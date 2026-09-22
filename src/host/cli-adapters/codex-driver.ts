@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process'
 import type { CodingNsCliModelCatalog, CodingNsCliPermissionResponse, CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
-import { JsonRpcProcess } from './json-rpc-process.js'
-import { detectBinary, emptyCatalog, isRecord, streamRpcRequest, textValue, usageChunk } from './rpc-driver-utils.js'
+import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
+import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
 import { CODEX_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 
 export interface CodexAppServerDriverOptions {
@@ -79,22 +79,62 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         session.providerSessionId = session.threadId
       }
       yield { type: 'session-binding', providerSessionId: session.providerSessionId }
+      const eventQueue = createCodexTurnEventQueue()
+      let activeTurnId: string | null = null
+      let terminalReason: 'stop' | 'cancel' | 'error' | null = null
+      const onNotification = (message: JsonRpcMessage): void => {
+        if (!isCodexNotificationForTurn(message, session.threadId, activeTurnId)) return
+        const turnId = readTurnId(message)
+        if (turnId !== null) {
+          activeTurnId = turnId
+          session.turnId = turnId
+        }
+        eventQueue.push(message)
+        const reason = readCodexTerminalReason(message)
+        if (reason !== null) {
+          terminalReason = reason
+          eventQueue.close()
+        }
+      }
+      // 与父仓库 CodexRuntimeAdapter 一致：监听器必须先于 turn/start 注册，
+      // 否则响应前到达的 turn/started 或文本通知也会丢失。
+      const removeNotificationListener = rpc.addNotificationListener(onNotification)
+      const onAbort = (): void => {
+        terminalReason = 'cancel'
+        eventQueue.close()
+      }
+      if (input.signal?.aborted) onAbort()
+      else input.signal?.addEventListener('abort', onAbort, { once: true })
       try {
-        for await (const message of streamRpcRequest(rpc, 'turn/start', {
+        const response = await rpc.request('turn/start', {
           threadId: session.threadId,
           input: [{ type: 'text', text: input.prompt }],
           ...(input.effortId ? { effort: input.effortId } : {}),
-        }, input.signal, { dispose: false, killOnAbort: false })) {
-          const turnId = readTurnId(message)
-          if (turnId) session.turnId = turnId
+        }, { signal: input.signal, killOnAbort: false })
+        const responseTurnId = readTurnId(response)
+        if (responseTurnId !== null) {
+          activeTurnId = responseTurnId
+          session.turnId = responseTurnId
+        }
+        // 某些 app-server 会直接在 turn/start 响应中返回终态。父仓库把它
+        // 归一化成 turn/completed，这里复用同一规则，避免永久等待通知。
+        const responseTerminal = buildCodexCompletionNotification(response, session.threadId)
+        if (responseTerminal !== null) onNotification(responseTerminal)
+
+        for await (const message of eventQueue.iterable) {
           const chunk = codexMessageToChunk(message)
           if (chunk !== null) yield chunk
         }
+        if (input.signal?.aborted) await this.interrupt(input.sessionId)
       } catch (error) {
         if (!input.signal?.aborted) throw error
         await this.interrupt(input.sessionId)
+      } finally {
+        input.signal?.removeEventListener('abort', onAbort)
+        removeNotificationListener()
+        eventQueue.close()
       }
-      yield { type: 'finish', reason: input.signal?.aborted ? 'cancel' : 'stop' }
+      yield { type: 'finish', reason: input.signal?.aborted ? 'cancel' : terminalReason ?? 'stop' }
     } finally { /* app-server 在会话结束前保持连接。 */ }
   }
 
@@ -224,11 +264,88 @@ function readRequestId(value: unknown): string | null {
   return null
 }
 
-function readTurnId(message: Record<string, any>): string | null {
+function readTurnId(message: unknown): string | null {
+  if (!isRecord(message)) return null
   const params = isRecord(message.params) ? message.params : message
   for (const key of ['turnId', 'turn_id']) if (typeof params[key] === 'string') return params[key]
   if (isRecord(params.turn) && typeof params.turn.id === 'string') return params.turn.id
   return null
+}
+
+/**
+ * 复用父仓库 CodexRuntimeAdapter 的事件队列结构：终止时先排空已入队事件，
+ * 再结束异步迭代，保证 turn/completed 前到达的最后一个文本片段不会丢失。
+ */
+function createCodexTurnEventQueue(): {
+  readonly iterable: AsyncIterable<JsonRpcMessage>
+  push(message: JsonRpcMessage): void
+  close(): void
+} {
+  const values: JsonRpcMessage[] = []
+  const waiters: Array<(result: IteratorResult<JsonRpcMessage>) => void> = []
+  let closed = false
+  return {
+    iterable: {
+      [Symbol.asyncIterator]() {
+        return {
+          next(): Promise<IteratorResult<JsonRpcMessage>> {
+            const value = values.shift()
+            if (value !== undefined) return Promise.resolve({ done: false, value })
+            if (closed) return Promise.resolve({ done: true, value: undefined })
+            return new Promise((resolve) => waiters.push(resolve))
+          },
+        }
+      },
+    },
+    push(message) {
+      if (closed) return
+      const waiter = waiters.shift()
+      if (waiter !== undefined) waiter({ done: false, value: message })
+      else values.push(message)
+    },
+    close() {
+      if (closed) return
+      closed = true
+      while (waiters.length > 0) waiters.shift()?.({ done: true, value: undefined })
+    },
+  }
+}
+
+/** 只接收当前 thread/turn 的事件，避免子 Agent 的完成通知提前结束父轮次。 */
+function isCodexNotificationForTurn(message: JsonRpcMessage, threadId: string, turnId: string | null): boolean {
+  const params = isRecord(message.params) ? message.params : null
+  const notificationThreadId = readScopedId(params, ['threadId', 'thread_id'], 'thread')
+  const notificationTurnId = readTurnId(message)
+  if (notificationThreadId !== null && notificationThreadId !== threadId) return false
+  return turnId === null || notificationTurnId === null || notificationTurnId === turnId
+}
+
+function readCodexTerminalReason(message: JsonRpcMessage): 'stop' | 'cancel' | 'error' | null {
+  if (message.method === 'error') {
+    const params = isRecord(message.params) ? message.params : null
+    return params?.willRetry === true ? null : 'error'
+  }
+  if (message.method !== 'turn/completed') return null
+  const params = isRecord(message.params) ? message.params : null
+  const turn = isRecord(params?.turn) ? params.turn : null
+  if (turn?.status === 'failed') return 'error'
+  if (turn?.status === 'interrupted' || turn?.status === 'cancelled') return 'cancel'
+  return 'stop'
+}
+
+/** 将 turn/start 响应里的终态归一化成父仓库使用的 turn/completed 通知。 */
+function buildCodexCompletionNotification(value: unknown, threadId: string): JsonRpcMessage | null {
+  if (!isRecord(value) || !isRecord(value.turn)) return null
+  const status = value.turn.status
+  if (status !== 'completed' && status !== 'failed' && status !== 'interrupted' && status !== 'cancelled') return null
+  return { method: 'turn/completed', params: { threadId, turn: value.turn } }
+}
+
+function readScopedId(value: Record<string, any> | null, keys: readonly string[], nestedKey: string): string | null {
+  if (value === null) return null
+  for (const key of keys) if (typeof value[key] === 'string' && value[key].trim()) return value[key].trim()
+  const nested = value[nestedKey]
+  return isRecord(nested) && typeof nested.id === 'string' && nested.id.trim() ? nested.id.trim() : null
 }
 
 function normalizeStatus(value: unknown): 'started' | 'running' | 'completed' | 'failed' | undefined {

@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process'
 import type { CodingNsCliModelCatalog, CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
-import { JsonRpcProcess } from './json-rpc-process.js'
-import { detectBinary, emptyCatalog, isRecord, streamRpcRequest, textValue, usageChunk } from './rpc-driver-utils.js'
+import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
+import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
 import { PI_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 
 export interface PiAgentDriverOptions {
@@ -73,22 +73,26 @@ export class PiAgentDriver implements CodingNsCliDriver {
         try { await rpc.request('set_model', { model: input.modelId }, { signal: input.signal, killOnAbort: false }) } catch { /* 兼容旧版 */ }
       }
       yield { type: 'session-binding', providerSessionId: session.providerSessionId }
-      try {
-        for await (const message of streamRpcRequest(rpc, 'prompt', { message: input.prompt }, input.signal, { dispose: false, killOnAbort: false })) {
-          const discoveredId = readSessionId(message)
-          if (discoveredId && discoveredId !== session.providerSessionId) {
-            session.providerSessionId = discoveredId
-            yield { type: 'session-binding', providerSessionId: discoveredId }
-          }
-          const chunk = piMessageToChunk(message)
-          if (chunk !== null) yield chunk
+      const stream = streamPiPrompt(rpc, input.prompt, input.signal)
+      let finishReason: 'stop' | 'cancel' | 'error'
+      while (true) {
+        const item = await stream.next()
+        if (item.done) {
+          finishReason = item.value
+          break
         }
-      } catch (error) {
-        if (!input.signal?.aborted) throw error
+        const discoveredId = readSessionId(item.value)
+        if (discoveredId && discoveredId !== session.providerSessionId) {
+          session.providerSessionId = discoveredId
+          yield { type: 'session-binding', providerSessionId: discoveredId }
+        }
+        const chunk = piMessageToChunk(item.value)
+        if (chunk !== null) yield chunk
+      }
+      if (finishReason === 'cancel') {
         await this.interrupt(input.sessionId)
       }
-      if (input.signal?.aborted) yield { type: 'finish', reason: 'cancel' }
-      else yield { type: 'finish', reason: 'stop' }
+      yield { type: 'finish', reason: finishReason }
     } finally { /* 跨轮复用：仅 dispose() 才回收长期进程。 */ }
   }
 
@@ -138,6 +142,61 @@ export class PiAgentDriver implements CodingNsCliDriver {
   }
 }
 
+/**
+ * Pi 的 prompt 响应只表示已接受，不能作为轮次终态。
+ * 监听器必须先于请求注册，并一直保留到 agent_settled、失败或取消。
+ */
+async function* streamPiPrompt(
+  rpc: JsonRpcProcess,
+  prompt: string,
+  signal: AbortSignal | undefined,
+): AsyncGenerator<JsonRpcMessage, 'stop' | 'cancel' | 'error', void> {
+  const queue: JsonRpcMessage[] = []
+  let wake: (() => void) | undefined
+  let promptSettled = false
+  let terminalReason: 'stop' | 'cancel' | 'error' | null = null
+  const notify = (): void => { wake?.(); wake = undefined }
+  const listener = (message: JsonRpcMessage): void => {
+    queue.push(message)
+    const type = piEventType(message)
+    if (type === 'agent_settled') terminalReason = 'stop'
+    else if (type === 'error' || type === 'agent_error' || type === 'agent_failed') terminalReason = 'error'
+    notify()
+  }
+  const removeListener = rpc.addNotificationListener(listener)
+  const onAbort = (): void => { terminalReason = 'cancel'; notify() }
+  if (signal?.aborted) onAbort()
+  else signal?.addEventListener('abort', onAbort, { once: true })
+
+  void rpc.request('prompt', { message: prompt }, { signal, killOnAbort: false }).then(
+    () => { promptSettled = true; notify() },
+    () => {
+      promptSettled = true
+      terminalReason = signal?.aborted ? 'cancel' : 'error'
+      notify()
+    },
+  )
+
+  try {
+    while (queue.length > 0 || !promptSettled || terminalReason === null) {
+      if (queue.length > 0) {
+        yield queue.shift()!
+        continue
+      }
+      await new Promise<void>((resolve) => { wake = resolve })
+    }
+    return terminalReason
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
+    removeListener()
+  }
+}
+
+function piEventType(message: JsonRpcMessage): string {
+  const params = isRecord(message.params) ? message.params : message
+  return typeof params.type === 'string' ? params.type.toLowerCase() : ''
+}
+
 function parsePiCliCatalog(output: string): CodingNsCliModelCatalog {
   const models: Array<{ id: string; name: string; efforts: readonly string[] }> = []
   const levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -179,8 +238,11 @@ function parsePiCatalog(value: unknown): CodingNsCliModelCatalog {
 function piMessageToChunk(message: Record<string, any>): CodingNsCliStreamChunk | null {
   const params = isRecord(message.params) ? message.params : message
   const event = isRecord(params.item) ? params.item : params
-  const type = typeof event.type === 'string' ? event.type : typeof params.event === 'string' ? params.event : ''
-  const text = textValue(params.delta ?? params.text ?? params.content ?? params.message)
+  const assistantEvent = isRecord(params.assistantMessageEvent) ? params.assistantMessageEvent : null
+  const rootType = typeof event.type === 'string' ? event.type : typeof params.event === 'string' ? params.event : ''
+  if (rootType === 'agent_settled' || rootType === 'agent_end' || rootType === 'turn_end') return null
+  const type = assistantEvent !== null && typeof assistantEvent.type === 'string' ? assistantEvent.type : rootType
+  const text = textValue(assistantEvent?.delta ?? params.delta ?? params.text ?? params.content ?? params.message)
   if (type.includes('text_delta') || type === 'text-delta' || type === 'assistant_message_event' && text) return text ? { type: 'text-delta', text } : null
   if (type.includes('thinking') || type.includes('reasoning')) return text ? { type: 'reasoning-delta', text } : null
   if (type.includes('tool') || type.includes('agent')) {

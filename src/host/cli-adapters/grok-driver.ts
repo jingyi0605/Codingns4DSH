@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process'
 import type { CodingNsCliModelCatalog, CodingNsCliPermissionResponse, CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
-import { JsonRpcProcess } from './json-rpc-process.js'
-import { detectBinary, emptyCatalog, isRecord, streamRpcRequest, textValue, usageChunk } from './rpc-driver-utils.js'
+import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
+import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
 import { GROK_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 
 export interface GrokBuildDriverOptions {
@@ -66,21 +66,25 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         this.sessions.set(providerSessionId, state)
       }
       yield { type: 'session-binding', providerSessionId }
-      try {
-        for await (const message of streamRpcRequest(rpc, 'session/prompt', {
-          sessionId: providerSessionId,
-          prompt: [{ type: 'text', text: input.prompt }],
-        }, input.signal, { onNotification: (notification) => {
-          const requestId = permissionRequestId(notification)
-          if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, notification.id)
-        }})) {
-          const chunk = acpMessageToChunk(message)
-          if (chunk !== null) yield chunk
+      const stream = streamGrokPrompt(rpc, providerSessionId, input.prompt, input.signal, (notification) => {
+        const requestId = permissionRequestId(notification)
+        if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, notification.id)
+      })
+      let finishReason: 'stop' | 'cancel' | 'error'
+      while (true) {
+        const item = await stream.next()
+        if (item.done) {
+          finishReason = item.value
+          break
         }
-      } catch (error) {
-        if (!input.signal?.aborted) throw error
+        const chunk = acpMessageToChunk(item.value)
+        if (chunk !== null) yield chunk
       }
-      yield { type: 'finish', reason: input.signal?.aborted ? 'cancel' : 'stop' }
+      if (finishReason === 'cancel') {
+        try { await rpc.request('session/cancel', { sessionId: providerSessionId }, { killOnAbort: false }) }
+        catch { /* 不同 ACP 版本的取消方法可能不同，请求级取消已经先行发出。 */ }
+      }
+      yield { type: 'finish', reason: finishReason }
     } finally { /* ACP 进程和会话跨轮复用，统一由 dispose() 回收。 */ }
   }
 
@@ -125,6 +129,121 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     if (state.providerSessionId !== '') this.sessions.set(state.providerSessionId, state)
     return state
   }
+}
+
+const GROK_DRAIN_WAIT_MS = 250
+
+/**
+ * Grok 可能先返回 prompt 响应，再补发最后一批 session/update。
+ * 响应或终态任一先到都会启动固定排空窗口，窗口内的文本和错误仍会被消费。
+ */
+async function* streamGrokPrompt(
+  rpc: JsonRpcProcess,
+  sessionId: string,
+  prompt: string,
+  signal: AbortSignal | undefined,
+  onNotification: (message: JsonRpcMessage) => void,
+): AsyncGenerator<JsonRpcMessage, 'stop' | 'cancel' | 'error', void> {
+  const queue: JsonRpcMessage[] = []
+  const requestController = new AbortController()
+  let wake: (() => void) | undefined
+  let drainDeadline: number | null = null
+  let terminalReason: 'stop' | 'cancel' | 'error' | null = null
+  const notify = (): void => { wake?.(); wake = undefined }
+  const beginDrain = (): void => {
+    if (drainDeadline === null) drainDeadline = Date.now() + GROK_DRAIN_WAIT_MS
+    notify()
+  }
+  const listener = (message: JsonRpcMessage): void => {
+    queue.push(message)
+    onNotification(message)
+    const notificationReason = grokNotificationReason(message)
+    if (notificationReason === null) {
+      notify()
+      return
+    }
+    terminalReason = mergeGrokReason(terminalReason, notificationReason)
+    // 部分 Grok 版本只发终态通知而不回复 prompt，主动取消可清理待处理请求。
+    requestController.abort()
+    beginDrain()
+  }
+  const removeListener = rpc.addNotificationListener(listener)
+  const onAbort = (): void => {
+    terminalReason = 'cancel'
+    queue.length = 0
+    requestController.abort()
+    drainDeadline = Date.now()
+    notify()
+  }
+  if (signal?.aborted) onAbort()
+  else signal?.addEventListener('abort', onAbort, { once: true })
+
+  void rpc.request('session/prompt', {
+    sessionId,
+    prompt: [{ type: 'text', text: prompt }],
+  }, { signal: requestController.signal, killOnAbort: false }).then(
+    (response) => {
+      const responseReason = grokPromptReason(response)
+      if (responseReason !== null) terminalReason = mergeGrokReason(terminalReason, responseReason)
+      beginDrain()
+    },
+    () => {
+      if (terminalReason === null) terminalReason = signal?.aborted ? 'cancel' : 'error'
+      beginDrain()
+    },
+  )
+
+  try {
+    while (true) {
+      if (queue.length > 0) {
+        yield queue.shift()!
+        continue
+      }
+      if (drainDeadline === null) {
+        await new Promise<void>((resolve) => { wake = resolve })
+        continue
+      }
+      const remaining = drainDeadline - Date.now()
+      if (remaining <= 0) break
+      await Promise.race([
+        new Promise<void>((resolve) => { wake = resolve }),
+        new Promise<void>((resolve) => setTimeout(resolve, remaining)),
+      ])
+      wake = undefined
+    }
+    return terminalReason ?? 'stop'
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
+    removeListener()
+  }
+}
+
+function grokPromptReason(value: unknown): 'stop' | 'error' | null {
+  if (!isRecord(value) || typeof value.stopReason !== 'string') return null
+  const reason = value.stopReason.toLowerCase()
+  return reason === 'cancelled' || reason === 'error' || reason === 'failed' ? 'error' : 'stop'
+}
+
+function mergeGrokReason(
+  current: 'stop' | 'cancel' | 'error' | null,
+  next: 'stop' | 'cancel' | 'error',
+): 'stop' | 'cancel' | 'error' {
+  if (current === 'error' || next === 'error') return 'error'
+  if (current === 'cancel' || next === 'cancel') return 'cancel'
+  return 'stop'
+}
+
+function grokNotificationReason(message: JsonRpcMessage): 'stop' | 'error' | null {
+  const params = isRecord(message.params) ? message.params : message
+  const update = isRecord(params.update) ? params.update : params
+  const type = typeof update.sessionUpdate === 'string'
+    ? update.sessionUpdate.toLowerCase()
+    : typeof update.type === 'string'
+      ? update.type.toLowerCase()
+      : ''
+  if (type.includes('error') || type.includes('failed')) return 'error'
+  if (type.includes('turn_completed') || type.includes('turn_complete') || type === 'completed' || type === 'done') return 'stop'
+  return null
 }
 
 function acpMessageToChunk(message: Record<string, any>): CodingNsCliStreamChunk | null {

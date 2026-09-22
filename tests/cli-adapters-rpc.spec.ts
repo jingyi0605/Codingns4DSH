@@ -23,13 +23,30 @@ test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async 
         const stdin = {
           write(data: string): void {
             const request = JSON.parse(data) as { id: number; method: string }
-            let result: Record<string, string> = {}
+            let result: Record<string, unknown> = {}
             if (request.method === 'thread/start') result = { threadId: 'thread-1' }
             if (request.method === 'session/new') result = { sessionId: 'session-1' }
-            if (request.method === 'prompt' || request.method === 'turn/start' || request.method === 'session/prompt') {
+            if (request.method === 'prompt') {
               stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'message_update', params: { type: 'text_delta', delta: '完成' } })}\n`)
+              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`)
+              setImmediate(() => stdout.write(`${JSON.stringify({ type: 'agent_settled' })}\n`))
+              return
             }
-            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`)
+            if (request.method === 'session/prompt') {
+              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'message_update', params: { type: 'text_delta', delta: '完成' } })}\n`)
+              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { stopReason: 'end_turn' } })}\n`)
+              return
+            }
+            if (request.method === 'turn/start') {
+              result = { turn: { id: 'turn-1', status: 'inProgress' } }
+              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`)
+              setImmediate(() => {
+                stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'message-1', delta: '完成' } })}\n`)
+                stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } })}\n`)
+              })
+            } else {
+              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`)
+            }
           },
         }
         return { stdout, stderr, stdin, kill() { killed = true; stdout.end(); stderr.end(); return true } }
@@ -208,7 +225,12 @@ test('Pi 同一 sessionId 跨轮复用 RPC 进程，并在 dispose 时统一回�
       const stderr = new PassThrough()
       const stdin = { write(data: string): void {
         const request = JSON.parse(data) as { id: number; method: string }
-        if (request.method === 'prompt') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'message_update', params: { type: 'text_delta', delta: 'ok' } })}\n`)
+        if (request.method === 'prompt') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'message_update', params: { type: 'text_delta', delta: 'ok' } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+          setImmediate(() => stdout.write(`${JSON.stringify({ type: 'agent_settled' })}\n`))
+          return
+        }
         stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
       } }
       return { stdout, stderr, stdin, kill() { killed += 1; stdout.end(); stderr.end(); return true } }
@@ -256,5 +278,218 @@ test('Codex 原生权限请求转换为标准事件并可回传审批结果', as
   await running
   assert.deepEqual(chunks.find((chunk) => (chunk as { type?: string }).type === 'permission-request'), { type: 'permission-request', requestId: '77', kind: 'command', detail: 'echo hidden' })
   assert.deepEqual(approved, { approved: true })
+  driver.dispose()
+})
+
+test('Pi 在 prompt 响应先到时继续等待文本和 agent_settled', async () => {
+  const driver = new PiAgentDriver({
+    binaries: ['fake-pi'],
+    spawnSync: (() => ({ status: 0, stdout: 'pi 0.85.1', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method !== 'prompt') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { accepted: true } })}\n`)
+        setImmediate(() => {
+          stdout.write(`${JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '延迟回复' } })}\n`)
+          stdout.write(`${JSON.stringify({ type: 'agent_settled' })}\n`)
+        })
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'pi-late', messages: [], prompt: '你好' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'pi-late' },
+    { type: 'text-delta', text: '延迟回复' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
+test('Pi prompt 被拒绝时结束为 error', async () => {
+  const driver = new PiAgentDriver({
+    binaries: ['fake-pi'],
+    spawnSync: (() => ({ status: 0, stdout: 'pi 0.85.1', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32000, message: '拒绝' } })}\n`)
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'pi-error', messages: [], prompt: '你好' })) chunks.push(chunk)
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'error' })
+  driver.dispose()
+})
+
+test('Grok 在 prompt 响应后排空延迟到达的文本和完成通知', async () => {
+  const driver = new GrokBuildDriver({
+    binaries: ['fake-grok'],
+    spawnSync: (() => ({ status: 0, stdout: 'grok 1.0.40', stderr: '' })) as never,
+    spawn: createGrokTimingSpawn('response-first'),
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'grok-late', messages: [], prompt: '你好' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'grok-session' },
+    { type: 'text-delta', text: '延迟回复' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
+test('Grok 只有终态通知而没有 prompt 响应时仍能完成', async () => {
+  const driver = new GrokBuildDriver({
+    binaries: ['fake-grok'],
+    spawnSync: (() => ({ status: 0, stdout: 'grok 1.0.40', stderr: '' })) as never,
+    spawn: createGrokTimingSpawn('terminal-only'),
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'grok-terminal', messages: [], prompt: '你好' })) chunks.push(chunk)
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'stop' })
+  driver.dispose()
+})
+
+test('Grok 延迟错误通知覆盖先到的 prompt 响应', async () => {
+  const driver = new GrokBuildDriver({
+    binaries: ['fake-grok'],
+    spawnSync: (() => ({ status: 0, stdout: 'grok 1.0.40', stderr: '' })) as never,
+    spawn: createGrokTimingSpawn('terminal-error'),
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'grok-error', messages: [], prompt: '你好' })) chunks.push(chunk)
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'error' })
+  driver.dispose()
+})
+
+function createGrokTimingSpawn(mode: 'response-first' | 'terminal-only' | 'terminal-error') {
+  return (() => {
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    const stdin = { write(data: string): void {
+      const request = JSON.parse(data) as { id?: number; method?: string }
+      if (request.method === 'initialize') {
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        return
+      }
+      if (request.method === 'session/new') {
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'grok-session' } })}\n`)
+        return
+      }
+      if (request.method !== 'session/prompt') return
+      if (mode !== 'terminal-only') {
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: mode === 'response-first' ? { stopReason: 'end_turn' } : {} })}\n`)
+      }
+      setTimeout(() => {
+        if (mode === 'response-first') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', text: '延迟回复' } } })}\n`)
+        }
+        const sessionUpdate = mode === 'terminal-error' ? 'turn_failed' : 'turn_completed'
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate } } })}\n`)
+      }, 10)
+    } }
+    return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+  }) as never
+}
+
+test('Codex 在 turn/start 响应先到时继续等待文本和完成通知', async () => {
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-agent'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        else if (request.method === 'thread/start') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'thread-late' } } })}\n`)
+        else if (request.method === 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'turn-late', status: 'inProgress' } } })}\n`)
+          setImmediate(() => {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/agentMessage/delta', params: { threadId: 'thread-late', turnId: 'turn-late', itemId: 'message-late', delta: '延迟回复' } })}\n`)
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'thread-late', turn: { id: 'turn-late', status: 'completed' } } })}\n`)
+          })
+        }
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-late', messages: [], prompt: '你好' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'thread-late' },
+    { type: 'text-delta', text: '延迟回复' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
+test('Codex 取消时使用 turn/start 响应中的 turnId 中断当前轮次', async () => {
+  const requests: Array<{ method: string; params?: Record<string, unknown> }> = []
+  const controller = new AbortController()
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-agent'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string; params?: Record<string, unknown> }
+        requests.push(request)
+        if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        else if (request.method === 'thread/start') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'thread-cancel' } } })}\n`)
+        else if (request.method === 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'turn-cancel', status: 'inProgress' } } })}\n`)
+          setImmediate(() => controller.abort())
+        } else if (request.method === 'turn/interrupt') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        }
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-cancel', messages: [], prompt: '等待', signal: controller.signal })) chunks.push(chunk)
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'cancel' })
+  assert.deepEqual(requests.find((request) => request.method === 'turn/interrupt')?.params, { threadId: 'thread-cancel', turnId: 'turn-cancel' })
+  driver.dispose()
+})
+
+test('Codex 仅在失败终止通知到达后结束为 error', async () => {
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-agent'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        else if (request.method === 'thread/start') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'thread-failed' } } })}\n`)
+        else if (request.method === 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'turn-failed', status: 'inProgress' } } })}\n`)
+          setImmediate(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'thread-failed', turn: { id: 'turn-failed', status: 'failed', error: { message: '模型调用失败' } } } })}\n`))
+        }
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-failed', messages: [], prompt: '执行' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'thread-failed' },
+    { type: 'finish', reason: 'error' },
+  ])
   driver.dispose()
 })
