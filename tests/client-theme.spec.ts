@@ -44,3 +44,42 @@ test('所有 Client 表单不再引用不存在的旧主题令牌', async () => 
   assert.equal(source.includes('dshPopupSurfaceStyle'), true)
   assert.equal(source.includes(dshThemeColor.labelPrimary), false, '组件应复用主题样式或令牌对象，不应复制令牌字符串')
 })
+
+test('切换外部 Agent 时模型选择器立即显示可访问的旋转加载状态', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/cli-slots.ts'), 'utf8')
+
+  assert.match(source, /@keyframes dsh-codingns-cli-spin/u)
+  assert.match(source, /className: 'dsh-codingns-cli-spinner'/u)
+  assert.match(source, /'aria-busy': loading/u)
+  assert.match(source, /role: loading \? 'status'/u)
+  assert.match(source, /catalogState\?\.adapterId === selection\.adapterId/u)
+  assert.match(source, /正在加载模型列表…/u)
+  assert.match(source, /disabled: triggerDisabled/u)
+  assert.match(source, /const triggerDisabled = !loading && modelUnavailable/u)
+})
+
+test('Agent 选择器位于模型左侧并显示完整 Provider Logo', async () => {
+  const [slotSource, iconSource, bundleSource] = await Promise.all([
+    readFile(join(projectRoot, 'src/client/cli-slots.ts'), 'utf8'),
+    readFile(join(projectRoot, 'src/client/provider-icons.ts'), 'utf8'),
+    readFile(join(projectRoot, 'dist/client/bundle.js'), 'utf8'),
+  ])
+
+  assert.match(slotSource, /id: 'dsh-codingns-agent',[\s\S]*?order: -20/u)
+  assert.match(slotSource, /id: 'dsh-codingns-model',[\s\S]*?order: -10/u)
+  assert.doesNotMatch(slotSource, /slots\.inject\('conversation\.input\.left'/u)
+  assert.match(slotSource, /className: 'dsh-codingns-agent-trigger'/u)
+  assert.match(slotSource, /className: 'dsh-codingns-agent-option'/u)
+  assert.match(slotSource, /role: 'menuitemradio'/u)
+  assert.match(slotSource, /CIRCULAR_PROVIDER_ICON_IDS = new Set\(\['gemini', 'grok'\]\)/u)
+  assert.match(slotSource, /CIRCULAR_PROVIDER_ICON_IDS\.has\(adapterId\) \? \{ \.\.\.style, borderRadius: '50%' \} : style/u)
+  assert.equal(slotSource.match(/createElement\(NativeDropdownChevron/g)?.length, 2)
+  assert.match(slotSource, /viewBox: '0 0 14 14'/u)
+  assert.match(slotSource, /M11\.8486 5\.5L11\.4238 5\.92383/u)
+  assert.doesNotMatch(slotSource, /⌄/u)
+
+  for (const adapterId of ['dsh', 'command-code', 'claude-code', 'kimi', 'gemini', 'pi', 'codex', 'opencode', 'grok']) {
+    assert.match(iconSource, new RegExp(`(?:['"]${adapterId}['"]|\\b${adapterId}):`, 'u'), `${adapterId} 缺少 Logo 映射`)
+  }
+  assert.match(bundleSource, /data:image\/(?:png|svg\+xml);base64,/u, 'Client 单文件包应内联 Provider Logo')
+})

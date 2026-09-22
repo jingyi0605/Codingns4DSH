@@ -7,7 +7,6 @@ import type {
   CodingNsCliSessionRecord,
 } from '../../shared/contracts/cli-adapter.js'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
-import { registerCliConversationSlots } from '../cli-slots.js'
 import { archiveCliSession, callCliRpc, errorMessage, listCliSessions, restoreCliSession } from '../cli-catalog.js'
 import { dshButtonStyle, dshFormRootStyle, dshPopupSurfaceStyle, dshThemeColor } from '../theme.js'
 
@@ -26,9 +25,11 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
       defaultOpen: true,
     },
   },
-  start: (context) => {
+  start: async (context) => {
     const slots = context.services.slots
     if (slots === undefined) return
+    // CLI Slot 带有浏览器图片资源，启用模块时再加载，避免 Node 侧读取 Client 元数据时解析图片。
+    const { registerCliConversationSlots } = await import('../cli-slots.js')
     const disposeSlots = registerCliConversationSlots(slots, context.services.rpc)
     context.resources.add(disposeSlots)
   },

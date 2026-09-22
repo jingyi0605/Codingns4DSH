@@ -12,6 +12,7 @@ test('Client 入口以 DSH Loader factory 格式构建', async () => {
   assert.match(source, /window\.__ModuleLoader__\.load/u)
   assert.match(source, /id:\s*["']dsh-codingns["']/u)
   assert.match(source, /factory:\s*\(require\)/u)
+  assert.doesNotMatch(source, /require\(["']\.\/[^"']+\.(?:cjs|js)["']\)/u, 'DSH Client 不得依赖 Loader 无法解析的相对分块')
 })
 
 test('Client 构建产物不包含 Node 专属模块', async () => {
@@ -34,7 +35,7 @@ test('Client 构建产物包含模块卡片、设置面板和 Host RPC 调用', 
     'settings.subscribe(listener)', 'settings.getSnapshot()',
     'crypto', 'randomUUID',
     '外部Agent集成', 'cli/${action}', 'catalog', 'models', 'session/get', 'session/set', 'session/list', '外部 Agent 会话', 'adapter/set', '已停用',
-    'conversation.input.left', 'conversation.input.right', 'Agent 选择器', '思考等级', 'data-codingns-agent', 'conversation.input.model',
+    'conversation.input.right', 'Agent 选择器', '思考等级', 'data-codingns-agent', 'conversation.input.model',
     '安装状态', '模型目录', 'aria-modal',
   ]) {
     assert.equal(source.includes(marker), true, `Client 产物缺少 ${marker}`)

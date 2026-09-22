@@ -71,6 +71,7 @@
   "files": [
     "dist/**/*.js",
     "dist/**/*.d.ts",
+    "assets/provider-icons/**",
     "dsh.bundle.patch",
     "profile/**",
     "README.md",

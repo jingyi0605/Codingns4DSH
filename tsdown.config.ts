@@ -6,12 +6,17 @@ export default defineConfig({
   format: 'cjs',
   platform: 'browser',
   target: 'es2022',
+  loader: {
+    '.png': 'dataurl',
+    '.svg': 'dataurl',
+  },
   dts: false,
   sourcemap: true,
   clean: false,
   external: ['react'],
   noExternal: (specifier) => specifier !== 'react',
   outputOptions: {
+    codeSplitting: false,
     // 与 tsc 的 dist/client/index.js 分离，避免两个监听进程互相覆盖产物。
     entryFileNames: 'bundle.js',
     banner: 'window.__ModuleLoader__.load({ id: "dsh-codingns", factory: (require) => {',
