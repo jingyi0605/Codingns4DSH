@@ -5,7 +5,11 @@ import type {
   CodingNsAuthSessionSnapshot,
   TunnelBindingSummary,
 } from '../../shared/contracts/auth.js'
-import { CODINGNS_CONTROL_BASE_URL_FIELD } from '../../shared/contracts/config.js'
+import {
+  CODINGNS_CONTROL_BASE_URL_FIELD,
+  CODINGNS_CONTROL_BASE_URLS_FIELD,
+  DEFAULT_CODINGNS_CONTROL_BASE_URLS,
+} from '../../shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import type { FeaturePanelProps, CodingNsRpcClient } from './types.js'
 
@@ -20,7 +24,11 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [controlBaseUrl, setControlBaseUrl] = useState(snapshot.value?.controlBaseUrl ?? '')
+  const [controlBaseUrl, setControlBaseUrl] = useState(resolveControlBaseUrl(snapshot.value?.controlBaseUrl))
+  const [controlBaseUrls, setControlBaseUrls] = useState(() => uniqueControlBaseUrls(snapshot.value?.controlBaseUrls, snapshot.value?.controlBaseUrl))
+  const [newControlBaseUrl, setNewControlBaseUrl] = useState('')
+  const [addAddressOpen, setAddAddressOpen] = useState(false)
+  const [addressError, setAddressError] = useState('')
   const [hostLabel, setHostLabel] = useState('')
   const [hostPublicKey, setHostPublicKey] = useState('')
   const [hostFingerprint, setHostFingerprint] = useState('')
@@ -31,8 +39,13 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
 
   useEffect(() => {
     const saved = snapshot.value?.controlBaseUrl
-    if (saved !== undefined) setControlBaseUrl(saved)
-  }, [snapshot.value?.controlBaseUrl])
+    const resolved = resolveControlBaseUrl(saved)
+    setControlBaseUrls(uniqueControlBaseUrls(snapshot.value?.controlBaseUrls, resolved))
+    setControlBaseUrl(resolved)
+    if (snapshot.status === 'ready' && snapshot.writable && saved !== resolved) {
+      void settings.set(CODINGNS_CONTROL_BASE_URL_FIELD, resolved).catch(() => undefined)
+    }
+  }, [settings, snapshot.status, snapshot.writable, snapshot.value?.controlBaseUrl, snapshot.value?.controlBaseUrls])
 
   useEffect(() => {
     void callCodingNsRpc<CodingNsAuthSessionSnapshot>(rpc, 'auth/snapshot', {})
@@ -53,9 +66,12 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
   }
 
   const login = (): Promise<void> => run(async () => {
-    await settings.set(CODINGNS_CONTROL_BASE_URL_FIELD, controlBaseUrl.trim())
+    const selectedUrl = normalizeControlBaseUrl(controlBaseUrl)
+    const nextUrls = uniqueControlBaseUrls(controlBaseUrls, selectedUrl)
+    await settings.set(CODINGNS_CONTROL_BASE_URLS_FIELD, nextUrls)
+    await settings.set(CODINGNS_CONTROL_BASE_URL_FIELD, selectedUrl)
     const next = await callCodingNsRpc<CodingNsAuthSessionSnapshot>(rpc, 'auth/login', {
-      controlBaseUrl,
+      controlBaseUrl: selectedUrl,
       email,
       password,
     })
@@ -92,6 +108,33 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     setMessage('Host 已解绑')
   })
 
+  const addControlBaseUrl = async (): Promise<void> => {
+    setBusy(true)
+    setAddressError('')
+    try {
+      const addedUrl = normalizeControlBaseUrl(newControlBaseUrl)
+      const nextUrls = uniqueControlBaseUrls(controlBaseUrls, addedUrl)
+      await settings.set(CODINGNS_CONTROL_BASE_URLS_FIELD, nextUrls)
+      await settings.set(CODINGNS_CONTROL_BASE_URL_FIELD, addedUrl)
+      setControlBaseUrls(nextUrls)
+      setControlBaseUrl(addedUrl)
+      setNewControlBaseUrl('')
+      setAddAddressOpen(false)
+      setMessage('已添加 Control API 地址')
+    } catch (error) {
+      setAddressError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const chooseControlBaseUrl = (value: string): void => {
+    setControlBaseUrl(value)
+    void settings.set(CODINGNS_CONTROL_BASE_URL_FIELD, value).catch((error: unknown) => {
+      setMessage(error instanceof Error ? error.message : String(error))
+    })
+  }
+
   const fieldStyle = { width: '100%', boxSizing: 'border-box' as const, padding: '8px 10px', border: '1px solid var(--dsw-alias-border-primary, #d9d9d9)', borderRadius: 6 }
   const buttonStyle = { padding: '8px 14px', border: '1px solid var(--dsw-alias-border-primary, #d9d9d9)', borderRadius: 6, background: 'var(--dsw-alias-bg-secondary, transparent)', cursor: 'pointer' }
   const authenticated = auth.status === 'authenticated'
@@ -105,7 +148,24 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     ),
     createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
       createElement('span', undefined, 'Control API 地址'),
-      createElement('input', { type: 'url', value: controlBaseUrl, placeholder: 'https://codingns.example.com', disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setControlBaseUrl(event.currentTarget.value), style: fieldStyle }),
+      createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+        createElement('select', { value: controlBaseUrl, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => chooseControlBaseUrl(event.currentTarget.value), style: { ...fieldStyle, flex: 1, minWidth: 0 } },
+          ...controlBaseUrls.map((url) => createElement('option', { key: url, value: url }, url)),
+        ),
+        createElement('button', { type: 'button', 'aria-haspopup': 'dialog', disabled: disabled || busy, onClick: () => { setAddressError(''); setAddAddressOpen(true) }, style: { ...buttonStyle, flex: '0 0 auto' } }, '添加'),
+      ),
+    ),
+    addAddressOpen && createElement('div', { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'codingns-add-address-title', style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'rgba(0, 0, 0, 0.45)' } },
+      createElement('div', { style: { width: 'min(100%, 480px)', boxSizing: 'border-box', padding: 24, borderRadius: 8, background: 'var(--dsw-alias-bg-primary, #fff)', boxShadow: '0 12px 40px rgba(0, 0, 0, 0.25)' } },
+        createElement('h3', { id: 'codingns-add-address-title', style: { margin: 0, fontSize: 18 } }, '添加中转服务器'),
+        createElement('p', { style: { margin: '8px 0 16px', opacity: 0.7 } }, '请输入新的 Control API 地址。'),
+        createElement('input', { type: 'url', autoFocus: true, value: newControlBaseUrl, placeholder: 'https://example.com:1443', disabled: busy, onChange: (event: { currentTarget: { value: string } }) => setNewControlBaseUrl(event.currentTarget.value), style: fieldStyle }),
+        addressError && createElement('div', { role: 'alert', style: { marginTop: 8, color: '#b42318' } }, addressError),
+        createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 } },
+          createElement('button', { type: 'button', disabled: busy, onClick: () => { setAddAddressOpen(false); setAddressError('') }, style: buttonStyle }, '取消'),
+          createElement('button', { type: 'button', disabled: busy || !newControlBaseUrl.trim(), onClick: () => void addControlBaseUrl(), style: buttonStyle }, busy ? '添加中…' : '添加'),
+        ),
+      ),
     ),
     !authenticated && createElement('form', { onSubmit: (event: { preventDefault: () => void }) => { event.preventDefault(); void login() }, style: { display: 'flex', flexDirection: 'column', gap: 12 } },
       createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
@@ -158,4 +218,21 @@ async function callCodingNsRpc<T>(rpc: CodingNsRpcClient, endpoint: string, payl
 
 function loggedOutSnapshot(): CodingNsAuthSessionSnapshot {
   return { status: 'logged_out', account: null, currentDevice: null, binding: null, expiresAt: null, errorCode: null }
+}
+
+function uniqueControlBaseUrls(saved: readonly string[] | undefined, selected: string | undefined): string[] {
+  const values = [...(saved ?? DEFAULT_CODINGNS_CONTROL_BASE_URLS), selected ?? '']
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))]
+}
+
+function resolveControlBaseUrl(value: string | undefined): string {
+  const trimmed = value?.trim()
+  return trimmed || DEFAULT_CODINGNS_CONTROL_BASE_URLS[0] || ''
+}
+
+function normalizeControlBaseUrl(value: string): string {
+  const trimmed = value.trim()
+  const parsed = new URL(trimmed)
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new TypeError('Control API 地址必须使用 HTTP(S)')
+  return parsed.toString().replace(/\/+$/u, '')
 }
