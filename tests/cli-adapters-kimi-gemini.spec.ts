@@ -62,10 +62,13 @@ test('Gemini ACP 完成初始化、session/new、prompt 并转换更新事件', 
         const request = JSON.parse(data) as { id?: number; method?: string; params?: Record<string, unknown> }
         requests.push(request)
         if (request.id === undefined) return true
-        const result = request.method === 'session/new' ? { sessionId: 'gemini-session-1' } : {}
+        const result = request.method === 'session/new'
+          ? { sessionId: 'gemini-session-1' }
+          : request.method === 'session/prompt'
+            ? { stopReason: 'end_turn' }
+            : {}
         if (request.method === 'session/prompt') {
           stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ACP 回复' } } } }) + '\n')
-          stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'turn_completed' } } }) + '\n')
         }
         queueMicrotask(() => stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result, ...(nextId++ < 0 ? { nope: true } : {}) }) + '\n'))
         return true
@@ -100,6 +103,37 @@ test('Gemini ACP 完成初始化、session/new、prompt 并转换更新事件', 
     { type: 'text-delta', text: 'ACP 回复' },
     { type: 'finish', reason: 'stop' },
   ])
+})
+
+test('Gemini 按 ACP prompt stopReason 映射取消和错误终态', async () => {
+  for (const [stopReason, expected] of [
+    ['cancelled', 'cancel'],
+    ['error', 'error'],
+  ] as const) {
+    const driver = new GeminiCliDriver({
+      binaries: ['fake-gemini'],
+      spawnSync: fakeDetection,
+      spawn: (() => {
+        const stdout = new PassThrough()
+        const stderr = new PassThrough()
+        const stdin = { write(data: string): boolean {
+          const request = JSON.parse(data) as { id?: number; method?: string }
+          if (request.id === undefined) return true
+          const result = request.method === 'session/new'
+            ? { sessionId: `gemini-${stopReason}` }
+            : request.method === 'session/prompt'
+              ? { stopReason }
+              : {}
+          queueMicrotask(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`))
+          return true
+        } }
+        return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+      }) as never,
+    })
+    const chunks = []
+    for await (const chunk of driver.executeTurn({ sessionId: `s-${stopReason}`, messages: [], prompt: '你好' })) chunks.push(chunk)
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: expected })
+  }
 })
 
 test('Gemini 从 ACP session/new 读取真实模型目录而不是帮助参数占位符', async () => {

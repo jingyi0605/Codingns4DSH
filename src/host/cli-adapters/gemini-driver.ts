@@ -87,22 +87,36 @@ export class GeminiCliDriver extends StandardStreamDriver {
         await rpc.request('session/set_model', { sessionId, modelId: input.modelId }, { signal: input.signal })
       }
       let finished = false
-      for await (const message of streamRpcRequest(rpc, 'session/prompt', {
+      const stream = streamRpcRequest(rpc, 'session/prompt', {
         sessionId,
         prompt: [{ type: 'text', text: input.prompt }],
-      }, input.signal)) {
-        const chunk = geminiAcpMessageToChunk(message)
+      }, input.signal)
+      let promptResponse: unknown
+      while (true) {
+        const item = await stream.next()
+        if (item.done) {
+          promptResponse = item.value
+          break
+        }
+        const chunk = geminiAcpMessageToChunk(item.value)
         if (chunk?.type === 'finish') finished = true
         if (chunk !== null) yield chunk
       }
-      if (input.signal?.aborted) {
-        if (!finished) yield { type: 'finish', reason: 'cancel' }
-      } else if (!finished) yield { type: 'finish', reason: 'stop' }
+      if (!finished) yield { type: 'finish', reason: geminiPromptReason(promptResponse, input.signal) }
     } finally {
       rpc.dispose()
       await runtimeSettings?.dispose()
     }
   }
+}
+
+function geminiPromptReason(value: unknown, signal: AbortSignal | undefined): 'stop' | 'cancel' | 'error' {
+  if (signal?.aborted) return 'cancel'
+  if (!isRecord(value) || typeof value.stopReason !== 'string') return 'stop'
+  const reason = value.stopReason.toLowerCase()
+  if (reason === 'cancelled') return 'cancel'
+  if (reason === 'error' || reason === 'failed') return 'error'
+  return 'stop'
 }
 
 function parseGeminiCatalog(value: unknown): CodingNsCliModelCatalog {
