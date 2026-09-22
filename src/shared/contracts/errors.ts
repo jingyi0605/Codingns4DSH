@@ -1,0 +1,35 @@
+export const CODINGNS_DSH_ERROR_CODES = {
+  PLUGIN_MANIFEST_INVALID: 'PLUGIN_MANIFEST_INVALID',
+  DSH_VERSION_UNSUPPORTED: 'DSH_VERSION_UNSUPPORTED',
+  HOST_ENTRY_UNAVAILABLE: 'HOST_ENTRY_UNAVAILABLE',
+  CLIENT_ENTRY_UNAVAILABLE: 'CLIENT_ENTRY_UNAVAILABLE',
+  TRANSPORT_NOT_READY: 'TRANSPORT_NOT_READY',
+  PEER_HOST_NOT_FOUND: 'PEER_HOST_NOT_FOUND',
+  PEER_HOST_VERSION_MISMATCH: 'PEER_HOST_VERSION_MISMATCH',
+  PEER_HOST_SESSION_REQUIRED: 'PEER_HOST_SESSION_REQUIRED',
+} as const
+
+export const SUPPORTED_DSH_VERSION = '0.1.6-alpha.2'
+
+export type CodingNsDshErrorCode = typeof CODINGNS_DSH_ERROR_CODES[keyof typeof CODINGNS_DSH_ERROR_CODES]
+
+/** 统一错误形状；阶段 0 只定义，不主动产生这些业务错误。 */
+export class CodingNsDshError extends Error {
+  readonly code: CodingNsDshErrorCode
+
+  constructor(code: CodingNsDshErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'CodingNsDshError'
+    this.code = code
+  }
+}
+
+/** 阶段 0 采用 DSH HEAD 的精确版本约束，不对未知版本静默降级。 */
+export function assertSupportedDshVersion(version: string): void {
+  if (version !== SUPPORTED_DSH_VERSION) {
+    throw new CodingNsDshError(
+      CODINGNS_DSH_ERROR_CODES.DSH_VERSION_UNSUPPORTED,
+      `不支持的 DSH 版本: ${version}；当前插件仅兼容 ${SUPPORTED_DSH_VERSION}`,
+    )
+  }
+}

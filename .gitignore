@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.pnpm-store/
+*.tsbuildinfo
+
+# 本机 AI 协作约定，不进入版本库
+AGENTS.md

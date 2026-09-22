@@ -1,0 +1,5 @@
+# 阶段 0 只注册一个无副作用的 Host Cordis 行。
+# dsh.client 声明会让 DSH 的 client-modules 扫描同一包的 ./client 出口。
+- insert:
+    - id: dsh-codingns
+      name: dsh-codingns
