@@ -222,8 +222,9 @@
   - 这一步到底做什么：复用 CodingNS Host 的终端、PTY 和后台任务服务，并通过 Remote stream 传输输出。
   - 做完你能看到什么：可以创建持久终端、输入命令、断线后恢复可恢复任务。
   - 先依赖什么：2.4
-  - 开始前先看：`requirements.md` 需求 7、后台任务接入规范
+  - 开始前先看：`requirements.md` 需求 6、后台任务接入规范
   - 主要改哪里：`src/features/terminal/`、Host 终端适配层
+  - 当前约束：DSH Web 是独立主体，插件不得要求 CodingNS 父仓库启动、接管或配置 DSH。替换默认 controller 前，必须先完成插件自身的 `pty`/`task` 公开协议和 Transport；未完成时保留 DSH 官方终端，不能用不可用的半成品抢占。
   - 这一步先不做什么：不创建新的全局 inflight、timer 或重试队列。
   - 怎么算完成：终端关闭、任务回收和恢复行为明确且无资源泄漏。
   - 怎么验证：tmux/PTY 集成测试、断线恢复测试
@@ -235,10 +236,10 @@
   - 先依赖什么：3.2
   - 开始前先看：`requirements.md` 需求 5
   - 主要改哪里：`src/host/cli-adapters/`、`src/client/features/cli-adapters.ts`、Provider registry
-  - 本轮已完成：在保留 `CodingNsCliDriver` 兼容性的基础上增加标准协议字段、能力声明、外部会话绑定和 Host-only raw store 引用；新增流式 JSON 驱动（Claude Code、Kimi、Gemini）、JSON-RPC/ACP 驱动（Pi、Codex、Grok）和 HTTP/SSE 驱动（OpenCode），全部通过统一注册表、设置页、会话选择器和 `llm/stream` 转换链路接入。新增 Host 持久化 SessionStore、外部会话列表、原生 DSH SessionStore/SessionController 探测桥接；消息仍由 DSH Agent Loop 写入原生会话时间线，Client 只提供恢复入口。新增 fake 进程、SSE、会话恢复、脱敏和取消清理测试；未知或未安装 Provider 仍返回不可用，不会阻塞其他模块。
+  - 本轮已完成：在保留 `CodingNsCliDriver` 兼容性的基础上增加标准协议字段、能力声明、外部会话绑定和 Host-only raw store 引用；新增流式 JSON 驱动（Claude Code、Kimi、Gemini）、JSON-RPC/ACP 驱动（Pi、Codex、Grok）和 HTTP/SSE 驱动（OpenCode），全部通过统一注册表、设置页、会话选择器和 `llm/stream` 转换链路接入。新增 Host 持久化 SessionStore、外部会话列表、原生 DSH SessionStore/SessionController/WorkspaceController 探测桥接；消息仍由 DSH Agent Loop 写入原生会话时间线，Client 只提供恢复入口。八个驱动把已执行工具统一转换成带 `delta|snapshot` 语义的观察事件，公共投影层再保存为 DSH `tool/call` 与 `tool/result` 历史；工具事件不进入模型流，不会被 Agent Loop 二次执行。`edit_file`、`write_file`、shell 和 read 类别名只在公共层映射，文件编辑结果携带 diff 元数据。Provider 原始会话会只读探测；确认删除后阻止 resume，并可通过 DSH 原生归档从侧栏移除。新增 fake 进程、SSE、会话恢复、脱敏、取消清理、工具历史边界、探测超时和执行/归档竞态测试；未知或未安装 Provider 仍返回不可用，不会阻塞其他模块。
   - 这一步先不做什么：不修改各外部 Agent 工具本身，不把 Provider 私有逻辑写进 Transport。
   - 怎么算完成：至少一个 Provider 端到端跑通，Provider 不可用时不会拖垮其他模块。
-  - 怎么验证：`pnpm exec tsc --noEmit`；`pnpm build`；`node --test tests/*.spec.ts`（120 个测试通过）；`git diff --check`。另有 `tests/cli-session-store.spec.ts`、`tests/cli-session-security.spec.ts`、`tests/client-cli-sessions.spec.ts` 和 `tests/native-session-bridge.spec.ts` 覆盖持久化、脱敏、恢复入口和原生服务探测。对话框中的外部 Agent 模型/思考等级菜单使用 DSH 原生 Slot、设计令牌和菜单交互语义兼容实现；DSH Agent 仍使用原生模型组件。真实模型执行、各 Provider 真实版本兼容、宿主磁盘 Session persistence 和远程 Host/Client 端到端仍待验证。
+  - 怎么验证：`pnpm exec tsc --noEmit`；`pnpm build`；`node --test tests/*.spec.ts`（166 个测试通过）；`git diff --check`。另有 `tests/cli-session-store.spec.ts`、`tests/cli-session-security.spec.ts`、`tests/cli-session-probe.spec.ts`、`tests/dsh-tool-history.spec.ts`、`tests/client-cli-sessions.spec.ts` 和 `tests/native-session-bridge.spec.ts` 覆盖持久化、脱敏、恢复入口、工具历史、原始会话探测和原生服务桥接。对话框中的外部 Agent 模型/思考等级菜单使用 DSH 原生 Slot、设计令牌和菜单交互语义兼容实现；DSH Agent 仍使用原生模型组件。所有外部 Agent 只产出统一工具观察事件，公共投影层再通过 `Session.append(tool/call + tool/result)` 生成 DSH 原生历史和编辑 diff 元数据；不输出模型流 `tool-call`，不会触发 Agent Loop 二次执行。原生侧栏行仍没有 badge Slot，因此只有这一处保持安全降级。真实模型执行、各 Provider 真实版本兼容、宿主磁盘 Session persistence 和远程 Host/Client 端到端仍待验证。
 
 - [ ] 3.4 接入进程、端口和反向代理
   - 状态：TODO
