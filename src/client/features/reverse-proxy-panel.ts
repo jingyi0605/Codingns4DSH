@@ -12,6 +12,7 @@ import {
 } from '../../shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import type { FeaturePanelProps, CodingNsRpcClient } from './types.js'
+import { dshButtonStyle, dshFieldStyle, dshFormRootStyle, dshPopupSurfaceStyle, dshThemeColor } from '../theme.js'
 
 /**
  * 「中转访问服务」卡片的设置面板：Control API 地址、登录、设备和 Host 绑定。
@@ -135,13 +136,13 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     })
   }
 
-  const fieldStyle = { width: '100%', boxSizing: 'border-box' as const, padding: '8px 10px', border: '1px solid var(--dsw-alias-border-primary, #d9d9d9)', borderRadius: 6 }
-  const buttonStyle = { padding: '8px 14px', border: '1px solid var(--dsw-alias-border-primary, #d9d9d9)', borderRadius: 6, background: 'var(--dsw-alias-bg-secondary, transparent)', cursor: 'pointer' }
+  const fieldStyle = { ...dshFieldStyle, width: '100%', boxSizing: 'border-box' as const, padding: '8px 10px', borderRadius: 6 }
+  const buttonStyle = { ...dshButtonStyle, padding: '8px 14px', borderRadius: 6, cursor: 'pointer' }
   const authenticated = auth.status === 'authenticated'
 
   return createElement(
     'div',
-    { 'aria-disabled': disabled, style: { display: 'flex', flexDirection: 'column', gap: 16, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
+    { 'aria-disabled': disabled, style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 16, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
     createElement('div', undefined,
       createElement('h3', { style: { margin: 0, fontSize: 17 } }, '服务设置'),
       createElement('p', { style: { margin: '8px 0 0', opacity: 0.65 } }, '登录 CodingNS，管理设备和当前 Host。'),
@@ -155,12 +156,12 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
         createElement('button', { type: 'button', 'aria-haspopup': 'dialog', disabled: disabled || busy, onClick: () => { setAddressError(''); setAddAddressOpen(true) }, style: { ...buttonStyle, flex: '0 0 auto' } }, '添加'),
       ),
     ),
-    addAddressOpen && createElement('div', { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'codingns-add-address-title', style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'rgba(0, 0, 0, 0.45)' } },
-      createElement('div', { style: { width: 'min(100%, 480px)', boxSizing: 'border-box', padding: 24, borderRadius: 8, background: 'var(--dsw-alias-bg-primary, #fff)', boxShadow: '0 12px 40px rgba(0, 0, 0, 0.25)' } },
+    addAddressOpen && createElement('div', { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'codingns-add-address-title', style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: dshThemeColor.overlay } },
+      createElement('div', { style: { ...dshPopupSurfaceStyle, width: 'min(100%, 480px)', boxSizing: 'border-box', padding: 24, borderRadius: 8 } },
         createElement('h3', { id: 'codingns-add-address-title', style: { margin: 0, fontSize: 18 } }, '添加中转服务器'),
         createElement('p', { style: { margin: '8px 0 16px', opacity: 0.7 } }, '请输入新的 Control API 地址。'),
         createElement('input', { type: 'url', autoFocus: true, value: newControlBaseUrl, placeholder: 'https://example.com:1443', disabled: busy, onChange: (event: { currentTarget: { value: string } }) => setNewControlBaseUrl(event.currentTarget.value), style: fieldStyle }),
-        addressError && createElement('div', { role: 'alert', style: { marginTop: 8, color: '#b42318' } }, addressError),
+        addressError && createElement('div', { role: 'alert', style: { marginTop: 8, color: dshThemeColor.error } }, addressError),
         createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 } },
           createElement('button', { type: 'button', disabled: busy, onClick: () => { setAddAddressOpen(false); setAddressError('') }, style: buttonStyle }, '取消'),
           createElement('button', { type: 'button', disabled: busy || !newControlBaseUrl.trim(), onClick: () => void addControlBaseUrl(), style: buttonStyle }, busy ? '添加中…' : '添加'),
@@ -179,7 +180,7 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
       createElement('button', { type: 'submit', disabled: disabled || busy || !controlBaseUrl || !email || !password, style: buttonStyle }, busy ? '登录中…' : '登录'),
     ),
     authenticated && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
-      createElement('div', { style: { padding: 12, border: '1px solid var(--dsw-alias-border-primary, #d9d9d9)', borderRadius: 6 } },
+      createElement('div', { style: { padding: 12, border: `1px solid ${dshThemeColor.border}`, borderRadius: 6 } },
         createElement('strong', undefined, auth.account?.email ?? '已登录'),
         createElement('div', { style: { marginTop: 6, opacity: 0.7 } }, `设备：${auth.currentDevice?.displayName ?? auth.currentDevice?.deviceId ?? '未识别'}`),
         createElement('div', { style: { marginTop: 4, opacity: 0.7 } }, `Host：${auth.binding?.tunnelDomain ?? '未绑定'}`),
@@ -199,7 +200,7 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
           createElement('button', { type: 'button', disabled: disabled || busy || !hostLabel || !hostPublicKey || !hostFingerprint, onClick: () => void bindHost(), style: buttonStyle }, '绑定 Host'),
         ),
     ),
-    message && createElement('div', { role: 'status', style: { color: message.includes('成功') ? '#16803c' : '#b42318' } }, message),
+    message && createElement('div', { role: 'status', style: { color: message.includes('成功') ? dshThemeColor.success : dshThemeColor.error } }, message),
   )
 }
 

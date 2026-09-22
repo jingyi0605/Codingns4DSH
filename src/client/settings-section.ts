@@ -10,6 +10,7 @@ import {
 } from '../shared/contracts/config.js'
 import { settingsModules, type CodingNsSettingsModule } from './features/index.js'
 import type { CodingNsClientFeatureModule, CodingNsClientServices } from './features/types.js'
+import { dshFormRootStyle, dshThemeColor } from './theme.js'
 
 export interface CodingNsSectionProps extends PropsRuntime<'settings.section'> {
   readonly settings: SettingsScope<CodingNsSettings>
@@ -32,7 +33,7 @@ export function CodingNsSettingsSection({ settings, registry, services }: Coding
 
   return createElement(
     'section',
-    { style: { display: 'flex', flexDirection: 'column', gap: 20, padding: 24, maxWidth: 980, width: '100%', boxSizing: 'border-box' } },
+    { style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 20, padding: 24, maxWidth: 980, width: '100%', boxSizing: 'border-box' } },
     createElement('div', undefined,
       createElement('h2', { style: { margin: 0, fontSize: 20 } }, 'CodingNS 功能模块'),
     ),
@@ -75,7 +76,7 @@ function FeatureCard({ entry, snapshot, services }: FeatureCardProps): ReactElem
     'details',
     {
       defaultOpen: ui.defaultOpen === true,
-      style: { border: '1px solid var(--dsw-alias-border-primary, #d9d9d9)', borderRadius: 6, overflow: 'hidden' },
+      style: { border: `1px solid ${dshThemeColor.border}`, borderRadius: 6, overflow: 'hidden' },
     },
     createElement('summary', {
       style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '14px 16px', cursor: 'pointer', fontWeight: 600 },
@@ -89,11 +90,11 @@ function FeatureCard({ entry, snapshot, services }: FeatureCardProps): ReactElem
       }),
     ),
     createElement('div', {
-      style: { display: 'flex', flexDirection: 'column', gap: 16, padding: 20, borderTop: '1px solid var(--dsw-alias-border-primary, #d9d9d9)' },
+      style: { display: 'flex', flexDirection: 'column', gap: 16, padding: 20, borderTop: `1px solid ${dshThemeColor.border}` },
     },
       createElement('p', { style: { margin: 0, fontSize: 13, opacity: 0.65 } }, ui.description),
       panel === undefined ? null : createElement(panel, { services, enabled, snapshot }),
-      writeError === null ? null : createElement('div', { role: 'alert', style: { color: '#b42318' } }, writeError),
+      writeError === null ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error } }, writeError),
     ),
   )
 }
@@ -121,10 +122,10 @@ function FeatureSwitch({ label, checked, disabled, onChange }: FeatureSwitchProp
       style: { position: 'absolute', inset: 0, width: '100%', height: '100%', margin: 0, opacity: 0, cursor: 'inherit', zIndex: 1 },
     }),
     createElement('span', {
-      style: { position: 'absolute', inset: 0, borderRadius: 999, background: checked ? '#1677ff' : 'var(--dsw-alias-bg-tertiary, #bfbfbf)', transition: 'background 160ms ease' },
+      style: { position: 'absolute', inset: 0, borderRadius: 999, background: checked ? dshThemeColor.accent : dshThemeColor.inputBackground, border: `1px solid ${dshThemeColor.border}`, boxSizing: 'border-box', transition: 'background 160ms ease' },
     },
       createElement('span', {
-        style: { position: 'absolute', top: 3, left: checked ? 21 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', boxShadow: '0 1px 3px rgba(0, 0, 0, 0.25)', transition: 'left 160ms ease' },
+        style: { position: 'absolute', top: 3, left: checked ? 21 : 3, width: 18, height: 18, borderRadius: '50%', background: dshThemeColor.switchThumb, boxShadow: '0 1px 3px rgba(0, 0, 0, 0.25)', transition: 'left 160ms ease' },
       }),
     ),
   )

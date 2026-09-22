@@ -4,6 +4,7 @@ import type { LanAccessDshSnapshot } from '../../shared/contracts/lan-access-dsh
 import type { LanAccessDshSettings } from '../../shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import type { FeaturePanelProps, CodingNsRpcClient } from './types.js'
+import { dshButtonStyle, dshFieldStyle, dshFormRootStyle, dshThemeColor } from '../theme.js'
 
 /** “局域网访问DSH”设置卡片：只配置一条监听并转发到当前 DSH Web。 */
 export function LanAccessPanel({ services, enabled }: FeaturePanelProps): ReactElement {
@@ -109,12 +110,12 @@ export function LanAccessPanel({ services, enabled }: FeaturePanelProps): ReactE
     setMessage(next ? '已开启自动启动，下一次启动 DSH 时将自动恢复映射' : '已关闭自动启动')
   })
 
-  const fieldStyle = { width: '100%', boxSizing: 'border-box' as const, padding: '8px 10px', border: '1px solid var(--dsw-alias-border-primary, #d9d9d9)', borderRadius: 6 }
-  const buttonStyle = { padding: '8px 14px', border: '1px solid var(--dsw-alias-border-primary, #d9d9d9)', borderRadius: 6, background: 'var(--dsw-alias-bg-secondary, transparent)', cursor: 'pointer' }
+  const fieldStyle = { ...dshFieldStyle, width: '100%', boxSizing: 'border-box' as const, padding: '8px 10px', borderRadius: 6 }
+  const buttonStyle = { ...dshButtonStyle, padding: '8px 14px', borderRadius: 6, cursor: 'pointer' }
 
   return createElement(
     'div',
-    { 'aria-disabled': disabled, style: { display: 'flex', flexDirection: 'column', gap: 12, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
+    { 'aria-disabled': disabled, style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 12, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
     createElement('p', { style: { margin: 0, opacity: 0.7 } }, '在本机增加一个监听端口，将访问重定向到当前 DSH Web。此功能属于局域网访问，不经过跨 NAT 中转服务。'),
     createElement('select', { value: listenHost, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setListenHost(event.currentTarget.value), onBlur: saveMappingOnBlur, style: fieldStyle },
       ...listenHosts.map((host) => createElement('option', { key: host, value: host }, host === '0.0.0.0' ? '所有网卡（0.0.0.0）' : host)),
@@ -126,7 +127,7 @@ export function LanAccessPanel({ services, enabled }: FeaturePanelProps): ReactE
     ),
     detectedDshPorts.length > 1 && createElement('div', { style: { fontSize: 13, opacity: 0.7 } }, `检测到多个 DSH 实例端口：${detectedDshPorts.join('、')}，请手动选择。`),
     createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 8, cursor: disabled || busy ? 'not-allowed' : 'pointer' } },
-      createElement('input', { type: 'checkbox', checked: autoStart, disabled: disabled || busy, onChange: () => void toggleAutoStart() }),
+      createElement('input', { type: 'checkbox', checked: autoStart, disabled: disabled || busy, onChange: () => void toggleAutoStart(), style: { accentColor: dshThemeColor.accent } }),
       createElement('span', undefined, '自动启动（启动 DSH 时自动恢复当前映射）'),
     ),
     createElement('div', { style: { display: 'flex', gap: 8 } },
@@ -134,7 +135,7 @@ export function LanAccessPanel({ services, enabled }: FeaturePanelProps): ReactE
       snapshot && createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void stop(), style: buttonStyle }, '停止'),
     ),
     snapshot && createElement('div', { role: 'status', style: { fontSize: 13 } }, `当前转发：${snapshot.listenHost}:${snapshot.actualListenPort ?? snapshot.listenPort} → DSH Web 127.0.0.1:${snapshot.dshPort}`),
-    message && createElement('div', { role: 'status', style: { color: message.includes('已') ? '#16803c' : '#b42318' } }, message),
+    message && createElement('div', { role: 'status', style: { color: message.includes('已') ? dshThemeColor.success : dshThemeColor.error } }, message),
   )
 }
 
