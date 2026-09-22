@@ -40,3 +40,29 @@ test('Claude、Gemini、Kimi 的标准流驱动统一转换文本和完成事件
     driver.dispose()
   }
 })
+
+test('Claude stream-json 保留 tool_use 与 tool_result 的完整生命周期', async () => {
+  const driver = new ClaudeCodeDriver({
+    binaries: ['fake-claude'],
+    spawnSync: (() => ({ status: 0, stdout: 'claude 1.2.3', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      queueMicrotask(() => {
+        stdout.write(`${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'claude-call-1', name: 'Read', input: { file_path: 'a.ts' } }] } })}\n`)
+        stdout.write(`${JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'claude-call-1', content: '文件内容' }] } })}\n`)
+        stdout.write(`${JSON.stringify({ type: 'result' })}\n`)
+        stdout.end()
+        stderr.end()
+      })
+      return { stdout, stderr, kill() { return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'claude-tools', messages: [], prompt: '读取' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'tool-running', toolName: 'Read', callId: 'claude-call-1', input: '{"file_path":"a.ts"}', status: 'running' },
+    { type: 'tool-running', toolName: 'tool', callId: 'claude-call-1', output: '文件内容', outputMode: 'snapshot', status: 'completed' },
+    { type: 'finish', reason: 'stop' },
+  ])
+})

@@ -67,6 +67,108 @@ test('RPC 驱动在命令不存在时返回未安装和空模型目录', async (
   assert.deepEqual(await driver.listModels(), { groups: [], currentModel: null, currentEffort: null })
 })
 
+test('Pi RPC 保留工具执行的参数、增量结果和完成状态', async () => {
+  const driver = new PiAgentDriver({
+    binaries: ['fake-pi'],
+    spawnSync: (() => ({ status: 0, stdout: 'pi 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method !== 'prompt') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'tool_execution_start', toolCallId: 'pi-call-1', toolName: 'bash', args: { command: 'pwd' } } })}\n`)
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'tool_execution_update', toolCallId: 'pi-call-1', toolName: 'bash', partialResult: '/work' } })}\n`)
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'tool_execution_end', toolCallId: 'pi-call-1', toolName: 'bash', result: '/workspace', isError: false } })}\n`)
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { accepted: true } })}\n`)
+        setImmediate(() => stdout.write(`${JSON.stringify({ type: 'agent_settled' })}\n`))
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'pi-tools', messages: [], prompt: '执行' })) chunks.push(chunk)
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-running'), [
+    { type: 'tool-running', toolName: 'bash', callId: 'pi-call-1', input: '{"command":"pwd"}', status: 'running' },
+    { type: 'tool-running', toolName: 'bash', callId: 'pi-call-1', output: '/work', outputMode: 'snapshot', status: 'running' },
+    { type: 'tool-running', toolName: 'bash', callId: 'pi-call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' },
+  ])
+  driver.dispose()
+})
+
+test('Codex app-server 保留 item 工具生命周期和失败结果', async () => {
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method === 'thread/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'codex-thread' } } })}\n`)
+          return
+        }
+        if (request.method === 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'codex-turn', status: 'inProgress' } } })}\n`)
+          setImmediate(() => {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/started', params: { threadId: 'codex-thread', turnId: 'codex-turn', item: { type: 'commandExecution', id: 'codex-call-1', command: 'exit 2', status: 'inProgress' } } })}\n`)
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/completed', params: { threadId: 'codex-thread', turnId: 'codex-turn', item: { type: 'commandExecution', id: 'codex-call-1', command: 'exit 2', aggregated_output: '失败输出', exitCode: 2, status: 'failed' } } })}\n`)
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'codex-thread', turn: { id: 'codex-turn', status: 'completed' } } })}\n`)
+          })
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-tools', messages: [], prompt: '执行' })) chunks.push(chunk)
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-running'), [
+    { type: 'tool-running', toolName: 'command_execution', callId: 'codex-call-1', input: 'exit 2', status: 'running' },
+    { type: 'tool-running', toolName: 'command_execution', callId: 'codex-call-1', input: 'exit 2', error: '失败输出', status: 'failed' },
+  ])
+  driver.dispose()
+})
+
+test('Grok ACP 保留 tool_call 与 tool_call_update 的结构化字段', async () => {
+  const driver = new GrokBuildDriver({
+    binaries: ['fake-grok'],
+    spawnSync: (() => ({ status: 0, stdout: 'grok 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method === 'session/new') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'grok-session' } })}\n`)
+          return
+        }
+        if (request.method === 'session/prompt') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'tool_call', toolCallId: 'grok-call-1', title: 'search', status: 'running', rawInput: { query: 'DSH' }, agentId: 'agent-1', detail: '搜索工作区' } } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'tool_call_update', toolCallId: 'grok-call-1', title: 'search', status: 'completed', rawOutput: { count: 2 } } } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'turn_completed' } } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { stopReason: 'end_turn' } })}\n`)
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'grok-tools', messages: [], prompt: '搜索' })) chunks.push(chunk)
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-running'), [
+    { type: 'tool-running', toolName: 'search', callId: 'grok-call-1', input: '{"query":"DSH"}', agentId: 'agent-1', detail: '搜索工作区', status: 'running' },
+    { type: 'tool-running', toolName: 'search', callId: 'grok-call-1', output: '{"count":2}', outputMode: 'snapshot', status: 'completed' },
+  ])
+  driver.dispose()
+})
+
 test('Pi 读取真实 --list-models 表格并生成思维强度列表', async () => {
   const driver = new PiAgentDriver({
     binaries: ['fake-pi'],

@@ -1,20 +1,38 @@
 import readline from 'node:readline'
+import { homedir } from 'node:os'
+import { basename, join } from 'node:path'
 import type { CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
 import { KIMI_CATALOG, enrichEfforts, isProviderDefaultModel } from './model-catalog.js'
+import { probeStoredSession, readFirstJsonRecord, resolveSessionDirectory } from './session-probe.js'
+import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 
 /** Kimi 的 wire 协议优先，旧版 CLI 不支持时自动回退 stream-json。 */
 export class KimiCliDriver extends StandardStreamDriver {
   private legacySyntax = false
+  private readonly sessionRoots: readonly string[]
 
   constructor(options: StandardStreamDriverOptions = {}) {
     super({ id: 'kimi', name: 'Kimi CLI', protocol: 'stream-json', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'steer'] }, { binaries: ['kimi', 'kimi-cli'] }, options)
+    this.sessionRoots = options.sessionRoots ?? [join(process.env.KIMI_HOME ?? join(homedir(), '.kimi'), 'sessions')]
   }
 
   async listModels() {
     if (!(await this.detect()).installed) return emptyCatalog()
     const catalog = await super.listModels()
     return catalog.groups.length > 0 ? enrichEfforts(catalog, KIMI_CATALOG) : KIMI_CATALOG
+  }
+
+  async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
+    return probeStoredSession(input, {
+      roots: this.sessionRoots,
+      matches: (path, entry, id) => entry.isDirectory() && basename(path) === id,
+      validate: async (path) => {
+        const directory = await resolveSessionDirectory(path)
+        return await readFirstJsonRecord(join(directory, 'context.jsonl')) !== null
+      },
+    })
   }
 
   protected buildArgs(input: CodingNsCliTurnInput): readonly string[] {
@@ -108,6 +126,7 @@ export class KimiCliDriver extends StandardStreamDriver {
 function mapKimiWireEvent(value: Record<string, unknown>, cancelled: boolean): { protocol: boolean; error: boolean; chunks: CodingNsCliStreamChunk[] } {
   const event = isRecord(value.event) ? value.event : isRecord(value.payload) ? value.payload : value
   const type = `${value.type ?? event.type ?? value.event ?? ''}`.toLowerCase()
+  const isToolEvent = type.includes('tool') || type.includes('command') || type.includes('function')
   const chunks: CodingNsCliStreamChunk[] = []
   const sessionId = firstString(value, event, ['session_id', 'sessionId', 'id'])
   if (sessionId && (type.includes('session') || type.includes('ready'))) chunks.push({ type: 'session-binding', providerSessionId: sessionId })
@@ -118,11 +137,40 @@ function mapKimiWireEvent(value: Record<string, unknown>, cancelled: boolean): {
     if (type.includes('think') || type.includes('reason')) chunks.push({ type: 'reasoning-delta', text })
     else if (!type.includes('result') && !type.includes('complete') && !type.includes('done')) chunks.push({ type: 'text-delta', text })
   }
-  const toolName = firstString(event, value, ['tool_name', 'toolName', 'name'])
-  if (toolName && (type.includes('tool') || type.includes('command'))) chunks.push({ type: 'tool-running', toolName })
+  const nestedTool = isToolRecord(event.tool_call)
+    ? event.tool_call
+    : isToolRecord(event.tool_result)
+      ? event.tool_result
+      : isToolRecord(event.function)
+        ? event.function
+        : event
+  const toolName = firstToolText(nestedTool.tool_name, nestedTool.toolName, nestedTool.name, event.tool_name, event.toolName, event.name)
+  if ((toolName || firstToolText(nestedTool.call_id, nestedTool.callId, event.tool_call_id, event.tool_use_id)) && isToolEvent) {
+    const callId = firstToolText(nestedTool.call_id, nestedTool.callId, nestedTool.id, event.tool_call_id, event.tool_use_id, event.toolUseId, event.id)
+    const input = serializeToolValue(nestedTool.input ?? nestedTool.arguments ?? nestedTool.args ?? nestedTool.parameters ?? event.input ?? event.arguments)
+    const output = serializeToolValue(nestedTool.output ?? nestedTool.result ?? event.output ?? event.result)
+    const error = serializeToolValue(nestedTool.error ?? event.error)
+    const fallback = error !== undefined || type.includes('error') || type.includes('fail')
+      ? 'failed'
+      : output !== undefined || type.includes('result') || type.includes('complete') || type.includes('return')
+        ? 'completed'
+        : 'running'
+    chunks.push({
+      type: 'tool-running',
+      toolName: toolName ?? 'tool',
+      status: normalizeToolStatus(nestedTool.status ?? event.status, fallback),
+      ...(callId ? { callId } : {}),
+      ...(input !== undefined ? { input } : {}),
+      ...(output !== undefined ? { output } : {}),
+      ...(output !== undefined ? { outputMode: type.includes('delta') ? 'delta' as const : 'snapshot' as const } : {}),
+      ...(error !== undefined ? { error } : {}),
+      ...(firstToolText(nestedTool.agent_id, nestedTool.agentId, event.agent_id, event.agentId) ? { agentId: firstToolText(nestedTool.agent_id, nestedTool.agentId, event.agent_id, event.agentId)! } : {}),
+      ...(serializeToolValue(nestedTool.detail ?? event.detail) !== undefined ? { detail: serializeToolValue(nestedTool.detail ?? event.detail)! } : {}),
+    })
+  }
   const usage = isRecord(event.usage) ? event.usage : isRecord(value.usage) ? value.usage : null
   if (usage) chunks.push({ type: 'usage', inputTokens: numberValue(usage.input_tokens ?? usage.inputTokens ?? usage.prompt_tokens), outputTokens: numberValue(usage.output_tokens ?? usage.outputTokens ?? usage.completion_tokens) })
-  if (type.includes('error') || type.includes('failed')) return { protocol: true, error: true, chunks }
+  if ((type.includes('error') || type.includes('failed')) && !isToolEvent) return { protocol: true, error: true, chunks }
   if (type.includes('turnend') || type.includes('turn_end') || type.includes('completed') || type.includes('complete') || type === 'done' || type === 'result' || type.includes('session.completed')) chunks.push({ type: 'finish', reason: cancelled ? 'cancel' : 'stop' })
   return { protocol: true, error: false, chunks }
 }

@@ -1,12 +1,17 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { homedir } from 'node:os'
+import { basename, join } from 'node:path'
 import type { CodingNsCliModelCatalog, CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
-import type { CodingNsCliDriver } from './driver.js'
+import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
 import { PI_CATALOG, isProviderDefaultModel } from './model-catalog.js'
+import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
+import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 
 export interface PiAgentDriverOptions {
   readonly binaries?: readonly string[]
+  readonly sessionRoots?: readonly string[]
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
 }
@@ -17,6 +22,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
+  private readonly sessionRoots: readonly string[]
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, { rpc: JsonRpcProcess; cwd: string | undefined; providerSessionId: string; needsResume: boolean }>()
@@ -25,6 +31,8 @@ export class PiAgentDriver implements CodingNsCliDriver {
     this.binaries = options.binaries ?? ['pi', 'pi-agent']
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
+    const configDirectory = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent')
+    this.sessionRoots = options.sessionRoots ?? [process.env.PI_CODING_AGENT_SESSION_DIR ?? join(configDirectory, 'sessions')]
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
@@ -53,6 +61,17 @@ export class PiAgentDriver implements CodingNsCliDriver {
       if (catalog.groups.length > 0) return catalog
     } catch { /* 旧版 Pi 没有 --list-models。 */ }
     return PI_CATALOG
+  }
+
+  async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
+    return probeStoredSession(input, {
+      roots: this.sessionRoots,
+      matches: (path, entry, id) => entry.isFile() && basename(path).endsWith(`${id}.jsonl`),
+      validate: async (path, id) => {
+        const record = await readFirstJsonRecord(path)
+        return record?.type === 'session' && record.id === id
+      },
+    })
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk> {
@@ -239,17 +258,40 @@ function piMessageToChunk(message: Record<string, any>): CodingNsCliStreamChunk 
   const params = isRecord(message.params) ? message.params : message
   const event = isRecord(params.item) ? params.item : params
   const assistantEvent = isRecord(params.assistantMessageEvent) ? params.assistantMessageEvent : null
+  const completedMessage = isRecord(params.message) ? params.message : null
   const rootType = typeof event.type === 'string' ? event.type : typeof params.event === 'string' ? params.event : ''
   if (rootType === 'agent_settled' || rootType === 'agent_end' || rootType === 'turn_end') return null
   const type = assistantEvent !== null && typeof assistantEvent.type === 'string' ? assistantEvent.type : rootType
   const text = textValue(assistantEvent?.delta ?? params.delta ?? params.text ?? params.content ?? params.message)
   if (type.includes('text_delta') || type === 'text-delta' || type === 'assistant_message_event' && text) return text ? { type: 'text-delta', text } : null
   if (type.includes('thinking') || type.includes('reasoning')) return text ? { type: 'reasoning-delta', text } : null
-  if (type.includes('tool') || type.includes('agent')) {
-    const toolName = typeof params.toolName === 'string' ? params.toolName : typeof params.name === 'string' ? params.name : type
-    const agentId = typeof params.agentId === 'string' ? params.agentId : typeof params.sessionId === 'string' && type.includes('agent') ? params.sessionId : undefined
-    const status = normalizeStatus(params.status ?? params.state ?? (type.includes('completed') ? 'completed' : type.includes('failed') ? 'failed' : 'running'))
-    return { type: 'tool-running', toolName, ...(agentId ? { agentId } : {}), ...(status ? { status } : {}) }
+  const toolResultMessage = completedMessage?.role === 'toolResult' ? completedMessage : null
+  const toolCall = isToolRecord(assistantEvent?.toolCall) ? assistantEvent.toolCall : null
+  if (type.includes('tool') || type.includes('agent') || toolResultMessage !== null) {
+    const source = toolResultMessage ?? assistantEvent ?? event
+    const toolName = firstToolText(source.toolName, source.name, toolCall?.name, params.toolName, params.name) ?? (type.includes('agent') ? 'subagent' : 'tool')
+    const callId = firstToolText(source.toolCallId, source.callId, source.id, toolCall?.id, params.toolCallId, params.callId)
+    const input = serializeToolValue(source.args ?? source.arguments ?? toolCall?.arguments ?? params.args)
+    const failed = source.isError === true || params.isError === true || type.includes('failed') || type.includes('error')
+    const resultValue = source.partialResult ?? source.result ?? (toolResultMessage === null ? source.output : source.content)
+    const result = serializeToolValue(resultValue)
+    const agentId = firstToolText(source.agentId, params.agentId, type.includes('agent') ? source.sessionId ?? params.sessionId : undefined)
+    const detail = serializeToolValue(source.detail ?? params.detail)
+    const status = normalizeToolStatus(
+      source.status ?? source.state ?? params.status ?? params.state,
+      failed ? 'failed' : type.includes('end') || type.includes('completed') || toolResultMessage !== null ? 'completed' : 'running',
+    )
+    return {
+      type: 'tool-running',
+      toolName,
+      status,
+      ...(callId ? { callId } : {}),
+      ...(input !== undefined ? { input } : {}),
+      ...(failed ? (result === undefined ? {} : { error: result }) : (result === undefined ? {} : { output: result })),
+      ...(!failed && result !== undefined ? { outputMode: 'snapshot' as const } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(detail !== undefined ? { detail } : {}),
+    }
   }
   const usage = usageChunk(params)
   return usage ?? null
@@ -259,9 +301,4 @@ function readSessionId(message: Record<string, any>): string | null {
   const params = isRecord(message.params) ? message.params : message
   for (const key of ['sessionId', 'session_id', 'providerSessionId']) if (typeof params[key] === 'string' && params[key].trim()) return params[key].trim()
   return null
-}
-
-function normalizeStatus(value: unknown): 'started' | 'running' | 'completed' | 'failed' | undefined {
-  if (value === 'started' || value === 'running' || value === 'completed' || value === 'failed') return value
-  return undefined
 }

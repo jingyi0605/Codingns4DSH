@@ -2,6 +2,7 @@ import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type {
   CodingNsCliAdapterId,
   CodingNsCliSessionConfig,
+  CodingNsCliProviderSessionState,
   CodingNsCliSessionRecord,
   CodingNsCliSessionStatus,
 } from '../../shared/contracts/cli-adapter.js'
@@ -31,7 +32,17 @@ export interface CodingNsCliSessionPatch {
   readonly title?: string
   readonly cwd?: string
   readonly status?: CodingNsCliSessionStatus
+  readonly providerState?: CodingNsCliProviderSessionState
+  readonly providerCheckedAt?: string
+  readonly providerStateReason?: string
   readonly lastError?: string
+}
+
+export interface CodingNsCliProviderStatePatch {
+  readonly state: CodingNsCliProviderSessionState
+  readonly checkedAt: string
+  readonly reason?: string
+  readonly rawStoreRef?: string
 }
 
 /**
@@ -50,14 +61,14 @@ export class CodingNsCliSessionStore {
   constructor(options: CodingNsCliSessionStoreOptions = {}) {
     this.settings = options.settings
     this.persistence = options.persistence
-    for (const record of options.settings?.get().cliSessions ?? []) this.hydrateRecord(record)
+    for (const record of options.settings?.get().cliSessions ?? []) this.hydrateRecord(record, true)
   }
 
   /** 将设置变更重新载入内存；非法或不完整记录会被忽略。 */
   sync(records: readonly CodingNsCliSessionRecord[] | undefined): void {
     if (records === undefined) return
     this.records.clear()
-    for (const record of records) this.hydrateRecord(record)
+    for (const record of records) this.hydrateRecord(record, false)
   }
 
   get(sessionId: string): CodingNsCliSessionRecord | undefined {
@@ -79,17 +90,40 @@ export class CodingNsCliSessionStore {
     const adapterId = patch.adapterId ?? previous?.adapterId ?? 'dsh'
     const sameAdapter = previous?.adapterId === adapterId
     const base = sameAdapter ? previous : undefined
+    const providerSessionId = patch.providerSessionId?.trim()
+    // providerSessionId 是 Provider 绑定的身份。即使适配器没变，身份一旦改变，
+    // 旧路径和旧探测结果也不能继承，否则会拿旧会话的状态判断新会话。
+    const providerIdentityChanged = providerSessionId !== undefined
+      && providerSessionId !== base?.providerSessionId
+    const providerBase = providerIdentityChanged ? undefined : base
     const record: CodingNsCliSessionRecord = {
       dshSessionId: sessionId,
       adapterId,
       ...(patch.modelId?.trim() ? { modelId: patch.modelId.trim() } : base?.modelId ? { modelId: base.modelId } : {}),
       ...(patch.effortId?.trim() ? { effortId: patch.effortId.trim() } : base?.effortId ? { effortId: base.effortId } : {}),
-      ...(patch.providerSessionId?.trim() ? { providerSessionId: patch.providerSessionId.trim() } : base?.providerSessionId ? { providerSessionId: base.providerSessionId } : {}),
-      ...(patch.rawStoreRef?.trim() ? { rawStoreRef: patch.rawStoreRef.trim() } : base?.rawStoreRef ? { rawStoreRef: base.rawStoreRef } : {}),
+      ...(providerSessionId ? { providerSessionId } : base?.providerSessionId ? { providerSessionId: base.providerSessionId } : {}),
+      ...(patch.rawStoreRef?.trim() ? { rawStoreRef: patch.rawStoreRef.trim() } : providerBase?.rawStoreRef ? { rawStoreRef: providerBase.rawStoreRef } : {}),
       ...(patch.title?.trim() ? { title: patch.title.trim() } : base?.title ? { title: base.title } : {}),
       ...(patch.cwd?.trim() ? { cwd: patch.cwd.trim() } : base?.cwd ? { cwd: base.cwd } : {}),
       ...(patch.lastError?.trim() ? { lastError: patch.lastError.trim() } : {}),
-      status: patch.status ?? base?.status ?? 'idle',
+      // archived 是侧栏 tombstone。延迟到达的 turn/end 或驱动 finish 不能把它
+      // 重新写回 idle；恢复必须走未来显式的 unarchive 链路。
+      status: base?.status === 'archived' ? 'archived' : patch.status ?? base?.status ?? 'idle',
+      ...(patch.providerState !== undefined
+        ? { providerState: patch.providerState }
+        : providerBase?.providerState !== undefined
+          ? { providerState: providerBase.providerState }
+          : {}),
+      ...(patch.providerCheckedAt?.trim()
+        ? { providerCheckedAt: patch.providerCheckedAt.trim() }
+        : patch.providerState === undefined && providerBase?.providerCheckedAt
+          ? { providerCheckedAt: providerBase.providerCheckedAt }
+          : {}),
+      ...(patch.providerStateReason?.trim()
+        ? { providerStateReason: patch.providerStateReason.trim() }
+        : patch.providerState === undefined && providerBase?.providerStateReason
+          ? { providerStateReason: providerBase.providerStateReason }
+          : {}),
       createdAt: base?.createdAt ?? now,
       updatedAt: now,
     }
@@ -107,11 +141,28 @@ export class CodingNsCliSessionStore {
     return { ...record }
   }
 
+  /** 更新 Provider 存在性，不改变会话活动时间，避免后台检查扰乱侧栏排序。 */
+  updateProviderState(sessionId: string, patch: CodingNsCliProviderStatePatch): CodingNsCliSessionRecord | undefined {
+    const previous = this.records.get(sessionId)
+    if (previous === undefined) return undefined
+    const { providerStateReason: _previousReason, ...base } = previous
+    const record: CodingNsCliSessionRecord = {
+      ...base,
+      providerState: patch.state,
+      providerCheckedAt: patch.checkedAt,
+      ...(patch.reason?.trim() ? { providerStateReason: patch.reason.trim() } : {}),
+      ...(patch.rawStoreRef?.trim() ? { rawStoreRef: patch.rawStoreRef.trim() } : {}),
+    }
+    this.records.set(sessionId, record)
+    this.schedulePersist()
+    return { ...record }
+  }
+
   async flush(): Promise<void> {
     await this.writeTail
   }
 
-  private hydrateRecord(value: unknown): void {
+  private hydrateRecord(value: unknown, resetActive: boolean): void {
     if (!isRecord(value)) return
     if (typeof value.dshSessionId !== 'string' || value.dshSessionId.trim() === '') return
     if (typeof value.adapterId !== 'string' || value.adapterId.trim() === '') return
@@ -126,7 +177,12 @@ export class CodingNsCliSessionStore {
       ...(stringValue(value.title) ? { title: stringValue(value.title)! } : {}),
       ...(stringValue(value.cwd) ? { cwd: stringValue(value.cwd)! } : {}),
       ...(stringValue(value.lastError) ? { lastError: stringValue(value.lastError)! } : {}),
-      status: value.status,
+      // active 只描述当前 Host 进程中的执行。进程重启后没有仍在运行的 Turn，
+      // 必须回到 idle，否则列表刷新会永久跳过该记录的存活探测。
+      status: resetActive && value.status === 'active' ? 'idle' : value.status,
+      ...(isProviderState(value.providerState) ? { providerState: value.providerState } : {}),
+      ...(stringValue(value.providerCheckedAt) ? { providerCheckedAt: stringValue(value.providerCheckedAt)! } : {}),
+      ...(stringValue(value.providerStateReason) ? { providerStateReason: stringValue(value.providerStateReason)! } : {}),
       createdAt: value.createdAt,
       updatedAt: value.updatedAt,
     })
@@ -145,6 +201,16 @@ export class CodingNsCliSessionStore {
 
 function isStatus(value: unknown): value is CodingNsCliSessionStatus {
   return value === 'active' || value === 'idle' || value === 'error' || value === 'archived'
+}
+
+function isProviderState(value: unknown): value is CodingNsCliProviderSessionState {
+  return value === 'unchecked'
+    || value === 'available'
+    || value === 'missing'
+    || value === 'corrupt'
+    || value === 'unreachable'
+    || value === 'unknown'
+    || value === 'ephemeral'
 }
 
 function stringValue(value: unknown): string | undefined {

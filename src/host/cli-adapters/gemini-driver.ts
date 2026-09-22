@@ -1,16 +1,22 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
 import type { CodingNsCliModelCatalog, CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
 import { JsonRpcProcess } from './json-rpc-process.js'
 import { isRecord, streamRpcRequest, textValue, usageChunk } from './rpc-driver-utils.js'
 import { GEMINI_CATALOG, isProviderDefaultModel, resolveGeminiEfforts } from './model-catalog.js'
+import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
+import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 
 /** Gemini 官方 ACP 优先；不支持 ACP 的旧 CLI 自动回退 headless stream-json。 */
 export class GeminiCliDriver extends StandardStreamDriver {
+  private readonly sessionRoots: readonly string[]
+
   constructor(options: StandardStreamDriverOptions = {}) {
     super({ id: 'gemini', name: 'Gemini CLI', protocol: 'acp', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission'] }, { binaries: ['gemini'] }, options)
+    this.sessionRoots = options.sessionRoots ?? [join(process.env.GEMINI_CLI_HOME ?? join(homedir(), '.gemini'), 'tmp')]
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {
@@ -37,6 +43,14 @@ export class GeminiCliDriver extends StandardStreamDriver {
       clearTimeout(timer)
       rpc.dispose()
     }
+  }
+
+  async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
+    return probeStoredSession(input, {
+      roots: this.sessionRoots,
+      matches: (path, entry, id) => entry.isFile() && basename(path).endsWith('.jsonl') && basename(path).includes(id.split('-')[0] ?? id),
+      validate: async (path, id) => (await readFirstJsonRecord(path))?.sessionId === id,
+    })
   }
 
   protected buildArgs(input: CodingNsCliTurnInput): readonly string[] {
@@ -263,8 +277,33 @@ function geminiAcpMessageToChunk(message: Record<string, any>): CodingNsCliStrea
   if (type.includes('thought') || type.includes('reason') || method.includes('reason')) return text ? { type: 'reasoning-delta', text } : null
   if (type.includes('agent_message') || type.includes('message') || type.includes('text') || method.includes('message')) return text ? { type: 'text-delta', text } : null
   if (type.includes('tool') || type.includes('command')) {
-    const name = firstString(update, ['name', 'toolName', 'tool_name'])
-    if (name) return { type: 'tool-running', toolName: name }
+    const tool = isToolRecord(update.toolCall) ? update.toolCall : isToolRecord(update.tool_call) ? update.tool_call : update
+    const name = firstToolText(tool.name, tool.toolName, tool.tool_name, tool.title, update.name, update.toolName, update.tool_name, update.title)
+    const callId = firstToolText(tool.callId, tool.call_id, tool.toolCallId, tool.tool_call_id, tool.toolUseId, tool.tool_use_id, tool.id, update.toolCallId, update.tool_call_id, update.toolUseId, update.tool_use_id, update.id)
+    if (name || callId) {
+      const input = serializeToolValue(tool.rawInput ?? tool.input ?? tool.arguments ?? tool.args ?? tool.parameters ?? update.rawInput)
+      const output = serializeToolValue(tool.rawOutput ?? tool.output ?? tool.result ?? update.rawOutput)
+      const error = serializeToolValue(tool.error ?? update.error)
+      const agentId = firstToolText(tool.agentId, tool.agent_id, update.agentId, update.agent_id)
+      const detail = serializeToolValue(tool.detail ?? update.detail ?? update.content)
+      const fallback = error !== undefined || type.includes('error') || type.includes('fail')
+        ? 'failed'
+        : output !== undefined || type.includes('result') || type.includes('complete')
+          ? 'completed'
+          : 'running'
+      return {
+        type: 'tool-running',
+        toolName: name ?? 'tool',
+        status: normalizeToolStatus(tool.status ?? tool.state ?? update.status, fallback),
+        ...(callId ? { callId } : {}),
+        ...(input !== undefined ? { input } : {}),
+        ...(output !== undefined ? { output } : {}),
+        ...(output !== undefined ? { outputMode: type.includes('delta') ? 'delta' as const : 'snapshot' as const } : {}),
+        ...(error !== undefined ? { error } : {}),
+        ...(agentId ? { agentId } : {}),
+        ...(detail !== undefined ? { detail } : {}),
+      }
+    }
   }
   const usage = usageChunk(update)
   if (usage) return usage

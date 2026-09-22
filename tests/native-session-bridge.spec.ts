@@ -50,7 +50,7 @@ test('原生会话桥接通过 get 探测可选服务，不直接读取未注入
   }) as never
 
   assert.doesNotThrow(() => createCodingNsNativeSessionBridge(ctx))
-  assert.deepEqual(reads, ['sessions', 'sessionController'])
+  assert.deepEqual(reads, ['sessions', 'sessionController', 'workspaceController'])
 })
 
 test('原生事件订阅在 Host 停用时可移除', () => {
@@ -96,4 +96,91 @@ test('只有 SessionStore 时只复用已有会话，不创建短命会话', asy
   assert.equal(await bridge.ensure('dsh-2'), 'dsh-2')
   await bridge.flush('dsh-2')
   assert.equal(flushed, 1)
+})
+
+test('原生会话桥接把外部工具保存为只读 call/result 事件且不触发执行器', () => {
+  const events: Array<Record<string, any>> = [
+    { type: 'turn/start', seq: 0, data: { turn: 3 } },
+    { type: 'step/start', seq: 1, data: { turn: 3, step: 2 } },
+  ]
+  const session = {
+    snapshotEvents() { return [...events] },
+    append(type: string, data: unknown, options?: unknown) {
+      const event = { type, seq: events.length, data, ...(options === undefined ? {} : { options }) }
+      events.push(event)
+      return event
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'sessions'
+        ? { get(id: string) { return id === 'native-tools' ? session : undefined }, list() { return [session] } }
+        : undefined
+    },
+  } as never)
+
+  const handle = bridge.appendToolCall?.('native-tools', {
+    callId: 'external-1',
+    name: 'read_directory',
+    arguments: '{"path":"."}',
+  })
+  assert.deepEqual(handle, { sessionId: 'native-tools', turn: 3, step: 2, callId: 'external-1', callSeq: 2 })
+  assert.equal(bridge.appendToolResult?.(handle!, { output: 'a.ts', isError: false }), true)
+  assert.deepEqual(events.slice(2), [
+    {
+      type: 'tool/call',
+      seq: 2,
+      data: { turn: 3, step: 2, callId: 'external-1', name: 'read_directory', arguments: '{"path":"."}' },
+    },
+    {
+      type: 'tool/result',
+      seq: 3,
+      data: {
+        turn: 3,
+        step: 2,
+        message: {
+          id: 'external-1-result-3-2',
+          role: 'user',
+          content: [{ type: 'tool-result', toolCallId: 'external-1', content: [{ type: 'text', text: 'a.ts' }] }],
+          source: { kind: 'tool', callId: 'external-1' },
+        },
+      },
+      options: { surfaceOp: 'append', sourceEventSeqs: [2] },
+    },
+  ])
+})
+
+test('原生会话桥接通过 WorkspaceController 同步侧栏归档状态', async () => {
+  const calls: string[] = []
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      if (name !== 'workspaceController') return undefined
+      return {
+        archiveSession(input: { sessionId: string }) { calls.push(`archive:${input.sessionId}`) },
+        unarchiveSession(input: { sessionId: string }) { calls.push(`unarchive:${input.sessionId}`) },
+      }
+    },
+  } as never)
+
+  assert.equal(bridge.available, true)
+  assert.equal(await bridge.archive?.('dsh-1'), true)
+  assert.equal(await bridge.unarchive?.('dsh-1'), true)
+  assert.deepEqual(calls, ['archive:dsh-1', 'unarchive:dsh-1'])
+})
+
+test('归档时重新发现晚于插件装载的 WorkspaceController', async () => {
+  const calls: string[] = []
+  let workspaceController: { archiveSession(input: { sessionId: string }): void } | undefined
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) { return name === 'workspaceController' ? workspaceController : undefined },
+  } as never)
+  assert.equal(bridge.available, false)
+  assert.equal(await bridge.archive?.('dsh-late'), false)
+
+  workspaceController = {
+    archiveSession(input) { calls.push(input.sessionId) },
+  }
+  assert.equal(bridge.available, true)
+  assert.equal(await bridge.archive?.('dsh-late'), true)
+  assert.deepEqual(calls, ['dsh-late'])
 })

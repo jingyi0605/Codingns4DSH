@@ -1,12 +1,17 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { homedir } from 'node:os'
+import { basename, join } from 'node:path'
 import type { CodingNsCliModelCatalog, CodingNsCliPermissionResponse, CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
-import type { CodingNsCliDriver } from './driver.js'
+import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
 import { CODEX_CATALOG, isProviderDefaultModel } from './model-catalog.js'
+import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
+import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 
 export interface CodexAppServerDriverOptions {
   readonly binaries?: readonly string[]
+  readonly sessionRoots?: readonly string[]
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
 }
@@ -17,6 +22,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
+  private readonly sessionRoots: readonly string[]
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, {
@@ -32,6 +38,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     this.binaries = options.binaries ?? ['codex']
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
+    const codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex')
+    this.sessionRoots = options.sessionRoots ?? [join(codexHome, 'sessions'), join(codexHome, 'archived_sessions')]
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
@@ -63,6 +71,17 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       clearTimeout(timer)
       rpc.dispose()
     }
+  }
+
+  async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
+    return probeStoredSession(input, {
+      roots: this.sessionRoots,
+      matches: (path, entry, id) => entry.isFile() && basename(path).endsWith(`${id}.jsonl`),
+      validate: async (path, id) => {
+        const record = await readFirstJsonRecord(path)
+        return isRecord(record?.payload) && record.payload.id === id
+      },
+    })
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk> {
@@ -249,11 +268,31 @@ function codexMessageToChunk(message: Record<string, any>): CodingNsCliStreamChu
   }
   if (method.includes('agentMessage') || method.includes('message') && (type.includes('text') || type === '')) return text ? { type: 'text-delta', text } : null
   if (method.includes('reason') || type.includes('reason')) return text ? { type: 'reasoning-delta', text } : null
-  if (method.includes('command') || method.includes('tool') || method.includes('agent') || type.includes('tool') || type.includes('agent')) {
-    const name = typeof item.name === 'string' ? item.name : typeof item.toolName === 'string' ? item.toolName : null
-    const agentId = typeof item.agentId === 'string' ? item.agentId : typeof item.id === 'string' && (method.includes('agent') || type.includes('agent') || type.includes('collab')) ? item.id : undefined
-    const status = normalizeStatus(item.status ?? item.state ?? (method.includes('completed') ? 'completed' : method.includes('failed') ? 'failed' : 'running'))
-    return name || agentId ? { type: 'tool-running', toolName: name ?? 'subagent', ...(agentId ? { agentId } : {}), ...(status ? { status } : {}) } : null
+  if (isCodexToolEvent(method, type)) {
+    const name = firstToolText(item.name, item.toolName, item.tool, item.command !== undefined ? 'command_execution' : undefined, type)
+    const callId = firstToolText(item.callId, item.call_id, item.toolCallId, item.id, params.itemId)
+    const agentId = firstToolText(item.agentId, item.agent_id, type.includes('agent') || type.includes('collab') ? item.id : undefined)
+    const input = serializeToolValue(item.arguments ?? item.input ?? item.command)
+    const rawOutput = item.result ?? item.output ?? item.aggregated_output
+    const explicitError = serializeToolValue(item.error)
+    const output = serializeToolValue(rawOutput)
+    const exitCodeFailed = typeof item.exitCode === 'number' && item.exitCode !== 0 || typeof item.exit_code === 'number' && item.exit_code !== 0
+    const failed = explicitError !== undefined || exitCodeFailed || method.includes('failed') || normalizeToolStatus(item.status ?? item.state, 'running') === 'failed'
+    const fallback = failed ? 'failed' : method.includes('completed') || output !== undefined ? 'completed' : 'running'
+    const detail = serializeToolValue(item.detail ?? item.description)
+    return {
+      type: 'tool-running',
+      toolName: name ?? (agentId ? 'subagent' : 'tool'),
+      status: normalizeToolStatus(item.status ?? item.state, fallback),
+      ...(callId ? { callId } : {}),
+      ...(input !== undefined ? { input } : {}),
+      ...(failed
+        ? { error: explicitError ?? output ?? `exit code ${String(item.exitCode ?? item.exit_code)}` }
+        : output === undefined ? {} : { output }),
+      ...(!failed && output !== undefined ? { outputMode: 'snapshot' as const } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(detail !== undefined ? { detail } : {}),
+    }
   }
   return usageChunk(params)
 }
@@ -348,9 +387,10 @@ function readScopedId(value: Record<string, any> | null, keys: readonly string[]
   return isRecord(nested) && typeof nested.id === 'string' && nested.id.trim() ? nested.id.trim() : null
 }
 
-function normalizeStatus(value: unknown): 'started' | 'running' | 'completed' | 'failed' | undefined {
-  if (value === 'started' || value === 'running' || value === 'completed' || value === 'failed') return value
-  return undefined
+function isCodexToolEvent(method: string, type: string): boolean {
+  if (method.includes('command') || method.includes('tool') || method.includes('agent')) return true
+  const normalized = type.replace(/[_-]/gu, '').toLowerCase()
+  return ['commandexecution', 'filechange', 'mcptoolcall', 'functioncall', 'customtoolcall', 'dynamictoolcall'].includes(normalized)
 }
 
 function readId(value: unknown): string | null {

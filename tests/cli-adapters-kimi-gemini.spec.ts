@@ -23,7 +23,10 @@ test('Kimi wire 优先并转换会话、思考、工具、用量和完成事件'
             stdout.write(JSON.stringify({ type: 'session.created', session_id: 'kimi-session-1' }) + '\n')
             stdout.write(JSON.stringify({ type: 'assistant.thinking', delta: '思考' }) + '\n')
             stdout.write(JSON.stringify({ type: 'assistant.message', content: [{ type: 'text', text: '回答' }] }) + '\n')
-            stdout.write(JSON.stringify({ type: 'tool_call', tool_name: 'shell' }) + '\n')
+            stdout.write(JSON.stringify({ type: 'tool_call', tool_call: { id: 'kimi-call-1', name: 'shell', arguments: { command: 'pwd' } } }) + '\n')
+            stdout.write(JSON.stringify({ type: 'tool_result', tool_result: { call_id: 'kimi-call-1', name: 'shell', output: '/workspace' } }) + '\n')
+            stdout.write(JSON.stringify({ type: 'tool_failed', tool_result: { call_id: 'kimi-call-2', name: 'shell', error: 'exit 1' } }) + '\n')
+            stdout.write(JSON.stringify({ type: 'tool_output_delta', tool_result: { call_id: 'kimi-call-3', name: 'shell', output: '片段', status: 'running' } }) + '\n')
             stdout.write(JSON.stringify({ type: 'usage', usage: { input_tokens: 2, output_tokens: 3 } }) + '\n')
             stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\n')
           })
@@ -40,7 +43,10 @@ test('Kimi wire 优先并转换会话、思考、工具、用量和完成事件'
     { type: 'session-binding', providerSessionId: 'kimi-session-1' },
     { type: 'reasoning-delta', text: '思考' },
     { type: 'text-delta', text: '回答' },
-    { type: 'tool-running', toolName: 'shell' },
+    { type: 'tool-running', toolName: 'shell', callId: 'kimi-call-1', input: '{"command":"pwd"}', status: 'running' },
+    { type: 'tool-running', toolName: 'shell', callId: 'kimi-call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' },
+    { type: 'tool-running', toolName: 'shell', callId: 'kimi-call-2', error: 'exit 1', status: 'failed' },
+    { type: 'tool-running', toolName: 'shell', callId: 'kimi-call-3', output: '片段', outputMode: 'delta', status: 'running' },
     { type: 'usage', inputTokens: 2, outputTokens: 3 },
     { type: 'finish', reason: 'stop' },
   ])
@@ -69,6 +75,8 @@ test('Gemini ACP 完成初始化、session/new、prompt 并转换更新事件', 
             : {}
         if (request.method === 'session/prompt') {
           stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ACP 回复' } } } }) + '\n')
+          stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'tool_call', toolCallId: 'gemini-call-1', title: 'read_file', status: 'running', rawInput: { path: 'a.ts' } } } }) + '\n')
+          stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'tool_call_update', toolCallId: 'gemini-call-1', title: 'read_file', status: 'completed', rawOutput: '源码' } } }) + '\n')
         }
         queueMicrotask(() => stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result, ...(nextId++ < 0 ? { nope: true } : {}) }) + '\n'))
         return true
@@ -101,6 +109,8 @@ test('Gemini ACP 完成初始化、session/new、prompt 并转换更新事件', 
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'gemini-session-1' },
     { type: 'text-delta', text: 'ACP 回复' },
+    { type: 'tool-running', toolName: 'read_file', callId: 'gemini-call-1', input: '{"path":"a.ts"}', status: 'running' },
+    { type: 'tool-running', toolName: 'read_file', callId: 'gemini-call-1', output: '源码', outputMode: 'snapshot', status: 'completed' },
     { type: 'finish', reason: 'stop' },
   ])
 })

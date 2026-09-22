@@ -1,12 +1,17 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { homedir } from 'node:os'
+import { basename, join } from 'node:path'
 import type { CodingNsCliModelCatalog, CodingNsCliPermissionResponse, CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
-import type { CodingNsCliDriver } from './driver.js'
+import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
 import { GROK_CATALOG, isProviderDefaultModel } from './model-catalog.js'
+import { isRegularFile, probeStoredSession, resolveSessionDirectory } from './session-probe.js'
+import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 
 export interface GrokBuildDriverOptions {
   readonly binaries?: readonly string[]
+  readonly sessionRoots?: readonly string[]
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
 }
@@ -17,6 +22,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
+  private readonly sessionRoots: readonly string[]
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, { rpc: JsonRpcProcess; cwd: string | undefined; providerSessionId: string; requests: Map<string, number | string> }>()
@@ -25,6 +31,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     this.binaries = options.binaries ?? ['grok', 'grok-build']
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
+    this.sessionRoots = options.sessionRoots ?? [join(process.env.GROK_HOME ?? join(homedir(), '.grok'), 'sessions')]
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
@@ -46,6 +53,17 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     } catch {
       return GROK_CATALOG
     } finally { rpc.dispose() }
+  }
+
+  async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
+    return probeStoredSession(input, {
+      roots: this.sessionRoots,
+      matches: (path, entry, id) => entry.isDirectory() && basename(path) === id,
+      validate: async (path, id) => {
+        const directory = await resolveSessionDirectory(path)
+        return basename(directory) === id && await isRegularFile(join(directory, 'updates.jsonl'))
+      },
+    })
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk> {
@@ -258,8 +276,32 @@ function acpMessageToChunk(message: Record<string, any>): CodingNsCliStreamChunk
   if (type.includes('agent_message') || type.includes('text') || type === 'message') return text ? { type: 'text-delta', text } : null
   if (type.includes('thought') || type.includes('reason')) return text ? { type: 'reasoning-delta', text } : null
   if (type.includes('tool') || type.includes('command')) {
-    const name = typeof update.name === 'string' ? update.name : typeof update.toolName === 'string' ? update.toolName : null
-    return name ? { type: 'tool-running', toolName: name } : null
+    const tool = isToolRecord(update.toolCall) ? update.toolCall : isToolRecord(update.tool_call) ? update.tool_call : update
+    const name = firstToolText(tool.name, tool.toolName, tool.tool_name, tool.title, update.name, update.toolName, update.title)
+    const callId = firstToolText(tool.callId, tool.call_id, tool.toolCallId, tool.tool_call_id, tool.id, update.toolCallId, update.tool_call_id, update.id)
+    if (!name && !callId) return null
+    const input = serializeToolValue(tool.rawInput ?? tool.input ?? tool.arguments ?? tool.args ?? update.rawInput)
+    const output = serializeToolValue(tool.rawOutput ?? tool.output ?? tool.result ?? update.rawOutput)
+    const error = serializeToolValue(tool.error ?? update.error)
+    const agentId = firstToolText(tool.agentId, tool.agent_id, update.agentId, update.agent_id)
+    const detail = serializeToolValue(tool.detail ?? update.detail ?? update.content)
+    const fallback = error !== undefined || type.includes('error') || type.includes('fail')
+      ? 'failed'
+      : output !== undefined || type.includes('result') || type.includes('complete')
+        ? 'completed'
+        : 'running'
+    return {
+      type: 'tool-running',
+      toolName: name ?? 'tool',
+      status: normalizeToolStatus(tool.status ?? tool.state ?? update.status, fallback),
+      ...(callId ? { callId } : {}),
+      ...(input !== undefined ? { input } : {}),
+      ...(output !== undefined ? { output } : {}),
+      ...(output !== undefined ? { outputMode: type.toLowerCase().includes('delta') ? 'delta' as const : 'snapshot' as const } : {}),
+      ...(error !== undefined ? { error } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(detail !== undefined ? { detail } : {}),
+    }
   }
   return usageChunk(update)
 }

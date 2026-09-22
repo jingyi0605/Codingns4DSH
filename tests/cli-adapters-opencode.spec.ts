@@ -41,6 +41,8 @@ test('OpenCode SSE 事件转换为标准文本流并绑定远端会话', async (
     if (url.endsWith('/event')) {
       const body = new ReadableStream<Uint8Array>({ start(controller) {
         controller.enqueue(encoder.encode('event: message.part.updated\ndata: {"properties":{"part":{"id":"p","type":"text","text":"结果"}}}\n\n'))
+        controller.enqueue(encoder.encode('event: message.part.updated\ndata: {"properties":{"part":{"id":"tool-part","type":"tool","tool":"shell","callID":"open-call-1","state":{"status":"running","input":{"command":"pwd"}}}}}\n\n'))
+        controller.enqueue(encoder.encode('event: message.part.updated\ndata: {"properties":{"part":{"id":"tool-part","type":"tool","tool":"shell","callID":"open-call-1","state":{"status":"completed","output":"/workspace"}}}}\n\n'))
         controller.enqueue(encoder.encode('data: {"type":"session.status","status":"idle"}\n\n'))
         controller.close()
       } })
@@ -54,6 +56,8 @@ test('OpenCode SSE 事件转换为标准文本流并绑定远端会话', async (
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'remote-1' },
     { type: 'text-delta', text: '结果' },
+    { type: 'tool-running', toolName: 'shell', callId: 'open-call-1', input: '{"command":"pwd"}', status: 'running' },
+    { type: 'tool-running', toolName: 'shell', callId: 'open-call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' },
     { type: 'finish', reason: 'stop' },
   ])
 })

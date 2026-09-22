@@ -49,8 +49,10 @@ export type {
   CodingNsCliPermissionResponse,
   CodingNsCliSessionConfig,
   CodingNsCliSessionRecord,
+  CodingNsCliProviderSessionState,
   CodingNsCliSessionStatus,
   CodingNsCliStreamChunk,
+  CodingNsCliToolObservation,
   CodingNsCliTurnInput,
 } from './contracts/cli-adapter.js'
 export type {

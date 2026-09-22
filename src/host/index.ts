@@ -66,6 +66,7 @@ export {
   type CodingNsNativeSessionBridge,
   type CodingNsNativeSessionController,
   type CodingNsNativeSessionStore,
+  type CodingNsNativeWorkspaceController,
 } from './native-session-bridge.js'
 export { CommandCodeDriver } from './cli-adapters/command-code-driver.js'
 export { ClaudeCodeDriver } from './cli-adapters/claude-driver.js'
@@ -83,9 +84,15 @@ export {
   CodingNsCliSessionStore,
   type CodingNsCliSessionPersistence,
   type CodingNsCliSessionPatch,
+  type CodingNsCliProviderStatePatch,
   type CodingNsCliSessionStoreOptions,
 } from './cli-adapters/session-store.js'
-export type { CodingNsCliDriver } from './cli-adapters/driver.js'
+export type {
+  CodingNsCliDriver,
+  CodingNsCliSessionProbeInput,
+  CodingNsCliSessionProbeResult,
+  CodingNsCliSessionProbeState,
+} from './cli-adapters/driver.js'
 export {
   CODINGNS_CONTROL_API_PATHS,
   CodingNsControlApiError,

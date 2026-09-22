@@ -8,7 +8,8 @@ import type {
   CodingNsCliStreamChunk,
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
-import type { CodingNsCliDriver } from './driver.js'
+import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
+import { firstToolText, serializeToolValue } from './tool-observation.js'
 
 const WINDOWS = process.platform === 'win32'
 const COMMAND_CODE_BINARIES = WINDOWS
@@ -183,6 +184,13 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     return result
   }
 
+  async probeSession(_input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
+    return {
+      state: 'ephemeral',
+      reason: 'Command Code 当前使用单轮临时 transcript，不存在可恢复的 Provider 原始会话',
+    }
+  }
+
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk> {
     const binary = this.cachedBinary ?? (await this.detect()).command
     if (binary === null) throw new Error('Command Code 未安装')
@@ -196,7 +204,6 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     const child = this.runSpawn(binary, args, { cwd: input.cwd ?? process.cwd(), env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: WINDOWS })
     this.processes.add(child)
     let finished = false
-    let streamedText = ''
     const onAbort = (): void => { try { child.kill('SIGTERM') } catch { /* 进程可能已退出 */ } }
     input.signal?.addEventListener('abort', onAbort, { once: true })
     // 必须消费 stderr，错误内容不能回传给 DSH，避免泄露命令参数或文件片段。
@@ -213,9 +220,6 @@ export class CommandCodeDriver implements CodingNsCliDriver {
           const eventType = textValue(event.type).toLowerCase()
           const chunks = commandCodeEventChunks(event, input.signal?.aborted ?? false)
           for (const chunk of chunks) {
-            // result.finalText 在 CLI 已经发过 text_delta 时是完整文本，避免把整段答案再追加一次。
-            if (eventType === 'result' && chunk.type === 'text-delta' && chunk.text === streamedText) continue
-            if (eventType !== 'result' && chunk.type === 'text-delta') streamedText += chunk.text
             if (chunk.type === 'finish') finished = true
             yield chunk
           }
@@ -257,14 +261,14 @@ function commandCodeEventChunks(event: Record<string, unknown>, cancelled: boole
     const text = textValue(event.delta ?? event.text ?? event.content)
     if (text) chunks.push({ type: 'text-delta', text })
   } else if (type === 'message' || type === 'message_update' || type === 'message-update') {
-    appendMessageChunks(chunks, event)
+    appendMessageSnapshots(chunks, event)
   }
 
   if (isToolStart(type)) {
-    const tool = readToolChunk(event, 'running')
+    const tool = readToolChunk(event, type === 'tool_queued' || type === 'tool_started' ? 'started' : 'running')
     if (tool !== null) chunks.push(tool)
   } else if (isToolResult(type)) {
-    const tool = readToolChunk(event, type.includes('error') || type.includes('fail') ? 'failed' : 'completed')
+    const tool = readToolChunk(event, type.includes('error') || type.includes('fail') || type.includes('denied') ? 'failed' : 'completed')
     if (tool !== null) chunks.push(tool)
   }
 
@@ -273,35 +277,47 @@ function commandCodeEventChunks(event: Record<string, unknown>, cancelled: boole
   if (type === 'result') {
     const result = recordValue(event.result)
     const finalText = textValue(event.finalText ?? result?.finalText ?? (typeof event.result === 'string' ? event.result : undefined) ?? event.output ?? event.text)
-    if (finalText) chunks.push({ type: 'text-delta', text: finalText })
+    if (finalText) chunks.push({ type: 'text-snapshot', text: finalText })
     chunks.push({ type: 'finish', reason: cancelled ? 'cancel' : 'stop' })
   }
   return chunks
 }
 
-function appendMessageChunks(chunks: CodingNsCliStreamChunk[], event: Record<string, unknown>): void {
+function appendMessageSnapshots(chunks: CodingNsCliStreamChunk[], event: Record<string, unknown>): void {
   const payload = recordValue(event.message ?? event.data) ?? event
   if (Array.isArray(payload.content)) {
+    const snapshots = new Map<'reasoning' | 'text', string[]>()
     for (const block of payload.content) {
       const value = recordValue(block)
       if (value === null) continue
-      const text = textValue(value.thinking ?? value.text ?? value.content)
+      const blockType = textValue(value.type).toLowerCase()
+      const channel = blockType.includes('thinking') || blockType.includes('reasoning') ? 'reasoning' : 'text'
+      const text = channel === 'reasoning'
+        ? textValue(value.thinking ?? value.reasoning ?? value.text ?? value.content)
+        : textValue(value.text ?? value.content)
       if (!text) continue
-      chunks.push({ type: textValue(value.type).toLowerCase() === 'thinking' ? 'reasoning-delta' : 'text-delta', text })
+      const values = snapshots.get(channel) ?? []
+      values.push(text)
+      snapshots.set(channel, values)
     }
+    for (const [channel, values] of snapshots) chunks.push({ type: `${channel}-snapshot`, text: values.join('') })
     return
   }
+  const reasoning = textValue(payload.thinking ?? payload.reasoning)
+  if (reasoning) chunks.push({ type: 'reasoning-snapshot', text: reasoning })
   const text = textValue(payload.text ?? payload.content ?? event.text ?? event.content)
-  if (text) chunks.push({ type: 'text-delta', text })
+  if (text) chunks.push({ type: 'text-snapshot', text })
 }
 
-function readToolChunk(event: Record<string, unknown>, status: 'running' | 'completed' | 'failed'): CodingNsCliStreamChunk | null {
+function readToolChunk(event: Record<string, unknown>, status: 'started' | 'running' | 'completed' | 'failed'): CodingNsCliStreamChunk | null {
   const callId = textValue(event.callId ?? event.call_id ?? event.toolUseId ?? event.tool_use_id ?? event.id)
   const fn = recordValue(event.function)
   const toolName = textValue(event.name ?? event.toolName ?? event.tool ?? fn?.name) || 'tool'
   const error = textValue(event.error ?? event.reason)
   const output = textValue(event.output ?? event.result ?? event.content)
   const input = event.input ?? fn?.arguments ?? event.arguments
+  const agentId = firstToolText(event.agentId, event.agent_id)
+  const detail = serializeToolValue(event.detail ?? event.metadata)
   if (!callId && !toolName) return null
   return {
     type: 'tool-running',
@@ -309,7 +325,10 @@ function readToolChunk(event: Record<string, unknown>, status: 'running' | 'comp
     ...(callId ? { callId } : {}),
     ...(input !== undefined ? { input: structuredText(input) } : {}),
     ...(output ? { output } : {}),
+    ...(output ? { outputMode: 'snapshot' as const } : {}),
     ...(error ? { error } : {}),
+    ...(agentId ? { agentId } : {}),
+    ...(detail !== undefined ? { detail } : {}),
     status,
   }
 }

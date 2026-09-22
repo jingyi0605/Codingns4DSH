@@ -7,11 +7,14 @@ import type {
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
+import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 
 const WINDOWS = process.platform === 'win32'
 
 export interface StandardStreamDriverOptions {
   readonly binaries?: readonly string[]
+  /** 仅供会话存在性探测使用；测试和自定义安装可覆盖默认存储根目录。 */
+  readonly sessionRoots?: readonly string[]
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
   readonly versionArgs?: readonly string[]
@@ -143,9 +146,9 @@ function isRecord(value: unknown): value is Record<string, any> { return typeof 
 
 function genericEventChunks(value: Record<string, unknown>, cancelled: boolean): CodingNsCliStreamChunk[] {
   const chunks: CodingNsCliStreamChunk[] = []
-  const type = typeof value.type === 'string' ? value.type : ''
+  const type = typeof value.type === 'string' ? value.type.toLowerCase() : ''
   const event = isRecord(value.event) ? value.event : value
-  const eventType = typeof event.type === 'string' ? event.type : type
+  const eventType = typeof event.type === 'string' ? event.type.toLowerCase() : type
   if (eventType.includes('think') || eventType.includes('reason')) {
     const delta = isRecord(event.delta) ? event.delta : event
     const reasoning = typeof event.delta === 'string' ? event.delta : typeof delta.text === 'string' ? delta.text : typeof delta.content === 'string' ? delta.content : null
@@ -158,8 +161,31 @@ function genericEventChunks(value: Record<string, unknown>, cancelled: boolean):
     const messageContent = message === null ? null : typeof message.content === 'string' ? message.content : null
     if (messageContent) chunks.push({ type: 'text-delta', text: messageContent })
   }
-  const toolName = typeof event.toolName === 'string' ? event.toolName : typeof event.name === 'string' && eventType.includes('tool') ? event.name : null
-  if (toolName) chunks.push({ type: 'tool-running', toolName })
+  const nestedTool = isToolRecord(event.tool_call) ? event.tool_call : isToolRecord(event.toolCall) ? event.toolCall : isToolRecord(event.function) ? event.function : event
+  const toolName = firstToolText(nestedTool.toolName, nestedTool.tool_name, nestedTool.name)
+  const callId = firstToolText(nestedTool.callId, nestedTool.call_id, nestedTool.toolCallId, nestedTool.tool_call_id, nestedTool.toolUseId, nestedTool.tool_use_id, nestedTool.id, event.tool_call_id, event.tool_use_id)
+  if ((toolName || callId) && (eventType.includes('tool') || eventType.includes('function') || eventType.includes('command'))) {
+    const input = serializeToolValue(nestedTool.input ?? nestedTool.arguments ?? nestedTool.args ?? nestedTool.parameters)
+    const output = serializeToolValue(nestedTool.output ?? nestedTool.result)
+    const error = serializeToolValue(nestedTool.error)
+    const fallback = error !== undefined || eventType.includes('error') || eventType.includes('fail')
+      ? 'failed'
+      : output !== undefined || eventType.includes('result') || eventType.includes('complete')
+        ? 'completed'
+        : 'running'
+    chunks.push({
+      type: 'tool-running',
+      toolName: toolName ?? 'tool',
+      status: normalizeToolStatus(nestedTool.status ?? nestedTool.state, fallback),
+      ...(callId ? { callId } : {}),
+      ...(input !== undefined ? { input } : {}),
+      ...(output !== undefined ? { output } : {}),
+      ...(output !== undefined ? { outputMode: eventType.includes('delta') ? 'delta' as const : 'snapshot' as const } : {}),
+      ...(error !== undefined ? { error } : {}),
+      ...(firstToolText(nestedTool.agentId, nestedTool.agent_id) ? { agentId: firstToolText(nestedTool.agentId, nestedTool.agent_id)! } : {}),
+      ...(serializeToolValue(nestedTool.detail) !== undefined ? { detail: serializeToolValue(nestedTool.detail)! } : {}),
+    })
+  }
   const usage = isRecord(value.usage) ? value.usage : isRecord(event.usage) ? event.usage : null
   if (usage) chunks.push({ type: 'usage', inputTokens: numberValue(usage.input_tokens ?? usage.inputTokens), outputTokens: numberValue(usage.output_tokens ?? usage.outputTokens) })
   if (['result', 'turn_end', 'done', 'complete', 'completed', 'final'].includes(eventType) || type === 'result') chunks.push({ type: 'finish', reason: cancelled ? 'cancel' : 'stop' })

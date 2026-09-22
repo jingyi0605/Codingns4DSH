@@ -4,9 +4,10 @@ import type {
   CodingNsCliStreamChunk,
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
-import type { CodingNsCliDriver } from './driver.js'
+import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { HttpSseClient, type SseEvent } from './http-sse-client.js'
 import { isProviderDefaultModel } from './model-catalog.js'
+import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 
 const WINDOWS = process.platform === 'win32'
 const DEFAULT_BINARIES = WINDOWS ? ['opencode.exe', 'opencode'] : ['opencode']
@@ -65,6 +66,31 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       } catch { /* OpenCode 版本间接口不同，继续尝试其他路径。 */ }
     }
     return emptyCatalog()
+  }
+
+  async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
+    const providerSessionId = input.providerSessionId?.trim()
+    if (!providerSessionId) return { state: 'unknown', reason: '缺少 Provider 会话标识' }
+    const server = await this.ensureServer(true, input.cwd)
+    if (server === null) return { state: 'unreachable', reason: 'OpenCode server 当前不可达' }
+    const rawStoreRef = `${server}/session/${encodeURIComponent(providerSessionId)}`
+    try {
+      const response = await this.http.json<unknown>(rawStoreRef, input.signal === undefined ? {} : { signal: input.signal })
+      if (response.status === 404) return { state: 'missing', reason: 'OpenCode server 确认该会话不存在' }
+      if (response.status >= 200 && response.status < 300) {
+        const record = asRecord(response.data)
+        const id = typeof record?.id === 'string' ? record.id : typeof record?.sessionID === 'string' ? record.sessionID : null
+        return id === null || id === providerSessionId
+          ? { state: 'available', reason: 'OpenCode 原始会话可用', rawStoreRef }
+          : { state: 'corrupt', reason: 'OpenCode 会话响应与绑定标识不一致', rawStoreRef }
+      }
+      if (response.status === 401 || response.status === 403 || response.status === 408 || response.status === 429 || response.status >= 500) {
+        return { state: 'unreachable', reason: `OpenCode server 暂时无法验证会话（HTTP ${response.status}）` }
+      }
+      return { state: 'unknown', reason: `OpenCode server 无法确认会话状态（HTTP ${response.status}）` }
+    } catch {
+      return { state: 'unreachable', reason: 'OpenCode server 会话探测请求失败' }
+    }
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk> {
@@ -268,8 +294,33 @@ function eventToChunk(event: Record<string, unknown>, cumulative: Map<string, nu
     if (!delta) return null
     return partType === 'reasoning' ? { type: 'reasoning-delta', text: delta } : { type: 'text-delta', text: delta }
   }
-  const tool = typeof part.tool === 'string' ? part.tool : typeof part.name === 'string' && partType === 'tool' ? part.name : null
-  if (tool !== null) return { type: 'tool-running', toolName: tool }
+  const toolName = firstToolText(part.tool, part.name)
+  if (partType === 'tool' && toolName !== undefined) {
+    const state = isToolRecord(part.state) ? part.state : part
+    const callId = firstToolText(part.callID, part.callId, part.toolCallId, part.id)
+    const input = serializeToolValue(state.input ?? state.arguments ?? state.args)
+    const output = serializeToolValue(state.output ?? state.result)
+    const error = serializeToolValue(state.error)
+    const fallback = error !== undefined
+      ? 'failed'
+      : output !== undefined
+        ? 'completed'
+        : 'running'
+    const agentId = firstToolText(state.agentId, state.agent_id, part.agentId, part.agent_id)
+    const detail = serializeToolValue(state.detail ?? part.detail)
+    return {
+      type: 'tool-running',
+      toolName,
+      status: normalizeToolStatus(state.status, fallback),
+      ...(callId ? { callId } : {}),
+      ...(input !== undefined ? { input } : {}),
+      ...(output !== undefined ? { output } : {}),
+      ...(output !== undefined ? { outputMode: 'snapshot' as const } : {}),
+      ...(error !== undefined ? { error } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(detail !== undefined ? { detail } : {}),
+    }
+  }
   const usage = asRecord(event.usage) ?? asRecord(part.usage)
   if (usage !== null) return { type: 'usage', inputTokens: numberValue(usage.inputTokens ?? usage.input_tokens), outputTokens: numberValue(usage.outputTokens ?? usage.output_tokens) }
   return null

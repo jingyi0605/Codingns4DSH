@@ -10,6 +10,7 @@ import { GrokBuildDriver } from './grok-driver.js'
 import { OpenCodeDriver } from './opencode-driver.js'
 import { CodingNsCliAdapterRegistry } from './registry.js'
 import { CodingNsCliSessionStore } from './session-store.js'
+import { CodingNsDshToolHistoryProjector } from './dsh-tool-history.js'
 import type { CodingNsHostServices } from '../features/types.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
@@ -45,7 +46,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             const eventType = nativeEventType(event)
             if (sessionId === undefined || eventType === undefined) return
             const current = sessionStore.get(sessionId)
-            if (current === undefined) return
+            if (current === undefined || current.status === 'archived') return
             if (eventType === 'turn/start') {
               sessionStore.upsert(sessionId, { ...current, status: 'active' })
             } else if (eventType === 'turn/end') {
@@ -103,14 +104,31 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             ...(cwd === undefined ? {} : { cwd }),
             ...(isAbortSignal(value?.signal) ? { signal: value.signal } : {}),
           }
+          const toolHistory = new CodingNsDshToolHistoryProjector(nativeSessions, sessionId)
           try {
             for await (const chunk of registry.execute({ ...input, adapterId: config.adapterId })) {
               if (chunk.type === 'session-binding') continue
+              if (chunk.type === 'tool-running') {
+                toolHistory.observe(chunk)
+                continue
+              }
+              if (chunk.type === 'finish') {
+                toolHistory.finalize(chunk.reason)
+                for (const dshChunk of toDshChunks(chunk)) yield dshChunk
+                // DSH 要求 finish 是唯一且最后一个 chunk。这里 return 也会关闭上游迭代器。
+                return
+              }
               for (const dshChunk of toDshChunks(chunk)) yield dshChunk
             }
+            const reason = input.signal?.aborted ? 'cancel' : 'stop'
+            toolHistory.finalize(reason)
+            for (const dshChunk of toDshChunks({ type: 'finish', reason })) yield dshChunk
           } catch (error) {
-            yield { type: 'text-delta', index: 1, text: `\n\n> [${config.adapterId} 执行失败: ${safeError(error)}]\n\n` }
-            yield { type: 'finish', reason: 'stop' }
+            const reason = input.signal?.aborted ? 'cancel' : 'error'
+            const message = safeError(error)
+            toolHistory.finalize(reason, message)
+            if (reason === 'error') yield { type: 'text-delta', index: 1, text: formatExecutionFailure(config.adapterId, message) }
+            for (const dshChunk of toDshChunks({ type: 'finish', reason }, message)) yield dshChunk
           }
         })
         if (typeof dispose === 'function') context.resources.add(() => { (dispose as () => void)() })
@@ -194,15 +212,45 @@ function extractText(content: unknown): string {
   return content.filter(isRecord).map((part) => typeof part.text === 'string' ? part.text : '').join('\n').trim()
 }
 
-function toDshChunks(chunk: { type: string; text?: string; toolName?: string; callId?: string; input?: string; kind?: string; inputTokens?: number; outputTokens?: number; reason?: string }): readonly Record<string, unknown>[] {
+function toDshChunks(
+  chunk: { type: string; text?: string; toolName?: string; callId?: string; input?: string; kind?: string; inputTokens?: number; outputTokens?: number; reason?: string },
+  failureMessage?: string,
+): readonly Record<string, unknown>[] {
+  if (chunk.type === 'reasoning-snapshot' || chunk.type === 'text-snapshot') throw new Error('CLI 快照未经过公共流规范化器')
   if (chunk.type === 'session-binding') return [{ type: 'session-binding' }]
   if (chunk.type === 'permission-request') return [{ type: 'text-delta', index: 1, text: `\n\n> [${chunk.kind ?? '工具'} 请求等待确认]\n\n` }]
   if (chunk.type === 'usage') return [{ type: 'usage', usage: { inputTokens: chunk.inputTokens ?? 0, outputTokens: chunk.outputTokens ?? 0 } }]
-  // CLI Agent 已在自己的进程内执行了工具。DSH tool-call 代表“待 Agent Loop 执行”，
-  // 不是纯展示事件；把观察事件转成 tool-call 会导致未知工具错误或重复执行。
+  // 工具事件由公共只读投影器直接保存到 Session，绝不作为 StreamChunk.tool-call
+  // 交回 Agent Loop，否则 DSH 会把外部 Agent 已执行的工具再执行一次。
   if (chunk.type === 'tool-running') return []
-  if (chunk.type === 'finish') return [{ type: 'finish', reason: chunk.reason ?? 'stop' }]
+  if (chunk.type === 'finish') return [{ type: 'finish', reason: toDshFinishReason(chunk.reason, failureMessage) }]
   return [{ type: chunk.type, index: chunk.type === 'reasoning-delta' ? 0 : 1, text: chunk.text ?? '' }]
+}
+
+function toDshFinishReason(reason: string | undefined, failureMessage?: string): Record<string, unknown> {
+  if (reason === 'cancel') {
+    return { kind: 'aborted', failure: { message: failureMessage ?? '外部 Agent 执行已取消', code: 'ABORTED' } }
+  }
+  if (reason === 'error') {
+    return { kind: 'error', failure: { message: failureMessage ?? '外部 Agent 执行失败', code: 'PROVIDER_ERROR' } }
+  }
+  return { kind: 'stop' }
+}
+
+function formatExecutionFailure(adapterId: string, message: string): string {
+  const content = `[${adapterId}] ${message}`
+  const fence = '~'.repeat(Math.max(3, longestCharacterRun(content, '~') + 1))
+  return `\n\n**外部 Agent 执行失败**\n\n${fence}text\n${content}\n${fence}\n`
+}
+
+function longestCharacterRun(value: string, character: string): number {
+  let longest = 0
+  let current = 0
+  for (const item of value) {
+    current = item === character ? current + 1 : 0
+    longest = Math.max(longest, current)
+  }
+  return longest
 }
 
 function resolveSessionCwd(

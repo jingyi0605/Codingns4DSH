@@ -13,7 +13,12 @@ export {
   type CodingNsRpcHandler,
   type CodingNsRpcTarget,
 } from './host/rpc-table.js'
-export { HOST_FEATURES, createAuthFeature, createLanAccessDshFeature } from './host/features/index.js'
+export {
+  HOST_FEATURES,
+  createAuthFeature,
+  createCliAdaptersFeature,
+  createLanAccessDshFeature,
+} from './host/features/index.js'
 export type { CodingNsHostServices } from './host/features/index.js'
 export { CODINGNS_RPC_CHANNEL } from './shared/contracts/transport.js'
 export {
