@@ -29,6 +29,13 @@ declare module 'node:fs' {
   export function rmSync(path: string, options?: { force?: boolean }): void
 }
 
+declare module 'node:fs/promises' {
+  export function mkdtemp(prefix: string): Promise<string>
+  export function readFile(path: string, encoding: 'utf8'): Promise<string>
+  export function writeFile(path: string, data: string, options: { encoding: 'utf8'; mode?: number }): Promise<void>
+  export function rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void>
+}
+
 declare module 'node:os' {
   export function homedir(): string
   export function tmpdir(): string

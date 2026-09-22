@@ -20,6 +20,31 @@ export function staticCatalog(
   }
 }
 
+const GEMINI_EFFORTS_BY_MODEL = new Map<string, readonly string[]>([
+  ['provider-default', ['low', 'medium', 'high']],
+  ['auto', ['low', 'medium', 'high']],
+  ['auto-gemini-3', ['low', 'medium', 'high']],
+  ['auto-gemini-2.5', ['low', 'medium', 'high']],
+  ['gemini-3.8-flash', ['low', 'medium', 'high']],
+  ['gemini-3.7-flash', ['low', 'medium', 'high']],
+  ['gemini-3.6-flash', ['minimal', 'low', 'medium', 'high']],
+  ['gemini-3.5-flash', ['minimal', 'low', 'medium', 'high']],
+  ['gemini-3.5-flash-lite', ['minimal', 'low', 'medium', 'high']],
+  ['gemini-3.1-pro-preview', ['low', 'medium', 'high']],
+  ['gemini-3.1-pro-preview-customtools', ['low', 'medium', 'high']],
+  ['gemini-3.1-flash-lite-image', ['minimal', 'high']],
+  ['gemini-3-flash-preview', ['minimal', 'low', 'medium', 'high']],
+  ['gemini-3-pro-preview', ['low', 'high']],
+  ['gemini-2.5-pro', ['low', 'medium', 'high']],
+  ['gemini-2.5-flash', ['low', 'medium', 'high']],
+  ['gemini-2.5-flash-lite', ['low', 'medium', 'high']],
+])
+
+/** Gemini ACP 只返回模型标识；思考档位需按 Gemini 官方能力表补齐。 */
+export function resolveGeminiEfforts(modelId: string): readonly string[] {
+  return GEMINI_EFFORTS_BY_MODEL.get(modelId.trim().toLowerCase()) ?? []
+}
+
 export const CLAUDE_CATALOG = staticCatalog('claude', 'Claude', [
   { id: 'provider-default', name: '跟随 Claude 默认模型', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'sonnet', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
@@ -35,11 +60,14 @@ export const KIMI_CATALOG = staticCatalog('kimi', 'Kimi', [
 ])
 
 export const GEMINI_CATALOG = staticCatalog('gemini', 'Gemini', [
-  { id: 'provider-default', name: '跟随 Gemini 默认模型', efforts: ['low', 'medium', 'high'] },
-  { id: 'gemini-3.8-flash', efforts: ['low', 'medium', 'high'] },
-  { id: 'gemini-3.7-flash', efforts: ['low', 'medium', 'high'] },
-  { id: 'gemini-2.5-pro', efforts: ['low', 'medium', 'high'] },
-  { id: 'gemini-2.5-flash', efforts: ['low', 'medium', 'high'] },
+  { id: 'provider-default', name: '跟随 Gemini 默认模型', efforts: resolveGeminiEfforts('provider-default') },
+  { id: 'auto-gemini-3', efforts: resolveGeminiEfforts('auto-gemini-3') },
+  { id: 'auto-gemini-2.5', efforts: resolveGeminiEfforts('auto-gemini-2.5') },
+  { id: 'gemini-3.1-pro-preview', efforts: resolveGeminiEfforts('gemini-3.1-pro-preview') },
+  { id: 'gemini-3-flash-preview', efforts: resolveGeminiEfforts('gemini-3-flash-preview') },
+  { id: 'gemini-2.5-pro', efforts: resolveGeminiEfforts('gemini-2.5-pro') },
+  { id: 'gemini-2.5-flash', efforts: resolveGeminiEfforts('gemini-2.5-flash') },
+  { id: 'gemini-2.5-flash-lite', efforts: resolveGeminiEfforts('gemini-2.5-flash-lite') },
 ])
 
 export const CODEX_CATALOG = staticCatalog('codex', 'Codex', [

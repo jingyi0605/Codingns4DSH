@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { GeminiCliDriver } from '../dist/host/cli-adapters/gemini-driver.js'
@@ -47,14 +48,19 @@ test('Kimi wire 优先并转换会话、思考、工具、用量和完成事件'
 
 test('Gemini ACP 完成初始化、session/new、prompt 并转换更新事件', async () => {
   const calls: string[][] = []
+  const requests: Array<{ method?: string; params?: Record<string, unknown> }> = []
+  let runtimeSettings: Record<string, any> | null = null
   const driver = new GeminiCliDriver({
     binaries: ['fake-gemini'], spawnSync: fakeDetection,
-    spawn: ((command: string, args: string[]) => {
+    spawn: ((command: string, args: string[], options: { env?: Record<string, string | undefined> }) => {
       calls.push([command, ...args])
+      const settingsPath = options.env?.GEMINI_CLI_SYSTEM_SETTINGS_PATH ?? options.env?.GEMINI_CLI_SYSTEM_DEFAULTS_PATH
+      if (settingsPath) runtimeSettings = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, any>
       const stdout = new PassThrough(); const stderr = new PassThrough()
       let nextId = 0
       const stdin = { write(data: string): boolean {
-        const request = JSON.parse(data) as { id?: number; method?: string }
+        const request = JSON.parse(data) as { id?: number; method?: string; params?: Record<string, unknown> }
+        requests.push(request)
         if (request.id === undefined) return true
         const result = request.method === 'session/new' ? { sessionId: 'gemini-session-1' } : {}
         if (request.method === 'session/prompt') {
@@ -68,8 +74,27 @@ test('Gemini ACP 完成初始化、session/new、prompt 并转换更新事件', 
     }) as never,
   })
   const chunks: unknown[] = []
-  for await (const chunk of driver.executeTurn({ sessionId: 's1', messages: [], prompt: '你好' })) chunks.push(chunk)
+  for await (const chunk of driver.executeTurn({
+    sessionId: 's1',
+    messages: [],
+    prompt: '你好',
+    modelId: 'auto-gemini-3',
+    effortId: 'medium',
+  })) chunks.push(chunk)
   assert.deepEqual(calls[0], ['fake-gemini', '--experimental-acp'])
+  assert.deepEqual(requests.find((request) => request.method === 'session/set_model')?.params, {
+    sessionId: 'gemini-session-1',
+    modelId: 'auto-gemini-3',
+  })
+  assert.equal('model' in (requests.find((request) => request.method === 'session/prompt')?.params ?? {}), false)
+  const overrides = runtimeSettings?.modelConfigs?.customOverrides as Array<Record<string, any>> | undefined
+  assert.deepEqual(overrides?.slice(-4).map((entry) => entry.match.model), [
+    'gemini-3.1-pro-preview-customtools',
+    'gemini-3.1-pro-preview',
+    'gemini-3-pro-preview',
+    'gemini-3-flash-preview',
+  ])
+  assert.deepEqual(overrides?.at(-1)?.modelConfig.generateContentConfig.thinkingConfig, { thinkingLevel: 'MEDIUM' })
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'gemini-session-1' },
     { type: 'text-delta', text: 'ACP 回复' },
@@ -95,6 +120,8 @@ test('Gemini 从 ACP session/new 读取真实模型目录而不是帮助参数�
                 availableModels: [
                   { modelId: 'auto-gemini-2.5', name: 'Auto (Gemini 2.5)', description: '自动选择模型' },
                   { modelId: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
+                  { modelId: 'gemini-3-flash-preview', name: 'Gemini 3 Flash' },
+                  { modelId: 'gemini-3-pro-preview', name: 'Gemini 3 Pro' },
                 ],
               },
             }
@@ -106,7 +133,18 @@ test('Gemini 从 ACP session/new 读取真实模型目录而不是帮助参数�
     }) as never,
   })
   const catalog = await driver.listModels()
-  assert.deepEqual(catalog.groups[0]?.models.map((model) => model.id), ['auto-gemini-2.5', 'gemini-2.5-pro'])
+  assert.deepEqual(catalog.groups[0]?.models.map((model) => model.id), [
+    'auto-gemini-2.5',
+    'gemini-2.5-pro',
+    'gemini-3-flash-preview',
+    'gemini-3-pro-preview',
+  ])
+  assert.deepEqual(catalog.groups[0]?.models.map((model) => model.efforts), [
+    ['low', 'medium', 'high'],
+    ['low', 'medium', 'high'],
+    ['minimal', 'low', 'medium', 'high'],
+    ['low', 'high'],
+  ])
   assert.equal(catalog.groups[0]?.models.some((model) => model.id.toLowerCase() === 'model'), false)
   assert.equal(catalog.currentModel, 'auto-gemini-2.5')
 })
