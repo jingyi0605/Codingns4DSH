@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { listCliSessions, restoreCliSession } from '../dist/client/cli-catalog.js'
+import { archiveCliSession, listCliSessions, restoreCliSession } from '../dist/client/cli-catalog.js'
 import type { CodingNsCliSessionRecord } from '../dist/shared/contracts/cli-adapter.js'
 
 const record: CodingNsCliSessionRecord = {
@@ -43,5 +43,22 @@ test('恢复外部会话先保存选择和 provider 绑定', async () => {
       effortId: 'high',
       providerSessionId: 'thread-1',
     },
+  }])
+})
+
+test('移除外部会话调用 Host 的原生归档链路', async () => {
+  const calls: Array<{ endpoint: string; payload: unknown }> = []
+  const rpc = {
+    call: async (_channel: string, endpoint: string, payload: unknown) => {
+      calls.push({ endpoint, payload })
+      return { ok: true as const, value: {} }
+    },
+  }
+
+  await archiveCliSession(rpc, record.dshSessionId)
+
+  assert.deepEqual(calls, [{
+    endpoint: 'cli/session/archive',
+    payload: { sessionId: 'dsh-session-1' },
   }])
 })

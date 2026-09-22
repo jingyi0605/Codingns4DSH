@@ -77,6 +77,14 @@ export async function restoreCliSession(
   navigateToDshSession(record.dshSessionId)
 }
 
+/** 通过 Host 同步归档 DSH 原生会话和 CodingNS 外部会话索引。 */
+export async function archiveCliSession(
+  rpc: CodingNsRpcClient,
+  sessionId: string,
+): Promise<void> {
+  await callCliRpc(rpc, 'session/archive', { sessionId })
+}
+
 /**
  * 使用 DSH 当前的会话路由，而不是在插件中复制会话消息组件。
  * 旧版 DSH 使用 `/sessions/:id`，新版 workspace 页面使用同一路径的 workspace 前缀，

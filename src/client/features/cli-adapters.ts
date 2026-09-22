@@ -8,7 +8,7 @@ import type {
 } from '../../shared/contracts/cli-adapter.js'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
 import { registerCliConversationSlots } from '../cli-slots.js'
-import { callCliRpc, errorMessage, listCliSessions, restoreCliSession } from '../cli-catalog.js'
+import { archiveCliSession, callCliRpc, errorMessage, listCliSessions, restoreCliSession } from '../cli-catalog.js'
 import { dshButtonStyle, dshFormRootStyle, dshPopupSurfaceStyle, dshThemeColor } from '../theme.js'
 
 /** 外部 Agent 集成模块。Agent 进程在 Host 运行，浏览器只读取目录和状态。 */
@@ -45,6 +45,7 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
   const [sessions, setSessions] = useState<readonly CodingNsCliSessionRecord[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [restoringSessionId, setRestoringSessionId] = useState<string | null>(null)
+  const [archivingSessionId, setArchivingSessionId] = useState<string | null>(null)
   const [message, setMessage] = useState('')
   const disabled = !enabled
 
@@ -115,6 +116,19 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
     }
   }
 
+  const archiveSession = async (record: CodingNsCliSessionRecord): Promise<void> => {
+    setArchivingSessionId(record.dshSessionId)
+    setMessage('')
+    try {
+      await archiveCliSession(services.rpc, record.dshSessionId)
+      setSessions((current) => current.filter((item) => item.dshSessionId !== record.dshSessionId))
+    } catch (error) {
+      setMessage(errorMessage(error))
+    } finally {
+      setArchivingSessionId(null)
+    }
+  }
+
   return createElement(
     'div',
     { 'aria-disabled': disabled, style: { ...dshFormRootStyle, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
@@ -142,7 +156,9 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
       sessions,
       loading: sessionsLoading,
       restoringSessionId,
+      archivingSessionId,
       onRestore: (record) => { void restoreSession(record) },
+      onArchive: (record) => { void archiveSession(record) },
     }),
     message && createElement('div', { role: 'alert', style: { marginTop: 10, color: dshThemeColor.error } }, message),
     selected !== null && createElement(AdapterDetailsDialog, {
@@ -159,11 +175,13 @@ interface CliSessionListProps {
   readonly sessions: readonly CodingNsCliSessionRecord[]
   readonly loading: boolean
   readonly restoringSessionId: string | null
+  readonly archivingSessionId: string | null
   readonly onRestore: (record: CodingNsCliSessionRecord) => void
+  readonly onArchive: (record: CodingNsCliSessionRecord) => void
 }
 
 /** 外部会话索引入口；打开后交给 DSH 原生会话页面渲染消息。 */
-function CliSessionList({ sessions, loading, restoringSessionId, onRestore }: CliSessionListProps): ReactElement {
+function CliSessionList({ sessions, loading, restoringSessionId, archivingSessionId, onRestore, onArchive }: CliSessionListProps): ReactElement {
   return createElement('section', { 'aria-labelledby': 'codingns-cli-session-title', style: { marginTop: 20 } },
     createElement('h4', { id: 'codingns-cli-session-title', style: { margin: '0 0 8px' } }, '外部 Agent 会话'),
     loading && createElement('div', { role: 'status' }, '正在读取外部会话…'),
@@ -175,7 +193,10 @@ function CliSessionList({ sessions, loading, restoringSessionId, onRestore }: Cl
       },
         createElement('div', { style: { flex: '1 1 auto', minWidth: 0 } },
           createElement('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 } }, record.title ?? `${record.adapterId} 会话`),
-          createElement('div', { style: { marginTop: 2, opacity: 0.65, fontSize: 12 } }, `${record.adapterId} · ${sessionStatusLabel(record.status)}`),
+          createElement('div', {
+            title: record.providerStateReason,
+            style: { marginTop: 2, color: record.providerState === 'missing' ? dshThemeColor.error : dshThemeColor.labelTertiary, fontSize: 12 },
+          }, `${record.adapterId} · ${sessionStatusLabel(record)}`),
         ),
         createElement('button', {
           type: 'button',
@@ -184,15 +205,26 @@ function CliSessionList({ sessions, loading, restoringSessionId, onRestore }: Cl
           'aria-label': `打开${record.title ?? `${record.adapterId} 会话`}`,
           style: { ...dshButtonStyle, flex: '0 0 auto', padding: '6px 10px', borderRadius: 6, cursor: restoringSessionId === null ? 'pointer' : 'not-allowed' },
         }, restoringSessionId === record.dshSessionId ? '打开中…' : '打开'),
+        record.providerState === 'missing' && createElement('button', {
+          type: 'button',
+          onClick: () => onArchive(record),
+          disabled: archivingSessionId !== null,
+          'aria-label': `从侧栏移除${record.title ?? `${record.adapterId} 会话`}`,
+          style: { ...dshButtonStyle, flex: '0 0 auto', padding: '6px 10px', borderRadius: 6, color: dshThemeColor.error, cursor: archivingSessionId === null ? 'pointer' : 'not-allowed' },
+        }, archivingSessionId === record.dshSessionId ? '移除中…' : '移除'),
       )),
     ),
   )
 }
 
-function sessionStatusLabel(status: CodingNsCliSessionRecord['status']): string {
-  if (status === 'active') return '运行中'
-  if (status === 'error') return '异常'
-  if (status === 'archived') return '已归档'
+function sessionStatusLabel(record: CodingNsCliSessionRecord): string {
+  if (record.providerState === 'missing') return '原始会话已删除'
+  if (record.providerState === 'corrupt') return '原始会话已损坏'
+  if (record.providerState === 'unreachable') return '暂时无法检查原始会话'
+  if (record.providerState === 'ephemeral') return '无独立原始会话'
+  if (record.status === 'active') return '运行中'
+  if (record.status === 'error') return '异常'
+  if (record.status === 'archived') return '已归档'
   return '已暂停'
 }
 
