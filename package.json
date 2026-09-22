@@ -16,7 +16,7 @@
     },
     "./client": {
       "types": "./dist/client/index.d.ts",
-      "default": "./dist/client/index.js"
+      "default": "./dist/client/bundle.js"
     },
     "./client/lan-access": {
       "types": "./dist/client/lan-access.d.ts",

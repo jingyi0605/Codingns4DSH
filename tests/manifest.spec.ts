@@ -22,7 +22,7 @@ test('package manifest declares the DSH bundle and client entry', () => {
     immediately: true,
   })
   assert.equal(manifest.exports['.'].default, './dist/index.js')
-  assert.equal(manifest.exports['./client'].default, './dist/client/index.js')
+  assert.equal(manifest.exports['./client'].default, './dist/client/bundle.js')
   assert.equal(manifest.exports['./client/lan-access'].default, './dist/client/lan-access.js')
   assert.equal(manifest.exports['./host'].default, './dist/host/index.js')
   assert.equal(manifest.exports['./bootstrap'].default, './dist/bootstrap/index.js')

@@ -12,7 +12,8 @@ export default defineConfig({
   external: ['react'],
   noExternal: (specifier) => specifier !== 'react',
   outputOptions: {
-    entryFileNames: 'index.js',
+    // 与 tsc 的 dist/client/index.js 分离，避免两个监听进程互相覆盖产物。
+    entryFileNames: 'bundle.js',
     banner: 'window.__ModuleLoader__.load({ id: "dsh-codingns", factory: (require) => {',
     footer: 'return module.exports; } });',
     intro: 'var module = { exports: {} }; var exports = module.exports;',

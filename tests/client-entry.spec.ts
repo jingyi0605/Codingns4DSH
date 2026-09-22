@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
-const clientBundle = join(dirname(fileURLToPath(import.meta.url)), '../dist/client/index.js')
+const clientBundle = join(dirname(fileURLToPath(import.meta.url)), '../dist/client/bundle.js')
 const clientSource = join(dirname(fileURLToPath(import.meta.url)), '../src/client/index.ts')
 
 test('Client 入口以 DSH Loader factory 格式构建', async () => {
