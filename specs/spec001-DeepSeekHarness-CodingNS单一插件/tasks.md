@@ -228,16 +228,17 @@
   - 怎么算完成：终端关闭、任务回收和恢复行为明确且无资源泄漏。
   - 怎么验证：tmux/PTY 集成测试、断线恢复测试
 
-- [ ] 3.3 接入 CLI Provider
-  - 状态：TODO
-  - 这一步到底做什么：将 CodingNS 现有 CLI 适配器统一成 DSH 可调用的 Provider，并允许单独开关。
-  - 做完你能看到什么：不同 CLI 可以在同一工作区启动、输入、查看输出和取消。
+- [ ] 3.3 接入外部 Agent Provider
+  - 状态：IN_REVIEW（Command Code 已接入；其他 Provider 和真实端到端执行仍待复核）
+  - 这一步到底做什么：将 CodingNS 现有外部 Agent 统一成 DSH 可调用的 Provider，并允许每个 Agent 单独开关。
+  - 做完你能看到什么：不同外部 Agent 可以在同一工作区启动、输入、查看输出和取消。
   - 先依赖什么：3.2
   - 开始前先看：`requirements.md` 需求 5
-  - 主要改哪里：`src/features/cli-adapters/`、Provider registry
-  - 这一步先不做什么：不修改各 CLI 工具本身，不把 Provider 私有逻辑写进 Transport。
+  - 主要改哪里：`src/host/cli-adapters/`、`src/client/features/cli-adapters.ts`、Provider registry
+  - 本轮已完成：新增 Host 侧 `CodingNsCliDriver` 注册契约、`CommandCodeDriver` 和 `cliAdapters` 功能模块；支持 Agent 探测、模型目录、会话 transcript、JSON 事件转换、会话配置 RPC、`llm/stream` 委托和停用清理。Client 已增加独立的“外部Agent集成”设置模块，按 Agent 记录展示安装状态、单独启停，点击记录可在模态框查看版本、命令路径、模型目录和思考等级；DSH 对话工具栏已注册 Agent、模型和思考强度选择器，选择结果写入 `cli/session/set`。未知 Provider 不会被伪装成可用。
+  - 这一步先不做什么：不修改各外部 Agent 工具本身，不把 Provider 私有逻辑写进 Transport。
   - 怎么算完成：至少一个 Provider 端到端跑通，Provider 不可用时不会拖垮其他模块。
-  - 怎么验证：Provider contract 测试、真实 CLI 冒烟测试
+  - 怎么验证：`pnpm exec tsc --noEmit`；`pnpm build`；`node --test tests/cli-adapters.spec.ts tests/client-entry.spec.ts tests/feature-wiring.spec.ts`；`node --test tests/*.spec.ts`（91 个测试通过，包含 Agent Client、单独启停、RPC 路由回退和内置 DSH 回切断言）；本机 `command-code --version` 与 `--list-models` 探查通过。真实模型执行、Codex/Claude 等其他 Provider 和远程 Host/Client 端到端仍待验证。
 
 - [ ] 3.4 接入进程、端口和反向代理
   - 状态：TODO
