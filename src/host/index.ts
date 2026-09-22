@@ -13,6 +13,7 @@ import type { CodingNsHostServices } from './features/types.js'
 import { registerCodingNsRpc } from './rpc.js'
 import { CodingNsRpcTable } from './rpc-table.js'
 import { registerCodingNsSettings } from './settings.js'
+import { createCodingNsNativeSessionBridge } from './native-session-bridge.js'
 
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
@@ -26,6 +27,7 @@ export function apply(ctx?: Context): void {
       settingsProvider: hostCtx.settings,
       dshWebPort: webServerPort,
       events: { on: hostCtx.on.bind(hostCtx) },
+      nativeSessions: createCodingNsNativeSessionBridge(hostCtx),
     }
     const registry = new FeatureRegistry<CodingNsHostServices>(services)
     registry.registerMany(HOST_FEATURES)
@@ -59,8 +61,30 @@ export {
 } from './rpc-table.js'
 
 export { CodingNsAuthSession } from './auth-session.js'
+export {
+  createCodingNsNativeSessionBridge,
+  type CodingNsNativeSessionBridge,
+  type CodingNsNativeSessionController,
+  type CodingNsNativeSessionStore,
+} from './native-session-bridge.js'
 export { CommandCodeDriver } from './cli-adapters/command-code-driver.js'
+export { ClaudeCodeDriver } from './cli-adapters/claude-driver.js'
+export { KimiCliDriver } from './cli-adapters/kimi-driver.js'
+export { GeminiCliDriver } from './cli-adapters/gemini-driver.js'
+export { PiAgentDriver } from './cli-adapters/pi-driver.js'
+export { CodexAppServerDriver } from './cli-adapters/codex-driver.js'
+export { OpenCodeDriver } from './cli-adapters/opencode-driver.js'
+export { GrokBuildDriver } from './cli-adapters/grok-driver.js'
+export { StandardStreamDriver } from './cli-adapters/standard-stream-driver.js'
+export { JsonRpcProcess } from './cli-adapters/json-rpc-process.js'
+export { HttpSseClient } from './cli-adapters/http-sse-client.js'
 export { CodingNsCliAdapterRegistry } from './cli-adapters/registry.js'
+export {
+  CodingNsCliSessionStore,
+  type CodingNsCliSessionPersistence,
+  type CodingNsCliSessionPatch,
+  type CodingNsCliSessionStoreOptions,
+} from './cli-adapters/session-store.js'
 export type { CodingNsCliDriver } from './cli-adapters/driver.js'
 export {
   CODINGNS_CONTROL_API_PATHS,

@@ -45,6 +45,27 @@ test('Command Code 驱动解析模型分组和默认思考强度', async () => {
   })
 })
 
+test('Command Code 驱动识别完整模型目录和工具调用事件', async () => {
+  const driver = new CommandCodeDriver({
+    homeDirectory: '/definitely/missing',
+    spawnSync: ((command: string, args: string[]) => {
+      if (args[0] === '--version') return { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+      if (args[0] === '--list-models') return {
+        status: 0,
+        stdout: 'OpenAI\ngpt-6-astra                            most capable\nqwen/qwen3.8-27b                       compact\n',
+        stderr: '',
+      }
+      return { status: 0, stdout: '', stderr: '' }
+    }) as never,
+    binaries: ['command-code'],
+  })
+  const catalog = await driver.listModels()
+  assert.deepEqual(catalog.groups[0]?.models, [
+    { id: 'gpt-6-astra', name: 'gpt-6-astra', description: 'most capable', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'qwen/qwen3.8-27b', name: 'qwen/qwen3.8-27b', description: 'compact', efforts: ['low', 'medium', 'xhigh'] },
+  ])
+})
+
 test('Command Code 驱动写入历史 transcript、转换 JSON 事件并清理子进程', async () => {
   let receivedArgs: string[] = []
   let transcript = ''
@@ -63,7 +84,8 @@ test('Command Code 驱动写入历史 transcript、转换 JSON 事件并清理�
         stdout: Readable.from([
           `${JSON.stringify({ type: 'event', event: { type: 'thinking_delta', delta: '思考' } })}\n`,
           `${JSON.stringify({ type: 'event', event: { type: 'text_delta', delta: '结果' } })}\n`,
-          `${JSON.stringify({ type: 'result', usage: { inputTokens: 2, outputTokens: 3 } })}\n`,
+          `${JSON.stringify({ type: 'event', event: { type: 'tool_use', id: 'call-1', name: 'read_directory', input: { path: '.' } } })}\n`,
+          `${JSON.stringify({ type: 'result', finalText: '结果', usage: { inputTokens: 2, outputTokens: 3 } })}\n`,
         ]),
         stderr: { on() { return this } },
         kill() { killed = true; return true },
@@ -86,6 +108,7 @@ test('Command Code 驱动写入历史 transcript、转换 JSON 事件并清理�
   assert.deepEqual(chunks, [
     { type: 'reasoning-delta', text: '思考' },
     { type: 'text-delta', text: '结果' },
+    { type: 'tool-running', toolName: 'read_directory', callId: 'call-1', input: '{"path":"."}', status: 'running' },
     { type: 'usage', inputTokens: 2, outputTokens: 3 },
     { type: 'finish', reason: 'stop' },
   ])
@@ -176,4 +199,53 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   assert.deepEqual(passthrough, [{ type: 'text-delta', text: '默认' }])
   await features.disable('cliAdapters')
   assert.equal(listener, undefined)
+})
+
+test('CLI 功能模块从 DSH 会话头传递工作目录并保留原生工具块', async () => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  let receivedCwd: string | undefined
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'fake', name: 'Fake' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'fake' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) {
+      receivedCwd = input.cwd
+      yield { type: 'tool-running', toolName: 'read_directory', callId: 'call-1', input: '{"path":"."}', status: 'running' }
+      yield { type: 'finish', reason: 'stop' }
+    },
+  }])
+  const events = {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+      listener = next
+      return () => { listener = undefined }
+    },
+  }
+  const features = new FeatureRegistry({
+    rpc: table,
+    events,
+    nativeSessions: {
+      available: true,
+      store: undefined,
+      controller: undefined,
+      get() { return { header: { cwd: '/workspace/project' } } },
+      list() { return [] },
+      async ensure() { return null },
+      async flush() {},
+      subscribe() { return () => {} },
+    },
+  })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  await table.resolve('cli/session/set')?.handler('session/set', { sessionId: 's-cwd', adapterId: 'fake' })
+  const chunks = []
+  for await (const chunk of listener!({ sessionId: 's-cwd', messages: [{ role: 'user', content: '读取目录' }] }, async function* () {})) chunks.push(chunk)
+  assert.equal(receivedCwd, '/workspace/project')
+  assert.deepEqual(chunks, [
+    { type: 'block-start', index: 1, blockType: 'tool-call' },
+    { type: 'tool-call-delta', index: 1, id: 'call-1', name: 'read_directory', argumentsDelta: '{"path":"."}' },
+    { type: 'block-end', index: 1, block: { type: 'tool-call', id: 'call-1', name: 'read_directory', arguments: '{"path":"."}' } },
+    { type: 'finish', reason: 'stop' },
+  ])
+  await features.disable('cliAdapters')
 })

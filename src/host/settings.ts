@@ -18,6 +18,8 @@ export const CodingNsSettingsSchema: z<CodingNsSettings> = z.object({
   controlBaseUrls: z.array(z.string()).default(DEFAULT_CODINGNS_SETTINGS.controlBaseUrls),
   modules: z.dict(z.boolean()).default(DEFAULT_CODINGNS_SETTINGS.modules),
   agentAdapters: z.dict(z.boolean()).default(DEFAULT_CODINGNS_SETTINGS.agentAdapters ?? {}),
+  // 会话索引是 Host 摘要数据，不能让它进入浏览器状态或模型上下文。
+  cliSessions: z.array(z.any()).default(DEFAULT_CODINGNS_SETTINGS.cliSessions ?? []),
   lanAccessDsh: z.object({
     autoStart: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.autoStart),
     listenHost: z.string().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.listenHost),

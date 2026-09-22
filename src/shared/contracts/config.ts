@@ -1,4 +1,5 @@
 import type { FeatureDescriptor } from './feature.js'
+import type { CodingNsCliSessionRecord } from './cli-adapter.js'
 
 /** CodingNS 在 DSH 设置文档中持久化的用户选项。 */
 export interface CodingNsSettings {
@@ -16,6 +17,8 @@ export interface CodingNsSettings {
   modules: Record<string, boolean>
   /** 外部 Agent 启用意图：适配器 id -> 是否启用；缺省时所有已注册 Agent 启用。 */
   agentAdapters?: Record<string, boolean>
+  /** Host 侧外部 Agent 会话索引；不含凭据和原始消息。 */
+  cliSessions?: CodingNsCliSessionRecord[]
 }
 
 /** 局域网访问 DSH 的持久化配置；dshPort 为 0 表示启动时自动探测。 */

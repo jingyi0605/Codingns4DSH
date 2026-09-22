@@ -1,6 +1,7 @@
 import type { CodingNsRpcTable } from '../rpc-table.js'
 import type { SettingsProvider, SettingsScope } from '@deepseek-ai/dsh-settings'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
+import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 
 export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
@@ -22,4 +23,6 @@ export interface CodingNsHostServices {
   readonly dshWebPort?: number
   /** DSH 事件总线；CLI 模块用它接入 llm/stream，测试环境可以不提供。 */
   readonly events?: CodingNsHostEvents
+  /** DSH 原生会话桥接；不可用时为 undefined，插件不因此阻断启动。 */
+  readonly nativeSessions?: CodingNsNativeSessionBridge
 }

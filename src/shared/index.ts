@@ -41,11 +41,15 @@ export { CODINGNS_RPC_CHANNEL } from './contracts/transport.js'
 export type {
   CodingNsCliAdapterDescriptor,
   CodingNsCliAdapterId,
+  CodingNsCliCapability,
   CodingNsCliMessage,
   CodingNsCliModel,
   CodingNsCliModelCatalog,
   CodingNsCliModelGroup,
+  CodingNsCliPermissionResponse,
   CodingNsCliSessionConfig,
+  CodingNsCliSessionRecord,
+  CodingNsCliSessionStatus,
   CodingNsCliStreamChunk,
   CodingNsCliTurnInput,
 } from './contracts/cli-adapter.js'

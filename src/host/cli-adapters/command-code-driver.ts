@@ -16,23 +16,83 @@ const COMMAND_CODE_BINARIES = WINDOWS
   : ['command-code', 'commandcode', 'cmdc', 'cmd']
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
 const CATALOG_EFFORTS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['deepseek/deepseek-v4-flash-vision-exp', ['high', 'max']],
   ['deepseek/deepseek-v4-pro', ['high', 'max']],
   ['deepseek/deepseek-v4-flash', ['high', 'max']],
+  ['deepseek/deepseek-v4.1-flash', ['low', 'high', 'max']],
   ['deepseek/deepseek-v4-flash-fast', ['low', 'high', 'max']],
   ['moonshotai/kimi-k3', ['low', 'high', 'max']],
+  ['moonshotai/kimi-k2.7-code', []],
+  ['moonshotai/kimi-k2.7-code-highspeed', []],
+  ['moonshotai/kimi-k2.6', []],
+  ['moonshotai/kimi-k2.5', []],
   ['z-ai/glm-5.3-flash', ['low', 'high', 'max']],
+  ['z-ai/glm-5.3-flashx', ['low', 'high', 'max']],
   ['zai-org/glm-5.3', ['low', 'high', 'max']],
   ['zai-org/glm-5.2', ['high', 'max']],
+  ['zai-org/glm-5.2-fast', []],
+  ['zai-org/glm-5.1', []],
+  ['zai-org/glm-5', []],
   ['minimaxai/minimax-m3', ['low', 'medium', 'high']],
+  ['minimaxai/minimax-m2.7', []],
+  ['minimaxai/minimax-m2.5', []],
+  ['xiaomi/mimo-v2.6-pro', []],
+  ['xiaomi/mimo-v2.6-pro-ultraspeed', []],
+  ['xiaomi/mimo-v2.6-flash', []],
+  ['xiaomi/mimo-v2.5-pro', []],
+  ['xiaomi/mimo-v2.5', []],
+  ['qwen/qwen3.8-omni-flash', ['low', 'medium', 'xhigh']],
+  ['qwen/qwen3.8-max-0902', ['low', 'medium', 'xhigh']],
   ['qwen/qwen3.8-max', ['low', 'medium', 'xhigh']],
+  ['qwen/qwen3.8-27b', ['low', 'medium', 'xhigh']],
   ['qwen/qwen3.8-flash', ['low', 'medium', 'xhigh']],
+  ['qwen/qwen3.7-max', []],
+  ['qwen/qwen3.7-plus', []],
+  ['qwen/qwen3.7-flash', []],
+  ['qwen/qwen3.6-max-preview', []],
+  ['qwen/qwen3.6-plus', []],
+  ['meituan/longcat-2.0', []],
+  ['stepfun/step-5-preview', []],
+  ['stepfun/step-3.7-flash', []],
+  ['stepfun/step-3.5-flash', []],
+  ['tencent/hy3-paid', []],
   ['tencent/hy4-preview', ['low', 'medium', 'high']],
+  ['nvidia/nemotron-3-ultra-550b-a55b', []],
+  ['thinkingmachines/inkling', []],
+  ['thinkingmachines/inkling-small', []],
+  ['poolside/laguna-s-2.1-free', []],
+  ['inclusionai/ling-3.0-flash-sante:free', []],
+  ['sakana/fugu-ultra', ['high', 'xhigh']],
   ['claude-sonnet-5', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['claude-sonnet-4-6', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['claude-fable-5-1', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['claude-fable-5', ['low', 'medium', 'high', 'xhigh', 'max']],
   ['claude-opus-5', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['claude-opus-4-8', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['claude-opus-4-7', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['claude-haiku-4-5', []],
+  ['gpt-6-astra', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['gpt-5.6-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['gpt-5.6-terra', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['gpt-5.6-luna', ['low', 'medium', 'high', 'xhigh', 'max']],
   ['gpt-5.5', ['low', 'medium', 'high', 'xhigh']],
+  ['gpt-5.4', ['low', 'medium', 'high', 'xhigh']],
   ['gpt-5.3-codex', ['low', 'medium', 'high', 'xhigh']],
+  ['gpt-5.4-mini', ['low', 'medium', 'high']],
   ['google/gemini-3.8-flash', ['low', 'medium', 'high']],
+  ['google/gemini-3.7-flash', ['low', 'medium', 'high']],
+  ['google/gemini-3.6-flash', ['low', 'medium', 'high']],
+  ['google/gemini-3.5-flash', ['low', 'medium', 'high']],
+  ['google/gemini-3.5-flash-lite', ['low', 'medium', 'high']],
+  ['google/gemini-3.1-flash-lite', ['low', 'medium', 'high']],
+  ['meta/muse-spark-1.1', ['low', 'medium', 'high', 'xhigh']],
+  ['meta/muse-spark-1.2', ['low', 'medium', 'high', 'xhigh']],
+  ['meta/muse-spark-1.2-contributor', ['low', 'medium', 'high', 'xhigh']],
+  ['meta/muse-spark-1.3', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['meta/muse-spark-1.3-contributor', ['low', 'medium', 'high', 'xhigh']],
   ['xai/grok-4.6', ['low', 'medium', 'high', 'xhigh']],
+  ['xai/grok-4.5', ['low', 'medium', 'high']],
+  ['xai/grok-4.7', ['low', 'medium', 'high', 'xhigh']],
 ])
 
 export interface CommandCodeDriverOptions {
@@ -47,7 +107,12 @@ export interface CommandCodeDriverOptions {
  * 它只负责 CLI 进程和事件转换，不把 Command Code 私有事件泄漏给上层。
  */
 export class CommandCodeDriver implements CodingNsCliDriver {
-  readonly descriptor = { id: 'command-code', name: 'Command Code' } as const
+  readonly descriptor = {
+    id: 'command-code',
+    name: 'Command Code',
+    protocol: 'command',
+    capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage'] as const,
+  } as const
   private readonly homeDirectory: string
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
@@ -131,6 +196,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     const child = this.runSpawn(binary, args, { cwd: input.cwd ?? process.cwd(), env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: WINDOWS })
     this.processes.add(child)
     let finished = false
+    let streamedText = ''
     const onAbort = (): void => { try { child.kill('SIGTERM') } catch { /* 进程可能已退出 */ } }
     input.signal?.addEventListener('abort', onAbort, { once: true })
     // 必须消费 stderr，错误内容不能回传给 DSH，避免泄露命令参数或文件片段。
@@ -142,17 +208,18 @@ export class CommandCodeDriver implements CodingNsCliDriver {
         for await (const line of lines) {
           if (!line.trim()) continue
           const item = parseJson(line)
-          if (item?.type === 'event' && isRecord(item.event)) {
-            const event = item.event
-            if (event.type === 'thinking_delta' && typeof event.delta === 'string' && event.delta) yield { type: 'reasoning-delta', text: event.delta }
-            else if (event.type === 'text_delta' && typeof event.delta === 'string' && event.delta) yield { type: 'text-delta', text: event.delta }
-            else if (event.type === 'tool_running' && typeof event.toolName === 'string' && event.toolName) yield { type: 'tool-running', toolName: event.toolName }
-            else if (event.type === 'turn_end' && isRecord(event.usage)) yield usageChunk(event.usage)
-          } else if (item?.type === 'result') {
-            if (isRecord(item.usage)) yield usageChunk(item.usage)
-            finished = true
-            yield { type: 'finish', reason: input.signal?.aborted ? 'cancel' : 'stop' }
+          if (item === null) continue
+          const event = item.type === 'event' && isRecord(item.event) ? item.event : item
+          const eventType = textValue(event.type).toLowerCase()
+          const chunks = commandCodeEventChunks(event, input.signal?.aborted ?? false)
+          for (const chunk of chunks) {
+            // result.finalText 在 CLI 已经发过 text_delta 时是完整文本，避免把整段答案再追加一次。
+            if (eventType === 'result' && chunk.type === 'text-delta' && chunk.text === streamedText) continue
+            if (eventType !== 'result' && chunk.type === 'text-delta') streamedText += chunk.text
+            if (chunk.type === 'finish') finished = true
+            yield chunk
           }
+          if (eventType === 'result' && !finished) finished = true
         }
       } finally {
         lines.close()
@@ -175,6 +242,97 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     this.cachedModels = null
     this.cachedBinary = null
   }
+}
+
+function commandCodeEventChunks(event: Record<string, unknown>, cancelled: boolean): CodingNsCliStreamChunk[] {
+  const chunks: CodingNsCliStreamChunk[] = []
+  const type = textValue(event.type).trim().toLowerCase()
+  const sessionId = textValue(event.sessionId ?? event.session_id ?? recordValue(event.session)?.id ?? recordValue(event.result)?.sessionId).trim()
+  if (sessionId) chunks.push({ type: 'session-binding', providerSessionId: sessionId })
+
+  if (type === 'thinking_delta' || type === 'thinking-delta') {
+    const text = textValue(event.delta ?? event.thinking ?? event.content)
+    if (text) chunks.push({ type: 'reasoning-delta', text })
+  } else if (type === 'text_delta' || type === 'text-delta') {
+    const text = textValue(event.delta ?? event.text ?? event.content)
+    if (text) chunks.push({ type: 'text-delta', text })
+  } else if (type === 'message' || type === 'message_update' || type === 'message-update') {
+    appendMessageChunks(chunks, event)
+  }
+
+  if (isToolStart(type)) {
+    const tool = readToolChunk(event, 'running')
+    if (tool !== null) chunks.push(tool)
+  } else if (isToolResult(type)) {
+    const tool = readToolChunk(event, type.includes('error') || type.includes('fail') ? 'failed' : 'completed')
+    if (tool !== null) chunks.push(tool)
+  }
+
+  const usage = recordValue(event.usage)
+  if (usage !== null) chunks.push(usageChunk(usage))
+  if (type === 'result') {
+    const result = recordValue(event.result)
+    const finalText = textValue(event.finalText ?? result?.finalText ?? (typeof event.result === 'string' ? event.result : undefined) ?? event.output ?? event.text)
+    if (finalText) chunks.push({ type: 'text-delta', text: finalText })
+    chunks.push({ type: 'finish', reason: cancelled ? 'cancel' : 'stop' })
+  }
+  return chunks
+}
+
+function appendMessageChunks(chunks: CodingNsCliStreamChunk[], event: Record<string, unknown>): void {
+  const payload = recordValue(event.message ?? event.data) ?? event
+  if (Array.isArray(payload.content)) {
+    for (const block of payload.content) {
+      const value = recordValue(block)
+      if (value === null) continue
+      const text = textValue(value.thinking ?? value.text ?? value.content)
+      if (!text) continue
+      chunks.push({ type: textValue(value.type).toLowerCase() === 'thinking' ? 'reasoning-delta' : 'text-delta', text })
+    }
+    return
+  }
+  const text = textValue(payload.text ?? payload.content ?? event.text ?? event.content)
+  if (text) chunks.push({ type: 'text-delta', text })
+}
+
+function readToolChunk(event: Record<string, unknown>, status: 'running' | 'completed' | 'failed'): CodingNsCliStreamChunk | null {
+  const callId = textValue(event.callId ?? event.call_id ?? event.toolUseId ?? event.tool_use_id ?? event.id)
+  const fn = recordValue(event.function)
+  const toolName = textValue(event.name ?? event.toolName ?? event.tool ?? fn?.name) || 'tool'
+  const error = textValue(event.error ?? event.reason)
+  const output = textValue(event.output ?? event.result ?? event.content)
+  const input = event.input ?? fn?.arguments ?? event.arguments
+  if (!callId && !toolName) return null
+  return {
+    type: 'tool-running',
+    toolName,
+    ...(callId ? { callId } : {}),
+    ...(input !== undefined ? { input: structuredText(input) } : {}),
+    ...(output ? { output } : {}),
+    ...(error ? { error } : {}),
+    status,
+  }
+}
+
+function isToolStart(type: string): boolean {
+  return ['tool_queued', 'tool_started', 'tool_running', 'tool_use', 'tool_call', 'function_call'].includes(type)
+}
+
+function isToolResult(type: string): boolean {
+  return ['tool_completed', 'tool_result', 'tool_return', 'tool_failed', 'tool_error', 'tool_denied', 'function_result'].includes(type)
+}
+
+function textValue(value: unknown): string {
+  return typeof value === 'string' ? value : value === undefined || value === null ? '' : structuredText(value)
+}
+
+function structuredText(value: unknown): string {
+  if (typeof value === 'string') return value
+  try { return JSON.stringify(value) ?? '' } catch { return String(value) }
+}
+
+function recordValue(value: unknown): Record<string, any> | null {
+  return isRecord(value) ? value : null
 }
 
 function writeTranscript(path: string, input: CodingNsCliTurnInput): void {

@@ -55,7 +55,7 @@ const CODINGNS_RPC_ENDPOINTS = [
   'auth/snapshot', 'auth/login', 'auth/logout', 'auth/devices', 'auth/bind', 'auth/unbind',
   'settings/get', 'settings/set',
   'lanAccessDsh/addresses', 'lanAccessDsh/detect', 'lanAccessDsh/get', 'lanAccessDsh/settings/get', 'lanAccessDsh/settings/set', 'lanAccessDsh/start', 'lanAccessDsh/stop',
-  'cli/catalog', 'cli/models', 'cli/adapter/set', 'cli/session/get', 'cli/session/set',
+  'cli/catalog', 'cli/models', 'cli/adapter/set', 'cli/session/get', 'cli/session/set', 'cli/session/list', 'cli/session/archive', 'cli/permission/respond', 'cli/session/steer', 'cli/session/follow-up', 'cli/session/interrupt',
 ] as const
 
 /** 创建远程设置处理器；只允许 CodingNS 自己的 namespace 和路径编辑。 */
@@ -75,7 +75,11 @@ export function createCodingNsSettingsRpcHandler(provider: SettingsProvider): Co
 function readCodingNsSettings(provider: SettingsProvider): { value: CodingNsSettings; revision: number } {
   const descriptor = provider.describe({ redactSecrets: true }).find((item) => item.ns === CODINGNS_SETTINGS_NAMESPACE)
   if (descriptor === undefined) throw new CodingNsRpcError('CODINGNS_SETTINGS_UNAVAILABLE', 'CodingNS 设置尚未注册')
-  return { value: provider.get(CODINGNS_SETTINGS_NAMESPACE) as CodingNsSettings, revision: descriptor.revision }
+  const value = provider.get(CODINGNS_SETTINGS_NAMESPACE) as CodingNsSettings
+  // cliSessions 是 Host-only 索引，包含 providerSessionId/rawStoreRef，不能通过设置 RPC
+  // 暴露给浏览器。外部会话列表必须走 cli/session/list，由 Host 按需返回摘要。
+  const { cliSessions: _cliSessions, ...clientValue } = value
+  return { value: clientValue, revision: descriptor.revision }
 }
 
 function parseSettingsMutation(value: unknown): { ops: SettingsPathOp[]; expectedRevision?: number } {
