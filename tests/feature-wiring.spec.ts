@@ -38,7 +38,7 @@ function featureOf(
 }
 
 function settingsOf(modules: Record<string, boolean>): CodingNsSettings {
-  return { controlBaseUrl: '', modules }
+  return { controlBaseUrl: '', modules, lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 } }
 }
 
 test('设置开关驱动模块启停，常驻模块不受开关影响', async () => {

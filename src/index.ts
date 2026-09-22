@@ -1,5 +1,11 @@
 /** Host 入口是包根导出；共享契约通过显式子路径另行提供。 */
-export { apply } from './host/index.js'
+import { apply as hostApply } from './host/index.js'
+
+/** Cordis Bundle 标准插件名称。 */
+export const name = 'dsh-codingns'
+/** Host Cordis 入口。 */
+export const apply = hostApply
+export default hostApply
 export { createCodingNsRpcHandler, registerCodingNsRpc } from './host/rpc.js'
 export {
   CodingNsRpcError,
@@ -12,6 +18,7 @@ export type { CodingNsHostServices } from './host/features/index.js'
 export { CODINGNS_RPC_CHANNEL } from './shared/contracts/transport.js'
 export {
   CODINGNS_CONTROL_BASE_URL_FIELD,
+  CODINGNS_LAN_ACCESS_DSH_FIELD,
   CODINGNS_MODULES_FIELD,
   CODINGNS_SETTINGS_NAMESPACE,
   DEFAULT_CODINGNS_SETTINGS,

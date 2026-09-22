@@ -4,11 +4,14 @@ import { FeatureRegistry } from '../dist/features/index.js'
 import { createLanAccessDshFeature } from '../dist/host/features/index.js'
 import {
   LanAccessDshProxy,
+  createLanAccessDshRpcHandler,
   normalizeLanAccessDshConfig,
+  rewriteLanAccessDshRequestHeaders,
   type LanAccessDshRuntime,
   type LanAccessDshStream,
 } from '../dist/host/lan-access-dsh.js'
 import { CodingNsRpcTable } from '../dist/host/rpc-table.js'
+import type { CodingNsSettings } from '../dist/shared/contracts/config.js'
 
 class FakeStream implements LanAccessDshStream {
   readonly pipes: LanAccessDshStream[] = []
@@ -45,8 +48,38 @@ class FakeRuntime implements LanAccessDshRuntime {
   accept(host = '0.0.0.0'): FakeStream { const socket = new FakeStream(); this.accepted.get(host)?.(socket); return socket }
 }
 
+class FakeSettings {
+  private readonly listeners = new Set<(next: CodingNsSettings, prev: CodingNsSettings) => void | Promise<void>>()
+  private value: CodingNsSettings
+
+  constructor(value: CodingNsSettings) { this.value = value }
+
+  get(): CodingNsSettings { return this.value }
+
+  watch(listener: (next: CodingNsSettings, prev: CodingNsSettings) => void | Promise<void>): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  async commit(value: CodingNsSettings): Promise<void> {
+    const previous = this.value
+    this.value = value
+    await Promise.all([...this.listeners].map((listener) => listener(value, previous)))
+  }
+
+  async update(patch: object): Promise<void> {
+    const next = patch as Partial<CodingNsSettings>
+    await this.commit({
+      ...this.value,
+      ...next,
+      lanAccessDsh: { ...this.value.lanAccessDsh, ...(next.lanAccessDsh ?? {}) },
+    })
+  }
+}
+
 test('配置只包含监听地址、监听端口和 DSH 本地端口', () => {
   assert.deepEqual(normalizeLanAccessDshConfig({ listenHost: '0.0.0.0', listenPort: 13080, dshPort: 9080 }), { listenHost: '0.0.0.0', listenPort: 13080, dshPort: 9080 })
+  assert.equal(normalizeLanAccessDshConfig({ listenHost: '10.0.0.8', listenPort: 13080, dshPort: 9080 }, ['0.0.0.0', '10.0.0.8']).listenHost, '10.0.0.8')
   assert.throws(() => normalizeLanAccessDshConfig({ listenHost: '10.0.0.2', listenPort: 13080, dshPort: 9080 }), /监听地址/u)
   assert.throws(() => normalizeLanAccessDshConfig({ listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 }), /dshPort/u)
 })
@@ -73,6 +106,34 @@ test('多个 DSH 实例要求手动指定端口', async () => {
   assert.equal(snapshot.dshPort, 9081)
 })
 
+test('局域网代理改写上游 Host/Origin 并保留 WebSocket 升级', () => {
+  const request = new TextEncoder().encode([
+    'POST /api/session/list HTTP/1.1',
+    'Host: 10.255.0.83:13080',
+    'Origin: http://10.255.0.83:13080',
+    'Connection: keep-alive',
+    '',
+    '',
+  ].join('\r\n'))
+  const rewritten = new TextDecoder().decode(rewriteLanAccessDshRequestHeaders(request, '127.0.0.1:3080'))
+  assert.match(rewritten, /Host: 127\.0\.0\.1:3080/u)
+  assert.match(rewritten, /Origin: http:\/\/127\.0\.0\.1:3080/u)
+  assert.match(rewritten, /Connection: close/u)
+
+  const upgrade = new TextEncoder().encode([
+    'GET /api/remote.mux HTTP/1.1',
+    'Host: 10.255.0.83:13080',
+    'Origin: http://10.255.0.83:13080',
+    'Connection: Upgrade',
+    'Upgrade: websocket',
+    '',
+    '',
+  ].join('\r\n'))
+  const rewrittenUpgrade = new TextDecoder().decode(rewriteLanAccessDshRequestHeaders(upgrade, '127.0.0.1:3080'))
+  assert.match(rewrittenUpgrade, /Connection: Upgrade/u)
+  assert.match(rewrittenUpgrade, /Upgrade: websocket/u)
+})
+
 test('Host 模块独立登记 lanAccessDsh RPC，停用后注销', async () => {
   const table = new CodingNsRpcTable()
   const registry = new FeatureRegistry({ rpc: table })
@@ -82,4 +143,40 @@ test('Host 模块独立登记 lanAccessDsh RPC，停用后注销', async () => {
   assert.notEqual(table.resolve('lanAccessDsh/addresses'), null)
   await registry.disable('lanAccessDsh')
   assert.deepEqual(table.namespaces(), [])
+})
+
+test('局域网访问设置通过 Host RPC 持久化并可刷新回读', async () => {
+  const runtime = new FakeRuntime()
+  const settings = new FakeSettings({
+    controlBaseUrl: '',
+    modules: {},
+    lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 },
+  })
+  const handler = createLanAccessDshRpcHandler(new LanAccessDshProxy(runtime), settings)
+  const next = { autoStart: true, listenHost: '192.168.1.10', listenPort: 13081, dshPort: 3080 }
+
+  assert.deepEqual(await handler('settings/get', {}), settings.get().lanAccessDsh)
+  assert.deepEqual(await handler('settings/set', next), next)
+  assert.deepEqual(settings.get().lanAccessDsh, next)
+})
+
+test('Host 启动时按持久化配置自动启动映射，运行中修改选项不会重启映射', async () => {
+  const runtime = new FakeRuntime()
+  const settings = new FakeSettings({
+    controlBaseUrl: '',
+    modules: {},
+    lanAccessDsh: { autoStart: true, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 },
+  })
+  const services = { rpc: new CodingNsRpcTable(), settings, dshWebPort: 3080 }
+  const registry = new FeatureRegistry({ ...services })
+  registry.register(createLanAccessDshFeature({ runtime }))
+  await registry.reconcile(['lanAccessDsh'])
+  runtime.accept()
+  assert.deepEqual(runtime.connected, [9080])
+  assert.equal(runtime.accepted.has('0.0.0.0'), true)
+
+  await settings.commit({ ...settings.get(), lanAccessDsh: { ...settings.get().lanAccessDsh, autoStart: false } })
+  assert.deepEqual(runtime.closed, [])
+  await registry.disable('lanAccessDsh')
+  assert.deepEqual(runtime.closed, [13080])
 })

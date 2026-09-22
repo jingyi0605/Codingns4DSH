@@ -17,13 +17,14 @@ import { registerCodingNsSettings } from './settings.js'
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
 
-  ctx.inject(['settings', 'connection'], (hostCtx) => {
-    const services: CodingNsHostServices = { rpc: new CodingNsRpcTable() }
+  ctx.inject(['settings', 'connection', 'webServer'], (hostCtx) => {
+    const webServerPort = (hostCtx as Context & { webServer: { port: number } }).webServer.port
+    const settings = registerCodingNsSettings(hostCtx)
+    const services: CodingNsHostServices = { rpc: new CodingNsRpcTable(), settings, dshWebPort: webServerPort }
     const registry = new FeatureRegistry<CodingNsHostServices>(services)
     registry.registerMany(HOST_FEATURES)
     registry.validate()
 
-    const settings = registerCodingNsSettings(hostCtx)
     registerCodingNsRpc(hostCtx, services.rpc)
 
     hostCtx.effect(() => {

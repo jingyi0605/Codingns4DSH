@@ -1,5 +1,6 @@
 import type { FeatureModule } from '../../shared/contracts/feature.js'
-import { createLanAccessDshRpcHandler, LanAccessDshProxy, type LanAccessDshRuntime } from '../lan-access-dsh.js'
+import type { CodingNsSettings, LanAccessDshSettings } from '../../shared/contracts/config.js'
+import { createLanAccessDshRpcHandler, createNodeLanAccessDshRuntime, LanAccessDshProxy, type LanAccessDshRuntime } from '../lan-access-dsh.js'
 import type { CodingNsHostServices } from './types.js'
 
 /** Host 侧“局域网访问 DSH”模块，只管理一条 DSH Web 监听映射。 */
@@ -12,10 +13,32 @@ export function createLanAccessDshFeature(options: { runtime?: LanAccessDshRunti
       dependencies: [],
       runtime: 'host',
     },
-    start(context) {
-      const proxy = new LanAccessDshProxy(options.runtime)
-      context.resources.add(context.services.rpc.register('lanAccessDsh', createLanAccessDshRpcHandler(proxy)))
+    async start(context) {
+      const runtime = options.runtime ?? createNodeLanAccessDshRuntime(context.services.dshWebPort)
+      const proxy = new LanAccessDshProxy(runtime)
+      const settings = context.services.settings
+      context.resources.add(context.services.rpc.register('lanAccessDsh', createLanAccessDshRpcHandler(proxy, settings)))
+      if (settings !== undefined) {
+        const autoStart = async (value: CodingNsSettings): Promise<void> => {
+          if (!value.lanAccessDsh.autoStart) return
+          try {
+            await proxy.start(toStartInput(value.lanAccessDsh))
+          } catch (error) {
+            // 自动启动失败不能阻断 DSH，其它功能仍应正常可用；用户仍可在卡片中手动重试。
+            console.error('dsh-codingns: 局域网访问 DSH 自动启动失败', error)
+          }
+        }
+        await autoStart(settings.get())
+      }
       context.resources.add(() => proxy.close())
     },
+  }
+}
+
+function toStartInput(value: LanAccessDshSettings): { listenHost: string; listenPort: number; dshPort?: number } {
+  return {
+    listenHost: value.listenHost,
+    listenPort: value.listenPort,
+    ...(value.dshPort > 0 ? { dshPort: value.dshPort } : {}),
   }
 }
