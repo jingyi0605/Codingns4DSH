@@ -26,7 +26,7 @@
 - 中转访问服务的 Control API 地址默认是 `https://channel.codingns.com:1443`。设置页使用下拉框选择已保存地址，也可以添加新的 HTTP(S) 地址；地址列表只保存地址，不保存账号、密码或 refresh token。
 - 局域网访问DSH模块：Client 入口加载时自动补齐 `crypto.randomUUID`，并在设置卡片中管理 Host 侧的单一 DSH Web 监听；已有浏览器实现不会被覆盖。
 
-这些能力不等于已经提供文件树、终端、通用进程管理或 PeerHost 代理；这些业务模块仍未实现。外部 Agent 已通过标准运行时层接入：流式 JSON、JSON-RPC/ACP 和 HTTP/SSE 都由 Host 侧协议驱动转换为统一的模型目录、会话绑定和文本、推理、工具、用量及终态事件。Host 会持久化外部会话摘要，只读检查 Provider 原始会话是否仍然存在，并复用 DSH 原生会话消息和归档 API；外部 CLI 已执行的工具由公共投影层保存为成对的 DSH `tool/call` 与 `tool/result` 历史事件，不会作为模型流中的 `tool-call` 交给 Agent Loop，因此不会被二次执行。当前验证覆盖 fake 进程、SSE、取消清理、会话恢复、原始会话探测和原生会话桥接；真实 CLI 版本差异、宿主的磁盘 Session persistence 插件以及远程 Host/Client 端到端联调仍需人工验收。
+这些能力不等于已经提供文件树、终端、通用进程管理或 PeerHost 代理；这些业务模块仍未实现。八个外部 Agent 已通过同一套消息边界接入：流式 JSON、JSON-RPC/ACP 和 HTTP/SSE 驱动只负责把 Provider 私有协议转换为 `CodingNsAgentEvent`，Registry 只管理执行和会话状态，公共消息投影器再统一处理正文、思考、工具、权限、问题、用量和终态。只有公共投影器及原生桥接理解 DSH 消息协议，单个驱动不得直接构造 DSH 原生消息。Host 会持久化外部会话摘要，只读检查 Provider 原始会话是否仍然存在，并复用 DSH 原生会话消息和归档 API；外部 CLI 已执行的工具由公共投影层保存为成对的 DSH `tool/call` 与 `tool/result` 历史事件，不会作为模型流中的 `tool-call` 交给 Agent Loop，因此不会被二次执行。当前验证覆盖 fake 进程、SSE、取消清理、会话恢复、原始会话探测、权限和问题回传以及原生会话桥接；真实 CLI 版本差异、宿主的磁盘 Session persistence 插件以及远程 Host/Client 端到端联调仍需人工验收。
 
 ### 局域网访问DSH
 
