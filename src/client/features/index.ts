@@ -2,12 +2,14 @@ import type { FeatureRegistry } from '../../features/registry.js'
 import type { FeatureUiDescriptor } from '../../shared/contracts/feature.js'
 import { lanAccessFeature } from './lan-access.js'
 import { reverseProxyFeature } from './reverse-proxy.js'
+import { cliAdaptersFeature } from './cli-adapters.js'
 import type { CodingNsClientFeatureModule, CodingNsClientServices } from './types.js'
 
 /** Client 侧功能模块清单：新增模块在这里登记一行，不需要改动设置页和入口。 */
 export const CLIENT_FEATURES: readonly CodingNsClientFeatureModule[] = [
   lanAccessFeature,
   reverseProxyFeature,
+  cliAdaptersFeature,
 ]
 
 /** 设置页要显示的一个模块及其界面描述。 */
@@ -35,9 +37,10 @@ export function settingsModules(
   return entries
 }
 
-export { lanAccessFeature, reverseProxyFeature }
+export { lanAccessFeature, reverseProxyFeature, cliAdaptersFeature }
 export { LanAccessPanel } from './lan-access-panel.js'
 export { ReverseProxyPanel } from './reverse-proxy-panel.js'
+export { CliAdaptersPanel } from './cli-adapters.js'
 export type {
   CodingNsClientFeatureModule,
   CodingNsClientServices,

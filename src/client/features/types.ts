@@ -1,4 +1,5 @@
 import type { ReactElement } from 'react'
+import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { FeatureModule } from '../../shared/contracts/feature.js'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
@@ -17,6 +18,8 @@ export interface CodingNsRpcClient {
 export interface CodingNsClientServices {
   readonly settings: SettingsScope<CodingNsSettings>
   readonly rpc: CodingNsRpcClient
+  /** 对话工具栏 Slot 服务；测试和非 Web 宿主可以不提供。 */
+  readonly slots?: SlotRegistry
 }
 
 /** 设置卡片传给模块面板的属性。 */
