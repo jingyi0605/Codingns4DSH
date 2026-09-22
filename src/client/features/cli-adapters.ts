@@ -4,10 +4,11 @@ import type {
   CodingNsCliAdapterDescriptor,
   CodingNsCliModel,
   CodingNsCliModelCatalog,
+  CodingNsCliSessionRecord,
 } from '../../shared/contracts/cli-adapter.js'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
 import { registerCliConversationSlots } from '../cli-slots.js'
-import { callCliRpc, errorMessage } from '../cli-catalog.js'
+import { callCliRpc, errorMessage, listCliSessions, restoreCliSession } from '../cli-catalog.js'
 
 /** 外部 Agent 集成模块。Agent 进程在 Host 运行，浏览器只读取目录和状态。 */
 export const cliAdaptersFeature: CodingNsClientFeatureModule = {
@@ -40,6 +41,9 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
   const [models, setModels] = useState<CodingNsCliModelCatalog | null>(null)
   const [loading, setLoading] = useState(false)
   const [busyAdapterId, setBusyAdapterId] = useState<string | null>(null)
+  const [sessions, setSessions] = useState<readonly CodingNsCliSessionRecord[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [restoringSessionId, setRestoringSessionId] = useState<string | null>(null)
   const [message, setMessage] = useState('')
   const disabled = !enabled
 
@@ -51,6 +55,20 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
       .then((value) => { if (active) setCatalog(value) })
       .catch((error: unknown) => { if (active) setMessage(errorMessage(error)) })
       .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [disabled, services.rpc])
+
+  useEffect(() => {
+    if (disabled) {
+      setSessions([])
+      return
+    }
+    let active = true
+    setSessionsLoading(true)
+    void listCliSessions(services.rpc)
+      .then((value) => { if (active) setSessions(value) })
+      .catch((error: unknown) => { if (active) setMessage(errorMessage(error)) })
+      .finally(() => { if (active) setSessionsLoading(false) })
     return () => { active = false }
   }, [disabled, services.rpc])
 
@@ -84,6 +102,18 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
     }
   }
 
+  const restoreSession = async (record: CodingNsCliSessionRecord): Promise<void> => {
+    setRestoringSessionId(record.dshSessionId)
+    setMessage('')
+    try {
+      await restoreCliSession(services.rpc, record)
+    } catch (error) {
+      setMessage(errorMessage(error))
+    } finally {
+      setRestoringSessionId(null)
+    }
+  }
+
   return createElement(
     'div',
     { 'aria-disabled': disabled, style: { opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
@@ -107,6 +137,12 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
         ),
       )),
     ),
+    createElement(CliSessionList, {
+      sessions,
+      loading: sessionsLoading,
+      restoringSessionId,
+      onRestore: (record) => { void restoreSession(record) },
+    }),
     message && createElement('div', { role: 'alert', style: { marginTop: 10, color: '#b42318' } }, message),
     selected !== null && createElement(AdapterDetailsDialog, {
       adapter: selected,
@@ -116,6 +152,47 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
       buttonStyle,
     }),
   )
+}
+
+interface CliSessionListProps {
+  readonly sessions: readonly CodingNsCliSessionRecord[]
+  readonly loading: boolean
+  readonly restoringSessionId: string | null
+  readonly onRestore: (record: CodingNsCliSessionRecord) => void
+}
+
+/** 外部会话索引入口；打开后交给 DSH 原生会话页面渲染消息。 */
+function CliSessionList({ sessions, loading, restoringSessionId, onRestore }: CliSessionListProps): ReactElement {
+  return createElement('section', { 'aria-labelledby': 'codingns-cli-session-title', style: { marginTop: 20 } },
+    createElement('h4', { id: 'codingns-cli-session-title', style: { margin: '0 0 8px' } }, '外部 Agent 会话'),
+    loading && createElement('div', { role: 'status' }, '正在读取外部会话…'),
+    !loading && sessions.length === 0 && createElement('div', { style: { opacity: 0.7 } }, '尚未创建外部 Agent 会话。'),
+    !loading && sessions.length > 0 && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+      ...sessions.map((record) => createElement('div', {
+        key: record.dshSessionId,
+        style: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: '1px solid var(--dsw-alias-border-primary, #d9d9d9)' },
+      },
+        createElement('div', { style: { flex: '1 1 auto', minWidth: 0 } },
+          createElement('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 } }, record.title ?? `${record.adapterId} 会话`),
+          createElement('div', { style: { marginTop: 2, opacity: 0.65, fontSize: 12 } }, `${record.adapterId} · ${sessionStatusLabel(record.status)}`),
+        ),
+        createElement('button', {
+          type: 'button',
+          onClick: () => onRestore(record),
+          disabled: restoringSessionId !== null,
+          'aria-label': `打开${record.title ?? `${record.adapterId} 会话`}`,
+          style: { flex: '0 0 auto', padding: '6px 10px', border: '1px solid var(--dsw-alias-border-primary, #d9d9d9)', borderRadius: 6, background: 'transparent', cursor: restoringSessionId === null ? 'pointer' : 'not-allowed' },
+        }, restoringSessionId === record.dshSessionId ? '打开中…' : '打开'),
+      )),
+    ),
+  )
+}
+
+function sessionStatusLabel(status: CodingNsCliSessionRecord['status']): string {
+  if (status === 'active') return '运行中'
+  if (status === 'error') return '异常'
+  if (status === 'archived') return '已归档'
+  return '已暂停'
 }
 
 interface AdapterDetailsDialogProps {
@@ -143,6 +220,8 @@ function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle }
         createElement('dt', undefined, '启用状态'), createElement('dd', { style: { margin: 0 } }, adapter.enabled ? '已启用' : '已停用'),
         createElement('dt', undefined, '版本'), createElement('dd', { style: { margin: 0 } }, adapter.version ?? '未检测到版本'),
         createElement('dt', undefined, '命令路径'), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.command ?? '未检测到命令'),
+        createElement('dt', undefined, '标准协议'), createElement('dd', { style: { margin: 0 } }, adapter.protocol ?? '未声明'),
+        createElement('dt', undefined, '已验证能力'), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.capabilities?.join('、') ?? '未声明'),
       ),
       createElement('h4', { style: { margin: '16px 0 8px' } }, '模型目录'),
       !adapter.installed && createElement('div', { style: { opacity: 0.7 } }, 'Agent 未安装，无法读取模型目录。'),

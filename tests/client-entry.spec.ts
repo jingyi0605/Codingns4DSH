@@ -33,8 +33,8 @@ test('Client 构建产物包含模块卡片、设置面板和 Host RPC 调用', 
     'settings/get', 'settings/set', '远程设置读取失败',
     'settings.subscribe(listener)', 'settings.getSnapshot()',
     'crypto', 'randomUUID',
-    '外部Agent集成', 'cli/${action}', 'catalog', 'models', 'session/get', 'session/set', 'adapter/set', '已停用',
-    'conversation.input.left', 'conversation.input.right', 'Agent 选择器', '选择思考强度',
+    '外部Agent集成', 'cli/${action}', 'catalog', 'models', 'session/get', 'session/set', 'session/list', '外部 Agent 会话', 'adapter/set', '已停用',
+    'conversation.input.left', 'conversation.input.right', 'Agent 选择器', '思考等级', 'data-codingns-agent', 'conversation.input.model',
     '安装状态', '模型目录', 'aria-modal',
   ]) {
     assert.equal(source.includes(marker), true, `Client 产物缺少 ${marker}`)

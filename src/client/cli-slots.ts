@@ -27,6 +27,20 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
+const CLI_STYLE_ID = 'dsh-codingns-cli-composer-style'
+
+function installComposerStyles(): void {
+  if (typeof document === 'undefined' || document.querySelector(`style[data-plugin-css="${CLI_STYLE_ID}"]`) !== null) return
+  const style = document.createElement('style')
+  style.dataset.plugin = 'dsh-codingns'
+  style.dataset.pluginCss = CLI_STYLE_ID
+  style.textContent = [
+    'html[data-codingns-agent]:not([data-codingns-agent="dsh"]) [data-slot="conversation.input.model"],',
+    'body[data-codingns-agent]:not([data-codingns-agent="dsh"]) [data-slot="conversation.input.model"]{display:none!important}',
+  ].join('')
+  document.head.appendChild(style)
+}
+
 interface CliSlotProps {
   readonly sessionId?: string
   readonly useSession?: SessionSelector
@@ -86,6 +100,7 @@ function publishSelection(sessionId: string, next: SelectionState): void {
 
 /** 注册对话输入左右两侧的 Agent 与模型/思考等级选择器。 */
 export function registerCliConversationSlots(slots: SlotRegistry, rpc: CodingNsRpcClient): () => void {
+  installComposerStyles()
   const disposeLeft = slots.inject('conversation.input.left', () => slots.register({
     name: 'conversation.input.left',
     id: 'dsh-codingns-agent',
@@ -115,6 +130,16 @@ function AgentSlot(props: CliSlotProps): ReactElement {
   const locked = session !== undefined && (!session.blank || Boolean(session.promptAttempted) || Boolean(session.running) || (session.queue?.length ?? 0) > 0)
 
   useEffect(() => {
+    if (typeof document === 'undefined') return
+    document.documentElement.dataset.codingnsAgent = selection.adapterId
+    document.body?.setAttribute('data-codingns-agent', selection.adapterId)
+    return () => {
+      if (document.documentElement.dataset.codingnsAgent === selection.adapterId) delete document.documentElement.dataset.codingnsAgent
+      if (document.body?.dataset.codingnsAgent === selection.adapterId) document.body.removeAttribute('data-codingns-agent')
+    }
+  }, [selection.adapterId])
+
+  useEffect(() => {
     let active = true
     void callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(props.rpc, 'catalog', {})
       .then((value) => { if (active) setAgents(adapterCatalogWithDsh(value)) })
@@ -142,12 +167,16 @@ function AgentSlot(props: CliSlotProps): ReactElement {
   )
 }
 
+type ModelPane = 'root' | 'model' | 'effort'
+
 function ModelSlot(props: CliSlotProps): ReactElement | null {
   const session = props.useSession?.((value) => value)
   const sessionId = props.sessionId ?? session?.sessionId
   const [selection, update] = useSelection(sessionId, props.rpc)
   const [catalog, setCatalog] = useState<CodingNsCliModelCatalog | null>(null)
   const [loading, setLoading] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [pane, setPane] = useState<ModelPane>('root')
 
   useEffect(() => {
     if (selection.adapterId === 'dsh') {
@@ -171,22 +200,72 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     return () => { active = false }
   }, [props.rpc, selection.adapterId])
 
+  useEffect(() => { if (selection.adapterId === 'dsh' || loading) setOpen(false) }, [loading, selection.adapterId])
+
   if (selection.adapterId === 'dsh') return null
 
   const model = catalog === null ? undefined : findModel(catalog, selection.modelId) ?? firstModel(catalog)
   const efforts = model?.efforts ?? []
-  const effortValue = selection.effortId ?? (efforts.length > 0 ? defaultEffort(efforts) : 'default')
-  const selectStyle = { height: 30, maxWidth: 220, border: 0, borderRadius: 16, padding: '0 8px', background: 'transparent', color: 'inherit' }
-  return createElement('div', { style: { display: 'inline-flex', alignItems: 'center', gap: 4 } },
-    createElement('select', { value: model?.id ?? '', disabled: loading || model === undefined, 'aria-label': '选择模型', onChange: (event: { currentTarget: { value: string } }) => { const next = findModel(catalog!, event.currentTarget.value); if (next) { const nextEffort = defaultEffort(next.efforts); update({ adapterId: selection.adapterId, modelId: next.id, ...(nextEffort === undefined ? {} : { effortId: nextEffort }) }) } }, style: selectStyle },
-      model === undefined && createElement('option', { value: '' }, loading ? '加载模型…' : '无可用模型'),
-      catalog?.groups.flatMap((group) => group.models.map((item) => createElement('option', { key: `${group.id}:${item.id}`, value: item.id }, `${group.name} / ${item.name}`))) ?? [],
+  const effortValue = selection.effortId ?? (efforts.length > 0 ? defaultEffort(efforts) : undefined) ?? 'default'
+  const modelLabel = model?.name ?? (loading ? '加载模型…' : '无可用模型')
+  const effortLabel = efforts.find((effort) => effort === effortValue) ?? 'Default'
+  const disabled = loading || model === undefined
+  const chooseModel = (next: CodingNsCliModel): void => {
+    const nextEffort = next.efforts.includes(effortValue) ? effortValue : defaultEffort(next.efforts)
+    update({ adapterId: selection.adapterId, modelId: next.id, ...(nextEffort ? { effortId: nextEffort } : {}) })
+    setOpen(false)
+    setPane('root')
+  }
+  const chooseEffort = (effort: string): void => {
+    if (model === undefined) return
+    update({ adapterId: selection.adapterId, modelId: model.id, effortId: effort })
+    setOpen(false)
+    setPane('root')
+  }
+  const menu = pane === 'root'
+      ? [
+          createElement('button', { key: 'model', type: 'button', role: 'menuitem', disabled, onClick: () => setPane('model'), style: nativeMenuCellStyle },
+          createElement('span', { style: nativeMenuLabelStyle }, '模型'), createElement('span', { style: nativeMenuValueStyle }, modelLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
+        createElement('button', { key: 'effort', type: 'button', role: 'menuitem', disabled, onClick: () => setPane('effort'), style: nativeMenuCellStyle },
+          createElement('span', undefined, '思考等级'), createElement('span', { style: nativeMenuValueStyle }, effortLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
+      ]
+    : pane === 'model'
+      ? [
+          createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, '‹ 返回'),
+          ...((catalog?.groups ?? []).map((group) => createElement('section', { key: group.id, role: 'group', 'aria-label': group.name, style: { marginTop: 4 } },
+            createElement('div', { style: nativeGroupTitleStyle }, group.name),
+            ...group.models.map((item) => createElement('button', { key: `${group.id}:${item.id}`, type: 'button', role: 'menuitemradio', 'aria-checked': item.id === model?.id, onClick: () => chooseModel(item), style: nativeOptionStyle },
+              createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.name),
+              item.id === model?.id && createElement('span', { 'aria-hidden': true }, '✓'),
+            )),
+          )))
+        ]
+      : [
+          createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, '‹ 返回'),
+          createElement('div', { key: 'title', style: nativeGroupTitleStyle }, `思考等级（${modelLabel}）`),
+          ...(efforts.length > 0 ? efforts : ['default']).map((effort) => createElement('button', { key: effort, type: 'button', role: 'menuitemradio', 'aria-checked': effort === effortValue, onClick: () => chooseEffort(effort), style: nativeOptionStyle },
+            createElement('span', { style: { flex: '1 1 auto' } }, effort === 'default' ? 'Default' : effort), effort === effortValue && createElement('span', { 'aria-hidden': true }, '✓'),
+          )),
+        ]
+  return createElement('div', { style: { position: 'relative', minWidth: 0, display: 'inline-flex' } },
+    createElement('button', { type: 'button', disabled, 'aria-label': `选择模型，当前 ${modelLabel}，思考等级 ${effortLabel}`, 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => { setPane('root'); setOpen((value) => !value) }, style: nativeTriggerStyle },
+      createElement('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, modelLabel),
+      createElement('span', { style: { color: 'var(--dsw-alias-label-caption, #8c8c8c)', whiteSpace: 'nowrap' } }, effortLabel),
+      createElement('span', { 'aria-hidden': true, style: { color: 'var(--dsw-alias-label-caption, #8c8c8c)', transform: open ? 'rotate(180deg)' : undefined } }, '⌄'),
     ),
-    createElement('select', { value: effortValue, disabled: loading || model === undefined, 'aria-label': '选择思考强度', onChange: (event: { currentTarget: { value: string } }) => update({ adapterId: selection.adapterId, ...(model ? { modelId: model.id } : {}), effortId: event.currentTarget.value }), style: { ...selectStyle, maxWidth: 130 } },
-      efforts.length > 0 ? efforts.map((effort) => createElement('option', { key: effort, value: effort }, effort)) : createElement('option', { value: 'default' }, '默认'),
-    ),
+    open && createElement('div', { role: 'menu', 'aria-label': '模型与思考等级', style: nativeMenuStyle }, ...menu),
   )
 }
+
+const nativeTriggerStyle = { minWidth: 0, maxWidth: 'min(360px, 45cqw)', height: 28, color: 'var(--dsw-alias-label-secondary, #5f6368)', cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 24, padding: '0 4px 0 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 13, lineHeight: '20px' }
+const nativeMenuStyle = { position: 'absolute' as const, zIndex: 1100, right: 0, bottom: 'calc(100% + 8px)', minWidth: 240, maxWidth: 'min(420px, calc(100vw - 32px))', maxHeight: 'min(360px, calc(100vh - 96px))', overflowY: 'auto' as const, padding: 4, border: 0, borderRadius: 20, background: 'var(--dsw-specific-menu, #fff)', color: 'var(--dsw-alias-label-primary, #202124)', boxShadow: 'var(--dsw-elevation-prominent, 0 12px 36px rgba(0,0,0,.18))' }
+const nativeMenuCellStyle = { width: '100%', minHeight: 40, color: 'inherit', cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left' as const, fontSize: 14, lineHeight: '22px' }
+const nativeMenuLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
+const nativeMenuValueStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, textAlign: 'right' as const, color: 'var(--dsw-alias-label-tertiary, #8c8c8c)' }
+const nativeChevronStyle = { flex: 'none', color: 'var(--dsw-alias-label-tertiary, #8c8c8c)', fontSize: 20, lineHeight: 1 }
+const nativeBackStyle = { width: '100%', height: 30, color: 'var(--dsw-alias-label-secondary, #5f6368)', cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 8, padding: '0 8px', fontSize: 13 }
+const nativeGroupTitleStyle = { position: 'sticky' as const, top: 0, zIndex: 1, padding: '5px 8px 3px', color: 'var(--dsw-alias-label-tertiary, #8c8c8c)', background: 'var(--dsw-specific-menu, #fff)', fontSize: 12, fontWeight: 500, lineHeight: '18px' }
+const nativeOptionStyle = { width: '100%', minHeight: 38, color: 'inherit', cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 10, padding: '6px 8px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, lineHeight: '20px' }
 
 function defaultEffort(efforts: readonly string[]): string | undefined {
   if (efforts.length === 0) return undefined
