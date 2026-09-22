@@ -28,3 +28,15 @@ declare module 'node:os' {
 
   export function networkInterfaces(): Record<string, NetworkInterfaceInfo[] | undefined>
 }
+
+declare module 'node:stream' {
+  export type TransformCallback = (error?: Error | null, data?: Uint8Array<ArrayBufferLike>) => void
+
+  export class Transform {
+    constructor(options?: unknown)
+    pipe(destination: unknown): unknown
+    push(data: Uint8Array): boolean
+    _transform(chunk: Uint8Array<ArrayBufferLike>, encoding: string, callback: TransformCallback): void
+    _flush(callback: TransformCallback): void
+  }
+}

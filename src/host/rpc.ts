@@ -1,6 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ConnectionRpcHandler, ConnectionRpcResult } from '@deepseek-ai/dsh-client-connection'
-import { CODINGNS_RPC_CHANNEL } from '../shared/contracts/transport.js'
 import type { CodingNsRpcTable } from './rpc-table.js'
 
 /**
@@ -28,9 +27,48 @@ export function createCodingNsRpcHandler(table: CodingNsRpcTable): ConnectionRpc
 /** 在当前 Connection 上挂载 CodingNS RPC 主处理器；注销由调用方的 effect 负责。 */
 export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable): void {
   ctx.effect(
-    () => ctx.connection.rpc.handle(CODINGNS_RPC_CHANNEL, createCodingNsRpcHandler(table)),
+    () => {
+      const handler = createCodingNsRpcHandler(table)
+      // DSH Web 已经占用 /api 拦截器，且部分启动器不允许插件增加自定义前缀。
+      // 直接注册精确 Fetch 路由，避免抢占共享路由或注册自定义 Web 前缀。
+      const disposeFetch = CODINGNS_RPC_ENDPOINTS.map((endpoint) => ctx.connection.fetch.register({
+        path: `/api/codingns/${endpoint}`,
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: async (request) => handleFetchRpc(request, endpoint, handler),
+      }))
+      return async (): Promise<void> => {
+        for (const dispose of disposeFetch.reverse()) await dispose()
+      }
+    },
     'dsh-codingns: Host RPC',
   )
+}
+
+const CODINGNS_RPC_ENDPOINTS = [
+  'auth/snapshot', 'auth/login', 'auth/logout', 'auth/devices', 'auth/bind', 'auth/unbind',
+  'lanAccessDsh/addresses', 'lanAccessDsh/detect', 'lanAccessDsh/get', 'lanAccessDsh/settings/get', 'lanAccessDsh/settings/set', 'lanAccessDsh/start', 'lanAccessDsh/stop',
+] as const
+
+async function handleFetchRpc(
+  request: Request,
+  endpoint: string,
+  handler: ConnectionRpcHandler,
+): Promise<Response> {
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return new Response('body is not JSON', { status: 400 })
+  }
+  if (!body || typeof body !== 'object') return new Response('invalid RPC envelope', { status: 400 })
+  const envelope = body as { rpcId?: unknown; method?: unknown; payload?: unknown }
+  const method = envelope.method
+  if (typeof envelope.rpcId !== 'string' || (method !== endpoint && method !== `codingns/${endpoint}`)) {
+    return new Response('invalid RPC envelope', { status: 400 })
+  }
+  const result = await handler(endpoint, envelope.payload, request.signal)
+  return Response.json({ type: 'server-response', rpcId: envelope.rpcId, result })
 }
 
 function success(value: unknown): ConnectionRpcResult<unknown> {

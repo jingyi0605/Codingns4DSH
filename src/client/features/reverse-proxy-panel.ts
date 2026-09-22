@@ -144,7 +144,14 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
 }
 
 async function callCodingNsRpc<T>(rpc: CodingNsRpcClient, endpoint: string, payload: unknown): Promise<T> {
-  const response = await rpc.call(CODINGNS_RPC_CHANNEL, endpoint, payload)
+  let response
+  try {
+    response = await rpc.call(CODINGNS_RPC_CHANNEL, endpoint, payload)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!/HTTP (?:404|405)\b/u.test(message)) throw error
+    response = await rpc.call('/api', `codingns/${endpoint}`, payload)
+  }
   if (!response.ok) throw new Error(response.error.message)
   return response.value as T
 }

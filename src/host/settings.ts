@@ -16,6 +16,12 @@ import {
 export const CodingNsSettingsSchema: z<CodingNsSettings> = z.object({
   controlBaseUrl: z.string().default(DEFAULT_CODINGNS_SETTINGS.controlBaseUrl),
   modules: z.dict(z.boolean()).default(DEFAULT_CODINGNS_SETTINGS.modules),
+  lanAccessDsh: z.object({
+    autoStart: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.autoStart),
+    listenHost: z.string().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.listenHost),
+    listenPort: z.number().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.listenPort),
+    dshPort: z.number().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.dshPort),
+  }).default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh),
 })
 
 /**

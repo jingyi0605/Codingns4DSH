@@ -32,13 +32,17 @@ function descriptorOf(name: string, options: {
 test('CodingNS 设置用模块名字典表达开关，结构不随模块数量变化', () => {
   assert.equal(CODINGNS_SETTINGS_NAMESPACE, 'codingns')
   assert.equal(CODINGNS_MODULES_FIELD, 'modules')
-  assert.deepEqual(DEFAULT_CODINGNS_SETTINGS, { controlBaseUrl: '', modules: {} })
+  assert.deepEqual(DEFAULT_CODINGNS_SETTINGS, {
+    controlBaseUrl: '',
+    modules: {},
+    lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 },
+  })
 })
 
 test('用户没有表达意图时使用模块自己的 enabledByDefault', () => {
   assert.equal(isFeatureEnabled(descriptorOf('terminal', { enabledByDefault: true }), undefined), true)
   assert.equal(
-    isFeatureEnabled(descriptorOf('terminal', { enabledByDefault: true }), { controlBaseUrl: '', modules: {} }),
+    isFeatureEnabled(descriptorOf('terminal', { enabledByDefault: true }), DEFAULT_CODINGNS_SETTINGS),
     true,
   )
   assert.equal(isFeatureEnabled(descriptorOf('reverseProxy'), undefined), false)
@@ -46,12 +50,12 @@ test('用户没有表达意图时使用模块自己的 enabledByDefault', () => 
 
 test('用户意图覆盖 enabledByDefault，常驻模块无法被关闭', () => {
   assert.equal(
-    isFeatureEnabled(descriptorOf('reverseProxy'), { controlBaseUrl: '', modules: { reverseProxy: true } }),
+    isFeatureEnabled(descriptorOf('reverseProxy'), { ...DEFAULT_CODINGNS_SETTINGS, modules: { reverseProxy: true } }),
     true,
   )
   assert.equal(
     isFeatureEnabled(descriptorOf('lanAccess', { enabledByDefault: true, alwaysEnabled: true }), {
-      controlBaseUrl: '',
+      ...DEFAULT_CODINGNS_SETTINGS,
       modules: { lanAccess: false },
     }),
     true,
@@ -67,7 +71,7 @@ test('enabledFeatureNames 汇总当前应当启用的模块', () => {
 
   assert.deepEqual(enabledFeatureNames(descriptors, undefined), ['lanAccess', 'auth'])
   assert.deepEqual(
-    enabledFeatureNames(descriptors, { controlBaseUrl: '', modules: { reverseProxy: true, auth: false } }),
+    enabledFeatureNames(descriptors, { ...DEFAULT_CODINGNS_SETTINGS, modules: { reverseProxy: true, auth: false } }),
     ['lanAccess', 'reverseProxy'],
   )
 })

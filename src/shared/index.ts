@@ -1,11 +1,13 @@
 export {
   CODINGNS_CONTROL_BASE_URL_FIELD,
+  CODINGNS_LAN_ACCESS_DSH_FIELD,
   CODINGNS_MODULES_FIELD,
   CODINGNS_SETTINGS_NAMESPACE,
   DEFAULT_CODINGNS_SETTINGS,
   enabledFeatureNames,
   isFeatureEnabled,
   type CodingNsSettings,
+  type LanAccessDshSettings,
 } from './contracts/config.js'
 export type {
   FeatureContext,

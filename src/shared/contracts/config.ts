@@ -4,6 +4,8 @@ import type { FeatureDescriptor } from './feature.js'
 export interface CodingNsSettings {
   /** Control API 地址不是秘密，可以由 Web 设置页保存到 Host 设置。 */
   controlBaseUrl: string
+  /** 局域网访问 DSH 的唯一监听映射及启动策略。 */
+  lanAccessDsh: LanAccessDshSettings
   /**
    * 功能模块启用意图：模块名 -> 是否启用。
    *
@@ -12,12 +14,27 @@ export interface CodingNsSettings {
   modules: Record<string, boolean>
 }
 
+/** 局域网访问 DSH 的持久化配置；dshPort 为 0 表示启动时自动探测。 */
+export interface LanAccessDshSettings {
+  autoStart: boolean
+  listenHost: string
+  listenPort: number
+  dshPort: number
+}
+
 export const CODINGNS_SETTINGS_NAMESPACE = 'codingns'
 export const CODINGNS_CONTROL_BASE_URL_FIELD = 'controlBaseUrl'
 export const CODINGNS_MODULES_FIELD = 'modules'
+export const CODINGNS_LAN_ACCESS_DSH_FIELD = 'lanAccessDsh'
 export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   controlBaseUrl: '',
   modules: {},
+  lanAccessDsh: {
+    autoStart: false,
+    listenHost: '0.0.0.0',
+    listenPort: 13080,
+    dshPort: 0,
+  },
 }
 
 /**
