@@ -39,12 +39,14 @@ export class PiAgentDriver implements CodingNsCliDriver {
     // Pi 的 RPC 目录包含每个模型精确的 thinkingLevelMap；表格接口只有 yes/no，
     // 不能用来判断具体档位，因此只能作为旧版本的降级路径。
     const rpc = new JsonRpcProcess({ command: detection.command!, args: ['--mode', 'rpc'], spawn: this.runSpawn })
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 12_000)
     try {
-      const response = await rpc.request('get_available_models', {})
+      const response = await rpc.request('get_available_models', {}, { signal: controller.signal })
       const catalog = parsePiCatalog(response)
       if (catalog.groups.length > 0) return catalog
     } catch { /* 旧版 Pi 没有模型 RPC 时继续读取表格。 */ }
-    finally { rpc.dispose() }
+    finally { clearTimeout(timer); rpc.dispose() }
     try {
       const result = this.runSpawnSync(detection.command!, ['--list-models'], { encoding: 'utf8', timeout: 12_000, windowsHide: true, shell: false })
       const catalog = parsePiCliCatalog(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
