@@ -4,7 +4,7 @@
 
 ## DSH 装配
 
-包根导出 `dist/index.js` 是 Host Cordis 入口，`exports["./client"]` 是浏览器入口。Client 入口声明为立即加载，确保 DSH 设置页打开时 CodingNS 区块已经注册。`package.json` 的 `dsh.bundle.patch` 指向 `dsh.bundle.patch`，Profile 通过 `dsh.profile.bundles` 按包名选择它。
+包根导出 `dist/index.js` 是 Host Cordis 入口，`exports["./client"]` 的浏览器实现是 `dist/client/bundle.js`。Client 入口声明为立即加载，确保 DSH 设置页打开时 CodingNS 区块已经注册。浏览器 bundle 与 `tsc` 生成的 `dist/client/index.js` 分开，避免开发监听时两个构建器互相覆盖。`package.json` 的 `dsh.bundle.patch` 指向 `dsh.bundle.patch`，Profile 通过 `dsh.profile.bundles` 按包名选择它。
 
 当前 DSH 版本约束为 `0.1.6-alpha.2`。启动期 Transport 事实和限制记录在 `specs/spec001-DeepSeekHarness-CodingNS单一插件/docs/20260921-阶段0-DSH插件装配调查.md`。
 
