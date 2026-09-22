@@ -23,14 +23,19 @@ test('Client 构建产物不包含 Node 专属模块', async () => {
 
 test('Client 构建产物包含模块卡片、设置面板和 Host RPC 调用', async () => {
   const source = await readFile(clientBundle, 'utf8')
+  assert.equal(source.includes('每个功能模块独立配置，避免多个表单同时横向挤压。'), false)
   for (const marker of [
     'type: "password"', 'auth/login', 'auth/logout',
     'settings.section', 'id: "codingns"', 'label: "CodingNS"', 'CodingNS 功能模块',
     'details', 'summary', 'role: "switch"', 'aria-label', 'aria-disabled', 'pointerEvents',
-    'disabled: disabled || busy',
+    'disabled: disabled || busy', 'aria-modal', '添加中…', '添加中转服务器', 'https://channel.codingns.com:1443',
     '局域网访问', '自动补齐 crypto.randomUUID', '中转访问服务', '绑定 Host',
+    'settings/get', 'settings/set', '远程设置读取失败',
     'settings.subscribe(listener)', 'settings.getSnapshot()',
     'crypto', 'randomUUID',
+    '外部Agent集成', 'cli/${action}', 'catalog', 'models', 'session/get', 'session/set', 'adapter/set', '已停用',
+    'conversation.input.left', 'conversation.input.right', 'Agent 选择器', '选择思考强度',
+    '安装状态', '模型目录', 'aria-modal',
   ]) {
     assert.equal(source.includes(marker), true, `Client 产物缺少 ${marker}`)
   }

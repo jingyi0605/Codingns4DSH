@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   CODINGNS_MODULES_FIELD,
   CODINGNS_SETTINGS_NAMESPACE,
+  DEFAULT_CODINGNS_CONTROL_BASE_URL,
   DEFAULT_CODINGNS_SETTINGS,
   CODINGNS_DSH_ERROR_CODES,
   CodingNsDshError,
@@ -33,8 +34,10 @@ test('CodingNS 设置用模块名字典表达开关，结构不随模块数量�
   assert.equal(CODINGNS_SETTINGS_NAMESPACE, 'codingns')
   assert.equal(CODINGNS_MODULES_FIELD, 'modules')
   assert.deepEqual(DEFAULT_CODINGNS_SETTINGS, {
-    controlBaseUrl: '',
+    controlBaseUrl: DEFAULT_CODINGNS_CONTROL_BASE_URL,
+    controlBaseUrls: [DEFAULT_CODINGNS_CONTROL_BASE_URL],
     modules: {},
+    agentAdapters: {},
     lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 },
   })
 })

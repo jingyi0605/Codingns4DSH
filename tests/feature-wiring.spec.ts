@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { FeatureRegistry, type FeatureModule } from '../dist/features/index.js'
-import { createCodingNsRpcHandler } from '../dist/host/rpc.js'
+import { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler } from '../dist/host/rpc.js'
 import { CodingNsRpcTable } from '../dist/host/rpc-table.js'
 import { createAuthFeature } from '../dist/host/features/index.js'
-import { lanAccessFeature, reverseProxyFeature } from '../dist/client/features/index.js'
+import { cliAdaptersFeature, lanAccessFeature, reverseProxyFeature } from '../dist/client/features/index.js'
 import {
   enabledFeatureNames,
   isFeatureEnabled,
@@ -38,7 +38,7 @@ function featureOf(
 }
 
 function settingsOf(modules: Record<string, boolean>): CodingNsSettings {
-  return { controlBaseUrl: '', modules, lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 } }
+  return { controlBaseUrl: 'https://channel.codingns.com:1443', controlBaseUrls: ['https://channel.codingns.com:1443'], modules, lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 } }
 }
 
 test('设置开关驱动模块启停，常驻模块不受开关影响', async () => {
@@ -190,6 +190,47 @@ test('RPC 主处理器把分发结果转成 Connection 结果，不向外抛错'
   assert.equal(unknown.ok === false ? unknown.error.code : '', 'CODINGNS_RPC_NOT_FOUND')
 })
 
+test('远程设置 RPC 返回版本并只允许修改 CodingNS 字段', async () => {
+  let current = settingsOf({})
+  let revision = 4
+  let received: unknown
+  const provider = {
+    writable: true,
+    describe: () => [{ ns: 'codingns', revision }],
+    get: () => current,
+    mutate: async (_namespace: string, ops: readonly { op: string; path: readonly string[]; value?: unknown }[], expectedRevision?: number) => {
+      received = { ops, expectedRevision }
+      const operation = ops[0]
+      if (operation?.op === 'set' && operation.path.join('.') === 'modules.reverseProxy') {
+        current = settingsOf({ reverseProxy: operation.value === true })
+      }
+      revision += 1
+    },
+  }
+  const handler = createCodingNsSettingsRpcHandler(provider as never)
+
+  assert.deepEqual(await handler('get', {}), { value: settingsOf({}), revision: 4 })
+  assert.deepEqual(await handler('set', {
+    ops: [{ op: 'set', path: ['modules', 'reverseProxy'], value: true }],
+    expectedRevision: 4,
+  }), { value: settingsOf({ reverseProxy: true }), revision: 5 })
+  assert.deepEqual(received, {
+    ops: [{ op: 'set', path: ['modules', 'reverseProxy'], value: true }],
+    expectedRevision: 4,
+  })
+  await handler('set', {
+    ops: [{ op: 'set', path: ['controlBaseUrls'], value: ['https://channel.codingns.com:1443', 'https://control.example.com'] }],
+  })
+  assert.deepEqual(received, {
+    ops: [{ op: 'set', path: ['controlBaseUrls'], value: ['https://channel.codingns.com:1443', 'https://control.example.com'] }],
+    expectedRevision: undefined,
+  })
+  await assert.rejects(
+    handler('set', { ops: [{ op: 'set', path: ['modules', 'auth'], value: false }] }),
+    /禁止修改设置字段/u,
+  )
+})
+
 test('auth 模块通过服务登记 auth 命名空间，停用后自动注销', async () => {
   const table = new CodingNsRpcTable()
   const registry = new FeatureRegistry({ rpc: table })
@@ -216,4 +257,12 @@ test('auth 模块通过服务登记 auth 命名空间，停用后自动注销', 
 test('本地端口映射面板归属局域网访问，不混入中转访问服务', () => {
   assert.equal(lanAccessFeature.settingsPanel?.name, 'LanAccessPanel')
   assert.equal(reverseProxyFeature.settingsPanel?.name, 'ReverseProxyPanel')
+})
+
+test('外部 Agent 作为独立 Client 设置模块登记且默认启用', () => {
+  assert.equal(cliAdaptersFeature.descriptor.name, 'cliAdapters')
+  assert.equal(cliAdaptersFeature.descriptor.runtime, 'client')
+  assert.equal(cliAdaptersFeature.descriptor.ui?.label, '外部Agent集成')
+  assert.equal(cliAdaptersFeature.descriptor.ui?.alwaysEnabled, undefined)
+  assert.equal(cliAdaptersFeature.settingsPanel?.name, 'CliAdaptersPanel')
 })

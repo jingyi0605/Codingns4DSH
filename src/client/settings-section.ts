@@ -35,7 +35,6 @@ export function CodingNsSettingsSection({ settings, registry, services }: Coding
     { style: { display: 'flex', flexDirection: 'column', gap: 20, padding: 24, maxWidth: 980, width: '100%', boxSizing: 'border-box' } },
     createElement('div', undefined,
       createElement('h2', { style: { margin: 0, fontSize: 20 } }, 'CodingNS 功能模块'),
-      createElement('p', { style: { margin: '8px 0 0', opacity: 0.65 } }, '每个功能模块独立配置，避免多个表单同时横向挤压。'),
     ),
     createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
       settingsModules(registry).map((entry) => createElement(FeatureCard, {
@@ -66,7 +65,7 @@ function FeatureCard({ entry, snapshot, services }: FeatureCardProps): ReactElem
   const toggle = (next: boolean): void => {
     setWriteError(null)
     void services.settings
-      .set(CODINGNS_MODULES_FIELD, { ...snapshot.value?.modules, [module.descriptor.name]: next })
+      .mutate([{ op: 'set', path: [CODINGNS_MODULES_FIELD, module.descriptor.name], value: next }])
       .catch((cause: unknown) => {
         setWriteError(cause instanceof Error ? cause.message : String(cause))
       })

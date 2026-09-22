@@ -20,12 +20,18 @@ export function apply(ctx?: Context): void {
   ctx.inject(['settings', 'connection', 'webServer'], (hostCtx) => {
     const webServerPort = (hostCtx as Context & { webServer: { port: number } }).webServer.port
     const settings = registerCodingNsSettings(hostCtx)
-    const services: CodingNsHostServices = { rpc: new CodingNsRpcTable(), settings, dshWebPort: webServerPort }
+    const services: CodingNsHostServices = {
+      rpc: new CodingNsRpcTable(),
+      settings,
+      settingsProvider: hostCtx.settings,
+      dshWebPort: webServerPort,
+      events: { on: hostCtx.on.bind(hostCtx) },
+    }
     const registry = new FeatureRegistry<CodingNsHostServices>(services)
     registry.registerMany(HOST_FEATURES)
     registry.validate()
 
-    registerCodingNsRpc(hostCtx, services.rpc)
+    registerCodingNsRpc(hostCtx, services.rpc, services.settingsProvider)
 
     hostCtx.effect(() => {
       const sync = (): void => {
@@ -41,10 +47,10 @@ export function apply(ctx?: Context): void {
   })
 }
 
-export { HOST_FEATURES, createAuthFeature, createLanAccessDshFeature } from './features/index.js'
+export { HOST_FEATURES, createAuthFeature, createLanAccessDshFeature, createCliAdaptersFeature } from './features/index.js'
 export type { CodingNsHostServices } from './features/index.js'
 export { CodingNsSettingsSchema, registerCodingNsSettings } from './settings.js'
-export { createCodingNsRpcHandler, registerCodingNsRpc } from './rpc.js'
+export { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler, registerCodingNsRpc } from './rpc.js'
 export {
   CodingNsRpcError,
   CodingNsRpcTable,
@@ -53,6 +59,9 @@ export {
 } from './rpc-table.js'
 
 export { CodingNsAuthSession } from './auth-session.js'
+export { CommandCodeDriver } from './cli-adapters/command-code-driver.js'
+export { CodingNsCliAdapterRegistry } from './cli-adapters/registry.js'
+export type { CodingNsCliDriver } from './cli-adapters/driver.js'
 export {
   CODINGNS_CONTROL_API_PATHS,
   CodingNsControlApiError,

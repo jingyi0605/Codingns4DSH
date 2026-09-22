@@ -6,7 +6,7 @@ export const name = 'dsh-codingns'
 /** Host Cordis 入口。 */
 export const apply = hostApply
 export default hostApply
-export { createCodingNsRpcHandler, registerCodingNsRpc } from './host/rpc.js'
+export { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler, registerCodingNsRpc } from './host/rpc.js'
 export {
   CodingNsRpcError,
   CodingNsRpcTable,
@@ -18,9 +18,12 @@ export type { CodingNsHostServices } from './host/features/index.js'
 export { CODINGNS_RPC_CHANNEL } from './shared/contracts/transport.js'
 export {
   CODINGNS_CONTROL_BASE_URL_FIELD,
+  CODINGNS_CONTROL_BASE_URLS_FIELD,
   CODINGNS_LAN_ACCESS_DSH_FIELD,
   CODINGNS_MODULES_FIELD,
   CODINGNS_SETTINGS_NAMESPACE,
+  DEFAULT_CODINGNS_CONTROL_BASE_URL,
+  DEFAULT_CODINGNS_CONTROL_BASE_URLS,
   DEFAULT_CODINGNS_SETTINGS,
   enabledFeatureNames,
   isFeatureEnabled,

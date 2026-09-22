@@ -148,7 +148,8 @@ test('Host 模块独立登记 lanAccessDsh RPC，停用后注销', async () => {
 test('局域网访问设置通过 Host RPC 持久化并可刷新回读', async () => {
   const runtime = new FakeRuntime()
   const settings = new FakeSettings({
-    controlBaseUrl: '',
+    controlBaseUrl: 'https://channel.codingns.com:1443',
+    controlBaseUrls: ['https://channel.codingns.com:1443'],
     modules: {},
     lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 },
   })
@@ -163,7 +164,8 @@ test('局域网访问设置通过 Host RPC 持久化并可刷新回读', async (
 test('Host 启动时按持久化配置自动启动映射，运行中修改选项不会重启映射', async () => {
   const runtime = new FakeRuntime()
   const settings = new FakeSettings({
-    controlBaseUrl: '',
+    controlBaseUrl: 'https://channel.codingns.com:1443',
+    controlBaseUrls: ['https://channel.codingns.com:1443'],
     modules: {},
     lanAccessDsh: { autoStart: true, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 },
   })

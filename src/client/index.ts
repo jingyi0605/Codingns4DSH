@@ -18,6 +18,7 @@ import { CLIENT_FEATURES } from './features/index.js'
 import type { CodingNsClientFeatureModule, CodingNsClientServices } from './features/types.js'
 import { ensureCryptoRandomUUID } from './lan-access.js'
 import { CodingNsSettingsSection } from './settings-section.js'
+import { createCodingNsSettingsBridge } from './settings-bridge.js'
 
 // DSH 在 Client/Cordis 建立前就可能读取 randomUUID，必须在入口加载时修复。
 ensureCryptoRandomUUID()
@@ -51,13 +52,14 @@ export function apply(ctx?: Context): void {
   if (ctx === undefined) return
 
   ctx.inject(['slots', 'settingsScope', 'connection'], (settingsCtx) => {
-    const settings = settingsCtx.settingsScope.bind<CodingNsSettings>({
+    const localSettings = settingsCtx.settingsScope.bind<CodingNsSettings>({
       namespace: CODINGNS_SETTINGS_NAMESPACE,
     })
     // Host 与 Client 共用同一个 cordis Context 类型，而 DSH 的 Host 侧声明会把
     // connection 收窄成 Host 句柄；浏览器侧按 ConnectionHandle 收窄回真实形状。
     const connection = settingsCtx.connection as unknown as ConnectionHandle
-    const services: CodingNsClientServices = { settings, rpc: connection.rpc }
+    const settings = createCodingNsSettingsBridge(localSettings, connection.rpc)
+    const services: CodingNsClientServices = { settings, rpc: connection.rpc, slots: settingsCtx.slots }
     const registry = new FeatureRegistry<CodingNsClientServices, CodingNsClientFeatureModule>(services)
     registry.registerMany(CLIENT_FEATURES)
     registry.validate()
@@ -71,7 +73,14 @@ export function apply(ctx?: Context): void {
           })
       }
       sync()
-      return settings.subscribe(sync)
+      void settings.load().catch((error: unknown) => {
+        console.error('dsh-codingns: 远程设置读取失败', error)
+      })
+      const unsubscribe = settings.subscribe(sync)
+      return () => {
+        unsubscribe()
+        settings.dispose()
+      }
     }, 'dsh-codingns: 功能模块启停同步')
 
     settingsCtx.slots.inject('settings.section', () => settingsCtx.slots.register({

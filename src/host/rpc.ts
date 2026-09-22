@@ -1,6 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ConnectionRpcHandler, ConnectionRpcResult } from '@deepseek-ai/dsh-client-connection'
-import type { CodingNsRpcTable } from './rpc-table.js'
+import type { SettingsPathOp, SettingsProvider } from '@deepseek-ai/dsh-settings'
+import { CODINGNS_SETTINGS_NAMESPACE, type CodingNsSettings } from '../shared/contracts/config.js'
+import { CodingNsRpcError, type CodingNsRpcHandler, type CodingNsRpcTable } from './rpc-table.js'
 
 /**
  * 创建 CodingNS Host RPC 主处理器。
@@ -25,9 +27,12 @@ export function createCodingNsRpcHandler(table: CodingNsRpcTable): ConnectionRpc
 }
 
 /** 在当前 Connection 上挂载 CodingNS RPC 主处理器；注销由调用方的 effect 负责。 */
-export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable): void {
+export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable, settingsProvider?: SettingsProvider): void {
   ctx.effect(
     () => {
+      const unregisterSettings = settingsProvider === undefined
+        ? undefined
+        : table.register('settings', createCodingNsSettingsRpcHandler(settingsProvider))
       const handler = createCodingNsRpcHandler(table)
       // DSH Web 已经占用 /api 拦截器，且部分启动器不允许插件增加自定义前缀。
       // 直接注册精确 Fetch 路由，避免抢占共享路由或注册自定义 Web 前缀。
@@ -39,6 +44,7 @@ export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable): void
       }))
       return async (): Promise<void> => {
         for (const dispose of disposeFetch.reverse()) await dispose()
+        unregisterSettings?.()
       }
     },
     'dsh-codingns: Host RPC',
@@ -47,8 +53,66 @@ export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable): void
 
 const CODINGNS_RPC_ENDPOINTS = [
   'auth/snapshot', 'auth/login', 'auth/logout', 'auth/devices', 'auth/bind', 'auth/unbind',
+  'settings/get', 'settings/set',
   'lanAccessDsh/addresses', 'lanAccessDsh/detect', 'lanAccessDsh/get', 'lanAccessDsh/settings/get', 'lanAccessDsh/settings/set', 'lanAccessDsh/start', 'lanAccessDsh/stop',
+  'cli/catalog', 'cli/models', 'cli/adapter/set', 'cli/session/get', 'cli/session/set',
 ] as const
+
+/** 创建远程设置处理器；只允许 CodingNS 自己的 namespace 和路径编辑。 */
+export function createCodingNsSettingsRpcHandler(provider: SettingsProvider): CodingNsRpcHandler {
+  return async (action, payload) => {
+    if (action === 'get') return readCodingNsSettings(provider)
+    if (action === 'set') {
+      if (!provider.writable) throw new CodingNsRpcError('CODINGNS_SETTINGS_READ_ONLY', 'Host 设置提供器当前只读')
+      const input = parseSettingsMutation(payload)
+      await provider.mutate(CODINGNS_SETTINGS_NAMESPACE, input.ops, input.expectedRevision)
+      return readCodingNsSettings(provider)
+    }
+    throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `未知 CodingNS RPC: settings/${action}`)
+  }
+}
+
+function readCodingNsSettings(provider: SettingsProvider): { value: CodingNsSettings; revision: number } {
+  const descriptor = provider.describe({ redactSecrets: true }).find((item) => item.ns === CODINGNS_SETTINGS_NAMESPACE)
+  if (descriptor === undefined) throw new CodingNsRpcError('CODINGNS_SETTINGS_UNAVAILABLE', 'CodingNS 设置尚未注册')
+  return { value: provider.get(CODINGNS_SETTINGS_NAMESPACE) as CodingNsSettings, revision: descriptor.revision }
+}
+
+function parseSettingsMutation(value: unknown): { ops: SettingsPathOp[]; expectedRevision?: number } {
+  if (!isRecord(value) || !Array.isArray(value.ops) || value.ops.length === 0 || value.ops.length > 8) {
+    throw new TypeError('settings/set 参数必须包含 1 到 8 个 ops')
+  }
+  const expectedRevisionValue = value.expectedRevision
+  if (expectedRevisionValue !== undefined && (typeof expectedRevisionValue !== 'number' || !Number.isInteger(expectedRevisionValue) || expectedRevisionValue < 0)) {
+    throw new TypeError('expectedRevision 必须是非负整数')
+  }
+  const ops = value.ops.map(parseSettingsOp)
+  return expectedRevisionValue === undefined ? { ops } : { ops, expectedRevision: expectedRevisionValue }
+}
+
+function parseSettingsOp(value: unknown): SettingsPathOp {
+  if (!isRecord(value) || (value.op !== 'set' && value.op !== 'unset') || !Array.isArray(value.path)) {
+    throw new TypeError('设置操作必须是 { op, path, value? }')
+  }
+  const path = value.path
+  if (path.length === 0 || path.length > 3 || path.some((part) => typeof part !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]*$/u.test(part))) {
+    throw new TypeError('设置路径非法')
+  }
+  if (!isAllowedSettingsPath(path)) throw new CodingNsRpcError('CODINGNS_SETTINGS_FIELD_FORBIDDEN', `禁止修改设置字段: ${path.join('.')}`)
+  if (value.op === 'unset') return { op: 'unset', path }
+  if (!('value' in value)) throw new TypeError('set 操作缺少 value')
+  return { op: 'set', path, value: value.value }
+}
+
+function isAllowedSettingsPath(path: readonly string[]): boolean {
+  if (path.length === 1) return path[0] === 'controlBaseUrl' || path[0] === 'controlBaseUrls'
+  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters'].includes(path[1] ?? '')
+  return path[0] === 'lanAccessDsh' && path.length === 2 && ['autoStart', 'listenHost', 'listenPort', 'dshPort'].includes(path[1] ?? '')
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 async function handleFetchRpc(
   request: Request,

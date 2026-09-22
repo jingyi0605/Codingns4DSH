@@ -1,8 +1,11 @@
 export {
   CODINGNS_CONTROL_BASE_URL_FIELD,
+  CODINGNS_CONTROL_BASE_URLS_FIELD,
   CODINGNS_LAN_ACCESS_DSH_FIELD,
   CODINGNS_MODULES_FIELD,
   CODINGNS_SETTINGS_NAMESPACE,
+  DEFAULT_CODINGNS_CONTROL_BASE_URL,
+  DEFAULT_CODINGNS_CONTROL_BASE_URLS,
   DEFAULT_CODINGNS_SETTINGS,
   enabledFeatureNames,
   isFeatureEnabled,
@@ -35,6 +38,17 @@ export type {
   CodingNsTransportHooks,
 } from './contracts/transport.js'
 export { CODINGNS_RPC_CHANNEL } from './contracts/transport.js'
+export type {
+  CodingNsCliAdapterDescriptor,
+  CodingNsCliAdapterId,
+  CodingNsCliMessage,
+  CodingNsCliModel,
+  CodingNsCliModelCatalog,
+  CodingNsCliModelGroup,
+  CodingNsCliSessionConfig,
+  CodingNsCliStreamChunk,
+  CodingNsCliTurnInput,
+} from './contracts/cli-adapter.js'
 export type {
   PeerHostRecord,
   PeerHostStatus,

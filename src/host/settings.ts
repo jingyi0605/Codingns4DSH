@@ -15,7 +15,9 @@ import {
  */
 export const CodingNsSettingsSchema: z<CodingNsSettings> = z.object({
   controlBaseUrl: z.string().default(DEFAULT_CODINGNS_SETTINGS.controlBaseUrl),
+  controlBaseUrls: z.array(z.string()).default(DEFAULT_CODINGNS_SETTINGS.controlBaseUrls),
   modules: z.dict(z.boolean()).default(DEFAULT_CODINGNS_SETTINGS.modules),
+  agentAdapters: z.dict(z.boolean()).default(DEFAULT_CODINGNS_SETTINGS.agentAdapters ?? {}),
   lanAccessDsh: z.object({
     autoStart: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.autoStart),
     listenHost: z.string().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.listenHost),

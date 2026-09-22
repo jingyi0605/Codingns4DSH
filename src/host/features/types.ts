@@ -1,6 +1,10 @@
 import type { CodingNsRpcTable } from '../rpc-table.js'
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
+import type { SettingsProvider, SettingsScope } from '@deepseek-ai/dsh-settings'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
+
+export interface CodingNsHostEvents {
+  on(name: string, listener: (...args: any[]) => any): unknown
+}
 
 /**
  * Host 侧功能模块可用的服务集合。
@@ -12,6 +16,10 @@ export interface CodingNsHostServices {
   readonly rpc: CodingNsRpcTable
   /** 持久化设置；测试或嵌入式调用未提供时，局域网映射仍可手动启动。 */
   readonly settings?: SettingsScope<CodingNsSettings>
+  /** Host 设置提供器，供远程设置 RPC 做版本校验和持久化写入。 */
+  readonly settingsProvider?: SettingsProvider
   /** 当前 DSH Web 服务实际监听端口，用于自动定位本机 DSH。 */
   readonly dshWebPort?: number
+  /** DSH 事件总线；CLI 模块用它接入 llm/stream，测试环境可以不提供。 */
+  readonly events?: CodingNsHostEvents
 }
