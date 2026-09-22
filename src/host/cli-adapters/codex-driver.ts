@@ -1,13 +1,14 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
-import type { CodingNsCliModelCatalog, CodingNsCliPermissionResponse, CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
 import { CODEX_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { isQuestionEvent, questionAnswersRecord, readAgentQuestions } from './interaction-events.js'
 
 export interface CodexAppServerDriverOptions {
   readonly binaries?: readonly string[]
@@ -18,7 +19,7 @@ export interface CodexAppServerDriverOptions {
 
 /** Codex app-server 的 JSON-RPC 驱动，Host 只暴露统一文本流，不暴露线程和 token。 */
 export class CodexAppServerDriver implements CodingNsCliDriver {
-  readonly descriptor = { id: 'codex', name: 'Codex', protocol: 'json-rpc', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'steer'] as const } as const
+  readonly descriptor = { id: 'codex', name: 'Codex', protocol: 'json-rpc', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions', 'steer'] as const } as const
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
@@ -32,6 +33,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     turnId: string | null
     providerSessionId: string
     pendingPermissions: Map<string, (value: unknown) => void>
+    pendingQuestions: Map<string, (value: unknown) => void>
   }>()
 
   constructor(options: CodexAppServerDriverOptions = {}) {
@@ -84,7 +86,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     })
   }
 
-  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk> {
+  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) throw new Error('Codex 未安装')
     const session = await this.getSession(input, command)
@@ -175,24 +177,32 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   }
 
   /** 回传原生权限请求；审批值只在 Host 进程中流转。 */
-  respondPermission(sessionId: string, response: CodingNsCliPermissionResponse): void {
-    this.respondToPermission(sessionId, response.requestId, response.approved, response.reason)
+  respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
+    const session = this.sessions.get(sessionId)
+    const resolve = session?.pendingPermissions.get(response.requestId)
+    if (resolve === undefined || session === undefined) throw new Error('Codex 权限请求不存在')
+    session.pendingPermissions.delete(response.requestId)
+    resolve({
+      approved: response.approved,
+      ...(response.reason?.trim() ? { reason: response.reason.trim().slice(0, 512) } : {}),
+    })
   }
 
-  /** 保留原生方法名，兼容已有 Host 内部调用方。 */
-  respondToPermission(sessionId: string, requestId: string, approved: boolean, reason?: string): boolean {
+  /** 回传 requestUserInput 的结构化回答。 */
+  respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
     const session = this.sessions.get(sessionId)
-    const resolve = session?.pendingPermissions.get(requestId)
-    if (resolve === undefined || session === undefined) return false
-    session.pendingPermissions.delete(requestId)
-    resolve({ approved, ...(reason?.trim() ? { reason: reason.trim().slice(0, 512) } : {}) })
-    return true
+    const resolve = session?.pendingQuestions.get(response.requestId)
+    if (resolve === undefined || session === undefined) throw new Error('Codex 问题请求不存在')
+    session.pendingQuestions.delete(response.requestId)
+    resolve({ answers: questionAnswersRecord(response) })
   }
 
   dispose(): void {
     for (const session of this.sessions.values()) {
       for (const resolve of session.pendingPermissions.values()) resolve({ approved: false })
       session.pendingPermissions.clear()
+      for (const resolve of session.pendingQuestions.values()) resolve({ answers: {} })
+      session.pendingQuestions.clear()
       session.rpc.dispose()
     }
     this.sessions.clear()
@@ -205,7 +215,15 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     if (previous !== undefined && previous.cwd === input.cwd) return previous
     previous?.rpc.dispose()
     const rpc = new JsonRpcProcess({ command, args: ['app-server'], cwd: input.cwd, spawn: this.runSpawn })
-    const session = { rpc, cwd: input.cwd, threadId: '', turnId: null as string | null, providerSessionId: input.providerSessionId ?? input.sessionId, pendingPermissions: new Map<string, (value: unknown) => void>() }
+    const session = {
+      rpc,
+      cwd: input.cwd,
+      threadId: '',
+      turnId: null as string | null,
+      providerSessionId: input.providerSessionId ?? input.sessionId,
+      pendingPermissions: new Map<string, (value: unknown) => void>(),
+      pendingQuestions: new Map<string, (value: unknown) => void>(),
+    }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, session)
     await rpc.request('initialize', { clientInfo: { name: 'dsh-codingns', version: '0.1.0' }, capabilities: {} }, { signal: input.signal, killOnAbort: false })
@@ -213,6 +231,13 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     rpc.setServerRequestHandler((request) => {
       const requestId = readRequestId(request)
       if (requestId === null) return { approved: false }
+      const params = isRecord(request.params) ? request.params : request
+      const item = isRecord(params.item) ? params.item : params
+      const method = typeof request.method === 'string' ? request.method : ''
+      const type = typeof item.type === 'string' ? item.type : ''
+      if (isQuestionEvent(`${method} ${type}`)) {
+        return new Promise<unknown>((resolve) => session.pendingQuestions.set(requestId, resolve))
+      }
       return new Promise<unknown>((resolve) => session.pendingPermissions.set(requestId, resolve))
     })
     return session
@@ -255,12 +280,17 @@ function parseCodexCatalog(value: unknown): CodingNsCliModelCatalog {
   }
 }
 
-function codexMessageToChunk(message: Record<string, any>): CodingNsCliStreamChunk | null {
+function codexMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | null {
   const params = isRecord(message.params) ? message.params : message
   const item = isRecord(params.item) ? params.item : params
   const method = typeof message.method === 'string' ? message.method : ''
   const type = typeof item.type === 'string' ? item.type : ''
   const text = textValue(params.delta ?? params.text ?? params.content ?? params.message)
+  if (isQuestionEvent(`${method} ${type}`)) {
+    const requestId = readRequestId(message) ?? readRequestId(params)
+    const questions = readAgentQuestions(params.questions ?? item.questions ?? params)
+    if (requestId !== null && questions.length > 0) return { type: 'question-request', requestId, questions }
+  }
   if (method.includes('permission') || method.includes('Approval') || type.includes('permission') || type.includes('approval')) {
     const requestId = readRequestId(message) ?? readRequestId(params)
     const detail = text ?? (typeof params.command === 'string' ? params.command : typeof params.description === 'string' ? params.description : null)
@@ -281,7 +311,7 @@ function codexMessageToChunk(message: Record<string, any>): CodingNsCliStreamChu
     const fallback = failed ? 'failed' : method.includes('completed') || output !== undefined ? 'completed' : 'running'
     const detail = serializeToolValue(item.detail ?? item.description)
     return {
-      type: 'tool-running',
+      type: 'tool-event',
       toolName: name ?? (agentId ? 'subagent' : 'tool'),
       status: normalizeToolStatus(item.status ?? item.state, fallback),
       ...(callId ? { callId } : {}),

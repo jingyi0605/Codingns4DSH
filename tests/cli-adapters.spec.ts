@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { createCliAdaptersFeature } from '../dist/host/cli-adapters/feature.js'
 import { CommandCodeDriver } from '../dist/host/cli-adapters/command-code-driver.js'
+import { CodingNsDshMessageProjector } from '../dist/host/cli-adapters/dsh-message-projector.js'
 import { CodingNsCliAdapterRegistry } from '../dist/host/cli-adapters/registry.js'
 import { CodingNsRpcTable } from '../dist/host/rpc-table.js'
 import { FeatureRegistry } from '../dist/features/registry.js'
@@ -108,7 +109,7 @@ test('Command Code 驱动写入历史 transcript、转换 JSON 事件并清理�
   assert.deepEqual(chunks, [
     { type: 'reasoning-delta', text: '思考' },
     { type: 'text-delta', text: '结果' },
-    { type: 'tool-running', toolName: 'read_directory', callId: 'call-1', input: '{"path":"."}', status: 'running' },
+    { type: 'tool-event', toolName: 'read_directory', callId: 'call-1', input: '{"path":"."}', status: 'running' },
     { type: 'usage', inputTokens: 2, outputTokens: 3 },
     { type: 'text-snapshot', text: '结果' },
     { type: 'finish', reason: 'stop' },
@@ -116,7 +117,7 @@ test('Command Code 驱动写入历史 transcript、转换 JSON 事件并清理�
   assert.equal(killed, true)
 })
 
-test('Command Code 累积快照经公共规范化层只输出新增后缀和最后一次 usage', async () => {
+test('Command Code 累积快照经公共消息投影层只输出新增后缀和最后一次 usage', async () => {
   const driver = new CommandCodeDriver({
     binaries: ['command-code'],
     spawnSync: ((command: string, args: string[]) => args[0] === '--version'
@@ -143,27 +144,25 @@ test('Command Code 累积快照经公共规范化层只输出新增后缀和最�
   })
   const registry = new CodingNsCliAdapterRegistry([driver])
   const chunks = []
+  const projector = new CodingNsDshMessageProjector({ adapterId: 'command-code', sessionId: 'snapshot-session' })
 
-  for await (const chunk of registry.execute({
+  for await (const event of registry.execute({
     adapterId: 'command-code',
     sessionId: 'snapshot-session',
     messages: [],
     prompt: '列出当前目录',
     cwd: '/workspace',
-  })) chunks.push(chunk)
+  })) chunks.push(...await projector.push(event))
 
   assert.deepEqual(chunks, [
-    { type: 'reasoning-delta', text: 'The user asks.' },
-    { type: 'reasoning-delta', text: ' Let me inspect.' },
-    { type: 'tool-running', toolName: 'read_directory', callId: 'call-1', input: '{"path":"."}', status: 'running' },
-    { type: 'tool-running', toolName: 'read_directory', callId: 'call-1', output: 'file.txt', outputMode: 'snapshot', status: 'completed' },
-    { type: 'tool-running', toolName: 'shell', callId: 'call-2', input: '{"command":"sudo true"}', error: '权限不足', status: 'failed' },
-    { type: 'text-delta', text: 'I' },
-    { type: 'text-delta', text: "'ll" },
-    { type: 'text-delta', text: ' list' },
-    { type: 'text-delta', text: ' the current directory.' },
-    { type: 'usage', inputTokens: 9, outputTokens: 10 },
-    { type: 'finish', reason: 'stop' },
+    { type: 'reasoning-delta', index: 0, text: 'The user asks.' },
+    { type: 'reasoning-delta', index: 0, text: ' Let me inspect.' },
+    { type: 'text-delta', index: 1, text: 'I' },
+    { type: 'text-delta', index: 1, text: "'ll" },
+    { type: 'text-delta', index: 1, text: ' list' },
+    { type: 'text-delta', index: 1, text: ' the current directory.' },
+    { type: 'usage', usage: { inputTokens: 9, outputTokens: 10 } },
+    { type: 'finish', reason: { kind: 'stop' } },
   ])
 })
 
@@ -197,30 +196,31 @@ test('Command Code 真实会话模式中的多工具边界和 reasoning 改写�
   })
   const registry = new CodingNsCliAdapterRegistry([driver])
   const chunks = []
+  const projector = new CodingNsDshMessageProjector({ adapterId: 'command-code', sessionId: 'real-pattern' })
 
-  for await (const chunk of registry.execute({
+  for await (const event of registry.execute({
     adapterId: 'command-code',
     sessionId: 'real-pattern',
     messages: [],
     prompt: '创建页面',
     cwd: '/workspace',
-  })) chunks.push(chunk)
+  })) chunks.push(...await projector.push(event))
 
   assert.deepEqual(chunks.filter(({ type }) => type === 'reasoning-delta'), [
-    { type: 'reasoning-delta', text: 'stage A' },
-    { type: 'reasoning-delta', text: 'stage B' },
-    { type: 'reasoning-delta', text: ' plus' },
-    { type: 'reasoning-delta', text: 'stage C' },
-    { type: 'reasoning-delta', text: ' done' },
+    { type: 'reasoning-delta', index: 0, text: 'stage A' },
+    { type: 'reasoning-delta', index: 0, text: 'stage B' },
+    { type: 'reasoning-delta', index: 0, text: ' plus' },
+    { type: 'reasoning-delta', index: 0, text: 'stage C' },
+    { type: 'reasoning-delta', index: 0, text: ' done' },
   ])
   assert.deepEqual(chunks.filter(({ type }) => type === 'text-delta'), [
-    { type: 'text-delta', text: "I'll check." },
-    { type: 'text-delta', text: 'Now build.' },
-    { type: 'text-delta', text: 'Found' },
+    { type: 'text-delta', index: 1, text: "I'll check." },
+    { type: 'text-delta', index: 1, text: 'Now build.' },
+    { type: 'text-delta', index: 1, text: 'Found' },
   ])
   assert.deepEqual(chunks.slice(-2), [
-    { type: 'usage', inputTokens: 11, outputTokens: 21 },
-    { type: 'finish', reason: 'stop' },
+    { type: 'usage', usage: { inputTokens: 11, outputTokens: 21 } },
+    { type: 'finish', reason: { kind: 'stop' } },
   ])
 })
 
@@ -320,7 +320,7 @@ test('CLI 功能模块把异常和取消映射成 DSH 原生终止原因且不�
     async detect() { return { installed: true, version: '1.0.0', command: 'fake' } },
     async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
     async *executeTurn(input) {
-      yield { type: 'tool-running', toolName: 'shell', callId: 'call-active', status: 'running' } as const
+      yield { type: 'tool-event', toolName: 'shell', callId: 'call-active', status: 'running' } as const
       if (input.signal?.aborted) yield { type: 'finish', reason: 'cancel' } as const
       else throw new Error('失败内容\n~~~\n不能逃出代码块')
     },
@@ -414,8 +414,8 @@ test('CLI 功能模块从 DSH 会话头传递工作目录并把统一工具事�
     async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
     async *executeTurn(input) {
       receivedCwd = input.cwd
-      yield { type: 'tool-running', toolName: 'read_directory', callId: 'call-1', input: '{"path":"."}', status: 'running' }
-      yield { type: 'tool-running', toolName: 'read_directory', callId: 'call-1', output: 'file.txt', outputMode: 'snapshot', status: 'completed' }
+      yield { type: 'tool-event', toolName: 'read_directory', callId: 'call-1', input: '{"path":"."}', status: 'running' }
+      yield { type: 'tool-event', toolName: 'read_directory', callId: 'call-1', output: 'file.txt', outputMode: 'snapshot', status: 'completed' }
       yield { type: 'finish', reason: 'stop' }
     },
   }])

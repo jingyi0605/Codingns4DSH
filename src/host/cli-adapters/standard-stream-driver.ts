@@ -3,7 +3,7 @@ import readline from 'node:readline'
 import type {
   CodingNsCliAdapterDescriptor,
   CodingNsCliModelCatalog,
-  CodingNsCliStreamChunk,
+  CodingNsAgentEvent,
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
@@ -77,7 +77,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     }
   }
 
-  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk> {
+  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) throw new Error(`${this.descriptor.name} 未安装`)
     const child = this.runSpawn(command, this.buildArgs(input), {
@@ -133,7 +133,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
 
   protected parseVersion(output: string): string | null { return output.match(/\b\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?\b/u)?.[0] ?? null }
   protected abstract buildArgs(input: CodingNsCliTurnInput): readonly string[]
-  protected parseEvent(value: Record<string, unknown>, input: CodingNsCliTurnInput): readonly CodingNsCliStreamChunk[] {
+  protected parseEvent(value: Record<string, unknown>, input: CodingNsCliTurnInput): readonly CodingNsAgentEvent[] {
     return genericEventChunks(value, input.signal?.aborted ?? false)
   }
   protected parseModels(output: string): CodingNsCliModelCatalog { return parseHelpModels(output) }
@@ -144,8 +144,8 @@ export function emptyCatalog(): CodingNsCliModelCatalog { return { groups: [], c
 function parseJson(line: string): Record<string, unknown> | null { try { const value: unknown = JSON.parse(line); return isRecord(value) ? value : null } catch { return null } }
 function isRecord(value: unknown): value is Record<string, any> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 
-function genericEventChunks(value: Record<string, unknown>, cancelled: boolean): CodingNsCliStreamChunk[] {
-  const chunks: CodingNsCliStreamChunk[] = []
+function genericEventChunks(value: Record<string, unknown>, cancelled: boolean): CodingNsAgentEvent[] {
+  const chunks: CodingNsAgentEvent[] = []
   const type = typeof value.type === 'string' ? value.type.toLowerCase() : ''
   const event = isRecord(value.event) ? value.event : value
   const eventType = typeof event.type === 'string' ? event.type.toLowerCase() : type
@@ -174,7 +174,7 @@ function genericEventChunks(value: Record<string, unknown>, cancelled: boolean):
         ? 'completed'
         : 'running'
     chunks.push({
-      type: 'tool-running',
+      type: 'tool-event',
       toolName: toolName ?? 'tool',
       status: normalizeToolStatus(nestedTool.status ?? nestedTool.state, fallback),
       ...(callId ? { callId } : {}),

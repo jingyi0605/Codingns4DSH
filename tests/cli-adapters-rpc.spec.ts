@@ -91,10 +91,10 @@ test('Pi RPC 保留工具执行的参数、增量结果和完成状态', async (
   })
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'pi-tools', messages: [], prompt: '执行' })) chunks.push(chunk)
-  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-running'), [
-    { type: 'tool-running', toolName: 'bash', callId: 'pi-call-1', input: '{"command":"pwd"}', status: 'running' },
-    { type: 'tool-running', toolName: 'bash', callId: 'pi-call-1', output: '/work', outputMode: 'snapshot', status: 'running' },
-    { type: 'tool-running', toolName: 'bash', callId: 'pi-call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' },
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-event'), [
+    { type: 'tool-event', toolName: 'bash', callId: 'pi-call-1', input: '{"command":"pwd"}', status: 'running' },
+    { type: 'tool-event', toolName: 'bash', callId: 'pi-call-1', output: '/work', outputMode: 'snapshot', status: 'running' },
+    { type: 'tool-event', toolName: 'bash', callId: 'pi-call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' },
   ])
   driver.dispose()
 })
@@ -128,9 +128,9 @@ test('Codex app-server 保留 item 工具生命周期和失败结果', async () 
   })
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'codex-tools', messages: [], prompt: '执行' })) chunks.push(chunk)
-  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-running'), [
-    { type: 'tool-running', toolName: 'command_execution', callId: 'codex-call-1', input: 'exit 2', status: 'running' },
-    { type: 'tool-running', toolName: 'command_execution', callId: 'codex-call-1', input: 'exit 2', error: '失败输出', status: 'failed' },
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-event'), [
+    { type: 'tool-event', toolName: 'command_execution', callId: 'codex-call-1', input: 'exit 2', status: 'running' },
+    { type: 'tool-event', toolName: 'command_execution', callId: 'codex-call-1', input: 'exit 2', error: '失败输出', status: 'failed' },
   ])
   driver.dispose()
 })
@@ -162,9 +162,9 @@ test('Grok ACP 保留 tool_call 与 tool_call_update 的结构化字段', async 
   })
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'grok-tools', messages: [], prompt: '搜索' })) chunks.push(chunk)
-  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-running'), [
-    { type: 'tool-running', toolName: 'search', callId: 'grok-call-1', input: '{"query":"DSH"}', agentId: 'agent-1', detail: '搜索工作区', status: 'running' },
-    { type: 'tool-running', toolName: 'search', callId: 'grok-call-1', output: '{"count":2}', outputMode: 'snapshot', status: 'completed' },
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-event'), [
+    { type: 'tool-event', toolName: 'search', callId: 'grok-call-1', input: '{"query":"DSH"}', agentId: 'agent-1', detail: '搜索工作区', status: 'running' },
+    { type: 'tool-event', toolName: 'search', callId: 'grok-call-1', output: '{"count":2}', outputMode: 'snapshot', status: 'completed' },
   ])
   driver.dispose()
 })
@@ -374,12 +374,65 @@ test('Codex 原生权限请求转换为标准事件并可回传审批结果', as
   const running = (async () => {
     for await (const chunk of driver.executeTurn({ sessionId: 'codex-session', messages: [], prompt: '执行命令' })) {
       chunks.push(chunk)
-      if (chunk.type === 'permission-request') driver.respondToPermission('codex-session', chunk.requestId, true)
+      if (chunk.type === 'permission-request') driver.respondPermission('codex-session', { requestId: chunk.requestId, approved: true })
     }
   })()
   await running
   assert.deepEqual(chunks.find((chunk) => (chunk as { type?: string }).type === 'permission-request'), { type: 'permission-request', requestId: '77', kind: 'command', detail: 'echo hidden' })
   assert.deepEqual(approved, { approved: true })
+  driver.dispose()
+})
+
+test('Codex requestUserInput 转成公共问题事件并回传结构化回答', async () => {
+  let answer: unknown = null
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-agent'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id?: number; method?: string; result?: unknown }
+        if (request.method === 'initialize') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        } else if (request.method === 'thread/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'thread-question' } } })}\n`)
+        } else if (request.method === 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'turn-question' } } })}\n`)
+          stdout.write(`${JSON.stringify({
+            jsonrpc: '2.0',
+            id: 88,
+            method: 'item/tool/requestUserInput',
+            params: {
+              questions: [{ id: 'framework', question: '选择框架', header: '框架', options: [{ label: 'React' }, { label: 'Vue' }] }],
+            },
+          })}\n`)
+        } else if (request.id === 88) {
+          answer = request.result
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { turn: { id: 'turn-question', status: 'completed' } } })}\n`)
+        }
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-question', messages: [], prompt: '创建页面' })) {
+    chunks.push(chunk)
+    if (chunk.type === 'question-request') {
+      driver.respondQuestion('codex-question', {
+        requestId: chunk.requestId,
+        answers: [{ id: 'framework', selected: ['React'] }],
+      })
+    }
+  }
+
+  assert.deepEqual(chunks.find((chunk) => chunk.type === 'question-request'), {
+    type: 'question-request',
+    requestId: '88',
+    questions: [{ id: 'framework', question: '选择框架', header: '框架', options: [{ label: 'React' }, { label: 'Vue' }] }],
+  })
+  assert.deepEqual(answer, { answers: { framework: { answers: ['React'] } } })
   driver.dispose()
 })
 

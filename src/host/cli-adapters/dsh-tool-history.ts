@@ -1,4 +1,4 @@
-import type { CodingNsCliToolObservation } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentToolEvent } from '../../shared/contracts/cli-adapter.js'
 import type {
   CodingNsNativeSessionBridge,
   CodingNsNativeToolCallHandle,
@@ -24,7 +24,7 @@ const TRUNCATION_MARKER = '\n...[内容因长度限制已截断]'
 /**
  * 所有外部 Agent 共用的 DSH 工具历史投影器。
  *
- * 驱动只需要产出统一的 tool-running 观察事件；这里负责生命周期聚合、工具别名、
+ * 驱动只需要产出统一的 tool-event 观察事件；这里负责生命周期聚合、工具别名、
  * 参数修正、结果文本和 diff 元数据，最后经唯一的原生 Session 桥接落盘。
  */
 export class CodingNsDshToolHistoryProjector {
@@ -38,7 +38,7 @@ export class CodingNsDshToolHistoryProjector {
     private readonly sessionId: string,
   ) {}
 
-  observe(event: CodingNsCliToolObservation): void {
+  observe(event: CodingNsAgentToolEvent): void {
     const explicitCallId = event.callId?.trim()
     const callId = explicitCallId || this.nextAnonymousCallId()
     const key = explicitCallId ? `id:${explicitCallId}` : `anonymous:${callId}`
@@ -57,12 +57,16 @@ export class CodingNsDshToolHistoryProjector {
     record.toolName = toolName
     this.assign(record, 'input', input, 'snapshot')
     if (event.output !== undefined) {
-      this.assign(record, 'output', event.output, event.outputMode ?? 'delta')
+      if (event.outputMode === undefined) throw new Error('工具输出事件缺少 outputMode')
+      this.assign(record, 'output', event.output, event.outputMode)
     }
     this.assign(record, 'error', event.error, 'snapshot')
     if (event.status === 'failed' || event.error !== undefined) record.failed = true
     if (record.handle === null) record.handle = this.appendCall(record)
     this.records.set(key, record)
+    if (event.status === 'completed' || event.status === 'failed') {
+      this.settle(record, record.failed)
+    }
   }
 
   /** 流结束时补齐 Provider 遗漏的终态，避免原生组件永久停留在运行中。 */

@@ -1,6 +1,6 @@
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
-import type { CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
 import { CLAUDE_CATALOG, enrichEfforts, isProviderDefaultModel } from './model-catalog.js'
@@ -32,7 +32,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     if (input.modelId && !isProviderDefaultModel(input.modelId)) args.push('--model', input.modelId)
     return args
   }
-  protected parseEvent(value: Record<string, unknown>, input: CodingNsCliTurnInput): readonly CodingNsCliStreamChunk[] {
+  protected parseEvent(value: Record<string, unknown>, input: CodingNsCliTurnInput): readonly CodingNsAgentEvent[] {
     const event = value.type === 'stream_event' && typeof value.event === 'object' && value.event !== null ? value.event as Record<string, unknown> : value
     const delta = typeof event.delta === 'object' && event.delta !== null ? event.delta as Record<string, unknown> : null
     if (event.type === 'content_block_delta' && delta?.type === 'text_delta' && typeof delta.text === 'string') return [{ type: 'text-delta', text: delta.text }]
@@ -43,7 +43,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     if ((value.type === 'assistant' || value.type === 'user') && typeof value.message === 'object' && value.message !== null) {
       const message = value.message as Record<string, unknown>
       const content = Array.isArray(message.content) ? message.content : []
-      return content.flatMap((part): CodingNsCliStreamChunk[] => {
+      return content.flatMap((part): CodingNsAgentEvent[] => {
         if (!part || typeof part !== 'object') return []
         const item = part as Record<string, unknown>
         if (item.type === 'tool_use') {
@@ -61,7 +61,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   }
 }
 
-function claudeToolUse(item: Record<string, unknown>): CodingNsCliStreamChunk | null {
+function claudeToolUse(item: Record<string, unknown>): CodingNsAgentEvent | null {
   const toolName = firstToolText(item.name, item.toolName)
   if (toolName === undefined) return null
   const callId = firstToolText(item.id, item.tool_use_id, item.toolUseId)
@@ -69,7 +69,7 @@ function claudeToolUse(item: Record<string, unknown>): CodingNsCliStreamChunk | 
   const agentId = firstToolText(item.agentId, item.agent_id)
   const detail = serializeToolValue(item.detail)
   return {
-    type: 'tool-running',
+    type: 'tool-event',
     toolName,
     status: 'running',
     ...(callId ? { callId } : {}),
@@ -79,7 +79,7 @@ function claudeToolUse(item: Record<string, unknown>): CodingNsCliStreamChunk | 
   }
 }
 
-function claudeToolResult(item: Record<string, unknown>): CodingNsCliStreamChunk | null {
+function claudeToolResult(item: Record<string, unknown>): CodingNsAgentEvent | null {
   const callId = firstToolText(item.tool_use_id, item.toolUseId, item.callId)
   if (callId === undefined) return null
   const failed = item.is_error === true || item.isError === true
@@ -87,7 +87,7 @@ function claudeToolResult(item: Record<string, unknown>): CodingNsCliStreamChunk
   const agentId = firstToolText(item.agentId, item.agent_id)
   const detail = serializeToolValue(item.detail)
   return {
-    type: 'tool-running',
+    type: 'tool-event',
     toolName: firstToolText(item.name, item.toolName) ?? 'tool',
     callId,
     status: failed ? 'failed' : 'completed',

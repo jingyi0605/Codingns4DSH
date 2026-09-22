@@ -1,4 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis'
+import type {
+  CodingNsAgentQuestion,
+  CodingNsAgentQuestionResponse,
+} from '../shared/contracts/cli-adapter.js'
 
 /**
  * DSH Host 原生会话服务的最小运行时面。
@@ -37,6 +41,24 @@ export interface CodingNsNativeToolResult {
   readonly meta?: unknown
 }
 
+export type CodingNsNativeApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+
+/** 公共消息投影层交给 DSH 原生权限服务的请求。 */
+export interface CodingNsNativeApprovalRequest {
+  readonly requestId: string
+  readonly toolName: string
+  readonly callId?: string
+  readonly reason?: string
+  readonly signal?: AbortSignal
+}
+
+/** 公共消息投影层交给 DSH 原生问题服务的请求。 */
+export interface CodingNsNativeQuestionRequest {
+  readonly requestId: string
+  readonly questions: readonly CodingNsAgentQuestion[]
+  readonly signal?: AbortSignal
+}
+
 export interface CodingNsNativeSessionController {
   create?(request: { readonly sessionId?: string; readonly cwd?: string }): Promise<{ readonly sessionId: string }>
   list?(request?: unknown, signal?: AbortSignal): Promise<{ readonly items: readonly unknown[] }>
@@ -70,6 +92,10 @@ export interface CodingNsNativeSessionBridge {
   appendToolCall?(sessionId: string, call: CodingNsNativeToolCall): CodingNsNativeToolCallHandle | null
   /** 追加与 appendToolCall 配对的只读结果；不会再次执行工具。 */
   appendToolResult?(handle: CodingNsNativeToolCallHandle, result: CodingNsNativeToolResult): boolean
+  /** 使用 DSH 原生 approval 组件请求一次权限决定；服务不可用时拒绝。 */
+  requestApproval?(sessionId: string, request: CodingNsNativeApprovalRequest): Promise<CodingNsNativeApprovalOutcome>
+  /** 使用 DSH 原生 userQuestions 组件提问；服务不可用或取消时返回 null。 */
+  askQuestions?(sessionId: string, request: CodingNsNativeQuestionRequest): Promise<CodingNsAgentQuestionResponse | null>
   /** 从 DSH 原生侧栏归档会话；控制器不可用时返回 false。 */
   archive?(sessionId: string): Promise<boolean>
   /** 恢复 DSH 原生侧栏中的归档会话；控制器不可用时返回 false。 */
@@ -176,6 +202,39 @@ export function createCodingNsNativeSessionBridge(ctx: Context): CodingNsNativeS
       })
       return true
     },
+    async requestApproval(sessionId, request) {
+      const agent = nativeAgent(ctx, sessionId)
+      const approval = nativeApproval(ctx)
+      if (agent === null || approval === null) return 'unavailable'
+      try {
+        const outcome = await approval.request({
+          agent,
+          toolName: request.toolName,
+          ...(request.callId ? { callId: request.callId } : {}),
+          ...(request.reason ? { reason: request.reason } : {}),
+          ...(request.signal === undefined ? {} : { signal: request.signal }),
+        })
+        return isApprovalOutcome(outcome) ? outcome : 'unavailable'
+      } catch {
+        return request.signal?.aborted ? 'cancelled' : 'unavailable'
+      }
+    },
+    async askQuestions(sessionId, request) {
+      const agent = nativeAgent(ctx, sessionId)
+      const userQuestions = nativeUserQuestions(ctx)
+      if (agent === null || userQuestions === null) return null
+      try {
+        const answer = await userQuestions.ask({
+          agent,
+          questions: request.questions,
+          ...(request.signal === undefined ? {} : { signal: request.signal }),
+        })
+        if (!isQuestionAnswer(answer)) return null
+        return { requestId: request.requestId, answers: answer.answers }
+      } catch {
+        return null
+      }
+    },
     async archive(sessionId) {
       const current = currentWorkspaceController()
       if (sessionId.trim() === '' || current?.archiveSession === undefined) return false
@@ -204,6 +263,18 @@ export function createCodingNsNativeSessionBridge(ctx: Context): CodingNsNativeS
 interface AppendableSession {
   snapshotEvents(): readonly unknown[]
   append(type: string, data: unknown, options?: unknown): unknown
+}
+
+interface NativeAgentRegistry {
+  get(sessionId: string): unknown
+}
+
+interface NativeApprovalService {
+  request(request: Record<string, unknown>): Promise<unknown>
+}
+
+interface NativeUserQuestionService {
+  ask(request: Record<string, unknown>): Promise<unknown>
 }
 
 function appendableSession(value: unknown): AppendableSession | null {
@@ -252,4 +323,33 @@ function isWorkspaceController(value: unknown): value is CodingNsNativeWorkspace
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function nativeAgent(ctx: Context, sessionId: string): unknown | null {
+  const value: unknown = ctx.get('agents')
+  if (!isRecord(value) || typeof value.get !== 'function') return null
+  try { return (value as unknown as NativeAgentRegistry).get(sessionId) ?? null } catch { return null }
+}
+
+function nativeApproval(ctx: Context): NativeApprovalService | null {
+  const value: unknown = ctx.get('approval')
+  return isRecord(value) && typeof value.request === 'function' ? value as unknown as NativeApprovalService : null
+}
+
+function nativeUserQuestions(ctx: Context): NativeUserQuestionService | null {
+  const value: unknown = ctx.get('userQuestions')
+  return isRecord(value) && typeof value.ask === 'function' ? value as unknown as NativeUserQuestionService : null
+}
+
+function isApprovalOutcome(value: unknown): value is CodingNsNativeApprovalOutcome {
+  return value === 'allowed-once' || value === 'rejected' || value === 'cancelled' || value === 'unavailable'
+}
+
+function isQuestionAnswer(value: unknown): value is Omit<CodingNsAgentQuestionResponse, 'requestId'> {
+  if (!isRecord(value) || !Array.isArray(value.answers)) return false
+  return value.answers.every((answer) => isRecord(answer)
+    && typeof answer.id === 'string'
+    && Array.isArray(answer.selected)
+    && answer.selected.every((item) => typeof item === 'string')
+    && (answer.custom === undefined || typeof answer.custom === 'string'))
 }

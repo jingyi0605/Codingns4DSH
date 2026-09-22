@@ -150,6 +150,46 @@ test('原生会话桥接把外部工具保存为只读 call/result 事件且不�
   ])
 })
 
+test('原生会话桥接通过 DSH approval 和 userQuestions 服务完成交互', async () => {
+  const agent = { id: 'interactive-session' }
+  const approvalRequests = []
+  const questionRequests = []
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      if (name === 'agents') return { get(id: string) { return id === agent.id ? agent : undefined } }
+      if (name === 'approval') return {
+        async request(request: unknown) {
+          approvalRequests.push(request)
+          return 'allowed-once'
+        },
+      }
+      if (name === 'userQuestions') return {
+        async ask(request: unknown) {
+          questionRequests.push(request)
+          return { answers: [{ id: 'language', selected: ['TypeScript'] }] }
+        },
+      }
+      return undefined
+    },
+  } as never)
+
+  assert.equal(await bridge.requestApproval?.('interactive-session', {
+    requestId: 'permission-1',
+    toolName: 'edit',
+    callId: 'edit-1',
+    reason: '修改文件',
+  }), 'allowed-once')
+  assert.deepEqual(await bridge.askQuestions?.('interactive-session', {
+    requestId: 'question-1',
+    questions: [{ id: 'language', question: '选择语言' }],
+  }), {
+    requestId: 'question-1',
+    answers: [{ id: 'language', selected: ['TypeScript'] }],
+  })
+  assert.deepEqual(approvalRequests, [{ agent, toolName: 'edit', callId: 'edit-1', reason: '修改文件' }])
+  assert.deepEqual(questionRequests, [{ agent, questions: [{ id: 'language', question: '选择语言' }] }])
+})
+
 test('原生会话桥接通过 WorkspaceController 同步侧栏归档状态', async () => {
   const calls: string[] = []
   const bridge = createCodingNsNativeSessionBridge({

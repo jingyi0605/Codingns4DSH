@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
-import type { CodingNsCliModelCatalog, CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsCliModelCatalog, CodingNsAgentEvent, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
@@ -18,7 +18,7 @@ export interface PiAgentDriverOptions {
 
 /** Pi Agent 的 --mode rpc 适配器。Pi 的长期 RPC 细节被限制在本文件和标准进程层内。 */
 export class PiAgentDriver implements CodingNsCliDriver {
-  readonly descriptor = { id: 'pi', name: 'Pi Agent', protocol: 'json-rpc', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'steer'] as const } as const
+  readonly descriptor = { id: 'pi', name: 'Pi Agent', protocol: 'json-rpc', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'steer'] as const } as const
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
@@ -74,7 +74,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
     })
   }
 
-  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk> {
+  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) throw new Error('Pi Agent 未安装')
     const session = this.getSession(input.sessionId, command, input.cwd, input.providerSessionId)
@@ -254,7 +254,7 @@ function parsePiCatalog(value: unknown): CodingNsCliModelCatalog {
   return { groups: [{ id: 'pi', name: 'Pi', models: [...new Map(items.map((item) => [item.id, item])).values()] }], currentModel: null, currentEffort: null }
 }
 
-function piMessageToChunk(message: Record<string, any>): CodingNsCliStreamChunk | null {
+function piMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | null {
   const params = isRecord(message.params) ? message.params : message
   const event = isRecord(params.item) ? params.item : params
   const assistantEvent = isRecord(params.assistantMessageEvent) ? params.assistantMessageEvent : null
@@ -282,7 +282,7 @@ function piMessageToChunk(message: Record<string, any>): CodingNsCliStreamChunk 
       failed ? 'failed' : type.includes('end') || type.includes('completed') || toolResultMessage !== null ? 'completed' : 'running',
     )
     return {
-      type: 'tool-running',
+      type: 'tool-event',
       toolName,
       status,
       ...(callId ? { callId } : {}),

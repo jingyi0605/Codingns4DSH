@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import readline from 'node:readline'
 import type {
   CodingNsCliModelCatalog,
-  CodingNsCliStreamChunk,
+  CodingNsAgentEvent,
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
@@ -119,7 +119,6 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
   private cachedBinary: string | null = null
-  private cachedModels: CodingNsCliModelCatalog | null = null
   private readonly processes = new Set<ChildProcessWithoutNullStreams>()
 
   constructor(options: CommandCodeDriverOptions = {}) {
@@ -147,7 +146,6 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {
-    if (this.cachedModels !== null) return this.cachedModels
     const detection = await this.detect()
     if (!detection.installed || detection.command === null) return emptyCatalog()
     let stdout = ''
@@ -180,7 +178,6 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     const configuredEffort = currentModel !== null && isRecord(config?.reasoningEffort) ? config.reasoningEffort[currentModel] : undefined
     const currentEffort = typeof configuredEffort === 'string' && VALID_EFFORTS.has(configuredEffort) ? configuredEffort : null
     const result = { groups, currentModel, currentEffort } satisfies CodingNsCliModelCatalog
-    if (groups.length > 0) this.cachedModels = result
     return result
   }
 
@@ -191,7 +188,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     }
   }
 
-  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk> {
+  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const binary = this.cachedBinary ?? (await this.detect()).command
     if (binary === null) throw new Error('Command Code 未安装')
 
@@ -243,13 +240,12 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   dispose(): void {
     for (const child of this.processes) { try { child.kill('SIGTERM') } catch { /* 进程可能已退出 */ } }
     this.processes.clear()
-    this.cachedModels = null
     this.cachedBinary = null
   }
 }
 
-function commandCodeEventChunks(event: Record<string, unknown>, cancelled: boolean): CodingNsCliStreamChunk[] {
-  const chunks: CodingNsCliStreamChunk[] = []
+function commandCodeEventChunks(event: Record<string, unknown>, cancelled: boolean): CodingNsAgentEvent[] {
+  const chunks: CodingNsAgentEvent[] = []
   const type = textValue(event.type).trim().toLowerCase()
   const sessionId = textValue(event.sessionId ?? event.session_id ?? recordValue(event.session)?.id ?? recordValue(event.result)?.sessionId).trim()
   if (sessionId) chunks.push({ type: 'session-binding', providerSessionId: sessionId })
@@ -283,7 +279,7 @@ function commandCodeEventChunks(event: Record<string, unknown>, cancelled: boole
   return chunks
 }
 
-function appendMessageSnapshots(chunks: CodingNsCliStreamChunk[], event: Record<string, unknown>): void {
+function appendMessageSnapshots(chunks: CodingNsAgentEvent[], event: Record<string, unknown>): void {
   const payload = recordValue(event.message ?? event.data) ?? event
   if (Array.isArray(payload.content)) {
     const snapshots = new Map<'reasoning' | 'text', string[]>()
@@ -309,7 +305,7 @@ function appendMessageSnapshots(chunks: CodingNsCliStreamChunk[], event: Record<
   if (text) chunks.push({ type: 'text-snapshot', text })
 }
 
-function readToolChunk(event: Record<string, unknown>, status: 'started' | 'running' | 'completed' | 'failed'): CodingNsCliStreamChunk | null {
+function readToolChunk(event: Record<string, unknown>, status: 'started' | 'running' | 'completed' | 'failed'): CodingNsAgentEvent | null {
   const callId = textValue(event.callId ?? event.call_id ?? event.toolUseId ?? event.tool_use_id ?? event.id)
   const fn = recordValue(event.function)
   const toolName = textValue(event.name ?? event.toolName ?? event.tool ?? fn?.name) || 'tool'
@@ -320,7 +316,7 @@ function readToolChunk(event: Record<string, unknown>, status: 'started' | 'runn
   const detail = serializeToolValue(event.detail ?? event.metadata)
   if (!callId && !toolName) return null
   return {
-    type: 'tool-running',
+    type: 'tool-event',
     toolName,
     ...(callId ? { callId } : {}),
     ...(input !== undefined ? { input: structuredText(input) } : {}),
@@ -368,7 +364,7 @@ function writeTranscript(path: string, input: CodingNsCliTurnInput): void {
 }
 
 function extractText(content: unknown): string { if (typeof content === 'string') return content; if (!Array.isArray(content)) return ''; return content.filter(isRecord).map((part) => typeof part.text === 'string' ? part.text : '').join('\n').trim() }
-function usageChunk(value: Record<string, unknown>): CodingNsCliStreamChunk { return { type: 'usage', inputTokens: numberValue(value.inputTokens), outputTokens: numberValue(value.outputTokens) } }
+function usageChunk(value: Record<string, unknown>): CodingNsAgentEvent { return { type: 'usage', inputTokens: numberValue(value.inputTokens), outputTokens: numberValue(value.outputTokens) } }
 function numberValue(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) ? value : 0 }
 function safeId(value: string): string { return value.replace(/[^a-zA-Z0-9._-]+/gu, '_').slice(0, 96) || 'default' }
 function parseJson(value: string): Record<string, unknown> | null { try { const parsed: unknown = JSON.parse(value); return isRecord(parsed) ? parsed : null } catch { return null } }

@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
-import type { CodingNsCliModelCatalog, CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
 import { JsonRpcProcess } from './json-rpc-process.js'
@@ -13,6 +13,10 @@ import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } 
 /** Gemini 官方 ACP 优先；不支持 ACP 的旧 CLI 自动回退 headless stream-json。 */
 export class GeminiCliDriver extends StandardStreamDriver {
   private readonly sessionRoots: readonly string[]
+  private readonly interactions = new Map<string, {
+    readonly rpc: JsonRpcProcess
+    readonly permissions: Map<string, number | string>
+  }>()
 
   constructor(options: StandardStreamDriverOptions = {}) {
     super({ id: 'gemini', name: 'Gemini CLI', protocol: 'acp', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission'] }, { binaries: ['gemini'] }, options)
@@ -60,7 +64,20 @@ export class GeminiCliDriver extends StandardStreamDriver {
     return args
   }
 
-  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk> {
+  respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
+    const state = this.interactions.get(sessionId)
+    const rpcId = state?.permissions.get(response.requestId)
+    if (state === undefined || rpcId === undefined) throw new Error('Gemini 权限请求不存在')
+    state.permissions.delete(response.requestId)
+    state.rpc.respond(rpcId, { outcome: { outcome: 'selected', optionId: response.approved ? 'allow-once' : 'reject-once' } })
+  }
+
+  override dispose(): void {
+    this.interactions.clear()
+    super.dispose()
+  }
+
+  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     try {
       yield* this.executeAcpTurn(input)
       return
@@ -73,7 +90,7 @@ export class GeminiCliDriver extends StandardStreamDriver {
     }
   }
 
-  private async *executeAcpTurn(input: CodingNsCliTurnInput): AsyncGenerator<CodingNsCliStreamChunk> {
+  private async *executeAcpTurn(input: CodingNsCliTurnInput): AsyncGenerator<CodingNsAgentEvent> {
     const detection = await this.detect()
     const command = detection.command
     if (command === null) throw new Error('Gemini CLI 未安装')
@@ -84,6 +101,17 @@ export class GeminiCliDriver extends StandardStreamDriver {
       cwd: input.cwd,
       ...(runtimeSettings === null ? {} : { env: runtimeSettings.env }),
       spawn: this.runSpawn,
+    })
+    const interaction = {
+      rpc,
+      permissions: new Map<string, number | string>(),
+    }
+    this.interactions.set(input.sessionId, interaction)
+    rpc.setServerRequestHandler((message) => {
+      const requestId = interactionRequestId(message)
+      if (requestId === null || message.id === undefined || message.id === null) return { outcome: { outcome: 'cancelled' } }
+      interaction.permissions.set(requestId, message.id)
+      return new Promise<never>(() => undefined)
     })
     try {
       await rpc.request('initialize', {
@@ -118,6 +146,7 @@ export class GeminiCliDriver extends StandardStreamDriver {
       }
       if (!finished) yield { type: 'finish', reason: geminiPromptReason(promptResponse, input.signal) }
     } finally {
+      if (this.interactions.get(input.sessionId) === interaction) this.interactions.delete(input.sessionId)
       rpc.dispose()
       await runtimeSettings?.dispose()
     }
@@ -264,14 +293,14 @@ async function readSettingsFile(path: string): Promise<SettingsFile> {
   }
 }
 
-function geminiAcpMessageToChunk(message: Record<string, any>): CodingNsCliStreamChunk | null {
+function geminiAcpMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | null {
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
   const method = typeof message.method === 'string' ? message.method.toLowerCase() : ''
   const type = typeof update.sessionUpdate === 'string' ? update.sessionUpdate.toLowerCase() : typeof update.type === 'string' ? update.type.toLowerCase() : ''
   const text = acpText(update.delta ?? update.text ?? update.content ?? update.message)
   if (method.includes('permission') || type.includes('permission')) {
-    const requestId = firstString(update, ['requestId', 'request_id', 'id'])
+    const requestId = interactionRequestId(message)
     if (requestId) return { type: 'permission-request', requestId, kind: firstString(update, ['kind', 'permission']) ?? 'unknown', ...(text ? { detail: text } : {}) }
   }
   if (type.includes('thought') || type.includes('reason') || method.includes('reason')) return text ? { type: 'reasoning-delta', text } : null
@@ -292,7 +321,7 @@ function geminiAcpMessageToChunk(message: Record<string, any>): CodingNsCliStrea
           ? 'completed'
           : 'running'
       return {
-        type: 'tool-running',
+        type: 'tool-event',
         toolName: name ?? 'tool',
         status: normalizeToolStatus(tool.status ?? tool.state ?? update.status, fallback),
         ...(callId ? { callId } : {}),
@@ -310,6 +339,20 @@ function geminiAcpMessageToChunk(message: Record<string, any>): CodingNsCliStrea
   if (type.includes('turn_completed') || type.includes('turn_complete') || type.includes('completed') || type.includes('prompt_end') || type === 'done' || type === 'result') return { type: 'finish', reason: 'stop' }
   if (type.includes('error') || type.includes('failed')) return { type: 'finish', reason: 'error' }
   return null
+}
+
+function interactionRequestId(message: Record<string, any>): string | null {
+  const params = isRecord(message.params) ? message.params : message
+  const update = isRecord(params.update) ? params.update : params
+  const method = typeof message.method === 'string' ? message.method.toLowerCase() : ''
+  const type = typeof update.sessionUpdate === 'string'
+    ? update.sessionUpdate.toLowerCase()
+    : typeof update.type === 'string'
+      ? update.type.toLowerCase()
+      : ''
+  if (!method.includes('permission') && !type.includes('permission')) return null
+  const value = update.requestId ?? update.request_id ?? update.id ?? message.id
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : null
 }
 
 function readSessionId(value: unknown): string | null {

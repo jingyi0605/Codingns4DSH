@@ -1,13 +1,16 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type {
   CodingNsCliModelCatalog,
-  CodingNsCliStreamChunk,
+  CodingNsAgentEvent,
+  CodingNsAgentQuestionResponse,
+  CodingNsAgentPermissionResponse,
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { HttpSseClient, type SseEvent } from './http-sse-client.js'
 import { isProviderDefaultModel } from './model-catalog.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { isQuestionEvent, questionAnswersList, readAgentQuestions } from './interaction-events.js'
 
 const WINDOWS = process.platform === 'win32'
 const DEFAULT_BINARIES = WINDOWS ? ['opencode.exe', 'opencode'] : ['opencode']
@@ -24,7 +27,7 @@ export interface OpenCodeDriverOptions {
 
 /** OpenCode 的 server/SSE 适配器，向上只暴露 CodingNS 标准流。 */
 export class OpenCodeDriver implements CodingNsCliDriver {
-  readonly descriptor = { id: 'opencode', name: 'OpenCode', protocol: 'http-sse', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage'] as const } as const
+  readonly descriptor = { id: 'opencode', name: 'OpenCode', protocol: 'http-sse', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] as const } as const
   private readonly binaries: readonly string[]
   private readonly serverUrls: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
@@ -35,6 +38,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   private cachedServer: string | null = null
   private readonly managedServers = new Map<string, { url: string; child: ChildProcessWithoutNullStreams }>()
   private readonly sessions = new Map<string, string>()
+  private readonly interactionTargets = new Map<string, string>()
 
   constructor(options: OpenCodeDriverOptions = {}) {
     this.binaries = options.binaries ?? DEFAULT_BINARIES
@@ -93,7 +97,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     }
   }
 
-  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk> {
+  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const server = await this.ensureServer(false, input.cwd)
     if (server === null) throw new Error('OpenCode server 未运行，请先启动 `opencode serve`')
     let sessionId = input.providerSessionId ?? this.sessions.get(input.sessionId)
@@ -103,6 +107,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       sessionId = await this.createSession(server, input)
       this.sessions.set(input.sessionId, sessionId)
     }
+    this.interactionTargets.set(input.sessionId, server)
 
     const streamController = new AbortController()
     let aborted = false
@@ -151,9 +156,32 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       else if (finished || emitted) yield { type: 'finish', reason: 'stop' }
       else throw new Error('OpenCode 未返回可识别的事件')
     } finally {
+      if (this.interactionTargets.get(input.sessionId) === server) this.interactionTargets.delete(input.sessionId)
       input.signal?.removeEventListener('abort', abort)
       streamController.abort()
     }
+  }
+
+  async respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): Promise<void> {
+    const server = this.interactionTargets.get(sessionId)
+    if (server === undefined) throw new Error('OpenCode 权限请求已结束')
+    const result = await this.http.json(`${server}/permission/${encodeURIComponent(response.requestId)}/reply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reply: response.approved ? 'once' : 'reject' }),
+    })
+    if (result.status < 200 || result.status >= 300) throw new Error(`OpenCode 权限回复失败（HTTP ${result.status}）`)
+  }
+
+  async respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): Promise<void> {
+    const server = this.interactionTargets.get(sessionId)
+    if (server === undefined) throw new Error('OpenCode 问题请求已结束')
+    const result = await this.http.json(`${server}/question/${encodeURIComponent(response.requestId)}/reply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answers: questionAnswersList(response) }),
+    })
+    if (result.status < 200 || result.status >= 300) throw new Error(`OpenCode 问题回复失败（HTTP ${result.status}）`)
   }
 
   dispose(): void {
@@ -280,10 +308,29 @@ function parseEvent(event: SseEvent): Record<string, unknown> | null {
   } catch { return null }
 }
 
-function eventToChunk(event: Record<string, unknown>, cumulative: Map<string, number>): CodingNsCliStreamChunk | null {
+function eventToChunk(event: Record<string, unknown>, cumulative: Map<string, number>): CodingNsAgentEvent | null {
   const type = typeof event.type === 'string' ? event.type : ''
   const properties = asRecord(event.properties)
   const part = asRecord(event.part) ?? asRecord(properties?.part) ?? properties ?? event
+  if (isQuestionEvent(type)) {
+    const requestId = firstToolText(part.id, part.requestID, part.requestId, properties?.id)
+    const questions = readAgentQuestions(part.questions ?? properties?.questions ?? part)
+    if (requestId !== undefined && questions.length > 0) return { type: 'question-request', requestId, questions }
+  }
+  if (type.toLowerCase().includes('permission')) {
+    const requestId = firstToolText(part.id, part.requestID, part.requestId, properties?.id)
+    if (requestId !== undefined) {
+      const kind = firstToolText(part.permission, part.kind, part.type) ?? 'unknown'
+      const detail = serializeToolValue(part.patterns ?? part.metadata ?? part.detail)
+      return {
+        type: 'permission-request',
+        requestId,
+        kind,
+        toolName: firstToolText(part.tool, part.toolName) ?? kind,
+        ...(detail === undefined ? {} : { detail }),
+      }
+    }
+  }
   const partType = typeof part.type === 'string' ? part.type : ''
   const key = typeof part.id === 'string' ? part.id : `${type}:${partType}`
   const text = typeof part.text === 'string' ? part.text : typeof part.content === 'string' ? part.content : typeof part.delta === 'string' ? part.delta : null
@@ -309,7 +356,7 @@ function eventToChunk(event: Record<string, unknown>, cumulative: Map<string, nu
     const agentId = firstToolText(state.agentId, state.agent_id, part.agentId, part.agent_id)
     const detail = serializeToolValue(state.detail ?? part.detail)
     return {
-      type: 'tool-running',
+      type: 'tool-event',
       toolName,
       status: normalizeToolStatus(state.status, fallback),
       ...(callId ? { callId } : {}),
@@ -336,7 +383,7 @@ function isFinishedEvent(event: Record<string, unknown>, emitted: boolean): bool
   return status === 'idle' || status === 'completed' || status === 'success'
 }
 
-function responseChunks(value: unknown, cumulative: Map<string, number>): CodingNsCliStreamChunk[] {
+function responseChunks(value: unknown, cumulative: Map<string, number>): CodingNsAgentEvent[] {
   const record = asRecord(value)
   if (record === null) return []
   const chunk = eventToChunk(record, cumulative)

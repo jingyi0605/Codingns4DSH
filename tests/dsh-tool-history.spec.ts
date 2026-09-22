@@ -4,6 +4,14 @@ import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { CodingNsDshToolHistoryProjector } from '../dist/host/cli-adapters/dsh-tool-history.js'
+import { CommandCodeDriver } from '../dist/host/cli-adapters/command-code-driver.js'
+import { ClaudeCodeDriver } from '../dist/host/cli-adapters/claude-driver.js'
+import { KimiCliDriver } from '../dist/host/cli-adapters/kimi-driver.js'
+import { GeminiCliDriver } from '../dist/host/cli-adapters/gemini-driver.js'
+import { PiAgentDriver } from '../dist/host/cli-adapters/pi-driver.js'
+import { CodexAppServerDriver } from '../dist/host/cli-adapters/codex-driver.js'
+import { OpenCodeDriver } from '../dist/host/cli-adapters/opencode-driver.js'
+import { GrokBuildDriver } from '../dist/host/cli-adapters/grok-driver.js'
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -26,9 +34,9 @@ function createSink() {
 test('公共工具投影层聚合生命周期并提取 Provider 文本块', () => {
   const sink = createSink()
   const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'session-1')
-  projector.observe({ type: 'tool-running', toolName: 'read_directory', callId: 'call-1', input: '{"path":"."}', status: 'running' })
+  projector.observe({ type: 'tool-event', toolName: 'read_directory', callId: 'call-1', input: '{"path":"."}', status: 'running' })
   projector.observe({
-    type: 'tool-running',
+    type: 'tool-event',
     toolName: 'tool',
     callId: 'call-1',
     output: '[{"type":"text","text":"Found 2 items"}]',
@@ -48,14 +56,14 @@ test('公共工具投影层统一映射 edit_file 并生成 DSH diff 元数据',
   const sink = createSink()
   const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'session-edit')
   projector.observe({
-    type: 'tool-running',
+    type: 'tool-event',
     toolName: 'edit_file',
     callId: 'edit-1',
     input: JSON.stringify({ filePath: '/workspace/a.ts', oldString: 'old', newString: 'new', replaceAll: true }),
     status: 'running',
   })
   projector.observe({
-    type: 'tool-running',
+    type: 'tool-event',
     toolName: 'tool',
     callId: 'edit-1',
     output: 'Updated /workspace/a.ts',
@@ -79,8 +87,8 @@ test('公共工具投影层统一映射 edit_file 并生成 DSH diff 元数据',
 test('公共工具投影层把 shell 别名归一为 bash 且失败终态只记录一次', () => {
   const sink = createSink()
   const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'session-shell')
-  projector.observe({ type: 'tool-running', toolName: 'shell_command', callId: 'shell-1', input: '{"command":"exit 2"}', status: 'running' })
-  projector.observe({ type: 'tool-running', toolName: 'tool', callId: 'shell-1', error: 'exit 2', status: 'failed' })
+  projector.observe({ type: 'tool-event', toolName: 'shell_command', callId: 'shell-1', input: '{"command":"exit 2"}', status: 'running' })
+  projector.observe({ type: 'tool-event', toolName: 'tool', callId: 'shell-1', error: 'exit 2', status: 'failed' })
   projector.finalize('error', '不应重复')
 
   assert.equal(sink.calls[0]?.call.name, 'bash')
@@ -90,10 +98,58 @@ test('公共工具投影层把 shell 别名归一为 bash 且失败终态只记�
 test('所有外部 Agent 驱动只产出统一事件，不直接依赖 DSH 原生消息', async () => {
   const directory = join(projectRoot, 'src/host/cli-adapters')
   const files = (await readdir(directory)).filter((file) => file === 'driver.ts' || file.endsWith('-driver.ts'))
-  const forbidden = /native-session-bridge|dsh-tool-history|appendToolCall|appendToolResult|tool\/call|tool\/result|toDshChunks/u
+  const forbidden = /native-session-bridge|dsh-message-projector|dsh-tool-history|appendToolCall|appendToolResult|tool\/call|tool\/result|toDshChunks/u
 
   for (const file of files) {
     const source = await readFile(join(directory, file), 'utf8')
     assert.doesNotMatch(source, forbidden, `${file} 不得绕过统一事件契约直接对接 DSH`)
+  }
+})
+
+test('公共消息链路不保留旧契约、旧工具事件或浏览器权限 RPC', async () => {
+  const adapterDirectory = join(projectRoot, 'src/host/cli-adapters')
+  const adapterFiles = (await readdir(adapterDirectory)).filter((file) => file.endsWith('.ts'))
+  const files = [
+    ...adapterFiles.map((file) => join(adapterDirectory, file)),
+    join(projectRoot, 'src/shared/contracts/cli-adapter.ts'),
+    join(projectRoot, 'src/shared/index.ts'),
+    join(projectRoot, 'src/client/cli-catalog.ts'),
+    join(projectRoot, 'src/host/rpc.ts'),
+  ]
+  const forbidden = /CodingNsCliStreamChunk|CodingNsCliToolObservation|CodingNsCliStreamNormalizer|CodingNsNormalizedCliStreamChunk|CodingNsCliPermissionResponse|tool-running|permission\/respond|respondToPermission/u
+
+  for (const file of files) {
+    assert.doesNotMatch(await readFile(file, 'utf8'), forbidden, `${file} 仍包含旧消息实现`)
+  }
+})
+
+test('八个适配器声明的交互能力与实际回传接口一致', async () => {
+  const drivers = [
+    new CommandCodeDriver(),
+    new ClaudeCodeDriver(),
+    new KimiCliDriver(),
+    new GeminiCliDriver(),
+    new PiAgentDriver(),
+    new CodexAppServerDriver(),
+    new OpenCodeDriver(),
+    new GrokBuildDriver(),
+  ]
+
+  try {
+    for (const driver of drivers) {
+      const capabilities = driver.descriptor.capabilities ?? []
+      assert.equal(
+        capabilities.includes('permission'),
+        typeof driver.respondPermission === 'function',
+        `${driver.descriptor.id} 的权限能力声明与接口不一致`,
+      )
+      assert.equal(
+        capabilities.includes('questions'),
+        typeof driver.respondQuestion === 'function',
+        `${driver.descriptor.id} 的问题能力声明与接口不一致`,
+      )
+    }
+  } finally {
+    for (const driver of drivers) await driver.dispose?.()
   }
 })

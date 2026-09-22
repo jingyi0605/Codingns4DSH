@@ -1,5 +1,5 @@
 import { spawnSync, type SpawnSyncResult } from 'node:child_process'
-import type { CodingNsCliModelCatalog, CodingNsCliStreamChunk } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsCliModelCatalog, CodingNsAgentEvent } from '../../shared/contracts/cli-adapter.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 
 export interface RpcBinaryOptions {
@@ -71,7 +71,7 @@ export function textValue(value: unknown): string | null {
   return null
 }
 
-export function usageChunk(value: unknown): CodingNsCliStreamChunk | null {
+export function usageChunk(value: unknown): CodingNsAgentEvent | null {
   if (!isRecord(value)) return null
   const usage = isRecord(value.usage) ? value.usage : value
   const inputTokens = numberValue(usage.inputTokens ?? usage.input_tokens ?? usage.prompt_tokens)

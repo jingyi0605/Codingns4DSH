@@ -61,8 +61,8 @@ test('Claude stream-json 保留 tool_use 与 tool_result 的完整生命周期',
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'claude-tools', messages: [], prompt: '读取' })) chunks.push(chunk)
   assert.deepEqual(chunks, [
-    { type: 'tool-running', toolName: 'Read', callId: 'claude-call-1', input: '{"file_path":"a.ts"}', status: 'running' },
-    { type: 'tool-running', toolName: 'tool', callId: 'claude-call-1', output: '文件内容', outputMode: 'snapshot', status: 'completed' },
+    { type: 'tool-event', toolName: 'Read', callId: 'claude-call-1', input: '{"file_path":"a.ts"}', status: 'running' },
+    { type: 'tool-event', toolName: 'tool', callId: 'claude-call-1', output: '文件内容', outputMode: 'snapshot', status: 'completed' },
     { type: 'finish', reason: 'stop' },
   ])
 })

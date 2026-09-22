@@ -56,9 +56,62 @@ test('OpenCode SSE 事件转换为标准文本流并绑定远端会话', async (
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'remote-1' },
     { type: 'text-delta', text: '结果' },
-    { type: 'tool-running', toolName: 'shell', callId: 'open-call-1', input: '{"command":"pwd"}', status: 'running' },
-    { type: 'tool-running', toolName: 'shell', callId: 'open-call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' },
+    { type: 'tool-event', toolName: 'shell', callId: 'open-call-1', input: '{"command":"pwd"}', status: 'running' },
+    { type: 'tool-event', toolName: 'shell', callId: 'open-call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' },
     { type: 'finish', reason: 'stop' },
+  ])
+})
+
+test('OpenCode 把权限和问题 SSE 转成公共交互事件并回复原生接口', async () => {
+  const encoder = new TextEncoder()
+  const replies: Array<{ url: string; body: unknown }> = []
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/session') && init.method === 'POST') return new Response(JSON.stringify({ id: 'remote-interaction' }), { status: 200 })
+    if (url.endsWith('/message')) return new Response('{}', { status: 200 })
+    if (url.includes('/reply')) {
+      replies.push({ url, body: JSON.parse(String(init.body)) })
+      return new Response('{}', { status: 200 })
+    }
+    if (url.endsWith('/event')) {
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"permission.asked","properties":{"id":"permission-1","sessionID":"remote-interaction","permission":"edit","patterns":["src/a.ts"]}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"question.asked","properties":{"id":"question-1","sessionID":"remote-interaction","questions":[{"question":"选择框架","header":"框架","options":[{"label":"React"},{"label":"Vue"}]}]}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"session.status","properties":{"status":{"type":"idle"}}}\n\n'))
+        controller.close()
+      } })
+      return new Response(body, { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'opencode-interaction', messages: [], prompt: '执行' })) {
+    chunks.push(chunk)
+    if (chunk.type === 'permission-request') {
+      await driver.respondPermission('opencode-interaction', { requestId: chunk.requestId, approved: true })
+    }
+    if (chunk.type === 'question-request') {
+      await driver.respondQuestion('opencode-interaction', {
+        requestId: chunk.requestId,
+        answers: [{ id: 'question-1', selected: ['React'] }],
+      })
+    }
+  }
+
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'remote-interaction' },
+    { type: 'permission-request', requestId: 'permission-1', kind: 'edit', toolName: 'edit', detail: '["src/a.ts"]' },
+    {
+      type: 'question-request',
+      requestId: 'question-1',
+      questions: [{ id: 'question-1', question: '选择框架', header: '框架', options: [{ label: 'React' }, { label: 'Vue' }] }],
+    },
+    { type: 'finish', reason: 'stop' },
+  ])
+  assert.deepEqual(replies, [
+    { url: 'http://opencode.test/permission/permission-1/reply', body: { reply: 'once' } },
+    { url: 'http://opencode.test/question/question-1/reply', body: { answers: [['React']] } },
   ])
 })
 

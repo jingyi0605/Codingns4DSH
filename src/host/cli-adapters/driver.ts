@@ -1,9 +1,10 @@
 import type {
   CodingNsCliAdapterDescriptor,
+  CodingNsAgentEvent,
+  CodingNsAgentQuestionResponse,
   CodingNsCliModelCatalog,
-  CodingNsCliStreamChunk,
   CodingNsCliTurnInput,
-  CodingNsCliPermissionResponse,
+  CodingNsAgentPermissionResponse,
 } from '../../shared/contracts/cli-adapter.js'
 
 /** 外部 Provider 原始会话的只读存在性状态。 */
@@ -46,8 +47,9 @@ export interface CodingNsCliDriver {
   detect(): Promise<Pick<CodingNsCliAdapterDescriptor, 'installed' | 'version' | 'command'>>
   listModels(): Promise<CodingNsCliModelCatalog>
   probeSession?(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult>
-  executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk>
-  respondPermission?(sessionId: string, response: CodingNsCliPermissionResponse): Promise<void> | void
+  executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent>
+  respondPermission?(sessionId: string, response: CodingNsAgentPermissionResponse): Promise<void> | void
+  respondQuestion?(sessionId: string, response: CodingNsAgentQuestionResponse): Promise<void> | void
   steer?(sessionId: string, prompt: string): Promise<void> | void
   followUp?(sessionId: string, prompt: string): Promise<void> | void
   interrupt?(sessionId: string): Promise<void> | void

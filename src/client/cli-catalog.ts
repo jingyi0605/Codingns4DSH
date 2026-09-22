@@ -124,13 +124,3 @@ function redactCliSessionRecord(record: CodingNsCliSessionRecord): CodingNsCliSe
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
-
-/** 向 Host 发送运行中 Agent 控制命令；权限和凭据永远不在浏览器保存。 */
-export async function callCliControl(
-  rpc: CodingNsRpcClient,
-  action: 'session/steer' | 'session/follow-up' | 'session/interrupt' | 'permission/respond',
-  payload: unknown,
-): Promise<void> {
-  const result = await callCliRpc<unknown>(rpc, action, payload)
-  void result
-}

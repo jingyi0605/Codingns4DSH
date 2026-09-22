@@ -1,8 +1,10 @@
 import type {
+  CodingNsAgentEvent,
+  CodingNsAgentQuestionResponse,
   CodingNsCliAdapterDescriptor,
   CodingNsCliAdapterId,
   CodingNsCliModelCatalog,
-  CodingNsCliPermissionResponse,
+  CodingNsAgentPermissionResponse,
   CodingNsCliSessionConfig,
   CodingNsCliSessionRecord,
   CodingNsCliTurnInput,
@@ -14,7 +16,6 @@ import type {
   CodingNsCliSessionProbeResult,
 } from './driver.js'
 import { CodingNsCliSessionStore } from './session-store.js'
-import { CodingNsCliStreamNormalizer, type CodingNsNormalizedCliStreamChunk } from './stream-normalizer.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 
 export class CodingNsCliAdapterRegistry {
@@ -133,7 +134,7 @@ export class CodingNsCliAdapterRegistry {
     return session !== undefined && (session.adapterId === 'dsh' || this.isEnabled(session.adapterId)) ? session : { adapterId: 'dsh' }
   }
 
-  async *execute(input: CodingNsCliTurnInput & { readonly adapterId: CodingNsCliAdapterId }): AsyncIterable<CodingNsNormalizedCliStreamChunk> {
+  async *execute(input: CodingNsCliTurnInput & { readonly adapterId: CodingNsCliAdapterId }): AsyncIterable<CodingNsAgentEvent> {
     const driver = this.requireEnabledDriver(input.adapterId)
     if (this.archivingSessions.has(input.sessionId)) {
       throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', '外部会话正在归档，不能开始新一轮执行')
@@ -162,38 +163,34 @@ export class CodingNsCliAdapterRegistry {
         status: 'active',
         title: input.prompt,
       })
-      const normalizer = new CodingNsCliStreamNormalizer()
       // Agent Loop 通常已经创建了同名 DSH 原生会话；直接调用 Registry 时才按需补建。
       // 原生服务失败不能阻断外部 Agent，消息仍由现有 llm/stream 链路处理。
       try { await this.nativeSessions?.ensure(input.sessionId, input.cwd) } catch { /* 可选服务降级 */ }
-      for await (const rawChunk of driver.executeTurn(input)) {
-        for (const chunk of normalizer.push(rawChunk)) {
-          if (chunk.type === 'session-binding') {
-            const providerIdentityChanged = chunk.providerSessionId !== current.providerSessionId
-            const { rawStoreRef: previousRawStoreRef, ...currentWithoutRawStoreRef } = current
-            const next = {
-              ...currentWithoutRawStoreRef,
-              providerSessionId: chunk.providerSessionId,
-              ...(chunk.rawStoreRef
-                ? { rawStoreRef: chunk.rawStoreRef }
-                : !providerIdentityChanged && previousRawStoreRef
-                  ? { rawStoreRef: previousRawStoreRef }
-                  : {}),
-            }
-            this.sessions.set(input.sessionId, next)
-            current = next
-            this.sessionStore?.upsert(input.sessionId, {
-              ...next,
-              status: 'active',
-              providerState: 'available',
-              providerCheckedAt: new Date().toISOString(),
-            })
+      for await (const event of driver.executeTurn(input)) {
+        if (event.type === 'session-binding') {
+          const providerIdentityChanged = event.providerSessionId !== current.providerSessionId
+          const { rawStoreRef: previousRawStoreRef, ...currentWithoutRawStoreRef } = current
+          const next = {
+            ...currentWithoutRawStoreRef,
+            providerSessionId: event.providerSessionId,
+            ...(event.rawStoreRef
+              ? { rawStoreRef: event.rawStoreRef }
+              : !providerIdentityChanged && previousRawStoreRef
+                ? { rawStoreRef: previousRawStoreRef }
+                : {}),
           }
-          if (chunk.type === 'finish') this.sessionStore?.upsert(input.sessionId, { ...this.sessions.get(input.sessionId) ?? current, status: chunk.reason === 'error' ? 'error' : 'idle' })
-          yield chunk
+          this.sessions.set(input.sessionId, next)
+          current = next
+          this.sessionStore?.upsert(input.sessionId, {
+            ...next,
+            status: 'active',
+            providerState: 'available',
+            providerCheckedAt: new Date().toISOString(),
+          })
         }
+        if (event.type === 'finish') this.sessionStore?.upsert(input.sessionId, { ...this.sessions.get(input.sessionId) ?? current, status: event.reason === 'error' ? 'error' : 'idle' })
+        yield event
       }
-      for (const chunk of normalizer.flush()) yield chunk
     } catch (error) {
       this.sessionStore?.upsert(input.sessionId, {
         ...this.sessions.get(input.sessionId) ?? current,
@@ -242,11 +239,18 @@ export class CodingNsCliAdapterRegistry {
     }
   }
 
-  async respondPermission(sessionId: string, response: CodingNsCliPermissionResponse): Promise<void> {
+  async respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): Promise<void> {
     const session = this.requireSession(sessionId)
     const driver = this.requireEnabledDriver(session.adapterId)
     if (driver.respondPermission === undefined) throw new CodingNsRpcError('CODINGNS_CLI_UNSUPPORTED', '当前 Agent 不支持权限回传')
     await driver.respondPermission(sessionId, response)
+  }
+
+  async respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): Promise<void> {
+    const session = this.requireSession(sessionId)
+    const driver = this.requireEnabledDriver(session.adapterId)
+    if (driver.respondQuestion === undefined) throw new CodingNsRpcError('CODINGNS_CLI_UNSUPPORTED', '当前 Agent 不支持问题回传')
+    await driver.respondQuestion(sessionId, response)
   }
 
   async steer(sessionId: string, prompt: string, followUp = false): Promise<void> {

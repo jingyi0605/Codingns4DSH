@@ -24,6 +24,7 @@ export type CodingNsCliCapability =
   | 'reasoning'
   | 'usage'
   | 'permission'
+  | 'questions'
   | 'steer'
 
 /** 适配器模型及其可用思考强度。 */
@@ -100,10 +101,33 @@ export interface CodingNsCliTurnInput {
   readonly rawStoreRef?: string
 }
 
-export interface CodingNsCliPermissionResponse {
+export interface CodingNsAgentPermissionResponse {
   readonly requestId: string
   readonly approved: boolean
   readonly reason?: string
+}
+
+/** 外部 Agent 请求用户回答的一道结构化问题。 */
+export interface CodingNsAgentQuestion {
+  readonly id: string
+  readonly question: string
+  readonly detail?: string
+  readonly header?: string
+  readonly options?: readonly {
+    readonly label: string
+    readonly description?: string
+  }[]
+  readonly multiSelect?: boolean
+}
+
+/** 用户对一组外部 Agent 问题的结构化回答。 */
+export interface CodingNsAgentQuestionResponse {
+  readonly requestId: string
+  readonly answers: readonly {
+    readonly id: string
+    readonly selected: readonly string[]
+    readonly custom?: string
+  }[]
 }
 
 export interface CodingNsCliMessage {
@@ -115,11 +139,11 @@ export interface CodingNsCliMessage {
 /**
  * 外部 CLI 已经执行过的工具观察事件。
  *
- * `tool-running` 是现有线协议名称，为兼容旧驱动暂不改名；`status` 才表示真实
- * 生命周期。该事件只能写入只读历史，不能转换成 DSH 的待执行 `tool-call`。
+ * `status` 表示真实生命周期。该事件只能写入只读历史，不能转换成
+ * DSH 的待执行 `tool-call`。
  */
-export interface CodingNsCliToolObservation {
-  readonly type: 'tool-running'
+export interface CodingNsAgentToolEvent {
+  readonly type: 'tool-event'
   readonly toolName: string
   readonly status?: 'started' | 'running' | 'completed' | 'failed'
   readonly callId?: string
@@ -127,7 +151,7 @@ export interface CodingNsCliToolObservation {
   readonly output?: string
   /**
    * output 的线协议语义。delta 表示追加片段，snapshot 表示截至当前的完整快照。
-   * 旧驱动未提供时按 delta 处理；新驱动只要提供 output 就必须显式填写。
+   * 只要提供 output 就必须显式填写。
    */
   readonly outputMode?: 'delta' | 'snapshot'
   readonly error?: string
@@ -135,13 +159,31 @@ export interface CodingNsCliToolObservation {
   readonly detail?: string
 }
 
-export type CodingNsCliStreamChunk =
+/**
+ * 所有外部 Agent 必须输出的公共事件契约。
+ *
+ * Provider 驱动只能理解自己的线协议并生成这些事件；快照去重、交互请求、工具
+ * 历史和 DSH 原生消息映射全部由公共消息投影层负责。
+ */
+export type CodingNsAgentEvent =
   | { readonly type: 'reasoning-delta'; readonly text: string }
   | { readonly type: 'reasoning-snapshot'; readonly text: string }
   | { readonly type: 'text-delta'; readonly text: string }
   | { readonly type: 'text-snapshot'; readonly text: string }
-  | CodingNsCliToolObservation
+  | CodingNsAgentToolEvent
   | { readonly type: 'usage'; readonly inputTokens: number; readonly outputTokens: number }
   | { readonly type: 'finish'; readonly reason: 'stop' | 'cancel' | 'error' }
   | { readonly type: 'session-binding'; readonly providerSessionId: string; readonly rawStoreRef?: string }
-  | { readonly type: 'permission-request'; readonly requestId: string; readonly kind: string; readonly detail?: string }
+  | {
+      readonly type: 'permission-request'
+      readonly requestId: string
+      readonly kind: string
+      readonly toolName?: string
+      readonly callId?: string
+      readonly detail?: string
+    }
+  | {
+      readonly type: 'question-request'
+      readonly requestId: string
+      readonly questions: readonly CodingNsAgentQuestion[]
+    }

@@ -13,22 +13,23 @@ test('Kimi wire 优先并转换会话、思考、工具、用量和完成事件'
     binaries: ['fake-kimi'], spawnSync: fakeDetection,
     spawn: ((command: string, args: string[]) => {
       calls.push([command, ...args])
-      const stdout = new PassThrough(); const stderr = new PassThrough(); let sent = false
+      const stdout = new PassThrough(); const stderr = new PassThrough()
       const stdin = { write(data: string): boolean {
-        if (!sent) {
-          sent = true
-          const payload = JSON.parse(data) as Record<string, unknown>
-          assert.equal(payload.type, 'prompt.submit')
+        const request = JSON.parse(data) as Record<string, any>
+        if (request.method === 'initialize') {
+          queueMicrotask(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocol_version: '1.10' } })}\n`))
+        } else if (request.method === 'prompt') {
+          assert.deepEqual(request.params, { user_input: '你好' })
           queueMicrotask(() => {
             stdout.write(JSON.stringify({ type: 'session.created', session_id: 'kimi-session-1' }) + '\n')
-            stdout.write(JSON.stringify({ type: 'assistant.thinking', delta: '思考' }) + '\n')
-            stdout.write(JSON.stringify({ type: 'assistant.message', content: [{ type: 'text', text: '回答' }] }) + '\n')
-            stdout.write(JSON.stringify({ type: 'tool_call', tool_call: { id: 'kimi-call-1', name: 'shell', arguments: { command: 'pwd' } } }) + '\n')
-            stdout.write(JSON.stringify({ type: 'tool_result', tool_result: { call_id: 'kimi-call-1', name: 'shell', output: '/workspace' } }) + '\n')
+            stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'ContentPart', payload: { type: 'think', think: '思考' } } }) + '\n')
+            stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'ContentPart', payload: { type: 'text', text: '回答' } } }) + '\n')
+            stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'ToolCall', payload: { type: 'function', id: 'kimi-call-1', function: { name: 'shell', arguments: '{"command":"pwd"}' } } } }) + '\n')
+            stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'ToolResult', payload: { tool_call_id: 'kimi-call-1', return_value: { is_error: false, output: '/workspace' } } } }) + '\n')
             stdout.write(JSON.stringify({ type: 'tool_failed', tool_result: { call_id: 'kimi-call-2', name: 'shell', error: 'exit 1' } }) + '\n')
             stdout.write(JSON.stringify({ type: 'tool_output_delta', tool_result: { call_id: 'kimi-call-3', name: 'shell', output: '片段', status: 'running' } }) + '\n')
             stdout.write(JSON.stringify({ type: 'usage', usage: { input_tokens: 2, output_tokens: 3 } }) + '\n')
-            stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\n')
+            stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { status: 'finished' } }) + '\n')
           })
         }
         return true
@@ -43,12 +44,91 @@ test('Kimi wire 优先并转换会话、思考、工具、用量和完成事件'
     { type: 'session-binding', providerSessionId: 'kimi-session-1' },
     { type: 'reasoning-delta', text: '思考' },
     { type: 'text-delta', text: '回答' },
-    { type: 'tool-running', toolName: 'shell', callId: 'kimi-call-1', input: '{"command":"pwd"}', status: 'running' },
-    { type: 'tool-running', toolName: 'shell', callId: 'kimi-call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' },
-    { type: 'tool-running', toolName: 'shell', callId: 'kimi-call-2', error: 'exit 1', status: 'failed' },
-    { type: 'tool-running', toolName: 'shell', callId: 'kimi-call-3', output: '片段', outputMode: 'delta', status: 'running' },
+    { type: 'tool-event', toolName: 'shell', callId: 'kimi-call-1', input: '{"command":"pwd"}', status: 'running' },
+    { type: 'tool-event', toolName: 'tool', callId: 'kimi-call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' },
+    { type: 'tool-event', toolName: 'shell', callId: 'kimi-call-2', error: 'exit 1', status: 'failed' },
+    { type: 'tool-event', toolName: 'shell', callId: 'kimi-call-3', output: '片段', outputMode: 'delta', status: 'running' },
     { type: 'usage', inputTokens: 2, outputTokens: 3 },
     { type: 'finish', reason: 'stop' },
+  ])
+})
+
+test('Kimi wire 按真实 JSON-RPC request 回传权限和结构化问题', async () => {
+  const responses: Array<Record<string, any>> = []
+  const driver = new KimiCliDriver({
+    binaries: ['fake-kimi'],
+    spawnSync: fakeDetection,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      let promptId = ''
+      const stdin = { write(data: string): boolean {
+        const request = JSON.parse(data) as Record<string, any>
+        if (request.method === 'initialize') {
+          assert.deepEqual(request.params.capabilities, { supports_question: true })
+          queueMicrotask(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocol_version: '1.10' } })}\n`))
+        } else if (request.method === 'prompt') {
+          promptId = request.id
+          queueMicrotask(() => stdout.write(`${JSON.stringify({
+            jsonrpc: '2.0',
+            id: 'approval-rpc',
+            method: 'request',
+            params: {
+              type: 'ApprovalRequest',
+              payload: { id: 'approval-1', tool_call_id: 'shell-1', sender: 'Shell', action: 'run command', description: '运行命令' },
+            },
+          })}\n`))
+        } else if (request.id === 'approval-rpc') {
+          responses.push(request)
+          queueMicrotask(() => stdout.write(`${JSON.stringify({
+            jsonrpc: '2.0',
+            id: 'question-rpc',
+            method: 'request',
+            params: {
+              type: 'QuestionRequest',
+              payload: {
+                id: 'question-1',
+                tool_call_id: 'question-tool-1',
+                questions: [{ question: '使用哪种语言？', header: '语言', options: [{ label: 'TypeScript' }, { label: 'Rust' }] }],
+              },
+            },
+          })}\n`))
+        } else if (request.id === 'question-rpc') {
+          responses.push(request)
+          queueMicrotask(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: promptId, result: { status: 'finished' } })}\n`))
+        }
+        return true
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'kimi-interaction', messages: [], prompt: '执行' })) {
+    chunks.push(chunk)
+    if (chunk.type === 'permission-request') {
+      driver.respondPermission('kimi-interaction', { requestId: chunk.requestId, approved: true })
+    }
+    if (chunk.type === 'question-request') {
+      driver.respondQuestion('kimi-interaction', {
+        requestId: chunk.requestId,
+        answers: [{ id: 'question-1', selected: ['TypeScript'] }],
+      })
+    }
+  }
+
+  assert.deepEqual(chunks, [
+    { type: 'permission-request', requestId: 'approval-1', kind: 'run command', toolName: 'Shell', callId: 'shell-1', detail: '运行命令' },
+    {
+      type: 'question-request',
+      requestId: 'question-1',
+      questions: [{ id: 'question-1', question: '使用哪种语言？', header: '语言', options: [{ label: 'TypeScript' }, { label: 'Rust' }] }],
+    },
+    { type: 'finish', reason: 'stop' },
+  ])
+  assert.deepEqual(responses, [
+    { jsonrpc: '2.0', id: 'approval-rpc', result: { request_id: 'approval-1', response: 'approve' } },
+    { jsonrpc: '2.0', id: 'question-rpc', result: { request_id: 'question-1', answers: { '使用哪种语言？': 'TypeScript' } } },
   ])
 })
 
@@ -109,8 +189,8 @@ test('Gemini ACP 完成初始化、session/new、prompt 并转换更新事件', 
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'gemini-session-1' },
     { type: 'text-delta', text: 'ACP 回复' },
-    { type: 'tool-running', toolName: 'read_file', callId: 'gemini-call-1', input: '{"path":"a.ts"}', status: 'running' },
-    { type: 'tool-running', toolName: 'read_file', callId: 'gemini-call-1', output: '源码', outputMode: 'snapshot', status: 'completed' },
+    { type: 'tool-event', toolName: 'read_file', callId: 'gemini-call-1', input: '{"path":"a.ts"}', status: 'running' },
+    { type: 'tool-event', toolName: 'read_file', callId: 'gemini-call-1', output: '源码', outputMode: 'snapshot', status: 'completed' },
     { type: 'finish', reason: 'stop' },
   ])
 })

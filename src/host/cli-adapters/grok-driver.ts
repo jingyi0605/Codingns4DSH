@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
-import type { CodingNsCliModelCatalog, CodingNsCliPermissionResponse, CodingNsCliStreamChunk, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
@@ -66,7 +66,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     })
   }
 
-  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsCliStreamChunk> {
+  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) throw new Error('Grok Build 未安装')
     const state = await this.getSession(input, command)
@@ -85,7 +85,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       }
       yield { type: 'session-binding', providerSessionId }
       const stream = streamGrokPrompt(rpc, providerSessionId, input.prompt, input.signal, (notification) => {
-        const requestId = permissionRequestId(notification)
+        const requestId = interactionRequestId(notification)
         if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, notification.id)
       })
       let finishReason: 'stop' | 'cancel' | 'error'
@@ -106,7 +106,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     } finally { /* ACP 进程和会话跨轮复用，统一由 dispose() 回收。 */ }
   }
 
-  respondPermission(sessionId: string, response: CodingNsCliPermissionResponse): void {
+  respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
     const state = this.sessions.get(sessionId)
     if (state === undefined) throw new Error('Grok 权限请求已结束')
     const rpcId = state.requests.get(response.requestId)
@@ -139,7 +139,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     }
     // ACP 权限是 Grok 发起的 server request，先挂起响应，待标准权限入口明确回复原始 id。
     rpc.setServerRequestHandler((message) => {
-      const requestId = permissionRequestId(message)
+      const requestId = interactionRequestId(message)
       if (requestId !== null && message.id !== undefined && message.id !== null) state.requests.set(requestId, message.id)
       return new Promise<never>(() => undefined)
     })
@@ -264,7 +264,7 @@ function grokNotificationReason(message: JsonRpcMessage): 'stop' | 'error' | nul
   return null
 }
 
-function acpMessageToChunk(message: Record<string, any>): CodingNsCliStreamChunk | null {
+function acpMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | null {
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
   const type = typeof update.sessionUpdate === 'string' ? update.sessionUpdate : typeof update.type === 'string' ? update.type : typeof message.method === 'string' ? message.method : ''
@@ -291,7 +291,7 @@ function acpMessageToChunk(message: Record<string, any>): CodingNsCliStreamChunk
         ? 'completed'
         : 'running'
     return {
-      type: 'tool-running',
+      type: 'tool-event',
       toolName: name ?? 'tool',
       status: normalizeToolStatus(tool.status ?? tool.state ?? update.status, fallback),
       ...(callId ? { callId } : {}),
@@ -313,6 +313,10 @@ function permissionRequestId(message: Record<string, any>): string | null {
   if (!type.toLowerCase().includes('permission')) return null
   const id = message.id ?? update.requestId ?? update.id
   return typeof id === 'string' || typeof id === 'number' ? String(id) : null
+}
+
+function interactionRequestId(message: Record<string, any>): string | null {
+  return permissionRequestId(message)
 }
 
 function readSessionId(value: unknown): string | null {

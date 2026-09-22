@@ -1,9 +1,9 @@
-import type { CodingNsCliStreamChunk } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent } from '../../shared/contracts/cli-adapter.js'
 
-type SnapshotChunk = Extract<CodingNsCliStreamChunk, { readonly type: 'reasoning-snapshot' | 'text-snapshot' }>
-type UsageChunk = Extract<CodingNsCliStreamChunk, { readonly type: 'usage' }>
+type SnapshotChunk = Extract<CodingNsAgentEvent, { readonly type: 'reasoning-snapshot' | 'text-snapshot' }>
+type UsageChunk = Extract<CodingNsAgentEvent, { readonly type: 'usage' }>
 
-export type CodingNsNormalizedCliStreamChunk = Exclude<CodingNsCliStreamChunk, SnapshotChunk>
+export type CodingNsNormalizedAgentEvent = Exclude<CodingNsAgentEvent, SnapshotChunk>
 
 /**
  * 把驱动差异收敛成 DSH 可消费的增量流。
@@ -11,14 +11,14 @@ export type CodingNsNormalizedCliStreamChunk = Exclude<CodingNsCliStreamChunk, S
  * 有些 CLI 发送真正的 delta，有些 CLI 反复发送从头累积的 snapshot。规范化器
  * 分别记录推理和正文已经发送的内容，避免完整快照被重复追加到 DSH 会话日志。
  */
-export class CodingNsCliStreamNormalizer {
+export class CodingNsAgentEventNormalizer {
   private reasoning = ''
   private text = ''
   private reasoningBoundary = false
   private textBoundary = false
   private usage: UsageChunk | null = null
 
-  push(chunk: CodingNsCliStreamChunk): readonly CodingNsNormalizedCliStreamChunk[] {
+  push(chunk: CodingNsAgentEvent): readonly CodingNsNormalizedAgentEvent[] {
     if (chunk.type === 'reasoning-delta') {
       this.reasoning = this.reasoningBoundary ? chunk.text : this.reasoning + chunk.text
       this.reasoningBoundary = false
@@ -35,7 +35,7 @@ export class CodingNsCliStreamNormalizer {
       this.usage = chunk
       return []
     }
-    if (chunk.type === 'tool-running') {
+    if (chunk.type === 'tool-event') {
       this.reasoningBoundary = true
       this.textBoundary = true
       return [chunk]
@@ -48,12 +48,12 @@ export class CodingNsCliStreamNormalizer {
   }
 
   /** 流未携带 finish 时仍返回最后一次统计，避免正常结束路径丢失 usage。 */
-  flush(): readonly CodingNsNormalizedCliStreamChunk[] {
+  flush(): readonly CodingNsNormalizedAgentEvent[] {
     const usage = this.takeUsage()
     return usage === null ? [] : [usage]
   }
 
-  private appendSnapshot(channel: 'reasoning' | 'text', snapshot: string): readonly CodingNsNormalizedCliStreamChunk[] {
+  private appendSnapshot(channel: 'reasoning' | 'text', snapshot: string): readonly CodingNsNormalizedAgentEvent[] {
     const previous = channel === 'reasoning' ? this.reasoning : this.text
     const boundary = channel === 'reasoning' ? this.reasoningBoundary : this.textBoundary
     if (channel === 'reasoning') this.reasoningBoundary = false

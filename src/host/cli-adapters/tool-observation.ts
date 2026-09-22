@@ -1,6 +1,6 @@
-import type { CodingNsCliToolObservation } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentToolEvent } from '../../shared/contracts/cli-adapter.js'
 
-export type ExternalToolStatus = NonNullable<CodingNsCliToolObservation['status']>
+export type ExternalToolStatus = NonNullable<CodingNsAgentToolEvent['status']>
 
 /** 保留 Provider 的结构化参数和结果，不用隐式的 [object Object] 丢失信息。 */
 export function serializeToolValue(value: unknown): string | undefined {
