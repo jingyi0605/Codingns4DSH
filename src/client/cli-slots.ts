@@ -3,6 +3,7 @@ import type { ReactElement } from 'react'
 import type { CodingNsCliAdapterDescriptor, CodingNsCliModel, CodingNsCliModelCatalog, CodingNsCliSessionConfig } from '../shared/contracts/cli-adapter.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { adapterCatalogWithDsh, callCliRpc, findModel, firstModel } from './cli-catalog.js'
+import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 
 interface SessionSnapshot {
@@ -155,11 +156,11 @@ function AgentSlot(props: CliSlotProps): ReactElement {
     update({ adapterId: agent.id })
     setOpen(false)
   }
-  const triggerStyle = { height: 30, maxWidth: 230, border: 0, borderRadius: 16, padding: '0 8px', background: 'transparent', cursor: locked ? 'default' : 'pointer', opacity: locked ? 0.7 : 1 }
+  const triggerStyle = { height: 30, maxWidth: 230, color: dshThemeColor.labelPrimary, border: 0, borderRadius: 16, padding: '0 8px', background: 'transparent', cursor: locked ? 'default' : 'pointer', opacity: locked ? 0.7 : 1 }
   return createElement('div', { style: { position: 'relative', display: 'inline-flex' } },
     createElement('button', { type: 'button', disabled: locked, onClick: () => setOpen((value) => !value), 'aria-label': `当前 Agent：${current.name}${locked ? '（已锁定）' : ''}`, 'aria-expanded': open, style: triggerStyle }, `${current.name}${locked ? '（已锁定）' : '⌄'}`),
-    open && !locked && createElement('div', { role: 'menu', style: { position: 'absolute', zIndex: 1100, bottom: 'calc(100% + 8px)', left: 0, minWidth: 250, padding: 6, borderRadius: 8, background: 'var(--dsw-specific-menu, #fff)', boxShadow: '0 8px 28px rgba(0,0,0,.22)' } },
-      ...agents.map((agent) => createElement('button', { key: agent.id, type: 'button', role: 'menuitemradio', 'aria-checked': agent.id === selection.adapterId, disabled: !agent.installed || !agent.enabled, onClick: () => choose(agent), style: { display: 'flex', width: '100%', justifyContent: 'space-between', gap: 12, padding: '8px 10px', border: 0, borderRadius: 6, background: 'transparent', textAlign: 'left', cursor: agent.installed && agent.enabled ? 'pointer' : 'not-allowed', opacity: agent.installed && agent.enabled ? 1 : 0.45 } },
+    open && !locked && createElement('div', { role: 'menu', style: { ...dshPopupSurfaceStyle, position: 'absolute', zIndex: 1100, bottom: 'calc(100% + 8px)', left: 0, minWidth: 250, padding: 6, borderRadius: 8 } },
+      ...agents.map((agent) => createElement('button', { key: agent.id, type: 'button', role: 'menuitemradio', 'aria-checked': agent.id === selection.adapterId, disabled: !agent.installed || !agent.enabled, onClick: () => choose(agent), style: { display: 'flex', width: '100%', justifyContent: 'space-between', gap: 12, padding: '8px 10px', color: 'inherit', border: 0, borderRadius: 6, background: 'transparent', textAlign: 'left', cursor: agent.installed && agent.enabled ? 'pointer' : 'not-allowed', opacity: agent.installed && agent.enabled ? 1 : 0.45 } },
         createElement('span', undefined, agent.name),
         createElement('span', { style: { fontSize: 12, opacity: 0.7 } }, !agent.installed ? '未安装' : !agent.enabled ? '已停用' : (agent.id === selection.adapterId ? '当前' : '已启用')),
       )),
@@ -250,21 +251,21 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   return createElement('div', { style: { position: 'relative', minWidth: 0, display: 'inline-flex' } },
     createElement('button', { type: 'button', disabled, 'aria-label': `选择模型，当前 ${modelLabel}，思考等级 ${effortLabel}`, 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => { setPane('root'); setOpen((value) => !value) }, style: nativeTriggerStyle },
       createElement('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, modelLabel),
-      createElement('span', { style: { color: 'var(--dsw-alias-label-caption, #8c8c8c)', whiteSpace: 'nowrap' } }, effortLabel),
-      createElement('span', { 'aria-hidden': true, style: { color: 'var(--dsw-alias-label-caption, #8c8c8c)', transform: open ? 'rotate(180deg)' : undefined } }, '⌄'),
+      createElement('span', { style: { color: dshThemeColor.labelCaption, whiteSpace: 'nowrap' } }, effortLabel),
+      createElement('span', { 'aria-hidden': true, style: { color: dshThemeColor.labelCaption, transform: open ? 'rotate(180deg)' : undefined } }, '⌄'),
     ),
     open && createElement('div', { role: 'menu', 'aria-label': '模型与思考等级', style: nativeMenuStyle }, ...menu),
   )
 }
 
-const nativeTriggerStyle = { minWidth: 0, maxWidth: 'min(360px, 45cqw)', height: 28, color: 'var(--dsw-alias-label-secondary, #5f6368)', cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 24, padding: '0 4px 0 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 13, lineHeight: '20px' }
-const nativeMenuStyle = { position: 'absolute' as const, zIndex: 1100, right: 0, bottom: 'calc(100% + 8px)', minWidth: 240, maxWidth: 'min(420px, calc(100vw - 32px))', maxHeight: 'min(360px, calc(100vh - 96px))', overflowY: 'auto' as const, padding: 4, border: 0, borderRadius: 20, background: 'var(--dsw-specific-menu, #fff)', color: 'var(--dsw-alias-label-primary, #202124)', boxShadow: 'var(--dsw-elevation-prominent, 0 12px 36px rgba(0,0,0,.18))' }
+const nativeTriggerStyle = { minWidth: 0, maxWidth: 'min(360px, 45cqw)', height: 28, color: dshThemeColor.labelSecondary, cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 24, padding: '0 4px 0 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 13, lineHeight: '20px' }
+const nativeMenuStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1100, right: 0, bottom: 'calc(100% + 8px)', minWidth: 240, maxWidth: 'min(420px, calc(100vw - 32px))', maxHeight: 'min(360px, calc(100vh - 96px))', overflowY: 'auto' as const, padding: 4, border: 0, borderRadius: 20 }
 const nativeMenuCellStyle = { width: '100%', minHeight: 40, color: 'inherit', cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left' as const, fontSize: 14, lineHeight: '22px' }
 const nativeMenuLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
-const nativeMenuValueStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, textAlign: 'right' as const, color: 'var(--dsw-alias-label-tertiary, #8c8c8c)' }
-const nativeChevronStyle = { flex: 'none', color: 'var(--dsw-alias-label-tertiary, #8c8c8c)', fontSize: 20, lineHeight: 1 }
-const nativeBackStyle = { width: '100%', height: 30, color: 'var(--dsw-alias-label-secondary, #5f6368)', cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 8, padding: '0 8px', fontSize: 13 }
-const nativeGroupTitleStyle = { position: 'sticky' as const, top: 0, zIndex: 1, padding: '5px 8px 3px', color: 'var(--dsw-alias-label-tertiary, #8c8c8c)', background: 'var(--dsw-specific-menu, #fff)', fontSize: 12, fontWeight: 500, lineHeight: '18px' }
+const nativeMenuValueStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, textAlign: 'right' as const, color: dshThemeColor.labelTertiary }
+const nativeChevronStyle = { flex: 'none', color: dshThemeColor.labelTertiary, fontSize: 20, lineHeight: 1 }
+const nativeBackStyle = { width: '100%', height: 30, color: dshThemeColor.labelSecondary, cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 8, padding: '0 8px', fontSize: 13 }
+const nativeGroupTitleStyle = { position: 'sticky' as const, top: 0, zIndex: 1, padding: '5px 8px 3px', color: dshThemeColor.labelTertiary, background: dshThemeColor.menuBackground, fontSize: 12, fontWeight: 500, lineHeight: '18px' }
 const nativeOptionStyle = { width: '100%', minHeight: 38, color: 'inherit', cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 10, padding: '6px 8px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, lineHeight: '20px' }
 
 function defaultEffort(efforts: readonly string[]): string | undefined {

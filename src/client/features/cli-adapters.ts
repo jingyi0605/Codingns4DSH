@@ -1,5 +1,5 @@
 import { createElement, useEffect, useState } from 'react'
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import type {
   CodingNsCliAdapterDescriptor,
   CodingNsCliModel,
@@ -9,6 +9,7 @@ import type {
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
 import { registerCliConversationSlots } from '../cli-slots.js'
 import { callCliRpc, errorMessage, listCliSessions, restoreCliSession } from '../cli-catalog.js'
+import { dshButtonStyle, dshFormRootStyle, dshPopupSurfaceStyle, dshThemeColor } from '../theme.js'
 
 /** 外部 Agent 集成模块。Agent 进程在 Host 运行，浏览器只读取目录和状态。 */
 export const cliAdaptersFeature: CodingNsClientFeatureModule = {
@@ -86,8 +87,8 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
     return () => { active = false }
   }, [disabled, selected, services.rpc])
 
-  const rowStyle = { display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: '1px solid var(--dsw-alias-border-primary, #d9d9d9)' }
-  const buttonStyle = { padding: '7px 12px', border: '1px solid var(--dsw-alias-border-primary, #d9d9d9)', borderRadius: '6px', background: 'var(--dsw-alias-bg-secondary, transparent)', cursor: disabled ? 'not-allowed' : 'pointer' }
+  const rowStyle = { display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `1px solid ${dshThemeColor.border}` }
+  const buttonStyle = { ...dshButtonStyle, padding: '7px 12px', borderRadius: '6px', cursor: disabled ? 'not-allowed' : 'pointer' }
   const toggleAdapter = async (adapter: CodingNsCliAdapterDescriptor, next: boolean): Promise<void> => {
     setBusyAdapterId(adapter.id)
     setMessage('')
@@ -116,7 +117,7 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
 
   return createElement(
     'div',
-    { 'aria-disabled': disabled, style: { opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
+    { 'aria-disabled': disabled, style: { ...dshFormRootStyle, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
     loading && createElement('div', { role: 'status' }, '正在读取外部 Agent 状态…'),
     !loading && catalog.length === 0 && createElement('div', { role: 'status', style: { opacity: 0.7 } }, '当前没有可用的外部 Agent。'),
     createElement('div', undefined,
@@ -124,15 +125,15 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
         createElement('button', {
           type: 'button',
           onClick: () => setSelected(adapter),
-          style: { flex: '1 1 auto', minWidth: 0, display: 'flex', alignItems: 'center', gap: 12, padding: 0, border: 0, textAlign: 'left', background: 'transparent', cursor: 'pointer' },
+          style: { flex: '1 1 auto', minWidth: 0, display: 'flex', alignItems: 'center', gap: 12, padding: 0, border: 0, color: 'inherit', textAlign: 'left', background: 'transparent', cursor: 'pointer' },
           'aria-label': `查看 ${adapter.name} 详情`,
         },
           createElement('span', { style: { flex: '1 1 auto', minWidth: 0, fontWeight: 600 } }, adapter.name),
-          createElement('span', { style: { color: adapter.installed ? '#16803c' : '#8c8c8c' } }, adapter.installed ? '已安装' : '未安装'),
-          createElement('span', { style: { minWidth: 70, color: 'var(--dsw-alias-label-tertiary, #8c8c8c)' } }, adapter.version ?? '未检测到版本'),
+          createElement('span', { style: { color: adapter.installed ? dshThemeColor.success : dshThemeColor.labelTertiary } }, adapter.installed ? '已安装' : '未安装'),
+          createElement('span', { style: { minWidth: 70, color: dshThemeColor.labelTertiary } }, adapter.version ?? '未检测到版本'),
         ),
         createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' } },
-          createElement('input', { type: 'checkbox', role: 'switch', 'aria-label': `${adapter.name}启用开关`, checked: adapter.enabled, disabled: !adapter.installed || busyAdapterId === adapter.id, onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleAdapter(adapter, event.currentTarget.checked) } }),
+          createElement('input', { type: 'checkbox', role: 'switch', 'aria-label': `${adapter.name}启用开关`, checked: adapter.enabled, disabled: !adapter.installed || busyAdapterId === adapter.id, onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleAdapter(adapter, event.currentTarget.checked) }, style: { accentColor: dshThemeColor.accent } }),
           createElement('span', undefined, adapter.enabled ? '已启用' : '已停用'),
         ),
       )),
@@ -143,7 +144,7 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
       restoringSessionId,
       onRestore: (record) => { void restoreSession(record) },
     }),
-    message && createElement('div', { role: 'alert', style: { marginTop: 10, color: '#b42318' } }, message),
+    message && createElement('div', { role: 'alert', style: { marginTop: 10, color: dshThemeColor.error } }, message),
     selected !== null && createElement(AdapterDetailsDialog, {
       adapter: selected,
       models,
@@ -170,7 +171,7 @@ function CliSessionList({ sessions, loading, restoringSessionId, onRestore }: Cl
     !loading && sessions.length > 0 && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
       ...sessions.map((record) => createElement('div', {
         key: record.dshSessionId,
-        style: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: '1px solid var(--dsw-alias-border-primary, #d9d9d9)' },
+        style: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: `1px solid ${dshThemeColor.border}` },
       },
         createElement('div', { style: { flex: '1 1 auto', minWidth: 0 } },
           createElement('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 } }, record.title ?? `${record.adapterId} 会话`),
@@ -181,7 +182,7 @@ function CliSessionList({ sessions, loading, restoringSessionId, onRestore }: Cl
           onClick: () => onRestore(record),
           disabled: restoringSessionId !== null,
           'aria-label': `打开${record.title ?? `${record.adapterId} 会话`}`,
-          style: { flex: '0 0 auto', padding: '6px 10px', border: '1px solid var(--dsw-alias-border-primary, #d9d9d9)', borderRadius: 6, background: 'transparent', cursor: restoringSessionId === null ? 'pointer' : 'not-allowed' },
+          style: { ...dshButtonStyle, flex: '0 0 auto', padding: '6px 10px', borderRadius: 6, cursor: restoringSessionId === null ? 'pointer' : 'not-allowed' },
         }, restoringSessionId === record.dshSessionId ? '打开中…' : '打开'),
       )),
     ),
@@ -200,7 +201,7 @@ interface AdapterDetailsDialogProps {
   readonly models: CodingNsCliModelCatalog | null
   readonly loading: boolean
   readonly onClose: () => void
-  readonly buttonStyle: Record<string, string>
+  readonly buttonStyle: CSSProperties
 }
 
 function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle }: AdapterDetailsDialogProps): ReactElement {
@@ -208,9 +209,9 @@ function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle }
     role: 'dialog',
     'aria-modal': true,
     'aria-labelledby': 'codingns-cli-adapter-title',
-    style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'rgba(0, 0, 0, 0.45)' },
+    style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: dshThemeColor.overlay },
   },
-    createElement('div', { style: { width: 'min(100%, 620px)', maxHeight: 'min(720px, 90vh)', overflow: 'auto', boxSizing: 'border-box', padding: 24, borderRadius: 8, background: 'var(--dsw-alias-bg-primary, #fff)', boxShadow: '0 12px 40px rgba(0, 0, 0, 0.25)' } },
+    createElement('div', { style: { ...dshPopupSurfaceStyle, width: 'min(100%, 620px)', maxHeight: 'min(720px, 90vh)', overflow: 'auto', boxSizing: 'border-box', padding: 24, borderRadius: 8 } },
       createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
         createElement('h3', { id: 'codingns-cli-adapter-title', style: { margin: 0, fontSize: 18 } }, adapter.name),
       createElement('button', { type: 'button', onClick: onClose, style: buttonStyle, 'aria-label': '关闭 Agent 详情' }, '关闭'),
@@ -248,7 +249,7 @@ function ModelCatalog({ catalog }: { readonly catalog: CodingNsCliModelCatalog }
 }
 
 function ModelRow({ model }: { readonly model: CodingNsCliModel }): ReactElement {
-  return createElement('div', { style: { padding: '8px 10px', border: '1px solid var(--dsw-alias-border-primary, #d9d9d9)', borderRadius: 6 } },
+  return createElement('div', { style: { padding: '8px 10px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 6 } },
     createElement('div', { style: { fontWeight: 600 } }, model.name),
     model.description && createElement('div', { style: { marginTop: 3, opacity: 0.7, fontSize: 13 } }, model.description),
     createElement('div', { style: { marginTop: 5, opacity: 0.7, fontSize: 13 } }, `思考等级：${model.efforts.length > 0 ? model.efforts.join('、') : '默认'}`),
