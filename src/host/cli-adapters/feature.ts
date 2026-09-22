@@ -38,6 +38,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         ...(context.services.nativeSessions === undefined ? {} : { nativeSessions: context.services.nativeSessions }),
       })
       registry.applyEnabledSettings(context.services.settings?.get().agentAdapters)
+      registry.warmCatalog()
       const nativeSessions = context.services.nativeSessions
       if (nativeSessions !== undefined) {
         const disposeNativeEvents = nativeSessions.subscribe({
