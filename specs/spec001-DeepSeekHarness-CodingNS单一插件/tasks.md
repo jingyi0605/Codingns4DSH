@@ -229,16 +229,16 @@
   - 怎么验证：tmux/PTY 集成测试、断线恢复测试
 
 - [ ] 3.3 接入外部 Agent Provider
-  - 状态：IN_REVIEW（Command Code 已接入；其他 Provider 和真实端到端执行仍待复核）
+  - 状态：IN_REVIEW（标准层、八个协议驱动、持久化外部会话和 DSH 原生会话接入已完成；真实 CLI/远程端到端执行仍待复核）
   - 这一步到底做什么：将 CodingNS 现有外部 Agent 统一成 DSH 可调用的 Provider，并允许每个 Agent 单独开关。
   - 做完你能看到什么：不同外部 Agent 可以在同一工作区启动、输入、查看输出和取消。
   - 先依赖什么：3.2
   - 开始前先看：`requirements.md` 需求 5
   - 主要改哪里：`src/host/cli-adapters/`、`src/client/features/cli-adapters.ts`、Provider registry
-  - 本轮已完成：新增 Host 侧 `CodingNsCliDriver` 注册契约、`CommandCodeDriver` 和 `cliAdapters` 功能模块；支持 Agent 探测、模型目录、会话 transcript、JSON 事件转换、会话配置 RPC、`llm/stream` 委托和停用清理。Client 已增加独立的“外部Agent集成”设置模块，按 Agent 记录展示安装状态、单独启停，点击记录可在模态框查看版本、命令路径、模型目录和思考等级；DSH 对话工具栏已注册 Agent、模型和思考强度选择器，选择结果写入 `cli/session/set`。未知 Provider 不会被伪装成可用。
+  - 本轮已完成：在保留 `CodingNsCliDriver` 兼容性的基础上增加标准协议字段、能力声明、外部会话绑定和 Host-only raw store 引用；新增流式 JSON 驱动（Claude Code、Kimi、Gemini）、JSON-RPC/ACP 驱动（Pi、Codex、Grok）和 HTTP/SSE 驱动（OpenCode），全部通过统一注册表、设置页、会话选择器和 `llm/stream` 转换链路接入。新增 Host 持久化 SessionStore、外部会话列表、原生 DSH SessionStore/SessionController 探测桥接；消息仍由 DSH Agent Loop 写入原生会话时间线，Client 只提供恢复入口。新增 fake 进程、SSE、会话恢复、脱敏和取消清理测试；未知或未安装 Provider 仍返回不可用，不会阻塞其他模块。
   - 这一步先不做什么：不修改各外部 Agent 工具本身，不把 Provider 私有逻辑写进 Transport。
   - 怎么算完成：至少一个 Provider 端到端跑通，Provider 不可用时不会拖垮其他模块。
-  - 怎么验证：`pnpm exec tsc --noEmit`；`pnpm build`；`node --test tests/cli-adapters.spec.ts tests/client-entry.spec.ts tests/feature-wiring.spec.ts`；`node --test tests/*.spec.ts`（91 个测试通过，包含 Agent Client、单独启停、RPC 路由回退和内置 DSH 回切断言）；本机 `command-code --version` 与 `--list-models` 探查通过。真实模型执行、Codex/Claude 等其他 Provider 和远程 Host/Client 端到端仍待验证。
+  - 怎么验证：`pnpm exec tsc --noEmit`；`pnpm build`；`node --test tests/*.spec.ts`（120 个测试通过）；`git diff --check`。另有 `tests/cli-session-store.spec.ts`、`tests/cli-session-security.spec.ts`、`tests/client-cli-sessions.spec.ts` 和 `tests/native-session-bridge.spec.ts` 覆盖持久化、脱敏、恢复入口和原生服务探测。对话框中的外部 Agent 模型/思考等级菜单使用 DSH 原生 Slot、设计令牌和菜单交互语义兼容实现；DSH Agent 仍使用原生模型组件。真实模型执行、各 Provider 真实版本兼容、宿主磁盘 Session persistence 和远程 Host/Client 端到端仍待验证。
 
 - [ ] 3.4 接入进程、端口和反向代理
   - 状态：TODO

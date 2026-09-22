@@ -26,7 +26,7 @@
 - 中转访问服务的 Control API 地址默认是 `https://channel.codingns.com:1443`。设置页使用下拉框选择已保存地址，也可以添加新的 HTTP(S) 地址；地址列表只保存地址，不保存账号、密码或 refresh token。
 - 局域网访问DSH模块：Client 入口加载时自动补齐 `crypto.randomUUID`，并在设置卡片中管理 Host 侧的单一 DSH Web 监听；已有浏览器实现不会被覆盖。
 
-这些能力不等于已经提供文件树、终端、进程管理或 PeerHost 代理；这些业务模块仍未实现。外部 Agent 接入已经单独实现，但其他 Provider 和真实端到端联调仍在复核中。
+这些能力不等于已经提供文件树、终端、进程管理或 PeerHost 代理；这些业务模块仍未实现。外部 Agent 已通过标准运行时层接入：流式 JSON、JSON-RPC/ACP 和 HTTP/SSE 都由 Host 侧协议驱动转换为统一的模型目录、会话绑定和 DSH 流事件。Host 还会持久化外部会话摘要，并复用 DSH 原生会话消息与侧栏。当前验证覆盖 fake 进程、SSE、取消清理、会话恢复和原生会话桥接；真实 CLI 版本差异、宿主的磁盘 Session persistence 插件以及远程 Host/Client 端到端联调仍需人工验收。
 
 ### 局域网访问DSH
 
