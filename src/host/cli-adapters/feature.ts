@@ -198,16 +198,9 @@ function toDshChunks(chunk: { type: string; text?: string; toolName?: string; ca
   if (chunk.type === 'session-binding') return [{ type: 'session-binding' }]
   if (chunk.type === 'permission-request') return [{ type: 'text-delta', index: 1, text: `\n\n> [${chunk.kind ?? '工具'} 请求等待确认]\n\n` }]
   if (chunk.type === 'usage') return [{ type: 'usage', usage: { inputTokens: chunk.inputTokens ?? 0, outputTokens: chunk.outputTokens ?? 0 } }]
-  if (chunk.type === 'tool-running') {
-    const name = chunk.toolName ?? 'tool'
-    const callId = chunk.callId ?? `codingns-${name}`
-    const args = chunk.input ?? '{}'
-    return [
-      { type: 'block-start', index: 1, blockType: 'tool-call' },
-      { type: 'tool-call-delta', index: 1, id: callId, name, argumentsDelta: args },
-      { type: 'block-end', index: 1, block: { type: 'tool-call', id: callId, name, arguments: args } },
-    ]
-  }
+  // CLI Agent 已在自己的进程内执行了工具。DSH tool-call 代表“待 Agent Loop 执行”，
+  // 不是纯展示事件；把观察事件转成 tool-call 会导致未知工具错误或重复执行。
+  if (chunk.type === 'tool-running') return []
   if (chunk.type === 'finish') return [{ type: 'finish', reason: chunk.reason ?? 'stop' }]
   return [{ type: chunk.type, index: chunk.type === 'reasoning-delta' ? 0 : 1, text: chunk.text ?? '' }]
 }

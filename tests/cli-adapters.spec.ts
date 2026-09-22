@@ -201,7 +201,7 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   assert.equal(listener, undefined)
 })
 
-test('CLI 功能模块从 DSH 会话头传递工作目录并保留原生工具块', async () => {
+test('CLI 功能模块从 DSH 会话头传递工作目录且不把已执行工具交给 DSH', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
   let receivedCwd: string | undefined
@@ -242,9 +242,6 @@ test('CLI 功能模块从 DSH 会话头传递工作目录并保留原生工具�
   for await (const chunk of listener!({ sessionId: 's-cwd', messages: [{ role: 'user', content: '读取目录' }] }, async function* () {})) chunks.push(chunk)
   assert.equal(receivedCwd, '/workspace/project')
   assert.deepEqual(chunks, [
-    { type: 'block-start', index: 1, blockType: 'tool-call' },
-    { type: 'tool-call-delta', index: 1, id: 'call-1', name: 'read_directory', argumentsDelta: '{"path":"."}' },
-    { type: 'block-end', index: 1, block: { type: 'tool-call', id: 'call-1', name: 'read_directory', arguments: '{"path":"."}' } },
     { type: 'finish', reason: 'stop' },
   ])
   await features.disable('cliAdapters')
