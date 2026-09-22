@@ -23,9 +23,10 @@
 - 阶段 2：Host 侧登录、refresh token 存储、设备查询和 Host 绑定；Control API 使用 CodingNS 当前真实路径。这些能力由 Host 侧 `auth` 模块以 `auth/*` 命名空间提供。
 - 阶段 3：Host/Workspace/PeerHost 资源作用域切换和旧 generation 回写隔离。
 - 阶段 4：Relay ticket、ICE 配置、offer/answer、candidate、DTLS fingerprint 校验、DataChannel Carrier 和 DSH Transport/Tunnel Frame 骨架。
+- 中转访问服务的 Control API 地址默认是 `https://channel.codingns.com:1443`。设置页使用下拉框选择已保存地址，也可以添加新的 HTTP(S) 地址；地址列表只保存地址，不保存账号、密码或 refresh token。
 - 局域网访问DSH模块：Client 入口加载时自动补齐 `crypto.randomUUID`，并在设置卡片中管理 Host 侧的单一 DSH Web 监听；已有浏览器实现不会被覆盖。
 
-这些能力不等于已经提供文件树、终端、CLI、进程管理或 PeerHost 代理；这些业务模块仍未实现。
+这些能力不等于已经提供文件树、终端、进程管理或 PeerHost 代理；这些业务模块仍未实现。外部 Agent 接入已经单独实现，但其他 Provider 和真实端到端联调仍在复核中。
 
 ### 局域网访问DSH
 
@@ -41,6 +42,23 @@ Profile 安装完成后，使用 DSH 官方启动器启动：
 dsh plugin --profile dsh-codingns add dsh-codingns@0.1.0
 dsh --profile dsh-codingns
 ```
+
+## 本地开发：重启 DSH 即加载最新代码
+
+DSH 运行时加载的是 `dist/` 中的 JavaScript，不能直接加载 `src/` 下的 TypeScript。开发时只需首次把某个本地 Profile 的插件目录链接到当前仓库，并启动一次监听编译：
+
+```bash
+pnpm dev:link stage0
+pnpm dev:watch
+```
+
+`dev:link` 会把原来的插件目录改名为可恢复的 `.bak-dev-*` 备份，然后创建指向当前仓库的链接；已经链接过时会直接复用。`dev:watch` 同时监听 Host 的 TypeScript 输出和浏览器 Client bundle。保持它运行，之后每次修改代码只需重启 DSH：
+
+```bash
+dsh --profile stage0 --no-open
+```
+
+不需要再次执行 `pnpm build`、打包或安装插件。若使用其他 Profile，把 `stage0` 换成对应名称；也可以通过 `DSH_HOME` 指定 DSH 数据目录。
 
 升级 DSH 时必须先匹配新的插件版本。版本不等于 `0.1.6-alpha.2` 时，启动胶水会明确抛出 `DSH_VERSION_UNSUPPORTED`，不会静默降级或覆盖默认连接。
 
