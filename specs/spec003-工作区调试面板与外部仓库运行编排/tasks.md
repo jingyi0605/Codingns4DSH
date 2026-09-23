@@ -88,7 +88,7 @@
   - 开始前先看：现有 Client feature 和 DSH 侧栏接口调查文档。
   - 主要文件：`src/client/` 调试页面和功能注册、定向测试。
   - 明确不做：不复制 DSH 布局，不在 Client 读取文件、扫描端口或保存 PID。
-  - 验证：已完成 Client 构建、模块注册测试和 `pnpm exec tsc --noEmit`；真实 DSH 浏览器交互和截图证据尚未完成，不能标记 DONE。Debug RPC 对 `/codingns` 失败会回退 `/api/codingns`，避免公开 Fetch 路由与逻辑通道差异导致 405。
+  - 验证：已完成 Client 构建、模块注册测试、添加启动配置表单和 `pnpm exec tsc --noEmit`；真实 DSH 浏览器交互和截图证据尚未完成，不能标记 DONE。Debug RPC 对 `/codingns` 失败会回退 `/api/codingns`，避免公开 Fetch 路由与逻辑通道差异导致 405。
 
 ## 阶段 4：验收
 

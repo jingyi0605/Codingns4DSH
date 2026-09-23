@@ -41,6 +41,7 @@ test('Client 构建产物包含模块卡片、设置面板和 Host RPC 调用', 
     '终端强化', '重启 DSH 后生效', '当前运行状态', '下次启动目标',
     '新建终端默认项', '系统推荐', 'PowerShell', 'Git Bash',
     '背景色', '前景色', '光标颜色', '字体', '字号（px）', '行高', '光标形状', '光标闪烁', '回滚行数',
+    '添加启动配置', '保存配置', '启动命令', 'Workspace 内相对路径', '启用服务代理', 'debug/config/save',
   ]) {
     assert.equal(source.includes(marker), true, `Client 产物缺少 ${marker}`)
   }

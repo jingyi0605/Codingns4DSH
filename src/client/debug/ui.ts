@@ -17,6 +17,12 @@ interface DebugTabProps extends PropsRuntime<'sidebar.right.pane.tab'> {
 interface DebugProfile {
   readonly id: string
   readonly name: string
+  readonly cwdRelative: string
+  readonly command: string
+  readonly args: readonly string[]
+  readonly env: Readonly<Record<string, string>>
+  readonly shell: { readonly profileId: string; readonly path: string; readonly args: readonly string[]; readonly name: string }
+  readonly runtimeType: string
   readonly port: number | null
   readonly proxy: { readonly enabled: boolean }
 }
@@ -25,6 +31,18 @@ interface DebugConfig { readonly profiles: readonly DebugProfile[] }
 interface DebugInstance { readonly id: string; readonly profileId: string; readonly state: string; readonly terminalId: string }
 interface DebugPortCheck { readonly id: string; readonly listening: boolean; readonly process: { readonly pid: number; readonly command: string | null } | null }
 interface DebugProxyBinding { readonly id: string; readonly profileId: string; readonly instanceId: string; readonly url: string }
+interface DebugProfileDraft {
+  readonly name: string
+  readonly cwdRelative: string
+  readonly command: string
+  readonly args: string
+  readonly shellProfileId: string
+  readonly shellPath: string
+  readonly shellArgs: string
+  readonly runtimeType: string
+  readonly port: string
+  readonly proxyEnabled: boolean
+}
 
 /** 注册最小 Debug 页面；页面只负责展示和发送用户意图。 */
 export function registerDebugUi(ctx: Context, rpc: CodingNsRpcClient, remote: unknown): () => void {
@@ -49,6 +67,7 @@ function DebugBody({ sessionId, rpc, remote, sidebarRight }: DebugTabProps): Rea
   const [config, setConfig] = useState<DebugConfig | null>(null)
   const [instances, setInstances] = useState<readonly DebugInstance[]>([])
   const [bindings, setBindings] = useState<readonly DebugProxyBinding[]>([])
+  const [draft, setDraft] = useState<DebugProfileDraft | null>(null)
   const [message, setMessage] = useState('正在读取工作区…')
   const [busy, setBusy] = useState(false)
 
@@ -58,7 +77,7 @@ function DebugBody({ sessionId, rpc, remote, sidebarRight }: DebugTabProps): Rea
     const running = await call<readonly DebugInstance[]>(rpc, 'debug/runtime/list', scope)
     setConfig(next)
     setInstances(running)
-    setMessage(next.profiles.length === 0 ? '当前 Workspace 没有启动配置' : '')
+    setMessage('')
   }
 
   useEffect(() => {
@@ -82,8 +101,16 @@ function DebugBody({ sessionId, rpc, remote, sidebarRight }: DebugTabProps): Rea
   if (workspaceId === null) return createElement('section', { style: panelStyle }, createElement('p', undefined, message))
   const profiles = config?.profiles ?? []
   return createElement('section', { style: panelStyle },
-    createElement('header', { style: headerStyle }, createElement('strong', undefined, '工作区调试'), createElement('span', { style: mutedStyle }, workspaceId)),
+    createElement('header', { style: headerStyle },
+      createElement('strong', undefined, '工作区调试'),
+      createElement('div', { style: actionsStyle },
+        createElement('span', { style: mutedStyle }, workspaceId),
+        createElement('button', { type: 'button', disabled: busy || draft !== null, onClick: () => setDraft(createProfileDraft()) }, '添加启动配置'),
+      ),
+    ),
     message && createElement('p', { role: 'status' }, message),
+    draft === null ? null : createProfileForm(draft),
+    profiles.length === 0 && draft === null ? createElement('p', { role: 'status' }, '当前 Workspace 没有启动配置，请先添加一个启动配置。') : null,
     profiles.map((profile) => createElement('article', { key: profile.id, style: itemStyle },
       createElement('div', undefined, createElement('strong', undefined, profile.name), profile.port === null ? null : createElement('span', { style: mutedStyle }, `端口 ${profile.port}`)),
       createElement('div', { style: actionsStyle },
@@ -105,6 +132,60 @@ function DebugBody({ sessionId, rpc, remote, sidebarRight }: DebugTabProps): Rea
       const result = await call<{ instance: DebugInstance; terminal: { readonly id: string } }>(rpc, 'debug/profile/launch', { sessionId: String(sessionId), workspaceId, generation: 0, profileId: profile.id, cols: 120, rows: 32 })
       setInstances((current) => [...current.filter((item) => item.id !== result.instance.id), result.instance])
       sidebarRight.openTabIn(String(sessionId) as Parameters<typeof sidebarRight.openTabIn>[0], 'terminal', { params: { terminalId: result.terminal.id } })
+    })
+  }
+
+  function createProfileForm(value: DebugProfileDraft): ReactElement {
+    const field = (label: string, key: keyof DebugProfileDraft, type = 'text'): ReactElement => createElement('label', { style: fieldStyle },
+      createElement('span', undefined, label),
+      createElement('input', {
+        type,
+        value: typeof value[key] === 'boolean' ? undefined : value[key],
+        checked: typeof value[key] === 'boolean' ? value[key] : undefined,
+        onChange: (event: { currentTarget: { value: string; checked: boolean } }) => setDraft({ ...value, [key]: type === 'checkbox' ? event.currentTarget.checked : event.currentTarget.value }),
+      }),
+    )
+    return createElement('form', { style: formStyle, onSubmit: (event: { preventDefault: () => void }) => { event.preventDefault(); void saveProfile(value) } },
+      createElement('strong', undefined, '添加启动配置'),
+      field('名称', 'name'),
+      field('启动命令', 'command'),
+      field('命令参数（空格分隔）', 'args'),
+      field('启动目录（Workspace 内相对路径）', 'cwdRelative'),
+      createElement('label', { style: fieldStyle }, createElement('span', undefined, 'Shell'), createElement('select', { value: value.shellProfileId, onChange: (event: { currentTarget: { value: string } }) => setDraft({ ...value, shellProfileId: event.currentTarget.value }) },
+        createElement('option', { value: 'zsh' }, 'zsh'), createElement('option', { value: 'bash' }, 'bash'), createElement('option', { value: 'powershell' }, 'PowerShell'), createElement('option', { value: 'cmd' }, 'cmd'), createElement('option', { value: 'git-bash' }, 'Git Bash'),
+      )),
+      field('Shell 可执行文件', 'shellPath'),
+      field('Shell 参数（空格分隔）', 'shellArgs'),
+      createElement('label', { style: fieldStyle }, createElement('span', undefined, '运行类型'), createElement('select', { value: value.runtimeType, onChange: (event: { currentTarget: { value: string } }) => setDraft({ ...value, runtimeType: event.currentTarget.value }) },
+        createElement('option', { value: 'local-pty' }, 'local-pty'), createElement('option', { value: 'tmux' }, 'tmux'), createElement('option', { value: 'conpty-powershell' }, 'ConPTY PowerShell'), createElement('option', { value: 'conpty-cmd' }, 'ConPTY cmd'), createElement('option', { value: 'conpty-git-bash' }, 'ConPTY Git Bash'),
+      )),
+      field('端口（可选）', 'port', 'number'),
+      createElement('label', { style: checkboxStyle }, createElement('input', { type: 'checkbox', checked: value.proxyEnabled, onChange: (event: { currentTarget: { checked: boolean } }) => setDraft({ ...value, proxyEnabled: event.currentTarget.checked }) }), '启用服务代理'),
+      createElement('div', { style: actionsStyle },
+        createElement('button', { type: 'submit', disabled: busy }, '保存配置'),
+        createElement('button', { type: 'button', disabled: busy, onClick: () => setDraft(null) }, '取消'),
+      ),
+    )
+  }
+
+  async function saveProfile(value: DebugProfileDraft): Promise<void> {
+    await withBusy(async () => {
+      const profile = {
+        id: createProfileId(),
+        name: value.name.trim(),
+        cwdRelative: value.cwdRelative.trim(),
+        command: value.command.trim(),
+        args: splitArgs(value.args),
+        env: {},
+        shell: { profileId: value.shellProfileId, path: value.shellPath.trim(), args: splitArgs(value.shellArgs), name: value.shellProfileId },
+        runtimeType: value.runtimeType,
+        port: value.port.trim() === '' ? null : Number(value.port),
+        proxy: { enabled: value.proxyEnabled },
+      }
+      const next = await call<DebugConfig>(rpc, 'debug/config/save', { sessionId: String(sessionId), workspaceId, generation: 0, config: { version: 1, profiles: [...profiles, profile] } })
+      setConfig(next)
+      setDraft(null)
+      setMessage('启动配置已保存')
     })
   }
 
@@ -178,6 +259,25 @@ const headerStyle = { display: 'flex', justifyContent: 'space-between', gap: 12,
 const itemStyle = { border: '1px solid var(--dsh-color-border, #d9dce3)', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 } as const
 const actionsStyle = { display: 'flex', flexWrap: 'wrap', gap: 8 } as const
 const mutedStyle = { color: 'var(--dsh-color-text-secondary, #6b7280)', fontSize: 12, marginLeft: 8 } as const
+const fieldStyle = { display: 'flex', flexDirection: 'column', gap: 4 } as const
+const formStyle = { ...itemStyle, background: 'var(--dsh-color-surface, #f8f9fb)' } as const
+const checkboxStyle = { display: 'flex', alignItems: 'center', gap: 8 } as const
+
+function createProfileDraft(): DebugProfileDraft {
+  const windows = typeof navigator !== 'undefined' && /Windows/u.test(navigator.userAgent)
+  return {
+    name: '开发服务', cwdRelative: '.', command: windows ? 'npm' : 'pnpm', args: 'run dev',
+    shellProfileId: windows ? 'powershell' : 'zsh', shellPath: windows ? 'powershell.exe' : '/bin/zsh', shellArgs: windows ? '-NoLogo' : '-i',
+    runtimeType: windows ? 'conpty-powershell' : 'local-pty', port: '', proxyEnabled: false,
+  }
+}
+
+function splitArgs(value: string): readonly string[] { return value.trim() === '' ? [] : value.trim().split(/\s+/u) }
+
+function createProfileId(): string {
+  const id = typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  return `debug-${id.slice(0, 12)}`
+}
 
 declare module '@deepseek-ai/dsh-client-ui-sidebar-right/client' {
   interface SidebarRightTabParamsMap { debug: undefined }
