@@ -230,8 +230,39 @@ function resolveSessionCwd(
   const record = asRecord(session)
   const header = asRecord(record?.header)
   const meta = asRecord(record?.meta)
-  const cwd = [header?.cwd, meta?.cwd, record?.cwd].find((item): item is string => typeof item === 'string' && item.trim() !== '')
-  return cwd?.trim()
+  const directCwd = [header?.cwd, meta?.cwd, record?.cwd].find((item): item is string => typeof item === 'string' && item.trim() !== '')
+  if (directCwd !== undefined) return directCwd.trim()
+  const snapshot = record?.snapshotEvents
+  if (typeof snapshot === 'function') {
+    try {
+      const events = snapshot.call(session)
+      const eventCwd = findCwdInValue(events, 0)
+      if (eventCwd !== undefined) return eventCwd
+    } catch { /* 原生会话快照不可读时继续使用未解析状态。 */ }
+  }
+  return findCwdInValue(record, 0)
+}
+
+/** DSH 的 cwd 可能只存在 request/header.data.header 或事件 data.cwd 中。 */
+function findCwdInValue(value: unknown, depth: number): string | undefined {
+  if (depth > 6 || value === null || typeof value !== 'object') return undefined
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findCwdInValue(item, depth + 1)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+  const record = value as Record<string, unknown>
+  for (const key of ['cwd', 'workingDirectory']) {
+    const candidate = record[key]
+    if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim()
+  }
+  for (const key of ['header', 'request', 'context', 'data', 'meta', 'session']) {
+    const found = findCwdInValue(record[key], depth + 1)
+    if (found !== undefined) return found
+  }
+  return undefined
 }
 
 function asRecord(value: unknown): Record<string, any> | null { return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, any> : null }

@@ -618,7 +618,7 @@ test('CLI 功能模块从 DSH 会话头传递工作目录并把统一工具事�
     {
       type: 'reasoning-delta',
       index: 0,
-      text: '',
+      text: ' ',
       codingnsExternalTool: {
         source: 'codingns-external-tool',
         phase: 'start',
@@ -631,7 +631,7 @@ test('CLI 功能模块从 DSH 会话头传递工作目录并把统一工具事�
     {
       type: 'reasoning-delta',
       index: 0,
-      text: '',
+      text: ' ',
       codingnsExternalTool: {
         source: 'codingns-external-tool',
         phase: 'update',

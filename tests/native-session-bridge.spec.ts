@@ -150,15 +150,15 @@ test('原生会话桥接把外部工具保存为只读 call/result 事件且不�
   ])
 })
 
-test('原生会话桥接按当前 step 顺序保存外部工具时间线标记', () => {
+test('原生会话桥接按当前 step 顺序保存外部工具 call/result 事件', () => {
   const events: Array<Record<string, any>> = [
     { type: 'turn/start', seq: 0, data: { turn: 3 } },
     { type: 'step/start', seq: 1, data: { turn: 3, step: 2 } },
   ]
   const session = {
     snapshotEvents() { return [...events] },
-    append(type: string, data: unknown) {
-      const event = { type, seq: events.length, data }
+    append(type: string, data: unknown, options?: unknown) {
+      const event = { type, seq: events.length, data, ...(options === undefined ? {} : { options }) }
       events.push(event)
       return event
     },
@@ -188,39 +188,34 @@ test('原生会话桥接按当前 step 顺序保存外部工具时间线标记',
   }), true)
   assert.deepEqual(events.slice(2), [
     {
-      type: 'assistant/attempt',
+      type: 'tool/call',
       seq: 2,
       data: {
         turn: 3,
         step: 2,
-        stream: [],
-        codingnsExternalTool: {
-          source: 'codingns-external-tool',
-          phase: 'start',
-          callId: 'bash-1',
-          name: 'bash',
-          arguments: '{"command":"pwd"}',
-          status: 'running',
-        },
+        callId: 'bash-1',
+        name: 'bash',
+        arguments: '{"command":"pwd"}',
       },
     },
     {
-      type: 'assistant/attempt',
+      type: 'tool/result',
       seq: 3,
       data: {
         turn: 3,
         step: 2,
-        stream: [],
-        codingnsExternalTool: {
-          source: 'codingns-external-tool',
-          phase: 'update',
-          callId: 'bash-1',
-          name: 'bash',
-          arguments: '{"command":"pwd"}',
-          status: 'completed',
-          output: '/workspace',
+        message: {
+          id: 'bash-1-result-3-2',
+          role: 'user',
+          content: [{
+            type: 'tool-result',
+            toolCallId: 'bash-1',
+            content: [{ type: 'text', text: '/workspace' }],
+          }],
+          source: { kind: 'tool', callId: 'bash-1' },
         },
       },
+      options: { surfaceOp: 'append', sourceEventSeqs: [2] },
     },
   ])
 })

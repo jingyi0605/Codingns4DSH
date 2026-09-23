@@ -52,7 +52,7 @@ test('公共工具投影层聚合生命周期并提取 Provider 文本块', () =
   assert.deepEqual(sink.results[0]?.result, { output: 'Found 2 items', isError: false })
 })
 
-test('公共工具投影层等待 assistant 落盘，并在工具独占终态兜底追加历史', async () => {
+test('公共工具投影层在当前 step 立即追加原生工具事件', async () => {
   const calls: string[] = []
   const session = {}
   let onEvent: ((subject: unknown, event: unknown) => void) | undefined
@@ -79,9 +79,9 @@ test('公共工具投影层等待 assistant 落盘，并在工具独占终态兜
   projector.observe({ type: 'tool-event', toolName: 'bash', callId: 'call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' })
   projector.finalize('stop')
 
-  assert.deepEqual(calls, [])
+  assert.deepEqual(calls, ['tool/call', 'tool/result'])
   publishing = true
-  onEvent?.(session, { type: 'assistant/message' })
+  onEvent?.(session, { type: 'step/start' })
   publishing = false
   await Promise.resolve()
   assert.deepEqual(calls, ['tool/call', 'tool/result'])
@@ -89,31 +89,65 @@ test('公共工具投影层等待 assistant 落盘，并在工具独占终态兜
 
 test('公共工具投影层优先按通知顺序保存外部工具标记，不追加原生 call/result', () => {
   const markers: Array<Record<string, unknown>> = []
-  const calls: string[] = []
   const bridge = {
     appendExternalToolEvent(_sessionId: string, marker: Record<string, unknown>) {
       markers.push(marker)
       return true
     },
-    appendToolCall() {
-      calls.push('tool/call')
-      return null
-    },
-    appendToolResult() {
-      calls.push('tool/result')
-      return true
-    },
   }
   const projector = new CodingNsDshToolHistoryProjector(bridge as never, 'session-timeline')
-  assert.equal(projector.observe({ type: 'tool-event', toolName: 'bash', callId: 'bash-1', input: 'pwd', status: 'running' }), null)
-  assert.equal(projector.observe({ type: 'tool-event', toolName: 'bash', callId: 'bash-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' }), null)
+  assert.equal(projector.observe({ type: 'tool-event', toolName: 'bash', callId: 'bash-1', input: 'pwd', status: 'running' })?.phase, 'start')
+  assert.equal(projector.observe({ type: 'tool-event', toolName: 'bash', callId: 'bash-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' })?.phase, 'update')
   projector.finalize('stop')
 
   assert.deepEqual(markers.map((marker) => ({ phase: marker.phase, status: marker.status, output: marker.output })), [
     { phase: 'start', status: 'running', output: undefined },
     { phase: 'update', status: 'completed', output: '/workspace' },
   ])
-  assert.deepEqual(calls, [])
+})
+
+test('公共工具投影层在 step 尚未打开时等待并补写持久起点', async () => {
+  const session = {}
+  const markers: Array<Record<string, unknown>> = []
+  let stepOpen = false
+  let onEvent: ((subject: unknown, event: unknown) => void) | undefined
+  const bridge = {
+    supportsEvents: true,
+    get() { return session },
+    subscribe(handlers: { onEvent?: (subject: unknown, event: unknown) => void }) {
+      onEvent = handlers.onEvent
+      return () => { onEvent = undefined }
+    },
+    appendExternalToolEvent(_sessionId: string, marker: Record<string, unknown>) {
+      if (!stepOpen) return false
+      markers.push(marker)
+      return true
+    },
+  }
+  const projector = new CodingNsDshToolHistoryProjector(bridge as never, 'session-race')
+  assert.deepEqual(projector.observe({ type: 'tool-event', toolName: 'bash', callId: 'bash-race', input: 'pwd', status: 'running' }), {
+    source: 'codingns-external-tool',
+    phase: 'start',
+    callId: 'bash-race',
+    name: 'bash',
+    arguments: '{"command":"pwd"}',
+    status: 'running',
+  })
+  stepOpen = true
+  onEvent?.(session, { type: 'step/start' })
+  await Promise.resolve()
+  assert.deepEqual(markers.map((marker) => marker.phase), ['start'])
+  assert.deepEqual(projector.observe({ type: 'tool-event', toolName: 'bash', callId: 'bash-race', output: '/workspace', outputMode: 'snapshot', status: 'completed' }), {
+    source: 'codingns-external-tool',
+    phase: 'update',
+    callId: 'bash-race',
+    name: 'bash',
+    arguments: '{"command":"pwd"}',
+    status: 'completed',
+    output: '/workspace',
+  })
+  assert.deepEqual(markers.map((marker) => marker.phase), ['start', 'update'])
+  projector.finalize('stop')
 })
 
 test('公共工具投影层统一映射 edit_file 并生成 DSH diff 元数据', () => {

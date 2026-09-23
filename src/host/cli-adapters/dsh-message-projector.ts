@@ -146,16 +146,16 @@ export class CodingNsDshMessageProjector {
 }
 
 /**
- * 外部工具已经由 Provider 执行，不能转成 DSH tool-call block；使用空 reasoning
- * chunk 携带私有标记，只让 Client 的实时 Conversation 投影读取，不会进入模型
- * 消息，也不会被 Agent Loop 再次执行。
+ * 外部工具已经由 Provider 执行，不能转成 DSH tool-call block；使用空白 reasoning
+ * chunk 携带私有标记，只让 Client 的实时 Conversation 投影读取，不会再次执行工具。
  */
 function externalToolChunk(marker: CodingNsDshExternalToolMarker | null): readonly CodingNsDshStreamChunk[] {
   if (marker === null) return []
   return [{
     type: 'reasoning-delta',
     index: 0,
-    text: '',
+    // 空 delta 会被 DSH 的流式聚合器丢弃，空格能保留 live-chunk 但不会显示思考正文。
+    text: ' ',
     codingnsExternalTool: marker,
   }]
 }

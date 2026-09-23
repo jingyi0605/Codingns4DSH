@@ -626,7 +626,7 @@ test('Codex 不会把 turn/start 响应前迟到的旧回合工具事件带入�
   driver.dispose()
 })
 
-test('Codex 不会把 turn/start 响应后仍无 turnId 的工具事件追加到当前流', async () => {
+test('Codex 会把 turn/start 响应后的无 turnId 工具事件交给当前流', async () => {
   const driver = new CodexAppServerDriver({
     binaries: ['fake-agent'],
     spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
@@ -657,6 +657,7 @@ test('Codex 不会把 turn/start 响应后仍无 turnId 的工具事件追加到
 
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'thread-after' },
+    { type: 'tool-event', toolName: 'command_execution', callId: 'late-old-call', input: '历史命令', status: 'running' },
     { type: 'tool-event', toolName: 'command_execution', callId: 'current-call', input: '当前命令', status: 'running' },
     { type: 'finish', reason: 'stop' },
   ])

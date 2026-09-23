@@ -67,6 +67,35 @@ test('OpenCode SSE 事件转换为标准文本流并绑定远端会话', async (
   assert.deepEqual(requests, [{ parts: [{ type: 'text', text: '你好' }], model: { providerID: 'openai', modelID: 'gpt-5.5' }, variant: 'high' }])
 })
 
+test('OpenCode 工具事件保留 Bash 和读取工具的真实参数', async () => {
+  const encoder = new TextEncoder()
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/session') && init.method === 'POST') return new Response(JSON.stringify({ id: 'remote-tool-input' }), { status: 200 })
+    if (url.endsWith('/message')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/event')) {
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"message.updated","properties":{"info":{"id":"assistant-tool-message","role":"assistant"}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"message.part.updated","properties":{"part":{"id":"bash-part","messageID":"assistant-tool-message","type":"tool","tool":"bash","callID":"bash-call","state":"{\\"status\\":\\"running\\",\\"input\\":{\\"command\\":\\"pwd && ls -la\\"}}"}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"message.part.updated","properties":{"part":{"id":"read-part","messageID":"assistant-tool-message","type":"tool","tool":"read","callID":"read-call","input":{"file_path":"README.md"},"state":{"status":"completed","output":"内容"}}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"session.status","status":"idle"}\n\n'))
+        controller.close()
+      } })
+      return new Response(body, { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 's-tool-input', messages: [], prompt: '执行工具' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'remote-tool-input' },
+    { type: 'tool-event', toolName: 'bash', callId: 'bash-call', input: '{"command":"pwd && ls -la"}', status: 'running' },
+    { type: 'tool-event', toolName: 'read', callId: 'read-call', input: '{"file_path":"README.md"}', output: '内容', outputMode: 'snapshot', status: 'completed' },
+    { type: 'finish', reason: 'stop' },
+  ])
+})
+
 test('OpenCode 创建会话和事件流都携带当前工作目录', async () => {
   const requests: string[] = []
   const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
@@ -96,6 +125,38 @@ test('OpenCode 创建会话和事件流都携带当前工作目录', async () =>
   assert.ok(requests.some((url) => url.endsWith('/event?directory=%2Fworkspace%2Fproject')))
 })
 
+test('OpenCode 不复用工作目录不一致的旧 Provider 会话', async () => {
+  const requests: string[] = []
+  const encoder = new TextEncoder()
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    requests.push(url)
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/session/old-provider')) return new Response(JSON.stringify({ id: 'old-provider', directory: '/Users/jackson/Code/GCAC' }), { status: 200 })
+    if (url.endsWith('/session?directory=%2FUsers%2Fjackson%2FCode%2F%E5%A4%B4%E8%84%91%E9%A3%8E%E6%9A%B4') && init.method === 'POST') return new Response(JSON.stringify({ id: 'new-provider' }), { status: 200 })
+    if (url.endsWith('/message?directory=%2FUsers%2Fjackson%2FCode%2F%E5%A4%B4%E8%84%91%E9%A3%8E%E6%9A%B4')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/event?directory=%2FUsers%2Fjackson%2FCode%2F%E5%A4%B4%E8%84%91%E9%A3%8E%E6%9A%B4')) {
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"session.status","status":"idle"}\n\n'))
+        controller.close()
+      } }), { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({
+    sessionId: 's-directory-switch',
+    providerSessionId: 'old-provider',
+    prompt: '切换目录',
+    cwd: '/Users/jackson/Code/头脑风暴',
+  })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'new-provider' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  assert.ok(requests.some((url) => url.endsWith('/session/old-provider')))
+})
+
 test('OpenCode 只投影 assistant 消息，并优先使用事件 delta', async () => {
   const encoder = new TextEncoder()
   const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
@@ -113,6 +174,8 @@ test('OpenCode 只投影 assistant 消息，并优先使用事件 delta', async 
         controller.enqueue(encoder.encode('data: {"type":"message.part.updated","properties":{"part":{"id":"reasoning-part","messageID":"assistant-message","type":"reasoning","text":"先检查目录"}}}\n\n'))
         controller.enqueue(encoder.encode('data: {"type":"message.part.delta","properties":{"messageID":"assistant-message","partID":"assistant-part","field":"text","delta":" answer"}}\n\n'))
         controller.enqueue(encoder.encode('data: {"type":"message.part.updated","properties":{"part":{"id":"assistant-part","messageID":"assistant-message","type":"text","text":"The answer"}}}\n\n'))
+        // OpenCode 的 reasoning part 增量同样使用 field: "text"；类型只能从此前的 part.updated 事件恢复。
+        controller.enqueue(encoder.encode('data: {"type":"message.part.delta","properties":{"messageID":"assistant-message","partID":"reasoning-part","field":"text","delta":"补充检查"}}\n\n'))
         controller.enqueue(encoder.encode('data: {"type":"session.status","status":"idle"}\n\n'))
         controller.close()
       } })
@@ -128,6 +191,7 @@ test('OpenCode 只投影 assistant 消息，并优先使用事件 delta', async 
     { type: 'reasoning-delta', text: '先检查目录' },
     { type: 'text-delta', text: 'The' },
     { type: 'text-delta', text: ' answer' },
+    { type: 'reasoning-delta', text: '补充检查' },
     { type: 'finish', reason: 'stop' },
   ])
 })

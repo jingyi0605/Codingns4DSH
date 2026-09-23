@@ -41,7 +41,7 @@ test('公共消息投影层统一处理正文、思考、工具、用量和唯�
     {
       type: 'reasoning-delta',
       index: 0,
-      text: '',
+      text: ' ',
       codingnsExternalTool: {
         source: 'codingns-external-tool',
         phase: 'start',
@@ -54,7 +54,7 @@ test('公共消息投影层统一处理正文、思考、工具、用量和唯�
     {
       type: 'reasoning-delta',
       index: 0,
-      text: '',
+      text: ' ',
       codingnsExternalTool: {
         source: 'codingns-external-tool',
         phase: 'update',

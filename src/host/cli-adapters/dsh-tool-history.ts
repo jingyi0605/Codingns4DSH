@@ -15,6 +15,8 @@ interface ToolRecord {
   settled: boolean
   resultAppended: boolean
   externalPersisted: boolean
+  externalMarker?: CodingNsDshExternalToolMarker
+  externalMarkerPersisted: boolean
 }
 
 /** 外部工具的实时回退标记；正常 Host 会优先写入 Session 持久时间线。 */
@@ -55,23 +57,20 @@ export class CodingNsDshToolHistoryProjector {
     private readonly nativeSessions: CodingNsNativeSessionBridge | undefined,
     private readonly sessionId: string,
   ) {
-    // 新桥接直接在工具通知到达时写入时间线标记；只有旧 Host 没有该接口时才保留旧的
-    // assistant settlement 兼容路径。旧路径不能用于新桥接，否则工具一定会落到正文之后。
-    const subscribe = nativeSessions?.appendExternalToolEvent === undefined
-      && nativeSessions?.supportsEvents === true
-      ? nativeSessions.subscribe
-      : undefined
-    this.deferNativeAppend = subscribe !== undefined
+    // 工具事件必须尽早进入当前 step。新桥接优先写入原生 tool/call 与 tool/result；
+    // 自定义标记只负责把这次通知立即送进实时 Conversation。不能把工具伪装成
+    // assistant/attempt，因为 DSH 会把后者当成模型结算，天然排到正文之后。
+    const subscribe = nativeSessions?.supportsEvents === true ? nativeSessions.subscribe : undefined
+    this.deferNativeAppend = nativeSessions?.appendToolCall === undefined && nativeSessions?.appendExternalToolEvent === undefined && subscribe !== undefined
     this.removeNativeEventListener = subscribe?.call(nativeSessions!, {
       onEvent: (session, event) => {
-        // DSH 的实时正文在 assistant/message 事件中才真正落盘。
-        // 工具历史必须排在该事件之后，否则 UI 会在流式正文下方提前堆积工具卡片。
-        if (session !== nativeSessions?.get(sessionId) || !isNativeAssistantSettlement(event)) return
-        if (this.flushScheduled) return
+        if (session !== nativeSessions?.get(sessionId)) return
+        if (!isNativeStepStart(event) || this.flushScheduled) return
         this.flushScheduled = true
         queueMicrotask(() => {
           this.flushScheduled = false
-          this.flushNativeRecords()
+          if (nativeSessions?.appendToolCall !== undefined) this.flushNativeRecords()
+          else this.flushExternalMarkers()
         })
       },
     })
@@ -93,6 +92,7 @@ export class CodingNsDshToolHistoryProjector {
       settled: false,
       resultAppended: false,
       externalPersisted: false,
+      externalMarkerPersisted: false,
     }
     if (current === undefined) this.observedCalls += 1
     record.toolName = toolName
@@ -123,23 +123,19 @@ export class CodingNsDshToolHistoryProjector {
       ...(record.output === undefined ? {} : { output: record.output }),
       ...(record.error === undefined ? {} : { error: record.error }),
     }
-    let persisted = false
-    if (this.nativeSessions?.appendExternalToolEvent !== undefined
-      && this.sessionId.trim() !== ''
-      && (current === undefined || record.externalPersisted)) {
-      try {
-        persisted = this.nativeSessions.appendExternalToolEvent(this.sessionId, marker)
-        record.externalPersisted = persisted
-      } catch {
-        // 时间线展示失败不能中断外部 Agent 的真实执行；流式 marker 仍会发送给 Client。
-      }
-    } else if (!this.deferNativeAppend) {
-      // 没有原生事件订阅的精简测试/旧 Host 继续使用旧兼容路径。
-      this.flushNativeRecords()
+    record.externalMarker = marker
+    record.externalMarkerPersisted = false
+    if (this.nativeSessions?.appendToolCall !== undefined && this.sessionId.trim() !== '') {
+      // 原生 tool/call/result 负责持久时间线，marker 负责流式期间的即时显示。
+      // 两者不能互相替代：Conversation 的 transient 会在 assistant settlement 时被清理。
+      const persisted = this.persistNativeRecord(record)
+      if (!persisted && this.nativeSessions.supportsEvents) this.scheduleFlush()
+      return marker
     }
-    // 持久事件已经同步发布给 Conversation，不能再发送同一 callId 的临时 start，
-    // 否则 assembler 会把它视为重复起点。仅在持久化不可用时保留 transient fallback。
-    return persisted ? null : marker
+    const hasExternalAppender = this.nativeSessions?.appendExternalToolEvent !== undefined && this.sessionId.trim() !== ''
+    if (hasExternalAppender) this.persistExternalMarker(record)
+    if (!hasExternalAppender && !this.deferNativeAppend) this.flushNativeRecords()
+    return marker
   }
 
   /** 流结束时补齐 Provider 遗漏的终态，避免原生组件永久停留在运行中。 */
@@ -150,7 +146,13 @@ export class CodingNsDshToolHistoryProjector {
       if (failure !== undefined && record.error === undefined) this.assign(record, 'error', failure, 'snapshot')
       this.settle(record, record.failed || reason !== 'stop')
     }
-    if (!this.deferNativeAppend) this.flushNativeRecords()
+    if (this.nativeSessions?.appendToolCall !== undefined) {
+      this.flushNativeRecords()
+      this.removeNativeEventListener?.()
+    } else if (this.nativeSessions?.appendExternalToolEvent !== undefined) {
+      this.flushExternalMarkers()
+      this.removeNativeEventListener?.()
+    } else if (!this.deferNativeAppend) this.flushNativeRecords()
   }
 
   private assign(
@@ -181,32 +183,81 @@ export class CodingNsDshToolHistoryProjector {
     record.failed = isError
   }
 
-  /** 在 DSH assistant/message 已经落盘后，按 Provider 到达顺序追加工具历史。 */
+  /** 按 Provider 到达顺序把工具调用和结果写入当前 DSH step。 */
   private flushNativeRecords(): void {
-    if (this.nativeSessions?.appendExternalToolEvent !== undefined) return
+    if (this.nativeSessions?.appendToolCall === undefined || this.sessionId.trim() === '') return
+    for (const record of this.records.values()) this.persistNativeRecord(record)
+    if (this.finalized) this.removeNativeEventListener?.()
+  }
+
+  private persistNativeRecord(record: ToolRecord): boolean {
     const append = this.nativeSessions?.appendToolCall
-    if (append === undefined || this.sessionId.trim() === '') return
+    if (append === undefined || this.sessionId.trim() === '') return false
+    if (record.handle === null) record.handle = this.appendCall(record, append)
+    if (!record.settled || record.resultAppended || record.handle === null) return record.handle !== null
+    const appendResult = this.nativeSessions?.appendToolResult
+    if (appendResult === undefined) return false
+    const normalized = normalizeToolCall(record.toolName, record.input)
+    const error = record.error?.trim()
+    const output = normalizeToolOutput(record.output ?? error ?? '')
+    try {
+      record.resultAppended = appendResult.call(this.nativeSessions, record.handle, {
+        output,
+        isError: record.failed,
+        ...(error ? { error } : {}),
+        ...toolResultMeta(normalized.name, normalized.arguments),
+      })
+    } catch {
+      record.resultAppended = false
+    }
+    return record.resultAppended
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushScheduled) return
+    this.flushScheduled = true
+    queueMicrotask(() => {
+      this.flushScheduled = false
+      if (this.nativeSessions?.appendToolCall !== undefined) this.flushNativeRecords()
+      else this.flushExternalMarkers()
+    })
+  }
+
+  /** 活动 step 晚于首个工具通知时，补写尚未进入 Session 的工具标记。 */
+  private flushExternalMarkers(): void {
+    if (this.nativeSessions?.appendExternalToolEvent === undefined || this.sessionId.trim() === '') return
     for (const record of this.records.values()) {
-      if (record.handle === null) record.handle = this.appendCall(record, append)
-      if (!record.settled || record.resultAppended || record.handle === null) continue
-      const appendResult = this.nativeSessions?.appendToolResult
-      if (appendResult === undefined) continue
-      const normalized = normalizeToolCall(record.toolName, record.input)
-      const error = record.error?.trim()
-      const output = normalizeToolOutput(record.output ?? error ?? '')
+      if (record.externalMarker === undefined || record.externalMarkerPersisted) continue
+      this.persistExternalMarker(record)
+    }
+  }
+
+  /** 先补齐同一调用的 start，再追加当前 update，保持 Conversation 生命周期合法。 */
+  private persistExternalMarker(record: ToolRecord): boolean {
+    const append = this.nativeSessions?.appendExternalToolEvent
+    const marker = record.externalMarker
+    if (append === undefined || marker === undefined || this.sessionId.trim() === '') return false
+    if (!record.externalPersisted) {
+      const start: CodingNsDshExternalToolMarker = marker.phase === 'start'
+        ? marker
+        : { source: marker.source, phase: 'start', callId: marker.callId, name: marker.name, arguments: marker.arguments, status: 'running' }
       try {
-        appendResult.call(this.nativeSessions, record.handle, {
-          output,
-          isError: record.failed,
-          ...(error ? { error } : {}),
-          ...toolResultMeta(normalized.name, normalized.arguments),
-        })
-        record.resultAppended = true
+        if (!append.call(this.nativeSessions, this.sessionId, start)) return false
+        record.externalPersisted = true
       } catch {
-        // DSH Session 是展示副作用，不能覆盖 Provider 的成功或失败终态。
+        return false
+      }
+      if (marker.phase === 'start') {
+        record.externalMarkerPersisted = true
+        return true
       }
     }
-    if (this.finalized) this.removeNativeEventListener?.()
+    try {
+      record.externalMarkerPersisted = append.call(this.nativeSessions, this.sessionId, marker)
+      return record.externalMarkerPersisted
+    } catch {
+      return false
+    }
   }
 
   private appendCall(
@@ -307,9 +358,8 @@ function meaningfulToolName(incoming: string, previous: string | undefined): str
   return normalized === 'tool' && previous !== undefined ? previous : normalized
 }
 
-function isNativeAssistantSettlement(value: unknown): boolean {
-  if (!isRecord(value)) return false
-  return value.type === 'assistant/message' || value.type === 'assistant/attempt'
+function isNativeStepStart(value: unknown): boolean {
+  return isRecord(value) && value.type === 'step/start'
 }
 
 function parseRecord(value: string | undefined): Record<string, unknown> | null {

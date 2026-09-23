@@ -105,7 +105,7 @@ export interface CodingNsNativeSessionBridge {
   appendToolCall?(sessionId: string, call: CodingNsNativeToolCall): CodingNsNativeToolCallHandle | null
   /** 追加与 appendToolCall 配对的只读结果；不会再次执行工具。 */
   appendToolResult?(handle: CodingNsNativeToolCallHandle, result: CodingNsNativeToolResult): boolean
-  /** 追加不进入模型消息面的外部工具时间线标记。 */
+  /** 兼容旧调用方；内部仍转换为 DSH 原生 tool/call 与 tool/result。 */
   appendExternalToolEvent?(sessionId: string, event: CodingNsNativeExternalToolEvent): boolean
   /** 使用 DSH 原生 approval 组件请求一次权限决定；服务不可用时拒绝。 */
   requestApproval?(sessionId: string, request: CodingNsNativeApprovalRequest): Promise<CodingNsNativeApprovalOutcome>
@@ -138,6 +138,49 @@ export function createCodingNsNativeSessionBridge(ctx: Context): CodingNsNativeS
   const on = typeof (ctx as unknown as { on?: unknown }).on === 'function'
     ? (ctx as unknown as { on(name: string, listener: (...args: unknown[]) => unknown): () => unknown }).on.bind(ctx)
     : undefined
+  const externalHandles = new Map<string, CodingNsNativeToolCallHandle>()
+  const appendNativeToolCall = (sessionId: string, call: CodingNsNativeToolCall): CodingNsNativeToolCallHandle | null => {
+    const session = appendableSession(store?.get(sessionId))
+    const position = session === null ? null : activeStep(session)
+    if (session === null || position === null) return null
+    const event = session.append('tool/call', {
+      turn: position.turn,
+      step: position.step,
+      callId: call.callId,
+      name: call.name,
+      arguments: call.arguments,
+    })
+    const callSeq = eventSeq(event)
+    return callSeq === null ? null : { sessionId, ...position, callId: call.callId, callSeq }
+  }
+  const appendNativeToolResult = (handle: CodingNsNativeToolCallHandle, result: CodingNsNativeToolResult): boolean => {
+    const session = appendableSession(store?.get(handle.sessionId))
+    if (session === null) return false
+    const error = result.error?.trim()
+    session.append('tool/result', {
+      turn: handle.turn,
+      step: handle.step,
+      message: {
+        id: `${handle.callId}-result-${handle.turn}-${handle.step}`,
+        role: 'user',
+        content: [{
+          type: 'tool-result',
+          toolCallId: handle.callId,
+          content: [{ type: 'text', text: result.output }],
+          ...(result.isError ? { isError: true } : {}),
+        }],
+        source: { kind: 'tool', callId: handle.callId },
+      },
+      ...(result.isError
+        ? { error: { name: 'ExternalToolError', code: 'EXTERNAL_TOOL_FAILED', ...(error ? { reason: error } : {}) } }
+        : {}),
+      ...(result.meta === undefined ? {} : { meta: result.meta }),
+    }, {
+      surfaceOp: 'append',
+      sourceEventSeqs: [handle.callSeq],
+    })
+    return true
+  }
 
   return {
     get available() {
@@ -176,64 +219,36 @@ export function createCodingNsNativeSessionBridge(ctx: Context): CodingNsNativeS
       await store.flush(session)
     },
     appendToolCall(sessionId, call) {
-      const session = appendableSession(store?.get(sessionId))
-      const position = session === null ? null : activeStep(session)
-      if (session === null || position === null) return null
-      const event = session.append('tool/call', {
-        turn: position.turn,
-        step: position.step,
-        callId: call.callId,
-        name: call.name,
-        arguments: call.arguments,
-      })
-      const callSeq = eventSeq(event)
-      if (callSeq === null) return null
-      return { sessionId, ...position, callId: call.callId, callSeq }
+      return appendNativeToolCall(sessionId, call)
     },
     appendToolResult(handle, result) {
-      const session = appendableSession(store?.get(handle.sessionId))
-      if (session === null) return false
-      const error = result.error?.trim()
-      session.append('tool/result', {
-        turn: handle.turn,
-        step: handle.step,
-        message: {
-          id: `${handle.callId}-result-${handle.turn}-${handle.step}`,
-          role: 'user',
-          content: [{
-            type: 'tool-result',
-            toolCallId: handle.callId,
-            content: [{ type: 'text', text: result.output }],
-            ...(result.isError ? { isError: true } : {}),
-          }],
-          source: { kind: 'tool', callId: handle.callId },
-        },
-        ...(result.isError
-          ? { error: { name: 'ExternalToolError', code: 'EXTERNAL_TOOL_FAILED', ...(error ? { reason: error } : {}) } }
-          : {}),
-        ...(result.meta === undefined ? {} : { meta: result.meta }),
-      }, {
-        surfaceOp: 'append',
-        sourceEventSeqs: [handle.callSeq],
-      })
-      return true
+      return appendNativeToolResult(handle, result)
     },
     appendExternalToolEvent(sessionId, externalTool) {
-      const session = appendableSession(store?.get(sessionId))
-      const position = session === null ? null : activeStep(session)
-      if (session === null || position === null) return false
       try {
-        // assistant/attempt 是 DSH 已定义的非消息事件，不会进入模型上下文或原生工具执行器。
-        // 额外字段由 Session 原样持久化，客户端 Definition 只把它当作 CodingNS 展示标记。
-        session.append('assistant/attempt', {
-          ...position,
-          stream: [],
-          codingnsExternalTool: {
-            source: 'codingns-external-tool',
-            ...externalTool,
-          },
+        // 兼容旧调用方，但仍然写入 DSH 原生工具事件，绝不能伪造 assistant/attempt。
+        const key = `${sessionId}:${externalTool.callId}`
+        if (externalTool.phase === 'start') {
+          if (externalHandles.has(key)) return true
+          const handle = appendNativeToolCall(sessionId, {
+            callId: externalTool.callId,
+            name: externalTool.name,
+            arguments: externalTool.arguments,
+          })
+          if (handle === null) return false
+          externalHandles.set(key, handle)
+          return true
+        }
+        const handle = externalHandles.get(key)
+        if (handle === undefined) return false
+        if (externalTool.status === 'running') return true
+        const result = appendNativeToolResult(handle, {
+          output: externalTool.output ?? externalTool.error ?? '',
+          isError: externalTool.status === 'failed',
+          ...(externalTool.error ? { error: externalTool.error } : {}),
         })
-        return true
+        if (result) externalHandles.delete(key)
+        return result
       } catch {
         return false
       }

@@ -30,8 +30,9 @@ interface ExternalToolState {
 }
 
 /**
- * 把流式标记和持久化的 assistant/attempt 工具标记投影成 Chat 节点。
- * 新 Host 只发送持久标记；流式标记仅是无法写入 Session 时的兼容回退。
+ * 把实时 assistant/live-chunk 工具标记投影成 Chat 节点。
+ * assistant/attempt 读取仅为兼容已经存在的旧历史；新 Host 的持久时间线使用原生
+ * tool/call 与 tool/result，避免把工具事件误当成模型结算。
  */
 const externalToolDefinition: ConversationNodeDefinition<ExternalToolState> = {
   kind: 'codingns-external-tool',

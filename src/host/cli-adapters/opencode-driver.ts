@@ -9,7 +9,7 @@ import type {
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { HttpSseClient, type SseEvent } from './http-sse-client.js'
 import { isProviderDefaultModel } from './model-catalog.js'
-import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { isQuestionEvent, questionAnswersList, readAgentQuestions } from './interaction-events.js'
 
 const WINDOWS = process.platform === 'win32'
@@ -38,6 +38,8 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   private cachedServer: string | null = null
   private readonly managedServers = new Map<string, { url: string; child: ChildProcessWithoutNullStreams }>()
   private readonly sessions = new Map<string, string>()
+  /** Provider 会话的实际工作目录；目录变化时禁止复用旧会话。 */
+  private readonly sessionCwds = new Map<string, string>()
   private readonly interactionTargets = new Map<string, string>()
 
   constructor(options: OpenCodeDriverOptions = {}) {
@@ -84,6 +86,10 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       if (response.status >= 200 && response.status < 300) {
         const record = asRecord(response.data)
         const id = typeof record?.id === 'string' ? record.id : typeof record?.sessionID === 'string' ? record.sessionID : null
+        const directory = readProviderDirectory(record)
+        if (input.cwd !== undefined && directory !== undefined && directory !== input.cwd.trim()) {
+          return { state: 'corrupt', reason: 'OpenCode 会话工作目录与当前 DSH 会话不一致', rawStoreRef }
+        }
         return id === null || id === providerSessionId
           ? { state: 'available', reason: 'OpenCode 原始会话可用', rawStoreRef }
           : { state: 'corrupt', reason: 'OpenCode 会话响应与绑定标识不一致', rawStoreRef }
@@ -101,12 +107,16 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     const server = await this.ensureServer(false, input.cwd)
     if (server === null) throw new Error('OpenCode server 未运行，请先启动 `opencode serve`')
     let sessionId = input.providerSessionId ?? this.sessions.get(input.sessionId)
+    if (sessionId !== undefined && !(await this.providerSessionMatchesDirectory(server, sessionId, input.cwd, input.signal))) {
+      sessionId = undefined
+    }
     if (sessionId !== undefined) this.sessions.set(input.sessionId, sessionId)
     const createdSession = sessionId === undefined
     if (sessionId === undefined) {
       sessionId = await this.createSession(server, input)
       this.sessions.set(input.sessionId, sessionId)
     }
+    if (input.cwd?.trim()) this.sessionCwds.set(sessionId, input.cwd.trim())
     this.interactionTargets.set(input.sessionId, server)
 
     const streamController = new AbortController()
@@ -133,6 +143,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     let emitted = false
     let finished = false
     const cumulative = new Map<string, number>()
+    const partTypes = new Map<string, string>()
     const assistantMessageIds = new Set<string>()
     const knownMessageIds = new Set<string>()
     const pendingMessageParts = new Map<string, Record<string, unknown>[]>()
@@ -158,7 +169,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
               const pending = pendingMessageParts.get(messageRole.id) ?? []
               pendingMessageParts.delete(messageRole.id)
               for (const pendingPart of pending) {
-                const chunk = eventToChunk(pendingPart, cumulative, assistantMessageIds)
+                const chunk = eventToChunk(pendingPart, cumulative, assistantMessageIds, partTypes)
                 if (chunk !== null) { emitted = true; yield chunk }
               }
             } else {
@@ -174,7 +185,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
             continue
           }
           if (messageId !== undefined && !assistantMessageIds.has(messageId)) continue
-          const chunk = eventToChunk(parsed, cumulative, assistantMessageIds)
+          const chunk = eventToChunk(parsed, cumulative, assistantMessageIds, partTypes)
           if (chunk !== null) {
             emitted = true
             yield chunk
@@ -188,7 +199,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       if (!finished && !aborted) {
         const response = await send
         if (sendError !== null && !aborted) throw sendError
-        for (const chunk of responseChunks(response, cumulative)) { emitted = true; yield chunk }
+        for (const chunk of responseChunks(response, cumulative, partTypes)) { emitted = true; yield chunk }
       }
       if (aborted || input.signal?.aborted) yield { type: 'finish', reason: 'cancel' }
       else if (finished || emitted) yield { type: 'finish', reason: 'stop' }
@@ -224,6 +235,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
 
   dispose(): void {
     this.sessions.clear()
+    this.sessionCwds.clear()
     for (const managed of this.managedServers.values()) {
       try { managed.child.kill('SIGTERM') } catch { /* 进程可能已经退出 */ }
     }
@@ -253,6 +265,29 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     const id = typeof record?.id === 'string' ? record.id : typeof record?.sessionID === 'string' ? record.sessionID : null
     if (response.status < 200 || response.status >= 300 || id === null) throw new Error(`OpenCode 创建会话失败（HTTP ${response.status}）`)
     return id
+  }
+
+  private async providerSessionMatchesDirectory(
+    server: string,
+    sessionId: string,
+    cwd: string | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<boolean> {
+    if (cwd === undefined || cwd.trim() === '') return true
+    const normalizedCwd = cwd.trim()
+    const knownCwd = this.sessionCwds.get(sessionId)
+    if (knownCwd !== undefined) return knownCwd === normalizedCwd
+    try {
+      const response = await this.http.json<unknown>(`${server}/session/${encodeURIComponent(sessionId)}`, signal === undefined ? {} : { signal })
+      if (response.status === 404) return false
+      if (response.status < 200 || response.status >= 300) return true
+      const directory = readProviderDirectory(asRecord(response.data))
+      if (directory === undefined) return true
+      return directory === normalizedCwd
+    } catch {
+      // 目录校验失败时保留旧兼容行为，避免临时网络故障导致会话被无故重建。
+      return true
+    }
   }
 
   private async abortSession(server: string, sessionId: string): Promise<void> {
@@ -345,6 +380,20 @@ function parseOpenCodeModel(modelId: string | undefined): { providerID: string; 
   return { providerID: modelId!.slice(0, separator), modelID: modelId!.slice(separator + 1) }
 }
 
+function readProviderDirectory(record: Record<string, any> | null): string | undefined {
+  const value = record?.directory ?? record?.cwd
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+}
+
+function isReasoningField(value: string | undefined): boolean {
+  if (value === undefined) return false
+  const normalized = value.trim().toLowerCase()
+  return normalized === 'reasoning'
+    || normalized === 'thinking'
+    || normalized === 'reasoning_content'
+    || normalized === 'reasoning_details'
+}
+
 function withOpenCodeDirectory(server: string, pathname: string, cwd: string | undefined): string {
   const url = new URL(pathname, `${server.replace(/\/$/u, '')}/`)
   if (cwd?.trim()) url.searchParams.set('directory', cwd.trim())
@@ -364,6 +413,7 @@ function eventToChunk(
   event: Record<string, unknown>,
   cumulative: Map<string, number>,
   assistantMessageIds?: ReadonlySet<string>,
+  partTypes?: Map<string, string>,
 ): CodingNsAgentEvent | null {
   const type = typeof event.type === 'string' ? event.type : ''
   const properties = asRecord(event.properties)
@@ -389,14 +439,20 @@ function eventToChunk(
       }
     }
   }
-  const partType = typeof part.type === 'string' ? part.type : ''
   const partId = firstToolText(part.id, part.partID, properties?.partID, properties?.partId)
+  const rawPartType = typeof part.type === 'string' ? part.type : ''
+  if (partId !== undefined && rawPartType !== '') partTypes?.set(partId, rawPartType.trim().toLowerCase())
+  const partType = rawPartType.trim().toLowerCase() || (partId === undefined ? '' : partTypes?.get(partId) ?? '')
   const key = partId ?? `${type}:${partType}`
-  const field = firstToolText(part.field, properties?.field)
-  const reasoning = partType === 'reasoning' || field === 'reasoning'
+  // OpenCode 1.18 的 delta 把 field 放在 properties 顶层；兼容旧版的顶层 field。
+  // field 是最具体的通道声明，必须优先于 part.type，避免 reasoning 被投影成正文。
+  const field = firstToolText(part.field, properties?.field, event.field)
+  const reasoning = isReasoningField(field) || partType === 'reasoning'
   const text = typeof part.text === 'string' ? part.text : typeof part.content === 'string' ? part.content : typeof part.delta === 'string' ? part.delta : null
   if (text !== null && (partType === 'text' || partType === 'reasoning' || type.includes('part'))) {
-    const eventDelta = typeof properties?.delta === 'string' ? properties.delta : undefined
+    const eventDelta = typeof properties?.delta === 'string'
+      ? properties.delta
+      : typeof event.delta === 'string' ? event.delta : undefined
     if (eventDelta !== undefined) {
       if (!eventDelta) return null
       cumulative.set(key, (cumulative.get(key) ?? 0) + eventDelta.length)
@@ -410,9 +466,18 @@ function eventToChunk(
   }
   const toolName = firstToolText(part.tool, part.name)
   if (partType === 'tool' && toolName !== undefined) {
-    const state = isToolRecord(part.state) ? part.state : part
+    const state = parseToolRecord(part.state) ?? part
     const callId = firstToolText(part.callID, part.callId, part.toolCallId, part.id)
-    const input = serializeToolValue(state.input ?? state.arguments ?? state.args)
+    const input = serializeToolValue(
+      state.input
+      ?? state.arguments
+      ?? state.args
+      ?? state.parameters
+      ?? part.input
+      ?? part.arguments
+      ?? part.args
+      ?? part.parameters,
+    )
     const output = serializeToolValue(state.output ?? state.result)
     const error = serializeToolValue(state.error)
     const fallback = error !== undefined
@@ -450,10 +515,10 @@ function isFinishedEvent(event: Record<string, unknown>, emitted: boolean): bool
   return status === 'idle' || status === 'completed' || status === 'success'
 }
 
-function responseChunks(value: unknown, cumulative: Map<string, number>): CodingNsAgentEvent[] {
+function responseChunks(value: unknown, cumulative: Map<string, number>, partTypes?: Map<string, string>): CodingNsAgentEvent[] {
   const record = asRecord(value)
   if (record === null) return []
-  const chunk = eventToChunk(record, cumulative)
+  const chunk = eventToChunk(record, cumulative, undefined, partTypes)
   return chunk === null ? [] : [chunk]
 }
 
@@ -549,5 +614,11 @@ function parseOpenCodeEfforts(value: Record<string, any> | null): readonly strin
 
 function asRecord(value: unknown): Record<string, any> | null { return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, any> : null }
 function isRecord(value: unknown): value is Record<string, any> { return asRecord(value) !== null }
+function parseToolRecord(value: unknown): Record<string, any> | null {
+  const record = asRecord(value)
+  if (record !== null) return record
+  if (typeof value !== 'string' || value.trim() === '') return null
+  try { return asRecord(JSON.parse(value)) } catch { return null }
+}
 function numberValue(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) ? value : 0 }
 function emptyCatalog(): CodingNsCliModelCatalog { return { groups: [], currentModel: null, currentEffort: null } }
