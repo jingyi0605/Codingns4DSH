@@ -3,6 +3,7 @@ import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { FeatureModule } from '../../shared/contracts/feature.js'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
+import type { CodingNsLocale } from '../locale.js'
 
 /** 一次 CodingNS RPC 的结果，与 DSH Connection 的结果形状一致。 */
 export type CodingNsRpcResult =
@@ -18,6 +19,8 @@ export interface CodingNsRpcClient {
 export interface CodingNsClientServices {
   readonly settings: SettingsScope<CodingNsSettings>
   readonly rpc: CodingNsRpcClient
+  /** DSH 语言运行时；所有 Client 文案都从 CodingNS 命名空间读取。 */
+  readonly locale: CodingNsLocale
   /** 对话工具栏 Slot 服务；测试和非 Web 宿主可以不提供。 */
   readonly slots?: SlotRegistry
 }

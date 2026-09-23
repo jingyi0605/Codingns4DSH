@@ -10,6 +10,7 @@ import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import './provider-icon-assets.js'
 import { FeatureRegistry } from '../features/registry.js'
+import { registerCodingNsLocale } from './locale.js'
 import {
   CODINGNS_SETTINGS_NAMESPACE,
   enabledFeatureNames,
@@ -41,7 +42,7 @@ export type {
 export { CodingNsSettingsSection } from './settings-section.js'
 
 /** Client Runner 用于等待服务就绪的 Cordis 依赖声明。 */
-export const inject = ['slots', 'settingsScope', 'connection'] as const
+export const inject = ['slots', 'settingsScope', 'connection', 'locale'] as const
 
 /**
  * 把 CodingNS 设置页挂载到 DSH 设置左侧导航，并让模块开关驱动启停。
@@ -52,7 +53,9 @@ export const inject = ['slots', 'settingsScope', 'connection'] as const
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
 
-  ctx.inject(['slots', 'settingsScope', 'connection'], (settingsCtx) => {
+  ctx.effect(() => registerCodingNsLocale(ctx), 'dsh-codingns: Client 词典')
+
+  ctx.inject(['slots', 'settingsScope', 'connection', 'locale'], (settingsCtx) => {
     const localSettings = settingsCtx.settingsScope.bind<CodingNsSettings>({
       namespace: CODINGNS_SETTINGS_NAMESPACE,
     })
@@ -60,7 +63,7 @@ export function apply(ctx?: Context): void {
     // connection 收窄成 Host 句柄；浏览器侧按 ConnectionHandle 收窄回真实形状。
     const connection = settingsCtx.connection as unknown as ConnectionHandle
     const settings = createCodingNsSettingsBridge(localSettings, connection.rpc)
-    const services: CodingNsClientServices = { settings, rpc: connection.rpc, slots: settingsCtx.slots }
+    const services: CodingNsClientServices = { settings, rpc: connection.rpc, slots: settingsCtx.slots, locale: settingsCtx.locale }
     const registry = new FeatureRegistry<CodingNsClientServices, CodingNsClientFeatureModule>(services)
     registry.registerMany(CLIENT_FEATURES)
     registry.validate()

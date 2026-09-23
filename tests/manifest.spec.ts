@@ -14,6 +14,7 @@ test('package manifest declares the DSH bundle and client entry', () => {
   assert.deepEqual(manifest.dsh.bundle, { patch: './dsh.bundle.patch' })
   assert.deepEqual(manifest.dsh.client, {
     inject: [
+      '@deepseek-ai/dsh-client-locale',
       '@deepseek-ai/dsh-client-connection',
       '@deepseek-ai/dsh-client-ui-settings',
       '@deepseek-ai/dsh-client-ui-renderer',

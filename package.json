@@ -51,6 +51,7 @@
     },
     "client": {
       "inject": [
+        "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-renderer"
@@ -90,6 +91,7 @@
     "typescript": "^5.9.2"
   },
   "dependencies": {
+    "@deepseek-ai/dsh-client-locale": "0.1.6-alpha.2",
     "@deepseek-ai/schemastery": "^3.18.2"
   }
 }
