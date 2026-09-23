@@ -54,7 +54,7 @@ export interface TerminalEnhancementSettings {
   appearance: TerminalAppearanceSettings
 }
 
-/** 工作区会话增强的用户可见设置；归档入口跟随模块启停，不增加额外开关。 */
+/** 工作区会话增强的用户可见设置；每个子能力都可以独立开关。 */
 export interface WorkspaceSessionEnhancementSettings {
   showAdapterLogo: boolean
   /** 是否在每个有归档会话的工作区中显示归档入口。 */

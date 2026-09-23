@@ -244,10 +244,22 @@ test('DOM 注入覆盖分组、平铺、搜索、DSH 默认值、重复扫描和
 test('模块总开关释放资源，子开关实时启停并保留设置值', async () => {
   clearSessionAdapters()
   let value = {
-    workspaceSessionEnhancement: { showAdapterLogo: true },
+    workspaceSessionEnhancement: { showAdapterLogo: true, showArchivedSessions: true, showSubscriptionUsage: true },
   }
   const listeners = new Set()
   const calls = []
+  let subscriptionRegistrations = 0
+  let subscriptionDisposals = 0
+  const slots = {
+    inject(_name, register) {
+      register()
+      subscriptionRegistrations += 1
+      return () => { subscriptionDisposals += 1 }
+    },
+    register() {
+      return () => undefined
+    },
+  }
   const settings = {
     getSnapshot() {
       return { status: 'ready', writable: true, value }
@@ -265,6 +277,7 @@ test('模块总开关释放资源，子开关实时启停并保留设置值', as
         return { ok: true, value: [{ sessionId: 'session-module', adapterId: 'kimi' }] }
       },
     },
+    slots,
   }
   const resources = new FeatureResourceScopeImpl()
 
@@ -276,21 +289,29 @@ test('模块总开关释放资源，子开关实时启停并保留设置值', as
   await nextTurn()
   assert.equal(calls.length, 1)
   assert.equal(sessionAdapterId('session-module'), 'kimi')
+  assert.equal(subscriptionRegistrations, 1)
 
-  value = { workspaceSessionEnhancement: { showAdapterLogo: false } }
+  value = { workspaceSessionEnhancement: { showAdapterLogo: false, showArchivedSessions: true, showSubscriptionUsage: true } }
   for (const listener of [...listeners]) listener()
   assert.equal(sessionAdapterId('session-module'), undefined)
   assert.equal(value.workspaceSessionEnhancement.showAdapterLogo, false, '停用只清理资源，不改写设置值')
+  assert.equal(subscriptionRegistrations, 1, '关闭 Logo 子项不应影响订阅子项')
 
-  value = { workspaceSessionEnhancement: { showAdapterLogo: true } }
+  value = { workspaceSessionEnhancement: { showAdapterLogo: true, showArchivedSessions: true, showSubscriptionUsage: false } }
   for (const listener of [...listeners]) listener()
   await nextTurn()
   assert.equal(calls.length, 2)
   assert.equal(sessionAdapterId('session-module'), 'kimi')
+  assert.equal(subscriptionDisposals, 1)
+
+  value = { workspaceSessionEnhancement: { showAdapterLogo: true, showArchivedSessions: true, showSubscriptionUsage: true } }
+  for (const listener of [...listeners]) listener()
+  assert.equal(subscriptionRegistrations, 2)
 
   await resources.dispose()
   assert.equal(listeners.size, 0)
   assert.equal(sessionAdapterId('session-module'), undefined)
+  assert.equal(subscriptionDisposals, 2)
   assert.equal(value.workspaceSessionEnhancement.showAdapterLogo, true)
 })
 

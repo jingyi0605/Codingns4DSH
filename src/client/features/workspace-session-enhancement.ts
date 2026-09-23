@@ -8,6 +8,7 @@ import { startWorkspaceSessionLogoDom, type WorkspaceSessionLogoDomController } 
 import { startWorkspaceSessionArchiveDom, type WorkspaceSessionArchiveDomController } from '../workspace-session-archive-dom.js'
 import { WorkspaceSessionEnhancementPanel } from './workspace-session-enhancement-panel.js'
 import type { CodingNsClientFeatureModule } from './types.js'
+import { registerSubscriptionSlot } from '../subscription-slot.js'
 
 /** DSH 0.1.6 原生会话行增强：Logo 与归档会话入口共用同一生命周期。 */
 export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
@@ -19,7 +20,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     ui: {
       label: '工作区会话增强',
-      description: '在原生工作区会话行显示 Agent Logo，并提供已归档会话入口。',
+      description: '在原生工作区会话行显示 Agent Logo、归档入口和订阅/用量信息。',
       labelKey: 'feature.workspaceSession.label',
       descriptionKey: 'feature.workspaceSession.description',
       order: 35,
@@ -30,6 +31,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
     let generation = 0
     let logoDom: WorkspaceSessionLogoDomController | undefined
     let archiveDom: WorkspaceSessionArchiveDomController | undefined
+    let disposeSubscription: (() => void) | undefined
 
     const disableLogo = (): void => {
       generation += 1
@@ -40,10 +42,19 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
     const enableArchive = (): void => {
       if (archiveDom === undefined) archiveDom = startWorkspaceSessionArchiveDom({ remote: context.services.remote })
     }
+    const enableSubscription = (): void => {
+      if (disposeSubscription !== undefined || context.services.slots === undefined) return
+      disposeSubscription = registerSubscriptionSlot(context.services.slots, context.services.rpc)
+    }
+    const disableSubscription = (): void => {
+      disposeSubscription?.()
+      disposeSubscription = undefined
+    }
     const disposeAll = (): void => {
       disableLogo()
       archiveDom?.dispose()
       archiveDom = undefined
+      disableSubscription()
     }
     const enableLogo = (): void => {
       if (logoDom !== undefined) return
@@ -71,6 +82,10 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
         ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS.showAdapterLogo
       if (showAdapterLogo) enableLogo()
       else disableLogo()
+      const showSubscriptionUsage = workspaceSettings?.showSubscriptionUsage
+        ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS.showSubscriptionUsage
+      if (showSubscriptionUsage) enableSubscription()
+      else disableSubscription()
     }
 
     sync()

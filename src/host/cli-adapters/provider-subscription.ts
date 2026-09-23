@@ -106,7 +106,7 @@ export class Sub2ApiUsageService {
         signal: controller.signal,
       })
       if (!response.ok) return null
-      const usage = normalizeSub2ApiUsage(await response.json())
+      const usage = normalizeSub2ApiUsage(await response.json(), baseUrl)
       if (usage === null) return null
       return { authenticated: true, planType: usage.planName, primary: null, secondary: null, monthly: null, rateLimitReachedType: null, resetCredits: null, capturedAt: new Date().toISOString(), sub2api: { ...usage, logoUrl: buildLogoUrl(baseUrl) } }
     } catch {
@@ -410,7 +410,7 @@ function findConfigSource(value: unknown, depth = 0): Sub2ApiSource | null {
   return null
 }
 
-function normalizeSub2ApiUsage(value: unknown): Sub2ApiUsage | null {
+function normalizeSub2ApiUsage(value: unknown, baseUrl: string): Sub2ApiUsage | null {
   const root = recordValue(value)
   if (root === null) return null
   const usage = recordValue(root.usage) ?? {}
@@ -422,6 +422,8 @@ function normalizeSub2ApiUsage(value: unknown): Sub2ApiUsage | null {
   if (balance === null || today === undefined || today === null || total === undefined || total === null) return null
   const models = Array.isArray(root.model_stats) ? root.model_stats.flatMap((item) => normalizeModelPoint(item)) : []
   return {
+    upstreamType: detectUpstreamType(root, baseUrl),
+    upstreamUrl: sanitizeUpstreamUrl(baseUrl),
     logoUrl: '',
     balance,
     remaining: numberValue(root.remaining) ?? balance,
@@ -435,6 +437,33 @@ function normalizeSub2ApiUsage(value: unknown): Sub2ApiUsage | null {
     rpm: numberValue(usage.rpm),
     tpm: numberValue(usage.tpm),
     averageDurationMs: numberValue(usage.average_duration_ms),
+  }
+}
+
+function detectUpstreamType(root: Record<string, any>, baseUrl: string): 'Sub2API' | 'OneAPI' | '其他' {
+  const provider = `${textValue(root.provider) ?? ''} ${textValue(root.source) ?? ''} ${textValue(root.platform) ?? ''}`.toLowerCase()
+  if (provider.includes('one-api') || provider.includes('oneapi')) return 'OneAPI'
+  if (provider.includes('sub2api') || Array.isArray(root.daily_usage) || Array.isArray(root.model_stats)) return 'Sub2API'
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase()
+    if (hostname.includes('oneapi')) return 'OneAPI'
+    if (hostname.includes('sub2api')) return 'Sub2API'
+  } catch {
+    // 非标准地址仍然可以展示统计，只标记为其他上游。
+  }
+  return '其他'
+}
+
+function sanitizeUpstreamUrl(value: string): string {
+  try {
+    const url = new URL(value)
+    url.username = ''
+    url.password = ''
+    url.search = ''
+    url.hash = ''
+    return url.toString().replace(/\/$/u, '')
+  } catch {
+    return ''
   }
 }
 

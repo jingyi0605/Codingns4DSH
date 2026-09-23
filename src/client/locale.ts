@@ -32,7 +32,7 @@ const en: Record<string, string> = {
   'feature.cliAdapters.label': 'External Agent integration',
   'feature.cliAdapters.description': 'View installed external Agents, versions, command paths, available models, and enable them independently.',
   'feature.workspaceSession.label': 'Workspace session enhancement',
-  'feature.workspaceSession.description': 'Show the Agent logo in native workspace session rows and provide an archived-session entry.',
+  'feature.workspaceSession.description': 'Show the Agent logo, archived-session entry, and subscription or usage information.',
   'feature.terminal.label': 'Terminal enhancement',
   'feature.terminal.description': 'Configure the default shell and terminal appearance. Enabling or disabling requires a DSH restart.',
   'terminal.title': 'Terminal',
@@ -193,6 +193,8 @@ const en: Record<string, string> = {
   'workspace.logoDescription': 'Display the selected external Agent logo in native workspace session rows.',
   'workspace.showArchivedSessions': 'Show archived workspace sessions',
   'workspace.archivedSessionsDescription': 'Display an archived-session folder entry above each workspace\'s more-sessions button.',
+  'workspace.showSubscriptionUsage': 'Show subscription and usage',
+  'workspace.subscriptionUsageDescription': 'Detect and display provider subscription balances and upstream usage in the conversation footer.',
 }
 
 const zh: Record<string, string> = {
@@ -211,7 +213,7 @@ const zh: Record<string, string> = {
   'feature.cliAdapters.label': '外部Agent集成',
   'feature.cliAdapters.description': '查看外部 Agent 的安装状态、版本、命令路径和可用模型，并单独启用或停用。',
   'feature.workspaceSession.label': '工作区会话增强',
-  'feature.workspaceSession.description': '在原生工作区会话行显示 Agent Logo，并提供已归档会话入口。',
+  'feature.workspaceSession.description': '在原生工作区会话行显示 Agent Logo、归档会话入口和订阅/用量信息。',
   'feature.terminal.label': '终端强化',
   'feature.terminal.description': '配置持久终端的默认 shell 与插件终端外观。启用和禁用均需重启 DSH。',
   'terminal.title': '终端',
@@ -372,6 +374,8 @@ const zh: Record<string, string> = {
   'workspace.logoDescription': '在原生工作区会话行显示所选外部 Agent 的 Logo。',
   'workspace.showArchivedSessions': '显示工作区归档会话',
   'workspace.archivedSessionsDescription': '在每个工作区的“展开其余会话”按钮上方显示已归档的会话入口。',
+  'workspace.showSubscriptionUsage': '显示订阅/用量检测',
+  'workspace.subscriptionUsageDescription': '在对话底部检测并显示 Agent 订阅余额和上游用量。',
 }
 
 /** 在当前 Client Cordis 作用域注册中英文词典。 */

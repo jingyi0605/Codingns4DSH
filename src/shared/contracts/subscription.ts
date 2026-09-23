@@ -26,7 +26,7 @@ export interface CliSubscriptionUsage {
     }[]
   }
   readonly capturedAt: string
-  /** 上游是 Sub2API 时的账户余额和用量摘要；原始 API key 永不进入此结构。 */
+  /** 第三方上游的账户余额和用量摘要；原始 API key 永不进入此结构。 */
   readonly sub2api?: Sub2ApiUsage
 }
 
@@ -52,6 +52,9 @@ export interface Sub2ApiModelUsage extends Sub2ApiUsagePoint {
 }
 
 export interface Sub2ApiUsage {
+  readonly upstreamType: 'Sub2API' | 'OneAPI' | '其他'
+  /** 已移除 query、fragment、userinfo 的可公开上游地址。 */
+  readonly upstreamUrl: string
   readonly logoUrl: string
   readonly balance: number
   readonly remaining: number

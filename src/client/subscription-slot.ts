@@ -142,9 +142,9 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         : createElement('span', { 'aria-hidden': true, style: sub2apiIdentityStyle },
           sub2api.logoUrl !== '' && createElement('img', { src: sub2api.logoUrl, alt: '', width: 20, height: 20, style: sub2apiLogoStyle }),
           createElement('span', undefined, formatSub2ApiMoney(sub2api.balance, sub2api.unit)),
-        ),
+      ),
       createElement('span', { className: 'bOPqQW_label', style: subscriptionLabelStyle },
-        sub2api === undefined ? (resetLabel ?? '订阅余量') : `今日费用 ${formatSub2ApiMoney(sub2api.today.cost, sub2api.unit)}`,
+        sub2api === undefined ? (resetLabel ?? '订阅余量') : `今日 ${formatSub2ApiMoney(sub2api.today.cost, sub2api.unit)}`,
       ),
     ),
     open && createElement(SubscriptionPopover, { usage, providerName }),
@@ -178,6 +178,12 @@ function Sub2ApiPopover({ usage, providerName }: { readonly usage: Sub2ApiUsage;
     createElement('div', { style: popoverHeadingStyle },
       createElement('strong', undefined, `${providerName} 上游用量`),
       createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatSub2ApiMoney(usage.balance, usage.unit)),
+    ),
+    createElement('div', { style: upstreamMetaStyle },
+      createElement('span', { style: upstreamTypeStyle }, usage.upstreamType),
+      usage.upstreamUrl === ''
+        ? createElement('span', { style: upstreamMutedStyle }, '地址未提供')
+        : createElement('a', { href: usage.upstreamUrl, target: '_blank', rel: 'noreferrer', title: usage.upstreamUrl, style: upstreamLinkStyle }, usage.upstreamUrl),
     ),
     createElement('div', { style: sub2apiStatsGridStyle },
       createSub2ApiStat('今日请求数', formatInteger(usage.today.requests)),
@@ -245,7 +251,11 @@ function subscriptionProviderName(adapterId: string | null): string {
 }
 function formatPercent(value: number): string { return Math.max(0, Math.min(100, value)).toFixed(0) }
 function formatRingPercentage(value: number): string { return String(Math.floor(Math.max(0, Math.min(100, value)))) }
-function formatSub2ApiMoney(value: number, unit: string): string { return `${value.toFixed(2)}${unit.trim() === '' ? '' : ` ${unit.trim()}`}` }
+function formatSub2ApiMoney(value: number, unit: string): string {
+  const normalizedUnit = unit.trim().toUpperCase()
+  if (normalizedUnit === 'USD') return `$${value.toFixed(2)}`
+  return `${value.toFixed(2)}${normalizedUnit === '' ? '' : ` ${normalizedUnit}`}`
+}
 function formatSub2ApiTokens(value: number): string { return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value) }
 function formatSub2ApiPercent(value: number): string { return `${Math.max(0, Math.min(100, value)).toFixed(1)}%` }
 function formatInteger(value: number): string { return new Intl.NumberFormat('zh-CN').format(Math.max(0, Math.round(value))) }
@@ -270,21 +280,25 @@ const progressRingVisualStyle = { boxSizing: 'border-box' as const, width: '100%
 const progressRingValueStyle = { boxSizing: 'border-box' as const, width: '100%', height: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, borderRadius: 'inherit', background: dshThemeColor.menuBackground, fontSize: 7, lineHeight: 1, fontWeight: 700, color: dshThemeColor.labelPrimary, whiteSpace: 'nowrap' as const }
 const progressRingSuffixStyle = { fontSize: 5.5, lineHeight: 1, color: dshThemeColor.labelTertiary, transform: 'translateY(1px)' }
 const popoverHeadingStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 18, paddingBottom: 10, borderBottom: `1px solid ${dshThemeColor.border}`, fontSize: 14 }
+const upstreamMetaStyle = { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, paddingTop: 8, color: dshThemeColor.labelTertiary, fontSize: 11, lineHeight: '16px' }
+const upstreamTypeStyle = { flex: '0 0 auto', color: dshThemeColor.labelSecondary, fontWeight: 600 }
+const upstreamLinkStyle = { minWidth: 0, overflow: 'hidden', color: dshThemeColor.accent, textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, textDecoration: 'none' }
+const upstreamMutedStyle = { flex: '0 0 auto', whiteSpace: 'nowrap' as const }
 const windowStyle = { display: 'grid', gap: 6, paddingTop: 10 }
 const windowHeadingStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelSecondary, fontSize: 13 }
 const barStyle = { height: 7, overflow: 'hidden' as const, borderRadius: 4, background: dshThemeColor.border }
 const barFillStyle = { display: 'block', height: '100%', borderRadius: 4, background: dshThemeColor.accent, transition: 'width .2s ease' }
 const resetStyle = { color: dshThemeColor.labelTertiary, fontSize: 12 }
-const subscriptionPopoverStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1200, bottom: 'calc(100% + 8px)', left: 0, width: 280, maxWidth: 'min(320px, calc(100vw - 24px))', padding: 14, borderRadius: 12 }
+const subscriptionPopoverStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1200, bottom: 'calc(100% + 8px)', left: 0, width: 'max-content', minWidth: 280, maxWidth: 'min(400px, calc(100vw - 24px))', boxSizing: 'border-box' as const, padding: 14, borderRadius: 12 }
 const sub2apiStatsGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, paddingTop: 12 }
 const sub2apiStatStyle = { display: 'grid', gap: 2, minWidth: 0 }
 const sub2apiStatLabelStyle = { color: dshThemeColor.labelTertiary, fontSize: 11 }
 const sub2apiSectionStyle = { display: 'grid', gap: 8, paddingTop: 14 }
 const sub2apiSectionTitleStyle = { fontSize: 12, color: dshThemeColor.labelSecondary }
-const sub2apiTableScrollStyle = { overflowX: 'auto' as const, maxWidth: '100%' }
-const sub2apiTableStyle = { width: '100%', borderCollapse: 'collapse' as const, fontSize: 11, whiteSpace: 'nowrap' as const }
+const sub2apiTableScrollStyle = { maxWidth: '100%', overflow: 'visible' as const }
+const sub2apiTableStyle = { width: '100%', tableLayout: 'fixed' as const, borderCollapse: 'collapse' as const, fontSize: 11 }
 const sub2apiThStyle = { padding: '4px 5px', textAlign: 'left' as const, color: dshThemeColor.labelTertiary, fontWeight: 500 }
-const sub2apiTdStyle = { padding: '5px', borderTop: `1px solid ${dshThemeColor.border}`, color: dshThemeColor.labelSecondary }
+const sub2apiTdStyle = { padding: '5px', borderTop: `1px solid ${dshThemeColor.border}`, color: dshThemeColor.labelSecondary, overflowWrap: 'anywhere' as const }
 function progressRingStyle(): Record<string, string | number> { return { position: 'relative', display: 'inline-flex', flex: '0 0 28px', width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: '50%', padding: 0, border: 0, boxShadow: `inset 0 0 0 1px ${dshThemeColor.border}`, background: 'transparent' } }
 function progressRingVisualBackground(progress: number, loading: boolean): string { return loading ? dshThemeColor.border : `conic-gradient(${dshThemeColor.accent} ${Math.max(0, Math.min(1, progress)) * 360}deg, ${dshThemeColor.border} 0deg)` }
 

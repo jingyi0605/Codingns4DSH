@@ -58,6 +58,7 @@ export const CodingNsSettingsSchema: z<CodingNsSettings> = z.object({
   workspaceSessionEnhancement: z.object({
     showAdapterLogo: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.showAdapterLogo),
     showArchivedSessions: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.showArchivedSessions),
+    showSubscriptionUsage: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.showSubscriptionUsage),
   }).default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement),
 })
 

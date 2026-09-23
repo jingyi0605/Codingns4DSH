@@ -16,7 +16,7 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot }
     ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS
   const disabled = !enabled || snapshot.status === 'loading' || !snapshot.writable
 
-  const updateSetting = (field: 'showAdapterLogo' | 'showArchivedSessions', nextValue: boolean): void => {
+  const updateSetting = (field: 'showAdapterLogo' | 'showArchivedSessions' | 'showSubscriptionUsage', nextValue: boolean): void => {
     setWriteError(null)
     void services.settings.mutate([{
       op: 'set',
@@ -51,6 +51,23 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot }
         checked: value.showAdapterLogo,
         disabled,
         onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('showAdapterLogo', event.currentTarget.checked),
+        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
+      }),
+    ),
+    createElement('label', {
+      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
+    },
+      createElement('span', { style: { minWidth: 0 } },
+        createElement('strong', { style: { display: 'block', fontSize: 14 } }, t('workspace.showSubscriptionUsage')),
+        createElement('span', { style: { display: 'block', marginTop: 3, color: dshThemeColor.labelTertiary, fontSize: 12 } }, t('workspace.subscriptionUsageDescription')),
+      ),
+      createElement('input', {
+        type: 'checkbox',
+        role: 'switch',
+        'aria-label': t('workspace.showSubscriptionUsage'),
+        checked: value.showSubscriptionUsage,
+        disabled,
+        onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('showSubscriptionUsage', event.currentTarget.checked),
         style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
       }),
     ),

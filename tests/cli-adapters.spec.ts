@@ -215,6 +215,8 @@ test('Sub2API 用量服务映射账户统计并计算缓存命中率且不返回
   })
 
   const result = await service.read('codex')
+  assert.equal(result?.sub2api?.upstreamType, 'Sub2API')
+  assert.equal(result?.sub2api?.upstreamUrl, 'https://upstream.example.test')
   assert.equal(result?.sub2api?.balance, 100)
   assert.equal(result?.sub2api?.remaining, 99.5)
   assert.equal(result?.sub2api?.today.cacheHitRate, 90)
