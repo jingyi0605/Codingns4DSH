@@ -6,9 +6,11 @@ import {
 } from '../../shared/contracts/config.js'
 import type { FeaturePanelProps } from './types.js'
 import { dshThemeColor } from '../theme.js'
+import { useCodingNsTranslator } from '../locale.js'
 
 /** 工作区会话增强的单列设置面板。 */
 export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot }: FeaturePanelProps): ReactElement {
+  const t = useCodingNsTranslator(services.locale)
   const [writeError, setWriteError] = useState<string | null>(null)
   const value = snapshot.value?.workspaceSessionEnhancement
     ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS
@@ -39,13 +41,13 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot }
       style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
     },
       createElement('span', { style: { minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 14 } }, '显示 Agent Logo'),
-        createElement('span', { style: { display: 'block', marginTop: 3, color: dshThemeColor.labelTertiary, fontSize: 12 } }, '在原生工作区会话行显示当前 Agent。'),
+        createElement('strong', { style: { display: 'block', fontSize: 14 } }, t('workspace.showLogo')),
+        createElement('span', { style: { display: 'block', marginTop: 3, color: dshThemeColor.labelTertiary, fontSize: 12 } }, t('workspace.logoDescription')),
       ),
       createElement('input', {
         type: 'checkbox',
         role: 'switch',
-        'aria-label': '显示 Agent Logo',
+        'aria-label': t('workspace.showLogo'),
         checked: value.showAdapterLogo,
         disabled,
         onChange: (event: { currentTarget: { checked: boolean } }) => updateLogo(event.currentTarget.checked),

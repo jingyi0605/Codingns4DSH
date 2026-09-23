@@ -13,6 +13,7 @@ import {
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import type { FeaturePanelProps, CodingNsRpcClient } from './types.js'
 import { dshButtonStyle, dshFieldStyle, dshFormRootStyle, dshPopupSurfaceStyle, dshThemeColor } from '../theme.js'
+import { useCodingNsTranslator } from '../locale.js'
 
 /**
  * 「中转访问服务」卡片的设置面板：Control API 地址、登录、设备和 Host 绑定。
@@ -21,6 +22,7 @@ import { dshButtonStyle, dshFieldStyle, dshFormRootStyle, dshPopupSurfaceStyle, 
  */
 export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelProps): ReactElement {
   const { settings, rpc } = services
+  const t = useCodingNsTranslator(services.locale)
   const disabled = !enabled
 
   const [email, setEmail] = useState('')
@@ -78,14 +80,14 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     })
     setPassword('')
     setAuth(next)
-    setMessage('登录成功')
+    setMessage(t('relay.loginSuccess'))
   })
 
   const logout = (): Promise<void> => run(async () => {
     await callCodingNsRpc(rpc, 'auth/logout', {})
     setAuth(loggedOutSnapshot())
     setDevices(null)
-    setMessage('已退出登录')
+    setMessage(t('relay.loggedOut'))
   })
 
   const loadDevices = (): Promise<void> => run(async () => {
@@ -99,14 +101,14 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
       hostFingerprint,
     })
     setAuth((current) => ({ ...current, binding }))
-    setMessage('Host 绑定成功')
+    setMessage(t('relay.bindSuccess'))
   })
 
   const unbindHost = (): Promise<void> => run(async () => {
     if (!auth.binding) return
     await callCodingNsRpc(rpc, 'auth/unbind', { bindingId: auth.binding.bindingId })
     setAuth((current) => ({ ...current, binding: null }))
-    setMessage('Host 已解绑')
+    setMessage(t('relay.unbindSuccess'))
   })
 
   const addControlBaseUrl = async (): Promise<void> => {
@@ -121,7 +123,7 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
       setControlBaseUrl(addedUrl)
       setNewControlBaseUrl('')
       setAddAddressOpen(false)
-      setMessage('已添加 Control API 地址')
+      setMessage(t('relay.add'))
     } catch (error) {
       setAddressError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -144,60 +146,60 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     'div',
     { 'aria-disabled': disabled, style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 16, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
     createElement('div', undefined,
-      createElement('h3', { style: { margin: 0, fontSize: 17 } }, '服务设置'),
-      createElement('p', { style: { margin: '8px 0 0', opacity: 0.65 } }, '登录 CodingNS，管理设备和当前 Host。'),
+      createElement('h3', { style: { margin: 0, fontSize: 17 } }, t('relay.settings')),
+      createElement('p', { style: { margin: '8px 0 0', opacity: 0.65 } }, t('relay.loginHint')),
     ),
     createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-      createElement('span', undefined, 'Control API 地址'),
+      createElement('span', undefined, t('relay.controlApi')),
       createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
         createElement('select', { value: controlBaseUrl, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => chooseControlBaseUrl(event.currentTarget.value), style: { ...fieldStyle, flex: 1, minWidth: 0 } },
           ...controlBaseUrls.map((url) => createElement('option', { key: url, value: url }, url)),
         ),
-        createElement('button', { type: 'button', 'aria-haspopup': 'dialog', disabled: disabled || busy, onClick: () => { setAddressError(''); setAddAddressOpen(true) }, style: { ...buttonStyle, flex: '0 0 auto' } }, '添加'),
+        createElement('button', { type: 'button', 'aria-haspopup': 'dialog', disabled: disabled || busy, onClick: () => { setAddressError(''); setAddAddressOpen(true) }, style: { ...buttonStyle, flex: '0 0 auto' } }, t('relay.add')),
       ),
     ),
     addAddressOpen && createElement('div', { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'codingns-add-address-title', style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: dshThemeColor.overlay } },
       createElement('div', { style: { ...dshPopupSurfaceStyle, width: 'min(100%, 480px)', boxSizing: 'border-box', padding: 24, borderRadius: 8 } },
-        createElement('h3', { id: 'codingns-add-address-title', style: { margin: 0, fontSize: 18 } }, '添加中转服务器'),
-        createElement('p', { style: { margin: '8px 0 16px', opacity: 0.7 } }, '请输入新的 Control API 地址。'),
+        createElement('h3', { id: 'codingns-add-address-title', style: { margin: 0, fontSize: 18 } }, t('relay.addServer')),
+        createElement('p', { style: { margin: '8px 0 16px', opacity: 0.7 } }, t('relay.addServerHint')),
         createElement('input', { type: 'url', autoFocus: true, value: newControlBaseUrl, placeholder: 'https://example.com:1443', disabled: busy, onChange: (event: { currentTarget: { value: string } }) => setNewControlBaseUrl(event.currentTarget.value), style: fieldStyle }),
         addressError && createElement('div', { role: 'alert', style: { marginTop: 8, color: dshThemeColor.error } }, addressError),
         createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 } },
-          createElement('button', { type: 'button', disabled: busy, onClick: () => { setAddAddressOpen(false); setAddressError('') }, style: buttonStyle }, '取消'),
-          createElement('button', { type: 'button', disabled: busy || !newControlBaseUrl.trim(), onClick: () => void addControlBaseUrl(), style: buttonStyle }, busy ? '添加中…' : '添加'),
+          createElement('button', { type: 'button', disabled: busy, onClick: () => { setAddAddressOpen(false); setAddressError('') }, style: buttonStyle }, t('relay.cancel')),
+          createElement('button', { type: 'button', disabled: busy || !newControlBaseUrl.trim(), onClick: () => void addControlBaseUrl(), style: buttonStyle }, busy ? t('relay.adding') : t('relay.add')),
         ),
       ),
     ),
     !authenticated && createElement('form', { onSubmit: (event: { preventDefault: () => void }) => { event.preventDefault(); void login() }, style: { display: 'flex', flexDirection: 'column', gap: 12 } },
       createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-        createElement('span', undefined, '邮箱'),
+        createElement('span', undefined, t('relay.email')),
         createElement('input', { type: 'email', autoComplete: 'username', value: email, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setEmail(event.currentTarget.value), style: fieldStyle }),
       ),
       createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-        createElement('span', undefined, '密码'),
+        createElement('span', undefined, t('relay.password')),
         createElement('input', { type: 'password', autoComplete: 'current-password', value: password, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setPassword(event.currentTarget.value), style: fieldStyle }),
       ),
-      createElement('button', { type: 'submit', disabled: disabled || busy || !controlBaseUrl || !email || !password, style: buttonStyle }, busy ? '登录中…' : '登录'),
+      createElement('button', { type: 'submit', disabled: disabled || busy || !controlBaseUrl || !email || !password, style: buttonStyle }, busy ? t('relay.loggingIn') : t('relay.login')),
     ),
     authenticated && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
       createElement('div', { style: { padding: 12, border: `1px solid ${dshThemeColor.border}`, borderRadius: 6 } },
-        createElement('strong', undefined, auth.account?.email ?? '已登录'),
-        createElement('div', { style: { marginTop: 6, opacity: 0.7 } }, `设备：${auth.currentDevice?.displayName ?? auth.currentDevice?.deviceId ?? '未识别'}`),
-        createElement('div', { style: { marginTop: 4, opacity: 0.7 } }, `Host：${auth.binding?.tunnelDomain ?? '未绑定'}`),
+        createElement('strong', undefined, auth.account?.email ?? t('relay.loggedIn')),
+        createElement('div', { style: { marginTop: 6, opacity: 0.7 } }, t('relay.device', { value: auth.currentDevice?.displayName ?? auth.currentDevice?.deviceId ?? t('relay.unrecognized') })),
+        createElement('div', { style: { marginTop: 4, opacity: 0.7 } }, t('relay.host', { value: auth.binding?.tunnelDomain ?? t('relay.unbound') })),
       ),
       createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-        createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void loadDevices(), style: buttonStyle }, '刷新设备'),
-        createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void logout(), style: buttonStyle }, '退出登录'),
+        createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void loadDevices(), style: buttonStyle }, t('relay.refreshDevices')),
+        createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void logout(), style: buttonStyle }, t('relay.logout')),
       ),
-      devices && createElement('div', { style: { fontSize: 13, opacity: 0.75 } }, `当前设备 ${devices.currentDevice?.deviceId ?? '未知'}，其他活动设备 ${devices.otherActiveDevices.length} 台`),
+      devices && createElement('div', { style: { fontSize: 13, opacity: 0.75 } }, t('relay.devicesSummary', { current: devices.currentDevice?.deviceId ?? t('relay.unknown'), count: devices.otherActiveDevices.length })),
       auth.binding
-        ? createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void unbindHost(), style: buttonStyle }, '解绑当前 Host')
+        ? createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void unbindHost(), style: buttonStyle }, t('relay.unbindHost'))
         : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-          createElement('strong', undefined, '绑定当前 Host'),
-          createElement('input', { placeholder: 'Host 标签', value: hostLabel, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setHostLabel(event.currentTarget.value), style: fieldStyle }),
-          createElement('input', { placeholder: 'Host 公钥', value: hostPublicKey, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setHostPublicKey(event.currentTarget.value), style: fieldStyle }),
-          createElement('input', { placeholder: 'Host 指纹', value: hostFingerprint, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setHostFingerprint(event.currentTarget.value), style: fieldStyle }),
-          createElement('button', { type: 'button', disabled: disabled || busy || !hostLabel || !hostPublicKey || !hostFingerprint, onClick: () => void bindHost(), style: buttonStyle }, '绑定 Host'),
+          createElement('strong', undefined, t('relay.bindHost')),
+          createElement('input', { placeholder: t('relay.hostLabel'), value: hostLabel, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setHostLabel(event.currentTarget.value), style: fieldStyle }),
+          createElement('input', { placeholder: t('relay.hostPublicKey'), value: hostPublicKey, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setHostPublicKey(event.currentTarget.value), style: fieldStyle }),
+          createElement('input', { placeholder: t('relay.hostFingerprint'), value: hostFingerprint, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setHostFingerprint(event.currentTarget.value), style: fieldStyle }),
+          createElement('button', { type: 'button', disabled: disabled || busy || !hostLabel || !hostPublicKey || !hostFingerprint, onClick: () => void bindHost(), style: buttonStyle }, t('relay.bindHost')),
         ),
     ),
     message && createElement('div', { role: 'status', style: { color: message.includes('成功') ? dshThemeColor.success : dshThemeColor.error } }, message),

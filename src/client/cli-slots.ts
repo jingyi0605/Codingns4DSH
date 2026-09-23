@@ -8,6 +8,7 @@ import { publishSessionAdapter } from './session-adapter-cache.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
+import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
 
 interface SessionSnapshot {
   readonly sessionId?: string
@@ -55,6 +56,7 @@ interface CliSlotProps {
   readonly sessionId?: string
   readonly useSession?: SessionSelector
   readonly rpc: CodingNsRpcClient
+  readonly locale: CodingNsLocale
 }
 
 interface SelectionState extends CodingNsCliSessionConfig {}
@@ -110,21 +112,22 @@ function publishSelection(sessionId: string, next: SelectionState): void {
 }
 
 /** 把 Agent 与模型选择器注册到同一工具栏，使用顺序保证 Agent 始终位于模型左侧。 */
-export function registerCliConversationSlots(slots: SlotRegistry, rpc: CodingNsRpcClient): () => void {
+export function registerCliConversationSlots(slots: SlotRegistry, rpc: CodingNsRpcClient, locale: CodingNsLocale): () => void {
   installComposerStyles()
+  const t = locale.bind('codingns')
   const disposeAgent = slots.inject('conversation.input.right', () => slots.register({
     name: 'conversation.input.right',
     id: 'dsh-codingns-agent',
     order: -20,
-    label: 'Agent 选择器',
-    inject: (sessionId: string) => ({ rpc, sessionId }),
+    label: t('cli.agentSelector'),
+    inject: (sessionId: string) => ({ rpc, sessionId, locale }),
   }, AgentSlot))
   const disposeModel = slots.inject('conversation.input.right', () => slots.register({
     name: 'conversation.input.right',
     id: 'dsh-codingns-model',
     order: -10,
-    label: '模型与思考强度选择器',
-    inject: (sessionId: string) => ({ rpc, sessionId }),
+    label: t('cli.modelSelector'),
+    inject: (sessionId: string) => ({ rpc, sessionId, locale }),
   }, ModelSlot))
   return () => {
     disposeModel()
@@ -133,6 +136,7 @@ export function registerCliConversationSlots(slots: SlotRegistry, rpc: CodingNsR
 }
 
 function AgentSlot(props: CliSlotProps): ReactElement {
+  const t = useCodingNsTranslator(props.locale)
   const session = props.useSession?.((value) => value)
   const sessionId = props.sessionId ?? session?.sessionId
   const [selection, update] = useSelection(sessionId, props.rpc)
@@ -168,14 +172,14 @@ function AgentSlot(props: CliSlotProps): ReactElement {
   }
   const currentIcon = providerIconUrl(current.id)
   return createElement('div', { style: agentRootStyle },
-    createElement('button', { type: 'button', className: 'dsh-codingns-agent-trigger', disabled: locked, onClick: () => setOpen((value) => !value), 'aria-label': `当前 Agent：${current.name}${locked ? '（已锁定）' : ''}`, 'aria-haspopup': 'menu', 'aria-expanded': open, style: { ...agentTriggerStyle, cursor: locked ? 'default' : 'pointer', opacity: locked ? 0.7 : 1 } },
+    createElement('button', { type: 'button', className: 'dsh-codingns-agent-trigger', disabled: locked, onClick: () => setOpen((value) => !value), 'aria-label': t('cli.currentAgent', { name: current.name, locked: locked ? t('cli.locked') : '' }), 'aria-haspopup': 'menu', 'aria-expanded': open, style: { ...agentTriggerStyle, cursor: locked ? 'default' : 'pointer', opacity: locked ? 0.7 : 1 } },
       currentIcon === undefined
         ? createElement(ProviderIconFallback, { name: current.name, size: 20 })
         : createElement('img', { src: currentIcon, alt: '', 'aria-hidden': true, style: applyProviderIconShape(current.id, agentTriggerIconStyle) }),
       createElement('span', { style: agentTriggerLabelStyle }, current.name),
       createElement(NativeDropdownChevron, { open }),
     ),
-    open && !locked && createElement('div', { role: 'menu', 'aria-label': '选择 Agent', style: agentMenuStyle },
+    open && !locked && createElement('div', { role: 'menu', 'aria-label': t('cli.selectAgent'), style: agentMenuStyle },
       ...agents.map((agent) => {
         const selected = agent.id === selection.adapterId
         const available = agent.installed && agent.enabled
@@ -186,8 +190,8 @@ function AgentSlot(props: CliSlotProps): ReactElement {
             ? createElement(ProviderIconFallback, { name: agent.name, size: 22 })
             : createElement('img', { src: icon, alt: '', 'aria-hidden': true, style: applyProviderIconShape(agent.id, agentOptionIconStyle) }),
           createElement('span', { style: agentOptionLabelStyle }, agent.name),
-          !agent.installed && createElement('span', { style: agentStatusStyle }, '未安装'),
-          agent.installed && !agent.enabled && createElement('span', { style: agentStatusStyle }, '已停用'),
+          !agent.installed && createElement('span', { style: agentStatusStyle }, t('cli.notInstalled')),
+          agent.installed && !agent.enabled && createElement('span', { style: agentStatusStyle }, t('cli.disabled')),
         )
       }),
     ),
@@ -242,6 +246,8 @@ interface ModelCatalogState {
 }
 
 function ModelSlot(props: CliSlotProps): ReactElement | null {
+  // 语言词典中的中文值仍保留“正在加载模型列表…”语义，切换语言时由 t() 取值。
+  const t = useCodingNsTranslator(props.locale)
   const session = props.useSession?.((value) => value)
   const sessionId = props.sessionId ?? session?.sessionId
   const [selection, update] = useSelection(sessionId, props.rpc)
@@ -285,7 +291,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const model = catalog === null ? undefined : findModel(catalog, selection.modelId) ?? firstModel(catalog)
   const efforts = model?.efforts ?? []
   const effortValue = selection.effortId ?? (efforts.length > 0 ? defaultEffort(efforts) : undefined) ?? 'default'
-  const modelLabel = model?.name ?? (loading ? '加载模型…' : '无可用模型')
+  const modelLabel = model?.name ?? (loading ? t('cli.loadingModel') : t('cli.noModelsAvailable'))
   const effortLabel = efforts.find((effort) => effort === effortValue) ?? 'Default'
   const modelUnavailable = model === undefined
   const triggerDisabled = !loading && modelUnavailable
@@ -305,19 +311,19 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     ? [
         createElement('div', { key: 'loading', role: 'status', 'aria-live': 'polite', style: modelLoadingMenuStyle },
           createElement('span', { className: 'dsh-codingns-cli-spinner', 'aria-hidden': true, style: modelSpinnerStyle }),
-          createElement('span', undefined, '正在加载模型列表…'),
+          createElement('span', undefined, t('cli.loadingModel')),
         ),
       ]
     : pane === 'root'
       ? [
           createElement('button', { key: 'model', type: 'button', role: 'menuitem', disabled: modelUnavailable, onClick: () => setPane('model'), style: nativeMenuCellStyle },
-          createElement('span', { style: nativeMenuLabelStyle }, '模型'), createElement('span', { style: nativeMenuValueStyle }, modelLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
+          createElement('span', { style: nativeMenuLabelStyle }, t('cli.model')), createElement('span', { style: nativeMenuValueStyle }, modelLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
         createElement('button', { key: 'effort', type: 'button', role: 'menuitem', disabled: modelUnavailable, onClick: () => setPane('effort'), style: nativeMenuCellStyle },
-          createElement('span', undefined, '思考等级'), createElement('span', { style: nativeMenuValueStyle }, effortLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
+          createElement('span', undefined, t('cli.thinking')), createElement('span', { style: nativeMenuValueStyle }, effortLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
       ]
     : pane === 'model'
       ? [
-          createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, '‹ 返回'),
+          createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, t('cli.back')),
           ...((catalog?.groups ?? []).map((group) => createElement('section', { key: group.id, role: 'group', 'aria-label': group.name, style: { marginTop: 4 } },
             createElement('div', { style: nativeGroupTitleStyle }, group.name),
             ...group.models.map((item) => createElement('button', { key: `${group.id}:${item.id}`, type: 'button', role: 'menuitemradio', 'aria-checked': item.id === model?.id, onClick: () => chooseModel(item), style: nativeOptionStyle },
@@ -327,20 +333,20 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
           )))
         ]
       : [
-          createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, '‹ 返回'),
-          createElement('div', { key: 'title', style: nativeGroupTitleStyle }, `思考等级（${modelLabel}）`),
+          createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, t('cli.back')),
+          createElement('div', { key: 'title', style: nativeGroupTitleStyle }, `${t('cli.thinking')}（${modelLabel}）`),
           ...(efforts.length > 0 ? efforts : ['default']).map((effort) => createElement('button', { key: effort, type: 'button', role: 'menuitemradio', 'aria-checked': effort === effortValue, onClick: () => chooseEffort(effort), style: nativeOptionStyle },
             createElement('span', { style: { flex: '1 1 auto' } }, effort === 'default' ? 'Default' : effort), effort === effortValue && createElement('span', { 'aria-hidden': true }, '✓'),
           )),
         ]
   return createElement('div', { style: { position: 'relative', minWidth: 0, display: 'inline-flex' } },
-    createElement('button', { type: 'button', disabled: triggerDisabled, 'aria-label': loading ? `正在加载 ${selection.adapterId} 模型列表` : `选择模型，当前 ${modelLabel}，思考等级 ${effortLabel}`, 'aria-busy': loading, 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => { setPane('root'); setOpen((value) => !value) }, style: nativeTriggerStyle },
+    createElement('button', { type: 'button', disabled: triggerDisabled, 'aria-label': t('cli.chooseModel', { model: modelLabel, effort: effortLabel }), 'aria-busy': loading, 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => { setPane('root'); setOpen((value) => !value) }, style: nativeTriggerStyle },
       loading && createElement('span', { className: 'dsh-codingns-cli-spinner', 'aria-hidden': true, style: modelSpinnerStyle }),
       createElement('span', { role: loading ? 'status' : undefined, 'aria-live': loading ? 'polite' : undefined, style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, modelLabel),
       !loading && createElement('span', { style: { color: dshThemeColor.labelCaption, whiteSpace: 'nowrap' } }, effortLabel),
       !loading && createElement(NativeDropdownChevron, { open }),
     ),
-    open && createElement('div', { role: 'menu', 'aria-label': '模型与思考等级', style: nativeMenuStyle }, ...menu),
+    open && createElement('div', { role: 'menu', 'aria-label': t('cli.chooseModelMenu'), style: nativeMenuStyle }, ...menu),
   )
 }
 

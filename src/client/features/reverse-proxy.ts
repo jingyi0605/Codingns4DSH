@@ -17,6 +17,8 @@ export const reverseProxyFeature: CodingNsClientFeatureModule = {
     ui: {
       label: '中转访问服务',
       description: '通过 CodingNS 隧道访问当前 Host。',
+      labelKey: 'feature.reverseProxy.label',
+      descriptionKey: 'feature.reverseProxy.description',
       order: 20,
       defaultOpen: true,
     },

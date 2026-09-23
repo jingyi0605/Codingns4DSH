@@ -5,10 +5,12 @@ import type { LanAccessDshSettings } from '../../shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import type { FeaturePanelProps, CodingNsRpcClient } from './types.js'
 import { dshButtonStyle, dshFieldStyle, dshFormRootStyle, dshThemeColor } from '../theme.js'
+import { useCodingNsTranslator } from '../locale.js'
 
 /** “局域网访问DSH”设置卡片：只配置一条监听并转发到当前 DSH Web。 */
 export function LanAccessPanel({ services, enabled }: FeaturePanelProps): ReactElement {
   const { rpc, settings } = services
+  const t = useCodingNsTranslator(services.locale)
   const [savedSettings, setSavedSettings] = useState<LanAccessDshSettings | undefined>()
   const disabled = !enabled
   const [listenHosts, setListenHosts] = useState<string[]>(['0.0.0.0'])
@@ -67,7 +69,7 @@ export function LanAccessPanel({ services, enabled }: FeaturePanelProps): ReactE
     const result = await callRpc<{ ports: number[] }>(rpc, 'lanAccessDsh/detect', {})
     setDetectedDshPorts(result.ports)
     if (result.ports.length === 1) setDshPort(String(result.ports[0]))
-    setMessage(result.ports.length === 0 ? '未探测到 DSH Web 端口，请手动填写' : `已探测到 DSH Web 端口：${result.ports.join('、')}`)
+    setMessage(result.ports.length === 0 ? t('lan.detectNone') : t('lan.detected', { ports: result.ports.join('、') }))
   })
 
   const saveMapping = async (nextAutoStart = autoStart): Promise<void> => {
@@ -94,20 +96,20 @@ export function LanAccessPanel({ services, enabled }: FeaturePanelProps): ReactE
     setSnapshot(current)
     setDshPort(String(current.dshPort))
     setListenPort(String(current.listenPort))
-    setMessage(`局域网访问DSH已启动：${current.listenHost}:${current.actualListenPort ?? current.listenPort} → 127.0.0.1:${current.dshPort}`)
+    setMessage(t('lan.started', { host: current.listenHost, port: current.actualListenPort ?? current.listenPort, dshPort: current.dshPort }))
   })
 
   const stop = (): Promise<void> => run(async () => {
     await callRpc(rpc, 'lanAccessDsh/stop', {})
     setSnapshot(null)
-    setMessage('局域网访问DSH已停止')
+    setMessage(t('lan.stopped'))
   })
 
   const toggleAutoStart = (): Promise<void> => run(async () => {
     const next = !autoStart
     await saveMapping(next)
     setAutoStart(next)
-    setMessage(next ? '已开启自动启动，下一次启动 DSH 时将自动恢复映射' : '已关闭自动启动')
+    setMessage(next ? t('lan.autoStartOn') : t('lan.autoStartOff'))
   })
 
   const fieldStyle = { ...dshFieldStyle, width: '100%', boxSizing: 'border-box' as const, padding: '8px 10px', borderRadius: 6 }
@@ -116,25 +118,25 @@ export function LanAccessPanel({ services, enabled }: FeaturePanelProps): ReactE
   return createElement(
     'div',
     { 'aria-disabled': disabled, style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 12, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
-    createElement('p', { style: { margin: 0, opacity: 0.7 } }, '在本机增加一个监听端口，将访问重定向到当前 DSH Web。此功能属于局域网访问，不经过跨 NAT 中转服务。'),
+    createElement('p', { style: { margin: 0, opacity: 0.7 } }, t('lan.description')),
     createElement('select', { value: listenHost, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setListenHost(event.currentTarget.value), onBlur: saveMappingOnBlur, style: fieldStyle },
-      ...listenHosts.map((host) => createElement('option', { key: host, value: host }, host === '0.0.0.0' ? '所有网卡（0.0.0.0）' : host)),
+      ...listenHosts.map((host) => createElement('option', { key: host, value: host }, host === '0.0.0.0' ? t('lan.allInterfaces') : host)),
     ),
-    createElement('input', { type: 'number', min: 0, max: 65535, placeholder: '监听端口', value: listenPort, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setListenPort(event.currentTarget.value), onBlur: saveMappingOnBlur, style: fieldStyle }),
+    createElement('input', { type: 'number', min: 0, max: 65535, placeholder: t('lan.listenPort'), value: listenPort, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setListenPort(event.currentTarget.value), onBlur: saveMappingOnBlur, style: fieldStyle }),
     createElement('div', { style: { display: 'flex', gap: 8 } },
-      createElement('input', { type: 'number', min: 1, max: 65535, placeholder: 'DSH 本地端口（自动探测，也可手动填写）', value: dshPort, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setDshPort(event.currentTarget.value), onBlur: saveMappingOnBlur, style: { ...fieldStyle, flex: 1 } }),
-      createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void detect(), style: buttonStyle }, '自动探测'),
+      createElement('input', { type: 'number', min: 1, max: 65535, placeholder: t('lan.dshPort'), value: dshPort, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setDshPort(event.currentTarget.value), onBlur: saveMappingOnBlur, style: { ...fieldStyle, flex: 1 } }),
+      createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void detect(), style: buttonStyle }, t('lan.detect')),
     ),
-    detectedDshPorts.length > 1 && createElement('div', { style: { fontSize: 13, opacity: 0.7 } }, `检测到多个 DSH 实例端口：${detectedDshPorts.join('、')}，请手动选择。`),
+    detectedDshPorts.length > 1 && createElement('div', { style: { fontSize: 13, opacity: 0.7 } }, t('lan.detectMultiple', { ports: detectedDshPorts.join('、') })),
     createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 8, cursor: disabled || busy ? 'not-allowed' : 'pointer' } },
       createElement('input', { type: 'checkbox', checked: autoStart, disabled: disabled || busy, onChange: () => void toggleAutoStart(), style: { accentColor: dshThemeColor.accent } }),
-      createElement('span', undefined, '自动启动（启动 DSH 时自动恢复当前映射）'),
+      createElement('span', undefined, t('lan.autoStart')),
     ),
     createElement('div', { style: { display: 'flex', gap: 8 } },
-      createElement('button', { type: 'button', disabled: disabled || busy || !listenPort, onClick: () => void start(), style: { ...buttonStyle, flex: 1 } }, busy ? '处理中…' : snapshot ? '更新局域网访问DSH' : '启动局域网访问DSH'),
-      snapshot && createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void stop(), style: buttonStyle }, '停止'),
+      createElement('button', { type: 'button', disabled: disabled || busy || !listenPort, onClick: () => void start(), style: { ...buttonStyle, flex: 1 } }, busy ? t('lan.processing') : snapshot ? t('lan.update') : t('lan.start')),
+      snapshot && createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void stop(), style: buttonStyle }, t('lan.stop')),
     ),
-    snapshot && createElement('div', { role: 'status', style: { fontSize: 13 } }, `当前转发：${snapshot.listenHost}:${snapshot.actualListenPort ?? snapshot.listenPort} → DSH Web 127.0.0.1:${snapshot.dshPort}`),
+    snapshot && createElement('div', { role: 'status', style: { fontSize: 13 } }, t('lan.forwarding', { host: snapshot.listenHost, port: snapshot.actualListenPort ?? snapshot.listenPort, dshPort: snapshot.dshPort })),
     message && createElement('div', { role: 'status', style: { color: message.includes('已') ? dshThemeColor.success : dshThemeColor.error } }, message),
   )
 }

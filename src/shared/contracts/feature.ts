@@ -14,6 +14,10 @@ export interface FeatureUiDescriptor {
   label: string
   /** 设置卡片说明。 */
   description: string
+  /** DSH locale 命名空间中的标题键；未提供时使用 label 原文。 */
+  labelKey?: string
+  /** DSH locale 命名空间中的说明键；未提供时使用 description 原文。 */
+  descriptionKey?: string
   /** 排序权重，升序靠前；缺省按 0 处理。 */
   order?: number
   /** 卡片初始是否展开。 */

@@ -11,6 +11,8 @@ import {
 import { settingsModules, type CodingNsSettingsModule } from './features/index.js'
 import type { CodingNsClientFeatureModule, CodingNsClientServices } from './features/types.js'
 import { dshFormRootStyle, dshThemeColor } from './theme.js'
+import { useCodingNsTranslator } from './locale.js'
+
 
 export interface CodingNsSectionProps extends PropsRuntime<'settings.section'> {
   readonly settings: SettingsScope<CodingNsSettings>
@@ -30,12 +32,13 @@ export function CodingNsSettingsSection({ settings, registry, services }: Coding
     () => settings.getSnapshot(),
     () => settings.getSnapshot(),
   )
+  const t = useCodingNsTranslator(services.locale)
 
   return createElement(
     'section',
     { style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 20, padding: 24, maxWidth: 980, width: '100%', boxSizing: 'border-box' } },
     createElement('div', undefined,
-      createElement('h2', { style: { margin: 0, fontSize: 20 } }, 'CodingNS 功能模块'),
+      createElement('h2', { style: { margin: 0, fontSize: 20 } }, t('settings.title')),
     ),
     createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
       settingsModules(registry).map((entry) => createElement(FeatureCard, {
@@ -57,6 +60,7 @@ interface FeatureCardProps {
 /** 通用功能模块卡片：标题栏开关由 descriptor.ui 决定，内容由模块自己提供。 */
 function FeatureCard({ entry, snapshot, services }: FeatureCardProps): ReactElement {
   const { module, ui } = entry
+  const t = useCodingNsTranslator(services.locale)
   const [writeError, setWriteError] = useState<string | null>(null)
   const enabled = isFeatureEnabled(module.descriptor, snapshot.value)
   const panel = module.settingsPanel
@@ -81,9 +85,9 @@ function FeatureCard({ entry, snapshot, services }: FeatureCardProps): ReactElem
     createElement('summary', {
       style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '14px 16px', cursor: 'pointer', fontWeight: 600 },
     },
-      createElement('span', undefined, ui.label),
+      createElement('span', undefined, t(ui.labelKey ?? ui.label)),
       createElement(FeatureSwitch, {
-        label: ui.label,
+        label: t(ui.labelKey ?? ui.label),
         checked: enabled,
         disabled: switchDisabled,
         onChange: toggle,
@@ -92,7 +96,7 @@ function FeatureCard({ entry, snapshot, services }: FeatureCardProps): ReactElem
     createElement('div', {
       style: { display: 'flex', flexDirection: 'column', gap: 16, padding: 20, borderTop: `1px solid ${dshThemeColor.border}` },
     },
-      createElement('p', { style: { margin: 0, fontSize: 13, opacity: 0.65 } }, ui.description),
+      createElement('p', { style: { margin: 0, fontSize: 13, opacity: 0.65 } }, t(ui.descriptionKey ?? ui.description)),
       panel === undefined ? null : createElement(panel, { services, enabled, snapshot }),
       writeError === null ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error } }, writeError),
     ),
@@ -115,7 +119,7 @@ function FeatureSwitch({ label, checked, disabled, onChange }: FeatureSwitchProp
     createElement('input', {
       type: 'checkbox',
       role: 'switch',
-      'aria-label': `${label}开关`,
+      'aria-label': label,
       checked,
       disabled,
       onChange: (event: { currentTarget: { checked: boolean } }) => onChange(event.currentTarget.checked),

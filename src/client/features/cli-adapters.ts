@@ -9,6 +9,7 @@ import type {
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
 import { archiveCliSession, callCliRpc, errorMessage, listCliSessions, restoreCliSession } from '../cli-catalog.js'
 import { dshButtonStyle, dshFormRootStyle, dshPopupSurfaceStyle, dshThemeColor } from '../theme.js'
+import { useCodingNsTranslator } from '../locale.js'
 
 /** 外部 Agent 集成模块。Agent 进程在 Host 运行，浏览器只读取目录和状态。 */
 export const cliAdaptersFeature: CodingNsClientFeatureModule = {
@@ -21,6 +22,8 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
     ui: {
       label: '外部Agent集成',
       description: '查看外部 Agent 的安装状态、版本、命令路径和可用模型，并单独启用或停用。',
+      labelKey: 'feature.cliAdapters.label',
+      descriptionKey: 'feature.cliAdapters.description',
       order: 30,
       defaultOpen: true,
     },
@@ -30,7 +33,7 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
     if (slots === undefined) return
     // CLI Slot 带有浏览器图片资源，启用模块时再加载，避免 Node 侧读取 Client 元数据时解析图片。
     const { registerCliConversationSlots } = await import('../cli-slots.js')
-    const disposeSlots = registerCliConversationSlots(slots, context.services.rpc)
+    const disposeSlots = registerCliConversationSlots(slots, context.services.rpc, context.services.locale)
     context.resources.add(disposeSlots)
   },
   settingsPanel: CliAdaptersPanel,
@@ -38,6 +41,7 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
 
 /** 设置页中的 Agent 列表和详情模态框。 */
 export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): ReactElement {
+  const t = useCodingNsTranslator(services.locale)
   const [catalog, setCatalog] = useState<readonly CodingNsCliAdapterDescriptor[]>([])
   const [selected, setSelected] = useState<CodingNsCliAdapterDescriptor | null>(null)
   const [models, setModels] = useState<CodingNsCliModelCatalog | null>(null)
@@ -133,23 +137,23 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
   return createElement(
     'div',
     { 'aria-disabled': disabled, style: { ...dshFormRootStyle, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
-    loading && createElement('div', { role: 'status' }, '正在读取外部 Agent 状态…'),
-    !loading && catalog.length === 0 && createElement('div', { role: 'status', style: { opacity: 0.7 } }, '当前没有可用的外部 Agent。'),
+    loading && createElement('div', { role: 'status' }, t('cli.readingAgents')),
+    !loading && catalog.length === 0 && createElement('div', { role: 'status', style: { opacity: 0.7 } }, t('cli.noAgents')),
     createElement('div', undefined,
       ...catalog.map((adapter) => createElement('div', { key: adapter.id, style: rowStyle },
         createElement('button', {
           type: 'button',
           onClick: () => setSelected(adapter),
           style: { flex: '1 1 auto', minWidth: 0, display: 'flex', alignItems: 'center', gap: 12, padding: 0, border: 0, color: 'inherit', textAlign: 'left', background: 'transparent', cursor: 'pointer' },
-          'aria-label': `查看 ${adapter.name} 详情`,
+          'aria-label': t('cli.viewDetails', { name: adapter.name }),
         },
           createElement('span', { style: { flex: '1 1 auto', minWidth: 0, fontWeight: 600 } }, adapter.name),
-          createElement('span', { style: { color: adapter.installed ? dshThemeColor.success : dshThemeColor.labelTertiary } }, adapter.installed ? '已安装' : '未安装'),
-          createElement('span', { style: { minWidth: 70, color: dshThemeColor.labelTertiary } }, adapter.version ?? '未检测到版本'),
+          createElement('span', { style: { color: adapter.installed ? dshThemeColor.success : dshThemeColor.labelTertiary } }, adapter.installed ? t('cli.installed') : t('cli.notInstalled')),
+          createElement('span', { style: { minWidth: 70, color: dshThemeColor.labelTertiary } }, adapter.version ?? t('cli.notDetectedVersion')),
         ),
         createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' } },
-          createElement('input', { type: 'checkbox', role: 'switch', 'aria-label': `${adapter.name}启用开关`, checked: adapter.enabled, disabled: !adapter.installed || busyAdapterId === adapter.id, onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleAdapter(adapter, event.currentTarget.checked) }, style: { accentColor: dshThemeColor.accent } }),
-          createElement('span', undefined, adapter.enabled ? '已启用' : '已停用'),
+          createElement('input', { type: 'checkbox', role: 'switch', 'aria-label': t('cli.adapterToggle', { name: adapter.name }), checked: adapter.enabled, disabled: !adapter.installed || busyAdapterId === adapter.id, onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleAdapter(adapter, event.currentTarget.checked) }, style: { accentColor: dshThemeColor.accent } }),
+          createElement('span', undefined, adapter.enabled ? t('cli.enabled') : t('cli.disabled')),
         ),
       )),
     ),
@@ -160,6 +164,7 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
       archivingSessionId,
       onRestore: (record) => { void restoreSession(record) },
       onArchive: (record) => { void archiveSession(record) },
+      t,
     }),
     message && createElement('div', { role: 'alert', style: { marginTop: 10, color: dshThemeColor.error } }, message),
     selected !== null && createElement(AdapterDetailsDialog, {
@@ -168,6 +173,7 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
       loading: selected.installed && selected.enabled && models === null && !message,
       onClose: () => setSelected(null),
       buttonStyle,
+      t,
     }),
   )
 }
@@ -179,54 +185,55 @@ interface CliSessionListProps {
   readonly archivingSessionId: string | null
   readonly onRestore: (record: CodingNsCliSessionRecord) => void
   readonly onArchive: (record: CodingNsCliSessionRecord) => void
+  readonly t: ReturnType<typeof useCodingNsTranslator>
 }
 
 /** 外部会话索引入口；打开后交给 DSH 原生会话页面渲染消息。 */
-function CliSessionList({ sessions, loading, restoringSessionId, archivingSessionId, onRestore, onArchive }: CliSessionListProps): ReactElement {
+function CliSessionList({ sessions, loading, restoringSessionId, archivingSessionId, onRestore, onArchive, t }: CliSessionListProps): ReactElement {
   return createElement('section', { 'aria-labelledby': 'codingns-cli-session-title', style: { marginTop: 20 } },
-    createElement('h4', { id: 'codingns-cli-session-title', style: { margin: '0 0 8px' } }, '外部 Agent 会话'),
-    loading && createElement('div', { role: 'status' }, '正在读取外部会话…'),
-    !loading && sessions.length === 0 && createElement('div', { style: { opacity: 0.7 } }, '尚未创建外部 Agent 会话。'),
+    createElement('h4', { id: 'codingns-cli-session-title', style: { margin: '0 0 8px' } }, t('cli.sessions')),
+    loading && createElement('div', { role: 'status' }, t('cli.readingSessions')),
+    !loading && sessions.length === 0 && createElement('div', { style: { opacity: 0.7 } }, t('cli.noSessions')),
     !loading && sessions.length > 0 && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
       ...sessions.map((record) => createElement('div', {
         key: record.dshSessionId,
         style: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: `1px solid ${dshThemeColor.border}` },
       },
         createElement('div', { style: { flex: '1 1 auto', minWidth: 0 } },
-          createElement('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 } }, record.title ?? `${record.adapterId} 会话`),
+          createElement('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 } }, record.title ?? t('cli.session', { id: record.adapterId })),
           createElement('div', {
             title: record.providerStateReason,
             style: { marginTop: 2, color: record.providerState === 'missing' ? dshThemeColor.error : dshThemeColor.labelTertiary, fontSize: 12 },
-          }, `${record.adapterId} · ${sessionStatusLabel(record)}`),
+          }, `${record.adapterId} · ${sessionStatusLabel(record, t)}`),
         ),
         createElement('button', {
           type: 'button',
           onClick: () => onRestore(record),
           disabled: restoringSessionId !== null,
-          'aria-label': `打开${record.title ?? `${record.adapterId} 会话`}`,
+          'aria-label': `${t('cli.open')} ${record.title ?? t('cli.session', { id: record.adapterId })}`,
           style: { ...dshButtonStyle, flex: '0 0 auto', padding: '6px 10px', borderRadius: 6, cursor: restoringSessionId === null ? 'pointer' : 'not-allowed' },
-        }, restoringSessionId === record.dshSessionId ? '打开中…' : '打开'),
+        }, restoringSessionId === record.dshSessionId ? t('cli.opening') : t('cli.open')),
         record.providerState === 'missing' && createElement('button', {
           type: 'button',
           onClick: () => onArchive(record),
           disabled: archivingSessionId !== null,
-          'aria-label': `从侧栏移除${record.title ?? `${record.adapterId} 会话`}`,
+          'aria-label': t('cli.removeFromSidebar', { name: record.title ?? t('cli.session', { id: record.adapterId }) }),
           style: { ...dshButtonStyle, flex: '0 0 auto', padding: '6px 10px', borderRadius: 6, color: dshThemeColor.error, cursor: archivingSessionId === null ? 'pointer' : 'not-allowed' },
-        }, archivingSessionId === record.dshSessionId ? '移除中…' : '移除'),
+        }, archivingSessionId === record.dshSessionId ? t('cli.removing') : t('cli.remove')),
       )),
     ),
   )
 }
 
-function sessionStatusLabel(record: CodingNsCliSessionRecord): string {
-  if (record.providerState === 'missing') return '原始会话已删除'
-  if (record.providerState === 'corrupt') return '原始会话已损坏'
-  if (record.providerState === 'unreachable') return '暂时无法检查原始会话'
-  if (record.providerState === 'ephemeral') return '无独立原始会话'
-  if (record.status === 'active') return '运行中'
-  if (record.status === 'error') return '异常'
-  if (record.status === 'archived') return '已归档'
-  return '已暂停'
+function sessionStatusLabel(record: CodingNsCliSessionRecord, t: ReturnType<typeof useCodingNsTranslator>): string {
+  if (record.providerState === 'missing') return t('cli.statusMissing')
+  if (record.providerState === 'corrupt') return t('cli.statusCorrupt')
+  if (record.providerState === 'unreachable') return t('cli.statusUnreachable')
+  if (record.providerState === 'ephemeral') return t('cli.statusEphemeral')
+  if (record.status === 'active') return t('cli.statusActive')
+  if (record.status === 'error') return t('cli.statusError')
+  if (record.status === 'archived') return t('cli.statusArchived')
+  return t('cli.statusPaused')
 }
 
 interface AdapterDetailsDialogProps {
@@ -235,9 +242,10 @@ interface AdapterDetailsDialogProps {
   readonly loading: boolean
   readonly onClose: () => void
   readonly buttonStyle: CSSProperties
+  readonly t: ReturnType<typeof useCodingNsTranslator>
 }
 
-function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle }: AdapterDetailsDialogProps): ReactElement {
+function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle, t }: AdapterDetailsDialogProps): ReactElement {
   return createElement('div', {
     role: 'dialog',
     'aria-modal': true,
@@ -247,44 +255,44 @@ function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle }
     createElement('div', { style: { ...dshPopupSurfaceStyle, width: 'min(100%, 620px)', maxHeight: 'min(720px, 90vh)', overflow: 'auto', boxSizing: 'border-box', padding: 24, borderRadius: 8 } },
       createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
         createElement('h3', { id: 'codingns-cli-adapter-title', style: { margin: 0, fontSize: 18 } }, adapter.name),
-      createElement('button', { type: 'button', onClick: onClose, style: buttonStyle, 'aria-label': '关闭 Agent 详情' }, '关闭'),
+      createElement('button', { type: 'button', onClick: onClose, style: buttonStyle, 'aria-label': t('cli.closeDetails') }, t('cli.closeDetails')),
       ),
       createElement('dl', { style: { display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '8px 16px', margin: '20px 0' } },
-        createElement('dt', undefined, '安装状态'), createElement('dd', { style: { margin: 0 } }, adapter.installed ? '已安装' : '未安装'),
-        createElement('dt', undefined, '启用状态'), createElement('dd', { style: { margin: 0 } }, adapter.enabled ? '已启用' : '已停用'),
-        createElement('dt', undefined, '版本'), createElement('dd', { style: { margin: 0 } }, adapter.version ?? '未检测到版本'),
-        createElement('dt', undefined, '命令路径'), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.command ?? '未检测到命令'),
-        createElement('dt', undefined, '标准协议'), createElement('dd', { style: { margin: 0 } }, adapter.protocol ?? '未声明'),
-        createElement('dt', undefined, '已验证能力'), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.capabilities?.join('、') ?? '未声明'),
+        createElement('dt', undefined, t('cli.installStatus')), createElement('dd', { style: { margin: 0 } }, adapter.installed ? t('cli.installed') : t('cli.notInstalled')),
+        createElement('dt', undefined, t('cli.enabledStatus')), createElement('dd', { style: { margin: 0 } }, adapter.enabled ? t('cli.enabled') : t('cli.disabled')),
+        createElement('dt', undefined, t('cli.version')), createElement('dd', { style: { margin: 0 } }, adapter.version ?? t('cli.notDetectedVersion')),
+        createElement('dt', undefined, t('cli.commandPath')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.command ?? t('cli.notDetectedCommand')),
+        createElement('dt', undefined, t('cli.protocol')), createElement('dd', { style: { margin: 0 } }, adapter.protocol ?? t('cli.undeclared')),
+        createElement('dt', undefined, t('cli.capabilities')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.capabilities?.join('、') ?? t('cli.undeclared')),
       ),
-      createElement('h4', { style: { margin: '16px 0 8px' } }, '模型目录'),
-      !adapter.installed && createElement('div', { style: { opacity: 0.7 } }, 'Agent 未安装，无法读取模型目录。'),
-      adapter.installed && !adapter.enabled && createElement('div', { style: { opacity: 0.7 } }, 'Agent 已停用，启用后才能读取模型目录。'),
-      adapter.installed && loading && createElement('div', { role: 'status' }, '正在读取模型目录…'),
-      adapter.installed && !loading && models !== null && createElement(ModelCatalog, { catalog: models }),
+      createElement('h4', { style: { margin: '16px 0 8px' } }, t('cli.modelCatalog')),
+      !adapter.installed && createElement('div', { style: { opacity: 0.7 } }, t('cli.agentNotInstalled')),
+      adapter.installed && !adapter.enabled && createElement('div', { style: { opacity: 0.7 } }, t('cli.agentDisabled')),
+      adapter.installed && loading && createElement('div', { role: 'status' }, t('cli.readingModels')),
+      adapter.installed && !loading && models !== null && createElement(ModelCatalog, { catalog: models, t }),
       createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: 20 } },
-        createElement('button', { type: 'button', onClick: onClose, style: buttonStyle }, '完成'),
+        createElement('button', { type: 'button', onClick: onClose, style: buttonStyle }, t('cli.done')),
       ),
     ),
   )
 }
 
-function ModelCatalog({ catalog }: { readonly catalog: CodingNsCliModelCatalog }): ReactElement {
-  if (catalog.groups.length === 0) return createElement('div', { style: { opacity: 0.7 } }, '没有读取到模型。')
+function ModelCatalog({ catalog, t }: { readonly catalog: CodingNsCliModelCatalog; readonly t: ReturnType<typeof useCodingNsTranslator> }): ReactElement {
+  if (catalog.groups.length === 0) return createElement('div', { style: { opacity: 0.7 } }, t('cli.noModels'))
   return createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 14 } },
     ...catalog.groups.map((group) => createElement('section', { key: group.id },
       createElement('strong', undefined, group.name),
       createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 } },
-        ...group.models.map((model) => createElement(ModelRow, { key: model.id, model })),
+        ...group.models.map((model) => createElement(ModelRow, { key: model.id, model, t })),
       ),
     )),
   )
 }
 
-function ModelRow({ model }: { readonly model: CodingNsCliModel }): ReactElement {
+function ModelRow({ model, t }: { readonly model: CodingNsCliModel; readonly t: ReturnType<typeof useCodingNsTranslator> }): ReactElement {
   return createElement('div', { style: { padding: '8px 10px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 6 } },
     createElement('div', { style: { fontWeight: 600 } }, model.name),
     model.description && createElement('div', { style: { marginTop: 3, opacity: 0.7, fontSize: 13 } }, model.description),
-    createElement('div', { style: { marginTop: 5, opacity: 0.7, fontSize: 13 } }, `思考等级：${model.efforts.length > 0 ? model.efforts.join('、') : '默认'}`),
+    createElement('div', { style: { marginTop: 5, opacity: 0.7, fontSize: 13 } }, t('cli.thinkingLevel', { value: model.efforts.length > 0 ? model.efforts.join('、') : t('cli.defaultEffort') })),
   )
 }
