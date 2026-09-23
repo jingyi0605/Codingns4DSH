@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { createCliAdaptersFeature } from '../dist/host/cli-adapters/feature.js'
 import { CommandCodeDriver } from '../dist/host/cli-adapters/command-code-driver.js'
@@ -8,6 +10,8 @@ import { CodingNsDshMessageProjector } from '../dist/host/cli-adapters/dsh-messa
 import { CodingNsCliAdapterRegistry } from '../dist/host/cli-adapters/registry.js'
 import { CodingNsRpcTable } from '../dist/host/rpc-table.js'
 import { FeatureRegistry } from '../dist/features/registry.js'
+import { CommandCodeSubscriptionService } from '../dist/host/cli-adapters/command-code-subscription.js'
+import { ClaudeCodeSubscriptionService, OpenCodeSubscriptionService, ProviderSubscriptionService, Sub2ApiUsageService } from '../dist/host/cli-adapters/provider-subscription.js'
 
 test('Command Code 驱动只把带版本号的候选命令视为已安装', async () => {
   const calls: string[][] = []
@@ -117,6 +121,151 @@ test('Command Code 驱动写入历史 transcript、转换 JSON 事件并清理�
   assert.equal(killed, true)
 })
 
+test('Command Code usage 保留缓存桶，并按完整输入计算未缓存输入', async () => {
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: (() => ({
+      stdout: Readable.from([`${JSON.stringify({ type: 'result', finalText: '完成', usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 40, cache_write_tokens: 5 } })}\n`]),
+      stderr: { on() { return this } },
+      kill() { return true },
+    })) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'cache-session', messages: [], prompt: '测试' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'usage', inputTokens: 100, outputTokens: 20, cacheReadTokens: 40, cacheWriteTokens: 5, uncachedInputTokens: 55, totalTokens: 120, cacheHitRate: 40 },
+    { type: 'text-snapshot', text: '完成' },
+    { type: 'finish', reason: 'stop' },
+  ])
+})
+
+test('Command Code 订阅服务只返回脱敏窗口并统一毫秒重置时间', async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), 'dsh-codingns-command-code-subscription-'))
+  writeFileSync(join(homeDirectory, 'auth.json'), JSON.stringify({ apiKey: 'secret-key' }), 'utf8')
+  try {
+    const service = new CommandCodeSubscriptionService({
+      homeDirectory,
+      fetch: (async (url: string, init?: RequestInit) => {
+        assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer secret-key')
+        if (url.endsWith('/credits')) return new Response(JSON.stringify({ windowLimits: { fiveHour: { used: 2, cap: 10, resetAt: 1_700_000_000_000 }, weekly: { used: 5, cap: 20 } }, credits: { monthlyCredits: 8 } }), { status: 200 })
+        return new Response(JSON.stringify({ data: { planId: 'individual-goat', currentPeriodEnd: '2026-10-01T00:00:00Z' } }), { status: 200 })
+      }) as typeof fetch,
+    })
+    const result = await service.read()
+    assert.equal(result?.authenticated, true)
+    assert.equal(result?.planType, 'individual-goat')
+    assert.equal(result?.resetCredits, null)
+    assert.deepEqual(result?.primary, { usedPercent: 20, remainingPercent: 80, windowDurationMins: null, resetsAt: 1_700_000_000 })
+    assert.deepEqual(result?.secondary, { usedPercent: 25, remainingPercent: 75, windowDurationMins: null, resetsAt: null })
+    assert.deepEqual(result?.monthly, { usedPercent: 88.57142857142857, remainingPercent: 11.428571428571429, windowDurationMins: null, resetsAt: 1_790_812_800, remainingCredits: 8, totalCredits: 70 })
+    assert.equal(result?.rateLimitReachedType, null)
+    assert.equal(typeof result?.capturedAt, 'string')
+  } finally {
+    rmSync(homeDirectory, { recursive: true, force: true })
+  }
+})
+
+test('Claude Code 订阅服务读取 OAuth 用量并且不返回访问令牌', async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), 'dsh-codingns-claude-subscription-'))
+  writeFileSync(join(homeDirectory, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'oauth-secret', subscriptionType: 'max' } }), 'utf8')
+  try {
+    const service = new ClaudeCodeSubscriptionService({
+      homeDirectory,
+      fetch: (async (_url: string, init?: RequestInit) => {
+        assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer oauth-secret')
+        return new Response(JSON.stringify({ five_hour: { utilization: 23, resets_at: '2026-09-23T12:00:00Z' }, seven_day: { utilization: 48, resets_at: 1_800_000_000 } }), { status: 200 })
+      }) as typeof fetch,
+    })
+    const result = await service.read()
+    assert.equal(result?.primary?.remainingPercent, 77)
+    assert.equal(result?.secondary?.remainingPercent, 52)
+    assert.equal(result?.planType, 'max')
+    assert.doesNotMatch(JSON.stringify(result), /oauth-secret/u)
+  } finally {
+    rmSync(homeDirectory, { recursive: true, force: true })
+  }
+})
+
+test('Sub2API 用量服务映射账户统计并计算缓存命中率且不返回密钥', async () => {
+  const service = new Sub2ApiUsageService({
+    sources: { codex: { baseUrl: 'https://upstream.example.test', apiKey: 'sub2api-secret' } },
+    fetch: (async (url: string, init?: RequestInit) => {
+      assert.equal(url, 'https://upstream.example.test/v1/usage')
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer sub2api-secret')
+      return new Response(JSON.stringify({
+        balance: 100,
+        remaining: 99.5,
+        unit: 'USD',
+        planName: '钱包余额',
+        mode: 'unrestricted',
+        daily_usage: [{ date: '2026-09-23', requests: 10, input_tokens: 100, output_tokens: 20, cache_read_tokens: 900, total_tokens: 1020, cost: 1.2 }],
+        model_stats: [{ model: 'gpt-5', requests: 10, input_tokens: 100, output_tokens: 20, cache_read_tokens: 900, total_tokens: 1020, cost: 1.2 }],
+        usage: {
+          today: { requests: 10, input_tokens: 100, output_tokens: 20, cache_read_tokens: 900, total_tokens: 1020, cost: 1.2 },
+          total: { requests: 100, input_tokens: 1000, output_tokens: 200, cache_read_tokens: 9000, total_tokens: 10200, cost: 12 },
+          rpm: 3,
+          tpm: 400,
+          average_duration_ms: 250,
+        },
+      }), { status: 200 })
+    }) as typeof fetch,
+  })
+
+  const result = await service.read('codex')
+  assert.equal(result?.sub2api?.balance, 100)
+  assert.equal(result?.sub2api?.remaining, 99.5)
+  assert.equal(result?.sub2api?.today.cacheHitRate, 90)
+  assert.equal(result?.sub2api?.total.cacheHitRate, 90)
+  assert.equal(result?.sub2api?.models[0]?.model, 'gpt-5')
+  assert.equal(result?.sub2api?.logoUrl, 'https://upstream.example.test/logo.svg')
+  assert.doesNotMatch(JSON.stringify(result), /sub2api-secret/u)
+})
+
+test('Sub2API 非成功响应不产生订阅组件数据', async () => {
+  const service = new Sub2ApiUsageService({
+    sources: { grok: { baseUrl: 'https://upstream.example.test/v1', apiKey: 'secret' } },
+    fetch: (async (url: string) => {
+      assert.equal(url, 'https://upstream.example.test/v1/usage')
+      return new Response('{}', { status: 401 })
+    }) as typeof fetch,
+  })
+  assert.equal(await service.read('grok'), null)
+})
+
+test('Codex 检测到第三方上游但 Sub2API 不可用时不回退官方订阅', async () => {
+  let officialReaderCalled = false
+  const service = new ProviderSubscriptionService({
+    sub2api: {
+      sources: { codex: { baseUrl: 'https://upstream.example.test', apiKey: 'secret' } },
+      fetch: (async () => new Response('{}', { status: 502 })) as typeof fetch,
+    },
+    codex: {
+      homeDirectory: '/definitely/missing',
+      binaries: ['codex'],
+      spawnSync: (() => {
+        officialReaderCalled = true
+        return { status: 127, stdout: '', stderr: '' }
+      }) as never,
+    },
+  })
+  assert.equal(await service.read('codex'), null)
+  assert.equal(officialReaderCalled, false)
+})
+
+test('OpenCode 订阅服务只识别本地认证而不伪造额度', async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), 'dsh-codingns-opencode-subscription-'))
+  writeFileSync(join(homeDirectory, 'auth.json'), JSON.stringify({ deepseek: { type: 'api', key: 'provider-secret' } }), 'utf8')
+  try {
+    const result = await new OpenCodeSubscriptionService({ homeDirectory }).read()
+    assert.equal(result, null)
+  } finally {
+    rmSync(homeDirectory, { recursive: true, force: true })
+  }
+})
+
 test('Command Code 累积快照经公共消息投影层只输出新增后缀和最后一次 usage', async () => {
   const driver = new CommandCodeDriver({
     binaries: ['command-code'],
@@ -154,7 +303,7 @@ test('Command Code 累积快照经公共消息投影层只输出新增后缀和�
     cwd: '/workspace',
   })) chunks.push(...await projector.push(event))
 
-  assert.deepEqual(chunks, [
+  assert.deepEqual(chunks.filter((chunk) => chunk.codingnsExternalTool === undefined), [
     { type: 'reasoning-delta', index: 0, text: 'The user asks.' },
     { type: 'reasoning-delta', index: 0, text: ' Let me inspect.' },
     { type: 'text-delta', index: 1, text: 'I' },
@@ -206,19 +355,20 @@ test('Command Code 真实会话模式中的多工具边界和 reasoning 改写�
     cwd: '/workspace',
   })) chunks.push(...await projector.push(event))
 
-  assert.deepEqual(chunks.filter(({ type }) => type === 'reasoning-delta'), [
+  const durableChunks = chunks.filter((chunk) => chunk.codingnsExternalTool === undefined)
+  assert.deepEqual(durableChunks.filter(({ type }) => type === 'reasoning-delta'), [
     { type: 'reasoning-delta', index: 0, text: 'stage A' },
     { type: 'reasoning-delta', index: 0, text: 'stage B' },
     { type: 'reasoning-delta', index: 0, text: ' plus' },
     { type: 'reasoning-delta', index: 0, text: 'stage C' },
     { type: 'reasoning-delta', index: 0, text: ' done' },
   ])
-  assert.deepEqual(chunks.filter(({ type }) => type === 'text-delta'), [
+  assert.deepEqual(durableChunks.filter(({ type }) => type === 'text-delta'), [
     { type: 'text-delta', index: 1, text: "I'll check." },
     { type: 'text-delta', index: 1, text: 'Now build.' },
     { type: 'text-delta', index: 1, text: 'Found' },
   ])
-  assert.deepEqual(chunks.slice(-2), [
+  assert.deepEqual(durableChunks.slice(-2), [
     { type: 'usage', usage: { inputTokens: 11, outputTokens: 21 } },
     { type: 'finish', reason: { kind: 'stop' } },
   ])
@@ -275,11 +425,13 @@ test('CLI 功能模块登记 cli RPC，停用后注销命名空间', async () =>
 test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流的旁路行为', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  let capturedPrompt = ''
   const registry = new CodingNsCliAdapterRegistry([{
     descriptor: { id: 'fake', name: 'Fake' },
     async detect() { return { installed: true, version: '1.0.0', command: 'fake' } },
     async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
-    async *executeTurn() {
+    async *executeTurn(input) {
+      capturedPrompt = input.prompt
       yield { type: 'text-delta', text: '来自 CLI' }
       yield { type: 'finish', reason: 'stop' }
       yield { type: 'text-delta', text: '不应出现在 finish 之后' }
@@ -299,11 +451,18 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   assert.notEqual(listener, undefined)
 
   const chunks = []
-  for await (const chunk of listener!({ sessionId: 's1', messages: [{ role: 'user', content: '你好' }] }, async function* () { yield { type: 'text-delta', text: '默认' } })) chunks.push(chunk)
+  for await (const chunk of listener!({
+    sessionId: 's1',
+    messages: [
+      { role: 'user', source: { kind: 'plugin', plugin: 'dsh-system-prompt', form: 'catalog' }, content: '不应发送给外部 Agent' },
+      { role: 'user', source: { kind: 'user' }, content: '你好' },
+    ],
+  }, async function* () { yield { type: 'text-delta', text: '默认' } })) chunks.push(chunk)
   assert.deepEqual(chunks, [
     { type: 'text-delta', index: 1, text: '来自 CLI' },
     { type: 'finish', reason: { kind: 'stop' } },
   ])
+  assert.equal(capturedPrompt, '你好')
 
   const passthrough = []
   for await (const chunk of listener!({ sessionId: 'unknown', messages: [] }, async function* () { yield { type: 'text-delta', text: '默认' } })) passthrough.push(chunk)
@@ -455,7 +614,36 @@ test('CLI 功能模块从 DSH 会话头传递工作目录并把统一工具事�
   const chunks = []
   for await (const chunk of listener!({ sessionId: 's-cwd', messages: [{ role: 'user', content: '读取目录' }] }, async function* () {})) chunks.push(chunk)
   assert.equal(receivedCwd, '/workspace/project')
-  assert.deepEqual(chunks, [{ type: 'finish', reason: { kind: 'stop' } }])
+  assert.deepEqual(chunks, [
+    {
+      type: 'reasoning-delta',
+      index: 0,
+      text: '',
+      codingnsExternalTool: {
+        source: 'codingns-external-tool',
+        phase: 'start',
+        callId: 'call-1',
+        name: 'read_directory',
+        arguments: '{"path":"."}',
+        status: 'running',
+      },
+    },
+    {
+      type: 'reasoning-delta',
+      index: 0,
+      text: '',
+      codingnsExternalTool: {
+        source: 'codingns-external-tool',
+        phase: 'update',
+        callId: 'call-1',
+        name: 'read_directory',
+        arguments: '{"path":"."}',
+        status: 'completed',
+        output: 'file.txt',
+      },
+    },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ])
   assert.deepEqual(nativeCalls, [{
     sessionId: 's-cwd',
     call: { callId: 'call-1', name: 'read_directory', arguments: '{"path":"."}' },

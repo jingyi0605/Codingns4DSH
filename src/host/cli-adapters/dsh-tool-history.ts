@@ -13,6 +13,20 @@ interface ToolRecord {
   handle: CodingNsNativeToolCallHandle | null
   failed: boolean
   settled: boolean
+  resultAppended: boolean
+  externalPersisted: boolean
+}
+
+/** 外部工具的实时回退标记；正常 Host 会优先写入 Session 持久时间线。 */
+export interface CodingNsDshExternalToolMarker {
+  readonly source: 'codingns-external-tool'
+  readonly phase: 'start' | 'update'
+  readonly callId: string
+  readonly name: string
+  readonly arguments: string
+  readonly status: 'running' | 'completed' | 'failed'
+  readonly output?: string
+  readonly error?: string
 }
 
 const FIELD_LIMIT = 64 * 1024
@@ -29,21 +43,46 @@ const TRUNCATION_MARKER = '\n...[内容因长度限制已截断]'
  */
 export class CodingNsDshToolHistoryProjector {
   private readonly records = new Map<string, ToolRecord>()
+  private readonly deferNativeAppend: boolean
+  private readonly removeNativeEventListener: (() => void) | undefined
   private anonymousSequence = 0
   private turnChars = 0
   private observedCalls = 0
+  private finalized = false
+  private flushScheduled = false
 
   constructor(
     private readonly nativeSessions: CodingNsNativeSessionBridge | undefined,
     private readonly sessionId: string,
-  ) {}
+  ) {
+    // 新桥接直接在工具通知到达时写入时间线标记；只有旧 Host 没有该接口时才保留旧的
+    // assistant settlement 兼容路径。旧路径不能用于新桥接，否则工具一定会落到正文之后。
+    const subscribe = nativeSessions?.appendExternalToolEvent === undefined
+      && nativeSessions?.supportsEvents === true
+      ? nativeSessions.subscribe
+      : undefined
+    this.deferNativeAppend = subscribe !== undefined
+    this.removeNativeEventListener = subscribe?.call(nativeSessions!, {
+      onEvent: (session, event) => {
+        // DSH 的实时正文在 assistant/message 事件中才真正落盘。
+        // 工具历史必须排在该事件之后，否则 UI 会在流式正文下方提前堆积工具卡片。
+        if (session !== nativeSessions?.get(sessionId) || !isNativeAssistantSettlement(event)) return
+        if (this.flushScheduled) return
+        this.flushScheduled = true
+        queueMicrotask(() => {
+          this.flushScheduled = false
+          this.flushNativeRecords()
+        })
+      },
+    })
+  }
 
-  observe(event: CodingNsAgentToolEvent): void {
+  observe(event: CodingNsAgentToolEvent): CodingNsDshExternalToolMarker | null {
     const explicitCallId = event.callId?.trim()
     const callId = explicitCallId || this.nextAnonymousCallId()
     const key = explicitCallId ? `id:${explicitCallId}` : `anonymous:${callId}`
     const current = this.records.get(key)
-    if (current === undefined && this.observedCalls >= CALL_COUNT_LIMIT) return
+    if (current === undefined && this.observedCalls >= CALL_COUNT_LIMIT) return null
     const toolName = meaningfulToolName(event.toolName, current?.toolName)
     const input = event.input ?? current?.input
     const record = current ?? {
@@ -52,6 +91,8 @@ export class CodingNsDshToolHistoryProjector {
       handle: null,
       failed: false,
       settled: false,
+      resultAppended: false,
+      externalPersisted: false,
     }
     if (current === undefined) this.observedCalls += 1
     record.toolName = toolName
@@ -62,20 +103,54 @@ export class CodingNsDshToolHistoryProjector {
     }
     this.assign(record, 'error', event.error, 'snapshot')
     if (event.status === 'failed' || event.error !== undefined) record.failed = true
-    if (record.handle === null) record.handle = this.appendCall(record)
     this.records.set(key, record)
     if (event.status === 'completed' || event.status === 'failed') {
       this.settle(record, record.failed)
     }
+    const normalized = normalizeToolCall(record.toolName, record.input)
+    const status = record.failed
+      ? 'failed'
+      : record.settled
+        ? 'completed'
+        : 'running'
+    const marker: CodingNsDshExternalToolMarker = {
+      source: 'codingns-external-tool',
+      phase: current === undefined ? 'start' : 'update',
+      callId: record.callId,
+      name: normalized.name,
+      arguments: normalized.arguments,
+      status,
+      ...(record.output === undefined ? {} : { output: record.output }),
+      ...(record.error === undefined ? {} : { error: record.error }),
+    }
+    let persisted = false
+    if (this.nativeSessions?.appendExternalToolEvent !== undefined
+      && this.sessionId.trim() !== ''
+      && (current === undefined || record.externalPersisted)) {
+      try {
+        persisted = this.nativeSessions.appendExternalToolEvent(this.sessionId, marker)
+        record.externalPersisted = persisted
+      } catch {
+        // 时间线展示失败不能中断外部 Agent 的真实执行；流式 marker 仍会发送给 Client。
+      }
+    } else if (!this.deferNativeAppend) {
+      // 没有原生事件订阅的精简测试/旧 Host 继续使用旧兼容路径。
+      this.flushNativeRecords()
+    }
+    // 持久事件已经同步发布给 Conversation，不能再发送同一 callId 的临时 start，
+    // 否则 assembler 会把它视为重复起点。仅在持久化不可用时保留 transient fallback。
+    return persisted ? null : marker
   }
 
   /** 流结束时补齐 Provider 遗漏的终态，避免原生组件永久停留在运行中。 */
   finalize(reason: 'stop' | 'cancel' | 'error', failure?: string): void {
+    this.finalized = true
     for (const record of this.records.values()) {
       if (record.settled) continue
       if (failure !== undefined && record.error === undefined) this.assign(record, 'error', failure, 'snapshot')
       this.settle(record, record.failed || reason !== 'stop')
     }
+    if (!this.deferNativeAppend) this.flushNativeRecords()
   }
 
   private assign(
@@ -100,12 +175,47 @@ export class CodingNsDshToolHistoryProjector {
     this.turnChars += next.length - current.length
   }
 
-  private appendCall(record: ToolRecord): CodingNsNativeToolCallHandle | null {
+  private settle(record: ToolRecord, isError: boolean): void {
+    if (record.settled) return
+    record.settled = true
+    record.failed = isError
+  }
+
+  /** 在 DSH assistant/message 已经落盘后，按 Provider 到达顺序追加工具历史。 */
+  private flushNativeRecords(): void {
+    if (this.nativeSessions?.appendExternalToolEvent !== undefined) return
     const append = this.nativeSessions?.appendToolCall
-    if (append === undefined || this.sessionId.trim() === '') return null
+    if (append === undefined || this.sessionId.trim() === '') return
+    for (const record of this.records.values()) {
+      if (record.handle === null) record.handle = this.appendCall(record, append)
+      if (!record.settled || record.resultAppended || record.handle === null) continue
+      const appendResult = this.nativeSessions?.appendToolResult
+      if (appendResult === undefined) continue
+      const normalized = normalizeToolCall(record.toolName, record.input)
+      const error = record.error?.trim()
+      const output = normalizeToolOutput(record.output ?? error ?? '')
+      try {
+        appendResult.call(this.nativeSessions, record.handle, {
+          output,
+          isError: record.failed,
+          ...(error ? { error } : {}),
+          ...toolResultMeta(normalized.name, normalized.arguments),
+        })
+        record.resultAppended = true
+      } catch {
+        // DSH Session 是展示副作用，不能覆盖 Provider 的成功或失败终态。
+      }
+    }
+    if (this.finalized) this.removeNativeEventListener?.()
+  }
+
+  private appendCall(
+    record: ToolRecord,
+    append: NonNullable<CodingNsNativeSessionBridge['appendToolCall']>,
+  ): CodingNsNativeToolCallHandle | null {
     const normalized = normalizeToolCall(record.toolName, record.input)
     try {
-      return append.call(this.nativeSessions, this.sessionId, {
+      return append.call(this.nativeSessions!, this.sessionId, {
         callId: record.callId,
         name: normalized.name,
         arguments: normalized.arguments,
@@ -113,26 +223,6 @@ export class CodingNsDshToolHistoryProjector {
     } catch {
       // 原生展示失败不能中断外部 Agent 的真实执行。
       return null
-    }
-  }
-
-  private settle(record: ToolRecord, isError: boolean): void {
-    if (record.settled) return
-    record.settled = true
-    const append = this.nativeSessions?.appendToolResult
-    if (append === undefined || record.handle === null) return
-    const normalized = normalizeToolCall(record.toolName, record.input)
-    const error = record.error?.trim()
-    const output = normalizeToolOutput(record.output ?? error ?? '')
-    try {
-      append.call(this.nativeSessions, record.handle, {
-        output,
-        isError,
-        ...(error ? { error } : {}),
-        ...toolResultMeta(normalized.name, normalized.arguments),
-      })
-    } catch {
-      // DSH Session 是展示副作用，不能覆盖 Provider 的成功或失败终态。
     }
   }
 
@@ -215,6 +305,11 @@ function collectTextBlocks(value: unknown): string[] {
 function meaningfulToolName(incoming: string, previous: string | undefined): string {
   const normalized = incoming.trim() || 'tool'
   return normalized === 'tool' && previous !== undefined ? previous : normalized
+}
+
+function isNativeAssistantSettlement(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return value.type === 'assistant/message' || value.type === 'assistant/attempt'
 }
 
 function parseRecord(value: string | undefined): Record<string, unknown> | null {

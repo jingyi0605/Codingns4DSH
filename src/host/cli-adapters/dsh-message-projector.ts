@@ -9,6 +9,7 @@ import {
   CodingNsAgentEventNormalizer,
   type CodingNsNormalizedAgentEvent,
 } from './stream-normalizer.js'
+import type { CodingNsDshExternalToolMarker } from './dsh-tool-history.js'
 
 export interface CodingNsDshMessageProjectorOptions {
   readonly adapterId: string
@@ -87,8 +88,7 @@ export class CodingNsDshMessageProjector {
       case 'text-delta':
         return event.text === '' ? [] : [{ type: 'text-delta', index: 1, text: event.text }]
       case 'tool-event':
-        this.toolHistory.observe(event)
-        return []
+        return externalToolChunk(this.toolHistory.observe(event))
       case 'permission-request':
         await this.requestPermission(event)
         return []
@@ -96,7 +96,18 @@ export class CodingNsDshMessageProjector {
         await this.requestQuestions(event)
         return []
       case 'usage':
-        return [{ type: 'usage', usage: { inputTokens: event.inputTokens, outputTokens: event.outputTokens } }]
+        return [{
+          type: 'usage',
+          usage: {
+            inputTokens: event.inputTokens,
+            outputTokens: event.outputTokens,
+            ...(event.cacheReadTokens === undefined ? {} : { cacheReadTokens: event.cacheReadTokens }),
+            ...(event.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: event.cacheWriteTokens }),
+            ...(event.uncachedInputTokens === undefined ? {} : { uncachedInputTokens: event.uncachedInputTokens }),
+            ...(event.totalTokens === undefined ? {} : { totalTokens: event.totalTokens }),
+            ...(event.cacheHitRate === undefined ? {} : { cacheHitRate: event.cacheHitRate }),
+          },
+        }]
       case 'session-binding':
         return []
       case 'finish':
@@ -132,6 +143,21 @@ export class CodingNsDshMessageProjector {
     if (response === null) throw new Error('DSH 原生问题组件不可用或问题已取消')
     await responder(response)
   }
+}
+
+/**
+ * 外部工具已经由 Provider 执行，不能转成 DSH tool-call block；使用空 reasoning
+ * chunk 携带私有标记，只让 Client 的实时 Conversation 投影读取，不会进入模型
+ * 消息，也不会被 Agent Loop 再次执行。
+ */
+function externalToolChunk(marker: CodingNsDshExternalToolMarker | null): readonly CodingNsDshStreamChunk[] {
+  if (marker === null) return []
+  return [{
+    type: 'reasoning-delta',
+    index: 0,
+    text: '',
+    codingnsExternalTool: marker,
+  }]
 }
 
 function toDshFinishReason(reason: 'stop' | 'cancel' | 'error', failureMessage?: string): Record<string, unknown> {

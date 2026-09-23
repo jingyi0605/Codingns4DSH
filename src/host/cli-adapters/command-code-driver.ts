@@ -268,11 +268,11 @@ function commandCodeEventChunks(event: Record<string, unknown>, cancelled: boole
     if (tool !== null) chunks.push(tool)
   }
 
-  const usage = recordValue(event.usage)
+  const resultRecord = recordValue(event.result)
+  const usage = recordValue(event.usage) ?? recordValue(resultRecord?.usage)
   if (usage !== null) chunks.push(usageChunk(usage))
   if (type === 'result') {
-    const result = recordValue(event.result)
-    const finalText = textValue(event.finalText ?? result?.finalText ?? (typeof event.result === 'string' ? event.result : undefined) ?? event.output ?? event.text)
+    const finalText = textValue(event.finalText ?? resultRecord?.finalText ?? (typeof event.result === 'string' ? event.result : undefined) ?? event.output ?? event.text)
     if (finalText) chunks.push({ type: 'text-snapshot', text: finalText })
     chunks.push({ type: 'finish', reason: cancelled ? 'cancel' : 'stop' })
   }
@@ -364,8 +364,27 @@ function writeTranscript(path: string, input: CodingNsCliTurnInput): void {
 }
 
 function extractText(content: unknown): string { if (typeof content === 'string') return content; if (!Array.isArray(content)) return ''; return content.filter(isRecord).map((part) => typeof part.text === 'string' ? part.text : '').join('\n').trim() }
-function usageChunk(value: Record<string, unknown>): CodingNsAgentEvent { return { type: 'usage', inputTokens: numberValue(value.inputTokens), outputTokens: numberValue(value.outputTokens) } }
+function usageChunk(value: Record<string, unknown>): CodingNsAgentEvent {
+  const inputTokens = numberValue(value.inputTokens ?? value.input_tokens ?? value.prompt_tokens)
+  const outputTokens = numberValue(value.outputTokens ?? value.output_tokens ?? value.completion_tokens)
+  const cacheReadTokens = optionalNumberValue(value.cacheReadTokens ?? value.cache_read_tokens ?? value.cachedInputTokens ?? value.cached_input_tokens)
+  const cacheWriteTokens = optionalNumberValue(value.cacheWriteTokens ?? value.cache_write_tokens)
+  const cachedInputTokens = (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
+  return {
+    type: 'usage',
+    inputTokens,
+    outputTokens,
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    ...(cacheReadTokens === undefined && cacheWriteTokens === undefined ? {} : {
+      uncachedInputTokens: Math.max(0, inputTokens - cachedInputTokens),
+      totalTokens: inputTokens + outputTokens,
+    }),
+    ...(cacheReadTokens === undefined || inputTokens <= 0 || cacheReadTokens > inputTokens ? {} : { cacheHitRate: cacheReadTokens / inputTokens * 100 }),
+  }
+}
 function numberValue(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) ? value : 0 }
+function optionalNumberValue(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined }
 function safeId(value: string): string { return value.replace(/[^a-zA-Z0-9._-]+/gu, '_').slice(0, 96) || 'default' }
 function parseJson(value: string): Record<string, unknown> | null { try { const parsed: unknown = JSON.parse(value); return isRecord(parsed) ? parsed : null } catch { return null } }
 function readJson(path: string): Record<string, unknown> | null { if (!existsSync(path)) return null; try { const parsed: unknown = JSON.parse(readFileSync(path, 'utf8')); return isRecord(parsed) ? parsed : null } catch { return null } }

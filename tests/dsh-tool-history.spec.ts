@@ -52,6 +52,70 @@ test('公共工具投影层聚合生命周期并提取 Provider 文本块', () =
   assert.deepEqual(sink.results[0]?.result, { output: 'Found 2 items', isError: false })
 })
 
+test('公共工具投影层等待 assistant 落盘，并在工具独占终态兜底追加历史', async () => {
+  const calls: string[] = []
+  const session = {}
+  let onEvent: ((subject: unknown, event: unknown) => void) | undefined
+  let publishing = false
+  const bridge = {
+    supportsEvents: true,
+    get() { return session },
+    subscribe(handlers: { onEvent?: (subject: unknown, event: unknown) => void }) {
+      onEvent = handlers.onEvent
+      return () => { onEvent = undefined }
+    },
+    appendToolCall() {
+      if (publishing) throw new Error('Session 正在发布事件时禁止重入 append')
+      calls.push('tool/call')
+      return { sessionId: 'session-deferred', turn: 1, step: 1, callId: 'call-1', callSeq: 1 }
+    },
+    appendToolResult() {
+      calls.push('tool/result')
+      return true
+    },
+  }
+  const projector = new CodingNsDshToolHistoryProjector(bridge as never, 'session-deferred')
+  projector.observe({ type: 'tool-event', toolName: 'bash', callId: 'call-1', input: 'pwd', status: 'running' })
+  projector.observe({ type: 'tool-event', toolName: 'bash', callId: 'call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' })
+  projector.finalize('stop')
+
+  assert.deepEqual(calls, [])
+  publishing = true
+  onEvent?.(session, { type: 'assistant/message' })
+  publishing = false
+  await Promise.resolve()
+  assert.deepEqual(calls, ['tool/call', 'tool/result'])
+})
+
+test('公共工具投影层优先按通知顺序保存外部工具标记，不追加原生 call/result', () => {
+  const markers: Array<Record<string, unknown>> = []
+  const calls: string[] = []
+  const bridge = {
+    appendExternalToolEvent(_sessionId: string, marker: Record<string, unknown>) {
+      markers.push(marker)
+      return true
+    },
+    appendToolCall() {
+      calls.push('tool/call')
+      return null
+    },
+    appendToolResult() {
+      calls.push('tool/result')
+      return true
+    },
+  }
+  const projector = new CodingNsDshToolHistoryProjector(bridge as never, 'session-timeline')
+  assert.equal(projector.observe({ type: 'tool-event', toolName: 'bash', callId: 'bash-1', input: 'pwd', status: 'running' }), null)
+  assert.equal(projector.observe({ type: 'tool-event', toolName: 'bash', callId: 'bash-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' }), null)
+  projector.finalize('stop')
+
+  assert.deepEqual(markers.map((marker) => ({ phase: marker.phase, status: marker.status, output: marker.output })), [
+    { phase: 'start', status: 'running', output: undefined },
+    { phase: 'update', status: 'completed', output: '/workspace' },
+  ])
+  assert.deepEqual(calls, [])
+})
+
 test('公共工具投影层统一映射 edit_file 并生成 DSH diff 元数据', () => {
   const sink = createSink()
   const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'session-edit')

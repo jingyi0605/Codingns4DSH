@@ -140,6 +140,8 @@ export interface CodingNsCliMessage {
   readonly id?: string
   readonly role: 'user' | 'assistant' | 'system'
   readonly content: unknown
+  /** DSH 原生消息来源；插件上下文不能被当成人类输入再次发送给外部 Agent。 */
+  readonly source?: { readonly kind?: string; readonly plugin?: string; readonly form?: string }
 }
 
 /**
@@ -177,7 +179,18 @@ export type CodingNsAgentEvent =
   | { readonly type: 'text-delta'; readonly text: string }
   | { readonly type: 'text-snapshot'; readonly text: string }
   | CodingNsAgentToolEvent
-  | { readonly type: 'usage'; readonly inputTokens: number; readonly outputTokens: number }
+  | {
+      readonly type: 'usage'
+      /** Command Code 的 inputTokens 是包含缓存读写的完整输入。 */
+      readonly inputTokens: number
+      readonly outputTokens: number
+      readonly cacheReadTokens?: number
+      readonly cacheWriteTokens?: number
+      readonly uncachedInputTokens?: number
+      readonly totalTokens?: number
+      /** 缓存读取 / 完整输入，百分比取值 0 到 100。 */
+      readonly cacheHitRate?: number
+    }
   | { readonly type: 'finish'; readonly reason: 'stop' | 'cancel' | 'error' }
   | { readonly type: 'session-binding'; readonly providerSessionId: string; readonly rawStoreRef?: string }
   | {

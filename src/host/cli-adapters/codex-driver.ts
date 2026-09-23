@@ -102,8 +102,10 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       yield { type: 'session-binding', providerSessionId: session.providerSessionId }
       const eventQueue = createCodexTurnEventQueue()
       let activeTurnId: string | null = null
+      let turnStartResolved = false
+      const notificationsBeforeTurnStart: JsonRpcMessage[] = []
       let terminalReason: 'stop' | 'cancel' | 'error' | null = null
-      const onNotification = (message: JsonRpcMessage): void => {
+      const acceptNotification = (message: JsonRpcMessage): void => {
         if (!isCodexNotificationForTurn(message, session.threadId, activeTurnId)) return
         const turnId = readTurnId(message)
         if (turnId !== null) {
@@ -116,6 +118,16 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
           terminalReason = reason
           eventQueue.close()
         }
+      }
+      const onNotification = (message: JsonRpcMessage): void => {
+        // thread/resume 后，Codex 可能把旧回合的 item 通知迟到到达，并且
+        // 与本次 turn/start 的响应交错。响应返回前不能把这些通知当成当前回合，
+        // 否则旧工具历史会在流式界面被追加到当前消息末尾。
+        if (!turnStartResolved) {
+          notificationsBeforeTurnStart.push(message)
+          return
+        }
+        acceptNotification(message)
       }
       // 与父仓库 CodexRuntimeAdapter 一致：监听器必须先于 turn/start 注册，
       // 否则响应前到达的 turn/started 或文本通知也会丢失。
@@ -137,6 +149,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
           activeTurnId = responseTurnId
           session.turnId = responseTurnId
         }
+        turnStartResolved = true
+        for (const message of notificationsBeforeTurnStart.splice(0)) acceptNotification(message)
         // 某些 app-server 会直接在 turn/start 响应中返回终态。父仓库把它
         // 归一化成 turn/completed，这里复用同一规则，避免永久等待通知。
         const responseTerminal = buildCodexCompletionNotification(response, session.threadId)
@@ -386,6 +400,10 @@ function isCodexNotificationForTurn(message: JsonRpcMessage, threadId: string, t
   const notificationThreadId = readScopedId(params, ['threadId', 'thread_id'], 'thread')
   const notificationTurnId = readTurnId(message)
   if (notificationThreadId !== null && notificationThreadId !== threadId) return false
+  // 工具事件会直接写入 DSH 原生 Session。无 turnId 的工具通知无法证明属于
+  // 哪个 Codex 回合；把它追加到当前开放 step 只会伪造时间线，通常还会把
+  // thread/resume 的迟到历史固定到实时消息底部。普通文本仍保留旧版兼容。
+  if (notificationTurnId === null && isCodexToolNotification(message)) return false
   return turnId === null || notificationTurnId === null || notificationTurnId === turnId
 }
 
@@ -421,6 +439,17 @@ function isCodexToolEvent(method: string, type: string): boolean {
   if (method.includes('command') || method.includes('tool') || method.includes('agent')) return true
   const normalized = type.replace(/[_-]/gu, '').toLowerCase()
   return ['commandexecution', 'filechange', 'mcptoolcall', 'functioncall', 'customtoolcall', 'dynamictoolcall'].includes(normalized)
+}
+
+function isCodexToolNotification(message: JsonRpcMessage): boolean {
+  // 带 id 的消息是 Codex 发起的 JSON-RPC 服务请求（例如权限审批），
+  // 必须交给 serverRequestHandler，不能被当成实时工具通知过滤掉。
+  if (message.id !== undefined && message.id !== null) return false
+  const params = isRecord(message.params) ? message.params : null
+  const item = isRecord(params?.item) ? params.item : params
+  const method = typeof message.method === 'string' ? message.method : ''
+  const type = typeof item?.type === 'string' ? item.type : ''
+  return isCodexToolEvent(method, type)
 }
 
 function readId(value: unknown): string | null {

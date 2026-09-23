@@ -590,6 +590,79 @@ test('Codex 在 turn/start 响应先到时继续等待文本和完成通知', as
   driver.dispose()
 })
 
+test('Codex 不会把 turn/start 响应前迟到的旧回合工具事件带入当前流', async () => {
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-agent'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method === 'initialize') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        } else if (request.method === 'thread/resume') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'thread-order' } } })}\n`)
+        } else if (request.method === 'turn/start') {
+          // 模拟 thread/resume 后旧回合事件迟到，并在本次响应前插入队列。
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/commandExecution', params: { threadId: 'thread-order', item: { type: 'commandExecution', id: 'old-call', command: '旧命令' } } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/commandExecution', params: { threadId: 'thread-order', turnId: 'turn-current', item: { type: 'commandExecution', id: 'current-call', command: '当前命令' } } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'turn-current', status: 'inProgress' } } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'thread-order', turn: { id: 'turn-current', status: 'completed' } } })}\n`)
+        }
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-order', providerSessionId: 'thread-order', messages: [], prompt: '执行' })) chunks.push(chunk)
+
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'thread-order' },
+    { type: 'tool-event', toolName: 'command_execution', callId: 'current-call', input: '当前命令', status: 'running' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
+test('Codex 不会把 turn/start 响应后仍无 turnId 的工具事件追加到当前流', async () => {
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-agent'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method === 'initialize') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        } else if (request.method === 'thread/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'thread-after' } } })}\n`)
+        } else if (request.method === 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'turn-after', status: 'inProgress' } } })}\n`)
+          setImmediate(() => {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/commandExecution', params: { threadId: 'thread-after', item: { type: 'commandExecution', id: 'late-old-call', command: '历史命令' } } })}\n`)
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/commandExecution', params: { threadId: 'thread-after', turnId: 'turn-after', item: { type: 'commandExecution', id: 'current-call', command: '当前命令' } } })}\n`)
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'thread-after', turn: { id: 'turn-after', status: 'completed' } } })}\n`)
+          })
+        }
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-after', messages: [], prompt: '执行' })) chunks.push(chunk)
+
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'thread-after' },
+    { type: 'tool-event', toolName: 'command_execution', callId: 'current-call', input: '当前命令', status: 'running' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
 test('Codex 取消时使用 turn/start 响应中的 turnId 中断当前轮次', async () => {
   const requests: Array<{ method: string; params?: Record<string, unknown> }> = []
   const controller = new AbortController()

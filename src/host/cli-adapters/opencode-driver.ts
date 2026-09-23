@@ -118,15 +118,24 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       if (input.cwd !== undefined) this.stopManagedServer(input.cwd)
     }
     input.signal?.addEventListener('abort', abort, { once: true })
-    const eventStream = this.http.sse(`${server}/event`, { signal: streamController.signal })
+    const eventStream = this.http.sse(withOpenCodeDirectory(server, '/event', input.cwd), { signal: streamController.signal })
     const eventIterator = eventStream[Symbol.asyncIterator]()
     // 先调用 next() 让 SSE 请求真正建立，再发送 prompt，避免首个事件竞态丢失。
     let pendingEvent = eventIterator.next()
     let sendError: unknown = null
-    const send = this.sendPrompt(server, sessionId, input).catch((error: unknown) => { sendError = error; return null })
+    const send = this.sendPrompt(server, sessionId, input).catch((error: unknown) => {
+      sendError = error
+      // message 请求失败时，OpenCode 的全局 SSE 通常不会自行结束；主动中止，
+      // 否则调用方会一直等不到错误，只看到没有任何输出。
+      streamController.abort()
+      return null
+    })
     let emitted = false
     let finished = false
     const cumulative = new Map<string, number>()
+    const assistantMessageIds = new Set<string>()
+    const knownMessageIds = new Set<string>()
+    const pendingMessageParts = new Map<string, Record<string, unknown>[]>()
     try {
       if (createdSession || input.providerSessionId !== undefined) yield { type: 'session-binding', providerSessionId: sessionId }
       // sendPrompt 的返回体可能包含完整消息；SSE 仍然是首选，返回体作为兜底。
@@ -137,7 +146,35 @@ export class OpenCodeDriver implements CodingNsCliDriver {
           pendingEvent = eventIterator.next()
           const parsed = parseEvent(result.value)
           if (parsed === null) continue
-          const chunk = eventToChunk(parsed, cumulative)
+          const eventSession = eventSessionId(parsed)
+          // /event 是全局 SSE；没有会话字段的旧版事件仍允许通过，
+          // 但明确属于其他会话的事件绝不能结束或污染当前轮次。
+          if (eventSession !== undefined && eventSession !== sessionId) continue
+          const messageRole = readMessageRole(parsed)
+          if (messageRole !== null) {
+            knownMessageIds.add(messageRole.id)
+            if (messageRole.role === 'assistant') {
+              assistantMessageIds.add(messageRole.id)
+              const pending = pendingMessageParts.get(messageRole.id) ?? []
+              pendingMessageParts.delete(messageRole.id)
+              for (const pendingPart of pending) {
+                const chunk = eventToChunk(pendingPart, cumulative, assistantMessageIds)
+                if (chunk !== null) { emitted = true; yield chunk }
+              }
+            } else {
+              pendingMessageParts.delete(messageRole.id)
+            }
+            continue
+          }
+          const messageId = eventMessageId(parsed)
+          if (messageId !== undefined && !knownMessageIds.has(messageId)) {
+            const pending = pendingMessageParts.get(messageId) ?? []
+            pending.push(parsed)
+            pendingMessageParts.set(messageId, pending)
+            continue
+          }
+          if (messageId !== undefined && !assistantMessageIds.has(messageId)) continue
+          const chunk = eventToChunk(parsed, cumulative, assistantMessageIds)
           if (chunk !== null) {
             emitted = true
             yield chunk
@@ -145,11 +182,12 @@ export class OpenCodeDriver implements CodingNsCliDriver {
           if (isFinishedEvent(parsed, emitted)) { finished = true; break }
         }
       } catch (error) {
+        if (sendError !== null && !aborted) throw sendError
         if (!aborted) throw error
       }
       if (!finished && !aborted) {
         const response = await send
-        if (sendError !== null) throw sendError
+        if (sendError !== null && !aborted) throw sendError
         for (const chunk of responseChunks(response, cumulative)) { emitted = true; yield chunk }
       }
       if (aborted || input.signal?.aborted) yield { type: 'finish', reason: 'cancel' }
@@ -196,9 +234,10 @@ export class OpenCodeDriver implements CodingNsCliDriver {
 
   private async sendPrompt(server: string, sessionId: string, input: CodingNsCliTurnInput): Promise<unknown> {
     const body: Record<string, unknown> = { parts: [{ type: 'text', text: input.prompt }] }
-    if (!isProviderDefaultModel(input.modelId)) { body.model = input.modelId; body.modelID = input.modelId }
-    if (input.effortId) body.effort = input.effortId
-    const response = await this.http.json<unknown>(`${server}/session/${encodeURIComponent(sessionId)}/message`, {
+    const model = parseOpenCodeModel(input.modelId)
+    if (model !== null) body.model = model
+    if (input.effortId) body.variant = input.effortId
+    const response = await this.http.json<unknown>(withOpenCodeDirectory(server, `/session/${encodeURIComponent(sessionId)}/message`, input.cwd), {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), ...(input.signal === undefined ? {} : { signal: input.signal }),
     })
     if (response.status < 200 || response.status >= 300) throw new Error(`OpenCode message 请求失败（HTTP ${response.status}）`)
@@ -207,7 +246,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
 
   private async createSession(server: string, input: CodingNsCliTurnInput): Promise<string> {
     const body = { title: input.sessionId, ...(input.cwd === undefined ? {} : { directory: input.cwd }) }
-    const response = await this.http.json<unknown>(`${server}/session`, {
+    const response = await this.http.json<unknown>(withOpenCodeDirectory(server, '/session', input.cwd), {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), ...(input.signal === undefined ? {} : { signal: input.signal }),
     })
     const record = asRecord(response.data)
@@ -299,6 +338,19 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   }
 }
 
+function parseOpenCodeModel(modelId: string | undefined): { providerID: string; modelID: string } | null {
+  if (isProviderDefaultModel(modelId)) return null
+  const separator = modelId!.indexOf('/')
+  if (separator <= 0 || separator === modelId!.length - 1) return null
+  return { providerID: modelId!.slice(0, separator), modelID: modelId!.slice(separator + 1) }
+}
+
+function withOpenCodeDirectory(server: string, pathname: string, cwd: string | undefined): string {
+  const url = new URL(pathname, `${server.replace(/\/$/u, '')}/`)
+  if (cwd?.trim()) url.searchParams.set('directory', cwd.trim())
+  return url.toString()
+}
+
 function parseEvent(event: SseEvent): Record<string, unknown> | null {
   try {
     const value: unknown = JSON.parse(event.data)
@@ -308,10 +360,16 @@ function parseEvent(event: SseEvent): Record<string, unknown> | null {
   } catch { return null }
 }
 
-function eventToChunk(event: Record<string, unknown>, cumulative: Map<string, number>): CodingNsAgentEvent | null {
+function eventToChunk(
+  event: Record<string, unknown>,
+  cumulative: Map<string, number>,
+  assistantMessageIds?: ReadonlySet<string>,
+): CodingNsAgentEvent | null {
   const type = typeof event.type === 'string' ? event.type : ''
   const properties = asRecord(event.properties)
   const part = asRecord(event.part) ?? asRecord(properties?.part) ?? properties ?? event
+  const messageId = firstToolText(part.messageID, part.messageId, properties?.messageID, properties?.messageId)
+  if (messageId !== undefined && assistantMessageIds !== undefined && !assistantMessageIds.has(messageId)) return null
   if (isQuestionEvent(type)) {
     const requestId = firstToolText(part.id, part.requestID, part.requestId, properties?.id)
     const questions = readAgentQuestions(part.questions ?? properties?.questions ?? part)
@@ -332,14 +390,23 @@ function eventToChunk(event: Record<string, unknown>, cumulative: Map<string, nu
     }
   }
   const partType = typeof part.type === 'string' ? part.type : ''
-  const key = typeof part.id === 'string' ? part.id : `${type}:${partType}`
+  const partId = firstToolText(part.id, part.partID, properties?.partID, properties?.partId)
+  const key = partId ?? `${type}:${partType}`
+  const field = firstToolText(part.field, properties?.field)
+  const reasoning = partType === 'reasoning' || field === 'reasoning'
   const text = typeof part.text === 'string' ? part.text : typeof part.content === 'string' ? part.content : typeof part.delta === 'string' ? part.delta : null
   if (text !== null && (partType === 'text' || partType === 'reasoning' || type.includes('part'))) {
+    const eventDelta = typeof properties?.delta === 'string' ? properties.delta : undefined
+    if (eventDelta !== undefined) {
+      if (!eventDelta) return null
+      cumulative.set(key, (cumulative.get(key) ?? 0) + eventDelta.length)
+      return reasoning ? { type: 'reasoning-delta', text: eventDelta } : { type: 'text-delta', text: eventDelta }
+    }
     const previous = cumulative.get(key) ?? 0
-    const delta = text.slice(previous)
+    const snapshotDelta = text.slice(previous)
     cumulative.set(key, text.length)
-    if (!delta) return null
-    return partType === 'reasoning' ? { type: 'reasoning-delta', text: delta } : { type: 'text-delta', text: delta }
+    if (!snapshotDelta) return null
+    return reasoning ? { type: 'reasoning-delta', text: snapshotDelta } : { type: 'text-delta', text: snapshotDelta }
   }
   const toolName = firstToolText(part.tool, part.name)
   if (partType === 'tool' && toolName !== undefined) {
@@ -388,6 +455,38 @@ function responseChunks(value: unknown, cumulative: Map<string, number>): Coding
   if (record === null) return []
   const chunk = eventToChunk(record, cumulative)
   return chunk === null ? [] : [chunk]
+}
+
+function readMessageRole(event: Record<string, unknown>): { id: string; role: 'assistant' | 'user' } | null {
+  if (event.type !== 'message.updated') return null
+  const properties = asRecord(event.properties)
+  const info = asRecord(properties?.info) ?? properties
+  if (info === null) return null
+  const messageId = firstToolText(info.id, info.messageID, info.messageId)
+  if (messageId === undefined || (info?.role !== 'assistant' && info?.role !== 'user')) return null
+  return { id: messageId, role: info.role }
+}
+
+function eventMessageId(event: Record<string, unknown>): string | undefined {
+  const properties = asRecord(event.properties)
+  const part = asRecord(event.part) ?? asRecord(properties?.part)
+  return firstToolText(part?.messageID, part?.messageId, properties?.messageID, properties?.messageId)
+}
+
+function eventSessionId(event: Record<string, unknown>): string | undefined {
+  const properties = asRecord(event.properties)
+  const info = asRecord(properties?.info)
+  const part = asRecord(event.part) ?? asRecord(properties?.part)
+  return firstToolText(
+    event.sessionID,
+    event.sessionId,
+    properties?.sessionID,
+    properties?.sessionId,
+    info?.sessionID,
+    info?.sessionId,
+    part?.sessionID,
+    part?.sessionId,
+  )
 }
 
 function parseModelCatalog(value: unknown): CodingNsCliModelCatalog {
