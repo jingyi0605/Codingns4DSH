@@ -304,6 +304,7 @@ function attachFiber(row, props, wrappers = 0) {
 
 function sessionRow(tagName, sessionId, search) {
   const row = new FakeElement(tagName)
+  row.setAttribute('role', 'treeitem')
   const titleLine = new FakeElement('div')
   const status = new FakeElement('span')
   status.setAttribute('data-native-status', '')

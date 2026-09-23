@@ -40,7 +40,10 @@ export function startWorkspaceSessionLogoDom(
 
   const scan = (): void => {
     if (disposed || dom === undefined) return
-    for (const row of dom.querySelectorAll<HTMLElement>(WORKSPACE_SESSION_ROW_SELECTOR)) {
+    // DSH 原生工作区会话行和搜索结果都声明为 treeitem。只读这个稳定语义
+    // 标记，禁止把对话区里的按钮、复制按钮或适配器选择按钮当成会话行。
+    const rows = dom.querySelectorAll<HTMLElement>(WORKSPACE_SESSION_ROW_SELECTOR)
+    for (const row of rows) {
       const sessionId = resolveDshSessionId(row)
       if (sessionId === undefined) continue
       upsertSessionLogo(row, sessionId, visualForAdapter(adapterIdForSession(sessionId)), dom)

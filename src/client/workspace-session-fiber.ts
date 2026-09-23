@@ -4,7 +4,7 @@ interface ReactFiberLike {
   readonly return?: unknown
 }
 
-/** 从一个 DSH 0.1.6 treeitem 对应的 React Fiber 向上查找会话身份。 */
+/** 从 DSH 侧栏会话行对应的 React Fiber 向上查找会话身份。 */
 export function resolveDshSessionId(row: object): string | undefined {
   const carrier = row as Record<string, unknown>
   const fiberKey = Object.getOwnPropertyNames(row).find((key) => key.startsWith('__reactFiber$'))

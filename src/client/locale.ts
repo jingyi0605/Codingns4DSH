@@ -191,6 +191,8 @@ const en: Record<string, string> = {
   'cli.selectAgent': 'Select Agent',
   'workspace.showLogo': 'Show Agent logo',
   'workspace.logoDescription': 'Display the selected external Agent logo in native workspace session rows.',
+  'workspace.showArchivedSessions': 'Show archived workspace sessions',
+  'workspace.archivedSessionsDescription': 'Display an archived-session folder entry above each workspace\'s more-sessions button.',
 }
 
 const zh: Record<string, string> = {
@@ -368,6 +370,8 @@ const zh: Record<string, string> = {
   'cli.selectAgent': '选择 Agent',
   'workspace.showLogo': '显示 Agent Logo',
   'workspace.logoDescription': '在原生工作区会话行显示所选外部 Agent 的 Logo。',
+  'workspace.showArchivedSessions': '显示工作区归档会话',
+  'workspace.archivedSessionsDescription': '在每个工作区的“展开其余会话”按钮上方显示已归档的会话入口。',
 }
 
 /** 在当前 Client Cordis 作用域注册中英文词典。 */

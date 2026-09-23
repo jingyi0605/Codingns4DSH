@@ -41,6 +41,17 @@ export interface CodingNsNativeToolResult {
   readonly meta?: unknown
 }
 
+/** 外部 Agent 工具在 DSH Session 中的只读时间线标记。 */
+export interface CodingNsNativeExternalToolEvent {
+  readonly phase: 'start' | 'update'
+  readonly callId: string
+  readonly name: string
+  readonly arguments: string
+  readonly status: 'running' | 'completed' | 'failed'
+  readonly output?: string
+  readonly error?: string
+}
+
 export type CodingNsNativeApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
 
 /** 公共消息投影层交给 DSH 原生权限服务的请求。 */
@@ -72,6 +83,8 @@ export interface CodingNsNativeWorkspaceController {
 
 export interface CodingNsNativeSessionBridge {
   readonly available: boolean
+  /** 当前 Host 是否提供可接收 Session 事件的事件总线。 */
+  readonly supportsEvents: boolean
   readonly store: CodingNsNativeSessionStore | undefined
   readonly controller: CodingNsNativeSessionController | undefined
   readonly workspaceController?: CodingNsNativeWorkspaceController
@@ -92,6 +105,8 @@ export interface CodingNsNativeSessionBridge {
   appendToolCall?(sessionId: string, call: CodingNsNativeToolCall): CodingNsNativeToolCallHandle | null
   /** 追加与 appendToolCall 配对的只读结果；不会再次执行工具。 */
   appendToolResult?(handle: CodingNsNativeToolCallHandle, result: CodingNsNativeToolResult): boolean
+  /** 追加不进入模型消息面的外部工具时间线标记。 */
+  appendExternalToolEvent?(sessionId: string, event: CodingNsNativeExternalToolEvent): boolean
   /** 使用 DSH 原生 approval 组件请求一次权限决定；服务不可用时拒绝。 */
   requestApproval?(sessionId: string, request: CodingNsNativeApprovalRequest): Promise<CodingNsNativeApprovalOutcome>
   /** 使用 DSH 原生 userQuestions 组件提问；服务不可用或取消时返回 null。 */
@@ -128,6 +143,7 @@ export function createCodingNsNativeSessionBridge(ctx: Context): CodingNsNativeS
     get available() {
       return store !== undefined || controller !== undefined || currentWorkspaceController() !== undefined
     },
+    supportsEvents: on !== undefined,
     store,
     controller,
     ...(workspaceController === undefined ? {} : { workspaceController }),
@@ -201,6 +217,26 @@ export function createCodingNsNativeSessionBridge(ctx: Context): CodingNsNativeS
         sourceEventSeqs: [handle.callSeq],
       })
       return true
+    },
+    appendExternalToolEvent(sessionId, externalTool) {
+      const session = appendableSession(store?.get(sessionId))
+      const position = session === null ? null : activeStep(session)
+      if (session === null || position === null) return false
+      try {
+        // assistant/attempt 是 DSH 已定义的非消息事件，不会进入模型上下文或原生工具执行器。
+        // 额外字段由 Session 原样持久化，客户端 Definition 只把它当作 CodingNS 展示标记。
+        session.append('assistant/attempt', {
+          ...position,
+          stream: [],
+          codingnsExternalTool: {
+            source: 'codingns-external-tool',
+            ...externalTool,
+          },
+        })
+        return true
+      } catch {
+        return false
+      }
     },
     async requestApproval(sessionId, request) {
       const agent = nativeAgent(ctx, sessionId)

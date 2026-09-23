@@ -16,12 +16,12 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot }
     ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS
   const disabled = !enabled || snapshot.status === 'loading' || !snapshot.writable
 
-  const updateLogo = (showAdapterLogo: boolean): void => {
+  const updateSetting = (field: 'showAdapterLogo' | 'showArchivedSessions', nextValue: boolean): void => {
     setWriteError(null)
     void services.settings.mutate([{
       op: 'set',
-      path: [CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD, 'showAdapterLogo'],
-      value: showAdapterLogo,
+      path: [CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD, field],
+      value: nextValue,
     }]).catch((cause: unknown) => {
       setWriteError(cause instanceof Error ? cause.message : String(cause))
     })
@@ -50,7 +50,24 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot }
         'aria-label': t('workspace.showLogo'),
         checked: value.showAdapterLogo,
         disabled,
-        onChange: (event: { currentTarget: { checked: boolean } }) => updateLogo(event.currentTarget.checked),
+        onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('showAdapterLogo', event.currentTarget.checked),
+        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
+      }),
+    ),
+    createElement('label', {
+      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
+    },
+      createElement('span', { style: { minWidth: 0 } },
+        createElement('strong', { style: { display: 'block', fontSize: 14 } }, t('workspace.showArchivedSessions')),
+        createElement('span', { style: { display: 'block', marginTop: 3, color: dshThemeColor.labelTertiary, fontSize: 12 } }, t('workspace.archivedSessionsDescription')),
+      ),
+      createElement('input', {
+        type: 'checkbox',
+        role: 'switch',
+        'aria-label': t('workspace.showArchivedSessions'),
+        checked: value.showArchivedSessions,
+        disabled,
+        onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('showArchivedSessions', event.currentTarget.checked),
         style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
       }),
     ),
