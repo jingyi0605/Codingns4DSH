@@ -121,11 +121,15 @@ test('归档入口位于工作区会话末尾并跟随工作区折叠', async ()
     value: { memoizedProps: { group: { workspaceId: 'workspace-a' } } },
   })
   const sessionOne = new FakeArchiveElement('div')
+  sessionOne.setAttribute('role', 'treeitem')
   sessionOne.textContent = '会话一'
   const sessionTwo = new FakeArchiveElement('div')
+  sessionTwo.setAttribute('role', 'treeitem')
   sessionTwo.textContent = '会话二'
+  const more = new FakeArchiveElement('button')
+  more.textContent = '展开其余 27 个会话'
   const group = new FakeArchiveElement('section')
-  group.append(header, sessionOne, sessionTwo)
+  group.append(header, sessionOne, sessionTwo, more)
   const document = new FakeArchiveDocument(group)
   const controller = startWorkspaceSessionArchiveDom({
     document,
@@ -144,18 +148,28 @@ test('归档入口位于工作区会话末尾并跟随工作区折叠', async ()
   })
 
   await nextArchiveTurn()
-  const entry = group.children[group.children.length - 1]
+  const entry = group.children[group.children.length - 2]
   assert.equal(entry.getAttribute(WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE), '')
-  assert.equal(group.children.indexOf(entry), group.children.length - 1)
+  assert.equal(group.children.indexOf(more), group.children.length - 1)
   assert.equal(entry.hidden, false)
 
   header.setAttribute('aria-expanded', 'false')
   controller.refresh()
   await nextArchiveTurn()
-  const collapsedEntry = group.children[group.children.length - 1]
+  const collapsedEntry = group.children[group.children.length - 2]
   assert.equal(collapsedEntry.getAttribute(WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE), '')
   assert.equal(collapsedEntry.hidden, true)
   assert.equal(collapsedEntry.style.display, 'none')
+  assert.equal(group.children.indexOf(more), group.children.length - 1)
+
+  more.remove()
+  header.setAttribute('aria-expanded', 'true')
+  controller.refresh()
+  await nextArchiveTurn()
+  const shortListEntry = group.children[group.children.length - 1]
+  assert.equal(shortListEntry.getAttribute(WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE), '')
+  assert.equal(group.children.indexOf(shortListEntry), group.children.length - 1)
+  assert.equal(shortListEntry.hidden, false)
   controller.dispose()
 })
 
@@ -176,6 +190,12 @@ class FakeArchiveElement {
 
   setAttribute(name, value) { this.attributes.set(name, value) }
   getAttribute(name) { return this.attributes.get(name) ?? null }
+  querySelectorAll(selector) {
+    const nodes = collectArchiveNodes(this)
+    if (selector === 'button') return nodes.filter((node) => node.tagName === 'BUTTON')
+    if (selector === '[role="treeitem"]') return nodes.filter((node) => node.getAttribute('role') === 'treeitem')
+    return []
+  }
   append(...children) { for (const child of children) this.appendChild(child) }
   appendChild(child) { child.parentElement = this; this.children.push(child); return child }
   insertBefore(child, before) {

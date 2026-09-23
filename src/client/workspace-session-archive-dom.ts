@@ -109,6 +109,7 @@ export function startWorkspaceSessionArchiveDom(
           items,
           dom,
           remote,
+          workspaceId,
           expandedByWorkspace.get(workspaceId) ?? true,
           () => { void refreshData().then(() => openArchiveModal(snapshot.byWorkspace.get(workspaceId) ?? [], dom, remote, () => { void refreshData() })) },
         )) insertedWorkspaceIds.add(workspaceId)
@@ -125,6 +126,7 @@ export function startWorkspaceSessionArchiveDom(
           items,
           dom,
           remote,
+          workspaceId,
           header.getAttribute('aria-expanded') !== 'false',
           () => { void refreshData().then(() => openArchiveModal(snapshot.byWorkspace.get(workspaceId) ?? [], dom, remote, () => { void refreshData() })) },
         )) insertedWorkspaceIds.add(workspaceId)
@@ -349,13 +351,16 @@ function insertArchiveEntry(
   items: readonly ArchivedSessionItem[],
   dom: Pick<Document, 'body' | 'createElement' | 'querySelector'>,
   remote: CodingNsRemote,
+  workspaceId: string,
   expanded: boolean,
   onOpen: () => void,
 ): boolean {
-  const parent = moreButton.parentElement
-  if (parent === null) return false
+  const container = findWorkspaceContainer(moreButton, workspaceId)
+  if (container === null) return false
   const entry = createArchiveEntry(items, dom, expanded, onOpen)
-  parent.insertBefore(entry, moreButton)
+  const anchor = directChildFor(container, moreButton)
+  if (anchor === null) return false
+  container.insertBefore(entry, anchor)
   return true
 }
 
@@ -364,16 +369,45 @@ function insertArchiveEntryAfterHeader(
   items: readonly ArchivedSessionItem[],
   dom: Pick<Document, 'body' | 'createElement' | 'querySelector'>,
   remote: CodingNsRemote,
+  workspaceId: string,
   expanded: boolean,
   onOpen: () => void,
 ): boolean {
-  const parent = header.parentElement
-  if (parent === null) return false
+  const container = findWorkspaceContainer(header, workspaceId)
+  if (container === null) return false
   const entry = createArchiveEntry(items, dom, expanded, onOpen)
-  const moreButton = [...parent.children].find(isMoreSessionButton)
-  if (moreButton !== undefined) parent.insertBefore(entry, moreButton)
-  else parent.appendChild(entry)
+  const moreButton = [...container.querySelectorAll<HTMLElement>('button')].find(isMoreSessionButton)
+  if (moreButton !== undefined) {
+    const anchor = directChildFor(container, moreButton)
+    if (anchor !== null) container.insertBefore(entry, anchor)
+    else return false
+  } else container.appendChild(entry)
   return true
+}
+
+function findWorkspaceContainer(anchor: HTMLElement, workspaceId: string): HTMLElement | null {
+  let current = anchor.parentElement
+  let fallback: HTMLElement | null = null
+  for (let depth = 0; depth < 8 && current !== null; depth += 1) {
+    fallback = current
+    const hasMoreButton = [...current.querySelectorAll<HTMLElement>('button')].some((button) => {
+      return isMoreSessionButton(button) && (resolveWorkspaceId(button) === workspaceId || button === anchor)
+    })
+    const hasSessionRow = [...current.querySelectorAll<HTMLElement>('[role="treeitem"]')].some((row) => {
+      return row !== anchor && row.getAttribute('aria-expanded') === null
+    })
+    if (hasMoreButton || hasSessionRow) return current
+    current = current.parentElement
+  }
+  return fallback
+}
+
+function directChildFor(container: HTMLElement, descendant: HTMLElement): HTMLElement | null {
+  let current: HTMLElement = descendant
+  while (current.parentElement !== null && current.parentElement !== container) {
+    current = current.parentElement
+  }
+  return current.parentElement === container ? current : null
 }
 
 function createArchiveEntry(
@@ -406,8 +440,12 @@ function createArchiveEntry(
 }
 
 function isMoreSessionButton(button: Element): boolean {
-  const label = `${button.textContent ?? ''} ${button.getAttribute('aria-label') ?? ''}`
-  return MORE_SESSION_PATTERN.test(label)
+  const label = `${button.textContent ?? ''} ${button.getAttribute('aria-label') ?? ''}`.replace(/\s+/gu, ' ')
+  if (MORE_SESSION_PATTERN.test(label)) return true
+  // React 文本节点可能被拆分或带换行，按三个稳定语义片段兜底识别。
+  return /(?:展开|显示|expand|show)/iu.test(label)
+    && /(?:其余|更多|remaining|more)/iu.test(label)
+    && /(?:会话|sessions?)/iu.test(label)
 }
 
 function removeArchiveEntries(dom: Pick<Document, 'querySelectorAll'>): void {
