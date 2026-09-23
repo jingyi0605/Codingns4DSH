@@ -101,4 +101,5 @@ declare const process: {
   readonly execPath: string
   readonly env: Record<string, string | undefined>
   cwd(): string
+  kill(pid: number, signal?: string): void
 }

@@ -1,0 +1,125 @@
+import assert from 'node:assert/strict'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+import { DebugWorkspaceService } from '../dist/host/debug.js'
+import { parseDebugConfig } from '../dist/shared/index.js'
+
+function config() {
+  return {
+    version: 1,
+    profiles: [{
+      id: 'frontend', name: '前端', cwdRelative: '.', command: 'pnpm', args: ['dev'], env: {},
+      shell: { profileId: 'bash', path: '/bin/bash', args: ['-i'], name: 'bash' },
+      runtimeType: 'local-pty', port: 5173, proxy: { enabled: true },
+    }],
+  }
+}
+
+function fakeTerminal() {
+  const calls: { profile?: unknown; launch?: unknown } = {}
+  const instance = { id: 'instance-1', workspaceId: 'workspace-a', profileId: 'frontend', terminalId: 'terminal-1', runtimeSessionKey: null, state: 'running', pid: 42, resolvedCommand: { command: 'pnpm', args: ['dev'], cwd: '/workspace' }, exitCode: null, startedAt: new Date().toISOString(), stoppedAt: null }
+  return {
+    calls,
+    service: {
+      async createProfile(value: unknown) { calls.profile = value; return value },
+      async launch(value: unknown) { calls.launch = value; return { instance, terminal: { id: 'terminal-1' } } },
+      listInstances() { return [instance] },
+      getInstance() { return instance },
+      async stop() { return { ...instance, state: 'exited' } },
+    } as never,
+  }
+}
+
+test('Spec003 配置拒绝越界路径和秘密环境变量', () => {
+  assert.throws(() => parseDebugConfig({ ...config(), profiles: [{ ...config().profiles[0], cwdRelative: '../outside' }] }), /相对路径/u)
+  assert.throws(() => parseDebugConfig({ ...config(), profiles: [{ ...config().profiles[0], env: { API_TOKEN: 'secret' } }] }), /秘密/u)
+})
+
+test('Spec003 读取配置并把启动参数交给已有 PTY 服务', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-debug-'))
+  try {
+    const terminal = fakeTerminal()
+    const service = new DebugWorkspaceService({ resolveWorkspaceRoot: () => root, terminalProcesses: terminal.service })
+    await service.saveConfig('workspace-a', config())
+    const loaded = await service.getConfig('workspace-a')
+    assert.equal(loaded.profiles[0]?.port, 5173)
+    const result = await service.launch({ workspaceId: 'workspace-a', profileId: 'frontend', cols: 80, rows: 24 })
+    assert.equal(result.instance.id, 'instance-1')
+    assert.equal((terminal.calls.profile as { command: string }).command, 'pnpm')
+    assert.deepEqual(terminal.calls.launch, { workspaceId: 'workspace-a', profileId: 'frontend', cols: 80, rows: 24 })
+    assert.match(await readFile(join(root, '.codingns', 'debug.json'), 'utf8'), /"version": 1/u)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Spec003 端口身份变化时拒绝结束，身份一致时才结束', async () => {
+  const observations = [
+    { pid: 100, startToken: 'start-a', command: 'node server.js', cwd: '/workspace' },
+    { pid: 101, startToken: 'start-b', command: 'node other.js', cwd: '/workspace' },
+    { pid: 101, startToken: 'start-b', command: 'node other.js', cwd: '/workspace' },
+    { pid: 101, startToken: 'start-b', command: 'node other.js', cwd: '/workspace' },
+  ]
+  const terminated: number[] = []
+  const inspector = {
+    async inspect() { return observations.shift() ?? null },
+    async terminate(value: { pid: number }) { terminated.push(value.pid) },
+  }
+  const root = await mkdtemp(join(tmpdir(), 'dsh-debug-'))
+  try {
+    const service = new DebugWorkspaceService({ resolveWorkspaceRoot: () => root, terminalProcesses: fakeTerminal().service, portInspector: inspector })
+    await service.saveConfig('workspace-a', config())
+    const first = await service.checkPort('workspace-a', 'frontend')
+    await assert.rejects(() => service.terminatePort('workspace-a', first.id), /已变化/u)
+    const second = await service.checkPort('workspace-a', 'frontend')
+    const stopped = await service.terminatePort('workspace-a', second.id)
+    assert.equal(stopped.listening, false)
+    assert.deepEqual(terminated, [101])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Spec003 代理绑定必须引用正在运行实例和已监听端口', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-debug-'))
+  try {
+    const terminal = fakeTerminal()
+    const enabled: unknown[] = []
+    const proxy = {
+      async enable(input: unknown) { enabled.push(input); return { id: 'binding-1', slug: 'abc123', url: '/proxy/abc123', ...(input as object) } },
+      async disable() {},
+      get() { return null },
+    }
+    const service = new DebugWorkspaceService({
+      resolveWorkspaceRoot: () => root,
+      terminalProcesses: terminal.service,
+      portInspector: { async inspect() { return { pid: 42, startToken: 'x', command: null, cwd: null } }, async terminate() {} },
+      proxyService: proxy,
+    })
+    await service.saveConfig('workspace-a', config())
+    const binding = await service.enableProxy('workspace-a', 'frontend', 'instance-1')
+    assert.equal(binding.slug, 'abc123')
+    assert.deepEqual(enabled, [{ workspaceId: 'workspace-a', profileId: 'frontend', instanceId: 'instance-1', port: 5173 }])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Spec003 端口被其他进程复用时拒绝创建代理', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-debug-'))
+  try {
+    const terminal = fakeTerminal()
+    const service = new DebugWorkspaceService({
+      resolveWorkspaceRoot: () => root,
+      terminalProcesses: terminal.service,
+      portInspector: { async inspect() { return { pid: 99, startToken: 'other', command: null, cwd: null } }, async terminate() {} },
+      proxyService: { async enable() { throw new Error('不应调用代理') }, async disable() {}, get() { return null } },
+    })
+    await service.saveConfig('workspace-a', config())
+    await assert.rejects(() => service.enableProxy('workspace-a', 'frontend', 'instance-1'), /当前运行实例/u)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

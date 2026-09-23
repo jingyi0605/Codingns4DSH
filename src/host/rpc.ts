@@ -57,6 +57,9 @@ const CODINGNS_RPC_ENDPOINTS = [
   'terminal/status',
   'terminalProcess/profile/list', 'terminalProcess/profile/create', 'terminalProcess/profile/delete',
   'terminalProcess/launch', 'terminalProcess/runtime/list', 'terminalProcess/runtime/get', 'terminalProcess/runtime/stop',
+  'debug/config/get', 'debug/config/save', 'debug/profile/list', 'debug/profile/launch',
+  'debug/runtime/get', 'debug/runtime/list', 'debug/runtime/stop',
+  'debug/port/check', 'debug/port/terminate', 'debug/proxy/get', 'debug/proxy/enable', 'debug/proxy/disable',
   'lanAccessDsh/addresses', 'lanAccessDsh/detect', 'lanAccessDsh/get', 'lanAccessDsh/settings/get', 'lanAccessDsh/settings/set', 'lanAccessDsh/start', 'lanAccessDsh/stop',
   'cli/catalog', 'cli/models', 'cli/adapter/set', 'cli/session/get', 'cli/session/set', 'cli/session/list', 'cli/session/adapter-map', 'cli/session/archive', 'cli/session/steer', 'cli/session/follow-up', 'cli/session/interrupt', 'cli/subscription',
 ] as const

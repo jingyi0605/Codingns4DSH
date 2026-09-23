@@ -79,6 +79,10 @@ export type {
 export type {
   CliSubscriptionUsage,
   CliSubscriptionWindow,
+  Sub2ApiDailyUsage,
+  Sub2ApiModelUsage,
+  Sub2ApiUsage,
+  Sub2ApiUsagePoint,
 } from './contracts/subscription.js'
 export type {
   PeerHostRecord,
@@ -131,6 +135,15 @@ export type {
   TerminalOwnerScope,
   TerminalRecordIdentity,
 } from './contracts/terminal.js'
+export {
+  EMPTY_DEBUG_CONFIG,
+  parseDebugConfig,
+  type DebugConfig,
+  type DebugProfile,
+  type DebugProxyConfig,
+  type DebugRuntimeType,
+  type DebugShell,
+} from './contracts/debug-config.js'
 export type {
   TerminalLaunchProfile,
   TerminalProcessInstance,

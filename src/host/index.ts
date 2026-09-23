@@ -15,6 +15,7 @@ import { CodingNsRpcTable } from './rpc-table.js'
 import { registerCodingNsSettings } from './settings.js'
 import { createCodingNsNativeSessionBridge } from './native-session-bridge.js'
 import { installTerminalController } from './terminal/startup.js'
+import { DebugWorkspaceService } from './debug.js'
 
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
@@ -35,8 +36,14 @@ export function apply(ctx?: Context): void {
       events: { on: hostCtx.on.bind(hostCtx) },
       nativeSessions: createCodingNsNativeSessionBridge(hostCtx),
       terminalProcesses: terminal.processService,
+      resolveWorkspaceRoot: (workspaceId) => resolveWorkspaceRoot(hostCtx, workspaceId),
     }
-    const registry = new FeatureRegistry<CodingNsHostServices>(services)
+    const debug = new DebugWorkspaceService({
+      resolveWorkspaceRoot: (workspaceId) => resolveWorkspaceRoot(hostCtx, workspaceId),
+      terminalProcesses: terminal.processService,
+    })
+    const servicesWithDebug: CodingNsHostServices = { ...services, debug }
+    const registry = new FeatureRegistry<CodingNsHostServices>(servicesWithDebug)
     registry.registerMany(createHostFeatures({
       terminalStatus: {
         controllerMode: terminal.mode,
@@ -90,6 +97,15 @@ export type { CodingNsHostServices } from './features/index.js'
 export { CodingNsSettingsSchema, registerCodingNsSettings } from './settings.js'
 export { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler, registerCodingNsRpc } from './rpc.js'
 export {
+  DebugWorkspaceService,
+  NodeDebugPortInspector,
+  type DebugPortCheck,
+  type DebugPortInspector,
+  type DebugPortProcess,
+  type DebugProxyBinding,
+  type DebugProxyService,
+} from './debug.js'
+export {
   CodingNsRpcError,
   CodingNsRpcTable,
   type CodingNsRpcHandler,
@@ -110,7 +126,10 @@ export {
   ProviderSubscriptionService,
   CodexSubscriptionService,
   ClaudeCodeSubscriptionService,
+  Sub2ApiUsageService,
   OpenCodeSubscriptionService,
+  type Sub2ApiSource,
+  type Sub2ApiUsageOptions,
 } from './cli-adapters/provider-subscription.js'
 export { ClaudeCodeDriver } from './cli-adapters/claude-driver.js'
 export { KimiCliDriver } from './cli-adapters/kimi-driver.js'
