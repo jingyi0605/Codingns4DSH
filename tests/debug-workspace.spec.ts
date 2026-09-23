@@ -136,13 +136,14 @@ test('Spec003 内部代理只转发已绑定回环服务并过滤升级头', asy
       assert.equal(init?.method, 'GET')
       const headers = new Headers(init?.headers)
       assert.equal(headers.get('connection'), null)
-      return new Response('ok', { status: 200, headers: { 'content-type': 'text/event-stream', connection: 'close' } })
+      return new Response('ok', { status: 200, headers: { 'content-type': 'text/event-stream', connection: 'close', location: '/login' } })
     }) as typeof fetch
     const response = await service.handleProxyRequest(new Request(`http://dsh${binding.url}&path=${encodeURIComponent('/events?x=1')}`, { headers: { connection: 'keep-alive' } }))
     assert.equal(response.status, 200)
     assert.equal(await response.text(), 'ok')
     assert.equal(target, 'http://127.0.0.1:5173/events?x=1')
     assert.equal(response.headers.get('connection'), null)
+    assert.match(response.headers.get('location') ?? '', /path=%2Flogin/u)
   } finally {
     globalThis.fetch = originalFetch
     await rm(root, { recursive: true, force: true })

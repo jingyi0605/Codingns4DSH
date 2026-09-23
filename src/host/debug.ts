@@ -140,6 +140,7 @@ export class DebugWorkspaceService {
     }
     await this.portInspector.terminate(current)
     this.checks.delete(checkId)
+    this.revokeBindings(workspaceId, check.profileId, check.port)
     return { ...check, listening: false, process: null, checkedAt: new Date().toISOString() }
   }
 
@@ -217,6 +218,14 @@ export class DebugWorkspaceService {
     return normalize(root)
   }
 
+  private revokeBindings(workspaceId: string, profileId: string, port: number): void {
+    for (const binding of this.bindings.values()) {
+      if (binding.workspaceId !== workspaceId || binding.profileId !== profileId || binding.port !== port) continue
+      this.bindings.delete(binding.id)
+      this.bindingProcesses.delete(binding.id)
+    }
+  }
+
   private configFilename(workspaceId: string): string { return join(this.workspaceRoot(workspaceId), '.codingns', 'debug.json') }
 }
 
@@ -226,7 +235,7 @@ function isUpgradeRequest(headers: Headers): boolean { return headers.get('upgra
 
 function rewriteLocation(location: string, proxyUrl: string): string {
   try {
-    const parsed = new URL(location)
+    const parsed = new URL(location, 'http://127.0.0.1')
     if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') return location
     return `${proxyUrl}&path=${encodeURIComponent(`${parsed.pathname}${parsed.search}`)}`
   } catch { return location }
