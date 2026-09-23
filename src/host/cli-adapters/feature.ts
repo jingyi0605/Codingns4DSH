@@ -11,6 +11,8 @@ import { OpenCodeDriver } from './opencode-driver.js'
 import { CodingNsCliAdapterRegistry } from './registry.js'
 import { CodingNsCliSessionStore } from './session-store.js'
 import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
+import { CommandCodeSubscriptionService } from './command-code-subscription.js'
+import { ProviderSubscriptionService } from './provider-subscription.js'
 import type { CodingNsHostServices } from '../features/types.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
@@ -23,6 +25,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       runtime: 'host',
     },
     start(context) {
+      const commandCodeSubscription = new CommandCodeSubscriptionService()
+      const subscriptions = new ProviderSubscriptionService({ commandCode: commandCodeSubscription })
       const sessionStore = new CodingNsCliSessionStore(context.services.settings === undefined ? {} : { settings: context.services.settings })
       const registry = options.registry ?? new CodingNsCliAdapterRegistry([
         new CommandCodeDriver(),
@@ -70,6 +74,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           case 'session/steer': return registry.steer(readSessionId(payload), readPrompt(payload), false)
           case 'session/follow-up': return registry.steer(readSessionId(payload), readPrompt(payload), true)
           case 'session/interrupt': return registry.interrupt(readSessionId(payload))
+          case 'subscription': return subscriptions.read(readSubscriptionAdapterId(payload))
           default: throw new Error(`未知 CLI RPC: cli/${action}`)
         }
       }))
@@ -139,6 +144,12 @@ function readAdapterId(value: unknown): string {
   return record.adapterId.trim()
 }
 
+function readSubscriptionAdapterId(value: unknown): string {
+  const record = asRecord(value)
+  if (record === null || record.adapterId === undefined) return 'command-code'
+  return readAdapterId(value)
+}
+
 function readSessionId(value: unknown): string {
   const record = asRecord(value)
   if (typeof record?.sessionId !== 'string' || record.sessionId.trim() === '') throw new Error('sessionId 不能为空')
@@ -186,8 +197,19 @@ async function setAdapterEnabled(
 }
 
 function extractPrompt(messages: readonly CodingNsCliMessage[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) if (messages[index]?.role === 'user') return extractText(messages[index]!.content)
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message !== undefined && isHumanUserMessage(message)) return extractText(message.content)
+  }
   return ''
+}
+
+function isHumanUserMessage(message: CodingNsCliMessage): boolean {
+  if (message.role !== 'user') return false
+  // 旧测试和旧调用方没有 source，保留其兼容语义；有 source 时只接受真实用户消息。
+  if (message.source === undefined) return true
+  if (!isRecord(message.source)) return false
+  return message.source.kind === undefined || message.source.kind === 'user'
 }
 
 function extractText(content: unknown): string {

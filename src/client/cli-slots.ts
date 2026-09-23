@@ -6,6 +6,7 @@ import { adapterCatalogWithDsh, callCliRpc, findModel, firstModel } from './cli-
 import { providerIconUrl } from './provider-icons.js'
 import { publishSessionAdapter } from './session-adapter-cache.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
+import { registerSubscriptionSlot } from './subscription-slot.js'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
@@ -129,7 +130,9 @@ export function registerCliConversationSlots(slots: SlotRegistry, rpc: CodingNsR
     label: t('cli.modelSelector'),
     inject: (sessionId: string) => ({ rpc, sessionId, locale }),
   }, ModelSlot))
+  const disposeSubscription = registerSubscriptionSlot(slots, rpc)
   return () => {
+    disposeSubscription()
     disposeModel()
     disposeAgent()
   }

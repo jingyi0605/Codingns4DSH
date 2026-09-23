@@ -19,8 +19,12 @@ export interface CodingNsRpcClient {
 export interface CodingNsClientServices {
   readonly settings: SettingsScope<CodingNsSettings>
   readonly rpc: CodingNsRpcClient
+  /** DSH Typert Remote；归档会话模块只通过运行时探测调用可选方法。 */
+  readonly remote?: unknown
   /** DSH 语言运行时；所有 Client 文案都从 CodingNS 命名空间读取。 */
   readonly locale: CodingNsLocale
+  /** DSH 对话装配服务；用于注册不写入 Session 的流式临时节点。 */
+  readonly uiConversation?: unknown
   /** 对话工具栏 Slot 服务；测试和非 Web 宿主可以不提供。 */
   readonly slots?: SlotRegistry
 }

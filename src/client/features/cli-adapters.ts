@@ -10,6 +10,7 @@ import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
 import { archiveCliSession, callCliRpc, errorMessage, listCliSessions, restoreCliSession } from '../cli-catalog.js'
 import { dshButtonStyle, dshFormRootStyle, dshPopupSurfaceStyle, dshThemeColor } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
+import { registerExternalToolStreamUi } from '../external-tool-stream.js'
 
 /** 外部 Agent 集成模块。Agent 进程在 Host 运行，浏览器只读取目录和状态。 */
 export const cliAdaptersFeature: CodingNsClientFeatureModule = {
@@ -31,6 +32,7 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
   start: async (context) => {
     const slots = context.services.slots
     if (slots === undefined) return
+    context.resources.add(registerExternalToolStreamUi(context.services))
     // CLI Slot 带有浏览器图片资源，启用模块时再加载，避免 Node 侧读取 Client 元数据时解析图片。
     const { registerCliConversationSlots } = await import('../cli-slots.js')
     const disposeSlots = registerCliConversationSlots(slots, context.services.rpc, context.services.locale)
