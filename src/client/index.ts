@@ -8,6 +8,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import './provider-icon-assets.js'
 import { FeatureRegistry } from '../features/registry.js'
 import {
   CODINGNS_SETTINGS_NAMESPACE,

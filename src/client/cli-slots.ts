@@ -4,6 +4,7 @@ import type { CodingNsCliAdapterDescriptor, CodingNsCliModel, CodingNsCliModelCa
 import type { CodingNsRpcClient } from './features/types.js'
 import { adapterCatalogWithDsh, callCliRpc, findModel, firstModel } from './cli-catalog.js'
 import { providerIconUrl } from './provider-icons.js'
+import { publishSessionAdapter } from './session-adapter-cache.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
@@ -104,6 +105,7 @@ function publishSelection(sessionId: string, next: SelectionState): void {
     ...(next.effortId ? { effortId: next.effortId } : {}),
   }
   selections.set(sessionId, normalized)
+  publishSessionAdapter(sessionId, normalized.adapterId)
   for (const listener of selectionListeners.get(sessionId) ?? []) listener()
 }
 

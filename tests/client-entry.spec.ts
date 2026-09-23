@@ -37,6 +37,7 @@ test('Client 构建产物包含模块卡片、设置面板和 Host RPC 调用', 
     '外部Agent集成', 'cli/${action}', 'catalog', 'models', 'session/get', 'session/set', 'session/list', '外部 Agent 会话', 'adapter/set', '已停用',
     'conversation.input.right', 'Agent 选择器', '思考等级', 'data-codingns-agent', 'conversation.input.model',
     '安装状态', '模型目录', 'aria-modal',
+    '工作区会话增强', '显示 Agent Logo', 'session/adapter-map', 'data-codingns-session-logo',
   ]) {
     assert.equal(source.includes(marker), true, `Client 产物缺少 ${marker}`)
   }

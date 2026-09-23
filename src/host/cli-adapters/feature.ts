@@ -65,6 +65,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           case 'session/get': return registry.getSession(readSessionId(payload))
           case 'session/set': return registry.setSession(readSessionId(payload), readSessionConfig(payload))
           case 'session/list': return registry.listSessions(readSessionListOptions(payload))
+          case 'session/adapter-map': return sessionStore.adapterBindings()
           case 'session/archive': return registry.archiveSession(readSessionId(payload))
           case 'session/steer': return registry.steer(readSessionId(payload), readPrompt(payload), false)
           case 'session/follow-up': return registry.steer(readSessionId(payload), readPrompt(payload), true)

@@ -5,6 +5,7 @@ import {
   CODINGNS_SETTINGS_NAMESPACE,
   DEFAULT_CODINGNS_CONTROL_BASE_URL,
   DEFAULT_CODINGNS_SETTINGS,
+  DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   CODINGNS_DSH_ERROR_CODES,
   CodingNsDshError,
   SUPPORTED_DSH_VERSION,
@@ -38,6 +39,7 @@ test('CodingNS 设置用模块名字典表达开关，结构不随模块数量�
     controlBaseUrls: [DEFAULT_CODINGNS_CONTROL_BASE_URL],
     modules: {},
     agentAdapters: {},
+    workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
     lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 },
   })
 })

@@ -57,6 +57,12 @@ export interface CodingNsCliSessionConfig {
   readonly rawStoreRef?: string
 }
 
+/** Client 展示会话 Agent 时使用的最小脱敏绑定。 */
+export interface CodingNsSessionAdapterBinding {
+  readonly sessionId: string
+  readonly adapterId: CodingNsCliAdapterId
+}
+
 /** 外部 Agent 会话在 Host 侧的持久化索引。
  *
  * 这里只保存恢复会话所需的标识和摘要，不保存令牌、原始消息或进程句柄。

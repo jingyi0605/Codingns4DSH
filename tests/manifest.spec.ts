@@ -38,3 +38,7 @@ test('bundle patch and example profile use DSH native shapes', async () => {
   assert.equal(profile.dependencies['dsh-codingns'], '0.1.0')
   assert.equal(profile.engines.dsh, '0.1.6-alpha.2')
 })
+
+test('npm 包声明包含工作区会话 Logo 资产', () => {
+  assert.equal(manifest.files.includes('assets/provider-icons/**'), true)
+})

@@ -5,6 +5,7 @@ import type {
   CodingNsCliProviderSessionState,
   CodingNsCliSessionRecord,
   CodingNsCliSessionStatus,
+  CodingNsSessionAdapterBinding,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
 
@@ -81,6 +82,14 @@ export class CodingNsCliSessionStore {
       .filter((record) => options.adapterId === undefined || record.adapterId === options.adapterId)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map((record) => ({ ...record }))
+  }
+
+  /** 浏览器会话行只需要这两个字段，Host-only 恢复信息不得跨过 RPC 边界。 */
+  adapterBindings(): CodingNsSessionAdapterBinding[] {
+    return this.list().map((record) => ({
+      sessionId: record.dshSessionId,
+      adapterId: record.adapterId,
+    }))
   }
 
   /** 创建或更新记录；返回值是内存中的规范化记录，持久化在后台串行完成。 */

@@ -26,6 +26,9 @@ export const CodingNsSettingsSchema: z<CodingNsSettings> = z.object({
     listenPort: z.number().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.listenPort),
     dshPort: z.number().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.dshPort),
   }).default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh),
+  workspaceSessionEnhancement: z.object({
+    showAdapterLogo: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.showAdapterLogo),
+  }).default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement),
 })
 
 /**

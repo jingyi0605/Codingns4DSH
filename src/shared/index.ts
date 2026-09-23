@@ -2,15 +2,18 @@ export {
   CODINGNS_CONTROL_BASE_URL_FIELD,
   CODINGNS_CONTROL_BASE_URLS_FIELD,
   CODINGNS_LAN_ACCESS_DSH_FIELD,
+  CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD,
   CODINGNS_MODULES_FIELD,
   CODINGNS_SETTINGS_NAMESPACE,
   DEFAULT_CODINGNS_CONTROL_BASE_URL,
   DEFAULT_CODINGNS_CONTROL_BASE_URLS,
   DEFAULT_CODINGNS_SETTINGS,
+  DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   enabledFeatureNames,
   isFeatureEnabled,
   type CodingNsSettings,
   type LanAccessDshSettings,
+  type WorkspaceSessionEnhancementSettings,
 } from './contracts/config.js'
 export type {
   FeatureContext,
@@ -55,6 +58,7 @@ export type {
   CodingNsCliSessionRecord,
   CodingNsCliProviderSessionState,
   CodingNsCliSessionStatus,
+  CodingNsSessionAdapterBinding,
   CodingNsCliTurnInput,
 } from './contracts/cli-adapter.js'
 export type {

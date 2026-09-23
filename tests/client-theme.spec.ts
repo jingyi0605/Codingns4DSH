@@ -33,6 +33,8 @@ test('所有 Client 表单不再引用不存在的旧主题令牌', async () => 
     'src/client/features/lan-access-panel.ts',
     'src/client/features/reverse-proxy-panel.ts',
     'src/client/features/cli-adapters.ts',
+    'src/client/features/workspace-session-enhancement-panel.ts',
+    'src/client/workspace-session-logo-dom.ts',
     'src/client/cli-slots.ts',
   ]
   const sources = await Promise.all(files.map((file) => readFile(join(projectRoot, file), 'utf8')))

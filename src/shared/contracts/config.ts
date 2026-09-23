@@ -9,6 +9,8 @@ export interface CodingNsSettings {
   controlBaseUrls: string[]
   /** 局域网访问 DSH 的唯一监听映射及启动策略。 */
   lanAccessDsh: LanAccessDshSettings
+  /** 原生工作区会话行的浏览器端增强选项。 */
+  workspaceSessionEnhancement: WorkspaceSessionEnhancementSettings
   /**
    * 功能模块启用意图：模块名 -> 是否启用。
    *
@@ -29,18 +31,28 @@ export interface LanAccessDshSettings {
   dshPort: number
 }
 
+/** 工作区会话增强当前只包含 Logo 显示，不包含删除功能。 */
+export interface WorkspaceSessionEnhancementSettings {
+  showAdapterLogo: boolean
+}
+
 export const CODINGNS_SETTINGS_NAMESPACE = 'codingns'
 export const CODINGNS_CONTROL_BASE_URL_FIELD = 'controlBaseUrl'
 export const CODINGNS_CONTROL_BASE_URLS_FIELD = 'controlBaseUrls'
 export const CODINGNS_MODULES_FIELD = 'modules'
 export const CODINGNS_LAN_ACCESS_DSH_FIELD = 'lanAccessDsh'
+export const CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD = 'workspaceSessionEnhancement'
 export const DEFAULT_CODINGNS_CONTROL_BASE_URL = 'https://channel.codingns.com:1443'
 export const DEFAULT_CODINGNS_CONTROL_BASE_URLS = [DEFAULT_CODINGNS_CONTROL_BASE_URL]
+export const DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS: WorkspaceSessionEnhancementSettings = {
+  showAdapterLogo: true,
+}
 export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   controlBaseUrl: DEFAULT_CODINGNS_CONTROL_BASE_URL,
   controlBaseUrls: [...DEFAULT_CODINGNS_CONTROL_BASE_URLS],
   modules: {},
   agentAdapters: {},
+  workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   lanAccessDsh: {
     autoStart: false,
     listenHost: '0.0.0.0',
