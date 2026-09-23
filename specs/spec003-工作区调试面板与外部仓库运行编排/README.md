@@ -4,7 +4,7 @@
 
 ## 一句话说明
 
-Spec003 只做三件事：读取 Workspace 级启动配置，按配置启动终端命令；检查配置中的端口并在用户确认后结束对应监听进程；把已经启动且确认过的进程服务接入 CodingNS 已有的反向代理。
+Spec003 只做三件事：读取 Workspace 级启动配置，按配置启动终端命令；检查配置中的端口并在用户确认后结束对应监听进程；把已经启动且确认过的进程服务接入插件自己的受控反向代理。
 
 这不是通用的进程编排平台，不负责框架分析、自动改项目文件或管理多服务拓扑。
 
@@ -22,9 +22,9 @@ Spec003 只做三件事：读取 Workspace 级启动配置，按配置启动终�
    - Client 不提交 PID、绝对路径或任意端口目标；端口复用或身份变化时必须拒绝结束。
 
 3. **指定服务的反向代理**
-   - 对配置中启用代理的服务，Host 将已核验的本机监听服务绑定到 CodingNS 已有反向代理入口。
+   - 对配置中启用代理的服务，Host 将已核验的本机监听服务绑定到插件自己的代理入口。
    - 代理目标只能来自 Host 根据 Workspace 配置和运行实例得到的回环地址与端口。
-   - 复用 CodingNS 已有 HTTP、SSE、WebSocket 代理实现；Spec003 只负责配置、运行实例和代理目标之间的绑定，不重新实现代理引擎。
+   - 插件内部实现受控 HTTP/SSE 转发、响应头过滤和重定向处理；WebSocket Upgrade 受 DSH 公开 Fetch 接口限制，当前明确返回不支持，不伪装成已实现。
 
 ## 已有前置能力
 
@@ -37,9 +37,9 @@ Spec003 只做三件事：读取 Workspace 级启动配置，按配置启动终�
 - `terminalProcess/launch`
 - `terminalProcess/runtime/list|get|stop`
 - POSIX tmux/local-pty 和 Windows 独立 ConPTY broker
-- CodingNS 现有反向代理服务
+- 插件内部的受控 HTTP/SSE 反向代理
 
-Spec003 不重新实现 tmux、local-pty、ConPTY 或反向代理协议处理，也不直接调用 CodingNS 父仓库私有源码。
+Spec003 不重新实现 tmux、local-pty 或 ConPTY；反向代理必须在插件内部实现，不调用 CodingNS 父仓库接口或私有源码。父仓库代码只能作为行为参考。
 
 ## 明确不做
 

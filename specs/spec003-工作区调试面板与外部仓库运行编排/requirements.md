@@ -32,14 +32,14 @@
 5. WHEN 目标确认无误 THEN Host SHALL 只结束该端口对应的受控进程或进程树并返回结果；不得因侧栏关闭、Session 切换、插件卸载或 generation 切换自动结束进程。
 6. WHEN 端口被后来启动的其他进程复用 THEN 旧的 `instance.id`、检查结果和代理绑定不得用于结束或代理新进程。
 
-## 需求 3：把指定进程服务接入已有反向代理
+## 需求 3：把指定进程服务接入插件反向代理
 
 用户希望从 CodingNS 访问已经启动的本机开发服务，而不让浏览器直接连接 Host 或任意本机地址。
 
 ### 验收标准
 
 1. WHEN 配置项启用代理且对应运行实例已由 Host 创建、端口已确认监听 THEN SHALL 创建绑定到该 Workspace、`instance.id` 和配置端口的代理目标。
-2. WHEN 代理请求到达 THEN SHALL 复用 CodingNS 已有反向代理服务，支持该服务已经提供的 HTTP、SSE 和 WebSocket 行为；Spec003 不复制代理协议实现。
+2. WHEN 代理请求到达 THEN SHALL 由插件内部受控代理转发 HTTP 和 SSE 请求，并过滤 hop-by-hop headers；DSH 公开 Fetch 接口未提供 Upgrade 注册时，WebSocket 请求必须明确返回不支持。
 3. WHEN Client 请求代理 THEN SHALL 只能引用 Host 返回的代理标识，不能提交任意 Host、URL、端口或本机路径。
 4. WHEN 运行实例停止、端口检查身份变化或代理绑定失效 THEN SHALL 立即停用旧代理目标；旧地址不得转发到后来占用同一端口的进程。
 5. WHEN 配置未启用代理、端口未监听或 Workspace/Session 校验失败 THEN SHALL 拒绝创建代理并返回可读错误。
@@ -53,4 +53,4 @@
 
 ## 非目标
 
-本 Spec 不验收：框架识别、非交互进程模式、多服务依赖、worktree 继承、端口租约、日志游标、AI 补丁、自动 HMR/callback 修复、容器调度以及新的代理协议实现。
+本 Spec 不验收：框架识别、非交互进程模式、多服务依赖、worktree 继承、端口租约、日志游标、AI 补丁、自动 HMR/callback 修复、容器调度以及 WebSocket Upgrade 扩展。

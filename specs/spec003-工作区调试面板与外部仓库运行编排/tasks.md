@@ -6,20 +6,20 @@
 
 - [x] **0.1 明确三项需求和非目标**
   - 状态：DONE
-  - 这一步到底做什么：把 Spec003 限定为 Workspace 配置启动、配置端口处理、已有代理接入。
+  - 这一步到底做什么：把 Spec003 限定为 Workspace 配置启动、配置端口处理、插件内部代理。
   - 做完能看到什么：README、requirements、design、tasks 对范围和“不做什么”说法一致。
   - 依赖：无。
-  - 开始前先看：本目录四份主文档、终端 PTY 调用说明、现有 CodingNS 代理功能。
+  - 开始前先看：本目录四份主文档、终端 PTY 调用说明、DSH Fetch 路由契约和父仓库代理行为参考。
   - 主要文件：本目录 `README.md`、`requirements.md`、`design.md`、`tasks.md`。
   - 明确不做：不写新的进程编排、端口租约、日志、AI 或代理引擎。
   - 验证：已执行 `git diff --check`；`pnpm exec tsc --noEmit` 通过；现有测试 288/288 通过；四份主文档已逐项检查为三条真实需求。
 
 - [x] **0.2 确认前置能力调用边界**
   - 状态：DONE
-  - 这一步到底做什么：确认 Spec003 只调用现有 `terminalProcess/*` 和 CodingNS 反向代理，不复制 backend 或父仓库私有实现。
+  - 这一步到底做什么：确认 Spec003 只调用插件已有 `terminalProcess/*`，并在插件内部实现受控代理；父仓库只作行为参考。
   - 做完能看到什么：调用说明能明确 `terminal.id` 只 attach，`instance.id` 管理生命周期。
   - 依赖：0.1。
-  - 开始前先看：PTY 调用说明、`src/host/features/terminal-process.ts`、现有代理模块。
+  - 开始前先看：PTY 调用说明、`src/host/features/terminal-process.ts`、DSH Fetch 路由公开类型。
   - 主要文件：终端调用说明、设计文档。
   - 明确不做：不新增 `runtimeMode=process`。
   - 验证：`pnpm test -- tests/terminal-process.spec.ts` 通过；`pnpm exec tsc --noEmit` 通过；Spec003 定向测试通过。
@@ -68,17 +68,17 @@
   - 明确不做：不允许 Client 直接传 PID，不因插件卸载或 Session 切换杀进程。
   - 验证：`node --test tests/debug-workspace.spec.ts` 已覆盖身份变化拒绝和身份一致结束；`pnpm exec tsc --noEmit` 通过。
 
-## 阶段 3：复用已有反向代理
+## 阶段 3：实现插件内部反向代理
 
-- [ ] **3.1 将运行实例绑定到现有代理**
-  - 状态：IN_REVIEW
-  - 这一步到底做什么：端口确认监听后，调用 CodingNS 已有反向代理服务创建绑定；停止或身份变化时撤销绑定。
+- [x] **3.1 将运行实例绑定到插件代理**
+  - 状态：DONE
+  - 这一步到底做什么：端口确认监听后，由插件生成绑定并通过自己的 Fetch 路由转发；停止或身份变化时撤销绑定。
   - 做完能看到什么：配置启用代理的服务可通过 Host 返回的代理入口访问，旧实例停止后入口失效。
-  - 依赖：1.2、2.1；现有代理接口必须可调用。
-  - 开始前先看：`requirements.md` 需求 3、`design.md` §5、现有 CodingNS 代理实现和测试。
-  - 主要文件：`src/host/` 代理绑定 RPC、共享契约、定向测试。
-  - 明确不做：不实现 HTTP/SSE/WebSocket 转发器，不允许任意 URL 或任意端口。
-  - 验证：已完成代理绑定前置条件 Fake 测试；真实 CodingNS 代理适配器尚未注入，不能标记 DONE。
+  - 依赖：1.2、2.1；DSH Fetch 路由契约已确认。
+  - 开始前先看：`requirements.md` 需求 3、`design.md` §5、阶段 0 接口调查和父仓库代理行为参考。
+  - 主要文件：`src/host/debug.ts`、`src/host/rpc.ts`、`tests/debug-workspace.spec.ts`。
+  - 明确不做：不调用父仓库代理接口，不接受任意 URL、Host 或端口；WebSocket Upgrade 暂不实现。
+  - 验证：`pnpm test -- tests/debug-workspace.spec.ts` 通过，覆盖绑定、路径透传、响应头过滤和端口身份变化失效。
 
 - [ ] **3.2 提供最小 DSH 调试入口**
   - 状态：IN_REVIEW
