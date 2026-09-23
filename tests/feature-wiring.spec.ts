@@ -6,6 +6,7 @@ import { CodingNsRpcTable } from '../dist/host/rpc-table.js'
 import { createAuthFeature } from '../dist/host/features/index.js'
 import {
   cliAdaptersFeature,
+  debugFeature,
   lanAccessFeature,
   reverseProxyFeature,
   terminalEnhancementFeature,
@@ -225,6 +226,9 @@ test('远程设置 RPC 返回版本并只允许修改 CodingNS 字段', async ()
     expectedRevision: 4,
   })
   await handler('set', {
+    ops: [{ op: 'set', path: ['modules', 'debug'], value: false }],
+  })
+  await handler('set', {
     ops: [{ op: 'set', path: ['controlBaseUrls'], value: ['https://channel.codingns.com:1443', 'https://control.example.com'] }],
   })
   assert.deepEqual(received, {
@@ -315,6 +319,14 @@ test('工作区会话增强作为依赖外部 Agent 的实时 Client 模块登�
   assert.equal(workspaceSessionEnhancementFeature.descriptor.activation, undefined)
   assert.equal(workspaceSessionEnhancementFeature.descriptor.ui?.label, '工作区会话增强')
   assert.equal(workspaceSessionEnhancementFeature.settingsPanel?.name, 'WorkspaceSessionEnhancementPanel')
+})
+
+test('工作区调试面板作为可独立启停的 Client 模块登记', () => {
+  assert.equal(debugFeature.descriptor.name, 'debug')
+  assert.equal(debugFeature.descriptor.runtime, 'client')
+  assert.equal(debugFeature.descriptor.enabledByDefault, true)
+  assert.equal(debugFeature.descriptor.ui?.label, '工作区调试')
+  assert.equal(debugFeature.settingsPanel, undefined)
 })
 
 test('注册表拒绝未知的模块生效模式', () => {

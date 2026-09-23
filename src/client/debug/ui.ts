@@ -148,11 +148,17 @@ function DebugBody({ sessionId, rpc, remote, sidebarRight }: DebugTabProps): Rea
   }
 }
 
-function call<T = unknown>(rpc: CodingNsRpcClient, endpoint: string, payload: unknown): Promise<T> {
-  return rpc.call(CODINGNS_RPC_CHANNEL, endpoint, payload).then((result: CodingNsRpcResult) => {
-    if (!result.ok) throw new Error(result.error.message)
-    return result.value as T
-  })
+async function call<T = unknown>(rpc: CodingNsRpcClient, endpoint: string, payload: unknown): Promise<T> {
+  let result: CodingNsRpcResult
+  try {
+    result = await rpc.call(CODINGNS_RPC_CHANNEL, endpoint, payload)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!/HTTP (?:404|405)\b/u.test(message)) throw error
+    result = await rpc.call('/api', `codingns/${endpoint}`, payload)
+  }
+  if (!result.ok) throw new Error(result.error.message)
+  return result.value as T
 }
 
 function readWorkspaceId(value: unknown): string | null {

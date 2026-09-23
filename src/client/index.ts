@@ -30,7 +30,6 @@ import { CodingNsSettingsSection } from './settings-section.js'
 import { createCodingNsSettingsBridge } from './settings-bridge.js'
 import { CodingNsWebTerminals, registerCodingNsTerminalUi } from './terminal/index.js'
 import type { TerminalRemote } from './terminal/model.js'
-import { registerDebugUi } from './debug/ui.js'
 
 // DSH 在 Client/Cordis 建立前就可能读取 randomUUID，必须在入口加载时修复。
 ensureCryptoRandomUUID()
@@ -84,7 +83,6 @@ export function apply(ctx?: Context): void {
     const terminalRemote = (): TerminalRemote | undefined => settingsCtx.remote.terminal as unknown as TerminalRemote | undefined
     const webTerminals = new CodingNsWebTerminals(settingsCtx, terminalRemote)
     const disposeTerminalUi = registerCodingNsTerminalUi(settingsCtx, webTerminals, settings)
-    const disposeDebugUi = registerDebugUi(settingsCtx, connection.rpc, settingsCtx.remote)
     const services: CodingNsClientServices = {
       settings,
       rpc: connection.rpc,
@@ -92,6 +90,7 @@ export function apply(ctx?: Context): void {
       slots: settingsCtx.slots,
       locale: settingsCtx.locale,
       uiConversation: settingsCtx.uiConversation,
+      uiContext: settingsCtx,
     }
     const registry = new FeatureRegistry<CodingNsClientServices, CodingNsClientFeatureModule>(services)
     registry.registerMany(CLIENT_FEATURES)
@@ -120,7 +119,6 @@ export function apply(ctx?: Context): void {
       return () => {
         unsubscribe()
         disposeTerminalUi()
-        disposeDebugUi()
         void webTerminals.dispose()
         settings.dispose()
       }

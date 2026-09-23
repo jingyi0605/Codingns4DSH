@@ -37,6 +37,12 @@ export function apply(ctx?: Context): void {
       nativeSessions: createCodingNsNativeSessionBridge(hostCtx),
       terminalProcesses: terminal.processService,
       resolveWorkspaceRoot: (workspaceId) => resolveWorkspaceRoot(hostCtx, workspaceId),
+      registerDebugProxyRoute: (handler) => hostCtx.connection.fetch.register({
+        path: '/api/codingns/debug-proxy',
+        methods: ['GET', 'HEAD', 'POST'],
+        requestBody: 'streaming',
+        fetch: handler,
+      }),
     }
     const debug = new DebugWorkspaceService({
       resolveWorkspaceRoot: (workspaceId) => resolveWorkspaceRoot(hostCtx, workspaceId),
@@ -53,7 +59,7 @@ export function apply(ctx?: Context): void {
     registry.validate()
     const restartStates = captureRestartFeatureStates(registry.descriptors(), settings.get())
 
-    registerCodingNsRpc(hostCtx, services.rpc, services.settingsProvider, debug)
+    registerCodingNsRpc(hostCtx, services.rpc, services.settingsProvider)
 
     hostCtx.effect(() => {
       const sync = (): void => {

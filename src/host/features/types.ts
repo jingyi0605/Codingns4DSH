@@ -31,6 +31,8 @@ export interface CodingNsHostServices {
   readonly terminalProcesses?: TerminalProcessService
   /** Workspace 级调试服务；只使用 Host 解析出的根目录。 */
   readonly debug?: DebugWorkspaceService
+  /** Debug 模块启用时注册其专属 Fetch 路由，停用时由模块资源注销。 */
+  readonly registerDebugProxyRoute?: (handler: (request: Request) => Promise<Response>) => () => Promise<void>
   /** 由 Host 权威解析 Workspace ID，Client 不可覆盖。 */
   readonly resolveWorkspaceRoot?: (workspaceId: string) => string | null
 }

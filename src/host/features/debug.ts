@@ -2,7 +2,7 @@ import type { FeatureModule } from '../../shared/contracts/feature.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import type { CodingNsHostServices } from './types.js'
 
-/** Spec003 Host RPC：只承载配置、PTY、端口检查和已有代理绑定。 */
+/** Spec003 Host 模块：配置、PTY、端口检查和插件内部代理。 */
 export function createDebugFeature(): FeatureModule<CodingNsHostServices> {
   return {
     descriptor: {
@@ -50,6 +50,8 @@ export function createDebugFeature(): FeatureModule<CodingNsHostServices> {
             throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `未知 Spec003 RPC: debug/${action}`)
         }
       }))
+      const registerProxyRoute = context.services.registerDebugProxyRoute
+      if (registerProxyRoute !== undefined) context.resources.add(registerProxyRoute((request) => service.handleProxyRequest(request)))
     },
   }
 }

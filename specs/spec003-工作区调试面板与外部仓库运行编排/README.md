@@ -28,6 +28,8 @@ Spec003 只做三件事：读取 Workspace 级启动配置，按配置启动终�
 
 ## 已有前置能力
 
+调试面板本身是插件的独立 `debug` 功能模块，设置中的 `modules.debug` 可以实时启用或禁用。禁用时移除右侧栏入口、Debug RPC handler 和代理路由；不会停止已有运行实例。
+
 以下能力已经存在，不属于 Spec003 重复开发范围：
 
 - `TerminalLaunchProfile`

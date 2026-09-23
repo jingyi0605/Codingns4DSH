@@ -1,4 +1,5 @@
 import type { ReactElement } from 'react'
+import type { Context } from '@deepseek-ai/cordis'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { FeatureModule } from '../../shared/contracts/feature.js'
@@ -27,6 +28,8 @@ export interface CodingNsClientServices {
   readonly uiConversation?: unknown
   /** 对话工具栏 Slot 服务；测试和非 Web 宿主可以不提供。 */
   readonly slots?: SlotRegistry
+  /** 当前 Client Cordis 上下文；只供需要注册 DSH UI Slot 的功能模块使用。 */
+  readonly uiContext?: Context
 }
 
 /** 设置卡片传给模块面板的属性。 */

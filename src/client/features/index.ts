@@ -5,6 +5,7 @@ import { reverseProxyFeature } from './reverse-proxy.js'
 import { cliAdaptersFeature } from './cli-adapters.js'
 import { terminalEnhancementFeature } from './terminal-enhancement.js'
 import { workspaceSessionEnhancementFeature } from './workspace-session-enhancement.js'
+import { debugFeature } from './debug.js'
 import type { CodingNsClientFeatureModule, CodingNsClientServices } from './types.js'
 
 /** Client 侧功能模块清单：新增模块在这里登记一行，不需要改动设置页和入口。 */
@@ -14,6 +15,7 @@ export const CLIENT_FEATURES: readonly CodingNsClientFeatureModule[] = [
   cliAdaptersFeature,
   workspaceSessionEnhancementFeature,
   terminalEnhancementFeature,
+  debugFeature,
 ]
 
 /** 设置页要显示的一个模块及其界面描述。 */
@@ -41,7 +43,7 @@ export function settingsModules(
   return entries
 }
 
-export { lanAccessFeature, reverseProxyFeature, cliAdaptersFeature, workspaceSessionEnhancementFeature, terminalEnhancementFeature }
+export { lanAccessFeature, reverseProxyFeature, cliAdaptersFeature, workspaceSessionEnhancementFeature, terminalEnhancementFeature, debugFeature }
 export { LanAccessPanel } from './lan-access-panel.js'
 export { ReverseProxyPanel } from './reverse-proxy-panel.js'
 export { CliAdaptersPanel } from './cli-adapters.js'

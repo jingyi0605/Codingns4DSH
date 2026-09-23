@@ -59,6 +59,8 @@ export interface WorkspaceSessionEnhancementSettings {
   showAdapterLogo: boolean
   /** 是否在每个有归档会话的工作区中显示归档入口。 */
   showArchivedSessions: boolean
+  /** 是否在对话底部显示订阅与上游用量检测。 */
+  showSubscriptionUsage: boolean
 }
 
 /** 局域网访问 DSH 的持久化配置；dshPort 为 0 表示启动时自动探测。 */
@@ -97,6 +99,7 @@ export const DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS: TerminalEnhancementSettings 
 export const DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS: WorkspaceSessionEnhancementSettings = {
   showAdapterLogo: true,
   showArchivedSessions: true,
+  showSubscriptionUsage: true,
 }
 export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   controlBaseUrl: DEFAULT_CODINGNS_CONTROL_BASE_URL,
