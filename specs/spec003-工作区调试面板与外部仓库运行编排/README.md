@@ -1,70 +1,60 @@
-# spec003-工作区调试面板与外部仓库运行编排
+# Spec003：工作区启动、端口处理和服务代理
 
-状态：Draft，等待方案评审。
+状态：Draft，范围已按真实需求收敛。
 
-## 这项功能解决什么问题
+## 一句话说明
 
-用户在 DSH 工作区中开发项目时，需要一处稳定入口完成以下工作：
+Spec003 只做三件事：读取 Workspace 级启动配置，按配置启动终端命令；检查配置中的端口并在用户确认后结束对应监听进程；把已经启动且确认过的进程服务接入 CodingNS 已有的反向代理。
 
-- 保存和复用启动项
-- 启动、停止、重启并查看日志
-- 分析外部仓库使用的框架
-- 为多个工作区或 Git worktree 分配不冲突的端口
-- 处理前后端发现、HMR WebSocket 和回调地址
-- 在非侵入式适配失败后，受控地使用 AI 生成可回滚补丁
-- 通过 DSH Host 的稳定路径访问本地调试服务
+这不是通用的进程编排平台，不负责框架分析、自动改项目文件或管理多服务拓扑。
 
-本 Spec 将这些能力放进 DSH 右侧栏的独立“调试面板”，配置和运行记录按 Workspace（工作区）隔离并持久化。
+## 三项真实需求
 
-## Host 在本文中的含义
+1. **Workspace 配置和终端启动**
+   - 每个 Workspace 使用一个受控配置文件，例如 `.codingns/debug.json`。
+   - 配置记录启动名称、终端运行类型、相对启动目录、命令、参数、可选环境变量和端口。
+   - Host 读取并校验配置，复用已有 `terminalProcess/*` 启动器创建 PTY 运行实例。
+   - `terminal.id` 只用于打开或恢复 DSH 原生 Terminal；`instance.id` 才是运行、查询、恢复和停止的主键。
 
-本文所说的 **Host**，专指安装并运行本插件 Host half 的本机 DSH Node.js/Cordis 进程，以及由它启动的本机辅助进程。
+2. **端口检查和进程结束**
+   - Host 按配置中的端口检查当前监听状态，并返回有限的进程信息供页面展示。
+   - 用户明确确认后，Host 重新核验端口、PID 和进程启动身份，再结束对应监听进程。
+   - Client 不提交 PID、绝对路径或任意端口目标；端口复用或身份变化时必须拒绝结束。
 
-Host 不是：
+3. **指定服务的反向代理**
+   - 对配置中启用代理的服务，Host 将已核验的本机监听服务绑定到 CodingNS 已有反向代理入口。
+   - 代理目标只能来自 Host 根据 Workspace 配置和运行实例得到的回环地址与端口。
+   - 复用 CodingNS 已有 HTTP、SSE、WebSocket 代理实现；Spec003 只负责配置、运行实例和代理目标之间的绑定，不重新实现代理引擎。
 
-- 浏览器中的插件 Client half
-- CodingNS Control API 控制站
-- Relay 中继服务
-- 用户项目自己的开发服务器
+## 已有前置能力
 
-只有 Host 能访问本机文件、创建进程、写日志、检查端口、应用补丁和转发到本机服务。浏览器只显示状态并发送经过校验的 RPC 请求。
+以下能力已经存在，不属于 Spec003 重复开发范围：
 
-## 与父仓库 Spec 的关系
+- `TerminalLaunchProfile`
+- `TerminalProcessInstance`
+- `TerminalProcessService`（兼容名称 `ProcessRuntimeService`）
+- `terminalProcess/profile/list|create|delete`
+- `terminalProcess/launch`
+- `terminalProcess/runtime/list|get|stop`
+- POSIX tmux/local-pty 和 Windows 独立 ConPTY broker
+- CodingNS 现有反向代理服务
 
-本 Spec 吸收并适配父仓库以下能力：
-
-- `spec007-进程管理与启动器`：启动配置、独立进程实例、日志和端口观察
-- `spec007.1-外部仓库调试进程端口编排与启动适配`：框架分析、启动适配、端口租约、worktree 继承、AI 兜底
-- `TemplateReverseProxyService`：HTTP、SSE、WebSocket 和路径前缀代理
-
-父仓库只能作为设计参考，插件不能把父仓库源码或服务作为运行时依赖。
-
-## 交付范围
-
-- DSH 右侧栏“调试面板”页面类型和开始页入口
-- Workspace 级启动项、调试目标和运行历史持久化
-- 独立于浏览器标签页的 Host 进程管理
-- 框架分析和可维护的兼容矩阵
-- Git worktree 启动项继承及端口重新编排
-- CLI、环境变量、临时覆盖产物、AI 补丁四层启动适配
-- 端口租约、监听验证、释放和异常恢复
-- HTTP、SSE、WebSocket 反向代理
-- 前后端服务发现、HMR 和 callback 提示或补丁
-- macOS、Linux、Windows 的测试和人工验收
+Spec003 不重新实现 tmux、local-pty、ConPTY 或反向代理协议处理，也不直接调用 CodingNS 父仓库私有源码。
 
 ## 明确不做
 
-- 修改 DSH 核心
-- Docker、Kubernetes、Dev Container 或操作系统级网络隔离
-- 跨机器分布式进程调度
-- 把任意 URL 暴露成反向代理
-- 未经用户确认和执行前身份复核，仅根据“某端口被占用”结束外部进程
-- 在没有用户确认的情况下由 AI 修改 tracked 文件
+- 非交互 `runtimeMode=process` 进程服务
+- 框架分析、启动适配器、worktree 继承和多服务编排
+- 端口租约、日志平台、AI 补丁和自动修复
+- 自研 HTTP、SSE、WebSocket 代理引擎
+- 修改 DSH 核心或覆盖默认 `connection`
+- 把命令字符串写入已经存在的交互 Shell
 
 ## 文档入口
 
 - [需求文档](requirements.md)
 - [设计文档](design.md)
 - [任务清单](tasks.md)
-- [父仓库移植范围与差异](docs/20260922-父仓库移植范围与差异.md)
-- [框架兼容矩阵](docs/20260922-框架兼容矩阵.md)
+- [终端 PTY 启动器调用说明](docs/20260923-终端PTY启动器调用说明.md)
+- [Spec003 继续开发提示词](docs/20260923-Spec003继续开发提示词.md)
+- [父仓库移植范围与差异](docs/20260922-父仓库移植范围与差异.md)：仅作背景参考，未列入本 Spec 的能力不应继续移植
