@@ -2,6 +2,7 @@ import type { CodingNsRpcTable } from '../rpc-table.js'
 import type { SettingsProvider, SettingsScope } from '@deepseek-ai/dsh-settings'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
+import type { TerminalProcessService } from '../terminal/terminal-process-service.js'
 
 export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
@@ -25,4 +26,6 @@ export interface CodingNsHostServices {
   readonly events?: CodingNsHostEvents
   /** DSH 原生会话桥接；不可用时为 undefined，插件不因此阻断启动。 */
   readonly nativeSessions?: CodingNsNativeSessionBridge
+  /** 终端启动项和 PTY 进程服务；只由 Host RPC 使用。 */
+  readonly terminalProcesses?: TerminalProcessService
 }

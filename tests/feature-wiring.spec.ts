@@ -4,7 +4,13 @@ import { FeatureRegistry, type FeatureModule } from '../dist/features/index.js'
 import { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler } from '../dist/host/rpc.js'
 import { CodingNsRpcTable } from '../dist/host/rpc-table.js'
 import { createAuthFeature } from '../dist/host/features/index.js'
-import { cliAdaptersFeature, lanAccessFeature, reverseProxyFeature, workspaceSessionEnhancementFeature } from '../dist/client/features/index.js'
+import {
+  cliAdaptersFeature,
+  lanAccessFeature,
+  reverseProxyFeature,
+  terminalEnhancementFeature,
+  workspaceSessionEnhancementFeature,
+} from '../dist/client/features/index.js'
 import {
   enabledFeatureNames,
   isFeatureEnabled,
@@ -226,6 +232,19 @@ test('远程设置 RPC 返回版本并只允许修改 CodingNS 字段', async ()
     expectedRevision: undefined,
   })
   await handler('set', {
+    ops: [{ op: 'set', path: ['terminalEnhancement'], value: {
+      defaultProfile: 'system',
+      appearance: { theme: 'inherit' },
+    } }],
+  })
+  assert.deepEqual(received, {
+    ops: [{ op: 'set', path: ['terminalEnhancement'], value: {
+      defaultProfile: 'system',
+      appearance: { theme: 'inherit' },
+    } }],
+    expectedRevision: undefined,
+  })
+  await handler('set', {
     ops: [
       { op: 'set', path: ['modules', 'workspaceSessionEnhancement'], value: true },
       { op: 'set', path: ['workspaceSessionEnhancement', 'showAdapterLogo'], value: false },
@@ -280,11 +299,35 @@ test('外部 Agent 作为独立 Client 设置模块登记且默认启用', () =>
   assert.equal(cliAdaptersFeature.settingsPanel?.name, 'CliAdaptersPanel')
 })
 
+test('终端强化作为默认关闭且重启生效的独立设置模块登记', () => {
+  assert.equal(terminalEnhancementFeature.descriptor.name, 'terminalEnhancement')
+  assert.equal(terminalEnhancementFeature.descriptor.enabledByDefault, false)
+  assert.equal(terminalEnhancementFeature.descriptor.activation, 'restart')
+  assert.equal(terminalEnhancementFeature.descriptor.ui?.label, '终端强化')
+  assert.equal(terminalEnhancementFeature.settingsPanel?.name, 'TerminalEnhancementPanel')
+})
+
 test('工作区会话增强作为依赖外部 Agent 的实时 Client 模块登记', () => {
   assert.equal(workspaceSessionEnhancementFeature.descriptor.name, 'workspaceSessionEnhancement')
   assert.equal(workspaceSessionEnhancementFeature.descriptor.runtime, 'client')
   assert.equal(workspaceSessionEnhancementFeature.descriptor.enabledByDefault, false)
   assert.deepEqual(workspaceSessionEnhancementFeature.descriptor.dependencies, ['cliAdapters'])
+  assert.equal(workspaceSessionEnhancementFeature.descriptor.activation, undefined)
   assert.equal(workspaceSessionEnhancementFeature.descriptor.ui?.label, '工作区会话增强')
   assert.equal(workspaceSessionEnhancementFeature.settingsPanel?.name, 'WorkspaceSessionEnhancementPanel')
+})
+
+test('注册表拒绝未知的模块生效模式', () => {
+  const registry = new FeatureRegistry({})
+  assert.throws(() => registry.register({
+    descriptor: {
+      name: 'brokenActivation',
+      version: '1.0.0',
+      enabledByDefault: false,
+      dependencies: [],
+      runtime: 'client',
+      activation: 'later' as never,
+    },
+    start: () => undefined,
+  }), /activation/u)
 })

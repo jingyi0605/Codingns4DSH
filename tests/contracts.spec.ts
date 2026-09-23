@@ -5,12 +5,14 @@ import {
   CODINGNS_SETTINGS_NAMESPACE,
   DEFAULT_CODINGNS_CONTROL_BASE_URL,
   DEFAULT_CODINGNS_SETTINGS,
+  DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   CODINGNS_DSH_ERROR_CODES,
   CodingNsDshError,
   SUPPORTED_DSH_VERSION,
   assertSupportedDshVersion,
   enabledFeatureNames,
+  captureRestartFeatureStates,
   isFeatureEnabled,
   type FeatureDescriptor,
 } from '../dist/shared/index.js'
@@ -39,9 +41,24 @@ test('CodingNS 设置用模块名字典表达开关，结构不随模块数量�
     controlBaseUrls: [DEFAULT_CODINGNS_CONTROL_BASE_URL],
     modules: {},
     agentAdapters: {},
+    terminalEnhancement: DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
     workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
     lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 },
   })
+})
+
+test('重启生效模块固定使用进程启动时捕获的状态', () => {
+  const terminal = {
+    ...descriptorOf('terminalEnhancement'),
+    activation: 'restart' as const,
+  }
+  const descriptors = [terminal, descriptorOf('reverseProxy')]
+  const started = { ...DEFAULT_CODINGNS_SETTINGS, modules: { terminalEnhancement: false, reverseProxy: false } }
+  const restartStates = captureRestartFeatureStates(descriptors, started)
+
+  const changed = { ...started, modules: { terminalEnhancement: true, reverseProxy: true } }
+  assert.deepEqual(enabledFeatureNames(descriptors, changed, restartStates), ['reverseProxy'])
+  assert.deepEqual(restartStates, { terminalEnhancement: false })
 })
 
 test('用户没有表达意图时使用模块自己的 enabledByDefault', () => {

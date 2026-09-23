@@ -360,6 +360,9 @@ function validateDescriptor(descriptor: FeatureDescriptor | undefined): asserts 
   if (descriptor.runtime !== 'host' && descriptor.runtime !== 'client' && descriptor.runtime !== 'both') {
     throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid runtime`, descriptor.name)
   }
+  if (descriptor.activation !== undefined && descriptor.activation !== 'live' && descriptor.activation !== 'restart') {
+    throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid activation`, descriptor.name)
+  }
   if (!Array.isArray(descriptor.dependencies) || descriptor.dependencies.some((dependency) => typeof dependency !== 'string' || dependency.trim() === '')) {
     throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid dependencies`, descriptor.name)
   }

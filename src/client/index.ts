@@ -7,12 +7,19 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
+import type {} from '@deepseek-ai/dsh-api-remotes/client'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
+import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import './provider-icon-assets.js'
 import { FeatureRegistry } from '../features/registry.js'
 import { registerCodingNsLocale } from './locale.js'
 import {
   CODINGNS_SETTINGS_NAMESPACE,
+  captureRestartFeatureStates,
   enabledFeatureNames,
   type CodingNsSettings,
 } from '../shared/contracts/config.js'
@@ -21,6 +28,8 @@ import type { CodingNsClientFeatureModule, CodingNsClientServices } from './feat
 import { ensureCryptoRandomUUID } from './lan-access.js'
 import { CodingNsSettingsSection } from './settings-section.js'
 import { createCodingNsSettingsBridge } from './settings-bridge.js'
+import { CodingNsWebTerminals, registerCodingNsTerminalUi } from './terminal/index.js'
+import type { TerminalRemote } from './terminal/model.js'
 
 // DSH 在 Client/Cordis 建立前就可能读取 randomUUID，必须在入口加载时修复。
 ensureCryptoRandomUUID()
@@ -40,9 +49,16 @@ export type {
   FeaturePanelProps,
 } from './features/index.js'
 export { CodingNsSettingsSection } from './settings-section.js'
+export {
+  startWorkspaceSessionArchiveDom,
+  WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE,
+  WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE,
+} from './workspace-session-archive-dom.js'
+export { CodingNsTerminalView, CodingNsWebTerminals, registerCodingNsTerminalUi } from './terminal/index.js'
+export { registerSubscriptionSlot, registerCommandCodeSubscriptionSlot, CommandCodeSubscriptionSlot } from './subscription-slot.js'
 
 /** Client Runner 用于等待服务就绪的 Cordis 依赖声明。 */
-export const inject = ['slots', 'settingsScope', 'connection', 'locale'] as const
+export const inject = ['slots', 'settingsScope', 'connection', 'remote', 'remote.workspace', 'remote.session', 'remote.terminal', 'sidebarRight', 'sidebarRightTabs', 'theme', 'locale', 'uiConversation'] as const
 
 /**
  * 把 CodingNS 设置页挂载到 DSH 设置左侧导航，并让模块开关驱动启停。
@@ -55,7 +71,7 @@ export function apply(ctx?: Context): void {
 
   ctx.effect(() => registerCodingNsLocale(ctx), 'dsh-codingns: Client 词典')
 
-  ctx.inject(['slots', 'settingsScope', 'connection', 'locale'], (settingsCtx) => {
+  ctx.inject(['slots', 'settingsScope', 'connection', 'remote', 'remote.workspace', 'remote.session', 'remote.terminal', 'sidebarRight', 'sidebarRightTabs', 'theme', 'locale', 'uiConversation'], (settingsCtx) => {
     const localSettings = settingsCtx.settingsScope.bind<CodingNsSettings>({
       namespace: CODINGNS_SETTINGS_NAMESPACE,
     })
@@ -63,15 +79,33 @@ export function apply(ctx?: Context): void {
     // connection 收窄成 Host 句柄；浏览器侧按 ConnectionHandle 收窄回真实形状。
     const connection = settingsCtx.connection as unknown as ConnectionHandle
     const settings = createCodingNsSettingsBridge(localSettings, connection.rpc)
-    const services: CodingNsClientServices = { settings, rpc: connection.rpc, slots: settingsCtx.slots, locale: settingsCtx.locale }
+    // Typert manifest 可能晚于立即加载的 Client 入口完成登记，必须在每次调用时取 Remote。
+    const terminalRemote = (): TerminalRemote | undefined => settingsCtx.remote.terminal as unknown as TerminalRemote | undefined
+    const webTerminals = new CodingNsWebTerminals(settingsCtx, terminalRemote)
+    const disposeTerminalUi = registerCodingNsTerminalUi(settingsCtx, webTerminals, settings)
+    const services: CodingNsClientServices = {
+      settings,
+      rpc: connection.rpc,
+      remote: settingsCtx.remote,
+      slots: settingsCtx.slots,
+      locale: settingsCtx.locale,
+      uiConversation: settingsCtx.uiConversation,
+    }
     const registry = new FeatureRegistry<CodingNsClientServices, CodingNsClientFeatureModule>(services)
     registry.registerMany(CLIENT_FEATURES)
     registry.validate()
+    const restartStates: Record<string, boolean> = {}
+    let restartStatesCaptured = false
 
     settingsCtx.effect(() => {
       const sync = (): void => {
+        const snapshot = settings.getSnapshot()
+        if (!restartStatesCaptured && snapshot.status === 'ready') {
+          Object.assign(restartStates, captureRestartFeatureStates(registry.descriptors(), snapshot.value))
+          restartStatesCaptured = true
+        }
         void registry
-          .reconcile(enabledFeatureNames(registry.descriptors(), settings.getSnapshot().value))
+          .reconcile(enabledFeatureNames(registry.descriptors(), snapshot.value, restartStates))
           .catch((error: unknown) => {
             console.error('dsh-codingns: 功能模块状态同步失败', error)
           })
@@ -83,6 +117,8 @@ export function apply(ctx?: Context): void {
       const unsubscribe = settings.subscribe(sync)
       return () => {
         unsubscribe()
+        disposeTerminalUi()
+        void webTerminals.dispose()
         settings.dispose()
       }
     }, 'dsh-codingns: 功能模块启停同步')
@@ -92,7 +128,7 @@ export function apply(ctx?: Context): void {
       id: 'codingns',
       order: 30,
       label: 'CodingNS',
-      inject: () => ({ settings, registry, services }),
+      inject: () => ({ settings, registry, services, restartStates }),
     }, CodingNsSettingsSection))
   })
 }

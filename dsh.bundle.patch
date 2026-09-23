@@ -1,5 +1,11 @@
-# 阶段 0 只注册一个无副作用的 Host Cordis 行。
-# dsh.client 声明会让 DSH 的 client-modules 扫描同一包的 ./client 出口。
+# 官方终端 Host 与 Client 行必须成对停用，避免重复 terminal namespace 和
+# webTerminals service；dsh-codingns 在同一个 Bundle generation 中提供两者。
+- id: terminal-controller
+  name: '@deepseek-ai/dsh-api-terminal-controller'
+  disabled: true
+- id: ui-sidebar-terminal
+  name: '@deepseek-ai/dsh-client-ui-sidebar-terminal'
+  disabled: true
 - insert:
     - id: dsh-codingns
       name: dsh-codingns

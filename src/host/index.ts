@@ -7,20 +7,26 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { FeatureRegistry } from '../features/registry.js'
-import { enabledFeatureNames } from '../shared/contracts/config.js'
-import { HOST_FEATURES } from './features/index.js'
+import { captureRestartFeatureStates, enabledFeatureNames } from '../shared/contracts/config.js'
+import { HOST_FEATURES, createHostFeatures } from './features/index.js'
 import type { CodingNsHostServices } from './features/types.js'
 import { registerCodingNsRpc } from './rpc.js'
 import { CodingNsRpcTable } from './rpc-table.js'
 import { registerCodingNsSettings } from './settings.js'
 import { createCodingNsNativeSessionBridge } from './native-session-bridge.js'
+import { installTerminalController } from './terminal/startup.js'
 
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
 
-  ctx.inject(['settings', 'connection', 'webServer'], (hostCtx) => {
+  ctx.inject(['settings', 'connection', 'webServer'], async (hostCtx) => {
     const webServerPort = (hostCtx as Context & { webServer: { port: number } }).webServer.port
     const settings = registerCodingNsSettings(hostCtx)
+    // controller 必须在功能模块和浏览器 Client 开始消费状态前完成装配。
+    // 工厂在本次启动只读取一次开关，设置 watcher 不会热切同名 service。
+    const terminal = await installTerminalController(hostCtx, settings, hostCtx.settings, {
+      resolveWorkspaceRoot: (workspaceId) => resolveWorkspaceRoot(hostCtx, workspaceId),
+    })
     const services: CodingNsHostServices = {
       rpc: new CodingNsRpcTable(),
       settings,
@@ -28,17 +34,24 @@ export function apply(ctx?: Context): void {
       dshWebPort: webServerPort,
       events: { on: hostCtx.on.bind(hostCtx) },
       nativeSessions: createCodingNsNativeSessionBridge(hostCtx),
+      terminalProcesses: terminal.processService,
     }
     const registry = new FeatureRegistry<CodingNsHostServices>(services)
-    registry.registerMany(HOST_FEATURES)
+    registry.registerMany(createHostFeatures({
+      terminalStatus: {
+        controllerMode: terminal.mode,
+        effectiveEnabled: terminal.mode === 'enhanced',
+      },
+    }))
     registry.validate()
+    const restartStates = captureRestartFeatureStates(registry.descriptors(), settings.get())
 
     registerCodingNsRpc(hostCtx, services.rpc, services.settingsProvider)
 
     hostCtx.effect(() => {
       const sync = (): void => {
         void registry
-          .reconcile(enabledFeatureNames(registry.descriptors(), settings.get()))
+          .reconcile(enabledFeatureNames(registry.descriptors(), settings.get(), restartStates))
           .catch((error: unknown) => {
             console.error('dsh-codingns: 功能模块状态同步失败', error)
           })
@@ -49,7 +62,30 @@ export function apply(ctx?: Context): void {
   })
 }
 
-export { HOST_FEATURES, createAuthFeature, createLanAccessDshFeature, createCliAdaptersFeature } from './features/index.js'
+function resolveWorkspaceRoot(ctx: Context, workspaceId: string): string | null {
+  try {
+    const registry = ctx.get('workspaceRegistry') as { readonly list?: () => readonly Record<string, unknown>[] } | undefined
+    const entry = registry?.list?.().find((candidate) => candidate.id === workspaceId)
+    if (entry === undefined) return null
+    for (const key of ['rootPath', 'path', 'cwd', 'directory']) {
+      const value = entry[key]
+      if (typeof value === 'string' && value.trim() !== '') return value
+    }
+  } catch {
+    // Workspace Registry 还未装配时由启动服务返回可读的不可用错误。
+  }
+  return null
+}
+
+export {
+  HOST_FEATURES,
+  createAuthFeature,
+  createLanAccessDshFeature,
+  createTerminalStatusFeature,
+  createHostFeatures,
+  createCliAdaptersFeature,
+  createTerminalProcessFeature,
+} from './features/index.js'
 export type { CodingNsHostServices } from './features/index.js'
 export { CodingNsSettingsSchema, registerCodingNsSettings } from './settings.js'
 export { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler, registerCodingNsRpc } from './rpc.js'
@@ -69,6 +105,13 @@ export {
   type CodingNsNativeWorkspaceController,
 } from './native-session-bridge.js'
 export { CommandCodeDriver } from './cli-adapters/command-code-driver.js'
+export { CommandCodeSubscriptionService, readCommandCodeApiKey } from './cli-adapters/command-code-subscription.js'
+export {
+  ProviderSubscriptionService,
+  CodexSubscriptionService,
+  ClaudeCodeSubscriptionService,
+  OpenCodeSubscriptionService,
+} from './cli-adapters/provider-subscription.js'
 export { ClaudeCodeDriver } from './cli-adapters/claude-driver.js'
 export { KimiCliDriver } from './cli-adapters/kimi-driver.js'
 export { GeminiCliDriver } from './cli-adapters/gemini-driver.js'
@@ -120,3 +163,4 @@ export {
   type LanAccessDshRuntime,
   type LanAccessDshStream,
 } from './lan-access-dsh.js'
+export * from './terminal/index.js'

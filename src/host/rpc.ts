@@ -54,8 +54,11 @@ export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable, setti
 const CODINGNS_RPC_ENDPOINTS = [
   'auth/snapshot', 'auth/login', 'auth/logout', 'auth/devices', 'auth/bind', 'auth/unbind',
   'settings/get', 'settings/set',
+  'terminal/status',
+  'terminalProcess/profile/list', 'terminalProcess/profile/create', 'terminalProcess/profile/delete',
+  'terminalProcess/launch', 'terminalProcess/runtime/list', 'terminalProcess/runtime/get', 'terminalProcess/runtime/stop',
   'lanAccessDsh/addresses', 'lanAccessDsh/detect', 'lanAccessDsh/get', 'lanAccessDsh/settings/get', 'lanAccessDsh/settings/set', 'lanAccessDsh/start', 'lanAccessDsh/stop',
-  'cli/catalog', 'cli/models', 'cli/adapter/set', 'cli/session/get', 'cli/session/set', 'cli/session/list', 'cli/session/adapter-map', 'cli/session/archive', 'cli/session/steer', 'cli/session/follow-up', 'cli/session/interrupt',
+  'cli/catalog', 'cli/models', 'cli/adapter/set', 'cli/session/get', 'cli/session/set', 'cli/session/list', 'cli/session/adapter-map', 'cli/session/archive', 'cli/session/steer', 'cli/session/follow-up', 'cli/session/interrupt', 'cli/subscription',
 ] as const
 
 /** 创建远程设置处理器；只允许 CodingNS 自己的 namespace 和路径编辑。 */
@@ -109,9 +112,11 @@ function parseSettingsOp(value: unknown): SettingsPathOp {
 }
 
 function isAllowedSettingsPath(path: readonly string[]): boolean {
-  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'workspaceSessionEnhancement'].includes(path[0] ?? '')
-  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'workspaceSessionEnhancement'].includes(path[1] ?? '')
-  if (path[0] === 'workspaceSessionEnhancement') return path.length === 2 && path[1] === 'showAdapterLogo'
+  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement'].includes(path[0] ?? '')
+  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'terminalEnhancement', 'workspaceSessionEnhancement'].includes(path[1] ?? '')
+  if (path[0] === 'workspaceSessionEnhancement') {
+    return path.length === 2 && ['showAdapterLogo', 'showArchivedSessions'].includes(path[1] ?? '')
+  }
   return path[0] === 'lanAccessDsh' && path.length === 2 && ['autoStart', 'listenHost', 'listenPort', 'dshPort'].includes(path[1] ?? '')
 }
 

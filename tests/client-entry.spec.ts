@@ -38,6 +38,9 @@ test('Client 构建产物包含模块卡片、设置面板和 Host RPC 调用', 
     'conversation.input.right', 'Agent 选择器', '思考等级', 'data-codingns-agent', 'conversation.input.model',
     '安装状态', '模型目录', 'aria-modal',
     '工作区会话增强', '显示 Agent Logo', 'session/adapter-map', 'data-codingns-session-logo',
+    '终端强化', '重启 DSH 后生效', '当前运行状态', '下次启动目标',
+    '新建终端默认项', '系统推荐', 'PowerShell', 'Git Bash',
+    '背景色', '前景色', '光标颜色', '字体', '字号（px）', '行高', '光标形状', '光标闪烁', '回滚行数',
   ]) {
     assert.equal(source.includes(marker), true, `Client 产物缺少 ${marker}`)
   }
@@ -69,4 +72,22 @@ test('设置页不再按模块名硬编码渲染分支', async () => {
 test('Client 构建产物声明 Cordis 服务依赖', async () => {
   const source = await readFile(clientBundle, 'utf8')
   assert.match(source, /exports\.inject\s*=\s*inject/u)
+  const clientSourceText = await readFile(clientSource, 'utf8')
+  for (const dependency of ['remote', 'remote.workspace', 'remote.session', 'remote.terminal']) {
+    assert.match(clientSourceText, new RegExp(`['"]${dependency.replace('.', '\\.') }['"]`))
+  }
+})
+
+test('Client 构建产物提供自有 webTerminals 与 Sidebar 终端', async () => {
+  const source = await readFile(clientBundle, 'utf8')
+  for (const marker of [
+    'super(ctx, "webTerminals")',
+    'dsh-codingns/terminal',
+    'sidebar.right.pane.tab',
+    'sidebar.right.tab.guide.entry',
+    'CodingNS 自有的浏览器终端服务',
+  ]) {
+    assert.equal(source.includes(marker), true, `Client 产物缺少自有终端标记 ${marker}`)
+  }
+  assert.equal(source.includes('@deepseek-ai/dsh-client-ui-sidebar-terminal'), false)
 })

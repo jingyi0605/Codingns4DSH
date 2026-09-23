@@ -1,11 +1,17 @@
 import { createElement, useState, useSyncExternalStore } from 'react'
 import type { ReactElement } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {
+  SettingsScope,
+  SettingsScopeSnapshot,
+  SettingsSectionOwnerProps,
+} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { FeatureRegistry } from '../features/registry.js'
 import {
   CODINGNS_MODULES_FIELD,
   isFeatureEnabled,
+  type RestartFeatureStates,
   type CodingNsSettings,
 } from '../shared/contracts/config.js'
 import { settingsModules, type CodingNsSettingsModule } from './features/index.js'
@@ -13,11 +19,24 @@ import type { CodingNsClientFeatureModule, CodingNsClientServices } from './feat
 import { dshFormRootStyle, dshThemeColor } from './theme.js'
 import { useCodingNsTranslator } from './locale.js'
 
+// pnpm 会为不同 peer 上下文保留独立的 ui-slots 类型实例；插件在自己实际使用的
+// 根实例上重申公开契约，避免依赖声明合并偶然穿过依赖副本。
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    'settings.section': {
+      kind: 'list'
+      scope: 'root'
+      owner: SettingsSectionOwnerProps
+    }
+  }
+}
 
 export interface CodingNsSectionProps extends PropsRuntime<'settings.section'> {
   readonly settings: SettingsScope<CodingNsSettings>
   readonly registry: FeatureRegistry<CodingNsClientServices, CodingNsClientFeatureModule>
   readonly services: CodingNsClientServices
+  /** 当前 Client 进程启动时捕获的重启生效模块状态。 */
+  readonly restartStates?: RestartFeatureStates
 }
 
 /**
@@ -26,7 +45,7 @@ export interface CodingNsSectionProps extends PropsRuntime<'settings.section'> {
  * 它只做一件事：遍历注册表中带界面描述的模块并渲染卡片。卡片内容来自模块
  * 自己的 settingsPanel，所以新增模块不会在这里产生分支。
  */
-export function CodingNsSettingsSection({ settings, registry, services }: CodingNsSectionProps): ReactElement {
+export function CodingNsSettingsSection({ settings, registry, services, restartStates = {} }: CodingNsSectionProps): ReactElement {
   const snapshot = useSyncExternalStore(
     (listener) => settings.subscribe(listener),
     () => settings.getSnapshot(),
@@ -46,6 +65,7 @@ export function CodingNsSettingsSection({ settings, registry, services }: Coding
         entry,
         snapshot,
         services,
+        restartStates,
       })),
     ),
   )
@@ -55,14 +75,18 @@ interface FeatureCardProps {
   readonly entry: CodingNsSettingsModule
   readonly snapshot: SettingsScopeSnapshot<CodingNsSettings>
   readonly services: CodingNsClientServices
+  readonly restartStates: RestartFeatureStates
 }
 
 /** 通用功能模块卡片：标题栏开关由 descriptor.ui 决定，内容由模块自己提供。 */
-function FeatureCard({ entry, snapshot, services }: FeatureCardProps): ReactElement {
+function FeatureCard({ entry, snapshot, services, restartStates }: FeatureCardProps): ReactElement {
   const { module, ui } = entry
   const t = useCodingNsTranslator(services.locale)
   const [writeError, setWriteError] = useState<string | null>(null)
   const enabled = isFeatureEnabled(module.descriptor, snapshot.value)
+  const effectiveEnabled = module.descriptor.activation === 'restart'
+    ? restartStates[module.descriptor.name] ?? module.descriptor.enabledByDefault
+    : enabled
   const panel = module.settingsPanel
   // 常驻模块不提供关闭入口；设置未就绪或只读时也不允许切换。
   const switchDisabled = ui.alwaysEnabled === true || snapshot.status === 'loading' || !snapshot.writable
@@ -97,6 +121,14 @@ function FeatureCard({ entry, snapshot, services }: FeatureCardProps): ReactElem
       style: { display: 'flex', flexDirection: 'column', gap: 16, padding: 20, borderTop: `1px solid ${dshThemeColor.border}` },
     },
       createElement('p', { style: { margin: 0, fontSize: 13, opacity: 0.65 } }, t(ui.descriptionKey ?? ui.description)),
+      module.descriptor.activation !== 'restart' ? null : createElement(
+        'div',
+        { role: 'status', style: { display: 'flex', flexDirection: 'column', gap: 4, padding: 10, border: `1px solid ${dshThemeColor.border}`, borderRadius: 6, fontSize: 13 } },
+        createElement('span', undefined, t('settings.restartTarget', { state: enabled ? t('settings.enabled') : t('settings.disabled') })),
+        effectiveEnabled === enabled
+          ? createElement('span', undefined, t('settings.runtimeReported'))
+          : createElement('strong', undefined, t('settings.restartRequired')),
+      ),
       panel === undefined ? null : createElement(panel, { services, enabled, snapshot }),
       writeError === null ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error } }, writeError),
     ),

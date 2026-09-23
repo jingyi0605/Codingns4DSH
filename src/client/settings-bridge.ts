@@ -67,7 +67,7 @@ export class CodingNsSettingsBridge implements SettingsScope<CodingNsSettings> {
 
   async set(field: string, value: unknown): Promise<void> {
     if (!this.isRemote()) return this.local.set(field, value)
-    return this.mutate([{ op: 'set', path: [field], value }])
+    return this.mutate([{ op: 'set', path: [field], value: toJsonValue(value) }])
   }
 
   async unset(field: string): Promise<void> {
@@ -116,6 +116,19 @@ export class CodingNsSettingsBridge implements SettingsScope<CodingNsSettings> {
     const snapshot = this.local.getSnapshot()
     return snapshot.mode === 'memory' || snapshot.status === 'unavailable'
   }
+}
+
+type JsonValue = Extract<SettingsMutation[number], { readonly op: 'set' }>['value']
+
+/** 设置 RPC 只能传 JSON；在浏览器边界尽早拒绝函数、循环引用等无效值。 */
+function toJsonValue(value: unknown): JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (Array.isArray(value)) return value.map(toJsonValue)
+  if (typeof value !== 'object') throw new TypeError('设置值必须是可序列化的 JSON')
+  const result: Record<string, JsonValue> = {}
+  for (const [key, entry] of Object.entries(value)) result[key] = toJsonValue(entry)
+  return result
 }
 
 export function createCodingNsSettingsBridge(

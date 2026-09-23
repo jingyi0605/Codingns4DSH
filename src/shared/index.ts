@@ -2,21 +2,32 @@ export {
   CODINGNS_CONTROL_BASE_URL_FIELD,
   CODINGNS_CONTROL_BASE_URLS_FIELD,
   CODINGNS_LAN_ACCESS_DSH_FIELD,
+  CODINGNS_TERMINAL_ENHANCEMENT_FIELD,
   CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD,
   CODINGNS_MODULES_FIELD,
   CODINGNS_SETTINGS_NAMESPACE,
   DEFAULT_CODINGNS_CONTROL_BASE_URL,
   DEFAULT_CODINGNS_CONTROL_BASE_URLS,
   DEFAULT_CODINGNS_SETTINGS,
+  DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
+  captureRestartFeatureStates,
   enabledFeatureNames,
   isFeatureEnabled,
   type CodingNsSettings,
   type LanAccessDshSettings,
+  type RestartFeatureStates,
+  type TerminalAppearanceSettings,
+  type TerminalAppearanceTheme,
+  type TerminalBindingScope,
+  type TerminalCursorStyle,
+  type TerminalEnhancementSettings,
+  type TerminalProfileId,
   type WorkspaceSessionEnhancementSettings,
 } from './contracts/config.js'
 export type {
   FeatureContext,
+  FeatureActivation,
   FeatureDescriptor,
   FeatureDisposer,
   FeatureModule,
@@ -62,6 +73,14 @@ export type {
   CodingNsCliTurnInput,
 } from './contracts/cli-adapter.js'
 export type {
+  CommandCodeSubscriptionUsage,
+  CommandCodeSubscriptionWindow,
+} from './contracts/command-code.js'
+export type {
+  CliSubscriptionUsage,
+  CliSubscriptionWindow,
+} from './contracts/subscription.js'
+export type {
   PeerHostRecord,
   PeerHostStatus,
   ResourceScopeDisposer,
@@ -70,11 +89,55 @@ export type {
   ResourceScopeSnapshot,
 } from './contracts/peer-host.js'
 export { ResourceScopeStaleError } from './contracts/peer-host.js'
+export {
+  DEBUG_ERROR_CODES,
+  DEBUG_RPC_ENDPOINTS,
+  parseDebugMutationScope,
+  parseDebugPtyLaunchRequest,
+  parseDebugRpcScope,
+  type DebugAiFallbackState,
+  type DebugCompatibilityLevel,
+  type DebugErrorCode,
+  type DebugMutationScope,
+  type DebugPortState,
+  type DebugProcessInstance,
+  type DebugProcessOwnership,
+  type DebugPlanState,
+  type DebugProxyProtocol,
+  type DebugPtyLaunchRequest,
+  type DebugRpcEndpoint,
+  type DebugRpcScope,
+  type DebugRuntimeMode,
+  type DebugRuntimeState,
+} from './contracts/debug.js'
 export type {
   LanAccessDshConfig,
   LanAccessDshSnapshot,
   LanAccessDshState,
 } from './contracts/lan-access-dsh.js'
+export type {
+  CodingNsTerminalCreateRequest,
+  CodingNsTerminalEnvironment,
+  CodingNsTerminalFrame,
+  CodingNsTerminalRetentionFrame,
+  CodingNsTerminalRuntimeType,
+  CodingNsTerminalShell,
+  CodingNsTerminalShellOption,
+  CodingNsTerminalStatus,
+  CodingNsTerminalState,
+  CodingNsWebTerminalInfo,
+  PersistentTerminalRecord,
+  TerminalAttachmentRecord,
+  TerminalOwnerScope,
+  TerminalRecordIdentity,
+} from './contracts/terminal.js'
+export type {
+  TerminalLaunchProfile,
+  TerminalProcessInstance,
+  TerminalProcessLaunchRequest,
+  TerminalProcessLaunchResult,
+  TerminalProcessState,
+} from './contracts/terminal-process.js'
 export type {
   AccountProfile,
   AuthClientType,

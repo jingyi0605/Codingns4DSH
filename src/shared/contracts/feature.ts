@@ -3,6 +3,9 @@ export type FeatureState = 'disabled' | 'enabling' | 'enabled' | 'draining' | 'f
 /** 功能模块的承载端：Host 进程、浏览器，或两端都需要。 */
 export type FeatureRuntime = 'host' | 'client' | 'both'
 
+/** 功能开关的生效时机；未声明时按实时生效处理。 */
+export type FeatureActivation = 'live' | 'restart'
+
 /**
  * 功能模块在设置界面中的静态描述。
  *
@@ -33,6 +36,8 @@ export interface FeatureDescriptor {
   enabledByDefault: boolean
   dependencies: string[]
   runtime: FeatureRuntime
+  /** `restart` 表示只保存下次启动意图，当前进程不跟随设置变化启停。 */
+  activation?: FeatureActivation
   /** 提供后该模块出现在设置页；缺省表示它没有界面。 */
   ui?: FeatureUiDescriptor
 }

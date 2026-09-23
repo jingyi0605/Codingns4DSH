@@ -14,10 +14,16 @@ test('package manifest declares the DSH bundle and client entry', () => {
   assert.deepEqual(manifest.dsh.bundle, { patch: './dsh.bundle.patch' })
   assert.deepEqual(manifest.dsh.client, {
     inject: [
+      '@deepseek-ai/dsh-api-remotes',
       '@deepseek-ai/dsh-client-locale',
       '@deepseek-ai/dsh-client-connection',
+      '@deepseek-ai/dsh-client-ui-conversation',
+      '@deepseek-ai/dsh-client-ui-layout',
       '@deepseek-ai/dsh-client-ui-settings',
       '@deepseek-ai/dsh-client-ui-renderer',
+      '@deepseek-ai/dsh-client-ui-session',
+      '@deepseek-ai/dsh-client-ui-sidebar-right',
+      '@deepseek-ai/dsh-client-ui-theme',
     ],
     platform: 'web',
     immediately: true,
@@ -26,6 +32,8 @@ test('package manifest declares the DSH bundle and client entry', () => {
   assert.equal(manifest.exports['./client'].default, './dist/client/bundle.js')
   assert.equal(manifest.exports['./client/lan-access'].default, './dist/client/lan-access.js')
   assert.equal(manifest.exports['./host'].default, './dist/host/index.js')
+  assert.equal(manifest.exports['./typert'].default, './dist/typert.host.js')
+  assert.equal(manifest.exports['./typert'].types, './dist/typert.host.d.ts')
   assert.equal(manifest.exports['./bootstrap'].default, './dist/bootstrap/index.js')
   assert.equal(manifest.engines.dsh, '0.1.6-alpha.2')
 })
@@ -34,6 +42,8 @@ test('bundle patch and example profile use DSH native shapes', async () => {
   const patch = await readFile(join(root, 'dsh.bundle.patch'), 'utf8')
   assert.match(patch, /id: dsh-codingns/u)
   assert.match(patch, /name: dsh-codingns/u)
+  assert.match(patch, /id:\s*terminal-controller[\s\S]*?name:\s*'@deepseek-ai\/dsh-api-terminal-controller'[\s\S]*?disabled:\s*true/u)
+  assert.match(patch, /id:\s*ui-sidebar-terminal[\s\S]*?name:\s*'@deepseek-ai\/dsh-client-ui-sidebar-terminal'[\s\S]*?disabled:\s*true/u)
   const profile = JSON.parse(await readFile(join(root, 'profile/package.json'), 'utf8'))
   assert.deepEqual(profile.dsh.profile.bundles, ['dsh-codingns'])
   assert.equal(profile.dependencies['dsh-codingns'], '0.1.0')
