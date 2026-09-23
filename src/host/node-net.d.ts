@@ -1,7 +1,11 @@
 declare module 'node:net' {
   interface Socket {
     pipe(destination: Socket): Socket
+    write(data: string | Uint8Array): boolean
+    end(): void
     destroy(error?: Error): void
+    setTimeout(timeout: number, callback?: () => void): this
+    on(event: 'data', listener: (chunk: Uint8Array | string) => void): this
     on(event: 'error' | 'close', listener: (...args: unknown[]) => void): this
     once(event: 'connect' | 'error' | 'close', listener: (...args: unknown[]) => void): this
     removeListener(event: 'error', listener: (...args: unknown[]) => void): this
@@ -9,6 +13,7 @@ declare module 'node:net' {
 
   interface Server {
     listen(options: { port: number; host: string }, callback?: () => void): this
+    listen(options: { path: string; readableAll?: boolean; writableAll?: boolean }, callback?: () => void): this
     close(callback?: (error?: Error) => void): this
     once(event: 'error', listener: (error: Error) => void): this
     removeListener(event: 'error', listener: (error: Error) => void): this
@@ -17,6 +22,7 @@ declare module 'node:net' {
 
   export function createServer(listener: (socket: Socket) => void): Server
   export function connect(options: { port: number; host: string }): Socket
+  export function connect(path: string): Socket
 }
 
 declare module 'node:os' {

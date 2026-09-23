@@ -14,6 +14,10 @@
       "types": "./dist/host/index.d.ts",
       "default": "./dist/host/index.js"
     },
+    "./typert": {
+      "types": "./dist/typert.host.d.ts",
+      "default": "./dist/typert.host.js"
+    },
     "./client": {
       "types": "./dist/client/index.d.ts",
       "default": "./dist/client/bundle.js"
@@ -51,22 +55,28 @@
     },
     "client": {
       "inject": [
+        "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-renderer"
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-theme"
       ],
       "platform": "web",
       "immediately": true
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && pnpm run bundle:client",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && pnpm run bundle:client",
     "bundle:client": "tsdown",
     "dev:link": "node scripts/link-dsh-dev.mjs",
     "dev:watch": "node scripts/dev-watch.mjs",
     "watch:client": "tsdown --watch",
-    "test": "pnpm run build && node --test",
+    "test": "pnpm run build && node --test tests/*.spec.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "files": [
@@ -81,8 +91,8 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-client-connection": "0.1.6-alpha.2",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.6-alpha.2",
     "@deepseek-ai/dsh-client-ui-renderer": "^0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.6-alpha.2",
     "@deepseek-ai/dsh-client-ui-slots": "^0.1.6-alpha.2",
     "@deepseek-ai/dsh-settings": "^0.1.6-alpha.2",
     "@types/react": "~18.3.1",
@@ -92,6 +102,18 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-client-locale": "0.1.6-alpha.2",
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/dsh-api-remotes": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-layout": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-session": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-theme": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.1.6-alpha.2",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@lydell/node-pty": "1.1.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "zod": "^4.4.3"
   }
 }
