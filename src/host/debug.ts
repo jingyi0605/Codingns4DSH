@@ -29,17 +29,10 @@ export interface DebugProxyBinding {
   readonly port: number
 }
 
-export interface DebugProxyService {
-  enable(input: { workspaceId: string; profileId: string; instanceId: string; port: number }): Promise<DebugProxyBinding>
-  disable(bindingId: string): Promise<void>
-  get(bindingId: string): DebugProxyBinding | null
-}
-
 export interface DebugWorkspaceServiceOptions {
   readonly resolveWorkspaceRoot: (workspaceId: string) => string | null
   readonly terminalProcesses: TerminalProcessService
   readonly portInspector?: DebugPortInspector
-  readonly proxyService?: DebugProxyService
 }
 
 export interface DebugPortCheck {
@@ -57,6 +50,7 @@ export class DebugWorkspaceService {
   private readonly portInspector: DebugPortInspector
   private readonly checks = new Map<string, DebugPortCheck>()
   private readonly bindings = new Map<string, DebugProxyBinding>()
+  private readonly bindingProcesses = new Map<string, DebugPortProcess>()
 
   constructor(private readonly options: DebugWorkspaceServiceOptions) {
     this.portInspector = options.portInspector ?? new NodeDebugPortInspector()
@@ -108,7 +102,16 @@ export class DebugWorkspaceService {
 
   listInstances(workspaceId?: string): readonly TerminalProcessInstance[] { return this.options.terminalProcesses.listInstances(workspaceId) }
   getInstance(instanceId: string): TerminalProcessInstance | undefined { return this.options.terminalProcesses.getInstance(instanceId) }
-  stop(instanceId: string): Promise<TerminalProcessInstance> { return this.options.terminalProcesses.stop(instanceId) }
+  async stop(instanceId: string): Promise<TerminalProcessInstance> {
+    const stopped = await this.options.terminalProcesses.stop(instanceId)
+    for (const binding of this.bindings.values()) {
+      if (binding.instanceId === instanceId) {
+        this.bindings.delete(binding.id)
+        this.bindingProcesses.delete(binding.id)
+      }
+    }
+    return stopped
+  }
 
   async checkPort(workspaceId: string, profileId: string): Promise<DebugPortCheck> {
     const profile = findProfile(await this.getConfig(workspaceId), profileId)
@@ -141,7 +144,6 @@ export class DebugWorkspaceService {
   }
 
   async enableProxy(workspaceId: string, profileId: string, instanceId: string): Promise<DebugProxyBinding> {
-    if (this.options.proxyService === undefined) throw new Error('CodingNS 反向代理服务不可用')
     const profile = findProfile(await this.getConfig(workspaceId), profileId)
     if (!profile.proxy.enabled || profile.port === null) throw new Error('配置项未启用代理或没有端口')
     const instance = this.getInstance(instanceId)
@@ -149,20 +151,65 @@ export class DebugWorkspaceService {
     const process = await this.portInspector.inspect(profile.port)
     if (process === null) throw new Error('配置端口当前未监听')
     if (instance.pid !== null && process.pid !== instance.pid) throw new Error('配置端口未由当前运行实例监听')
-    const binding = await this.options.proxyService.enable({ workspaceId, profileId, instanceId, port: profile.port })
+    const slug = randomUUID().replaceAll('-', '')
+    const binding: DebugProxyBinding = {
+      id: randomUUID(), slug, url: `/api/codingns/debug-proxy?slug=${encodeURIComponent(slug)}`,
+      workspaceId, profileId, instanceId, port: profile.port,
+    }
     this.bindings.set(binding.id, binding)
+    this.bindingProcesses.set(binding.id, process)
     return binding
   }
 
   async disableProxy(workspaceId: string, bindingId: string): Promise<void> {
-    const binding = this.bindings.get(bindingId) ?? this.options.proxyService?.get(bindingId) ?? null
+    const binding = this.bindings.get(bindingId) ?? null
     if (binding === null || binding.workspaceId !== workspaceId) throw new Error('代理绑定不存在')
-    if (this.options.proxyService === undefined) throw new Error('CodingNS 反向代理服务不可用')
-    await this.options.proxyService.disable(bindingId)
     this.bindings.delete(bindingId)
+    this.bindingProcesses.delete(bindingId)
   }
 
-  getProxy(bindingId: string): DebugProxyBinding | null { return this.bindings.get(bindingId) ?? this.options.proxyService?.get(bindingId) ?? null }
+  getProxy(bindingId: string): DebugProxyBinding | null { return this.bindings.get(bindingId) ?? null }
+
+  /** 由插件自己的 Fetch 路由调用；不接受任意 Host、端口或 URL。 */
+  async handleProxyRequest(request: Request): Promise<Response> {
+    const requestUrl = new URL(request.url)
+    const slug = requestUrl.searchParams.get('slug')
+    const binding = slug === null ? undefined : [...this.bindings.values()].find((item) => item.slug === slug)
+    if (binding === undefined) return new Response('代理绑定不存在', { status: 404 })
+    if (isUpgradeRequest(request.headers)) return new Response('WebSocket 代理未由 DSH Fetch 接口提供', { status: 501 })
+    const instance = this.getInstance(binding.instanceId)
+    if (instance === undefined || instance.workspaceId !== binding.workspaceId || !isActive(instance.state)) {
+      this.bindings.delete(binding.id)
+      this.bindingProcesses.delete(binding.id)
+      return new Response('运行实例已停止', { status: 404 })
+    }
+    const process = await this.portInspector.inspect(binding.port)
+    const expectedProcess = this.bindingProcesses.get(binding.id)
+    if (process === null || expectedProcess === undefined || !sameProcess(expectedProcess, process) || (instance.pid !== null && process.pid !== instance.pid)) {
+      this.bindings.delete(binding.id)
+      this.bindingProcesses.delete(binding.id)
+      return new Response('端口监听身份已变化', { status: 404 })
+    }
+    const targetPath = requestUrl.searchParams.get('path') ?? '/'
+    let parsedPath: URL
+    try { parsedPath = new URL(targetPath, 'http://127.0.0.1') } catch { return new Response('代理路径非法', { status: 400 }) }
+    if (parsedPath.origin !== 'http://127.0.0.1' || !parsedPath.pathname.startsWith('/')) return new Response('代理路径非法', { status: 400 })
+    const upstreamHeaders = new Headers()
+    request.headers.forEach((value, key) => { if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase()) && key.toLowerCase() !== 'host') upstreamHeaders.set(key, value) })
+    const init: RequestInit = { method: request.method, headers: upstreamHeaders, redirect: 'manual', signal: request.signal }
+    if (request.method !== 'GET' && request.method !== 'HEAD') init.body = await request.arrayBuffer()
+    let response: Response
+    try {
+      response = await fetch(`http://127.0.0.1:${binding.port}${parsedPath.pathname}${parsedPath.search}`, init)
+    } catch (error) {
+      return new Response(error instanceof Error ? error.message : '上游服务不可达', { status: 502 })
+    }
+    const responseHeaders = new Headers()
+    response.headers.forEach((value, key) => { if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) responseHeaders.set(key, value) })
+    const location = response.headers.get('location')
+    if (location !== null) responseHeaders.set('location', rewriteLocation(location, binding.url))
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders })
+  }
 
   private workspaceRoot(workspaceId: string): string {
     const root = this.options.resolveWorkspaceRoot(workspaceId)
@@ -171,6 +218,18 @@ export class DebugWorkspaceService {
   }
 
   private configFilename(workspaceId: string): string { return join(this.workspaceRoot(workspaceId), '.codingns', 'debug.json') }
+}
+
+const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
+
+function isUpgradeRequest(headers: Headers): boolean { return headers.get('upgrade')?.toLowerCase() === 'websocket' }
+
+function rewriteLocation(location: string, proxyUrl: string): string {
+  try {
+    const parsed = new URL(location)
+    if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') return location
+    return `${proxyUrl}&path=${encodeURIComponent(`${parsed.pathname}${parsed.search}`)}`
+  } catch { return location }
 }
 
 /** Node 平台的最小端口观察器；具体系统命令只留在这一层。 */

@@ -86,22 +86,17 @@ test('Spec003 代理绑定必须引用正在运行实例和已监听端口', asy
   const root = await mkdtemp(join(tmpdir(), 'dsh-debug-'))
   try {
     const terminal = fakeTerminal()
-    const enabled: unknown[] = []
-    const proxy = {
-      async enable(input: unknown) { enabled.push(input); return { id: 'binding-1', slug: 'abc123', url: '/proxy/abc123', ...(input as object) } },
-      async disable() {},
-      get() { return null },
-    }
     const service = new DebugWorkspaceService({
       resolveWorkspaceRoot: () => root,
       terminalProcesses: terminal.service,
       portInspector: { async inspect() { return { pid: 42, startToken: 'x', command: null, cwd: null } }, async terminate() {} },
-      proxyService: proxy,
     })
     await service.saveConfig('workspace-a', config())
     const binding = await service.enableProxy('workspace-a', 'frontend', 'instance-1')
-    assert.equal(binding.slug, 'abc123')
-    assert.deepEqual(enabled, [{ workspaceId: 'workspace-a', profileId: 'frontend', instanceId: 'instance-1', port: 5173 }])
+    assert.equal(binding.workspaceId, 'workspace-a')
+    assert.equal(binding.instanceId, 'instance-1')
+    assert.match(binding.url, /^\/api\/codingns\/debug-proxy\?slug=/u)
+    assert.equal(service.getProxy(binding.id)?.port, 5173)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -115,10 +110,61 @@ test('Spec003 端口被其他进程复用时拒绝创建代理', async () => {
       resolveWorkspaceRoot: () => root,
       terminalProcesses: terminal.service,
       portInspector: { async inspect() { return { pid: 99, startToken: 'other', command: null, cwd: null } }, async terminate() {} },
-      proxyService: { async enable() { throw new Error('不应调用代理') }, async disable() {}, get() { return null } },
     })
     await service.saveConfig('workspace-a', config())
     await assert.rejects(() => service.enableProxy('workspace-a', 'frontend', 'instance-1'), /当前运行实例/u)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Spec003 内部代理只转发已绑定回环服务并过滤升级头', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-debug-'))
+  const originalFetch = globalThis.fetch
+  try {
+    const terminal = fakeTerminal()
+    const service = new DebugWorkspaceService({
+      resolveWorkspaceRoot: () => root,
+      terminalProcesses: terminal.service,
+      portInspector: { async inspect() { return { pid: 42, startToken: 'x', command: null, cwd: null } }, async terminate() {} },
+    })
+    await service.saveConfig('workspace-a', config())
+    const binding = await service.enableProxy('workspace-a', 'frontend', 'instance-1')
+    let target = ''
+    globalThis.fetch = (async (input, init) => {
+      target = String(input)
+      assert.equal(init?.method, 'GET')
+      const headers = new Headers(init?.headers)
+      assert.equal(headers.get('connection'), null)
+      return new Response('ok', { status: 200, headers: { 'content-type': 'text/event-stream', connection: 'close' } })
+    }) as typeof fetch
+    const response = await service.handleProxyRequest(new Request(`http://dsh${binding.url}&path=${encodeURIComponent('/events?x=1')}`, { headers: { connection: 'keep-alive' } }))
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), 'ok')
+    assert.equal(target, 'http://127.0.0.1:5173/events?x=1')
+    assert.equal(response.headers.get('connection'), null)
+  } finally {
+    globalThis.fetch = originalFetch
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Spec003 代理请求发现同 PID 身份变化时立即失效', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-debug-'))
+  try {
+    const terminal = fakeTerminal()
+    let current = { pid: 42, startToken: 'before', command: null, cwd: null }
+    const service = new DebugWorkspaceService({
+      resolveWorkspaceRoot: () => root,
+      terminalProcesses: terminal.service,
+      portInspector: { async inspect() { return current }, async terminate() {} },
+    })
+    await service.saveConfig('workspace-a', config())
+    const binding = await service.enableProxy('workspace-a', 'frontend', 'instance-1')
+    current = { ...current, startToken: 'after' }
+    const response = await service.handleProxyRequest(new Request(`http://dsh${binding.url}`))
+    assert.equal(response.status, 404)
+    assert.equal(service.getProxy(binding.id), null)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

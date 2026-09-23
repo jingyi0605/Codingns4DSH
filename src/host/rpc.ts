@@ -3,6 +3,7 @@ import type { ConnectionRpcHandler, ConnectionRpcResult } from '@deepseek-ai/dsh
 import type { SettingsPathOp, SettingsProvider } from '@deepseek-ai/dsh-settings'
 import { CODINGNS_SETTINGS_NAMESPACE, type CodingNsSettings } from '../shared/contracts/config.js'
 import { CodingNsRpcError, type CodingNsRpcHandler, type CodingNsRpcTable } from './rpc-table.js'
+import type { DebugWorkspaceService } from './debug.js'
 
 /**
  * 创建 CodingNS Host RPC 主处理器。
@@ -27,7 +28,7 @@ export function createCodingNsRpcHandler(table: CodingNsRpcTable): ConnectionRpc
 }
 
 /** 在当前 Connection 上挂载 CodingNS RPC 主处理器；注销由调用方的 effect 负责。 */
-export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable, settingsProvider?: SettingsProvider): void {
+export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable, settingsProvider?: SettingsProvider, debug?: DebugWorkspaceService): void {
   ctx.effect(
     () => {
       const unregisterSettings = settingsProvider === undefined
@@ -42,7 +43,14 @@ export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable, setti
         requestBody: 'buffered',
         fetch: async (request) => handleFetchRpc(request, endpoint, handler),
       }))
+      const disposeProxy = debug === undefined ? undefined : ctx.connection.fetch.register({
+        path: '/api/codingns/debug-proxy',
+        methods: ['GET', 'HEAD', 'POST'],
+        requestBody: 'streaming',
+        fetch: (request) => debug.handleProxyRequest(request),
+      })
       return async (): Promise<void> => {
+        await disposeProxy?.()
         for (const dispose of disposeFetch.reverse()) await dispose()
         unregisterSettings?.()
       }

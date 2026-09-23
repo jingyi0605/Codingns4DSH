@@ -24,6 +24,7 @@ interface DebugProfile {
 interface DebugConfig { readonly profiles: readonly DebugProfile[] }
 interface DebugInstance { readonly id: string; readonly profileId: string; readonly state: string; readonly terminalId: string }
 interface DebugPortCheck { readonly id: string; readonly listening: boolean; readonly process: { readonly pid: number; readonly command: string | null } | null }
+interface DebugProxyBinding { readonly id: string; readonly profileId: string; readonly instanceId: string; readonly url: string }
 
 /** 注册最小 Debug 页面；页面只负责展示和发送用户意图。 */
 export function registerDebugUi(ctx: Context, rpc: CodingNsRpcClient, remote: unknown): () => void {
@@ -47,6 +48,7 @@ function DebugBody({ sessionId, rpc, remote, sidebarRight }: DebugTabProps): Rea
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [config, setConfig] = useState<DebugConfig | null>(null)
   const [instances, setInstances] = useState<readonly DebugInstance[]>([])
+  const [bindings, setBindings] = useState<readonly DebugProxyBinding[]>([])
   const [message, setMessage] = useState('正在读取工作区…')
   const [busy, setBusy] = useState(false)
 
@@ -88,6 +90,12 @@ function DebugBody({ sessionId, rpc, remote, sidebarRight }: DebugTabProps): Rea
         createElement('button', { type: 'button', disabled: busy, onClick: () => void launch(profile) }, '启动'),
         profile.port === null ? null : createElement('button', { type: 'button', disabled: busy, onClick: () => void inspect(profile) }, '检查端口'),
         instances.filter((instance) => instance.profileId === profile.id && instance.state === 'running').map((instance) => createElement('button', { key: instance.id, type: 'button', disabled: busy, onClick: () => void stop(instance) }, '停止')),
+        instances.filter((instance) => instance.profileId === profile.id && instance.state === 'running' && profile.proxy.enabled).map((instance) => {
+          const binding = bindings.find((item) => item.instanceId === instance.id)
+          return binding === undefined
+            ? createElement('button', { key: `proxy-${instance.id}`, type: 'button', disabled: busy, onClick: () => void enableProxy(profile, instance) }, '开启代理')
+            : createElement('span', { key: `proxy-${instance.id}`, style: mutedStyle }, createElement('a', { href: binding.url, target: '_blank', rel: 'noreferrer' }, '打开代理'), createElement('button', { type: 'button', disabled: busy, onClick: () => void disableProxy(binding) }, '关闭代理'))
+        }),
       ),
     )),
   )
@@ -115,6 +123,22 @@ function DebugBody({ sessionId, rpc, remote, sidebarRight }: DebugTabProps): Rea
     await withBusy(async () => {
       await call(rpc, 'debug/runtime/stop', { sessionId: String(sessionId), workspaceId, generation: 0, instanceId: instance.id })
       setInstances((current) => current.map((item) => item.id === instance.id ? { ...item, state: 'exited' } : item))
+      setBindings((current) => current.filter((item) => item.instanceId !== instance.id))
+    })
+  }
+
+  async function enableProxy(profile: DebugProfile, instance: DebugInstance): Promise<void> {
+    await withBusy(async () => {
+      const binding = await call<DebugProxyBinding>(rpc, 'debug/proxy/enable', { sessionId: String(sessionId), workspaceId, generation: 0, profileId: profile.id, instanceId: instance.id })
+      setBindings((current) => [...current.filter((item) => item.id !== binding.id && item.instanceId !== binding.instanceId), binding])
+      setMessage(`代理已开启：${binding.url}`)
+    })
+  }
+
+  async function disableProxy(binding: DebugProxyBinding): Promise<void> {
+    await withBusy(async () => {
+      await call(rpc, 'debug/proxy/disable', { sessionId: String(sessionId), workspaceId, generation: 0, bindingId: binding.id })
+      setBindings((current) => current.filter((item) => item.id !== binding.id))
     })
   }
 

@@ -53,7 +53,7 @@ export function apply(ctx?: Context): void {
     registry.validate()
     const restartStates = captureRestartFeatureStates(registry.descriptors(), settings.get())
 
-    registerCodingNsRpc(hostCtx, services.rpc, services.settingsProvider)
+    registerCodingNsRpc(hostCtx, services.rpc, services.settingsProvider, debug)
 
     hostCtx.effect(() => {
       const sync = (): void => {
@@ -103,7 +103,6 @@ export {
   type DebugPortInspector,
   type DebugPortProcess,
   type DebugProxyBinding,
-  type DebugProxyService,
 } from './debug.js'
 export {
   CodingNsRpcError,

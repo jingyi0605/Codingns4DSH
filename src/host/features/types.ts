@@ -3,7 +3,7 @@ import type { SettingsProvider, SettingsScope } from '@deepseek-ai/dsh-settings'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import type { TerminalProcessService } from '../terminal/terminal-process-service.js'
-import type { DebugProxyService, DebugWorkspaceService } from '../debug.js'
+import type { DebugWorkspaceService } from '../debug.js'
 
 export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
@@ -31,8 +31,6 @@ export interface CodingNsHostServices {
   readonly terminalProcesses?: TerminalProcessService
   /** Workspace 级调试服务；只使用 Host 解析出的根目录。 */
   readonly debug?: DebugWorkspaceService
-  /** DSH/CodingNS 已有代理的绑定适配器，不在插件内重复实现代理协议。 */
-  readonly debugProxy?: DebugProxyService
   /** 由 Host 权威解析 Workspace ID，Client 不可覆盖。 */
   readonly resolveWorkspaceRoot?: (workspaceId: string) => string | null
 }
