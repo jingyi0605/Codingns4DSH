@@ -76,8 +76,11 @@ test('Agent 选择器位于模型左侧并显示完整 Provider Logo', async () 
   assert.match(slotSource, /CIRCULAR_PROVIDER_ICON_IDS = new Set\(\['gemini', 'grok'\]\)/u)
   assert.match(slotSource, /CIRCULAR_PROVIDER_ICON_IDS\.has\(adapterId\) \? \{ \.\.\.style, borderRadius: '50%' \} : style/u)
   assert.equal(slotSource.match(/createElement\(NativeDropdownChevron/g)?.length, 2)
+  assert.match(slotSource, /createElement\(NativeDropdownChevron, \{ open, locked \}\)/u)
   assert.match(slotSource, /viewBox: '0 0 14 14'/u)
   assert.match(slotSource, /M11\.8486 5\.5L11\.4238 5\.92383/u)
+  assert.match(slotSource, /M10\.5 6V4\.75a3\.5 3\.5 0 0 0-7 0V6H3a1 1 0 0 0-1 1v4/u)
+  assert.match(slotSource, /transform: !locked && open \?/u)
   assert.doesNotMatch(slotSource, /⌄/u)
 
   for (const adapterId of ['dsh', 'command-code', 'claude-code', 'kimi', 'gemini', 'pi', 'codex', 'opencode', 'grok']) {

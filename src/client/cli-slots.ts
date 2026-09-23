@@ -177,7 +177,7 @@ function AgentSlot(props: CliSlotProps): ReactElement {
         ? createElement(ProviderIconFallback, { name: current.name, size: 20 })
         : createElement('img', { src: currentIcon, alt: '', 'aria-hidden': true, style: applyProviderIconShape(current.id, agentTriggerIconStyle) }),
       createElement('span', { style: agentTriggerLabelStyle }, current.name),
-      createElement(NativeDropdownChevron, { open }),
+      createElement(NativeDropdownChevron, { open, locked }),
     ),
     open && !locked && createElement('div', { role: 'menu', 'aria-label': t('cli.selectAgent'), style: agentMenuStyle },
       ...agents.map((agent) => {
@@ -209,8 +209,8 @@ function applyProviderIconShape<Style extends object>(adapterId: string, style: 
   return CIRCULAR_PROVIDER_ICON_IDS.has(adapterId) ? { ...style, borderRadius: '50%' } : style
 }
 
-/** 与 DSH 原生工具一致的下拉箭头。 */
-function NativeDropdownChevron({ open }: { readonly open: boolean }): ReactElement {
+/** 与 DSH 原生工具一致的下拉箭头；会话开始后改为锁形状态提示。 */
+function NativeDropdownChevron({ open, locked = false }: { readonly open: boolean; readonly locked?: boolean }): ReactElement {
   return createElement('svg', {
     width: 14,
     height: 14,
@@ -218,9 +218,11 @@ function NativeDropdownChevron({ open }: { readonly open: boolean }): ReactEleme
     fill: 'none',
     xmlns: 'http://www.w3.org/2000/svg',
     'aria-hidden': true,
-    style: { ...nativeDropdownChevronStyle, transform: open ? 'rotate(180deg)' : undefined },
+    style: { ...nativeDropdownChevronStyle, transform: !locked && open ? 'rotate(180deg)' : undefined },
   }, createElement('path', {
-    d: 'M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.90706 8.21562 9.13382 8.01172 9.29785C7.79912 9.46883 7.55595 9.61756 7.25 9.66602C7.08435 9.69222 6.91565 9.69222 6.75 9.66602C6.44405 9.61756 6.20088 9.46883 5.98828 9.29785C5.78438 9.13382 5.55843 8.90706 5.30273 8.65137L2.57617 5.92383L2.15137 5.5L3 4.65137L3.42383 5.07617L6.15137 7.80273C6.42595 8.07732 6.59876 8.24849 6.74023 8.3623C6.87291 8.46904 6.92272 8.47813 6.9375 8.48047C6.97895 8.48703 7.02105 8.48703 7.0625 8.48047C7.07728 8.47813 7.12709 8.46904 7.25977 8.3623C7.40124 8.24849 7.57405 8.07732 7.84863 7.80273L10.5762 5.07617L11 4.65137L11.8486 5.5Z',
+    d: locked
+      ? 'M10.5 6V4.75a3.5 3.5 0 0 0-7 0V6H3a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-.5ZM5 4.75a2 2 0 0 1 4 0V6H5V4.75ZM7 8a.9.9 0 0 0-.5 1.648V11h1V9.648A.9.9 0 0 0 7 8Z'
+      : 'M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.90706 8.21562 9.13382 8.01172 9.29785C7.79912 9.46883 7.55595 9.61756 7.25 9.66602C7.08435 9.69222 6.91565 9.69222 6.75 9.66602C6.44405 9.61756 6.20088 9.46883 5.98828 9.29785C5.78438 9.13382 5.55843 8.90706 5.30273 8.65137L2.57617 5.92383L2.15137 5.5L3 4.65137L3.42383 5.07617L6.15137 7.80273C6.42595 8.07732 6.59876 8.24849 6.74023 8.3623C6.87291 8.46904 6.92272 8.47813 6.9375 8.48047C6.97895 8.48703 7.02105 8.48703 7.0625 8.48047C7.07728 8.47813 7.12709 8.46904 7.25977 8.3623C7.40124 8.24849 7.57405 8.07732 7.84863 7.80273L10.5762 5.07617L11 4.65137L11.8486 5.5Z',
     fill: 'currentColor',
   }))
 }
