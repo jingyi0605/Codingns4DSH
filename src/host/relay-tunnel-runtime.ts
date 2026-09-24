@@ -152,9 +152,16 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
   const gateways = new Map<string, DshGateway>()
 
   const scheduleRenewal = (): void => {
+    if (renewTimer !== null) clearTimeout(renewTimer)
     const expiresAt = Date.parse(ticket.expiresAt)
     const skew = options.ticketRenewSkewMs ?? 30_000
-    const delay = Number.isFinite(expiresAt) ? Math.min(2_147_000_000, Math.max(1_000, expiresAt - Date.now() - skew)) : 60_000
+    // 信令票据只在 WebSocket 建立时校验。连接仍然存活时不能因为票据
+    // 到期而替换 WebSocket，否则会在客户端 offer/answer 期间丢信令。
+    const signalingOpen = isSignalingOpen(acceptor.signaling)
+    const untilExpiry = Number.isFinite(expiresAt) ? expiresAt - Date.now() : 60_000
+    const delay = signalingOpen
+      ? Math.min(2_147_000_000, Math.max(30_000, untilExpiry - skew))
+      : Math.max(1_000, Math.min(30_000, untilExpiry - skew))
     renewTimer = setTimeout(() => { void renew() }, delay)
     options.resources?.add(() => {
       if (renewTimer !== null) clearTimeout(renewTimer)
@@ -163,6 +170,10 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
   }
   const renew = async (): Promise<void> => {
     if (closed || renewalInFlight) return
+    if (isSignalingOpen(acceptor.signaling)) {
+      scheduleRenewal()
+      return
+    }
     renewalInFlight = true
     try {
       const nextTicket = await requestTicket()
@@ -235,6 +246,11 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
     get sessions() { return acceptor.sessions },
     close: runtimeClose,
   }
+}
+
+function isSignalingOpen(socket: unknown): boolean {
+  if (!isRecord(socket) || typeof socket.readyState !== 'number') return true
+  return socket.readyState === 1
 }
 
 /** 为 Host answerer 创建 werift PeerConnection，并适配到 transport 的注入接口。 */
