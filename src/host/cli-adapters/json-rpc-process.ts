@@ -39,6 +39,7 @@ export class JsonRpcProcess {
   private readonly pending = new Map<number | string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
   private closed = false
   private lineLoop: Promise<void> | null = null
+  private exitPromise: Promise<void> = Promise.resolve()
   private readonly notificationHandlers = new Set<(message: JsonRpcMessage) => void>()
   private serverRequestHandler: ((message: JsonRpcMessage) => unknown | Promise<unknown>) | undefined
 
@@ -56,7 +57,8 @@ export class JsonRpcProcess {
       this.cancel(id)
       this.pending.get(id)?.reject(new Error('请求已取消'))
       if (options.killOnAbort !== false) {
-        try { this.child?.kill('SIGTERM') } catch { /* 进程可能已经退出 */ }
+        const child = this.child
+        if (child !== null) terminateChild(child, 'SIGTERM')
       }
     }
     if (options.signal?.aborted) onAbort()
@@ -120,8 +122,26 @@ export class JsonRpcProcess {
     this.closed = true
     for (const pending of this.pending.values()) pending.reject(new Error('Agent 进程已退出'))
     this.pending.clear()
-    try { this.child?.kill('SIGTERM') } catch { /* 进程可能已经退出 */ }
+    const child = this.child
     this.child = null
+    if (child === null) return
+    terminateChild(child, 'SIGTERM')
+    const forceKill = setTimeout(() => terminateChild(child, 'SIGKILL'), 500)
+    forceKill.unref?.()
+  }
+
+  /** 销毁并等待子进程退出，避免下一轮恢复与上一轮残留进程交叉。 */
+  async disposeAndWait(timeoutMs = 2_000): Promise<void> {
+    this.dispose()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([this.exitPromise, new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs)
+        timer.unref?.()
+      })])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
   }
 
   private ensureStarted(): void {
@@ -133,8 +153,12 @@ export class JsonRpcProcess {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       shell: false,
+      // CLI 可能是 Node 包装脚本，直接 kill 包装进程不会连带真正的 Node 子进程。
+      // POSIX 下单独进程组后才能可靠地一次清理整棵进程树。
+      detached: process.platform !== 'win32',
     })
     this.child = child
+    this.exitPromise = childExitPromise(child)
     // stderr 必须持续消费，但绝不能把命令参数、环境变量或文件片段回传给 DSH。
     child.stderr.on('data', () => undefined)
     this.lineLoop = this.consumeLines(child).catch((error: unknown) => this.fail(error))
@@ -203,4 +227,30 @@ export class JsonRpcProcess {
 
 function isRecord(value: unknown): value is JsonRpcMessage {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function childExitPromise(child: ChildProcessWithoutNullStreams): Promise<void> {
+  return new Promise((resolve) => {
+    const eventChild = child as unknown as { once?: (event: string, listener: () => void) => unknown }
+    if (typeof eventChild.once !== 'function') {
+      resolve()
+      return
+    }
+    let settled = false
+    const settle = (): void => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
+    eventChild.once('close', settle)
+    eventChild.once('error', settle)
+  })
+}
+
+function terminateChild(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
+  const pid = child.pid
+  if (process.platform !== 'win32' && typeof pid === 'number' && pid > 0) {
+    try { process.kill(-pid, signal) } catch { /* 进程组可能已经退出 */ }
+  }
+  try { child.kill(signal) } catch { /* 进程可能已经退出 */ }
 }

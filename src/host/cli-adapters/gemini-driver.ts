@@ -45,7 +45,7 @@ export class GeminiCliDriver extends StandardStreamDriver {
       return GEMINI_CATALOG
     } finally {
       clearTimeout(timer)
-      rpc.dispose()
+      await rpc.disposeAndWait()
     }
   }
 
@@ -162,7 +162,7 @@ export class GeminiCliDriver extends StandardStreamDriver {
       if (!finished) yield { type: 'finish', reason: geminiPromptReason(promptResponse, input.signal) }
     } finally {
       if (this.interactions.get(input.sessionId) === interaction) this.interactions.delete(input.sessionId)
-      rpc.dispose()
+      await rpc.disposeAndWait()
       await runtimeSettings?.dispose()
     }
   }
