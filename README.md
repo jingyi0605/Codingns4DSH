@@ -74,3 +74,26 @@ pnpm install --ignore-scripts
 pnpm test -- tests/manifest.spec.ts tests/contracts.spec.ts tests/host-entry.spec.ts tests/client-entry.spec.ts tests/bootstrap.spec.ts tests/feature-registry.spec.ts tests/feature-wiring.spec.ts
 pnpm exec tsc --noEmit
 ```
+
+## GitHub tag 自动发布 npm
+
+仓库包含 `.github/workflows/publish-npm.yml`。推送 `v` 前缀的版本 tag 后，GitHub Actions
+会依次执行版本校验、依赖安装、类型检查、完整测试、npm 包内容检查和发布：
+
+```bash
+git tag v0.1.6-alpha.2
+git push origin v0.1.6-alpha.2
+```
+
+发布 tag 必须与根目录 `version.json` 的版本一致。发布前先切换 DSH 版本并提交所有同步文件：
+
+```bash
+pnpm run version:set-dsh -- 0.1.7-rc.1
+pnpm run version:check
+```
+
+仓库的 GitHub Actions Secrets 必须配置 `NPM_TOKEN`，其 npm 权限至少需要发布
+`dsh-codingns`。Workflow 使用 npm provenance，因此 GitHub Actions 还需要保留
+`id-token: write` 权限。带连字符的预发布版本（例如 `-alpha.2`、`-rc.1`）自动发布到
+npm `next` dist-tag，稳定版本发布到 `latest`。首次启用前，应在 npm 包设置中确认该
+token 或仓库发布权限有效。

@@ -1,0 +1,67 @@
+name: 发布 npm 包
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: 校验、打包并发布
+    runs-on: ubuntu-latest
+    env:
+      NPM_CONFIG_PROVENANCE: 'true'
+
+    steps:
+      - name: 检出发布提交
+        uses: actions/checkout@v4
+
+      - name: 配置 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.1
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: 校验 tag 与版本源
+        run: |
+          node scripts/check-tag-version.mjs
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm run version:check
+
+      - name: 类型检查与完整测试
+        run: |
+          pnpm exec tsc --noEmit
+          pnpm test
+
+      - name: 检查 npm 包内容
+        run: npm pack --dry-run --ignore-scripts --json
+
+      - name: 选择 npm dist-tag
+        id: npm-tag
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [[ "$version" == *-* ]]; then
+            echo 'dist_tag=next' >> "$GITHUB_OUTPUT"
+          else
+            echo 'dist_tag=latest' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 发布 npm
+        run: npm publish --provenance --access public --tag "${{ steps.npm-tag.outputs.dist_tag }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
