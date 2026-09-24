@@ -44,3 +44,11 @@ test('终端布局和 xterm 默认值与 DSH 0.1.6 内置终端一致', async ()
   assert.match(xterm, /fontSize:\s*appearance\.fontSize \?\? 13/u)
   assert.match(xterm, /ui-monospace, SFMono-Regular, Menlo, Consolas, monospace/u)
 })
+
+test('xterm 不会用 Shell 默认标题覆盖调试终端标题', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/terminal/xterm-view.ts'), 'utf8')
+
+  assert.match(source, /preserveHostTitle/u)
+  assert.match(source, /state\.info\.title !== state\.info\.shell\.name/u)
+  assert.match(source, /if \(!preserveHostTitle\) void view\.rename\(value\)/u)
+})

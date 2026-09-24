@@ -62,7 +62,11 @@ export function CodingNsXtermView({
     fitRef.current = fit
     lastRevision.current = 0
     const input = terminal.onData((data) => view.write(data))
-    const title = terminal.onTitleChange((value) => { void view.rename(value) })
+    // 调试终端由 Host 预设“配置名(终端类型)”标题；Shell 启动时通常会发一个 zsh 等默认标题，不能覆盖它。
+    const preserveHostTitle = state.info !== undefined && state.info.title !== state.info.shell.name
+    const title = terminal.onTitleChange((value) => {
+      if (!preserveHostTitle) void view.rename(value)
+    })
     const measure = (): void => {
       if (!state.writable || host.clientWidth === 0 || host.clientHeight === 0) return
       fitTerminal(terminal, fit, view)
