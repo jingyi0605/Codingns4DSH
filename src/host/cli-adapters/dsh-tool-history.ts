@@ -126,11 +126,11 @@ export class CodingNsDshToolHistoryProjector {
     record.externalMarker = marker
     record.externalMarkerPersisted = false
     if (this.nativeSessions?.appendToolCall !== undefined && this.sessionId.trim() !== '') {
-      // 原生 tool/call/result 负责持久时间线，marker 负责流式期间的即时显示。
-      // 两者不能互相替代：Conversation 的 transient 会在 assistant settlement 时被清理。
+      // DSH Chat 原生识别 tool/call 为运行中的工具节点，tool/result 负责更新它。
+      // 不再额外伪造 reasoning-delta，否则每个工具通知都会触发 assistant 正文刷新。
       const persisted = this.persistNativeRecord(record)
       if (!persisted && this.nativeSessions.supportsEvents) this.scheduleFlush()
-      return marker
+      return null
     }
     const hasExternalAppender = this.nativeSessions?.appendExternalToolEvent !== undefined && this.sessionId.trim() !== ''
     if (hasExternalAppender) this.persistExternalMarker(record)

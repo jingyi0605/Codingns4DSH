@@ -146,8 +146,9 @@ export class CodingNsDshMessageProjector {
 }
 
 /**
- * 外部工具已经由 Provider 执行，不能转成 DSH tool-call block；使用空白 reasoning
- * chunk 携带私有标记，只让 Client 的实时 Conversation 投影读取，不会再次执行工具。
+ * 没有 DSH 原生 Session 时的工具展示回退：使用空白 reasoning chunk 携带私有标记，
+ * 只让 Client 的实时 Conversation 投影读取，不会再次执行工具。完整 Host 直接使用
+ * 原生 tool/call 与 tool/result，不经过这里。
  */
 function externalToolChunk(marker: CodingNsDshExternalToolMarker | null): readonly CodingNsDshStreamChunk[] {
   if (marker === null) return []
