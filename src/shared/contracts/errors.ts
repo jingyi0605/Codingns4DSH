@@ -1,4 +1,4 @@
-import { DSH_VERSION } from './version.js'
+import { DSH_COMPATIBILITY, DSH_VERSION, isDshVersionCompatible } from './version.js'
 
 export const CODINGNS_DSH_ERROR_CODES = {
   PLUGIN_MANIFEST_INVALID: 'PLUGIN_MANIFEST_INVALID',
@@ -24,6 +24,7 @@ export const CODINGNS_DSH_ERROR_CODES = {
 } as const
 
 export const SUPPORTED_DSH_VERSION = DSH_VERSION
+export const SUPPORTED_DSH_COMPATIBILITY = DSH_COMPATIBILITY
 
 export type CodingNsDshErrorCode = typeof CODINGNS_DSH_ERROR_CODES[keyof typeof CODINGNS_DSH_ERROR_CODES]
 
@@ -38,12 +39,12 @@ export class CodingNsDshError extends Error {
   }
 }
 
-/** 阶段 0 采用 DSH HEAD 的精确版本约束，不对未知版本静默降级。 */
+/** 启动期严格检查 DSH 兼容范围，不对未知版本静默降级。 */
 export function assertSupportedDshVersion(version: string): void {
-  if (version !== SUPPORTED_DSH_VERSION) {
+  if (!isDshVersionCompatible(version)) {
     throw new CodingNsDshError(
       CODINGNS_DSH_ERROR_CODES.DSH_VERSION_UNSUPPORTED,
-      `不支持的 DSH 版本: ${version}；当前插件仅兼容 ${SUPPORTED_DSH_VERSION}`,
+      `不支持的 DSH 版本: ${version}；当前插件兼容范围为 ${SUPPORTED_DSH_COMPATIBILITY}`,
     )
   }
 }

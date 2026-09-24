@@ -39,11 +39,19 @@ export type {
 export {
   CODINGNS_DSH_ERROR_CODES,
   CodingNsDshError,
+  SUPPORTED_DSH_COMPATIBILITY,
   SUPPORTED_DSH_VERSION,
   assertSupportedDshVersion,
   type CodingNsDshErrorCode,
 } from './contracts/errors.js'
-export { CODINGNS_VERSION, DSH_VERSION } from './contracts/version.js'
+export {
+  CODINGNS_VERSION,
+  DSH_COMPATIBILITY,
+  DSH_PROTOCOL_VERSION,
+  DSH_TESTED_VERSION,
+  DSH_VERSION,
+  isDshVersionCompatible,
+} from './contracts/version.js'
 export type {
   CodingNsRpcRequest,
   CodingNsStreamRequest,

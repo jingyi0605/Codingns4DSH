@@ -232,7 +232,7 @@ export function bindDshConnectionHooks(
 
 /**
  * pre-Cordis 启动胶水：登记正确的 DSH hooks，并返回 Connection 绑定函数。
- * 版本检查严格锁定 0.1.6-alpha.2，避免未经验证的 generation 契约静默漂移。
+ * 版本检查遵循 version.json 声明的兼容范围，避免未经验证的 generation 契约静默漂移。
  */
 export function installDshTransport(options: {
   dshVersion: string
