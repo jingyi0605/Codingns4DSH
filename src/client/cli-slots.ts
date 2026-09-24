@@ -75,6 +75,8 @@ function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [S
     void callCliRpc<CodingNsCliSessionConfig>(rpc, 'session/get', { sessionId })
       .then((value) => {
         if (!active) return
+        // 用户可能已在 session/get 返回前切换 Agent；旧响应不能覆盖本地最新选择。
+        if (selections.has(sessionId)) return
         publishSelection(sessionId, value)
       })
       .catch(() => undefined)
@@ -95,7 +97,9 @@ function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [S
   const update = (next: SelectionState): void => {
     if (sessionId === undefined || sessionId.trim() === '') return
     publishSelection(sessionId, next)
-    void callCliRpc<CodingNsCliSessionConfig>(rpc, 'session/set', { sessionId, ...next }).catch(() => undefined)
+    void callCliRpc<CodingNsCliSessionConfig>(rpc, 'session/set', { sessionId, ...next })
+      .then((normalized) => publishSelection(sessionId, normalized))
+      .catch(() => undefined)
   }
   return [selection, update]
 }
@@ -276,10 +280,15 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       .then((value) => {
         if (!active) return
         setCatalogState({ adapterId, value })
-        const model = findModel(value, selection.modelId) ?? firstModel(value)
+        // session/set 可能在模型目录请求期间返回适配器级记忆值；不能使用
+        // effect 闭包里的旧 selection，否则会把记忆模型覆盖成目录第一项。
+        const currentSelection = sessionId === undefined
+          ? selection
+          : selections.get(sessionId) ?? selection
+        const model = findModel(value, currentSelection.modelId) ?? firstModel(value)
         if (model === undefined) return
-        const effort = model.efforts.includes(selection.effortId ?? '') ? selection.effortId : defaultEffort(model.efforts)
-        if (model.id !== selection.modelId || effort !== selection.effortId) update({ adapterId, modelId: model.id, ...(effort ? { effortId: effort } : {}) })
+        const effort = model.efforts.includes(currentSelection.effortId ?? '') ? currentSelection.effortId : defaultEffort(model.efforts)
+        if (model.id !== currentSelection.modelId || effort !== currentSelection.effortId) update({ adapterId, modelId: model.id, ...(effort ? { effortId: effort } : {}) })
       })
       .catch(() => { if (active) setCatalogState({ adapterId, value: { groups: [], currentModel: null, currentEffort: null } }) })
       .finally(() => { if (active) setRefreshingAdapterId(null) })
