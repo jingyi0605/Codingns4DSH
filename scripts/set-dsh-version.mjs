@@ -14,6 +14,7 @@ const writeJson = async (relativePath, value) => {
 }
 
 const manifest = await readJson('package.json')
+const previousVersion = manifest.engines?.dsh
 manifest.version = nextVersion
 manifest.engines.dsh = nextVersion
 for (const sectionName of ['dependencies', 'devDependencies']) {
@@ -35,6 +36,14 @@ const source = await readFile(versionPath, 'utf8')
 const updated = source.replace(/^(export const DSH_VERSION = ')[^']+(' as const)$/mu, `$1${nextVersion}$2`)
 if (updated === source) throw new Error('没有找到 src/shared/contracts/version.ts 中的 DSH_VERSION')
 await writeFile(versionPath, updated)
+
+for (const relativePath of ['README.md', 'profile/README.md']) {
+  const documentPath = join(root, relativePath)
+  const document = await readFile(documentPath, 'utf8')
+  if (typeof previousVersion === 'string' && previousVersion !== nextVersion) {
+    await writeFile(documentPath, document.replaceAll(previousVersion, nextVersion))
+  }
+}
 
 console.log(`已将 CodingNS 与 DSH 版本切换为 ${nextVersion}`)
 console.log('请随后运行 pnpm install --lockfile-only 和 pnpm run version:check')
