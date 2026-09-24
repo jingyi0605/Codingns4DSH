@@ -103,6 +103,39 @@ test('归档摘要兼容 DSH RemoteResult 并优先使用工作区成员关系',
   }])
 })
 
+test('没有归档会话时不渲染归档入口', async () => {
+  const header = new FakeArchiveElement('div')
+  header.setAttribute('role', 'treeitem')
+  header.setAttribute('aria-expanded', 'true')
+  Object.defineProperty(header, '__reactFiber$archive', {
+    value: { memoizedProps: { group: { workspaceId: 'workspace-a' } } },
+  })
+  const more = new FakeArchiveElement('button')
+  more.textContent = '展开其余 27 个会话'
+  const group = new FakeArchiveElement('section')
+  group.append(header, more)
+  const document = new FakeArchiveDocument(group)
+  const controller = startWorkspaceSessionArchiveDom({
+    document,
+    remote: {
+      workspace: {
+        async *follow() {
+          yield { type: 'baseline', value: { items: [{ workspaceId: 'workspace-a', path: '/work', sessionIds: [] }], archivedSessionIds: [] } }
+        },
+      },
+      session: {
+        async list() {
+          return { ok: true, value: { items: [] } }
+        },
+      },
+    },
+  })
+
+  await nextArchiveTurn()
+  assert.equal(document.querySelectorAll(`[${WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE}]`).length, 0)
+  controller.dispose()
+})
+
 test('未注入的 Cordis Remote namespace 不应阻断归档模块启动', async () => {
   const remote = new Proxy({}, {
     get(_target, property) {
@@ -136,12 +169,12 @@ test('归档入口位于工作区会话末尾并跟随工作区折叠', async ()
     remote: {
       workspace: {
         async *follow() {
-          yield { type: 'baseline', value: { items: [{ workspaceId: 'workspace-a', path: '/work', sessionIds: [] }], archivedSessionIds: [] } }
+          yield { type: 'baseline', value: { items: [{ workspaceId: 'workspace-a', path: '/work', sessionIds: [] }], archivedSessionIds: ['archived'] } }
         },
       },
       session: {
         async list() {
-          return { ok: true, value: { items: [] } }
+          return { ok: true, value: { items: [{ sessionId: 'archived', updatedAt: 1_800_000_000_000, cwd: '/work', projections: { values: { title: '已归档' } } }] } }
         },
       },
     },

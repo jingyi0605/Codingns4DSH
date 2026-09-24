@@ -355,6 +355,7 @@ function insertArchiveEntry(
   expanded: boolean,
   onOpen: () => void,
 ): boolean {
+  if (items.length === 0) return false
   const container = findWorkspaceContainer(moreButton, workspaceId)
   if (container === null) return false
   const entry = createArchiveEntry(items, dom, expanded, onOpen)
@@ -373,6 +374,7 @@ function insertArchiveEntryAfterHeader(
   expanded: boolean,
   onOpen: () => void,
 ): boolean {
+  if (items.length === 0) return false
   const container = findWorkspaceContainer(header, workspaceId)
   if (container === null) return false
   const entry = createArchiveEntry(items, dom, expanded, onOpen)
