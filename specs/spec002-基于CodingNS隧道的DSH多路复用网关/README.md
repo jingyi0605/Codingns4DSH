@@ -21,6 +21,9 @@ CodingNS WebRTC / HTTP / WebSocket Tunnel
 - 官方 DSH Desktop 维护本地和远程 Web Context；远程插件不安装到本地 Profile，只在对应 HostScope 临时加载。
 - Remote Host 可以作为 PeerHost 资源显示，但物理连接优先直接 WebRTC；当前 Host 代转只作为受信任回退。
 - Relay 不终止业务 WebSocket，不解析 DSH Envelope，不保存业务内容。
+- 终端能力由插件自身实现：自有 UI 挂载到 DSH Sidebar，POSIX 使用 tmux，Windows 使用独立 ConPTY broker；不调用 CodingNS 父仓库或 Host 私有接口。
+- 终端持久化只承诺跨浏览器、插件和 DSH 重启，不承诺跨操作系统重启。官方 Host controller 与官方 terminal UI 成对禁用，由插件原子提供 Typert、Host controller、`webTerminals` 与 Sidebar UI。
+- DSH「设置 → CodingNS」提供“终端强化”模块；启用或禁用需要重启 DSH，默认终端和外观设置在模块已启用时分别从下一次新建终端或当前插件终端开始生效。
 
 ## 文档顺序
 

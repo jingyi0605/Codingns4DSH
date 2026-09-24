@@ -1,11 +1,13 @@
 import { ReverseProxyPanel } from './reverse-proxy-panel.js'
 import type { CodingNsClientFeatureModule } from './types.js'
+import type { CodingNsRpcClient } from './types.js'
+import { startDshH5Bootstrap } from '../dsh-h5-bootstrap.js'
 
 /**
  * 中转访问服务模块。
  *
- * 它把 DSH 页面接入 CodingNS 隧道。登录、设备和 Host 绑定都是这个模块的配置
- * 内容，因此由它的设置面板承载；隧道本身的连接建立在后续阶段接入 start。
+ * 它把 DSH 页面接入 DSH-CodingNS 独立设备隧道。登录和设备列表由 Host RPC 提供，
+ * 连接状态和设备选择由设置面板承载；隧道本身在模块启用时建立。
  */
 export const reverseProxyFeature: CodingNsClientFeatureModule = {
   descriptor: {
@@ -16,7 +18,7 @@ export const reverseProxyFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     ui: {
       label: '中转访问服务',
-      description: '通过 CodingNS 隧道访问当前 Host。',
+      description: '通过 DSH-CodingNS 独立设备隧道访问 Host。',
       labelKey: 'feature.reverseProxy.label',
       descriptionKey: 'feature.reverseProxy.description',
       order: 20,
@@ -27,6 +29,36 @@ export const reverseProxyFeature: CodingNsClientFeatureModule = {
    * 隧道连接属于后续阶段，当前模块只提供配置面，因此这里不创建任何资源。
    * 接入连接后，流与订阅必须登记到 context.resources，由停用自动清理。
    */
-  start: () => undefined,
+  start(context) {
+    const abort = new AbortController()
+    let disposeConnection: (() => Promise<void>) | undefined
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let stopped = false
+    const attempt = async (): Promise<void> => {
+      if (stopped) return
+      try {
+        const dispose = await startBrowserRelayConnection(context.services.rpc, abort.signal)
+        if (stopped || abort.signal.aborted) { await dispose(); return }
+        disposeConnection = dispose
+      } catch (error) {
+        if (stopped || abort.signal.aborted) return
+        console.error('dsh-codingns: 中继连接建立失败，将在稍后重试', error)
+        retryTimer = setTimeout(() => { void attempt() }, 5_000)
+      }
+    }
+    void attempt()
+    return async () => {
+      stopped = true
+      abort.abort()
+      if (retryTimer !== undefined) clearTimeout(retryTimer)
+      await disposeConnection?.()
+    }
+  },
   settingsPanel: ReverseProxyPanel,
+}
+
+/** 浏览器侧真实中继连接；refresh token 和 access token 只经过 Host RPC。 */
+export async function startBrowserRelayConnection(rpc: CodingNsRpcClient, signal: AbortSignal): Promise<() => Promise<void>> {
+  const bootstrap = await startDshH5Bootstrap({ rpc, signal })
+  return bootstrap.dispose
 }

@@ -71,8 +71,9 @@
     }
   },
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && pnpm run bundle:client",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && pnpm run bundle:client && pnpm run bundle:h5",
     "bundle:client": "tsdown",
+    "bundle:h5": "tsdown --config tsdown.h5.config.ts",
     "dev:link": "node scripts/link-dsh-dev.mjs",
     "dev:watch": "node scripts/dev-watch.mjs",
     "watch:client": "tsdown --watch",
@@ -101,8 +102,8 @@
     "typescript": "^5.9.2"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-client-locale": "0.1.6-alpha.2",
     "@deepseek-ai/dsh-api-remotes": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-locale": "0.1.6-alpha.2",
     "@deepseek-ai/dsh-client-ui-conversation": "0.1.6-alpha.2",
     "@deepseek-ai/dsh-client-ui-layout": "0.1.6-alpha.2",
     "@deepseek-ai/dsh-client-ui-primitives": "0.1.6-alpha.2",
@@ -114,6 +115,7 @@
     "@lydell/node-pty": "1.1.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "werift": "^0.24.4",
     "zod": "^4.4.3"
   }
 }

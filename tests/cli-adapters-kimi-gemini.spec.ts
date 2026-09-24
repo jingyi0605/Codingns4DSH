@@ -4,8 +4,15 @@ import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { GeminiCliDriver } from '../dist/host/cli-adapters/gemini-driver.js'
 import { KimiCliDriver } from '../dist/host/cli-adapters/kimi-driver.js'
+import type { CodingNsCliTurnInput } from '../dist/shared/contracts/cli-adapter.js'
 
 function fakeDetection() { return ({ status: 0, stdout: 'fake-agent 1.2.3', stderr: '' }) as never }
+
+class InspectableGeminiCliDriver extends GeminiCliDriver {
+  parse(value: Record<string, unknown>): readonly unknown[] {
+    return this.parseEvent(value, { sessionId: 'inspect', messages: [], prompt: '用户输入' } as CodingNsCliTurnInput)
+  }
+}
 
 test('Kimi wire 优先并转换会话、思考、工具、用量和完成事件', async () => {
   const calls: string[][] = []
@@ -271,4 +278,18 @@ test('Gemini 从 ACP session/new 读取真实模型目录而不是帮助参数�
   ])
   assert.equal(catalog.groups[0]?.models.some((model) => model.id.toLowerCase() === 'model'), false)
   assert.equal(catalog.currentModel, 'auto-gemini-2.5')
+})
+
+test('Gemini 回退 stream-json 忽略用户输入回显并保留错误终态与用量', () => {
+  const driver = new InspectableGeminiCliDriver({ binaries: ['fake-gemini'], spawnSync: fakeDetection })
+  assert.deepEqual(driver.parse({ type: 'message', role: 'user', content: '用户输入' }), [])
+  assert.deepEqual(driver.parse({
+    type: 'result',
+    status: 'error',
+    stats: { input_tokens: 12, output_tokens: 3 },
+  }), [
+    { type: 'usage', inputTokens: 12, outputTokens: 3 },
+    { type: 'finish', reason: 'error' },
+  ])
+  driver.dispose()
 })

@@ -170,9 +170,30 @@ export {
 } from './control-api-client.js'
 export {
   InMemoryCodingNsCredentialStore,
+  FileCodingNsCredentialStore,
+  InMemoryDshDeviceCredentialStore,
+  FileDshDeviceCredentialStore,
   type CodingNsCredentialStore,
   type HostCredentialRecord,
+  type DshDeviceCredentialStore,
 } from './credential-store.js'
+export {
+  startDshHostDeviceRuntime,
+  type DshHostDeviceRuntime,
+  type DshHostDeviceRuntimeOptions,
+} from './dsh-device-runtime.js'
+export { createDshRpcGatewayFeature } from './dsh-gateway-feature.js'
+export {
+  createLocalDshWebRuntimeProvider,
+  createRemoteWebRuntimeFeature,
+  type DshWebAsset,
+  type DshWebBoot,
+  type DshWebRuntimeProvider,
+  type DshWebSession,
+  type DshWebSocketLike,
+  type LocalDshWebRuntimeProviderOptions,
+  type RemoteWebRuntimeFeatureOptions,
+} from './remote-web-runtime.js'
 export type {
   LoginByEmailResponse,
   RefreshTokenRequest,
@@ -187,4 +208,20 @@ export {
   type LanAccessDshRuntime,
   type LanAccessDshStream,
 } from './lan-access-dsh.js'
+export {
+  CODINGNS_TUNNEL_DATA_CHANNEL_LABEL,
+  FileHostDtlsIdentityStore,
+  createRegisteredHostSignalingSocket,
+  createWeriftPeerConnectionFactory,
+  ensureHostDtlsIdentity,
+  formatHostDtlsFingerprint,
+  generateHostDtlsIdentity,
+  startHostRelayRuntime,
+  type HostDtlsIdentityMaterial,
+  type HostDtlsIdentityStore,
+  type HostRelayRuntime,
+  type HostRelayRuntimeOptions,
+  type HostRelaySession,
+  type HostSignalingSocket,
+} from './relay-tunnel-runtime.js'
 export * from './terminal/index.js'

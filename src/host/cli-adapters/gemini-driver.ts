@@ -64,6 +64,21 @@ export class GeminiCliDriver extends StandardStreamDriver {
     return args
   }
 
+  /**
+   * Gemini 的旧版 stream-json 会先回放一条 role=user 的消息。
+   * 这条记录只是输入回显，不能投影成 DSH 的 assistant 正文；result 还要按
+   * Gemini 自己的 status 和 stats 字段生成正确的终态与用量。
+   */
+  protected override parseEvent(value: Record<string, unknown>, input: CodingNsCliTurnInput): readonly CodingNsAgentEvent[] {
+    const type = typeof value.type === 'string' ? value.type.toLowerCase() : ''
+    if (type === 'message') {
+      const role = typeof value.role === 'string' ? value.role.toLowerCase() : ''
+      if (role === 'user') return []
+    }
+    if (type === 'result') return geminiStreamResultChunks(value, input.signal?.aborted ?? false)
+    return super.parseEvent(value, input)
+  }
+
   respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
     const state = this.interactions.get(sessionId)
     const rpcId = state?.permissions.get(response.requestId)
@@ -304,6 +319,8 @@ function geminiAcpMessageToChunk(message: Record<string, any>): CodingNsAgentEve
     if (requestId) return { type: 'permission-request', requestId, kind: firstString(update, ['kind', 'permission']) ?? 'unknown', ...(text ? { detail: text } : {}) }
   }
   if (type.includes('thought') || type.includes('reason') || method.includes('reason')) return text ? { type: 'reasoning-delta', text } : null
+  // ACP 可能回放用户消息；它不是模型正文。
+  if (type.includes('user') && type.includes('message')) return null
   if (type.includes('agent_message') || type.includes('message') || type.includes('text') || method.includes('message')) return text ? { type: 'text-delta', text } : null
   if (type.includes('tool') || type.includes('command')) {
     const tool = isToolRecord(update.toolCall) ? update.toolCall : isToolRecord(update.tool_call) ? update.tool_call : update
@@ -381,6 +398,26 @@ function acpText(value: unknown): string | null {
     }
   }
   return null
+}
+
+function geminiStreamResultChunks(value: Record<string, unknown>, cancelled: boolean): readonly CodingNsAgentEvent[] {
+  const chunks: CodingNsAgentEvent[] = []
+  const stats = isRecord(value.stats) ? value.stats : null
+  if (stats !== null) {
+    chunks.push({
+      type: 'usage',
+      inputTokens: numberValue(stats.input_tokens ?? stats.inputTokens),
+      outputTokens: numberValue(stats.output_tokens ?? stats.outputTokens),
+    })
+  }
+  const status = typeof value.status === 'string' ? value.status.toLowerCase() : ''
+  const reason = cancelled ? 'cancel' : status === 'error' || status === 'failed' ? 'error' : 'stop'
+  chunks.push({ type: 'finish', reason })
+  return chunks
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
 export { GeminiCliDriver as GeminiDriver }

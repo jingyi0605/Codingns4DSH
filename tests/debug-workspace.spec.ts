@@ -18,16 +18,18 @@ function config() {
 }
 
 function fakeTerminal() {
-  const calls: { profile?: unknown; launch?: unknown } = {}
+  const calls: { profile?: unknown; launch?: unknown; stop: number; deleteProfile: number } = { stop: 0, deleteProfile: 0 }
   const instance = { id: 'instance-1', workspaceId: 'workspace-a', profileId: 'frontend', terminalId: 'terminal-1', runtimeSessionKey: null, state: 'running', pid: 42, resolvedCommand: { command: 'pnpm', args: ['dev'], cwd: '/workspace' }, exitCode: null, startedAt: new Date().toISOString(), stoppedAt: null }
+  let active = true
   return {
     calls,
     service: {
       async createProfile(value: unknown) { calls.profile = value; return value },
       async launch(value: unknown) { calls.launch = value; return { instance, terminal: { id: 'terminal-1' } } },
-      listInstances() { return [instance] },
+      listInstances() { return active ? [instance] : [] },
       getInstance() { return instance },
-      async stop() { return { ...instance, state: 'exited' } },
+      async stop() { calls.stop += 1; active = false; return { ...instance, state: 'exited' } },
+      async deleteProfile() { calls.deleteProfile += 1; return true },
     } as never,
   }
 }
@@ -50,6 +52,41 @@ test('Spec003 读取配置并把启动参数交给已有 PTY 服务', async () =
     assert.equal((terminal.calls.profile as { command: string }).command, 'pnpm')
     assert.deepEqual(terminal.calls.launch, { workspaceId: 'workspace-a', profileId: 'frontend', cols: 80, rows: 24 })
     assert.match(await readFile(join(root, '.codingns', 'debug.json'), 'utf8'), /"version": 1/u)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Spec003 可以单独更新和删除启动配置', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-debug-'))
+  try {
+    const terminal = fakeTerminal()
+    const service = new DebugWorkspaceService({ resolveWorkspaceRoot: () => root, terminalProcesses: terminal.service })
+    await service.saveConfig('workspace-a', config())
+    const updated = await service.updateProfile('workspace-a', 'frontend', { ...config().profiles[0], name: '后端' })
+    assert.equal(updated.profiles[0]?.name, '后端')
+    await terminal.service.stop('instance-1')
+    const deleted = await service.deleteProfile('workspace-a', 'frontend')
+    assert.deepEqual(deleted.profiles, [])
+    assert.equal(terminal.calls.deleteProfile, 1)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Spec003 结束端口进程不会调用终端停止逻辑', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-debug-'))
+  try {
+    const terminal = fakeTerminal()
+    const inspector = {
+      async inspect() { return { pid: 101, startToken: 'start-a', command: 'node server.js', cwd: '/workspace' } },
+      async terminate() {},
+    }
+    const service = new DebugWorkspaceService({ resolveWorkspaceRoot: () => root, terminalProcesses: terminal.service, portInspector: inspector })
+    await service.saveConfig('workspace-a', config())
+    const check = await service.checkPort('workspace-a', 'frontend')
+    await service.killPortProcess('workspace-a', check.id)
+    assert.equal(terminal.calls.stop, 0)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

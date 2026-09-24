@@ -40,7 +40,17 @@ export type {
   LanAccessCrypto,
   LanAccessGlobal,
 } from './lan-access.js'
-export { CLIENT_FEATURES, settingsModules } from './features/index.js'
+export { CLIENT_FEATURES, settingsModules, startBrowserRelayConnection } from './features/index.js'
+export { chooseDshDevice, createHttpDshH5ControlApi, startDshH5Bootstrap, startDshH5BrowserBootstrap } from './dsh-h5-bootstrap.js'
+export type {
+  DshH5BootstrapOptions,
+  DshH5BootstrapResult,
+  DshH5BrowserBootstrapOptions,
+  DshH5BrowserBootstrapResult,
+  DshH5BrowserControlApi,
+} from './dsh-h5-bootstrap.js'
+export { RemoteDshWebContext } from './remote-web-context.js'
+export type { RemoteDshWebBoot, RemoteDshWebContextOptions } from './remote-web-context.js'
 export type {
   CodingNsClientFeatureModule,
   CodingNsClientServices,

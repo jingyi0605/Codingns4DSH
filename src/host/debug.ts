@@ -76,6 +76,30 @@ export class DebugWorkspaceService {
     return config
   }
 
+  /** 更新一个已有启动项；运行中的实例继续使用启动时的旧参数。 */
+  async updateProfile(workspaceId: string, profileId: string, value: unknown): Promise<DebugConfig> {
+    const current = await this.getConfig(workspaceId)
+    if (!current.profiles.some((profile) => profile.id === profileId)) throw new Error(`Spec003 配置项不存在: ${profileId}`)
+    const parsed = parseDebugConfig({ version: 1, profiles: [value] })
+    const profile = parsed.profiles[0]
+    if (profile === undefined || profile.id !== profileId) throw new Error('更新配置项 ID 不匹配')
+    return this.saveConfig(workspaceId, {
+      version: 1,
+      profiles: current.profiles.map((item) => item.id === profileId ? profile : item),
+    })
+  }
+
+  /** 删除一个启动项；有活动实例时拒绝删除，避免留下无法管理的终端进程。 */
+  async deleteProfile(workspaceId: string, profileId: string): Promise<DebugConfig> {
+    const current = await this.getConfig(workspaceId)
+    if (!current.profiles.some((profile) => profile.id === profileId)) throw new Error(`Spec003 配置项不存在: ${profileId}`)
+    if (this.options.terminalProcesses.listInstances(workspaceId).some((instance) => instance.profileId === profileId && isActive(instance.state))) {
+      throw new Error('配置项仍有活动进程，请先停止后再删除')
+    }
+    await this.options.terminalProcesses.deleteProfile(workspaceId, profileId)
+    return this.saveConfig(workspaceId, { version: 1, profiles: current.profiles.filter((profile) => profile.id !== profileId) })
+  }
+
   async launch(input: { workspaceId: string; profileId: string; dshSessionId?: string; cols: number; rows: number }): Promise<TerminalProcessLaunchResult> {
     const config = await this.getConfig(input.workspaceId)
     const profile = findProfile(config, input.profileId)
@@ -126,6 +150,11 @@ export class DebugWorkspaceService {
   }
 
   async terminatePort(workspaceId: string, checkId: string): Promise<DebugPortCheck> {
+    return this.killPortProcess(workspaceId, checkId)
+  }
+
+  /** 只结束端口对应的业务进程，不触碰 tmux/ConPTY 终端运行时。 */
+  async killPortProcess(workspaceId: string, checkId: string): Promise<DebugPortCheck> {
     const check = this.checks.get(checkId)
     if (check === undefined || check.workspaceId !== workspaceId) throw new Error('端口检查结果不存在或已失效')
     if (Date.now() - Date.parse(check.checkedAt) > 60_000) {

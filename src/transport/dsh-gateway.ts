@@ -1,0 +1,196 @@
+import type { CodingNsCarrier } from './carrier.js'
+import {
+  type DshChannel,
+  type DshEnvelope,
+  type DshHostScope,
+} from './dsh-envelope.js'
+import { DshSession, type DshSessionOptions } from './dsh-session.js'
+
+export const DSH_GATEWAY_PATH = '/__dsh__/transport/v1'
+
+export interface DshStreamContext {
+  readonly envelope: DshEnvelope
+  readonly session: DshSession
+  send(type: string, meta?: Record<string, unknown>, body?: Uint8Array): void
+  close(): void
+}
+
+export interface DshGatewayFeature {
+  readonly channel?: DshChannel
+  readonly operation?: string
+  canHandle?(envelope: DshEnvelope): boolean | Promise<boolean>
+  handleStream?(context: DshStreamContext): void | Promise<void> | AsyncIterable<DshEnvelope>
+  handleMessage?(context: DshStreamContext, envelope: DshEnvelope): void | Promise<void>
+  handleWindow?(context: DshStreamContext, envelope: DshEnvelope): void | Promise<void>
+}
+
+export interface DshGatewayOptions {
+  carrier: CodingNsCarrier
+  session?: DshSession
+  sessionOptions?: Omit<DshSessionOptions, 'carrier'>
+  /** 只依赖 FeatureRegistry 的 modules()，避免把具体 Host services 类型泄漏到传输层。 */
+  registry?: { modules(): readonly unknown[] }
+  features?: readonly DshGatewayFeature[]
+  hostScope: DshHostScope
+  generation: string
+  maxStreams?: number
+}
+
+/** 将 DSH Session 后的 Envelope 按 streamId 路由到 FeatureRegistry 模块。 */
+export class DshGateway {
+  readonly session: DshSession
+  private readonly streams = new Map<string, { envelope: DshEnvelope; feature: DshGatewayFeature; context: DshStreamContext }>()
+  private readonly maxStreams: number
+  private readonly features: readonly DshGatewayFeature[]
+  private sequence = 0
+  private started = false
+  private unsubscribe: (() => void) | undefined
+
+  constructor(private readonly options: DshGatewayOptions) {
+    this.maxStreams = options.maxStreams ?? 128
+    this.features = options.features ?? []
+    this.session = options.session ?? new DshSession({
+      carrier: options.carrier,
+      role: 'host',
+      generation: options.generation,
+      hostScope: options.hostScope,
+      ...(options.sessionOptions ?? {}),
+    })
+  }
+
+  start(): void {
+    if (this.started) return
+    this.started = true
+    this.unsubscribe = this.session.subscribe((envelope) => { void this.route(envelope) })
+    this.session.start()
+  }
+
+  async close(reason = 'DSH Gateway 已关闭'): Promise<void> {
+    if (!this.started) return
+    this.started = false
+    this.unsubscribe?.()
+    this.unsubscribe = undefined
+    for (const active of this.streams.values()) {
+      try {
+        await active.feature.handleMessage?.(active.context, { ...active.envelope, type: 'stream.cancel', meta: { reason } })
+      } catch {
+        // 关闭阶段不再向远端传播业务错误，但必须继续清理其他流。
+      }
+    }
+    this.streams.clear()
+    this.session.close(reason)
+  }
+
+  get path(): string { return DSH_GATEWAY_PATH }
+
+  private async route(envelope: DshEnvelope): Promise<void> {
+    if (envelope.generation !== this.options.generation
+      || envelope.hostScope.hostId !== this.options.hostScope.hostId
+      || envelope.hostScope.kind !== this.options.hostScope.kind) {
+      this.sendError(envelope, 'RESOURCE_SCOPE_STALE', '资源属于已经失效的 HostScope')
+      return
+    }
+    if (envelope.type === 'stream.open') {
+      await this.openStream(envelope)
+      return
+    }
+    if (envelope.type === 'stream.cancel' || envelope.type === 'stream.close') {
+      const active = this.streams.get(envelope.streamId)
+      if (active) {
+        await active.feature.handleMessage?.(active.context, envelope)
+        this.streams.delete(envelope.streamId)
+      }
+      this.send({ ...envelope, type: 'stream.close', sequence: this.nextSequence(), meta: {} })
+      return
+    }
+    const active = this.streams.get(envelope.streamId)
+    if (active === undefined) {
+      this.sendError(envelope, 'STREAM_LOST', '流不存在或已经关闭')
+      return
+    }
+    if (envelope.type === 'stream.window') {
+      await active.feature.handleWindow?.(active.context, envelope)
+      return
+    }
+    await active.feature.handleMessage?.(active.context, envelope)
+  }
+
+  private async openStream(envelope: DshEnvelope): Promise<void> {
+    if (this.streams.has(envelope.streamId)) {
+      this.sendError(envelope, 'MESSAGE_INVALID', 'streamId 已经使用')
+      return
+    }
+    if (this.streams.size >= this.maxStreams) {
+      this.sendError(envelope, 'FLOW_CONTROL_INVALID', '超过会话流数量上限')
+      return
+    }
+    const feature = await this.findFeature(envelope)
+    if (!feature) {
+      this.sendError(envelope, 'FEATURE_DISABLED', '没有启用匹配的 DSH 功能模块')
+      return
+    }
+    let context!: DshStreamContext
+    context = {
+      envelope,
+      session: this.session,
+      send: (type, meta = {}, body) => {
+        const message: DshEnvelope = {
+          ...envelope,
+          messageId: `${envelope.streamId}_${this.nextSequence()}`,
+          type,
+          sequence: this.nextSequence(),
+          meta,
+          ...(body === undefined ? {} : { body }),
+        }
+        this.send(message)
+      },
+      close: () => {
+        this.streams.delete(envelope.streamId)
+        this.send({ ...envelope, type: 'stream.close', sequence: this.nextSequence(), meta: {} })
+      },
+    }
+    this.streams.set(envelope.streamId, { envelope, feature, context })
+    this.send({ ...envelope, type: 'stream.accepted', sequence: this.nextSequence(), meta: { channel: envelope.channel } })
+    if (!feature.handleStream) return
+    const result = await feature.handleStream(context)
+    if (result && Symbol.asyncIterator in Object(result)) {
+      for await (const message of result as AsyncIterable<DshEnvelope>) this.send(message)
+    }
+  }
+
+  private async findFeature(envelope: DshEnvelope): Promise<DshGatewayFeature | undefined> {
+    for (const feature of this.features) {
+      if (feature.channel && feature.channel !== envelope.channel) continue
+      if (feature.operation && feature.operation !== envelope.meta.operation) continue
+      if (!feature.canHandle || await feature.canHandle(envelope)) return feature
+    }
+    if (!this.options.registry) return undefined
+    for (const module of this.options.registry.modules()) {
+      const candidate = module as unknown as DshGatewayFeature
+      if (!candidate.canHandle && !candidate.handleStream && !candidate.handleMessage && !candidate.handleWindow) continue
+      if (candidate.channel && candidate.channel !== envelope.channel) continue
+      if (candidate.operation && candidate.operation !== envelope.meta.operation) continue
+      if (!candidate.canHandle || await candidate.canHandle(envelope)) return candidate
+    }
+    return undefined
+  }
+
+  private sendError(envelope: DshEnvelope, code: string, detail: string): void {
+    this.send({
+      ...envelope,
+      messageId: `${envelope.messageId}_error`,
+      type: 'stream.error',
+      sequence: this.nextSequence(),
+      meta: { errorCode: code, detail, retryable: false },
+    })
+  }
+
+  private send(envelope: DshEnvelope): void {
+    this.session.send(envelope)
+  }
+
+  private nextSequence(): number {
+    if (this.sequence >= Number.MAX_SAFE_INTEGER) throw new Error('DSH Gateway sequence 已耗尽')
+    return ++this.sequence
+  }
+}

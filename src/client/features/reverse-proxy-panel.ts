@@ -1,10 +1,7 @@
 import { createElement, useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
-import type {
-  AuthDeviceManagementSnapshotDto,
-  CodingNsAuthSessionSnapshot,
-  TunnelBindingSummary,
-} from '../../shared/contracts/auth.js'
+import type { CodingNsAuthSessionSnapshot } from '../../shared/contracts/auth.js'
+import type { DshDeviceListResponse } from '../../shared/contracts/dsh-device.js'
 import {
   CODINGNS_CONTROL_BASE_URL_FIELD,
   CODINGNS_CONTROL_BASE_URLS_FIELD,
@@ -16,7 +13,7 @@ import { dshButtonStyle, dshFieldStyle, dshFormRootStyle, dshPopupSurfaceStyle, 
 import { useCodingNsTranslator } from '../locale.js'
 
 /**
- * 「中转访问服务」卡片的设置面板：Control API 地址、登录、设备和 Host 绑定。
+ * 「中转访问服务」卡片的设置面板：Control API 地址、登录和 DSH 独立设备。
  *
  * 密码只在单次 RPC 中经过 Host，表单不保存它；refresh token 只存在于 Host。
  */
@@ -32,11 +29,9 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
   const [newControlBaseUrl, setNewControlBaseUrl] = useState('')
   const [addAddressOpen, setAddAddressOpen] = useState(false)
   const [addressError, setAddressError] = useState('')
-  const [hostLabel, setHostLabel] = useState('')
-  const [hostPublicKey, setHostPublicKey] = useState('')
-  const [hostFingerprint, setHostFingerprint] = useState('')
   const [auth, setAuth] = useState<CodingNsAuthSessionSnapshot>(loggedOutSnapshot())
-  const [devices, setDevices] = useState<AuthDeviceManagementSnapshotDto | null>(null)
+  const [devices, setDevices] = useState<DshDeviceListResponse | null>(null)
+  const [selectedDeviceId, setSelectedDeviceId] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
 
@@ -80,6 +75,9 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     })
     setPassword('')
     setAuth(next)
+    const dshDevices = await callCodingNsRpc<DshDeviceListResponse>(rpc, 'auth/dsh/device/list', {})
+    setDevices(dshDevices)
+    setSelectedDeviceId(dshDevices.devices.find((device) => device.online && device.status === 'active')?.dshDeviceId ?? '')
     setMessage(t('relay.loginSuccess'))
   })
 
@@ -87,28 +85,15 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     await callCodingNsRpc(rpc, 'auth/logout', {})
     setAuth(loggedOutSnapshot())
     setDevices(null)
+    setSelectedDeviceId('')
     setMessage(t('relay.loggedOut'))
   })
 
   const loadDevices = (): Promise<void> => run(async () => {
-    setDevices(await callCodingNsRpc<AuthDeviceManagementSnapshotDto>(rpc, 'auth/devices', {}))
-  })
-
-  const bindHost = (): Promise<void> => run(async () => {
-    const binding = await callCodingNsRpc<TunnelBindingSummary>(rpc, 'auth/bind', {
-      hostLabel,
-      hostPublicKey,
-      hostFingerprint,
-    })
-    setAuth((current) => ({ ...current, binding }))
-    setMessage(t('relay.bindSuccess'))
-  })
-
-  const unbindHost = (): Promise<void> => run(async () => {
-    if (!auth.binding) return
-    await callCodingNsRpc(rpc, 'auth/unbind', { bindingId: auth.binding.bindingId })
-    setAuth((current) => ({ ...current, binding: null }))
-    setMessage(t('relay.unbindSuccess'))
+    const next = await callCodingNsRpc<DshDeviceListResponse>(rpc, 'auth/dsh/device/list', {})
+    setDevices(next)
+    const preferred = next.devices.find((device) => device.online && device.status === 'active')?.dshDeviceId ?? ''
+    setSelectedDeviceId(preferred)
   })
 
   const addControlBaseUrl = async (): Promise<void> => {
@@ -184,23 +169,21 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     authenticated && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
       createElement('div', { style: { padding: 12, border: `1px solid ${dshThemeColor.border}`, borderRadius: 6 } },
         createElement('strong', undefined, auth.account?.email ?? t('relay.loggedIn')),
-        createElement('div', { style: { marginTop: 6, opacity: 0.7 } }, t('relay.device', { value: auth.currentDevice?.displayName ?? auth.currentDevice?.deviceId ?? t('relay.unrecognized') })),
-        createElement('div', { style: { marginTop: 4, opacity: 0.7 } }, t('relay.host', { value: auth.binding?.tunnelDomain ?? t('relay.unbound') })),
+        createElement('div', { style: { marginTop: 6, opacity: 0.7 } }, t('relay.device', { value: devices?.devices.find((device) => device.dshDeviceId === selectedDeviceId)?.displayName ?? t('relay.unrecognized') })),
+        createElement('div', { style: { marginTop: 4, opacity: 0.7 } }, t('relay.host', { value: selectedDeviceId || t('relay.unbound') })),
       ),
       createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
         createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void loadDevices(), style: buttonStyle }, t('relay.refreshDevices')),
         createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void logout(), style: buttonStyle }, t('relay.logout')),
       ),
-      devices && createElement('div', { style: { fontSize: 13, opacity: 0.75 } }, t('relay.devicesSummary', { current: devices.currentDevice?.deviceId ?? t('relay.unknown'), count: devices.otherActiveDevices.length })),
-      auth.binding
-        ? createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void unbindHost(), style: buttonStyle }, t('relay.unbindHost'))
-        : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-          createElement('strong', undefined, t('relay.bindHost')),
-          createElement('input', { placeholder: t('relay.hostLabel'), value: hostLabel, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setHostLabel(event.currentTarget.value), style: fieldStyle }),
-          createElement('input', { placeholder: t('relay.hostPublicKey'), value: hostPublicKey, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setHostPublicKey(event.currentTarget.value), style: fieldStyle }),
-          createElement('input', { placeholder: t('relay.hostFingerprint'), value: hostFingerprint, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setHostFingerprint(event.currentTarget.value), style: fieldStyle }),
-          createElement('button', { type: 'button', disabled: disabled || busy || !hostLabel || !hostPublicKey || !hostFingerprint, onClick: () => void bindHost(), style: buttonStyle }, t('relay.bindHost')),
+      devices && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+        createElement('strong', undefined, t('relay.dshDevices')),
+        createElement('select', { value: selectedDeviceId, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setSelectedDeviceId(event.currentTarget.value), style: fieldStyle },
+          createElement('option', { value: '' }, t('relay.selectDevice')),
+          ...devices.devices.map((device) => createElement('option', { key: device.dshDeviceId, value: device.dshDeviceId, disabled: !device.online || device.status !== 'active' }, `${device.displayName} · ${device.online ? t('relay.online') : t('relay.offline')}`)),
         ),
+        createElement('div', { style: { fontSize: 13, opacity: 0.75 } }, t('relay.devicesSummary', { current: selectedDeviceId || t('relay.unknown'), count: devices.devices.length })),
+      ),
     ),
     message && createElement('div', { role: 'status', style: { color: message.includes('成功') ? dshThemeColor.success : dshThemeColor.error } }, message),
   )

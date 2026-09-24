@@ -38,6 +38,27 @@ test('tmux backend 创建命名空间会话且重复创建不产生第二个会�
   assert.ok(calls.some((call) => call.includes(tmuxSessionName(session.runtimeSessionKey))))
 })
 
+test('tmux 调试命令退出后保留交互 Shell', async () => {
+  const calls: string[][] = []
+  let alive = false
+  const backend = new TmuxTerminalBackend({
+    platform: 'linux',
+    tmuxPath: '/usr/bin/tmux',
+    commandRunner: {
+      run(_command, args) {
+        calls.push([...args])
+        if (args[0] === 'has-session') return { status: alive ? 0 : 1, stdout: '', stderr: alive ? '' : 'no server running' }
+        if (args[0] === 'new-session') alive = true
+        return { status: 0, stdout: '', stderr: '' }
+      },
+    },
+  })
+  await backend.create({ session: { ...session, commandPath: 'pnpm', commandArgs: ['run', 'dev'] } })
+  const create = calls.find((args) => args[0] === 'new-session')
+  assert.ok(create)
+  assert.deepEqual(create?.slice(-4), ['/bin/zsh', '-i', '-c', "'pnpm' 'run' 'dev'; exec '/bin/zsh' '-i'"])
+})
+
 test('tmux detach 只结束临时 client，显式关闭才结束持久 session', async () => {
   const commands = []
   let killed = 0

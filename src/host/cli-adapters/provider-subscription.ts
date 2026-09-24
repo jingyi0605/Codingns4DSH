@@ -386,6 +386,7 @@ function resolveSub2ApiSources(adapterId: string): Sub2ApiSource[] {
   if (adapterId === 'grok') {
     add(envSource('GROK_BASE_URL', 'GROK_API_KEY'))
     add(envSource('XAI_BASE_URL', 'XAI_API_KEY'))
+    add(envSource('XAI_API_BASE_URL', 'XAI_API_KEY'))
     add(findConfigSource(readJson(join(homedir(), '.grok', 'config.json'))))
   }
   return sources

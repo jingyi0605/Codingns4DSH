@@ -1,6 +1,6 @@
 # dsh-codingns
 
-这是把 CodingNS 接入 DeepSeek Harness（DSH）的独立插件包。阶段 0 至 3 的结构、契约和最小实现已完成；阶段 4 已完成可注入的 WebRTC/Transport 连接骨架和 Fake 联调。DSH Web 设置页已经提供登录、设备和 Host 绑定表单，但真实 Host/Relay/Browser 四端联调尚未完成。
+这是把 CodingNS 接入 DeepSeek Harness（DSH）的独立插件包。插件现在使用独立的 DSH 设备凭据、Host runtime 和二进制 Relay Tunnel/DSH Envelope；独立的 H5 Bootstrap 位于同级仓库 `../dsh-codingns-h5`。Control API、Relay、Host、Client 的真实四端联调仍待在目标部署环境执行。
 
 ## DSH 装配
 

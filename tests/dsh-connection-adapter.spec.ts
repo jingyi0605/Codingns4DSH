@@ -8,17 +8,18 @@ import {
 } from '../dist/bootstrap/dsh-connection-adapter.js'
 import { DshCodingNsTransport } from '../dist/transport/dsh-transport.js'
 import type { CodingNsCarrier } from '../dist/transport/carrier.js'
+import { decodeDshEnvelope, encodeDshEnvelope } from '../dist/transport/dsh-envelope.js'
 
 class FakeCarrier implements CodingNsCarrier {
   state: CodingNsCarrier['state'] = 'open'
-  sent: string[] = []
-  private listeners = new Set<(data: string) => void>()
-  send(data: string): void { this.sent.push(data) }
-  subscribe(listener: (data: string) => void): () => void {
+  sent: Uint8Array[] = []
+  private listeners = new Set<(data: Uint8Array) => void>()
+  send(data: Uint8Array): void { this.sent.push(data) }
+  subscribe(listener: (data: Uint8Array) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
   }
-  emit(data: string): void { for (const listener of this.listeners) listener(data) }
+  emit(data: Uint8Array): void { for (const listener of this.listeners) listener(data) }
   async close(): Promise<void> { this.state = 'closed' }
 }
 
@@ -27,17 +28,8 @@ test('适配层将 DSH rpc.call 路由映射到 CodingNS Transport', async () =>
   const transport = new DshCodingNsTransport({ carrier, generation: { id: 1, host: { home: '/tmp' } } })
   const hooks = createDshClientTransportHooks(transport)
   const resultPromise = hooks.rpc.call('/api', 'ping', { ok: true })
-  const frame = JSON.parse(carrier.sent[0] as string) as { id: string }
-  // 通过 Transport 的协议响应完成待处理 RPC；这里直接从 sent 读取关联 ID。
-  const { encodeTunnelFrame } = await import('../dist/transport/frame.js')
-  carrier.emit(encodeTunnelFrame({
-    version: 1,
-    channel: 'rpc',
-    id: frame.id,
-    sequence: 0,
-    kind: 'data',
-    payload: { pong: true },
-  }))
+  const frame = decodeDshEnvelope(carrier.sent[0]!)
+  carrier.emit(encodeDshEnvelope({ ...frame, type: 'rpc.response', body: new TextEncoder().encode(JSON.stringify({ pong: true })) }))
   assert.deepEqual(await resultPromise, { ok: true, value: { pong: true } })
   await transport.close()
 })

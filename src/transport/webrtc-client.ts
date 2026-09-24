@@ -3,7 +3,8 @@ import type {
   RelaySignalingServerMessage,
   RelaySignalingTicketResponse,
 } from '../shared/index.js'
-import { createDataChannelCarrier, type CodingNsCarrier, type DataChannelLike } from './carrier.js'
+import { createDataChannelCarrier, TUNNEL_DATA_CHANNEL_LABEL, type CodingNsCarrier, type DataChannelLike } from './carrier.js'
+import { encodeFrame } from './frame.js'
 
 export interface SignalingSocketLike {
   send(data: string): void
@@ -28,6 +29,7 @@ export interface WebRtcClientConnectorOptions {
   peerConnectionFactory(options: { iceServers: RelayIceServer[]; iceTransportPolicy: 'all' | 'relay' }): PeerConnectionLike
   channelLabel?: string
   timeoutMs?: number
+  heartbeatIntervalMs?: number
 }
 
 export interface WebRtcClientConnection {
@@ -42,13 +44,24 @@ export async function connectWebRtcClient(options: WebRtcClientConnectorOptions)
   const ticket = options.signalingTicket
   const signalingUrl = createSignalingUrl(ticket.signalingBaseUrl, ticket.ticket)
   const signaling = await options.signalingSocketFactory(signalingUrl)
+  const cleanupListeners: Array<() => void> = []
+  // 真实 WebSocket 暴露 readyState；测试注入的最小 socket 可能没有该字段。
+  // 生产路径严格等待 registered，旧的纯协议 fake 仍可直接进入 offer 流程。
+  if ('readyState' in signaling) {
+    await waitForSignalingRegistered(signaling, options.timeoutMs ?? 15_000, cleanupListeners)
+    await waitForPeerReady(signaling, options.timeoutMs ?? 15_000, cleanupListeners)
+  }
+  const heartbeat = options.heartbeatIntervalMs === 0 ? null : setInterval(() => {
+    try { signaling.send(JSON.stringify({ type: 'ping', at: new Date().toISOString() })) } catch { /* 断线由 close 事件处理 */ }
+  }, options.heartbeatIntervalMs ?? 20_000)
+  cleanupListeners.push(() => { if (heartbeat) clearInterval(heartbeat) })
   const peerConnection = options.peerConnectionFactory({
     iceServers: ticket.iceServers,
     iceTransportPolicy: ticket.iceTransportPolicy,
   })
-  const channel = peerConnection.createDataChannel(options.channelLabel ?? 'dsh-codingns')
+  // Relay Tunnel 的标签属于线协议，不能由调用方改写。
+  const channel = peerConnection.createDataChannel(TUNNEL_DATA_CHANNEL_LABEL)
   const carrier = createDataChannelCarrier(channel)
-  const cleanupListeners: Array<() => void> = []
   let closed = false
 
   const close = async () => {
@@ -82,6 +95,7 @@ export async function connectWebRtcClient(options: WebRtcClientConnectorOptions)
     await peerConnection.setRemoteDescription({ type: 'answer', sdp: answer.sdp })
     for (const candidate of answer.candidates) await peerConnection.addIceCandidate(candidate)
     await waitForOpen(channel, options.timeoutMs ?? 15_000, cleanupListeners)
+    await carrier.send(encodeFrame({ type: 'hello', clientContext: null, protocolVersion: '1' }))
     return { carrier, peerConnection, signaling, close }
   } catch (error) {
     await close()
@@ -90,9 +104,44 @@ export async function connectWebRtcClient(options: WebRtcClientConnectorOptions)
 }
 
 export function createSignalingUrl(baseUrl: string, ticket: string): string {
-  const url = new URL('/signal', ensureWebSocketProtocol(baseUrl))
+  const base = new URL(ensureWebSocketProtocol(baseUrl))
+  const pathname = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`
+  const url = new URL('signal', `${base.origin}${pathname}`)
   url.searchParams.set('ticket', ticket)
   return url.toString()
+}
+
+export function waitForSignalingRegistered(socket: SignalingSocketLike, timeoutMs: number, cleanup: Array<() => void> = []): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { remove(); reject(new Error('等待 Relay registered 超时')) }, timeoutMs)
+    const onMessage = (event: Event) => {
+      const raw = (event as MessageEvent<unknown>).data
+      if (typeof raw !== 'string') return
+      try { const message = JSON.parse(raw) as { type?: string }; if (message.type !== 'registered') return; clearTimeout(timer); remove(); resolve() } catch { /* 忽略非 JSON 信令 */ }
+    }
+    const onClose = () => { clearTimeout(timer); remove(); reject(new Error('信令连接在 registered 前关闭')) }
+    const remove = () => { socket.removeEventListener('message', onMessage); socket.removeEventListener('close', onClose) }
+    socket.addEventListener('message', onMessage); socket.addEventListener('close', onClose); cleanup.push(remove)
+  })
+}
+
+/** Relay 只有在 Host 在线后才接受客户端 offer，避免过早发送被 HOST_NOT_CONNECTED 拒绝。 */
+export function waitForPeerReady(socket: SignalingSocketLike, timeoutMs: number, cleanup: Array<() => void> = []): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { remove(); reject(new Error('等待 Relay peer-ready 超时')) }, timeoutMs)
+    const onMessage = (event: Event) => {
+      const raw = (event as MessageEvent<unknown>).data
+      if (typeof raw !== 'string') return
+      try {
+        const message = JSON.parse(raw) as { type?: string }
+        if (message.type === 'peer-ready') { clearTimeout(timer); remove(); resolve() }
+        else if (message.type === 'error') { clearTimeout(timer); remove(); reject(new Error('Relay 拒绝 peer-ready')) }
+      } catch { /* 忽略非 JSON 信令 */ }
+    }
+    const onClose = () => { clearTimeout(timer); remove(); reject(new Error('信令连接在 peer-ready 前关闭')) }
+    const remove = () => { socket.removeEventListener('message', onMessage); socket.removeEventListener('close', onClose) }
+    socket.addEventListener('message', onMessage); socket.addEventListener('close', onClose); cleanup.push(remove)
+  })
 }
 
 export function extractDtlsFingerprint(sdp: string): string | null {

@@ -7,6 +7,7 @@ import type {
   TunnelBindingSummary,
 } from '../shared/contracts/auth.js'
 import type { CodingNsControlApiClient } from './control-api-client.js'
+import type { RelaySignalingTicketResponse } from '../shared/contracts/signaling.js'
 import type { HostCredentialRecord, CodingNsCredentialStore } from './credential-store.js'
 
 /**
@@ -51,6 +52,11 @@ export class CodingNsAuthSession {
    */
   getAccessToken(): string | null {
     return this.accessToken
+  }
+
+  /** 仅供 Host 内部设备运行时调用，Client 不会拿到控制面客户端。 */
+  getControlClient(): CodingNsControlApiClient {
+    return this.client
   }
 
   /** 使用保存的 refresh token 恢复会话；没有凭据时保持 logged_out。 */
@@ -133,6 +139,13 @@ export class CodingNsAuthSession {
       this.state = { ...this.state, binding: null }
     }
     return response.binding
+  }
+
+  /** 为浏览器 Client 申请短期票据；access/refresh token 永远不离开 Host。 */
+  async createClientSignalingTicket(tunnelDomain?: string): Promise<RelaySignalingTicketResponse> {
+    const domain = tunnelDomain?.trim() || this.state.binding?.tunnelDomain
+    if (!domain) throw new Error('CodingNS 尚未绑定 Host')
+    return this.client.createSignalingTicket(this.requireAccessToken(), { tunnelDomain: domain })
   }
 
   private async saveResponse(response: {

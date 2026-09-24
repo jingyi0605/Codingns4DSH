@@ -9,7 +9,7 @@ test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async 
   for (const [Driver, expectedArgs] of [
     [PiAgentDriver, ['--mode', 'rpc']],
     [CodexAppServerDriver, ['app-server']],
-    [GrokBuildDriver, ['--acp']],
+    [GrokBuildDriver, ['agent', '--no-leader', 'stdio']],
   ] as const) {
     const calls: string[][] = []
     let killed = false

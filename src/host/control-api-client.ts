@@ -8,6 +8,14 @@ import type {
   LoginByEmailRequest,
 } from '../shared/contracts/auth.js'
 import type {
+  DshDeviceHeartbeatResponse,
+  DshDeviceListResponse,
+  DshDeviceRegistrationRequest,
+  DshDeviceRegistrationResponse,
+  DshRelayTicketRequest,
+  DshRelayTicketResponse,
+} from '../shared/contracts/dsh-device.js'
+import type {
   RelaySignalingTicketRequest,
   RelaySignalingTicketResponse,
 } from '../shared/contracts/signaling.js'
@@ -32,12 +40,13 @@ export const CODINGNS_CONTROL_API_PATHS = {
   login: '/api/public/auth/login',
   refresh: '/api/public/auth/refresh',
   me: '/api/v1/auth/me',
-  // 设备管理属于当前 CodingNS Host API，不是 codingns-proxy Control API。
-  devices: '/api/auth/devices',
+  // 当前 codingns-proxy 没有独立的设备管理接口；设备绑定通过 hosts 返回。
   hosts: '/api/v1/hosts',
   bind: '/api/v1/hosts/bind',
   availability: '/api/v1/hosts/availability',
   signalingTicket: '/api/v1/relay/signaling/ticket',
+  dshDevices: '/api/v1/dsh/devices',
+  dshRelayTicket: '/api/v1/dsh/relay/ticket',
 } as const
 
 export class CodingNsControlApiError extends Error {
@@ -68,6 +77,10 @@ export interface CodingNsControlApiClient {
     accessToken: string,
     request: RelaySignalingTicketRequest,
   ): Promise<RelaySignalingTicketResponse>
+  registerDshDevice(accessToken: string, request: DshDeviceRegistrationRequest): Promise<DshDeviceRegistrationResponse>
+  listDshDevices(accessToken: string): Promise<DshDeviceListResponse>
+  heartbeatDshDevice(accessToken: string, deviceId: string, deviceCredential: string): Promise<DshDeviceHeartbeatResponse>
+  createDshRelayTicket(accessToken: string, request: DshRelayTicketRequest): Promise<DshRelayTicketResponse>
 }
 
 /** 设计文档中的简写名称；保留长名称以明确其 Control API 边界。 */
@@ -100,8 +113,17 @@ export class HttpCodingNsControlApiClient implements CodingNsControlApiClient {
     return this.request(this.controlBaseUrl, CODINGNS_CONTROL_API_PATHS.refresh, { method: 'POST', body: request })
   }
 
-  getDevices(accessToken: string): Promise<AuthDeviceManagementSnapshotDto> {
-    return this.request(this.hostApiBaseUrl, CODINGNS_CONTROL_API_PATHS.devices, { token: accessToken })
+  /**
+   * codingns-proxy Connect 只提供账号和 Host 绑定接口，没有旧版的设备管理接口。
+   * 保留 DTO 方法是为了兼容插件 RPC；不能向不存在的 `/api/auth/devices` 发请求，
+   * 否则登录成功后的补充状态读取会被误报成登录失败。
+   */
+  getDevices(_accessToken: string): Promise<AuthDeviceManagementSnapshotDto> {
+    return Promise.resolve({
+      currentDevice: null,
+      otherActiveDevices: [],
+      recentLoginRecords: [],
+    })
   }
 
   listHostBindings(accessToken: string): Promise<HostBindingsResponse> {
@@ -131,8 +153,34 @@ export class HttpCodingNsControlApiClient implements CodingNsControlApiClient {
     })
   }
 
-  private async request<T>(baseUrl: string, path: string, options: { method?: string; token?: string; body?: unknown } = {}): Promise<T> {
+  registerDshDevice(accessToken: string, request: DshDeviceRegistrationRequest): Promise<DshDeviceRegistrationResponse> {
+    return this.request(this.controlBaseUrl, CODINGNS_CONTROL_API_PATHS.dshDevices, { method: 'POST', token: accessToken, body: request })
+  }
+
+  listDshDevices(accessToken: string): Promise<DshDeviceListResponse> {
+    return this.request(this.controlBaseUrl, CODINGNS_CONTROL_API_PATHS.dshDevices, { token: accessToken })
+  }
+
+  heartbeatDshDevice(accessToken: string, deviceId: string, deviceCredential: string): Promise<DshDeviceHeartbeatResponse> {
+    return this.request(this.controlBaseUrl, `${CODINGNS_CONTROL_API_PATHS.dshDevices}/${encodeURIComponent(deviceId)}/heartbeat`, {
+      method: 'POST',
+      token: accessToken,
+      headers: { 'x-dsh-device-credential': deviceCredential },
+    })
+  }
+
+  createDshRelayTicket(accessToken: string, request: DshRelayTicketRequest): Promise<DshRelayTicketResponse> {
+    return this.request(this.controlBaseUrl, CODINGNS_CONTROL_API_PATHS.dshRelayTicket, {
+      method: 'POST',
+      token: accessToken,
+      body: request,
+      headers: { 'x-dsh-device-credential': request.deviceCredential },
+    })
+  }
+
+  private async request<T>(baseUrl: string, path: string, options: { method?: string; token?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
     const headers = new Headers({ accept: 'application/json' })
+    for (const [key, value] of Object.entries(options.headers ?? {})) headers.set(key, value)
     if (options.body !== undefined) headers.set('content-type', 'application/json')
     if (options.token) headers.set('authorization', `Bearer ${options.token}`)
     const requestInit: RequestInit = { method: options.method ?? 'GET', headers }

@@ -67,8 +67,7 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
       'new-session', '-d', '-s', name,
       ...Object.entries(input.session.commandEnv ?? {}).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
       '-c', input.session.cwd,
-      input.session.commandPath ?? input.session.shellPath,
-      ...(input.session.commandArgs ?? input.session.shellArgs),
+      ...tmuxLaunchCommand(input.session),
     ])
     if (result.status !== 0) {
       throw new TerminalRuntimeError(
@@ -183,6 +182,21 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     if (this.tmuxPath === null) throw new TerminalRuntimeError('TERMINAL_RUNTIME_UNAVAILABLE', '未找到可执行的 tmux')
     return this.tmuxPath
   }
+}
+
+/**
+ * 调试命令必须是 Shell 的子进程：杀掉端口对应的业务进程后，tmux pane
+ * 仍然回到交互 Shell；只有显式停止才会调用 terminate 销毁整个会话。
+ */
+function tmuxLaunchCommand(session: TerminalRuntimeSession): readonly string[] {
+  if (session.commandPath === undefined) return [session.shellPath, ...session.shellArgs]
+  const command = [session.commandPath, ...(session.commandArgs ?? [])].map(shellQuote).join(' ')
+  const shell = [session.shellPath, ...session.shellArgs].map(shellQuote).join(' ')
+  return [session.shellPath, ...session.shellArgs, '-c', `${command}; exec ${shell}`]
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`
 }
 
 export function tmuxSessionName(runtimeSessionKey: string): string {

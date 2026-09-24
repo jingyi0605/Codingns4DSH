@@ -41,10 +41,13 @@ test('Client 构建产物包含模块卡片、设置面板和 Host RPC 调用', 
     '终端强化', '重启 DSH 后生效', '当前运行状态', '下次启动目标',
     '新建终端默认项', '系统推荐', 'PowerShell', 'Git Bash',
     '背景色', '前景色', '光标颜色', '字体', '字号（px）', '行高', '光标形状', '光标闪烁', '回滚行数',
-    '添加启动配置', '保存配置', '启动命令', 'Workspace 内相对路径', '启用服务代理', 'debug/config/save',
+    '添加启动配置', '保存配置', '完整启动命令', 'Workspace 内相对路径', '启用服务代理', 'debug/config/save',
+    '启动入口', '执行环境', '服务检查', '端口每 5 秒自动检查', '端口状态尚未检查', '结束进程', '编辑', '删除', 'terminal/status', '运行方式由 Host 平台自动选择',
+    'debug/config/update', 'debug/config/delete', 'debug/port/kill',
   ]) {
     assert.equal(source.includes(marker), true, `Client 产物缺少 ${marker}`)
   }
+  assert.equal(source.includes('环境变量'), false, '基础调试表单不应展示环境变量字段')
 })
 
 test('设置页由注册表驱动：遍历模块清单并同步启停', async () => {

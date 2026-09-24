@@ -44,6 +44,7 @@ export function settingsModules(
 }
 
 export { lanAccessFeature, reverseProxyFeature, cliAdaptersFeature, workspaceSessionEnhancementFeature, terminalEnhancementFeature, debugFeature }
+export { startBrowserRelayConnection } from './reverse-proxy.js'
 export { LanAccessPanel } from './lan-access-panel.js'
 export { ReverseProxyPanel } from './reverse-proxy-panel.js'
 export { CliAdaptersPanel } from './cli-adapters.js'

@@ -43,7 +43,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
   async listModels(): Promise<CodingNsCliModelCatalog> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) return emptyCatalog()
-    const rpc = new JsonRpcProcess({ command, args: ['--acp'], spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], spawn: this.runSpawn })
     try {
       await rpc.request('initialize', { protocolVersion: 1, clientInfo: { name: 'dsh-codingns', version: '0.1.0' }, capabilities: {} })
       rpc.notify('initialized', {})
@@ -122,7 +122,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     const previous = this.sessions.get(input.sessionId)
     if (previous !== undefined && previous.cwd === input.cwd) return previous
     previous?.rpc.dispose()
-    const rpc = new JsonRpcProcess({ command, args: ['--acp'], cwd: input.cwd, spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], cwd: input.cwd, spawn: this.runSpawn })
     this.processes.add(rpc)
     const state = { rpc, cwd: input.cwd, providerSessionId: '', requests: new Map<string, number | string>() }
     await rpc.request('initialize', {

@@ -25,6 +25,10 @@ export function createDebugFeature(): FeatureModule<CodingNsHostServices> {
             return service.getConfig(workspaceId)
           case 'config/save':
             return service.saveConfig(workspaceId, input.config)
+          case 'config/update':
+            return service.updateProfile(workspaceId, requiredString(input.profileId, 'profileId'), input.profile)
+          case 'config/delete':
+            return service.deleteProfile(workspaceId, requiredString(input.profileId, 'profileId'))
           case 'profile/list':
             return (await service.getConfig(workspaceId)).profiles
           case 'profile/launch':
@@ -40,6 +44,8 @@ export function createDebugFeature(): FeatureModule<CodingNsHostServices> {
             return service.checkPort(workspaceId, requiredString(input.profileId, 'profileId'))
           case 'port/terminate':
             return service.terminatePort(workspaceId, requiredString(input.checkId, 'checkId'))
+          case 'port/kill':
+            return service.killPortProcess(workspaceId, requiredString(input.checkId, 'checkId'))
           case 'proxy/get':
             return service.getProxy(requiredString(input.bindingId, 'bindingId'))
           case 'proxy/enable':

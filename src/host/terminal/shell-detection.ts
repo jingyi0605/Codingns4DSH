@@ -36,7 +36,7 @@ export function detectTerminalShells(options: ShellDetectionOptions = {}): reado
 export function resolveTerminalShell(
   requestedProfileId: TerminalShellProfileId,
   detected: readonly DetectedTerminalShell[],
-  platform = process.platform,
+  platform: string = process.platform,
 ): ResolvedTerminalShell {
   const requested = requestedProfileId === 'system'
     ? undefined

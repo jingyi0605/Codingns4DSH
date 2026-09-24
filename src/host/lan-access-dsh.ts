@@ -179,7 +179,7 @@ export class LanAccessDshProxy {
       if (typeof (dshSocket as unknown as { on?: unknown }).on === 'function') {
         const requestTransform = new LanAccessDshRequestTransform(`127.0.0.1:${active.config.dshPort}`)
         localSocket.pipe(requestTransform as unknown as LanAccessDshStream)
-        requestTransform.pipe(dshSocket)
+        requestTransform.pipe(dshSocket as unknown as NodeJS.WritableStream)
       } else localSocket.pipe(dshSocket)
       dshSocket.pipe(localSocket)
     }, (error) => localSocket.destroy(error))

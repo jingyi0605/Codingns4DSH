@@ -8,6 +8,8 @@ import type {
 import type { CodingNsCarrier } from './carrier.js'
 import { DshTunnelMultiplexer } from './multiplexer.js'
 import type { TunnelFlowControl } from './multiplexer.js'
+import type { DshHostScope } from './dsh-envelope.js'
+import type { DshSession } from './dsh-session.js'
 
 export interface DshCodingNsTransportOptions {
   carrier: CodingNsCarrier
@@ -16,6 +18,9 @@ export interface DshCodingNsTransportOptions {
   streamBaseUrl?: string
   reconnect?: (signal?: AbortSignal) => Promise<void | CodingNsTransportGeneration>
   flowControl?: TunnelFlowControl
+  hostScope?: DshHostScope
+  session?: DshSession
+  requireSessionReady?: boolean
 }
 
 /** 将 Tunnel Multiplexer 映射为 DSH ClientTransportHooks。 */
@@ -28,6 +33,10 @@ export class DshCodingNsTransport implements CodingNsTransport {
     this.generation = options.generation
     this.multiplexer = new DshTunnelMultiplexer(options.carrier, {
       idPrefix: `g${options.generation.id}`,
+      generation: String(options.generation.id),
+      ...(options.hostScope ? { hostScope: options.hostScope } : {}),
+      ...(options.session ? { session: options.session } : {}),
+      ...(options.requireSessionReady === undefined ? {} : { requireSessionReady: options.requireSessionReady }),
       ...(options.flowControl ? { flowControl: options.flowControl } : {}),
     })
   }
@@ -42,6 +51,28 @@ export class DshCodingNsTransport implements CodingNsTransport {
       init: init ? { method: init.method, headers: [...new Headers(init.headers).entries()], body: typeof init.body === 'string' ? init.body : undefined } : undefined,
     }, init?.signal ?? undefined)
     return new Response(result.body, { status: result.status, headers: result.headers })
+  }
+
+  /** 向 Host 的 Remote Web Runtime 发送带明确 operation 的请求。 */
+  webRequest<TResponse = unknown, TPayload = unknown>(operation: string, payload: TPayload, signal?: AbortSignal): Promise<TResponse> {
+    return this.multiplexer.requestOperation<TResponse>('web', operation, payload, signal)
+  }
+
+  /** 打开一个由 Remote Web Runtime 管理的 Web 流。 */
+  openWebStream<TChunk = unknown, TPayload = unknown>(operation: string, payload: TPayload, signal?: AbortSignal): AsyncIterable<TChunk> {
+    return this.multiplexer.openStreamOperation<TChunk>('web', operation, payload, signal)
+  }
+
+  openWebStreamWithId<TChunk = unknown, TPayload = unknown>(operation: string, payload: TPayload, signal?: AbortSignal): { streamId: string; stream: AsyncIterable<TChunk> } {
+    return this.multiplexer.openStreamOperationWithId<TChunk>('web', operation, payload, signal)
+  }
+
+  sendWebStream(streamId: string, type: string, body?: Uint8Array, meta: Record<string, unknown> = {}): void {
+    this.multiplexer.sendStreamMessage(streamId, 'web', type, meta, body)
+  }
+
+  closeWebStream(streamId: string): void {
+    this.multiplexer.closeStream(streamId, 'web')
   }
 
   openStream<TChunk = unknown, TPayload = unknown>(request: CodingNsStreamRequest<TPayload>): AsyncIterable<TChunk> {

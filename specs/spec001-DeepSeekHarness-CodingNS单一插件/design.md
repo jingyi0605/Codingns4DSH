@@ -28,7 +28,7 @@ DSH Runtime
   └── dsh-codingns Host half
        ├── CodingNS Auth / Device / Host binding
        ├── WebRTC Host Gateway
-       ├── CLI / 文件 / PTY / Task / Process / Port
+       ├── CLI / 文件 / 自有 PTY / Task / Process / Port
        ├── PeerHost Registry / Proxy
        └── Remote DSH Web Runtime Provider
 ```
@@ -138,7 +138,8 @@ Client 处理规则：
 | `remote-dsh-web-runtime` | 远程 Web boot、资源、插件 Manifest/Bundle 和 WebSocket |
 | `cli-adapters` | CodingNS CLI Provider 的统一启动、输入、输出和退出 |
 | `workspace-files` | 工作区树、预览和文件流 |
-| `terminal` / `task` | tmux、PTY、后台任务、恢复和取消 |
+| `terminal` | DSH `webTerminals` 兼容 controller、终端强化设置、持久映射、tmux、ConPTY broker、attach 与显式关闭 |
+| `task` | 插件自有后台任务、恢复和取消；不与终端生命周期混用 |
 | `process-network` | 进程、端口、显式反向代理 |
 | `peerhost` | PeerHost 检查、目标会话、HTTP/WS 白名单代理和回退路径 |
 
@@ -207,3 +208,4 @@ interface DshEnvelope {
 - 浏览器和桌面 WebView 对 WebRTC DataChannel、二进制 WebSocket 和远程 Bundle 加载的差异需要矩阵测试。
 - PeerHost 代转路径会在当前 Host 看到明文，必须默认关闭并留下审计记录。
 - 移动端壳只复用 Client Transport 和 Remote Web Runtime；原生打包不属于当前阶段。
+- 插件自有 Typert manifest、Host controller、浏览器 `webTerminals`、DSH Sidebar UI、xterm、“终端强化”设置、POSIX tmux 和 Windows ConPTY broker 已实现；Bundle 已成对禁用官方 Host controller 与官方 terminal UI。契约、Fake 测试、macOS 真实 tmux 和静态 Bundle 合成已有证据，但 Windows、Linux、真实 DSH Web UI 和冷启动尚未完成最终验收。完整设计和状态以 `spec002` 的 `design.md` §10 与 `tasks.md` 3.2.1～3.2.6 为准。

@@ -15,12 +15,14 @@ export const dshThemeColor = {
   inputBackground: 'var(--dsw-specific-input-major, Canvas)',
   buttonBackground: 'var(--dsw-alias-button-elevated-fill, transparent)',
   menuBackground: 'var(--dsw-specific-menu, Canvas)',
+  pageBackground: 'var(--dsw-alias-bg-primary, Canvas)',
   overlay: 'var(--dsw-alias-bg-mask-1, rgba(0, 0, 0, 0.45))',
   accent: 'var(--dsw-alias-button-info-fill, #1677ff)',
   success: 'var(--dsw-alias-state-success-primary, #16803c)',
   error: 'var(--dsw-alias-state-error-primary, #b42318)',
   switchThumb: 'var(--dsw-static-neutral-00, #fff)',
   prominentShadow: 'var(--dsw-elevation-prominent, 0 12px 40px rgba(0, 0, 0, 0.25))',
+  subtleShadow: 'var(--dsw-elevation-l1, 0 1px 2px rgba(0, 0, 0, 0.06))',
 } as const
 
 /** 设置模块根节点显式接入 DSH 的主文字色。 */

@@ -20,7 +20,7 @@
 
 - DSH `0.1.6-alpha.2` 的 `ClientTransportHooks`、`installConnection()`、`loadBundle()` 和 connection generation；后续版本必须维护兼容矩阵。
 - `/Users/jackson/Code/CodingNS/apps/codingns-proxy` 的 Auth、Device、Workspace、Relay、Tailscale、Multi-Host、Host binding 和 signaling ticket 契约。
-- CodingNS Host 现有工作区、终端、PTY、TaskManager、进程、端口、反向代理和 PeerHost 服务。
+- `dsh-codingns` 自身实现的工作区、终端、任务、进程、端口、反向代理和 PeerHost 模块；CodingNS 父仓库只能作为设计参考，不能成为源码或运行时依赖。
 - CodingNS 主仓库 `spec001.3.2-当前HOST代理访问其他HOST仓库`、`spec001.3.3-HOST与PEERHOST资源作用域统一与切换收口` 定义的 PeerHost 白名单、目标会话和资源作用域规则。
 
 ## 明确不做
@@ -31,3 +31,5 @@
 - 不在浏览器持久化 refresh token；浏览器只使用控制站 HttpOnly 会话、一次性访问码或 Device Code。
 - 不强制第一阶段自行打包 Win、macOS 或移动端；优先扩展官方 DSH Desktop 和官方 Web Runtime。
 - 不把 PeerHost 简化成任意 URL 代理。直接 WebRTC 连接优先，当前 Host 代转只作为受信任回退路径。
+- 不导入或调用 CodingNS 父仓库及其 Host 私有实现。DSH Web 是唯一主体，插件所需本机能力必须在插件包内通过公开契约独立实现。
+- 终端强化在 DSH「设置 → CodingNS」中配置；启用和禁用需要重启 DSH，默认终端和外观设置不需要重启。终端界面由插件挂载到 DSH Sidebar，不加载官方 terminal UI 包，也不是脱离 DSH Web 的独立页面。

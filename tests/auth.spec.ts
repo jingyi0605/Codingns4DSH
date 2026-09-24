@@ -163,6 +163,23 @@ test('HTTP Client 使用新的 WebRTC 信令票据接口并携带请求体', asy
   assert.deepEqual(await new Response(calls[0]?.init?.body).json(), { tunnelDomain: 'host.example' })
 })
 
+test('HTTP Client 不访问父仓库不存在的旧设备接口', async () => {
+  const calls: string[] = []
+  const client = new HttpCodingNsControlApiClient({
+    controlBaseUrl: 'https://control.example.com',
+    fetcher: async (input) => {
+      calls.push(String(input))
+      return new Response('{}', { status: 404 })
+    },
+  })
+  assert.deepEqual(await client.getDevices('access-token'), {
+    currentDevice: null,
+    otherActiveDevices: [],
+    recentLoginRecords: [],
+  })
+  assert.deepEqual(calls, [])
+})
+
 test('Host 认证状态机保存 refresh token，但快照不暴露任何 token', async () => {
   const client = new FakeControlApiClient()
   const store = new InMemoryCodingNsCredentialStore()

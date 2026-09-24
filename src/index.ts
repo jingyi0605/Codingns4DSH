@@ -20,6 +20,40 @@ export {
   createLanAccessDshFeature,
 } from './host/features/index.js'
 export type { CodingNsHostServices } from './host/features/index.js'
+export {
+  CODINGNS_TUNNEL_DATA_CHANNEL_LABEL,
+  FileHostDtlsIdentityStore,
+  createRegisteredHostSignalingSocket,
+  createWeriftPeerConnectionFactory,
+  ensureHostDtlsIdentity,
+  formatHostDtlsFingerprint,
+  generateHostDtlsIdentity,
+  startHostRelayRuntime,
+} from './host/relay-tunnel-runtime.js'
+export type {
+  HostDtlsIdentityMaterial,
+  HostDtlsIdentityStore,
+  HostRelayRuntime,
+  HostRelayRuntimeOptions,
+  HostRelaySession,
+  HostSignalingSocket,
+} from './host/relay-tunnel-runtime.js'
+export { createDshRpcGatewayFeature } from './host/dsh-gateway-feature.js'
+export {
+  createLocalDshWebRuntimeProvider,
+  createRemoteWebRuntimeFeature,
+  type DshWebAsset,
+  type DshWebBoot,
+  type DshWebRuntimeProvider,
+  type DshWebSession,
+  type DshWebSocketLike,
+  type LocalDshWebRuntimeProviderOptions,
+  type RemoteWebRuntimeFeatureOptions,
+} from './host/remote-web-runtime.js'
+export { RemoteDshWebContext } from './client/remote-web-context.js'
+export type { RemoteDshWebBoot, RemoteDshWebContextOptions } from './client/remote-web-context.js'
+export { createHttpDshH5ControlApi, startDshH5BrowserBootstrap } from './client/dsh-h5-bootstrap.js'
+export type { DshH5BrowserBootstrapOptions, DshH5BrowserBootstrapResult, DshH5BrowserControlApi } from './client/dsh-h5-bootstrap.js'
 export { CODINGNS_RPC_CHANNEL } from './shared/contracts/transport.js'
 export {
   CODINGNS_CONTROL_BASE_URL_FIELD,
@@ -76,7 +110,19 @@ export type {
 export {
   DshCodingNsTransport,
   DshTunnelMultiplexer,
+  DshSession,
+  DshGateway,
+  DSH_GATEWAY_PATH,
+  encodeDshEnvelope,
+  decodeDshEnvelope,
+  validateDshEnvelope,
+  DSH_ENVELOPE_PROTOCOL,
+  DSH_ENVELOPE_VERSION,
+  DEFAULT_MAX_DSH_ENVELOPE_BYTES,
+  DEFAULT_MAX_DSH_META_BYTES,
   createDataChannelCarrier,
+  createRelayTunnelHostCarrier,
+  TUNNEL_DATA_CHANNEL_LABEL,
   decodeTunnelFrame,
   encodeTunnelFrame,
   TUNNEL_PROTOCOL_VERSION,
@@ -87,6 +133,8 @@ export {
   connectWebRtcClient,
   createSignalingUrl,
   extractDtlsFingerprint,
+  waitForSignalingRegistered,
+  waitForPeerReady,
   acceptWebRtcHost,
   createHostSignalingTicketRequest,
   requestHostSignalingTicket,
@@ -112,6 +160,7 @@ export type {
 } from './bootstrap/index.js'
 export type {
   CodingNsCarrier,
+  DataChannelCarrierOptions,
   DataChannelLike,
   DshCodingNsTransportOptions,
   TunnelChannel,
@@ -128,5 +177,16 @@ export type {
   WebRtcHostSession,
   DshTunnelMultiplexerOptions,
   TunnelFlowControl,
+  DshSessionOptions,
+  DshSessionRole,
+  DshSessionState,
+  DshGatewayFeature,
+  DshGatewayOptions,
+  DshStreamContext,
+  DshEnvelope,
+  DshEnvelopeCodecOptions,
+  DshEnvelopeFlags,
+  DshHostScope,
+  DshChannel,
   TunnelFrameCodecOptions,
 } from './transport/index.js'

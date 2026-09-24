@@ -51,6 +51,20 @@ export type {
   CodingNsTransportGeneration,
   CodingNsTransportHooks,
 } from './contracts/transport.js'
+export {
+  DSH_ENVELOPE_PROTOCOL,
+  DSH_ENVELOPE_VERSION,
+  DEFAULT_MAX_DSH_ENVELOPE_BYTES,
+  DEFAULT_MAX_DSH_META_BYTES,
+  decodeDshEnvelope,
+  encodeDshEnvelope,
+  validateDshEnvelope,
+  type DshChannel,
+  type DshEnvelope,
+  type DshEnvelopeCodecOptions,
+  type DshEnvelopeFlags,
+  type DshHostScope,
+} from '../transport/dsh-envelope.js'
 export { CODINGNS_RPC_CHANNEL } from './contracts/transport.js'
 export type {
   CodingNsCliAdapterDescriptor,
@@ -144,6 +158,18 @@ export {
   type DebugRuntimeType,
   type DebugShell,
 } from './contracts/debug-config.js'
+export type {
+  DshDeviceSummary,
+  DshDeviceRegistrationRequest,
+  DshDeviceRegistrationResponse,
+  DshDeviceListResponse,
+  DshDeviceHeartbeatResponse,
+  DshRelayTicketRequest,
+  DshRelayTicketResponse,
+  DshRelayTicketLike,
+  DshIceServer,
+  DshDeviceCredentialRecord,
+} from './contracts/dsh-device.js'
 export type {
   TerminalLaunchProfile,
   TerminalProcessInstance,

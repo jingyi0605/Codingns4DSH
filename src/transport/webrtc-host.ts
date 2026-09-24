@@ -4,9 +4,10 @@ import type {
   RelaySignalingTicketResponse,
 } from '../shared/contracts/signaling.js'
 import type { CodingNsControlApiClient } from '../host/control-api-client.js'
-import { createDataChannelCarrier, type CodingNsCarrier, type DataChannelLike } from './carrier.js'
+import { createDataChannelCarrier, createRelayTunnelHostCarrier, TUNNEL_DATA_CHANNEL_LABEL, type CodingNsCarrier, type DataChannelLike } from './carrier.js'
 import {
   createSignalingUrl,
+  waitForSignalingRegistered,
   type PeerConnectionLike,
   type SignalingSocketLike,
 } from './webrtc-client.js'
@@ -32,6 +33,7 @@ export interface WebRtcHostAcceptorOptions {
   }): HostPeerConnectionLike
   channelLabel?: string
   onConnection?: (connection: WebRtcHostSession) => void | Promise<void>
+  onSessionClosed?: (sessionId: string) => void | Promise<void>
 }
 
 export interface WebRtcHostSession {
@@ -91,6 +93,16 @@ export async function acceptWebRtcHost(options: WebRtcHostAcceptorOptions): Prom
   const signaling = await options.signalingSocketFactory(
     createSignalingUrl(options.signalingTicket.signalingBaseUrl, options.signalingTicket.ticket),
   )
+  if ('readyState' in signaling) {
+    await waitForSignalingRegistered(signaling, 15_000)
+  }
+  const heartbeat = 'readyState' in signaling
+    ? setInterval(() => {
+      if ((signaling as SignalingSocketLike & { readyState?: number }).readyState === 1) {
+        try { signaling.send(JSON.stringify({ type: 'ping', at: new Date().toISOString() })) } catch { /* 断线由 close 处理 */ }
+      }
+    }, 20_000)
+    : undefined
   const sessions = new Map<string, HostSessionImpl>()
   const queuedCandidates = new Map<string, Array<{ candidate: string; sdpMid: string | null }>>()
   let closed = false
@@ -129,6 +141,7 @@ export async function acceptWebRtcHost(options: WebRtcHostAcceptorOptions): Prom
     if (!session) return
     sessions.delete(sessionId)
     await session.close()
+    await options.onSessionClosed?.(sessionId)
   }
   const closeAllSessions = async () => {
     const current = [...sessions.keys()]
@@ -146,7 +159,7 @@ export async function acceptWebRtcHost(options: WebRtcHostAcceptorOptions): Prom
         }),
         signaling,
         options.onConnection,
-        options.channelLabel,
+        TUNNEL_DATA_CHANNEL_LABEL,
       )
       sessions.set(sessionId, session)
     }
@@ -162,6 +175,7 @@ export async function acceptWebRtcHost(options: WebRtcHostAcceptorOptions): Prom
     async close() {
       if (closed) return
       closed = true
+      if (heartbeat !== undefined) clearInterval(heartbeat)
       signaling.removeEventListener('message', onMessage)
       signaling.removeEventListener('close', onClose)
       await closeAllSessions()
@@ -208,7 +222,7 @@ class HostSessionImpl implements WebRtcHostSession {
         return
       }
       if (this._carrier) void this._carrier.close()
-      this._carrier = createDataChannelCarrier(channel)
+      this._carrier = createRelayTunnelHostCarrier(createDataChannelCarrier(channel))
       void this.onConnection?.(this)
     }
   }

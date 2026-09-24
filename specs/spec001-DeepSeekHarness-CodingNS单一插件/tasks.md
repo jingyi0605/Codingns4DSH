@@ -217,17 +217,17 @@
   - 怎么算完成：路径限制、大小限制、排序和断线刷新都有测试。
   - 怎么验证：文件树和预览集成测试
 
-- [ ] 3.2 接入 tmux、PTY 和后台任务
+- [ ] 3.2 接入 DSH Sidebar 的持久终端与后台任务
   - 状态：TODO
-  - 这一步到底做什么：复用 CodingNS Host 的终端、PTY 和后台任务服务，并通过 Remote stream 传输输出。
-  - 做完你能看到什么：可以创建持久终端、输入命令、断线后恢复可恢复任务。
+  - 这一步到底做什么：由插件自身实现 DSH `webTerminals` 兼容 controller、终端强化设置、持久映射、POSIX tmux、Windows ConPTY broker、生命周期协调和平台 shell 检测；后台任务使用独立 `task` 频道。
+  - 做完你能看到什么：可以在插件挂载到 DSH Sidebar 的终端 UI 创建持久终端、输入命令、调整尺寸、显式关闭，并在浏览器、插件或 DSH 重启后重新 attach 到同一运行时；设置页可以控制下次启动是否启用强化，并选择默认终端与外观。
   - 先依赖什么：2.4
-  - 开始前先看：`requirements.md` 需求 6、后台任务接入规范
-  - 主要改哪里：`src/features/terminal/`、Host 终端适配层
-  - 当前约束：DSH Web 是独立主体，插件不得要求 CodingNS 父仓库启动、接管或配置 DSH。替换默认 controller 前，必须先完成插件自身的 `pty`/`task` 公开协议和 Transport；未完成时保留 DSH 官方终端，不能用不可用的半成品抢占。
-  - 这一步先不做什么：不创建新的全局 inflight、timer 或重试队列。
-  - 怎么算完成：终端关闭、任务回收和恢复行为明确且无资源泄漏。
-  - 怎么验证：tmux/PTY 集成测试、断线恢复测试
+  - 开始前先看：`requirements.md` 需求 6；`../spec002-基于CodingNS隧道的DSH多路复用网关/design.md` §10；同 Spec 的 `tasks.md` 3.2.1～3.2.6。
+  - 主要改哪里：以 Spec 002 的 3.2.1～3.2.6 和独立后台任务任务为准，本任务不再维护第二份实现清单。
+  - 当前约束：DSH Web 是唯一主体；插件不得调用 CodingNS 父仓库或 Host 私有接口。浏览器不得直连本机 broker。官方 Host controller 与官方 terminal UI 成对禁用，插件在同一 Bundle generation 内原子提供 Typert、Host controller、`webTerminals` 与 Sidebar UI。
+  - 这一步先不做什么：不承诺跨操作系统重启，不创建新的全局 inflight、timer 或重试队列，不创建脱离 DSH Web 的独立终端应用。
+  - 怎么算完成：Spec 002 的 3.2.1～3.2.6 全部为 `DONE`，后台任务频道也完成独立验收；终端显式关闭、任务取消、崩溃恢复和资源回收均有证据。
+  - 怎么验证：以 Spec 002 各子任务记录的定向测试、启停待重启测试、默认 profile 与样式作用域测试、三平台 DSH 重启验证和 Sidebar UI 回放为准。
 
 - [ ] 3.3 接入外部 Agent Provider
   - 状态：IN_REVIEW（标准层、八个协议驱动、持久化外部会话和 DSH 原生会话接入已完成；真实 CLI/远程端到端执行仍待复核）
@@ -363,14 +363,14 @@
   - 怎么验证：多 Host Fake Transport 测试、Host 切换和同名资源隔离测试。
 
 - [ ] 5.2 实现远程 DSH Web Runtime
-  - 状态：TODO
+  - 状态：IN_REVIEW（Host provider、web.* Gateway、浏览器隔离 Context 已有 Fake 测试；真实 DSH Web 服务尚未联调）
   - 这一步到底做什么：通过 `web.session.open`、`web.boot.get`、`web.asset.get` 和 WebSocket 流，把远程 Host 的官方 DSH Web 直接呈现给 H5/Desktop。
   - 做完你能看到什么：远程页面来自用户自己的 DSH Host，不需要在 Vercel/CDN 部署固定版本 DSH 前端。
   - 先依赖什么：5.1、2.3
   - 主要改哪里：`src/features/remote-web-runtime/`、`src/transport/`、`tests/remote-web-runtime.spec.ts`
   - 这一步先不做什么：不重写 DSH Web，不让控制站代理业务 HTTP/WebSocket。
   - 怎么算完成：boot、资源、WebSocket、关闭和 generation 替换都有 HostScope 校验和清理。
-  - 怎么验证：Fake Web Runtime 集成测试；H5 Bootstrap 和 Desktop Web Context 回放。
+  - 怎么验证：`pnpm test -- tests/remote-web-runtime.spec.ts tests/dsh-session-gateway.spec.ts`；结果：远程 Session、boot、二进制 asset、Session close 和 WebSocket 错误收敛通过。真实 DSH Web 服务回放待完成。
 
 - [ ] 5.3 实现按 HostScope 临时加载远程插件 Bundle
   - 状态：TODO
@@ -383,14 +383,14 @@
   - 怎么验证：双 Host 同名不同版本插件测试、关闭 Context 清理测试。
 
 - [ ] 5.4 接入 H5 Bootstrap
-  - 状态：TODO
+  - 状态：IN_REVIEW（静态 H5 runtime 已生成并接入；浏览器自动化和真实 Relay 仍待完成）
   - 这一步到底做什么：提供只负责浏览器会话、一次性访问码、ticket 和 Transport 启动的最小入口。
   - 做完你能看到什么：网页访问直接进入用户 Host 的 DSH Web，浏览器持久化状态没有 refresh token。
   - 先依赖什么：5.2
   - 主要改哪里：`src/client/h5-bootstrap/`、控制站集成契约、H5 测试
   - 这一步先不做什么：不部署独立固定版本 DSH 前端，不把业务请求转给控制站。
   - 怎么算完成：未登录、ticket 过期、WebRTC 失败和退出登录都有清理行为。
-  - 怎么验证：浏览器自动化测试、存储检查和控制站/Relay 明文审计。
+  - 怎么验证：`pnpm run build` 生成同级项目 `../dsh-codingns-h5/runtime.js`；`tests/dsh-h5-bootstrap.spec.ts` 通过。浏览器自动化、真实控制站/Relay 明文审计待完成。
 
 - [ ] 5.5 接入官方 Desktop Client 模式
   - 状态：TODO

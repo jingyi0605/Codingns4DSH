@@ -9,6 +9,7 @@ import {
   installPreCordisTransport,
   type CodingNsTransportRegistration,
 } from './index.js'
+export type { CodingNsTransportRegistration } from './index.js'
 
 /** DSH 0.1.6-alpha.2 的 ClientConnectionRpc 结果形状。 */
 export interface DshConnectionRpcResult<T = unknown> {
