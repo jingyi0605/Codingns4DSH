@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { registerCodingNsLocale } from '../dist/client/locale.js'
+import { registerCodingNsLocale } from '../data/build/dist/client/locale.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -29,7 +29,7 @@ test('CodingNS 注册完整中英文词典并交给 DSH locale 服务管理', ()
 })
 
 test('Client bundle 同时包含英文默认文案和中文词典文案', async () => {
-  const bundle = await readFile(join(root, 'dist/client/bundle.js'), 'utf8')
+  const bundle = await readFile(join(root, 'data/build/dist/client/bundle.js'), 'utf8')
   assert.match(bundle, /CodingNS features/u)
   assert.match(bundle, /CodingNS 功能模块/u)
   assert.match(bundle, /codingns/u)

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { DshCodingNsTransport } from '../dist/transport/dsh-transport.js'
-import { decodeTunnelFrame, encodeTunnelFrame, TUNNEL_PROTOCOL_VERSION } from '../dist/transport/frame.js'
-import { decodeDshEnvelope, encodeDshEnvelope } from '../dist/transport/dsh-envelope.js'
-import type { CodingNsCarrier } from '../dist/transport/carrier.js'
+import { DshCodingNsTransport } from '../data/build/dist/transport/dsh-transport.js'
+import { decodeTunnelFrame, encodeTunnelFrame, TUNNEL_PROTOCOL_VERSION } from '../data/build/dist/transport/frame.js'
+import { decodeDshEnvelope, encodeDshEnvelope } from '../data/build/dist/transport/dsh-envelope.js'
+import type { CodingNsCarrier } from '../data/build/dist/transport/carrier.js'
 
 class FakeCarrier implements CodingNsCarrier {
   state: CodingNsCarrier['state'] = 'open'

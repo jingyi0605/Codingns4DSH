@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
-import { GeminiCliDriver } from '../dist/host/cli-adapters/gemini-driver.js'
-import { KimiCliDriver } from '../dist/host/cli-adapters/kimi-driver.js'
-import type { CodingNsCliTurnInput } from '../dist/shared/contracts/cli-adapter.js'
+import { GeminiCliDriver } from '../data/build/dist/host/cli-adapters/gemini-driver.js'
+import { KimiCliDriver } from '../data/build/dist/host/cli-adapters/kimi-driver.js'
+import type { CodingNsCliTurnInput } from '../data/build/dist/shared/contracts/cli-adapter.js'
 
 function fakeDetection() { return ({ status: 0, stdout: 'fake-agent 1.2.3', stderr: '' }) as never }
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { CodingNsCliAdapterRegistry } from '../dist/host/cli-adapters/registry.js'
-import type { CodingNsCliModelCatalog } from '../dist/shared/contracts/cli-adapter.js'
+import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
+import type { CodingNsCliModelCatalog } from '../data/build/dist/shared/contracts/cli-adapter.js'
 
 test('Agent 安装状态在 Host 启动后预热并按未安装短周期自动刷新', async () => {
   let detections = 0

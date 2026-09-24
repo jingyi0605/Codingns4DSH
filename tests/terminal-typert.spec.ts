@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { TYPERT } from '../dist/typert.host.js'
+import { TYPERT } from '../data/build/dist/typert.host.js'
 
 const expectedMethods = [
   'close', 'create', 'environment', 'follow', 'list',

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { FeatureResourceScopeImpl } from '../dist/features/index.js'
-import { CodingNsCliSessionStore } from '../dist/host/cli-adapters/session-store.js'
+import { FeatureResourceScopeImpl } from '../data/build/dist/features/index.js'
+import { CodingNsCliSessionStore } from '../data/build/dist/host/cli-adapters/session-store.js'
 import {
   workspaceSessionEnhancementFeature,
-} from '../dist/client/features/workspace-session-enhancement.js'
+} from '../data/build/dist/client/features/workspace-session-enhancement.js'
 import {
   clearSessionAdapters,
   fetchSessionAdapters,
@@ -13,17 +13,17 @@ import {
   sessionAdapterId,
   sessionAdapterSnapshot,
   subscribeSessionAdapters,
-} from '../dist/client/session-adapter-cache.js'
+} from '../data/build/dist/client/session-adapter-cache.js'
 import {
   installProviderIcons,
   providerIconUrl,
   providerVisual,
-} from '../dist/client/provider-icons.js'
-import { resolveDshSessionId } from '../dist/client/workspace-session-fiber.js'
+} from '../data/build/dist/client/provider-icons.js'
+import { resolveDshSessionId } from '../data/build/dist/client/workspace-session-fiber.js'
 import {
   WORKSPACE_SESSION_LOGO_ATTRIBUTE,
   startWorkspaceSessionLogoDom,
-} from '../dist/client/workspace-session-logo-dom.js'
+} from '../data/build/dist/client/workspace-session-logo-dom.js'
 
 const KNOWN_ADAPTERS = [
   ['claude-code', 'Claude Code'],

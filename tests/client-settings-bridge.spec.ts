@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createCodingNsSettingsBridge } from '../dist/client/settings-bridge.js'
-import { callCliRpc } from '../dist/client/cli-catalog.js'
-import type { CodingNsSettings } from '../dist/shared/contracts/config.js'
-import { CODINGNS_RPC_CHANNEL } from '../dist/shared/contracts/transport.js'
+import { createCodingNsSettingsBridge } from '../data/build/dist/client/settings-bridge.js'
+import { callCliRpc } from '../data/build/dist/client/cli-catalog.js'
+import type { CodingNsSettings } from '../data/build/dist/shared/contracts/config.js'
+import { CODINGNS_RPC_CHANNEL } from '../data/build/dist/shared/contracts/transport.js'
 
 const settings: CodingNsSettings = {
   controlBaseUrl: 'https://control.example.com',

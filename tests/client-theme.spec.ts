@@ -8,7 +8,7 @@ import {
   dshFieldStyle,
   dshPopupSurfaceStyle,
   dshThemeColor,
-} from '../dist/client/theme.js'
+} from '../data/build/dist/client/theme.js'
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -64,7 +64,7 @@ test('Agent 选择器位于模型左侧并显示完整 Provider Logo', async () 
   const [slotSource, iconSource, bundleSource] = await Promise.all([
     readFile(join(projectRoot, 'src/client/cli-slots.ts'), 'utf8'),
     readFile(join(projectRoot, 'src/client/provider-icons.ts'), 'utf8'),
-    readFile(join(projectRoot, 'dist/client/bundle.js'), 'utf8'),
+    readFile(join(projectRoot, 'data/build/dist/client/bundle.js'), 'utf8'),
   ])
 
   assert.match(slotSource, /id: 'dsh-codingns-agent',[\s\S]*?order: -20/u)

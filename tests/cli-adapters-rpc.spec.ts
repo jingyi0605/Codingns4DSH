@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
-import { CodexAppServerDriver } from '../dist/host/cli-adapters/codex-driver.js'
-import { GrokBuildDriver } from '../dist/host/cli-adapters/grok-driver.js'
-import { PiAgentDriver } from '../dist/host/cli-adapters/pi-driver.js'
+import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
+import { GrokBuildDriver } from '../data/build/dist/host/cli-adapters/grok-driver.js'
+import { PiAgentDriver } from '../data/build/dist/host/cli-adapters/pi-driver.js'
 
 test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async () => {
   for (const [Driver, expectedArgs] of [

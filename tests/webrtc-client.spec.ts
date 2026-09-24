@@ -5,7 +5,7 @@ import {
   connectWebRtcClient,
   createSignalingUrl,
   extractDtlsFingerprint,
-} from '../dist/transport/index.js'
+} from '../data/build/dist/transport/index.js'
 
 test('信令 URL 使用 /signal 和 ticket 查询参数', () => {
   assert.equal(createSignalingUrl('https://relay.example.com', 'ticket.demo'), 'wss://relay.example.com/signal?ticket=ticket.demo')

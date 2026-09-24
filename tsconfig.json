@@ -5,7 +5,7 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "rootDir": "src",
-    "outDir": "dist",
+    "outDir": "data/build/dist",
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,

@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ConptyTerminalBackend, conptyPipeName } from '../dist/host/terminal/backends/conpty-backend.js'
+import { ConptyTerminalBackend, conptyPipeName } from '../data/build/dist/host/terminal/backends/conpty-backend.js'
 import {
   BoundedTerminalBuffer,
   ExclusiveAttachmentLease,
   createJsonLineParser,
   parseBrokerRequest,
   writeBrokerMessage,
-} from '../dist/host/terminal/broker/conpty-broker-protocol.js'
+} from '../data/build/dist/host/terminal/broker/conpty-broker-protocol.js'
 
 const session = {
   runtimeSessionKey: 'secret-runtime-session-key',

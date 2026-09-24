@@ -3,8 +3,8 @@ import test from 'node:test'
 import {
   InMemoryDshDeviceCredentialStore,
   startDshHostDeviceRuntime,
-} from '../dist/host/index.js'
-import type { HostDtlsIdentityMaterial } from '../dist/host/index.js'
+} from '../data/build/dist/host/index.js'
+import type { HostDtlsIdentityMaterial } from '../data/build/dist/host/index.js'
 
 const identity: HostDtlsIdentityMaterial = {
   privateKeyPem: 'private',

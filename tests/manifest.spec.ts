@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { SUPPORTED_DSH_VERSION } from '../dist/shared/index.js'
+import { SUPPORTED_DSH_VERSION } from '../data/build/dist/shared/index.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
@@ -29,15 +30,16 @@ test('package manifest declares the DSH bundle and client entry', () => {
     platform: 'web',
     immediately: true,
   })
-  assert.equal(manifest.exports['.'].default, './dist/index.js')
-  assert.equal(manifest.exports['./client'].default, './dist/client/bundle.js')
-  assert.equal(manifest.exports['./client/lan-access'].default, './dist/client/lan-access.js')
-  assert.equal(manifest.exports['./host'].default, './dist/host/index.js')
-  assert.equal(manifest.exports['./typert'].default, './dist/typert.host.js')
-  assert.equal(manifest.exports['./typert'].types, './dist/typert.host.d.ts')
-  assert.equal(manifest.exports['./bootstrap'].default, './dist/bootstrap/index.js')
+  assert.equal(manifest.exports['.'].default, './data/build/dist/index.js')
+  assert.equal(manifest.exports['./client'].default, './data/build/dist/client/bundle.js')
+  assert.equal(manifest.exports['./client/lan-access'].default, './data/build/dist/client/lan-access.js')
+  assert.equal(manifest.exports['./host'].default, './data/build/dist/host/index.js')
+  assert.equal(manifest.exports['./typert'].default, './data/build/dist/typert.host.js')
+  assert.equal(manifest.exports['./typert'].types, './data/build/dist/typert.host.d.ts')
+  assert.equal(manifest.exports['./bootstrap'].default, './data/build/dist/bootstrap/index.js')
   assert.equal(manifest.engines.dsh, SUPPORTED_DSH_VERSION)
   assert.equal(manifest.version, manifest.engines.dsh)
+  assert.equal(JSON.parse(readFileSync(join(root, 'version.json'), 'utf8')).version, manifest.version)
 })
 
 test('bundle patch and example profile use DSH native shapes', async () => {

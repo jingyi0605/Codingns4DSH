@@ -3,7 +3,7 @@ import test from 'node:test'
 import {
   ResourceScopeManager,
   ResourceScopeStaleError,
-} from '../dist/features/resource-scope/index.js'
+} from '../data/build/dist/features/resource-scope/index.js'
 
 const scope = {
   hostId: 'host-a',

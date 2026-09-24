@@ -5,7 +5,7 @@ import {
   createHostSignalingTicketRequest,
   requestHostSignalingTicket,
   type HostPeerConnectionLike,
-} from '../dist/transport/index.js'
+} from '../data/build/dist/transport/index.js'
 
 function ticket() {
   return {

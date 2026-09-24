@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { FeatureRegistry } from '../dist/features/index.js'
-import { createTerminalStatusFeature } from '../dist/host/features/index.js'
-import { CodingNsRpcTable } from '../dist/host/rpc-table.js'
+import { FeatureRegistry } from '../data/build/dist/features/index.js'
+import { createTerminalStatusFeature } from '../data/build/dist/host/features/index.js'
+import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
 
 test('终端状态由 Host 平台和实际 controller 模式决定', async () => {
   const rpc = new CodingNsRpcTable()

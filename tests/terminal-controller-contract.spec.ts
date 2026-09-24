@@ -5,8 +5,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
-import { CodingNsTerminalController } from '../dist/host/terminal/terminal-controller.js'
-import { createTerminalController } from '../dist/host/terminal/controller-factory.js'
+import { CodingNsTerminalController } from '../data/build/dist/host/terminal/terminal-controller.js'
+import { createTerminalController } from '../data/build/dist/host/terminal/controller-factory.js'
 
 const terminalSettings = {
   defaultProfile: 'system',

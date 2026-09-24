@@ -4,11 +4,13 @@
 
 ## DSH 装配
 
-包根导出 `dist/index.js` 是 Host Cordis 入口，`exports["./client"]` 的浏览器实现是 `dist/client/bundle.js`。Client 入口声明为立即加载，确保 DSH 设置页打开时 CodingNS 区块已经注册。浏览器 bundle 与 `tsc` 生成的 `dist/client/index.js` 分开，避免开发监听时两个构建器互相覆盖。`package.json` 的 `dsh.bundle.patch` 指向 `dsh.bundle.patch`，Profile 通过 `dsh.profile.bundles` 按包名选择它。
+包根导出 `data/build/dist/index.js` 是 Host Cordis 入口，`exports["./client"]` 的浏览器实现是 `data/build/dist/client/bundle.js`。Client 入口声明为立即加载，确保 DSH 设置页打开时 CodingNS 区块已经注册。浏览器 bundle 与 `tsc` 生成的 `data/build/dist/client/index.js` 分开，避免开发监听时两个构建器互相覆盖。`package.json` 的 `dsh.bundle.patch` 指向 `dsh.bundle.patch`，Profile 通过 `dsh.profile.bundles` 按包名选择它。
 
 DSH Web 是唯一主体，`dsh-codingns` 只是由 DSH 装载的 Bundle。CodingNS 父仓库不启动、接管或配置本插件，也不得向本插件提供私有接口。终端由本插件原子提供 Typert manifest、Host controller、浏览器 `webTerminals`、DSH Sidebar UI 和 xterm；Bundle 成对禁用官方 Host controller 与官方终端 UI，避免重复 namespace 或服务空洞。
 
 当前 DSH 版本约束为 `0.1.6-alpha.2`。启动期 Transport 事实和限制记录在 `specs/spec001-DeepSeekHarness-CodingNS单一插件/docs/20260921-阶段0-DSH插件装配调查.md`。
+
+版本源是根目录的 `version.json`。`package.json`、Profile、运行时常量和所有 DSH 依赖由 `pnpm run version:set-dsh -- <版本>` 同步，并由每次构建前的 `pnpm run version:check` 校验。TypeScript、Client bundle 和 H5 bundle 都写入 git 排除的 `data/build/`；`npm pack` 通过 `prepack` 自动先构建再打包。
 
 ## 三件套装配
 
@@ -48,7 +50,7 @@ dsh --profile dsh-codingns
 
 ## 本地开发：重启 DSH 即加载最新代码
 
-DSH 运行时加载的是 `dist/` 中的 JavaScript，不能直接加载 `src/` 下的 TypeScript。开发时只需首次把某个本地 Profile 的插件目录链接到当前仓库，并启动一次监听编译：
+DSH 运行时加载的是 `data/build/dist/` 中的 JavaScript，不能直接加载 `src/` 下的 TypeScript。开发时只需首次把某个本地 Profile 的插件目录链接到当前仓库，并启动一次监听编译：
 
 ```bash
 pnpm dev:link stage0

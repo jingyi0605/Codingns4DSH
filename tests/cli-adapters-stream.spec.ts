@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
-import { ClaudeCodeDriver } from '../dist/host/cli-adapters/claude-driver.js'
-import { GeminiCliDriver } from '../dist/host/cli-adapters/gemini-driver.js'
-import { KimiCliDriver } from '../dist/host/cli-adapters/kimi-driver.js'
+import { ClaudeCodeDriver } from '../data/build/dist/host/cli-adapters/claude-driver.js'
+import { GeminiCliDriver } from '../data/build/dist/host/cli-adapters/gemini-driver.js'
+import { KimiCliDriver } from '../data/build/dist/host/cli-adapters/kimi-driver.js'
 
 test('Claude、Gemini、Kimi 的标准流驱动统一转换文本和完成事件', async () => {
   for (const [Driver, event] of [

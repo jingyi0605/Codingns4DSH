@@ -4,8 +4,8 @@ import {
   CODINGNS_TERMINAL_ENHANCEMENT_FIELD,
   DEFAULT_CODINGNS_SETTINGS,
   DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
-} from '../dist/shared/index.js'
-import { CodingNsSettingsSchema } from '../dist/host/settings.js'
+} from '../data/build/dist/shared/index.js'
+import { CodingNsSettingsSchema } from '../data/build/dist/host/settings.js'
 
 test('终端强化默认继承 DSH 主题并使用系统推荐 profile', () => {
   assert.equal(CODINGNS_TERMINAL_ENHANCEMENT_FIELD, 'terminalEnhancement')

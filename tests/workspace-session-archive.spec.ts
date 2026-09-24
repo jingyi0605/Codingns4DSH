@@ -4,7 +4,7 @@ import {
   loadWorkspaceArchivedSessions,
   startWorkspaceSessionArchiveDom,
   WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE,
-} from '../dist/client/workspace-session-archive-dom.js'
+} from '../data/build/dist/client/workspace-session-archive-dom.js'
 
 test('归档摘要按工作区路径过滤并按最近归档时间倒序', async () => {
   const calls: string[] = []

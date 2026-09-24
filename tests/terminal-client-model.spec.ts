@@ -4,7 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import {
   CodingNsTerminalView,
   CodingNsWebTerminals,
-} from '../dist/client/terminal/model.js'
+} from '../data/build/dist/client/terminal/model.js'
 
 const environment = {
   cwd: '/workspace',

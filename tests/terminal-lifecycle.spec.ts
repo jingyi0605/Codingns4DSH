@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { TerminalRuntimeManager } from '../dist/host/terminal/runtime-manager.js'
-import { CodingNsTerminalService } from '../dist/host/terminal/terminal-service.js'
+import { TerminalRuntimeManager } from '../data/build/dist/host/terminal/runtime-manager.js'
+import { CodingNsTerminalService } from '../data/build/dist/host/terminal/terminal-service.js'
 import {
   CodingNsTerminalStore,
   InMemoryTerminalStorePersistence,
-} from '../dist/host/terminal/terminal-store.js'
+} from '../data/build/dist/host/terminal/terminal-store.js'
 
 class FakeRuntimeAdapter {
   runtimeTypes = ['tmux']

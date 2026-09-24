@@ -7,8 +7,8 @@ import {
   bootWithPreCordisTransport,
   installPreCordisTransport,
   CODINGNS_BOOTSTRAP_DSH_VERSION,
-} from '../dist/bootstrap/index.js'
-import { CODINGNS_DSH_ERROR_CODES, CodingNsDshError } from '../dist/shared/index.js'
+} from '../data/build/dist/bootstrap/index.js'
+import { CODINGNS_DSH_ERROR_CODES, CodingNsDshError } from '../data/build/dist/shared/index.js'
 
 const transport = Object.freeze({ ownsHost: true })
 
@@ -54,7 +54,7 @@ test('DSH 启动失败时胶水自动撤销全局 Transport', async () => {
 })
 
 test('启动胶水构建产物不包含 Node 专属模块', async () => {
-  const path = join(dirname(fileURLToPath(import.meta.url)), '../dist/bootstrap/index.js')
+  const path = join(dirname(fileURLToPath(import.meta.url)), '../data/build/dist/bootstrap/index.js')
   const source = await readFile(path, 'utf8')
   for (const specifier of ['node:crypto', 'node:fs', 'node:net', 'node:child_process']) {
     assert.equal(source.includes(specifier), false, `启动胶水包含 ${specifier}`)

@@ -13,8 +13,11 @@ const writeJson = async (relativePath, value) => {
   await writeFile(join(root, relativePath), `${JSON.stringify(value, null, 2)}\n`)
 }
 
+const versionFile = await readJson('version.json')
 const manifest = await readJson('package.json')
-const previousVersion = manifest.engines?.dsh
+const previousVersion = versionFile.version
+versionFile.version = nextVersion
+await writeJson('version.json', versionFile)
 manifest.version = nextVersion
 manifest.engines.dsh = nextVersion
 for (const sectionName of ['dependencies', 'devDependencies']) {

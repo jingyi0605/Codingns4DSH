@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createCodingNsSettingsRpcHandler } from '../dist/host/rpc.js'
+import { createCodingNsSettingsRpcHandler } from '../data/build/dist/host/rpc.js'
 
 test('设置 RPC 不向浏览器暴露 Host-only 外部会话绑定', async () => {
   const handler = createCodingNsSettingsRpcHandler({

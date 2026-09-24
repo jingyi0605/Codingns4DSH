@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { archiveCliSession, listCliSessions, restoreCliSession } from '../dist/client/cli-catalog.js'
-import type { CodingNsCliSessionRecord } from '../dist/shared/contracts/cli-adapter.js'
+import { archiveCliSession, listCliSessions, restoreCliSession } from '../data/build/dist/client/cli-catalog.js'
+import type { CodingNsCliSessionRecord } from '../data/build/dist/shared/contracts/cli-adapter.js'
 
 const record: CodingNsCliSessionRecord = {
   dshSessionId: 'dsh-session-1',

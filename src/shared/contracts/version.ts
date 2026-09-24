@@ -1,4 +1,4 @@
-/** DSH 与 CodingNS 插件共同遵循的发布版本。 */
+/** DSH 与 CodingNS 插件共同遵循的发布版本；源文件由根目录 version.json 同步。 */
 export const DSH_VERSION = '0.1.6-alpha.2' as const
 
 /** 插件版本跟随 DSH 版本，避免 Bundle 与宿主版本错配。 */

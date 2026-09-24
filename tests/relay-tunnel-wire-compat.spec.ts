@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createFrameDecoder, decodeFrame, encodeFrame, TUNNEL_FRAME_HEADER_BYTES } from '../dist/transport/frame.js'
+import { createFrameDecoder, decodeFrame, encodeFrame, TUNNEL_FRAME_HEADER_BYTES } from '../data/build/dist/transport/frame.js'
 
 test('与父仓库 relay-tunnel-wire 的 hello fixture 字节布局一致', () => {
   const frame = encodeFrame({

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { LocalPtyTerminalBackend } from '../dist/host/terminal/backends/local-pty-backend.js'
-import { TerminalRuntimeManager } from '../dist/host/terminal/runtime-manager.js'
+import { LocalPtyTerminalBackend } from '../data/build/dist/host/terminal/backends/local-pty-backend.js'
+import { TerminalRuntimeManager } from '../data/build/dist/host/terminal/runtime-manager.js'
 
 const session = {
   runtimeSessionKey: 'local-session-1',

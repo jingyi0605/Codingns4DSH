@@ -1,19 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { TerminalRuntimeManager } from '../dist/host/terminal/runtime-manager.js'
-import { CodingNsTerminalService } from '../dist/host/terminal/terminal-service.js'
+import { TerminalRuntimeManager } from '../data/build/dist/host/terminal/runtime-manager.js'
+import { CodingNsTerminalService } from '../data/build/dist/host/terminal/terminal-service.js'
 import {
   InMemoryTerminalStorePersistence,
   CodingNsTerminalStore,
-} from '../dist/host/terminal/terminal-store.js'
+} from '../data/build/dist/host/terminal/terminal-store.js'
 import {
   InMemoryTerminalProcessStorePersistence,
   TerminalProcessStore,
-} from '../dist/host/terminal/terminal-process-store.js'
-import { TerminalProcessService } from '../dist/host/terminal/terminal-process-service.js'
-import { createTerminalProcessFeature } from '../dist/host/features/terminal-process.js'
-import { CodingNsRpcTable } from '../dist/host/rpc-table.js'
-import { FeatureResourceScopeImpl } from '../dist/features/registry.js'
+} from '../data/build/dist/host/terminal/terminal-process-store.js'
+import { TerminalProcessService } from '../data/build/dist/host/terminal/terminal-process-service.js'
+import { createTerminalProcessFeature } from '../data/build/dist/host/features/terminal-process.js'
+import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
+import { FeatureResourceScopeImpl } from '../data/build/dist/features/registry.js'
 
 class FakeRuntimeAdapter {
   runtimeTypes = ['local-pty']

@@ -3,8 +3,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { DebugWorkspaceService } from '../dist/host/debug.js'
-import { parseDebugConfig } from '../dist/shared/index.js'
+import { DebugWorkspaceService } from '../data/build/dist/host/debug.js'
+import { parseDebugConfig } from '../data/build/dist/shared/index.js'
 
 function config() {
   return {

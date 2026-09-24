@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { FeatureRegistry, type FeatureModule } from '../dist/features/index.js'
-import { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler } from '../dist/host/rpc.js'
-import { CodingNsRpcTable } from '../dist/host/rpc-table.js'
-import { createAuthFeature } from '../dist/host/features/index.js'
+import { FeatureRegistry, type FeatureModule } from '../data/build/dist/features/index.js'
+import { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler } from '../data/build/dist/host/rpc.js'
+import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
+import { createAuthFeature } from '../data/build/dist/host/features/index.js'
 import {
   cliAdaptersFeature,
   debugFeature,
@@ -11,12 +11,12 @@ import {
   reverseProxyFeature,
   terminalEnhancementFeature,
   workspaceSessionEnhancementFeature,
-} from '../dist/client/features/index.js'
+} from '../data/build/dist/client/features/index.js'
 import {
   enabledFeatureNames,
   isFeatureEnabled,
   type CodingNsSettings,
-} from '../dist/shared/index.js'
+} from '../data/build/dist/shared/index.js'
 
 /** 录制启停事件的测试模块。 */
 function featureOf(

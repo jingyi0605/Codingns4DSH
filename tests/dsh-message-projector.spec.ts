@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { CodingNsDshMessageProjector } from '../dist/host/cli-adapters/dsh-message-projector.js'
+import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 
 test('公共消息投影层统一处理正文、思考、工具、用量和唯一终态', async () => {
   const calls = []

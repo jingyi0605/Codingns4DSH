@@ -9,7 +9,7 @@ import {
   resolveTerminalStartupIdentity,
   terminalAttachmentGeneration,
   terminalWorkspaceId,
-} from '../dist/host/terminal/startup.js'
+} from '../data/build/dist/host/terminal/startup.js'
 
 const settingsValue = (enabled: boolean) => ({
   modules: { terminalEnhancement: enabled },

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ensureCryptoRandomUUID } from '../dist/client/lan-access.js'
+import { ensureCryptoRandomUUID } from '../data/build/dist/client/lan-access.js'
 
 test('已有 randomUUID 时不覆盖浏览器原生实现', () => {
   const native = () => 'native-uuid'

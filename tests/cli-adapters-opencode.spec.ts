@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
-import { OpenCodeDriver } from '../dist/host/cli-adapters/opencode-driver.js'
+import { OpenCodeDriver } from '../data/build/dist/host/cli-adapters/opencode-driver.js'
 
 test('OpenCode 驱动探测本地 server 并读取模型目录', async () => {
   const fetch = async (url: string): Promise<Response> => {

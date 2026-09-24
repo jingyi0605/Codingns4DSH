@@ -3,44 +3,44 @@
   "version": "0.1.6-alpha.2",
   "description": "CodingNS 的 DeepSeek Harness 插件骨架与连接契约",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./data/build/dist/index.js",
+  "types": "./data/build/dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "types": "./data/build/dist/index.d.ts",
+      "default": "./data/build/dist/index.js"
     },
     "./host": {
-      "types": "./dist/host/index.d.ts",
-      "default": "./dist/host/index.js"
+      "types": "./data/build/dist/host/index.d.ts",
+      "default": "./data/build/dist/host/index.js"
     },
     "./typert": {
-      "types": "./dist/typert.host.d.ts",
-      "default": "./dist/typert.host.js"
+      "types": "./data/build/dist/typert.host.d.ts",
+      "default": "./data/build/dist/typert.host.js"
     },
     "./client": {
-      "types": "./dist/client/index.d.ts",
-      "default": "./dist/client/bundle.js"
+      "types": "./data/build/dist/client/index.d.ts",
+      "default": "./data/build/dist/client/bundle.js"
     },
     "./client/lan-access": {
-      "types": "./dist/client/lan-access.d.ts",
-      "default": "./dist/client/lan-access.js"
+      "types": "./data/build/dist/client/lan-access.d.ts",
+      "default": "./data/build/dist/client/lan-access.js"
     },
     "./bootstrap": {
-      "types": "./dist/bootstrap/index.d.ts",
-      "default": "./dist/bootstrap/index.js"
+      "types": "./data/build/dist/bootstrap/index.d.ts",
+      "default": "./data/build/dist/bootstrap/index.js"
     },
     "./shared": {
-      "types": "./dist/shared/index.d.ts",
-      "default": "./dist/shared/index.js"
+      "types": "./data/build/dist/shared/index.d.ts",
+      "default": "./data/build/dist/shared/index.js"
     },
     "./features": {
-      "types": "./dist/features/index.d.ts",
-      "default": "./dist/features/index.js"
+      "types": "./data/build/dist/features/index.d.ts",
+      "default": "./data/build/dist/features/index.js"
     },
     "./transport": {
-      "types": "./dist/transport/index.d.ts",
-      "default": "./dist/transport/index.js"
+      "types": "./data/build/dist/transport/index.d.ts",
+      "default": "./data/build/dist/transport/index.js"
     },
     "./package.json": "./package.json"
   },
@@ -75,6 +75,7 @@
     "version:set-dsh": "node scripts/set-dsh-version.mjs",
     "prebuild": "pnpm run version:check",
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && pnpm run bundle:client && pnpm run bundle:h5",
+    "prepack": "pnpm run build",
     "bundle:client": "tsdown",
     "bundle:h5": "tsdown --config tsdown.h5.config.ts",
     "dev:link": "node scripts/link-dsh-dev.mjs",
@@ -84,11 +85,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "files": [
-    "dist/**/*.js",
-    "dist/**/*.d.ts",
+    "data/build/dist/**/*.js",
+    "data/build/dist/**/*.d.ts",
     "assets/provider-icons/**",
     "dsh.bundle.patch",
     "profile/**",
+    "version.json",
     "README.md",
     "package.json"
   ],

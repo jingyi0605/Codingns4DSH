@@ -4,7 +4,7 @@ import {
   FeatureRegistry,
   FeatureRegistryError,
   type FeatureModule,
-} from '../dist/features/index.js'
+} from '../data/build/dist/features/index.js'
 
 function moduleOf(name: string, dependencies: string[] = [], hooks: Partial<FeatureModule> = {}): FeatureModule {
   return {

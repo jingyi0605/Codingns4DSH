@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { SUPPORTED_DSH_VERSION } from '../dist/shared/index.js'
+import { SUPPORTED_DSH_VERSION } from '../data/build/dist/shared/index.js'
 
 async function readProjectFile(path: string): Promise<string> {
   return readFile(new URL(`../${path}`, import.meta.url), 'utf8')

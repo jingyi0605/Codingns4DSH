@@ -6,7 +6,7 @@ import {
   parseDebugMutationScope,
   parseDebugPtyLaunchRequest,
   parseDebugRpcScope,
-} from '../dist/shared/index.js'
+} from '../data/build/dist/shared/index.js'
 
 test('阶段 0 冻结 Debug RPC 清单和状态边界', () => {
   assert.equal(DEBUG_RPC_ENDPOINTS[0], 'debug/snapshot')

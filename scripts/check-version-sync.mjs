@@ -4,11 +4,12 @@ import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const readJson = async (relativePath) => JSON.parse(await readFile(join(root, relativePath), 'utf8'))
+const versionFile = await readJson('version.json')
 const manifest = await readJson('package.json')
 const profile = await readJson('profile/package.json')
 const source = await readFile(join(root, 'src/shared/contracts/version.ts'), 'utf8')
 const sourceVersion = /^export const DSH_VERSION = '([^']+)'/mu.exec(source)?.[1]
-const dshVersion = manifest.engines?.dsh
+const dshVersion = versionFile.version
 
 const failures = []
 const expectEqual = (label, actual, expected) => {
@@ -16,8 +17,9 @@ const expectEqual = (label, actual, expected) => {
 }
 
 if (typeof dshVersion !== 'string' || !/^0\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(dshVersion)) {
-  failures.push(`package.engines.dsh 不是合法 DSH 版本: ${String(dshVersion)}`)
+  failures.push(`version.json.version 不是合法 DSH 版本: ${String(dshVersion)}`)
 } else {
+  expectEqual('package.engines.dsh', manifest.engines?.dsh, dshVersion)
   expectEqual('package.version', manifest.version, dshVersion)
   expectEqual('profile.version', profile.version, dshVersion)
   expectEqual('profile.engines.dsh', profile.engines?.dsh, dshVersion)

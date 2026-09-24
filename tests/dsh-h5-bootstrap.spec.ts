@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chooseDshDevice, resolveDshHostScope } from '../dist/client/dsh-h5-bootstrap.js'
+import { chooseDshDevice, resolveDshHostScope } from '../data/build/dist/client/dsh-h5-bootstrap.js'
 
 const devices = {
   devices: [

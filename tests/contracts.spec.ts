@@ -15,7 +15,7 @@ import {
   captureRestartFeatureStates,
   isFeatureEnabled,
   type FeatureDescriptor,
-} from '../dist/shared/index.js'
+} from '../data/build/dist/shared/index.js'
 
 function descriptorOf(name: string, options: {
   enabledByDefault?: boolean
@@ -99,7 +99,7 @@ test('enabledFeatureNames 汇总当前应当启用的模块', () => {
 })
 
 test('共享出口不再暴露按模块枚举的配置结构', async () => {
-  const shared = await import('../dist/shared/index.js')
+  const shared = await import('../data/build/dist/shared/index.js')
   assert.equal(typeof shared.isFeatureEnabled, 'function')
   assert.equal(typeof shared.enabledFeatureNames, 'function')
   assert.equal('parseCodingNsDshConfig' in shared, false)

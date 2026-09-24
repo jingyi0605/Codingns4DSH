@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { FeatureRegistry } from '../dist/features/index.js'
-import { createLanAccessDshFeature } from '../dist/host/features/index.js'
+import { FeatureRegistry } from '../data/build/dist/features/index.js'
+import { createLanAccessDshFeature } from '../data/build/dist/host/features/index.js'
 import {
   LanAccessDshProxy,
   createLanAccessDshRpcHandler,
@@ -9,9 +9,9 @@ import {
   rewriteLanAccessDshRequestHeaders,
   type LanAccessDshRuntime,
   type LanAccessDshStream,
-} from '../dist/host/lan-access-dsh.js'
-import { CodingNsRpcTable } from '../dist/host/rpc-table.js'
-import type { CodingNsSettings } from '../dist/shared/contracts/config.js'
+} from '../data/build/dist/host/lan-access-dsh.js'
+import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
+import type { CodingNsSettings } from '../data/build/dist/shared/contracts/config.js'
 
 class FakeStream implements LanAccessDshStream {
   readonly pipes: LanAccessDshStream[] = []

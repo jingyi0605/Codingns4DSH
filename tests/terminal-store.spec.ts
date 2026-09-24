@@ -3,7 +3,7 @@ import test from 'node:test'
 import {
   CodingNsTerminalStore,
   InMemoryTerminalStorePersistence,
-} from '../dist/host/terminal/terminal-store.js'
+} from '../data/build/dist/host/terminal/terminal-store.js'
 
 function record(overrides = {}) {
   return {

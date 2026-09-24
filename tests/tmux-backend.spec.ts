@@ -5,7 +5,7 @@ import test from 'node:test'
 import {
   TmuxTerminalBackend,
   tmuxSessionName,
-} from '../dist/host/terminal/backends/tmux-backend.js'
+} from '../data/build/dist/host/terminal/backends/tmux-backend.js'
 
 const session = {
   runtimeSessionKey: 'host/workspace/session-1',

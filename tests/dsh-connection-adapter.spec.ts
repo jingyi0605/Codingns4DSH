@@ -5,10 +5,10 @@ import {
   createDshClientTransportHooks,
   createDshGenerationSource,
   installDshTransport,
-} from '../dist/bootstrap/dsh-connection-adapter.js'
-import { DshCodingNsTransport } from '../dist/transport/dsh-transport.js'
-import type { CodingNsCarrier } from '../dist/transport/carrier.js'
-import { decodeDshEnvelope, encodeDshEnvelope } from '../dist/transport/dsh-envelope.js'
+} from '../data/build/dist/bootstrap/dsh-connection-adapter.js'
+import { DshCodingNsTransport } from '../data/build/dist/transport/dsh-transport.js'
+import type { CodingNsCarrier } from '../data/build/dist/transport/carrier.js'
+import { decodeDshEnvelope, encodeDshEnvelope } from '../data/build/dist/transport/dsh-envelope.js'
 
 class FakeCarrier implements CodingNsCarrier {
   state: CodingNsCarrier['state'] = 'open'

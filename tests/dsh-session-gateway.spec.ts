@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { DshCodingNsTransport, DshGateway, DshSession, decodeDshEnvelope, encodeDshEnvelope, type DshEnvelope } from '../dist/transport/index.js'
-import { createDshRpcGatewayFeature } from '../dist/host/dsh-gateway-feature.js'
-import { CodingNsRpcTable } from '../dist/host/rpc-table.js'
+import { DshCodingNsTransport, DshGateway, DshSession, decodeDshEnvelope, encodeDshEnvelope, type DshEnvelope } from '../data/build/dist/transport/index.js'
+import { createDshRpcGatewayFeature } from '../data/build/dist/host/dsh-gateway-feature.js'
+import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
 
 function carrierPair(): [{ carrier: any; connect(peer: any): void }, { carrier: any; connect(peer: any): void }] {
   const make = () => {

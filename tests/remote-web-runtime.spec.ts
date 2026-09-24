@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createLocalDshWebRuntimeProvider, createRemoteWebRuntimeFeature, type DshWebRuntimeProvider } from '../dist/host/remote-web-runtime.js'
-import type { DshEnvelope } from '../dist/transport/dsh-envelope.js'
+import { createLocalDshWebRuntimeProvider, createRemoteWebRuntimeFeature, type DshWebRuntimeProvider } from '../data/build/dist/host/remote-web-runtime.js'
+import type { DshEnvelope } from '../data/build/dist/transport/dsh-envelope.js'
 
 const scope = { hostId: 'h1', kind: 'local' as const }
 

@@ -7,7 +7,7 @@ import {
   FileHostDtlsIdentityStore,
   formatHostDtlsFingerprint,
   type HostDtlsIdentityMaterial,
-} from '../dist/host/index.js'
+} from '../data/build/dist/host/index.js'
 
 const identity: HostDtlsIdentityMaterial = {
   privateKeyPem: 'private-key',

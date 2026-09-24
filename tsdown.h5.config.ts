@@ -2,8 +2,8 @@ import { defineConfig } from 'tsdown'
 
 export default defineConfig({
   entry: { runtime: 'src/client/h5-bootstrap-entry.ts' },
-  // H5 Bootstrap 是独立部署项目，构建产物写入仓库同级目录。
-  outDir: '../dsh-codingns-h5',
+  // H5 Bootstrap 是独立部署项目，构建产物统一写入 git 忽略的 data/build。
+  outDir: 'data/build/h5',
   format: 'iife',
   platform: 'browser',
   target: 'es2022',

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { CodingNsAuthSession } from '../dist/host/auth-session.js'
-import { CODINGNS_CONTROL_API_PATHS, HttpCodingNsControlApiClient } from '../dist/host/control-api-client.js'
-import { InMemoryCodingNsCredentialStore } from '../dist/host/credential-store.js'
+import { CodingNsAuthSession } from '../data/build/dist/host/auth-session.js'
+import { CODINGNS_CONTROL_API_PATHS, HttpCodingNsControlApiClient } from '../data/build/dist/host/control-api-client.js'
+import { InMemoryCodingNsCredentialStore } from '../data/build/dist/host/credential-store.js'
 import type {
   AuthDeviceManagementSnapshotDto,
   HostBindRequest,
@@ -11,14 +11,14 @@ import type {
   HostLabelAvailabilityResponse,
   HostUnbindResponse,
   LoginByEmailRequest,
-} from '../dist/shared/contracts/auth.js'
+} from '../data/build/dist/shared/contracts/auth.js'
 import type {
   CodingNsControlApiClient,
   LoginByEmailResponse,
   RefreshTokenRequest,
   RefreshTokenResponse,
-} from '../dist/host/control-api-client.js'
-import type { RelaySignalingTicketRequest, RelaySignalingTicketResponse } from '../dist/shared/contracts/signaling.js'
+} from '../data/build/dist/host/control-api-client.js'
+import type { RelaySignalingTicketRequest, RelaySignalingTicketResponse } from '../data/build/dist/shared/contracts/signaling.js'
 
 const account = {
   accountId: 'account_1',

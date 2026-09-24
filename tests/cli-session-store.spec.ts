@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { CodingNsCliAdapterRegistry } from '../dist/host/cli-adapters/registry.js'
-import { CodingNsCliSessionStore } from '../dist/host/cli-adapters/session-store.js'
+import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
+import { CodingNsCliSessionStore } from '../data/build/dist/host/cli-adapters/session-store.js'
 
 test('Host 会话索引串行持久化并支持归档筛选', async () => {
   const writes = []

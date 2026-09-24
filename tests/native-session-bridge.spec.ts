@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createCodingNsNativeSessionBridge } from '../dist/host/native-session-bridge.js'
+import { createCodingNsNativeSessionBridge } from '../data/build/dist/host/native-session-bridge.js'
 
 test('原生会话桥接优先调用 SessionController 并复用已存在会话', async () => {
   const sessions = new Map<string, object>()

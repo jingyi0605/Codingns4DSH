@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { detectTerminalShells, resolveTerminalShell } from '../dist/host/terminal/shell-detection.js'
+import { detectTerminalShells, resolveTerminalShell } from '../data/build/dist/host/terminal/shell-detection.js'
 
 test('Linux 缺少 zsh 时系统推荐回退 bash', () => {
   const shells = detectTerminalShells({
