@@ -42,6 +42,23 @@ test('DSH Transport 可通过 Fake Carrier 完成 RPC 和 Fetch', async () => {
   await transport.close()
 })
 
+test('DSH Transport 将文本 WebSocket 流帧还原为字符串', async () => {
+  const carrier = new FakeCarrier()
+  const transport = new DshCodingNsTransport({ carrier, generation: { id: 1, host: { home: '/tmp' } } })
+  const stream = transport.openStream<{ type: string }>({ method: 'web.ws.open', payload: {} })
+  const openFrame = decodeDshEnvelope(carrier.sent[0]!)
+  carrier.emit(encodeDshEnvelope({ ...openFrame, type: 'stream.accepted', meta: { channel: 'web' } }))
+  carrier.emit(encodeDshEnvelope({
+    ...openFrame,
+    type: 'web.ws.data',
+    meta: { encoding: 'text' },
+    body: new TextEncoder().encode('{"type":"item"}'),
+  }))
+  const result = await stream[Symbol.asyncIterator]().next()
+  assert.deepEqual(result, { done: false, value: '{"type":"item"}' })
+  await transport.close()
+})
+
 test('Tunnel Frame 拒绝超过注入上限的消息', () => {
   const frame = { version: TUNNEL_PROTOCOL_VERSION, channel: 'rpc' as const, id: 'large', sequence: 0, kind: 'data' as const, payload: 'x'.repeat(200) }
   assert.throws(() => encodeTunnelFrame(frame, { maxBytes: 64 }), /超过大小限制/u)

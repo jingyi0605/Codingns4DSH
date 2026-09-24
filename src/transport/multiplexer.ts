@@ -239,6 +239,7 @@ function decodePayload(envelope: DshEnvelope): unknown {
   if (envelope.meta.encoding === 'json' && envelope.body) {
     try { return JSON.parse(new TextDecoder().decode(envelope.body)) as unknown } catch { return envelope.body }
   }
+  if (envelope.meta.encoding === 'text' && envelope.body) return new TextDecoder().decode(envelope.body)
   return envelope.body ?? envelope.meta.payload
 }
 
