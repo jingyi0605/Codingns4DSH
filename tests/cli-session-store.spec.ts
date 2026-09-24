@@ -96,6 +96,81 @@ test('Registry 同适配器重绑 Provider 身份时不继承旧原始路径', (
   assert.equal(store.get('dsh-rebind')?.providerState, undefined)
 })
 
+test('Registry 为新会话回填适配器最近模型和思考强度，并允许显式覆盖', () => {
+  const store = new CodingNsCliSessionStore()
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'fake', name: 'Fake' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'fake' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } },
+  }], {}, {
+    sessionStore: store,
+    settings: {
+      get() {
+        return {
+          agentAdapterPreferences: {
+            fake: { modelId: 'remembered-model', effortId: 'high' },
+          },
+        }
+      },
+      async update() {},
+    } as never,
+  })
+
+  assert.deepEqual(registry.setSession('new-session', { adapterId: 'fake' }), {
+    adapterId: 'fake', modelId: 'remembered-model', effortId: 'high',
+  })
+  assert.deepEqual(registry.setSession('another-session', {
+    adapterId: 'fake', modelId: 'explicit-model', effortId: 'low',
+  }), {
+    adapterId: 'fake', modelId: 'explicit-model', effortId: 'low',
+  })
+  assert.deepEqual(registry.setSession('latest-session', { adapterId: 'fake' }), {
+    adapterId: 'fake', modelId: 'explicit-model', effortId: 'low',
+  })
+})
+
+test('Registry 没有适配器偏好设置时从历史会话恢复最近选择', () => {
+  const store = new CodingNsCliSessionStore()
+  store.upsert('old-session', { adapterId: 'dsh', modelId: 'dsh-model', effortId: 'medium' })
+  const registry = new CodingNsCliAdapterRegistry([], {}, { sessionStore: store })
+  assert.deepEqual(registry.getSession('brand-new-dsh-session'), {
+    adapterId: 'dsh', modelId: 'dsh-model', effortId: 'medium',
+  })
+  assert.deepEqual(registry.setSession('new-dsh-session', { adapterId: 'dsh' }), {
+    adapterId: 'dsh', modelId: 'dsh-model', effortId: 'medium',
+  })
+})
+
+test('Registry 直接执行一轮时也会记住真实使用的模型和思考强度', async () => {
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'fake', name: 'Fake' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'fake' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } },
+  }])
+
+  for await (const _event of registry.execute({
+    sessionId: 'direct-session',
+    adapterId: 'fake',
+    messages: [],
+    prompt: '直接执行',
+    modelId: 'direct-model',
+    effortId: 'xhigh',
+  })) { /* 消费完整执行流 */ }
+
+  assert.deepEqual(registry.getSession('direct-session'), {
+    adapterId: 'fake',
+    modelId: 'direct-model',
+    effortId: 'xhigh',
+  })
+  assert.deepEqual(registry.setSession('next-session', { adapterId: 'fake' }), {
+    adapterId: 'fake',
+    modelId: 'direct-model',
+    effortId: 'xhigh',
+  })
+})
+
 test('Registry 在 session-binding 和完成时更新持久化会话摘要', async () => {
   const store = new CodingNsCliSessionStore()
   const registry = new CodingNsCliAdapterRegistry([{

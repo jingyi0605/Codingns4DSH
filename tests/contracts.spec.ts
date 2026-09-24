@@ -42,6 +42,7 @@ test('CodingNS 设置用模块名字典表达开关，结构不随模块数量�
     controlBaseUrls: [DEFAULT_CODINGNS_CONTROL_BASE_URL],
     modules: {},
     agentAdapters: {},
+    agentAdapterPreferences: {},
     terminalEnhancement: DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
     workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
     lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 },

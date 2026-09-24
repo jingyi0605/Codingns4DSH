@@ -469,6 +469,21 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   const passthrough = []
   for await (const chunk of listener!({ sessionId: 'unknown', messages: [] }, async function* () { yield { type: 'text-delta', text: '默认' } })) passthrough.push(chunk)
   assert.deepEqual(passthrough, [{ type: 'text-delta', text: '默认' }])
+
+  const dshSelection = []
+  for await (const chunk of listener!({
+    sessionId: 'dsh-selection',
+    modelSelection: {
+      lastUsed: { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' },
+      next: { provider: 'deepseek', model: 'deepseek-next', reasoningEffort: 'low' },
+    },
+  }, async function* () { yield { type: 'text-delta', text: '默认 DSH' } })) dshSelection.push(chunk)
+  assert.deepEqual(dshSelection, [{ type: 'text-delta', text: '默认 DSH' }])
+  assert.deepEqual(registry.getSession('dsh-selection'), {
+    adapterId: 'dsh',
+    modelId: 'deepseek-chat',
+    effortId: 'high',
+  })
   await features.disable('cliAdapters')
   assert.equal(listener, undefined)
 })

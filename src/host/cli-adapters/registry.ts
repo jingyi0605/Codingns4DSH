@@ -17,6 +17,8 @@ import type {
 } from './driver.js'
 import { CodingNsCliSessionStore } from './session-store.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
+import type { CodingNsSettings, CodingNsCliAdapterPreference } from '../../shared/contracts/config.js'
+import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 
 type CodingNsCliDetection = Pick<CodingNsCliAdapterDescriptor, 'installed' | 'version' | 'command'>
 
@@ -76,10 +78,13 @@ export class CodingNsCliAdapterRegistry {
       readonly uninstalledCacheTtlMs?: number
       readonly modelCacheTtlMs?: number
       readonly modelRetryTtlMs?: number
+      /** 适配器级最近模型选择的持久化设置。 */
+      readonly settings?: SettingsScope<CodingNsSettings>
     } = {},
   ) {
     this.sessionStore = options.sessionStore
     this.nativeSessions = options.nativeSessions
+    this.settings = options.settings
     this.providerProbeTtlMs = options.providerProbeTtlMs ?? 60_000
     this.missingConfirmationDelayMs = options.missingConfirmationDelayMs ?? 2_000
     this.providerProbeTimeoutMs = Math.max(1, options.providerProbeTimeoutMs ?? 10_000)
@@ -88,6 +93,7 @@ export class CodingNsCliAdapterRegistry {
     this.uninstalledCacheTtlMs = positiveTtl(options.uninstalledCacheTtlMs, DEFAULT_UNINSTALLED_CACHE_TTL_MS)
     this.modelCacheTtlMs = positiveTtl(options.modelCacheTtlMs, DEFAULT_MODEL_CACHE_TTL_MS)
     this.modelRetryTtlMs = positiveTtl(options.modelRetryTtlMs, DEFAULT_MODEL_RETRY_TTL_MS)
+    this.syncPreferences(options.settings?.get().agentAdapterPreferences)
     for (const driver of drivers) {
       if (this.drivers.has(driver.descriptor.id)) throw new Error(`重复 Agent: ${driver.descriptor.id}`)
       this.drivers.set(driver.descriptor.id, driver)
@@ -113,6 +119,8 @@ export class CodingNsCliAdapterRegistry {
 
   private readonly sessionStore: CodingNsCliSessionStore | undefined
   private readonly nativeSessions: CodingNsNativeSessionBridge | undefined
+  private readonly settings: SettingsScope<CodingNsSettings> | undefined
+  private readonly preferences = new Map<CodingNsCliAdapterId, { modelId?: string; effortId?: string }>()
 
   /** Host 启动后预热安装状态；定时器让同步 CLI 探测不阻塞功能模块装配。 */
   warmCatalog(): void {
@@ -171,13 +179,26 @@ export class CodingNsCliAdapterRegistry {
     if (config.adapterId !== 'dsh') this.requireEnabledDriver(config.adapterId)
     const previous = this.sessions.get(sessionId)
     const sameAdapter = previous?.adapterId === config.adapterId
+    const remembered = this.preferences.get(config.adapterId) ?? this.findRememberedPreference(config.adapterId)
     const providerSessionId = config.providerSessionId?.trim()
     const providerIdentityChanged = providerSessionId !== undefined
       && providerSessionId !== previous?.providerSessionId
     const normalized = {
       adapterId: config.adapterId,
-      ...(config.modelId?.trim() ? { modelId: config.modelId.trim() } : {}),
-      ...(config.effortId?.trim() ? { effortId: config.effortId.trim() } : {}),
+      ...(config.modelId?.trim()
+        ? { modelId: config.modelId.trim() }
+        : sameAdapter && previous?.modelId
+          ? { modelId: previous.modelId }
+          : remembered?.modelId
+            ? { modelId: remembered.modelId }
+            : {}),
+      ...(config.effortId?.trim()
+        ? { effortId: config.effortId.trim() }
+        : sameAdapter && previous?.effortId
+          ? { effortId: previous.effortId }
+          : remembered?.effortId
+            ? { effortId: remembered.effortId }
+            : {}),
       ...(providerSessionId ? { providerSessionId } : sameAdapter && previous?.providerSessionId ? { providerSessionId: previous.providerSessionId } : {}),
       ...(config.rawStoreRef?.trim()
         ? { rawStoreRef: config.rawStoreRef.trim() }
@@ -187,12 +208,65 @@ export class CodingNsCliAdapterRegistry {
     }
     this.sessions.set(sessionId, normalized)
     this.sessionStore?.upsert(sessionId, normalized)
+    this.rememberPreference(config.adapterId, normalized)
     return normalized
+  }
+
+  /** 设置服务变更后重新载入适配器级默认选择。 */
+  syncPreferences(value: Readonly<Record<string, CodingNsCliAdapterPreference>> | undefined): void {
+    if (value === undefined) return
+    this.preferences.clear()
+    for (const [adapterId, preference] of Object.entries(value)) {
+      const modelId = preference?.modelId?.trim()
+      const effortId = preference?.effortId?.trim()
+      if (modelId === undefined && effortId === undefined) continue
+      this.preferences.set(adapterId, {
+        ...(modelId ? { modelId } : {}),
+        ...(effortId ? { effortId } : {}),
+      })
+    }
+  }
+
+  private findRememberedPreference(adapterId: CodingNsCliAdapterId): { modelId?: string; effortId?: string } | undefined {
+    const records = this.sessionStore?.list({ includeArchived: true, adapterId }) ?? []
+    for (const record of records) {
+      if (record.modelId !== undefined || record.effortId !== undefined) {
+        const preference = {
+          ...(record.modelId ? { modelId: record.modelId } : {}),
+          ...(record.effortId ? { effortId: record.effortId } : {}),
+        }
+        this.preferences.set(adapterId, preference)
+        return preference
+      }
+    }
+    return undefined
+  }
+
+  private rememberPreference(adapterId: CodingNsCliAdapterId, config: CodingNsCliSessionConfig): void {
+    const previous = this.preferences.get(adapterId)
+    const modelId = config.modelId?.trim() || previous?.modelId
+    const effortId = config.effortId?.trim() || previous?.effortId
+    if (modelId === undefined && effortId === undefined) return
+    if (previous?.modelId === modelId && previous?.effortId === effortId) return
+    const preference = {
+      ...(modelId ? { modelId } : {}),
+      ...(effortId ? { effortId } : {}),
+    }
+    this.preferences.set(adapterId, preference)
+    if (this.settings === undefined) return
+    const snapshot = Object.fromEntries([...this.preferences.entries()].map(([id, value]) => [id, { ...value }]))
+    void this.settings.update({ agentAdapterPreferences: snapshot }).catch(() => undefined)
   }
 
   getSession(sessionId: string): CodingNsCliSessionConfig {
     const session = this.sessions.get(sessionId)
-    return session !== undefined && (session.adapterId === 'dsh' || this.isEnabled(session.adapterId)) ? session : { adapterId: 'dsh' }
+    if (session !== undefined && (session.adapterId === 'dsh' || this.isEnabled(session.adapterId))) return session
+    const remembered = this.preferences.get('dsh') ?? this.findRememberedPreference('dsh')
+    return {
+      adapterId: 'dsh',
+      ...(remembered?.modelId ? { modelId: remembered.modelId } : {}),
+      ...(remembered?.effortId ? { effortId: remembered.effortId } : {}),
+    }
   }
 
   async *execute(input: CodingNsCliTurnInput & { readonly adapterId: CodingNsCliAdapterId }): AsyncIterable<CodingNsAgentEvent> {
@@ -204,7 +278,15 @@ export class CodingNsCliAdapterRegistry {
       throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', '外部会话已有一轮执行正在进行')
     }
     this.executingSessions.add(input.sessionId)
-    let current = this.sessions.get(input.sessionId) ?? { adapterId: input.adapterId }
+    const previous = this.sessions.get(input.sessionId)
+    let current = {
+      ...(previous ?? { adapterId: input.adapterId }),
+      ...(input.modelId?.trim() ? { modelId: input.modelId.trim() } : {}),
+      ...(input.effortId?.trim() ? { effortId: input.effortId.trim() } : {}),
+    }
+    // 除了 Client 的 session/set，Host 内部和未来的调用方也可能直接执行一轮。
+    // 最近使用应由真实执行参数更新，不能依赖某个 UI 一定先发 RPC。
+    this.rememberPreference(input.adapterId, input)
     try {
       const stored = this.sessionStore?.get(input.sessionId)
       if (stored?.status === 'archived') {

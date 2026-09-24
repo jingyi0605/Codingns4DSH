@@ -39,6 +39,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         new GrokBuildDriver(),
       ], context.services.settings?.get().agentAdapters, {
         sessionStore,
+        ...(context.services.settings === undefined ? {} : { settings: context.services.settings }),
         ...(context.services.nativeSessions === undefined ? {} : { nativeSessions: context.services.nativeSessions }),
       })
       registry.applyEnabledSettings(context.services.settings?.get().agentAdapters)
@@ -83,6 +84,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       if (settings !== undefined) {
         context.resources.add(settings.watch((next) => {
           registry.applyEnabledSettings(next.agentAdapters)
+          registry.syncPreferences(next.agentAdapterPreferences)
           sessionStore.sync(next.cliSessions)
         }))
       }
@@ -93,7 +95,15 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           const value = asRecord(options)
           const sessionId = typeof value?.sessionId === 'string' ? value.sessionId : ''
           const config = sessionId ? registry.getSession(sessionId) : { adapterId: 'dsh' }
-          if (config.adapterId === 'dsh' || value?.purpose === 'session-title' || value?.purpose === 'compaction') {
+          if (config.adapterId === 'dsh') {
+            const selection = readDshSelection(value)
+            if (sessionId !== '' && (selection.modelId !== undefined || selection.effortId !== undefined)) {
+              registry.setSession(sessionId, { adapterId: 'dsh', ...selection })
+            }
+            yield* next()
+            return
+          }
+          if (value?.purpose === 'session-title' || value?.purpose === 'compaction') {
             yield* next()
             return
           }
@@ -182,6 +192,45 @@ function readPrompt(value: unknown): string {
   const record = asRecord(value)
   if (typeof record?.prompt !== 'string' || record.prompt.trim() === '') throw new Error('prompt 不能为空')
   return record.prompt.trim()
+}
+
+/** 从 DSH 原生 llm/stream 请求头捕获当前模型和思考强度。 */
+function readDshSelection(value: Record<string, any> | null): { modelId?: string; effortId?: string } {
+  const candidates = [
+    value,
+    asRecord(value?.request),
+    asRecord(value?.config),
+    asRecord(value?.header),
+    ...readModelSelectionCandidates(value),
+  ]
+  const read = (keys: readonly string[]): string | undefined => {
+    for (const candidate of candidates) {
+      for (const key of keys) {
+        const result = candidate?.[key]
+        if (typeof result === 'string' && result.trim() !== '') return result.trim()
+      }
+    }
+    return undefined
+  }
+  const modelId = read(['model', 'modelId'])
+  const effortId = read(['reasoningEffort', 'effortId', 'thinking'])
+  return {
+    ...(modelId === undefined ? {} : { modelId }),
+    ...(effortId === undefined ? {} : { effortId }),
+  }
+}
+
+/** DSH Session 快照把最近选择放在 modelSelection.lastUsed/next。 */
+function readModelSelectionCandidates(value: Record<string, any> | null): Record<string, any>[] {
+  const result: Record<string, any>[] = []
+  for (const candidate of [value, asRecord(value?.request), asRecord(value?.config), asRecord(value?.header)]) {
+    const selection = asRecord(candidate?.modelSelection)
+    const lastUsed = asRecord(selection?.lastUsed)
+    const next = asRecord(selection?.next)
+    if (lastUsed !== null) result.push(lastUsed)
+    if (next !== null) result.push(next)
+  }
+  return result
 }
 
 async function setAdapterEnabled(

@@ -1,6 +1,12 @@
 import type { FeatureDescriptor } from './feature.js'
 import type { CodingNsCliSessionRecord } from './cli-adapter.js'
 
+/** 适配器最近一次使用的模型与思考强度。 */
+export interface CodingNsCliAdapterPreference {
+  readonly modelId?: string | undefined
+  readonly effortId?: string | undefined
+}
+
 /** CodingNS 在 DSH 设置文档中持久化的用户选项。 */
 export interface CodingNsSettings {
   /** Control API 地址不是秘密，可以由 Web 设置页保存到 Host 设置。 */
@@ -23,6 +29,8 @@ export interface CodingNsSettings {
   agentAdapters?: Record<string, boolean>
   /** Host 侧外部 Agent 会话索引；不含凭据和原始消息。 */
   cliSessions?: CodingNsCliSessionRecord[]
+  /** 适配器级最近选择；新建会话时作为默认模型和思考强度。 */
+  agentAdapterPreferences?: Record<string, CodingNsCliAdapterPreference>
 }
 
 /** 跨平台终端 profile；`system` 由 Host 根据平台和已安装 shell 解析。 */
@@ -106,6 +114,7 @@ export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   controlBaseUrls: [...DEFAULT_CODINGNS_CONTROL_BASE_URLS],
   modules: {},
   agentAdapters: {},
+  agentAdapterPreferences: {},
   terminalEnhancement: DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   lanAccessDsh: {

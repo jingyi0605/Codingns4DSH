@@ -15,6 +15,7 @@ export {
   enabledFeatureNames,
   isFeatureEnabled,
   type CodingNsSettings,
+  type CodingNsCliAdapterPreference,
   type LanAccessDshSettings,
   type RestartFeatureStates,
   type TerminalAppearanceSettings,
