@@ -41,8 +41,8 @@ test('所有 Client 表单不再引用不存在的旧主题令牌', async () => 
   const source = sources.join('\n')
 
   assert.doesNotMatch(source, /--dsw-alias-(?:bg-primary|bg-secondary|border-primary)/u)
-  assert.equal(source.includes('dshFieldStyle'), true)
-  assert.equal(source.includes('dshButtonStyle'), true)
+  assert.equal(source.includes('dshSettingsFieldStyle'), true)
+  assert.equal(source.includes('dshSettingsButtonStyle'), true)
   assert.equal(source.includes('dshPopupSurfaceStyle'), true)
   assert.equal(source.includes(dshThemeColor.labelPrimary), false, '组件应复用主题样式或令牌对象，不应复制令牌字符串')
 })
