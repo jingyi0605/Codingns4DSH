@@ -34,7 +34,15 @@ export interface DshH5BrowserBootstrapOptions {
   readonly signal?: AbortSignal
   readonly webContext?: Omit<RemoteDshWebContextOptions, 'transport'>
   readonly generation?: number
+  /** 页面可用的阶段提示；不携带任何凭据或业务正文。 */
+  readonly onStatus?: (status: DshH5BootstrapStatus) => void
 }
+
+export type DshH5BootstrapStatus =
+  'ticket'
+  | 'webrtc'
+  | 'session-ready'
+  | 'remote-web'
 
 export interface DshH5BrowserBootstrapResult {
   readonly dshDeviceId: string
@@ -93,9 +101,11 @@ export async function startDshH5Bootstrap(options: DshH5BootstrapOptions): Promi
 /** 独立 H5 页面使用的入口；Control API 会话通过 HttpOnly Cookie 提供。 */
 export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapOptions): Promise<DshH5BrowserBootstrapResult> {
   const signal = options.signal
+  options.onStatus?.('ticket')
   const devices = await options.controlApi.listDevices(signal)
   const device = chooseDshDevice(devices, options.dshDeviceId)
   const ticket = await options.controlApi.createClientTicket(device.dshDeviceId, signal)
+  options.onStatus?.('webrtc')
   const connection = await connectWebRtcClient({
     signalingTicket: ticket as unknown as RelaySignalingTicketResponse,
     signalingSocketFactory: (url) => new WebSocket(url) as unknown as SignalingSocketLike,
@@ -114,10 +124,12 @@ export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapO
   let webContext: RemoteDshWebContext | undefined
   try {
     session.start()
-    await session.waitReady(signal)
+    await waitForSessionReady(session, signal, 15_000)
+    options.onStatus?.('session-ready')
     if (options.webContext) {
       webContext = new RemoteDshWebContext({ ...options.webContext, transport })
-      await webContext.open(signal)
+      options.onStatus?.('remote-web')
+      await withTimeout(webContext.open(signal), signal, 30_000, '读取远程 DSH Web 超时')
     }
     return {
       dshDeviceId: device.dshDeviceId,
@@ -137,6 +149,32 @@ export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapO
     await transport.close()
     await connection.close()
     throw error
+  }
+}
+
+async function waitForSessionReady(session: DshSession, signal: AbortSignal | undefined, timeoutMs: number): Promise<void> {
+  await withTimeout(session.waitReady(signal), signal, timeoutMs, '等待 DSH session.ready 超时')
+}
+
+async function withTimeout<T>(promise: Promise<T>, signal: AbortSignal | undefined, timeoutMs: number, message: string): Promise<T> {
+  if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('请求已取消')
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let removeAbort: (() => void) | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+        if (signal) {
+          const onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error('请求已取消'))
+          signal.addEventListener('abort', onAbort, { once: true })
+          removeAbort = () => signal.removeEventListener('abort', onAbort)
+        }
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    removeAbort?.()
   }
 }
 
