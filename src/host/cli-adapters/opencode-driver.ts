@@ -179,6 +179,18 @@ export class OpenCodeDriver implements CodingNsCliDriver {
           }
           const messageId = eventMessageId(parsed)
           if (messageId !== undefined && !knownMessageIds.has(messageId)) {
+            // OpenCode 的 message.part.updated 经常早于 message.updated 到达。
+            // 工具调用是当前轮次最重要的实时事件，不能像正文一样等到
+            // assistant 消息结算后才投影，否则原生工具节点会被追加到正文底部。
+            // 用户消息没有 tool 字段，因此仍然暂存并等待 role 校验。
+            if (isOpenCodeToolEvent(parsed)) {
+              const chunk = eventToChunk(parsed, cumulative, undefined, partTypes)
+              if (chunk !== null) {
+                emitted = true
+                yield chunk
+              }
+              continue
+            }
             const pending = pendingMessageParts.get(messageId) ?? []
             pending.push(parsed)
             pendingMessageParts.set(messageId, pending)
@@ -468,16 +480,7 @@ function eventToChunk(
   if (partType === 'tool' && toolName !== undefined) {
     const state = parseToolRecord(part.state) ?? part
     const callId = firstToolText(part.callID, part.callId, part.toolCallId, part.id)
-    const input = serializeToolValue(
-      state.input
-      ?? state.arguments
-      ?? state.args
-      ?? state.parameters
-      ?? part.input
-      ?? part.arguments
-      ?? part.args
-      ?? part.parameters,
-    )
+    const input = serializeToolValue(readOpenCodeToolInput(event, properties, part, state))
     const output = serializeToolValue(state.output ?? state.result)
     const error = serializeToolValue(state.error)
     const fallback = error !== undefined
@@ -536,6 +539,58 @@ function eventMessageId(event: Record<string, unknown>): string | undefined {
   const properties = asRecord(event.properties)
   const part = asRecord(event.part) ?? asRecord(properties?.part)
   return firstToolText(part?.messageID, part?.messageId, properties?.messageID, properties?.messageId)
+}
+
+/** 判断尚未关联到 role 的 SSE 是否已经明确是工具 part。 */
+function isOpenCodeToolEvent(event: Record<string, unknown>): boolean {
+  const properties = asRecord(event.properties)
+  const part = asRecord(event.part) ?? asRecord(properties?.part) ?? properties
+  if (part === null) return false
+  const type = typeof part.type === 'string' ? part.type.trim().toLowerCase() : ''
+  return type === 'tool' || typeof part.tool === 'string' || part.callID !== undefined || part.toolCallId !== undefined
+}
+
+/**
+ * OpenCode 不同版本把工具参数放在不同层级：稳定格式是 state.input，
+ * 旧版/代理层还会放到 part.input、arguments 或 metadata.input。优先取
+ * 非空值，避免先到达的空快照把真正参数覆盖成 `{}`。
+ */
+function readOpenCodeToolInput(
+  event: Record<string, unknown>,
+  properties: Record<string, any> | null,
+  part: Record<string, any>,
+  state: Record<string, any>,
+): unknown {
+  const stateMetadata = asRecord(state.metadata)
+  const stateData = asRecord(state.data)
+  const partMetadata = asRecord(part.metadata)
+  const partData = asRecord(part.data)
+  const toolCall = asRecord(part.toolCall) ?? asRecord(part.tool_call) ?? asRecord(part.call)
+  const values = [
+    state.input, state.arguments, state.args, state.parameters,
+    state.raw,
+    stateMetadata?.input, stateMetadata?.arguments, stateMetadata?.args,
+    stateData?.input, stateData?.arguments, stateData?.args,
+    part.input, part.arguments, part.args, part.parameters,
+    part.raw,
+    partMetadata?.input, partMetadata?.arguments, partMetadata?.args,
+    partData?.input, partData?.arguments, partData?.args,
+    toolCall?.input, toolCall?.arguments, toolCall?.args, toolCall?.parameters, toolCall?.raw,
+    properties?.input, properties?.arguments, properties?.args,
+    event.input, event.arguments, event.args,
+  ]
+  let fallback: unknown
+  for (const value of values) {
+    if (value === undefined || value === null) continue
+    if (fallback === undefined) fallback = value
+    if (!isEmptyToolValue(value)) return value
+  }
+  return fallback
+}
+
+function isEmptyToolValue(value: unknown): boolean {
+  if (typeof value === 'string') return value.trim() === '' || value.trim() === '{}'
+  return isRecord(value) && Object.keys(value).length === 0
 }
 
 function eventSessionId(event: Record<string, unknown>): string | undefined {

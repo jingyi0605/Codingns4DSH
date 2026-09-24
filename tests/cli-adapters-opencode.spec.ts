@@ -96,6 +96,36 @@ test('OpenCode 工具事件保留 Bash 和读取工具的真实参数', async ()
   ])
 })
 
+test('OpenCode 在 assistant role 到达前立即投影工具并读取嵌套参数', async () => {
+  const encoder = new TextEncoder()
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/session') && init.method === 'POST') return new Response(JSON.stringify({ id: 'remote-live-tool' }), { status: 200 })
+    if (url.endsWith('/message')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/event')) {
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        // 真实 OpenCode SSE 可能先推 part.updated，再推 message.updated。
+        controller.enqueue(encoder.encode('data: {"type":"message.part.updated","properties":{"part":{"id":"live-bash","messageID":"live-assistant","type":"tool","tool":"bash","callID":"live-bash-call","state":{"status":"running","metadata":{"input":{"command":"pwd && ls"}}}}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"message.part.updated","properties":{"part":{"id":"live-text","messageID":"live-assistant","type":"text","text":"已执行"}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"message.updated","properties":{"info":{"id":"live-assistant","role":"assistant"}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"session.status","status":"idle"}\n\n'))
+        controller.close()
+      } })
+      return new Response(body, { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 's-live-tool', messages: [], prompt: '执行工具' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'remote-live-tool' },
+    { type: 'tool-event', toolName: 'bash', callId: 'live-bash-call', input: '{"command":"pwd && ls"}', status: 'running' },
+    { type: 'text-delta', text: '已执行' },
+    { type: 'finish', reason: 'stop' },
+  ])
+})
+
 test('OpenCode 创建会话和事件流都携带当前工作目录', async () => {
   const requests: string[] = []
   const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
