@@ -1,4 +1,5 @@
 import type { DshGatewayFeature, DshStreamContext } from '../transport/dsh-gateway.js'
+import { createDshTransportDebugLogger, type DshTransportDebugLogger } from '../transport/debug.js'
 
 /** 远程 DSH Web 资源；正文始终使用二进制，不经 Base64。 */
 export interface DshWebAsset {
@@ -44,6 +45,7 @@ export interface DshWebRuntimeProvider {
 export interface RemoteWebRuntimeFeatureOptions {
   readonly provider: DshWebRuntimeProvider
   readonly maxAssetBytes?: number
+  readonly debug?: DshTransportDebugLogger
 }
 
 /**
@@ -54,6 +56,7 @@ export interface RemoteWebRuntimeFeatureOptions {
  */
 export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOptions): DshGatewayFeature {
   const maxAssetBytes = options.maxAssetBytes ?? 16 * 1024 * 1024
+  const debug = options.debug ?? createDshTransportDebugLogger({ side: 'host', component: 'remote-web' })
   const sessions = new Map<string, DshWebSession>()
   const sockets = new Map<string, DshWebSocketLike>()
   const socketCleanups = new Map<string, () => void>()
@@ -71,6 +74,7 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
     canHandle: (envelope) => typeof envelope.meta.operation === 'string' && envelope.meta.operation.startsWith('web.'),
     handleStream: async (context) => {
       const operation = readOperation(context)
+      debug.log('web.request.start', { operation, streamId: context.envelope.streamId, bodyBytes: context.envelope.body?.byteLength ?? 0 })
       if (operation === 'web.ws.open') {
         try {
           await openWebSocketStream(context)
@@ -86,25 +90,32 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
           case 'web.session.open': {
             const session = await options.provider.openSession(readOptionalRecord(request))
             sessions.set(session.sessionId, session)
+            debug.log('web.session.opened', { operation, streamId: context.envelope.streamId, sessionId: session.sessionId })
             context.send('web.session.response', { encoding: 'json' }, encodeJson(session))
             break
           }
           case 'web.session.close': {
             const session = requireSession(sessions, request)
+            debug.log('web.session.close', { operation, streamId: context.envelope.streamId, sessionId: session.sessionId })
             sessions.delete(session.sessionId)
             context.send('web.session.close.response', { encoding: 'json' }, encodeJson({ closed: true }))
             break
           }
           case 'web.boot.get': {
             const session = requireSession(sessions, request)
-            context.send('web.boot.response', { encoding: 'json' }, encodeJson(await options.provider.getBoot(session)))
+            debug.log('web.boot.start', { operation, streamId: context.envelope.streamId, sessionId: session.sessionId })
+            const boot = await options.provider.getBoot(session)
+            debug.log('web.boot.done', { operation, streamId: context.envelope.streamId, sessionId: session.sessionId, htmlBytes: boot.html.length })
+            context.send('web.boot.response', { encoding: 'json' }, encodeJson(boot))
             break
           }
           case 'web.asset.get': {
             const session = requireSession(sessions, request)
             const path = readPath(request)
+            debug.log('web.asset.start', { operation, streamId: context.envelope.streamId, sessionId: session.sessionId, path })
             const asset = await options.provider.getAsset(session, path)
             assertAssetSize(asset, maxAssetBytes)
+            debug.log('web.asset.done', { operation, streamId: context.envelope.streamId, sessionId: session.sessionId, path, bytes: asset.body.byteLength })
             context.send('web.asset.response', { contentType: asset.contentType, ...(asset.etag ? { etag: asset.etag } : {}) }, asset.body)
             break
           }
@@ -141,6 +152,7 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
             throw new RemoteWebRuntimeError('WEB_OPERATION_UNSUPPORTED', `不支持的 DSH Web operation: ${operation}`)
         }
       } catch (error) {
+        debug.log('web.request.error', { operation, streamId: context.envelope.streamId, error: error instanceof Error ? error.message : String(error) })
         context.send('stream.error', { errorCode: error instanceof RemoteWebRuntimeError ? error.code : 'WEB_RUNTIME_FAILED', detail: error instanceof Error ? error.message : 'DSH Web Runtime 失败', retryable: false })
       } finally {
         if (operation !== 'web.ws.open') {
@@ -153,6 +165,7 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
         const socket = sockets.get(envelope.streamId)
         if (!socket) throw new RemoteWebRuntimeError('WEB_SOCKET_NOT_FOUND', 'DSH WebSocket 流不存在')
         socket.send(envelope.body ?? new Uint8Array())
+        debug.log('web.ws.data', { streamId: envelope.streamId, bytes: envelope.body?.byteLength ?? 0 })
         return
       }
       if (envelope.type === 'stream.cancel' || envelope.type === 'stream.close' || envelope.type === 'web.ws.close') {
@@ -219,6 +232,7 @@ export interface LocalDshWebRuntimeProviderOptions {
 export function createLocalDshWebRuntimeProvider(options: LocalDshWebRuntimeProviderOptions): DshWebRuntimeProvider {
   if (!Number.isInteger(options.port) || options.port <= 0 || options.port > 65535) throw new TypeError('DSH Web 端口无效')
   const fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis)
+  const debug = createDshTransportDebugLogger({ side: 'host', component: 'web-provider' })
   const baseUrl = `http://127.0.0.1:${options.port}`
   const allowed = options.allowedPathPrefixes ?? ['/', '/assets/', '/plugins/', '/api/']
   const sessions = new Map<string, DshWebSession>()
@@ -234,12 +248,15 @@ export function createLocalDshWebRuntimeProvider(options: LocalDshWebRuntimeProv
 
   const ensureAuthenticated = async (): Promise<void> => {
     if (sessionCookie !== undefined || options.authenticatedUrl === undefined) return
+    debug.log('web.auth.start', { authenticatedUrlConfigured: true })
     const response = await fetcher(options.authenticatedUrl, { redirect: 'manual' })
     const setCookie = getSetCookie(response.headers)
     if (setCookie !== undefined) sessionCookie = setCookie
     if (response.status !== 303 || sessionCookie === undefined) {
+      debug.log('web.auth.error', { status: response.status, hasCookie: sessionCookie !== undefined })
       throw new Error(`DSH Web 认证交换失败 (${response.status})`)
     }
+    debug.log('web.auth.done', { status: response.status, hasCookie: true })
   }
 
   return {
@@ -250,8 +267,10 @@ export function createLocalDshWebRuntimeProvider(options: LocalDshWebRuntimeProv
     },
     async getBoot(session) {
       ensureSession(sessions, session)
+      debug.log('web.provider.boot', { sessionId: session.sessionId, authenticated: sessionCookie !== undefined, path: normalizePath(options.bootPath ?? '/') })
       await ensureAuthenticated()
       const response = await fetchLocal(normalizePath(options.bootPath ?? '/'))
+      debug.log('web.provider.boot.response', { sessionId: session.sessionId, status: response.status })
       if (!response.ok) throw new Error(`读取 DSH Web boot 失败 (${response.status})`)
       return { dshVersion: options.dshVersion, contentType: response.headers.get('content-type') ?? 'text/html; charset=utf-8', html: await response.text(), capabilities: ['boot', 'asset', 'websocket', 'plugin'] }
     },
@@ -260,7 +279,9 @@ export function createLocalDshWebRuntimeProvider(options: LocalDshWebRuntimeProv
       const normalized = normalizePath(path)
       if (!allowed.some((prefix) => normalized === prefix || normalized.startsWith(prefix))) throw new Error('DSH Web 资源路径不在白名单内')
       await ensureAuthenticated()
-      return readAsset(await fetchLocal(normalized))
+      const response = await fetchLocal(normalized)
+      debug.log('web.provider.asset.response', { sessionId: session.sessionId, path: normalized, status: response.status })
+      return readAsset(response)
     },
     async getPluginManifest(session) {
       ensureSession(sessions, session)
@@ -280,6 +301,7 @@ export function createLocalDshWebRuntimeProvider(options: LocalDshWebRuntimeProv
       if (input.body !== undefined) init.body = input.body
       await ensureAuthenticated()
       const response = await fetchLocal(path, init)
+      debug.log('web.provider.request.response', { sessionId: session.sessionId, path, method: input.method ?? 'GET', status: response.status })
       return { status: response.status, headers: [...response.headers.entries()], body: await response.text() }
     },
     async openWebSocket(session, path) {

@@ -25,6 +25,8 @@ export interface RemoteDshWebContextOptions {
  */
 export class RemoteDshWebContext {
   private readonly objectUrls = new Set<string>()
+  private readonly moduleUrls = new Map<string, string>()
+  private readonly moduleLoads = new Map<string, Promise<string>>()
   private readonly sockets = new Map<string, string>()
   private iframeValue: HTMLIFrameElement | undefined
   private sessionIdValue: string | undefined
@@ -89,23 +91,76 @@ export class RemoteDshWebContext {
     base.href = 'https://dsh.remote.invalid/'
     documentValue.head.prepend(base)
     const scriptNodes = [...documentValue.querySelectorAll<HTMLScriptElement>('script[src]')]
+    const inlineScriptNodes = [...documentValue.querySelectorAll<HTMLScriptElement>('script:not([src])')]
     const styleNodes = [...documentValue.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"][href]')]
+    // modulepreload、manifest 和 favicon 指向的是不可访问的 Host 地址；模块依赖
+    // 会由 loadScript 重写为 Blob URL，其他链接直接移除，避免浏览器绕过 Tunnel。
+    for (const node of [...documentValue.querySelectorAll<HTMLLinkElement>('link')]) {
+      const rel = (node.getAttribute('rel') ?? '').toLowerCase()
+      if (rel === 'modulepreload' || rel === 'manifest' || rel === 'icon') node.remove()
+    }
     await Promise.all([
       ...scriptNodes.map(async (node) => {
         const path = resolveRemotePath(node.getAttribute('src') ?? '')
-        const body = await this.options.transport.webRequest<Uint8Array>('web.asset.get', { sessionId: this.sessionIdValue, path }, signal)
-        node.src = this.createObjectUrl(body, 'text/javascript')
+        node.src = await this.loadScript(path, signal)
+      }),
+      ...inlineScriptNodes.map(async (node) => {
+        const type = (node.getAttribute('type') ?? '').toLowerCase()
+        // JSON 数据脚本不是可执行代码，保留给 DSH 前端读取；其余内联脚本
+        // 转成 Blob 外链，以兼容 Bootstrap 的 script-src 无 unsafe-inline 策略。
+        if (type === 'application/json' || type === 'application/ld+json') return
+        const source = node.textContent ?? ''
+        node.textContent = ''
+        node.src = this.createObjectUrl(new TextEncoder().encode(source), 'text/javascript')
       }),
       ...styleNodes.map(async (node) => {
         const path = resolveRemotePath(node.getAttribute('href') ?? '')
-        const body = await this.options.transport.webRequest<Uint8Array>('web.asset.get', { sessionId: this.sessionIdValue, path }, signal)
-        node.href = this.createObjectUrl(body, 'text/css')
+        node.href = await this.loadStyle(path, signal)
       }),
     ])
     const bridge = documentValue.createElement('script')
-    bridge.textContent = createBridgeScript()
+    bridge.src = this.createObjectUrl(new TextEncoder().encode(createBridgeScript()), 'text/javascript')
     documentValue.head.prepend(bridge)
     return `<!doctype html>${documentValue.documentElement.outerHTML}`
+  }
+
+  private async loadScript(path: string, signal?: AbortSignal): Promise<string> {
+    const cached = this.moduleUrls.get(path)
+    if (cached !== undefined) return cached
+    const pending = this.moduleLoads.get(path)
+    if (pending !== undefined) return pending
+    const load = (async () => {
+      const body = await this.options.transport.webRequest<Uint8Array>('web.asset.get', { sessionId: this.sessionIdValue, path }, signal)
+      let source = decodeText(body)
+      const references = collectRelativeReferences(source, /\.(?:js)(?:\?[^\s"'`)]*)?$/u)
+      const replacements = await Promise.all(references.map(async (reference) => {
+        const dependencyPath = resolveRelativeAssetPath(path, reference)
+        return [reference, await this.loadScript(dependencyPath, signal)] as const
+      }))
+      for (const [reference, url] of replacements) source = source.split(reference).join(url)
+      const url = this.createObjectUrl(new TextEncoder().encode(source), 'text/javascript')
+      this.moduleUrls.set(path, url)
+      return url
+    })()
+    this.moduleLoads.set(path, load)
+    return load
+  }
+
+  private async loadStyle(path: string, signal?: AbortSignal): Promise<string> {
+    const cached = this.moduleUrls.get(path)
+    if (cached !== undefined) return cached
+    const body = await this.options.transport.webRequest<Uint8Array>('web.asset.get', { sessionId: this.sessionIdValue, path }, signal)
+    let source = decodeText(body)
+    const references = collectCssReferences(source, /\.(?:woff2?|ttf|otf|png|svg)(?:\?[^\s"'`)]*)?$/u)
+    const replacements = await Promise.all(references.map(async (reference) => {
+      const dependencyPath = resolveRelativeAssetPath(path, reference)
+      const dependency = await this.options.transport.webRequest<Uint8Array>('web.asset.get', { sessionId: this.sessionIdValue, path: dependencyPath }, signal)
+      return [reference, this.createObjectUrl(dependency, contentTypeForPath(dependencyPath))] as const
+    }))
+    for (const [reference, url] of replacements) source = source.split(reference).join(url)
+    const url = this.createObjectUrl(new TextEncoder().encode(source), 'text/css')
+    this.moduleUrls.set(path, url)
+    return url
   }
 
   private createObjectUrl(value: Uint8Array, contentType: string): string {
@@ -250,4 +305,44 @@ function toBytes(value: unknown): Uint8Array {
   if (value instanceof ArrayBuffer) return new Uint8Array(value)
   if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
   throw new TypeError('远程 WebSocket 消息必须是二进制或字符串')
+}
+
+function decodeText(value: Uint8Array): string {
+  if (!(value instanceof Uint8Array)) throw new TypeError('远程 DSH Web 资源必须是二进制')
+  return new TextDecoder().decode(value)
+}
+
+function collectRelativeReferences(source: string, suffix: RegExp): readonly string[] {
+  const found = new Set<string>()
+  const pattern = /["'`]((?:\.\.?\/)[^"'`]+)["'`]/gu
+  for (const match of source.matchAll(pattern)) {
+    const reference = match[1]
+    if (reference !== undefined && suffix.test(reference)) found.add(reference)
+  }
+  return [...found]
+}
+
+function collectCssReferences(source: string, suffix: RegExp): readonly string[] {
+  const found = new Set<string>()
+  const pattern = /url\(\s*(?:"([^"]+)"|'([^']+)'|([^)'\s]+))\s*\)/gu
+  for (const match of source.matchAll(pattern)) {
+    const reference = match[1] ?? match[2] ?? match[3]
+    if (reference?.startsWith('./') === true || reference?.startsWith('../') === true) {
+      if (suffix.test(reference)) found.add(reference)
+    }
+  }
+  return [...found]
+}
+
+function resolveRelativeAssetPath(sourcePath: string, reference: string): string {
+  const resolved = new URL(reference, `https://dsh.remote.invalid${sourcePath}`)
+  return resolveRemotePath(resolved.pathname + resolved.search)
+}
+
+function contentTypeForPath(path: string): string {
+  if (/\.woff2?(?:$|\?)/u.test(path)) return 'font/woff'
+  if (/\.ttf(?:$|\?)/u.test(path)) return 'font/ttf'
+  if (/\.svg(?:$|\?)/u.test(path)) return 'image/svg+xml'
+  if (/\.png(?:$|\?)/u.test(path)) return 'image/png'
+  return 'application/octet-stream'
 }
