@@ -202,6 +202,72 @@ test('Gemini ACP 完成初始化、session/new、prompt 并转换更新事件', 
   ])
 })
 
+test('Gemini ACP 连续两轮复用同一 Provider 会话并正常返回正文', async () => {
+  const methods: string[] = []
+  let processCount = 0
+  let providerSessionId = ''
+  const driver = new GeminiCliDriver({
+    binaries: ['fake-gemini'],
+    spawnSync: fakeDetection,
+    spawn: (() => {
+      processCount += 1
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = {
+        write(data: string): boolean {
+          const request = JSON.parse(data) as { id?: number; method?: string; params?: Record<string, any> }
+          if (request.method) methods.push(request.method)
+          if (request.id === undefined) return true
+          const result = request.method === 'session/new'
+            ? { sessionId: 'gemini-two-round-session' }
+            : request.method === 'session/load'
+              ? { sessionId: request.params?.sessionId }
+              : request.method === 'session/prompt'
+                ? { stopReason: 'end_turn' }
+                : {}
+          if (request.method === 'session/prompt') {
+            const prompt = JSON.stringify(request.params?.prompt ?? '')
+            const text = prompt.includes('SECOND') ? 'SECOND_OK' : 'FIRST_OK'
+            stdout.write(JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'session/update',
+              params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } },
+            }) + '\n')
+          }
+          queueMicrotask(() => stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\n'))
+          return true
+        },
+      }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const run = async (prompt: string, resume = false): Promise<unknown[]> => {
+    const chunks: unknown[] = []
+    for await (const chunk of driver.executeTurn({
+      sessionId: 'gemini-two-round-dsh',
+      messages: [],
+      prompt,
+      ...(resume ? { providerSessionId } : {}),
+    })) {
+      chunks.push(chunk)
+      if (chunk.type === 'session-binding') providerSessionId = chunk.providerSessionId
+    }
+    return chunks
+  }
+
+  assert.deepEqual((await run('只回答 FIRST_OK')).slice(-2), [
+    { type: 'text-delta', text: 'FIRST_OK' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  assert.deepEqual((await run('只回答 SECOND_OK', true)).slice(-2), [
+    { type: 'text-delta', text: 'SECOND_OK' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  assert.equal(processCount, 2)
+  assert.deepEqual(methods.filter((method) => method === 'session/new' || method === 'session/load'), ['session/new', 'session/load'])
+})
+
 test('Gemini 按 ACP prompt stopReason 映射取消和错误终态', async () => {
   for (const [stopReason, expected] of [
     ['cancelled', 'cancel'],
