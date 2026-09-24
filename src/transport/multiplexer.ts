@@ -38,16 +38,16 @@ export class DshTunnelMultiplexer {
   private sequence = 0
   private nextId = 0
   private disposed = false
-  private readonly unsubscribe: () => void
+  private unsubscribe: () => void
   private idPrefix: string
   private readonly flowControl: TunnelFlowControl | undefined
   private generation: string
   private readonly hostScope: DshHostScope
-  private readonly session: DshSession | undefined
+  private session: DshSession | undefined
   private readonly requireSessionReady: boolean
   private readonly debug: DshTransportDebugLogger
 
-  constructor(private readonly carrier: CodingNsCarrier, options: DshTunnelMultiplexerOptions = {}) {
+  constructor(private carrier: CodingNsCarrier, options: DshTunnelMultiplexerOptions = {}) {
     this.idPrefix = options.idPrefix ?? 'g0'
     this.flowControl = options.flowControl
     this.generation = options.generation ?? this.idPrefix.replace(/^g/u, '')
@@ -156,6 +156,16 @@ export class DshTunnelMultiplexer {
     for (const pending of this.pending.values()) pending.reject(error)
     this.pending.clear()
     for (const [id, stream] of this.streams) { stream.error = error; this.finishStream(id, stream) }
+  }
+  /** 替换物理 carrier；逻辑请求已在 invalidate 中失败，后续请求使用新线路。 */
+  replaceCarrier(carrier: CodingNsCarrier): void {
+    if (this.disposed) throw new Error('Transport 已关闭')
+    this.unsubscribe()
+    this.carrier = carrier
+    this.unsubscribe = carrier.subscribe((data) => this.receive(data as unknown as Uint8Array))
+  }
+  setSession(session: DshSession | undefined): void {
+    this.session = session
   }
   rotateGeneration(idPrefix: string, error = new Error('Transport generation 已过期')): void {
     this.invalidate(error)

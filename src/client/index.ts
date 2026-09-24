@@ -78,7 +78,6 @@ export const inject = ['slots', 'settingsScope', 'connection', 'remote', 'remote
  */
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
-
   ctx.effect(() => registerCodingNsLocale(ctx), 'dsh-codingns: Client 词典')
 
   ctx.inject(['slots', 'settingsScope', 'connection', 'remote', 'remote.workspace', 'remote.session', 'remote.terminal', 'sidebarRight', 'sidebarRightTabs', 'theme', 'locale', 'uiConversation'], (settingsCtx) => {

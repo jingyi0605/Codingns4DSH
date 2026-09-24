@@ -47,7 +47,9 @@ export interface DshEnvelopeCodecOptions {
 
 export const DSH_ENVELOPE_VERSION = 1 as const
 export const DSH_ENVELOPE_PROTOCOL = 'dsh-transport-v1'
-export const DEFAULT_MAX_DSH_ENVELOPE_BYTES = 1024 * 1024
+// Web 插件聚合 bundle 可能达到数 MiB；物理 DataChannel 已负责 64 KiB 分片，
+// Envelope 层只限制单条逻辑消息，和 Host 资源上限保持 16 MiB 一致。
+export const DEFAULT_MAX_DSH_ENVELOPE_BYTES = 16 * 1024 * 1024
 export const DEFAULT_MAX_DSH_META_BYTES = 64 * 1024
 
 const MAGIC = new Uint8Array([0x44, 0x53, 0x48, 0x01])

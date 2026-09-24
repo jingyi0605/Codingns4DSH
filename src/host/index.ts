@@ -19,8 +19,12 @@ import { DebugWorkspaceService } from './debug.js'
 
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
+  console.error('dsh-codingns: host apply entered')
 
   ctx.inject(['settings', 'connection', 'webServer'], async (hostCtx) => {
+    console.error('dsh-codingns: host inject ready', {
+      hasConnection: hostCtx.connection !== undefined,
+    })
     const webServerPort = (hostCtx as Context & { webServer: { port: number } }).webServer.port
     const settings = registerCodingNsSettings(hostCtx)
     // controller 必须在功能模块和浏览器 Client 开始消费状态前完成装配。
@@ -60,7 +64,13 @@ export function apply(ctx?: Context): void {
     registry.validate()
     const restartStates = captureRestartFeatureStates(registry.descriptors(), settings.get())
 
-    registerCodingNsRpc(hostCtx, services.rpc, services.settingsProvider)
+    try {
+      registerCodingNsRpc(hostCtx, services.rpc, services.settingsProvider)
+      console.error('dsh-codingns: host RPC registration requested')
+    } catch (error) {
+      console.error('dsh-codingns: host RPC registration failed', error)
+      throw error
+    }
 
     hostCtx.effect(() => {
       const sync = (): void => {

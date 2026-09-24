@@ -22,6 +22,8 @@ export interface PeerConnectionLike {
   addIceCandidate(candidate: { candidate: string; sdpMid: string | null }): Promise<void>
   close(): void
   onicecandidate: ((event: { candidate: { candidate: string; sdpMid: string | null } | null }) => void) | null
+  addEventListener?(type: string, listener: (event: Event) => void): void
+  removeEventListener?(type: string, listener: (event: Event) => void): void
 }
 
 export interface WebRtcClientConnectorOptions {
@@ -38,6 +40,7 @@ export interface WebRtcClientConnection {
   carrier: CodingNsCarrier
   peerConnection: PeerConnectionLike
   signaling: SignalingSocketLike
+  onClosed(listener: (error?: Error) => void): () => void
   close(): Promise<void>
 }
 
@@ -67,10 +70,38 @@ export async function connectWebRtcClient(options: WebRtcClientConnectorOptions)
   const channel = peerConnection.createDataChannel(TUNNEL_DATA_CHANNEL_LABEL)
   const carrier = createDataChannelCarrier(channel, { ...(options.debug ? { debug: options.debug } : {}) })
   let closed = false
+  let closeNotified = false
+  const closeListeners = new Set<(error?: Error) => void>()
+  const notifyClosed = (error?: Error) => {
+    if (closeNotified) return
+    closeNotified = true
+    debug.log('webrtc.connection.closed', { reason: error?.message ?? 'closed' })
+    for (const listener of [...closeListeners]) listener(error)
+    closeListeners.clear()
+  }
+  const onSignalingClose = () => notifyClosed(new Error('Relay signaling closed'))
+  const onSignalingError = () => notifyClosed(new Error('Relay signaling error'))
+  const onPeerState = () => {
+    const state = (peerConnection as PeerConnectionLike & { connectionState?: string; iceConnectionState?: string })
+    const value = state.connectionState ?? state.iceConnectionState
+    debug.log('webrtc.peer.state', { state: value ?? 'unknown' })
+    if (value === 'failed' || value === 'disconnected' || value === 'closed') notifyClosed(new Error(`PeerConnection ${value}`))
+  }
+  signaling.addEventListener('close', onSignalingClose)
+  signaling.addEventListener('error', onSignalingError)
+  peerConnection.addEventListener?.('connectionstatechange', onPeerState)
+  peerConnection.addEventListener?.('iceconnectionstatechange', onPeerState)
+  const carrierClosed = (reason?: string) => notifyClosed(new Error(reason ?? 'DataChannel closed'))
+  carrier.onClosed?.(carrierClosed)
 
   const close = async () => {
     if (closed) return
     closed = true
+    notifyClosed(new Error('client closed'))
+    signaling.removeEventListener('close', onSignalingClose)
+    signaling.removeEventListener('error', onSignalingError)
+    peerConnection.removeEventListener?.('connectionstatechange', onPeerState)
+    peerConnection.removeEventListener?.('iceconnectionstatechange', onPeerState)
     for (const cleanup of cleanupListeners.splice(0)) cleanup()
     await carrier.close()
     peerConnection.close()
@@ -102,7 +133,7 @@ export async function connectWebRtcClient(options: WebRtcClientConnectorOptions)
     await waitForOpen(channel, options.timeoutMs ?? 15_000, cleanupListeners)
     await carrier.send(encodeFrame({ type: 'hello', clientContext: null, protocolVersion: '1' }))
     debug.log('webrtc.connected', { channelLabel: TUNNEL_DATA_CHANNEL_LABEL })
-    return { carrier, peerConnection, signaling, close }
+    return { carrier, peerConnection, signaling, onClosed: (listener) => { if (closeNotified) { listener(new Error('connection closed')); return () => undefined } closeListeners.add(listener); return () => closeListeners.delete(listener) }, close }
   } catch (error) {
     await close()
     throw error

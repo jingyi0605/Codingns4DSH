@@ -103,6 +103,7 @@
     "@deepseek-ai/dsh-client-ui-slots": "0.1.6-alpha.2",
     "@deepseek-ai/dsh-settings": "0.1.6-alpha.2",
     "@types/react": "~18.3.1",
+    "@types/ws": "^8.18.1",
     "react": "^18.2.0",
     "tsdown": "^0.22.2",
     "typescript": "^5.9.2"
@@ -122,6 +123,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "werift": "^0.24.4",
+    "ws": "^8.21.0",
     "zod": "^4.4.3"
   }
 }

@@ -109,25 +109,74 @@ export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapO
   options.onStatus?.('ticket')
   const devices = await options.controlApi.listDevices(signal)
   const device = chooseDshDevice(devices, options.dshDeviceId)
-  const ticket = await options.controlApi.createClientTicket(device.dshDeviceId, signal)
+  let generation = options.generation ?? 1
+  let connection: Awaited<ReturnType<typeof connectWebRtcClient>> | undefined
+  let session: DshSession | undefined
+  let reconnecting = false
+  let stopped = false
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  let reconnectRef: ((signal?: AbortSignal) => Promise<void>) | undefined
+  const firstTicket = await options.controlApi.createClientTicket(device.dshDeviceId, signal)
   options.onStatus?.('webrtc')
-  const connection = await connectWebRtcClient({
-    signalingTicket: ticket as unknown as RelaySignalingTicketResponse,
-    signalingSocketFactory: (url) => new WebSocket(url) as unknown as SignalingSocketLike,
-    peerConnectionFactory: ({ iceServers, iceTransportPolicy }) => createPeerConnection({ iceServers, iceTransportPolicy }),
-    debug,
-  })
-  const generation = options.generation ?? 1
-  const hostScope = resolveDshHostScope(ticket)
-  const session = new DshSession({ carrier: connection.carrier, role: 'client', generation: String(generation), hostScope, debug })
+  connection = await connectWebRtcClient(createWebRtcClientOptions(firstTicket, debug))
+  const hostScope = resolveDshHostScope(firstTicket)
+  session = new DshSession({ carrier: connection.carrier, role: 'client', generation: String(generation), hostScope, debug })
   const transport = new DshCodingNsTransport({
     carrier: connection.carrier,
     generation: { id: generation, host: { home: '/' } },
     hostScope,
     session,
     requireSessionReady: true,
+    reconnect: (reconnectSignal) => reconnectRef?.(reconnectSignal) ?? Promise.reject(new Error('H5 重连尚未就绪')),
     debug,
   })
+  const reconnect = async (): Promise<void> => {
+    if (stopped || reconnecting) return
+    reconnecting = true
+    debug.log('bootstrap.reconnect.start', { generation })
+    transport.invalidateConnection(new Error('WebRTC connection closed'))
+    session?.close('旧 WebRTC generation 已失效')
+    try {
+      for (let attempt = 0; !stopped; attempt += 1) {
+        try {
+          const waitMs = Math.min(10_000, 500 * (attempt + 1))
+          if (attempt > 0) await delay(waitMs, signal)
+          options.onStatus?.('ticket')
+          const ticket = await options.controlApi.createClientTicket(device.dshDeviceId, signal)
+          debug.log('bootstrap.reconnect.ticket', { generation: generation + 1 })
+          options.onStatus?.('webrtc')
+          const nextConnection = await connectWebRtcClient(createWebRtcClientOptions(ticket, debug))
+          const nextSession = new DshSession({ carrier: nextConnection.carrier, role: 'client', generation: String(generation + 1), hostScope: resolveDshHostScope(ticket), debug })
+          nextSession.start()
+          await waitForSessionReady(nextSession, signal, 15_000)
+          const previous = connection
+          connection = nextConnection
+          session = nextSession
+          generation += 1
+          transport.replaceConnection(nextConnection.carrier, nextSession, { id: generation, host: { home: '/' } })
+          attachConnectionClose(nextConnection)
+          await previous?.close()
+          debug.log('bootstrap.reconnect.ready', { generation })
+          options.onStatus?.('remote-web')
+          return
+        } catch (error) {
+          debug.log('bootstrap.reconnect.error', { generation, error: error instanceof Error ? error.message : String(error) })
+          if (stopped || signal?.aborted) throw error
+        }
+      }
+    } finally {
+      reconnecting = false
+    }
+  }
+  const attachConnectionClose = (current: Awaited<ReturnType<typeof connectWebRtcClient>>): void => {
+    current.onClosed((error) => {
+      if (stopped || current !== connection) return
+      debug.log('bootstrap.connection.closed', { generation, error: error?.message ?? 'closed' })
+      reconnectTimer = setTimeout(() => { reconnectTimer = undefined; void reconnect() }, 50)
+    })
+  }
+  reconnectRef = reconnect
+  attachConnectionClose(connection)
   let webContext: RemoteDshWebContext | undefined
   try {
     session.start()
@@ -141,22 +190,43 @@ export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapO
     return {
       dshDeviceId: device.dshDeviceId,
       transport,
-      session,
+      get session() { return session as DshSession },
       ...(webContext ? { webContext } : {}),
       dispose: async () => {
+        stopped = true
+        if (reconnectTimer !== undefined) clearTimeout(reconnectTimer)
         await webContext?.dispose()
-        session.close()
+        session?.close()
         await transport.close()
-        await connection.close()
+        await connection?.close()
       },
     }
   } catch (error) {
     await webContext?.dispose()
-    session.close()
+    stopped = true
+    session?.close()
     await transport.close()
-    await connection.close()
+    await connection?.close()
     throw error
   }
+}
+
+function createWebRtcClientOptions(ticket: DshRelaySignalingTicket, debug: ReturnType<typeof createDshTransportDebugLogger>) {
+  return {
+    signalingTicket: ticket as unknown as RelaySignalingTicketResponse,
+    signalingSocketFactory: (url: string) => new WebSocket(url) as unknown as SignalingSocketLike,
+    peerConnectionFactory: ({ iceServers, iceTransportPolicy }: { iceServers: readonly { urls: string | string[]; username?: string; credential?: string }[]; iceTransportPolicy: 'all' | 'relay' }) => createPeerConnection({ iceServers, iceTransportPolicy }),
+    debug,
+  }
+}
+
+async function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('请求已取消')
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve() }, ms)
+    const abort = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(signal?.reason instanceof Error ? signal.reason : new Error('请求已取消')) }
+    signal?.addEventListener('abort', abort, { once: true })
+  })
 }
 
 async function waitForSessionReady(session: DshSession, signal: AbortSignal | undefined, timeoutMs: number): Promise<void> {

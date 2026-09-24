@@ -6,6 +6,7 @@ import test from 'node:test'
 
 const clientBundle = join(dirname(fileURLToPath(import.meta.url)), '../data/build/dist/client/bundle.js')
 const clientSource = join(dirname(fileURLToPath(import.meta.url)), '../src/client/index.ts')
+const remoteWebContextSource = join(dirname(fileURLToPath(import.meta.url)), '../src/client/remote-web-context.ts')
 
 test('Client 入口以 DSH Loader factory 格式构建', async () => {
   const source = await readFile(clientBundle, 'utf8')
@@ -13,6 +14,18 @@ test('Client 入口以 DSH Loader factory 格式构建', async () => {
   assert.match(source, /id:\s*["']dsh-codingns["']/u)
   assert.match(source, /factory:\s*\(require\)/u)
   assert.doesNotMatch(source, /require\(["']\.\/[^"']+\.(?:cjs|js)["']\)/u, 'DSH Client 不得依赖 Loader 无法解析的相对分块')
+})
+
+test('远程 DSH Web 自动确认内测声明，不触碰其他引导弹窗', async () => {
+  const source = await readFile(remoteWebContextSource, 'utf8')
+  assert.match(source, /\[role="dialog"\],dialog,\[class\*="onboardingOverlay"\]/u)
+  assert.match(source, /内测声明/u)
+  assert.match(source, /candidate\.textContent/u)
+  assert.match(source, /button\.click\(\)/u)
+  assert.match(source, /MutationObserver\(acknowledgeRemoteWelcome\)/u)
+  assert.match(source, /welcomeTitles\.has\(welcomeTitle\(root\)\)/u)
+  assert.match(source, /welcomeButtons\.has\(normalizeText\(candidate\.textContent\)\)/u)
+  assert.match(source, /appRoot\.inert = false/u)
 })
 
 test('Client 构建产物不包含 Node 专属模块', async () => {

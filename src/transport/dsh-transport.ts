@@ -29,9 +29,11 @@ export interface DshCodingNsTransportOptions {
 export class DshCodingNsTransport implements CodingNsTransport {
   private readonly listeners = new Set<(generation: CodingNsTransportGeneration | undefined) => void>()
   private readonly multiplexer: DshTunnelMultiplexer
+  private currentCarrier: CodingNsCarrier
   private generation: CodingNsTransportGeneration | undefined
 
   constructor(private readonly options: DshCodingNsTransportOptions) {
+    this.currentCarrier = options.carrier
     this.generation = options.generation
     this.multiplexer = new DshTunnelMultiplexer(options.carrier, {
       idPrefix: `g${options.generation.id}`,
@@ -108,12 +110,28 @@ export class DshCodingNsTransport implements CodingNsTransport {
     for (const listener of [...this.listeners]) listener(generation)
   }
 
+  /** 物理 WebRTC 重连后替换 carrier/session，并让 DSH Connection 看见新 generation。 */
+  replaceConnection(carrier: CodingNsCarrier, session: DshSession, generation: CodingNsTransportGeneration): void {
+    this.multiplexer.replaceCarrier(carrier)
+    this.multiplexer.setSession(session)
+    this.currentCarrier = carrier
+    this.updateGeneration(generation)
+  }
+
+  /** 物理连接失效时立即结束旧请求和旧 generation。 */
+  invalidateConnection(error = new Error('WebRTC connection closed')): void {
+    this.multiplexer.invalidate(error)
+    const previous = this.generation
+    this.generation = undefined
+    if (previous) for (const listener of [...this.listeners]) listener(undefined)
+  }
+
   close(): Promise<void> {
     this.multiplexer.close()
     const previous = this.generation
     this.generation = undefined
     if (previous) for (const listener of [...this.listeners]) listener(undefined)
-    return this.options.carrier.close()
+    return this.currentCarrier.close()
   }
 
   /** 给 pre-Cordis 启动胶水使用，不直接安装 DSH Connection。 */

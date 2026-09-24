@@ -3,6 +3,12 @@ import type { CodingNsClientFeatureModule } from './types.js'
 import type { CodingNsRpcClient } from './types.js'
 import { startDshH5Bootstrap } from '../dsh-h5-bootstrap.js'
 
+function isRemoteWebContext(): boolean {
+  return (globalThis as typeof globalThis & {
+    readonly __DSH_CODINGNS_REMOTE_WEB_CONTEXT__?: boolean
+  }).__DSH_CODINGNS_REMOTE_WEB_CONTEXT__ === true
+}
+
 /**
  * 中转访问服务模块。
  *
@@ -30,6 +36,11 @@ export const reverseProxyFeature: CodingNsClientFeatureModule = {
    * 接入连接后，流与订阅必须登记到 context.resources，由停用自动清理。
    */
   start(context) {
+    if (isRemoteWebContext()) {
+      // 远程 DSH Web 的外层已经拥有有效 Tunnel；这里只保留设置 UI 和其它
+      // 插件贡献，禁止同一页面重新申请票据并建立第二条中继连接。
+      return () => {}
+    }
     const abort = new AbortController()
     let disposeConnection: (() => Promise<void>) | undefined
     let retryTimer: ReturnType<typeof setTimeout> | undefined

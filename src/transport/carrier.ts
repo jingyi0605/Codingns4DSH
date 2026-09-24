@@ -5,18 +5,21 @@ export const TUNNEL_DATA_CHANNEL_LABEL = 'codingns-tunnel'
 /** DataChannel 单消息保守上限；实际对端协商值可能只有 256 KiB。 */
 export const DATA_CHANNEL_FRAGMENT_PAYLOAD_BYTES = 64 * 1024
 export const DATA_CHANNEL_FRAGMENT_HEADER_BYTES = 20
-export const DATA_CHANNEL_MAX_REASSEMBLY_BYTES = 4 * 1024 * 1024
+export const DATA_CHANNEL_MAX_REASSEMBLY_BYTES = 16 * 1024 * 1024
 const DATA_CHANNEL_FRAGMENT_MAGIC = new Uint8Array([0x44, 0x53, 0x46, 0x01])
 export interface CodingNsCarrier {
   readonly state: 'connecting' | 'open' | 'closed'
   send(data: Uint8Array): Promise<void>
   subscribe(listener: (data: Uint8Array) => void): () => void
+  /** 物理 carrier 关闭时通知上层重建 generation；不会携带业务正文。 */
+  onClosed?(listener: (reason?: string) => void): () => void
   close(reason?: string): Promise<void>
 }
 
 export interface DataChannelLike {
   readonly label?: string
   readonly readyState: string
+  binaryType?: string
   readonly bufferedAmount?: number
   bufferedAmountLowThreshold?: number
   send(data: ArrayBuffer | ArrayBufferView): void
@@ -83,36 +86,58 @@ export function createDataChannelCarrier(channel: DataChannelLike, options: Data
   const logger = options.debug ?? createDshTransportDebugLogger({ component: 'data-channel' })
   let state: CodingNsCarrier['state'] = channel.readyState === 'open' ? 'open' : 'connecting'
   const listeners = new Set<(data: Uint8Array) => void>()
+  const closeListeners = new Set<(reason?: string) => void>()
   const high = options.highWaterMark ?? 1024 * 1024
   const low = options.lowWaterMark ?? 256 * 1024
   const timeoutMs = options.backpressureTimeoutMs ?? 30_000
   const reassemblyTimeoutMs = options.reassemblyTimeoutMs ?? 30_000
   const maxReassemblyBytes = options.maxReassemblyBytes ?? DATA_CHANNEL_MAX_REASSEMBLY_BYTES
   let chain = Promise.resolve()
+  let receiveChain = Promise.resolve()
   let nextFragmentId = 0
   const fragments = new Map<number, FragmentAssembly>()
+  try { channel.binaryType = 'arraybuffer' } catch { /* 某些 WebRTC 实现不允许修改 binaryType */ }
   const clearFragments = (): void => {
     for (const fragment of fragments.values()) clearTimeout(fragment.timer)
     fragments.clear()
   }
   const onOpen = () => { state = 'open'; logger.log('data-channel.open', { label: channel.label ?? null }) }
-  const onClose = () => { state = 'closed'; clearFragments(); logger.log('data-channel.close', { label: channel.label ?? null }); listeners.clear() }
-  const onMessage = (event: Event) => {
-    const value = (event as MessageEvent<unknown>).data
-    const bytes = toBytes(value)
-    if (!bytes) return
+  let closeNotified = false
+  const notifyClosed = (reason?: string) => {
+    if (closeNotified) return
+    closeNotified = true
+    for (const listener of [...closeListeners]) listener(reason)
+    closeListeners.clear()
+  }
+  const onClose = () => { state = 'closed'; clearFragments(); logger.log('data-channel.close', { label: channel.label ?? null }); notifyClosed('DataChannel closed'); listeners.clear() }
+  const processBytes = (bytes: Uint8Array | null, value: unknown): void => {
+    if (!bytes) {
+      logger.log('carrier.receive.invalid', { dataType: Object.prototype.toString.call(value), valueType: typeof value })
+      return
+    }
     try {
       const complete = acceptFragment(bytes)
       if (complete === null) return
-      logger.log('carrier.receive', { bytes: complete.byteLength, physicalBytes: bytes.byteLength })
+      logger.log('carrier.receive', { bytes: complete.byteLength, physicalBytes: bytes.byteLength, prefix: bytesToHex(bytes.subarray(0, 8)) })
       for (const listener of [...listeners]) listener(complete)
     } catch (error) {
-      logger.log('carrier.fragment.error', { physicalBytes: bytes.byteLength, error: error instanceof Error ? error.message : String(error) })
+      logger.log('carrier.fragment.error', { physicalBytes: bytes.byteLength, prefix: bytesToHex(bytes.subarray(0, 8)), error: error instanceof Error ? error.message : String(error) })
       state = 'closed'
       clearFragments()
       listeners.clear()
       channel.close()
     }
+  }
+  const onMessage = (event: Event) => {
+    const value = (event as MessageEvent<unknown>).data
+    const result = toBytes(value)
+    if (!(result instanceof Promise)) {
+      processBytes(result, value)
+      return
+    }
+    receiveChain = receiveChain.then(() => result).then((bytes) => processBytes(bytes, value)).catch((error: unknown) => {
+      logger.log('carrier.receive.error', { error: error instanceof Error ? error.message : String(error) })
+    })
   }
   channel.addEventListener('open', onOpen); channel.addEventListener('close', onClose); channel.addEventListener('message', onMessage)
 
@@ -191,7 +216,8 @@ export function createDataChannelCarrier(channel: DataChannelLike, options: Data
       return chain
     },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
-    async close() { if (state === 'closed') return; state = 'closed'; clearFragments(); channel.close(); channel.removeEventListener('open', onOpen); channel.removeEventListener('close', onClose); channel.removeEventListener('message', onMessage); listeners.clear() },
+    onClosed(listener) { if (closeNotified) { listener('DataChannel closed'); return () => undefined } closeListeners.add(listener); return () => closeListeners.delete(listener) },
+    async close(reason) { if (state === 'closed') return; state = 'closed'; clearFragments(); notifyClosed(reason ?? 'DataChannel closed'); channel.close(); channel.removeEventListener('open', onOpen); channel.removeEventListener('close', onClose); channel.removeEventListener('message', onMessage); listeners.clear() },
   }
 }
 
@@ -228,9 +254,14 @@ function decodeFragment(data: Uint8Array, maxReassemblyBytes: number): { fragmen
   return { fragmentId, index, chunkCount, totalBytes, body: body.slice() }
 }
 
-function toBytes(value: unknown): Uint8Array | null {
+function toBytes(value: unknown): Uint8Array | Promise<Uint8Array | null> | null {
   if (value instanceof Uint8Array) return new Uint8Array(value)
   if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0))
   if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
+  if (typeof Blob !== 'undefined' && value instanceof Blob) return value.arrayBuffer().then((body) => new Uint8Array(body))
   return null
+}
+
+function bytesToHex(value: Uint8Array): string {
+  return [...value].map((item) => item.toString(16).padStart(2, '0')).join('')
 }

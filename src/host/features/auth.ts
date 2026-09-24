@@ -49,6 +49,7 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
       let sessionBaseUrl: string | null = null
       let dshRuntime: DshHostDeviceRuntime | null = null
       let dshStartPromise: Promise<void> | null = null
+      let disposed = false
 
       const ensureSession = async (controlBaseUrl: string): Promise<CodingNsAuthSession> => {
         if (session && sessionBaseUrl === controlBaseUrl) return session
@@ -68,6 +69,7 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
       }
 
       const startDsh = async (target: CodingNsAuthSession): Promise<void> => {
+        if (disposed || context.resources.disposed) return
         if (dshRuntime !== null) return
         if (dshStartPromise !== null) return dshStartPromise
         const accessToken = target.getAccessToken()
@@ -84,13 +86,19 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
                 }),
               }))
             }
-            dshRuntime = await startDshHostDeviceRuntime({
+            if (disposed || context.resources.disposed) return
+            const runtime = await startDshHostDeviceRuntime({
               controlClient: target.getControlClient(),
               accessToken,
               credentialStore: dshCredentials,
               resources: context.resources,
               gatewayFeatures,
             })
+            if (disposed || context.resources.disposed) {
+              await runtime.stop()
+              return
+            }
+            dshRuntime = runtime
           } catch (error) {
             // DSH 设备服务不可用时不应破坏已有 CodingNS 登录；下次登录/显式 start 会重试。
             console.error('dsh-codingns: DSH Host runtime 启动失败', error)
@@ -165,6 +173,7 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
       })()
 
       context.resources.add(async () => {
+        disposed = true
         await dshRuntime?.stop()
         dshRuntime = null
         await session?.logout()

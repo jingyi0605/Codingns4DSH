@@ -24,6 +24,8 @@ export interface DshSessionOptions {
   onReady?(session: DshSession): void
   onEnvelope?(envelope: DshEnvelope): void
   onError?(error: Error): void
+  /** Host 首个 session.hello 到达时采用对端 generation；后续帧仍严格校验。 */
+  acceptInitialGeneration?: boolean
   debug?: DshTransportDebugLogger
 }
 
@@ -39,9 +41,11 @@ export class DshSession {
   private readyResolve: (() => void) | undefined
   private readyReject: ((error: Error) => void) | undefined
   private readonly debug: DshTransportDebugLogger
+  private generationValue: string
 
   constructor(private readonly options: DshSessionOptions) {
     this.debug = options.debug ?? createDshTransportDebugLogger({ component: `session-${options.role}` })
+    this.generationValue = options.generation
     this.unsubscribe = options.carrier.subscribe((data) => this.receive(data as Uint8Array))
     if (options.onEnvelope) this.listeners.add(options.onEnvelope)
   }
@@ -49,11 +53,12 @@ export class DshSession {
   get state(): DshSessionState { return this.stateValue }
   get ready(): boolean { return this.stateValue === 'ready' }
   get capabilities(): readonly string[] { return this.remoteCapabilities }
+  get generation(): string { return this.generationValue }
 
   start(): void {
     if (this.stateValue !== 'idle') return
     this.stateValue = 'handshaking'
-    this.debug.log('session.start', { role: this.options.role, generation: this.options.generation, hostId: this.options.hostScope.hostId, hostKind: this.options.hostScope.kind })
+    this.debug.log('session.start', { role: this.options.role, generation: this.generationValue, hostId: this.options.hostScope.hostId, hostKind: this.options.hostScope.kind })
     this.readyValue = new Promise<void>((resolve, reject) => {
       this.readyResolve = resolve
       this.readyReject = reject
@@ -198,10 +203,24 @@ export class DshSession {
   }
 
   private validateScope(envelope: DshEnvelope): void {
-    if (envelope.generation !== this.options.generation
-      || envelope.hostScope.hostId !== this.options.hostScope.hostId
-      || envelope.hostScope.kind !== this.options.hostScope.kind) {
+    const isInitialHello = this.options.role === 'host'
+      && this.options.acceptInitialGeneration === true
+      && this.stateValue === 'handshaking'
+      && envelope.channel === 'session'
+      && envelope.type === 'session.hello'
+      && envelope.sequence === 0
+    if (envelope.hostScope.hostId !== this.options.hostScope.hostId
+      || envelope.hostScope.kind !== this.options.hostScope.kind
+      || (!isInitialHello && envelope.generation !== this.generationValue)) {
       throw new Error('RESOURCE_SCOPE_STALE')
+    }
+    if (isInitialHello && envelope.generation !== this.generationValue) {
+      this.debug.log('session.generation.adopt', {
+        previousGeneration: this.generationValue,
+        generation: envelope.generation,
+        hostId: envelope.hostScope.hostId,
+      })
+      this.generationValue = envelope.generation
     }
   }
 
@@ -213,7 +232,7 @@ export class DshSession {
       channel,
       type,
       sequence: this.messageCounter - 1,
-      generation: this.options.generation,
+      generation: this.generationValue,
       hostScope: this.options.hostScope,
       meta,
     }

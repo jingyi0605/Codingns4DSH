@@ -1,5 +1,6 @@
 import type { DshGatewayFeature, DshStreamContext } from '../transport/dsh-gateway.js'
 import { createDshTransportDebugLogger, type DshTransportDebugLogger } from '../transport/debug.js'
+import WebSocket from 'ws'
 
 /** 远程 DSH Web 资源；正文始终使用二进制，不经 Base64。 */
 export interface DshWebAsset {
@@ -58,6 +59,9 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
   const maxAssetBytes = options.maxAssetBytes ?? 16 * 1024 * 1024
   const debug = options.debug ?? createDshTransportDebugLogger({ side: 'host', component: 'remote-web' })
   const sessions = new Map<string, DshWebSession>()
+  // 显式关闭的 session 不能被 WebSocket 惰性恢复；generation 重建造成的
+  // 内存丢失则仍允许按原 ID恢复，避免旧 iframe 必须重新加载整个页面。
+  const closedSessions = new Set<string>()
   const sockets = new Map<string, DshWebSocketLike>()
   const socketCleanups = new Map<string, () => void>()
 
@@ -79,6 +83,11 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
         try {
           await openWebSocketStream(context)
         } catch (error) {
+          debug.log('web.websocket.open.outer.error', {
+            operation,
+            streamId: context.envelope.streamId,
+            error: error instanceof Error ? error.message : String(error),
+          })
           context.send('stream.error', { errorCode: error instanceof RemoteWebRuntimeError ? error.code : 'WEB_SOCKET_OPEN_FAILED', detail: error instanceof Error ? error.message : 'DSH WebSocket 打开失败', retryable: true })
           context.close()
         }
@@ -90,6 +99,7 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
           case 'web.session.open': {
             const session = await options.provider.openSession(readOptionalRecord(request))
             sessions.set(session.sessionId, session)
+            closedSessions.delete(session.sessionId)
             debug.log('web.session.opened', { operation, streamId: context.envelope.streamId, sessionId: session.sessionId })
             context.send('web.session.response', { encoding: 'json' }, encodeJson(session))
             break
@@ -98,6 +108,7 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
             const session = requireSession(sessions, request)
             debug.log('web.session.close', { operation, streamId: context.envelope.streamId, sessionId: session.sessionId })
             sessions.delete(session.sessionId)
+            closedSessions.add(session.sessionId)
             context.send('web.session.close.response', { encoding: 'json' }, encodeJson({ closed: true }))
             break
           }
@@ -148,6 +159,16 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
             context.send('web.request.response', { encoding: 'json' }, encodeJson(result))
             break
           }
+          case 'web.debug': {
+            const record = readRecord(request)
+            debug.log('web.client.debug', {
+              streamId: context.envelope.streamId,
+              event: typeof record.event === 'string' ? record.event : 'unknown',
+              fields: isRecord(record.fields) ? record.fields : {},
+            })
+            context.send('web.debug.response', { encoding: 'json' }, encodeJson({ ok: true }))
+            break
+          }
           default:
             throw new RemoteWebRuntimeError('WEB_OPERATION_UNSUPPORTED', `不支持的 DSH Web operation: ${operation}`)
         }
@@ -164,8 +185,20 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
       if (envelope.type === 'web.ws.data') {
         const socket = sockets.get(envelope.streamId)
         if (!socket) throw new RemoteWebRuntimeError('WEB_SOCKET_NOT_FOUND', 'DSH WebSocket 流不存在')
-        socket.send(envelope.body ?? new Uint8Array())
-        debug.log('web.ws.data', { streamId: envelope.streamId, bytes: envelope.body?.byteLength ?? 0 })
+        const body = envelope.body ?? new Uint8Array()
+        // Remote mux 是 JSON 文本协议。DataChannel/DSH Envelope 的 body
+        // 始终是二进制，但必须依据 encoding 恢复为本地 WebSocket 文本帧，
+        // 否则 DSH Web 会以 1003 (text messages required) 立即关闭连接。
+        const payload = envelope.meta.encoding === 'text'
+          ? new TextDecoder('utf-8', { fatal: true }).decode(body)
+          : body
+        socket.send(payload)
+        debug.log('web.ws.data', {
+          streamId: envelope.streamId,
+          bytes: body.byteLength,
+          encoding: envelope.meta.encoding === 'text' ? 'text' : 'binary',
+          ...(typeof payload === 'string' ? { preview: payload.slice(0, 240) } : {}),
+        })
         return
       }
       if (envelope.type === 'stream.cancel' || envelope.type === 'stream.close' || envelope.type === 'web.ws.close') {
@@ -178,13 +211,34 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
 
   async function openWebSocketStream(context: DshStreamContext): Promise<void> {
     const request = readRecord(readJson(context))
-    const session = requireSession(sessions, request)
+    // Host 重启或 generation 恢复后，旧 iframe 可能仍持有上一个 sessionId。
+    // 该 session 只代表本地 DSH Web 的短期句柄，不是认证凭据；在当前已认证
+    // Tunnel 内按原 ID 惰性恢复，避免浏览器必须先销毁整个 iframe 才能重连。
+    const session = await ensureWebSession(sessions, closedSessions, options.provider, request)
     const path = readPath(request)
+    debug.log('web.websocket.open.start', {
+      streamId: context.envelope.streamId,
+      sessionId: session.sessionId,
+      path,
+    })
     let socket: DshWebSocketLike
     try {
       socket = await options.provider.openWebSocket(session, path)
+      debug.log('web.websocket.factory.done', {
+        streamId: context.envelope.streamId,
+        sessionId: session.sessionId,
+        path,
+        readyState: socket.readyState,
+      })
       await waitForWebSocketOpen(socket)
     } catch (error) {
+      debug.log('web.websocket.open.error', {
+        streamId: context.envelope.streamId,
+        sessionId: session.sessionId,
+        path,
+        error: error instanceof Error ? error.message : String(error),
+        errorName: error instanceof Error ? error.name : typeof error,
+      })
       context.send('stream.error', { errorCode: 'WEB_SOCKET_OPEN_FAILED', detail: error instanceof Error ? error.message : 'DSH WebSocket 打开失败', retryable: true })
       context.close()
       return
@@ -197,12 +251,47 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
     }
     const onMessage = (event: Event): void => {
       const value = (event as MessageEvent<unknown>).data
+      // Node ws 在收到文本帧时，部分版本的 EventTarget 适配会暴露 Buffer。
+      // /api/remote.mux 是 JSON 文本协议，必须在 Host 侧恢复 encoding=text，
+      // 否则 H5 Bridge 会把 JSON 当 ArrayBuffer，$events 首帧无法解析并立即关闭。
+      if (path === '/api/remote.mux') {
+        const text = decodeTextWebSocketValue(value)
+        if (text !== undefined) {
+          debug.log('web.websocket.message', {
+            streamId: context.envelope.streamId,
+            bytes: new TextEncoder().encode(text).byteLength,
+            encoding: 'text',
+            preview: text.slice(0, 240),
+          })
+          context.send('web.ws.data', { encoding: 'text' }, new TextEncoder().encode(text))
+          return
+        }
+      }
       const body = toBytes(value)
-      if (body) context.send('web.ws.data', { binary: true }, body)
-      else if (typeof value === 'string') context.send('web.ws.data', { encoding: 'text' }, new TextEncoder().encode(value))
+      if (body) {
+        debug.log('web.websocket.message', { streamId: context.envelope.streamId, bytes: body.byteLength, encoding: 'binary' })
+        context.send('web.ws.data', { binary: true }, body)
+      } else if (typeof value === 'string') {
+        debug.log('web.websocket.message', { streamId: context.envelope.streamId, bytes: new TextEncoder().encode(value).byteLength, encoding: 'text', preview: value.slice(0, 240) })
+        context.send('web.ws.data', { encoding: 'text' }, new TextEncoder().encode(value))
+      }
     }
-    const onClose = (): void => { closeStream(context.envelope.streamId); context.close() }
-    const onError = (): void => { context.send('stream.error', { errorCode: 'WEB_SOCKET_FAILED', detail: 'DSH WebSocket 连接失败', retryable: true }); closeStream(context.envelope.streamId); context.close() }
+    const onClose = (event: Event): void => {
+      const close = event as Event & { readonly code?: number; readonly reason?: string }
+      debug.log('web.websocket.close', { streamId: context.envelope.streamId, code: close.code, reason: close.reason })
+      closeStream(context.envelope.streamId)
+      context.close()
+    }
+    const onError = (event: Event): void => {
+      const error = event as Event & { readonly error?: unknown; readonly message?: unknown }
+      debug.log('web.websocket.error', {
+        streamId: context.envelope.streamId,
+        sessionId: session.sessionId,
+        path,
+        detail: typeof error.message === 'string' ? error.message : error.error instanceof Error ? error.error.message : 'DSH WebSocket 连接失败',
+      })
+      context.send('stream.error', { errorCode: 'WEB_SOCKET_FAILED', detail: 'DSH WebSocket 连接失败', retryable: true }); closeStream(context.envelope.streamId); context.close()
+    }
     socket.addEventListener('message', onMessage)
     socket.addEventListener('close', onClose)
     socket.addEventListener('error', onError)
@@ -234,7 +323,11 @@ export function createLocalDshWebRuntimeProvider(options: LocalDshWebRuntimeProv
   const fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis)
   const debug = createDshTransportDebugLogger({ side: 'host', component: 'web-provider' })
   const baseUrl = `http://127.0.0.1:${options.port}`
-  const allowed = options.allowedPathPrefixes ?? ['/', '/assets/', '/plugins/', '/api/']
+  // `/codingns` 是插件自己的 DSH Connection RPC 通道；它与 `/api`
+  // 一样只在本机 Host 内部转发，不能因为 Web Provider 的资源白名单而被
+  // 当成未知路径拒绝。实际权限仍由 Connection 的浏览器认证和 RPC handler
+  // 共同校验，远端页面不能借此访问任意本机地址。
+  const allowed = options.allowedPathPrefixes ?? ['/', '/assets/', '/plugins/', '/api/', '/codingns/']
   const sessions = new Map<string, DshWebSession>()
   let sessionCookie: string | undefined
 
@@ -281,7 +374,19 @@ export function createLocalDshWebRuntimeProvider(options: LocalDshWebRuntimeProv
       await ensureAuthenticated()
       const response = await fetchLocal(normalized)
       debug.log('web.provider.asset.response', { sessionId: session.sessionId, path: normalized, status: response.status })
-      return readAsset(response)
+      const asset = await readAsset(response)
+      // 只对插件聚合脚本做轻量标记检查，确认远程 H5 拿到的是当前工作区
+      // 构建，而不是 DSH Web 进程缓存的旧 bundle。
+      if (normalized.startsWith('/plugins/??')) {
+        const source = new TextDecoder().decode(asset.body)
+        debug.log('web.provider.asset.marker', {
+          sessionId: session.sessionId,
+          path: normalized,
+          bytes: asset.body.byteLength,
+          hasRemoteTransportBinding: source.includes('remote.connection.binding.detected') || source.includes('__DSH_TRANSPORT__'),
+        })
+      }
+      return asset
     },
     async getPluginManifest(session) {
       ensureSession(sessions, session)
@@ -309,13 +414,31 @@ export function createLocalDshWebRuntimeProvider(options: LocalDshWebRuntimeProv
       const normalized = normalizePath(path)
       if (!allowed.some((prefix) => normalized === prefix || normalized.startsWith(prefix))) throw new Error('DSH WebSocket 路径不在白名单内')
       await ensureAuthenticated()
-      const factory = options.websocketFactory ?? ((url: string, init?: { readonly headers?: Readonly<Record<string, string>> }) => {
-        const Constructor = globalThis.WebSocket
-        if (!Constructor) throw new Error('当前 Host 运行时没有 WebSocket')
-        const NodeConstructor = Constructor as unknown as new (url: string, options?: unknown) => DshWebSocketLike
-        return new NodeConstructor(url, init === undefined ? undefined : { headers: init.headers })
+      debug.log('web.provider.websocket.start', {
+        sessionId: session.sessionId,
+        path: normalized,
+        url: `${baseUrl.replace(/^http:/u, 'ws:')}${normalized}`,
+        hasCookie: sessionCookie !== undefined,
       })
-      return factory(`${baseUrl.replace(/^http:/u, 'ws:')}${normalized}`, sessionCookie === undefined ? undefined : { headers: { cookie: sessionCookie } })
+      // Node 的 WHATWG WebSocket 不支持自定义 Cookie 头；DSH Web 的本地连接
+      // 必须复用 Host 刚交换得到的认证 Cookie，因此使用 ws 提供的 Node 客户端。
+      const factory = options.websocketFactory ?? ((url: string, init?: { readonly headers?: Readonly<Record<string, string>> }) => {
+        return new WebSocket(url, init === undefined ? undefined : { headers: init.headers }) as unknown as DshWebSocketLike
+      })
+      try {
+        const socket = factory(`${baseUrl.replace(/^http:/u, 'ws:')}${normalized}`, {
+          headers: {
+            ...(sessionCookie === undefined ? {} : { cookie: sessionCookie }),
+            // DSH Remote mux 按客户端约定校验 Origin；Node ws 不会自动带浏览器 Origin。
+            origin: baseUrl,
+          },
+        })
+        debug.log('web.provider.websocket.created', { sessionId: session.sessionId, path: normalized, readyState: socket.readyState })
+        return socket
+      } catch (error) {
+        debug.log('web.provider.websocket.error', { sessionId: session.sessionId, path: normalized, error: error instanceof Error ? error.message : String(error) })
+        throw error
+      }
     },
   }
 }
@@ -350,6 +473,10 @@ function readRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
 function readOptionalRecord(value: unknown): { workspaceId?: string; sessionId?: string } {
   const record = readRecord(value)
   const result: { workspaceId?: string; sessionId?: string } = {}
@@ -363,6 +490,26 @@ function requireSession(sessions: ReadonlyMap<string, DshWebSession>, value: unk
   const sessionId = readRequiredString(record.sessionId, 'sessionId')
   const session = sessions.get(sessionId)
   if (!session) throw new RemoteWebRuntimeError('WEB_SESSION_NOT_FOUND', 'DSH Web Session 不存在')
+  return session
+}
+
+async function ensureWebSession(
+  sessions: Map<string, DshWebSession>,
+  closedSessions: ReadonlySet<string>,
+  provider: DshWebRuntimeProvider,
+  value: unknown,
+): Promise<DshWebSession> {
+  const record = readRecord(value)
+  const sessionId = readRequiredString(record.sessionId, 'sessionId')
+  if (closedSessions.has(sessionId)) throw new RemoteWebRuntimeError('WEB_SESSION_NOT_FOUND', 'DSH Web Session 不存在')
+  const current = sessions.get(sessionId)
+  if (current !== undefined) return current
+  const workspaceId = typeof record.workspaceId === 'string' && record.workspaceId.trim()
+    ? record.workspaceId.trim()
+    : undefined
+  const session = await provider.openSession({ sessionId, ...(workspaceId === undefined ? {} : { workspaceId }) })
+  if (session.sessionId !== sessionId) throw new RemoteWebRuntimeError('WEB_SESSION_INVALID', 'DSH Web Session ID 不一致')
+  sessions.set(session.sessionId, session)
   return session
 }
 
@@ -407,6 +554,19 @@ function toBytes(value: unknown): Uint8Array | null {
   if (value instanceof ArrayBuffer) return new Uint8Array(value)
   if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
   return null
+}
+
+function decodeTextWebSocketValue(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  const bytes = toBytes(value)
+  if (!bytes) return undefined
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    JSON.parse(text)
+    return text
+  } catch {
+    return undefined
+  }
 }
 
 function cryptoRandomId(): string {

@@ -134,4 +134,79 @@ test('本地 DSH Web Provider 为 WebSocket 握手注入认证 Cookie', async ()
   await provider.getBoot(session)
   assert.equal(await provider.openWebSocket(session, '/api/remote.mux'), socket)
   assert.equal(socketOptions?.headers?.cookie, 'dsh-auth-test=session-cookie')
+  assert.equal(socketOptions?.headers?.origin, 'http://127.0.0.1:3080')
+})
+
+test('Remote Web 将 encoding=text 的 Envelope 恢复为本地 WebSocket 文本帧', async () => {
+  const listeners = new Map<string, (event: Event) => void>()
+  const sent: Array<string | Uint8Array> = []
+  const socket = {
+    readyState: 1,
+    send(value: string | Uint8Array) { sent.push(value) },
+    close() { listeners.get('close')?.({} as Event) },
+    addEventListener(type: string, listener: (event: Event) => void) { listeners.set(type, listener) },
+    removeEventListener(type: string) { listeners.delete(type) },
+  }
+  const provider: DshWebRuntimeProvider = {
+    async openSession() { return { sessionId: 'web-text', dshVersion: '0.1.6-alpha.2' } },
+    async getBoot() { throw new Error('unused') },
+    async getAsset() { throw new Error('unused') },
+    async getPluginManifest() { return [] },
+    async getPluginBundle() { throw new Error('unused') },
+    async openWebSocket() { return socket },
+  }
+  const feature = createRemoteWebRuntimeFeature({ provider })
+  const openSession = context('web.session.open', 's-text-session', {})
+  await feature.handleStream?.(openSession.value)
+  const open = context('web.ws.open', 's-text-ws', { sessionId: 'web-text', path: '/api/remote.mux' })
+  const running = feature.handleStream?.(open.value)
+  for (let attempt = 0; attempt < 20 && !listeners.has('close'); attempt += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+  await feature.handleMessage?.({ ...open.value, envelope: { ...open.value.envelope, type: 'web.ws.data', meta: { encoding: 'text' }, body: new TextEncoder().encode('{"type":"open"}') } }, {
+    ...open.value.envelope,
+    type: 'web.ws.data',
+    meta: { encoding: 'text' },
+    body: new TextEncoder().encode('{"type":"open"}'),
+  })
+  assert.equal(sent.at(-1), '{"type":"open"}')
+  listeners.get('close')?.({} as Event)
+  await running
+})
+
+test('Remote Web 将 /api/remote.mux 的 Buffer 文本帧恢复为 encoding=text', async () => {
+  const listeners = new Map<string, (event: Event) => void>()
+  const socket = {
+    readyState: 1,
+    send() {},
+    close() { listeners.get('close')?.({} as Event) },
+    addEventListener(type: string, listener: (event: Event) => void) { listeners.set(type, listener) },
+    removeEventListener(type: string) { listeners.delete(type) },
+  }
+  const provider: DshWebRuntimeProvider = {
+    async openSession() { return { sessionId: 'web-buffer', dshVersion: '0.1.6-alpha.2' } },
+    async getBoot() { throw new Error('unused') },
+    async getAsset() { throw new Error('unused') },
+    async getPluginManifest() { return [] },
+    async getPluginBundle() { throw new Error('unused') },
+    async openWebSocket() { return socket },
+  }
+  const feature = createRemoteWebRuntimeFeature({ provider })
+  const openSession = context('web.session.open', 's-buffer-session', {})
+  await feature.handleStream?.(openSession.value)
+  const open = context('web.ws.open', 's-buffer-ws', { sessionId: 'web-buffer', path: '/api/remote.mux' })
+  const running = feature.handleStream?.(open.value)
+  // openWebSocketStream 会先等待 WebSocket 打开，再异步注册 message 监听器。
+  // 测试必须等到监听器存在后再注入首帧，否则会把真实实现误判为丢帧。
+  for (let attempt = 0; attempt < 20 && !listeners.has('message'); attempt += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+  assert.equal(listeners.has('message'), true)
+  listeners.get('message')?.({ data: Buffer.from(JSON.stringify({ type: 'item', streamId: 'events', value: { type: 'ready' } })) } as unknown as Event)
+  await Promise.resolve()
+  const forwarded = open.sent.find((item) => item.type === 'web.ws.data')
+  assert.equal(forwarded?.meta.encoding, 'text')
+  assert.equal(new TextDecoder().decode(forwarded?.body), JSON.stringify({ type: 'item', streamId: 'events', value: { type: 'ready' } }))
+  listeners.get('close')?.({} as Event)
+  await running
 })

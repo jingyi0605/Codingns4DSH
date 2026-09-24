@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ConnectionRpcHandler, ConnectionRpcResult } from '@deepseek-ai/dsh-client-connection'
 import type { SettingsPathOp, SettingsProvider } from '@deepseek-ai/dsh-settings'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { CODINGNS_SETTINGS_NAMESPACE, type CodingNsSettings } from '../shared/contracts/config.js'
 import { CodingNsRpcError, type CodingNsRpcHandler, type CodingNsRpcTable } from './rpc-table.js'
 
@@ -28,14 +29,24 @@ export function createCodingNsRpcHandler(table: CodingNsRpcTable): ConnectionRpc
 
 /** 在当前 Connection 上挂载 CodingNS RPC 主处理器；注销由调用方的 effect 负责。 */
 export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable, settingsProvider?: SettingsProvider): void {
+  // 连接服务的 rpc.handle 内部会把路由注册延迟到另一个 effect；该 effect 的 owner
+  // 不携带本插件的 webServer 注入，在部分 DSH 版本中会直接失败。因此这里捕获已经
+  // 注入的服务实例，挂载同协议的前缀路由，避免把 RPC 请求落到 SPA fallback。
+  const webServer = (ctx as Context & { webServer: WebServerLike }).webServer
+  const connection = ctx.connection
   ctx.effect(
     () => {
       const unregisterSettings = settingsProvider === undefined
         ? undefined
         : table.register('settings', createCodingNsSettingsRpcHandler(settingsProvider))
       const handler = createCodingNsRpcHandler(table)
-      // DSH Web 已经占用 /api 拦截器，且部分启动器不允许插件增加自定义前缀。
-      // 直接注册精确 Fetch 路由，避免抢占共享路由或注册自定义 Web 前缀。
+      const unregisterChannel = webServer.register({
+        kind: 'prefix',
+        path: '/codingns',
+        handler: (request: IncomingMessage, response: ServerResponse) => handleChannelRequest(request, response, connection, handler),
+      })
+      // 保留旧的精确 Fetch 路由，兼容早期 H5/桌面载体直接访问 `/api/codingns/*`
+      // 的调用方。两条入口共享同一个 handler，不复制任何业务逻辑。
       const disposeFetch = CODINGNS_RPC_ENDPOINTS.map((endpoint) => ctx.connection.fetch.register({
         path: `/api/codingns/${endpoint}`,
         methods: ['POST'],
@@ -44,11 +55,100 @@ export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable, setti
       }))
       return async (): Promise<void> => {
         for (const dispose of disposeFetch.reverse()) await dispose()
+        unregisterChannel()
         unregisterSettings?.()
       }
     },
     'dsh-codingns: Host RPC',
   )
+}
+
+async function handleChannelRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  connection: Context['connection'],
+  handler: ConnectionRpcHandler,
+): Promise<void> {
+  const abortController = new AbortController()
+  request.once('close', () => abortController.abort())
+  const rejection = connection.requestRejection({ headers: request.headers })
+  if (rejection !== undefined) {
+    response.statusCode = rejection
+    response.end(rejection === 401 ? 'unauthorized' : 'forbidden')
+    return
+  }
+  const endpoint = endpointFromChannelUrl(request.url)
+  if (request.method !== 'POST' || endpoint === undefined) {
+    response.statusCode = 404
+    response.end('not found')
+    return
+  }
+  const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+  if (contentType !== 'application/json') {
+    response.statusCode = 415
+    response.end('content type must be application/json')
+    return
+  }
+  let body: unknown
+  try {
+    body = JSON.parse(await readRequestBody(request)) as unknown
+  } catch {
+    response.statusCode = 400
+    response.end('body is not JSON')
+    return
+  }
+  if (!isRecord(body) || body.type !== 'client-request' || typeof body.rpcId !== 'string' || typeof body.method !== 'string') {
+    writeRpcResponse(response, typeof (body as { rpcId?: unknown } | null)?.rpcId === 'string' ? (body as { rpcId: string }).rpcId : 'invalid-request', {
+      ok: false,
+      error: { code: 'gateway/bad-request', message: 'invalid client-request message', details: {} },
+    })
+    return
+  }
+  if (body.method !== endpoint) {
+    writeRpcResponse(response, body.rpcId, {
+      ok: false,
+      error: { code: 'gateway/bad-request', message: `method ${JSON.stringify(body.method)} does not match endpoint ${JSON.stringify(endpoint)}`, details: {} },
+    })
+    return
+  }
+  try {
+    writeRpcResponse(response, body.rpcId, await handler(endpoint, body.payload, abortController.signal))
+  } catch (error) {
+    response.statusCode = 500
+    response.end(`handler failure: ${String(error)}`)
+  }
+}
+
+interface WebServerLike {
+  register(route: { kind: 'prefix'; path: string; handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void> }): () => void
+}
+
+function endpointFromChannelUrl(rawUrl: string | undefined): string | undefined {
+  if (rawUrl === undefined) return undefined
+  const pathname = new URL(rawUrl, 'http://127.0.0.1').pathname
+  if (!pathname.startsWith('/codingns/')) return undefined
+  const endpoint = pathname.slice('/codingns/'.length)
+  if (endpoint === '' || endpoint.split('/').some((segment) => segment === '' || segment === '.' || segment === '..' || !/^[A-Za-z0-9_$.-]+$/u.test(segment))) return undefined
+  return endpoint
+}
+
+async function readRequestBody(request: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buffer.byteLength
+    if (size > 4 * 1024 * 1024) throw new Error('request body too large')
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+function writeRpcResponse(response: ServerResponse, rpcId: string, result: ConnectionRpcResult<unknown>): void {
+  const body = JSON.stringify({ type: 'server-response', rpcId, result })
+  response.statusCode = 200
+  response.setHeader('content-type', 'application/json; charset=utf-8')
+  response.end(body)
 }
 
 const CODINGNS_RPC_ENDPOINTS = [

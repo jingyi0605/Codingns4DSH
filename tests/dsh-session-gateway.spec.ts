@@ -32,6 +32,37 @@ test('DSH Session 完成 hello/ready 协商并进入 ready', async () => {
   host.close(); client.close()
 })
 
+test('Host Session 首个 hello 采用 Client generation，重连 generation 不再被误判过期', async () => {
+  const [left, right] = carrierPair()
+  const host = new DshSession({ carrier: left.carrier, role: 'host', generation: '1', hostScope: { hostId: 'h1', kind: 'local' }, acceptInitialGeneration: true })
+  const client = new DshSession({ carrier: right.carrier, role: 'client', generation: '2', hostScope: { hostId: 'h1', kind: 'local' } })
+  host.start(); client.start()
+  await client.waitReady()
+  assert.equal(host.generation, '2')
+  assert.equal(host.ready, true)
+  host.close(); client.close()
+})
+
+test('DSH Gateway 跟随首个 hello 的 generation 路由重连后的 stream', async () => {
+  const [hostCarrier, clientCarrier] = carrierPair()
+  const gateway = new DshGateway({
+    carrier: hostCarrier.carrier,
+    generation: '1',
+    hostScope: { hostId: 'h1', kind: 'local' },
+    features: [{ channel: 'rpc', operation: 'ping', handleStream: (context) => { context.send('rpc.response', { ok: true }); context.close() } }],
+  })
+  const client = new DshSession({ carrier: clientCarrier.carrier, role: 'client', generation: '2', hostScope: { hostId: 'h1', kind: 'local' } })
+  gateway.start(); client.start()
+  await client.waitReady()
+  assert.equal(gateway.session.generation, '2')
+  const replies: DshEnvelope[] = []
+  client.subscribe((envelope) => replies.push(envelope))
+  client.send({ version: 1, messageId: 'reconnect-open', streamId: 'reconnect-stream', channel: 'rpc', type: 'stream.open', sequence: 1, generation: '2', hostScope: { hostId: 'h1', kind: 'local' }, meta: { operation: 'ping' } })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.ok(replies.some((item) => item.type === 'rpc.response'))
+  await gateway.close(); client.close()
+})
+
 test('DSH Gateway 按 channel/operation 路由 stream.open', async () => {
   const [hostCarrier, clientCarrier] = carrierPair()
   const hostSession = new DshSession({ carrier: hostCarrier.carrier, role: 'host', generation: '1', hostScope: { hostId: 'h1', kind: 'local' }, capabilities: ['rpc'] })
@@ -46,6 +77,43 @@ test('DSH Gateway 按 channel/operation 路由 stream.open', async () => {
   assert.ok(replies.some((item) => item.type === 'stream.accepted'))
   assert.ok(replies.some((item) => item.type === 'rpc.response'))
   await gateway.close(); clientSession.close()
+})
+
+test('DSH Gateway 在异步 stream.open 期间不会丢失 stream.cancel', async () => {
+  const [hostCarrier, clientCarrier] = carrierPair()
+  const hostSession = new DshSession({ carrier: hostCarrier.carrier, role: 'host', generation: '1', hostScope: { hostId: 'h1', kind: 'local' } })
+  const clientSession = new DshSession({ carrier: clientCarrier.carrier, role: 'client', generation: '1', hostScope: { hostId: 'h1', kind: 'local' } })
+  let started = 0
+  const gateway = new DshGateway({
+    carrier: hostCarrier.carrier,
+    session: hostSession,
+    generation: '1',
+    hostScope: { hostId: 'h1', kind: 'local' },
+    maxStreams: 1,
+    features: [{
+      channel: 'web',
+      operation: 'web.ws.open',
+      canHandle: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        return true
+      },
+      handleStream: async (context) => {
+        started += 1
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        context.close()
+      },
+    }],
+  })
+  gateway.start(); clientSession.start(); await clientSession.waitReady()
+  const scope = { hostId: 'h1', kind: 'local' as const }
+  const open = (streamId: string, type: 'stream.open' | 'stream.cancel'): void => clientSession.send({ version: 1, messageId: `${streamId}-${type}`, streamId, channel: 'web', type, sequence: 1, generation: '1', hostScope: scope, meta: { operation: 'web.ws.open' } })
+  open('cancelled', 'stream.open')
+  open('cancelled', 'stream.cancel')
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  open('next', 'stream.open')
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  assert.equal(started, 1)
+  await gateway.close(); clientSession.close(); hostSession.close()
 })
 
 test('DSH Envelope body 保持原始二进制', () => {

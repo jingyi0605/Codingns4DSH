@@ -42,6 +42,12 @@ export interface DshGatewayOptions {
 export class DshGateway {
   readonly session: DshSession
   private readonly streams = new Map<string, { envelope: DshEnvelope; feature: DshGatewayFeature; context: DshStreamContext }>()
+  /**
+   * stream.open 的 feature 选择和本地资源创建可能异步完成。
+   * 取消帧可以在这段窗口内到达，必须先登记 opening，不能让取消穿透后又把旧流插入 streams。
+   */
+  private readonly opening = new Set<string>()
+  private readonly cancelledOpening = new Set<string>()
   private readonly maxStreams: number
   private readonly features: readonly DshGatewayFeature[]
   private sequence = 0
@@ -58,6 +64,7 @@ export class DshGateway {
       role: 'host',
       generation: options.generation,
       hostScope: options.hostScope,
+      acceptInitialGeneration: true,
       ...(options.sessionOptions ?? {}),
       debug: this.debug,
     })
@@ -66,7 +73,7 @@ export class DshGateway {
   start(): void {
     if (this.started) return
     this.started = true
-    this.debug.log('gateway.start', { generation: this.options.generation, hostId: this.options.hostScope.hostId })
+    this.debug.log('gateway.start', { generation: this.session.generation, hostId: this.options.hostScope.hostId })
     this.unsubscribe = this.session.subscribe((envelope) => { void this.route(envelope) })
     this.session.start()
   }
@@ -85,6 +92,8 @@ export class DshGateway {
       }
     }
     this.streams.clear()
+    this.opening.clear()
+    this.cancelledOpening.clear()
     this.session.close(reason)
   }
 
@@ -92,10 +101,10 @@ export class DshGateway {
 
   private async route(envelope: DshEnvelope): Promise<void> {
     this.debug.log('gateway.receive', envelopeDebugFields(envelope))
-    if (envelope.generation !== this.options.generation
+    if (envelope.generation !== this.session.generation
       || envelope.hostScope.hostId !== this.options.hostScope.hostId
       || envelope.hostScope.kind !== this.options.hostScope.kind) {
-      this.debug.log('gateway.scope.drop', { expectedGeneration: this.options.generation, expectedHostId: this.options.hostScope.hostId, expectedHostKind: this.options.hostScope.kind, ...envelopeDebugFields(envelope) })
+      this.debug.log('gateway.scope.drop', { expectedGeneration: this.session.generation, expectedHostId: this.options.hostScope.hostId, expectedHostKind: this.options.hostScope.kind, ...envelopeDebugFields(envelope) })
       this.sendError(envelope, 'RESOURCE_SCOPE_STALE', '资源属于已经失效的 HostScope')
       return
     }
@@ -108,6 +117,10 @@ export class DshGateway {
       if (active) {
         await active.feature.handleMessage?.(active.context, envelope)
         this.streams.delete(envelope.streamId)
+      } else if (this.opening.has(envelope.streamId)) {
+        // openStream 尚未完成时不能调用尚不存在的 context；记录取消，
+        // 由 openStream 在完成异步准备后丢弃资源并发送最终 close。
+        this.cancelledOpening.add(envelope.streamId)
       }
       this.send({ ...envelope, type: 'stream.close', sequence: this.nextSequence(), meta: {} })
       return
@@ -129,16 +142,23 @@ export class DshGateway {
       this.sendError(envelope, 'MESSAGE_INVALID', 'streamId 已经使用')
       return
     }
-    if (this.streams.size >= this.maxStreams) {
+    if (this.streams.size + this.opening.size >= this.maxStreams) {
       this.sendError(envelope, 'FLOW_CONTROL_INVALID', '超过会话流数量上限')
       return
     }
-    const feature = await this.findFeature(envelope)
-    if (!feature) {
-      this.debug.log('gateway.feature.missing', envelopeDebugFields(envelope))
-      this.sendError(envelope, 'FEATURE_DISABLED', '没有启用匹配的 DSH 功能模块')
-      return
-    }
+    this.opening.add(envelope.streamId)
+    try {
+      const feature = await this.findFeature(envelope)
+      if (!feature) {
+        this.debug.log('gateway.feature.missing', envelopeDebugFields(envelope))
+        this.sendError(envelope, 'FEATURE_DISABLED', '没有启用匹配的 DSH 功能模块')
+        return
+      }
+      if (this.cancelledOpening.delete(envelope.streamId)) {
+        // 取消发生在 feature 选择期间，不能再启动本地 WebSocket 或其它子资源。
+        this.send({ ...envelope, type: 'stream.close', sequence: this.nextSequence(), meta: {} })
+        return
+      }
     let context!: DshStreamContext
     context = {
       envelope,
@@ -162,10 +182,20 @@ export class DshGateway {
     this.streams.set(envelope.streamId, { envelope, feature, context })
     this.debug.log('gateway.stream.accepted', { ...envelopeDebugFields(envelope), feature: feature.operation ?? feature.channel ?? 'custom' })
     this.send({ ...envelope, type: 'stream.accepted', sequence: this.nextSequence(), meta: { channel: envelope.channel } })
-    if (!feature.handleStream) return
-    const result = await feature.handleStream(context)
-    if (result && Symbol.asyncIterator in Object(result)) {
-      for await (const message of result as AsyncIterable<DshEnvelope>) this.send(message)
+      if (!feature.handleStream) return
+      const result = await feature.handleStream(context)
+      if (result && Symbol.asyncIterator in Object(result)) {
+        for await (const message of result as AsyncIterable<DshEnvelope>) this.send(message)
+      }
+    } catch (error) {
+      this.debug.log('gateway.stream.error', { ...envelopeDebugFields(envelope), error: error instanceof Error ? error.message : String(error) })
+      if (this.streams.has(envelope.streamId)) {
+        this.sendError(envelope, 'STREAM_FAILED', error instanceof Error ? error.message : 'DSH 流处理失败')
+        this.streams.delete(envelope.streamId)
+      }
+    } finally {
+      this.opening.delete(envelope.streamId)
+      this.cancelledOpening.delete(envelope.streamId)
     }
   }
 

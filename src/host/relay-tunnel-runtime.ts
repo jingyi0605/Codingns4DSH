@@ -151,11 +151,13 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
   let closed = false
   let renewTimer: ReturnType<typeof setTimeout> | null = null
   let renewalInFlight = false
+  let renewalResourceRegistered = false
   let acceptor = await createAcceptor(ticket)
   const gateways = new Map<string, DshGateway>()
 
   const scheduleRenewal = (): void => {
     if (renewTimer !== null) clearTimeout(renewTimer)
+    if (closed) return
     const expiresAt = Date.parse(ticket.expiresAt)
     const skew = options.ticketRenewSkewMs ?? 30_000
     // 信令票据只在 WebSocket 建立时校验。连接仍然存活时不能因为票据
@@ -166,10 +168,13 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
       ? Math.min(2_147_000_000, Math.max(30_000, untilExpiry - skew))
       : Math.max(1_000, Math.min(30_000, untilExpiry - skew))
     renewTimer = setTimeout(() => { void renew() }, delay)
-    options.resources?.add(() => {
-      if (renewTimer !== null) clearTimeout(renewTimer)
-      renewTimer = null
-    })
+    if (options.resources && !renewalResourceRegistered) {
+      renewalResourceRegistered = true
+      options.resources.add(() => {
+        if (renewTimer !== null) clearTimeout(renewTimer)
+        renewTimer = null
+      })
+    }
   }
   const renew = async (): Promise<void> => {
     if (closed || renewalInFlight) return
