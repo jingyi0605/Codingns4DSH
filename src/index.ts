@@ -123,6 +123,9 @@ export {
   createDataChannelCarrier,
   createRelayTunnelHostCarrier,
   TUNNEL_DATA_CHANNEL_LABEL,
+  DATA_CHANNEL_FRAGMENT_PAYLOAD_BYTES,
+  DATA_CHANNEL_FRAGMENT_HEADER_BYTES,
+  DATA_CHANNEL_MAX_REASSEMBLY_BYTES,
   decodeTunnelFrame,
   encodeTunnelFrame,
   TUNNEL_PROTOCOL_VERSION,
@@ -138,6 +141,8 @@ export {
   acceptWebRtcHost,
   createHostSignalingTicketRequest,
   requestHostSignalingTicket,
+  createDshTransportDebugLogger,
+  resolveDshTransportDebugEnabled,
 } from './transport/index.js'
 export {
   bindDshConnection,
@@ -189,4 +194,7 @@ export type {
   DshHostScope,
   DshChannel,
   TunnelFrameCodecOptions,
+  DshTransportDebugLogger,
+  DshTransportDebugOptions,
+  DshTransportDebugSide,
 } from './transport/index.js'

@@ -5,6 +5,7 @@ import type {
 } from '../shared/index.js'
 import { createDataChannelCarrier, TUNNEL_DATA_CHANNEL_LABEL, type CodingNsCarrier, type DataChannelLike } from './carrier.js'
 import { encodeFrame } from './frame.js'
+import { createDshTransportDebugLogger, type DshTransportDebugLogger } from './debug.js'
 
 export interface SignalingSocketLike {
   send(data: string): void
@@ -30,6 +31,7 @@ export interface WebRtcClientConnectorOptions {
   channelLabel?: string
   timeoutMs?: number
   heartbeatIntervalMs?: number
+  debug?: DshTransportDebugLogger
 }
 
 export interface WebRtcClientConnection {
@@ -42,7 +44,9 @@ export interface WebRtcClientConnection {
 /** 客户端发起 offer，校验 Host fingerprint 后返回 DataChannel Carrier。 */
 export async function connectWebRtcClient(options: WebRtcClientConnectorOptions): Promise<WebRtcClientConnection> {
   const ticket = options.signalingTicket
+  const debug = options.debug ?? createDshTransportDebugLogger({ side: 'h5', component: 'webrtc-client' })
   const signalingUrl = createSignalingUrl(ticket.signalingBaseUrl, ticket.ticket)
+  debug.log('signaling.connect', { signalingBaseUrl: ticket.signalingBaseUrl })
   const signaling = await options.signalingSocketFactory(signalingUrl)
   const cleanupListeners: Array<() => void> = []
   // 真实 WebSocket 暴露 readyState；测试注入的最小 socket 可能没有该字段。
@@ -61,7 +65,7 @@ export async function connectWebRtcClient(options: WebRtcClientConnectorOptions)
   })
   // Relay Tunnel 的标签属于线协议，不能由调用方改写。
   const channel = peerConnection.createDataChannel(TUNNEL_DATA_CHANNEL_LABEL)
-  const carrier = createDataChannelCarrier(channel)
+  const carrier = createDataChannelCarrier(channel, { ...(options.debug ? { debug: options.debug } : {}) })
   let closed = false
 
   const close = async () => {
@@ -90,12 +94,14 @@ export async function connectWebRtcClient(options: WebRtcClientConnectorOptions)
     const offer = await peerConnection.createOffer()
     await peerConnection.setLocalDescription(offer)
     signaling.send(JSON.stringify({ type: 'offer', sdp: offer.sdp ?? '' }))
+    debug.log('signaling.offer.sent', { sdpBytes: offer.sdp?.length ?? 0 })
     const answer = await answerPromise
     assertDtlsFingerprint(ticket.hostDtlsFingerprint, answer.sdp)
     await peerConnection.setRemoteDescription({ type: 'answer', sdp: answer.sdp })
     for (const candidate of answer.candidates) await peerConnection.addIceCandidate(candidate)
     await waitForOpen(channel, options.timeoutMs ?? 15_000, cleanupListeners)
     await carrier.send(encodeFrame({ type: 'hello', clientContext: null, protocolVersion: '1' }))
+    debug.log('webrtc.connected', { channelLabel: TUNNEL_DATA_CHANNEL_LABEL })
     return { carrier, peerConnection, signaling, close }
   } catch (error) {
     await close()

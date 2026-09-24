@@ -10,6 +10,7 @@ import { DshTunnelMultiplexer } from './multiplexer.js'
 import type { TunnelFlowControl } from './multiplexer.js'
 import type { DshHostScope } from './dsh-envelope.js'
 import type { DshSession } from './dsh-session.js'
+import type { DshTransportDebugLogger } from './debug.js'
 
 export interface DshCodingNsTransportOptions {
   carrier: CodingNsCarrier
@@ -21,6 +22,7 @@ export interface DshCodingNsTransportOptions {
   hostScope?: DshHostScope
   session?: DshSession
   requireSessionReady?: boolean
+  debug?: DshTransportDebugLogger
 }
 
 /** 将 Tunnel Multiplexer 映射为 DSH ClientTransportHooks。 */
@@ -38,6 +40,7 @@ export class DshCodingNsTransport implements CodingNsTransport {
       ...(options.session ? { session: options.session } : {}),
       ...(options.requireSessionReady === undefined ? {} : { requireSessionReady: options.requireSessionReady }),
       ...(options.flowControl ? { flowControl: options.flowControl } : {}),
+      ...(options.debug ? { debug: options.debug } : {}),
     })
   }
 

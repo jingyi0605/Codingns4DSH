@@ -21,6 +21,7 @@ import {
   type HostRelayRuntime,
 } from './relay-tunnel-runtime.js'
 import type { DshGatewayFeature } from '../transport/dsh-gateway.js'
+import type { DshTransportDebugLogger } from '../transport/debug.js'
 
 export interface DshHostDeviceRuntimeOptions {
   readonly controlClient: Pick<CodingNsControlApiClient, 'registerDshDevice' | 'listDshDevices' | 'heartbeatDshDevice' | 'createDshRelayTicket'>
@@ -36,6 +37,7 @@ export interface DshHostDeviceRuntimeOptions {
   readonly gatewayFeatures?: readonly DshGatewayFeature[]
   readonly heartbeatIntervalMs?: number
   readonly onRuntime?: (runtime: HostRelayRuntime) => void | Promise<void>
+  readonly debug?: DshTransportDebugLogger
 }
 
 export interface DshHostDeviceRuntime {
@@ -110,6 +112,7 @@ export async function startDshHostDeviceRuntime(options: DshHostDeviceRuntimeOpt
     ...(options.signalingSocketFactory === undefined ? {} : { signalingSocketFactory: options.signalingSocketFactory }),
     ...(options.peerConnectionFactory === undefined ? {} : { peerConnectionFactory: options.peerConnectionFactory }),
     ...(options.gatewayFeatures === undefined ? {} : { gatewayFeatures: options.gatewayFeatures }),
+    ...(options.debug === undefined ? {} : { debug: options.debug }),
   } satisfies Parameters<typeof startHostRelayRuntime>[0]
   const runtime = await startHostRelayRuntime(runtimeOptions)
 

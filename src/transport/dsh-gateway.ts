@@ -5,6 +5,7 @@ import {
   type DshHostScope,
 } from './dsh-envelope.js'
 import { DshSession, type DshSessionOptions } from './dsh-session.js'
+import { createDshTransportDebugLogger, type DshTransportDebugLogger } from './debug.js'
 
 export const DSH_GATEWAY_PATH = '/__dsh__/transport/v1'
 
@@ -34,6 +35,7 @@ export interface DshGatewayOptions {
   hostScope: DshHostScope
   generation: string
   maxStreams?: number
+  debug?: DshTransportDebugLogger
 }
 
 /** 将 DSH Session 后的 Envelope 按 streamId 路由到 FeatureRegistry 模块。 */
@@ -45,9 +47,11 @@ export class DshGateway {
   private sequence = 0
   private started = false
   private unsubscribe: (() => void) | undefined
+  private readonly debug: DshTransportDebugLogger
 
   constructor(private readonly options: DshGatewayOptions) {
     this.maxStreams = options.maxStreams ?? 128
+    this.debug = options.debug ?? createDshTransportDebugLogger({ component: 'gateway' })
     this.features = options.features ?? []
     this.session = options.session ?? new DshSession({
       carrier: options.carrier,
@@ -55,12 +59,14 @@ export class DshGateway {
       generation: options.generation,
       hostScope: options.hostScope,
       ...(options.sessionOptions ?? {}),
+      debug: this.debug,
     })
   }
 
   start(): void {
     if (this.started) return
     this.started = true
+    this.debug.log('gateway.start', { generation: this.options.generation, hostId: this.options.hostScope.hostId })
     this.unsubscribe = this.session.subscribe((envelope) => { void this.route(envelope) })
     this.session.start()
   }
@@ -68,6 +74,7 @@ export class DshGateway {
   async close(reason = 'DSH Gateway 已关闭'): Promise<void> {
     if (!this.started) return
     this.started = false
+    this.debug.log('gateway.close', { reason, streams: this.streams.size })
     this.unsubscribe?.()
     this.unsubscribe = undefined
     for (const active of this.streams.values()) {
@@ -84,9 +91,11 @@ export class DshGateway {
   get path(): string { return DSH_GATEWAY_PATH }
 
   private async route(envelope: DshEnvelope): Promise<void> {
+    this.debug.log('gateway.receive', envelopeDebugFields(envelope))
     if (envelope.generation !== this.options.generation
       || envelope.hostScope.hostId !== this.options.hostScope.hostId
       || envelope.hostScope.kind !== this.options.hostScope.kind) {
+      this.debug.log('gateway.scope.drop', { expectedGeneration: this.options.generation, expectedHostId: this.options.hostScope.hostId, expectedHostKind: this.options.hostScope.kind, ...envelopeDebugFields(envelope) })
       this.sendError(envelope, 'RESOURCE_SCOPE_STALE', '资源属于已经失效的 HostScope')
       return
     }
@@ -126,6 +135,7 @@ export class DshGateway {
     }
     const feature = await this.findFeature(envelope)
     if (!feature) {
+      this.debug.log('gateway.feature.missing', envelopeDebugFields(envelope))
       this.sendError(envelope, 'FEATURE_DISABLED', '没有启用匹配的 DSH 功能模块')
       return
     }
@@ -150,6 +160,7 @@ export class DshGateway {
       },
     }
     this.streams.set(envelope.streamId, { envelope, feature, context })
+    this.debug.log('gateway.stream.accepted', { ...envelopeDebugFields(envelope), feature: feature.operation ?? feature.channel ?? 'custom' })
     this.send({ ...envelope, type: 'stream.accepted', sequence: this.nextSequence(), meta: { channel: envelope.channel } })
     if (!feature.handleStream) return
     const result = await feature.handleStream(context)
@@ -176,6 +187,7 @@ export class DshGateway {
   }
 
   private sendError(envelope: DshEnvelope, code: string, detail: string): void {
+    this.debug.log('gateway.error', { code, detail, ...envelopeDebugFields(envelope) })
     this.send({
       ...envelope,
       messageId: `${envelope.messageId}_error`,
@@ -192,5 +204,19 @@ export class DshGateway {
   private nextSequence(): number {
     if (this.sequence >= Number.MAX_SAFE_INTEGER) throw new Error('DSH Gateway sequence 已耗尽')
     return ++this.sequence
+  }
+}
+
+function envelopeDebugFields(envelope: DshEnvelope): Record<string, unknown> {
+  return {
+    type: envelope.type,
+    channel: envelope.channel,
+    streamId: envelope.streamId,
+    sequence: envelope.sequence,
+    generation: envelope.generation,
+    hostId: envelope.hostScope.hostId,
+    hostKind: envelope.hostScope.kind,
+    operation: typeof envelope.meta.operation === 'string' ? envelope.meta.operation : undefined,
+    bodyBytes: envelope.body?.byteLength ?? 0,
   }
 }

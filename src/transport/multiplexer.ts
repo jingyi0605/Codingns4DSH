@@ -1,6 +1,7 @@
 import type { CodingNsCarrier } from './carrier.js'
 import { decodeDshEnvelope, encodeDshEnvelope, type DshChannel, type DshEnvelope, type DshHostScope } from './dsh-envelope.js'
 import type { DshSession } from './dsh-session.js'
+import { createDshTransportDebugLogger, type DshTransportDebugLogger } from './debug.js'
 
 interface PendingUnary { resolve(value: unknown): void; reject(error: Error): void; accepted: boolean }
 interface PendingStream<T> {
@@ -26,6 +27,7 @@ export interface DshTunnelMultiplexerOptions {
   session?: DshSession
   requireSessionReady?: boolean
   flowControl?: TunnelFlowControl
+  debug?: DshTransportDebugLogger
 }
 const DEFAULT_SCOPE: DshHostScope = { hostId: 'unknown', kind: 'remote' }
 
@@ -43,6 +45,7 @@ export class DshTunnelMultiplexer {
   private readonly hostScope: DshHostScope
   private readonly session: DshSession | undefined
   private readonly requireSessionReady: boolean
+  private readonly debug: DshTransportDebugLogger
 
   constructor(private readonly carrier: CodingNsCarrier, options: DshTunnelMultiplexerOptions = {}) {
     this.idPrefix = options.idPrefix ?? 'g0'
@@ -51,6 +54,7 @@ export class DshTunnelMultiplexer {
     this.hostScope = options.hostScope ?? DEFAULT_SCOPE
     this.session = options.session
     this.requireSessionReady = options.requireSessionReady ?? options.session !== undefined
+    this.debug = options.debug ?? createDshTransportDebugLogger({ component: 'multiplexer' })
     this.unsubscribe = carrier.subscribe((data) => this.receive(data as unknown as Uint8Array))
   }
 
@@ -77,6 +81,7 @@ export class DshTunnelMultiplexer {
           accepted: false,
       })
       try {
+        this.debug.log('request.send', { channel, operation, streamId: id, generation: this.generation, hostId: this.hostScope.hostId, bodyBytes: encodeJson(payload).byteLength })
         this.send({
           streamId: id,
           channel: mapChannel(channel),
@@ -168,8 +173,12 @@ export class DshTunnelMultiplexer {
         const options = this.flowControl?.maxFrameBytes === undefined ? {} : { maxBytes: this.flowControl.maxFrameBytes }
         envelope = decodeDshEnvelope(data, options)
       }
-    } catch (error) { this.close(error instanceof Error ? error : new Error(String(error))); return }
-    if (envelope.generation !== this.generation || envelope.hostScope.hostId !== this.hostScope.hostId || envelope.hostScope.kind !== this.hostScope.kind) return
+    } catch (error) { this.debug.log('envelope.decode.error', { bytes: typeof data === 'string' ? data.length : data.byteLength, error: error instanceof Error ? error.message : String(error) }); this.close(error instanceof Error ? error : new Error(String(error))); return }
+    this.debug.log('envelope.receive', envelopeDebugFields(envelope, typeof data === 'string' ? new TextEncoder().encode(data).byteLength : data.byteLength))
+    if (envelope.generation !== this.generation || envelope.hostScope.hostId !== this.hostScope.hostId || envelope.hostScope.kind !== this.hostScope.kind) {
+      this.debug.log('envelope.scope.drop', { expectedGeneration: this.generation, expectedHostId: this.hostScope.hostId, expectedHostKind: this.hostScope.kind, ...envelopeDebugFields(envelope, undefined) })
+      return
+    }
     this.flowControl?.onReceive?.(typeof data === 'string' ? new TextEncoder().encode(data).byteLength : data.byteLength, envelope)
     const state = this.streams.get(envelope.streamId)
     const pending = this.pending.get(envelope.streamId)
@@ -198,6 +207,7 @@ export class DshTunnelMultiplexer {
     const encoded = encodeDshEnvelope(envelope, this.flowControl?.maxFrameBytes === undefined ? {} : { maxBytes: this.flowControl.maxFrameBytes })
     if (this.flowControl?.canSend && !this.flowControl.canSend(encoded.byteLength, envelope)) throw new Error('Transport 背压窗口不足')
     const pending = this.carrier.send(encoded)
+    this.debug.log('envelope.send', envelopeDebugFields(envelope, encoded.byteLength))
     if (pending && typeof (pending as Promise<void>).catch === 'function') {
       void (pending as Promise<void>).catch((error) => this.close(error instanceof Error ? error : new Error(String(error))))
     }
@@ -207,6 +217,21 @@ export class DshTunnelMultiplexer {
   private nextRequestId(): number { if (this.nextId >= Number.MAX_SAFE_INTEGER) throw new Error('Transport request id 已耗尽'); return ++this.nextId }
   private closedStream(error?: Error): AsyncIterable<never> { return { [Symbol.asyncIterator]: () => ({ next: async () => error ? Promise.reject(error) : ({ done: true, value: undefined }) }) } }
   private ensureOpen(): void { if (this.disposed || this.carrier.state !== 'open') throw new Error('Transport 尚未 ready'); if (this.requireSessionReady && !this.session?.ready) throw new Error('SESSION_NOT_READY') }
+}
+
+function envelopeDebugFields(envelope: DshEnvelope, bytes: number | undefined): Record<string, unknown> {
+  return {
+    type: envelope.type,
+    channel: envelope.channel,
+    streamId: envelope.streamId,
+    sequence: envelope.sequence,
+    generation: envelope.generation,
+    hostId: envelope.hostScope.hostId,
+    hostKind: envelope.hostScope.kind,
+    operation: typeof envelope.meta.operation === 'string' ? envelope.meta.operation : undefined,
+    bodyBytes: envelope.body?.byteLength ?? 0,
+    ...(bytes === undefined ? {} : { frameBytes: bytes }),
+  }
 }
 function mapChannel(channel: 'rpc' | 'fetch' | 'control' | 'web'): DshChannel { return channel === 'fetch' || channel === 'web' ? 'web' : channel === 'control' ? 'session' : 'rpc' }
 function encodeJson(value: unknown): Uint8Array { return new TextEncoder().encode(JSON.stringify(value === undefined ? null : value)) }

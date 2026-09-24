@@ -11,6 +11,7 @@ import {
   type PeerConnectionLike,
   type SignalingSocketLike,
 } from './webrtc-client.js'
+import { createDshTransportDebugLogger, type DshTransportDebugLogger } from './debug.js'
 
 /** Host 侧每个客户端会话使用一个独立的 PeerConnection。真实 Node WebRTC 实现由调用方注入。 */
 export interface HostPeerConnectionLike extends Omit<PeerConnectionLike, 'createDataChannel' | 'createOffer'> {
@@ -34,6 +35,7 @@ export interface WebRtcHostAcceptorOptions {
   channelLabel?: string
   onConnection?: (connection: WebRtcHostSession) => void | Promise<void>
   onSessionClosed?: (sessionId: string) => void | Promise<void>
+  debug?: DshTransportDebugLogger
 }
 
 export interface WebRtcHostSession {
@@ -90,6 +92,7 @@ export function requestHostSignalingTicket(
  */
 export async function acceptWebRtcHost(options: WebRtcHostAcceptorOptions): Promise<WebRtcHostAcceptor> {
   validateHostTicket(options.signalingTicket)
+  const debug = options.debug ?? createDshTransportDebugLogger({ side: 'host', component: 'webrtc-host' })
   const signaling = await options.signalingSocketFactory(
     createSignalingUrl(options.signalingTicket.signalingBaseUrl, options.signalingTicket.ticket),
   )
@@ -112,6 +115,7 @@ export async function acceptWebRtcHost(options: WebRtcHostAcceptorOptions): Prom
     if (typeof raw !== 'string') return
     let message: HostSignalingMessage
     try { message = JSON.parse(raw) as HostSignalingMessage } catch { return }
+    debug.log('signaling.message', { type: message.type, sessionId: 'sessionId' in message ? message.sessionId : null })
     if (message.type === 'offer') {
       if (message.senderRole !== 'client' || !message.sessionId || !message.sdp) return
       void handleOffer(message.sessionId, message.sdp)
@@ -160,6 +164,7 @@ export async function acceptWebRtcHost(options: WebRtcHostAcceptorOptions): Prom
         signaling,
         options.onConnection,
         TUNNEL_DATA_CHANNEL_LABEL,
+        options.debug,
       )
       sessions.set(sessionId, session)
     }
@@ -203,6 +208,7 @@ class HostSessionImpl implements WebRtcHostSession {
     private readonly signaling: SignalingSocketLike,
     private readonly onConnection: WebRtcHostAcceptorOptions['onConnection'],
     channelLabel: string | undefined,
+    private readonly debug?: DshTransportDebugLogger,
   ) {
     this.peerConnection.onicecandidate = (event) => {
       if (this.closed || !event.candidate) return
@@ -222,7 +228,8 @@ class HostSessionImpl implements WebRtcHostSession {
         return
       }
       if (this._carrier) void this._carrier.close()
-      this._carrier = createRelayTunnelHostCarrier(createDataChannelCarrier(channel))
+      this.debug?.log('data-channel.accepted', { sessionId: this.sessionId, label: channel.label ?? null })
+      this._carrier = createRelayTunnelHostCarrier(createDataChannelCarrier(channel, { ...(this.debug ? { debug: this.debug } : {}) }), this.debug)
       void this.onConnection?.(this)
     }
   }

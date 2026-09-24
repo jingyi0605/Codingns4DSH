@@ -7,6 +7,7 @@ import {
   type DshHostScope,
 } from './dsh-envelope.js'
 import { DSH_VERSION } from '../shared/contracts/version.js'
+import { createDshTransportDebugLogger, type DshTransportDebugLogger } from './debug.js'
 
 export type DshSessionRole = 'client' | 'host'
 export type DshSessionState = 'idle' | 'handshaking' | 'ready' | 'degraded' | 'closed'
@@ -23,6 +24,7 @@ export interface DshSessionOptions {
   onReady?(session: DshSession): void
   onEnvelope?(envelope: DshEnvelope): void
   onError?(error: Error): void
+  debug?: DshTransportDebugLogger
 }
 
 /** 负责 DSH hello/ready、版本能力协商和心跳，不执行任何业务。 */
@@ -36,8 +38,10 @@ export class DshSession {
   private readyValue: Promise<void> | undefined
   private readyResolve: (() => void) | undefined
   private readyReject: ((error: Error) => void) | undefined
+  private readonly debug: DshTransportDebugLogger
 
   constructor(private readonly options: DshSessionOptions) {
+    this.debug = options.debug ?? createDshTransportDebugLogger({ component: `session-${options.role}` })
     this.unsubscribe = options.carrier.subscribe((data) => this.receive(data as Uint8Array))
     if (options.onEnvelope) this.listeners.add(options.onEnvelope)
   }
@@ -49,6 +53,7 @@ export class DshSession {
   start(): void {
     if (this.stateValue !== 'idle') return
     this.stateValue = 'handshaking'
+    this.debug.log('session.start', { role: this.options.role, generation: this.options.generation, hostId: this.options.hostScope.hostId, hostKind: this.options.hostScope.kind })
     this.readyValue = new Promise<void>((resolve, reject) => {
       this.readyResolve = resolve
       this.readyReject = reject
@@ -81,6 +86,7 @@ export class DshSession {
   send(envelope: DshEnvelope): void {
     if (this.stateValue === 'closed') throw new Error('DSH Session 已关闭')
     const pending = this.options.carrier.send(encodeDshEnvelope(envelope))
+    this.debug.log('session.send', envelopeDebugFields(envelope))
     if (pending && typeof pending.catch === 'function') {
       void pending.catch((error) => this.fail(error instanceof Error ? error : new Error(String(error))))
     }
@@ -89,6 +95,7 @@ export class DshSession {
   close(reason = 'DSH Session 已关闭'): void {
     if (this.stateValue === 'closed') return
     this.stateValue = 'closed'
+    this.debug.log('session.close', { reason })
     this.unsubscribe()
     if (this.heartbeat) clearInterval(this.heartbeat)
     this.heartbeat = undefined
@@ -122,9 +129,11 @@ export class DshSession {
       envelope = decodeDshEnvelope(data)
       this.validateScope(envelope)
     } catch (error) {
+      this.debug.log('session.receive.invalid', { bytes: data.byteLength, error: error instanceof Error ? error.message : String(error) })
       this.fail(error instanceof Error ? error : new Error(String(error)))
       return
     }
+    this.debug.log('session.receive', { bytes: data.byteLength, ...envelopeDebugFields(envelope) })
     if (envelope.channel === 'session') {
       this.receiveSession(envelope)
       return
@@ -152,6 +161,7 @@ export class DshSession {
       const allowed = new Set(this.options.capabilities ?? offered)
       this.remoteCapabilities = offered.filter((capability) => allowed.has(capability))
       this.stateValue = 'ready'
+      this.debug.log('session.ready', { role: this.options.role, capabilities: this.remoteCapabilities })
       this.sendReady(this.remoteCapabilities)
       this.readyResolve?.()
       this.options.onReady?.(this)
@@ -170,6 +180,7 @@ export class DshSession {
       }
       this.remoteCapabilities = readCapabilities(envelope.meta.capabilities)
       this.stateValue = 'ready'
+      this.debug.log('session.ready', { role: this.options.role, capabilities: this.remoteCapabilities })
       this.readyResolve?.()
       this.options.onReady?.(this)
       return
@@ -219,8 +230,23 @@ export class DshSession {
 
   private fail(error: Error): void {
     this.stateValue = 'degraded'
+    this.debug.log('session.error', { error: error.message })
     this.readyReject?.(error)
     this.options.onError?.(error)
+  }
+}
+
+function envelopeDebugFields(envelope: DshEnvelope): Record<string, unknown> {
+  return {
+    type: envelope.type,
+    channel: envelope.channel,
+    streamId: envelope.streamId,
+    sequence: envelope.sequence,
+    generation: envelope.generation,
+    hostId: envelope.hostScope.hostId,
+    hostKind: envelope.hostScope.kind,
+    operation: typeof envelope.meta.operation === 'string' ? envelope.meta.operation : undefined,
+    bodyBytes: envelope.body?.byteLength ?? 0,
   }
 }
 

@@ -27,6 +27,16 @@ DSH Web 是唯一主体，`dsh-codingns` 只是由 DSH 装载的 Bundle。Coding
 - 阶段 2：Host 侧登录、refresh token 存储、设备查询和 Host 绑定；Control API 使用 CodingNS 当前真实路径。这些能力由 Host 侧 `auth` 模块以 `auth/*` 命名空间提供。
 - 阶段 3：Host/Workspace/PeerHost 资源作用域切换和旧 generation 回写隔离。
 - 阶段 4：Relay ticket、ICE 配置、offer/answer、candidate、DTLS fingerprint 校验、DataChannel Carrier 和 DSH Transport/Tunnel Frame 骨架。
+
+## Tunnel 调试日志
+
+Tunnel 调试日志默认关闭。Host 侧启动 DSH 时设置：
+
+```bash
+DSH_CODINGNS_TUNNEL_DEBUG=1 dsh --profile stage0 --no-open
+```
+
+关闭时去掉该环境变量，或设置为 `0`。日志会覆盖 Relay 信令、DataChannel、Session、DSH Envelope、Gateway 和 Remote Web Provider；只记录方向、类型、`streamId`、`operation`、generation、HostScope、状态码和字节数，不记录 Envelope body、ticket、Cookie 或 DSH Web 正文。H5 侧可用独立项目的 `?dshDebug=1` 开关启用。
 - 中转访问服务的 Control API 地址默认是 `https://channel.codingns.com:1443`。设置页使用下拉框选择已保存地址，也可以添加新的 HTTP(S) 地址；地址列表只保存地址，不保存账号、密码或 refresh token。
 - 局域网访问DSH模块：Client 入口加载时自动补齐 `crypto.randomUUID`，并在设置卡片中管理 Host 侧的单一 DSH Web 监听；已有浏览器实现不会被覆盖。
 - 终端：插件自有 Sidebar UI 和 xterm 通过 DSH 公开 Slot 挂载。强化关闭时使用随 DSH 生命周期结束的本机 PTY；强化开启时 macOS/Linux 使用 tmux，Windows 使用独立 ConPTY broker。浏览器只调用 DSH Remote，不接触 Named Pipe、broker 凭据或 Host token。

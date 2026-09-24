@@ -21,6 +21,7 @@ import {
   type WebRtcHostSession,
 } from '../transport/webrtc-host.js'
 import { DshGateway, type DshGatewayFeature } from '../transport/dsh-gateway.js'
+import { createDshTransportDebugLogger, type DshTransportDebugLogger } from '../transport/debug.js'
 
 /** Relay Tunnel 规定的 DataChannel label，不允许使用插件自定义值。 */
 export const CODINGNS_TUNNEL_DATA_CHANNEL_LABEL = 'codingns-tunnel'
@@ -115,6 +116,7 @@ export interface HostRelayRuntimeOptions {
   readonly onSession?: (session: HostRelaySession) => void | Promise<void>
   readonly gatewayFeatures?: readonly DshGatewayFeature[]
   readonly gatewayRegistry?: FeatureRegistry<unknown, FeatureModule<unknown>>
+  readonly debug?: DshTransportDebugLogger
   readonly generation?: string
   readonly hostId?: string
   readonly ticketRenewSkewMs?: number
@@ -136,6 +138,7 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
   if (!options.accessToken.trim()) throw new TypeError('Host Relay accessToken 不能为空')
   if (!options.bindingId?.trim() && options.createTicket === undefined) throw new TypeError('Host Relay bindingId 或 createTicket 必须提供')
   const bindingId = options.bindingId?.trim() ?? ''
+  const debug = options.debug ?? createDshTransportDebugLogger({ side: 'host', component: 'relay-runtime' })
   const identity = await ensureHostDtlsIdentity(options.dtlsStore)
   const requestTicket = (): Promise<RelaySignalingTicketResponse> => options.createTicket
     ? options.createTicket({ accessToken: options.accessToken, identity, ...(options.credentialVersion === undefined ? {} : { credentialVersion: options.credentialVersion }) })
@@ -201,6 +204,7 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
       signalingSocketFactory: socketFactory,
       peerConnectionFactory: options.peerConnectionFactory ?? createWeriftPeerConnectionFactory(identity),
       channelLabel: CODINGNS_TUNNEL_DATA_CHANNEL_LABEL,
+      debug,
       onConnection: (session) => {
         if (!session.carrier) return
         const gateway = new DshGateway({
@@ -209,6 +213,7 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
           hostScope: { hostId: options.hostId ?? bindingId, kind: 'local' },
           ...(options.gatewayFeatures === undefined ? {} : { features: options.gatewayFeatures }),
           ...(options.gatewayRegistry === undefined ? {} : { registry: options.gatewayRegistry }),
+          debug,
         })
         gateway.start()
         gateways.set(session.sessionId, gateway)

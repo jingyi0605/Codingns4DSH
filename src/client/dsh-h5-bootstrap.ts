@@ -8,6 +8,7 @@ import { DshCodingNsTransport } from '../transport/dsh-transport.js'
 import { connectWebRtcClient, type PeerConnectionLike, type SignalingSocketLike } from '../transport/webrtc-client.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { RemoteDshWebContext, type RemoteDshWebContextOptions } from './remote-web-context.js'
+import { createDshTransportDebugLogger } from '../transport/debug.js'
 
 /** H5 启动器需要的最小参数；不依赖 Node 或 Cordis 私有实现。 */
 export interface DshH5BootstrapOptions {
@@ -58,6 +59,7 @@ export interface DshH5BrowserBootstrapResult {
  */
 export async function startDshH5Bootstrap(options: DshH5BootstrapOptions): Promise<DshH5BootstrapResult> {
   const signal = options.signal
+  const debug = createDshTransportDebugLogger({ side: 'h5', component: 'h5-bootstrap' })
   const devices = await callRpc<DshDeviceListResponse>(options.rpc, 'auth/dsh/device/list', {}, signal)
   const device = chooseDshDevice(devices, options.dshDeviceId)
   const ticket = await callRpc<DshRelaySignalingTicket>(options.rpc, 'auth/dsh/relayTicket', { dshDeviceId: device.dshDeviceId }, signal)
@@ -65,16 +67,18 @@ export async function startDshH5Bootstrap(options: DshH5BootstrapOptions): Promi
     signalingTicket: ticket as unknown as RelaySignalingTicketResponse,
     signalingSocketFactory: (url) => new WebSocket(url) as unknown as SignalingSocketLike,
     peerConnectionFactory: ({ iceServers, iceTransportPolicy }) => createPeerConnection({ iceServers, iceTransportPolicy }),
+    debug,
   })
   const generation = 1
   const hostScope = resolveDshHostScope(ticket)
-  const session = new DshSession({ carrier: connection.carrier, role: 'client', generation: String(generation), hostScope })
+  const session = new DshSession({ carrier: connection.carrier, role: 'client', generation: String(generation), hostScope, debug })
   const transport = new DshCodingNsTransport({
     carrier: connection.carrier,
     generation: { id: generation, host: { home: '/' } },
     hostScope,
     session,
     requireSessionReady: true,
+    debug,
   })
   let registration: ReturnType<typeof installDshTransport> | undefined
   try {
@@ -101,6 +105,7 @@ export async function startDshH5Bootstrap(options: DshH5BootstrapOptions): Promi
 /** 独立 H5 页面使用的入口；Control API 会话通过 HttpOnly Cookie 提供。 */
 export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapOptions): Promise<DshH5BrowserBootstrapResult> {
   const signal = options.signal
+  const debug = createDshTransportDebugLogger({ side: 'h5', component: 'h5-bootstrap' })
   options.onStatus?.('ticket')
   const devices = await options.controlApi.listDevices(signal)
   const device = chooseDshDevice(devices, options.dshDeviceId)
@@ -110,16 +115,18 @@ export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapO
     signalingTicket: ticket as unknown as RelaySignalingTicketResponse,
     signalingSocketFactory: (url) => new WebSocket(url) as unknown as SignalingSocketLike,
     peerConnectionFactory: ({ iceServers, iceTransportPolicy }) => createPeerConnection({ iceServers, iceTransportPolicy }),
+    debug,
   })
   const generation = options.generation ?? 1
   const hostScope = resolveDshHostScope(ticket)
-  const session = new DshSession({ carrier: connection.carrier, role: 'client', generation: String(generation), hostScope })
+  const session = new DshSession({ carrier: connection.carrier, role: 'client', generation: String(generation), hostScope, debug })
   const transport = new DshCodingNsTransport({
     carrier: connection.carrier,
     generation: { id: generation, host: { home: '/' } },
     hostScope,
     session,
     requireSessionReady: true,
+    debug,
   })
   let webContext: RemoteDshWebContext | undefined
   try {
