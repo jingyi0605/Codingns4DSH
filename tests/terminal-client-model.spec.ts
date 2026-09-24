@@ -108,6 +108,25 @@ test('Sidebar 显式关闭才结束 Host 终端', async () => {
   assert.equal(calls.close, 1)
 })
 
+test('重复尺寸变化只向 Host 发送一次 resize', async () => {
+  const { calls, remote } = createRemote(true)
+  const view = new CodingNsTerminalView('session-1', 'terminal-1', remote, false)
+  const unmount = view.mount()
+  await waitFor(() => view.state.getSnapshot().render !== undefined, '终端 snapshot 未到达 Client')
+  const render = view.state.getSnapshot().render
+  assert.ok(render)
+  view.acknowledge(render.revision)
+
+  view.resize(80, 24)
+  view.resize(80, 24)
+  view.resize(80, 24)
+  await waitFor(() => calls.resize.length === 1, '重复尺寸没有收敛为一次 resize')
+  assert.deepEqual(calls.resize, [[80, 24]])
+
+  unmount()
+  await view.dispose()
+})
+
 test('终端 Remote 晚于 Client 注册时可以在就绪后重试', async () => {
   const { remote } = createRemote()
   let currentRemote

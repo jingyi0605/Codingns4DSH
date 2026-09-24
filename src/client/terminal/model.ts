@@ -94,6 +94,8 @@ export class CodingNsTerminalView {
   private loading: Promise<void> | undefined
   private writes = Promise.resolve()
   private attachmentId: TerminalAttachmentId | undefined
+  /** 最近一次已排队的尺寸；ResizeObserver 可能在同一布局周期内重复触发。 */
+  private lastResize: { readonly attachmentId: TerminalAttachmentId; readonly cols: number; readonly rows: number } | undefined
 
   constructor(
     readonly sessionId: string,
@@ -151,9 +153,15 @@ export class CodingNsTerminalView {
     if (!state.writable || attachmentId === undefined) return
     const nextCols = Math.max(1, Math.min(Math.floor(cols), state.environment?.maxCols ?? 500))
     const nextRows = Math.max(1, Math.min(Math.floor(rows), state.environment?.maxRows ?? 200))
+    const request = { attachmentId, cols: nextCols, rows: nextRows }
+    if (sameResize(this.lastResize, request)) return
+    this.lastResize = request
     this.writes = this.writes
       .then(async () => { unwrap(await resolveRemote(this.remote).resize(this.sessionId, this.id, attachmentId, nextCols, nextRows)) })
-      .catch((error: unknown) => this.fail(error))
+      .catch((error: unknown) => {
+        if (sameResize(this.lastResize, request)) this.lastResize = undefined
+        this.fail(error)
+      })
   }
 
   async rename(title: string): Promise<void> {
@@ -212,6 +220,7 @@ export class CodingNsTerminalView {
     const controller = new AbortController()
     this.followController = controller
     this.attachmentId = crypto.randomUUID() as TerminalAttachmentId
+    this.lastResize = undefined
     this.patch({ phase: 'connecting', writable: false })
     void this.consume(controller.signal)
   }
@@ -255,6 +264,7 @@ export class CodingNsTerminalView {
     this.followController?.abort(new Error('终端视图已 detach'))
     this.followController = undefined
     this.attachmentId = undefined
+    this.lastResize = undefined
     if (!this.lifetime.signal.aborted && this.store.getSnapshot().phase !== 'closed') {
       const { render: _render, ...state } = this.store.getSnapshot()
       this.store.set({ ...state, phase: 'disconnected', writable: false })
@@ -411,6 +421,13 @@ function resolveRemote(source: TerminalRemoteSource): TerminalRemote {
   const remote = typeof source === 'function' ? source() : source
   if (remote === undefined) throw new Error('终端服务尚未就绪，请稍后重试')
   return remote
+}
+
+function sameResize(
+  left: { readonly attachmentId: TerminalAttachmentId; readonly cols: number; readonly rows: number } | undefined,
+  right: { readonly attachmentId: TerminalAttachmentId; readonly cols: number; readonly rows: number },
+): boolean {
+  return left?.attachmentId === right.attachmentId && left.cols === right.cols && left.rows === right.rows
 }
 
 function errorMessage(error: unknown): string {
