@@ -14,6 +14,7 @@ import type { CodingNsDshExternalToolMarker } from './dsh-tool-history.js'
 export interface CodingNsDshMessageProjectorOptions {
   readonly adapterId: string
   readonly sessionId: string
+  readonly modelId?: string
   readonly nativeSessions?: CodingNsNativeSessionBridge
   readonly signal?: AbortSignal
   readonly respondPermission?: (response: CodingNsAgentPermissionResponse) => Promise<void> | void
@@ -96,6 +97,13 @@ export class CodingNsDshMessageProjector {
         await this.requestQuestions(event)
         return []
       case 'usage':
+        if (event.contextWindow !== undefined) {
+          this.options.nativeSessions?.appendRequestContext?.(this.options.sessionId, {
+            provider: this.options.adapterId,
+            model: this.options.modelId ?? this.options.adapterId,
+            contextWindow: event.contextWindow,
+          })
+        }
         return [{
           type: 'usage',
           usage: {
@@ -106,6 +114,9 @@ export class CodingNsDshMessageProjector {
             ...(event.uncachedInputTokens === undefined ? {} : { uncachedInputTokens: event.uncachedInputTokens }),
             ...(event.totalTokens === undefined ? {} : { totalTokens: event.totalTokens }),
             ...(event.cacheHitRate === undefined ? {} : { cacheHitRate: event.cacheHitRate }),
+            ...(event.contextWindow === undefined ? {} : { contextWindow: event.contextWindow }),
+            ...(event.contextTokens === undefined ? {} : { contextTokens: event.contextTokens }),
+            ...(event.contextUsageRatio === undefined ? {} : { contextUsageRatio: event.contextUsageRatio }),
           },
         }]
       case 'session-binding':

@@ -74,9 +74,10 @@ export function textValue(value: unknown): string | null {
 export function usageChunk(value: unknown): CodingNsAgentEvent | null {
   if (!isRecord(value)) return null
   const usage = isRecord(value.usage) ? value.usage : value
-  const inputTokens = numberValue(usage.inputTokens ?? usage.input_tokens ?? usage.prompt_tokens ?? usage.promptTokenCount)
+  const explicitUncachedInputTokens = optionalNumberValue(usage.uncachedInputTokens ?? usage.uncached_input_tokens)
+  const inputTokens = explicitUncachedInputTokens
+    ?? numberValue(usage.inputTokens ?? usage.input_tokens ?? usage.prompt_tokens ?? usage.promptTokenCount)
   const outputTokens = numberValue(usage.outputTokens ?? usage.output_tokens ?? usage.completion_tokens ?? usage.candidatesTokenCount)
-  if (inputTokens === 0 && outputTokens === 0) return null
   const cacheReadInputTokens = optionalNumberValue(usage.cache_read_input_tokens ?? usage.cacheReadInputTokens)
   const cacheWriteInputTokens = optionalNumberValue(usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens)
   const cacheReadTokens = optionalNumberValue(
@@ -99,10 +100,11 @@ export function usageChunk(value: unknown): CodingNsAgentEvent | null {
       ?? usage.cache_creation_input_tokens
       ?? cacheWriteInputTokens,
   )
+  if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === undefined && cacheWriteTokens === undefined) return null
   const totalTokens = optionalNumberValue(usage.totalTokens ?? usage.total_tokens ?? usage.totalTokenCount)
-  const hasCacheBreakdown = cacheReadTokens !== undefined || cacheWriteTokens !== undefined
+  const hasCacheBreakdown = explicitUncachedInputTokens !== undefined || cacheReadTokens !== undefined || cacheWriteTokens !== undefined
   const cachedInputTokens = (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
-  const inputExcludesCache = cacheReadInputTokens !== undefined || cacheWriteInputTokens !== undefined
+  const inputExcludesCache = explicitUncachedInputTokens !== undefined || cacheReadInputTokens !== undefined || cacheWriteInputTokens !== undefined
   const fullInputTokens = inputTokens + (inputExcludesCache ? cachedInputTokens : 0)
   return {
     type: 'usage',

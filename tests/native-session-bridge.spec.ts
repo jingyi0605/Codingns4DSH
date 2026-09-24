@@ -150,6 +150,39 @@ test('原生会话桥接把外部工具保存为只读 call/result 事件且不�
   ])
 })
 
+test('原生会话桥接保存外部 Agent 的 request/context 容量元数据', () => {
+  const events: Array<Record<string, any>> = [
+    { type: 'turn/start', seq: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+  ]
+  const session = {
+    snapshotEvents() { return [...events] },
+    append(type: string, data: unknown) {
+      const event = { type, seq: events.length, data }
+      events.push(event)
+      return event
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'sessions'
+        ? { get(id: string) { return id === 'native-context' ? session : undefined }, list() { return [session] } }
+        : undefined
+    },
+  } as never)
+
+  assert.equal(bridge.appendRequestContext?.('native-context', {
+    provider: 'codex',
+    model: 'gpt-5.3-codex',
+    contextWindow: 258400,
+  }), true)
+  assert.deepEqual(events[2], {
+    type: 'request/context',
+    seq: 2,
+    data: { provider: 'codex', model: 'gpt-5.3-codex', contextWindow: 258400 },
+  })
+})
+
 test('原生会话桥接按当前 step 顺序保存外部工具 call/result 事件', () => {
   const events: Array<Record<string, any>> = [
     { type: 'turn/start', seq: 0, data: { turn: 3 } },

@@ -138,6 +138,42 @@ test('Codex app-server 保留 item 工具生命周期和失败结果', async () 
   driver.dispose()
 })
 
+test('Codex app-server 解析 tokenUsage.last 并传递上下文窗口占用', async () => {
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method === 'thread/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'codex-usage-thread' } } })}\n`)
+          return
+        }
+        if (request.method === 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'codex-usage-turn', status: 'inProgress' } } })}\n`)
+          setImmediate(() => {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'thread/tokenUsage/updated', params: { threadId: 'codex-usage-thread', tokenUsage: { last: { input_tokens: 32000, cached_input_tokens: 8000, output_tokens: 120, total_tokens: 40120 }, contextWindow: 258400 } } })}\n`)
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'codex-usage-thread', turn: { id: 'codex-usage-turn', status: 'completed' } } })}\n`)
+          })
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-usage', messages: [], prompt: '统计用量' })) chunks.push(chunk)
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'usage'), [{
+    type: 'usage', inputTokens: 32000, outputTokens: 120, cacheReadTokens: 8000,
+    uncachedInputTokens: 32000, totalTokens: 40120, cacheHitRate: 20,
+    contextWindow: 258400, contextTokens: 40000, contextUsageRatio: 0.154799,
+  }])
+  driver.dispose()
+})
+
 test('Grok ACP 保留 tool_call 与 tool_call_update 的结构化字段', async () => {
   const driver = new GrokBuildDriver({
     binaries: ['fake-grok'],

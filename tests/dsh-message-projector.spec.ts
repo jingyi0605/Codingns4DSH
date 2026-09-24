@@ -50,6 +50,35 @@ test('公共消息投影层统一处理正文、思考、工具、用量和唯�
   assert.equal(results.length, 1)
 })
 
+test('用量带上下文窗口时写入 DSH request/context 元数据', async () => {
+  const contexts = []
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'codex',
+    modelId: 'gpt-5.3-codex',
+    sessionId: 'session-context',
+    nativeSessions: {
+      appendRequestContext(sessionId, context) {
+        contexts.push({ sessionId, context })
+        return true
+      },
+    },
+  })
+
+  await projector.push({
+    type: 'usage',
+    inputTokens: 32000,
+    outputTokens: 120,
+    cacheReadTokens: 8000,
+    contextWindow: 258400,
+  })
+  await projector.push({ type: 'finish', reason: 'stop' })
+
+  assert.deepEqual(contexts, [{
+    sessionId: 'session-context',
+    context: { provider: 'codex', model: 'gpt-5.3-codex', contextWindow: 258400 },
+  }])
+})
+
 test('公共消息投影层在工具终态到达时立即完成原生组件', async () => {
   const order = []
   const projector = new CodingNsDshMessageProjector({

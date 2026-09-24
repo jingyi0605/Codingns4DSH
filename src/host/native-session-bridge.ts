@@ -70,6 +70,13 @@ export interface CodingNsNativeQuestionRequest {
   readonly signal?: AbortSignal
 }
 
+/** 外部 Agent 已确认的模型路由上下文容量，用于 DSH token-meter 的上下文占用投影。 */
+export interface CodingNsNativeRequestContext {
+  readonly provider: string
+  readonly model: string
+  readonly contextWindow?: number
+}
+
 export interface CodingNsNativeSessionController {
   create?(request: { readonly sessionId?: string; readonly cwd?: string }): Promise<{ readonly sessionId: string }>
   list?(request?: unknown, signal?: AbortSignal): Promise<{ readonly items: readonly unknown[] }>
@@ -107,6 +114,8 @@ export interface CodingNsNativeSessionBridge {
   appendToolResult?(handle: CodingNsNativeToolCallHandle, result: CodingNsNativeToolResult): boolean
   /** 兼容旧调用方；内部仍转换为 DSH 原生 tool/call 与 tool/result。 */
   appendExternalToolEvent?(sessionId: string, event: CodingNsNativeExternalToolEvent): boolean
+  /** 写入当前原生步骤的路由上下文元数据，不携带凭据或消息正文。 */
+  appendRequestContext?(sessionId: string, context: CodingNsNativeRequestContext): boolean
   /** 使用 DSH 原生 approval 组件请求一次权限决定；服务不可用时拒绝。 */
   requestApproval?(sessionId: string, request: CodingNsNativeApprovalRequest): Promise<CodingNsNativeApprovalOutcome>
   /** 使用 DSH 原生 userQuestions 组件提问；服务不可用或取消时返回 null。 */
@@ -181,6 +190,20 @@ export function createCodingNsNativeSessionBridge(ctx: Context): CodingNsNativeS
     })
     return true
   }
+  const appendNativeRequestContext = (sessionId: string, context: CodingNsNativeRequestContext): boolean => {
+    const session = appendableSession(store?.get(sessionId))
+    if (session === null || context.provider.trim() === '' || context.model.trim() === '') return false
+    try {
+      session.append('request/context', {
+        provider: context.provider,
+        model: context.model,
+        ...(context.contextWindow === undefined ? {} : { contextWindow: context.contextWindow }),
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
 
   return {
     get available() {
@@ -223,6 +246,9 @@ export function createCodingNsNativeSessionBridge(ctx: Context): CodingNsNativeS
     },
     appendToolResult(handle, result) {
       return appendNativeToolResult(handle, result)
+    },
+    appendRequestContext(sessionId, context) {
+      return appendNativeRequestContext(sessionId, context)
     },
     appendExternalToolEvent(sessionId, externalTool) {
       try {

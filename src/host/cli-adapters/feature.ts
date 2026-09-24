@@ -113,6 +113,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           const projector = new CodingNsDshMessageProjector({
             adapterId: config.adapterId,
             sessionId,
+            ...(config.modelId === undefined ? {} : { modelId: config.modelId }),
             ...(nativeSessions === undefined ? {} : { nativeSessions }),
             ...(input.signal === undefined ? {} : { signal: input.signal }),
             respondPermission: (response) => registry.respondPermission(sessionId, response),

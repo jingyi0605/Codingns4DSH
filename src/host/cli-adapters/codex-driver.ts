@@ -341,7 +341,59 @@ function codexMessageToChunk(message: Record<string, any>): CodingNsAgentEvent |
       ...(detail !== undefined ? { detail } : {}),
     }
   }
-  return usageChunk(params)
+  return codexUsageChunk(params)
+}
+
+/** Codex app-server 的 tokenUsage 使用未缓存输入和缓存输入两个独立桶。 */
+function codexUsageChunk(params: Record<string, any>): CodingNsAgentEvent | null {
+  const tokenUsage = isRecord(params.tokenUsage) ? params.tokenUsage : isRecord(params.token_usage) ? params.token_usage : null
+  if (tokenUsage === null) return usageChunk(params)
+  const latest = isRecord(tokenUsage.last)
+    ? tokenUsage.last
+    : isRecord(tokenUsage.lastUsage)
+      ? tokenUsage.lastUsage
+      : isRecord(tokenUsage.last_token_usage)
+        ? tokenUsage.last_token_usage
+        : isRecord(tokenUsage.total)
+          ? tokenUsage.total
+          : tokenUsage
+  const uncachedInputTokens = optionalToken(latest.inputTokens ?? latest.input_tokens)
+  const cacheReadTokens = optionalToken(latest.cachedInputTokens ?? latest.cached_input_tokens)
+  const usage = usageChunk({
+    inputTokens: uncachedInputTokens ?? 0,
+    ...(uncachedInputTokens === undefined ? {} : { uncachedInputTokens }),
+    ...(latest.outputTokens === undefined && latest.output_tokens === undefined ? {} : { outputTokens: latest.outputTokens ?? latest.output_tokens }),
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(latest.totalTokens === undefined && latest.total_tokens === undefined ? {} : { totalTokens: latest.totalTokens ?? latest.total_tokens }),
+  })
+  if (usage === null) return null
+  if (usage.type !== 'usage') return null
+  const contextWindowValue = optionalToken(
+    tokenUsage.contextWindow
+      ?? tokenUsage.context_window
+      ?? tokenUsage.modelContextWindow
+      ?? tokenUsage.model_context_window
+      ?? latest.contextWindow
+      ?? latest.context_window
+      ?? latest.modelContextWindow
+      ?? latest.model_context_window
+      ?? params.contextWindow
+      ?? params.context_window,
+  )
+  const contextWindow = contextWindowValue !== undefined && contextWindowValue > 0 ? contextWindowValue : undefined
+  const contextTokens = usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)
+  return {
+    ...usage,
+    ...(contextWindow === undefined ? {} : {
+      contextWindow,
+      contextTokens,
+      contextUsageRatio: Number(Math.min(1, contextTokens / contextWindow).toFixed(6)),
+    }),
+  }
+}
+
+function optionalToken(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
 }
 
 function readRequestId(value: unknown): string | null {

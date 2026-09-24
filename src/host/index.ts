@@ -125,6 +125,7 @@ export {
   type CodingNsNativeSessionController,
   type CodingNsNativeSessionStore,
   type CodingNsNativeWorkspaceController,
+  type CodingNsNativeRequestContext,
 } from './native-session-bridge.js'
 export { CommandCodeDriver } from './cli-adapters/command-code-driver.js'
 export { CommandCodeSubscriptionService, readCommandCodeApiKey } from './cli-adapters/command-code-subscription.js'

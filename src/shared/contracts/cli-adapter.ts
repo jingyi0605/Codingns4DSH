@@ -190,6 +190,10 @@ export type CodingNsAgentEvent =
       readonly totalTokens?: number
       /** 缓存读取 / 完整输入，百分比取值 0 到 100。 */
       readonly cacheHitRate?: number
+      /** Provider 明确报告的上下文窗口及当前占用，用于会话上下文用量展示。 */
+      readonly contextWindow?: number
+      readonly contextTokens?: number
+      readonly contextUsageRatio?: number
     }
   | { readonly type: 'finish'; readonly reason: 'stop' | 'cancel' | 'error' }
   | { readonly type: 'session-binding'; readonly providerSessionId: string; readonly rawStoreRef?: string }
