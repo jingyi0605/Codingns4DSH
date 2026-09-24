@@ -19,6 +19,7 @@ export type CodingNsTranslator = Translate<string>
 const en: Record<string, string> = {
   'common.brand': 'CodingNS',
   'settings.title': 'CodingNS features',
+  'settings.subtitle': 'Configure modules without changing DSH global settings.',
   'settings.restartTarget': 'Target after restart: {state}',
   'settings.enabled': 'Enabled',
   'settings.disabled': 'Disabled',
@@ -204,6 +205,7 @@ const en: Record<string, string> = {
 const zh: Record<string, string> = {
   'common.brand': 'CodingNS',
   'settings.title': 'CodingNS 功能模块',
+  'settings.subtitle': '按模块配置 CodingNS 功能，不影响 DSH 的全局设置。',
   'settings.restartTarget': '下次启动目标：{state}',
   'settings.enabled': '启用',
   'settings.disabled': '禁用',

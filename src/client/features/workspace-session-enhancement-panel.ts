@@ -5,7 +5,12 @@ import {
   DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
 } from '../../shared/contracts/config.js'
 import type { FeaturePanelProps } from './types.js'
-import { dshThemeColor } from '../theme.js'
+import {
+  dshFormRootStyle,
+  dshSettingsHelpStyle,
+  dshSettingsListRowStyle,
+  dshThemeColor,
+} from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 
 /** 工作区会话增强的单列设置面板。 */
@@ -28,21 +33,22 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot }
   }
 
   return createElement('div', {
-    'aria-disabled': !enabled,
+    'aria-disabled': disabled,
     style: {
+      ...dshFormRootStyle,
       display: 'flex',
       flexDirection: 'column',
       gap: 12,
-      opacity: enabled ? 1 : 0.5,
-      pointerEvents: enabled ? 'auto' : 'none',
+      opacity: disabled ? 0.5 : 1,
+      pointerEvents: disabled ? 'none' : 'auto',
     },
   },
     createElement('label', {
-      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
+      style: dshSettingsListRowStyle,
     },
       createElement('span', { style: { minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 14 } }, t('workspace.showLogo')),
-        createElement('span', { style: { display: 'block', marginTop: 3, color: dshThemeColor.labelTertiary, fontSize: 12 } }, t('workspace.logoDescription')),
+        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.showLogo')),
+        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.logoDescription')),
       ),
       createElement('input', {
         type: 'checkbox',
@@ -55,11 +61,11 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot }
       }),
     ),
     createElement('label', {
-      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
+      style: dshSettingsListRowStyle,
     },
       createElement('span', { style: { minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 14 } }, t('workspace.showSubscriptionUsage')),
-        createElement('span', { style: { display: 'block', marginTop: 3, color: dshThemeColor.labelTertiary, fontSize: 12 } }, t('workspace.subscriptionUsageDescription')),
+        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.showSubscriptionUsage')),
+        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.subscriptionUsageDescription')),
       ),
       createElement('input', {
         type: 'checkbox',
@@ -72,11 +78,11 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot }
       }),
     ),
     createElement('label', {
-      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
+      style: dshSettingsListRowStyle,
     },
       createElement('span', { style: { minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 14 } }, t('workspace.showArchivedSessions')),
-        createElement('span', { style: { display: 'block', marginTop: 3, color: dshThemeColor.labelTertiary, fontSize: 12 } }, t('workspace.archivedSessionsDescription')),
+        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.showArchivedSessions')),
+        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.archivedSessionsDescription')),
       ),
       createElement('input', {
         type: 'checkbox',

@@ -9,7 +9,16 @@ import {
 } from '../../shared/contracts/config.js'
 import type { CodingNsTerminalStatus } from '../../shared/contracts/terminal.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
-import { dshButtonStyle, dshFieldStyle, dshFormRootStyle, dshThemeColor } from '../theme.js'
+import {
+  dshFormRootStyle,
+  dshSettingsButtonStyle,
+  dshSettingsFieldLabelStyle,
+  dshSettingsFieldStyle,
+  dshSettingsHelpStyle,
+  dshSettingsNoteStyle,
+  dshSettingsRowStyle,
+  dshThemeColor,
+} from '../theme.js'
 import type { CodingNsRpcClient, FeaturePanelProps } from './types.js'
 import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 
@@ -159,7 +168,7 @@ export function TerminalEnhancementPanel({ services, enabled, snapshot }: Featur
 }
 
 function Field({ label, children }: { readonly label: string; readonly children?: ReactNode }): ReactElement {
-  return createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, createElement('span', undefined, label), children)
+  return createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, createElement('span', { style: dshSettingsFieldLabelStyle }, label), children)
 }
 
 function ColorField({ label, value, disabled, onChange, inheritLabel, resetLabel }: { readonly label: string; readonly value: string | null; readonly disabled: boolean; readonly onChange: (value: string | null) => void; readonly inheritLabel: string; readonly resetLabel: string }): ReactElement {
@@ -232,8 +241,8 @@ function parseCursorStyle(value: string): TerminalAppearanceSettings['cursorStyl
   return value === 'block' || value === 'bar' || value === 'underline' ? value : null
 }
 
-const fieldStyle: CSSProperties = { ...dshFieldStyle, width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 6 }
-const buttonStyle: CSSProperties = { ...dshButtonStyle, flex: '0 0 auto', padding: '7px 10px', borderRadius: 6 }
-const rowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, width: '100%' }
-const helpStyle: CSSProperties = { color: dshThemeColor.labelTertiary, lineHeight: 1.5 }
-const noteStyle: CSSProperties = { padding: 12, border: `1px solid ${dshThemeColor.border}`, borderRadius: 6, color: dshThemeColor.labelSecondary }
+const fieldStyle: CSSProperties = dshSettingsFieldStyle
+const buttonStyle: CSSProperties = { ...dshSettingsButtonStyle, flex: '0 0 auto', minWidth: 92 }
+const rowStyle: CSSProperties = dshSettingsRowStyle
+const helpStyle: CSSProperties = dshSettingsHelpStyle
+const noteStyle: CSSProperties = dshSettingsNoteStyle

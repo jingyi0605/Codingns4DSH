@@ -13,6 +13,7 @@ export const dshThemeColor = {
   labelCaption: 'var(--dsw-alias-label-caption, GrayText)',
   border: 'var(--dsw-alias-border-l2, #d9d9d9)',
   inputBackground: 'var(--dsw-specific-input-major, Canvas)',
+  surfaceSubtle: 'var(--dsw-alias-bg-secondary, rgba(127, 127, 127, 0.06))',
   buttonBackground: 'var(--dsw-alias-button-elevated-fill, transparent)',
   menuBackground: 'var(--dsw-specific-menu, Canvas)',
   pageBackground: 'var(--dsw-alias-bg-primary, Canvas)',
@@ -42,6 +43,162 @@ export const dshButtonStyle: CSSProperties = {
   color: dshThemeColor.labelPrimary,
   background: dshThemeColor.buttonBackground,
   border: `1px solid ${dshThemeColor.border}`,
+}
+
+/** CodingNS 设置页共享外壳：保持紧凑宽度，避免挤压宿主设置导航。 */
+export const dshSettingsPageStyle: CSSProperties = {
+  ...dshFormRootStyle,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 20,
+  width: '100%',
+  maxWidth: 900,
+  margin: '0 auto',
+  padding: '20px clamp(16px, 3vw, 32px) 28px',
+  boxSizing: 'border-box',
+}
+
+/** 设置页标题区，使用宿主主题颜色而不是独立品牌色。 */
+export const dshSettingsHeaderStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 5,
+  paddingBottom: 16,
+  borderBottom: `1px solid ${dshThemeColor.border}`,
+}
+
+export const dshSettingsTitleStyle: CSSProperties = {
+  margin: 0,
+  color: dshThemeColor.labelPrimary,
+  fontSize: 21,
+  lineHeight: 1.3,
+  fontWeight: 700,
+}
+
+export const dshSettingsSubtitleStyle: CSSProperties = {
+  margin: 0,
+  color: dshThemeColor.labelSecondary,
+  fontSize: 13,
+  lineHeight: 1.5,
+}
+
+/** 模块卡片和标题栏共享的结构样式。 */
+export const dshSettingsCardStyle: CSSProperties = {
+  background: dshThemeColor.pageBackground,
+  border: `1px solid ${dshThemeColor.border}`,
+  borderRadius: 8,
+  overflow: 'hidden',
+  boxShadow: dshThemeColor.subtleShadow,
+}
+
+export const dshSettingsSummaryStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 14,
+  minHeight: 58,
+  padding: '12px 16px',
+  boxSizing: 'border-box',
+  cursor: 'pointer',
+  listStyle: 'none',
+}
+
+export const dshSettingsSummaryTextStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 3,
+  minWidth: 0,
+}
+
+export const dshSettingsSummaryLabelStyle: CSSProperties = {
+  color: dshThemeColor.labelPrimary,
+  fontSize: 14,
+  lineHeight: 1.35,
+  fontWeight: 650,
+}
+
+export const dshSettingsSummaryDescriptionStyle: CSSProperties = {
+  color: dshThemeColor.labelSecondary,
+  fontSize: 12,
+  lineHeight: 1.45,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+}
+
+export const dshSettingsBodyStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 16,
+  padding: '18px 20px 20px',
+  borderTop: `1px solid ${dshThemeColor.border}`,
+  boxSizing: 'border-box',
+}
+
+export const dshSettingsFieldLabelStyle: CSSProperties = {
+  color: dshThemeColor.labelSecondary,
+  fontSize: 12,
+  lineHeight: 1.4,
+  fontWeight: 600,
+}
+
+export const dshSettingsFieldStyle: CSSProperties = {
+  ...dshFieldStyle,
+  width: '100%',
+  minHeight: 36,
+  boxSizing: 'border-box',
+  padding: '8px 10px',
+  borderRadius: 6,
+  fontSize: 13,
+}
+
+export const dshSettingsButtonStyle: CSSProperties = {
+  ...dshButtonStyle,
+  minHeight: 36,
+  padding: '8px 14px',
+  borderRadius: 6,
+  fontSize: 13,
+  lineHeight: 1.3,
+  cursor: 'pointer',
+}
+
+export const dshSettingsPrimaryButtonStyle: CSSProperties = {
+  ...dshSettingsButtonStyle,
+  color: dshThemeColor.switchThumb,
+  background: dshThemeColor.accent,
+  borderColor: dshThemeColor.accent,
+}
+
+export const dshSettingsRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  width: '100%',
+}
+
+export const dshSettingsListRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 12,
+  minHeight: 52,
+  padding: '10px 0',
+  borderBottom: `1px solid ${dshThemeColor.border}`,
+  boxSizing: 'border-box',
+}
+
+export const dshSettingsHelpStyle: CSSProperties = {
+  color: dshThemeColor.labelTertiary,
+  fontSize: 12,
+  lineHeight: 1.5,
+}
+
+export const dshSettingsNoteStyle: CSSProperties = {
+  padding: '10px 12px',
+  border: `1px solid ${dshThemeColor.border}`,
+  borderRadius: 6,
+  color: dshThemeColor.labelSecondary,
+  background: dshThemeColor.surfaceSubtle,
+  fontSize: 12,
+  lineHeight: 1.5,
 }
 
 /** 模态框和弹出菜单必须成对设置前景色与背景色。 */

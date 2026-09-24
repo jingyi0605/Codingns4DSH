@@ -8,7 +8,7 @@ import type {
 } from '../../shared/contracts/cli-adapter.js'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
 import { archiveCliSession, callCliRpc, errorMessage, listCliSessions, restoreCliSession } from '../cli-catalog.js'
-import { dshButtonStyle, dshFormRootStyle, dshPopupSurfaceStyle, dshThemeColor } from '../theme.js'
+import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { registerExternalToolStreamUi } from '../external-tool-stream.js'
 
@@ -95,8 +95,8 @@ export function CliAdaptersPanel({ services, enabled }: FeaturePanelProps): Reac
     return () => { active = false }
   }, [disabled, selected, services.rpc])
 
-  const rowStyle = { display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `1px solid ${dshThemeColor.border}` }
-  const buttonStyle = { ...dshButtonStyle, padding: '7px 12px', borderRadius: '6px', cursor: disabled ? 'not-allowed' : 'pointer' }
+  const rowStyle = dshSettingsListRowStyle
+  const buttonStyle = { ...dshSettingsButtonStyle, cursor: disabled ? 'not-allowed' : 'pointer' }
   const toggleAdapter = async (adapter: CodingNsCliAdapterDescriptor, next: boolean): Promise<void> => {
     setBusyAdapterId(adapter.id)
     setMessage('')
@@ -213,14 +213,14 @@ function CliSessionList({ sessions, loading, restoringSessionId, archivingSessio
           onClick: () => onRestore(record),
           disabled: restoringSessionId !== null,
           'aria-label': `${t('cli.open')} ${record.title ?? t('cli.session', { id: record.adapterId })}`,
-          style: { ...dshButtonStyle, flex: '0 0 auto', padding: '6px 10px', borderRadius: 6, cursor: restoringSessionId === null ? 'pointer' : 'not-allowed' },
+          style: { ...dshSettingsButtonStyle, flex: '0 0 auto', cursor: restoringSessionId === null ? 'pointer' : 'not-allowed' },
         }, restoringSessionId === record.dshSessionId ? t('cli.opening') : t('cli.open')),
         record.providerState === 'missing' && createElement('button', {
           type: 'button',
           onClick: () => onArchive(record),
           disabled: archivingSessionId !== null,
           'aria-label': t('cli.removeFromSidebar', { name: record.title ?? t('cli.session', { id: record.adapterId }) }),
-          style: { ...dshButtonStyle, flex: '0 0 auto', padding: '6px 10px', borderRadius: 6, color: dshThemeColor.error, cursor: archivingSessionId === null ? 'pointer' : 'not-allowed' },
+          style: { ...dshSettingsButtonStyle, flex: '0 0 auto', color: dshThemeColor.error, cursor: archivingSessionId === null ? 'pointer' : 'not-allowed' },
         }, archivingSessionId === record.dshSessionId ? t('cli.removing') : t('cli.remove')),
       )),
     ),

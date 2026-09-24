@@ -4,15 +4,25 @@ import type { LanAccessDshSnapshot } from '../../shared/contracts/lan-access-dsh
 import type { LanAccessDshSettings } from '../../shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import type { FeaturePanelProps, CodingNsRpcClient } from './types.js'
-import { dshButtonStyle, dshFieldStyle, dshFormRootStyle, dshThemeColor } from '../theme.js'
+import {
+  dshFormRootStyle,
+  dshSettingsButtonStyle,
+  dshSettingsFieldLabelStyle,
+  dshSettingsFieldStyle,
+  dshSettingsNoteStyle,
+  dshSettingsPrimaryButtonStyle,
+  dshSettingsRowStyle,
+  dshThemeColor,
+} from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 
 /** “局域网访问DSH”设置卡片：只配置一条监听并转发到当前 DSH Web。 */
-export function LanAccessPanel({ services, enabled }: FeaturePanelProps): ReactElement {
+export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot }: FeaturePanelProps): ReactElement {
   const { rpc, settings } = services
   const t = useCodingNsTranslator(services.locale)
   const [savedSettings, setSavedSettings] = useState<LanAccessDshSettings | undefined>()
   const disabled = !enabled
+  const controlsDisabled = disabled || settingsSnapshot.status === 'loading' || !settingsSnapshot.writable
   const [listenHosts, setListenHosts] = useState<string[]>(['0.0.0.0'])
   const [listenHost, setListenHost] = useState('0.0.0.0')
   const [listenPort, setListenPort] = useState('13080')
@@ -112,31 +122,40 @@ export function LanAccessPanel({ services, enabled }: FeaturePanelProps): ReactE
     setMessage(next ? t('lan.autoStartOn') : t('lan.autoStartOff'))
   })
 
-  const fieldStyle = { ...dshFieldStyle, width: '100%', boxSizing: 'border-box' as const, padding: '8px 10px', borderRadius: 6 }
-  const buttonStyle = { ...dshButtonStyle, padding: '8px 14px', borderRadius: 6, cursor: 'pointer' }
+  const fieldStyle = dshSettingsFieldStyle
+  const buttonStyle = dshSettingsButtonStyle
 
   return createElement(
     'div',
-    { 'aria-disabled': disabled, style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 12, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
-    createElement('p', { style: { margin: 0, opacity: 0.7 } }, t('lan.description')),
-    createElement('select', { value: listenHost, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setListenHost(event.currentTarget.value), onBlur: saveMappingOnBlur, style: fieldStyle },
-      ...listenHosts.map((host) => createElement('option', { key: host, value: host }, host === '0.0.0.0' ? t('lan.allInterfaces') : host)),
+    { 'aria-disabled': controlsDisabled, style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 14, opacity: controlsDisabled ? 0.5 : 1, pointerEvents: controlsDisabled ? 'none' : 'auto' } },
+    createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 } }, t('lan.description')),
+    createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+      createElement('span', { style: dshSettingsFieldLabelStyle }, t('lan.listenHost')),
+      createElement('select', { value: listenHost, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { value: string } }) => setListenHost(event.currentTarget.value), onBlur: saveMappingOnBlur, style: fieldStyle },
+        ...listenHosts.map((host) => createElement('option', { key: host, value: host }, host === '0.0.0.0' ? t('lan.allInterfaces') : host)),
+      ),
     ),
-    createElement('input', { type: 'number', min: 0, max: 65535, placeholder: t('lan.listenPort'), value: listenPort, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setListenPort(event.currentTarget.value), onBlur: saveMappingOnBlur, style: fieldStyle }),
-    createElement('div', { style: { display: 'flex', gap: 8 } },
-      createElement('input', { type: 'number', min: 1, max: 65535, placeholder: t('lan.dshPort'), value: dshPort, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setDshPort(event.currentTarget.value), onBlur: saveMappingOnBlur, style: { ...fieldStyle, flex: 1 } }),
-      createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void detect(), style: buttonStyle }, t('lan.detect')),
+    createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+      createElement('span', { style: dshSettingsFieldLabelStyle }, t('lan.listenPort')),
+      createElement('input', { type: 'number', min: 0, max: 65535, placeholder: t('lan.listenPort'), value: listenPort, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { value: string } }) => setListenPort(event.currentTarget.value), onBlur: saveMappingOnBlur, style: fieldStyle }),
     ),
-    detectedDshPorts.length > 1 && createElement('div', { style: { fontSize: 13, opacity: 0.7 } }, t('lan.detectMultiple', { ports: detectedDshPorts.join('、') })),
-    createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 8, cursor: disabled || busy ? 'not-allowed' : 'pointer' } },
-      createElement('input', { type: 'checkbox', checked: autoStart, disabled: disabled || busy, onChange: () => void toggleAutoStart(), style: { accentColor: dshThemeColor.accent } }),
+    createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+      createElement('span', { style: dshSettingsFieldLabelStyle }, t('lan.dshPort')),
+      createElement('div', { style: dshSettingsRowStyle },
+        createElement('input', { type: 'number', min: 1, max: 65535, placeholder: t('lan.dshPort'), value: dshPort, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { value: string } }) => setDshPort(event.currentTarget.value), onBlur: saveMappingOnBlur, style: { ...fieldStyle, flex: 1, minWidth: 0 } }),
+        createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void detect(), style: buttonStyle }, t('lan.detect')),
+      ),
+    ),
+    detectedDshPorts.length > 1 && createElement('div', { style: dshSettingsNoteStyle }, t('lan.detectMultiple', { ports: detectedDshPorts.join('、') })),
+    createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 8, cursor: controlsDisabled || busy ? 'not-allowed' : 'pointer', color: dshThemeColor.labelSecondary, fontSize: 13 } },
+      createElement('input', { type: 'checkbox', checked: autoStart, disabled: controlsDisabled || busy, onChange: () => void toggleAutoStart(), style: { accentColor: dshThemeColor.accent } }),
       createElement('span', undefined, t('lan.autoStart')),
     ),
-    createElement('div', { style: { display: 'flex', gap: 8 } },
-      createElement('button', { type: 'button', disabled: disabled || busy || !listenPort, onClick: () => void start(), style: { ...buttonStyle, flex: 1 } }, busy ? t('lan.processing') : snapshot ? t('lan.update') : t('lan.start')),
-      snapshot && createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void stop(), style: buttonStyle }, t('lan.stop')),
+    createElement('div', { style: dshSettingsRowStyle },
+      createElement('button', { type: 'button', disabled: controlsDisabled || busy || !listenPort, onClick: () => void start(), style: { ...dshSettingsPrimaryButtonStyle, flex: 1 } }, busy ? t('lan.processing') : snapshot ? t('lan.update') : t('lan.start')),
+      snapshot && createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void stop(), style: buttonStyle }, t('lan.stop')),
     ),
-    snapshot && createElement('div', { role: 'status', style: { fontSize: 13 } }, t('lan.forwarding', { host: snapshot.listenHost, port: snapshot.actualListenPort ?? snapshot.listenPort, dshPort: snapshot.dshPort })),
+    snapshot && createElement('div', { role: 'status', style: dshSettingsNoteStyle }, t('lan.forwarding', { host: snapshot.listenHost, port: snapshot.actualListenPort ?? snapshot.listenPort, dshPort: snapshot.dshPort })),
     message && createElement('div', { role: 'status', style: { color: message.includes('已') ? dshThemeColor.success : dshThemeColor.error } }, message),
   )
 }

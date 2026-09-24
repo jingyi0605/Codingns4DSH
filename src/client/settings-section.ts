@@ -16,7 +16,19 @@ import {
 } from '../shared/contracts/config.js'
 import { settingsModules, type CodingNsSettingsModule } from './features/index.js'
 import type { CodingNsClientFeatureModule, CodingNsClientServices } from './features/types.js'
-import { dshFormRootStyle, dshThemeColor } from './theme.js'
+import {
+  dshSettingsBodyStyle,
+  dshSettingsCardStyle,
+  dshSettingsHeaderStyle,
+  dshSettingsPageStyle,
+  dshSettingsSubtitleStyle,
+  dshSettingsSummaryDescriptionStyle,
+  dshSettingsSummaryLabelStyle,
+  dshSettingsSummaryStyle,
+  dshSettingsSummaryTextStyle,
+  dshSettingsTitleStyle,
+  dshThemeColor,
+} from './theme.js'
 import { useCodingNsTranslator } from './locale.js'
 
 // pnpm 会为不同 peer 上下文保留独立的 ui-slots 类型实例；插件在自己实际使用的
@@ -55,9 +67,10 @@ export function CodingNsSettingsSection({ settings, registry, services, restartS
 
   return createElement(
     'section',
-    { style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 20, padding: 24, maxWidth: 980, width: '100%', boxSizing: 'border-box' } },
-    createElement('div', undefined,
-      createElement('h2', { style: { margin: 0, fontSize: 20 } }, t('settings.title')),
+    { style: dshSettingsPageStyle },
+    createElement('header', { style: dshSettingsHeaderStyle },
+      createElement('h2', { style: dshSettingsTitleStyle }, t('settings.title')),
+      createElement('p', { style: dshSettingsSubtitleStyle }, t('settings.subtitle')),
     ),
     createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
       settingsModules(registry).map((entry) => createElement(FeatureCard, {
@@ -104,12 +117,15 @@ function FeatureCard({ entry, snapshot, services, restartStates }: FeatureCardPr
     'details',
     {
       defaultOpen: ui.defaultOpen === true,
-      style: { border: `1px solid ${dshThemeColor.border}`, borderRadius: 6, overflow: 'hidden' },
+      style: dshSettingsCardStyle,
     },
     createElement('summary', {
-      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '14px 16px', cursor: 'pointer', fontWeight: 600 },
+      style: dshSettingsSummaryStyle,
     },
-      createElement('span', undefined, t(ui.labelKey ?? ui.label)),
+      createElement('span', { style: dshSettingsSummaryTextStyle },
+        createElement('span', { style: dshSettingsSummaryLabelStyle }, t(ui.labelKey ?? ui.label)),
+        createElement('span', { style: dshSettingsSummaryDescriptionStyle }, t(ui.descriptionKey ?? ui.description)),
+      ),
       createElement(FeatureSwitch, {
         label: t(ui.labelKey ?? ui.label),
         checked: enabled,
@@ -117,10 +133,7 @@ function FeatureCard({ entry, snapshot, services, restartStates }: FeatureCardPr
         onChange: toggle,
       }),
     ),
-    createElement('div', {
-      style: { display: 'flex', flexDirection: 'column', gap: 16, padding: 20, borderTop: `1px solid ${dshThemeColor.border}` },
-    },
-      createElement('p', { style: { margin: 0, fontSize: 13, opacity: 0.65 } }, t(ui.descriptionKey ?? ui.description)),
+    createElement('div', { style: dshSettingsBodyStyle },
       module.descriptor.activation !== 'restart' ? null : createElement(
         'div',
         { role: 'status', style: { display: 'flex', flexDirection: 'column', gap: 4, padding: 10, border: `1px solid ${dshThemeColor.border}`, borderRadius: 6, fontSize: 13 } },
@@ -145,7 +158,7 @@ interface FeatureSwitchProps {
 /** 标题栏开关：真实 checkbox 语义，点击不会连带折叠卡片。 */
 function FeatureSwitch({ label, checked, disabled, onChange }: FeatureSwitchProps): ReactElement {
   return createElement('label', {
-    style: { position: 'relative', display: 'inline-flex', flex: '0 0 auto', width: 42, height: 24, cursor: disabled ? 'not-allowed' : 'pointer' },
+    style: { position: 'relative', display: 'inline-flex', flex: '0 0 auto', width: 44, height: 24, opacity: disabled ? 0.55 : 1, cursor: disabled ? 'not-allowed' : 'pointer' },
     onClick: (event: { stopPropagation: () => void }) => event.stopPropagation(),
   },
     createElement('input', {
@@ -158,10 +171,10 @@ function FeatureSwitch({ label, checked, disabled, onChange }: FeatureSwitchProp
       style: { position: 'absolute', inset: 0, width: '100%', height: '100%', margin: 0, opacity: 0, cursor: 'inherit', zIndex: 1 },
     }),
     createElement('span', {
-      style: { position: 'absolute', inset: 0, borderRadius: 999, background: checked ? dshThemeColor.accent : dshThemeColor.inputBackground, border: `1px solid ${dshThemeColor.border}`, boxSizing: 'border-box', transition: 'background 160ms ease' },
+      style: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', padding: 2, borderRadius: 999, background: checked ? dshThemeColor.accent : dshThemeColor.surfaceSubtle, border: `1px solid ${dshThemeColor.border}`, boxSizing: 'border-box', transition: 'background 160ms ease' },
     },
       createElement('span', {
-        style: { position: 'absolute', top: 3, left: checked ? 21 : 3, width: 18, height: 18, borderRadius: '50%', background: dshThemeColor.switchThumb, boxShadow: '0 1px 3px rgba(0, 0, 0, 0.25)', transition: 'left 160ms ease' },
+        style: { width: 18, height: 18, flex: '0 0 18px', borderRadius: '50%', background: dshThemeColor.switchThumb, boxShadow: dshThemeColor.subtleShadow, transform: `translateX(${checked ? 20 : 0}px)`, transition: 'transform 160ms ease' },
       }),
     ),
   )

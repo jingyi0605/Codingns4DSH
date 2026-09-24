@@ -9,7 +9,17 @@ import {
 } from '../../shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import type { FeaturePanelProps, CodingNsRpcClient } from './types.js'
-import { dshButtonStyle, dshFieldStyle, dshFormRootStyle, dshPopupSurfaceStyle, dshThemeColor } from '../theme.js'
+import {
+  dshFormRootStyle,
+  dshPopupSurfaceStyle,
+  dshSettingsButtonStyle,
+  dshSettingsFieldLabelStyle,
+  dshSettingsFieldStyle,
+  dshSettingsNoteStyle,
+  dshSettingsPrimaryButtonStyle,
+  dshSettingsRowStyle,
+  dshThemeColor,
+} from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 
 /**
@@ -21,6 +31,7 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
   const { settings, rpc } = services
   const t = useCodingNsTranslator(services.locale)
   const disabled = !enabled
+  const controlsDisabled = disabled || snapshot.status === 'loading' || !snapshot.writable
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -123,31 +134,31 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     })
   }
 
-  const fieldStyle = { ...dshFieldStyle, width: '100%', boxSizing: 'border-box' as const, padding: '8px 10px', borderRadius: 6 }
-  const buttonStyle = { ...dshButtonStyle, padding: '8px 14px', borderRadius: 6, cursor: 'pointer' }
+  const fieldStyle = dshSettingsFieldStyle
+  const buttonStyle = dshSettingsButtonStyle
   const authenticated = auth.status === 'authenticated'
 
   return createElement(
     'div',
-    { 'aria-disabled': disabled, style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 16, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
+    { 'aria-disabled': controlsDisabled, style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 16, opacity: controlsDisabled ? 0.5 : 1, pointerEvents: controlsDisabled ? 'none' : 'auto' } },
     createElement('div', undefined,
       createElement('h3', { style: { margin: 0, fontSize: 17 } }, t('relay.settings')),
-      createElement('p', { style: { margin: '8px 0 0', opacity: 0.65 } }, t('relay.loginHint')),
+      createElement('p', { style: { margin: '6px 0 0', color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 } }, t('relay.loginHint')),
     ),
     createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-      createElement('span', undefined, t('relay.controlApi')),
-      createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
-        createElement('select', { value: controlBaseUrl, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => chooseControlBaseUrl(event.currentTarget.value), style: { ...fieldStyle, flex: 1, minWidth: 0 } },
+      createElement('span', { style: dshSettingsFieldLabelStyle }, t('relay.controlApi')),
+      createElement('div', { style: dshSettingsRowStyle },
+        createElement('select', { value: controlBaseUrl, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { value: string } }) => chooseControlBaseUrl(event.currentTarget.value), style: { ...fieldStyle, flex: 1, minWidth: 0 } },
           ...controlBaseUrls.map((url) => createElement('option', { key: url, value: url }, url)),
         ),
-        createElement('button', { type: 'button', 'aria-haspopup': 'dialog', disabled: disabled || busy, onClick: () => { setAddressError(''); setAddAddressOpen(true) }, style: { ...buttonStyle, flex: '0 0 auto' } }, t('relay.add')),
+        createElement('button', { type: 'button', 'aria-haspopup': 'dialog', disabled: controlsDisabled || busy, onClick: () => { setAddressError(''); setAddAddressOpen(true) }, style: { ...buttonStyle, flex: '0 0 auto' } }, t('relay.add')),
       ),
     ),
     addAddressOpen && createElement('div', { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'codingns-add-address-title', style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: dshThemeColor.overlay } },
-      createElement('div', { style: { ...dshPopupSurfaceStyle, width: 'min(100%, 480px)', boxSizing: 'border-box', padding: 24, borderRadius: 8 } },
+        createElement('div', { style: { ...dshPopupSurfaceStyle, width: 'min(100%, 480px)', boxSizing: 'border-box', padding: 24, borderRadius: 8 } },
         createElement('h3', { id: 'codingns-add-address-title', style: { margin: 0, fontSize: 18 } }, t('relay.addServer')),
         createElement('p', { style: { margin: '8px 0 16px', opacity: 0.7 } }, t('relay.addServerHint')),
-        createElement('input', { type: 'url', autoFocus: true, value: newControlBaseUrl, placeholder: 'https://example.com:1443', disabled: busy, onChange: (event: { currentTarget: { value: string } }) => setNewControlBaseUrl(event.currentTarget.value), style: fieldStyle }),
+        createElement('input', { type: 'url', autoFocus: true, value: newControlBaseUrl, placeholder: 'https://example.com:1443', disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setNewControlBaseUrl(event.currentTarget.value), style: fieldStyle }),
         addressError && createElement('div', { role: 'alert', style: { marginTop: 8, color: dshThemeColor.error } }, addressError),
         createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 } },
           createElement('button', { type: 'button', disabled: busy, onClick: () => { setAddAddressOpen(false); setAddressError('') }, style: buttonStyle }, t('relay.cancel')),
@@ -157,28 +168,28 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     ),
     !authenticated && createElement('form', { onSubmit: (event: { preventDefault: () => void }) => { event.preventDefault(); void login() }, style: { display: 'flex', flexDirection: 'column', gap: 12 } },
       createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-        createElement('span', undefined, t('relay.email')),
-        createElement('input', { type: 'email', autoComplete: 'username', value: email, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setEmail(event.currentTarget.value), style: fieldStyle }),
+        createElement('span', { style: dshSettingsFieldLabelStyle }, t('relay.email')),
+        createElement('input', { type: 'email', autoComplete: 'username', value: email, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { value: string } }) => setEmail(event.currentTarget.value), style: fieldStyle }),
       ),
       createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-        createElement('span', undefined, t('relay.password')),
-        createElement('input', { type: 'password', autoComplete: 'current-password', value: password, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setPassword(event.currentTarget.value), style: fieldStyle }),
+        createElement('span', { style: dshSettingsFieldLabelStyle }, t('relay.password')),
+        createElement('input', { type: 'password', autoComplete: 'current-password', value: password, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { value: string } }) => setPassword(event.currentTarget.value), style: fieldStyle }),
       ),
-      createElement('button', { type: 'submit', disabled: disabled || busy || !controlBaseUrl || !email || !password, style: buttonStyle }, busy ? t('relay.loggingIn') : t('relay.login')),
+      createElement('button', { type: 'submit', disabled: controlsDisabled || busy || !controlBaseUrl || !email || !password, style: dshSettingsPrimaryButtonStyle }, busy ? t('relay.loggingIn') : t('relay.login')),
     ),
     authenticated && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
-      createElement('div', { style: { padding: 12, border: `1px solid ${dshThemeColor.border}`, borderRadius: 6 } },
+      createElement('div', { style: dshSettingsNoteStyle },
         createElement('strong', undefined, auth.account?.email ?? t('relay.loggedIn')),
         createElement('div', { style: { marginTop: 6, opacity: 0.7 } }, t('relay.device', { value: devices?.devices.find((device) => device.dshDeviceId === selectedDeviceId)?.displayName ?? t('relay.unrecognized') })),
         createElement('div', { style: { marginTop: 4, opacity: 0.7 } }, t('relay.host', { value: selectedDeviceId || t('relay.unbound') })),
       ),
       createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-        createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void loadDevices(), style: buttonStyle }, t('relay.refreshDevices')),
-        createElement('button', { type: 'button', disabled: disabled || busy, onClick: () => void logout(), style: buttonStyle }, t('relay.logout')),
+        createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void loadDevices(), style: buttonStyle }, t('relay.refreshDevices')),
+        createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void logout(), style: buttonStyle }, t('relay.logout')),
       ),
       devices && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-        createElement('strong', undefined, t('relay.dshDevices')),
-        createElement('select', { value: selectedDeviceId, disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setSelectedDeviceId(event.currentTarget.value), style: fieldStyle },
+        createElement('strong', { style: dshSettingsFieldLabelStyle }, t('relay.dshDevices')),
+        createElement('select', { value: selectedDeviceId, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { value: string } }) => setSelectedDeviceId(event.currentTarget.value), style: fieldStyle },
           createElement('option', { value: '' }, t('relay.selectDevice')),
           ...devices.devices.map((device) => createElement('option', { key: device.dshDeviceId, value: device.dshDeviceId, disabled: !device.online || device.status !== 'active' }, `${device.displayName} · ${device.online ? t('relay.online') : t('relay.offline')}`)),
         ),
