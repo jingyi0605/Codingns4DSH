@@ -147,6 +147,7 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
   let ticket = await requestTicket()
   let closed = false
   let renewTimer: ReturnType<typeof setTimeout> | null = null
+  let renewalInFlight = false
   let acceptor = await createAcceptor(ticket)
   const gateways = new Map<string, DshGateway>()
 
@@ -161,7 +162,8 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
     })
   }
   const renew = async (): Promise<void> => {
-    if (closed) return
+    if (closed || renewalInFlight) return
+    renewalInFlight = true
     try {
       const nextTicket = await requestTicket()
       const previous = acceptor
@@ -173,6 +175,8 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
       if (!closed) {
         renewTimer = setTimeout(() => { void renew() }, 5_000)
       }
+    } finally {
+      renewalInFlight = false
     }
   }
   scheduleRenewal()

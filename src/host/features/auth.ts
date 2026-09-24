@@ -47,6 +47,7 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
       let session: CodingNsAuthSession | null = null
       let sessionBaseUrl: string | null = null
       let dshRuntime: DshHostDeviceRuntime | null = null
+      let dshStartPromise: Promise<void> | null = null
 
       const ensureSession = async (controlBaseUrl: string): Promise<CodingNsAuthSession> => {
         if (session && sessionBaseUrl === controlBaseUrl) return session
@@ -67,29 +68,35 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
 
       const startDsh = async (target: CodingNsAuthSession): Promise<void> => {
         if (dshRuntime !== null) return
+        if (dshStartPromise !== null) return dshStartPromise
         const accessToken = target.getAccessToken()
         if (!accessToken) return
-        try {
-          const gatewayFeatures = [createDshRpcGatewayFeature(context.services.rpc)]
-          if (context.services.dshWebPort !== undefined) {
-            gatewayFeatures.push(createRemoteWebRuntimeFeature({
-              provider: createLocalDshWebRuntimeProvider({
-                port: context.services.dshWebPort,
-                dshVersion: '0.1.6-alpha.2',
-              }),
-            }))
+        dshStartPromise = (async () => {
+          try {
+            const gatewayFeatures = [createDshRpcGatewayFeature(context.services.rpc)]
+            if (context.services.dshWebPort !== undefined) {
+              gatewayFeatures.push(createRemoteWebRuntimeFeature({
+                provider: createLocalDshWebRuntimeProvider({
+                  port: context.services.dshWebPort,
+                  dshVersion: '0.1.6-alpha.2',
+                }),
+              }))
+            }
+            dshRuntime = await startDshHostDeviceRuntime({
+              controlClient: target.getControlClient(),
+              accessToken,
+              credentialStore: dshCredentials,
+              resources: context.resources,
+              gatewayFeatures,
+            })
+          } catch (error) {
+            // DSH 设备服务不可用时不应破坏已有 CodingNS 登录；下次登录/显式 start 会重试。
+            console.error('dsh-codingns: DSH Host runtime 启动失败', error)
+          } finally {
+            dshStartPromise = null
           }
-          dshRuntime = await startDshHostDeviceRuntime({
-            controlClient: target.getControlClient(),
-            accessToken,
-            credentialStore: dshCredentials,
-            resources: context.resources,
-            gatewayFeatures,
-          })
-        } catch (error) {
-          // DSH 设备服务不可用时不应破坏已有 CodingNS 登录；下次登录/显式 start 会重试。
-          console.error('dsh-codingns: DSH Host runtime 启动失败', error)
-        }
+        })()
+        return dshStartPromise
       }
 
       const actions: Record<string, AuthAction> = {
