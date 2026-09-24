@@ -8,14 +8,14 @@
 
 DSH Web 是唯一主体，`dsh-codingns` 只是由 DSH 装载的 Bundle。CodingNS 父仓库不启动、接管或配置本插件，也不得向本插件提供私有接口。终端由本插件原子提供 Typert manifest、Host controller、浏览器 `webTerminals`、DSH Sidebar UI 和 xterm；Bundle 成对禁用官方 Host controller 与官方终端 UI，避免重复 namespace 或服务空洞。
 
-当前 DSH 版本约束为 `0.1.6-alpha.2`。启动期 Transport 事实和限制记录在 `specs/spec001-DeepSeekHarness-CodingNS单一插件/docs/20260921-阶段0-DSH插件装配调查.md`。
+当前插件版本为 `0.1.0`，兼容 DSH `>=0.1.6-alpha.2 <0.1.7`，已针对 `0.1.6-alpha.2` 完成验证。启动期 Transport 事实和限制记录在 `specs/spec001-DeepSeekHarness-CodingNS单一插件/docs/20260921-阶段0-DSH插件装配调查.md`。
 
-版本源是根目录的 `version.json`。`package.json`、Profile、运行时常量和所有 DSH 依赖由 `pnpm run version:set-dsh -- <版本>` 同步，并由每次构建前的 `pnpm run version:check` 校验。TypeScript、Client bundle 和 H5 bundle 都写入 git 排除的 `data/build/`；`npm pack` 通过 `prepack` 自动先构建再打包。
+版本源是根目录的 `version.json`：`pluginVersion` 管理插件发布版本，`dshCompatibility` 管理宿主兼容范围，`dshTestedVersion` 管理当前验证的 DSH 版本，`dshProtocolVersion` 管理协议主版本。插件版本使用 `pnpm run version:set-plugin -- <版本>` 更新；DSH 版本使用 `pnpm run version:set-dsh -- <版本> [兼容范围]` 更新。每次构建前由 `pnpm run version:check` 校验四者同步。TypeScript、Client bundle 和 H5 bundle 都写入 git 排除的 `data/build/`；`npm pack` 通过 `prepack` 自动先构建再打包。
 
 ## 三件套装配
 
 - `dsh-codingns`：DSH Bundle，提供 Host/Client 入口和后续 CodingNS 能力。
-- `profile/`：独立 CodingNS Profile，只声明 `dsh-codingns` Bundle，并锁定 DSH `0.1.6-alpha.2`。
+- `profile/`：独立 CodingNS Profile，只声明 `dsh-codingns@0.1.0` Bundle，并声明 DSH 兼容范围 `>=0.1.6-alpha.2 <0.1.7`。
 - `exports["./bootstrap"]`：启动胶水。桌面壳或页面必须在创建 DSH Client/Cordis 之前调用 `installPreCordisTransport()`，再启动 DSH；它不是普通动态插件，也不覆盖默认 Connection。
 
 启动胶水当前负责版本校验、唯一 Transport 登记和失败清理；`DshCodingNsTransport` 通过 `asTransportHooks()` 提供给它。普通动态插件不会覆盖默认 Connection。
@@ -54,7 +54,7 @@ DSH_CODINGNS_TUNNEL_DEBUG=1 dsh --profile stage0 --no-open
 Profile 安装完成后，使用 DSH 官方启动器启动：
 
 ```bash
-dsh plugin --profile dsh-codingns add dsh-codingns@0.1.6-alpha.2
+dsh plugin --profile dsh-codingns add dsh-codingns@0.1.0
 dsh --profile dsh-codingns
 ```
 
@@ -75,7 +75,7 @@ dsh --profile stage0 --no-open
 
 不需要再次执行 `pnpm build`、打包或安装插件。若使用其他 Profile，把 `stage0` 换成对应名称；也可以通过 `DSH_HOME` 指定 DSH 数据目录。
 
-升级 DSH 时必须先匹配新的插件版本。版本不等于 `0.1.6-alpha.2` 时，启动胶水会明确抛出 `DSH_VERSION_UNSUPPORTED`，不会静默降级或覆盖默认连接。
+升级 DSH 时必须先确认版本落在插件声明的兼容范围内。超出 `>=0.1.6-alpha.2 <0.1.7` 时，启动胶水会明确抛出 `DSH_VERSION_UNSUPPORTED`，不会静默降级或覆盖默认连接。同一个 DSH 版本可以发布多个插件版本，插件版本和 DSH 版本不再要求相等。
 
 验证：
 
@@ -91,14 +91,21 @@ pnpm exec tsc --noEmit
 会依次执行版本校验、依赖安装、类型检查、完整测试、npm 包内容检查和发布：
 
 ```bash
-git tag v0.1.6-alpha.2
-git push origin v0.1.6-alpha.2
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
-发布 tag 必须与根目录 `version.json` 的版本一致。发布前先切换 DSH 版本并提交所有同步文件：
+发布 tag 必须与根目录 `version.json` 的 `pluginVersion` 一致。发布插件修订时只需更新插件版本；切换 DSH 兼容线时再更新 DSH 测试版本和兼容范围：
 
 ```bash
-pnpm run version:set-dsh -- 0.1.7-rc.1
+pnpm run version:set-plugin -- 0.1.1
+pnpm run version:check
+```
+
+切换 DSH 版本时：
+
+```bash
+pnpm run version:set-dsh -- 0.1.7-rc.1 ">=0.1.7-rc.1 <0.1.8"
 pnpm run version:check
 ```
 

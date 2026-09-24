@@ -1,13 +1,13 @@
 {
   "name": "dsh-codingns-profile",
-  "version": "0.1.6-alpha.2",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "engines": {
-    "dsh": "0.1.6-alpha.2"
+    "dsh": ">=0.1.6-alpha.2 <0.1.7"
   },
   "dependencies": {
-    "dsh-codingns": "0.1.6-alpha.2"
+    "dsh-codingns": "0.1.0"
   },
   "dsh": {
     "profile": {

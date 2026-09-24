@@ -1,6 +1,6 @@
 {
   "name": "dsh-codingns",
-  "version": "0.1.6-alpha.2",
+  "version": "0.1.0",
   "description": "CodingNS 的 DeepSeek Harness 插件骨架与连接契约",
   "type": "module",
   "main": "./data/build/dist/index.js",
@@ -45,7 +45,7 @@
     "./package.json": "./package.json"
   },
   "engines": {
-    "dsh": "0.1.6-alpha.2",
+    "dsh": ">=0.1.6-alpha.2 <0.1.7",
     "node": ">=22.19.0"
   },
   "dsh": {
@@ -72,6 +72,7 @@
   },
   "scripts": {
     "version:check": "node scripts/check-version-sync.mjs",
+    "version:set-plugin": "node scripts/set-plugin-version.mjs",
     "version:set-dsh": "node scripts/set-dsh-version.mjs",
     "prebuild": "pnpm run version:check",
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && pnpm run bundle:client && pnpm run bundle:h5",

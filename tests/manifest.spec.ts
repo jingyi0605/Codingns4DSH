@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { SUPPORTED_DSH_VERSION } from '../data/build/dist/shared/index.js'
+import { SUPPORTED_DSH_COMPATIBILITY, SUPPORTED_DSH_VERSION } from '../data/build/dist/shared/index.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
@@ -37,9 +37,12 @@ test('package manifest declares the DSH bundle and client entry', () => {
   assert.equal(manifest.exports['./typert'].default, './data/build/dist/typert.host.js')
   assert.equal(manifest.exports['./typert'].types, './data/build/dist/typert.host.d.ts')
   assert.equal(manifest.exports['./bootstrap'].default, './data/build/dist/bootstrap/index.js')
-  assert.equal(manifest.engines.dsh, SUPPORTED_DSH_VERSION)
-  assert.equal(manifest.version, manifest.engines.dsh)
-  assert.equal(JSON.parse(readFileSync(join(root, 'version.json'), 'utf8')).version, manifest.version)
+  assert.equal(manifest.engines.dsh, SUPPORTED_DSH_COMPATIBILITY)
+  assert.equal(manifest.version, '0.1.0')
+  const versionFile = JSON.parse(readFileSync(join(root, 'version.json'), 'utf8'))
+  assert.equal(versionFile.pluginVersion, manifest.version)
+  assert.equal(versionFile.dshTestedVersion, SUPPORTED_DSH_VERSION)
+  assert.equal(versionFile.dshProtocolVersion, 1)
 })
 
 test('bundle patch and example profile use DSH native shapes', async () => {
@@ -52,7 +55,7 @@ test('bundle patch and example profile use DSH native shapes', async () => {
   assert.deepEqual(profile.dsh.profile.bundles, ['dsh-codingns'])
   assert.equal(profile.version, manifest.version)
   assert.equal(profile.dependencies['dsh-codingns'], manifest.version)
-  assert.equal(profile.engines.dsh, SUPPORTED_DSH_VERSION)
+  assert.equal(profile.engines.dsh, SUPPORTED_DSH_COMPATIBILITY)
 })
 
 test('npm 包声明包含工作区会话 Logo 资产', () => {
