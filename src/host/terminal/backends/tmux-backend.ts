@@ -211,7 +211,7 @@ function isExecutable(path: string): boolean {
 }
 
 function isMissingSession(stderr: string): boolean {
-  return /no (server running|sessions|session)|can't find session/i.test(stderr)
+  return /no (server running|sessions|session)|can't find session|error connecting to .*no such file or directory/i.test(stderr)
 }
 
 function sanitizeCommandError(prefix: string, stderr: string): string {

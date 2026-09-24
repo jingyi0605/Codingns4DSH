@@ -98,6 +98,23 @@ test('tmux 检查不会把权限或 socket 故障误判为会话丢失', async (
   await assert.rejects(() => backend.inspect(session), /tmux 会话检查失败/u)
 })
 
+test('宿主机重启后 tmux socket 消失时视为会话已丢失并可幂等关闭', async () => {
+  const socketError = 'error connecting to /private/tmp/tmux-501/default (No such file or directory)'
+  const backend = new TmuxTerminalBackend({
+    platform: 'darwin',
+    tmuxPath: '/opt/homebrew/bin/tmux',
+    commandRunner: {
+      run: (_command, args) => args[0] === 'has-session'
+        ? { status: 1, stdout: '', stderr: socketError }
+        : { status: 1, stdout: '', stderr: socketError },
+    },
+  })
+
+  const identity = await backend.inspect(session)
+  assert.equal(identity.alive, false)
+  await backend.terminate(session)
+})
+
 test('真实 tmux 会话可创建、跨检查保持身份并显式关闭', { skip: findTmux() === null }, async () => {
   const tmuxPath = findTmux()
   assert.notEqual(tmuxPath, null)
