@@ -8,6 +8,7 @@ import type {
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { usageChunk } from './rpc-driver-utils.js'
 
 const WINDOWS = process.platform === 'win32'
 
@@ -187,7 +188,8 @@ function genericEventChunks(value: Record<string, unknown>, cancelled: boolean):
     })
   }
   const usage = isRecord(value.usage) ? value.usage : isRecord(event.usage) ? event.usage : null
-  if (usage) chunks.push({ type: 'usage', inputTokens: numberValue(usage.input_tokens ?? usage.inputTokens), outputTokens: numberValue(usage.output_tokens ?? usage.outputTokens) })
+  const usageEvent = usageChunk(usage)
+  if (usageEvent) chunks.push(usageEvent)
   if (['result', 'turn_end', 'done', 'complete', 'completed', 'final'].includes(eventType) || type === 'result') chunks.push({ type: 'finish', reason: cancelled ? 'cancel' : 'stop' })
   return chunks
 }
@@ -204,4 +206,3 @@ function parseHelpModels(output: string): CodingNsCliModelCatalog {
   }
   return models.length === 0 ? emptyCatalog() : { groups: [{ id: 'default', name: '可用模型', models }], currentModel: null, currentEffort: null }
 }
-function numberValue(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) ? value : 0 }

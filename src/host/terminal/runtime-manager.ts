@@ -92,6 +92,32 @@ export class TerminalRuntimeManager {
     await this.adapter(attachment.runtimeType).write({ attachmentId: attachment.runtimeAttachmentId, data })
   }
 
+  /**
+   * 在不抢占浏览器 attach 控制权的前提下，向持久终端写入一次启动命令。
+   * 这是调试快捷启动所需的“先开 Shell、再发送命令”路径。
+   */
+  async writeSession(record: PersistentTerminalRecord, data: string): Promise<void> {
+    const monitor = this.monitors.get(monitorKey(record))
+    const backend = this.adapter(record.runtimeType)
+    if (monitor !== undefined) {
+      // monitor attach 与持久 Shell 同寿命，不能像临时 attach 一样写完立即销毁。
+      await backend.write({ attachmentId: monitor.attachmentId, data })
+      return
+    }
+
+    const attachment = await backend.attach({
+      session: runtimeSession(record),
+      cols: record.cols,
+      rows: record.rows,
+      onData: () => undefined,
+    })
+    try {
+      await backend.write({ attachmentId: attachment.attachmentId, data })
+    } finally {
+      await backend.detach(attachment.attachmentId)
+    }
+  }
+
   async resize(subscriptionId: string, cols: number, rows: number): Promise<void> {
     const attachment = this.requireAttachment(subscriptionId)
     await this.adapter(attachment.runtimeType).resize({ attachmentId: attachment.runtimeAttachmentId, cols, rows })
@@ -113,7 +139,7 @@ export class TerminalRuntimeManager {
 
   /** 为 Host 进程状态提供退出监听，不获取终端输入控制权。 */
   async monitor(record: PersistentTerminalRecord, onExit: (exitCode: number | null) => void): Promise<void> {
-    const key = JSON.stringify([record.hostId, record.workspaceId, record.terminalId])
+    const key = monitorKey(record)
     if (this.monitors.has(key)) return
     const backend = this.adapter(record.runtimeType)
     const attachment = await backend.attach({
@@ -130,7 +156,7 @@ export class TerminalRuntimeManager {
   }
 
   async detachMonitor(record: PersistentTerminalRecord): Promise<void> {
-    const key = JSON.stringify([record.hostId, record.workspaceId, record.terminalId])
+    const key = monitorKey(record)
     const monitor = this.monitors.get(key)
     if (monitor === undefined) return
     this.monitors.delete(key)
@@ -161,6 +187,10 @@ export class TerminalRuntimeManager {
     return attachment
   }
 
+}
+
+function monitorKey(record: Pick<PersistentTerminalRecord, 'hostId' | 'workspaceId' | 'terminalId'>): string {
+  return JSON.stringify([record.hostId, record.workspaceId, record.terminalId])
 }
 
 function runtimeSession(record: PersistentTerminalRecord): TerminalRuntimeSession {

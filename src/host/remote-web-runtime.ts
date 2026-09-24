@@ -206,8 +206,10 @@ export function createRemoteWebRuntimeFeature(options: RemoteWebRuntimeFeatureOp
 export interface LocalDshWebRuntimeProviderOptions {
   readonly port: number
   readonly dshVersion: string
+  /** DSH 官方 Web 认证入口；首次请求只用于换取 HttpOnly Cookie。 */
+  readonly authenticatedUrl?: string
   readonly fetcher?: typeof fetch
-  readonly websocketFactory?: (url: string) => DshWebSocketLike
+  readonly websocketFactory?: (url: string, options?: { readonly headers?: Readonly<Record<string, string>> }) => DshWebSocketLike
   readonly bootPath?: string
   readonly pluginManifestPath?: string
   readonly allowedPathPrefixes?: readonly string[]
@@ -220,6 +222,26 @@ export function createLocalDshWebRuntimeProvider(options: LocalDshWebRuntimeProv
   const baseUrl = `http://127.0.0.1:${options.port}`
   const allowed = options.allowedPathPrefixes ?? ['/', '/assets/', '/plugins/', '/api/']
   const sessions = new Map<string, DshWebSession>()
+  let sessionCookie: string | undefined
+
+  const fetchLocal = async (path: string, init: RequestInit = {}): Promise<Response> => {
+    const headers = new Headers(init.headers)
+    // Cookie 只允许由 Host 侧认证交换产生，不能让远端页面伪造或覆盖。
+    if (sessionCookie !== undefined) headers.set('cookie', sessionCookie)
+    else headers.delete('cookie')
+    return fetcher(`${baseUrl}${path}`, { ...init, headers })
+  }
+
+  const ensureAuthenticated = async (): Promise<void> => {
+    if (sessionCookie !== undefined || options.authenticatedUrl === undefined) return
+    const response = await fetcher(options.authenticatedUrl, { redirect: 'manual' })
+    const setCookie = getSetCookie(response.headers)
+    if (setCookie !== undefined) sessionCookie = setCookie
+    if (response.status !== 303 || sessionCookie === undefined) {
+      throw new Error(`DSH Web 认证交换失败 (${response.status})`)
+    }
+  }
+
   return {
     async openSession(input) {
       const session: DshWebSession = { sessionId: input.sessionId?.trim() || `web_${cryptoRandomId()}`, dshVersion: options.dshVersion, ...(input.workspaceId?.trim() ? { workspaceId: input.workspaceId.trim() } : {}) }
@@ -228,7 +250,8 @@ export function createLocalDshWebRuntimeProvider(options: LocalDshWebRuntimeProv
     },
     async getBoot(session) {
       ensureSession(sessions, session)
-      const response = await fetcher(`${baseUrl}${normalizePath(options.bootPath ?? '/')}`)
+      await ensureAuthenticated()
+      const response = await fetchLocal(normalizePath(options.bootPath ?? '/'))
       if (!response.ok) throw new Error(`读取 DSH Web boot 失败 (${response.status})`)
       return { dshVersion: options.dshVersion, contentType: response.headers.get('content-type') ?? 'text/html; charset=utf-8', html: await response.text(), capabilities: ['boot', 'asset', 'websocket', 'plugin'] }
     },
@@ -236,11 +259,13 @@ export function createLocalDshWebRuntimeProvider(options: LocalDshWebRuntimeProv
       ensureSession(sessions, session)
       const normalized = normalizePath(path)
       if (!allowed.some((prefix) => normalized === prefix || normalized.startsWith(prefix))) throw new Error('DSH Web 资源路径不在白名单内')
-      return readAsset(await fetcher(`${baseUrl}${normalized}`))
+      await ensureAuthenticated()
+      return readAsset(await fetchLocal(normalized))
     },
     async getPluginManifest(session) {
       ensureSession(sessions, session)
-      const response = await fetcher(`${baseUrl}${normalizePath(options.pluginManifestPath ?? '/api/plugins/manifest')}`)
+      await ensureAuthenticated()
+      const response = await fetchLocal(normalizePath(options.pluginManifestPath ?? '/api/plugins/manifest'))
       if (response.status === 404) return []
       if (!response.ok) throw new Error(`读取 DSH 插件清单失败 (${response.status})`)
       return await response.json() as unknown
@@ -253,21 +278,34 @@ export function createLocalDshWebRuntimeProvider(options: LocalDshWebRuntimeProv
       const init: RequestInit = { method: input.method ?? 'GET' }
       if (input.headers !== undefined) init.headers = Object.fromEntries(input.headers)
       if (input.body !== undefined) init.body = input.body
-      const response = await fetcher(`${baseUrl}${path}`, init)
+      await ensureAuthenticated()
+      const response = await fetchLocal(path, init)
       return { status: response.status, headers: [...response.headers.entries()], body: await response.text() }
     },
     async openWebSocket(session, path) {
       ensureSession(sessions, session)
       const normalized = normalizePath(path)
       if (!allowed.some((prefix) => normalized === prefix || normalized.startsWith(prefix))) throw new Error('DSH WebSocket 路径不在白名单内')
-      const factory = options.websocketFactory ?? ((url: string) => {
+      await ensureAuthenticated()
+      const factory = options.websocketFactory ?? ((url: string, init?: { readonly headers?: Readonly<Record<string, string>> }) => {
         const Constructor = globalThis.WebSocket
         if (!Constructor) throw new Error('当前 Host 运行时没有 WebSocket')
-        return new Constructor(url) as unknown as DshWebSocketLike
+        const NodeConstructor = Constructor as unknown as new (url: string, options?: unknown) => DshWebSocketLike
+        return new NodeConstructor(url, init === undefined ? undefined : { headers: init.headers })
       })
-      return factory(`${baseUrl.replace(/^http:/u, 'ws:')}${normalized}`)
+      return factory(`${baseUrl.replace(/^http:/u, 'ws:')}${normalized}`, sessionCookie === undefined ? undefined : { headers: { cookie: sessionCookie } })
     },
   }
+}
+
+function getSetCookie(headers: Headers): string | undefined {
+  const extended = headers as Headers & { getSetCookie?: () => string[] }
+  const values = extended.getSetCookie?.() ?? (headers.get('set-cookie') === null ? [] : [headers.get('set-cookie')!])
+  for (const value of values) {
+    const match = /^([^=;\s]+=[^;]*)/u.exec(value)
+    if (match?.[1] !== undefined) return match[1]
+  }
+  return undefined
 }
 
 class RemoteWebRuntimeError extends Error {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { SUPPORTED_DSH_VERSION } from '../dist/shared/index.js'
 
 async function readProjectFile(path: string): Promise<string> {
   return readFile(new URL(`../${path}`, import.meta.url), 'utf8')
@@ -9,8 +10,8 @@ async function readProjectFile(path: string): Promise<string> {
 test('阶段 0 锁定 DSH 公共包版本', async () => {
   const packageJson = JSON.parse(await readProjectFile('node_modules/@deepseek-ai/dsh-client-ui-sidebar-right/package.json')) as { version?: unknown }
   const connectionPackageJson = JSON.parse(await readProjectFile('node_modules/@deepseek-ai/dsh-client-connection/package.json')) as { version?: unknown }
-  assert.equal(packageJson.version, '0.1.6-alpha.2')
-  assert.equal(connectionPackageJson.version, '0.1.6-alpha.2')
+  assert.equal(packageJson.version, SUPPORTED_DSH_VERSION)
+  assert.equal(connectionPackageJson.version, SUPPORTED_DSH_VERSION)
 })
 
 test('阶段 0 记录 Sidebar 正式注册和打开接口', async () => {

@@ -100,8 +100,8 @@ export class TerminalProcessService {
         terminalId,
         runtimeType: profile.runtimeType,
         shell: profile.shell,
-        commandPath: profile.command,
-        commandArgs: profile.args,
+        ...(request.commandMode === 'shell-input' ? { title: `${profile.shell.name}-${profile.name}` } : {}),
+        ...(request.commandMode === 'shell-input' ? {} : { commandPath: profile.command, commandArgs: profile.args }),
         commandEnv: profile.env,
         launchProfileId: profile.id,
         cwd,
@@ -109,6 +109,9 @@ export class TerminalProcessService {
         rows: request.rows,
         onExit: (exitCode) => { void this.handleExit(instanceId, exitCode) },
       })
+      if (request.commandMode === 'shell-input') {
+        await this.options.terminalService.writeInitialInput(identity, buildShellInput(profile))
+      }
       const record = this.options.terminalService.getRecord(identity)
       const runtime = await this.options.terminalService.inspect(identity)
       if (record === undefined) throw new Error('终端启动后记录丢失')
@@ -116,7 +119,9 @@ export class TerminalProcessService {
         ...instance,
         runtimeSessionKey: record.runtimeSessionKey,
         state: 'running',
-        pid: runtime.runtimePid,
+        // Shell-input 模式的 runtime PID 是交互 Shell，不是实际监听端口的业务进程。
+        // 业务进程身份由 DebugWorkspaceService 的端口快照单独确认。
+        pid: request.commandMode === 'shell-input' ? null : runtime.runtimePid,
       }
       await this.store.putInstance(instance)
       return { instance, terminal }
@@ -183,3 +188,21 @@ export { TerminalProcessService as ProcessRuntimeService }
 
 function isActive(state: TerminalProcessInstance['state']): boolean { return state === 'starting' || state === 'running' || state === 'stopping' }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }
+
+/** 按目标 Shell 的语法编码命令参数，避免把参数中的空格重新拆开。 */
+function buildShellInput(profile: TerminalLaunchProfile): string {
+  const command = [profile.command, ...profile.args]
+  const shellType = profile.shell.profileId === 'cmd'
+    ? 'cmd'
+    : profile.shell.profileId === 'powershell'
+      ? 'powershell'
+      : 'posix'
+  const line = shellType === 'powershell'
+    ? `& ${command.map(powerShellQuote).join(' ')}`
+    : command.map(shellType === 'cmd' ? cmdQuote : posixQuote).join(' ')
+  return `${line}${shellType === 'posix' ? '\n' : '\r'}`
+}
+
+function posixQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'` }
+function powerShellQuote(value: string): string { return `'${value.replaceAll("'", "''")}'` }
+function cmdQuote(value: string): string { return `"${value.replaceAll('"', '""')}"` }

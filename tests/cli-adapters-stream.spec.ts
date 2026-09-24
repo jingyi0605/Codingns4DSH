@@ -51,7 +51,7 @@ test('Claude stream-json 保留 tool_use 与 tool_result 的完整生命周期',
       queueMicrotask(() => {
         stdout.write(`${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'claude-call-1', name: 'Read', input: { file_path: 'a.ts' } }] } })}\n`)
         stdout.write(`${JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'claude-call-1', content: '文件内容' }] } })}\n`)
-        stdout.write(`${JSON.stringify({ type: 'result' })}\n`)
+        stdout.write(`${JSON.stringify({ type: 'result', usage: { input_tokens: 100, output_tokens: 3, cache_read_input_tokens: 40, cache_creation_input_tokens: 5, total_tokens: 148 } })}\n`)
         stdout.end()
         stderr.end()
       })
@@ -63,6 +63,7 @@ test('Claude stream-json 保留 tool_use 与 tool_result 的完整生命周期',
   assert.deepEqual(chunks, [
     { type: 'tool-event', toolName: 'Read', callId: 'claude-call-1', input: '{"file_path":"a.ts"}', status: 'running' },
     { type: 'tool-event', toolName: 'tool', callId: 'claude-call-1', output: '文件内容', outputMode: 'snapshot', status: 'completed' },
+    { type: 'usage', inputTokens: 100, outputTokens: 3, cacheReadTokens: 40, cacheWriteTokens: 5, uncachedInputTokens: 100, totalTokens: 148, cacheHitRate: 27.5862 },
     { type: 'finish', reason: 'stop' },
   ])
 })

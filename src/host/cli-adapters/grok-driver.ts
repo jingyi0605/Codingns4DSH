@@ -47,7 +47,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     try {
       await rpc.request('initialize', { protocolVersion: 1, clientInfo: { name: 'dsh-codingns', version: '0.1.0' }, capabilities: {} })
       rpc.notify('initialized', {})
-      const session = await rpc.request('session/new', { cwd: process.cwd() })
+      const session = await rpc.request('session/new', { cwd: process.cwd(), mcpServers: [] })
       const parsed = parseGrokCatalog(session)
       return parsed.groups.length > 0 ? parsed : GROK_CATALOG
     } catch {
@@ -76,6 +76,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       if (providerSessionId === '') {
         const session = await rpc.request('session/new', {
           cwd: input.cwd ?? process.cwd(),
+          mcpServers: [],
         ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}),
         }, { signal: input.signal })
         providerSessionId = readSessionId(session) ?? input.sessionId
@@ -133,7 +134,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     rpc.notify('initialized', {})
     if (input.providerSessionId) {
       try {
-        const loaded = await rpc.request('session/load', { sessionId: input.providerSessionId, cwd: input.cwd ?? process.cwd() })
+        const loaded = await rpc.request('session/load', { sessionId: input.providerSessionId, cwd: input.cwd ?? process.cwd(), mcpServers: [] })
         state.providerSessionId = readSessionId(loaded) ?? input.providerSessionId
       } catch { /* 旧版 ACP 没有 load，下一轮在同一进程创建新会话 */ }
     }

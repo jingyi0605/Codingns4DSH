@@ -6,6 +6,7 @@ import {
   type DshEnvelope,
   type DshHostScope,
 } from './dsh-envelope.js'
+import { DSH_VERSION } from '../shared/contracts/version.js'
 
 export type DshSessionRole = 'client' | 'host'
 export type DshSessionState = 'idle' | 'handshaking' | 'ready' | 'degraded' | 'closed'
@@ -99,7 +100,7 @@ export class DshSession {
   private sendHello(): void {
     this.send(this.createEnvelope('session.hello', 'session', {
       protocol: this.options.protocol ?? DSH_ENVELOPE_PROTOCOL,
-      dshVersion: this.options.dshVersion ?? '0.1.6-alpha.2',
+      dshVersion: this.options.dshVersion ?? DSH_VERSION,
       capabilities: [...this.options.capabilities ?? []],
     }))
   }
@@ -107,7 +108,7 @@ export class DshSession {
   private sendReady(capabilities: readonly string[]): void {
     this.send(this.createEnvelope('session.ready', 'session', {
       protocol: this.options.protocol ?? DSH_ENVELOPE_PROTOCOL,
-      dshVersion: this.options.dshVersion ?? '0.1.6-alpha.2',
+      dshVersion: this.options.dshVersion ?? DSH_VERSION,
       capabilities: [...capabilities],
       byteCredit: 64 * 1024,
       messageCredit: 32,
@@ -143,7 +144,7 @@ export class DshSession {
       }
       const protocol = envelope.meta.protocol
       const dshVersion = envelope.meta.dshVersion
-      if (protocol !== (this.options.protocol ?? DSH_ENVELOPE_PROTOCOL) || dshVersion !== (this.options.dshVersion ?? '0.1.6-alpha.2')) {
+      if (protocol !== (this.options.protocol ?? DSH_ENVELOPE_PROTOCOL) || dshVersion !== (this.options.dshVersion ?? DSH_VERSION)) {
         this.fail(new Error('PROTOCOL_VERSION_UNSUPPORTED'))
         return
       }
@@ -163,7 +164,7 @@ export class DshSession {
       }
       const protocol = envelope.meta.protocol
       const dshVersion = envelope.meta.dshVersion
-      if (protocol !== (this.options.protocol ?? DSH_ENVELOPE_PROTOCOL) || dshVersion !== (this.options.dshVersion ?? '0.1.6-alpha.2')) {
+      if (protocol !== (this.options.protocol ?? DSH_ENVELOPE_PROTOCOL) || dshVersion !== (this.options.dshVersion ?? DSH_VERSION)) {
         this.fail(new Error('PROTOCOL_VERSION_UNSUPPORTED'))
         return
       }

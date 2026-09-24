@@ -33,6 +33,7 @@ export function apply(ctx?: Context): void {
       settings,
       settingsProvider: hostCtx.settings,
       dshWebPort: webServerPort,
+      dshWebAuthenticatedUrl: hostCtx.connection.authenticatedUrl(`http://127.0.0.1:${String(webServerPort)}`),
       events: { on: hostCtx.on.bind(hostCtx) },
       nativeSessions: createCodingNsNativeSessionBridge(hostCtx),
       terminalProcesses: terminal.processService,

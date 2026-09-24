@@ -47,6 +47,7 @@ test('OpenCode SSE 事件转换为标准文本流并绑定远端会话', async (
         controller.enqueue(encoder.encode('event: message.part.updated\ndata: {"properties":{"part":{"id":"p","type":"text","text":"结果"}}}\n\n'))
         controller.enqueue(encoder.encode('event: message.part.updated\ndata: {"properties":{"part":{"id":"tool-part","type":"tool","tool":"shell","callID":"open-call-1","state":{"status":"running","input":{"command":"pwd"}}}}}\n\n'))
         controller.enqueue(encoder.encode('event: message.part.updated\ndata: {"properties":{"part":{"id":"tool-part","type":"tool","tool":"shell","callID":"open-call-1","state":{"status":"completed","output":"/workspace"}}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"message.updated","properties":{"info":{"role":"assistant","tokens":{"input":100,"output":3,"cache":{"read":40,"write":5},"total":108}}}}\n\n'))
         controller.enqueue(encoder.encode('data: {"type":"session.status","status":"idle"}\n\n'))
         controller.close()
       } })
@@ -62,6 +63,7 @@ test('OpenCode SSE 事件转换为标准文本流并绑定远端会话', async (
     { type: 'text-delta', text: '结果' },
     { type: 'tool-event', toolName: 'shell', callId: 'open-call-1', input: '{"command":"pwd"}', status: 'running' },
     { type: 'tool-event', toolName: 'shell', callId: 'open-call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' },
+    { type: 'usage', inputTokens: 100, outputTokens: 3, cacheReadTokens: 40, cacheWriteTokens: 5, uncachedInputTokens: 55, totalTokens: 108, cacheHitRate: 40 },
     { type: 'finish', reason: 'stop' },
   ])
   assert.deepEqual(requests, [{ parts: [{ type: 'text', text: '你好' }], model: { providerID: 'openai', modelID: 'gpt-5.5' }, variant: 'high' }])

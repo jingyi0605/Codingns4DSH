@@ -15,6 +15,15 @@ test('终端入口复用 DSH 内置按钮与菜单，不退回原生表单控件
   assert.doesNotMatch(source, /border:\s*['"]1px solid currentColor/u)
 })
 
+test('终端标题双击会进入编辑并阻止标签页父级事件吞掉交互', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
+
+  assert.match(source, /onDoubleClick:[ \t]*beginEditing/u)
+  assert.match(source, /onClick:[ \t]*beginEditing/u)
+  assert.match(source, /event\.detail\s*===\s*undefined\s*\|\|\s*event\.detail\s*>=\s*2/u)
+  assert.match(source, /onPointerDown:[ \t]*stopPropagation/u)
+})
+
 test('切换会话恢复时会清理已在 Host 关闭的旧终端标签', async () => {
   const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
   assert.match(source, /listedIds/u)

@@ -23,6 +23,8 @@ export interface CodingNsHostServices {
   readonly settingsProvider?: SettingsProvider
   /** 当前 DSH Web 服务实际监听端口，用于自动定位本机 DSH。 */
   readonly dshWebPort?: number
+  /** DSH 官方生成的一次性 Web 认证 URL；只留在 Host 内部完成 Cookie 交换。 */
+  readonly dshWebAuthenticatedUrl?: string
   /** DSH 事件总线；CLI 模块用它接入 llm/stream，测试环境可以不提供。 */
   readonly events?: CodingNsHostEvents
   /** DSH 原生会话桥接；不可用时为 undefined，插件不因此阻断启动。 */

@@ -50,7 +50,7 @@ test('Spec003 读取配置并把启动参数交给已有 PTY 服务', async () =
     const result = await service.launch({ workspaceId: 'workspace-a', profileId: 'frontend', cols: 80, rows: 24 })
     assert.equal(result.instance.id, 'instance-1')
     assert.equal((terminal.calls.profile as { command: string }).command, 'pnpm')
-    assert.deepEqual(terminal.calls.launch, { workspaceId: 'workspace-a', profileId: 'frontend', cols: 80, rows: 24 })
+    assert.deepEqual(terminal.calls.launch, { workspaceId: 'workspace-a', profileId: 'frontend', cols: 80, rows: 24, commandMode: 'shell-input' })
     assert.match(await readFile(join(root, '.codingns', 'debug.json'), 'utf8'), /"version": 1/u)
   } finally {
     await rm(root, { recursive: true, force: true })

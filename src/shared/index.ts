@@ -43,6 +43,7 @@ export {
   assertSupportedDshVersion,
   type CodingNsDshErrorCode,
 } from './contracts/errors.js'
+export { CODINGNS_VERSION, DSH_VERSION } from './contracts/version.js'
 export type {
   CodingNsRpcRequest,
   CodingNsStreamRequest,

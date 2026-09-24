@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
+import { SUPPORTED_DSH_VERSION } from '../dist/shared/index.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
@@ -35,7 +36,8 @@ test('package manifest declares the DSH bundle and client entry', () => {
   assert.equal(manifest.exports['./typert'].default, './dist/typert.host.js')
   assert.equal(manifest.exports['./typert'].types, './dist/typert.host.d.ts')
   assert.equal(manifest.exports['./bootstrap'].default, './dist/bootstrap/index.js')
-  assert.equal(manifest.engines.dsh, '0.1.6-alpha.2')
+  assert.equal(manifest.engines.dsh, SUPPORTED_DSH_VERSION)
+  assert.equal(manifest.version, manifest.engines.dsh)
 })
 
 test('bundle patch and example profile use DSH native shapes', async () => {
@@ -46,8 +48,9 @@ test('bundle patch and example profile use DSH native shapes', async () => {
   assert.match(patch, /id:\s*ui-sidebar-terminal[\s\S]*?name:\s*'@deepseek-ai\/dsh-client-ui-sidebar-terminal'[\s\S]*?disabled:\s*true/u)
   const profile = JSON.parse(await readFile(join(root, 'profile/package.json'), 'utf8'))
   assert.deepEqual(profile.dsh.profile.bundles, ['dsh-codingns'])
-  assert.equal(profile.dependencies['dsh-codingns'], '0.1.0')
-  assert.equal(profile.engines.dsh, '0.1.6-alpha.2')
+  assert.equal(profile.version, manifest.version)
+  assert.equal(profile.dependencies['dsh-codingns'], manifest.version)
+  assert.equal(profile.engines.dsh, SUPPORTED_DSH_VERSION)
 })
 
 test('npm 包声明包含工作区会话 Logo 资产', () => {

@@ -121,6 +121,7 @@ export class DebugWorkspaceService {
       ...(input.dshSessionId === undefined ? {} : { dshSessionId: input.dshSessionId }),
       cols: input.cols,
       rows: input.rows,
+      commandMode: 'shell-input',
     })
   }
 

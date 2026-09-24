@@ -1,6 +1,6 @@
 {
   "name": "dsh-codingns",
-  "version": "0.1.0",
+  "version": "0.1.6-alpha.2",
   "description": "CodingNS 的 DeepSeek Harness 插件骨架与连接契约",
   "type": "module",
   "main": "./dist/index.js",
@@ -71,6 +71,9 @@
     }
   },
   "scripts": {
+    "version:check": "node scripts/check-version-sync.mjs",
+    "version:set-dsh": "node scripts/set-dsh-version.mjs",
+    "prebuild": "pnpm run version:check",
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && pnpm run bundle:client && pnpm run bundle:h5",
     "bundle:client": "tsdown",
     "bundle:h5": "tsdown --config tsdown.h5.config.ts",
@@ -92,10 +95,10 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-client-connection": "0.1.6-alpha.2",
-    "@deepseek-ai/dsh-client-ui-renderer": "^0.1.6-alpha.2",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.6-alpha.2",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.6-alpha.2",
-    "@deepseek-ai/dsh-settings": "^0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-settings": "0.1.6-alpha.2",
     "@types/react": "~18.3.1",
     "react": "^18.2.0",
     "tsdown": "^0.22.2",

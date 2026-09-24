@@ -11,6 +11,7 @@ import { HttpSseClient, type SseEvent } from './http-sse-client.js'
 import { isProviderDefaultModel } from './model-catalog.js'
 import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { isQuestionEvent, questionAnswersList, readAgentQuestions } from './interaction-events.js'
+import { usageChunk } from './rpc-driver-utils.js'
 
 const WINDOWS = process.platform === 'win32'
 const DEFAULT_BINARIES = WINDOWS ? ['opencode.exe', 'opencode'] : ['opencode']
@@ -503,9 +504,24 @@ function eventToChunk(
       ...(detail !== undefined ? { detail } : {}),
     }
   }
-  const usage = asRecord(event.usage) ?? asRecord(part.usage)
-  if (usage !== null) return { type: 'usage', inputTokens: numberValue(usage.inputTokens ?? usage.input_tokens), outputTokens: numberValue(usage.outputTokens ?? usage.output_tokens) }
+  const usage = asRecord(event.usage) ?? asRecord(part.usage) ?? readOpenCodeTokenUsage(properties)
+  if (usage !== null) return usageChunk(usage)
   return null
+}
+
+/** OpenCode 将最终用量放在 message.updated.properties.info.tokens。 */
+function readOpenCodeTokenUsage(properties: Record<string, unknown> | null): Record<string, unknown> | null {
+  const info = asRecord(properties?.info)
+  const tokens = asRecord(info?.tokens)
+  if (tokens === null) return null
+  const cache = asRecord(tokens.cache)
+  return {
+    input_tokens: tokens.input ?? tokens.input_tokens,
+    output_tokens: tokens.output ?? tokens.output_tokens,
+    cache_read_tokens: cache?.read ?? tokens.cache_read_tokens ?? tokens.cacheReadTokens,
+    cache_creation_tokens: cache?.write ?? tokens.cache_write_tokens ?? tokens.cacheWriteTokens,
+    total_tokens: tokens.total ?? tokens.total_tokens ?? tokens.totalTokens,
+  }
 }
 
 function isFinishedEvent(event: Record<string, unknown>, emitted: boolean): boolean {
@@ -675,5 +691,4 @@ function parseToolRecord(value: unknown): Record<string, any> | null {
   if (typeof value !== 'string' || value.trim() === '') return null
   try { return asRecord(JSON.parse(value)) } catch { return null }
 }
-function numberValue(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) ? value : 0 }
 function emptyCatalog(): CodingNsCliModelCatalog { return { groups: [], currentModel: null, currentEffort: null } }

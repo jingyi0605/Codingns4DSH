@@ -404,20 +404,13 @@ function geminiStreamResultChunks(value: Record<string, unknown>, cancelled: boo
   const chunks: CodingNsAgentEvent[] = []
   const stats = isRecord(value.stats) ? value.stats : null
   if (stats !== null) {
-    chunks.push({
-      type: 'usage',
-      inputTokens: numberValue(stats.input_tokens ?? stats.inputTokens),
-      outputTokens: numberValue(stats.output_tokens ?? stats.outputTokens),
-    })
+    const usage = usageChunk(stats)
+    if (usage) chunks.push(usage)
   }
   const status = typeof value.status === 'string' ? value.status.toLowerCase() : ''
   const reason = cancelled ? 'cancel' : status === 'error' || status === 'failed' ? 'error' : 'stop'
   chunks.push({ type: 'finish', reason })
   return chunks
-}
-
-function numberValue(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
 export { GeminiCliDriver as GeminiDriver }

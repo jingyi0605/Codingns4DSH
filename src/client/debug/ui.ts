@@ -110,6 +110,7 @@ function DebugBody({ sessionId, rpc, remote, sidebarRight }: DebugTabProps): Rea
 
   useEffect(() => {
     if (workspaceId === null || config === null) return
+    if (!config.profiles.some((profile) => profile.port !== null)) return
     let disposed = false
     let checking = false
     const checkPorts = async (): Promise<void> => {

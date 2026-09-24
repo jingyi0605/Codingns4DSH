@@ -64,6 +64,8 @@ export interface TerminalProcessLaunchRequest {
   readonly terminalId?: string
   readonly cols: number
   readonly rows: number
+  /** 直接启动命令，或先启动 Shell 再把命令写入终端。 */
+  readonly commandMode?: 'direct' | 'shell-input'
 }
 
 export interface TerminalProcessLaunchResult {

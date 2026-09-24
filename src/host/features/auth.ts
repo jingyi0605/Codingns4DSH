@@ -11,6 +11,7 @@ import { CodingNsRpcError } from '../rpc-table.js'
 import type { CodingNsHostServices } from './types.js'
 import { createDshRpcGatewayFeature } from '../dsh-gateway-feature.js'
 import { createLocalDshWebRuntimeProvider, createRemoteWebRuntimeFeature } from '../remote-web-runtime.js'
+import { DSH_VERSION } from '../../shared/contracts/version.js'
 
 /** 未登录时的稳定快照；Client 首次读取 `auth/snapshot` 会拿到它。 */
 const LOGGED_OUT_SNAPSHOT = {
@@ -78,7 +79,8 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
               gatewayFeatures.push(createRemoteWebRuntimeFeature({
                 provider: createLocalDshWebRuntimeProvider({
                   port: context.services.dshWebPort,
-                  dshVersion: '0.1.6-alpha.2',
+                  dshVersion: DSH_VERSION,
+                  ...(context.services.dshWebAuthenticatedUrl === undefined ? {} : { authenticatedUrl: context.services.dshWebAuthenticatedUrl }),
                 }),
               }))
             }

@@ -22,10 +22,13 @@ test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async 
         const stderr = new PassThrough()
         const stdin = {
           write(data: string): void {
-            const request = JSON.parse(data) as { id: number; method: string }
+            const request = JSON.parse(data) as { id: number; method: string; params?: unknown }
             let result: Record<string, unknown> = {}
             if (request.method === 'thread/start') result = { threadId: 'thread-1' }
-            if (request.method === 'session/new') result = { sessionId: 'session-1' }
+            if (request.method === 'session/new') {
+              assert.deepEqual(request.params, { cwd: process.cwd(), mcpServers: [] })
+              result = { sessionId: 'session-1' }
+            }
             if (request.method === 'prompt') {
               stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'message_update', params: { type: 'text_delta', delta: '完成' } })}\n`)
               stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`)
@@ -166,6 +169,40 @@ test('Grok ACP 保留 tool_call 与 tool_call_update 的结构化字段', async 
     { type: 'tool-event', toolName: 'search', callId: 'grok-call-1', input: '{"query":"DSH"}', agentId: 'agent-1', detail: '搜索工作区', status: 'running' },
     { type: 'tool-event', toolName: 'search', callId: 'grok-call-1', output: '{"count":2}', outputMode: 'snapshot', status: 'completed' },
   ])
+  driver.dispose()
+})
+
+test('Grok ACP 传递缓存 token 并计算缓存命中率', async () => {
+  const driver = new GrokBuildDriver({
+    binaries: ['fake-grok'],
+    spawnSync: (() => ({ status: 0, stdout: 'grok 1.0.41', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id?: number; method?: string }
+        if (request.method === 'initialize') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+          return
+        }
+        if (request.method === 'session/new') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'grok-usage-session' } })}\n`)
+          return
+        }
+        if (request.method !== 'session/prompt') return
+        const usage = { inputTokens: 14646, outputTokens: 4, totalTokens: 14650, cachedReadTokens: 1920, cacheCreationTokens: 0 }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: '_x.ai/session_notification', params: { update: { sessionUpdate: 'turn_completed', usage } } })}\n`)
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { stopReason: 'end_turn' } })}\n`)
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'grok-usage', messages: [], prompt: '统计' })) chunks.push(chunk)
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'usage'), [{
+    type: 'usage', inputTokens: 14646, outputTokens: 4, cacheReadTokens: 1920, cacheWriteTokens: 0,
+    uncachedInputTokens: 12726, totalTokens: 14650, cacheHitRate: 13.1094,
+  }])
   driver.dispose()
 })
 

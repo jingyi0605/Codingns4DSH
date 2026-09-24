@@ -74,10 +74,48 @@ export function textValue(value: unknown): string | null {
 export function usageChunk(value: unknown): CodingNsAgentEvent | null {
   if (!isRecord(value)) return null
   const usage = isRecord(value.usage) ? value.usage : value
-  const inputTokens = numberValue(usage.inputTokens ?? usage.input_tokens ?? usage.prompt_tokens)
-  const outputTokens = numberValue(usage.outputTokens ?? usage.output_tokens ?? usage.completion_tokens)
+  const inputTokens = numberValue(usage.inputTokens ?? usage.input_tokens ?? usage.prompt_tokens ?? usage.promptTokenCount)
+  const outputTokens = numberValue(usage.outputTokens ?? usage.output_tokens ?? usage.completion_tokens ?? usage.candidatesTokenCount)
   if (inputTokens === 0 && outputTokens === 0) return null
-  return { type: 'usage', inputTokens, outputTokens }
+  const cacheReadInputTokens = optionalNumberValue(usage.cache_read_input_tokens ?? usage.cacheReadInputTokens)
+  const cacheWriteInputTokens = optionalNumberValue(usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens)
+  const cacheReadTokens = optionalNumberValue(
+    usage.cacheReadTokens
+      ?? usage.cachedReadTokens
+      ?? usage.cache_read_tokens
+      ?? usage.cached_read_tokens
+      ?? usage.cache_read_input_tokens
+      ?? usage.cachedInputTokens
+      ?? usage.cached_input_tokens
+      ?? usage.cachedContentTokenCount
+      ?? cacheReadInputTokens,
+  )
+  const cacheWriteTokens = optionalNumberValue(
+    usage.cacheWriteTokens
+      ?? usage.cacheCreationTokens
+      ?? usage.cache_write_tokens
+      ?? usage.cache_creation_tokens
+      ?? usage.cache_write_input_tokens
+      ?? usage.cache_creation_input_tokens
+      ?? cacheWriteInputTokens,
+  )
+  const totalTokens = optionalNumberValue(usage.totalTokens ?? usage.total_tokens ?? usage.totalTokenCount)
+  const hasCacheBreakdown = cacheReadTokens !== undefined || cacheWriteTokens !== undefined
+  const cachedInputTokens = (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
+  const inputExcludesCache = cacheReadInputTokens !== undefined || cacheWriteInputTokens !== undefined
+  const fullInputTokens = inputTokens + (inputExcludesCache ? cachedInputTokens : 0)
+  return {
+    type: 'usage',
+    inputTokens,
+    outputTokens,
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    ...(hasCacheBreakdown ? { uncachedInputTokens: inputExcludesCache ? inputTokens : Math.max(0, inputTokens - cachedInputTokens) } : {}),
+    ...(totalTokens === undefined && !hasCacheBreakdown ? {} : { totalTokens: totalTokens ?? fullInputTokens + outputTokens }),
+    ...(cacheReadTokens === undefined || fullInputTokens <= 0
+      ? {}
+      : { cacheHitRate: Number((cacheReadTokens / fullInputTokens * 100).toFixed(4)) }),
+  }
 }
 
 export function isRecord(value: unknown): value is Record<string, any> {
@@ -85,5 +123,9 @@ export function isRecord(value: unknown): value is Record<string, any> {
 }
 
 function numberValue(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) ? value : 0 }
+
+function optionalNumberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : undefined
+}
 
 export type { SpawnSyncResult }

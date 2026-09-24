@@ -8,6 +8,7 @@ import { KIMI_CATALOG, enrichEfforts, isProviderDefaultModel } from './model-cat
 import { probeStoredSession, readFirstJsonRecord, resolveSessionDirectory } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { isQuestionEvent, readAgentQuestions } from './interaction-events.js'
+import { usageChunk } from './rpc-driver-utils.js'
 
 interface KimiPendingInteraction {
   readonly rpcId: string | number
@@ -282,7 +283,8 @@ function mapKimiWireEvent(value: Record<string, unknown>, cancelled: boolean): {
     })
   }
   const usage = isRecord(event.usage) ? event.usage : isRecord(value.usage) ? value.usage : null
-  if (usage) chunks.push({ type: 'usage', inputTokens: numberValue(usage.input_tokens ?? usage.inputTokens ?? usage.prompt_tokens), outputTokens: numberValue(usage.output_tokens ?? usage.outputTokens ?? usage.completion_tokens) })
+  const usageEvent = usageChunk(usage)
+  if (usageEvent) chunks.push(usageEvent)
   if ((type.includes('error') || type.includes('failed')) && !isToolEvent) return { protocol: true, error: true, chunks }
   if (type.includes('turnend') || type.includes('turn_end') || type.includes('completed') || type.includes('complete') || type === 'done' || type === 'result' || type.includes('session.completed')) chunks.push({ type: 'finish', reason: cancelled ? 'cancel' : 'stop' })
   return { protocol: true, error: false, chunks }
@@ -349,7 +351,6 @@ function firstString(a: Record<string, unknown>, b: Record<string, unknown>, key
   for (const key of keys) for (const source of [a, b]) if (typeof source[key] === 'string' && source[key].trim()) return source[key] as string
   return null
 }
-function numberValue(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) ? value : 0 }
 function isRecord(value: unknown): value is Record<string, any> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 
 export { KimiCliDriver as KimiDriver }

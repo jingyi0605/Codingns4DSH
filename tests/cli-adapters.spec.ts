@@ -128,7 +128,7 @@ test('Command Code usage 保留缓存桶，并按完整输入计算未缓存输�
       ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
       : { status: 0, stdout: '', stderr: '' }) as never,
     spawn: (() => ({
-      stdout: Readable.from([`${JSON.stringify({ type: 'result', finalText: '完成', usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 40, cache_write_tokens: 5 } })}\n`]),
+      stdout: Readable.from([`${JSON.stringify({ type: 'result', finalText: '完成', usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 40, cache_creation_input_tokens: 5, total_tokens: 120 } })}\n`]),
       stderr: { on() { return this } },
       kill() { return true },
     })) as never,

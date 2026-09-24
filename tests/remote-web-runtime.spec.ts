@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createRemoteWebRuntimeFeature, type DshWebRuntimeProvider } from '../dist/host/remote-web-runtime.js'
+import { createLocalDshWebRuntimeProvider, createRemoteWebRuntimeFeature, type DshWebRuntimeProvider } from '../dist/host/remote-web-runtime.js'
 import type { DshEnvelope } from '../dist/transport/dsh-envelope.js'
 
 const scope = { hostId: 'h1', kind: 'local' as const }
@@ -79,3 +79,59 @@ test('Remote Web Session close 会删除会话，WebSocket 打开失败会返回
   assert.equal(socket.sent[0]?.meta.errorCode, 'WEB_SESSION_NOT_FOUND')
 })
 
+test('本地 DSH Web Provider 使用官方认证 URL 换取并复用 Cookie', async () => {
+  const requests: Array<{ url: string; cookie: string | undefined }> = []
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input)
+    const headers = new Headers(init?.headers)
+    requests.push({ url, cookie: headers.get('cookie') ?? undefined })
+    if (url.includes('?token=launch-token')) {
+      return new Response(null, { status: 303, headers: { 'set-cookie': 'dsh-auth-test=session-cookie; Path=/; HttpOnly' } })
+    }
+    if (url.endsWith('/api/plugins/manifest')) {
+      assert.equal(headers.get('cookie'), 'dsh-auth-test=session-cookie')
+      return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    assert.equal(headers.get('cookie'), 'dsh-auth-test=session-cookie')
+    return new Response('<html><script src="/assets/app.js"></script></html>', { status: 200, headers: { 'content-type': 'text/html' } })
+  }
+  const provider = createLocalDshWebRuntimeProvider({
+    port: 3080,
+    dshVersion: '0.1.6-alpha.2',
+    authenticatedUrl: 'http://127.0.0.1:3080/?token=launch-token',
+    fetcher,
+  })
+  const session = await provider.openSession({})
+  const boot = await provider.getBoot(session)
+  assert.match(boot.html, /app\.js/u)
+  await provider.getPluginManifest(session)
+  assert.deepEqual(requests.map((item) => item.url), [
+    'http://127.0.0.1:3080/?token=launch-token',
+    'http://127.0.0.1:3080/',
+    'http://127.0.0.1:3080/api/plugins/manifest',
+  ])
+  assert.equal(requests[1]?.cookie, 'dsh-auth-test=session-cookie')
+  assert.equal(requests[2]?.cookie, 'dsh-auth-test=session-cookie')
+})
+
+test('本地 DSH Web Provider 为 WebSocket 握手注入认证 Cookie', async () => {
+  let socketOptions: { readonly headers?: Readonly<Record<string, string>> } | undefined
+  const fetcher: typeof fetch = async (input) => {
+    if (String(input).includes('?token=launch-token')) {
+      return new Response(null, { status: 303, headers: { 'set-cookie': 'dsh-auth-test=session-cookie; Path=/; HttpOnly' } })
+    }
+    return new Response('<html></html>', { status: 200 })
+  }
+  const socket = {} as never
+  const provider = createLocalDshWebRuntimeProvider({
+    port: 3080,
+    dshVersion: '0.1.6-alpha.2',
+    authenticatedUrl: 'http://127.0.0.1:3080/?token=launch-token',
+    fetcher,
+    websocketFactory: (_url, options) => { socketOptions = options; return socket },
+  })
+  const session = await provider.openSession({})
+  await provider.getBoot(session)
+  assert.equal(await provider.openWebSocket(session, '/api/remote.mux'), socket)
+  assert.equal(socketOptions?.headers?.cookie, 'dsh-auth-test=session-cookie')
+})

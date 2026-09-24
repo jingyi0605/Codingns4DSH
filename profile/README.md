@@ -9,7 +9,7 @@ Transport 必须由外部 pre-Cordis 启动胶水在 DSH Client/Cordis 创建前
 发布后，在 DSH 的 Profile 中安装精确版本的 Bundle：
 
 ```bash
-dsh plugin --profile dsh-codingns add dsh-codingns@0.1.0
+dsh plugin --profile dsh-codingns add dsh-codingns@0.1.6-alpha.2
 ```
 
 Profile 安装完成后，使用 DSH 官方启动器启动：

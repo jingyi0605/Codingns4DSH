@@ -16,6 +16,8 @@ export interface CreatePersistentTerminalInput {
   readonly terminalId: string
   readonly runtimeType: CodingNsTerminalRuntimeType
   readonly shell: CodingNsTerminalShell
+  /** 可选的业务标题；普通终端未提供时使用 Shell 名称。 */
+  readonly title?: string
   readonly commandPath?: string
   readonly commandArgs?: readonly string[]
   readonly commandEnv?: Readonly<Record<string, string>>
@@ -147,7 +149,7 @@ export class CodingNsTerminalService {
         ...(input.commandEnv === undefined ? {} : { commandEnv: { ...input.commandEnv } }),
         ...(input.launchProfileId === undefined ? {} : { launchProfileId: input.launchProfileId }),
         cwd: input.cwd,
-        title: input.shell.name,
+        title: input.title?.trim() || input.shell.name,
         cols: input.cols,
         rows: input.rows,
         state: 'starting',
@@ -265,6 +267,16 @@ export class CodingNsTerminalService {
   async write(identity: TerminalRecordIdentity, attachmentId: string, data: string): Promise<void> {
     const controller = this.requireController(identity, attachmentId)
     await this.runtimes.write(controller.subscriptionId, data)
+  }
+
+  /** Host 内部向持久终端发送一次输入，不改变浏览器 attach 控制权。 */
+  async writeInitialInput(identity: TerminalRecordIdentity, data: string): Promise<void> {
+    if (data.length === 0) throw new TypeError('终端输入不能为空')
+    this.requireInitialized()
+    await this.enqueue(identity, async () => {
+      const record = this.requireAvailable(identity)
+      await this.runtimes.writeSession(record, data)
+    })
   }
 
   async resize(identity: TerminalRecordIdentity, attachmentId: string, cols: number, rows: number): Promise<void> {

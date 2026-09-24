@@ -42,7 +42,7 @@ DSH Web 是唯一主体，`dsh-codingns` 只是由 DSH 装载的 Bundle。Coding
 Profile 安装完成后，使用 DSH 官方启动器启动：
 
 ```bash
-dsh plugin --profile dsh-codingns add dsh-codingns@0.1.0
+dsh plugin --profile dsh-codingns add dsh-codingns@0.1.6-alpha.2
 dsh --profile dsh-codingns
 ```
 

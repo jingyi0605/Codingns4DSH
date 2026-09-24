@@ -19,6 +19,8 @@ class FakeRuntimeAdapter {
   runtimeTypes = ['local-pty']
   sessions = new Map()
   attachments = new Map()
+  writes = []
+  attachCount = 0
   nextPid = 1000
 
   async create({ session }) {
@@ -35,12 +37,16 @@ class FakeRuntimeAdapter {
   }
 
   async attach(input) {
+    this.attachCount += 1
     const id = `attachment-${this.attachments.size + 1}`
     this.attachments.set(id, input)
     return { attachmentId: id, identity: this.identity(input.session, this.sessions.get(input.session.runtimeSessionKey)?.pid ?? null) }
   }
 
-  async write() {}
+  async write({ attachmentId, data }) {
+    if (!this.attachments.has(attachmentId)) throw new Error('attach missing')
+    this.writes.push(data)
+  }
   async resize() {}
   async detach(id) { this.attachments.delete(id) }
   async terminate(session) { this.sessions.delete(session.runtimeSessionKey) }
@@ -93,6 +99,23 @@ test('Host 先创建 pty 命令进程，再返回可附着终端和 ProcessInsta
   assert.equal(runtimeSession.commandPath, '/usr/bin/node')
   assert.deepEqual(runtimeSession.commandArgs, ['server.js'])
   assert.deepEqual(runtimeSession.commandEnv, { NODE_ENV: 'development' })
+})
+
+test('调试快捷启动先创建交互 Shell，再写入命令并保留 Shell', async () => {
+  const { adapter, processService } = await setup()
+  await processService.createProfile(profile())
+  const result = await processService.launch({ workspaceId: 'workspace-a', profileId: 'dev', cols: 80, rows: 24, commandMode: 'shell-input' })
+
+  assert.equal(result.instance.state, 'running')
+  assert.equal(result.instance.pid, null)
+  assert.equal(result.terminal.title, 'bash-开发服务')
+  const runtimeSession = [...adapter.sessions.values()][0].session
+  assert.equal(runtimeSession.commandPath, undefined)
+  assert.equal(runtimeSession.commandArgs, undefined)
+  assert.deepEqual(runtimeSession.commandEnv, { NODE_ENV: 'development' })
+  assert.deepEqual(adapter.writes, ["'/usr/bin/node' 'server.js'\n"])
+  assert.equal(adapter.attachCount, 1)
+  assert.equal(adapter.attachments.size, 1)
 })
 
 test('停止 ProcessInstance 才会结束它对应的终端运行时', async () => {

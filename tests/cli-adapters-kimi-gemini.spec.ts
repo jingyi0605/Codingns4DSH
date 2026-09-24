@@ -35,7 +35,7 @@ test('Kimi wire 优先并转换会话、思考、工具、用量和完成事件'
             stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'ToolResult', payload: { tool_call_id: 'kimi-call-1', return_value: { is_error: false, output: '/workspace' } } } }) + '\n')
             stdout.write(JSON.stringify({ type: 'tool_failed', tool_result: { call_id: 'kimi-call-2', name: 'shell', error: 'exit 1' } }) + '\n')
             stdout.write(JSON.stringify({ type: 'tool_output_delta', tool_result: { call_id: 'kimi-call-3', name: 'shell', output: '片段', status: 'running' } }) + '\n')
-            stdout.write(JSON.stringify({ type: 'usage', usage: { input_tokens: 2, output_tokens: 3 } }) + '\n')
+            stdout.write(JSON.stringify({ type: 'usage', usage: { input_tokens: 100, output_tokens: 3, cache_read_tokens: 40, cache_creation_tokens: 5, total_tokens: 108 } }) + '\n')
             stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { status: 'finished' } }) + '\n')
           })
         }
@@ -55,7 +55,7 @@ test('Kimi wire 优先并转换会话、思考、工具、用量和完成事件'
     { type: 'tool-event', toolName: 'tool', callId: 'kimi-call-1', output: '/workspace', outputMode: 'snapshot', status: 'completed' },
     { type: 'tool-event', toolName: 'shell', callId: 'kimi-call-2', error: 'exit 1', status: 'failed' },
     { type: 'tool-event', toolName: 'shell', callId: 'kimi-call-3', output: '片段', outputMode: 'delta', status: 'running' },
-    { type: 'usage', inputTokens: 2, outputTokens: 3 },
+    { type: 'usage', inputTokens: 100, outputTokens: 3, cacheReadTokens: 40, cacheWriteTokens: 5, uncachedInputTokens: 55, totalTokens: 108, cacheHitRate: 40 },
     { type: 'finish', reason: 'stop' },
   ])
 })
@@ -352,9 +352,9 @@ test('Gemini 回退 stream-json 忽略用户输入回显并保留错误终态与
   assert.deepEqual(driver.parse({
     type: 'result',
     status: 'error',
-    stats: { input_tokens: 12, output_tokens: 3 },
+    stats: { promptTokenCount: 100, candidatesTokenCount: 3, cachedContentTokenCount: 40, cache_creation_tokens: 5, totalTokenCount: 108 },
   }), [
-    { type: 'usage', inputTokens: 12, outputTokens: 3 },
+    { type: 'usage', inputTokens: 100, outputTokens: 3, cacheReadTokens: 40, cacheWriteTokens: 5, uncachedInputTokens: 55, totalTokens: 108, cacheHitRate: 40 },
     { type: 'finish', reason: 'error' },
   ])
   driver.dispose()

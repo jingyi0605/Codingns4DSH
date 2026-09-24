@@ -138,6 +138,10 @@ function TerminalTitle({ sessionId, useTabInfo, webTerminals, locale }: Terminal
     input.current?.focus()
     input.current?.select()
   }, [editing])
+  const beginEditing = (event: { stopPropagation: () => void; detail?: number }): void => {
+    event.stopPropagation()
+    if (event.detail === undefined || event.detail >= 2) setEditing(true)
+  }
   return createElement(Fragment, undefined,
     createElement(TerminalIcon),
     editing
@@ -160,7 +164,10 @@ function TerminalTitle({ sessionId, useTabInfo, webTerminals, locale }: Terminal
       })
       : createElement('span', {
         className: terminalClass.title,
-        onDoubleClick: (event: { stopPropagation: () => void }) => { event.stopPropagation(); setEditing(true) },
+        onPointerDown: stopPropagation,
+        onMouseDown: stopPropagation,
+        onClick: beginEditing,
+        onDoubleClick: beginEditing,
         title: t('terminal.rename'),
       }, state.title),
   )
