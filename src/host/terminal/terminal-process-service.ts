@@ -100,7 +100,7 @@ export class TerminalProcessService {
         terminalId,
         runtimeType: profile.runtimeType,
         shell: profile.shell,
-        ...(request.commandMode === 'shell-input' ? { title: `${profile.shell.name}-${profile.name}` } : {}),
+        ...(request.commandMode === 'shell-input' ? { title: `${profile.name}(${profile.shell.name})` } : {}),
         ...(request.commandMode === 'shell-input' ? {} : { commandPath: profile.command, commandArgs: profile.args }),
         commandEnv: profile.env,
         launchProfileId: profile.id,

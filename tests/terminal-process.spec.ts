@@ -108,7 +108,7 @@ test('调试快捷启动先创建交互 Shell，再写入命令并保留 Shell',
 
   assert.equal(result.instance.state, 'running')
   assert.equal(result.instance.pid, null)
-  assert.equal(result.terminal.title, 'bash-开发服务')
+  assert.equal(result.terminal.title, '开发服务(bash)')
   const runtimeSession = [...adapter.sessions.values()][0].session
   assert.equal(runtimeSession.commandPath, undefined)
   assert.equal(runtimeSession.commandArgs, undefined)
