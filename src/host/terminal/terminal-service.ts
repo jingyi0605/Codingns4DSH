@@ -282,8 +282,10 @@ export class CodingNsTerminalService {
   async resize(identity: TerminalRecordIdentity, attachmentId: string, cols: number, rows: number): Promise<void> {
     validateSize(cols, rows)
     const controller = this.requireController(identity, attachmentId)
-    await this.runtimes.resize(controller.subscriptionId, cols, rows)
     const record = this.requireAvailable(identity)
+    // ResizeObserver 可能重复报告同一尺寸；相同尺寸不应再次向 PTY 发送 SIGWINCH。
+    if (record.cols === cols && record.rows === rows) return
+    await this.runtimes.resize(controller.subscriptionId, cols, rows)
     await this.update(record, { cols, rows })
     this.broadcastState(identity)
   }

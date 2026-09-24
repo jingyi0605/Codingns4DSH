@@ -11,6 +11,7 @@ class FakeRuntimeAdapter {
   runtimeTypes = ['tmux']
   sessions = new Set()
   attachments = new Map()
+  resizes = []
   terminated = []
   detached = []
   nextAttachment = 0
@@ -39,6 +40,7 @@ class FakeRuntimeAdapter {
   async resize({ attachmentId, cols, rows }) {
     const attachment = this.attachments.get(attachmentId)
     if (!attachment) throw new Error('attach missing')
+    this.resizes.push([cols, rows])
     attachment.lastSize = { cols, rows }
   }
 
@@ -110,6 +112,22 @@ test('插件卸载只 detach，不 terminate 持久运行时', async () => {
   assert.equal(adapter.detached.length, 1)
   assert.deepEqual(adapter.terminated, [])
   assert.equal(adapter.sessions.size, 1)
+})
+
+test('相同终端尺寸不会重复触发 backend resize', async () => {
+  const { adapter, service, identity } = await setup()
+  const controller = new AbortController()
+  const iterator = service.follow({ identity, attachmentId: 'browser-a', generation: 'generation-a', signal: controller.signal })[Symbol.asyncIterator]()
+  await iterator.next()
+  await iterator.next()
+
+  await service.resize(identity, 'browser-a', 80, 24)
+  await service.resize(identity, 'browser-a', 80, 24)
+  await service.resize(identity, 'browser-a', 100, 30)
+  assert.deepEqual(adapter.resizes, [[100, 30]])
+
+  controller.abort()
+  await iterator.return()
 })
 
 test('同一工作区的另一个 DSH session 可以恢复已有终端', async () => {
