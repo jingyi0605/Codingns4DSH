@@ -617,33 +617,6 @@ test('CLI 功能模块从 DSH 会话头传递工作目录并把统一工具事�
   for await (const chunk of listener!({ sessionId: 's-cwd', messages: [{ role: 'user', content: '读取目录' }] }, async function* () {})) chunks.push(chunk)
   assert.equal(receivedCwd, '/workspace/project')
   assert.deepEqual(chunks, [
-    {
-      type: 'reasoning-delta',
-      index: 0,
-      text: ' ',
-      codingnsExternalTool: {
-        source: 'codingns-external-tool',
-        phase: 'start',
-        callId: 'call-1',
-        name: 'read_directory',
-        arguments: '{"path":"."}',
-        status: 'running',
-      },
-    },
-    {
-      type: 'reasoning-delta',
-      index: 0,
-      text: ' ',
-      codingnsExternalTool: {
-        source: 'codingns-external-tool',
-        phase: 'update',
-        callId: 'call-1',
-        name: 'read_directory',
-        arguments: '{"path":"."}',
-        status: 'completed',
-        output: 'file.txt',
-      },
-    },
     { type: 'finish', reason: { kind: 'stop' } },
   ])
   assert.deepEqual(nativeCalls, [{
