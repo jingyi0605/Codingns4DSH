@@ -213,3 +213,4 @@ export type {
   RelaySignalingServerMessage,
   RelaySignalingTicketResponse,
 } from './contracts/signaling.js'
+export type { DshHostStatus } from './contracts/host-status.js'

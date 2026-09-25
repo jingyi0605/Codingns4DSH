@@ -30,6 +30,7 @@ import { CodingNsSettingsSection } from './settings-section.js'
 import { createCodingNsSettingsBridge } from './settings-bridge.js'
 import { CodingNsWebTerminals, registerCodingNsTerminalUi } from './terminal/index.js'
 import type { TerminalRemote } from './terminal/model.js'
+import { startCodingNsAccountBar } from './account-bar.js'
 
 // DSH 在 Client/Cordis 建立前就可能读取 randomUUID，必须在入口加载时修复。
 ensureCryptoRandomUUID()
@@ -101,6 +102,7 @@ export function apply(ctx?: Context): void {
       uiConversation: settingsCtx.uiConversation,
       uiContext: settingsCtx,
     }
+    const disposeAccountBar = startCodingNsAccountBar(connection.rpc)
     const registry = new FeatureRegistry<CodingNsClientServices, CodingNsClientFeatureModule>(services)
     registry.registerMany(CLIENT_FEATURES)
     registry.validate()
@@ -128,6 +130,7 @@ export function apply(ctx?: Context): void {
       return () => {
         unsubscribe()
         disposeTerminalUi()
+        disposeAccountBar.dispose()
         void webTerminals.dispose()
         settings.dispose()
       }

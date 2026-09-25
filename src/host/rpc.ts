@@ -153,6 +153,7 @@ function writeRpcResponse(response: ServerResponse, rpcId: string, result: Conne
 
 const CODINGNS_RPC_ENDPOINTS = [
   'auth/snapshot', 'auth/login', 'auth/logout', 'auth/devices', 'auth/bind', 'auth/unbind', 'auth/signalingTicket', 'auth/dsh/device/list', 'auth/dsh/device/start', 'auth/dsh/device/stop', 'auth/dsh/device/status', 'auth/dsh/relayTicket',
+  'host/status',
   'settings/get', 'settings/set',
   'terminal/status',
   'terminalProcess/profile/list', 'terminalProcess/profile/create', 'terminalProcess/profile/delete',
