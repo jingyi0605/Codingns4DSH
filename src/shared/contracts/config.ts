@@ -79,6 +79,14 @@ export interface LanAccessDshSettings {
   dshPort: number
 }
 
+/** 局域网入口登录保护的公开设置；密码哈希仅保存在 Host 私有凭据文件中。 */
+export interface LanAccessDshLoginSettings {
+  enabled: boolean
+  username: string
+  passwordConfigured: boolean
+  timeoutSeconds: number
+}
+
 export const CODINGNS_SETTINGS_NAMESPACE = 'codingns'
 export const CODINGNS_CONTROL_BASE_URL_FIELD = 'controlBaseUrl'
 export const CODINGNS_CONTROL_BASE_URLS_FIELD = 'controlBaseUrls'

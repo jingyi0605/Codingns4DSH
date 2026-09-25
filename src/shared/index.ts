@@ -17,6 +17,7 @@ export {
   type CodingNsSettings,
   type CodingNsCliAdapterPreference,
   type LanAccessDshSettings,
+  type LanAccessDshLoginSettings,
   type RestartFeatureStates,
   type TerminalAppearanceSettings,
   type TerminalAppearanceTheme,
@@ -140,6 +141,7 @@ export {
 } from './contracts/debug.js'
 export type {
   LanAccessDshConfig,
+  LanAccessDshLoginConfig,
   LanAccessDshSnapshot,
   LanAccessDshState,
 } from './contracts/lan-access-dsh.js'

@@ -6,6 +6,16 @@ export interface LanAccessDshConfig {
   listenPort: number
   /** 当前 DSH Web 的本地端口。 */
   dshPort: number
+  /** 可选的 Host 侧登录保护；凭据不会进入此配置快照。 */
+  login?: LanAccessDshLoginConfig
+}
+
+export interface LanAccessDshLoginConfig {
+  enabled: boolean
+  username: string
+  passwordHash: string
+  passwordSalt: string
+  timeoutSeconds: number
 }
 
 export type LanAccessDshState = 'stopped' | 'starting' | 'listening' | 'error'
@@ -16,4 +26,5 @@ export interface LanAccessDshSnapshot extends LanAccessDshConfig {
   actualListenPort: number | null
   detectedDshPorts: readonly number[]
   error: string | null
+  loginEnabled: boolean
 }
