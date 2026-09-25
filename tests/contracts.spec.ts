@@ -116,12 +116,12 @@ test('不兼容 DSH 版本给出稳定错误码', () => {
   assert.equal(isDshVersionCompatible('0.1.5-rc.3'), true)
   assert.equal(isDshVersionCompatible('0.1.6'), true)
   assert.equal(isDshVersionCompatible('0.1.6-alpha.3'), true)
-  assert.equal(isDshVersionCompatible('0.1.7-rc.1'), false)
-  assert.equal(isDshVersionCompatible('0.1.7'), false)
+  assert.equal(isDshVersionCompatible('0.1.7-rc.1'), true)
+  assert.equal(isDshVersionCompatible('0.1.7'), true)
   assert.equal(isLegacyDshVersion('0.1.5-rc.3'), true)
   assert.equal(isLegacyDshVersion('0.1.6-alpha.2'), false)
   assert.throws(
-    () => assertSupportedDshVersion('0.1.7'),
+    () => assertSupportedDshVersion('0.1.8'),
     (error) => error instanceof CodingNsDshError
       && error.code === CODINGNS_DSH_ERROR_CODES.DSH_VERSION_UNSUPPORTED,
   )

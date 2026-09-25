@@ -39,7 +39,7 @@ test('package manifest declares the DSH bundle and client entry', () => {
   assert.equal(manifest.exports['./bootstrap'].default, './data/build/dist/bootstrap/index.js')
   assert.equal(manifest.engines.dsh, SUPPORTED_DSH_COMPATIBILITY)
   assert.equal(manifest.peerDependencies['@deepseek-ai/dsh'], SUPPORTED_DSH_COMPATIBILITY)
-  assert.equal(manifest.version, '0.1.0')
+  assert.equal(manifest.version, '0.1.1')
   const versionFile = JSON.parse(readFileSync(join(root, 'version.json'), 'utf8'))
   assert.equal(versionFile.pluginVersion, manifest.version)
   assert.equal(versionFile.dshTestedVersion, SUPPORTED_DSH_VERSION)

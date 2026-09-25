@@ -1,20 +1,22 @@
 {
   "name": "dsh-codingns-profile",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "engines": {
-    "dsh": ">=0.1.5-rc.3 <0.1.7-0"
+    "dsh": ">=0.1.5-rc.3 <0.1.8-0"
   },
   "scripts": {
     "preinstall": "node scripts/check-dsh-install.mjs"
   },
   "dependencies": {
-    "dsh-codingns": "0.1.0"
+    "dsh-codingns": "0.1.1"
   },
   "dsh": {
     "profile": {
-      "bundles": ["dsh-codingns"]
+      "bundles": [
+        "dsh-codingns"
+      ]
     }
   }
 }

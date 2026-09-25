@@ -14,7 +14,7 @@ import { registerSubscriptionSlot } from '../subscription-slot.js'
 export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
   descriptor: {
     name: 'workspaceSessionEnhancement',
-    version: '0.1.0',
+    version: '0.1.1',
     enabledByDefault: false,
     dependencies: ['cliAdapters'],
     runtime: 'client',

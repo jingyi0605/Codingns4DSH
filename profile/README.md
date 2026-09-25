@@ -1,6 +1,6 @@
 # CodingNS DSH Profile
 
-这是独立的 CodingNS Profile，插件版本为 `0.1.0`，兼容 DSH `>=0.1.5-rc.3 <0.1.7-0`，当前测试版本为 `0.1.6-alpha.2`。
+这是独立的 CodingNS Profile，插件版本为 `0.1.1`，兼容 DSH `>=0.1.5-rc.3 <0.1.8-0`，当前测试版本为 `0.1.6-alpha.2`。
 
 Profile 只选择 `dsh-codingns` Bundle。`cordis.patch.yml` 保持 `[]`，因为启动期
 Transport 必须由外部 pre-Cordis 启动胶水在 DSH Client/Cordis 创建前登记，不能由
@@ -9,7 +9,7 @@ Transport 必须由外部 pre-Cordis 启动胶水在 DSH Client/Cordis 创建前
 发布后，在 DSH 的 Profile 中安装精确版本的插件 Bundle：
 
 ```bash
-dsh plugin --profile dsh-codingns add dsh-codingns@0.1.0
+dsh plugin --profile dsh-codingns add dsh-codingns@0.1.1
 ```
 
 Profile 安装完成后，使用 DSH 官方启动器启动：

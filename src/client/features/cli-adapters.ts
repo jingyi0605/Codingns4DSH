@@ -16,7 +16,7 @@ import { registerExternalToolStreamUi } from '../external-tool-stream.js'
 export const cliAdaptersFeature: CodingNsClientFeatureModule = {
   descriptor: {
     name: 'cliAdapters',
-    version: '0.1.0',
+    version: '0.1.1',
     enabledByDefault: true,
     dependencies: [],
     runtime: 'client',

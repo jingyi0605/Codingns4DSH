@@ -11,7 +11,7 @@ import type { CodingNsClientFeatureModule } from './types.js'
 export const lanAccessFeature: CodingNsClientFeatureModule = {
   descriptor: {
     name: 'lanAccess',
-    version: '0.1.0',
+    version: '0.1.1',
     enabledByDefault: true,
     dependencies: [],
     runtime: 'client',

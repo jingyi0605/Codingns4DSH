@@ -30,7 +30,7 @@ export function createTerminalStatusFeature(options: TerminalStatusFeatureOption
   return {
     descriptor: {
       name: 'terminalStatus',
-      version: '0.1.0',
+      version: '0.1.1',
       enabledByDefault: true,
       dependencies: [],
       runtime: 'host',

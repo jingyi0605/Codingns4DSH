@@ -33,7 +33,7 @@ test('重复接管和不兼容版本都明确失败', () => {
       (error) => error instanceof CodingNsDshError && error.code === CODINGNS_DSH_ERROR_CODES.TRANSPORT_NOT_READY,
     )
     assert.throws(
-      () => installPreCordisTransport({ dshVersion: '0.1.7', transport }),
+      () => installPreCordisTransport({ dshVersion: '0.1.8', transport }),
       (error) => error instanceof CodingNsDshError && error.code === CODINGNS_DSH_ERROR_CODES.DSH_VERSION_UNSUPPORTED,
     )
   } finally {

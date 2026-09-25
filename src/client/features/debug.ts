@@ -5,7 +5,7 @@ import { registerDebugUi } from '../debug/ui.js'
 export const debugFeature: CodingNsClientFeatureModule = {
   descriptor: {
     name: 'debug',
-    version: '0.1.0',
+    version: '0.1.1',
     enabledByDefault: true,
     dependencies: [],
     runtime: 'client',

@@ -5,7 +5,7 @@ import { TerminalEnhancementPanel } from './terminal-enhancement-panel.js'
 export const terminalEnhancementFeature: CodingNsClientFeatureModule = {
   descriptor: {
     name: 'terminalEnhancement',
-    version: '0.1.0',
+    version: '0.1.1',
     enabledByDefault: false,
     dependencies: [],
     runtime: 'client',

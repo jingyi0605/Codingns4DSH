@@ -32,7 +32,7 @@ export class GeminiCliDriver extends StandardStreamDriver {
     try {
       await rpc.request('initialize', {
         protocolVersion: 1,
-        clientInfo: { name: 'dsh-codingns', version: '0.1.0' },
+        clientInfo: { name: 'dsh-codingns', version: '0.1.1' },
         clientCapabilities: {},
       }, { signal: controller.signal })
       const session = await rpc.request('session/new', {
@@ -131,7 +131,7 @@ export class GeminiCliDriver extends StandardStreamDriver {
     try {
       await rpc.request('initialize', {
         protocolVersion: 1,
-        clientInfo: { name: 'dsh-codingns', version: '0.1.0' },
+        clientInfo: { name: 'dsh-codingns', version: '0.1.1' },
         clientCapabilities: {},
       }, { signal: input.signal })
       rpc.notify('initialized', {})

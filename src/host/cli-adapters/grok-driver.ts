@@ -45,7 +45,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     if (command === null) return emptyCatalog()
     const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], spawn: this.runSpawn })
     try {
-      await rpc.request('initialize', { protocolVersion: 1, clientInfo: { name: 'dsh-codingns', version: '0.1.0' }, capabilities: {} })
+      await rpc.request('initialize', { protocolVersion: 1, clientInfo: { name: 'dsh-codingns', version: '0.1.1' }, capabilities: {} })
       rpc.notify('initialized', {})
       const session = await rpc.request('session/new', { cwd: process.cwd(), mcpServers: [] })
       const parsed = parseGrokCatalog(session)
@@ -128,7 +128,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     const state = { rpc, cwd: input.cwd, providerSessionId: '', requests: new Map<string, number | string>() }
     await rpc.request('initialize', {
       protocolVersion: 1,
-      clientInfo: { name: 'dsh-codingns', version: '0.1.0' },
+      clientInfo: { name: 'dsh-codingns', version: '0.1.1' },
       capabilities: {},
     })
     rpc.notify('initialized', {})

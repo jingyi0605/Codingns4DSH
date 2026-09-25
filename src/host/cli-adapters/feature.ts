@@ -19,7 +19,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
   return {
     descriptor: {
       name: 'cliAdapters',
-      version: '0.1.0',
+      version: '0.1.1',
       enabledByDefault: true,
       dependencies: [],
       runtime: 'host',

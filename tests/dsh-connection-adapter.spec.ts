@@ -85,7 +85,7 @@ test('版本不匹配时拒绝安装 DSH Transport', () => {
   const carrier = new FakeCarrier()
   const transport = new DshCodingNsTransport({ carrier, generation: { id: 5, host: { home: '/tmp' } } })
   assert.throws(
-    () => installDshTransport({ dshVersion: '0.1.7', transport }),
+    () => installDshTransport({ dshVersion: '0.1.8', transport }),
     /不支持的 DSH 版本/u,
   )
 })

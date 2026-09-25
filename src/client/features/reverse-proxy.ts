@@ -21,7 +21,7 @@ function isRemoteWebContext(): boolean {
 export const reverseProxyFeature: CodingNsClientFeatureModule = {
   descriptor: {
     name: 'reverseProxy',
-    version: '0.1.0',
+    version: '0.1.1',
     enabledByDefault: false,
     dependencies: [],
     runtime: 'client',

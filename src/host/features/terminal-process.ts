@@ -8,7 +8,7 @@ export function createTerminalProcessFeature(): FeatureModule<CodingNsHostServic
   return {
     descriptor: {
       name: 'terminalProcess',
-      version: '0.1.0',
+      version: '0.1.1',
       enabledByDefault: true,
       dependencies: [],
       runtime: 'host',

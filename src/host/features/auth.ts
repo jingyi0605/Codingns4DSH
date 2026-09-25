@@ -37,7 +37,7 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
   return {
     descriptor: {
       name: 'auth',
-      version: '0.1.0',
+      version: '0.1.1',
       enabledByDefault: true,
       dependencies: [],
       runtime: 'host',

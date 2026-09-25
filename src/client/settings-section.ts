@@ -31,7 +31,9 @@ import {
   dshThemeColor,
 } from './theme.js'
 import { useCodingNsTranslator } from './locale.js'
-import { isLegacyDshVersion } from '../shared/contracts/version.js'
+import { CODINGNS_VERSION, DSH_COMPATIBILITY, isLegacyDshVersion } from '../shared/contracts/version.js'
+
+const CODINGNS_GITHUB_URL = 'https://github.com/jingyi0605/DSH-CodingNS'
 
 // pnpm 会为不同 peer 上下文保留独立的 ui-slots 类型实例；插件在自己实际使用的
 // 根实例上重申公开契约，避免依赖声明合并偶然穿过依赖副本。
@@ -82,6 +84,13 @@ export function CodingNsSettingsSection({ settings, registry, services, restartS
         services,
         restartStates,
       })),
+    ),
+    createElement('details', { style: { alignSelf: 'center', marginTop: 4, color: dshThemeColor.labelTertiary, textAlign: 'center', fontSize: 12, lineHeight: 1.5 } },
+      createElement('summary', { style: { cursor: 'pointer', color: dshThemeColor.labelSecondary, listStylePosition: 'inside' } }, t('settings.version', { version: CODINGNS_VERSION })),
+      createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', maxWidth: 'min(100%, 560px)', marginTop: 8, padding: '8px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 6, background: dshThemeColor.surfaceSubtle } },
+        createElement('div', undefined, t('settings.compatibility', { range: DSH_COMPATIBILITY })),
+        createElement('a', { href: CODINGNS_GITHUB_URL, target: '_blank', rel: 'noreferrer', style: { color: dshThemeColor.accent, overflowWrap: 'anywhere' } }, CODINGNS_GITHUB_URL),
+      ),
     ),
   )
 }

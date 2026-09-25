@@ -152,7 +152,7 @@ export class CodexSubscriptionService implements SubscriptionReader {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), this.timeoutMs)
       try {
-        await rpc.request('initialize', { clientInfo: { name: 'dsh-codingns', version: '0.1.0' }, capabilities: {} }, { signal: controller.signal })
+        await rpc.request('initialize', { clientInfo: { name: 'dsh-codingns', version: '0.1.1' }, capabilities: {} }, { signal: controller.signal })
         rpc.notify('initialized', {})
         const result = await rpc.request('account/rateLimits/read', {}, { signal: controller.signal })
         return normalizeCodexSnapshot(result)

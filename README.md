@@ -5,10 +5,10 @@
 **Use your existing Agent CLIs, persistent terminals, workspace debugging, and remote access — inside DSH's own interface.**
 
 [![npm version](https://img.shields.io/npm/v/dsh-codingns?logo=npm)](https://www.npmjs.com/package/dsh-codingns)
-[![DSH compatibility](https://img.shields.io/badge/DSH-%3E%3D0.1.5--rc.3%20%3C0.1.7-0-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH compatibility](https://img.shields.io/badge/DSH-%3E%3D0.1.5--rc.3%20%3C0.1.8-0-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-3C873A?logo=node.js&logoColor=white)](https://nodejs.org)
 
-**Current release: `0.1.0`** · **DSH: `>=0.1.5-rc.3 <0.1.7-0`** (validated on `0.1.6-alpha.2`)
+**Current release: `0.1.1`** · **DSH: `>=0.1.5-rc.3 <0.1.8-0`** (validated on `0.1.6-alpha.2`)
 
 **Reach your own DSH Web UI from anywhere on the internet.** Beyond [LAN access](#lan-access-to-dsh), the [relay access service](#relay-access-service) carries the same DSH Web session to any device on any network — no public IP, no port forwarding, no VPN.
 
@@ -101,8 +101,8 @@ Nothing in DSH is replaced: conversations, the session list, the sidebar, settin
 | | |
 | --- | --- |
 | Package | `dsh-codingns` (DSH bundle: Host + browser layers) |
-| Plugin version | `0.1.0` (independent from the DSH version) |
-| DSH compatibility | `>=0.1.5-rc.3 <0.1.7-0`, validated on `0.1.6-alpha.2` |
+| Plugin version | `0.1.1` (independent from the DSH version) |
+| DSH compatibility | `>=0.1.5-rc.3 <0.1.8-0`, validated on `0.1.6-alpha.2` |
 | Node.js | `>= 22.19` |
 | Platforms | macOS, Linux, Windows |
 | Toolchain | `dsh` CLI; `pnpm` for plugin installation |
@@ -271,7 +271,7 @@ Anything not listed for an Agent is not supported by that CLI or its current ver
 
 | Requirement | Notes |
 | --- | --- |
-| **DSH `>=0.1.5-rc.3 <0.1.7-0`** | Tested with `0.1.6-alpha.2`. Plugin and DSH versions are released independently; keep them inside the declared range. |
+| **DSH `>=0.1.5-rc.3 <0.1.8-0`** | Tested with `0.1.6-alpha.2`. Plugin and DSH versions are released independently; keep them inside the declared range. |
 | **Node.js `>= 22.19`** | Used by the `dsh` launcher and by the bundle. |
 | **`pnpm` on `PATH`** | `dsh plugin` forwards to pnpm. DSH prints `dsh: pnpm was not found` if it is missing. |
 | **A supported Agent CLI** | Only if you plan to use external Agents. Install and log in with the vendor's own installer. |
@@ -290,7 +290,7 @@ DSH installs plugins into a **profile**. CodingNS expects the profile to also co
 dsh codingns --from-default-profile web --dump-config
 
 # 2. Install the CodingNS bundle into that profile.
-dsh plugin --profile codingns add dsh-codingns@0.1.0
+dsh plugin --profile codingns add dsh-codingns@0.1.1
 
 # 3. Start DSH with the profile.
 dsh codingns
@@ -299,7 +299,7 @@ dsh codingns
 Or install into the standard `web` profile, if you prefer not to keep a separate profile:
 
 ```bash
-dsh plugin --profile web add dsh-codingns@0.1.0
+dsh plugin --profile web add dsh-codingns@0.1.1
 dsh web
 ```
 
@@ -310,7 +310,7 @@ What the install command does:
 - because `dsh-codingns` declares a bundle patch, the package is appended to `dsh.profile.bundles`, so the plugin's Host and browser layers are loaded on the next start;
 - the CodingNS bundle patch disables the official DSH terminal rows and inserts the CodingNS terminal in the same bundle generation, so there is exactly one terminal service.
 
-To install a later release, replace `0.1.0` with the version shown on the [npm package page](https://www.npmjs.com/package/dsh-codingns), keeping it inside the declared DSH compatibility range.
+To install a later release, replace `0.1.1` with the version shown on the [npm package page](https://www.npmjs.com/package/dsh-codingns), keeping it inside the declared DSH compatibility range.
 
 > **If the registry reports a 404 for `dsh-codingns`:** that version has not been published yet. Use [Install from source](#install-from-source-fallback) and add the local checkout instead — the rest of the setup is identical.
 
@@ -320,7 +320,7 @@ To install a later release, replace `0.1.0` with the version shown on the [npm p
 
 ```bash
 dsh --version                                  # DSH version, must be inside the supported range
-dsh plugin --profile codingns list --depth 0   # dsh-codingns 0.1.0
+dsh plugin --profile codingns list --depth 0   # dsh-codingns 0.1.1
 dsh --profile codingns --dump-config           # composed plugin tree
 ```
 
@@ -363,7 +363,7 @@ If you prefer an installable artifact, pack a tarball instead of linking the dir
 
 ```bash
 npm pack                                  # builds via prepack, then writes dsh-codingns-<version>.tgz
-dsh plugin --profile codingns add ./dsh-codingns-0.1.0.tgz
+dsh plugin --profile codingns add ./dsh-codingns-0.1.1.tgz
 ```
 
 ### Where CodingNS keeps files
@@ -485,7 +485,7 @@ dsh plugin --profile codingns list --depth 0
 npm view dsh-codingns version
 ```
 
-Keep DSH inside `>=0.1.5-rc.3 <0.1.7-0`. The bundle's launch glue validates the running DSH version and refuses to take over the connection for an unsupported Host; upgrade or downgrade DSH instead of mixing versions.
+Keep DSH inside `>=0.1.5-rc.3 <0.1.8-0`. The bundle's launch glue validates the running DSH version and refuses to take over the connection for an unsupported Host; upgrade or downgrade DSH instead of mixing versions.
 
 ### `patch: entry "terminal-controller" not found`
 
@@ -493,7 +493,7 @@ The profile has no DSH Web application layer, which happens when a custom profil
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add dsh-codingns@0.1.0
+dsh plugin --profile codingns add dsh-codingns@0.1.1
 ```
 
 ### An Agent is not detected
@@ -792,7 +792,7 @@ Agent 的安装和登录都在 DSH **之外** 用各家自己的工具完成，C
 
 | 要求 | 说明 |
 | --- | --- |
-| **DSH `>=0.1.5-rc.3 <0.1.7-0`** | 已在 `0.1.6-alpha.2` 上验证。插件与 DSH 版本独立发布，请保持在该范围内。 |
+| **DSH `>=0.1.5-rc.3 <0.1.8-0`** | 已在 `0.1.6-alpha.2` 上验证。插件与 DSH 版本独立发布，请保持在该范围内。 |
 | **Node.js `>= 22.19`** | `dsh` 启动器和本 Bundle 都依赖该版本。 |
 | **`PATH` 中有 `pnpm`** | `dsh plugin` 会转发给 pnpm；缺失时 DSH 会提示 `dsh: pnpm was not found`。 |
 | **受支持的 Agent CLI** | 仅在使用外部 Agent 时需要，请用各家官方方式安装并登录。 |
@@ -810,7 +810,7 @@ DSH 把插件安装到 **Profile** 中。CodingNS 需要 Profile 同时包含 DS
 dsh codingns --from-default-profile web --dump-config
 
 # 2. 把 CodingNS 安装进该 Profile。
-dsh plugin --profile codingns add dsh-codingns@0.1.0
+dsh plugin --profile codingns add dsh-codingns@0.1.1
 
 # 3. 使用该 Profile 启动 DSH。
 dsh codingns
@@ -819,7 +819,7 @@ dsh codingns
 如果你不想单独维护一个 Profile，也可以直接装进标准的 `web` Profile：
 
 ```bash
-dsh plugin --profile web add dsh-codingns@0.1.0
+dsh plugin --profile web add dsh-codingns@0.1.1
 dsh web
 ```
 
@@ -831,7 +831,7 @@ dsh web
 - 由于 `dsh-codingns` 声明了 Bundle patch，包名会被自动追加到 `dsh.profile.bundles`，下次启动即加载插件的 Host 层和浏览器层；
 - CodingNS 的 Bundle patch 会在同一个 Bundle generation 中停用官方终端相关行并插入 CodingNS 终端，保证只有一个终端服务。
 
-安装后续版本时，把 `0.1.0` 替换为 [npm 包页面](https://www.npmjs.com/package/dsh-codingns) 上的目标版本，并保持在上表声明的 DSH 兼容范围内。
+安装后续版本时，把 `0.1.1` 替换为 [npm 包页面](https://www.npmjs.com/package/dsh-codingns) 上的目标版本，并保持在上表声明的 DSH 兼容范围内。
 
 > **如果 npm 返回 `dsh-codingns` 404**：说明该版本还没有发布到 registry。请改用 [从源码安装](#从源码安装备选)，把本地检出目录装进 Profile，其余步骤完全相同。
 
@@ -841,7 +841,7 @@ dsh web
 
 ```bash
 dsh --version                                  # DSH 版本，必须在支持范围内
-dsh plugin --profile codingns list --depth 0   # 应显示 dsh-codingns 0.1.0
+dsh plugin --profile codingns list --depth 0   # 应显示 dsh-codingns 0.1.1
 dsh --profile codingns --dump-config           # 打印合成后的插件树
 ```
 
@@ -884,7 +884,7 @@ dsh codingns
 
 ```bash
 npm pack                                  # 通过 prepack 自动构建，生成 dsh-codingns-<版本>.tgz
-dsh plugin --profile codingns add ./dsh-codingns-0.1.0.tgz
+dsh plugin --profile codingns add ./dsh-codingns-0.1.1.tgz
 ```
 
 #### 文件位置
@@ -999,7 +999,7 @@ dsh plugin --profile codingns list --depth 0
 npm view dsh-codingns version
 ```
 
-请保持 DSH 在 `>=0.1.5-rc.3 <0.1.7-0` 范围内。Bundle 的启动胶水会校验运行中的 DSH 版本，对不支持的宿主会拒绝接管连接；这时应升级或降级 DSH，而不是混用版本。
+请保持 DSH 在 `>=0.1.5-rc.3 <0.1.8-0` 范围内。Bundle 的启动胶水会校验运行中的 DSH 版本，对不支持的宿主会拒绝接管连接；这时应升级或降级 DSH，而不是混用版本。
 
 安装脚本和启动胶水都会拒绝不兼容版本：安装阶段由插件和 Profile 的 `preinstall` 检查
 当前 `dsh --version`，启动阶段由 Host、Client 和 Bootstrap 再次读取实际 DSH 版本并执行
@@ -1011,7 +1011,7 @@ npm view dsh-codingns version
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add dsh-codingns@0.1.0
+dsh plugin --profile codingns add dsh-codingns@0.1.1
 ```
 
 #### 检测不到某个 Agent
