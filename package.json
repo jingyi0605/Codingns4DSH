@@ -1,7 +1,7 @@
 {
   "name": "dsh-codingns",
   "version": "0.1.1",
-  "description": "CodingNS 的 DeepSeek Harness 插件骨架与连接契约",
+  "description": "DSH-CodingNS 的 DeepSeek Harness 插件骨架与连接契约",
   "type": "module",
   "main": "./data/build/dist/index.js",
   "types": "./data/build/dist/index.d.ts",
