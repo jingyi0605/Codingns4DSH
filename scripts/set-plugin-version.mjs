@@ -26,6 +26,9 @@ const profile = await readJson('profile/package.json')
 profile.version = nextVersion
 profile.dependencies['dsh-codingns'] = nextVersion
 await writeJson('profile/package.json', profile)
+const profileVersion = await readJson('profile/version.json')
+profileVersion.pluginVersion = nextVersion
+await writeJson('profile/version.json', profileVersion)
 
 const versionPath = join(root, 'src/shared/contracts/version.ts')
 const source = await readFile(versionPath, 'utf8')

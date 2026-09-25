@@ -71,6 +71,7 @@
     }
   },
   "scripts": {
+    "preinstall": "node scripts/check-dsh-install.mjs",
     "version:check": "node scripts/check-version-sync.mjs",
     "version:set-plugin": "node scripts/set-plugin-version.mjs",
     "version:set-dsh": "node scripts/set-dsh-version.mjs",
@@ -94,7 +95,8 @@
     "profile/**",
     "version.json",
     "README.md",
-    "package.json"
+    "package.json",
+    "scripts/check-dsh-install.mjs"
   ],
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

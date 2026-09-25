@@ -827,6 +827,7 @@ dsh web
 安装命令做了什么：
 
 - 在 `$DSH_HOME/profiles/<profile>`（默认 `~/.dsh/profiles/<profile>`）中执行 `pnpm add`；
+- 安装前会执行 DSH 版本门禁：读取当前 `dsh --version`，不在插件 `engines.dsh` 范围内时直接终止安装；
 - Profile 不存在时由 DSH 自动初始化；
 - 由于 `dsh-codingns` 声明了 Bundle patch，包名会被自动追加到 `dsh.profile.bundles`，下次启动即加载插件的 Host 层和浏览器层；
 - CodingNS 的 Bundle patch 会在同一个 Bundle generation 中停用官方终端相关行并插入 CodingNS 终端，保证只有一个终端服务。
@@ -1000,6 +1001,10 @@ npm view dsh-codingns version
 ```
 
 请保持 DSH 在 `>=0.1.6-alpha.2 <0.1.7` 范围内。Bundle 的启动胶水会校验运行中的 DSH 版本，对不支持的宿主会拒绝接管连接；这时应升级或降级 DSH，而不是混用版本。
+
+安装脚本和启动胶水都会拒绝不兼容版本：安装阶段由插件和 Profile 的 `preinstall` 检查
+当前 `dsh --version`，启动阶段由 Host、Client 和 Bootstrap 再次读取实际 DSH 版本并执行
+`assertSupportedDshVersion()`。即使跳过包管理器脚本，插件也不会在不支持的 DSH 上启用。
 
 #### 出现 `patch: entry "terminal-controller" not found`
 

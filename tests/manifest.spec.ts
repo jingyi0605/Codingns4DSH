@@ -56,6 +56,10 @@ test('bundle patch and example profile use DSH native shapes', async () => {
   assert.equal(profile.version, manifest.version)
   assert.equal(profile.dependencies['dsh-codingns'], manifest.version)
   assert.equal(profile.engines.dsh, SUPPORTED_DSH_COMPATIBILITY)
+  assert.equal(profile.scripts.preinstall, 'node scripts/check-dsh-install.mjs')
+  const profileVersion = JSON.parse(await readFile(join(root, 'profile/version.json'), 'utf8'))
+  assert.equal(profileVersion.pluginVersion, manifest.version)
+  assert.equal(profileVersion.dshCompatibility, SUPPORTED_DSH_COMPATIBILITY)
 })
 
 test('npm 包声明包含工作区会话 Logo 资产', () => {

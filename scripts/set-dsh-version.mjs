@@ -36,6 +36,10 @@ await writeJson('package.json', manifest)
 const profile = await readJson('profile/package.json')
 profile.engines.dsh = nextCompatibility
 await writeJson('profile/package.json', profile)
+const profileVersion = await readJson('profile/version.json')
+profileVersion.dshTestedVersion = nextVersion
+profileVersion.dshCompatibility = nextCompatibility
+await writeJson('profile/version.json', profileVersion)
 
 const versionPath = join(root, 'src/shared/contracts/version.ts')
 const source = await readFile(versionPath, 'utf8')

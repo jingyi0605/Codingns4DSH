@@ -7,6 +7,7 @@ const readJson = async (relativePath) => JSON.parse(await readFile(join(root, re
 const versionFile = await readJson('version.json')
 const manifest = await readJson('package.json')
 const profile = await readJson('profile/package.json')
+const profileVersionFile = await readJson('profile/version.json').catch(() => undefined)
 const source = await readFile(join(root, 'src/shared/contracts/version.ts'), 'utf8')
 const sourceDshVersion = /^export const DSH_VERSION = '([^']+)'/mu.exec(source)?.[1]
 const sourcePluginVersion = /^export const CODINGNS_VERSION = '([^']+)'/mu.exec(source)?.[1]
@@ -30,10 +31,17 @@ if (typeof dshCompatibility !== 'string' || !compatibility.test(dshCompatibility
 if (!Number.isInteger(dshProtocolVersion) || dshProtocolVersion < 1) failures.push(`version.json.dshProtocolVersion 不是正整数: ${String(dshProtocolVersion)}`)
 
 expectEqual('package.engines.dsh', manifest.engines?.dsh, dshCompatibility)
+expectEqual('package.peerDependencies.@deepseek-ai/dsh', manifest.peerDependencies?.['@deepseek-ai/dsh'], dshCompatibility)
 expectEqual('package.version', manifest.version, pluginVersion)
 expectEqual('profile.version', profile.version, pluginVersion)
 expectEqual('profile.engines.dsh', profile.engines?.dsh, dshCompatibility)
 expectEqual('profile.dependencies.dsh-codingns', profile.dependencies?.['dsh-codingns'], pluginVersion)
+if (profile.scripts?.preinstall !== 'node scripts/check-dsh-install.mjs') failures.push('profile.scripts.preinstall 未配置 DSH 安装期版本检查')
+if (profileVersionFile !== undefined) {
+  expectEqual('profile/version.json.pluginVersion', profileVersionFile.pluginVersion, pluginVersion)
+  expectEqual('profile/version.json.dshCompatibility', profileVersionFile.dshCompatibility, dshCompatibility)
+  expectEqual('profile/version.json.dshTestedVersion', profileVersionFile.dshTestedVersion, dshVersion)
+}
 expectEqual('src/shared/contracts/version.ts DSH_VERSION', sourceDshVersion, dshVersion)
 expectEqual('src/shared/contracts/version.ts CODINGNS_VERSION', sourcePluginVersion, pluginVersion)
 expectEqual('src/shared/contracts/version.ts DSH_COMPATIBILITY', sourceCompatibility, dshCompatibility)

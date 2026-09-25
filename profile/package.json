@@ -6,6 +6,9 @@
   "engines": {
     "dsh": ">=0.1.6-alpha.2 <0.1.7"
   },
+  "scripts": {
+    "preinstall": "node scripts/check-dsh-install.mjs"
+  },
   "dependencies": {
     "dsh-codingns": "0.1.0"
   },

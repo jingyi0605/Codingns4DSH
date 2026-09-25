@@ -18,6 +18,10 @@ Profile 安装完成后，使用 DSH 官方启动器启动：
 dsh --profile dsh-codingns --dump-config
 ```
 
+Profile 和插件安装前都会读取当前 `dsh --version`；版本不在 Profile 的 `engines.dsh`
+范围内时，安装直接失败。启动时 Host、Client 和 Bootstrap 还会再次校验实际 DSH 版本，
+不兼容版本不会启用插件。
+
 真实 Transport 工厂完成后，桌面壳或页面应先调用 `dsh-codingns/bootstrap` 的
 `bootWithPreCordisTransport()`，再启动 DSH Client。DSH 升级后必须先发布匹配的新
 Profile 和启动胶水版本。
