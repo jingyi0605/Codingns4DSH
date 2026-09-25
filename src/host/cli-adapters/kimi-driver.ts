@@ -9,6 +9,7 @@ import { probeStoredSession, readFirstJsonRecord, resolveSessionDirectory } from
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { isQuestionEvent, readAgentQuestions } from './interaction-events.js'
 import { usageChunk } from './rpc-driver-utils.js'
+import { terminateChildProcess } from './process-utils.js'
 
 interface KimiPendingInteraction {
   readonly rpcId: string | number
@@ -130,7 +131,7 @@ export class KimiCliDriver extends StandardStreamDriver {
     this.interactions.set(input.sessionId, interaction)
     let finished = false
     let sawProtocol = false
-    const onAbort = (): void => { try { child.kill('SIGTERM') } catch { /* 进程可能已经退出 */ } }
+    const onAbort = (): void => { terminateChildProcess(child) }
     input.signal?.addEventListener('abort', onAbort, { once: true })
     if (input.signal?.aborted) onAbort()
     child.stderr.on('data', () => undefined)
@@ -203,7 +204,7 @@ export class KimiCliDriver extends StandardStreamDriver {
     } finally {
       if (this.interactions.get(input.sessionId) === interaction) this.interactions.delete(input.sessionId)
       input.signal?.removeEventListener('abort', onAbort)
-      try { child.kill('SIGTERM') } catch { /* 进程可能已经退出 */ }
+      terminateChildProcess(child)
     }
   }
 

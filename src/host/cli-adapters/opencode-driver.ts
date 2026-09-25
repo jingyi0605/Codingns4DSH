@@ -12,6 +12,7 @@ import { isProviderDefaultModel } from './model-catalog.js'
 import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { isQuestionEvent, questionAnswersList, readAgentQuestions } from './interaction-events.js'
 import { usageChunk } from './rpc-driver-utils.js'
+import { terminateChildProcess } from './process-utils.js'
 
 const WINDOWS = process.platform === 'win32'
 const DEFAULT_BINARIES = WINDOWS ? ['opencode.exe', 'opencode'] : ['opencode']
@@ -249,9 +250,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   dispose(): void {
     this.sessions.clear()
     this.sessionCwds.clear()
-    for (const managed of this.managedServers.values()) {
-      try { managed.child.kill('SIGTERM') } catch { /* 进程可能已经退出 */ }
-    }
+    for (const managed of this.managedServers.values()) terminateChildProcess(managed.child)
     this.managedServers.clear()
     this.cachedBinary = null
     this.cachedServer = null
@@ -351,7 +350,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     const managed = this.managedServers.get(cwd)
     if (managed === undefined) return
     this.managedServers.delete(cwd)
-    try { managed.child.kill('SIGTERM') } catch { /* 进程可能已经退出 */ }
+    terminateChildProcess(managed.child)
   }
 
   private async findServer(): Promise<{ url: string; version: string | null } | null> {

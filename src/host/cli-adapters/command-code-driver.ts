@@ -11,6 +11,7 @@ import type {
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { firstToolText, serializeToolValue } from './tool-observation.js'
 import { usageChunk } from './rpc-driver-utils.js'
+import { terminateChildProcess } from './process-utils.js'
 
 const WINDOWS = process.platform === 'win32'
 const COMMAND_CODE_BINARIES = WINDOWS
@@ -202,7 +203,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     const child = this.runSpawn(binary, args, { cwd: input.cwd ?? process.cwd(), env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: WINDOWS })
     this.processes.add(child)
     let finished = false
-    const onAbort = (): void => { try { child.kill('SIGTERM') } catch { /* 进程可能已退出 */ } }
+    const onAbort = (): void => { terminateChildProcess(child) }
     input.signal?.addEventListener('abort', onAbort, { once: true })
     // 必须消费 stderr，错误内容不能回传给 DSH，避免泄露命令参数或文件片段。
     child.stderr.on('data', () => undefined)
@@ -233,13 +234,13 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     } finally {
       input.signal?.removeEventListener('abort', onAbort)
       this.processes.delete(child)
-      try { child.kill('SIGTERM') } catch { /* 正常退出 */ }
+      terminateChildProcess(child)
       try { rmSync(transcriptPath, { force: true }) } catch { /* 临时文件清理尽力而为 */ }
     }
   }
 
   dispose(): void {
-    for (const child of this.processes) { try { child.kill('SIGTERM') } catch { /* 进程可能已退出 */ } }
+    for (const child of this.processes) terminateChildProcess(child)
     this.processes.clear()
     this.cachedBinary = null
   }

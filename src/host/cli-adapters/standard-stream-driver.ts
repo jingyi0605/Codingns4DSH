@@ -9,6 +9,7 @@ import type {
 import type { CodingNsCliDriver } from './driver.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { usageChunk } from './rpc-driver-utils.js'
+import { terminateChildProcess } from './process-utils.js'
 
 const WINDOWS = process.platform === 'win32'
 
@@ -87,7 +88,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     this.processes.add(child)
     let emittedFinish = false
     let emittedBinding = input.providerSessionId !== undefined
-    const onAbort = (): void => { try { child.kill('SIGTERM') } catch { /* 进程可能已退出 */ } }
+    const onAbort = (): void => { terminateChildProcess(child) }
     input.signal?.addEventListener('abort', onAbort, { once: true })
     if (input.signal?.aborted) onAbort()
     child.stderr.on('data', () => undefined)
@@ -122,12 +123,12 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     } finally {
       input.signal?.removeEventListener('abort', onAbort)
       this.processes.delete(child)
-      try { child.kill('SIGTERM') } catch { /* 正常退出 */ }
+      terminateChildProcess(child)
     }
   }
 
   dispose(): void {
-    for (const child of this.processes) { try { child.kill('SIGTERM') } catch { /* 进程可能已退出 */ } }
+    for (const child of this.processes) terminateChildProcess(child)
     this.processes.clear()
     this.cachedBinary = null
   }

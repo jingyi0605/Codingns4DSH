@@ -89,21 +89,36 @@ function detectWindowsShells(
 ): readonly DetectedTerminalShell[] {
   const systemRoot = env.SystemRoot ?? env.WINDIR ?? 'C:\\Windows'
   const programFiles = env.ProgramFiles ?? 'C:\\Program Files'
+  const programFilesX86 = env['ProgramFiles(x86)']
   const localAppData = env.LOCALAPPDATA
-  const powershell = firstExecutable([
+  const pathEntries = (env.Path ?? env.PATH ?? '').split(';').map((value) => value.trim()).filter(Boolean)
+  const powershell = firstExecutable(uniqueWindowsPaths([
     `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
     `${programFiles}\\PowerShell\\7\\pwsh.exe`,
-  ], executable, 'win32')
+    ...(programFilesX86 ? [`${programFilesX86}\\PowerShell\\7\\pwsh.exe`] : []),
+    ...(localAppData ? [`${localAppData}\\Programs\\PowerShell\\7\\pwsh.exe`] : []),
+    ...pathCandidates(pathEntries, ['pwsh.exe', 'powershell.exe']),
+  ]), executable, 'win32')
   const cmd = firstExecutable([env.ComSpec ?? '', `${systemRoot}\\System32\\cmd.exe`], executable, 'win32')
-  const gitBash = firstExecutable([
+  const gitBash = firstExecutable(uniqueWindowsPaths([
     `${programFiles}\\Git\\bin\\bash.exe`,
+    ...(programFilesX86 ? [`${programFilesX86}\\Git\\bin\\bash.exe`] : []),
     ...(localAppData ? [`${localAppData}\\Programs\\Git\\bin\\bash.exe`] : []),
-  ], executable, 'win32')
+    ...pathCandidates(pathEntries, ['bash.exe']),
+  ]), executable, 'win32')
   return [
     shellResult('powershell', 'PowerShell', powershell),
     shellResult('cmd', '命令提示符', cmd),
     shellResult('git-bash', 'Git Bash', gitBash),
   ]
+}
+
+function pathCandidates(entries: readonly string[], names: readonly string[]): readonly string[] {
+  return entries.flatMap((entry) => names.map((name) => `${entry.replace(/[\\/]+$/u, '')}\\${name}`))
+}
+
+function uniqueWindowsPaths(paths: readonly string[]): readonly string[] {
+  return [...new Set(paths)]
 }
 
 function firstExecutable(paths: readonly string[], executable: (path: string) => boolean, platform: string): string | null {

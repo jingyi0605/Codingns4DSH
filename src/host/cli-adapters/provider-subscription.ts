@@ -214,7 +214,7 @@ export interface OpenCodeSubscriptionOptions { readonly homeDirectory?: string }
 export class OpenCodeSubscriptionService implements SubscriptionReader {
   private readonly homeDirectory: string
   constructor(options: OpenCodeSubscriptionOptions = {}) {
-    this.homeDirectory = options.homeDirectory ?? join(homedir(), '.local', 'share', 'opencode')
+    this.homeDirectory = options.homeDirectory ?? defaultOpenCodeDataDirectory()
   }
 
   async read(): Promise<CliSubscriptionUsage | null> {
@@ -222,6 +222,9 @@ export class OpenCodeSubscriptionService implements SubscriptionReader {
       join(this.homeDirectory, 'auth.json'),
       join(homedir(), '.config', 'opencode', 'auth.json'),
       join(homedir(), 'Library', 'Application Support', 'opencode', 'auth.json'),
+      ...(process.platform === 'win32' && process.env.APPDATA
+        ? [join(process.env.APPDATA, 'opencode', 'auth.json')]
+        : []),
     ]
     const auth = candidates.map(readJson).find((value) => value !== null)
     if (auth === null || auth === undefined || Object.keys(auth).length === 0) return null
@@ -374,7 +377,13 @@ function resolveSub2ApiSources(adapterId: string): Sub2ApiSource[] {
     })
   }
   if (adapterId === 'opencode') {
-    const config = readJson(join(homedir(), '.config', 'opencode', 'opencode.json'))
+    const configCandidates = [
+      join(homedir(), '.config', 'opencode', 'opencode.json'),
+      ...(process.platform === 'win32' && process.env.APPDATA
+        ? [join(process.env.APPDATA, 'opencode', 'opencode.json')]
+        : []),
+    ]
+    const config = configCandidates.map(readJson).find((value) => value !== null) ?? null
     add(findConfigSource(config))
   }
   if (adapterId === 'dsh') {
@@ -390,6 +399,11 @@ function resolveSub2ApiSources(adapterId: string): Sub2ApiSource[] {
     add(findConfigSource(readJson(join(homedir(), '.grok', 'config.json'))))
   }
   return sources
+}
+
+function defaultOpenCodeDataDirectory(): string {
+  if (process.platform === 'win32') return join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'opencode')
+  return join(homedir(), '.local', 'share', 'opencode')
 }
 
 function envSource(baseName: string, keyName: string): Sub2ApiSource | null {

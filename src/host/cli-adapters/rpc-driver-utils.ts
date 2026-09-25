@@ -1,6 +1,7 @@
 import { spawnSync, type SpawnSyncResult } from 'node:child_process'
 import type { CodingNsCliModelCatalog, CodingNsAgentEvent } from '../../shared/contracts/cli-adapter.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
+import { WINDOWS } from './process-utils.js'
 
 export interface RpcBinaryOptions {
   readonly binaries: readonly string[]
@@ -11,7 +12,7 @@ export async function detectBinary(options: RpcBinaryOptions): Promise<{ install
   const run = options.spawnSync ?? spawnSync
   for (const command of options.binaries) {
     try {
-      const result = run(command, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: false })
+      const result = run(command, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS })
       const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
       const version = output.match(/\d+\.\d+(?:\.\d+)?/u)?.[0] ?? null
       if (result.status === 0 && version !== null) return { installed: true, version, command }

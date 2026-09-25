@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import readline from 'node:readline'
+import { terminateChildProcess, WINDOWS } from './process-utils.js'
 
 /** JSON-RPC 消息的最小形状。不同 Agent 的扩展字段保持在 unknown 中。 */
 export interface JsonRpcMessage {
@@ -152,7 +153,7 @@ export class JsonRpcProcess {
       env: { ...process.env, ...(this.options.env ?? {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
-      shell: false,
+      shell: WINDOWS,
       // CLI 可能是 Node 包装脚本，直接 kill 包装进程不会连带真正的 Node 子进程。
       // POSIX 下单独进程组后才能可靠地一次清理整棵进程树。
       detached: process.platform !== 'win32',
@@ -252,5 +253,5 @@ function terminateChild(child: ChildProcessWithoutNullStreams, signal: NodeJS.Si
   if (process.platform !== 'win32' && typeof pid === 'number' && pid > 0) {
     try { process.kill(-pid, signal) } catch { /* 进程组可能已经退出 */ }
   }
-  try { child.kill(signal) } catch { /* 进程可能已经退出 */ }
+  terminateChildProcess(child, signal)
 }

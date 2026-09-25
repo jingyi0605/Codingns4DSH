@@ -8,6 +8,7 @@ import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './r
 import { PI_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { WINDOWS } from './process-utils.js'
 
 export interface PiAgentDriverOptions {
   readonly binaries?: readonly string[]
@@ -56,7 +57,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
     } catch { /* 旧版 Pi 没有模型 RPC 时继续读取表格。 */ }
     finally { clearTimeout(timer); rpc.dispose() }
     try {
-      const result = this.runSpawnSync(detection.command!, ['--list-models'], { encoding: 'utf8', timeout: 12_000, windowsHide: true, shell: false })
+      const result = this.runSpawnSync(detection.command!, ['--list-models'], { encoding: 'utf8', timeout: 12_000, windowsHide: true, shell: WINDOWS })
       const catalog = parsePiCliCatalog(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
       if (catalog.groups.length > 0) return catalog
     } catch { /* 旧版 Pi 没有 --list-models。 */ }
