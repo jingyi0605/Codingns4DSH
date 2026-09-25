@@ -14,6 +14,8 @@ import { createDshTransportDebugLogger } from '../transport/debug.js'
 export interface DshH5BootstrapOptions {
   readonly rpc: CodingNsRpcClient
   readonly dshDeviceId?: string
+  /** 登录保护开启中继范围时使用的短期 Host 签名票据。 */
+  readonly loginProtectionToken?: string
   readonly signal?: AbortSignal
   readonly boot?: () => void | Promise<void>
 }
@@ -65,7 +67,10 @@ export async function startDshH5Bootstrap(options: DshH5BootstrapOptions): Promi
   const debug = createDshTransportDebugLogger({ side: 'h5', component: 'h5-bootstrap' })
   const devices = await callRpc<DshDeviceListResponse>(options.rpc, 'auth/dsh/device/list', {}, signal)
   const device = chooseDshDevice(devices, options.dshDeviceId)
-  const ticket = await callRpc<DshRelaySignalingTicket>(options.rpc, 'auth/dsh/relayTicket', { dshDeviceId: device.dshDeviceId }, signal)
+  const ticket = await callRpc<DshRelaySignalingTicket>(options.rpc, 'auth/dsh/relayTicket', {
+    dshDeviceId: device.dshDeviceId,
+    ...(options.loginProtectionToken === undefined ? {} : { loginProtectionToken: options.loginProtectionToken }),
+  }, signal)
   const connection = await connectWebRtcClient({
     signalingTicket: ticket as unknown as RelaySignalingTicketResponse,
     signalingSocketFactory: (url) => new WebSocket(url) as unknown as SignalingSocketLike,

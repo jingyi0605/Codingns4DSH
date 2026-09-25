@@ -2,6 +2,9 @@ import { ReverseProxyPanel } from './reverse-proxy-panel.js'
 import type { CodingNsClientFeatureModule } from './types.js'
 import type { CodingNsRpcClient } from './types.js'
 import { startDshH5Bootstrap } from '../dsh-h5-bootstrap.js'
+import { LOGIN_PROTECTION_SESSION_EVENT, readLoginProtectionSession } from './login-protection-session.js'
+import type { LanAccessDshLoginSettings } from '../../shared/contracts/config.js'
+import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 
 function isRemoteWebContext(): boolean {
   return (globalThis as typeof globalThis & {
@@ -45,10 +48,22 @@ export const reverseProxyFeature: CodingNsClientFeatureModule = {
     let disposeConnection: (() => Promise<void>) | undefined
     let retryTimer: ReturnType<typeof setTimeout> | undefined
     let stopped = false
+    let waitingForLogin = false
+    const onLoginProtectionSession = (): void => {
+      waitingForLogin = false
+      void attempt()
+    }
+    globalThis.addEventListener(LOGIN_PROTECTION_SESSION_EVENT, onLoginProtectionSession)
     const attempt = async (): Promise<void> => {
-      if (stopped) return
+      if (stopped || waitingForLogin) return
       try {
-        const dispose = await startBrowserRelayConnection(context.services.rpc, abort.signal)
+        const protection = await readLoginProtectionSettings(context.services.rpc)
+        const loginProtectionToken = readLoginProtectionSession()
+        if (protection.enabled && protection.scopes.relay && loginProtectionToken === undefined) {
+          waitingForLogin = true
+          return
+        }
+        const dispose = await startBrowserRelayConnection(context.services.rpc, abort.signal, loginProtectionToken)
         if (stopped || abort.signal.aborted) { await dispose(); return }
         disposeConnection = dispose
       } catch (error) {
@@ -60,6 +75,7 @@ export const reverseProxyFeature: CodingNsClientFeatureModule = {
     void attempt()
     return async () => {
       stopped = true
+      globalThis.removeEventListener(LOGIN_PROTECTION_SESSION_EVENT, onLoginProtectionSession)
       abort.abort()
       if (retryTimer !== undefined) clearTimeout(retryTimer)
       await disposeConnection?.()
@@ -69,7 +85,20 @@ export const reverseProxyFeature: CodingNsClientFeatureModule = {
 }
 
 /** 浏览器侧真实中继连接；refresh token 和 access token 只经过 Host RPC。 */
-export async function startBrowserRelayConnection(rpc: CodingNsRpcClient, signal: AbortSignal): Promise<() => Promise<void>> {
-  const bootstrap = await startDshH5Bootstrap({ rpc, signal })
+export async function startBrowserRelayConnection(rpc: CodingNsRpcClient, signal: AbortSignal, loginProtectionToken?: string): Promise<() => Promise<void>> {
+  const bootstrap = await startDshH5Bootstrap({ rpc, signal, ...(loginProtectionToken === undefined ? {} : { loginProtectionToken }) })
   return bootstrap.dispose
+}
+
+async function readLoginProtectionSettings(rpc: CodingNsRpcClient): Promise<LanAccessDshLoginSettings> {
+  let response
+  try {
+    response = await rpc.call(CODINGNS_RPC_CHANNEL, 'lanAccessDsh/login/get', {})
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!/HTTP (?:404|405)\b/u.test(message)) throw error
+    response = await rpc.call('/api', 'codingns/lanAccessDsh/login/get', {})
+  }
+  if (!response.ok) throw new Error(response.error.message)
+  return response.value as LanAccessDshLoginSettings
 }

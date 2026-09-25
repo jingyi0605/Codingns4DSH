@@ -733,6 +733,8 @@ Agent 的安装和登录都在 DSH **之外** 用各家自己的工具完成，C
 
 模块还会在浏览器里补齐 `crypto.randomUUID`：明文 HTTP 的局域网来源不是安全上下文，部分浏览器不提供该 API。开启 **自动启动** 后，下次 DSH 启动会恢复该映射。这条链路只在你自己的局域网内，不经过中转服务。
 
+如需保护 DSH Web，在 **登录保护** 模块中设置用户名、至少 8 位密码、会话超时时间，并选择局域网或中继访问范围。本机 `127.0.0.1` / `::1` 永远放行，避免本地配置错误导致无法进入 DSH。认证发生在 Host 的转发边界：未登录请求不会被转发到 DSH Web，上游 DSH 启动时生成的一次性认证 Cookie 也只由 Host 自动接管，不会暴露给浏览器。密码使用 `scrypt` 哈希并以当前用户可读写的 `0600` 文件保存；浏览器仅持有 `HttpOnly`、`SameSite=Strict` 会话 Cookie。
+
 #### 中转访问服务
 
 **中转服务突破局域网限制：让你在互联网上的任何位置打开自己的 DSH Web 界面。** 局域网访问只在其他设备与 Host 处于同一网络时可用；中转则把同一个 DSH Web 会话跨网络、跨 NAT、跨移动数据送达——在另一个办公室、另一座城市，或用手机蜂窝网络都没问题，不需要公网 IP、路由器端口映射或 VPN。
@@ -980,6 +982,7 @@ CodingNS 提供两条互相独立的远程通道，可以只启用其一，也�
 | `lanAccessDsh.autoStart` | DSH 启动时恢复局域网映射。 | `false` |
 | `lanAccessDsh.listenHost` / `listenPort` | 监听网卡与端口。 | `0.0.0.0` / `13080` |
 | `lanAccessDsh.dshPort` | 本机 DSH Web 端口，`0` 表示自动探测。 | `0` |
+| `lan-access-login.json` | 局域网登录保护的用户名、`scrypt` 哈希和盐；仅 Host 当前用户可读写。 | `~/.config/dsh-codingns/` |
 | `terminalEnhancement.bindingScope` | `workspace`（按工作区共享终端）或 `session`。 | `workspace` |
 | `terminalEnhancement.defaultProfile` | 新终端默认 Shell（`system`、`zsh`、`bash`、`powershell`、`cmd`、`git-bash`）。 | `system` |
 | `terminalEnhancement.appearance.*` | 主题、颜色、字体、光标、滚动缓冲区；`null` 表示继承 DSH。 | 继承 |

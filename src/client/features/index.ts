@@ -2,6 +2,7 @@ import type { FeatureRegistry } from '../../features/registry.js'
 import type { FeatureUiDescriptor } from '../../shared/contracts/feature.js'
 import { lanAccessFeature } from './lan-access.js'
 import { reverseProxyFeature } from './reverse-proxy.js'
+import { loginProtectionFeature } from './login-protection.js'
 import { cliAdaptersFeature } from './cli-adapters.js'
 import { terminalEnhancementFeature } from './terminal-enhancement.js'
 import { workspaceSessionEnhancementFeature } from './workspace-session-enhancement.js'
@@ -11,6 +12,7 @@ import type { CodingNsClientFeatureModule, CodingNsClientServices } from './type
 /** Client 侧功能模块清单：新增模块在这里登记一行，不需要改动设置页和入口。 */
 export const CLIENT_FEATURES: readonly CodingNsClientFeatureModule[] = [
   lanAccessFeature,
+  loginProtectionFeature,
   reverseProxyFeature,
   cliAdaptersFeature,
   workspaceSessionEnhancementFeature,
@@ -43,9 +45,10 @@ export function settingsModules(
   return entries
 }
 
-export { lanAccessFeature, reverseProxyFeature, cliAdaptersFeature, workspaceSessionEnhancementFeature, terminalEnhancementFeature, debugFeature }
+export { lanAccessFeature, loginProtectionFeature, reverseProxyFeature, cliAdaptersFeature, workspaceSessionEnhancementFeature, terminalEnhancementFeature, debugFeature }
 export { startBrowserRelayConnection } from './reverse-proxy.js'
 export { LanAccessPanel } from './lan-access-panel.js'
+export { LoginProtectionPanel } from './login-protection-panel.js'
 export { ReverseProxyPanel } from './reverse-proxy-panel.js'
 export { CliAdaptersPanel } from './cli-adapters.js'
 export { TerminalEnhancementPanel } from './terminal-enhancement-panel.js'
