@@ -70,19 +70,7 @@ export async function verifyLoginProtectionSession(
 ): Promise<boolean> {
   const config = await store.read()
   if (config === null || !config.enabled || !config.scopes[scope]) return true
-  if (typeof token !== 'string' || token.length < 32 || token.length > 4096) return false
-  const separator = token.lastIndexOf('.')
-  if (separator <= 0) return false
-  const payload = token.slice(0, separator)
-  const signature = token.slice(separator + 1)
-  const expected = signSessionPayload(payload, config)
-  const expectedBytes = Buffer.from(expected)
-  const actualBytes = Buffer.from(signature)
-  if (expectedBytes.length !== actualBytes.length || !timingSafeEqual(expectedBytes, actualBytes)) return false
-  try {
-    const value = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { username?: unknown; scope?: unknown; expiresAt?: unknown; nonce?: unknown }
-    return value.username === config.username && value.scope === scope && typeof value.nonce === 'string' && typeof value.expiresAt === 'number' && value.expiresAt > Date.now()
-  } catch { return false }
+  return typeof token === 'string' && verifySignedSessionToken(token, config, scope)
 }
 
 /** 测试和嵌入式宿主使用的内存凭据存储。 */
@@ -167,7 +155,8 @@ export class LanAccessDshProxy {
   private active: ActiveProxy | null = null
   private detectedDshPorts: readonly number[] = []
   private loginConfig: LanAccessDshLoginConfig | null = null
-  private readonly sessions = new Map<string, number>()
+  /** 当前进程内主动退出的会话；正常会话由签名令牌承载，可跨代理重建复用。 */
+  private readonly revokedSessions = new Set<string>()
   private upstreamCookie: string | null = null
 
   constructor(
@@ -234,7 +223,7 @@ export class LanAccessDshProxy {
     active.state = 'stopped'
     for (const socket of active.sockets) socket.destroy()
     active.sockets.clear()
-    this.sessions.clear()
+    this.revokedSessions.clear()
     await active.close()
   }
 
@@ -248,7 +237,7 @@ export class LanAccessDshProxy {
 
   setLoginConfig(config: LanAccessDshLoginConfig | null): void {
     this.loginConfig = config === null ? null : normalizeLoginConfig(config)
-    if (config === null || !config.enabled) this.sessions.clear()
+    if (config === null || !config.enabled) this.revokedSessions.clear()
   }
 
   loginSettings(): LanAccessDshLoginSettings {
@@ -322,24 +311,26 @@ export class LanAccessDshProxy {
     if (request.path === '/__codingns/login' && request.method === 'POST') {
       const form = new URLSearchParams(new TextDecoder().decode(request.body))
       if (form.get('username') !== config.username || !verifyPassword(form.get('password') ?? '', config)) {
-        return loginResponse(401, '用户名或密码错误')
+        return loginResponse(401, loginPageWithError('用户名或密码错误', form.get('username') ?? ''))
       }
-      const token = randomBytes(32).toString('base64url')
-      this.sessions.set(token, Date.now() + config.timeoutSeconds * 1000)
+      const expiresAt = Date.now() + config.timeoutSeconds * 1000
+      const payload = encodeSessionPayload({ username: config.username, scope: 'lan', expiresAt, nonce: randomBytes(16).toString('base64url') })
+      const token = `${payload}.${signSessionPayload(payload, config)}`
+      this.revokedSessions.delete(token)
       return loginResponse(303, '', { 'Set-Cookie': sessionCookie(token, config.timeoutSeconds), Location: '/' })
     }
     if (request.path === '/__codingns/logout') {
       const token = readCookie(request.headers.cookie, 'dsh_codingns_session')
-      if (token !== undefined) this.sessions.delete(token)
+      if (token !== undefined && verifySignedSessionToken(token, config, 'lan')) this.revokedSessions.add(token)
       return loginResponse(303, '', { 'Set-Cookie': 'dsh_codingns_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0', Location: '/' })
     }
+    // 浏览器会在页面刷新时独立请求 Web App manifest；它只包含静态元数据，
+    // 不应因为登录保护缺少 Cookie 而产生 401 控制台噪声。
+    if (request.path === '/manifest.webmanifest' && request.method === 'GET') return 'pass'
     const token = readCookie(request.headers.cookie, 'dsh_codingns_session')
-    const expiresAt = token === undefined ? undefined : this.sessions.get(token)
-    if (expiresAt !== undefined && expiresAt > Date.now()) {
-      this.sessions.set(token!, Date.now() + config.timeoutSeconds * 1000)
+    if (token !== undefined && !this.revokedSessions.has(token) && verifySignedSessionToken(token, config, 'lan')) {
       return 'pass'
     }
-    if (token !== undefined) this.sessions.delete(token)
     return request.path === '/' || request.path.endsWith('.html')
       ? loginResponse(200, loginPage())
       : loginResponse(401, '需要登录')
@@ -438,10 +429,10 @@ function getSetCookie(headers: Headers): string | undefined {
 }
 
 function loginResponse(status: number, body: string, extra: Record<string, string> = {}): Uint8Array {
-  const html = body === loginPage() ? body : escapeHtml(body)
-  const content = new TextEncoder().encode(html)
+  const isHtml = body.startsWith('<!doctype html>')
+  const content = new TextEncoder().encode(isHtml ? body : escapeHtml(body))
   const headers = {
-    'Content-Type': body === loginPage() ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8',
+    'Content-Type': isHtml ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8',
     'Content-Length': String(content.length),
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
@@ -461,6 +452,15 @@ function loginPage(): string {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DSH Web | 本地登录</title><style>
 :root{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;color:#f1f5f9;background:#0a0f1d}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0}body{overflow:hidden}.cyber-login-page{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden;background:radial-gradient(ellipse at center,#0f172a 0%,#0a0f1d 100%);color:#f1f5f9}.cyber-login-page:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(59,130,246,.08) 1px,transparent 1px),linear-gradient(90deg,rgba(59,130,246,.08) 1px,transparent 1px);background-size:50px 50px;transform:perspective(500px) rotateX(60deg);transform-origin:center top}.cyber-login-page:after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.15) 2px,rgba(0,0,0,.15) 4px)}.cyber-login-container{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:30px;width:min(440px,calc(100% - 32px));padding:24px}.cyber-login-content{display:flex;flex-direction:column;align-items:center;gap:28px;width:100%}.cyber-brand{display:flex;flex-direction:column;align-items:center;gap:13px;text-align:center}.cyber-logo{display:grid;place-items:center;width:80px;height:80px;border:1px solid rgba(59,130,246,.48);border-radius:22px;color:#60a5fa;font-size:19px;font-weight:700;letter-spacing:2px;box-shadow:0 0 25px rgba(0,212,255,.35),inset 0 0 22px rgba(59,130,246,.18);transform:rotate(30deg)}.cyber-logo span{transform:rotate(-30deg)}.cyber-brand-title{margin:0;color:#f1f5f9;font-size:28px;font-weight:700;letter-spacing:4px}.cyber-brand-subtitle{margin:0;color:#94a3b8;font-size:12px;letter-spacing:1.5px}.cyber-card{width:100%;padding:30px;border:1px solid rgba(59,130,246,.28);border-radius:12px;background:rgba(30,41,59,.78);backdrop-filter:blur(10px);box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 0 1px rgba(59,130,246,.28)}.cyber-card-header{display:flex;align-items:center;gap:12px;margin-bottom:22px}.cyber-line{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.48),transparent)}.cyber-card-label{color:#94a3b8;font-size:11px;font-weight:600;letter-spacing:3px;white-space:nowrap}.cyber-form{display:flex;flex-direction:column;gap:18px}.cyber-connect-hint{margin:0;color:#94a3b8;font-size:12px;line-height:1.7}.cyber-field{position:relative;padding:12px 16px;border:1px solid rgba(59,130,246,.28);border-radius:8px;background:rgba(15,23,42,.68)}.cyber-field-label{display:flex;align-items:center;gap:8px;margin-bottom:8px;color:#94a3b8;font-size:11px;letter-spacing:1px}.cyber-field-icon{color:#60a5fa}.cyber-input{width:100%;padding:0;border:0;outline:0;background:transparent;color:#f1f5f9;font:14px var(--font-mono)}.cyber-input::placeholder{color:#94a3b8;opacity:.55}.cyber-submit{position:relative;width:100%;min-height:48px;margin-top:4px;padding:14px 24px;overflow:hidden;border:0;border-radius:8px;background:linear-gradient(135deg,#3b82f6,#06b6d4);color:white;font:600 13px var(--font-mono);letter-spacing:2px;cursor:pointer;box-shadow:0 0 18px rgba(59,130,246,.32)}.cyber-submit:hover{filter:brightness(1.12)}.cyber-submit:active{transform:translateY(1px)}.cyber-submit:disabled{cursor:wait;opacity:.6}.cyber-submit-text{position:relative;display:flex;align-items:center;justify-content:center;gap:8px}.cyber-status{display:flex;align-items:center;gap:8px;margin:0;padding:10px 12px;border:1px solid rgba(239,68,68,.25);border-radius:6px;background:rgba(239,68,68,.1);color:#fca5a5;font-size:12px;line-height:1.5}.cyber-footer{margin-top:2px}.cyber-divider{display:flex;align-items:center;gap:12px;margin-bottom:14px}.cyber-divider-line{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.48),transparent)}.cyber-divider-text{color:#64748b;font-size:10px;letter-spacing:2px}.cyber-version{display:flex;align-items:center;gap:12px;color:#64748b;font-size:10px;letter-spacing:2px;opacity:.65}@media(prefers-color-scheme:light){.cyber-login-page{color:#0f172a;background:radial-gradient(ellipse at center,#f8fafc 0%,#eef4fb 100%)}.cyber-card{background:rgba(255,255,255,.86);box-shadow:0 8px 28px rgba(15,23,42,.12),0 0 0 1px rgba(37,99,235,.13)}.cyber-brand-title{color:#0f172a}.cyber-input{color:#0f172a}.cyber-connect-hint,.cyber-field-label,.cyber-card-label{color:#64748b}.cyber-field{background:rgba(241,245,249,.86)}}@media(max-width:520px){.cyber-login-container{width:100%;padding:20px 16px}.cyber-card{padding:24px 20px}.cyber-brand-subtitle{font-size:10px;letter-spacing:1px}}
 </style></head><body><main class="cyber-login-page"><div class="cyber-login-container"><div class="cyber-login-content"><div class="cyber-brand"><div class="cyber-logo"><span>DSH</span></div><h1 class="cyber-brand-title">DSH Web</h1><p class="cyber-brand-subtitle">LOCAL SECURE DSH ENVIRONMENT</p></div><div class="cyber-card"><form class="cyber-form" method="post" action="/__codingns/login"><div class="cyber-card-header"><div class="cyber-line"></div><span class="cyber-card-label">LOCAL ACCESS</span><div class="cyber-line"></div></div><p class="cyber-connect-hint">使用本机设置的本地账号进入 DSH Web。</p><div class="cyber-field"><label class="cyber-field-label" for="login-username"><span class="cyber-field-icon" aria-hidden="true">⌁</span>用户名</label><input class="cyber-input" id="login-username" name="username" autocomplete="username" placeholder="输入本地用户名" required></div><div class="cyber-field"><label class="cyber-field-label" for="login-password"><span class="cyber-field-icon" aria-hidden="true">⚷</span>密码</label><input class="cyber-input" id="login-password" name="password" type="password" autocomplete="current-password" placeholder="输入本地密码" required></div><button class="cyber-submit" type="submit"><span class="cyber-submit-text"><span aria-hidden="true">➤</span>登录 DSH Web</span></button><div class="cyber-footer"><div class="cyber-divider"><span class="cyber-divider-line"></span><span class="cyber-divider-text">CODINGNS</span><span class="cyber-divider-line"></span></div></div></form></div></div><div class="cyber-version"><span>DSH-CODINGNS</span><span>|</span><span>LOCAL AUTH READY</span></div></div></main></body></html>`
+}
+
+/** 登录失败时继续渲染完整登录页，避免浏览器落到无样式的纯文本错误页。 */
+function loginPageWithError(message: string, username: string): string {
+  const page = loginPage()
+  const status = `<p class="cyber-status" role="alert" aria-live="polite"><span aria-hidden="true">!</span>${escapeHtml(message)}</p>`
+  return page
+    .replace('<p class="cyber-connect-hint">', `${status}<p class="cyber-connect-hint">`)
+    .replace('name="username" autocomplete="username"', `name="username" autocomplete="username" value="${escapeHtml(username)}"`)
 }
 
 function statusText(status: number): string { return status === 200 ? 'OK' : status === 303 ? 'See Other' : status === 401 ? 'Unauthorized' : 'Request Error' }
@@ -748,6 +748,20 @@ function encodeSessionPayload(value: { username: string; scope: keyof LoginProte
 }
 function signSessionPayload(payload: string, config: LanAccessDshLoginConfig): string {
   return createHmac('sha256', `${config.passwordSalt}:${config.passwordHash}`).update(payload).digest('base64url')
+}
+function verifySignedSessionToken(token: string, config: LanAccessDshLoginConfig, scope: keyof LoginProtectionScopes): boolean {
+  if (token.length < 32 || token.length > 4096) return false
+  const separator = token.lastIndexOf('.')
+  if (separator <= 0) return false
+  const payload = token.slice(0, separator)
+  const signature = token.slice(separator + 1)
+  const expectedBytes = Buffer.from(signSessionPayload(payload, config))
+  const actualBytes = Buffer.from(signature)
+  if (expectedBytes.length !== actualBytes.length || !timingSafeEqual(expectedBytes, actualBytes)) return false
+  try {
+    const value = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { username?: unknown; scope?: unknown; expiresAt?: unknown; nonce?: unknown }
+    return value.username === config.username && value.scope === scope && typeof value.nonce === 'string' && typeof value.expiresAt === 'number' && value.expiresAt > Date.now()
+  } catch { return false }
 }
 function requireLoginText(value: unknown, field: string, min: number, max: number): string {
   if (typeof value !== 'string' || value.trim().length < min || value.trim().length > max || /[\u0000-\u001F\u007F]/u.test(value)) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', `${field} 格式无效`)
