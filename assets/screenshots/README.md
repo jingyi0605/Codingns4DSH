@@ -1,6 +1,6 @@
 # README 截图素材
 
-本目录保存 README（[../../README.md](../../README.md)）使用的截图。文件名统一使用英文 kebab-case，README 里用 HTML `<img>` 引用以便控制宽度。
+本目录保存 README（中文 [../../README.md](../../README.md)、英文 [../../README.en.md](../../README.en.md)）使用的截图，两个语言版本共用同一批图片。文件名统一使用英文 kebab-case，README 里用 HTML `<img>` 引用以便控制宽度。
 
 ## 已收录截图
 
