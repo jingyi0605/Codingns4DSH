@@ -26,6 +26,13 @@ export function apply(ctx?: Context): void {
       hasConnection: hostCtx.connection !== undefined,
     })
     const webServerPort = (hostCtx as Context & { webServer: { port: number } }).webServer.port
+    // LAN 入口和中继 Web 页面可能使用非 loopback URL，但它们都已经经过
+    // DSH Host 的认证边界并回到本机 Host。通过启动页注入 transport 所有权，
+    // 让 DSH 原生 ui-settings 保持 host 模式，而不是错误降级为 memory 模式。
+    const indexInjectionEvents = hostCtx as unknown as { on(name: string, listener: (table: unknown[]) => void): unknown }
+    indexInjectionEvents.on('webserver/index-inject', (table) => {
+      table.push({ kind: 'global', name: '__DSH_TRANSPORT__', value: { ownsHost: true } })
+    })
     const settings = registerCodingNsSettings(hostCtx)
     // controller 必须在功能模块和浏览器 Client 开始消费状态前完成装配。
     // 工厂在本次启动只读取一次开关，设置 watcher 不会热切同名 service。

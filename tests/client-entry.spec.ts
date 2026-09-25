@@ -7,6 +7,7 @@ import test from 'node:test'
 const clientBundle = join(dirname(fileURLToPath(import.meta.url)), '../data/build/dist/client/bundle.js')
 const clientSource = join(dirname(fileURLToPath(import.meta.url)), '../src/client/index.ts')
 const remoteWebContextSource = join(dirname(fileURLToPath(import.meta.url)), '../src/client/remote-web-context.ts')
+const hostSource = join(dirname(fileURLToPath(import.meta.url)), '../src/host/index.ts')
 
 test('Client 入口以 DSH Loader factory 格式构建', async () => {
   const source = await readFile(clientBundle, 'utf8')
@@ -26,6 +27,13 @@ test('远程 DSH Web 自动确认内测声明，不触碰其他引导弹窗', as
   assert.match(source, /welcomeTitles\.has\(welcomeTitle\(root\)\)/u)
   assert.match(source, /welcomeButtons\.has\(normalizeText\(candidate\.textContent\)\)/u)
   assert.match(source, /appRoot\.inert = false/u)
+})
+
+test('Host 启动页为 LAN 和本机 Web 注入 Host 所有权标记', async () => {
+  const source = await readFile(hostSource, 'utf8')
+  assert.match(source, /webserver\/index-inject/u)
+  assert.match(source, /name: '__DSH_TRANSPORT__'/u)
+  assert.match(source, /value: \{ ownsHost: true \}/u)
 })
 
 test('Client 构建产物不包含 Node 专属模块', async () => {
