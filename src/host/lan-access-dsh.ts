@@ -1,7 +1,7 @@
 import { connect, createServer } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import { Transform, type TransformCallback } from 'node:stream'
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { homedir } from 'node:os'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -143,7 +143,9 @@ export class LanAccessDshProxy {
       listenHost: input.listenHost ?? '0.0.0.0',
       listenPort: input.listenPort ?? 13080,
       dshPort,
-      ...(input.login === undefined ? {} : { login: normalizeLoginConfig(input.login) }),
+      ...(input.login === undefined
+        ? (this.loginConfig === null ? {} : { login: this.loginConfig })
+        : { login: normalizeLoginConfig(input.login) }),
     }, this.listenHosts())
     this.setLoginConfig(config.login ?? null)
     if (this.active) await this.stop()
@@ -239,7 +241,7 @@ export class LanAccessDshProxy {
         const authTransform = new LanAccessDshAuthTransform(localSocket, (request) => this.authorize(request))
         const requestTransform = new LanAccessDshRequestTransform(`127.0.0.1:${active.config.dshPort}`)
         localSocket.pipe(authTransform as unknown as LanAccessDshStream)
-        authTransform.pipe(requestTransform as unknown as LanAccessDshStream)
+        authTransform.pipe(requestTransform as unknown as NodeJS.WritableStream)
         requestTransform.pipe(dshSocket as unknown as NodeJS.WritableStream)
       } else localSocket.pipe(dshSocket)
       dshSocket.pipe(localSocket)
@@ -247,8 +249,9 @@ export class LanAccessDshProxy {
   }
 
   private snapshot(active: ActiveProxy): LanAccessDshSnapshot {
+    const { login: _login, ...publicConfig } = active.config
     return {
-      ...active.config,
+      ...publicConfig,
       state: active.state,
       actualListenPort: active.actualListenPort || null,
       detectedDshPorts: this.detectedDshPorts,
@@ -296,7 +299,7 @@ interface ParsedLanRequest {
 
 /** 在 TCP 转发前完成登录校验；未通过时直接向局域网客户端返回页面/错误。 */
 class LanAccessDshAuthTransform extends Transform {
-  private pending = new Uint8Array(0)
+  private pending: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
   private handled = false
   constructor(
     private readonly client: LanAccessDshStream,
@@ -532,12 +535,18 @@ export function normalizeLanAccessDshConfig(value: Partial<LanAccessDshConfig>, 
   const dshPort = requirePort(value.dshPort, 'dshPort', false)
   const allowedHosts = allowedListenHosts === undefined ? LISTEN_HOSTS : new Set(allowedListenHosts)
   if (!allowedHosts.has(listenHost)) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '监听地址必须来自本机网卡或 0.0.0.0')
-  return { listenHost, listenPort, dshPort }
+  return {
+    listenHost,
+    listenPort,
+    dshPort,
+    ...(value.login === undefined ? {} : { login: normalizeLoginConfig(value.login) }),
+  }
 }
 
 export function createLanAccessDshRpcHandler(
   proxy: LanAccessDshProxy,
   settings?: SettingsScope<CodingNsSettings>,
+  loginStore: LanAccessDshLoginStore = new FileLanAccessDshLoginStore(),
 ): (action: string, payload: unknown) => unknown | Promise<unknown> {
   return async (action, payload) => {
     switch (action) {
@@ -555,6 +564,20 @@ export function createLanAccessDshRpcHandler(
         await settings.update({ lanAccessDsh: next })
         return settings.get().lanAccessDsh
       }
+      case 'login/get':
+        return proxy.loginSettings()
+      case 'login/set': {
+        const current = await loginStore.read()
+        const next = parseLoginSettings(payload, current)
+        if (next === null) {
+          await loginStore.clear()
+          proxy.setLoginConfig(null)
+        } else {
+          await loginStore.write(next)
+          proxy.setLoginConfig(next)
+        }
+        return proxy.loginSettings()
+      }
       case 'start':
         return proxy.start(parseStartPayload(payload))
       case 'stop':
@@ -569,6 +592,54 @@ export function createLanAccessDshRpcHandler(
 function defaultLanAccessDshSettings(): LanAccessDshSettings {
   return { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 }
 }
+
+function parseLoginSettings(value: unknown, current: LanAccessDshLoginRecord | null): LanAccessDshLoginRecord | null {
+  if (!value || typeof value !== 'object') throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '登录保护设置必须是对象')
+  const input = value as Record<string, unknown>
+  if (input.enabled === false) return null
+  if (input.enabled !== true) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '登录保护 enabled 必须是布尔值')
+  const username = requireLoginText(input.username, '用户名', 1, 128)
+  const timeoutSeconds = requireInteger(input.timeoutSeconds, '超时时间', 60, 604800)
+  const password = typeof input.password === 'string' ? input.password : ''
+  if (password === '' && current === null) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '启用登录保护时必须设置密码')
+  if (password !== '' && (password.length < 8 || password.length > 256)) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '密码长度必须是 8 到 256 个字符')
+  const passwordSalt = password === '' ? current!.passwordSalt : randomBytes(16).toString('hex')
+  const passwordHash = password === '' ? current!.passwordHash : hashPassword(password, passwordSalt)
+  return { enabled: true, username, passwordHash, passwordSalt, timeoutSeconds }
+}
+
+function normalizeLoginConfig(value: LanAccessDshLoginConfig): LanAccessDshLoginConfig {
+  if (typeof value !== 'object' || value === null) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '登录保护配置无效')
+  return {
+    enabled: value.enabled === true,
+    username: requireLoginText(value.username, '用户名', 1, 128),
+    passwordHash: requireLoginText(value.passwordHash, '密码哈希', 1, 512),
+    passwordSalt: requireLoginText(value.passwordSalt, '密码盐', 1, 128),
+    timeoutSeconds: requireInteger(value.timeoutSeconds, '超时时间', 60, 604800),
+  }
+}
+
+function parseLoginRecord(value: unknown): LanAccessDshLoginRecord {
+  return normalizeLoginConfig(value as LanAccessDshLoginConfig)
+}
+
+function hashPassword(password: string, salt: string): string { return scryptSync(password, salt, 64).toString('hex') }
+function verifyPassword(password: string, config: LanAccessDshLoginConfig): boolean {
+  try {
+    const expected = Buffer.from(config.passwordHash, 'hex')
+    const actual = Buffer.from(hashPassword(password, config.passwordSalt), 'hex')
+    return expected.length === actual.length && timingSafeEqual(expected, actual)
+  } catch { return false }
+}
+function requireLoginText(value: unknown, field: string, min: number, max: number): string {
+  if (typeof value !== 'string' || value.trim().length < min || value.trim().length > max || /[\u0000-\u001F\u007F]/u.test(value)) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', `${field} 格式无效`)
+  return value.trim()
+}
+function requireInteger(value: unknown, field: string, min: number, max: number): number {
+  if (!Number.isInteger(value) || (value as number) < min || (value as number) > max) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', `${field} 必须是 ${min} 到 ${max} 的整数`)
+  return value as number
+}
+function isNodeError(error: unknown, code: string): boolean { return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === code }
 
 function parseLanAccessDshSettings(value: unknown, allowedListenHosts: readonly string[]): LanAccessDshSettings {
   if (!value || typeof value !== 'object') throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '局域网访问 DSH 设置必须是对象')
