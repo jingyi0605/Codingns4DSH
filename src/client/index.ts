@@ -102,7 +102,7 @@ export function apply(ctx?: Context): void {
       uiConversation: settingsCtx.uiConversation,
       uiContext: settingsCtx,
     }
-    const disposeAccountBar = startCodingNsAccountBar(connection.rpc)
+    const disposeAccountBar = startCodingNsAccountBar(connection.rpc, undefined, settings)
     const registry = new FeatureRegistry<CodingNsClientServices, CodingNsClientFeatureModule>(services)
     registry.registerMany(CLIENT_FEATURES)
     registry.validate()

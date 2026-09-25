@@ -1,7 +1,9 @@
 import type { CodingNsAuthSessionSnapshot } from '../shared/contracts/auth.js'
+import type { CodingNsSettings } from '../shared/contracts/config.js'
 import type { DshHostStatus } from '../shared/contracts/host-status.js'
 import { CODINGNS_RPC_CHANNEL } from '../shared/contracts/transport.js'
 import type { CodingNsRpcClient } from './features/types.js'
+import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 
 const SETTINGS_BUTTON_SELECTOR = 'button[aria-label="设置"]'
 const ACCOUNT_ATTRIBUTE = 'data-codingns-account-button'
@@ -11,7 +13,7 @@ const POLL_MS = 5_000
 export interface AccountBarController { dispose(): void }
 
 /** 在 DSH 设置触发器旁挂载统一账户入口，兼容侧栏横排与收起竖排。 */
-export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document): AccountBarController {
+export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, settings?: SettingsScope<CodingNsSettings>): AccountBarController {
   const currentDocument = dom ?? (typeof document === 'undefined' ? undefined : document)
   if (currentDocument === undefined) return { dispose() {} }
   const root = currentDocument
@@ -25,6 +27,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document):
   let closeMenuListener: ((event: MouseEvent) => void) | undefined
   let auth: CodingNsAuthSessionSnapshot = loggedOutSnapshot()
   let local: LocalIdentity = { username: '', enabled: false }
+  let relayAccessEnabled = false
   let status: DshHostStatus | undefined
   let latency: number | undefined
   let busy = false
@@ -52,6 +55,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document):
     ])
     if (nextAuth.status === 'fulfilled') auth = nextAuth.value
     if (nextLocal.status === 'fulfilled') local = nextLocal.value
+    relayAccessEnabled = settings?.getSnapshot().value?.modules?.reverseProxy === true
     if (nextStatus.status === 'fulfilled') {
       status = nextStatus.value
       latency = Math.max(0, Math.round(performance.now() - started))
@@ -67,6 +71,11 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document):
 
   const scan = (): void => {
     if (disposed) return
+    if (!local.enabled && !relayAccessEnabled) {
+      removeAccountBar()
+      observeDom = true
+      return
+    }
     const settings = root.querySelector<HTMLElement>(SETTINGS_BUTTON_SELECTOR)
     if (settings === null) {
       observeDom = true
@@ -144,6 +153,10 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document):
   }
   observer = typeof MutationObserver === 'undefined' ? undefined : new MutationObserver(observerCallback)
   observer?.observe(root.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-expanded'] })
+  const unsubscribeSettings = settings?.subscribe(() => {
+    relayAccessEnabled = settings.getSnapshot().value?.modules?.reverseProxy === true
+    renderAll()
+  })
   timer = setInterval(() => { void refresh() }, POLL_MS)
   void refresh()
 
@@ -152,6 +165,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document):
       if (disposed) return
       disposed = true
       if (timer !== undefined) clearInterval(timer)
+      unsubscribeSettings?.()
       observer?.disconnect()
       resizeObserver?.disconnect()
       if (closeMenuListener !== undefined) {
@@ -161,6 +175,15 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document):
       root.querySelectorAll<HTMLElement>(`[${MENU_ATTRIBUTE}]`).forEach((node) => node.remove())
       root.querySelectorAll<HTMLElement>(`button[${ACCOUNT_ATTRIBUTE}]`).forEach((node) => node.remove())
     },
+  }
+
+  function removeAccountBar(): void {
+    if (closeMenuListener !== undefined) {
+      root.removeEventListener('click', closeMenuListener, true)
+      closeMenuListener = undefined
+    }
+    root.querySelectorAll<HTMLElement>(`[${MENU_ATTRIBUTE}]`).forEach((node) => node.remove())
+    root.querySelectorAll<HTMLElement>(`button[${ACCOUNT_ATTRIBUTE}]`).forEach((node) => node.remove())
   }
 
   function renderButton(button: HTMLButtonElement): void {
