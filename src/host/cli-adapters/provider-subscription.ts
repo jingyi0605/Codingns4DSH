@@ -108,7 +108,9 @@ export class Sub2ApiUsageService {
       if (!response.ok) return null
       const usage = normalizeSub2ApiUsage(await response.json(), baseUrl)
       if (usage === null) return null
-      return { authenticated: true, planType: usage.planName, primary: null, secondary: null, monthly: null, rateLimitReachedType: null, resetCredits: null, capturedAt: new Date().toISOString(), sub2api: { ...usage, logoUrl: buildLogoUrl(baseUrl) } }
+      const logoUrl = buildLogoUrl(baseUrl)
+      const logoDataUrl = logoUrl === '' ? '' : await readLogoDataUrl(logoUrl, this.request, this.timeoutMs)
+      return { authenticated: true, planType: usage.planName, primary: null, secondary: null, monthly: null, rateLimitReachedType: null, resetCredits: null, capturedAt: new Date().toISOString(), sub2api: { ...usage, logoUrl, logoDataUrl } }
     } catch {
       return null
     } finally {
@@ -439,6 +441,7 @@ function normalizeSub2ApiUsage(value: unknown, baseUrl: string): Sub2ApiUsage | 
   return {
     upstreamType: detectUpstreamType(root, baseUrl),
     upstreamUrl: sanitizeUpstreamUrl(baseUrl),
+    logoDataUrl: '',
     logoUrl: '',
     balance,
     remaining: numberValue(root.remaining) ?? balance,
@@ -484,6 +487,75 @@ function sanitizeUpstreamUrl(value: string): string {
 
 function buildLogoUrl(baseUrl: string): string {
   try { return new URL('/logo.svg', baseUrl).toString() } catch { return '' }
+}
+
+/** 获取小型公开图标并转为 CSP 允许的 data URL；图标失败不影响订阅数据。 */
+async function readLogoDataUrl(url: string, request: FetchLike, timeoutMs: number): Promise<string> {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return ''
+  } catch {
+    return ''
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, 3_000))
+  try {
+    const response = await request(parsed.toString(), { headers: { Accept: 'image/*' }, signal: controller.signal })
+    if (!response.ok) return ''
+    const contentType = (response.headers.get('content-type') ?? '').split(';', 1)[0]?.trim().toLowerCase() ?? ''
+    if (!isSupportedLogoContentType(contentType)) return ''
+    if (response.url !== '' && new URL(response.url).origin !== parsed.origin) return ''
+    const bytes = await readResponseBytes(response, 64 * 1024)
+    if (bytes === null || (contentType === 'image/svg+xml' && !isSafeSvg(bytes))) return ''
+    return `data:${contentType};base64,${Buffer.from(bytes).toString('base64')}`
+  } catch {
+    return ''
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function isSupportedLogoContentType(value: string): boolean {
+  return value === 'image/svg+xml' || value === 'image/png' || value === 'image/jpeg' || value === 'image/gif' || value === 'image/webp' || value === 'image/avif' || value === 'image/x-icon' || value === 'image/vnd.microsoft.icon'
+}
+
+async function readResponseBytes(response: Response, maxBytes: number): Promise<Uint8Array | null> {
+  const declaredLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) return null
+  if (response.body === null) {
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    return bytes.byteLength > maxBytes ? null : bytes
+  }
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      total += next.value.byteLength
+      if (total > maxBytes) {
+        await reader.cancel()
+        return null
+      }
+      chunks.push(next.value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return bytes
+}
+
+function isSafeSvg(bytes: Uint8Array): boolean {
+  const source = new TextDecoder().decode(bytes).toLowerCase()
+  return !/<\/?script\b|<\/?foreignobject\b|\bon[a-z]+\s*=|(?:href|xlink:href)\s*=\s*["']https?:|url\(\s*https?:/u.test(source)
 }
 
 function normalizePoint(value: unknown): Sub2ApiUsagePoint | null {

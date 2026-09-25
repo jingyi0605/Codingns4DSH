@@ -193,6 +193,10 @@ test('Sub2API 用量服务映射账户统计并计算缓存命中率且不返回
   const service = new Sub2ApiUsageService({
     sources: { codex: { baseUrl: 'https://upstream.example.test', apiKey: 'sub2api-secret' } },
     fetch: (async (url: string, init?: RequestInit) => {
+      if (url === 'https://upstream.example.test/logo.svg') {
+        assert.equal(new Headers(init?.headers).get('authorization'), null)
+        return new Response('<svg xmlns="http://www.w3.org/2000/svg"><path fill="red"/></svg>', { status: 200, headers: { 'content-type': 'image/svg+xml' } })
+      }
       assert.equal(url, 'https://upstream.example.test/v1/usage')
       assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer sub2api-secret')
       return new Response(JSON.stringify({
@@ -223,6 +227,7 @@ test('Sub2API 用量服务映射账户统计并计算缓存命中率且不返回
   assert.equal(result?.sub2api?.total.cacheHitRate, 90)
   assert.equal(result?.sub2api?.models[0]?.model, 'gpt-5')
   assert.equal(result?.sub2api?.logoUrl, 'https://upstream.example.test/logo.svg')
+  assert.match(result?.sub2api?.logoDataUrl ?? '', /^data:image\/svg\+xml;base64,/u)
   assert.doesNotMatch(JSON.stringify(result), /sub2api-secret/u)
 })
 

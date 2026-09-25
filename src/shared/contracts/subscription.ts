@@ -55,6 +55,8 @@ export interface Sub2ApiUsage {
   readonly upstreamType: 'Sub2API' | 'OneAPI' | '其他'
   /** 已移除 query、fragment、userinfo 的可公开上游地址。 */
   readonly upstreamUrl: string
+  /** Host 侧按需获取并内联的图标；失败时为空字符串。 */
+  readonly logoDataUrl?: string
   readonly logoUrl: string
   readonly balance: number
   readonly remaining: number
