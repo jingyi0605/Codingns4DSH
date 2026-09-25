@@ -26,7 +26,8 @@ export interface DshH5BootstrapResult {
 
 export interface DshH5BrowserControlApi {
   listDevices(signal?: AbortSignal): Promise<DshDeviceListResponse>
-  createClientTicket(dshDeviceId: string, signal?: AbortSignal): Promise<DshRelaySignalingTicket>
+  /** 可复用 sessionId，刷新页面时让 Relay 顶掉旧的同会话连接。 */
+  createClientTicket(dshDeviceId: string, signal?: AbortSignal, sessionId?: string): Promise<DshRelaySignalingTicket>
 }
 
 export interface DshH5BrowserBootstrapOptions {
@@ -35,6 +36,8 @@ export interface DshH5BrowserBootstrapOptions {
   readonly signal?: AbortSignal
   readonly webContext?: Omit<RemoteDshWebContextOptions, 'transport'>
   readonly generation?: number
+  /** 浏览器侧稳定的 Relay Client 会话标识；不携带账号凭据。 */
+  readonly clientSessionId?: string
   /** 页面可用的阶段提示；不携带任何凭据或业务正文。 */
   readonly onStatus?: (status: DshH5BootstrapStatus) => void
 }
@@ -116,7 +119,8 @@ export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapO
   let stopped = false
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined
   let reconnectRef: ((signal?: AbortSignal) => Promise<void>) | undefined
-  const firstTicket = await options.controlApi.createClientTicket(device.dshDeviceId, signal)
+  const clientSessionId = options.clientSessionId?.trim() || undefined
+  const firstTicket = await options.controlApi.createClientTicket(device.dshDeviceId, signal, clientSessionId)
   options.onStatus?.('webrtc')
   connection = await connectWebRtcClient(createWebRtcClientOptions(firstTicket, debug))
   const hostScope = resolveDshHostScope(firstTicket)
@@ -142,7 +146,7 @@ export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapO
           const waitMs = Math.min(10_000, 500 * (attempt + 1))
           if (attempt > 0) await delay(waitMs, signal)
           options.onStatus?.('ticket')
-          const ticket = await options.controlApi.createClientTicket(device.dshDeviceId, signal)
+          const ticket = await options.controlApi.createClientTicket(device.dshDeviceId, signal, clientSessionId)
           debug.log('bootstrap.reconnect.ticket', { generation: generation + 1 })
           options.onStatus?.('webrtc')
           const nextConnection = await connectWebRtcClient(createWebRtcClientOptions(ticket, debug))
@@ -262,11 +266,11 @@ export function createHttpDshH5ControlApi(baseUrl = ''): DshH5BrowserControlApi 
     async listDevices(signal) {
       return requestJson<DshDeviceListResponse>(`${normalizedBaseUrl}/api/v1/dsh/devices`, signal === undefined ? {} : { signal })
     },
-    async createClientTicket(dshDeviceId, signal) {
+    async createClientTicket(dshDeviceId, signal, sessionId) {
       return requestJson<DshRelaySignalingTicket>(`${normalizedBaseUrl}/api/v1/dsh/relay/ticket`, {
         method: 'POST',
         ...(signal === undefined ? {} : { signal }),
-        body: { dshDeviceId, role: 'client' },
+        body: { dshDeviceId, role: 'client', ...(sessionId?.trim() ? { sessionId: sessionId.trim() } : {}) },
       })
     },
   }

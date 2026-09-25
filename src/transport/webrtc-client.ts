@@ -154,7 +154,21 @@ export function waitForSignalingRegistered(socket: SignalingSocketLike, timeoutM
     const onMessage = (event: Event) => {
       const raw = (event as MessageEvent<unknown>).data
       if (typeof raw !== 'string') return
-      try { const message = JSON.parse(raw) as { type?: string }; if (message.type !== 'registered') return; clearTimeout(timer); remove(); resolve() } catch { /* 忽略非 JSON 信令 */ }
+      try {
+        const message = JSON.parse(raw) as { type?: string; errorCode?: string; detail?: string }
+        if (message.type === 'error') {
+          clearTimeout(timer)
+          remove()
+          const code = message.errorCode?.trim() || 'RELAY_ERROR'
+          const detail = message.detail?.trim()
+          reject(new Error(detail ? `Relay ${code}: ${detail}` : `Relay ${code}`))
+          return
+        }
+        if (message.type !== 'registered') return
+        clearTimeout(timer)
+        remove()
+        resolve()
+      } catch { /* 忽略非 JSON 信令 */ }
     }
     const onClose = () => { clearTimeout(timer); remove(); reject(new Error('信令连接在 registered 前关闭')) }
     const remove = () => { socket.removeEventListener('message', onMessage); socket.removeEventListener('close', onClose) }
