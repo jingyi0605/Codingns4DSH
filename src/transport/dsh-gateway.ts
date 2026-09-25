@@ -34,6 +34,8 @@ export interface DshGatewayOptions {
   features?: readonly DshGatewayFeature[]
   hostScope: DshHostScope
   generation: string
+  /** 当前 DSH 宿主版本；用于没有显式 session 的默认 Gateway。 */
+  dshVersion?: string
   maxStreams?: number
   debug?: DshTransportDebugLogger
 }
@@ -65,6 +67,7 @@ export class DshGateway {
       generation: options.generation,
       hostScope: options.hostScope,
       acceptInitialGeneration: true,
+      ...(options.dshVersion === undefined ? {} : { dshVersion: options.dshVersion }),
       ...(options.sessionOptions ?? {}),
       debug: this.debug,
     })

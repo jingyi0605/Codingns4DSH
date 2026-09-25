@@ -115,6 +115,8 @@ export interface HostRelayRuntimeOptions {
   readonly resources?: Pick<FeatureResourceScope, 'add'>
   readonly onSession?: (session: HostRelaySession) => void | Promise<void>
   readonly gatewayFeatures?: readonly DshGatewayFeature[]
+  /** 传给 DSH Gateway 的运行时版本；缺省时仅保留独立模块测试兼容性。 */
+  readonly dshVersion?: string
   readonly gatewayRegistry?: FeatureRegistry<unknown, FeatureModule<unknown>>
   readonly debug?: DshTransportDebugLogger
   readonly generation?: string
@@ -223,6 +225,7 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
           generation: options.generation ?? '1',
           hostScope: { hostId: options.hostId ?? bindingId, kind: 'local' },
           ...(options.gatewayFeatures === undefined ? {} : { features: options.gatewayFeatures }),
+          ...(options.dshVersion === undefined ? {} : { dshVersion: options.dshVersion }),
           ...(options.gatewayRegistry === undefined ? {} : { registry: options.gatewayRegistry }),
           debug,
         })

@@ -17,6 +17,8 @@ export interface CodingNsHostEvents {
  */
 export interface CodingNsHostServices {
   readonly rpc: CodingNsRpcTable
+  /** 当前 DSH 宿主的真实版本；由 Host 入口启动门禁解析并向功能模块传递。 */
+  readonly dshVersion?: string
   /** 持久化设置；测试或嵌入式调用未提供时，局域网映射仍可手动启动。 */
   readonly settings?: SettingsScope<CodingNsSettings>
   /** Host 设置提供器，供远程设置 RPC 做版本校验和持久化写入。 */

@@ -32,6 +32,8 @@ export interface DshHostDeviceRuntimeOptions {
   readonly dtlsStore?: HostDtlsIdentityStore
   readonly displayName?: string
   readonly protocolVersion?: string
+  /** 当前 DSH 宿主的真实版本，用于 Relay Transport 握手。 */
+  readonly dshVersion?: string
   readonly capabilities?: readonly string[]
   readonly resources?: Pick<FeatureResourceScope, 'add'>
   readonly signalingSocketFactory?: Parameters<typeof startHostRelayRuntime>[0]['signalingSocketFactory']
@@ -119,6 +121,7 @@ export async function startDshHostDeviceRuntime(options: DshHostDeviceRuntimeOpt
     ...(options.signalingSocketFactory === undefined ? {} : { signalingSocketFactory: options.signalingSocketFactory }),
     ...(options.peerConnectionFactory === undefined ? {} : { peerConnectionFactory: options.peerConnectionFactory }),
     ...(options.gatewayFeatures === undefined ? {} : { gatewayFeatures: options.gatewayFeatures }),
+    ...(options.dshVersion === undefined ? {} : { dshVersion: options.dshVersion }),
     ...(options.debug === undefined ? {} : { debug: options.debug }),
   } satisfies Parameters<typeof startHostRelayRuntime>[0]
   const runtime = await startHostRelayRuntime(runtimeOptions)

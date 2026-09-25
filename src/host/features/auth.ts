@@ -85,7 +85,7 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
               gatewayFeatures.push(createRemoteWebRuntimeFeature({
                 provider: createLocalDshWebRuntimeProvider({
                   port: context.services.dshWebPort,
-                  dshVersion: DSH_VERSION,
+                  dshVersion: context.services.dshVersion ?? DSH_VERSION,
                   ...(context.services.dshWebAuthenticatedUrl === undefined ? {} : { authenticatedUrl: context.services.dshWebAuthenticatedUrl }),
                 }),
               }))
@@ -96,6 +96,7 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
               accessToken,
               credentialStore: dshCredentials,
               accessTokenProvider: () => target.getAccessToken(),
+              ...(context.services.dshVersion === undefined ? {} : { dshVersion: context.services.dshVersion }),
               resources: context.resources,
               gatewayFeatures,
             })
