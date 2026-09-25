@@ -24,10 +24,10 @@ test('终端标题双击会进入编辑并阻止标签页父级事件吞掉交�
   assert.match(source, /onPointerDown:[ \t]*stopPropagation/u)
 })
 
-test('切换会话恢复时会清理已在 Host 关闭的旧终端标签', async () => {
+test('消息列表会话头部不再显示终端恢复按钮', async () => {
   const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
-  assert.match(source, /listedIds/u)
-  assert.match(source, /sidebarRight\.closeIn\(sidebarSessionId, tab\.id\)/u)
+  assert.doesNotMatch(source, /conversation\.session\.header\.actions/u)
+  assert.doesNotMatch(source, /TerminalRecovery/u)
 })
 
 test('终端布局和 xterm 默认值与 DSH 0.1.6 内置终端一致', async () => {

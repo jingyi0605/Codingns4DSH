@@ -94,10 +94,6 @@ export function registerCodingNsTerminalUi(
     name: 'sidebar.right.tab.guide.entry', key: TERMINAL_PROVIDER_ID,
     inject: () => ({ webTerminals, locale: ctx.locale }),
   }, TerminalGuide)))
-  disposers.push(ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
-    name: 'conversation.session.header.actions', id: 'dsh-codingns-terminal-recovery', order: 1000,
-    inject: () => ({ webTerminals, sidebarRight: ctx.sidebarRight, locale: ctx.locale }),
-  }, TerminalRecovery)))
   disposers.push(ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay', id: 'dsh-codingns-terminal-cleanup', order: 1000,
     inject: () => ({ webTerminals, locale: ctx.locale }),
@@ -255,40 +251,6 @@ function shellMenuItems(state: ShellMenuState, t: ReturnType<typeof codingNsTran
   return state.shells.map((shell) => ({ id: shell.path, label: shell.name }))
 }
 
-function TerminalRecovery({ sessionId, webTerminals, sidebarRight, locale }: PropsRuntime<'conversation.session.header.actions'> & { readonly webTerminals: CodingNsWebTerminals; readonly sidebarRight: Context['sidebarRight']; readonly locale: CodingNsLocale }): ReactElement | null {
-  const t = useCodingNsTranslator(locale)
-  const [error, setError] = useState('')
-  const recover = (): void => {
-    setError('')
-    void webTerminals.recover(String(sessionId)).then((terminals) => {
-      // conversation Slot 的旧声明仍暴露 string，Sidebar 服务要求同一个值的品牌类型。
-      const sidebarSessionId = sessionId as Parameters<typeof sidebarRight.tabsIn>[0]
-      const openTabs = sidebarRight.tabsIn(sidebarSessionId).filter((tab) => tab.kind === TERMINAL_KIND)
-      const listedIds = new Set(terminals.map((terminal) => terminal.id))
-      const openIds = new Set<string>()
-      for (const tab of openTabs) {
-        const id = terminalIdForTab(webTerminals, String(sessionId), tab)
-        if (!isTerminalId(id)) continue
-        openIds.add(id)
-        // A 会话关闭后，B 会话已有的旧标签仍在本地布局里；按 Host 当前列表收敛它。
-        if (!listedIds.has(id)) sidebarRight.closeIn(sidebarSessionId, tab.id)
-      }
-      for (const terminal of terminals) {
-        if (openIds.has(terminal.id)) continue
-        // 先加入集合再提交 UI mutation，避免同一轮或并发恢复重复打开同一终端。
-        openIds.add(terminal.id)
-        sidebarRight.openTabIn(sidebarSessionId, TERMINAL_KIND, { params: { terminalId: terminal.id } })
-      }
-    }).catch((cause: unknown) => setError(messageOf(cause)))
-  }
-  useEffect(recover, [sessionId, webTerminals, sidebarRight])
-  return error === '' ? null : createElement('button', {
-    type: 'button',
-    onClick: recover,
-    title: t('terminal.recoveryFailed', { message: error }),
-  }, t('terminal.recovery'))
-}
-
 function TerminalCleanup({ webTerminals, locale }: PropsRuntime<'shell.overlay'> & Pick<TerminalInjected, 'webTerminals' | 'locale'>): ReactElement | null {
   const t = useCodingNsTranslator(locale)
   const failures = useSyncExternalStore(webTerminals.closeFailures.subscribe.bind(webTerminals.closeFailures), webTerminals.closeFailures.getSnapshot.bind(webTerminals.closeFailures))
@@ -315,15 +277,6 @@ function navigationParams(tab: { readonly navigation?: { readonly params?: unkno
   return typeof params === 'object' && params !== null ? params as TerminalParams : {}
 }
 
-function terminalIdFromTab(tab: unknown): unknown {
-  return navigationParams(tab as { readonly navigation?: { readonly params?: unknown } }).terminalId
-}
-
-function terminalIdForTab(webTerminals: CodingNsWebTerminals, sessionId: string, tab: { readonly contentId: string }): unknown {
-  return terminalIdFromTab(tab) ?? webTerminals.boundTerminalId(sessionId, tab.contentId)
-}
-
-function isTerminalId(value: unknown): value is WebTerminalId { return typeof value === 'string' && value.length > 0 }
 function messageOf(value: unknown): string { return value instanceof Error ? value.message : String(value) }
 function stopPropagation(event: { stopPropagation: () => void }): void { event.stopPropagation() }
 
