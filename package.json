@@ -77,6 +77,7 @@
     "prebuild": "pnpm run version:check",
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && pnpm run bundle:client && pnpm run bundle:h5",
     "prepack": "pnpm run build",
+    "publish:local": "bash scripts/publish-npm-package.sh",
     "bundle:client": "tsdown",
     "bundle:h5": "tsdown --config tsdown.h5.config.ts",
     "dev:link": "node scripts/link-dsh-dev.mjs",
