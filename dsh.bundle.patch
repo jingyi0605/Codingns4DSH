@@ -1,5 +1,6 @@
 # 官方终端 Host 与 Client 行必须成对停用，避免重复 terminal namespace 和
 # webTerminals service；dsh-codingns 在同一个 Bundle generation 中提供两者。
+# rc3 没有这两个行，DSH 会按可选 patch 记录 warning 并继续启动；alpha2 则会正常命中。
 - id: terminal-controller
   name: '@deepseek-ai/dsh-api-terminal-controller'
   disabled: true

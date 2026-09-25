@@ -41,7 +41,7 @@ test('终端 Typert manifest 保持官方 lookup、scope、stream 和 cancellati
 test('终端 Typert result codec 会裁掉插件内部 shell profileId', () => {
   const create = TYPERT.invocations.find((item) => item.method === 'create')
   assert.ok(create)
-  const parsed = create.result.create().parse({
+  const value = {
     id: 'tab-1',
     title: 'zsh',
     shell: { profileId: 'zsh', path: '/bin/zsh', args: ['-i'], name: 'zsh' },
@@ -50,19 +50,23 @@ test('终端 Typert result codec 会裁掉插件内部 shell profileId', () => {
     rows: 24,
     state: 'running',
     exitCode: null,
-  })
+  }
+  assert.deepEqual(create.result.schema.parse(value).shell, { path: '/bin/zsh', args: ['-i'], name: 'zsh' })
+  const parsed = create.result.create().parse(value)
   assert.deepEqual(parsed.shell, { path: '/bin/zsh', args: ['-i'], name: 'zsh' })
 })
 
 test('终端环境 codec 保留跨会话的 DSH Workspace ID', () => {
   const environment = TYPERT.invocations.find((item) => item.method === 'environment')
   assert.ok(environment)
-  assert.equal(environment.result.create().parse({
+  const value = {
     cwd: '/workspace',
     workspaceId: 'workspace-stable',
     maxInputBytes: 65536,
     maxCols: 500,
     maxRows: 200,
     scrollback: 1000,
-  }).workspaceId, 'workspace-stable')
+  }
+  assert.equal(environment.result.schema.parse(value).workspaceId, 'workspace-stable')
+  assert.equal(environment.result.create().parse(value).workspaceId, 'workspace-stable')
 })

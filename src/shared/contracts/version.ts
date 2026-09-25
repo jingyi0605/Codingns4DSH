@@ -5,13 +5,18 @@ export const DSH_VERSION = '0.1.6-alpha.2' as const
 export const DSH_TESTED_VERSION = DSH_VERSION
 
 /** 插件支持的 DSH 版本范围；插件版本与宿主版本独立发布。 */
-export const DSH_COMPATIBILITY = '>=0.1.6-alpha.2 <0.1.7' as const
+export const DSH_COMPATIBILITY = '>=0.1.5-rc.3 <0.1.7-0' as const
 
 /** DSH Envelope/Tunnel 协议主版本。 */
 export const DSH_PROTOCOL_VERSION = 1 as const
 
 /** Host 注入到浏览器页面的真实 DSH 版本全局字段。 */
 export const CODINGNS_DSH_VERSION_GLOBAL = '__CODINGNS_DSH_VERSION__' as const
+
+/** 识别没有 alpha2 Sidebar 扩展 API 的 DSH 旧版运行时。 */
+export function isLegacyDshVersion(version: string): boolean {
+  return /^0\.1\.5(?:-|$)/u.test(version)
+}
 
 /** CodingNS 插件自身的 npm 版本。 */
 export const CODINGNS_VERSION = '0.1.0' as const
@@ -32,6 +37,14 @@ export function isDshVersionCompatible(version: string): boolean {
   if (!actual || !minimum || !maximum) return version === DSH_VERSION
   if (actual.major === maximum.major && actual.minor === maximum.minor && actual.patch === maximum.patch && actual.prerelease.length > 0) return false
   return compareVersions(actual, minimum) >= 0 && compareVersions(actual, maximum) < 0
+}
+
+/** 判断 DSH 版本是否达到某个功能模块要求的最低版本。 */
+export function isDshVersionAtLeast(version: string, minimum: string): boolean {
+  const actual = parseVersion(version)
+  const required = parseVersion(minimum)
+  if (!actual || !required) return false
+  return compareVersions(actual, required) >= 0
 }
 
 function parseVersion(value: string): ParsedVersion | undefined {

@@ -21,10 +21,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
-import type {
-  SidebarRightGuideEntryOwnerProps,
-  SidebarRightTabInfo,
-} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
+import type { SidebarRightTabInfo } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
 import { CodingNsWebTerminals, type WebTerminalId } from './model.js'
 import { installTerminalStyles, terminalClass } from './styles.js'
@@ -49,11 +46,24 @@ interface TerminalInjected {
   readonly settings: SettingsScope<CodingNsSettings>
   readonly theme: TerminalThemeSource
   readonly locale: CodingNsLocale
+  readonly legacyCloseFallback: boolean
 }
 
 type TerminalTabProps = PropsRuntime<'sidebar.right.pane.tab'> & TerminalInjected
 type TerminalTitleProps = PropsRuntime<'sidebar.right.pane.tab.title'> & Pick<TerminalInjected, 'webTerminals' | 'locale'>
-type TerminalGuideProps = PropsRuntime<'sidebar.right.tab.guide.entry'> & SidebarRightGuideEntryOwnerProps & Pick<TerminalInjected, 'webTerminals' | 'locale'>
+/** alpha2 才导出的 guide entry owner 类型；本地重述字段以保持 rc3 源码可编译。 */
+interface TerminalGuideEntryOwnerProps {
+  readonly entryId: string
+  readonly kind: string
+  readonly title: string
+  readonly description?: string
+}
+interface TerminalGuideProps extends TerminalGuideEntryOwnerProps {
+  readonly sessionId: string
+  readonly useTabInfo: () => SidebarRightTabInfo
+  readonly webTerminals: CodingNsWebTerminals
+  readonly locale: CodingNsLocale
+}
 
 /** 注册终端类型及其所有公开 Sidebar Slot。 */
 export function registerCodingNsTerminalUi(
@@ -67,11 +77,24 @@ export function registerCodingNsTerminalUi(
     getSnapshot: () => ctx.theme.getTheme().revision,
     subscribe: (listener) => ctx.on('theme/change', listener),
   }
+  const sidebarRight = ctx.sidebarRight as typeof ctx.sidebarRight & {
+    readonly registerCloseHandler?: (
+      kind: string,
+      handler: (sessionId: string, tab: SidebarRightTabInfo['tab']) => void,
+    ) => () => void
+  }
+  const registerCloseHandler = sidebarRight.registerCloseHandler
+  // alpha2 提供多 Tab 元数据和关闭 API；rc3 没有这些字段，不能直接调用。
+  const legacyCloseFallback = typeof registerCloseHandler !== 'function'
+  const supportsMultiple = typeof (ctx.sidebarRight as typeof ctx.sidebarRight & { readonly openTabs?: unknown }).openTabs !== 'undefined'
+  const guideEntrySlot = (ctx.slots as typeof ctx.slots & {
+    readonly specDynamic?: (name: string) => unknown
+  }).specDynamic?.('sidebar.right.tab.guide.entry') !== undefined
   disposers.push(installTerminalStyles())
-  disposers.push(ctx.sidebarRightTabs.register({
+  const tabDefinition = {
     id: TERMINAL_PROVIDER_ID,
     kind: TERMINAL_KIND,
-    multiple: true,
+    ...(supportsMultiple ? { multiple: true } : {}),
     priority: 'extension',
     title: () => t('terminal.title'),
     guide: [{
@@ -81,16 +104,17 @@ export function registerCodingNsTerminalUi(
       description: () => t('terminal.description'),
       icon: TerminalGuideIcon,
     }],
-  }))
+  } as const
+  disposers.push(ctx.sidebarRightTabs.register(tabDefinition))
   disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab', key: TERMINAL_PROVIDER_ID,
-    inject: () => ({ webTerminals, settings, theme, locale: ctx.locale }),
+    inject: () => ({ webTerminals, settings, theme, locale: ctx.locale, legacyCloseFallback }),
   }, TerminalBody)))
   disposers.push(ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab.title', key: TERMINAL_PROVIDER_ID,
     inject: () => ({ webTerminals, locale: ctx.locale }),
   }, TerminalTitle)))
-  disposers.push(ctx.slots.inject('sidebar.right.tab.guide.entry', () => ctx.slots.register({
+  if (guideEntrySlot) disposers.push(ctx.slots.inject('sidebar.right.tab.guide.entry', () => ctx.slots.register({
     name: 'sidebar.right.tab.guide.entry', key: TERMINAL_PROVIDER_ID,
     inject: () => ({ webTerminals, locale: ctx.locale }),
   }, TerminalGuide)))
@@ -98,19 +122,30 @@ export function registerCodingNsTerminalUi(
     name: 'shell.overlay', id: 'dsh-codingns-terminal-cleanup', order: 1000,
     inject: () => ({ webTerminals, locale: ctx.locale }),
   }, TerminalCleanup)))
-  disposers.push(ctx.sidebarRight.registerCloseHandler(TERMINAL_KIND, (sessionId, tab) => {
+  if (typeof registerCloseHandler === 'function') disposers.push(registerCloseHandler.call(ctx.sidebarRight, TERMINAL_KIND, (sessionId, tab) => {
     const params = navigationParams(tab)
     webTerminals.close(String(sessionId), String(tab.id), tab.contentId, params.terminalId)
   }))
   return () => { for (const dispose of disposers.reverse()) dispose() }
 }
 
-function TerminalBody({ sessionId, useTabInfo, webTerminals, settings, theme }: TerminalTabProps): ReactElement | null {
+function TerminalBody({ sessionId, useTabInfo, webTerminals, settings, theme, legacyCloseFallback }: TerminalTabProps): ReactElement | null {
   const info = useTabInfo()
   const params = terminalParams(info)
   const view = webTerminals.view(String(sessionId), String(info.tab.id), info.tab.contentId, params.terminalId, params.shellPath)
   const themeRevision = useSyncExternalStore(theme.subscribe, theme.getSnapshot)
   useEffect(() => info.tab.visible ? view.mount() : undefined, [info.tab.visible, view])
+  useEffect(() => {
+    if (!legacyCloseFallback) return
+    // rc3 没有显式关闭回调，只能利用 Tab 被移除时的 signal 回收对应 Host 终端。
+    const close = (): void => {
+      const nextParams = navigationParams(info.tab)
+      webTerminals.close(String(sessionId), String(info.tab.id), info.tab.contentId, nextParams.terminalId)
+    }
+    if (info.tab.signal.aborted) close()
+    else info.tab.signal.addEventListener('abort', close, { once: true })
+    return () => info.tab.signal.removeEventListener('abort', close)
+  }, [legacyCloseFallback, info.tab, sessionId, webTerminals])
   return info.tab.visible ? createElement(CodingNsXtermView, {
     view,
     settings,

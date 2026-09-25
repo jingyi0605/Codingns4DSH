@@ -45,8 +45,11 @@
     "./package.json": "./package.json"
   },
   "engines": {
-    "dsh": ">=0.1.6-alpha.2 <0.1.7",
+    "dsh": ">=0.1.5-rc.3 <0.1.7-0",
     "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.5-rc.3 <0.1.7-0"
   },
   "dsh": {
     "manifestVersion": 1,

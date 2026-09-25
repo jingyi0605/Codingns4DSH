@@ -62,6 +62,8 @@ const terminalFrameSchema = z.union([
 interface StrictCodec {
   readonly mode: 'strict'
   readonly typeSymbol: string
+  /** rc3 使用 schema；alpha2 使用 create；同时保留两者以兼容两代 Loader。 */
+  readonly schema: z.ZodType
   readonly create: () => z.ZodType
 }
 
@@ -74,7 +76,7 @@ interface InvocationParameter {
 }
 
 function codec(typeSymbol: string, schema: z.ZodType): StrictCodec {
-  return { mode: 'strict', typeSymbol, create: () => schema }
+  return { mode: 'strict', typeSymbol, schema, create: () => schema }
 }
 
 function json(name: string, wire: string, typeSymbol: string, schema: z.ZodType): InvocationParameter {

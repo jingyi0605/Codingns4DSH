@@ -6,10 +6,10 @@
 
 [![npm version](https://img.shields.io/npm/v/dsh-codingns?logo=npm)](https://www.npmjs.com/package/dsh-codingns)
 [![npm downloads](https://img.shields.io/npm/dm/dsh-codingns?logo=npm)](https://www.npmjs.com/package/dsh-codingns)
-[![DSH compatibility](https://img.shields.io/badge/DSH-%3E%3D0.1.6--alpha.2%20%3C0.1.7-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH compatibility](https://img.shields.io/badge/DSH-%3E%3D0.1.5--rc.3%20%3C0.1.7-0-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-3C873A?logo=node.js&logoColor=white)](https://nodejs.org)
 
-**Current release: `0.1.0`** · **DSH: `>=0.1.6-alpha.2 <0.1.7`** (validated on `0.1.6-alpha.2`)
+**Current release: `0.1.0`** · **DSH: `>=0.1.5-rc.3 <0.1.7-0`** (validated on `0.1.6-alpha.2`)
 
 **Reach your own DSH Web UI from anywhere on the internet.** Beyond [LAN access](#lan-access-to-dsh), the [relay access service](#relay-access-service) carries the same DSH Web session to any device on any network — no public IP, no port forwarding, no VPN.
 
@@ -103,7 +103,7 @@ Nothing in DSH is replaced: conversations, the session list, the sidebar, settin
 | --- | --- |
 | Package | `dsh-codingns` (DSH bundle: Host + browser layers) |
 | Plugin version | `0.1.0` (independent from the DSH version) |
-| DSH compatibility | `>=0.1.6-alpha.2 <0.1.7`, validated on `0.1.6-alpha.2` |
+| DSH compatibility | `>=0.1.5-rc.3 <0.1.7-0`, validated on `0.1.6-alpha.2` |
 | Node.js | `>= 22.19` |
 | Platforms | macOS, Linux, Windows |
 | Toolchain | `dsh` CLI; `pnpm` for plugin installation |
@@ -272,7 +272,7 @@ Anything not listed for an Agent is not supported by that CLI or its current ver
 
 | Requirement | Notes |
 | --- | --- |
-| **DSH `>=0.1.6-alpha.2 <0.1.7`** | Tested with `0.1.6-alpha.2`. Plugin and DSH versions are released independently; keep them inside the declared range. |
+| **DSH `>=0.1.5-rc.3 <0.1.7-0`** | Tested with `0.1.6-alpha.2`. Plugin and DSH versions are released independently; keep them inside the declared range. |
 | **Node.js `>= 22.19`** | Used by the `dsh` launcher and by the bundle. |
 | **`pnpm` on `PATH`** | `dsh plugin` forwards to pnpm. DSH prints `dsh: pnpm was not found` if it is missing. |
 | **A supported Agent CLI** | Only if you plan to use external Agents. Install and log in with the vendor's own installer. |
@@ -486,7 +486,7 @@ dsh plugin --profile codingns list --depth 0
 npm view dsh-codingns version
 ```
 
-Keep DSH inside `>=0.1.6-alpha.2 <0.1.7`. The bundle's launch glue validates the running DSH version and refuses to take over the connection for an unsupported Host; upgrade or downgrade DSH instead of mixing versions.
+Keep DSH inside `>=0.1.5-rc.3 <0.1.7-0`. The bundle's launch glue validates the running DSH version and refuses to take over the connection for an unsupported Host; upgrade or downgrade DSH instead of mixing versions.
 
 ### `patch: entry "terminal-controller" not found`
 
@@ -793,7 +793,7 @@ Agent 的安装和登录都在 DSH **之外** 用各家自己的工具完成，C
 
 | 要求 | 说明 |
 | --- | --- |
-| **DSH `>=0.1.6-alpha.2 <0.1.7`** | 已在 `0.1.6-alpha.2` 上验证。插件与 DSH 版本独立发布，请保持在该范围内。 |
+| **DSH `>=0.1.5-rc.3 <0.1.7-0`** | 已在 `0.1.6-alpha.2` 上验证。插件与 DSH 版本独立发布，请保持在该范围内。 |
 | **Node.js `>= 22.19`** | `dsh` 启动器和本 Bundle 都依赖该版本。 |
 | **`PATH` 中有 `pnpm`** | `dsh plugin` 会转发给 pnpm；缺失时 DSH 会提示 `dsh: pnpm was not found`。 |
 | **受支持的 Agent CLI** | 仅在使用外部 Agent 时需要，请用各家官方方式安装并登录。 |
@@ -1000,7 +1000,7 @@ dsh plugin --profile codingns list --depth 0
 npm view dsh-codingns version
 ```
 
-请保持 DSH 在 `>=0.1.6-alpha.2 <0.1.7` 范围内。Bundle 的启动胶水会校验运行中的 DSH 版本，对不支持的宿主会拒绝接管连接；这时应升级或降级 DSH，而不是混用版本。
+请保持 DSH 在 `>=0.1.5-rc.3 <0.1.7-0` 范围内。Bundle 的启动胶水会校验运行中的 DSH 版本，对不支持的宿主会拒绝接管连接；这时应升级或降级 DSH，而不是混用版本。
 
 安装脚本和启动胶水都会拒绝不兼容版本：安装阶段由插件和 Profile 的 `preinstall` 检查
 当前 `dsh --version`，启动阶段由 Host、Client 和 Bootstrap 再次读取实际 DSH 版本并执行

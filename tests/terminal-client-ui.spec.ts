@@ -52,3 +52,15 @@ test('xterm 不会用 Shell 默认标题覆盖调试终端标题', async () => {
   assert.match(source, /state\.info\.title !== state\.info\.shell\.name/u)
   assert.match(source, /if \(!preserveHostTitle\) void view\.rename\(value\)/u)
 })
+
+test('终端 UI 对 rc3 缺失的 Sidebar 扩展能力走兼容分支', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
+
+  assert.match(source, /registerCloseHandler\?/u)
+  assert.match(source, /typeof registerCloseHandler !== 'function'/u)
+  assert.match(source, /legacyCloseFallback/u)
+  assert.match(source, /specDynamic\?\.\('sidebar\.right\.tab\.guide\.entry'\)/u)
+  assert.match(source, /if \(guideEntrySlot\)/u)
+  assert.match(source, /info\.tab\.signal\.addEventListener\('abort'/u)
+  assert.doesNotMatch(source, /PropsRuntime<'sidebar\.right\.tab\.guide\.entry'>/u)
+})
