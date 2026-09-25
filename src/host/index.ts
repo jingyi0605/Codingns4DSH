@@ -16,9 +16,11 @@ import { registerCodingNsSettings } from './settings.js'
 import { createCodingNsNativeSessionBridge } from './native-session-bridge.js'
 import { installTerminalController } from './terminal/startup.js'
 import { DebugWorkspaceService } from './debug.js'
+import { detectRuntimeDshVersion, DSH_VERSION_INJECTION_NAME } from './dsh-runtime-version.js'
 
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
+  const dshVersion = detectRuntimeDshVersion()
   console.error('dsh-codingns: host apply entered')
 
   ctx.inject(['settings', 'connection', 'webServer'], async (hostCtx) => {
@@ -32,6 +34,7 @@ export function apply(ctx?: Context): void {
     const indexInjectionEvents = hostCtx as unknown as { on(name: string, listener: (table: unknown[]) => void): unknown }
     indexInjectionEvents.on('webserver/index-inject', (table) => {
       table.push({ kind: 'global', name: '__DSH_TRANSPORT__', value: { ownsHost: true } })
+      table.push({ kind: 'global', name: DSH_VERSION_INJECTION_NAME, value: dshVersion })
     })
     const settings = registerCodingNsSettings(hostCtx)
     // controller 必须在功能模块和浏览器 Client 开始消费状态前完成装配。
@@ -41,6 +44,7 @@ export function apply(ctx?: Context): void {
     })
     const services: CodingNsHostServices = {
       rpc: new CodingNsRpcTable(),
+      dshVersion,
       settings,
       settingsProvider: hostCtx.settings,
       dshWebPort: webServerPort,

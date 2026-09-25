@@ -10,6 +10,9 @@ export const DSH_COMPATIBILITY = '>=0.1.6-alpha.2 <0.1.7' as const
 /** DSH Envelope/Tunnel 协议主版本。 */
 export const DSH_PROTOCOL_VERSION = 1 as const
 
+/** Host 注入到浏览器页面的真实 DSH 版本全局字段。 */
+export const CODINGNS_DSH_VERSION_GLOBAL = '__CODINGNS_DSH_VERSION__' as const
+
 /** CodingNS 插件自身的 npm 版本。 */
 export const CODINGNS_VERSION = '0.1.0' as const
 

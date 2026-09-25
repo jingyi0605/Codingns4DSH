@@ -31,9 +31,7 @@ import { createCodingNsSettingsBridge } from './settings-bridge.js'
 import { CodingNsWebTerminals, registerCodingNsTerminalUi } from './terminal/index.js'
 import type { TerminalRemote } from './terminal/model.js'
 import { startCodingNsAccountBar } from './account-bar.js'
-
-// DSH 在 Client/Cordis 建立前就可能读取 randomUUID，必须在入口加载时修复。
-ensureCryptoRandomUUID()
+import { assertInjectedDshVersion } from './dsh-runtime-version.js'
 
 export { ensureCryptoRandomUUID } from './lan-access.js'
 export type {
@@ -79,6 +77,9 @@ export const inject = ['slots', 'settingsScope', 'connection', 'remote', 'remote
  */
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
+  const dshVersion = assertInjectedDshVersion()
+  // 版本门禁通过后才修改浏览器全局，避免不兼容 Client 留下半初始化状态。
+  ensureCryptoRandomUUID()
   ctx.effect(() => registerCodingNsLocale(ctx), 'dsh-codingns: Client 词典')
 
   ctx.inject(['slots', 'settingsScope', 'connection', 'remote', 'remote.workspace', 'remote.session', 'remote.terminal', 'sidebarRight', 'sidebarRightTabs', 'theme', 'locale', 'uiConversation'], (settingsCtx) => {

@@ -1,6 +1,6 @@
 import type { DshDeviceListResponse, DshRelaySignalingTicket } from '../shared/contracts/dsh-device.js'
 import type { RelaySignalingTicketResponse } from '../shared/contracts/signaling.js'
-import { SUPPORTED_DSH_VERSION } from '../shared/index.js'
+import { assertSupportedDshVersion } from '../shared/index.js'
 import { installDshTransport } from '../bootstrap/dsh-connection-adapter.js'
 import { DshSession } from '../transport/dsh-session.js'
 import type { DshHostScope } from '../transport/dsh-envelope.js'
@@ -9,6 +9,7 @@ import { connectWebRtcClient, type PeerConnectionLike, type SignalingSocketLike 
 import type { CodingNsRpcClient } from './features/types.js'
 import { RemoteDshWebContext, type RemoteDshWebContextOptions } from './remote-web-context.js'
 import { createDshTransportDebugLogger } from '../transport/debug.js'
+import { assertInjectedDshVersion } from './dsh-runtime-version.js'
 
 /** H5 启动器需要的最小参数；不依赖 Node 或 Cordis 私有实现。 */
 export interface DshH5BootstrapOptions {
@@ -65,6 +66,8 @@ export interface DshH5BrowserBootstrapResult {
  * 账号凭据只在 Host RPC 内部使用，浏览器只看到设备摘要和短期票据。
  */
 export async function startDshH5Bootstrap(options: DshH5BootstrapOptions): Promise<DshH5BootstrapResult> {
+  const dshVersion = assertInjectedDshVersion()
+  assertSupportedDshVersion(dshVersion)
   const signal = options.signal
   const debug = createDshTransportDebugLogger({ side: 'h5', component: 'h5-bootstrap' })
   const devices = await callRpc<DshDeviceListResponse>(options.rpc, 'auth/dsh/device/list', {}, signal)
@@ -81,7 +84,7 @@ export async function startDshH5Bootstrap(options: DshH5BootstrapOptions): Promi
   })
   const generation = 1
   const hostScope = resolveDshHostScope(ticket)
-  const session = new DshSession({ carrier: connection.carrier, role: 'client', generation: String(generation), hostScope, debug })
+  const session = new DshSession({ carrier: connection.carrier, role: 'client', generation: String(generation), hostScope, dshVersion, debug })
   const transport = new DshCodingNsTransport({
     carrier: connection.carrier,
     generation: { id: generation, host: { home: '/' } },
@@ -94,7 +97,7 @@ export async function startDshH5Bootstrap(options: DshH5BootstrapOptions): Promi
   try {
     session.start()
     await session.waitReady(signal)
-    registration = installDshTransport({ dshVersion: SUPPORTED_DSH_VERSION, transport })
+    registration = installDshTransport({ dshVersion, transport })
     if (options.boot) await options.boot()
     const dispose = async (): Promise<void> => {
       registration?.dispose()

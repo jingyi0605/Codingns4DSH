@@ -39,6 +39,7 @@ test('Host 启动页为 LAN 和本机 Web 注入 Host 所有权标记', async ()
   assert.match(source, /webserver\/index-inject/u)
   assert.match(source, /name: '__DSH_TRANSPORT__'/u)
   assert.match(source, /value: \{ ownsHost: true \}/u)
+  assert.match(source, /name: DSH_VERSION_INJECTION_NAME/u)
 })
 
 test('Client 构建产物不包含 Node 专属模块', async () => {
