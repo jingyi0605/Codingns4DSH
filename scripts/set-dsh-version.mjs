@@ -49,7 +49,7 @@ const updated = source
 if (updated === source) throw new Error('没有找到 DSH_VERSION 或 DSH_COMPATIBILITY')
 await writeFile(versionPath, updated)
 
-for (const relativePath of ['README.md', 'profile/README.md']) {
+for (const relativePath of ['README.md', 'README.en.md', 'profile/README.md']) {
   const documentPath = join(root, relativePath)
   const document = await readFile(documentPath, 'utf8')
   let updatedDocument = document

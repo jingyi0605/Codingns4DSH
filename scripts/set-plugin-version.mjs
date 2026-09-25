@@ -36,7 +36,7 @@ const updated = source.replace(/^(export const CODINGNS_VERSION = ')[^']+(' as c
 if (updated === source) throw new Error('没有找到 CODINGNS_VERSION')
 await writeFile(versionPath, updated)
 
-for (const relativePath of ['README.md', 'profile/README.md']) {
+for (const relativePath of ['README.md', 'README.en.md', 'profile/README.md']) {
   const documentPath = join(root, relativePath)
   const document = await readFile(documentPath, 'utf8')
   if (typeof previousVersion === 'string' && previousVersion !== nextVersion) {
