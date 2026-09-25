@@ -26,6 +26,8 @@ import type { DshTransportDebugLogger } from '../transport/debug.js'
 export interface DshHostDeviceRuntimeOptions {
   readonly controlClient: Pick<CodingNsControlApiClient, 'registerDshDevice' | 'listDshDevices' | 'heartbeatDshDevice' | 'createDshRelayTicket'>
   readonly accessToken: string
+  /** 认证续期后动态读取最新 access token；未提供时沿用 accessToken。 */
+  readonly accessTokenProvider?: () => string | null
   readonly credentialStore?: DshDeviceCredentialStore
   readonly dtlsStore?: HostDtlsIdentityStore
   readonly displayName?: string
@@ -53,6 +55,11 @@ export interface DshHostDeviceRuntime {
  */
 export async function startDshHostDeviceRuntime(options: DshHostDeviceRuntimeOptions): Promise<DshHostDeviceRuntime> {
   if (!options.accessToken.trim()) throw new TypeError('DSH Host accessToken 不能为空')
+  const getAccessToken = (): string => {
+    const token = options.accessTokenProvider === undefined ? options.accessToken : options.accessTokenProvider()
+    if (typeof token !== 'string' || !token.trim()) throw new Error('DSH Host accessToken 已失效')
+    return token
+  }
   const credentialStore = options.credentialStore ?? new FileDshDeviceCredentialStore(defaultDshCredentialPath())
   const dtlsStore = options.dtlsStore ?? new FileHostDtlsIdentityStore(defaultDtlsPath())
   const identity = await ensureHostDtlsIdentity(dtlsStore)
@@ -66,7 +73,7 @@ export async function startDshHostDeviceRuntime(options: DshHostDeviceRuntimeOpt
       protocolVersion: options.protocolVersion ?? 'dsh-envelope-v1',
       capabilities: [...(options.capabilities ?? ['rpc', 'pty', 'file', 'web'])],
     }
-    const registered = await options.controlClient.registerDshDevice(options.accessToken, request)
+    const registered = await options.controlClient.registerDshDevice(getAccessToken(), request)
     credential = {
       deviceId: registered.device.dshDeviceId ?? registered.device.deviceId ?? (() => { throw new Error('DSH 注册响应缺少设备标识') })(),
       deviceCredential: registered.deviceCredential,
@@ -79,7 +86,7 @@ export async function startDshHostDeviceRuntime(options: DshHostDeviceRuntimeOpt
     await credentialStore.write(credential)
     device = registered.device
   } else {
-    const listed = await options.controlClient.listDshDevices(options.accessToken)
+    const listed = await options.controlClient.listDshDevices(getAccessToken())
     device = listed.devices.find((candidate) => (candidate.dshDeviceId ?? candidate.deviceId) === credential!.deviceId) ?? {
       dshDeviceId: credential.deviceId,
       deviceId: credential.deviceId,
@@ -99,10 +106,10 @@ export async function startDshHostDeviceRuntime(options: DshHostDeviceRuntimeOpt
   if (credential === null) throw new Error('DSH 设备凭据初始化失败')
   const savedCredential = credential
 
-  await options.controlClient.heartbeatDshDevice(options.accessToken, savedCredential.deviceId, savedCredential.deviceCredential)
+  await options.controlClient.heartbeatDshDevice(getAccessToken(), savedCredential.deviceId, savedCredential.deviceCredential)
   const runtimeOptions = {
     controlClient: { createSignalingTicket: async () => { throw new Error('DSH runtime 必须使用 DSH ticket') } },
-    createTicket: ({ accessToken, identity: material, credentialVersion }: { accessToken: string; identity: typeof identity; credentialVersion?: number }) => requestDshTicket(options.controlClient, accessToken, savedCredential, material.fingerprint, credentialVersion),
+    createTicket: ({ identity: material, credentialVersion }: { accessToken: string; identity: typeof identity; credentialVersion?: number }) => requestDshTicket(options.controlClient, getAccessToken(), savedCredential, material.fingerprint, credentialVersion),
     accessToken: options.accessToken,
     bindingId: savedCredential.deviceId,
     credentialVersion: savedCredential.credentialVersion,
@@ -119,7 +126,9 @@ export async function startDshHostDeviceRuntime(options: DshHostDeviceRuntimeOpt
   let stopped = false
   const interval = options.heartbeatIntervalMs === 0 ? null : setInterval(() => {
     if (stopped) return
-    void options.controlClient.heartbeatDshDevice(options.accessToken, savedCredential.deviceId, savedCredential.deviceCredential).catch(() => undefined)
+    void Promise.resolve()
+      .then(() => options.controlClient.heartbeatDshDevice(getAccessToken(), savedCredential.deviceId, savedCredential.deviceCredential))
+      .catch(() => undefined)
   }, options.heartbeatIntervalMs ?? 30_000)
   const stop = async (): Promise<void> => {
     if (stopped) return

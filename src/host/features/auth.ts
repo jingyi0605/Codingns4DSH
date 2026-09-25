@@ -49,6 +49,8 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
       let sessionBaseUrl: string | null = null
       let dshRuntime: DshHostDeviceRuntime | null = null
       let dshStartPromise: Promise<void> | null = null
+      let keepAliveTimer: ReturnType<typeof setInterval> | undefined
+      let keepAlivePromise: Promise<void> | null = null
       let disposed = false
 
       const ensureSession = async (controlBaseUrl: string): Promise<CodingNsAuthSession> => {
@@ -91,6 +93,7 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
               controlClient: target.getControlClient(),
               accessToken,
               credentialStore: dshCredentials,
+              accessTokenProvider: () => target.getAccessToken(),
               resources: context.resources,
               gatewayFeatures,
             })
@@ -158,6 +161,31 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
         }
         return handler(payload)
       }))
+
+      // 设备心跳维持在线状态；认证 token 临近过期时提前续期，运行时通过
+      // accessTokenProvider 自动使用新 token，不需要重建隧道。
+      const keepAlive = async (): Promise<void> => {
+        if (disposed || keepAlivePromise !== null || session === null) return
+        const target = session
+        if (target.getAccessToken() === null) return
+        keepAlivePromise = (async () => {
+          const expiresAt = Date.parse(target.snapshot().expiresAt ?? '')
+          if (!Number.isFinite(expiresAt) || expiresAt - Date.now() <= 120_000) {
+            try {
+              await target.refresh()
+            } catch (error) {
+              console.error('dsh-codingns: 后台刷新 CodingNS 会话失败', error)
+            }
+          }
+          if (dshRuntime === null) await startDsh(target)
+        })().finally(() => { keepAlivePromise = null })
+        await keepAlivePromise
+      }
+      keepAliveTimer = setInterval(() => { void keepAlive() }, 30_000)
+      context.resources.add(() => {
+        if (keepAliveTimer !== undefined) clearInterval(keepAliveTimer)
+        keepAliveTimer = undefined
+      })
 
       // Host 重启后优先恢复 refresh token，并尝试把已注册的 DSH 设备重新上线。
       void (async () => {

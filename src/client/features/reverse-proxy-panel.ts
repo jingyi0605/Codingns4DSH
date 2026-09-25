@@ -62,6 +62,15 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
       .catch(() => setAuth(loggedOutSnapshot()))
   }, [rpc])
 
+  // 设置页打开时 Host 可能正在恢复登录会话；认证快照变为 authenticated
+  // 后立即刷新设备列表，避免用户必须再点一次“刷新设备”。
+  useEffect(() => {
+    if (!enabled || auth.status !== 'authenticated') return
+    void loadDevicesInternal().catch((error: unknown) => {
+      setMessage(error instanceof Error ? error.message : String(error))
+    })
+  }, [auth.status, enabled, rpc])
+
   const run = async (operation: () => Promise<void>): Promise<void> => {
     setBusy(true)
     setMessage('')
@@ -86,9 +95,6 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     })
     setPassword('')
     setAuth(next)
-    const dshDevices = await callCodingNsRpc<DshDeviceListResponse>(rpc, 'auth/dsh/device/list', {})
-    setDevices(dshDevices)
-    setSelectedDeviceId(dshDevices.devices.find((device) => device.online && device.status === 'active')?.dshDeviceId ?? '')
     setMessage(t('relay.loginSuccess'))
   })
 
@@ -101,11 +107,15 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
   })
 
   const loadDevices = (): Promise<void> => run(async () => {
+    await loadDevicesInternal()
+  })
+
+  async function loadDevicesInternal(): Promise<void> {
     const next = await callCodingNsRpc<DshDeviceListResponse>(rpc, 'auth/dsh/device/list', {})
     setDevices(next)
     const preferred = next.devices.find((device) => device.online && device.status === 'active')?.dshDeviceId ?? ''
     setSelectedDeviceId(preferred)
-  })
+  }
 
   const addControlBaseUrl = async (): Promise<void> => {
     setBusy(true)
