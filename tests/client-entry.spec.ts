@@ -29,6 +29,11 @@ test('远程 DSH Web 自动确认内测声明，不触碰其他引导弹窗', as
   assert.match(source, /appRoot\.inert = false/u)
 })
 
+test('远程 DSH Web 声明已认证 Host 所有权以启用持久设置', async () => {
+  const source = await readFile(remoteWebContextSource, 'utf8')
+  assert.match(source, /openStream: openRemoteStream,[\s\S]{0,240}ownsHost: true/u)
+})
+
 test('Host 启动页为 LAN 和本机 Web 注入 Host 所有权标记', async () => {
   const source = await readFile(hostSource, 'utf8')
   assert.match(source, /webserver\/index-inject/u)
