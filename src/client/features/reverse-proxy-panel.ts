@@ -3,8 +3,10 @@ import type { ReactElement } from 'react'
 import type { CodingNsAuthSessionSnapshot } from '../../shared/contracts/auth.js'
 import type { DshDeviceListResponse } from '../../shared/contracts/dsh-device.js'
 import {
+  CODINGNS_CONTROL_STATION_URL,
   CODINGNS_CONTROL_BASE_URL_FIELD,
   CODINGNS_CONTROL_BASE_URLS_FIELD,
+  CODINGNS_H5_LOGIN_URL,
   DEFAULT_CODINGNS_CONTROL_BASE_URLS,
 } from '../../shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
@@ -45,6 +47,7 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
   const [selectedDeviceId, setSelectedDeviceId] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [h5UrlCopied, setH5UrlCopied] = useState(false)
 
   useEffect(() => {
     const saved = snapshot.value?.controlBaseUrl
@@ -95,6 +98,7 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     })
     setPassword('')
     setAuth(next)
+    setH5UrlCopied(false)
     setMessage(t('relay.loginSuccess'))
   })
 
@@ -103,8 +107,26 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
     setAuth(loggedOutSnapshot())
     setDevices(null)
     setSelectedDeviceId('')
+    setH5UrlCopied(false)
     setMessage(t('relay.loggedOut'))
   })
+
+  const copyH5LoginUrl = async (): Promise<void> => {
+    try {
+      await copyText(CODINGNS_H5_LOGIN_URL)
+      setH5UrlCopied(true)
+      setMessage(t('relay.copySuccess'))
+    } catch (error) {
+      setH5UrlCopied(false)
+      setMessage(error instanceof Error ? error.message : t('relay.copyFailed'))
+    }
+  }
+
+  const handleH5AddressKeyDown = (event: { key: string; preventDefault: () => void }): void => {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    void copyH5LoginUrl()
+  }
 
   const loadDevices = (): Promise<void> => run(async () => {
     await loadDevicesInternal()
@@ -147,14 +169,16 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
   const fieldStyle = dshSettingsFieldStyle
   const buttonStyle = dshSettingsButtonStyle
   const authenticated = auth.status === 'authenticated'
+  const selectedDevice = devices?.devices.find((device) => device.dshDeviceId === selectedDeviceId)
+  const deviceStatus = selectedDevice === undefined
+    ? { label: t('relay.unknown'), color: dshThemeColor.labelTertiary }
+    : selectedDevice.online && selectedDevice.status === 'active'
+      ? { label: t('relay.online'), color: dshThemeColor.success }
+      : { label: t('relay.offline'), color: dshThemeColor.error }
 
   return createElement(
     'div',
     { 'aria-disabled': controlsDisabled, style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 16, opacity: controlsDisabled ? 0.5 : 1, pointerEvents: controlsDisabled ? 'none' : 'auto' } },
-    createElement('div', undefined,
-      createElement('h3', { style: { margin: 0, fontSize: 17 } }, t('relay.settings')),
-      createElement('p', { style: { margin: '6px 0 0', color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 } }, t('relay.loginHint')),
-    ),
     createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
       createElement('span', { style: dshSettingsFieldLabelStyle }, t('relay.controlApi')),
       createElement('div', { style: dshSettingsRowStyle },
@@ -186,6 +210,11 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
         createElement('input', { type: 'password', autoComplete: 'current-password', value: password, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { value: string } }) => setPassword(event.currentTarget.value), style: fieldStyle }),
       ),
       createElement('button', { type: 'submit', disabled: controlsDisabled || busy || !controlBaseUrl || !email || !password, style: dshSettingsPrimaryButtonStyle }, busy ? t('relay.loggingIn') : t('relay.login')),
+      createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 } },
+        t('relay.noAccountPrefix'),
+        createElement('a', { href: CODINGNS_CONTROL_STATION_URL, target: '_blank', rel: 'noreferrer', style: { color: dshThemeColor.accent } }, t('relay.register')),
+        t('relay.noAccountSuffix'),
+      ),
     ),
     authenticated && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
       createElement('div', { style: dshSettingsNoteStyle },
@@ -193,12 +222,63 @@ export function ReverseProxyPanel({ services, enabled, snapshot }: FeaturePanelP
         createElement('div', { style: { marginTop: 6, opacity: 0.7 } }, t('relay.device', { value: devices?.devices.find((device) => device.dshDeviceId === selectedDeviceId)?.displayName ?? t('relay.unrecognized') })),
         createElement('div', { style: { marginTop: 4, opacity: 0.7 } }, t('relay.host', { value: selectedDeviceId || t('relay.unbound') })),
       ),
+      createElement('div', { style: dshSettingsNoteStyle },
+        createElement('strong', undefined, t('relay.h5LoginAddress')),
+        createElement('div', {
+          role: 'button',
+          tabIndex: controlsDisabled || busy ? -1 : 0,
+          'aria-disabled': controlsDisabled || busy,
+          'aria-label': t('relay.copyAddressHint'),
+          title: t('relay.copyAddressHint'),
+          onClick: () => { if (!controlsDisabled && !busy) void copyH5LoginUrl() },
+          onKeyDown: (event: { key: string; preventDefault: () => void }) => { if (!controlsDisabled && !busy) handleH5AddressKeyDown(event) },
+          style: {
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            marginTop: 8,
+            minWidth: 0,
+            padding: '10px 12px',
+            border: `1px solid ${h5UrlCopied ? dshThemeColor.success : dshThemeColor.border}`,
+            borderRadius: 8,
+            color: dshThemeColor.accent,
+            background: dshThemeColor.pageBackground,
+            cursor: controlsDisabled || busy ? 'default' : 'copy',
+            transition: 'border-color 160ms ease, background 160ms ease',
+          },
+        },
+          createElement('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 13, fontWeight: 600 } }, CODINGNS_H5_LOGIN_URL),
+        ),
+      ),
       createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
         createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void loadDevices(), style: buttonStyle }, t('relay.refreshDevices')),
         createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void logout(), style: buttonStyle }, t('relay.logout')),
       ),
       devices && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-        createElement('strong', { style: dshSettingsFieldLabelStyle }, t('relay.dshDevices')),
+        createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minWidth: 0 } },
+          createElement('strong', { style: dshSettingsFieldLabelStyle }, t('relay.dshDevices')),
+          createElement('span', {
+            role: 'status',
+            'aria-label': t('relay.deviceStatus', { value: deviceStatus.label }),
+            style: {
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              flex: '0 0 auto',
+              padding: '4px 9px',
+              border: `1px solid ${deviceStatus.color}`,
+              borderRadius: 999,
+              color: deviceStatus.color,
+              background: dshThemeColor.surfaceSubtle,
+              fontSize: 12,
+              lineHeight: 1.2,
+              fontWeight: 600,
+            },
+          },
+            createElement('span', { 'aria-hidden': true, style: { width: 7, height: 7, flex: '0 0 auto', borderRadius: '50%', background: deviceStatus.color } }),
+            deviceStatus.label,
+          ),
+        ),
         createElement('select', { value: selectedDeviceId, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { value: string } }) => setSelectedDeviceId(event.currentTarget.value), style: fieldStyle },
           createElement('option', { value: '' }, t('relay.selectDevice')),
           ...devices.devices.map((device) => createElement('option', { key: device.dshDeviceId, value: device.dshDeviceId, disabled: !device.online || device.status !== 'active' }, `${device.displayName} · ${device.online ? t('relay.online') : t('relay.offline')}`)),
@@ -242,4 +322,25 @@ function normalizeControlBaseUrl(value: string): string {
   const parsed = new URL(trimmed)
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new TypeError('Control API 地址必须使用 HTTP(S)')
   return parsed.toString().replace(/\/+$/u, '')
+}
+
+/** 复制 H5 地址；非安全上下文下回退到传统 DOM 复制接口。 */
+async function copyText(value: string): Promise<void> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+  if (typeof document === 'undefined') throw new Error('当前环境不支持复制')
+  const input = document.createElement('textarea')
+  input.value = value
+  input.setAttribute('readonly', '')
+  input.style.position = 'fixed'
+  input.style.opacity = '0'
+  document.body.appendChild(input)
+  input.select()
+  try {
+    if (!document.execCommand('copy')) throw new Error('当前环境不支持复制')
+  } finally {
+    input.remove()
+  }
 }
