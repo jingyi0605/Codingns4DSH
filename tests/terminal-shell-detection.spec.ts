@@ -53,6 +53,26 @@ test('Windows 只报告实际存在的 PowerShell、cmd 和 Git Bash', () => {
   })
 })
 
+test('Windows Shell 探测覆盖用户级 PowerShell、32 位安装和 PATH', () => {
+  const installed = new Set([
+    'C:\\Users\\alice\\AppData\\Local\\Programs\\PowerShell\\7\\pwsh.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+  ])
+  const shells = detectTerminalShells({
+    platform: 'win32',
+    env: {
+      SystemRoot: 'C:\\Windows',
+      ProgramFiles: 'C:\\Program Files',
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+      LOCALAPPDATA: 'C:\\Users\\alice\\AppData\\Local',
+      Path: 'C:\\Windows\\System32',
+    },
+    isExecutable: (path) => installed.has(path),
+  })
+  assert.equal(shells.find((shell) => shell.profileId === 'powershell')?.path, 'C:\\Users\\alice\\AppData\\Local\\Programs\\PowerShell\\7\\pwsh.exe')
+  assert.equal(shells.find((shell) => shell.profileId === 'git-bash')?.path, 'C:\\Program Files (x86)\\Git\\bin\\bash.exe')
+})
+
 test('没有支持的 shell 时拒绝创建终端', () => {
   const shells = detectTerminalShells({ platform: 'linux', env: {}, isExecutable: () => false })
   assert.throws(() => resolveTerminalShell('system', shells, 'linux'), /没有可用/)
