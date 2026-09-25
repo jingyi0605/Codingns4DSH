@@ -1,9 +1,13 @@
 import { connect, createServer } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import { Transform, type TransformCallback } from 'node:stream'
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { homedir } from 'node:os'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
-import type { CodingNsSettings, LanAccessDshSettings } from '../shared/contracts/config.js'
-import type { LanAccessDshConfig, LanAccessDshSnapshot } from '../shared/contracts/lan-access-dsh.js'
+import type { CodingNsSettings, LanAccessDshLoginSettings, LanAccessDshSettings } from '../shared/contracts/config.js'
+import type { LanAccessDshConfig, LanAccessDshLoginConfig, LanAccessDshSnapshot } from '../shared/contracts/lan-access-dsh.js'
 import { CodingNsRpcError } from './rpc-table.js'
 
 export interface LanAccessDshStream {
@@ -33,6 +37,41 @@ interface ActiveProxy {
   sockets: Set<LanAccessDshStream>
   state: LanAccessDshSnapshot['state']
   error: string | null
+}
+
+export interface LanAccessDshLoginRecord extends LanAccessDshLoginConfig {}
+
+export interface LanAccessDshLoginStore {
+  read(): Promise<LanAccessDshLoginRecord | null>
+  write(record: LanAccessDshLoginRecord): Promise<void>
+  clear(): Promise<void>
+}
+
+/** 测试和嵌入式宿主使用的内存凭据存储。 */
+export class InMemoryLanAccessDshLoginStore implements LanAccessDshLoginStore {
+  private value: LanAccessDshLoginRecord | null = null
+  async read(): Promise<LanAccessDshLoginRecord | null> { return this.value === null ? null : { ...this.value } }
+  async write(record: LanAccessDshLoginRecord): Promise<void> { this.value = { ...record } }
+  async clear(): Promise<void> { this.value = null }
+}
+
+/** 登录保护凭据与 CodingNS refresh token 分离保存，文件权限限制为当前用户。 */
+export class FileLanAccessDshLoginStore implements LanAccessDshLoginStore {
+  constructor(private readonly filePath = join(homedir(), '.config', 'dsh-codingns', 'lan-access-login.json')) {}
+  async read(): Promise<LanAccessDshLoginRecord | null> {
+    try { return parseLoginRecord(JSON.parse(await readFile(this.filePath, 'utf8')) as unknown) }
+    catch (error) { if (isNodeError(error, 'ENOENT')) return null; throw error }
+  }
+  async write(record: LanAccessDshLoginRecord): Promise<void> {
+    await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 })
+    const temp = `${this.filePath}.${process.pid}.tmp`
+    await writeFile(temp, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 })
+    await rename(temp, this.filePath)
+  }
+  async clear(): Promise<void> {
+    try { await (await import('node:fs/promises')).unlink(this.filePath) }
+    catch (error) { if (!isNodeError(error, 'ENOENT')) throw error }
+  }
 }
 
 const LISTEN_HOSTS = new Set(['127.0.0.1', '0.0.0.0', '::1', '::'])
@@ -84,6 +123,8 @@ export function createNodeLanAccessDshRuntime(dshWebPort?: number): LanAccessDsh
 export class LanAccessDshProxy {
   private active: ActiveProxy | null = null
   private detectedDshPorts: readonly number[] = []
+  private loginConfig: LanAccessDshLoginConfig | null = null
+  private readonly sessions = new Map<string, number>()
 
   constructor(private readonly runtime: LanAccessDshRuntime = createNodeLanAccessDshRuntime()) {}
 
@@ -102,7 +143,9 @@ export class LanAccessDshProxy {
       listenHost: input.listenHost ?? '0.0.0.0',
       listenPort: input.listenPort ?? 13080,
       dshPort,
+      ...(input.login === undefined ? {} : { login: normalizeLoginConfig(input.login) }),
     }, this.listenHosts())
+    this.setLoginConfig(config.login ?? null)
     if (this.active) await this.stop()
 
     const active: ActiveProxy = {
@@ -135,6 +178,7 @@ export class LanAccessDshProxy {
     active.state = 'stopped'
     for (const socket of active.sockets) socket.destroy()
     active.sockets.clear()
+    this.sessions.clear()
     await active.close()
   }
 
@@ -144,6 +188,21 @@ export class LanAccessDshProxy {
 
   get(): LanAccessDshSnapshot | null {
     return this.active ? this.snapshot(this.active) : null
+  }
+
+  setLoginConfig(config: LanAccessDshLoginConfig | null): void {
+    this.loginConfig = config === null ? null : normalizeLoginConfig(config)
+    if (config === null || !config.enabled) this.sessions.clear()
+  }
+
+  loginSettings(): LanAccessDshLoginSettings {
+    const config = this.loginConfig
+    return {
+      enabled: config?.enabled === true,
+      username: config?.username ?? '',
+      passwordConfigured: config !== null && config.passwordHash.length > 0,
+      timeoutSeconds: config?.timeoutSeconds ?? 1800,
+    }
   }
 
   private async resolveDetectedPort(): Promise<number> {
@@ -177,8 +236,10 @@ export class LanAccessDshProxy {
       // 只改写请求头，响应和 WebSocket 帧仍然原样双向转发。测试运行时的最小
       // FakeStream 没有 Node Writable 接口，保留原始 pipe 以便验证连接关系。
       if (typeof (dshSocket as unknown as { on?: unknown }).on === 'function') {
+        const authTransform = new LanAccessDshAuthTransform(localSocket, (request) => this.authorize(request))
         const requestTransform = new LanAccessDshRequestTransform(`127.0.0.1:${active.config.dshPort}`)
-        localSocket.pipe(requestTransform as unknown as LanAccessDshStream)
+        localSocket.pipe(authTransform as unknown as LanAccessDshStream)
+        authTransform.pipe(requestTransform as unknown as LanAccessDshStream)
         requestTransform.pipe(dshSocket as unknown as NodeJS.WritableStream)
       } else localSocket.pipe(dshSocket)
       dshSocket.pipe(localSocket)
@@ -192,9 +253,132 @@ export class LanAccessDshProxy {
       actualListenPort: active.actualListenPort || null,
       detectedDshPorts: this.detectedDshPorts,
       error: active.error,
+      loginEnabled: active.config.login?.enabled === true,
     }
   }
+
+  private authorize(request: ParsedLanRequest): Uint8Array | 'pass' {
+    const config = this.loginConfig
+    if (config === null || !config.enabled) return 'pass'
+    if (request.path === '/__codingns/login' && request.method === 'POST') {
+      const form = new URLSearchParams(new TextDecoder().decode(request.body))
+      if (form.get('username') !== config.username || !verifyPassword(form.get('password') ?? '', config)) {
+        return loginResponse(401, '用户名或密码错误')
+      }
+      const token = randomBytes(32).toString('base64url')
+      this.sessions.set(token, Date.now() + config.timeoutSeconds * 1000)
+      return loginResponse(303, '', { 'Set-Cookie': sessionCookie(token, config.timeoutSeconds), Location: '/' })
+    }
+    if (request.path === '/__codingns/logout') {
+      const token = readCookie(request.headers.cookie, 'dsh_codingns_session')
+      if (token !== undefined) this.sessions.delete(token)
+      return loginResponse(303, '', { 'Set-Cookie': 'dsh_codingns_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0', Location: '/' })
+    }
+    const token = readCookie(request.headers.cookie, 'dsh_codingns_session')
+    const expiresAt = token === undefined ? undefined : this.sessions.get(token)
+    if (expiresAt !== undefined && expiresAt > Date.now()) {
+      this.sessions.set(token!, Date.now() + config.timeoutSeconds * 1000)
+      return 'pass'
+    }
+    if (token !== undefined) this.sessions.delete(token)
+    return request.path === '/' || request.path.endsWith('.html')
+      ? loginResponse(200, loginPage())
+      : loginResponse(401, '需要登录')
+  }
 }
+
+interface ParsedLanRequest {
+  method: string
+  path: string
+  headers: Record<string, string>
+  body: Uint8Array
+}
+
+/** 在 TCP 转发前完成登录校验；未通过时直接向局域网客户端返回页面/错误。 */
+class LanAccessDshAuthTransform extends Transform {
+  private pending = new Uint8Array(0)
+  private handled = false
+  constructor(
+    private readonly client: LanAccessDshStream,
+    private readonly authorize: (request: ParsedLanRequest) => Uint8Array | 'pass',
+  ) { super() }
+  _transform(chunk: Uint8Array, _encoding: string, callback: TransformCallback): void {
+    if (this.handled) { callback(null, chunk); return }
+    this.pending = concatBytes(this.pending, chunk)
+    const end = findHeaderEnd(this.pending)
+    if (end < 0) { if (this.pending.length > 64 * 1024) this.finish(loginResponse(431, '请求头过大')); callback(); return }
+    const head = this.pending.subarray(0, end + 4)
+    const headers = parseHeaders(head)
+    const bodyLength = contentLengthOf(head)
+    if (this.pending.length < end + 4 + bodyLength) { callback(); return }
+    const requestLine = decodeLatin1(head).split('\r\n', 1)[0] ?? ''
+    const parts = requestLine.split(' ')
+    const request: ParsedLanRequest = {
+      method: parts[0] ?? 'GET',
+      path: (parts[1] ?? '/').split('?', 1)[0] ?? '/',
+      headers,
+      body: this.pending.subarray(end + 4, end + 4 + bodyLength),
+    }
+    const decision = this.authorize(request)
+    if (decision === 'pass') {
+      this.handled = true
+      this.push(this.pending)
+      this.pending = new Uint8Array(0)
+    } else this.finish(decision)
+    callback()
+  }
+  _flush(callback: TransformCallback): void { callback() }
+  private finish(response: Uint8Array): void {
+    if (this.handled) return
+    this.handled = true
+    const writable = this.client as unknown as { write?: (chunk: Uint8Array) => void; end?: () => void }
+    writable.write?.(response)
+    writable.end?.()
+    this.client.destroy()
+  }
+}
+
+function parseHeaders(input: Uint8Array): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const line of decodeLatin1(input).split('\r\n').slice(1)) {
+    const separator = line.indexOf(':')
+    if (separator > 0) result[line.slice(0, separator).trim().toLowerCase()] = line.slice(separator + 1).trim()
+  }
+  return result
+}
+
+function readCookie(value: string | undefined, name: string): string | undefined {
+  for (const item of (value ?? '').split(';')) {
+    const separator = item.indexOf('=')
+    if (separator > 0 && item.slice(0, separator).trim() === name) return item.slice(separator + 1).trim()
+  }
+  return undefined
+}
+
+function sessionCookie(token: string, timeoutSeconds: number): string {
+  return `dsh_codingns_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${timeoutSeconds}`
+}
+
+function loginResponse(status: number, body: string, extra: Record<string, string> = {}): Uint8Array {
+  const html = body === loginPage() ? body : escapeHtml(body)
+  const content = new TextEncoder().encode(html)
+  const headers = {
+    'Content-Type': body === loginPage() ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8',
+    'Content-Length': String(content.length),
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    Connection: 'close',
+    ...extra,
+  }
+  return encodeLatin1(`HTTP/1.1 ${status} ${statusText(status)}\r\n${Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join('\r\n')}\r\n\r\n${new TextDecoder().decode(content)}`)
+}
+
+function loginPage(): string {
+  return '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DSH 登录</title><style>body{font:16px system-ui;max-width:360px;margin:15vh auto;padding:24px}input,button{box-sizing:border-box;width:100%;padding:10px;margin:6px 0}button{cursor:pointer}</style><h1>DSH 登录</h1><form method="post" action="/__codingns/login"><input name="username" autocomplete="username" placeholder="用户名" required><input name="password" type="password" autocomplete="current-password" placeholder="密码" required><button>登录</button></form>'
+}
+
+function statusText(status: number): string { return status === 200 ? 'OK' : status === 303 ? 'See Other' : status === 401 ? 'Unauthorized' : 'Request Error' }
+function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char) }
 
 /**
  * 将局域网入口发往上游 DSH 的 HTTP 请求头改成上游自身的 authority。
