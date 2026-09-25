@@ -92,7 +92,9 @@ export function apply(ctx?: Context): void {
     const connection = settingsCtx.connection as unknown as ConnectionHandle
     const settings = createCodingNsSettingsBridge(localSettings, connection.rpc)
     // Typert manifest 可能晚于立即加载的 Client 入口完成登记，必须在每次调用时取 Remote。
-    const terminalRemote = (): TerminalRemote | undefined => settingsCtx.remote.terminal as unknown as TerminalRemote | undefined
+    // DSH 0.1.7 的 ClientRemote 声明可能尚未包含插件按需挂载的 terminal 命名空间。
+    // 运行时仍由 Typert manifest 提供该字段，因此在边界处按可选动态服务读取。
+    const terminalRemote = (): TerminalRemote | undefined => (settingsCtx.remote as unknown as { readonly terminal?: TerminalRemote }).terminal
     const webTerminals = new CodingNsWebTerminals(settingsCtx, terminalRemote)
     const disposeTerminalUi = registerCodingNsTerminalUi(settingsCtx, webTerminals, settings)
     const services: CodingNsClientServices = {
