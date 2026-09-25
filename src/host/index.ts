@@ -221,11 +221,17 @@ export type {
 export {
   LanAccessDshError,
   LanAccessDshProxy,
+  FileLanAccessDshLoginStore,
+  InMemoryLanAccessDshLoginStore,
   createLanAccessDshRpcHandler,
   createNodeLanAccessDshRuntime,
   normalizeLanAccessDshConfig,
+  openLoginProtectionSession,
+  verifyLoginProtectionSession,
   type LanAccessDshRuntime,
   type LanAccessDshStream,
+  type LanAccessDshLoginRecord,
+  type LanAccessDshLoginStore,
 } from './lan-access-dsh.js'
 export {
   CODINGNS_TUNNEL_DATA_CHANNEL_LABEL,

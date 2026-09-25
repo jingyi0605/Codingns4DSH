@@ -15,7 +15,7 @@ export function createLanAccessDshFeature(options: { runtime?: LanAccessDshRunti
     },
     async start(context) {
       const runtime = options.runtime ?? createNodeLanAccessDshRuntime(context.services.dshWebPort)
-      const proxy = new LanAccessDshProxy(runtime)
+      const proxy = new LanAccessDshProxy(runtime, context.services.dshWebAuthenticatedUrl)
       const settings = context.services.settings
       const loginStore = new FileLanAccessDshLoginStore()
       const loginConfig = await loginStore.read()

@@ -1,3 +1,5 @@
+import type { LoginProtectionScopes } from './config.js'
+
 /** “局域网访问 DSH”唯一一条监听配置。 */
 export interface LanAccessDshConfig {
   /** 监听地址：本机网卡地址，或 0.0.0.0 监听所有 IPv4 网卡。 */
@@ -16,6 +18,7 @@ export interface LanAccessDshLoginConfig {
   passwordHash: string
   passwordSalt: string
   timeoutSeconds: number
+  scopes: LoginProtectionScopes
 }
 
 export type LanAccessDshState = 'stopped' | 'starting' | 'listening' | 'error'

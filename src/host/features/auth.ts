@@ -12,6 +12,7 @@ import type { CodingNsHostServices } from './types.js'
 import { createDshRpcGatewayFeature } from '../dsh-gateway-feature.js'
 import { createLocalDshWebRuntimeProvider, createRemoteWebRuntimeFeature } from '../remote-web-runtime.js'
 import { DSH_VERSION } from '../../shared/contracts/version.js'
+import { FileLanAccessDshLoginStore, verifyLoginProtectionSession } from '../lan-access-dsh.js'
 
 /** 未登录时的稳定快照；Client 首次读取 `auth/snapshot` 会拿到它。 */
 const LOGGED_OUT_SNAPSHOT = {
@@ -45,6 +46,7 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
       const stateDirectory = process.env.DSH_CODINGNS_STATE_DIR?.trim() || join(homedir(), '.config', 'dsh-codingns')
       const credentials = new FileCodingNsCredentialStore(join(stateDirectory, 'codingns-credentials.json'))
       const dshCredentials = new FileDshDeviceCredentialStore(join(stateDirectory, 'device-credential.json'))
+      const loginProtectionStore = new FileLanAccessDshLoginStore(join(stateDirectory, 'lan-access-login.json'))
       let session: CodingNsAuthSession | null = null
       let sessionBaseUrl: string | null = null
       let dshRuntime: DshHostDeviceRuntime | null = null
@@ -136,6 +138,10 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
         'dsh/device/stop': async () => { await dshRuntime?.stop(); dshRuntime = null; return { stopped: true } },
         'dsh/device/status': () => dshRuntime ? { device: dshRuntime.device, online: true } : { device: null, online: false },
         'dsh/relayTicket': async (payload) => {
+          const loginProtectionToken = isRecord(payload) && typeof payload.loginProtectionToken === 'string' ? payload.loginProtectionToken : undefined
+          if (!await verifyLoginProtectionSession(loginProtectionStore, loginProtectionToken, 'relay')) {
+            throw new CodingNsRpcError('CODINGNS_RPC_UNAUTHENTICATED', '需要先完成登录保护验证')
+          }
           const target = requireSession()
           if (!dshRuntime) await startDsh(target)
           if (!dshRuntime) throw new CodingNsRpcError('DSH_DEVICE_OFFLINE', 'DSH Host 尚未上线')

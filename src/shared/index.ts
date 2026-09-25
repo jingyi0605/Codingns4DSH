@@ -18,6 +18,7 @@ export {
   type CodingNsCliAdapterPreference,
   type LanAccessDshSettings,
   type LanAccessDshLoginSettings,
+  type LoginProtectionScopes,
   type RestartFeatureStates,
   type TerminalAppearanceSettings,
   type TerminalAppearanceTheme,

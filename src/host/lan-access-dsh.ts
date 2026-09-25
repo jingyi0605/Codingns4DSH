@@ -1,12 +1,12 @@
 import { connect, createServer } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import { Transform, type TransformCallback } from 'node:stream'
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { homedir } from 'node:os'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
-import type { CodingNsSettings, LanAccessDshLoginSettings, LanAccessDshSettings } from '../shared/contracts/config.js'
+import type { CodingNsSettings, LanAccessDshLoginSettings, LanAccessDshSettings, LoginProtectionScopes } from '../shared/contracts/config.js'
 import type { LanAccessDshConfig, LanAccessDshLoginConfig, LanAccessDshSnapshot } from '../shared/contracts/lan-access-dsh.js'
 import { CodingNsRpcError } from './rpc-table.js'
 
@@ -47,6 +47,44 @@ export interface LanAccessDshLoginStore {
   clear(): Promise<void>
 }
 
+/** 浏览器中继只携带短期签名票据，密码哈希和签名密钥始终留在 Host。 */
+export async function openLoginProtectionSession(
+  store: LanAccessDshLoginStore,
+  username: string,
+  password: string,
+  scope: keyof LoginProtectionScopes,
+): Promise<{ token: string; expiresAt: string }> {
+  const config = await store.read()
+  if (config === null || !config.enabled || !config.scopes[scope]) return { token: '', expiresAt: new Date().toISOString() }
+  if (username !== config.username || !verifyPassword(password, config)) throw new CodingNsRpcError('CODINGNS_RPC_UNAUTHENTICATED', '本地用户名或密码错误')
+  const expiresAt = Date.now() + config.timeoutSeconds * 1000
+  const payload = encodeSessionPayload({ username: config.username, scope, expiresAt, nonce: randomBytes(16).toString('base64url') })
+  return { token: `${payload}.${signSessionPayload(payload, config)}`, expiresAt: new Date(expiresAt).toISOString() }
+}
+
+/** 校验中继票据；配置关闭或未覆盖该范围时保持向后兼容，直接放行。 */
+export async function verifyLoginProtectionSession(
+  store: LanAccessDshLoginStore,
+  token: string | undefined,
+  scope: keyof LoginProtectionScopes,
+): Promise<boolean> {
+  const config = await store.read()
+  if (config === null || !config.enabled || !config.scopes[scope]) return true
+  if (typeof token !== 'string' || token.length < 32 || token.length > 4096) return false
+  const separator = token.lastIndexOf('.')
+  if (separator <= 0) return false
+  const payload = token.slice(0, separator)
+  const signature = token.slice(separator + 1)
+  const expected = signSessionPayload(payload, config)
+  const expectedBytes = Buffer.from(expected)
+  const actualBytes = Buffer.from(signature)
+  if (expectedBytes.length !== actualBytes.length || !timingSafeEqual(expectedBytes, actualBytes)) return false
+  try {
+    const value = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { username?: unknown; scope?: unknown; expiresAt?: unknown; nonce?: unknown }
+    return value.username === config.username && value.scope === scope && typeof value.nonce === 'string' && typeof value.expiresAt === 'number' && value.expiresAt > Date.now()
+  } catch { return false }
+}
+
 /** 测试和嵌入式宿主使用的内存凭据存储。 */
 export class InMemoryLanAccessDshLoginStore implements LanAccessDshLoginStore {
   private value: LanAccessDshLoginRecord | null = null
@@ -57,7 +95,7 @@ export class InMemoryLanAccessDshLoginStore implements LanAccessDshLoginStore {
 
 /** 登录保护凭据与 CodingNS refresh token 分离保存，文件权限限制为当前用户。 */
 export class FileLanAccessDshLoginStore implements LanAccessDshLoginStore {
-  constructor(private readonly filePath = join(homedir(), '.config', 'dsh-codingns', 'lan-access-login.json')) {}
+  constructor(private readonly filePath = join(defaultStateDir(), 'lan-access-login.json')) {}
   async read(): Promise<LanAccessDshLoginRecord | null> {
     try { return parseLoginRecord(JSON.parse(await readFile(this.filePath, 'utf8')) as unknown) }
     catch (error) { if (isNodeError(error, 'ENOENT')) return null; throw error }
@@ -72,6 +110,11 @@ export class FileLanAccessDshLoginStore implements LanAccessDshLoginStore {
     try { await (await import('node:fs/promises')).unlink(this.filePath) }
     catch (error) { if (!isNodeError(error, 'ENOENT')) throw error }
   }
+}
+
+function defaultStateDir(): string {
+  const configured = process.env.DSH_CODINGNS_STATE_DIR?.trim()
+  return configured === undefined || configured === '' ? join(homedir(), '.config', 'dsh-codingns') : configured
 }
 
 const LISTEN_HOSTS = new Set(['127.0.0.1', '0.0.0.0', '::1', '::'])
@@ -125,8 +168,12 @@ export class LanAccessDshProxy {
   private detectedDshPorts: readonly number[] = []
   private loginConfig: LanAccessDshLoginConfig | null = null
   private readonly sessions = new Map<string, number>()
+  private upstreamCookie: string | null = null
 
-  constructor(private readonly runtime: LanAccessDshRuntime = createNodeLanAccessDshRuntime()) {}
+  constructor(
+    private readonly runtime: LanAccessDshRuntime = createNodeLanAccessDshRuntime(),
+    private readonly authenticatedUrl?: string,
+  ) {}
 
   listenHosts(): readonly string[] {
     return this.runtime.listListenHosts()
@@ -164,6 +211,13 @@ export class LanAccessDshProxy {
       active.actualListenPort = listener.actualPort
       active.close = listener.close
       active.state = 'listening'
+      try {
+        await this.takeOverDshWebToken()
+      } catch (error) {
+        // Token 交换失败不能撤销已经绑定的局域网端口；保留监听并记录错误，后续请求会收到上游认证状态。
+        active.error = error instanceof Error ? error.message : String(error)
+        console.error('dsh-codingns: DSH Web Token 接管失败，局域网监听仍保持可用', error)
+      }
       return this.snapshot(active)
     } catch (error) {
       this.active = null
@@ -204,6 +258,7 @@ export class LanAccessDshProxy {
       username: config?.username ?? '',
       passwordConfigured: config !== null && config.passwordHash.length > 0,
       timeoutSeconds: config?.timeoutSeconds ?? 1800,
+      scopes: config?.scopes ?? defaultLoginScopes(),
     }
   }
 
@@ -238,8 +293,9 @@ export class LanAccessDshProxy {
       // 只改写请求头，响应和 WebSocket 帧仍然原样双向转发。测试运行时的最小
       // FakeStream 没有 Node Writable 接口，保留原始 pipe 以便验证连接关系。
       if (typeof (dshSocket as unknown as { on?: unknown }).on === 'function') {
-        const authTransform = new LanAccessDshAuthTransform(localSocket, (request) => this.authorize(request))
-        const requestTransform = new LanAccessDshRequestTransform(`127.0.0.1:${active.config.dshPort}`)
+        const localAddress = isLoopbackSocket(localSocket)
+        const authTransform = new LanAccessDshAuthTransform(localSocket, (request) => this.authorize(request, localAddress))
+        const requestTransform = new LanAccessDshRequestTransform(`127.0.0.1:${active.config.dshPort}`, this.upstreamCookie)
         localSocket.pipe(authTransform as unknown as LanAccessDshStream)
         authTransform.pipe(requestTransform as unknown as NodeJS.WritableStream)
         requestTransform.pipe(dshSocket as unknown as NodeJS.WritableStream)
@@ -256,13 +312,13 @@ export class LanAccessDshProxy {
       actualListenPort: active.actualListenPort || null,
       detectedDshPorts: this.detectedDshPorts,
       error: active.error,
-      loginEnabled: active.config.login?.enabled === true,
+      loginEnabled: this.loginConfig?.enabled === true,
     }
   }
 
-  private authorize(request: ParsedLanRequest): Uint8Array | 'pass' {
+  private authorize(request: ParsedLanRequest, localAddress: boolean): Uint8Array | 'pass' {
     const config = this.loginConfig
-    if (config === null || !config.enabled) return 'pass'
+    if (localAddress || config === null || !config.enabled || !config.scopes.lan) return 'pass'
     if (request.path === '/__codingns/login' && request.method === 'POST') {
       const form = new URLSearchParams(new TextDecoder().decode(request.body))
       if (form.get('username') !== config.username || !verifyPassword(form.get('password') ?? '', config)) {
@@ -288,6 +344,15 @@ export class LanAccessDshProxy {
       ? loginResponse(200, loginPage())
       : loginResponse(401, '需要登录')
   }
+
+  /** DSH 启动时的认证 URL 只在 Host 内交换一次 Cookie，绝不下发到浏览器。 */
+  private async takeOverDshWebToken(): Promise<void> {
+    if (this.authenticatedUrl === undefined) return
+    const response = await fetch(this.authenticatedUrl, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
+    const cookie = getSetCookie(response.headers)
+    if (response.status !== 303 || cookie === undefined) throw new Error(`DSH Web Token 接管失败 (${response.status})`)
+    this.upstreamCookie = cookie
+  }
 }
 
 interface ParsedLanRequest {
@@ -295,6 +360,11 @@ interface ParsedLanRequest {
   path: string
   headers: Record<string, string>
   body: Uint8Array
+}
+
+function isLoopbackSocket(socket: LanAccessDshStream): boolean {
+  const remoteAddress = (socket as unknown as { remoteAddress?: unknown }).remoteAddress
+  return remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1'
 }
 
 /** 在 TCP 转发前完成登录校验；未通过时直接向局域网客户端返回页面/错误。 */
@@ -334,10 +404,9 @@ class LanAccessDshAuthTransform extends Transform {
   private finish(response: Uint8Array): void {
     if (this.handled) return
     this.handled = true
-    const writable = this.client as unknown as { write?: (chunk: Uint8Array) => void; end?: () => void }
-    writable.write?.(response)
-    writable.end?.()
-    this.client.destroy()
+    const writable = this.client as unknown as { end?: (chunk?: Uint8Array) => void }
+    // 让 Node Socket 自己 flush 完响应后关闭，不能 end 后立即 destroy，否则登录页可能被截断。
+    writable.end?.(response)
   }
 }
 
@@ -362,6 +431,12 @@ function sessionCookie(token: string, timeoutSeconds: number): string {
   return `dsh_codingns_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${timeoutSeconds}`
 }
 
+function getSetCookie(headers: Headers): string | undefined {
+  const extended = headers as Headers & { getSetCookie?: () => string[] }
+  const values = extended.getSetCookie?.() ?? (headers.get('set-cookie') === null ? [] : [headers.get('set-cookie')!])
+  return values.map((value) => value.split(';', 1)[0]).find((value) => value !== '')
+}
+
 function loginResponse(status: number, body: string, extra: Record<string, string> = {}): Uint8Array {
   const html = body === loginPage() ? body : escapeHtml(body)
   const content = new TextEncoder().encode(html)
@@ -370,14 +445,22 @@ function loginResponse(status: number, body: string, extra: Record<string, strin
     'Content-Length': String(content.length),
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'",
+    'Referrer-Policy': 'no-referrer',
     Connection: 'close',
     ...extra,
   }
-  return encodeLatin1(`HTTP/1.1 ${status} ${statusText(status)}\r\n${Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join('\r\n')}\r\n\r\n${new TextDecoder().decode(content)}`)
+  const head = encodeLatin1(`HTTP/1.1 ${status} ${statusText(status)}\r\n${Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join('\r\n')}\r\n\r\n`)
+  return concatBytes(head, content)
 }
 
 function loginPage(): string {
-  return '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DSH 登录</title><style>body{font:16px system-ui;max-width:360px;margin:15vh auto;padding:24px}input,button{box-sizing:border-box;width:100%;padding:10px;margin:6px 0}button{cursor:pointer}</style><h1>DSH 登录</h1><form method="post" action="/__codingns/login"><input name="username" autocomplete="username" placeholder="用户名" required><input name="password" type="password" autocomplete="current-password" placeholder="密码" required><button>登录</button></form>'
+  // 视觉规则直接复用 dsh-codingns-h5/styles.css 的 Cyber 登录区，只把 Connect
+  // 账号字段替换成本地用户名/密码；不能依赖外部 CSS，避免局域网入口离线时失效。
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DSH Web | 本地登录</title><style>
+:root{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;color:#f1f5f9;background:#0a0f1d}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0}body{overflow:hidden}.cyber-login-page{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden;background:radial-gradient(ellipse at center,#0f172a 0%,#0a0f1d 100%);color:#f1f5f9}.cyber-login-page:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(59,130,246,.08) 1px,transparent 1px),linear-gradient(90deg,rgba(59,130,246,.08) 1px,transparent 1px);background-size:50px 50px;transform:perspective(500px) rotateX(60deg);transform-origin:center top}.cyber-login-page:after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.15) 2px,rgba(0,0,0,.15) 4px)}.cyber-login-container{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:30px;width:min(440px,calc(100% - 32px));padding:24px}.cyber-login-content{display:flex;flex-direction:column;align-items:center;gap:28px;width:100%}.cyber-brand{display:flex;flex-direction:column;align-items:center;gap:13px;text-align:center}.cyber-logo{display:grid;place-items:center;width:80px;height:80px;border:1px solid rgba(59,130,246,.48);border-radius:22px;color:#60a5fa;font-size:19px;font-weight:700;letter-spacing:2px;box-shadow:0 0 25px rgba(0,212,255,.35),inset 0 0 22px rgba(59,130,246,.18);transform:rotate(30deg)}.cyber-logo span{transform:rotate(-30deg)}.cyber-brand-title{margin:0;color:#f1f5f9;font-size:28px;font-weight:700;letter-spacing:4px}.cyber-brand-subtitle{margin:0;color:#94a3b8;font-size:12px;letter-spacing:1.5px}.cyber-card{width:100%;padding:30px;border:1px solid rgba(59,130,246,.28);border-radius:12px;background:rgba(30,41,59,.78);backdrop-filter:blur(10px);box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 0 1px rgba(59,130,246,.28)}.cyber-card-header{display:flex;align-items:center;gap:12px;margin-bottom:22px}.cyber-line{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.48),transparent)}.cyber-card-label{color:#94a3b8;font-size:11px;font-weight:600;letter-spacing:3px;white-space:nowrap}.cyber-form{display:flex;flex-direction:column;gap:18px}.cyber-connect-hint{margin:0;color:#94a3b8;font-size:12px;line-height:1.7}.cyber-field{position:relative;padding:12px 16px;border:1px solid rgba(59,130,246,.28);border-radius:8px;background:rgba(15,23,42,.68)}.cyber-field-label{display:flex;align-items:center;gap:8px;margin-bottom:8px;color:#94a3b8;font-size:11px;letter-spacing:1px}.cyber-field-icon{color:#60a5fa}.cyber-input{width:100%;padding:0;border:0;outline:0;background:transparent;color:#f1f5f9;font:14px var(--font-mono)}.cyber-input::placeholder{color:#94a3b8;opacity:.55}.cyber-submit{position:relative;width:100%;min-height:48px;margin-top:4px;padding:14px 24px;overflow:hidden;border:0;border-radius:8px;background:linear-gradient(135deg,#3b82f6,#06b6d4);color:white;font:600 13px var(--font-mono);letter-spacing:2px;cursor:pointer;box-shadow:0 0 18px rgba(59,130,246,.32)}.cyber-submit:hover{filter:brightness(1.12)}.cyber-submit:active{transform:translateY(1px)}.cyber-submit:disabled{cursor:wait;opacity:.6}.cyber-submit-text{position:relative;display:flex;align-items:center;justify-content:center;gap:8px}.cyber-status{display:flex;align-items:center;gap:8px;margin:0;padding:10px 12px;border:1px solid rgba(239,68,68,.25);border-radius:6px;background:rgba(239,68,68,.1);color:#fca5a5;font-size:12px;line-height:1.5}.cyber-footer{margin-top:2px}.cyber-divider{display:flex;align-items:center;gap:12px;margin-bottom:14px}.cyber-divider-line{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.48),transparent)}.cyber-divider-text{color:#64748b;font-size:10px;letter-spacing:2px}.cyber-version{display:flex;align-items:center;gap:12px;color:#64748b;font-size:10px;letter-spacing:2px;opacity:.65}@media(prefers-color-scheme:light){.cyber-login-page{color:#0f172a;background:radial-gradient(ellipse at center,#f8fafc 0%,#eef4fb 100%)}.cyber-card{background:rgba(255,255,255,.86);box-shadow:0 8px 28px rgba(15,23,42,.12),0 0 0 1px rgba(37,99,235,.13)}.cyber-brand-title{color:#0f172a}.cyber-input{color:#0f172a}.cyber-connect-hint,.cyber-field-label,.cyber-card-label{color:#64748b}.cyber-field{background:rgba(241,245,249,.86)}}@media(max-width:520px){.cyber-login-container{width:100%;padding:20px 16px}.cyber-card{padding:24px 20px}.cyber-brand-subtitle{font-size:10px;letter-spacing:1px}}
+</style></head><body><main class="cyber-login-page"><div class="cyber-login-container"><div class="cyber-login-content"><div class="cyber-brand"><div class="cyber-logo"><span>DSH</span></div><h1 class="cyber-brand-title">DSH Web</h1><p class="cyber-brand-subtitle">LOCAL SECURE DSH ENVIRONMENT</p></div><div class="cyber-card"><form class="cyber-form" method="post" action="/__codingns/login"><div class="cyber-card-header"><div class="cyber-line"></div><span class="cyber-card-label">LOCAL ACCESS</span><div class="cyber-line"></div></div><p class="cyber-connect-hint">使用本机设置的本地账号进入 DSH Web。</p><div class="cyber-field"><label class="cyber-field-label" for="login-username"><span class="cyber-field-icon" aria-hidden="true">⌁</span>用户名</label><input class="cyber-input" id="login-username" name="username" autocomplete="username" placeholder="输入本地用户名" required></div><div class="cyber-field"><label class="cyber-field-label" for="login-password"><span class="cyber-field-icon" aria-hidden="true">⚷</span>密码</label><input class="cyber-input" id="login-password" name="password" type="password" autocomplete="current-password" placeholder="输入本地密码" required></div><button class="cyber-submit" type="submit"><span class="cyber-submit-text"><span aria-hidden="true">➤</span>登录 DSH Web</span></button><div class="cyber-footer"><div class="cyber-divider"><span class="cyber-divider-line"></span><span class="cyber-divider-text">CODINGNS</span><span class="cyber-divider-line"></span></div></div></form></div></div><div class="cyber-version"><span>DSH-CODINGNS</span><span>|</span><span>LOCAL AUTH READY</span></div></div></main></body></html>`
 }
 
 function statusText(status: number): string { return status === 200 ? 'OK' : status === 303 ? 'See Other' : status === 401 ? 'Unauthorized' : 'Request Error' }
@@ -395,7 +478,7 @@ class LanAccessDshRequestTransform extends Transform {
   private bodyRemaining = 0
   private finished = false
 
-  constructor(private readonly targetAuthority: string) {
+  constructor(private readonly targetAuthority: string, private readonly upstreamCookie: string | null = null) {
     super()
   }
 
@@ -439,7 +522,7 @@ class LanAccessDshRequestTransform extends Transform {
       const head = this.pending.subarray(0, end + 4)
       this.pending = this.pending.subarray(end + 4)
       const upgrade = isUpgradeRequest(head)
-      this.push(rewriteLanAccessDshRequestHeaders(head, this.targetAuthority))
+      this.push(rewriteLanAccessDshRequestHeaders(head, this.targetAuthority, this.upstreamCookie ?? undefined))
       if (upgrade) {
         // WebSocket 头部之后全部是帧数据，不能再次进入 HTTP 头缓存。
         this.finished = true
@@ -465,11 +548,12 @@ class LanAccessDshRequestTransform extends Transform {
 }
 
 /** 改写请求中的 Host、Origin，并关闭普通 HTTP 上游连接。 */
-export function rewriteLanAccessDshRequestHeaders(input: Uint8Array, targetAuthority: string): Uint8Array {
+export function rewriteLanAccessDshRequestHeaders(input: Uint8Array, targetAuthority: string, upstreamCookie?: string): Uint8Array {
   const text = decodeLatin1(input)
   const lines = text.split('\r\n')
   const upgrade = isUpgradeRequest(input)
   let hasConnection = false
+  let hasCookie = false
   for (let index = 1; index < lines.length; index += 1) {
     const line = lines[index]
     if (line === undefined || line === '') continue
@@ -481,7 +565,14 @@ export function rewriteLanAccessDshRequestHeaders(input: Uint8Array, targetAutho
     else if (name === 'connection') {
       hasConnection = true
       if (!upgrade) lines[index] = 'Connection: close'
-    }
+    } else if (name === 'cookie') hasCookie = true
+  }
+  if (upstreamCookie !== undefined) {
+    if (hasCookie) {
+      for (let index = 1; index < lines.length; index += 1) {
+        if (lines[index]?.toLowerCase().startsWith('cookie:')) lines[index] = `Cookie: ${lines[index]!.slice(lines[index]!.indexOf(':') + 1).trim()}; ${upstreamCookie}`
+      }
+    } else lines.splice(-2, 0, `Cookie: ${upstreamCookie}`)
   }
   if (!upgrade && !hasConnection) lines.splice(-2, 0, 'Connection: close')
   return encodeLatin1(lines.join('\r\n'))
@@ -576,7 +667,16 @@ export function createLanAccessDshRpcHandler(
           await loginStore.write(next)
           proxy.setLoginConfig(next)
         }
-        return proxy.loginSettings()
+        const settings = proxy.loginSettings()
+        if (next !== null && next.scopes.relay && isRecord(payload) && typeof payload.password === 'string' && payload.password !== '') {
+          const sessionInput = parseLoginSessionPayload({ username: next.username, password: payload.password, scope: 'relay' })
+          return { ...settings, relaySession: await openLoginProtectionSession(loginStore, sessionInput.username, sessionInput.password, 'relay') }
+        }
+        return settings
+      }
+      case 'login/session/open': {
+        const input = parseLoginSessionPayload(payload)
+        return openLoginProtectionSession(loginStore, input.username, input.password, input.scope)
       }
       case 'start':
         return proxy.start(parseStartPayload(payload))
@@ -587,6 +687,16 @@ export function createLanAccessDshRpcHandler(
         throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `未知局域网访问 DSH RPC: lanAccessDsh/${action}`)
     }
   }
+}
+
+function parseLoginSessionPayload(value: unknown): { username: string; password: string; scope: keyof LoginProtectionScopes } {
+  if (!value || typeof value !== 'object') throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '登录会话参数必须是对象')
+  const input = value as Record<string, unknown>
+  const username = requireLoginText(input.username, '用户名', 1, 128)
+  if (typeof input.password !== 'string' || input.password.length < 1 || input.password.length > 256) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '密码格式无效')
+  const scope = input.scope
+  if (scope !== 'lan' && scope !== 'relay') throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '登录会话应用范围无效')
+  return { username, password: input.password, scope }
 }
 
 function defaultLanAccessDshSettings(): LanAccessDshSettings {
@@ -600,12 +710,13 @@ function parseLoginSettings(value: unknown, current: LanAccessDshLoginRecord | n
   if (input.enabled !== true) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '登录保护 enabled 必须是布尔值')
   const username = requireLoginText(input.username, '用户名', 1, 128)
   const timeoutSeconds = requireInteger(input.timeoutSeconds, '超时时间', 60, 604800)
+  const scopes = parseLoginScopes(input.scopes ?? current?.scopes)
   const password = typeof input.password === 'string' ? input.password : ''
   if (password === '' && current === null) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '启用登录保护时必须设置密码')
   if (password !== '' && (password.length < 8 || password.length > 256)) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '密码长度必须是 8 到 256 个字符')
   const passwordSalt = password === '' ? current!.passwordSalt : randomBytes(16).toString('hex')
   const passwordHash = password === '' ? current!.passwordHash : hashPassword(password, passwordSalt)
-  return { enabled: true, username, passwordHash, passwordSalt, timeoutSeconds }
+  return { enabled: true, username, passwordHash, passwordSalt, timeoutSeconds, scopes }
 }
 
 function normalizeLoginConfig(value: LanAccessDshLoginConfig): LanAccessDshLoginConfig {
@@ -616,6 +727,7 @@ function normalizeLoginConfig(value: LanAccessDshLoginConfig): LanAccessDshLogin
     passwordHash: requireLoginText(value.passwordHash, '密码哈希', 1, 512),
     passwordSalt: requireLoginText(value.passwordSalt, '密码盐', 1, 128),
     timeoutSeconds: requireInteger(value.timeoutSeconds, '超时时间', 60, 604800),
+    scopes: parseLoginScopes(value.scopes),
   }
 }
 
@@ -631,6 +743,12 @@ function verifyPassword(password: string, config: LanAccessDshLoginConfig): bool
     return expected.length === actual.length && timingSafeEqual(expected, actual)
   } catch { return false }
 }
+function encodeSessionPayload(value: { username: string; scope: keyof LoginProtectionScopes; expiresAt: number; nonce: string }): string {
+  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url')
+}
+function signSessionPayload(payload: string, config: LanAccessDshLoginConfig): string {
+  return createHmac('sha256', `${config.passwordSalt}:${config.passwordHash}`).update(payload).digest('base64url')
+}
 function requireLoginText(value: unknown, field: string, min: number, max: number): string {
   if (typeof value !== 'string' || value.trim().length < min || value.trim().length > max || /[\u0000-\u001F\u007F]/u.test(value)) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', `${field} 格式无效`)
   return value.trim()
@@ -639,7 +757,17 @@ function requireInteger(value: unknown, field: string, min: number, max: number)
   if (!Number.isInteger(value) || (value as number) < min || (value as number) > max) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', `${field} 必须是 ${min} 到 ${max} 的整数`)
   return value as number
 }
+function defaultLoginScopes(): LoginProtectionScopes { return { lan: true, relay: true } }
+function parseLoginScopes(value: unknown): LoginProtectionScopes {
+  if (value === undefined) return defaultLoginScopes()
+  if (!value || typeof value !== 'object') throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '登录保护应用范围无效')
+  const input = value as Record<string, unknown>
+  if (typeof input.lan !== 'boolean' || typeof input.relay !== 'boolean') throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '登录保护应用范围必须是布尔值')
+  if (!input.lan && !input.relay) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '至少选择一个登录保护应用范围')
+  return { lan: input.lan, relay: input.relay }
+}
 function isNodeError(error: unknown, code: string): boolean { return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === code }
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 
 function parseLanAccessDshSettings(value: unknown, allowedListenHosts: readonly string[]): LanAccessDshSettings {
   if (!value || typeof value !== 'object') throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '局域网访问 DSH 设置必须是对象')

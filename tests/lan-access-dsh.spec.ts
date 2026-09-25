@@ -4,6 +4,7 @@ import { FeatureRegistry } from '../data/build/dist/features/index.js'
 import { createLanAccessDshFeature } from '../data/build/dist/host/features/index.js'
 import {
   LanAccessDshProxy,
+  InMemoryLanAccessDshLoginStore,
   createLanAccessDshRpcHandler,
   normalizeLanAccessDshConfig,
   rewriteLanAccessDshRequestHeaders,
@@ -159,6 +160,22 @@ test('局域网访问设置通过 Host RPC 持久化并可刷新回读', async (
   assert.deepEqual(await handler('settings/get', {}), settings.get().lanAccessDsh)
   assert.deepEqual(await handler('settings/set', next), next)
   assert.deepEqual(settings.get().lanAccessDsh, next)
+})
+
+test('启用登录保护时同一次 RPC 返回中继会话，避免启用后立即被新规则拦截', async () => {
+  const runtime = new FakeRuntime()
+  const store = new InMemoryLanAccessDshLoginStore()
+  const handler = createLanAccessDshRpcHandler(new LanAccessDshProxy(runtime), undefined, store)
+  const result = await handler('login/set', {
+    enabled: true,
+    username: 'jackson',
+    password: 'password123',
+    timeoutSeconds: 1800,
+    scopes: { lan: true, relay: true },
+  }) as { enabled: boolean; scopes: { lan: boolean; relay: boolean }; relaySession?: { token?: string } }
+  assert.equal(result.enabled, true)
+  assert.deepEqual(result.scopes, { lan: true, relay: true })
+  assert.equal(typeof result.relaySession?.token, 'string')
 })
 
 test('Host 启动时按持久化配置自动启动映射，运行中修改选项不会重启映射', async () => {
