@@ -68,11 +68,13 @@ test('Host acceptor 为每个客户端 offer 创建 answer，并接管 DataChann
     close: () => { closed = true },
   }
   const carriers: unknown[] = []
+  const closedSessions: string[] = []
   const host = await acceptWebRtcHost({
     signalingTicket: ticket(),
     signalingSocketFactory: () => socket,
     peerConnectionFactory: () => peer,
     onConnection: (connection) => { carriers.push(connection.carrier) },
+    onSessionClosed: (sessionId) => { closedSessions.push(sessionId) },
   })
   listeners.get('message')?.({ data: JSON.stringify({
     type: 'candidate', candidate: 'candidate:early', mid: '0', senderRole: 'client', sessionId: 'session-1',
@@ -88,6 +90,10 @@ test('Host acceptor 为每个客户端 offer 创建 answer，并接管 DataChann
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(host.sessions.size, 1)
   assert.equal(carriers.length, 1)
+  channelListeners.get('close')?.({} as Event)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(host.sessions.size, 0)
+  assert.deepEqual(closedSessions, ['session-1'])
   await host.close()
   assert.equal(closed, true)
   assert.equal(host.sessions.size, 0)

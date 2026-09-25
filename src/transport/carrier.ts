@@ -77,6 +77,7 @@ export function createRelayTunnelHostCarrier(base: CodingNsCarrier, debug?: DshT
       return base.send(data)
     },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+    onClosed(listener) { return base.onClosed?.(listener) ?? (() => undefined) },
     async close(reason) { unsubscribe(); listeners.clear(); await base.close(reason) },
   }
 }

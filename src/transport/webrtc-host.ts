@@ -15,6 +15,8 @@ import { createDshTransportDebugLogger, type DshTransportDebugLogger } from './d
 
 /** Host 侧每个客户端会话使用一个独立的 PeerConnection。真实 Node WebRTC 实现由调用方注入。 */
 export interface HostPeerConnectionLike extends Omit<PeerConnectionLike, 'createDataChannel' | 'createOffer'> {
+  readonly connectionState?: string
+  readonly iceConnectionState?: string
   createAnswer(): Promise<{ type: 'answer'; sdp?: string }>
   ondatachannel: ((event: { channel: DataChannelLike }) => void) | null
 }
@@ -163,6 +165,7 @@ export async function acceptWebRtcHost(options: WebRtcHostAcceptorOptions): Prom
         }),
         signaling,
         options.onConnection,
+        () => { void closeSession(sessionId) },
         TUNNEL_DATA_CHANNEL_LABEL,
         options.debug,
       )
@@ -207,9 +210,12 @@ class HostSessionImpl implements WebRtcHostSession {
     public readonly peerConnection: HostPeerConnectionLike,
     private readonly signaling: SignalingSocketLike,
     private readonly onConnection: WebRtcHostAcceptorOptions['onConnection'],
+    private readonly onTransportClosed: () => void | Promise<void>,
     channelLabel: string | undefined,
     private readonly debug?: DshTransportDebugLogger,
   ) {
+    this.peerConnection.addEventListener?.('connectionstatechange', this.onPeerState)
+    this.peerConnection.addEventListener?.('iceconnectionstatechange', this.onPeerState)
     this.peerConnection.onicecandidate = (event) => {
       if (this.closed || !event.candidate) return
       this.signaling.send(JSON.stringify({
@@ -230,6 +236,7 @@ class HostSessionImpl implements WebRtcHostSession {
       if (this._carrier) void this._carrier.close()
       this.debug?.log('data-channel.accepted', { sessionId: this.sessionId, label: channel.label ?? null })
       this._carrier = createRelayTunnelHostCarrier(createDataChannelCarrier(channel, { ...(this.debug ? { debug: this.debug } : {}) }), this.debug)
+      this._carrier.onClosed?.(() => { void this.onTransportClosed() })
       void this.onConnection?.(this)
     }
   }
@@ -269,9 +276,17 @@ class HostSessionImpl implements WebRtcHostSession {
     this.closed = true
     this.peerConnection.onicecandidate = null
     this.peerConnection.ondatachannel = null
+    this.peerConnection.removeEventListener?.('connectionstatechange', this.onPeerState)
+    this.peerConnection.removeEventListener?.('iceconnectionstatechange', this.onPeerState)
     await this._carrier?.close()
     this._carrier = null
     this.peerConnection.close()
+  }
+
+  private readonly onPeerState = () => {
+    const state = this.peerConnection as HostPeerConnectionLike & { connectionState?: string; iceConnectionState?: string }
+    const value = state.connectionState ?? state.iceConnectionState
+    if (value === 'failed' || value === 'disconnected' || value === 'closed') void this.onTransportClosed()
   }
 }
 

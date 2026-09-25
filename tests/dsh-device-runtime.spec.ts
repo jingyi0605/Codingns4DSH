@@ -32,6 +32,7 @@ function ticket() {
 
 test('DSH Host 首次启动注册独立设备并保存 device credential', async () => {
   const calls: string[] = []
+  let closedSockets = 0
   const store = new InMemoryDshDeviceCredentialStore()
   const control = {
     async registerDshDevice() {
@@ -59,7 +60,7 @@ test('DSH Host 首次启动注册独立设备并保存 device credential', async
           for (const listener of listeners.get('message') ?? []) listener(new MessageEvent('message', { data: JSON.stringify({ type: 'registered', role: 'host', bindingId: 'dsh-device-1', sessionId: null }) }))
         })
       },
-      close() { /* test socket */ },
+      close() { closedSockets += 1 },
       addEventListener(type: string, listener: (event: Event) => void) {
         const current = listeners.get(type) ?? new Set()
         current.add(listener)
@@ -81,5 +82,15 @@ test('DSH Host 首次启动注册独立设备并保存 device credential', async
   assert.equal(runtime.credential.deviceId, 'dsh-device-1')
   assert.equal((await store.read())?.deviceCredential, 'secret-device-credential')
   assert.deepEqual(calls.slice(0, 3), ['register', 'heartbeat', 'ticket'])
+  const replacement = await startDshHostDeviceRuntime({
+    controlClient: control,
+    accessToken: 'access',
+    credentialStore: store,
+    dtlsStore: { read: async () => identity, write: async () => undefined },
+    signalingSocketFactory,
+    heartbeatIntervalMs: 0,
+  } as never)
+  assert.equal(closedSockets, 1)
   await runtime.stop()
+  await replacement.stop()
 })

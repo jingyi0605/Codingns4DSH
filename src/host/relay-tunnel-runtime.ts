@@ -130,6 +130,9 @@ export interface HostRelayRuntime {
   close(): Promise<void>
 }
 
+/** 同一 Host 进程内只允许一个 Relay runtime，避免热重载留下旧 Gateway 和流。 */
+const activeRelayRuntimes = new Map<string, { close(): Promise<void> }>()
+
 /**
  * 启动一个可接收多个 Client 的 Host Relay runtime。
  * `resources` 若提供，所有 WebSocket、PeerConnection、心跳和换票计时器都会登记。
@@ -138,6 +141,9 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
   if (!options.accessToken.trim()) throw new TypeError('Host Relay accessToken 不能为空')
   if (!options.bindingId?.trim() && options.createTicket === undefined) throw new TypeError('Host Relay bindingId 或 createTicket 必须提供')
   const bindingId = options.bindingId?.trim() ?? ''
+  const runtimeKey = (options.hostId?.trim() || bindingId) || null
+  const previousRuntime = runtimeKey === null ? undefined : activeRelayRuntimes.get(runtimeKey)
+  if (previousRuntime) await previousRuntime.close()
   const debug = options.debug ?? createDshTransportDebugLogger({ side: 'host', component: 'relay-runtime' })
   const identity = await ensureHostDtlsIdentity(options.dtlsStore)
   const requestTicket = (): Promise<RelaySignalingTicketResponse> => options.createTicket
@@ -242,12 +248,16 @@ export async function startHostRelayRuntime(options: HostRelayRuntimeOptions): P
   async function runtimeClose(): Promise<void> {
     if (closed) return
     closed = true
+    if (runtimeKey !== null && activeRelayRuntimes.get(runtimeKey) === registration) activeRelayRuntimes.delete(runtimeKey)
     if (renewTimer !== null) clearTimeout(renewTimer)
     renewTimer = null
     await acceptor.close()
     for (const gateway of gateways.values()) await gateway.close()
     gateways.clear()
   }
+
+  const registration = { close: runtimeClose }
+  if (runtimeKey !== null) activeRelayRuntimes.set(runtimeKey, registration)
 
   return {
     identity,
@@ -269,10 +279,14 @@ export function createWeriftPeerConnectionFactory(identity?: HostDtlsIdentityMat
     const certificate = identity ? new RTCCertificate(identity.privateKeyPem, identity.certPem, identity.signatureHash as never) : undefined
     const peer = new RTCPeerConnection({ iceServers, iceTransportPolicy, ...(certificate ? { certificates: [certificate] } : {}) })
     const adapted: HostPeerConnectionLike = {
+      get connectionState() { return peer.connectionState },
+      get iceConnectionState() { return peer.iceConnectionState },
       get onicecandidate() { return peer.onicecandidate as HostPeerConnectionLike['onicecandidate'] },
       set onicecandidate(value) { peer.onicecandidate = value as never },
       get ondatachannel() { return peer.ondatachannel as HostPeerConnectionLike['ondatachannel'] },
       set ondatachannel(value) { peer.ondatachannel = value as never },
+      addEventListener: (type, listener) => { peer.addEventListener(type, listener as never) },
+      removeEventListener: (type, listener) => { peer.removeEventListener(type, listener as never) },
       createAnswer: async () => {
         const answer = await peer.createAnswer()
         return { type: 'answer', sdp: answer.sdp }
