@@ -22,6 +22,8 @@ export interface DshH5BootstrapOptions {
 
 export interface DshH5BootstrapResult {
   readonly dshDeviceId: string
+  /** 当前 WebRTC ICE 策略，all 表示允许直连，relay 表示强制中转。 */
+  readonly relayMode: 'direct' | 'relay'
   readonly registration: ReturnType<typeof installDshTransport>
   readonly dispose: () => Promise<void>
 }
@@ -100,7 +102,7 @@ export async function startDshH5Bootstrap(options: DshH5BootstrapOptions): Promi
       await transport.close()
       await connection.close()
     }
-    return { dshDeviceId: device.dshDeviceId, registration, dispose }
+    return { dshDeviceId: device.dshDeviceId, relayMode: ticket.iceTransportPolicy === 'relay' ? 'relay' : 'direct', registration, dispose }
   } catch (error) {
     registration?.dispose()
     session.close()

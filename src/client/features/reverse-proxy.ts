@@ -87,7 +87,12 @@ export const reverseProxyFeature: CodingNsClientFeatureModule = {
 /** 浏览器侧真实中继连接；refresh token 和 access token 只经过 Host RPC。 */
 export async function startBrowserRelayConnection(rpc: CodingNsRpcClient, signal: AbortSignal, loginProtectionToken?: string): Promise<() => Promise<void>> {
   const bootstrap = await startDshH5Bootstrap({ rpc, signal, ...(loginProtectionToken === undefined ? {} : { loginProtectionToken }) })
-  return bootstrap.dispose
+  const state = globalThis as typeof globalThis & { __DSH_CODINGNS_RELAY_MODE__?: 'direct' | 'relay' }
+  state.__DSH_CODINGNS_RELAY_MODE__ = bootstrap.relayMode
+  return async () => {
+    if (state.__DSH_CODINGNS_RELAY_MODE__ === bootstrap.relayMode) delete state.__DSH_CODINGNS_RELAY_MODE__
+    await bootstrap.dispose()
+  }
 }
 
 async function readLoginProtectionSettings(rpc: CodingNsRpcClient): Promise<LanAccessDshLoginSettings> {
