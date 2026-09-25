@@ -214,7 +214,7 @@
   - 对应需求：需求 3、需求 6、需求 10、非功能需求 1
   - 对应设计：§4、§8、§10.1、§10.2、§10.6
   - 本轮进展：已实现十个 `terminal/*` 方法的兼容 controller、按 `hostId + workspaceId + terminalId` 定位的持久存储、临时 attach 注册表、baseline/enhanced 工厂、自有严格 Typert Host manifest 和 Host/Client 生产启动装配；DSH `sessionId` 只保留为请求上下文，不再决定终端归属；新增 Host `terminal/status` RPC，Client 卡片使用 Host 平台、实际已安装 shell 和当前 controller 模式，不再使用浏览器平台推测。
-  - 本轮验证：`tests/terminal-controller-contract.spec.ts`、`tests/terminal-store.spec.ts`、`tests/terminal-status.spec.ts`、`tests/terminal-typert.spec.ts`、`tests/terminal-startup.spec.ts` 和 `pnpm exec tsc --noEmit` 通过；接口核对见 `docs/20260922-DSH终端兼容接口与阻塞调查.md`。
+  - 本轮验证：`tests/terminal-controller-contract.spec.ts`、`tests/terminal-store.spec.ts`、`tests/terminal-status.spec.ts`、`tests/terminal-typert.spec.ts`、`tests/terminal-startup.spec.ts` 和 `pnpm exec tsc --noEmit` 通过；接口核对见 `docs/调查报告/20260922-DSH终端兼容接口与阻塞调查.md`。
 
 - [ ] 3.2.2 实现 POSIX tmux backend
   - 状态：IN_REVIEW
@@ -292,7 +292,7 @@
   - 对应设计：§10.1、§10.6、§10.8
   - 本轮进展：`dsh.bundle.patch` 已成对禁用官方两行；插件已生成自身包身份的严格 Typert Host manifest，并在 Client 入口生产装配 `webTerminals` 与 Sidebar UI。静态合成已经确认只有插件终端栈处于活动状态。
   - 未完成项：尚未启动 DSH 验证真实冷启动和 Web UI；Linux、Windows 和三平台重启回放也未完成，因此保持 `IN_REVIEW`。
-  - 本轮验证：`tests/manifest.spec.ts`、`tests/terminal-typert.spec.ts`、`tests/client-entry.spec.ts` 和 `dsh --profile stage0 --dump-config` 通过；调查证据见 `docs/20260922-DSH终端兼容接口与阻塞调查.md`。
+  - 本轮验证：`tests/manifest.spec.ts`、`tests/terminal-typert.spec.ts`、`tests/client-entry.spec.ts` 和 `dsh --profile stage0 --dump-config` 通过；调查证据见 `docs/调查报告/20260922-DSH终端兼容接口与阻塞调查.md`。
 
 - [ ] 3.3 接入后台任务频道
   - 状态：TODO
