@@ -1,4 +1,7 @@
+import type { DshCapabilityDiagnostic, FeatureCapabilityRequirement } from '../../dsh-capabilities/types.js'
+
 export type FeatureState = 'disabled' | 'enabling' | 'enabled' | 'draining' | 'failed'
+export type { FeatureCapabilityRequirement }
 
 /** 功能模块的承载端：Host 进程、浏览器，或两端都需要。 */
 export type FeatureRuntime = 'host' | 'client' | 'both'
@@ -44,6 +47,8 @@ export interface FeatureDescriptor {
   activation?: FeatureActivation
   /** 模块要求的最低 DSH 版本；低于该版本时不得启动。 */
   minimumDshVersion?: string
+  /** 模块依赖的宿主能力；版本差异由能力注册表负责路由。 */
+  requires?: readonly FeatureCapabilityRequirement[]
   /** 提供后该模块出现在设置页；缺省表示它没有界面。 */
   ui?: FeatureUiDescriptor
 }
@@ -67,6 +72,8 @@ export interface FeatureContext<S = unknown> {
   readonly descriptor: FeatureDescriptor
   readonly resources: FeatureResourceScope
   readonly services: S
+  /** 本次启动解析出的能力诊断，供模块记录降级原因。 */
+  readonly capabilityDiagnostics?: readonly DshCapabilityDiagnostic[]
 }
 
 /** 可由模块注册表管理的功能模块。 */

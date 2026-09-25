@@ -4,7 +4,7 @@
  * 每个功能模块在启动时登记自己的命名空间，主 handler 只做一次 `namespace/action`
  * 前缀解析。新增模块只登记新命名空间，不需要修改中心分发代码。
  */
-export type CodingNsRpcHandler = (action: string, payload: unknown) => unknown | Promise<unknown>
+export type CodingNsRpcHandler = (action: string, payload: unknown, context?: unknown) => unknown | Promise<unknown>
 
 export interface CodingNsRpcTarget {
   readonly handler: CodingNsRpcHandler

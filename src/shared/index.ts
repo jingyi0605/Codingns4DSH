@@ -16,6 +16,8 @@ export {
   isFeatureDshVersionCompatible,
   isFeatureEnabled,
   type CodingNsSettings,
+  type CodingNsConfig,
+  type CodingNsRuntimeState,
   type CodingNsCliAdapterPreference,
   type LanAccessDshSettings,
   type LanAccessDshLoginSettings,
@@ -33,6 +35,7 @@ export type {
   FeatureContext,
   FeatureActivation,
   FeatureDescriptor,
+  FeatureCapabilityRequirement,
   FeatureDisposer,
   FeatureModule,
   FeatureResourceScope,
@@ -40,6 +43,16 @@ export type {
   FeatureState,
   FeatureUiDescriptor,
 } from './contracts/feature.js'
+export type {
+  DshCapabilityDiagnostic,
+  DshCapabilityId,
+  DshCapabilityProfile,
+  DshCapabilityResolution,
+  DshCapabilityResolutionStatus,
+  DshCapabilityRoute,
+  DshCapabilityRouteStatus,
+  DshCapabilityRuntime,
+} from '../dsh-capabilities/types.js'
 export {
   CODINGNS_DSH_ERROR_CODES,
   CodingNsDshError,

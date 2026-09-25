@@ -17,6 +17,7 @@ import { createCodingNsNativeSessionBridge } from './native-session-bridge.js'
 import { installTerminalController } from './terminal/startup.js'
 import { DebugWorkspaceService } from './debug.js'
 import { detectRuntimeDshVersion, DSH_VERSION_INJECTION_NAME } from './dsh-runtime-version.js'
+import { createDshCapabilityRegistry } from '../dsh-capabilities/index.js'
 
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
@@ -65,7 +66,8 @@ export function apply(ctx?: Context): void {
       terminalProcesses: terminal.processService,
     })
     const servicesWithDebug: CodingNsHostServices = { ...services, debug }
-    const registry = new FeatureRegistry<CodingNsHostServices>(servicesWithDebug)
+    const capabilityProfile = createDshCapabilityRegistry(dshVersion, 'host', hostCtx).getProfile(hostCtx)
+    const registry = new FeatureRegistry<CodingNsHostServices>(servicesWithDebug, capabilityProfile)
     registry.registerMany(createHostFeatures({
       terminalStatus: {
         controllerMode: terminal.mode,

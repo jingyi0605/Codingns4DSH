@@ -68,6 +68,8 @@ export {
   isFeatureEnabled,
 } from './shared/contracts/config.js'
 export type * from './shared/index.js'
+export * from './dsh-capabilities/index.js'
+export { dispatchCodingNsRpc, type CodingNsRpcContext, type CodingNsRpcDispatchResult } from './dsh-capabilities/host/connection-rpc-adapter.js'
 export {
   FeatureRegistry,
   FeatureRegistryError,

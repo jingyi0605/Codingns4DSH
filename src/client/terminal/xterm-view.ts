@@ -6,6 +6,7 @@ import { Terminal } from '@xterm/xterm'
 import type { ITheme } from '@xterm/xterm'
 import xtermCss from '@xterm/xterm/css/xterm.css'
 import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import { resolvePlusIcon } from '../../dsh-capabilities/client/primitives-adapter.js'
 import {
   DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   type CodingNsSettings,
@@ -160,7 +161,7 @@ function TerminalStatus({
     ended ? createElement(Button, {
       variant: 'primary',
       size: 'sm',
-      icon: createElement(IconPlusOutline16),
+      icon: createElement(resolvePlusIcon()),
       onClick: onNewTerminal,
     }, '新建终端') : null,
   )

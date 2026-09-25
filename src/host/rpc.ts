@@ -14,13 +14,13 @@ import { CodingNsRpcError, type CodingNsRpcHandler, type CodingNsRpcTable } from
  * 凭据存储。
  */
 export function createCodingNsRpcHandler(table: CodingNsRpcTable): ConnectionRpcHandler {
-  return async (endpoint, payload) => {
+  return async (endpoint, payload, signal) => {
     const target = table.resolve(endpoint)
     if (target === null) {
       return failure('CODINGNS_RPC_NOT_FOUND', `未知 CodingNS RPC: ${endpoint}`)
     }
     try {
-      return success(await target.handler(target.action, payload))
+      return success(await target.handler(target.action, payload, { signal }))
     } catch (error) {
       return failure(errorCode(error), error instanceof Error ? error.message : String(error))
     }

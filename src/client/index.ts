@@ -32,6 +32,7 @@ import { CodingNsWebTerminals, registerCodingNsTerminalUi } from './terminal/ind
 import type { TerminalRemote } from './terminal/model.js'
 import { startCodingNsAccountBar } from './account-bar.js'
 import { assertInjectedDshVersion } from './dsh-runtime-version.js'
+import { createDshCapabilityRegistry } from '../dsh-capabilities/index.js'
 
 export { ensureCryptoRandomUUID } from './lan-access.js'
 export type {
@@ -105,7 +106,8 @@ export function apply(ctx?: Context): void {
       uiContext: settingsCtx,
     }
     const disposeAccountBar = startCodingNsAccountBar(connection.rpc, undefined, settings)
-    const registry = new FeatureRegistry<CodingNsClientServices, CodingNsClientFeatureModule>(services)
+    const capabilityProfile = createDshCapabilityRegistry(dshVersion, 'client', settingsCtx).getProfile(settingsCtx)
+    const registry = new FeatureRegistry<CodingNsClientServices, CodingNsClientFeatureModule>(services, capabilityProfile)
     registry.registerMany(CLIENT_FEATURES)
     registry.validate()
     const restartStates: Record<string, boolean> = {}

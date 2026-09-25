@@ -6,6 +6,7 @@ import type {
   FeatureResourceScope,
   FeatureState,
 } from '../shared/contracts/feature.js'
+import type { DshCapabilityDiagnostic, DshCapabilityProfile } from '../dsh-capabilities/types.js'
 
 export type FeatureRegistryErrorCode =
   | 'FEATURE_INVALID_DESCRIPTOR'
@@ -16,6 +17,7 @@ export type FeatureRegistryErrorCode =
   | 'FEATURE_START_FAILED'
   | 'FEATURE_DISPOSE_FAILED'
   | 'FEATURE_STATE_INVALID'
+  | 'FEATURE_CAPABILITY_MISSING'
 
 export class FeatureRegistryError extends Error {
   readonly code: FeatureRegistryErrorCode
@@ -36,6 +38,7 @@ export interface FeatureSnapshot {
   runtime: FeatureDescriptor['runtime']
   dependencies: readonly string[]
   reason: string | null
+  capabilities: readonly DshCapabilityDiagnostic[]
 }
 
 /**
@@ -87,6 +90,7 @@ interface FeatureRecord<S, M extends FeatureModule<S>> {
   reason: string | null
   resources: FeatureResourceScopeImpl
   context: FeatureContext<S>
+  capabilities: readonly DshCapabilityDiagnostic[]
 }
 
 /**
@@ -100,7 +104,7 @@ export class FeatureRegistry<S = unknown, M extends FeatureModule<S> = FeatureMo
   private readonly operations = new Map<string, Promise<void>>()
 
   /** @param services - 每个模块在 start 时通过 context.services 取用的服务集合。 */
-  constructor(private readonly services: S) {}
+  constructor(private readonly services: S, private readonly capabilityProfile?: DshCapabilityProfile) {}
 
   register(module: M): void {
     validateDescriptor(module?.descriptor)
@@ -115,6 +119,7 @@ export class FeatureRegistry<S = unknown, M extends FeatureModule<S> = FeatureMo
       reason: null,
       resources,
       context: { descriptor: module.descriptor, resources, services: this.services },
+      capabilities: [],
     })
   }
 
@@ -295,6 +300,12 @@ export class FeatureRegistry<S = unknown, M extends FeatureModule<S> = FeatureMo
     starting.add(name)
     for (const dependency of record.module.descriptor.dependencies) {
       await this.enqueue(dependency, () => this.startInternal(dependency, starting))
+      const dependencyRecord = this.getRecord(dependency)
+      if (dependencyRecord.state !== 'enabled') {
+        record.state = 'disabled'
+        record.reason = `依赖模块 ${dependency} 未启用`
+        return
+      }
     }
     starting.delete(name)
 
@@ -304,6 +315,19 @@ export class FeatureRegistry<S = unknown, M extends FeatureModule<S> = FeatureMo
     }
     record.state = 'enabling'
     record.reason = null
+    const capabilityCheck = this.checkCapabilities(record)
+    record.capabilities = capabilityCheck.diagnostics
+    if (capabilityCheck.action === 'disable') {
+      record.state = 'disabled'
+      record.reason = capabilityCheck.reason ?? null
+      return
+    }
+    if (capabilityCheck.action === 'error') {
+      record.state = 'failed'
+      record.reason = capabilityCheck.reason ?? '能力不可用'
+      throw new FeatureRegistryError('FEATURE_CAPABILITY_MISSING', record.reason, name)
+    }
+    record.context = { ...record.context, capabilityDiagnostics: record.capabilities }
     try {
       const returned = await record.module.start(record.context)
       addReturnedDisposer(record.resources, returned)
@@ -318,6 +342,30 @@ export class FeatureRegistry<S = unknown, M extends FeatureModule<S> = FeatureMo
       record.reason = errorMessage(error)
       throw new FeatureRegistryError('FEATURE_START_FAILED', `Failed to start feature ${name}`, name, { cause: error })
     }
+  }
+
+  private checkCapabilities(record: FeatureRecord<S, M>): {
+    action: 'start' | 'disable' | 'error'
+    reason?: string
+    diagnostics: readonly DshCapabilityDiagnostic[]
+  } {
+    const requirements = record.module.descriptor.requires ?? []
+    if (requirements.length === 0 || this.capabilityProfile === undefined) return { action: 'start', diagnostics: [] }
+    const diagnostics: DshCapabilityDiagnostic[] = []
+    for (const requirement of requirements) {
+      const resolution = this.capabilityProfile.capabilities.get(requirement.capability)
+      if (resolution?.status !== 'unavailable') {
+        if (resolution?.status === 'degraded') diagnostics.push(...this.capabilityProfile.diagnostics.filter((item) => item.capability === requirement.capability))
+        continue
+      }
+      const diagnostic = this.capabilityProfile.diagnostics.find((item) => item.capability === requirement.capability)
+        ?? { code: 'CAPABILITY_UNAVAILABLE', capability: requirement.capability, dshVersion: this.capabilityProfile.dshVersion, message: resolution?.reason ?? `能力不可用: ${requirement.capability}` }
+      diagnostics.push(diagnostic)
+      const fallback = requirement.fallback ?? (requirement.required ? 'error' : 'disable')
+      if (requirement.required || fallback === 'error') return { action: 'error', reason: `${record.module.descriptor.name} 缺少能力 ${requirement.capability}: ${diagnostic.message}`, diagnostics }
+      if (fallback === 'disable') return { action: 'disable', reason: `能力 ${requirement.capability} 不可用，模块已禁用`, diagnostics }
+    }
+    return { action: 'start', diagnostics }
   }
 
   private activeDependents(name: string): string[] {
@@ -367,6 +415,20 @@ function validateDescriptor(descriptor: FeatureDescriptor | undefined): asserts 
     && (typeof descriptor.minimumDshVersion !== 'string' || descriptor.minimumDshVersion.trim() === '')) {
     throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid minimumDshVersion`, descriptor.name)
   }
+  if (descriptor.requires !== undefined) {
+    if (!Array.isArray(descriptor.requires)) throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid requires`, descriptor.name)
+    const seen = new Set<string>()
+    for (const requirement of descriptor.requires) {
+      if (requirement === undefined || typeof requirement.capability !== 'string' || requirement.capability.trim() === '' || typeof requirement.required !== 'boolean') {
+        throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid capability requirement`, descriptor.name)
+      }
+      if (seen.has(requirement.capability)) throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has duplicate capability requirement`, descriptor.name)
+      seen.add(requirement.capability)
+      if (requirement.fallback !== undefined && !['disable', 'degrade', 'error'].includes(requirement.fallback)) {
+        throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid capability fallback`, descriptor.name)
+      }
+    }
+  }
   if (!Array.isArray(descriptor.dependencies) || descriptor.dependencies.some((dependency) => typeof dependency !== 'string' || dependency.trim() === '')) {
     throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid dependencies`, descriptor.name)
   }
@@ -414,6 +476,7 @@ function snapshot<S, M extends FeatureModule<S>>(record: FeatureRecord<S, M>): F
     runtime: record.module.descriptor.runtime,
     dependencies: [...record.module.descriptor.dependencies],
     reason: record.reason,
+    capabilities: [...record.capabilities],
   }
 }
 

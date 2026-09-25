@@ -23,6 +23,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type { SidebarRightTabInfo } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
+import { resolveChevronDownIcon } from '../../dsh-capabilities/client/primitives-adapter.js'
 import { CodingNsWebTerminals, type WebTerminalId } from './model.js'
 import { installTerminalStyles, terminalClass } from './styles.js'
 import { CodingNsXtermView } from './xterm-view.js'
@@ -267,7 +268,7 @@ function TerminalGuide({ sessionId, useTabInfo, webTerminals, title, description
       'aria-haspopup': 'menu',
       'aria-expanded': open,
       onClick: () => { setState({ phase: 'loading' }); setOpen((value) => !value) },
-    }, createElement(IconChevronDownOutline14)),
+    }, createElement(resolveChevronDownIcon())),
   }))
 }
 

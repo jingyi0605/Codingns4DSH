@@ -34,6 +34,14 @@ export interface CodingNsSettings {
   agentAdapterPreferences?: Record<string, CodingNsCliAdapterPreference>
 }
 
+/** 0.1.7 ConfigForm 面向用户的持久化配置；Host-only 会话索引不在其中。 */
+export type CodingNsConfig = Omit<CodingNsSettings, 'cliSessions'>
+
+/** Host 运行时状态，与可编辑配置分离，避免泄露到 Client 配置表单。 */
+export interface CodingNsRuntimeState {
+  readonly cliSessions: CodingNsCliSessionRecord[]
+}
+
 /** 跨平台终端 profile；`system` 由 Host 根据平台和已安装 shell 解析。 */
 export type TerminalProfileId = 'system' | 'zsh' | 'bash' | 'powershell' | 'cmd' | 'git-bash'
 /** 终端持久记录的归属范围；工作区模式允许不同 DSH 会话共享终端。 */
