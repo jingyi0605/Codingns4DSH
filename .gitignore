@@ -5,3 +5,7 @@ dist/
 data
 # 本机 AI 协作约定，不进入版本库
 AGENTS.md
+docs/开发记录
+docs/生成报告
+docs/调查报告
+docs/配图
