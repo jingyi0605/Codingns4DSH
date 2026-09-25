@@ -121,6 +121,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const label = sub2api === undefined
     ? `${providerName} 订阅余量 ${formatPercent(remaining ?? 0)}%`
     : `${providerName} 上游余额 ${formatSub2ApiMoney(sub2api.balance, sub2api.unit)}`
+  const logoSource = sub2api === undefined ? '' : (sub2api.logoDataUrl ?? (isRemoteWebContext() ? '' : sub2api.logoUrl))
   return createElement('div', { ref: rootRef, style: subscriptionRootStyle },
     createElement('button', {
       type: 'button',
@@ -140,7 +141,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
           ),
         )
         : createElement('span', { 'aria-hidden': true, style: sub2apiIdentityStyle },
-          sub2api.logoUrl !== '' && createElement('img', { src: sub2api.logoUrl, alt: '', width: 20, height: 20, style: sub2apiLogoStyle }),
+          logoSource !== '' && createElement('img', { src: logoSource, alt: '', width: 20, height: 20, style: sub2apiLogoStyle }),
           createElement('span', undefined, formatSub2ApiMoney(sub2api.balance, sub2api.unit)),
       ),
       createElement('span', { className: 'bOPqQW_label', style: subscriptionLabelStyle },
@@ -237,6 +238,9 @@ function resolveDisplayWindow(usage: CliSubscriptionUsage): CliSubscriptionWindo
 }
 function isSubscriptionAdapter(adapterId: unknown): adapterId is 'command-code' | 'codex' | 'claude-code' | 'dsh' | 'grok' | 'opencode' {
   return adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'opencode'
+}
+function isRemoteWebContext(): boolean {
+  return (globalThis as { __DSH_CODINGNS_REMOTE_WEB_CONTEXT__?: unknown }).__DSH_CODINGNS_REMOTE_WEB_CONTEXT__ === true
 }
 function subscriptionProviderName(adapterId: string | null): string {
   switch (adapterId) {
