@@ -115,8 +115,14 @@ export class DshGateway {
     if (envelope.type === 'stream.cancel' || envelope.type === 'stream.close') {
       const active = this.streams.get(envelope.streamId)
       if (active) {
-        await active.feature.handleMessage?.(active.context, envelope)
-        this.streams.delete(envelope.streamId)
+        try {
+          await active.feature.handleMessage?.(active.context, envelope)
+        } catch (error) {
+          this.sendError(envelope, 'STREAM_FAILED', error instanceof Error ? error.message : 'DSH 流清理失败')
+        } finally {
+          // Feature 清理失败也不能让已取消的流继续占用会话配额。
+          this.streams.delete(envelope.streamId)
+        }
       } else if (this.opening.has(envelope.streamId)) {
         // openStream 尚未完成时不能调用尚不存在的 context；记录取消，
         // 由 openStream 在完成异步准备后丢弃资源并发送最终 close。
@@ -143,10 +149,17 @@ export class DshGateway {
       return
     }
     if (this.streams.size + this.opening.size >= this.maxStreams) {
+      this.debug.log('gateway.flow-control.rejected', {
+        activeStreams: this.streams.size,
+        openingStreams: this.opening.size,
+        maxStreams: this.maxStreams,
+        ...envelopeDebugFields(envelope),
+      })
       this.sendError(envelope, 'FLOW_CONTROL_INVALID', '超过会话流数量上限')
       return
     }
     this.opening.add(envelope.streamId)
+    let streamHandlerStarted = false
     try {
       const feature = await this.findFeature(envelope)
       if (!feature) {
@@ -180,9 +193,13 @@ export class DshGateway {
       },
     }
     this.streams.set(envelope.streamId, { envelope, feature, context })
+    // 进入 streams 后已经完成异步初始化，不能再同时计入 opening。
+    // 否则一个正在处理的流会被计算两次，实际并发达到上限一半就会误报流控错误。
+    this.opening.delete(envelope.streamId)
     this.debug.log('gateway.stream.accepted', { ...envelopeDebugFields(envelope), feature: feature.operation ?? feature.channel ?? 'custom' })
-    this.send({ ...envelope, type: 'stream.accepted', sequence: this.nextSequence(), meta: { channel: envelope.channel } })
+      this.send({ ...envelope, type: 'stream.accepted', sequence: this.nextSequence(), meta: { channel: envelope.channel } })
       if (!feature.handleStream) return
+      streamHandlerStarted = true
       const result = await feature.handleStream(context)
       if (result && Symbol.asyncIterator in Object(result)) {
         for await (const message of result as AsyncIterable<DshEnvelope>) this.send(message)
@@ -196,6 +213,14 @@ export class DshGateway {
     } finally {
       this.opening.delete(envelope.streamId)
       this.cancelledOpening.delete(envelope.streamId)
+      if (streamHandlerStarted && this.streams.delete(envelope.streamId)) {
+        // handleStream 正常返回但遗漏 context.close 时，网关仍必须收敛流状态。
+        try {
+          this.send({ ...envelope, type: 'stream.close', sequence: this.nextSequence(), meta: {} })
+        } catch {
+          // 物理连接已关闭时，释放本地流状态优先于发送结束帧。
+        }
+      }
     }
   }
 

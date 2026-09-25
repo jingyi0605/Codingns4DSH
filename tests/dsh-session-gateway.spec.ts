@@ -79,6 +79,69 @@ test('DSH Gateway 按 channel/operation 路由 stream.open', async () => {
   await gateway.close(); clientSession.close()
 })
 
+test('DSH Gateway 的 handleStream 自然返回时自动释放流配额', async () => {
+  const [hostCarrier, clientCarrier] = carrierPair()
+  const hostSession = new DshSession({ carrier: hostCarrier.carrier, role: 'host', generation: '1', hostScope: { hostId: 'h1', kind: 'local' } })
+  const clientSession = new DshSession({ carrier: clientCarrier.carrier, role: 'client', generation: '1', hostScope: { hostId: 'h1', kind: 'local' } })
+  const gateway = new DshGateway({
+    carrier: hostCarrier.carrier,
+    session: hostSession,
+    generation: '1',
+    hostScope: { hostId: 'h1', kind: 'local' },
+    maxStreams: 1,
+    features: [{ channel: 'rpc', operation: 'ping', handleStream: (context) => { context.send('rpc.response', { ok: true }) } }],
+  })
+  const replies: DshEnvelope[] = []
+  gateway.start(); clientSession.start(); await clientSession.waitReady()
+  clientSession.subscribe((envelope) => replies.push(envelope))
+  const scope = { hostId: 'h1', kind: 'local' as const }
+  const open = (streamId: string): void => clientSession.send({ version: 1, messageId: `${streamId}-open`, streamId, channel: 'rpc', type: 'stream.open', sequence: 1, generation: '1', hostScope: scope, meta: { operation: 'ping' } })
+  open('first')
+  await new Promise((resolve) => setImmediate(resolve))
+  open('second')
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.ok(replies.some((item) => item.streamId === 'first' && item.type === 'stream.close'))
+  assert.equal(replies.some((item) => item.streamId === 'second' && item.type === 'stream.error' && item.meta.errorCode === 'FLOW_CONTROL_INVALID'), false)
+  await gateway.close(); clientSession.close(); hostSession.close()
+})
+
+test('DSH Gateway 不会把已接受但仍在处理的流重复计入配额', async () => {
+  const [hostCarrier, clientCarrier] = carrierPair()
+  const hostSession = new DshSession({ carrier: hostCarrier.carrier, role: 'host', generation: '1', hostScope: { hostId: 'h1', kind: 'local' } })
+  const clientSession = new DshSession({ carrier: clientCarrier.carrier, role: 'client', generation: '1', hostScope: { hostId: 'h1', kind: 'local' } })
+  let release!: () => void
+  const held = new Promise<void>((resolve) => { release = resolve })
+  const gateway = new DshGateway({
+    carrier: hostCarrier.carrier,
+    session: hostSession,
+    generation: '1',
+    hostScope: { hostId: 'h1', kind: 'local' },
+    maxStreams: 2,
+    features: [{
+      channel: 'rpc',
+      operation: 'held',
+      handleStream: async (context) => {
+        await held
+        context.close()
+      },
+    }],
+  })
+  const replies: DshEnvelope[] = []
+  gateway.start(); clientSession.start(); await clientSession.waitReady()
+  clientSession.subscribe((envelope) => replies.push(envelope))
+  const scope = { hostId: 'h1', kind: 'local' as const }
+  const open = (streamId: string): void => clientSession.send({ version: 1, messageId: `${streamId}-open`, streamId, channel: 'rpc', type: 'stream.open', sequence: 1, generation: '1', hostScope: scope, meta: { operation: 'held' } })
+  open('first')
+  await new Promise((resolve) => setImmediate(resolve))
+  open('second')
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(replies.filter((item) => item.type === 'stream.accepted').length, 2)
+  assert.equal(replies.some((item) => item.type === 'stream.error' && item.meta.errorCode === 'FLOW_CONTROL_INVALID'), false)
+  release()
+  await new Promise((resolve) => setImmediate(resolve))
+  await gateway.close(); clientSession.close(); hostSession.close()
+})
+
 test('DSH Gateway 在异步 stream.open 期间不会丢失 stream.cancel', async () => {
   const [hostCarrier, clientCarrier] = carrierPair()
   const hostSession = new DshSession({ carrier: hostCarrier.carrier, role: 'host', generation: '1', hostScope: { hostId: 'h1', kind: 'local' } })
