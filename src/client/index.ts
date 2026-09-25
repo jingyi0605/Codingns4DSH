@@ -95,6 +95,7 @@ export function apply(ctx?: Context): void {
     const webTerminals = new CodingNsWebTerminals(settingsCtx, terminalRemote)
     const disposeTerminalUi = registerCodingNsTerminalUi(settingsCtx, webTerminals, settings)
     const services: CodingNsClientServices = {
+      dshVersion,
       settings,
       rpc: connection.rpc,
       remote: settingsCtx.remote,
@@ -114,11 +115,11 @@ export function apply(ctx?: Context): void {
       const sync = (): void => {
         const snapshot = settings.getSnapshot()
         if (!restartStatesCaptured && snapshot.status === 'ready') {
-          Object.assign(restartStates, captureRestartFeatureStates(registry.descriptors(), snapshot.value))
+          Object.assign(restartStates, captureRestartFeatureStates(registry.descriptors(), snapshot.value, dshVersion))
           restartStatesCaptured = true
         }
         void registry
-          .reconcile(enabledFeatureNames(registry.descriptors(), snapshot.value, restartStates))
+          .reconcile(enabledFeatureNames(registry.descriptors(), snapshot.value, restartStates, dshVersion))
           .catch((error: unknown) => {
             console.error('dsh-codingns: 功能模块状态同步失败', error)
           })

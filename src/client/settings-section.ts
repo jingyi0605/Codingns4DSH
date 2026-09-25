@@ -11,6 +11,7 @@ import type { FeatureRegistry } from '../features/registry.js'
 import {
   CODINGNS_MODULES_FIELD,
   isFeatureEnabled,
+  isFeatureDshVersionCompatible,
   type RestartFeatureStates,
   type CodingNsSettings,
 } from '../shared/contracts/config.js'
@@ -30,6 +31,7 @@ import {
   dshThemeColor,
 } from './theme.js'
 import { useCodingNsTranslator } from './locale.js'
+import { isLegacyDshVersion } from '../shared/contracts/version.js'
 
 // pnpm 会为不同 peer 上下文保留独立的 ui-slots 类型实例；插件在自己实际使用的
 // 根实例上重申公开契约，避免依赖声明合并偶然穿过依赖副本。
@@ -96,16 +98,25 @@ function FeatureCard({ entry, snapshot, services, restartStates }: FeatureCardPr
   const { module, ui } = entry
   const t = useCodingNsTranslator(services.locale)
   const [writeError, setWriteError] = useState<string | null>(null)
-  const enabled = isFeatureEnabled(module.descriptor, snapshot.value)
+  const versionCompatible = isFeatureDshVersionCompatible(module.descriptor, services.dshVersion)
+  const requestedEnabled = isFeatureEnabled(module.descriptor, snapshot.value)
+  const enabled = versionCompatible && requestedEnabled
   const effectiveEnabled = module.descriptor.activation === 'restart'
-    ? restartStates[module.descriptor.name] ?? module.descriptor.enabledByDefault
+    ? versionCompatible && (restartStates[module.descriptor.name] ?? module.descriptor.enabledByDefault)
     : enabled
   const panel = module.settingsPanel
   // 常驻模块不提供关闭入口；设置未就绪或只读时也不允许切换。
-  const switchDisabled = ui.alwaysEnabled === true || snapshot.status === 'loading' || !snapshot.writable
+  const switchDisabled = ui.alwaysEnabled === true || !versionCompatible || snapshot.status === 'loading' || !snapshot.writable
 
   const toggle = (next: boolean): void => {
     setWriteError(null)
+    if (!versionCompatible) {
+      setWriteError(t('settings.versionBlocked', {
+        version: services.dshVersion,
+        minimum: module.descriptor.minimumDshVersion ?? '未知版本',
+      }))
+      return
+    }
     void services.settings
       .mutate([{ op: 'set', path: [CODINGNS_MODULES_FIELD, module.descriptor.name], value: next }])
       .catch((cause: unknown) => {
@@ -134,6 +145,15 @@ function FeatureCard({ entry, snapshot, services, restartStates }: FeatureCardPr
       }),
     ),
     createElement('div', { style: dshSettingsBodyStyle },
+      versionCompatible && ui.legacyFallback === true && isLegacyDshVersion(services.dshVersion)
+        ? createElement('div', { role: 'status', style: { marginBottom: 10, color: dshThemeColor.labelSecondary } }, t(ui.legacyFallbackKey ?? 'settings.legacyFallback'))
+        : null,
+      !versionCompatible
+        ? createElement('div', { role: 'alert', style: { marginBottom: 10, color: dshThemeColor.error } }, t('settings.versionBlocked', {
+          version: services.dshVersion,
+          minimum: module.descriptor.minimumDshVersion ?? '未知版本',
+        }))
+        : null,
       module.descriptor.activation !== 'restart' ? null : createElement(
         'div',
         { role: 'status', style: { display: 'flex', flexDirection: 'column', gap: 4, padding: 10, border: `1px solid ${dshThemeColor.border}`, borderRadius: 6, fontSize: 13 } },

@@ -1,5 +1,6 @@
 import type { FeatureDescriptor } from './feature.js'
 import type { CodingNsCliSessionRecord } from './cli-adapter.js'
+import { isDshVersionAtLeast } from './version.js'
 
 /** 适配器最近一次使用的模型与思考强度。 */
 export interface CodingNsCliAdapterPreference {
@@ -147,10 +148,14 @@ export type RestartFeatureStates = Readonly<Record<string, boolean>>
 export function captureRestartFeatureStates(
   descriptors: readonly FeatureDescriptor[],
   settings: CodingNsSettings | undefined,
+  dshVersion?: string,
 ): Record<string, boolean> {
   const states: Record<string, boolean> = {}
   for (const descriptor of descriptors) {
-    if (descriptor.activation === 'restart') states[descriptor.name] = isFeatureEnabled(descriptor, settings)
+    if (descriptor.activation === 'restart') {
+      states[descriptor.name] = isFeatureDshVersionCompatible(descriptor, dshVersion)
+        && isFeatureEnabled(descriptor, settings)
+    }
   }
   return states
 }
@@ -174,13 +179,23 @@ export function enabledFeatureNames(
   descriptors: readonly FeatureDescriptor[],
   settings: CodingNsSettings | undefined,
   restartStates?: RestartFeatureStates,
+  dshVersion?: string,
 ): string[] {
   const names: string[] = []
   for (const descriptor of descriptors) {
     const enabled = descriptor.activation === 'restart' && restartStates !== undefined
       ? restartStates[descriptor.name] ?? descriptor.enabledByDefault
       : isFeatureEnabled(descriptor, settings)
-    if (enabled) names.push(descriptor.name)
+    if (enabled && isFeatureDshVersionCompatible(descriptor, dshVersion)) names.push(descriptor.name)
   }
   return names
+}
+
+/** 判断模块是否可以在当前 DSH 版本运行。未提供运行时版本时保留旧调用方行为。 */
+export function isFeatureDshVersionCompatible(
+  descriptor: FeatureDescriptor,
+  dshVersion?: string,
+): boolean {
+  if (descriptor.minimumDshVersion === undefined || dshVersion === undefined) return true
+  return isDshVersionAtLeast(dshVersion, descriptor.minimumDshVersion)
 }

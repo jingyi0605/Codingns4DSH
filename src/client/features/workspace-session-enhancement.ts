@@ -25,6 +25,8 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
       descriptionKey: 'feature.workspaceSession.description',
       order: 35,
       defaultOpen: true,
+      legacyFallback: true,
+      legacyFallbackKey: 'feature.workspaceSession.legacyFallback',
     },
   },
   start(context) {

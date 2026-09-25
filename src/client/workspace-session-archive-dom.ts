@@ -541,10 +541,14 @@ function createArchiveRow(
   const restore = dom.createElement('button')
   restore.type = 'button'
   restore.textContent = '取消归档'
-  Object.assign(restore.style, { flex: '0 0 auto', padding: '7px 12px', border: '1px solid var(--dsw-alias-border-l2, #d9d9d9)', borderRadius: '8px', color: 'inherit', background: 'transparent', cursor: 'pointer', font: 'inherit' })
+  const unarchive = remote.workspace?.unarchiveSession
+  const canUnarchive = typeof unarchive === 'function'
+  restore.disabled = !canUnarchive
+  restore.title = canUnarchive ? '取消归档' : '当前 DSH 版本不支持取消归档'
+  if (!canUnarchive) restore.textContent = '取消归档（当前版本不支持）'
+  Object.assign(restore.style, { flex: '0 0 auto', padding: '7px 12px', border: '1px solid var(--dsw-alias-border-l2, #d9d9d9)', borderRadius: '8px', color: 'inherit', background: 'transparent', cursor: canUnarchive ? 'pointer' : 'not-allowed', font: 'inherit', opacity: canUnarchive ? '1' : '0.55' })
   restore.addEventListener('click', async () => {
-    const unarchive = remote.workspace?.unarchiveSession
-    if (unarchive === undefined) return
+    if (!canUnarchive || unarchive === undefined) return
     restore.disabled = true
     restore.textContent = '处理中…'
     try {

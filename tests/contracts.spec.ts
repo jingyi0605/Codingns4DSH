@@ -10,9 +10,12 @@ import {
   CODINGNS_DSH_ERROR_CODES,
   CodingNsDshError,
   isDshVersionCompatible,
+  isDshVersionAtLeast,
+  isLegacyDshVersion,
   SUPPORTED_DSH_VERSION,
   assertSupportedDshVersion,
   enabledFeatureNames,
+  isFeatureDshVersionCompatible,
   captureRestartFeatureStates,
   isFeatureEnabled,
   type FeatureDescriptor,
@@ -110,12 +113,28 @@ test('共享出口不再暴露按模块枚举的配置结构', async () => {
 
 test('不兼容 DSH 版本给出稳定错误码', () => {
   assert.doesNotThrow(() => assertSupportedDshVersion(SUPPORTED_DSH_VERSION))
+  assert.equal(isDshVersionCompatible('0.1.5-rc.3'), true)
   assert.equal(isDshVersionCompatible('0.1.6'), true)
   assert.equal(isDshVersionCompatible('0.1.6-alpha.3'), true)
   assert.equal(isDshVersionCompatible('0.1.7-rc.1'), false)
+  assert.equal(isDshVersionCompatible('0.1.7'), false)
+  assert.equal(isLegacyDshVersion('0.1.5-rc.3'), true)
+  assert.equal(isLegacyDshVersion('0.1.6-alpha.2'), false)
   assert.throws(
     () => assertSupportedDshVersion('0.1.7'),
     (error) => error instanceof CodingNsDshError
       && error.code === CODINGNS_DSH_ERROR_CODES.DSH_VERSION_UNSUPPORTED,
   )
+})
+
+test('模块版本门禁阻止旧设置在 rc3 上启动 alpha2 专属模块', () => {
+  const workspace = {
+    ...descriptorOf('workspaceSessionEnhancement', { enabledByDefault: false }),
+    minimumDshVersion: '0.1.6-alpha.2',
+  }
+  const settings = { ...DEFAULT_CODINGNS_SETTINGS, modules: { workspaceSessionEnhancement: true } }
+  assert.equal(isDshVersionAtLeast('0.1.5-rc.3', '0.1.6-alpha.2'), false)
+  assert.equal(isFeatureDshVersionCompatible(workspace, '0.1.5-rc.3'), false)
+  assert.deepEqual(enabledFeatureNames([workspace], settings, undefined, '0.1.5-rc.3'), [])
+  assert.deepEqual(enabledFeatureNames([workspace], settings, undefined, '0.1.6-alpha.2'), ['workspaceSessionEnhancement'])
 })

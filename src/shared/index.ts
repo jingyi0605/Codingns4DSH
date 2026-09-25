@@ -13,6 +13,7 @@ export {
   DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   captureRestartFeatureStates,
   enabledFeatureNames,
+  isFeatureDshVersionCompatible,
   isFeatureEnabled,
   type CodingNsSettings,
   type CodingNsCliAdapterPreference,
@@ -54,6 +55,8 @@ export {
   CODINGNS_DSH_VERSION_GLOBAL,
   DSH_TESTED_VERSION,
   DSH_VERSION,
+  isDshVersionAtLeast,
+  isLegacyDshVersion,
   isDshVersionCompatible,
 } from './contracts/version.js'
 export type {

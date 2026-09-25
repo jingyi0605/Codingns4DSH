@@ -18,6 +18,8 @@ export interface CodingNsRpcClient {
 
 /** Client 侧功能模块在 start 中取用的服务集合。 */
 export interface CodingNsClientServices {
+  /** 当前 DSH 实际运行版本，由 Host 注入。 */
+  readonly dshVersion: string
   readonly settings: SettingsScope<CodingNsSettings>
   readonly rpc: CodingNsRpcClient
   /** DSH Typert Remote；归档会话模块只通过运行时探测调用可选方法。 */

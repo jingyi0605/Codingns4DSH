@@ -27,6 +27,10 @@ export interface FeatureUiDescriptor {
   defaultOpen?: boolean
   /** 启动即生效、不提供关闭入口的模块；设置页只展示当前的启用状态。 */
   alwaysEnabled?: boolean
+  /** 旧版 DSH 仍可运行但能力降级时显示的提示。 */
+  legacyFallback?: boolean
+  /** 旧版兼容提示使用的 locale key；未提供时使用通用提示。 */
+  legacyFallbackKey?: string
 }
 
 export interface FeatureDescriptor {
@@ -38,6 +42,8 @@ export interface FeatureDescriptor {
   runtime: FeatureRuntime
   /** `restart` 表示只保存下次启动意图，当前进程不跟随设置变化启停。 */
   activation?: FeatureActivation
+  /** 模块要求的最低 DSH 版本；低于该版本时不得启动。 */
+  minimumDshVersion?: string
   /** 提供后该模块出现在设置页；缺省表示它没有界面。 */
   ui?: FeatureUiDescriptor
 }

@@ -73,7 +73,7 @@ export function apply(ctx?: Context): void {
       },
     }))
     registry.validate()
-    const restartStates = captureRestartFeatureStates(registry.descriptors(), settings.get())
+    const restartStates = captureRestartFeatureStates(registry.descriptors(), settings.get(), dshVersion)
 
     try {
       registerCodingNsRpc(hostCtx, services.rpc, services.settingsProvider)
@@ -86,7 +86,7 @@ export function apply(ctx?: Context): void {
     hostCtx.effect(() => {
       const sync = (): void => {
         void registry
-          .reconcile(enabledFeatureNames(registry.descriptors(), settings.get(), restartStates))
+          .reconcile(enabledFeatureNames(registry.descriptors(), settings.get(), restartStates, dshVersion))
           .catch((error: unknown) => {
             console.error('dsh-codingns: 功能模块状态同步失败', error)
           })

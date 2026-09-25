@@ -363,6 +363,10 @@ function validateDescriptor(descriptor: FeatureDescriptor | undefined): asserts 
   if (descriptor.activation !== undefined && descriptor.activation !== 'live' && descriptor.activation !== 'restart') {
     throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid activation`, descriptor.name)
   }
+  if (descriptor.minimumDshVersion !== undefined
+    && (typeof descriptor.minimumDshVersion !== 'string' || descriptor.minimumDshVersion.trim() === '')) {
+    throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid minimumDshVersion`, descriptor.name)
+  }
   if (!Array.isArray(descriptor.dependencies) || descriptor.dependencies.some((dependency) => typeof dependency !== 'string' || dependency.trim() === '')) {
     throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid dependencies`, descriptor.name)
   }
@@ -389,6 +393,12 @@ function validateUiDescriptor(descriptor: FeatureDescriptor): void {
   }
   if (ui.alwaysEnabled !== undefined && typeof ui.alwaysEnabled !== 'boolean') {
     throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid ui.alwaysEnabled`, descriptor.name)
+  }
+  if (ui.legacyFallback !== undefined && typeof ui.legacyFallback !== 'boolean') {
+    throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid ui.legacyFallback`, descriptor.name)
+  }
+  if (ui.legacyFallbackKey !== undefined && (typeof ui.legacyFallbackKey !== 'string' || ui.legacyFallbackKey.trim() === '')) {
+    throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid ui.legacyFallbackKey`, descriptor.name)
   }
 }
 
