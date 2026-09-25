@@ -21,7 +21,7 @@ export interface LanAccessDshLoginConfig {
 export type LanAccessDshState = 'stopped' | 'starting' | 'listening' | 'error'
 
 /** 局域网访问 DSH 的运行快照。 */
-export interface LanAccessDshSnapshot extends LanAccessDshConfig {
+export interface LanAccessDshSnapshot extends Omit<LanAccessDshConfig, 'login'> {
   state: LanAccessDshState
   actualListenPort: number | null
   detectedDshPorts: readonly number[]

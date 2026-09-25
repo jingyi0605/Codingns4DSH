@@ -498,7 +498,7 @@ function isUpgradeRequest(input: Uint8Array): boolean {
     && /\r\nupgrade:\s*websocket\b/iu.test(text)
 }
 
-function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
+function concatBytes(first: Uint8Array<ArrayBufferLike>, second: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike> {
   const result = new Uint8Array(first.length + second.length)
   result.set(first)
   result.set(second, first.length)

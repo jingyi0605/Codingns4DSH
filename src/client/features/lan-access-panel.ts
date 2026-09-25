@@ -1,7 +1,7 @@
 import { createElement, useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { LanAccessDshSnapshot } from '../../shared/contracts/lan-access-dsh.js'
-import type { LanAccessDshSettings } from '../../shared/contracts/config.js'
+import type { LanAccessDshLoginSettings, LanAccessDshSettings } from '../../shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import type { FeaturePanelProps, CodingNsRpcClient } from './types.js'
 import {
@@ -32,6 +32,10 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot }
   const [snapshot, setSnapshot] = useState<LanAccessDshSnapshot | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [loginSettings, setLoginSettings] = useState<LanAccessDshLoginSettings>({ enabled: false, username: '', passwordConfigured: false, timeoutSeconds: 1800 })
+  const [loginUsername, setLoginUsername] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginTimeout, setLoginTimeout] = useState('1800')
 
   useEffect(() => {
     if (disabled) return
@@ -53,6 +57,9 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot }
         const fallback = settings.getSnapshot().value?.lanAccessDsh
         if (fallback !== undefined) setSavedSettings(fallback)
       })
+    void callRpc<LanAccessDshLoginSettings>(rpc, 'lanAccessDsh/login/get', {})
+      .then((current) => { setLoginSettings(current); setLoginUsername(current.username); setLoginTimeout(String(current.timeoutSeconds)) })
+      .catch(() => undefined)
   }, [disabled, rpc, settings])
 
   useEffect(() => {
@@ -122,6 +129,20 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot }
     setMessage(next ? t('lan.autoStartOn') : t('lan.autoStartOff'))
   })
 
+  const saveLogin = (): Promise<void> => run(async () => {
+    const timeoutSeconds = Number(loginTimeout)
+    if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 60 || timeoutSeconds > 604800) throw new Error('登录超时时间必须是 60 到 604800 秒')
+    const saved = await callRpc<LanAccessDshLoginSettings>(rpc, 'lanAccessDsh/login/set', {
+      enabled: loginSettings.enabled,
+      username: loginUsername,
+      password: loginPassword,
+      timeoutSeconds,
+    })
+    setLoginSettings(saved)
+    setLoginPassword('')
+    setMessage('登录保护设置已保存')
+  })
+
   const fieldStyle = dshSettingsFieldStyle
   const buttonStyle = dshSettingsButtonStyle
 
@@ -147,6 +168,19 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot }
       ),
     ),
     detectedDshPorts.length > 1 && createElement('div', { style: dshSettingsNoteStyle }, t('lan.detectMultiple', { ports: detectedDshPorts.join('、') })),
+    createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 6, borderTop: `1px solid ${dshThemeColor.border}` } },
+      createElement('strong', { style: { color: dshThemeColor.labelPrimary, fontSize: 13 } }, '登录保护'),
+      createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 8, color: dshThemeColor.labelSecondary, fontSize: 13 } },
+        createElement('input', { type: 'checkbox', checked: loginSettings.enabled, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { checked: boolean } }) => setLoginSettings({ ...loginSettings, enabled: event.currentTarget.checked }), style: { accentColor: dshThemeColor.accent } }),
+        createElement('span', undefined, '启用局域网登录保护'),
+      ),
+      loginSettings.enabled && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, createElement('span', { style: dshSettingsFieldLabelStyle }, '用户名'), createElement('input', { value: loginUsername, disabled: controlsDisabled || busy, autoComplete: 'username', onChange: (event: { currentTarget: { value: string } }) => setLoginUsername(event.currentTarget.value), style: fieldStyle })),
+        createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, createElement('span', { style: dshSettingsFieldLabelStyle }, loginSettings.passwordConfigured ? '新密码（留空保持不变）' : '密码'), createElement('input', { type: 'password', value: loginPassword, disabled: controlsDisabled || busy, autoComplete: 'new-password', onChange: (event: { currentTarget: { value: string } }) => setLoginPassword(event.currentTarget.value), style: fieldStyle })),
+        createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, createElement('span', { style: dshSettingsFieldLabelStyle }, '会话超时（秒）'), createElement('input', { type: 'number', min: 60, max: 604800, value: loginTimeout, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { value: string } }) => setLoginTimeout(event.currentTarget.value), style: fieldStyle })),
+        createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void saveLogin(), style: buttonStyle }, '保存登录保护'),
+      ),
+    ),
     createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 8, cursor: controlsDisabled || busy ? 'not-allowed' : 'pointer', color: dshThemeColor.labelSecondary, fontSize: 13 } },
       createElement('input', { type: 'checkbox', checked: autoStart, disabled: controlsDisabled || busy, onChange: () => void toggleAutoStart(), style: { accentColor: dshThemeColor.accent } }),
       createElement('span', undefined, t('lan.autoStart')),
