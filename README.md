@@ -5,7 +5,6 @@
 **Use your existing Agent CLIs, persistent terminals, workspace debugging, and remote access — inside DSH's own interface.**
 
 [![npm version](https://img.shields.io/npm/v/dsh-codingns?logo=npm)](https://www.npmjs.com/package/dsh-codingns)
-[![npm downloads](https://img.shields.io/npm/dm/dsh-codingns?logo=npm)](https://www.npmjs.com/package/dsh-codingns)
 [![DSH compatibility](https://img.shields.io/badge/DSH-%3E%3D0.1.5--rc.3%20%3C0.1.7-0-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-3C873A?logo=node.js&logoColor=white)](https://nodejs.org)
 
