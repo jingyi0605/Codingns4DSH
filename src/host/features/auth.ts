@@ -124,6 +124,8 @@ export function createAuthFeature(): FeatureModule<CodingNsHostServices> {
           return target.snapshot()
         },
         logout: async () => {
+          // DSH 设备注册凭据独立保存在 device-credential.json；注销中继站
+          // 登录只停止当前运行时并清理 CodingNS refresh token，不得清除设备注册。
           await dshRuntime?.stop()
           dshRuntime = null
           if (session) await session.logout()

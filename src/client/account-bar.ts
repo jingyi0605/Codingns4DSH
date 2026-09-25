@@ -251,7 +251,9 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document):
     busy = true
     renderMenu(menu)
     try {
-      if (auth.account !== null || auth.status === 'authenticated' || auth.status === 'refreshing' || auth.status === 'logging_in') await call('auth/logout', {})
+      // 注销目标由当前访问入口决定；LAN 页面上的 Host 可能仍保留中继站
+      // 会话，但不能因为注销本地登录而一并清掉它。
+      if (resolveAccountLogoutTarget() === 'relay') await call('auth/logout', {})
       else await fetch('/__codingns/logout', { credentials: 'include', redirect: 'manual' })
       if (typeof location !== 'undefined') location.reload()
     } catch (error) {
@@ -356,6 +358,11 @@ function isWide(parent: HTMLElement, settings: HTMLElement): boolean { return pa
 function formatPercent(value: number): string { return `${Math.round(value)}%` }
 function formatBytes(value: number): string { if (value < 1024 ** 3) return `${Math.round(value / 1024 ** 2)} MB`; return `${(value / 1024 ** 3).toFixed(1)} GB` }
 function isRemoteContext(): boolean { return (globalThis as { __DSH_CODINGNS_REMOTE_WEB_CONTEXT__?: unknown }).__DSH_CODINGNS_REMOTE_WEB_CONTEXT__ === true }
+function resolveAccountLogoutTarget(): 'local' | 'relay' {
+  if (isRemoteContext()) return 'relay'
+  if (typeof location !== 'undefined' && location.hostname.replace(/\.$/u, '').toLowerCase() === 'dsh.codingns.com') return 'relay'
+  return 'local'
+}
 function relayModeLabel(): string {
   const state = globalThis as { __DSH_CODINGNS_RELAY_MODE__?: 'direct' | 'relay' }
   if (state.__DSH_CODINGNS_RELAY_MODE__ === 'relay') return '中转'
