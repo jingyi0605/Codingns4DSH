@@ -75,7 +75,9 @@ export function startPeerHostNativeNavigation(options: PeerHostNativeNavigationO
     root.setAttribute(PEER_HOST_NAVIGATION_ATTRIBUTE, '')
     root.setAttribute('aria-label', 'PeerHost 工作区与会话')
     root.style.display = 'contents'
-    const navigation = buildHostNavigation(latestResults)
+    // 本地 Host 已由 DSH 原生工作区树渲染；这里只追加远端 Host，避免重复显示本地工作区。
+    const navigation = buildHostNavigation(latestResults.filter((host) => host.targetHostId !== null))
+    if (navigation.length === 0) return
     for (const host of navigation) root.appendChild(renderHost(dom, host, options.onSelect))
     tree.appendChild(root)
   }

@@ -15,6 +15,8 @@ interface WorkspaceSnapshot {
 interface SnapshotStore<T> {
   getSnapshot(): T
   subscribe(listener: () => void): () => void
+  set?: (next: T) => void
+  update?: (mutator: (draft: T) => void) => void
 }
 
 interface WorkspaceService {
@@ -94,7 +96,7 @@ export function installPeerHostNativeStoreAdapter(options: PeerHostNativeStoreAd
   const notify = (listeners: Set<() => void>): void => {
     for (const listener of listeners) listener()
   }
-  const workspaceList: SnapshotStore<WorkspaceSnapshot> = {
+  const workspaceList = createSnapshotFacade(originalWorkspaceList, {
     getSnapshot() {
       const source = originalWorkspaceList.getSnapshot()
       if (workspaceCache?.version === version && workspaceCache.source === source) return workspaceCache.value
@@ -108,8 +110,8 @@ export function installPeerHostNativeStoreAdapter(options: PeerHostNativeStoreAd
         workspaceListeners.delete(listener)
       }
     },
-  }
-  const sessionList: SnapshotStore<SessionListSnapshot> = {
+  })
+  const sessionList = createSnapshotFacade(originalSessionList, {
     getSnapshot() {
       const source = originalSessionList.getSnapshot()
       if (sessionCache?.version === version && sessionCache.source === source) return sessionCache.value
@@ -123,7 +125,7 @@ export function installPeerHostNativeStoreAdapter(options: PeerHostNativeStoreAd
         sessionListeners.delete(listener)
       }
     },
-  }
+  })
 
   workspaces.list = workspaceList
   sessions.list = sessionList
@@ -170,6 +172,17 @@ export function installPeerHostNativeStoreAdapter(options: PeerHostNativeStoreAd
       sessionListeners.clear()
     },
   }
+}
+
+/** 保留 DSH 原生 Store 的写入口；列表投影只改读侧，写入仍回到 Host Store。 */
+function createSnapshotFacade<T>(original: SnapshotStore<T>, readSide: SnapshotStore<T>): SnapshotStore<T> {
+  const facade: SnapshotStore<T> = {
+    getSnapshot: readSide.getSnapshot,
+    subscribe: readSide.subscribe,
+  }
+  if (typeof original.set === 'function') facade.set = (next) => original.set!(next)
+  if (typeof original.update === 'function') facade.update = (mutator) => original.update!(mutator)
+  return facade
 }
 
 function mergeWorkspaceSnapshot(source: WorkspaceSnapshot, aggregate: readonly AggregateHostResult[], workspaceOrder: readonly string[]): WorkspaceSnapshot {

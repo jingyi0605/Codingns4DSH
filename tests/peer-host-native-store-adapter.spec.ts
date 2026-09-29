@@ -4,11 +4,14 @@ import { installPeerHostNativeStoreAdapter } from '../data/build/dist/client/pee
 
 function store<T>(value: T) {
   const listeners = new Set<() => void>()
-  return {
+  const api = {
     getSnapshot: () => value,
     subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener) },
+    set(next: T) { value = next; for (const listener of listeners) listener() },
+    update(mutator: (draft: T) => void) { const draft = structuredClone(value); mutator(draft); api.set(draft) },
     publish(next: T) { value = next; for (const listener of listeners) listener() },
   }
+  return api
 }
 
 test('原生列表 Store 投影本地与 PeerHost 工作区及会话，并保留远端标签', () => {
@@ -28,6 +31,10 @@ test('原生列表 Store 投影本地与 PeerHost 工作区及会话，并保留
   assert.match(String(workspaceSnapshot.items[1]?.title), /开发机/u)
   assert.equal(sessionSnapshot.ids.length, 2)
   assert.match(sessionSnapshot.byId[sessionSnapshot.ids[1]!]!.displayTitle, /开发机/u)
+  assert.equal(typeof workspaces.list.set, 'function')
+  assert.equal(typeof sessions.list.update, 'function')
+  sessions.list.set?.({ ...sessionList.getSnapshot(), phase: 'ready-again' })
+  assert.equal(sessionList.getSnapshot().phase, 'ready-again')
   adapter.dispose()
   assert.equal(workspaces.list, workspaceList)
   assert.equal(sessions.list, sessionList)
