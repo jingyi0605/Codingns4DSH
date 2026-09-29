@@ -25,7 +25,8 @@ test('没有既有 Transport 时用脚本行声明 Host 所有权，不追加同
   const sandbox: Record<string, unknown> = {}
   runScripts(table, sandbox)
   assert.equal((sandbox.__DSH_TRANSPORT__ as { ownsHost?: unknown } | undefined)?.ownsHost, true)
-  assert.deepEqual(Object.keys(sandbox.__DSH_TRANSPORT__ as object), ['ownsHost'])
+  assert.deepEqual(Object.keys(sandbox.__DSH_TRANSPORT__ as object), ['ownsHost', 'rpc', 'fetch', 'reconnect', 'close', 'openStream', 'loadBundle'])
+  assert.equal(typeof (sandbox.__CODINGNS4DSH_PREBOOT_SHIM__ as { getState: () => string }).getState, 'function')
 })
 
 test('Desktop Transport 保留 streamBaseUrl 并补充 Host 所有权', () => {

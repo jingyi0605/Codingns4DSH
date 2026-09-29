@@ -108,6 +108,7 @@ export function apply(ctx?: Context): void {
     debugInfo('codingns4dsh: host terminal controller ready', { mode: terminal.mode })
     const services: CodingNsHostServices = {
       rpc: new CodingNsRpcTable(),
+      dshContext: hostCtx,
       dshVersion,
       settings,
       settingsProvider: settingsContext.settings,
@@ -259,6 +260,30 @@ export {
 export type { CodingNsHostServices } from './features/index.js'
 export { CodingNsSettingsSchema, registerCodingNsSettings } from './settings.js'
 export { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler, registerCodingNsRpc } from './rpc.js'
+export {
+  AGGREGATED_HOST_RPC_ROUTES,
+  AggregatedHostTransportError,
+  AggregatedHostTransportService,
+  PeerHostAggregatedTransport,
+  type AggregatedHostLocalHandlers,
+  type AggregatedHostPeerHandlers,
+  type AggregatedHostTransportOptions,
+} from './modules/peer-host/aggregated-host-transport.js'
+export {
+  FileAggregateWorkspaceOrderStore,
+  VirtualWorkspaceRegistry,
+  type AggregateWorkspaceOrderStore,
+  type VirtualSessionEntry,
+  type VirtualWorkspaceEntry,
+} from './modules/peer-host/peer-host-virtual-registry.js'
+export {
+  DSH_NATIVE_REMOTE_METHODS,
+  isDshNativeRemoteMethod,
+  rewriteNativeRequestIds,
+  rewriteNativeResponseIds,
+  type DshNativeRemoteMethod,
+  type VirtualIdResolver,
+} from './modules/peer-host/peer-host-native-protocol.js'
 export {
   DebugWorkspaceService,
   NodeDebugPortInspector,
@@ -421,7 +446,9 @@ export {
   CODINGNS_TUNNEL_DATA_CHANNEL_LABEL,
   FileHostDtlsIdentityStore,
   createRegisteredHostSignalingSocket,
+  adaptWeriftPeerConnection,
   createWeriftPeerConnectionFactory,
+  type WeriftPeerConnectionLike,
   ensureHostDtlsIdentity,
   formatHostDtlsFingerprint,
   generateHostDtlsIdentity,

@@ -62,6 +62,8 @@ export function sanitizeDshTransportDebugFields(fields: Readonly<Record<string, 
     'streams', 'activeStreams', 'openingStreams', 'maxStreams', 'fragmentId', 'chunkCount',
     'totalBytes', 'payloadBytes', 'bufferedAmount', 'highWaterMark', 'lowWaterMark', 'dataType',
     'valueType', 'trafficRemainingBytes', 'path', 'method', 'status', 'errorCode',
+    // 候选计数用于定位「answer 先到、候选被丢弃」这类连接慢的问题，只记数量不记候选内容。
+    'candidateCount', 'applied', 'waitMs', 'attempt',
   ])
   const result: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(fields)) {

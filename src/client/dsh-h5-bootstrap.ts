@@ -189,7 +189,7 @@ export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapO
   let session: DshSession | undefined
   let reconnecting = false
   let stopped = false
-  let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  let reconnectScheduled = false
   let reconnectRef: ((signal?: AbortSignal) => Promise<void>) | undefined
   const clientSessionId = options.clientSessionId?.trim() || undefined
   const firstTicket = await options.controlApi.createClientTicket(device.dshDeviceId, signal, clientSessionId)
@@ -215,7 +215,9 @@ export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapO
     try {
       for (let attempt = 0; !stopped; attempt += 1) {
         try {
-          const waitMs = Math.min(10_000, 500 * (attempt + 1))
+          // 首次尝试立即重连（移动端切回前台时 Host 通常还在，秒连体感最好）；
+          // 后续退避 300ms 起指数增长、上限 3s，避免原来最长 10s 的等待。
+          const waitMs = Math.min(3_000, 300 * 2 ** (attempt - 1))
           if (attempt > 0) await delay(waitMs, signal)
           options.onStatus?.('ticket')
           const ticket = await options.controlApi.createClientTicket(device.dshDeviceId, signal, clientSessionId)
@@ -254,7 +256,14 @@ export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapO
       // 空白且没有任何报错，会话列表却因为重连成功而看起来正常。
       transport.invalidateConnection(reason)
       session?.close(reason.message)
-      reconnectTimer = setTimeout(() => { reconnectTimer = undefined; void reconnect() }, 50)
+      // 移动端切后台会频繁断连，重连延迟直接体现为「卡住不动」的体感。
+      // 原来这里等 50ms 只是为了不在 close 回调栈里重入，用 microtask 就能达到
+      // 同样效果且不引入额外延迟；reconnecting 与 current !== connection 双重
+      // 守卫保证不会并发重连或对已替换的连接重复触发。
+      if (!reconnectScheduled) {
+        reconnectScheduled = true
+        queueMicrotask(() => { reconnectScheduled = false; void reconnect() })
+      }
     })
   }
   reconnectRef = reconnect
@@ -276,7 +285,6 @@ export async function startDshH5BrowserBootstrap(options: DshH5BrowserBootstrapO
       ...(webContext ? { webContext } : {}),
       dispose: async () => {
         stopped = true
-        if (reconnectTimer !== undefined) clearTimeout(reconnectTimer)
         await webContext?.dispose()
         session?.close()
         await transport.close()

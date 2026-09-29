@@ -90,6 +90,17 @@ test('PeerHost 八项能力已进入矩阵并覆盖支持版本', () => {
   }
 })
 
+test('pre-boot Transport 只在官方 Provider 契约版本和适配器同时存在时可用', () => {
+  const currentContext = {}
+  const current = createDshCapabilityRegistry('0.2.0-rc.1', 'client', currentContext).getProfile(currentContext)
+  assert.equal(current.capabilities.get('peer-host.client-preboot-transport')?.status, 'unavailable')
+
+  const futureContext = { peerHostClientPrebootTransport: { register: () => undefined } }
+  const future = createDshCapabilityRegistry('0.2.1', 'client', futureContext).getProfile(futureContext)
+  assert.equal(future.capabilities.get('peer-host.client-preboot-transport')?.routeId, 'peer-host-client-preboot-transport')
+  assert.equal(future.capabilities.get('peer-host.client-preboot-transport')?.status, 'ready')
+})
+
 test('PeerHost 未注入适配器时生成不可用诊断', () => {
   const host = createDshCapabilityRegistry('0.1.6-alpha.2', 'host', {}).getProfile({})
   const client = createDshCapabilityRegistry('0.1.6-alpha.2', 'client', {}).getProfile({})

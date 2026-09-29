@@ -19,6 +19,11 @@ export interface PeerHostLoginRequest {
   readonly password: string
 }
 
+export interface PeerHostWorkspaceOrder {
+  readonly orderedWorkspaceIds: readonly string[]
+  readonly persistedWorkspaceIds: readonly string[]
+}
+
 export interface PeerHostManagementApi {
   list(): Promise<readonly PeerHostClientRecord[]>
   create(input: PeerHostCreateRequest): Promise<PeerHostClientRecord>
@@ -30,6 +35,8 @@ export interface PeerHostManagementApi {
   logout(peerHostId: string): Promise<{ readonly peerHostId: string; readonly status: string; readonly expiresAt: number | null }>
   webSocketEndpoint(): Promise<PeerHostWebSocketEndpoint | null>
   aggregate(): Promise<readonly AggregateHostResult[]>
+  workspaceOrder(): Promise<PeerHostWorkspaceOrder>
+  moveWorkspace(virtualWorkspaceId: string, beforeVirtualWorkspaceId: string | null): Promise<readonly string[]>
   diagnostics(): Promise<readonly PeerHostDiagnosticSnapshot[]>
 }
 
@@ -58,6 +65,12 @@ export function createPeerHostManagementApi(rpc: CodingNsRpcClient): PeerHostMan
     logout: (peerHostId) => call('peerHost/logout', { peerHostId }),
     webSocketEndpoint: () => call('peerHost/wsEndpoint', {}),
     aggregate: () => call('peerHost/aggregate', {}),
+    workspaceOrder: () => call('peerHost/workspaceOrder', { action: 'get' }),
+    moveWorkspace: (virtualWorkspaceId, beforeVirtualWorkspaceId) => call<{ orderedWorkspaceIds: readonly string[] }>('peerHost/workspaceOrder', {
+      action: 'move',
+      virtualWorkspaceId,
+      beforeVirtualWorkspaceId,
+    }).then((result) => result.orderedWorkspaceIds),
     diagnostics: () => call('peerHost/diagnostics', {}),
   }
 }

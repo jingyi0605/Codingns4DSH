@@ -57,8 +57,11 @@ export async function connectWebRtcClient(options: WebRtcClientConnectorOptions)
   // 真实 WebSocket 暴露 readyState；测试注入的最小 socket 可能没有该字段。
   // 生产路径严格等待 registered，旧的纯协议 fake 仍可直接进入 offer 流程。
   if ('readyState' in signaling) {
-    await waitForSignalingRegistered(signaling, options.timeoutMs ?? 15_000, cleanupListeners)
-    await waitForPeerReady(signaling, options.timeoutMs ?? 15_000, cleanupListeners)
+    // 原来分成两次 await（先 registered 再 peer-ready）。Relay 会把 registered 和
+    // peer-ready 连续发出，如果两条消息落在同一个事件循环轮次里，第二个 await 的
+    // 监听还没挂上，peer-ready 就被丢掉，只能干等 15s 超时重连。
+    // 这里用单个监听同时记录两个状态，消除丢事件窗口，也少一次订阅往返。
+    await waitForSignalingReady(signaling, options.timeoutMs ?? 15_000, cleanupListeners)
   }
   const heartbeat = options.heartbeatIntervalMs === 0 ? null : setInterval(() => {
     try { signaling.send(JSON.stringify({ type: 'ping', at: new Date().toISOString() })) } catch { /* 断线由 close 事件处理 */ }
@@ -113,6 +116,22 @@ export async function connectWebRtcClient(options: WebRtcClientConnectorOptions)
   }
 
   try {
+    // 候选可能在 answer 之后才到（Host 现在先发 answer 再收集），因此候选监听必须
+    // 覆盖整条连接生命周期，不能挂在 waitForAnswer 上（它在 answer 到达时就退订了）。
+    const remoteCandidates = createRemoteCandidateQueue(peerConnection, debug)
+    const onCandidateMessage = (event: Event) => {
+      const raw = (event as MessageEvent<unknown>).data
+      if (typeof raw !== 'string') return
+      let message: RelaySignalingServerMessage
+      try { message = JSON.parse(raw) as RelaySignalingServerMessage } catch { return }
+      if (message.type !== 'candidate') return
+      remoteCandidates.push({ candidate: message.candidate, sdpMid: message.mid })
+    }
+    signaling.addEventListener('message', onCandidateMessage)
+    cleanupListeners.push(() => {
+      signaling.removeEventListener('message', onCandidateMessage)
+      remoteCandidates.dispose()
+    })
     const answerPromise = waitForAnswer(
       signaling,
       options.timeoutMs ?? 15_000,
@@ -133,7 +152,8 @@ export async function connectWebRtcClient(options: WebRtcClientConnectorOptions)
     const answer = await answerPromise
     assertDtlsFingerprint(ticket.hostDtlsFingerprint, answer.sdp)
     await peerConnection.setRemoteDescription({ type: 'answer', sdp: answer.sdp })
-    for (const candidate of answer.candidates) await peerConnection.addIceCandidate(candidate)
+    // answer 之前到达的候选在队列里等 remote description，这里放行。
+    remoteCandidates.flush()
     await waitForOpen(channel, options.timeoutMs ?? 15_000, cleanupListeners)
     await carrier.send(encodeFrame({ type: 'hello', clientContext: null, protocolVersion: '1' }))
     debug.log('webrtc.connected', { channelLabel: TUNNEL_DATA_CHANNEL_LABEL })
@@ -150,6 +170,56 @@ export function createSignalingUrl(baseUrl: string, ticket: string): string {
   const url = new URL('signal', `${base.origin}${pathname}`)
   url.searchParams.set('ticket', ticket)
   return url.toString()
+}
+
+/**
+ * 合并等待 registered + peer-ready。
+ *
+ * 两者由 Relay 连续下发，用两个独立 Promise 顺序等待时存在丢事件窗口：
+ * 若两条消息在同一个事件循环轮次到达，后一个监听尚未注册，消息被丢弃，
+ * 调用方只能等到超时才重连。这里用单个监听同时记录两个状态，谁先到都不会丢。
+ */
+export function waitForSignalingReady(socket: SignalingSocketLike, timeoutMs: number, cleanup: Array<() => void> = []): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let registered = false
+    let peerReady = false
+    let settled = false
+    const timer = setTimeout(() => { remove(); reject(new Error('等待 Relay registered 超时')) }, timeoutMs)
+    const finish = () => {
+      if (settled || !registered || !peerReady) return
+      settled = true
+      clearTimeout(timer)
+      remove()
+      resolve()
+    }
+    const onMessage = (event: Event) => {
+      const raw = (event as MessageEvent<unknown>).data
+      if (typeof raw !== 'string') return
+      try {
+        const message = JSON.parse(raw) as { type?: string; errorCode?: string; detail?: string }
+        if (message.type === 'error') {
+          settled = true
+          clearTimeout(timer)
+          remove()
+          const code = message.errorCode?.trim() || 'RELAY_ERROR'
+          const detail = message.detail?.trim()
+          reject(new Error(detail ? `Relay ${code}: ${detail}` : `Relay ${code}`))
+          return
+        }
+        if (message.type === 'registered') { registered = true; finish(); return }
+        if (message.type === 'peer-ready') { peerReady = true; finish() }
+      } catch { /* 忽略非 JSON 信令 */ }
+    }
+    const onClose = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      remove()
+      reject(new Error(registered ? '信令连接在 peer-ready 前关闭' : '信令连接在 registered 前关闭'))
+    }
+    const remove = () => { socket.removeEventListener('message', onMessage); socket.removeEventListener('close', onClose) }
+    socket.addEventListener('message', onMessage); socket.addEventListener('close', onClose); cleanup.push(remove)
+  })
 }
 
 export function waitForSignalingRegistered(socket: SignalingSocketLike, timeoutMs: number, cleanup: Array<() => void> = []): Promise<void> {
@@ -211,14 +281,64 @@ export function assertDtlsFingerprint(expected: string, sdp: string): void {
   }
 }
 
+/**
+ * Host 现在先发 answer 再 setLocalDescription，候选只能靠 trickle 后续补发。
+ * addIceCandidate 必须严格串行（按调用顺序处理），所以这里把所有远端候选压进
+ * 一条 promise 链；remote description 就绪前的候选先缓冲，避免被静默丢弃。
+ */
+interface RemoteCandidateQueue {
+  push(candidate: { candidate: string; sdpMid: string | null }): void
+  flush(): void
+  dispose(): void
+}
+
+function createRemoteCandidateQueue(
+  peerConnection: PeerConnectionLike,
+  debug: DshTransportDebugLogger,
+): RemoteCandidateQueue {
+  const buffered: Array<{ candidate: string; sdpMid: string | null }> = []
+  let remoteDescriptionReady = false
+  let chain: Promise<void> = Promise.resolve()
+  let disposed = false
+  let received = 0
+  let applied = 0
+  const apply = (candidate: { candidate: string; sdpMid: string | null }) => {
+    chain = chain
+      .then(() => peerConnection.addIceCandidate(candidate).then(() => { applied += 1 }))
+      .catch((error: unknown) => {
+        debug.log('webrtc.candidate.failed', {
+          candidateCount: received,
+          code: error instanceof Error ? error.message : String(error),
+        })
+      })
+  }
+  return {
+    push(candidate) {
+      if (disposed) return
+      received += 1
+      if (!remoteDescriptionReady) { buffered.push(candidate); return }
+      apply(candidate)
+    },
+    flush() {
+      if (disposed) return
+      remoteDescriptionReady = true
+      for (const candidate of buffered.splice(0)) apply(candidate)
+      debug.log('webrtc.candidate.flushed', { candidateCount: received })
+    },
+    dispose() {
+      disposed = true
+      debug.log('webrtc.candidate.summary', { candidateCount: received, applied: applied })
+    },
+  }
+}
+
 function waitForAnswer(
   socket: SignalingSocketLike,
   timeoutMs: number,
   cleanup: Array<() => void>,
-): Promise<{ sdp: string; candidates: Array<{ candidate: string; sdpMid: string | null }> }> {
+): Promise<{ sdp: string }> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('等待 Host answer 超时')), timeoutMs)
-    const candidates: Array<{ candidate: string; sdpMid: string | null }> = []
     const onMessage = (event: Event) => {
       const raw = (event as MessageEvent<string>).data
       if (typeof raw !== 'string') return
@@ -227,9 +347,7 @@ function waitForAnswer(
       if (message.type === 'answer') {
         clearTimeout(timer)
         remove()
-        resolve({ sdp: message.sdp, candidates })
-      } else if (message.type === 'candidate') {
-        candidates.push({ candidate: message.candidate, sdpMid: message.mid })
+        resolve({ sdp: message.sdp })
       } else if (message.type === 'error') {
         clearTimeout(timer)
         remove()

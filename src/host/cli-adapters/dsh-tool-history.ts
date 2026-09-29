@@ -323,8 +323,32 @@ function normalizeToolCall(toolName: string, input: string | undefined): Normali
     rename(args, 'oldString', 'old_string')
     rename(args, 'newString', 'new_string')
     rename(args, 'replaceAll', 'replace_all')
+    normalizeEditChanges(args)
   }
   return { name, arguments: JSON.stringify(args) }
+}
+
+/**
+ * 将多文件编辑补齐为 DSH 原生 edit 卡片可识别的单文件字段。
+ *
+ * changes 仍完整保留，完成态由 toolResultMeta 生成全部文件的 Diff；顶层字段
+ * 只取首个有效变更，用于 DSH 原生组件识别工具类型、展示文件名和实时 Diff。
+ */
+function normalizeEditChanges(args: Record<string, unknown>): void {
+  if (!Array.isArray(args.changes)) return
+  const existingPath = stringValue(args.file_path)?.trim()
+  if (existingPath && typeof args.old_string === 'string' && typeof args.new_string === 'string') return
+  for (const value of args.changes) {
+    if (!isRecord(value)) continue
+    const path = stringValue(value.file_path ?? value.path)
+    const diff = stringValue(value.diff ?? value.patch)
+    if (path === null || diff === null) continue
+    const parsed = unifiedDiffChangedText(path, diff, stringValue(value.kind))
+    if (!existingPath) args.file_path = parsed.path
+    if (typeof args.old_string !== 'string') args.old_string = parsed.oldText ?? ''
+    if (typeof args.new_string !== 'string') args.new_string = parsed.newText
+    return
+  }
 }
 
 function canonicalToolName(value: string): string {
@@ -368,7 +392,7 @@ function toolResultMeta(name: string, argumentsJson: string): { readonly meta?: 
 function unifiedDiffMeta(path: string, diff: string, kind: string | null): { readonly path: string; readonly oldText: string | null; readonly newText: string } {
   const oldLines: string[] = []
   const newLines: string[] = []
-  for (const line of diff.split('\n')) {
+  for (const line of diff.split(/\r?\n/u)) {
     if (line.startsWith('--- ') || line.startsWith('+++ ') || line.startsWith('@@')) continue
     if (line.startsWith('-')) oldLines.push(line.slice(1))
     else if (line.startsWith('+')) newLines.push(line.slice(1))
@@ -377,6 +401,23 @@ function unifiedDiffMeta(path: string, diff: string, kind: string | null): { rea
       oldLines.push(context)
       newLines.push(context)
     }
+  }
+  const oldText = kind === 'add' || kind === 'create' ? null : oldLines.join('\n')
+  const newText = kind === 'delete' || kind === 'remove' ? '' : newLines.join('\n')
+  return { path, oldText, newText }
+}
+
+/**
+ * 编辑卡片的行数只应统计真实变更行；上下文行留在 tool/result.meta 的 Diff 中。
+ * DSH 原生编辑预览会把 old_string/new_string 的每一行都计入删除/新增，
+ * 因此不能直接把 unified diff 的上下文行传给顶层工具参数。
+ */
+function unifiedDiffChangedText(path: string, diff: string, kind: string | null): { readonly path: string; readonly oldText: string | null; readonly newText: string } {
+  const oldLines: string[] = []
+  const newLines: string[] = []
+  for (const line of diff.split(/\r?\n/u)) {
+    if (line.startsWith('-') && !line.startsWith('--- ')) oldLines.push(line.slice(1))
+    else if (line.startsWith('+') && !line.startsWith('+++ ')) newLines.push(line.slice(1))
   }
   const oldText = kind === 'add' || kind === 'create' ? null : oldLines.join('\n')
   const newText = kind === 'delete' || kind === 'remove' ? '' : newLines.join('\n')

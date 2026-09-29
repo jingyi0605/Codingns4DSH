@@ -270,7 +270,7 @@ test('公共工具投影层统一映射 edit_file 并生成 DSH diff 元数据',
   })
 })
 
-test('公共工具投影层把 Codex fileChange 的 unified diff 映射为编辑元数据', () => {
+test('公共工具投影层把 Codex fileChange 归一为 DSH edit 并保留多文件 Diff', () => {
   const sink = createSink()
   const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'session-codex-file-change')
   projector.observe({
@@ -282,6 +282,10 @@ test('公共工具投影层把 Codex fileChange 的 unified diff 映射为编辑
         file_path: '/workspace/a.ts',
         kind: 'update',
         diff: '@@ -1 +1 @@\n-old\n+new',
+      }, {
+        file_path: '/workspace/b.ts',
+        kind: 'delete',
+        diff: '@@ -1 +1 @@\n-removed\n',
       }],
     }),
     status: 'running',
@@ -290,8 +294,59 @@ test('公共工具投影层把 Codex fileChange 的 unified diff 映射为编辑
   projector.finalize('stop')
 
   assert.equal(sink.calls[0]?.call.name, 'edit')
+  assert.deepEqual(JSON.parse(sink.calls[0]?.call.arguments ?? '{}'), {
+    changes: [{
+      file_path: '/workspace/a.ts',
+      kind: 'update',
+      diff: '@@ -1 +1 @@\n-old\n+new',
+    }, {
+      file_path: '/workspace/b.ts',
+      kind: 'delete',
+      diff: '@@ -1 +1 @@\n-removed\n',
+    }],
+    file_path: '/workspace/a.ts',
+    old_string: 'old',
+    new_string: 'new',
+  })
   assert.deepEqual(sink.results[0]?.result.meta, {
-    diffs: [{ path: '/workspace/a.ts', oldText: 'old', newText: 'new' }],
+    diffs: [
+      { path: '/workspace/a.ts', oldText: 'old', newText: 'new' },
+      { path: '/workspace/b.ts', oldText: 'removed', newText: '' },
+    ],
+  })
+})
+
+test('Codex 编辑参数只统计真实变更行，不把 unified diff 上下文算进编辑行数', () => {
+  const sink = createSink()
+  const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'session-codex-line-stats')
+  projector.observe({
+    type: 'tool-event',
+    toolName: 'edit_file',
+    callId: 'edit-line-stats',
+    input: JSON.stringify({
+      changes: [{
+        file_path: '/workspace/a.ts',
+        kind: 'update',
+        diff: '@@ -1,3 +1,3 @@\n keep\n-old\n+new\n tail',
+      }],
+    }),
+    status: 'running',
+  })
+  projector.observe({ type: 'tool-event', toolName: 'edit_file', callId: 'edit-line-stats', status: 'completed' })
+  projector.finalize('stop')
+
+  assert.deepEqual(JSON.parse(sink.calls[0]?.call.arguments ?? '{}'), {
+    changes: [{
+      file_path: '/workspace/a.ts',
+      kind: 'update',
+      diff: '@@ -1,3 +1,3 @@\n keep\n-old\n+new\n tail',
+    }],
+    file_path: '/workspace/a.ts',
+    old_string: 'old',
+    new_string: 'new',
+  })
+  assert.deepEqual(sink.results[0]?.result.meta, {
+    diffs: [{ path: '/workspace/a.ts', oldText: 'keep\nold\ntail', newText: 'keep\nnew\ntail' }],
   })
 })
 

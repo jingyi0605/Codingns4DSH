@@ -93,6 +93,12 @@ export {
   installDshTransport,
   SUPPORTED_DSH_CONNECTION_VERSION,
 } from './dsh-connection-adapter.js'
+export {
+  DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL,
+  createDshPeerHostPrebootShimScript,
+  installDshPeerHostPrebootShim,
+} from './dsh-peer-host-preboot-shim.js'
+export type { DshPeerHostPrebootShimApi, DshPeerHostPrebootShimState } from './dsh-peer-host-preboot-shim.js'
 export type {
   DshClientTransportHooks,
   DshConnectionAdapter,

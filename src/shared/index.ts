@@ -164,8 +164,18 @@ export type {
 } from './contracts/subscription.js'
 export { isSubscriptionUsageFresh } from './contracts/subscription.js'
 export type {
+  AggregatedHostCapabilitySummary,
+  AggregatedHostFetchRequest,
+  AggregatedHostGeneration,
+  AggregatedHostLocalPluginBaseline,
+  AggregatedHostManifestBoundary,
+  AggregatedHostRpcRequest,
+  AggregatedHostStreamRequest,
+  AggregatedHostTransport,
+  AggregatedHostWebSocketClient,
   AggregateWorkspaceSummary,
   AggregateHostResult,
+  AggregateWorkspaceOrder,
   HostScope,
   PeerHostErrorCode,
   PeerHostErrorShape,
@@ -180,8 +190,20 @@ export type {
   ResourceScopeInput,
   ResourceScopeRef,
   ResourceScopeSnapshot,
+  VirtualWorkspaceId,
+  VirtualSessionId,
+  VirtualWorkspaceRef,
+  VirtualSessionRef,
 } from './contracts/peer-host.js'
-export { PEER_HOST_ERROR_CODES, ResourceScopeStaleError } from './contracts/peer-host.js'
+export {
+  PEER_HOST_ERROR_CODES,
+  ResourceScopeStaleError,
+  VIRTUAL_RESOURCE_ID_PREFIX,
+  createVirtualWorkspaceId,
+  createVirtualSessionId,
+  parseVirtualWorkspaceId,
+  parseVirtualSessionId,
+} from './contracts/peer-host.js'
 export {
   DEBUG_ERROR_CODES,
   DEBUG_RPC_ENDPOINTS,

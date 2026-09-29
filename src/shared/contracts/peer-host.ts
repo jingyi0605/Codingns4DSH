@@ -108,6 +108,170 @@ export interface AggregateHostResult {
   readonly workspaces: readonly AggregateWorkspaceSummary[]
 }
 
+/** Aggregated Host 只允许本地插件基线；远端不得提供 Manifest、Bundle 或 UI Slot。 */
+export interface AggregatedHostLocalPluginBaseline {
+  readonly pluginId: string
+  readonly pluginVersion: string
+  readonly manifestSource: 'local'
+  readonly bundleSource: 'local'
+  readonly uiSource: 'local'
+  readonly allowRemoteManifest: false
+  readonly allowRemoteBundle: false
+}
+
+/** 目标 Host 的执行能力摘要；不包含 token、路由地址或插件正文。 */
+export interface AggregatedHostCapabilitySummary {
+  readonly hostId: string
+  readonly targetHostId: string | null
+  readonly hostLabel: string
+  readonly status: 'ready' | 'checking' | 'unreachable' | 'unsupported'
+  readonly dshVersion: string | null
+  readonly apiCompatibility: string | null
+  readonly capabilities: readonly string[]
+  readonly diagnostic?: string
+}
+
+/** Client 读取的 Manifest 只代表当前 Host 的本地插件基线。 */
+export interface AggregatedHostManifestBoundary {
+  readonly source: 'local'
+  readonly plugin: AggregatedHostLocalPluginBaseline
+  readonly remoteManifest: 'forbidden'
+  readonly remoteBundle: 'forbidden'
+}
+
+/** Aggregated Transport 的物理连接 generation；作用域 generation 仍由 HostScope 管理。 */
+export interface AggregatedHostGeneration {
+  readonly id: number
+  readonly host: { readonly home: string }
+  readonly connectedAt: number
+}
+
+export interface AggregatedHostRpcRequest {
+  readonly scope: HostScope
+  readonly method: string
+  readonly payload?: unknown
+  readonly signal?: AbortSignal
+}
+
+export interface AggregatedHostFetchRequest {
+  readonly scope: HostScope
+  readonly path: string
+  readonly method?: string
+  readonly headers?: Readonly<Record<string, string>>
+  readonly body?: string
+  readonly signal?: AbortSignal
+}
+
+export interface AggregatedHostStreamRequest {
+  readonly scope: HostScope
+  readonly method: string
+  readonly payload?: unknown
+  readonly signal?: AbortSignal
+}
+
+/** Client 侧只提交自己的 Socket；目标连接和 token 由 Host 侧代理服务持有。 */
+export interface AggregatedHostWebSocketClient {
+  readonly readyState: number
+  send(data: string): void
+  close(code?: number, reason?: string): void
+  on(event: 'message' | 'close' | 'error', listener: (...args: any[]) => void): void
+}
+
+/** Aggregated Host 的内部稳定 Transport；不替换普通插件 ctx.connection。 */
+export interface AggregatedHostTransport {
+  readonly kind: 'aggregated-host'
+  readonly localPlugin: AggregatedHostLocalPluginBaseline
+  getCapabilities(): readonly AggregatedHostCapabilitySummary[]
+  rpc<TResponse = unknown>(request: AggregatedHostRpcRequest): Promise<TResponse>
+  fetch(request: AggregatedHostFetchRequest): Promise<Response>
+  openStream<TChunk = unknown>(request: AggregatedHostStreamRequest): AsyncIterable<TChunk>
+  openWebSocket(client: AggregatedHostWebSocketClient, scope: HostScope): Promise<() => void>
+  getGeneration(): AggregatedHostGeneration | undefined
+  onGenerationChange(listener: (generation: AggregatedHostGeneration | undefined) => void): () => void
+  reconnect(signal?: AbortSignal): Promise<void>
+  readManifest(): AggregatedHostManifestBoundary
+  loadBundle(url: string): Promise<void>
+  close(): Promise<void>
+}
+
+/**
+ * 聚合 Host 对外暴露的资源命名空间。
+ *
+ * 远端 Host 的 workspace/session id 只在各自 Host 内唯一，不能直接交给
+ * 本地 DSH Store。聚合层使用版本化、可逆的虚拟 ID，避免不同 Host 的同名
+ * 资源碰撞，同时保留真实 ID 供路由层转发。
+ */
+export type VirtualWorkspaceId = string
+export type VirtualSessionId = string
+
+export interface VirtualWorkspaceRef {
+  readonly virtualWorkspaceId: VirtualWorkspaceId
+  readonly hostId: string
+  readonly targetHostId: string | null
+  readonly workspaceId: string
+}
+
+export interface VirtualSessionRef {
+  readonly virtualSessionId: VirtualSessionId
+  readonly hostId: string
+  readonly targetHostId: string | null
+  readonly workspaceId: string
+  readonly sessionId: string
+}
+
+/** 混合 Workspace 顺序的持久化内容，只保存虚拟 ID，不复制 Host 数据。 */
+export interface AggregateWorkspaceOrder {
+  readonly version: 1
+  readonly orderedWorkspaceIds: readonly VirtualWorkspaceId[]
+}
+
+export const VIRTUAL_RESOURCE_ID_PREFIX = 'codingns:peer-host:v1'
+
+export function createVirtualWorkspaceId(hostId: string, workspaceId: string): VirtualWorkspaceId {
+  return createVirtualResourceId('workspace', hostId, workspaceId)
+}
+
+export function createVirtualSessionId(hostId: string, sessionId: string): VirtualSessionId {
+  return createVirtualResourceId('session', hostId, sessionId)
+}
+
+export function parseVirtualWorkspaceId(value: string): VirtualWorkspaceRef | null {
+  const parsed = parseVirtualResourceId(value, 'workspace')
+  if (parsed === null) return null
+  return { virtualWorkspaceId: value, hostId: parsed.hostId, targetHostId: parsed.hostId === 'local' ? null : parsed.hostId, workspaceId: parsed.resourceId }
+}
+
+export function parseVirtualSessionId(value: string): { readonly hostId: string; readonly sessionId: string } | null {
+  const parsed = parseVirtualResourceId(value, 'session')
+  return parsed === null ? null : { hostId: parsed.hostId, sessionId: parsed.resourceId }
+}
+
+function createVirtualResourceId(kind: 'workspace' | 'session', hostId: string, resourceId: string): string {
+  const host = requiredResourcePart(hostId, 'hostId')
+  const resource = requiredResourcePart(resourceId, kind === 'workspace' ? 'workspaceId' : 'sessionId')
+  return `${VIRTUAL_RESOURCE_ID_PREFIX}:${kind}:${encodeURIComponent(host)}:${encodeURIComponent(resource)}`
+}
+
+function parseVirtualResourceId(value: string, kind: 'workspace' | 'session'): { readonly hostId: string; readonly resourceId: string } | null {
+  if (typeof value !== 'string') return null
+  const prefix = `${VIRTUAL_RESOURCE_ID_PREFIX}:${kind}:`
+  if (!value.startsWith(prefix)) return null
+  const parts = value.slice(prefix.length).split(':')
+  if (parts.length !== 2 || parts.some((part) => part === '')) return null
+  try {
+    const hostId = decodeURIComponent(parts[0]!)
+    const resourceId = decodeURIComponent(parts[1]!)
+    return hostId && resourceId ? { hostId, resourceId } : null
+  } catch {
+    return null
+  }
+}
+
+function requiredResourcePart(value: string, name: string): string {
+  if (typeof value !== 'string' || value.trim() === '') throw new TypeError(`${name} 不能为空`)
+  return value
+}
+
 export const PEER_HOST_ERROR_CODES = {
   NOT_FOUND: 'PEER_HOST_NOT_FOUND',
   NOT_READY: 'PEER_HOST_NOT_READY',
@@ -126,6 +290,9 @@ export const PEER_HOST_ERROR_CODES = {
   RELAY_UNAVAILABLE: 'PEER_HOST_RELAY_UNAVAILABLE',
   AGGREGATE_UNAVAILABLE: 'PEER_HOST_AGGREGATE_UNAVAILABLE',
   STALE_GENERATION: 'PEER_HOST_STALE_GENERATION',
+  AGGREGATED_TRANSPORT_UNSUPPORTED: 'PEER_HOST_AGGREGATED_TRANSPORT_UNSUPPORTED',
+  AGGREGATED_MANIFEST_FORBIDDEN: 'PEER_HOST_AGGREGATED_MANIFEST_FORBIDDEN',
+  AGGREGATED_BUNDLE_FORBIDDEN: 'PEER_HOST_AGGREGATED_BUNDLE_FORBIDDEN',
 } as const
 
 export type PeerHostErrorCode = typeof PEER_HOST_ERROR_CODES[keyof typeof PEER_HOST_ERROR_CODES]

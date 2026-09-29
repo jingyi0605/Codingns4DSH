@@ -247,12 +247,18 @@ function addPeerHostHostRoutes(add: CapabilityRouteAdder): void {
   addPeerHostRoute(add, 'peer-host.http-proxy', 'peer-host-http-proxy', 'peerHostHttpProxy')
   addPeerHostRoute(add, 'peer-host.ws-proxy', 'peer-host-ws-proxy', 'peerHostWsProxy')
   addPeerHostRoute(add, 'peer-host.aggregate', 'peer-host-aggregate', 'peerHostAggregate')
+  addPeerHostRoute(add, 'peer-host.aggregated-transport', 'peer-host-aggregated-transport', 'peerHostAggregatedTransport')
+  addPeerHostRoute(add, 'peer-host.target-capabilities', 'peer-host-target-capabilities', 'peerHostTargetCapabilities')
+  addPeerHostRoute(add, 'peer-host.local-plugin-baseline', 'peer-host-local-plugin-baseline', 'peerHostLocalPluginBaseline')
   addPeerHostRoute(add, 'peer-host.relay-route', 'peer-host-relay-route', 'peerHostRelayRoute')
   addPeerHostRoute(add, 'peer-host.store', 'peer-host-store-020', 'peerHostStore', '>=0.2.0-rc.1', 'supported', 30)
   addPeerHostRoute(add, 'peer-host.handshake', 'peer-host-handshake-020', 'peerHostHandshake', '>=0.2.0-rc.1', 'supported', 30)
   addPeerHostRoute(add, 'peer-host.http-proxy', 'peer-host-http-proxy-020', 'peerHostHttpProxy', '>=0.2.0-rc.1', 'supported', 30)
   addPeerHostRoute(add, 'peer-host.ws-proxy', 'peer-host-ws-proxy-020', 'peerHostWsProxy', '>=0.2.0-rc.1', 'supported', 30)
   addPeerHostRoute(add, 'peer-host.aggregate', 'peer-host-aggregate-020', 'peerHostAggregate', '>=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.aggregated-transport', 'peer-host-aggregated-transport-020', 'peerHostAggregatedTransport', '>=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.target-capabilities', 'peer-host-target-capabilities-020', 'peerHostTargetCapabilities', '>=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.local-plugin-baseline', 'peer-host-local-plugin-baseline-020', 'peerHostLocalPluginBaseline', '>=0.2.0-rc.1', 'supported', 30)
   addPeerHostRoute(add, 'peer-host.relay-route', 'peer-host-relay-route-020', 'peerHostRelayRoute', '>=0.2.0-rc.1', 'supported', 30)
 }
 
@@ -263,6 +269,7 @@ function addPeerHostClientRoutes(add: CapabilityRouteAdder): void {
   addPeerHostRoute(add, 'peer-host.remote-web-context-fallback', 'peer-host-remote-web-context-fallback', 'peerHostRemoteWebContextFallback')
   addPeerHostRoute(add, 'peer-host.native-navigation', 'peer-host-native-navigation-020', 'peerHostNativeNavigation', '>=0.2.0-rc.1', 'supported', 30)
   addPeerHostRoute(add, 'peer-host.remote-web-context-fallback', 'peer-host-remote-web-context-fallback-020', 'peerHostRemoteWebContextFallback', '>=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.client-preboot-transport', 'peer-host-client-preboot-transport', 'peerHostClientPrebootTransport', '>=0.2.1 <=0.2.99', 'supported', 40)
 }
 
 function addPeerHostRoute(
@@ -278,7 +285,7 @@ function addPeerHostRoute(
     id,
     capability,
     supportedDsh,
-    runtime: capability === 'peer-host.native-navigation' || capability === 'peer-host.remote-web-context-fallback' ? 'client' : 'host',
+    runtime: capability === 'peer-host.native-navigation' || capability === 'peer-host.remote-web-context-fallback' || capability === 'peer-host.client-preboot-transport' ? 'client' : 'host',
     priority,
     status,
     introducedIn: '0.1.5-rc.3',

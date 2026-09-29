@@ -5,6 +5,7 @@ import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import type { TerminalProcessService } from '../terminal/terminal-process-service.js'
 import type { DebugWorkspaceService } from '../debug.js'
 import type { CodingNsNativeTeamProxy } from '../cli-adapters/native-team-proxy.js'
+import type { Context } from '@deepseek-ai/cordis'
 
 export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
@@ -18,6 +19,8 @@ export interface CodingNsHostEvents {
  */
 export interface CodingNsHostServices {
   readonly rpc: CodingNsRpcTable
+  /** 当前 DSH Host Context；仅供需要结构探测原生服务的适配层使用。 */
+  readonly dshContext?: Context
   /** 当前 DSH 宿主的真实版本；由 Host 入口启动门禁解析并向功能模块传递。 */
   readonly dshVersion?: string
   /** 持久化设置；测试或嵌入式调用未提供时，局域网映射仍可手动启动。 */

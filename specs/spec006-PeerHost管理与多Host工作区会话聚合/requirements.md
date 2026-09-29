@@ -1,6 +1,6 @@
 # 需求文档 - PeerHost 管理与多 Host 工作区会话聚合
 
-状态：详细设计完成，待实施。
+状态：原始受控代理和 DOM 适配器已完成部分实现；Aggregated Host 原生聚合主线已接入单插件 preboot、原生列表 Store 和 Remote connector，当前进入真实 DSH Web Conversation 回放验收。
 
 ## 简介
 
@@ -10,7 +10,7 @@
 2. 不同 Host 可能有相同的 `workspaceId` 或 `sessionId`，页面容易把消息、文件、终端和右侧面板串到错误的机器。
 3. 目标 Host 的登录态、版本兼容性和断线状态没有清晰的管理入口。
 
-本 Spec 要求当前 Host 以受控代理的方式管理其他已安装本插件的 DSH Host，并在 Client 侧建立带 Host 作用域的工作区、会话和工具链路。
+本 Spec 要求当前 Host 以受控代理的方式管理其他已安装本插件的 DSH Host，并通过 Aggregated Host 向本地 DSH Client 暴露统一的 Workspace、Session、Conversation 和工具数据面。Client/UI/插件 Bundle 只使用当前 Host 的版本和状态；远端 Host 只提供执行能力，不参与插件 Bundle 或 UI Slot 合并。
 
 ## 术语表
 
@@ -21,6 +21,9 @@
 - **聚合导航**：将当前 Host 和已启用 PeerHost 的工作区/会话摘要合并到一个 Client 导航树中。
 - **受控代理**：当前 Host 只转发明确登记的 DSH API、WebSocket 路径和消息类型。
 - **Host 标签**：显示在工作区名称后的目标 Host 名称或别名，用于区分相同名称的工作区。
+- **Aggregated Host**：对 DSH Client 表现为单一 Host、对后端路由当前 Host 和多个 PeerHost 的 Host 适配层。
+- **虚拟资源 ID**：带 Host 命名空间的 Workspace/Session ID，例如 `peer-a:workspace-1`，只在聚合数据面中使用。
+- **本地插件基线**：当前 Host 已加载的 DSH/CodingNS Client Bundle、Feature、Slot 和设置；远端独有插件不进入本 Spec。
 
 ## 范围说明
 
@@ -34,6 +37,8 @@
 - 工作区、会话、文件、Git、终端和右侧工具所需的受控 HTTP/WS 代理。
 - 当前 Host 与 PeerHost 工作区/会话的聚合展示和 Host 标签。
 - 远端会话的消息记录、聊天输入、实时事件和右侧栏结果路由。
+- 通过 Aggregated Host 让本地 DSH 原生 Workspace、Session、Conversation、终端和右侧工具消费虚拟资源。
+- 本地 CodingNS 插件调用多个目标 Host 的适配器对话，并按目标能力显示 `unsupported`。
 - 断线、版本变化、登录过期、作用域切换和旧结果丢弃。
 
 ### Out of Scope
@@ -42,6 +47,7 @@
 - 任意 URL、任意 Host、任意 WebSocket 消息的通用代理。
 - PeerHost 之间的递归代理、代理链路和自动拓扑发现。
 - 目标 Host 插件 Bundle 写入当前 Host 的 Profile 或全局 Plugin Loader。
+- 远端独有插件、远端 UI Slot、远端设置和远端 Client Bundle 的合并或加载。
 - 改变当前 Host 的登录语义、局域网访问语义或中转访问语义。
 - 用一个裸 `workspaceId` 或裸 `sessionId` 作为跨 Host 全局主键。
 
@@ -191,12 +197,62 @@
 3. WHEN 执行验证命令 THEN System SHALL 覆盖当前 Host、局域网 PeerHost、不可达 PeerHost、版本不兼容 PeerHost、目标登录失效和旧作用域回写。
 4. WHEN PeerHost 模块代码被停用或卸载 THEN System SHALL 不影响当前 Host 原有局域网、中转、登录和其他 Feature。
 
+### 需求 13：Aggregated Host 必须成为原生 UI 的唯一数据面
+
+**用户故事：** 作为用户，我希望本地 DSH 原生组件直接显示和操作本地及多个 PeerHost 资源，而不是看到一层容易失效的 DOM 伪装。
+
+#### 验收标准
+
+1. WHEN PeerHost 聚合功能启用 THEN System SHALL 为本地 DSH Client 提供单一 Aggregated Host Transport，不要求 UI 读取远端 DOM 或创建伪造的原生节点。
+2. WHEN DSH 原生 Workspace/Session/Conversation 组件读取列表或历史 THEN System SHALL 返回当前 Host 与 PeerHost 的虚拟资源，并保留资源所属 Host 信息。
+3. WHEN DSH 原生组件执行打开、发送、停止、权限回复、工具刷新或终端操作 THEN System SHALL 根据虚拟资源 ID 路由到资源所属 Host。
+4. WHEN Aggregated Host 无法装配或当前 DSH 版本不支持所需启动扩展点 THEN System SHALL 保持 PeerHost 原生聚合不可用，并显示明确诊断；不得把 DOM 注入标记为原生成功。
+
+5. WHEN PeerHost 聚合功能启用 THEN System SHALL 由 CodingNS 单插件安装 DSH `0.2.0-rc.1` preboot shim，并包装现有 `workspaces.list`、`sessions.list` 公开快照，让原生列表显示本地与远端虚拟资源。
+6. WHEN DSH 原生 Session binding、Conversation stream 或工具 Remote 不可用 THEN System SHALL 仅将对应能力标记为 `unsupported/degraded`；不得伪造 binding，不得通过普通运行时插件覆盖 `ctx.connection`。CodingNS 已通过 `peerHost/native` 与 `peerHost/nativeStream` 提供远端 Remote connector，但仍必须以真实页面回放证明 `sessions.retain()` 全链路。
+
+### 需求 16：单插件安装和 DSH 边界
+
+**用户故事：** 作为用户，我希望安装一个 CodingNS 插件即可启用 PeerHost 聚合，不需要另行安装补丁包或运行时包。
+
+#### 验收标准
+
+1. WHEN 用户安装 PeerHost 聚合功能 THEN System SHALL 只要求安装 CodingNS 插件，不要求安装独立的 Patch Engine、PeerHost Runtime、Store 插件或第二个 PeerHost 插件。
+2. WHEN CodingNS 插件声明 `dsh.bundle.patch` THEN System SHALL 只使用其现有配置 entry 调整和插件 entry 注册语义，不以此替换 DSH 原生模块实现。
+3. WHEN DSH 将来新增更早的 pre-boot Transport Provider 能力 THEN CodingNS MAY 适配该入口，但当前实现 SHALL 继续使用插件内置 shim，不得要求用户额外安装包，也不得由安装脚本覆盖 DSH 安装目录。
+4. WHEN DSH 版本不满足 CodingNS shim 或列表 facade 的兼容条件 THEN CodingNS SHALL 保持原有单 Host 行为，并显示可解释的版本/能力诊断。
+5. WHEN 聚合功能启用 THEN System SHALL 只加载当前 Host 的 DSH/CodingNS UI Bundle、Feature、Slot 和设置；远端 Host 的 Manifest、Bundle 和 UI Slot 永远不进入加载范围。
+
+### 需求 14：本地插件状态必须是唯一 UI 基线
+
+**用户故事：** 作为维护者，我希望多 Host 聚合不引入远端插件 Bundle 冲突，同时本地 CodingNS 插件可以统一操作不同 Host 的适配器。
+
+#### 验收标准
+
+1. WHEN DSH Client 启动 Aggregated Host THEN System SHALL 只加载当前 Host 的 DSH/CodingNS Client Bundle、Feature、Slot 和设置。
+2. WHEN PeerHost 握手或摘要返回远端能力 THEN System SHALL 将其作为执行能力状态，不加载远端 Plugin Manifest、Bundle 或 UI Slot。
+3. WHEN 本地插件调用目标 Host 的适配器、文件、Git、终端或右侧工具 THEN System SHALL 使用虚拟资源作用域和目标能力摘要。
+4. WHEN 目标 Host 缺少本地 UI 所请求的能力 THEN System SHALL 返回稳定的 `unsupported` 错误，不得静默切换到当前 Host。
+5. WHEN 本地插件升级或重新装配 THEN System SHALL 不要求所有 PeerHost 同步安装 Client Bundle，但目标 Host API 兼容性必须通过能力矩阵验证。
+
+### 需求 15：虚拟资源和混合顺序必须可持久化
+
+**用户故事：** 作为用户，我希望本地和多个 PeerHost 的工作区可以在同一列表中排序，刷新页面后顺序仍然保持。
+
+#### 验收标准
+
+1. WHEN Aggregated Host 返回工作区或会话 THEN System SHALL 为每条资源生成稳定的 Host 命名空间 ID，禁止使用裸远端 ID。
+2. WHEN 用户调整本地与远端工作区的混合顺序 THEN System SHALL 将全局顺序保存到当前 Host 的聚合设置中。
+3. WHEN 用户调整同一远端 Host 内部的工作区顺序 THEN System MAY 转发目标 Host 原生排序，但不得丢失当前 Host 的全局混合顺序。
+4. WHEN PeerHost 删除、重命名或暂时不可用 THEN System SHALL 保留可恢复的顺序记录，并按稳定虚拟 ID 重新合并。
+5. WHEN 两个 Host 存在相同工作区或会话 ID THEN System SHALL 在排序、缓存、订阅、路由和 React key 中保持隔离。
+
 ## 非功能需求
 
 ### 非功能需求 1：性能
 
 1. WHEN 加载多个 PeerHost 的导航 THEN System SHALL 并发获取摘要，但每个 Host 的请求必须有独立超时和取消信号。
-2. WHEN 页面只显示工作区摘要 THEN System SHALL 不预加载所有会话全文、文件内容或远端 Bundle。
+2. WHEN 页面只显示工作区摘要 THEN System SHALL 不预加载所有会话全文、文件内容或远端 Bundle；远端 Bundle 永远不属于本 Spec 的加载范围。
 3. WHEN 收到实时事件 THEN System SHALL 使用有界队列和背压，不因单个慢 Host 阻塞其他 Host。
 4. WHEN 作用域切换 THEN System SHALL 在旧结果回写前完成 generation 校验，避免用全局锁阻塞新作用域。
 
@@ -227,6 +283,8 @@
 - 用户可以从当前 DSH 设置启用 PeerHost 模块，并在右下角管理入口添加至少一个局域网 PeerHost。
 - 目标 Host 未安装插件、版本不兼容、fingerprint 变化或未登录时，系统都能阻止代理并显示可解释状态。
 - 当前 Host 与 PeerHost 的工作区、会话和同名资源可以同时显示，且每项带 Host 标签。
+- 本地 DSH 原生 Workspace、Session、Conversation、终端和右侧工具可以消费 Aggregated Host 的虚拟资源；验证不依赖 DOM 选择器。
+- 本地 CodingNS 插件可以使用统一 UI 调用多个 PeerHost 的适配器对话，目标能力缺失时显示可解释的 `unsupported`。
 - 打开 PeerHost 会话后，中栏历史、聊天输入、实时事件和右侧工具不会请求到错误 Host。
 - 切换 Host 作用域后旧 WebSocket、缓存和异步结果不会污染新页面。
 - 全量验证可以证明当前 Host 原有局域网、中转和其他功能不受 PeerHost 模块影响。

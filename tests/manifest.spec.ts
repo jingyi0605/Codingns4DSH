@@ -25,6 +25,7 @@ test('package manifest declares the DSH bundle and client entry', () => {
       '@deepseek-ai/dsh-client-locale',
       '@deepseek-ai/dsh-client-connection',
       '@deepseek-ai/dsh-client-ui-conversation',
+      '@deepseek-ai/dsh-client-ui-tool',
       '@deepseek-ai/dsh-client-ui-layout',
       '@deepseek-ai/dsh-client-ui-sidebar',
       '@deepseek-ai/dsh-client-ui-settings',

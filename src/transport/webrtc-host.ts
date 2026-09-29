@@ -269,10 +269,14 @@ class HostSessionImpl implements WebRtcHostSession {
     const pendingCandidates = this.pendingCandidates.splice(0)
     for (const candidate of pendingCandidates) await this.peerConnection.addIceCandidate(candidate)
     const answer = await this.peerConnection.createAnswer()
-    await this.peerConnection.setLocalDescription(answer)
+    // 先发 answer 再 setLocalDescription：werift 的 setLocalDescription 内部会 await
+    // gatherCandidates()，STUN/TURN 不可达时要等满 5s 才返回。answer SDP 由 createAnswer
+    // 生成，已带 ice-ufrag/ice-pwd 与 DTLS fingerprint，候选靠 trickle 后续补发，
+    // 因此这里无需等收集完成。
     if (!this.closed) {
       this.signaling.send(JSON.stringify({ type: 'answer', sdp: answer.sdp ?? '', sessionId: this.sessionId }))
     }
+    await this.peerConnection.setLocalDescription(answer)
   }
 
   async close(): Promise<void> {

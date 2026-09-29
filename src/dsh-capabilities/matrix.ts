@@ -68,6 +68,11 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('peer-host.http-proxy', 'peer-host-http-proxy-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/features/peer-host.ts']),
   route('peer-host.ws-proxy', 'peer-host-ws-proxy-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/features/peer-host.ts']),
   route('peer-host.aggregate', 'peer-host-aggregate-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/features/peer-host.ts']),
+  route('peer-host.aggregated-transport', 'peer-host-aggregated-transport-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/modules/peer-host/aggregated-host-transport.ts']),
+  // 该能力只在 DSH 提供正式 pre-boot Transport Provider 契约后启用；0.2.0-rc.1 没有公开入口。
+  route('peer-host.client-preboot-transport', 'peer-host-client-preboot-transport-021', 'client', '>=0.2.1 <=0.2.99', 'supported', ['bootstrap/index.ts', 'client/features/peer-host.ts']),
+  route('peer-host.target-capabilities', 'peer-host-target-capabilities-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/modules/peer-host/aggregated-host-transport.ts']),
+  route('peer-host.local-plugin-baseline', 'peer-host-local-plugin-baseline-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/modules/peer-host/aggregated-host-transport.ts']),
   route('peer-host.relay-route', 'peer-host-relay-route-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/features/peer-host.ts']),
   // 移动端 PWA 与手势相关能力只在 0.2.0-rc.1 上验证过：结构化 `html` 行、`tapIndex`
   // 与布局服务在更早版本没有运行时实现，由 Registry 判为 unavailable 并给出诊断，

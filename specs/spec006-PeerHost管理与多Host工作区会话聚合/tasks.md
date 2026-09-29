@@ -1,6 +1,29 @@
 # 任务清单 - PeerHost 管理与多 Host 工作区会话聚合
 
-状态：阶段 6 进行中；阶段 1 至阶段 5 已完成，阶段 6 的 HTTP 作用域适配已完成，原生 WebSocket/UI 接入受 DSH WebServer 扩展点限制。
+状态：阶段 1 至阶段 5 已完成；原阶段 6 的 HTTP/WS/DOM 适配保留为验证和降级实现；阶段 5.1、5.2 已完成账户菜单集成和自动凭据识别；阶段 6A.0、6A.1、6A.2、6A.3、6A.6 已完成，6A.4 已完成首个原生 Remote connector 子集，6A.5、6A.7 进行中；本轮已把普通 Remote、session/follow 流、虚拟 ID 路由和目标 Host DSH Controller 接通。阶段 7.1 阻塞、7.2 进行中，仍需真实 DSH Web 回放覆盖 Conversation 全生命周期。
+
+## 2026-09-29 架构决策与下一步总览
+
+### 2026-09-29 本轮装配结果
+
+- `CodingNsHostServices.dshContext` 已向 PeerHost Feature 暴露当前 DSH Context；新增 `dsh-native-summary-source.ts`，通过结构探测读取 `workspaceRegistry` 和 `nativeSessions.listRemote()`，生成本地工作区/会话摘要。缺少稳定服务时返回 `unsupported`，不伪造空成功。
+- `createPeerHostFeature()` 默认创建 `AggregatedHostTransportService`，聚合当前 Host 和已登录 PeerHost 的 `/api/workspaces`、`/api/sessions` 摘要；远端摘要仍受 HostScope、HTTP 白名单和 token 隔离保护。
+- 新增 `peerHost/native` 固定 RPC 入口，只接受 `DSH_NATIVE_REMOTE_METHODS`，执行虚拟 ID 改写；目标 Host 没有原生 Remote connector 时明确返回 `unsupported`，不把旧 HTTP API 冒充成原生协议。
+- Client PeerHost Feature 已将单插件 preboot shim 绑定到页面 fetch/RPC bridge，启用 PeerHost 后不再无条件停留在 `requires-reload`；页面 reload 仍是让 DSH 原生 Connection 在 boot 前首次读取 facade 的必要条件。
+- 新增 `tests/dsh-native-summary-source.spec.ts`；定向 PeerHost/boot/shim/Registry 测试 20 项全部通过。完整测试唯一失败仍为受限环境不能绑定 `0.0.0.0` 的既有 Host relay 测试（`bind EPERM 0.0.0.0`）。
+- 本轮新增页面端 `peerHost/native` 与 `peerHost/nativeStream` connector：虚拟 Workspace/Session ID 会解析为 HostScope，普通 Remote 通过目标 Host 的 DSH Controller 执行，`session/follow` 等流通过受控句柄轮询转发；已覆盖目标 Host 无 Controller、作用域不匹配、流结束和关闭路径。
+- 当前仍未完成真实 DSH Web 三栏回放、`session/control` 投影与消息发送/权限回复的端到端浏览器证据；因此 6A.7 不能标记为完成，右侧栏完整能力仍以本地 CodingNS 插件为基线。
+
+本 Spec 的最终目标调整为：本地 DSH Client 和本地 CodingNS Client Bundle 作为唯一 UI/插件基线，连接一个 Aggregated Host；Aggregated Host 将当前 Host 和多个 PeerHost 的 Workspace、Session、Conversation、适配器、文件、Git、终端和右侧工具能力映射到统一的虚拟数据面。远端独有插件 Bundle、Manifest、UI Slot 和设置不进入聚合范围。
+
+剩余验收必须按以下顺序执行（6A.0、6A.1、6A.2、6A.6 已完成）：
+
+1. **6A.3 原生列表接入**：已完成；由 CodingNS 单插件内置 shim 和 Store facade，让 DSH 原生 Workspace/Session 列表消费 Aggregated Host 数据。
+2. **6A.4 原生 UI connector**：已完成 connector 子集；继续补齐 Conversation 的发送、停止、权限回复、历史分页和 `session/control` 投影的真实回放。
+3. **6A.5 本地插件适配器路由**：以当前 Host 的 CodingNS UI/设置为准，将适配器、文件、Git、终端和工具请求按虚拟 ID 路由到目标 Host。
+4. **6A.7 集成验收**：在当前 DSH 0.2.0-rc.1 fixture 和真实 DSH Web 回放中验证原生列表、消息流、工具链路和单 Host 兼容性。
+
+旧阶段 6 的 DOM 导航和会话节点只用于能力探测、协议验证和降级展示；它们不能关闭 6A 任务，也不能作为发布验收证据。
 
 ## 使用规则
 
@@ -11,6 +34,15 @@
 - `BLOCKED`：外部能力或决策阻塞，必须写明原因。
 - 每个任务完成后立即回写状态、改动文件和验证命令，不允许最后一次性补记录。
 - 任务只修改本任务列出的边界；发现跨边界需求时先在“风险与待确认项”中记录，再拆新任务。
+
+## 阶段 6A.0：DSH Web Client pre-boot Transport 接入
+
+- 状态：`DONE`（shim）；官方 Provider 契约仍为后续可选演进项
+- 已完成（2026-09-29）：CodingNS 单插件在启动页 head 注入版本锁定的 `0.2.0-rc.1` preboot facade。facade 默认透传页面 fetch，支持幂等安装、激活/停用、dispose、版本拒绝和 Desktop 外部 Transport 保护；PeerHost 设置启用时显示安装状态和刷新提示。
+- 改动文件：`src/bootstrap/dsh-peer-host-preboot-shim.ts`、`src/bootstrap/index.ts`、`src/host/index-injection.ts`、`src/client/features/peer-host.ts`、`tests/dsh-peer-host-preboot-shim.spec.ts`、`tests/host-index-injection.spec.ts`
+- 验证证据：`pnpm run typecheck`；`pnpm run build`；`node --test tests/dsh-peer-host-preboot-shim.spec.ts tests/host-index-injection.spec.ts tests/dsh-client-boot-020.spec.ts`（8 项通过）。
+- 真实边界：shim 只解决页面 Transport 的 preboot 生命周期，不伪造 `ctx.workspaces`、`ctx.sessions`，也不覆盖 Desktop Transport；原生 Store 接入仍由 6A.3/6A.4 负责。
+- 明确不做什么：不引入独立补丁包、Patch Engine、第二插件或远端 UI Bundle；不在运行中的页面重建 DSH Connection。
 
 ## 阶段 1：建立 Spec 边界、能力矩阵和内部契约
 
@@ -202,34 +234,34 @@
 
 ## 阶段 5：连接管理入口和设置面板
 
-### 5.1 增加右下角连接管理按钮
+### 5.1 集成账户菜单连接管理入口
 
 - 状态：`DONE`
-- 改动文件：`src/client/peer-host-connection-button.ts`、`src/client/features/peer-host.ts`、`src/client/features/index.ts`、`tests/peer-host-connection-button.spec.ts`
-- 验证命令：`pnpm run typecheck && pnpm run build && node --test tests/peer-host-connection-button.spec.ts`（1 项通过）
-- 已知限制：按钮已由 Feature 生命周期创建/销毁并派发打开事件，管理面板、真实 RPC 以及 DOM 集成回放留在 `5.2`；未复用 active Host 切换器。
+- 改动文件：`src/client/account-bar.ts`、`src/client/peer-host-connection-button.ts`、`src/client/features/peer-host.ts`、`src/client/features/index.ts`、`tests/peer-host-connection-button.spec.ts`、`tests/peer-host-account-menu.spec.ts`
+- 验证命令：`pnpm run typecheck && pnpm run build && node --test tests/peer-host-connection-button.spec.ts tests/peer-host-account-menu.spec.ts`（2 项通过）
+- 已完成（2026-09-29）：管理入口已从独立 Host 按钮迁移到账户菜单，继续复用既有打开事件；Feature 停用时不再额外注入重复入口。旧按钮工厂保留用于兼容既有调用方和测试，不再是默认装配路径。
 - 对应需求和设计章节：需求 1、2、12；设计 §2.1、§9.3
-- 做什么：PeerHost Feature 启用时在右下角显示按钮，停用时移除并释放订阅。
-- 做完看到什么：用户在当前工作区内打开管理面板，不需要切换页面或 Host。
+- 做什么：在统一用户管理窗口中提供 PeerHost 管理入口，停用时移除管理面板事件监听和 DOM。
+- 做完看到什么：用户从账户菜单进入 PeerHost 管理，不需要在页面上寻找第二个 Host 按钮。
 - 依赖什么：1.1、4.1；现有 account bar/右下角 UI 注册方式。
 - 先看哪些文档：`requirements.md` 需求 1、2；`design.md` §9.3。
 - 主要改哪些文件：`src/client/account-bar.ts`、PeerHost UI 组件、Feature wiring 和组件测试。
-- 明确不做什么：不复用 HostSwitcher 的 active Host 切换语义，不在停用后保留 DOM 节点。
+- 明确不做什么：不复用 HostSwitcher 的 active Host 切换语义，不在停用后保留 DOM 节点，不改变当前 Host 登录菜单语义。
 - 怎么验证：Feature 启停、按钮显示、面板打开、资源释放和移动视口测试。
 
 ### 5.2 实现 PeerHost 管理面板
 
 - 状态：`DONE`
-- 改动文件：`src/client/peer-host-management-api.ts`、`src/client/peer-host-management-panel.ts`、`src/host/features/peer-host.ts`、`src/host/features/types.ts`、`src/host/index.ts`、`src/host/rpc.ts`、`src/shared/contracts/peer-host.ts`、`src/shared/index.ts`、`tests/peer-host-management.spec.ts`
-- 验证命令：`node --test tests/peer-host-management.spec.ts`（5 项通过）；`pnpm run typecheck`；`pnpm run build`；`git diff --check`
-- 已知限制：管理面板和 Host RPC 已接入，LAN 握手使用固定 `/api/public/host-handshake`；relay 路由仍明确显示不可用。当前工作区缺少该独立包的 `node_modules` 链接，类型检查无法完整解析依赖；另有并行 `codex-driver.ts` 改动的既有类型错误。
+- 改动文件：`src/client/account-bar.ts`、`src/client/peer-host-management-api.ts`、`src/client/peer-host-management-panel.ts`、`src/host/features/peer-host.ts`、`src/host/features/types.ts`、`src/host/index.ts`、`src/host/rpc.ts`、`src/shared/contracts/peer-host.ts`、`src/shared/index.ts`、`tests/peer-host-management.spec.ts`、`tests/peer-host-account-menu.spec.ts`
+- 验证命令：`node --test tests/peer-host-management.spec.ts tests/peer-host-account-menu.spec.ts tests/peer-host-connection-button.spec.ts tests/client-entry.spec.ts tests/popup-dismiss.spec.ts`（44 项通过）；`pnpm run typecheck`；`pnpm run build`；`git diff --check`
+- 已完成（2026-09-29）：新增/登录改为面板内表单，移除 `window.prompt()`；客户端自动识别局部保护登录或中转账号并预填用户名，密码不读取、不持久化，只在一次 `peerHost/login` RPC 中提交。Relay 仍在提交前明确提示不可用，不创建假成功连接。LAN 地址和中转路由详情继续由 Host 侧保存或按隐私边界要求重新输入。
 - 对应需求和设计章节：需求 2、3、4、5、12；设计 §2.1、§5、§9.3、§11
-- 做什么：提供添加、编辑、检查、重连、登录、退出和删除 PeerHost 的表单与状态视图。
-- 做完看到什么：用户能看到名称、路由、版本、fingerprint 脱敏摘要、最近检查和错误原因。
+- 做什么：提供添加、编辑、检查、重连、登录、退出和删除 PeerHost 的表单与状态视图，并按父仓库 CodingNS 的 Host Switcher 方式把凭据入口集中到用户管理流程。
+- 做完看到什么：用户能看到名称、路由、版本、fingerprint 脱敏摘要、最近检查和错误原因；添加或登录时能看到当前账号来源的自动识别结果。
 - 依赖什么：2.1、2.2、2.3、5.1；现有设置表单规范。
 - 先看哪些文档：`requirements.md` 需求 2、3、4、5；`docs/开发规范/20260922-设置选项与表单开发规则.md`。
 - 主要改哪些文件：`src/client/features/peer-host-management.ts`、管理面板 DOM/React、locale 和测试。
-- 明确不做什么：不显示 token、密码、完整 relay ticket 或任意目标 URL 查询串。
+- 明确不做什么：不显示或读取 token、密码、完整 relay ticket 或任意目标 URL 查询串；不把中转后端未实现伪装成可用能力。
 - 怎么验证：表单校验、重复目标、删除确认、登录失败、版本错误和中转不可用状态测试。
 
 ### 5.3 接入设置项和模块启停
@@ -247,9 +279,102 @@
 - 明确不做什么：不删除用户保存的 PeerHost，不影响当前 Host 的既有开关。
 - 怎么验证：重复启停、持久配置保留、定时器/WS/iframe 清理和能力缺失降级测试。
 
-## 阶段 6：远端中栏、聊天输入、实时事件和右侧工具
+## 阶段 6A：Aggregated Host 原生聚合主线
 
-### 6.1 路由远端会话历史和实时事件
+### 6A.1 固定 Aggregated Host Transport 与能力契约
+
+- 状态：`DONE`
+- 已完成（2026-09-29）：新增 Host 侧 `AggregatedHostTransportService`，统一 RPC、fetch、stream、WebSocket、generation/reconnect 作用域；RPC/path 使用正向白名单，目标 token 仍由 Host 代理持有；Manifest/Bundle 仅允许本地插件基线，远端能力仅返回脱敏摘要。
+- 改动文件：`src/shared/contracts/peer-host.ts`、`src/shared/index.ts`、`src/dsh-capabilities/types.ts`、`src/dsh-capabilities/matrix.ts`、`src/dsh-capabilities/routes.ts`、`src/host/modules/peer-host/aggregated-host-transport.ts`、`src/host/modules/peer-host/host-api-proxy-service.ts`、`src/host/index.ts`、`tests/peer-host-aggregated-transport.spec.ts`
+- 验证命令：`pnpm run typecheck`；`pnpm run build`；`node --test tests/peer-host-aggregated-transport.spec.ts`（3 项通过）
+- 已知限制：真实 DSH Client boot 接入、虚拟 Registry 消费和目标 Host stream adapter 留在 6A.2 至 6A.4；本任务不加载远端 Bundle/Manifest，也不替换普通插件 `ctx.connection`。
+- 做什么：定义 DSH Client 所需的统一 RPC、fetch、stream、WebSocket、generation、reconnect、manifest/bundle 读取边界，以及本地插件基线和目标 Host 能力摘要。
+- 做完看到什么：本地 DSH Client 只连接一个 Aggregated Host；远端插件 Bundle、Manifest 和 UI Slot 不进入协议。
+- 依赖什么：阶段 1 至阶段 5；DSH 0.2.0-rc.1 Client boot 调查。
+- 主要改哪些文件：`src/shared/contracts/peer-host.ts`、`src/dsh-capabilities/types.ts`、`src/dsh-capabilities/matrix.ts`、`src/host/modules/peer-host/`、对应契约测试。
+- 明确不做什么：不在本任务中加载远端 Client Bundle，不开放任意 URL、任意 RPC 或任意插件接口。
+- 怎么验证：Transport hook、能力摘要、版本门禁、`unsupported` 错误和敏感字段测试。
+
+### 6A.2 实现虚拟 Workspace/Session Registry
+
+- 状态：`DONE`
+- 已完成（2026-09-29）：新增版本化虚拟 Workspace/Session ID、可逆解析函数、Host 命名空间路由表和混合 Workspace 顺序 Registry；新增 DSH 原生 Workspace/Session Remote 方法白名单、请求 ID 解码和响应/事件 ID 编码，未知资源、重复 ID、同 ID move 和离线快照均有明确处理。
+- 改动文件：`src/shared/contracts/peer-host.ts`、`src/shared/index.ts`、`src/host/modules/peer-host/peer-host-virtual-registry.ts`、`src/host/modules/peer-host/peer-host-native-protocol.ts`、`src/host/index.ts`、`tests/peer-host-virtual-registry.spec.ts`、`tests/peer-host-native-protocol.spec.ts`
+- 验证证据：`pnpm run typecheck`；`pnpm run build`；`node --test tests/peer-host-native-protocol.spec.ts tests/peer-host-virtual-registry.spec.ts tests/peer-host-aggregated-transport.spec.ts`（14 项通过）。
+- 剩余边界：原生事件流仍须由远端 DSH Remote connector 装配；本任务只提供可复用的 ID 改写和路由契约，不在 0.2.0-rc.1 上伪造 Session binding。
+- 做什么：为当前 Host 和 PeerHost 生成 Host 命名空间虚拟 ID，建立 Workspace/Session 路由表、稳定 key、事件 ID 改写和混合顺序数据结构。
+- 做完看到什么：原生 Store 可以区分 `local-host:workspace-1`、`peer-a:workspace-1` 等相同远端 ID；删除、离线和重连不会破坏顺序记账。
+- 依赖什么：6A.1、阶段 4 的 HostScope 和聚合 DTO。
+- 主要改哪些文件：`src/shared/contracts/peer-host.ts`、`src/host/modules/peer-host/peer-host-aggregate-service.ts`、新增虚拟 Registry、`tests/peer-host-aggregate.spec.ts`。
+- 明确不做什么：不把远端 Workspace/Session 写入当前 Host 原生持久 Registry，不使用裸 ID 作为跨 Host 主键。
+- 怎么验证：同名资源、虚拟 ID、路由往返、事件改写、混合排序和单 Host 失败测试。
+
+### 6A.3 验证 DSH 0.2.0-rc.1 Client boot 与原生列表接入
+
+- 状态：`DONE`
+- 做什么：在 CodingNS 单插件内安装 `0.2.0-rc.1` shim，并包装现有 `ctx.get('workspaces').list`、`ctx.get('sessions').list` 快照，让原生 Workspace/Session UI 读取聚合数据。
+- 做完看到什么：真实 DSH Web 页面不依赖 DOM 选择器即可显示带 Host 标签的虚拟 Workspace/Session，并把远端 Workspace 拖拽排序路由回 Host。
+- 依赖什么：6A.1、6A.2；`src/bootstrap/dsh-connection-adapter.ts` 和 DSH Web boot graph 调查。
+- 主要改哪些文件：`src/bootstrap/`、`src/client/dsh-h5-bootstrap.ts`、`tests/fixtures/`、新增 DSH Web boot 回放测试。
+- 明确不做什么：不以 DOM 注入成功作为原生 Store 接入证据，不覆盖 `ctx.connection`，不伪造远端 Session binding。
+- 怎么验证：`node --test tests/dsh-client-boot-020.spec.ts`（1 项通过）；`pnpm run typecheck`；`pnpm run build` 均已通过。完整 `pnpm test` 的唯一失败是受限环境无法绑定 `0.0.0.0` 的既有 Host relay 测试，与本任务无关。
+- 已完成证据：`tests/fixtures/dsh-020-aggregated-transport.mjs` 通过 `globalThis.__DSH_TRANSPORT__` 安装最小聚合 RPC；测试真实加载 0.2.0-rc.1 `@deepseek-ai/dsh-client-connection/client`，在 Client apply 前登记 Transport，随后通过公开 `registerGenerationSource/start` 建立 generation，并读取 workspace/session fixture 快照。
+- 当前边界：0.2.0-rc.1 没有公开的 pre-boot `workspaces/sessions` 替换点，但其列表快照对象可被安全包装。CodingNS 已在单插件内完成列表投影；`dsh-client-ui-workspace`/`ui-session` 后续打开远端会话仍需要真实 `workspace.follow`、Session control stream 和 Conversation history/stream。
+- 不需要的事情：不需要用户等待或安装 DSH 官方契约，不需要通用模块替换 Patch Engine，也不需要修改 DSH Host 业务逻辑。
+
+### 6A.4 接入本地原生 Workspace/Session/Conversation
+
+- 状态：`IN_PROGRESS`
+- 已完成（2026-09-29）：页面端根据聚合摘要建立虚拟 ID 到 HostScope 的映射；`/api` 原生 Remote 普通调用路由到 `peerHost/native`，流调用路由到 `peerHost/nativeStream`；Host 侧使用目标 DSH Context 的 `workspaceController`/`sessionController`，`session/follow` 保留请求参数，流句柄支持轮询、结束、关闭、过期和作用域校验。
+- 当前缺口：真实 DSH Web 的 `sessions.retain()` 全链路、`session/control` 投影、历史分页与发送/停止/权限回复尚未在浏览器 fixture 中闭环验证。
+- 做什么：让本地 DSH 原生 Workspace、Session、Conversation 组件消费虚拟 Store，并将打开、历史、实时消息、发送、停止、权限回复和问题回答路由到目标 Host。
+- 做完看到什么：本地和多个 PeerHost 工作区出现在同一个原生列表，远端会话使用原生消息和会话生命周期，不再插入插件消息 DOM。
+- 依赖什么：6A.2、6A.3、阶段 6B.1/6B.2 的 HostScope 请求适配器。
+- 主要改哪些文件：Aggregated Host adapter、`src/client/peer-host-session-controller.ts`、DSH boot/connection fixture、原生 UI 集成测试。
+- 明确不做什么：不加载远端 UI Bundle，不把远端消息复制成本地持久会话。
+- 怎么验证：多 Host 同名会话、历史、增量、切换、旧 generation 丢弃和本地会话回归测试。
+
+### 6A.5 接入本地插件的适配器与工具路由
+
+- 状态：`IN_PROGRESS`
+- 阻塞原因：原生 Conversation connector 已可路由，但右侧工具、终端和文件/Git 操作仍需按同一虚拟 Session 作用域逐项接入并完成真实页面验证；不将 DOM 降级节点宣称为原生右侧栏。
+- 做什么：以当前 Host CodingNS Client Bundle、Feature、Slot 和设置为准，将多适配器对话、文件、Git、终端和右侧工具请求按虚拟 Workspace/Session 路由到目标 Host。
+- 做完看到什么：本地 UI 可以操作多个 PeerHost；目标 Host 缺少能力时只返回稳定 `unsupported`，不静默切换到当前 Host。
+- 依赖什么：6A.1、6A.2、6A.4、阶段 6B.3 的工具白名单。
+- 主要改哪些文件：`src/client/features/`、`src/client/peer-host-scoped-client.ts`、`src/host/modules/peer-host/`、能力摘要和工具测试。
+- 明确不做什么：不聚合远端插件标签页、远端设置或远端 Plugin Manifest。
+- 怎么验证：适配器能力差异、文件/Git/终端/右侧工具作用域隔离和错误回退测试。
+
+### 6A.6 实现混合 Workspace 顺序和持久化
+
+- 状态：`DONE`
+- 已完成（2026-09-29）：Host 侧新增 `FileAggregateWorkspaceOrderStore` 和 `peerHost/workspaceOrder` RPC，混合顺序仅保存虚拟 Workspace ID；支持读取顺序、移动到指定项之前或末尾，离线资源保留顺序墓碑，重连后恢复原位置。Client 管理 API 已提供对应读写封装。
+- 改动文件：`src/host/modules/peer-host/peer-host-virtual-registry.ts`、`src/host/features/peer-host.ts`、`src/host/rpc.ts`、`src/client/peer-host-management-api.ts`、`tests/peer-host-virtual-registry.spec.ts`
+- 验证证据：`pnpm run typecheck`；`pnpm run build`；虚拟 Registry 定向测试 5 项通过；`git diff --check`。
+- 已知限制：远端 Workspace 拖拽已通过 Store facade 路由到顺序 RPC；远端 Session 归档、重命名和会话内排序仍须原生 connector。
+- 做什么：在当前 Host 保存 `virtualWorkspaceId[]` 全局顺序，支持拖拽、刷新、PeerHost 离线/恢复、删除和重命名；同 Host 局部排序按能力选择是否转发。
+- 做完看到什么：本地和多个 PeerHost 工作区可以混合排序，页面重载后顺序保持，目标 Host 恢复后资源回到正确位置。
+- 依赖什么：6A.2、6A.4、当前设置存储契约。
+- 主要改哪些文件：`src/client/` 聚合顺序 store、`src/host/settings.ts` 或对应设置边界、排序测试。
+- 明确不做什么：不把跨 Host 全局顺序写入任一目标 Host 的原生 Workspace Registry。
+- 怎么验证：拖拽/重载、同名资源、目标删除、离线恢复、版本变化和并发刷新测试。
+
+### 6A.7 原生 UI 回放与验收门禁
+
+- 状态：`IN_PROGRESS`
+- 当前阻塞：代码级 connector 和 fixture 已具备，但尚未在不影响现有 DSH Web 的独立 Profile 中完成真实 `sessions.retain()`、历史、实时事件和右侧工具回放；现有 DOM/HTTP/WS 回放仍只能作为降级和协议测试。
+- 做什么：用真实 DSH Web Profile 回放工作区、会话、消息、右侧栏、终端和适配器操作，确认 DOM 注入不再是验收路径。
+- 做完看到什么：原生 UI 在本地和至少两个 PeerHost 资源之间切换和操作，所有请求均可追踪到正确 Host。
+- 依赖什么：6A.1 至 6A.6、阶段 7 的重连治理。
+- 主要改哪些文件：`tests/peer-host-integration.spec.ts`、真实 Profile fixture、验收记录文档。
+- 明确不做什么：不依赖不可重复的公网 Host，不把远端插件 Bundle 作为验收前提。
+- 怎么验证：三版本 fixture、真实 Web 回放、四项标准验证命令和 `git diff --check`。
+
+## 阶段 6B：远端中栏、聊天输入、实时事件和右侧工具（旧适配器保留）
+
+本阶段已有实现继续保留，用于 Aggregated Host 未装配时的协议测试、能力探测和降级路径；其中 DOM 导航和会话节点不再满足最终原生聚合验收。
+
+### 6B.1 路由远端会话历史和实时事件（降级/验证）
 
 - 状态：`IN_PROGRESS`
 - 当前 Host 摘要 source 增量（2026-09-28）：新增 `PeerHostWorkspaceSessionSummarySource` 与 `createAggregateHostSource`。聚合层不再假设 DSH 私有 `SessionStore/WorkspaceRegistry` 结构；未注入稳定 source 时返回 `availability: unsupported` 和明确 `diagnostic`，不把空工作区伪装成成功。注入 source 后统一生成 `hostId/targetHostId/workspaceId/sessionId/scopeGeneration` 作用域节点。
@@ -261,7 +386,7 @@
 - 本次修复（2026-09-28）：管理 API 统一使用 `'/codingns'` RPC 通道并保留 HTTP 回退；原生导航缺失时只保留 `degraded` 状态，不再向 DSH 工作区树顶部注入错误节点。
 - 本次修复（2026-09-28）：设置页遇到只读 SettingsScope/ConfigForm 镜像时改走 Host 自有 `settings/get`、`settings/set` 边界；存在 Host writer 时不再误禁用模块开关，PeerHost 可正常停用并触发资源清理。导航重绘同时清理旧版本遗留的顶部状态节点。
 - 本次修复（2026-09-28）：远端资源 HTTP 请求适配器同步统一到 `'/codingns'` RPC 通道，并保留 `/api/codingns/peerHost/request` 回退，避免会话、文件、Git、终端和右侧工具在管理 RPC 修复后仍命中旧通道。
-- 本次维护策略（2026-09-28）：PeerHost Host/Client 描述增加强制停用标记；即使 profile 历史设置保存为 `modules.peerHost=true` 也不会启动、连接或渲染实时资源，设置开关显示关闭且不再触发 `settings/set`。待真实 DSH Host-to-Host 与 relay 验收完成后再移除该标记。
+- 本次维护策略（2026-09-29）：移除 PeerHost Host/Client 的强制停用标记，允许用户在设置页启用已实现的管理、聚合摘要和降级链路；启用时会检查单插件 preboot shim 并提示刷新。原生 Workspace/Session Store 尚未接入时仍明确显示 `degraded/unsupported`，不会伪装成完整原生聚合。
 - 补充验证：`node --test tests/peer-host-management.spec.ts tests/peer-host-ws-proxy.spec.ts tests/peer-host-native-session-ui.spec.ts`（含重连订阅恢复、缺失 sessionId 拒绝和旧面板错误隔离）。
 - 本次增量（2026-09-28）：Client WebSocket 工厂增加浏览器标准 `addEventListener` 适配，确保真实浏览器能够收到 `open/message/close/error` 事件；管理测试新增标准 WebSocket fake 回放。
 - 补充验证：`node --test tests/peer-host-management.spec.ts`（17 项通过）；`pnpm run typecheck`；`git diff --check`。
@@ -279,7 +404,7 @@
 - 明确不做什么：不把远端消息复制到当前 Host 的持久会话，不用全局 activeHost 推断路由。
 - 怎么验证：历史、增量、错误、权限请求、会话删除、切换和旧消息丢弃测试。
 
-### 6.2 路由聊天发送、停止和权限回复
+### 6B.2 路由聊天发送、停止和权限回复（降级/验证）
 
 - 状态：`IN_PROGRESS`
 - 本次增量（2026-09-28）：原生会话节点提供作用域绑定的发送、停止、权限回复和问题回答控件，所有操作直接调用 `PeerHostSessionController`，不接受客户端 target URL/token；发送 Enter、按钮事件均使用当前 HostScope。
@@ -297,7 +422,7 @@
 - 明确不做什么：不允许用户在请求体中覆盖 targetHostId 或目标 URL。
 - 怎么验证：发送、停止、权限、问答、超时和目标登录过期测试。
 
-### 6.3 路由文件、Git、终端和右侧工具
+### 6B.3 路由文件、Git、终端和右侧工具（降级/验证）
 
 - 状态：`IN_REVIEW`
 - 本次增量（2026-09-28）：原生会话面板新增作用域绑定的终端订阅、输入、调整大小、关闭和右侧工具订阅/刷新/关闭控件；这些操作通过当前 PeerHost WebSocket 订阅发送，未建立实时通道时明确显示降级，不回退到当前 Host。新增 `peerHost/aggregate` 固定 RPC 入口，Feature 启动时只用 Host 返回的摘要和自有 WS endpoint 装配导航/工具链路。
@@ -366,14 +491,14 @@
 
 ## 阶段 8：完整验证、文档和验收
 
-### 8.1 三版本和多场景集成测试
+### 8.1 三版本、多场景和 Aggregated Host 原生集成测试
 
-- 状态：`IN_PROGRESS`
-- 本次增量（2026-09-28）：新增 `tests/peer-host-integration.spec.ts`，串联当前 Host、LAN PeerHost、同名工作区/会话、单个 PeerHost 故障和目标路由隔离；补充 0.1.5-rc.3、0.1.6-alpha.2、0.1.7-rc.2 三版本显式 adapter fixture，验证原生导航、Remote Web Context 降级和 Relay unavailable 语义。
-- 当前验证（2026-09-28）：`pnpm run build`；三版本与多场景集成测试 2 项通过；PeerHost、HostRouter、隐私、Transport、原生会话 UI 定向测试共 53 项通过。完整 `pnpm test` 为 588 项，585 项通过、2 项跳过；唯一失败仍是受限环境关闭真实 tmux socket 时的 `Operation not permitted`。
+- 状态：`TODO`
+- 已有降级集成 fixture 保留，但不再等同于原生聚合验收；必须在 6A.1 至 6A.7 完成后补充 Aggregated Host Transport、虚拟 Registry、本地原生 Store 和多 Host 工具回放。
+- 当前验证（2026-09-29）：`pnpm run typecheck`、`pnpm run version:check`、`pnpm run capability:check`、`pnpm run build` 通过；PeerHost Aggregated Transport、原生 Remote 协议、虚拟 Registry、boot fixture 定向测试通过。完整 `pnpm test` 共 685 项，681 项通过、3 项跳过、1 项失败；失败为受限环境 Host relay 测试绑定 `0.0.0.0` 时的 `Operation not permitted`，与 PeerHost 聚合改动无关。
 - 做什么：把当前 Host、局域网 PeerHost、中转 PeerHost、未登录、版本不兼容、fingerprint 变化和断线恢复串成集成 fixture。
 - 做完看到什么：一套可重复测试证明单 Host 行为未被破坏，多 Host 作用域正确。
-- 依赖什么：阶段 1 至 7。
+- 依赖什么：阶段 1 至 7、阶段 6A.1 至 6A.7。
 - 先看哪些文档：`requirements.md` 全部需求；`design.md` §13、§14。
 - 主要改哪些文件：`tests/peer-host-integration.spec.ts`、三版本 fixture、测试脚本。
 - 明确不做什么：不依赖未锁定的公网 Host 或不可重复的人工环境。
@@ -382,8 +507,9 @@
 ### 8.2 文档、能力报告和索引同步
 
 - 状态：`DONE`
+- 本次增量（2026-09-29）：回写 Aggregated Host 架构决策、本地插件基线、虚拟 Workspace/Session Registry、原生 Client boot 接入门槛和 6A.1 至 6A.7 后续任务；旧 DOM/适配器实现明确降级为验证路径。
 - 完成记录（2026-09-28）：同步 Spec README、仓库 README、AGENTS Spec 索引、能力报告生成脚本与报告产物；新增 PeerHost 能力与中转边界调查、聚合与断线重连开发记录。文档明确 LAN connector、HostScope/generation、实时工具、有限重连和隐私诊断的已验证边界，并明确真实 DSH source、三版本 fixture、原生容器缺失和 relay Transport 未验证时的降级状态。
-- 改动文件：`AGENTS.md`、`README.md`、`specs/spec006-PeerHost管理与多Host工作区会话聚合/README.md`、`scripts/generate-capability-report.mjs`、`docs/生成报告/20260925-能力路由报告.md`、`docs/调查报告/20260928-PeerHost能力与中转边界调查.md`、`docs/开发记录/20260928-PeerHost聚合与断线重连实现记录.md`
+- 改动文件：`AGENTS.md`、`README.md`、`specs/spec006-PeerHost管理与多Host工作区会话聚合/README.md`、`scripts/generate-capability-report.mjs`、`docs/生成报告/20260925-能力路由报告.md`、`docs/调查报告/20260928-PeerHost能力与中转边界调查.md`、`docs/开发记录/20260928-PeerHost聚合与断线重连实现记录.md`、`docs/开发记录/20260929-DSH原生Remote协议白名单与虚拟ID改写记录.md`
 - 验证命令：`pnpm run capability:report`；`pnpm run capability:check`；`git diff --check`；文档路径与 Spec 索引扫描通过。
 - 做什么：更新能力报告、README、AGENTS Spec 索引、调查报告和开发记录，记录已实现能力与降级边界。
 - 做完看到什么：新成员能从 Spec、能力矩阵和验证证据追踪 PeerHost 的完整边界。
@@ -396,9 +522,9 @@
 ### 8.3 发布前回归与验收签字
 
 - 状态：`TODO`
-- 做什么：逐条对照需求验收标准，记录已知限制、未支持工具和发布阻塞项。
-- 做完看到什么：需求 1 至 12、非功能需求和成功定义都有测试或明确证据。
-- 依赖什么：8.1、8.2；用户确认的 fingerprint 信任策略和中转能力结论。
+- 做什么：逐条对照需求 1 至 15 验收标准，确认本地 UI/插件基线、Aggregated Host 原生 Store、混合顺序、适配器能力和未支持工具边界。
+- 做完看到什么：需求 1 至 15、非功能需求和成功定义都有测试或明确证据。
+- 依赖什么：6A.7、8.1、8.2；用户确认的 fingerprint 信任策略和中转能力结论。
 - 先看哪些文档：`requirements.md` 验收标准、`design.md` 风险项、所有测试报告。
 - 主要改哪些文件：本 Spec `tasks.md`、验收记录文档、必要的调查报告。
 - 明确不做什么：不在没有证据时把降级能力标记为 ready，不执行提交、推送或发布。

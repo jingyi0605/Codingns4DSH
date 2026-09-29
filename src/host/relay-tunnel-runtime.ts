@@ -277,6 +277,87 @@ function isSignalingOpen(socket: unknown): boolean {
   return socket.readyState === 1
 }
 
+/** werift PeerConnection 中适配层需要用到的最小结构，便于用替身测试提前 connect 的门控。 */
+export interface WeriftPeerConnectionLike {
+  readonly connectionState: string
+  readonly iceConnectionState: string
+  onicecandidate: unknown
+  ondatachannel: unknown
+  createAnswer(): Promise<{ sdp: string }>
+  setRemoteDescription(description: unknown): Promise<void>
+  setLocalDescription(description: unknown): Promise<void>
+  addIceCandidate(candidate: unknown): Promise<void>
+  addEventListener(type: string, listener: unknown): void
+  removeEventListener(type: string, listener: unknown): void
+  close(): void
+  /** werift 声明为 private，因此这里是可选字段。 */
+  connect?(): Promise<void>
+}
+
+/**
+ * 把 werift PeerConnection 适配到 Host 注入接口，并在此处实现「提前 connect」。
+ *
+ * werift 的 setLocalDescription(answer) 内部会先 await gatherCandidates() 再调用
+ * connect()。STUN/TURN 不可达时 gatherCandidates 要等满 5s 超时，ICE 检查因此被
+ * 推迟 5s，DataChannel 才迟迟不 open（实测 dead STUN 下 5.1s，正常网络 0.3s）。
+ *
+ * 这里在「首个本地候选出现」时提前调用 connect()，把 ICE 检查与剩余的候选收集
+ * 并行起来，实测可把 open 时间压到 ~0.18s。两个约束必须同时满足：
+ *   1. 必须有本地候选：零候选时调用 connect() 会让 ICE 进入 failed（实测必然失败）。
+ *   2. 必须已有 remote description：iceTransport.start() 在缺 remoteParams 时直接抛错。
+ * 提前调用是安全的：werift 收集结束后自己再调 connect() 时，ICE/DTLS 已 connected，
+ * 会命中 connect() 内部的 checkDtlsConnected 早退分支，不会重复握手。
+ */
+export function adaptWeriftPeerConnection(peer: WeriftPeerConnectionLike): HostPeerConnectionLike {
+  let originalOnIceCandidate: HostPeerConnectionLike['onicecandidate'] = null
+  let remoteDescriptionSet = false
+  let earlyConnectStarted = false
+  let peerClosed = false
+  const earlyConnect = async (): Promise<void> => {
+    if (earlyConnectStarted || peerClosed || !remoteDescriptionSet) return
+    // werift 把 connect() 声明为 private；这是唯一能绕开 5s 收集等待的入口
+    // （公开的二次 setLocalDescription 会被 signaling state 拒绝）。
+    const connect = peer.connect?.bind(peer)
+    if (typeof connect !== 'function') return
+    earlyConnectStarted = true
+    try {
+      await connect()
+    } catch {
+      // 失败不影响主流程：werift 收集结束后的 connect() 仍会重试。
+      earlyConnectStarted = false
+    }
+  }
+  return {
+    get connectionState() { return peer.connectionState },
+    get iceConnectionState() { return peer.iceConnectionState },
+    get onicecandidate() { return originalOnIceCandidate as HostPeerConnectionLike['onicecandidate'] },
+    set onicecandidate(value) {
+      originalOnIceCandidate = value
+      if (!value) { peer.onicecandidate = null; return }
+      peer.onicecandidate = ((event: { candidate?: unknown } | undefined) => {
+        value(event as never)
+        // 首个本地候选出现即触发；零候选时绝不调用 connect()。
+        if (event?.candidate) void earlyConnect()
+      }) as never
+    },
+    get ondatachannel() { return peer.ondatachannel as HostPeerConnectionLike['ondatachannel'] },
+    set ondatachannel(value) { peer.ondatachannel = value as never },
+    addEventListener: (type, listener) => { peer.addEventListener(type, listener as never) },
+    removeEventListener: (type, listener) => { peer.removeEventListener(type, listener as never) },
+    createAnswer: async () => {
+      const answer = await peer.createAnswer()
+      return { type: 'answer', sdp: answer.sdp }
+    },
+    setRemoteDescription: async (description) => {
+      await peer.setRemoteDescription(description as never)
+      remoteDescriptionSet = true
+    },
+    setLocalDescription: (description) => peer.setLocalDescription(description as never).then(() => undefined),
+    addIceCandidate: (candidate) => peer.addIceCandidate(candidate as never),
+    close: () => { peerClosed = true; peer.close() },
+  }
+}
+
 /** 为 Host answerer 创建 werift PeerConnection，并适配到 transport 的注入接口。 */
 export function createWeriftPeerConnectionFactory(identity?: HostDtlsIdentityMaterial): NonNullable<HostRelayRuntimeOptions['peerConnectionFactory']> {
   return ({ iceServers, iceTransportPolicy }) => {
@@ -290,25 +371,7 @@ export function createWeriftPeerConnectionFactory(identity?: HostDtlsIdentityMat
       maxMessageSize: DATA_CHANNEL_MAX_MESSAGE_BYTES,
       ...(certificate ? { certificates: [certificate] } : {}),
     })
-    const adapted: HostPeerConnectionLike = {
-      get connectionState() { return peer.connectionState },
-      get iceConnectionState() { return peer.iceConnectionState },
-      get onicecandidate() { return peer.onicecandidate as HostPeerConnectionLike['onicecandidate'] },
-      set onicecandidate(value) { peer.onicecandidate = value as never },
-      get ondatachannel() { return peer.ondatachannel as HostPeerConnectionLike['ondatachannel'] },
-      set ondatachannel(value) { peer.ondatachannel = value as never },
-      addEventListener: (type, listener) => { peer.addEventListener(type, listener as never) },
-      removeEventListener: (type, listener) => { peer.removeEventListener(type, listener as never) },
-      createAnswer: async () => {
-        const answer = await peer.createAnswer()
-        return { type: 'answer', sdp: answer.sdp }
-      },
-      setRemoteDescription: (description) => peer.setRemoteDescription(description as never),
-      setLocalDescription: (description) => peer.setLocalDescription(description as never).then(() => undefined),
-      addIceCandidate: (candidate) => peer.addIceCandidate(candidate as never),
-      close: () => { void peer.close() },
-    }
-    return adapted
+    return adaptWeriftPeerConnection(peer as unknown as WeriftPeerConnectionLike)
   }
 }
 

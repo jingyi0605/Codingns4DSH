@@ -8,7 +8,7 @@ import { PiAgentDriver } from '../data/build/dist/host/cli-adapters/pi-driver.js
 test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async () => {
   for (const [Driver, expectedArgs] of [
     [PiAgentDriver, ['--mode', 'rpc']],
-    [CodexAppServerDriver, ['app-server']],
+    [CodexAppServerDriver, ['app-server', '--disable', 'computer_use']],
     [GrokBuildDriver, ['agent', '--no-leader', 'stdio']],
   ] as const) {
     const calls: string[][] = []
@@ -970,6 +970,44 @@ test('Codex 原生权限请求转换为标准事件并可回传审批结果', as
   driver.dispose()
 })
 
+test('Codex 动态工具请求必须立即回绝，不能让回合永久等待宿主执行', async () => {
+  let dynamicToolReply: unknown = null
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-agent'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id?: number; method?: string; result?: unknown }
+        if (request.method === 'initialize') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        } else if (request.method === 'thread/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'dynamic-thread' } } })}\n`)
+        } else if (request.method === 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'dynamic-turn', status: 'inProgress' } } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 77, method: 'item/tool/call', params: { threadId: 'dynamic-thread', turnId: 'dynamic-turn', callId: 'call-1', tool: 'exec', arguments: '{}' } })}\n`)
+        } else if (request.id === 77) {
+          dynamicToolReply = request.result
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/completed', params: { threadId: 'dynamic-thread', turnId: 'dynamic-turn', item: { type: 'customToolCall', id: 'call-1', tool: 'exec', status: 'failed', error: '动态工具未执行' } } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'dynamic-thread', turn: { id: 'dynamic-turn', status: 'completed' } } })}\n`)
+        }
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-dynamic-tool', messages: [], prompt: '执行动态工具' })) chunks.push(chunk)
+
+  assert.deepEqual(dynamicToolReply, {
+    success: false,
+    contentItems: [{ type: 'inputText', text: 'CodingNS 不支持由 Codex 反向调用动态工具' }],
+  })
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'stop' })
+  driver.dispose()
+})
+
 test('Codex fileChange 使用工作区可写沙箱、编辑工具名和原生审批格式', async () => {
   let turnParams: Record<string, unknown> | null = null
   let approval: unknown = null
@@ -1399,5 +1437,35 @@ test('Codex 仅在失败终止通知到达后结束为 error', async () => {
     { type: 'text-delta', text: 'CODINGNS_PROVIDER_EMPTY_RESPONSE: Codex Provider 未返回任何有效事件。' },
     { type: 'finish', reason: 'error' },
   ])
+  driver.dispose()
+})
+
+test('Codex 工具完成后收到 turn/aborted 也必须收敛会话终态', async () => {
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-agent'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        else if (request.method === 'thread/start') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'thread-aborted' } } })}\n`)
+        else if (request.method === 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'turn-aborted', status: 'inProgress' } } })}\n`)
+          setImmediate(() => {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/completed', params: { threadId: 'thread-aborted', turnId: 'turn-aborted', item: { type: 'fileChange', id: 'file-change-aborted', changes: [], status: 'completed' } } })}\n`)
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/aborted', params: { threadId: 'thread-aborted', turnId: 'turn-aborted' } })}\n`)
+          })
+        }
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-aborted', messages: [], prompt: '执行编辑' })) chunks.push(chunk)
+  assert.equal(chunks.at(-1)?.type, 'finish')
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'cancel' })
   driver.dispose()
 })

@@ -7,8 +7,15 @@ import { peerHostSafeError } from './peer-host-diagnostics.js'
 const MAX_PROXY_BODY_BYTES = 4 * 1024 * 1024
 const ALLOWED_QUERY = new Set(['workspaceId', 'sessionId', 'scopeGeneration', 'cursor', 'path', 'toolId'])
 const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'authorization'])
+const ALLOWED_CLIENT_HEADERS = new Set(['accept', 'content-type', 'if-match', 'if-none-match', 'range'])
 
 export const PEER_HOST_HTTP_PROXY_RULES = [
+  { prefix: '/api/codingns/peerHost/nativeLocal', methods: ['POST'] },
+  { prefix: '/api/codingns/peerHost/native', methods: ['POST'] },
+  { prefix: '/api/codingns/peerHost/nativeStream', methods: ['POST'] },
+  { prefix: '/api/codingns/peerHost/nativeStreamOpen', methods: ['POST'] },
+  { prefix: '/api/codingns/peerHost/nativeStreamNext', methods: ['POST'] },
+  { prefix: '/api/codingns/peerHost/nativeStreamClose', methods: ['POST'] },
   { prefix: '/api/workspaces', methods: ['GET'] },
   { prefix: '/api/sessions', methods: ['GET', 'POST'] },
   { prefix: '/api/file-tree', methods: ['GET'] },
@@ -67,6 +74,7 @@ export class PeerHostHttpProxyService {
     readonly scope: HostScope
     readonly path: string
     readonly method?: string
+    readonly headers?: Readonly<Record<string, string>>
     readonly body?: string
   }): Promise<{ readonly status: number; readonly headers: readonly [string, string][]; readonly body: string }> {
     const path = typeof input.path === 'string' ? input.path : ''
@@ -82,6 +90,9 @@ export class PeerHostHttpProxyService {
       ...(input.scope.sessionId === null ? {} : { 'x-codingns-session-id': input.scope.sessionId }),
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     })
+    for (const [name, value] of Object.entries(input.headers ?? {})) {
+      if (ALLOWED_CLIENT_HEADERS.has(name.toLowerCase())) headers.set(name, value)
+    }
     const response = await this.handle(peerHostId, new Request(new URL(path, 'http://peer-host.invalid'), { method, headers, ...(body === undefined ? {} : { body }) }))
     const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
     if (response.body !== null && !contentType.includes('json') && !contentType.startsWith('text/')) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.RESPONSE_INVALID, '目标 Host 返回了不支持的响应类型')

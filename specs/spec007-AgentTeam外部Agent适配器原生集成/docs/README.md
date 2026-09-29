@@ -4,8 +4,9 @@
 
 ## 当前文档
 
+- [CodingNS Agent Team 分层集成规划](20260929-CodingNSAgentTeam分层集成规划.md)
 - [DSH 0.1.7-RC2 Agent Team 与外部适配器调查](20260928-DSH-0.1.7-RC2-AgentTeam与外部适配器调查.md)
-- [外部 Agent 代理成员技术规划](20260928-外部Agent代理成员技术规划.md)
+- [外部 Agent 代理成员技术规划（历史版本）](20260928-外部Agent代理成员技术规划.md)
 
 ## 文档规则
 

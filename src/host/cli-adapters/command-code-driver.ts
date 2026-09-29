@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import readline from 'node:readline'
 import type {
   CodingNsCliModelCatalog,
@@ -109,7 +109,8 @@ interface CommandCodeEventQueue {
 /** Command Code 的 `--output-format json` 在一个进程里跑完整个 agent 循环。 */
 interface CommandCodeTurn {
   readonly sessionId: string
-  readonly child: ChildProcessWithoutNullStreams
+  /** 当前活动子进程；撞到 --max-turns 自动续跑时会被替换成新进程。 */
+  child: ChildProcessWithoutNullStreams | undefined
   readonly transcriptPath: string
   readonly queue: CommandCodeEventQueue
   /** 当前 assistant 消息身份；正文/推理增量必须携带它，公共投影层才能切块。 */
@@ -125,6 +126,12 @@ interface CommandCodeTurn {
   aborted: boolean
   failure: Error | null
   disposed: boolean
+  /** 已启动的 CLI 尝试次数；撞到 --max-turns 自动续跑时递增。 */
+  attempt: number
+  /** 最近一次尝试是否撞到 --max-turns 上限（需要自动续跑）。 */
+  maxTurnsReached: boolean
+  /** 已产生的 assistant 消息序号；跨自动续跑保持单调，避免消息身份重复。 */
+  messageSequence: number
 }
 
 /** 单次运行内的消息标识与增量补齐状态。 */
@@ -138,6 +145,8 @@ interface CommandCodeStreamState {
   turnUsageSeen: boolean
   sessionId: string | null
   aborted: () => boolean
+  /** 本次尝试是否以 `--max-turns` 上限结束；上限不是终态，需要自动续跑。 */
+  maxTurnsReached: boolean
 }
 
 export interface CommandCodeDriverOptions {
@@ -145,7 +154,24 @@ export interface CommandCodeDriverOptions {
   readonly binaries?: readonly string[]
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
+  /** 传给 CLI 的 `--max-turns`；缺省用 DEFAULT_MAX_TURNS，避免落到 CLI 的 100 轮默认值。 */
+  readonly maxTurns?: number
+  /** 撞到 `--max-turns` 上限后自动续跑的次数上限；0 表示撞上限即结束。 */
+  readonly autoContinueMaxAttempts?: number
+  /** 自动续跑时发给 CLI 的输入文本。 */
+  readonly autoContinuePrompt?: string
 }
+
+/**
+ * CLI 的 `--max-turns` 默认只有 100，复杂任务经常在半途被截断。
+ *
+ * 这里显式抬高预算，避免“还没做完就输出结束”；真撞到了再由自动续跑兜底。
+ */
+const DEFAULT_MAX_TURNS = 500
+const DEFAULT_AUTO_CONTINUE_ATTEMPTS = 3
+const AUTO_CONTINUE_PROMPT = '继续'
+/** CLI 在 -p 模式撞到 --max-turns 时的退出码（MAX_TURNS_REACHED）。 */
+const COMMAND_CODE_MAX_TURNS_EXIT_CODE = 8
 
 /**
  * Command Code 驱动：沿用 `--session + -p + --output-format json` 的 NDJSON 事件流。
@@ -168,6 +194,9 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
+  private readonly maxTurns: number
+  private readonly autoContinueMaxAttempts: number
+  private readonly autoContinuePrompt: string
   private cachedBinary: string | null = null
   private cachedEnvironment: Record<string, string | undefined> | undefined
   private readonly processes = new Set<ChildProcessWithoutNullStreams>()
@@ -178,6 +207,15 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     this.binaries = options.binaries ?? COMMAND_CODE_BINARIES
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
+    this.maxTurns = normalizePositiveInteger(
+      options.maxTurns ?? readOptionalIntegerEnv('CODINGNS_COMMAND_CODE_MAX_TURNS'),
+      DEFAULT_MAX_TURNS,
+    )
+    this.autoContinueMaxAttempts = normalizeNonNegativeInteger(
+      options.autoContinueMaxAttempts ?? readOptionalIntegerEnv('CODINGNS_COMMAND_CODE_AUTO_CONTINUE_ATTEMPTS'),
+      DEFAULT_AUTO_CONTINUE_ATTEMPTS,
+    )
+    this.autoContinuePrompt = options.autoContinuePrompt?.trim() || AUTO_CONTINUE_PROMPT
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
@@ -306,17 +344,9 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   private startTurn(input: CodingNsCliTurnInput, binary: string): CommandCodeTurn {
     const transcriptPath = join(tmpdir(), `codingns4dsh-cc-${safeId(input.sessionId)}.jsonl`)
     writeTranscript(transcriptPath, input)
-    const args = ['--session', transcriptPath, '-p', input.prompt, '--output-format', 'json', '--tools-all', '--yolo']
-    if (input.modelId) args.push('-m', input.modelId)
-    if (input.effortId && input.effortId !== 'default' && input.effortId !== 'Default') args.push('--effort', input.effortId)
-
-    const child = this.runSpawn(binary, args, { cwd: input.cwd ?? process.cwd(), env: this.cachedEnvironment ?? commandEnvironment(binary), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: WINDOWS })
-    this.processes.add(child)
-    // 必须消费 stderr，错误内容不能回传给 DSH，避免泄露命令参数或文件片段。
-    child.stderr?.on('data', () => undefined)
     const turn: CommandCodeTurn = {
       sessionId: input.sessionId,
-      child,
+      child: undefined,
       transcriptPath,
       queue: createEventQueue(),
       currentMessageId: undefined,
@@ -327,23 +357,122 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       aborted: false,
       failure: null,
       disposed: false,
+      attempt: 0,
+      maxTurnsReached: false,
+      messageSequence: 0,
     }
-    // 未监听 error 的 ChildProcess 会把 spawn 失败升级成宿主进程异常。
-    if (typeof (child as { on?: unknown }).on === 'function') {
-      child.on('error', (error: Error) => {
-        turn.failure ??= error
-        turn.queue.close()
-      })
-    }
-    void this.pumpTurn(turn)
+    void this.runTurnAttempts(turn, input, binary)
     return turn
   }
 
-  /** 常驻读取 stdout：NDJSON 转成公共事件，进程结束后关闭队列。 */
-  private async pumpTurn(turn: CommandCodeTurn): Promise<void> {
-    const state = createStreamState(() => turn.aborted)
+  /**
+   * 运行一个 `-p` 会话，并在撞到 `--max-turns` 上限时自动续跑。
+   *
+   * CLI 的 `--max-turns` 只是“单个进程的模型往返预算”，撞到上限会退出 8 并把
+   * `subtype=max_turns` 的结果行当成正常结束。对 DSH 来说那既不是完成也不是失败：
+   * 直接结束会把只做了一半的任务显示成“已完成”。这里的策略与父仓库
+   * `CommandCodeRuntimeAdapter` 对齐——显式抬高预算，撞上限后在同一会话上自动
+   * 续跑若干次；次数用尽才按失败上报。
+   */
+  private async runTurnAttempts(
+    turn: CommandCodeTurn,
+    input: CodingNsCliTurnInput,
+    binary: string,
+  ): Promise<void> {
     try {
-      const lines = readline.createInterface({ input: turn.child.stdout })
+      while (true) {
+        turn.attempt += 1
+        // 自动续跑是同一个 DSH 运行里的下一段；消息序号必须跨尝试连续，
+        // 否则新进程会从 command-code-message-1 重新编号，公共投影层会把它
+        // 当成同一条消息继续追加，而不是开启新段。
+        const state = createStreamState(() => turn.aborted, turn.messageSequence)
+        const child = this.spawnAttempt(turn, input, binary)
+        const code = await this.readAttempt(turn, child, state)
+        turn.messageSequence = state.messageSequence
+        if (turn.disposed || turn.finished) return
+
+        const capped = state.maxTurnsReached || code === COMMAND_CODE_MAX_TURNS_EXIT_CODE
+        const autoContinueUsed = turn.attempt - 1
+        if (capped && !turn.aborted && !turn.terminal && autoContinueUsed < this.autoContinueMaxAttempts) {
+          // 续跑必须落在同一个会话上。CLI 可能把 transcript 写回会话文件、也可能
+          // 写进按 cwd 归档的 canonical 目录；两种落点都要先归位到同一个文件，
+          // 否则“继续”会开出一个没有上文的新会话，等于白跑一轮预算。
+          syncCommandCodeTranscript(turn.transcriptPath, this.homeDirectory, input.cwd)
+          continue
+        }
+        if (capped && !turn.aborted && !turn.terminal) {
+          turn.failure ??= new Error(
+            buildMaxTurnsReachedMessage(autoContinueUsed, this.maxTurns),
+          )
+        }
+        return
+      }
+    } catch (error) {
+      turn.failure ??= error instanceof Error ? error : new Error(String(error))
+    } finally {
+      turn.queue.close()
+      if (turn.child !== undefined) this.processes.delete(turn.child)
+    }
+  }
+
+  /** 启动一次 CLI 尝试；首次写入 transcript，续跑沿用同一会话文件。 */
+  private spawnAttempt(
+    turn: CommandCodeTurn,
+    input: CodingNsCliTurnInput,
+    binary: string,
+  ): ChildProcessWithoutNullStreams {
+    const args = this.buildTurnArgs(input, turn)
+    const child = this.runSpawn(binary, args, { cwd: input.cwd ?? process.cwd(), env: this.cachedEnvironment ?? commandEnvironment(binary), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: WINDOWS })
+    // 自动续跑会替换活动进程；已退出的旧尝试不能继续留在进程表里等待 terminate。
+    if (turn.child !== undefined) this.processes.delete(turn.child)
+    this.processes.add(child)
+    // 必须消费 stderr，错误内容不能回传给 DSH，避免泄露命令参数或文件片段。
+    child.stderr?.on('data', () => undefined)
+    turn.child = child
+    return child
+  }
+
+  private buildTurnArgs(input: CodingNsCliTurnInput, turn: CommandCodeTurn): string[] {
+    // 续跑沿用同一个 transcript 文件，只把输入换成续跑提示；不能再次写入历史，
+    // 否则会把 CLI 已经落盘的进度覆盖成空会话。
+    const prompt = turn.attempt > 1 ? this.autoContinuePrompt : input.prompt
+    const args = ['--session', turn.transcriptPath, '-p', prompt, '--output-format', 'json', '--tools-all', '--yolo', '--max-turns', String(this.maxTurns)]
+    if (input.modelId) args.push('-m', input.modelId)
+    if (input.effortId && input.effortId !== 'default' && input.effortId !== 'Default') args.push('--effort', input.effortId)
+    return args
+  }
+
+  /** 读取一次尝试的 stdout，直到进程结束；队列在整个运行结束前保持打开。 */
+  private async readAttempt(
+    turn: CommandCodeTurn,
+    child: ChildProcessWithoutNullStreams,
+    state: CommandCodeStreamState,
+  ): Promise<number | null> {
+    // 测试替身可能只提供 stdout/kill，没有 ChildProcess 的事件接口。
+    const emitter = typeof (child as { on?: unknown }).on === 'function'
+      ? child as unknown as {
+          on(event: string, listener: (...args: any[]) => void): unknown
+        }
+      : null
+    let exitCode: number | null = null
+    let resolveClose: (() => void) | null = null
+    const closed = new Promise<void>((resolve) => { resolveClose = resolve })
+    if (emitter !== null) {
+      // 未监听 error 的 ChildProcess 会把 spawn 失败升级成宿主进程异常。
+      // 这里只记账并结束本次尝试；队列统一由 runTurnAttempts 关闭，
+      // 避免某次尝试失败时把仍在排队的正文事件丢掉。
+      emitter.on('error', (error: Error) => {
+        turn.failure ??= error
+        resolveClose?.()
+      })
+      emitter.on('close', (code: number | null) => {
+        exitCode = code
+        if (state.maxTurnsReached) turn.maxTurnsReached = true
+        resolveClose?.()
+      })
+    }
+    try {
+      const lines = readline.createInterface({ input: child.stdout })
       try {
         for await (const line of lines) {
           if (!line.trim()) continue
@@ -360,10 +489,14 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       }
     } catch (error) {
       turn.failure ??= error instanceof Error ? error : new Error(String(error))
-    } finally {
-      turn.queue.close()
-      this.processes.delete(turn.child)
     }
+    // 没有 close 事件时，stdout 结束即视为本次尝试结束。
+    if (emitter === null) {
+      if (state.maxTurnsReached) turn.maxTurnsReached = true
+    } else {
+      await closed
+    }
+    return exitCode
   }
 
   private async *consumeTurn(
@@ -422,15 +555,18 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     turn.disposed = true
     turn.queue.close()
     if (this.turns.get(turn.sessionId) === turn) this.turns.delete(turn.sessionId)
-    this.processes.delete(turn.child)
-    terminateChildProcess(turn.child)
+    const child = turn.child
+    if (child !== undefined) {
+      this.processes.delete(child)
+      terminateChildProcess(child)
+    }
     try { rmSync(turn.transcriptPath, { force: true }) } catch { /* 临时文件清理尽力而为 */ }
   }
 }
 
-function createStreamState(aborted: () => boolean): CommandCodeStreamState {
+function createStreamState(aborted: () => boolean, messageSequence = 0): CommandCodeStreamState {
   return {
-    messageSequence: 0,
+    messageSequence,
     messageId: null,
     emittedText: '',
     emittedReasoning: '',
@@ -439,6 +575,7 @@ function createStreamState(aborted: () => boolean): CommandCodeStreamState {
     turnUsageSeen: false,
     sessionId: null,
     aborted,
+    maxTurnsReached: false,
   }
 }
 
@@ -550,6 +687,12 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
       }
       break
     }
+    case 'run_end':
+    case 'run-end':
+      // run_end 只是“CLI 侧整个 run 收尾了”，最终结算仍以紧随其后的 result 行为准。
+      // 这里只识别轮次上限：上限不是终态，等进程退出后决定续跑还是报错。
+      if (isMaxTurnsOutcome(event)) state.maxTurnsReached = true
+      break
     case 'result': {
       if (!state.perRequestUsageSeen) {
         const usage = usageChunk(recordValue(event.usage))
@@ -563,6 +706,12 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
           state.emittedText += finalText
           chunks.push(textDelta(finalText, state))
         }
+      }
+      // 撞到 CLI 的轮次上限不是终态：这里只记账，等进程退出后决定自动续跑还是
+      // 按失败上报。直接发 finish 就是“任务没做完却显示已完成”的老毛病。
+      if (isMaxTurnsOutcome(event)) {
+        state.maxTurnsReached = true
+        break
       }
       chunks.push({ type: 'finish', reason: state.aborted() ? 'cancel' : resultReason(event) })
       break
@@ -682,6 +831,118 @@ function resultReason(event: Record<string, unknown>): 'stop' | 'cancel' | 'erro
   if (event.error !== undefined || subtype === 'error' || stopReason.includes('error') || stopReason.includes('fail')) return 'error'
   if (stopReason.includes('interrupt') || stopReason.includes('cancel') || stopReason === 'aborted') return 'cancel'
   return 'stop'
+}
+
+/**
+ * 读取 CLI 的结束原因。
+ *
+ * `result` 行的 subtype/stopReason 在顶层，`run_end` 的 stopReason 藏在 result 里，
+ * 两种都要认，否则 max_turns 会被当成正常完成。
+ */
+function readOutcomeSignal(event: Record<string, unknown>): string {
+  const resultRecord = recordValue(event.result)
+  return textValue(
+    event.subtype
+      ?? event.stopReason
+      ?? event.stop_reason
+      ?? resultRecord?.stopReason
+      ?? resultRecord?.stop_reason
+      ?? resultRecord?.subtype,
+  ).trim().toLowerCase()
+}
+
+function isMaxTurnsOutcome(event: Record<string, unknown>): boolean {
+  const signal = readOutcomeSignal(event)
+  return signal.includes('max_turns') || signal.includes('max-turns') || signal.includes('maxturns')
+}
+
+/**
+ * 把 CLI 可能写到 canonical 目录的 transcript 归位到 `--session` 指定的文件。
+ *
+ * 实测 CLI 的落盘位置取决于会话文件里是否已有历史：空会话（只有 session 头）时
+ * 会把消息写进 `~/.commandcode/projects/<slug>/<id>.jsonl`，带上历史时则写回
+ * `--session` 指定的文件。两种落点都要先归位，否则自动续跑的“继续”会落在一个
+ * 没有上文的会话上。归位只做“canonical 比本地新”的单向复制，不覆盖更新的本地文件。
+ */
+function syncCommandCodeTranscript(
+  transcriptPath: string,
+  homeDirectory: string,
+  cwd: string | undefined,
+): void {
+  const canonicalPath = resolveCanonicalTranscriptPath(transcriptPath, homeDirectory, cwd)
+  if (canonicalPath === null) return
+  try {
+    if (statSync(canonicalPath).mtimeMs <= statSync(transcriptPath).mtimeMs) return
+    copyFileSync(canonicalPath, transcriptPath)
+  } catch {
+    // transcript 归位是续跑优化；文件缺失或不可读时保持现状即可。
+  }
+}
+
+/** 按 CLI 的 `<cwd slug>/<session id>` 规则定位 canonical transcript。 */
+function resolveCanonicalTranscriptPath(
+  transcriptPath: string,
+  homeDirectory: string,
+  cwd: string | undefined,
+): string | null {
+  const projectsRoot = join(homeDirectory, 'projects')
+  const id = basename(transcriptPath, '.jsonl')
+  const candidates = new Set<string>()
+  if (cwd) candidates.add(join(projectsRoot, workspaceSlug(cwd), `${id}.jsonl`))
+  // cwd 缺失或 slug 规则变化时，退化为按会话文件名在 projects 下检索。
+  try {
+    for (const entry of readdirSync(projectsRoot)) {
+      if (candidates.has(join(projectsRoot, entry, `${id}.jsonl`))) continue
+      if (existsSync(join(projectsRoot, entry, `${id}.jsonl`))) {
+        candidates.add(join(projectsRoot, entry, `${id}.jsonl`))
+        break
+      }
+    }
+  } catch {
+    // projects 目录不存在说明 CLI 还没写过 canonical transcript。
+  }
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return null
+}
+
+/** CLI 的 canonical 目录名：绝对路径去掉前导分隔符，非字母数字统一换成连字符并转小写。 */
+function workspaceSlug(workspacePath: string): string {
+  return workspacePath.replace(/[\\/]+$/, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replaceAll(':', '-')
+    .replaceAll('\\', '-')
+    .replaceAll('/', '-')
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase()
+}
+
+function buildMaxTurnsReachedMessage(autoContinueCount: number, maxTurns: number): string {
+  const autoContinueSuffix = autoContinueCount > 0
+    ? `，自动续跑 ${autoContinueCount} 次后仍未完成`
+    : ''
+  return `COMMAND_CODE_MAX_TURNS:单次运行达到 --max-turns ${maxTurns} 上限${autoContinueSuffix}，会话已停止，任务可能尚未完成。`
+}
+
+function normalizePositiveInteger(value: unknown, fallback: number): number {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : fallback
+}
+
+function normalizeNonNegativeInteger(value: unknown, fallback: number): number {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback
+}
+
+/** 读取可选的整数环境变量；与父仓库同名，便于两套 Host 用同一份运维配置。 */
+function readOptionalIntegerEnv(name: string): number | null {
+  const raw = process.env[name]?.trim()
+  if (!raw) return null
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function readSessionId(event: Record<string, unknown>): string | null {

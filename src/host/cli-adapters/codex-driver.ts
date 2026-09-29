@@ -58,6 +58,9 @@ interface CodexSession {
 // 自身的 auto-compact，避免对正常的高占用回合重复发起压缩。
 const CODEX_COMPACTION_THRESHOLD = 1
 const CODEX_COMPACTION_TIMEOUT_MS = 60_000
+// Codex CLI 默认会启用 computer_use；DSH 没有对应的桌面控制宿主，必须在
+// app-server 进程启动时关闭该 feature，避免模型进入无法完成的控制回合。
+const CODEX_APP_SERVER_ARGS = ['app-server', '--disable', 'computer_use'] as const
 
 interface PendingCodexPermission {
   readonly resolve: (value: unknown) => void
@@ -95,7 +98,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   async listModels(): Promise<CodingNsCliModelCatalog> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) return emptyCatalog()
-    const rpc = new JsonRpcProcess({ command, args: ['app-server'], spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args: CODEX_APP_SERVER_ARGS, spawn: this.runSpawn })
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 12_000)
     try {
@@ -624,7 +627,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     if (previous !== undefined && previous.cwd === input.cwd) return previous
     if (previous?.segmentedTurn !== undefined) this.closeSegmentedTurn(previous, previous.segmentedTurn)
     previous?.rpc.dispose()
-    const rpc = new JsonRpcProcess({ command, args: ['app-server'], cwd: input.cwd, spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args: CODEX_APP_SERVER_ARGS, cwd: input.cwd, spawn: this.runSpawn })
     const session = {
       rpc,
       cwd: input.cwd,
@@ -653,6 +656,15 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       const item = isRecord(params.item) ? params.item : params
       const method = typeof request.method === 'string' ? request.method : ''
       const type = typeof item.type === 'string' ? item.type : ''
+      // 动态工具服务端请求要求客户端执行任意工具。
+      // DSH 适配器只负责观察 Codex 已执行的工具，不具备安全执行任意动态工具
+      // 的能力；必须显式回绝请求，不能把它挂进权限等待表，否则 Provider 会永久等待。
+      if (method === ['item', 'tool', 'call'].join('/')) {
+        return {
+          success: false,
+          contentItems: [{ type: 'inputText', text: 'CodingNS 不支持由 Codex 反向调用动态工具' }],
+        }
+      }
       if (isQuestionEvent(`${method} ${type}`)) {
         return new Promise<unknown>((resolve) => session.pendingQuestions.set(requestId, resolve))
       }
@@ -1074,16 +1086,29 @@ function hasContextWindowError(value: unknown): boolean {
 }
 
 function readCodexTerminalReason(message: JsonRpcMessage): 'stop' | 'cancel' | 'error' | null {
-  if (message.method === 'error') {
+  const method = message.method ?? ''
+  if (method === 'error') {
     const params = isRecord(message.params) ? message.params : null
     return params?.willRetry === true ? null : 'error'
   }
-  if (message.method !== 'turn/completed') return null
+  if (!isCodexTerminalMethod(method)) return null
   const params = isRecord(message.params) ? message.params : null
   const turn = isRecord(params?.turn) ? params.turn : null
   if (turn?.status === 'failed' || hasContextWindowError(turn?.error)) return 'error'
   if (turn?.status === 'interrupted' || turn?.status === 'cancelled') return 'cancel'
+  if (method === 'turn/failed' || method === 'turn/error') return 'error'
+  if (method === 'turn/interrupted' || method === 'turn/cancelled' || method === 'turn/aborted') return 'cancel'
   return 'stop'
+}
+
+/** Codex 版本间曾使用不同的 turn 终态通知名，统一收敛到同一结束路径。 */
+function isCodexTerminalMethod(method: string): boolean {
+  return method === 'turn/completed'
+    || method === 'turn/failed'
+    || method === 'turn/error'
+    || method === 'turn/interrupted'
+    || method === 'turn/cancelled'
+    || method === 'turn/aborted'
 }
 
 /** 将 turn/start 响应里的终态归一化成父仓库使用的 turn/completed 通知。 */

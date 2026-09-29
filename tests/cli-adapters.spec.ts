@@ -199,6 +199,122 @@ test('Command Code 按 assistant 消息切换 DSH step 并只结算每次请求�
   driver.dispose()
 })
 
+test('Command Code 驱动显式抬高 --max-turns 并保留会话续跑参数', async () => {
+  let receivedArgs: string[] = []
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.69.0', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: ((command: string, args: string[]) => {
+      receivedArgs = args
+      return {
+        stdout: Readable.from([`${JSON.stringify({ type: 'result', subtype: 'success', stopReason: 'end_turn', finalText: 'ok', usage: { inputTokens: 1, outputTokens: 1 } })}\n`]),
+        stderr: { on() { return this } },
+        kill() { return true },
+      }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'max-turns-args', messages: [], prompt: '执行', modelId: 'deepseek/deepseek-v4-flash-fast', effortId: 'high' })) chunks.push(chunk)
+
+  // CLI 默认 --max-turns 100；驱动必须显式抬高预算，否则复杂任务会在半途被截断。
+  assert.equal(receivedArgs[receivedArgs.indexOf('--max-turns') + 1], '500')
+  assert.equal(receivedArgs[0], '--session')
+  assert.equal(receivedArgs[2], '-p')
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'stop' })
+})
+
+test('Command Code 撞到 --max-turns 时自动续跑并在次数用尽后按失败上报', async () => {
+  const prompts: string[] = []
+  let spawns = 0
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    autoContinueMaxAttempts: 2,
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.69.0', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: ((command: string, args: string[]) => {
+      spawns += 1
+      prompts.push(args[args.indexOf('-p') + 1]!)
+      // 每次尝试都撞上限：CLI 输出 subtype=max_turns 的结果行并以 8 退出。
+      return {
+        stdout: Readable.from([
+          `${JSON.stringify({ type: 'event', event: { type: 'run_start', sessionId: 'capped-cc' } })}\n`,
+          `${JSON.stringify({ type: 'event', event: { type: 'text_delta', delta: `第${spawns}段` } })}\n`,
+          `${JSON.stringify({ type: 'event', event: { type: 'run_end', result: { stopReason: 'max_turns', usage: { inputTokens: 10, outputTokens: 2 } } } })}\n`,
+          `${JSON.stringify({ type: 'result', subtype: 'max_turns', sessionId: 'capped-cc', stopReason: 'max_turns', finalText: '', usage: { inputTokens: 10, outputTokens: 2 } })}\n`,
+        ]),
+        stderr: { on() { return this } },
+        kill() { return true },
+        on(event: string, listener: (value: never) => void) { if (event === 'close') queueMicrotask(() => listener(8 as never)); return this },
+      }
+    }) as never,
+  })
+
+  const chunks: Array<{ type: string; text?: string; messageId?: string }> = []
+  let failure: Error | null = null
+  try {
+    for await (const chunk of driver.executeTurn({ sessionId: 'capped-cc', messages: [], prompt: '复杂任务' })) {
+      chunks.push(chunk as { type: string; text?: string })
+    }
+  } catch (error) {
+    failure = error as Error
+  }
+
+  // 首次 + 2 次自动续跑：撞上限不是完成，必须继续把预算花在同一会话上。
+  assert.equal(spawns, 3)
+  assert.deepEqual(prompts, ['复杂任务', '继续', '继续'])
+  // 每一段正文都保留；上限尝试不发 finish，避免“没做完却显示已完成”。
+  // 消息身份跨续跑单调递增，新进程的正文不会被拼回上一条 assistant 消息。
+  assert.deepEqual(chunks.filter(({ type }) => type === 'text-delta'), [
+    { type: 'text-delta', text: '第1段', messageId: 'command-code-message-1' },
+    { type: 'text-delta', text: '第2段', messageId: 'command-code-message-2' },
+    { type: 'text-delta', text: '第3段', messageId: 'command-code-message-3' },
+  ])
+  assert.equal(chunks.some(({ type }) => type === 'finish'), false)
+  // 次数用尽必须按失败上报，并带上可解释的错误码，而不是伪装成正常结束。
+  assert.match(failure?.message ?? '', /COMMAND_CODE_MAX_TURNS/u)
+  driver.dispose()
+})
+
+test('Command Code 撞到 --max-turns 后在续跑中完成时正常结束', async () => {
+  let spawns = 0
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    autoContinueMaxAttempts: 2,
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.69.0', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: (() => {
+      spawns += 1
+      const lines = spawns === 1
+        ? [
+            `${JSON.stringify({ type: 'event', event: { type: 'text_delta', delta: '先做一半' } })}\n`,
+            `${JSON.stringify({ type: 'result', subtype: 'max_turns', stopReason: 'max_turns', finalText: '', usage: { inputTokens: 10, outputTokens: 2 } })}\n`,
+          ]
+        : [
+            `${JSON.stringify({ type: 'event', event: { type: 'text_delta', delta: '全部完成' } })}\n`,
+            `${JSON.stringify({ type: 'result', subtype: 'success', stopReason: 'end_turn', finalText: '全部完成', usage: { inputTokens: 12, outputTokens: 4 } })}\n`,
+          ]
+      return {
+        stdout: Readable.from(lines),
+        stderr: { on() { return this } },
+        kill() { return true },
+        on(event: string, listener: (value: never) => void) { if (event === 'close') queueMicrotask(() => listener((spawns === 1 ? 8 : 0) as never)); return this },
+      }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'resume-ok-cc', messages: [], prompt: '跑完它' })) chunks.push(chunk)
+
+  assert.equal(spawns, 2)
+  assert.deepEqual(chunks.filter(({ type }) => type === 'finish'), [{ type: 'finish', reason: 'stop' }])
+  assert.equal(chunks.filter(({ type }) => type === 'text-delta').map((chunk) => (chunk as { text: string }).text).join(''), '先做一半全部完成')
+  driver.dispose()
+})
+
 test('Command Code 未被 Host 声明为续段时不会复用上一次运行的进程', async () => {
   let spawns = 0
   const kills: number[] = []

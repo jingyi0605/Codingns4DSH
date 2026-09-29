@@ -7,6 +7,7 @@ import type { CodingNsSettingsStore } from '../dsh-capabilities/settings-store.j
 import { LOGIN_PROTECTION_SESSION_EVENT, readLoginProtectionSession, readLoginProtectionSessionExpiresAt, writeLoginProtectionSession } from './features/login-protection-session.js'
 import { dshThemeColor } from './theme.js'
 import { attachOutsideDismissal } from './popup-dismiss.js'
+import { PEER_HOST_OPEN_EVENT } from './peer-host-connection-button.js'
 
 const SETTINGS_BUTTON_SELECTOR = 'button[aria-label="设置"]'
 const ACCOUNT_ATTRIBUTE = 'data-codingns-account-button'
@@ -14,7 +15,7 @@ const MENU_ATTRIBUTE = 'data-codingns-account-menu'
 const POLL_MS = 5_000
 const LOGIN_REFRESH_POLL_MS = 30_000
 
-interface LocalIdentity { username: string; expiresAt?: number }
+export interface LocalIdentity { username: string; expiresAt?: number }
 type ActiveAccount =
   | { kind: 'codingns'; identity: string }
   | { kind: 'local'; identity: string; scope: 'lan' | 'relay' }
@@ -320,6 +321,16 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
       menu.append(resourceRow(root, '内存', status.memoryPercent))
       menu.append(textNode(root, `${formatBytes(status.memoryUsedBytes)} / ${formatBytes(status.memoryTotalBytes)}`, 'span'))
     }
+    const peerHost = root.createElement('button')
+    peerHost.type = 'button'
+    peerHost.textContent = '管理 PeerHost'
+    peerHost.title = '连接和管理其他 DSH Host'
+    Object.assign(peerHost.style, menuButtonStyle())
+    peerHost.addEventListener('click', () => {
+      root.defaultView?.dispatchEvent(new Event(PEER_HOST_OPEN_EVENT))
+      closeMenu()
+    })
+    menu.append(peerHost)
     const logout = root.createElement('button')
     logout.type = 'button'
     logout.textContent = busy ? '注销中…' : '注销登录'
@@ -353,7 +364,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   }
 }
 
-async function fetchLocalIdentity(dom: Document): Promise<LocalIdentity | null> {
+export async function fetchLocalIdentity(dom: Document): Promise<LocalIdentity | null> {
   // Desktop 使用 dsh-app://app，不提供网页侧的本地身份路由。
   // 只有局域网/中转 HTTP 页面才需要查询这个端点；其它协议直接视为未登录，
   // 避免在 Desktop 控制台制造无意义的 404。
@@ -371,7 +382,7 @@ async function fetchLocalIdentity(dom: Document): Promise<LocalIdentity | null> 
     : null
 }
 
-function readRelayLoginIdentity(): LocalIdentity | null {
+export function readRelayLoginIdentity(): LocalIdentity | null {
   const token = readLoginProtectionSession()
   if (token === undefined) return null
   try {

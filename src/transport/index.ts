@@ -57,6 +57,7 @@ export {
   connectWebRtcClient,
   createSignalingUrl,
   extractDtlsFingerprint,
+  waitForSignalingReady,
   waitForSignalingRegistered,
   waitForPeerReady,
   type PeerConnectionLike,

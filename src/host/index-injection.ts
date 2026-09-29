@@ -1,6 +1,7 @@
 /** 启动页注入表中的全局变量记录。 */
 import type { LanAccessDshPwaSettings } from '../shared/contracts/config.js'
 import { createPwaClientScript } from './modules/pwa/index.js'
+import { createDshPeerHostPrebootShimScript } from '../bootstrap/dsh-peer-host-preboot-shim.js'
 
 export interface DshIndexInjectionEntry {
   readonly kind?: unknown
@@ -33,6 +34,9 @@ export function injectDshWebTransportOwnership(table: unknown[]): void {
   }
 
   table.push({ kind: 'script', placement: 'head', text: TRANSPORT_OWNERSHIP_SCRIPT })
+  // preboot shim 必须排在 DSH Client Bundle 之前；它只包装页面 Transport，默认
+  // 透传原有 fetch，不触碰 Desktop 已经持有的未知形状 Transport。
+  if (index < 0) table.push({ kind: 'script', placement: 'head', text: createDshPeerHostPrebootShimScript() })
 }
 
 /**

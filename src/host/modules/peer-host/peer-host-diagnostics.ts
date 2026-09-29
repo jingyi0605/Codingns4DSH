@@ -25,6 +25,9 @@ const DEFAULT_MESSAGES: Readonly<Record<PeerHostErrorCode, string>> = {
   [PEER_HOST_ERROR_CODES.RELAY_UNAVAILABLE]: '中转 PeerHost 暂不可用',
   [PEER_HOST_ERROR_CODES.STALE_GENERATION]: 'PeerHost 作用域已过期',
   [PEER_HOST_ERROR_CODES.AGGREGATE_UNAVAILABLE]: 'PeerHost 摘要暂不可用',
+  [PEER_HOST_ERROR_CODES.AGGREGATED_TRANSPORT_UNSUPPORTED]: 'Aggregated Host Transport 不受当前 DSH 版本支持',
+  [PEER_HOST_ERROR_CODES.AGGREGATED_MANIFEST_FORBIDDEN]: 'Aggregated Host 禁止加载远端 Manifest',
+  [PEER_HOST_ERROR_CODES.AGGREGATED_BUNDLE_FORBIDDEN]: 'Aggregated Host 禁止加载远端 Bundle',
 }
 
 /** 将内部错误转换成稳定错误码和固定文案，禁止回显底层异常正文。 */
