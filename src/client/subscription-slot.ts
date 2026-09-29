@@ -10,6 +10,7 @@ import { callCliRpc } from './cli-catalog.js'
 import { providerIconUrl } from './provider-icons.js'
 import { subscribeSessionAdapters } from './session-adapter-cache.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
+import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import type { SessionSnapshot } from './cli-slots.js'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -145,22 +146,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     return () => globalThis.clearInterval(timer)
   }, [eligible, usage])
 
-  useEffect(() => {
-    if (!open) return
-    const closeOnPointerDown = (event: PointerEvent): void => {
-      const target = event.target
-      if (target instanceof Node && !rootRef.current?.contains(target)) setOpen(false)
-    }
-    const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('pointerdown', closeOnPointerDown)
-    document.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.removeEventListener('pointerdown', closeOnPointerDown)
-      document.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [open])
+  useDismissOnOutsidePointer(rootRef, open, () => setOpen(false))
 
   // 未拿到真实订阅数据时不占用底部栏空间；加载状态不能伪装成订阅存在。
   if (!eligible || usage === null || (usage.sub2api === undefined && usage.deepseek === undefined && usage.providerBalance === undefined && resolveDisplayWindow(usage) === null)) return null

@@ -10,6 +10,7 @@ import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
 import { archiveCliSession, callCliRpc, errorMessage, listCliSessions, restoreCliSession } from '../cli-catalog.js'
 import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
+import { backdropPointerDownHandler } from '../popup-dismiss.js'
 import { registerExternalToolStreamUi } from '../external-tool-stream.js'
 import { startContextBreakdownDom } from '../context-breakdown-dom.js'
 import { fetchSessionAdapters, replaceSessionAdapters, sessionAdapterId } from '../session-adapter-cache.js'
@@ -259,12 +260,16 @@ interface AdapterDetailsDialogProps {
 
 function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle, t }: AdapterDetailsDialogProps): ReactElement {
   return createElement('div', {
-    role: 'dialog',
-    'aria-modal': true,
-    'aria-labelledby': 'codingns-cli-adapter-title',
+    role: 'presentation',
+    onPointerDown: backdropPointerDownHandler(onClose),
     style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: dshThemeColor.overlay },
   },
-    createElement('div', { style: { ...dshPopupSurfaceStyle, width: 'min(100%, 620px)', maxHeight: 'min(720px, 90vh)', overflow: 'auto', boxSizing: 'border-box', padding: 24, borderRadius: 8 } },
+    createElement('div', {
+      role: 'dialog',
+      'aria-modal': true,
+      'aria-labelledby': 'codingns-cli-adapter-title',
+      style: { ...dshPopupSurfaceStyle, width: 'min(100%, 620px)', maxHeight: 'min(720px, 90vh)', overflow: 'auto', boxSizing: 'border-box', padding: 24, borderRadius: 8 },
+    },
       createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
         createElement('h3', { id: 'codingns-cli-adapter-title', style: { margin: 0, fontSize: 18 } }, adapter.name),
       createElement('button', { type: 'button', onClick: onClose, style: buttonStyle, 'aria-label': t('cli.closeDetails') }, t('cli.closeDetails')),

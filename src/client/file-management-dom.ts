@@ -8,6 +8,7 @@ import { json } from '@codemirror/lang-json'
 import { markdown } from '@codemirror/lang-markdown'
 import { python } from '@codemirror/lang-python'
 import { sql } from '@codemirror/lang-sql'
+import { isOutsideDismissRoots } from './popup-dismiss.js'
 
 type FileEntryElement = HTMLElement & { dataset: DOMStringMap }
 type ClipboardState = { mode: 'copy' | 'cut'; paths: string[] }
@@ -49,12 +50,15 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
     event.stopPropagation()
     openMenu(target, event.clientX, event.clientY)
   }
-  const onDocumentClick = (event: MouseEvent): void => {
-    if (menu !== undefined && !menu.contains(event.target as Node)) closeMenu()
+  // 只关闭「点在外面」的情况：菜单项自身在 pointerdown 之后才收到 click，
+  // 若无条件关闭会把菜单从 DOM 移除，菜单项的动作永远不会执行。
+  const onDocumentPointerDown = (event: Event): void => {
+    if (menu === undefined) return
+    if (isOutsideDismissRoots(event.target, [menu])) closeMenu()
   }
   const onKeyDown = (event: KeyboardEvent): void => { if (event.key === 'Escape') closeMenu() }
   document.addEventListener('contextmenu', onContextMenu, true)
-  document.addEventListener('click', onDocumentClick, true)
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
   document.addEventListener('keydown', onKeyDown, true)
   observer?.observe(document.body, { childList: true, subtree: true })
   if (options.fileEditor) enhanceEditors()
@@ -66,7 +70,7 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
     editor = undefined
     observer?.disconnect()
     document.removeEventListener('contextmenu', onContextMenu, true)
-    document.removeEventListener('click', onDocumentClick, true)
+    document.removeEventListener('pointerdown', onDocumentPointerDown, true)
     document.removeEventListener('keydown', onKeyDown, true)
   }
 

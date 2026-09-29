@@ -533,7 +533,8 @@ function openArchiveModal(
     }
   }
   close.addEventListener('click', () => closeArchiveModal(dom))
-  overlay.addEventListener('click', (event) => { if (event.target === overlay) closeArchiveModal(dom) })
+  // 与插件其它弹层一致：按下遮罩即关闭，点在面板内部不关闭。
+  overlay.addEventListener('pointerdown', (event) => { if (event.target === overlay) closeArchiveModal(dom) })
   overlay.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') closeArchiveModal(dom)
   })

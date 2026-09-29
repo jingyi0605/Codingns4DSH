@@ -6,6 +6,7 @@ import type { CodingNsRpcClient } from './features/types.js'
 import type { CodingNsSettingsStore } from '../dsh-capabilities/settings-store.js'
 import { LOGIN_PROTECTION_SESSION_EVENT, readLoginProtectionSession, readLoginProtectionSessionExpiresAt, writeLoginProtectionSession } from './features/login-protection-session.js'
 import { dshThemeColor } from './theme.js'
+import { attachOutsideDismissal } from './popup-dismiss.js'
 
 const SETTINGS_BUTTON_SELECTOR = 'button[aria-label="设置"]'
 const ACCOUNT_ATTRIBUTE = 'data-codingns-account-button'
@@ -34,7 +35,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   let resizeObserver: ResizeObserver | undefined
   let renderQueued = false
   let rendering = false
-  let closeMenuListener: ((event: MouseEvent) => void) | undefined
+  let closeMenuDismiss: (() => void) | undefined
   let auth: CodingNsAuthSessionSnapshot = loggedOutSnapshot()
   let local: LocalIdentity | null = null
   let localSessionExpiresAt: number | null = null
@@ -186,11 +187,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
       observer?.disconnect()
       resizeObserver?.disconnect()
       root.defaultView?.removeEventListener(LOGIN_PROTECTION_SESSION_EVENT, onLoginProtectionSessionChanged)
-      if (closeMenuListener !== undefined) {
-        root.removeEventListener('click', closeMenuListener, true)
-        closeMenuListener = undefined
-      }
-      root.querySelectorAll<HTMLElement>(`[${MENU_ATTRIBUTE}]`).forEach((node) => node.remove())
+      closeMenu()
       root.querySelectorAll<HTMLElement>(`button[${ACCOUNT_ATTRIBUTE}]`).forEach((node) => node.remove())
     },
   }
@@ -231,11 +228,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   }
 
   function removeAccountBar(): void {
-    if (closeMenuListener !== undefined) {
-      root.removeEventListener('click', closeMenuListener, true)
-      closeMenuListener = undefined
-    }
-    root.querySelectorAll<HTMLElement>(`[${MENU_ATTRIBUTE}]`).forEach((node) => node.remove())
+    closeMenu()
     root.querySelectorAll<HTMLElement>(`button[${ACCOUNT_ATTRIBUTE}]`).forEach((node) => node.remove())
   }
 
@@ -270,14 +263,17 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
     return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '::ffff:127.0.0.1'
   }
 
+  /** 关闭账户菜单并注销外部点击监听；菜单与监听始终成对回收。 */
+  function closeMenu(): void {
+    root.querySelectorAll<HTMLElement>(`[${MENU_ATTRIBUTE}]`).forEach((node) => node.remove())
+    closeMenuDismiss?.()
+    closeMenuDismiss = undefined
+  }
+
   function toggleMenu(button: HTMLButtonElement): void {
     const existing = root.querySelector<HTMLElement>(`[${MENU_ATTRIBUTE}]`)
     if (existing !== null) {
-      existing.remove()
-      if (closeMenuListener !== undefined) {
-        root.removeEventListener('click', closeMenuListener, true)
-        closeMenuListener = undefined
-      }
+      closeMenu()
       return
     }
     const menu = createMenu(root)
@@ -286,15 +282,9 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
     root.body.appendChild(menu)
     renderMenu(menu)
     positionMenuUpperRight(menu, button)
-    const close = (event: MouseEvent): void => {
-      if (!menu.contains(event.target as Node) && event.target !== button) {
-        menu.remove()
-        root.removeEventListener('click', close, true)
-        if (closeMenuListener === close) closeMenuListener = undefined
-      }
-    }
-    closeMenuListener = close
-    queueMicrotask(() => root.addEventListener('click', close, true))
+    // 触发按钮算内部：它自己的 click 负责开合，pointerdown 不重复关闭。
+    // 菜单创建发生在 pointerdown 之后，因此不需要再延迟注册。
+    closeMenuDismiss = attachOutsideDismissal(root, () => [menu, button], closeMenu)
   }
 
   function positionMenuUpperRight(menu: HTMLElement, button: HTMLButtonElement): void {

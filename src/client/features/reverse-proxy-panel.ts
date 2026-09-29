@@ -24,6 +24,7 @@ import {
   dshThemeColor,
 } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
+import { backdropPointerDownHandler } from '../popup-dismiss.js'
 
 /**
  * 「中转访问服务」卡片的设置面板：Control API 地址、登录和 DSH 独立设备。
@@ -201,8 +202,8 @@ export function ReverseProxyPanel({ services, enabled, snapshot, notify }: Featu
         createElement('button', { type: 'button', 'aria-haspopup': 'dialog', disabled: controlsDisabled || busy, onClick: () => { setAddressError(''); setAddAddressOpen(true) }, style: { ...buttonStyle, flex: '0 0 auto' } }, t('relay.add')),
       ),
     ),
-    addAddressOpen && createElement('div', { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'codingns-add-address-title', style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: dshThemeColor.overlay } },
-        createElement('div', { style: { ...dshPopupSurfaceStyle, width: 'min(100%, 480px)', boxSizing: 'border-box', padding: 24, borderRadius: 8 } },
+    addAddressOpen && createElement('div', { role: 'presentation', onPointerDown: backdropPointerDownHandler(() => { setAddAddressOpen(false); setAddressError('') }), style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: dshThemeColor.overlay } },
+        createElement('div', { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'codingns-add-address-title', style: { ...dshPopupSurfaceStyle, width: 'min(100%, 480px)', boxSizing: 'border-box', padding: 24, borderRadius: 8 } },
         createElement('h3', { id: 'codingns-add-address-title', style: { margin: 0, fontSize: 18 } }, t('relay.addServer')),
         createElement('p', { style: { margin: '8px 0 16px', opacity: 0.7 } }, t('relay.addServerHint')),
         createElement('input', { type: 'url', autoFocus: true, value: newControlBaseUrl, placeholder: 'https://example.com:1443', disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setNewControlBaseUrl(event.currentTarget.value), style: fieldStyle }),

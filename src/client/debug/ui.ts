@@ -6,6 +6,7 @@ import type { CodingNsRpcClient, CodingNsRpcResult } from '../features/types.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import { debugWarn } from '../../shared/debug.js'
 import { dshButtonStyle, dshFieldStyle, dshFormRootStyle, dshThemeColor } from '../theme.js'
+import { backdropPointerDownHandler } from '../popup-dismiss.js'
 
 export const DEBUG_KIND = 'debug'
 export const DEBUG_PROVIDER_ID = 'codingns4dsh/debug'
@@ -261,8 +262,8 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: Deb
       createElement('span', { style: fieldLabelStyle }, label),
       createElement('select', { value: value[key], onChange: (event: { currentTarget: { value: string } }) => setDraft({ ...value, [key]: event.currentTarget.value as DebugProfileDraft['shellProfileId'] }), style: inputStyle }, ...options.map((option) => createElement('option', { key: option.value, value: option.value }, option.label))),
     )
-    return createElement('div', { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'debug-shortcut-title', style: formOverlayStyle },
-      createElement('form', { style: formStyle, onSubmit: (event: { preventDefault: () => void }) => { event.preventDefault(); void saveProfile(value) } },
+    return createElement('div', { role: 'presentation', onPointerDown: backdropPointerDownHandler(() => setDraft(null)), style: formOverlayStyle },
+      createElement('form', { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'debug-shortcut-title', style: formStyle, onSubmit: (event: { preventDefault: () => void }) => { event.preventDefault(); void saveProfile(value) } },
         createElement('div', { style: formHeaderStyle }, createElement('div', undefined, createElement('h3', { id: 'debug-shortcut-title', style: formTitleStyle }, value.id === null ? '添加快捷启动项' : '编辑快捷启动项'), createElement('p', { style: formHintStyle }, '保存一组可重复使用的启动参数，之后可以一键打开终端。')), createElement('button', { type: 'button', disabled: busy, onClick: () => setDraft(null), style: closeButtonStyle, 'aria-label': '关闭快捷启动项' }, '×')),
         createElement('section', { style: formSectionStyle },
           createElement('div', { style: formSectionHeaderStyle }, createElement('strong', { style: formSectionTitleStyle }, '启动入口'), createElement('span', { style: formSectionHintStyle }, '直接输入完整命令，例如 pnpm run dev --host 0.0.0.0。')),

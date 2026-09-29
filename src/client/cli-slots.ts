@@ -1,4 +1,5 @@
 import { createElement, useEffect, useRef, useState } from 'react'
+import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import type { ReactElement } from 'react'
 import type { CSSProperties } from 'react'
 import type { CodingNsCliAdapterDescriptor, CodingNsCliModel, CodingNsCliModelCatalog, CodingNsCliSessionConfig } from '../shared/contracts/cli-adapter.js'
@@ -181,7 +182,10 @@ function AgentSlot(props: CliSlotProps): ReactElement {
   const [selection, update] = useSelection(sessionId, props.rpc)
   const [agents, setAgents] = useState<readonly CodingNsCliAdapterDescriptor[]>([{ id: 'dsh', name: 'DeepSeek Harness', installed: true, enabled: true, version: null, command: null }])
   const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement | null>(null)
   const locked = isSessionLocked(session)
+
+  useDismissOnOutsidePointer(rootRef, open, () => setOpen(false))
 
   useEffect(() => {
     if (typeof document === 'undefined') return
@@ -210,7 +214,7 @@ function AgentSlot(props: CliSlotProps): ReactElement {
     setOpen(false)
   }
   const currentIcon = providerIconUrl(current.id)
-  return createElement('div', { style: agentRootStyle },
+  return createElement('div', { ref: rootRef, style: agentRootStyle },
     createElement('button', { type: 'button', className: 'codingns4dsh-agent-trigger', disabled: locked, onClick: () => setOpen((value) => !value), 'aria-label': t('cli.currentAgent', { name: current.name, locked: locked ? t('cli.locked') : '' }), 'aria-haspopup': 'menu', 'aria-expanded': open, style: { ...agentTriggerStyle, cursor: locked ? 'default' : 'pointer', opacity: locked ? 0.7 : 1 } },
       currentIcon === undefined
         ? createElement(ProviderIconFallback, { name: current.name, size: 20 })
@@ -338,6 +342,9 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const [refreshingAdapterId, setRefreshingAdapterId] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
   const [pane, setPane] = useState<ModelPane>('root')
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
+  useDismissOnOutsidePointer(rootRef, open, () => { setOpen(false); setPane('root') })
 
   const catalog = catalogState?.adapterId === selection.adapterId ? catalogState.value : null
   // 目录必须和当前适配器绑定；切换后的第一次渲染立即进入加载态，不能短暂展示旧目录。
@@ -437,7 +444,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
             createElement('span', { style: { flex: '1 1 auto' } }, effort === 'default' ? 'Default' : effort), effort === effortValue && createElement('span', { 'aria-hidden': true }, '✓'),
           )),
         ]
-  return createElement('div', { className: 'codingns4dsh-model-root', style: { position: 'relative', minWidth: 0, maxWidth: '100%', flex: '1 1 min(360px, 45cqw)', display: 'inline-flex' } },
+  return createElement('div', { ref: rootRef, className: 'codingns4dsh-model-root', style: { position: 'relative', minWidth: 0, maxWidth: '100%', flex: '1 1 min(360px, 45cqw)', display: 'inline-flex' } },
     createElement('button', { type: 'button', disabled: triggerDisabled, 'aria-label': t('cli.chooseModel', { model: modelLabel, effort: effortLabel }), 'aria-busy': loading, 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => { setPane('root'); setOpen((value) => !value) }, style: nativeTriggerStyle },
       loading && createElement('span', { className: 'codingns4dsh-cli-spinner', 'aria-hidden': true, style: modelSpinnerStyle }),
       createElement(ModelName, { label: modelLabel, loading }),
