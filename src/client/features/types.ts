@@ -8,6 +8,7 @@ import type { CodingNsSettingsSnapshot, CodingNsSettingsStore } from '../../dsh-
 import type { PeerHostScopedClient } from '../peer-host-scoped-client.js'
 import type { HostRouter } from '../host-router.js'
 import type { PeerHostSessionController } from '../peer-host-session-controller.js'
+import type { PwaNotificationClient } from '../pwa-notifications.js'
 
 /** 一次 Codingns4DSH RPC 的结果，与 DSH Connection 的结果形状一致。 */
 export type CodingNsRpcResult =
@@ -41,6 +42,12 @@ export interface CodingNsClientServices {
   readonly uiConversation?: unknown
   /** 对话工具栏 Slot 服务；测试和非 Web 宿主可以不提供。 */
   readonly slots?: SlotRegistry
+  /** DSH 布局服务；手势只用它开合左侧会话列表。 */
+  readonly layout?: { toggleSidebar(): void }
+  /** DSH 右侧栏服务；手势用它读取状态并开合右栏。 */
+  readonly sidebarRight?: { isExpanded(): boolean; toggleExpanded(): void }
+  /** 通知与推送客户端；局域网 PWA 面板用它请求权限、订阅与注销 Service Worker。 */
+  readonly notifications?: PwaNotificationClient
   /** 当前 Client Cordis 上下文；只供需要注册 DSH UI Slot 的功能模块使用。 */
   readonly uiContext?: Context
 }

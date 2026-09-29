@@ -1,4 +1,5 @@
-import { DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS, normalizeSubscriptionUsageSettings } from '../../shared/contracts/config.js'
+import { DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS, normalizeSidebarGestureSettings, normalizeSubscriptionUsageSettings } from '../../shared/contracts/config.js'
+import { debugWarn } from '../../shared/debug.js'
 import {
   clearSessionAdapters,
   fetchSessionAdapters,
@@ -7,6 +8,7 @@ import {
 import { startWorkspaceSessionLogoDom, type WorkspaceSessionLogoDomController } from '../workspace-session-logo-dom.js'
 import { startWorkspaceSessionArchiveDom, type WorkspaceSessionArchiveDomController } from '../workspace-session-archive-dom.js'
 import { startWorkspaceSessionVisibilityDom, type WorkspaceSessionVisibilityDomController } from '../workspace-session-visibility-dom.js'
+import { startMobileSidebarGestures, type MobileSidebarGestureController } from '../mobile-sidebar-gestures.js'
 import { WorkspaceSessionEnhancementPanel } from './workspace-session-enhancement-panel.js'
 import type { CodingNsClientFeatureModule } from './types.js'
 import { registerSubscriptionSlot } from '../subscription-slot.js'
@@ -38,6 +40,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
     let archiveDom: WorkspaceSessionArchiveDomController | undefined
     let visibilityDom: WorkspaceSessionVisibilityDomController | undefined
     let rightbarDom: WorkspaceSessionRightbarDomController | undefined
+    let gestureController: MobileSidebarGestureController | undefined
     let adapterRefreshTimer: ReturnType<typeof globalThis.setInterval> | undefined
     let disposeSubscription: (() => void) | undefined
     let disposeQuickPhrases: (() => void) | undefined
@@ -84,6 +87,21 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
       rightbarDom?.dispose()
       rightbarDom = undefined
     }
+    const enableGestures = (): void => {
+      if (gestureController !== undefined) {
+        gestureController.refresh()
+        return
+      }
+      gestureController = startMobileSidebarGestures({
+        ports: { layout: context.services.layout, sidebarRight: context.services.sidebarRight },
+        settings: () => normalizeSidebarGestureSettings(context.services.settings.getSnapshot().value?.workspaceSessionEnhancement),
+        onDiagnostic: (code) => debugWarn('codingns4dsh: 侧栏手势不可用', { code }),
+      })
+    }
+    const disableGestures = (): void => {
+      gestureController?.dispose()
+      gestureController = undefined
+    }
     const enableSubscription = (): void => {
       if (disposeSubscription !== undefined || context.services.slots === undefined) return
       // 查询间隔对所有适配器统一生效：slot 内部的自动刷新定时器读取同一份设置。
@@ -109,6 +127,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
       archiveDom = undefined
       disableWorkspaceVisibility()
       disableRightbarMemory()
+      disableGestures()
       disableSubscription()
       disableQuickPhrases()
     }
@@ -162,6 +181,10 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
         ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS.rememberConversationRightbarRatio
       if (rememberConversationRightbarRatio) enableRightbarMemory()
       else disableRightbarMemory()
+      const sidebarGestures = workspaceSettings?.sidebarGestures
+        ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS.sidebarGestures
+      if (sidebarGestures) enableGestures()
+      else disableGestures()
       // 用量查询间隔变更后立即重挂 slot，让新间隔马上生效，而不是等下一次开关切换。
       const subscriptionUsageSignature = JSON.stringify(context.services.settings.getSnapshot().value?.subscriptionUsage ?? null)
       if (lastSubscriptionUsageSignature === null) {

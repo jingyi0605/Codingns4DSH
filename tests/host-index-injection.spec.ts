@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
-import { injectDshWebTransportOwnership } from '../data/build/dist/host/index-injection.js'
+import { CODINGNS_PWA_METADATA_MARKUP, injectDshWebPwaMetadata, injectDshWebTransportOwnership } from '../data/build/dist/host/index-injection.js'
 
 /** 启动页在文档里执行脚本行；这里用 vm 复现页面侧的赋值结果。 */
 function runScripts(table: readonly unknown[], sandbox: Record<string, unknown>): void {
@@ -68,4 +68,55 @@ test('未知 Transport 形状不被覆盖', () => {
   const sandbox: Record<string, unknown> = { __DSH_TRANSPORT__: 'desktop-managed' }
   runScripts(table, sandbox)
   assert.equal(sandbox.__DSH_TRANSPORT__, 'desktop-managed')
+})
+
+test('PWA 元数据与注册脚本只按开关追加，关闭时零副作用', () => {
+  const disabled: unknown[] = []
+  assert.equal(injectDshWebPwaMetadata(disabled, { enabled: false, serviceWorker: true, installPrompt: true, notifications: 'off' }), false)
+  assert.deepEqual(disabled, [])
+
+  const table: unknown[] = []
+  injectDshWebTransportOwnership(table)
+  assert.equal(injectDshWebPwaMetadata(table, { enabled: true, serviceWorker: false, installPrompt: true, notifications: 'local' }), true)
+
+  const htmlRows = table.filter((entry) => (entry as { kind?: unknown }).kind === 'html')
+  const scriptRows = table.filter((entry) => (entry as { kind?: unknown }).kind === 'script')
+  assert.equal(htmlRows.length, 1)
+  const markup = String((htmlRows[0] as { html?: unknown }).html)
+  assert.equal(markup, CODINGNS_PWA_METADATA_MARKUP)
+  assert.match(markup, /apple-mobile-web-app-capable/u)
+  assert.match(markup, /apple-touch-icon/u)
+  assert.match(markup, /theme-color/u)
+  // 元数据行必须排在脚本行之前，脚本行排在最后，避免迟到覆盖其它注入。
+  assert.equal(table.indexOf(htmlRows[0]!), table.length - 2)
+  assert.equal(table.indexOf(scriptRows[scriptRows.length - 1]!), table.length - 1)
+  const text = scriptRows.map((entry) => String((entry as { text?: unknown }).text)).join('')
+  assert.doesNotMatch(text, /serviceWorker\.register/u)
+  assert.match(text, /beforeinstallprompt/u)
+})
+
+test('注入脚本在页面侧按入口与安全上下文裁剪行为', () => {
+  const table: unknown[] = []
+  injectDshWebPwaMetadata(table, { enabled: true, serviceWorker: true, installPrompt: true, notifications: 'push' })
+
+  const loopback: Record<string, unknown> = { location: { hostname: '127.0.0.1' } }
+  runScripts(table, loopback)
+  assert.equal((loopback.__CODINGNS_PWA__ as { loopback: boolean; sw: string }).loopback, true)
+  assert.equal((loopback.__CODINGNS_PWA__ as { sw: string }).sw, 'loopback')
+
+  const insecure: Record<string, unknown> = {
+    location: { hostname: '192.168.1.10' },
+    isSecureContext: false,
+    // 浏览器提供的最小事件接口；脚本在非安全上下文里也只用到这些。
+    addEventListener: () => undefined,
+    dispatchEvent: () => true,
+    CustomEvent: class {},
+    matchMedia: () => ({ matches: false }),
+  }
+  runScripts(table, insecure)
+  const state = insecure.__CODINGNS_PWA__ as { loopback: boolean; sw: string }
+  assert.equal(state.loopback, false)
+  // 非安全上下文只暴露注销入口，不注册 Service Worker。
+  assert.equal(state.sw, 'unsupported')
+  assert.equal(typeof insecure.__CODINGNS_PWA_UNREGISTER__, 'function')
 })

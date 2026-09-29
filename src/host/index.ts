@@ -7,7 +7,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { FeatureRegistry } from '../features/registry.js'
-import { captureRestartFeatureStates, enabledFeatureNames } from '../shared/contracts/config.js'
+import { captureRestartFeatureStates, enabledFeatureNames, type CodingNsSettings } from '../shared/contracts/config.js'
 import { HOST_FEATURES, createHostFeatures } from './features/index.js'
 import type { CodingNsHostServices } from './features/types.js'
 import { registerCodingNsRpc } from './rpc.js'
@@ -20,8 +20,9 @@ import { detectRuntimeDshVersion, DSH_VERSION_INJECTION_NAME } from './dsh-runti
 import { createDshCapabilityRegistry } from '../dsh-capabilities/index.js'
 import { debugInfo, debugWarn } from '../shared/debug.js'
 import { repairLegacySessionLogs } from './session-migration-repair.js'
-import { injectDshWebTransportOwnership } from './index-injection.js'
-import type { DshHostSettingsProvider } from '../dsh-capabilities/host/config-forms-adapter.js'
+import { injectDshWebPwaMetadata, injectDshWebTransportOwnership } from './index-injection.js'
+import { applyViewportFitTap } from './modules/pwa/pwa-viewport.js'
+import type { DshHostSettingsProvider, DshHostSettingsScope } from '../dsh-capabilities/host/config-forms-adapter.js'
 import { DshNativeTeamProxy, type AgentRegistry, type NativeTeamService } from './cli-adapters/native-team-proxy.js'
 
 export function apply(ctx?: Context): void {
@@ -73,11 +74,18 @@ export function apply(ctx?: Context): void {
     // 仅在 DSH 已提供 Transport 时补充 ownsHost；普通 Web 的 Codingns4DSH
     // 设置由 Client RPC 桥接持久化，不能在这里追加同名全局覆盖 Desktop。
     const indexInjectionEvents = hostCtx as unknown as { on(name: string, listener: (table: unknown[]) => void): unknown }
+    // 设置服务在下面才注册；注入回调在每个页面渲染时读取最新值，避免缓存旧开关。
+    let indexInjectionSettings: DshHostSettingsScope<CodingNsSettings> | undefined
+    // 结构化 `html` 行属于版本相关能力；缺失时 PWA 注入整块跳过（Transport 注入保持原样）。
+    let indexInjectionCapabilityReady = false
     debugInfo('codingns4dsh: host index injection registration begin')
     indexInjectionEvents.on('webserver/index-inject', (table) => {
       try {
         injectDshWebTransportOwnership(table)
         table.push({ kind: 'global', name: DSH_VERSION_INJECTION_NAME, value: dshVersion })
+        if (indexInjectionSettings !== undefined && indexInjectionCapabilityReady) {
+          injectDshWebPwaMetadata(table, indexInjectionSettings.get().lanAccessDsh.pwa)
+        }
       } catch (error) {
         // 首页认证不应因插件注入表异常变成 WebServer 的 HTTP 400。
         debugWarn('codingns4dsh: host index injection skipped', {
@@ -88,6 +96,7 @@ export function apply(ctx?: Context): void {
     debugInfo('codingns4dsh: host index injection registration ready')
     debugInfo('codingns4dsh: host settings registration begin')
     const settings = registerCodingNsSettings(settingsContext)
+    indexInjectionSettings = settings
     debugInfo('codingns4dsh: host settings registered')
     const workspaceRoots = new Map<string, string>()
     // controller 必须在功能模块和浏览器 Client 开始消费状态前完成装配。
@@ -137,6 +146,25 @@ export function apply(ctx?: Context): void {
       capabilities: [...capabilityProfile.capabilities.entries()].map(([capability, resolution]) => ({ capability, status: resolution.status, route: resolution.routeId, reason: resolution.reason ?? null })),
       diagnostics: capabilityProfile.diagnostics,
     })
+    // viewport 改写是版本相关的 raw HTML 变换：能力缺失时整块跳过并留诊断，
+    // 不能把版本判断写进业务代码。
+    indexInjectionCapabilityReady = capabilityProfile.capabilities.get('web.index-inject')?.status === 'ready'
+    if (!indexInjectionCapabilityReady) {
+      debugWarn('codingns4dsh: 跳过启动页 PWA 元数据注入', {
+        status: capabilityProfile.capabilities.get('web.index-inject')?.status ?? 'missing',
+      })
+    }
+    const indexTap = capabilityProfile.capabilities.get('web.index-tap')
+    const webServerForTaps = (hostCtx as Context & { webServer?: { tapIndex?: (transform: (html: string) => string) => () => void } }).webServer
+    if (indexTap?.status === 'ready' && typeof webServerForTaps?.tapIndex === 'function') {
+      hostCtx.effect(() => {
+        const dispose = webServerForTaps.tapIndex?.((html) => applyViewportFitTap(html))
+        return () => { dispose?.() }
+      }, 'codingns4dsh: 启动页 viewport 改写')
+      debugInfo('codingns4dsh: index viewport tap registered')
+    } else {
+      debugWarn('codingns4dsh: 跳过启动页 viewport 改写', { status: indexTap?.status ?? 'missing' })
+    }
     const registry = new FeatureRegistry<CodingNsHostServices>(servicesWithDebug, capabilityProfile)
     registry.registerMany(createHostFeatures({
       terminalStatus: {
@@ -364,12 +392,31 @@ export {
   createNodeLanAccessDshRuntime,
   normalizeLanAccessDshConfig,
   openLoginProtectionSession,
+  resolveLanAccessDshPwaResponse,
+  synthLanResponse,
   verifyLoginProtectionSession,
   type LanAccessDshRuntime,
   type LanAccessDshStream,
   type LanAccessDshLoginRecord,
   type LanAccessDshLoginStore,
+  type LanSynthesizedResponse,
 } from './lan-access-dsh.js'
+export { injectDshWebPwaMetadata, injectDshWebTransportOwnership, CODINGNS_PWA_METADATA_MARKUP } from './index-injection.js'
+export {
+  PWA_ASSET_PREFIX,
+  PWA_MANIFEST_PATH,
+  PWA_SERVICE_WORKER_PATH,
+  createLanAccessDshPwaBundle,
+  createLanAccessDshPwaProvider,
+  createPwaClientScript,
+  createPwaIconPng,
+  createPwaManifest,
+  createPwaServiceWorkerScript,
+  type LanAccessDshPwaAsset,
+  type LanAccessDshPwaBundle,
+  type LanAccessDshPwaProvider,
+} from './modules/pwa/index.js'
+export { applyViewportFitTap, hasViewportFit } from './modules/pwa/pwa-viewport.js'
 export {
   CODINGNS_TUNNEL_DATA_CHANNEL_LABEL,
   FileHostDtlsIdentityStore,

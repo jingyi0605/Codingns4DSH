@@ -1,19 +1,25 @@
-import { createElement, useState } from 'react'
+import { createElement, useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import {
   CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD,
   DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
+  normalizeSidebarGestureSettings,
+  SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS,
 } from '../../shared/contracts/config.js'
 import type { FeaturePanelProps } from './types.js'
 import { SubscriptionUsageSettingsDialog } from './subscription-usage-panel.js'
 import {
   dshFormRootStyle,
   dshSettingsButtonStyle,
+  dshSettingsFieldLabelStyle,
+  dshSettingsFieldStyle,
   dshSettingsHelpStyle,
   dshSettingsListRowStyle,
   dshThemeColor,
 } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
+
+type WorkspaceToggleField = 'showAdapterLogo' | 'showArchivedSessions' | 'showWorkspaceHiding' | 'showSubscriptionUsage' | 'showQuickPhrases' | 'rememberConversationRightbarRatio' | 'sidebarGestures'
 
 /** 工作区会话增强的单列设置面板。 */
 export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
@@ -21,8 +27,14 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, 
   const [usageSettingsOpen, setUsageSettingsOpen] = useState(false)
   const value = snapshot.value?.workspaceSessionEnhancement
     ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS
+  const gestures = normalizeSidebarGestureSettings(value)
+  const [thresholdDraft, setThresholdDraft] = useState(String(gestures.sidebarGestureThresholdPx))
+  // 设置可能在面板打开后才加载完成；只在数值真的变化时覆盖输入框草稿。
+  useEffect(() => {
+    setThresholdDraft(String(gestures.sidebarGestureThresholdPx))
+  }, [gestures.sidebarGestureThresholdPx])
   const disabled = !enabled || snapshot.status === 'loading' || !snapshot.writable
-  const updateSetting = (field: 'showAdapterLogo' | 'showArchivedSessions' | 'showWorkspaceHiding' | 'showSubscriptionUsage' | 'showQuickPhrases' | 'rememberConversationRightbarRatio', nextValue: boolean): void => {
+  const updateField = (field: string, nextValue: unknown, successMessage: string): void => {
     void services.settings.mutate([{
       op: 'set',
       path: [CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD, field],
@@ -32,10 +44,13 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, 
         notify({ kind: 'error', message: t('settings.moduleWriteRejected') })
         return
       }
-      notify({ kind: 'success', message: '工作区会话设置已保存' })
+      notify({ kind: 'success', message: successMessage })
     }).catch((cause: unknown) => {
       notify({ kind: 'error', message: cause instanceof Error ? cause.message : String(cause) })
     })
+  }
+  const updateSetting = (field: WorkspaceToggleField, nextValue: boolean): void => {
+    updateField(field, nextValue, '工作区会话设置已保存')
   }
 
   return createElement('div', {
@@ -163,6 +178,72 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, 
         onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('rememberConversationRightbarRatio', event.currentTarget.checked),
         style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
       }),
+    ),
+    createElement('label', {
+      style: dshSettingsListRowStyle,
+    },
+      createElement('span', { style: { minWidth: 0 } },
+        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.sidebarGestures')),
+        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.sidebarGesturesDescription')),
+      ),
+      createElement('input', {
+        type: 'checkbox',
+        role: 'switch',
+        'aria-label': t('workspace.sidebarGestures'),
+        checked: gestures.sidebarGestures,
+        disabled,
+        onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('sidebarGestures', event.currentTarget.checked),
+        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
+      }),
+    ),
+    gestures.sidebarGestures && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, paddingInlineStart: 12 } },
+      createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        createElement('span', { style: dshSettingsFieldLabelStyle }, t('workspace.sidebarGestureMapping')),
+        createElement('select', {
+          value: gestures.sidebarGestureMapping,
+          disabled,
+          onChange: (event: { currentTarget: { value: string } }) => updateField('sidebarGestureMapping', event.currentTarget.value, t('workspace.sidebarGestureSaved')),
+          style: dshSettingsFieldStyle,
+        },
+          createElement('option', { value: 'swipe-inward' }, t('workspace.sidebarGestureMappingInward')),
+          createElement('option', { value: 'swap' }, t('workspace.sidebarGestureMappingSwap')),
+        ),
+      ),
+      createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        createElement('span', { style: dshSettingsFieldLabelStyle }, t('workspace.sidebarGestureEdge')),
+        createElement('select', {
+          value: gestures.sidebarGestureEdge,
+          disabled,
+          onChange: (event: { currentTarget: { value: string } }) => updateField('sidebarGestureEdge', event.currentTarget.value, t('workspace.sidebarGestureSaved')),
+          style: dshSettingsFieldStyle,
+        },
+          createElement('option', { value: 'avoid' }, t('workspace.sidebarGestureEdgeAvoid')),
+          createElement('option', { value: 'edge' }, t('workspace.sidebarGestureEdgeEdge')),
+        ),
+      ),
+      createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        createElement('span', { style: dshSettingsFieldLabelStyle }, t('workspace.sidebarGestureThreshold')),
+        createElement('input', {
+          type: 'number',
+          min: SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.min,
+          max: SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.max,
+          value: thresholdDraft,
+          disabled,
+          onChange: (event: { currentTarget: { value: string } }) => setThresholdDraft(event.currentTarget.value),
+          onBlur: () => {
+            const next = Number(thresholdDraft)
+            if (!Number.isFinite(next)) {
+              setThresholdDraft(String(gestures.sidebarGestureThresholdPx))
+              return
+            }
+            const clamped = Math.min(SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.max, Math.max(SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.min, Math.round(next)))
+            setThresholdDraft(String(clamped))
+            if (clamped !== gestures.sidebarGestureThresholdPx) updateField('sidebarGestureThresholdPx', clamped, t('workspace.sidebarGestureSaved'))
+          },
+          style: dshSettingsFieldStyle,
+        }),
+        createElement('span', { style: dshSettingsHelpStyle }, t('workspace.sidebarGestureThresholdHelp')),
+      ),
     ),
     usageSettingsOpen && createElement(SubscriptionUsageSettingsDialog, {
       services,

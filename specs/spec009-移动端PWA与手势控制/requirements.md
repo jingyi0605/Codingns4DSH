@@ -58,7 +58,7 @@
 #### 验收标准
 
 1. WHEN 手机通过局域网代理请求 `GET /manifest.webmanifest` THEN System SHALL 返回插件合成的 manifest：保留上游 `start_url: "./"`、`scope: "./"`，将 `display` 覆盖为 `standalone`，补齐 `name`、`short_name`、`theme_color`、`background_color` 与 PNG 图标（至少 192×192 与 512×512，含 `purpose: maskable`）。
-2. WHEN manifest 引用图标 THEN System SHALL 从包内静态资产（`assets/pwa/`）提供它们，且这些请求不因登录保护返回 401。
+2. WHEN manifest 引用图标 THEN System SHALL 从插件提供的图标源（实现为程序化生成的 PNG：192、512、maskable 512 与 apple-touch-icon 180）提供它们，且这些请求不因登录保护返回 401。
 3. WHEN 启动页被渲染 THEN System SHALL 注入 `theme-color`、`apple-mobile-web-app-capable`、`apple-mobile-web-app-status-bar-style` 与 `apple-touch-icon`（180×180 PNG）。
 4. WHEN 启动页被渲染 THEN System SHALL 把 `<meta name="viewport">` 改写为包含 `viewport-fit=cover`，且不重复插入第二个 viewport meta。
 5. WHEN 用户从本机 127.0.0.1 或中继入口访问 THEN System SHALL 不改变这些入口的 manifest 与页面元数据行为（资产只作用于代理入口）。

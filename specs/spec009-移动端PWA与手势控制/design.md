@@ -21,7 +21,7 @@
 - Host：TypeScript、Cordis Feature、`CodingNsHostServices` 注入；代理沿用 `LanAccessDshProxy`/`LanAccessDshAuthTransform` 的请求侧解析路径。
 - 注入：只使用 `webserver/index-inject` 事件（`html`/`script`/`script-src` 行）与 `webServer.tapIndex`；响应侧保持“原样 pipe”。
 - Client：沿用 `src/client/*-dom.ts` 的控制器模式与 `CLIENT_FEATURES` 注册表；手势只调用 `ctx.layout` 与 `ctx.sidebarRight`。
-- 存储：包内静态资产 `assets/pwa/`（`package.json files` 需登记）；Host 私有状态文件沿用 `~/.config/codingns4dsh/`（0600）。
+- 存储：Host 私有状态文件沿用 `~/.config/codingns4dsh/`（0600）。图标不落包内二进制，由 `src/host/modules/pwa/pwa-icons.ts` 程序化生成（偏离与理由见 `docs/开发记录/20260929-PWA与移动端手势实现记录.md`）。
 - 网络：HTTPS 由 NGINX 反代提供；插件不做 TLS 终结、不做公网方案。
 - 平台前提：Service Worker / Push / Android 安装判定需要安全上下文；iOS 通知需要“已添加到主屏幕”（16.4+）；iOS 无 `navigator.vibrate`。
 - 禁止事项：改写上游 HTML 响应；把凭据注入页面；把登录保护放行扩大到非静态路径；用版本 `if` 代替能力探测。
@@ -159,7 +159,7 @@ DSH Web 前端（React）
 | --- | --- | --- |
 | `path` | `string` | 对外路径，如 `/__codingns/pwa/icon-192.png` |
 | `contentType` | `string` | `image/png` 等 |
-| `file` | `string` | 包内相对路径，如 `assets/pwa/icon-192.png` |
+| `file` | `string` | 规划中的包内相对路径；实现改为程序化生成字节（`pwa-icons.ts`），该字段未使用 |
 | `cacheControl` | `string` | 文件名含内容哈希时用长缓存 |
 
 #### 3.2.4 `PwaPushSubscription`（Host-only）

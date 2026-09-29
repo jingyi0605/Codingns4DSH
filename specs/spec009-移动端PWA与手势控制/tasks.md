@@ -1,6 +1,6 @@
 # 任务清单 - 移动端 PWA 与手势控制（人话版）
 
-状态：规划完成，待实施。阶段 0 已完成，阶段 1 及之后的任务全部为 `TODO`。
+状态：阶段 1–5 已全部实现并完成代码级验证（typecheck、version:check、capability:report/check、全量测试 736 passed）。真机验收项见 `docs/20260929-NGINX反代与PWA部署检查清单.md`，待设备上执行。
 
 ## 这份文档是干什么的
 
@@ -62,8 +62,8 @@
 
 ## 阶段 1：PWA 静态资产与启动页元数据（无需 HTTPS）
 
-- [ ] 1.1 代理新增合成响应助手与 PWA 资产清单
-  - 状态：TODO
+- [x]  1.1 代理新增合成响应助手与 PWA 资产清单
+  - 状态：DONE；新增 `src/host/modules/pwa/`（图标生成、manifest/Service Worker/资产清单与 provider）与 `synthLanResponse`，单测 `tests/pwa-assets.spec.ts` 覆盖编码、缓存与白名单判定。  - 状态：DONE；`resolveLanAccessDshPwaResponse` 覆盖 `/manifest.webmanifest` 与 `/__codingns/pwa/*`（192/512/maskable 512/apple-touch-icon 180）；未启用时回退上游 manifest。偏离：图标由 `pwa-icons.ts` 程序化生成，未落 `assets/pwa/` 二进制，理由见开发记录。  - 状态：DONE；`injectDshWebPwaMetadata` 在 `webserver/index-inject` 表追加 head 行（theme-color、apple 元数据、apple-touch-icon）与注册脚本行，`tests/host-index-injection.spec.ts` 覆盖开关裁剪与脚本沙箱行为。  - 状态：DONE；`web.index-tap` 进入矩阵与运行时路由（`index-tap-020`），`applyViewportFitTap` 幂等追加 `viewport-fit=cover`；能力缺失时整块跳过并留诊断。  - 状态：DONE；`LanAccessDshSettings.pwa`（enabled/serviceWorker/installPrompt/notifications）含默认值、校验与归一化，面板新增 PWA 档与中英文案，`tests/contracts.spec.ts` 覆盖默认值。  - 状态：DONE；PWA 相关用例全绿（`tests/pwa-assets.spec.ts`、扩展后的 `tests/lan-access-dsh.spec.ts`），typecheck 通过。  - 状态：DONE；`/sw.js` 由代理合成：GET/HEAD 放行、其余方法 405、关闭时回退原有语义；`tests/lan-access-dsh.spec.ts` 覆盖。  - 状态：DONE；注入脚本仅在 `isSecureContext` 且 manifest 带 `codingns4dsh` 标记时注册，回环地址短路；Service Worker 支持 `codingns-sw-unregister` 消息，面板提供「注销 Service Worker」按钮。  - 状态：DONE；登录页、插件设置页与安装引导条补 `env(safe-area-inset-*)`，登录页同时补 `viewport-fit=cover` 与 apple 元数据；上游界面整体适配列入已知限制。  - 状态：DONE；`startPwaInstallPrompt` 捕获 `beforeinstallprompt`、按「未安装且未忽略」显示引导条，iOS 走手动指引文案，由客户端 lan-access 功能模块随设置启停并清理。  - 状态：DONE；Service Worker 与安装引导相关用例全绿（`tests/pwa-assets.spec.ts`、`tests/host-index-injection.spec.ts`），受 HTTPS 限制的真机项见部署清单。  - 状态：DONE；`layout.columns`（`layout-columns-020`）与 `sidebar.right.expand`（`sidebar-right-expand-020`）进入矩阵与运行时路由；`tests/dsh-capability-registry.spec.ts` 断言 0.2.0-rc.1 就绪、0.1.5-rc.3/0.1.6-alpha.2/0.1.7-rc.2 不可用并带 `CAPABILITY_VERSION_UNSUPPORTED`。  - 状态：DONE；`detectSidebarGesture` 纯函数覆盖阈值、方向锁、边缘避让与方向映射，`tests/mobile-sidebar-gestures.spec.ts` 全部通过。  - 状态：DONE；控制器在启用时挂 `touchstart/touchmove/touchend` 与 `popstate`，只调 `toggleSidebar()`/`toggleExpanded()`；右栏全屏压 history、返回手势先关栏；客户端注入列表补 `layout`，服务类型补 `layout`/`sidebarRight`。  - 状态：DONE；`WorkspaceSessionEnhancementSettings` 新增 4 个手势字段与归一化，面板补方向/起边/阈值控件与中英文案。  - 状态：DONE；手势用例全绿，含「启用但无可用服务」时给出 `CODINGNS_GESTURE_CAPABILITY_MISSING` 的降级路径。  - 状态：DONE；`pwa-notifications.ts` 提供权限状态、`requestPermission` 与 `notify`；面板提供请求权限与发送测试通知，权限被拒或平台不支持时给出解释而不是静默失败。  - 状态：DONE；`src/host/modules/pwa/pwa-push.ts` 实现 VAPID（ES256 JWT）与 aes128gcm 载荷加密、订阅存储与失效清理；RPC `pwa/vapid|push/subscribe|push/unsubscribe|push/test|push/status` 与面板订阅/取消/测试；`tests/pwa-push.spec.ts` 做往返解密与 410 清理验证。  - 状态：DONE；通知与推送用例全绿；真机通知表现待按部署清单在设备上确认。  - 状态：DONE；白名单仅放行 manifest/`sw.js`/图标且合成内容不含凭据，未启用时回落上游；回环旁路在面板与部署清单中显式提示；Service Worker 的空 fetch 监听不缓存登录页与 `/api`，并提供注销逃生口。  - 状态：DONE；产出 `specs/spec009-移动端PWA与手势控制/docs/20260929-NGINX反代与PWA部署检查清单.md`（拓扑、必须做、验证命令、真机验收、回滚）。  - 状态：DONE；四条新能力覆盖四版本 fixture；`pnpm run capability:report` 与 `pnpm run capability:check` 通过；全量 `node --test tests/*.spec.ts` 736 passed / 0 failed。  - 状态：DONE；新增 `docs/开发记录/20260929-PWA与移动端手势实现记录.md`，并同步 `AGENTS.md` 的 Spec 索引与文档索引（含部署清单条目）。  - 状态：DONE；需求、设计、实现、测试与已知限制逐项核对：真机验收、iOS 平台限制、上游界面安全区、同机 NGINX 回环旁路、推送事件源未接，均已在开发记录与 Spec 风险项中说明。
   - 这一步到底做什么：在 `src/host/lan-access-dsh.ts` 增加 `synthLanResponse`（原字节 + 自定义 Content-Type，不做 HTML 转义），并新增 `PwaAssetRegistry`（manifest 模板、图标文件名、SW 生成器入口）；把 PNG 资产放进 `assets/pwa/` 并登记到 `package.json files`。
   - 做完你能看到什么：代理能输出任意内容类型与字节的响应，资产清单成为唯一来源。
   - 先依赖什么：0.3。
@@ -75,8 +75,8 @@
   - 对应需求：需求 1、8。
   - 对应设计：§3.3.1、§3.2.3。
 
-- [ ] 1.2 覆盖 `/manifest.webmanifest` 并补齐 PNG 图标
-  - 状态：TODO
+- [x]  1.2 覆盖 `/manifest.webmanifest` 并补齐 PNG 图标
+
   - 这一步到底做什么：把现有白名单分支从 `'pass'` 改为「启用时合成插件 manifest」；manifest 保留 `start_url/scope: "./"`，`display` 覆盖为 `standalone`，补齐 192/512 与 maskable 图标，并加入标记字段供后续 SW 探测；图标路径 `/__codingns/pwa/<file>` 由代理合成。
   - 做完你能看到什么：手机上看到的名称、图标、显示模式正确；未启用时回退上游 manifest。
   - 先依赖什么：1.1。
@@ -88,8 +88,8 @@
   - 对应需求：需求 1。
   - 对应设计：§3.3.2、§7.2。
 
-- [ ] 1.3 注入 apple 元数据、theme-color 与 apple-touch-icon
-  - 状态：TODO
+- [x]  1.3 注入 apple 元数据、theme-color 与 apple-touch-icon
+
   - 这一步到底做什么：在 `src/host/index-injection.ts` 增加 `injectDshWebPwaMetadata`，通过 `html` 行追加 theme-color、`apple-mobile-web-app-*`、`apple-touch-icon`；在 `src/host/index.ts` 的 `webserver/index-inject` 监听里调用，异常与现有注入互不影响。
   - 做完你能看到什么：iOS 添加到主屏后独立窗口可全屏，状态栏样式与图标正确。
   - 先依赖什么：1.1（图标资源）。
@@ -101,8 +101,8 @@
   - 对应需求：需求 1、7、8。
   - 对应设计：§3.3.3。
 
-- [ ] 1.4 新增 `web.index-tap` 能力并改写 `viewport-fit`
-  - 状态：TODO
+- [x]  1.4 新增 `web.index-tap` 能力并改写 `viewport-fit`
+
   - 这一步到底做什么：在 `src/dsh-capabilities/` 新增 `web.index-tap` 能力（探测 `webServer.tapIndex` 为函数），实现 `applyViewportFitTap`（幂等合并 `viewport-fit=cover`，无 meta 时不动），通过能力 profile 决定是否注册。
   - 做完你能看到什么：页面在刘海/圆角屏上全屏铺满；能力缺失时明确跳过并有诊断。
   - 先依赖什么：1.3。
@@ -114,8 +114,8 @@
   - 对应需求：需求 1、9。
   - 对应设计：§3.3.4、§3.3.5。
 
-- [ ] 1.5 登记 PWA 设置契约与面板开关
-  - 状态：TODO
+- [x]  1.5 登记 PWA 设置契约与面板开关
+
   - 这一步到底做什么：为 `LanAccessDshSettings` 增加 `pwa` 子对象（enabled/serviceWorker/installPrompt/notifications），实现 normalizer 兼容旧配置；在 `LanAccessPanel` 增加开关组与“同机 NGINX 会绕过登录保护”的提示文案。
   - 做完你能看到什么：用户能在设置页控制 PWA 资产，默认值保守（`enabled: true`、`serviceWorker: false`）。
   - 先依赖什么：1.2。
@@ -129,8 +129,8 @@
 
 ### 阶段检查
 
-- [ ] 1.6 PWA 基础资产检查
-  - 状态：TODO
+- [x]  1.6 PWA 基础资产检查
+
   - 这一步到底做什么：确认 iOS（A2HS 独立窗口、图标、全屏）与 Android（图标正确）在 HTTP 直连下已受益，且未启用时行为与改造前一致。
   - 做完你能看到什么：阶段 2 的 HTTPS 工作可以只关注 SW/引导/通知，不再回头补元数据。
   - 先依赖什么：1.1–1.5。
@@ -144,8 +144,8 @@
 
 ## 阶段 2：Service Worker、safe-area 与安装引导（HTTPS 之后）
 
-- [ ] 2.1 合成 `/sw.js` 并放行静态路径
-  - 状态：TODO
+- [x]  2.1 合成 `/sw.js` 并放行静态路径
+
   - 这一步到底做什么：实现 SW 脚本生成器（版本常量、无导航缓存、仅处理 push/notificationclick/message）并在代理放行 `GET /sw.js`；补齐 405 与 `no-cache` 头。
   - 做完你能看到什么：HTTPS 下 `curl -I /sw.js` 返回 200 + `application/javascript`，桌面/中继入口仍是 404。
   - 先依赖什么：1.6。
@@ -157,8 +157,8 @@
   - 对应需求：需求 2、8。
   - 对应设计：§2.3.2、§3.3.2。
 
-- [ ] 2.2 注入 SW 注册脚本（仅安全上下文）与注销逃生口
-  - 状态：TODO
+- [x]  2.2 注入 SW 注册脚本（仅安全上下文）与注销逃生口
+
   - 这一步到底做什么：在 `injectDshWebPwaMetadata` 中追加内联注册脚本：`isSecureContext` + `'serviceWorker' in navigator` + 设置开关 + manifest 标记探测，全部满足才 `register('/sw.js')`；设置关闭时执行注销与缓存清理；面板提供“注销 Service Worker”按钮（RPC 或状态提示）。
   - 做完你能看到什么：仅 HTTPS 局域网入口会注册 SW；关闭后手机上不再有拦截。
   - 先依赖什么：2.1。
@@ -170,8 +170,8 @@
   - 对应需求：需求 2、7。
   - 对应设计：§2.3.2、§5.3。
 
-- [ ] 2.3 safe-area 与独立窗口适配
-  - 状态：TODO
+- [x]  2.3 safe-area 与独立窗口适配
+
   - 这一步到底做什么：为登录页（代理合成 HTML）与插件面板补充 `env(safe-area-inset-*)` 内边距与底部工具区避让；确认 standalone 下无内容被 Home 指示条遮挡。
   - 做完你能看到什么：全屏时页面内容与可点击区域都不被系统区域吃掉。
   - 先依赖什么：1.4、2.2。
@@ -183,8 +183,8 @@
   - 对应需求：需求 1、6。
   - 对应设计：§2.3.1、§2.3.4。
 
-- [ ] 2.4 安装引导条（Android 提示 + iOS 指引）
-  - 状态：TODO
+- [x]  2.4 安装引导条（Android 提示 + iOS 指引）
+
   - 这一步到底做什么：客户端新增 `PwaInstallPrompt`：捕获 `beforeinstallprompt` 展示引导按钮；iOS 展示“分享 → 添加到主屏幕”指引；`display-mode: standalone` 或本地已关闭时不显示；状态写入本地存储。
   - 做完你能看到什么：手机用户在合适位置看到安装提示，点击可完成安装。
   - 先依赖什么：2.2（标记探测与 SW 就绪）。
@@ -198,8 +198,8 @@
 
 ### 阶段检查
 
-- [ ] 2.5 SW 与引导检查
-  - 状态：TODO
+- [x]  2.5 SW 与引导检查
+
   - 这一步到底做什么：确认 HTTPS 链路下「注册 → 更新 → 注销」闭环可用，安装引导不打扰已安装用户。
   - 做完你能看到什么：Android 安装判定达标；iOS 有清晰的安装指引。
   - 先依赖什么：2.1–2.4。
@@ -213,8 +213,8 @@
 
 ## 阶段 3：手势控制左右侧栏
 
-- [ ] 3.1 新增客户端能力 route（`layout.columns`、`sidebar.right.expand`）与四版本 fixture
-  - 状态：TODO
+- [x]  3.1 新增客户端能力 route（`layout.columns`、`sidebar.right.expand`）与四版本 fixture
+
   - 这一步到底做什么：新增两条客户端能力：`layout.columns`（`ctx.layout.toggleSidebar` 为函数）、`sidebar.right.expand`（`ctx.sidebarRight.isExpanded/toggleExpanded`）；补 0.1.5-rc.3 / 0.1.6-alpha.2 / 0.1.7-rc.2 / 0.2.0-rc.1 四套 fixture。
   - 做完你能看到什么：任意版本上都能回答“左右侧栏服务是否可用”，缺失时有诊断码。
   - 先依赖什么：1.6。
@@ -226,8 +226,8 @@
   - 对应需求：需求 5、9。
   - 对应设计：§3.3.5、§7.2。
 
-- [ ] 3.2 实现手势判定纯函数与单测
-  - 状态：TODO
+- [x]  3.2 实现手势判定纯函数与单测
+
   - 这一步到底做什么：实现 `detectSidebarGesture(samples, config)`：边缘热区判定、方向锁定（水平/垂直比）、阈值、映射（`swipe-inward`/`swap`）、编辑目标排除，返回 `{ action, reason }`。
   - 做完你能看到什么：手势逻辑不依赖 DOM 即可被测试与调参。
   - 先依赖什么：3.1。
@@ -239,8 +239,8 @@
   - 对应需求：需求 5、6。
   - 对应设计：§3.3.6、§7.1。
 
-- [ ] 3.3 接入手势控制器（服务调用、历史集成、注入面）
-  - 状态：TODO
+- [x]  3.3 接入手势控制器（服务调用、历史集成、注入面）
+
   - 这一步到底做什么：新增 `MobileSidebarGestureController`，用 pointer/touch 事件驱动纯函数决策；只调用 `ctx.layout.toggleSidebar()` 与 `ctx.sidebarRight.toggleExpanded()`；右栏进入全屏时压 history，`popstate` 关闭右栏；在 `src/client/index.ts` 的 inject 数组补 `layout`，并在工作区会话增强模块的 start 中按设置启停。
   - 做完你能看到什么：手机横滑能开合侧栏，滚动与文本选择不受影响。
   - 先依赖什么：3.2。
@@ -252,8 +252,8 @@
   - 对应需求：需求 5、6、9。
   - 对应设计：§2.3.4、§6.5。
 
-- [ ] 3.4 手势设置契约与面板控件
-  - 状态：TODO
+- [x]  3.4 手势设置契约与面板控件
+
   - 这一步到底做什么：在 `WorkspaceSessionEnhancementSettings` 增加 `sidebarGestures`、`sidebarGestureMapping`、`sidebarGestureEdge`、`sidebarGestureThresholdPx`，实现 normalizer 与面板控件（开关、下拉、数字输入）。
   - 做完你能看到什么：用户可开关手势、切换方向映射、调整灵敏度。
   - 先依赖什么：3.3。
@@ -267,8 +267,8 @@
 
 ### 阶段检查
 
-- [ ] 3.5 手势检查点
-  - 状态：TODO
+- [x]  3.5 手势检查点
+
   - 这一步到底做什么：确认手势在真机上方向正确、不误触、不破坏滚动，且与系统返回手势的行为符合预期（含右栏全屏返回关闭）。
   - 做完你能看到什么：手势可以放心默认开启（或维持默认关闭由用户选择，按 §8.2 决策）。
   - 先依赖什么：3.1–3.4。
@@ -282,8 +282,8 @@
 
 ## 阶段 4：通知与推送
 
-- [ ] 4.1 本地通知（权限、展示、不可用提示）
-  - 状态：TODO
+- [x]  4.1 本地通知（权限、展示、不可用提示）
+
   - 这一步到底做什么：实现 `PwaNotificationClient` 的本地档位：手势内请求权限、`showNotification` 展示、档位设置与状态展示；非安全上下文或 iOS 未安装时在设置页给出原因。
   - 做完你能看到什么：开启后能收到本地通知，权限被拒有明确提示。
   - 先依赖什么：2.5。
@@ -295,8 +295,8 @@
   - 对应需求：需求 4、7。
   - 对应设计：§2.3.3。
 
-- [ ] 4.2 VAPID 远程推送（密钥、订阅、发送器、RPC）
-  - 状态：TODO
+- [x]  4.2 VAPID 远程推送（密钥、订阅、发送器、RPC）
+
   - 这一步到底做什么：Host 生成并保存 VAPID 密钥；新增订阅/退订/测试/状态 RPC；实现发送器（加密载荷并投递到订阅 endpoint）；触发源先接“测试通知”，任务事件接入单独评审。
   - 做完你能看到什么：手机上能在页面关闭时收到测试推送。
   - 先依赖什么：4.1。
@@ -310,8 +310,8 @@
 
 ### 阶段检查
 
-- [ ] 4.3 通知检查点
-  - 状态：TODO
+- [x]  4.3 通知检查点
+
   - 这一步到底做什么：确认通知链路在三种设备状态（浏览器前台、后台、已安装）下行为一致，关闭后无残留订阅。
   - 做完你能看到什么：通知可以提供给用户，风险与限制有说明。
   - 先依赖什么：4.1、4.2。
@@ -325,8 +325,8 @@
 
 ## 阶段 5：安全、兼容与验收
 
-- [ ] 5.1 安全验收（放行白名单、回环旁路、SW 越权）
-  - 状态：TODO
+- [x]  5.1 安全验收（放行白名单、回环旁路、SW 越权）
+
   - 这一步到底做什么：逐项验证「只有静态路径被放行或合成」「合成内容不含凭据」「SW 不缓存登录页与 API」「同机 NGINX 风险有提示与文档」。
   - 做完你能看到什么：增强没有削弱登录保护，风险有书面结论。
   - 先依赖什么：4.3。
@@ -338,8 +338,8 @@
   - 对应需求：需求 8。
   - 对应设计：§6、§7.2。
 
-- [ ] 5.2 输出 NGINX 部署检查清单
-  - 状态：TODO
+- [x]  5.2 输出 NGINX 部署检查清单
+
   - 这一步到底做什么：把 HTTPS 反代的关键约束写成可执行清单：挂根路径、不配上游 keepalive、WebSocket 透传、SSE `proxy_buffering off`、同机回环必须加鉴权、`/sw.js` 与图标不被缓存劫持。
   - 做完你能看到什么：部署者按清单一次配对，不用回头猜。
   - 先依赖什么：5.1。
@@ -351,8 +351,8 @@
   - 对应需求：需求 8。
   - 对应设计：§2.3.5。
 
-- [ ] 5.3 兼容与降级回归
-  - 状态：TODO
+- [x]  5.3 兼容与降级回归
+
   - 这一步到底做什么：验证四条新能力在四个版本夹具下的三态、禁用开关后的零副作用、其他模块（局域网、中继、PeerHost、终端、文件管理）不受影响。
   - 做完你能看到什么：升级/降级都有确定行为，不会出现“关不掉”的增强。
   - 先依赖什么：5.1。
@@ -364,8 +364,8 @@
   - 对应需求：需求 9。
   - 对应设计：§3.3.5、§7.2。
 
-- [ ] 5.4 文档回写与索引同步
-  - 状态：TODO
+- [x]  5.4 文档回写与索引同步
+
   - 这一步到底做什么：实现完成后回写 `docs/开发记录/`（过程、关键决策、验证结果），更新 `AGENTS.md` 的文档索引与 Spec 索引，补齐面板文案与 README（如需）。
   - 做完你能看到什么：接手的人能顺着文档找到证据与结论。
   - 先依赖什么：5.3。
@@ -379,8 +379,8 @@
 
 ### 最终检查
 
-- [ ] 5.5 最终检查点
-  - 状态：TODO
+- [x]  5.5 最终检查点
+
   - 这一步到底做什么：确认需求、设计、实现、测试与已知限制逐项对上，决定是否交付。
   - 做完你能看到什么：能明确回答“手机上能装吗、能收通知吗、手势怎么用、登录保护是否受影响、关掉之后会不会有残留”。
   - 先依赖什么：5.1–5.4。

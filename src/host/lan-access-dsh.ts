@@ -5,8 +5,10 @@ import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypt
 import { homedir } from 'node:os'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { CodingNsSettings, LanAccessDshLoginSettings, LanAccessDshSettings, LoginProtectionScopes } from '../shared/contracts/config.js'
-import type { LanAccessDshConfig, LanAccessDshLoginConfig, LanAccessDshSnapshot } from '../shared/contracts/lan-access-dsh.js'
+import type { CodingNsSettings, LanAccessDshLoginSettings, LanAccessDshPwaSettings, LanAccessDshSettings, LoginProtectionScopes } from '../shared/contracts/config.js'
+import { normalizeLanAccessDshPwaSettings, DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS } from '../shared/contracts/config.js'
+import type { LanAccessDshConfig, LanAccessDshLoginConfig, LanAccessDshPwaStatus, LanAccessDshSnapshot } from '../shared/contracts/lan-access-dsh.js'
+import { PWA_ASSET_PREFIX, PWA_MANIFEST_PATH, PWA_SERVICE_WORKER_PATH, type LanAccessDshPwaBundle, type LanAccessDshPwaProvider, type PwaPushService, type PwaPushSubscriptionInput } from './modules/pwa/index.js'
 import { CodingNsRpcError } from './rpc-table.js'
 import type { DshHostSettingsScope } from '../dsh-capabilities/host/config-forms-adapter.js'
 
@@ -184,6 +186,7 @@ export class LanAccessDshProxy {
   /** 当前进程内主动退出的会话；正常会话由签名令牌承载，可跨代理重建复用。 */
   private readonly revokedSessions = new Set<string>()
   private upstreamCookie: string | null = null
+  private pwaProvider: LanAccessDshPwaProvider | null = null
 
   constructor(
     private readonly runtime: LanAccessDshRuntime = createNodeLanAccessDshRuntime(),
@@ -271,6 +274,24 @@ export class LanAccessDshProxy {
     if (config === null || !config.enabled) this.revokedSessions.clear()
   }
 
+  /** 注入 PWA 资产来源；传 null 表示回到“不提供 PWA 资产”的原始行为。 */
+  setPwaProvider(provider: LanAccessDshPwaProvider | null): void {
+    this.pwaProvider = provider
+  }
+
+  /** PWA 资产就绪状态；只描述代理侧能力，不含浏览器状态与凭据。 */
+  pwaStatus(): LanAccessDshPwaStatus {
+    const bundle = this.pwaProvider?.snapshot() ?? null
+    return {
+      listening: this.active?.state === 'listening',
+      manifest: bundle !== null,
+      serviceWorker: bundle?.serviceWorker !== null && bundle?.serviceWorker !== undefined,
+      marker: bundle?.marker ?? null,
+      assetPaths: bundle === null ? [] : [...bundle.assets.keys()],
+      paths: { manifest: PWA_MANIFEST_PATH, serviceWorker: PWA_SERVICE_WORKER_PATH },
+    }
+  }
+
   loginSettings(): LanAccessDshLoginSettings {
     const config = this.loginConfig
     return {
@@ -339,6 +360,10 @@ export class LanAccessDshProxy {
 
   private authorize(request: ParsedLanRequest, localAddress: boolean): Uint8Array | 'pass' {
     const config = this.loginConfig
+    // PWA 静态资产先于登录判定：它们只包含公开元数据，未登录时也可取；命中时
+    // 直接合成响应，不进入上游转发路径。
+    const pwaResponse = this.authorizePwa(request)
+    if (pwaResponse !== undefined) return pwaResponse
     if (request.path === '/__codingns/session' && request.method === 'GET') {
       const token = readCookie(request.headers.cookie, this.sessionCookieName)
       const authenticated = !localAddress && config !== null && config.enabled && config.scopes.lan
@@ -389,6 +414,17 @@ export class LanAccessDshProxy {
       : loginResponse(401, '需要登录')
   }
 
+  /**
+   * PWA 白名单：`/manifest.webmanifest`、`/sw.js` 与 `/__codingns/pwa/*`。
+   *
+   * 返回 undefined 表示“不属于 PWA 白名单，或当前未启用”，交回原有登录与转发
+   * 语义；这样关闭增强时行为与改造前完全一致。合成内容只有公开元数据与图标，
+   * 不允许出现任何 Cookie、令牌或宿主路径。
+   */
+  private authorizePwa(request: ParsedLanRequest): Uint8Array | undefined {
+    return resolveLanAccessDshPwaResponse(request, this.pwaProvider?.snapshot() ?? null)
+  }
+
   /** DSH 启动时的认证 URL 只在 Host 内交换一次 Cookie，绝不下发到浏览器。 */
   private async takeOverDshWebToken(): Promise<void> {
     if (this.authenticatedUrl === undefined) return
@@ -404,6 +440,75 @@ interface ParsedLanRequest {
   path: string
   headers: Record<string, string>
   body: Uint8Array
+}
+
+/** PWA 白名单判定所需的请求子集；单独抽出来便于直接单测。 */
+export interface LanAccessDshPwaRequest {
+  readonly method: string
+  readonly path: string
+}
+
+/**
+ * PWA 静态资产白名单：`/manifest.webmanifest`、`/sw.js` 与 `/__codingns/pwa/*`。
+ *
+ * 返回 undefined 表示“不属于白名单，或当前未启用”，交回原有登录与转发语义；
+ * 这样关闭增强时行为与改造前完全一致。合成内容只有公开元数据与图标，不允许
+ * 出现任何 Cookie、令牌或宿主路径。
+ */
+export function resolveLanAccessDshPwaResponse(
+  request: LanAccessDshPwaRequest,
+  bundle: LanAccessDshPwaBundle | null,
+): Uint8Array | undefined {
+  const path = request.path
+  const inWhitelist = path === PWA_MANIFEST_PATH || path === PWA_SERVICE_WORKER_PATH || path.startsWith(PWA_ASSET_PREFIX)
+  if (!inWhitelist) return undefined
+  const headOnly = request.method === 'HEAD'
+  if (request.method !== 'GET' && !headOnly) {
+    return synthLanResponse({
+      status: 405,
+      contentType: 'text/plain; charset=utf-8',
+      body: 'Method Not Allowed',
+      headers: { Allow: 'GET, HEAD' },
+    })
+  }
+  if (bundle === null) {
+    // 未启用：manifest 与 SW 保持原有语义（manifest 透传上游、/sw.js 走登录/上游），
+    // 图标路径没有上游对应物，直接 404 以免落到 SPA 兜底。
+    return path.startsWith(PWA_ASSET_PREFIX)
+      ? synthLanResponse({ status: 404, contentType: 'text/plain; charset=utf-8', body: 'Not Found' })
+      : undefined
+  }
+  if (path === PWA_MANIFEST_PATH) {
+    return synthLanResponse({
+      status: 200,
+      contentType: 'application/manifest+json; charset=utf-8',
+      body: bundle.manifest,
+      cacheControl: 'public, max-age=300',
+      headOnly,
+    })
+  }
+  if (path === PWA_SERVICE_WORKER_PATH) {
+    if (bundle.serviceWorker === null) return undefined
+    return synthLanResponse({
+      status: 200,
+      contentType: 'text/javascript; charset=utf-8',
+      body: bundle.serviceWorker,
+      // SW 脚本必须每次回源校验：插件升级后要能立刻安装新版本。
+      cacheControl: 'no-cache',
+      headOnly,
+    })
+  }
+  const asset = bundle.assets.get(path)
+  if (asset === undefined) {
+    return synthLanResponse({ status: 404, contentType: 'text/plain; charset=utf-8', body: 'Not Found' })
+  }
+  return synthLanResponse({
+    status: 200,
+    contentType: asset.contentType,
+    body: asset.body,
+    cacheControl: asset.cacheControl,
+    headOnly,
+  })
 }
 
 function isLoopbackSocket(socket: LanAccessDshStream): boolean {
@@ -491,6 +596,38 @@ function getSetCookie(headers: Headers): string | undefined {
   return values.map((value) => value.split(';', 1)[0]).find((value) => value !== '')
 }
 
+/**
+ * 合成响应助手。
+ *
+ * `loginResponse` 会把非 HTML/JSON 正文做 HTML 转义并强制 `text/plain`，不适合
+ * 输出脚本与二进制。这里按字节原样发送，由调用方显式给出 Content-Type 与缓存
+ * 策略；`headOnly` 用于 HEAD 请求，保留 Content-Length 但不发送正文。
+ */
+export interface LanSynthesizedResponse {
+  readonly status: number
+  readonly contentType: string
+  readonly body?: Uint8Array | string
+  readonly cacheControl?: string
+  readonly headers?: Readonly<Record<string, string>>
+  readonly headOnly?: boolean
+}
+
+export function synthLanResponse(input: LanSynthesizedResponse): Uint8Array {
+  const body = typeof input.body === 'string'
+    ? new TextEncoder().encode(input.body)
+    : input.body ?? new Uint8Array(0)
+  const headers: Record<string, string> = {
+    'Content-Type': input.contentType,
+    'Content-Length': String(body.length),
+    'Cache-Control': input.cacheControl ?? 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    Connection: 'close',
+    ...input.headers,
+  }
+  const head = encodeLatin1(`HTTP/1.1 ${input.status} ${statusText(input.status)}\r\n${Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join('\r\n')}\r\n\r\n`)
+  return input.headOnly === true ? head : concatBytes(head, body)
+}
+
 function loginResponse(status: number, body: string, extra: Record<string, string> = {}): Uint8Array {
   const isHtml = body.startsWith('<!doctype html>')
   const isJson = extra['Content-Type']?.startsWith('application/json') === true
@@ -517,8 +654,8 @@ function loginJsonResponse(status: number, value: unknown, extra: Record<string,
 function loginPage(): string {
   // 视觉规则直接复用 codingns4dsh-h5/styles.css 的 Cyber 登录区，只把 Connect
   // 账号字段替换成本地用户名/密码；不能依赖外部 CSS，避免局域网入口离线时失效。
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DSH Web | 本地登录</title><style>
-:root{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;color:#f1f5f9;background:#0a0f1d}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0}body{overflow:hidden}.cyber-login-page{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden;background:radial-gradient(ellipse at center,#0f172a 0%,#0a0f1d 100%);color:#f1f5f9}.cyber-login-page:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(59,130,246,.08) 1px,transparent 1px),linear-gradient(90deg,rgba(59,130,246,.08) 1px,transparent 1px);background-size:50px 50px;transform:perspective(500px) rotateX(60deg);transform-origin:center top}.cyber-login-page:after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.15) 2px,rgba(0,0,0,.15) 4px)}.cyber-login-container{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:30px;width:min(440px,calc(100% - 32px));padding:24px}.cyber-login-content{display:flex;flex-direction:column;align-items:center;gap:28px;width:100%}.cyber-brand{display:flex;flex-direction:column;align-items:center;gap:13px;text-align:center}.cyber-logo{display:grid;place-items:center;width:80px;height:80px;border:1px solid rgba(59,130,246,.48);border-radius:22px;color:#60a5fa;font-size:19px;font-weight:700;letter-spacing:2px;box-shadow:0 0 25px rgba(0,212,255,.35),inset 0 0 22px rgba(59,130,246,.18);transform:rotate(30deg)}.cyber-logo span{transform:rotate(-30deg)}.cyber-brand-title{margin:0;color:#f1f5f9;font-size:28px;font-weight:700;letter-spacing:4px}.cyber-brand-subtitle{margin:0;color:#94a3b8;font-size:12px;letter-spacing:1.5px}.cyber-card{width:100%;padding:30px;border:1px solid rgba(59,130,246,.28);border-radius:12px;background:rgba(30,41,59,.78);backdrop-filter:blur(10px);box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 0 1px rgba(59,130,246,.28)}.cyber-card-header{display:flex;align-items:center;gap:12px;margin-bottom:22px}.cyber-line{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.48),transparent)}.cyber-card-label{color:#94a3b8;font-size:11px;font-weight:600;letter-spacing:3px;white-space:nowrap}.cyber-form{display:flex;flex-direction:column;gap:18px}.cyber-connect-hint{margin:0;color:#94a3b8;font-size:12px;line-height:1.7}.cyber-field{position:relative;padding:12px 16px;border:1px solid rgba(59,130,246,.28);border-radius:8px;background:rgba(15,23,42,.68)}.cyber-field-label{display:flex;align-items:center;gap:8px;margin-bottom:8px;color:#94a3b8;font-size:11px;letter-spacing:1px}.cyber-field-icon{color:#60a5fa}.cyber-input{width:100%;padding:0;border:0;outline:0;background:transparent;color:#f1f5f9;font:14px var(--font-mono)}.cyber-input::placeholder{color:#94a3b8;opacity:.55}.cyber-submit{position:relative;width:100%;min-height:48px;margin-top:4px;padding:14px 24px;overflow:hidden;border:0;border-radius:8px;background:linear-gradient(135deg,#3b82f6,#06b6d4);color:white;font:600 13px var(--font-mono);letter-spacing:2px;cursor:pointer;box-shadow:0 0 18px rgba(59,130,246,.32)}.cyber-submit:hover{filter:brightness(1.12)}.cyber-submit:active{transform:translateY(1px)}.cyber-submit:disabled{cursor:wait;opacity:.6}.cyber-submit-text{position:relative;display:flex;align-items:center;justify-content:center;gap:8px}.cyber-status{display:flex;align-items:center;gap:8px;margin:0;padding:10px 12px;border:1px solid rgba(239,68,68,.25);border-radius:6px;background:rgba(239,68,68,.1);color:#fca5a5;font-size:12px;line-height:1.5}.cyber-footer{margin-top:2px}.cyber-divider{display:flex;align-items:center;gap:12px;margin-bottom:14px}.cyber-divider-line{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.48),transparent)}.cyber-divider-text{color:#64748b;font-size:10px;letter-spacing:2px}.cyber-version{display:flex;align-items:center;gap:12px;color:#64748b;font-size:10px;letter-spacing:2px;opacity:.65}@media(prefers-color-scheme:light){.cyber-login-page{color:#0f172a;background:radial-gradient(ellipse at center,#f8fafc 0%,#eef4fb 100%)}.cyber-card{background:rgba(255,255,255,.86);box-shadow:0 8px 28px rgba(15,23,42,.12),0 0 0 1px rgba(37,99,235,.13)}.cyber-brand-title{color:#0f172a}.cyber-input{color:#0f172a}.cyber-connect-hint,.cyber-field-label,.cyber-card-label{color:#64748b}.cyber-field{background:rgba(241,245,249,.86)}}@media(max-width:520px){.cyber-login-container{width:100%;padding:20px 16px}.cyber-card{padding:24px 20px}.cyber-brand-subtitle{font-size:10px;letter-spacing:1px}}
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0a0f1d"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" sizes="180x180" href="/__codingns/pwa/apple-touch-icon.png"><title>DSH Web | 本地登录</title><style>
+:root{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;color:#f1f5f9;background:#0a0f1d}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0}body{overflow:hidden}.cyber-login-page{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden;background:radial-gradient(ellipse at center,#0f172a 0%,#0a0f1d 100%);color:#f1f5f9}.cyber-login-page:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(59,130,246,.08) 1px,transparent 1px),linear-gradient(90deg,rgba(59,130,246,.08) 1px,transparent 1px);background-size:50px 50px;transform:perspective(500px) rotateX(60deg);transform-origin:center top}.cyber-login-page:after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.15) 2px,rgba(0,0,0,.15) 4px)}.cyber-login-container{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:30px;width:min(440px,calc(100% - 32px));padding:calc(24px + env(safe-area-inset-top,0px)) calc(24px + env(safe-area-inset-right,0px)) calc(24px + env(safe-area-inset-bottom,0px)) calc(24px + env(safe-area-inset-left,0px))}.cyber-login-content{display:flex;flex-direction:column;align-items:center;gap:28px;width:100%}.cyber-brand{display:flex;flex-direction:column;align-items:center;gap:13px;text-align:center}.cyber-logo{display:grid;place-items:center;width:80px;height:80px;border:1px solid rgba(59,130,246,.48);border-radius:22px;color:#60a5fa;font-size:19px;font-weight:700;letter-spacing:2px;box-shadow:0 0 25px rgba(0,212,255,.35),inset 0 0 22px rgba(59,130,246,.18);transform:rotate(30deg)}.cyber-logo span{transform:rotate(-30deg)}.cyber-brand-title{margin:0;color:#f1f5f9;font-size:28px;font-weight:700;letter-spacing:4px}.cyber-brand-subtitle{margin:0;color:#94a3b8;font-size:12px;letter-spacing:1.5px}.cyber-card{width:100%;padding:30px;border:1px solid rgba(59,130,246,.28);border-radius:12px;background:rgba(30,41,59,.78);backdrop-filter:blur(10px);box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 0 1px rgba(59,130,246,.28)}.cyber-card-header{display:flex;align-items:center;gap:12px;margin-bottom:22px}.cyber-line{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.48),transparent)}.cyber-card-label{color:#94a3b8;font-size:11px;font-weight:600;letter-spacing:3px;white-space:nowrap}.cyber-form{display:flex;flex-direction:column;gap:18px}.cyber-connect-hint{margin:0;color:#94a3b8;font-size:12px;line-height:1.7}.cyber-field{position:relative;padding:12px 16px;border:1px solid rgba(59,130,246,.28);border-radius:8px;background:rgba(15,23,42,.68)}.cyber-field-label{display:flex;align-items:center;gap:8px;margin-bottom:8px;color:#94a3b8;font-size:11px;letter-spacing:1px}.cyber-field-icon{color:#60a5fa}.cyber-input{width:100%;padding:0;border:0;outline:0;background:transparent;color:#f1f5f9;font:14px var(--font-mono)}.cyber-input::placeholder{color:#94a3b8;opacity:.55}.cyber-submit{position:relative;width:100%;min-height:48px;margin-top:4px;padding:14px 24px;overflow:hidden;border:0;border-radius:8px;background:linear-gradient(135deg,#3b82f6,#06b6d4);color:white;font:600 13px var(--font-mono);letter-spacing:2px;cursor:pointer;box-shadow:0 0 18px rgba(59,130,246,.32)}.cyber-submit:hover{filter:brightness(1.12)}.cyber-submit:active{transform:translateY(1px)}.cyber-submit:disabled{cursor:wait;opacity:.6}.cyber-submit-text{position:relative;display:flex;align-items:center;justify-content:center;gap:8px}.cyber-status{display:flex;align-items:center;gap:8px;margin:0;padding:10px 12px;border:1px solid rgba(239,68,68,.25);border-radius:6px;background:rgba(239,68,68,.1);color:#fca5a5;font-size:12px;line-height:1.5}.cyber-footer{margin-top:2px}.cyber-divider{display:flex;align-items:center;gap:12px;margin-bottom:14px}.cyber-divider-line{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.48),transparent)}.cyber-divider-text{color:#64748b;font-size:10px;letter-spacing:2px}.cyber-version{display:flex;align-items:center;gap:12px;color:#64748b;font-size:10px;letter-spacing:2px;opacity:.65}@media(prefers-color-scheme:light){.cyber-login-page{color:#0f172a;background:radial-gradient(ellipse at center,#f8fafc 0%,#eef4fb 100%)}.cyber-card{background:rgba(255,255,255,.86);box-shadow:0 8px 28px rgba(15,23,42,.12),0 0 0 1px rgba(37,99,235,.13)}.cyber-brand-title{color:#0f172a}.cyber-input{color:#0f172a}.cyber-connect-hint,.cyber-field-label,.cyber-card-label{color:#64748b}.cyber-field{background:rgba(241,245,249,.86)}}@media(max-width:520px){.cyber-login-container{width:100%;padding:calc(20px + env(safe-area-inset-top,0px)) calc(16px + env(safe-area-inset-right,0px)) calc(20px + env(safe-area-inset-bottom,0px)) calc(16px + env(safe-area-inset-left,0px))}.cyber-card{padding:24px 20px}.cyber-brand-subtitle{font-size:10px;letter-spacing:1px}}
 </style></head><body><main class="cyber-login-page"><div class="cyber-login-container"><div class="cyber-login-content"><div class="cyber-brand"><div class="cyber-logo"><span>DSH</span></div><h1 class="cyber-brand-title">DSH Web</h1><p class="cyber-brand-subtitle">LOCAL SECURE DSH ENVIRONMENT</p></div><div class="cyber-card"><form class="cyber-form" method="post" action="/__codingns/login"><div class="cyber-card-header"><div class="cyber-line"></div><span class="cyber-card-label">LOCAL ACCESS</span><div class="cyber-line"></div></div><p class="cyber-connect-hint">使用本机设置的本地账号进入 DSH Web。</p><div class="cyber-field"><label class="cyber-field-label" for="login-username"><span class="cyber-field-icon" aria-hidden="true">⌁</span>用户名</label><input class="cyber-input" id="login-username" name="username" autocomplete="username" placeholder="输入本地用户名" required></div><div class="cyber-field"><label class="cyber-field-label" for="login-password"><span class="cyber-field-icon" aria-hidden="true">⚷</span>密码</label><input class="cyber-input" id="login-password" name="password" type="password" autocomplete="current-password" placeholder="输入本地密码" required></div><button class="cyber-submit" type="submit"><span class="cyber-submit-text"><span aria-hidden="true">➤</span>登录 DSH Web</span></button><div class="cyber-footer"><div class="cyber-divider"><span class="cyber-divider-line"></span><span class="cyber-divider-text">CODINGNS</span><span class="cyber-divider-line"></span></div></div></form></div></div><div class="cyber-version"><span>CODINGNS4DSH</span><span>|</span><span>LOCAL AUTH READY</span></div></div></main></body></html>`
 }
 
@@ -531,7 +668,22 @@ function loginPageWithError(message: string, username: string): string {
     .replace('name="username" autocomplete="username"', `name="username" autocomplete="username" value="${escapeHtml(username)}"`)
 }
 
-function statusText(status: number): string { return status === 200 ? 'OK' : status === 303 ? 'See Other' : status === 401 ? 'Unauthorized' : 'Request Error' }
+function statusText(status: number): string {
+  switch (status) {
+    case 200: return 'OK'
+    case 204: return 'No Content'
+    case 301: return 'Moved Permanently'
+    case 302: return 'Found'
+    case 303: return 'See Other'
+    case 400: return 'Bad Request'
+    case 401: return 'Unauthorized'
+    case 404: return 'Not Found'
+    case 405: return 'Method Not Allowed'
+    case 431: return 'Request Header Fields Too Large'
+    case 500: return 'Internal Server Error'
+    default: return 'Request Error'
+  }
+}
 function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char) }
 
 /**
@@ -758,11 +910,21 @@ export function normalizeLanAccessDshConfig(value: Partial<LanAccessDshConfig>, 
   }
 }
 
+export interface LanAccessDshRpcOptions {
+  /** 推送服务；未提供时 `pwa/push/*` 返回可解释的不可用错误。 */
+  readonly push?: PwaPushService
+}
+
 export function createLanAccessDshRpcHandler(
   proxy: LanAccessDshProxy,
   settings?: DshHostSettingsScope<CodingNsSettings>,
   loginStore: LanAccessDshLoginStore = new FileLanAccessDshLoginStore(),
+  options: LanAccessDshRpcOptions = {},
 ): (action: string, payload: unknown) => unknown | Promise<unknown> {
+  const requirePush = (): PwaPushService => {
+    if (options.push === undefined) throw new CodingNsRpcError('CODINGNS_PWA_PUSH_UNAVAILABLE', '推送服务未启用')
+    return options.push
+  }
   return async (action, payload) => {
     switch (action) {
       case 'addresses':
@@ -781,6 +943,33 @@ export function createLanAccessDshRpcHandler(
       }
       case 'login/get':
         return proxy.loginSettings()
+      case 'pwa/status':
+        return proxy.pwaStatus()
+      case 'pwa/vapid': {
+        const push = requirePush()
+        return { available: true, publicKey: (await push.vapidKeys()).publicKey }
+      }
+      case 'pwa/push/status': {
+        if (options.push === undefined) return { available: false, subscriptions: 0 }
+        const subscriptions = await options.push.listSubscriptions()
+        return { available: true, subscriptions: subscriptions.length }
+      }
+      case 'pwa/push/subscribe': {
+        const push = requirePush()
+        const input = parsePushSubscribePayload(payload)
+        const record = await push.subscribe(input, readPushLabel(payload))
+        return { endpoint: record.endpoint, createdAt: record.createdAt, subscriptions: (await push.listSubscriptions()).length }
+      }
+      case 'pwa/push/unsubscribe': {
+        const push = requirePush()
+        const endpoint = readPushEndpoint(payload)
+        return { removed: await push.unsubscribe(endpoint) }
+      }
+      case 'pwa/push/test': {
+        const push = requirePush()
+        const summary = await push.sendToAll({ title: 'DSH 测试通知', body: '如果你看到这条通知，推送链路已经打通。', tag: 'codingns4dsh-test' })
+        return summary
+      }
       case 'login/set': {
         const current = await loginStore.read()
         const next = parseLoginSettings(payload, current)
@@ -837,7 +1026,7 @@ function parseLoginSessionRefreshPayload(value: unknown): { token: string; scope
 }
 
 function defaultLanAccessDshSettings(): LanAccessDshSettings {
-  return { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 }
+  return { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0, pwa: { ...DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS } }
 }
 
 function parseLoginSettings(value: unknown, current: LanAccessDshLoginRecord | null): LanAccessDshLoginRecord | null {
@@ -926,6 +1115,28 @@ function parseLoginScopes(value: unknown): LoginProtectionScopes {
   return { lan: input.lan, relay: input.relay }
 }
 function isNodeError(error: unknown, code: string): boolean { return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === code }
+/** 推送订阅只接受 endpoint + 两个密钥，其余字段忽略；非法输入给出稳定错误码。 */
+function parsePushSubscribePayload(value: unknown): PwaPushSubscriptionInput {
+  if (!isRecord(value)) throw new CodingNsRpcError('CODINGNS_PWA_PUSH_INVALID', '推送订阅参数无效')
+  const keys = value.keys
+  if (typeof value.endpoint !== 'string' || !isRecord(keys) || typeof keys.p256dh !== 'string' || typeof keys.auth !== 'string') {
+    throw new CodingNsRpcError('CODINGNS_PWA_PUSH_INVALID', '推送订阅参数无效')
+  }
+  return { endpoint: value.endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } }
+}
+
+function readPushLabel(value: unknown): string {
+  if (!isRecord(value)) return ''
+  return typeof value.label === 'string' ? value.label : ''
+}
+
+function readPushEndpoint(value: unknown): string {
+  if (!isRecord(value) || typeof value.endpoint !== 'string' || value.endpoint === '') {
+    throw new CodingNsRpcError('CODINGNS_PWA_PUSH_INVALID', '推送订阅 endpoint 无效')
+  }
+  return value.endpoint
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 
 function parseLanAccessDshSettings(value: unknown, allowedListenHosts: readonly string[]): LanAccessDshSettings {
@@ -936,7 +1147,12 @@ function parseLanAccessDshSettings(value: unknown, allowedListenHosts: readonly 
   const listenPort = requirePort(input.listenPort, 'listenPort', true)
   const dshPort = requirePort(input.dshPort, 'dshPort', true)
   if (!new Set(allowedListenHosts).has(listenHost)) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '监听地址必须来自本机网卡或 0.0.0.0')
-  return { autoStart: input.autoStart, listenHost, listenPort, dshPort }
+  return { autoStart: input.autoStart, listenHost, listenPort, dshPort, pwa: parseLanAccessDshPwaSettings(input.pwa) }
+}
+
+/** PWA 档位走归一化而非严格校验：非法值收敛到保守默认，避免设置页写不进去。 */
+function parseLanAccessDshPwaSettings(value: unknown): LanAccessDshPwaSettings {
+  return normalizeLanAccessDshPwaSettings(value)
 }
 
 function parseStartPayload(value: unknown): Partial<LanAccessDshConfig> {

@@ -120,6 +120,36 @@ export interface WorkspaceSessionEnhancementSettings {
   quickPhrases: QuickPhrase[]
   /** 内置快捷会话是否已经完成首次初始化；仅用于兼容旧配置。 */
   quickPhrasesSeeded: boolean
+  /** 是否在触摸设备上启用横滑开合左右侧栏。 */
+  sidebarGestures: boolean
+  /** 手势方向映射：右滑/左滑分别对应哪一侧栏。 */
+  sidebarGestureMapping: SidebarGestureMapping
+  /** 手势起手区域：是否允许贴上系统边缘热区。 */
+  sidebarGestureEdge: SidebarGestureEdgeMode
+  /** 手势触发阈值（像素）；数值越小越灵敏。 */
+  sidebarGestureThresholdPx: number
+}
+
+/** 横滑手势的方向映射。 */
+export type SidebarGestureMapping = 'swipe-inward' | 'swap'
+
+/** 横滑手势的起手区域。 */
+export type SidebarGestureEdgeMode = 'avoid' | 'edge'
+
+export const SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS = { min: 24, max: 200 } as const
+export const DEFAULT_SIDEBAR_GESTURE_THRESHOLD_PX = 64
+
+/** 归一化手势设置：缺省回填、越界收敛，非法枚举回落到默认值。 */
+export function normalizeSidebarGestureSettings(
+  value: Pick<WorkspaceSessionEnhancementSettings, 'sidebarGestures' | 'sidebarGestureMapping' | 'sidebarGestureEdge' | 'sidebarGestureThresholdPx'> | undefined,
+): Pick<WorkspaceSessionEnhancementSettings, 'sidebarGestures' | 'sidebarGestureMapping' | 'sidebarGestureEdge' | 'sidebarGestureThresholdPx'> {
+  const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
+  return {
+    sidebarGestures: record.sidebarGestures === true,
+    sidebarGestureMapping: record.sidebarGestureMapping === 'swap' ? 'swap' : 'swipe-inward',
+    sidebarGestureEdge: record.sidebarGestureEdge === 'edge' ? 'edge' : 'avoid',
+    sidebarGestureThresholdPx: clampSettingsInteger(record.sidebarGestureThresholdPx, SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS, DEFAULT_SIDEBAR_GESTURE_THRESHOLD_PX),
+  }
 }
 
 /** 文件管理增强的独立能力开关。 */
@@ -158,6 +188,40 @@ export interface LanAccessDshSettings {
   listenHost: string
   listenPort: number
   dshPort: number
+  /** PWA 资产与安装引导；只在局域网入口生效，不影响本机与中继入口。 */
+  pwa: LanAccessDshPwaSettings
+}
+
+/** 局域网入口的 PWA 增强档位。 */
+export interface LanAccessDshPwaSettings {
+  /** 是否由代理提供 manifest、图标等静态资产与启动页元数据。 */
+  enabled: boolean
+  /** 是否合成 `/sw.js` 并在安全上下文里注册；默认关闭，避免驻留。 */
+  serviceWorker: boolean
+  /** 是否注入安装引导（Android 提示按钮 / iOS 指引）。 */
+  installPrompt: boolean
+  /** 通知档位；`push` 需要 Host 侧 VAPID 就绪。 */
+  notifications: LanAccessDshNotificationMode
+}
+
+export type LanAccessDshNotificationMode = 'off' | 'local' | 'push'
+
+export const DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS: LanAccessDshPwaSettings = {
+  enabled: true,
+  serviceWorker: false,
+  installPrompt: true,
+  notifications: 'off',
+}
+
+/** 归一化 PWA 设置：缺省回填默认值，非法枚举回落到最保守档位。 */
+export function normalizeLanAccessDshPwaSettings(value: unknown): LanAccessDshPwaSettings {
+  const record = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  return {
+    enabled: record.enabled === undefined ? DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS.enabled : record.enabled === true,
+    serviceWorker: record.serviceWorker === true,
+    installPrompt: record.installPrompt === undefined ? DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS.installPrompt : record.installPrompt === true,
+    notifications: record.notifications === 'local' || record.notifications === 'push' ? record.notifications : 'off',
+  }
 }
 
 export interface LoginProtectionScopes {
@@ -228,6 +292,11 @@ export const DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS: WorkspaceSessionEnh
   rememberConversationRightbarRatio: false,
   quickPhrases: DEFAULT_QUICK_PHRASES.map((phrase) => ({ ...phrase })),
   quickPhrasesSeeded: true,
+  // 手势默认关闭：系统边缘手势与侧栏语义都存在平台差异，先由用户显式开启。
+  sidebarGestures: false,
+  sidebarGestureMapping: 'swipe-inward',
+  sidebarGestureEdge: 'avoid',
+  sidebarGestureThresholdPx: DEFAULT_SIDEBAR_GESTURE_THRESHOLD_PX,
 }
 export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   controlBaseUrl: DEFAULT_CODINGNS_CONTROL_BASE_URL,
@@ -244,6 +313,7 @@ export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
     listenHost: '0.0.0.0',
     listenPort: 13080,
     dshPort: 0,
+    pwa: DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS,
   },
 }
 

@@ -5,6 +5,7 @@ import {
   CODINGNS_SETTINGS_NAMESPACE,
   DEFAULT_CODINGNS_CONTROL_BASE_URL,
   DEFAULT_CODINGNS_SETTINGS,
+  DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS,
   DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   DEFAULT_FILE_MANAGEMENT_SETTINGS,
@@ -54,7 +55,7 @@ test('Codingns4DSH 设置用模块名字典表达开关，结构不随模块数�
     workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
     fileManagement: DEFAULT_FILE_MANAGEMENT_SETTINGS,
     subscriptionUsage: DEFAULT_SUBSCRIPTION_USAGE_SETTINGS,
-    lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 },
+    lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0, pwa: DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS },
   })
 })
 

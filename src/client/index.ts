@@ -43,6 +43,7 @@ import { TYPERT_REMOTE } from '../typert.remote-client.js'
 import { createPeerHostScopedClient } from './peer-host-scoped-client.js'
 import { HostRouter } from './host-router.js'
 import { PeerHostSessionController } from './peer-host-session-controller.js'
+import { createPwaNotificationClient } from './pwa-notifications.js'
 export { PeerHostSessionController } from './peer-host-session-controller.js'
 
 export { ensureCryptoRandomUUID } from './lan-access.js'
@@ -108,7 +109,7 @@ export { CodingNsTerminalView, CodingNsWebTerminals, registerCodingNsTerminalUi 
 export { registerSubscriptionSlot, registerCommandCodeSubscriptionSlot, CommandCodeSubscriptionSlot } from './subscription-slot.js'
 
 /** Client Runner 用于等待服务就绪的 Cordis 依赖声明。 */
-export const inject = ['slots', 'connection', 'remote', 'remote.workspace', 'remote.session', 'sidebarRight', 'sidebarRightTabs', 'theme', 'locale', 'uiConversation'] as const
+export const inject = ['slots', 'connection', 'remote', 'remote.workspace', 'remote.session', 'sidebarRight', 'sidebarRightTabs', 'layout', 'theme', 'locale', 'uiConversation'] as const
 
 /**
  * 把 Codingns4DSH 设置页挂载到 DSH 设置左侧导航，并让模块开关驱动启停。
@@ -124,13 +125,14 @@ export function apply(ctx?: Context): void {
   ensureCryptoRandomUUID()
   ctx.effect(() => registerCodingNsLocale(ctx), 'codingns4dsh: Client 词典')
 
-  ctx.inject(['slots', 'connection', 'remote', 'remote.workspace', 'remote.session', 'sidebarRight', 'sidebarRightTabs', 'theme', 'locale', 'uiConversation'], async (settingsCtx) => {
+  ctx.inject(['slots', 'connection', 'remote', 'remote.workspace', 'remote.session', 'sidebarRight', 'sidebarRightTabs', 'layout', 'theme', 'locale', 'uiConversation'], async (settingsCtx) => {
     debugInfo('codingns4dsh: client inject ready', {
       hasConnection: settingsCtx.connection !== undefined,
       hasRemote: settingsCtx.remote !== undefined,
       hasSlots: settingsCtx.slots !== undefined,
       hasSidebarRight: settingsCtx.sidebarRight !== undefined,
       hasSidebarRightTabs: settingsCtx.sidebarRightTabs !== undefined,
+      hasLayout: settingsCtx.layout !== undefined,
       hasTheme: settingsCtx.theme !== undefined,
       hasLocale: settingsCtx.locale !== undefined,
       hasUiConversation: settingsCtx.uiConversation !== undefined,
@@ -168,6 +170,9 @@ export function apply(ctx?: Context): void {
       slots: settingsCtx.slots,
       locale: settingsCtx.locale,
       uiConversation: settingsCtx.uiConversation,
+      layout: settingsCtx.layout,
+      sidebarRight: settingsCtx.sidebarRight,
+      notifications: createPwaNotificationClient(),
       uiContext: settingsCtx,
     }
     debugInfo('codingns4dsh: client account bar registration begin')

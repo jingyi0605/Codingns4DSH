@@ -69,6 +69,13 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('peer-host.ws-proxy', 'peer-host-ws-proxy-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/features/peer-host.ts']),
   route('peer-host.aggregate', 'peer-host-aggregate-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/features/peer-host.ts']),
   route('peer-host.relay-route', 'peer-host-relay-route-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/features/peer-host.ts']),
+  // 移动端 PWA 与手势相关能力只在 0.2.0-rc.1 上验证过：结构化 `html` 行、`tapIndex`
+  // 与布局服务在更早版本没有运行时实现，由 Registry 判为 unavailable 并给出诊断，
+  // 业务侧据此整块跳过（不写入行、不注册手势）。
+  route('web.index-inject', 'index-inject-rows-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/index-injection.ts', 'host/index.ts']),
+  route('web.index-tap', 'index-tap-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/index.ts', 'host/modules/pwa/pwa-viewport.ts']),
+  route('layout.columns', 'layout-columns-020', 'client', '>=0.2.0-rc.1', 'supported', ['client/mobile-sidebar-gestures.ts', 'client/features/workspace-session-enhancement.ts']),
+  route('sidebar.right.expand', 'sidebar-right-expand-020', 'client', '>=0.2.0-rc.1', 'supported', ['client/mobile-sidebar-gestures.ts', 'client/features/workspace-session-enhancement.ts']),
 ]
 
 function route(

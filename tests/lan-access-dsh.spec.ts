@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createECDH, randomBytes } from 'node:crypto'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { FeatureRegistry } from '../data/build/dist/features/index.js'
 import { createLanAccessDshFeature } from '../data/build/dist/host/features/index.js'
 import {
@@ -17,8 +21,9 @@ import {
   type LanAccessDshRuntime,
   type LanAccessDshStream,
 } from '../data/build/dist/host/lan-access-dsh.js'
+import { PwaPushService, createLanAccessDshPwaProvider } from '../data/build/dist/host/modules/pwa/index.js'
 import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
-import type { CodingNsSettings } from '../data/build/dist/shared/contracts/config.js'
+import { DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS, type CodingNsSettings } from '../data/build/dist/shared/contracts/config.js'
 
 class FakeStream implements LanAccessDshStream {
   readonly pipes: LanAccessDshStream[] = []
@@ -210,14 +215,63 @@ test('局域网访问设置通过 Host RPC 持久化并可刷新回读', async (
     controlBaseUrl: 'https://channel.codingns.com:1443',
     controlBaseUrls: ['https://channel.codingns.com:1443'],
     modules: {},
-    lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 },
+    lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0, pwa: DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS },
   })
   const handler = createLanAccessDshRpcHandler(new LanAccessDshProxy(runtime), settings)
-  const next = { autoStart: true, listenHost: '192.168.1.10', listenPort: 13081, dshPort: 3080 }
+  const next = { autoStart: true, listenHost: '192.168.1.10', listenPort: 13081, dshPort: 3080, pwa: { enabled: true, serviceWorker: true, installPrompt: false, notifications: 'push' as const } }
 
   assert.deepEqual(await handler('settings/get', {}), settings.get().lanAccessDsh)
   assert.deepEqual(await handler('settings/set', next), next)
   assert.deepEqual(settings.get().lanAccessDsh, next)
+})
+
+test('PWA 设置缺省回填，非法枚举回落到最保守档位', async () => {
+  const runtime = new FakeRuntime()
+  const settings = new FakeSettings({
+    controlBaseUrl: 'https://channel.codingns.com:1443',
+    controlBaseUrls: ['https://channel.codingns.com:1443'],
+    modules: {},
+    lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0, pwa: DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS },
+  })
+  const handler = createLanAccessDshRpcHandler(new LanAccessDshProxy(runtime), settings)
+  const saved = await handler('settings/set', { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 }) as { pwa: unknown }
+  assert.deepEqual(saved.pwa, DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS)
+  const normalized = await handler('settings/set', {
+    autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0,
+    pwa: { enabled: true, serviceWorker: true, installPrompt: true, notifications: 'silent' },
+  }) as { pwa: { notifications: string; serviceWorker: boolean } }
+  assert.equal(normalized.pwa.notifications, 'off')
+  assert.equal(normalized.pwa.serviceWorker, true)
+})
+
+test('PWA 状态与推送 RPC：未提供推送服务时给出稳定错误，提供后覆盖订阅全流程', async () => {
+  const runtime = new FakeRuntime()
+  const proxy = new LanAccessDshProxy(runtime)
+  proxy.setPwaProvider(createLanAccessDshPwaProvider({ readSettings: () => ({ enabled: true, serviceWorker: true, installPrompt: true, notifications: 'push' }) }))
+  const handler = createLanAccessDshRpcHandler(proxy)
+  const status = await handler('pwa/status', {}) as { manifest: boolean; serviceWorker: boolean; assetPaths: readonly string[] }
+  assert.equal(status.manifest, true)
+  assert.equal(status.serviceWorker, true)
+  assert.ok(status.assetPaths.some((path) => path.endsWith('apple-touch-icon.png')))
+  await assert.rejects(() => Promise.resolve(handler('pwa/vapid', {})), /推送服务未启用/u)
+
+  const stateDir = await mkdtemp(join(tmpdir(), 'codingns4dsh-rpc-push-'))
+  const push = new PwaPushService({ stateDir })
+  const handlerWithPush = createLanAccessDshRpcHandler(proxy, undefined, new InMemoryLanAccessDshLoginStore(), { push })
+  const vapid = await handlerWithPush('pwa/vapid', {}) as { available: boolean; publicKey: string }
+  assert.equal(vapid.available, true)
+  assert.equal(Buffer.from(vapid.publicKey, 'base64url').length, 65)
+  const client = createECDH('prime256v1')
+  client.generateKeys()
+  const subscribed = await handlerWithPush('pwa/push/subscribe', {
+    endpoint: 'https://push.example.com/sub/rpc',
+    keys: { p256dh: client.getPublicKey().toString('base64url'), auth: randomBytes(16).toString('base64url') },
+    label: 'test-agent',
+  }) as { subscriptions: number }
+  assert.equal(subscribed.subscriptions, 1)
+  assert.deepEqual(await handlerWithPush('pwa/push/status', {}), { available: true, subscriptions: 1 })
+  assert.deepEqual(await handlerWithPush('pwa/push/unsubscribe', { endpoint: 'https://push.example.com/sub/rpc' }), { removed: true })
+  await assert.rejects(() => Promise.resolve(handlerWithPush('pwa/push/subscribe', { endpoint: 'not-a-url', keys: {} })), /推送订阅参数无效/u)
 })
 
 test('启用登录保护时同一次 RPC 返回中继会话，避免启用后立即被新规则拦截', async () => {

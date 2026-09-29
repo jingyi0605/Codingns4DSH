@@ -6,6 +6,7 @@ import {
   CODINGNS_SETTINGS_NAMESPACE,
   isCodingNsSettingsEntryId,
   DEFAULT_CODINGNS_SETTINGS,
+  SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS,
   SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MINS_LIMITS,
   SUBSCRIPTION_USAGE_TIMEOUT_SECS_LIMITS,
   type CodingNsConfig,
@@ -35,6 +36,13 @@ export const CodingNsSettingsSchema = z.object({
     listenHost: z.string().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.listenHost),
     listenPort: z.number().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.listenPort),
     dshPort: z.number().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.dshPort),
+    pwa: z.object({
+      enabled: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.pwa.enabled),
+      serviceWorker: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.pwa.serviceWorker),
+      installPrompt: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.pwa.installPrompt),
+      notifications: z.union([z.const('off'), z.const('local'), z.const('push')])
+        .default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.pwa.notifications),
+    }).default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh.pwa),
   }).default(DEFAULT_CODINGNS_SETTINGS.lanAccessDsh),
   terminalEnhancement: z.object({
     bindingScope: z.union([z.const('workspace'), z.const('session')])
@@ -79,6 +87,15 @@ export const CodingNsSettingsSchema = z.object({
     })).default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.quickPhrases),
     // 缺少该字段说明是旧配置；Client 首次加载时会补齐内置快捷会话。
     quickPhrasesSeeded: z.boolean().default(false),
+    sidebarGestures: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.sidebarGestures),
+    sidebarGestureMapping: z.union([z.const('swipe-inward'), z.const('swap')])
+      .default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.sidebarGestureMapping),
+    sidebarGestureEdge: z.union([z.const('avoid'), z.const('edge')])
+      .default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.sidebarGestureEdge),
+    sidebarGestureThresholdPx: z.number().step(1)
+      .min(SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.min)
+      .max(SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.max)
+      .default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.sidebarGestureThresholdPx),
   }).default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement),
   fileManagement: z.object({
     menuEnhancement: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.fileManagement.menuEnhancement),

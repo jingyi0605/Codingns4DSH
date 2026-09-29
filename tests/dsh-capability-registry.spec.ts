@@ -152,6 +152,9 @@ test('0.2.0-rc.1/rc.2 Host fixture 都按服务形状解析到 020 路由', () =
     subagents: { startContinuable: async () => undefined, sendMessage: async () => undefined },
     agentTeams: { listMembers: () => [], spawnTeammate: async () => undefined },
     agents: { get: () => undefined, list: () => [] },
+    // 启动页注入需要事件总线与 WebServer；tapIndex 是 viewport 改写的唯一入口。
+    on: () => undefined,
+    webServer: { port: 3080, tapIndex: () => () => undefined },
   }
   const expectations = [
     ['settings.store', 'settings-forms-020'],
@@ -165,6 +168,8 @@ test('0.2.0-rc.1/rc.2 Host fixture 都按服务形状解析到 020 路由', () =
     ['session.format-v4', 'session-format-v4'],
     ['subagent.continuable', 'subagent-continuable-020'],
     ['agent-team.native', 'agent-team-native-020'],
+    ['web.index-inject', 'index-inject-rows-020'],
+    ['web.index-tap', 'index-tap-020'],
   ] as const
   for (const version of ['0.2.0-rc.1', '0.2.0-rc.2'] as const) {
     const profile = createDshCapabilityRegistry(version, 'host', context).getProfile(context)
@@ -182,7 +187,8 @@ test('0.2.0-rc.1/rc.2 Client fixture 都按服务形状与图标事实解析到 
     locale: {},
     theme: {},
     uiConversation: {},
-    sidebarRight: {},
+    sidebarRight: { isExpanded: () => false, toggleExpanded: () => undefined },
+    layout: { toggleSidebar: () => undefined },
     remote: { $mount: () => undefined, $stream: () => undefined },
     typert: { contexts: { getHost: () => undefined, getClient: () => undefined } },
     modules: { version: 'client' },
@@ -200,6 +206,8 @@ test('0.2.0-rc.1/rc.2 Client fixture 都按服务形状与图标事实解析到 
     ['typert.context', 'typert-context-registry-020-client'],
     ['typert.stream', 'typert-remote-stream-020-client'],
     ['client.boot-graph', 'client-web-boot-graph-020'],
+    ['layout.columns', 'layout-columns-020'],
+    ['sidebar.right.expand', 'sidebar-right-expand-020'],
   ] as const
   for (const version of ['0.2.0-rc.1', '0.2.0-rc.2'] as const) {
     const profile = createDshCapabilityRegistry(version, 'client', context, facts).getProfile(context)
@@ -221,6 +229,33 @@ test('0.2.0-rc.1 fixture 缺失结构时保持不可用并生成诊断', () => {
     assert.equal(clientProfile.capabilities.get(capability)?.status, 'unavailable', capability)
   }
   assert.ok(clientProfile.diagnostics.some((item) => item.code === 'CAPABILITY_UNAVAILABLE'))
+})
+
+test('移动端 PWA 与手势能力已进入矩阵并覆盖支持版本', () => {
+  for (const capability of ['web.index-inject', 'web.index-tap', 'layout.columns', 'sidebar.right.expand'] as const) {
+    const routes = DSH_CAPABILITY_MATRIX.filter((route) => route.capability === capability)
+    assert.ok(routes.length > 0, capability)
+    assert.ok(routes.every((route) => route.consumers.length > 0), capability)
+    assert.ok(routes.some((route) => route.supportedDsh.includes('0.2.0-rc.1')), capability)
+  }
+})
+
+test('移动端 PWA 与手势能力在旧版本上整块不可用并给出诊断', () => {
+  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2'] as const) {
+    const hostContext = { on: () => undefined, webServer: { port: 3080, tapIndex: () => () => undefined } }
+    const hostProfile = createDshCapabilityRegistry(version, 'host', hostContext).getProfile(hostContext)
+    for (const capability of ['web.index-inject', 'web.index-tap'] as const) {
+      assert.equal(hostProfile.capabilities.get(capability)?.status, 'unavailable', `${version} ${capability}`)
+    }
+    const clientContext = { layout: { toggleSidebar: () => undefined }, sidebarRight: { isExpanded: () => false, toggleExpanded: () => undefined } }
+    const clientProfile = createDshCapabilityRegistry(version, 'client', clientContext).getProfile(clientContext)
+    for (const capability of ['layout.columns', 'sidebar.right.expand'] as const) {
+      assert.equal(clientProfile.capabilities.get(capability)?.status, 'unavailable', `${version} ${capability}`)
+    }
+    // 诊断必须能解释“为什么没有”，而不是静默降级。
+    assert.ok(hostProfile.diagnostics.some((item) => item.code === 'CAPABILITY_VERSION_UNSUPPORTED' && item.capability === 'web.index-tap'))
+    assert.ok(clientProfile.diagnostics.some((item) => item.code === 'CAPABILITY_VERSION_UNSUPPORTED' && item.capability === 'layout.columns'))
+  }
 })
 
 test('0.1.7 fixture 即使携带同名结构也不会误解析 0.2 专属能力', () => {

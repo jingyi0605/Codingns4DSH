@@ -1,4 +1,7 @@
 /** 启动页注入表中的全局变量记录。 */
+import type { LanAccessDshPwaSettings } from '../shared/contracts/config.js'
+import { createPwaClientScript } from './modules/pwa/index.js'
+
 export interface DshIndexInjectionEntry {
   readonly kind?: unknown
   readonly name?: unknown
@@ -45,6 +48,35 @@ const TRANSPORT_OWNERSHIP_SCRIPT = [
   'if(typeof t==="object")t.ownsHost=true;',
   '})()',
 ].join('')
+
+/** PWA 元数据标记；代理未覆盖 manifest 的入口上这些链接只会 404，属预期。 */
+export const CODINGNS_PWA_METADATA_MARKUP = [
+  '<meta name="theme-color" content="#0a0f1d" media="(prefers-color-scheme: dark)">',
+  '<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">',
+  '<meta name="mobile-web-app-capable" content="yes">',
+  '<meta name="apple-mobile-web-app-capable" content="yes">',
+  '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">',
+  '<meta name="apple-mobile-web-app-title" content="DSH">',
+  '<link rel="apple-touch-icon" sizes="180x180" href="/__codingns/pwa/apple-touch-icon.png">',
+].join('')
+
+/**
+ * 追加移动端 PWA 元数据与注册脚本。
+ *
+ * 与 Transport 注入共用同一张表：元数据行排在前、脚本行排在后，二者都只在
+ * `lanAccessDsh.pwa.enabled` 开启时出现。脚本自身会在回环地址短路，因此本机与
+ * 桌面壳不会因此改变安装行为。
+ */
+export function injectDshWebPwaMetadata(table: unknown[], settings: LanAccessDshPwaSettings): boolean {
+  if (!settings.enabled) return false
+  table.push({ kind: 'html', placement: 'head', html: CODINGNS_PWA_METADATA_MARKUP })
+  table.push({
+    kind: 'script',
+    placement: 'head',
+    text: createPwaClientScript({ serviceWorker: settings.serviceWorker, installPrompt: settings.installPrompt }),
+  })
+  return true
+}
 
 function isTransportInjection(value: unknown): value is DshIndexInjectionEntry {
   return isRecord(value) && value.name === '__DSH_TRANSPORT__'

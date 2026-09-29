@@ -73,6 +73,10 @@ export const dshSettingsPageStyle: CSSProperties = {
   maxWidth: 900,
   margin: '0 auto',
   padding: '20px clamp(16px, 3vw, 32px) 28px',
+  // 独立窗口（PWA）下把底部与左右让给系统安全区，避免被 Home 指示条与刘海遮挡。
+  paddingLeft: 'max(clamp(16px, 3vw, 32px), env(safe-area-inset-left, 0px))',
+  paddingRight: 'max(clamp(16px, 3vw, 32px), env(safe-area-inset-right, 0px))',
+  paddingBottom: 'calc(28px + env(safe-area-inset-bottom, 0px))',
   boxSizing: 'border-box',
 }
 

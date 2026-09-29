@@ -128,6 +128,20 @@ function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): v
     detect: (ctx) => hasMethods(read(ctx, 'agentTeams'), ['listMembers', 'spawnTeammate']) && read(ctx, 'agents') !== undefined,
     create: (ctx) => read(ctx, 'agentTeams'),
   })
+  add({
+    id: 'index-inject-rows-020', capability: 'web.index-inject', supportedDsh, runtime: 'host', priority: 30,
+    status: 'supported', introducedIn: '0.2.0-rc.1',
+    // 启动页注入 = 事件总线 + WebServer 端口；行类型是否支持由渲染方决定。
+    detect: (ctx) => typeof read(ctx, 'on') === 'function' && read(ctx, 'webServer') !== undefined,
+    create: (ctx) => ({ events: read(ctx, 'on'), webServer: read(ctx, 'webServer') }),
+  })
+  add({
+    id: 'index-tap-020', capability: 'web.index-tap', supportedDsh, runtime: 'host', priority: 30,
+    status: 'supported', introducedIn: '0.2.0-rc.1',
+    // raw HTML 变换是逃生口：只有确认存在 tapIndex 才允许注册。
+    detect: (ctx) => typeof read(ctx, 'webServer.tapIndex') === 'function',
+    create: (ctx) => read(ctx, 'webServer'),
+  })
 }
 
 /** DSH 0.2 Client 结构化能力；图标和 UI 服务允许由新旧导出共同提供。 */
@@ -158,6 +172,20 @@ function addDsh020ClientRoutes(add: CapabilityRouteAdder, supportedDsh: string, 
   add({ id: 'typert-context-registry-020-client', capability: 'typert.context', supportedDsh, runtime: 'client', priority: 10, status: 'supported', introducedIn: '0.2.0-rc.1', detect: (ctx) => hasMethods(read(ctx, 'typert.contexts'), ['getHost', 'getClient']), create: (ctx) => read(ctx, 'typert.contexts') })
   add({ id: 'typert-remote-stream-020-client', capability: 'typert.stream', supportedDsh, runtime: 'client', priority: 10, status: 'supported', introducedIn: '0.2.0-rc.1', detect: (ctx) => hasMethods(read(ctx, 'remote'), ['$mount', '$stream']), create: (ctx) => read(ctx, 'remote') })
   add({ id: 'client-web-boot-graph-020', capability: 'client.boot-graph', supportedDsh, runtime: 'client', priority: 10, status: 'supported', introducedIn: '0.2.0-rc.1', detect: (ctx) => read(ctx, 'modules.version') === 'client', create: (ctx) => read(ctx, 'modules') })
+  add({
+    id: 'layout-columns-020', capability: 'layout.columns', supportedDsh, runtime: 'client', priority: 30,
+    status: 'supported', introducedIn: '0.2.0-rc.1',
+    // 手势只通过布局服务开合左栏；缺 toggleSidebar 时整块禁用。
+    detect: (ctx) => typeof read(ctx, 'layout.toggleSidebar') === 'function',
+    create: (ctx) => read(ctx, 'layout'),
+  })
+  add({
+    id: 'sidebar-right-expand-020', capability: 'sidebar.right.expand', supportedDsh, runtime: 'client', priority: 30,
+    status: 'supported', introducedIn: '0.2.0-rc.1',
+    // 右栏开合比“停靠”更窄：必须同时能读状态与切换，否则手势无法保持同步。
+    detect: (ctx) => hasMethods(read(ctx, 'sidebarRight'), ['isExpanded', 'toggleExpanded']),
+    create: (ctx) => read(ctx, 'sidebarRight'),
+  })
 }
 
 /**
