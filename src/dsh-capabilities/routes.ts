@@ -16,7 +16,7 @@ export function createDshCapabilityRegistry(
   const registry = new DshCapabilityRegistry(dshVersion, runtime)
   const rangeLegacy = '>=0.1.5-rc.3 <=0.1.6'
   const rangeModern = '>=0.1.7-rc.2 <=0.1.7-rc.2'
-  const range020 = '>=0.2.0-rc.1 <=0.2.0-rc.1'
+  const range020 = '>=0.2.0-rc.1'
   const add = <T>(route: DshCapabilityRoute<T>): void => registry.register(route)
 
   if (runtime === 'host') {
@@ -220,12 +220,12 @@ function addPeerHostHostRoutes(add: CapabilityRouteAdder): void {
   addPeerHostRoute(add, 'peer-host.ws-proxy', 'peer-host-ws-proxy', 'peerHostWsProxy')
   addPeerHostRoute(add, 'peer-host.aggregate', 'peer-host-aggregate', 'peerHostAggregate')
   addPeerHostRoute(add, 'peer-host.relay-route', 'peer-host-relay-route', 'peerHostRelayRoute')
-  addPeerHostRoute(add, 'peer-host.store', 'peer-host-store-020', 'peerHostStore', '>=0.2.0-rc.1 <=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.handshake', 'peer-host-handshake-020', 'peerHostHandshake', '>=0.2.0-rc.1 <=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.http-proxy', 'peer-host-http-proxy-020', 'peerHostHttpProxy', '>=0.2.0-rc.1 <=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.ws-proxy', 'peer-host-ws-proxy-020', 'peerHostWsProxy', '>=0.2.0-rc.1 <=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.aggregate', 'peer-host-aggregate-020', 'peerHostAggregate', '>=0.2.0-rc.1 <=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.relay-route', 'peer-host-relay-route-020', 'peerHostRelayRoute', '>=0.2.0-rc.1 <=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.store', 'peer-host-store-020', 'peerHostStore', '>=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.handshake', 'peer-host-handshake-020', 'peerHostHandshake', '>=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.http-proxy', 'peer-host-http-proxy-020', 'peerHostHttpProxy', '>=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.ws-proxy', 'peer-host-ws-proxy-020', 'peerHostWsProxy', '>=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.aggregate', 'peer-host-aggregate-020', 'peerHostAggregate', '>=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.relay-route', 'peer-host-relay-route-020', 'peerHostRelayRoute', '>=0.2.0-rc.1', 'supported', 30)
 }
 
 /** PeerHost Client 导航能力由独立 adapter 注入；未注入时由 Feature 诊断降级。 */
@@ -233,8 +233,8 @@ function addPeerHostClientRoutes(add: CapabilityRouteAdder): void {
   addPeerHostRoute(add, 'peer-host.native-navigation', 'peer-host-native-navigation-legacy', 'peerHostNativeNavigation', '>=0.1.5-rc.3 <=0.1.6', 'deprecated')
   addPeerHostRoute(add, 'peer-host.native-navigation', 'peer-host-native-navigation-modern', 'peerHostNativeNavigation', '>=0.1.7-rc.2 <=0.1.7-rc.2', 'supported', 20)
   addPeerHostRoute(add, 'peer-host.remote-web-context-fallback', 'peer-host-remote-web-context-fallback', 'peerHostRemoteWebContextFallback')
-  addPeerHostRoute(add, 'peer-host.native-navigation', 'peer-host-native-navigation-020', 'peerHostNativeNavigation', '>=0.2.0-rc.1 <=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.remote-web-context-fallback', 'peer-host-remote-web-context-fallback-020', 'peerHostRemoteWebContextFallback', '>=0.2.0-rc.1 <=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.native-navigation', 'peer-host-native-navigation-020', 'peerHostNativeNavigation', '>=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.remote-web-context-fallback', 'peer-host-remote-web-context-fallback-020', 'peerHostRemoteWebContextFallback', '>=0.2.0-rc.1', 'supported', 30)
 }
 
 function addPeerHostRoute(

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stage0 使用独立的 DSH 0.2.0-rc.1 运行时；不要复用旧的 0.1.x 启动器。
+# Stage0 使用独立的 DSH 0.2.0-rc.2 运行时；不要复用旧的 0.1.x 启动器。
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-dsh_bin=${DSH_STAGE0_LAUNCHER:-"$HOME/.local/share/codingns/deepseek-harness/0.2.0-rc.1/node_modules/@deepseek-ai/dsh/lib/bin.js"}
+dsh_bin=${DSH_STAGE0_LAUNCHER:-"$HOME/.local/share/codingns/deepseek-harness/0.2.0-rc.2/node_modules/@deepseek-ai/dsh/lib/bin.js"}
 dsh_home=${DSH_STAGE0_HOME:-"$HOME/.dsh-stage0-020"}
 state_dir=${CODINGNS4DSH_STAGE0_STATE_DIR:-"$HOME/.config/codingns4dsh/stage0-020"}
 port=${DSH_STAGE0_PORT:-17891}
 
 if [[ ! -f "$dsh_bin" ]]; then
-  printf '找不到 DSH 0.2.0-rc.1 启动器: %s\n' "$dsh_bin" >&2
+  printf '找不到 DSH 0.2.0-rc.2 启动器: %s\n' "$dsh_bin" >&2
   exit 1
 fi
 

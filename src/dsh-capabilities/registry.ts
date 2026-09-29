@@ -166,12 +166,14 @@ function unavailable(capability: DshCapabilityId, dshVersion: string, reason: st
 }
 
 function isVersionInRange(version: string, range: string): boolean {
-  const match = /^>=([^ ]+) <=([^ ]+)$/u.exec(range)
+  const match = /^>=([^ ]+)(?: <=([^ ]+))?$/u.exec(range)
   if (match === null) return false
   const actual = parseVersion(version)
   const minimum = parseVersion(match[1]!)
-  const maximum = parseVersion(match[2]!)
-  if (actual === undefined || minimum === undefined || maximum === undefined) return false
+  if (actual === undefined || minimum === undefined) return false
+  if (match[2] === undefined) return compareVersions(actual, minimum) >= 0
+  const maximum = parseVersion(match[2])
+  if (maximum === undefined) return false
   return compareVersions(actual, minimum) >= 0 && compareVersions(actual, maximum) <= 0
 }
 

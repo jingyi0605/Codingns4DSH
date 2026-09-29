@@ -127,9 +127,10 @@ test('共享出口不再暴露按模块枚举的配置结构', async () => {
 test('不兼容 DSH 版本给出稳定错误码', () => {
   assert.doesNotThrow(() => assertSupportedDshVersion(SUPPORTED_DSH_VERSION))
   assert.equal(isDshVersionCompatible('0.2.0-rc.1'), true)
+  assert.equal(isDshVersionCompatible('0.2.0-rc.2'), true)
+  assert.equal(isDshVersionCompatible('0.2.0'), true)
+  assert.equal(isDshVersionCompatible('0.3.0'), true)
   assert.equal(isDshVersionCompatible('0.1.7-rc.2'), false)
-  assert.equal(isDshVersionCompatible('0.2.0-rc.2'), false)
-  assert.equal(isDshVersionCompatible('0.2.0'), false)
   assert.equal(isLegacyDshVersion('0.1.5-rc.3'), true)
   assert.equal(isLegacyDshVersion('0.1.6-alpha.2'), false)
   assert.throws(

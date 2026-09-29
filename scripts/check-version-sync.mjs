@@ -25,14 +25,14 @@ const expectEqual = (label, actual, expected) => {
 }
 
 const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u
-const compatibility = /^>=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)? <=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u
+const compatibility = /^>=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?: <=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)?$/u
 if (typeof pluginVersion !== 'string' || !semver.test(pluginVersion)) failures.push(`version.json.pluginVersion 不是合法插件版本: ${String(pluginVersion)}`)
 if (typeof dshVersion !== 'string' || !semver.test(dshVersion)) failures.push(`version.json.dshTestedVersion 不是合法 DSH 版本: ${String(dshVersion)}`)
 if (typeof dshCompatibility !== 'string' || !compatibility.test(dshCompatibility)) failures.push(`version.json.dshCompatibility 不是受支持的 DSH 范围: ${String(dshCompatibility)}`)
 if (!Number.isInteger(dshProtocolVersion) || dshProtocolVersion < 1) failures.push(`version.json.dshProtocolVersion 不是正整数: ${String(dshProtocolVersion)}`)
 if (!matrixSource.includes('DSH_CAPABILITY_MATRIX') || !matrixSource.includes("'settings.store'")) failures.push('能力矩阵未声明 settings.store，无法作为版本兼容事实源')
 
-const matrixRanges = [...matrixSource.matchAll(/'>=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)? <=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?'/gu)].map((match) => match[0].slice(1, -1))
+const matrixRanges = [...matrixSource.matchAll(/'>=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?: <=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)?'/gu)].map((match) => match[0].slice(1, -1))
 const parseVersion = (value) => {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/u.exec(value)
   if (!match) return undefined
@@ -59,18 +59,20 @@ const compareVersion = (left, right) => {
   }
   return 0
 }
-const compatibilityBounds = compatibility.exec(dshCompatibility)
+const rangePattern = /^>=([^ ]+)(?: <=([^ ]+))?$/u
+const compatibilityBounds = rangePattern.exec(dshCompatibility)
 if (compatibilityBounds && matrixRanges.length > 0) {
   const lower = parseVersion(compatibilityBounds[1])
-  const upper = parseVersion(compatibilityBounds[2])
-  const matrixBounds = matrixRanges.map((range) => /^>=([^ ]+) <=([^ ]+)$/u.exec(range)).filter(Boolean)
+  const upper = compatibilityBounds[2] === undefined ? undefined : parseVersion(compatibilityBounds[2])
+  const matrixBounds = matrixRanges.map((range) => rangePattern.exec(range)).filter(Boolean)
   const matrixLower = matrixBounds.map((match) => parseVersion(match[1])).filter(Boolean).sort(compareVersion)[0]
-  const matrixUpper = matrixBounds.map((match) => parseVersion(match[2])).filter(Boolean).sort(compareVersion).at(-1)
+  const matrixUpper = matrixBounds.map((match) => match[2] === undefined ? undefined : parseVersion(match[2])).filter(Boolean).sort(compareVersion).at(-1)
   if (lower && matrixLower && compareVersion(lower, matrixLower) < 0) failures.push(`manifest DSH 下界低于能力矩阵: ${dshCompatibility}`)
+  // manifest 省略上界表示不限制上限版本，此时矩阵上界只用于约束显式声明的上限。
   if (upper && matrixUpper && compareVersion(upper, matrixUpper) > 0) failures.push(`manifest DSH 上界超出能力矩阵: ${dshCompatibility}`)
   if (dshVersion && !matrixBounds.some((match) => {
-    const min = parseVersion(match[1]); const max = parseVersion(match[2]); const actual = parseVersion(dshVersion)
-    return min && max && actual && compareVersion(actual, min) >= 0 && compareVersion(actual, max) <= 0
+    const min = parseVersion(match[1]); const max = match[2] === undefined ? undefined : parseVersion(match[2]); const actual = parseVersion(dshVersion)
+    return min && actual && compareVersion(actual, min) >= 0 && (match[2] === undefined || (max !== undefined && compareVersion(actual, max) <= 0))
   })) failures.push(`当前测试 DSH 版本不在能力矩阵中: ${dshVersion}`)
 }
 

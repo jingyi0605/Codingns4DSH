@@ -1,6 +1,6 @@
 {
-  "pluginVersion": "0.2.0-beta.1",
-  "dshCompatibility": ">=0.2.0-rc.1 <=0.2.0-rc.1",
+  "pluginVersion": "0.2.0-beta.2",
+  "dshCompatibility": ">=0.2.0-rc.1",
   "dshTestedVersion": "0.2.0-rc.1",
   "dshProtocolVersion": 1
 }

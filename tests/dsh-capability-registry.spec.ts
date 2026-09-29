@@ -133,7 +133,7 @@ test('PeerHost 三版本 fixture 明确区分原生导航、Remote Web Context �
   }
 })
 
-test('0.2.0-rc.1 Host fixture 按服务形状解析到 020 路由', () => {
+test('0.2.0-rc.1/rc.2 Host fixture 都按服务形状解析到 020 路由', () => {
   const context = {
     settings: { describe: () => [], mutate: async () => undefined, configure: () => () => undefined },
     connection: {
@@ -153,7 +153,6 @@ test('0.2.0-rc.1 Host fixture 按服务形状解析到 020 路由', () => {
     agentTeams: { listMembers: () => [], spawnTeammate: async () => undefined },
     agents: { get: () => undefined, list: () => [] },
   }
-  const profile = createDshCapabilityRegistry('0.2.0-rc.1', 'host', context).getProfile(context)
   const expectations = [
     ['settings.store', 'settings-forms-020'],
     ['connection.rpc', 'connection-rpc-020'],
@@ -167,14 +166,17 @@ test('0.2.0-rc.1 Host fixture 按服务形状解析到 020 路由', () => {
     ['subagent.continuable', 'subagent-continuable-020'],
     ['agent-team.native', 'agent-team-native-020'],
   ] as const
-  for (const [capability, routeId] of expectations) {
-    const resolution = profile.capabilities.get(capability)
-    assert.equal(resolution?.routeId, routeId, capability)
-    assert.equal(resolution?.status, 'ready', capability)
+  for (const version of ['0.2.0-rc.1', '0.2.0-rc.2'] as const) {
+    const profile = createDshCapabilityRegistry(version, 'host', context).getProfile(context)
+    for (const [capability, routeId] of expectations) {
+      const resolution = profile.capabilities.get(capability)
+      assert.equal(resolution?.routeId, routeId, capability)
+      assert.equal(resolution?.status, 'ready', capability)
+    }
   }
 })
 
-test('0.2.0-rc.1 Client fixture 按服务形状与图标事实解析到 020 路由', () => {
+test('0.2.0-rc.1/rc.2 Client fixture 都按服务形状与图标事实解析到 020 路由', () => {
   const context = {
     configForms: { get: () => undefined },
     locale: {},
@@ -186,7 +188,6 @@ test('0.2.0-rc.1 Client fixture 按服务形状与图标事实解析到 020 路�
     modules: { version: 'client' },
   }
   const facts = { primitives: { IconPlusOutlineRegular: () => null, IconChevronDownOutlineRegular: () => null } }
-  const profile = createDshCapabilityRegistry('0.2.0-rc.1', 'client', context, facts).getProfile(context)
   const expectations = [
     ['settings.store', 'config-forms-020'],
     ['ui.icon.plus', 'regular-plus-icon-020'],
@@ -200,10 +201,13 @@ test('0.2.0-rc.1 Client fixture 按服务形状与图标事实解析到 020 路�
     ['typert.stream', 'typert-remote-stream-020-client'],
     ['client.boot-graph', 'client-web-boot-graph-020'],
   ] as const
-  for (const [capability, routeId] of expectations) {
-    const resolution = profile.capabilities.get(capability)
-    assert.equal(resolution?.routeId, routeId, capability)
-    assert.equal(resolution?.status, 'ready', capability)
+  for (const version of ['0.2.0-rc.1', '0.2.0-rc.2'] as const) {
+    const profile = createDshCapabilityRegistry(version, 'client', context, facts).getProfile(context)
+    for (const [capability, routeId] of expectations) {
+      const resolution = profile.capabilities.get(capability)
+      assert.equal(resolution?.routeId, routeId, capability)
+      assert.equal(resolution?.status, 'ready', capability)
+    }
   }
 })
 
@@ -294,4 +298,16 @@ test('必需能力缺失只影响该模块，同一轮同步里其余模块照�
   assert.deepEqual(started, ['before', 'after'])
   assert.equal(registry.getState('broken'), 'failed')
   assert.equal(registry.getState('after'), 'enabled')
+})
+
+test('0.2 代能力路由只声明下界，rc.2 与后续版本沿用同一路由', () => {
+  const modernRoutes = DSH_CAPABILITY_MATRIX.filter((route) => route.supportedDsh.startsWith('>=0.2.0-rc.1'))
+  assert.ok(modernRoutes.length > 0)
+  assert.ok(modernRoutes.every((route) => route.supportedDsh === '>=0.2.0-rc.1'))
+
+  const registry = new DshCapabilityRegistry('0.3.0', 'host')
+  registry.register(route({ id: 'modern', supportedDsh: '>=0.2.0-rc.1', create: () => 'modern' }))
+  const profile = registry.resolve({})
+  assert.equal(profile.capabilities.get('settings.store')?.routeId, 'modern')
+  assert.equal(profile.capabilities.get('settings.store')?.value, 'modern')
 })

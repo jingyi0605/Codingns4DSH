@@ -43,6 +43,7 @@ for (const relativePath of ['README.md', 'README.en.md', 'profile/README.md']) {
   if (typeof previousVersion === 'string' && previousVersion !== nextVersion) {
     const updatedDocument = document
       .replaceAll(`@jingyi0605/codingns4dsh@${previousVersion}`, `@jingyi0605/codingns4dsh@${nextVersion}`)
+      .replaceAll(`jingyi0605-codingns4dsh-${previousVersion}`, `jingyi0605-codingns4dsh-${nextVersion}`)
       .replaceAll(`v${previousVersion}`, `v${nextVersion}`)
       .replaceAll(`插件版本为 \`${previousVersion}\``, `插件版本为 \`${nextVersion}\``)
       .replaceAll(`当前插件版本为 \`${previousVersion}\``, `当前插件版本为 \`${nextVersion}\``)
