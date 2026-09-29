@@ -3,12 +3,29 @@ import type { CSSProperties, ReactElement } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { UseSessions } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { UseSidebarRightTabInfo } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
-import type { GitBranchSnapshot, GitChangeItem, GitCommitChangedFile, GitCommitDiff, GitDiff, GitHistoryItem, GitHistoryRef, GitStatus } from '../shared/contracts/git.js'
+import type { GitBranchSnapshot, GitChangeItem, GitCommitChangedFile, GitCommitDiff, GitDiff, GitHistoryItem, GitHistoryOrigin, GitHistoryRef, GitHistoryScope, GitStatus } from '../shared/contracts/git.js'
 import type { CodingNsClientFeatureModule, CodingNsRpcClient, CodingNsRpcResult } from './features/types.js'
+import { buildHistoryGraph, GRAPH_DASH_ARRAY, GRAPH_LANE_WIDTH, GRAPH_ROW_HEIGHT, laneCenterX, laneColor, laneStroke, laneDashed, isUnpushed, segmentStroke } from './git-history-graph.js'
+import type { GitGraphLane, GitGraphRow } from './git-history-graph.js'
 import { CODINGNS_RPC_CHANNEL } from '../shared/contracts/transport.js'
+import { backdropPointerDownHandler, useDismissOnOutsidePointer } from './popup-dismiss.js'
 import { debugWarn } from '../shared/debug.js'
 import { dshSettingsToastStyle, dshThemeColor } from './theme.js'
+import { gitPanelClass, installGitPanelStyles } from './git-panel-styles.js'
 import type { SettingsNotice } from './features/types.js'
+
+// 单列 Git 视图需要一个稳定的分段控件；这里保持 React 结构简单，避免引入额外依赖。
+function SegmentedControl<Value extends string>({ id, value, options, onChange, label, disabled }: { readonly id: string; readonly value: Value; readonly options: readonly { readonly value: Value; readonly label: string; readonly title?: string; readonly disabled?: boolean }[]; readonly onChange: (next: Value) => void; readonly label: string; readonly disabled?: boolean }): ReactElement {
+  const index = Math.max(0, options.findIndex((option) => option.value === value))
+  return createElement('div', { role: 'tablist', 'aria-label': label, className: gitPanelClass.segmented, style: { '--dsh-segment-count': options.length, '--dsh-segment-index': index } as CSSProperties },
+    createElement('span', { 'aria-hidden': 'true', className: gitPanelClass.segmentedIndicator }),
+    ...options.map((option) => createElement('button', {
+      key: option.value, type: 'button', role: 'tab', id: `${id}-${option.value}`, 'aria-selected': option.value === value,
+      tabIndex: option.value === value ? 0 : -1, disabled: disabled === true || option.disabled === true,
+      className: gitPanelClass.segment, title: option.title, onClick: () => onChange(option.value),
+    }, option.label)),
+  )
+}
 
 export const GIT_PROVIDER_ID = 'codingns4dsh/git'
 export const GIT_KIND = 'git'
@@ -85,6 +102,7 @@ interface MutableGitTreeDirectory {
 /** 注册 DSH 右侧 Sidebar 的 Git 标签类型，数据按 Workspace 复用。 */
 export function registerGitManagementUi(ctx: Context, services: GitServices): () => void {
   const disposers: Array<() => void> = []
+  disposers.push(installGitPanelStyles())
   const sidebarRight = ctx.sidebarRight as typeof ctx.sidebarRight & GitSidebarRuntime
   try {
     disposers.push(ctx.sidebarRightTabs.register({
@@ -149,6 +167,7 @@ function GitPanel(props: GitTabProps): ReactElement {
   const [fileDiff, setFileDiff] = useState<{ readonly path: string; readonly staged: boolean; readonly diff: GitDiff } | null>(null)
   const [singleColumn, setSingleColumn] = useState(false)
   const [activeColumn, setActiveColumn] = useState<'files' | 'history'>('files')
+  const [historyScope, setHistoryScope] = useState<GitHistoryScope>('all')
   const [historyTotalCount, setHistoryTotalCount] = useState(0)
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false)
   const contentGridRef = useRef<HTMLDivElement | null>(null)
@@ -204,7 +223,7 @@ function GitPanel(props: GitTabProps): ReactElement {
           return
         }
         const [nextHistory, nextBranches] = await Promise.all([
-          historyExpanded.current ? Promise.resolve(null) : call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { workspaceId: resolvedWorkspaceId, limit: INITIAL_HISTORY_LIMIT, offset: 0 }),
+          historyExpanded.current ? Promise.resolve(null) : call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { workspaceId: resolvedWorkspaceId, limit: INITIAL_HISTORY_LIMIT, offset: 0, scope: historyScope }),
           call<GitBranchSnapshot>(props.rpc, 'git/branches', { workspaceId: resolvedWorkspaceId }),
         ])
         if (disposed) return
@@ -227,7 +246,7 @@ function GitPanel(props: GitTabProps): ReactElement {
       cleanupTimer = () => globalThis.clearInterval(timer)
     }).catch((error: unknown) => { if (!disposed) notify('error', error instanceof Error ? error.message : String(error)) })
     return () => { disposed = true; cleanupTimer?.() }
-  }, [props.remote, props.rpc, sessionId])
+  }, [props.remote, props.rpc, sessionId, historyScope])
 
   useEffect(() => {
     const close = (): void => {
@@ -253,7 +272,7 @@ function GitPanel(props: GitTabProps): ReactElement {
       setStatus(nextStatus)
       if (nextStatus.snapshot.enabled !== false) {
         const [nextHistory, nextBranches] = await Promise.all([
-          preserveExpandedHistory ? Promise.resolve(null) : call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { workspaceId: targetWorkspaceId, limit: INITIAL_HISTORY_LIMIT, offset: 0 }),
+          preserveExpandedHistory ? Promise.resolve(null) : call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { workspaceId: targetWorkspaceId, limit: INITIAL_HISTORY_LIMIT, offset: 0, scope: historyScope }),
           call<GitBranchSnapshot>(props.rpc, 'git/branches', { workspaceId: targetWorkspaceId }),
         ])
         const normalizedBranches = normalizeBranchSnapshot(nextBranches)
@@ -301,7 +320,7 @@ function GitPanel(props: GitTabProps): ReactElement {
     if (workspaceId === undefined || historyLoadingMore || history.length >= historyTotalCount) return
     setHistoryLoadingMore(true)
     historyExpanded.current = true
-    void call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { workspaceId, limit: HISTORY_PAGE_SIZE, offset: history.length }).then((page) => {
+    void call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { workspaceId, limit: HISTORY_PAGE_SIZE, offset: history.length, scope: historyScope }).then((page) => {
       setHistory((current) => [...current, ...page.items.filter((item) => !current.some((existing) => existing.commitHash === item.commitHash))])
       setHistoryTotalCount(page.totalCount)
     }).catch((error: unknown) => { historyExpanded.current = history.length > INITIAL_HISTORY_LIMIT; notify('error', error instanceof Error ? error.message : String(error)) }).finally(() => setHistoryLoadingMore(false))
@@ -316,13 +335,18 @@ function GitPanel(props: GitTabProps): ReactElement {
   const stageAll = (): void => { void run('git/stage', { targets: unstaged.map((item) => item.path) }) }
   const discardAll = (): void => { void run('git/discard', { targets: changes.map((item) => item.path) }) }
   return createElement('section', { style: panelStyle, 'data-git-management-panel': 'true' },
+    // 面板标题已由 Sidebar 标签页渲染，这里不再重复；只保留视图切换与操作菜单。
     createElement('header', { style: headerStyle },
-      createElement('div', { style: { minWidth: 0 } }, createElement('h1', { style: titleStyle }, 'Git')),
+      singleColumn ? createElement('div', { style: columnSwitchStyle },
+        createElement(SegmentedControl<'files' | 'history'>, {
+          id: 'codingns4dsh-git-view', value: activeColumn, onChange: setActiveColumn, label: '切换文件与版本视图',
+          options: [
+            { value: 'files', label: '切换文件', title: '切换文件' },
+            { value: 'history', label: '切换版本', title: '切换版本' },
+          ],
+        }),
+      ) : null,
       createElement('div', { style: headerActionsStyle },
-        singleColumn ? createElement('div', { style: columnSwitchStyle, role: 'group', 'aria-label': '切换文件与版本视图' },
-          createElement('button', { type: 'button', onClick: () => setActiveColumn('files'), style: activeColumn === 'files' ? columnSwitchActiveButtonStyle : columnSwitchButtonStyle, title: '切换文件', 'aria-label': '切换文件', 'aria-pressed': activeColumn === 'files' }, '切换文件'),
-          createElement('button', { type: 'button', onClick: () => setActiveColumn('history'), style: activeColumn === 'history' ? columnSwitchActiveButtonStyle : columnSwitchButtonStyle, title: '切换版本', 'aria-label': '切换版本', 'aria-pressed': activeColumn === 'history' }, '切换版本'),
-        ) : null,
         createElement(GitOperationsMenu, { busy, hasRemote: Boolean(status?.snapshot.hasRemote || branches?.remote.length), canUndo: history.length > 0, hasMoreVersions: history.length < historyTotalCount, stagedCount: staged.length, unstagedCount: unstaged.length, onStageAll: stageAll, onDiscardAll: discardAll, onLoadMore: loadMoreHistory, onOperation: runGitOperation }),
       ),
     ),
@@ -331,28 +355,32 @@ function GitPanel(props: GitTabProps): ReactElement {
     status !== null && status.snapshot.enabled === false ? createElement('section', { style: sectionStyle },
       createElement('strong', undefined, '当前目录还没有 Git 仓库'),
       createElement('div', { style: mutedStyle }, '初始化后即可查看改动、提交和版本历史。'),
-      createElement('button', { type: 'button', disabled: busy, onClick: () => void run('git/init', {}), style: primaryButtonStyle }, '初始化 Git'),
+      createElement('button', { type: 'button', disabled: busy, onClick: () => void run('git/init', {}), className: `${gitPanelClass.button} ${gitPanelClass.buttonPrimary}`, style: primaryButtonStyle }, '初始化 Git'),
     ) : null,
-    status !== null ? createElement('div', { style: summaryStyle }, `${staged.length} 个已暂存 · ${unstaged.length} 个未暂存 · ${historyTotalCount} 条提交`) : null,
+    status !== null ? createElement('div', { style: summaryStyle }, `${staged.length} 个已暂存 · ${unstaged.length} 个未暂存 · ${historyTotalCount} 条提交（${historyScope === 'all' ? '全部分支' : '当前分支'}）`) : null,
     diffView !== null ? createElement(DiffViewer, { diff: diffView, onClose: () => setDiffView(null) }) : null,
     fileDiff !== null ? createElement(FileDiffViewer, { path: fileDiff.path, staged: fileDiff.staged, diff: fileDiff.diff, onClose: () => setFileDiff(null) }) : null,
     status !== null && status.snapshot.enabled !== false ? createElement('div', { ref: contentGridRef, style: contentGridStyle },
       singleColumn && activeColumn !== 'files' ? null : createElement('div', { style: columnStyle },
         createElement('section', { style: commitSectionStyle },
+          createElement('div', { style: sectionHeaderStyle },
+            createElement('strong', undefined, '提交更改'),
+            createElement('span', { style: mutedStyle }, staged.length === 0 ? '暂存区为空' : `${staged.length} 个已暂存`),
+          ),
           createElement('div', { style: commitEditorRowStyle },
-            createElement('textarea', { value: subject, disabled: busy || workspaceId === undefined, onChange: (event: { currentTarget: { value: string } }) => setSubject(event.currentTarget.value), onKeyDown: (event: { key: string; preventDefault: () => void }) => { if (event.key === 'Enter') event.preventDefault() }, placeholder: '在这里输入提交信息', rows: 1, style: commitSubjectStyle }),
-            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined, onClick: () => notify('info', '生成提交信息功能暂未开放'), style: draftButtonStyle, title: '生成提交信息', 'aria-label': '生成提交信息' }, '✦'),
+            createElement('textarea', { value: subject, disabled: busy || workspaceId === undefined, className: gitPanelClass.field, onChange: (event: { currentTarget: { value: string } }) => setSubject(event.currentTarget.value), onKeyDown: (event: { key: string; preventDefault: () => void }) => { if (event.key === 'Enter') event.preventDefault() }, placeholder: '在这里输入提交信息', rows: 1, style: commitSubjectStyle }),
+            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined, onClick: () => notify('info', '生成提交信息功能暂未开放'), className: `${gitPanelClass.button} ${gitPanelClass.field}`, style: draftButtonStyle, title: '生成提交信息', 'aria-label': '生成提交信息' }, '✦'),
           ),
           createElement('div', { style: commitActionsStyle },
-            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined, onClick: () => void run('git/status', {}, (value) => setStatus(value as GitStatus)), style: refreshActionStyle }, '刷新'),
-            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined || staged.length === 0 || subject.trim().length === 0, onClick: commit, style: submitActionStyle }, '提交'),
+            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined, onClick: () => void run('git/status', {}, (value) => setStatus(value as GitStatus)), className: `${gitPanelClass.button} ${gitPanelClass.field}`, style: refreshActionStyle }, '刷新'),
+            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined || staged.length === 0 || subject.trim().length === 0, onClick: commit, className: `${gitPanelClass.button} ${gitPanelClass.buttonPrimary}`, style: submitActionStyle }, '提交'),
           ),
         ),
         staged.length > 0 ? createElement(ChangeSection, { title: '暂存文件', items: staged, busy, onOpenDiff: openFileDiff, onAction: (action, path) => void run(`git/${action}`, { targets: [path] }), onBatchAction: (action, paths) => void run(`git/${action}`, { targets: paths }), onBulkAction: () => void run('git/unstage', { targets: staged.map((item) => item.path) }) }) : null,
         unstaged.length > 0 ? createElement(ChangeSection, { title: '未提交文件', items: unstaged, busy, onOpenDiff: openFileDiff, onAction: (action, path) => void run(`git/${action}`, { targets: [path] }), onBatchAction: (action, paths) => void run(`git/${action}`, { targets: paths }), onBulkAction: () => void run('git/stage', { targets: unstaged.map((item) => item.path) }) }) : null,
       ),
       singleColumn && activeColumn !== 'history' ? null : createElement('div', { style: columnStyle },
-        createElement(HistorySection, { history, totalCount: historyTotalCount, hasMore: history.length < historyTotalCount, loadingMore: historyLoadingMore, onLoadMore: loadMoreHistory, branches, busy, onSwitch: (branchName) => void run('git/switch', { branchName, create: false }, (value) => setBranches(normalizeBranchSnapshot(value as GitBranchSnapshot))), onCopy: copyCommitHash, onCopyMessage: copyCommitMessage, onViewDiff: openCommitDiff, onUndo: () => runGitOperation('undo') }),
+        createElement(HistorySection, { history, totalCount: historyTotalCount, hasMore: history.length < historyTotalCount, loadingMore: historyLoadingMore, onLoadMore: loadMoreHistory, branches, busy, scope: historyScope, hasRemote: Boolean(status?.snapshot.hasRemote || branches?.remote.length), onScopeChange: setHistoryScope, onSwitch: (branchName) => void run('git/switch', { branchName, create: false }, (value) => setBranches(normalizeBranchSnapshot(value as GitBranchSnapshot))), onCopy: copyCommitHash, onCopyMessage: copyCommitMessage, onViewDiff: openCommitDiff, onUndo: () => runGitOperation('undo') }),
       ),
     ) : null,
   )
@@ -368,45 +396,50 @@ function ChangeSection({ title, items, busy, onOpenDiff, onAction, onBatchAction
       const directoryTargets = collectTreeTargets(node)
       const isHovered = hoveredPath === directoryKey
       return createElement('details', { key: `dir:${node.path}`, open: true, style: treeDirectoryStyle },
-        createElement('summary', { style: { ...treeRowStyle, paddingLeft: 8 + depth * 14 }, onMouseEnter: () => setHoveredPath(directoryKey), onMouseLeave: () => setHoveredPath(null) },
+        createElement('summary', { className: gitPanelClass.row, style: { ...treeRowStyle, paddingLeft: 8 + depth * 14 }, onMouseEnter: () => setHoveredPath(directoryKey), onMouseLeave: () => setHoveredPath(null) },
           createElement('span', { style: treeChevronStyle }, '⌄'), createElement('span', { style: folderIconStyle }, '▰'), createElement('span', { style: fileNameStyle, title: node.path }, node.name), createElement('span', { style: mutedStyle }, countTreeFiles(node)),
           isHovered ? createElement('div', { style: rowActionsStyle },
-            createElement('button', { type: 'button', disabled: busy, onClick: (event: { stopPropagation: () => void; preventDefault: () => void }) => { event.preventDefault(); event.stopPropagation(); onBatchAction(staged ? 'unstage' : 'stage', directoryTargets) }, style: iconButtonStyle, title: staged ? '撤销目录暂存' : '将目录添加到暂存区', 'aria-label': staged ? '撤销目录暂存' : '将目录添加到暂存区' }, staged ? '↶' : '+'),
-            !staged ? createElement('button', { type: 'button', disabled: busy, onClick: (event: { stopPropagation: () => void; preventDefault: () => void }) => { event.preventDefault(); event.stopPropagation(); onBatchAction('discard', directoryTargets) }, style: dangerIconButtonStyle, title: '撤销目录变更', 'aria-label': '撤销目录变更' }, '×') : null,
+            createElement('button', { type: 'button', disabled: busy, onClick: (event: { stopPropagation: () => void; preventDefault: () => void }) => { event.preventDefault(); event.stopPropagation(); onBatchAction(staged ? 'unstage' : 'stage', directoryTargets) }, className: gitPanelClass.action, style: iconActionStyle, title: staged ? '撤销目录暂存' : '将目录添加到暂存区', 'aria-label': staged ? '撤销目录暂存' : '将目录添加到暂存区' }, staged ? '↶' : '+'),
+            !staged ? createElement('button', { type: 'button', disabled: busy, onClick: (event: { stopPropagation: () => void; preventDefault: () => void }) => { event.preventDefault(); event.stopPropagation(); onBatchAction('discard', directoryTargets) }, className: `${gitPanelClass.action} ${gitPanelClass.actionDanger}`, style: iconActionStyle, title: '撤销目录变更', 'aria-label': '撤销目录变更' }, '×') : null,
           ) : null,
         ),
         createElement('div', undefined, ...node.children.map((child) => renderNode(child, depth + 1))),
       )
     }
     const isHovered = hoveredPath === node.path
-    return createElement('div', { key: `file:${node.path}`, style: { ...treeRowStyle, paddingLeft: 28 + depth * 14 }, onMouseEnter: () => setHoveredPath(node.path), onMouseLeave: () => setHoveredPath(null), onDoubleClick: () => onOpenDiff(node.path, staged) },
+    return createElement('div', { key: `file:${node.path}`, className: gitPanelClass.row, style: { ...treeRowStyle, paddingLeft: 28 + depth * 14 }, onMouseEnter: () => setHoveredPath(node.path), onMouseLeave: () => setHoveredPath(null), onDoubleClick: () => onOpenDiff(node.path, staged) },
       createElement('span', { style: fileIconStyle }, fileIcon(node.name)),
       createElement('span', { title: node.path, style: fileNameStyle }, node.name),
       createElement('span', { style: fileStatusStyle }, changeStatus(node.item, staged)),
       isHovered ? createElement('div', { style: rowActionsStyle },
-        createElement('button', { type: 'button', disabled: busy, onClick: () => onAction(staged ? 'unstage' : 'stage', node.path), style: iconButtonStyle, title: staged ? '撤销暂存' : '添加到暂存区', 'aria-label': staged ? '撤销暂存' : '添加到暂存区' }, staged ? '↶' : '+'),
-        !staged ? createElement('button', { type: 'button', disabled: busy, onClick: () => onAction('discard', node.path), style: dangerIconButtonStyle, title: '撤销变更', 'aria-label': '撤销变更' }, '×') : null,
+        createElement('button', { type: 'button', disabled: busy, onClick: () => onAction(staged ? 'unstage' : 'stage', node.path), className: gitPanelClass.action, style: iconActionStyle, title: staged ? '撤销暂存' : '添加到暂存区', 'aria-label': staged ? '撤销暂存' : '添加到暂存区' }, staged ? '↶' : '+'),
+        !staged ? createElement('button', { type: 'button', disabled: busy, onClick: () => onAction('discard', node.path), className: `${gitPanelClass.action} ${gitPanelClass.actionDanger}`, style: iconActionStyle, title: '撤销变更', 'aria-label': '撤销变更' }, '×') : null,
       ) : null,
     )
   }
   return createElement('section', { style: sectionStyle },
-    createElement('div', { style: sectionHeaderStyle }, createElement('strong', undefined, `${title} (${items.length})`), createElement('button', { type: 'button', disabled: busy, onClick: onBulkAction, style: iconButtonStyle, title: staged ? '取消全部暂存' : '全部添加到暂存区', 'aria-label': staged ? '取消全部暂存' : '全部添加到暂存区' }, staged ? '↶' : '+')),
+    createElement('div', { style: sectionHeaderStyle }, createElement('strong', undefined, `${title} (${items.length})`), createElement('button', { type: 'button', disabled: busy, onClick: onBulkAction, className: gitPanelClass.action, style: iconActionStyle, title: staged ? '取消全部暂存' : '全部添加到暂存区', 'aria-label': staged ? '取消全部暂存' : '全部添加到暂存区' }, staged ? '↶' : '+')),
     createElement('div', { style: treeStyle }, ...nodes.map((node) => renderNode(node, 0))),
   )
 }
 
 function GitOperationsMenu({ busy, hasRemote, canUndo, hasMoreVersions, stagedCount, unstagedCount, onStageAll, onDiscardAll, onLoadMore, onOperation }: { readonly busy: boolean; readonly hasRemote: boolean; readonly canUndo: boolean; readonly hasMoreVersions: boolean; readonly stagedCount: number; readonly unstagedCount: number; readonly onStageAll: () => void; readonly onDiscardAll: () => void; readonly onLoadMore: () => void; readonly onOperation: (action: GitOperation) => void }): ReactElement {
-  return createElement('details', { style: menuStyle },
-    createElement('summary', { style: menuSummaryStyle, title: 'Git 操作菜单', 'aria-label': 'Git 操作菜单' }, '⋯'),
-    createElement('div', { style: menuPopupStyle },
-      createElement('button', { type: 'button', disabled: busy || unstagedCount === 0, onClick: onStageAll, style: menuButtonStyle }, '暂存全部'),
-      createElement('button', { type: 'button', disabled: busy || stagedCount + unstagedCount === 0, onClick: onDiscardAll, style: dangerMenuButtonStyle }, '放弃全部改动'),
-      createElement('button', { type: 'button', disabled: busy || !hasRemote, onClick: () => onOperation('fetch'), style: menuButtonStyle }, 'Fetch'),
-      createElement('button', { type: 'button', disabled: busy || !hasRemote, onClick: () => onOperation('pull'), style: menuButtonStyle }, 'Pull'),
-      createElement('button', { type: 'button', disabled: busy || !hasRemote || stagedCount > 0 || unstagedCount > 0, onClick: () => onOperation('push'), style: menuButtonStyle }, 'Push'),
-      createElement('button', { type: 'button', disabled: busy || !hasMoreVersions, onClick: onLoadMore, style: menuButtonStyle, title: '查看所有版本' }, '查看更多版本（每次 100 条）'),
-      createElement('button', { type: 'button', disabled: busy || !canUndo, onClick: () => onOperation('undo'), style: menuButtonStyle }, '撤销上次提交'),
-      createElement('button', { type: 'button', disabled: busy, onClick: () => onOperation('refresh'), style: menuButtonStyle }, '刷新'),
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  useDismissOnOutsidePointer(rootRef, open, () => setOpen(false))
+  // 菜单项统一在点击后收起；关闭动作与具体操作解耦，避免每个按钮各写一次。
+  const run = (action: () => void): (() => void) => () => { setOpen(false); action() }
+  return createElement('div', { ref: rootRef, style: menuStyle },
+    createElement('button', { type: 'button', className: gitPanelClass.menuTrigger, style: iconActionStyle, title: 'Git 操作菜单', 'aria-label': 'Git 操作菜单', 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => setOpen((value) => !value) }, '⋯'),
+    open && createElement('div', { role: 'menu', 'aria-label': 'Git 操作菜单', className: gitPanelClass.menu, style: menuPopupStyle },
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || unstagedCount === 0, onClick: run(onStageAll), className: gitPanelClass.menuItem, style: menuItemStyle }, '暂存全部'),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || stagedCount + unstagedCount === 0, onClick: run(onDiscardAll), className: `${gitPanelClass.menuItem} ${gitPanelClass.menuItemDanger}`, style: menuItemStyle }, '放弃全部改动'),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !hasRemote, onClick: run(() => onOperation('fetch')), className: gitPanelClass.menuItem, style: menuItemStyle }, 'Fetch'),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !hasRemote, onClick: run(() => onOperation('pull')), className: gitPanelClass.menuItem, style: menuItemStyle }, 'Pull'),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !hasRemote || stagedCount > 0 || unstagedCount > 0, onClick: run(() => onOperation('push')), className: gitPanelClass.menuItem, style: menuItemStyle }, 'Push'),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !hasMoreVersions, onClick: run(onLoadMore), className: gitPanelClass.menuItem, style: menuItemStyle, title: '查看所有版本' }, '查看更多版本（每次 100 条）'),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !canUndo, onClick: run(() => onOperation('undo')), className: gitPanelClass.menuItem, style: menuItemStyle }, '撤销上次提交'),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy, onClick: run(() => onOperation('refresh')), className: gitPanelClass.menuItem, style: menuItemStyle }, '刷新'),
     ),
   )
 }
@@ -421,9 +454,9 @@ interface ParsedDiffLine {
 function DiffViewer({ diff, onClose }: { readonly diff: GitCommitDiff; readonly onClose: () => void }): ReactElement {
   const providedFiles = diff.files ?? []
   const files = providedFiles.length > 0 ? providedFiles : parseDiffFiles(diff.content)
-  return createElement('div', { style: diffOverlayStyle },
+  return createElement('div', { style: diffOverlayStyle, onPointerDown: backdropPointerDownHandler(onClose) },
     createElement('section', { role: 'dialog', 'aria-modal': true, 'aria-label': '提交 Diff', style: diffStyle },
-      createElement('div', { style: sectionHeaderStyle }, createElement('strong', undefined, `提交 Diff · ${diff.commitHash.slice(0, 8)}`), createElement('button', { type: 'button', onClick: onClose, style: iconButtonStyle, title: '关闭 Diff', 'aria-label': '关闭 Diff' }, '×')),
+      createElement('div', { style: sectionHeaderStyle }, createElement('strong', undefined, `提交 Diff · ${diff.commitHash.slice(0, 8)}`), createElement('button', { type: 'button', onClick: onClose, className: gitPanelClass.action, style: iconActionStyle, title: '关闭 Diff', 'aria-label': '关闭 Diff' }, '×')),
       createElement('div', { style: diffBodyStyle },
         createElement('section', { style: diffFilesSectionStyle },
           createElement('div', { style: diffSectionHeaderStyle }, createElement('strong', undefined, '变更文件'), createElement('span', { style: diffCountStyle }, String(files.length))),
@@ -445,13 +478,13 @@ function DiffLines({ content }: { readonly content: string }): ReactElement {
 }
 
 function FileDiffViewer({ path, staged, diff, onClose }: { readonly path: string; readonly staged: boolean; readonly diff: GitDiff; readonly onClose: () => void }): ReactElement {
-  return createElement('div', { style: diffOverlayStyle },
+  return createElement('div', { style: diffOverlayStyle, onPointerDown: backdropPointerDownHandler(onClose) },
     createElement('section', { role: 'dialog', 'aria-modal': true, 'aria-label': '文件 Diff', style: diffStyle },
       createElement('div', { style: sectionHeaderStyle },
         createElement('strong', { style: fileDiffTitleStyle, title: path }, `文件 Diff · ${path}`),
         createElement('div', { style: rowActionsStyle },
           createElement('span', { style: diffCountStyle }, staged ? '已暂存' : '未暂存'),
-          createElement('button', { type: 'button', onClick: onClose, style: iconButtonStyle, title: '关闭 Diff', 'aria-label': '关闭 Diff' }, '×'),
+          createElement('button', { type: 'button', onClick: onClose, className: gitPanelClass.action, style: iconActionStyle, title: '关闭 Diff', 'aria-label': '关闭 Diff' }, '×'),
         ),
       ),
       createElement('div', { style: diffBodyStyle },
@@ -511,44 +544,173 @@ function parseDiffFiles(content: string): readonly GitCommitChangedFile[] {
 
 function diffFileStatusLabel(status: string): string { return status === 'A' ? '新增' : status === 'D' ? '删除' : status === 'R' ? '重命名' : status === 'C' ? '复制' : '修改' }
 function diffLinePrefix(kind: ParsedDiffLine['kind']): string { return kind === 'add' ? '+' : kind === 'remove' ? '-' : kind === 'context' ? ' ' : '' }
+/** Diff 行的配色与 DSH 内置 DiffBlock 完全对齐：同一组状态色 + 行底色 + 左侧 3px 色条。 */
 function diffLineStyle(kind: ParsedDiffLine['kind']): CSSProperties {
-  if (kind === 'add') return { ...diffLineBaseStyle, color: '#1f9d55', background: 'color-mix(in srgb, #22c55e 13%, transparent)' }
-  if (kind === 'remove') return { ...diffLineBaseStyle, color: '#e05252', background: 'color-mix(in srgb, #ef4444 13%, transparent)' }
-  if (kind === 'hunk') return { ...diffLineBaseStyle, color: dshThemeColor.accent, background: 'color-mix(in srgb, currentColor 10%, transparent)', fontWeight: 600 }
+  if (kind === 'add') return { ...diffLineBaseStyle, color: dshThemeColor.success, background: dshThemeColor.diffAddedBackground, boxShadow: `inset 3px 0 0 ${dshThemeColor.success}` }
+  if (kind === 'remove') return { ...diffLineBaseStyle, color: dshThemeColor.error, background: dshThemeColor.diffDeletedBackground, boxShadow: `inset 3px 0 0 ${dshThemeColor.error}` }
+  if (kind === 'hunk') return { ...diffLineBaseStyle, color: dshThemeColor.accent, background: dshThemeColor.surfaceSubtle, fontWeight: 600 }
   if (kind === 'meta') return { ...diffLineBaseStyle, color: dshThemeColor.labelTertiary }
   return diffLineBaseStyle
 }
 
-function HistorySection({ history, totalCount, hasMore, loadingMore, onLoadMore, branches, busy, onSwitch, onCopy, onCopyMessage, onViewDiff, onUndo }: { readonly history: readonly GitHistoryItem[]; readonly totalCount: number; readonly hasMore: boolean; readonly loadingMore: boolean; readonly onLoadMore: () => void; readonly branches: GitBranchSnapshot | null; readonly busy: boolean; readonly onSwitch: (branchName: string) => void; readonly onCopy: (commitHash: string) => void; readonly onCopyMessage: (message: string) => void; readonly onViewDiff: (commitHash: string) => void; readonly onUndo: () => void }): ReactElement {
-  const rows = groupHistoryByDate(history).flatMap((group) => [
-    createElement('div', { key: `date:${group.key}`, style: historyDateHeaderStyle }, createElement('time', { dateTime: group.key, style: historyDateHeaderTextStyle }, group.label)),
-    ...group.items.map(({ item, index, timeLabel }) => {
-      const refs = item.refs ?? []
-      return createElement('div', { key: item.commitHash, style: historyRowStyle },
-        createElement('div', { style: historyRowMainStyle },
-          createElement('code', { style: hashStyle }, item.commitHash.slice(0, 8)),
-          createElement('span', { style: fileNameStyle, title: item.subject }, item.subject),
-          createElement('time', { style: historyTimeStyle, dateTime: item.authoredAt }, timeLabel),
-          createElement('details', { style: menuStyle },
-            createElement('summary', { style: menuSummaryStyle, title: '版本操作菜单', 'aria-label': '版本操作菜单' }, '⋯'),
-            createElement('div', { style: menuPopupStyle },
-              createElement('button', { type: 'button', onClick: () => onViewDiff(item.commitHash), style: menuButtonStyle }, '查看更改文件与 Diff'),
-              createElement('button', { type: 'button', onClick: () => onCopy(item.commitHash), style: menuButtonStyle }, '复制 Commit Hash'),
-              createElement('button', { type: 'button', onClick: () => onCopyMessage(buildCommitMessageText(item.subject, item.body)), style: menuButtonStyle }, '复制提交信息'),
-              createElement('button', { type: 'button', onClick: () => onCopy(item.commitHash), style: menuButtonStyle }, '复制 Git 版本号'),
-              index === 0 ? createElement('button', { type: 'button', disabled: busy, onClick: onUndo, style: dangerMenuButtonStyle }, '撤销上次提交') : null,
-            ),
+function HistorySection({ history, totalCount, hasMore, loadingMore, onLoadMore, branches, busy, scope, hasRemote, onScopeChange, onSwitch, onCopy, onCopyMessage, onViewDiff, onUndo }: { readonly history: readonly GitHistoryItem[]; readonly totalCount: number; readonly hasMore: boolean; readonly loadingMore: boolean; readonly onLoadMore: () => void; readonly branches: GitBranchSnapshot | null; readonly busy: boolean; readonly scope: GitHistoryScope; readonly hasRemote: boolean; readonly onScopeChange: (scope: GitHistoryScope) => void; readonly onSwitch: (branchName: string) => void; readonly onCopy: (commitHash: string) => void; readonly onCopyMessage: (message: string) => void; readonly onViewDiff: (commitHash: string) => void; readonly onUndo: () => void }): ReactElement {
+  const graph = buildHistoryGraph(history)
+  const graphWidth = graph.laneCount * GRAPH_LANE_WIDTH
+  const rows: ReactElement[] = []
+  for (const group of groupHistoryByDate(history)) {
+    const firstIndex = group.items[0]?.index ?? 0
+    rows.push(createElement('div', { key: `date:${group.key}`, style: historyDateHeaderStyle },
+      createElement(GitGraphRails, { lanes: graph.rows[firstIndex]?.top ?? [], width: graphWidth, minHeight: 16 }),
+      createElement('time', { dateTime: group.key, style: historyDateHeaderTextStyle }, group.label),
+    ))
+    for (const { item, index, timeLabel } of group.items) {
+      rows.push(createElement(HistoryGraphRow, {
+        key: item.commitHash, item, timeLabel, row: graph.rows[index] ?? EMPTY_GRAPH_ROW, width: graphWidth,
+        busy, hasRemote, isHead: hasHeadRef(item), onCopy, onCopyMessage, onViewDiff, onUndo,
+      }))
+    }
+  }
+  return createElement('section', { style: sectionStyle },
+    createElement('div', { style: sectionHeaderStyle },
+      createElement('strong', { title: '提交图：彩色实线＝泳道（分支拓扑），蓝色虚线＝尚未推送到远程的提交；鼠标悬浮节点可看该提交的归属与分支' }, `Git 版本 (${totalCount})`),
+      createElement('div', { style: historyHeaderActionsStyle },
+        createElement('select', {
+          value: scope, disabled: busy, className: gitPanelClass.select, style: scopeSelectStyle, title: '版本范围：只列当前分支，或列出全部本地分支与远程跟踪分支', 'aria-label': '版本范围',
+          onChange: (event: { currentTarget: { value: string } }) => onScopeChange(event.currentTarget.value === 'all' ? 'all' : 'head'),
+        },
+        createElement('option', { value: 'head' }, '当前分支'),
+        createElement('option', { value: 'all' }, '全部分支'),
+        ),
+        branches === null ? null : createElement('select', { value: branches.currentBranch, disabled: busy, className: gitPanelClass.select, style: branchSelectStyle, title: '切换分支', 'aria-label': '切换分支', onChange: (event: { currentTarget: { value: string } }) => onSwitch(event.currentTarget.value) }, ...branches.local.map((branch) => createElement('option', { key: branch.name, value: branch.name }, branch.name))),
+      ),
+    ),
+    history.length === 0
+      ? createElement('div', { style: mutedStyle }, '暂无提交')
+      // 行间不能留间距：每行的竖线只画到行底，一旦行与行之间有缝隙，泳道就会断成一段一段。
+      : createElement('div', { style: historyListStyle }, ...rows),
+    hasMore ? createElement('button', { type: 'button', disabled: busy || loadingMore, onClick: onLoadMore, className: `${gitPanelClass.button} ${gitPanelClass.field}`, style: loadMoreButtonStyle }, loadingMore ? '正在加载…' : '查看更多版本（每次 100 条）') : null,
+  )
+}
+
+const EMPTY_GRAPH_ROW: GitGraphRow = { lane: 0, color: 0, through: [], merges: [], branches: [], top: [], bottom: [] }
+
+function HistoryGraphRow({ item, timeLabel, row, width, busy, hasRemote, isHead, onCopy, onCopyMessage, onViewDiff, onUndo }: { readonly item: GitHistoryItem; readonly timeLabel: string; readonly row: GitGraphRow; readonly width: number; readonly busy: boolean; readonly hasRemote: boolean; readonly isHead: boolean; readonly onCopy: (commitHash: string) => void; readonly onCopyMessage: (message: string) => void; readonly onViewDiff: (commitHash: string) => void; readonly onUndo: () => void }): ReactElement {
+  const refs = sortHistoryRefs(item.refs ?? [])
+  const nodeTitle = describeCommitNode(item, refs, hasRemote)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  useDismissOnOutsidePointer(menuRef, menuOpen, () => setMenuOpen(false))
+  const runMenu = (action: () => void): (() => void) => () => { setMenuOpen(false); action() }
+  return createElement('div', { className: gitPanelClass.row, style: historyRowStyle },
+    createElement('div', { style: { ...graphGutterStyle, width }, 'aria-hidden': 'true' },
+      createElement(GitGraphTrack, { row, width, head: isHead, title: nodeTitle }),
+      refs.length === 0 ? null : createElement(GitGraphRails, { lanes: row.bottom, width, fill: true }),
+    ),
+    createElement('div', { style: historyRowBodyStyle },
+      createElement('div', { style: historyRowMainStyle },
+        createElement('code', { style: hashStyle }, item.commitHash.slice(0, 8)),
+        createElement('span', { style: fileNameStyle, title: item.subject }, item.subject),
+        createElement('time', {
+          style: historyTimeStyle, dateTime: item.authoredAt,
+          title: item.authorName === '' ? item.authoredAt : `${item.authoredAt} · 作者 ${item.authorName}`,
+        }, timeLabel),
+        createElement('div', { ref: menuRef, style: menuStyle },
+          createElement('button', { type: 'button', className: gitPanelClass.menuTrigger, style: iconActionStyle, title: '版本操作菜单', 'aria-label': '版本操作菜单', 'aria-haspopup': 'menu', 'aria-expanded': menuOpen, onClick: () => setMenuOpen((value) => !value) }, '⋯'),
+          menuOpen && createElement('div', { role: 'menu', 'aria-label': '版本操作菜单', className: gitPanelClass.menu, style: menuPopupStyle },
+            createElement('button', { type: 'button', role: 'menuitem', onClick: runMenu(() => onViewDiff(item.commitHash)), className: gitPanelClass.menuItem, style: menuItemStyle }, '查看更改文件与 Diff'),
+            createElement('button', { type: 'button', role: 'menuitem', onClick: runMenu(() => onCopy(item.commitHash)), className: gitPanelClass.menuItem, style: menuItemStyle }, '复制 Commit Hash'),
+            createElement('button', { type: 'button', role: 'menuitem', onClick: runMenu(() => onCopyMessage(buildCommitMessageText(item.subject, item.body))), className: gitPanelClass.menuItem, style: menuItemStyle }, '复制提交信息'),
+            createElement('button', { type: 'button', role: 'menuitem', onClick: runMenu(() => onCopy(item.commitHash)), className: gitPanelClass.menuItem, style: menuItemStyle }, '复制 Git 版本号'),
+            isHead ? createElement('button', { type: 'button', role: 'menuitem', disabled: busy, onClick: runMenu(onUndo), className: `${gitPanelClass.menuItem} ${gitPanelClass.menuItemDanger}`, style: menuItemStyle }, '撤销上次提交') : null,
           ),
         ),
-        refs.length === 0 ? null : createElement('div', { style: historyRefListStyle }, ...refs.map((ref) => createElement('span', { key: `${ref.kind}:${ref.name}`, title: ref.name, style: historyRefPillStyle(ref.kind, ref.remoteName) }, ref.name))),
-      )
-    }),
-  ])
-  return createElement('section', { style: sectionStyle },
-    createElement('div', { style: sectionHeaderStyle }, createElement('strong', undefined, `Git 版本 (${totalCount})`), branches === null ? null : createElement('select', { value: branches.currentBranch, disabled: busy, onChange: (event: { currentTarget: { value: string } }) => onSwitch(event.currentTarget.value), style: branchSelectStyle }, ...branches.local.map((branch) => createElement('option', { key: branch.name, value: branch.name }, branch.name)))),
-    history.length === 0 ? createElement('div', { style: mutedStyle }, '暂无提交') : rows,
-    hasMore ? createElement('button', { type: 'button', disabled: busy || loadingMore, onClick: onLoadMore, style: loadMoreButtonStyle }, loadingMore ? '正在加载…' : '查看更多版本（每次 100 条）') : null,
+      ),
+      refs.length === 0 ? null : createElement('div', { style: historyRefListStyle }, ...refs.map((ref) => createElement('span', { key: `${ref.kind}:${ref.name}`, title: refTitle(ref), className: gitPanelClass.ref, style: historyRefPillStyle(ref.kind, ref.remoteName) }, `${refGlyph(ref.kind)} ${ref.name}`))),
+    ),
   )
+}
+
+/** 标签顺序对齐 VS Code：当前分支 → 本地分支 → 远程分支 → 标签，同一提交的多个引用顺序稳定。 */
+function sortHistoryRefs(refs: readonly GitHistoryRef[]): readonly GitHistoryRef[] {
+  const rank = (kind: GitHistoryRef['kind']): number => kind === 'head' ? 0 : kind === 'local' ? 1 : kind === 'remote' ? 2 : 3
+  return [...refs].sort((left, right) => rank(left.kind) - rank(right.kind) || left.name.localeCompare(right.name))
+}
+
+/** 未推送的线段画虚线：颜色说明「是谁的提交」，线型说明「还没进任何远程」。 */
+function dashProps(origin: GitHistoryOrigin | undefined): { readonly strokeDasharray?: string } {
+  return isUnpushed(origin) ? { strokeDasharray: GRAPH_DASH_ARRAY } : {}
+}
+
+/** 提交节点与它这一行的连线；坐标按 GRAPH_ROW_HEIGHT 计算，与主行高度严格对齐。 */
+function GitGraphTrack({ row, width, head, title }: { readonly row: GitGraphRow; readonly width: number; readonly head: boolean; readonly title: string | null }): ReactElement {
+  const mid = GRAPH_ROW_HEIGHT / 2
+  const nodeX = laneCenterX(row.lane)
+  // 节点保持泳道色：颜色负责拓扑，蓝虚线负责「未推送」，两者不互相覆盖。
+  const color = laneColor(row.color)
+  const children: ReactElement[] = []
+  if (row.top.some((lane) => lane.lane === row.lane)) {
+    children.push(createElement('line', { key: 'node-in', x1: nodeX, y1: 0, x2: nodeX, y2: mid, stroke: segmentStroke(row.incomingOrigin, row.color), strokeWidth: 1.5, ...dashProps(row.incomingOrigin) }))
+  }
+  for (const lane of row.through) {
+    const x = laneCenterX(lane.lane)
+    children.push(createElement('line', { key: `through:${lane.lane}`, x1: x, y1: 0, x2: x, y2: GRAPH_ROW_HEIGHT, stroke: laneStroke(lane), strokeWidth: 1.5, ...dashProps(lane.origin) }))
+  }
+  for (const merge of row.merges) {
+    const x = laneCenterX(merge.lane)
+    children.push(createElement('path', { key: `merge:${merge.lane}`, d: `M ${x} 0 C ${x} 5 ${nodeX} ${mid - 5} ${nodeX} ${mid}`, fill: 'none', stroke: laneStroke(merge), strokeWidth: 1.5, strokeLinecap: 'round', ...dashProps(merge.origin) }))
+  }
+  for (const branch of row.branches) {
+    const x = laneCenterX(branch.lane)
+    if (branch.lane === row.lane) children.push(createElement('line', { key: `branch:${branch.lane}`, x1: x, y1: mid, x2: x, y2: GRAPH_ROW_HEIGHT, stroke: laneStroke(branch), strokeWidth: 1.5, ...dashProps(branch.origin) }))
+    else children.push(createElement('path', { key: `branch:${branch.lane}`, d: `M ${nodeX} ${mid} C ${nodeX} ${mid + 5} ${x} ${GRAPH_ROW_HEIGHT - 5} ${x} ${GRAPH_ROW_HEIGHT}`, fill: 'none', stroke: laneStroke(branch), strokeWidth: 1.5, strokeLinecap: 'round', ...dashProps(branch.origin) }))
+  }
+  // 与 VS Code 一致：普通提交是实心圆点，当前提交（HEAD）是带外环的靶心，一眼可辨。
+  const nodeTitle = title === null ? undefined : createElement('title', { key: 'node-title' }, title)
+  if (head) {
+    children.push(createElement('circle', { key: 'head-ring', cx: nodeX, cy: mid, r: 6, fill: 'none', stroke: color, strokeWidth: 1.5 }))
+    children.push(createElement('circle', { key: 'node', cx: nodeX, cy: mid, r: 3, fill: color, stroke: dshThemeColor.menuBackground, strokeWidth: 1.5 }, nodeTitle))
+  } else {
+    children.push(createElement('circle', { key: 'node', cx: nodeX, cy: mid, r: 3.6, fill: color, stroke: dshThemeColor.menuBackground, strokeWidth: 1.5 }, nodeTitle))
+  }
+  return createElement('svg', { width, height: GRAPH_ROW_HEIGHT, viewBox: `0 0 ${width} ${GRAPH_ROW_HEIGHT}`, 'aria-hidden': 'true', style: graphTrackStyle }, ...children)
+}
+
+/** 只画竖直贯穿线：日期分隔行与分支标签行用它延续泳道，避免提交图被行高切断。 */
+function GitGraphRails({ lanes, width, minHeight, fill = false }: { readonly lanes: readonly GitGraphLane[]; readonly width: number; readonly minHeight?: number; readonly fill?: boolean }): ReactElement {
+  return createElement('div', { style: { ...graphRailsStyle, width, ...(minHeight === undefined ? {} : { minHeight }), ...(fill ? { flex: '1 1 auto' } : {}) }, 'aria-hidden': 'true' },
+    ...lanes.map((lane) => createElement('span', { key: lane.lane, style: graphRailStyle(lane.lane, laneStroke(lane), laneDashed(lane)) })),
+  )
+}
+
+function hasHeadRef(item: GitHistoryItem): boolean {
+  return (item.refs ?? []).some((ref) => ref.kind === 'head')
+}
+
+function refGlyph(kind: GitHistoryRef['kind']): string {
+  return kind === 'head' ? '●' : kind === 'remote' ? '☁' : kind === 'tag' ? '⚑' : '⑂'
+}
+
+function refTitle(ref: GitHistoryRef): string {
+  const kind = ref.kind === 'head' ? '当前分支' : ref.kind === 'remote' ? '远程分支' : ref.kind === 'tag' ? '标签' : '本地分支'
+  return `${kind}：${ref.name}`
+}
+
+/** 归属不单独显示文字，只作为节点 tooltip：颜色与虚实已经表达了归属，说明放在悬浮提示里。 */
+function describeCommitOrigin(origin: GitHistoryOrigin | undefined, hasRemote: boolean): string | null {
+  if (origin === undefined) return null
+  if (origin === 'local') return hasRemote ? '本地提交：只在本地分支上，尚未推送到远程（蓝色虚线）' : '本地提交：只在本地分支上（当前仓库没有远程，蓝色虚线）'
+  if (origin === 'synced') return '已同步：当前分支与远程跟踪分支都包含该提交（彩色实线）'
+  if (origin === 'remote') return '远程提交：只有远程跟踪分支包含该提交，本地还没有（可先 Fetch/Pull）'
+  return '其他分支：只有其他本地分支包含该提交，当前分支与远程都没有（蓝色虚线）'
+}
+
+/** 悬浮节点时显示：短哈希、归属状态、该提交上的分支与标签名称。 */
+function describeCommitNode(item: GitHistoryItem, refs: readonly GitHistoryRef[], hasRemote: boolean): string {
+  const status = describeCommitOrigin(item.origin, hasRemote) ?? '归属未知：Host 未返回提交归属（按泳道配色）'
+  const parts = [`${item.commitHash.slice(0, 8)} ${item.subject}`, status]
+  if (refs.length > 0) parts.push(`分支与标签：${refs.map((ref) => refTitle(ref)).join('；')}`)
+  if (item.authorName !== '') parts.push(`作者：${item.authorName}`)
+  return parts.join('\n')
 }
 
 function buildChangeTree(items: readonly GitChangeItem[]): readonly GitTreeNode[] {
@@ -861,59 +1023,74 @@ function resolveRemotePaletteIndex(remoteName: string | null): number {
   return hash % REMOTE_REF_PALETTE.length
 }
 
+/**
+ * 分支标签的配色按「在哪」分色，而不是按名称：当前分支＝品牌蓝，本地分支＝绿，
+ * 远程分支＝按远程名散列到固定调色板，标签＝琥珀。色相拉开后，一眼就能区分本地与远程。
+ */
 function historyRefPillStyle(kind: GitHistoryRef['kind'], remoteName: string | null): CSSProperties {
   if (kind === 'remote') {
     const color = REMOTE_REF_PALETTE[resolveRemotePaletteIndex(remoteName)]!
-    return { ...historyRefPillBaseStyle, border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`, background: `color-mix(in srgb, ${color} 14%, transparent)`, color }
+    return { ...historyRefPillBaseStyle, border: `.5px solid color-mix(in srgb, ${color} 40%, transparent)`, background: `color-mix(in srgb, ${color} 14%, transparent)`, color }
   }
-  const color = kind === 'head' ? '#4f9cff' : '#67b0ff'
-  const mix = kind === 'head' ? { border: 36, background: 18 } : { border: 28, background: 12 }
-  return { ...historyRefPillBaseStyle, border: `1px solid color-mix(in srgb, ${color} ${mix.border}%, transparent)`, background: `color-mix(in srgb, ${color} ${mix.background}%, transparent)`, color: '#2b74d8' }
+  if (kind === 'tag') return { ...historyRefPillBaseStyle, border: '.5px solid color-mix(in srgb, #d98324 42%, transparent)', background: 'color-mix(in srgb, #d98324 15%, transparent)', color: '#b26a12' }
+  // 本地分支用绿色，与远程调色板中的绿区分开：本地分支恒为绿，远程绿只出现在同名远程上。
+  if (kind === 'local') return { ...historyRefPillBaseStyle, border: '.5px solid color-mix(in srgb, #10b981 40%, transparent)', background: 'color-mix(in srgb, #10b981 14%, transparent)', color: '#0f8a63' }
+  return { ...historyRefPillBaseStyle, border: '.5px solid color-mix(in srgb, #4f9cff 42%, transparent)', background: 'color-mix(in srgb, #4f9cff 16%, transparent)', color: '#2b74d8' }
 }
 
-const panelStyle: CSSProperties = { position: 'relative', userSelect: 'none', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 12, minHeight: '100%', padding: '16px 18px 24px', overflow: 'auto', background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary }
-const headerStyle: CSSProperties = { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, paddingBottom: 10, borderBottom: `1px solid ${dshThemeColor.border}` }
-const titleStyle: CSSProperties = { margin: 0, fontSize: 20, lineHeight: 1.2 }
+function graphRailStyle(lane: number, stroke: string, dashed = false): CSSProperties {
+  const background = dashed ? `repeating-linear-gradient(to bottom, ${stroke} 0 3px, transparent 3px 6px)` : stroke
+  return { position: 'absolute', top: 0, bottom: 0, left: laneCenterX(lane) - 0.75, width: 1.5, borderRadius: dashed ? 0 : 1, background }
+}
+
+// 面板根节点不再铺底色：DSH 右侧栏的其它面板都是透明的，继承 Sidebar 表面色才不会出现色块接缝。
+const panelStyle: CSSProperties = { position: 'relative', userSelect: 'none', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 12, minHeight: '100%', padding: '12px 14px 20px', overflow: 'auto', color: dshThemeColor.labelPrimary }
+const headerStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 28 }
 const tabTitleStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', minWidth: 0, color: dshThemeColor.labelPrimary, fontSize: 12 }
 const headerActionsStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4 }
-const columnSwitchStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 2, padding: 2, border: `1px solid ${dshThemeColor.border}`, borderRadius: 5, background: dshThemeColor.pageBackground }
-const columnSwitchButtonStyle: CSSProperties = { border: 0, borderRadius: 3, padding: '3px 6px', color: dshThemeColor.labelSecondary, background: 'transparent', cursor: 'pointer', fontSize: 11, whiteSpace: 'nowrap' }
-const columnSwitchActiveButtonStyle: CSSProperties = { ...columnSwitchButtonStyle, color: dshThemeColor.accent, background: 'color-mix(in srgb, currentColor 12%, transparent)', fontWeight: 600 }
+// SegmentedControl 自带 indicator 与键盘走查，这里只负责在单列布局下占位与对齐。
+const columnSwitchStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', minWidth: 0 }
 const summaryStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: 12 }
 const contentGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', alignItems: 'start', gap: 12 }
 const columnStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }
-const sectionStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8, padding: 10, border: `1px solid ${dshThemeColor.border}`, borderRadius: 6, background: dshThemeColor.menuBackground }
-const sectionHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12 }
+// 卡片用 layer-1：与 DSH 内置卡片同层，暗色下只比侧栏表面亮一档。
+const sectionStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8, padding: 10, border: `.5px solid ${dshThemeColor.menuBorder}`, borderRadius: 8, background: dshThemeColor.cardBackground }
+const sectionHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 24, fontSize: 12 }
 const treeStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 1 }
 const treeDirectoryStyle: CSSProperties = { minWidth: 0 }
-const treeRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 7, minHeight: 28, fontSize: 12 }
+const treeRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 7, minHeight: 28, paddingLeft: 4, paddingRight: 2, borderRadius: 4, fontSize: 12 }
 const treeChevronStyle: CSSProperties = { width: 12, color: dshThemeColor.labelTertiary, fontSize: 12 }
 const folderIconStyle: CSSProperties = { color: dshThemeColor.accent, fontSize: 11 }
 const fileIconStyle: CSSProperties = { width: 12, color: dshThemeColor.labelTertiary, fontSize: 12, textAlign: 'center' }
 const fileNameStyle: CSSProperties = { minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
-const fileStatusStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontFamily: 'monospace', fontSize: 11 }
-const historyRowStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12 }
-const historyRowMainStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, minHeight: 28 }
+const fileStatusStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontFamily: dshThemeColor.codeFont, fontSize: 11 }
+const historyListStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 0, minWidth: 0 }
+const historyRowStyle: CSSProperties = { display: 'flex', alignItems: 'stretch', minWidth: 0, fontSize: 12 }
+const historyRowBodyStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, flex: '1 1 auto' }
+const historyRowMainStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, minHeight: 28, paddingLeft: 4, paddingRight: 2, borderRadius: 4 }
+const graphGutterStyle: CSSProperties = { display: 'flex', flexDirection: 'column', flex: '0 0 auto', alignSelf: 'stretch', marginRight: 6 }
+const graphTrackStyle: CSSProperties = { display: 'block', flex: '0 0 auto', overflow: 'visible' }
+const graphRailsStyle: CSSProperties = { position: 'relative', flex: '0 0 auto', alignSelf: 'stretch', minHeight: 0 }
+const historyHeaderActionsStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }
 const historyRefListStyle: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: '4px 6px', paddingLeft: 2 }
-const historyRefPillBaseStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minHeight: 18, padding: '0 8px', borderRadius: 999, fontSize: 10, lineHeight: 1, whiteSpace: 'nowrap' }
-const historyDateHeaderStyle: CSSProperties = { paddingTop: 6, color: dshThemeColor.labelSecondary, fontSize: 11, fontWeight: 600 }
-const historyDateHeaderTextStyle: CSSProperties = { display: 'block' }
-const hashStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: 11 }
+// 尺寸对齐 DSH Pill：20px 高、11px 字号；颜色仍按来源区分，颜色是唯一的语义载体。
+const historyRefPillBaseStyle: CSSProperties = { justifyContent: 'center', height: 20, padding: '0 8px', fontSize: 11, lineHeight: '17px' }
+const historyDateHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'stretch', color: dshThemeColor.labelSecondary, fontSize: 11, fontWeight: 600 }
+const historyDateHeaderTextStyle: CSSProperties = { display: 'block', minWidth: 0, paddingTop: 8 }
+const hashStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontFamily: dshThemeColor.codeFont, fontSize: 11 }
 const rowActionsStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 2, flex: '0 0 auto' }
-const iconButtonStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, border: 0, borderRadius: 4, padding: 0, color: dshThemeColor.labelSecondary, background: 'transparent', cursor: 'pointer', fontSize: 16 }
-const dangerIconButtonStyle: CSSProperties = { ...iconButtonStyle, color: dshThemeColor.error }
 const mutedStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: 11 }
 const historyTimeStyle: CSSProperties = { ...mutedStyle, flex: '0 0 auto', fontVariantNumeric: 'tabular-nums' }
 const emptyStyle: CSSProperties = { padding: 16, color: dshThemeColor.labelSecondary, fontSize: 12 }
-const diffOverlayStyle: CSSProperties = { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, boxSizing: 'border-box', background: 'color-mix(in srgb, #000 28%, transparent)' }
-const diffStyle: CSSProperties = { ...sectionStyle, width: 'min(1000px, 100%)', maxHeight: 'min(88vh, 760px)', overflow: 'hidden', boxShadow: dshThemeColor.subtleShadow }
+const diffOverlayStyle: CSSProperties = { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, boxSizing: 'border-box', background: dshThemeColor.overlay }
+const diffStyle: CSSProperties = { ...sectionStyle, width: 'min(1000px, 100%)', maxHeight: 'min(88vh, 760px)', overflow: 'hidden', background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.prominentShadow }
 const diffBodyStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0, overflow: 'auto', paddingRight: 2 }
 const diffFilesSectionStyle: CSSProperties = { ...sectionStyle, gap: 6, padding: 10, background: dshThemeColor.pageBackground }
 const diffDiffSectionStyle: CSSProperties = { ...sectionStyle, gap: 6, padding: 10, background: dshThemeColor.pageBackground }
 const diffSectionHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 24, fontSize: 12 }
-const diffCountStyle: CSSProperties = { minWidth: 20, padding: '2px 6px', borderRadius: 10, color: dshThemeColor.labelSecondary, background: dshThemeColor.menuBackground, fontSize: 11, textAlign: 'center' }
+const diffCountStyle: CSSProperties = { minWidth: 20, padding: '2px 6px', borderRadius: 999, color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, fontSize: 11, textAlign: 'center' }
 const diffFileListStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 2 }
-const diffFileRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minHeight: 30, padding: '4px 6px', borderRadius: 4, background: dshThemeColor.menuBackground, fontSize: 12 }
+const diffFileRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minHeight: 30, padding: '4px 6px', borderRadius: 4, background: dshThemeColor.surfaceSubtle, fontSize: 12 }
 const diffFileStatusStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 42, flex: '0 0 auto', color: dshThemeColor.accent, fontSize: 11, fontWeight: 700 }
 const diffFileNameStyle: CSSProperties = { display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1, overflow: 'hidden' }
 const diffFileOldPathStyle: CSSProperties = { overflow: 'hidden', color: dshThemeColor.labelTertiary, textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11 }
@@ -921,25 +1098,27 @@ const diffBinaryStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fon
 const fileDiffTitleStyle: CSSProperties = { ...fileNameStyle, fontSize: 12 }
 const diffTruncatedStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: 11 }
 const diffEmptyStyle: CSSProperties = { padding: 10, color: dshThemeColor.labelTertiary, fontSize: 12 }
-const diffLinesStyle: CSSProperties = { overflow: 'auto', border: `1px solid ${dshThemeColor.border}`, borderRadius: 4, background: dshThemeColor.pageBackground, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 }
+const diffLinesStyle: CSSProperties = { overflow: 'auto', border: `.5px solid ${dshThemeColor.menuBorder}`, borderRadius: 8, background: dshThemeColor.pageBackground, fontFamily: dshThemeColor.codeFont, fontSize: 12 }
 const diffLineBaseStyle: CSSProperties = { display: 'grid', gridTemplateColumns: '42px 42px minmax(0, 1fr)', minHeight: 21, alignItems: 'stretch', padding: '0 8px', whiteSpace: 'pre', overflowWrap: 'normal', lineHeight: 1.5 }
-const diffLineNumberStyle: CSSProperties = { paddingRight: 8, color: dshThemeColor.labelTertiary, borderRight: `1px solid ${dshThemeColor.border}`, textAlign: 'right', userSelect: 'none' }
+const diffLineNumberStyle: CSSProperties = { paddingRight: 8, color: dshThemeColor.labelTertiary, borderRight: `.5px solid ${dshThemeColor.menuBorder}`, textAlign: 'right', userSelect: 'none' }
 const diffCodeStyle: CSSProperties = { minWidth: 0, paddingLeft: 10, color: 'inherit', font: 'inherit', overflow: 'visible' }
-const commitSectionStyle: CSSProperties = { ...sectionStyle, gap: 14, padding: '16px 14px 12px' }
-const commitEditorRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }
-const commitSubjectStyle: CSSProperties = { width: '100%', minHeight: 30, boxSizing: 'border-box', resize: 'none', border: 0, outline: 'none', padding: '3px 0', color: dshThemeColor.labelPrimary, background: 'transparent', font: 'inherit', fontSize: 16 }
-const draftButtonStyle: CSSProperties = { ...iconButtonStyle, width: 30, height: 30, color: dshThemeColor.labelSecondary, fontSize: 21 }
+const commitSectionStyle: CSSProperties = { ...sectionStyle, gap: 10 }
+/** 提交框与「生成提交信息」按钮同高，输入面沿用面板的表单风格（边框 + 输入底色 + 8px 圆角）。 */
+const commitEditorRowStyle: CSSProperties = { display: 'flex', alignItems: 'stretch', gap: 8, minWidth: 0 }
+const commitSubjectStyle: CSSProperties = { width: '100%', minHeight: 34, boxSizing: 'border-box', resize: 'none', padding: '7px 10px', borderRadius: 8, font: 'inherit', fontSize: 12, lineHeight: '16px' }
+const draftButtonStyle: CSSProperties = { width: 34, flex: '0 0 auto', padding: 0, borderRadius: 8, fontSize: 16, lineHeight: 1 }
 const commitActionsStyle: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }
-const refreshActionStyle: CSSProperties = { minHeight: 30, border: 0, borderRadius: 5, background: 'transparent', color: dshThemeColor.labelSecondary, cursor: 'pointer', fontSize: 13 }
-const submitActionStyle: CSSProperties = { ...refreshActionStyle, color: dshThemeColor.accent, fontWeight: 600 }
-const primaryButtonStyle: CSSProperties = { minHeight: 28, border: 0, borderRadius: 5, padding: '4px 9px', color: '#fff', background: dshThemeColor.accent, cursor: 'pointer', fontSize: 12 }
-const branchSelectStyle: CSSProperties = { maxWidth: 150, border: `1px solid ${dshThemeColor.border}`, borderRadius: 4, padding: '3px 5px', color: dshThemeColor.labelSecondary, background: dshThemeColor.pageBackground, fontSize: 11 }
-const loadMoreButtonStyle: CSSProperties = { minHeight: 30, border: `1px solid ${dshThemeColor.border}`, borderRadius: 5, padding: '4px 9px', color: dshThemeColor.labelSecondary, background: 'transparent', cursor: 'pointer', fontSize: 12 }
+const refreshActionStyle: CSSProperties = { minHeight: 32, padding: '6px 12px', borderRadius: 8, fontSize: 12, lineHeight: '16px' }
+// 主按钮沿用 DSH 品牌填充与前景色，暗色下自动变成浅底深字，与内置主按钮一致。
+const submitActionStyle: CSSProperties = { ...refreshActionStyle }
+const primaryButtonStyle: CSSProperties = { minHeight: 30, padding: '5px 12px', borderRadius: 8, fontSize: 12 }
+const branchSelectStyle: CSSProperties = { maxWidth: 150, borderRadius: 8, padding: '3px 5px', fontSize: 11 }
+const scopeSelectStyle: CSSProperties = { ...branchSelectStyle, maxWidth: 92 }
+const loadMoreButtonStyle: CSSProperties = { minHeight: 30, borderRadius: 8, padding: '4px 9px', fontSize: 12 }
 const menuStyle: CSSProperties = { position: 'relative', flex: '0 0 auto' }
-const menuSummaryStyle: CSSProperties = { listStyle: 'none', cursor: 'pointer', padding: '0 4px', color: dshThemeColor.labelSecondary, fontSize: 16 }
-const menuPopupStyle: CSSProperties = { position: 'absolute', right: 0, zIndex: 2, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 100, padding: 4, border: `1px solid ${dshThemeColor.border}`, borderRadius: 5, background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.subtleShadow }
-const menuButtonStyle: CSSProperties = { border: 0, padding: '5px 7px', color: dshThemeColor.labelPrimary, background: 'transparent', textAlign: 'left', cursor: 'pointer', fontSize: 11 }
-const dangerMenuButtonStyle: CSSProperties = { ...menuButtonStyle, color: dshThemeColor.error }
+const menuPopupStyle: CSSProperties = { position: 'absolute', right: 0, zIndex: 2, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 120, padding: 4 }
+const iconActionStyle: CSSProperties = { width: 28, height: 28 }
+const menuItemStyle: CSSProperties = { padding: '6px 8px' }
 
 export const gitManagementFeature: CodingNsClientFeatureModule = {
   descriptor: {

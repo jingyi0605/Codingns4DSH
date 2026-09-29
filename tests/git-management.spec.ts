@@ -155,13 +155,77 @@ test('Git Host 历史记录带分支标签并支持文件 Diff', async () => {
   }
 })
 
+test('Git Host 历史记录返回父提交、标签与提交归属', async () => {
+  const root = await mkdtemp(`${tmpdir()}/codingns-git-origin-`)
+  interface HistoryItem { commitHash: string; parents?: readonly string[]; origin?: string; refs: readonly { name: string; kind: string; remoteName: string | null }[] }
+  interface HistoryPage { items: readonly HistoryItem[]; totalCount: number }
+  try {
+    const { table } = startGitFeature(new Map([['workspace-origin', root]]))
+    await rpc(table, 'git/init', { workspaceId: 'workspace-origin' })
+    await git(root, ['config', 'user.name', 'CodingNS Test'])
+    await git(root, ['config', 'user.email', 'codingns-test@example.invalid'])
+    const trunk = await gitOutput(root, ['branch', '--show-current'])
+
+    // A：主线基线，同时挂标签与远程跟踪 ref（origin/main 之后停在 A）。
+    await writeFile(`${root}/README.md`, 'A\n', 'utf8')
+    await rpc(table, 'git/stage', { workspaceId: 'workspace-origin', targets: ['README.md'] })
+    const a = (await rpc(table, 'git/commit', { workspaceId: 'workspace-origin', subject: 'A 基线' }) as { commitHash: string }).commitHash
+    await git(root, ['tag', 'v1'])
+    // B：只属于本地特性分支，随后被合并进主线。
+    await git(root, ['switch', '-c', 'feature/topic'])
+    await writeFile(`${root}/feature.md`, 'B\n', 'utf8')
+    await rpc(table, 'git/stage', { workspaceId: 'workspace-origin', targets: ['feature.md'] })
+    const b = (await rpc(table, 'git/commit', { workspaceId: 'workspace-origin', subject: 'B 特性' }) as { commitHash: string }).commitHash
+    // C：主线新增提交，尚未出现在远程跟踪分支上。
+    await git(root, ['switch', trunk])
+    await writeFile(`${root}/README.md`, 'C\n', 'utf8')
+    await rpc(table, 'git/stage', { workspaceId: 'workspace-origin', targets: ['README.md'] })
+    const c = (await rpc(table, 'git/commit', { workspaceId: 'workspace-origin', subject: 'C 主线' }) as { commitHash: string }).commitHash
+    await git(root, ['merge', '--no-ff', '-m', 'M 合并特性', 'feature/topic'])
+    const m = await gitOutput(root, ['rev-parse', 'HEAD'])
+    await git(root, ['update-ref', 'refs/remotes/origin/main', a])
+    // D：只被远程跟踪 ref 包含（本地分支随后删除）。
+    await git(root, ['switch', '-c', 'tmp/remote', a])
+    await writeFile(`${root}/remote.md`, 'D\n', 'utf8')
+    await rpc(table, 'git/stage', { workspaceId: 'workspace-origin', targets: ['remote.md'] })
+    const d = (await rpc(table, 'git/commit', { workspaceId: 'workspace-origin', subject: 'D 仅远程' }) as { commitHash: string }).commitHash
+    await git(root, ['update-ref', 'refs/remotes/origin/tmp', d])
+    await git(root, ['switch', trunk])
+    await git(root, ['branch', '-D', 'tmp/remote'])
+
+    const headPage = await rpc(table, 'git/history', { workspaceId: 'workspace-origin', limit: 20, scope: 'head' }) as HistoryPage
+    assert.deepEqual(headPage.items.map((item) => item.commitHash).sort(), [a, b, c, m].sort())
+    assert.equal(headPage.totalCount, 4)
+    const headByHash = new Map(headPage.items.map((item) => [item.commitHash, item]))
+    assert.equal(headByHash.get(m)?.parents?.length, 2, '合并提交应有两个父提交')
+    assert.equal(headByHash.get(a)?.parents?.length, 0, '根提交没有父提交')
+    assert.equal(headByHash.get(c)?.parents?.[0], a)
+    assert.equal(headByHash.get(m)?.origin, 'local')
+    assert.equal(headByHash.get(b)?.origin, 'local')
+    assert.equal(headByHash.get(a)?.origin, 'synced')
+    assert.ok(headByHash.get(a)?.refs.some((ref) => ref.kind === 'tag' && ref.name === 'v1'), `期望 A 带标签，实际 ${JSON.stringify(headByHash.get(a)?.refs)}`)
+    assert.ok(headByHash.get(b)?.refs.some((ref) => ref.kind === 'local' && ref.name === 'feature/topic'), `期望 B 带本地分支标签，实际 ${JSON.stringify(headByHash.get(b)?.refs)}`)
+    assert.ok(headByHash.get(m)?.refs.some((ref) => ref.kind === 'head' && ref.name === trunk), `期望 M 带当前分支标签，实际 ${JSON.stringify(headByHash.get(m)?.refs)}`)
+
+    const allPage = await rpc(table, 'git/history', { workspaceId: 'workspace-origin', limit: 20, scope: 'all' }) as HistoryPage
+    assert.deepEqual(allPage.items.map((item) => item.commitHash).sort(), [a, b, c, d, m].sort())
+    assert.equal(allPage.totalCount, 5)
+    const allByHash = new Map(allPage.items.map((item) => [item.commitHash, item]))
+    assert.equal(allByHash.get(d)?.origin, 'remote')
+    assert.equal(allByHash.get(a)?.origin, 'synced')
+    assert.ok(allByHash.get(d)?.refs.some((ref) => ref.kind === 'remote' && ref.name === 'origin/tmp' && ref.remoteName === 'origin'), `期望 D 带远程分支标签，实际 ${JSON.stringify(allByHash.get(d)?.refs)}`)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('Git Client 与 Host 接线包含侧栏面板和所有版本 RPC', async () => {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { dsh: { client: { inject: string[] } } }
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-sidebar'))
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-workspace'))
   const source = await readFile(new URL('../src/client/git-management.ts', import.meta.url), 'utf8')
   const hostRpc = await readFile(new URL('../src/host/rpc.ts', import.meta.url), 'utf8')
-  for (const marker of ['sidebarRightTabs.register', 'sidebar.right.pane.tab', 'sidebar.right.pane.tab.title', 'git/status', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/${action}', 'buildChangeTree', 'collectTreeTargets', 'onBatchAction', '撤销目录暂存', '撤销目录变更', 'hoveredPath', 'contentGridStyle', 'commitSectionStyle', 'commitEditorRowStyle', '在这里输入提交信息', '生成提交信息', 'commitActionsStyle', '暂存全部', '查看所有版本', "onOperation('refresh')", 'groupHistoryByDate', 'historyDateHeaderStyle', 'historyTimeStyle', 'formatHistoryTimestamp', '切换文件', '切换版本', 'columnSwitchStyle', 'columnSwitchActiveButtonStyle', 'singleColumn && activeColumn !== \'history\'', 'contentGridRef', 'ResizeObserver', 'onDoubleClick', "'git/diff'", 'FileDiffViewer', 'historyRefPillStyle', 'historyRefListStyle', 'REMOTE_REF_PALETTE', "position: 'relative', userSelect: 'none'"]) {
+  for (const marker of ['sidebarRightTabs.register', 'sidebar.right.pane.tab', 'sidebar.right.pane.tab.title', 'git/status', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/${action}', 'buildChangeTree', 'collectTreeTargets', 'onBatchAction', '撤销目录暂存', '撤销目录变更', 'hoveredPath', 'contentGridStyle', 'commitSectionStyle', 'commitEditorRowStyle', '提交更改', 'submitActionStyle', 'gitPanelClass.buttonPrimary', 'gitPanelClass.segment', '在这里输入提交信息', '生成提交信息', 'commitActionsStyle', '暂存全部', '查看所有版本', "onOperation('refresh')", 'groupHistoryByDate', 'historyDateHeaderStyle', 'historyTimeStyle', 'formatHistoryTimestamp', '切换文件', '切换版本', 'columnSwitchStyle', 'SegmentedControl', 'gitPanelClass', 'installGitPanelStyles', 'singleColumn && activeColumn !== \'history\'', 'contentGridRef', 'ResizeObserver', 'onDoubleClick', "'git/diff'", 'FileDiffViewer', 'historyRefPillStyle', 'historyRefListStyle', 'REMOTE_REF_PALETTE', "position: 'relative', userSelect: 'none'", 'buildHistoryGraph', 'GitGraphTrack', 'GitGraphRails', 'describeCommitOrigin', 'describeCommitNode', 'dashProps', 'historyListStyle', 'segmentStroke(row.incomingOrigin', 'laneColor(row.color)', 'laneStroke', 'laneDashed', '蓝色虚线', 'graphRailStyle', 'scopeSelectStyle', '当前分支', '全部分支', 'scope: historyScope']) {
     assert.match(source, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
   }
   assert.doesNotMatch(source, /snapshot\.repoRoot/u)

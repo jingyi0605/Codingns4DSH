@@ -11,8 +11,10 @@ import type {
   GitCommitResult,
   GitDiff,
   GitHistoryItem,
+  GitHistoryOrigin,
   GitHistoryPage,
   GitHistoryRef,
+  GitHistoryScope,
   GitStatus,
 } from '../../shared/contracts/git.js'
 import { CodingNsRpcError } from '../rpc-table.js'
@@ -47,7 +49,7 @@ export function createGitManagementFeature(): FeatureModule<CodingNsHostServices
           case 'discard': return discardTargets(workspaceId, root, input.targets)
           case 'commit': return commit(workspaceId, root, requiredString(input.subject, 'subject'))
           case 'commit-diff': return readCommitDiff(root, requiredString(input.commitHash, 'commitHash'))
-          case 'history': return readHistory(workspaceId, root, input.limit, input.offset)
+          case 'history': return readHistory(workspaceId, root, input.limit, input.offset, input.scope)
           case 'branches': return readBranches(root)
           case 'switch': return switchBranch(root, requiredString(input.branchName, 'branchName'), input.create === true)
           case 'fetch': return syncRemote(workspaceId, root, ['fetch', '--all', '--prune'])
@@ -213,30 +215,102 @@ async function undoLastCommit(workspaceId: string, root: string): Promise<GitSta
   return readStatus(workspaceId, root)
 }
 
-async function readHistory(_workspaceId: string, root: string, rawLimit: unknown, rawOffset: unknown): Promise<GitHistoryPage> {
+async function readHistory(_workspaceId: string, root: string, rawLimit: unknown, rawOffset: unknown, rawScope: unknown): Promise<GitHistoryPage> {
   const limit = Math.max(1, Math.min(100, Number.isSafeInteger(rawLimit) ? Number(rawLimit) : 50))
   const offset = Math.max(0, Math.min(1_000_000, Number.isSafeInteger(rawOffset) ? Number(rawOffset) : 0))
+  const scope: GitHistoryScope = rawScope === 'all' ? 'all' : 'head'
+  // HEAD 之外的提交只有在 all 范围才可见；--date-order 保证父提交永远排在其子提交之后。
+  // 空仓库没有 HEAD 时必须省略该 revision，否则 git log 会以 ambiguous argument 失败。
+  const hasHead = await hasHeadCommit(root)
+  if (scope === 'head' && !hasHead) return { items: [], cursor: String(offset), nextCursor: null, totalCount: 0 }
+  const revisions = scope === 'all' ? [...(hasHead ? ['HEAD'] : []), '--branches', '--remotes'] : ['HEAD']
   let result: { stdout: string; stderr: string }
   try {
-    result = await runGit(root, ['log', `--skip=${String(offset)}`, `--max-count=${String(limit)}`, '--decorate=short', '--format=%H%x1f%an%x1f%aI%x1f%s%x1f%b%x1f%D%x1e'])
+    result = await runGit(root, ['log', ...revisions, `--skip=${String(offset)}`, `--max-count=${String(limit)}`, '--date-order', '--decorate=short', `--format=${HISTORY_FORMAT}`])
   } catch (error) {
     if (isEmptyRepositoryError(error)) return { items: [], cursor: String(offset), nextCursor: null, totalCount: 0 }
     throw error
   }
-  const refByShortName = new Map((await readRefRecords(root)).map((record) => [record.shortName, record] as const))
+  const refRecords = await readRefRecords(root)
+  const refByShortName = new Map(refRecords.map((record) => [record.shortName, record] as const))
+  const originByHash = await readOriginIndex(root, refRecords, hasHead)
   const items: GitHistoryItem[] = []
   for (const record of result.stdout.split('\x1e')) {
     const fields = record.trim().split('\x1f')
-    if (fields.length < 5 || !fields[0]) continue
-    items.push({ commitHash: fields[0]!, authorName: fields[1] ?? '', authoredAt: fields[2] ?? '', subject: fields[3] ?? '', body: fields[4] ?? '', refs: parseHistoryRefs(fields[5] ?? '', refByShortName) })
+    if (fields.length < 6 || !fields[0]) continue
+    const commitHash = fields[0]!
+    const origin = originByHash?.get(commitHash)
+    items.push({
+      commitHash,
+      authorName: fields[2] ?? '',
+      authoredAt: fields[3] ?? '',
+      subject: fields[4] ?? '',
+      body: fields[5] ?? '',
+      refs: parseHistoryRefs(fields[6] ?? '', refByShortName),
+      parents: parseParentHashes(fields[1] ?? ''),
+      ...(origin === undefined ? {} : { origin }),
+    })
   }
   let total = 0
   try {
-    total = Number((await runGit(root, ['rev-list', '--count', 'HEAD'])).stdout.trim() || 0)
+    total = Number((await runGit(root, ['rev-list', '--count', ...revisions])).stdout.trim() || 0)
   } catch (error) {
     if (!isEmptyRepositoryError(error)) throw error
   }
   return { items, cursor: String(offset), nextCursor: offset + items.length < total ? String(offset + items.length) : null, totalCount: total }
+}
+
+/** 提交字段分隔：哈希、父哈希、作者、时间、标题、正文、装饰；记录之间用 0x1e 分隔。 */
+const HISTORY_FORMAT = '%H%x1f%P%x1f%an%x1f%aI%x1f%s%x1f%b%x1f%D%x1e'
+
+function parseParentHashes(value: string): readonly string[] {
+  return value.split(' ').map((hash) => hash.trim()).filter((hash) => hash !== '')
+}
+
+/** HEAD 在空仓库或非仓库目录下不可解析；历史与归属统计都要先区分这两种情况。 */
+async function hasHeadCommit(root: string): Promise<boolean> {
+  try {
+    await runGit(root, ['rev-parse', '--verify', '--quiet', 'HEAD'])
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 统计每个提交的归属。三个 rev-list 集合都是一次图遍历，命中内存缓冲上限时返回 null，
+ * 由 Client 退化为“只按分支标签显示”，不会给出错误结论。
+ */
+async function readOriginIndex(root: string, records: readonly GitRefRecord[], hasHead: boolean): Promise<Map<string, GitHistoryOrigin> | null> {
+  const hasLocal = records.some((record) => record.kind === 'local')
+  const hasRemote = records.some((record) => record.kind === 'remote')
+  const [head, local, remote] = await Promise.all([
+    hasHead ? revListHashes(root, ['HEAD']) : Promise.resolve(new Set<string>()),
+    hasLocal ? revListHashes(root, ['--branches']) : Promise.resolve(new Set<string>()),
+    hasRemote ? revListHashes(root, ['--remotes']) : Promise.resolve(new Set<string>()),
+  ])
+  if (head === null || local === null || remote === null) return null
+  const index = new Map<string, GitHistoryOrigin>()
+  for (const hash of new Set([...head, ...local, ...remote])) {
+    if (head.has(hash)) index.set(hash, remote.has(hash) ? 'synced' : 'local')
+    else if (local.has(hash)) index.set(hash, 'branch')
+    else if (remote.has(hash)) index.set(hash, 'remote')
+  }
+  return index
+}
+
+async function revListHashes(root: string, args: readonly string[]): Promise<Set<string> | null> {
+  try {
+    const result = await runGit(root, ['rev-list', ...args])
+    const hashes = new Set<string>()
+    for (const line of result.stdout.split(/\r?\n/u)) {
+      const hash = line.trim()
+      if (hash !== '') hashes.add(hash)
+    }
+    return hashes
+  } catch {
+    return null
+  }
 }
 
 interface GitRefRecord {
@@ -263,15 +337,24 @@ async function readRefRecords(root: string): Promise<readonly GitRefRecord[]> {
   return records
 }
 
-/** 解析 git log 的 %D 装饰字段：标签不显示，HEAD -> 分支 记为 head，其余通过 ref 表补全类型。 */
+/** 解析 git log 的 %D 装饰字段：HEAD -> 分支 记为 head，tag: x 记为 tag，其余通过 ref 表补全类型。 */
 function parseHistoryRefs(decoration: string, refByShortName: ReadonlyMap<string, GitRefRecord>): readonly GitHistoryRef[] {
   const refs: GitHistoryRef[] = []
   for (const rawToken of decoration.split(',')) {
     const token = rawToken.trim()
-    if (token === '' || token.startsWith('tag: ')) continue
+    if (token === '') continue
+    if (token === 'HEAD') {
+      refs.push({ name: 'HEAD', kind: 'head', remoteName: null })
+      continue
+    }
     if (token.startsWith('HEAD -> ')) {
       const name = token.slice('HEAD -> '.length).trim()
       if (name !== '') refs.push({ name, kind: 'head', remoteName: null })
+      continue
+    }
+    if (token.startsWith('tag: ')) {
+      const name = token.slice('tag: '.length).trim()
+      if (name !== '') refs.push({ name, kind: 'tag', remoteName: null })
       continue
     }
     const record = refByShortName.get(token)

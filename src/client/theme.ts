@@ -13,18 +13,35 @@ export const dshThemeColor = {
   labelCaption: 'var(--dsw-alias-label-caption, GrayText)',
   border: 'var(--dsw-alias-border-l2, #d9d9d9)',
   inputBackground: 'var(--dsw-specific-input-major, Canvas)',
-  surfaceSubtle: 'var(--dsw-alias-bg-secondary, rgba(127, 127, 127, 0.06))',
+  surfaceSubtle: 'var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, 0.06))',
   buttonBackground: 'var(--dsw-alias-button-elevated-fill, transparent)',
   // 0.1.7 的 specific-menu 可能带透明度；layer-3 在 0.1.5 至 0.1.7 中均为弹层实底。
-  menuBackground: 'var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-l1, var(--dsw-specific-menu, Canvas)))',
-  pageBackground: 'var(--dsw-alias-bg-primary, Canvas)',
+  menuBackground: 'var(--dsw-alias-bg-layer-3, var(--dsw-specific-menu, Canvas))',
+  // 侧栏面板内嵌卡片比弹层低一层，暗色下只比侧栏表面亮一档，避免形成刺眼的色块。
+  cardBackground: 'var(--dsw-alias-bg-layer-1, Canvas)',
+  pageBackground: 'var(--dsw-alias-bg-base, Canvas)',
   overlay: 'var(--dsw-alias-bg-mask-1, rgba(0, 0, 0, 0.45))',
   accent: 'var(--dsw-alias-button-info-fill, #1677ff)',
+  // 主操作按钮沿用 DSH 品牌填充：暗色下是浅底深字，和内置主按钮完全一致。
+  primaryBackground: 'var(--dsw-alias-button-primary-fill, #1677ff)',
+  primaryHoverBackground: 'var(--dsw-alias-button-primary-hover, #4096ff)',
+  primaryForeground: 'var(--dsw-alias-label-primary-foreground, #fff)',
   success: 'var(--dsw-alias-state-success-primary, #16803c)',
   error: 'var(--dsw-alias-state-error-primary, #b42318)',
+  // 状态描边用 l3/l4：DSH 的输入控件是 0.5px，比 l2 更轻。
+  fieldBorder: 'var(--dsw-alias-border-l4, #d9d9d9)',
+  menuBorder: 'var(--dsw-alias-border-l3, #d9d9d9)',
   switchThumb: 'var(--dsw-static-neutral-00, #fff)',
   prominentShadow: 'var(--dsw-elevation-prominent, 0 12px 40px rgba(0, 0, 0, 0.25))',
-  subtleShadow: 'var(--dsw-elevation-l1, 0 1px 2px rgba(0, 0, 0, 0.06))',
+  subtleShadow: 'var(--dsw-elevation-soft, 0 1px 2px rgba(0, 0, 0, 0.06))',
+  // 交互态令牌：内联样式无法表达 :hover/:active/:focus-visible，交给注入的插件样式表。
+  hoverBackground: 'var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, 0.08))',
+  activeBackground: 'var(--dsw-alias-interactive-bg-active, rgba(127, 127, 127, 0.14))',
+  focusRing: 'var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary))',
+  // Diff 行背景直接复用 DSH DiffBlock 的同一组令牌，保证与内置 Diff 视图一致。
+  diffAddedBackground: 'var(--dsw-alias-code-diff-added, rgba(34, 197, 94, 0.13))',
+  diffDeletedBackground: 'var(--dsw-alias-code-diff-deleted, rgba(239, 68, 68, 0.13))',
+  codeFont: 'var(--dsw-font-markdown-code-font-family, ui-monospace, SFMono-Regular, Menlo, monospace)',
 } as const
 
 /** 设置模块根节点显式接入 DSH 的主文字色。 */

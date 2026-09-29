@@ -22,11 +22,47 @@ test('表单控件使用 DSH 真实主题令牌', () => {
 
 test('弹窗表面同时设置 DSH 背景、前景和阴影', () => {
   assert.match(String(dshThemeColor.menuBackground), /--dsw-alias-bg-layer-3/u)
-  assert.match(String(dshThemeColor.menuBackground), /--dsw-alias-bg-l1/u)
+  assert.match(String(dshThemeColor.menuBackground), /--dsw-specific-menu/u)
+  assert.doesNotMatch(String(dshThemeColor.menuBackground), /--dsw-alias-bg-l1/u, 'bg-l1 不是 DSH 令牌，不能留在回退链里')
   assert.match(String(dshPopupSurfaceStyle.background), /--dsw-specific-menu/u)
   assert.match(String(dshPopupSurfaceStyle.color), /--dsw-alias-label-primary/u)
   assert.match(String(dshPopupSurfaceStyle.boxShadow), /--dsw-elevation-prominent/u)
   assert.match(dshThemeColor.overlay, /--dsw-alias-bg-mask-1/u)
+})
+
+test('主题桥接与 Git 面板不再引用任何幽灵令牌', async () => {
+  const files = [
+    'src/client/theme.ts',
+    'src/client/git-management.ts',
+    'src/client/git-panel-styles.ts',
+    'src/client/git-history-graph.ts',
+  ]
+  const sources = await Promise.all(files.map((file) => readFile(join(projectRoot, file), 'utf8')))
+  // 这些令牌在 DSH 0.2.0-rc.1 的 401 个已定义令牌中都不存在，一旦写入就只会落到兜底值。
+  // 用词边界匹配，避免把真实令牌（如 --dsw-alias-state-success-primary）误判成前缀相同的幽灵令牌。
+  const ghosts = ['--dsw-alias-bg-l1', '--dsw-alias-bg-l2', '--dsw-alias-bg-primary', '--dsw-alias-bg-secondary', '--dsw-alias-bg-tertiary', '--dsw-alias-button-elevated-hover', '--dsw-alias-interactive-bg-selected', '--dsw-alias-state-danger', '--dsw-alias-state-success', '--dsw-elevation-l1', '--dsw-font-mono', '--dsw-font-family-mono']
+  for (const [index, source] of sources.entries()) {
+    for (const ghost of ghosts) {
+      assert.doesNotMatch(source, new RegExp(`${ghost}(?![\\w-])`, 'u'), `${files[index]} 引用了幽灵令牌 ${ghost}`)
+    }
+  }
+})
+
+test('Git 面板的交互态由注入样式表提供且使用真实令牌', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/git-panel-styles.ts'), 'utf8')
+  // 内联样式无法表达伪类，因此悬停/按下/聚焦/禁用必须落在注入的样式表里。
+  // 禁用态统一走 `disabled` 常量插值，所以按引用次数统计而不是按字面量。
+  const count = (pattern: RegExp): number => (source.match(pattern) ?? []).length
+  assert.ok(count(/:hover:not\(:disabled\)/gu) >= 4, `悬停态覆盖不足：${count(/:hover:not\(:disabled\)/gu)}`)
+  assert.ok(count(/:active:not\(:disabled\)/gu) >= 4, `按下态覆盖不足：${count(/:active:not\(:disabled\)/gu)}`)
+  assert.ok(count(/:focus-visible/gu) >= 4, `聚焦态覆盖不足：${count(/:focus-visible/gu)}`)
+  assert.ok(count(/\$\{disabled\}/gu) >= 5, `禁用态覆盖不足：${count(/\$\{disabled\}/gu)}`)
+  assert.match(source, /--dsw-alias-interactive-bg-hover/u)
+  assert.match(source, /--dsw-alias-interactive-bg-active/u)
+  assert.match(source, /--dsw-focus-ring-width/u)
+  assert.match(source, /--dsw-focus-ring-color/u)
+  assert.match(source, /opacity:\.4;cursor:not-allowed/u)
+  assert.match(source, /prefers-reduced-motion/u)
 })
 
 test('所有弹层组件复用跨 DSH 版本的实底主题令牌', async () => {

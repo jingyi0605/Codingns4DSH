@@ -44,13 +44,29 @@ export interface GitHistoryItem {
   readonly subject: string
   readonly body: string
   readonly refs: readonly GitHistoryRef[]
+  /** 父提交哈希；旧 Host 未提供时 Client 退化为线性轨道，不绘制分支/合并连线。 */
+  readonly parents?: readonly string[]
+  /** 提交相对当前分支与远程分支的归属；旧 Host 未提供或仓库过大时省略。 */
+  readonly origin?: GitHistoryOrigin
 }
 
 export interface GitHistoryRef {
   readonly name: string
-  readonly kind: 'head' | 'local' | 'remote'
+  readonly kind: 'head' | 'local' | 'remote' | 'tag'
   readonly remoteName: string | null
 }
+
+/** 版本历史的取值范围：仅当前分支，或全部本地分支与远程跟踪分支。 */
+export type GitHistoryScope = 'head' | 'all'
+
+/**
+ * 提交归属：
+ * - `local`：只在本机分支上，没有任何远程跟踪分支包含它（未推送）；
+ * - `synced`：当前分支与至少一个远程跟踪分支都包含它；
+ * - `remote`：只有远程跟踪分支包含它（本地还没有，例如拉取前）；
+ * - `branch`：只有其他本地分支包含它，当前分支与远程都没有。
+ */
+export type GitHistoryOrigin = 'local' | 'synced' | 'remote' | 'branch'
 
 export interface GitHistoryPage {
   readonly items: readonly GitHistoryItem[]
