@@ -1,11 +1,11 @@
 /** 当前经过完整验证的 DSH 版本；源文件由根目录 version.json 同步。 */
-export const DSH_VERSION = '0.2.0-rc.1' as const
+export const DSH_VERSION = '0.2.0-rc.2' as const
 
 /** DSH 测试版本别名，供新代码表达语义，保留 DSH_VERSION 兼容旧调用方。 */
 export const DSH_TESTED_VERSION = DSH_VERSION
 
-/** 插件支持的 DSH 版本范围；插件版本与宿主版本独立发布。只声明下界，不限制上限版本。 */
-export const DSH_COMPATIBILITY = '>=0.2.0-rc.1' as const
+/** 插件正式验证的 DSH 版本范围；rc.2 的 Client ABI 未经验证不得放宽上限。 */
+export const DSH_COMPATIBILITY = '>=0.2.0-rc.2 <=0.2.0-rc.2' as const
 
 /**
  * 兼容范围下界，即插件仍然接受的最低 DSH 版本。

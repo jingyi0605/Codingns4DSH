@@ -32,7 +32,11 @@ if (typeof dshCompatibility !== 'string' || !compatibility.test(dshCompatibility
 if (!Number.isInteger(dshProtocolVersion) || dshProtocolVersion < 1) failures.push(`version.json.dshProtocolVersion 不是正整数: ${String(dshProtocolVersion)}`)
 if (!matrixSource.includes('DSH_CAPABILITY_MATRIX') || !matrixSource.includes("'settings.store'")) failures.push('能力矩阵未声明 settings.store，无法作为版本兼容事实源')
 
-const matrixRanges = [...matrixSource.matchAll(/'>=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?: <=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)?'/gu)].map((match) => match[0].slice(1, -1))
+const matrixRanges = [
+  ...[...matrixSource.matchAll(/'>=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?: <=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)?'/gu)].map((match) => match[0].slice(1, -1)),
+  // 0.2 路由直接复用版本契约，避免矩阵和发布门禁各自维护一份 ABI 范围。
+  ...(typeof sourceCompatibility === 'string' ? [sourceCompatibility] : []),
+]
 const parseVersion = (value) => {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/u.exec(value)
   if (!match) return undefined

@@ -11,7 +11,7 @@
 
 [简体中文](README.md) · **English**
 
-**Current release `@jingyi0605/codingns4dsh@0.2.0-beta.2`** · DSH **`>=0.2.0-rc.1`** (no upper bound, validated `0.2.0-rc.1`) · Node **`>= 22.19`** · macOS / Linux / Windows
+**Current release `@jingyi0605/codingns4dsh@0.2.0-beta.2`** · DSH **`0.2.0-rc.2`** (the only formally supported and validated version) · Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ group 1092985965**
 
@@ -52,7 +52,7 @@ The CodingNS workbench brings the conversation, Agent picker and Git sidebar tog
 | --- | --- | :---: |
 | **External Agent integration** | Run installed Agent CLIs as native DSH sessions: streaming, tools, approvals, questions, usage, thinking levels | On |
 | **Workspace session enhancement** | Agent logos on session rows, archived-session entry, subscription/usage readout | Off |
-| **Mobile access enhancements** | On phones or narrow viewports, collapse the left sidebar's 56px icon rail to zero width and keep only the top-left logo as the way back in; also configures the LAN entry's PWA assets (manifest, icons, install guidance, notifications) | On |
+| **Mobile access enhancements** | On phones or narrow viewports, collapse the main sidebar, turn the settings navigation into an icon rail, support horizontal swipes, Android vibration and LAN PWA notifications | On |
 | **Terminal enhancement** | Persistent terminals plus shell, theme, font, cursor and scrollback settings | Off · restart |
 | **LAN access to DSH** | Listener forwarding a LAN address to the local DSH Web port, with a status indicator and one-click copy of a usable access URL | Always on |
 | **Login protection** | One optional local account guarding LAN **and** relay access; loopback always allowed | Always on (card) |
@@ -201,7 +201,7 @@ The “access” line tells you whether you entered DSH Web locally, over the LA
 
 ## Installation
 
-**Requirements**: DSH `>=0.2.0-rc.1` or newer (no upper bound; plugin and DSH versions ship independently, and both the installer and the runtime reject versions below the lower bound) · Node.js `>= 22.19` · `pnpm` on `PATH` (`dsh plugin` forwards to pnpm) · optional: Agent CLIs, and `tmux` on macOS/Linux for persistent terminals (`brew install tmux` / `sudo apt install tmux`).
+**Requirements**: DSH `0.2.0-rc.2` · Node.js `>= 22.19` · `pnpm` on `PATH` (`dsh plugin` forwards to pnpm) · optional: Agent CLIs, and `tmux` on macOS/Linux for persistent terminals (`brew install tmux` / `sudo apt install tmux`).
 
 ### Simplest install: use the built-in `web` profile
 

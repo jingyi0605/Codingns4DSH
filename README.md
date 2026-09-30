@@ -11,7 +11,7 @@
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.0-beta.2`** · DSH **`>=0.2.0-rc.1`**（不限制上限版本，已验证 `0.2.0-rc.1`）· Node **`>= 22.19`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.0-beta.2`** · DSH **`0.2.0-rc.2`**（仅正式兼容并验证该版本）· Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965**
 
@@ -52,7 +52,7 @@ CodingNS 工作台把会话、Agent 选择器与右侧 Git 面板放在同一界
 | --- | --- | :---: |
 | **外部Agent集成** | 把已安装的 Agent CLI 变成 DSH 原生会话：流式输出、工具调用、权限确认、提问、用量、思考强度 | 开 |
 | **工作区会话增强** | 会话行显示 Agent Logo、归档会话入口、工作区隐藏/恢复入口、订阅/用量信息 | 关 |
-| **移动端访问增强** | 手机或窄屏下彻底隐藏左侧边栏的 56px 图标轨道，只在左上角保留 logo 作为再次唤起入口；并配置局域网入口的 PWA 资产（manifest、图标、安装引导、通知） | 开 |
+| **移动端访问增强** | 手机或窄屏下收起主侧栏、设置导航改为图标轨道，支持左右横滑开合侧栏、Android 振动与局域网 PWA 通知 | 开 |
 | **终端强化** | 持久终端，以及 Shell、主题、字体、光标、滚动缓冲区设置 | 关 · 需重启 |
 | **局域网访问DSH** | 监听端口并把局域网地址转发到本机 DSH Web；状态指示器显示启动状态，一键复制可用的访问地址 | 常驻 |
 | **登录保护** | 可选：用统一的本地账号保护局域网**和**中继访问，回环地址始终放行 | 常驻（卡片） |
@@ -215,7 +215,7 @@ DSH 设置按钮旁的账户入口会显示登录状态、访问路径与延迟�
 
 ## 安装
 
-**环境要求**：DSH `>=0.2.0-rc.1`（不限制上限版本；插件与 DSH 版本独立发布，运行期会拒绝低于下界的版本，安装期在能识别当前运行时版本时同样拒绝）· Node.js `>= 22.19` · `PATH` 中有 `pnpm`（`dsh plugin` 转发给 pnpm）· 可选：Agent CLI，以及 macOS/Linux 上用于持久终端的 `tmux`（`brew install tmux` / `sudo apt install tmux`）。
+**环境要求**：DSH `0.2.0-rc.2`· Node.js `>= 22.19` · `PATH` 中有 `pnpm`（`dsh plugin` 转发给 pnpm）· 可选：Agent CLI，以及 macOS/Linux 上用于持久终端的 `tmux`（`brew install tmux` / `sudo apt install tmux`）。
 
 ### 最简单的安装方式：使用内置 `web` Profile
 

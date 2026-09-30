@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "dsh": ">=0.2.0-rc.1"
+    "dsh": ">=0.2.0-rc.2 <=0.2.0-rc.2"
   },
   "scripts": {
     "preinstall": "node scripts/check-dsh-install.mjs"

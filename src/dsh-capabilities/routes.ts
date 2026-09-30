@@ -1,5 +1,6 @@
 import { DshCapabilityRegistry } from './registry.js'
 import { DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL } from '../bootstrap/dsh-peer-host-preboot-shim.js'
+import { DSH_COMPATIBILITY } from '../shared/contracts/version.js'
 import type { DshCapabilityRoute, DshCapabilityRuntime } from './types.js'
 
 /**
@@ -17,7 +18,7 @@ export function createDshCapabilityRegistry(
   const registry = new DshCapabilityRegistry(dshVersion, runtime)
   const rangeLegacy = '>=0.1.5-rc.3 <=0.1.6'
   const rangeModern = '>=0.1.7-rc.2 <=0.1.7-rc.2'
-  const range020 = '>=0.2.0-rc.1'
+  const range020 = DSH_COMPATIBILITY
   const add = <T>(route: DshCapabilityRoute<T>): void => registry.register(route)
 
   if (runtime === 'host') {
@@ -252,15 +253,15 @@ function addPeerHostHostRoutes(add: CapabilityRouteAdder): void {
   addPeerHostRoute(add, 'peer-host.target-capabilities', 'peer-host-target-capabilities', 'peerHostTargetCapabilities')
   addPeerHostRoute(add, 'peer-host.local-plugin-baseline', 'peer-host-local-plugin-baseline', 'peerHostLocalPluginBaseline')
   addPeerHostRoute(add, 'peer-host.relay-route', 'peer-host-relay-route', 'peerHostRelayRoute')
-  addPeerHostRoute(add, 'peer-host.store', 'peer-host-store-020', 'peerHostStore', '>=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.handshake', 'peer-host-handshake-020', 'peerHostHandshake', '>=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.http-proxy', 'peer-host-http-proxy-020', 'peerHostHttpProxy', '>=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.ws-proxy', 'peer-host-ws-proxy-020', 'peerHostWsProxy', '>=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.aggregate', 'peer-host-aggregate-020', 'peerHostAggregate', '>=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.aggregated-transport', 'peer-host-aggregated-transport-020', 'peerHostAggregatedTransport', '>=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.target-capabilities', 'peer-host-target-capabilities-020', 'peerHostTargetCapabilities', '>=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.local-plugin-baseline', 'peer-host-local-plugin-baseline-020', 'peerHostLocalPluginBaseline', '>=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.relay-route', 'peer-host-relay-route-020', 'peerHostRelayRoute', '>=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.store', 'peer-host-store-020', 'peerHostStore', DSH_COMPATIBILITY, 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.handshake', 'peer-host-handshake-020', 'peerHostHandshake', DSH_COMPATIBILITY, 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.http-proxy', 'peer-host-http-proxy-020', 'peerHostHttpProxy', DSH_COMPATIBILITY, 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.ws-proxy', 'peer-host-ws-proxy-020', 'peerHostWsProxy', DSH_COMPATIBILITY, 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.aggregate', 'peer-host-aggregate-020', 'peerHostAggregate', DSH_COMPATIBILITY, 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.aggregated-transport', 'peer-host-aggregated-transport-020', 'peerHostAggregatedTransport', DSH_COMPATIBILITY, 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.target-capabilities', 'peer-host-target-capabilities-020', 'peerHostTargetCapabilities', DSH_COMPATIBILITY, 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.local-plugin-baseline', 'peer-host-local-plugin-baseline-020', 'peerHostLocalPluginBaseline', DSH_COMPATIBILITY, 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.relay-route', 'peer-host-relay-route-020', 'peerHostRelayRoute', DSH_COMPATIBILITY, 'supported', 30)
 }
 
 /**
@@ -276,16 +277,16 @@ function addPeerHostClientRoutes(add: CapabilityRouteAdder): void {
   addPeerHostRoute(add, 'peer-host.native-navigation', 'peer-host-native-navigation-legacy', 'peerHostNativeNavigation', '>=0.1.5-rc.3 <=0.1.6', 'deprecated')
   addPeerHostRoute(add, 'peer-host.native-navigation', 'peer-host-native-navigation-modern', 'peerHostNativeNavigation', '>=0.1.7-rc.2 <=0.1.7-rc.2', 'supported', 20)
   addPeerHostRoute(add, 'peer-host.remote-web-context-fallback', 'peer-host-remote-web-context-fallback', 'peerHostRemoteWebContextFallback')
-  addPeerHostRoute(add, 'peer-host.native-navigation', 'peer-host-native-navigation-020', 'peerHostNativeNavigation', '>=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.remote-web-context-fallback', 'peer-host-remote-web-context-fallback-020', 'peerHostRemoteWebContextFallback', '>=0.2.0-rc.1', 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.native-navigation', 'peer-host-native-navigation-020', 'peerHostNativeNavigation', DSH_COMPATIBILITY, 'supported', 30)
+  addPeerHostRoute(add, 'peer-host.remote-web-context-fallback', 'peer-host-remote-web-context-fallback-020', 'peerHostRemoteWebContextFallback', DSH_COMPATIBILITY, 'supported', 30)
   add({
     id: 'peer-host-client-preboot-transport-020',
     capability: 'peer-host.client-preboot-transport',
-    supportedDsh: '>=0.2.0-rc.1',
+    supportedDsh: DSH_COMPATIBILITY,
     runtime: 'client',
     priority: 40,
     status: 'supported',
-    introducedIn: '0.2.0-rc.1',
+    introducedIn: '0.2.0-rc.2',
     detect: () => isPeerHostPrebootShimWrappable(),
     create: () => readPeerHostPrebootShim(),
   })

@@ -1,6 +1,6 @@
 # Codingns4DSH Profile
 
-这是独立的 Codingns4DSH Profile，插件版本为 `0.2.0-beta.2`，兼容 DSH `>=0.2.0-rc.1`（不限制上限版本），当前测试版本为 `0.2.0-rc.1`。
+这是独立的 Codingns4DSH Profile，插件版本为 `0.2.0-beta.2`，仅兼容并验证 DSH `0.2.0-rc.2`。
 
 Profile 只选择 `codingns4dsh` Bundle。`cordis.patch.yml` 保持 `[]`，因为启动期
 Transport 必须由外部 pre-Cordis 启动胶水在 DSH Client/Cordis 创建前登记，不能由

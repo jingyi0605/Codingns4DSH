@@ -6,9 +6,9 @@ const nextVersion = process.argv[2]?.trim()
 const requestedCompatibility = process.argv[3]?.trim()
 const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u
 const compatibilityPattern = /^>=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?: <=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)?$/u
-if (!nextVersion || !semver.test(nextVersion)) throw new Error('用法: pnpm run version:set-dsh -- 0.2.0-rc.1 [兼容范围]')
+if (!nextVersion || !semver.test(nextVersion)) throw new Error('用法: pnpm run version:set-dsh 0.2.0-rc.2 [兼容范围]')
 if (requestedCompatibility !== undefined && !compatibilityPattern.test(requestedCompatibility)) {
-  throw new Error('DSH 兼容范围必须形如 ">=0.2.0-rc.1" 或 ">=0.2.0-rc.1 <=0.2.0-rc.2"')
+  throw new Error('DSH 兼容范围必须形如 ">=0.2.0-rc.2" 或 ">=0.2.0-rc.2 <=0.2.0-rc.2"')
 }
 
 const root = fileURLToPath(new URL('../', import.meta.url))
@@ -27,6 +27,8 @@ await writeJson('version.json', versionFile)
 
 const manifest = await readJson('package.json')
 manifest.engines.dsh = nextCompatibility
+manifest.peerDependencies ??= {}
+manifest.peerDependencies['@deepseek-ai/dsh'] = nextCompatibility
 for (const sectionName of ['dependencies', 'devDependencies']) {
   const section = manifest[sectionName] ?? {}
   for (const name of Object.keys(section)) {
@@ -50,6 +52,15 @@ const updated = source
   .replace(/^(export const DSH_COMPATIBILITY = ')[^']+(' as const)$/mu, `$1${nextCompatibility}$2`)
 if (updated === source) throw new Error('没有找到 DSH_VERSION 或 DSH_COMPATIBILITY')
 await writeFile(versionPath, updated)
+
+for (const relativePath of ['src/dsh-capabilities/matrix.ts', 'src/dsh-capabilities/routes.ts']) {
+  const filePath = join(root, relativePath)
+  const document = await readFile(filePath, 'utf8')
+  const updatedDocument = typeof previousCompatibility === 'string'
+    ? document.replaceAll(previousCompatibility, nextCompatibility)
+    : document
+  if (updatedDocument !== document) await writeFile(filePath, updatedDocument)
+}
 
 for (const relativePath of ['README.md', 'README.en.md', 'profile/README.md']) {
   const documentPath = join(root, relativePath)

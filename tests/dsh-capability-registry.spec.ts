@@ -72,7 +72,7 @@ test('能力矩阵覆盖插件当前测试的四个 DSH 版本', () => {
   const settingsRoutes = DSH_CAPABILITY_MATRIX.filter((route) => route.capability === 'settings.store')
   assert.ok(settingsRoutes.some((route) => route.supportedDsh.includes('0.1.5-rc.3')))
   assert.ok(settingsRoutes.some((route) => route.supportedDsh.includes('0.1.7-rc.2')))
-  assert.ok(settingsRoutes.some((route) => route.supportedDsh.includes('0.2.0-rc.1')))
+  assert.ok(settingsRoutes.some((route) => route.supportedDsh.includes('0.2.0-rc.2')))
   assert.ok(settingsRoutes.every((route) => route.consumers.length > 0))
 })
 
@@ -106,13 +106,11 @@ test('pre-boot Transport 按页面 shim 状态解析：已安装即 ready，缺�
     const missing = createDshCapabilityRegistry('0.2.0-rc.1', 'client', {}).getProfile({})
     assert.equal(missing.capabilities.get('peer-host.client-preboot-transport')?.status, 'unavailable')
 
-    // Web 页面：shim 已随启动页安装即可用，rc.1 与 rc.2 走同一条 020 路由。
+    // Web 页面：shim 已随启动页安装即可用，正式支持的 rc.2 走 020 路由。
     installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
-    for (const version of ['0.2.0-rc.1', '0.2.0-rc.2']) {
-      const web = createDshCapabilityRegistry(version, 'client', {}).getProfile({})
-      assert.equal(web.capabilities.get('peer-host.client-preboot-transport')?.routeId, 'peer-host-client-preboot-transport-020')
-      assert.equal(web.capabilities.get('peer-host.client-preboot-transport')?.status, 'ready')
-    }
+    const web = createDshCapabilityRegistry('0.2.0-rc.2', 'client', {}).getProfile({})
+    assert.equal(web.capabilities.get('peer-host.client-preboot-transport')?.routeId, 'peer-host-client-preboot-transport-020')
+    assert.equal(web.capabilities.get('peer-host.client-preboot-transport')?.status, 'ready')
 
     // Desktop 页面：Transport 由运行时赋值，shim 用访问器接管，同样可用。
     globals.__DSH_TRANSPORT__ = { ownsHost: true, streamBaseUrl: 'http://127.0.0.1:13082' }
@@ -181,7 +179,7 @@ test('PeerHost 三版本 fixture 明确区分原生导航、Remote Web Context �
   }
 })
 
-test('0.2.0-rc.1/rc.2 Host fixture 都按服务形状解析到 020 路由', () => {
+test('0.2.0-rc.2 Host fixture 按服务形状解析到 020 路由', () => {
   const context = {
     settings: { describe: () => [], mutate: async () => undefined, configure: () => () => undefined },
     connection: {
@@ -219,17 +217,15 @@ test('0.2.0-rc.1/rc.2 Host fixture 都按服务形状解析到 020 路由', () =
     ['web.index-inject', 'index-inject-rows-020'],
     ['web.index-tap', 'index-tap-020'],
   ] as const
-  for (const version of ['0.2.0-rc.1', '0.2.0-rc.2'] as const) {
-    const profile = createDshCapabilityRegistry(version, 'host', context).getProfile(context)
-    for (const [capability, routeId] of expectations) {
-      const resolution = profile.capabilities.get(capability)
-      assert.equal(resolution?.routeId, routeId, capability)
-      assert.equal(resolution?.status, 'ready', capability)
-    }
+  const profile = createDshCapabilityRegistry('0.2.0-rc.2', 'host', context).getProfile(context)
+  for (const [capability, routeId] of expectations) {
+    const resolution = profile.capabilities.get(capability)
+    assert.equal(resolution?.routeId, routeId, capability)
+    assert.equal(resolution?.status, 'ready', capability)
   }
 })
 
-test('0.2.0-rc.1/rc.2 Client fixture 都按服务形状与图标事实解析到 020 路由', () => {
+test('0.2.0-rc.2 Client fixture 按服务形状与图标事实解析到 020 路由', () => {
   const context = {
     configForms: { get: () => undefined },
     locale: {},
@@ -257,13 +253,11 @@ test('0.2.0-rc.1/rc.2 Client fixture 都按服务形状与图标事实解析到 
     ['layout.columns', 'layout-columns-020'],
     ['sidebar.right.expand', 'sidebar-right-expand-020'],
   ] as const
-  for (const version of ['0.2.0-rc.1', '0.2.0-rc.2'] as const) {
-    const profile = createDshCapabilityRegistry(version, 'client', context, facts).getProfile(context)
-    for (const [capability, routeId] of expectations) {
-      const resolution = profile.capabilities.get(capability)
-      assert.equal(resolution?.routeId, routeId, capability)
-      assert.equal(resolution?.status, 'ready', capability)
-    }
+  const profile = createDshCapabilityRegistry('0.2.0-rc.2', 'client', context, facts).getProfile(context)
+  for (const [capability, routeId] of expectations) {
+    const resolution = profile.capabilities.get(capability)
+    assert.equal(resolution?.routeId, routeId, capability)
+    assert.equal(resolution?.status, 'ready', capability)
   }
 })
 
@@ -276,7 +270,7 @@ test('0.2.0-rc.1 fixture 缺失结构时保持不可用并生成诊断', () => {
   for (const capability of ['ui.icon.plus', 'ui.icon.chevron', 'client.boot-graph'] as const) {
     assert.equal(clientProfile.capabilities.get(capability)?.status, 'unavailable', capability)
   }
-  assert.ok(clientProfile.diagnostics.some((item) => item.code === 'CAPABILITY_UNAVAILABLE'))
+  assert.ok(clientProfile.diagnostics.some((item) => item.code === 'CAPABILITY_VERSION_UNSUPPORTED'))
 })
 
 test('移动端 PWA 与手势能力已进入矩阵并覆盖支持版本', () => {
@@ -284,7 +278,7 @@ test('移动端 PWA 与手势能力已进入矩阵并覆盖支持版本', () => 
     const routes = DSH_CAPABILITY_MATRIX.filter((route) => route.capability === capability)
     assert.ok(routes.length > 0, capability)
     assert.ok(routes.every((route) => route.consumers.length > 0), capability)
-    assert.ok(routes.some((route) => route.supportedDsh.includes('0.2.0-rc.1')), capability)
+    assert.ok(routes.some((route) => route.supportedDsh.includes('0.2.0-rc.2')), capability)
   }
 })
 
@@ -339,7 +333,7 @@ test('客户端探测在 Cordis 的 inject 限制下仍解析 settings.store', a
   // 未注入的服务在 Cordis 代理上直接读取会抛 without-inject，旧探测因此短路失败。
   assert.throws(() => Reflect.get(probe as Context, 'configForms'), /without inject/u)
 
-  const profile = createDshCapabilityRegistry('0.2.0-rc.1', 'client', probe, {}).getProfile(probe)
+  const profile = createDshCapabilityRegistry('0.2.0-rc.2', 'client', probe, {}).getProfile(probe)
   const resolution = profile.capabilities.get('settings.store')
   assert.equal(resolution?.routeId, 'config-forms-020')
   assert.equal(resolution?.status, 'ready')
@@ -383,13 +377,13 @@ test('必需能力缺失只影响该模块，同一轮同步里其余模块照�
   assert.equal(registry.getState('after'), 'enabled')
 })
 
-test('0.2 代能力路由只声明下界，rc.2 与后续版本沿用同一路由', () => {
-  const modernRoutes = DSH_CAPABILITY_MATRIX.filter((route) => route.supportedDsh.startsWith('>=0.2.0-rc.1'))
+test('0.2 代能力路由只声明正式验证的 rc.2', () => {
+  const modernRoutes = DSH_CAPABILITY_MATRIX.filter((route) => route.supportedDsh.includes('0.2.0-rc.2'))
   assert.ok(modernRoutes.length > 0)
-  assert.ok(modernRoutes.every((route) => route.supportedDsh === '>=0.2.0-rc.1'))
+  assert.ok(modernRoutes.every((route) => route.supportedDsh === '>=0.2.0-rc.2 <=0.2.0-rc.2'))
 
-  const registry = new DshCapabilityRegistry('0.3.0', 'host')
-  registry.register(route({ id: 'modern', supportedDsh: '>=0.2.0-rc.1', create: () => 'modern' }))
+  const registry = new DshCapabilityRegistry('0.2.0-rc.2', 'host')
+  registry.register(route({ id: 'modern', supportedDsh: '>=0.2.0-rc.2 <=0.2.0-rc.2', create: () => 'modern' }))
   const profile = registry.resolve({})
   assert.equal(profile.capabilities.get('settings.store')?.routeId, 'modern')
   assert.equal(profile.capabilities.get('settings.store')?.value, 'modern')
