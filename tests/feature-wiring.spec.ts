@@ -379,20 +379,29 @@ test('移动端访问增强的设置路径与模块开关可通过 RPC 写入', 
     expectedRevision: undefined,
   })
 
-  // 手势设置必须一并放行：非回环页面没有本地设置镜像，写入只能走这条 RPC。
+  // 手势设置归属移动端访问增强：非回环页面没有本地设置镜像，写入只能走这条 RPC。
   await handler('set', {
     ops: [
-      { op: 'set', path: ['workspaceSessionEnhancement', 'sidebarGestures'], value: true },
-      { op: 'set', path: ['workspaceSessionEnhancement', 'sidebarGestureThresholdPx'], value: 80 },
+      { op: 'set', path: ['mobileAccess', 'sidebarGestures'], value: true },
+      { op: 'set', path: ['mobileAccess', 'sidebarGestureMapping'], value: 'swipe-inward' },
+      { op: 'set', path: ['mobileAccess', 'sidebarGestureEdge'], value: 'avoid' },
+      { op: 'set', path: ['mobileAccess', 'sidebarGestureThresholdPx'], value: 80 },
     ],
   })
   assert.deepEqual(received, {
     ops: [
-      { op: 'set', path: ['workspaceSessionEnhancement', 'sidebarGestures'], value: true },
-      { op: 'set', path: ['workspaceSessionEnhancement', 'sidebarGestureThresholdPx'], value: 80 },
+      { op: 'set', path: ['mobileAccess', 'sidebarGestures'], value: true },
+      { op: 'set', path: ['mobileAccess', 'sidebarGestureMapping'], value: 'swipe-inward' },
+      { op: 'set', path: ['mobileAccess', 'sidebarGestureEdge'], value: 'avoid' },
+      { op: 'set', path: ['mobileAccess', 'sidebarGestureThresholdPx'], value: 80 },
     ],
     expectedRevision: undefined,
   })
+
+  await assert.rejects(
+    handler('set', { ops: [{ op: 'set', path: ['workspaceSessionEnhancement', 'sidebarGestures'], value: true }] }),
+    /禁止修改设置字段/u,
+  )
 
   await assert.rejects(
     handler('set', { ops: [{ op: 'set', path: ['mobileAccess', 'unknownField'], value: 1 }] }),

@@ -16,6 +16,9 @@ test('局域网入口的 PWA 配置由「移动端访问增强」卡片承载', 
   assert.match(mobile, /'lanAccessDsh\/pwa\/vapid'/u)
   assert.match(mobile, /'lanAccessDsh\/pwa\/push\/subscribe'/u)
   assert.match(mobile, /'lanAccessDsh\/pwa\/push\/test'/u)
+  assert.match(mobile, /'mobile\.sidebarGestures'/u)
+  assert.match(mobile, /CODINGNS_MOBILE_ACCESS_FIELD, field/u)
+  assert.doesNotMatch(mobile, /path: \['workspaceSessionEnhancement', field\]/u)
   for (const key of [
     'lan.pwa.title',
     'lan.pwa.enabled',
@@ -40,6 +43,14 @@ test('局域网入口的 PWA 配置由「移动端访问增强」卡片承载', 
     assert.equal(lan.includes(removed), false, `局域网卡片仍包含 ${removed}`)
   }
   assert.doesNotMatch(lan, /\bpwa:/u)
+})
+
+test('横滑设置只在移动端访问增强卡片中渲染', async () => {
+  const mobile = await readFile(join(root, 'src/client/features/mobile-access-panel.ts'), 'utf8')
+  const workspace = await readFile(join(root, 'src/client/features/workspace-session-enhancement-panel.ts'), 'utf8')
+  assert.match(mobile, /checked: gestures\.sidebarGestures/u)
+  assert.match(mobile, /normalizeMobileAccessSettings\(/u)
+  assert.doesNotMatch(workspace, /sidebarGestures/u)
 })
 
 test('移动端卡片写入的 PWA 设置与局域网卡片共用同一份 Host 设置', async () => {

@@ -38,7 +38,7 @@
 - 安装引导：Android `beforeinstallprompt` 引导条；iOS “分享 → 添加到主屏幕”指引；已安装（standalone）时不再展示。
 - 通知：本地通知 → VAPID 远程推送（订阅、存储、发送、iOS 限制说明）。
 - 手势：移动端横滑开合左（`toggleSidebar`）右（`toggleExpanded`）侧栏，方向锁定、边缘避让、阈值可配、与系统返回手势共存。
-- 设置与面板：PWA 开关挂在“局域网访问 DSH”面板；手势开关/方向/灵敏度挂在“工作区会话增强”面板。
+- 设置与面板：PWA 开关挂在“局域网访问 DSH”面板；手势开关、方向、边缘模式与灵敏度统一挂在“移动端访问增强”面板。
 - 能力登记：`web.index-inject`、`web.index-tap`、`layout.columns`、`sidebar.right.expand` 四条新能力与三版本 fixture。
 - 安全边界：登录放行白名单、回环旁路提示、合成响应不进入上游转发路径、NGINX 部署注意事项。
 

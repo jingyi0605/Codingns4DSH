@@ -128,7 +128,7 @@
 #### 验收标准
 
 1. WHEN 用户在设置页查看“局域网访问 DSH”卡片 THEN System SHALL 提供 PWA 资产开关、Service Worker 开关、安装引导开关与通知档位，未启用时灰显且不可操作。
-2. WHEN 用户在“工作区会话增强”卡片 THEN System SHALL 提供手势开关、方向映射、边缘模式与阈值（带范围校验与默认值）。
+2. WHEN 用户在“移动端访问增强”卡片 THEN System SHALL 提供手势开关、方向映射、边缘模式与阈值（带范围校验与默认值），且手势默认开启。
 3. WHEN 设置字段缺失或越界 THEN System SHALL 按默认值回填并收敛到允许范围（沿用现有 normalizer 模式）。
 4. WHEN 设置变更 THEN System SHALL 立即生效（无需重启），且不因反复读写产生设置循环。
 5. WHEN 功能未启用 THEN System SHALL 保证零副作用：不注册 SW、不注入引导、不挂手势监听。

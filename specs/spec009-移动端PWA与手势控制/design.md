@@ -144,11 +144,11 @@ DSH Web 前端（React）
 
 `LanAccessDshSettings` 增加 `pwa` 字段；旧配置缺省时由 normalizer 回填默认值，读取路径与 `lanAccessDsh/settings/*` RPC 复用。
 
-#### 3.2.2 `SidebarGestureSettings`（挂 `WorkspaceSessionEnhancementSettings`）
+#### 3.2.2 `SidebarGestureSettings`（挂 `MobileAccessSettings`）
 
 | 字段 | 类型 | 必填 | 说明 | 约束 |
 | --- | --- | --- | --- | --- |
-| `sidebarGestures` | `boolean` | 是 | 手势总开关 | 默认 `false` |
+| `sidebarGestures` | `boolean` | 是 | 手势总开关 | 默认 `true` |
 | `sidebarGestureMapping` | `'swipe-inward' \| 'swap'` | 是 | 方向映射 | 默认 `swipe-inward`（右滑=左栏，左滑=右栏） |
 | `sidebarGestureEdge` | `'avoid' \| 'edge'` | 是 | 起手是否允许贴边 | 默认 `avoid`（避开 24px 系统热区） |
 | `sidebarGestureThresholdPx` | `number` | 是 | 触发阈值 | 24–200，默认 64，越界收敛 |
@@ -391,9 +391,10 @@ Service Worker：
 - **推送实现选型**：自实现 VAPID + `aes128gcm` 加密与成熟依赖（如 `web-push`）之间需要决策；新增依赖要走发布确认流程。
 - **代理拦截语义**：拦截只作用于每条连接的首个请求；当前依赖“每请求一条连接”的既有性质，若上游引入 keep-alive/多路复用会退化。
 
-### 8.2 待确认项
+手势设置已归入“移动端访问增强”面板，与移动端视口和侧栏行为共用一份设置；旧版本写在
+`workspaceSessionEnhancement` 的字段只做兼容读取。
 
-- 手势设置放“工作区会话增强”面板，还是新建独立客户端模块卡片（本设计暂放前者，理由：已承载布局类偏好）。
+### 8.2 待确认项
 - PWA 资产开关的默认值：阶段 1 是否直接默认开启，还是先默认关闭、由用户在面板勾选。
 - `display` 取值最终定为 `standalone` 还是保留上游 `fullscreen`。
 - 推送的事件源（任务完成、等待输入等）与首个触发点；是否先只提供“测试通知”。

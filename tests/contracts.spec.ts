@@ -65,17 +65,30 @@ test('Codingns4DSH 设置用模块名字典表达开关，结构不随模块数�
 
 test('移动端访问设置缺省回填、越界收敛', () => {
   // 默认开启：DSH 原生折叠态仍占 56px 轨道，手机上一开始就该收掉。
-  assert.deepEqual(DEFAULT_MOBILE_ACCESS_SETTINGS, { hideSidebarOnMobile: true, mobileViewportMaxPx: 1024 })
+  const defaultMobileAccess = {
+    hideSidebarOnMobile: true,
+    mobileViewportMaxPx: 1024,
+    sidebarGestures: true,
+    sidebarGestureMapping: 'swipe-inward',
+    sidebarGestureEdge: 'avoid',
+    sidebarGestureThresholdPx: 64,
+  }
+  assert.deepEqual(DEFAULT_MOBILE_ACCESS_SETTINGS, defaultMobileAccess)
   assert.deepEqual(normalizeMobileAccessSettings(undefined), DEFAULT_MOBILE_ACCESS_SETTINGS)
   assert.deepEqual(normalizeMobileAccessSettings({}), DEFAULT_MOBILE_ACCESS_SETTINGS)
-  assert.deepEqual(normalizeMobileAccessSettings({ hideSidebarOnMobile: false }), { hideSidebarOnMobile: false, mobileViewportMaxPx: 1024 })
+  assert.deepEqual(normalizeMobileAccessSettings({ hideSidebarOnMobile: false }), { ...defaultMobileAccess, hideSidebarOnMobile: false })
   // 越界值收敛到允许范围，非法类型回落到默认值。
-  assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 10 }), { hideSidebarOnMobile: true, mobileViewportMaxPx: 480 })
-  assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 99999 }), { hideSidebarOnMobile: true, mobileViewportMaxPx: 1280 })
-  assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 'wide' }), { hideSidebarOnMobile: true, mobileViewportMaxPx: 1024 })
+  assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 10 }), { ...defaultMobileAccess, mobileViewportMaxPx: 480 })
+  assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 99999 }), { ...defaultMobileAccess, mobileViewportMaxPx: 1280 })
+  assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 'wide' }), defaultMobileAccess)
   // 非对象输入不能抛出，也不能把字符串当成真值开关。
-  assert.deepEqual(normalizeMobileAccessSettings('on'), { hideSidebarOnMobile: true, mobileViewportMaxPx: 1024 })
-  assert.deepEqual(normalizeMobileAccessSettings({ hideSidebarOnMobile: 'yes' }), { hideSidebarOnMobile: false, mobileViewportMaxPx: 1024 })
+  assert.deepEqual(normalizeMobileAccessSettings('on'), defaultMobileAccess)
+  assert.deepEqual(normalizeMobileAccessSettings({ hideSidebarOnMobile: 'yes' }), { ...defaultMobileAccess, hideSidebarOnMobile: false })
+  assert.deepEqual(normalizeMobileAccessSettings({}, { sidebarGestures: false, sidebarGestureMapping: 'swap' }), {
+    ...defaultMobileAccess,
+    sidebarGestures: false,
+    sidebarGestureMapping: 'swap',
+  })
 })
 
 test('重启生效模块固定使用进程启动时捕获的状态', () => {

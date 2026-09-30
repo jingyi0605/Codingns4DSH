@@ -319,13 +319,13 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
       'showAdapterLogo', 'showArchivedSessions', 'showWorkspaceHiding', 'hiddenWorkspaceIds',
       'showSubscriptionUsage', 'showQuickPhrases', 'rememberConversationRightbarRatio',
       'quickPhrases', 'quickPhrasesSeeded',
-      // 手势设置由「工作区会话增强」面板写入；非回环页面没有本地设置镜像，
-      // 写入必须经过这里，缺项会让手机上的手势开关直接被拒绝。
-      'sidebarGestures', 'sidebarGestureMapping', 'sidebarGestureEdge', 'sidebarGestureThresholdPx',
     ].includes(path[1] ?? '')
   }
   if (path[0] === 'mobileAccess') {
-    return path.length === 2 && ['hideSidebarOnMobile', 'mobileViewportMaxPx'].includes(path[1] ?? '')
+    return path.length === 2 && [
+      'hideSidebarOnMobile', 'mobileViewportMaxPx',
+      'sidebarGestures', 'sidebarGestureMapping', 'sidebarGestureEdge', 'sidebarGestureThresholdPx',
+    ].includes(path[1] ?? '')
   }
   if (path[0] === 'subscriptionUsage') {
     return path.length === 2 && ['timeoutSecs', 'refreshIntervalMins'].includes(path[1] ?? '')

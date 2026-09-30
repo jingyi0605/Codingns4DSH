@@ -1,4 +1,4 @@
-import { normalizeMobileAccessSettings, normalizeSidebarGestureSettings } from '../../shared/contracts/config.js'
+import { normalizeMobileAccessSettings } from '../../shared/contracts/config.js'
 import { debugWarn } from '../../shared/debug.js'
 import {
   startMobileSidebarRailDom,
@@ -48,7 +48,18 @@ export const mobileAccessFeature: CodingNsClientFeatureModule = {
     // 手势控制器自身会按窄屏与触摸能力门禁，桌面端不会注册监听。
     const gestures: MobileSidebarGestureController = startMobileSidebarGestures({
       ports: { layout: context.services.layout, sidebarRight: context.services.sidebarRight },
-      settings: () => normalizeSidebarGestureSettings(context.services.settings.getSnapshot().value?.workspaceSessionEnhancement),
+      // 手势需要区分“左栏尚未呼出”和“左栏已经展开”：默认映射下物理左滑
+      // 在后一种状态应关闭左栏，而不是打开右栏。移动端侧栏 DOM 控制器在
+      // 框架上留下稳定标记，缺少该节点时由手势控制器内部状态兜底。
+      readLeftCollapsed: () => {
+        if (typeof document === 'undefined') return undefined
+        const frame = document.querySelector<HTMLElement>('[data-codingns-mobile-sidebar-frame]')
+        return frame?.hasAttribute('data-sidebar-collapsed')
+      },
+      settings: () => normalizeMobileAccessSettings(
+        context.services.settings.getSnapshot().value?.mobileAccess,
+        context.services.settings.getSnapshot().value?.workspaceSessionEnhancement,
+      ),
       onDiagnostic: (code) => debugWarn('codingns4dsh: 侧栏手势不可用', { code }),
     })
     const settingsModal: MobileSettingsModalController = startMobileSettingsModalDom({

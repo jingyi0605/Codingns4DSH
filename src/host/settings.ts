@@ -88,15 +88,6 @@ export const CodingNsSettingsSchema = z.object({
     })).default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.quickPhrases),
     // 缺少该字段说明是旧配置；Client 首次加载时会补齐内置快捷会话。
     quickPhrasesSeeded: z.boolean().default(false),
-    sidebarGestures: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.sidebarGestures),
-    sidebarGestureMapping: z.union([z.const('swipe-inward'), z.const('swap')])
-      .default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.sidebarGestureMapping),
-    sidebarGestureEdge: z.union([z.const('avoid'), z.const('edge')])
-      .default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.sidebarGestureEdge),
-    sidebarGestureThresholdPx: z.number().step(1)
-      .min(SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.min)
-      .max(SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.max)
-      .default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.sidebarGestureThresholdPx),
   }).default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement),
   fileManagement: z.object({
     menuEnhancement: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.fileManagement.menuEnhancement),
@@ -109,7 +100,20 @@ export const CodingNsSettingsSchema = z.object({
       .min(MOBILE_VIEWPORT_MAX_PX_LIMITS.min)
       .max(MOBILE_VIEWPORT_MAX_PX_LIMITS.max)
       .default(DEFAULT_CODINGNS_SETTINGS.mobileAccess.mobileViewportMaxPx),
-  }).default(DEFAULT_CODINGNS_SETTINGS.mobileAccess),
+    // 手势字段不设置 schema 默认值，让旧配置可以由 Client 从 workspaceSessionEnhancement 回填。
+    sidebarGestures: z.union([z.boolean(), z.const(undefined)]),
+    sidebarGestureMapping: z.union([z.const('swipe-inward'), z.const('swap'), z.const(undefined)]),
+    sidebarGestureEdge: z.union([z.const('avoid'), z.const('edge'), z.const(undefined)]),
+    sidebarGestureThresholdPx: z.union([
+      z.number().step(1)
+        .min(SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.min)
+        .max(SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.max),
+      z.const(undefined),
+    ]),
+  }).default({
+    hideSidebarOnMobile: DEFAULT_CODINGNS_SETTINGS.mobileAccess.hideSidebarOnMobile,
+    mobileViewportMaxPx: DEFAULT_CODINGNS_SETTINGS.mobileAccess.mobileViewportMaxPx,
+  }),
   subscriptionUsage: z.object({
     timeoutSecs: z.number().step(1)
       .min(SUBSCRIPTION_USAGE_TIMEOUT_SECS_LIMITS.min)

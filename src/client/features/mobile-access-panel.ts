@@ -5,9 +5,7 @@ import {
   CODINGNS_MOBILE_ACCESS_FIELD,
   DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS,
   DEFAULT_MOBILE_ACCESS_SETTINGS,
-  DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   MOBILE_VIEWPORT_MAX_PX_LIMITS,
-  normalizeSidebarGestureSettings,
   normalizeLanAccessDshPwaSettings,
   normalizeMobileAccessSettings,
   SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS,
@@ -46,8 +44,9 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
   const pwa = normalizeLanAccessDshPwaSettings(
     snapshot.value?.lanAccessDsh?.pwa ?? DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS,
   )
-  const gestures = normalizeSidebarGestureSettings(
-    snapshot.value?.workspaceSessionEnhancement ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
+  const gestures = normalizeMobileAccessSettings(
+    snapshot.value?.mobileAccess,
+    snapshot.value?.workspaceSessionEnhancement,
   )
   const [widthDraft, setWidthDraft] = useState(String(value.mobileViewportMaxPx))
   const [busy, setBusy] = useState(false)
@@ -120,12 +119,12 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
   const updateGestureField = (field: string, nextValue: unknown): void => {
     void settings.mutate([{
       op: 'set',
-      path: ['workspaceSessionEnhancement', field],
+      path: [CODINGNS_MOBILE_ACCESS_FIELD, field],
       value: nextValue,
     }]).then((accepted) => {
       notify({
         kind: accepted ? 'success' : 'error',
-        message: accepted ? t('workspace.sidebarGestureSaved') : t('settings.moduleWriteRejected'),
+        message: accepted ? t('mobile.sidebarGestureSaved') : t('settings.moduleWriteRejected'),
       })
     }).catch((cause: unknown) => {
       notify({ kind: 'error', message: cause instanceof Error ? cause.message : String(cause) })
@@ -251,13 +250,13 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
     createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 12, borderTop: `1px solid ${dshThemeColor.border}` } },
       createElement('label', { style: dshSettingsListRowStyle },
         createElement('span', { style: { minWidth: 0 } },
-          createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.sidebarGestures')),
-          createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.sidebarGesturesDescription')),
+          createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('mobile.sidebarGestures')),
+          createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('mobile.sidebarGesturesDescription')),
         ),
         createElement('input', {
           type: 'checkbox',
           role: 'switch',
-          'aria-label': t('workspace.sidebarGestures'),
+          'aria-label': t('mobile.sidebarGestures'),
           checked: gestures.sidebarGestures,
           disabled: controlsDisabled,
           onChange: (event: { currentTarget: { checked: boolean } }) => updateGestureField('sidebarGestures', event.currentTarget.checked),
@@ -266,31 +265,31 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
       ),
       gestures.sidebarGestures && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, paddingInlineStart: 12 } },
         createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-          createElement('span', { style: dshSettingsFieldLabelStyle }, t('workspace.sidebarGestureMapping')),
+          createElement('span', { style: dshSettingsFieldLabelStyle }, t('mobile.sidebarGestureMapping')),
           createElement('select', {
             value: gestures.sidebarGestureMapping,
             disabled: controlsDisabled,
             onChange: (event: { currentTarget: { value: string } }) => updateGestureField('sidebarGestureMapping', event.currentTarget.value === 'swap' ? 'swap' : 'swipe-inward'),
             style: fieldStyle,
           },
-            createElement('option', { value: 'swipe-inward' }, t('workspace.sidebarGestureMappingInward')),
-            createElement('option', { value: 'swap' }, t('workspace.sidebarGestureMappingSwap')),
+            createElement('option', { value: 'swipe-inward' }, t('mobile.sidebarGestureMappingInward')),
+            createElement('option', { value: 'swap' }, t('mobile.sidebarGestureMappingSwap')),
           ),
         ),
         createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-          createElement('span', { style: dshSettingsFieldLabelStyle }, t('workspace.sidebarGestureEdge')),
+          createElement('span', { style: dshSettingsFieldLabelStyle }, t('mobile.sidebarGestureEdge')),
           createElement('select', {
             value: gestures.sidebarGestureEdge,
             disabled: controlsDisabled,
             onChange: (event: { currentTarget: { value: string } }) => updateGestureField('sidebarGestureEdge', event.currentTarget.value === 'edge' ? 'edge' : 'avoid'),
             style: fieldStyle,
           },
-            createElement('option', { value: 'avoid' }, t('workspace.sidebarGestureEdgeAvoid')),
-            createElement('option', { value: 'edge' }, t('workspace.sidebarGestureEdgeEdge')),
+            createElement('option', { value: 'avoid' }, t('mobile.sidebarGestureEdgeAvoid')),
+            createElement('option', { value: 'edge' }, t('mobile.sidebarGestureEdgeEdge')),
           ),
         ),
         createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-          createElement('span', { style: dshSettingsFieldLabelStyle }, t('workspace.sidebarGestureThreshold')),
+          createElement('span', { style: dshSettingsFieldLabelStyle }, t('mobile.sidebarGestureThreshold')),
           createElement('input', {
             type: 'number',
             min: SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.min,
@@ -307,7 +306,7 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
             },
             style: fieldStyle,
           }),
-          createElement('span', { style: dshSettingsHelpStyle }, t('workspace.sidebarGestureThresholdHelp')),
+          createElement('span', { style: dshSettingsHelpStyle }, t('mobile.sidebarGestureThresholdHelp')),
         ),
       ),
     ),

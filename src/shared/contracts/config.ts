@@ -122,6 +122,18 @@ export interface WorkspaceSessionEnhancementSettings {
   quickPhrases: QuickPhrase[]
   /** 内置快捷会话是否已经完成首次初始化；仅用于兼容旧配置。 */
   quickPhrasesSeeded: boolean
+  /**
+   * 旧版本曾把手势设置写在这里。保留可选字段只用于读取旧配置，新的设置一律写入
+   * `mobileAccess`，避免升级后把用户主动关闭的手势重新打开。
+   */
+  sidebarGestures?: boolean
+  sidebarGestureMapping?: SidebarGestureMapping
+  sidebarGestureEdge?: SidebarGestureEdgeMode
+  sidebarGestureThresholdPx?: number
+}
+
+/** 移动端侧栏横滑设置。 */
+export interface SidebarGestureSettings {
   /** 是否在触摸设备上启用横滑开合左右侧栏。 */
   sidebarGestures: boolean
   /** 手势方向映射：右滑/左滑分别对应哪一侧栏。 */
@@ -140,16 +152,22 @@ export type SidebarGestureEdgeMode = 'avoid' | 'edge'
 
 export const SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS = { min: 24, max: 200 } as const
 export const DEFAULT_SIDEBAR_GESTURE_THRESHOLD_PX = 64
+export const DEFAULT_SIDEBAR_GESTURE_SETTINGS: SidebarGestureSettings = {
+  sidebarGestures: true,
+  sidebarGestureMapping: 'swipe-inward',
+  sidebarGestureEdge: 'avoid',
+  sidebarGestureThresholdPx: DEFAULT_SIDEBAR_GESTURE_THRESHOLD_PX,
+}
 
 /** 归一化手势设置：缺省回填、越界收敛，非法枚举回落到默认值。 */
 export function normalizeSidebarGestureSettings(
-  value: Pick<WorkspaceSessionEnhancementSettings, 'sidebarGestures' | 'sidebarGestureMapping' | 'sidebarGestureEdge' | 'sidebarGestureThresholdPx'> | undefined,
-): Pick<WorkspaceSessionEnhancementSettings, 'sidebarGestures' | 'sidebarGestureMapping' | 'sidebarGestureEdge' | 'sidebarGestureThresholdPx'> {
+  value: Partial<SidebarGestureSettings> | undefined,
+): SidebarGestureSettings {
   const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
   return {
     // 移动端访问增强默认提供横滑入口；桌面端控制器仍会按触摸能力和视口门禁不挂监听。
     sidebarGestures: record.sidebarGestures === undefined
-      ? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS.sidebarGestures
+      ? DEFAULT_SIDEBAR_GESTURE_SETTINGS.sidebarGestures
       : record.sidebarGestures === true,
     sidebarGestureMapping: record.sidebarGestureMapping === 'swap' ? 'swap' : 'swipe-inward',
     sidebarGestureEdge: record.sidebarGestureEdge === 'edge' ? 'edge' : 'avoid',
@@ -179,6 +197,14 @@ export interface MobileAccessSettings {
   hideSidebarOnMobile: boolean
   /** 判定“移动端/窄屏”的视口宽度上限（像素）。 */
   mobileViewportMaxPx: number
+  /** 移动端触摸设备上是否启用横滑开合左右侧栏。 */
+  sidebarGestures: boolean
+  /** 手势方向映射：右滑/左滑分别对应哪一侧栏。 */
+  sidebarGestureMapping: SidebarGestureMapping
+  /** 手势起手区域：是否允许贴上系统边缘热区。 */
+  sidebarGestureEdge: SidebarGestureEdgeMode
+  /** 手势触发阈值（像素）；数值越小越灵敏。 */
+  sidebarGestureThresholdPx: number
 }
 
 export const MOBILE_VIEWPORT_MAX_PX_LIMITS = { min: 480, max: 1280 } as const
@@ -189,11 +215,28 @@ export const DEFAULT_MOBILE_ACCESS_SETTINGS: MobileAccessSettings = {
   // 默认开启本模块的隐藏能力，用户可随时在设置里关回原生行为。
   hideSidebarOnMobile: true,
   mobileViewportMaxPx: DEFAULT_MOBILE_VIEWPORT_MAX_PX,
+  ...DEFAULT_SIDEBAR_GESTURE_SETTINGS,
 }
 
-/** 归一化移动端访问设置：缺省回填默认值，越界值收敛到允许范围。 */
-export function normalizeMobileAccessSettings(value: unknown): MobileAccessSettings {
+/**
+ * 归一化移动端访问设置：缺省回填默认值，越界值收敛到允许范围。
+ * 第二个参数只用于读取旧版本写在 workspaceSessionEnhancement 下的手势设置。
+ */
+export function normalizeMobileAccessSettings(value: unknown, legacyGestureValue?: unknown): MobileAccessSettings {
   const record = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  const legacy = typeof legacyGestureValue === 'object' && legacyGestureValue !== null && !Array.isArray(legacyGestureValue)
+    ? legacyGestureValue as Record<string, unknown>
+    : {}
+  const gestureValue = (key: keyof SidebarGestureSettings): unknown => record[key] ?? legacy[key]
+  const gesture: Partial<SidebarGestureSettings> = {}
+  const sidebarGestures = gestureValue('sidebarGestures')
+  const sidebarGestureMapping = gestureValue('sidebarGestureMapping')
+  const sidebarGestureEdge = gestureValue('sidebarGestureEdge')
+  const sidebarGestureThresholdPx = gestureValue('sidebarGestureThresholdPx')
+  if (sidebarGestures !== undefined) gesture.sidebarGestures = sidebarGestures as boolean
+  if (sidebarGestureMapping !== undefined) gesture.sidebarGestureMapping = sidebarGestureMapping as SidebarGestureMapping
+  if (sidebarGestureEdge !== undefined) gesture.sidebarGestureEdge = sidebarGestureEdge as SidebarGestureEdgeMode
+  if (sidebarGestureThresholdPx !== undefined) gesture.sidebarGestureThresholdPx = sidebarGestureThresholdPx as number
   return {
     hideSidebarOnMobile: record.hideSidebarOnMobile === undefined
       ? DEFAULT_MOBILE_ACCESS_SETTINGS.hideSidebarOnMobile
@@ -203,6 +246,7 @@ export function normalizeMobileAccessSettings(value: unknown): MobileAccessSetti
       MOBILE_VIEWPORT_MAX_PX_LIMITS,
       DEFAULT_MOBILE_ACCESS_SETTINGS.mobileViewportMaxPx,
     ),
+    ...normalizeSidebarGestureSettings(gesture),
   }
 }
 
@@ -331,11 +375,6 @@ export const DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS: WorkspaceSessionEnh
   rememberConversationRightbarRatio: false,
   quickPhrases: DEFAULT_QUICK_PHRASES.map((phrase) => ({ ...phrase })),
   quickPhrasesSeeded: true,
-  // 移动端默认开启；控制器只在触摸窄屏上挂监听，桌面端不会改变行为。
-  sidebarGestures: true,
-  sidebarGestureMapping: 'swipe-inward',
-  sidebarGestureEdge: 'avoid',
-  sidebarGestureThresholdPx: DEFAULT_SIDEBAR_GESTURE_THRESHOLD_PX,
 }
 export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   controlBaseUrl: DEFAULT_CODINGNS_CONTROL_BASE_URL,

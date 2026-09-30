@@ -241,11 +241,11 @@
 
 - [x]  3.3 接入手势控制器（服务调用、历史集成、注入面）
 
-  - 这一步到底做什么：新增 `MobileSidebarGestureController`，用 pointer/touch 事件驱动纯函数决策；只调用 `ctx.layout.toggleSidebar()` 与 `ctx.sidebarRight.toggleExpanded()`；右栏进入全屏时压 history，`popstate` 关闭右栏；在 `src/client/index.ts` 的 inject 数组补 `layout`，并在工作区会话增强模块的 start 中按设置启停。
+  - 这一步到底做什么：新增 `MobileSidebarGestureController`，用 pointer/touch 事件驱动纯函数决策；只调用 `ctx.layout.toggleSidebar()` 与 `ctx.sidebarRight.toggleExpanded()`；右栏进入全屏时压 history，`popstate` 关闭右栏；在 `src/client/index.ts` 的 inject 数组补 `layout`，并在移动端访问增强模块的 start 中按设置启停。
   - 做完你能看到什么：手机横滑能开合侧栏，滚动与文本选择不受影响。
   - 先依赖什么：3.2。
   - 开始前先看：`design.md` §2.3.4、§3.3.6、§6.5；调查报告 §4.4、§4.6。
-  - 主要改哪里：`src/client/index.ts`、`src/client/mobile-sidebar-gestures.ts`、`src/client/features/workspace-session-enhancement.ts`、`tests/mobile-sidebar-gestures.spec.ts`。
+  - 主要改哪里：`src/client/index.ts`、`src/client/mobile-sidebar-gestures.ts`、`src/client/features/mobile-access.ts`、`tests/mobile-sidebar-gestures.spec.ts`。
   - 这一步先不做什么：不改 DOM class 或 DSH store、不接管系统边缘手势、不在非触摸环境启用。
   - 怎么算完成：fake DOM + fake 端口测试证明只调服务；卸载后无监听；能力缺失时不注册。
   - 怎么验证：定向测试 + 真机手势回放（iOS/Android 各一份）。
@@ -254,12 +254,12 @@
 
 - [x]  3.4 手势设置契约与面板控件
 
-  - 这一步到底做什么：在 `WorkspaceSessionEnhancementSettings` 增加 `sidebarGestures`、`sidebarGestureMapping`、`sidebarGestureEdge`、`sidebarGestureThresholdPx`，实现 normalizer 与面板控件（开关、下拉、数字输入）。
+  - 这一步到底做什么：在 `MobileAccessSettings` 增加 `sidebarGestures`、`sidebarGestureMapping`、`sidebarGestureEdge`、`sidebarGestureThresholdPx`，实现 normalizer 与移动端访问增强面板控件（开关、下拉、数字输入），默认开启并兼容读取旧工作区字段。
   - 做完你能看到什么：用户可开关手势、切换方向映射、调整灵敏度。
   - 先依赖什么：3.3。
   - 开始前先看：`docs/开发规范/20260922-设置选项与表单开发规则.md`；`design.md` §3.2.2。
-  - 主要改哪里：`src/shared/contracts/config.ts`、`src/client/features/workspace-session-enhancement-panel.ts`、`src/client/locale.ts`、`tests/contracts.spec.ts`。
-  - 这一步先不做什么：不新增独立模块卡片（暂挂现有面板；如后续评审要求独立卡片再迁移）。
+  - 主要改哪里：`src/shared/contracts/config.ts`、`src/host/settings.ts`、`src/client/features/mobile-access-panel.ts`、`src/client/locale.ts`、`tests/contracts.spec.ts`。
+  - 这一步先不做什么：不改变手势判定和服务调用契约，只迁移设置归属与面板位置。
   - 怎么算完成：默认值、越界收敛、旧配置兼容、面板灰显规则有测试。
   - 怎么验证：设置测试 + `pnpm run typecheck`。
   - 对应需求：需求 7。
