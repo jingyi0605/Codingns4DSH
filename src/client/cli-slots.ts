@@ -58,8 +58,9 @@ function installComposerStyles(): void {
     // 650 取自实测「适配器名称开始与左侧控件冲突」的临界宽度（容器查询按行的内容盒计，
     // 比输入框的可见宽度小左右各 8px 内边距）。
     '@container (width<=650px){[data-composer-card] .codingns4dsh-agent-trigger > .codingns4dsh-agent-label{display:none}[data-composer-card] .codingns4dsh-agent-trigger > svg{display:none!important}[data-composer-card] .codingns4dsh-agent-trigger{padding-left:4px;padding-right:4px;gap:0}}',
-    // 移动端工具栏空间有限，收掉控件组自身的间距。
-    '@media (max-width: 768px){[data-composer-card] > div:has([data-slot="conversation.input.right"]) > div:has(> [data-slot="conversation.input.right"]),[data-composer-card] [data-slot="conversation.input.right"],.uV2eYG_standardControls,.uV2eYG_trailing{gap:0!important;column-gap:0!important}}',
+    // 移动端工具栏空间有限，收掉控件组自身的间距；控件组按 CSS Modules 本地名匹配，
+    // 不绑定构建哈希（npm 分发的 Web 构建是 uV2eYG_*，Desktop 内嵌构建是 yhfFVG_*）。
+    '@media (max-width: 768px){[data-composer-card] > div:has([data-slot="conversation.input.right"]) > div:has(> [data-slot="conversation.input.right"]),[data-composer-card] [data-slot="conversation.input.right"],[data-composer-card] [class*="_standardControls"],[data-composer-card] [class*="_trailing"]{gap:0!important;column-gap:0!important}}',
     // ContextMeter 在 pressure 尚未合并时会暂时返回 null；dock 保留同样的行高，数值回来时只更新内容。
     '[data-composer-card] + div{box-sizing:border-box;min-height:26px;align-items:center}',
     '[data-composer-card] + div svg[viewBox="0 0 14 14"] circle:last-child{transition:stroke-dasharray .18s ease,stroke .18s ease}',
