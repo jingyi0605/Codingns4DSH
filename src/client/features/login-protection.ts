@@ -16,7 +16,7 @@ export const loginProtectionFeature: CodingNsClientFeatureModule = {
       descriptionKey: 'feature.loginProtection.description',
       order: 15,
       alwaysEnabled: true,
-      defaultOpen: true,
+      defaultOpen: false,
     },
   },
   start: () => undefined,

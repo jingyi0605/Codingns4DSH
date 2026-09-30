@@ -16,7 +16,7 @@ export const terminalEnhancementFeature: CodingNsClientFeatureModule = {
       labelKey: 'feature.terminal.label',
       descriptionKey: 'feature.terminal.description',
       order: 40,
-      defaultOpen: true,
+      defaultOpen: false,
       legacyFallback: true,
     },
   },

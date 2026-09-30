@@ -32,7 +32,7 @@ export const reverseProxyFeature: CodingNsClientFeatureModule = {
       labelKey: 'feature.reverseProxy.label',
       descriptionKey: 'feature.reverseProxy.description',
       order: 20,
-      defaultOpen: true,
+      defaultOpen: false,
     },
   },
   /**

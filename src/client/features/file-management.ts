@@ -18,7 +18,7 @@ export const fileManagementFeature: CodingNsClientFeatureModule = {
       labelKey: 'feature.fileManagement.label',
       descriptionKey: 'feature.fileManagement.description',
       order: 40,
-      defaultOpen: true,
+      defaultOpen: false,
     },
   },
   start(context) {

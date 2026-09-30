@@ -13,7 +13,7 @@ export const debugFeature: CodingNsClientFeatureModule = {
       label: '工作区调试',
       description: '启动终端并检查服务',
       order: 35,
-      defaultOpen: true,
+      defaultOpen: false,
     },
   },
   start(context) {

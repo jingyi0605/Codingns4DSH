@@ -29,7 +29,7 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
       labelKey: 'feature.cliAdapters.label',
       descriptionKey: 'feature.cliAdapters.description',
       order: 30,
-      defaultOpen: true,
+      defaultOpen: false,
     },
   },
   start: async (context) => {
