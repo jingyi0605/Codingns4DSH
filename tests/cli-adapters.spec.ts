@@ -889,6 +889,48 @@ test('CLI 功能模块登记 cli RPC，停用后注销命名空间', async () =>
   assert.deepEqual(table.namespaces(), [])
 })
 
+test('CLI 功能模块向 DSH 注册外部 Provider 的图片能力，流仍由 llm/stream 接管', async () => {
+  const table = new CodingNsRpcTable()
+  let registeredProviders: string[] = []
+  let disposed = false
+  let virtualAdapter: {
+    resolveModel(provider: string, model: string): Promise<{ provider: string; id: string; inputModalities: readonly string[] }>
+  } | undefined
+  const llm = {
+    registerAdapter(providers: string[], adapter: typeof virtualAdapter & Record<string, unknown>) {
+      registeredProviders = [...providers]
+      virtualAdapter = adapter as NonNullable<typeof virtualAdapter>
+      const registration = (() => { disposed = true }) as (() => void) & { replace?: (next: string[]) => void }
+      registration.replace = (next) => { registeredProviders = [...next] }
+      return registration
+    },
+  }
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } as const },
+  }])
+  const features = new FeatureRegistry({
+    rpc: table,
+    dshContext: { get(name: string) { return name === 'llm' ? llm : undefined } } as never,
+  })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+
+  assert.deepEqual(registeredProviders, ['codex'])
+  assert.notEqual(virtualAdapter, undefined)
+  assert.deepEqual(await virtualAdapter!.resolveModel('codex', 'gpt-5.5'), {
+    provider: 'codex',
+    id: 'gpt-5.5',
+    name: 'gpt-5.5',
+    inputModalities: ['text', 'image'],
+  })
+
+  await features.disable('cliAdapters')
+  assert.equal(disposed, true)
+})
+
 test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流的旁路行为', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined

@@ -15,6 +15,7 @@ import { CommandCodeSubscriptionService } from './command-code-subscription.js'
 import { ProviderSubscriptionService } from './provider-subscription.js'
 import { normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsHostServices } from '../features/types.js'
+import { createDshVirtualProviderRegistration } from './dsh-virtual-providers.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -56,6 +57,9 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         ...(context.services.nativeSessions === undefined ? {} : { nativeSessions: context.services.nativeSessions }),
       })
       registry.applyEnabledSettings(context.services.settings?.get().agentAdapters)
+      const virtualProviders = createDshVirtualProviderRegistration(context.services.dshContext)
+      virtualProviders?.setProviders(registry.enabledAdapterIds())
+      if (virtualProviders !== undefined) context.resources.add(() => virtualProviders.dispose())
       registry.warmCatalog()
       if (nativeSessions !== undefined) {
         const disposeNativeEvents = nativeSessions.subscribe({
@@ -116,6 +120,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       if (settings !== undefined) {
         context.resources.add(settings.watch((next) => {
           registry.applyEnabledSettings(next.agentAdapters)
+          virtualProviders?.setProviders(registry.enabledAdapterIds())
           registry.syncPreferences(next.agentAdapterPreferences)
           sessionStore.sync(next.cliSessions)
           subscriptions = buildSubscriptions(next)
