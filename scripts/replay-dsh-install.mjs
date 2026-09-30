@@ -1,9 +1,9 @@
 import { createRequire } from 'node:module'
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 
 const tarball = process.argv[2]
@@ -35,11 +35,19 @@ if (manifest.peerDependencies?.['@deepseek-ai/dsh'] !== '>=0.2.0-rc.2 <=0.2.0-rc
 if (!dump.includes(packageName)) throw new Error('Profile dump-config 未包含 CodingNS bundle')
 
 const moduleResolution = []
+const runtimeNodeModules = process.env.DSH_RUNTIME_NODE_MODULES
+  ?? join(homedir(), '.local/share/codingns/deepseek-harness/0.2.0-rc.2/node_modules')
+const resolutionAnchors = [
+  { anchor: join(profile, 'package.json'), source: 'profile' },
+  { anchor: join(runtimeNodeModules, '.codingns-replay-anchor.cjs'), source: 'dsh-runtime' },
+]
 for (const moduleName of manifest.dsh?.client?.inject ?? []) {
   try {
-    const path = requireFromProfile.resolve(`${moduleName}/package.json`)
+    const resolved = resolvePackageManifest(moduleName, resolutionAnchors)
+    if (resolved === undefined) throw new Error(`无法从安装 Profile 或 Desktop DSH runtime 解析 ${moduleName}`)
+    const { path, source } = resolved
     const moduleManifest = JSON.parse(await readFile(path, 'utf8'))
-    moduleResolution.push({ name: moduleName, version: moduleManifest.version, path })
+    moduleResolution.push({ name: moduleName, version: moduleManifest.version, path, source })
     if (moduleManifest.version !== '0.2.0-rc.2') throw new Error(`${moduleName}@${moduleManifest.version} 不是 rc.2`)
   } catch (error) {
     moduleResolution.push({ name: moduleName, error: error instanceof Error ? error.message : String(error) })
@@ -47,8 +55,14 @@ for (const moduleName of manifest.dsh?.client?.inject ?? []) {
   }
 }
 
+// DSH Desktop 的 runtime resolution 会把 peer 包映射到宿主 runtime；CLI 临时 Profile
+// 的 Node 进程没有加载该拦截器，因此在回放目录建立同一份只读映射，再导入安装后的 Host。
+await linkRuntimePackage('@deepseek-ai/cordis')
+
 const hostPath = requireFromProfile.resolve(`${packageName}/host`)
 const host = await import(pathToFileURL(hostPath).href)
+const rootPath = requireFromProfile.resolve(packageName)
+const bundle = await import(pathToFileURL(rootPath).href)
 const checks = {}
 
 // 通过实际安装后的 Host bundle 回放 Agent catalog、模型目录及 session/create/follow。
@@ -78,18 +92,39 @@ await registry.dispose()
 
 // 验证 PeerHost 原生 RPC 白名单和虚拟 ID 改写边界。
 if (!host.DSH_NATIVE_REMOTE_METHODS.includes('session/create') || !host.DSH_NATIVE_REMOTE_METHODS.includes('session/follow')) throw new Error('PeerHost native RPC 白名单不完整')
+const nativeRequest = host.rewriteNativeRequestIds('session/create', { args: { workspaceId: 'virtual-workspace', requestId: 'stable-request' } }, {
+  resolveWorkspace(id) { return id === 'virtual-workspace' ? { workspaceId: 'real-workspace', targetHostId: null } : null },
+  resolveSession() { return null },
+})
+if (nativeRequest?.args?.workspaceId !== 'real-workspace' || nativeRequest?.args?.requestId !== 'stable-request') throw new Error('PeerHost native RPC 虚拟 ID 改写失败')
 checks.peerHostNativeRpc = 'passed'
+
+class MemoryChannel {
+  label = 'codingns-tunnel'
+  readyState = 'open'
+  bufferedAmount = 0
+  peer = null
+  listeners = new Map()
+  send(data) {
+    const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+    this.peer?.emit('message', { data: new Uint8Array(bytes) })
+  }
+  close() { this.readyState = 'closed'; this.emit('close', {}) }
+  addEventListener(type, listener) { const list = this.listeners.get(type) ?? new Set(); list.add(listener); this.listeners.set(type, list) }
+  removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener) }
+  emit(type, event) { for (const listener of this.listeners.get(type) ?? []) listener(event) }
+}
 
 // 用两个内存 DataChannel 回放 Relay hello 后的数据通道建立，覆盖实际 Carrier 分片入口。
 const left = new MemoryChannel()
 const right = new MemoryChannel()
 left.peer = right
 right.peer = left
-const clientCarrier = host.createDataChannelCarrier(left)
-const relayCarrier = host.createRelayTunnelHostCarrier(host.createDataChannelCarrier(right))
+const clientCarrier = bundle.createDataChannelCarrier(left)
+const relayCarrier = bundle.createRelayTunnelHostCarrier(bundle.createDataChannelCarrier(right))
 const received = []
 relayCarrier.subscribe((value) => received.push(value))
-await clientCarrier.send(host.encodeTunnelFrame({ type: 'hello', clientContext: null, protocolVersion: '1' }))
+await clientCarrier.send(bundle.encodeTunnelFrame({ type: 'hello', clientContext: null, protocolVersion: '1' }))
 await clientCarrier.send(new Uint8Array([0x63, 0x6e, 0x73]))
 if (received.length !== 1 || received[0][0] !== 0x63) throw new Error('Relay DataChannel 建立或数据收发失败')
 checks.relayDataChannel = 'passed'
@@ -118,18 +153,21 @@ function run(command, args, cwd) {
   return result
 }
 
-class MemoryChannel {
-  label = 'codingns-tunnel'
-  readyState = 'open'
-  bufferedAmount = 0
-  peer = null
-  listeners = new Map()
-  send(data) {
-    const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-    this.peer?.emit('message', { data: new Uint8Array(bytes) })
+function resolvePackageManifest(packageName, anchors) {
+  for (const { anchor, source } of anchors) {
+    try {
+      return { path: createRequire(anchor).resolve(`${packageName}/package.json`), source }
+    } catch {
+      // Desktop 的 client-modules Loader 会以宿主 DSH runtime 作为外部包解析根。
+    }
   }
-  close() { this.readyState = 'closed'; this.emit('close', {}) }
-  addEventListener(type, listener) { const list = this.listeners.get(type) ?? new Set(); list.add(listener); this.listeners.set(type, list) }
-  removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener) }
-  emit(type, event) { for (const listener of this.listeners.get(type) ?? []) listener(event) }
+  return undefined
+}
+
+async function linkRuntimePackage(packageName) {
+  const target = join(runtimeNodeModules, packageName)
+  const destination = join(profile, 'node_modules', packageName)
+  if (!existsSync(target) || existsSync(destination)) return
+  await mkdir(dirname(destination), { recursive: true })
+  await symlink(target, destination, 'dir')
 }
