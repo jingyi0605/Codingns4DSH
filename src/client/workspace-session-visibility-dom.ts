@@ -305,20 +305,20 @@ function selectFilterMenus(
 ): HTMLElement[] {
   const visible = menus.filter(isVisibleMenu)
   const candidates = (visible.length > 0 ? visible : menus).filter(isWorkspaceFilterMenu)
-  if (candidates.length > 0) return [candidates[candidates.length - 1]]
+  if (candidates.length > 0) return [candidates[candidates.length - 1]!]
   const fallback = (visible.length > 0 ? visible : menus).filter((menu) => (
     menuWorkspaceIds.get(menu) === undefined
       && (activeWorkspaceId === undefined || resolveWorkspaceId(menu) !== activeWorkspaceId)
       && menu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_MENU_ATTRIBUTE}]`) === null
   ))
-  return fallback.length > 0 ? [fallback[fallback.length - 1]] : []
+  return fallback.length > 0 ? [fallback[fallback.length - 1]!] : []
 }
 
 function selectWorkspaceMenus(menus: readonly HTMLElement[]): HTMLElement[] {
   const visible = menus.filter(isVisibleMenu)
   const candidates = (visible.length > 0 ? visible : menus).filter((menu) => !isWorkspaceFilterMenu(menu))
   const available = candidates.length > 0 ? candidates : (visible.length > 0 ? visible : menus)
-  return available.length > 0 ? [available[available.length - 1]] : []
+  return available.length > 0 ? [available[available.length - 1]!] : []
 }
 
 function isVisibleMenu(menu: HTMLElement): boolean {
