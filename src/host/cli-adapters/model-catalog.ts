@@ -113,6 +113,17 @@ export const PI_CATALOG = staticCatalog('pi', 'Pi', [
   { id: 'provider-default', name: '跟随 Pi 默认模型', efforts: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
 ])
 
+/** MiniMax Code 的稳定默认目录；运行时会优先读取 CLI 自己的 config.yaml。 */
+export const MINIMAX_CODE_CATALOG = staticCatalog('mcode', 'MiniMax Code', [
+  { id: 'provider-default', name: '跟随 MiniMax Code 默认模型', efforts: ['off', 'low', 'medium', 'high'] },
+  { id: 'minimax/MiniMax-M2.7', name: 'MiniMax-M2.7', efforts: ['low', 'medium', 'high'] },
+])
+
+/** ZCode 动态目录尚未建立时的保守回退项；正常桌面运行时会用会话快照替换。 */
+export const ZCODE_CATALOG = staticCatalog('zcode', 'ZCode', [
+  { id: 'provider-default', name: '跟随 ZCode 默认模型', efforts: [] },
+])
+
 /** 把 CLI 帮助解析到的模型补上已知档位，未知模型保持空数组。 */
 export function enrichEfforts(catalog: CodingNsCliModelCatalog, known: CodingNsCliModelCatalog): CodingNsCliModelCatalog {
   const effortById = new Map(known.groups.flatMap((group) => group.models.map((model) => [model.id.toLowerCase(), model.efforts] as const)))

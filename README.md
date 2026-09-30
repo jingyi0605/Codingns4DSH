@@ -84,6 +84,8 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
 | Codex | `codex` | `codex` | JSON-RPC（app-server） | 全部 + 权限确认、提问、插话 |
 | OpenCode | `opencode` | `opencode`，或 `OPENCODE_SERVER_URL`（默认 `http://127.0.0.1:4096`） | HTTP + SSE | 全部 + 权限确认、提问 |
 | Grok Build | `grok` | `grok`、`grok-build` | ACP | 模型、流式、工具、思考、用量、权限确认 |
+| MiniMax Code | `mcode` | `mcode` | ACP / stream-json | 模型、流式、恢复、打断、工具、思考、用量 |
+| ZCode | `zcode` | `zcode`、桌面端内置运行时 | JSON-RPC 裸信封 | 模型、流式、恢复、打断、用量 |
 
 **模型** 模型列表 · **流式** 实时输出 · **恢复** 重启后继续 · **打断** 取消当前回合 · **工具** 对话中渲染工具调用 · **思考** 推理/思考强度 · **用量** token 或订阅额度 · **权限确认 / 提问** 变成 DSH 原生交互 · **插话** 回合中追加消息。
 

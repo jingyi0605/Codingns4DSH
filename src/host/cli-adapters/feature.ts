@@ -8,6 +8,8 @@ import { PiAgentDriver } from './pi-driver.js'
 import { CodexAppServerDriver } from './codex-driver.js'
 import { GrokBuildDriver } from './grok-driver.js'
 import { OpenCodeDriver } from './opencode-driver.js'
+import { MiniMaxCodeDriver } from './mcode-driver.js'
+import { ZcodeAppServerDriver } from './zcode-driver.js'
 import { CodingNsCliAdapterRegistry } from './registry.js'
 import { CodingNsCliSessionStore } from './session-store.js'
 import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
@@ -15,6 +17,7 @@ import { CommandCodeSubscriptionService } from './command-code-subscription.js'
 import { ProviderSubscriptionService } from './provider-subscription.js'
 import { normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsHostServices } from '../features/types.js'
+import { setAdapterRegistry } from './registry-holder.js'
 import { createDshVirtualProviderRegistration } from './dsh-virtual-providers.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
@@ -51,10 +54,17 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         new CodexAppServerDriver(),
         new OpenCodeDriver(),
         new GrokBuildDriver(),
+        new MiniMaxCodeDriver(),
+        new ZcodeAppServerDriver(),
       ], context.services.settings?.get().agentAdapters, {
         sessionStore,
         ...(context.services.settings === undefined ? {} : { settings: context.services.settings }),
         ...(context.services.nativeSessions === undefined ? {} : { nativeSessions: context.services.nativeSessions }),
+      })
+      setAdapterRegistry(registry)
+      context.resources.add(() => {
+        if (registry === undefined) return
+        setAdapterRegistry(undefined)
       })
       registry.applyEnabledSettings(context.services.settings?.get().agentAdapters)
       const virtualProviders = createDshVirtualProviderRegistration(context.services.dshContext)
@@ -236,7 +246,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         })
         if (typeof dispose === 'function') context.resources.add(() => { (dispose as () => void)() })
       }
-      context.resources.add(async () => { await registry.dispose(); await sessionStore.flush() })
+      context.resources.add(async () => { await registry.dispose(); await sessionStore.flush(); setAdapterRegistry(undefined) })
     },
   }
 }

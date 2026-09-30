@@ -32,6 +32,8 @@ const PROVIDER_DEFINITIONS: Readonly<Record<string, ProviderDefinition>> = {
   codex: { adapterId: 'codex', displayName: 'Codex', color: '#10a37f' },
   opencode: { adapterId: 'opencode', displayName: 'OpenCode', color: '#14b8a6' },
   grok: { adapterId: 'grok', displayName: 'Grok', color: '#71717a' },
+  mcode: { adapterId: 'mcode', displayName: 'MiniMax Code', color: '#f97316' },
+  zcode: { adapterId: 'zcode', displayName: 'ZCode', color: '#38bdf8' },
 }
 
 const PROVIDER_ICONS: Record<string, string> = {}
