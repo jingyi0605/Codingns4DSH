@@ -1,3 +1,5 @@
+import { resolveSettingsAnchor, settingsAnchorContainer } from './settings-anchor.js'
+
 export const PEER_HOST_BUTTON_ATTRIBUTE = 'data-codingns-peer-host-button'
 export const PEER_HOST_OPEN_EVENT = 'codingns4dsh:peer-host-open'
 
@@ -18,10 +20,12 @@ export function startPeerHostConnectionButton(options: PeerHostConnectionButtonO
   let observer: MutationObserver | undefined
   const scan = (): void => {
     if (disposed) return
-    const settings = dom.querySelector<HTMLButtonElement>('button[aria-label="设置"]')
     const account = dom.querySelector<HTMLButtonElement>('button[data-codingns-account-button]')
-    const anchor = account ?? settings
-    const parent = anchor?.parentElement
+    // 账户入口本身也要靠锚点解析才能挂载（Desktop 下原生齿轮不渲染），因此这里
+    // 复用同一套锚点规则，避免两个入口在 Desktop 下一起消失。
+    const match = resolveSettingsAnchor((selector) => dom.querySelector<HTMLElement>(selector))
+    const anchor = account ?? (match === null ? null : match.node)
+    const parent = account?.parentElement ?? (match === null ? null : settingsAnchorContainer(match))
     if (parent === null || parent === undefined) return
     let button = parent.querySelector<HTMLButtonElement>(`button[${PEER_HOST_BUTTON_ATTRIBUTE}]`)
     if (button === null) {

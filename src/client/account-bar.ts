@@ -8,9 +8,9 @@ import { LOGIN_PROTECTION_SESSION_EVENT, readLoginProtectionSession, readLoginPr
 import { dshThemeColor } from './theme.js'
 import { attachOutsideDismissal } from './popup-dismiss.js'
 import { PEER_HOST_OPEN_EVENT } from './peer-host-connection-button.js'
+import { resolveSettingsAnchor, settingsAnchorContainer, type SettingsAnchorKind } from './settings-anchor.js'
 import { readDshPeerHostPrebootShimState } from '../bootstrap/dsh-peer-host-preboot-shim.js'
 
-const SETTINGS_BUTTON_SELECTOR = 'button[aria-label="设置"]'
 const ACCOUNT_ATTRIBUTE = 'data-codingns-account-button'
 const MENU_ATTRIBUTE = 'data-codingns-account-menu'
 const POLL_MS = 5_000
@@ -91,20 +91,24 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
       observeDom = true
       return
     }
-    const settings = root.querySelector<HTMLElement>(SETTINGS_BUTTON_SELECTOR)
-    if (settings === null) {
+    // 齿轮按钮是 `settings.launcher` 槽位内的 fallback；Desktop 下该槽位被 DSH
+    // 账户菜单占位，齿轮不渲染，锚点直接落在槽位出口节点上。
+    const match = resolveSettingsAnchor((selector) => root.querySelector<HTMLElement>(selector))
+    if (match === null) {
       observeDom = true
       return
     }
-    const parent = settings.parentElement
-    if (parent === null) {
+    // 两种锚点最终都落在同一个「槽位出口」容器里（详见 settings-anchor 模块）。
+    const container = settingsAnchorContainer(match)
+    if (container === null) {
       observeDom = true
       return
     }
-    let button = parent.querySelector<HTMLButtonElement>(`button[${ACCOUNT_ATTRIBUTE}]`)
+    let button = container.querySelector<HTMLButtonElement>(`button[${ACCOUNT_ATTRIBUTE}]`)
     if (button === null) {
       button = createAccountButton(root)
-      parent.insertBefore(button, settings)
+      // 排在设置入口之前：横排时是「用户图标 → 设置入口」，与原生顺序一致。
+      container.insertBefore(button, container.firstChild)
       button.addEventListener('click', (event) => {
         event.preventDefault()
         event.stopPropagation()
@@ -113,35 +117,55 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
     }
     observeDom = false
     observer?.disconnect()
-    parent.dataset.codingnsAccountRow = 'true'
-    Object.assign(parent.style, {
+    container.dataset.codingnsAccountRow = 'true'
+    updateAccountLayout(container, match.node, button, match.kind)
+    resizeObserver?.disconnect()
+    if (typeof ResizeObserver !== 'undefined') {
+      // 观察真正参与布局的那一层：槽位出口是 `display: contents`，自身没有尺寸，
+      // 观察它拿不到宽度变化。
+      const observed = match.kind === 'launcher-slot' ? container.parentElement ?? container : container
+      resizeObserver ??= new ResizeObserver(() => {
+        if (!disposed) updateAccountLayout(container, match.node, button, match.kind)
+      })
+      resizeObserver.observe(observed)
+    }
+    renderButton(button)
+  }
+
+  const updateAccountLayout = (container: HTMLElement, anchor: HTMLElement, button: HTMLButtonElement, kind: SettingsAnchorKind): void => {
+    // Desktop：容器是 `display: contents` 的槽位出口，自身不产生盒，真正的一行是
+    // DSH 的 `triggerRow`（里面是 DSH 自己的账户菜单）。宽侧栏完全保留 DSH 布局；
+    // 收起态该行只有 36px 宽，改为允许换行并居中，避免两个按钮横向溢出侧栏，
+    // 同时不动 `flex-direction`，以免 `flex:1` 的账户菜单被压扁。
+    if (kind === 'launcher-slot') {
+      const row = container.parentElement
+      if (row === null) return
+      const wide = row.clientWidth > 96
+      const mode = wide ? 'wide' : 'rail'
+      if (button.dataset.codingnsWide === mode) return
+      button.dataset.codingnsWide = mode
+      row.style.flexWrap = wide ? '' : 'wrap'
+      row.style.justifyContent = wide ? '' : 'center'
+      row.style.gap = wide ? '' : '4px'
+      return
+    }
+    // Web：出口内部是 fallback 齿轮，出口自身没有布局，由插件补全成一行。
+    const wide = isWide(container, anchor)
+    const mode = wide ? 'wide' : 'rail'
+    if (button.dataset.codingnsWide === mode) return
+    button.dataset.codingnsWide = mode
+    Object.assign(container.style, {
       display: 'flex',
       alignItems: 'center',
       gap: '4px',
       width: '100%',
       boxSizing: 'border-box',
     })
-    updateAccountLayout(parent, settings, button)
-    resizeObserver?.disconnect()
-    if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver ??= new ResizeObserver(() => {
-        if (!disposed) updateAccountLayout(parent, settings, button)
-      })
-      resizeObserver.observe(parent)
-    }
-    renderButton(button)
-  }
-
-  const updateAccountLayout = (parent: HTMLElement, settings: HTMLElement, button: HTMLButtonElement): void => {
-    const wide = isWide(parent, settings)
-    const mode = wide ? 'wide' : 'rail'
-    if (button.dataset.codingnsWide === mode) return
-    button.dataset.codingnsWide = mode
-    parent.style.flexDirection = wide ? 'row' : 'column'
-    parent.style.justifyContent = 'flex-end'
+    container.style.flexDirection = wide ? 'row' : 'column'
+    container.style.justifyContent = 'flex-end'
     button.style.marginLeft = wide ? 'auto' : '0'
     button.style.order = wide ? '2' : '1'
-    settings.style.order = wide ? '1' : '2'
+    anchor.style.order = wide ? '1' : '2'
   }
 
   const renderAll = (): void => {
@@ -160,9 +184,9 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
 
   const observerCallback = (): void => {
     if (disposed || rendering || renderQueued) return
-    const settings = root.querySelector<HTMLElement>(SETTINGS_BUTTON_SELECTOR)
+    const match = resolveSettingsAnchor((selector) => root.querySelector<HTMLElement>(selector))
     const button = root.querySelector<HTMLButtonElement>(`button[${ACCOUNT_ATTRIBUTE}]`)
-    if (settings !== null && button !== null && settings.parentElement === button.parentElement) return
+    if (match !== null && button !== null && settingsAnchorContainer(match) === button.parentElement) return
     renderQueued = true
     queueMicrotask(() => {
       renderQueued = false
