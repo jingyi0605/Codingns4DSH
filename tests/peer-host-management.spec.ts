@@ -155,6 +155,42 @@ test('PeerHost 管理面板居中显示列表，并隐藏中转实现字段', as
   controller.dispose()
 })
 
+test('编辑 Host 默认回填局域网地址，清空地址时沿用原记录', async () => {
+  const dom = new FakeDocument()
+  const record = {
+    id: 'peer-1', ownerUserId: 'user-1', displayName: '开发机',
+    route: { kind: 'lan' as const, baseUrl: 'http://192.168.1.20:13080' },
+    status: 'ready' as const, pluginId: null, pluginVersion: null, dshVersion: '0.2.0-rc.2',
+    hostname: 'dev.local', configProfile: null, apiCompatibility: 'peer-host-v1', fingerprint: null,
+    lastCheckedAt: 1, lastErrorCode: null, color: null, visibleWorkspaceIds: [], createdAt: 1, updatedAt: 1,
+  }
+  const updates: unknown[] = []
+  const api = {
+    list: async () => [record],
+    status: async () => ({ cpuPercent: 1, memoryPercent: 2, memoryUsedBytes: 3, memoryTotalBytes: 4, sampledAt: 5 }),
+    credentialStatus: async () => ({ peerHostId: 'peer-1', hasSavedCredential: false }),
+    update: async (input: unknown) => { updates.push(input); return record },
+  }
+  const controller = startPeerHostManagementPanel({ document: dom as never, rpc: {} as never, api: api as never })
+  dom.defaultView.dispatchEvent(new Event('codingns4dsh:peer-host-open'))
+  await settle()
+  await settle()
+  const panel = dom.body.children[0]!
+  const edit = panel.find((node) => node.tagName === 'BUTTON' && node.textContent === '编辑')
+  assert.ok(edit)
+  edit.dispatchEvent(new Event('click'))
+  const form = panel.querySelector('[data-codingns-peer-host-edit]')!
+  const url = form.querySelector('[data-codingns-peer-host-url]')!
+  assert.equal(url.value, 'http://192.168.1.20:13080')
+  assert.equal(url.required, false)
+  url.value = ''
+  form.querySelector('[data-codingns-peer-host-username]')!.value = 'jackson'
+  form.dispatchEvent(new Event('submit'))
+  await settle()
+  assert.deepEqual(updates, [{ peerHostId: 'peer-1', displayName: '开发机', color: null }])
+  controller.dispose()
+})
+
 test('添加 Host 成功后自动关闭模态框，失败时保留以便修正', async () => {
   const dom = new FakeDocument()
   const calls: string[] = []
@@ -262,15 +298,15 @@ test('PeerHost 作用域请求使用统一 RPC 通道并兼容 HTTP 回退', asy
   ])
 })
 
-test('Host 返回的 PeerHost DTO 不包含完整路由地址或 fingerprint', () => {
+test('Host 返回的 PeerHost DTO 回传局域网地址但仍脱敏 fingerprint', () => {
   const value = toPeerHostClientRecord({
     id: 'peer-1', ownerUserId: 'user-1', displayName: '开发机',
     route: { kind: 'lan', baseUrl: 'http://192.168.1.20:13080', normalizedOrigin: 'http://192.168.1.20:13080' },
     status: 'ready', pluginId: '@jingyi0605/codingns4dsh', pluginVersion: '0.1.2', dshVersion: '0.1.6-alpha.2', apiCompatibility: 'peer-host-v1', fingerprint: 'sha256:full-fingerprint-secret', lastCheckedAt: 1, lastErrorCode: null, createdAt: 1, updatedAt: 1,
   })
-  assert.deepEqual(value.route, { kind: 'lan' })
+  assert.deepEqual(value.route, { kind: 'lan', baseUrl: 'http://192.168.1.20:13080' })
   assert.equal(value.fingerprint, 'sha256:f...cret')
-  assert.equal(JSON.stringify(value).includes('192.168.1.20'), false)
+  assert.equal(JSON.stringify(value).includes('192.168.1.20'), true)
   assert.equal(JSON.stringify(value).includes('full-fingerprint-secret'), false)
 })
 
@@ -590,6 +626,8 @@ class FakeElement {
 
   setAttribute(name: string, value: string): void { this.attributes.set(name, value) }
 
+  getAttribute(name: string): string | null { return this.attributes.get(name) ?? null }
+
   addEventListener(name: string, listener: (event: Event) => void): void {
     const listeners = this.listeners.get(name) ?? new Set<(event: Event) => void>()
     listeners.add(listener)
@@ -607,6 +645,15 @@ class FakeElement {
       if (nested !== null) return nested
     }
     return null
+  }
+
+  querySelectorAll<T extends FakeElement = FakeElement>(selector: string): T[] {
+    const matchesFound: T[] = []
+    for (const child of this.children) {
+      if (matches(child, selector)) matchesFound.push(child as T)
+      matchesFound.push(...child.querySelectorAll<T>(selector))
+    }
+    return matchesFound
   }
 
   find(predicate: (node: FakeElement) => boolean): FakeElement | null {

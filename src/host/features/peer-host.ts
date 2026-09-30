@@ -625,7 +625,8 @@ export function toPeerHostClientRecord(record: PeerHostRecord): PeerHostClientRe
   return {
     ...record,
     fingerprint: redactFingerprint(record.fingerprint),
-    route: record.route.kind === 'lan' ? { kind: 'lan' } : { kind: 'relay' },
+    // 局域网地址用于编辑窗口默认回填；PeerHostStore 已保证它是无凭据的 HTTP(S) Origin。
+    route: record.route.kind === 'lan' ? { kind: 'lan', baseUrl: record.route.baseUrl } : { kind: 'relay' },
   }
 }
 

@@ -399,7 +399,9 @@ function openEditForm(dom: Document, api: PeerHostManagementApi, record: PeerHos
   Object.assign(form.style, { display: 'flex', flexDirection: 'column', gap: '8px' })
   const name = input(dom, '名称', 'text', 'data-codingns-peer-host-name')
   name.input.value = record.displayName
-  const url = input(dom, 'Host 地址（重新输入）', 'url', 'data-codingns-peer-host-url')
+  const url = input(dom, 'Host 地址（可选）', 'url', 'data-codingns-peer-host-url')
+  url.input.required = false
+  if (record.route.kind === 'lan' && record.route.baseUrl !== undefined) url.input.value = record.route.baseUrl
   const username = input(dom, '目标 Host 用户名（可选）', 'text', 'data-codingns-peer-host-username')
   username.input.required = false
   username.input.autocomplete = 'username'
@@ -410,11 +412,11 @@ function openEditForm(dom: Document, api: PeerHostManagementApi, record: PeerHos
   const credentialNote = dom.createElement('small')
   credentialNote.setAttribute('data-codingns-peer-host-credential-note', '')
   Object.assign(credentialNote.style, { color: dshThemeColor.labelSecondary, fontSize: '11px', lineHeight: '1.5' })
-  credentialNote.textContent = '留空表示保持已保存的登录凭据不变；填写后会立即握手并登录，密码加密保存在当前 Host。'
+  credentialNote.textContent = '密码留空表示保持已保存的登录凭据不变；填写密码后会立即握手并登录。'
   const submit = actionButton(dom, '保存并连接', () => undefined)
   submit.type = 'submit'
   const note = dom.createElement('small')
-  note.textContent = record.route.kind === 'lan' ? '出于隐私保护，已保存地址不会回传到客户端，请重新输入。' : '中转路由由 Host 侧保存，当前不可在客户端修改。'
+  note.textContent = record.route.kind === 'lan' ? '地址已从记录中回填；留空表示保持当前地址不变。' : '中转路由由 Host 侧保存，当前不可在客户端修改。'
   form.append(name.wrapper, ...(record.route.kind === 'lan' ? [url.wrapper] : []), colorField.wrapper, username.wrapper, password.wrapper, credentialNote, note, submit)
   modal.body.append(form)
   void hydrateCredentialState(dom, api, record.id, credentialNote)
@@ -423,14 +425,13 @@ function openEditForm(dom: Document, api: PeerHostManagementApi, record: PeerHos
     event.preventDefault()
     if (!name.input.value.trim()) return
     const route = record.route.kind === 'lan'
-      ? { kind: 'lan' as const, baseUrl: url.input.value.trim(), normalizedOrigin: '' }
+      ? (url.input.value.trim() === '' ? undefined : { kind: 'lan' as const, baseUrl: url.input.value.trim(), normalizedOrigin: '' })
       : undefined
-    if (record.route.kind === 'lan' && !url.input.value.trim()) return
-    // 账号与密码必须成对提交：只填一半时明确报错，而不是静默忽略用户输入。
+    // 密码是一次性更新凭据的开关：密码留空时忽略用户名建议并保留原登录态。
     const account = username.input.value.trim()
     const secret = password.input.value
-    if ((account === '') !== (secret === '')) {
-      credentialNote.textContent = '用户名与密码需要同时填写；只想改名称或配色时请把两项都留空。'
+    if (secret !== '' && account === '') {
+      credentialNote.textContent = '填写密码时必须同时填写目标 Host 用户名；密码留空即可保持当前凭据。'
       return
     }
     submit.disabled = true
@@ -440,7 +441,7 @@ function openEditForm(dom: Document, api: PeerHostManagementApi, record: PeerHos
       displayName: name.input.value.trim(),
       color: colorField.value(),
       ...(route === undefined ? {} : { route }),
-      ...(account === '' ? {} : { username: account, password: secret }),
+      ...(secret === '' ? {} : { username: account, password: secret }),
     })
       .then(() => refreshList(panel, api))
       .then(() => modal.close())

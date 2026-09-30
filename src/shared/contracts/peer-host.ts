@@ -59,9 +59,9 @@ export interface PeerHostRecord {
   readonly updatedAt: number
 }
 
-/** Client 管理面板可见的 PeerHost 摘要；路由详情和所有凭据只留在 Host。 */
+/** Client 管理面板可见的 PeerHost 摘要；仅暴露局域网地址，凭据和中转路由详情仍留在 Host。 */
 export type PeerHostClientRoute =
-  | { readonly kind: 'lan' }
+  | { readonly kind: 'lan'; readonly baseUrl?: string }
   | { readonly kind: 'relay' }
 
 export type PeerHostClientRecord = Omit<PeerHostRecord, 'route'> & {

@@ -62,7 +62,7 @@ function readyRecord(id = 'peer-1', displayName = '开发机') {
     id,
     ownerUserId: 'user-1',
     displayName,
-    route: { kind: 'lan' },
+    route: { kind: 'lan', baseUrl: 'http://127.0.0.1:13080' },
     status: 'ready',
     pluginId: '@jingyi0605/codingns4dsh',
     pluginVersion: '0.2.0',
