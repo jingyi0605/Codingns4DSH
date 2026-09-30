@@ -37,7 +37,7 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
     ],
     ui: {
       label: '管理其他 DSH Host',
-      description: '聚合多个 Host 的工作区与会话；原生 Transport shim 随插件安装。',
+      description: '聚合多个 Host 会话',
       order: 50,
       defaultOpen: false,
     },

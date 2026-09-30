@@ -14,7 +14,7 @@ export const fileManagementFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     ui: {
       label: '文件管理增强',
-      description: '为 DSH 文件侧栏增加操作菜单，并支持编辑和保存常用文本文件。',
+      description: '增强文件侧栏操作',
       labelKey: 'feature.fileManagement.label',
       descriptionKey: 'feature.fileManagement.description',
       order: 40,

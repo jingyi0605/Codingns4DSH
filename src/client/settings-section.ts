@@ -132,6 +132,7 @@ interface FeatureCardProps {
 /** 通用功能模块卡片：标题栏开关由 descriptor.ui 决定，内容由模块自己提供。 */
 function FeatureCard({ entry, snapshot, services, restartStates, notify }: FeatureCardProps): ReactElement {
   const { module, ui } = entry
+  const [open, setOpen] = useState(ui.defaultOpen === true)
   const t = useCodingNsTranslator(services.locale)
   const versionCompatible = isFeatureDshVersionCompatible(module.descriptor, services.dshVersion)
   const requestedEnabled = isFeatureEnabled(module.descriptor, snapshot.value)
@@ -166,15 +167,32 @@ function FeatureCard({ entry, snapshot, services, restartStates, notify }: Featu
   return createElement(
     'details',
     {
-      defaultOpen: ui.defaultOpen === true,
+      open,
+      onToggle: (event: { currentTarget: { open: boolean } }) => setOpen(event.currentTarget.open),
       style: dshSettingsCardStyle,
     },
     createElement('summary', {
       style: dshSettingsSummaryStyle,
     },
       createElement('span', { style: dshSettingsSummaryTextStyle },
-        createElement('span', { style: dshSettingsSummaryLabelStyle }, t(ui.labelKey ?? ui.label)),
-        createElement('span', { style: dshSettingsSummaryDescriptionStyle }, t(ui.descriptionKey ?? ui.description)),
+        createElement('span', {
+          'aria-hidden': true,
+          style: {
+            width: 14,
+            height: 18,
+            flex: '0 0 14px',
+            color: dshThemeColor.labelTertiary,
+            fontSize: 18,
+            lineHeight: '18px',
+            transform: open ? 'rotate(90deg)' : 'none',
+            transformOrigin: 'center',
+            transition: 'transform 160ms ease',
+          },
+        }, '›'),
+        createElement('span', { style: { display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 } },
+          createElement('span', { style: dshSettingsSummaryLabelStyle }, t(ui.labelKey ?? ui.label)),
+          createElement('span', { style: dshSettingsSummaryDescriptionStyle }, t(ui.descriptionKey ?? ui.description)),
+        ),
       ),
       createElement(FeatureSwitch, {
         label: t(ui.labelKey ?? ui.label),

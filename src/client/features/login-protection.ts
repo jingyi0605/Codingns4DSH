@@ -11,7 +11,7 @@ export const loginProtectionFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     ui: {
       label: '登录保护',
-      description: '为局域网和中继访问设置统一的本地账号验证，本机回环地址始终放行。',
+      description: '统一账号保护访问',
       labelKey: 'feature.loginProtection.label',
       descriptionKey: 'feature.loginProtection.description',
       order: 15,

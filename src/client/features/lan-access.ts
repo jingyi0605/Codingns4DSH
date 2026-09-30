@@ -22,7 +22,7 @@ export const lanAccessFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     ui: {
       label: '局域网访问DSH',
-      description: '通过局域网 IP 访问 DSH，自动补齐 crypto.randomUUID，并将监听端口转发到当前 DSH Web。',
+      description: '通过局域网访问 DSH',
       labelKey: 'feature.lanAccess.label',
       descriptionKey: 'feature.lanAccess.description',
       order: 10,

@@ -25,7 +25,7 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     ui: {
       label: '外部Agent集成',
-      description: '查看外部 Agent 的安装状态、版本、命令路径和可用模型，并单独启用或停用。',
+      description: '管理外部 Agent',
       labelKey: 'feature.cliAdapters.label',
       descriptionKey: 'feature.cliAdapters.description',
       order: 30,

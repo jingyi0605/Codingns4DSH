@@ -1143,7 +1143,7 @@ const menuItemStyle: CSSProperties = { padding: '6px 8px' }
 export const gitManagementFeature: CodingNsClientFeatureModule = {
   descriptor: {
     name: 'gitManagement', version: '0.1.0', enabledByDefault: true, dependencies: [], runtime: 'client',
-    ui: { label: 'Git 仓库管理', description: '在右侧 Sidebar 标签页查看提交、暂存文件、未提交文件和 Git 版本历史。', order: 40, defaultOpen: false },
+    ui: { label: 'Git 仓库管理', description: '查看改动并管理提交', order: 40, defaultOpen: false },
   },
   start(context) {
     const uiContext = context.services.uiContext

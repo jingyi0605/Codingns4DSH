@@ -28,7 +28,7 @@ export const reverseProxyFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     ui: {
       label: '中转访问服务',
-      description: '通过 Codingns4DSH 独立设备隧道访问 Host。',
+      description: '通过中继访问 Host',
       labelKey: 'feature.reverseProxy.label',
       descriptionKey: 'feature.reverseProxy.description',
       order: 20,

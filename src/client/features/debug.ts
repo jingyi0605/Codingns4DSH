@@ -11,7 +11,7 @@ export const debugFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     ui: {
       label: '工作区调试',
-      description: '按 Workspace 配置启动终端、检查端口并访问指定服务。',
+      description: '启动终端并检查服务',
       order: 35,
       defaultOpen: true,
     },

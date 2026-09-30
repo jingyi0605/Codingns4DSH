@@ -12,7 +12,7 @@ export const terminalEnhancementFeature: CodingNsClientFeatureModule = {
     activation: 'restart',
     ui: {
       label: '终端增强',
-      description: '配置持久终端的默认 shell 与插件终端外观。启用和禁用均需重启 DSH。',
+      description: '配置终端与默认 Shell',
       labelKey: 'feature.terminal.label',
       descriptionKey: 'feature.terminal.description',
       order: 40,

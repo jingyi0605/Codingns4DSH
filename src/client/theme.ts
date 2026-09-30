@@ -63,20 +63,16 @@ export const dshButtonStyle: CSSProperties = {
   border: `1px solid ${dshThemeColor.border}`,
 }
 
-/** Codingns4DSH 设置页共享外壳：保持紧凑宽度，避免挤压宿主设置导航。 */
+/** Codingns4DSH 设置页共享外壳：占满宿主内容区，避免重复留白。 */
 export const dshSettingsPageStyle: CSSProperties = {
   ...dshFormRootStyle,
   display: 'flex',
   flexDirection: 'column',
-  gap: 20,
+  gap: 16,
   width: '100%',
-  maxWidth: 900,
-  margin: '0 auto',
-  padding: '20px clamp(16px, 3vw, 32px) 28px',
-  // 独立窗口（PWA）下把底部与左右让给系统安全区，避免被 Home 指示条与刘海遮挡。
-  paddingLeft: 'max(clamp(16px, 3vw, 32px), env(safe-area-inset-left, 0px))',
-  paddingRight: 'max(clamp(16px, 3vw, 32px), env(safe-area-inset-right, 0px))',
-  paddingBottom: 'calc(28px + env(safe-area-inset-bottom, 0px))',
+  maxWidth: 'none',
+  margin: 0,
+  padding: 0,
   boxSizing: 'border-box',
 }
 
@@ -117,9 +113,9 @@ export const dshSettingsSummaryStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  gap: 14,
+  gap: 12,
   minHeight: 58,
-  padding: '12px 16px',
+  padding: '12px 14px',
   boxSizing: 'border-box',
   cursor: 'pointer',
   listStyle: 'none',
@@ -127,9 +123,10 @@ export const dshSettingsSummaryStyle: CSSProperties = {
 
 export const dshSettingsSummaryTextStyle: CSSProperties = {
   display: 'flex',
-  flexDirection: 'column',
-  gap: 3,
+  alignItems: 'center',
+  gap: 8,
   minWidth: 0,
+  flex: '1 1 auto',
 }
 
 export const dshSettingsSummaryLabelStyle: CSSProperties = {
