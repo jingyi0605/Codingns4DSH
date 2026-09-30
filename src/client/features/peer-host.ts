@@ -7,16 +7,18 @@ import { DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL, readDshPeerHostPrebootShimMode, read
 import type { CodingNsTransportHooks } from '../../shared/contracts/transport.js'
 import { dshSettingsNoteStyle, dshThemeColor } from '../theme.js'
 import type { AggregateHostResult, HostScope } from '../../shared/contracts/peer-host.js'
-import { createVirtualSessionId, createVirtualWorkspaceId } from '../../shared/index.js'
-import { isDshNativeRemoteMethod } from '../../host/modules/peer-host/peer-host-native-protocol.js'
+import { createVirtualSessionId, createVirtualWorkspaceId, parseVirtualSessionId } from '../../shared/index.js'
+import { decodeNativeResponseBytes, isDshNativeRemoteMethod } from '../../host/modules/peer-host/peer-host-native-protocol.js'
 import { createPeerHostNativeProjection, type PeerHostNativeProjection } from '../peer-host-native-projection.js'
 import { installPeerHostNativeStoreProjection, refreshPeerHostNativeSessions } from '../peer-host-native-store-projection.js'
 import { startPeerHostWorkspaceTag } from '../peer-host-workspace-tag.js'
 import { startPeerHostWorkspaceTab } from '../peer-host-workspace-tab.js'
-import { registerPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
+import { registerPeerHostAggregateRefresh, requestPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
 const PEER_HOST_AGGREGATE_REFRESH_MS = 30_000
+/** 新建会话尚未出现在聚合摘要时，临时保留其远端作用域的最长时间。 */
+const PEER_HOST_PENDING_SESSION_SCOPE_TTL_MS = 30_000
 
 /** PeerHost Client 模块的边界声明；远端凭据和目标连接始终由 Host 侧持有。 */
 export const peerHostFeature: CodingNsClientFeatureModule = {
@@ -163,13 +165,56 @@ export function createPeerHostPageTransport(
       while (!(signal?.aborted ?? false)) {
         const next = asRecord(await codingNsCall('peerHost/nativeStreamNext', { streamId, scope }, signal))
         if (next?.done === true) return
-        yield next?.value
+        yield decodeNativeResponseBytes(next?.value)
       }
       signal?.throwIfAborted()
     } finally {
       await codingNsCall('peerHost/nativeStreamClose', { streamId, scope }).catch(() => undefined)
     }
   })()
+  /**
+   * 记录刚在远端新建的会话作用域。
+   *
+   * 新会话要等下一轮聚合刷新才会进入投影，但 DSH 在 `session/create` 返回后立刻
+   * 用同一个虚拟会话 ID 发起 `session/follow`。不在这里登记，作用域查找会落空并
+   * 退回本机 Gateway，表现为"会话建好了却打不开"。
+   */
+  interface PendingSessionScope {
+    readonly scope: HostScope
+    readonly expiresAt: number
+    readonly timer: ReturnType<typeof setTimeout>
+  }
+  const pendingSessionScopes = new Map<string, PendingSessionScope>()
+  const forgetPendingSession = (sessionId: string): PendingSessionScope | undefined => {
+    const pending = pendingSessionScopes.get(sessionId)
+    if (pending === undefined) return undefined
+    clearTimeout(pending.timer)
+    pendingSessionScopes.delete(sessionId)
+    return pending
+  }
+  const rememberCreatedSession = (scope: HostScope, value: unknown): void => {
+    const sessionId = asRecord(value)?.sessionId
+    if (typeof sessionId !== 'string') return
+    const parsed = parseVirtualSessionId(sessionId)
+    if (parsed === null) return
+    // 只接受目标 Host 自己编码回来的虚拟 ID，避免把别的 Host 的会话挂到当前作用域。
+    if (parsed.hostId !== (scope.targetHostId ?? scope.hostId)) return
+    const created: HostScope = { ...scope, sessionId: parsed.sessionId }
+    const expiresAt = Date.now() + PEER_HOST_PENDING_SESSION_SCOPE_TTL_MS
+    const previous = forgetPendingSession(sessionId)
+    if (previous !== undefined && scopes.get(sessionId) === previous.scope) scopes.delete(sessionId)
+    const timer = setTimeout(() => {
+      const pending = pendingSessionScopes.get(sessionId)
+      if (pending === undefined || pending.expiresAt !== expiresAt) return
+      pendingSessionScopes.delete(sessionId)
+      // 聚合确认后 scopes 会持有新的对象；只清理仍由 pending 持有的旧作用域。
+      if (scopes.get(sessionId) === pending.scope) scopes.delete(sessionId)
+    }, PEER_HOST_PENDING_SESSION_SCOPE_TTL_MS)
+    // Node 测试进程不应因一个未确认的远端会话被定时器阻塞退出；浏览器没有 unref 时照常运行。
+    ;(timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.()
+    pendingSessionScopes.set(sessionId, { scope: created, expiresAt, timer })
+    scopes.set(sessionId, created)
+  }
   const hooks: CodingNsTransportHooks = {
     rpc: async <TResponse = unknown>({ method, payload, signal }: { method: string; payload: unknown; signal?: AbortSignal }): Promise<TResponse> => {
       const value = asRecord(payload)
@@ -181,7 +226,15 @@ export function createPeerHostPageTransport(
           // DSH 的 client 契约要求 unary 结果是 `{ok, value}` / `{ok:false, error}` 信封：
           // 返回裸值会让网关在 `rebuiltFailure(result.error)` 读 undefined.code 而崩成 carrierFailure。
           try {
-            return { ok: true, value: await codingNsCall('peerHost/native', { method, payload: body, scope }, signal) } as TResponse
+            const created = decodeNativeResponseBytes(await codingNsCall('peerHost/native', { method, payload: body, scope }, signal))
+            if (method === 'session/create' || method === 'session/fork') {
+              rememberCreatedSession(scope, created)
+              // 侧栏按聚合摘要里的 workspace.sessionIds 归组，新会话只有在刷新后的摘要里
+              // 才会挂到远端工作区。不立刻刷新，它会先落在"未分组/本机默认工作区"，
+              // 看起来像新建到了本机。刷新失败不影响创建结果。
+              void Promise.resolve(requestPeerHostAggregateRefresh()).catch(() => undefined)
+            }
+            return { ok: true, value: created } as TResponse
           } catch (error) {
             const code = (error as { code?: unknown }).code
             return {
@@ -237,6 +290,20 @@ export function createPeerHostPageTransport(
             scopes.set(createVirtualSessionId(virtualHostId, session.scope.sessionId), { ...workspaceScope, sessionId: session.scope.sessionId })
           }
         }
+      }
+      // 刚创建、尚未进入聚合的会话要保住作用域；聚合里已存在的以聚合为准。
+      // 一旦聚合确认，pending 记录立即清掉；之后远端删除会随下一次聚合重建自然移除。
+      const now = Date.now()
+      for (const [sessionId, pending] of [...pendingSessionScopes]) {
+        if (scopes.has(sessionId)) {
+          forgetPendingSession(sessionId)
+          continue
+        }
+        if (pending.expiresAt <= now) {
+          forgetPendingSession(sessionId)
+          continue
+        }
+        scopes.set(sessionId, pending.scope)
       }
       return projection.setAggregate(aggregate)
     },

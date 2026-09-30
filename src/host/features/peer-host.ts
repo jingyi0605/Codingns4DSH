@@ -34,7 +34,7 @@ import { createDshNativeSummarySource } from '../modules/peer-host/dsh-native-su
 import { createPeerHostRemoteSummarySource, readPeerHostRemoteWorkspaceCandidates, type PeerHostRemoteWorkspaceCandidate } from '../modules/peer-host/peer-host-remote-summary-source.js'
 import { callPeerNativeRpc, openPeerNativeStream, readNativeRpcEnvelope } from '../modules/peer-host/peer-host-native-transport.js'
 import { createAggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
-import { isDshNativeRemoteMethod, rewriteNativeRequestIds, rewriteNativeResponseIds } from '../modules/peer-host/peer-host-native-protocol.js'
+import { encodeNativeResponseBytes, isDshNativeRemoteMethod, rewriteNativeRequestIds, rewriteNativeResponseIds } from '../modules/peer-host/peer-host-native-protocol.js'
 
 /** 原生 Remote 流句柄的存活窗口；每次轮询续期，超时仍未再被轮询即回收。 */
 const NATIVE_STREAM_TTL_MS = 600_000
@@ -355,7 +355,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             parseScope(input.scope)
             // 必须经过 DSH 自己的 Typert Gateway 解码线上载荷，不能直接调用 Controller。
             if (dshNativeDispatch === undefined) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', '当前 Host 未提供 DSH Typert Gateway')
-            return await dshNativeDispatch.rpc(method, input.payload, (rpcContext as { signal?: AbortSignal } | undefined)?.signal)
+            return encodeNativeResponseBytes(await dshNativeDispatch.rpc(method, input.payload, (rpcContext as { signal?: AbortSignal } | undefined)?.signal))
           }
           case 'nativeStream': {
             const method = requiredString(input.method, 'method')
@@ -405,7 +405,10 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             nativeStreams.set(streamId, { ...stream, expiresAt: Date.now() + NATIVE_STREAM_TTL_MS })
             const next = await stream.iterator.next()
             if (next.done === true) nativeStreams.delete(streamId)
-            return { done: next.done === true, ...(next.done === true ? {} : { value: next.value }) }
+            return {
+              done: next.done === true,
+              ...(next.done === true ? {} : { value: encodeNativeResponseBytes(next.value) }),
+            }
           }
           case 'nativeStreamClose': {
             const streamId = requiredString(input.streamId, 'streamId')
@@ -421,7 +424,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             const rewritten = rewriteNativeRequestIds(method, input.payload, workspaceRegistry)
             const value = await aggregatedTransport.rpc({ scope, method, payload: rewritten })
             const virtualHostId = scope.targetHostId ?? scope.hostId
-            return rewriteNativeResponseIds(value, (id) => createVirtualWorkspaceId(virtualHostId, id), (id) => createVirtualSessionId(virtualHostId, id))
+            return encodeNativeResponseBytes(rewriteNativeResponseIds(value, (id) => createVirtualWorkspaceId(virtualHostId, id), (id) => createVirtualSessionId(virtualHostId, id)))
           }
           default: throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `未知 PeerHost RPC: peerHost/${action}`)
         }

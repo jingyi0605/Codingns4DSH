@@ -35,6 +35,8 @@ export const DSH_NATIVE_REMOTE_METHODS = Object.freeze([
   'session/selectModel',
   'session/updateQueue',
   'session/workspacePathApplications',
+  'officeToPdf/generation',
+  'officeToPdf/render',
   'workspaceFiles/changes',
   'workspaceFiles/list',
   'workspaceFiles/read',
@@ -115,6 +117,9 @@ export function rewriteNativeResponseIds(
 }
 
 function rewriteValue(value: unknown, map: (key: string, value: unknown, parentKey?: string) => unknown, key = '', parentKey?: string): unknown {
+  // 二进制字段（例如 workspaceFiles/readBytes.data）属于 Remote 结果的一部分，
+  // 不能按普通对象展开，否则 Uint8Array 会变成带数字键的对象并在 JSON 边界丢失类型。
+  if (value instanceof Uint8Array) return value
   if (Array.isArray(value)) return value.map((item) => rewriteValue(item, map, key, parentKey))
   if (typeof value !== 'object' || value === null) return map(key, value)
   const result: Record<string, unknown> = {}
@@ -125,6 +130,56 @@ function rewriteValue(value: unknown, map: (key: string, value: unknown, parentK
       : mapped
   }
   return result
+}
+
+/** PeerHost 的 JSON RPC 不能直接传输 Uint8Array，使用显式标记保留二进制结果。 */
+const NATIVE_BYTES_MARKER = '__codingnsNativeBytes'
+
+export function encodeNativeResponseBytes(value: unknown): unknown {
+  if (value instanceof Uint8Array) return { [NATIVE_BYTES_MARKER]: encodeBase64(value) }
+  if (Array.isArray(value)) return value.map(encodeNativeResponseBytes)
+  if (typeof value !== 'object' || value === null) return value
+  const result: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(value)) result[key] = encodeNativeResponseBytes(child)
+  return result
+}
+
+export function decodeNativeResponseBytes(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(decodeNativeResponseBytes)
+  if (typeof value !== 'object' || value === null) return value
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).length === 1 && typeof record[NATIVE_BYTES_MARKER] === 'string') {
+    return decodeBase64(record[NATIVE_BYTES_MARKER] as string)
+  }
+  const result: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(record)) result[key] = decodeNativeResponseBytes(child)
+  return result
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  const browserEncoder = (globalThis as { btoa?: (value: string) => string }).btoa
+  if (typeof browserEncoder === 'function') return browserEncoder(binary)
+  const nodeBuffer = (globalThis as { Buffer?: { from(value: Uint8Array): { toString(encoding: string): string } } }).Buffer
+  if (nodeBuffer !== undefined) return nodeBuffer.from(bytes).toString('base64')
+  throw new Error('当前运行时不支持 Base64 编码')
+}
+
+function decodeBase64(value: string): Uint8Array {
+  const browserDecoder = (globalThis as { atob?: (value: string) => string }).atob
+  if (typeof browserDecoder === 'function') {
+    const binary = browserDecoder(value)
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+    return bytes
+  }
+  const nodeBuffer = (globalThis as { Buffer?: { from(value: string, encoding: string): { [index: number]: number; length: number } } }).Buffer
+  if (nodeBuffer !== undefined) {
+    const buffer = nodeBuffer.from(value, 'base64')
+    return Uint8Array.from({ length: buffer.length }, (_, index) => buffer[index] ?? 0)
+  }
+  throw new Error('当前运行时不支持 Base64 解码')
 }
 
 function isWorkspaceField(key: string): boolean {

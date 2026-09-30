@@ -137,7 +137,8 @@ function projectSession(
     sessionId: virtualSessionId,
     updatedAt: session.updatedAt,
     running: session.status === 'running' || session.status === 'active',
-    blank: false,
+    // 旧缓存摘要没有 blank 时按正式会话兼容；原生远端摘要会提供真实值。
+    blank: session.blank === true,
     cwd,
     // DSH 列表行的标题只读投影值：cached 块只填没有原生水位的键，适合跨 Host 摘要。
     projections: { kind: 'cached', values: { title: session.title } },
@@ -173,6 +174,7 @@ function sameSessions(previous: readonly PeerHostVirtualSessionSummary[], next: 
       && session.sessionId === candidate.sessionId
       && session.updatedAt === candidate.updatedAt
       && session.running === candidate.running
+      && session.blank === candidate.blank
       && session.projections.values.title === candidate.projections.values.title
   })
 }

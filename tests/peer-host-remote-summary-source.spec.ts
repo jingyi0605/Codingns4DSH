@@ -22,10 +22,10 @@ test('远端摘要用 workspace/follow 首帧和 session/list 组装工作区会
         calls.push(`${request.method}:${String(request.scope.targetHostId)}:${JSON.stringify(request.payload)}`)
         return {
           items: [
-            { sessionId: 'session-a', cwd: '/Users/dev/project-a', running: true, updatedAt: 42, projections: { values: { title: '修复登录问题' } } },
-            { sessionId: 'session-b', cwd: 'C:\\work\\project-b', updatedAt: 11 },
-            { sessionId: 'session-archived', cwd: '/Users/dev/project-a', updatedAt: 7 },
-            { sessionId: 'session-subagent', cwd: '/Users/dev/project-a', updatedAt: 8, origin: 'subagent' },
+            { sessionId: 'session-a', cwd: '/Users/dev/project-a', running: true, updatedAt: 42, blank: false, projections: { values: { title: '修复登录问题' } } },
+            { sessionId: 'session-b', cwd: 'C:\\work\\project-b', updatedAt: 11, blank: true },
+            { sessionId: 'session-archived', cwd: '/Users/dev/project-a', updatedAt: 7, blank: false },
+            { sessionId: 'session-subagent', cwd: '/Users/dev/project-a', updatedAt: 8, blank: true, origin: 'subagent' },
           ],
         }
       },
@@ -58,12 +58,13 @@ test('远端摘要用 workspace/follow 首帧和 session/list 组装工作区会
     displayName: '项目 A',
     path: '/Users/dev/project-a',
     sessions: [
-      { sessionId: 'session-a', title: '修复登录问题', status: 'running', updatedAt: 42 },
-      { sessionId: 'session-b', title: 'project-b', status: 'idle', updatedAt: 11 },
+      { sessionId: 'session-a', title: '修复登录问题', status: 'running', updatedAt: 42, blank: false },
+      // 临时占位不伪造 cwd 目录名；原生 UI 会根据 blank 显示“新建会话”。
+      { sessionId: 'session-b', title: '', status: 'idle', updatedAt: 11, blank: true },
     ],
     // 归档会话单独归类：原生侧栏默认隐藏，但归档入口与取消归档路由需要它们。
     archivedSessions: [
-      { sessionId: 'session-archived', title: 'project-a', status: 'idle', updatedAt: 7 },
+      { sessionId: 'session-archived', title: 'project-a', status: 'idle', updatedAt: 7, blank: false },
     ],
   }])
   assert.deepEqual(calls.sort(), [
@@ -86,7 +87,7 @@ test('远端摘要对缺失字段和空 baseline 保持容错', async () => {
     displayName: 'workspace-b',
     // 目标未上报 path 时退回 workspaceId，保证原生视图字段完整。
     path: 'workspace-b',
-    sessions: [{ sessionId: 'missing-session', title: 'missing-session', status: 'idle', updatedAt: 0 }],
+    sessions: [{ sessionId: 'missing-session', title: 'missing-session', status: 'idle', updatedAt: 0, blank: false }],
   }])
 
   const empty = createPeerHostRemoteSummarySource({

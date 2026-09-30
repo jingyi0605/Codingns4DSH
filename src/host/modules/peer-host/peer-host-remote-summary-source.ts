@@ -129,6 +129,7 @@ function buildRemoteSummary(
       if (readString(session, ['origin']) === 'subagent') continue
       const entry: AggregateSessionSource = {
         sessionId,
+        blank: session?.blank === true,
         title: readSessionTitle(session, sessionId),
         status: session?.running === true ? 'running' : 'idle',
         updatedAt: readTime(session),
@@ -148,6 +149,8 @@ function buildRemoteSummary(
 }
 
 function readSessionTitle(session: Record<string, unknown> | null, sessionId: string): string {
+  // 空白会话的标题由 DSH 原生 UI 显示为“新会话”，不能用 cwd 伪造正式标题。
+  if (session?.blank === true) return ''
   // session/list 把持久标题放在 projections.values.title；没有投影时退回目录名。
   const projected = readString(asRecord(asRecord(session?.projections)?.values), ['title'])
   if (projected !== null) return projected

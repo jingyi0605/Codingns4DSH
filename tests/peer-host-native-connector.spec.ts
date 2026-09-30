@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createPeerHostPageTransport } from '../data/build/dist/client/features/peer-host.js'
+import { registerPeerHostAggregateRefresh } from '../data/build/dist/client/peer-host-aggregate-refresh.js'
 import { createVirtualSessionId, createVirtualWorkspaceId } from '../data/build/dist/shared/index.js'
 
 const aggregate = [{
@@ -216,6 +217,95 @@ function installFakeWebSocket(script: (socket: { emit: (type: string, event: unk
     },
   }
 }
+
+test('页面 connector 在远端新建会话后立刻按虚拟 ID 路由后续 unary 与 stream', async () => {
+  const paths: string[] = []
+  const previousFetch = globalThis.fetch
+  let nextCount = 0
+  const createdSessionId = createVirtualSessionId('peer-1', 'session-new')
+  globalThis.fetch = (async (input) => {
+    const path = new URL(String(input), 'http://dsh.test').pathname
+    paths.push(path)
+    if (path.endsWith('/peerHost/native')) return response({ sessionId: createdSessionId })
+    if (path.endsWith('/nativeStream')) return response({ streamId: 'stream-new' })
+    if (path.endsWith('/nativeStreamNext')) {
+      nextCount += 1
+      return response(nextCount === 1 ? { done: false, value: { type: 'snapshot' } } : { done: true })
+    }
+    if (path.endsWith('/nativeStreamClose')) return response({ closed: true })
+    throw new Error(`unexpected path: ${path}`)
+  }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    // 聚合里没有该工作区的任何会话，模拟"远端工作区里还没有会话"。
+    transport.setAggregate([{ ...aggregate[0]!, workspaces: [{ ...aggregate[0]!.workspaces[0]!, sessions: [] }] }])
+    const created = await transport.hooks.rpc?.({
+      method: 'session/create',
+      payload: { channel: '/api', payload: { args: { request: { workspaceId: createVirtualWorkspaceId('peer-1', 'workspace-1') } } } },
+    })
+    assert.deepEqual(created, { ok: true, value: { sessionId: createdSessionId } })
+    assert.equal(paths.at(-1), '/codingns/peerHost/native')
+
+    paths.length = 0
+    const page = await transport.hooks.rpc?.({
+      method: 'session/page',
+      payload: { channel: '/api', payload: { args: { request: { address: { kind: 'session', sessionId: createdSessionId } } } } },
+    })
+    assert.deepEqual(page, { ok: true, value: { sessionId: createdSessionId } })
+    assert.deepEqual(paths, ['/codingns/peerHost/native'])
+
+    paths.length = 0
+    const stream = transport.hooks.openStream?.({
+      method: 'session/follow',
+      payload: { channel: '/api', payload: { args: { request: { address: { kind: 'session', sessionId: createdSessionId } } } } },
+    })
+    assert.ok(stream)
+    const values: unknown[] = []
+    for await (const value of stream) values.push(value)
+    assert.deepEqual(values, [{ type: 'snapshot' }])
+    assert.deepEqual(paths, [
+      '/codingns/peerHost/nativeStream',
+      '/codingns/peerHost/nativeStreamNext',
+      '/codingns/peerHost/nativeStreamNext',
+      '/codingns/peerHost/nativeStreamClose',
+    ])
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('页面 connector 在远端新建会话后立刻请求聚合刷新，失败时不请求', async () => {
+  const previousFetch = globalThis.fetch
+  let refreshCount = 0
+  let fail = false
+  const createdSessionId = createVirtualSessionId('peer-1', 'session-new')
+  globalThis.fetch = (async (input) => {
+    const path = new URL(String(input), 'http://dsh.test').pathname
+    if (!path.endsWith('/peerHost/native')) throw new Error(`unexpected path: ${path}`)
+    if (fail) {
+      return new Response(JSON.stringify({ result: { ok: false, error: { code: 'gateway/internal', message: '目标 Host 不可达' } } }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    return response({ sessionId: createdSessionId })
+  }) as typeof fetch
+  const dispose = registerPeerHostAggregateRefresh(() => { refreshCount += 1 })
+  try {
+    const transport = createPeerHostPageTransport()
+    // 聚合里没有该工作区的任何会话：只有刷新摘要，侧栏才能把新会话挂到远端工作区。
+    transport.setAggregate([{ ...aggregate[0]!, workspaces: [{ ...aggregate[0]!.workspaces[0]!, sessions: [] }] }])
+    const payload = { channel: '/api', payload: { args: { request: { workspaceId: createVirtualWorkspaceId('peer-1', 'workspace-1') } } } }
+    const created = await transport.hooks.rpc?.({ method: 'session/create', payload })
+    assert.deepEqual(created, { ok: true, value: { sessionId: createdSessionId } })
+    assert.equal(refreshCount, 1)
+
+    fail = true
+    const failed = await transport.hooks.rpc?.({ method: 'session/create', payload })
+    assert.equal((failed as { ok?: boolean } | undefined)?.ok, false)
+    assert.equal(refreshCount, 1)
+  } finally {
+    dispose()
+    globalThis.fetch = previousFetch
+  }
+})
 
 test('页面 connector 把虚拟会话并入原生 session/list 结果', async () => {
   const previousFetch = globalThis.fetch

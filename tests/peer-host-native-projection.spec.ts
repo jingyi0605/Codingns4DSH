@@ -8,10 +8,12 @@ interface SessionShape {
   readonly title: string
   readonly status: string
   readonly updatedAt: number
+  /** DSH 的临时“新建会话”占位标记。 */
+  readonly blank: boolean
 }
 
 function remoteHost(
-  sessions: readonly SessionShape[] = [{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 10 }],
+  sessions: readonly SessionShape[] = [{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 10, blank: false }],
   archivedSessions: readonly SessionShape[] = [],
 ): Record<string, unknown> {
   return {
@@ -41,6 +43,7 @@ function toSessionRecord(session: SessionShape): Record<string, unknown> {
     title: session.title,
     status: session.status,
     updatedAt: session.updatedAt,
+    blank: session.blank,
   }
 }
 
@@ -64,6 +67,7 @@ function localHost(): Record<string, unknown> {
         title: '本机会话',
         status: 'idle',
         updatedAt: 5,
+        blank: false,
       }],
     }],
   }
@@ -97,8 +101,8 @@ test('投影只输出虚拟 ID、标题与运行态，本机资源不参与投�
 test('归档会话保留成员槽位与标题，但进入独立的归档集合', () => {
   const projection = createPeerHostNativeProjection()
   projection.setAggregate([remoteHost(
-    [{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 10 }],
-    [{ sessionId: 'session-archived', title: '归档会话', status: 'idle', updatedAt: 4 }],
+    [{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 10, blank: false }],
+    [{ sessionId: 'session-archived', title: '归档会话', status: 'idle', updatedAt: 4, blank: false }],
   )] as never)
 
   const workspace = projection.workspaces()[0]
@@ -124,10 +128,18 @@ test('快照变化才通知订阅者，重复快照返回未变化', () => {
   assert.equal(projection.setAggregate([remoteHost()] as never), false)
   assert.equal(notified, 1)
 
-  assert.equal(projection.setAggregate([remoteHost([{ sessionId: 'session-1', title: '远端会话', status: 'running', updatedAt: 30 }])] as never), true)
+  assert.equal(projection.setAggregate([remoteHost([{ sessionId: 'session-1', title: '远端会话', status: 'running', updatedAt: 30, blank: false }])] as never), true)
   assert.equal(notified, 2)
   assert.equal(projection.sessions()[0]?.running, true)
   assert.equal(projection.workspaces()[0]?.updatedAt, new Date(30).toISOString())
+
+  // blank 是列表语义的一部分：新建后先是临时占位，首次交互后才变成普通会话。
+  assert.equal(projection.setAggregate([remoteHost([{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 31, blank: true }])] as never), true)
+  assert.equal(notified, 3)
+  assert.equal(projection.sessions()[0]?.blank, true)
+  assert.equal(projection.setAggregate([remoteHost([{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 32, blank: false }])] as never), true)
+  assert.equal(notified, 4)
+  assert.equal(projection.sessions()[0]?.blank, false)
 
   assert.equal(projection.setAggregate([localHost()] as never), true)
   assert.deepEqual(projection.workspaces(), [])
@@ -135,5 +147,5 @@ test('快照变化才通知订阅者，重复快照返回未变化', () => {
 
   unsubscribe()
   projection.setAggregate([remoteHost()] as never)
-  assert.equal(notified, 3)
+  assert.equal(notified, 5)
 })

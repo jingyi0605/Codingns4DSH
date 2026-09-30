@@ -51,9 +51,10 @@ function buildSummary(workspaces: readonly unknown[], sessions: readonly unknown
       if (sessionId === null) return []
       return [{
         sessionId,
-        title: readText(value, ['title', 'name', 'displayName']) ?? sessionId,
+        title: value?.blank === true ? '' : readText(value, ['title', 'name', 'displayName']) ?? sessionId,
         status: readText(value, ['status', 'state']) ?? 'unknown',
         updatedAt: readTimestamp(value, ['updatedAt', 'updated', 'lastUpdatedAt', 'createdAt']),
+        blank: value?.blank === true,
       }]
     }),
   }))

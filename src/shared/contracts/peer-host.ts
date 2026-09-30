@@ -100,6 +100,8 @@ export interface PeerHostSessionRecord {
   readonly title: string
   readonly status: string
   readonly updatedAt: number
+  /** DSH 原生会话是否仍处于待首条消息的临时状态。 */
+  readonly blank: boolean
 }
 
 /** 当前 Host 和 PeerHost 统一使用的工作区摘要。 */

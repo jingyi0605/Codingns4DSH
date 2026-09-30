@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   DSH_NATIVE_REMOTE_METHODS,
+  decodeNativeResponseBytes,
+  encodeNativeResponseBytes,
   isDshNativeRemoteMethod,
   rewriteNativeRequestIds,
   rewriteNativeResponseIds,
@@ -23,6 +25,8 @@ test('DSH 原生 Workspace/Session Remote 方法使用正式命名空间', () =>
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('session/follow'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('session/page'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('session/prompt'))
+  assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('officeToPdf/generation'))
+  assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('officeToPdf/render'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('workspaceFiles/changes'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('terminal/environment'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('terminal/follow'))
@@ -97,4 +101,19 @@ test('原生响应中的列表、header 和 projection key 可重新编码为虚
     header: { id: 'codingns:peer-host:v1:session:peer-a:remote-session', parentSession: 'codingns:peer-host:v1:session:peer-a:remote-parent' },
     projections: { 'remote-session': { sessionId: 'codingns:peer-host:v1:session:peer-a:remote-session' } },
   })
+})
+
+test('原生响应改写不会展开 Uint8Array，并可安全穿过 PeerHost JSON 边界', () => {
+  const bytes = new Uint8Array([0, 45, 60, 255])
+  const rewritten = rewriteNativeResponseIds(
+    { offset: 0, data: bytes, absolutePath: '/repo/index.html' },
+    (id) => `codingns:peer-host:v1:workspace:peer-a:${id}`,
+    (id) => `codingns:peer-host:v1:session:peer-a:${id}`,
+  ) as { data: Uint8Array }
+  assert.equal(rewritten.data, bytes)
+
+  const wire = JSON.parse(JSON.stringify(encodeNativeResponseBytes(rewritten)))
+  const decoded = decodeNativeResponseBytes(wire) as { data: Uint8Array }
+  assert.ok(decoded.data instanceof Uint8Array)
+  assert.deepEqual([...decoded.data], [...bytes])
 })
