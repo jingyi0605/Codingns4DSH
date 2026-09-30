@@ -7,6 +7,7 @@ import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } 
 import { KIMI_CATALOG, enrichEfforts, isProviderDefaultModel } from './model-catalog.js'
 import { probeStoredSession, readFirstJsonRecord, resolveSessionDirectory } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { promptWithAttachmentPaths, buildKimiAttachments } from './attachment-utils.js'
 import { isQuestionEvent, readAgentQuestions } from './interaction-events.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { commandEnvironment, terminateChildProcess } from './process-utils.js'
@@ -148,6 +149,7 @@ export class KimiCliDriver extends StandardStreamDriver {
           capabilities: { supports_question: true },
         },
       })}\n`)
+      const wireAttachments = input.attachments?.length ? await buildKimiAttachments(input.attachments) : []
       let promptSent = false
       const sendPrompt = (): void => {
         if (promptSent) return
@@ -156,7 +158,10 @@ export class KimiCliDriver extends StandardStreamDriver {
           jsonrpc: '2.0',
           id: promptId,
           method: 'prompt',
-          params: { user_input: input.prompt },
+          params: {
+            user_input: promptWithAttachmentPaths(input.prompt, input.attachments ?? []),
+            ...(wireAttachments.length > 0 ? { attachments: wireAttachments } : {}),
+          },
         })}\n`)
       }
       const lines = readline.createInterface({ input: child.stdout })
@@ -168,10 +173,10 @@ export class KimiCliDriver extends StandardStreamDriver {
           if (!isRecord(value)) continue
           if (value.id === initializeId && (value.result !== undefined || value.error !== undefined)) {
             // initialize 是可选握手；旧版返回 method not found 时仍可直接 prompt。
-            sendPrompt()
+            void sendPrompt()
             continue
           }
-          if (!promptSent) sendPrompt()
+          if (!promptSent) void sendPrompt()
           const request = kimiInteractionRequest(value)
           if (request !== null) {
             interaction.pending.set(request.event.requestId, request.pending)

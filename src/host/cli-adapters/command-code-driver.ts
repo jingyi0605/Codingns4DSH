@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { copyFileSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import readline from 'node:readline'
 import type {
   CodingNsCliModelCatalog,
@@ -13,6 +13,7 @@ import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessio
 import { firstToolText, serializeToolValue } from './tool-observation.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { commandEnvironment, resolveCommandPath, terminateChildProcess } from './process-utils.js'
+import { promptWithAttachmentPaths } from './attachment-utils.js'
 
 const WINDOWS = process.platform === 'win32'
 const COMMAND_CODE_BINARIES = WINDOWS
@@ -435,8 +436,9 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   private buildTurnArgs(input: CodingNsCliTurnInput, turn: CommandCodeTurn): string[] {
     // 续跑沿用同一个 transcript 文件，只把输入换成续跑提示；不能再次写入历史，
     // 否则会把 CLI 已经落盘的进度覆盖成空会话。
-    const prompt = turn.attempt > 1 ? this.autoContinuePrompt : input.prompt
+    const prompt = turn.attempt > 1 ? this.autoContinuePrompt : promptWithAttachmentPaths(input.prompt, input.attachments ?? [])
     const args = ['--session', turn.transcriptPath, '-p', prompt, '--output-format', 'json', '--tools-all', '--yolo', '--max-turns', String(this.maxTurns)]
+    for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--add-dir', directory)
     if (input.modelId) args.push('-m', input.modelId)
     if (input.effortId && input.effortId !== 'default' && input.effortId !== 'Default') args.push('--effort', input.effortId)
     return args

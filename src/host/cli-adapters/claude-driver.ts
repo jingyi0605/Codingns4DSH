@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
@@ -7,6 +7,7 @@ import { CLAUDE_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { discoverClaudeModelCatalog } from './claude-model-options.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
+import { promptWithAttachmentPaths } from './attachment-utils.js'
 
 export class ClaudeCodeDriver extends StandardStreamDriver {
   private readonly sessionRoots: readonly string[]
@@ -41,7 +42,8 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     })
   }
   protected buildArgs(input: CodingNsCliTurnInput): readonly string[] {
-    const args = ['-p', input.prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions']
+    const args = ['-p', promptWithAttachmentPaths(input.prompt, input.attachments ?? []), '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions']
+    for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--add-dir', directory)
     if (input.providerSessionId) args.push('--resume', input.providerSessionId)
     if (input.modelId && !isProviderDefaultModel(input.modelId)) args.push('--model', input.modelId)
     return args

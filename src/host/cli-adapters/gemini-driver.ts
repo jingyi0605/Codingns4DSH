@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
@@ -9,6 +9,7 @@ import { isRecord, streamRpcRequest, textValue, usageChunk } from './rpc-driver-
 import { GEMINI_CATALOG, isProviderDefaultModel, resolveGeminiEfforts } from './model-catalog.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { buildAcpPromptBlocks, promptWithAttachmentPaths } from './attachment-utils.js'
 
 /** Gemini 官方 ACP 优先；不支持 ACP 的旧 CLI 自动回退 headless stream-json。 */
 export class GeminiCliDriver extends StandardStreamDriver {
@@ -58,7 +59,8 @@ export class GeminiCliDriver extends StandardStreamDriver {
   }
 
   protected buildArgs(input: CodingNsCliTurnInput): readonly string[] {
-    const args = ['-p', input.prompt, '--output-format', 'stream-json', '--yolo']
+    const args = ['-p', promptWithAttachmentPaths(input.prompt, input.attachments ?? []), '--output-format', 'stream-json', '--yolo']
+    for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--include-directories', directory)
     if (input.providerSessionId) args.push('--resume', input.providerSessionId)
     if (input.modelId && !isProviderDefaultModel(input.modelId)) args.push('--model', input.modelId)
     return args
@@ -146,7 +148,7 @@ export class GeminiCliDriver extends StandardStreamDriver {
       let finished = false
       const stream = streamRpcRequest(rpc, 'session/prompt', {
         sessionId,
-        prompt: [{ type: 'text', text: input.prompt }],
+        prompt: await buildAcpPromptBlocks(input.prompt, input.attachments ?? []),
       }, input.signal)
       let promptResponse: unknown
       while (true) {

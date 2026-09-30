@@ -8,6 +8,7 @@ import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './r
 import { GROK_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { isRegularFile, probeStoredSession, resolveSessionDirectory } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { buildAcpPromptBlocks } from './attachment-utils.js'
 
 export interface GrokBuildDriverOptions {
   readonly binaries?: readonly string[]
@@ -85,7 +86,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         this.sessions.set(providerSessionId, state)
       }
       yield { type: 'session-binding', providerSessionId }
-      const stream = streamGrokPrompt(rpc, providerSessionId, input.prompt, input.signal, (notification) => {
+      const stream = streamGrokPrompt(rpc, providerSessionId, await buildAcpPromptBlocks(input.prompt, input.attachments ?? []), input.signal, (notification) => {
         const requestId = interactionRequestId(notification)
         if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, notification.id)
       })
@@ -159,7 +160,7 @@ const GROK_DRAIN_WAIT_MS = 250
 async function* streamGrokPrompt(
   rpc: JsonRpcProcess,
   sessionId: string,
-  prompt: string,
+  prompt: readonly Record<string, unknown>[],
   signal: AbortSignal | undefined,
   onNotification: (message: JsonRpcMessage) => void,
 ): AsyncGenerator<JsonRpcMessage, 'stop' | 'cancel' | 'error', void> {
@@ -199,7 +200,7 @@ async function* streamGrokPrompt(
 
   void rpc.request('session/prompt', {
     sessionId,
-    prompt: [{ type: 'text', text: prompt }],
+    prompt,
   }, { signal: requestController.signal, killOnAbort: false }).then(
     (response) => {
       const responseReason = grokPromptReason(response)

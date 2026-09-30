@@ -13,6 +13,7 @@ import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-o
 import { isQuestionEvent, questionAnswersList, readAgentQuestions } from './interaction-events.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { commandEnvironment, resolveCommandPath, terminateChildProcess } from './process-utils.js'
+import { buildOpenCodeAttachmentParts } from './attachment-utils.js'
 
 const WINDOWS = process.platform === 'win32'
 const DEFAULT_BINARIES = WINDOWS ? ['opencode.exe', 'opencode'] : ['opencode']
@@ -267,7 +268,11 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   }
 
   private async sendPrompt(server: string, sessionId: string, input: CodingNsCliTurnInput): Promise<unknown> {
-    const body: Record<string, unknown> = { parts: [{ type: 'text', text: input.prompt }] }
+    const attachments = await buildOpenCodeAttachmentParts(input.attachments ?? [])
+    const parts: Record<string, unknown>[] = []
+    if (input.prompt.trim() !== '' || attachments.length === 0) parts.push({ type: 'text', text: input.prompt })
+    parts.push(...attachments)
+    const body: Record<string, unknown> = { parts }
     const model = parseOpenCodeModel(input.modelId)
     if (model !== null) body.model = model
     if (input.effortId) body.variant = input.effortId

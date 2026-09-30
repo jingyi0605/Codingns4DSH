@@ -9,6 +9,7 @@ import { PI_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { commandEnvironment, WINDOWS } from './process-utils.js'
+import { buildPiImages, promptWithAttachmentPaths } from './attachment-utils.js'
 
 export interface PiAgentDriverOptions {
   readonly binaries?: readonly string[]
@@ -110,7 +111,11 @@ export class PiAgentDriver implements CodingNsCliDriver {
         } catch { /* 旧版 Pi 不支持单独设置思考等级时使用当前等级。 */ }
       }
       yield { type: 'session-binding', providerSessionId: session.providerSessionId }
-      const stream = streamPiPrompt(rpc, input.prompt, input.signal)
+      const images = await buildPiImages(input.attachments ?? [])
+      const stream = streamPiPrompt(rpc, {
+        message: promptWithAttachmentPaths(input.prompt, input.attachments ?? []),
+        ...(images.length > 0 ? { images } : {}),
+      }, input.signal)
       let finishReason: 'stop' | 'cancel' | 'error'
       while (true) {
         const item = await stream.next()
@@ -198,7 +203,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
  */
 async function* streamPiPrompt(
   rpc: JsonRpcProcess,
-  prompt: string,
+  prompt: Record<string, unknown>,
   signal: AbortSignal | undefined,
 ): AsyncGenerator<JsonRpcMessage, 'stop' | 'cancel' | 'error', void> {
   const queue: JsonRpcMessage[] = []
@@ -218,7 +223,7 @@ async function* streamPiPrompt(
   if (signal?.aborted) onAbort()
   else signal?.addEventListener('abort', onAbort, { once: true })
 
-  void rpc.request('prompt', { message: prompt }, { signal, killOnAbort: false, wireFormat: 'pi' }).then(
+  void rpc.request('prompt', prompt, { signal, killOnAbort: false, wireFormat: 'pi' }).then(
     () => { promptSettled = true; notify() },
     () => {
       promptSettled = true
