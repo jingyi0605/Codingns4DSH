@@ -80,7 +80,7 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   // 业务侧据此整块跳过（不写入行、不注册手势）。
   route('web.index-inject', 'index-inject-rows-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/index-injection.ts', 'host/index.ts']),
   route('web.index-tap', 'index-tap-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/index.ts', 'host/modules/pwa/pwa-viewport.ts']),
-  route('layout.columns', 'layout-columns-020', 'client', '>=0.2.0-rc.1', 'supported', ['client/mobile-sidebar-gestures.ts', 'client/features/workspace-session-enhancement.ts']),
+  route('layout.columns', 'layout-columns-020', 'client', '>=0.2.0-rc.1', 'supported', ['client/mobile-sidebar-gestures.ts', 'client/features/workspace-session-enhancement.ts', 'client/mobile-sidebar-rail-dom.ts', 'client/features/mobile-access.ts']),
   route('sidebar.right.expand', 'sidebar-right-expand-020', 'client', '>=0.2.0-rc.1', 'supported', ['client/mobile-sidebar-gestures.ts', 'client/features/workspace-session-enhancement.ts']),
 ]
 

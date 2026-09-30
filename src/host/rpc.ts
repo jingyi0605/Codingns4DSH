@@ -312,7 +312,7 @@ function operationsToPatch(operations: readonly CodingNsSettingsOperation[]): Re
 }
 
 function isAllowedSettingsPath(path: readonly string[]): boolean {
-  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'mobileAccess', 'subscriptionUsage'].includes(path[0] ?? '')
+  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage'].includes(path[0] ?? '')
   if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'mobileAccess', 'peerHost'].includes(path[1] ?? '')
   if (path[0] === 'workspaceSessionEnhancement') {
     return path.length === 2 && [
