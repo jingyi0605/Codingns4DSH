@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   applyQuickPhraseOrder,
+  matchesDshCssModuleClass,
   QUICK_PHRASE_FALLBACK_MARGIN,
   QUICK_PHRASE_GAP_SCALE,
   QUICK_PHRASE_PERMISSION_ORDER,
@@ -91,6 +92,22 @@ test('工具栏结构变化时不改宿主布局', () => {
   const looseOrder = applyQuickPhraseOrder({ trigger: detachedTrigger, addButton: new FakeElement('button') }, { computedStyle: fakeComputedStyle })
   assert.deepEqual(looseOrder.reordered, [])
   looseOrder.dispose()
+})
+
+test('添加附件按钮按 CSS Modules 本地名匹配，兼容两种构建的哈希前缀', () => {
+  // npm 分发的 Web 构建是 uV2eYG_*，Desktop 内嵌构建（app.asar）是 yhfFVG_*。
+  assert.equal(matchesDshCssModuleClass('uV2eYG_add', 'add'), true)
+  assert.equal(matchesDshCssModuleClass('yhfFVG_add', 'add'), true)
+  assert.equal(matchesDshCssModuleClass('uV2eYG_add uV2eYG_primary', 'add'), true)
+  assert.equal(matchesDshCssModuleClass('_3e4SsG_trailing', 'trailing'), true)
+  // 只认完整类名，不做子串匹配。
+  assert.equal(matchesDshCssModuleClass('uV2eYG_addFiles', 'add'), false)
+  assert.equal(matchesDshCssModuleClass('uV2eYG_addition', 'add'), false)
+  // 没有哈希前缀的类名不是 CSS Modules 类名。
+  assert.equal(matchesDshCssModuleClass('add', 'add'), false)
+  assert.equal(matchesDshCssModuleClass('codingns4dsh-agent-trigger', 'add'), false)
+  assert.equal(matchesDshCssModuleClass(null, 'add'), false)
+  assert.equal(matchesDshCssModuleClass(undefined, 'add'), false)
 })
 
 class FakeElement {

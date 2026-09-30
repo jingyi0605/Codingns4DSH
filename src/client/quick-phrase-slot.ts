@@ -6,12 +6,14 @@ import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { DEFAULT_QUICK_PHRASES, type CodingNsSettings, type QuickPhrase } from '../shared/contracts/config.js'
 import type { CodingNsSettingsStore } from '../dsh-capabilities/settings-store.js'
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
-import { applyQuickPhraseOrder, QUICK_PHRASE_FALLBACK_MARGIN, QUICK_PHRASE_TRIGGER_ORDER, readQuickPhraseMargin } from './quick-phrase-layout.js'
+import { applyQuickPhraseOrder, matchesDshCssModuleClass, QUICK_PHRASE_FALLBACK_MARGIN, QUICK_PHRASE_TRIGGER_ORDER, readQuickPhraseMargin } from './quick-phrase-layout.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 
 const QUICK_PHRASE_FALLBACK_SIZE = 28
 const QUICK_PHRASE_FALLBACK_ICON_SIZE = 14
 const QUICK_PHRASE_STYLE_ID = 'codingns4dsh-quick-phrase-responsive-style'
+/** 用属性选择器粗筛带 `_add` 类名的按钮，精确匹配再交给 matchesDshCssModuleClass。 */
+const ADD_BUTTON_CANDIDATE_SELECTOR = 'button[class*="_add"]'
 
 /** 移动端弹层脱离对话窗口边界，使用整个视口宽度。 */
 function installQuickPhraseStyles(): void {
@@ -343,13 +345,17 @@ function QuickPhraseSlot(props: QuickPhraseSlotProps): ReactElement | null {
 function findAddButton(root: HTMLElement): HTMLButtonElement | null {
   let scope: HTMLElement | null = root.parentElement
   while (scope !== null) {
-    const button = Array.from(scope.querySelectorAll<HTMLButtonElement>('button.uV2eYG_add'))
-      .find(isVisibleElement) ?? null
+    const button = findAddButtonIn(scope)
     if (button !== null) return button
     scope = scope.parentElement
   }
-  return Array.from(document.querySelectorAll<HTMLButtonElement>('button.uV2eYG_add'))
-    .find(isVisibleElement) ?? null
+  return findAddButtonIn(document)
+}
+
+/** 添加附件按钮：类名带 CSS Modules 本地名 `add` 且可见。哈希前缀随构建变化，不参与匹配。 */
+function findAddButtonIn(scope: ParentNode): HTMLButtonElement | null {
+  return Array.from(scope.querySelectorAll<HTMLButtonElement>(ADD_BUTTON_CANDIDATE_SELECTOR))
+    .find((button) => matchesDshCssModuleClass(button.className, 'add') && isVisibleElement(button)) ?? null
 }
 
 function findPositioningParent(root: HTMLElement): HTMLElement | null {

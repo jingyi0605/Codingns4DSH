@@ -12,6 +12,25 @@ export const QUICK_PHRASE_GAP_SCALE = 0.5
 /** 读不到宿主 gap 时按 DSH 当前的 12px 估算，留出一半间距。 */
 export const QUICK_PHRASE_FALLBACK_MARGIN = -6
 
+/**
+ * 按 CSS Modules 本地名匹配 DSH 类名。
+ *
+ * DSH 类名形如 `uV2eYG_add`，前缀是构建期生成的哈希：npm 分发的 Web 构建与
+ * Desktop 内嵌构建（app.asar）哈希不同（`yhfFVG_add`）。插件只能按本地名
+ * 匹配，把类名绑到某一次构建的哈希上会在另一个运行时失效。
+ * @param className - 元素完整的 class 字符串，可含多个类名。
+ * @param localName - CSS Modules 本地名，例如 `add`。
+ * @returns class 字符串里是否有本地名等于 localName 的类名。
+ */
+export function matchesDshCssModuleClass(className: string | null | undefined, localName: string): boolean {
+  if (typeof className !== 'string') return false
+  for (const token of className.split(/\s+/)) {
+    const separator = token.lastIndexOf('_')
+    if (separator > 0 && token.slice(separator + 1) === localName) return true
+  }
+  return false
+}
+
 /** 读取计算样式的入口；测试可注入替身。 */
 export interface QuickPhraseLayoutEnvironment {
   readonly computedStyle?: (element: Element) => { readonly display: string; readonly columnGap?: string }
