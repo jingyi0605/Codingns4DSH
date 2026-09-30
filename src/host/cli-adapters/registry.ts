@@ -189,6 +189,11 @@ export class CodingNsCliAdapterRegistry {
     return this.enabled.get(adapterId) ?? false
   }
 
+  /** 返回当前启用的外部 Provider 路由，供 DSH 虚拟 Provider 注册使用。 */
+  enabledAdapterIds(): readonly CodingNsCliAdapterId[] {
+    return [...this.drivers.keys()].filter((adapterId) => this.isEnabled(adapterId))
+  }
+
   enabledSnapshot(): Record<string, boolean> {
     return Object.fromEntries(this.enabled.entries())
   }
