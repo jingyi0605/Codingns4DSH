@@ -34,6 +34,10 @@ export interface PeerHostRecord {
   readonly pluginId: string | null
   readonly pluginVersion: string | null
   readonly dshVersion: string | null
+  /** 远端操作系统主机名；旧记录没有此字段时保持缺省。 */
+  readonly hostname?: string | null
+  /** 远端 DSH 配置文件名；只返回名称，不返回本地路径。 */
+  readonly configProfile?: string | null
   readonly apiCompatibility: string | null
   readonly fingerprint: string | null
   readonly lastCheckedAt: number | null
@@ -92,6 +96,8 @@ export interface AggregateWorkspaceSummary {
   readonly targetHostId: string | null
   readonly workspaceId: string
   readonly displayName: string
+  /** 工作区在所属 Host 上的真实路径；原生文件面板等按路径解析，不能用 workspaceId 代替。 */
+  readonly path: string
   readonly hostLabel: string
   readonly availability: 'ready' | 'checking' | 'unreachable' | 'unsupported'
   readonly sessions: readonly PeerHostSessionRecord[]

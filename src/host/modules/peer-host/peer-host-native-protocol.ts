@@ -35,6 +35,32 @@ export const DSH_NATIVE_REMOTE_METHODS = Object.freeze([
   'session/selectModel',
   'session/updateQueue',
   'session/workspacePathApplications',
+  'workspaceFiles/changes',
+  'workspaceFiles/list',
+  'workspaceFiles/read',
+  'workspaceFiles/readBytes',
+  'workspaceFiles/stat',
+  'terminal/close',
+  'terminal/create',
+  'terminal/environment',
+  'terminal/follow',
+  'terminal/list',
+  'terminal/rename',
+  'terminal/resize',
+  'terminal/retain',
+  'terminal/shells',
+  'terminal/write',
+  // CodingNs4DSH 自带终端控制器：右侧终端面板实际调用它（会话身份在 agentId 线参上）。
+  'codingnsTerminal/close',
+  'codingnsTerminal/create',
+  'codingnsTerminal/environment',
+  'codingnsTerminal/follow',
+  'codingnsTerminal/list',
+  'codingnsTerminal/rename',
+  'codingnsTerminal/resize',
+  'codingnsTerminal/retain',
+  'codingnsTerminal/shells',
+  'codingnsTerminal/write',
   'fileReferences/list',
   'skills/list',
 ] as const)
@@ -106,5 +132,8 @@ function isWorkspaceField(key: string): boolean {
 }
 
 function isSessionField(key: string): boolean {
+  if (key === 'workspaceFileScopeId') return true
+  // CodingNs4DSH 终端 Remote 用 agentId（lookup: agent，codec 为 SessionId）承载会话身份。
+  if (key === 'agentId') return true
   return key === 'sessionId' || key === 'beforeSessionId' || key === 'sessionIds' || key === 'parentSessionId' || key === 'childSessionId'
 }

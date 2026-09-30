@@ -10,6 +10,8 @@ export interface AggregateSessionSource {
 export interface AggregateWorkspaceSource {
   readonly workspaceId: string
   readonly displayName: string
+  /** 工作区在所属 Host 上的真实路径；原生文件面板按路径解析，不能用 workspaceId 代替。 */
+  readonly path: string
   readonly sessions: readonly AggregateSessionSource[]
 }
 
@@ -108,6 +110,7 @@ function toWorkspace(source: AggregateHostSource, workspace: AggregateWorkspaceS
     targetHostId: source.targetHostId,
     workspaceId: workspace.workspaceId,
     displayName: workspace.displayName,
+    path: workspace.path,
     hostLabel: source.hostLabel,
     availability: 'ready',
     sessions: workspace.sessions.map((session): PeerHostSessionRecord => ({

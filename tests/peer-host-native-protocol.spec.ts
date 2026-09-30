@@ -23,6 +23,9 @@ test('DSH 原生 Workspace/Session Remote 方法使用正式命名空间', () =>
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('session/follow'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('session/page'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('session/prompt'))
+  assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('workspaceFiles/changes'))
+  assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('terminal/environment'))
+  assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('terminal/follow'))
   assert.equal(isDshNativeRemoteMethod('workspace/list'), false)
   assert.equal(isDshNativeRemoteMethod('session/send'), false)
 })
@@ -41,6 +44,42 @@ test('原生请求只改写 Workspace/Session 资源 ID，不污染 requestId �
     sessionId: 'remote-session',
     requestId: 'codingns:peer-host:v1:session:peer-a:remote-session',
     content: [{ text: 'workspaceId=sessionId 不应解析' }],
+  })
+})
+
+test('session/follow 流沿用同一套请求与帧 ID 改写', () => {
+  const request = rewriteNativeRequestIds('session/follow', {
+    args: { request: { address: { kind: 'session', sessionId: 'codingns:peer-host:v1:session:peer-a:remote-session' }, assistantStream: true } },
+  }, resolver)
+  assert.deepEqual(request, {
+    args: { request: { address: { kind: 'session', sessionId: 'remote-session' }, assistantStream: true } },
+  })
+  const frame = rewriteNativeResponseIds(
+    { type: 'snapshot', cursor: 1, records: [], header: { id: 'remote-session', cwd: '/repo' } },
+    (id) => `codingns:peer-host:v1:workspace:peer-a:${id}`,
+    (id) => `codingns:peer-host:v1:session:peer-a:${id}`,
+  )
+  assert.deepEqual(frame, {
+    type: 'snapshot',
+    cursor: 1,
+    records: [],
+    header: { id: 'codingns:peer-host:v1:session:peer-a:remote-session', cwd: '/repo' },
+  })
+})
+
+test('codingnsTerminal 的 agentId 承载会话身份并双向改写', () => {
+  const request = rewriteNativeRequestIds('codingnsTerminal/environment', {
+    args: { agentId: 'codingns:peer-host:v1:session:peer-a:remote-session' },
+  }, resolver)
+  assert.deepEqual(request, { args: { agentId: 'remote-session' } })
+  const frame = rewriteNativeResponseIds(
+    { agentId: 'remote-session', workspaceId: 'remote-ws' },
+    (id) => `codingns:peer-host:v1:workspace:peer-a:${id}`,
+    (id) => `codingns:peer-host:v1:session:peer-a:${id}`,
+  )
+  assert.deepEqual(frame, {
+    agentId: 'codingns:peer-host:v1:session:peer-a:remote-session',
+    workspaceId: 'codingns:peer-host:v1:workspace:peer-a:remote-ws',
   })
 })
 

@@ -25,25 +25,26 @@ export function createDshNativeSummarySource(ctx: Context | undefined, sessions:
 }
 
 function buildSummary(workspaces: readonly unknown[], sessions: readonly unknown[]): readonly AggregateWorkspaceSource[] {
-  const entries = new Map<string, { name: string; sessions: unknown[] }>()
+  const entries = new Map<string, { name: string; path: string; sessions: unknown[] }>()
   for (const raw of workspaces) {
     const value = asRecord(raw)
     const id = readText(value, ['id', 'workspaceId', 'key'])
     if (id === null) continue
-    entries.set(id, { name: readText(value, ['displayName', 'name', 'title']) ?? id, sessions: [] })
+    entries.set(id, { name: readText(value, ['displayName', 'name', 'title']) ?? id, path: readText(value, ['path', 'cwd']) ?? id, sessions: [] })
   }
   for (const raw of sessions) {
     const value = asRecord(raw)
     const id = readText(value, ['id', 'sessionId', 'key'])
     if (id === null) continue
     const workspaceId = readText(value, ['workspaceId']) ?? readNestedText(value, ['workspace', 'id']) ?? 'default'
-    const entry = entries.get(workspaceId) ?? { name: workspaceId === 'default' ? '默认工作区' : workspaceId, sessions: [] }
+    const entry = entries.get(workspaceId) ?? { name: workspaceId === 'default' ? '默认工作区' : workspaceId, path: readText(value, ['cwd']) ?? workspaceId, sessions: [] }
     entry.sessions.push(value)
     entries.set(workspaceId, entry)
   }
   return [...entries.entries()].map(([workspaceId, entry]) => ({
     workspaceId,
     displayName: entry.name,
+    path: entry.path,
     sessions: entry.sessions.flatMap((raw) => {
       const value = asRecord(raw)
       const sessionId = readText(value, ['id', 'sessionId', 'key'])

@@ -1,6 +1,6 @@
 import type { FeatureModule } from '../../shared/contracts/feature.js'
 import type { CodingNsHostServices } from './types.js'
-import { homedir } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -15,9 +15,11 @@ import {
 } from '../modules/peer-host/peer-host-store.js'
 import type { PeerHostRoute } from '../../shared/contracts/peer-host.js'
 import type { PeerHostRecord, PeerHostClientRecord } from '../../shared/contracts/peer-host.js'
+import type { DshHostStatus } from '../../shared/contracts/host-status.js'
 import { createVirtualSessionId, createVirtualWorkspaceId, type HostScope } from '../../shared/contracts/peer-host.js'
-import type { AggregateHostSource, AggregateWorkspaceSource, AggregateSessionSource } from '../modules/peer-host/peer-host-aggregate-service.js'
+import type { AggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { PeerHostAggregateService } from '../modules/peer-host/peer-host-aggregate-service.js'
+import { resolveDshNativeDispatch } from '../modules/peer-host/peer-host-native-dispatch.js'
 import { FileAggregateWorkspaceOrderStore, VirtualWorkspaceRegistry } from '../modules/peer-host/peer-host-virtual-registry.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import { PeerHostWebSocketGateway, PEER_HOST_WS_PATH, type PeerHostWsGatewayEndpoint } from '../modules/peer-host/peer-host-ws-gateway.js'
@@ -29,8 +31,13 @@ import { FileLanAccessDshLoginStore, resolveLoginProtectionCookieName, verifyLog
 import { createPeerHostDiagnosticSink, toPeerHostDiagnosticSnapshot } from '../modules/peer-host/peer-host-diagnostics.js'
 import { AggregatedHostTransportService } from '../modules/peer-host/aggregated-host-transport.js'
 import { createDshNativeSummarySource } from '../modules/peer-host/dsh-native-summary-source.js'
+import { createPeerHostRemoteSummarySource } from '../modules/peer-host/peer-host-remote-summary-source.js'
+import { callPeerNativeRpc, openPeerNativeStream, readNativeRpcEnvelope } from '../modules/peer-host/peer-host-native-transport.js'
 import { createAggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { isDshNativeRemoteMethod, rewriteNativeRequestIds, rewriteNativeResponseIds } from '../modules/peer-host/peer-host-native-protocol.js'
+
+/** 原生 Remote 流句柄的存活窗口；每次轮询续期，超时仍未再被轮询即回收。 */
+const NATIVE_STREAM_TTL_MS = 600_000
 
 export interface PeerHostFeatureOptions {
   readonly stateDirectory?: string
@@ -88,6 +95,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
       })
       let workspaceOrderHydrated = false
       const nativeStreams = new Map<string, { readonly iterator: AsyncIterator<unknown>; readonly scope: HostScope; readonly expiresAt: number }>()
+      const dshNativeDispatch = resolveDshNativeDispatch(context.services.dshContext)
       const diagnostics = createPeerHostDiagnosticSink({
         enabled: process.env.CODINGNS4DSH_DEBUG === '1',
         sink: (event, snapshot) => console.info('[codingns4dsh:peer-host]', { event, ...snapshot }),
@@ -109,13 +117,18 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
         })]
         for (const record of await store.list()) {
           if (record.status !== 'ready') continue
-          sources.push({
+          sources.push(createAggregateHostSource({
             hostId: localHostId,
             targetHostId: record.id,
             hostLabel: record.displayName,
-            capability: { available: true, reason: 'PeerHost workspace/session HTTP 摘要代理' },
-            load: () => loadPeerSummary(httpProxy, record.id, localHostId),
-          })
+            source: createPeerHostRemoteSummarySource({
+              scope: { hostId: localHostId, targetHostId: record.id, workspaceId: '__aggregate__', sessionId: null, scopeGeneration: 0 },
+              transport: {
+                rpc: (request) => callPeerNativeRpc(httpProxy, record.id, request),
+                stream: (request) => openPeerNativeStream(httpProxy, record.id, request),
+              },
+            }),
+          }))
         }
         return sources
       }
@@ -187,6 +200,8 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
           pluginId: '@jingyi0605/codingns4dsh',
           pluginVersion: CODINGNS_VERSION,
           dshVersion: context.services.dshVersion ?? DSH_VERSION,
+          hostname: hostname().trim() || null,
+          configProfile: process.env.CODINGNS4DSH_PROFILE_NAME?.trim() || null,
           apiCompatibility: 'peer-host-v1',
           fingerprint: process.env.CODINGNS4DSH_HOST_FINGERPRINT?.trim() || null,
           capabilities: ['peer-host.store', 'peer-host.handshake', 'peer-host.http-proxy', 'peer-host.ws-proxy', 'peer-host.aggregate', 'peer-host.aggregated-transport'],
@@ -208,12 +223,15 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             ...(input.route === undefined ? {} : { route: parseRoute(input.route) }),
           }))
           case 'remove': await store.remove(requiredString(input.peerHostId, 'peerHostId')); return { removed: true }
+          case 'enable': return toPeerHostClientRecord(await store.updateStatus(requiredString(input.peerHostId, 'peerHostId'), 'configured', null))
+          case 'disable': return toPeerHostClientRecord(await store.updateStatus(requiredString(input.peerHostId, 'peerHostId'), 'disabled', null))
           case 'check': return handshake.check(requiredString(input.peerHostId, 'peerHostId')).then(toPeerHostClientRecord)
           case 'reconnect': {
             const peerHostId = requiredString(input.peerHostId, 'peerHostId')
             await store.updateStatus(peerHostId, 'reconnecting', null)
             return handshake.check(peerHostId).then(toPeerHostClientRecord)
           }
+          case 'status': return loadPeerHostStatus(httpProxy, requiredString(input.peerHostId, 'peerHostId'), localHostId)
           case 'login': return sessions.login(requiredString(input.peerHostId, 'peerHostId'), {
             username: requiredString(input.username, 'username'),
             password: requiredString(input.password, 'password'),
@@ -259,18 +277,31 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
           case 'nativeLocal': {
             const method = requiredString(input.method, 'method')
             if (!isDshNativeRemoteMethod(method)) throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `未知 DSH 原生 Remote 方法: ${method}`)
-            const scope = parseScope(input.scope)
-            return await invokeDshNativeService(context.services.dshContext, method, input.payload, (rpcContext as { signal?: AbortSignal } | undefined)?.signal, scope)
+            parseScope(input.scope)
+            // 必须经过 DSH 自己的 Typert Gateway 解码线上载荷，不能直接调用 Controller。
+            if (dshNativeDispatch === undefined) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', '当前 Host 未提供 DSH Typert Gateway')
+            return await dshNativeDispatch.rpc(method, input.payload, (rpcContext as { signal?: AbortSignal } | undefined)?.signal)
           }
           case 'nativeStream': {
             const method = requiredString(input.method, 'method')
             if (!isDshNativeRemoteMethod(method)) throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `未知 DSH 原生 Remote 方法: ${method}`)
             const scope = parseScope(input.scope)
-            const signal = (rpcContext as { signal?: AbortSignal } | undefined)?.signal
-            const stream = aggregatedTransport.openStream({ scope, method, payload: input.payload, ...(signal === undefined ? {} : { signal }) })
-            const iterator = stream[Symbol.asyncIterator]()
+            // 远端流与 unary 一样需要双向 ID 改写：请求要换回目标 Host 的真实 ID，
+            // 帧里的 ID 要重新编码成虚拟 ID，否则原生会话流认不出目标 Host 的会话。
+            const payload = rewriteNativeRequestIds(method, input.payload, workspaceRegistry)
+            // 句柄由 nativeStreamNext/Close 轮询管理，不绑定本次 HTTP 请求的 signal：
+            // 该 signal 会在 nativeStream 响应返回后立即中止，导致第一次 next 直接结束。
+            const stream = aggregatedTransport.openStream({ scope, method, payload })
+            const targetHostId = scope.targetHostId
+            const iterator = targetHostId === null
+              ? stream[Symbol.asyncIterator]()
+              : mapAsyncIterator(stream[Symbol.asyncIterator](), (value) => rewriteNativeResponseIds(
+                value,
+                (id) => createVirtualWorkspaceId(targetHostId, id),
+                (id) => createVirtualSessionId(targetHostId, id),
+              ))
             const streamId = randomUUID()
-            nativeStreams.set(streamId, { iterator, scope, expiresAt: Date.now() + 120_000 })
+            nativeStreams.set(streamId, { iterator, scope, expiresAt: Date.now() + NATIVE_STREAM_TTL_MS })
             return { streamId }
           }
           case 'nativeStreamOpen': {
@@ -278,10 +309,11 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             if (!isDshNativeRemoteMethod(method)) throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `未知 DSH 原生 Remote 方法: ${method}`)
             const scope = parseScope(input.scope)
             // 句柄会在后续 nativeStreamNext/Close 中被轮询管理，不能绑定到本次 HTTP 请求的短生命周期 signal。
-            const stream = await invokeDshNativeService(context.services.dshContext, method, input.payload, undefined, scope)
+            if (dshNativeDispatch === undefined) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', '当前 Host 未提供 DSH Typert Gateway')
+            const stream = await dshNativeDispatch.stream(method, input.payload)
             if (!isAsyncIterable(stream)) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', `DSH 原生 Remote 方法不是流: ${method}`)
             const streamId = randomUUID()
-            nativeStreams.set(streamId, { iterator: stream[Symbol.asyncIterator](), scope, expiresAt: Date.now() + 120_000 })
+            nativeStreams.set(streamId, { iterator: stream[Symbol.asyncIterator](), scope, expiresAt: Date.now() + NATIVE_STREAM_TTL_MS })
             return { streamId }
           }
           case 'nativeStreamNext': {
@@ -294,9 +326,10 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             }
             const scope = parseScope(input.scope)
             assertSameScope(stream.scope, scope)
+            // 每次轮询都算一次心跳：空闲会话的 next 会长时间挂起，不能只在出帧时续期。
+            nativeStreams.set(streamId, { ...stream, expiresAt: Date.now() + NATIVE_STREAM_TTL_MS })
             const next = await stream.iterator.next()
             if (next.done === true) nativeStreams.delete(streamId)
-            else nativeStreams.set(streamId, { ...stream, expiresAt: Date.now() + 120_000 })
             return { done: next.done === true, ...(next.done === true ? {} : { value: next.value }) }
           }
           case 'nativeStreamClose': {
@@ -327,76 +360,53 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
   }
 }
 
-async function invokeDshNativeService(ctx: import('@deepseek-ai/cordis').Context | undefined, method: string, payload: unknown, signal: AbortSignal | undefined, scope: HostScope): Promise<unknown> {
-  if (ctx === undefined) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', '当前 Host 未提供 DSH Context')
-  const separator = method.indexOf('/')
-  const namespace = separator > 0 ? method.slice(0, separator) : ''
-  const operation = separator > 0 ? method.slice(separator + 1) : ''
-  const serviceName = namespace === 'workspace' ? 'workspaceController' : namespace === 'session' ? 'sessionController' : ''
-  if (serviceName === '' || operation === '') throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `无法路由 DSH 原生 Remote: ${method}`)
-  let service: Record<string, unknown> | undefined
-  try { service = ctx.get(serviceName) as Record<string, unknown> | undefined } catch { service = undefined }
-  const handler = service?.[operation]
-  if (typeof handler !== 'function') throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', `当前 Host 未提供 DSH 原生服务: ${serviceName}.${operation}`)
-  // Host 服务只接受 DSH Remote 自己的参数；scope 只用于校验和审计，不注入业务 payload。
-  void scope
-  if (operation === 'control' || (namespace === 'workspace' && operation === 'follow')) {
-    return await (handler as (signal?: AbortSignal) => unknown).call(service, signal)
+/** 逐帧映射异步迭代器；不改变完成与错误语义。 */
+function mapAsyncIterator<TValue, TMapped>(iterator: AsyncIterator<TValue>, map: (value: TValue) => TMapped): AsyncIterator<TMapped> {
+  const mapped: AsyncIterator<TMapped> = {
+    async next(): Promise<IteratorResult<TMapped>> {
+      const next = await iterator.next()
+      if (next.done === true) return { done: true, value: undefined }
+      return { done: false, value: map(next.value) }
+    },
   }
-  return await (handler as (request: unknown, signal?: AbortSignal) => unknown).call(service, payload, signal)
-}
-
-async function callPeerNativeRpc(httpProxy: PeerHostHttpProxyService, peerHostId: string, request: { readonly scope: HostScope; readonly method: string; readonly payload?: unknown; readonly signal?: AbortSignal }): Promise<unknown> {
-  const response = await httpProxy.request(peerHostId, {
-    scope: request.scope,
-    path: '/api/codingns/peerHost/nativeLocal',
-    method: 'POST',
-    body: JSON.stringify({ method: request.method, payload: request.payload, scope: request.scope }),
-  })
-  return readNativeRpcEnvelope(response.body)
-}
-
-function openPeerNativeStream(httpProxy: PeerHostHttpProxyService, peerHostId: string, request: { readonly scope: HostScope; readonly method: string; readonly payload?: unknown; readonly signal?: AbortSignal }): AsyncIterable<unknown> {
-  return (async function* () {
-    const opened = await httpProxy.request(peerHostId, {
-      scope: request.scope,
-      path: '/api/codingns/peerHost/nativeStreamOpen',
-      method: 'POST',
-      body: JSON.stringify({ method: request.method, payload: request.payload, scope: request.scope }),
-    })
-    const openedValue = readNativeRpcEnvelope(opened.body)
-    const streamId = requiredString(record(openedValue).streamId, 'streamId')
-    try {
-      while (!(request.signal?.aborted ?? false)) {
-        const next = await httpProxy.request(peerHostId, {
-          scope: request.scope,
-          path: '/api/codingns/peerHost/nativeStreamNext',
-          method: 'POST',
-          body: JSON.stringify({ streamId, scope: request.scope }),
-        })
-        const value = record(readNativeRpcEnvelope(next.body))
-        if (value.done === true) return
-        yield value.value
-      }
-    } finally {
-      await httpProxy.request(peerHostId, {
-        scope: request.scope,
-        path: '/api/codingns/peerHost/nativeStreamClose',
-        method: 'POST',
-        body: JSON.stringify({ streamId, scope: request.scope }),
-      }).catch(() => undefined)
+  if (iterator.return !== undefined) {
+    const close = iterator.return.bind(iterator)
+    mapped.return = async (value?: unknown): Promise<IteratorResult<TMapped>> => {
+      const result = await close(value)
+      if (result.done === true) return { done: true, value: undefined }
+      return { done: false, value: map(result.value) }
     }
-  })()
+  }
+  return mapped
 }
 
-function readNativeRpcEnvelope(body: string): unknown {
-  let value: unknown
-  try { value = JSON.parse(body) } catch { throw new CodingNsRpcError('CODINGNS_RPC_RESPONSE_INVALID', 'PeerHost 原生 Remote 返回不是 JSON') }
-  const envelope = record(value)
-  const result = record(envelope.result)
-  if (result.ok === true) return result.value
-  const error = record(result.error)
-  throw new CodingNsRpcError(typeof error.code === 'string' ? error.code : 'CODINGNS_RPC_REMOTE_FAILED', typeof error.message === 'string' ? error.message : 'PeerHost 原生 Remote 调用失败')
+/** 通过目标 Host 自有 RPC 读取资源采样；不把目标 URL 暴露给客户端。 */
+async function loadPeerHostStatus(httpProxy: PeerHostHttpProxyService, peerHostId: string, localHostId: string): Promise<DshHostStatus> {
+  const scope = { hostId: localHostId, targetHostId: peerHostId, workspaceId: '__management__', sessionId: null, scopeGeneration: 0 } as const
+  const response = await httpProxy.request(peerHostId, {
+    scope,
+    path: '/api/codingns/host/status',
+    method: 'POST',
+    body: JSON.stringify({ rpcId: `peer-host-status-${randomUUID()}`, method: 'host/status', payload: {} }),
+  })
+  return parsePeerHostStatus(readNativeRpcEnvelope(response.body))
+}
+
+function parsePeerHostStatus(value: unknown): DshHostStatus {
+  const input = record(value)
+  const cpuPercent = finiteNumber(input.cpuPercent)
+  const memoryPercent = finiteNumber(input.memoryPercent)
+  const memoryUsedBytes = finiteNumber(input.memoryUsedBytes)
+  const memoryTotalBytes = finiteNumber(input.memoryTotalBytes)
+  const sampledAt = finiteNumber(input.sampledAt)
+  if (cpuPercent === null || memoryPercent === null || memoryUsedBytes === null || memoryTotalBytes === null || sampledAt === null) {
+    throw new CodingNsRpcError('CODINGNS_RPC_RESPONSE_INVALID', '目标 Host 资源状态字段无效')
+  }
+  return { cpuPercent, memoryPercent, memoryUsedBytes, memoryTotalBytes, sampledAt }
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
@@ -518,70 +528,6 @@ function parseScope(value: unknown): import('../../shared/contracts/peer-host.js
   const sessionId = scope.sessionId === null ? null : requiredString(scope.sessionId, 'scope.sessionId')
   if (typeof scope.scopeGeneration !== 'number' || !Number.isSafeInteger(scope.scopeGeneration) || scope.scopeGeneration < 0) throw new TypeError('scope.scopeGeneration 无效')
   return { hostId, targetHostId, workspaceId, sessionId, scopeGeneration: scope.scopeGeneration }
-}
-
-async function loadPeerSummary(httpProxy: PeerHostHttpProxyService, peerHostId: string, localHostId: string): Promise<readonly AggregateWorkspaceSource[]> {
-  const scope = { hostId: localHostId, targetHostId: peerHostId, workspaceId: '__aggregate__', sessionId: null, scopeGeneration: 0 } as const
-  const [workspaceResponse, sessionResponse] = await Promise.all([
-    httpProxy.request(peerHostId, { scope, path: '/api/workspaces', method: 'GET' }),
-    httpProxy.request(peerHostId, { scope, path: '/api/sessions', method: 'GET' }),
-  ])
-  const workspaces = readItems(workspaceResponse.body)
-  const sessions = readItems(sessionResponse.body)
-  const byWorkspace = new Map<string, AggregateSessionSource[]>()
-  for (const raw of sessions) {
-    const value = asRecord(raw)
-    const sessionId = readString(value, ['id', 'sessionId', 'key'])
-    if (sessionId === null) continue
-    const workspaceId = readString(value, ['workspaceId']) ?? 'default'
-    const list = byWorkspace.get(workspaceId) ?? []
-    list.push({ sessionId, title: readString(value, ['title', 'name', 'displayName']) ?? sessionId, status: readString(value, ['status', 'state']) ?? 'unknown', updatedAt: readTime(value) })
-    byWorkspace.set(workspaceId, list)
-  }
-  return workspaces.flatMap((raw) => {
-    const value = asRecord(raw)
-    const workspaceId = readString(value, ['id', 'workspaceId', 'key'])
-    if (workspaceId === null) return []
-    return [{ workspaceId, displayName: readString(value, ['displayName', 'name', 'title']) ?? workspaceId, sessions: byWorkspace.get(workspaceId) ?? [] }]
-  })
-}
-
-function readItems(body: string): readonly unknown[] {
-  try {
-    const value: unknown = JSON.parse(body)
-    if (Array.isArray(value)) return value
-    const record = asRecord(value)
-    if (record !== null && Array.isArray(record.items)) return record.items
-    return []
-  } catch {
-    return []
-  }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null
-}
-
-function readString(value: Record<string, unknown> | null, keys: readonly string[]): string | null {
-  if (value === null) return null
-  for (const key of keys) {
-    const candidate = value[key]
-    if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim()
-  }
-  return null
-}
-
-function readTime(value: Record<string, unknown> | null): number {
-  if (value === null) return 0
-  for (const key of ['updatedAt', 'updated', 'lastUpdatedAt', 'createdAt']) {
-    const candidate = value[key]
-    if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate
-    if (typeof candidate === 'string') {
-      const parsed = Date.parse(candidate)
-      if (Number.isFinite(parsed)) return parsed
-    }
-  }
-  return 0
 }
 
 export function toPeerHostClientRecord(record: PeerHostRecord): PeerHostClientRecord {

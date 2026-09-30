@@ -5,7 +5,7 @@ import { createDshNativeSummarySource } from '../data/build/dist/host/modules/pe
 test('原生摘要 source 从 workspaceRegistry 和 sessionController 生成工作区会话摘要', async () => {
   const source = createDshNativeSummarySource({
     get(name: string) {
-      if (name === 'workspaceRegistry') return { list: () => [{ id: 'workspace-a', title: '本地工作区' }] }
+      if (name === 'workspaceRegistry') return { list: () => [{ id: 'workspace-a', title: '本地工作区', path: '/Users/dev/local' }] }
       return undefined
     },
   } as never, {
@@ -16,6 +16,7 @@ test('原生摘要 source 从 workspaceRegistry 和 sessionController 生成工�
   assert.deepEqual(await source.load(), [{
     workspaceId: 'workspace-a',
     displayName: '本地工作区',
+    path: '/Users/dev/local',
     sessions: [{ sessionId: 'session-a', title: '远端记录', status: 'running', updatedAt: 123 }],
   }])
 })
