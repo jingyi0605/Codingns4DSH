@@ -53,7 +53,9 @@ export function createGitManagementFeature(): FeatureModule<CodingNsHostServices
           case 'branches': return readBranches(root)
           case 'switch': return switchBranch(root, requiredString(input.branchName, 'branchName'), input.create === true)
           case 'fetch': return syncRemote(workspaceId, root, ['fetch', '--all', '--prune'])
-          case 'pull': return syncRemote(workspaceId, root, ['pull', '--ff-only'])
+          // 自动暂存已跟踪的本地改动，快进完成后再恢复，避免本地未提交文件阻塞拉取。
+          // `--ff-only` 仍然保留：远程与本地已经分叉时必须明确处理，不能偷偷创建合并提交。
+          case 'pull': return syncRemote(workspaceId, root, ['pull', '--ff-only', '--autostash'])
           case 'push': return syncRemote(workspaceId, root, ['push'])
           case 'undo': return undoLastCommit(workspaceId, root)
           default: throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `未知 Git RPC: git/${action}`)

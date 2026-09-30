@@ -17,6 +17,7 @@ export const gitPanelClass = {
   menu: 'codingns4dsh-git-menu',
   menuItem: 'codingns4dsh-git-menu-item',
   menuItemDanger: 'codingns4dsh-git-menu-item-danger',
+  progress: 'codingns4dsh-git-progress',
   field: 'codingns4dsh-git-field',
   select: 'codingns4dsh-git-select',
   ref: 'codingns4dsh-git-ref',
@@ -74,6 +75,7 @@ const gitPanelCss = `
 .${gitPanelClass.menuItem}:focus-visible{${focusRingInset}}
 .${gitPanelClass.menuItem}:disabled{${disabled}}
 .${gitPanelClass.menuItemDanger}{color:var(--dsw-alias-state-error-primary)}
+.${gitPanelClass.progress}{display:inline-block;animation:codingns4dsh-git-spin 900ms linear infinite}
 .${gitPanelClass.field}{border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-specific-input-major);color:var(--dsw-alias-label-primary)}
 .${gitPanelClass.field}:hover:not(:disabled){border-color:var(--dsw-alias-border-l3)}
 .${gitPanelClass.field}:focus-visible{${focusRing}}
@@ -89,5 +91,6 @@ const gitPanelCss = `
 .${gitPanelClass.segment}:hover:not(:disabled),.${gitPanelClass.segment}[aria-selected='true']{color:var(--dsw-alias-label-primary)}
 .${gitPanelClass.segment}:disabled{cursor:default;opacity:.4}
 .${gitPanelClass.segment}:focus-visible{${focusRingInset}}
-@media (prefers-reduced-motion: reduce){.${gitPanelClass.row}{transition:none}.${gitPanelClass.segmentedIndicator},.${gitPanelClass.segment}{transition:none}}
+@keyframes codingns4dsh-git-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.${gitPanelClass.row}{transition:none}.${gitPanelClass.segmentedIndicator},.${gitPanelClass.segment}{transition:none}.${gitPanelClass.progress}{animation:none}}
 `

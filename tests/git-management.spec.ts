@@ -219,6 +219,53 @@ test('Git Host 历史记录返回父提交、标签与提交归属', async () =>
   }
 })
 
+test('Git Host 允许脏工作区 Push，并在 Pull 后恢复本地改动', async () => {
+  const root = await mkdtemp(`${tmpdir()}/codingns-git-sync-`)
+  const remote = await mkdtemp(`${tmpdir()}/codingns-git-remote-`)
+  const peerParent = await mkdtemp(`${tmpdir()}/codingns-git-peer-`)
+  const peer = `${peerParent}/clone`
+  try {
+    await git(remote, ['init', '--bare'])
+    await git(root, ['init'])
+    await git(root, ['config', 'user.name', 'CodingNS Test'])
+    await git(root, ['config', 'user.email', 'codingns-test@example.invalid'])
+    await writeFile(`${root}/README.md`, 'base\n', 'utf8')
+    await git(root, ['add', 'README.md'])
+    await git(root, ['commit', '-m', '基础提交'])
+    await git(root, ['branch', '-M', 'main'])
+    await git(root, ['remote', 'add', 'origin', remote])
+    await git(root, ['push', '--set-upstream', 'origin', 'main'])
+
+    const roots = new Map([['workspace-sync', root]])
+    const { table } = startGitFeature(roots)
+    await writeFile(`${root}/pushed.md`, '待推送提交\n', 'utf8')
+    await rpc(table, 'git/stage', { workspaceId: 'workspace-sync', targets: ['pushed.md'] })
+    await rpc(table, 'git/commit', { workspaceId: 'workspace-sync', subject: '脏工作区前的提交' })
+    await writeFile(`${root}/README.md`, 'base\n本地未提交改动\n', 'utf8')
+
+    // Push 只发送提交对象，工作区仍有未提交改动时也必须能够完成。
+    await rpc(table, 'git/push', { workspaceId: 'workspace-sync' })
+    await execFile('git', ['clone', remote, peer])
+    assert.equal(await readFile(`${peer}/pushed.md`, 'utf8'), '待推送提交\n')
+
+    await git(peer, ['config', 'user.name', 'CodingNS Peer'])
+    await git(peer, ['config', 'user.email', 'codingns-peer@example.invalid'])
+    await writeFile(`${peer}/remote.md`, '远程新增提交\n', 'utf8')
+    await git(peer, ['add', 'remote.md'])
+    await git(peer, ['commit', '-m', '远程新增提交'])
+    await git(peer, ['push'])
+
+    // Pull 使用 autostash：快进远程提交后，本地已跟踪改动仍然保留。
+    await rpc(table, 'git/pull', { workspaceId: 'workspace-sync' })
+    assert.equal(await readFile(`${root}/README.md`, 'utf8'), 'base\n本地未提交改动\n')
+    assert.equal(await readFile(`${root}/remote.md`, 'utf8'), '远程新增提交\n')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+    await rm(remote, { recursive: true, force: true })
+    await rm(peerParent, { recursive: true, force: true })
+  }
+})
+
 test('Git Client 与 Host 接线包含侧栏面板和所有版本 RPC', async () => {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { dsh: { client: { inject: string[] } } }
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-sidebar'))
