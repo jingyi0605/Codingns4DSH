@@ -9,4 +9,6 @@ docs/开发记录
 docs/生成报告
 docs/调查报告
 docs/配图
+.DS_Store
 output/imagegen/dsh-cover-api/dsh-bilibili-cover-api-16x9.png
+tmp

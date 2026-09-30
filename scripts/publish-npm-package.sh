@@ -225,24 +225,63 @@ run_checks_and_build() {
 }
 
 create_tarball() {
+  local dry_run_json=""
   local pack_json=""
   local tarball_name=""
+
+  # 打包前先确认构建产物存在，避免并发构建清空 data/build/dist 后打出残缺包。
+  [[ -f "$ROOT_DIR/data/build/dist/index.js" ]] \
+    || { echo "缺少构建产物：data/build/dist/index.js，请先执行 pnpm run build" >&2; exit 1; }
 
   mkdir -p "$OUTPUT_DIR"
   rm -f "$OUTPUT_DIR"/*.tgz
 
   echo "==> 检查 npm 打包清单"
-  npm pack --dry-run --ignore-scripts --json >/dev/null
+  dry_run_json="$(npm pack --dry-run --ignore-scripts --json)"
 
   echo "==> 生成 npm tarball"
   pack_json="$(npm pack --ignore-scripts --pack-destination "$OUTPUT_DIR" --json)"
-  tarball_name="$(PACK_JSON="$pack_json" node <<'NODE'
-const fs = require('node:fs')
-const input = process.env.PACK_JSON ?? ''
-if (!input) process.exit(1)
-const parsed = JSON.parse(input)
-const entry = Array.isArray(parsed) ? parsed[0] : parsed
+  tarball_name="$(DRY_RUN_JSON="$dry_run_json" PACK_JSON="$pack_json" node <<'NODE'
+const first = (value) => (Array.isArray(value) ? value[0] : value)
+const parse = (value, label) => {
+  if (!value) {
+    console.error(`缺少 ${label} 输出`)
+    process.exit(1)
+  }
+  try {
+    return first(JSON.parse(value))
+  } catch {
+    console.error(`${label} 不是合法 JSON`)
+    process.exit(1)
+  }
+}
+
+const entry = parse(process.env.PACK_JSON, 'npm pack')
+const dryEntry = parse(process.env.DRY_RUN_JSON, 'npm pack --dry-run')
 if (!entry?.filename) process.exit(1)
+
+const requiredEntries = [
+  'package.json',
+  'version.json',
+  'dsh.bundle.patch',
+  'data/build/dist/index.js',
+  'data/build/dist/host/index.js',
+  'data/build/dist/client/bundle.js',
+]
+const paths = new Set((entry.files ?? []).map((file) => file.path))
+for (const required of requiredEntries) {
+  if (!paths.has(required)) {
+    console.error(`打包产物缺少必需条目：${required}`)
+    process.exit(1)
+  }
+}
+
+// dry-run 与实际打包条目数必须一致；不一致说明构建产物在打包期间被并发构建改写或清空。
+if (entry.entryCount !== dryEntry.entryCount) {
+  console.error(`打包条目数不一致：dry-run ${dryEntry.entryCount}，实际 ${entry.entryCount}`)
+  process.exit(1)
+}
+
 process.stdout.write(entry.filename)
 NODE
 )"
@@ -250,6 +289,10 @@ NODE
   TARBALL_PATH="$OUTPUT_DIR/$tarball_name"
   [[ -f "$TARBALL_PATH" ]] || { echo "未找到 npm pack 产物：$TARBALL_PATH" >&2; exit 1; }
   echo "已生成：$TARBALL_PATH"
+  echo "打包条目数：$(PACK_JSON="$pack_json" node -e '
+const first = (value) => (Array.isArray(value) ? value[0] : value)
+process.stdout.write(String(first(JSON.parse(process.env.PACK_JSON)).entryCount))
+')"
 }
 
 publish_tarball() {

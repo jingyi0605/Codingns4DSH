@@ -58,6 +58,7 @@
     "node": ">=22.19.0"
   },
   "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4",
     "@deepseek-ai/dsh": ">=0.2.0-rc.1"
   },
   "dsh": {
@@ -134,8 +135,6 @@
     "@deepseek-ai/dsh-client-ui-sidebar-right": "0.2.0-rc.1",
     "@deepseek-ai/dsh-client-ui-theme": "0.2.0-rc.1",
     "@deepseek-ai/dsh-settings": "0.2.0-rc.1",
-    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.4",
     "@types/react": "~18.3.1",
     "@types/ws": "^8.18.1",
     "react": "^18.2.0",
@@ -143,6 +142,8 @@
     "typescript": "^5.9.2"
   },
   "dependencies": {
+    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.4",
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-html": "^6.4.12",
     "@codemirror/lang-javascript": "^6.2.5",
