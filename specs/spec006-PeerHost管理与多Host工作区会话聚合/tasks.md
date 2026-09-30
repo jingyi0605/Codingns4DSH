@@ -137,6 +137,16 @@
 - 主要改哪些文件：`src/host/modules/peer-host/peer-host-service.ts`、Host RPC/API、认证测试。
 - 明确不做什么：不把密码、token 或 refresh 结果返回 Client，不复用当前 Host token。
 - 怎么验证：token 刷新成功/失败、目标退出、目标删除和当前 Host 会话隔离测试。
+- 本次修复（2026-09-30）：目标 LAN 边界新增 `POST /api/auth/login|refresh|logout`，用登录保护的
+  口令哈希与签名材料签发短期票据；PeerHost 白名单路由改为校验票据签名，不再接受任意 Bearer。
+  当前 Host 侧 `errorResponse()` 直传 `PeerHostSessionError` 稳定错误码（缺少凭据返回
+  `401 PEER_HOST_SESSION_REQUIRED`），`login()` / `refresh()` 允许从 `session_required` 直接恢复并写回
+  `ready`。修复前目标返回 404，日志里只看到被掩码的 `PEER_HOST_PROXY_UNREACHABLE`。
+- 本次修复验证：`pnpm run typecheck`、`pnpm run build`、`pnpm run version:check`、
+  `pnpm run capability:check` 通过；`pnpm test` 750 项通过；真实 socket 探针（LAN 边界 11/11、
+  端到端登录与状态代理 9/9）通过。详见 `docs/开发记录/20260930-PeerHost目标登录端点与Bearer票据校验记录.md`。
+- 本次修复边界：目标 LAN 上游的 `/api/workspaces`、`/api/sessions` 在 DSH 0.2.0-rc.2 不存在（404），
+  远端工作区摘要仍需 spec006 阶段 6A 的原生 source 方案，未在本轮修改。
 
 ## 阶段 3：HTTP/WS 受控代理
 
@@ -383,6 +393,22 @@
 - 本次增量（2026-09-28）：新增 `src/client/peer-host-native-session-ui.ts` 原生会话 UI adapter。adapter 只在结构探测到 DSH `[data-composer-card]`/conversation 容器时挂载，加载历史并把白名单实时事件写入带完整 HostScope 的当前会话节点；generation 失效由 `PeerHostSessionController` 拒绝旧结果。未探测到稳定容器时显示“原生 conversation 容器不可用”降级状态，不创建 iframe 或伪装三栏。
 - 验证：`pnpm run typecheck`；`pnpm run build`；`node --test tests/peer-host-native-session-ui.spec.ts`（2 项通过）。
 - 本次增量（2026-09-28）：原生会话打开后立即发送作用域绑定的 `session.subscribe`；Client WebSocket 等待真实 `open` 事件后才交付订阅，断线重连只重放白名单中的幂等订阅（工作区、文件树、Git、会话、终端和右侧工具），命令与终端输入不会重放。远端非法消息改为以带完整 HostScope 的 `peerHost.error` 仅回传当前连接。
+- 本次修复（2026-09-30）：远端工作区/会话摘要改走 DSH 原生协议。新增 `src/host/modules/peer-host/peer-host-remote-summary-source.ts`：工作区来自 `workspace/follow` 首帧 baseline（`items[].sessionIds` 分组、`archivedSessionIds` 过滤），会话元数据来自 `session/list`（标题取 `projections.values.title`，状态取 `running`），`origin: 'subagent'` 会话不进入摘要；`features/peer-host.ts` 的 `buildSources()` 不再假设目标存在 `/api/workspaces`、`/api/sessions`（实测 404），旧 `loadPeerSummary()` 已删除。
+- 本次修复（2026-09-30）：PeerHost 原生调用信封集中到 `src/host/modules/peer-host/peer-host-native-transport.ts` 并导出，正文统一为 `{rpcId, method: 'peerHost/<action>', payload}`，与目标 `/api/codingns/<endpoint>` fetch RPC 入口一致（旧正文缺 rpcId 且 method 写成原生方法名，目标返回 400 `invalid RPC envelope`）；`workspace/follow`、`session/control` 等流式原生方法补兜底 `AbortSignal`，修复 `TypeError: Cannot read properties of undefined (reading 'throwIfAborted')`。
+- 本次修复验证：真实目标（LAN 入口 + 有效票据）`session/list` 返回会话数据且信封不再被拒；假目标端到端探针（真实 HTTP + `PeerHostHttpProxyService` + Bearer 注入 + 摘要组装）通过；`node --test tests/*.spec.ts` 760 项通过（新增 `tests/peer-host-remote-summary-source.spec.ts`、`tests/peer-host-native-transport.spec.ts`）。
+- 本次修复边界：点击远端会话仍走降级面板，`/api/sessions/<id>/history` 同样是目标不存在的路径，需要后续接入原生 `session/follow` 首帧（snapshot.records）；终端、文件树、Git 等 `PEER_HOST_HTTP_PROXY_RULES` 旧 REST 路径未经验证，迁移前不应视为可用能力。详见 `docs/开发记录/20260930-PeerHost远端工作区会话摘要改造记录.md`。
+- 本次修复（2026-09-30）：远端资源改走 DSH 原生界面，删除自绘 DOM 与列表 facade；同时记录关键时序约束——PeerHost Client 模块在设置从 Host 异步返回后才启动，必然晚于 DSH UI 插件打开 `workspace/follow`/`$events`（启动期已由官方 mux 建立），因此不能再依赖"拦截原生流注入帧"。最终实现改为两条真实数据通道：①`src/client/peer-host-native-store-projection.ts` 就地改写原生 UI 按引用持有的 `workspaces.list`（`getSnapshot` 合并虚拟工作区、`subscribe` 转发聚合变化、写入口保持原生行为、合并结果按引用记忆化以满足 `useSyncExternalStore`）；②`src/client/features/peer-host.ts` 在 `session/list` 响应并入虚拟会话摘要（标题用 `projections.values.title` 的 cached 块），并在聚合变化时调用原生 `sessions.refresh()`，把虚拟会话送进原生 `SessionManager`（`sessions.retain()` 可解析、点击可打开）；非白名单 `/api` 流回到 `openDshGatewayStream`，不再抛哨兵错误。
+- 本次修复（2026-09-30）：`peerHost/nativeStream` 补齐双向 ID 改写——转发前 `rewriteNativeRequestIds`，返回迭代器逐帧 `rewriteNativeResponseIds`；远端 `session/follow` 现在能带着虚拟 ID 进入、带着虚拟 ID 回帧。
+- 本次修复（2026-09-30）：删除 `src/client/peer-host-native-session-ui.ts`、`src/client/host-navigation.ts`、`src/client/peer-host-native-store-adapter.ts` 及对应测试，`src/client/index.ts`、`src/client/features/index.ts` 同步清理导出；`peerHost`/`peerHostSession`/WS 事件通道暂无消费者，保留待确认后单列清理。
+- 本次修复验证：`pnpm test` 768 项通过（含构建）；`pnpm run typecheck`、`pnpm run version:check`、`pnpm run capability:check` 通过；新增 `tests/peer-host-native-projection.spec.ts`、`tests/peer-host-native-store-projection.spec.ts`（就地投影、快照引用稳定、订阅转发、卸载还原），扩展 `tests/peer-host-native-connector.spec.ts`（`session/list` 合并、`$events` 本地回退）与 `tests/peer-host-native-protocol.spec.ts`（`session/follow` 流 ID 改写）。详见 `docs/开发记录/20260930-PeerHost远端资源改用原生界面记录.md`。
+- 本次修复（2026-09-30 第二轮）：目标侧原生调用改走 DSH 自己的 `typertGateway`。此前把线上载荷 `{args:{...}}` 当作位置参数直接调用 `sessionController`：`session/list` 参数被静默忽略（cursor 丢失），`session/follow` 首帧即抛 `address.kind` 未定义，客户端记为 `session event stream ended before its opening cursor`。新增 `src/host/modules/peer-host/peer-host-native-dispatch.ts`（`invoke`/`stream` + `{args}` 解包 + 方法拆分诊断），`features/peer-host.ts` 的 `nativeLocal`/`nativeStreamOpen` 全部改用该派发；`peer-host-remote-summary-source.ts` 的 `session/list` 改为线上形状 `{args:{_request:{}}}`。
+- 本次修复（2026-09-30 第二轮）：右侧文件面板接入转发。`DSH_NATIVE_REMOTE_METHODS` 新增 `workspaceFiles/changes|list|read|readBytes|stat`，并把 lookup 参数 `workspaceFileScopeId`（承载 SessionId）纳入虚拟/真实 Session 身份改写，避免 `lookup provider "workspaceFileScope" did not resolve the requested identity`。
+- 本次修复验证（第二轮）：`pnpm test` 772 项通过（含构建）；`pnpm run typecheck` 通过；新增 `tests/peer-host-native-dispatch.spec.ts`（线上载荷解包、方法拆分、Gateway 缺失诊断），`tests/peer-host-remote-summary-source.spec.ts` 断言 `session/list` 的线上载荷形状。
+- 本次修复（2026-09-30 第三轮）：虚拟工作区必须携带远端真实 `path`。右侧文件面板按工作区视图的 `path` 解析文件树根目录，而 DSH 的 `workspaceId` 本身就是 UUID（目标实测 `30aead24-…`、`f3c44ab5-…`），此前用 workspaceId 充当 path，导致目标端报 `no entry at "<workspaceId>"`（`workspace-file/not-found`）。`AggregateWorkspaceSource`/`AggregateWorkspaceSummary` 新增 `path`：远端摘要读 `workspace/follow` 首帧的 `path`（缺失退回 workspaceId），本地摘要读 workspaceRegistry 的 `path`/`cwd`；客户端投影改用真实路径，会话摘要 `cwd` 同步修正。
+- 本次修复验证（第三轮）：直连目标实测——`workspaceFiles/list` + 真实路径 → 200 且 `entries=32`；同一调用改用 workspaceId → 精确复现 `no entry at "f3c44ab5-…"`；`pnpm test` 772 项通过（含构建）。
+- 本次修复（2026-09-30 第四轮）：流通道对目标重启窗口做有限重试。重启 `dsh-stage0` 后页面立刻出现的 `PEER_HOST_PROXY_UNREACHABLE: 目标 Host 代理不可达` 并不是目标插件的业务错误，而是本机代理在连接级失败时生成的 502 信封——目标 LAN 监听由插件启动时创建，比 webserver 晚若干秒，启动窗口内的 `nativeStreamOpen`/`nativeStreamNext` 会直接失败并把已打开的会话流打断。`peer-host-native-transport.ts` 新增 `requestPeerHostStream()`：只对「502 + `PEER_HOST_PROXY_UNREACHABLE`」做最多 3 次退避重试（400ms/800ms），调用方 signal 中止即放弃；unary 调用与业务错误不重试，避免副作用重复执行。
+- 本次修复验证（第四轮）：`pnpm test` 776 项通过（含构建），新增用例覆盖「两次连接级失败后成功」与「业务错误只调用一次」。
+- 本次修复（第五轮）：登录端点 401 不再被映射成「登录态已失效」。实测目标对错误密码返回 `目标 Host 用户名或密码错误`，而客户端把登录端点的 401 统一按 SESSION_REQUIRED 文案展示，掩盖了真实原因；`PeerHostSessionService.request()` 现按路径区分文案。同时记录：重新保存「登录保护」设置会轮换 salt，旧 PeerHost 凭据立即失效（属预期）；记录进入 `session_required` 后，token 仍有效时点「测试/检查」重新握手即可回到 `ready`。验证：`pnpm test` 777 项通过（含构建）。
 - 本次修复（2026-09-28）：管理 API 统一使用 `'/codingns'` RPC 通道并保留 HTTP 回退；原生导航缺失时只保留 `degraded` 状态，不再向 DSH 工作区树顶部注入错误节点。
 - 本次修复（2026-09-28）：设置页遇到只读 SettingsScope/ConfigForm 镜像时改走 Host 自有 `settings/get`、`settings/set` 边界；存在 Host writer 时不再误禁用模块开关，PeerHost 可正常停用并触发资源清理。导航重绘同时清理旧版本遗留的顶部状态节点。
 - 本次修复（2026-09-28）：远端资源 HTTP 请求适配器同步统一到 `'/codingns'` RPC 通道，并保留 `/api/codingns/peerHost/request` 回退，避免会话、文件、Git、终端和右侧工具在管理 RPC 修复后仍命中旧通道。
@@ -529,3 +555,7 @@
 - 主要改哪些文件：本 Spec `tasks.md`、验收记录文档、必要的调查报告。
 - 明确不做什么：不在没有证据时把降级能力标记为 ready，不执行提交、推送或发布。
 - 怎么验证：完整四项验证命令、验收清单逐项勾选和 `git diff --check`。
+
+- 本次修复（2026-09-30）：修复"远端会话历史打不开（session event stream ended before its opening cursor）"。用 Playwright 从浏览器驱动复现并抓包，确认第一次 `peerHost/nativeStreamNext` 即返回 `{"done":true}`：`nativeStream` 分支误绑了本次 HTTP 请求的 `rpcContext.signal`，该 signal 在响应返回后立即中止，导致聚合流第一轮循环即结束；`nativeStreamOpen` 分支本就未绑定（句柄由 `nativeStreamNext/Close` 轮询管理）。修复：`nativeStream` 不再传入请求 signal；`nativeStreamNext` 改为每次轮询续期存活窗口（空闲会话的 `next` 会长时间挂起），窗口收敛为 `NATIVE_STREAM_TTL_MS = 600_000`。对照证据：同一载荷直连目标 LAN 入口的 `session/follow`（四种载荷变体含应用原样）均返回 `snapshot`，经本机 Host 转发在修复前一律 `done:true`。`pnpm test` 777 项通过（含构建），`pnpm run typecheck` 通过。详见 `docs/开发记录/20260930-PeerHost远端资源改用原生界面记录.md`。
+
+- 本次修复（2026-09-30）：右侧「文件管理」「终端」面板接入原生转发。`terminal` 命名空间（`environment/list/create/follow/write/resize/close/rename/retain/shells`）登记进 `DSH_NATIVE_REMOTE_METHODS`：面板挂载时会先经 `terminal.environment(sessionId)` 解析会话环境，此前该调用落到本机 Host，虚拟会话解析不到，表现为"当前 Session 没有关联 Workspace"与面板空白。`pnpm test` 777 项通过（含构建），协议测试补充终端方法登记断言。详见 `docs/开发记录/20260930-PeerHost远端资源改用原生界面记录.md`。

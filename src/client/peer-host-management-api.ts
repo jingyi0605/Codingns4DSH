@@ -1,4 +1,5 @@
 import type { AggregateHostResult, PeerHostClientRecord, PeerHostDiagnosticSnapshot, PeerHostRoute, PeerHostWebSocketEndpoint } from '../shared/contracts/peer-host.js'
+import type { DshHostStatus } from '../shared/contracts/host-status.js'
 import { CODINGNS_RPC_CHANNEL } from '../shared/contracts/transport.js'
 import type { CodingNsRpcClient } from './features/types.js'
 
@@ -29,8 +30,11 @@ export interface PeerHostManagementApi {
   create(input: PeerHostCreateRequest): Promise<PeerHostClientRecord>
   update(input: PeerHostUpdateRequest): Promise<PeerHostClientRecord>
   remove(peerHostId: string): Promise<void>
+  enable(peerHostId: string): Promise<PeerHostClientRecord>
+  disable(peerHostId: string): Promise<PeerHostClientRecord>
   check(peerHostId: string): Promise<PeerHostClientRecord>
   reconnect(peerHostId: string): Promise<PeerHostClientRecord>
+  status(peerHostId: string): Promise<DshHostStatus>
   login(input: PeerHostLoginRequest): Promise<{ readonly peerHostId: string; readonly status: string; readonly expiresAt: number | null }>
   logout(peerHostId: string): Promise<{ readonly peerHostId: string; readonly status: string; readonly expiresAt: number | null }>
   webSocketEndpoint(): Promise<PeerHostWebSocketEndpoint | null>
@@ -59,8 +63,11 @@ export function createPeerHostManagementApi(rpc: CodingNsRpcClient): PeerHostMan
     create: (input) => call('peerHost/create', input),
     update: (input) => call('peerHost/update', input),
     remove: (peerHostId) => call('peerHost/remove', { peerHostId }).then(() => undefined),
+    enable: (peerHostId) => call('peerHost/enable', { peerHostId }),
+    disable: (peerHostId) => call('peerHost/disable', { peerHostId }),
     check: (peerHostId) => call('peerHost/check', { peerHostId }),
     reconnect: (peerHostId) => call('peerHost/reconnect', { peerHostId }),
+    status: (peerHostId) => call('peerHost/status', { peerHostId }),
     login: (input) => call('peerHost/login', input),
     logout: (peerHostId) => call('peerHost/logout', { peerHostId }),
     webSocketEndpoint: () => call('peerHost/wsEndpoint', {}),

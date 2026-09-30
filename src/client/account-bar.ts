@@ -23,7 +23,7 @@ type ActiveAccount =
 export interface AccountBarController { dispose(): void }
 
 /** 在 DSH 设置触发器旁挂载统一账户入口，兼容侧栏横排与收起竖排。 */
-export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, _settings?: CodingNsSettingsStore<CodingNsSettings>): AccountBarController {
+export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, settingsStore?: CodingNsSettingsStore<CodingNsSettings>): AccountBarController {
   const currentDocument = dom ?? (typeof document === 'undefined' ? undefined : document)
   if (currentDocument === undefined) return { dispose() {} }
   const root = currentDocument
@@ -170,6 +170,8 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   }
   observer = typeof MutationObserver === 'undefined' ? undefined : new MutationObserver(observerCallback)
   observer?.observe(root.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-expanded'] })
+  // PeerHost 开关变化会改变账户入口是否存在，因此必须和设置存储订阅同一轮重绘。
+  const unsubscribeSettings = settingsStore?.subscribe(() => renderAll())
   const onLoginProtectionSessionChanged = (): void => {
     localRelay = readRelayLoginIdentity()
     renderAll()
@@ -187,6 +189,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
       if (loginRefreshTimer !== undefined) clearInterval(loginRefreshTimer)
       observer?.disconnect()
       resizeObserver?.disconnect()
+      unsubscribeSettings?.()
       root.defaultView?.removeEventListener(LOGIN_PROTECTION_SESSION_EVENT, onLoginProtectionSessionChanged)
       closeMenu()
       root.querySelectorAll<HTMLElement>(`button[${ACCOUNT_ATTRIBUTE}]`).forEach((node) => node.remove())
@@ -245,7 +248,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
 
   function activeAccount(): ActiveAccount | null {
     const remote = isRemoteContext()
-    if (isLoopbackPage() && !remote) return null
+    if (isLoopbackPage() && !remote && !peerHostModuleEnabled()) return null
     if (local !== null) return { kind: 'local', identity: local.username, scope: 'lan' }
     if (!remote) return null
     if (auth.status === 'authenticated' && auth.account !== null) {
@@ -256,12 +259,24 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   }
 
   function isAccountAuthenticated(): boolean {
-    return activeAccount() !== null
+    return activeAccount() !== null || shouldShowPeerHostEntry()
+  }
+
+  function shouldShowPeerHostEntry(): boolean {
+    return peerHostModuleEnabled() && (isLoopbackPage() || isDesktopPage())
+  }
+
+  function peerHostModuleEnabled(): boolean {
+    return settingsStore?.getSnapshot().value?.modules.peerHost === true
   }
 
   function isLoopbackPage(): boolean {
     const hostname = root.defaultView?.location.hostname.toLowerCase().replace(/\.$/u, '').replace(/^\[|\]$/gu, '') ?? ''
     return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '::ffff:127.0.0.1'
+  }
+
+  function isDesktopPage(): boolean {
+    return root.defaultView?.location.protocol.toLowerCase() === 'dsh-app:'
   }
 
   /** 关闭账户菜单并注销外部点击监听；菜单与监听始终成对回收。 */
@@ -331,13 +346,15 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
       closeMenu()
     })
     menu.append(peerHost)
-    const logout = root.createElement('button')
-    logout.type = 'button'
-    logout.textContent = busy ? '注销中…' : '注销登录'
-    logout.disabled = busy
-    Object.assign(logout.style, menuButtonStyle())
-    logout.addEventListener('click', () => { void logoutCurrent(menu) })
-    menu.append(logout)
+    if (account !== null) {
+      const logout = root.createElement('button')
+      logout.type = 'button'
+      logout.textContent = busy ? '注销中…' : '注销登录'
+      logout.disabled = busy
+      Object.assign(logout.style, menuButtonStyle())
+      logout.addEventListener('click', () => { void logoutCurrent(menu) })
+      menu.append(logout)
+    }
   }
 
   async function logoutCurrent(menu: HTMLElement): Promise<void> {

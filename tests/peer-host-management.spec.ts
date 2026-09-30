@@ -17,6 +17,7 @@ test('PeerHost 管理 API 只向 Host RPC 发送目标 ID 和一次性登录参�
       if (endpoint === 'peerHost/list') return { ok: true as const, value: [] }
       if (endpoint === 'peerHost/login') return { ok: true as const, value: { peerHostId: 'peer-1', status: 'logged_in', expiresAt: 123 } }
       if (endpoint === 'peerHost/remove') return { ok: true as const, value: null }
+      if (endpoint === 'peerHost/status') return { ok: true as const, value: { cpuPercent: 12, memoryPercent: 34, memoryUsedBytes: 1, memoryTotalBytes: 2, sampledAt: 3 } }
       return { ok: true as const, value: { id: 'peer-1' } }
     },
   }
@@ -24,9 +25,12 @@ test('PeerHost 管理 API 只向 Host RPC 发送目标 ID 和一次性登录参�
   await api.list()
   await api.login({ peerHostId: 'peer-1', username: 'alice', password: 'password-secret' })
   await api.remove('peer-1')
+  await api.enable('peer-1')
+  await api.disable('peer-1')
+  await api.status('peer-1')
 
-  assert.deepEqual(calls.map((call) => call.endpoint), ['peerHost/list', 'peerHost/login', 'peerHost/remove'])
-  assert.deepEqual(calls.map((call) => call.channel), ['/codingns', '/codingns', '/codingns'])
+  assert.deepEqual(calls.map((call) => call.endpoint), ['peerHost/list', 'peerHost/login', 'peerHost/remove', 'peerHost/enable', 'peerHost/disable', 'peerHost/status'])
+  assert.deepEqual(calls.map((call) => call.channel), ['/codingns', '/codingns', '/codingns', '/codingns', '/codingns', '/codingns'])
   assert.deepEqual(calls[1]?.payload, { peerHostId: 'peer-1', username: 'alice', password: 'password-secret' })
   assert.equal(JSON.stringify(calls[0]?.payload).includes('token'), false)
   assert.equal(JSON.stringify(calls[2]?.payload), JSON.stringify({ peerHostId: 'peer-1' }))
@@ -63,7 +67,7 @@ test('PeerHost 管理面板关闭后可重新打开，dispose 会移除事件监
   await Promise.resolve()
   assert.equal(dom.body.children.length, 1)
   const first = dom.body.children[0]!
-  const close = first.find((node) => node.tagName === 'BUTTON' && node.textContent === '关闭')
+  const close = first.find((node) => node.tagName === 'BUTTON' && node.attributes.get('aria-label') === '关闭 PeerHost 管理')
   assert.ok(close)
   close.dispatchEvent(new Event('click'))
   assert.equal(dom.body.children.length, 0)
@@ -74,6 +78,29 @@ test('PeerHost 管理面板关闭后可重新打开，dispose 会移除事件监
   assert.equal(dom.body.children.length, 0)
   dom.defaultView.dispatchEvent(new Event('codingns4dsh:peer-host-open'))
   assert.equal(dom.body.children.length, 0)
+})
+
+test('PeerHost 管理面板居中显示列表，并隐藏中转实现字段', async () => {
+  const dom = new FakeDocument()
+  const controller = startPeerHostManagementPanel({ document: dom as never, rpc: {} as never, api: { list: async () => [] } as never })
+  dom.defaultView.dispatchEvent(new Event('codingns4dsh:peer-host-open'))
+  await Promise.resolve()
+  const panel = dom.body.children[0]!
+  assert.equal(panel.style.position, 'fixed')
+  assert.equal(panel.style.alignItems, 'center')
+  assert.equal(panel.style.justifyContent, 'center')
+  assert.ok(panel.querySelector('[data-codingns-peer-host-list]'))
+  assert.equal(panel.querySelector('[data-codingns-peer-host-device-id]'), null)
+  assert.equal(panel.querySelector('[data-codingns-peer-host-relay-entry-id]'), null)
+  assert.equal(panel.querySelector('[data-codingns-peer-host-transport-version]'), null)
+  const addButton = panel.find((node) => node.tagName === 'BUTTON' && node.attributes.get('aria-label') === '添加 Host')
+  assert.ok(addButton)
+  addButton.dispatchEvent(new Event('click'))
+  const addForm = panel.querySelector('[data-codingns-peer-host-add-form]')
+  assert.ok(addForm)
+  const formDialog = panel.querySelector('[data-codingns-peer-host-form-dialog]')
+  assert.equal(formDialog?.attributes.get('role'), 'dialog')
+  controller.dispose()
 })
 
 test('PeerHost 作用域客户端为会话请求绑定完整 HostScope，不接受目标 URL', async () => {

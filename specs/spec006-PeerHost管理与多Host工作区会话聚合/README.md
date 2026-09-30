@@ -51,14 +51,14 @@
 - 新增 Aggregated Host 边界：它负责虚拟 Workspace/Session Registry、Host 命名空间、请求/事件路由、混合排序持久化和能力聚合。
 - 本地 DSH Client 和 CodingNS Client Bundle 是唯一 UI 来源；远端 PeerHost 只提供工作区、会话、对话、适配器、文件、Git、终端和右侧工具的 Host 能力。
 - 本地插件可以渲染远端会话和工具，但每个目标 Host 的实际适配器能力仍必须通过握手/能力摘要确认；不支持的能力返回结构化 `unsupported`。
-- 现有 `peer-host-native-session-ui.ts`、`host-navigation.ts` 和受控代理保留为阶段性验证/降级实现，不作为最终原生聚合验收证据。
+- 自绘 DOM 适配器（`peer-host-native-session-ui.ts`、`host-navigation.ts`）与列表 Store facade（`peer-host-native-store-adapter.ts`）已删除：虚拟工作区就地投影进原生 `workspaces.list`（`peer-host-native-store-projection.ts`），虚拟会话由页面 Transport 并入 `session/list` 并触发原生 `sessions.refresh()` 进入 SessionManager，两者都由原生侧栏与会话组件渲染；受控代理继续保留。
 
 - 已实现 PeerHost 管理面板、Host 侧加密凭据存储、固定握手、HTTP/WS 正向白名单和局域网 Host-to-Host `/ws` connector。
 - PeerHost 管理已复用统一用户账户菜单；添加/登录表单自动识别本地保护账号或中转账号，仅预填用户名，密码不读取、不持久化；中转路由后端未就绪时保持明确不可用。
 - 已实现 `HostScope` 作用域校验、`scopeGeneration` 清理、聊天/停止/权限/问题回答命令、实时消息写入、文件/Git/终端/右侧工具的受控适配器，以及有限指数退避和重连后的 generation 重建。
-- 当前聚合层只接受显式注入的稳定 workspace/session source。未注入时返回 `unsupported` 和中文诊断，不把空列表伪装成成功；远端摘要已通过列表 Store facade 接入原生 Workspace/Session 列表。
-- DSH 0.2.0-rc.1 已由 CodingNS 单插件内置并验证 preboot Transport shim；当前版本进一步通过公开 `workspaces.list`、`sessions.list` 快照 facade 注入远端虚拟 Workspace/Session 摘要，并在 `/api` Remote 层提供 `peerHost/native`、`peerHost/nativeStream` connector。原生列表可显示和排序远端工作区，远端 `session/page`/`session/follow` 已能通过目标 Host 的 DSH Controller 路由；真实 `sessions.retain()` 全链路和右侧工具浏览器回放仍在 6A.4/6A.5/6A.7 验收中。
-- 当前原生导航和会话实现仍是 DOM 结构探测适配器，能力缺失时保持 `degraded`/`unsupported`；它们不能证明原生三栏聚合已经完成。
+- 当前聚合层只接受显式注入的稳定 workspace/session source。未注入时返回 `unsupported` 和中文诊断，不把空列表伪装成成功；远端摘要已由页面 Transport 投影进原生工作区 Store 与 `session/list` 通道。
+- DSH 0.2.0-rc.1 已由 CodingNS 单插件内置并验证 preboot Transport shim；当前版本把聚合结果投影进原生 `workspaces.list`（就地改写 `getSnapshot`/`subscribe`）与 `session/list`（虚拟会话摘要与 cached 标题投影），并调用原生 `sessions.refresh()` 让虚拟会话进入 SessionManager，`sessions.retain()` 与远端 `session/follow` 已能串联；Host 侧 `peerHost/native`、`peerHost/nativeStream` 负责双向虚拟 ID 改写。页面 Transport 启动晚于 DSH UI 插件建立原生流，因此不能再依赖拦截 `workspace/follow`/`$events` 注入帧。目标侧原生调用已改走 DSH 自己的 `typertGateway`（按 descriptor 解包 `{args}` 并解析 lookup），会话流不再“开场游标前结束”；右侧 `workspaceFiles/*` 已纳入转发与 `workspaceFileScopeId` 身份改写，终端/Git 等其余命名空间仍在 6A.5/6A.7 验收中。
+- 远端资源只经原生 Remote 帧进入原生 Store；页面流结构不符时跳过注入并保持本机数据可用，不再以 DOM 节点或列表 facade 冒充原生集成。
 - Relay route 仅代表能力矩阵中的受控扩展点。Host-to-Host 工作台 JSON/WS Transport 尚未验证，所有中转 PeerHost 必须保持 `relay_unavailable/degraded`。
 - 诊断只返回 PeerHost ID、路由类型、状态、稳定错误码、检查时间和脱敏 fingerprint；不向 Client 或日志写入 token、密码、relay ticket、完整 URL、文件内容、命令和模型正文。
 

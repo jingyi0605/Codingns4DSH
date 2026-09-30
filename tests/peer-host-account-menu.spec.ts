@@ -15,12 +15,20 @@ test('PeerHost 管理入口归属于统一账户菜单，不再由 Feature 注�
   assert.doesNotMatch(feature, /startPeerHostConnectionButton\(\)/u)
 })
 
+test('PeerHost 启用后回环和 Desktop 页面也显示统一账户入口', async () => {
+  const accountBar = await readFile(join(projectRoot, 'src/client/account-bar.ts'), 'utf8')
+  assert.match(accountBar, /settingsStore\?\.getSnapshot\(\)\.value\?\.modules\.peerHost === true/u)
+  assert.match(accountBar, /location\.protocol\.toLowerCase\(\) === 'dsh-app:'/u)
+  assert.match(accountBar, /peerHostModuleEnabled\(\) && \(isLoopbackPage\(\) \|\| isDesktopPage\(\)\)/u)
+  assert.match(accountBar, /settingsStore\?\.subscribe\(\(\) => renderAll\(\)\)/u)
+})
+
 test('PeerHost 管理表单自动识别账号但不读取密码或使用 prompt', async () => {
   const panel = await readFile(join(projectRoot, 'src/client/peer-host-management-panel.ts'), 'utf8')
   assert.match(panel, /fetchLocalIdentity/u)
   assert.match(panel, /readRelayLoginIdentity/u)
   assert.match(panel, /data-codingns-peer-host-username/u)
   assert.match(panel, /data-codingns-peer-host-password/u)
-  assert.match(panel, /当前中转 PeerHost 路由不可用/u)
+  assert.match(panel, /不会自动登录远程 Host/u)
   assert.doesNotMatch(panel, /\.prompt\(/u)
 })

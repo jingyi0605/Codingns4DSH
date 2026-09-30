@@ -382,7 +382,7 @@ interface HostRouter {
 
 PeerHost Feature 启用后，在右下角注册连接管理按钮；按钮只负责打开当前页面内的管理面板，不触发 Host 切换。管理面板显示配置、握手状态、版本、路由、最近检查和登录操作。
 
-最终路径是让 CodingNS 单插件连接 Aggregated Host，由本地原生 Workspace/Session/Conversation 组件读取虚拟数据。当前 `peer-host-native-session-ui.ts` 的 DOM 注入只能作为能力探测和降级路径；列表 facade 与 `/api` 原生 Remote connector 已可用，但没有真实浏览器 Session binding/Conversation 回放证据时仍必须显示 `degraded/unsupported`，不能把 iframe 或 DOM 节点冒充成完整原生多 Host 聚合。
+最终路径是让 CodingNS 单插件连接 Aggregated Host，由本地原生 Workspace/Session/Conversation 组件读取虚拟数据。当前实现已删除 DOM 注入与列表 facade：`peer-host-native-store-projection.ts` 就地改写原生 UI 按引用持有的 `workspaces.list`（`getSnapshot` 合并虚拟工作区、`subscribe` 转发聚合变化），页面 Transport 把虚拟会话并入 `session/list` 响应并触发原生 `sessions.refresh()`，`/api` 原生 Remote 的 `session/follow`、`session/page`、`session/prompt` 按 HostScope 双向改写 ID 后转发。注意页面 Transport 启动必然晚于 DSH UI 插件建立原生流，不能依赖拦截 `workspace/follow`/`$events` 注入帧。目标侧一律经 DSH 的 `typertGateway` 派发（`{args}` 解包 + lookup 解析），右侧 `workspaceFiles/*` 已纳入转发；终端与 Git 等其余命名空间仍需独立验收，不能仅凭列表与文件面板可用就宣称完整原生多 Host 聚合。
 
 ### 9.4 混合顺序
 
