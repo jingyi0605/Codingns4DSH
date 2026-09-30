@@ -113,6 +113,8 @@
   "files": [
     "data/build/dist/**/*.js",
     "data/build/dist/**/*.d.ts",
+    "data/build/dist/**/*.js.map",
+    "data/build/dist/**/*.d.ts.map",
     "assets/provider-icons/**",
     "dsh.bundle.patch",
     "profile/**",

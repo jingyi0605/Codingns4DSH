@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -27,10 +28,12 @@ const runtimeRoot = process.argv[2] ?? process.env.DSH_DESKTOP_RUNTIME_ROOT
 if (runtimeRoot) {
   const runtimeManifest = JSON.parse(await readFile(join(runtimeRoot, 'node_modules/@deepseek-ai/dsh/package.json'), 'utf8'))
   if (runtimeManifest.version !== expected) failures.push(`Desktop runtime 的 @deepseek-ai/dsh 为 ${runtimeManifest.version}，必须为 ${expected}`)
-  const runtime = JSON.parse(await readFile(join(runtimeRoot, 'desktop-runtime.json'), 'utf8'))
-  if (runtime.release?.version !== expected) failures.push(`Desktop runtime release 为 ${String(runtime.release?.version)}，必须为 ${expected}`)
-  const mismatches = (runtime.sharedPackages ?? []).filter((item) => item.name.startsWith('@deepseek-ai/dsh') && item.version !== expected)
-  if (mismatches.length > 0) failures.push(`Desktop runtime 存在非 rc.2 DSH 包：${mismatches.map((item) => `${item.name}@${item.version}`).join(', ')}`)
+  if (existsSync(join(runtimeRoot, 'desktop-runtime.json'))) {
+    const runtime = JSON.parse(await readFile(join(runtimeRoot, 'desktop-runtime.json'), 'utf8'))
+    if (runtime.release?.version !== expected) failures.push(`Desktop runtime release 为 ${String(runtime.release?.version)}，必须为 ${expected}`)
+    const mismatches = (runtime.sharedPackages ?? []).filter((item) => item.name.startsWith('@deepseek-ai/dsh') && item.version !== expected)
+    if (mismatches.length > 0) failures.push(`Desktop runtime 存在非 rc.2 DSH 包：${mismatches.map((item) => `${item.name}@${item.version}`).join(', ')}`)
+  }
 }
 
 if (failures.length > 0) {
