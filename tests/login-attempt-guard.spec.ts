@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { LoginAttemptGuard, createLoginAttemptContext } from '../data/build/dist/host/login-attempt-guard.js'
-import { PEER_HOST_AUTH_PATHS, createLoginProtectionConfig, resolvePeerHostAuthResponse } from '../data/build/dist/host/lan-access-dsh.js'
+import { LanAccessDshProxy, PEER_HOST_AUTH_PATHS, createLoginProtectionConfig, resolvePeerHostAuthResponse } from '../data/build/dist/host/lan-access-dsh.js'
 
 const headers = {
   'user-agent': 'CodingNS test browser',
@@ -77,4 +77,81 @@ test('PeerHost 登录接口共享来源和全局失败限速', () => {
   }
   const blocked = resolvePeerHostAuthResponse(request, config, new Set(), guard, context)
   assert.match(new TextDecoder().decode(blocked), /429 Too Many Requests/u)
+})
+
+// —— 回归：验证码被并发签发请求作废，导致正确密码也永远提示“验证码错误” ——
+
+/** 足以压过守卫层每设备验证码配额的静态资源请求次数。 */
+const MAX_FAVICON_REQUESTS = 6
+
+const captchaGlyphs: Readonly<Record<string, readonly string[]>> = {
+  '2': ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
+  '3': ['11110', '00001', '00001', '01110', '00001', '00001', '11110'],
+  '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+  '5': ['11111', '10000', '10000', '11110', '00001', '00001', '11110'],
+  '6': ['01110', '10000', '10000', '11110', '10001', '10001', '01110'],
+  '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+  '8': ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+  '9': ['01110', '10001', '10001', '01111', '00001', '00001', '01110'],
+}
+
+/** 从验证码 SVG 反解出答案，模拟“用户能看清图片并照抄”的等价能力。 */
+function solveCaptcha(svg: string): string {
+  const grids = new Map<number, string[][]>()
+  for (const match of svg.matchAll(/M(\d+) (\d+)h3v3h-3z/gu)) {
+    const offsetX = Number(match[1]) - 12
+    const offsetY = Number(match[2]) - 14
+    const index = Math.floor(offsetX / 24)
+    const column = (offsetX % 24) / 3
+    const row = offsetY / 3
+    if (!Number.isInteger(column) || !Number.isInteger(row)) continue
+    const grid = grids.get(index) ?? Array.from({ length: 7 }, () => Array.from({ length: 5 }, () => '0'))
+    grid[row]![column] = '1'
+    grids.set(index, grid)
+  }
+  return [...grids.keys()].sort((left, right) => left - right).map((key) => {
+    const pattern = grids.get(key)!.map((row) => row.join('')).join(',')
+    return Object.entries(captchaGlyphs).find(([, rows]) => rows.join(',') === pattern)?.[0] ?? '?'
+  }).join('')
+}
+
+test('未登录的静态资源请求不会让登录页上的验证码失效', () => {
+  const socket = { remoteAddress: '192.168.1.31' }
+  const proxy = new LanAccessDshProxy()
+  proxy.setLoginConfig(createLoginProtectionConfig({ username: 'jackson', password: 'password123', timeoutSeconds: 1800, scopes: { lan: true, relay: true } }))
+  const authorize = (request: { method: string; path: string; query?: string; body: Uint8Array }): Uint8Array | 'pass' =>
+    (proxy as unknown as { authorize: (request: unknown, local: boolean, socket: unknown) => Uint8Array | 'pass' })
+      .authorize({ headers: headers as unknown as Record<string, string>, ...request }, false, socket)
+
+  const decode = (response: Uint8Array | 'pass'): { status: number; body: string } => {
+    assert.notEqual(response, 'pass')
+    const text = new TextDecoder().decode(response as Uint8Array)
+    const [head, ...rest] = text.split('\r\n\r\n')
+    return { status: Number(/^HTTP\/1\.1 (\d+)/u.exec(head ?? '')?.[1] ?? '0'), body: rest.join('\r\n\r\n') }
+  }
+  const submit = (fields: Record<string, string>): { status: number; body: string } => {
+    const body = new TextEncoder().encode(new URLSearchParams(fields).toString())
+    return decode(authorize({ method: 'POST', path: '/__codingns/login', body }))
+  }
+  const fetchPage = (path: string, query?: string): { status: number; body: string } =>
+    decode(authorize({ method: 'GET', path, body: new Uint8Array(0), ...(query === undefined ? {} : { query }) }))
+
+  // 先让来源进入验证码态。
+  for (let index = 0; index < 3; index += 1) submit({ username: 'jackson', password: 'wrong-password' })
+
+  const page = fetchPage('/')
+  assert.equal(page.status, 200)
+  const captchaId = /name="captchaId" value="([^"]+)"/u.exec(page.body)?.[1]
+  assert.equal(typeof captchaId, 'string')
+  const answer = solveCaptcha(fetchPage('/__codingns/captcha', `id=${encodeURIComponent(captchaId!)}`).body)
+  assert.equal(answer.length, 5)
+
+  // 浏览器会为 favicon 等静态资源发出额外的未登录请求，它们不得签发新验证码，
+  // 更不能把页面上已渲染的验证码挤出设备配额（这里刻意超过每设备上限）。
+  for (let index = 0; index < MAX_FAVICON_REQUESTS; index += 1) assert.equal(fetchPage('/favicon.ico').status, 401)
+  assert.equal(fetchPage('/__codingns/captcha', `id=${encodeURIComponent(captchaId!)}`).status, 200)
+
+  const login = submit({ username: 'jackson', password: 'password123', captchaId: captchaId!, captchaCode: answer })
+  assert.equal(login.status, 303)
+  assert.doesNotMatch(login.body, /图形验证码/u)
 })

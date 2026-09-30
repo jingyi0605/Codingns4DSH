@@ -459,10 +459,12 @@ export class LanAccessDshProxy {
     if (token !== undefined && !this.revokedSessions.has(token) && verifySignedSessionToken(token, config, 'lan')) {
       return 'pass'
     }
+    // 只有真正渲染登录页的 HTML 请求才签发验证码。浏览器会为 favicon、图标等
+    // 静态资源发出额外的未登录请求，如果它们也签发验证码，就会不断翻转页面上
+    // 已经渲染的 captchaId，用户永远提交不到与图片一致的答案。
+    if (request.path !== '/' && !request.path.endsWith('.html')) return loginResponse(401, hostBrowserText(locale, 'login.required'))
     const challenge = this.loginAttempts.requiresCaptcha(loginContext) ? this.loginAttempts.issueCaptcha(loginContext) : undefined
-    return request.path === '/' || request.path.endsWith('.html')
-      ? loginResponse(200, loginPage(challenge, locale))
-      : loginResponse(401, hostBrowserText(locale, 'login.required'))
+    return loginResponse(200, loginPage(challenge, locale))
   }
 
   /**
