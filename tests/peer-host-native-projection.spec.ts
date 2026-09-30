@@ -1,0 +1,109 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { createPeerHostNativeProjection } from '../data/build/dist/client/peer-host-native-projection.js'
+import { createVirtualSessionId, createVirtualWorkspaceId } from '../data/build/dist/shared/index.js'
+
+interface SessionShape {
+  readonly sessionId: string
+  readonly title: string
+  readonly status: string
+  readonly updatedAt: number
+}
+
+function remoteHost(sessions: readonly SessionShape[] = [{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 10 }]): Record<string, unknown> {
+  return {
+    hostId: 'host-local',
+    targetHostId: 'peer-1',
+    hostLabel: '开发机',
+    availability: 'ready',
+    errorCode: null,
+    workspaces: [{
+      key: 'peer-1:workspace-1',
+      hostId: 'host-local',
+      targetHostId: 'peer-1',
+      workspaceId: 'workspace-1',
+      displayName: '远端工作区',
+      path: '/Users/dev/project-a',
+      hostLabel: '开发机',
+      availability: 'ready',
+      sessions: sessions.map((session) => ({
+        scope: { hostId: 'host-local', targetHostId: 'peer-1', workspaceId: 'workspace-1', sessionId: session.sessionId, scopeGeneration: 0 },
+        title: session.title,
+        status: session.status,
+        updatedAt: session.updatedAt,
+      })),
+    }],
+  }
+}
+
+function localHost(): Record<string, unknown> {
+  return {
+    hostId: 'host-local',
+    targetHostId: null,
+    hostLabel: '当前 Host',
+    availability: 'ready',
+    errorCode: null,
+    workspaces: [{
+      key: 'host-local:local-workspace',
+      hostId: 'host-local',
+      targetHostId: null,
+      workspaceId: 'local-workspace',
+      displayName: '本机工作区',
+      hostLabel: '当前 Host',
+      availability: 'ready',
+      sessions: [{
+        scope: { hostId: 'host-local', targetHostId: null, workspaceId: 'local-workspace', sessionId: 'local-session', scopeGeneration: 0 },
+        title: '本机会话',
+        status: 'idle',
+        updatedAt: 5,
+      }],
+    }],
+  }
+}
+
+test('投影只输出虚拟 ID、标题与运行态，本机资源不参与投影', () => {
+  const projection = createPeerHostNativeProjection()
+  projection.setAggregate([remoteHost(), localHost()] as never)
+
+  assert.deepEqual(projection.workspaces(), [{
+    workspaceId: createVirtualWorkspaceId('peer-1', 'workspace-1'),
+    path: '/Users/dev/project-a',
+    title: '远端工作区 (开发机)',
+    sessionIds: [createVirtualSessionId('peer-1', 'session-1')],
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(10).toISOString(),
+  }])
+  assert.deepEqual(projection.sessions(), [{
+    agentAvailable: true,
+    sessionId: createVirtualSessionId('peer-1', 'session-1'),
+    updatedAt: 10,
+    running: false,
+    blank: false,
+    cwd: '/Users/dev/project-a',
+    projections: { kind: 'cached', values: { title: '远端会话' } },
+  }])
+})
+
+test('快照变化才通知订阅者，重复快照返回未变化', () => {
+  const projection = createPeerHostNativeProjection()
+  let notified = 0
+  const unsubscribe = projection.subscribe(() => { notified += 1 })
+
+  assert.equal(projection.setAggregate([remoteHost()] as never), true)
+  assert.equal(notified, 1)
+  assert.equal(projection.setAggregate([remoteHost()] as never), false)
+  assert.equal(notified, 1)
+
+  assert.equal(projection.setAggregate([remoteHost([{ sessionId: 'session-1', title: '远端会话', status: 'running', updatedAt: 30 }])] as never), true)
+  assert.equal(notified, 2)
+  assert.equal(projection.sessions()[0]?.running, true)
+  assert.equal(projection.workspaces()[0]?.updatedAt, new Date(30).toISOString())
+
+  assert.equal(projection.setAggregate([localHost()] as never), true)
+  assert.deepEqual(projection.workspaces(), [])
+  assert.deepEqual(projection.sessions(), [])
+
+  unsubscribe()
+  projection.setAggregate([remoteHost()] as never)
+  assert.equal(notified, 3)
+})

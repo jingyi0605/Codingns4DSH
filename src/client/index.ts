@@ -65,20 +65,6 @@ export { RemoteDshWebContext } from './remote-web-context.js'
 export type { RemoteDshWebBoot, RemoteDshWebContextOptions } from './remote-web-context.js'
 export { createPeerHostScopedClient, createPeerHostWebSocketFactory } from './peer-host-scoped-client.js'
 export type { PeerHostClientMessageType, PeerHostEventStreamOptions, PeerHostEventSubscription, PeerHostProxyResponse, PeerHostScopedClient } from './peer-host-scoped-client.js'
-export {
-  startPeerHostNativeNavigation,
-  startPeerHostNativeSession,
-  probePeerHostNativeNavigation,
-  probePeerHostNativeSession,
-  PEER_HOST_NAVIGATION_ATTRIBUTE,
-  PEER_HOST_SESSION_ATTRIBUTE,
-  PEER_HOST_STATUS_ATTRIBUTE,
-} from './peer-host-native-session-ui.js'
-export type {
-  PeerHostNativeUiState,
-  PeerHostNativeNavigationController,
-  PeerHostNativeSessionController,
-} from './peer-host-native-session-ui.js'
 export type {
   CodingNsClientFeatureModule,
   CodingNsClientServices,

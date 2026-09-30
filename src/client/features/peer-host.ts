@@ -2,16 +2,18 @@ import { createElement, useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { CodingNsClientFeatureModule, FeaturePanelProps } from './types.js'
 import { startPeerHostManagementPanel } from '../peer-host-management-panel.js'
-import { startPeerHostNativeNavigation, startPeerHostNativeSession } from '../peer-host-native-session-ui.js'
 import { createPeerHostManagementApi } from '../peer-host-management-api.js'
-import { createPeerHostWebSocketFactory } from '../peer-host-scoped-client.js'
 import { DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL } from '../../bootstrap/dsh-peer-host-preboot-shim.js'
 import type { CodingNsTransportHooks } from '../../shared/contracts/transport.js'
 import { dshSettingsNoteStyle, dshThemeColor } from '../theme.js'
-import { installPeerHostNativeStoreAdapter } from '../peer-host-native-store-adapter.js'
 import type { AggregateHostResult, HostScope } from '../../shared/contracts/peer-host.js'
 import { createVirtualSessionId, createVirtualWorkspaceId } from '../../shared/index.js'
 import { isDshNativeRemoteMethod } from '../../host/modules/peer-host/peer-host-native-protocol.js'
+import { createPeerHostNativeProjection, type PeerHostNativeProjection } from '../peer-host-native-projection.js'
+import { installPeerHostNativeStoreProjection, refreshPeerHostNativeSessions } from '../peer-host-native-store-projection.js'
+
+/** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
+const PEER_HOST_AGGREGATE_REFRESH_MS = 30_000
 
 /** PeerHost Client 模块的边界声明；远端凭据和目标连接始终由 Host 侧持有。 */
 export const peerHostFeature: CodingNsClientFeatureModule = {
@@ -35,87 +37,52 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
   },
   start: async (context) => {
     const shim = (globalThis as typeof globalThis & { [DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]?: { activate: (transport?: CodingNsTransportHooks) => string; deactivate: () => string } })[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]
-    const transport = shim === undefined ? undefined : createPeerHostPageTransport()
+    const projection = createPeerHostNativeProjection()
+    const transport = shim === undefined ? undefined : createPeerHostPageTransport(projection)
     if (shim !== undefined) {
       shim.activate(transport!.hooks)
       context.resources.add(() => { shim.deactivate() })
+      // 原生侧栏在插件 apply 时按引用捕获 `workspaces.list`，只能就地投影这个对象；
+      // 没有 shim 就没有原生 Remote 路由，此时不注入，避免出现点不开的远端条目。
+      context.resources.add(installPeerHostNativeStoreProjection({ uiContext: context.services.uiContext, projection }))
     }
     const panel = startPeerHostManagementPanel({ rpc: context.services.rpc })
     context.resources.add(() => panel.dispose())
     const management = createPeerHostManagementApi(context.services.rpc)
-    let endpoint = null as Awaited<ReturnType<typeof management.webSocketEndpoint>>
-    let results: Awaited<ReturnType<typeof management.aggregate>> | null = null
-    let workspaceOrder: readonly string[] = []
-    let aggregateError: unknown
-    try {
-      ;[endpoint, results] = await Promise.all([management.webSocketEndpoint(), management.aggregate()])
-      try { workspaceOrder = (await management.workspaceOrder()).orderedWorkspaceIds } catch { workspaceOrder = [] }
-    } catch (error) {
-      aggregateError = error
-      try { endpoint = await management.webSocketEndpoint() } catch { endpoint = null }
-    }
-    let socketFactory: ReturnType<typeof createPeerHostWebSocketFactory> | undefined
-    if (endpoint !== null) {
+    // 虚拟会话必须进入原生 SessionManager 目录（否则 sessions.retain 解析失败），
+    // 因此聚合变化后触发一次原生列表刷新，由页面 Transport 在 session/list 响应里补齐。
+    const refresh = async (): Promise<void> => {
       try {
-        socketFactory = createPeerHostWebSocketFactory(endpoint)
+        if (transport?.setAggregate(await management.aggregate()) === true) {
+          await refreshPeerHostNativeSessions(context.services.uiContext)
+        }
       } catch {
-        endpoint = null
-        aggregateError = new Error('PeerHost 实时通道端点不可用')
+        // 单个 Host 的摘要失败由聚合层降级，不阻断本机原生工作区与会话。
       }
     }
-    if (results !== null) {
-      transport?.setAggregate(results)
+    await refresh()
+    const timer = setInterval(() => { void refresh() }, PEER_HOST_AGGREGATE_REFRESH_MS)
+    const onVisibilityChange = (): void => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') void refresh()
     }
-    if (results !== null && context.services.uiContext !== undefined) {
-      const nativeStore = installPeerHostNativeStoreAdapter({
-        context: context.services.uiContext,
-        aggregate: results,
-        workspaceOrder,
-        moveWorkspace: (workspaceId, beforeWorkspaceId) => management.moveWorkspace(workspaceId, beforeWorkspaceId),
-      })
-      context.resources.add(() => nativeStore.dispose())
-      if (!nativeStore.supported) {
-        console.warn(`codingns4dsh: 原生 Workspace/Session 列表未接入：${nativeStore.reason ?? '未知原因'}`)
-      }
-    }
-    const session = startPeerHostNativeSession({
-      controller: context.services.peerHostSession,
-      client: context.services.peerHost,
-      ...(socketFactory === undefined ? {} : { socketFactory }),
-    })
-    context.resources.add(() => session.close())
-    const navigation = startPeerHostNativeNavigation({
-      controller: context.services.peerHostSession,
-      onSelect: async (scope) => {
-        const selected = await context.services.peerHostSession.select({
-          hostId: scope.hostId,
-          targetHostId: scope.targetHostId,
-          workspaceId: scope.workspaceId,
-          sessionId: scope.sessionId,
-        })
-        await session.open(selected)
-      },
-    })
-    context.resources.add(() => navigation.dispose())
-    if (results !== null) navigation.refresh(results)
-    else navigation.setStatus({
-      status: 'degraded',
-      reason: aggregateError instanceof Error && aggregateError.message === 'PeerHost 实时通道端点不可用'
-        ? aggregateError.message
-        : 'PeerHost 聚合摘要暂不可用',
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibilityChange)
+    context.resources.add(() => {
+      clearInterval(timer)
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibilityChange)
     })
   },
   settingsPanel: PeerHostPanel,
 }
 
 /** 将 DSH preboot shim 绑定到当前页面的 Host RPC；不调用 Connection.rpc，避免递归。 */
-export function createPeerHostPageTransport(): {
+export function createPeerHostPageTransport(
+  projection: PeerHostNativeProjection = createPeerHostNativeProjection(),
+): {
   readonly hooks: CodingNsTransportHooks
-  readonly setAggregate: (aggregate: readonly AggregateHostResult[]) => void
+  readonly setAggregate: (aggregate: readonly AggregateHostResult[]) => boolean
 } {
   const fetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined
   const scopes = new Map<string, HostScope>()
-  let lastRemoteScope: HostScope | undefined
   const request = async (channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> => {
     if (fetchImpl === undefined) throw new Error('当前页面没有 fetch')
     const body = JSON.stringify({ type: 'client-request', rpcId: createRequestId(), method: endpoint, payload })
@@ -133,7 +100,10 @@ export function createPeerHostPageTransport(): {
     const result = asRecord(await request('/codingns', endpoint, payload, signal))
     if (result?.ok === true) return result.value
     const error = asRecord(result?.error)
-    throw new Error(typeof error?.message === 'string' ? error.message : `CodingNS RPC 失败: ${endpoint}`)
+    const failure = new Error(typeof error?.message === 'string' ? error.message : `CodingNS RPC 失败: ${endpoint}`)
+    // 保留稳定错误码，让 DSH 的 Remote 失败装上原始 code 而不是退化成 carrierFailure。
+    if (typeof error?.code === 'string') (failure as Error & { code?: string }).code = error.code
+    throw failure
   }
   const findScope = (value: unknown): HostScope | undefined => {
     if (typeof value === 'string') {
@@ -173,29 +143,40 @@ export function createPeerHostPageTransport(): {
       const channel = typeof value?.channel === 'string' ? value.channel : '/codingns'
       const body = value?.payload
       if (channel === '/api' && isDshNativeRemoteMethod(method)) {
-        const scope = findScope(body) ?? (method === 'session/control' || method === 'workspace/follow' ? lastRemoteScope : undefined)
+        const scope = findScope(body)
         if (scope !== undefined && scope.targetHostId !== null) {
-          lastRemoteScope = scope
-          return await codingNsCall('peerHost/native', { method, payload: body, scope }, signal) as TResponse
+          // DSH 的 client 契约要求 unary 结果是 `{ok, value}` / `{ok:false, error}` 信封：
+          // 返回裸值会让网关在 `rebuiltFailure(result.error)` 读 undefined.code 而崩成 carrierFailure。
+          try {
+            return { ok: true, value: await codingNsCall('peerHost/native', { method, payload: body, scope }, signal) } as TResponse
+          } catch (error) {
+            const code = (error as { code?: unknown }).code
+            return {
+              ok: false,
+              error: { code: typeof code === 'string' ? code : 'gateway/internal', message: error instanceof Error ? error.message : String(error) },
+            } as TResponse
+          }
         }
       }
-      return await request(channel, method, body, signal) as TResponse
+      const result = await request(channel, method, body, signal)
+      // 原生会话目录必须认识远端会话，否则点击时会因 sessions.retain 解析失败而打不开。
+      if (channel === '/api' && method === 'session/list') return mergeSessionListResult(result, projection) as TResponse
+      return result as TResponse
     },
     openStream: <TChunk = unknown>({ method, payload, signal }: { method: string; payload: unknown; signal?: AbortSignal; uplink?: AsyncIterable<unknown> }): AsyncIterable<TChunk> => {
       const value = asRecord(payload)
       const channel = typeof value?.channel === 'string' ? value.channel : '/api'
       const body = value?.payload
       if (channel === '/api' && isDshNativeRemoteMethod(method)) {
-        const scope = findScope(body) ?? (method === 'session/control' || method === 'workspace/follow' ? lastRemoteScope : undefined)
+        const scope = findScope(body)
         if (scope !== undefined && scope.targetHostId !== null) {
-          lastRemoteScope = scope
           return openRemoteStream(method, body, scope, signal) as AsyncIterable<TChunk>
         }
-        // 本地资源仍需使用 DSH Gateway 的标准 Remote stream；不能把它
-        // 当作 PeerHost baseline，否则原生 workspace/session Store 会整体停在 loading。
-        return openDshGatewayStream<TChunk>(method, body, signal)
       }
-      throw new Error('CODINGNS_BASELINE_STREAM')
+      // 本机流（含 $events 等非白名单流）必须回到 DSH Gateway：本地 baseline 不能
+      // 走 PeerHost，否则原生 workspace/session Store 会整体停在 loading。
+      if (channel !== '/api') throw new Error('CODINGNS_BASELINE_STREAM')
+      return openDshGatewayStream<TChunk>(method, body, signal)
     },
     fetch: (input: RequestInfo | URL, init?: RequestInit) => {
       if (fetchImpl === undefined) return Promise.reject(new Error('当前页面没有 fetch'))
@@ -218,8 +199,25 @@ export function createPeerHostPageTransport(): {
           }
         }
       }
+      return projection.setAggregate(aggregate)
     },
   }
+}
+
+/** 把虚拟会话摘要并入 session/list 结果；形状不符时保持本机结果不变。 */
+function mergeSessionListResult(result: unknown, projection: PeerHostNativeProjection): unknown {
+  const envelope = asRecord(result)
+  if (envelope?.ok !== true) return result
+  const value = asRecord(envelope.value)
+  if (value === null || !Array.isArray(value.items)) return result
+  const virtual = projection.sessions()
+  if (virtual.length === 0) return result
+  const known = new Set(value.items.flatMap((item) => {
+    const id = asRecord(item)?.sessionId
+    return typeof id === 'string' ? [id] : []
+  }))
+  const items = [...value.items, ...virtual.filter((session) => !known.has(session.sessionId))]
+  return { ...envelope, value: { ...value, items } }
 }
 
 function createRequestId(): string {

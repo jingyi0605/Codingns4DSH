@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createPeerHostPageTransport } from '../data/build/dist/client/features/peer-host.js'
-import { createVirtualSessionId } from '../data/build/dist/shared/index.js'
+import { createVirtualSessionId, createVirtualWorkspaceId } from '../data/build/dist/shared/index.js'
 
 const aggregate = [{
   hostId: 'host-local',
@@ -47,11 +47,32 @@ test('页面 connector 将虚拟 Session 的原生 Remote 路由到 peerHost/nat
       method: 'session/page',
       payload: { channel: '/api', payload: { sessionId } },
     })
-    assert.deepEqual(result, { page: 'remote' })
+    // DSH 的 client 契约要求结果信封；返回裸值会让网关读 undefined.code 而崩成 carrierFailure。
+    assert.deepEqual(result, { ok: true, value: { page: 'remote' } })
     assert.equal(calls[0]?.path, '/codingns/peerHost/native')
     const routed = calls[0]?.body.payload as Record<string, unknown>
     assert.equal(routed.method, 'session/page')
     assert.deepEqual(routed.scope, { hostId: 'host-local', targetHostId: 'peer-1', workspaceId: 'workspace-1', sessionId: 'session-1', scopeGeneration: 0 })
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('页面 connector 的 Peer unary 失败保留稳定错误码而不是抛裸错误', async () => {
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ result: { ok: false, error: { code: 'session/not-found', message: 'session not found' } } }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    transport.setAggregate(aggregate)
+    const result = await transport.hooks.rpc?.({
+      method: 'session/page',
+      payload: { channel: '/api', payload: { sessionId: createVirtualSessionId('peer-1', 'session-1') } },
+    })
+    assert.deepEqual(result, { ok: false, error: { code: 'session/not-found', message: 'session not found' } })
   } finally {
     globalThis.fetch = previousFetch
   }
@@ -143,5 +164,100 @@ test('页面 connector 将本地 workspace/follow 回退到 DSH Gateway stream',
   } finally {
     if (previousWebSocket === undefined) delete (globalThis as typeof globalThis & { WebSocket?: unknown }).WebSocket
     else (globalThis as typeof globalThis & { WebSocket?: unknown }).WebSocket = previousWebSocket
+  }
+})
+
+interface FakeSocketHarness {
+  readonly opens: Array<{ streamId: string; endpoint: string; payload: unknown }>
+  restore(): void
+}
+
+/** 安装只记录 open 帧、按脚本回放的假 WebSocket；用于断言本地流回退路径。 */
+function installFakeWebSocket(script: (socket: { emit: (type: string, event: unknown) => void }, request: { streamId: string; endpoint: string }) => void): FakeSocketHarness {
+  const previous = (globalThis as typeof globalThis & { WebSocket?: unknown }).WebSocket
+  const opens: Array<{ streamId: string; endpoint: string; payload: unknown }> = []
+  class FakeWebSocket {
+    static readonly OPEN = 1
+    readyState = 0
+    readonly url: string
+    private readonly listeners = new Map<string, Array<(event: unknown) => void>>()
+    constructor(url: string) {
+      this.url = url
+      queueMicrotask(() => {
+        this.readyState = FakeWebSocket.OPEN
+        this.emit('open', {})
+      })
+    }
+    addEventListener(type: string, listener: (event: unknown) => void): void {
+      const entries = this.listeners.get(type) ?? []
+      entries.push(listener)
+      this.listeners.set(type, entries)
+    }
+    removeEventListener(type: string, listener: (event: unknown) => void): void {
+      this.listeners.set(type, (this.listeners.get(type) ?? []).filter((entry) => entry !== listener))
+    }
+    send(value: string): void {
+      const frame = JSON.parse(value) as { type: string; streamId: string; endpoint: string; payload: unknown }
+      if (frame.type !== 'open') return
+      opens.push({ streamId: frame.streamId, endpoint: frame.endpoint, payload: frame.payload })
+      script({ emit: (type, event) => this.emit(type, event) }, frame)
+    }
+    close(): void {}
+    emit(type: string, event: unknown): void {
+      for (const listener of [...(this.listeners.get(type) ?? [])]) listener(event)
+    }
+  }
+  ;(globalThis as typeof globalThis & { WebSocket?: unknown }).WebSocket = FakeWebSocket
+  return {
+    opens,
+    restore() {
+      if (previous === undefined) delete (globalThis as typeof globalThis & { WebSocket?: unknown }).WebSocket
+      else (globalThis as typeof globalThis & { WebSocket?: unknown }).WebSocket = previous
+    },
+  }
+}
+
+test('页面 connector 把虚拟会话并入原生 session/list 结果', async () => {
+  const previousFetch = globalThis.fetch
+  const paths: string[] = []
+  globalThis.fetch = (async (input) => {
+    paths.push(new URL(String(input), 'http://dsh.test').pathname)
+    return response({ items: [{ agentAvailable: true, sessionId: 'local-session', updatedAt: 1, running: false, blank: false }] })
+  }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    transport.setAggregate(aggregate)
+    const result = await transport.hooks.rpc?.({
+      method: 'session/list',
+      payload: { channel: '/api', payload: { args: {} } },
+    }) as { value: { items: Array<Record<string, unknown>> } }
+    assert.deepEqual(paths, ['/api/session/list'])
+    assert.deepEqual(result.value.items.map((item) => item.sessionId), ['local-session', createVirtualSessionId('peer-1', 'session-1')])
+    const projected = result.value.items[1] ?? {}
+    assert.deepEqual(projected.projections, { kind: 'cached', values: { title: '远端会话' } })
+    assert.equal(projected.running, true)
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('页面 connector 将 $events 等本地流回退到 DSH Gateway 而不是抛错', async () => {
+  const socket = installFakeWebSocket((fake, request) => {
+    queueMicrotask(() => fake.emit('message', { data: JSON.stringify({ type: 'item', streamId: request.streamId, value: { type: 'ready' } }) }))
+    queueMicrotask(() => fake.emit('message', { data: JSON.stringify({ type: 'end', streamId: request.streamId }) }))
+  })
+  try {
+    const transport = createPeerHostPageTransport()
+    const stream = transport.hooks.openStream?.({
+      method: '$events',
+      payload: { channel: '/api', payload: { args: {} } },
+    })
+    assert.ok(stream)
+    const values: unknown[] = []
+    for await (const value of stream) values.push(value)
+    assert.deepEqual(values, [{ type: 'ready' }])
+    assert.equal(socket.opens[0]?.endpoint, '$events')
+  } finally {
+    socket.restore()
   }
 })
