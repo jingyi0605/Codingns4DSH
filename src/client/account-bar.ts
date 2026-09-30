@@ -149,7 +149,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
       button.dataset.codingnsWide = mode
       row.style.flexWrap = 'nowrap'
       button.style.order = '2'
-      button.style.marginLeft = '0'
+      button.style.marginLeft = 'auto'
       return
     }
     // Web：出口内部是 fallback 齿轮，出口自身没有布局，由插件补全成一行。
