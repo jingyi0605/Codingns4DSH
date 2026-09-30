@@ -32,7 +32,7 @@ test('用量查询设置默认值与边界收敛', () => {
 
 test('用量查询超时统一下发给所有适配器读取器，单项覆盖优先', () => {
   const service = new ProviderSubscriptionService({ timeoutMs: 4_500 })
-  for (const reader of [service.codex, service.claudeCode, service.sub2api, service.deepseek, service.official, service.kimi, service.grok]) {
+  for (const reader of [service.codex, service.claudeCode, service.sub2api, service.deepseek, service.official, service.kimi, service.grok, service.zcode]) {
     assert.equal(reader.timeoutMs, 4_500)
   }
 

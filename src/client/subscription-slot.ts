@@ -361,8 +361,8 @@ function resolveDisplayWindow(usage: CliSubscriptionUsage): CliSubscriptionWindo
 function selectDeepseekBalance(usage: DeepseekUsage): DeepseekUsage['balances'][number] | null {
   return usage.balances.find((balance) => balance.currency.toUpperCase() === 'USD') ?? usage.balances[0] ?? null
 }
-function isSubscriptionAdapter(adapterId: unknown): adapterId is 'command-code' | 'codex' | 'claude-code' | 'dsh' | 'grok' | 'kimi' | 'opencode' {
-  return adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'kimi' || adapterId === 'opencode'
+function isSubscriptionAdapter(adapterId: unknown): adapterId is 'command-code' | 'codex' | 'claude-code' | 'dsh' | 'grok' | 'kimi' | 'opencode' | 'zcode' {
+  return adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'kimi' || adapterId === 'opencode' || adapterId === 'zcode'
 }
 function isRemoteWebContext(): boolean {
   return (globalThis as { __CODINGNS4DSH_REMOTE_WEB_CONTEXT__?: unknown }).__CODINGNS4DSH_REMOTE_WEB_CONTEXT__ === true
@@ -382,6 +382,7 @@ function subscriptionProviderName(adapterId: string | null, providerId: string |
     case 'grok': return 'Grok'
     case 'kimi': return 'Kimi Code'
     case 'opencode': return 'OpenCode'
+    case 'zcode': return 'ZCode'
     default: return 'Agent'
   }
 }

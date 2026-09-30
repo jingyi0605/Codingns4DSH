@@ -5,6 +5,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import type { CliSubscriptionProvider, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekBalance, DeepseekUsage, Sub2ApiDailyUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../../shared/contracts/subscription.js'
 import { identifyModelProvider, normalizeProviderBaseUrl, thirdPartyProvider, type ProviderDefinition } from './provider-registry.js'
 import { OfficialProviderSubscriptionService, type OfficialProviderSubscriptionOptions } from './official-provider-subscription.js'
+import { ZcodeSubscriptionService, type ZcodeSubscriptionOptions } from './zcode-subscription.js'
 import { JsonRpcProcess } from './json-rpc-process.js'
 import { detectBinary } from './rpc-driver-utils.js'
 
@@ -21,6 +22,7 @@ export class ProviderSubscriptionService {
   readonly official: OfficialProviderSubscriptionService
   readonly kimi: KimiSubscriptionService
   readonly grok: GrokSubscriptionService
+  readonly zcode: ZcodeSubscriptionService
 
   constructor(options: ProviderSubscriptionOptions = {}) {
     // 全局超时只作为缺省值；单项服务显式给出的 timeoutMs 优先。
@@ -34,6 +36,7 @@ export class ProviderSubscriptionService {
     this.official = new OfficialProviderSubscriptionService({ ...shared, ...options.official })
     this.kimi = new KimiSubscriptionService({ ...shared, ...options.kimi })
     this.grok = new GrokSubscriptionService({ ...shared, ...options.grok })
+    this.zcode = new ZcodeSubscriptionService({ ...shared, ...options.zcode })
   }
 
   read(adapterId: string, providerId?: string): Promise<CliSubscriptionUsage | null> {
@@ -47,6 +50,7 @@ export class ProviderSubscriptionService {
       case 'claude-code': return this.claudeCode.read()
       case 'opencode': return this.opencode.read()
       case 'kimi': return this.kimi.read().then((usage) => usage === null ? null : withProvider(usage, identifyModelProvider({ name: 'kimi-coding' }), ''))
+      case 'zcode': return this.zcode.read()
       default: return Promise.resolve(null)
     }
   }
@@ -92,6 +96,7 @@ export interface ProviderSubscriptionOptions {
   readonly official?: OfficialProviderSubscriptionOptions
   readonly kimi?: KimiSubscriptionOptions
   readonly grok?: GrokSubscriptionOptions
+  readonly zcode?: ZcodeSubscriptionOptions
   /** 所有读取器共用的网络超时（毫秒）；单项服务显式给出时优先。 */
   readonly timeoutMs?: number
 }
