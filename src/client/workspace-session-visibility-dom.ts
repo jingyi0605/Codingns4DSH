@@ -137,7 +137,7 @@ export function startWorkspaceSessionVisibilityDom(
       knownNativeMenus = new Set(menus)
       if (menus.length > 0) menuContextPending = false
       if (activeMenuKind === 'filter') {
-        injectFilterMenuAction(dom, menus, showHiddenWorkspaces, () => {
+        injectFilterMenuAction(dom, selectFilterMenus(menus, menuWorkspaceIds, activeMenuWorkspaceId), showHiddenWorkspaces, () => {
           showHiddenWorkspaces = !showHiddenWorkspaces
           scheduleScan()
         }, (menu) => closeFilterMenu(activeFilterTrigger, menu, () => {
@@ -145,7 +145,7 @@ export function startWorkspaceSessionVisibilityDom(
           return () => { suppressFilterTrigger = false }
         }))
       } else {
-        injectWorkspaceMenuActions(menus, dom, activeMenuWorkspaceId, workspaceIds, menuWorkspaceIds, (workspaceId) => updateVisibility(workspaceId, true))
+        injectWorkspaceMenuActions(selectWorkspaceMenus(menus), dom, activeMenuWorkspaceId, workspaceIds, menuWorkspaceIds, (workspaceId) => updateVisibility(workspaceId, true))
       }
       // 点击触发器与 Portal 菜单挂载不是同一个同步阶段。菜单尚未出现时
       // 必须保留上下文，否则后续 MutationObserver 扫描无法判断这是筛选菜单。
@@ -275,8 +275,6 @@ function isWorkspaceFilterTrigger(element: HTMLElement): boolean {
 
 function findWorkspaceMenus(dom: Pick<Document, 'querySelectorAll'>): HTMLElement[] {
   const explicit = [...dom.querySelectorAll<HTMLElement>('[role="menu"], [role="listbox"], [data-menu-content], [data-radix-menu-content]')]
-  const matchingExplicit = explicit.filter(isWorkspaceFilterMenu)
-  if (matchingExplicit.length > 0) return matchingExplicit
   if (explicit.length > 0) return explicit
   // 某些 DSH 构建不会给 Portal 菜单设置 role。不能遍历页面所有 div 并对每个
   // 节点读取 textContent，那会在长会话页面上反复遍历整棵消息树，退化为 O(N²)。
@@ -296,6 +294,39 @@ function findWorkspaceMenus(dom: Pick<Document, 'querySelectorAll'>): HTMLElemen
   return candidates.filter((element) => !candidates.some((other) => other !== element && element.contains(other)))
 }
 
+/**
+ * 菜单 Portal 在关闭时可能短暂保留旧节点。先过滤不可见节点，再按菜单内容
+ * 区分筛选菜单和工作区操作菜单，避免旧筛选菜单抢走当前工作区菜单的注入目标。
+ */
+function selectFilterMenus(
+  menus: readonly HTMLElement[],
+  menuWorkspaceIds: WeakMap<HTMLElement, string>,
+  activeWorkspaceId: string | undefined,
+): HTMLElement[] {
+  const visible = menus.filter(isVisibleMenu)
+  const candidates = (visible.length > 0 ? visible : menus).filter(isWorkspaceFilterMenu)
+  if (candidates.length > 0) return [candidates[candidates.length - 1]]
+  const fallback = (visible.length > 0 ? visible : menus).filter((menu) => (
+    menuWorkspaceIds.get(menu) === undefined
+      && (activeWorkspaceId === undefined || resolveWorkspaceId(menu) !== activeWorkspaceId)
+      && menu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_MENU_ATTRIBUTE}]`) === null
+  ))
+  return fallback.length > 0 ? [fallback[fallback.length - 1]] : []
+}
+
+function selectWorkspaceMenus(menus: readonly HTMLElement[]): HTMLElement[] {
+  const visible = menus.filter(isVisibleMenu)
+  const candidates = (visible.length > 0 ? visible : menus).filter((menu) => !isWorkspaceFilterMenu(menu))
+  const available = candidates.length > 0 ? candidates : (visible.length > 0 ? visible : menus)
+  return available.length > 0 ? [available[available.length - 1]] : []
+}
+
+function isVisibleMenu(menu: HTMLElement): boolean {
+  if (menu.hasAttribute('hidden') || menu.getAttribute('aria-hidden') === 'true' || menu.getAttribute('data-state') === 'closed') return false
+  const style = menu.style
+  return style.display !== 'none' && style.visibility !== 'hidden'
+}
+
 function isWorkspaceFilterMenu(element: HTMLElement): boolean {
   return /(?:分组方式|排序方式|筛选会话|group(?:ing)?|sort(?:ing)?|filter(?:\s+sessions?)?)/iu.test(element.textContent ?? '')
 }
@@ -309,6 +340,7 @@ function injectWorkspaceMenuActions(
   onHide: (workspaceId: string) => void,
 ): void {
   for (const menu of menus) {
+    for (const stale of menu.querySelectorAll<HTMLElement>(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`)) stale.remove()
     const workspaceId = activeWorkspaceId ?? resolveWorkspaceId(menu) ?? menuWorkspaceIds.get(menu)
     if (workspaceId === undefined) continue
     if (!workspaceIds.has(workspaceId)) continue
@@ -348,6 +380,7 @@ function injectFilterMenuAction(
   // 错注入到页面中其他仍然存在的菜单。
   const menu = menus.find(isWorkspaceFilterMenu) ?? menus[menus.length - 1]
   if (menu === undefined) return
+  for (const stale of menu.querySelectorAll<HTMLElement>(`[${WORKSPACE_SESSION_HIDDEN_MENU_ATTRIBUTE}]`)) stale.remove()
   const existing = menu.querySelector<HTMLElement>(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`)
   if (existing !== null) {
     existing.setAttribute('aria-checked', String(checked))
