@@ -1067,8 +1067,8 @@ const panelStyle: CSSProperties = { position: 'relative', userSelect: 'none', bo
 const headerStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 28 }
 const tabTitleStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', minWidth: 0, color: dshThemeColor.labelPrimary, fontSize: 12 }
 const headerActionsStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4 }
-// SegmentedControl 自带 indicator 与键盘走查，这里只负责在单列布局下占位与对齐。
-const columnSwitchStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', minWidth: 0 }
+// SegmentedControl 自带 indicator 与键盘走查；外层占满面板宽度后再将控件居中。
+const columnSwitchStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', minWidth: 0 }
 const summaryStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: 12 }
 const contentGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', alignItems: 'start', gap: 12 }
 const columnStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }
