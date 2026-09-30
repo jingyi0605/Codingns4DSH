@@ -88,6 +88,7 @@ export {
   isDshVersionAtLeast,
   isLegacyDshVersion,
   isDshVersionCompatible,
+  minimumSupportedDshVersion,
 } from './contracts/version.js'
 export type {
   CodingNsRpcRequest,

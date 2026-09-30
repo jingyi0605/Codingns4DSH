@@ -7,6 +7,18 @@ export const DSH_TESTED_VERSION = DSH_VERSION
 /** 插件支持的 DSH 版本范围；插件版本与宿主版本独立发布。只声明下界，不限制上限版本。 */
 export const DSH_COMPATIBILITY = '>=0.2.0-rc.1' as const
 
+/**
+ * 兼容范围下界，即插件仍然接受的最低 DSH 版本。
+ *
+ * 供“宿主没有注入真实版本、但已确认处于现代世代”的保守回退使用：回退值取自
+ * 范围本身，因此永远落在兼容范围内。写死某个历史版本会在范围收紧后变成
+ * “不支持的 DSH 版本”，把仅仅缺少启动页注入的页面误判为宿主不兼容。
+ */
+export function minimumSupportedDshVersion(): string {
+  const match = /^>=([^ ]+)/u.exec(DSH_COMPATIBILITY)
+  return match?.[1] ?? DSH_VERSION
+}
+
 /** DSH Envelope/Tunnel 协议主版本。 */
 export const DSH_PROTOCOL_VERSION = 1 as const
 

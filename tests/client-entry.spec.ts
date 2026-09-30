@@ -147,11 +147,14 @@ test('Client ConfigForm 只绑定 Host 实际提供的 scoped namespace，不误
   assert.match(adapterSource, /entryIds\.find/u)
 })
 
-test('Client 版本门禁可用 ConfigForms 标识现代 DSH', async () => {
+test('Client 版本门禁用兼容范围下界回退，不写死历史版本', async () => {
   const source = await readFile(runtimeVersionSource, 'utf8')
   assert.match(source, /hasModernConfigForms\(ctx\)/u)
   assert.match(source, /ctx\.get\('configForms'\)/u)
-  assert.match(source, /0\.1\.7-rc\.2/u)
+  // 回退值必须来自兼容范围：写死 0.1.7-rc.2 会在范围放宽为 >=0.2.0-rc.1 后
+  // 变成“不支持的 DSH 版本”，把只缺启动页注入的页面误判为宿主不兼容。
+  assert.match(source, /minimumSupportedDshVersion\(\)/u)
+  assert.doesNotMatch(source, /'0\.1\.7-rc\.2'/u)
 })
 
 test('Client 构建产物提供自有 webTerminals 与 Sidebar 终端', async () => {

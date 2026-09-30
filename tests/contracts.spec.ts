@@ -15,6 +15,7 @@ import {
   isDshVersionCompatible,
   isDshVersionAtLeast,
   isLegacyDshVersion,
+  minimumSupportedDshVersion,
   SUPPORTED_DSH_VERSION,
   assertSupportedDshVersion,
   enabledFeatureNames,
@@ -139,6 +140,15 @@ test('不兼容 DSH 版本给出稳定错误码', () => {
     (error) => error instanceof CodingNsDshError
       && error.code === CODINGNS_DSH_ERROR_CODES.DSH_VERSION_UNSUPPORTED,
   )
+})
+
+test('缺少注入时的回退版本取自兼容范围下界且始终在范围内', () => {
+  const fallback = minimumSupportedDshVersion()
+  assert.equal(fallback, '0.2.0-rc.1')
+  // 回退值必须能通过同一套门禁：它一旦落在范围外，缺注入的页面就会被
+  // 误报为“不支持的 DSH 版本”，而真实原因只是启动页没有注入。
+  assert.doesNotThrow(() => assertSupportedDshVersion(fallback))
+  assert.equal(isDshVersionCompatible(fallback), true)
 })
 
 test('模块版本门禁阻止旧设置在 rc3 上启动 alpha2 专属模块', () => {
