@@ -25,8 +25,21 @@ test('没有既有 Transport 时用脚本行声明 Host 所有权，不追加同
   const sandbox: Record<string, unknown> = {}
   runScripts(table, sandbox)
   assert.equal((sandbox.__DSH_TRANSPORT__ as { ownsHost?: unknown } | undefined)?.ownsHost, true)
-  assert.deepEqual(Object.keys(sandbox.__DSH_TRANSPORT__ as object), ['ownsHost', 'rpc', 'fetch', 'reconnect', 'close', 'openStream', 'loadBundle'])
+  assert.deepEqual(Object.keys(sandbox.__DSH_TRANSPORT__ as object), ['ownsHost', 'fetch', 'reconnect', 'close', 'streamBaseUrl', 'rpc', 'openStream', 'loadBundle'])
   assert.equal(typeof (sandbox.__CODINGNS4DSH_PREBOOT_SHIM__ as { getState: () => string }).getState, 'function')
+})
+
+test('表里已有 __DSH_TRANSPORT__ 全局行时仍然注入 preboot shim', () => {
+  const table: unknown[] = [{ kind: 'global', name: '__DSH_TRANSPORT__', value: { ownsHost: true } }]
+
+  injectDshWebTransportOwnership(table)
+
+  const shimRows = table.filter((entry) => typeof (entry as { text?: unknown }).text === 'string' && String((entry as { text: string }).text).includes('__CODINGNS4DSH_PREBOOT_SHIM__'))
+  assert.equal(shimRows.length, 1, '有同名全局行时必须照样注入 shim，否则页面只会显示 not-installed')
+  // 再跑一次不能重复注入同一个 shim 行。
+  injectDshWebTransportOwnership(table)
+  const again = table.filter((entry) => typeof (entry as { text?: unknown }).text === 'string' && String((entry as { text: string }).text).includes('__CODINGNS4DSH_PREBOOT_SHIM__'))
+  assert.equal(again.length, 1)
 })
 
 test('Desktop Transport 保留 streamBaseUrl 并补充 Host 所有权', () => {
@@ -44,19 +57,24 @@ test('Desktop Transport 保留 streamBaseUrl 并补充 Host 所有权', () => {
   const sandbox: Record<string, unknown> = { __DSH_TRANSPORT__: { fetch: desktopTransport.fetch, streamBaseUrl: 'dsh-app://app' } }
   runScripts(table, sandbox)
   const merged = sandbox.__DSH_TRANSPORT__ as { fetch?: unknown; streamBaseUrl?: unknown; ownsHost?: unknown }
-  assert.equal(merged.fetch, desktopTransport.fetch)
+  // fetch 被 shim 包装后不再是同一个函数引用，但必须仍然委派到原实现。
+  assert.equal(typeof merged.fetch, 'function')
   assert.equal(merged.streamBaseUrl, 'dsh-app://app')
   assert.equal(merged.ownsHost, true)
 })
 
-test('Desktop 壳存在且尚未登记 Transport 时不由插件创建', () => {
+test('Desktop 壳存在且尚未登记 Transport 时由 shim 提供 facade，但不伪造基址', () => {
   const table: unknown[] = []
 
   injectDshWebTransportOwnership(table)
 
   const sandbox: Record<string, unknown> = { dshDesktopBoot: {} }
   runScripts(table, sandbox)
-  assert.equal(sandbox.__DSH_TRANSPORT__, undefined)
+  const transport = sandbox.__DSH_TRANSPORT__ as { ownsHost?: unknown; streamBaseUrl?: unknown } | undefined
+  assert.equal(transport?.ownsHost, true)
+  // 所有权脚本不创建全局行，Shim 用访问器保证 DSH 拿到 facade；Desktop 之后赋值再补 streamBaseUrl。
+  assert.equal(transport?.streamBaseUrl, undefined)
+  assert.equal((sandbox.__CODINGNS4DSH_PREBOOT_SHIM__ as { getMode: () => string }).getMode(), 'desktop')
 })
 
 test('未知 Transport 形状不被覆盖', () => {

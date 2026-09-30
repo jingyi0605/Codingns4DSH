@@ -97,8 +97,10 @@ export {
   DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL,
   createDshPeerHostPrebootShimScript,
   installDshPeerHostPrebootShim,
+  readDshPeerHostPrebootShimMode,
+  readDshPeerHostPrebootShimState,
 } from './dsh-peer-host-preboot-shim.js'
-export type { DshPeerHostPrebootShimApi, DshPeerHostPrebootShimState } from './dsh-peer-host-preboot-shim.js'
+export type { DshPeerHostPrebootShimApi, DshPeerHostPrebootShimMode, DshPeerHostPrebootShimState } from './dsh-peer-host-preboot-shim.js'
 export type {
   DshClientTransportHooks,
   DshConnectionAdapter,

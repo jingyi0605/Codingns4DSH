@@ -1,4 +1,5 @@
 import { DshCapabilityRegistry } from './registry.js'
+import { DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL } from '../bootstrap/dsh-peer-host-preboot-shim.js'
 import type { DshCapabilityRoute, DshCapabilityRuntime } from './types.js'
 
 /**
@@ -262,14 +263,62 @@ function addPeerHostHostRoutes(add: CapabilityRouteAdder): void {
   addPeerHostRoute(add, 'peer-host.relay-route', 'peer-host-relay-route-020', 'peerHostRelayRoute', '>=0.2.0-rc.1', 'supported', 30)
 }
 
-/** PeerHost Client 导航能力由独立 adapter 注入；未注入时由 Feature 诊断降级。 */
+/**
+ * PeerHost Client 导航能力由独立 adapter 注入；未注入时由 Feature 诊断降级。
+ *
+ * `peer-host.client-preboot-transport` 表示"页面在 DSH Connection 之前已可被聚合
+ * Transport 包装"。它不再等待官方 Provider 适配器，而是由插件自带的启动页 shim
+ * 提供：Web 与 Desktop 都注入同一个 shim，Desktop 用访问器接管运行时赋值。探测
+ * 只读 shim 状态，`external`（Transport 形状未知）时判为不可用，由 Feature 按
+ * "能力缺失只影响该模块"停用 PeerHost，而不是提示用户刷新。
+ */
 function addPeerHostClientRoutes(add: CapabilityRouteAdder): void {
   addPeerHostRoute(add, 'peer-host.native-navigation', 'peer-host-native-navigation-legacy', 'peerHostNativeNavigation', '>=0.1.5-rc.3 <=0.1.6', 'deprecated')
   addPeerHostRoute(add, 'peer-host.native-navigation', 'peer-host-native-navigation-modern', 'peerHostNativeNavigation', '>=0.1.7-rc.2 <=0.1.7-rc.2', 'supported', 20)
   addPeerHostRoute(add, 'peer-host.remote-web-context-fallback', 'peer-host-remote-web-context-fallback', 'peerHostRemoteWebContextFallback')
   addPeerHostRoute(add, 'peer-host.native-navigation', 'peer-host-native-navigation-020', 'peerHostNativeNavigation', '>=0.2.0-rc.1', 'supported', 30)
   addPeerHostRoute(add, 'peer-host.remote-web-context-fallback', 'peer-host-remote-web-context-fallback-020', 'peerHostRemoteWebContextFallback', '>=0.2.0-rc.1', 'supported', 30)
-  addPeerHostRoute(add, 'peer-host.client-preboot-transport', 'peer-host-client-preboot-transport', 'peerHostClientPrebootTransport', '>=0.2.1 <=0.2.99', 'supported', 40)
+  add({
+    id: 'peer-host-client-preboot-transport-020',
+    capability: 'peer-host.client-preboot-transport',
+    supportedDsh: '>=0.2.0-rc.1',
+    runtime: 'client',
+    priority: 40,
+    status: 'supported',
+    introducedIn: '0.2.0-rc.1',
+    detect: () => isPeerHostPrebootShimWrappable(),
+    create: () => readPeerHostPrebootShim(),
+  })
+}
+
+/**
+ * shim 已安装且不是"结构不支持"时，页面 Transport 可被聚合层包装。
+ *
+ * 探测只读启动页已经写入的全局状态：`not-installed`（脚本未注入）与 `external`
+ * （Transport 形状未知）都判为不可用，让 Feature 按"能力缺失只影响该模块"停用
+ * PeerHost，而不是提示用户刷新。
+ */
+function isPeerHostPrebootShimWrappable(): boolean {
+  const state = readPeerHostPrebootShimState()
+  return state !== 'not-installed' && state !== 'external'
+}
+
+function readPeerHostPrebootShimState(): string {
+  const shim = readPeerHostPrebootShim()
+  if (shim === undefined) return 'not-installed'
+  try {
+    return typeof shim.getState === 'function' ? String(shim.getState()) : 'installed'
+  } catch {
+    return 'not-installed'
+  }
+}
+
+function readPeerHostPrebootShim(): { getState?: () => string; getMode?: () => string } | undefined {
+  try {
+    return (globalThis as Record<string, unknown>)[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL] as { getState?: () => string } | undefined
+  } catch {
+    return undefined
+  }
 }
 
 function addPeerHostRoute(

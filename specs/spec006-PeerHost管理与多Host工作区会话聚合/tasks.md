@@ -10,6 +10,7 @@
 - `createPeerHostFeature()` 默认创建 `AggregatedHostTransportService`，聚合当前 Host 和已登录 PeerHost 的 `/api/workspaces`、`/api/sessions` 摘要；远端摘要仍受 HostScope、HTTP 白名单和 token 隔离保护。
 - 新增 `peerHost/native` 固定 RPC 入口，只接受 `DSH_NATIVE_REMOTE_METHODS`，执行虚拟 ID 改写；目标 Host 没有原生 Remote connector 时明确返回 `unsupported`，不把旧 HTTP API 冒充成原生协议。
 - Client PeerHost Feature 已将单插件 preboot shim 绑定到页面 fetch/RPC bridge，启用 PeerHost 后不再无条件停留在 `requires-reload`；页面 reload 仍是让 DSH 原生 Connection 在 boot 前首次读取 facade 的必要条件。
+  - 2026-09-30 更正：Desktop 拓扑不再需要 reload。shim 用访问器在页面 Transport 赋值时就地接管，连接层分流挂在已建立的 Connection 上；Web 路径同样在启用后即时生效，"开→关→开"不需要刷新页面。只有"插件刚安装、当前页面 head 还没跑过 shim 脚本"才需要一次刷新，此时面板显示的是"未安装 preboot shim"而不是 `requires-reload`。
 - 新增 `tests/dsh-native-summary-source.spec.ts`；定向 PeerHost/boot/shim/Registry 测试 20 项全部通过。完整测试唯一失败仍为受限环境不能绑定 `0.0.0.0` 的既有 Host relay 测试（`bind EPERM 0.0.0.0`）。
 - 本轮新增页面端 `peerHost/native` 与 `peerHost/nativeStream` connector：虚拟 Workspace/Session ID 会解析为 HostScope，普通 Remote 通过目标 Host 的 DSH Controller 执行，`session/follow` 等流通过受控句柄轮询转发；已覆盖目标 Host 无 Controller、作用域不匹配、流结束和关闭路径。
 - 当前仍未完成真实 DSH Web 三栏回放、`session/control` 投影与消息发送/权限回复的端到端浏览器证据；因此 6A.7 不能标记为完成，右侧栏完整能力仍以本地 CodingNS 插件为基线。
@@ -37,12 +38,19 @@
 
 ## 阶段 6A.0：DSH Web Client pre-boot Transport 接入
 
-- 状态：`DONE`（shim）；官方 Provider 契约仍为后续可选演进项
-- 已完成（2026-09-29）：CodingNS 单插件在启动页 head 注入版本锁定的 `0.2.0-rc.1` preboot facade。facade 默认透传页面 fetch，支持幂等安装、激活/停用、dispose、版本拒绝和 Desktop 外部 Transport 保护；PeerHost 设置启用时显示安装状态和刷新提示。
-- 改动文件：`src/bootstrap/dsh-peer-host-preboot-shim.ts`、`src/bootstrap/index.ts`、`src/host/index-injection.ts`、`src/client/features/peer-host.ts`、`tests/dsh-peer-host-preboot-shim.spec.ts`、`tests/host-index-injection.spec.ts`
-- 验证证据：`pnpm run typecheck`；`pnpm run build`；`node --test tests/dsh-peer-host-preboot-shim.spec.ts tests/host-index-injection.spec.ts tests/dsh-client-boot-020.spec.ts`（8 项通过）。
-- 真实边界：shim 只解决页面 Transport 的 preboot 生命周期，不伪造 `ctx.workspaces`、`ctx.sessions`，也不覆盖 Desktop Transport；原生 Store 接入仍由 6A.3/6A.4 负责。
-- 明确不做什么：不引入独立补丁包、Patch Engine、第二插件或远端 UI Bundle；不在运行中的页面重建 DSH Connection。
+- 状态：`DONE`（Web 与 Desktop 两条路径均已接入）；官方 Provider 契约仍为后续可选演进项
+- 已完成（2026-09-29）：CodingNS 单插件在启动页 head 注入版本锁定的 `0.2.0-rc.1` preboot facade。facade 默认透传页面 fetch，支持幂等安装、激活/停用、dispose、版本拒绝；PeerHost 设置启用时显示安装状态和刷新提示。
+- 已完成（2026-09-30，Desktop 适配）：把原先"Desktop 外部 Transport 保护"这个**刻意边界重新分类为已修复缺口**。Desktop 的 `__DSH_TRANSPORT__` 由前端 Bundle 运行时直接赋值（`{ ownsHost, streamBaseUrl }`，无 rpc/fetch/openStream），旧实现因此直接返回只读 `external`，加上 `index-injection` 的 `index < 0` 守卫会跳过 shim 脚本行，形成 `not-installed` / `external` 两个死路分支。本次改为：
+  1. shim 用带 setter 的 `Object.defineProperty` 访问器接管 Desktop 的运行时赋值，`External` 只在 Transport 形状未知（非对象）时保留；facade 新增 `streamBaseUrl` 透传，且**刻意不提供 `rpc`/`openStream`**，让 DSH 继续走原生 `createWebConnectionRpc`（保住 rpcId 校验与 multipart 附件解析，并让 `connection.rpc.open === void 0` 成立以启动原生 Remote mux）。
+  2. `index-injection` 的注入守卫改为"表里没有 shim 行就注入"。
+  3. Feature 在 Desktop 拓扑下就地补连接层分流：`connection.rpc.call` 与 `remote.openRemoteStream` 只在命中聚合作用域时转交页面 Transport，本机请求原样落回 DSH 自身实现（含 uplink 与 mux 重连语义）。
+  4. 能力路由 `peer-host.client-preboot-transport` 范围改为 `>=0.2.0-rc.1`，探测改为读页面 shim 状态；Feature 该能力回退策略改为 `disable`（结构不支持时只停用 PeerHost，不再提示"请刷新"）；设置面板文案区分"结构不支持"与"需要刷新"，`account-bar` 入口可见性与能力状态一致。
+- 改动文件：`src/bootstrap/dsh-peer-host-preboot-shim.ts`、`src/bootstrap/index.ts`、`src/host/index-injection.ts`、`src/dsh-capabilities/matrix.ts`、`src/dsh-capabilities/routes.ts`、`src/client/features/peer-host.ts`、`src/client/features/index.ts`、`src/client/account-bar.ts`、`src/host/cli-adapters/feature.ts`（顺带修复阻塞构建的 `readSandboxMode` 返回类型）
+- 测试：`tests/dsh-peer-host-preboot-shim.spec.ts`、`tests/host-index-injection.spec.ts`、`tests/peer-host-desktop-transport.spec.ts`（新增）、`tests/dsh-capability-registry.spec.ts`、`tests/peer-host-account-menu.spec.ts`
+- 验证证据（2026-09-30）：`pnpm run typecheck`；`pnpm run version:check`；`pnpm run capability:check`；`pnpm run capability:report`（已重新生成 `docs/生成报告/20260925-能力路由报告.md`）；`pnpm test`（876 项全部通过）。
+- 证据文档：`docs/调查报告/20260930-Desktop页面Transport下发方式调查.md`、`docs/开发记录/20260930-Desktop下PeerHost聚合适配记录.md`
+- 真实边界：shim 只解决页面 Transport 的 preboot 生命周期，不伪造 `ctx.workspaces`、`ctx.sessions`；原生 Store 接入仍由 6A.3/6A.4 负责。Desktop 侧结论来自 `app.asar` 反编译证据与等价沙箱测试，真实 Desktop 窗口的首次人工验证仍需在用户侧完成。
+- 明确不做什么：不引入独立补丁包、Patch Engine、第二插件或远端 UI Bundle；不在运行中的页面重建 DSH Connection；不替换 `createWebConnectionRpc`。
 
 ## 阶段 1：建立 Spec 边界、能力矩阵和内部契约
 

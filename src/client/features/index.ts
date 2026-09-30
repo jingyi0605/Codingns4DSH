@@ -54,6 +54,7 @@ export function settingsModules(
 }
 
 export { lanAccessFeature, loginProtectionFeature, reverseProxyFeature, cliAdaptersFeature, workspaceSessionEnhancementFeature, mobileAccessFeature, terminalEnhancementFeature, debugFeature, gitManagementFeature, fileManagementFeature, peerHostFeature }
+export { createPeerHostPageTransport, installPeerHostConnectionRouting } from './peer-host.js'
 export { startBrowserRelayConnection } from './reverse-proxy.js'
 export { LanAccessPanel } from './lan-access-panel.js'
 export { startPeerHostConnectionButton, PEER_HOST_BUTTON_ATTRIBUTE, PEER_HOST_OPEN_EVENT } from '../peer-host-connection-button.js'

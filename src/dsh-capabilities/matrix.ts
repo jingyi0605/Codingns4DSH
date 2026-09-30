@@ -69,8 +69,9 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('peer-host.ws-proxy', 'peer-host-ws-proxy-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/features/peer-host.ts']),
   route('peer-host.aggregate', 'peer-host-aggregate-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/features/peer-host.ts']),
   route('peer-host.aggregated-transport', 'peer-host-aggregated-transport-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/modules/peer-host/aggregated-host-transport.ts']),
-  // 该能力只在 DSH 提供正式 pre-boot Transport Provider 契约后启用；0.2.0-rc.1 没有公开入口。
-  route('peer-host.client-preboot-transport', 'peer-host-client-preboot-transport-021', 'client', '>=0.2.1 <=0.2.99', 'supported', ['bootstrap/index.ts', 'client/features/peer-host.ts']),
+  // 页面级 preboot shim 由插件自己的启动页脚本注入，Web 与 Desktop 共用同一份实现；
+  // Desktop 用带 setter 的访问器接管运行时赋值，因此 0.2.0-rc.1 起即可用。
+  route('peer-host.client-preboot-transport', 'peer-host-client-preboot-transport-020', 'client', '>=0.2.0-rc.1', 'supported', ['bootstrap/index.ts', 'host/index-injection.ts', 'client/features/peer-host.ts']),
   route('peer-host.target-capabilities', 'peer-host-target-capabilities-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/modules/peer-host/aggregated-host-transport.ts']),
   route('peer-host.local-plugin-baseline', 'peer-host-local-plugin-baseline-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/modules/peer-host/aggregated-host-transport.ts']),
   route('peer-host.relay-route', 'peer-host-relay-route-020', 'host', '>=0.2.0-rc.1', 'supported', ['host/features/peer-host.ts']),

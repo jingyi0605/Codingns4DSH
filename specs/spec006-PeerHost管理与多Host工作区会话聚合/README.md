@@ -62,7 +62,7 @@
 - Relay route 仅代表能力矩阵中的受控扩展点。Host-to-Host 工作台 JSON/WS Transport 尚未验证，所有中转 PeerHost 必须保持 `relay_unavailable/degraded`。
 - 诊断只返回 PeerHost ID、路由类型、状态、稳定错误码、检查时间和脱敏 fingerprint；不向 Client 或日志写入 token、密码、relay ticket、完整 URL、文件内容、命令和模型正文。
 
-详细证据见：[PeerHost 能力与中转边界调查](../../docs/调查报告/20260928-PeerHost能力与中转边界调查.md)、[PeerHost 聚合与断线重连实现记录](../../docs/开发记录/20260928-PeerHost聚合与断线重连实现记录.md)、[PeerHost 聚合 Host 与本地插件基线架构决策记录](../../docs/开发记录/20260929-PeerHost聚合Host与本地插件基线架构决策记录.md) 与 [DSH 原生 Remote 协议白名单与虚拟 ID 改写记录](../../docs/开发记录/20260929-DSH原生Remote协议白名单与虚拟ID改写记录.md)。
+详细证据见：[PeerHost 能力与中转边界调查](../../docs/调查报告/20260928-PeerHost能力与中转边界调查.md)、[PeerHost 聚合与断线重连实现记录](../../docs/开发记录/20260928-PeerHost聚合与断线重连实现记录.md)、[PeerHost 聚合 Host 与本地插件基线架构决策记录](../../docs/开发记录/20260929-PeerHost聚合Host与本地插件基线架构决策记录.md)、[DSH 原生 Remote 协议白名单与虚拟 ID 改写记录](../../docs/开发记录/20260929-DSH原生Remote协议白名单与虚拟ID改写记录.md)、[Desktop 页面 Transport 下发方式调查](../../docs/调查报告/20260930-Desktop页面Transport下发方式调查.md) 与 [Desktop 下 PeerHost 聚合适配记录](../../docs/开发记录/20260930-Desktop下PeerHost聚合适配记录.md)。
 
 ## 当前范围
 

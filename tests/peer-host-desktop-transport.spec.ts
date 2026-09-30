@@ -1,0 +1,179 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import {
+  DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL,
+  CODINGNS_BOOTSTRAP_DSH_VERSION,
+  installDshPeerHostPrebootShim,
+} from '../data/build/dist/bootstrap/index.js'
+import { createPeerHostPageTransport, installPeerHostConnectionRouting } from '../data/build/dist/client/features/index.js'
+
+type ShimGlobal = typeof globalThis & {
+  __DSH_TRANSPORT__?: unknown
+  dshDesktopBoot?: unknown
+  [DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]?: { getMode: () => string; dispose: () => void }
+}
+
+/** Desktop 真实顺序：前端 Bundle 先直接赋值 Transport，注入脚本行之后才执行。 */
+async function withDesktopPage(run: (facade: Record<string, unknown>) => void | Promise<void>): Promise<void> {
+  const globals = globalThis as ShimGlobal
+  const hadDesktop = Object.hasOwn(globals, 'dshDesktopBoot')
+  const hadTransport = Object.hasOwn(globals, '__DSH_TRANSPORT__')
+  globals.dshDesktopBoot = {}
+  globals.__DSH_TRANSPORT__ = { ownsHost: true, streamBaseUrl: 'http://127.0.0.1:13082' }
+  const shim = installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
+  try {
+    assert.equal(shim.getMode(), 'desktop')
+    await run(globals.__DSH_TRANSPORT__ as Record<string, unknown>)
+  } finally {
+    shim.dispose()
+    if (!hadDesktop) delete globals.dshDesktopBoot
+    if (!hadTransport) delete globals.__DSH_TRANSPORT__
+  }
+}
+
+function remoteWorkspaceAggregate(): unknown[] {
+  return [{
+    hostId: 'host-local',
+    targetHostId: 'peer-1',
+    hostLabel: '开发机',
+    availability: 'ready',
+    errorCode: null,
+    workspaces: [{
+      key: 'peer-1:workspace-1',
+      hostId: 'host-local',
+      targetHostId: 'peer-1',
+      workspaceId: 'workspace-1',
+      displayName: '远端工作区',
+      hostLabel: '开发机',
+      availability: 'ready',
+      sessions: [{
+        scope: { hostId: 'host-local', targetHostId: 'peer-1', workspaceId: 'workspace-1', sessionId: 'session-1', scopeGeneration: 0 },
+        title: '远端会话',
+        status: 'idle',
+        updatedAt: 10,
+      }],
+    }],
+  }]
+}
+
+test('Desktop Transport 被访问器接管后仍保留 streamBaseUrl，且不提供 rpc/openStream', async () => {
+  await withDesktopPage((facade) => {
+    assert.equal(facade.ownsHost, true)
+    // 聚合流基址必须透传，否则 `/api/remote.mux` 会退回 document.baseURI。
+    assert.equal(facade.streamBaseUrl, 'http://127.0.0.1:13082')
+    // 关键约束：Desktop 分支不提供 rpc/openStream，DSH 才会继续创建原生
+    // `createWebConnectionRpc`，并在 `connection.rpc.open === void 0` 时启动 Remote mux。
+    assert.equal(facade.rpc, undefined)
+    assert.equal(facade.openStream, undefined)
+    // 运行时再赋值时 setter 接管，facade 身份稳定。
+    const before = facade
+    ;(globalThis as ShimGlobal).__DSH_TRANSPORT__ = { ownsHost: true, streamBaseUrl: 'http://127.0.0.1:9999' }
+    assert.equal((globalThis as ShimGlobal).__DSH_TRANSPORT__, before)
+    assert.equal(facade.streamBaseUrl, 'http://127.0.0.1:9999')
+  })
+})
+
+test('Desktop 聚合路由分流远端请求，本机调用原样委派原生实现', async () => {
+  await withDesktopPage(async () => {
+    const transport = createPeerHostPageTransport()
+    transport.setAggregate(remoteWorkspaceAggregate() as never)
+
+    const nativeCalls: { channel: string; endpoint: string; payload: unknown }[] = []
+    const rpc = {
+      call: async (channel: string, endpoint: string, payload: unknown) => {
+        nativeCalls.push({ channel, endpoint, payload })
+        return { ok: true, value: { items: [{ sessionId: 'local-1' }] } }
+      },
+    }
+    const localOpens: string[] = []
+    const remote = {
+      openRemoteStream: (endpoint: string) => {
+        localOpens.push(endpoint)
+        return (async function* () { yield { local: true } })()
+      },
+    }
+    const hooks = {
+      rpc: async ({ method, payload }: { method: string; payload: { channel: string; payload: unknown } }) => ({
+        ok: true,
+        value: { routed: method, channel: payload.channel },
+      }),
+      openStream: ({ method }: { method: string }) => (async function* () { yield { routed: method } })(),
+    }
+    const matchesScope = (value: unknown): boolean => JSON.stringify(value ?? null).includes('virtual')
+
+    const route = installPeerHostConnectionRouting({
+      uiContext: { get: (name: string) => (name === 'connection' ? { rpc } : undefined) },
+      remote,
+      hooks,
+      matchesScope,
+    })
+    assert.equal(typeof route, 'function')
+
+    // 远端作用域的本机 `/api` 原生方法走聚合 Transport。
+    const peer = await rpc.call('/api', 'session/list', { args: { workspaceId: 'virtual' } })
+    assert.deepEqual(peer, { ok: true, value: { routed: 'session/list', channel: '/api' } })
+    assert.equal(nativeCalls.length, 0)
+
+    // 本机 session/list 委派原生实现，并保持结果形状不变（未注入装饰时原样返回）。
+    const local = await rpc.call('/api', 'session/list', { args: {} })
+    assert.deepEqual(local, { ok: true, value: { items: [{ sessionId: 'local-1' }] } })
+    assert.deepEqual(nativeCalls, [{ channel: '/api', endpoint: 'session/list', payload: { args: {} } }])
+
+    // 非 `/api` 通道永不分流。
+    await rpc.call('/codingns', 'peerHost/request', { id: 1 })
+    assert.equal(nativeCalls.length, 2)
+
+    // 远端流走聚合 Transport；本机流原样落回 DSH 自己的 openRemoteStream。
+    const peerStream = remote.openRemoteStream('session/follow', { args: { sessionId: 'virtual' } }) as AsyncIterable<unknown>
+    const peerItems: unknown[] = []
+    for await (const item of peerStream) peerItems.push(item)
+    assert.deepEqual(peerItems, [{ routed: 'session/follow' }])
+    assert.deepEqual(localOpens, [])
+
+    const localStream = remote.openRemoteStream('session/follow', { args: { sessionId: 'local-1' } }) as AsyncIterable<unknown>
+    const localItems: unknown[] = []
+    for await (const item of localStream) localItems.push(item)
+    assert.deepEqual(localItems, [{ local: true }])
+    assert.deepEqual(localOpens, ['session/follow'])
+
+    // 关键：分流不能以定义 `connection.rpc.open` 为代价，否则网关会跳过 mux 启动/重连。
+    assert.equal(Object.hasOwn(rpc, 'open'), false)
+
+    route!()
+    assert.equal(Object.hasOwn(rpc, 'open'), false)
+    assert.equal(remote.openRemoteStream.toString().includes('hooks'), false)
+  })
+})
+
+test('Desktop 路由只装饰本机 session/list，最终仍还原 Remote 服务方法', async () => {
+  await withDesktopPage(async () => {
+    const transport = createPeerHostPageTransport()
+    const rpc = { call: async () => ({ ok: true, value: { items: [] } }) }
+    const originalOpen = function * (): Generator<unknown> { yield 'native' }
+    const remote = { openRemoteStream: originalOpen as unknown as (...args: unknown[]) => unknown }
+    const route = installPeerHostConnectionRouting({
+      uiContext: { get: () => ({ rpc }) },
+      remote,
+      hooks: {},
+      matchesScope: () => false,
+      decorateLocalResult: (_method, result) => ({ ...(result as Record<string, unknown>), decorated: true }),
+    })
+    const decorated = await rpc.call('/api', 'session/list', { args: {} }) as Record<string, unknown>
+    assert.equal(decorated.decorated, true)
+
+    route!()
+    assert.equal(remote.openRemoteStream, originalOpen)
+  })
+})
+
+test('缺少 Remote 服务时不安装 Desktop 路由，避免半接管', async () => {
+  await withDesktopPage(async () => {
+    const rpc = { call: async () => ({ ok: true, value: null }) }
+    const route = installPeerHostConnectionRouting({
+      uiContext: { get: () => ({ rpc }) },
+      hooks: {},
+      matchesScope: () => true,
+    })
+    assert.equal(route, undefined)
+  })
+})

@@ -20,6 +20,9 @@ test('PeerHost 启用后回环和 Desktop 页面也显示统一账户入口', as
   assert.match(accountBar, /settingsStore\?\.getSnapshot\(\)\.value\?\.modules\.peerHost === true/u)
   assert.match(accountBar, /location\.protocol\.toLowerCase\(\) === 'dsh-app:'/u)
   assert.match(accountBar, /peerHostModuleEnabled\(\) && \(isLoopbackPage\(\) \|\| isDesktopPage\(\)\)/u)
+  // 入口可见性必须与能力状态一致：结构不支持或 shim 未安装时不显示入口。
+  assert.match(accountBar, /if \(!isPeerHostTransportWrappable\(\)\) return false/u)
+  assert.match(accountBar, /readDshPeerHostPrebootShimState\(\)/u)
   assert.match(accountBar, /settingsStore\?\.subscribe\(\(\) => renderAll\(\)\)/u)
 })
 

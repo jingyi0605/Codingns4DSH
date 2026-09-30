@@ -9,6 +9,7 @@ import {
   type DshCapabilityRoute,
 } from '../data/build/dist/index.js'
 import { FeatureRegistry, FeatureRegistryError } from '../data/build/dist/features/index.js'
+import { CODINGNS_BOOTSTRAP_DSH_VERSION, DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL, installDshPeerHostPrebootShim } from '../data/build/dist/bootstrap/index.js'
 
 function route(overrides: Partial<DshCapabilityRoute<unknown>>): DshCapabilityRoute<unknown> {
   return {
@@ -90,15 +91,51 @@ test('PeerHost 八项能力已进入矩阵并覆盖支持版本', () => {
   }
 })
 
-test('pre-boot Transport 只在官方 Provider 契约版本和适配器同时存在时可用', () => {
-  const currentContext = {}
-  const current = createDshCapabilityRegistry('0.2.0-rc.1', 'client', currentContext).getProfile(currentContext)
-  assert.equal(current.capabilities.get('peer-host.client-preboot-transport')?.status, 'unavailable')
+test('pre-boot Transport 按页面 shim 状态解析：已安装即 ready，缺失或结构不支持不可用', () => {
+  const globals = globalThis as typeof globalThis & { __DSH_TRANSPORT__?: unknown; dshDesktopBoot?: unknown; [DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]?: unknown }
+  const previousTransport = globals.__DSH_TRANSPORT__
+  const previousDesktop = globals.dshDesktopBoot
+  const previousShim = globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]
+  const hadTransport = Object.hasOwn(globals, '__DSH_TRANSPORT__')
+  const hadDesktop = Object.hasOwn(globals, 'dshDesktopBoot')
+  try {
+    // 页面没有 shim（脚本未注入）时不可用，且能落到结构化诊断。
+    delete globals.__DSH_TRANSPORT__
+    delete globals.dshDesktopBoot
+    delete globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]
+    const missing = createDshCapabilityRegistry('0.2.0-rc.1', 'client', {}).getProfile({})
+    assert.equal(missing.capabilities.get('peer-host.client-preboot-transport')?.status, 'unavailable')
 
-  const futureContext = { peerHostClientPrebootTransport: { register: () => undefined } }
-  const future = createDshCapabilityRegistry('0.2.1', 'client', futureContext).getProfile(futureContext)
-  assert.equal(future.capabilities.get('peer-host.client-preboot-transport')?.routeId, 'peer-host-client-preboot-transport')
-  assert.equal(future.capabilities.get('peer-host.client-preboot-transport')?.status, 'ready')
+    // Web 页面：shim 已随启动页安装即可用，rc.1 与 rc.2 走同一条 020 路由。
+    installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
+    for (const version of ['0.2.0-rc.1', '0.2.0-rc.2']) {
+      const web = createDshCapabilityRegistry(version, 'client', {}).getProfile({})
+      assert.equal(web.capabilities.get('peer-host.client-preboot-transport')?.routeId, 'peer-host-client-preboot-transport-020')
+      assert.equal(web.capabilities.get('peer-host.client-preboot-transport')?.status, 'ready')
+    }
+
+    // Desktop 页面：Transport 由运行时赋值，shim 用访问器接管，同样可用。
+    globals.__DSH_TRANSPORT__ = { ownsHost: true, streamBaseUrl: 'http://127.0.0.1:13082' }
+    globals.dshDesktopBoot = {}
+    const desktop = createDshCapabilityRegistry('0.2.0-rc.2', 'client', {}).getProfile({})
+    assert.equal(desktop.capabilities.get('peer-host.client-preboot-transport')?.status, 'ready')
+
+    // 结构不支持（非对象 Transport）时会话 shim 判 external，能力不可用。
+    globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]?.dispose?.()
+    delete globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]
+    globals.__DSH_TRANSPORT__ = 'desktop-managed'
+    installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
+    const external = createDshCapabilityRegistry('0.2.0-rc.2', 'client', {}).getProfile({})
+    assert.equal(external.capabilities.get('peer-host.client-preboot-transport')?.status, 'unavailable')
+  } finally {
+    globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]?.dispose?.()
+    if (hadTransport) globals.__DSH_TRANSPORT__ = previousTransport
+    else delete globals.__DSH_TRANSPORT__
+    if (hadDesktop) globals.dshDesktopBoot = previousDesktop
+    else delete globals.dshDesktopBoot
+    if (previousShim === undefined) delete globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]
+    else globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL] = previousShim
+  }
 })
 
 test('PeerHost 未注入适配器时生成不可用诊断', () => {

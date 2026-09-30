@@ -1,7 +1,7 @@
 /** 启动页注入表中的全局变量记录。 */
 import type { LanAccessDshPwaSettings } from '../shared/contracts/config.js'
 import { createPwaClientScript } from './modules/pwa/index.js'
-import { createDshPeerHostPrebootShimScript } from '../bootstrap/dsh-peer-host-preboot-shim.js'
+import { createDshPeerHostPrebootShimScript, DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL } from '../bootstrap/dsh-peer-host-preboot-shim.js'
 
 export interface DshIndexInjectionEntry {
   readonly kind?: unknown
@@ -24,6 +24,10 @@ export interface DshIndexInjectionEntry {
  *   且页面也不是 Desktop（`dshDesktopBoot` 未定义，Desktop 自己声明所有权）时
  *   才创建 `{ ownsHost: true }`。
  * - 未知形状（例如 Desktop 托管的字符串标记）保持原样，不被覆盖。
+ * - preboot shim 只按"表里没有 shim 行"判断是否注入。此前用 `index < 0`
+ *   （表里没有 `__DSH_TRANSPORT__` 全局行）做条件，导致 DSH 自带全局行的页面
+ *   完全跳过 shim，插件面板只会显示 `not-installed`；shim 自身的 external 分支
+ *   已经能安全处理未知形状，不需要这个守卫替它兜底。
  */
 export function injectDshWebTransportOwnership(table: unknown[]): void {
   const index = table.findIndex((entry) => isTransportInjection(entry))
@@ -36,7 +40,7 @@ export function injectDshWebTransportOwnership(table: unknown[]): void {
   table.push({ kind: 'script', placement: 'head', text: TRANSPORT_OWNERSHIP_SCRIPT })
   // preboot shim 必须排在 DSH Client Bundle 之前；它只包装页面 Transport，默认
   // 透传原有 fetch，不触碰 Desktop 已经持有的未知形状 Transport。
-  if (index < 0) table.push({ kind: 'script', placement: 'head', text: createDshPeerHostPrebootShimScript() })
+  if (!hasPrebootShimRow(table)) table.push({ kind: 'script', placement: 'head', text: createDshPeerHostPrebootShimScript() })
 }
 
 /**
@@ -84,6 +88,14 @@ export function injectDshWebPwaMetadata(table: unknown[], settings: LanAccessDsh
 
 function isTransportInjection(value: unknown): value is DshIndexInjectionEntry {
   return isRecord(value) && value.name === '__DSH_TRANSPORT__'
+}
+
+/** shim 脚本行自带全局安装标记；表里已有标记说明别的注入方已经装过。 */
+function hasPrebootShimRow(table: readonly unknown[]): boolean {
+  return table.some((entry) => isRecord(entry)
+    && entry.kind === 'script'
+    && typeof entry.text === 'string'
+    && entry.text.includes(DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL))
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

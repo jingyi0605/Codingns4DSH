@@ -8,6 +8,7 @@ import { LOGIN_PROTECTION_SESSION_EVENT, readLoginProtectionSession, readLoginPr
 import { dshThemeColor } from './theme.js'
 import { attachOutsideDismissal } from './popup-dismiss.js'
 import { PEER_HOST_OPEN_EVENT } from './peer-host-connection-button.js'
+import { readDshPeerHostPrebootShimState } from '../bootstrap/dsh-peer-host-preboot-shim.js'
 
 const SETTINGS_BUTTON_SELECTOR = 'button[aria-label="设置"]'
 const ACCOUNT_ATTRIBUTE = 'data-codingns-account-button'
@@ -263,7 +264,15 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   }
 
   function shouldShowPeerHostEntry(): boolean {
+    // 入口可见性与 PeerHost 的能力状态一致：Transport 结构不支持（external）
+    // 或 preboot shim 没装（not-installed）时，模块会被禁用，入口不再出现。
+    if (!isPeerHostTransportWrappable()) return false
     return peerHostModuleEnabled() && (isLoopbackPage() || isDesktopPage())
+  }
+
+  function isPeerHostTransportWrappable(): boolean {
+    const state = readDshPeerHostPrebootShimState()
+    return state !== 'not-installed' && state !== 'external'
   }
 
   function peerHostModuleEnabled(): boolean {
