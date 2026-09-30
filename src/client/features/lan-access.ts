@@ -1,6 +1,7 @@
 import { DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS } from '../../shared/contracts/config.js'
 import { ensureCryptoRandomUUID } from '../lan-access.js'
 import { startPwaInstallPrompt, type PwaInstallPromptController } from '../pwa-install-prompt.js'
+import { startMobileSessionInteractionDom, type MobileSessionInteractionController } from '../mobile-session-interaction.js'
 import { LanAccessPanel } from './lan-access-panel.js'
 import type { CodingNsClientFeatureModule } from './types.js'
 
@@ -32,6 +33,9 @@ export const lanAccessFeature: CodingNsClientFeatureModule = {
   start: (context) => {
     ensureCryptoRandomUUID()
     let prompt: PwaInstallPromptController | undefined
+    // 局域网入口在手机浏览器中复用 DSH 原生会话列表；交互修正控制器自身
+    // 按窄屏和触摸能力门禁，桌面端不会注册全局监听。
+    const mobileSessionInteraction: MobileSessionInteractionController = startMobileSessionInteractionDom()
     const sync = (): void => {
       const pwa = context.services.settings.getSnapshot().value?.lanAccessDsh.pwa ?? DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS
       if (!pwa.enabled || !pwa.installPrompt) {
@@ -49,6 +53,7 @@ export const lanAccessFeature: CodingNsClientFeatureModule = {
     context.resources.add(() => {
       prompt?.dispose()
       prompt = undefined
+      mobileSessionInteraction.dispose()
     })
     sync()
   },
