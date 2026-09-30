@@ -1,9 +1,9 @@
 import { createElement, useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { LanAccessDshSnapshot } from '../../shared/contracts/lan-access-dsh.js'
-import type { LanAccessDshPwaSettings, LanAccessDshSettings } from '../../shared/contracts/config.js'
-import { DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS, normalizeLanAccessDshPwaSettings } from '../../shared/contracts/config.js'
+import type { LanAccessDshSettings } from '../../shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
+import { buildLanAccessUrls, copyTextToClipboard, resolveLanAccessStatus } from './lan-access-status.js'
 import type { FeaturePanelProps, CodingNsRpcClient } from './types.js'
 import {
   dshFormRootStyle,
@@ -16,7 +16,6 @@ import {
   dshThemeColor,
 } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
-import type { PwaNotificationClient, PwaNotificationStatus } from '../pwa-notifications.js'
 
 /** “局域网访问DSH”设置卡片：只配置一条监听并转发到当前 DSH Web。 */
 export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, notify }: FeaturePanelProps): ReactElement {
@@ -26,23 +25,22 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
   const disabled = !enabled
   const controlsDisabled = disabled || settingsSnapshot.status === 'loading' || !settingsSnapshot.writable
   const [listenHosts, setListenHosts] = useState<string[]>(['0.0.0.0'])
+  const [interfaceAddresses, setInterfaceAddresses] = useState<string[]>([])
   const [listenHost, setListenHost] = useState('0.0.0.0')
   const [listenPort, setListenPort] = useState('13080')
   const [dshPort, setDshPort] = useState('')
   const [autoStart, setAutoStart] = useState(false)
-  const [pwa, setPwa] = useState<LanAccessDshPwaSettings>(DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS)
   const [detectedDshPorts, setDetectedDshPorts] = useState<number[]>([])
   const [snapshot, setSnapshot] = useState<LanAccessDshSnapshot | null>(null)
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [notificationStatus, setNotificationStatus] = useState<PwaNotificationStatus | undefined>()
-  const [pushEndpoint, setPushEndpoint] = useState<string | null>(null)
-  const [pushSubscriptions, setPushSubscriptions] = useState<number | undefined>()
 
   useEffect(() => {
     if (disabled) return
     void callRpc<string[]>(rpc, 'lanAccessDsh/addresses', {})
       .then((addresses) => {
         setListenHosts(addresses)
+        setInterfaceAddresses(addresses)
         if (!addresses.includes(listenHost)) setListenHost(addresses[0] ?? '0.0.0.0')
       })
       .catch(() => undefined)
@@ -66,20 +64,14 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
     setListenHost(savedSettings.listenHost)
     setListenPort(String(savedSettings.listenPort))
     setDshPort(savedSettings.dshPort > 0 ? String(savedSettings.dshPort) : '')
-    setPwa(normalizeLanAccessDshPwaSettings(savedSettings.pwa))
   }, [savedSettings])
 
-  // 通知/推送状态只在卡片打开时读取一次；所有写入都由用户手势触发。
+  // 复制反馈只保留两秒，避免地址行长期停在“已复制”。
   useEffect(() => {
-    if (disabled) return
-    const client = services.notifications
-    if (client === undefined) return
-    void client.status().then(setNotificationStatus).catch(() => undefined)
-    void client.currentSubscription().then((subscription) => setPushEndpoint(subscription?.endpoint ?? null)).catch(() => undefined)
-    void callRpc<{ available: boolean; subscriptions: number }>(rpc, 'lanAccessDsh/pwa/push/status', {})
-      .then((status) => setPushSubscriptions(status.available ? status.subscriptions : undefined))
-      .catch(() => undefined)
-  }, [disabled, rpc, services.notifications])
+    if (copiedUrl === null) return
+    const timer = setTimeout(() => setCopiedUrl(null), 2000)
+    return () => clearTimeout(timer)
+  }, [copiedUrl])
 
   const run = async (operation: () => Promise<void>): Promise<void> => {
     setBusy(true)
@@ -100,18 +92,8 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
   })
 
   const saveMapping = async (nextAutoStart = autoStart): Promise<void> => {
-    const saved = await callRpc<LanAccessDshSettings>(rpc, 'lanAccessDsh/settings/set', readMapping(listenHost, listenPort, dshPort, nextAutoStart, pwa))
+    const saved = await callRpc<LanAccessDshSettings>(rpc, 'lanAccessDsh/settings/set', readMapping(listenHost, listenPort, dshPort, nextAutoStart))
     setSavedSettings(saved)
-  }
-
-  const updatePwa = (patch: Partial<LanAccessDshPwaSettings>): void => {
-    const next = normalizeLanAccessDshPwaSettings({ ...pwa, ...patch })
-    setPwa(next)
-    void run(async () => {
-      const saved = await callRpc<LanAccessDshSettings>(rpc, 'lanAccessDsh/settings/set', readMapping(listenHost, listenPort, dshPort, autoStart, next))
-      setSavedSettings(saved)
-      notify({ kind: 'success', message: t('lan.pwa.saved') })
-    })
   }
 
   const saveMappingOnBlur = (): void => {
@@ -122,7 +104,7 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
   }
 
   const start = (): Promise<void> => run(async () => {
-    const saved = readMapping(listenHost, listenPort, dshPort, autoStart, pwa)
+    const saved = readMapping(listenHost, listenPort, dshPort, autoStart)
     await saveMapping()
     const payload = {
       listenHost: saved.listenHost,
@@ -131,16 +113,37 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
     }
     const current = await callRpc<LanAccessDshSnapshot>(rpc, 'lanAccessDsh/start', payload)
     setSnapshot(current)
+    setCopiedUrl(null)
     setDshPort(String(current.dshPort))
     setListenPort(String(current.listenPort))
-    notify({ kind: 'success', message: t('lan.started', { host: current.listenHost, port: current.actualListenPort ?? current.listenPort, dshPort: current.dshPort }) })
+    const url = buildLanAccessUrls(current, interfaceAddresses)[0]
+      ?? `http://${current.listenHost}:${current.actualListenPort ?? current.listenPort}/`
+    notify({ kind: 'success', message: t('lan.started', { url }) })
   })
 
   const stop = (): Promise<void> => run(async () => {
     await callRpc(rpc, 'lanAccessDsh/stop', {})
     setSnapshot(null)
+    setCopiedUrl(null)
     notify({ kind: 'success', message: t('lan.stopped') })
   })
+
+  const copyAccessUrl = async (url: string): Promise<void> => {
+    try {
+      await copyTextToClipboard(url)
+      setCopiedUrl(url)
+      notify({ kind: 'success', message: t('lan.copySuccess') })
+    } catch (error) {
+      setCopiedUrl(null)
+      notify({ kind: 'error', message: error instanceof Error ? error.message : t('lan.copyFailed') })
+    }
+  }
+
+  const handleAccessUrlKeyDown = (event: { key: string; preventDefault: () => void }, url: string): void => {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    void copyAccessUrl(url)
+  }
 
   const toggleAutoStart = (): Promise<void> => run(async () => {
     const next = !autoStart
@@ -149,65 +152,14 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
     notify({ kind: 'success', message: next ? t('lan.autoStartOn') : t('lan.autoStartOff') })
   })
 
-  const requireNotifications = (): PwaNotificationClient => {
-    const client = services.notifications
-    if (client === undefined) throw new Error(t('lan.pwa.pushUnavailable'))
-    return client
-  }
-
-  const requestPermission = (): Promise<void> => run(async () => {
-    const status = await requireNotifications().requestPermission()
-    setNotificationStatus(status)
-    notify({ kind: status.permission === 'granted' ? 'success' : 'info', message: status.permission === 'granted' ? t('lan.pwa.permissionGranted') : t('lan.pwa.permissionNotGranted') })
-  })
-
-  const sendTestNotification = (): Promise<void> => run(async () => {
-    const sent = await requireNotifications().notify({ title: 'DSH', body: t('lan.pwa.testBody'), tag: 'codingns4dsh-test' })
-    notify({ kind: sent ? 'success' : 'error', message: sent ? t('lan.pwa.testSent') : t('lan.pwa.testFailed') })
-  })
-
-  const subscribePush = (): Promise<void> => run(async () => {
-    const client = requireNotifications()
-    const vapid = await callRpc<{ available: boolean; publicKey?: string }>(rpc, 'lanAccessDsh/pwa/vapid', {})
-    if (vapid.publicKey === undefined) throw new Error(t('lan.pwa.pushUnavailable'))
-    let status = await client.status()
-    if (status.permission !== 'granted') {
-      status = await client.requestPermission()
-    }
-    setNotificationStatus(status)
-    if (status.permission !== 'granted') throw new Error(t('lan.pwa.pushNeedsPermission'))
-    const subscription = await client.subscribe(vapid.publicKey)
-    const label = typeof navigator === 'undefined' ? '' : navigator.userAgent
-    const result = await callRpc<{ subscriptions: number }>(rpc, 'lanAccessDsh/pwa/push/subscribe', { endpoint: subscription.endpoint, keys: subscription.keys, label })
-    setPushEndpoint(subscription.endpoint)
-    setPushSubscriptions(result.subscriptions)
-    notify({ kind: 'success', message: t('lan.pwa.pushSubscribed', { count: String(result.subscriptions) }) })
-  })
-
-  const unsubscribePush = (): Promise<void> => run(async () => {
-    const client = requireNotifications()
-    const endpoint = pushEndpoint ?? (await client.currentSubscription())?.endpoint
-    await client.unsubscribe()
-    if (endpoint !== undefined && endpoint !== null) {
-      await callRpc(rpc, 'lanAccessDsh/pwa/push/unsubscribe', { endpoint })
-    }
-    setPushEndpoint(null)
-    setPushSubscriptions(undefined)
-    notify({ kind: 'success', message: t('lan.pwa.pushUnsubscribed') })
-  })
-
-  const sendTestPush = (): Promise<void> => run(async () => {
-    const summary = await callRpc<{ sent: number; failed: number; removed: number }>(rpc, 'lanAccessDsh/pwa/push/test', {})
-    notify({ kind: summary.sent > 0 ? 'success' : 'info', message: t('lan.pwa.pushTestSummary', { sent: String(summary.sent), failed: String(summary.failed), removed: String(summary.removed) }) })
-  })
-
-  const unregisterServiceWorker = (): Promise<void> => run(async () => {
-    const done = await requireNotifications().unregisterServiceWorker()
-    notify({ kind: done ? 'success' : 'error', message: done ? t('lan.pwa.unregisterSwDone') : t('lan.pwa.unregisterSwFailed') })
-  })
-
   const fieldStyle = dshSettingsFieldStyle
   const buttonStyle = dshSettingsButtonStyle
+  const status = resolveLanAccessStatus(snapshot)
+  const accessUrls = buildLanAccessUrls(snapshot, interfaceAddresses)
+  // 监听全部网卡时会有多个可用地址，用数量提示这不是唯一的入口。
+  const statusLabel = status.listening && accessUrls.length > 1
+    ? t('lan.statusListeningCount', { count: String(accessUrls.length) })
+    : t(status.labelKey)
 
   return createElement(
     'div',
@@ -239,71 +191,75 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
       createElement('button', { type: 'button', disabled: controlsDisabled || busy || !listenPort, onClick: () => void start(), style: { ...dshSettingsPrimaryButtonStyle, flex: 1 } }, busy ? t('lan.processing') : snapshot ? t('lan.update') : t('lan.start')),
       snapshot && createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void stop(), style: buttonStyle }, t('lan.stop')),
     ),
-    snapshot && createElement('div', { role: 'status', style: dshSettingsNoteStyle }, t('lan.forwarding', { host: snapshot.listenHost, port: snapshot.actualListenPort ?? snapshot.listenPort, dshPort: snapshot.dshPort })),
-    createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4, paddingTop: 12, borderTop: `1px solid ${dshThemeColor.border}` } },
-      createElement('strong', { style: { fontSize: 13 } }, t('lan.pwa.title')),
-      createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: 12, lineHeight: 1.6 } }, t('lan.pwa.description')),
-      createElement('label', { style: { display: 'flex', alignItems: 'flex-start', gap: 8, cursor: controlsDisabled || busy ? 'not-allowed' : 'pointer', color: dshThemeColor.labelSecondary, fontSize: 13 } },
-        createElement('input', { type: 'checkbox', checked: pwa.enabled, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { checked: boolean } }) => updatePwa({ enabled: event.currentTarget.checked }), style: { marginTop: 2, accentColor: dshThemeColor.accent } }),
-        createElement('span', undefined,
-          createElement('span', { style: { display: 'block' } }, t('lan.pwa.enabled')),
-          createElement('span', { style: { display: 'block', marginTop: 3, fontSize: 11, lineHeight: 1.5 } }, t('lan.pwa.enabledHelp')),
-        ),
+    createElement('div', {
+      role: 'status',
+      'aria-live': 'polite',
+      style: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+        padding: '12px 14px',
+        border: `1px solid ${status.listening ? dshThemeColor.success : dshThemeColor.border}`,
+        borderRadius: 8,
+        background: dshThemeColor.surfaceSubtle,
+      },
+    },
+      createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+        createElement('span', { 'aria-hidden': true, style: { width: 9, height: 9, flex: '0 0 auto', borderRadius: '50%', background: status.color } }),
+        createElement('span', { style: { color: status.color, fontSize: 13, fontWeight: 600 } }, statusLabel),
+        snapshot !== null && createElement('span', { style: { color: dshThemeColor.labelTertiary, fontSize: 12 } }, t('lan.forwardTarget', { dshPort: String(snapshot.dshPort) })),
       ),
-      createElement('label', { style: { display: 'flex', alignItems: 'flex-start', gap: 8, cursor: controlsDisabled || busy || !pwa.enabled ? 'not-allowed' : 'pointer', color: dshThemeColor.labelSecondary, fontSize: 13, opacity: pwa.enabled ? 1 : 0.55 } },
-        createElement('input', { type: 'checkbox', checked: pwa.serviceWorker, disabled: controlsDisabled || busy || !pwa.enabled, onChange: (event: { currentTarget: { checked: boolean } }) => updatePwa({ serviceWorker: event.currentTarget.checked }), style: { marginTop: 2, accentColor: dshThemeColor.accent } }),
-        createElement('span', undefined,
-          createElement('span', { style: { display: 'block' } }, t('lan.pwa.serviceWorker')),
-          createElement('span', { style: { display: 'block', marginTop: 3, fontSize: 11, lineHeight: 1.5 } }, t('lan.pwa.serviceWorkerHelp')),
+      status.state === 'error' && snapshot !== null && snapshot.error !== null && createElement('div', { style: { color: dshThemeColor.error, fontSize: 12, lineHeight: 1.5, overflowWrap: 'anywhere' } }, snapshot.error),
+      accessUrls.length === 0
+        ? createElement('div', { style: { color: dshThemeColor.labelTertiary, fontSize: 12, lineHeight: 1.5 } }, t('lan.accessUrlEmpty'))
+        : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+          ...accessUrls.map((url) => createElement('div', {
+            key: url,
+            role: 'button',
+            tabIndex: controlsDisabled || busy ? -1 : 0,
+            'aria-disabled': controlsDisabled || busy,
+            'aria-label': t('lan.copyAddressHint', { url }),
+            title: t('lan.copyAddressHint', { url }),
+            onClick: () => { if (!controlsDisabled && !busy) void copyAccessUrl(url) },
+            onKeyDown: (event: { key: string; preventDefault: () => void }) => { if (!controlsDisabled && !busy) handleAccessUrlKeyDown(event, url) },
+            style: {
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              minWidth: 0,
+              padding: '8px 10px',
+              border: `1px solid ${copiedUrl === url ? dshThemeColor.success : dshThemeColor.border}`,
+              borderRadius: 6,
+              background: dshThemeColor.pageBackground,
+              cursor: controlsDisabled || busy ? 'default' : 'copy',
+              transition: 'border-color 160ms ease, background 160ms ease',
+            },
+          },
+            createElement('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: dshThemeColor.accent, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 13, fontWeight: 600 } }, url),
+            createElement('span', { style: { flex: '0 0 auto', color: copiedUrl === url ? dshThemeColor.success : dshThemeColor.labelSecondary, fontSize: 12, fontWeight: 600 } }, copiedUrl === url ? t('lan.copied') : t('lan.copy')),
+          )),
         ),
-      ),
-      createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 8, cursor: controlsDisabled || busy || !pwa.enabled ? 'not-allowed' : 'pointer', color: dshThemeColor.labelSecondary, fontSize: 13, opacity: pwa.enabled ? 1 : 0.55 } },
-        createElement('input', { type: 'checkbox', checked: pwa.installPrompt, disabled: controlsDisabled || busy || !pwa.enabled, onChange: (event: { currentTarget: { checked: boolean } }) => updatePwa({ installPrompt: event.currentTarget.checked }), style: { accentColor: dshThemeColor.accent } }),
-        createElement('span', undefined, t('lan.pwa.installPrompt')),
-      ),
-      createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6, opacity: pwa.enabled ? 1 : 0.55 } },
-        createElement('span', { style: dshSettingsFieldLabelStyle }, t('lan.pwa.notifications')),
-        createElement('select', {
-          value: pwa.notifications,
-          disabled: controlsDisabled || busy || !pwa.enabled,
-          onChange: (event: { currentTarget: { value: string } }) => updatePwa({ notifications: event.currentTarget.value === 'local' ? 'local' : event.currentTarget.value === 'push' ? 'push' : 'off' }),
-          style: fieldStyle,
-        },
-          createElement('option', { value: 'off' }, t('lan.pwa.notificationsOff')),
-          createElement('option', { value: 'local' }, t('lan.pwa.notificationsLocal')),
-          createElement('option', { value: 'push' }, t('lan.pwa.notificationsPush')),
-        ),
-      ),
-      pwa.enabled && pwa.notifications !== 'off' && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, opacity: pwa.enabled ? 1 : 0.55 } },
-        notificationStatus !== undefined && createElement('div', { style: dshSettingsNoteStyle }, t('lan.pwa.notificationState', {
-          permission: notificationStatus.permission,
-          sw: notificationStatus.serviceWorker ? t('lan.pwa.swActive') : t('lan.pwa.swMissing'),
-        })),
-        pwa.notifications === 'push' && !pwa.serviceWorker && createElement('div', { style: dshSettingsNoteStyle }, t('lan.pwa.swNeeded')),
-        createElement('div', { style: dshSettingsRowStyle },
-          notificationStatus?.permission !== 'granted' && createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void requestPermission(), style: buttonStyle }, t('lan.pwa.requestPermission')),
-          pwa.notifications === 'local' && notificationStatus?.permission === 'granted' && createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void sendTestNotification(), style: buttonStyle }, t('lan.pwa.sendTest')),
-          pwa.notifications === 'push' && pushEndpoint === null && createElement('button', { type: 'button', disabled: controlsDisabled || busy || !pwa.serviceWorker, onClick: () => void subscribePush(), style: buttonStyle }, t('lan.pwa.subscribe')),
-          pwa.notifications === 'push' && pushEndpoint !== null && createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void unsubscribePush(), style: buttonStyle }, t('lan.pwa.unsubscribe')),
-          pwa.notifications === 'push' && createElement('button', { type: 'button', disabled: controlsDisabled || busy || pushSubscriptions === undefined, onClick: () => void sendTestPush(), style: buttonStyle }, t('lan.pwa.pushTest')),
-        ),
-        pwa.notifications === 'push' && pushSubscriptions !== undefined && createElement('div', { style: dshSettingsNoteStyle }, t('lan.pwa.pushDevices', { count: String(pushSubscriptions) })),
-        createElement('div', { style: dshSettingsRowStyle },
-          createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void unregisterServiceWorker(), style: buttonStyle }, t('lan.pwa.unregisterSw')),
-        ),
-      ),
-      createElement('div', { style: dshSettingsNoteStyle }, t('lan.pwa.loopbackWarning')),
     ),
+    // PWA 资产与通知配置已移到「移动端访问增强」卡片；这里只保留监听边界上的回环告警。
+    createElement('div', { style: dshSettingsNoteStyle }, t('lan.pwa.loopbackWarning')),
   )
 }
 
-function readMapping(listenHost: string, listenPort: string, dshPort: string, autoStart: boolean, pwa: LanAccessDshPwaSettings): LanAccessDshSettings {
+/** 局域网卡片只写监听映射：PWA 档位由「移动端访问增强」卡片单独写入 Host。 */
+interface LanAccessMappingPayload {
+  autoStart: boolean
+  listenHost: string
+  listenPort: number
+  dshPort: number
+}
+
+function readMapping(listenHost: string, listenPort: string, dshPort: string, autoStart: boolean): LanAccessMappingPayload {
   return {
     autoStart,
     listenHost,
     listenPort: parsePort(listenPort, '监听端口', true),
     dshPort: dshPort.trim() === '' ? 0 : parsePort(dshPort, 'DSH 本地端口', false),
-    pwa: normalizeLanAccessDshPwaSettings(pwa),
   }
 }
 

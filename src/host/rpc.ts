@@ -333,7 +333,9 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
   if (path[0] === 'fileManagement') {
     return path.length === 2 && ['menuEnhancement', 'fileEditor', 'sessionChangedFiles'].includes(path[1] ?? '')
   }
-  return path[0] === 'lanAccessDsh' && path.length === 2 && ['autoStart', 'listenHost', 'listenPort', 'dshPort'].includes(path[1] ?? '')
+  // 局域网入口的 PWA 资产设置由「移动端访问增强」卡片写入：非回环页面没有本地设置镜像，
+  // 必须在这里放行 `lanAccessDsh.pwa`，否则手机上的开关会被直接拒绝。
+  return path[0] === 'lanAccessDsh' && path.length === 2 && ['autoStart', 'listenHost', 'listenPort', 'dshPort', 'pwa'].includes(path[1] ?? '')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

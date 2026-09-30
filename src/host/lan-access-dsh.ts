@@ -1070,7 +1070,7 @@ export function createLanAccessDshRpcHandler(
         return settings?.get().lanAccessDsh ?? defaultLanAccessDshSettings()
       case 'settings/set': {
         if (settings === undefined) throw new CodingNsRpcError('CODINGNS_SETTINGS_UNAVAILABLE', 'Codingns4DSH 设置服务不可用')
-        const next = parseLanAccessDshSettings(payload, proxy.listenHosts())
+        const next = parseLanAccessDshSettings(payload, proxy.listenHosts(), settings.get().lanAccessDsh.pwa)
         await settings.update({ lanAccessDsh: next })
         return settings.get().lanAccessDsh
       }
@@ -1293,7 +1293,18 @@ function readPushEndpoint(value: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 
-function parseLanAccessDshSettings(value: unknown, allowedListenHosts: readonly string[]): LanAccessDshSettings {
+/**
+ * 解析监听映射设置。
+ *
+ * PWA 设置已经移到「移动端访问增强」卡片，它的写入走设置 RPC 的 `lanAccessDsh.pwa` 路径；
+ * 这里在请求未携带 `pwa` 时沿用当前值，避免用户在局域网卡片里只改监听端口就把手机端
+ * 资产配置重置成默认档位。显式传入 `pwa` 时仍然走归一化。
+ */
+function parseLanAccessDshSettings(
+  value: unknown,
+  allowedListenHosts: readonly string[],
+  currentPwa: LanAccessDshPwaSettings | null = null,
+): LanAccessDshSettings {
   if (!value || typeof value !== 'object') throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '局域网访问 DSH 设置必须是对象')
   const input = value as Record<string, unknown>
   if (typeof input.autoStart !== 'boolean') throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', 'autoStart 必须是布尔值')
@@ -1301,7 +1312,10 @@ function parseLanAccessDshSettings(value: unknown, allowedListenHosts: readonly 
   const listenPort = requirePort(input.listenPort, 'listenPort', true)
   const dshPort = requirePort(input.dshPort, 'dshPort', true)
   if (!new Set(allowedListenHosts).has(listenHost)) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '监听地址必须来自本机网卡或 0.0.0.0')
-  return { autoStart: input.autoStart, listenHost, listenPort, dshPort, pwa: parseLanAccessDshPwaSettings(input.pwa) }
+  const pwa = input.pwa === undefined && currentPwa !== null
+    ? currentPwa
+    : parseLanAccessDshPwaSettings(input.pwa)
+  return { autoStart: input.autoStart, listenHost, listenPort, dshPort, pwa }
 }
 
 /** PWA 档位走归一化而非严格校验：非法值收敛到保守默认，避免设置页写不进去。 */

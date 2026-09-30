@@ -52,9 +52,9 @@ The CodingNS workbench brings the conversation, Agent picker and Git sidebar tog
 | --- | --- | :---: |
 | **External Agent integration** | Run installed Agent CLIs as native DSH sessions: streaming, tools, approvals, questions, usage, thinking levels | On |
 | **Workspace session enhancement** | Agent logos on session rows, archived-session entry, subscription/usage readout | Off |
-| **Mobile access enhancements** | On phones or narrow viewports, collapse the left sidebar's 56px icon rail to zero width and keep only the top-left logo as the way back in | On |
+| **Mobile access enhancements** | On phones or narrow viewports, collapse the left sidebar's 56px icon rail to zero width and keep only the top-left logo as the way back in; also configures the LAN entry's PWA assets (manifest, icons, install guidance, notifications) | On |
 | **Terminal enhancement** | Persistent terminals plus shell, theme, font, cursor and scrollback settings | Off · restart |
-| **LAN access to DSH** | Listener forwarding a LAN address to the local DSH Web port | Always on |
+| **LAN access to DSH** | Listener forwarding a LAN address to the local DSH Web port, with a status indicator and one-click copy of a usable access URL | Always on |
 | **Login protection** | One optional local account guarding LAN **and** relay access; loopback always allowed | Always on (card) |
 | **Relay access service** | **Your DSH Web from anywhere on the internet**, end-to-end encrypted | Off |
 | **Workspace debug** | Per-workspace launch profiles, port checks, HTTP service proxy | On |
@@ -274,7 +274,7 @@ A directory install links the checkout — rebuild (`pnpm build` / `pnpm dev:wat
 - **`patch: entry "terminal-controller" not found`** — the profile lacks the Web app layer; recreate it from the `web` template as shown above.
 - **Agent not detected** — run `<cli> --version` on the Host; ensure its directory is on the `PATH` of the process that started DSH (GUI launchers often differ); log in with the vendor tool, then restart DSH.
 - **Terminal** — persistent mode needs `tmux` on macOS/Linux; enabling/disabling the module and changing the binding scope need a restart; terminals are addressed per workspace.
-- **LAN** — check the card's forwarding line, allow the port through the firewall, keep both devices on one network; with several DSH instances pick the detected port manually; sign in first when login protection is on.
+- **LAN** — check the card's status indicator and access URL, allow the port through the firewall, keep both devices on one network; with several DSH instances pick the detected port manually; sign in first when login protection is on.
 - **Relay** — verify Control API reachability, log in again if the session expired, refresh devices, then bind the Host.
 - **Logs** — `CODINGNS4DSH_TUNNEL_DEBUG=1 dsh codingns --no-open` (metadata only); pnpm install logs live in `$DSH_HOME/profiles/<profile>/.plugin-manager/logs/`.
 - **Reporting** — include DSH and Codingns4DSH versions, OS, module and exact error: [GitHub Issues](https://github.com/jingyi0605/Codingns4DSH/issues) or QQ **1092985965**.

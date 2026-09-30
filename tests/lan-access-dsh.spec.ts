@@ -230,17 +230,19 @@ test('局域网访问设置通过 Host RPC 持久化并可刷新回读', async (
   assert.deepEqual(settings.get().lanAccessDsh, next)
 })
 
-test('PWA 设置缺省回填，非法枚举回落到最保守档位', async () => {
+test('PWA 设置未携带时保留当前档位，显式非法枚举回落到最保守档位', async () => {
   const runtime = new FakeRuntime()
+  // 移动端卡片保存过的档位：局域网卡片只改监听映射时必须原样保留。
+  const savedPwa = { enabled: true, serviceWorker: true, installPrompt: false, notifications: 'local' as const }
   const settings = new FakeSettings({
     controlBaseUrl: 'https://channel.codingns.com:1443',
     controlBaseUrls: ['https://channel.codingns.com:1443'],
     modules: {},
-    lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0, pwa: DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS },
+    lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0, pwa: savedPwa },
   })
   const handler = createLanAccessDshRpcHandler(new LanAccessDshProxy(runtime), settings)
-  const saved = await handler('settings/set', { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0 }) as { pwa: unknown }
-  assert.deepEqual(saved.pwa, DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS)
+  const saved = await handler('settings/set', { autoStart: true, listenHost: '0.0.0.0', listenPort: 13081, dshPort: 0 }) as { pwa: unknown }
+  assert.deepEqual(saved.pwa, savedPwa)
   const normalized = await handler('settings/set', {
     autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0,
     pwa: { enabled: true, serviceWorker: true, installPrompt: true, notifications: 'silent' },

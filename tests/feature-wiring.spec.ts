@@ -399,6 +399,18 @@ test('移动端访问增强的设置路径与模块开关可通过 RPC 写入', 
     /禁止修改设置字段/u,
   )
 
+  // 局域网入口的 PWA 资产由「移动端访问增强」卡片写入：非回环页面没有本地设置镜像，
+  // 这条路径必须放行，否则手机上的 PWA 开关会被直接拒绝。
+  const pwa = { enabled: false, serviceWorker: true, installPrompt: false, notifications: 'local' }
+  await handler('set', { ops: [{ op: 'set', path: ['lanAccessDsh', 'pwa'], value: pwa }] })
+  assert.deepEqual(received, {
+    ops: [{ op: 'set', path: ['lanAccessDsh', 'pwa'], value: pwa }],
+    expectedRevision: undefined,
+  })
+  await assert.rejects(
+    handler('set', { ops: [{ op: 'set', path: ['lanAccessDsh', 'unknownField'], value: 1 }] }),
+    /禁止修改设置字段/u,
+  )
 })
 
 test('远程设置 RPC 兼容 DSH 0.1.7 的插件 entry id', async () => {
