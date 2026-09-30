@@ -274,6 +274,40 @@ test('页面 connector 在远端新建会话后立刻按虚拟 ID 路由后续 u
   }
 })
 
+test('页面 connector 在聚合确认后清理 pending，远端会话消失后回落本地路由', async () => {
+  const paths: string[] = []
+  const previousFetch = globalThis.fetch
+  const createdSessionId = createVirtualSessionId('peer-1', 'session-new')
+  globalThis.fetch = (async (input) => {
+    const path = new URL(String(input), 'http://dsh.test').pathname
+    paths.push(path)
+    if (path.endsWith('/peerHost/native')) return response({ sessionId: createdSessionId })
+    if (path.endsWith('/api/session/page')) return response({ page: 'local' })
+    throw new Error(`unexpected path: ${path}`)
+  }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    const emptyAggregate = [{ ...aggregate[0]!, workspaces: [{ ...aggregate[0]!.workspaces[0]!, sessions: [] }] }]
+    transport.setAggregate(emptyAggregate)
+    const payload = { channel: '/api', payload: { args: { request: { workspaceId: createVirtualWorkspaceId('peer-1', 'workspace-1') } } } }
+    const created = await transport.hooks.rpc?.({ method: 'session/create', payload })
+    assert.deepEqual(created, { ok: true, value: { sessionId: createdSessionId } })
+
+    // 聚合确认后 pending 作用域应被正式条目接管并清理。
+    transport.setAggregate(aggregate)
+    // 下一次聚合移除该会话后，不能继续凭旧 pending 作用域访问 PeerHost。
+    transport.setAggregate(emptyAggregate)
+    const page = await transport.hooks.rpc?.({
+      method: 'session/page',
+      payload: { channel: '/api', payload: { sessionId: createdSessionId } },
+    })
+    assert.deepEqual(page, { ok: true, value: { page: 'local' } })
+    assert.deepEqual(paths, ['/codingns/peerHost/native', '/api/session/page'])
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
 test('页面 connector 在远端新建会话后立刻请求聚合刷新，失败时不请求', async () => {
   const previousFetch = globalThis.fetch
   let refreshCount = 0
