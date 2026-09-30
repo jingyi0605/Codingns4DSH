@@ -93,7 +93,8 @@ test('设置页由注册表驱动：遍历模块清单并同步启停', async ()
     'settingsPanel',
     'alwaysEnabled',
     'reconcile',
-    'codingns4dsh: 功能模块启停同步',
+    // Cordis effect 标签改成英文，避免被国际化守卫当成用户可见中文文案。
+    'codingns4dsh: feature module activation sync',
   ]) {
     assert.equal(source.includes(marker), true, `Client 产物缺少 ${marker}`)
   }

@@ -10,7 +10,7 @@ test('PeerHost 管理入口归属于统一账户菜单，不再由 Feature 注�
   const accountBar = await readFile(join(projectRoot, 'src/client/account-bar.ts'), 'utf8')
   const feature = await readFile(join(projectRoot, 'src/client/features/peer-host.ts'), 'utf8')
   assert.match(accountBar, /PEER_HOST_OPEN_EVENT/u)
-  assert.match(accountBar, /管理 PeerHost/u)
+  assert.match(accountBar, /t\('accountBar\.managePeerHost'\)/u)
   assert.match(accountBar, /dispatchEvent\(new Event\(PEER_HOST_OPEN_EVENT\)\)/u)
   assert.doesNotMatch(feature, /startPeerHostConnectionButton\(\)/u)
 })
@@ -35,7 +35,7 @@ test('Desktop 账户入口追加到原生账户组件右侧并保持同一行', 
   assert.match(accountBar, /button\.style\.marginLeft = 'auto'/u)
   assert.match(accountBar, /createAccountButton\(root, isDesktopPage\(\)\)/u)
   assert.match(accountBar, /function createConnectionIcon\(dom: Document\)/u)
-  assert.match(accountBar, /desktop \? '连接管理' : `用户：\$\{identity\}`/u)
+  assert.match(accountBar, /desktop \? t\('accountBar\.connectionManageTitle'\) : t\('accountBar\.identityClickHint', \{ identity \}\)/u)
 })
 
 test('PeerHost 管理表单自动识别账号但不读取密码或使用 prompt', async () => {
@@ -44,6 +44,6 @@ test('PeerHost 管理表单自动识别账号但不读取密码或使用 prompt'
   assert.match(panel, /readRelayLoginIdentity/u)
   assert.match(panel, /data-codingns-peer-host-username/u)
   assert.match(panel, /data-codingns-peer-host-password/u)
-  assert.match(panel, /不会自动登录远程 Host/u)
+  assert.match(panel, /peerHost\.identityLocal/u)
   assert.doesNotMatch(panel, /\.prompt\(/u)
 })

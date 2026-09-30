@@ -13,9 +13,13 @@ import {
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
-test('锚点候选把原生齿轮排在槽位出口之前，保持 Web 行为不变', () => {
+test('锚点候选把原生齿轮排在槽位出口之前，且选择器覆盖 DSH 的全部语言', () => {
   assert.deepEqual([...SETTINGS_ANCHOR_SELECTORS], [SETTINGS_BUTTON_SELECTOR, SETTINGS_LAUNCHER_SLOT_SELECTOR])
-  assert.equal(SETTINGS_BUTTON_SELECTOR, 'button[aria-label="设置"]')
+  // DSH 0.2.0-rc.2 只支持 zh/en；aria-label 来自 locale 词典，两种语言都必须命中。
+  assert.equal(SETTINGS_BUTTON_SELECTOR, 'button[aria-label="设置"], button[aria-label="Settings"]')
+  for (const label of ['设置', 'Settings']) {
+    assert.ok(SETTINGS_BUTTON_SELECTOR.includes(`aria-label="${label}"`), `选择器缺少 ${label} 语言`)
+  }
   assert.equal(SETTINGS_LAUNCHER_SLOT_SELECTOR, '[data-slot="settings.launcher"]')
 })
 
