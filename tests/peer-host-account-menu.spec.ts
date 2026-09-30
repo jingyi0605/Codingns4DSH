@@ -32,6 +32,7 @@ test('Desktop 账户入口追加到原生账户组件右侧并保持同一行', 
   // triggerRow 的最后一个 flex 子项，不能再把宿主行改成可换行布局。
   assert.match(accountBar, /if \(match\.kind === 'launcher-slot'\) container\.append\(button\)/u)
   assert.match(accountBar, /row\.style\.flexWrap = 'nowrap'/u)
+  assert.match(accountBar, /button\.style\.marginLeft = 'auto'/u)
   assert.match(accountBar, /createAccountButton\(root, isDesktopPage\(\)\)/u)
   assert.match(accountBar, /function createConnectionIcon\(dom: Document\)/u)
   assert.match(accountBar, /desktop \? '连接管理' : `用户：\$\{identity\}`/u)
