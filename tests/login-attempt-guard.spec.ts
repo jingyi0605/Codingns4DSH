@@ -115,6 +115,20 @@ function solveCaptcha(svg: string): string {
   }).join('')
 }
 
+test('签发新验证码不会作废同设备已渲染的验证码', () => {
+  const now = 1_000
+  const guard = new LoginAttemptGuard(() => now)
+  const context = createLoginAttemptContext('192.168.1.30', headers)
+
+  const first = guard.issueCaptcha(context)
+  const firstAnswer = solveCaptcha(guard.renderCaptcha(first.id, context) ?? '')
+  // 同一设备再次签发（例如另一个标签页、或页面被重新渲染）不应当让旧验证码失效。
+  guard.issueCaptcha(context)
+
+  assert.equal(solveCaptcha(guard.renderCaptcha(first.id, context) ?? '').length, 5)
+  assert.equal(guard.beforeLogin(context, { captchaId: first.id, captchaCode: firstAnswer }).allowed, true)
+})
+
 test('未登录的静态资源请求不会让登录页上的验证码失效', () => {
   const socket = { remoteAddress: '192.168.1.31' }
   const proxy = new LanAccessDshProxy()

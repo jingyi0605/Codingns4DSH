@@ -9,6 +9,7 @@ const CAPTCHA_TTL_MS = 5 * 60 * 1000
 const CAPTCHA_ATTEMPT_LIMIT = 3
 const MAX_FAILURE_BUCKETS = 4096
 const MAX_CAPTCHAS = 1024
+const MAX_CAPTCHAS_PER_DEVICE = 4
 const CAPTCHA_ALPHABET = '23456789'
 const CAPTCHA_GLYPHS: Readonly<Record<string, readonly string[]>> = {
   '2': ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
@@ -107,9 +108,7 @@ export class LoginAttemptGuard {
 
   issueCaptcha(context: LoginAttemptContext): LoginCaptchaChallenge {
     this.prune()
-    for (const [id, record] of this.captchas) {
-      if (record.deviceFingerprint === context.deviceFingerprint) this.captchas.delete(id)
-    }
+    this.trimDeviceCaptchas(context.deviceFingerprint)
     const id = randomBytes(18).toString('base64url')
     const expiresAt = this.now() + CAPTCHA_TTL_MS
     const answer = randomCaptchaCode()
@@ -163,6 +162,24 @@ export class LoginAttemptGuard {
       const oldest = values.keys().next().value
       if (oldest === undefined) return
       values.delete(oldest)
+    }
+  }
+
+  /**
+   * 按设备保留有限个验证码。
+   *
+   * 之前这里是“签发新验证码即清空同设备全部旧验证码”，一旦同一次页面加载里出现
+   * 第二次签发（例如浏览器自动请求的静态资源命中未登录分支），页面上已经渲染的
+   * `captchaId` 就会立刻失效，用户无论输入多少次都只会得到“验证码错误”。
+   * 现在改为只淘汰最旧的记录，保证并发的登录页/标签页各自持有的验证码仍然可用。
+   */
+  private trimDeviceCaptchas(fingerprint: string): void {
+    const ids: string[] = []
+    for (const [id, record] of this.captchas) if (record.deviceFingerprint === fingerprint) ids.push(id)
+    while (ids.length >= MAX_CAPTCHAS_PER_DEVICE) {
+      const oldest = ids.shift()
+      if (oldest === undefined) return
+      this.captchas.delete(oldest)
     }
   }
 }
