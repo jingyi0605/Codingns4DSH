@@ -47,6 +47,23 @@ test('设置弹窗控制器只在窄屏标记宿主节点，停用后完全清�
   desktopController.dispose()
 })
 
+test('关闭移动端设置优化时不注入设置弹窗样式', () => {
+  const dom = new FakeDocument()
+  const panel = new FakeElement('div')
+  panel.setAttribute('data-shortcut-modal', 'settings')
+  dom.body.append(panel)
+
+  const controller = startMobileSettingsModalDom({
+    document: dom as unknown as Document,
+    window: { innerWidth: 390 },
+    enabled: () => false,
+    MutationObserver: FakeObserver as unknown as typeof MutationObserver,
+  })
+  assert.equal(panel.hasAttribute(MOBILE_SETTINGS_MODAL_ATTRIBUTE), false)
+  assert.equal(dom.styleTags().length, 0)
+  controller.dispose()
+})
+
 class FakeElement {
   readonly tagName: string
   readonly dataset: Record<string, string> = {}

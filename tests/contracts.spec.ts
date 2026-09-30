@@ -67,6 +67,7 @@ test('移动端访问设置缺省回填、越界收敛', () => {
   // 默认开启：DSH 原生折叠态仍占 56px 轨道，手机上一开始就该收掉。
   const defaultMobileAccess = {
     hideSidebarOnMobile: true,
+    optimizeSettingsOnMobile: true,
     mobileViewportMaxPx: 1024,
     sidebarGestures: true,
     sidebarGestureMapping: 'swipe-inward',

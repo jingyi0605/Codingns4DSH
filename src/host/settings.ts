@@ -96,6 +96,7 @@ export const CodingNsSettingsSchema = z.object({
   }).default(DEFAULT_CODINGNS_SETTINGS.fileManagement),
   mobileAccess: z.object({
     hideSidebarOnMobile: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.mobileAccess.hideSidebarOnMobile),
+    optimizeSettingsOnMobile: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.mobileAccess.optimizeSettingsOnMobile),
     mobileViewportMaxPx: z.number().step(1)
       .min(MOBILE_VIEWPORT_MAX_PX_LIMITS.min)
       .max(MOBILE_VIEWPORT_MAX_PX_LIMITS.max)
@@ -112,6 +113,7 @@ export const CodingNsSettingsSchema = z.object({
     ]),
   }).default({
     hideSidebarOnMobile: DEFAULT_CODINGNS_SETTINGS.mobileAccess.hideSidebarOnMobile,
+    optimizeSettingsOnMobile: DEFAULT_CODINGNS_SETTINGS.mobileAccess.optimizeSettingsOnMobile,
     mobileViewportMaxPx: DEFAULT_CODINGNS_SETTINGS.mobileAccess.mobileViewportMaxPx,
   }),
   subscriptionUsage: z.object({

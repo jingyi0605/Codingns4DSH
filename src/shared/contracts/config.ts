@@ -195,6 +195,8 @@ export const DEFAULT_FILE_MANAGEMENT_SETTINGS: FileManagementSettings = {
 export interface MobileAccessSettings {
   /** 窄屏下彻底隐藏左侧边栏，只在原位置保留品牌 logo 作为唤起入口。 */
   hideSidebarOnMobile: boolean
+  /** 是否启用移动端设置界面布局优化。 */
+  optimizeSettingsOnMobile: boolean
   /** 判定“移动端/窄屏”的视口宽度上限（像素）。 */
   mobileViewportMaxPx: number
   /** 移动端触摸设备上是否启用横滑开合左右侧栏。 */
@@ -214,6 +216,7 @@ export const DEFAULT_MOBILE_ACCESS_SETTINGS: MobileAccessSettings = {
   // 窄屏下 DSH 原生侧栏默认只收起成 56px 图标轨道，仍持续占用横向空间；
   // 默认开启本模块的隐藏能力，用户可随时在设置里关回原生行为。
   hideSidebarOnMobile: true,
+  optimizeSettingsOnMobile: true,
   mobileViewportMaxPx: DEFAULT_MOBILE_VIEWPORT_MAX_PX,
   ...DEFAULT_SIDEBAR_GESTURE_SETTINGS,
 }
@@ -241,6 +244,9 @@ export function normalizeMobileAccessSettings(value: unknown, legacyGestureValue
     hideSidebarOnMobile: record.hideSidebarOnMobile === undefined
       ? DEFAULT_MOBILE_ACCESS_SETTINGS.hideSidebarOnMobile
       : record.hideSidebarOnMobile === true,
+    optimizeSettingsOnMobile: record.optimizeSettingsOnMobile === undefined
+      ? DEFAULT_MOBILE_ACCESS_SETTINGS.optimizeSettingsOnMobile
+      : record.optimizeSettingsOnMobile === true,
     mobileViewportMaxPx: clampSettingsInteger(
       record.mobileViewportMaxPx,
       MOBILE_VIEWPORT_MAX_PX_LIMITS,

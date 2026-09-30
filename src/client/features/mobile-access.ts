@@ -63,6 +63,10 @@ export const mobileAccessFeature: CodingNsClientFeatureModule = {
       onDiagnostic: (code) => debugWarn('codingns4dsh: 侧栏手势不可用', { code }),
     })
     const settingsModal: MobileSettingsModalController = startMobileSettingsModalDom({
+      enabled: () => normalizeMobileAccessSettings(
+        context.services.settings.getSnapshot().value?.mobileAccess,
+        context.services.settings.getSnapshot().value?.workspaceSessionEnhancement,
+      ).optimizeSettingsOnMobile,
       mobileViewportMaxPx: () => normalizeMobileAccessSettings(
         context.services.settings.getSnapshot().value?.mobileAccess,
       ).mobileViewportMaxPx,

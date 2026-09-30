@@ -17,6 +17,7 @@ test('局域网入口的 PWA 配置由「移动端访问增强」卡片承载', 
   assert.match(mobile, /'lanAccessDsh\/pwa\/push\/subscribe'/u)
   assert.match(mobile, /'lanAccessDsh\/pwa\/push\/test'/u)
   assert.match(mobile, /'mobile\.sidebarGestures'/u)
+  assert.match(mobile, /'mobile\.optimizeSettingsOnMobile'/u)
   assert.match(mobile, /CODINGNS_MOBILE_ACCESS_FIELD, field/u)
   assert.doesNotMatch(mobile, /path: \['workspaceSessionEnhancement', field\]/u)
   for (const key of [
