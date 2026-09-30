@@ -241,10 +241,13 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
       }
       return
     }
-    vibrateMobile(
-      pattern,
-      (hostWindow as unknown as MobileVibrationGlobalLike | undefined) ?? undefined,
-    )
+    const pageGlobal = hostWindow as unknown as MobileVibrationGlobalLike | undefined
+    if (typeof pageGlobal?.navigator?.vibrate === 'function') {
+      vibrateMobile(pattern, pageGlobal)
+      return
+    }
+    // 测试环境或宿主窗口没有 navigator 时仍保留全局环境的兼容回退。
+    vibrateMobile(pattern)
   }
 
   const toggleLeftSidebar = (): void => {
