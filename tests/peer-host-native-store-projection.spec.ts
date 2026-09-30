@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createPeerHostNativeProjection } from '../data/build/dist/client/peer-host-native-projection.js'
 import { installPeerHostNativeStoreProjection, refreshPeerHostNativeSessions } from '../data/build/dist/client/peer-host-native-store-projection.js'
-import { createVirtualWorkspaceId } from '../data/build/dist/shared/index.js'
+import { createVirtualSessionId, createVirtualWorkspaceId } from '../data/build/dist/shared/index.js'
 
 interface FakeNativeStores {
   readonly list: {
@@ -75,6 +75,12 @@ function remoteWorkspace(): Record<string, unknown> {
         status: 'idle',
         updatedAt: 10,
       }],
+      archivedSessions: [{
+        scope: { hostId: 'host-local', targetHostId: 'peer-1', workspaceId: 'workspace-1', sessionId: 'session-archived', scopeGeneration: 0 },
+        title: '远端归档会话',
+        status: 'idle',
+        updatedAt: 5,
+      }],
     }],
   }
 }
@@ -92,8 +98,10 @@ test('虚拟工作区就地并入原生 Workspace Store，卸载后还原', () =
     'local-workspace',
     createVirtualWorkspaceId('peer-1', 'workspace-1'),
   ])
-  // 本机快照的其余字段保持原样。
-  assert.deepEqual(merged.archivedSessionIds, ['archived-session'])
+  // 本机快照的其余字段保持原样，虚拟归档集合追加在本机归档之后。
+  const virtualArchived = createVirtualSessionId('peer-1', 'session-archived')
+  assert.deepEqual(merged.archivedSessionIds, ['archived-session', virtualArchived])
+  assert.deepEqual((merged.items as Array<Record<string, unknown>>)[1]?.archivedSessionIds, [virtualArchived])
   assert.equal(merged.phase, 'ready')
 
   dispose()

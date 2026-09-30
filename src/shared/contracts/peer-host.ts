@@ -101,6 +101,11 @@ export interface AggregateWorkspaceSummary {
   readonly hostLabel: string
   readonly availability: 'ready' | 'checking' | 'unreachable' | 'unsupported'
   readonly sessions: readonly PeerHostSessionRecord[]
+  /**
+   * 已归档会话。远端侧栏默认隐藏这些行，但归档入口、归档集合与取消归档路由
+   * 仍需要它们；子代理会话在可见与归档两侧都不出现。
+   */
+  readonly archivedSessions?: readonly PeerHostSessionRecord[]
 }
 
 export interface AggregateHostResult {

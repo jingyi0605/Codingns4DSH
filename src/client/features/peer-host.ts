@@ -11,6 +11,7 @@ import { createVirtualSessionId, createVirtualWorkspaceId } from '../../shared/i
 import { isDshNativeRemoteMethod } from '../../host/modules/peer-host/peer-host-native-protocol.js'
 import { createPeerHostNativeProjection, type PeerHostNativeProjection } from '../peer-host-native-projection.js'
 import { installPeerHostNativeStoreProjection, refreshPeerHostNativeSessions } from '../peer-host-native-store-projection.js'
+import { registerPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
 const PEER_HOST_AGGREGATE_REFRESH_MS = 30_000
@@ -60,6 +61,8 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
         // 单个 Host 的摘要失败由聚合层降级，不阻断本机原生工作区与会话。
       }
     }
+    // 归档入口等原生操作完成后可以立刻请求刷新，而不必等待下一个周期。
+    context.resources.add(registerPeerHostAggregateRefresh(refresh))
     await refresh()
     const timer = setInterval(() => { void refresh() }, PEER_HOST_AGGREGATE_REFRESH_MS)
     const onVisibilityChange = (): void => {
@@ -193,7 +196,8 @@ export function createPeerHostPageTransport(
           const virtualWorkspaceId = createVirtualWorkspaceId(virtualHostId, workspace.workspaceId)
           const workspaceScope: HostScope = { hostId: host.hostId, targetHostId: host.targetHostId, workspaceId: workspace.workspaceId, sessionId: null, scopeGeneration: 0 }
           scopes.set(virtualWorkspaceId, workspaceScope)
-          for (const session of workspace.sessions) {
+          // 归档会话也要能解析作用域：取消归档请求按虚拟会话 ID 路由到目标 Host。
+          for (const session of [...workspace.sessions, ...(workspace.archivedSessions ?? [])]) {
             if (session.scope.sessionId === null) continue
             scopes.set(createVirtualSessionId(virtualHostId, session.scope.sessionId), { ...workspaceScope, sessionId: session.scope.sessionId })
           }

@@ -1,10 +1,13 @@
 import { DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS, normalizeSidebarGestureSettings, normalizeSubscriptionUsageSettings } from '../../shared/contracts/config.js'
+import { parseVirtualSessionId } from '../../shared/contracts/peer-host.js'
 import { debugWarn } from '../../shared/debug.js'
 import {
   clearSessionAdapters,
   fetchSessionAdapters,
   replaceSessionAdapters,
 } from '../session-adapter-cache.js'
+import { readNativeWorkspaceSnapshot } from '../native-workspace-store.js'
+import { requestPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
 import { startWorkspaceSessionLogoDom, type WorkspaceSessionLogoDomController } from '../workspace-session-logo-dom.js'
 import { startWorkspaceSessionArchiveDom, type WorkspaceSessionArchiveDomController } from '../workspace-session-archive-dom.js'
 import { startWorkspaceSessionVisibilityDom, type WorkspaceSessionVisibilityDomController } from '../workspace-session-visibility-dom.js'
@@ -57,7 +60,17 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
       clearSessionAdapters()
     }
     const enableArchive = (): void => {
-      if (archiveDom === undefined) archiveDom = startWorkspaceSessionArchiveDom({ remote: context.services.remote })
+      if (archiveDom === undefined) {
+        archiveDom = startWorkspaceSessionArchiveDom({
+          remote: context.services.remote,
+          readNativeWorkspaceSnapshot: () => readNativeWorkspaceSnapshot(context.services.uiContext),
+          onSessionUnarchived: async (sessionId) => {
+            // 远端虚拟会话的归档状态只存在于聚合投影里，取消归档后同步一次再重读入口。
+            if (parseVirtualSessionId(sessionId) === null) return
+            await requestPeerHostAggregateRefresh()
+          },
+        })
+      }
     }
     const enableWorkspaceVisibility = (hiddenWorkspaceIds: readonly string[]): void => {
       if (visibilityDom === undefined) {

@@ -13,6 +13,8 @@ export interface AggregateWorkspaceSource {
   /** 工作区在所属 Host 上的真实路径；原生文件面板按路径解析，不能用 workspaceId 代替。 */
   readonly path: string
   readonly sessions: readonly AggregateSessionSource[]
+  /** 已归档会话；远端侧栏默认隐藏，但归档入口与取消归档路由需要它们。 */
+  readonly archivedSessions?: readonly AggregateSessionSource[]
 }
 
 export interface AggregateHostSource {
@@ -104,6 +106,7 @@ export class PeerHostAggregateService {
 }
 
 function toWorkspace(source: AggregateHostSource, workspace: AggregateWorkspaceSource): AggregateWorkspaceSummary {
+  const archivedSessions = workspace.archivedSessions ?? []
   return {
     key: `${source.hostId}:${workspace.workspaceId}`,
     hostId: source.hostId,
@@ -113,18 +116,29 @@ function toWorkspace(source: AggregateHostSource, workspace: AggregateWorkspaceS
     path: workspace.path,
     hostLabel: source.hostLabel,
     availability: 'ready',
-    sessions: workspace.sessions.map((session): PeerHostSessionRecord => ({
-      scope: {
-        hostId: source.hostId,
-        targetHostId: source.targetHostId,
-        workspaceId: workspace.workspaceId,
-        sessionId: session.sessionId,
-        scopeGeneration: 0,
-      },
-      title: session.title,
-      status: session.status,
-      updatedAt: session.updatedAt,
-    })),
+    sessions: workspace.sessions.map((session) => toSessionRecord(source, workspace, session)),
+    ...(archivedSessions.length === 0
+      ? {}
+      : { archivedSessions: archivedSessions.map((session) => toSessionRecord(source, workspace, session)) }),
+  }
+}
+
+function toSessionRecord(
+  source: AggregateHostSource,
+  workspace: AggregateWorkspaceSource,
+  session: AggregateSessionSource,
+): PeerHostSessionRecord {
+  return {
+    scope: {
+      hostId: source.hostId,
+      targetHostId: source.targetHostId,
+      workspaceId: workspace.workspaceId,
+      sessionId: session.sessionId,
+      scopeGeneration: 0,
+    },
+    title: session.title,
+    status: session.status,
+    updatedAt: session.updatedAt,
   }
 }
 

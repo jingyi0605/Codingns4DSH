@@ -77,6 +77,7 @@ export {
   startWorkspaceSessionArchiveDom,
   WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE,
   WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE,
+  WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE,
 } from './workspace-session-archive-dom.js'
 export {
   startWorkspaceSessionVisibilityDom,

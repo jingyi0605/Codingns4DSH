@@ -1,5 +1,5 @@
 import type { HostScope } from '../../../shared/contracts/peer-host.js'
-import type { AggregateWorkspaceSource, PeerHostWorkspaceSessionSummarySource } from './peer-host-aggregate-service.js'
+import type { AggregateSessionSource, AggregateWorkspaceSource, PeerHostWorkspaceSessionSummarySource } from './peer-host-aggregate-service.js'
 
 /**
  * 通过 PeerHost 原生 Remote 通道读取目标 Host 的 workspace/session 摘要。
@@ -71,23 +71,28 @@ function buildRemoteSummary(baseline: WorkspaceBaseline, sessions: readonly Reco
     const value = asRecord(raw)
     const workspaceId = readString(value, ['workspaceId', 'id', 'key'])
     if (workspaceId === null) return []
+    const visible: AggregateSessionSource[] = []
+    const archivedSessions: AggregateSessionSource[] = []
+    for (const sessionId of readStringList(value?.sessionIds)) {
+      const session = sessionsById.get(sessionId) ?? null
+      // 子代理会话在可见与归档两侧都不出现在宿主侧栏。
+      if (readString(session, ['origin']) === 'subagent') continue
+      const entry: AggregateSessionSource = {
+        sessionId,
+        title: readSessionTitle(session, sessionId),
+        status: session?.running === true ? 'running' : 'idle',
+        updatedAt: readTime(session),
+      }
+      if (archived.has(sessionId)) archivedSessions.push(entry)
+      else visible.push(entry)
+    }
     return [{
       workspaceId,
       displayName: readString(value, ['title', 'displayName', 'name']) ?? workspaceId,
       // 原生文件面板按工作区路径解析，远端摘要必须携带真实路径而不是 workspaceId。
       path: readString(value, ['path']) ?? workspaceId,
-      sessions: readStringList(value?.sessionIds).flatMap((sessionId) => {
-        // 归档与子代理会话不出现在宿主侧栏的会话列表里。
-        if (archived.has(sessionId)) return []
-        const session = sessionsById.get(sessionId) ?? null
-        if (readString(session, ['origin']) === 'subagent') return []
-        return [{
-          sessionId,
-          title: readSessionTitle(session, sessionId),
-          status: session?.running === true ? 'running' : 'idle',
-          updatedAt: readTime(session),
-        }]
-      }),
+      sessions: visible,
+      ...(archivedSessions.length === 0 ? {} : { archivedSessions }),
     }]
   })
 }

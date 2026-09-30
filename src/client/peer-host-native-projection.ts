@@ -7,6 +7,8 @@ export interface PeerHostVirtualWorkspaceView {
   readonly path: string
   readonly title: string
   readonly sessionIds: readonly string[]
+  /** 归档会话仍是成员（保留槽位），但会被原生归档集合默认隐藏。 */
+  readonly archivedSessionIds: readonly string[]
   readonly createdAt: string
   readonly updatedAt: string
 }
@@ -95,22 +97,27 @@ function projectWorkspace(
   // 否则目标端会拿 workspaceId 当文件路径并报 `no entry at "<workspaceId>"`。
   const path = workspace.path
   const sessionIds: string[] = []
+  const archivedSessionIds: string[] = []
   const sessions: PeerHostVirtualSessionSummary[] = []
   let updatedAt = 0
-  for (const session of workspace.sessions) {
+  const append = (session: PeerHostSessionRecord, archived: boolean): void => {
     const realSessionId = session.scope.sessionId
-    if (realSessionId === null) continue
+    if (realSessionId === null) return
     const virtualSessionId = createVirtualSessionId(virtualHostId, realSessionId)
     sessionIds.push(virtualSessionId)
+    if (archived) archivedSessionIds.push(virtualSessionId)
     sessions.push(projectSession(virtualSessionId, session, path))
     updatedAt = Math.max(updatedAt, session.updatedAt)
   }
+  for (const session of workspace.sessions) append(session, false)
+  for (const session of workspace.archivedSessions ?? []) append(session, true)
   return {
     workspace: {
       workspaceId: virtualWorkspaceId,
       path,
       title: `${workspace.displayName} (${hostLabel})`,
       sessionIds,
+      archivedSessionIds,
       // 远端未提供 Workspace 创建时间；用纪元时间保证原生 hover 卡片拿到合法日期。
       createdAt: new Date(0).toISOString(),
       updatedAt: new Date(updatedAt).toISOString(),
@@ -149,8 +156,12 @@ function sameWorkspace(left: PeerHostVirtualWorkspaceView, right: PeerHostVirtua
     && left.title === right.title
     && left.path === right.path
     && left.updatedAt === right.updatedAt
-    && left.sessionIds.length === right.sessionIds.length
-    && left.sessionIds.every((id, index) => id === right.sessionIds[index])
+    && sameIds(left.sessionIds, right.sessionIds)
+    && sameIds(left.archivedSessionIds, right.archivedSessionIds)
+}
+
+function sameIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index])
 }
 
 function sameSessions(previous: readonly PeerHostVirtualSessionSummary[], next: readonly PeerHostVirtualSessionSummary[]): boolean {

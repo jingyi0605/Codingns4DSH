@@ -1,8 +1,13 @@
 import { dshThemeColor } from './theme.js'
+import { providerVisual } from './provider-icons.js'
+import { sessionAdapterId } from './session-adapter-cache.js'
+import type { NativeWorkspaceSnapshot } from './native-workspace-store.js'
 
 /** 归档入口和模态框节点使用的标记，便于重复扫描与停用时完整清理。 */
 export const WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE = 'data-codingns-session-archive'
 export const WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE = 'data-codingns-session-archive-modal'
+/** 模态框内每个会话行上的 Agent 彩色标签标记。 */
+export const WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE = 'data-codingns-session-archive-agent'
 
 const MORE_SESSION_PATTERN = /(?:展开|显示|expand|show).*(?:其余|更多|remaining|more).*(?:会话|sessions?)/iu
 
@@ -37,6 +42,17 @@ export interface WorkspaceSessionArchiveDomOptions {
   readonly MutationObserver?: typeof MutationObserver
   readonly remote?: unknown
   readonly now?: () => number
+  /** 会话到 Agent 的映射；默认读取与侧栏 Logo 同源的会话绑定缓存。 */
+  readonly adapterIdForSession?: (sessionId: string) => string | undefined
+  /**
+   * 原生 Workspace 列表快照。
+   *
+   * 远端虚拟工作区只存在于原生 Store 投影里，`workspace/follow` 首帧只覆盖本机，
+   * 因此有原生快照时以它为准。
+   */
+  readonly readNativeWorkspaceSnapshot?: () => NativeWorkspaceSnapshot | undefined
+  /** 会话取消归档成功后的通知；返回的 Promise 会在远端聚合同步完成后兑现。 */
+  readonly onSessionUnarchived?: (sessionId: string) => void | Promise<void>
 }
 
 /** 读取当前 DSH Workspace 的归档会话摘要，独立导出供契约测试和宿主探测使用。 */
@@ -61,6 +77,11 @@ export function startWorkspaceSessionArchiveDom(
     ?? (typeof MutationObserver === 'undefined' ? undefined : MutationObserver)
   const remote = normalizeRemote(options.remote)
   const now = options.now ?? Date.now
+  // SessionStore 只记录显式选择；没有外部绑定时，DSH Registry 的权威默认值就是 dsh。
+  const adapterIdForSession = options.adapterIdForSession
+    ?? ((sessionId: string): string => sessionAdapterId(sessionId) ?? 'dsh')
+  const readNativeWorkspaceSnapshot = options.readNativeWorkspaceSnapshot
+  const onSessionUnarchived = options.onSessionUnarchived
   let disposed = false
   let scanQueued = false
   let loading: Promise<void> | undefined
@@ -72,7 +93,7 @@ export function startWorkspaceSessionArchiveDom(
       await loading
       return
     }
-    loading = loadArchiveSnapshot(remote, now).then((next) => {
+    loading = loadArchiveSnapshot(remote, now, readNativeWorkspaceSnapshot).then((next) => {
       if (disposed) return
       snapshot = next
       scan()
@@ -100,6 +121,15 @@ export function startWorkspaceSessionArchiveDom(
           return workspaceId === undefined ? [] : [[workspaceId, header.getAttribute('aria-expanded') !== 'false'] as const]
         }),
       )
+      const openModalFor = (workspaceId: string): (() => void) => () => {
+        void refreshData().then(() => openArchiveModal(snapshot.byWorkspace.get(workspaceId) ?? [], {
+          dom,
+          remote,
+          adapterIdForSession,
+          onChanged: () => { void refreshData() },
+          onSessionUnarchived,
+        }))
+      }
       for (const [index, button] of buttons.entries()) {
         const workspaceId = resolveWorkspaceId(button)
           ?? onlyWorkspaceId
@@ -113,7 +143,7 @@ export function startWorkspaceSessionArchiveDom(
           remote,
           workspaceId,
           expandedByWorkspace.get(workspaceId) ?? true,
-          () => { void refreshData().then(() => openArchiveModal(snapshot.byWorkspace.get(workspaceId) ?? [], dom, remote, () => { void refreshData() })) },
+          openModalFor(workspaceId),
         )) insertedWorkspaceIds.add(workspaceId)
       }
 
@@ -130,7 +160,7 @@ export function startWorkspaceSessionArchiveDom(
           remote,
           workspaceId,
           header.getAttribute('aria-expanded') !== 'false',
-          () => { void refreshData().then(() => openArchiveModal(snapshot.byWorkspace.get(workspaceId) ?? [], dom, remote, () => { void refreshData() })) },
+          openModalFor(workspaceId),
         )) insertedWorkspaceIds.add(workspaceId)
       }
     } finally {
@@ -195,9 +225,13 @@ function emptyArchiveSnapshot(): ArchiveSnapshot {
   return { byWorkspace: new Map(), workspaceIds: [] }
 }
 
-async function loadArchiveSnapshot(remote: CodingNsRemote, now: () => number): Promise<ArchiveSnapshot> {
+async function loadArchiveSnapshot(
+  remote: CodingNsRemote,
+  now: () => number,
+  readNativeSnapshot?: () => NativeWorkspaceSnapshot | undefined,
+): Promise<ArchiveSnapshot> {
   const [workspaces, sessions] = await Promise.all([
-    readWorkspaceBaseline(remote.workspace),
+    readWorkspaceRecords(remote.workspace, readNativeSnapshot),
     readSessionList(remote.session),
   ])
   const byId = new Map(sessions.map((item) => [item.sessionId, item]))
@@ -240,6 +274,24 @@ interface SessionRecord {
 /** 读取 DSH 当前工作区基线；隐藏工作区控制器与归档控制器共用这份解析。 */
 export async function loadWorkspaceRecords(remote: unknown): Promise<readonly WorkspaceRecord[]> {
   return readWorkspaceBaseline(normalizeRemote(remote).workspace)
+}
+
+/**
+ * 读取工作区基线。
+ *
+ * 有原生 Store 快照时以它为准：远端虚拟工作区与虚拟归档集合只存在于这层投影里，
+ * `workspace/follow` 首帧只覆盖本机工作区。两者都不可用时保持空表。
+ */
+async function readWorkspaceRecords(
+  api: RemoteWorkspaceApi | undefined,
+  readNativeSnapshot?: () => NativeWorkspaceSnapshot | undefined,
+): Promise<WorkspaceRecord[]> {
+  const native = readNativeSnapshot?.()
+  if (native !== undefined && native.items.length > 0) {
+    // 原生归档集合是 Registry 级的一份列表，按工作区分发后由 workspaces 归属过滤。
+    return native.items.map((item) => ({ ...item, archivedSessionIds: native.archivedSessionIds }))
+  }
+  return readWorkspaceBaseline(api)
 }
 
 async function readWorkspaceBaseline(api: RemoteWorkspaceApi | undefined): Promise<WorkspaceRecord[]> {
@@ -461,6 +513,7 @@ function createArchiveEntry(
     textAlign: 'left',
     cursor: 'pointer',
     font: 'inherit',
+    fontSize: '12px',
   })
   entry.addEventListener('click', onOpen)
   return entry
@@ -479,12 +532,20 @@ function removeArchiveEntries(dom: Pick<Document, 'querySelectorAll'>): void {
   for (const node of dom.querySelectorAll<HTMLElement>(`[${WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE}]`)) node.remove()
 }
 
+/** 归档模态框的渲染上下文；工作区入口与行创建共用同一份依赖。 */
+interface ArchiveModalContext {
+  readonly dom: Pick<Document, 'body' | 'createElement' | 'querySelector'>
+  readonly remote: CodingNsRemote
+  readonly adapterIdForSession: (sessionId: string) => string | undefined
+  readonly onChanged: () => void
+  readonly onSessionUnarchived: ((sessionId: string) => void | Promise<void>) | undefined
+}
+
 function openArchiveModal(
   items: readonly ArchivedSessionItem[],
-  dom: Pick<Document, 'body' | 'createElement' | 'querySelector'>,
-  remote: CodingNsRemote,
-  onChanged: () => void,
+  context: ArchiveModalContext,
 ): void {
+  const { dom } = context
   closeArchiveModal(dom)
   if (dom.body === null || dom.body === undefined) return
   const overlay = dom.createElement('div')
@@ -524,7 +585,7 @@ function openArchiveModal(
     list.replaceChildren()
     const keyword = search.value.trim().toLocaleLowerCase()
     const filtered = items.filter((item) => item.title.toLocaleLowerCase().includes(keyword))
-    for (const item of filtered) list.appendChild(createArchiveRow(item, dom, remote, onChanged))
+    for (const item of filtered) list.appendChild(createArchiveRow(item, context))
     if (filtered.length === 0) {
       const empty = dom.createElement('p')
       empty.textContent = '没有找到归档会话。'
@@ -548,22 +609,24 @@ function openArchiveModal(
 
 function createArchiveRow(
   item: ArchivedSessionItem,
-  dom: Pick<Document, 'createElement'>,
-  remote: CodingNsRemote,
-  onChanged: () => void,
+  context: ArchiveModalContext,
 ): HTMLElement {
+  const { dom, remote, adapterIdForSession, onChanged, onSessionUnarchived } = context
   const row = dom.createElement('div')
   Object.assign(row.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', padding: '12px 0', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08))' })
   const content = dom.createElement('div')
   Object.assign(content.style, { minWidth: '0', display: 'flex', flexDirection: 'column', gap: '4px' })
+  const titleRow = dom.createElement('div')
+  Object.assign(titleRow.style, { minWidth: '0', display: 'flex', alignItems: 'center', gap: '8px' })
   const name = dom.createElement('strong')
   name.textContent = item.title
   name.title = item.title
-  Object.assign(name.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '15px' })
+  Object.assign(name.style, { minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '15px' })
+  titleRow.append(createAgentBadge(adapterIdForSession(item.sessionId), dom), name)
   const time = dom.createElement('span')
   time.textContent = `归档于 ${formatArchiveTime(item.archivedAt)}`
   Object.assign(time.style, { color: 'var(--dsw-alias-label-secondary, GrayText)', fontSize: '13px' })
-  content.append(name, time)
+  content.append(titleRow, time)
   const restore = dom.createElement('button')
   restore.type = 'button'
   restore.textContent = '取消归档'
@@ -580,6 +643,7 @@ function createArchiveRow(
     try {
       await unarchive({ sessionId: item.sessionId })
       row.remove()
+      await onSessionUnarchived?.(item.sessionId)
       onChanged()
     } catch {
       restore.disabled = false
@@ -588,6 +652,29 @@ function createArchiveRow(
   })
   row.append(content, restore)
   return row
+}
+
+function createAgentBadge(
+  adapterId: string | undefined,
+  dom: Pick<Document, 'createElement'>,
+): HTMLElement {
+  const visual = providerVisual(adapterId)
+  const badge = dom.createElement('span')
+  badge.setAttribute(WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE, visual.adapterId ?? '')
+  badge.textContent = visual.displayName
+  Object.assign(badge.style, {
+    flex: '0 0 auto',
+    padding: '1px 8px',
+    borderRadius: '999px',
+    // 与插件其它徽章一致：实心文字色 + 同色低透明度底，深浅主题下都可读。
+    color: visual.color,
+    background: `color-mix(in srgb, ${visual.color} 14%, transparent)`,
+    fontSize: '11px',
+    fontWeight: '600',
+    lineHeight: '18px',
+    whiteSpace: 'nowrap',
+  })
+  return badge
 }
 
 function formatArchiveTime(timestamp: number): string {

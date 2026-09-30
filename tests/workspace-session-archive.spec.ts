@@ -3,8 +3,14 @@ import test from 'node:test'
 import {
   loadWorkspaceArchivedSessions,
   startWorkspaceSessionArchiveDom,
+  WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE,
   WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE,
+  WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE,
 } from '../data/build/dist/client/workspace-session-archive-dom.js'
+import {
+  clearSessionAdapters,
+  replaceSessionAdapters,
+} from '../data/build/dist/client/session-adapter-cache.js'
 
 test('归档摘要按工作区路径过滤并按最近归档时间倒序', async () => {
   const calls: string[] = []
@@ -259,6 +265,124 @@ function nextArchiveTurn() {
   return new Promise((resolve) => setImmediate(resolve))
 }
 
+test('归档入口使用 12px 文本，模态框为每个会话显示彩色 Agent 标签', async () => {
+  clearSessionAdapters()
+  replaceSessionAdapters([
+    { sessionId: 'archived-codex', adapterId: 'codex' },
+    { sessionId: 'archived-claude', adapterId: 'claude-code' },
+  ])
+  const header = workspaceHeader('workspace-a')
+  const more = new FakeArchiveElement('button')
+  more.textContent = '展开其余 27 个会话'
+  const group = new FakeArchiveElement('section')
+  group.append(header, more)
+  const document = new FakeArchiveDocument(group)
+  const controller = startWorkspaceSessionArchiveDom({
+    document,
+    remote: {
+      workspace: {
+        async *follow() {
+          yield { type: 'baseline', value: { items: [{ workspaceId: 'workspace-a', path: '/work', sessionIds: ['archived-codex', 'archived-claude', 'archived-native'] }], archivedSessionIds: ['archived-codex', 'archived-claude', 'archived-native'] } }
+        },
+      },
+      session: {
+        async list() {
+          return {
+            items: [
+              { sessionId: 'archived-codex', updatedAt: 3, cwd: '/work', projections: { values: { title: 'Codex 会话' } } },
+              { sessionId: 'archived-claude', updatedAt: 2, cwd: '/work', projections: { values: { title: 'Claude 会话' } } },
+              { sessionId: 'archived-native', updatedAt: 1, cwd: '/work', projections: { values: { title: '原生会话' } } },
+            ],
+          }
+        },
+      },
+    },
+  })
+
+  await nextArchiveTurn()
+  const entry = group.children.find((child) => child.getAttribute(WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE) !== null)
+  assert.equal(entry.style.fontSize, '12px')
+
+  entry.listeners.get('click')()
+  await nextArchiveTurn()
+  await nextArchiveTurn()
+  assert.equal(document.body.children.some((child) => child.getAttribute(WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE) !== null), true)
+
+  const badges = document.querySelectorAll(`[${WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE}]`)
+  assert.deepEqual(badges.map((badge) => ({
+    adapterId: badge.getAttribute(WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE),
+    label: badge.textContent,
+    color: badge.style.color,
+    background: badge.style.background,
+  })), [
+    { adapterId: 'codex', label: 'Codex', color: '#10a37f', background: 'color-mix(in srgb, #10a37f 14%, transparent)' },
+    { adapterId: 'claude-code', label: 'Claude Code', color: '#d97757', background: 'color-mix(in srgb, #d97757 14%, transparent)' },
+    { adapterId: 'dsh', label: 'DeepSeek Harness', color: '#2563eb', background: 'color-mix(in srgb, #2563eb 14%, transparent)' },
+  ])
+  controller.dispose()
+  clearSessionAdapters()
+})
+
+test('远端虚拟工作区按原生 Store 快照显示归档入口并可取消归档', async () => {
+  const virtualWorkspaceId = 'codingns:peer-host:v1:workspace:peer-1:workspace-1'
+  const virtualSessionId = 'codingns:peer-host:v1:session:peer-1:session-archived'
+  const header = workspaceHeader(virtualWorkspaceId)
+  const more = new FakeArchiveElement('button')
+  more.textContent = '展开其余 3 个会话'
+  const group = new FakeArchiveElement('section')
+  group.append(header, more)
+  const document = new FakeArchiveDocument(group)
+  const unarchiveCalls: string[] = []
+  const events: string[] = []
+  const nativeSnapshot = {
+    items: [{ workspaceId: virtualWorkspaceId, path: '/remote/project', title: '远端工作区', sessionIds: [virtualSessionId] }],
+    archivedSessionIds: ['local-archived', virtualSessionId],
+  }
+  const controller = startWorkspaceSessionArchiveDom({
+    document,
+    readNativeWorkspaceSnapshot: () => nativeSnapshot,
+    onSessionUnarchived: async (sessionId) => {
+      events.push(`notify:${sessionId}`)
+      await nextArchiveTurn()
+      events.push('notified')
+    },
+    remote: {
+      workspace: {
+        // `workspace/follow` 只有本机基线：远端虚拟工作区必须来自原生 Store 快照。
+        async *follow() {
+          yield { type: 'baseline', value: { items: [{ workspaceId: 'local-workspace', path: '/work', sessionIds: [] }], archivedSessionIds: ['local-archived'] } }
+        },
+        async unarchiveSession(input: { sessionId: string }) { unarchiveCalls.push(input.sessionId) },
+      },
+      session: {
+        async list() {
+          events.push('list')
+          return { items: [{ sessionId: virtualSessionId, updatedAt: 1_800_000_000_000, cwd: '/remote/project', projections: { values: { title: '远端归档会话' } } }] }
+        },
+      },
+    },
+  })
+
+  await nextArchiveTurn()
+  const entry = group.children.find((child) => child.getAttribute(WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE) !== null)
+  assert.equal(entry.textContent, '已归档的会话 1')
+
+  entry.listeners.get('click')()
+  await nextArchiveTurn()
+  await nextArchiveTurn()
+  const row = document.querySelectorAll(`[${WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE}]`)
+  assert.deepEqual(row.map((badge) => badge.getAttribute(WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE)), ['dsh'])
+
+  const restore = document.querySelectorAll('button').find((button) => button.textContent === '取消归档')
+  restore.listeners.get('click')()
+  await nextArchiveTurn()
+  await nextArchiveTurn()
+  assert.deepEqual(unarchiveCalls, [virtualSessionId])
+  // 聚合通知先兑现，随后才重读归档摘要，避免入口计数停留在旧值。
+  assert.deepEqual(events.slice(-3), [`notify:${virtualSessionId}`, 'notified', 'list'])
+  controller.dispose()
+})
+
 function workspaceHeader(workspaceId) {
   const header = new FakeArchiveElement('div')
   header.setAttribute('role', 'treeitem')
@@ -278,6 +402,8 @@ class FakeArchiveElement {
     this.style = {}
     this.hidden = false
     this.textContent = ''
+    this.value = ''
+    this.listeners = new Map()
   }
 
   setAttribute(name, value) { this.attributes.set(name, value) }
@@ -287,10 +413,12 @@ class FakeArchiveElement {
     if (selector === 'button') return nodes.filter((node) => node.tagName === 'BUTTON')
     if (selector === '[role="treeitem"]') return nodes.filter((node) => node.getAttribute('role') === 'treeitem')
     if (selector === `[${WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE}]`) return nodes.filter((node) => node.getAttribute(WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE) !== null)
+    if (selector === `[${WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE}]`) return nodes.filter((node) => node.getAttribute(WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE) !== null)
     return []
   }
   append(...children) { for (const child of children) this.appendChild(child) }
   appendChild(child) { child.parentElement = this; this.children.push(child); return child }
+  replaceChildren() { this.children = [] }
   insertBefore(child, before) {
     child.parentElement = this
     const index = before === null ? -1 : this.children.indexOf(before)
@@ -298,7 +426,8 @@ class FakeArchiveElement {
     else this.children.splice(index, 0, child)
     return child
   }
-  addEventListener() {}
+  addEventListener(name, handler) { this.listeners.set(name, handler) }
+  focus() {}
   remove() {
     if (this.parentElement === null) return
     const index = this.parentElement.children.indexOf(this)
@@ -321,6 +450,7 @@ class FakeArchiveDocument {
     if (selector === 'button') return nodes.filter((node) => node.tagName === 'BUTTON')
     if (selector === '[role="treeitem"][aria-expanded]') return nodes.filter((node) => node.getAttribute('role') === 'treeitem' && node.getAttribute('aria-expanded') !== null)
     if (selector === `[${WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE}]`) return nodes.filter((node) => node.getAttribute(WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE) !== null)
+    if (selector === `[${WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE}]`) return nodes.filter((node) => node.getAttribute(WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE) !== null)
     return []
   }
 

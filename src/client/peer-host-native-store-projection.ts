@@ -1,11 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { PeerHostNativeProjection, PeerHostVirtualWorkspaceView } from './peer-host-native-projection.js'
-
-/** DSH 原生 Workspace 列表 Store；消费方只用到这两条读取通道。 */
-interface WorkspaceListStore {
-  getSnapshot: () => unknown
-  subscribe: (listener: () => void) => () => void
-}
+import { readNativeService, readNativeWorkspaceListStore } from './native-workspace-store.js'
 
 /**
  * 把虚拟工作区就地投影进 DSH 原生 Workspace Store。
@@ -18,7 +13,7 @@ export function installPeerHostNativeStoreProjection(input: {
   readonly uiContext: Context | undefined
   readonly projection: PeerHostNativeProjection
 }): () => void {
-  const store = readWorkspaceListStore(input.uiContext)
+  const store = readNativeWorkspaceListStore(input.uiContext)
   if (store === undefined) return () => undefined
   const ownsGetSnapshot = Object.hasOwn(store, 'getSnapshot')
   const ownsSubscribe = Object.hasOwn(store, 'subscribe')
@@ -54,12 +49,6 @@ export function installPeerHostNativeStoreProjection(input: {
   }
 }
 
-function readWorkspaceListStore(uiContext: Context | undefined): WorkspaceListStore | undefined {
-  const store = readNativeService(uiContext, 'workspaces', 'list')
-  if (!isRecord(store) || typeof store.getSnapshot !== 'function' || typeof store.subscribe !== 'function') return undefined
-  return store as unknown as WorkspaceListStore
-}
-
 /**
  * 触发一次原生会话列表刷新。
  *
@@ -77,21 +66,7 @@ export async function refreshPeerHostNativeSessions(uiContext: Context | undefin
   }
 }
 
-function readNativeService(uiContext: Context | undefined, name: string, field?: string): unknown {
-  if (uiContext === undefined) return undefined
-  try {
-    const getter = (uiContext as { get?: (service: string) => unknown }).get
-    if (typeof getter !== 'function') return undefined
-    const service = getter.call(uiContext, name)
-    if (field === undefined) return service
-    return isRecord(service) ? service[field] : undefined
-  } catch {
-    // 原生服务不可用（非 Web Client 宿主或版本差异）时保持本机行为。
-    return undefined
-  }
-}
-
-/** 原生快照追加虚拟工作区；快照形状不符时原样返回，注入失败不影响本机数据。 */
+/** 原生快照追加虚拟工作区与虚拟归档集合；快照形状不符时原样返回，注入失败不影响本机数据。 */
 function mergeWorkspaceSnapshot(snapshot: unknown, virtual: readonly PeerHostVirtualWorkspaceView[]): unknown {
   const record = asRecord(snapshot)
   if (record === null || !Array.isArray(record.items) || virtual.length === 0) return snapshot
@@ -100,8 +75,36 @@ function mergeWorkspaceSnapshot(snapshot: unknown, virtual: readonly PeerHostVir
     return typeof workspaceId === 'string' ? [workspaceId] : []
   }))
   const injected = virtual.filter((workspace) => !known.has(workspace.workspaceId))
-  if (injected.length === 0) return snapshot
-  return { ...record, items: [...record.items, ...injected] }
+  const archivedSessionIds = mergeArchivedSessionIds(record.archivedSessionIds, virtual)
+  if (injected.length === 0 && archivedSessionIds === undefined) return snapshot
+  return {
+    ...record,
+    items: [...record.items, ...injected],
+    ...(archivedSessionIds === undefined ? {} : { archivedSessionIds }),
+  }
+}
+
+/**
+ * 把虚拟归档会话并入 Registry 级归档集合。
+ *
+ * 原生侧栏与归档入口都按这份集合判断会话是否已归档；没有新增时返回 undefined，
+ * 让快照保持原引用。
+ */
+function mergeArchivedSessionIds(
+  current: unknown,
+  virtual: readonly PeerHostVirtualWorkspaceView[],
+): readonly string[] | undefined {
+  const local = Array.isArray(current) ? current.flatMap((id) => typeof id === 'string' ? [id] : []) : []
+  const seen = new Set(local)
+  const merged = [...local]
+  for (const workspace of virtual) {
+    for (const id of workspace.archivedSessionIds) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      merged.push(id)
+    }
+  }
+  return merged.length === local.length ? undefined : merged
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

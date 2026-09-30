@@ -81,7 +81,7 @@ export class VirtualWorkspaceRegistry {
           source: host.targetHostId === null ? 'local' : 'peer',
         }
         this.workspaces.set(virtualWorkspaceId, entry)
-        for (const session of workspace.sessions) {
+        for (const session of allWorkspaceSessions(workspace)) {
           if (session.scope.sessionId === null) continue
           const virtualSessionId = createVirtualSessionId(virtualHostId, session.scope.sessionId)
           this.sessions.set(virtualSessionId, {
@@ -131,7 +131,7 @@ export class VirtualWorkspaceRegistry {
   listSessions(virtualWorkspaceId: VirtualWorkspaceId): readonly VirtualSessionEntry[] {
     const workspace = this.workspaces.get(virtualWorkspaceId)
     if (workspace === undefined) return []
-    return workspace.sessions.flatMap((session) => {
+    return allWorkspaceSessions(workspace).flatMap((session) => {
       const sessionId = session.scope.sessionId
       if (sessionId === null) return []
       const virtualSessionId = createVirtualSessionId(workspace.targetHostId ?? workspace.hostId, sessionId)
@@ -186,6 +186,11 @@ export class VirtualWorkspaceRegistry {
 
 function uniqueIds(ids: readonly string[]): string[] {
   return [...new Set(ids.filter((id) => typeof id === 'string' && id.trim() !== ''))]
+}
+
+/** 可见与归档会话都要进入虚拟资源表：归档会话仍需解析取消归档等原生请求。 */
+function allWorkspaceSessions(workspace: AggregateWorkspaceSummary): readonly PeerHostSessionRecord[] {
+  return [...workspace.sessions, ...(workspace.archivedSessions ?? [])]
 }
 
 function isOrder(value: unknown): value is AggregateWorkspaceOrder {

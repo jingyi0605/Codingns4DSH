@@ -26,15 +26,15 @@ import {
 } from '../data/build/dist/client/workspace-session-logo-dom.js'
 
 const KNOWN_ADAPTERS = [
-  ['claude-code', 'Claude Code'],
-  ['codex', 'Codex'],
-  ['command-code', 'Command Code'],
-  ['gemini', 'Gemini CLI'],
-  ['grok', 'Grok'],
-  ['kimi', 'Kimi'],
-  ['opencode', 'OpenCode'],
-  ['pi', 'Pi'],
-  ['dsh', 'DeepSeek Harness'],
+  ['claude-code', 'Claude Code', '#d97757'],
+  ['codex', 'Codex', '#10a37f'],
+  ['command-code', 'Command Code', '#8b5cf6'],
+  ['gemini', 'Gemini CLI', '#4285f4'],
+  ['grok', 'Grok', '#71717a'],
+  ['kimi', 'Kimi', '#0ea5e9'],
+  ['opencode', 'OpenCode', '#14b8a6'],
+  ['pi', 'Pi', '#f59e0b'],
+  ['dsh', 'DeepSeek Harness', '#2563eb'],
 ]
 
 test('Host 会话映射只返回 sessionId 和 adapterId', () => {
@@ -118,25 +118,33 @@ test('Provider 映射覆盖九个已知适配器且未知值使用中性占位',
   const icons = Object.fromEntries(KNOWN_ADAPTERS.map(([adapterId]) => [adapterId, `asset:${adapterId}`]))
   installProviderIcons(icons)
 
-  for (const [adapterId, displayName] of KNOWN_ADAPTERS) {
+  for (const [adapterId, displayName, color] of KNOWN_ADAPTERS) {
     assert.deepEqual(providerVisual(adapterId), {
       adapterId,
       displayName,
       iconUrl: `asset:${adapterId}`,
+      color,
     })
     assert.equal(providerIconUrl(adapterId), `asset:${adapterId}`)
   }
+  // 归档列表用颜色区分 Agent，配色必须两两不同且是 HEX 字面量。
+  const colors = KNOWN_ADAPTERS.map(([, , color]) => color)
+  assert.equal(new Set(colors).size, colors.length)
+  for (const color of colors) assert.match(color, /^#[0-9a-f]{6}$/u, `${color} 不是 HEX 颜色`)
   assert.deepEqual(providerVisual(undefined), {
     adapterId: null,
     displayName: '未绑定 Agent',
     iconUrl: undefined,
+    color: '#71717a',
   })
   assert.deepEqual(providerVisual('future-agent'), {
     adapterId: 'future-agent',
     displayName: '未知 Agent（future-agent）',
     iconUrl: undefined,
+    color: '#71717a',
   })
   assert.notEqual(providerVisual('future-agent').displayName, 'Codex')
+  assert.notEqual(providerVisual('future-agent').color, providerVisual('codex').color)
   installProviderIcons({})
 })
 

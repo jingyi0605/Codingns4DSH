@@ -61,6 +61,10 @@ test('远端摘要用 workspace/follow 首帧和 session/list 组装工作区会
       { sessionId: 'session-a', title: '修复登录问题', status: 'running', updatedAt: 42 },
       { sessionId: 'session-b', title: 'project-b', status: 'idle', updatedAt: 11 },
     ],
+    // 归档会话单独归类：原生侧栏默认隐藏，但归档入口与取消归档路由需要它们。
+    archivedSessions: [
+      { sessionId: 'session-archived', title: 'project-a', status: 'idle', updatedAt: 7 },
+    ],
   }])
   assert.deepEqual(calls.sort(), [
     'session/list:peer-1:{"args":{"_request":{}}}',

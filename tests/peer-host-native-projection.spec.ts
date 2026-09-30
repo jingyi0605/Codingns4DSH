@@ -10,7 +10,10 @@ interface SessionShape {
   readonly updatedAt: number
 }
 
-function remoteHost(sessions: readonly SessionShape[] = [{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 10 }]): Record<string, unknown> {
+function remoteHost(
+  sessions: readonly SessionShape[] = [{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 10 }],
+  archivedSessions: readonly SessionShape[] = [],
+): Record<string, unknown> {
   return {
     hostId: 'host-local',
     targetHostId: 'peer-1',
@@ -26,13 +29,18 @@ function remoteHost(sessions: readonly SessionShape[] = [{ sessionId: 'session-1
       path: '/Users/dev/project-a',
       hostLabel: '开发机',
       availability: 'ready',
-      sessions: sessions.map((session) => ({
-        scope: { hostId: 'host-local', targetHostId: 'peer-1', workspaceId: 'workspace-1', sessionId: session.sessionId, scopeGeneration: 0 },
-        title: session.title,
-        status: session.status,
-        updatedAt: session.updatedAt,
-      })),
+      sessions: sessions.map((session) => toSessionRecord(session)),
+      ...(archivedSessions.length === 0 ? {} : { archivedSessions: archivedSessions.map((session) => toSessionRecord(session)) }),
     }],
+  }
+}
+
+function toSessionRecord(session: SessionShape): Record<string, unknown> {
+  return {
+    scope: { hostId: 'host-local', targetHostId: 'peer-1', workspaceId: 'workspace-1', sessionId: session.sessionId, scopeGeneration: 0 },
+    title: session.title,
+    status: session.status,
+    updatedAt: session.updatedAt,
   }
 }
 
@@ -70,6 +78,7 @@ test('投影只输出虚拟 ID、标题与运行态，本机资源不参与投�
     path: '/Users/dev/project-a',
     title: '远端工作区 (开发机)',
     sessionIds: [createVirtualSessionId('peer-1', 'session-1')],
+    archivedSessionIds: [],
     createdAt: new Date(0).toISOString(),
     updatedAt: new Date(10).toISOString(),
   }])
@@ -82,6 +91,26 @@ test('投影只输出虚拟 ID、标题与运行态，本机资源不参与投�
     cwd: '/Users/dev/project-a',
     projections: { kind: 'cached', values: { title: '远端会话' } },
   }])
+})
+
+test('归档会话保留成员槽位与标题，但进入独立的归档集合', () => {
+  const projection = createPeerHostNativeProjection()
+  projection.setAggregate([remoteHost(
+    [{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 10 }],
+    [{ sessionId: 'session-archived', title: '归档会话', status: 'idle', updatedAt: 4 }],
+  )] as never)
+
+  const workspace = projection.workspaces()[0]
+  assert.deepEqual(workspace?.sessionIds, [
+    createVirtualSessionId('peer-1', 'session-1'),
+    createVirtualSessionId('peer-1', 'session-archived'),
+  ])
+  assert.deepEqual(workspace?.archivedSessionIds, [createVirtualSessionId('peer-1', 'session-archived')])
+  // 原生会话目录仍需要归档会话的标题，否则原生列表行拿不到标题。
+  assert.deepEqual(projection.sessions().map((session) => session.sessionId), [
+    createVirtualSessionId('peer-1', 'session-1'),
+    createVirtualSessionId('peer-1', 'session-archived'),
+  ])
 })
 
 test('快照变化才通知订阅者，重复快照返回未变化', () => {
