@@ -137,9 +137,8 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
 
   const updateAccountLayout = (container: HTMLElement, anchor: HTMLElement, button: HTMLButtonElement, kind: SettingsAnchorKind): void => {
     // Desktop：容器是 `display: contents` 的槽位出口，自身不产生盒，真正的一行是
-    // DSH 的 `triggerRow`（里面是 DSH 自己的账户菜单）。宽侧栏完全保留 DSH 布局；
-    // 收起态该行只有 36px 宽，改为允许换行并居中，避免两个按钮横向溢出侧栏，
-    // 同时不动 `flex-direction`，以免 `flex:1` 的账户菜单被压扁。
+    // DSH 的 `triggerRow`（里面是 DSH 自己的账户菜单）。宿主自己负责宽窄态，
+    // 插件只保证入口追加到末尾并保持一行，避免原生账户组件被换到下一行。
     if (kind === 'launcher-slot') {
       const row = container.parentElement
       if (row === null) return

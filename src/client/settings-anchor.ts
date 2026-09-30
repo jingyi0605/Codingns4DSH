@@ -39,7 +39,7 @@ export const SETTINGS_ANCHOR_SELECTORS = [SETTINGS_BUTTON_SELECTOR, SETTINGS_LAU
  * - `settings-button`：命中槽位出口**内部**的 fallback 齿轮。容器是
  *   `display: contents` 的槽位出口，它没有自己的布局，调用方需要补全为一行。
  * - `launcher-slot`：命中槽位出口**本身**。容器是 DSH 的 `triggerRow`，
- *   已有完整布局，调用方只允许插入节点，不得覆盖方向、宽度与间距。
+ *   已有完整布局，调用方只允许插入节点并保持宿主的一行布局。
  */
 export type SettingsAnchorKind = 'settings-button' | 'launcher-slot'
 

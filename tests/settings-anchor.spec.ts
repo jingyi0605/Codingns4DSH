@@ -70,7 +70,7 @@ test('账户入口通过共用锚点解析挂载，不再硬编码齿轮选择�
   assert.match(accountBar, /import \{ resolveSettingsAnchor, settingsAnchorContainer, type SettingsAnchorKind \} from '\.\/settings-anchor\.js'/u)
   assert.equal([...accountBar.matchAll(/resolveSettingsAnchor\(\(selector\) => root\.querySelector<HTMLElement>\(selector\)\)/gu)].length, 2)
   assert.doesNotMatch(accountBar, /querySelector<HTMLElement>\('button\[aria-label="设置"\]'\)/u)
-  // 收起态（36px 宽）必须改竖排，否则两个按钮横排会溢出侧栏。
+  // Desktop 的宿主行由插件保持 nowrap，避免原生账户组件与入口被拆成两行。
   assert.match(accountBar, /if \(kind === 'launcher-slot'\) \{/u)
   // 选择器只允许在锚点模块里定义一份，避免调用点各自漂移。
   assert.match(anchor, /'\[data-slot="settings\.launcher"\]'/u)
