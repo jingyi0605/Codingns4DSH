@@ -172,5 +172,5 @@ const MOBILE_SETTINGS_MODAL_STYLE_TEXT = [
   `[${MOBILE_SETTINGS_MODAL_ATTRIBUTE}="on"]>nav>:last-child>button{box-sizing:border-box!important;justify-content:center!important;width:44px!important;height:44px!important;padding:9px!important;gap:0!important}`,
   `[${MOBILE_SETTINGS_MODAL_ATTRIBUTE}="on"]>nav>:last-child>button>span{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}`,
   `[${MOBILE_SETTINGS_MODAL_ATTRIBUTE}="on"]>div{box-sizing:border-box!important;min-width:0!important;flex:1 1 auto!important;width:auto!important}`,
-  `[${MOBILE_SETTINGS_MODAL_ATTRIBUTE}="on"]>div>div:last-child{box-sizing:border-box!important;min-width:0!important;width:100%!important}`,
+  `[${MOBILE_SETTINGS_MODAL_ATTRIBUTE}="on"]>div>div:last-child{box-sizing:border-box!important;min-width:0!important;width:100%!important;padding-left:8px!important;padding-right:8px!important}`,
 ].join('')
