@@ -157,17 +157,26 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             inferMessageAdapter(messages),
             registry,
           )
-          const config = storedConfig.adapterId === 'dsh' && selectedExternalAdapter !== undefined
+          // DSH 的 modelSelection 只描述 DSH 自己那条模型路由（例如 glor/deepseek）。
+          // 只有它明确指向即将接管的外部适配器时，model/effort 才属于该适配器；
+          // 当适配器是从会话历史推断出来的（fork 子会话继承父会话的外部消息，而
+          // provider 仍是 DSH 主模型）时，沿用该 model 会把别的 Provider 的模型名
+          // 写进外部 Agent——Codex 会用它 thread/start 并直接 404，整个会话从此
+          // 无法继续。此时必须留空，由适配器自己的偏好决定模型。
+          const selectionOwnedByAdapter = selectedExternalAdapter !== undefined
+            && dshSelection.providerId === selectedExternalAdapter
+          let config: CodingNsCliSessionConfig = storedConfig.adapterId === 'dsh' && selectedExternalAdapter !== undefined
             ? {
                 adapterId: selectedExternalAdapter,
-                ...(dshSelection.modelId === undefined ? {} : { modelId: dshSelection.modelId }),
-                ...(dshSelection.effortId === undefined ? {} : { effortId: dshSelection.effortId }),
+                ...(selectionOwnedByAdapter && dshSelection.modelId !== undefined ? { modelId: dshSelection.modelId } : {}),
+                ...(selectionOwnedByAdapter && dshSelection.effortId !== undefined ? { effortId: dshSelection.effortId } : {}),
               }
             : storedConfig
           // DSH 首轮请求可能只通过 provider 临时选择外部 Agent，第二轮请求通常不再携带
           // provider。必须在路由决定后立即持久化绑定，否则下一轮会在进入 Registry 前退回 dsh。
+          // 采用规范化结果，让本轮也使用适配器自己的模型偏好，而不是 DSH 主模型。
           if (sessionId !== '' && storedConfig.adapterId === 'dsh' && selectedExternalAdapter !== undefined) {
-            registry.setSession(sessionId, config)
+            config = registry.setSession(sessionId, config)
           }
           if (config.adapterId === 'dsh') {
             const selection = dshSelection

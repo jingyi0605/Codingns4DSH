@@ -998,6 +998,56 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   assert.equal(listener, undefined)
 })
 
+test('fork 子会话从继承的历史推断外部适配器时，不得把 DSH 主模型写入外部 Agent', async () => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  const received: { prompt: string; modelId?: string }[] = []
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) {
+      received.push({ prompt: input.prompt, ...(input.modelId === undefined ? {} : { modelId: input.modelId }) })
+      yield { type: 'text-delta', text: 'Codex 回复' }
+      yield { type: 'finish', reason: 'stop' }
+    },
+  }])
+  const events = {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+      listener = next
+      return () => { listener = undefined }
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table, events })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+
+  // fork 子会话：继承的历史里有父会话的外部 Agent 消息（provider=codex），
+  // 但本轮 DSH 路由仍然是主模型 glor/deepseek-v4.1-flash。
+  // 修复前这段历史会让 Codex 接管，同时把 deepseek-v4.1-flash 当成 Codex 模型，
+  // thread/start 直接 404，会话再也无法继续。
+  const chunks: unknown[] = []
+  for await (const chunk of listener!({
+    sessionId: 'fork-child',
+    modelSelection: {
+      lastUsed: { provider: 'glor', model: 'deepseek-v4.1-flash', reasoningEffort: 'high' },
+    },
+    messages: [
+      { role: 'assistant', source: { kind: 'model', plugin: 'codingns4dsh', provider: 'codex', model: 'codex' }, content: '父会话的外部 Agent 回复' },
+      { role: 'user', source: { kind: 'user' }, content: '继续' },
+    ],
+  }, async function* () { yield { type: 'finish', reason: { kind: 'stop' } } })) chunks.push(chunk)
+
+  assert.equal(received.length, 1)
+  assert.equal(received[0]?.prompt, '继续')
+  // 关键断言：绝不能把 DSH 主模型名透给 Codex。
+  assert.notEqual(received[0]?.modelId, 'deepseek-v4.1-flash')
+  assert.equal(chunks.some((chunk) => (chunk as { type?: string }).type === 'text-delta'), true)
+  // 绑定必须落盘为 codex，且不得留下 DSH 主模型。
+  assert.deepEqual(registry.getSession('fork-child'), { adapterId: 'codex' })
+  await features.disable('cliAdapters')
+})
+
 test('DSH 请求明确携带外部 provider 时恢复外部适配器路由', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined

@@ -43,6 +43,16 @@ interface CodexSession {
   contextWindow: number | undefined
   contextTokens: number | undefined
   threadId: string
+  /**
+   * 线程当前真正生效的模型。
+   *
+   * Codex 只在 `thread/start` 时确定线程模型：同一 app-server 进程内再次
+   * `thread/resume` 不会改写已持久化的模型。必须与期望模型分开记录，才能在
+   * 模型变化或线程被错误模型污染时显式纠正。
+   */
+  threadModelId: string | undefined
+  /** 旧版 Codex 没有 thread/settings/update；失败一次后不再每轮重试。 */
+  threadModelCorrectionUnsupported: boolean
   turnId: string | null
   providerSessionId: string
   readonly pendingPermissions: Map<string, PendingCodexPermission>
@@ -158,7 +168,9 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
           : await rpc.request('thread/start', threadParams, { signal: input.signal, killOnAbort: false })
         session.threadId = readId(thread) ?? input.providerSessionId ?? input.sessionId
         session.providerSessionId = session.threadId
+        session.threadModelId = readThreadModel(thread)
       }
+      await this.alignThreadModel(session, input)
       await this.ensureContextCapacity(session, input)
       yield* drainCompactionEvents(session)
       yield { type: 'session-binding', providerSessionId: session.providerSessionId }
@@ -281,6 +293,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
           : await rpc.request('thread/start', threadParams, { signal: input.signal, killOnAbort: false })
         session.threadId = readId(thread) ?? input.providerSessionId ?? input.sessionId
         session.providerSessionId = session.threadId
+        session.threadModelId = readThreadModel(thread)
       }
       // 只有 Host 显式声明续段时才复用挂起的 Provider 运行。新用户回合、注入
       // 失败或取消后的下一次执行必须丢弃旧段：旧段要么已经跑完，要么其队列
@@ -293,8 +306,10 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       if (suspended === undefined && session.segmentedTurn !== undefined) {
         this.closeSegmentedTurn(session, session.segmentedTurn)
       }
-      // 分段 step 仍属于同一个 Provider turn；恢复它时不能插入 compact turn。
+      // 分段 step 仍属于同一个 Provider turn；恢复它时不能插入 compact turn，
+      // 也不能改写线程模型（同一个 Provider turn 中途换模型会被 Codex 拒绝）。
       const hasSuspendedTurn = suspended !== undefined
+      if (!hasSuspendedTurn) await this.alignThreadModel(session, input)
       if (!hasSuspendedTurn) await this.ensureContextCapacity(session, input)
       if (!hasSuspendedTurn) yield* drainCompactionEvents(session)
       active = suspended ?? await this.startSegmentedTurn(session, input)
@@ -444,6 +459,34 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     active.removeNotificationListener()
     active.queue.close()
     if (session.segmentedTurn === active) session.segmentedTurn = undefined
+  }
+
+  /**
+   * 让线程真正生效的模型与 DSH 当前选择的模型保持一致。
+   *
+   * Codex 只在 `thread/start` 时决定线程模型，同一 app-server 进程内再次
+   * `thread/resume` 不会改写已持久化的模型。用户在 DSH 里切换模型后，如果不
+   * 显式纠正，后续 turn 仍会沿用旧模型；而线程一旦被写入错误模型（例如历史
+   * 路由把 DSH 主模型泄漏给 Codex），会话就会持续以 404 失败且无法自愈。
+   * 这里只在两者确实不同时下发一次纠正，避免每个 step 都产生额外 RPC。
+   */
+  private async alignThreadModel(session: CodexSession, input: CodingNsCliTurnInput): Promise<void> {
+    if (session.threadId === '' || session.threadModelCorrectionUnsupported) return
+    const desired = isProviderDefaultModel(input.modelId) ? undefined : input.modelId?.trim()
+    if (desired === undefined || desired === '') return
+    if (session.threadModelId === desired) return
+    try {
+      const response = await session.rpc.request(
+        'thread/settings/update',
+        { threadId: session.threadId, model: desired },
+        { signal: input.signal, killOnAbort: false },
+      )
+      session.threadModelId = readThreadModel(response) ?? desired
+    } catch (error) {
+      // 旧版 Codex 可能没有该方法；纠正失败不能阻断本轮，模型仍由 turn 自身决定。
+      // 只有“方法不存在”才永久关闭纠正，避免网络类瞬时失败让会话再也无法换模型。
+      if (isMethodNotFound(error)) session.threadModelCorrectionUnsupported = true
+    }
   }
 
   /** 在下一轮开始前主动压缩，避免把已满的线程直接交给 turn/start。 */
@@ -659,6 +702,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       contextWindow: undefined as number | undefined,
       contextTokens: undefined as number | undefined,
       threadId: '',
+      threadModelId: undefined as string | undefined,
+      threadModelCorrectionUnsupported: false,
       turnId: null as string | null,
       providerSessionId: input.providerSessionId ?? input.sessionId,
       pendingPermissions: new Map<string, PendingCodexPermission>(),
@@ -1191,6 +1236,25 @@ function isContextWindowError(error: unknown): boolean {
   return hasContextWindowError(error)
 }
 
+/**
+ * 判断 RPC 失败是否表示“服务端不认识这个方法”。
+ *
+ * 旧版 Codex app-server 没有 `thread/settings/update`。只有这种情况才应永久
+ * 关闭模型纠正；进程退出、超时等瞬时失败必须保留重试机会，否则一次抖动就会让
+ * 该会话再也无法切换模型。
+ */
+function isMethodNotFound(error: unknown): boolean {
+  if (error instanceof JsonRpcRequestError) {
+    if (error.code === -32601) return true
+    const data = isRecord(error.data) ? error.data : null
+    if (data?.code === -32601) return true
+    return typeof data?.message === 'string' && /method\s*not\s*found|unknown method/iu.test(data.message)
+  }
+  if (isRecord(error) && error.code === -32601) return true
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  return /method\s*not\s*found|unknown method/iu.test(message)
+}
+
 function hasContextWindowError(value: unknown): boolean {
   if (typeof value === 'string') return /context[_-]?window[_-]?exceeded|context window exceeded/iu.test(value)
   if (!isRecord(value)) return false
@@ -1348,4 +1412,18 @@ function readId(value: unknown): string | null {
   if (typeof value.id === 'string') return value.id
   if (isRecord(value.thread) && typeof value.thread.id === 'string') return value.thread.id
   return null
+}
+
+/**
+ * 读取线程当前生效的模型。
+ *
+ * `thread/start`、`thread/resume` 的响应都在顶层返回 `model`；旧版协议把它嵌在
+ * `thread.model` 中。读不到时返回 undefined，调用方按“未知”处理并自行纠正。
+ */
+function readThreadModel(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined
+  const direct = value.model
+  if (typeof direct === 'string' && direct.trim() !== '') return direct.trim()
+  const nested = isRecord(value.thread) ? value.thread.model : undefined
+  return typeof nested === 'string' && nested.trim() !== '' ? nested.trim() : undefined
 }
