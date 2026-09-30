@@ -86,7 +86,7 @@
     }
   },
   "scripts": {
-    "preinstall": "node scripts/check-dsh-install.mjs",
+    "check:dsh-install": "node scripts/check-dsh-install.mjs",
     "version:check": "node scripts/check-version-sync.mjs",
     "capability:check": "node scripts/check-capability-retirement.mjs",
     "capability:report": "node scripts/generate-capability-report.mjs",

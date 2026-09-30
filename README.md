@@ -214,7 +214,7 @@ DSH 设置按钮旁的账户入口会显示登录状态、访问路径与延迟�
 
 ## 安装
 
-**环境要求**：DSH `>=0.2.0-rc.1`（不限制上限版本；插件与 DSH 版本独立发布，安装期与运行期都会拒绝低于下界的版本）· Node.js `>= 22.19` · `PATH` 中有 `pnpm`（`dsh plugin` 转发给 pnpm）· 可选：Agent CLI，以及 macOS/Linux 上用于持久终端的 `tmux`（`brew install tmux` / `sudo apt install tmux`）。
+**环境要求**：DSH `>=0.2.0-rc.1`（不限制上限版本；插件与 DSH 版本独立发布，运行期会拒绝低于下界的版本，安装期在能识别当前运行时版本时同样拒绝）· Node.js `>= 22.19` · `PATH` 中有 `pnpm`（`dsh plugin` 转发给 pnpm）· 可选：Agent CLI，以及 macOS/Linux 上用于持久终端的 `tmux`（`brew install tmux` / `sudo apt install tmux`）。
 
 ### 最简单的安装方式：使用内置 `web` Profile
 
@@ -282,7 +282,8 @@ dsh web
 
 ## 故障排查
 
-- **版本** —— `dsh --version`、`dsh plugin --profile web list --depth 0`（独立 Profile 请替换 `web`）、`npm view @jingyi0605/codingns4dsh version`；安装与启动都会拒绝范围外的 DSH。
+- **版本** —— `dsh --version`、`dsh plugin --profile web list --depth 0`（独立 Profile 请替换 `web`）、`npm view @jingyi0605/codingns4dsh version`；启动时会拒绝范围外的 DSH，安装期在能识别当前运行时版本时同样拒绝。
+- **安装期被 `PATH` 上的旧 `dsh` 误判** —— 安装期只把宿主注入的版本、Desktop Runtime 根和 Profile 内可解析的 `@deepseek-ai/dsh` 当作阻断依据；`PATH` 上的 `dsh --version` 仅用于提示，不会阻断安装。运行期仍以实际加载的 DSH 为准。
 - **`patch: entry "terminal-controller" not found`** —— Profile 缺少 Web 应用层，按上文用 `web` 模板重建。
 - **检测不到 Agent** —— 在 Host 上执行 `<cli> --version`；确认其目录在启动 DSH 的进程的 `PATH` 中（图形启动器常不同）；用各家工具登录后重启 DSH。
 - **终端** —— macOS/Linux 持久模式需要 `tmux`；启停模块与修改绑定范围需重启；终端按工作区寻址。

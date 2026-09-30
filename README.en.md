@@ -268,7 +268,8 @@ A directory install links the checkout — rebuild (`pnpm build` / `pnpm dev:wat
 
 ## Troubleshooting
 
-- **Versions** — `dsh --version`, `dsh plugin --profile web list --depth 0` (replace `web` for a separate profile), `npm view @jingyi0605/codingns4dsh version`; install and startup both reject DSH outside the supported range.
+- **Versions** — `dsh --version`, `dsh plugin --profile web list --depth 0` (replace `web` for a separate profile), `npm view @jingyi0605/codingns4dsh version`; startup rejects DSH outside the supported range, and installation does too whenever it can identify the runtime actually in use.
+- **Install-time rejection from a stale `dsh` on `PATH`** — installation only blocks on the host-injected version, the Desktop Runtime root, and a `@deepseek-ai/dsh` resolvable from the profile; `dsh --version` from `PATH` is advisory and never blocks. Runtime still validates the DSH that actually loaded.
 - **`patch: entry "terminal-controller" not found`** — the profile lacks the Web app layer; recreate it from the `web` template as shown above.
 - **Agent not detected** — run `<cli> --version` on the Host; ensure its directory is on the `PATH` of the process that started DSH (GUI launchers often differ); log in with the vendor tool, then restart DSH.
 - **Terminal** — persistent mode needs `tmux` on macOS/Linux; enabling/disabling the module and changing the binding scope need a restart; terminals are addressed per workspace.

@@ -18,9 +18,22 @@ Profile 安装完成后，使用 DSH 官方启动器启动：
 dsh --profile codingns4dsh --dump-config
 ```
 
-Profile 和插件安装前都会读取当前 `dsh --version`；版本不在 Profile 的 `engines.dsh`
-范围内时，安装直接失败。启动时 Host、Client 和 Bootstrap 还会再次校验实际 DSH 版本，
-不兼容版本不会启用插件。
+Profile 安装前会读取当前 DSH 运行时版本；版本不在 Profile 的 `engines.dsh` 范围内时，
+安装直接失败。探测顺序与「能否阻断」的对应关系如下：
+
+| 优先级 | 来源 | 是否阻断 |
+| --- | --- | --- |
+| 1 | `DSH_RUNTIME_VERSION` / `DSH_VERSION`（宿主注入） | 是 |
+| 2 | Desktop Runtime 根（`app.asar` 内真实加载的 `@deepseek-ai/dsh`） | 是 |
+| 3 | Profile 目录内可解析到的 `@deepseek-ai/dsh` | 是 |
+| 4 | `PATH` 上的 `dsh --version` | 否，只告警 |
+
+第 4 项不阻断是刻意的：桌面宿主经 `scrubbedParentEnv()` 派生 pnpm 子进程时会剥离全部
+`DSH_*` 变量，命令行启动脚本也可能用绝对路径调用 0.2.x 启动器、同时把旧版 `dsh` 留在
+`PATH` 上。`PATH` 上的 `dsh` 只能证明机器上装了某个 DSH，不能证明它就是本次安装所使用的
+运行时，因此它只用于提示；否则会把正常安装误判为不兼容。
+
+启动时 Host、Client 和 Bootstrap 还会再次校验实际 DSH 版本，不兼容版本不会启用插件。
 
 真实 Transport 工厂完成后，桌面壳或页面应先调用 `codingns4dsh/bootstrap` 的
 `bootWithPreCordisTransport()`，再启动 DSH Client。DSH 升级后必须先发布匹配的新

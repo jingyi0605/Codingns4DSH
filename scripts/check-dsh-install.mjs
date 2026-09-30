@@ -1,33 +1,108 @@
+import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u
 const root = fileURLToPath(new URL('../', import.meta.url))
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 const compatibility = manifest.engines?.dsh
-const actualVersion = readRuntimeDshVersion()
+const detected = detectRuntimeDshVersion()
 
-// 普通 npm/pnpm 开发安装可能没有 DSH 宿主；这种场景没有可校验的目标，
-// 不能把插件作为独立 npm 包安装的能力误判为失败。
-if (actualVersion === undefined) {
-  if (process.env.DSH_HOME !== undefined || process.env.DSH_PLUGIN_INSTALL === '1') {
-    throw new Error('codingns4dsh 安装失败：检测到 DSH 安装上下文，但无法读取当前 DSH 版本')
-  }
-  console.warn('codingns4dsh: 未检测到 DSH 宿主，跳过安装期 DSH 兼容性检查')
+// 这个脚本既可以作为 npm 包安装期的门禁运行，也可以手工执行。
+//
+// 关键约束：PATH 上的 `dsh` 只能证明机器上装了某个 DSH，不能证明它就是本次安装
+// 所使用的运行时。桌面宿主经 scrubbedParentEnv() 派生子进程时会剥离全部 DSH_*
+// 变量，命令行启动脚本也可能用绝对路径调用 0.2.x 启动器、同时把旧版 `dsh` 留在
+// PATH 上。把 PATH 来源当作硬门禁会把正常安装误判为不兼容，因此它只用于提示；
+// 真正会阻断的只有能归属到当前运行时的来源。
+if (detected === undefined) {
+  console.warn('codingns4dsh: 未检测到当前 DSH 运行时，跳过安装期兼容性检查；运行期仍会再次校验')
   process.exit(0)
 }
 
-if (typeof compatibility !== 'string' || !isCompatible(actualVersion, compatibility)) {
-  throw new Error(`codingns4dsh 安装失败：当前 DSH ${actualVersion} 不在插件支持范围 ${String(compatibility)} 内`)
+if (detected.source === 'path') {
+  const verdict = isCompatible(detected.version, compatibility) ? '在' : '不在'
+  console.warn(
+    `codingns4dsh: PATH 上的 dsh ${detected.version} ${verdict}插件支持范围 ${String(compatibility)} 内，` +
+      '但它未必是本次安装所使用的运行时，已跳过阻断',
+  )
+  process.exit(0)
 }
 
-console.log(`codingns4dsh 安装期版本检查通过：DSH ${actualVersion}，兼容范围 ${compatibility}`)
+if (typeof compatibility !== 'string' || !isCompatible(detected.version, compatibility)) {
+  throw new Error(
+    `codingns4dsh 安装失败：当前 DSH ${detected.version} 不在插件支持范围 ${String(compatibility)} 内` +
+      `（版本来源：${detected.source}）`,
+  )
+}
 
-function readRuntimeDshVersion() {
-  const candidates = [process.env.DSH_RUNTIME_VERSION, process.env.DSH_VERSION, readVersionFromCommand()]
-  return candidates.find((value) => typeof value === 'string' && VERSION_PATTERN.test(value))
+console.log(
+  `codingns4dsh 安装期版本检查通过：DSH ${detected.version}（来源 ${detected.source}），兼容范围 ${compatibility}`,
+)
+
+/**
+ * 读取当前 DSH 运行时版本，并标注来源。
+ *
+ * 优先级：宿主显式注入的版本 → Desktop Runtime 根（app.asar 内真实加载的包）
+ * → 从插件目录可解析到的 @deepseek-ai/dsh → PATH 上的 dsh。
+ *
+ * @returns {{ version: string, source: 'env' | 'runtime' | 'module' | 'path' } | undefined}
+ */
+function detectRuntimeDshVersion() {
+  const injected = [process.env.DSH_RUNTIME_VERSION, process.env.DSH_VERSION].find(isVersion)
+  if (injected !== undefined) return { version: injected, source: 'env' }
+
+  const fromRuntime = readVersionFromRuntimeRoots()
+  if (fromRuntime !== undefined) return { version: fromRuntime, source: 'runtime' }
+
+  const fromModule = readVersionFromModule()
+  if (fromModule !== undefined) return { version: fromModule, source: 'module' }
+
+  const fromPath = readVersionFromCommand()
+  if (fromPath !== undefined) return { version: fromPath, source: 'path' }
+
+  return undefined
+}
+
+/** Electron 把 Resources 根暴露为 process.resourcesPath；纯 Node 下不存在。 */
+function readVersionFromRuntimeRoots() {
+  const resourcesRoot = process.resourcesPath
+  if (typeof resourcesRoot !== 'string' || resourcesRoot.trim() === '') return undefined
+  const runtimeRoots = [
+    join(resourcesRoot, 'app.asar', 'dsh'),
+    join(resourcesRoot, 'app.asar.unpacked', 'dsh'),
+    join(resourcesRoot, 'dsh'),
+  ]
+  for (const runtimeRoot of runtimeRoots) {
+    const version = readDshManifestVersion(
+      join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
+    )
+    if (version !== undefined) return version
+  }
+  return undefined
+}
+
+/** 插件被装进某个 DSH 运行时后，可从自身位置解析到宿主包清单。 */
+function readVersionFromModule() {
+  try {
+    const require = createRequire(join(root, 'package.json'))
+    return readDshManifestVersion(require.resolve('@deepseek-ai/dsh/package.json'))
+  } catch {
+    return undefined
+  }
+}
+
+function readDshManifestVersion(manifestPath) {
+  try {
+    const parsed = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    if (parsed.name === '@deepseek-ai/dsh' && isVersion(parsed.version)) return parsed.version
+  } catch {
+    // 该路径没有 DSH 包时继续尝试下一个来源。
+  }
+  return undefined
 }
 
 function readVersionFromCommand() {
@@ -44,8 +119,12 @@ function readVersionFromCommand() {
   }
 }
 
+function isVersion(value) {
+  return typeof value === 'string' && VERSION_PATTERN.test(value)
+}
+
 function isCompatible(actual, range) {
-  const match = /^>=([^ ]+)(?: <=([^ ]+))?$/u.exec(range)
+  const match = typeof range === 'string' ? /^>=([^ ]+)(?: <=([^ ]+))?$/u.exec(range) : undefined
   if (!match) return false
   const actualVersion = parseVersion(actual)
   const minimum = parseVersion(match[1])
