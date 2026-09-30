@@ -7,6 +7,7 @@ import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import { debugWarn } from '../../shared/debug.js'
 import { dshButtonStyle, dshFieldStyle, dshFormRootStyle, dshThemeColor } from '../theme.js'
 import { backdropPointerDownHandler } from '../popup-dismiss.js'
+import { codingNsTranslator, useCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from '../locale.js'
 
 export const DEBUG_KIND = 'debug'
 export const DEBUG_PROVIDER_ID = 'codingns4dsh/debug'
@@ -19,6 +20,7 @@ interface DebugTabProps {
   readonly remote: unknown
   readonly terminalRemote: (() => unknown) | undefined
   readonly sidebarRight: Context['sidebarRight']
+  readonly locale: CodingNsLocale
 }
 
 interface DebugProfile {
@@ -57,20 +59,21 @@ interface DebugProfileDraft {
 }
 
 /** 注册最小 Debug 页面；页面只负责展示和发送用户意图。 */
-export function registerDebugUi(ctx: Context, rpc: CodingNsRpcClient, remote: unknown, terminalRemote?: () => unknown): () => void {
+export function registerDebugUi(ctx: Context, rpc: CodingNsRpcClient, remote: unknown, terminalRemote?: () => unknown, locale: CodingNsLocale = ctx.locale): () => void {
   const disposers: Array<() => void> = []
+  const t = codingNsTranslator(locale)
   try {
     disposers.push(ctx.sidebarRightTabs.register({
       id: DEBUG_PROVIDER_ID,
       kind: DEBUG_KIND,
       multiple: false,
       priority: 'extension',
-      title: () => '调试',
-      guide: [{ id: 'debug', order: 30, title: () => '调试', description: () => '启动工作区命令、检查端口并访问服务', icon: DebugIcon }],
+      title: () => t('debug.title'),
+      guide: [{ id: 'debug', order: 30, title: () => t('debug.title'), description: () => t('debug.guideDescription'), icon: DebugIcon }],
     }))
     disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
       name: 'sidebar.right.pane.tab', key: DEBUG_PROVIDER_ID,
-      inject: () => ({ rpc, remote, terminalRemote, sidebarRight: ctx.sidebarRight }),
+      inject: () => ({ rpc, remote, terminalRemote, sidebarRight: ctx.sidebarRight, locale }),
     }, DebugBody)))
   } catch (error) {
     for (const dispose of disposers.reverse()) dispose()
@@ -87,7 +90,8 @@ function isDuplicateDebugRegistration(error: unknown): boolean {
   return error instanceof Error && /sidebarRight: (?:tab type id|tab kind) .* already registered/u.test(error.message)
 }
 
-function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: DebugTabProps): ReactElement {
+function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight, locale }: DebugTabProps): ReactElement {
+  const t = useCodingNsTranslator(locale)
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [config, setConfig] = useState<DebugConfig | null>(null)
   const [instances, setInstances] = useState<readonly DebugInstance[]>([])
@@ -95,7 +99,7 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: Deb
   const [portChecks, setPortChecks] = useState<Readonly<Record<string, DebugPortCheck>>>({})
   const [terminalStatus, setTerminalStatus] = useState<HostTerminalStatus | null>(null)
   const [draft, setDraft] = useState<DebugProfileDraft | null>(null)
-  const [message, setMessage] = useState('正在读取工作区…')
+  const [message, setMessage] = useState<StatusMessage>({ text: t('debug.readingWorkspace'), tone: 'info' })
   const [busy, setBusy] = useState(false)
 
   const load = async (currentWorkspaceId: string, isCurrent?: () => boolean): Promise<void> => {
@@ -106,7 +110,7 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: Deb
     if (isCurrent?.() === false) return
     setConfig(next)
     setInstances(running)
-    setMessage('')
+    setMessage({ text: '', tone: 'info' })
   }
 
   useEffect(() => {
@@ -125,7 +129,7 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: Deb
         setWorkspaceId(id)
         await load(id, () => !disposed)
       } catch (error) {
-        if (!disposed) setMessage(error instanceof Error ? error.message : String(error))
+        if (!disposed) setMessage({ text: error instanceof Error ? error.message : String(error), tone: 'error' })
       }
     })()
     return () => { disposed = true }
@@ -170,28 +174,28 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: Deb
     return () => { disposed = true; clearInterval(timer) }
   }, [workspaceId, config, sessionId])
 
-  if (workspaceId === null) return createElement('section', { style: panelStyle }, createElement('div', { style: loadingStyle }, createElement('span', { style: loadingDotStyle }), message))
+  if (workspaceId === null) return createElement('section', { style: panelStyle }, createElement('div', { style: loadingStyle }, createElement('span', { style: loadingDotStyle }), message.text))
   const profiles = config?.profiles ?? []
   return createElement('section', { style: panelStyle },
     createElement('header', { style: headerStyle },
       createElement('div', { style: titleBlockStyle },
-        createElement('div', { style: eyebrowStyle }, '工作区工具'),
-        createElement('h2', { style: titleStyle }, '工作区调试'),
+        createElement('div', { style: eyebrowStyle }, t('debug.eyebrow')),
+        createElement('h2', { style: titleStyle }, t('debug.heading')),
         createElement('div', { style: workspaceStyle, title: workspaceId }, createElement('span', { style: workspaceDotStyle }), workspaceId),
       ),
       createElement('div', { style: headerActionsStyle },
-        createElement('span', { style: countStyle }, `${profiles.length} 个配置`),
-      createElement('button', { type: 'button', 'aria-label': '添加启动配置', disabled: busy || draft !== null, onClick: () => setDraft(createProfileDraft()), style: primaryButtonStyle }, createElement('span', { 'aria-hidden': true }, '+'), ' 添加配置'),
+        createElement('span', { style: countStyle }, t('debug.profileCount', { count: profiles.length })),
+      createElement('button', { type: 'button', 'aria-label': t('debug.addProfileAria'), disabled: busy || draft !== null, onClick: () => setDraft(createProfileDraft()), style: primaryButtonStyle }, createElement('span', { 'aria-hidden': true }, '+'), ' ', t('debug.addProfile')),
       ),
     ),
-    message && createElement('div', { role: 'status', 'aria-live': 'polite', style: statusStyle(statusTone(message)) }, createElement('span', { style: statusIconStyle }, statusTone(message) === 'success' ? '✓' : statusTone(message) === 'error' ? '!' : 'i'), message),
+    message.text && createElement('div', { role: 'status', 'aria-live': 'polite', style: statusStyle(message.tone) }, createElement('span', { style: statusIconStyle }, message.tone === 'success' ? '✓' : message.tone === 'error' ? '!' : 'i'), message.text),
     terminalStatus?.runtimeWarning === undefined ? null : createElement('div', { role: 'alert', style: warningStatusStyle }, createElement('span', { style: statusIconStyle }, '!'), terminalStatus.runtimeWarning),
     draft === null ? null : createProfileForm(draft),
     profiles.length === 0 && draft === null ? createElement('div', { style: emptyStyle },
       createElement('div', { style: emptyIconStyle }, createElement(DebugIcon, { size: 22 })),
-      createElement('strong', { style: emptyTitleStyle }, '还没有启动配置'),
-      createElement('p', { style: emptyTextStyle }, '为当前 Workspace 添加一个命令，即可从这里启动终端、检查端口和访问服务。'),
-      createElement('button', { type: 'button', 'aria-label': '添加启动配置', disabled: busy, onClick: () => setDraft(createProfileDraft()), style: secondaryButtonStyle }, '+ 添加第一个配置'),
+      createElement('strong', { style: emptyTitleStyle }, t('debug.emptyTitle')),
+      createElement('p', { style: emptyTextStyle }, t('debug.emptyText')),
+      createElement('button', { type: 'button', 'aria-label': t('debug.addProfileAria'), disabled: busy, onClick: () => setDraft(createProfileDraft()), style: secondaryButtonStyle }, '+ ', t('debug.addFirstProfile')),
     ) : null,
     profiles.map((profile) => {
       const running = runningInstances(profile, instances)
@@ -202,32 +206,34 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: Deb
           createElement('strong', { style: itemTitleStyle }, profile.name),
           createElement('span', { style: itemCommandStyle }, formatCommand(profile)),
         ),
-        createElement('span', { style: running > 0 ? runningBadgeStyle : stoppedBadgeStyle }, running > 0 ? `${running} 个运行中` : '未运行'),
+        createElement('span', { style: running > 0 ? runningBadgeStyle : stoppedBadgeStyle }, running > 0 ? t('debug.runningCount', { count: running }) : t('debug.notRunning')),
       ),
       createElement('div', { style: metaStyle },
-        createElement('span', { style: metaItemStyle }, createElement('span', { style: metaKeyStyle }, '目录'), profile.cwdRelative || '.'),
-        profile.port === null ? null : createElement('span', { style: metaItemStyle }, createElement('span', { style: metaKeyStyle }, '端口'), String(profile.port)),
-        createElement('span', { style: metaItemStyle }, createElement('span', { style: metaKeyStyle }, '运行方式'), profile.runtimeType),
-        profile.proxy.enabled ? createElement('span', { style: proxyBadgeStyle }, '代理已启用') : null,
+        createElement('span', { style: metaItemStyle }, createElement('span', { style: metaKeyStyle }, t('debug.metaCwd')), profile.cwdRelative || '.'),
+        profile.port === null ? null : createElement('span', { style: metaItemStyle }, createElement('span', { style: metaKeyStyle }, t('debug.metaPort')), String(profile.port)),
+        createElement('span', { style: metaItemStyle }, createElement('span', { style: metaKeyStyle }, t('debug.metaRuntime')), profile.runtimeType),
+        profile.proxy.enabled ? createElement('span', { style: proxyBadgeStyle }, t('debug.proxyEnabled')) : null,
       ),
       profile.port === null ? null : createElement('div', { style: portStatusStyle }, portCheck === undefined
-        ? createElement('span', { style: portUnknownStyle }, '端口状态尚未检查')
+        ? createElement('span', { style: portUnknownStyle }, t('debug.portUnknown'))
         : portCheck.listening
-          ? createElement('span', { style: portListeningStyle }, `端口 ${profile.port} 正在监听${portCheck.process?.pid === undefined ? '' : ` · PID ${portCheck.process.pid}`}`)
-          : createElement('span', { style: portStoppedStyle }, `端口 ${profile.port} 未监听`)),
+          ? createElement('span', { style: portListeningStyle }, portCheck.process?.pid === undefined
+            ? t('debug.portListening', { port: profile.port })
+            : t('debug.portListeningPid', { port: profile.port, pid: portCheck.process.pid }))
+          : createElement('span', { style: portStoppedStyle }, t('debug.portStopped', { port: profile.port }))),
       createElement('div', { style: actionsStyle },
-        createElement('button', { type: 'button', disabled: busy, onClick: () => void launch(profile), style: primaryButtonStyle }, '启动'),
-        profile.port === null ? null : createElement('button', { type: 'button', disabled: busy, onClick: () => void inspect(profile), style: secondaryButtonStyle }, '检查端口'),
-        portCheck?.listening === true && portCheck.process !== null ? createElement('button', { type: 'button', title: '只结束端口监听进程，保留终端窗口', disabled: busy, onClick: () => void terminatePort(profile, portCheck), style: dangerButtonStyle }, '结束进程') : null,
-        instances.filter((instance) => instance.profileId === profile.id && instance.state === 'running').map((instance) => createElement('button', { key: instance.id, type: 'button', title: '停止并关闭终端窗口', disabled: busy, onClick: () => void stop(instance), style: dangerButtonStyle }, '停止')),
+        createElement('button', { type: 'button', disabled: busy, onClick: () => void launch(profile), style: primaryButtonStyle }, t('debug.launch')),
+        profile.port === null ? null : createElement('button', { type: 'button', disabled: busy, onClick: () => void inspect(profile), style: secondaryButtonStyle }, t('debug.checkPort')),
+        portCheck?.listening === true && portCheck.process !== null ? createElement('button', { type: 'button', title: t('debug.killPortHint'), disabled: busy, onClick: () => void terminatePort(profile, portCheck), style: dangerButtonStyle }, t('debug.killProcess')) : null,
+        instances.filter((instance) => instance.profileId === profile.id && instance.state === 'running').map((instance) => createElement('button', { key: instance.id, type: 'button', title: t('debug.stopHint'), disabled: busy, onClick: () => void stop(instance), style: dangerButtonStyle }, t('debug.stop'))),
         createElement('span', { style: actionDividerStyle }),
-        createElement('button', { type: 'button', disabled: busy, onClick: () => setDraft(createProfileDraft(profile)), style: quietButtonStyle }, '编辑'),
-        createElement('button', { type: 'button', disabled: busy, onClick: () => void deleteProfile(profile), style: dangerQuietButtonStyle }, '删除'),
+        createElement('button', { type: 'button', disabled: busy, onClick: () => setDraft(createProfileDraft(profile)), style: quietButtonStyle }, t('debug.edit')),
+        createElement('button', { type: 'button', disabled: busy, onClick: () => void deleteProfile(profile), style: dangerQuietButtonStyle }, t('debug.delete')),
         instances.filter((instance) => instance.profileId === profile.id && instance.state === 'running' && profile.proxy.enabled).map((instance) => {
           const binding = bindings.find((item) => item.instanceId === instance.id)
           return binding === undefined
-            ? createElement('button', { key: `proxy-${instance.id}`, type: 'button', disabled: busy, onClick: () => void enableProxy(profile, instance), style: secondaryButtonStyle }, '开启代理')
-            : createElement('span', { key: `proxy-${instance.id}`, style: proxyActionsStyle }, createElement('a', { href: binding.url, target: '_blank', rel: 'noreferrer', style: linkStyle }, '打开代理'), createElement('button', { type: 'button', disabled: busy, onClick: () => void disableProxy(binding), style: quietButtonStyle }, '关闭'))
+            ? createElement('button', { key: `proxy-${instance.id}`, type: 'button', disabled: busy, onClick: () => void enableProxy(profile, instance), style: secondaryButtonStyle }, t('debug.enableProxy'))
+            : createElement('span', { key: `proxy-${instance.id}`, style: proxyActionsStyle }, createElement('a', { href: binding.url, target: '_blank', rel: 'noreferrer', style: linkStyle }, t('debug.openProxy')), createElement('button', { type: 'button', disabled: busy, onClick: () => void disableProxy(binding), style: quietButtonStyle }, t('debug.proxyTurnOff')))
         }),
       ),
     )
@@ -264,33 +270,33 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: Deb
     )
     return createElement('div', { role: 'presentation', onPointerDown: backdropPointerDownHandler(() => setDraft(null)), style: formOverlayStyle },
       createElement('form', { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'debug-shortcut-title', style: formStyle, onSubmit: (event: { preventDefault: () => void }) => { event.preventDefault(); void saveProfile(value) } },
-        createElement('div', { style: formHeaderStyle }, createElement('div', undefined, createElement('h3', { id: 'debug-shortcut-title', style: formTitleStyle }, value.id === null ? '添加快捷启动项' : '编辑快捷启动项'), createElement('p', { style: formHintStyle }, '保存一组可重复使用的启动参数，之后可以一键打开终端。')), createElement('button', { type: 'button', disabled: busy, onClick: () => setDraft(null), style: closeButtonStyle, 'aria-label': '关闭快捷启动项' }, '×')),
+        createElement('div', { style: formHeaderStyle }, createElement('div', undefined, createElement('h3', { id: 'debug-shortcut-title', style: formTitleStyle }, value.id === null ? t('debug.formAddTitle') : t('debug.formEditTitle')), createElement('p', { style: formHintStyle }, t('debug.formHint'))), createElement('button', { type: 'button', disabled: busy, onClick: () => setDraft(null), style: closeButtonStyle, 'aria-label': t('debug.closeFormAria') }, '×')),
         createElement('section', { style: formSectionStyle },
-          createElement('div', { style: formSectionHeaderStyle }, createElement('strong', { style: formSectionTitleStyle }, '启动入口'), createElement('span', { style: formSectionHintStyle }, '直接输入完整命令，例如 pnpm run dev --host 0.0.0.0。')),
+          createElement('div', { style: formSectionHeaderStyle }, createElement('strong', { style: formSectionTitleStyle }, t('debug.sectionLaunch')), createElement('span', { style: formSectionHintStyle }, t('debug.sectionLaunchHint'))),
           createElement('div', { style: formGridStyle },
-            field('名称', 'name', 'text', '例如：前端开发'),
-            field('启动目录（Workspace 内相对路径）', 'cwdRelative', 'text', '留空使用根目录'),
-            field('完整启动命令', 'commandLine', 'text', '例如：pnpm run dev --host 0.0.0.0', { gridColumn: '1 / -1' }),
+            field(t('debug.fieldName'), 'name', 'text', t('debug.fieldNamePlaceholder')),
+            field(t('debug.fieldCwd'), 'cwdRelative', 'text', t('debug.fieldCwdPlaceholder')),
+            field(t('debug.fieldCommand'), 'commandLine', 'text', t('debug.fieldCommandPlaceholder'), { gridColumn: '1 / -1' }),
           ),
         ),
         createElement('section', { style: formSectionStyle },
-          createElement('div', { style: formSectionHeaderStyle }, createElement('strong', { style: formSectionTitleStyle }, '执行环境（可选）'), createElement('span', { style: formSectionHintStyle }, '只显示 Host 实际检测到的 Shell。')),
+          createElement('div', { style: formSectionHeaderStyle }, createElement('strong', { style: formSectionTitleStyle }, t('debug.sectionRuntime')), createElement('span', { style: formSectionHintStyle }, t('debug.sectionRuntimeHint'))),
           createElement('div', { style: formGridStyle },
-            selectField('终端 Shell', 'shellProfileId', shellOptions(terminalStatus)),
+            selectField(t('debug.fieldShell'), 'shellProfileId', shellOptions(terminalStatus, t)),
           ),
-          createElement('p', { style: runtimeHintStyle }, `运行方式由 Host 平台自动选择（实际能力：${terminalRuntimeLabel(terminalStatus)}）。`),
+          createElement('p', { style: runtimeHintStyle }, t('debug.runtimeHint', { runtime: terminalRuntimeLabel(terminalStatus, t) })),
           terminalStatus?.runtimeWarning === undefined ? null : createElement('p', { style: warningHintStyle }, terminalStatus.runtimeWarning),
         ),
         createElement('section', { style: formSectionStyle },
-          createElement('div', { style: formSectionHeaderStyle }, createElement('strong', { style: formSectionTitleStyle }, '服务检查'), createElement('span', { style: formSectionHintStyle }, '端口每 5 秒自动检查，也可手动刷新。')),
+          createElement('div', { style: formSectionHeaderStyle }, createElement('strong', { style: formSectionTitleStyle }, t('debug.sectionPort')), createElement('span', { style: formSectionHintStyle }, t('debug.sectionPortHint'))),
           createElement('div', { style: formGridStyle },
-            field('监听端口（可选）', 'port', 'number', '1 - 65535'),
-            createElement('label', { style: proxyFieldStyle }, createElement('span', { style: fieldLabelStyle }, '反向代理'), createElement('span', { style: proxyToggleStyle }, createElement('span', undefined, '允许访问已确认的服务'), createElement('input', { type: 'checkbox', 'aria-label': '启用服务代理', checked: value.proxyEnabled, onChange: (event: { currentTarget: { checked: boolean } }) => setDraft({ ...value, proxyEnabled: event.currentTarget.checked }), style: { accentColor: dshThemeColor.accent } }))),
+            field(t('debug.fieldPort'), 'port', 'number', '1 - 65535'),
+            createElement('label', { style: proxyFieldStyle }, createElement('span', { style: fieldLabelStyle }, t('debug.fieldProxy')), createElement('span', { style: proxyToggleStyle }, createElement('span', undefined, t('debug.proxyToggleLabel')), createElement('input', { type: 'checkbox', 'aria-label': t('debug.proxyToggleAria'), checked: value.proxyEnabled, onChange: (event: { currentTarget: { checked: boolean } }) => setDraft({ ...value, proxyEnabled: event.currentTarget.checked }), style: { accentColor: dshThemeColor.accent } }))),
           ),
         ),
         createElement('div', { style: formActionsStyle },
-          createElement('button', { type: 'button', disabled: busy, onClick: () => setDraft(null), style: secondaryButtonStyle }, '关闭'),
-          createElement('button', { type: 'submit', 'aria-label': value.id === null ? '保存配置并创建快捷启动项' : '保存快捷启动项修改', disabled: busy || value.commandLine.trim() === '', style: primaryButtonStyle }, busy ? '保存中…' : value.id === null ? '保存为快捷启动' : '保存修改'),
+          createElement('button', { type: 'button', disabled: busy, onClick: () => setDraft(null), style: secondaryButtonStyle }, t('debug.close')),
+          createElement('button', { type: 'submit', 'aria-label': value.id === null ? t('debug.saveAriaCreate') : t('debug.saveAriaUpdate'), disabled: busy || value.commandLine.trim() === '', style: primaryButtonStyle }, busy ? t('debug.saving') : value.id === null ? t('debug.saveAsQuickLaunch') : t('debug.saveChanges')),
         ),
       ),
     )
@@ -324,18 +330,18 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: Deb
       const next = await call<DebugConfig>(rpc, endpoint, payload)
       setConfig(next)
       setDraft(null)
-      setMessage(value.id === null ? '启动配置已保存' : '启动配置已更新')
+      setMessage(value.id === null ? { text: t('debug.saved'), tone: 'success' } : { text: t('debug.updated'), tone: 'success' })
     })
   }
 
   async function deleteProfile(profile: DebugProfile): Promise<void> {
-    if (!window.confirm(`确认删除“${profile.name}”启动配置？`)) return
+    if (!window.confirm(t('debug.confirmDelete', { name: profile.name }))) return
     await withBusy(async () => {
       const next = await call<DebugConfig>(rpc, 'debug/config/delete', { sessionId: String(sessionId), workspaceId, generation: 0, profileId: profile.id })
       setConfig(next)
       setPortChecks((current) => { const { [profile.id]: _removed, ...rest } = current; return rest })
       setBindings((current) => current.filter((item) => item.profileId !== profile.id))
-      setMessage('启动配置已删除')
+      setMessage({ text: t('debug.deleted'), tone: 'success' })
     })
   }
 
@@ -343,7 +349,9 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: Deb
     await withBusy(async () => {
       const result = await requestPortCheck(profile)
       setPortChecks((current) => ({ ...current, [profile.id]: result }))
-      setMessage(result.listening ? `端口 ${profile.port ?? ''} 正在监听` : `端口 ${profile.port ?? ''} 未监听`)
+      setMessage(result.listening
+        ? { text: t('debug.portListening', { port: profile.port ?? '' }), tone: 'info' }
+        : { text: t('debug.portStopped', { port: profile.port ?? '' }), tone: 'info' })
     })
   }
 
@@ -352,11 +360,11 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: Deb
   }
 
   async function terminatePort(profile: DebugProfile, check: DebugPortCheck): Promise<void> {
-    if (!check.listening || check.process === null || !window.confirm(`确认结束端口 ${profile.port ?? ''} 的监听进程？`)) return
+    if (!check.listening || check.process === null || !window.confirm(t('debug.confirmKillPort', { port: profile.port ?? '' }))) return
     await withBusy(async () => {
       await call(rpc, 'debug/port/kill', { sessionId: String(sessionId), workspaceId, generation: 0, checkId: check.id })
       setPortChecks((current) => ({ ...current, [profile.id]: { ...check, listening: false, process: null } }))
-      setMessage('监听进程已结束')
+      setMessage({ text: t('debug.portKilled'), tone: 'success' })
     })
   }
 
@@ -372,7 +380,7 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: Deb
     await withBusy(async () => {
       const binding = await call<DebugProxyBinding>(rpc, 'debug/proxy/enable', { sessionId: String(sessionId), workspaceId, generation: 0, profileId: profile.id, instanceId: instance.id })
       setBindings((current) => [...current.filter((item) => item.id !== binding.id && item.instanceId !== binding.instanceId), binding])
-      setMessage(`代理已开启：${binding.url}`)
+      setMessage({ text: t('debug.proxyEnabledMessage', { url: binding.url }), tone: 'success' })
     })
   }
 
@@ -385,7 +393,7 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight }: Deb
 
   async function withBusy(action: () => Promise<void>): Promise<void> {
     setBusy(true)
-    try { await action() } catch (error) { setMessage(error instanceof Error ? error.message : String(error)) } finally { setBusy(false) }
+    try { await action() } catch (error) { setMessage({ text: error instanceof Error ? error.message : String(error), tone: 'error' }) } finally { setBusy(false) }
   }
 }
 
@@ -478,7 +486,8 @@ const proxyToggleStyle: CSSProperties = { display: 'flex', alignItems: 'center',
 const formActionsStyle: CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: 6, paddingTop: 4 }
 
 type StatusTone = 'success' | 'error' | 'info'
-function statusTone(message: string): StatusTone { return /失败|错误|不能为空|无效/u.test(message) ? 'error' : /已保存|已更新|已删除|已开启|已结束/u.test(message) ? 'success' : 'info' }
+/** 状态条文案自带色调，避免依赖中文文案内容推断成功/失败。 */
+interface StatusMessage { readonly text: string; readonly tone: StatusTone }
 function statusStyle(tone: StatusTone): CSSProperties { const color = tone === 'success' ? dshThemeColor.success : tone === 'error' ? dshThemeColor.error : dshThemeColor.labelSecondary; return { display: 'flex', alignItems: 'center', gap: 7, padding: '8px 10px', border: `1px solid ${color}`, borderRadius: 6, color, background: 'color-mix(in srgb, currentColor 7%, transparent)', fontSize: 12 } }
 function runningInstances(profile: DebugProfile, instances: readonly DebugInstance[]): number { return instances.filter((instance) => instance.profileId === profile.id && instance.state === 'running').length }
 function formatCommand(profile: DebugProfile): string { return [profile.command, ...profile.args].join(' ') }
@@ -495,10 +504,10 @@ function createProfileDraft(profile?: DebugProfile): DebugProfileDraft {
   }
 }
 
-function shellOptions(status: HostTerminalStatus | null): readonly { readonly value: DebugProfileDraft['shellProfileId']; readonly label: string }[] {
+function shellOptions(status: HostTerminalStatus | null, t: CodingNsTranslator): readonly { readonly value: DebugProfileDraft['shellProfileId']; readonly label: string }[] {
   const detected = status?.profiles ?? []
   return [
-    { value: 'system', label: status === null ? '系统默认' : '系统默认（自动选择）' },
+    { value: 'system', label: status === null ? t('debug.shellSystemDefault') : t('debug.shellSystemDefaultAuto') },
     ...detected.map((profile): { readonly value: DebugProfileDraft['shellProfileId']; readonly label: string } => ({ value: profile.profileId, label: profile.name })),
   ]
 }
@@ -543,12 +552,12 @@ function runtimeTypeFor(status: HostTerminalStatus | null, shellProfileId: Debug
   throw new Error('Host 没有可用的终端 backend')
 }
 
-function terminalRuntimeLabel(status: HostTerminalStatus | null): string {
+function terminalRuntimeLabel(status: HostTerminalStatus | null, t: CodingNsTranslator): string {
   const runtimeTypes = status?.runtimeTypes ?? (status?.effectiveEnabled ? ['tmux'] : ['local-pty'])
-  if (runtimeTypes.includes('tmux')) return status?.platform === 'darwin' ? 'macOS 使用 tmux' : 'Linux 使用 tmux'
-  if (runtimeTypes.includes('conpty-powershell') || runtimeTypes.includes('conpty-cmd') || runtimeTypes.includes('conpty-git-bash')) return 'Windows 使用 ConPTY'
-  if (runtimeTypes.includes('local-pty')) return '使用 local-pty（进程内 PTY）'
-  return '等待 Host 终端能力状态'
+  if (runtimeTypes.includes('tmux')) return status?.platform === 'darwin' ? t('debug.runtimeMacosTmux') : t('debug.runtimeLinuxTmux')
+  if (runtimeTypes.includes('conpty-powershell') || runtimeTypes.includes('conpty-cmd') || runtimeTypes.includes('conpty-git-bash')) return t('debug.runtimeWindowsConpty')
+  if (runtimeTypes.includes('local-pty')) return t('debug.runtimeLocalPty')
+  return t('debug.runtimeWaiting')
 }
 
 function splitCommandLine(value: string): readonly string[] {
