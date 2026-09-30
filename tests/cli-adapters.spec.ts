@@ -13,6 +13,7 @@ import { FeatureRegistry } from '../data/build/dist/features/registry.js'
 import { CommandCodeSubscriptionService } from '../data/build/dist/host/cli-adapters/command-code-subscription.js'
 import { ClaudeCodeSubscriptionService, DeepseekSubscriptionService, OpenCodeSubscriptionService, ProviderSubscriptionService, Sub2ApiUsageService } from '../data/build/dist/host/cli-adapters/provider-subscription.js'
 import { identifyModelProvider, normalizeProviderBaseUrl } from '../data/build/dist/host/cli-adapters/provider-registry.js'
+import { knownCodexContextWindow } from '../data/build/dist/host/cli-adapters/model-catalog.js'
 
 test('Command Code 驱动只把带版本号的候选命令视为已安装', async () => {
   const calls: string[][] = []
@@ -1367,6 +1368,14 @@ test('Codex 新会话在首个 usage 到达前也使用 256K 上下文窗口', a
     source: 'catalog',
   }])
   assert.equal(chunks.at(-1)?.type, 'finish')
+})
+
+test('Codex 已知模型表覆盖当前主力模型并容忍大小写与空白', () => {
+  assert.equal(knownCodexContextWindow('gpt-5.6-sol'), 258400)
+  assert.equal(knownCodexContextWindow('gpt-6.1-sol'), 258400)
+  assert.equal(knownCodexContextWindow(' GPT-6-Astra '), 258400)
+  assert.equal(knownCodexContextWindow('unknown-model'), undefined)
+  assert.equal(knownCodexContextWindow(undefined), undefined)
 })
 
 test('CLI 功能模块把异常和取消映射成 DSH 原生终止原因且不会留下运行中工具', async () => {

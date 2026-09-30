@@ -78,12 +78,29 @@ export const CODEX_CATALOG = staticCatalog('codex', 'Codex', [
 ])
 
 /**
- * Codex app-server 在 request/context 中会先沿用 1M 的通用默认值，
- * 但 gpt-5.6-sol 的真实 tokenUsage.contextWindow 是 258400。
- * 这个提示只用于首个 usage 到达前稳定 DSH 的分母；真实 usage 仍然优先。
+ * Codex app-server 不提供模型容量的目录接口（model/list 不含 contextWindow，
+ * config/read 的 model_context_window 默认也是 null），首个 tokenUsage 到达前
+ * DSH 的分母只能靠已知模型提示。这里只列本机 rollout `token_count` 事件
+ * （payload.info.model_context_window）验证过的模型；该值会随服务端变化
+ * （gpt-5.6-sol 曾从 353400 调整为 258400），因此提示只用于首个 Provider
+ * usage 到达前的占位，与已确认 usage 冲突时不会被写入。
  */
+const CODEX_CONTEXT_WINDOWS = new Map<string, number>([
+  ['codex-auto-review', 258400],
+  ['gpt-5.4', 258400],
+  ['gpt-5.5', 258400],
+  ['gpt-5.6-luna', 258400],
+  ['gpt-5.6-sol', 258400],
+  ['gpt-5.6-terra', 258400],
+  ['gpt-6-astra', 258400],
+  ['gpt-6-luna', 258400],
+  ['gpt-6-sol', 258400],
+  ['gpt-6.1-sol', 258400],
+])
+
 export function knownCodexContextWindow(modelId: string | undefined): number | undefined {
-  return modelId?.trim().toLowerCase() === 'gpt-5.6-sol' ? 258400 : undefined
+  if (modelId === undefined) return undefined
+  return CODEX_CONTEXT_WINDOWS.get(modelId.trim().toLowerCase())
 }
 
 export const GROK_CATALOG = staticCatalog('grok', 'Grok', [
