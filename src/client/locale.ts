@@ -2,6 +2,14 @@ import { useMemo, useSyncExternalStore } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
+import * as debugDictionary from './locales/debug.js'
+import * as fileWorkspaceDictionary from './locales/fileWorkspace.js'
+import * as gitDictionary from './locales/git.js'
+import * as panelsDictionary from './locales/panels.js'
+import * as peerHostDictionary from './locales/peerHost.js'
+import * as peerHostWorkspaceDictionary from './locales/peerHostWorkspace.js'
+import * as terminalAuthDictionary from './locales/terminalAuth.js'
+import * as usageDictionary from './locales/usage.js'
 
 /** Codingns4DSH 自有词典命名空间。词典缺少的语言由 DSH 自动回退到英文。 */
 export const CODINGNS_LOCALE_NS = 'codingns' as const
@@ -16,7 +24,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 export type CodingNsLocale = Pick<LocaleRuntime, 'bind' | 'getSnapshot' | 'subscribe' | 'register'>
 export type CodingNsTranslator = Translate<string>
 
-const en: Record<string, string> = {
+const CORE_EN: Record<string, string> = {
   'common.brand': 'Codingns4DSH',
   'settings.title': 'Codingns4DSH features',
   'settings.subtitle': 'Configure modules without changing DSH global settings.',
@@ -325,7 +333,7 @@ const en: Record<string, string> = {
   'workspace.quickPhrasesClose': 'Close quick sessions',
 }
 
-const zh: Record<string, string> = {
+const CORE_ZH: Record<string, string> = {
   'common.brand': 'Codingns4DSH',
   'settings.title': 'Codingns4DSH 功能模块',
   'settings.subtitle': '按模块配置 Codingns4DSH 功能，不影响 DSH 的全局设置。',
@@ -634,6 +642,36 @@ const zh: Record<string, string> = {
   'workspace.quickPhrasesClose': '关闭快捷会话',
 }
 
+/**
+ * 合并核心词典与各域片段。
+ *
+ * 每个域片段只声明自己的键；一旦两个片段出现同名键，后面的会静默覆盖前面的，
+ * 因此 scripts/check-client-i18n.mjs 会把重复键判为错误。
+ */
+const en: Record<string, string> = {
+  ...CORE_EN,
+  ...gitDictionary.en,
+  ...debugDictionary.en,
+  ...peerHostDictionary.en,
+  ...peerHostWorkspaceDictionary.en,
+  ...usageDictionary.en,
+  ...fileWorkspaceDictionary.en,
+  ...terminalAuthDictionary.en,
+  ...panelsDictionary.en,
+}
+
+const zh: Record<string, string> = {
+  ...CORE_ZH,
+  ...gitDictionary.zh,
+  ...debugDictionary.zh,
+  ...peerHostDictionary.zh,
+  ...peerHostWorkspaceDictionary.zh,
+  ...usageDictionary.zh,
+  ...fileWorkspaceDictionary.zh,
+  ...terminalAuthDictionary.zh,
+  ...panelsDictionary.zh,
+}
+
 /** 在当前 Client Cordis 作用域注册中英文词典。 */
 export function registerCodingNsLocale(ctx: Context): () => void {
   return ctx.locale.register(CODINGNS_LOCALE_NS, { en, zh })
@@ -661,4 +699,23 @@ function localeSnapshotHandle(locale: CodingNsLocale): {
 /** 非 React 注册回调使用的翻译函数。 */
 export function codingNsTranslator(locale: CodingNsLocale): CodingNsTranslator {
   return locale.bind(CODINGNS_LOCALE_NS)
+}
+
+/**
+ * 命令式模块的翻译函数入口。
+ *
+ * 正式运行总是由功能模块注入 DSH locale 服务；只有单测或非 Cordis 宿主没有
+ * locale 时，才退回内置中文词典，保证命令式模块仍可独立运行。
+ */
+export function resolveCodingNsTranslator(locale?: CodingNsLocale): CodingNsTranslator {
+  return locale === undefined ? staticCodingNsTranslator() : codingNsTranslator(locale)
+}
+
+/** 无 locale 服务时的内置中文兜底；插值规则与 DSH 的 `{name}` 保持一致。 */
+function staticCodingNsTranslator(): CodingNsTranslator {
+  return (key, params) => {
+    const template = zh[key] ?? key
+    if (params === undefined) return template
+    return template.replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match))
+  }
 }
