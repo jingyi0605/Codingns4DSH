@@ -15,7 +15,25 @@ type ClipboardState = { mode: 'copy' | 'cut'; paths: string[] }
 type FileEditorState = { root: HTMLElement; body: HTMLElement; host: HTMLElement; view: EditorView; path: FileTarget; buttons: HTMLElement }
 type FileTarget = { path: string; sessionId?: string }
 
-const TEXT_EXTENSIONS = new Set(['.md', '.markdown', '.txt', '.ini', '.json', '.yaml', '.yml', '.toml', '.xml', '.csv', '.js', '.jsx', '.ts', '.tsx', '.css', '.html', '.htm', '.env', '.gitignore', '.conf', '.properties', '.sh', '.py', '.sql'])
+/** 可直接交给文本编辑器的扩展名；未知扩展名仍按只读预览处理，避免误打开二进制文件。 */
+const TEXT_EXTENSIONS = new Set([
+  '.md', '.markdown', '.txt', '.text', '.rst', '.adoc',
+  '.ini', '.cfg', '.conf', '.config', '.properties', '.env', '.envrc', '.toml', '.yaml', '.yml', '.json', '.jsonc', '.json5', '.xml', '.csv', '.tsv',
+  '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts', '.vue', '.svelte',
+  '.css', '.scss', '.sass', '.less', '.html', '.htm', '.xhtml',
+  '.sh', '.bash', '.zsh', '.fish', '.ksh', '.csh', '.ps1', '.psm1', '.bat', '.cmd',
+  '.py', '.pyw', '.rb', '.rake', '.pl', '.pm', '.lua', '.php',
+  '.go', '.rs', '.java', '.kt', '.kts', '.swift', '.dart', '.cs', '.c', '.h', '.cc', '.cpp', '.cxx', '.hh', '.hpp', '.hxx',
+  '.sql', '.graphql', '.gql', '.proto',
+  '.gitignore', '.gitattributes', '.gitmodules', '.npmrc', '.yarnrc', '.editorconfig', '.prettierrc', '.eslintrc', '.stylelintrc',
+  '.lock',
+])
+
+/** 没有扩展名但内容通常是文本的常见工程文件名。 */
+const TEXT_FILE_NAMES = new Set([
+  '.env', '.envrc', '.gitignore', '.gitattributes', '.gitmodules', '.npmrc', '.yarnrc', '.editorconfig', '.prettierrc', '.eslintrc', '.stylelintrc',
+  'dockerfile', 'makefile', 'cmakelists.txt', 'jenkinsfile', 'rakefile', 'gemfile', 'license', 'readme',
+])
 
 export interface FileManagementDomOptions {
   readonly menuEnhancement: boolean
@@ -447,9 +465,16 @@ function filesRootForEntry(item: Element): string | undefined {
 }
 
 function isEditableFile(url: string): boolean {
-  const path = url.split('/').pop() ?? ''
-  const dot = path.lastIndexOf('.')
-  return path.startsWith('.gitignore') || (dot >= 0 && TEXT_EXTENSIONS.has(path.slice(dot).toLowerCase()))
+  const path = decodeURIComponent((url.split(/[?#]/u)[0] ?? '').split('/').pop() ?? '')
+  return isEditableFilePath(path)
+}
+
+/** 判断文件名是否应显示编辑入口；与资源 URL 解码分开，便于单元测试和复用。 */
+export function isEditableFilePath(path: string): boolean {
+  const fileName = path.split(/[\\/]/u).filter(Boolean).pop()?.toLowerCase() ?? ''
+  if (fileName === '' || TEXT_FILE_NAMES.has(fileName) || fileName.startsWith('.env.')) return fileName !== ''
+  const dot = fileName.lastIndexOf('.')
+  return dot > 0 && TEXT_EXTENSIONS.has(fileName.slice(dot))
 }
 
 function parentPath(path: string): string { const index = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')); return index <= 0 ? path.slice(0, Math.max(index, 1)) : path.slice(0, index) }
