@@ -106,15 +106,18 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
     }
     let button = container.querySelector<HTMLButtonElement>(`button[${ACCOUNT_ATTRIBUTE}]`)
     if (button === null) {
-      button = createAccountButton(root)
-      // 排在设置入口之前：横排时是「用户图标 → 设置入口」，与原生顺序一致。
-      container.insertBefore(button, container.firstChild)
+      button = createAccountButton(root, isDesktopPage())
       button.addEventListener('click', (event) => {
         event.preventDefault()
         event.stopPropagation()
         toggleMenu(button!)
       })
     }
+    // `settings.launcher` 出口是 display: contents，子节点会直接参与宿主
+    // triggerRow 的 flex 布局。把插件入口放在原生账户组件之后，才能和账户登录
+    // 组件保持同一行，并让连接管理入口自然落到最右侧。
+    if (match.kind === 'launcher-slot') container.append(button)
+    else if (button.parentElement !== container) container.insertBefore(button, container.firstChild)
     observeDom = false
     observer?.disconnect()
     container.dataset.codingnsAccountRow = 'true'
@@ -140,13 +143,14 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
     if (kind === 'launcher-slot') {
       const row = container.parentElement
       if (row === null) return
-      const wide = row.clientWidth > 96
-      const mode = wide ? 'wide' : 'rail'
+      // Desktop 的宿主 triggerRow 已经负责宽窄态布局。插件不能给它加
+      // wrap/居中规则，否则 36px 收起态会把原生账户组件和入口拆成两行。
+      const mode = 'desktop'
       if (button.dataset.codingnsWide === mode) return
       button.dataset.codingnsWide = mode
-      row.style.flexWrap = wide ? '' : 'wrap'
-      row.style.justifyContent = wide ? '' : 'center'
-      row.style.gap = wide ? '' : '4px'
+      row.style.flexWrap = 'nowrap'
+      button.style.order = '2'
+      button.style.marginLeft = '0'
       return
     }
     // Web：出口内部是 fallback 齿轮，出口自身没有布局，由插件补全成一行。
@@ -264,8 +268,9 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   function renderButton(button: HTMLButtonElement): void {
     const account = activeAccount()
     const identity = account?.identity ?? '用户'
-    button.title = `${identity} · 点击管理登录`
-    button.setAttribute('aria-label', `用户：${identity}`)
+    const desktop = isDesktopPage()
+    button.title = desktop ? '连接管理 · 管理其他 DSH Host' : `${identity} · 点击管理登录`
+    button.setAttribute('aria-label', desktop ? '连接管理' : `用户：${identity}`)
     button.dataset.codingnsAuth = account?.kind ?? 'unknown'
     const statusDot = button.querySelector<HTMLElement>('[data-codingns-account-status]')
     if (statusDot !== null) statusDot.style.background = 'var(--dsw-alias-state-success-primary, #35b66b)'
@@ -449,7 +454,7 @@ export function readRelayLoginIdentity(): LocalIdentity | null {
   }
 }
 
-function createAccountButton(dom: Document): HTMLButtonElement {
+function createAccountButton(dom: Document, desktop: boolean): HTMLButtonElement {
   const button = dom.createElement('button')
   button.type = 'button'
   button.setAttribute(ACCOUNT_ATTRIBUTE, '')
@@ -466,13 +471,42 @@ function createAccountButton(dom: Document): HTMLButtonElement {
   })
   button.addEventListener('focus', () => { button.style.outline = '2px solid var(--dsw-alias-brand-primary, #4aa3ff)'; button.style.outlineOffset = '2px' })
   button.addEventListener('blur', () => { button.style.outline = 'none' })
-  button.append(createAccountIcon(dom))
+  button.append(desktop ? createConnectionIcon(dom) : createAccountIcon(dom))
   const status = dom.createElement('span')
   status.setAttribute('data-codingns-account-status', '')
   status.setAttribute('aria-hidden', 'true')
-  Object.assign(status.style, { position: 'absolute', right: '0px', bottom: '0px', width: '7px', height: '7px', border: '2px solid var(--dsw-specific-sidebar-fill, var(--dsw-alias-bg-primary, #202124))', borderRadius: '50%', background: 'var(--dsw-alias-label-tertiary, #8b8d91)', boxSizing: 'border-box' })
+  Object.assign(status.style, { position: 'absolute', right: '0px', bottom: '0px', width: '7px', height: '7px', border: '2px solid var(--dsw-specific-sidebar-fill, var(--dsw-alias-bg-primary, #202124))', borderRadius: '50%', background: 'var(--dsw-alias-label-tertiary, #8b8d91)', boxSizing: 'border-box', display: desktop ? 'none' : '' })
   button.append(status)
   return button
+}
+
+/** Desktop 入口表示跨 Host 连接管理，不再复用用户登录头像。 */
+function createConnectionIcon(dom: Document): SVGSVGElement {
+  const svg = dom.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.setAttribute('width', '17')
+  svg.setAttribute('height', '17')
+  svg.setAttribute('viewBox', '0 0 24 24')
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('aria-hidden', 'true')
+  svg.style.pointerEvents = 'none'
+  svg.style.overflow = 'visible'
+  const left = dom.createElementNS('http://www.w3.org/2000/svg', 'path')
+  left.setAttribute('d', 'M10 13.8 8.4 15.4a3.4 3.4 0 1 1-4.8-4.8l2.5-2.5a3.4 3.4 0 0 1 4.8 0')
+  left.setAttribute('stroke', 'currentColor')
+  left.setAttribute('stroke-width', '1.8')
+  left.setAttribute('stroke-linecap', 'round')
+  const right = dom.createElementNS('http://www.w3.org/2000/svg', 'path')
+  right.setAttribute('d', 'M14 10.2 15.6 8.6a3.4 3.4 0 1 1 4.8 4.8l-2.5 2.5a3.4 3.4 0 0 1-4.8 0')
+  right.setAttribute('stroke', 'currentColor')
+  right.setAttribute('stroke-width', '1.8')
+  right.setAttribute('stroke-linecap', 'round')
+  const bridge = dom.createElementNS('http://www.w3.org/2000/svg', 'path')
+  bridge.setAttribute('d', 'm8.5 15.5 7-7')
+  bridge.setAttribute('stroke', 'var(--dsw-alias-brand-primary, #4aa3ff)')
+  bridge.setAttribute('stroke-width', '1.8')
+  bridge.setAttribute('stroke-linecap', 'round')
+  svg.append(left, right, bridge)
+  return svg
 }
 
 function createAccountIcon(dom: Document): SVGSVGElement {
