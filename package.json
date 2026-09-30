@@ -93,6 +93,8 @@
     "version:check": "node scripts/check-version-sync.mjs",
     "capability:check": "node scripts/check-capability-retirement.mjs",
     "capability:report": "node scripts/generate-capability-report.mjs",
+    "i18n:check": "node scripts/check-client-i18n.mjs",
+    "i18n:report": "node scripts/check-client-i18n.mjs --warn-only",
     "version:set-plugin": "node scripts/set-plugin-version.mjs",
     "version:set-dsh": "node scripts/set-dsh-version.mjs",
     "prebuild": "pnpm run version:check",

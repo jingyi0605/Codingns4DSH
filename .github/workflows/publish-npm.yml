@@ -51,6 +51,7 @@ jobs:
       - name: 类型检查与完整测试
         run: |
           pnpm exec tsc --noEmit
+          pnpm run i18n:check
           pnpm test
 
       - name: 检查 npm 包内容
