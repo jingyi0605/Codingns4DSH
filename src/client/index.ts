@@ -18,7 +18,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import './provider-icon-assets.js'
 import { FeatureRegistry } from '../features/registry.js'
-import { registerCodingNsLocale } from './locale.js'
+import { registerCodingNsLocale, codingNsTranslator } from './locale.js'
 import {
   CODINGNS_SETTINGS_NAMESPACE,
   CODINGNS_SETTINGS_ENTRY_IDS,
@@ -120,7 +120,7 @@ export function apply(ctx?: Context): void {
   debugInfo('codingns4dsh: client apply entered', { dshVersion })
   // 版本门禁通过后才修改浏览器全局，避免不兼容 Client 留下半初始化状态。
   ensureCryptoRandomUUID()
-  ctx.effect(() => registerCodingNsLocale(ctx), 'codingns4dsh: Client 词典')
+  ctx.effect(() => registerCodingNsLocale(ctx), 'codingns4dsh: client dictionaries')
 
   ctx.inject(['slots', 'connection', 'remote', 'remote.workspace', 'remote.session', 'sidebarRight', 'sidebarRightTabs', 'layout', 'theme', 'locale', 'uiConversation'], async (settingsCtx) => {
     debugInfo('codingns4dsh: client inject ready', {
@@ -144,7 +144,7 @@ export function apply(ctx?: Context): void {
     // 独立注入避免把 DSH 0.1.7 自动提供的官方 `remote.terminal` 当成插件终端。
     let mountedTerminalRemote: TerminalRemote | undefined
     const terminalRemote = (): TerminalRemote | undefined => mountedTerminalRemote
-    const webTerminals = new CodingNsWebTerminals(settingsCtx, terminalRemote)
+    const webTerminals = new CodingNsWebTerminals(settingsCtx, terminalRemote, codingNsTranslator(settingsCtx.locale))
     settingsCtx.inject(['remote.codingnsTerminal'], (terminalCtx) => {
       mountedTerminalRemote = terminalCtx.get('remote.codingnsTerminal') as TerminalRemote
       debugInfo('codingns4dsh: client terminal remote ready')
@@ -173,7 +173,7 @@ export function apply(ctx?: Context): void {
       uiContext: settingsCtx,
     }
     debugInfo('codingns4dsh: client account bar registration begin')
-    const disposeAccountBar = startCodingNsAccountBar(connection.rpc, undefined, settings)
+    const disposeAccountBar = startCodingNsAccountBar(connection.rpc, undefined, settings, settingsCtx.locale)
     debugInfo('codingns4dsh: client account bar registration ready')
     // 图标导出由客户端静态导入决定，无法从 Context 探测；随装配一起交给注册表。
     const capabilityProfile = createDshCapabilityRegistry(dshVersion, 'client', settingsCtx, { primitives: dshUiPrimitives }).getProfile(settingsCtx)
@@ -227,7 +227,7 @@ export function apply(ctx?: Context): void {
         await webTerminals.dispose()
         await settings.dispose?.()
       }
-    }, 'codingns4dsh: 功能模块启停同步')
+    }, 'codingns4dsh: feature module activation sync')
 
     try {
       debugInfo('codingns4dsh: client settings slot registration begin')

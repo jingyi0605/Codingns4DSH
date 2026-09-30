@@ -24,8 +24,8 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
     dependencies: [],
     runtime: 'client',
     ui: {
-      label: '外部Agent集成',
-      description: '管理外部 Agent',
+      label: 'External Agent integration',
+      description: 'View installed external Agents, versions, command paths, available models, and enable them independently. External Agent context panels keep only the occupancy percentage and totals.',
       labelKey: 'feature.cliAdapters.label',
       descriptionKey: 'feature.cliAdapters.description',
       order: 30,
@@ -115,7 +115,7 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
       await callCliRpc(services.rpc, 'adapter/set', { adapterId: adapter.id, enabled: next })
       const refreshed = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(services.rpc, 'catalog', {})
       setCatalog(refreshed)
-      notify({ kind: 'success', message: next ? `已启用 ${adapter.name}` : `已停用 ${adapter.name}` })
+      notify({ kind: 'success', message: t(next ? 'cli.adapterEnabled' : 'cli.adapterDisabled', { name: adapter.name }) })
     } catch (error) {
       notify({ kind: 'error', message: errorMessage(error) })
     } finally {
@@ -127,7 +127,7 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
     setRestoringSessionId(record.dshSessionId)
     try {
       await restoreCliSession(services.rpc, record)
-      notify({ kind: 'success', message: `已打开 ${record.title ?? record.adapterId} 会话` })
+      notify({ kind: 'success', message: t('cli.sessionOpened', { name: record.title ?? record.adapterId }) })
     } catch (error) {
       notify({ kind: 'error', message: errorMessage(error) })
     } finally {
@@ -140,7 +140,7 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
     try {
       await archiveCliSession(services.rpc, record.dshSessionId)
       setSessions((current) => current.filter((item) => item.dshSessionId !== record.dshSessionId))
-      notify({ kind: 'success', message: `已移除 ${record.title ?? record.adapterId} 会话` })
+      notify({ kind: 'success', message: t('cli.sessionRemoved', { name: record.title ?? record.adapterId }) })
     } catch (error) {
       notify({ kind: 'error', message: errorMessage(error) })
     } finally {
@@ -280,7 +280,7 @@ function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle, 
         createElement('dt', undefined, t('cli.version')), createElement('dd', { style: { margin: 0 } }, adapter.version ?? t('cli.notDetectedVersion')),
         createElement('dt', undefined, t('cli.commandPath')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.command ?? t('cli.notDetectedCommand')),
         createElement('dt', undefined, t('cli.protocol')), createElement('dd', { style: { margin: 0 } }, adapter.protocol ?? t('cli.undeclared')),
-        createElement('dt', undefined, t('cli.capabilities')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.capabilities?.join('、') ?? t('cli.undeclared')),
+        createElement('dt', undefined, t('cli.capabilities')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.capabilities?.join(t('common.listSeparator')) ?? t('cli.undeclared')),
       ),
       createElement('h4', { style: { margin: '16px 0 8px' } }, t('cli.modelCatalog')),
       !adapter.installed && createElement('div', { style: { opacity: 0.7 } }, t('cli.agentNotInstalled')),
@@ -310,6 +310,6 @@ function ModelRow({ model, t }: { readonly model: CodingNsCliModel; readonly t: 
   return createElement('div', { style: { padding: '8px 10px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 6 } },
     createElement('div', { style: { fontWeight: 600 } }, model.name),
     model.description && createElement('div', { style: { marginTop: 3, opacity: 0.7, fontSize: 13 } }, model.description),
-    createElement('div', { style: { marginTop: 5, opacity: 0.7, fontSize: 13 } }, t('cli.thinkingLevel', { value: model.efforts.length > 0 ? model.efforts.join('、') : t('cli.defaultEffort') })),
+    createElement('div', { style: { marginTop: 5, opacity: 0.7, fontSize: 13 } }, t('cli.thinkingLevel', { value: model.efforts.length > 0 ? model.efforts.join(t('common.listSeparator')) : t('cli.defaultEffort') })),
   )
 }

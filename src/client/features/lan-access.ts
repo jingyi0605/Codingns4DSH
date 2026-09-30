@@ -21,8 +21,8 @@ export const lanAccessFeature: CodingNsClientFeatureModule = {
     dependencies: [],
     runtime: 'client',
     ui: {
-      label: '局域网访问DSH',
-      description: '通过局域网访问 DSH',
+      label: 'LAN access to DSH',
+      description: 'Access DSH through a LAN IP, provide crypto.randomUUID when needed, and forward the listener to the current DSH Web port.',
       labelKey: 'feature.lanAccess.label',
       descriptionKey: 'feature.lanAccess.description',
       order: 10,
@@ -40,7 +40,7 @@ export const lanAccessFeature: CodingNsClientFeatureModule = {
         return
       }
       if (prompt === undefined) {
-        prompt = startPwaInstallPrompt()
+        prompt = startPwaInstallPrompt({ locale: context.services.locale })
         return
       }
       prompt.refresh()

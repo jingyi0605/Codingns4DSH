@@ -146,7 +146,7 @@ function FeatureCard({ entry, snapshot, services, restartStates, notify }: Featu
     if (!versionCompatible) {
       notify({ kind: 'error', message: t('settings.versionBlocked', {
         version: services.dshVersion,
-        minimum: module.descriptor.minimumDshVersion ?? '未知版本',
+        minimum: module.descriptor.minimumDshVersion ?? t('settings.unknownVersion'),
       }) })
       return
     }
@@ -207,11 +207,11 @@ function FeatureCard({ entry, snapshot, services, restartStates, notify }: Featu
       !versionCompatible
         ? createElement('div', { role: 'alert', style: { marginBottom: 10, color: dshThemeColor.error } }, t('settings.versionBlocked', {
           version: services.dshVersion,
-          minimum: module.descriptor.minimumDshVersion ?? '未知版本',
+          minimum: module.descriptor.minimumDshVersion ?? t('settings.unknownVersion'),
         }))
         : null,
       temporarilyDisabled
-        ? createElement('div', { role: 'status', style: { marginBottom: 10, color: dshThemeColor.labelSecondary } }, '该模块当前由维护策略停用，设置不会启动它。')
+        ? createElement('div', { role: 'status', style: { marginBottom: 10, color: dshThemeColor.labelSecondary } }, t('settings.maintenanceDisabled'))
         : null,
       panel === undefined ? null : createElement(panel, { services, enabled, snapshot, notify }),
     ),

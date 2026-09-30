@@ -404,7 +404,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const efforts = model?.efforts ?? []
   const effortValue = selection.effortId ?? (efforts.length > 0 ? defaultEffort(efforts) : undefined) ?? 'default'
   const modelLabel = model?.name ?? (loading ? t('cli.loadingModel') : t('cli.noModelsAvailable'))
-  const effortLabel = efforts.find((effort) => effort === effortValue) ?? 'Default'
+  const effortLabel = efforts.find((effort) => effort === effortValue) ?? t('cli.defaultEffort')
   const modelUnavailable = model === undefined
   const triggerDisabled = !loading && modelUnavailable
   const chooseModel = (next: CodingNsCliModel): void => {
@@ -446,9 +446,9 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
         ]
       : [
           createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, t('cli.back')),
-          createElement('div', { key: 'title', style: nativeGroupTitleStyle }, `${t('cli.thinking')}（${modelLabel}）`),
+          createElement('div', { key: 'title', style: nativeGroupTitleStyle }, t('cli.thinkingLevelTitle', { model: modelLabel })),
           ...(efforts.length > 0 ? efforts : ['default']).map((effort) => createElement('button', { key: effort, type: 'button', role: 'menuitemradio', 'aria-checked': effort === effortValue, onClick: () => chooseEffort(effort), style: nativeOptionStyle },
-            createElement('span', { style: { flex: '1 1 auto' } }, effort === 'default' ? 'Default' : effort), effort === effortValue && createElement('span', { 'aria-hidden': true }, '✓'),
+            createElement('span', { style: { flex: '1 1 auto' } }, effort === 'default' ? t('cli.defaultEffort') : effort), effort === effortValue && createElement('span', { 'aria-hidden': true }, '✓'),
           )),
         ]
   return createElement('div', { ref: rootRef, className: 'codingns4dsh-model-root', style: { position: 'relative', minWidth: 0, maxWidth: '100%', flex: '1 1 min(360px, 45cqw)', display: 'inline-flex' } },

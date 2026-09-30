@@ -27,8 +27,8 @@ export const reverseProxyFeature: CodingNsClientFeatureModule = {
     dependencies: [],
     runtime: 'client',
     ui: {
-      label: '中转访问服务',
-      description: '通过中继访问 Host',
+      label: 'Relay access service',
+      description: 'Access a DSH Host through the isolated Codingns4DSH relay.',
       labelKey: 'feature.reverseProxy.label',
       descriptionKey: 'feature.reverseProxy.description',
       order: 20,

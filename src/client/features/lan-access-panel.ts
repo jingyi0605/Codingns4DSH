@@ -88,11 +88,11 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
     const result = await callRpc<{ ports: number[] }>(rpc, 'lanAccessDsh/detect', {})
     setDetectedDshPorts(result.ports)
     if (result.ports.length === 1) setDshPort(String(result.ports[0]))
-    notify({ kind: 'info', message: result.ports.length === 0 ? t('lan.detectNone') : t('lan.detected', { ports: result.ports.join('、') }) })
+    notify({ kind: 'info', message: result.ports.length === 0 ? t('lan.detectNone') : t('lan.detected', { ports: result.ports.join(t('common.listSeparator')) }) })
   })
 
   const saveMapping = async (nextAutoStart = autoStart): Promise<void> => {
-    const saved = await callRpc<LanAccessDshSettings>(rpc, 'lanAccessDsh/settings/set', readMapping(listenHost, listenPort, dshPort, nextAutoStart))
+    const saved = await callRpc<LanAccessDshSettings>(rpc, 'lanAccessDsh/settings/set', readMapping(listenHost, listenPort, dshPort, nextAutoStart, t))
     setSavedSettings(saved)
   }
 
@@ -104,7 +104,7 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
   }
 
   const start = (): Promise<void> => run(async () => {
-    const saved = readMapping(listenHost, listenPort, dshPort, autoStart)
+    const saved = readMapping(listenHost, listenPort, dshPort, autoStart, t)
     await saveMapping()
     const payload = {
       listenHost: saved.listenHost,
@@ -182,7 +182,7 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
         createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void detect(), style: buttonStyle }, t('lan.detect')),
       ),
     ),
-    detectedDshPorts.length > 1 && createElement('div', { style: dshSettingsNoteStyle }, t('lan.detectMultiple', { ports: detectedDshPorts.join('、') })),
+    detectedDshPorts.length > 1 && createElement('div', { style: dshSettingsNoteStyle }, t('lan.detectMultiple', { ports: detectedDshPorts.join(t('common.listSeparator')) })),
     createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 8, cursor: controlsDisabled || busy ? 'not-allowed' : 'pointer', color: dshThemeColor.labelSecondary, fontSize: 13 } },
       createElement('input', { type: 'checkbox', checked: autoStart, disabled: controlsDisabled || busy, onChange: () => void toggleAutoStart(), style: { accentColor: dshThemeColor.accent } }),
       createElement('span', undefined, t('lan.autoStart')),
@@ -254,20 +254,26 @@ interface LanAccessMappingPayload {
   dshPort: number
 }
 
-function readMapping(listenHost: string, listenPort: string, dshPort: string, autoStart: boolean): LanAccessMappingPayload {
+function readMapping(
+  listenHost: string,
+  listenPort: string,
+  dshPort: string,
+  autoStart: boolean,
+  t: ReturnType<typeof useCodingNsTranslator>,
+): LanAccessMappingPayload {
   return {
     autoStart,
     listenHost,
-    listenPort: parsePort(listenPort, '监听端口', true),
-    dshPort: dshPort.trim() === '' ? 0 : parsePort(dshPort, 'DSH 本地端口', false),
+    listenPort: parsePort(listenPort, t('lan.fieldListenPort'), true, t),
+    dshPort: dshPort.trim() === '' ? 0 : parsePort(dshPort, t('lan.fieldDshPort'), false, t),
   }
 }
 
-function parsePort(value: string, field: string, allowZero: boolean): number {
-  if (!/^\d+$/u.test(value)) throw new Error(`${field} 必须是数字`)
+function parsePort(value: string, field: string, allowZero: boolean, t: ReturnType<typeof useCodingNsTranslator>): number {
+  if (!/^\d+$/u.test(value)) throw new Error(t('lan.fieldMustBeNumber', { field }))
   const port = Number(value)
   const minimum = allowZero ? 0 : 1
-  if (!Number.isInteger(port) || port < minimum || port > 65535) throw new Error(`${field} 必须是 ${minimum} 到 65535 的整数`)
+  if (!Number.isInteger(port) || port < minimum || port > 65535) throw new Error(t('lan.fieldMustBeInteger', { field, minimum }))
   return port
 }
 

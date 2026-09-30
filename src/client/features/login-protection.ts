@@ -10,8 +10,8 @@ export const loginProtectionFeature: CodingNsClientFeatureModule = {
     dependencies: [],
     runtime: 'client',
     ui: {
-      label: '登录保护',
-      description: '统一账号保护访问',
+      label: 'Login protection',
+      description: 'Protect LAN and relay DSH Web access with one local account; loopback access is always allowed.',
       labelKey: 'feature.loginProtection.label',
       descriptionKey: 'feature.loginProtection.description',
       order: 15,

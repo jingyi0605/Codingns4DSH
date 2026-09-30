@@ -11,8 +11,8 @@ export const terminalEnhancementFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     activation: 'restart',
     ui: {
-      label: '终端增强',
-      description: '配置终端与默认 Shell',
+      label: 'Terminal enhancements',
+      description: 'Configure the default shell and terminal appearance. Enabling or disabling requires a DSH restart.',
       labelKey: 'feature.terminal.label',
       descriptionKey: 'feature.terminal.description',
       order: 40,
