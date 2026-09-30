@@ -73,6 +73,10 @@ export const dshSettingsPageStyle: CSSProperties = {
   maxWidth: 'none',
   margin: 0,
   padding: 0,
+  // 只保留设备刘海和 Home 指示条所需的安全区，不再叠加宿主留白。
+  paddingLeft: 'env(safe-area-inset-left, 0px)',
+  paddingRight: 'env(safe-area-inset-right, 0px)',
+  paddingBottom: 'env(safe-area-inset-bottom, 0px)',
   boxSizing: 'border-box',
 }
 
