@@ -5,7 +5,7 @@
 **External Agent CLIs, persistent terminals, workspace debug and remote access — inside DSH's own UI.**
 
 [![npm version](https://img.shields.io/npm/v/%40jingyi0605%2Fcodingns4dsh?logo=npm)](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)
-[![DSH compatibility](https://img.shields.io/badge/DSH-0.2.0--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH compatibility](https://img.shields.io/badge/DSH-0.2.0--rc.2-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-3C873A?logo=node.js&logoColor=white)](https://nodejs.org)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 
@@ -44,7 +44,7 @@ The CodingNS workbench brings the conversation, Agent picker and Git sidebar tog
 
 **DSH (DeepSeek Harness)** is a coding-agent harness — a CLI plus Web UI that runs an agent loop inside your workspace.
 
-**Codingns4DSH is a DSH plugin bundle** (Host + browser layers) adding eight modules, all configured under **Settings → Codingns4DSH**.
+**Codingns4DSH is a DSH plugin bundle** (Host + browser layers) adding eleven modules, all configured under **Settings → Codingns4DSH**.
 
 > Naming: this plugin is **Codingns4DSH** (npm package `@jingyi0605/codingns4dsh`; its settings entry is labelled Codingns4DSH). **Codingns4DSH** on its own refers to the platform service that provides the Control API, accounts and the relay tunnel.
 
@@ -58,6 +58,9 @@ The CodingNS workbench brings the conversation, Agent picker and Git sidebar tog
 | **Login protection** | One optional local account guarding LAN **and** relay access; loopback always allowed | Always on (card) |
 | **Relay access service** | **Your DSH Web from anywhere on the internet**, end-to-end encrypted | Off |
 | **Workspace debug** | Per-workspace launch profiles, port checks, HTTP service proxy | On |
+| **Git repository management** | View changes, stage files, commit and browse Git history in the right sidebar | On |
+| **File management enhancement** | Create, rename, move, copy and delete files/directories, with code and script detection | Off |
+| **PeerHost workbench** | Proxy other handshaken DSH Hosts and aggregate workspaces, sessions and scoped tools | Off |
 
 Nothing native is replaced — conversations, sessions, sidebar, settings and approvals stay DSH's own.
 
@@ -136,6 +139,18 @@ Each workspace keeps its own launch profiles (`<workspace>/.codingns/debug.json`
 </div>
 
 The panel shows live port state and PID, and issues an unguessable proxy URL per running instance.
+
+### Git Repository Management
+
+The Git panel is opened from DSH's native right sidebar and persists per workspace across sessions. It can initialize a repository, show staged and unstaged files, stage or unstage paths, discard changes, create commits, switch branches and browse commit history. Disabling the module removes its sidebar tab and Host Git RPC without affecting other modules.
+
+### File Management Enhancement
+
+File management enhancement adds common file operations to DSH's native file sidebar: create files and directories, rename, move, copy and delete entries, with code and script type detection for the editor entry point. Workspace path validation rejects paths outside the active workspace; disabling the module removes its sidebar entry and Host RPC.
+
+### PeerHost Workbench
+
+PeerHost proxies other DSH Hosts without replacing the current logged-in Host. It can add LAN peers, persist target configuration and login state, and route workspaces, sessions, chat input, live events, files, Git, terminals and right-sidebar tools through an explicit HostScope. A failing peer does not block the local Host or other peers. Unsupported native navigation surfaces report `degraded` or `unsupported` instead of creating an iframe or pretending to be a native three-column view.
 
 ### Modules and Settings
 
@@ -288,7 +303,7 @@ Requires Node `>= 22.19` and pnpm:
 ```bash
 pnpm install
 pnpm build            # version check -> tsc -> client + H5 bundles
-pnpm test             # build, then 61 suites under tests/
+pnpm test             # build, then the full test suite (currently 901 cases)
 pnpm typecheck
 pnpm run capability:check   # capability retirement check
 ```
@@ -297,7 +312,7 @@ Dev loop: `pnpm dev:watch` with `pnpm dev:link <profile>`, then restart DSH. Ver
 
 Layout: `src/host` (Host layer), `src/client` (browser layer), `src/dsh-capabilities` (capability registry and version routing), `src/shared/contracts`, `src/transport` (tunnel + WebRTC), `src/features` (module registry), `tests/`, `specs/`, `docs/`, `data/build` (git-ignored).
 
-A `v*` tag runs GitHub Actions (tag/version check, frozen install, typecheck, tests, `npm pack`) and publishes with provenance; prereleases get the `next` dist-tag. Roadmap: PeerHost, file management, workspace sessions, debug-proxy completion (auth + WebSocket), Git, SKILL, more.
+A `v*` tag runs GitHub Actions (tag/version check, frozen install, typecheck, tests, `npm pack`) and publishes with provenance; prereleases get the `next` dist-tag. Releases also run DSH installation replay, runtime module resolution and per-file npm artifact checks.
 
 Screenshot assets and shot list: [assets/screenshots](assets/screenshots/README.md) (Chinese).
 

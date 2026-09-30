@@ -5,7 +5,7 @@
 **把外部 Agent CLI、持久终端、工作区调试和远程访问，装进 DSH 原生界面。**
 
 [![npm version](https://img.shields.io/npm/v/%40jingyi0605%2Fcodingns4dsh?logo=npm)](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)
-[![DSH compatibility](https://img.shields.io/badge/DSH-0.2.0--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH compatibility](https://img.shields.io/badge/DSH-0.2.0--rc.2-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-3C873A?logo=node.js&logoColor=white)](https://nodejs.org)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 
@@ -44,7 +44,7 @@ CodingNS 工作台把会话、Agent 选择器与右侧 Git 面板放在同一界
 
 **DSH（DeepSeek Harness）** 是一个编码 Agent 运行框架，由 CLI 和 Web 界面组成，在你的 Workspace 中运行 Agent 循环。
 
-**Codingns4DSH 是一个 DSH 插件 Bundle**（Host 层 + 浏览器层），提供十个模块，全部在 **设置 → Codingns4DSH** 中配置。
+**Codingns4DSH 是一个 DSH 插件 Bundle**（Host 层 + 浏览器层），提供十一个模块，全部在 **设置 → Codingns4DSH** 中配置。
 
 > 名称说明：本插件名为 **Codingns4DSH**（npm 包 `@jingyi0605/codingns4dsh`，设置页入口显示为 Codingns4DSH）；文中单独出现的 **Codingns4DSH** 指提供 Control API、账号与中继隧道的平台服务。
 
@@ -59,6 +59,7 @@ CodingNS 工作台把会话、Agent 选择器与右侧 Git 面板放在同一界
 | **中转访问服务** | **在互联网任何位置访问自己的 DSH Web**，端到端加密 | 关 |
 | **工作区调试** | 按工作区保存启动配置、检查端口、HTTP 服务代理 | 开 |
 | **Git 仓库管理** | 在右侧 Sidebar 标签页查看改动、暂存文件、提交和 Git 版本历史 | 开 |
+| **文件管理增强** | 在文件侧栏创建、重命名、移动、复制、删除文件和目录，并支持代码与脚本识别 | 关 |
 | **PeerHost 聚合工作台** | 当前 Host 代理已握手的其他 DSH Host，按 HostScope 聚合工作区、会话和受控工具 | 关 |
 
 DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权限确认仍然是 DSH 自己的组件。
@@ -142,6 +143,10 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
 ### Git 仓库管理
 
 Git 面板通过 DSH 原生右侧 Sidebar 的标签页入口打开，按 Workspace 保存状态并跨会话复用。未初始化的目录可直接初始化仓库；已初始化的仓库支持查看暂存文件和未提交文件、暂存/取消暂存、丢弃更改、填写提交说明、切换分支和浏览提交历史。模块关闭后会移除右侧标签及对应 Host Git RPC，不影响其他模块。
+
+### 文件管理增强
+
+文件管理增强把常用文件操作接入 DSH 原生文件侧栏：可以创建文件和目录、重命名、移动、复制、删除，并按代码与脚本类型选择编辑入口。操作会经过 Workspace 路径校验，拒绝越出当前工作区；模块关闭后清理对应的侧栏入口和 Host RPC。
 
 ### PeerHost 多 Host 工作区
 
@@ -302,7 +307,7 @@ dsh web
 ```bash
 pnpm install
 pnpm build            # 版本校验 → tsc → Client + H5 Bundle
-pnpm test             # 构建后运行 61 个测试套件
+pnpm test             # 构建后运行完整测试（当前 901 个用例）
 pnpm typecheck
 pnpm run capability:check   # DSH 能力注册表退休检查
 ```
@@ -311,7 +316,7 @@ pnpm run capability:check   # DSH 能力注册表退休检查
 
 目录：`src/host`（Host 层）、`src/client`（浏览器层）、`src/dsh-capabilities`（DSH 能力注册与版本路由）、`src/shared/contracts`、`src/transport`（隧道与 WebRTC）、`src/features`（模块注册表）、`tests/`、`specs/`、`docs/`、`data/build`（已忽略）。
 
-推送 `v*` tag 触发 GitHub Actions（tag/版本校验、冻结安装、类型检查、测试、`npm pack`）并以 provenance 发布，预发布版本用 `next` dist-tag。路线图：PeerHost、文件管理、工作区会话、调试代理完善（鉴权 + WebSocket）、Git、SKILL、更多。
+推送 `v*` tag 触发 GitHub Actions（tag/版本校验、冻结安装、类型检查、测试、`npm pack`）并以 provenance 发布，预发布版本用 `next` dist-tag。当前发布还会执行 DSH 安装回放、运行时模块解析和 npm 产物逐文件校验。
 
 截图素材与清单见 [assets/screenshots](assets/screenshots/README.md)。
 
