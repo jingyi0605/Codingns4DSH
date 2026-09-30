@@ -16,7 +16,7 @@ import {
 import type { PeerHostRoute } from '../../shared/contracts/peer-host.js'
 import type { PeerHostRecord, PeerHostClientRecord } from '../../shared/contracts/peer-host.js'
 import type { DshHostStatus } from '../../shared/contracts/host-status.js'
-import { createVirtualSessionId, createVirtualWorkspaceId, type HostScope } from '../../shared/contracts/peer-host.js'
+import { createVirtualSessionId, createVirtualWorkspaceId, normalizePeerHostColor, type HostScope } from '../../shared/contracts/peer-host.js'
 import type { AggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { PeerHostAggregateService } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { resolveDshNativeDispatch } from '../modules/peer-host/peer-host-native-dispatch.js'
@@ -31,7 +31,7 @@ import { FileLanAccessDshLoginStore, resolveLoginProtectionCookieName, verifyLog
 import { createPeerHostDiagnosticSink, toPeerHostDiagnosticSnapshot } from '../modules/peer-host/peer-host-diagnostics.js'
 import { AggregatedHostTransportService } from '../modules/peer-host/aggregated-host-transport.js'
 import { createDshNativeSummarySource } from '../modules/peer-host/dsh-native-summary-source.js'
-import { createPeerHostRemoteSummarySource } from '../modules/peer-host/peer-host-remote-summary-source.js'
+import { createPeerHostRemoteSummarySource, readPeerHostRemoteWorkspaceCandidates, type PeerHostRemoteWorkspaceCandidate } from '../modules/peer-host/peer-host-remote-summary-source.js'
 import { callPeerNativeRpc, openPeerNativeStream, readNativeRpcEnvelope } from '../modules/peer-host/peer-host-native-transport.js'
 import { createAggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { isDshNativeRemoteMethod, rewriteNativeRequestIds, rewriteNativeResponseIds } from '../modules/peer-host/peer-host-native-protocol.js'
@@ -121,16 +121,40 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             hostId: localHostId,
             targetHostId: record.id,
             hostLabel: record.displayName,
+            hostColor: record.color ?? null,
             source: createPeerHostRemoteSummarySource({
               scope: { hostId: localHostId, targetHostId: record.id, workspaceId: '__aggregate__', sessionId: null, scopeGeneration: 0 },
               transport: {
                 rpc: (request) => callPeerNativeRpc(httpProxy, record.id, request),
                 stream: (request) => openPeerNativeStream(httpProxy, record.id, request),
               },
+              // 默认只投影用户显式添加的远端工作区；未添加时不展示该 Host 的任何工作区。
+              visibleWorkspaceIds: record.visibleWorkspaceIds ?? [],
             }),
           }))
         }
         return sources
+      }
+      /** 远端工作区候选的唯一读取入口；不过滤可见性，供"添加工作区"选择器使用。 */
+      const readRemoteWorkspaceCandidates = async (peerHostId: string): Promise<readonly PeerHostRemoteWorkspaceCandidate[]> => {
+        let record = await store.get(peerHostId)
+        if (record === null) throw new CodingNsRpcError('PEER_HOST_NOT_FOUND', 'PeerHost 不存在')
+        // 票据过期但保存过账号时先静默重登：用户不该为了看一眼工作区列表
+        // 再回管理面板手工登录一次。
+        if (record.status === 'session_required') {
+          await sessions.refresh(peerHostId).catch(() => undefined)
+          record = await store.get(peerHostId)
+        }
+        if (record === null || record.status !== 'ready') {
+          throw new CodingNsRpcError('PEER_HOST_NOT_READY', 'PeerHost 尚未通过握手检查')
+        }
+        return await readPeerHostRemoteWorkspaceCandidates({
+          scope: { hostId: localHostId, targetHostId: record.id, workspaceId: '__aggregate__', sessionId: null, scopeGeneration: 0 },
+          transport: {
+            rpc: (request) => callPeerNativeRpc(httpProxy, record.id, request),
+            stream: (request) => openPeerNativeStream(httpProxy, record.id, request),
+          },
+        })
       }
       const reconnectManager = new PeerHostReconnectManager({
         connect: connector,
@@ -208,6 +232,37 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
         }))
         context.resources.add(unregisterHandshake)
       }
+      /**
+       * 编辑保存 = 一次性完成配置、握手与登录。
+       *
+       * 用户只在编辑里填一次地址和账号密码；之后连接、续期与票据失效重登全部自动。
+       * 因此这里刻意不要求用户先点"测试"再点"登录"。
+       */
+      const updatePeerHost = async (input: Record<string, unknown>): Promise<PeerHostClientRecord> => {
+        const peerHostId = requiredString(input.peerHostId, 'peerHostId')
+        // 记录编辑前是否被禁用：握手会把状态写成 ready，必须恢复用户的显式禁用意图。
+        const wasDisabled = (await store.get(peerHostId))?.status === 'disabled'
+        let record = await store.update(peerHostId, {
+          ...(input.displayName === undefined ? {} : { displayName: requiredString(input.displayName, 'displayName') }),
+          ...(input.route === undefined ? {} : { route: parseRoute(input.route) }),
+          ...(input.color === undefined ? {} : { color: parseColor(input.color) }),
+        })
+        const username = typeof input.username === 'string' ? input.username.trim() : ''
+        const password = typeof input.password === 'string' ? input.password : ''
+        // 没有凭据时保持原有登录态：编辑名称或配色不应该把已连接的目标踢下线。
+        if (username === '' || password === '') return toPeerHostClientRecord(record)
+        record = await handshake.check(peerHostId)
+        if (record.status !== 'ready') {
+          throw new CodingNsRpcError(
+            'PEER_HOST_NOT_READY',
+            `PeerHost 握手未通过（${record.status}），凭据未保存`,
+          )
+        }
+        await sessions.login(peerHostId, { username, password })
+        // 凭据已经保存，但被禁用的 Host 不应因为一次编辑就被重新启用。
+        if (wasDisabled) record = await store.updateStatus(peerHostId, 'disabled', null)
+        return toPeerHostClientRecord((await store.get(peerHostId)) ?? record)
+      }
       const unregister = context.services.rpc.register('peerHost', async (action, payload, rpcContext) => {
         const input = record(payload)
         switch (action) {
@@ -217,11 +272,12 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             for (const snapshot of snapshots) diagnostics.emit('peer-host.snapshot', snapshot)
             return snapshots
           }
-          case 'create': return toPeerHostClientRecord(await store.create({ displayName: requiredString(input.displayName, 'displayName'), route: parseRoute(input.route) }))
-          case 'update': return toPeerHostClientRecord(await store.update(requiredString(input.peerHostId, 'peerHostId'), {
-            ...(input.displayName === undefined ? {} : { displayName: requiredString(input.displayName, 'displayName') }),
-            ...(input.route === undefined ? {} : { route: parseRoute(input.route) }),
+          case 'create': return toPeerHostClientRecord(await store.create({
+            displayName: requiredString(input.displayName, 'displayName'),
+            route: parseRoute(input.route),
+            ...(input.color === undefined ? {} : { color: parseColor(input.color) }),
           }))
+          case 'update': return await updatePeerHost(input)
           case 'remove': await store.remove(requiredString(input.peerHostId, 'peerHostId')); return { removed: true }
           case 'enable': return toPeerHostClientRecord(await store.updateStatus(requiredString(input.peerHostId, 'peerHostId'), 'configured', null))
           case 'disable': return toPeerHostClientRecord(await store.updateStatus(requiredString(input.peerHostId, 'peerHostId'), 'disabled', null))
@@ -237,6 +293,25 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             password: requiredString(input.password, 'password'),
           })
           case 'logout': return sessions.logout(requiredString(input.peerHostId, 'peerHostId'))
+          case 'credentialStatus': {
+            const peerHostId = requiredString(input.peerHostId, 'peerHostId')
+            const credential = await credentials.read(peerHostId)
+            return { peerHostId, hasSavedCredential: credential?.password !== undefined && credential.password !== '' }
+          }
+          case 'workspaceCandidates': return await readRemoteWorkspaceCandidates(requiredString(input.peerHostId, 'peerHostId'))
+          case 'setWorkspaceVisibility': {
+            const peerHostId = requiredString(input.peerHostId, 'peerHostId')
+            const workspaceId = requiredString(input.workspaceId, 'workspaceId')
+            const visible = input.visible === true
+            return toPeerHostClientRecord(await store.setWorkspaceVisibility(peerHostId, workspaceId, visible))
+          }
+          case 'replaceVisibleWorkspaces': {
+            const peerHostId = requiredString(input.peerHostId, 'peerHostId')
+            const ids = Array.isArray(input.workspaceIds)
+              ? input.workspaceIds.flatMap((item) => typeof item === 'string' && item.trim() !== '' ? [item.trim()] : [])
+              : []
+            return toPeerHostClientRecord(await store.replaceVisibleWorkspaces(peerHostId, ids))
+          }
           case 'wsEndpoint': return wsEndpoint
           case 'aggregate': {
             const results = await aggregate.load(await buildSources())
@@ -512,6 +587,19 @@ function parseRoute(value: unknown): PeerHostRoute {
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('PeerHost RPC 参数必须是对象')
   return value as Record<string, unknown>
+}
+
+/**
+ * 解析工作区标签配色。
+ *
+ * 颜色最终会写进本机侧栏 DOM 的内联样式，因此只接受 `#rrggbb`；`null` 表示
+ * 清除自定义色，回退到客户端按名称推导的稳定色。
+ */
+function parseColor(value: unknown): string | null {
+  if (value === null) return null
+  const normalized = normalizePeerHostColor(value)
+  if (normalized === null) throw new TypeError('color 必须是 #rrggbb 形式')
+  return normalized
 }
 
 function requiredString(value: unknown, field: string): string {

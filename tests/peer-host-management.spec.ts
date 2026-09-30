@@ -59,6 +59,58 @@ test('PeerHost 管理 API 通过固定 RPC 获取聚合摘要，不接收目标�
   assert.equal(JSON.stringify(calls).includes('baseUrl'), false)
 })
 
+test('PeerHost 管理 API 的编辑一次性提交凭据、配色与路由', async () => {
+  const calls: Array<{ endpoint: string; payload: unknown }> = []
+  const api = createPeerHostManagementApi({
+    async call(_channel, endpoint, payload) {
+      calls.push({ endpoint, payload })
+      return { ok: true as const, value: { id: 'peer-1' } }
+    },
+  })
+  await api.update({
+    peerHostId: 'peer-1',
+    displayName: '开发机',
+    color: '#1677ff',
+    route: { kind: 'lan', baseUrl: 'http://127.0.0.1:13080', normalizedOrigin: '' },
+    username: 'alice',
+    password: 'password-secret',
+  })
+  assert.deepEqual(calls, [{
+    endpoint: 'peerHost/update',
+    payload: {
+      peerHostId: 'peer-1',
+      displayName: '开发机',
+      color: '#1677ff',
+      route: { kind: 'lan', baseUrl: 'http://127.0.0.1:13080', normalizedOrigin: '' },
+      username: 'alice',
+      password: 'password-secret',
+    },
+  }])
+})
+
+test('PeerHost 管理 API 提供可见工作区与凭据状态入口', async () => {
+  const calls: Array<{ endpoint: string; payload: unknown }> = []
+  const api = createPeerHostManagementApi({
+    async call(_channel, endpoint, payload) {
+      calls.push({ endpoint, payload })
+      if (endpoint === 'peerHost/workspaceCandidates') return { ok: true as const, value: [{ workspaceId: 'workspace-1', displayName: '项目 A', path: '/repo', sessionCount: 2 }] }
+      if (endpoint === 'peerHost/credentialStatus') return { ok: true as const, value: { peerHostId: 'peer-1', hasSavedCredential: true } }
+      return { ok: true as const, value: { id: 'peer-1' } }
+    },
+  })
+  const candidates = await api.workspaceCandidates('peer-1')
+  assert.deepEqual(candidates.map((candidate) => candidate.workspaceId), ['workspace-1'])
+  const status = await api.credentialStatus('peer-1')
+  assert.equal(status.hasSavedCredential, true)
+  await api.setWorkspaceVisibility('peer-1', 'workspace-1', true)
+  assert.deepEqual(calls.map((call) => call.endpoint), [
+    'peerHost/workspaceCandidates',
+    'peerHost/credentialStatus',
+    'peerHost/setWorkspaceVisibility',
+  ])
+  assert.deepEqual(calls[2]?.payload, { peerHostId: 'peer-1', workspaceId: 'workspace-1', visible: true })
+})
+
 test('PeerHost 管理面板关闭后可重新打开，dispose 会移除事件监听和 DOM', async () => {
   const dom = new FakeDocument()
   const api = { list: async () => [] }
@@ -102,6 +154,70 @@ test('PeerHost 管理面板居中显示列表，并隐藏中转实现字段', as
   assert.equal(formDialog?.attributes.get('role'), 'dialog')
   controller.dispose()
 })
+
+test('添加 Host 成功后自动关闭模态框，失败时保留以便修正', async () => {
+  const dom = new FakeDocument()
+  const calls: string[] = []
+  let checkStatus = 'ready'
+  const api = {
+    list: async () => [],
+    create: async () => { calls.push('create'); return { id: 'peer-1', status: 'configured' } },
+    update: async () => { calls.push('update'); return { id: 'peer-1', status: 'configured' } },
+    check: async () => ({ id: 'peer-1', status: checkStatus }),
+    login: async () => { calls.push('login'); return { peerHostId: 'peer-1', status: 'logged_in', expiresAt: 1 } },
+  }
+  const controller = startPeerHostManagementPanel({ document: dom as never, rpc: {} as never, api: api as never })
+  dom.defaultView.dispatchEvent(new Event('codingns4dsh:peer-host-open'))
+  await Promise.resolve()
+  const panel = dom.body.children[0]!
+  const addButton = panel.find((node) => node.tagName === 'BUTTON' && node.attributes.get('aria-label') === '添加 Host')!
+  addButton.dispatchEvent(new Event('click'))
+
+  const form = panel.querySelector('[data-codingns-peer-host-add-form]')!
+  const url = form.querySelector('[data-codingns-peer-host-url]')!
+  url.value = 'http://127.0.0.1:13080'
+  const username = form.querySelector('[data-codingns-peer-host-username]')!
+  username.value = 'alice'
+  const password = form.querySelector('[data-codingns-peer-host-password]')!
+  password.value = 'password-secret'
+  const submit = new Event('submit')
+  form.dispatchEvent(submit)
+  await settle()
+
+  // 添加并登录成功后必须自动关闭，否则用户会以为没生效而重复提交。
+  assert.equal(panel.querySelector('[data-codingns-peer-host-form-dialog]'), null)
+  assert.deepEqual(calls, ['create', 'login'])
+  // 添加按钮的展开状态要回置，保证下次还能打开。
+  assert.equal(addButton.attributes.get('aria-expanded'), 'false')
+
+  // 握手未通过时保留对话框并给出原因，便于就地修正后重试。
+  checkStatus = 'unreachable'
+  addButton.dispatchEvent(new Event('click'))
+  const retryForm = panel.querySelector('[data-codingns-peer-host-add-form]')!
+  retryForm.querySelector('[data-codingns-peer-host-url]')!.value = 'http://127.0.0.1:13080'
+  retryForm.querySelector('[data-codingns-peer-host-username]')!.value = 'alice'
+  retryForm.querySelector('[data-codingns-peer-host-password]')!.value = 'password-secret'
+  retryForm.dispatchEvent(new Event('submit'))
+  await settle()
+
+  assert.notEqual(panel.querySelector('[data-codingns-peer-host-form-dialog]'), null)
+  const message = panel.querySelector('[data-codingns-peer-host-message]')!
+  assert.match(message.textContent, /无法连接/u)
+  assert.equal(message.hidden, false)
+
+  // 在**同一张**表单上再次提交（用户就地改完地址直接重试）：
+  // 必须走 update，重复 create 会撞 PEER_HOST_DUPLICATE，重新 create 又会留下孤儿记录。
+  retryForm.dispatchEvent(new Event('submit'))
+  await settle()
+  assert.deepEqual(calls, ['create', 'login', 'create', 'update'])
+  // 失败路径不应再尝试登录。
+  assert.equal(calls.filter((call) => call === 'login').length, 1)
+  controller.dispose()
+})
+
+function settle(): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, 0) })
+}
 
 test('PeerHost 作用域客户端为会话请求绑定完整 HostScope，不接受目标 URL', async () => {
   const calls: unknown[] = []

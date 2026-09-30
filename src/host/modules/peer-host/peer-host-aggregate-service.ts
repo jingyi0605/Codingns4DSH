@@ -21,6 +21,8 @@ export interface AggregateHostSource {
   readonly hostId: string
   readonly targetHostId: string | null
   readonly hostLabel: string
+  /** 该 Host 工作区标签的配色；缺省时客户端按名称推导稳定色。 */
+  readonly hostColor?: string | null
   readonly load: () => Promise<readonly AggregateWorkspaceSource[]>
   /** DSH 未提供稳定摘要来源时显式声明降级，不把失败折叠成空数组。 */
   readonly capability?: {
@@ -47,6 +49,7 @@ export function createAggregateHostSource(input: {
   readonly hostId: string
   readonly targetHostId: string | null
   readonly hostLabel: string
+  readonly hostColor?: string | null
   readonly source: PeerHostWorkspaceSessionSummarySource
 }): AggregateHostSource {
   const source = input.source
@@ -54,6 +57,7 @@ export function createAggregateHostSource(input: {
     hostId: input.hostId,
     targetHostId: input.targetHostId,
     hostLabel: input.hostLabel,
+    ...(input.hostColor === undefined ? {} : { hostColor: input.hostColor }),
     capability: {
       available: source.available,
       reason: source.reason?.trim() || (source.available ? '摘要 source 已就绪' : 'Host 未提供稳定 workspace/session 摘要 source'),
@@ -76,6 +80,7 @@ export class PeerHostAggregateService {
         hostId: source.hostId,
         targetHostId: source.targetHostId,
         hostLabel: source.hostLabel,
+        hostColor: source.hostColor ?? null,
         availability: 'unsupported',
         errorCode: null,
         diagnostic: source.capability.reason,
@@ -88,6 +93,7 @@ export class PeerHostAggregateService {
         hostId: source.hostId,
         targetHostId: source.targetHostId,
         hostLabel: source.hostLabel,
+        hostColor: source.hostColor ?? null,
         availability: 'ready',
         errorCode: null,
         workspaces: workspaces.map((workspace) => toWorkspace(source, workspace)),
@@ -97,6 +103,7 @@ export class PeerHostAggregateService {
         hostId: source.hostId,
         targetHostId: source.targetHostId,
         hostLabel: source.hostLabel,
+        hostColor: source.hostColor ?? null,
         availability: 'unreachable',
         errorCode: 'PEER_HOST_UNREACHABLE',
         workspaces: [],

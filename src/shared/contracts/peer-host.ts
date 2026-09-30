@@ -42,6 +42,19 @@ export interface PeerHostRecord {
   readonly fingerprint: string | null
   readonly lastCheckedAt: number | null
   readonly lastErrorCode: PeerHostErrorCode | null
+  /**
+   * 工作区标签配色；缺省时客户端按名称推导稳定色。
+   *
+   * 颜色只影响本机侧栏标签，不参与握手、代理或目标 Host 的任何状态。
+   */
+  readonly color?: string | null
+  /**
+   * 用户显式添加的远端工作区 ID。
+   *
+   * 聚合摘要只投影这个集合内的远端工作区；缺省或空集合表示"尚未显式添加任何
+   * 远端工作区"，此时不展示该 Host 的任何工作区——这是默认行为，不是降级。
+   */
+  readonly visibleWorkspaceIds?: readonly string[]
   readonly createdAt: number
   readonly updatedAt: number
 }
@@ -112,12 +125,41 @@ export interface AggregateHostResult {
   readonly hostId: string
   readonly targetHostId: string | null
   readonly hostLabel: string
+  /** 该 Host 工作区标签的配色；缺省时客户端按名称推导稳定色。 */
+  readonly hostColor?: string | null
   readonly availability: 'ready' | 'checking' | 'unreachable' | 'unsupported'
   readonly errorCode: PeerHostErrorCode | null
   /** 摘要能力不可用时保留可诊断原因，禁止以空工作区伪装成功。 */
   readonly diagnostic?: string
   readonly workspaces: readonly AggregateWorkspaceSummary[]
 }
+
+/**
+ * 工作区标签配色的取值范围。
+ *
+ * 只接受 `#rrggbb`：颜色会被写进本机侧栏 DOM 的内联样式，开放任意字符串
+ * 等于把 CSS 注入面交给远端配置。
+ */
+export const PEER_HOST_COLOR_PATTERN = /^#[0-9a-f]{6}$/u
+
+/** 校验并归一化工作区标签配色；非法值返回 null，由消费方回退到推导色。 */
+export function normalizePeerHostColor(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim().toLowerCase()
+  return PEER_HOST_COLOR_PATTERN.test(trimmed) ? trimmed : null
+}
+
+/** 管理面板的默认配色候选；顺序即下拉顺序。 */
+export const PEER_HOST_COLOR_PRESETS = Object.freeze([
+  '#1677ff',
+  '#722ed1',
+  '#13c2c2',
+  '#52c41a',
+  '#fa8c16',
+  '#eb2f96',
+  '#f5222d',
+  '#8c8c8c',
+] as const)
 
 /** Aggregated Host 只允许本地插件基线；远端不得提供 Manifest、Bundle 或 UI Slot。 */
 export interface AggregatedHostLocalPluginBaseline {

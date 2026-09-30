@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPeerHostRemoteSummarySource } from '../data/build/dist/host/modules/peer-host/peer-host-remote-summary-source.js'
+import { createPeerHostRemoteSummarySource, readPeerHostRemoteWorkspaceCandidates } from '../data/build/dist/host/modules/peer-host/peer-host-remote-summary-source.js'
 
 const scope = { hostId: 'local-host', targetHostId: 'peer-1', workspaceId: '__aggregate__', sessionId: null, scopeGeneration: 0 }
 
@@ -97,4 +97,91 @@ test('远端摘要对缺失字段和空 baseline 保持容错', async () => {
     },
   })
   assert.deepEqual(await empty.load(), [])
+})
+
+test('显式添加的工作区白名单只投影集合内的远端工作区', async () => {
+  const source = createPeerHostRemoteSummarySource({
+    scope,
+    visibleWorkspaceIds: ['workspace-b'],
+    transport: {
+      async rpc() {
+        return { items: [{ sessionId: 'session-b', cwd: '/Users/dev/project-b', updatedAt: 11 }] }
+      },
+      stream() {
+        return asyncIterableOf([{
+          type: 'baseline',
+          value: {
+            items: [
+              { workspaceId: 'workspace-a', title: '项目 A', path: '/Users/dev/project-a', sessionIds: [] },
+              { workspaceId: 'workspace-b', title: '项目 B', path: '/Users/dev/project-b', sessionIds: ['session-b'] },
+            ],
+            archivedSessionIds: [],
+          },
+        }])
+      },
+    },
+  })
+  assert.deepEqual((await source.load()).map((workspace) => workspace.workspaceId), ['workspace-b'])
+})
+
+test('未显式添加任何工作区时不访问目标 Host，直接返回空摘要', async () => {
+  let touched = 0
+  const source = createPeerHostRemoteSummarySource({
+    scope,
+    visibleWorkspaceIds: [],
+    transport: {
+      async rpc() { touched += 1; return { items: [] } },
+      stream() { touched += 1; return asyncIterableOf([]) },
+    },
+  })
+  assert.deepEqual(await source.load(), [])
+  // 默认不显示远端工作区时不应该产生任何代理往返。
+  assert.equal(touched, 0)
+})
+
+test('不传白名单时保持不过滤，供显式调用方使用', async () => {
+  const source = createPeerHostRemoteSummarySource({
+    scope,
+    transport: {
+      async rpc() { return { items: [] } },
+      stream() {
+        return asyncIterableOf([{
+          type: 'baseline',
+          value: {
+            items: [
+              { workspaceId: 'workspace-a', title: '项目 A', path: '/Users/dev/project-a', sessionIds: [] },
+              { workspaceId: 'workspace-b', title: '项目 B', path: '/Users/dev/project-b', sessionIds: [] },
+            ],
+            archivedSessionIds: [],
+          },
+        }])
+      },
+    },
+  })
+  assert.deepEqual((await source.load()).map((workspace) => workspace.workspaceId), ['workspace-a', 'workspace-b'])
+})
+
+test('工作区候选读取不做可见性过滤，供“添加工作区”选择器使用', async () => {
+  const candidates = await readPeerHostRemoteWorkspaceCandidates({
+    scope,
+    transport: {
+      async rpc() { return { items: [] } },
+      stream() {
+        return asyncIterableOf([{
+          type: 'baseline',
+          value: {
+            items: [
+              { workspaceId: 'workspace-a', title: '项目 A', path: '/Users/dev/project-a', sessionIds: ['s1', 's2'] },
+              { workspaceId: 'workspace-b', path: '/Users/dev/project-b', sessionIds: [] },
+            ],
+            archivedSessionIds: [],
+          },
+        }])
+      },
+    },
+  })
+  assert.deepEqual(candidates, [
+    { workspaceId: 'workspace-a', displayName: '项目 A', path: '/Users/dev/project-a', sessionCount: 2 },
+    { workspaceId: 'workspace-b', displayName: 'workspace-b', path: '/Users/dev/project-b', sessionCount: 0 },
+  ])
 })

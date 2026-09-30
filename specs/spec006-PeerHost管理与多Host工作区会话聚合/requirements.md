@@ -71,10 +71,15 @@
 #### 验收标准
 
 1. WHEN 用户打开连接管理入口 THEN System SHALL 显示当前 Host、PeerHost 名称、路由类型、连接状态、远端版本和最近检查时间。
-2. WHEN 用户添加 PeerHost THEN System SHALL 保存名称、路由配置、创建时间和更新时间，并拒绝空名称、非法地址和重复目标。
-3. WHEN 用户编辑 PeerHost 地址 THEN System SHALL 清除旧的握手结果和目标登录态，要求重新检查和登录。
-4. WHEN 用户删除 PeerHost THEN System SHALL 删除该 PeerHost 的配置、目标登录态、工作区绑定和本地聚合缓存。
-5. WHEN 用户点击右下角连接管理按钮 THEN System SHALL 在不离开当前 DSH 工作区的情况下打开管理面板。
+2. WHEN 用户添加 PeerHost THEN System SHALL 保存名称、路由配置、配色、创建时间和更新时间，并拒绝空名称、非法地址、非法配色和重复目标。
+3. WHEN 用户编辑 PeerHost THEN System SHALL 在同一张表单里一次性完成配置保存、握手与登录，不要求用户先单独"测试"再"登录"。
+4. WHEN 用户编辑 PeerHost 地址 THEN System SHALL 清除旧的握手结果和目标登录态，要求重新检查和登录。
+5. WHEN 用户编辑时留空账号密码 THEN System SHALL 保持已保存的登录凭据与连接状态不变。
+6. WHEN 用户编辑一个已禁用的 PeerHost THEN System SHALL 保留其禁用状态，不得因一次编辑而重新启用。
+7. WHEN 握手未通过或目标拒绝凭据 THEN System SHALL 明确报错且**不保存**该凭据。
+8. WHEN 用户删除 PeerHost THEN System SHALL 删除该 PeerHost 的配置、目标登录态、工作区绑定和本地聚合缓存。
+9. WHEN 用户点击右下角连接管理按钮 THEN System SHALL 在不离开当前 DSH 工作区的情况下打开管理面板。
+10. WHEN 管理面板显示单个 PeerHost 卡片 THEN System SHALL 只提供"编辑""测试""启用/禁用""删除"四个动作；登录与退出登录不再是独立按钮。
 
 ### 需求 3：PeerHost 必须通过目标 Host 握手检查
 
@@ -110,8 +115,11 @@
 1. WHEN 用户登录 PeerHost THEN System SHALL 将目标 access token、refresh token 和过期时间只保存到当前 Host 的敏感信息存储中。
 2. WHEN Client 发起 PeerHost 请求 THEN System SHALL 只携带 `targetHostId`，不得携带目标 token、密码或目标 base URL。
 3. WHEN 目标 access token 过期 THEN System SHALL 由当前 Host 使用目标 refresh token 尝试刷新。
-4. WHEN 目标登录态失效 THEN System SHALL 只清理该 PeerHost 的会话并返回 `session_required`，不得清理当前 Host 登录态。
-5. WHEN PeerHost 被删除、地址改变或 fingerprint 改变 THEN System SHALL 清理对应目标登录态。
+4. WHEN refresh token 失效且用户在编辑时保存过账号密码 THEN System SHALL 用该账号静默重登，不要求用户重新手工登录。
+5. WHEN 静默重登被目标明确拒绝 THEN System SHALL 清除该凭据并返回 `session_required`；网络类失败 SHALL 保留凭据供下次重试。
+6. WHEN 用户保存账号密码 THEN System SHALL 只写入加密凭据存储，明文记录文件与 Client DTO SHALL 均不包含密码。
+7. WHEN 目标登录态失效 THEN System SHALL 只清理该 PeerHost 的会话并返回 `session_required`，不得清理当前 Host 登录态。
+8. WHEN PeerHost 被删除、地址改变或 fingerprint 改变 THEN System SHALL 清理对应目标登录态。
 
 ### 需求 6：代理必须有明确的 HTTP/WS 白名单
 
@@ -140,15 +148,21 @@
 
 ### 需求 8：工作区和会话必须聚合显示并带 Host 标签
 
-**用户故事：** 作为用户，我希望在一个工作区导航中看到多台 DSH Host 的工作区和会话，并且一眼知道资源来自哪台机器。
+**用户故事：** 作为用户，我希望在一个工作区导航中只看到我主动添加的远端工作区，并且一眼知道每个工作区来自哪台机器。
 
 #### 验收标准
 
-1. WHEN PeerHost 模块启用且至少有一个可用 PeerHost THEN System SHALL 加载当前 Host 与 PeerHost 的工作区/会话摘要。
-2. WHEN 工作区名称显示在导航中 THEN System SHALL 在名称后显示稳定的 Host 标签；当前 Host 也必须有可识别标签或默认标记。
-3. WHEN 不同 Host 存在同名工作区或相同 `workspaceId` THEN System SHALL 分别显示并分别生成稳定 DOM/React key。
-4. WHEN 某个 PeerHost 检查中、不可达或版本不兼容 THEN System SHALL 保留 Host 节点和错误状态，不得阻塞其他 Host 的导航加载。
-5. WHEN PeerHost 工作区摘要刷新 THEN System SHALL 合并新数据、删除远端已删除项，并保持当前选中作用域不被错误替换。
+1. WHEN PeerHost 模块启用且至少有一个可用 PeerHost THEN System SHALL 只加载**用户已显式添加**的远端工作区；未添加任何工作区的 Host SHALL 不产生代理往返，也不在导航中出现条目。
+2. WHEN 用户添加远端工作区 THEN System SHALL 通过 DSH 原生"添加工作区"对话框中的一个额外标签页完成选择，且原生"本机文件夹"主体（面包屑、目录列表、新建文件夹、打开）SHALL 保持原有行为。
+3. WHEN 用户在标签页里选择远端 Host 与工作区 THEN System SHALL 只登记该工作区的可见性，**不得**调用原生 `onPicked`，避免在本机按远端路径创建不存在的工作区。
+4. WHEN 远端 Host 未通过握手、未登录或没有已登记工作区 THEN System SHALL 显示可操作的原因，不得把读取失败伪装成"没有工作区"。
+5. WHEN 工作区名称显示在导航中 THEN System SHALL 在名称后显示该 Host 的彩色标签；标签颜色由 PeerHost 配置决定，未配置时按 Host 名称推导稳定色。
+6. WHEN 用户为 PeerHost 配置颜色 THEN System SHALL 只接受 `#rrggbb`，拒绝其他形式，避免把任意字符串写进侧栏内联样式。
+7. WHEN 不同 Host 存在同名工作区或相同 `workspaceId` THEN System SHALL 分别显示并分别生成稳定 DOM/React key。
+8. WHEN 某个 PeerHost 检查中、不可达或版本不兼容 THEN System SHALL 保留 Host 节点和错误状态，不得阻塞其他 Host 的导航加载。
+9. WHEN PeerHost 工作区摘要刷新 THEN System SHALL 合并新数据、删除远端已删除项或用户已移除可见性的项，并保持当前选中作用域不被错误替换。
+10. WHEN 用户移除某个远端工作区的可见性 THEN System SHALL 在侧栏移除该条目与其彩色标签，不得残留无主标记。
+11. WHEN PeerHost 模块被停用 THEN System SHALL 移除注入的标签页与彩色标签，且不得删除 DSH 原生对话框或原生工作区行。
 
 ### 需求 9：打开远端会话后中栏和聊天输入必须路由正确
 

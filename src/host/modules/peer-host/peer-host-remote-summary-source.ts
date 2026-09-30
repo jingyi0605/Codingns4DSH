@@ -21,18 +21,62 @@ interface WorkspaceBaseline {
 export function createPeerHostRemoteSummarySource(input: {
   readonly transport: PeerHostRemoteSummaryTransport
   readonly scope: HostScope
+  /**
+   * 允许投影到侧栏的远端工作区 ID；缺省表示不过滤（仅测试与显式调用方使用）。
+   *
+   * 传空数组表示"用户尚未显式添加任何远端工作区"，此时返回空摘要且不访问目标
+   * Host——这是默认行为，不是降级，也不应伪装成远端没有工作区。
+   */
+  readonly visibleWorkspaceIds?: readonly string[]
 }): PeerHostWorkspaceSessionSummarySource {
+  const visible = input.visibleWorkspaceIds === undefined ? null : new Set(input.visibleWorkspaceIds)
   return {
     capabilityId: 'peer-host.native-workspace-session-summary',
     available: true,
     async load(signal) {
+      // 没有可见工作区时不必访问目标 Host：省一次代理往返，也避免把"没有可见
+      // 工作区"和"远端不可达"混成同一个错误。
+      if (visible !== null && visible.size === 0) return []
       const [baseline, sessions] = await Promise.all([
         readWorkspaceBaseline(input.transport, input.scope, signal),
         readSessionList(input.transport, input.scope, signal),
       ])
-      return buildRemoteSummary(baseline, sessions)
+      return buildRemoteSummary(baseline, sessions, visible)
     },
   }
+}
+
+/** 供"添加工作区"选择器使用的远端工作区候选；不过滤，也不含会话正文。 */
+export interface PeerHostRemoteWorkspaceCandidate {
+  readonly workspaceId: string
+  readonly displayName: string
+  readonly path: string
+  readonly sessionCount: number
+}
+
+/**
+ * 读取远端 Host 已登记的全部工作区。
+ *
+ * 与摘要不同，这里**刻意不做可见性过滤**：选择器必须先看到全部候选，用户才能
+ * 决定要显式添加哪些。返回值不含会话正文、标题或凭据。
+ */
+export async function readPeerHostRemoteWorkspaceCandidates(input: {
+  readonly transport: PeerHostRemoteSummaryTransport
+  readonly scope: HostScope
+  readonly signal?: AbortSignal
+}): Promise<readonly PeerHostRemoteWorkspaceCandidate[]> {
+  const baseline = await readWorkspaceBaseline(input.transport, input.scope, input.signal)
+  return baseline.items.flatMap((raw) => {
+    const value = asRecord(raw)
+    const workspaceId = readString(value, ['workspaceId', 'id', 'key'])
+    if (workspaceId === null) return []
+    return [{
+      workspaceId,
+      displayName: readString(value, ['title', 'displayName', 'name']) ?? workspaceId,
+      path: readString(value, ['path']) ?? workspaceId,
+      sessionCount: readStringList(value?.sessionIds).length,
+    }]
+  })
 }
 
 async function readWorkspaceBaseline(transport: PeerHostRemoteSummaryTransport, scope: HostScope, signal: AbortSignal | undefined): Promise<WorkspaceBaseline> {
@@ -60,7 +104,11 @@ async function readSessionList(transport: PeerHostRemoteSummaryTransport, scope:
   })
 }
 
-function buildRemoteSummary(baseline: WorkspaceBaseline, sessions: readonly Record<string, unknown>[]): readonly AggregateWorkspaceSource[] {
+function buildRemoteSummary(
+  baseline: WorkspaceBaseline,
+  sessions: readonly Record<string, unknown>[],
+  visibleWorkspaceIds: ReadonlySet<string> | null,
+): readonly AggregateWorkspaceSource[] {
   const sessionsById = new Map<string, Record<string, unknown>>()
   for (const session of sessions) {
     const sessionId = readString(session, ['sessionId', 'id', 'key'])
@@ -71,6 +119,8 @@ function buildRemoteSummary(baseline: WorkspaceBaseline, sessions: readonly Reco
     const value = asRecord(raw)
     const workspaceId = readString(value, ['workspaceId', 'id', 'key'])
     if (workspaceId === null) return []
+    // 默认只投影用户显式添加的远端工作区；未在集合内的远端工作区不进入导航。
+    if (visibleWorkspaceIds !== null && !visibleWorkspaceIds.has(workspaceId)) return []
     const visible: AggregateSessionSource[] = []
     const archivedSessions: AggregateSessionSource[] = []
     for (const sessionId of readStringList(value?.sessionIds)) {

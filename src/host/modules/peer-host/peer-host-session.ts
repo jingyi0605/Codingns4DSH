@@ -43,7 +43,7 @@ export class PeerHostSessionService {
     const password = requiredText(input.password, 'password')
     const response = await this.request(record, '/api/auth/login', { username, password })
     const payload = parseTokenResponse(response)
-    const credential = toCredential(payload, this.now())
+    const credential = toCredential(payload, this.now(), { username, password })
     await this.credentials.write(peerHostId, credential)
     if (record.status !== 'ready') await this.store.updateStatus(peerHostId, 'ready', null)
     return toView(peerHostId, credential)
@@ -53,37 +53,85 @@ export class PeerHostSessionService {
     const record = await this.ensureReady(peerHostId, true)
     const previous = await this.credentials.read(peerHostId)
     if (previous === null) return this.sessionRequired(peerHostId)
-    try {
-      const response = await this.request(record, '/api/auth/refresh', { refreshToken: previous.refreshToken })
-      const payload = parseTokenResponse(response, previous.refreshToken)
-      const credential = toCredential(payload, this.now())
-      await this.credentials.write(peerHostId, credential)
-      if (record.status !== 'ready') await this.store.updateStatus(peerHostId, 'ready', null)
-      return toView(peerHostId, credential)
-    } catch (error) {
-      await this.credentials.clear(peerHostId)
-      await this.store.updateStatus(peerHostId, 'session_required', errorCode(error, PEER_HOST_ERROR_CODES.SESSION_REQUIRED))
-      return this.sessionRequired(peerHostId)
-    }
+    const refreshed = await this.tryRefresh(peerHostId, record, previous)
+    if (refreshed !== null) return toView(peerHostId, refreshed)
+    // refreshToken 失效但编辑时保存了账号密码时静默重登，用户无需再手工登录。
+    const relogged = await this.trySavedLogin(peerHostId, record, previous)
+    if (relogged !== null) return toView(peerHostId, relogged)
+    return this.sessionRequired(peerHostId)
   }
 
   async getAccessToken(peerHostId: string): Promise<string> {
     const record = await this.ensureReady(peerHostId)
     const credential = await this.credentials.read(peerHostId)
     if (credential === null) return this.sessionRequired(peerHostId)
-    if (credential.expiresAt - this.now() <= this.refreshSkewMs) {
-      const refreshed = await this.refresh(peerHostId)
-      const latest = await this.credentials.read(peerHostId)
-      if (refreshed.status !== 'logged_in' || latest === null) throw new PeerHostSessionError(PEER_HOST_ERROR_CODES.SESSION_REQUIRED, '目标 Host 登录态已失效')
-      return latest.accessToken
-    }
-    return credential.accessToken
+    if (credential.expiresAt - this.now() > this.refreshSkewMs) return credential.accessToken
+    const refreshed = await this.tryRefresh(peerHostId, record, credential)
+    if (refreshed !== null) return refreshed.accessToken
+    const relogged = await this.trySavedLogin(peerHostId, record, credential)
+    if (relogged !== null) return relogged.accessToken
+    return this.sessionRequired(peerHostId)
   }
 
-  /** 目标 Host 明确拒绝当前 token 时，只清理该 PeerHost 的登录态。 */
+  /**
+   * 用 refreshToken 续期；失败返回 null，交给调用方决定是否静默重登。
+   *
+   * 这里刻意不清除凭据：网络抖动导致的失败不应该抹掉用户在编辑里保存的账号，
+   * 否则"只保存一次"的语义会被一次断网破坏。
+   */
+  private async tryRefresh(peerHostId: string, record: PeerHostRecord, previous: PeerHostTokenRecord): Promise<PeerHostTokenRecord | null> {
+    try {
+      const response = await this.request(record, '/api/auth/refresh', { refreshToken: previous.refreshToken })
+      const payload = parseTokenResponse(response, previous.refreshToken)
+      const credential = toCredential(payload, this.now(), readSavedAccount(previous))
+      await this.credentials.write(peerHostId, credential)
+      if (record.status !== 'ready') await this.store.updateStatus(peerHostId, 'ready', null)
+      return credential
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 用编辑时保存的账号密码静默重登。
+   *
+   * 只有目标明确拒绝该账号（401 → SESSION_REQUIRED）时才清除凭据，避免用过期
+   * 口令反复重试；网络类失败保留凭据，等待下一次请求再试。
+   */
+  private async trySavedLogin(peerHostId: string, record: PeerHostRecord, previous: PeerHostTokenRecord): Promise<PeerHostTokenRecord | null> {
+    const account = readSavedAccount(previous)
+    if (account === null) return null
+    try {
+      const response = await this.request(record, '/api/auth/login', account)
+      const payload = parseTokenResponse(response)
+      const credential = toCredential(payload, this.now(), account)
+      await this.credentials.write(peerHostId, credential)
+      if (record.status !== 'ready') await this.store.updateStatus(peerHostId, 'ready', null)
+      return credential
+    } catch (error) {
+      if (error instanceof PeerHostSessionError && error.code === PEER_HOST_ERROR_CODES.SESSION_REQUIRED) {
+        await this.credentials.clear(peerHostId)
+      }
+      return null
+    }
+  }
+
+  /**
+   * 目标 Host 明确拒绝当前 token 时的恢复入口。
+   *
+   * 保存了账号密码时先尝试静默重登：目标是"编辑里保存一次，之后一直能连"，
+   * 因此一次 401 不应该直接把用户打回手工登录。重登失败才清理登录态。
+   */
   async invalidate(peerHostId: string): Promise<void> {
-    await this.credentials.clear(peerHostId)
     const record = await this.store.get(peerHostId)
+    if (record !== null && record.status === 'ready') {
+      const credential = await this.credentials.read(peerHostId)
+      if (credential !== null && readSavedAccount(credential) !== null) {
+        const recovered = await this.trySavedLogin(peerHostId, record, credential)
+        if (recovered !== null) return
+      }
+    }
+    await this.credentials.clear(peerHostId)
     if (record !== null && record.status === 'ready') await this.store.updateStatus(peerHostId, 'session_required', PEER_HOST_ERROR_CODES.SESSION_REQUIRED)
   }
 
@@ -163,8 +211,24 @@ function parseTokenResponse(value: unknown, fallbackRefreshToken?: string): { ac
   return { accessToken, refreshToken, expiresIn }
 }
 
-function toCredential(payload: { accessToken: string; refreshToken: string; expiresIn: number }, now: number): PeerHostTokenRecord {
-  return { accessToken: payload.accessToken, refreshToken: payload.refreshToken, expiresAt: now + payload.expiresIn * 1000 }
+function toCredential(
+  payload: { accessToken: string; refreshToken: string; expiresIn: number },
+  now: number,
+  account: PeerHostLoginInput | null = null,
+): PeerHostTokenRecord {
+  return {
+    accessToken: payload.accessToken,
+    refreshToken: payload.refreshToken,
+    expiresAt: now + payload.expiresIn * 1000,
+    ...(account === null ? {} : { username: account.username, password: account.password }),
+  }
+}
+
+/** 读出凭据里保存的目标账号；缺任一半都视为未保存。 */
+function readSavedAccount(credential: PeerHostTokenRecord): PeerHostLoginInput | null {
+  const username = typeof credential.username === 'string' ? credential.username.trim() : ''
+  const password = typeof credential.password === 'string' ? credential.password : ''
+  return username === '' || password === '' ? null : { username, password }
 }
 
 function toView(peerHostId: string, credential: PeerHostTokenRecord): PeerHostSessionView {
@@ -174,8 +238,4 @@ function toView(peerHostId: string, credential: PeerHostTokenRecord): PeerHostSe
 function requiredText(value: string, field: string): string {
   if (typeof value !== 'string' || value.trim() === '') throw new TypeError(`${field} 不能为空`)
   return value.trim()
-}
-
-function errorCode(error: unknown, fallback: PeerHostErrorCode): PeerHostErrorCode {
-  return error instanceof PeerHostSessionError ? error.code : fallback
 }

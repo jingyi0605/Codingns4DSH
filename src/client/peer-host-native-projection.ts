@@ -79,7 +79,7 @@ function projectAggregate(results: readonly AggregateHostResult[]): {
     if (host.targetHostId === null) continue
     const virtualHostId = host.targetHostId
     for (const workspace of host.workspaces) {
-      const projected = projectWorkspace(virtualHostId, host.hostLabel, workspace)
+      const projected = projectWorkspace(virtualHostId, workspace)
       workspaces.push(projected.workspace)
       sessions.push(...projected.sessions)
     }
@@ -89,7 +89,6 @@ function projectAggregate(results: readonly AggregateHostResult[]): {
 
 function projectWorkspace(
   virtualHostId: string,
-  hostLabel: string,
   workspace: AggregateWorkspaceSummary,
 ): { readonly workspace: PeerHostVirtualWorkspaceView; readonly sessions: readonly PeerHostVirtualSessionSummary[] } {
   const virtualWorkspaceId = createVirtualWorkspaceId(virtualHostId, workspace.workspaceId)
@@ -115,7 +114,9 @@ function projectWorkspace(
     workspace: {
       workspaceId: virtualWorkspaceId,
       path,
-      title: `${workspace.displayName} (${hostLabel})`,
+      // Host 归属不再写进标题文本：侧栏由彩色标签表达，标题保持干净，可搜索、
+      // 可重命名，也不会污染 hover 卡片与重命名初值。
+      title: workspace.displayName,
       sessionIds,
       archivedSessionIds,
       // 远端未提供 Workspace 创建时间；用纪元时间保证原生 hover 卡片拿到合法日期。

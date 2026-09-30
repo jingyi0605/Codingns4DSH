@@ -6,12 +6,19 @@ import type {
   PeerHostRecord,
   PeerHostRoute,
 } from '../../../shared/contracts/peer-host.js'
-import { PEER_HOST_ERROR_CODES } from '../../../shared/contracts/peer-host.js'
+import { PEER_HOST_ERROR_CODES, normalizePeerHostColor } from '../../../shared/contracts/peer-host.js'
 
 export interface PeerHostTokenRecord {
   readonly accessToken: string
   readonly refreshToken: string
   readonly expiresAt: number
+  /**
+   * 用户显式保存的目标账号；只存在于加密凭据文件，从不回传客户端。
+   *
+   * 保存账号密码的唯一目的是票据彻底失效后静默重登，避免用户重复手工登录。
+   */
+  readonly username?: string
+  readonly password?: string
 }
 
 export interface PeerHostRecordStore {
@@ -28,11 +35,14 @@ export interface PeerHostCredentialStore {
 export interface PeerHostCreateInput {
   readonly displayName: string
   readonly route: PeerHostRoute
+  /** 工作区标签配色；缺省时客户端按名称推导稳定色。 */
+  readonly color?: string | null
 }
 
 export interface PeerHostUpdateInput {
   readonly displayName?: string
   readonly route?: PeerHostRoute
+  readonly color?: string | null
 }
 
 export interface PeerHostHandshakeUpdate {
@@ -105,6 +115,8 @@ export class PeerHostStore {
         fingerprint: null,
         lastCheckedAt: null,
         lastErrorCode: null,
+        color: normalizePeerHostColor(input.color) ?? null,
+        visibleWorkspaceIds: [],
         createdAt: timestamp,
         updatedAt: timestamp,
       }
@@ -127,6 +139,7 @@ export class PeerHostStore {
         ...previous,
         displayName,
         route,
+        ...(input.color === undefined ? {} : { color: normalizePeerHostColor(input.color) }),
         ...(routeChanged ? resetHandshake(previous) : {}),
         updatedAt: this.now(),
       }
@@ -169,12 +182,48 @@ export class PeerHostStore {
     })
   }
 
+  /**
+   * 显式添加或移除一个可见远端工作区。
+   *
+   * 只有这里写入的远端工作区才会进入聚合摘要；重复添加是幂等的，移除不存在的
+   * ID 也不报错，避免用户连点或并发刷新时产生难以理解的状态。
+   */
+  async setWorkspaceVisibility(peerHostId: string, workspaceId: string, visible: boolean): Promise<PeerHostRecord> {
+    return this.enqueue(async () => {
+      await this.load()
+      const index = this.findIndex(peerHostId)
+      const previous = this.records![index]!
+      const current = previous.visibleWorkspaceIds ?? []
+      const next = visible
+        ? (current.includes(workspaceId) ? current : [...current, workspaceId])
+        : current.filter((id) => id !== workspaceId)
+      const record: PeerHostRecord = { ...previous, visibleWorkspaceIds: next, updatedAt: this.now() }
+      this.records![index] = record
+      await this.persist()
+      return cloneRecord(record)
+    })
+  }
+
+  /** 整体替换可见工作区集合；用于"一次性保存"的编辑路径。 */
+  async replaceVisibleWorkspaces(peerHostId: string, workspaceIds: readonly string[]): Promise<PeerHostRecord> {
+    return this.enqueue(async () => {
+      await this.load()
+      const index = this.findIndex(peerHostId)
+      const previous = this.records![index]!
+      const next = [...new Set(workspaceIds.filter((id) => typeof id === 'string' && id.trim() !== ''))]
+      const record: PeerHostRecord = { ...previous, visibleWorkspaceIds: next, updatedAt: this.now() }
+      this.records![index] = record
+      await this.persist()
+      return cloneRecord(record)
+    })
+  }
+
   private async load(): Promise<void> {
     if (this.records !== null) return
     const records = await this.recordStore.read()
     this.records = records
       .filter((record) => record.ownerUserId === this.ownerUserId)
-      .map((record) => ({ ...record, route: normalizePeerHostRoute(record.route) }))
+      .map((record) => ({ ...normalizeStoredRecord(record), route: normalizePeerHostRoute(record.route) }))
   }
 
   private async persist(): Promise<void> {
@@ -341,6 +390,23 @@ function routeKey(route: PeerHostRoute): string {
     : `relay:${route.deviceId}:${route.relayEntryId}`
 }
 
+/**
+ * 归一化磁盘上的旧记录。
+ *
+ * 旧版本没有 `color` 与 `visibleWorkspaceIds`：前者保持 null（客户端按名称推导），
+ * 后者必须是空数组——把 undefined 当成"显示全部"会让升级后的用户突然看到所有
+ * 远端工作区，与"默认不显示"的新语义相反。
+ */
+function normalizeStoredRecord(record: PeerHostRecord): PeerHostRecord {
+  return {
+    ...record,
+    color: normalizePeerHostColor(record.color),
+    visibleWorkspaceIds: Array.isArray(record.visibleWorkspaceIds)
+      ? record.visibleWorkspaceIds.filter((id): id is string => typeof id === 'string' && id.trim() !== '')
+      : [],
+  }
+}
+
 function resetHandshake(record: PeerHostRecord): Pick<PeerHostRecord, 'status' | 'pluginId' | 'pluginVersion' | 'dshVersion' | 'hostname' | 'configProfile' | 'apiCompatibility' | 'fingerprint' | 'lastCheckedAt' | 'lastErrorCode'> {
   return {
     status: 'configured',
@@ -368,7 +434,12 @@ function requireText(value: unknown, field: string): string {
 }
 
 function cloneRecord(record: PeerHostRecord): PeerHostRecord {
-  return { ...record, route: record.route.kind === 'lan' ? { ...record.route } : { ...record.route } }
+  return {
+    ...record,
+    route: record.route.kind === 'lan' ? { ...record.route } : { ...record.route },
+    // 数组字段必须复制：调用方拿到的是快照，不能通过引用改到 store 内部状态。
+    ...(record.visibleWorkspaceIds === undefined ? {} : { visibleWorkspaceIds: [...record.visibleWorkspaceIds] }),
+  }
 }
 
 function isCredentialMap(value: unknown): value is Record<string, PeerHostTokenRecord> {

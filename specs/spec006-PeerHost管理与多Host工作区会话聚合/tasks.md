@@ -26,6 +26,50 @@
 
 旧阶段 6 的 DOM 导航和会话节点只用于能力探测、协议验证和降级展示；它们不能关闭 6A 任务，也不能作为发布验收证据。
 
+## 2026-09-30 用户体验改造：显式添加远端工作区、彩色标签与一次性凭据
+
+- 状态：`DONE`
+- 目标：远端工作区默认不显示，改由原生"添加工作区"对话框新增的"远程 HOST"标签页显式登记；
+  Host 归属改用可配色标签；凭据在编辑里一次性保存并自动连接，管理面板按钮精简为四项。
+- 改动文件：
+  - 契约：`src/shared/contracts/peer-host.ts`、`src/shared/index.ts`
+  - Host：`src/host/modules/peer-host/peer-host-store.ts`、
+    `src/host/modules/peer-host/peer-host-session.ts`、
+    `src/host/modules/peer-host/peer-host-aggregate-service.ts`、
+    `src/host/modules/peer-host/peer-host-remote-summary-source.ts`、
+    `src/host/features/peer-host.ts`
+  - Client：`src/client/peer-host-color.ts`（新增）、
+    `src/client/peer-host-workspace-tag.ts`（新增）、
+    `src/client/peer-host-workspace-tab.ts`（新增）、
+    `src/client/peer-host-management-api.ts`、
+    `src/client/peer-host-management-panel.ts`、
+    `src/client/peer-host-native-projection.ts`、
+    `src/client/features/peer-host.ts`
+  - 测试：`tests/peer-host-workspace-tab.spec.ts`（新增 7 项）、
+    `tests/peer-host-workspace-tag.spec.ts`（新增 7 项）、
+    `tests/peer-host-edit-connect.spec.ts`（新增 7 项），
+    并扩展 `peer-host-store`、`peer-host-session`、`peer-host-remote-summary-source`、
+    `peer-host-management`、`peer-host-native-projection` 用例
+- 关键决策：
+  1. **不抢占 `sidebar.workspaces.directoryFlow` 插槽**。它是 `single` 插槽且 DSH 自带 browse 组件
+     不可复用（包只导出 `apply`/`inject`），抢占等于自绘整个目录浏览器并替换原生入口。
+     用户要求"原生主体不变，只加标签页"，因此改为在原生对话框 DOM 上追加标签页。
+  2. **远端分支不调用 `onPicked`**。原生 flow 的 `onPicked` 会交给本地 `createWorkspace({path})`，
+     走这条路径会在本机按远端路径创建不存在的工作区。
+  3. **配色只接受 `#rrggbb`**。颜色会写进本机侧栏内联样式，开放任意字符串等于交出 CSS 注入面。
+  4. **旧记录缺失 `visibleWorkspaceIds` 归一化为空数组**。当成"显示全部"会让升级用户突然看到
+     所有远端工作区，与"默认不显示"语义相反。
+- 验证证据：
+  - `pnpm run typecheck`、`pnpm run version:check`、`pnpm run capability:check` 通过。
+  - `node --test tests/*.spec.ts`：826 项中 825 项通过；唯一失败为 `contracts.spec.ts` 的
+    `mobileAccess` 用例，属于同一工作区中另一写入者并行进行的移动端改造（其 `config.ts`
+    改动本轮期间落盘、测试未同步），与本任务无关。
+  - 测试实际捕获并修复两个实现缺陷：标签注入后当轮被清理循环误删；
+    远端读取失败被伪装成"没有已连接的 Host"。
+- 明确不做什么：不新增远端目录浏览、不新增 `directoryPicker/*` 白名单、不修改 DSH 原生组件源码。
+- 风险：标签页依赖原生对话框的 CSS module 类名（`_editorScope`/`_header`/`_content`/`_footerBar`），
+  已确认在 0.2.0-rc.1 与 rc.2 上一致，但 DSH 升级时需回归 `peer-host-workspace-tab.spec.ts`。
+
 ## 使用规则
 
 - `TODO`：未开始。

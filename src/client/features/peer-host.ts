@@ -11,6 +11,8 @@ import { createVirtualSessionId, createVirtualWorkspaceId } from '../../shared/i
 import { isDshNativeRemoteMethod } from '../../host/modules/peer-host/peer-host-native-protocol.js'
 import { createPeerHostNativeProjection, type PeerHostNativeProjection } from '../peer-host-native-projection.js'
 import { installPeerHostNativeStoreProjection, refreshPeerHostNativeSessions } from '../peer-host-native-store-projection.js'
+import { startPeerHostWorkspaceTag } from '../peer-host-workspace-tag.js'
+import { startPeerHostWorkspaceTab } from '../peer-host-workspace-tab.js'
 import { registerPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
@@ -66,11 +68,22 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
     const panel = startPeerHostManagementPanel({ rpc: context.services.rpc })
     context.resources.add(() => panel.dispose())
     const management = createPeerHostManagementApi(context.services.rpc)
+    // 工作区标签：远端工作区不再把 Host 名写进标题文本，改由彩色标签表达归属。
+    const tag = startPeerHostWorkspaceTag()
+    context.resources.add(() => tag.dispose())
+    // 原生"添加工作区"对话框保持主体不变，只额外挂一个"远程 HOST"标签页。
+    const workspaceTab = startPeerHostWorkspaceTab({
+      api: management,
+      onWorkspaceAdded: () => refresh(),
+    })
+    context.resources.add(() => workspaceTab.dispose())
     // 虚拟会话必须进入原生 SessionManager 目录（否则 sessions.retain 解析失败），
     // 因此聚合变化后触发一次原生列表刷新，由页面 Transport 在 session/list 响应里补齐。
     const refresh = async (): Promise<void> => {
       try {
-        if (transport?.setAggregate(await management.aggregate()) === true) {
+        const aggregate = await management.aggregate()
+        tag.setAggregate(aggregate)
+        if (transport?.setAggregate(aggregate) === true) {
           await refreshPeerHostNativeSessions(context.services.uiContext)
         }
       } catch {

@@ -206,10 +206,13 @@ export type {
 } from './contracts/peer-host.js'
 export {
   PEER_HOST_ERROR_CODES,
+  PEER_HOST_COLOR_PATTERN,
+  PEER_HOST_COLOR_PRESETS,
   ResourceScopeStaleError,
   VIRTUAL_RESOURCE_ID_PREFIX,
   createVirtualWorkspaceId,
   createVirtualSessionId,
+  normalizePeerHostColor,
   parseVirtualWorkspaceId,
   parseVirtualSessionId,
 } from './contracts/peer-host.js'
