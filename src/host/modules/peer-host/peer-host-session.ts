@@ -36,18 +36,21 @@ export class PeerHostSessionService {
   }
 
   async login(peerHostId: string, input: PeerHostLoginInput): Promise<PeerHostSessionView> {
-    const record = await this.ensureReady(peerHostId)
+    // 目标明确拒绝旧 token 后状态就是 session_required；此时重新登录必须直接可用，
+    // 不能要求用户先手工重新握手。
+    const record = await this.ensureReady(peerHostId, true)
     const username = requiredText(input.username, 'username')
     const password = requiredText(input.password, 'password')
     const response = await this.request(record, '/api/auth/login', { username, password })
     const payload = parseTokenResponse(response)
     const credential = toCredential(payload, this.now())
     await this.credentials.write(peerHostId, credential)
+    if (record.status !== 'ready') await this.store.updateStatus(peerHostId, 'ready', null)
     return toView(peerHostId, credential)
   }
 
   async refresh(peerHostId: string): Promise<PeerHostSessionView> {
-    const record = await this.ensureReady(peerHostId)
+    const record = await this.ensureReady(peerHostId, true)
     const previous = await this.credentials.read(peerHostId)
     if (previous === null) return this.sessionRequired(peerHostId)
     try {
@@ -55,6 +58,7 @@ export class PeerHostSessionService {
       const payload = parseTokenResponse(response, previous.refreshToken)
       const credential = toCredential(payload, this.now())
       await this.credentials.write(peerHostId, credential)
+      if (record.status !== 'ready') await this.store.updateStatus(peerHostId, 'ready', null)
       return toView(peerHostId, credential)
     } catch (error) {
       await this.credentials.clear(peerHostId)
@@ -66,7 +70,7 @@ export class PeerHostSessionService {
   async getAccessToken(peerHostId: string): Promise<string> {
     const record = await this.ensureReady(peerHostId)
     const credential = await this.credentials.read(peerHostId)
-    if (credential === null) return this.sessionRequired(peerHostId).then(() => '')
+    if (credential === null) return this.sessionRequired(peerHostId)
     if (credential.expiresAt - this.now() <= this.refreshSkewMs) {
       const refreshed = await this.refresh(peerHostId)
       const latest = await this.credentials.read(peerHostId)
@@ -99,11 +103,15 @@ export class PeerHostSessionService {
     return { peerHostId, status: 'logged_out', expiresAt: null }
   }
 
-  private async ensureReady(peerHostId: string): Promise<PeerHostRecord> {
+  private async ensureReady(peerHostId: string, allowSessionRequired = false): Promise<PeerHostRecord> {
     const record = await this.store.get(peerHostId)
     if (record === null) throw new PeerHostSessionError(PEER_HOST_ERROR_CODES.NOT_FOUND, 'PeerHost 不存在')
-    if (record.status !== 'ready') throw new PeerHostSessionError(record.status === 'session_required' ? PEER_HOST_ERROR_CODES.SESSION_REQUIRED : PEER_HOST_ERROR_CODES.NOT_READY, 'PeerHost 尚未通过握手检查')
-    return record
+    const requiresLogin = record.status === 'session_required'
+    if (record.status === 'ready' || (allowSessionRequired && requiresLogin)) return record
+    throw new PeerHostSessionError(
+      requiresLogin ? PEER_HOST_ERROR_CODES.SESSION_REQUIRED : PEER_HOST_ERROR_CODES.NOT_READY,
+      requiresLogin ? '目标 Host 需要登录' : 'PeerHost 尚未通过握手检查',
+    )
   }
 
   private async request(record: PeerHostRecord, path: string, body?: unknown, accessToken?: string): Promise<unknown> {
@@ -111,12 +119,24 @@ export class PeerHostSessionService {
     const headers = new Headers({ accept: 'application/json' })
     if (body !== undefined) headers.set('content-type', 'application/json')
     if (accessToken !== undefined) headers.set('authorization', `Bearer ${accessToken}`)
-    const response = await this.fetchImpl(new URL(path, record.route.normalizedOrigin), {
-      method: 'POST', headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    })
+    let response: Response
+    try {
+      response = await this.fetchImpl(new URL(path, record.route.normalizedOrigin), {
+        method: 'POST', headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      })
+    } catch {
+      throw new PeerHostSessionError(PEER_HOST_ERROR_CODES.PROXY_UNREACHABLE, `目标 Host 请求失败（POST ${path}，网络不可达）`)
+    }
     let payload: unknown = null
     try { payload = await response.json() } catch { /* logout 允许空响应 */ }
-    if (!response.ok) throw new PeerHostSessionError(response.status === 401 ? PEER_HOST_ERROR_CODES.SESSION_REQUIRED : PEER_HOST_ERROR_CODES.PROXY_UNREACHABLE, '目标 Host 登录请求失败')
+    if (!response.ok) {
+      if (response.status === 401) {
+        // 登录端点的 401 只表示凭据被拒；不能用“登录态已失效”掩盖密码错误。
+        const message = path === '/api/auth/login' ? '目标 Host 用户名或密码错误' : '目标 Host 登录态已失效'
+        throw new PeerHostSessionError(PEER_HOST_ERROR_CODES.SESSION_REQUIRED, message)
+      }
+      throw new PeerHostSessionError(PEER_HOST_ERROR_CODES.PROXY_UNREACHABLE, `目标 Host 请求失败（POST ${path}，HTTP ${response.status}）`)
+    }
     return payload
   }
 

@@ -12,6 +12,8 @@ export interface PeerHostHandshakePayload {
   readonly pluginId: string | null
   readonly pluginVersion: string | null
   readonly dshVersion: string
+  readonly hostname?: string | null
+  readonly configProfile?: string | null
   readonly apiCompatibility: string
   readonly fingerprint: string | null
   readonly capabilities: readonly string[]
@@ -81,6 +83,8 @@ export class PeerHostHandshakeService {
       pluginId: payload.pluginId,
       pluginVersion: payload.pluginVersion,
       dshVersion: payload.dshVersion,
+      hostname: payload.hostname ?? null,
+      configProfile: payload.configProfile ?? null,
       apiCompatibility: payload.apiCompatibility,
       fingerprint: payload.fingerprint,
       lastCheckedAt: this.now(),
@@ -104,6 +108,8 @@ export class PeerHostHandshakeService {
       pluginId: null,
       pluginVersion: null,
       dshVersion: null,
+      hostname: null,
+      configProfile: null,
       apiCompatibility: null,
       fingerprint: null,
       lastCheckedAt: this.now(),
@@ -132,6 +138,8 @@ function isHandshakePayload(value: unknown): value is PeerHostHandshakePayload {
     && (typeof input.pluginId === 'string' || input.pluginId === null)
     && (typeof input.pluginVersion === 'string' || input.pluginVersion === null)
     && typeof input.dshVersion === 'string'
+    && (input.hostname === undefined || input.hostname === null || typeof input.hostname === 'string')
+    && (input.configProfile === undefined || input.configProfile === null || typeof input.configProfile === 'string')
     && typeof input.apiCompatibility === 'string'
     && (typeof input.fingerprint === 'string' || input.fingerprint === null)
     && Array.isArray(input.capabilities)

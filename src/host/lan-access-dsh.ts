@@ -360,6 +360,22 @@ export class LanAccessDshProxy {
 
   private authorize(request: ParsedLanRequest, localAddress: boolean): Uint8Array | 'pass' {
     const config = this.loginConfig
+    // PeerHost 的握手和目标 Host 认证端点必须在建立登录保护会话前可达：
+    // 握手只返回公开能力摘要，auth/login 负责交换目标 Host 自己签发的短期票据。
+    // 其他 API 仍然经过登录保护，不把业务数据面暴露给未登录客户端。
+    if (request.method === 'GET' && request.path === '/api/public/host-handshake') return 'pass'
+    const authResponse = resolvePeerHostAuthResponse(request, config, this.revokedSessions)
+    if (authResponse !== undefined) return authResponse
+    // Host-to-Host 请求不持有浏览器 Cookie，而是由 PeerHost Host 侧注入目标 Host
+    // 签发的 Bearer 票据；只放行固定资源白名单，票据本身必须通过签名校验。
+    if (isPeerHostRouteRequest(request)) {
+      const token = readBearerToken(request.headers.authorization)
+      if (token !== undefined) {
+        return verifyPeerHostAccessToken(config, token, this.revokedSessions)
+          ? 'pass'
+          : loginResponse(401, '需要登录')
+      }
+    }
     // PWA 静态资产先于登录判定：它们只包含公开元数据，未登录时也可取；命中时
     // 直接合成响应，不进入上游转发路径。
     const pwaResponse = this.authorizePwa(request)
@@ -435,11 +451,128 @@ export class LanAccessDshProxy {
   }
 }
 
-interface ParsedLanRequest {
+/**
+ * PeerHost 出站请求允许访问的固定路由白名单。
+ *
+ * 票据校验在调用方完成：这里只回答“这条路由是否属于 Host-to-Host 数据面”，
+ * 避免把路径判定和签名校验混在一起，也避免把整个 LAN API 变成公开入口。
+ */
+export function isPeerHostRouteRequest(request: LanAccessDshPwaRequest): boolean {
+  const routes: readonly { readonly prefix: string; readonly methods: readonly string[] }[] = [
+    { prefix: '/ws', methods: ['GET'] },
+    { prefix: '/api/codingns/host/status', methods: ['POST'] },
+    { prefix: '/api/codingns/peerHost/nativeLocal', methods: ['POST'] },
+    { prefix: '/api/codingns/peerHost/native', methods: ['POST'] },
+    { prefix: '/api/codingns/peerHost/nativeStream', methods: ['POST'] },
+    { prefix: '/api/codingns/peerHost/nativeStreamOpen', methods: ['POST'] },
+    { prefix: '/api/codingns/peerHost/nativeStreamNext', methods: ['POST'] },
+    { prefix: '/api/codingns/peerHost/nativeStreamClose', methods: ['POST'] },
+    { prefix: '/api/workspaces', methods: ['GET'] },
+    { prefix: '/api/sessions', methods: ['GET', 'POST'] },
+    { prefix: '/api/file-tree', methods: ['GET'] },
+    { prefix: '/api/files', methods: ['GET', 'PUT', 'POST'] },
+    { prefix: '/api/git', methods: ['GET', 'POST'] },
+    { prefix: '/api/terminal', methods: ['GET', 'POST'] },
+    { prefix: '/api/right-tools', methods: ['GET', 'POST'] },
+  ]
+  const route = routes.find((candidate) => request.path === candidate.prefix || request.path.startsWith(`${candidate.prefix}/`))
+  return route !== undefined && route.methods.includes(request.method.toUpperCase())
+}
+
+/** 已解析到登录保护边界的请求；PeerHost 认证与转发共用同一份最小字段。 */
+export interface ParsedLanRequest {
   method: string
   path: string
   headers: Record<string, string>
   body: Uint8Array
+}
+
+/** PeerHost 目标侧认证端点；路径固定，客户端不能自定义目标或凭据格式。 */
+export const PEER_HOST_AUTH_PATHS = {
+  login: '/api/auth/login',
+  refresh: '/api/auth/refresh',
+  logout: '/api/auth/logout',
+} as const
+
+/**
+ * PeerHost 目标侧认证裁决。
+ *
+ * 目标 Host 自己签发短期票据，当前 Host 才能在不保存目标密码的前提下代理请求。
+ * 票据复用登录保护的签名材料；登录保护未覆盖局域网范围时返回占位票据，与
+ * “未启用保护即放行”的既有语义保持一致。返回 undefined 表示不是认证端点。
+ */
+export function resolvePeerHostAuthResponse(
+  request: ParsedLanRequest,
+  config: LanAccessDshLoginConfig | null,
+  revoked: Set<string>,
+): Uint8Array | undefined {
+  if (request.method.toUpperCase() !== 'POST') return undefined
+  if (request.path === PEER_HOST_AUTH_PATHS.login) {
+    const credentials = readJsonBody(request.body)
+    const username = typeof credentials?.username === 'string' ? credentials.username : ''
+    const password = typeof credentials?.password === 'string' ? credentials.password : ''
+    if (!peerHostLoginProtected(config)) return loginJsonResponse(200, issueOpenPeerHostCredential())
+    if (username === '' || password === '' || username !== config.username || !verifyPassword(password, config)) {
+      return loginJsonResponse(401, { error: { code: 'PEER_HOST_SESSION_REQUIRED', message: '目标 Host 用户名或密码错误' } })
+    }
+    return loginJsonResponse(200, issuePeerHostCredential(config))
+  }
+  if (request.path === PEER_HOST_AUTH_PATHS.refresh) {
+    const body = readJsonBody(request.body)
+    const refreshToken = typeof body?.refreshToken === 'string' ? body.refreshToken : ''
+    if (!peerHostLoginProtected(config)) return loginJsonResponse(200, issueOpenPeerHostCredential())
+    if (refreshToken === '' || revoked.has(refreshToken) || !verifySignedSessionToken(refreshToken, config, 'lan')) {
+      return loginJsonResponse(401, { error: { code: 'PEER_HOST_SESSION_REQUIRED', message: '目标 Host 登录态已失效' } })
+    }
+    return loginJsonResponse(200, issuePeerHostCredential(config))
+  }
+  if (request.path === PEER_HOST_AUTH_PATHS.logout) {
+    const token = readBearerToken(request.headers.authorization)
+    if (token !== undefined && peerHostLoginProtected(config)) revoked.add(token)
+    return loginJsonResponse(200, { ok: true })
+  }
+  return undefined
+}
+
+/** 校验 PeerHost 出站票据；登录保护未覆盖局域网范围时保持向后兼容。 */
+export function verifyPeerHostAccessToken(config: LanAccessDshLoginConfig | null, token: string, revoked: ReadonlySet<string> = new Set()): boolean {
+  if (!peerHostLoginProtected(config)) return true
+  return !revoked.has(token) && verifySignedSessionToken(token, config, 'lan')
+}
+
+export function readBearerToken(value: string | undefined): string | undefined {
+  const match = /^Bearer\s+(\S+)$/u.exec(value?.trim() ?? '')
+  return match?.[1]
+}
+
+function peerHostLoginProtected(config: LanAccessDshLoginConfig | null): config is LanAccessDshLoginConfig {
+  return config !== null && config.enabled && config.scopes.lan
+}
+
+function issuePeerHostCredential(config: LanAccessDshLoginConfig): { accessToken: string; refreshToken: string; expiresIn: number } {
+  return {
+    accessToken: issueLoginProtectionSession(config, 'lan').token,
+    refreshToken: issueLoginProtectionSession(config, 'lan').token,
+    expiresIn: config.timeoutSeconds,
+  }
+}
+
+/** 未启用登录保护时目标不校验票据，这里只保证 Host 侧凭据格式一致。 */
+function issueOpenPeerHostCredential(): { accessToken: string; refreshToken: string; expiresIn: number } {
+  return {
+    accessToken: `open.${randomBytes(16).toString('base64url')}`,
+    refreshToken: `open.${randomBytes(16).toString('base64url')}`,
+    expiresIn: 3600,
+  }
+}
+
+function readJsonBody(body: Uint8Array): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(new TextDecoder().decode(body))
+    return isRecord(value) ? value : null
+  } catch {
+    return null
+  }
 }
 
 /** PWA 白名单判定所需的请求子集；单独抽出来便于直接单测。 */
@@ -1038,11 +1171,32 @@ function parseLoginSettings(value: unknown, current: LanAccessDshLoginRecord | n
   const timeoutSeconds = requireInteger(input.timeoutSeconds, '超时时间', 60, 604800)
   const scopes = parseLoginScopes(input.scopes ?? current?.scopes)
   const password = typeof input.password === 'string' ? input.password : ''
-  if (password === '' && current === null) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '启用登录保护时必须设置密码')
-  if (password !== '' && (password.length < 8 || password.length > 256)) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '密码长度必须是 8 到 256 个字符')
-  const passwordSalt = password === '' ? current!.passwordSalt : randomBytes(16).toString('hex')
-  const passwordHash = password === '' ? current!.passwordHash : hashPassword(password, passwordSalt)
-  return { enabled: true, username, passwordHash, passwordSalt, timeoutSeconds, scopes }
+  if (password === '') {
+    if (current === null) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '启用登录保护时必须设置密码')
+    return { enabled: true, username, passwordHash: current.passwordHash, passwordSalt: current.passwordSalt, timeoutSeconds, scopes }
+  }
+  return createLoginProtectionConfig({ username, password, timeoutSeconds, scopes })
+}
+
+/** 由明文密码生成登录保护配置；只在设置写入与测试夹具中使用，不回显密码。 */
+export function createLoginProtectionConfig(input: {
+  readonly username: string
+  readonly password: string
+  readonly timeoutSeconds: number
+  readonly scopes: LoginProtectionScopes
+}): LanAccessDshLoginConfig {
+  const username = requireLoginText(input.username, '用户名', 1, 128)
+  const timeoutSeconds = requireInteger(input.timeoutSeconds, '超时时间', 60, 604800)
+  if (input.password.length < 8 || input.password.length > 256) throw new LanAccessDshError('LAN_ACCESS_DSH_INVALID', '密码长度必须是 8 到 256 个字符')
+  const passwordSalt = randomBytes(16).toString('hex')
+  return {
+    enabled: true,
+    username,
+    passwordHash: hashPassword(input.password, passwordSalt),
+    passwordSalt,
+    timeoutSeconds,
+    scopes: parseLoginScopes(input.scopes),
+  }
 }
 
 function normalizeLoginConfig(value: LanAccessDshLoginConfig): LanAccessDshLoginConfig {

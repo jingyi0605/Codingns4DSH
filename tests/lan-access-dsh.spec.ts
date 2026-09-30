@@ -9,10 +9,15 @@ import { createLanAccessDshFeature } from '../data/build/dist/host/features/inde
 import {
   LanAccessDshProxy,
   LanAccessDshRequestTransform,
+  PEER_HOST_AUTH_PATHS,
   DEFAULT_LOGIN_PROTECTION_COOKIE_NAME,
   InMemoryLanAccessDshLoginStore,
   createLanAccessDshRpcHandler,
+  createLoginProtectionConfig,
+  isPeerHostRouteRequest,
   refreshLoginProtectionSession,
+  resolvePeerHostAuthResponse,
+  verifyPeerHostAccessToken,
   verifyLoginProtectionSession,
   normalizeLanAccessDshConfig,
   normalizeLanAccessDshRpcBody,
@@ -326,4 +331,92 @@ test('Host 启动时按持久化配置自动启动映射，运行中修改选项
   assert.deepEqual(runtime.closed, [])
   await registry.disable('lanAccessDsh')
   assert.deepEqual(runtime.closed, [13080])
+})
+
+function peerHostAuthRequest(path: string, body: unknown, authorization?: string): { method: string; path: string; headers: Record<string, string>; body: Uint8Array } {
+  return {
+    method: 'POST',
+    path,
+    headers: authorization === undefined ? {} : { authorization },
+    body: new TextEncoder().encode(JSON.stringify(body ?? {})),
+  }
+}
+
+function readAuthResponse(response: Uint8Array | undefined): { status: number; body: Record<string, unknown> } {
+  assert.ok(response !== undefined)
+  const [head, body] = new TextDecoder().decode(response).split('\r\n\r\n', 2)
+  return { status: Number(/^HTTP\/1\.1 (\d+)/u.exec(head ?? '')?.[1] ?? '0'), body: JSON.parse(body ?? '{}') as Record<string, unknown> }
+}
+
+test('PeerHost 目标侧登录端点只在校验通过时签发票据', () => {
+  const config = createLoginProtectionConfig({ username: 'jackson', password: 'password123', timeoutSeconds: 1800, scopes: { lan: true, relay: true } })
+  const accepted = readAuthResponse(resolvePeerHostAuthResponse(
+    peerHostAuthRequest(PEER_HOST_AUTH_PATHS.login, { username: 'jackson', password: 'password123' }),
+    config,
+    new Set(),
+  ))
+  assert.equal(accepted.status, 200)
+  assert.equal(accepted.body.expiresIn, 1800)
+  assert.equal(typeof accepted.body.accessToken, 'string')
+  assert.equal(accepted.body.accessToken, verifyPeerHostAccessToken(config, String(accepted.body.accessToken)) ? accepted.body.accessToken : '')
+  assert.equal(verifyPeerHostAccessToken(config, 'forged-token'), false)
+  assert.equal(verifyPeerHostAccessToken(null, 'forged-token'), true)
+
+  assert.equal(readAuthResponse(resolvePeerHostAuthResponse(
+    peerHostAuthRequest(PEER_HOST_AUTH_PATHS.login, { username: 'jackson', password: 'wrong-password' }),
+    config,
+    new Set(),
+  )).status, 401)
+  assert.equal(readAuthResponse(resolvePeerHostAuthResponse(
+    peerHostAuthRequest(PEER_HOST_AUTH_PATHS.login, { username: 'jackson' }),
+    config,
+    new Set(),
+  )).status, 401)
+
+  const notProtected = readAuthResponse(resolvePeerHostAuthResponse(
+    peerHostAuthRequest(PEER_HOST_AUTH_PATHS.login, { username: 'anyone', password: 'anything' }),
+    null,
+    new Set(),
+  ))
+  assert.equal(notProtected.status, 200)
+  assert.match(String(notProtected.body.accessToken), /^open\./u)
+})
+
+test('PeerHost 票据可刷新，撤销后刷新与代理校验同时失效', () => {
+  const config = createLoginProtectionConfig({ username: 'jackson', password: 'password123', timeoutSeconds: 1800, scopes: { lan: true, relay: true } })
+  const issued = readAuthResponse(resolvePeerHostAuthResponse(
+    peerHostAuthRequest(PEER_HOST_AUTH_PATHS.login, { username: 'jackson', password: 'password123' }),
+    config,
+    new Set(),
+  )).body
+  const refreshed = readAuthResponse(resolvePeerHostAuthResponse(
+    peerHostAuthRequest(PEER_HOST_AUTH_PATHS.refresh, { refreshToken: issued.refreshToken }),
+    config,
+    new Set(),
+  )).body
+  assert.notEqual(refreshed.accessToken, issued.accessToken)
+  assert.equal(verifyPeerHostAccessToken(config, String(refreshed.accessToken)), true)
+
+  assert.equal(readAuthResponse(resolvePeerHostAuthResponse(peerHostAuthRequest(PEER_HOST_AUTH_PATHS.refresh, {}), config, new Set())).status, 401)
+  const revoked = new Set([String(refreshed.accessToken)])
+  assert.equal(readAuthResponse(resolvePeerHostAuthResponse(
+    peerHostAuthRequest(PEER_HOST_AUTH_PATHS.refresh, { refreshToken: refreshed.accessToken }),
+    config,
+    revoked,
+  )).status, 401)
+  const loggedOut = readAuthResponse(resolvePeerHostAuthResponse(
+    peerHostAuthRequest(PEER_HOST_AUTH_PATHS.logout, {}, `Bearer ${String(refreshed.refreshToken)}`),
+    config,
+    revoked,
+  ))
+  assert.equal(loggedOut.status, 200)
+  assert.equal(verifyPeerHostAccessToken(config, String(refreshed.refreshToken), revoked), false)
+})
+
+test('PeerHost 出站白名单只覆盖固定资源路由', () => {
+  assert.equal(isPeerHostRouteRequest({ method: 'POST', path: '/api/codingns/host/status' }), true)
+  assert.equal(isPeerHostRouteRequest({ method: 'POST', path: '/api/codingns/peerHost/nativeLocal' }), true)
+  assert.equal(isPeerHostRouteRequest({ method: 'GET', path: '/api/workspaces' }), true)
+  assert.equal(isPeerHostRouteRequest({ method: 'POST', path: '/api/workspaces' }), false)
+  assert.equal(isPeerHostRouteRequest({ method: 'GET', path: '/api/admin/users' }), false)
 })

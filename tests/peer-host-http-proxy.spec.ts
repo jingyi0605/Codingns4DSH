@@ -6,6 +6,7 @@ import {
   PeerHostStore,
 } from '../data/build/dist/host/modules/peer-host/peer-host-store.js'
 import { PeerHostHttpProxyService } from '../data/build/dist/host/modules/peer-host/host-api-proxy-service.js'
+import { PeerHostSessionService } from '../data/build/dist/host/modules/peer-host/peer-host-session.js'
 
 const scopeHeaders = {
   'x-codingns-host-id': 'host-local',
@@ -69,4 +70,17 @@ test('目标 Host 返回 401 时只清理该 PeerHost 登录态', async () => {
   assert.equal(response.status, 401)
   assert.equal((await response.json()).error.code, 'PEER_HOST_SESSION_REQUIRED')
   assert.equal(invalidated, 1)
+})
+
+test('缺少目标凭据时按登录态失效返回，不伪装成目标代理不可达', async () => {
+  const credentials = new InMemoryPeerHostCredentialStore()
+  const store = new PeerHostStore('user-1', new InMemoryPeerHostRecordStore(), credentials, () => 100, () => 'peer-1')
+  await store.create({ displayName: '开发机', route: { kind: 'lan', baseUrl: 'http://127.0.0.1:13080', normalizedOrigin: '' } })
+  await store.updateHandshake('peer-1', { status: 'ready', pluginId: '@jingyi0605/codingns4dsh', pluginVersion: '0.1.2', dshVersion: '0.1.6-alpha.2', apiCompatibility: 'peer-host-v1', fingerprint: 'sha256:first', lastCheckedAt: 100, lastErrorCode: null })
+  const sessions = new PeerHostSessionService(store, credentials, { fetchImpl: async () => Response.json({}) })
+  const service = new PeerHostHttpProxyService(store, sessions, { fetchImpl: async () => { throw new Error('目标请求不应被发出') } })
+  const response = await service.handle('peer-1', new Request('http://current.test/api/codingns/host/status', { method: 'POST', headers: scopeHeaders }))
+  assert.equal(response.status, 401)
+  assert.equal((await response.json()).error.code, 'PEER_HOST_SESSION_REQUIRED')
+  assert.equal((await store.get('peer-1'))?.status, 'session_required')
 })

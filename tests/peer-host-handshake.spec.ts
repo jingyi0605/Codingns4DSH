@@ -41,11 +41,13 @@ async function setup(fetchImpl: typeof fetch = async () => response(payload())) 
 }
 
 test('握手成功进入 ready 并保存脱敏身份摘要', async () => {
-  const { service, store } = await setup()
+  const { service, store } = await setup(async () => response(payload({ hostname: 'dev-host', configProfile: 'office' })))
   const record = await service.check('peer-1')
   assert.equal(record.status, 'ready')
   assert.equal(record.fingerprint, 'sha256:first')
   assert.equal(record.lastCheckedAt, 200)
+  assert.equal(record.hostname, 'dev-host')
+  assert.equal(record.configProfile, 'office')
   assert.equal((await store.get('peer-1'))?.route.kind, 'lan')
 })
 

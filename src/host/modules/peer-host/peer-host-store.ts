@@ -40,6 +40,8 @@ export interface PeerHostHandshakeUpdate {
   readonly pluginId: string | null
   readonly pluginVersion: string | null
   readonly dshVersion: string | null
+  readonly hostname?: string | null
+  readonly configProfile?: string | null
   readonly apiCompatibility: string | null
   readonly fingerprint: string | null
   readonly lastCheckedAt: number
@@ -97,6 +99,8 @@ export class PeerHostStore {
         pluginId: null,
         pluginVersion: null,
         dshVersion: null,
+        hostname: null,
+        configProfile: null,
         apiCompatibility: null,
         fingerprint: null,
         lastCheckedAt: null,
@@ -337,12 +341,14 @@ function routeKey(route: PeerHostRoute): string {
     : `relay:${route.deviceId}:${route.relayEntryId}`
 }
 
-function resetHandshake(record: PeerHostRecord): Pick<PeerHostRecord, 'status' | 'pluginId' | 'pluginVersion' | 'dshVersion' | 'apiCompatibility' | 'fingerprint' | 'lastCheckedAt' | 'lastErrorCode'> {
+function resetHandshake(record: PeerHostRecord): Pick<PeerHostRecord, 'status' | 'pluginId' | 'pluginVersion' | 'dshVersion' | 'hostname' | 'configProfile' | 'apiCompatibility' | 'fingerprint' | 'lastCheckedAt' | 'lastErrorCode'> {
   return {
     status: 'configured',
     pluginId: null,
     pluginVersion: null,
     dshVersion: null,
+    hostname: null,
+    configProfile: null,
     apiCompatibility: null,
     fingerprint: null,
     lastCheckedAt: null,

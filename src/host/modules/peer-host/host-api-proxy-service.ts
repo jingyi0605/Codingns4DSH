@@ -1,6 +1,6 @@
 import type { HostScope, PeerHostErrorCode, PeerHostRecord } from '../../../shared/contracts/peer-host.js'
 import { PEER_HOST_ERROR_CODES } from '../../../shared/contracts/peer-host.js'
-import { PeerHostSessionService } from './peer-host-session.js'
+import { PeerHostSessionError, PeerHostSessionService } from './peer-host-session.js'
 import { PeerHostStore } from './peer-host-store.js'
 import { peerHostSafeError } from './peer-host-diagnostics.js'
 
@@ -10,6 +10,7 @@ const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'proxy-authentic
 const ALLOWED_CLIENT_HEADERS = new Set(['accept', 'content-type', 'if-match', 'if-none-match', 'range'])
 
 export const PEER_HOST_HTTP_PROXY_RULES = [
+  { prefix: '/api/codingns/host/status', methods: ['POST'] },
   { prefix: '/api/codingns/peerHost/nativeLocal', methods: ['POST'] },
   { prefix: '/api/codingns/peerHost/native', methods: ['POST'] },
   { prefix: '/api/codingns/peerHost/nativeStream', methods: ['POST'] },
@@ -171,8 +172,17 @@ async function forwardResponse(response: Response, scope: HostScope): Promise<Re
 }
 
 function errorResponse(error: unknown): Response {
-  const code = error instanceof PeerHostProxyError ? error.code : PEER_HOST_ERROR_CODES.PROXY_UNREACHABLE
-  const message = error instanceof PeerHostProxyError ? peerHostSafeError(error.code).message : '目标 Host 代理请求失败'
+  const code = resolveErrorCode(error)
+  const message = peerHostSafeError(code).message
   const status = code === PEER_HOST_ERROR_CODES.SCOPE_MISMATCH || code === PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED ? 400 : code === PEER_HOST_ERROR_CODES.NOT_FOUND ? 404 : code === PEER_HOST_ERROR_CODES.SESSION_REQUIRED ? 401 : 502
   return Response.json({ error: { code, message } }, { status })
+}
+
+/**
+ * 只有本模块和会话层的稳定错误码可以直传；其它异常统一收敛为代理不可达。
+ * 否则目标登录态失效会被伪装成网络故障，管理面板拿不到可操作的诊断。
+ */
+function resolveErrorCode(error: unknown): PeerHostErrorCode {
+  if (error instanceof PeerHostProxyError || error instanceof PeerHostSessionError) return error.code
+  return PEER_HOST_ERROR_CODES.PROXY_UNREACHABLE
 }

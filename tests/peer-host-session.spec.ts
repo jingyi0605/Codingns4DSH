@@ -71,3 +71,27 @@ test('退出会话会清理目标凭据，即使远端退出请求失败', async
   assert.deepEqual(await target.service.logout('peer-1'), { peerHostId: 'peer-1', status: 'logged_out', expiresAt: null })
   assert.equal(await target.credentials.read('peer-1'), null)
 })
+
+test('目标拒绝旧登录态后可以直接重新登录并恢复 ready', async () => {
+  const target = await setup(async () => response({ accessToken: 'access-secret', refreshToken: 'refresh-secret', expiresIn: 120 }))
+  await target.service.invalidate('peer-1')
+  assert.equal((await target.store.get('peer-1'))?.status, 'session_required')
+  const view = await target.service.login('peer-1', { username: 'alice', password: 'password-secret' })
+  assert.equal(view.status, 'logged_in')
+  assert.equal((await target.store.get('peer-1'))?.status, 'ready')
+  assert.deepEqual(await target.credentials.read('peer-1'), { accessToken: 'access-secret', refreshToken: 'refresh-secret', expiresAt: 121_000 })
+})
+
+test('目标拒绝登录凭据时提示密码错误，而不是笼统的登录态失效', async () => {
+  const target = await setup(async () => response({ error: { code: 'PEER_HOST_SESSION_REQUIRED', message: '目标 Host 用户名或密码错误' } }, 401))
+  await assert.rejects(
+    target.service.login('peer-1', { username: 'alice', password: 'wrong-password' }),
+    (error: unknown) => {
+      const value = error as { code?: string; message?: string }
+      assert.equal(value.code, 'PEER_HOST_SESSION_REQUIRED')
+      assert.match(value.message ?? '', /用户名或密码错误/u)
+      return true
+    },
+  )
+  assert.equal((await target.store.get('peer-1'))?.status, 'ready')
+})
