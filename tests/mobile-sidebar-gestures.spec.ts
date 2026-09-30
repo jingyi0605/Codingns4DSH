@@ -128,15 +128,113 @@ test('手势控制器只通过服务开合侧栏，并在右栏全屏时压入�
   harness.window.emit('touchend', { touches: [] })
   harness.window.emit('touchstart', touchEvent(280, 300))
   harness.window.emit('touchmove', touchEvent(190, 302))
-  assert.deepEqual(harness.calls, ['left', 'right'])
+  // 第一次右滑已经呼出左栏，随后左滑应收回左栏，不能误打开右栏。
+  assert.deepEqual(harness.calls, ['left', 'left'])
   assert.deepEqual(harness.vibrations, [10, 10])
+  assert.equal(harness.isExpanded(), false)
+  assert.deepEqual(harness.window.pushed, [])
+
+  // 左栏收回后再次左滑才打开右栏；返回手势先关右栏，而不是退出会话。
+  harness.window.emit('touchend', { touches: [] })
+  harness.window.emit('touchstart', touchEvent(280, 300))
+  harness.window.emit('touchmove', touchEvent(190, 302))
+  assert.deepEqual(harness.calls, ['left', 'left', 'right'])
+  assert.equal(harness.isExpanded(), true)
+  assert.deepEqual(harness.window.pushed, [{ codingnsRightbar: true }])
+  harness.window.emit('popstate', {})
+  assert.deepEqual(harness.calls, ['left', 'left', 'right', 'right'])
+  assert.equal(harness.isExpanded(), false)
+})
+
+test('DOM 状态表明左栏已展开时，默认映射的物理左滑关闭左栏', () => {
+  const window = new FakeWindow()
+  let leftCollapsed = false
+  let rightExpanded = false
+  const calls: string[] = []
+  const controller = startMobileSidebarGestures({
+    ports: {
+      layout: {
+        toggleSidebar: () => {
+          leftCollapsed = !leftCollapsed
+          calls.push('left')
+        },
+      },
+      sidebarRight: {
+        isExpanded: () => rightExpanded,
+        toggleExpanded: () => {
+          rightExpanded = !rightExpanded
+          calls.push('right')
+        },
+      },
+    },
+    settings: () => SETTINGS,
+    readLeftCollapsed: () => leftCollapsed,
+    window,
+  })
+
+  window.emit('touchstart', touchEvent(280, 300))
+  window.emit('touchmove', touchEvent(190, 302))
+  assert.deepEqual(calls, ['left'])
+  assert.equal(leftCollapsed, true)
+  assert.equal(rightExpanded, false)
+  controller.dispose()
+})
+
+test('右栏已展开时，反向物理右滑关闭右栏且不再切换左栏', () => {
+  const harness = createHarness()
+
+  // 默认映射下物理左滑呼出右栏。
+  harness.window.emit('touchstart', touchEvent(280, 300))
+  harness.window.emit('touchmove', touchEvent(190, 302))
+  assert.deepEqual(harness.calls, ['right'])
   assert.equal(harness.isExpanded(), true)
   assert.deepEqual(harness.window.pushed, [{ codingnsRightbar: true }])
 
-  // 返回手势先关右栏，而不是退出会话。
-  harness.window.emit('popstate', {})
-  assert.deepEqual(harness.calls, ['left', 'right', 'right'])
+  // 反向右滑只关闭右栏，不应同时呼出左栏。
+  harness.window.emit('touchend', { touches: [] })
+  harness.window.emit('touchstart', touchEvent(120, 300))
+  harness.window.emit('touchmove', touchEvent(200, 302))
+  assert.deepEqual(harness.calls, ['right', 'right'])
   assert.equal(harness.isExpanded(), false)
+
+  // 主动关闭后，历史回退不能再次调用右栏关闭逻辑。
+  harness.window.emit('popstate', {})
+  assert.deepEqual(harness.calls, ['right', 'right'])
+  assert.equal(harness.isExpanded(), false)
+})
+
+test('swap 映射下物理左滑同样关闭已展开的左栏', () => {
+  const window = new FakeWindow()
+  let leftCollapsed = false
+  let rightExpanded = false
+  const calls: string[] = []
+  const controller = startMobileSidebarGestures({
+    ports: {
+      layout: {
+        toggleSidebar: () => {
+          leftCollapsed = !leftCollapsed
+          calls.push('left')
+        },
+      },
+      sidebarRight: {
+        isExpanded: () => rightExpanded,
+        toggleExpanded: () => {
+          rightExpanded = !rightExpanded
+          calls.push('right')
+        },
+      },
+    },
+    settings: () => ({ ...SETTINGS, sidebarGestureMapping: 'swap' }),
+    readLeftCollapsed: () => leftCollapsed,
+    window,
+  })
+
+  window.emit('touchstart', touchEvent(280, 300))
+  window.emit('touchmove', touchEvent(190, 302))
+  assert.deepEqual(calls, ['left'])
+  assert.equal(leftCollapsed, true)
+  assert.equal(rightExpanded, false)
+  controller.dispose()
 })
 
 test('方向锁定后不再触发，且输入框内的触摸被忽略', () => {

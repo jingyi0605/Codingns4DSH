@@ -9,7 +9,7 @@
  * 方向锁定失败时立即释放，不 intercept 滚动。
  */
 
-import { vibrateMobile } from './mobile-vibration.js'
+import { vibrateMobile, type MobileVibrationGlobalLike } from './mobile-vibration.js'
 
 export type SidebarGestureAction = 'left' | 'right' | 'ignore'
 
@@ -98,7 +98,7 @@ export interface SidebarGestureDocumentLike {
 export interface MobileSidebarGestureOptions {
   readonly ports: SidebarGesturePorts
   readonly settings: () => SidebarGestureSettings
-  /** 读取左栏折叠状态（来自 `data-sidebar-collapsed` 等 DOM 钩子）；缺失时不影响开合。 */
+  /** 读取左栏折叠状态（来自 `data-sidebar-collapsed` 等 DOM 钩子）；缺失时使用内部兜底状态。 */
   readonly readLeftCollapsed?: (() => boolean | undefined) | undefined
   readonly onDiagnostic?: ((code: string) => void) | undefined
   /** 手势成功后的可选触感反馈；缺省使用浏览器 navigator.vibrate。 */
@@ -127,6 +127,9 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
   let tracking = false
   let claimed = false
   let rightbarHistoryPushed = false
+  // 只有宿主没有提供左栏 DOM 状态时才使用这个乐观状态，保证测试环境和
+  // 尚未完成 DOM 挂载的 WebView 仍能连续完成“打开后左滑关闭”。
+  let leftCollapsedFallback: boolean | undefined
 
   const onResize = (): void => { refresh() }
 
@@ -174,15 +177,37 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
   const applyAction = (action: SidebarGestureAction): void => {
     if (action === 'ignore') return
     // 仅在手势真正触发开合后反馈，避免滚动和方向锁定失败时误振动。
-    ;(options.vibrate ?? vibrateMobile)(10)
+    triggerVibration(10)
+    const sidebarRight = options.ports.sidebarRight
     if (action === 'left') {
-      options.ports.layout?.toggleSidebar()
+      // 与左栏保持对称：右栏由左滑呼出后，下一次反向右滑应先收回右栏，
+      // 不能把同一次操作解释成呼出左栏。右栏状态由端口提供，是唯一事实来源。
+      if (sidebarRight?.isExpanded() === true) {
+        sidebarRight.toggleExpanded()
+        // 该历史记录只服务于“返回键关闭右栏”；手势已经主动关闭时不应再
+        // 在后续 popstate 中重复尝试关闭。
+        rightbarHistoryPushed = false
+        return
+      }
+      toggleLeftSidebar()
       return
     }
-    const sidebarRight = options.ports.sidebarRight
+    // 默认映射下物理左滑会得到 `right` 动作。左栏已经展开时，用户的意图
+    // 是收回刚刚呼出的左栏，而不是再打开右栏；优先关闭左栏才能保持手势
+    // 的方向直觉。`swap` 映射下物理左滑本身已经映射为 `left`，同样由上方
+    // 分支处理。
+    if (readLeftCollapsed() === false && options.ports.layout !== undefined) {
+      toggleLeftSidebar()
+      return
+    }
     if (sidebarRight === undefined) return
     const wasExpanded = sidebarRight.isExpanded() === true
     sidebarRight.toggleExpanded()
+    if (wasExpanded) {
+      // 同方向再次触发也可能关闭右栏，保持历史状态与实际面板一致。
+      rightbarHistoryPushed = false
+      return
+    }
     if (!wasExpanded && sidebarRight.isExpanded() === true && hostWindow?.history !== undefined) {
       // 全屏右栏压入一条历史记录：Android 返回手势与 iOS 边缘返回先关右栏。
       try {
@@ -192,6 +217,43 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
         rightbarHistoryPushed = false
       }
     }
+  }
+
+  const readLeftCollapsed = (): boolean | undefined => {
+    const reported = options.readLeftCollapsed?.()
+    return reported ?? leftCollapsedFallback
+  }
+
+  /**
+   * 将振动调用绑定到实际接收触摸事件的 Window。
+   *
+   * DSH 的客户端代码由模块加载器注入执行，模块里的 `globalThis` 在部分
+   * Android WebView 中不一定就是承载触摸事件的页面 Window。直接使用它会
+   * 让 `navigator.vibrate()` 静默降级；优先从 hostWindow 读取 navigator，
+   * 才能保证手势和振动属于同一个浏览器上下文。
+   */
+  const triggerVibration = (pattern: number): void => {
+    if (options.vibrate !== undefined) {
+      try {
+        options.vibrate(pattern)
+      } catch {
+        // 可选触感能力失败时不能影响侧栏开合。
+      }
+      return
+    }
+    vibrateMobile(
+      pattern,
+      (hostWindow as unknown as MobileVibrationGlobalLike | undefined) ?? undefined,
+    )
+  }
+
+  const toggleLeftSidebar = (): void => {
+    const reported = options.readLeftCollapsed?.()
+    const before = reported ?? leftCollapsedFallback
+    options.ports.layout?.toggleSidebar()
+    // DOM 状态是宿主的唯一事实来源；只有它缺失时才更新本地兜底值。首次
+    // 触发左栏切换按“由收起态呼出”处理，后续手势即可得到稳定的开合语义。
+    if (reported === undefined) leftCollapsedFallback = before === undefined ? false : !before
   }
 
   const attach = (): void => {
