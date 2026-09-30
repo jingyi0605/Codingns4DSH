@@ -1,5 +1,5 @@
 import type { FeatureModule } from '../../shared/contracts/feature.js'
-import type { CodingNsCliAttachment, CodingNsCliMessage, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsCliApprovalPolicy, CodingNsCliAttachment, CodingNsCliMessage, CodingNsCliPermissionState, CodingNsCliSandboxMode, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
 import { CommandCodeDriver } from './command-code-driver.js'
 import { ClaudeCodeDriver } from './claude-driver.js'
 import { GeminiCliDriver } from './gemini-driver.js'
@@ -164,6 +164,9 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           }
           const cwd = resolveSessionCwd(context.services.nativeSessions, sessionId, value)
           const turnInput = extractTurnInput(messages, context.services.dshContext)
+          // 权限状态必须与 DSH 会话当前生效值同源。驱动不能自行假设“完全权限”，
+          // 也不能把缺省当成“已确认无限制”：解析失败时留空，由驱动沿用保守默认。
+          const permission = resolveSessionPermission(context.services.dshContext, sessionId)
           // 只有 Provider 驱动明确维护了稳定的 turn 分段，才把工具边界映射为 DSH step。
           // Command Code、Codex 会在下一个 assistant 消息处结束当前 step；未声明分段
           // 支持的驱动（如 OpenCode）仍把整轮保持在一个 step，避免 token-meter 在下一
@@ -173,6 +176,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             messages,
             prompt: turnInput.prompt,
             ...(turnInput.attachments.length === 0 ? {} : { attachments: turnInput.attachments }),
+            ...(permission === undefined ? {} : { permission }),
             ...(config.modelId ? { modelId: config.modelId } : {}),
             ...(config.effortId ? { effortId: config.effortId } : {}),
             ...(config.providerSessionId ? { providerSessionId: config.providerSessionId } : {}),
@@ -479,6 +483,100 @@ function resolveDshAttachmentPath(
   } catch {
     return undefined
   }
+}
+
+/**
+ * 读取 DSH 会话当前生效的权限状态。
+ *
+ * 三个服务各自负责一部分事实，必须与 DSH 执行侧同源：
+ * - `sandboxPolicy.resolve()` 给出含部署默认的生效模式；
+ * - `approval.overrideOf()` 只返回会话覆盖值，缺省时用服务自身配置的默认策略补齐；
+ * - `permissionPresets.current()` 只用于诊断。
+ *
+ * 任一服务缺失或结构不符时留空对应字段：驱动必须区分“还没读到”和“已确认无限制”，
+ * 绝不能把探测失败当成 danger-full-access。
+ */
+function resolveSessionPermission(
+  dshContext: CodingNsHostServices['dshContext'],
+  sessionId: string,
+): CodingNsCliPermissionState | undefined {
+  if (dshContext === undefined || sessionId.trim() === '') return undefined
+  const session = nativeSessionFor(dshContext, sessionId)
+  if (session === undefined) return undefined
+  const sandboxMode = readSandboxMode(dshContext, session)
+  const approvalPolicy = readApprovalPolicy(dshContext, session)
+  const preset = readPermissionPreset(dshContext, session)
+  if (sandboxMode === undefined && approvalPolicy === undefined && preset === undefined) return undefined
+  return {
+    ...(sandboxMode === undefined ? {} : { sandboxMode }),
+    ...(approvalPolicy === undefined ? {} : { approvalPolicy }),
+    ...(preset === undefined ? {} : { preset }),
+  }
+}
+
+/**
+ * DSH 的 `agents` 注册表持有 Agent，而权限服务以 Agent 的 Session 为读取键。
+ * 两者形状变化时都必须留空，不能把 Agent 直接当 Session 传进服务。
+ */
+function nativeSessionFor(dshContext: NonNullable<CodingNsHostServices['dshContext']>, sessionId: string): unknown {
+  try {
+    const agents = dshContext.get('agents') as Record<string, unknown> | undefined
+    const get = agents?.get
+    if (typeof get !== 'function') return undefined
+    const agent = asRecord(get.call(agents, sessionId))
+    return agent?.session ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+function readSandboxMode(dshContext: NonNullable<CodingNsHostServices['dshContext']>, session: unknown): CodingNsCliSandboxMode | undefined {
+  try {
+    const service = dshContext.get('sandboxPolicy') as Record<string, unknown> | undefined
+    const resolvePolicy = service?.resolve
+    if (typeof resolvePolicy !== 'function') return undefined
+    const policy = resolvePolicy.call(service, { session })
+    // 先落到 unknown 再收窄：asRecord 返回的 any 属性不会触发类型谓词收窄，
+    // 直接返回会退化成 boolean，无法赋给 CodingNsCliSandboxMode。
+    const mode: unknown = asRecord(policy)?.mode
+    return isSandboxMode(mode) ? mode : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function readApprovalPolicy(dshContext: NonNullable<CodingNsHostServices['dshContext']>, session: unknown): CodingNsCliApprovalPolicy | undefined {
+  try {
+    const service = dshContext.get('approval') as Record<string, unknown> | undefined
+    const overrideOf = service?.overrideOf
+    const override = typeof overrideOf === 'function' ? overrideOf.call(service, session) : undefined
+    if (isApprovalPolicy(override)) return override
+    // 没有会话覆盖时，服务自身配置的策略就是生效值；缺省与 DSH 一致按 ask 处理。
+    const configured = asRecord(service?.config)?.policy
+    return isApprovalPolicy(configured) ? configured : 'ask'
+  } catch {
+    return undefined
+  }
+}
+
+function readPermissionPreset(dshContext: NonNullable<CodingNsHostServices['dshContext']>, session: unknown): string | undefined {
+  try {
+    const service = dshContext.get('permissionPresets') as Record<string, unknown> | undefined
+    const current = service?.current
+    if (typeof current !== 'function') return undefined
+    const preset = current.call(service, session)
+    return typeof preset === 'string' && preset.trim() !== '' ? preset.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function isSandboxMode(value: unknown): value is CodingNsCliSandboxMode {
+  return value === 'read-only' || value === 'workspace-write' || value === 'danger-full-access'
+}
+
+function isApprovalPolicy(value: unknown): value is CodingNsCliApprovalPolicy {
+  return value === 'ask' || value === 'never'
 }
 
 function resolveSessionCwd(

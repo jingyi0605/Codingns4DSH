@@ -134,6 +134,9 @@ export type {
   CodingNsCliSessionStatus,
   CodingNsSessionAdapterBinding,
   CodingNsCliTurnInput,
+  CodingNsCliPermissionState,
+  CodingNsCliSandboxMode,
+  CodingNsCliApprovalPolicy,
 } from './contracts/cli-adapter.js'
 export type {
   CommandCodeSubscriptionUsage,

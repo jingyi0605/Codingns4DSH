@@ -1593,3 +1593,171 @@ test('Codex 工具完成后收到 turn/aborted 也必须收敛会话终态', asy
   assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'cancel' })
   driver.dispose()
 })
+
+/** 记录 Codex 线程级与回合级权限参数，用于验证两侧同源。 */
+function createCodexPermissionRecorder(options: {
+  readonly requestPermission?: boolean
+  readonly permissionRequest?: Record<string, unknown>
+} = {}) {
+  const state: {
+    threadStart: Record<string, unknown> | null
+    threadResume: Record<string, unknown> | null
+    turnStart: Record<string, unknown> | null
+    permissionResult: unknown
+  } = { threadStart: null, threadResume: null, turnStart: null, permissionResult: null }
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id?: number; method?: string; params?: Record<string, unknown>; result?: unknown }
+        if (request.method === 'initialize') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        } else if (request.method === 'thread/start') {
+          state.threadStart = request.params ?? null
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'perm-thread' } } })}\n`)
+        } else if (request.method === 'thread/resume') {
+          state.threadResume = request.params ?? null
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'perm-thread' } } })}\n`)
+        } else if (request.method === 'turn/start') {
+          state.turnStart = request.params ?? null
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'perm-turn', status: 'inProgress' } } })}\n`)
+          if (options.requestPermission === true) {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 77, method: 'item/permissions/requestApproval', params: options.permissionRequest ?? {} })}\n`)
+          } else {
+            setImmediate(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'perm-thread', turn: { id: 'perm-turn', status: 'completed' } } })}\n`))
+          }
+        } else if (request.id === 77) {
+          state.permissionResult = request.result
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'perm-thread', turn: { id: 'perm-turn', status: 'completed' } } })}\n`)
+        }
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  return { driver, state }
+}
+
+test('Codex 按 DSH 权限状态派生沙箱与审批，danger-full-access 不再降级为工作区可写', async () => {
+  const cases = [
+    {
+      permission: { sandboxMode: 'danger-full-access', approvalPolicy: 'never', preset: 'danger-full-access' },
+      sandbox: 'danger-full-access',
+      sandboxPolicy: { type: 'dangerFullAccess' },
+      approvalPolicy: 'never',
+    },
+    {
+      permission: { sandboxMode: 'workspace-write', approvalPolicy: 'ask', preset: 'workspace-write' },
+      sandbox: 'workspace-write',
+      sandboxPolicy: {
+        type: 'workspaceWrite',
+        writableRoots: [process.cwd()],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      },
+      approvalPolicy: 'on-request',
+    },
+    {
+      permission: { sandboxMode: 'read-only', approvalPolicy: 'ask' },
+      sandbox: 'read-only',
+      sandboxPolicy: { type: 'readOnly', networkAccess: false },
+      approvalPolicy: 'on-request',
+    },
+  ] as const
+
+  for (const item of cases) {
+    const { driver, state } = createCodexPermissionRecorder()
+    for await (const _chunk of driver.executeTurn({ sessionId: 'codex-perm', messages: [], prompt: '检查权限', permission: item.permission })) { /* 只验证发出的 RPC 参数 */ }
+    // thread/start、thread/resume 与 turn/start 必须由同一份权限状态派生。
+    assert.equal(state.threadStart?.sandbox, item.sandbox)
+    assert.equal(state.threadStart?.approvalPolicy, item.approvalPolicy)
+    assert.deepEqual(state.turnStart?.sandboxPolicy, item.sandboxPolicy)
+    assert.equal(state.turnStart?.approvalPolicy, item.approvalPolicy)
+    driver.dispose()
+  }
+})
+
+test('Codex 未读到 DSH 权限状态时保留保守默认，不推断为完全权限', async () => {
+  const { driver, state } = createCodexPermissionRecorder()
+  for await (const _chunk of driver.executeTurn({ sessionId: 'codex-perm-default', messages: [], prompt: '检查默认权限' })) { /* 只验证发出的 RPC 参数 */ }
+  assert.equal(state.threadStart?.sandbox, 'workspace-write')
+  assert.equal(state.threadStart?.approvalPolicy, 'on-request')
+  assert.deepEqual(state.turnStart?.sandboxPolicy, {
+    type: 'workspaceWrite',
+    writableRoots: [process.cwd()],
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  })
+  assert.equal(state.turnStart?.approvalPolicy, 'on-request')
+  driver.dispose()
+})
+
+test('Codex thread/resume 与 turn/start 使用同一份权限状态', async () => {
+  const { driver, state } = createCodexPermissionRecorder()
+  for await (const _chunk of driver.executeTurn({
+    sessionId: 'codex-perm-resume',
+    messages: [],
+    prompt: '恢复线程',
+    providerSessionId: 'existing-thread',
+    permission: { sandboxMode: 'danger-full-access', approvalPolicy: 'never' },
+  })) { /* 只验证发出的 RPC 参数 */ }
+  assert.equal(state.threadStart, null)
+  assert.equal(state.threadResume?.threadId, 'existing-thread')
+  assert.equal(state.threadResume?.sandbox, 'danger-full-access')
+  assert.equal(state.threadResume?.approvalPolicy, 'never')
+  assert.deepEqual(state.turnStart?.sandboxPolicy, { type: 'dangerFullAccess' })
+  assert.equal(state.turnStart?.approvalPolicy, 'never')
+  driver.dispose()
+})
+
+test('Codex permissions/requestApproval 按 {permissions, scope} 应答并回显请求画像', async () => {
+  const requestedProfile = {
+    fileSystem: { write: ['/workspace/out'], read: ['/workspace/in'] },
+    network: { enabled: true },
+  }
+  const { driver, state } = createCodexPermissionRecorder({
+    requestPermission: true,
+    permissionRequest: {
+      threadId: 'perm-thread',
+      turnId: 'perm-turn',
+      itemId: 'perm-item',
+      reason: '需要额外写权限',
+      permissions: requestedProfile,
+    },
+  })
+  const chunks: unknown[] = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-permissions', messages: [], prompt: '申请提权' })) {
+    chunks.push(chunk)
+    if (chunk.type === 'permission-request') driver.respondPermission('codex-permissions', { requestId: chunk.requestId, approved: true })
+  }
+  const request = chunks.find((chunk) => (chunk as { type?: string }).type === 'permission-request') as Record<string, unknown> | undefined
+  assert.equal(request?.kind, 'permissions')
+  assert.equal(request?.callId, 'perm-item')
+  assert.match(String(request?.detail), /需要额外写权限/u)
+  assert.match(String(request?.detail), /请求写入: \/workspace\/out/u)
+  assert.match(String(request?.detail), /请求网络访问/u)
+  // 应答必须是 {permissions, scope}，不能退化成 {approved}。
+  assert.deepEqual(state.permissionResult, { permissions: requestedProfile, scope: 'turn' })
+  driver.dispose()
+})
+
+test('Codex permissions/requestApproval 被拒绝时回传空权限画像', async () => {
+  const { driver, state } = createCodexPermissionRecorder({
+    requestPermission: true,
+    permissionRequest: {
+      threadId: 'perm-thread',
+      turnId: 'perm-turn',
+      itemId: 'perm-item',
+      permissions: { fileSystem: { write: ['/workspace/out'] } },
+    },
+  })
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-permissions-deny', messages: [], prompt: '申请提权' })) {
+    if (chunk.type === 'permission-request') driver.respondPermission('codex-permissions-deny', { requestId: chunk.requestId, approved: false })
+  }
+  assert.deepEqual(state.permissionResult, { permissions: {}, scope: 'turn' })
+  driver.dispose()
+})

@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsCliSandboxMode, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
@@ -66,7 +66,14 @@ const CODEX_APP_SERVER_ARGS = ['app-server', '--disable', 'computer_use'] as con
 
 interface PendingCodexPermission {
   readonly resolve: (value: unknown) => void
-  readonly response: 'legacy' | 'command' | 'file-change'
+  readonly response: 'legacy' | 'command' | 'file-change' | 'permissions'
+  /**
+   * `item/permissions/requestApproval` 的原始请求画像。
+   *
+   * 该协议的应答不是布尔值，而是 `{permissions, scope}`：批准必须回显 Codex 请求的
+   * 权限范围，拒绝必须给出空画像。丢掉请求画像就无法构造合法应答。
+   */
+  readonly requested?: unknown
 }
 
 /** Codex app-server 的 JSON-RPC 驱动，Host 只暴露统一文本流，不暴露线程和 token。 */
@@ -145,9 +152,10 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     const rpc = session.rpc
     try {
       if (session.threadId === '') {
+        const threadParams = codexThreadParams(input)
         const thread = input.providerSessionId
-          ? await rpc.request('thread/resume', { threadId: input.providerSessionId, cwd: input.cwd ?? process.cwd(), ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}) }, { signal: input.signal, killOnAbort: false })
-          : await rpc.request('thread/start', { cwd: input.cwd ?? process.cwd(), ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}) }, { signal: input.signal, killOnAbort: false })
+          ? await rpc.request('thread/resume', { threadId: input.providerSessionId, ...threadParams }, { signal: input.signal, killOnAbort: false })
+          : await rpc.request('thread/start', threadParams, { signal: input.signal, killOnAbort: false })
         session.threadId = readId(thread) ?? input.providerSessionId ?? input.sessionId
         session.providerSessionId = session.threadId
       }
@@ -267,9 +275,10 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     let active: CodexSegmentedTurn | undefined
     try {
       if (session.threadId === '') {
+        const threadParams = codexThreadParams(input)
         const thread = input.providerSessionId
-          ? await rpc.request('thread/resume', { threadId: input.providerSessionId, cwd: input.cwd ?? process.cwd(), ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}) }, { signal: input.signal, killOnAbort: false })
-          : await rpc.request('thread/start', { cwd: input.cwd ?? process.cwd(), ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}) }, { signal: input.signal, killOnAbort: false })
+          ? await rpc.request('thread/resume', { threadId: input.providerSessionId, ...threadParams }, { signal: input.signal, killOnAbort: false })
+          : await rpc.request('thread/start', threadParams, { signal: input.signal, killOnAbort: false })
         session.threadId = readId(thread) ?? input.providerSessionId ?? input.sessionId
         session.providerSessionId = session.threadId
       }
@@ -600,6 +609,12 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       pending.resolve({ decision: response.approved ? 'accept' : 'decline' })
     } else if (pending.response === 'command') {
       pending.resolve({ decision: response.approved ? 'accept' : 'decline' })
+    } else if (pending.response === 'permissions') {
+      // `item/permissions/requestApproval` 的应答形状是 {permissions, scope}，
+      // 不是 {approved}。批准回显请求画像；拒绝给空画像，语义等价于“不授予额外权限”。
+      pending.resolve(response.approved
+        ? { permissions: grantedPermissionProfile(pending.requested), scope: 'turn' }
+        : { permissions: {}, scope: 'turn' })
     } else {
       pending.resolve({
         approved: response.approved,
@@ -678,9 +693,11 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       if (isQuestionEvent(`${method} ${type}`)) {
         return new Promise<unknown>((resolve) => session.pendingQuestions.set(requestId, resolve))
       }
+      const kind = permissionResponseKind(method, params)
       return new Promise<unknown>((resolve) => session.pendingPermissions.set(requestId, {
         resolve,
-        response: permissionResponseKind(method, params),
+        response: kind,
+        ...(kind === 'permissions' ? { requested: params.permissions } : {}),
       }))
     })
     return session
@@ -971,20 +988,42 @@ interface CodexPermissionDetails {
 
 function codexPermissionDetails(method: string, params: Record<string, any>, item: Record<string, any>): CodexPermissionDetails {
   const fileChange = method.includes('fileChange') || method.includes('file_change') || String(item.type ?? '').toLowerCase() === 'filechange'
+  // 沙箱提权请求没有 command/grantRoot，只有一个待授予的权限画像；
+  // 必须把画像摘要带进 detail，否则审批弹窗只会显示一个空理由。
+  const permissions = method.includes('permissions') && method.includes('Approval') ? params.permissions : undefined
   const command = typeof params.command === 'string' ? params.command : typeof item.command === 'string' ? item.command : undefined
   const reason = typeof params.reason === 'string' ? params.reason : typeof params.description === 'string' ? params.description : undefined
   const grantRoot = typeof params.grantRoot === 'string' ? params.grantRoot : undefined
   const paths = permissionPaths(params.fileChanges ?? params.file_changes ?? item.changes)
   const callId = firstToolText(params.callId, params.call_id, params.itemId, item.id)
-  const detail = [reason, command, paths.length > 0 ? `文件: ${paths.join(', ')}` : undefined, grantRoot ? `允许写入: ${grantRoot}` : undefined]
+  const detail = [reason, command, paths.length > 0 ? `文件: ${paths.join(', ')}` : undefined, grantRoot ? `允许写入: ${grantRoot}` : undefined, permissionProfileSummary(permissions)]
     .filter((value): value is string => value !== undefined && value.trim() !== '')
     .join('；')
   return {
-    kind: typeof params.kind === 'string' ? params.kind : fileChange ? 'file_change' : 'command',
+    kind: permissions !== undefined ? 'permissions' : typeof params.kind === 'string' ? params.kind : fileChange ? 'file_change' : 'command',
     ...(fileChange ? { toolName: 'edit' } : {}),
     ...(callId === undefined ? {} : { callId }),
     ...(detail === '' ? {} : { detail }),
   }
+}
+
+/** 把权限画像压成一句可读摘要；未知形状返回 undefined，不猜测语义。 */
+function permissionProfileSummary(value: unknown): string | undefined {
+  const profile = isRecord(value) ? value : null
+  if (profile === null) return undefined
+  const fileSystem = isRecord(profile.fileSystem) ? profile.fileSystem : null
+  const network = isRecord(profile.network) ? profile.network : null
+  const parts: string[] = []
+  const write = stringList(fileSystem?.write)
+  const read = stringList(fileSystem?.read)
+  if (write.length > 0) parts.push(`请求写入: ${write.join(', ')}`)
+  if (read.length > 0) parts.push(`请求读取: ${read.join(', ')}`)
+  if (network?.enabled === true) parts.push('请求网络访问')
+  return parts.length === 0 ? undefined : parts.join('；')
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '') : []
 }
 
 function permissionPaths(value: unknown): string[] {
@@ -1205,6 +1244,21 @@ function isCodexToolEvent(method: string, type: string): boolean {
   return ['commandexecution', 'filechange', 'mcptoolcall', 'functioncall', 'customtoolcall', 'dynamictoolcall'].includes(normalized)
 }
 
+/**
+ * `thread/start` 与 `thread/resume` 共用的线程参数。
+ *
+ * 权限必须在这里就与 `turn/start` 保持一致：Codex 的线程级沙箱会成为后续回合
+ * 的默认值，只在 turn 上覆盖会让首次工具调用落到与 DSH 不同的模式。
+ */
+function codexThreadParams(input: CodingNsCliTurnInput): Record<string, unknown> {
+  return {
+    cwd: input.cwd ?? process.cwd(),
+    sandbox: codexSandboxMode(input),
+    approvalPolicy: codexApprovalPolicy(input),
+    ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}),
+  }
+}
+
 function codexTurnStartParams(input: CodingNsCliTurnInput, threadId: string): Record<string, unknown> {
   const cwd = resolve(input.cwd ?? process.cwd())
   const inputBlocks: Record<string, unknown>[] = []
@@ -1217,26 +1271,75 @@ function codexTurnStartParams(input: CodingNsCliTurnInput, threadId: string): Re
     threadId,
     input: inputBlocks,
     cwd,
-    // DSH 的 workspace-write 只约束自身工具沙箱，不会自动传递给 Codex
-    // app-server。显式声明当前工作区，避免 Codex 将文件编辑误判为只读越权。
-    sandboxPolicy: {
-      type: 'workspaceWrite',
-      writableRoots: [cwd],
-      networkAccess: false,
-      excludeTmpdirEnvVar: false,
-      excludeSlashTmp: false,
-    },
-    approvalPolicy: 'on-request',
+    sandboxPolicy: codexSandboxPolicy(input, cwd),
+    approvalPolicy: codexApprovalPolicy(input),
     ...(input.effortId ? { effort: input.effortId } : {}),
   }
 }
 
+/**
+ * 由 DSH 会话权限状态派生 Codex 原生沙箱模式。
+ *
+ * `permission` 缺省表示 Host **还没读到**权限事实，此时沿用旧的保守默认
+ * （工作区可写），不能推断为完全权限。三个字段必须来自同一份状态。
+ */
+function codexSandboxMode(input: CodingNsCliTurnInput): CodingNsCliSandboxMode {
+  return input.permission?.sandboxMode ?? 'workspace-write'
+}
+
+function codexSandboxPolicy(input: CodingNsCliTurnInput, cwd: string): Record<string, unknown> {
+  const mode = codexSandboxMode(input)
+  // danger-full-access 必须映射成 Codex 自己的 bypass 形状；继续下发
+  // workspaceWrite 会让 DSH 声明完全权限、Codex 实际只读，两侧语义分叉。
+  if (mode === 'danger-full-access') return { type: 'dangerFullAccess' }
+  if (mode === 'read-only') return { type: 'readOnly', networkAccess: false }
+  // DSH 的 workspace-write 只约束自身工具沙箱，不会自动传递给 Codex
+  // app-server。显式声明当前工作区，避免 Codex 将文件编辑误判为只读越权。
+  return {
+    type: 'workspaceWrite',
+    writableRoots: [cwd],
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  }
+}
+
+/**
+ * 由同一份权限状态派生审批策略。
+ *
+ * DSH 的 `never` 表示“需要审批的动作会被自动拒绝”，因此绝不能同时向 Codex
+ * 声明 `on-request`：那会让 Codex 发起注定被自动拒绝的审批，模型还会误以为
+ * 用户拒绝了它。`ask` 才映射为 Codex 的 `on-request`。
+ */
+function codexApprovalPolicy(input: CodingNsCliTurnInput): string {
+  return input.permission?.approvalPolicy === 'never' ? 'never' : 'on-request'
+}
+
 function permissionResponseKind(method: string, params: Record<string, any>): PendingCodexPermission['response'] {
+  // 沙箱提权请求的应答是 {permissions, scope}，必须在识别 fileChange/command 之前
+  // 判定，否则会落到 legacy 分支返回 {approved}，形状不符。
+  if (method.includes('permissions') && method.includes('Approval')) return 'permissions'
   if (method.includes('fileChange') || method.includes('file_change')) return 'file-change'
   // 新版 Codex 带 threadId/turnId/itemId，并要求 decision；旧版测试和旧
   // app-server 使用 approved 字段，按请求形状保持向后兼容。
   if (method.includes('commandExecution') && (params.threadId !== undefined || params.turnId !== undefined || params.itemId !== undefined)) return 'command'
   return 'legacy'
+}
+
+/**
+ * 把 Codex 请求的权限画像转成可回传的授予画像。
+ *
+ * `RequestPermissionProfile` 与 `GrantedPermissionProfile` 同形，但缺省字段在
+ * 授予侧是可选的；这里只保留实际存在的部分，避免回传 null 触发 schema 拒绝。
+ */
+function grantedPermissionProfile(requested: unknown): Record<string, unknown> {
+  const profile = isRecord(requested) ? requested : null
+  const fileSystem = isRecord(profile?.fileSystem) ? profile.fileSystem : undefined
+  const network = isRecord(profile?.network) ? profile.network : undefined
+  return {
+    ...(fileSystem === undefined ? {} : { fileSystem }),
+    ...(network === undefined ? {} : { network }),
+  }
 }
 
 function readId(value: unknown): string | null {

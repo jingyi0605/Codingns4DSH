@@ -1684,3 +1684,79 @@ function commandCodeStreamLines(): string[] {
     `${JSON.stringify({ type: 'result', subtype: 'success', sessionId: 'cc-session-1', stopReason: 'end_turn', usage: { inputTokens: 280, outputTokens: 15, cacheReadTokens: 190, cacheWriteTokens: 0 }, durationMs: 123, finalText: '完成' })}\n`,
   ]
 }
+
+test('DSH 会话权限状态随轮次下发驱动，缺省字段按未读到处理', async () => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  let received: Record<string, unknown> | undefined
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) {
+      received = input
+      yield { type: 'finish', reason: 'stop' } as const
+    },
+  }])
+  const events = {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+      listener = next
+      return () => { listener = undefined }
+    },
+  }
+  const session = { id: 'codex-permission' }
+  const dshContext = {
+    get(name: string): unknown {
+      if (name === 'agents') return { get: (id: string) => id === 'codex-permission' ? { session } : undefined }
+      if (name === 'sandboxPolicy') return { resolve: (request: { session?: unknown }) => ({ mode: request.session === session ? 'danger-full-access' : 'read-only', workspaceRoot: '/tmp' }) }
+      if (name === 'approval') return { overrideOf: () => 'never', config: { policy: 'ask' } }
+      if (name === 'permissionPresets') return { current: () => 'danger-full-access' }
+      return undefined
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table, events, dshContext: dshContext as never })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  await table.resolve('cli/session/set')?.handler('session/set', { sessionId: 'codex-permission', adapterId: 'codex' })
+
+  for await (const _chunk of listener!({ sessionId: 'codex-permission', messages: [{ role: 'user', content: '检查权限' }] }, async function* () {})) { /* 消费完整流 */ }
+
+  assert.deepEqual(received?.permission, {
+    sandboxMode: 'danger-full-access',
+    approvalPolicy: 'never',
+    preset: 'danger-full-access',
+  })
+  await features.disable('cliAdapters')
+})
+
+test('DSH 权限服务不可用时不下发权限字段，驱动沿用保守默认', async () => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  let received: Record<string, unknown> | undefined
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) {
+      received = input
+      yield { type: 'finish', reason: 'stop' } as const
+    },
+  }])
+  const events = {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+      listener = next
+      return () => { listener = undefined }
+    },
+  }
+  // 精简 Host 可能没有装载权限服务；探测失败必须留空，而不是推断为完全权限。
+  const dshContext = { get: () => undefined }
+  const features = new FeatureRegistry({ rpc: table, events, dshContext: dshContext as never })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  await table.resolve('cli/session/set')?.handler('session/set', { sessionId: 'codex-no-permission', adapterId: 'codex' })
+
+  for await (const _chunk of listener!({ sessionId: 'codex-no-permission', messages: [{ role: 'user', content: '检查权限' }] }, async function* () {})) { /* 消费完整流 */ }
+
+  assert.equal(received?.permission, undefined)
+  await features.disable('cliAdapters')
+})
