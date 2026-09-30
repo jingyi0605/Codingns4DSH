@@ -5,9 +5,12 @@ import {
   CODINGNS_MOBILE_ACCESS_FIELD,
   DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS,
   DEFAULT_MOBILE_ACCESS_SETTINGS,
+  DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   MOBILE_VIEWPORT_MAX_PX_LIMITS,
+  normalizeSidebarGestureSettings,
   normalizeLanAccessDshPwaSettings,
   normalizeMobileAccessSettings,
+  SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS,
 } from '../../shared/contracts/config.js'
 import type { LanAccessDshPwaSettings } from '../../shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
@@ -42,6 +45,9 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
   )
   const pwa = normalizeLanAccessDshPwaSettings(
     snapshot.value?.lanAccessDsh?.pwa ?? DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS,
+  )
+  const gestures = normalizeSidebarGestureSettings(
+    snapshot.value?.workspaceSessionEnhancement ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   )
   const [widthDraft, setWidthDraft] = useState(String(value.mobileViewportMaxPx))
   const [busy, setBusy] = useState(false)
@@ -106,6 +112,21 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
         return
       }
       notify({ kind: 'success', message: t('lan.pwa.saved') })
+    }).catch((cause: unknown) => {
+      notify({ kind: 'error', message: cause instanceof Error ? cause.message : String(cause) })
+    })
+  }
+
+  const updateGestureField = (field: string, nextValue: unknown): void => {
+    void settings.mutate([{
+      op: 'set',
+      path: ['workspaceSessionEnhancement', field],
+      value: nextValue,
+    }]).then((accepted) => {
+      notify({
+        kind: accepted ? 'success' : 'error',
+        message: accepted ? t('workspace.sidebarGestureSaved') : t('settings.moduleWriteRejected'),
+      })
     }).catch((cause: unknown) => {
       notify({ kind: 'error', message: cause instanceof Error ? cause.message : String(cause) })
     })
@@ -227,6 +248,69 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
       }),
       createElement('span', { style: dshSettingsHelpStyle }, t('mobile.viewportMaxHelp')),
     ),
+    createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 12, borderTop: `1px solid ${dshThemeColor.border}` } },
+      createElement('label', { style: dshSettingsListRowStyle },
+        createElement('span', { style: { minWidth: 0 } },
+          createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.sidebarGestures')),
+          createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.sidebarGesturesDescription')),
+        ),
+        createElement('input', {
+          type: 'checkbox',
+          role: 'switch',
+          'aria-label': t('workspace.sidebarGestures'),
+          checked: gestures.sidebarGestures,
+          disabled: controlsDisabled,
+          onChange: (event: { currentTarget: { checked: boolean } }) => updateGestureField('sidebarGestures', event.currentTarget.checked),
+          style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
+        }),
+      ),
+      gestures.sidebarGestures && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, paddingInlineStart: 12 } },
+        createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+          createElement('span', { style: dshSettingsFieldLabelStyle }, t('workspace.sidebarGestureMapping')),
+          createElement('select', {
+            value: gestures.sidebarGestureMapping,
+            disabled: controlsDisabled,
+            onChange: (event: { currentTarget: { value: string } }) => updateGestureField('sidebarGestureMapping', event.currentTarget.value === 'swap' ? 'swap' : 'swipe-inward'),
+            style: fieldStyle,
+          },
+            createElement('option', { value: 'swipe-inward' }, t('workspace.sidebarGestureMappingInward')),
+            createElement('option', { value: 'swap' }, t('workspace.sidebarGestureMappingSwap')),
+          ),
+        ),
+        createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+          createElement('span', { style: dshSettingsFieldLabelStyle }, t('workspace.sidebarGestureEdge')),
+          createElement('select', {
+            value: gestures.sidebarGestureEdge,
+            disabled: controlsDisabled,
+            onChange: (event: { currentTarget: { value: string } }) => updateGestureField('sidebarGestureEdge', event.currentTarget.value === 'edge' ? 'edge' : 'avoid'),
+            style: fieldStyle,
+          },
+            createElement('option', { value: 'avoid' }, t('workspace.sidebarGestureEdgeAvoid')),
+            createElement('option', { value: 'edge' }, t('workspace.sidebarGestureEdgeEdge')),
+          ),
+        ),
+        createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+          createElement('span', { style: dshSettingsFieldLabelStyle }, t('workspace.sidebarGestureThreshold')),
+          createElement('input', {
+            type: 'number',
+            min: SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.min,
+            max: SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.max,
+            value: gestures.sidebarGestureThresholdPx,
+            disabled: controlsDisabled,
+            onChange: (event: { currentTarget: { value: string } }) => {
+              const next = Number(event.currentTarget.value)
+              if (!Number.isFinite(next)) return
+              updateGestureField('sidebarGestureThresholdPx', Math.min(
+                SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.max,
+                Math.max(SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.min, Math.round(next)),
+              ))
+            },
+            style: fieldStyle,
+          }),
+          createElement('span', { style: dshSettingsHelpStyle }, t('workspace.sidebarGestureThresholdHelp')),
+        ),
+      ),
+    ),
     createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4, paddingTop: 12, borderTop: `1px solid ${dshThemeColor.border}` } },
       createElement('strong', { style: { fontSize: 13 } }, t('lan.pwa.title')),
       createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: 12, lineHeight: 1.6 } }, t('lan.pwa.description')),
@@ -266,6 +350,8 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
         notificationStatus !== undefined && createElement('div', { style: dshSettingsNoteStyle }, t('lan.pwa.notificationState', {
           permission: notificationStatus.permission,
           sw: notificationStatus.serviceWorker ? t('lan.pwa.swActive') : t('lan.pwa.swMissing'),
+          supported: notificationStatus.supported ? t('lan.pwa.yes') : t('lan.pwa.no'),
+          secure: notificationStatus.secure ? t('lan.pwa.yes') : t('lan.pwa.no'),
         })),
         pwa.notifications === 'push' && !pwa.serviceWorker && createElement('div', { style: dshSettingsNoteStyle }, t('lan.pwa.swNeeded')),
         createElement('div', { style: dshSettingsRowStyle },

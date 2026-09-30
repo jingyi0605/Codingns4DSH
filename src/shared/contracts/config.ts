@@ -147,7 +147,10 @@ export function normalizeSidebarGestureSettings(
 ): Pick<WorkspaceSessionEnhancementSettings, 'sidebarGestures' | 'sidebarGestureMapping' | 'sidebarGestureEdge' | 'sidebarGestureThresholdPx'> {
   const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
   return {
-    sidebarGestures: record.sidebarGestures === true,
+    // 移动端访问增强默认提供横滑入口；桌面端控制器仍会按触摸能力和视口门禁不挂监听。
+    sidebarGestures: record.sidebarGestures === undefined
+      ? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS.sidebarGestures
+      : record.sidebarGestures === true,
     sidebarGestureMapping: record.sidebarGestureMapping === 'swap' ? 'swap' : 'swipe-inward',
     sidebarGestureEdge: record.sidebarGestureEdge === 'edge' ? 'edge' : 'avoid',
     sidebarGestureThresholdPx: clampSettingsInteger(record.sidebarGestureThresholdPx, SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS, DEFAULT_SIDEBAR_GESTURE_THRESHOLD_PX),
@@ -328,8 +331,8 @@ export const DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS: WorkspaceSessionEnh
   rememberConversationRightbarRatio: false,
   quickPhrases: DEFAULT_QUICK_PHRASES.map((phrase) => ({ ...phrase })),
   quickPhrasesSeeded: true,
-  // 手势默认关闭：系统边缘手势与侧栏语义都存在平台差异，先由用户显式开启。
-  sidebarGestures: false,
+  // 移动端默认开启；控制器只在触摸窄屏上挂监听，桌面端不会改变行为。
+  sidebarGestures: true,
   sidebarGestureMapping: 'swipe-inward',
   sidebarGestureEdge: 'avoid',
   sidebarGestureThresholdPx: DEFAULT_SIDEBAR_GESTURE_THRESHOLD_PX,

@@ -9,6 +9,8 @@
  * 方向锁定失败时立即释放，不 intercept 滚动。
  */
 
+import { vibrateMobile } from './mobile-vibration.js'
+
 export type SidebarGestureAction = 'left' | 'right' | 'ignore'
 
 export interface TouchSample {
@@ -40,6 +42,8 @@ export interface SidebarGestureDecision {
 
 export const DEFAULT_GESTURE_EDGE_ZONE_PX = 24
 export const DEFAULT_GESTURE_DIRECTION_RATIO = 1.5
+/** 与 DSH 窄屏断点保持一致；超过该宽度不安装全局触摸监听。 */
+export const DEFAULT_MOBILE_GESTURE_VIEWPORT_MAX_PX = 1024
 
 /** 纯函数：只依据样本与配置给出动作，不读 DOM、不调服务。 */
 export function detectSidebarGesture(samples: readonly TouchSample[], config: SidebarGestureConfig): SidebarGestureDecision {
@@ -82,6 +86,8 @@ export interface SidebarGestureWindowLike {
   removeEventListener(type: string, listener: (event: never) => void, options?: unknown): void
   history?: { pushState(data: unknown, title: string): void } | undefined
   innerWidth?: number | undefined
+  navigator?: { maxTouchPoints?: number | undefined } | undefined
+  ontouchstart?: unknown
 }
 
 export interface SidebarGestureDocumentLike {
@@ -95,8 +101,12 @@ export interface MobileSidebarGestureOptions {
   /** 读取左栏折叠状态（来自 `data-sidebar-collapsed` 等 DOM 钩子）；缺失时不影响开合。 */
   readonly readLeftCollapsed?: (() => boolean | undefined) | undefined
   readonly onDiagnostic?: ((code: string) => void) | undefined
+  /** 手势成功后的可选触感反馈；缺省使用浏览器 navigator.vibrate。 */
+  readonly vibrate?: ((pattern: number) => boolean | void) | undefined
   readonly window?: SidebarGestureWindowLike | undefined
   readonly document?: SidebarGestureDocumentLike | undefined
+  /** 移动端视口上限；缺省与 DSH 窄屏断点一致。 */
+  readonly viewportMaxPx?: number | undefined
 }
 
 export interface MobileSidebarGestureController {
@@ -106,6 +116,7 @@ export interface MobileSidebarGestureController {
 }
 
 export const GESTURE_DIAGNOSTIC_CAPABILITY_MISSING = 'CODINGNS_GESTURE_CAPABILITY_MISSING'
+export const GESTURE_DIAGNOSTIC_NOT_MOBILE = 'CODINGNS_GESTURE_NOT_MOBILE'
 
 /** 启动手势控制器；未启用或没有任何可用端口时不注册任何监听。 */
 export function startMobileSidebarGestures(options: MobileSidebarGestureOptions): MobileSidebarGestureController {
@@ -116,6 +127,8 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
   let tracking = false
   let claimed = false
   let rightbarHistoryPushed = false
+
+  const onResize = (): void => { refresh() }
 
   const onTouchStart = (event: unknown): void => {
     const touch = firstTouch(event)
@@ -160,6 +173,8 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
 
   const applyAction = (action: SidebarGestureAction): void => {
     if (action === 'ignore') return
+    // 仅在手势真正触发开合后反馈，避免滚动和方向锁定失败时误振动。
+    ;(options.vibrate ?? vibrateMobile)(10)
     if (action === 'left') {
       options.ports.layout?.toggleSidebar()
       return
@@ -204,7 +219,13 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
     const hasLayout = options.ports.layout !== undefined
     const hasRight = options.ports.sidebarRight !== undefined
     const hasAnyPort = hasLayout || hasRight
-    const wanted = settings.sidebarGestures && hasAnyPort
+    const wanted = settings.sidebarGestures && hasAnyPort && isMobileTouchViewport(
+      hostWindow,
+      options.viewportMaxPx ?? DEFAULT_MOBILE_GESTURE_VIEWPORT_MAX_PX,
+    )
+    if (settings.sidebarGestures && hasAnyPort && !wanted) {
+      options.onDiagnostic?.(GESTURE_DIAGNOSTIC_NOT_MOBILE)
+    }
     if (settings.sidebarGestures && !hasAnyPort) {
       // 用户打开了手势但布局服务整体不可用：不挂监听，并留下可解释诊断。
       options.onDiagnostic?.(GESTURE_DIAGNOSTIC_CAPABILITY_MISSING)
@@ -217,8 +238,27 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
   }
 
   if (hostDocument === undefined && hostWindow === undefined) options.onDiagnostic?.(GESTURE_DIAGNOSTIC_CAPABILITY_MISSING)
+  hostWindow?.addEventListener('resize', onResize as (event: never) => void)
   refresh()
-  return { dispose: detach, refresh }
+  return {
+    dispose() {
+      detach()
+      hostWindow?.removeEventListener('resize', onResize as (event: never) => void)
+    },
+    refresh,
+  }
+}
+
+/** 只在窄屏或明确存在触摸点的设备上启用，避免桌面触摸屏误抢滚动。 */
+function isMobileTouchViewport(windowLike: SidebarGestureWindowLike | undefined, maxPx: number): boolean {
+  const width = windowLike?.innerWidth
+    ?? (globalThis as unknown as { innerWidth?: number }).innerWidth
+  if (typeof width !== 'number' || !Number.isFinite(width) || width <= 0) return false
+  if (!Number.isFinite(maxPx) || maxPx <= 0 || width > maxPx) return false
+  const maxTouchPoints = windowLike?.navigator?.maxTouchPoints
+  if (typeof maxTouchPoints === 'number' && Number.isFinite(maxTouchPoints)) return maxTouchPoints > 0
+  // 某些 WebView 不暴露 maxTouchPoints；窄屏 fallback 保证 Android WebView 能工作。
+  return true
 }
 
 function resolveConfig(options: MobileSidebarGestureOptions): SidebarGestureConfig {

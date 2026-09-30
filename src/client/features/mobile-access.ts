@@ -1,9 +1,11 @@
-import { normalizeMobileAccessSettings } from '../../shared/contracts/config.js'
+import { normalizeMobileAccessSettings, normalizeSidebarGestureSettings } from '../../shared/contracts/config.js'
 import { debugWarn } from '../../shared/debug.js'
 import {
   startMobileSidebarRailDom,
   type MobileSidebarRailDomController,
 } from '../mobile-sidebar-rail-dom.js'
+import { startMobileSidebarGestures, type MobileSidebarGestureController } from '../mobile-sidebar-gestures.js'
+import { startMobileSettingsModalDom, type MobileSettingsModalController } from '../mobile-settings-modal-dom.js'
 import { MobileAccessPanel } from './mobile-access-panel.js'
 import type { CodingNsClientFeatureModule } from './types.js'
 
@@ -27,7 +29,7 @@ export const mobileAccessFeature: CodingNsClientFeatureModule = {
     requires: [{ capability: 'layout.columns', required: false, fallback: 'disable' }],
     ui: {
       label: '移动端访问增强',
-      description: '手机或窄屏访问时彻底隐藏左侧边栏，只在左上角保留 logo 作为再次唤起的入口。',
+      description: '优化移动端访问布局',
       labelKey: 'feature.mobileAccess.label',
       descriptionKey: 'feature.mobileAccess.description',
       order: 36,
@@ -42,8 +44,28 @@ export const mobileAccessFeature: CodingNsClientFeatureModule = {
       toggleSidebar: () => { context.services.layout?.toggleSidebar() },
       onDiagnostic: (code) => debugWarn('codingns4dsh: 移动端侧栏隐藏不可用', { code }),
     })
-    context.resources.add(context.services.settings.subscribe(() => { controller.refresh() }))
-    context.resources.add(() => controller.dispose())
+    // 横滑属于移动端访问基础能力，不能依赖“工作区会话增强”模块是否开启。
+    // 手势控制器自身会按窄屏与触摸能力门禁，桌面端不会注册监听。
+    const gestures: MobileSidebarGestureController = startMobileSidebarGestures({
+      ports: { layout: context.services.layout, sidebarRight: context.services.sidebarRight },
+      settings: () => normalizeSidebarGestureSettings(context.services.settings.getSnapshot().value?.workspaceSessionEnhancement),
+      onDiagnostic: (code) => debugWarn('codingns4dsh: 侧栏手势不可用', { code }),
+    })
+    const settingsModal: MobileSettingsModalController = startMobileSettingsModalDom({
+      mobileViewportMaxPx: () => normalizeMobileAccessSettings(
+        context.services.settings.getSnapshot().value?.mobileAccess,
+      ).mobileViewportMaxPx,
+    })
+    context.resources.add(context.services.settings.subscribe(() => {
+      controller.refresh()
+      gestures.refresh()
+      settingsModal.refresh()
+    }))
+    context.resources.add(() => {
+      controller.dispose()
+      gestures.dispose()
+      settingsModal.dispose()
+    })
   },
   settingsPanel: MobileAccessPanel,
 }

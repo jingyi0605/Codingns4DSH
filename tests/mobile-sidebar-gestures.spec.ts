@@ -94,6 +94,7 @@ function createHarness(overrides: Partial<{ settings: SidebarGestureSettings; wi
   const calls: string[] = []
   let expanded = false
   const diagnostics: string[] = []
+  const vibrations: number[] = []
   const portSettings = overrides.settings ?? SETTINGS
   const controller = startMobileSidebarGestures({
     ports: overrides.withPorts === false
@@ -109,8 +110,9 @@ function createHarness(overrides: Partial<{ settings: SidebarGestureSettings; wi
     window,
     document,
     onDiagnostic: (code) => diagnostics.push(code),
+    vibrate: (pattern) => { vibrations.push(pattern) },
   })
-  return { window, document, controller, calls, diagnostics, isExpanded: () => expanded }
+  return { window, document, controller, calls, diagnostics, vibrations, isExpanded: () => expanded }
 }
 
 test('手势控制器只通过服务开合侧栏，并在右栏全屏时压入历史记录', () => {
@@ -121,11 +123,13 @@ test('手势控制器只通过服务开合侧栏，并在右栏全屏时压入�
   harness.window.emit('touchstart', touchEvent(120, 300))
   harness.window.emit('touchmove', touchEvent(200, 304))
   assert.deepEqual(harness.calls, ['left'])
+  assert.deepEqual(harness.vibrations, [10])
 
   harness.window.emit('touchend', { touches: [] })
   harness.window.emit('touchstart', touchEvent(280, 300))
   harness.window.emit('touchmove', touchEvent(190, 302))
   assert.deepEqual(harness.calls, ['left', 'right'])
+  assert.deepEqual(harness.vibrations, [10, 10])
   assert.equal(harness.isExpanded(), true)
   assert.deepEqual(harness.window.pushed, [{ codingnsRightbar: true }])
 
@@ -156,6 +160,25 @@ test('关闭开关或缺少端口时不注册监听，并给出可解释诊断',
   const noPorts = createHarness({ withPorts: false })
   assert.equal(noPorts.window.listenerCount('touchstart'), 0)
   assert.deepEqual(noPorts.diagnostics, [GESTURE_DIAGNOSTIC_CAPABILITY_MISSING])
+})
+
+test('桌面视口不注册全局触摸监听，缩放到窄屏后自动启用', () => {
+  const window = new FakeWindow()
+  window.innerWidth = 1440
+  let expanded = false
+  const controller = startMobileSidebarGestures({
+    ports: {
+      layout: { toggleSidebar: () => undefined },
+      sidebarRight: { isExpanded: () => expanded, toggleExpanded: () => { expanded = !expanded } },
+    },
+    settings: () => SETTINGS,
+    window,
+  })
+  assert.equal(window.listenerCount('touchstart'), 0)
+  window.innerWidth = 390
+  window.emit('resize', {})
+  assert.equal(window.listenerCount('touchstart'), 1)
+  controller.dispose()
 })
 
 test('dispose 之后不再响应触摸，refresh 可以重新激活', () => {

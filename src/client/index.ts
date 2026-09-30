@@ -44,6 +44,8 @@ import { createPeerHostScopedClient } from './peer-host-scoped-client.js'
 import { HostRouter } from './host-router.js'
 import { PeerHostSessionController } from './peer-host-session-controller.js'
 import { createPwaNotificationClient } from './pwa-notifications.js'
+export { vibrateMobile } from './mobile-vibration.js'
+export type { MobileVibrationGlobalLike, MobileVibrationNavigatorLike, MobileVibrationPattern } from './mobile-vibration.js'
 export { PeerHostSessionController } from './peer-host-session-controller.js'
 
 export { ensureCryptoRandomUUID } from './lan-access.js'
@@ -92,6 +94,14 @@ export {
   CONTEXT_BREAKDOWN_CONVERSATION_ATTRIBUTE,
   DEFAULT_CONTEXT_BREAKDOWN_HIDDEN_ADAPTERS,
 } from './context-breakdown-dom.js'
+export {
+  startMobileSettingsModalDom,
+  isMobileSettingsViewport,
+  MOBILE_SETTINGS_MODAL_ATTRIBUTE,
+  MOBILE_SETTINGS_MODAL_DEFAULT_MAX_PX,
+  MOBILE_SETTINGS_MODAL_SELECTOR,
+  MOBILE_SETTINGS_MODAL_STYLE_ID,
+} from './mobile-settings-modal-dom.js'
 export { CodingNsTerminalView, CodingNsWebTerminals, registerCodingNsTerminalUi } from './terminal/index.js'
 export { registerSubscriptionSlot, registerCommandCodeSubscriptionSlot, CommandCodeSubscriptionSlot } from './subscription-slot.js'
 

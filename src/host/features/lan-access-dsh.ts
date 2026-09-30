@@ -2,6 +2,7 @@ import type { FeatureModule } from '../../shared/contracts/feature.js'
 import { DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS, type CodingNsSettings, type LanAccessDshSettings } from '../../shared/contracts/config.js'
 import { createLanAccessDshRpcHandler, createNodeLanAccessDshRuntime, FileLanAccessDshLoginStore, LanAccessDshProxy, type LanAccessDshRuntime } from '../lan-access-dsh.js'
 import { createLanAccessDshPwaProvider, PwaPushService } from '../modules/pwa/index.js'
+import { createPwaSessionNotification } from '../modules/pwa/pwa-session-notifications.js'
 import type { CodingNsHostServices } from './types.js'
 
 /** Host 侧“局域网访问 DSH”模块，只管理一条 DSH Web 监听映射。 */
@@ -28,6 +29,24 @@ export function createLanAccessDshFeature(options: { runtime?: LanAccessDshRunti
       // 推送只保存订阅与 VAPID 私钥；是否真的订阅由浏览器侧在用户开启时决定。
       const push = new PwaPushService()
       context.resources.add(context.services.rpc.register('lanAccessDsh', createLanAccessDshRpcHandler(proxy, settings, loginStore, { push })))
+      // 推送订阅由浏览器显式开启；开启后把原生会话完成/等待输入事件转成通知。
+      // 事件监听属于局域网功能生命周期，停用模块时随资源一起释放。
+      const nativeSessions = context.services.nativeSessions
+      if (nativeSessions?.supportsEvents === true) {
+        const disposeNotifications = nativeSessions.subscribe({
+          onEvent: (session, event) => {
+            const pwa = settings?.get().lanAccessDsh.pwa
+            if (pwa?.enabled !== true || pwa.notifications !== 'push') return
+            const payload = createPwaSessionNotification({ session, event })
+            if (payload === null) return
+            void push.sendToAll(payload).catch((error: unknown) => {
+              // 单个推送服务故障不能影响 DSH 会话事件处理。
+              console.warn('codingns4dsh: PWA 会话通知发送失败', error)
+            })
+          },
+        })
+        context.resources.add(disposeNotifications)
+      }
       if (settings !== undefined) {
         const autoStart = async (value: CodingNsSettings): Promise<void> => {
           if (!value.lanAccessDsh.autoStart) return

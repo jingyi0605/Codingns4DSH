@@ -28,4 +28,5 @@ export {
   type PwaPushSubscriptionRecord,
   type PwaPushVapidKeys,
 } from './pwa-push.js'
+export { createPwaSessionNotification, type PwaSessionNotificationInput } from './pwa-session-notifications.js'
 export { applyViewportFitTap, hasViewportFit } from './pwa-viewport.js'

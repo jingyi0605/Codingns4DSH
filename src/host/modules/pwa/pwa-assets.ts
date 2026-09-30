@@ -169,6 +169,8 @@ self.addEventListener('push', (event) => {
     data: { url },
     icon: ${JSON.stringify(PWA_NOTIFICATION_ICON_PATH)},
     badge: ${JSON.stringify(PWA_NOTIFICATION_ICON_PATH)},
+    // Android PWA 支持的通知振动模式；不支持的平台会忽略该字段。
+    vibrate: [80, 40, 80],
   }));
 });
 
@@ -179,6 +181,10 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil((async () => {
     const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of clientList) {
+      // 已有页面也要跳到通知携带的会话地址，否则点击通知只会把旧页面置前。
+      if (typeof client.navigate === 'function') {
+        try { await client.navigate(target); } catch (error) {}
+      }
       if (typeof client.focus === 'function') {
         await client.focus();
         return;

@@ -71,6 +71,8 @@ export interface PwaNotificationPayload {
   readonly body?: string
   readonly tag?: string
   readonly url?: string
+  /** Android 通知的振动模式；浏览器不支持时会自动忽略。 */
+  readonly vibrate?: number | readonly number[]
 }
 
 /** 通知与推送的统一入口；同一实例可重复调用。 */
@@ -122,6 +124,8 @@ export class PwaNotificationClient {
       ...(payload.body === undefined ? {} : { body: payload.body }),
       ...(payload.tag === undefined ? {} : { tag: payload.tag }),
       ...(payload.url === undefined ? {} : { data: { url: payload.url } }),
+      // Android Chrome 会在允许通知时按该模式触发系统振动；iOS/桌面会忽略未知选项。
+      vibrate: payload.vibrate ?? [80, 40, 80],
     }
     const registration = await this.registration()
     if (registration?.showNotification !== undefined) {

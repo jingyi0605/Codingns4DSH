@@ -70,6 +70,7 @@ test('Service Worker 不做请求缓存，只处理推送、点击与注销', ()
   assert.match(script, /skipWaiting/u)
   assert.match(script, /showNotification/u)
   assert.match(script, /notificationclick/u)
+  assert.match(script, /client\.navigate\(target\)/u)
   assert.match(script, /codingns-sw-unregister/u)
   // 空 fetch 监听只为满足安装判定；一旦出现 respondWith/cache.addAll 就说明开始缓存请求了。
   assert.doesNotMatch(script, /respondWith/u)
