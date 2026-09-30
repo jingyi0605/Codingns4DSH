@@ -2,6 +2,7 @@ import { dshThemeColor } from './theme.js'
 import { providerVisual } from './provider-icons.js'
 import { sessionAdapterId } from './session-adapter-cache.js'
 import type { NativeWorkspaceSnapshot } from './native-workspace-store.js'
+import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 
 /** 归档入口和模态框节点使用的标记，便于重复扫描与停用时完整清理。 */
 export const WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE = 'data-codingns-session-archive'
@@ -53,6 +54,8 @@ export interface WorkspaceSessionArchiveDomOptions {
   readonly readNativeWorkspaceSnapshot?: () => NativeWorkspaceSnapshot | undefined
   /** 会话取消归档成功后的通知；返回的 Promise 会在远端聚合同步完成后兑现。 */
   readonly onSessionUnarchived?: (sessionId: string) => void | Promise<void>
+  /** DSH 语言运行时；归档入口、模态框和 Agent 兜底展示名都从它取词。 */
+  readonly locale?: CodingNsLocale
 }
 
 /** 读取当前 DSH Workspace 的归档会话摘要，独立导出供契约测试和宿主探测使用。 */
@@ -77,6 +80,7 @@ export function startWorkspaceSessionArchiveDom(
     ?? (typeof MutationObserver === 'undefined' ? undefined : MutationObserver)
   const remote = normalizeRemote(options.remote)
   const now = options.now ?? Date.now
+  const t = resolveCodingNsTranslator(options.locale)
   // SessionStore 只记录显式选择；没有外部绑定时，DSH Registry 的权威默认值就是 dsh。
   const adapterIdForSession = options.adapterIdForSession
     ?? ((sessionId: string): string => sessionAdapterId(sessionId) ?? 'dsh')
@@ -126,6 +130,7 @@ export function startWorkspaceSessionArchiveDom(
           dom,
           remote,
           adapterIdForSession,
+          t,
           onChanged: () => { void refreshData() },
           onSessionUnarchived,
         }))
@@ -144,6 +149,7 @@ export function startWorkspaceSessionArchiveDom(
           workspaceId,
           expandedByWorkspace.get(workspaceId) ?? true,
           openModalFor(workspaceId),
+          t,
         )) insertedWorkspaceIds.add(workspaceId)
       }
 
@@ -161,6 +167,7 @@ export function startWorkspaceSessionArchiveDom(
           workspaceId,
           header.getAttribute('aria-expanded') !== 'false',
           openModalFor(workspaceId),
+          t,
         )) insertedWorkspaceIds.add(workspaceId)
       }
     } finally {
@@ -416,11 +423,12 @@ function insertArchiveEntry(
   workspaceId: string,
   expanded: boolean,
   onOpen: () => void,
+  t: CodingNsTranslator,
 ): boolean {
   if (items.length === 0) return false
   const container = findWorkspaceContainer(moreButton, workspaceId)
   if (container === null) return false
-  const entry = createArchiveEntry(items, dom, expanded, onOpen)
+  const entry = createArchiveEntry(items, dom, expanded, onOpen, t)
   const anchor = directChildFor(container, moreButton)
   if (anchor === null) return false
   container.insertBefore(entry, anchor)
@@ -435,11 +443,12 @@ function insertArchiveEntryAfterHeader(
   workspaceId: string,
   expanded: boolean,
   onOpen: () => void,
+  t: CodingNsTranslator,
 ): boolean {
   if (items.length === 0) return false
   const container = findWorkspaceContainer(header, workspaceId)
   if (container === null) return false
-  const entry = createArchiveEntry(items, dom, expanded, onOpen)
+  const entry = createArchiveEntry(items, dom, expanded, onOpen, t)
   const moreButton = [...container.querySelectorAll<HTMLElement>('button')].find(isMoreSessionButton)
   if (moreButton !== undefined) {
     const anchor = directChildFor(container, moreButton)
@@ -494,14 +503,15 @@ function createArchiveEntry(
   dom: Pick<Document, 'body' | 'createElement' | 'querySelector'>,
   expanded: boolean,
   onOpen: () => void,
+  t: CodingNsTranslator,
 ): HTMLElement {
   const entry = dom.createElement('button')
   entry.type = 'button'
   entry.setAttribute(WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE, '')
-  entry.setAttribute('aria-label', '已归档的会话')
+  entry.setAttribute('aria-label', t('archive.title'))
   entry.hidden = !expanded
   entry.setAttribute('aria-hidden', expanded ? 'false' : 'true')
-  entry.textContent = `已归档的会话 ${items.length}`
+  entry.textContent = t('archive.entryCount', { count: items.length })
   Object.assign(entry.style, {
     display: expanded ? 'block' : 'none',
     width: '100%',
@@ -537,6 +547,7 @@ interface ArchiveModalContext {
   readonly dom: Pick<Document, 'body' | 'createElement' | 'querySelector'>
   readonly remote: CodingNsRemote
   readonly adapterIdForSession: (sessionId: string) => string | undefined
+  readonly t: CodingNsTranslator
   readonly onChanged: () => void
   readonly onSessionUnarchived: ((sessionId: string) => void | Promise<void>) | undefined
 }
@@ -548,6 +559,7 @@ function openArchiveModal(
   const { dom } = context
   closeArchiveModal(dom)
   if (dom.body === null || dom.body === undefined) return
+  const t = context.t
   const overlay = dom.createElement('div')
   overlay.setAttribute(WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE, '')
   Object.assign(overlay.style, {
@@ -557,7 +569,7 @@ function openArchiveModal(
   const surface = dom.createElement('section')
   surface.setAttribute('role', 'dialog')
   surface.setAttribute('aria-modal', 'true')
-  surface.setAttribute('aria-label', '已归档的会话')
+  surface.setAttribute('aria-label', t('archive.title'))
   Object.assign(surface.style, {
     width: 'min(860px, 100%)', maxHeight: 'min(720px, 90vh)', overflow: 'auto', boxSizing: 'border-box',
     padding: '28px 32px', borderRadius: '16px', color: dshThemeColor.labelPrimary,
@@ -566,18 +578,18 @@ function openArchiveModal(
   const header = dom.createElement('div')
   Object.assign(header.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', marginBottom: '18px' })
   const title = dom.createElement('h2')
-  title.textContent = '已归档的会话'
+  title.textContent = t('archive.title')
   Object.assign(title.style, { margin: '0', fontSize: '22px', fontWeight: '600' })
   const close = dom.createElement('button')
   close.type = 'button'
-  close.setAttribute('aria-label', '关闭')
+  close.setAttribute('aria-label', t('archive.close'))
   close.textContent = '×'
   Object.assign(close.style, { border: '0', background: 'transparent', color: 'inherit', fontSize: '30px', lineHeight: '1', cursor: 'pointer' })
   header.append(title, close)
   const search = dom.createElement('input')
   search.type = 'search'
-  search.placeholder = '搜索已归档会话'
-  search.setAttribute('aria-label', '搜索已归档会话')
+  search.placeholder = t('archive.searchPlaceholder')
+  search.setAttribute('aria-label', t('archive.searchPlaceholder'))
   Object.assign(search.style, { width: '100%', boxSizing: 'border-box', padding: '11px 14px', marginBottom: '16px', border: '1px solid var(--dsw-alias-border-l2, #d9d9d9)', borderRadius: '8px', color: 'inherit', background: 'var(--dsw-specific-input-major, Canvas)', font: 'inherit' })
   const list = dom.createElement('div')
   Object.assign(list.style, { display: 'flex', flexDirection: 'column', gap: '4px' })
@@ -588,7 +600,7 @@ function openArchiveModal(
     for (const item of filtered) list.appendChild(createArchiveRow(item, context))
     if (filtered.length === 0) {
       const empty = dom.createElement('p')
-      empty.textContent = '没有找到归档会话。'
+      empty.textContent = t('archive.empty')
       Object.assign(empty.style, { margin: '20px 0', color: 'var(--dsw-alias-label-secondary, GrayText)', textAlign: 'center' })
       list.appendChild(empty)
     }
@@ -611,7 +623,7 @@ function createArchiveRow(
   item: ArchivedSessionItem,
   context: ArchiveModalContext,
 ): HTMLElement {
-  const { dom, remote, adapterIdForSession, onChanged, onSessionUnarchived } = context
+  const { dom, remote, adapterIdForSession, t, onChanged, onSessionUnarchived } = context
   const row = dom.createElement('div')
   Object.assign(row.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', padding: '12px 0', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08))' })
   const content = dom.createElement('div')
@@ -622,24 +634,24 @@ function createArchiveRow(
   name.textContent = item.title
   name.title = item.title
   Object.assign(name.style, { minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '15px' })
-  titleRow.append(createAgentBadge(adapterIdForSession(item.sessionId), dom), name)
+  titleRow.append(createAgentBadge(adapterIdForSession(item.sessionId), dom, t), name)
   const time = dom.createElement('span')
-  time.textContent = `归档于 ${formatArchiveTime(item.archivedAt)}`
+  time.textContent = t('archive.archivedAt', { time: formatArchiveTime(item.archivedAt) })
   Object.assign(time.style, { color: 'var(--dsw-alias-label-secondary, GrayText)', fontSize: '13px' })
   content.append(titleRow, time)
   const restore = dom.createElement('button')
   restore.type = 'button'
-  restore.textContent = '取消归档'
+  restore.textContent = t('archive.restore')
   const unarchive = remote.workspace?.unarchiveSession
   const canUnarchive = typeof unarchive === 'function'
   restore.disabled = !canUnarchive
-  restore.title = canUnarchive ? '取消归档' : '当前 DSH 版本不支持取消归档'
-  if (!canUnarchive) restore.textContent = '取消归档（当前版本不支持）'
+  restore.title = canUnarchive ? t('archive.restore') : t('archive.restoreUnsupportedTitle')
+  if (!canUnarchive) restore.textContent = t('archive.restoreUnsupported')
   Object.assign(restore.style, { flex: '0 0 auto', padding: '7px 12px', border: '1px solid var(--dsw-alias-border-l2, #d9d9d9)', borderRadius: '8px', color: 'inherit', background: 'transparent', cursor: canUnarchive ? 'pointer' : 'not-allowed', font: 'inherit', opacity: canUnarchive ? '1' : '0.55' })
   restore.addEventListener('click', async () => {
     if (!canUnarchive || unarchive === undefined) return
     restore.disabled = true
-    restore.textContent = '处理中…'
+    restore.textContent = t('archive.processing')
     try {
       await unarchive({ sessionId: item.sessionId })
       row.remove()
@@ -647,7 +659,7 @@ function createArchiveRow(
       onChanged()
     } catch {
       restore.disabled = false
-      restore.textContent = '取消归档'
+      restore.textContent = t('archive.restore')
     }
   })
   row.append(content, restore)
@@ -657,8 +669,9 @@ function createArchiveRow(
 function createAgentBadge(
   adapterId: string | undefined,
   dom: Pick<Document, 'createElement'>,
+  t: CodingNsTranslator,
 ): HTMLElement {
-  const visual = providerVisual(adapterId)
+  const visual = providerVisual(adapterId, t)
   const badge = dom.createElement('span')
   badge.setAttribute(WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE, visual.adapterId ?? '')
   badge.textContent = visual.displayName

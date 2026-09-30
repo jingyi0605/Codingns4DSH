@@ -136,7 +136,8 @@ export function registerCodingNsTerminalUi(
   return () => { for (const dispose of disposers.reverse()) dispose() }
 }
 
-function TerminalBody({ sessionId, useTabInfo, webTerminals, settings, theme, legacyCloseFallback }: TerminalTabProps): ReactElement | null {
+function TerminalBody({ sessionId, useTabInfo, webTerminals, settings, theme, locale, legacyCloseFallback }: TerminalTabProps): ReactElement | null {
+  const t = useCodingNsTranslator(locale)
   const info = useTabInfo()
   const params = terminalParams(info)
   const view = webTerminals.view(String(sessionId), String(info.tab.id), info.tab.contentId, params.terminalId, params.shellPath)
@@ -158,6 +159,7 @@ function TerminalBody({ sessionId, useTabInfo, webTerminals, settings, theme, le
     settings,
     themeRevision,
     onNewTerminal: () => info.tab.actions.openTab(TERMINAL_KIND, { replaceTab: true }),
+    t,
   }) : null
 }
 

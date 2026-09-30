@@ -9,6 +9,7 @@ import { markdown } from '@codemirror/lang-markdown'
 import { python } from '@codemirror/lang-python'
 import { sql } from '@codemirror/lang-sql'
 import { isOutsideDismissRoots } from './popup-dismiss.js'
+import { resolveCodingNsTranslator, type CodingNsLocale } from './locale.js'
 
 type FileEntryElement = HTMLElement & { dataset: DOMStringMap }
 type ClipboardState = { mode: 'copy' | 'cut'; paths: string[] }
@@ -38,6 +39,8 @@ const TEXT_FILE_NAMES = new Set([
 export interface FileManagementDomOptions {
   readonly menuEnhancement: boolean
   readonly fileEditor: boolean
+  /** DSH 语言运行时；右键菜单、原生对话框和编辑按钮文案都从它取词。 */
+  readonly locale?: CodingNsLocale
 }
 
 export interface FileManagementDomController {
@@ -54,6 +57,7 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
   let clipboard: ClipboardState | undefined
   let editor: FileEditorState | undefined
   let options = { ...initialOptions }
+  let t = resolveCodingNsTranslator(initialOptions.locale)
   let disposed = false
   const observer = typeof MutationObserver === 'undefined'
     ? undefined
@@ -96,6 +100,7 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
     setOptions(nextOptions) {
       const previous = options
       options = { ...nextOptions }
+      if (nextOptions.locale !== previous.locale) t = resolveCodingNsTranslator(nextOptions.locale)
       if (!options.menuEnhancement) closeMenu()
       if (!options.fileEditor) clearEditorEnhancements()
       else if (!previous.fileEditor) enhanceEditors()
@@ -111,18 +116,18 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
     const base = kind === 'directory' ? path : parentPath(path)
     const panel = item.closest<HTMLElement>('[data-files-state="tree"]')
     const items: Array<{ label: string; disabled?: boolean; action: () => void | Promise<void> }> = [
-      { label: kind === 'directory' ? '展开文件夹' : '打开文件', action: () => clickEntry(item) },
-      { label: '下载文件', disabled: kind !== 'file', action: () => void downloadFile({ path }) },
-      { label: '新建文件', action: () => void createEntry(base, false) },
-      { label: '新建目录', action: () => void createEntry(base, true) },
-      { label: '重命名/移动', action: () => void renameEntry(path) },
-      { label: '复制', action: () => { clipboard = { mode: 'copy', paths: [path] } } },
-      { label: '剪切', action: () => { clipboard = { mode: 'cut', paths: [path] } } },
-      { label: '粘贴', disabled: clipboard === undefined, action: () => void pasteEntry(base, panel) },
-      { label: '复制相对路径', action: () => void copyPath(item, false) },
-      { label: '复制绝对路径', action: () => void copyPath(item, true) },
-      { label: '添加到 Git 排除', action: () => void runMutation('git-ignore', { paths: [path] }, panel) },
-      { label: '删除', action: () => void deleteEntry(path, panel) },
+      { label: t(kind === 'directory' ? 'fileMenu.expandFolder' : 'fileMenu.openFile'), action: () => clickEntry(item) },
+      { label: t('fileMenu.download'), disabled: kind !== 'file', action: () => void downloadFile({ path }) },
+      { label: t('fileMenu.newFile'), action: () => void createEntry(base, false) },
+      { label: t('fileMenu.newDirectory'), action: () => void createEntry(base, true) },
+      { label: t('fileMenu.rename'), action: () => void renameEntry(path) },
+      { label: t('fileMenu.copy'), action: () => { clipboard = { mode: 'copy', paths: [path] } } },
+      { label: t('fileMenu.cut'), action: () => { clipboard = { mode: 'cut', paths: [path] } } },
+      { label: t('fileMenu.paste'), disabled: clipboard === undefined, action: () => void pasteEntry(base, panel) },
+      { label: t('fileMenu.copyRelativePath'), action: () => void copyPath(item, false) },
+      { label: t('fileMenu.copyAbsolutePath'), action: () => void copyPath(item, true) },
+      { label: t('fileMenu.gitIgnore'), action: () => void runMutation('git-ignore', { paths: [path] }, panel) },
+      { label: t('fileMenu.delete'), action: () => void deleteEntry(path, panel) },
     ]
     menu = document.createElement('div')
     menu.setAttribute('role', 'menu')
@@ -151,13 +156,13 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
   }
 
   async function createEntry(base: string, directory: boolean): Promise<void> {
-    const name = window.prompt(directory ? '输入新目录名称或相对路径' : '输入新文件名称或相对路径', '')?.trim()
+    const name = window.prompt(t(directory ? 'fileMenu.promptNewDirectory' : 'fileMenu.promptNewFile'), '')?.trim()
     if (!name) return
     await runMutation(directory ? 'create-directory' : 'create-file', { path: joinPath(base, name) }, null)
   }
 
   async function renameEntry(path: string): Promise<void> {
-    const next = window.prompt('输入新的文件名或相对路径', leaf(path))?.trim()
+    const next = window.prompt(t('fileMenu.promptRename'), leaf(path))?.trim()
     if (!next || next === leaf(path)) return
     const destination = isAbsoluteLike(next) ? next : joinPath(parentPath(path), next)
     await runMutation('rename', { path, destination }, null)
@@ -170,7 +175,7 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
   }
 
   async function deleteEntry(path: string, panel: HTMLElement | null): Promise<void> {
-    if (!window.confirm(`确定删除“${leaf(path)}”吗？`)) return
+    if (!window.confirm(t('fileMenu.confirmDelete', { name: leaf(path) }))) return
     await runMutation('delete', { paths: [path] }, panel)
   }
 
@@ -195,22 +200,22 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
     const value = absolute ? absolutePath(path, root) : relativePath(path, root)
     try {
       await copyTextToClipboard(value)
-      showNotice(absolute ? '已复制绝对路径' : '已复制相对路径')
-    } catch { showNotice('复制路径失败') }
+      showNotice(t(absolute ? 'fileMenu.copiedAbsolutePath' : 'fileMenu.copiedRelativePath'))
+    } catch { showNotice(t('fileMenu.copyPathFailed')) }
   }
 
   async function runMutation(action: string, payload: Record<string, unknown>, panel: HTMLElement | null): Promise<void> {
     try {
       await call(action, payload)
       refreshPanel(panel)
-      showNotice('文件操作已完成')
+      showNotice(t('fileMenu.operationDone'))
     } catch (error) { showNotice(errorMessage(error)) }
   }
 
   function refreshPanel(panel: HTMLElement | null): void {
     const reload = panel?.querySelector<HTMLButtonElement>('[data-files-reload]')
-      ?? findButton(panel, ['重新读取', '重新读取文件'])
-      ?? findButton(document, ['重新读取', '重新读取文件'])
+      ?? findButton(panel, NATIVE_RELOAD_PATTERN)
+      ?? findButton(document, NATIVE_RELOAD_PATTERN)
     if (reload !== null && reload !== undefined) reload.click()
   }
 
@@ -222,7 +227,7 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
       if (root.getAttribute('data-textpreview-state') !== 'text' || !isEditableFile(url)) continue
       const header = root.querySelector<HTMLElement>('[data-textpreview-path]')?.parentElement
       if (header === null || header === undefined) continue
-      const button = createEditorButton(root, 'edit', '编辑文件')
+      const button = createEditorButton(root, 'edit', t('fileEditor.edit'))
       button.setAttribute('data-file-management-edit', 'true')
       button.addEventListener('click', () => void beginEdit(root, url, button))
       placeEditorButton(root, header, button)
@@ -234,14 +239,14 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
     if (!options.fileEditor) return
     if (editor !== undefined) cancelEdit()
     const target = parseFileTarget(url, root)
-    if (target === undefined) { showNotice('无法解析当前文件路径'); return }
+    if (target === undefined) { showNotice(t('fileMenu.unresolvedPath')); return }
     try {
       const result = await call('read', target) as { content: string }
       const body = root.querySelector<HTMLElement>('[data-textpreview-body]')
       if (body === null) return
       const host = document.createElement('div')
       host.setAttribute('data-file-management-editor', 'true')
-      host.setAttribute('aria-label', '文件内容编辑器')
+      host.setAttribute('aria-label', t('fileEditor.editorLabel'))
       host.style.cssText = 'box-sizing:border-box;width:100%;height:100%;min-height:360px;border:1px solid var(--dsw-alias-border-l2,#666);border-radius:6px;overflow:hidden;background:var(--dsw-alias-bg-layer-1,transparent)'
       body.style.display = 'none'
       body.parentElement?.append(host)
@@ -253,8 +258,8 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
       view.focus()
       const buttons = document.createElement('span')
       buttons.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin-left:auto'
-      const save = createEditorButton(root, 'save', '保存文件')
-      const cancel = createEditorButton(root, 'cancel', '取消编辑')
+      const save = createEditorButton(root, 'save', t('fileEditor.save'))
+      const cancel = createEditorButton(root, 'cancel', t('fileEditor.cancel'))
       buttons.append(save, cancel)
       editButton.replaceWith(buttons)
       editor = { root, body, host, view, path: target, buttons }
@@ -268,11 +273,11 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
     try {
       await call('write', { ...editor.path, content: editor.view.state.doc.toString() })
       const reload = editor.root.querySelector<HTMLButtonElement>('[data-textpreview-tool="reload"]')
-        ?? findButton(editor.root.parentElement, ['重新读取文件', '重新读取'])
-        ?? findButton(document, ['重新读取文件', '重新读取'])
+        ?? findButton(editor.root.parentElement, NATIVE_RELOAD_PATTERN)
+        ?? findButton(document, NATIVE_RELOAD_PATTERN)
       cancelEdit()
       reload?.click()
-      showNotice('文件已保存')
+      showNotice(t('fileEditor.saved'))
     } catch (error) { showNotice(errorMessage(error)) }
   }
 
@@ -437,11 +442,19 @@ function createEditorIcon(iconName: EditorButtonIcon): Element {
   return fallback
 }
 
-function findButton(root: ParentNode | null | undefined, labels: readonly string[]): HTMLButtonElement | undefined {
+/**
+ * DSH 原生“重新读取”按钮的兜底识别。
+ *
+ * 这里匹配的是宿主自己的界面文案，不是插件词典，因此只能按宿主实际渲染的
+ * 中英文标签判断；用正则表达多语言匹配，避免把宿主文案当成插件词条。
+ */
+const NATIVE_RELOAD_PATTERN = /^(?:重新读取文件|重新读取)$/u
+
+function findButton(root: ParentNode | null | undefined, pattern: RegExp): HTMLButtonElement | undefined {
   if (root === null || root === undefined) return undefined
   for (const button of root.querySelectorAll<HTMLButtonElement>('button')) {
     const label = button.getAttribute('aria-label')?.trim() || button.textContent?.trim() || ''
-    if (labels.includes(label)) return button
+    if (pattern.test(label)) return button
   }
   return undefined
 }

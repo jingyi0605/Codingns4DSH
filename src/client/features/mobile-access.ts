@@ -8,6 +8,10 @@ import { startMobileSidebarGestures, type MobileSidebarGestureController } from 
 import { startMobileSettingsModalDom, type MobileSettingsModalController } from '../mobile-settings-modal-dom.js'
 import { MobileAccessPanel } from './mobile-access-panel.js'
 import type { CodingNsClientFeatureModule } from './types.js'
+import { resolveCodingNsTranslator } from '../locale.js'
+
+/** descriptor 的 label/description 只是词典缺失时的兜底，取内置中文词典。 */
+const fallbackT = resolveCodingNsTranslator()
 
 /**
  * 移动端访问增强。
@@ -28,8 +32,8 @@ export const mobileAccessFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     requires: [{ capability: 'layout.columns', required: false, fallback: 'disable' }],
     ui: {
-      label: '移动端访问增强',
-      description: '优化移动端访问布局',
+      label: fallbackT('feature.mobileAccess.label'),
+      description: fallbackT('feature.mobileAccess.description'),
       labelKey: 'feature.mobileAccess.label',
       descriptionKey: 'feature.mobileAccess.description',
       order: 36,
@@ -43,6 +47,7 @@ export const mobileAccessFeature: CodingNsClientFeatureModule = {
       // 每次点击都重新取布局服务：宿主重建期间 services.layout 可能是后补的。
       toggleSidebar: () => { context.services.layout?.toggleSidebar() },
       onDiagnostic: (code) => debugWarn('codingns4dsh: 移动端侧栏隐藏不可用', { code }),
+      locale: context.services.locale,
     })
     // 横滑属于移动端访问基础能力，不能依赖“工作区会话增强”模块是否开启。
     // 手势控制器自身会按窄屏与触摸能力门禁，桌面端不会注册监听。

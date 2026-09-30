@@ -5,6 +5,7 @@ import type { SessionChangedFiles } from '../shared/contracts/file-management.js
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCodingNsRpc } from './settings-bridge.js'
 import { resolveGitWorkspaceId } from './git-management.js'
+import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 
 export const SESSION_CHANGED_FILES_VIEW_ID = 'codingns4dsh/session-changed-files'
 
@@ -17,6 +18,8 @@ interface SessionChangedFilesViewProps {
   readonly rpc: CodingNsRpcClient
   readonly remote?: unknown
   readonly reportCount?: (sessionId: string, count: number) => void
+  /** 由 Slot inject 注入的 Codingns4DSH 词典翻译函数。 */
+  readonly t: CodingNsTranslator
 }
 
 interface SessionChangedFilesCounterProps {
@@ -49,6 +52,7 @@ interface MutableDirectory {
 
 /** 会话“修改文件”视图；数据只通过插件 RPC 和现有 Git RPC 读取。 */
 export function SessionChangedFilesView(props: SessionChangedFilesViewProps): ReactElement {
+  const t = props.t
   const compactLayout = useCompactLayout()
   const [workspaceId, setWorkspaceId] = useState<string>()
   const [changes, setChanges] = useState<readonly GitChangeItem[]>([])
@@ -146,43 +150,50 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
 
   return createElement('div', { style: viewRootStyle },
     createElement('div', { style: viewToolbarStyle },
-      createElement('strong', { style: { fontSize: 15 } }, '修改文件'),
-      createElement('span', { style: countStyle }, `${changes.length} 个文件`),
+      createElement('strong', { style: { fontSize: 15 } }, t('sessionFiles.title')),
+      createElement('span', { style: countStyle }, t('sessionFiles.count', { count: changes.length })),
       createElement('span', { style: { flex: 1 } }),
-      createElement('button', { type: 'button', disabled: loading || busy, onClick: () => void load(), style: toolbarRefreshButtonStyle, title: '刷新', 'aria-label': '刷新' },
+      createElement('button', { type: 'button', disabled: loading || busy, onClick: () => void load(), style: toolbarRefreshButtonStyle, title: t('sessionFiles.refresh'), 'aria-label': t('sessionFiles.refresh') },
         createElement(RefreshIcon)),
-      createElement('button', { type: 'button', disabled: busy || unstaged.length === 0, onClick: () => void stageTargets(unstaged.map((item) => item.path), 'stage'), style: toolbarStageButtonStyle, title: '全部暂存', 'aria-label': '全部暂存' },
+      createElement('button', { type: 'button', disabled: busy || unstaged.length === 0, onClick: () => void stageTargets(unstaged.map((item) => item.path), 'stage'), style: toolbarStageButtonStyle, title: t('sessionFiles.stageAll'), 'aria-label': t('sessionFiles.stageAll') },
         createElement(StageIcon)),
     ),
     error === undefined ? null : createElement('div', { role: 'alert', style: errorStyle }, error),
     createElement('div', { style: viewContentStyle },
       createElement('div', { style: viewTreePaneStyle },
-        loading ? createElement('div', { style: emptyStyle }, '正在读取会话修改…')
-          : changes.length === 0 ? createElement('div', { style: emptyStyle }, '本次会话没有已识别的修改文件')
-            : tree.map((node) => renderNode(node, 0, collapsed, hoveredPath, selectedPath, toggle, setSelectedPath, setHoveredPath, stageTargets)),
+        loading ? createElement('div', { style: emptyStyle }, t('sessionFiles.loading'))
+          : changes.length === 0 ? createElement('div', { style: emptyStyle }, t('sessionFiles.empty'))
+            : tree.map((node) => renderNode(node, 0, collapsed, hoveredPath, selectedPath, toggle, setSelectedPath, setHoveredPath, stageTargets, t)),
       ),
       hasChanges ? createElement('div', { style: diffPaneStyle },
-        selectedPath === undefined ? createElement('div', { style: emptyStyle }, '选择文件查看 Diff')
+        selectedPath === undefined ? createElement('div', { style: emptyStyle }, t('sessionFiles.selectFile'))
           : diff?.content ? createElement('pre', { style: diffStyle }, renderDiff(diff.content))
-            : createElement('div', { style: emptyStyle }, '当前文件没有可显示的 Diff'),
+            : createElement('div', { style: emptyStyle }, t('sessionFiles.noDiff')),
       ) : null,
     ),
   )
 }
 
 /** 注册 DSH 原生 conversation.view Slot；标签由 DSH 根据 Slot 的 id/label 自动投影。 */
-export function registerSessionChangedFilesView(ctx: unknown, rpc: CodingNsRpcClient, remote?: unknown): (() => void) | undefined {
+export function registerSessionChangedFilesView(
+  ctx: unknown,
+  rpc: CodingNsRpcClient,
+  remote?: unknown,
+  locale?: CodingNsLocale,
+): (() => void) | undefined {
   const runtime = globalThis as typeof globalThis & {
     __CODINGNS4DSH_SESSION_CHANGED_FILES_VIEW__?: SessionChangedFilesViewRegistration
   }
   // DSH 热重启可能先保留旧 Context 的 Slot；复用旧注册避免 id 冲突。
   if (runtime.__CODINGNS4DSH_SESSION_CHANGED_FILES_VIEW__ !== undefined) return undefined
   const value = asRecord(ctx)
-  const slots = value?.slots as {
-    inject?: (key: string, callback: () => unknown) => (() => void)
-    register?: (options: unknown, component: unknown) => () => void
-  } | undefined
+  const slots = value?.slots as SessionChangedFilesSlotRegistry | undefined
   if (typeof slots?.inject !== 'function' || typeof slots.register !== 'function') return undefined
+  // 同进程内换 Context 重建时，旧 Slot 账本可能仍然登记着同一个 id；先读账本再决定
+  // 是否注册，避免依赖宿主异常文案（0.2.0 起错误只描述 list/keyed/single 单元格冲突）。
+  if (isSlotIdRegistered(slots, 'conversation.view', SESSION_CHANGED_FILES_VIEW_ID)) return undefined
+  if (isSlotIdRegistered(slots, 'conversation.session.header.actions', `${SESSION_CHANGED_FILES_VIEW_ID}/counter`)) return undefined
+  const t = resolveCodingNsTranslator(locale)
   let disposeSlot: (() => void) | undefined
   let disposeCounterSlot: (() => void) | undefined
   let disposed = false
@@ -209,8 +220,8 @@ export function registerSessionChangedFilesView(ctx: unknown, rpc: CodingNsRpcCl
         name: 'conversation.view',
         id: SESSION_CHANGED_FILES_VIEW_ID,
         order: 100,
-        label: () => `修改文件 ${labelCount}`,
-        inject: () => ({ rpc, remote, reportCount }),
+        label: () => t('sessionFiles.tabLabel', { count: labelCount }),
+        inject: () => ({ rpc, remote, reportCount, t }),
       }, SessionChangedFilesView)
     })
   }
@@ -226,11 +237,6 @@ export function registerSessionChangedFilesView(ctx: unknown, rpc: CodingNsRpcCl
     disposeSlot = registerSlot()
     disposeCounterSlot = registerCounterSlot()
   } catch (error) {
-    if (isDuplicateRegistrationError(error)) {
-      disposeSlot?.()
-      disposeCounterSlot?.()
-      return undefined
-    }
     disposeSlot?.()
     disposeCounterSlot?.()
     throw error
@@ -247,8 +253,25 @@ export function registerSessionChangedFilesView(ctx: unknown, rpc: CodingNsRpcCl
   return dispose
 }
 
-function isDuplicateRegistrationError(error: unknown): boolean {
-  return error instanceof Error && /already registered|已注册/u.test(error.message)
+interface SessionChangedFilesSlotRegistry {
+  inject?: (key: string, callback: () => unknown) => (() => void)
+  register?: (options: unknown, component: unknown) => () => void
+  /**
+   * SlotRegistry 的账本读取接口。
+   *
+   * 只在版本提供时使用：缺失时退化为直接注册，由全局注册标记兜底。
+   */
+  entries?: (key: string) => readonly { readonly options?: { readonly id?: string } }[]
+}
+
+/** 按账本中的稳定 id 判断某个 Slot 是否已经登记，不再解析宿主异常文案。 */
+function isSlotIdRegistered(
+  slots: SessionChangedFilesSlotRegistry,
+  name: string,
+  id: string,
+): boolean {
+  const entries = slots.entries?.(name)
+  return Array.isArray(entries) && entries.some((entry) => entry.options?.id === id)
 }
 
 function SessionChangedFilesCounter(props: SessionChangedFilesCounterProps): null {
@@ -317,6 +340,7 @@ function renderNode(
   select: (path: string) => void,
   hover: (path: string | undefined) => void,
   stageTargets: (targets: readonly string[], action: 'stage' | 'unstage' | 'discard') => Promise<void>,
+  t: CodingNsTranslator,
 ): ReactElement {
   if (node.kind === 'directory') {
     const expanded = !collapsed.has(node.path)
@@ -329,9 +353,9 @@ function renderNode(
           createElement('span', { style: fileNameStyle, title: node.path }, node.name),
           createElement('span', { style: mutedCountStyle }, String(files.length)),
         ),
-        hoveredPath === node.path ? createElement('button', { type: 'button', title: '暂存目录', disabled: files.every((item) => item.staged), onClick: () => void stageTargets(files.filter((item) => !item.staged).map((item) => item.path), 'stage'), style: iconButtonStyle }, '+') : null,
+        hoveredPath === node.path ? createElement('button', { type: 'button', title: t('sessionFiles.stageDirectory'), disabled: files.every((item) => item.staged), onClick: () => void stageTargets(files.filter((item) => !item.staged).map((item) => item.path), 'stage'), style: iconButtonStyle }, '+') : null,
       ),
-      expanded ? createElement('div', null, node.children.map((child) => renderNode(child, depth + 1, collapsed, hoveredPath, selectedPath, toggle, select, hover, stageTargets))) : null,
+      expanded ? createElement('div', null, node.children.map((child) => renderNode(child, depth + 1, collapsed, hoveredPath, selectedPath, toggle, select, hover, stageTargets, t))) : null,
     )
   }
   const item = node.change
@@ -343,8 +367,8 @@ function renderNode(
       createElement('span', { style: statusStyle }, item.status),
     ),
     isHovered ? createElement('span', { style: actionsStyle },
-      createElement('button', { type: 'button', title: item.staged ? '撤销暂存' : '添加到暂存区', onClick: () => void stageTargets([item.path], item.staged ? 'unstage' : 'stage'), style: iconButtonStyle }, item.staged ? '↶' : '+'),
-      createElement('button', { type: 'button', title: '撤销变更', disabled: item.staged, onClick: () => void stageTargets([item.path], 'discard'), style: dangerButtonStyle }, '×'),
+      createElement('button', { type: 'button', title: item.staged ? t('sessionFiles.unstage') : t('sessionFiles.stage'), onClick: () => void stageTargets([item.path], item.staged ? 'unstage' : 'stage'), style: iconButtonStyle }, item.staged ? '↶' : '+'),
+      createElement('button', { type: 'button', title: t('sessionFiles.discard'), disabled: item.staged, onClick: () => void stageTargets([item.path], 'discard'), style: dangerButtonStyle }, '×'),
     ) : null,
   )
 }

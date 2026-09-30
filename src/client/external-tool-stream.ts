@@ -3,6 +3,7 @@ import type { ReactElement } from 'react'
 import type { ConversationNodeDefinition, ConversationLocation, ConversationMatch, ConversationStartMatch } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { CodingNsClientServices } from './features/types.js'
 import { dshThemeColor } from './theme.js'
+import { resolveCodingNsTranslator, type CodingNsTranslator } from './locale.js'
 
 /** 浏览器收到的 Host 外部工具临时标记。 */
 interface ExternalToolMarker {
@@ -34,47 +35,54 @@ interface ExternalToolState {
  * assistant/attempt 读取仅为兼容已经存在的旧历史；新 Host 的持久时间线使用原生
  * tool/call 与 tool/result，避免把工具事件误当成模型结算。
  */
-const externalToolDefinition: ConversationNodeDefinition<ExternalToolState> = {
-  kind: 'codingns-external-tool',
-  target: 'chat',
-  match(event: unknown) {
-    const marker = readMarker(event)
-    return marker === null ? null : { id: marker.callId, role: marker.phase === 'start' ? 'start' : 'update' }
-  },
-  start(_context: unknown, match: ConversationStartMatch) {
-    const marker = readMarker(match.event)
-    if (marker === null) throw new Error('外部工具节点缺少起始标记')
-    return { marker }
-  },
-  update(context: { readonly state: ExternalToolState }, match: ConversationMatch) {
-    const marker = readMarker(match.event)
-    return marker === null ? context.state : { marker }
-  },
-  buildViewNode(context) {
-    const state = context.state
-    if (state === undefined) return null
-    const location: ConversationLocation = context.start?.location ?? context.matches[0]?.location ?? { kind: 'unresolved' }
-    return {
-      key: context.key,
-      kind: 'codingns-external-tool',
-      id: context.id,
-      target: 'chat',
-      anchorSeq: context.start?.event.seq ?? context.matches[0]?.event.seq ?? 0,
-      location,
-      visibility: 'visible',
-      data: state.marker,
-    }
-  },
+function createExternalToolDefinition(t: CodingNsTranslator): ConversationNodeDefinition<ExternalToolState> {
+  return {
+    kind: 'codingns-external-tool',
+    target: 'chat',
+    match(event: unknown) {
+      const marker = readMarker(event)
+      return marker === null ? null : { id: marker.callId, role: marker.phase === 'start' ? 'start' : 'update' }
+    },
+    start(_context: unknown, match: ConversationStartMatch) {
+      const marker = readMarker(match.event)
+      if (marker === null) throw new Error(t('toolStream.missingMarker'))
+      return { marker }
+    },
+    update(context: { readonly state: ExternalToolState }, match: ConversationMatch) {
+      const marker = readMarker(match.event)
+      return marker === null ? context.state : { marker }
+    },
+    buildViewNode(context) {
+      const state = context.state
+      if (state === undefined) return null
+      const location: ConversationLocation = context.start?.location ?? context.matches[0]?.location ?? { kind: 'unresolved' }
+      return {
+        key: context.key,
+        kind: 'codingns-external-tool',
+        id: context.id,
+        target: 'chat',
+        anchorSeq: context.start?.event.seq ?? context.matches[0]?.event.seq ?? 0,
+        location,
+        visibility: 'visible',
+        data: state.marker,
+      }
+    },
+  }
 }
 
 interface ExternalToolNodeProps {
   readonly node: { readonly data: CodingNsExternalToolChatData }
+  /** 由 Slot inject 注入的 Codingns4DSH 词典翻译函数。 */
+  readonly t: CodingNsTranslator
 }
 
 /** 外部工具临时节点的紧凑渲染；持久化后由 DSH 原生工具节点接管。 */
 function ExternalToolNodeView(props: ExternalToolNodeProps): ReactElement {
   const data = props.node.data
-  const statusLabel = data.status === 'failed' ? '失败' : data.status === 'completed' ? '已完成' : '运行中'
+  const t = props.t
+  const statusLabel = data.status === 'failed'
+    ? t('toolStream.statusFailed')
+    : data.status === 'completed' ? t('toolStream.statusCompleted') : t('toolStream.statusRunning')
   const output = data.error ?? data.output
   return createElement('div', {
     style: {
@@ -104,7 +112,8 @@ export function registerExternalToolStreamUi(services: CodingNsClientServices): 
   const uiConversation = services.uiConversation as { events?: { register(definition: ConversationNodeDefinition): () => void } } | undefined
   const slots = services.slots
   if (uiConversation?.events?.register === undefined || slots === undefined) return () => undefined
-  const removeDefinition = uiConversation.events.register(externalToolDefinition)
+  const t = resolveCodingNsTranslator(services.locale)
+  const removeDefinition = uiConversation.events.register(createExternalToolDefinition(t))
   const slotRegistry = slots as unknown as {
     inject(key: string, callback: () => () => void): () => void
     register(options: Record<string, unknown>, component: (props: ExternalToolNodeProps) => ReactElement): () => void
@@ -112,6 +121,7 @@ export function registerExternalToolStreamUi(services: CodingNsClientServices): 
   const removeRenderer = slotRegistry.inject('conversation.chat.node', () => slotRegistry.register({
     name: 'conversation.chat.node',
     key: 'codingns-external-tool',
+    inject: () => ({ t }),
   }, ExternalToolNodeView))
   return () => {
     removeRenderer()

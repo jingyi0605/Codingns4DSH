@@ -12,6 +12,7 @@ import {
   type CodingNsSettings,
   type TerminalAppearanceSettings,
 } from '../../shared/contracts/config.js'
+import { resolveCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 import type { CodingNsTerminalView, TerminalViewState } from './model.js'
 import { terminalClass } from './styles.js'
 
@@ -20,6 +21,8 @@ export interface CodingNsXtermViewProps {
   readonly settings: CodingNsSettingsStore<CodingNsSettings>
   readonly themeRevision: number
   readonly onNewTerminal: () => void
+  /** 由 terminal/ui.ts 注入的翻译函数；缺省时退回内置中文词典（单测路径）。 */
+  readonly t?: CodingNsTranslator
 }
 
 /** 使用与 DSH 内置终端相同的布局、状态条和 xterm 默认参数。 */
@@ -28,7 +31,9 @@ export function CodingNsXtermView({
   settings,
   themeRevision,
   onNewTerminal,
+  t: injectedTranslator,
 }: CodingNsXtermViewProps): ReactElement {
+  const t = injectedTranslator ?? resolveCodingNsTranslator()
   const hostRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -58,7 +63,7 @@ export function CodingNsXtermView({
     const fit = new FitAddon()
     terminal.loadAddon(fit)
     terminal.open(container)
-    terminal.textarea?.setAttribute('aria-label', '终端')
+    terminal.textarea?.setAttribute('aria-label', t('terminal.title'))
     terminalRef.current = terminal
     fitRef.current = fit
     lastRevision.current = 0
@@ -126,13 +131,13 @@ export function CodingNsXtermView({
     className: terminalClass.root,
     'data-sidebar-terminal': true,
   },
-  createElement(TerminalStatus, { state, view, onNewTerminal }),
+  createElement(TerminalStatus, { state, view, onNewTerminal, t }),
   hasTerminal ? createElement('div', { className: terminalClass.screen },
     createElement('div', { ref: hostRef, style: terminalHostStyle }),
   ) : null,
   state.error === undefined || state.phase === 'disconnected'
     ? null
-    : createElement('p', { className: terminalClass.error, role: 'alert' }, `终端错误：${state.error}`),
+    : createElement('p', { className: terminalClass.error, role: 'alert' }, t('terminalView.errorDetail', { message: state.error })),
   )
 }
 
@@ -140,41 +145,43 @@ function TerminalStatus({
   state,
   view,
   onNewTerminal,
+  t,
 }: {
   readonly state: TerminalViewState
   readonly view: CodingNsTerminalView
   readonly onNewTerminal: () => void
+  readonly t: CodingNsTranslator
 }): ReactElement | null {
-  const status = statusText(state)
+  const status = statusText(state, t)
   const ended = state.info?.state === 'exited' || state.phase === 'closed'
   const retry = !ended && (state.phase === 'failed' || state.phase === 'disconnected')
   const readOnly = state.phase === 'connected' && state.info?.state === 'running' && !state.writable
   if (status === undefined && !retry && !readOnly) return null
   return createElement('div', { className: terminalClass.status, role: 'status' },
     status,
-    readOnly ? '此页面当前只读。' : null,
+    readOnly ? t('terminalView.readOnly') : null,
     retry ? createElement(Button, {
       variant: 'outline',
       size: 'sm',
       onClick: () => { void view.refresh() },
-    }, state.phase === 'disconnected' ? '重新连接' : '重试') : null,
+    }, state.phase === 'disconnected' ? t('terminalView.reconnect') : t('terminal.retry')) : null,
     ended ? createElement(Button, {
       variant: 'primary',
       size: 'sm',
       icon: createElement(resolvePlusIcon()),
       onClick: onNewTerminal,
-    }, '新建终端') : null,
+    }, t('terminal.new')) : null,
   )
 }
 
-function statusText(state: TerminalViewState): string | undefined {
-  if (state.phase === 'idle' || state.phase === 'loading') return '正在读取终端环境…'
-  if (state.phase === 'creating') return '正在启动…'
-  if (state.phase === 'connecting') return '正在连接…'
-  if (state.phase === 'disconnected') return '连接已断开。'
-  if (state.info?.state === 'exited') return `进程已退出（${state.info.exitCode ?? '—'}）`
-  if (state.info?.state === 'failed') return '不可用'
-  if (state.phase === 'closed') return '终端已关闭。'
+function statusText(state: TerminalViewState, t: CodingNsTranslator): string | undefined {
+  if (state.phase === 'idle' || state.phase === 'loading') return t('terminalView.readingEnvironment')
+  if (state.phase === 'creating') return t('terminalView.starting')
+  if (state.phase === 'connecting') return t('terminalView.connecting')
+  if (state.phase === 'disconnected') return t('terminalView.disconnected')
+  if (state.info?.state === 'exited') return t('terminalView.exited', { exitCode: state.info.exitCode ?? '—' })
+  if (state.info?.state === 'failed') return t('terminalView.unavailable')
+  if (state.phase === 'closed') return t('terminalView.closed')
   return undefined
 }
 

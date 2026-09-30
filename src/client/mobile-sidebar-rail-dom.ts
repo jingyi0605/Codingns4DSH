@@ -26,6 +26,7 @@
  */
 
 import { FISH_LOGO_PATH, FISH_LOGO_VIEWBOX } from './mobile-sidebar-logo.js'
+import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 
 /** 加在 `documentElement` 上的开关：`on` 表示移动端隐藏模式正在生效。 */
 export const MOBILE_SIDEBAR_MODE_ATTRIBUTE = 'data-codingns-mobile-sidebar'
@@ -43,8 +44,13 @@ export const MOBILE_SIDEBAR_LEADING_CLEARANCE_PX = 72
 /** 框架上承载“已应用隐藏”的标记，供样式与诊断读取。 */
 export const MOBILE_SIDEBAR_GRID_STATE_ATTRIBUTE = 'data-codingns-mobile-sidebar-grid'
 
-/** 唤起按钮的无障碍名称；与 DSH 原生折叠按钮的 `toggle.open` 文案一致。 */
-export const MOBILE_SIDEBAR_TOGGLE_LABEL = '打开侧边栏'
+/**
+ * 唤起按钮的无障碍名称；与 DSH 原生折叠按钮的 `toggle.open` 文案一致。
+ *
+ * 保留导出以兼容既有测试与调用方；运行时的按钮文案由注入的 locale 决定，
+ * 这里的内置中文只作为未接 locale 时的兜底。
+ */
+export const MOBILE_SIDEBAR_TOGGLE_LABEL = resolveCodingNsTranslator()('mobileRail.openSidebar')
 
 export interface MobileSidebarRailSettings {
   readonly hideSidebarOnMobile: boolean
@@ -74,6 +80,8 @@ export interface MobileSidebarRailDomOptions {
   readonly toggleSidebar?: (() => void) | undefined
   /** 结构不符合预期时给出稳定诊断码，便于排查“为什么不生效”。 */
   readonly onDiagnostic?: ((code: string) => void) | undefined
+  /** DSH 语言运行时；只影响自建唤起按钮的无障碍名称。 */
+  readonly locale?: CodingNsLocale | undefined
 }
 
 /** 结构不匹配：找不到应用框架或左侧栏列。 */
@@ -140,6 +148,7 @@ export function startMobileSidebarRailDom(
   const win = options.window ?? (typeof window === 'undefined' ? undefined : window)
   const Observer = options.MutationObserver
     ?? (typeof MutationObserver === 'undefined' ? undefined : MutationObserver)
+  const t = resolveCodingNsTranslator(options.locale)
   let disposed = false
   let frame: HTMLElement | undefined
   let column: HTMLElement | undefined
@@ -242,7 +251,7 @@ export function startMobileSidebarRailDom(
 
   const showButton = (): void => {
     if (button === undefined) {
-      button = createToggleButton(dom)
+      button = createToggleButton(dom, t)
       if (button === undefined) return
       // 点击只调用 DSH 官方布局服务；插件不自己改状态、不猜当前开合。
       button.addEventListener('click', () => {
@@ -395,13 +404,14 @@ const MOBILE_SIDEBAR_STYLE_TEXT = [
 ].join('')
 
 /** 插件自有的唤起按钮：与 DSH 折叠轨道使用同一个鲸鱼图形。 */
-function createToggleButton(dom: Document | undefined): HTMLElement | undefined {
+function createToggleButton(dom: Document | undefined, t: CodingNsTranslator): HTMLElement | undefined {
   if (dom?.body === undefined || dom.body === null) return undefined
   const element = dom.createElement('button')
   element.setAttribute(MOBILE_SIDEBAR_BUTTON_ATTRIBUTE, '')
   element.setAttribute('type', 'button')
-  element.setAttribute('aria-label', MOBILE_SIDEBAR_TOGGLE_LABEL)
-  element.setAttribute('title', MOBILE_SIDEBAR_TOGGLE_LABEL)
+  const label = t('mobileRail.openSidebar')
+  element.setAttribute('aria-label', label)
+  element.setAttribute('title', label)
   const icon = createFishLogo(dom)
   if (icon !== undefined) element.appendChild(icon)
   else element.textContent = '≡'

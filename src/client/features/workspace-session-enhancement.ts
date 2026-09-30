@@ -15,6 +15,10 @@ import type { CodingNsClientFeatureModule } from './types.js'
 import { registerSubscriptionSlot } from '../subscription-slot.js'
 import { registerQuickPhraseSlot } from '../quick-phrase-slot.js'
 import { startWorkspaceSessionRightbarDom, type WorkspaceSessionRightbarDomController } from '../workspace-session-rightbar-dom.js'
+import { resolveCodingNsTranslator } from '../locale.js'
+
+/** descriptor 的 label/description 只是词典缺失时的兜底，取内置中文词典。 */
+const fallbackT = resolveCodingNsTranslator()
 
 /** DSH 0.1.6 原生会话行增强：Logo 与归档会话入口共用同一生命周期。 */
 export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
@@ -25,8 +29,8 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
     dependencies: ['cliAdapters'],
     runtime: 'client',
     ui: {
-      label: '工作区会话增强',
-      description: '增强工作区会话体验',
+      label: fallbackT('feature.workspaceSession.label'),
+      description: fallbackT('feature.workspaceSession.description'),
       labelKey: 'feature.workspaceSession.label',
       descriptionKey: 'feature.workspaceSession.description',
       order: 35,
@@ -61,6 +65,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
         archiveDom = startWorkspaceSessionArchiveDom({
           remote: context.services.remote,
           readNativeWorkspaceSnapshot: () => readNativeWorkspaceSnapshot(context.services.uiContext),
+          locale: context.services.locale,
           onSessionUnarchived: async (sessionId) => {
             // 远端虚拟会话的归档状态只存在于聚合投影里，取消归档后同步一次再重读入口。
             if (parseVirtualSessionId(sessionId) === null) return
@@ -74,6 +79,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
         visibilityDom = startWorkspaceSessionVisibilityDom({
           remote: context.services.remote,
           hiddenWorkspaceIds,
+          locale: context.services.locale,
           onHiddenWorkspaceIdsChange: async (ids) => {
             await context.services.settings.mutate([{
               op: 'set',
@@ -128,7 +134,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
     const enableLogo = (): void => {
       if (logoDom !== undefined) return
       const currentGeneration = ++generation
-      logoDom = startWorkspaceSessionLogoDom()
+      logoDom = startWorkspaceSessionLogoDom({ locale: context.services.locale })
       const refreshAdapters = (): void => {
         void fetchSessionAdapters(context.services.rpc)
         .then((bindings) => {
