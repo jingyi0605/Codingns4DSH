@@ -66,7 +66,7 @@ test.after(() => {
   for (const dir of cleanups) rmSync(dir, { recursive: true, force: true })
 })
 
-test('Profile 安装检查接受 DSH 0.2.0-rc.2 的无上界兼容范围', () => {
+test('Profile 安装检查接受 DSH 0.2.0-rc.2 的精确兼容范围', () => {
   const sandbox = makeSandbox()
   cleanups.push(sandbox)
   const result = runSandbox(sandbox, { env: { ...scrubbedEnv(), DSH_RUNTIME_VERSION: '0.2.0-rc.2', PATH: '' } })

@@ -41,5 +41,5 @@ if (failures.length > 0) {
 console.log(`DSH 0.2.0-rc.2 依赖矩阵校验通过：${dshDependencies.length} 个 DSH 依赖精确锁定`)
 
 function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\\]\\]/gu, '\\$&')
+  return value.replace(/[.*+?^${}()|[\[\]\\]/gu, '\\$&')
 }

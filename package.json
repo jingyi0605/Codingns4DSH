@@ -89,6 +89,7 @@
   "scripts": {
     "check:dsh-install": "node scripts/check-dsh-install.mjs",
     "check:dsh-rc2-matrix": "node scripts/check-dsh-rc2-matrix.mjs",
+    "replay:dsh-install": "node scripts/replay-dsh-install.mjs",
     "version:check": "node scripts/check-version-sync.mjs",
     "capability:check": "node scripts/check-capability-retirement.mjs",
     "capability:report": "node scripts/generate-capability-report.mjs",
