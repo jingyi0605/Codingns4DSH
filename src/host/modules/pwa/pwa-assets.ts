@@ -7,6 +7,7 @@
  */
 import { CODINGNS_VERSION } from '../../../shared/contracts/version.js'
 import type { LanAccessDshPwaSettings } from '../../../shared/contracts/config.js'
+import { hostBrowserText, type HostLocale } from '../../browser-text.js'
 import { createPwaIconPng } from './pwa-icons.js'
 
 export const PWA_MANIFEST_PATH = '/manifest.webmanifest'
@@ -37,35 +38,36 @@ export interface LanAccessDshPwaBundle {
 }
 
 export interface LanAccessDshPwaProvider {
-  /** 返回当前应提供的资产；未启用时返回 null（代理保持原行为）。 */
-  snapshot(): LanAccessDshPwaBundle | null
+  /** 返回当前应提供的资产；未启用时返回 null（代理保持原行为）。locale 只影响 manifest 描述。 */
+  snapshot(locale?: HostLocale): LanAccessDshPwaBundle | null
 }
 
 export interface LanAccessDshPwaProviderOptions {
   readonly readSettings: () => LanAccessDshPwaSettings
 }
 
-/** 按设置生成资产；设置未变化时复用上一次的字节。 */
+/** 按设置生成资产；设置与语言均未变化时复用上一次的字节。 */
 export function createLanAccessDshPwaProvider(options: LanAccessDshPwaProviderOptions): LanAccessDshPwaProvider {
   let cachedKey: string | null = null
   let cached: LanAccessDshPwaBundle | null = null
   return {
-    snapshot() {
+    snapshot(locale: HostLocale = 'zh'): LanAccessDshPwaBundle | null {
       const settings = options.readSettings()
-      const key = `${settings.enabled ? '1' : '0'}:${settings.serviceWorker ? '1' : '0'}`
+      const key = `${settings.enabled ? '1' : '0'}:${settings.serviceWorker ? '1' : '0'}:${locale}`
       if (key === cachedKey) return cached
       cachedKey = key
       cached = settings.enabled
-        ? createLanAccessDshPwaBundle({ serviceWorker: settings.serviceWorker })
+        ? createLanAccessDshPwaBundle({ serviceWorker: settings.serviceWorker, locale })
         : null
       return cached
     },
   }
 }
 
-export function createLanAccessDshPwaBundle(options: { readonly serviceWorker: boolean }): LanAccessDshPwaBundle {
+export function createLanAccessDshPwaBundle(options: { readonly serviceWorker: boolean; readonly locale?: HostLocale }): LanAccessDshPwaBundle {
+  const locale = options.locale ?? 'zh'
   return {
-    manifest: encodeManifest(),
+    manifest: encodeManifest(locale),
     serviceWorker: options.serviceWorker ? encodeServiceWorker() : null,
     assets: createIconAssets(),
     marker: PWA_MANIFEST_MARKER,
@@ -93,11 +95,11 @@ function createIconAssets(): ReadonlyMap<string, LanAccessDshPwaAsset> {
 }
 
 /** 覆盖上游 manifest：保留名称与 start_url/scope，覆盖显示模式并补齐 PNG 图标。 */
-export function createPwaManifest(): Record<string, unknown> {
+export function createPwaManifest(locale: HostLocale = 'zh'): Record<string, unknown> {
   return {
     name: 'DeepSeek Harness',
     short_name: 'DSH',
-    description: 'DeepSeek Harness Web 应用（Codingns4DSH 局域网入口）',
+    description: hostBrowserText(locale, 'manifest.description'),
     start_url: './',
     scope: './',
     display: 'standalone',
@@ -118,8 +120,8 @@ export function createPwaManifest(): Record<string, unknown> {
   }
 }
 
-function encodeManifest(): Uint8Array {
-  return new TextEncoder().encode(`${JSON.stringify(createPwaManifest(), null, 2)}\n`)
+function encodeManifest(locale: HostLocale): Uint8Array {
+  return new TextEncoder().encode(`${JSON.stringify(createPwaManifest(locale), null, 2)}\n`)
 }
 
 /**

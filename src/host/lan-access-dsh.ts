@@ -12,6 +12,7 @@ import { PWA_ASSET_PREFIX, PWA_MANIFEST_PATH, PWA_SERVICE_WORKER_PATH, type LanA
 import { CodingNsRpcError } from './rpc-table.js'
 import type { DshHostSettingsScope } from '../dsh-capabilities/host/config-forms-adapter.js'
 import { createLoginAttemptContext, LoginAttemptGuard, type LoginAttemptContext } from './login-attempt-guard.js'
+import { hostBrowserText, resolveAcceptLanguageLocale, resolveHostPushLocale, type HostLocale } from './browser-text.js'
 
 export interface LanAccessDshStream {
   pipe(destination: LanAccessDshStream): LanAccessDshStream
@@ -364,6 +365,8 @@ export class LanAccessDshProxy {
 
   private authorize(request: ParsedLanRequest, localAddress: boolean, localSocket: LanAccessDshStream): Uint8Array | 'pass' {
     const config = this.loginConfig
+    // 登录页与登录错误按浏览器自己的语言渲染；DSH 只支持 zh/en，其它语言回退中文。
+    const locale = resolveAcceptLanguageLocale(request.headers['accept-language'])
     const loginContext = createLoginAttemptContext(readRemoteAddress(localSocket), request.headers)
     // PeerHost 的握手和目标 Host 认证端点必须在建立登录保护会话前可达：
     // 握手只返回公开能力摘要，auth/login 负责交换目标 Host 自己签发的短期票据。
@@ -428,14 +431,14 @@ export class LanAccessDshProxy {
       if (!attempt.allowed) {
         const challenge = this.loginAttempts.requiresCaptcha(loginContext) ? this.loginAttempts.issueCaptcha(loginContext) : undefined
         const message = attempt.reason === 'rate_limited'
-          ? `登录尝试过于频繁，请 ${attempt.retryAfterSeconds} 秒后重试`
-          : '请输入正确的图形验证码'
-        return loginResponse(429, loginPageWithError(message, username, challenge), { 'Retry-After': String(attempt.retryAfterSeconds) })
+          ? hostBrowserText(locale, 'login.rateLimited', { seconds: attempt.retryAfterSeconds })
+          : hostBrowserText(locale, 'login.badCaptcha')
+        return loginResponse(429, loginPageWithError(message, username, challenge, locale), { 'Retry-After': String(attempt.retryAfterSeconds) })
       }
       if (username !== config.username || !verifyPassword(form.get('password') ?? '', config)) {
         this.loginAttempts.recordFailure(loginContext)
         const challenge = this.loginAttempts.requiresCaptcha(loginContext) ? this.loginAttempts.issueCaptcha(loginContext) : undefined
-        return loginResponse(401, loginPageWithError('用户名或密码错误', username, challenge))
+        return loginResponse(401, loginPageWithError(hostBrowserText(locale, 'login.badCredentials'), username, challenge, locale))
       }
       this.loginAttempts.recordSuccess(loginContext)
       const expiresAt = Date.now() + config.timeoutSeconds * 1000
@@ -458,8 +461,8 @@ export class LanAccessDshProxy {
     }
     const challenge = this.loginAttempts.requiresCaptcha(loginContext) ? this.loginAttempts.issueCaptcha(loginContext) : undefined
     return request.path === '/' || request.path.endsWith('.html')
-      ? loginResponse(200, loginPage(challenge))
-      : loginResponse(401, '需要登录')
+      ? loginResponse(200, loginPage(challenge, locale))
+      : loginResponse(401, hostBrowserText(locale, 'login.required'))
   }
 
   /**
@@ -470,7 +473,9 @@ export class LanAccessDshProxy {
    * 不允许出现任何 Cookie、令牌或宿主路径。
    */
   private authorizePwa(request: ParsedLanRequest): Uint8Array | undefined {
-    return resolveLanAccessDshPwaResponse(request, this.pwaProvider?.snapshot() ?? null)
+    // manifest 的 description 属于浏览器可见文案，按请求语言选择。
+    const locale = resolveAcceptLanguageLocale(request.headers['accept-language'])
+    return resolveLanAccessDshPwaResponse(request, this.pwaProvider?.snapshot(locale) ?? null)
   }
 
   /** DSH 启动时的认证 URL 只在 Host 内交换一次 Cookie，绝不下发到浏览器。 */
@@ -843,18 +848,18 @@ function loginJsonResponse(status: number, value: unknown, extra: Record<string,
   return loginResponse(status, JSON.stringify(value), { 'Content-Type': 'application/json; charset=utf-8', ...extra })
 }
 
-function loginPage(captcha?: { readonly id: string }): string {
-  const captchaFields = captcha === undefined ? '' : `<input type="hidden" name="captchaId" value="${escapeHtml(captcha.id)}"><div class="cyber-captcha" style="display:flex;flex-direction:row;align-items:center;gap:12px;width:100%;"><img src="/__codingns/captcha?id=${encodeURIComponent(captcha.id)}" width="140" height="52" alt="图形验证码" style="display:block;flex:0 0 140px;width:140px;height:52px;border:1px solid rgba(59,130,246,.5);border-radius:7px;background:rgba(15,23,42,.68);"><input class="cyber-input" name="captchaCode" autocomplete="off" inputmode="text" maxlength="5" placeholder="输入图形验证码" required style="flex:1 1 auto;min-width:0;width:auto;height:52px;padding:12px 14px;border:1px solid rgba(59,130,246,.5);border-radius:8px;background:rgba(15,23,42,.68);box-shadow:inset 0 0 8px rgba(59,130,246,.12);color:#f1f5f9;font:14px var(--font-mono);outline:0;"></div>`
+function loginPage(captcha: { readonly id: string } | undefined, locale: HostLocale): string {
+  const captchaFields = captcha === undefined ? '' : `<input type="hidden" name="captchaId" value="${escapeHtml(captcha.id)}"><div class="cyber-captcha" style="display:flex;flex-direction:row;align-items:center;gap:12px;width:100%;"><img src="/__codingns/captcha?id=${encodeURIComponent(captcha.id)}" width="140" height="52" alt="${escapeHtml(hostBrowserText(locale, 'login.captchaAlt'))}" style="display:block;flex:0 0 140px;width:140px;height:52px;border:1px solid rgba(59,130,246,.5);border-radius:7px;background:rgba(15,23,42,.68);"><input class="cyber-input" name="captchaCode" autocomplete="off" inputmode="text" maxlength="5" placeholder="${escapeHtml(hostBrowserText(locale, 'login.captchaPlaceholder'))}" required style="flex:1 1 auto;min-width:0;width:auto;height:52px;padding:12px 14px;border:1px solid rgba(59,130,246,.5);border-radius:8px;background:rgba(15,23,42,.68);box-shadow:inset 0 0 8px rgba(59,130,246,.12);color:#f1f5f9;font:14px var(--font-mono);outline:0;"></div>`
   // 视觉规则直接复用 codingns4dsh-h5/styles.css 的 Cyber 登录区，只把 Connect
   // 账号字段替换成本地用户名/密码；不能依赖外部 CSS，避免局域网入口离线时失效。
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0a0f1d"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" sizes="180x180" href="/__codingns/pwa/apple-touch-icon.png"><title>DSH Web | 本地登录</title><style>
+  return `<!doctype html><html lang="${locale === 'zh' ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0a0f1d"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" sizes="180x180" href="/__codingns/pwa/apple-touch-icon.png"><title>${escapeHtml(hostBrowserText(locale, 'login.documentTitle'))}</title><style>
 :root{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;color:#f1f5f9;background:#0a0f1d}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0}body{overflow:hidden}.cyber-login-page{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden;background:radial-gradient(ellipse at center,#0f172a 0%,#0a0f1d 100%);color:#f1f5f9}.cyber-login-page:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(59,130,246,.08) 1px,transparent 1px),linear-gradient(90deg,rgba(59,130,246,.08) 1px,transparent 1px);background-size:50px 50px;transform:perspective(500px) rotateX(60deg);transform-origin:center top}.cyber-login-page:after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.15) 2px,rgba(0,0,0,.15) 4px)}.cyber-login-container{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:30px;width:min(440px,calc(100% - 32px));padding:calc(24px + env(safe-area-inset-top,0px)) calc(24px + env(safe-area-inset-right,0px)) calc(24px + env(safe-area-inset-bottom,0px)) calc(24px + env(safe-area-inset-left,0px))}.cyber-login-content{display:flex;flex-direction:column;align-items:center;gap:28px;width:100%}.cyber-brand{display:flex;flex-direction:column;align-items:center;gap:13px;text-align:center}.cyber-logo{display:grid;place-items:center;width:80px;height:80px;border:1px solid rgba(59,130,246,.48);border-radius:22px;color:#60a5fa;font-size:19px;font-weight:700;letter-spacing:2px;box-shadow:0 0 25px rgba(0,212,255,.35),inset 0 0 22px rgba(59,130,246,.18);transform:rotate(30deg)}.cyber-logo span{transform:rotate(-30deg)}.cyber-brand-title{margin:0;color:#f1f5f9;font-size:28px;font-weight:700;letter-spacing:4px}.cyber-brand-subtitle{margin:0;color:#94a3b8;font-size:12px;letter-spacing:1.5px}.cyber-card{width:100%;padding:30px;border:1px solid rgba(59,130,246,.28);border-radius:12px;background:rgba(30,41,59,.78);backdrop-filter:blur(10px);box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 0 1px rgba(59,130,246,.28)}.cyber-card-header{display:flex;align-items:center;gap:12px;margin-bottom:22px}.cyber-line{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.48),transparent)}.cyber-card-label{color:#94a3b8;font-size:11px;font-weight:600;letter-spacing:3px;white-space:nowrap}.cyber-form{display:flex;flex-direction:column;gap:18px}.cyber-connect-hint{margin:0;color:#94a3b8;font-size:12px;line-height:1.7}.cyber-field{position:relative;padding:12px 16px;border:1px solid rgba(59,130,246,.28);border-radius:8px;background:rgba(15,23,42,.68)}.cyber-field-label{display:flex;align-items:center;gap:8px;margin-bottom:8px;color:#94a3b8;font-size:11px;letter-spacing:1px}.cyber-field-icon{color:#60a5fa}.cyber-input{width:100%;padding:0;border:0;outline:0;background:transparent;color:#f1f5f9;font:14px var(--font-mono)}.cyber-input::placeholder{color:#94a3b8;opacity:.55}.cyber-captcha{display:flex;align-items:center;gap:12px}.cyber-captcha img{display:block;flex:0 0 140px;width:140px;height:52px;border:1px solid rgba(59,130,246,.28);border-radius:7px}.cyber-captcha .cyber-input{flex:1;min-width:0;width:auto;padding:12px;border:1px solid rgba(59,130,246,.28);border-radius:8px;background:rgba(15,23,42,.68)}.cyber-submit{position:relative;width:100%;min-height:48px;margin-top:4px;padding:14px 24px;overflow:hidden;border:0;border-radius:8px;background:linear-gradient(135deg,#3b82f6,#06b6d4);color:white;font:600 13px var(--font-mono);letter-spacing:2px;cursor:pointer;box-shadow:0 0 18px rgba(59,130,246,.32)}.cyber-submit:hover{filter:brightness(1.12)}.cyber-submit:active{transform:translateY(1px)}.cyber-submit:disabled{cursor:wait;opacity:.6}.cyber-submit-text{position:relative;display:flex;align-items:center;justify-content:center;gap:8px}.cyber-status{display:flex;align-items:center;gap:8px;margin:0;padding:10px 12px;border:1px solid rgba(239,68,68,.25);border-radius:6px;background:rgba(239,68,68,.1);color:#fca5a5;font-size:12px;line-height:1.5}.cyber-footer{margin-top:2px}.cyber-divider{display:flex;align-items:center;gap:12px;margin-bottom:14px}.cyber-divider-line{flex:1;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.48),transparent)}.cyber-divider-text{color:#64748b;font-size:10px;letter-spacing:2px}.cyber-version{display:flex;align-items:center;gap:12px;color:#64748b;font-size:10px;letter-spacing:2px;opacity:.65}@media(prefers-color-scheme:light){.cyber-login-page{color:#0f172a;background:radial-gradient(ellipse at center,#f8fafc 0%,#eef4fb 100%)}.cyber-card{background:rgba(255,255,255,.86);box-shadow:0 8px 28px rgba(15,23,42,.12),0 0 0 1px rgba(37,99,235,.13)}.cyber-brand-title{color:#0f172a}.cyber-input{color:#0f172a}.cyber-connect-hint,.cyber-field-label,.cyber-card-label{color:#64748b}.cyber-field{background:rgba(241,245,249,.86)}}@media(max-width:520px){.cyber-login-container{width:100%;padding:calc(20px + env(safe-area-inset-top,0px)) calc(16px + env(safe-area-inset-right,0px)) calc(20px + env(safe-area-inset-bottom,0px)) calc(16px + env(safe-area-inset-left,0px))}.cyber-card{padding:24px 20px}.cyber-brand-subtitle{font-size:10px;letter-spacing:1px}}
-</style></head><body><main class="cyber-login-page"><div class="cyber-login-container"><div class="cyber-login-content"><div class="cyber-brand"><div class="cyber-logo"><span>DSH</span></div><h1 class="cyber-brand-title">DSH Web</h1><p class="cyber-brand-subtitle">LOCAL SECURE DSH ENVIRONMENT</p></div><div class="cyber-card"><form class="cyber-form" method="post" action="/__codingns/login"><div class="cyber-card-header"><div class="cyber-line"></div><span class="cyber-card-label">LOCAL ACCESS</span><div class="cyber-line"></div></div><p class="cyber-connect-hint">使用本机设置的本地账号进入 DSH Web。</p><div class="cyber-field"><label class="cyber-field-label" for="login-username"><span class="cyber-field-icon" aria-hidden="true">⌁</span>用户名</label><input class="cyber-input" id="login-username" name="username" autocomplete="username" placeholder="输入本地用户名" required></div><div class="cyber-field"><label class="cyber-field-label" for="login-password"><span class="cyber-field-icon" aria-hidden="true">⚷</span>密码</label><input class="cyber-input" id="login-password" name="password" type="password" autocomplete="current-password" placeholder="输入本地密码" required></div>${captchaFields}<button class="cyber-submit" type="submit"><span class="cyber-submit-text"><span aria-hidden="true">➤</span>登录 DSH Web</span></button><div class="cyber-footer"><div class="cyber-divider"><span class="cyber-divider-line"></span><span class="cyber-divider-text">CODINGNS</span><span class="cyber-divider-line"></span></div></div></form></div></div><div class="cyber-version"><span>CODINGNS4DSH</span><span>|</span><span>LOCAL AUTH READY</span></div></div></main></body></html>`
+</style></head><body><main class="cyber-login-page"><div class="cyber-login-container"><div class="cyber-login-content"><div class="cyber-brand"><div class="cyber-logo"><span>DSH</span></div><h1 class="cyber-brand-title">DSH Web</h1><p class="cyber-brand-subtitle">LOCAL SECURE DSH ENVIRONMENT</p></div><div class="cyber-card"><form class="cyber-form" method="post" action="/__codingns/login"><div class="cyber-card-header"><div class="cyber-line"></div><span class="cyber-card-label">LOCAL ACCESS</span><div class="cyber-line"></div></div><p class="cyber-connect-hint">${escapeHtml(hostBrowserText(locale, 'login.description'))}</p><div class="cyber-field"><label class="cyber-field-label" for="login-username"><span class="cyber-field-icon" aria-hidden="true">⌁</span>${escapeHtml(hostBrowserText(locale, 'login.username'))}</label><input class="cyber-input" id="login-username" name="username" autocomplete="username" placeholder="${escapeHtml(hostBrowserText(locale, 'login.usernamePlaceholder'))}" required></div><div class="cyber-field"><label class="cyber-field-label" for="login-password"><span class="cyber-field-icon" aria-hidden="true">⚷</span>${escapeHtml(hostBrowserText(locale, 'login.password'))}</label><input class="cyber-input" id="login-password" name="password" type="password" autocomplete="current-password" placeholder="${escapeHtml(hostBrowserText(locale, 'login.passwordPlaceholder'))}" required></div>${captchaFields}<button class="cyber-submit" type="submit"><span class="cyber-submit-text"><span aria-hidden="true">➤</span>${escapeHtml(hostBrowserText(locale, 'login.submit'))}</span></button><div class="cyber-footer"><div class="cyber-divider"><span class="cyber-divider-line"></span><span class="cyber-divider-text">CODINGNS</span><span class="cyber-divider-line"></span></div></div></form></div></div><div class="cyber-version"><span>CODINGNS4DSH</span><span>|</span><span>LOCAL AUTH READY</span></div></div></main></body></html>`
 }
 
 /** 登录失败时继续渲染完整登录页，避免浏览器落到无样式的纯文本错误页。 */
-function loginPageWithError(message: string, username: string, captcha?: { readonly id: string }): string {
-  const page = loginPage(captcha)
+function loginPageWithError(message: string, username: string, captcha: { readonly id: string } | undefined, locale: HostLocale): string {
+  const page = loginPage(captcha, locale)
   const status = `<p class="cyber-status" role="alert" aria-live="polite"><span aria-hidden="true">!</span>${escapeHtml(message)}</p>`
   return page
     .replace('<p class="cyber-connect-hint">', `${status}<p class="cyber-connect-hint">`)
@@ -1107,6 +1112,8 @@ export function normalizeLanAccessDshConfig(value: Partial<LanAccessDshConfig>, 
 export interface LanAccessDshRpcOptions {
   /** 推送服务；未提供时 `pwa/push/*` 返回可解释的不可用错误。 */
   readonly push?: PwaPushService
+  /** 推送通知语言；缺省 `zh`。Host 侧主动推送没有浏览器请求上下文，只能读持久化偏好。 */
+  readonly resolveLocale?: () => HostLocale
 }
 
 export function createLanAccessDshRpcHandler(
@@ -1161,7 +1168,12 @@ export function createLanAccessDshRpcHandler(
       }
       case 'pwa/push/test': {
         const push = requirePush()
-        const summary = await push.sendToAll({ title: 'DSH 测试通知', body: '如果你看到这条通知，推送链路已经打通。', tag: 'codingns4dsh-test' })
+        const locale = options.resolveLocale?.() ?? 'zh'
+        const summary = await push.sendToAll({
+          title: hostBrowserText(locale, 'push.testTitle'),
+          body: hostBrowserText(locale, 'push.testBody'),
+          tag: 'codingns4dsh-test',
+        })
         return summary
       }
       case 'login/set': {
