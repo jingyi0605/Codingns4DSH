@@ -293,6 +293,47 @@ NODE
 const first = (value) => (Array.isArray(value) ? value[0] : value)
 process.stdout.write(String(first(JSON.parse(process.env.PACK_JSON)).entryCount))
 ')"
+
+  echo "==> 逐文件校验 tar 与 data/build/dist 的 SHA-256"
+  ROOT_DIR="$ROOT_DIR" TARBALL_PATH="$TARBALL_PATH" node <<'NODE'
+const { createHash } = require('node:crypto')
+const { mkdtempSync, readFileSync, readdirSync, statSync, rmSync } = require('node:fs')
+const { join, relative } = require('node:path')
+const { tmpdir } = require('node:os')
+const { execFileSync } = require('node:child_process')
+
+const root = process.env.ROOT_DIR
+const tarball = process.env.TARBALL_PATH
+const sourceRoot = join(root, 'data/build/dist')
+const extractRoot = mkdtempSync(join(tmpdir(), 'codingns4dsh-tar-'))
+
+const walk = (directory, prefix = '') => {
+  const result = []
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name)
+    const name = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (entry.isDirectory()) result.push(...walk(path, name))
+    else if (entry.isFile()) result.push(name)
+  }
+  return result
+}
+const digest = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
+const sourceFiles = walk(sourceRoot).sort()
+execFileSync('tar', ['-xzf', tarball, '-C', extractRoot])
+const tarRoot = join(extractRoot, 'package/data/build/dist')
+const tarFiles = walk(tarRoot).sort()
+if (JSON.stringify(sourceFiles) !== JSON.stringify(tarFiles)) {
+  const sourceSet = new Set(sourceFiles)
+  const tarSet = new Set(tarFiles)
+  const missing = sourceFiles.filter((file) => !tarSet.has(file))
+  const extra = tarFiles.filter((file) => !sourceSet.has(file))
+  throw new Error(`tar 与 data/build/dist 文件集合不一致：缺少 ${missing.join(', ') || '无'}；多出 ${extra.join(', ') || '无'}`)
+}
+const mismatches = sourceFiles.filter((file) => digest(join(sourceRoot, file)) !== digest(join(tarRoot, file)))
+if (mismatches.length > 0) throw new Error(`tar 与 data/build/dist SHA-256 不一致：${mismatches.join(', ')}`)
+console.log(`SHA-256 校验通过：${sourceFiles.length} 个 dist 文件逐文件一致`)
+rmSync(extractRoot, { recursive: true, force: true })
+NODE
 }
 
 publish_tarball() {
