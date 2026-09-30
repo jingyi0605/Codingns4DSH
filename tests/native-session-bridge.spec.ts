@@ -491,6 +491,75 @@ test('原生会话桥接把 Codex 压缩活动写成标准 compaction 生命周�
   assert.deepEqual(events[6]?.data?.source, { kind: 'plugin', plugin: 'compact' })
 })
 
+test('携带摘要的压缩 end 事件仍会闭合 compaction 事务', () => {
+  const events: Array<Record<string, any>> = [
+    { type: 'turn/start', seq: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+    { type: 'user/message', seq: 2, data: { id: 'user-1', role: 'user', content: [{ type: 'text', text: '旧问题' }], source: { kind: 'user' } }, surfaceOp: 'append' },
+    { type: 'assistant/message', seq: 3, data: { turn: 1, step: 1, message: { id: 'assistant-1', role: 'assistant', content: [{ type: 'text', text: '旧回答' }], source: { kind: 'model', provider: 'codex', model: 'gpt-5.3-codex' } }, stream: [] }, surfaceOp: 'append' },
+  ]
+  const session = {
+    surface: { nodes: [2, 3] },
+    snapshotEvents() { return [...events] },
+    append(type: string, data: unknown, options?: unknown) {
+      const event = { type, seq: events.length, data, ...(options === undefined ? {} : { options }) }
+      events.push(event)
+      return event
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'sessions'
+        ? { get(id: string) { return id === 'native-compaction-end' ? session : undefined }, list() { return [session] } }
+        : undefined
+    },
+  } as never)
+
+  assert.equal(bridge.appendCompactionEvent?.('native-compaction-end', { type: 'context-compaction', phase: 'start', compactionId: 'compact-end', provider: 'codex', model: 'gpt-5.3-codex' }), true)
+  // 旧版 Codex 只在完成信号里携带摘要：end 必须在写 summary 与检查点之后继续写 compaction/end，
+  // 否则会话日志会残留未闭合 compaction，历史加载时报 "turn/end crosses an open compaction"。
+  assert.equal(bridge.appendCompactionEvent?.('native-compaction-end', { type: 'context-compaction', phase: 'end', compactionId: 'compact-end', summary: '保留任务目标。' }), true)
+  assert.deepEqual(events.slice(4).map((event) => event.type), ['compaction/start', 'compaction/summary', 'user/message', 'compaction/end'])
+  assert.deepEqual(events.at(-1)?.data, { compactionId: 'compact-end', turn: 1 })
+})
+
+test('已关闭 turn 的未闭合压缩不会挂住新 turn 的压缩事务', () => {
+  const events: Array<Record<string, any>> = [
+    { type: 'turn/start', seq: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+    { type: 'user/message', seq: 2, data: { id: 'user-1', role: 'user', content: [{ type: 'text', text: '旧问题' }], source: { kind: 'user' } }, surfaceOp: 'append' },
+    { type: 'assistant/message', seq: 3, data: { turn: 1, step: 1, message: { id: 'assistant-1', role: 'assistant', content: [{ type: 'text', text: '旧回答' }], source: { kind: 'model', provider: 'codex', model: 'gpt-5.3-codex' } }, stream: [] }, surfaceOp: 'append' },
+  ]
+  const session = {
+    surface: { nodes: [2, 3] },
+    snapshotEvents() { return [...events] },
+    append(type: string, data: unknown, options?: unknown) {
+      const event = { type, seq: events.length, data, ...(options === undefined ? {} : { options }) }
+      events.push(event)
+      return event
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'sessions'
+        ? { get(id: string) { return id === 'native-compaction-stale' ? session : undefined }, list() { return [session] } }
+        : undefined
+    },
+  } as never)
+
+  assert.equal(bridge.appendCompactionEvent?.('native-compaction-stale', { type: 'context-compaction', phase: 'start', compactionId: 'compact-stale', provider: 'codex', model: 'gpt-5.3-codex' }), true)
+  events.push({ type: 'step/end', seq: events.length, data: { turn: 1, step: 1 } })
+  events.push({ type: 'turn/end', seq: events.length, data: { turn: 1 } })
+  events.push({ type: 'turn/start', seq: events.length, data: { turn: 2 } })
+  events.push({ type: 'step/start', seq: events.length, data: { turn: 2, step: 1 } })
+  // turn 1 的压缩没有完成就结束了：事务无法在事后补救，但不能把新 turn 的压缩
+  // 挂到已经关闭的旧 turn 上，否则后续 end 会写进错误的 turn。
+  assert.equal(bridge.appendCompactionEvent?.('native-compaction-stale', { type: 'context-compaction', phase: 'start', compactionId: 'compact-fresh', provider: 'codex', model: 'gpt-5.3-codex' }), true)
+  assert.deepEqual(events.filter((event) => event.type === 'compaction/start').at(-1)?.data, { compactionId: 'compact-fresh', turn: 2 })
+  assert.equal(bridge.appendCompactionEvent?.('native-compaction-stale', { type: 'context-compaction', phase: 'end', compactionId: 'compact-fresh' }), true)
+  assert.deepEqual(events.at(-1)?.data, { compactionId: 'compact-fresh', turn: 2, error: 'Provider 未返回可投影的压缩摘要。' })
+})
+
 test('Session V4 的压缩检查点改用生产者自持的 compact-checkpoint 标识', () => {
   const events: Array<Record<string, any>> = [
     { type: 'session', version: 4, seq: 0 },

@@ -52,6 +52,8 @@ interface CodexSession {
   suppressCompactionNotifications: boolean
   readonly suppressedCompactionTurnIds: Set<string>
   pendingCompactionEvents: CodingNsAgentEvent[]
+  /** 自动压缩的待闭合事务：item/started 开启，item/completed 或 turn 终结时闭合。 */
+  autoCompaction: { readonly compactionId: string | undefined; open: boolean } | undefined
 }
 
 // 只有 Provider 已明确报告超过窗口时才主动压缩；接近上限仍交给 Codex
@@ -224,9 +226,10 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         for await (const message of eventQueue.iterable) {
           const rawChunk = codexMessageToChunk(message)
           if (rawChunk === null) continue
-          if (rawChunk.type !== 'finish') sawMeaningfulEvent = true
-          const chunk = stabilizeCodexEvent(session, rawChunk)
-          yield chunk
+          for (const chunk of expandCodexCompactionChunk(session, rawChunk)) {
+            if (chunk.type !== 'finish') sawMeaningfulEvent = true
+            yield stabilizeCodexEvent(session, chunk)
+          }
         }
         if (input.signal?.aborted) await this.interrupt(input.sessionId)
       } catch (error) {
@@ -240,6 +243,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       // 终态 chunk 之后调用方不会再拉动本迭代器，turnId 必须在产出 finish
       // 前复位，否则下一轮 steer/interrupt 会指向已经结束的 turn。
       session.turnId = null
+      const danglingCompaction = closeDanglingAutoCompaction(session)
+      if (danglingCompaction !== undefined) yield stabilizeCodexEvent(session, danglingCompaction)
       if (!input.signal?.aborted && terminalReason !== 'cancel' && !sawMeaningfulEvent) {
         yield { type: 'text-delta', text: 'CODINGNS_PROVIDER_EMPTY_RESPONSE: Codex Provider 未返回任何有效事件。' }
         yield { type: 'finish', reason: 'error' }
@@ -388,6 +393,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
           if (session.segmentedTurn === active) session.segmentedTurn = undefined
           active.removeAbortListener()
           active.removeNotificationListener()
+          const danglingCompaction = closeDanglingAutoCompaction(session)
+          if (danglingCompaction !== undefined) yield stabilizeCodexEvent(session, danglingCompaction)
           yield { type: 'finish', reason: active.terminalReason ?? 'stop' }
           return
         }
@@ -396,27 +403,29 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       }
       if (chunk === null) continue
 
-      // 一个 assistant item 可能在多个工具调用之间切换。把新 item 的首个
-      // 正文留给下一次 llm/stream，当前流只返回边界，确保 DSH 先创建新 step。
-      if ((chunk.type === 'text-delta' || chunk.type === 'reasoning-delta')
-        && chunk.messageId !== undefined) {
-        const previousMessageId = active.currentAssistantMessageId
-        if (previousMessageId !== undefined
-          && previousMessageId !== chunk.messageId
-          && active.sawCompletedTool) {
-          active.pendingChunk = chunk
-          active.currentAssistantMessageId = chunk.messageId
-          active.sawCompletedTool = false
-          yield { type: 'step-boundary' }
-          return
+      for (const part of expandCodexCompactionChunk(session, chunk)) {
+        // 一个 assistant item 可能在多个工具调用之间切换。把新 item 的首个
+        // 正文留给下一次 llm/stream，当前流只返回边界，确保 DSH 先创建新 step。
+        if ((part.type === 'text-delta' || part.type === 'reasoning-delta')
+          && part.messageId !== undefined) {
+          const previousMessageId = active.currentAssistantMessageId
+          if (previousMessageId !== undefined
+            && previousMessageId !== part.messageId
+            && active.sawCompletedTool) {
+            active.pendingChunk = part
+            active.currentAssistantMessageId = part.messageId
+            active.sawCompletedTool = false
+            yield { type: 'step-boundary' }
+            return
+          }
+          active.currentAssistantMessageId = part.messageId
         }
-        active.currentAssistantMessageId = chunk.messageId
+        const stabilizedChunk = stabilizeCodexEvent(session, part)
+        if (stabilizedChunk.type === 'tool-event' && (stabilizedChunk.status === 'completed' || stabilizedChunk.status === 'failed')) {
+          active.sawCompletedTool = true
+        }
+        yield stabilizedChunk
       }
-      const stabilizedChunk = stabilizeCodexEvent(session, chunk)
-      if (stabilizedChunk.type === 'tool-event' && (stabilizedChunk.status === 'completed' || stabilizedChunk.status === 'failed')) {
-        active.sawCompletedTool = true
-      }
-      yield stabilizedChunk
     }
   }
 
@@ -644,6 +653,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       suppressCompactionNotifications: false,
       suppressedCompactionTurnIds: new Set<string>(),
       pendingCompactionEvents: [] as CodingNsAgentEvent[],
+      autoCompaction: undefined as CodexSession['autoCompaction'],
     }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, session)
@@ -861,6 +871,69 @@ function* drainCompactionEvents(session: CodexSession): Generator<CodingNsAgentE
   while (session.pendingCompactionEvents.length > 0) {
     const event = session.pendingCompactionEvents.shift()
     if (event !== undefined) yield event
+  }
+}
+
+/**
+ * 把自动压缩的 item 生命周期展开成闭合的 start/summary/end 事务。
+ *
+ * Codex 0.158 起，压缩只通过 contextCompaction item 的 started/completed 通知
+ * 发布，`thread/compacted`（ContextCompactedNotification）已废弃且不再发送。
+ * 而 DSH 会话格式要求每个 compaction/start 必须由 compaction/end 闭合，否则
+ * 历史加载会以 "turn/end crosses an open compaction" 失败。这里在 item/completed
+ * 之后合成 end，同时兼容旧版 Codex 仍会发送的 thread/compacted 完成信号。
+ */
+function* expandCodexCompactionChunk(session: CodexSession, chunk: CodingNsAgentEvent): Generator<CodingNsAgentEvent> {
+  if (chunk.type !== 'context-compaction') {
+    yield chunk
+    return
+  }
+  if (chunk.phase === 'start') {
+    if (session.autoCompaction?.open === true && session.autoCompaction.compactionId === chunk.compactionId) {
+      yield chunk
+      return
+    }
+    session.autoCompaction = { compactionId: chunk.compactionId, open: true }
+    yield chunk
+    return
+  }
+  if (chunk.phase === 'summary') {
+    yield chunk
+    const pending = session.autoCompaction
+    if (pending !== undefined && pending.open) {
+      pending.open = false
+      yield {
+        type: 'context-compaction',
+        phase: 'end',
+        ...(chunk.compactionId === undefined ? {} : { compactionId: chunk.compactionId }),
+      }
+    }
+    return
+  }
+  const pending = session.autoCompaction
+  if (pending !== undefined) {
+    if (pending.open) {
+      // item/started 之后直接收到完成信号（旧版 Codex 的 thread/compacted）：
+      // 由该信号闭合事务。
+      pending.open = false
+      yield chunk
+    }
+    // 已经由 item/completed 合成过 end 的重复完成信号不再下发；桥接层虽然
+    // 对重复 end 幂等，但重复通知没有新的语义。
+    return
+  }
+  yield chunk
+}
+
+/** 流终结时为未收到完成通知的自动压缩补一个 end，避免会话日志残留未闭合事务。 */
+function closeDanglingAutoCompaction(session: CodexSession): CodingNsAgentEvent | undefined {
+  const pending = session.autoCompaction
+  if (pending === undefined || !pending.open) return undefined
+  session.autoCompaction = undefined
+  return {
+    type: 'context-compaction',
+    phase: 'end',
+    ...(pending.compactionId === undefined ? {} : { compactionId: pending.compactionId }),
   }
 }
 

@@ -600,6 +600,87 @@ test('Codex 独立压缩 turn 的 item 通知不会被当前 turn 过滤器丢�
   driver.dispose()
 })
 
+test('Codex 只发送 contextCompaction item 时自动闭合压缩事务', async () => {
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method === 'thread/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'item-only-thread' } } })}\n`)
+          return
+        }
+        if (request.method !== 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'user-turn', status: 'inProgress' } } })}\n`)
+        setImmediate(() => {
+          // Codex 0.158 起 thread/compacted 已废弃：自动压缩只发布 item 生命周期，
+          // 适配器必须在 item/completed 之后自行闭合压缩事务。
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/started', params: { threadId: 'item-only-thread', turnId: 'compact-turn', item: { type: 'contextCompaction', id: 'compact-item' } } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/completed', params: { threadId: 'item-only-thread', turnId: 'compact-turn', item: { type: 'contextCompaction', id: 'compact-item' } } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/agentMessage/delta', params: { threadId: 'item-only-thread', turnId: 'user-turn', itemId: 'user-message', delta: '继续回答' } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'item-only-thread', turn: { id: 'user-turn', status: 'completed' } } })}\n`)
+        })
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'item-only-session', messages: [], prompt: '继续' })) chunks.push(chunk)
+  assert.deepEqual(
+    chunks.filter((chunk) => chunk.type === 'context-compaction').map((chunk) => `${chunk.phase}:${String(chunk.compactionId)}`),
+    ['start:compact-item', 'summary:compact-item', 'end:compact-item'],
+  )
+  assert.equal(chunks.some((chunk) => chunk.type === 'text-delta' && chunk.text === '继续回答'), true)
+  assert.equal(chunks.at(-1)?.type, 'finish')
+  driver.dispose()
+})
+
+test('Codex 压缩中途结束回合时补写压缩结束事件', async () => {
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method === 'thread/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'dangling-thread' } } })}\n`)
+          return
+        }
+        if (request.method !== 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'user-turn', status: 'inProgress' } } })}\n`)
+        setImmediate(() => {
+          // 压缩尚未完成，回合已经终结：必须补一个 end，避免会话日志残留
+          // 未闭合 compaction 让历史加载失败。
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/started', params: { threadId: 'dangling-thread', turnId: 'compact-turn', item: { type: 'contextCompaction', id: 'dangling-item' } } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'dangling-thread', turn: { id: 'user-turn', status: 'completed' } } })}\n`)
+        })
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'dangling-session', messages: [], prompt: '继续' })) chunks.push(chunk)
+  assert.deepEqual(
+    chunks.filter((chunk) => chunk.type === 'context-compaction').map((chunk) => `${chunk.phase}:${String(chunk.compactionId)}`),
+    ['start:dangling-item', 'end:dangling-item'],
+  )
+  assert.equal(chunks.at(-1)?.type, 'finish')
+  driver.dispose()
+})
+
 test('Codex 自动压缩后第二轮使用压缩后的上下文状态', async () => {
   const methods: string[] = []
   let turnCount = 0

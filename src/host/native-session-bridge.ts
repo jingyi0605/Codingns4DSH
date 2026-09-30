@@ -390,7 +390,16 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     if (session === null || sessionFormat(session) === 'unsupported') return false
     try {
       if (event.phase === 'start') {
-        if (compactionStates.has(sessionId)) return true
+        const existing = compactionStates.get(sessionId)
+        if (existing !== undefined) {
+          const position = activeStep(session)
+          // 同一 turn 内重复的 start 属于同一次压缩的迟到通知，保持幂等。
+          if (existing.turn === (position?.turn ?? null)) return true
+          // 旧事务属于已经关闭的 turn：DSH 只允许在 owner turn 打开期间写
+          // compaction/end，历史日志无法在这里补救。丢弃它的状态，让当前压缩
+          // 建立新事务，避免后续 summary/end 继续挂到错误的 turn 上。
+          compactionStates.delete(sessionId)
+        }
         const compactionId = event.compactionId?.trim() || `codingns-compaction-${randomUUID()}`
         const position = activeStep(session)
         session.append('compaction/start', {
@@ -435,7 +444,10 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
           })
           state.summaryAppended = true
         }
-        return true
+        // summary 相位到此结束；end 相位还必须继续写 compaction/end 关闭事务，
+        // 否则携带摘要的 end 会让日志残留未闭合 compaction，历史加载时报
+        // "turn/end crosses an open compaction"。
+        if (event.phase === 'summary') return true
       }
       if (event.phase === 'end') {
         session.append('compaction/end', {
