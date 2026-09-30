@@ -6,6 +6,7 @@ import { fetchLocalIdentity, readRelayLoginIdentity, type LocalIdentity } from '
 import type { CodingNsRpcClient } from './features/types.js'
 import { createPeerHostManagementApi, type PeerHostManagementApi } from './peer-host-management-api.js'
 import { resolvePeerHostColor } from './peer-host-color.js'
+import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { dshThemeColor } from './theme.js'
 
 export interface PeerHostManagementPanelController { dispose(): void }
@@ -14,19 +15,22 @@ export interface PeerHostManagementPanelOptions {
   readonly document?: Document
   readonly rpc: CodingNsRpcClient
   readonly api?: PeerHostManagementApi
+  /** DSH 语言运行时；缺省退回内置中文词典，仅供单测与非 Cordis 宿主使用。 */
+  readonly locale?: CodingNsLocale
 }
 
 /** PeerHost 管理面板；入口来自统一账户菜单，面板只渲染脱敏记录。 */
 export function startPeerHostManagementPanel(options: PeerHostManagementPanelOptions): PeerHostManagementPanelController {
   const dom = options.document ?? (typeof document === 'undefined' ? undefined : document)
   if (dom === undefined) return { dispose() {} }
+  const t = resolveCodingNsTranslator(options.locale)
   const api = options.api ?? createPeerHostManagementApi(options.rpc)
   let disposed = false
   let overlay: HTMLElement | null = null
   const open = (): void => {
     if (disposed) return
-    if (overlay === null) overlay = createOverlay(dom, api, () => { overlay = null })
-    void refreshList(overlay, api)
+    if (overlay === null) overlay = createOverlay(dom, api, t, () => { overlay = null })
+    void refreshList(overlay, api, t)
   }
   dom.defaultView?.addEventListener(PEER_HOST_OPEN_EVENT, open)
   return {
@@ -40,12 +44,12 @@ export function startPeerHostManagementPanel(options: PeerHostManagementPanelOpt
   }
 }
 
-function createOverlay(dom: Document, api: PeerHostManagementApi, onClose: () => void): HTMLElement {
+function createOverlay(dom: Document, api: PeerHostManagementApi, t: CodingNsTranslator, onClose: () => void): HTMLElement {
   const overlay = dom.createElement('div')
   overlay.setAttribute('data-codingns-peer-host-panel', '')
   overlay.setAttribute('role', 'dialog')
   overlay.setAttribute('aria-modal', 'true')
-  overlay.setAttribute('aria-label', '管理其他 DSH Host')
+  overlay.setAttribute('aria-label', t('peerHost.panelTitle'))
   Object.assign(overlay.style, {
     position: 'fixed', inset: '0', zIndex: '9999', display: 'flex', alignItems: 'center', justifyContent: 'center',
     padding: 'max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px))',
@@ -62,23 +66,23 @@ function createOverlay(dom: Document, api: PeerHostManagementApi, onClose: () =>
   const heading = dom.createElement('div')
   Object.assign(heading.style, { display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '0' })
   const title = dom.createElement('strong')
-  title.textContent = '管理其他 DSH Host'
+  title.textContent = t('peerHost.panelTitle')
   Object.assign(title.style, { fontSize: '18px', lineHeight: '1.35' })
   const subtitle = dom.createElement('span')
-  subtitle.textContent = '连接并管理已登记的其他工作主机'
+  subtitle.textContent = t('peerHost.panelSubtitle')
   Object.assign(subtitle.style, { color: dshThemeColor.labelSecondary, fontSize: '12px', lineHeight: '1.5' })
   heading.append(title, subtitle)
   const close = actionButton(dom, '', () => { overlay.remove(); onClose() })
-  close.setAttribute('aria-label', '关闭 PeerHost 管理')
-  close.title = '关闭'
+  close.setAttribute('aria-label', t('peerHost.closePanel'))
+  close.title = t('peerHost.close')
   close.append(createHeaderIcon(dom, 'close'))
   styleHeaderIconButton(close, 'close')
   const addToggle = actionButton(dom, '', () => {
     addToggle.setAttribute('aria-expanded', 'true')
-    openAddDialog(dom, overlay, api, () => addToggle.setAttribute('aria-expanded', 'false'))
+    openAddDialog(dom, overlay, api, t, () => addToggle.setAttribute('aria-expanded', 'false'))
   })
-  addToggle.setAttribute('aria-label', '添加 Host')
-  addToggle.title = '添加 Host'
+  addToggle.setAttribute('aria-label', t('peerHost.addHost'))
+  addToggle.title = t('peerHost.addHost')
   addToggle.setAttribute('aria-expanded', 'false')
   addToggle.append(createHeaderIcon(dom, 'plus'))
   styleHeaderIconButton(addToggle, 'add')
@@ -91,9 +95,9 @@ function createOverlay(dom: Document, api: PeerHostManagementApi, onClose: () =>
   const listHeading = dom.createElement('div')
   Object.assign(listHeading.style, { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: '4px 10px', marginBottom: '10px' })
   const listTitle = dom.createElement('strong')
-  listTitle.textContent = '已登记的 Host'
+  listTitle.textContent = t('peerHost.registeredHosts')
   const listHint = dom.createElement('span')
-  listHint.textContent = '管理连接、资源和访问状态'
+  listHint.textContent = t('peerHost.listHint')
   Object.assign(listHint.style, { color: dshThemeColor.labelSecondary, fontSize: '11px', lineHeight: '1.4' })
   listHeading.append(listTitle, listHint)
   const list = dom.createElement('div')
@@ -121,7 +125,7 @@ interface FormDialogParts {
   readonly close: () => void
 }
 
-function createFormDialog(dom: Document, parent: HTMLElement, titleText: string, onClose: () => void): FormDialogParts {
+function createFormDialog(dom: Document, parent: HTMLElement, titleText: string, t: CodingNsTranslator, onClose: () => void): FormDialogParts {
   const formOverlay = dom.createElement('div')
   formOverlay.setAttribute('data-codingns-peer-host-form-dialog', '')
   formOverlay.setAttribute('role', 'dialog')
@@ -144,8 +148,8 @@ function createFormDialog(dom: Document, parent: HTMLElement, titleText: string,
   title.textContent = titleText
   Object.assign(title.style, { fontSize: '16px', lineHeight: '1.35' })
   const closeButton = actionButton(dom, '', closeDialog)
-  closeButton.setAttribute('aria-label', `关闭${titleText}`)
-  closeButton.title = '关闭'
+  closeButton.setAttribute('aria-label', t('peerHost.closeDialogTitle', { title: titleText }))
+  closeButton.title = t('peerHost.close')
   closeButton.append(createHeaderIcon(dom, 'close'))
   styleHeaderIconButton(closeButton, 'close')
   header.append(title, closeButton)
@@ -170,29 +174,29 @@ function createFormDialog(dom: Document, parent: HTMLElement, titleText: string,
   return { overlay: formOverlay, body, message, close: closeDialog }
 }
 
-function openAddDialog(dom: Document, parent: HTMLElement, api: PeerHostManagementApi, onClose: () => void): void {
-  const modal = createFormDialog(dom, parent, '添加 Host', onClose)
+function openAddDialog(dom: Document, parent: HTMLElement, api: PeerHostManagementApi, t: CodingNsTranslator, onClose: () => void): void {
+  const modal = createFormDialog(dom, parent, t('peerHost.addHost'), t, onClose)
   // 表单必须拿到 close：添加成功后要自动关闭对话框，否则用户会以为没生效而重复提交。
-  modal.body.append(createAddForm(dom, api, parent, modal.message, modal.close))
+  modal.body.append(createAddForm(dom, api, parent, modal.message, modal.close, t))
 }
 
-function createAddForm(dom: Document, api: PeerHostManagementApi, panel: HTMLElement, message: HTMLElement, close: () => void): HTMLElement {
+function createAddForm(dom: Document, api: PeerHostManagementApi, panel: HTMLElement, message: HTMLElement, close: () => void, t: CodingNsTranslator): HTMLElement {
   const form = dom.createElement('form')
   form.setAttribute('data-codingns-peer-host-add-form', '')
   Object.assign(form.style, { display: 'flex', flexDirection: 'column', gap: '8px' })
-  const name = input(dom, '名称（可选）', 'text', 'data-codingns-peer-host-name')
+  const name = input(dom, t('peerHost.nameOptional'), 'text', 'data-codingns-peer-host-name')
   name.input.required = false
-  const url = input(dom, 'Host 地址', 'url', 'data-codingns-peer-host-url')
-  const username = input(dom, '目标 Host 用户名', 'text', 'data-codingns-peer-host-username')
-  const password = input(dom, '目标 Host 密码', 'password', 'data-codingns-peer-host-password')
+  const url = input(dom, t('peerHost.hostUrl'), 'url', 'data-codingns-peer-host-url')
+  const username = input(dom, t('peerHost.targetUsername'), 'text', 'data-codingns-peer-host-username')
+  const password = input(dom, t('peerHost.targetPassword'), 'password', 'data-codingns-peer-host-password')
   password.input.autocomplete = 'current-password'
   const identity = dom.createElement('small')
   identity.setAttribute('data-codingns-peer-host-identity', '')
-  identity.textContent = '正在识别当前登录账号…'
+  identity.textContent = t('peerHost.identifyingAccount')
   const identityNote = dom.createElement('small')
-  identityNote.textContent = '登录信息只用于目标 Host 会话；密码不会保存到浏览器。'
+  identityNote.textContent = t('peerHost.loginNote')
   Object.assign(identityNote.style, { color: dshThemeColor.labelSecondary, fontSize: '11px', lineHeight: '1.5' })
-  const submit = actionButton(dom, '添加并登录', () => undefined)
+  const submit = actionButton(dom, t('peerHost.addAndLogin'), () => undefined)
   submit.type = 'submit'
   Object.assign(submit.style, { alignSelf: 'flex-start', marginTop: '4px', padding: '0 14px', background: dshThemeColor.accent, borderColor: dshThemeColor.accent, color: dshThemeColor.primaryForeground })
   form.append(name.wrapper, url.wrapper, identity, identityNote, username.wrapper, password.wrapper, submit)
@@ -204,7 +208,7 @@ function createAddForm(dom: Document, api: PeerHostManagementApi, panel: HTMLEle
     const displayName = name.input.value.trim()
     const route: PeerHostRoute = { kind: 'lan', baseUrl: url.input.value.trim(), normalizedOrigin: '' }
     submit.disabled = true
-    submit.textContent = createdId === null ? '添加中…' : '重试中…'
+    submit.textContent = createdId === null ? t('peerHost.adding') : t('peerHost.retrying')
     const ensureRecord = createdId === null
       ? api.create({ displayName, route }).then((record) => {
         createdId = record.id
@@ -227,19 +231,19 @@ function createAddForm(dom: Document, api: PeerHostManagementApi, panel: HTMLEle
         return { record: checked, ready: true }
       })
       .then(async ({ record, ready }) => {
-        await refreshList(panel, api)
+        await refreshList(panel, api, t)
         if (ready) {
           // 添加并连接成功：自动关闭对话框，由外层列表展示新记录。
           close()
           return
         }
         // 握手未通过时保留对话框，让用户看到原因并就地修正后重试。
-        setMessage(`PeerHost 已登记，但握手状态为“${statusLabel(record.status)}”；请修正地址或凭据后再次提交。`)
+        setMessage(t('peerHost.handshakeFailed', { status: statusLabel(record.status, t) }))
       })
       .catch((error) => setMessage(error instanceof Error ? error.message : String(error)))
-      .finally(() => { submit.disabled = false; submit.textContent = '添加并登录' })
+      .finally(() => { submit.disabled = false; submit.textContent = t('peerHost.addAndLogin') })
   })
-  void hydrateIdentity(dom, username.input, identity)
+  void hydrateIdentity(dom, username.input, identity, t)
   return form
 
   function setMessage(text: string): void {
@@ -248,33 +252,33 @@ function createAddForm(dom: Document, api: PeerHostManagementApi, panel: HTMLEle
   }
 }
 
-async function hydrateIdentity(dom: Document, username: HTMLInputElement, identity: HTMLElement): Promise<void> {
+async function hydrateIdentity(dom: Document, username: HTMLInputElement, identity: HTMLElement, t: CodingNsTranslator): Promise<void> {
   let local: LocalIdentity | null = null
   try { local = await fetchLocalIdentity(dom) } catch { local = null }
   const relay = readRelayLoginIdentity()
   if (local !== null) {
     username.value = local.username
-    identity.textContent = `已读取当前页面账号“${local.username}”作为用户名建议；这不会自动登录远程 Host`
+    identity.textContent = t('peerHost.identityLocal', { username: local.username })
     return
   }
   if (relay !== null) {
     username.value = relay.username
-    identity.textContent = `已读取当前中转账号“${relay.username}”作为用户名建议；仍需目标 Host 自己的密码`
+    identity.textContent = t('peerHost.identityRelay', { username: relay.username })
     return
   }
-  identity.textContent = '未识别当前页面账号；请填写目标 Host 的用户名和密码'
+  identity.textContent = t('peerHost.identityUnknown')
 }
 
-async function refreshList(overlay: HTMLElement, api: PeerHostManagementApi): Promise<void> {
+async function refreshList(overlay: HTMLElement, api: PeerHostManagementApi, t: CodingNsTranslator): Promise<void> {
   const list = overlay.querySelector<HTMLElement>('[data-codingns-peer-host-list]')
   if (list === null) return
-  list.textContent = '正在读取 PeerHost...'
+  list.textContent = t('peerHost.readingList')
   try {
     const records = await api.list()
     list.textContent = ''
     if (records.length === 0) {
       const empty = list.ownerDocument.createElement('p')
-      empty.textContent = '尚未添加其他 Host。点击右上角“+”添加。'
+      empty.textContent = t('peerHost.emptyList')
       Object.assign(empty.style, { margin: '6px 0 0', color: dshThemeColor.labelSecondary, fontSize: '12px' })
       list.append(empty)
       return
@@ -284,13 +288,13 @@ async function refreshList(overlay: HTMLElement, api: PeerHostManagementApi): Pr
       // 未握手或未登录的记录不能通过代理读取远端资源，避免把业务错误当成 RPC 格式错误。
       status: record.status === 'ready' ? await api.status(record.id).catch(() => null) : null,
     })))
-    for (const card of cards) list.append(renderRecord(overlay.ownerDocument, api, card.record, list, card.status, overlay))
+    for (const card of cards) list.append(renderRecord(overlay.ownerDocument, api, card.record, list, card.status, overlay, t))
   } catch (error) {
     list.textContent = error instanceof Error ? error.message : String(error)
   }
 }
 
-function renderRecord(dom: Document, api: PeerHostManagementApi, record: PeerHostClientRecord, list: HTMLElement, hostStatus: DshHostStatus | null, panel: HTMLElement): HTMLElement {
+function renderRecord(dom: Document, api: PeerHostManagementApi, record: PeerHostClientRecord, list: HTMLElement, hostStatus: DshHostStatus | null, panel: HTMLElement, t: CodingNsTranslator): HTMLElement {
   const row = dom.createElement('article')
   row.setAttribute('data-peer-host-id', record.id)
   Object.assign(row.style, {
@@ -313,7 +317,7 @@ function renderRecord(dom: Document, api: PeerHostManagementApi, record: PeerHos
   Object.assign(titleRow.style, { display: 'flex', alignItems: 'center', gap: '8px', minWidth: '0', minHeight: '20px' })
   const swatch = dom.createElement('span')
   swatch.setAttribute('data-codingns-peer-host-swatch', '')
-  swatch.title = record.color === null || record.color === undefined ? '默认配色（按名称推导）' : `标签配色 ${record.color}`
+  swatch.title = record.color === null || record.color === undefined ? t('peerHost.colorDefaultHint') : t('peerHost.colorLabel', { color: record.color })
   Object.assign(swatch.style, {
     flex: '0 0 auto', width: '10px', height: '10px', borderRadius: '999px',
     background: peerHostColor(record), border: `1px solid ${dshThemeColor.border}`,
@@ -322,31 +326,31 @@ function renderRecord(dom: Document, api: PeerHostManagementApi, record: PeerHos
   title.textContent = record.displayName
   Object.assign(title.style, { minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '14px', lineHeight: '1.3' })
   const status = dom.createElement('span')
-  status.textContent = statusLabel(record.status)
+  status.textContent = statusLabel(record.status, t)
   Object.assign(status.style, { flex: '0 0 auto', padding: '2px 6px', borderRadius: '999px', color: record.status === 'ready' ? dshThemeColor.success : dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, fontSize: '10px', lineHeight: '1.2' })
   titleRow.append(swatch, title, status)
   const hostname = dom.createElement('div')
-  hostname.textContent = `主机名：${record.hostname ?? '未上报'}`
+  hostname.textContent = t('peerHost.hostnameValue', { hostname: record.hostname ?? t('peerHost.notReported') })
   Object.assign(hostname.style, { color: dshThemeColor.labelSecondary, fontSize: '11px', lineHeight: '1.35', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })
   const metadata = dom.createElement('div')
   Object.assign(metadata.style, { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '6px', padding: '4px 0', borderTop: `1px solid ${dshThemeColor.border}`, borderBottom: `1px solid ${dshThemeColor.border}` })
   metadata.append(
-    metaItem(dom, 'DSH 版本', record.dshVersion ?? '未知'),
-    metaItem(dom, '可见工作区', String((record.visibleWorkspaceIds ?? []).length)),
+    metaItem(dom, t('peerHost.dshVersion'), record.dshVersion ?? t('peerHost.unknown')),
+    metaItem(dom, t('peerHost.visibleWorkspaces'), String((record.visibleWorkspaceIds ?? []).length)),
   )
   const resources = dom.createElement('div')
   Object.assign(resources.style, { display: 'flex', flexDirection: 'column', gap: '4px' })
-  resources.append(resourceMeter(dom, 'CPU', hostStatus === null ? null : hostStatus.cpuPercent, hostStatus === null ? null : `${Math.round(hostStatus.cpuPercent)}%`))
-  resources.append(resourceMeter(dom, '内存', hostStatus === null ? null : hostStatus.memoryPercent, hostStatus === null ? null : `${formatBytes(hostStatus.memoryUsedBytes)} / ${formatBytes(hostStatus.memoryTotalBytes)}`))
+  resources.append(resourceMeter(dom, 'CPU', hostStatus === null ? null : hostStatus.cpuPercent, hostStatus === null ? null : `${Math.round(hostStatus.cpuPercent)}%`, t('peerHost.noSample')))
+  resources.append(resourceMeter(dom, t('peerHost.memory'), hostStatus === null ? null : hostStatus.memoryPercent, hostStatus === null ? null : `${formatBytes(hostStatus.memoryUsedBytes)} / ${formatBytes(hostStatus.memoryTotalBytes)}`, t('peerHost.noSample')))
   const actions = dom.createElement('div')
   // 只保留四个动作：登录/退出登录已并入"编辑"的一次性保存，不再是独立步骤。
   Object.assign(actions.style, { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '4px', marginTop: 'auto' })
   actions.append(
-    actionButton(dom, '编辑', () => openEditForm(dom, api, record, panel)),
-    actionButton(dom, '测试', () => run(() => api.check(record.id))),
-    actionButton(dom, record.status === 'disabled' ? '启用' : '禁用', () => run(() => record.status === 'disabled' ? api.enable(record.id) : api.disable(record.id))),
-    actionButton(dom, '删除', () => {
-      if (dom.defaultView?.confirm(`确认删除 PeerHost“${record.displayName}”？`) !== true) return
+    actionButton(dom, t('peerHost.edit'), () => openEditForm(dom, api, record, panel, t)),
+    actionButton(dom, t('peerHost.test'), () => run(() => api.check(record.id))),
+    actionButton(dom, record.status === 'disabled' ? t('peerHost.enable') : t('peerHost.disable'), () => run(() => record.status === 'disabled' ? api.enable(record.id) : api.disable(record.id))),
+    actionButton(dom, t('peerHost.delete'), () => {
+      if (dom.defaultView?.confirm(t('peerHost.confirmDelete', { name: record.displayName })) !== true) return
       run(() => api.remove(record.id))
     }),
   )
@@ -357,7 +361,7 @@ function renderRecord(dom: Document, api: PeerHostManagementApi, record: PeerHos
   return row
 
   function run(operation: () => Promise<unknown>): void {
-    void operation().then(() => refreshList(panel, api)).catch((error) => { hostname.textContent = error instanceof Error ? error.message : String(error) })
+    void operation().then(() => refreshList(panel, api, t)).catch((error) => { hostname.textContent = error instanceof Error ? error.message : String(error) })
   }
 }
 
@@ -374,14 +378,14 @@ function metaItem(dom: Document, label: string, value: string): HTMLElement {
   return item
 }
 
-function resourceMeter(dom: Document, label: string, percent: number | null, value: string | null): HTMLElement {
+function resourceMeter(dom: Document, label: string, percent: number | null, value: string | null, emptyText: string): HTMLElement {
   const item = dom.createElement('div')
   const header = dom.createElement('div')
   Object.assign(header.style, { display: 'flex', justifyContent: 'space-between', gap: '8px', color: dshThemeColor.labelSecondary, fontSize: '10px', lineHeight: '1.2' })
   const name = dom.createElement('span')
   name.textContent = label
   const amount = dom.createElement('span')
-  amount.textContent = value ?? '暂无采样'
+  amount.textContent = value ?? emptyText
   header.append(name, amount)
   const track = dom.createElement('div')
   Object.assign(track.style, { height: '4px', marginTop: '2px', overflow: 'hidden', borderRadius: '999px', background: dshThemeColor.surfaceSubtle })
@@ -392,34 +396,34 @@ function resourceMeter(dom: Document, label: string, percent: number | null, val
   return item
 }
 
-function openEditForm(dom: Document, api: PeerHostManagementApi, record: PeerHostClientRecord, panel: HTMLElement): void {
-  const modal = createFormDialog(dom, panel, '编辑 Host', () => undefined)
+function openEditForm(dom: Document, api: PeerHostManagementApi, record: PeerHostClientRecord, panel: HTMLElement, t: CodingNsTranslator): void {
+  const modal = createFormDialog(dom, panel, t('peerHost.editHost'), t, () => undefined)
   const form = dom.createElement('form')
   form.setAttribute('data-codingns-peer-host-edit', '')
   Object.assign(form.style, { display: 'flex', flexDirection: 'column', gap: '8px' })
-  const name = input(dom, '名称', 'text', 'data-codingns-peer-host-name')
+  const name = input(dom, t('peerHost.name'), 'text', 'data-codingns-peer-host-name')
   name.input.value = record.displayName
-  const url = input(dom, 'Host 地址（可选）', 'url', 'data-codingns-peer-host-url')
+  const url = input(dom, t('peerHost.hostUrlOptional'), 'url', 'data-codingns-peer-host-url')
   url.input.required = false
   if (record.route.kind === 'lan' && record.route.baseUrl !== undefined) url.input.value = record.route.baseUrl
-  const username = input(dom, '目标 Host 用户名（可选）', 'text', 'data-codingns-peer-host-username')
+  const username = input(dom, t('peerHost.targetUsernameOptional'), 'text', 'data-codingns-peer-host-username')
   username.input.required = false
   username.input.autocomplete = 'username'
-  const password = input(dom, '目标 Host 密码（可选）', 'password', 'data-codingns-peer-host-password')
+  const password = input(dom, t('peerHost.targetPasswordOptional'), 'password', 'data-codingns-peer-host-password')
   password.input.required = false
   password.input.autocomplete = 'current-password'
-  const colorField = colorInput(dom, record.color ?? null)
+  const colorField = colorInput(dom, record.color ?? null, t)
   const credentialNote = dom.createElement('small')
   credentialNote.setAttribute('data-codingns-peer-host-credential-note', '')
   Object.assign(credentialNote.style, { color: dshThemeColor.labelSecondary, fontSize: '11px', lineHeight: '1.5' })
-  credentialNote.textContent = '密码留空表示保持已保存的登录凭据不变；填写密码后会立即握手并登录。'
-  const submit = actionButton(dom, '保存并连接', () => undefined)
+  credentialNote.textContent = t('peerHost.passwordKeepNote')
+  const submit = actionButton(dom, t('peerHost.saveAndConnect'), () => undefined)
   submit.type = 'submit'
   const note = dom.createElement('small')
-  note.textContent = record.route.kind === 'lan' ? '地址已从记录中回填；留空表示保持当前地址不变。' : '中转路由由 Host 侧保存，当前不可在客户端修改。'
+  note.textContent = record.route.kind === 'lan' ? t('peerHost.urlBackfilledNote') : t('peerHost.relayRouteNote')
   form.append(name.wrapper, ...(record.route.kind === 'lan' ? [url.wrapper] : []), colorField.wrapper, username.wrapper, password.wrapper, credentialNote, note, submit)
   modal.body.append(form)
-  void hydrateCredentialState(dom, api, record.id, credentialNote)
+  void hydrateCredentialState(dom, api, record.id, credentialNote, t)
   void hydrateEditUsername(dom, username.input)
   form.addEventListener('submit', (event) => {
     event.preventDefault()
@@ -431,11 +435,11 @@ function openEditForm(dom: Document, api: PeerHostManagementApi, record: PeerHos
     const account = username.input.value.trim()
     const secret = password.input.value
     if (secret !== '' && account === '') {
-      credentialNote.textContent = '填写密码时必须同时填写目标 Host 用户名；密码留空即可保持当前凭据。'
+      credentialNote.textContent = t('peerHost.passwordRequiresUsername')
       return
     }
     submit.disabled = true
-    submit.textContent = '保存中…'
+    submit.textContent = t('peerHost.saving')
     void api.update({
       peerHostId: record.id,
       displayName: name.input.value.trim(),
@@ -443,19 +447,19 @@ function openEditForm(dom: Document, api: PeerHostManagementApi, record: PeerHos
       ...(route === undefined ? {} : { route }),
       ...(secret === '' ? {} : { username: account, password: secret }),
     })
-      .then(() => refreshList(panel, api))
+      .then(() => refreshList(panel, api, t))
       .then(() => modal.close())
       .catch((error) => { credentialNote.textContent = error instanceof Error ? error.message : String(error) })
-      .finally(() => { submit.disabled = false; submit.textContent = '保存并连接' })
+      .finally(() => { submit.disabled = false; submit.textContent = t('peerHost.saveAndConnect') })
   })
 }
 
 /** 显示该 PeerHost 是否已保存凭据；已保存时用户名不再回填（Host 不回传）。 */
-async function hydrateCredentialState(dom: Document, api: PeerHostManagementApi, peerHostId: string, note: HTMLElement): Promise<void> {
+async function hydrateCredentialState(dom: Document, api: PeerHostManagementApi, peerHostId: string, note: HTMLElement, t: CodingNsTranslator): Promise<void> {
   try {
     const status = await api.credentialStatus(peerHostId)
     if (!status.hasSavedCredential) return
-    note.textContent = '当前 Host 已保存该目标的登录凭据，连接会自动完成；留空即可保持不变。'
+    note.textContent = t('peerHost.credentialSavedNote')
   } catch {
     // 凭据状态只是提示信息，读取失败不影响编辑与保存。
   }
@@ -558,11 +562,11 @@ function input(dom: Document, label: string, type: string, attribute?: string): 
  * 提供一组预设色加一个原生取色器，并允许"默认"（清除自定义色，回到按名称推导）。
  * 返回值始终是 `#rrggbb` 或 null，Host 侧还会再校验一次。
  */
-function colorInput(dom: Document, initial: string | null): { wrapper: HTMLElement; value: () => string | null } {
+function colorInput(dom: Document, initial: string | null, t: CodingNsTranslator): { wrapper: HTMLElement; value: () => string | null } {
   const wrapper = dom.createElement('div')
   Object.assign(wrapper.style, { display: 'flex', flexDirection: 'column', gap: '5px', margin: '5px 0', color: dshThemeColor.labelSecondary, fontSize: '12px', lineHeight: '1.4' })
   const label = dom.createElement('span')
-  label.textContent = '工作区标签配色'
+  label.textContent = t('peerHost.colorSection')
   const row = dom.createElement('div')
   Object.assign(row.style, { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' })
 
@@ -583,13 +587,13 @@ function colorInput(dom: Document, initial: string | null): { wrapper: HTMLEleme
       syncPresets()
     })
     button.setAttribute('data-codingns-peer-host-color-preset', preset)
-    button.setAttribute('aria-label', `使用配色 ${preset}`)
+    button.setAttribute('aria-label', t('peerHost.usePresetColor', { color: preset }))
     button.title = preset
     Object.assign(button.style, { width: '18px', minWidth: '18px', height: '18px', minHeight: '18px', padding: '0', borderRadius: '999px', background: preset, border: `1px solid ${dshThemeColor.border}` })
     presetButtons.push(button)
     presetRow.append(button)
   }
-  const reset = actionButton(dom, '默认', () => {
+  const reset = actionButton(dom, t('peerHost.colorReset'), () => {
     selected = null
     syncPresets()
   })
@@ -616,13 +620,15 @@ function colorInput(dom: Document, initial: string | null): { wrapper: HTMLEleme
   }
 }
 
-function statusLabel(status: PeerHostClientRecord['status']): string {
-  const labels: Partial<Record<PeerHostClientRecord['status'], string>> = {
-    configured: '待测试', checking: '测试中', ready: '已连接', plugin_missing: '插件缺失',
-    version_mismatch: '版本不匹配', identity_changed: '身份已变化', session_required: '需要登录',
-    unreachable: '无法连接', reconnecting: '重连中', disabled: '已禁用',
+function statusLabel(status: PeerHostClientRecord['status'], t: CodingNsTranslator): string {
+  const keys: Partial<Record<PeerHostClientRecord['status'], string>> = {
+    configured: 'peerHost.statusConfigured', checking: 'peerHost.statusChecking', ready: 'peerHost.statusReady',
+    plugin_missing: 'peerHost.statusPluginMissing', version_mismatch: 'peerHost.statusVersionMismatch',
+    identity_changed: 'peerHost.statusIdentityChanged', session_required: 'peerHost.statusSessionRequired',
+    unreachable: 'peerHost.statusUnreachable', reconnecting: 'peerHost.statusReconnecting', disabled: 'peerHost.statusDisabled',
   }
-  return labels[status] ?? status
+  const key = keys[status]
+  return key === undefined ? status : t(key)
 }
 
 /** 卡片色点用的最终颜色：显式配置优先，否则按名称推导。 */

@@ -165,7 +165,7 @@ async function openEventStream(scope: HostScope, socketFactory: PeerHostEventSoc
   try {
     await waitForSocketOpen(initialSocket)
   } catch (error) {
-    closeSocket(initialSocket, 1011, 'PeerHost WebSocket 打开失败')
+    closeSocket(initialSocket, 1011, 'PeerHost WebSocket open failed')
     throw error
   }
   let socket = initialSocket
@@ -181,8 +181,8 @@ async function openEventStream(scope: HostScope, socketFactory: PeerHostEventSoc
     closed = true
     if (reconnectTimer !== undefined) clearTimeout(reconnectTimer)
     reconnectTimer = undefined
-    closeSocket(socket, 1000, 'PeerHost 作用域已清理')
-    if (pendingSocket !== undefined && pendingSocket !== socket) closeSocket(pendingSocket, 1000, 'PeerHost 作用域已清理')
+    closeSocket(socket, 1000, 'PeerHost scope disposed')
+    if (pendingSocket !== undefined && pendingSocket !== socket) closeSocket(pendingSocket, 1000, 'PeerHost scope disposed')
   }
 
   const send = (type: PeerHostClientMessageType, payload: Readonly<Record<string, unknown>> = {}): void => {
@@ -221,7 +221,7 @@ async function openEventStream(scope: HostScope, socketFactory: PeerHostEventSoc
     })
     current.on('error', () => {
       if (closed || socket !== current) return
-      if (current.readyState === OPEN) current.close(1011, 'PeerHost WebSocket 连接错误')
+      if (current.readyState === OPEN) current.close(1011, 'PeerHost WebSocket connection error')
       else scheduleReconnect()
     })
     replaySubscriptions(current)
@@ -235,7 +235,7 @@ async function openEventStream(scope: HostScope, socketFactory: PeerHostEventSoc
       await waitForSocketOpen(next)
       pendingSocket = undefined
       if (closed) {
-        closeSocket(next, 1000, 'PeerHost 作用域已清理')
+        closeSocket(next, 1000, 'PeerHost scope disposed')
         return
       }
       reconnectAttempt = 0

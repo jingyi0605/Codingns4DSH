@@ -1,6 +1,7 @@
 import type { PeerHostClientRecord } from '../shared/contracts/peer-host.js'
 import type { PeerHostManagementApi, PeerHostRemoteWorkspaceCandidate } from './peer-host-management-api.js'
 import { resolvePeerHostColor } from './peer-host-color.js'
+import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 
 /**
  * 在 DSH 原生"添加工作区"对话框里追加一个"远程 HOST"标签页。
@@ -96,6 +97,13 @@ export interface PeerHostWorkspaceTabOptions {
   readonly api: PeerHostManagementApi
   readonly document?: Document
   readonly MutationObserver?: typeof MutationObserver
+  /**
+   * 浏览器 locale 服务。
+   *
+   * 命令式模块没有 React 上下文，只能由功能模块注入；缺省时退回内置中文词典，
+   * 仅用于单测或非 Cordis 宿主。
+   */
+  readonly locale?: CodingNsLocale
   /** 远端工作区登记成功后触发聚合刷新；失败不影响标签页状态。 */
   readonly onWorkspaceAdded?: (peerHostId: string, workspaceId: string) => void | Promise<void>
 }
@@ -108,6 +116,8 @@ interface Injection {
   readonly panel: HTMLElement
   readonly localTab: HTMLButtonElement
   readonly remoteTab: HTMLButtonElement
+  /** 该次注入使用的翻译函数；React 重渲染后仍沿用同一 locale。 */
+  readonly t: CodingNsTranslator
   kind: TabKind
   records: readonly PeerHostClientRecord[] | null
   selectedHostId: string | null
@@ -209,14 +219,15 @@ function inject(
   const dom = dialog.ownerDocument
   const header = editorScope.querySelector<HTMLElement>(HEADER_SELECTOR)
   const title = header?.querySelector<HTMLElement>(TITLE_SELECTOR) ?? null
+  const t = resolveCodingNsTranslator(options.locale)
 
-  const localTab = tabButton(dom, '本机文件夹')
-  const remoteTab = tabButton(dom, '远程 HOST')
+  const localTab = tabButton(dom, t('peerHostWorkspace.tabLocal'))
+  const remoteTab = tabButton(dom, t('peerHostWorkspace.tabRemote'))
   const tabBar = dom.createElement('div')
   tabBar.setAttribute(PEER_HOST_WORKSPACE_TAB_ATTRIBUTE, '')
   tabBar.setAttribute(PEER_HOST_WORKSPACE_TAB_STATE_ATTRIBUTE, previous?.kind ?? 'local')
   tabBar.setAttribute('role', 'tablist')
-  tabBar.setAttribute('aria-label', '工作区来源')
+  tabBar.setAttribute('aria-label', t('peerHostWorkspace.sourceLabel'))
   tabBar.className = `${TAB_CLASS}-tabs`
   tabBar.append(localTab, remoteTab)
 
@@ -237,6 +248,7 @@ function inject(
     panel,
     localTab,
     remoteTab,
+    t,
     kind: previous?.kind ?? 'local',
     records: previous?.records ?? null,
     selectedHostId: previous?.selectedHostId ?? null,
@@ -273,25 +285,26 @@ function render(state: Injection, options: PeerHostWorkspaceTabOptions | null): 
   if (!active) return
 
   const dom = state.dialog.ownerDocument
+  const t = state.t
   state.panel.textContent = ''
 
   const heading = dom.createElement('strong')
-  heading.textContent = '远程 HOST 工作区'
+  heading.textContent = t('peerHostWorkspace.heading')
   heading.className = `${TAB_CLASS}-heading`
   const hint = dom.createElement('small')
-  hint.textContent = '选择一台 Host，再选择它上面已登记的工作区；添加后只在本机侧栏显示这些工作区。'
+  hint.textContent = t('peerHostWorkspace.hint')
   hint.className = `${TAB_CLASS}-hint`
   state.panel.append(heading, hint)
 
   if (state.records === null) {
-    state.panel.append(note(dom, '正在读取已登记的 Host…', 'info'))
+    state.panel.append(note(dom, t('peerHostWorkspace.loadingHosts'), 'info'))
     return
   }
   if (state.records.length === 0) {
     // 读取失败时必须先给出真实错误；否则用户看到的是"没有 Host"，
     // 会把网络故障误判成配置为空。
     if (state.message !== null) state.panel.append(note(dom, state.message, state.messageKind))
-    else state.panel.append(note(dom, '尚未登记其他 Host。请先在“管理其他 DSH Host”中添加。', 'info'))
+    else state.panel.append(note(dom, t('peerHostWorkspace.noHosts'), 'info'))
     return
   }
 
@@ -321,7 +334,7 @@ function render(state: Injection, options: PeerHostWorkspaceTabOptions | null): 
     if (record.status !== 'ready') {
       const badge = dom.createElement('span')
       badge.className = `${TAB_CLASS}-rowMeta`
-      badge.textContent = statusText(record.status)
+      badge.textContent = statusText(t, record.status)
       button.append(badge)
     }
     button.addEventListener('click', () => {
@@ -342,17 +355,17 @@ function render(state: Injection, options: PeerHostWorkspaceTabOptions | null): 
   const selected = state.records.find((record) => record.id === state.selectedHostId) ?? null
   // 未就绪的 Host 先给出可操作原因，不去发一个注定失败的代理请求。
   if (selected !== null && selected.status !== 'ready') {
-    state.panel.append(note(dom, notReadyHint(selected), 'error'))
+    state.panel.append(note(dom, notReadyHint(t, selected), 'error'))
     return
   }
   if (state.candidates === null) {
-    state.panel.append(note(dom, '正在读取该 Host 已登记的工作区…', 'info'))
+    state.panel.append(note(dom, t('peerHostWorkspace.loadingWorkspaces'), 'info'))
     return
   }
   if (state.candidates.length === 0) {
     // 同上：候选读取失败不能伪装成"该 Host 没有工作区"。
     if (state.message !== null) state.panel.append(note(dom, state.message, state.messageKind))
-    else state.panel.append(note(dom, '该 Host 上没有已登记的工作区。', 'info'))
+    else state.panel.append(note(dom, t('peerHostWorkspace.noWorkspaces'), 'info'))
     return
   }
 
@@ -383,7 +396,9 @@ function render(state: Injection, options: PeerHostWorkspaceTabOptions | null): 
 
     const count = dom.createElement('span')
     count.className = `${TAB_CLASS}-rowCount`
-    count.textContent = candidate.sessionCount === 0 ? '无会话' : `${candidate.sessionCount} 个会话`
+    count.textContent = candidate.sessionCount === 0
+      ? t('peerHostWorkspace.noSessions')
+      : t('peerHostWorkspace.sessionCount', { count: candidate.sessionCount })
 
     row.append(text, count)
     row.addEventListener('click', () => {
@@ -437,7 +452,7 @@ async function addWorkspace(state: Injection, options: PeerHostWorkspaceTabOptio
   render(state, options)
   try {
     await options.api.setWorkspaceVisibility(hostId, workspaceId, true)
-    state.message = '已添加；关闭对话框后该工作区会出现在侧栏。'
+    state.message = state.t('peerHostWorkspace.added')
     state.messageKind = 'success'
     await options.onWorkspaceAdded?.(hostId, workspaceId)
   } catch (error) {
@@ -494,31 +509,46 @@ function message(value: unknown): string {
   return value instanceof Error ? value.message : String(value)
 }
 
-/** Host 状态的中文标签；与管理工作面板保持同一套措辞。 */
-function statusText(status: PeerHostClientRecord['status']): string {
-  const labels: Partial<Record<PeerHostClientRecord['status'], string>> = {
-    configured: '待连接', checking: '检查中', ready: '已连接', plugin_missing: '插件缺失',
-    version_mismatch: '版本不匹配', identity_changed: '身份已变化', session_required: '需要登录',
-    unreachable: '无法连接', reconnecting: '重连中', disabled: '已禁用',
-  }
-  return labels[status] ?? status
+/**
+ * Host 状态到词条的完整映射。
+ *
+ * 用 `Record<状态, 键>` 保证状态联合新增取值时编译器立刻报错，而不是静默回退成状态码；
+ * 措辞与管理工作面板保持同一套。
+ */
+const STATUS_KEYS: Record<PeerHostClientRecord['status'], string> = {
+  configured: 'peerHostWorkspace.statusConfigured',
+  checking: 'peerHostWorkspace.statusChecking',
+  ready: 'peerHostWorkspace.statusReady',
+  plugin_missing: 'peerHostWorkspace.statusPluginMissing',
+  version_mismatch: 'peerHostWorkspace.statusVersionMismatch',
+  identity_changed: 'peerHostWorkspace.statusIdentityChanged',
+  session_required: 'peerHostWorkspace.statusSessionRequired',
+  unreachable: 'peerHostWorkspace.statusUnreachable',
+  reconnecting: 'peerHostWorkspace.statusReconnecting',
+  disabled: 'peerHostWorkspace.statusDisabled',
+}
+
+/** Host 状态标签。 */
+function statusText(t: CodingNsTranslator, status: PeerHostClientRecord['status']): string {
+  return t(STATUS_KEYS[status])
 }
 
 /** 未就绪 Host 的可操作提示：告诉用户该去做什么，而不是只说"不能用"。 */
-function notReadyHint(record: PeerHostClientRecord): string {
+function notReadyHint(t: CodingNsTranslator, record: PeerHostClientRecord): string {
+  const host = record.displayName
   switch (record.status) {
     case 'session_required':
-      return `“${record.displayName}”需要重新登录。请到“管理其他 DSH Host”打开该 Host 的“编辑”，填入账号密码保存即可。`
+      return t('peerHostWorkspace.hintSessionRequired', { host })
     case 'unreachable':
     case 'reconnecting':
-      return `“${record.displayName}”当前无法连接。请确认目标机器已启动，然后在管理面板点“测试”重试。`
+      return t('peerHostWorkspace.hintUnreachable', { host })
     case 'version_mismatch':
-      return `“${record.displayName}”的插件或 DSH 版本不匹配，需要先升级目标 Host 上的本插件。`
+      return t('peerHostWorkspace.hintVersionMismatch', { host })
     case 'plugin_missing':
-      return `“${record.displayName}”没有安装本插件，无法聚合它的工作区。`
+      return t('peerHostWorkspace.hintPluginMissing', { host })
     case 'identity_changed':
-      return `“${record.displayName}”的身份已变化。请在管理面板重新“测试”并登录。`
+      return t('peerHostWorkspace.hintIdentityChanged', { host })
     default:
-      return `“${record.displayName}”当前状态为“${statusText(record.status)}”，请先在管理面板完成连接。`
+      return t('peerHostWorkspace.hintNotReady', { host, status: statusText(t, record.status) })
   }
 }

@@ -14,6 +14,7 @@ import { installPeerHostNativeStoreProjection, refreshPeerHostNativeSessions } f
 import { startPeerHostWorkspaceTag } from '../peer-host-workspace-tag.js'
 import { startPeerHostWorkspaceTab } from '../peer-host-workspace-tab.js'
 import { registerPeerHostAggregateRefresh, requestPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
+import { useCodingNsTranslator } from '../locale.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
 const PEER_HOST_AGGREGATE_REFRESH_MS = 30_000
@@ -36,8 +37,10 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
       { capability: 'peer-host.remote-web-context-fallback', required: false, fallback: 'degrade' },
     ],
     ui: {
-      label: '管理其他 DSH Host',
-      description: '聚合多个 Host 会话',
+      label: 'Manage other DSH Hosts',
+      labelKey: 'feature.peerHost.label',
+      description: 'Aggregate sessions from multiple Hosts',
+      descriptionKey: 'feature.peerHost.description',
       order: 50,
       defaultOpen: false,
     },
@@ -67,7 +70,7 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
         if (route !== undefined) context.resources.add(route)
       }
     }
-    const panel = startPeerHostManagementPanel({ rpc: context.services.rpc })
+    const panel = startPeerHostManagementPanel({ rpc: context.services.rpc, locale: context.services.locale })
     context.resources.add(() => panel.dispose())
     const management = createPeerHostManagementApi(context.services.rpc)
     // 工作区标签：远端工作区不再把 Host 名写进标题文本，改由彩色标签表达归属。
@@ -77,6 +80,7 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
     const workspaceTab = startPeerHostWorkspaceTab({
       api: management,
       onWorkspaceAdded: () => refresh(),
+      locale: context.services.locale,
     })
     context.resources.add(() => workspaceTab.dispose())
     // 虚拟会话必须进入原生 SessionManager 目录（否则 sessions.retain 解析失败），
@@ -497,23 +501,24 @@ function isDesktopTopologyPage(): boolean {
 }
 
 /** PeerHost 启用状态说明；安装动作发生在启动页 preboot 阶段。 */
-function PeerHostPanel({ enabled }: FeaturePanelProps): ReactElement {
+function PeerHostPanel({ services, enabled }: FeaturePanelProps): ReactElement {
+  const t = useCodingNsTranslator(services.locale)
   // shim 状态在启用变化后可能改变（刚激活为 active），每次渲染都重读全局。
   const state = readDshPeerHostPrebootShimState()
   const mode = readDshPeerHostPrebootShimMode()
   const desktop = mode === 'desktop' || isDesktopTopologyPage()
   const structural = state === 'external' || state === 'not-installed'
   const message = state === 'external'
-    ? '当前页面的 Transport 结构不受支持，插件无法包装它，PeerHost 聚合已停用；刷新页面不会改变结果。'
+    ? t('peerHost.stateExternal')
     : state === 'not-installed'
       ? desktop
-        ? '当前 Desktop 页面没有安装 preboot shim；请重启 DSH Desktop 后再打开页面。'
-        : '当前页面未安装 preboot shim；请刷新 DSH Web 后再启用 PeerHost。'
+        ? t('peerHost.stateNotInstalledDesktop')
+        : t('peerHost.stateNotInstalledWeb')
       : state === 'requires-reload'
-        ? 'preboot shim 已安装，但当前 Connection 尚未绑定聚合 Transport；请刷新 DSH Web 后再操作远端工作区。'
+        ? t('peerHost.stateRequiresReload')
         : state === 'active'
-          ? 'preboot shim 已接管页面 Transport；本次页面的原生 Connection 将继续复用同一实例。'
-          : 'preboot shim 已随 CodingNS 安装；启用 PeerHost 后立即生效，原生工作区会直接读取聚合 Transport。'
+          ? t('peerHost.stateActive')
+          : t('peerHost.statePending')
   return createElement('div', {
     role: structural ? 'alert' : 'status',
     'aria-disabled': !enabled,

@@ -7,6 +7,7 @@ import type { CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, Provid
 import { DEFAULT_SUBSCRIPTION_USAGE_SETTINGS } from '../shared/contracts/config.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCliRpc } from './cli-catalog.js'
+import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { providerIconUrl } from './provider-icons.js'
 import { subscribeSessionAdapters } from './session-adapter-cache.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
@@ -27,9 +28,22 @@ interface SubscriptionSlotProps {
   readonly useSession?: SessionSelector
   /** 读取当前自动查询间隔（分钟）；缺省或 0 表示不自动查询。 */
   readonly getRefreshIntervalMins?: () => number
+  /** DSH 语言服务；缺省时退回内置中文词典（仅单测或非 Cordis 宿主）。 */
+  readonly locale?: CodingNsLocale
 }
 
 const SUBSCRIPTION_STYLE_ID = 'codingns4dsh-subscription-responsive-style'
+
+/**
+ * 没有 locale 服务时的静态兜底：命名空间绑定固定指向内置中文词典，
+ * 且不产生任何语言变更通知。生产路径由 registerSubscriptionSlot 注入 DSH locale。
+ */
+const FALLBACK_LOCALE = {
+  bind: () => resolveCodingNsTranslator(undefined),
+  getSnapshot: () => ({ revision: 0 }),
+  subscribe: () => () => {},
+  register: () => () => {},
+} as unknown as CodingNsLocale
 
 /**
  * 进程内用量结果缓存：同一适配器/提供商在刷新间隔内直接复用上次结果，
@@ -48,18 +62,25 @@ function installSubscriptionStyles(): void {
 }
 
 /** 在 DSH 原生步骤统计左侧显示当前 Agent 的订阅余量。 */
-export function registerSubscriptionSlot(slots: SlotRegistry, rpc: CodingNsRpcClient, getRefreshIntervalMins?: () => number): () => void {
+export function registerSubscriptionSlot(slots: SlotRegistry, rpc: CodingNsRpcClient, getRefreshIntervalMins?: () => number, locale?: CodingNsLocale): () => void {
   installSubscriptionStyles()
+  const t = resolveCodingNsTranslator(locale)
   return slots.inject('conversation.composer.dock', () => slots.register({
     name: 'conversation.composer.dock',
     id: 'codingns4dsh-subscription',
     order: -20,
-    label: 'Agent 订阅余量',
-    inject: (sessionId: string) => ({ rpc, sessionId, ...(getRefreshIntervalMins === undefined ? {} : { getRefreshIntervalMins }) }),
+    label: t('usage.slotLabel'),
+    inject: (sessionId: string) => ({
+      rpc,
+      sessionId,
+      locale: locale ?? FALLBACK_LOCALE,
+      ...(getRefreshIntervalMins === undefined ? {} : { getRefreshIntervalMins }),
+    }),
   }, CommandCodeSubscriptionSlot))
 }
 
 function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement | null {
+  const t = useCodingNsTranslator(props.locale ?? FALLBACK_LOCALE)
   const [usage, setUsage] = useState<CliSubscriptionUsage | null>(null)
   const [adapterId, setAdapterId] = useState<string | null>(null)
   const [providerId, setProviderId] = useState<string | null>(null)
@@ -155,18 +176,18 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const providerBalance = usage.providerBalance
   const displayWindow = sub2api === undefined && deepseek === undefined && providerBalance === undefined ? resolveDisplayWindow(usage) : null
   const remaining = displayWindow?.remainingPercent ?? null
-  const resetLabel = displayWindow === null ? null : formatCountdown(displayWindow.resetsAt, clock)
-  const providerName = subscriptionProviderName(adapterId, providerId, usage)
+  const resetLabel = displayWindow === null ? null : formatCountdown(displayWindow.resetsAt, t, clock)
+  const providerName = subscriptionProviderName(adapterId, providerId, usage, t)
   const deepseekBalance = deepseek === undefined ? null : selectDeepseekBalance(deepseek)
   const providerLogoSource = usage.provider?.logoDataUrl ?? (isRemoteWebContext() ? '' : usage.provider?.logoUrl ?? '')
   const deepseekIconSource = providerLogoSource || (providerBalance === undefined ? providerIconUrl('dsh') : '')
   const label = sub2api === undefined && deepseek === undefined && providerBalance === undefined
-    ? `${providerName} 订阅余量 ${formatPercent(remaining ?? 0)}%`
+    ? t('usage.remainingLabel', { provider: providerName, percent: formatPercent(remaining ?? 0) })
     : sub2api !== undefined
-      ? `${providerName} 上游余额 ${formatSub2ApiMoney(sub2api.balance, sub2api.unit)}`
+      ? t('usage.upstreamBalanceLabel', { provider: providerName, amount: formatSub2ApiMoney(sub2api.balance, sub2api.unit) })
       : deepseek !== undefined
-        ? `${providerName} 余额 ${deepseekBalance === null ? '不可用' : formatDeepseekMoney(deepseekBalance.totalBalance, deepseekBalance.currency)}`
-        : `${providerName} 余量 ${formatProviderBalance(providerBalance)}`
+        ? t('usage.balanceLabel', { provider: providerName, amount: deepseekBalance === null ? t('usage.unavailable') : formatDeepseekMoney(deepseekBalance.totalBalance, deepseekBalance.currency) })
+        : t('usage.providerBalanceLabel', { provider: providerName, amount: formatProviderBalance(providerBalance) })
   const logoSource = providerLogoSource || (sub2api === undefined ? '' : (sub2api.logoDataUrl ?? (isRemoteWebContext() ? '' : sub2api.logoUrl)))
   const triggerContent = sub2api === undefined && deepseek === undefined && providerBalance === undefined
     ? createElement('span', { 'aria-hidden': true, style: progressRingStyle() },
@@ -204,111 +225,111 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       triggerContent,
       createElement('span', { className: 'codingns4dsh-subscription-label', style: subscriptionLabelStyle },
         sub2api === undefined && deepseek === undefined && providerBalance === undefined
-          ? (resetLabel ?? '订阅余量')
-          : sub2api !== undefined ? `今日 ${formatSub2ApiMoney(sub2api.today.cost, sub2api.unit)}` : deepseek !== undefined ? '账户余额' : '官方余量',
+          ? (resetLabel ?? t('usage.subscriptionRemaining'))
+          : sub2api !== undefined ? t('usage.todayCostShort', { amount: formatSub2ApiMoney(sub2api.today.cost, sub2api.unit) }) : deepseek !== undefined ? t('usage.accountBalance') : t('usage.officialRemaining'),
       ),
     ),
-    open && createElement(SubscriptionPopover, { usage, providerName }),
+    open && createElement(SubscriptionPopover, { usage, providerName, t }),
   )
 }
 
-function SubscriptionPopover({ usage, providerName }: { readonly usage: CliSubscriptionUsage; readonly providerName: string }): ReactElement {
-  if (usage.sub2api !== undefined) return createElement(Sub2ApiPopover, { usage: usage.sub2api, providerName })
-  if (usage.deepseek !== undefined) return createElement(DeepseekPopover, { usage: usage.deepseek, providerName })
-  if (usage.providerBalance !== undefined) return createElement(ProviderBalancePopover, { usage: usage.providerBalance, providerName })
+function SubscriptionPopover({ usage, providerName, t }: { readonly usage: CliSubscriptionUsage; readonly providerName: string; readonly t: CodingNsTranslator }): ReactElement {
+  if (usage.sub2api !== undefined) return createElement(Sub2ApiPopover, { usage: usage.sub2api, providerName, t })
+  if (usage.deepseek !== undefined) return createElement(DeepseekPopover, { usage: usage.deepseek, providerName, t })
+  if (usage.providerBalance !== undefined) return createElement(ProviderBalancePopover, { usage: usage.providerBalance, providerName, t })
   const windows = [
-    { id: 'primary', label: formatSubscriptionWindowLabel(usage.primary, '5 小时额度'), window: usage.primary },
-    { id: 'secondary', label: formatSubscriptionWindowLabel(usage.secondary, '周额度'), window: usage.secondary },
-    { id: 'monthly', label: formatSubscriptionWindowLabel(usage.monthly, '月额度'), window: usage.monthly },
+    { id: 'primary', label: formatSubscriptionWindowLabel(usage.primary, t('usage.windowFiveHour'), t), window: usage.primary },
+    { id: 'secondary', label: formatSubscriptionWindowLabel(usage.secondary, t('usage.windowWeekly'), t), window: usage.secondary },
+    { id: 'monthly', label: formatSubscriptionWindowLabel(usage.monthly, t('usage.windowMonthly'), t), window: usage.monthly },
   ] as const
-  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': `${providerName} 订阅使用情况`, style: subscriptionPopoverStyle },
+  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.popoverSubscriptionUsage', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
-      createElement('strong', undefined, `${providerName} 订阅`),
+      createElement('strong', undefined, t('usage.popoverSubscriptionTitle', { provider: providerName })),
       usage.planType && createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatPlanType(usage.planType)),
     ),
     ...windows.map(({ id, label, window }) => window === null ? null : createElement('section', { key: id, style: windowStyle },
       createElement('div', { style: windowHeadingStyle }, createElement('span', undefined, label), createElement('span', undefined, `${formatPercent(window.remainingPercent)}%`)),
-      createElement('div', { role: 'progressbar', 'aria-label': `${label}剩余 ${formatPercent(window.remainingPercent)}%`, 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': window.remainingPercent, style: barStyle },
+      createElement('div', { role: 'progressbar', 'aria-label': t('usage.windowRemaining', { label, percent: formatPercent(window.remainingPercent) }), 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': window.remainingPercent, style: barStyle },
         createElement('span', { style: { ...barFillStyle, width: `${window.remainingPercent}%` } }),
       ),
-      window.resetsAt !== null && createElement('div', { style: resetStyle }, `重置于 ${formatCountdown(window.resetsAt)}`),
+      window.resetsAt !== null && createElement('div', { style: resetStyle }, t('usage.resetsIn', { time: formatCountdown(window.resetsAt, t) })),
     )),
   )
 }
 
 /** 根据服务端返回的窗口时长生成准确的额度标签，避免把七天窗口误显示成五小时。 */
-function formatSubscriptionWindowLabel(window: CliSubscriptionWindow | null, fallback: string): string {
+function formatSubscriptionWindowLabel(window: CliSubscriptionWindow | null, fallback: string, t: CodingNsTranslator): string {
   const durationMins = window?.windowDurationMins
   if (durationMins === null || durationMins === undefined || !Number.isFinite(durationMins) || durationMins <= 0) return fallback
-  if (durationMins % (24 * 60) === 0) return `${durationMins / (24 * 60)} 天额度`
-  if (durationMins % 60 === 0) return `${durationMins / 60} 小时额度`
-  return `${durationMins} 分钟额度`
+  if (durationMins % (24 * 60) === 0) return t('usage.windowDays', { count: durationMins / (24 * 60) })
+  if (durationMins % 60 === 0) return t('usage.windowHours', { count: durationMins / 60 })
+  return t('usage.windowMinutes', { count: durationMins })
 }
 
-function ProviderBalancePopover({ usage, providerName }: { readonly usage: ProviderBalanceUsage; readonly providerName: string }): ReactElement {
-  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': `${providerName} 官方余量`, style: subscriptionPopoverStyle },
+function ProviderBalancePopover({ usage, providerName, t }: { readonly usage: ProviderBalanceUsage; readonly providerName: string; readonly t: CodingNsTranslator }): ReactElement {
+  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.officialRemainingPopover', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
-      createElement('strong', undefined, `${providerName} 官方余量`),
+      createElement('strong', undefined, t('usage.officialRemainingPopover', { provider: providerName })),
       createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatProviderBalance(usage)),
     ),
-    usage.used !== null && usage.total !== null && createElement('div', { style: upstreamMetaStyle }, `已用 ${formatProviderBalanceValue(usage.used, usage.unit)} / ${formatProviderBalanceValue(usage.total, usage.unit)}`),
+    usage.used !== null && usage.total !== null && createElement('div', { style: upstreamMetaStyle }, t('usage.usedOfTotal', { used: formatProviderBalanceValue(usage.used, usage.unit), total: formatProviderBalanceValue(usage.total, usage.unit) })),
     usage.details.length === 0
-      ? createElement('div', { style: resetStyle }, '暂无更多统计')
+      ? createElement('div', { style: resetStyle }, t('usage.noMoreStats'))
       : usage.details.map((item) => createElement('div', { key: item.label, style: deepseekBalanceDetailsStyle }, createElement('span', undefined, item.label), createElement('span', undefined, String(item.value)))),
   )
 }
 
-function DeepseekPopover({ usage, providerName }: { readonly usage: DeepseekUsage; readonly providerName: string }): ReactElement {
-  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': `${providerName} 账户余额`, style: subscriptionPopoverStyle },
+function DeepseekPopover({ usage, providerName, t }: { readonly usage: DeepseekUsage; readonly providerName: string; readonly t: CodingNsTranslator }): ReactElement {
+  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.providerAccountBalance', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
-      createElement('strong', undefined, `${providerName} 账户余额`),
-      createElement('span', { style: { color: usage.isAvailable === false ? dshThemeColor.error : dshThemeColor.labelTertiary } }, usage.isAvailable === false ? '不可用' : '可用'),
+      createElement('strong', undefined, t('usage.providerAccountBalance', { provider: providerName })),
+      createElement('span', { style: { color: usage.isAvailable === false ? dshThemeColor.error : dshThemeColor.labelTertiary } }, usage.isAvailable === false ? t('usage.unavailable') : t('usage.available')),
     ),
     usage.balances.map((balance) => createElement('section', { key: balance.currency, style: deepseekBalanceSectionStyle },
       createElement('div', { style: windowHeadingStyle }, createElement('span', undefined, balance.currency), createElement('strong', undefined, formatDeepseekMoney(balance.totalBalance, balance.currency))),
       createElement('div', { style: deepseekBalanceDetailsStyle },
-        createElement('span', undefined, `赠送 ${formatDeepseekMoney(balance.grantedBalance, balance.currency)}`),
-        createElement('span', undefined, `充值 ${formatDeepseekMoney(balance.toppedUpBalance, balance.currency)}`),
+        createElement('span', undefined, t('usage.granted', { amount: formatDeepseekMoney(balance.grantedBalance, balance.currency) })),
+        createElement('span', undefined, t('usage.toppedUp', { amount: formatDeepseekMoney(balance.toppedUpBalance, balance.currency) })),
       ),
     )),
-    createElement('div', { style: deepseekUnavailableStatsStyle }, '官方 DeepSeek API 当前只提供账户余额接口，暂无请求量、Token 或费用明细。'),
+    createElement('div', { style: deepseekUnavailableStatsStyle }, t('usage.deepseekApiNote')),
   )
 }
 
-function Sub2ApiPopover({ usage, providerName }: { readonly usage: Sub2ApiUsage; readonly providerName: string }): ReactElement {
-  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': `${providerName} 上游用量`, style: subscriptionPopoverStyle },
+function Sub2ApiPopover({ usage, providerName, t }: { readonly usage: Sub2ApiUsage; readonly providerName: string; readonly t: CodingNsTranslator }): ReactElement {
+  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.upstreamUsageTitle', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
-      createElement('strong', undefined, `${providerName} 上游用量`),
+      createElement('strong', undefined, t('usage.upstreamUsageTitle', { provider: providerName })),
       createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatSub2ApiMoney(usage.balance, usage.unit)),
     ),
     createElement('div', { style: upstreamMetaStyle },
       createElement('span', { style: upstreamTypeStyle }, usage.upstreamType),
       usage.upstreamUrl === ''
-        ? createElement('span', { style: upstreamMutedStyle }, '地址未提供')
+        ? createElement('span', { style: upstreamMutedStyle }, t('usage.addressMissing'))
         : createElement('a', { href: usage.upstreamUrl, target: '_blank', rel: 'noreferrer', title: usage.upstreamUrl, style: upstreamLinkStyle }, usage.upstreamUrl),
     ),
     createElement('div', { style: sub2apiStatsGridStyle },
-      createSub2ApiStat('今日请求数', formatInteger(usage.today.requests)),
-      createSub2ApiStat('今日 Token 用量', formatSub2ApiTokens(usage.today.totalTokens)),
-      createSub2ApiStat('今日费用', formatSub2ApiMoney(usage.today.cost, usage.unit)),
-      createSub2ApiStat('累计请求数', formatInteger(usage.total.requests)),
-      createSub2ApiStat('累计 Token 用量', formatSub2ApiTokens(usage.total.totalTokens)),
-      createSub2ApiStat('累计费用', formatSub2ApiMoney(usage.total.cost, usage.unit)),
-      createSub2ApiStat('今日缓存命中率', formatSub2ApiPercent(usage.today.cacheHitRate)),
-      createSub2ApiStat('累计缓存命中率', formatSub2ApiPercent(usage.total.cacheHitRate)),
+      createSub2ApiStat(t('usage.statTodayRequests'), formatInteger(usage.today.requests)),
+      createSub2ApiStat(t('usage.statTodayTokens'), formatSub2ApiTokens(usage.today.totalTokens)),
+      createSub2ApiStat(t('usage.statTodayCost'), formatSub2ApiMoney(usage.today.cost, usage.unit)),
+      createSub2ApiStat(t('usage.statTotalRequests'), formatInteger(usage.total.requests)),
+      createSub2ApiStat(t('usage.statTotalTokens'), formatSub2ApiTokens(usage.total.totalTokens)),
+      createSub2ApiStat(t('usage.statTotalCost'), formatSub2ApiMoney(usage.total.cost, usage.unit)),
+      createSub2ApiStat(t('usage.statTodayCacheHitRate'), formatSub2ApiPercent(usage.today.cacheHitRate)),
+      createSub2ApiStat(t('usage.statTotalCacheHitRate'), formatSub2ApiPercent(usage.total.cacheHitRate)),
     ),
     createElement('section', { style: sub2apiSectionStyle },
-      createElement('strong', { style: sub2apiSectionTitleStyle }, '按模型统计'),
+      createElement('strong', { style: sub2apiSectionTitleStyle }, t('usage.byModel')),
       usage.models.length === 0
-        ? createElement('div', { style: resetStyle }, '暂无按模型统计')
+        ? createElement('div', { style: resetStyle }, t('usage.noModelStats'))
         : createElement('div', { style: sub2apiTableScrollStyle },
           createElement('table', { style: sub2apiTableStyle },
             createElement('thead', undefined, createElement('tr', undefined,
-              createElement('th', { style: sub2apiThStyle }, '模型'),
-              createElement('th', { style: sub2apiThStyle }, '请求'),
-              createElement('th', { style: sub2apiThStyle }, 'Token'),
-              createElement('th', { style: sub2apiThStyle }, '费用'),
-              createElement('th', { style: sub2apiThStyle }, '缓存'),
+              createElement('th', { style: sub2apiThStyle }, t('usage.colModel')),
+              createElement('th', { style: sub2apiThStyle }, t('usage.colRequests')),
+              createElement('th', { style: sub2apiThStyle }, t('usage.colToken')),
+              createElement('th', { style: sub2apiThStyle }, t('usage.colCost')),
+              createElement('th', { style: sub2apiThStyle }, t('usage.colCache')),
             )),
             createElement('tbody', undefined, ...usage.models.map((model) => createModelRow(model, usage.unit))),
           ),
@@ -346,13 +367,13 @@ function isSubscriptionAdapter(adapterId: unknown): adapterId is 'command-code' 
 function isRemoteWebContext(): boolean {
   return (globalThis as { __CODINGNS4DSH_REMOTE_WEB_CONTEXT__?: unknown }).__CODINGNS4DSH_REMOTE_WEB_CONTEXT__ === true
 }
-function subscriptionProviderName(adapterId: string | null, providerId: string | null, usage: CliSubscriptionUsage): string {
+function subscriptionProviderName(adapterId: string | null, providerId: string | null, usage: CliSubscriptionUsage, t: CodingNsTranslator): string {
   if (usage.provider?.displayName) return usage.provider.displayName
   if (adapterId === 'dsh' && providerId !== null) {
-    if (/^(?:deepseek(?:-official)?|official-deepseek)$/iu.test(providerId)) return 'DeepSeek 官方'
+    if (/^(?:deepseek(?:-official)?|official-deepseek)$/iu.test(providerId)) return t('usage.providerDeepseekOfficial')
     return formatProviderName(providerId)
   }
-  if (adapterId === 'dsh' && usage.sub2api !== undefined) return `${usage.sub2api.upstreamType} 上游`
+  if (adapterId === 'dsh' && usage.sub2api !== undefined) return t('usage.providerUpstream', { name: usage.sub2api.upstreamType })
   switch (adapterId) {
     case 'command-code': return 'Command Code'
     case 'codex': return 'Codex'
@@ -395,15 +416,15 @@ function formatSub2ApiTokens(value: number): string { return new Intl.NumberForm
 function formatSub2ApiPercent(value: number): string { return `${Math.max(0, Math.min(100, value)).toFixed(1)}%` }
 function formatInteger(value: number): string { return new Intl.NumberFormat('zh-CN').format(Math.max(0, Math.round(value))) }
 function formatPlanType(value: string): string { return value.replace(/^individual-/u, '').replace(/(^|-)([a-z])/gu, (_match, _separator, letter: string) => ` ${letter.toUpperCase()}`).trim() }
-function formatCountdown(timestampSeconds: number | null, nowMs = Date.now()): string | null {
+function formatCountdown(timestampSeconds: number | null, t: CodingNsTranslator, nowMs = Date.now()): string | null {
   if (timestampSeconds === null) return null
   const minutes = Math.max(0, Math.ceil((timestampSeconds * 1000 - nowMs) / 60_000))
   const days = Math.floor(minutes / 1440)
   const hours = Math.floor((minutes % 1440) / 60)
   const remainder = minutes % 60
-  if (days > 0) return `${days}天${hours}小时后`
-  if (hours > 0) return `${hours}小时${remainder > 0 ? `${remainder}分钟` : ''}后`
-  return `${remainder}分钟后`
+  if (days > 0) return t('usage.countdownDaysHours', { days, hours })
+  if (hours > 0) return remainder > 0 ? t('usage.countdownHoursMinutes', { hours, minutes: remainder }) : t('usage.countdownHours', { hours })
+  return t('usage.countdownMinutes', { minutes: remainder })
 }
 
 const subscriptionRootStyle = { position: 'relative' as const, minWidth: 0, display: 'inline-flex', alignItems: 'center' }

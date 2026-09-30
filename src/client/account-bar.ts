@@ -6,6 +6,7 @@ import type { CodingNsRpcClient } from './features/types.js'
 import type { CodingNsSettingsStore } from '../dsh-capabilities/settings-store.js'
 import { LOGIN_PROTECTION_SESSION_EVENT, readLoginProtectionSession, readLoginProtectionSessionExpiresAt, writeLoginProtectionSession } from './features/login-protection-session.js'
 import { dshThemeColor } from './theme.js'
+import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { attachOutsideDismissal } from './popup-dismiss.js'
 import { PEER_HOST_OPEN_EVENT } from './peer-host-connection-button.js'
 import { resolveSettingsAnchor, settingsAnchorContainer, type SettingsAnchorKind } from './settings-anchor.js'
@@ -24,10 +25,12 @@ type ActiveAccount =
 export interface AccountBarController { dispose(): void }
 
 /** 在 DSH 设置触发器旁挂载统一账户入口，兼容侧栏横排与收起竖排。 */
-export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, settingsStore?: CodingNsSettingsStore<CodingNsSettings>): AccountBarController {
+export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, settingsStore?: CodingNsSettingsStore<CodingNsSettings>, locale?: CodingNsLocale): AccountBarController {
   const currentDocument = dom ?? (typeof document === 'undefined' ? undefined : document)
   if (currentDocument === undefined) return { dispose() {} }
   const root = currentDocument
+  // 没有 locale 服务（单测或非 Cordis 宿主）时退回内置中文词典。
+  const t = resolveCodingNsTranslator(locale)
   let disposed = false
   let timer: ReturnType<typeof setInterval> | undefined
   let loginRefreshTimer: ReturnType<typeof setInterval> | undefined
@@ -266,10 +269,10 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
 
   function renderButton(button: HTMLButtonElement): void {
     const account = activeAccount()
-    const identity = account?.identity ?? '用户'
+    const identity = account?.identity ?? t('accountBar.userFallback')
     const desktop = isDesktopPage()
-    button.title = desktop ? '连接管理 · 管理其他 DSH Host' : `${identity} · 点击管理登录`
-    button.setAttribute('aria-label', desktop ? '连接管理' : `用户：${identity}`)
+    button.title = desktop ? t('accountBar.connectionManageTitle') : t('accountBar.identityClickHint', { identity })
+    button.setAttribute('aria-label', desktop ? t('accountBar.connectionManage') : t('accountBar.userAria', { identity }))
     button.dataset.codingnsAuth = account?.kind ?? 'unknown'
     const statusDot = button.querySelector<HTMLElement>('[data-codingns-account-status]')
     if (statusDot !== null) statusDot.style.background = 'var(--dsw-alias-state-success-primary, #35b66b)'
@@ -362,21 +365,23 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   function renderMenu(menu: HTMLElement): void {
     const account = activeAccount()
     const identity = account?.kind === 'codingns' ? account.identity
-      : account !== null ? `${account.identity}（本地账号）`
-      : '未识别账号'
-    const access = relayModeLabel()
+      : account !== null ? t('accountBar.localAccount', { identity: account.identity })
+      : t('accountBar.unknownAccount')
+    const access = relayModeLabel(t)
     menu.innerHTML = ''
     menu.append(textNode(root, identity, 'strong'))
-    menu.append(textNode(root, `访问：${access}${latency === undefined ? '' : ` · ${latency} ms`}`, 'span'))
+    menu.append(textNode(root, latency === undefined
+      ? t('accountBar.access', { access })
+      : t('accountBar.accessWithLatency', { access, latency }), 'span'))
     if (status !== undefined) {
       menu.append(resourceRow(root, 'CPU', status.cpuPercent))
-      menu.append(resourceRow(root, '内存', status.memoryPercent))
+      menu.append(resourceRow(root, t('accountBar.memory'), status.memoryPercent))
       menu.append(textNode(root, `${formatBytes(status.memoryUsedBytes)} / ${formatBytes(status.memoryTotalBytes)}`, 'span'))
     }
     const peerHost = root.createElement('button')
     peerHost.type = 'button'
-    peerHost.textContent = '管理 PeerHost'
-    peerHost.title = '连接和管理其他 DSH Host'
+    peerHost.textContent = t('accountBar.managePeerHost')
+    peerHost.title = t('accountBar.managePeerHostHint')
     Object.assign(peerHost.style, menuButtonStyle())
     peerHost.addEventListener('click', () => {
       root.defaultView?.dispatchEvent(new Event(PEER_HOST_OPEN_EVENT))
@@ -386,7 +391,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
     if (account !== null) {
       const logout = root.createElement('button')
       logout.type = 'button'
-      logout.textContent = busy ? '注销中…' : '注销登录'
+      logout.textContent = busy ? t('accountBar.loggingOut') : t('accountBar.logout')
       logout.disabled = busy
       Object.assign(logout.style, menuButtonStyle())
       logout.addEventListener('click', () => { void logoutCurrent(menu) })
@@ -574,10 +579,10 @@ function isWide(parent: HTMLElement, settings: HTMLElement): boolean { return pa
 function formatPercent(value: number): string { return `${Math.round(value)}%` }
 function formatBytes(value: number): string { if (value < 1024 ** 3) return `${Math.round(value / 1024 ** 2)} MB`; return `${(value / 1024 ** 3).toFixed(1)} GB` }
 function isRemoteContext(): boolean { return (globalThis as { __CODINGNS4DSH_REMOTE_WEB_CONTEXT__?: unknown }).__CODINGNS4DSH_REMOTE_WEB_CONTEXT__ === true }
-function relayModeLabel(): string {
+function relayModeLabel(t: CodingNsTranslator): string {
   const state = globalThis as { __CODINGNS4DSH_RELAY_MODE__?: 'direct' | 'relay' }
-  if (state.__CODINGNS4DSH_RELAY_MODE__ === 'relay') return '中转'
-  if (state.__CODINGNS4DSH_RELAY_MODE__ === 'direct') return '直连'
-  return isRemoteContext() ? '中转' : '直连'
+  if (state.__CODINGNS4DSH_RELAY_MODE__ === 'relay') return t('accountBar.relay')
+  if (state.__CODINGNS4DSH_RELAY_MODE__ === 'direct') return t('accountBar.direct')
+  return isRemoteContext() ? t('accountBar.relay') : t('accountBar.direct')
 }
 function loggedOutSnapshot(): CodingNsAuthSessionSnapshot { return { status: 'logged_out', account: null, currentDevice: null, binding: null, expiresAt: null, errorCode: null } }
