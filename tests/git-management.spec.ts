@@ -245,7 +245,9 @@ test('Git Host 允许脏工作区 Push，并在 Pull 后恢复本地改动', asy
 
     // Push 只发送提交对象，工作区仍有未提交改动时也必须能够完成。
     await rpc(table, 'git/push', { workspaceId: 'workspace-sync' })
-    await execFile('git', ['clone', remote, peer])
+    // 裸仓库的默认 HEAD 在不同 Git 发行版中可能仍指向 master，显式检出 main 才能
+    // 验证 push 后的提交内容，而不是依赖运行环境的 init.defaultBranch 配置。
+    await execFile('git', ['clone', '--branch', 'main', remote, peer])
     assert.equal(await readFile(`${peer}/pushed.md`, 'utf8'), '待推送提交\n')
 
     await git(peer, ['config', 'user.name', 'CodingNS Peer'])
