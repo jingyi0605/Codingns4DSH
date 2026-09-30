@@ -67,6 +67,49 @@ test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async 
   }
 })
 
+test('Codex turn/start 将图片附件作为 localImage 传递，并为文件保留可读取路径', async () => {
+  let turnStartParams: Record<string, unknown> | undefined
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string; params?: Record<string, unknown> }
+        if (request.method === 'thread/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'attachment-thread' } } })}\n`)
+          return
+        }
+        if (request.method === 'turn/start') {
+          turnStartParams = request.params
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'attachment-turn', status: 'inProgress' } } })}\n`)
+          setImmediate(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'attachment-thread', turn: { id: 'attachment-turn', status: 'completed' } } })}\n`))
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  for await (const _chunk of driver.executeTurn({
+    sessionId: 'codex-attachments',
+    messages: [],
+    prompt: '请检查附件文件。\n\n附件文件「说明.txt」位于：/tmp/说明.txt\n请使用工具读取该文件的内容。',
+    attachments: [
+      { kind: 'image', path: '/tmp/photo.png', name: 'photo.png', mimeType: 'image/png' },
+      { kind: 'file', path: '/tmp/说明.txt', name: '说明.txt', mimeType: 'text/plain' },
+    ],
+  })) { /* 只验证发出的 RPC 参数 */ }
+
+  assert.deepEqual(turnStartParams?.input, [
+    { type: 'text', text: '请检查附件文件。\n\n附件文件「说明.txt」位于：/tmp/说明.txt\n请使用工具读取该文件的内容。' },
+    { type: 'localImage', path: '/tmp/photo.png' },
+  ])
+  driver.dispose()
+})
+
 test('RPC 驱动在命令不存在时返回未安装和空模型目录', async () => {
   const driver = new PiAgentDriver({ binaries: ['missing-agent'], spawnSync: (() => ({ status: 127, stdout: '', stderr: '' })) as never })
   assert.deepEqual(await driver.detect(), { installed: false, version: null, command: null })

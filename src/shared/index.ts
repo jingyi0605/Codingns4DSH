@@ -122,6 +122,7 @@ export type {
   CodingNsAgentQuestionResponse,
   CodingNsAgentToolEvent,
   CodingNsCliMessage,
+  CodingNsCliAttachment,
   CodingNsCliModel,
   CodingNsCliModelCatalog,
   CodingNsCliModelGroup,

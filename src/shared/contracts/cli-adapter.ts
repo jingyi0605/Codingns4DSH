@@ -123,6 +123,8 @@ export interface CodingNsCliTurnInput {
   readonly sessionId: string
   readonly messages: readonly CodingNsCliMessage[]
   readonly prompt: string
+  /** 当前用户消息中的已解析附件；路径只在 Host 内部传给驱动。 */
+  readonly attachments?: readonly CodingNsCliAttachment[]
   readonly modelId?: string
   readonly effortId?: string
   readonly cwd?: string
@@ -136,6 +138,14 @@ export interface CodingNsCliTurnInput {
    * Provider 运行，而不是新的用户回合。驱动据此复用常驻进程。
    */
   readonly resumeSegmentedTurn?: boolean
+}
+
+/** 外部驱动可消费的本地附件路径。 */
+export interface CodingNsCliAttachment {
+  readonly kind: 'image' | 'file'
+  readonly path: string
+  readonly name?: string
+  readonly mimeType?: string
 }
 
 export interface CodingNsAgentPermissionResponse {

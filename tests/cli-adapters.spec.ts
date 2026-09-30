@@ -1586,6 +1586,72 @@ test('CLI 功能模块从 DSH 会话头传递工作目录并把统一工具事�
   await features.disable('cliAdapters')
 })
 
+test('CLI 功能模块解析 DSH 图片和文件附件并传给外部驱动', async () => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  let received: { prompt: string; attachments?: readonly { kind: string; path: string; name?: string }[] } | undefined
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) {
+      received = input
+      yield { type: 'finish', reason: 'stop' } as const
+    },
+  }])
+  const events = {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+      listener = next
+      return () => { listener = undefined }
+    },
+  }
+  const dshContext = {
+    get(name: string): unknown {
+      if (name === 'attachments') return {
+        imageHostPath: () => '/dsh/attachments/photo.png',
+        fileHostPath: () => '/dsh/attachments/readme.md',
+      }
+      if (name === 'fs') return { processPathFromHostPath: (path: string) => `/process${path}` }
+      return undefined
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table, events, dshContext: dshContext as never })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  await table.resolve('cli/session/set')?.handler('session/set', { sessionId: 'codex-attachments', adapterId: 'codex' })
+
+  for await (const _chunk of listener!({
+    sessionId: 'codex-attachments',
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: '请检查附件。' },
+        { type: 'image', attachment: { attachmentId: 'sha256:image', mediaType: 'image/png', name: 'photo.png' } },
+        { type: 'file', attachment: { attachmentId: 'sha256:file', name: 'readme.md', bytes: 12 } },
+      ],
+    }],
+  }, async function* () {})) { /* 消费完整流 */ }
+
+  assert.deepEqual(received, {
+    adapterId: 'codex',
+    sessionId: 'codex-attachments',
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: '请检查附件。' },
+        { type: 'image', attachment: { attachmentId: 'sha256:image', mediaType: 'image/png', name: 'photo.png' } },
+        { type: 'file', attachment: { attachmentId: 'sha256:file', name: 'readme.md', bytes: 12 } },
+      ],
+    }],
+    prompt: '请检查附件。\n\n附件文件「readme.md」位于：/process/dsh/attachments/readme.md\n请使用工具读取该文件的内容。',
+    attachments: [
+      { kind: 'image', path: '/process/dsh/attachments/photo.png', name: 'photo.png', mimeType: 'image/png' },
+      { kind: 'file', path: '/process/dsh/attachments/readme.md', name: 'readme.md' },
+    ],
+  })
+  await features.disable('cliAdapters')
+})
+
 /**
  * 本机 Command Code 1.66.0 的 `--output-format json` 事件序列：
  * 一个进程连续跑两个 agent turn，第一个 turn 调用工具，第二个 turn 收尾。

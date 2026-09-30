@@ -1,5 +1,5 @@
 import type { FeatureModule } from '../../shared/contracts/feature.js'
-import type { CodingNsCliMessage, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsCliAttachment, CodingNsCliMessage, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
 import { CommandCodeDriver } from './command-code-driver.js'
 import { ClaudeCodeDriver } from './claude-driver.js'
 import { GeminiCliDriver } from './gemini-driver.js'
@@ -163,6 +163,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             return
           }
           const cwd = resolveSessionCwd(context.services.nativeSessions, sessionId, value)
+          const turnInput = extractTurnInput(messages, context.services.dshContext)
           // 只有 Provider 驱动明确维护了稳定的 turn 分段，才把工具边界映射为 DSH step。
           // Command Code、Codex 会在下一个 assistant 消息处结束当前 step；未声明分段
           // 支持的驱动（如 OpenCode）仍把整轮保持在一个 step，避免 token-meter 在下一
@@ -170,7 +171,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           const input = {
             sessionId,
             messages,
-            prompt: extractPrompt(messages),
+            prompt: turnInput.prompt,
+            ...(turnInput.attachments.length === 0 ? {} : { attachments: turnInput.attachments }),
             ...(config.modelId ? { modelId: config.modelId } : {}),
             ...(config.effortId ? { effortId: config.effortId } : {}),
             ...(config.providerSessionId ? { providerSessionId: config.providerSessionId } : {}),
@@ -406,13 +408,13 @@ async function setAdapterEnabled(
   return { adapterId, enabled }
 }
 
-function extractPrompt(messages: readonly CodingNsCliMessage[]): string {
+function extractTurnInput(messages: readonly CodingNsCliMessage[], dshContext?: CodingNsHostServices['dshContext']): { readonly prompt: string; readonly attachments: readonly CodingNsCliAttachment[] } {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
-    if (message !== undefined && isInjectedStepNotice(message)) return extractText(message.content)
-    if (message !== undefined && isHumanUserMessage(message)) return extractText(message.content)
+    if (message !== undefined && isInjectedStepNotice(message)) return { prompt: extractText(message.content), attachments: [] }
+    if (message !== undefined && isHumanUserMessage(message)) return extractMessageInput(message.content, dshContext)
   }
-  return ''
+  return { prompt: '', attachments: [] }
 }
 
 /** DSH 为工具分段注入的继续提示必须成为下一次 Provider 请求的 prompt。 */
@@ -435,6 +437,48 @@ function extractText(content: unknown): string {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
   return content.filter(isRecord).map((part) => typeof part.text === 'string' ? part.text : '').join('\n').trim()
+}
+
+function extractMessageInput(content: unknown, dshContext?: CodingNsHostServices['dshContext']): { readonly prompt: string; readonly attachments: readonly CodingNsCliAttachment[] } {
+  if (typeof content === 'string') return { prompt: content, attachments: [] }
+  if (!Array.isArray(content)) return { prompt: '', attachments: [] }
+  const text: string[] = []
+  const attachments: CodingNsCliAttachment[] = []
+  for (const part of content) {
+    if (!isRecord(part)) continue
+    if (typeof part.text === 'string' && part.text.trim() !== '') text.push(part.text)
+    const kind = part.type === 'image' ? 'image' : part.type === 'file' ? 'file' : null
+    if (kind === null) continue
+    const reference = isRecord(part.attachment) ? part.attachment : part
+    const path = resolveDshAttachmentPath(dshContext, kind, reference)
+    if (path === undefined) continue
+    const name = typeof reference.name === 'string' && reference.name.trim() !== '' ? reference.name.trim() : undefined
+    const mimeType = typeof reference.mediaType === 'string' && reference.mediaType.trim() !== '' ? reference.mediaType.trim() : undefined
+    attachments.push({ kind, path, ...(name === undefined ? {} : { name }), ...(mimeType === undefined ? {} : { mimeType }) })
+  }
+  const fileNotes = attachments.filter((attachment) => attachment.kind === 'file').map((attachment) => `附件文件${attachment.name === undefined ? '' : `「${attachment.name}」`}位于：${attachment.path}\n请使用工具读取该文件的内容。`)
+  return { prompt: [...text, ...fileNotes].join('\n\n').trim(), attachments }
+}
+
+function resolveDshAttachmentPath(
+  dshContext: CodingNsHostServices['dshContext'],
+  kind: CodingNsCliAttachment['kind'],
+  reference: Record<string, unknown>,
+): string | undefined {
+  if (dshContext === undefined || typeof reference.attachmentId !== 'string') return undefined
+  try {
+    const attachments = dshContext.get('attachments') as Record<string, unknown> | undefined
+    const resolver = attachments?.[kind === 'image' ? 'imageHostPath' : 'fileHostPath']
+    if (typeof resolver !== 'function') return undefined
+    const hostPath = resolver.call(attachments, reference)
+    if (typeof hostPath !== 'string' || hostPath.trim() === '') return undefined
+    const fs = dshContext.get('fs') as Record<string, unknown> | undefined
+    const mapper = fs?.processPathFromHostPath
+    const processPath = typeof mapper === 'function' ? mapper.call(fs, hostPath) : undefined
+    return typeof processPath === 'string' && processPath.trim() !== '' ? processPath : hostPath
+  } catch {
+    return undefined
+  }
 }
 
 function resolveSessionCwd(

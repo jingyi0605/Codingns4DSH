@@ -1207,9 +1207,15 @@ function isCodexToolEvent(method: string, type: string): boolean {
 
 function codexTurnStartParams(input: CodingNsCliTurnInput, threadId: string): Record<string, unknown> {
   const cwd = resolve(input.cwd ?? process.cwd())
+  const inputBlocks: Record<string, unknown>[] = []
+  const attachments = input.attachments ?? []
+  if (input.prompt.trim() !== '' || attachments.length === 0) inputBlocks.push({ type: 'text', text: input.prompt })
+  for (const attachment of attachments) {
+    if (attachment.kind === 'image') inputBlocks.push({ type: 'localImage', path: attachment.path })
+  }
   return {
     threadId,
-    input: [{ type: 'text', text: input.prompt }],
+    input: inputBlocks,
     cwd,
     // DSH 的 workspace-write 只约束自身工具沙箱，不会自动传递给 Codex
     // app-server。显式声明当前工作区，避免 Codex 将文件编辑误判为只读越权。
