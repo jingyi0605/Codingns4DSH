@@ -24,6 +24,9 @@ import { injectDshWebPwaMetadata, injectDshWebTransportOwnership } from './index
 import { applyViewportFitTap } from './modules/pwa/pwa-viewport.js'
 import type { DshHostSettingsProvider, DshHostSettingsScope } from '../dsh-capabilities/host/config-forms-adapter.js'
 import { DshNativeTeamProxy, type AgentRegistry, type NativeTeamService } from './cli-adapters/native-team-proxy.js'
+import { createAgentSubagentTool } from './cli-adapters/subagent-tool.js'
+import { registerNativeTeamSubagentProviders, type NativeSubagentService } from './cli-adapters/native-team-subagent.js'
+import { setNativeSubagents } from './cli-adapters/native-subagent-holder.js'
 
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
@@ -186,6 +189,31 @@ export function apply(ctx?: Context): void {
       console.error('codingns4dsh: host RPC registration failed', error)
       throw error
     }
+
+    // DSH 提供原生工具运行时后再注册；能力缺失时不阻塞 Host 启动。
+    hostCtx.inject(['tools'], (toolsCtx) => {
+      if (capabilityProfile.capabilities.get('subagent.continuable')?.status !== 'ready') return
+      const tools = (toolsCtx as unknown as { tools?: { register(definition: Record<string, unknown>): unknown } }).tools
+      if (tools === undefined || typeof tools.register !== 'function') return
+      try {
+        const dispose = tools.register(createAgentSubagentTool({ nativeSessions: services.nativeSessions }))
+        return typeof dispose === 'function' ? dispose : undefined
+      } catch (error) {
+        debugWarn('codingns4dsh: agent_subagent 工具注册失败', { error: error instanceof Error ? error.message : String(error) })
+        return undefined
+      }
+    })
+    hostCtx.inject(['subagents'], (subagentCtx) => {
+      if (capabilityProfile.capabilities.get('subagent.continuable')?.status !== 'ready') return
+      const service = (subagentCtx as unknown as { subagents?: NativeSubagentService }).subagents
+      if (service === undefined || typeof service.registerProvider !== 'function') return
+      const disposeProviders = registerNativeTeamSubagentProviders(service)
+      setNativeSubagents(service)
+      return () => {
+        disposeProviders()
+        setNativeSubagents(undefined)
+      }
+    })
 
     hostCtx.effect(() => {
       const sync = (): void => {

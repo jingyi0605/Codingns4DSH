@@ -341,6 +341,17 @@ export class CodingNsCliAdapterRegistry {
     return this.drivers.get(adapterId)?.supportsSegmentedTurns === true
   }
 
+  /** 供原生 Subagent Provider 执行首轮；不创建普通外部会话索引。 */
+  async *runSubagentTurn(input: CodingNsCliTurnInput & { readonly adapterId: CodingNsCliAdapterId }): AsyncIterable<CodingNsAgentEvent> {
+    const driver = this.requireEnabledDriver(input.adapterId)
+    yield* driver.executeTurn(input)
+  }
+
+  /** 子会话 Provider 绑定完成后立即落盘，确保冷恢复不会丢失适配器身份。 */
+  async flushSessionBindings(): Promise<void> {
+    await this.sessionStore?.flush()
+  }
+
   async *execute(input: CodingNsCliTurnInput & { readonly adapterId: CodingNsCliAdapterId }): AsyncIterable<CodingNsAgentEvent> {
     const driver = this.requireEnabledDriver(input.adapterId)
     if (this.archivingSessions.has(input.sessionId)) {
