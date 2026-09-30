@@ -22,6 +22,8 @@ export interface CodingNsSettings {
   workspaceSessionEnhancement: WorkspaceSessionEnhancementSettings
   /** DSH 文件管理侧栏的独立增强选项。 */
   fileManagement: FileManagementSettings
+  /** 手机/平板窄屏访问时的界面增强选项。 */
+  mobileAccess: MobileAccessSettings
   /** 用量查询设置：超时控制单次网络查询，间隔控制自动刷新。 */
   subscriptionUsage: SubscriptionUsageSettings
   /**
@@ -168,6 +170,39 @@ export const DEFAULT_FILE_MANAGEMENT_SETTINGS: FileManagementSettings = {
   sessionChangedFiles: true,
 }
 
+/** 移动端访问增强的独立能力开关；全部只作用于浏览器侧界面。 */
+export interface MobileAccessSettings {
+  /** 窄屏下彻底隐藏左侧边栏，只在原位置保留品牌 logo 作为唤起入口。 */
+  hideSidebarOnMobile: boolean
+  /** 判定“移动端/窄屏”的视口宽度上限（像素）。 */
+  mobileViewportMaxPx: number
+}
+
+export const MOBILE_VIEWPORT_MAX_PX_LIMITS = { min: 480, max: 1280 } as const
+export const DEFAULT_MOBILE_VIEWPORT_MAX_PX = 1024
+
+export const DEFAULT_MOBILE_ACCESS_SETTINGS: MobileAccessSettings = {
+  // 窄屏下 DSH 原生侧栏默认只收起成 56px 图标轨道，仍持续占用横向空间；
+  // 默认开启本模块的隐藏能力，用户可随时在设置里关回原生行为。
+  hideSidebarOnMobile: true,
+  mobileViewportMaxPx: DEFAULT_MOBILE_VIEWPORT_MAX_PX,
+}
+
+/** 归一化移动端访问设置：缺省回填默认值，越界值收敛到允许范围。 */
+export function normalizeMobileAccessSettings(value: unknown): MobileAccessSettings {
+  const record = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  return {
+    hideSidebarOnMobile: record.hideSidebarOnMobile === undefined
+      ? DEFAULT_MOBILE_ACCESS_SETTINGS.hideSidebarOnMobile
+      : record.hideSidebarOnMobile === true,
+    mobileViewportMaxPx: clampSettingsInteger(
+      record.mobileViewportMaxPx,
+      MOBILE_VIEWPORT_MAX_PX_LIMITS,
+      DEFAULT_MOBILE_ACCESS_SETTINGS.mobileViewportMaxPx,
+    ),
+  }
+}
+
 /** 可复用的快捷会话文本。 */
 export interface QuickPhrase {
   id: string
@@ -259,6 +294,7 @@ export const CODINGNS_LAN_ACCESS_DSH_FIELD = 'lanAccessDsh'
 export const CODINGNS_TERMINAL_ENHANCEMENT_FIELD = 'terminalEnhancement'
 export const CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD = 'workspaceSessionEnhancement'
 export const CODINGNS_FILE_MANAGEMENT_FIELD = 'fileManagement'
+export const CODINGNS_MOBILE_ACCESS_FIELD = 'mobileAccess'
 export const CODINGNS_SUBSCRIPTION_USAGE_FIELD = 'subscriptionUsage'
 export const DEFAULT_CODINGNS_CONTROL_BASE_URL = 'https://channel.codingns.com:1443'
 export const DEFAULT_CODINGNS_CONTROL_BASE_URLS = [DEFAULT_CODINGNS_CONTROL_BASE_URL]
@@ -307,6 +343,7 @@ export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   terminalEnhancement: DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   fileManagement: DEFAULT_FILE_MANAGEMENT_SETTINGS,
+  mobileAccess: DEFAULT_MOBILE_ACCESS_SETTINGS,
   subscriptionUsage: DEFAULT_SUBSCRIPTION_USAGE_SETTINGS,
   lanAccessDsh: {
     autoStart: false,

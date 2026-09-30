@@ -9,6 +9,7 @@ import {
   DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   DEFAULT_FILE_MANAGEMENT_SETTINGS,
+  DEFAULT_MOBILE_ACCESS_SETTINGS,
   DEFAULT_SUBSCRIPTION_USAGE_SETTINGS,
   CODINGNS_DSH_ERROR_CODES,
   CodingNsDshError,
@@ -22,6 +23,7 @@ import {
   isFeatureDshVersionCompatible,
   captureRestartFeatureStates,
   isFeatureEnabled,
+  normalizeMobileAccessSettings,
   type FeatureDescriptor,
 } from '../data/build/dist/shared/index.js'
 
@@ -55,9 +57,25 @@ test('Codingns4DSH 设置用模块名字典表达开关，结构不随模块数�
     terminalEnhancement: DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
     workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
     fileManagement: DEFAULT_FILE_MANAGEMENT_SETTINGS,
+    mobileAccess: DEFAULT_MOBILE_ACCESS_SETTINGS,
     subscriptionUsage: DEFAULT_SUBSCRIPTION_USAGE_SETTINGS,
     lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 0, pwa: DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS },
   })
+})
+
+test('移动端访问设置缺省回填、越界收敛', () => {
+  // 默认开启：DSH 原生折叠态仍占 56px 轨道，手机上一开始就该收掉。
+  assert.deepEqual(DEFAULT_MOBILE_ACCESS_SETTINGS, { hideSidebarOnMobile: true, mobileViewportMaxPx: 1024 })
+  assert.deepEqual(normalizeMobileAccessSettings(undefined), DEFAULT_MOBILE_ACCESS_SETTINGS)
+  assert.deepEqual(normalizeMobileAccessSettings({}), DEFAULT_MOBILE_ACCESS_SETTINGS)
+  assert.deepEqual(normalizeMobileAccessSettings({ hideSidebarOnMobile: false }), { hideSidebarOnMobile: false, mobileViewportMaxPx: 1024 })
+  // 越界值收敛到允许范围，非法类型回落到默认值。
+  assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 10 }), { hideSidebarOnMobile: true, mobileViewportMaxPx: 480 })
+  assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 99999 }), { hideSidebarOnMobile: true, mobileViewportMaxPx: 1280 })
+  assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 'wide' }), { hideSidebarOnMobile: true, mobileViewportMaxPx: 1024 })
+  // 非对象输入不能抛出，也不能把字符串当成真值开关。
+  assert.deepEqual(normalizeMobileAccessSettings('on'), { hideSidebarOnMobile: true, mobileViewportMaxPx: 1024 })
+  assert.deepEqual(normalizeMobileAccessSettings({ hideSidebarOnMobile: 'yes' }), { hideSidebarOnMobile: false, mobileViewportMaxPx: 1024 })
 })
 
 test('重启生效模块固定使用进程启动时捕获的状态', () => {

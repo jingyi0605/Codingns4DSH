@@ -6,6 +6,7 @@ import {
   CODINGNS_SETTINGS_NAMESPACE,
   isCodingNsSettingsEntryId,
   DEFAULT_CODINGNS_SETTINGS,
+  MOBILE_VIEWPORT_MAX_PX_LIMITS,
   SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS,
   SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MINS_LIMITS,
   SUBSCRIPTION_USAGE_TIMEOUT_SECS_LIMITS,
@@ -102,6 +103,13 @@ export const CodingNsSettingsSchema = z.object({
     fileEditor: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.fileManagement.fileEditor),
     sessionChangedFiles: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.fileManagement.sessionChangedFiles),
   }).default(DEFAULT_CODINGNS_SETTINGS.fileManagement),
+  mobileAccess: z.object({
+    hideSidebarOnMobile: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.mobileAccess.hideSidebarOnMobile),
+    mobileViewportMaxPx: z.number().step(1)
+      .min(MOBILE_VIEWPORT_MAX_PX_LIMITS.min)
+      .max(MOBILE_VIEWPORT_MAX_PX_LIMITS.max)
+      .default(DEFAULT_CODINGNS_SETTINGS.mobileAccess.mobileViewportMaxPx),
+  }).default(DEFAULT_CODINGNS_SETTINGS.mobileAccess),
   subscriptionUsage: z.object({
     timeoutSecs: z.number().step(1)
       .min(SUBSCRIPTION_USAGE_TIMEOUT_SECS_LIMITS.min)

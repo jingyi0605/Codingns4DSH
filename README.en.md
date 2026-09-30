@@ -44,7 +44,7 @@ The CodingNS workbench brings the conversation, Agent picker and Git sidebar tog
 
 **DSH (DeepSeek Harness)** is a coding-agent harness — a CLI plus Web UI that runs an agent loop inside your workspace.
 
-**Codingns4DSH is a DSH plugin bundle** (Host + browser layers) adding seven modules, all configured under **Settings → Codingns4DSH**.
+**Codingns4DSH is a DSH plugin bundle** (Host + browser layers) adding eight modules, all configured under **Settings → Codingns4DSH**.
 
 > Naming: this plugin is **Codingns4DSH** (npm package `@jingyi0605/codingns4dsh`; its settings entry is labelled Codingns4DSH). **Codingns4DSH** on its own refers to the platform service that provides the Control API, accounts and the relay tunnel.
 
@@ -52,6 +52,7 @@ The CodingNS workbench brings the conversation, Agent picker and Git sidebar tog
 | --- | --- | :---: |
 | **External Agent integration** | Run installed Agent CLIs as native DSH sessions: streaming, tools, approvals, questions, usage, thinking levels | On |
 | **Workspace session enhancement** | Agent logos on session rows, archived-session entry, subscription/usage readout | Off |
+| **Mobile access enhancements** | On phones or narrow viewports, collapse the left sidebar's 56px icon rail to zero width and keep only the top-left logo as the way back in | On |
 | **Terminal enhancement** | Persistent terminals plus shell, theme, font, cursor and scrollback settings | Off · restart |
 | **LAN access to DSH** | Listener forwarding a LAN address to the local DSH Web port | Always on |
 | **Login protection** | One optional local account guarding LAN **and** relay access; loopback always allowed | Always on (card) |

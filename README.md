@@ -44,7 +44,7 @@ CodingNS 工作台把会话、Agent 选择器与右侧 Git 面板放在同一界
 
 **DSH（DeepSeek Harness）** 是一个编码 Agent 运行框架，由 CLI 和 Web 界面组成，在你的 Workspace 中运行 Agent 循环。
 
-**Codingns4DSH 是一个 DSH 插件 Bundle**（Host 层 + 浏览器层），提供九个模块，全部在 **设置 → Codingns4DSH** 中配置。
+**Codingns4DSH 是一个 DSH 插件 Bundle**（Host 层 + 浏览器层），提供十个模块，全部在 **设置 → Codingns4DSH** 中配置。
 
 > 名称说明：本插件名为 **Codingns4DSH**（npm 包 `@jingyi0605/codingns4dsh`，设置页入口显示为 Codingns4DSH）；文中单独出现的 **Codingns4DSH** 指提供 Control API、账号与中继隧道的平台服务。
 
@@ -52,6 +52,7 @@ CodingNS 工作台把会话、Agent 选择器与右侧 Git 面板放在同一界
 | --- | --- | :---: |
 | **外部Agent集成** | 把已安装的 Agent CLI 变成 DSH 原生会话：流式输出、工具调用、权限确认、提问、用量、思考强度 | 开 |
 | **工作区会话增强** | 会话行显示 Agent Logo、归档会话入口、工作区隐藏/恢复入口、订阅/用量信息 | 关 |
+| **移动端访问增强** | 手机或窄屏下彻底隐藏左侧边栏的 56px 图标轨道，只在左上角保留 logo 作为再次唤起入口 | 开 |
 | **终端强化** | 持久终端，以及 Shell、主题、字体、光标、滚动缓冲区设置 | 关 · 需重启 |
 | **局域网访问DSH** | 监听端口并把局域网地址转发到本机 DSH Web | 常驻 |
 | **登录保护** | 可选：用统一的本地账号保护局域网**和**中继访问，回环地址始终放行 | 常驻（卡片） |

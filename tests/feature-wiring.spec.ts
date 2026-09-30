@@ -8,6 +8,7 @@ import {
   cliAdaptersFeature,
   debugFeature,
   lanAccessFeature,
+  mobileAccessFeature,
   reverseProxyFeature,
   terminalEnhancementFeature,
   workspaceSessionEnhancementFeature,
@@ -353,6 +354,53 @@ test('远程设置 RPC 返回版本并只允许修改 Codingns4DSH 字段', asyn
   )
 })
 
+test('移动端访问增强的设置路径与模块开关可通过 RPC 写入', async () => {
+  let received: unknown
+  const handler = createCodingNsSettingsRpcHandler({
+    writable: true,
+    describe: () => [{ ns: 'codingns', revision: 1, value: settingsOf({}) }],
+    get: () => settingsOf({}),
+    mutate: async (_namespace: string, ops: unknown) => { received = { ops, expectedRevision: undefined } },
+  } as never)
+
+  await handler('set', {
+    ops: [
+      { op: 'set', path: ['modules', 'mobileAccess'], value: true },
+      { op: 'set', path: ['mobileAccess', 'hideSidebarOnMobile'], value: true },
+      { op: 'set', path: ['mobileAccess', 'mobileViewportMaxPx'], value: 900 },
+    ],
+  })
+  assert.deepEqual(received, {
+    ops: [
+      { op: 'set', path: ['modules', 'mobileAccess'], value: true },
+      { op: 'set', path: ['mobileAccess', 'hideSidebarOnMobile'], value: true },
+      { op: 'set', path: ['mobileAccess', 'mobileViewportMaxPx'], value: 900 },
+    ],
+    expectedRevision: undefined,
+  })
+
+  // 手势设置必须一并放行：非回环页面没有本地设置镜像，写入只能走这条 RPC。
+  await handler('set', {
+    ops: [
+      { op: 'set', path: ['workspaceSessionEnhancement', 'sidebarGestures'], value: true },
+      { op: 'set', path: ['workspaceSessionEnhancement', 'sidebarGestureThresholdPx'], value: 80 },
+    ],
+  })
+  assert.deepEqual(received, {
+    ops: [
+      { op: 'set', path: ['workspaceSessionEnhancement', 'sidebarGestures'], value: true },
+      { op: 'set', path: ['workspaceSessionEnhancement', 'sidebarGestureThresholdPx'], value: 80 },
+    ],
+    expectedRevision: undefined,
+  })
+
+  await assert.rejects(
+    handler('set', { ops: [{ op: 'set', path: ['mobileAccess', 'unknownField'], value: 1 }] }),
+    /禁止修改设置字段/u,
+  )
+
+})
+
 test('远程设置 RPC 兼容 DSH 0.1.7 的插件 entry id', async () => {
   const current = settingsOf({})
   let namespace: string | undefined
@@ -437,6 +485,18 @@ test('工作区会话增强作为依赖外部 Agent 的实时 Client 模块登�
   assert.equal(workspaceSessionEnhancementFeature.descriptor.activation, undefined)
   assert.equal(workspaceSessionEnhancementFeature.descriptor.ui?.label, '工作区会话增强')
   assert.equal(workspaceSessionEnhancementFeature.settingsPanel?.name, 'WorkspaceSessionEnhancementPanel')
+})
+
+test('移动端访问增强作为默认启用、依赖布局能力的 Client 模块登记', () => {
+  assert.equal(mobileAccessFeature.descriptor.name, 'mobileAccess')
+  assert.equal(mobileAccessFeature.descriptor.runtime, 'client')
+  assert.equal(mobileAccessFeature.descriptor.enabledByDefault, true)
+  assert.deepEqual(mobileAccessFeature.descriptor.dependencies, [])
+  assert.deepEqual(mobileAccessFeature.descriptor.requires, [
+    { capability: 'layout.columns', required: false, fallback: 'disable' },
+  ])
+  assert.equal(mobileAccessFeature.descriptor.ui?.label, '移动端访问增强')
+  assert.equal(mobileAccessFeature.settingsPanel?.name, 'MobileAccessPanel')
 })
 
 test('工作区调试面板作为可独立启停的 Client 模块登记', () => {

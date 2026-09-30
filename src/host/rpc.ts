@@ -312,10 +312,20 @@ function operationsToPatch(operations: readonly CodingNsSettingsOperation[]): Re
 }
 
 function isAllowedSettingsPath(path: readonly string[]): boolean {
-  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'subscriptionUsage'].includes(path[0] ?? '')
-  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'peerHost'].includes(path[1] ?? '')
+  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'mobileAccess', 'subscriptionUsage'].includes(path[0] ?? '')
+  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'mobileAccess', 'peerHost'].includes(path[1] ?? '')
   if (path[0] === 'workspaceSessionEnhancement') {
-    return path.length === 2 && ['showAdapterLogo', 'showArchivedSessions', 'showWorkspaceHiding', 'hiddenWorkspaceIds', 'showSubscriptionUsage', 'showQuickPhrases', 'rememberConversationRightbarRatio', 'quickPhrases', 'quickPhrasesSeeded'].includes(path[1] ?? '')
+    return path.length === 2 && [
+      'showAdapterLogo', 'showArchivedSessions', 'showWorkspaceHiding', 'hiddenWorkspaceIds',
+      'showSubscriptionUsage', 'showQuickPhrases', 'rememberConversationRightbarRatio',
+      'quickPhrases', 'quickPhrasesSeeded',
+      // 手势设置由「工作区会话增强」面板写入；非回环页面没有本地设置镜像，
+      // 写入必须经过这里，缺项会让手机上的手势开关直接被拒绝。
+      'sidebarGestures', 'sidebarGestureMapping', 'sidebarGestureEdge', 'sidebarGestureThresholdPx',
+    ].includes(path[1] ?? '')
+  }
+  if (path[0] === 'mobileAccess') {
+    return path.length === 2 && ['hideSidebarOnMobile', 'mobileViewportMaxPx'].includes(path[1] ?? '')
   }
   if (path[0] === 'subscriptionUsage') {
     return path.length === 2 && ['timeoutSecs', 'refreshIntervalMins'].includes(path[1] ?? '')

@@ -18,6 +18,9 @@ export {
   DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   DEFAULT_FILE_MANAGEMENT_SETTINGS,
+  DEFAULT_MOBILE_ACCESS_SETTINGS,
+  MOBILE_VIEWPORT_MAX_PX_LIMITS,
+  normalizeMobileAccessSettings,
   DEFAULT_SUBSCRIPTION_USAGE_SETTINGS,
   DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS,
   normalizeLanAccessDshPwaSettings,
@@ -46,6 +49,7 @@ export {
   type QuickPhrase,
   type WorkspaceSessionEnhancementSettings,
   type FileManagementSettings,
+  type MobileAccessSettings,
   type SubscriptionUsageSettings,
 } from './contracts/config.js'
 export type {
