@@ -6,7 +6,7 @@ import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { DEFAULT_QUICK_PHRASES, type CodingNsSettings, type QuickPhrase } from '../shared/contracts/config.js'
 import type { CodingNsSettingsStore } from '../dsh-capabilities/settings-store.js'
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
-import { applyQuickPhraseOrder, matchesDshCssModuleClass, QUICK_PHRASE_FALLBACK_MARGIN, QUICK_PHRASE_TRIGGER_ORDER, readQuickPhraseMargin } from './quick-phrase-layout.js'
+import { applyQuickPhraseOrder, matchesDshCssModuleClass, QUICK_PHRASE_FALLBACK_MARGIN, QUICK_PHRASE_PERMISSION_ORDER, QUICK_PHRASE_TRIGGER_ORDER, readQuickPhraseMargin } from './quick-phrase-layout.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 
 const QUICK_PHRASE_FALLBACK_SIZE = 28
@@ -21,7 +21,12 @@ function installQuickPhraseStyles(): void {
   const style = document.createElement('style')
   style.dataset.plugin = 'codingns4dsh'
   style.dataset.pluginCss = QUICK_PHRASE_STYLE_ID
-  style.textContent = '@media (max-width: 768px){.codingns4dsh-quick-phrase-overlay{left:0!important;right:0!important;width:100vw!important}}'
+  style.textContent = [
+    '@media (max-width: 768px){.codingns4dsh-quick-phrase-overlay{left:0!important;right:0!important;width:100vw!important}}',
+    // 与 applyQuickPhraseOrder 同一顺序：权限/规划组永远排在快捷短语之后。
+    // JS 落位依赖挂载时序（找不到添加按钮时静默跳过），CSS 固定值兜底，结构在即生效。
+    `[data-composer-card] [class*="_modes"]{order:${QUICK_PHRASE_PERMISSION_ORDER}}`,
+  ].join('')
   document.head.appendChild(style)
 }
 
