@@ -12,6 +12,8 @@ import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 const QUICK_PHRASE_FALLBACK_SIZE = 28
 const QUICK_PHRASE_FALLBACK_ICON_SIZE = 14
 const QUICK_PHRASE_STYLE_ID = 'codingns4dsh-quick-phrase-responsive-style'
+/** 高于 DSH 侧栏和普通模态框，避免弹层被宿主布局覆盖。 */
+const QUICK_PHRASE_MODAL_Z_INDEX = 10001
 /** 用属性选择器粗筛带 `_add` 类名的按钮，精确匹配再交给 matchesDshCssModuleClass。 */
 const ADD_BUTTON_CANDIDATE_SELECTOR = 'button[class*="_add"]'
 
@@ -413,7 +415,7 @@ const quickPhraseTriggerStyle = {
 const quickPhraseOverlayStyle = {
   position: 'fixed' as const,
   inset: 0,
-  zIndex: 1400,
+  zIndex: QUICK_PHRASE_MODAL_Z_INDEX,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -436,7 +438,7 @@ const quickPhraseTitleStyle = { display: 'block', color: dshThemeColor.labelPrim
 const quickPhraseHintStyle = { margin: '6px 0 0', color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 }
 const quickPhraseCloseStyle = { width: 32, height: 32, flex: '0 0 auto', border: 0, borderRadius: 16, color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, fontSize: 24, lineHeight: 1, cursor: 'pointer' }
 const quickPhraseIconButtonStyle = { width: 32, height: 32, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, border: 0, borderRadius: 8, color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, cursor: 'pointer' }
-const quickPhraseEditorOverlayStyle = { ...quickPhraseOverlayStyle, zIndex: 1410, background: 'transparent' }
+const quickPhraseEditorOverlayStyle = { ...quickPhraseOverlayStyle, zIndex: QUICK_PHRASE_MODAL_Z_INDEX + 1, background: 'transparent' }
 const quickPhraseEditorStyle = { ...dshPopupSurfaceStyle, width: 'min(100%, 520px)', boxSizing: 'border-box' as const, padding: 24, borderRadius: 12 }
 const quickPhraseEditorHeaderStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, paddingBottom: 16, borderBottom: `1px solid ${dshThemeColor.border}` }
 const quickPhraseEditorInputStyle = { width: '100%', minHeight: 92, marginTop: 16, boxSizing: 'border-box' as const, padding: '10px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, color: dshThemeColor.labelPrimary, background: dshThemeColor.inputBackground, fontSize: 14, lineHeight: 1.5, resize: 'vertical' as const }
