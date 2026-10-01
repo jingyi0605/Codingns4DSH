@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdtempSync, writeFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 import {
   DEFAULT_SUBSCRIPTION_USAGE_SETTINGS,
   SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MINS_LIMITS,
@@ -11,6 +13,7 @@ import {
   normalizeSubscriptionUsageSettings,
 } from '../data/build/dist/shared/index.js'
 import {
+  CodexSubscriptionService,
   GrokSubscriptionService,
   KimiSubscriptionService,
   ProviderSubscriptionService,
@@ -141,6 +144,145 @@ test('Grok 缺失凭据或鉴权失败时返回空用量', async () => {
   })
   assert.equal(await unauthorized.read(), null)
 })
+
+test('Codex 订阅快照映射重置次数、到期明细与点数余额', async () => {
+  await withoutOpenAiBaseUrl(async () => {
+    const methods: string[] = []
+    const service = createCodexService((request) => {
+      methods.push(request.method)
+      if (request.method === 'account/rateLimits/read') {
+        return {
+          rateLimits: {
+            primary: { usedPercent: 20, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+            secondary: null,
+            credits: { hasCredits: true, unlimited: false, balance: '123.45' },
+          },
+          rateLimitResetCredits: {
+            availableCount: 2,
+            credits: [
+              { id: 'RateLimitResetCredit_1', resetType: 'codexRateLimits', status: 'available', grantedAt: 1_780_000_000, expiresAt: 1_784_000_000, title: 'Rate-limit reset', description: null },
+              { id: 'RateLimitResetCredit_2', status: 'redeemed', expiresAt: 1_700_000_000 },
+            ],
+          },
+        }
+      }
+      return {}
+    })
+
+    const usage = await service.read()
+    assert.equal(usage?.resetCredits?.availableCount, 2)
+    assert.deepEqual(usage?.resetCredits?.credits, [
+      { id: 'RateLimitResetCredit_1', expiresAt: 1_784_000_000, title: 'Rate-limit reset', description: null },
+    ])
+    assert.deepEqual(usage?.credits, { hasCredits: true, unlimited: false, balance: '123.45' })
+    assert.deepEqual(methods, ['initialize', 'account/rateLimits/read'])
+  })
+})
+
+test('Codex 旧版快照缺少重置券与点数时安全降级', async () => {
+  await withoutOpenAiBaseUrl(async () => {
+    const service = createCodexService((request) => request.method === 'account/rateLimits/read'
+      ? { rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: 1_800_000_000 }, secondary: null } }
+      : {})
+    const usage = await service.read()
+    assert.equal(usage?.resetCredits, null)
+    assert.equal(usage?.credits, null)
+  })
+})
+
+test('Codex 重置携带幂等键且不指定具体重置券', async () => {
+  await withoutOpenAiBaseUrl(async () => {
+    const consumed: Record<string, unknown>[] = []
+    const service = createCodexService((request) => {
+      if (request.method === 'account/rateLimitResetCredit/consume') {
+        consumed.push(request.params ?? {})
+        return { outcome: 'reset' }
+      }
+      return {}
+    })
+
+    assert.deepEqual(await service.reset(), { outcome: 'reset' })
+    assert.equal(consumed.length, 1)
+    assert.match(String(consumed[0]?.idempotencyKey), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u)
+    assert.equal('creditId' in (consumed[0] ?? {}), false)
+  })
+})
+
+test('Codex 重置遇到未知结果或缺少方法时报稳定错误', async () => {
+  await withoutOpenAiBaseUrl(async () => {
+    const unknown = createCodexService((request) => request.method === 'account/rateLimitResetCredit/consume' ? { outcome: 'mystery' } : {})
+    await assert.rejects(() => unknown.reset(), /无法识别的重置结果/u)
+
+    const unsupported = createCodexService((request) => request.method === 'account/rateLimitResetCredit/consume'
+      ? { error: { code: -32601, message: 'Method not found' } }
+      : {})
+    await assert.rejects(() => unsupported.reset(), /升级 Codex/u)
+  })
+})
+
+test('订阅重置仅对官方 Codex 开放，第三方上游与其它 Agent 被拒绝', async () => {
+  const service = new ProviderSubscriptionService({
+    sub2api: { sources: { codex: { baseUrl: 'https://upstream.example.test', apiKey: 'sub2api-secret' } } },
+  })
+  await assert.rejects(() => service.reset('codex'), /第三方上游/u)
+  await assert.rejects(() => service.reset('claude-code'), /不支持重置订阅/u)
+})
+
+test('订阅重置 RPC 已注册到 Host 路由与白名单', async () => {
+  const [featureSource, rpcSource] = await Promise.all([
+    readFile(new URL('../src/host/cli-adapters/feature.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../src/host/rpc.ts', import.meta.url), 'utf8'),
+  ])
+  assert.match(featureSource, /case 'subscription\/reset'/u)
+  assert.match(rpcSource, /'cli\/subscription\/reset'/u)
+})
+
+interface FakeCodexRequest {
+  readonly id?: number
+  readonly method: string
+  readonly params?: Record<string, unknown>
+}
+
+/** 假 app-server：按请求回写 result 或 error，信封与 codex JSONL 协议一致。 */
+function createCodexService(handler: (request: FakeCodexRequest) => Record<string, unknown>): CodexSubscriptionService {
+  const spawn = ((_command: string, _args: string[]) => {
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    return {
+      stdout,
+      stderr,
+      stdin: {
+        write(data: string): void {
+          const request = JSON.parse(data) as FakeCodexRequest
+          // 通知（initialized 等）没有 id，不产生响应。
+          if (typeof request.id !== 'number') return
+          const response = handler(request)
+          if (response.error !== undefined) stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: response.error })}\n`)
+          else stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: response })}\n`)
+        },
+      },
+      kill() { stdout.end(); stderr.end(); return true },
+    }
+  }) as never
+  return new CodexSubscriptionService({
+    homeDirectory: '/definitely/missing',
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn,
+  })
+}
+
+/** 排除真实环境里指向第三方上游的 OPENAI_BASE_URL 干扰 Codex 用例。 */
+async function withoutOpenAiBaseUrl(run: () => Promise<void>): Promise<void> {
+  const previous = process.env.OPENAI_BASE_URL
+  delete process.env.OPENAI_BASE_URL
+  try {
+    await run()
+  } finally {
+    if (previous === undefined) delete process.env.OPENAI_BASE_URL
+    else process.env.OPENAI_BASE_URL = previous
+  }
+}
 
 function grokBillingPayload(usedPercent, resetsAt) {
   const resetField = [0x08, ...varint(resetsAt)]

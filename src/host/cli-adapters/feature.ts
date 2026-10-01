@@ -133,6 +133,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             const subscription = readSubscriptionRequest(payload)
             return subscriptions.read(subscription.adapterId, subscription.providerId)
           }
+          case 'subscription/reset': {
+            const subscription = readSubscriptionResetRequest(payload)
+            return subscriptions.reset(subscription.adapterId, subscription.providerId)
+          }
           default: throw new Error(`未知 CLI RPC: cli/${action}`)
         }
       }))
@@ -342,6 +346,13 @@ function readSubscriptionRequest(value: unknown): { adapterId: string; providerI
     adapterId,
     ...(typeof record.providerId === 'string' && record.providerId.trim() !== '' ? { providerId: record.providerId.trim() } : {}),
   }
+}
+
+/** 重置请求必须显式给出适配器；缺省回退 command-code 会让重置落到错误的 Agent。 */
+function readSubscriptionResetRequest(value: unknown): { adapterId: string; providerId?: string } {
+  const record = asRecord(value)
+  if (record === null || record.adapterId === undefined) throw new Error('adapterId 不能为空')
+  return readSubscriptionRequest(value)
 }
 
 function readSessionId(value: unknown): string {

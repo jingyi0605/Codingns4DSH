@@ -2,11 +2,12 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
-import type { CliSubscriptionProvider, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekBalance, DeepseekUsage, Sub2ApiDailyUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../../shared/contracts/subscription.js'
+import { randomUUID } from 'node:crypto'
+import type { CliSubscriptionCredits, CliSubscriptionProvider, CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekBalance, DeepseekUsage, Sub2ApiDailyUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../../shared/contracts/subscription.js'
 import { identifyModelProvider, normalizeProviderBaseUrl, thirdPartyProvider, type ProviderDefinition } from './provider-registry.js'
 import { OfficialProviderSubscriptionService, type OfficialProviderSubscriptionOptions } from './official-provider-subscription.js'
 import { ZcodeSubscriptionService, type ZcodeSubscriptionOptions } from './zcode-subscription.js'
-import { JsonRpcProcess } from './json-rpc-process.js'
+import { JsonRpcProcess, JsonRpcRequestError } from './json-rpc-process.js'
 import { detectBinary } from './rpc-driver-utils.js'
 
 type FetchLike = typeof fetch
@@ -53,6 +54,15 @@ export class ProviderSubscriptionService {
       case 'zcode': return this.zcode.read()
       default: return Promise.resolve(null)
     }
+  }
+
+  /** 消耗一次官方订阅重置；仅官方 Codex 订阅支持，第三方上游必须显式拒绝。 */
+  async reset(adapterId: string, providerId?: string): Promise<CliSubscriptionResetResult> {
+    if (adapterId !== 'codex') throw new Error('当前 Agent 不支持重置订阅')
+    if (this.sub2api.hasThirdPartySource(adapterId, providerId)) {
+      throw new Error('Codex 正在使用第三方上游，无法重置官方订阅')
+    }
+    return this.codex.reset()
   }
 
   private async readDsh(providerId?: string): Promise<CliSubscriptionUsage | null> {
@@ -281,6 +291,31 @@ export class CodexSubscriptionService implements SubscriptionReader {
       }
     } catch {
       return null
+    }
+  }
+
+  /** 消耗一次 Codex 官方重置券；凭据始终留在 Codex 侧，Host 只中转协议结果。 */
+  async reset(): Promise<CliSubscriptionResetResult> {
+    if (hasThirdPartyCodexConfig(this.homeDirectory)) throw new Error('Codex 使用第三方配置，无法重置官方订阅')
+    this.command ??= (await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync })).command
+    if (this.command === null) throw new Error('未找到 Codex CLI，无法重置订阅')
+    const rpc = new JsonRpcProcess({ command: this.command, args: ['app-server'], spawn: this.runSpawn })
+    const controller = new AbortController()
+    // 消费接口连上游耗时可能超过普通查询；超时过短会在重置已生效时误报失败。
+    const timer = setTimeout(() => controller.abort(), Math.max(this.timeoutMs, 20_000))
+    try {
+      await rpc.request('initialize', { clientInfo: { name: 'codingns4dsh', version: '0.1.1' }, capabilities: {} }, { signal: controller.signal })
+      rpc.notify('initialized', {})
+      const result = await rpc.request('account/rateLimitResetCredit/consume', { idempotencyKey: randomUUID() }, { signal: controller.signal })
+      return { outcome: normalizeCodexResetOutcome(result) }
+    } catch (error) {
+      if (error instanceof JsonRpcRequestError && error.code === -32601) {
+        throw new Error('当前 Codex CLI 版本不支持重置订阅，请升级 Codex 后重试')
+      }
+      throw error
+    } finally {
+      clearTimeout(timer)
+      rpc.dispose()
     }
   }
 }
@@ -707,9 +742,55 @@ function normalizeCodexSnapshot(value: unknown): CliSubscriptionUsage | null {
     secondary,
     monthly: null,
     rateLimitReachedType: textValue(source.rateLimitReachedType ?? source.rate_limit_reached_type),
-    resetCredits: null,
+    resetCredits: normalizeCodexResetCredits(root?.rateLimitResetCredits ?? root?.rate_limit_reset_credits),
+    credits: normalizeCodexCredits(source.credits),
     capturedAt: new Date().toISOString(),
   }
+}
+
+/** Codex 重置券摘要；availableCount 权威，明细行可能被上游截断。 */
+function normalizeCodexResetCredits(value: unknown): CliSubscriptionUsage['resetCredits'] {
+  const source = recordValue(value)
+  if (source === null) return null
+  const rawCount = source.availableCount ?? source.available_count
+  const availableCount = rawCount === null || rawCount === undefined ? null : numberValue(rawCount)
+  if (availableCount === null) return null
+  const rows = Array.isArray(source.credits) ? source.credits : []
+  return {
+    availableCount: Math.max(0, Math.trunc(availableCount)),
+    credits: rows
+      .map((item) => recordValue(item))
+      .filter((row): row is Record<string, any> => row !== null && (typeof row.status !== 'string' || row.status === 'available'))
+      .map((row) => {
+        const rawExpiry = row.expiresAt ?? row.expires_at
+        return {
+          id: textValue(row.id),
+          expiresAt: rawExpiry === null || rawExpiry === undefined ? null : timestampValue(rawExpiry),
+          title: textValue(row.title),
+          description: textValue(row.description),
+        }
+      }),
+  }
+}
+
+/** Codex 点数余额：余额保持字符串以保留上游十进制精度；字段全缺时视为未提供。 */
+function normalizeCodexCredits(value: unknown): CliSubscriptionCredits | null {
+  const source = recordValue(value)
+  if (source === null) return null
+  const hasCredits = booleanValue(source.hasCredits ?? source.has_credits)
+  const unlimited = booleanValue(source.unlimited)
+  const balance = creditBalanceValue(source.balance)
+  if (hasCredits === null && unlimited === null && balance === null) return null
+  return { hasCredits: hasCredits ?? balance !== null, unlimited: unlimited ?? false, balance }
+}
+
+const CODEX_RESET_OUTCOMES: readonly CliSubscriptionResetOutcome[] = ['reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit']
+
+function normalizeCodexResetOutcome(value: unknown): CliSubscriptionResetOutcome {
+  const outcome = textValue(recordValue(value)?.outcome)
+  const matched = CODEX_RESET_OUTCOMES.find((candidate) => candidate === outcome)
+  if (matched === undefined) throw new Error('Codex 返回了无法识别的重置结果')
+  return matched
 }
 
 function normalizeClaudeSnapshot(value: unknown, planType: string | null): CliSubscriptionUsage {
@@ -882,6 +963,12 @@ function timestampValue(value: unknown): number | null {
   return null
 }
 function clamp(value: number): number { return Math.max(0, Math.min(100, value)) }
+function booleanValue(value: unknown): boolean | null { return typeof value === 'boolean' ? value : null }
+/** 点数余额保持字符串以保留上游十进制精度；数字也归一为字符串。 */
+function creditBalanceValue(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return textValue(value)
+}
 
 function normalizeDeepseekUsage(value: unknown, baseUrl: string): DeepseekUsage | null {
   const root = recordValue(value)
