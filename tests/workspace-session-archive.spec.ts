@@ -323,6 +323,71 @@ test('归档入口使用 12px 文本，模态框为每个会话显示彩色 Agen
   clearSessionAdapters()
 })
 
+test('归档会话行第一行只显示标题，第二行显示类型标签与归档时间，取消归档为图标按钮', async () => {
+  clearSessionAdapters()
+  replaceSessionAdapters([{ sessionId: 'archived-codex', adapterId: 'codex' }])
+  const header = workspaceHeader('workspace-a')
+  const more = new FakeArchiveElement('button')
+  more.textContent = '展开其余 27 个会话'
+  const group = new FakeArchiveElement('section')
+  group.append(header, more)
+  const document = new FakeArchiveDocument(group)
+  const controller = startWorkspaceSessionArchiveDom({
+    document,
+    remote: {
+      workspace: {
+        async *follow() {
+          yield { type: 'baseline', value: { items: [{ workspaceId: 'workspace-a', path: '/work', sessionIds: ['archived-codex'] }], archivedSessionIds: ['archived-codex'] } }
+        },
+        async unarchiveSession() {},
+      },
+      session: {
+        async list() {
+          return { items: [{ sessionId: 'archived-codex', updatedAt: 1_800_000_000_000, projections: { values: { title: '修复移动端布局' } } }] }
+        },
+      },
+    },
+  })
+
+  await nextArchiveTurn()
+  const entry = group.children.find((child) => child.getAttribute(WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE) !== null)
+  entry.listeners.get('click')()
+  await nextArchiveTurn()
+  await nextArchiveTurn()
+
+  const overlay = document.body.children.find((child) => child.getAttribute(WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE) !== null)
+  const list = overlay.children[0].children[2]
+  const row = list.children[0]
+  const content = row.children[0]
+  // 第一行只显示标题：标题独占一行，不再与标签并排。
+  const title = content.children[0]
+  assert.equal(title.tagName, 'STRONG')
+  assert.equal(title.textContent, '修复移动端布局')
+  assert.equal(title.children.length, 0)
+  // 第二行是「类型标签 + 归档时间」：强制同排，不做整行换行。
+  const meta = content.children[1]
+  assert.equal(meta.style.flexWrap, undefined)
+  const badge = meta.children[0]
+  assert.equal(badge.getAttribute(WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE), 'codex')
+  assert.equal(badge.textContent, 'Codex')
+  assert.equal(badge.style.whiteSpace, 'nowrap')
+  const time = meta.children[1]
+  assert.match(time.textContent, /^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/u)
+  assert.equal(time.textContent.includes('归档于'), false)
+  assert.equal(time.style.whiteSpace, 'nowrap')
+  // 取消归档改为图标按钮：无文字、保留无障碍名称、内含 DSH 原生取消归档图形。
+  const restore = row.children[1]
+  assert.equal(restore.textContent, '')
+  assert.equal(restore.getAttribute('aria-label'), '取消归档')
+  assert.equal(restore.title, '取消归档')
+  const icon = restore.children[0]
+  assert.equal(icon.tagName, 'SVG')
+  assert.equal(icon.getAttribute('viewBox'), '0 0 20 20')
+  assert.deepEqual(icon.children.map((path) => path.getAttribute('d') !== null), [true, true])
+  controller.dispose()
+  clearSessionAdapters()
+})
+
 test('远端虚拟工作区按原生 Store 快照显示归档入口并可取消归档', async () => {
   const virtualWorkspaceId = 'codingns:peer-host:v1:workspace:peer-1:workspace-1'
   const virtualSessionId = 'codingns:peer-host:v1:session:peer-1:session-archived'
@@ -373,7 +438,9 @@ test('远端虚拟工作区按原生 Store 快照显示归档入口并可取消�
   const row = document.querySelectorAll(`[${WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE}]`)
   assert.deepEqual(row.map((badge) => badge.getAttribute(WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE)), ['dsh'])
 
-  const restore = document.querySelectorAll('button').find((button) => button.textContent === '取消归档')
+  const restore = document.querySelectorAll('button').find((button) => button.getAttribute('aria-label') === '取消归档')
+  assert.equal(restore.textContent, '')
+  assert.equal(restore.children[0].tagName, 'SVG')
   restore.listeners.get('click')()
   await nextArchiveTurn()
   await nextArchiveTurn()
@@ -444,6 +511,8 @@ class FakeArchiveDocument {
   }
 
   createElement(tagName) { return new FakeArchiveElement(tagName) }
+
+  createElementNS(_namespace, tagName) { return new FakeArchiveElement(tagName) }
 
   querySelectorAll(selector) {
     const nodes = collectArchiveNodes(this.body)
