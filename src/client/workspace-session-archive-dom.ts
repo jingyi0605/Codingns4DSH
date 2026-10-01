@@ -542,9 +542,17 @@ function removeArchiveEntries(dom: Pick<Document, 'querySelectorAll'>): void {
   for (const node of dom.querySelectorAll<HTMLElement>(`[${WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE}]`)) node.remove()
 }
 
+/**
+ * 模态框渲染所需的最小 DOM 面：真实 Document 与测试假实现都满足。
+ *
+ * `createElementNS` 在部分测试假实现里缺失，取消归档图标据此退回字符占位。
+ */
+type ArchiveModalDom = Pick<Document, 'body' | 'createElement' | 'querySelector'>
+  & Partial<Pick<Document, 'createElementNS'>>
+
 /** 归档模态框的渲染上下文；工作区入口与行创建共用同一份依赖。 */
 interface ArchiveModalContext {
-  readonly dom: Pick<Document, 'body' | 'createElement' | 'querySelector'>
+  readonly dom: ArchiveModalDom
   readonly remote: CodingNsRemote
   readonly adapterIdForSession: (sessionId: string) => string | undefined
   readonly t: CodingNsTranslator
@@ -564,7 +572,8 @@ function openArchiveModal(
   overlay.setAttribute(WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE, '')
   Object.assign(overlay.style, {
     position: 'fixed', inset: '0', zIndex: '9999', display: 'flex', alignItems: 'center', justifyContent: 'center',
-    padding: '24px', boxSizing: 'border-box', background: 'var(--dsw-alias-bg-mask-1, rgba(0,0,0,.45))',
+    // 窄屏用视口比例收紧留白，给会话行留出「标签 + 归档时间」同排所需的宽度。
+    padding: 'min(24px, 4vw)', boxSizing: 'border-box', background: 'var(--dsw-alias-bg-mask-1, rgba(0,0,0,.45))',
   })
   const surface = dom.createElement('section')
   surface.setAttribute('role', 'dialog')
@@ -572,7 +581,7 @@ function openArchiveModal(
   surface.setAttribute('aria-label', t('archive.title'))
   Object.assign(surface.style, {
     width: 'min(860px, 100%)', maxHeight: 'min(720px, 90vh)', overflow: 'auto', boxSizing: 'border-box',
-    padding: '28px 32px', borderRadius: '16px', color: dshThemeColor.labelPrimary,
+    padding: 'min(28px, 5vw) min(32px, 4vw)', borderRadius: '16px', color: dshThemeColor.labelPrimary,
     background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.prominentShadow,
   })
   const header = dom.createElement('div')
@@ -623,35 +632,81 @@ function createArchiveRow(
   item: ArchivedSessionItem,
   context: ArchiveModalContext,
 ): HTMLElement {
-  const { dom, remote, adapterIdForSession, t, onChanged, onSessionUnarchived } = context
+  const { dom, adapterIdForSession, t } = context
   const row = dom.createElement('div')
-  Object.assign(row.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', padding: '12px 0', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08))' })
+  Object.assign(row.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '12px 0', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08))' })
   const content = dom.createElement('div')
-  Object.assign(content.style, { minWidth: '0', display: 'flex', flexDirection: 'column', gap: '4px' })
-  const titleRow = dom.createElement('div')
-  Object.assign(titleRow.style, { minWidth: '0', display: 'flex', alignItems: 'center', gap: '8px' })
+  Object.assign(content.style, { minWidth: '0', flex: '1 1 auto', display: 'flex', flexDirection: 'column', gap: '4px' })
+  // 移动端窄屏下第一行只保留标题，独占整行以避免被标签与时间挤压截断。
   const name = dom.createElement('strong')
   name.textContent = item.title
   name.title = item.title
   Object.assign(name.style, { minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '15px' })
-  titleRow.append(createAgentBadge(adapterIdForSession(item.sessionId), dom, t), name)
+  // 第二行放类型标签与归档时间，强制同排：标签不收缩、时间不折行，
+  // 极端窄屏只截断时间尾部，不允许整行换行。
+  const meta = dom.createElement('div')
+  Object.assign(meta.style, { minWidth: '0', display: 'flex', alignItems: 'center', gap: '8px' })
   const time = dom.createElement('span')
-  time.textContent = t('archive.archivedAt', { time: formatArchiveTime(item.archivedAt) })
-  Object.assign(time.style, { color: 'var(--dsw-alias-label-secondary, GrayText)', fontSize: '13px' })
-  content.append(titleRow, time)
-  const restore = dom.createElement('button')
-  restore.type = 'button'
-  restore.textContent = t('archive.restore')
+  time.textContent = formatArchiveTime(item.archivedAt)
+  Object.assign(time.style, { minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--dsw-alias-label-secondary, GrayText)', fontSize: '13px' })
+  meta.append(createAgentBadge(adapterIdForSession(item.sessionId), dom, t), time)
+  content.append(name, meta)
+  const restore = createRestoreButton(item, row, context)
+  row.append(content, restore)
+  return row
+}
+
+/**
+ * 行尾的取消归档按钮：图标按钮，不再占用一整行宽度。
+ *
+ * 图形沿用 DSH 原生归档行的 `IconUnarchiveOutlineRegular`，让插件模态框与原生
+ * 界面语言一致；文字只保留在 `aria-label` 与 `title` 里。
+ */
+function createRestoreButton(
+  item: ArchivedSessionItem,
+  row: HTMLElement,
+  context: ArchiveModalContext,
+): HTMLButtonElement {
+  const { dom, remote, t, onChanged, onSessionUnarchived } = context
   const unarchive = remote.workspace?.unarchiveSession
   const canUnarchive = typeof unarchive === 'function'
+  const label = canUnarchive ? t('archive.restore') : t('archive.restoreUnsupported')
+  const restore = dom.createElement('button')
+  restore.type = 'button'
   restore.disabled = !canUnarchive
+  restore.setAttribute('aria-label', label)
   restore.title = canUnarchive ? t('archive.restore') : t('archive.restoreUnsupportedTitle')
-  if (!canUnarchive) restore.textContent = t('archive.restoreUnsupported')
-  Object.assign(restore.style, { flex: '0 0 auto', padding: '7px 12px', border: '1px solid var(--dsw-alias-border-l2, #d9d9d9)', borderRadius: '8px', color: 'inherit', background: 'transparent', cursor: canUnarchive ? 'pointer' : 'not-allowed', font: 'inherit', opacity: canUnarchive ? '1' : '0.55' })
+  Object.assign(restore.style, {
+    flex: '0 0 auto',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '32px',
+    height: '32px',
+    padding: '0',
+    border: '0',
+    borderRadius: '8px',
+    color: 'var(--dsw-alias-label-secondary, GrayText)',
+    background: 'transparent',
+    cursor: canUnarchive ? 'pointer' : 'not-allowed',
+    opacity: canUnarchive ? '1' : '0.55',
+    font: 'inherit',
+  })
+  restore.append(createUnarchiveIcon(dom))
+  // 内联 style 表达不了 :hover，与插件其它自绘按钮一致用监听器补齐交互态。
+  if (canUnarchive) {
+    restore.addEventListener('mouseenter', () => {
+      restore.style.background = 'var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, 0.08))'
+    })
+    restore.addEventListener('mouseleave', () => {
+      restore.style.background = 'transparent'
+    })
+  }
   restore.addEventListener('click', async () => {
     if (!canUnarchive || unarchive === undefined) return
     restore.disabled = true
-    restore.textContent = t('archive.processing')
+    restore.style.opacity = '0.55'
+    restore.setAttribute('aria-label', t('archive.processing'))
     try {
       await unarchive({ sessionId: item.sessionId })
       row.remove()
@@ -659,11 +714,55 @@ function createArchiveRow(
       onChanged()
     } catch {
       restore.disabled = false
-      restore.textContent = t('archive.restore')
+      restore.style.opacity = '1'
+      restore.setAttribute('aria-label', label)
     }
   })
-  row.append(content, restore)
-  return row
+  return restore
+}
+
+/**
+ * DSH 官方“取消归档”图标几何。
+ *
+ * 取值自 `@deepseek-ai/dsh-client-ui-primitives` 的 `IconUnarchiveOutlineRegular`
+ * （DSH 0.2.0-rc.2，20×20 viewBox）。不 import primitives 的原因与
+ * `mobile-sidebar-logo.ts` 相同：本模块是纯 DOM 控制器，要在没有 React 的 Node
+ * 测试里直接运行；内联同一份路径才能保持与原生归档行的视觉一致。
+ */
+const UNARCHIVE_ICON_VIEWBOX = '0 0 20 20'
+const UNARCHIVE_ICON_BOX_PATH = 'M15.8659 2.05975C17.2603 2.05995 18.3913 3.19096 18.3914 4.58527V5.4874C18.3914 6.02747 18.2192 6.52672 17.9303 6.93735C17.9336 6.96524 17.9388 6.99318 17.9388 7.02195V12.8884C17.9388 13.6345 17.9395 14.2379 17.8996 14.7254C17.8642 15.1593 17.7936 15.5499 17.6373 15.9141L17.5654 16.0685C17.278 16.6328 16.8405 17.1046 16.3038 17.434L16.0679 17.5661C15.66 17.7739 15.2196 17.8598 14.7237 17.9003C14.2362 17.9401 13.6327 17.9405 12.8867 17.9405H7.11122C6.36511 17.9405 5.76171 17.9401 5.27418 17.9003C4.84051 17.8649 4.44949 17.7952 4.08545 17.6391L3.93104 17.5661C3.36673 17.2785 2.89392 16.8414 2.56465 16.3044L2.43245 16.0685C2.22473 15.6608 2.13878 15.2211 2.09825 14.7254C2.05841 14.2379 2.05912 13.6345 2.05912 12.8884V7.02195C2.05912 6.99284 2.06422 6.96449 2.06758 6.93629C1.77931 6.52592 1.60858 6.02687 1.60858 5.4874V4.58527C1.60876 3.19084 2.73962 2.05975 4.1341 2.05975H15.8659ZM16.4984 7.92936C16.296 7.98169 16.0847 8.01288 15.8659 8.01291H4.1341C3.91478 8.01291 3.70246 7.98194 3.49955 7.92936V12.8884C3.49955 13.6582 3.50053 14.1927 3.53445 14.608C3.56769 15.0146 3.62923 15.244 3.71635 15.415L3.7925 15.5514C3.98339 15.8627 4.25749 16.1165 4.58464 16.2833L4.72529 16.3435C4.88095 16.3993 5.08638 16.4402 5.39158 16.4651C5.80685 16.4991 6.34138 16.5001 7.11122 16.5001H12.8867C13.6564 16.5001 14.1911 16.499 14.6063 16.4651C15.0128 16.432 15.2423 16.3703 15.4133 16.2833L15.5508 16.2061C15.8618 16.0152 16.116 15.7419 16.2827 15.415L16.3429 15.2732C16.3985 15.1177 16.4396 14.9128 16.4645 14.608C16.4985 14.1927 16.4984 13.6583 16.4984 12.8884V7.92936ZM4.1341 3.50019C3.53511 3.50019 3.0492 3.98631 3.04902 4.58527V5.4874C3.04902 6.08649 3.535 6.57248 4.1341 6.57248H15.8659C16.4648 6.57228 16.951 6.08638 16.951 5.4874V4.58527C16.9509 3.98644 16.4647 3.50038 15.8659 3.50019H4.1341Z'
+const UNARCHIVE_ICON_ARROW_PATH = 'M10 14.1V10.1M7.85 12.05L10 9.9L12.15 12.05'
+
+/** 内联取消归档 SVG；`createElementNS` 不可用时退回字符占位。 */
+function createUnarchiveIcon(dom: ArchiveModalDom): Element {
+  const createElementNS = dom.createElementNS?.bind(dom)
+  if (createElementNS === undefined) {
+    const fallback = dom.createElement('span')
+    fallback.textContent = '↩'
+    fallback.setAttribute('aria-hidden', 'true')
+    return fallback
+  }
+  const svg = createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.setAttribute('width', '16')
+  svg.setAttribute('height', '16')
+  svg.setAttribute('viewBox', UNARCHIVE_ICON_VIEWBOX)
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('aria-hidden', 'true')
+  svg.style.display = 'block'
+  svg.style.pointerEvents = 'none'
+  const box = createElementNS('http://www.w3.org/2000/svg', 'path')
+  box.setAttribute('fill-rule', 'evenodd')
+  box.setAttribute('clip-rule', 'evenodd')
+  box.setAttribute('fill', 'currentColor')
+  box.setAttribute('d', UNARCHIVE_ICON_BOX_PATH)
+  const arrow = createElementNS('http://www.w3.org/2000/svg', 'path')
+  arrow.setAttribute('d', UNARCHIVE_ICON_ARROW_PATH)
+  arrow.setAttribute('stroke', 'currentColor')
+  arrow.setAttribute('stroke-width', '1')
+  arrow.setAttribute('stroke-linecap', 'round')
+  arrow.setAttribute('stroke-linejoin', 'round')
+  svg.append(box, arrow)
+  return svg
 }
 
 function createAgentBadge(
@@ -692,11 +791,10 @@ function createAgentBadge(
 
 function formatArchiveTime(timestamp: number): string {
   const value = timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp
-  try {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
-  } catch {
-    return new Date(value).toLocaleString()
-  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (part: number): string => String(part).padStart(2, '0')
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 function closeArchiveModal(dom: Pick<Document, 'querySelector'>): void {
