@@ -58,6 +58,34 @@
   - 能力：解密本机 `zcodejwttoken`，携带 `X-Device-Mid` 请求 `billing/balance`，按活动套餐聚合多模型总量、已用量和剩余量，并复用现有 `providerBalance` UI。
   - 验证：`tests/zcode-subscription.spec.ts` 覆盖密文、请求头、活动套餐过滤、聚合和失败响应。
 
+- [x] 1.8 修复 ZCode 账号 Provider 的真实请求认证
+  - 主要文件：`src/host/cli-adapters/zcode-driver.ts`。
+  - 根因：app-server 的模型请求会反向调用 `interaction/requestProviderRuntimeHeaders`；旧实现返回空对象，账号请求最终被折叠为 `PROVIDER_ERROR`。
+  - 修复：Host 从 ZCode 共享凭据读取对应账号 API Key，仅通过本地 RPC 返回 `headersApplied/requestAuth`，并为余额不足错误提供可读提示。
+  - 验证：区分 Start Plan 试用额度和 Coding Plan API 余额；本机 `/Applications/ZCode.app` 实际执行已使用 `account:bigmodel-start-plan` 成功返回模型文本，不再误报 `1113`。
+
+- [x] 1.9 美化订阅用量显示
+  - 主要文件：`src/client/subscription-slot.ts`。
+  - 能力：Token 数量统一使用 `K/M/B` 紧凑格式，账期结束时间使用浏览器 `toLocaleString()` 按本地时区显示。
+  - 验证：完整测试套件通过。
+
+- [x] 1.10 修复 ZCode Protocol 正文事件订阅与转换
+  - 主要文件：`src/host/cli-adapters/zcode-driver.ts`、`tests/external-agent-pr.spec.ts`。
+  - 根因：未调用 `session/subscribe` 时 app-server 只推送状态和遥测通知；真实正文位于 `session/event.payload`。
+  - 修复：订阅 `desktop-continuous` 事件流，转换 `text_delta`、`reasoning_delta` 和完成快照，并保留旧版通知兼容。
+  - 验证：fake 协议测试通过；本机 Start Plan 实际对话返回 `测试成功`。
+
+- [x] 1.11 修复普通套餐选择被 Start Plan 遮蔽并验证真实调用
+  - 主要文件：`src/host/cli-adapters/zcode-driver.ts`、`tests/external-agent-pr.spec.ts`。
+  - 根因：设置选择普通 Coding Plan 时，旧逻辑只要发现登录 JWT 就强制切换到 Start Plan，普通套餐模型目录和请求因此不可见。
+  - 修复：按 Provider 套餐类型分别检查 Coding Plan API Key 与 Start Plan JWT；尊重设置中的显式选择，仅在选中套餐缺少凭据时回退试用套餐；个人和团队 Coding Plan 共用该规则。
+  - 验证：本机模型目录返回 `account:bigmodel-individual-coding-plan` 的 `GLM-5.3`、`GLM-5.3-Flash` 与 `low/high/max`；真实普通套餐调用已到达上游并返回 `1113`（账号无可用资源包），确认不是误走试用接口；回归测试和全套检查通过。
+
+- [x] 1.12 统一 ZCode 用量 Logo 并美化余额弹层
+  - 主要文件：`src/client/subscription-slot.ts`、`src/client/locales/usage.ts`。
+  - 修复：官方余额没有 Logo URL 时回退当前适配器注册的内置 Logo；余额按总量和模型显示进度条，周期结束显示本地化倒计时，移除重复的明细文字。
+  - 验证：客户端主题回归测试覆盖 Logo 回退、进度条和倒计时；ZCode 用量读取与路由测试通过。
+
 ### 阶段检查 1
 
 - [x] 1.5 外部驱动门禁
