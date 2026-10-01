@@ -88,7 +88,9 @@ test('Client 构建产物包含模块卡片、设置面板和 Host RPC 调用', 
 test('外部 Agent 集成设置面板只保留 Agent 列表，不再渲染外部会话列表', async () => {
   const source = await readFile(clientBundle, 'utf8')
   // 会话由 DSH 原生侧栏与工作区归档入口承载；设置面板不得再维护第二份会话列表。
-  assert.equal(source.includes('codingns-cli-session-title'), false, 'Client 产物仍包含外部会话列表组件')
+  for (const marker of ['外部 Agent 会话', '正在读取外部会话…', '尚未创建外部 Agent 会话。', 'codingns-cli-session-title']) {
+    assert.equal(source.includes(marker), false, `Client 产物仍包含会话列表标记 ${marker}`)
+  }
   assert.equal(source.includes('正在读取外部 Agent 状态…'), true, 'Agent 列表仍应保留')
 })
 
