@@ -28,11 +28,18 @@ class FakeObserver {
 
   callback: (records: unknown[], observer: FakeObserver) => void
   disconnected: boolean
+  document: FakeDocument | null = null
 
-  observe(): void {}
+  observe(target: { ownerDocument?: FakeDocument }): void {
+    this.disconnected = false
+    // 记录被观察的文档，属性写入时由它同步派发记录。
+    this.document = target.ownerDocument ?? null
+    if (this.document !== null) this.document.observer = this
+  }
 
   disconnect(): void {
     this.disconnected = true
+    if (this.document !== null && this.document.observer === this) this.document.observer = null
   }
 
   trigger(): void {
@@ -128,10 +135,14 @@ class FakeElement {
 
   setAttribute(name: string, value: string): void {
     this.attributes.set(name, String(value))
+    // 真实 MutationObserver 在「写入相同值」时同样产生记录，测试必须照此建模，
+    // 否则复现不出「无脑写属性 → 观察器触发 → 再写」的自激循环。
+    this.ownerDocument?.notifyMutation?.(this, name)
   }
 
   removeAttribute(name: string): void {
     this.attributes.delete(name)
+    this.ownerDocument?.notifyMutation?.(this, name)
   }
 
   hasAttribute(name: string): boolean {
@@ -186,11 +197,29 @@ class FakeDocument {
   head = new FakeElement('head')
   body = new FakeElement('body')
   defaultView = { MouseEvent: FakeMouseEvent }
+  /** 当前挂载的假观察器；属性写入时同步回调，模拟 MutationObserver 的记录派发。 */
+  observer: FakeObserver | null = null
+  /** 一次写入触发的回调计数，用来给自激循环设上限。 */
+  mutations = 0
 
   constructor() {
     this.documentElement.ownerDocument = this
     this.head.ownerDocument = this
     this.body.ownerDocument = this
+  }
+
+  /**
+   * 属性变化通知。
+   *
+   * 真实 MutationObserver 的回调是异步微任务，但「回调里再写属性」同样会再入队一条
+   * 记录，最终表现为无限循环。这里同步回调即可复现同一失效模式，并让死循环以计数
+   * 上限直接失败而不是挂住测试。
+   */
+  notifyMutation(_target: FakeElement, _name: string): void {
+    if (this.observer === null || this.observer.disconnected) return
+    this.mutations += 1
+    if (this.mutations > 500) throw new Error('观察器自激循环：属性写入触发了过多回调')
+    this.observer.callback([], this.observer)
   }
 
   createElement(tagName: string): FakeElement {
@@ -558,6 +587,66 @@ test('克隆行不能继承原生高亮类，高亮只由 data-active 驱动', a
       false,
       '克隆行不能带原生高亮类，否则取消高亮后仍会保持高亮',
     )
+  } finally {
+    controller.dispose()
+  }
+})
+
+test('鼠标移到菜单行不会触发观察器自激循环（回归：/ 菜单卡死）', async () => {
+  const dom = new FakeDocument()
+  const { listbox, delegateRow } = slashMenu(dom)
+  const controller = startDelegateUiDom({
+    document: dom as never,
+    MutationObserver: FakeObserver as never,
+    menuLabel: () => '委派',
+    popupPlaceholder: () => '搜索外部 Agent',
+  })
+  await nextTurn()
+  try {
+    const proxy = listbox.querySelector(`[${DELEGATE_MENU_PROXY_ATTRIBUTE}]`)!
+    // 菜单刚打开时真实行未高亮；此时同步逻辑不得写 aria-selected，
+    // 否则每次属性写入都会再触发一次观察器回调。
+    assert.equal(proxy.hasAttribute('aria-selected'), false)
+    const baseline = dom.mutations
+
+    // 模拟鼠标移到委派行：DSH 把该行标记为 aria-selected="true"。
+    // 修复前这里会「写克隆行 aria-selected → 触发观察器 → 再扫描 → 再写」无限循环。
+    delegateRow.setAttribute('aria-selected', 'true')
+    dom.observer?.trigger()
+    await nextTurn()
+    assert.equal(proxy.getAttribute('aria-selected'), 'true', '克隆行必须同步高亮')
+
+    // 高亮期间重复触发（真实场景里悬停会持续产生记录）不得放大写入次数。
+    const afterHover = dom.mutations
+    dom.observer?.trigger()
+    await nextTurn()
+    assert.ok(
+      dom.mutations - afterHover <= 2,
+      `一次重扫不应产生连锁写入，实际新增 ${dom.mutations - afterHover} 次`,
+    )
+    assert.ok(dom.mutations - baseline < 100, '属性写入次数必须保持有界')
+  } finally {
+    controller.dispose()
+  }
+})
+
+test('菜单与弹层都不存在时，文档改动不会触发全树查询', async () => {
+  const dom = new FakeDocument()
+  const controller = startDelegateUiDom({
+    document: dom as never,
+    MutationObserver: FakeObserver as never,
+    menuLabel: () => '委派',
+    popupPlaceholder: () => '搜索外部 Agent',
+  })
+  await nextTurn()
+  try {
+    // 流式输出期间文档改动频繁；没有菜单时必须直接返回，不做任何属性写入。
+    // 计数器同时统计测试自身的写入，因此按「总数 == 测试自己写的次数」判定插件贡献为 0。
+    const unrelated = element(dom, 'div')
+    dom.body.appendChild(unrelated)
+    const writes = 3
+    for (let index = 0; index < writes; index += 1) unrelated.setAttribute('data-stream', `chunk-${index}`)
+    assert.equal(dom.mutations, writes, '没有菜单时插件不得产生任何属性写入')
   } finally {
     controller.dispose()
   }

@@ -93,11 +93,40 @@ export function startDelegateUiDom(options: DelegateUiDomOptions): DelegateUiDom
   const iconUrl = options.iconUrlForAdapter ?? providerIconUrl
   let disposed = false
   let scanQueued = false
+  let observer: MutationObserver | undefined
+
+  const observe = (): void => {
+    if (disposed || dom === undefined || observer === undefined) return
+    observer.observe(dom.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['aria-selected'],
+    })
+  }
+
+  const runScan = (): void => {
+    if (disposed || dom === undefined) return
+    // 提前退出：菜单与弹层都没打开时，文档里任何一次改动都不该触发整棵树的查询。
+    // 观察器挂在 documentElement 且带 subtree，流式输出期间改动极频繁，这步是必需的。
+    const listboxes = [...dom.querySelectorAll(MENU_LISTBOX_SELECTOR)]
+    if (listboxes.length === 0) return
+    relocateMenuRow(listboxes, options.menuLabel())
+    decoratePopupRows(listboxes, options.popupPlaceholder(), iconUrl)
+  }
 
   const scan = (): void => {
     if (disposed || dom === undefined) return
-    relocateMenuRow(dom, options.menuLabel())
-    decoratePopupRows(dom, options.popupPlaceholder(), iconUrl)
+    // 本函数会写克隆行的 aria-selected（把真实行高亮镜像到「添加」分类），而观察器
+    // 恰好盯这个属性：不摘掉观察器就会「写属性 → 触发观察器 → 再扫 → 再写」无限
+    // 循环，鼠标移到菜单（首次出现 aria-selected="true"）时页面直接卡死。断开观察器
+    // 还会丢弃已入队的记录，因此本次扫描自身的改动不会再触发自己。
+    observer?.disconnect()
+    try {
+      runScan()
+    } finally {
+      observe()
+    }
   }
 
   const scheduleScan = (): void => {
@@ -111,17 +140,10 @@ export function startDelegateUiDom(options: DelegateUiDomOptions): DelegateUiDom
   requestRefresh = scheduleScan
 
   if (dom !== undefined) installDelegateUiStyles(dom)
-  // 菜单行只在悬停/方向键变化时改写 aria-selected（结构不变），因此必须同时观察
-  // 属性，才能把高亮同步到「添加」分类里的克隆行。
-  const observer = dom === undefined || Observer === undefined ? undefined : new Observer(scheduleScan)
-  if (observer !== undefined && dom !== undefined) {
-    observer.observe(dom.documentElement, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['aria-selected'],
-    })
-  }
+  // 菜单行只在悬停/方向键变化时改写 aria-selected（结构不变），因此必须观察属性才能
+  // 把高亮同步到克隆行；扫描期间的自我触发由 scan() 里的断开-重连兜住。
+  observer = dom === undefined || Observer === undefined ? undefined : new Observer(scheduleScan)
+  observe()
   scan()
 
   return {
@@ -137,15 +159,15 @@ export function startDelegateUiDom(options: DelegateUiDomOptions): DelegateUiDom
 }
 
 /** 把插件自己的 `/` 菜单行搬进「添加」分类。 */
-function relocateMenuRow(dom: Document, label: string): void {
-  const listbox = findSlashMenuListbox(dom)
+function relocateMenuRow(listboxes: readonly Element[], label: string): void {
+  const listbox = findSlashMenuListbox(listboxes)
   if (listbox === undefined) return
   const row = findMenuRow(listbox, label)
   const section = findAddSectionTitle(listbox)
   // 只有「能造出克隆行」时才隐藏真实行：用户一旦在 `/` 后输入过滤词，DSH 会走
   // rankByName 而不产生分类标题，此时若已经隐藏真实行，委派入口就会凭空消失。
   if (row === undefined || section === undefined) {
-    removeProxies(dom)
+    removeProxies(listbox)
     if (row !== undefined) row.removeAttribute(DELEGATE_MENU_ROW_ATTRIBUTE)
     return
   }
@@ -217,18 +239,28 @@ function stripActiveClass(proxy: Element): void {
   proxy.setAttribute('class', kept.join(' '))
 }
 
-/** 真实行被方向键/悬停高亮时，克隆行同步高亮，避免「高亮看不见」。 */
+/**
+ * 真实行被方向键/悬停高亮时，克隆行同步高亮。
+ *
+ * 每次写入前都必须先比较现值：这里的属性正是观察器盯着的那个，多余的写会白白
+ * 触发一轮重扫（真正的死循环由 scan() 的断开-重连兜住，这里只减少无谓触发）。
+ */
 function syncProxyActive(row: Element, proxy: Element): void {
   const active = row.getAttribute('aria-selected') === 'true'
-  if (proxy.getAttribute('data-active') !== String(active)) proxy.setAttribute('data-active', String(active))
-  if (active) proxy.setAttribute('aria-selected', 'true')
-  else proxy.removeAttribute('aria-selected')
-  // 方向键移动时菜单会把真实行滚进视野，但用户看到的是克隆行，必须一并滚动。
-  if (active) proxy.scrollIntoView?.({ block: 'nearest' })
+  const next = String(active)
+  if (proxy.getAttribute('data-active') !== next) proxy.setAttribute('data-active', next)
+  const current = proxy.getAttribute('aria-selected')
+  if (active) {
+    if (current !== 'true') proxy.setAttribute('aria-selected', 'true')
+    // 方向键移动时菜单会把真实行滚进视野，但用户看到的是克隆行，必须一并滚动。
+    proxy.scrollIntoView?.({ block: 'nearest' })
+  } else if (current !== null) {
+    proxy.removeAttribute('aria-selected')
+  }
 }
 
-function findSlashMenuListbox(dom: Document): Element | undefined {
-  for (const listbox of dom.querySelectorAll(MENU_LISTBOX_SELECTOR)) {
+function findSlashMenuListbox(listboxes: readonly Element[]): Element | undefined {
+  for (const listbox of listboxes) {
     if (listbox.querySelector(`[id^="${MENU_OPTION_ID_PREFIX}"]`) !== null) return listbox
   }
   return undefined
@@ -279,8 +311,8 @@ function insertAfterSectionOptions(section: Element, proxy: Element): void {
 }
 
 /** 给委派弹层里的适配器行补图标。 */
-function decoratePopupRows(dom: Document, placeholder: string, iconUrl: (adapterId: string) => string | undefined): void {
-  const listbox = findDelegatePopupListbox(dom, placeholder)
+function decoratePopupRows(listboxes: readonly Element[], placeholder: string, iconUrl: (adapterId: string) => string | undefined): void {
+  const listbox = findDelegatePopupListbox(listboxes, placeholder)
   if (listbox === undefined) return
   for (const row of listbox.querySelectorAll(MENU_OPTION_SELECTOR)) {
     if (row.querySelector(`[${DELEGATE_POPUP_LOGO_ATTRIBUTE}]`) !== null) continue
@@ -288,7 +320,7 @@ function decoratePopupRows(dom: Document, placeholder: string, iconUrl: (adapter
     if (adapterId === undefined) continue
     const url = iconUrl(adapterId)
     if (url === undefined) continue
-    const image = dom.createElement('img')
+    const image = listbox.ownerDocument.createElement('img')
     image.setAttribute('src', url)
     image.setAttribute('alt', '')
     image.setAttribute('aria-hidden', 'true')
@@ -298,8 +330,8 @@ function decoratePopupRows(dom: Document, placeholder: string, iconUrl: (adapter
 }
 
 /** 通过插件自己的搜索占位符识别委派弹层，避免影响其它 popupSelect 命令。 */
-function findDelegatePopupListbox(dom: Document, placeholder: string): Element | undefined {
-  for (const listbox of dom.querySelectorAll(MENU_LISTBOX_SELECTOR)) {
+function findDelegatePopupListbox(listboxes: readonly Element[], placeholder: string): Element | undefined {
+  for (const listbox of listboxes) {
     if (listbox.querySelector(`[id^="${MENU_OPTION_ID_PREFIX}"]`) !== null) continue
     const card = listbox.parentNode
     const input = card?.querySelector?.('input') ?? null
@@ -318,8 +350,8 @@ function adapterIdForLabel(label: string): string | undefined {
   return popupOptions.find((option) => option.label === label)?.id
 }
 
-function removeProxies(dom: Document): void {
-  for (const proxy of dom.querySelectorAll(`[${DELEGATE_MENU_PROXY_ATTRIBUTE}]`)) proxy.remove()
+function removeProxies(scope: Element): void {
+  for (const proxy of scope.querySelectorAll(`[${DELEGATE_MENU_PROXY_ATTRIBUTE}]`)) proxy.remove()
 }
 
 function removeDelegateNodes(dom: Document): void {
