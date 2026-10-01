@@ -12,6 +12,10 @@ type PrimitiveExports = typeof primitives & {
   readonly IconDataOutlineRegular?: IconComponent
   readonly IconDataOutlineMedium?: IconComponent
   readonly IconDataOutline16?: IconComponent
+  readonly IconShareOutlineRegular?: IconComponent
+  readonly IconShareOutlineMedium?: IconComponent
+  readonly IconSendOutlineRegular?: IconComponent
+  readonly IconSendOutlineMedium?: IconComponent
 }
 
 const unavailableIcon: IconComponent = () => null
@@ -37,4 +41,17 @@ export function resolveChevronDownIcon(): IconComponent {
 export function resolveDataIcon(): IconComponent {
   const value = primitives as PrimitiveExports
   return value.IconDataOutlineRegular ?? value.IconDataOutlineMedium ?? value.IconDataOutline16 ?? unavailableIcon
+}
+
+/**
+ * `/委派` 菜单行图标：优先使用共享（send/share）字形，缺失时回退到插件通用的
+ * data 图标，保证旧版 DSH 仍能渲染出一行可识别的委派入口。
+ */
+export function resolveDelegateIcon(): IconComponent {
+  const value = primitives as PrimitiveExports
+  return value.IconShareOutlineRegular
+    ?? value.IconShareOutlineMedium
+    ?? value.IconSendOutlineRegular
+    ?? value.IconSendOutlineMedium
+    ?? resolveDataIcon()
 }
