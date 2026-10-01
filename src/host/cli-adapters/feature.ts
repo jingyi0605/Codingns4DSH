@@ -285,6 +285,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             ...(permission === undefined ? {} : { permission }),
             ...(config.modelId ? { modelId: config.modelId } : {}),
             ...(config.effortId ? { effortId: config.effortId } : {}),
+            ...(config.serviceTierId ? { serviceTierId: config.serviceTierId } : {}),
             ...(config.providerSessionId ? { providerSessionId: config.providerSessionId } : {}),
             ...(config.rawStoreRef ? { rawStoreRef: config.rawStoreRef } : {}),
             ...(cwd === undefined ? {} : { cwd }),
@@ -454,6 +455,9 @@ function readSessionConfig(value: unknown): CodingNsCliSessionConfig {
     adapterId,
     ...(typeof record?.modelId === 'string' && record.modelId.trim() ? { modelId: record.modelId.trim() } : {}),
     ...(typeof record?.effortId === 'string' && record.effortId.trim() ? { effortId: record.effortId.trim() } : {}),
+    // `default` 是显式的“标准速度”选择，不能当作空值丢弃，否则关掉 Fast 会被
+    // Registry 回退成上一次记住的加速档。
+    ...(typeof record?.serviceTierId === 'string' && record.serviceTierId.trim() ? { serviceTierId: record.serviceTierId.trim() } : {}),
     ...(typeof record?.providerId === 'string' && record.providerId.trim() ? { providerId: record.providerId.trim() } : {}),
     ...(typeof record?.providerSessionId === 'string' && record.providerSessionId.trim() ? { providerSessionId: record.providerSessionId.trim() } : {}),
   }

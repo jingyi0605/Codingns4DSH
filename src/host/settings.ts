@@ -29,6 +29,7 @@ export const CodingNsSettingsSchema = z.object({
   agentAdapterPreferences: z.dict(z.object({
     modelId: z.union([z.string(), z.const(undefined)]),
     effortId: z.union([z.string(), z.const(undefined)]),
+    serviceTierId: z.union([z.string(), z.const(undefined)]),
   })).default({}),
   subagentBridge: z.object({
     enabled: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.subagentBridge?.enabled ?? false),

@@ -30,6 +30,7 @@ export interface CodingNsCliSessionPatch {
   readonly adapterId?: CodingNsCliAdapterId
   readonly modelId?: string
   readonly effortId?: string
+  readonly serviceTierId?: string
   readonly providerId?: string
   readonly providerSessionId?: string
   readonly rawStoreRef?: string
@@ -155,6 +156,7 @@ export class CodingNsCliSessionStore {
         adapterId: parent.adapterId,
         ...(parent.modelId === undefined ? {} : { modelId: parent.modelId }),
         ...(parent.effortId === undefined ? {} : { effortId: parent.effortId }),
+        ...(parent.serviceTierId === undefined ? {} : { serviceTierId: parent.serviceTierId }),
         ...(cwd === undefined ? {} : { cwd }),
         status: existing?.status ?? 'idle',
       })
@@ -181,6 +183,7 @@ export class CodingNsCliSessionStore {
       adapterId,
       ...(patch.modelId?.trim() ? { modelId: patch.modelId.trim() } : base?.modelId ? { modelId: base.modelId } : {}),
       ...(patch.effortId?.trim() ? { effortId: patch.effortId.trim() } : base?.effortId ? { effortId: base.effortId } : {}),
+      ...(patch.serviceTierId?.trim() ? { serviceTierId: patch.serviceTierId.trim() } : base?.serviceTierId ? { serviceTierId: base.serviceTierId } : {}),
       ...(patch.providerId?.trim() ? { providerId: patch.providerId.trim() } : base?.providerId ? { providerId: base.providerId } : {}),
       ...(providerSessionId ? { providerSessionId } : base?.providerSessionId ? { providerSessionId: base.providerSessionId } : {}),
       ...(patch.rawStoreRef?.trim() ? { rawStoreRef: patch.rawStoreRef.trim() } : providerBase?.rawStoreRef ? { rawStoreRef: providerBase.rawStoreRef } : {}),
@@ -260,6 +263,7 @@ export class CodingNsCliSessionStore {
       adapterId: value.adapterId,
       ...(stringValue(value.modelId) ? { modelId: stringValue(value.modelId)! } : {}),
       ...(stringValue(value.effortId) ? { effortId: stringValue(value.effortId)! } : {}),
+      ...(stringValue(value.serviceTierId) ? { serviceTierId: stringValue(value.serviceTierId)! } : {}),
       ...(stringValue(value.providerId) ? { providerId: stringValue(value.providerId)! } : {}),
       ...(stringValue(value.providerSessionId) ? { providerSessionId: stringValue(value.providerSessionId)! } : {}),
       ...(stringValue(value.rawStoreRef) ? { rawStoreRef: stringValue(value.rawStoreRef)! } : {}),

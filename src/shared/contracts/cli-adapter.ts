@@ -31,12 +31,31 @@ export type CodingNsCliCapability =
   | 'questions'
   | 'steer'
 
+/**
+ * Provider 声明的服务档位（例如 Codex 官方订阅的 Fast / Standard）。
+ *
+ * `id` 是 Provider 线协议取值，`default` 保留给标准速度；`name` 与 `description`
+ * 只用于展示，Host 不得据此推断档位语义。
+ */
+export interface CodingNsCliServiceTier {
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+}
+
 /** 适配器模型及其可用思考强度。 */
 export interface CodingNsCliModel {
   readonly id: string
   readonly name: string
   readonly description?: string
   readonly efforts: readonly string[]
+  /**
+   * Provider 为该模型声明的服务档位；空数组或缺省表示不支持档位切换。
+   *
+   * 目录声明只说明“该模型可以选”，是否真正可用还取决于账号类型，见
+   * `CodingNsCliModelCatalog.officialSubscription`。
+   */
+  readonly serviceTiers?: readonly CodingNsCliServiceTier[]
 }
 
 export interface CodingNsCliModelGroup {
@@ -49,6 +68,23 @@ export interface CodingNsCliModelCatalog {
   readonly groups: readonly CodingNsCliModelGroup[]
   readonly currentModel: string | null
   readonly currentEffort: string | null
+  /**
+   * Provider 是否确认当前使用官方订阅。
+   *
+   * 服务档位是官方订阅能力：第三方中转或纯 API key 接入时，目录仍可能返回
+   * 档位元数据，但档位不会真正生效。缺省表示未确认，UI 必须按不可用处理，
+   * 不能把“没读到”当成“已确认官方订阅”。
+   */
+  readonly officialSubscription?: boolean
+  /**
+   * Provider 自身配置的默认档位，即 DSH 没有显式选择时线程真正生效的档位。
+   *
+   * 必须来自 Provider 的配置（Codex 的 `config/read.service_tier`），不能用
+   * `model/list` 的 `defaultServiceTier`：后者只是目录元数据，app-server 在
+   * `thread/start` 时并不会自动应用它（实测 gpt-6-luna 声明 priority，线程仍为
+   * null）。用错来源会让开关显示“Fast 已开启”，而线程实际以标准档运行。
+   */
+  readonly defaultServiceTier?: string | null
 }
 
 /** DSH 0.2 Agent Team 能力诊断；明确区分“未接入”与“可用”。 */
@@ -63,6 +99,14 @@ export interface CodingNsCliSessionConfig {
   readonly adapterId: CodingNsCliAdapterId
   readonly modelId?: string
   readonly effortId?: string
+  /**
+   * Provider 服务档位（例如 Codex 的 `priority` = Fast）。
+   *
+   * `default` 与缺省语义不同：`default` 是用户显式选择的“标准速度”，驱动必须把它
+   * 下发给 Provider；缺省表示 Host 没有该选择，驱动不得擅自改写 Provider 现状。
+   * 界面关闭 Fast 时必须写 `default`，否则线程会保留上一次的加速档。
+   */
+  readonly serviceTierId?: string
   /** DSH 原生模型提供商，例如 deepseek-official、glor；不包含凭据。 */
   readonly providerId?: string
   /** 外部运行时会话标识，只保存在 Host 会话表中。 */
@@ -151,6 +195,8 @@ export interface CodingNsCliTurnInput {
   readonly permission?: CodingNsCliPermissionState
   readonly modelId?: string
   readonly effortId?: string
+  /** Provider 服务档位；`default` 表示标准速度，缺省表示不下发、沿用 Provider 默认。 */
+  readonly serviceTierId?: string
   readonly cwd?: string
   readonly signal?: AbortSignal
   readonly providerSessionId?: string

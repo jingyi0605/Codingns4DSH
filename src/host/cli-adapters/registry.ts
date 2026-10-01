@@ -141,7 +141,7 @@ export class CodingNsCliAdapterRegistry {
   private readonly sessionStore: CodingNsCliSessionStore | undefined
   private readonly nativeSessions: CodingNsNativeSessionBridge | undefined
   private readonly settings: DshHostSettingsScope<CodingNsSettings> | undefined
-  private readonly preferences = new Map<CodingNsCliAdapterId, { modelId?: string; effortId?: string }>()
+  private readonly preferences = new Map<CodingNsCliAdapterId, { modelId?: string; effortId?: string; serviceTierId?: string }>()
 
   /** Host 启动后预热安装状态；定时器让同步 CLI 探测不阻塞功能模块装配。 */
   warmCatalog(): void {
@@ -238,6 +238,15 @@ export class CodingNsCliAdapterRegistry {
           : remembered?.effortId
             ? { effortId: remembered.effortId }
             : {}),
+      // 服务档位是“显式选择”而不是“可回退的最近值”：`default` 表示标准速度，
+      // 与 undefined（Host 没有该选择）语义不同，必须原样保留，不能被记忆值覆盖。
+      ...(config.serviceTierId?.trim()
+        ? { serviceTierId: config.serviceTierId.trim() }
+        : sameAdapter && previous?.serviceTierId
+          ? { serviceTierId: previous.serviceTierId }
+          : remembered?.serviceTierId
+            ? { serviceTierId: remembered.serviceTierId }
+            : {}),
       ...(config.providerId?.trim()
         ? { providerId: config.providerId.trim() }
         : sameAdapter && previous?.providerId
@@ -284,21 +293,24 @@ export class CodingNsCliAdapterRegistry {
     for (const [adapterId, preference] of Object.entries(value)) {
       const modelId = preference?.modelId?.trim()
       const effortId = preference?.effortId?.trim()
-      if (modelId === undefined && effortId === undefined) continue
+      const serviceTierId = preference?.serviceTierId?.trim()
+      if (modelId === undefined && effortId === undefined && serviceTierId === undefined) continue
       this.preferences.set(adapterId, {
         ...(modelId ? { modelId } : {}),
         ...(effortId ? { effortId } : {}),
+        ...(serviceTierId ? { serviceTierId } : {}),
       })
     }
   }
 
-  private findRememberedPreference(adapterId: CodingNsCliAdapterId): { modelId?: string; effortId?: string } | undefined {
+  private findRememberedPreference(adapterId: CodingNsCliAdapterId): { modelId?: string; effortId?: string; serviceTierId?: string } | undefined {
     const records = this.sessionStore?.list({ includeArchived: true, adapterId }) ?? []
     for (const record of records) {
-      if (record.modelId !== undefined || record.effortId !== undefined) {
+      if (record.modelId !== undefined || record.effortId !== undefined || record.serviceTierId !== undefined) {
         const preference = {
           ...(record.modelId ? { modelId: record.modelId } : {}),
           ...(record.effortId ? { effortId: record.effortId } : {}),
+          ...(record.serviceTierId ? { serviceTierId: record.serviceTierId } : {}),
         }
         this.preferences.set(adapterId, preference)
         return preference
@@ -311,11 +323,13 @@ export class CodingNsCliAdapterRegistry {
     const previous = this.preferences.get(adapterId)
     const modelId = config.modelId?.trim() || previous?.modelId
     const effortId = config.effortId?.trim() || previous?.effortId
-    if (modelId === undefined && effortId === undefined) return
-    if (previous?.modelId === modelId && previous?.effortId === effortId) return
+    const serviceTierId = config.serviceTierId?.trim() || previous?.serviceTierId
+    if (modelId === undefined && effortId === undefined && serviceTierId === undefined) return
+    if (previous?.modelId === modelId && previous?.effortId === effortId && previous?.serviceTierId === serviceTierId) return
     const preference = {
       ...(modelId ? { modelId } : {}),
       ...(effortId ? { effortId } : {}),
+      ...(serviceTierId ? { serviceTierId } : {}),
     }
     this.preferences.set(adapterId, preference)
     if (this.settings === undefined) return
@@ -345,6 +359,7 @@ export class CodingNsCliAdapterRegistry {
         adapterId: stored.adapterId,
         ...(stored.modelId === undefined ? {} : { modelId: stored.modelId }),
         ...(stored.effortId === undefined ? {} : { effortId: stored.effortId }),
+        ...(stored.serviceTierId === undefined ? {} : { serviceTierId: stored.serviceTierId }),
         ...(stored.providerId === undefined ? {} : { providerId: stored.providerId }),
         ...(stored.providerSessionId === undefined ? {} : { providerSessionId: stored.providerSessionId }),
         ...(stored.rawStoreRef === undefined ? {} : { rawStoreRef: stored.rawStoreRef }),
@@ -358,6 +373,7 @@ export class CodingNsCliAdapterRegistry {
       adapterId: 'dsh',
       ...(remembered?.modelId ? { modelId: remembered.modelId } : {}),
       ...(remembered?.effortId ? { effortId: remembered.effortId } : {}),
+      ...(remembered?.serviceTierId ? { serviceTierId: remembered.serviceTierId } : {}),
     }, this.nativeSessions?.get(sessionId))
   }
 
@@ -391,6 +407,7 @@ export class CodingNsCliAdapterRegistry {
       ...(previous ?? { adapterId: input.adapterId }),
       ...(input.modelId?.trim() ? { modelId: input.modelId.trim() } : {}),
       ...(input.effortId?.trim() ? { effortId: input.effortId.trim() } : {}),
+      ...(input.serviceTierId?.trim() ? { serviceTierId: input.serviceTierId.trim() } : {}),
     }
     // 除了 Client 的 session/set，Host 内部和未来的调用方也可能直接执行一轮。
     // 最近使用应由真实执行参数更新，不能依赖某个 UI 一定先发 RPC。
@@ -909,10 +926,12 @@ function normalizePreference(value: CodingNsCliAdapterPreference | undefined): C
   if (value === undefined) return undefined
   const modelId = value.modelId?.trim()
   const effortId = value.effortId?.trim()
-  if (modelId === undefined && effortId === undefined) return undefined
+  const serviceTierId = value.serviceTierId?.trim()
+  if (modelId === undefined && effortId === undefined && serviceTierId === undefined) return undefined
   return {
     ...(modelId ? { modelId } : {}),
     ...(effortId ? { effortId } : {}),
+    ...(serviceTierId ? { serviceTierId } : {}),
   }
 }
 
@@ -924,6 +943,7 @@ function hasMissingPreferences(
     const current = configured?.[adapterId]
     if (legacyPreference.modelId !== undefined && !hasText(current?.modelId)) return true
     if (legacyPreference.effortId !== undefined && !hasText(current?.effortId)) return true
+    if (legacyPreference.serviceTierId !== undefined && !hasText(current?.serviceTierId)) return true
   }
   return false
 }

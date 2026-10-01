@@ -2,10 +2,12 @@ import type { FeatureDescriptor } from './feature.js'
 import type { CodingNsCliSessionRecord } from './cli-adapter.js'
 import { isDshVersionAtLeast } from './version.js'
 
-/** 适配器最近一次使用的模型与思考强度。 */
+/** 适配器最近一次使用的模型、思考强度与服务档位。 */
 export interface CodingNsCliAdapterPreference {
   readonly modelId?: string | undefined
   readonly effortId?: string | undefined
+  /** Provider 服务档位（例如 Codex 官方订阅的 Fast）；`default` 表示标准速度。 */
+  readonly serviceTierId?: string | undefined
 }
 
 /** Codingns4DSH 在 DSH 设置文档中持久化的用户选项。 */
