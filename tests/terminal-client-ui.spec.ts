@@ -84,3 +84,22 @@ test('终端 Guide Entry 交给 Slots 注入器处理延迟声明', async () => 
   assert.match(source, /disposers\.push\(ctx\.slots\.inject\('sidebar\.right\.tab\.guide\.entry'/u)
   assert.doesNotMatch(source, /guideEntrySlot/u)
 })
+
+test('运行时丢失显示重建入口而不是假的进程退出', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/terminal/xterm-view.ts'), 'utf8')
+  // lost 是终态：给"重建终端"，不能再给只会重复失败的"重新连接"。
+  assert.match(source, /const lost = state\.info\?\.state === 'lost'/u)
+  assert.match(source, /terminalView\.rebuild/u)
+  assert.match(source, /const retry = !ended && !lost/u)
+  // 状态文案必须区分"运行时丢失"和"进程已退出"。
+  assert.match(source, /if \(state\.info\?\.state === 'lost'\) return t\('terminalView\.lost'\)/u)
+})
+
+test('客户端在连接层断开时自动重连，终态才停下', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/terminal/model.ts'), 'utf8')
+  // 流结束/异常但终端仍在运行 -> 退避重连。
+  assert.match(source, /if \(this\.isRunning\(\)\) this\.scheduleReconnect\(\)/u)
+  assert.match(source, /private scheduleReconnect\(\): void/u)
+  // 真正收到画面后重置退避，避免长时间使用后重连变慢。
+  assert.match(source, /this\.reconnectAttempts = 0/u)
+})

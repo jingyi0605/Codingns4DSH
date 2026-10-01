@@ -18,6 +18,8 @@ import { FeatureResourceScopeImpl } from '../data/build/dist/features/registry.j
 class FakeRuntimeAdapter {
   runtimeTypes = ['local-pty']
   sessions = new Map()
+  /** 模拟 backend 从持久 shell 拿到的真实退出码；缺失表示运行时丢失。 */
+  exits = new Map()
   attachments = new Map()
   writes = []
   attachCount = 0
@@ -28,6 +30,7 @@ class FakeRuntimeAdapter {
     if (current) return this.identity(session, current.pid)
     const process = { pid: ++this.nextPid, session }
     this.sessions.set(session.runtimeSessionKey, process)
+    this.exits.delete(session.runtimeSessionKey)
     return this.identity(session, process.pid)
   }
 
@@ -52,7 +55,14 @@ class FakeRuntimeAdapter {
   async terminate(session) { this.sessions.delete(session.runtimeSessionKey) }
 
   identity(session, pid, alive = pid !== null) {
-    return { alive, runtimeSessionKey: session.runtimeSessionKey, runtimePid: pid, shellPid: pid }
+    const exitCode = this.exits.get(session.runtimeSessionKey)
+    return {
+      alive,
+      runtimeSessionKey: session.runtimeSessionKey,
+      runtimePid: pid,
+      shellPid: pid,
+      ...(alive ? {} : { exitCode: exitCode ?? null }),
+    }
   }
 }
 
@@ -133,10 +143,26 @@ test('PTY 自然退出会同步收敛 ProcessInstance 终态', async () => {
   await processService.createProfile(profile())
   const launched = await processService.launch({ workspaceId: 'workspace-a', profileId: 'dev', cols: 80, rows: 24 })
   const monitor = [...adapter.attachments.values()][0]
+  // 运行时消失且 backend 报告真实退出码 3，才算"进程退出"。
+  adapter.sessions.clear()
+  adapter.exits.set(monitor.session.runtimeSessionKey, 3)
   monitor.onExit(3)
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(processService.getInstance(launched.instance.id)?.state, 'exited')
   assert.equal(processService.getInstance(launched.instance.id)?.exitCode, 3)
+})
+
+test('连接层断开不会把 ProcessInstance 写成 exited', async () => {
+  const { adapter, processService } = await setup()
+  await processService.createProfile(profile())
+  const launched = await processService.launch({ workspaceId: 'workspace-a', profileId: 'dev', cols: 80, rows: 24 })
+  const monitor = [...adapter.attachments.values()][0]
+  // 客户端以 1 退出但没有真实退出码：只能报告运行时丢失。
+  adapter.sessions.clear()
+  monitor.onExit(1)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(processService.getInstance(launched.instance.id)?.state, 'lost')
+  assert.notEqual(processService.getInstance(launched.instance.id)?.exitCode, 1)
 })
 
 test('启动项工作目录不能越出 Workspace', async () => {
