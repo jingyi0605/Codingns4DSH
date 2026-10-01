@@ -323,10 +323,35 @@ export class CodingNsCliAdapterRegistry {
     void this.settings.update({ agentAdapterPreferences: snapshot }).catch(() => undefined)
   }
 
+  /**
+   * 会话索引。迁移 fork 子会话的继承绑定需要在 Registry 外部补写记录，
+   * 因此这里暴露只读引用，避免调用方自己再建一份索引。
+   */
+  get sessionRecords(): CodingNsCliSessionStore | undefined {
+    return this.sessionStore
+  }
+
   getSession(sessionId: string): CodingNsCliSessionConfig {
     const session = this.sessions.get(sessionId)
     if (session !== undefined && (session.adapterId === 'dsh' || this.isEnabled(session.adapterId))) {
       return session.adapterId === 'dsh' ? mergeDshNativeSelection(session, this.nativeSessions?.get(sessionId)) : session
+    }
+    // 迁移可能在 Registry 构造之后才完成（用户点击打开旧会话、或 fork 子会话
+    // 刚被加载）。此时必须读取 SessionStore，否则子会话会被当成 DSH 主会话，
+    // 用户看到的仍是“默认 DSH Agent”。
+    const stored = this.sessionStore?.get(sessionId)
+    if (stored !== undefined && stored.adapterId !== 'dsh' && this.isEnabled(stored.adapterId)) {
+      const config: CodingNsCliSessionConfig = {
+        adapterId: stored.adapterId,
+        ...(stored.modelId === undefined ? {} : { modelId: stored.modelId }),
+        ...(stored.effortId === undefined ? {} : { effortId: stored.effortId }),
+        ...(stored.providerId === undefined ? {} : { providerId: stored.providerId }),
+        ...(stored.providerSessionId === undefined ? {} : { providerSessionId: stored.providerSessionId }),
+        ...(stored.rawStoreRef === undefined ? {} : { rawStoreRef: stored.rawStoreRef }),
+        ...(stored.parentSessionId === undefined ? {} : { parentSessionId: stored.parentSessionId }),
+      }
+      this.sessions.set(sessionId, config)
+      return config
     }
     const remembered = this.preferences.get('dsh') ?? this.findRememberedPreference('dsh')
     return mergeDshNativeSelection({

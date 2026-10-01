@@ -37,10 +37,15 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         return new ProviderSubscriptionService({ commandCode: new CommandCodeSubscriptionService({ timeoutMs }), timeoutMs })
       }
       let subscriptions = buildSubscriptions(context.services.settings?.get())
-      const sessionStore = new CodingNsCliSessionStore(context.services.settings === undefined ? {} : { settings: context.services.settings })
+      // 注入的 registry 自带 SessionStore；只有自建时才有本地 store 变量。
+      const sessionStore = options.registry?.sessionRecords
+        ?? new CodingNsCliSessionStore(context.services.settings === undefined ? {} : { settings: context.services.settings })
       const nativeSessions = context.services.nativeSessions
+      // fork 子会话的绑定来自父会话，启动迁移也必须补齐祖先链。
       if (nativeSessions !== undefined) {
-        const migration = sessionStore.migrateLegacySessions(nativeSessions.list())
+        const migration = sessionStore.migrateLegacySessions(
+          expandMigrationChain(nativeSessions, nativeSessions.list()),
+        )
         if (migration.migrated > 0 || migration.unresolved > 0) {
           console.info('codingns4dsh: 旧外部会话适配器迁移完成', migration)
         }
@@ -78,8 +83,11 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             const eventType = nativeEventType(event)
             if (sessionId === undefined || eventType === undefined) return
             // 旧会话可能不在启动时的 SessionStore.list() 中，直到用户点击
-            // 侧栏才加载。加载事件本身携带完整快照，此时补做一次迁移。
-            if (sessionStore.get(sessionId) === undefined) sessionStore.migrateLegacySessions([session])
+            // 侧栏才加载。加载事件本身携带完整快照，此时补做一次迁移；
+            // fork 子会话的绑定来自父会话，必须把祖先链一起交给迁移。
+            if (sessionStore.get(sessionId) === undefined) {
+              sessionStore.migrateLegacySessions(collectMigrationChain(nativeSessions, session))
+            }
             const current = sessionStore.get(sessionId)
             if (current === undefined || current.status === 'archived') return
             if (eventType === 'turn/start') {
@@ -102,7 +110,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           case 'session/adapter-map':
             // DSH 历史会话的 seed 事件不会发布 session/event；每次读取映射时
             // 重新检查当前已加载对象，覆盖“用户刚点击打开旧会话”的路径。
-            if (nativeSessions !== undefined) sessionStore.migrateLegacySessions(nativeSessions.list())
+            // 子会话的父会话可能尚未出现在 list() 里，按需补齐祖先链。
+            if (nativeSessions !== undefined) {
+              sessionStore.migrateLegacySessions(expandMigrationChain(nativeSessions, nativeSessions.list()))
+            }
             return sessionStore.adapterBindings()
           case 'session/archive': return registry.archiveSession(readSessionId(payload))
           case 'session/steer': return registry.steer(readSessionId(payload), readPrompt(payload), false)
@@ -145,6 +156,16 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           if (value?.purpose === 'session-title' || value?.purpose === 'compaction') {
             yield* next()
             return
+          }
+          // fork 子会话继承父会话历史，但可能还没被任何 RPC 触碰过；用户直接在
+          // 子会话里发消息时，这里必须补一次迁移，否则子会话会被当成默认 DSH
+          // 会话，用户看到的仍是 DSH 主模型而不是原来的外部 Agent。子会话的
+          // 绑定来自父会话，所以父会话必须一起进入同一批迁移。
+          if (sessionId !== '' && nativeSessions !== undefined) {
+            const nativeSession = nativeSessions.get(sessionId)
+            if (nativeSession !== undefined) {
+              sessionStore.migrateLegacySessions(collectMigrationChain(nativeSessions, nativeSession))
+            }
           }
           const storedConfig = sessionId ? registry.getSession(sessionId) : { adapterId: 'dsh' }
           // DSH 原生请求仍会携带当前模型提供方。旧会话在重载后可能暂时
@@ -397,6 +418,50 @@ function readModelSelectionCandidates(value: Record<string, any> | null): Record
     if (lastUsed !== null) result.push(lastUsed)
     if (next !== null) result.push(next)
     if (pending !== null) result.push(pending)
+  }
+  return result
+}
+
+/**
+ * 分叉子会话的绑定来自父会话，迁移时必须把祖先链一起交给 SessionStore。
+ * 只传子会话会让继承逻辑找不到父记录，子会话继续停留在 dsh。
+ */
+function collectMigrationChain(
+  nativeSessions: CodingNsHostServices['nativeSessions'],
+  session: unknown,
+): readonly unknown[] {
+  const chain: unknown[] = [session]
+  const seen = new Set<string>()
+  let current = session
+  for (let depth = 0; depth < 16; depth += 1) {
+    const record = asRecord(current)
+    const header = asRecord(record?.header)
+    const parentSessionId = typeof header?.parentSession === 'string' ? header.parentSession.trim() : ''
+    if (parentSessionId === '' || seen.has(parentSessionId)) break
+    seen.add(parentSessionId)
+    const parent = nativeSessions?.get(parentSessionId)
+    if (parent === undefined) break
+    chain.push(parent)
+    current = parent
+  }
+  return chain
+}
+
+/** 对一批会话逐个补齐祖先链，保持原有顺序并去重。 */
+function expandMigrationChain(
+  nativeSessions: CodingNsHostServices['nativeSessions'],
+  sessions: readonly unknown[],
+): readonly unknown[] {
+  const result: unknown[] = []
+  const seen = new Set<string>()
+  for (const session of sessions) {
+    for (const entry of collectMigrationChain(nativeSessions, session)) {
+      const record = asRecord(entry)
+      const id = typeof record?.id === 'string' ? record.id : ''
+      if (id !== '' && seen.has(id)) continue
+      if (id !== '') seen.add(id)
+      result.push(entry)
+    }
   }
   return result
 }

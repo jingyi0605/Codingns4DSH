@@ -107,21 +107,55 @@ export class CodingNsCliSessionStore {
     }))
   }
 
-  /** 启动时把旧 DSH 原生会话中有明确证据的适配器回填到 Host 索引。 */
+  /**
+   * 启动时把旧 DSH 原生会话中有明确证据的适配器回填到 Host 索引。
+   *
+   * 两遍处理：先按会话自身日志回填，再让 `isSeeded` 分叉子会话继承父会话
+   * 已经确认的绑定。父会话可能排在子会话之后，所以继承必须单独走第二遍。
+   */
   migrateLegacySessions(sessions: readonly unknown[]): { migrated: number; unresolved: number } {
     let migrated = 0
     let unresolved = 0
+    const pendingInheritance: { readonly sessionId: string; readonly parentSessionId: string; readonly cwd?: string }[] = []
     for (const session of sessions) {
       const evidence = inspectLegacySessionAdapter(session)
-      const existing = evidence === undefined ? undefined : this.records.get(evidence.sessionId)
-      if (evidence === undefined || existing !== undefined && existing.adapterId !== 'dsh') continue
+      if (evidence === undefined) continue
+      // 自身日志没有外部证据、但确实是 fork 子会话：绑定只能来自父会话，
+      // 放进第二遍。自身已有外部证据的会话一律按自己的日志处理。
+      if (!evidence.external && evidence.adapterId === undefined
+        && evidence.seeded && evidence.parentSessionId !== undefined) {
+        pendingInheritance.push({
+          sessionId: evidence.sessionId,
+          parentSessionId: evidence.parentSessionId,
+          ...(evidence.cwd === undefined ? {} : { cwd: evidence.cwd }),
+        })
+        continue
+      }
+      const existing = this.records.get(evidence.sessionId)
+      if (existing !== undefined && existing.adapterId !== 'dsh') continue
       if (evidence.adapterId === undefined) {
-        unresolved += 1
+        // 有外部证据但适配器不唯一：计入 unresolved，避免静默丢失绑定。
+        if (evidence.external) unresolved += 1
         continue
       }
       this.upsert(evidence.sessionId, {
         adapterId: evidence.adapterId,
         ...(evidence.cwd === undefined ? {} : { cwd: evidence.cwd }),
+        status: existing?.status ?? 'idle',
+      })
+      migrated += 1
+    }
+    for (const pending of pendingInheritance) {
+      const existing = this.records.get(pending.sessionId)
+      if (existing !== undefined && existing.adapterId !== 'dsh') continue
+      const parent = this.records.get(pending.parentSessionId)
+      if (parent === undefined || parent.adapterId === 'dsh') continue
+      const cwd = pending.cwd ?? parent.cwd
+      this.upsert(pending.sessionId, {
+        adapterId: parent.adapterId,
+        ...(parent.modelId === undefined ? {} : { modelId: parent.modelId }),
+        ...(parent.effortId === undefined ? {} : { effortId: parent.effortId }),
+        ...(cwd === undefined ? {} : { cwd }),
         status: existing?.status ?? 'idle',
       })
       migrated += 1

@@ -15,6 +15,9 @@ export const KNOWN_CLI_ADAPTER_IDS = new Set<CodingNsCliAdapterId>([
 export interface LegacySessionAdapterEvidence {
   readonly sessionId: string
   readonly adapterId?: CodingNsCliAdapterId
+  /** 分叉子会话的父会话；父会话已绑定外部适配器时，子会话必须继承。 */
+  readonly parentSessionId?: string
+  readonly seeded: boolean
   readonly cwd?: string
   readonly createdAt?: string
   readonly external: boolean
@@ -22,8 +25,14 @@ export interface LegacySessionAdapterEvidence {
 
 /**
  * 从 DSH 原生会话快照读取旧版外部 Agent 的适配器证据。
- * `codingns-external` 只能证明消息来自外部 Agent；只有 source/provider 或
- * request/context 中出现当前已知适配器 ID 时才回填，避免把 DSH 模型提供方误认成 CLI。
+ *
+ * 两级证据：
+ * 1. 会话自身日志：`codingns-external` 只能证明消息来自外部 Agent；只有
+ *    source/provider 或 request/context 中出现当前已知适配器 ID 时才回填，
+ *    避免把 DSH 模型提供方误认成 CLI。
+ * 2. 分叉继承：`isSeeded` 子会话自身可能没有任何插件痕迹——外部 Agent 只
+ *    回了一段文本、没调工具时，日志里只有父会话继承下来的 request/context。
+ *    此时由调用方按 `parentSessionId` 继承父会话已确认的绑定。
  */
 export function inspectLegacySessionAdapter(value: unknown): LegacySessionAdapterEvidence | undefined {
   const record = asRecord(value)
@@ -50,15 +59,17 @@ export function inspectLegacySessionAdapter(value: unknown): LegacySessionAdapte
     if (pluginSource) addCandidate(candidates, sourceProvider)
     if (eventRecord.type === 'request/context') addCandidate(candidates, firstString(data?.adapterId, data?.provider))
   }
-  if (!external) return undefined
-  const adapterId = candidates.size === 1 ? [...candidates][0] : undefined
+  const adapterId = external && candidates.size === 1 ? [...candidates][0] : undefined
+  const parentSessionId = firstString(header?.parentSession)
   return {
     sessionId,
     ...(adapterId === undefined ? {} : { adapterId }),
+    ...(parentSessionId === undefined ? {} : { parentSessionId }),
+    seeded: header?.isSeeded === true,
     ...(typeof header?.cwd === 'string' && header.cwd.trim() ? { cwd: header.cwd.trim() } : {}),
     ...(typeof header?.createdAt === 'number' ? { createdAt: new Date(header.createdAt).toISOString() } : {}),
     ...(typeof header?.createdAt === 'string' && header.createdAt.trim() ? { createdAt: header.createdAt } : {}),
-    external: true,
+    external,
   }
 }
 

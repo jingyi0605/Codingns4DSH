@@ -8,6 +8,7 @@ import { createCliAdaptersFeature } from '../data/build/dist/host/cli-adapters/f
 import { CommandCodeDriver } from '../data/build/dist/host/cli-adapters/command-code-driver.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
+import { CodingNsCliSessionStore } from '../data/build/dist/host/cli-adapters/session-store.js'
 import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
 import { FeatureRegistry } from '../data/build/dist/features/registry.js'
 import { CommandCodeSubscriptionService } from '../data/build/dist/host/cli-adapters/command-code-subscription.js'
@@ -1859,5 +1860,94 @@ test('DSH 权限服务不可用时不下发权限字段，驱动沿用保守默�
   for await (const _chunk of listener!({ sessionId: 'codex-no-permission', messages: [{ role: 'user', content: '检查权限' }] }, async function* () {})) { /* 消费完整流 */ }
 
   assert.equal(received?.permission, undefined)
+  await features.disable('cliAdapters')
+})
+
+test('stage0 形态：fork 子会话被识别为父会话的外部 Agent，而不是默认 DSH 会话', async () => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  const handled: string[] = []
+
+  // 真实 stage0 日志形态：外部 Agent 只回了一段文本、没调工具，因此日志里
+  // 完全没有 codingns4dsh 痕迹，只有继承下来的 request/context。
+  const parent = {
+    id: 'stage0-parent',
+    header: { id: 'stage0-parent', cwd: '/workspace', createdAt: 1790738653345, isSeeded: false },
+    snapshotEvents: () => [
+      { type: 'request/context', data: { provider: 'deepseek-official', model: 'deepseek-flash' } },
+      { type: 'request/context', data: { provider: 'command-code', model: 'deepseek/deepseek-v4.1-flash' } },
+      { type: 'assistant/message', data: { message: { source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' } } } },
+    ],
+  }
+  const child = {
+    id: 'stage0-child',
+    header: { id: 'stage0-child', cwd: '/workspace', createdAt: 1790819437613, isSeeded: true, parentSession: 'stage0-parent' },
+    snapshotEvents: () => [
+      { type: 'request/context', data: { provider: 'deepseek-official', model: 'deepseek-flash' } },
+      { type: 'request/context', data: { provider: 'command-code', model: 'deepseek/deepseek-v4.1-flash' } },
+      { type: 'assistant/message', data: { message: { source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' } } } },
+    ],
+  }
+
+  const sessionStore = new CodingNsCliSessionStore()
+  // 父会话此前由用户在界面上显式选择过 command-code。
+  sessionStore.upsert('stage0-parent', { adapterId: 'command-code', modelId: 'deepseek/deepseek-v4.1-flash' })
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'command-code', name: 'Command Code' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'cc' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) {
+      handled.push(input.prompt)
+      yield { type: 'text-delta', text: '来自 Command Code' }
+      yield { type: 'finish', reason: 'stop' }
+    },
+  }], {}, { sessionStore })
+
+  const events = {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+      listener = next
+      return () => { listener = undefined }
+    },
+  }
+  const features = new FeatureRegistry({
+    rpc: table,
+    events,
+    nativeSessions: {
+      available: true,
+      supportsEvents: false,
+      store: undefined,
+      controller: undefined,
+      get(sessionId: string) {
+        if (sessionId === 'stage0-child') return child
+        if (sessionId === 'stage0-parent') return parent
+        return undefined
+      },
+      // 子会话已加载，父会话尚未进入 list()：祖先链必须按 header 补齐。
+      list() { return [child] },
+      async listRemote() { return [] },
+      async ensure() { return null },
+      async flush() {},
+      subscribe() { return () => {} },
+    },
+  })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+
+  const chunks: unknown[] = []
+  for await (const chunk of listener!({
+    sessionId: 'stage0-child',
+    modelSelection: { lastUsed: { provider: 'deepseek-official', model: 'deepseek-flash' } },
+    messages: [
+      { role: 'assistant', source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' }, content: '父会话回复' },
+      { role: 'user', source: { kind: 'user' }, content: '继续' },
+    ],
+  }, async function* () { yield { type: 'finish', reason: { kind: 'stop' } } })) chunks.push(chunk)
+
+  // 关键断言：子会话被路由到原来的外部 Agent，而不是回落到 DSH 主会话。
+  assert.deepEqual(handled, ['继续'])
+  assert.equal(chunks.some((chunk) => (chunk as { type?: string; text?: string }).type === 'text-delta'), true)
+  assert.equal(registry.getSession('stage0-child').adapterId, 'command-code')
+  // DSH 主模型名绝不能进入外部 Agent。
+  assert.notEqual(registry.getSession('stage0-child').modelId, 'deepseek-flash')
   await features.disable('cliAdapters')
 })
