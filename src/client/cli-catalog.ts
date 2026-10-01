@@ -88,6 +88,7 @@ export async function restoreCliSession(
     adapterId: record.adapterId,
     ...(record.modelId ? { modelId: record.modelId } : {}),
     ...(record.effortId ? { effortId: record.effortId } : {}),
+    ...(record.serviceTierId ? { serviceTierId: record.serviceTierId } : {}),
     ...(record.providerId ? { providerId: record.providerId } : {}),
     ...(record.providerSessionId ? { providerSessionId: record.providerSessionId } : {}),
   })

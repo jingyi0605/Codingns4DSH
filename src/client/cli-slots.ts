@@ -2,9 +2,18 @@ import { createElement, useEffect, useRef, useState } from 'react'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import type { ReactElement } from 'react'
 import type { CSSProperties } from 'react'
+import { Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CodingNsCliAdapterDescriptor, CodingNsCliModel, CodingNsCliModelCatalog, CodingNsCliSessionConfig } from '../shared/contracts/cli-adapter.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { adapterCatalogWithDsh, callCliRpc, findModel, firstModel } from './cli-catalog.js'
+import {
+  activeServiceTier,
+  canSelectServiceTier,
+  carriedServiceTierId,
+  isServiceTierEnabled,
+  modelServiceTiers,
+  toggledServiceTierId,
+} from './service-tier.js'
 import { resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 import { providerIconUrl } from './provider-icons.js'
 import { publishSessionAdapter } from './session-adapter-cache.js'
@@ -159,6 +168,7 @@ function publishSelection(sessionId: string, next: SelectionState): void {
     adapterId: next.adapterId,
     ...(next.modelId ? { modelId: next.modelId } : {}),
     ...(next.effortId ? { effortId: next.effortId } : {}),
+    ...(next.serviceTierId ? { serviceTierId: next.serviceTierId } : {}),
   }
   selections.set(sessionId, normalized)
   publishSessionAdapter(sessionId, normalized.adapterId)
@@ -389,7 +399,19 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
           const model = findModel(value, currentSelection.modelId) ?? firstModel(value)
           if (model === undefined) return
           const effort = model.efforts.includes(currentSelection.effortId ?? '') ? currentSelection.effortId : defaultEffort(model.efforts)
-          if (model.id !== currentSelection.modelId || effort !== currentSelection.effortId) update({ adapterId, modelId: model.id, ...(effort ? { effortId: effort } : {}) })
+          // 目录就绪后的补默认值同样是“部分更新”：必须把档位一起带上，否则用户
+          // 刚开的 Fast 会在目录返回的瞬间被这次规范化悄悄清掉（父仓库同源缺陷）。
+          const tier = carriedServiceTierId(model, currentSelection.serviceTierId)
+          if (model.id !== currentSelection.modelId
+            || effort !== currentSelection.effortId
+            || tier !== currentSelection.serviceTierId) {
+            update({
+              adapterId,
+              modelId: model.id,
+              ...(effort ? { effortId: effort } : {}),
+              ...(tier ? { serviceTierId: tier } : {}),
+            })
+          }
         }
         const pending = sessionId === undefined ? undefined : selectionUpdates.get(sessionId)
         if (pending === undefined) {
@@ -416,15 +438,41 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const triggerDisabled = !loading && modelUnavailable
   const chooseModel = (next: CodingNsCliModel): void => {
     const nextEffort = next.efforts.includes(effortValue) ? effortValue : defaultEffort(next.efforts)
-    update({ adapterId: selection.adapterId, modelId: next.id, ...(nextEffort ? { effortId: nextEffort } : {}) })
+    // 档位必须随模型切换一起携带：新模型不声明该档位时显式回落 `default`，
+    // 不能省略——省略会让 Host 保留旧档位，继续下发该模型不支持的 serviceTier。
+    const nextTier = carriedServiceTierId(next, selection.serviceTierId)
+    update({
+      adapterId: selection.adapterId,
+      modelId: next.id,
+      ...(nextEffort ? { effortId: nextEffort } : {}),
+      ...(nextTier ? { serviceTierId: nextTier } : {}),
+    })
     setOpen(false)
     setPane('root')
   }
   const chooseEffort = (effort: string): void => {
     if (model === undefined) return
-    update({ adapterId: selection.adapterId, modelId: model.id, effortId: effort })
+    // 只改思考等级时档位必须原样保留，否则用户开了 Fast 再调等级就会掉回标准档。
+    const tier = carriedServiceTierId(model, selection.serviceTierId)
+    update({
+      adapterId: selection.adapterId,
+      modelId: model.id,
+      effortId: effort,
+      ...(tier ? { serviceTierId: tier } : {}),
+    })
     setOpen(false)
     setPane('root')
+  }
+  // 服务档位是官方订阅能力：只有目录确认官方订阅且当前模型声明了档位才展示。
+  const serviceTierAvailable = canSelectServiceTier(catalog, model)
+  const serviceTierEnabled = isServiceTierEnabled(catalog, selection.serviceTierId)
+  const activeTier = activeServiceTier(catalog, model, selection.serviceTierId)
+  const serviceTierLabel = activeTier?.name ?? t('cli.serviceTierFast')
+  const toggleServiceTier = (next: boolean): void => {
+    if (model === undefined) return
+    const serviceTierId = toggledServiceTierId(model, next)
+    if (serviceTierId === undefined) return
+    update({ adapterId: selection.adapterId, modelId: model.id, ...(selection.effortId ? { effortId: selection.effortId } : {}), serviceTierId })
   }
   const menu = loading
     ? [
@@ -435,6 +483,18 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       ]
     : pane === 'root'
       ? [
+          // 档位开关固定在「模型」行上方，与模型/思考等级同处一个弹层。
+          ...(serviceTierAvailable
+            ? [createElement('div', { key: 'service-tier', className: 'codingns4dsh-service-tier', style: serviceTierRowStyle },
+                createElement('span', { style: serviceTierLabelStyle }, t('cli.serviceTier')),
+                createElement('span', { style: nativeMenuValueStyle }, serviceTierEnabled ? serviceTierLabel : t('cli.serviceTierStandard')),
+                createElement(Switch, {
+                  checked: serviceTierEnabled,
+                  onChange: toggleServiceTier,
+                  label: t('cli.serviceTierToggle', { name: serviceTierLabel }),
+                }),
+              )]
+            : []),
           createElement('button', { key: 'model', type: 'button', role: 'menuitem', disabled: modelUnavailable, onClick: () => setPane('model'), style: nativeMenuCellStyle },
           createElement('span', { style: nativeMenuLabelStyle }, t('cli.model')), createElement('span', { style: nativeMenuValueStyle }, modelLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
         createElement('button', { key: 'effort', type: 'button', role: 'menuitem', disabled: modelUnavailable, onClick: () => setPane('effort'), style: nativeMenuCellStyle },
@@ -474,6 +534,9 @@ const nativeTriggerStyle = { width: '100%', minWidth: 0, maxWidth: 'min(360px, 4
 const modelNameStyle = { minWidth: 0, maxWidth: 150, flex: '0 1 150px', display: 'block', overflow: 'hidden', whiteSpace: 'nowrap' as const }
 const nativeMenuStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1100, right: 0, bottom: 'calc(100% + 8px)', minWidth: 240, maxWidth: 'min(420px, calc(100vw - 32px))', maxHeight: 'min(360px, calc(100vh - 96px))', overflowY: 'auto' as const, padding: 4, border: 0, borderRadius: 20 }
 const nativeMenuCellStyle = { width: '100%', minHeight: 40, color: 'inherit', cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left' as const, fontSize: 14, lineHeight: '22px' }
+// 档位行与相邻菜单行保持同一高度和内边距，Switch 右对齐到与菜单箭头同一列。
+const serviceTierRowStyle = { width: '100%', minHeight: 40, color: 'inherit', borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, lineHeight: '22px' }
+const serviceTierLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
 const nativeMenuLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
 const nativeMenuValueStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, textAlign: 'right' as const, color: dshThemeColor.labelTertiary }
 const nativeChevronStyle = { flex: 'none', color: dshThemeColor.labelTertiary, fontSize: 20, lineHeight: 1 }
