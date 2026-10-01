@@ -138,10 +138,23 @@ test('Agent 选择器位于模型左侧并显示完整 Provider Logo', async () 
   assert.match(bundleSource, /data:image\/(?:png|svg\+xml);base64,/u, 'Client 单文件包应内联 Provider Logo')
 })
 
-test('输入工具栏保持单行并动态滚动显示超长模型名称', async () => {
-  const source = await readFile(join(projectRoot, 'src/client/cli-slots.ts'), 'utf8')
+test('输入工具栏放不下时按 DSH 判定收起模型字段，超长名称保持滚动展示', async () => {
+  const [source, quickPhraseSource] = await Promise.all([
+    readFile(join(projectRoot, 'src/client/cli-slots.ts'), 'utf8'),
+    readFile(join(projectRoot, 'src/client/quick-phrase-slot.ts'), 'utf8'),
+  ])
 
-  assert.match(source, /data-composer-card\].*flex-wrap:nowrap!important/u)
+  // 放不下时由 DSH 给控制行加 data-model-compact；插件不能强制 nowrap，
+  // 否则工具行改为压缩权限/规划组，测量口径失真且内容溢出重叠。
+  assert.doesNotMatch(source, /flex-wrap:nowrap!important/u)
+  assert.match(source, /\[data-composer-card\] \[data-model-compact\] \.codingns4dsh-model-root \.codingns4dsh-model-name,/u)
+  assert.match(source, /\[data-composer-card\] \[data-model-compact\] \.codingns4dsh-model-root \.codingns4dsh-model-effort\{display:none!important\}/u)
+  assert.match(source, /\[data-composer-card\] \[data-model-compact\] \.codingns4dsh-model-root \.codingns4dsh-model-icon\{display:block!important;flex:none\}/u)
+  // 收起图标经适配层解析，不绑定具体 DSH 版本的导出名。
+  assert.match(source, /resolveDataIcon\(\)/u)
+  assert.doesNotMatch(source, /IconDataOutline/u)
+  assert.match(source, /className: 'codingns4dsh-model-icon'/u)
+  assert.match(source, /className: 'codingns4dsh-model-effort'/u)
   assert.match(source, /data-composer-card\].*width:0;flex:1 1 0/u)
   assert.match(source, /codingns4dsh-model-root/u)
   assert.match(source, /conversation\.input\.model.*select\{[\s\S]*max-width:min\(150px,45cqw\)/u)
@@ -153,6 +166,8 @@ test('输入工具栏保持单行并动态滚动显示超长模型名称', async
   assert.doesNotMatch(source, /const modelNameStyle = \{[^}]*textOverflow/u)
   assert.match(source, /const agentRootStyle = \{[^}]*flex: '0 0 auto'/u)
   assert.match(source, /const agentTriggerLabelStyle = \{ flex: '0 0 auto', whiteSpace: 'nowrap'/u)
+  // 顺序兜底：权限/规划组固定排在快捷短语之后，不依赖 JS 挂载时序。
+  assert.match(quickPhraseSource, /\[data-composer-card\] \[class\*="_modes"\]\{order:\$\{QUICK_PHRASE_PERMISSION_ORDER\}\}/u)
 })
 
 test('上下文计量 dock 保留稳定行高，避免数值投影短暂缺失时工具栏抖动', async () => {
