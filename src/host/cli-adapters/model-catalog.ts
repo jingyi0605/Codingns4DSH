@@ -45,11 +45,19 @@ export function resolveGeminiEfforts(modelId: string): readonly string[] {
   return GEMINI_EFFORTS_BY_MODEL.get(modelId.trim().toLowerCase()) ?? []
 }
 
+/**
+ * Claude Code `--effort` 接受的档位，同时也是静态目录和 CLI 探测失败时的兜底。
+ *
+ * 该档位表属于 CLI 会话级参数，与具体模型无关：即使经 `ANTHROPIC_BASE_URL`
+ * 接入中转站，`claude` 仍会把选中的档位写进请求的 `output_config.effort`。
+ */
+export const CLAUDE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+
 export const CLAUDE_CATALOG = staticCatalog('claude', 'Claude', [
-  { id: 'provider-default', name: '跟随 Claude 默认模型', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'sonnet', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'opus', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'haiku', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { id: 'provider-default', name: '跟随 Claude 默认模型', efforts: CLAUDE_EFFORT_LEVELS },
+  { id: 'sonnet', efforts: CLAUDE_EFFORT_LEVELS },
+  { id: 'opus', efforts: CLAUDE_EFFORT_LEVELS },
+  { id: 'haiku', efforts: CLAUDE_EFFORT_LEVELS },
 ])
 
 export const KIMI_CATALOG = staticCatalog('kimi', 'Kimi', [
@@ -132,6 +140,52 @@ export function enrichEfforts(catalog: CodingNsCliModelCatalog, known: CodingNsC
     groups: catalog.groups.map((group) => ({
       ...group,
       models: group.models.map((model) => ({ ...model, efforts: effortById.get(model.id.toLowerCase()) ?? model.efforts })),
+    })),
+  }
+}
+
+/**
+ * 用同一个 Provider 已知的档位补齐目录中仍为空的模型。
+ *
+ * Claude Code 的 `--effort` 是会话级参数，档位不随模型变化：中转站自定义命名的
+ * 模型在官方目录里匹配不到 ID，但 CLI 依然接受同一组档位。此时沿用同 Provider
+ * 已确认的档位，而不是把强度切换静默置空。
+ *
+ * `excludedIds` 是 CLI 明确回报不支持思考档位的模型；这些模型必须保持空数组，
+ * 不能被 Provider 级档位覆盖，否则 UI 会提供实际无效的选项。匹配与
+ * `enrichEfforts` 一样忽略大小写，避免同名的中转模型出现互相矛盾的档位。
+ */
+export function fillProviderEfforts(
+  catalog: CodingNsCliModelCatalog,
+  levels: readonly string[],
+  excludedIds: ReadonlySet<string> = new Set(),
+): CodingNsCliModelCatalog {
+  if (levels.length === 0 && excludedIds.size === 0) return catalog
+  const excluded = new Set([...excludedIds].map((id) => id.toLowerCase()))
+  return {
+    ...catalog,
+    groups: catalog.groups.map((group) => ({
+      ...group,
+      models: group.models.map((model) => {
+        if (excluded.has(model.id.toLowerCase())) return model.efforts.length === 0 ? model : { ...model, efforts: [] }
+        return model.efforts.length > 0 ? model : { ...model, efforts: levels }
+      }),
+    })),
+  }
+}
+
+/**
+ * 清空目录中所有模型的思考档位。
+ *
+ * 用于 CLI 明确不支持该能力时：与其让 UI 展示一个切换后不生效的选项，
+ * 不如不展示——「可选但无效」正是本适配器此前被报告的缺陷形态。
+ */
+export function clearEfforts(catalog: CodingNsCliModelCatalog): CodingNsCliModelCatalog {
+  return {
+    ...catalog,
+    groups: catalog.groups.map((group) => ({
+      ...group,
+      models: group.models.map((model) => (model.efforts.length === 0 ? model : { ...model, efforts: [] })),
     })),
   }
 }

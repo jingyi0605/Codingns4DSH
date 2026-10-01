@@ -1,9 +1,9 @@
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
-import { CLAUDE_CATALOG, isProviderDefaultModel } from './model-catalog.js'
+import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel } from './model-catalog.js'
 import { discoverClaudeModelCatalog } from './claude-model-options.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
@@ -41,16 +41,20 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   async listModels() {
     const detected = await this.detect()
     if (!detected.installed || detected.command === null) return emptyCatalog()
+    let catalog: CodingNsCliModelCatalog
     try {
-      return await discoverClaudeModelCatalog({
+      catalog = await discoverClaudeModelCatalog({
         command: detected.command,
         spawn: this.runSpawn,
         ...(this.discoveryFetch ? { fetch: this.discoveryFetch } : {}),
         ...(this.claudeConfigDir ? { configDir: this.claudeConfigDir } : {}),
       })
     } catch {
-      return CLAUDE_CATALOG
+      catalog = CLAUDE_CATALOG
     }
+    // CLI 明确不支持 `--effort` 时，驱动不会下发该参数；此时目录也不能展示档位，
+    // 否则用户看到的是一个切换后不生效的选项。探测不确定时保持目录原样。
+    return this.probeEffortSupport() === 'unsupported' ? clearEfforts(catalog) : catalog
   }
   async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
     return probeStoredSession(input, {
