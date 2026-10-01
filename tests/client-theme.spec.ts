@@ -211,4 +211,13 @@ test('Codex 订阅展示重置次数与点数，并经确认模态框触发重�
   assert.match(source, /'aria-modal': true/u)
   assert.match(source, /subscriptionUsageCache\.delete\(cacheKey\)/u)
   assert.match(source, /refreshRef\.current = refresh/u)
+  // 点数保留两位小数，重置次数与图标按钮同一行。
+  assert.match(source, /formatCreditBalance\(credits\.balance\)/u)
+  assert.match(source, /numeric\.toFixed\(2\)/u)
+  assert.match(source, /resetCreditsValueGroupStyle/u)
+  assert.match(source, /function ResetIcon\(\)/u)
+  assert.match(source, /'aria-label': t\('usage\.resetButton'\)/u)
+  // 图标按钮的伪类只能落在注入样式表里，内联样式无法表达。
+  assert.match(source, /\.codingns4dsh-subscription-reset:hover:not\(:disabled\)/u)
+  assert.match(source, /\.codingns4dsh-subscription-reset:disabled\{opacity:\.4;cursor:not-allowed\}/u)
 })

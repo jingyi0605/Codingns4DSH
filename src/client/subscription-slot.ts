@@ -51,13 +51,16 @@ const FALLBACK_LOCALE = {
  */
 const subscriptionUsageCache = new Map<string, { readonly usage: CliSubscriptionUsage; readonly capturedAt: number }>()
 
+/** 图标重置按钮的悬停/按下/聚焦/禁用只能由注入样式表表达，内联样式无法命中伪类。 */
+const RESET_BUTTON_CSS = '.codingns4dsh-subscription-reset{display:inline-flex;align-items:center;justify-content:center;flex:none;width:26px;height:26px;padding:0;border:1px solid var(--dsw-alias-border-l2,#d9d9d9);border-radius:50%;background:transparent;color:var(--dsw-alias-label-secondary,GrayText);cursor:pointer;transition:background .15s ease,color .15s ease}.codingns4dsh-subscription-reset:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08));color:var(--dsw-alias-label-primary,CanvasText)}.codingns4dsh-subscription-reset:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active,rgba(127,127,127,.14))}.codingns4dsh-subscription-reset:focus-visible{outline:none;box-shadow:0 0 0 var(--dsw-focus-ring-width,2px) var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#1677ff))}.codingns4dsh-subscription-reset:disabled{opacity:.4;cursor:not-allowed}@media (prefers-reduced-motion: reduce){.codingns4dsh-subscription-reset{transition:none}}'
+
 /** 移动端订阅入口只保留图标，完整数据仍可在点击后的弹层中查看。 */
 function installSubscriptionStyles(): void {
   if (typeof document === 'undefined' || document.querySelector(`style[data-plugin-css="${SUBSCRIPTION_STYLE_ID}"]`) !== null) return
   const style = document.createElement('style')
   style.dataset.plugin = 'codingns4dsh'
   style.dataset.pluginCss = SUBSCRIPTION_STYLE_ID
-  style.textContent = '@media (max-width: 768px){.codingns4dsh-subscription-trigger{gap:0!important;padding-left:4px!important;padding-right:4px!important}.codingns4dsh-subscription-label,.codingns4dsh-subscription-value{display:none!important}.codingns4dsh-subscription-popover{position:fixed!important;left:12px!important;right:12px!important;bottom:48px!important;width:auto!important;min-width:0!important;max-width:none!important;max-height:calc(100vh - 72px)!important;overflow:auto!important}}'
+  style.textContent = '@media (max-width: 768px){.codingns4dsh-subscription-trigger{gap:0!important;padding-left:4px!important;padding-right:4px!important}.codingns4dsh-subscription-label,.codingns4dsh-subscription-value{display:none!important}.codingns4dsh-subscription-popover{position:fixed!important;left:12px!important;right:12px!important;bottom:48px!important;width:auto!important;min-width:0!important;max-width:none!important;max-height:calc(100vh - 72px)!important;overflow:auto!important}}' + RESET_BUTTON_CSS
   document.head.appendChild(style)
 }
 
@@ -339,7 +342,9 @@ function SubscriptionPopover({ usage, providerName, t, nowMs, reset }: {
     ? null
     : credits.unlimited
       ? t('usage.creditUnlimited')
-      : credits.balance ?? (credits.hasCredits ? '0' : '--')
+      : credits.balance !== null
+        ? formatCreditBalance(credits.balance)
+        : credits.hasCredits ? '0.00' : '--'
   const expiries = usage.resetCredits === null
     ? []
     : usage.resetCredits.credits
@@ -361,25 +366,35 @@ function SubscriptionPopover({ usage, providerName, t, nowMs, reset }: {
     (creditText !== null || usage.resetCredits !== null) && createElement('section', { style: resetCreditsSectionStyle },
       creditText !== null && createElement('div', { style: resetCreditsRowStyle },
         createElement('span', undefined, t('usage.creditBalanceLabel')),
-        createElement('span', undefined, creditText),
+        createElement('span', { style: resetCreditsValueStyle }, creditText),
       ),
       usage.resetCredits !== null && createElement('div', { style: resetCreditsRowStyle },
         createElement('span', undefined, t('usage.resetCreditsLabel')),
-        createElement('span', undefined, t('usage.resetCreditsCount', { count: usage.resetCredits.availableCount })),
+        createElement('span', { style: resetCreditsValueGroupStyle },
+          createElement('span', { style: resetCreditsValueStyle }, t('usage.resetCreditsCount', { count: usage.resetCredits.availableCount })),
+          reset !== null && createElement('button', {
+            type: 'button',
+            className: 'codingns4dsh-subscription-reset',
+            disabled: !reset.enabled,
+            onClick: reset.onRequest,
+            title: reset.enabled ? t('usage.resetTooltipReady') : t('usage.resetTooltipNone'),
+            'aria-label': t('usage.resetButton'),
+          }, createElement(ResetIcon, undefined)),
+        ),
       ),
-      expiries.slice(0, 3).map((expiry) => createElement('div', { key: expiry, style: resetCreditsExpiryStyle },
+      expiries.slice(0, 3).map((expiry, index) => createElement('div', { key: `${expiry}-${index}`, style: resetCreditsExpiryStyle },
         t('usage.resetCreditsExpiresAt', { time: formatResetExpiry(expiry, t, nowMs) }),
       )),
       expiries.length > 3 && createElement('div', { style: resetCreditsExpiryStyle }, t('usage.resetCreditsMore', { count: expiries.length - 3 })),
-      reset !== null && createElement('button', {
-        type: 'button',
-        className: 'codingns4dsh-subscription-reset',
-        disabled: !reset.enabled,
-        onClick: reset.onRequest,
-        title: reset.enabled ? t('usage.resetTooltipReady') : t('usage.resetTooltipNone'),
-        style: reset.enabled ? resetButtonStyle : resetButtonDisabledStyle,
-      }, t('usage.resetButton')),
     ),
+  )
+}
+
+/** 重置按钮复用会话变更视图的刷新字形，保持插件内图标语言一致。 */
+function ResetIcon(): ReactElement {
+  return createElement('svg', { width: 14, height: 14, viewBox: '0 0 20 20', fill: 'none', 'aria-hidden': true },
+    createElement('path', { d: 'M16 8.5A6.2 6.2 0 1 0 16.1 12', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round' }),
+    createElement('path', { d: 'M16 4.5v4h-4', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }),
   )
 }
 
@@ -718,6 +733,12 @@ function formatResetExpiry(expiry: number, t: CodingNsTranslator, nowMs: number)
   return formatCountdown(expiry, t, nowMs) ?? t('usage.resetCreditsExpired')
 }
 
+/** 点数余额保留两位小数展示；无法解析时原样保留上游字符串。 */
+function formatCreditBalance(value: string): string {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric.toFixed(2) : value
+}
+
 const subscriptionRootStyle = { position: 'relative' as const, minWidth: 0, display: 'inline-flex', alignItems: 'center' }
 const subscriptionTriggerStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, height: 28, border: 0, borderRadius: 14, padding: '0 8px 0 4px', color: dshThemeColor.labelSecondary, background: 'transparent', cursor: 'pointer', fontSize: 13, lineHeight: '20px' }
 const subscriptionLabelStyle = { whiteSpace: 'nowrap' as const }
@@ -755,11 +776,11 @@ const barStyle = { height: 7, overflow: 'hidden' as const, borderRadius: 4, back
 const barFillStyle = { display: 'block', height: '100%', borderRadius: 4, background: dshThemeColor.accent, transition: 'width .2s ease' }
 const resetStyle = { color: dshThemeColor.labelTertiary, fontSize: 12 }
 const subscriptionPopoverStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1200, bottom: 'calc(100% + 8px)', left: 0, width: 'max-content', minWidth: 280, maxWidth: 'min(400px, calc(100vw - 24px))', boxSizing: 'border-box' as const, padding: 14, borderRadius: 12 }
-const resetCreditsSectionStyle = { display: 'grid', gap: 6, marginTop: 10, paddingTop: 10, borderTop: `1px solid ${dshThemeColor.border}` }
-const resetCreditsRowStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelSecondary, fontSize: 13 }
+const resetCreditsSectionStyle = { display: 'grid', gap: 6, marginTop: 10, padding: '10px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 10, background: dshThemeColor.surfaceSubtle }
+const resetCreditsRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelSecondary, fontSize: 13 }
+const resetCreditsValueGroupStyle = { display: 'inline-flex', alignItems: 'center', gap: 8 }
+const resetCreditsValueStyle = { color: dshThemeColor.labelPrimary, fontWeight: 600, fontVariantNumeric: 'tabular-nums' as const }
 const resetCreditsExpiryStyle = { color: dshThemeColor.labelTertiary, fontSize: 11, lineHeight: '16px', fontVariantNumeric: 'tabular-nums' as const }
-const resetButtonStyle = { justifySelf: 'start' as const, marginTop: 2, minHeight: 28, padding: '0 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, background: 'transparent', color: dshThemeColor.error, fontSize: 12, fontWeight: 600, cursor: 'pointer' }
-const resetButtonDisabledStyle = { ...resetButtonStyle, opacity: 0.5, cursor: 'default' as const }
 const resetDialogOverlayStyle = { position: 'fixed' as const, inset: 0, zIndex: 1400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, boxSizing: 'border-box' as const, background: dshThemeColor.overlay }
 const resetDialogStyle = { ...dshPopupSurfaceStyle, width: 'min(100%, 420px)', boxSizing: 'border-box' as const, padding: 16, borderRadius: 12, display: 'grid', gap: 12 }
 const sub2apiStatsGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, paddingTop: 12 }
