@@ -135,7 +135,7 @@ export function CodingNsXtermView({
   hasTerminal ? createElement('div', { className: terminalClass.screen },
     createElement('div', { ref: hostRef, style: terminalHostStyle }),
   ) : null,
-  state.error === undefined || state.phase === 'disconnected'
+  state.error === undefined || state.phase === 'disconnected' || state.info?.state === 'lost'
     ? null
     : createElement('p', { className: terminalClass.error, role: 'alert' }, t('terminalView.errorDetail', { message: state.error })),
   )
@@ -154,9 +154,11 @@ function TerminalStatus({
 }): ReactElement | null {
   const status = statusText(state, t)
   const ended = state.info?.state === 'exited' || state.phase === 'closed'
-  const retry = !ended && (state.phase === 'failed' || state.phase === 'disconnected')
+  // 运行时丢失是终态：重连只会重复失败，这里给"重建终端"而不是"重新连接"。
+  const lost = state.info?.state === 'lost'
+  const retry = !ended && !lost && (state.phase === 'failed' || state.phase === 'disconnected')
   const readOnly = state.phase === 'connected' && state.info?.state === 'running' && !state.writable
-  if (status === undefined && !retry && !readOnly) return null
+  if (status === undefined && !retry && !readOnly && !lost) return null
   return createElement('div', { className: terminalClass.status, role: 'status' },
     status,
     readOnly ? t('terminalView.readOnly') : null,
@@ -165,7 +167,12 @@ function TerminalStatus({
       size: 'sm',
       onClick: () => { void view.refresh() },
     }, state.phase === 'disconnected' ? t('terminalView.reconnect') : t('terminal.retry')) : null,
-    ended ? createElement(Button, {
+    lost ? createElement(Button, {
+      variant: 'outline',
+      size: 'sm',
+      onClick: () => { void view.rebuild() },
+    }, t('terminalView.rebuild')) : null,
+    ended || lost ? createElement(Button, {
       variant: 'primary',
       size: 'sm',
       icon: createElement(resolvePlusIcon()),
@@ -178,6 +185,7 @@ function statusText(state: TerminalViewState, t: CodingNsTranslator): string | u
   if (state.phase === 'idle' || state.phase === 'loading') return t('terminalView.readingEnvironment')
   if (state.phase === 'creating') return t('terminalView.starting')
   if (state.phase === 'connecting') return t('terminalView.connecting')
+  if (state.info?.state === 'lost') return t('terminalView.lost')
   if (state.phase === 'disconnected') return t('terminalView.disconnected')
   if (state.info?.state === 'exited') return t('terminalView.exited', { exitCode: state.info.exitCode ?? '—' })
   if (state.info?.state === 'failed') return t('terminalView.unavailable')

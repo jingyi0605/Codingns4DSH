@@ -105,6 +105,8 @@ export class CodingNsTerminalView {
   private attachmentId: TerminalAttachmentId | undefined
   /** 最近一次已排队的尺寸；ResizeObserver 可能在同一布局周期内重复触发。 */
   private lastResize: { readonly attachmentId: TerminalAttachmentId; readonly cols: number; readonly rows: number } | undefined
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  private reconnectAttempts = 0
 
   constructor(
     readonly sessionId: string,
@@ -139,6 +141,42 @@ export class CodingNsTerminalView {
     if (this.lifetime.signal.aborted) return
     this.loading = this.load().finally(() => { this.loading = undefined })
     return this.loading
+  }
+
+  /**
+   * 运行时丢失后按当前绑定重建终端。
+   *
+   * 这是"进程已经不存在"时的显式恢复动作：沿用同一个 terminalId 与工作区绑定，
+   * 让 Sidebar 标签、标题和尺寸都保持不变，而不是让用户去点"新建终端"。
+   */
+  async rebuild(): Promise<void> {
+    if (this.loading !== undefined) return this.loading
+    this.clearReconnect()
+    this.reconnectAttempts = 0
+    this.patch({ phase: 'loading', writable: false })
+    const task = this.loadWithRebuild().finally(() => { this.loading = undefined })
+    this.loading = task
+    return task
+  }
+
+  private async loadWithRebuild(): Promise<void> {
+    try {
+      const remote = resolveRemote(this.remote)
+      const environment = unwrap(await remote.environment(this.sessionId, this.lifetime.signal))
+      this.patch({ phase: 'creating', environment })
+      const info = unwrap(await remote.create(this.sessionId, {
+        id: this.id,
+        ...(this.shellPath === undefined ? {} : { shellPath: this.shellPath }),
+        cols: Math.min(80, environment.maxCols),
+        rows: Math.min(24, environment.maxRows),
+      }, this.lifetime.signal))
+      debugInfo('codingns4dsh: client terminal rebuilt', { sessionId: this.sessionId, terminalId: info.id })
+      const { error: _error, ...rest } = this.store.getSnapshot()
+      this.store.set({ ...rest, environment, info, title: info.title })
+      if (this.mounted > 0) this.connect()
+    } catch (error) {
+      if (!this.lifetime.signal.aborted) this.fail(error)
+    }
   }
 
   acknowledge(revision: number): void {
@@ -219,7 +257,10 @@ export class CodingNsTerminalView {
         if (binding !== undefined) {
           if (binding.id !== this.id) this.id = binding.id
           // 工作区已有绑定时，恢复必须失败闭合，不能用新 ID 偷建替代终端。
-          createWhenMissing = !binding.existing
+          // 显式传入 terminalId 或读取到会话绑定时同样不能新建：工作区绑定
+          // 可能刚被另一个会话的关闭动作删除，此时旧标签仍在卸载途中，不能
+          // 把已经关闭的 ID 当成新终端重新 create。
+          createWhenMissing = createWhenMissing && !binding.existing
         }
       }
       const listed = unwrap(await remote.list(this.sessionId))
@@ -245,6 +286,7 @@ export class CodingNsTerminalView {
 
   private connect(): void {
     if (this.followController !== undefined || this.lifetime.signal.aborted || this.mounted === 0) return
+    this.clearReconnect()
     const controller = new AbortController()
     this.followController = controller
     this.attachmentId = crypto.randomUUID() as TerminalAttachmentId
@@ -265,9 +307,17 @@ export class CodingNsTerminalView {
         }
         await this.deliver(frame)
       }
-      if (!signal.aborted) this.patch({ phase: 'disconnected', writable: false })
+      if (!signal.aborted) {
+        // 流正常结束但终端仍在运行：这是连接层断开（Host 重连、服务器短暂不可达），
+        // 必须自动重连；只有真正结束的终端才停在终态。
+        if (this.isRunning()) this.scheduleReconnect()
+        else this.patch({ phase: 'disconnected', writable: false })
+      }
     } catch (error) {
-      if (!signal.aborted) this.fail(error)
+      if (!signal.aborted) {
+        if (this.isRunning()) this.scheduleReconnect()
+        else this.fail(error)
+      }
     } finally {
       if (this.followController?.signal === signal) {
         this.followController = undefined
@@ -277,6 +327,9 @@ export class CodingNsTerminalView {
   }
 
   private async deliver(frame: Extract<TerminalFrame, { readonly type: 'snapshot' | 'output' }>): Promise<void> {
+    // 真正收到画面才算连接成功，退避计数在这里归零。
+    this.reconnectAttempts = 0
+    this.clearReconnect()
     this.pendingRender?.resolve()
     this.revision += 1
     let resolveWaiting = (): void => {}
@@ -287,6 +340,7 @@ export class CodingNsTerminalView {
   }
 
   private detach(): void {
+    this.clearReconnect()
     this.pendingRender?.resolve()
     this.pendingRender = undefined
     this.followController?.abort(new Error('终端视图已 detach'))
@@ -296,6 +350,40 @@ export class CodingNsTerminalView {
     if (!this.lifetime.signal.aborted && this.store.getSnapshot().phase !== 'closed') {
       const { render: _render, ...state } = this.store.getSnapshot()
       this.store.set({ ...state, phase: 'disconnected', writable: false })
+    }
+  }
+
+  /** 终端是否仍被认为在运行；终态（exited/failed/closed）不参与自动重连。 */
+  private isRunning(): boolean {
+    const state = this.store.getSnapshot()
+    if (state.phase === 'closed' || state.phase === 'failed') return false
+    if (state.info === undefined) return true
+    return state.info.state === 'running'
+  }
+
+  /**
+   * 连接层断开后的自动重连。
+   *
+   * 指数退避到 5 秒封顶：DSH 重启、中继抖动或 tmux 服务器短暂不可达时，用户
+   * 不需要手动点"重新连接"，也不会看到刷屏式的重试。
+   */
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer !== undefined || this.lifetime.signal.aborted || this.mounted === 0) return
+    const delay = Math.min(500 * 2 ** this.reconnectAttempts, 5000)
+    this.reconnectAttempts += 1
+    this.patch({ phase: 'disconnected', writable: false })
+    debugInfo('codingns4dsh: client terminal reconnect scheduled', { sessionId: this.sessionId, terminalId: this.id, delay, attempt: this.reconnectAttempts })
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined
+      if (this.lifetime.signal.aborted || this.mounted === 0) return
+      void this.refresh()
+    }, delay)
+  }
+
+  private clearReconnect(): void {
+    if (this.reconnectTimer !== undefined) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = undefined
     }
   }
 

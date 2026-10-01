@@ -30,6 +30,8 @@ export interface TerminalSidebarRecoveryPort {
   }
   readonly mounted?: TerminalSidebarMountedSource
   readonly openTabIn?: (sessionId: string, kind: string, options?: { readonly params?: unknown }) => void
+  /** 通过 Sidebar 自己的关闭流程移除指定会话中的标签。 */
+  readonly closeIn?: (sessionId: string, tabId: string) => void
   readonly tabDomain?: {
     occurrence(sessionId: string, tab: { readonly id: string }): TerminalOccurrence
   }
@@ -77,14 +79,31 @@ export function createTerminalSessionRecovery(
       existingTabs: existing.map((tab) => ({ id: tab.id, kind: tab.kind })),
     })
     const opened = new Set<string>()
+    const available = new Set(terminals.map((terminal) => terminal.id))
+    /**
+     * Host 列表为空时不能做任何"残留标签"清理。
+     *
+     * 用户点"新建终端"后，Sidebar 标签会立刻出现并触发 TerminalCleanup 的恢复，
+     * 而 Host 侧的 create 还在进行中、list 暂时为空。此刻把"不在列表里"当作残留
+     * 证据就会把刚建好的标签直接关掉，右侧栏随即退回"开始"引导页。
+     */
+    const canPrune = terminals.length > 0
     for (const tab of existing) {
       if (tab.kind !== terminalKind) continue
       const id = terminalIdOf(sidebar, sessionId, tab)
       if (id === undefined) {
-        // 旧版标签没有导航参数时仍代表一个有效终端，避免恢复时重复创建。
+        // 没有 terminalId 的标签可能是旧版残留，也可能是刚点开、参数尚未写入的
+        // 新标签；两者无法区分，而误关活终端远比残留一个标签严重，因此一律保留。
         for (const terminal of terminals) opened.add(terminal.id)
         debugInfo('codingns4dsh: client terminal sidebar recovery legacy tab', { sessionId, tabId: tab.id })
       } else {
+        if (canPrune && !available.has(id)) {
+          // Host 已经关闭该终端时，旧 Sidebar 标签只是残留记录，必须走
+          // Sidebar 的正式关闭路径，才能同步更新布局和标签生命周期。
+          sidebar.closeIn?.(sessionId, tab.id)
+          debugInfo('codingns4dsh: client terminal sidebar recovery removed stale tab', { sessionId, tabId: tab.id, terminalId: id })
+          continue
+        }
         opened.add(id)
       }
     }
