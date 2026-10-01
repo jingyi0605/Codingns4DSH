@@ -102,6 +102,53 @@ const CATALOG_EFFORTS: ReadonlyMap<string, readonly string[]> = new Map([
   ['xai/grok-4.7', ['low', 'medium', 'high', 'xhigh']],
 ])
 
+/**
+ * 按模型名的最后一段回退查找思考强度。
+ *
+ * BYOK 提供者的模型 id 带自定义前缀（如 `mcgrox/deepseek-v4.1-flash`），
+ * 而 CATALOG_EFFORTS 的键是 Command Code 内置目录 id（`deepseek/deepseek-v4.1-flash`），
+ * 直接查表会落空，导致菜单只剩 Default。表内 77 个键的最后一段互不重复，
+ * 因此可以安全地按末段匹配；命中多个时按歧义处理并返回空，避免误判。
+ */
+function catalogEffortsFor(id: string): readonly string[] {
+  const key = id.toLowerCase()
+  const direct = CATALOG_EFFORTS.get(key)
+  if (direct !== undefined) return direct
+  const bare = key.includes('/') ? key.slice(key.lastIndexOf('/') + 1) : key
+  if (bare === key) return []
+  let matched: readonly string[] | undefined
+  for (const [candidate, efforts] of CATALOG_EFFORTS) {
+    if (!candidate.endsWith(`/${bare}`)) continue
+    if (matched !== undefined) return [] // 末段歧义，宁可不给强度也不猜
+    matched = efforts
+  }
+  return matched ?? []
+}
+
+/**
+ * 读取 BYOK 提供者在 `~/.commandcode/providers.json` 里声明的思考强度。
+ *
+ * 这是 BYOK 模型强度的权威来源：用户在 providers.json 的模型条目上写
+ * `reasoningEfforts: [...]`，Command Code 据此校验 `--effort`。内置目录查不到
+ * 的自定义模型只能从这里拿到强度。键为 `提供者/模型` 小写形式，空 Map 表示无声明。
+ */
+function readDeclaredEfforts(homeDirectory: string): ReadonlyMap<string, readonly string[]> {
+  const declared = new Map<string, readonly string[]>()
+  const config = readJson(join(homeDirectory, 'providers.json'))
+  if (config === null) return declared
+  const providers = isRecord(config.provider) ? config.provider : isRecord(config.providers) ? config.providers : null
+  if (providers === null) return declared
+  for (const [providerId, provider] of Object.entries(providers)) {
+    if (!isRecord(provider) || !isRecord(provider.models)) continue
+    for (const [modelName, entry] of Object.entries(provider.models)) {
+      if (!isRecord(entry) || !Array.isArray(entry.reasoningEfforts)) continue
+      const efforts = entry.reasoningEfforts.filter((value): value is string => typeof value === 'string' && VALID_EFFORTS.has(value))
+      if (efforts.length > 0) declared.set(`${providerId}/${modelName}`.toLowerCase(), efforts)
+    }
+  }
+  return declared
+}
+
 /** 一个 `-p` 运行的事件队列；进程常驻，DSH step 之间只暂停消费。 */
 interface CommandCodeEventQueue {
   next(): Promise<IteratorResult<CodingNsAgentEvent>>
@@ -267,6 +314,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     }
 
     const groups: Array<{ id: string; name: string; models: Array<{ id: string; name: string; description?: string; efforts: readonly string[] }> }> = []
+    const declared = readDeclaredEfforts(this.homeDirectory)
     let currentGroup: (typeof groups)[number] | undefined
     for (const rawLine of stdout.split(/\r?\n/u)) {
       const line = rawLine.trim()
@@ -280,7 +328,10 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       if (!match || currentGroup === undefined) continue
       const id = match[1]!
       const description = match[2]!.trim()
-      currentGroup.models.push({ id, name: id, ...(description ? { description } : {}), efforts: CATALOG_EFFORTS.get(id.toLowerCase()) ?? [] })
+      // BYOK 模型以 providers.json 的声明为准，内置目录作为回退；
+      // 目录回退按末段匹配，使 `mcgrox/deepseek-v4.1-flash` 也能拿到内置强度。
+      const efforts = declared.get(id.toLowerCase()) ?? catalogEffortsFor(id)
+      currentGroup.models.push({ id, name: id, ...(description ? { description } : {}), efforts })
     }
 
     const config = readJson(join(this.homeDirectory, 'config.json'))

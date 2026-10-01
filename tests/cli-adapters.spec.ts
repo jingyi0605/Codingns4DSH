@@ -94,6 +94,70 @@ test('Command Code 驱动识别完整模型目录和工具调用事件', async (
   ])
 })
 
+test('Command Code 的 BYOK 模型按末段回退拿到内置思考强度', async () => {
+  const driver = new CommandCodeDriver({
+    homeDirectory: '/definitely/missing',
+    spawnSync: ((command: string, args: string[]) => {
+      if (args[0] === '--version') return { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+      return {
+        status: 0,
+        stdout: 'McGrox (byok)\nmcgrox/deepseek-v4.1-flash             deepseek-v4.1-flash\n\nAnthropic\nclaude-sonnet-5  sonnet\n',
+        stderr: '',
+      }
+    }) as never,
+    binaries: ['command-code'],
+  })
+  const catalog = await driver.listModels()
+  // BYOK 前缀不应再让强度落空：末段 deepseek-v4.1-flash 命中内置目录。
+  assert.deepEqual(catalog.groups[0]?.models, [
+    { id: 'mcgrox/deepseek-v4.1-flash', name: 'mcgrox/deepseek-v4.1-flash', description: 'deepseek-v4.1-flash', efforts: ['low', 'high', 'max'] },
+  ])
+  // 无前缀的内置 id 行为不变。
+  assert.deepEqual(catalog.groups[1]?.models, [
+    { id: 'claude-sonnet-5', name: 'claude-sonnet-5', description: 'sonnet', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  ])
+})
+
+test('Command Code 的 BYOK 模型优先采用 providers.json 声明的思考强度', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'cmd-byok-'))
+  try {
+    writeFileSync(join(home, 'providers.json'), JSON.stringify({
+      provider: {
+        'my-gw': {
+          baseURL: 'https://example.test/v1',
+          models: {
+            // 声明了内置目录没有的模型与自定义强度，且含非法值应被过滤。
+            'custom-model': { reasoningEfforts: ['low', 'medium', 'max', 'bogus'] },
+            // 声明为空数组视为未声明，回退内置目录。
+            'deepseek-v4.1-flash': { reasoningEfforts: [] },
+          },
+        },
+      },
+    }))
+    const driver = new CommandCodeDriver({
+      homeDirectory: home,
+      spawnSync: ((command: string, args: string[]) => {
+        if (args[0] === '--version') return { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+        return {
+          status: 0,
+          stdout: 'My GW (byok)\nmy-gw/custom-model                     custom\nmy-gw/deepseek-v4.1-flash             deepseek-v4.1-flash\n',
+          stderr: '',
+        }
+      }) as never,
+      binaries: ['command-code'],
+    })
+    const catalog = await driver.listModels()
+    assert.deepEqual(catalog.groups[0]?.models, [
+      // providers.json 是权威来源；非法值 bogus 按 VALID_EFFORTS 过滤后保留其余。
+      { id: 'my-gw/custom-model', name: 'my-gw/custom-model', description: 'custom', efforts: ['low', 'medium', 'max'] },
+      // 空声明不算数，回退内置目录末段匹配。
+      { id: 'my-gw/deepseek-v4.1-flash', name: 'my-gw/deepseek-v4.1-flash', description: 'deepseek-v4.1-flash', efforts: ['low', 'high', 'max'] },
+    ])
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('Command Code 驱动写入历史 transcript、转换 JSON 事件并清理子进程', async () => {
   let receivedArgs: string[] = []
   let transcript = ''
