@@ -1818,3 +1818,204 @@ test('Codex permissions/requestApproval 被拒绝时回传空权限画像', asyn
   assert.deepEqual(state.permissionResult, { permissions: {}, scope: 'turn' })
   driver.dispose()
 })
+
+/** Codex 服务档位夹具：目录声明档位，账号类型可控。 */
+function createCodexServiceTierRecorder(options: {
+  readonly account?: unknown
+  readonly accountReadFails?: boolean
+  readonly modelList?: unknown
+  readonly configuredServiceTier?: string | null
+} = {}) {
+  const state: {
+    calls: Array<{ method: string; params: Record<string, unknown> }>
+    turnStarts: number
+  } = { calls: [], turnStarts: 0 }
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id?: number; method?: string; params?: Record<string, unknown> }
+        state.calls.push({ method: request.method ?? '', params: request.params ?? {} })
+        if (request.method === 'account/read') {
+          if (options.accountReadFails === true) {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'method not found' } })}\n`)
+            return
+          }
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { account: options.account ?? null, requiresOpenaiAuth: true } })}\n`)
+          return
+        }
+        if (request.method === 'config/read') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { config: { service_tier: options.configuredServiceTier ?? null } } })}\n`)
+          return
+        }
+        if (request.method === 'model/list') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: options.modelList ?? { data: [] } })}\n`)
+          return
+        }
+        if (request.method === 'thread/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'tier-thread' }, serviceTier: request.params?.serviceTier ?? null } })}\n`)
+          return
+        }
+        if (request.method === 'thread/resume') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'tier-thread' } } })}\n`)
+          return
+        }
+        if (request.method === 'thread/settings/update') {
+          // 真实 app-server 只返回 {}，不回显档位。
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+          return
+        }
+        if (request.method === 'turn/start') {
+          state.turnStarts += 1
+          const turnId = `tier-turn-${state.turnStarts}`
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: turnId, status: 'inProgress' } } })}\n`)
+          setImmediate(() => {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'tier-thread', turn: { id: turnId, status: 'completed' } } })}\n`)
+          })
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  return { driver, state }
+}
+
+test('Codex model/list 的 serviceTiers 进入目录，并据 account/read 判定官方订阅', async () => {
+  const modelList = {
+    data: [{
+      id: 'gpt-6.1-sol',
+      displayName: 'GPT-6.1-Sol',
+      supportedReasoningEfforts: [{ reasoningEffort: 'low' }],
+      serviceTiers: [{ id: 'priority', name: 'Fast', description: '2x speed, increased usage' }],
+      defaultServiceTier: null,
+    }],
+  }
+  const subscribed = createCodexServiceTierRecorder({ account: { type: 'chatgpt', email: null, planType: 'pro' }, modelList })
+  assert.deepEqual(await subscribed.driver.listModels(), {
+    groups: [{
+      id: 'codex',
+      name: 'Codex',
+      models: [{
+        id: 'gpt-6.1-sol',
+        name: 'GPT-6.1-Sol',
+        efforts: ['low'],
+        serviceTiers: [{ id: 'priority', name: 'Fast', description: '2x speed, increased usage' }],
+      }],
+    }],
+    currentModel: null,
+    currentEffort: null,
+    officialSubscription: true,
+    // 配置未设置 service_tier：默认档位显式为 null，表示线程以标准档运行。
+    defaultServiceTier: null,
+  })
+  subscribed.driver.dispose()
+
+  // Provider 配置了 service_tier：它才是线程未显式选择时真正生效的档位。
+  // 注意来源是 config/read 而不是 model/list 的 defaultServiceTier。
+  const configured = createCodexServiceTierRecorder({
+    account: { type: 'chatgpt', email: null, planType: 'pro' },
+    modelList: { data: [{ ...(modelList.data as Array<Record<string, unknown>>)[0], defaultServiceTier: 'priority' }] },
+    configuredServiceTier: 'priority',
+  })
+  const configuredCatalog = await configured.driver.listModels()
+  assert.equal(configuredCatalog.defaultServiceTier, 'priority')
+  // 模型的 defaultServiceTier 只是目录元数据，不得进入目录结果。
+  assert.equal('defaultServiceTier' in (configuredCatalog.groups[0]?.models[0] ?? {}), false)
+  configured.driver.dispose()
+
+  // 纯 API key 账号：目录仍带档位，但必须明确判为不可用。
+  const apiKey = createCodexServiceTierRecorder({ account: { type: 'apiKey' }, modelList })
+  assert.equal((await apiKey.driver.listModels()).officialSubscription, false)
+  apiKey.driver.dispose()
+
+  // 未登录（account 为 null）。
+  const anonymous = createCodexServiceTierRecorder({ account: null, modelList })
+  assert.equal((await anonymous.driver.listModels()).officialSubscription, false)
+  anonymous.driver.dispose()
+
+  // 旧版 Codex 没有 account/read：保留“未确认”，不能当成已确认官方订阅。
+  const legacy = createCodexServiceTierRecorder({ accountReadFails: true, modelList })
+  const legacyCatalog = await legacy.driver.listModels()
+  assert.equal(legacyCatalog.officialSubscription, undefined)
+  assert.equal(legacyCatalog.groups[0]?.models[0]?.serviceTiers?.[0]?.id, 'priority')
+  legacy.driver.dispose()
+})
+
+test('Codex 线程按 DSH 选择下发服务档位，并在关闭 Fast 时显式回落标准速度', async () => {
+  const { driver, state } = createCodexServiceTierRecorder()
+
+  // 首轮选择 Fast：thread/start 直接带上档位。
+  for await (const _chunk of driver.executeTurn({
+    sessionId: 'codex-tier',
+    messages: [],
+    prompt: '开始',
+    modelId: 'gpt-6.1-sol',
+    serviceTierId: 'priority',
+  })) { /* 只验证发出的 RPC 参数 */ }
+
+  const start = state.calls.find((call) => call.method === 'thread/start')
+  assert.equal(start?.params.serviceTier, 'priority')
+
+  // 用户关掉 Fast：必须下发 default，不能只是停止下发而让线程保留加速档。
+  for await (const _chunk of driver.executeTurn({
+    sessionId: 'codex-tier',
+    messages: [],
+    prompt: '继续',
+    modelId: 'gpt-6.1-sol',
+    serviceTierId: 'default',
+  })) { /* 只验证发出的 RPC 参数 */ }
+
+  // 模型纠正与档位纠正共用 thread/settings/update，这里只看带 serviceTier 的那些。
+  const tierUpdates = (): Array<Record<string, unknown>> => state.calls
+    .filter((call) => call.method === 'thread/settings/update' && 'serviceTier' in call.params)
+    .map((call) => call.params)
+
+  const updates = tierUpdates()
+  assert.equal(updates.length, 1)
+  assert.deepEqual(updates[0], { threadId: 'tier-thread', serviceTier: 'default' })
+
+  // 档位没有再次变化：不能每个 step 都重复下发。
+  for await (const _chunk of driver.executeTurn({
+    sessionId: 'codex-tier',
+    messages: [],
+    prompt: '再继续',
+    modelId: 'gpt-6.1-sol',
+    serviceTierId: 'default',
+  })) { /* 只验证发出的 RPC 参数 */ }
+  assert.equal(tierUpdates().length, 1)
+
+  // 重新打开 Fast 时再次下发。
+  for await (const _chunk of driver.executeTurn({
+    sessionId: 'codex-tier',
+    messages: [],
+    prompt: '加速',
+    modelId: 'gpt-6.1-sol',
+    serviceTierId: 'priority',
+  })) { /* 只验证发出的 RPC 参数 */ }
+  const reopened = tierUpdates()
+  assert.equal(reopened.length, 2)
+  assert.deepEqual(reopened[1], { threadId: 'tier-thread', serviceTier: 'priority' })
+
+  driver.dispose()
+})
+
+test('Codex 未声明服务档位时不下发 serviceTier，旧版无该方法也不阻断回合', async () => {
+  const { driver, state } = createCodexServiceTierRecorder()
+  for await (const _chunk of driver.executeTurn({
+    sessionId: 'codex-tier-absent',
+    messages: [],
+    prompt: '普通回合',
+    modelId: 'gpt-6.1-sol',
+  })) { /* 只验证发出的 RPC 参数 */ }
+
+  // Host 没有该选择时不能擅自改写线程档位：档位纠正只在显式声明时发生。
+  assert.equal(state.calls.some((call) => call.method === 'thread/settings/update' && 'serviceTier' in call.params), false)
+  assert.equal(state.calls.find((call) => call.method === 'thread/start')?.params.serviceTier, undefined)
+  assert.equal(state.turnStarts, 1)
+  driver.dispose()
+})

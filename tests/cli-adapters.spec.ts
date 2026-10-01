@@ -791,6 +791,28 @@ test('Agent 注册表允许把会话切回内置 DSH Agent', () => {
   assert.deepEqual(registry.getSession('session-dsh'), { adapterId: 'dsh' })
 })
 
+test('Agent 注册表保留服务档位选择，关闭 Fast 时不会被记忆值回退成加速档', () => {
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'fake', name: 'Fake' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'fake' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } },
+  }])
+
+  // 打开 Fast：档位随会话保存。
+  assert.deepEqual(
+    registry.setSession('tier-session', { adapterId: 'fake', modelId: 'm1', serviceTierId: 'priority' }),
+    { adapterId: 'fake', modelId: 'm1', serviceTierId: 'priority' },
+  )
+  // 关闭 Fast：`default` 是显式选择，不能被上一次记住的 priority 覆盖。
+  assert.deepEqual(
+    registry.setSession('tier-session', { adapterId: 'fake', modelId: 'm1', serviceTierId: 'default' }),
+    { adapterId: 'fake', modelId: 'm1', serviceTierId: 'default' },
+  )
+  // 新建会话沿用适配器级记忆值。
+  assert.deepEqual(registry.getSession('tier-session'), { adapterId: 'fake', modelId: 'm1', serviceTierId: 'default' })
+})
+
 test('外部 Agent 可以单独停用并阻止模型目录和会话绑定', async () => {
   const registry = new CodingNsCliAdapterRegistry([{
     descriptor: { id: 'fake', name: 'Fake' },
@@ -2089,5 +2111,98 @@ test('委派 RPC 允许任务留空，交由派发内核回退到最近一条用
     async () => { await handler?.('delegate', { sessionId: 'session-delegate-empty', adapterId: 'codex', prompt: 42 }) },
     /prompt 必须是字符串/u,
   )
+  await features.disable('cliAdapters')
+})
+
+test('CLI 功能模块把服务档位选择从 session/set 传到驱动的一轮输入', async () => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  const turnInputs: Array<Record<string, unknown>> = []
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) {
+      turnInputs.push(input as unknown as Record<string, unknown>)
+      yield { type: 'finish', reason: 'stop' } as const
+    },
+  }])
+  const features = new FeatureRegistry({
+    rpc: table,
+    events: {
+      on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+        listener = next
+        return () => { listener = undefined }
+      },
+    },
+  })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+
+  // 打开 Fast。
+  await table.resolve('cli/session/set')?.handler('session/set', {
+    sessionId: 'tier-e2e',
+    adapterId: 'codex',
+    modelId: 'gpt-6.1-sol',
+    serviceTierId: 'priority',
+  })
+  for await (const _chunk of listener!({ sessionId: 'tier-e2e', messages: [{ role: 'user', content: '加速' }] }, async function* () {})) { /* 只验证驱动输入 */ }
+  assert.equal(turnInputs[0]?.serviceTierId, 'priority')
+
+  // 关闭 Fast：`default` 必须原样传到驱动，不能被当成空值丢掉。
+  await table.resolve('cli/session/set')?.handler('session/set', {
+    sessionId: 'tier-e2e',
+    adapterId: 'codex',
+    modelId: 'gpt-6.1-sol',
+    serviceTierId: 'default',
+  })
+  for await (const _chunk of listener!({ sessionId: 'tier-e2e', messages: [{ role: 'user', content: '标准' }] }, async function* () {})) { /* 只验证驱动输入 */ }
+  assert.equal(turnInputs[1]?.serviceTierId, 'default')
+
+  await features.disable('cliAdapters')
+})
+
+test('新建会话开启 Fast 后，档位在选择器规范化与思考等级变更中都不丢失', async () => {
+  const table = new CodingNsRpcTable()
+  const turnInputs: Array<Record<string, unknown>> = []
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() {
+      return {
+        groups: [{
+          id: 'codex',
+          name: 'Codex',
+          models: [{ id: 'gpt-6.1-sol', name: 'GPT-6.1-Sol', efforts: ['low', 'high'], serviceTiers: [{ id: 'priority', name: 'Fast' }] }],
+        }],
+        currentModel: null,
+        currentEffort: null,
+        officialSubscription: true,
+      }
+    },
+    async *executeTurn(input) {
+      turnInputs.push(input as unknown as Record<string, unknown>)
+      yield { type: 'finish', reason: 'stop' } as const
+    },
+  }])
+  const features = new FeatureRegistry({ rpc: table, events: { on() { return () => {} } } })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+
+  const setSession = table.resolve('cli/session/set')!
+  const getSession = table.resolve('cli/session/get')!
+
+  // 1. 新建会话并开启 Fast。
+  await setSession.handler('session/set', { sessionId: 'fast-new', adapterId: 'codex', modelId: 'gpt-6.1-sol', effortId: 'high', serviceTierId: 'priority' })
+  assert.equal(((await getSession.handler('session/get', { sessionId: 'fast-new' })) as { serviceTierId?: string }).serviceTierId, 'priority')
+
+  // 2. 选择器规范化（目录就绪后补默认值）只带 modelId/effortId，不能丢掉档位。
+  await setSession.handler('session/set', { sessionId: 'fast-new', adapterId: 'codex', modelId: 'gpt-6.1-sol', effortId: 'high' })
+  assert.equal(((await getSession.handler('session/get', { sessionId: 'fast-new' })) as { serviceTierId?: string }).serviceTierId, 'priority', '规范化后 Fast 必须保持')
+
+  // 3. 用户调整思考等级，档位同样必须保持。
+  await setSession.handler('session/set', { sessionId: 'fast-new', adapterId: 'codex', modelId: 'gpt-6.1-sol', effortId: 'low' })
+  assert.equal(((await getSession.handler('session/get', { sessionId: 'fast-new' })) as { serviceTierId?: string }).serviceTierId, 'priority', '改思考等级后 Fast 必须保持')
+
   await features.disable('cliAdapters')
 })
