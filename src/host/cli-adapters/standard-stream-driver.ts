@@ -155,6 +155,9 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     }
   }
 
+  /** 已探测到的 CLI 路径；供子类在同步的 buildArgs 里做参数能力探测。 */
+  protected get resolvedBinary(): string | null { return this.cachedBinary }
+
   dispose(): void {
     for (const child of this.processes) terminateChildProcess(child)
     this.processes.clear()
