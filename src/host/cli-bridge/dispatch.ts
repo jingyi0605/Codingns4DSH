@@ -28,43 +28,55 @@ export async function dispatchBridgeSubagent(
 ): Promise<SubagentBridgeDispatchResult> {
   const native = getNativeSubagents()
   if (native?.startContinuable === undefined) {
-    return { ok: false, text: '', error: 'DSH 原生 Subagent 能力不可用，当前 Host 未提供可续子会话' }
+    return bridgeFailure('DSH 原生 Subagent 能力不可用，当前 Host 未提供可续子会话')
   }
   if (deps.nativeSessions === undefined) {
-    return { ok: false, text: '', error: 'DSH 原生会话桥接不可用' }
+    return bridgeFailure('DSH 原生会话桥接不可用')
   }
   const parentAgent = findAgentBySession(deps.agents, request.sessionId)
   if (parentAgent === undefined) {
-    return { ok: false, text: '', error: `找不到会话对应的 DSH Agent: ${request.sessionId}` }
+    return bridgeFailure(`找不到会话对应的 DSH Agent: ${request.sessionId}`)
   }
   const parentId = parentAgent.session?.header?.id ?? parentAgent.id ?? request.sessionId
   const adapterId = (request.agent ?? resolveSessionAdapter(request.sessionId) ?? '').trim()
   if (!EXTERNAL_SUBAGENT_IDS.includes(adapterId as typeof EXTERNAL_SUBAGENT_IDS[number])) {
-    return { ok: false, text: '', error: `不支持的外部 Agent: ${adapterId === '' ? '(未指定)' : adapterId}` }
+    return bridgeFailure(`不支持的外部 Agent: ${adapterId === '' ? '(未指定)' : adapterId}`)
   }
   const registry = getAdapterRegistry()
   if (registry !== undefined) {
     const adapter = (await registry.catalog()).find((item) => item.id === adapterId)
     if (adapter === undefined || !adapter.installed || !adapter.enabled) {
-      return { ok: false, text: '', error: `${adapterId} 未安装或未启用` }
+      return bridgeFailure(`${adapterId} 未安装或未启用`)
     }
   }
   const modelId = request.model?.trim() === '' ? undefined : request.model?.trim()
-  const result = await dispatchNativeSubagent(native, deps.nativeSessions, {
-    adapterId,
-    prompt: request.prompt,
-    parentAgent,
-    parentId,
-    modelId,
-    background: false,
-    select: (action) => enqueueTeamSubagentSelection(parentId, adapterId, modelId, action),
-  })
-  return {
-    ok: result.ok,
-    text: result.text,
-    childSessionId: result.childSessionId,
-    toolCalls: result.toolCalls,
+  try {
+    const result = await dispatchNativeSubagent(native, deps.nativeSessions, {
+      adapterId,
+      prompt: request.prompt,
+      parentAgent,
+      parentId,
+      modelId,
+      background: false,
+      select: (action) => enqueueTeamSubagentSelection(parentId, adapterId, modelId, action),
+    })
+    return {
+      ok: result.ok,
+      completed: result.completed,
+      text: result.text,
+      childSessionId: result.childSessionId,
+      toolCalls: result.toolCalls,
+      ...(result.error === undefined ? {} : { error: result.error }),
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return bridgeFailure(message || '子代理派发失败，且未返回具体错误。')
   }
+}
+
+function bridgeFailure(error: string): SubagentBridgeDispatchResult {
+  const message = error.trim() || '子代理派发失败，且未返回具体错误。'
+  return { ok: false, completed: false, text: message, error: message }
 }
 
 function resolveSessionAdapter(sessionId: string): string | undefined {

@@ -111,12 +111,16 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
       }),
       signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
     })
-    if (!response.ok) return textResult(`子代理桥接请求失败：HTTP ${String(response.status)}`, true)
-    const payload = asRecord(await response.json())
-    if (payload?.ok !== true) {
-      return textResult(`子代理执行失败：${typeof payload?.error === 'string' ? payload.error : '未知错误'}`, true)
+    const payload = await readJsonRecord(response)
+    if (!response.ok) {
+      const detail = typeof payload?.error === 'string' && payload.error.trim() !== '' ? payload.error.trim() : `HTTP ${String(response.status)}`
+      return textResult(`子代理桥接请求失败：${detail}`, true)
     }
-    const text = typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : '(子代理没有文本输出)'
+    if (payload?.ok !== true) {
+      const detail = typeof payload?.error === 'string' && payload.error.trim() !== '' ? payload.error.trim() : '桥接端未返回具体错误。'
+      return textResult(`子代理执行失败：${detail}`, true)
+    }
+    const text = typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : '子代理已完成，但没有文本输出。'
     return textResult(text, false)
   } catch (error) {
     return textResult(`子代理桥接不可达：${error instanceof Error ? error.message : String(error)}`, true)
@@ -125,6 +129,14 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
 
 function textResult(text: string, isError: boolean): Record<string, unknown> {
   return { content: [{ type: 'text', text }], ...(isError ? { isError: true } : {}) }
+}
+
+async function readJsonRecord(response: Response): Promise<Record<string, unknown> | undefined> {
+  try {
+    return asRecord(await response.json())
+  } catch {
+    return undefined
+  }
 }
 
 function readProtocolVersion(params: unknown): string {

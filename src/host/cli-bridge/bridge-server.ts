@@ -18,6 +18,7 @@ export interface SubagentBridgeDispatchRequest {
 
 export interface SubagentBridgeDispatchResult {
   readonly ok: boolean
+  readonly completed?: boolean | undefined
   readonly text: string
   readonly childSessionId?: string | undefined
   readonly toolCalls?: number | undefined
@@ -43,7 +44,8 @@ export async function startSubagentBridgeServer(options: {
   const token = randomBytes(24).toString('hex')
   const server = createServer((request, response) => {
     void handleRequest(request, response, token, options.dispatch).catch((error: unknown) => {
-      respondJson(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
+      const message = error instanceof Error ? error.message : String(error)
+      respondJson(response, 500, { ok: false, text: message || '子代理桥接内部错误。', error: message || '子代理桥接内部错误。' })
     })
   })
   server.requestTimeout = 0
