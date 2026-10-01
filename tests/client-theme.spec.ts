@@ -132,7 +132,7 @@ test('Agent 选择器位于模型左侧并显示完整 Provider Logo', async () 
   assert.match(slotSource, /transform: !locked && open \?/u)
   assert.doesNotMatch(slotSource, /⌄/u)
 
-  for (const adapterId of ['dsh', 'command-code', 'claude-code', 'kimi', 'gemini', 'pi', 'codex', 'opencode', 'grok']) {
+  for (const adapterId of ['dsh', 'command-code', 'claude-code', 'kimi', 'gemini', 'pi', 'codex', 'opencode', 'grok', 'zcode']) {
     assert.match(iconSource, new RegExp(`(?:['"]${adapterId}['"]|\\b${adapterId}):`, 'u'), `${adapterId} 缺少 Logo 映射`)
   }
   assert.match(bundleSource, /data:image\/(?:png|svg\+xml);base64,/u, 'Client 单文件包应内联 Provider Logo')
@@ -183,4 +183,32 @@ test('订阅悬浮框按内容自适应且不产生横向滚动', async () => {
   assert.match(source, /tableLayout: 'fixed'/u)
   assert.match(source, /overflow: 'visible'/u)
   assert.doesNotMatch(source, /sub2apiTableScrollStyle = \{ overflowX:/u)
+})
+
+test('官方余额统一复用适配器 Logo，并以进度条和到期倒计时展示', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/subscription-slot.ts'), 'utf8')
+  assert.match(source, /const adapterIconSource = providerIconUrl\(adapterId \?\? 'dsh'\)/u)
+  assert.match(source, /const providerBalanceRemaining = providerBalance === undefined \? null : balancePercent\(providerBalance\.remaining, providerBalance\.total\)/u)
+  assert.match(source, /providerBalanceRemaining !== null\s*\? createRemainingRing\(providerBalanceRemaining\)/u)
+  assert.match(source, /usage\.providerBalancePlanLabel/u)
+  assert.match(source, /usage\.planName\?\.trim\(\)/u)
+  assert.match(source, /role: 'progressbar'/u)
+  assert.match(source, /function summarizeProviderBalance/u)
+  assert.match(source, /function formatExpiryCountdown/u)
+  assert.match(source, /usage\.expiresIn/u)
+  assert.doesNotMatch(source, /src: deepseekIconSource, alt: '', width: 18, height: 18[\s\S]*deepseekIconSource !== undefined/u)
+})
+
+test('Codex 订阅展示重置次数与点数，并经确认模态框触发重置', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/subscription-slot.ts'), 'utf8')
+  assert.match(source, /usage\.creditBalanceLabel/u)
+  assert.match(source, /usage\.resetCreditsLabel/u)
+  assert.match(source, /usage\.resetCreditsExpiresAt/u)
+  assert.match(source, /usage\.resetButton/u)
+  assert.match(source, /'subscription\/reset'/u)
+  assert.match(source, /createElement\(ResetConfirmDialog/u)
+  assert.match(source, /useDismissOnOutsidePointer\(resetDialogRef, resetOpen && !resetPending, closeResetDialog\)/u)
+  assert.match(source, /'aria-modal': true/u)
+  assert.match(source, /subscriptionUsageCache\.delete\(cacheKey\)/u)
+  assert.match(source, /refreshRef\.current = refresh/u)
 })

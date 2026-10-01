@@ -1,16 +1,16 @@
 import { createElement, useEffect, useRef, useState } from 'react'
-import type { ReactElement } from 'react'
+import type { ReactElement, RefObject } from 'react'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { isSubscriptionUsageFresh } from '../shared/contracts/subscription.js'
-import type { CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
+import type { CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
 import { DEFAULT_SUBSCRIPTION_USAGE_SETTINGS } from '../shared/contracts/config.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCliRpc } from './cli-catalog.js'
 import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { providerIconUrl } from './provider-icons.js'
 import { subscribeSessionAdapters } from './session-adapter-cache.js'
-import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
+import { dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from './theme.js'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import type { SessionSnapshot } from './cli-slots.js'
 
@@ -89,6 +89,13 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const [loading, setLoading] = useState(false)
   const [clock, setClock] = useState(() => Date.now())
   const rootRef = useRef<HTMLDivElement>(null)
+  const resetDialogRef = useRef<HTMLDivElement>(null)
+  // 重置成功后的刷新不能重跑加载 effect，否则 usage 会被清空导致底部入口闪断。
+  const refreshRef = useRef<null | (() => Promise<void>)>(null)
+  const [resetOpen, setResetOpen] = useState(false)
+  const [resetPending, setResetPending] = useState(false)
+  const [resetResult, setResetResult] = useState<CliSubscriptionResetOutcome | null>(null)
+  const [resetError, setResetError] = useState<string | null>(null)
   const modelSelectionRevision = props.useSession?.((value) => JSON.stringify(value.modelSelection))
   // 切换 Agent 可能只改变 Host 侧会话配置，DSH 会话快照不一定会更新；订阅适配器
   // 缓存的变更才能真正触发重新查询，否则底部会一直显示上一个 Agent 的订阅数据。
@@ -103,6 +110,10 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       setAdapterId(null)
       setProviderId(null)
       setOpen(false)
+      setResetOpen(false)
+      setResetPending(false)
+      setResetResult(null)
+      setResetError(null)
       return
     }
     let active = true
@@ -111,6 +122,10 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     setAdapterId(null)
     setProviderId(null)
     setOpen(false)
+    setResetOpen(false)
+    setResetPending(false)
+    setResetResult(null)
+    setResetError(null)
     const refresh = async (): Promise<void> => {
       setLoading(true)
       try {
@@ -152,11 +167,13 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         if (active) setLoading(false)
       }
     }
+    refreshRef.current = refresh
     void refresh()
     const intervalMins = props.getRefreshIntervalMins?.() ?? DEFAULT_SUBSCRIPTION_USAGE_SETTINGS.refreshIntervalMins
     const timer = intervalMins > 0 ? globalThis.setInterval(() => { void refresh() }, intervalMins * 60_000) : undefined
     return () => {
       active = false
+      refreshRef.current = null
       if (timer !== undefined) globalThis.clearInterval(timer)
     }
   }, [props.rpc, props.sessionId, props.getRefreshIntervalMins, modelSelectionRevision, adapterRevision])
@@ -167,7 +184,38 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     return () => globalThis.clearInterval(timer)
   }, [eligible, usage])
 
+  const closeResetDialog = (): void => {
+    if (resetPending) return
+    setResetOpen(false)
+    setResetResult(null)
+    setResetError(null)
+  }
+
+  const confirmReset = (): void => {
+    if (resetPending || adapterId === null) return
+    const cacheKey = `${adapterId}|${providerId ?? ''}`
+    setResetPending(true)
+    setResetError(null)
+    void (async () => {
+      try {
+        const result = await callCliRpc<CliSubscriptionResetResult>(props.rpc, 'subscription/reset', {
+          adapterId,
+          ...(providerId === null ? {} : { providerId }),
+        })
+        setResetResult(result.outcome)
+        // 重置改变了窗口与次数，必须绕过进程内缓存重新读取。
+        subscriptionUsageCache.delete(cacheKey)
+        await refreshRef.current?.()
+      } catch (error) {
+        setResetError(error instanceof Error ? error.message : '')
+      } finally {
+        setResetPending(false)
+      }
+    })()
+  }
+
   useDismissOnOutsidePointer(rootRef, open, () => setOpen(false))
+  useDismissOnOutsidePointer(resetDialogRef, resetOpen && !resetPending, closeResetDialog)
 
   // 未拿到真实订阅数据时不占用底部栏空间；加载状态不能伪装成订阅存在。
   if (!eligible || usage === null || (usage.sub2api === undefined && usage.deepseek === undefined && usage.providerBalance === undefined && resolveDisplayWindow(usage) === null)) return null
@@ -179,16 +227,36 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const resetLabel = displayWindow === null ? null : formatCountdown(displayWindow.resetsAt, t, clock)
   const providerName = subscriptionProviderName(adapterId, providerId, usage, t)
   const deepseekBalance = deepseek === undefined ? null : selectDeepseekBalance(deepseek)
-  const providerLogoSource = usage.provider?.logoDataUrl ?? (isRemoteWebContext() ? '' : usage.provider?.logoUrl ?? '')
-  const deepseekIconSource = providerLogoSource || (providerBalance === undefined ? providerIconUrl('dsh') : '')
+  const providerBalanceRemaining = providerBalance === undefined ? null : balancePercent(providerBalance.remaining, providerBalance.total)
+  const providerBalancePlan = providerBalance?.planName?.trim() || null
+  // 官方余额读取器可能没有可直连的 Provider Logo；此时统一回退到当前
+  // 适配器注册的内置图标，ZCode 等 Agent 不再显示空 src 的破图。
+  const adapterIconSource = providerIconUrl(adapterId ?? 'dsh') ?? ''
+  const providerLogoSource = usage.provider?.logoDataUrl?.trim() || (!isRemoteWebContext() ? usage.provider?.logoUrl?.trim() : '') || adapterIconSource
+  const deepseekIconSource = providerLogoSource
   const label = sub2api === undefined && deepseek === undefined && providerBalance === undefined
     ? t('usage.remainingLabel', { provider: providerName, percent: formatPercent(remaining ?? 0) })
     : sub2api !== undefined
       ? t('usage.upstreamBalanceLabel', { provider: providerName, amount: formatSub2ApiMoney(sub2api.balance, sub2api.unit) })
       : deepseek !== undefined
         ? t('usage.balanceLabel', { provider: providerName, amount: deepseekBalance === null ? t('usage.unavailable') : formatDeepseekMoney(deepseekBalance.totalBalance, deepseekBalance.currency) })
-        : t('usage.providerBalanceLabel', { provider: providerName, amount: formatProviderBalance(providerBalance) })
+        : providerBalancePlan === null
+          ? t('usage.providerBalanceLabel', { provider: providerName, amount: formatProviderBalance(providerBalance) })
+          : t('usage.providerBalancePlanLabel', { provider: providerName, plan: providerBalancePlan, amount: formatProviderBalance(providerBalance) })
   const logoSource = providerLogoSource || (sub2api === undefined ? '' : (sub2api.logoDataUrl ?? (isRemoteWebContext() ? '' : sub2api.logoUrl)))
+  const resetCredits = usage.resetCredits
+  // 重置只对官方 Codex 订阅开放；第三方上游走 sub2api 面板，不会带出重置券。
+  const resetRequest = adapterId === 'codex' && resetCredits !== null
+    ? {
+        enabled: resetCredits.availableCount > 0 && !resetPending,
+        onRequest: (): void => {
+          setOpen(false)
+          setResetResult(null)
+          setResetError(null)
+          setResetOpen(true)
+        },
+      }
+    : null
   const triggerContent = sub2api === undefined && deepseek === undefined && providerBalance === undefined
     ? createElement('span', { 'aria-hidden': true, style: progressRingStyle() },
       createElement('span', { style: { ...progressRingVisualStyle, background: progressRingVisualBackground(remaining === null ? 0 : remaining / 100, false) } },
@@ -205,13 +273,15 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       )
       : deepseek !== undefined
         ? createElement('span', { 'aria-hidden': true, style: deepseekBalanceIdentityStyle },
-        deepseekIconSource !== undefined && createElement('img', { src: deepseekIconSource, alt: '', width: 18, height: 18, style: deepseekLogoStyle }),
+        deepseekIconSource !== '' && createElement('img', { src: deepseekIconSource, alt: '', width: 18, height: 18, style: deepseekLogoStyle }),
         createElement('span', { className: 'codingns4dsh-subscription-value', style: deepseekBalanceStyle }, deepseekBalance === null ? '--' : formatDeepseekMoney(deepseekBalance.totalBalance, deepseekBalance.currency)),
         )
-        : createElement('span', { 'aria-hidden': true, style: deepseekBalanceIdentityStyle },
-          deepseekIconSource !== undefined && createElement('img', { src: deepseekIconSource, alt: '', width: 18, height: 18, style: deepseekLogoStyle }),
-          createElement('span', { className: 'codingns4dsh-subscription-value', style: deepseekBalanceStyle }, formatProviderBalance(providerBalance)),
-        )
+        : providerBalanceRemaining !== null
+          ? createRemainingRing(providerBalanceRemaining)
+          : createElement('span', { 'aria-hidden': true, style: deepseekBalanceIdentityStyle },
+            deepseekIconSource !== '' && createElement('img', { src: deepseekIconSource, alt: '', width: 18, height: 18, style: deepseekLogoStyle }),
+            createElement('span', { className: 'codingns4dsh-subscription-value', style: deepseekBalanceStyle }, formatProviderBalance(providerBalance)),
+          )
   return createElement('div', { ref: rootRef, style: subscriptionRootStyle },
     createElement('button', {
       type: 'button',
@@ -226,22 +296,56 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       createElement('span', { className: 'codingns4dsh-subscription-label', style: subscriptionLabelStyle },
         sub2api === undefined && deepseek === undefined && providerBalance === undefined
           ? (resetLabel ?? t('usage.subscriptionRemaining'))
-          : sub2api !== undefined ? t('usage.todayCostShort', { amount: formatSub2ApiMoney(sub2api.today.cost, sub2api.unit) }) : deepseek !== undefined ? t('usage.accountBalance') : t('usage.officialRemaining'),
+          : sub2api !== undefined ? t('usage.todayCostShort', { amount: formatSub2ApiMoney(sub2api.today.cost, sub2api.unit) }) : deepseek !== undefined ? t('usage.accountBalance') : providerBalancePlan ?? t('usage.officialRemaining'),
       ),
     ),
-    open && createElement(SubscriptionPopover, { usage, providerName, t }),
+    open && createElement(SubscriptionPopover, { usage, providerName, t, nowMs: clock, reset: resetRequest }),
+    resetOpen && createElement(ResetConfirmDialog, {
+      count: resetCredits?.availableCount ?? 0,
+      pending: resetPending,
+      result: resetResult,
+      error: resetError,
+      t,
+      onCancel: closeResetDialog,
+      onConfirm: confirmReset,
+      onClose: closeResetDialog,
+      dialogRef: resetDialogRef,
+    }),
   )
 }
 
-function SubscriptionPopover({ usage, providerName, t }: { readonly usage: CliSubscriptionUsage; readonly providerName: string; readonly t: CodingNsTranslator }): ReactElement {
+interface SubscriptionResetRequest {
+  readonly enabled: boolean
+  readonly onRequest: () => void
+}
+
+function SubscriptionPopover({ usage, providerName, t, nowMs, reset }: {
+  readonly usage: CliSubscriptionUsage
+  readonly providerName: string
+  readonly t: CodingNsTranslator
+  readonly nowMs: number
+  readonly reset: SubscriptionResetRequest | null
+}): ReactElement {
   if (usage.sub2api !== undefined) return createElement(Sub2ApiPopover, { usage: usage.sub2api, providerName, t })
   if (usage.deepseek !== undefined) return createElement(DeepseekPopover, { usage: usage.deepseek, providerName, t })
-  if (usage.providerBalance !== undefined) return createElement(ProviderBalancePopover, { usage: usage.providerBalance, providerName, t })
+  if (usage.providerBalance !== undefined) return createElement(ProviderBalancePopover, { usage: usage.providerBalance, providerName, t, nowMs })
   const windows = [
     { id: 'primary', label: formatSubscriptionWindowLabel(usage.primary, t('usage.windowFiveHour'), t), window: usage.primary },
     { id: 'secondary', label: formatSubscriptionWindowLabel(usage.secondary, t('usage.windowWeekly'), t), window: usage.secondary },
     { id: 'monthly', label: formatSubscriptionWindowLabel(usage.monthly, t('usage.windowMonthly'), t), window: usage.monthly },
   ] as const
+  const credits = usage.credits ?? null
+  const creditText = credits === null
+    ? null
+    : credits.unlimited
+      ? t('usage.creditUnlimited')
+      : credits.balance ?? (credits.hasCredits ? '0' : '--')
+  const expiries = usage.resetCredits === null
+    ? []
+    : usage.resetCredits.credits
+      .map((credit) => credit.expiresAt)
+      .filter((expiry): expiry is number => expiry !== null)
+      .sort((left, right) => left - right)
   return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.popoverSubscriptionUsage', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
       createElement('strong', undefined, t('usage.popoverSubscriptionTitle', { provider: providerName })),
@@ -254,7 +358,82 @@ function SubscriptionPopover({ usage, providerName, t }: { readonly usage: CliSu
       ),
       window.resetsAt !== null && createElement('div', { style: resetStyle }, t('usage.resetsIn', { time: formatCountdown(window.resetsAt, t) })),
     )),
+    (creditText !== null || usage.resetCredits !== null) && createElement('section', { style: resetCreditsSectionStyle },
+      creditText !== null && createElement('div', { style: resetCreditsRowStyle },
+        createElement('span', undefined, t('usage.creditBalanceLabel')),
+        createElement('span', undefined, creditText),
+      ),
+      usage.resetCredits !== null && createElement('div', { style: resetCreditsRowStyle },
+        createElement('span', undefined, t('usage.resetCreditsLabel')),
+        createElement('span', undefined, t('usage.resetCreditsCount', { count: usage.resetCredits.availableCount })),
+      ),
+      expiries.slice(0, 3).map((expiry) => createElement('div', { key: expiry, style: resetCreditsExpiryStyle },
+        t('usage.resetCreditsExpiresAt', { time: formatResetExpiry(expiry, t, nowMs) }),
+      )),
+      expiries.length > 3 && createElement('div', { style: resetCreditsExpiryStyle }, t('usage.resetCreditsMore', { count: expiries.length - 3 })),
+      reset !== null && createElement('button', {
+        type: 'button',
+        className: 'codingns4dsh-subscription-reset',
+        disabled: !reset.enabled,
+        onClick: reset.onRequest,
+        title: reset.enabled ? t('usage.resetTooltipReady') : t('usage.resetTooltipNone'),
+        style: reset.enabled ? resetButtonStyle : resetButtonDisabledStyle,
+      }, t('usage.resetButton')),
+    ),
   )
+}
+
+function ResetConfirmDialog({ count, pending, result, error, t, onCancel, onConfirm, onClose, dialogRef }: {
+  readonly count: number
+  readonly pending: boolean
+  readonly result: CliSubscriptionResetOutcome | null
+  readonly error: string | null
+  readonly t: CodingNsTranslator
+  readonly onCancel: () => void
+  readonly onConfirm: () => void
+  readonly onClose: () => void
+  readonly dialogRef: RefObject<HTMLDivElement>
+}): ReactElement {
+  const finished = result !== null || error !== null
+  const message = pending
+    ? t('usage.resetDialogPending')
+    : result !== null
+      ? resetOutcomeMessage(result, t)
+      : error !== null && error.trim() !== ''
+        ? error
+        : t('usage.resetDialogBody', { count })
+  const messageColor = error !== null
+    ? dshThemeColor.error
+    : result === 'reset' || result === 'alreadyRedeemed' ? dshThemeColor.success : dshThemeColor.labelTertiary
+  return createElement('div', { className: 'codingns4dsh-subscription-reset-overlay', role: 'presentation', style: resetDialogOverlayStyle },
+    createElement('div', {
+      ref: dialogRef,
+      role: 'dialog',
+      'aria-modal': true,
+      'aria-label': t('usage.resetDialogTitle'),
+      style: resetDialogStyle,
+    },
+      createElement('div', { style: { display: 'grid', gap: 4 } },
+        createElement('strong', { style: { fontSize: 14, lineHeight: 1.4 } }, t('usage.resetDialogTitle')),
+        createElement('span', { style: { color: messageColor, fontSize: 12, lineHeight: '18px' } }, message),
+      ),
+      createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 } },
+        finished
+          ? createElement('button', { type: 'button', onClick: onClose, style: dshSettingsPrimaryButtonStyle }, t('usage.resetDialogClose'))
+          : createElement('button', { type: 'button', disabled: pending, onClick: onCancel, style: dshSettingsButtonStyle, autoFocus: true }, t('usage.resetDialogCancel')),
+        !finished && createElement('button', { type: 'button', disabled: pending, onClick: onConfirm, style: dshSettingsPrimaryButtonStyle }, t('usage.resetDialogConfirm')),
+      ),
+    ),
+  )
+}
+
+function resetOutcomeMessage(outcome: CliSubscriptionResetOutcome, t: CodingNsTranslator): string {
+  switch (outcome) {
+    case 'reset': return t('usage.resetOutcomeReset')
+    case 'alreadyRedeemed': return t('usage.resetOutcomeAlreadyRedeemed')
+    case 'nothingToReset': return t('usage.resetOutcomeNothingToReset')
+    case 'noCredit': return t('usage.resetOutcomeNoCredit')
+  }
 }
 
 /** 根据服务端返回的窗口时长生成准确的额度标签，避免把七天窗口误显示成五小时。 */
@@ -266,17 +445,98 @@ function formatSubscriptionWindowLabel(window: CliSubscriptionWindow | null, fal
   return t('usage.windowMinutes', { count: durationMins })
 }
 
-function ProviderBalancePopover({ usage, providerName, t }: { readonly usage: ProviderBalanceUsage; readonly providerName: string; readonly t: CodingNsTranslator }): ReactElement {
+function ProviderBalancePopover({ usage, providerName, t, nowMs }: { readonly usage: ProviderBalanceUsage; readonly providerName: string; readonly t: CodingNsTranslator; readonly nowMs: number }): ReactElement {
+  const models = summarizeProviderBalance(usage)
+  const overallPercent = balancePercent(usage.remaining, usage.total)
   return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.officialRemainingPopover', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
-      createElement('strong', undefined, t('usage.officialRemainingPopover', { provider: providerName })),
+      createElement('span', { style: providerBalanceHeadingStyle },
+        createElement('strong', undefined, providerName),
+        usage.planName?.trim() && createElement('span', { style: providerBalancePlanStyle }, usage.planName.trim()),
+      ),
       createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatProviderBalance(usage)),
     ),
-    usage.used !== null && usage.total !== null && createElement('div', { style: upstreamMetaStyle }, t('usage.usedOfTotal', { used: formatProviderBalanceValue(usage.used, usage.unit), total: formatProviderBalanceValue(usage.total, usage.unit) })),
-    usage.details.length === 0
+    overallPercent !== null && createElement(BalanceProgress, {
+      label: t('usage.officialRemainingPopover', { provider: providerName }),
+      percent: overallPercent,
+      value: `${formatProviderBalanceAmount(usage.remaining ?? 0, usage.unit)} / ${formatProviderBalanceAmount(usage.total ?? 0, usage.unit)}`,
+      style: overallBalanceStyle,
+    }),
+    usage.used !== null && createElement('div', { style: balanceMetaStyle }, t('usage.usedShort', { amount: formatProviderBalanceAmount(usage.used, usage.unit) })),
+    models.length === 0
       ? createElement('div', { style: resetStyle }, t('usage.noMoreStats'))
-      : usage.details.map((item) => createElement('div', { key: item.label, style: deepseekBalanceDetailsStyle }, createElement('span', undefined, item.label), createElement('span', undefined, String(item.value)))),
+      : models.map((model) => createElement('section', { key: model.name, style: providerBalanceModelStyle },
+        createElement('div', { style: windowHeadingStyle },
+          createElement('span', undefined, model.name),
+          createElement('span', undefined, model.total === null ? formatProviderBalanceAmount(model.remaining ?? 0, usage.unit) : `${formatProviderBalanceAmount(model.remaining ?? 0, usage.unit)} / ${formatProviderBalanceAmount(model.total, usage.unit)}`),
+        ),
+        model.total !== null && model.remaining !== null && createElement(BalanceProgress, {
+          label: model.name,
+          percent: balancePercent(model.remaining, model.total) ?? 0,
+          value: '',
+        }),
+        createElement('div', { style: balanceMetaStyle },
+          model.used === null ? null : createElement('span', undefined, t('usage.usedShort', { amount: formatProviderBalanceAmount(model.used, usage.unit) })),
+          model.periodEnd === null ? null : createElement('span', undefined, t('usage.expiresIn', { time: formatExpiryCountdown(model.periodEnd, t, nowMs) })),
+        ),
+      )),
   )
+}
+
+function BalanceProgress({ label, percent, value, style }: { readonly label: string; readonly percent: number; readonly value: string; readonly style?: Record<string, string | number> }): ReactElement {
+  const normalized = Math.max(0, Math.min(100, percent))
+  return createElement('div', { style: style ?? providerBalanceProgressStyle },
+    createElement('div', { style: balanceProgressHeaderStyle },
+      createElement('span', { style: visuallyHiddenStyle }, label),
+      value !== '' && createElement('span', { style: balanceProgressValueStyle }, value),
+      createElement('span', { style: balanceProgressPercentStyle }, `${Math.round(normalized)}%`),
+    ),
+    createElement('div', { role: 'progressbar', 'aria-label': label, 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': normalized, style: providerBalanceBarStyle },
+      createElement('span', { style: { ...providerBalanceBarFillStyle, width: `${normalized}%` } }),
+    ),
+  )
+}
+
+interface ProviderBalanceModel {
+  readonly name: string
+  remaining: number | null
+  used: number | null
+  total: number | null
+  periodEnd: string | null
+}
+
+function summarizeProviderBalance(usage: ProviderBalanceUsage): ProviderBalanceModel[] {
+  const models = new Map<string, ProviderBalanceModel>()
+  for (const item of usage.details) {
+    const label = item.label.trim()
+    const matched = PROVIDER_DETAIL_SUFFIXES.find(({ suffix }) => label.endsWith(` ${suffix}`))
+    if (matched === undefined) continue
+    const name = label.slice(0, -(matched.suffix.length + 1)).trim()
+    if (name === '') continue
+    const model = models.get(name) ?? { name, remaining: null, used: null, total: null, periodEnd: null }
+    if (matched.kind === 'remaining') model.remaining = typeof item.value === 'number' ? item.value : null
+    else if (matched.kind === 'used') model.used = typeof item.value === 'number' ? item.value : null
+    else if (matched.kind === 'total') model.total = typeof item.value === 'number' ? item.value : null
+    else model.periodEnd = typeof item.value === 'string' ? item.value : null
+    models.set(name, model)
+  }
+  return [...models.values()]
+}
+
+const PROVIDER_DETAIL_SUFFIXES = [
+  { suffix: String.fromCodePoint(0x5269, 0x4f59), kind: 'remaining' },
+  { suffix: String.fromCodePoint(0x5df2, 0x7528), kind: 'used' },
+  { suffix: String.fromCodePoint(0x603b, 0x91cf), kind: 'total' },
+  { suffix: String.fromCodePoint(0x5468, 0x671f, 0x7ed3, 0x675f), kind: 'periodEnd' },
+  { suffix: 'remaining', kind: 'remaining' },
+  { suffix: 'used', kind: 'used' },
+  { suffix: 'total', kind: 'total' },
+  { suffix: 'period end', kind: 'periodEnd' },
+] as const
+
+function balancePercent(remaining: number | null, total: number | null): number | null {
+  if (remaining === null || total === null || !Number.isFinite(remaining) || !Number.isFinite(total) || total <= 0) return null
+  return Math.max(0, Math.min(100, remaining / total * 100))
 }
 
 function DeepseekPopover({ usage, providerName, t }: { readonly usage: DeepseekUsage; readonly providerName: string; readonly t: CodingNsTranslator }): ReactElement {
@@ -409,11 +669,31 @@ function formatProviderBalance(usage: ProviderBalanceUsage | undefined): string 
 }
 function formatProviderBalanceValue(value: number, unit: string | null): string {
   const normalized = unit?.trim().toUpperCase() ?? ''
+  const amount = formatProviderBalanceAmount(value, unit)
+  if (normalized === '%' || normalized === 'USD') return amount
+  return `${amount}${normalized === '' ? '' : ` ${normalized}`}`
+}
+function formatProviderBalanceAmount(value: number, unit: string | null): string {
+  const normalized = unit?.trim().toUpperCase() ?? ''
   if (normalized === '%') return `${value.toFixed(0)}%`
   if (normalized === 'USD') return `$${value.toFixed(2)}`
-  return `${value.toFixed(2)}${normalized === '' ? '' : ` ${normalized}`}`
+  return isTokenUnit(normalized) ? formatCompactTokenCount(value) : value.toFixed(2)
 }
-function formatSub2ApiTokens(value: number): string { return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value) }
+function formatSub2ApiTokens(value: number): string { return formatCompactTokenCount(value) }
+function formatCompactTokenCount(value: number): string {
+  if (!Number.isFinite(value)) return '--'
+  const absolute = Math.abs(value)
+  const format = (divisor: number, suffix: string): string => {
+    const amount = value / divisor
+    const rounded = Math.round(amount * 10) / 10
+    return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}${suffix}`
+  }
+  if (absolute >= 1_000_000_000) return format(1_000_000_000, 'B')
+  if (absolute >= 1_000_000) return format(1_000_000, 'M')
+  if (absolute >= 1_000) return format(1_000, 'K')
+  return String(Math.round(value))
+}
+function isTokenUnit(unit: string): boolean { return /^(?:TOKENS?|TOKEN_COUNT)$/u.test(unit) }
 function formatSub2ApiPercent(value: number): string { return `${Math.max(0, Math.min(100, value)).toFixed(1)}%` }
 function formatInteger(value: number): string { return new Intl.NumberFormat('zh-CN').format(Math.max(0, Math.round(value))) }
 function formatPlanType(value: string): string { return value.replace(/^individual-/u, '').replace(/(^|-)([a-z])/gu, (_match, _separator, letter: string) => ` ${letter.toUpperCase()}`).trim() }
@@ -427,6 +707,16 @@ function formatCountdown(timestampSeconds: number | null, t: CodingNsTranslator,
   if (hours > 0) return remainder > 0 ? t('usage.countdownHoursMinutes', { hours, minutes: remainder }) : t('usage.countdownHours', { hours })
   return t('usage.countdownMinutes', { minutes: remainder })
 }
+function formatExpiryCountdown(value: string, t: CodingNsTranslator, nowMs: number): string {
+  const timestamp = Date.parse(value)
+  if (Number.isNaN(timestamp)) return value
+  if (timestamp <= nowMs) return t('usage.expired')
+  return formatCountdown(timestamp / 1000, t, nowMs) ?? t('usage.expired')
+}
+function formatResetExpiry(expiry: number, t: CodingNsTranslator, nowMs: number): string {
+  if (expiry * 1000 <= nowMs) return t('usage.resetCreditsExpired')
+  return formatCountdown(expiry, t, nowMs) ?? t('usage.resetCreditsExpired')
+}
 
 const subscriptionRootStyle = { position: 'relative' as const, minWidth: 0, display: 'inline-flex', alignItems: 'center' }
 const subscriptionTriggerStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, height: 28, border: 0, borderRadius: 14, padding: '0 8px 0 4px', color: dshThemeColor.labelSecondary, background: 'transparent', cursor: 'pointer', fontSize: 13, lineHeight: '20px' }
@@ -436,8 +726,20 @@ const sub2apiLogoStyle = { display: 'block', borderRadius: 4, objectFit: 'contai
 const deepseekBalanceIdentityStyle = { display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' as const, fontVariantNumeric: 'tabular-nums' as const }
 const deepseekLogoStyle = { display: 'block', borderRadius: 5, objectFit: 'contain' as const }
 const deepseekBalanceStyle = { display: 'inline-flex', alignItems: 'center', color: dshThemeColor.labelSecondary, fontSize: 13, fontWeight: 600, fontVariantNumeric: 'tabular-nums' as const }
+const providerBalanceHeadingStyle = { display: 'grid', gap: 2, minWidth: 0 }
+const providerBalancePlanStyle = { color: dshThemeColor.labelTertiary, fontSize: 11, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
 const deepseekBalanceSectionStyle = { display: 'grid', gap: 6, marginTop: 10, padding: '10px 0 2px', borderTop: `1px solid ${dshThemeColor.border}` }
 const deepseekBalanceDetailsStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelTertiary, fontSize: 12 }
+const overallBalanceStyle = { display: 'grid', gap: 5, marginTop: 10 }
+const providerBalanceModelStyle = { display: 'grid', gap: 6, marginTop: 12, paddingTop: 10, borderTop: `1px solid ${dshThemeColor.border}` }
+const providerBalanceProgressStyle = { display: 'grid', gap: 5, marginTop: 10 }
+const balanceProgressHeaderStyle = { display: 'flex', justifyContent: 'space-between', gap: 8, minWidth: 0, color: dshThemeColor.labelTertiary, fontSize: 11, fontVariantNumeric: 'tabular-nums' as const }
+const balanceProgressValueStyle = { color: dshThemeColor.labelSecondary, fontWeight: 600 }
+const balanceProgressPercentStyle = { color: dshThemeColor.labelTertiary, fontVariantNumeric: 'tabular-nums' as const }
+const balanceMetaStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelTertiary, fontSize: 11, lineHeight: '16px', fontVariantNumeric: 'tabular-nums' as const }
+const visuallyHiddenStyle = { position: 'absolute' as const, width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden' as const, clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap' as const, border: 0 }
+const providerBalanceBarStyle = { height: 7, overflow: 'hidden' as const, borderRadius: 4, background: dshThemeColor.border }
+const providerBalanceBarFillStyle = { display: 'block', height: '100%', borderRadius: 4, background: dshThemeColor.accent, transition: 'width .2s ease' }
 const deepseekUnavailableStatsStyle = { marginTop: 12, paddingTop: 10, borderTop: `1px solid ${dshThemeColor.border}`, color: dshThemeColor.labelTertiary, fontSize: 12, lineHeight: '17px' }
 const progressRingVisualStyle = { boxSizing: 'border-box' as const, width: '100%', height: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 2, borderRadius: 'inherit' }
 const progressRingValueStyle = { boxSizing: 'border-box' as const, width: '100%', height: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, borderRadius: 'inherit', background: dshThemeColor.menuBackground, fontSize: 7, lineHeight: 1, fontWeight: 700, color: dshThemeColor.labelPrimary, whiteSpace: 'nowrap' as const }
@@ -453,6 +755,13 @@ const barStyle = { height: 7, overflow: 'hidden' as const, borderRadius: 4, back
 const barFillStyle = { display: 'block', height: '100%', borderRadius: 4, background: dshThemeColor.accent, transition: 'width .2s ease' }
 const resetStyle = { color: dshThemeColor.labelTertiary, fontSize: 12 }
 const subscriptionPopoverStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1200, bottom: 'calc(100% + 8px)', left: 0, width: 'max-content', minWidth: 280, maxWidth: 'min(400px, calc(100vw - 24px))', boxSizing: 'border-box' as const, padding: 14, borderRadius: 12 }
+const resetCreditsSectionStyle = { display: 'grid', gap: 6, marginTop: 10, paddingTop: 10, borderTop: `1px solid ${dshThemeColor.border}` }
+const resetCreditsRowStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelSecondary, fontSize: 13 }
+const resetCreditsExpiryStyle = { color: dshThemeColor.labelTertiary, fontSize: 11, lineHeight: '16px', fontVariantNumeric: 'tabular-nums' as const }
+const resetButtonStyle = { justifySelf: 'start' as const, marginTop: 2, minHeight: 28, padding: '0 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, background: 'transparent', color: dshThemeColor.error, fontSize: 12, fontWeight: 600, cursor: 'pointer' }
+const resetButtonDisabledStyle = { ...resetButtonStyle, opacity: 0.5, cursor: 'default' as const }
+const resetDialogOverlayStyle = { position: 'fixed' as const, inset: 0, zIndex: 1400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, boxSizing: 'border-box' as const, background: dshThemeColor.overlay }
+const resetDialogStyle = { ...dshPopupSurfaceStyle, width: 'min(100%, 420px)', boxSizing: 'border-box' as const, padding: 16, borderRadius: 12, display: 'grid', gap: 12 }
 const sub2apiStatsGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, paddingTop: 12 }
 const sub2apiStatStyle = { display: 'grid', gap: 2, minWidth: 0 }
 const sub2apiStatLabelStyle = { color: dshThemeColor.labelTertiary, fontSize: 11 }
@@ -464,6 +773,16 @@ const sub2apiThStyle = { padding: '4px 5px', textAlign: 'left' as const, color: 
 const sub2apiTdStyle = { padding: '5px', borderTop: `1px solid ${dshThemeColor.border}`, color: dshThemeColor.labelSecondary, overflowWrap: 'anywhere' as const }
 function progressRingStyle(): Record<string, string | number> { return { position: 'relative', display: 'inline-flex', flex: '0 0 28px', width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: '50%', padding: 0, border: 0, boxShadow: `inset 0 0 0 1px ${dshThemeColor.border}`, background: 'transparent' } }
 function progressRingVisualBackground(progress: number, loading: boolean): string { return loading ? dshThemeColor.border : `conic-gradient(${dshThemeColor.accent} ${Math.max(0, Math.min(1, progress)) * 360}deg, ${dshThemeColor.border} 0deg)` }
+function createRemainingRing(percent: number): ReactElement {
+  return createElement('span', { 'aria-hidden': true, style: progressRingStyle() },
+    createElement('span', { style: { ...progressRingVisualStyle, background: progressRingVisualBackground(percent / 100, false) } },
+      createElement('span', { style: progressRingValueStyle },
+        createElement('span', undefined, formatRingPercentage(percent)),
+        createElement('span', { style: progressRingSuffixStyle }, '%'),
+      ),
+    ),
+  )
+}
 
 export { CommandCodeSubscriptionSlot }
 export const registerCommandCodeSubscriptionSlot = registerSubscriptionSlot
