@@ -899,6 +899,14 @@ test('CLI 功能模块向 DSH 注册外部 Provider 的图片能力，流仍由 
   } | undefined
   const llm = {
     registerAdapter(providers: string[], adapter: typeof virtualAdapter & Record<string, unknown>) {
+      // DSH 0.2 在首次注册路由时会同步读取这两个可选契约；真实运行时若缺少
+      // providerRetryPolicy，cliAdapters 会在登记 cli RPC 之前启动失败。
+      const contract = adapter as unknown as {
+        providerRetryPolicy(provider: string): unknown
+        imageRequestPricing(provider: string, model: string): unknown
+      }
+      contract.providerRetryPolicy(providers[0] ?? 'codex')
+      contract.imageRequestPricing(providers[0] ?? 'codex', 'gpt-5.5')
       registeredProviders = [...providers]
       virtualAdapter = adapter as NonNullable<typeof virtualAdapter>
       const registration = (() => { disposed = true }) as (() => void) & { replace?: (next: string[]) => void }

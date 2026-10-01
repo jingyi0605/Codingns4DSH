@@ -21,8 +21,16 @@ interface DshVirtualAdapterRegistration {
 
 interface DshVirtualLlmAdapter {
   providerInfo(provider: string): { readonly id: string; readonly name: string }
+  /** DSH 0.2 在注册路由时会读取该策略；未声明时使用 DSH 默认策略。 */
+  providerRetryPolicy(provider: string): undefined
+  /** 外部 Agent 的图片计费由其自身用量事件提供，虚拟 Provider 不声明价格。 */
+  imageRequestPricing(provider: string, model: string): undefined
   listModels(provider: string): Promise<readonly unknown[]>
   resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<DshVirtualModelInfo>
+  prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<{
+    readonly model: DshVirtualModelInfo
+    readonly stream: (options: unknown) => AsyncIterable<never>
+  }>
   stream(options: unknown): AsyncIterable<never>
 }
 
@@ -53,11 +61,17 @@ export function createDshVirtualProviderRegistration(
 
   const adapter: DshVirtualLlmAdapter = {
     providerInfo: (provider) => ({ id: provider, name: `CodingNS ${provider}` }),
+    providerRetryPolicy: () => undefined,
+    imageRequestPricing: () => undefined,
     listModels: async () => [],
     resolveModel: async (provider, model, signal) => {
       signal?.throwIfAborted()
       return { provider, id: model, name: model, inputModalities: ['text', 'image'] }
     },
+    prepareCall: async (provider, model, signal) => ({
+      model: await adapter.resolveModel(provider, model, signal),
+      stream: (options) => adapter.stream(options),
+    }),
     async *stream() {
       throw new Error('CODINGNS_EXTERNAL_PROVIDER_STREAM_NOT_INTERCEPTED')
     },
