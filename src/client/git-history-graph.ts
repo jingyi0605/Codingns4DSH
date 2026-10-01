@@ -31,8 +31,8 @@ export function isUnpushed(origin: GitHistoryOrigin | undefined): boolean {
 
 /** 与 historyRowMainStyle 的 min-height 保持一致，SVG 的纵坐标直接按行高计算。 */
 export const GRAPH_ROW_HEIGHT = 28
-/** 单条泳道的水平宽度。 */
-export const GRAPH_LANE_WIDTH = 14
+/** 单条泳道的水平宽度；收窄后保留节点与相邻泳道之间的可读间隔。 */
+export const GRAPH_LANE_WIDTH = 12
 
 export interface GitGraphLane {
   readonly lane: number

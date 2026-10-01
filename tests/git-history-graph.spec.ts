@@ -86,8 +86,8 @@ test('提交图：缺少父提交字段时退化为连续竖线', () => {
 })
 
 test('提交图：泳道坐标与配色稳定', () => {
-  assert.equal(laneCenterX(0), 7)
-  assert.equal(laneCenterX(2), 35)
+  assert.equal(laneCenterX(0), 6)
+  assert.equal(laneCenterX(2), 30)
   assert.equal(laneColor(0), laneColor(8))
   assert.notEqual(laneColor(0), laneColor(1))
 })
