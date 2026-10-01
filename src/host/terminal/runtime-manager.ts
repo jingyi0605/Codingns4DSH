@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { PersistentTerminalRecord, TerminalRecordIdentity } from '../../shared/contracts/terminal.js'
 import { TerminalAttachmentRegistry, type ManagedTerminalAttachment } from './attachment-registry.js'
+import { supportsServerInput } from './runtime-adapter.js'
 import type {
   TerminalRuntimeAdapter,
   TerminalRuntimeIdentity,
@@ -16,6 +17,7 @@ export interface RuntimeAttachmentInput {
   readonly cols: number
   readonly rows: number
   readonly onData: (data: string) => void
+  /** attach 客户端结束；调用方必须再 inspect 才能区分"进程退出"和"连接断开"。 */
   readonly onExit: (exitCode: number | null) => void
 }
 
@@ -101,8 +103,14 @@ export class TerminalRuntimeManager {
    * 这是调试快捷启动所需的“先开 Shell、再发送命令”路径。
    */
   async writeSession(record: PersistentTerminalRecord, data: string): Promise<void> {
-    const monitor = this.monitors.get(monitorKey(record))
     const backend = this.adapter(record.runtimeType)
+    // tmux 由服务器直接 send-keys，不产生额外客户端；临时客户端会改变窗口
+    // 尺寸并让正在看的用户看到整屏重绘。
+    if (supportsServerInput(backend)) {
+      await backend.sendInput(runtimeSession(record), data)
+      return
+    }
+    const monitor = this.monitors.get(monitorKey(record))
     if (monitor !== undefined) {
       // monitor attach 与持久 Shell 同寿命，不能像临时 attach 一样写完立即销毁。
       await backend.write({ attachmentId: monitor.attachmentId, data })
