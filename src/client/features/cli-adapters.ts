@@ -4,10 +4,9 @@ import type {
   CodingNsCliAdapterDescriptor,
   CodingNsCliModel,
   CodingNsCliModelCatalog,
-  CodingNsCliSessionRecord,
 } from '../../shared/contracts/cli-adapter.js'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
-import { archiveCliSession, callCliRpc, errorMessage, listCliSessions, restoreCliSession } from '../cli-catalog.js'
+import { callCliRpc, errorMessage } from '../cli-catalog.js'
 import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { backdropPointerDownHandler } from '../popup-dismiss.js'
@@ -53,7 +52,12 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
   settingsPanel: CliAdaptersPanel,
 }
 
-/** 设置页中的 Agent 列表和详情模态框。 */
+/**
+ * 设置页中的 Agent 列表和详情模态框。
+ *
+ * 面板只管理 Agent 本身：安装状态、版本、命令、启用开关与模型目录。外部会话由
+ * DSH 原生侧栏和工作区归档入口承载，这里不再重复一份会话列表。
+ */
 export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProps): ReactElement {
   const t = useCodingNsTranslator(services.locale)
   const [catalog, setCatalog] = useState<readonly CodingNsCliAdapterDescriptor[]>([])
@@ -61,10 +65,6 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
   const [models, setModels] = useState<CodingNsCliModelCatalog | null>(null)
   const [loading, setLoading] = useState(false)
   const [busyAdapterId, setBusyAdapterId] = useState<string | null>(null)
-  const [sessions, setSessions] = useState<readonly CodingNsCliSessionRecord[]>([])
-  const [sessionsLoading, setSessionsLoading] = useState(false)
-  const [restoringSessionId, setRestoringSessionId] = useState<string | null>(null)
-  const [archivingSessionId, setArchivingSessionId] = useState<string | null>(null)
   const [modelsError, setModelsError] = useState('')
   const disabled = !enabled
 
@@ -76,20 +76,6 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
       .then((value) => { if (active) setCatalog(value) })
       .catch((error: unknown) => { if (active) notify({ kind: 'error', message: errorMessage(error) }) })
       .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [disabled, services.rpc])
-
-  useEffect(() => {
-    if (disabled) {
-      setSessions([])
-      return
-    }
-    let active = true
-    setSessionsLoading(true)
-    void listCliSessions(services.rpc)
-      .then((value) => { if (active) setSessions(value) })
-      .catch((error: unknown) => { if (active) notify({ kind: 'error', message: errorMessage(error) }) })
-      .finally(() => { if (active) setSessionsLoading(false) })
     return () => { active = false }
   }, [disabled, services.rpc])
 
@@ -123,31 +109,6 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
     }
   }
 
-  const restoreSession = async (record: CodingNsCliSessionRecord): Promise<void> => {
-    setRestoringSessionId(record.dshSessionId)
-    try {
-      await restoreCliSession(services.rpc, record)
-      notify({ kind: 'success', message: t('cli.sessionOpened', { name: record.title ?? record.adapterId }) })
-    } catch (error) {
-      notify({ kind: 'error', message: errorMessage(error) })
-    } finally {
-      setRestoringSessionId(null)
-    }
-  }
-
-  const archiveSession = async (record: CodingNsCliSessionRecord): Promise<void> => {
-    setArchivingSessionId(record.dshSessionId)
-    try {
-      await archiveCliSession(services.rpc, record.dshSessionId)
-      setSessions((current) => current.filter((item) => item.dshSessionId !== record.dshSessionId))
-      notify({ kind: 'success', message: t('cli.sessionRemoved', { name: record.title ?? record.adapterId }) })
-    } catch (error) {
-      notify({ kind: 'error', message: errorMessage(error) })
-    } finally {
-      setArchivingSessionId(null)
-    }
-  }
-
   return createElement(
     'div',
     { 'aria-disabled': disabled, style: { ...dshFormRootStyle, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
@@ -171,15 +132,6 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
         ),
       )),
     ),
-    createElement(CliSessionList, {
-      sessions,
-      loading: sessionsLoading,
-      restoringSessionId,
-      archivingSessionId,
-      onRestore: (record) => { void restoreSession(record) },
-      onArchive: (record) => { void archiveSession(record) },
-      t,
-    }),
     selected !== null && createElement(AdapterDetailsDialog, {
       adapter: selected,
       models,
@@ -189,64 +141,6 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
       t,
     }),
   )
-}
-
-interface CliSessionListProps {
-  readonly sessions: readonly CodingNsCliSessionRecord[]
-  readonly loading: boolean
-  readonly restoringSessionId: string | null
-  readonly archivingSessionId: string | null
-  readonly onRestore: (record: CodingNsCliSessionRecord) => void
-  readonly onArchive: (record: CodingNsCliSessionRecord) => void
-  readonly t: ReturnType<typeof useCodingNsTranslator>
-}
-
-/** 外部会话索引入口；打开后交给 DSH 原生会话页面渲染消息。 */
-function CliSessionList({ sessions, loading, restoringSessionId, archivingSessionId, onRestore, onArchive, t }: CliSessionListProps): ReactElement {
-  return createElement('section', { 'aria-labelledby': 'codingns-cli-session-title', style: { marginTop: 20 } },
-    createElement('h4', { id: 'codingns-cli-session-title', style: { margin: '0 0 8px' } }, t('cli.sessions')),
-    loading && createElement('div', { role: 'status' }, t('cli.readingSessions')),
-    !loading && sessions.length === 0 && createElement('div', { style: { opacity: 0.7 } }, t('cli.noSessions')),
-    !loading && sessions.length > 0 && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-      ...sessions.map((record) => createElement('div', {
-        key: record.dshSessionId,
-        style: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: `1px solid ${dshThemeColor.border}` },
-      },
-        createElement('div', { style: { flex: '1 1 auto', minWidth: 0 } },
-          createElement('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 } }, record.title ?? t('cli.session', { id: record.adapterId })),
-          createElement('div', {
-            title: record.providerStateReason,
-            style: { marginTop: 2, color: record.providerState === 'missing' ? dshThemeColor.error : dshThemeColor.labelTertiary, fontSize: 12 },
-          }, `${record.adapterId} · ${sessionStatusLabel(record, t)}`),
-        ),
-        createElement('button', {
-          type: 'button',
-          onClick: () => onRestore(record),
-          disabled: restoringSessionId !== null,
-          'aria-label': `${t('cli.open')} ${record.title ?? t('cli.session', { id: record.adapterId })}`,
-          style: { ...dshSettingsButtonStyle, flex: '0 0 auto', cursor: restoringSessionId === null ? 'pointer' : 'not-allowed' },
-        }, restoringSessionId === record.dshSessionId ? t('cli.opening') : t('cli.open')),
-        record.providerState === 'missing' && createElement('button', {
-          type: 'button',
-          onClick: () => onArchive(record),
-          disabled: archivingSessionId !== null,
-          'aria-label': t('cli.removeFromSidebar', { name: record.title ?? t('cli.session', { id: record.adapterId }) }),
-          style: { ...dshSettingsButtonStyle, flex: '0 0 auto', color: dshThemeColor.error, cursor: archivingSessionId === null ? 'pointer' : 'not-allowed' },
-        }, archivingSessionId === record.dshSessionId ? t('cli.removing') : t('cli.remove')),
-      )),
-    ),
-  )
-}
-
-function sessionStatusLabel(record: CodingNsCliSessionRecord, t: ReturnType<typeof useCodingNsTranslator>): string {
-  if (record.providerState === 'missing') return t('cli.statusMissing')
-  if (record.providerState === 'corrupt') return t('cli.statusCorrupt')
-  if (record.providerState === 'unreachable') return t('cli.statusUnreachable')
-  if (record.providerState === 'ephemeral') return t('cli.statusEphemeral')
-  if (record.status === 'active') return t('cli.statusActive')
-  if (record.status === 'error') return t('cli.statusError')
-  if (record.status === 'archived') return t('cli.statusArchived')
-  return t('cli.statusPaused')
 }
 
 interface AdapterDetailsDialogProps {

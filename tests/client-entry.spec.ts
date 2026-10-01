@@ -69,7 +69,7 @@ test('Client 构建产物包含模块卡片、设置面板和 Host RPC 调用', 
     'settings/get', 'settings/set', '远程设置读取失败',
     'settings.subscribe(listener)', 'settings.getSnapshot()',
     'crypto', 'randomUUID',
-    '外部Agent集成', 'cli/${action}', 'catalog', 'models', 'session/get', 'session/set', 'session/list', '外部 Agent 会话', 'adapter/set', '已停用',
+    '外部Agent集成', 'cli/${action}', 'catalog', 'models', 'session/get', 'session/set', 'adapter/set', '已停用',
     'conversation.input.right', 'Agent 选择器', '思考等级', 'data-codingns-agent', 'conversation.input.model', '@container (width<=650px)',
     '安装状态', '模型目录', 'aria-modal',
     '工作区会话增强', '显示 Agent Logo', 'session/adapter-map', 'data-codingns-session-logo',
@@ -83,6 +83,13 @@ test('Client 构建产物包含模块卡片、设置面板和 Host RPC 调用', 
     assert.equal(source.includes(marker), true, `Client 产物缺少 ${marker}`)
   }
   assert.equal(source.includes('环境变量名称'), false, '基础调试表单不应展示环境变量字段')
+})
+
+test('外部 Agent 集成设置面板只保留 Agent 列表，不再渲染外部会话列表', async () => {
+  const source = await readFile(clientBundle, 'utf8')
+  // 会话由 DSH 原生侧栏与工作区归档入口承载；设置面板不得再维护第二份会话列表。
+  assert.equal(source.includes('codingns-cli-session-title'), false, 'Client 产物仍包含外部会话列表组件')
+  assert.equal(source.includes('正在读取外部 Agent 状态…'), true, 'Agent 列表仍应保留')
 })
 
 test('设置页由注册表驱动：遍历模块清单并同步启停', async () => {
