@@ -27,6 +27,8 @@ export interface DelegateDispatchResult {
   readonly ok: boolean
   readonly adapterId: string
   readonly childSessionId?: string | undefined
+  /** 委派接口只在首轮收到 turn/end 后才报告完成。 */
+  readonly completed?: boolean | undefined
   readonly error?: string | undefined
 }
 
@@ -118,7 +120,7 @@ export async function dispatchDelegateSubagent(
       // 委派是异步的：父会话不等首轮结果，但创建阶段仍必须串行化。
       select: (action) => enqueueTeamSubagentSelection(parentId, adapterId, modelId, action),
     })
-    return { ok: result.ok, adapterId, childSessionId: result.childSessionId }
+    return { ok: result.ok, adapterId, childSessionId: result.childSessionId, completed: result.completed }
   } catch (error) {
     return { ok: false, adapterId, error: error instanceof Error ? error.message : String(error) }
   }

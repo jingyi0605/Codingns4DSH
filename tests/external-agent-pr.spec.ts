@@ -292,7 +292,7 @@ test('原生 Subagent 首轮已在订阅前结束时从快照补齐（真实 DSH
     { agent: { id: 'parent-1', options: { subagentDepth: 0 }, session: { header: { id: 'parent-1' } } } },
   )
   assert.deepEqual(result, {
-    agent: 'mcode', childSessionId: 'child-1', providerSessionId: 'child-1', ok: true, result: '快照结果', toolCalls: 0,
+    agent: 'mcode', childSessionId: 'child-1', providerSessionId: 'child-1', ok: true, completed: true, result: '快照结果', toolCalls: 0,
   })
   assert.equal(handlers, undefined)
   setNativeSubagents(undefined)
@@ -325,7 +325,35 @@ test('原生 Subagent 同步等待能消费订阅期间的实时事件并正常�
     new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 3_000)),
   ])
   assert.deepEqual(result, {
-    agent: 'mcode', childSessionId: 'child-live', providerSessionId: 'child-live', ok: true, result: '实时结果', toolCalls: 1,
+    agent: 'mcode', childSessionId: 'child-live', providerSessionId: 'child-live', ok: true, completed: true, result: '实时结果', toolCalls: 1,
+  })
+  setNativeSubagents(undefined)
+})
+
+test('原生 Subagent 只有收到 turn/end 才完成，并透传终态真实错误', async () => {
+  let handlers: { onEvent?: (session: unknown, event: unknown) => void } | undefined
+  const child = { header: { id: 'child-error' }, snapshotEvents: () => [] }
+  const sessions = {
+    get: (id: string) => id === 'child-error' ? child : undefined,
+    subscribe: (value: { onEvent?: (session: unknown, event: unknown) => void }) => { handlers = value; return () => { handlers = undefined } },
+  } as never
+  setNativeSubagents({ registerProvider: () => undefined, startContinuable: async () => ({ childId: 'child-error', messageId: 'message-error' }) })
+  const tool = createAgentSubagentTool({ nativeSessions: sessions })
+  const controller = new AbortController()
+  const pending = (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+    { agent: 'mcode', prompt: '失败任务' },
+    { agent: { id: 'parent-error', options: { subagentDepth: 0 }, session: { header: { id: 'parent-error' } } }, signal: controller.signal },
+  )
+  for (let i = 0; i < 50 && handlers === undefined; i += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.notEqual(handlers, undefined)
+  handlers!.onEvent?.(child, nativeEvent('assistant/message', 1, { message: { content: [{ type: 'text', text: '失败前的片段' }] } }))
+  const beforeEnd = Promise.race([pending, new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 20))])
+  assert.deepEqual(await beforeEnd, { timedOut: true })
+  handlers!.onEvent?.(child, nativeEvent('turn/end', 2, { reason: { kind: 'error', error: { message: '上游真实失败：额度不足' } } }))
+  const result = await pending
+  assert.deepEqual(result, {
+    agent: 'mcode', childSessionId: 'child-error', providerSessionId: 'child-error', ok: false, completed: true,
+    result: '失败前的片段', toolCalls: 0, error: '上游真实失败：额度不足',
   })
   setNativeSubagents(undefined)
 })
@@ -352,7 +380,7 @@ test('agent_subagent 工具定义满足 dsh-tools 注册契约且向 startContin
   assert.equal(received?.request?.parent, parentAgent)
   assert.equal(received?.request?.parent?.options?.subagentDepth, 0)
   assert.deepEqual(result, {
-    agent: 'mcode', childSessionId: 'child-real', providerSessionId: 'child-real', ok: true, background: true, result: '子代理已在原生子智能体会话中启动。',
+    agent: 'mcode', childSessionId: 'child-real', providerSessionId: 'child-real', ok: true, completed: false, background: true, result: '子代理已启动，等待首轮 turn/end。',
   })
   setNativeSubagents(undefined)
 })

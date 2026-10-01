@@ -48,9 +48,18 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
         signal: exec.signal,
       })
       if (result.background) {
-        return { agent: result.adapterId, childSessionId: result.childSessionId, providerSessionId: result.childSessionId, ok: true, background: true, result: result.text }
+        return { agent: result.adapterId, childSessionId: result.childSessionId, providerSessionId: result.childSessionId, ok: true, completed: false, background: true, result: result.text }
       }
-      return { agent: result.adapterId, childSessionId: result.childSessionId, providerSessionId: result.childSessionId, ok: result.ok, result: result.text || '(子代理没有文本输出)', toolCalls: result.toolCalls }
+      return {
+        agent: result.adapterId,
+        childSessionId: result.childSessionId,
+        providerSessionId: result.childSessionId,
+        ok: result.ok,
+        completed: result.completed,
+        result: result.text,
+        toolCalls: result.toolCalls,
+        ...(result.error === undefined ? {} : { error: result.error }),
+      }
     },
   }
 }

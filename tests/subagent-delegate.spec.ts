@@ -92,7 +92,7 @@ test('委派异步派发：立刻返回子会话 ID，不等待子代理首轮�
         nativeSessions: SESSIONS as never,
       },
     )
-    assert.deepEqual(result, { ok: true, adapterId: 'codex', childSessionId: 'child-99' })
+    assert.deepEqual(result, { ok: true, adapterId: 'codex', childSessionId: 'child-99', completed: false })
     assert.equal(started.length, 1)
     // Provider 名必须与原生 Subagent 注册名一致，否则 startContinuable 找不到实现。
     assert.equal(started[0]!.provider, 'codingns-external-codex')
@@ -189,11 +189,11 @@ test('不同适配器的委派可以真正并行创建，不被单飞守卫拒�
   const registry = registryWith(['codex', 'gemini'])
   setNativeSubagents(service as never)
   setAdapterRegistry(registry)
-  const agents = { get: (id: string) => (id === 'parent' ? { id: 'agent-parent', session: { header: { id: 'parent' } } } : undefined) }
+  const agents = { get: (id: string) => (id === 'parent-parallel' ? { id: 'agent-parent-parallel', session: { header: { id: 'parent-parallel' } } } : undefined) }
   try {
     const results = await Promise.all([
-      dispatchDelegateSubagent({ sessionId: 'parent', adapterId: 'codex', prompt: '任务 A' }, { agents, nativeSessions: SESSIONS as never }),
-      dispatchDelegateSubagent({ sessionId: 'parent', adapterId: 'gemini', prompt: '任务 B' }, { agents, nativeSessions: SESSIONS as never }),
+      dispatchDelegateSubagent({ sessionId: 'parent-parallel', adapterId: 'codex', prompt: '任务 A' }, { agents, nativeSessions: SESSIONS as never }),
+      dispatchDelegateSubagent({ sessionId: 'parent-parallel', adapterId: 'gemini', prompt: '任务 B' }, { agents, nativeSessions: SESSIONS as never }),
     ])
     assert.ok(results.every((item) => item.ok), JSON.stringify(results))
     assert.equal(started.length, 2)
@@ -237,14 +237,14 @@ test('任务留空时回退到会话最近一条人类消息，并跳过插件�
     { type: 'user/message', seq: 2, data: { content: [{ type: 'text', text: '插件注入的压缩检查点' }], source: { kind: 'compact-checkpoint', compactionId: 'c1' } } },
     { type: 'user/message', seq: 3, data: { content: [{ type: 'text', text: '插件注入的继续提示' }], source: { kind: 'plugin', plugin: 'codingns4dsh', form: 'notice' } } },
   ]
-  const sessions = { available: true, get: (id: string) => (id === 'parent' ? { snapshotEvents: () => events } : undefined), subscribe: () => () => undefined, list: () => [] }
+  const sessions = { available: true, get: (id: string) => (id === 'parent-fallback' ? { snapshotEvents: () => events } : undefined), subscribe: () => () => undefined, list: () => [] }
   const registry = registryWith(['codex'])
   setNativeSubagents(service as never)
   setAdapterRegistry(registry)
-  const agents = { get: (id: string) => (id === 'parent' ? { id: 'agent-parent', session: { header: { id: 'parent' } } } : undefined) }
+  const agents = { get: (id: string) => (id === 'parent-fallback' ? { id: 'agent-parent-fallback', session: { header: { id: 'parent-fallback' } } } : undefined) }
   try {
     const result = await dispatchDelegateSubagent(
-      { sessionId: 'parent', adapterId: 'codex', prompt: '' },
+      { sessionId: 'parent-fallback', adapterId: 'codex', prompt: '' },
       { agents, nativeSessions: sessions as never },
     )
     assert.equal(result.ok, true)
@@ -255,7 +255,7 @@ test('任务留空时回退到会话最近一条人类消息，并跳过插件�
   }
 })
 
-test('同一会话把同一任务连续委派给多个外部 Agent，各自得到独立子会话', async () => {
+test('同一会话把同一任务重复委派给多个外部 Agent 时按目标去重', async () => {
   const started: Array<Record<string, any>> = []
   const service = {
     registerProvider: () => () => undefined,
@@ -267,20 +267,41 @@ test('同一会话把同一任务连续委派给多个外部 Agent，各自得�
   const registry = registryWith(['codex', 'gemini', 'claude-code'])
   setNativeSubagents(service as never)
   setAdapterRegistry(registry)
-  const agents = { get: (id: string) => (id === 'parent' ? { id: 'agent-parent', session: { header: { id: 'parent' } } } : undefined) }
+  const agents = { get: (id: string) => (id === 'parent-multi' ? { id: 'agent-parent-multi', session: { header: { id: 'parent-multi' } } } : undefined) }
   try {
     const results = []
     for (const adapterId of ['codex', 'gemini', 'claude-code']) {
-      results.push(await dispatchDelegateSubagent({ sessionId: 'parent', adapterId, prompt: '审计当前模块' }, { agents, nativeSessions: SESSIONS as never }))
+      results.push(await dispatchDelegateSubagent({ sessionId: 'parent-multi', adapterId, prompt: '审计当前模块' }, { agents, nativeSessions: SESSIONS as never }))
     }
-    assert.ok(results.every((item) => item.ok), JSON.stringify(results))
-    assert.deepEqual(results.map((item) => item.adapterId), ['codex', 'gemini', 'claude-code'])
-    assert.equal(new Set(results.map((item) => item.childSessionId)).size, 3)
-    assert.deepEqual(started.map((spec) => spec.provider), [
-      'codingns-external-codex',
-      'codingns-external-gemini',
-      'codingns-external-claude-code',
-    ])
+    assert.equal(results[0]!.ok, true, JSON.stringify(results))
+    assert.equal(results[1]!.ok, false, JSON.stringify(results))
+    assert.equal(results[2]!.ok, false, JSON.stringify(results))
+    assert.match(results[1]!.error ?? '', /相同目标/u)
+    assert.equal(started.length, 1)
+  } finally {
+    setNativeSubagents(undefined)
+    setAdapterRegistry(undefined)
+  }
+})
+
+test('同一父会话最多保留五个后台子代理，第六个任务直接返回并发错误', async () => {
+  let started = 0
+  const service = {
+    registerProvider: () => () => undefined,
+    startContinuable: async () => { started += 1; return { childId: `child-limit-${started}`, messageId: `m${started}` } },
+  }
+  const registry = registryWith(['codex'])
+  setNativeSubagents(service as never)
+  setAdapterRegistry(registry)
+  const agents = { get: (id: string) => (id === 'parent-limit' ? { id: 'agent-parent-limit', session: { header: { id: 'parent-limit' } } } : undefined) }
+  try {
+    const results = await Promise.all([1, 2, 3, 4, 5, 6].map((index) => dispatchDelegateSubagent(
+      { sessionId: 'parent-limit', adapterId: 'codex', prompt: `处理目标${index}.md` },
+      { agents, nativeSessions: SESSIONS as never },
+    )))
+    assert.equal(started, 5)
+    assert.equal(results.filter((item) => item.ok).length, 5)
+    assert.match(results.find((item) => !item.ok)?.error ?? '', /最多同时运行 5 个/u)
   } finally {
     setNativeSubagents(undefined)
     setAdapterRegistry(undefined)
