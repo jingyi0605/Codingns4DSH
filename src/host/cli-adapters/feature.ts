@@ -22,6 +22,7 @@ import { createDshVirtualProviderRegistration } from './dsh-virtual-providers.js
 import { dispatchBridgeSubagent, type BridgeAgentRegistry } from '../cli-bridge/dispatch.js'
 import { startSubagentBridgeServer, type SubagentBridgeServer } from '../cli-bridge/bridge-server.js'
 import { setSubagentBridge } from '../cli-bridge/bridge-holder.js'
+import { delegateCapability, dispatchDelegateSubagent, type DelegateAgentRegistry } from './delegate-dispatch.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -139,6 +140,20 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           case 'subscription/reset': {
             const subscription = readSubscriptionResetRequest(payload)
             return subscriptions.reset(subscription.adapterId, subscription.providerId)
+          }
+          // `/委派` 的 Host 边界：先给 Client 一个可读的能力诊断，再落地异步派发。
+          case 'delegate/capability': {
+            return delegateCapability({
+              agents: readOptionalContextService(context.services.dshContext, 'agents') as DelegateAgentRegistry | undefined,
+              nativeSessions: context.services.nativeSessions,
+            })
+          }
+          case 'delegate': {
+            const request = readDelegateRequest(payload)
+            return dispatchDelegateSubagent(request, {
+              agents: readOptionalContextService(context.services.dshContext, 'agents') as DelegateAgentRegistry | undefined,
+              nativeSessions: context.services.nativeSessions,
+            })
           }
           default: throw new Error(`未知 CLI RPC: cli/${action}`)
         }
@@ -411,6 +426,20 @@ function readSessionId(value: unknown): string {
   const record = asRecord(value)
   if (typeof record?.sessionId !== 'string' || record.sessionId.trim() === '') throw new Error('sessionId 不能为空')
   return record.sessionId.trim()
+}
+
+/** `/委派` 请求：父会话、目标适配器与自包含任务描述。 */
+function readDelegateRequest(value: unknown): { sessionId: string; adapterId: string; prompt: string; modelId?: string } {
+  const record = asRecord(value)
+  const sessionId = readSessionId(value)
+  const adapterId = readAdapterId(value)
+  const prompt = readPrompt(value)
+  return {
+    sessionId,
+    adapterId,
+    prompt,
+    ...(typeof record?.modelId === 'string' && record.modelId.trim() !== '' ? { modelId: record.modelId.trim() } : {}),
+  }
 }
 
 function readSessionConfig(value: unknown): CodingNsCliSessionConfig {
