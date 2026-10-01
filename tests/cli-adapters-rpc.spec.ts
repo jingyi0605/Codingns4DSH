@@ -1351,7 +1351,7 @@ test('Pi prompt 被拒绝时结束为 error', async () => {
   })
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'pi-error', messages: [], prompt: '你好' })) chunks.push(chunk)
-  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'error' })
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'error', failure: { message: '拒绝' } })
   driver.dispose()
 })
 
@@ -1381,7 +1381,7 @@ test('Pi turn_end 的 Provider 错误不会被 agent_settled 覆盖为成功', a
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'pi-provider-error', messages: [], prompt: '你好' })) chunks.push(chunk)
   assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-event'), [])
-  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'error' })
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'error', failure: { message: '认证失败' } })
   driver.dispose()
 })
 
@@ -1605,7 +1605,7 @@ test('Codex 仅在失败终止通知到达后结束为 error', async () => {
         else if (request.method === 'thread/start') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'thread-failed' } } })}\n`)
         else if (request.method === 'turn/start') {
           stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'turn-failed', status: 'inProgress' } } })}\n`)
-          setImmediate(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'thread-failed', turn: { id: 'turn-failed', status: 'failed', error: { message: '模型调用失败' } } } })}\n`))
+          setImmediate(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'thread-failed', turn: { id: 'turn-failed', status: 'failed', error: { code: 429, type: 'rate_limit_exceeded', message: '上游请求过于频繁，请稍后重试' } } } })}\n`))
         }
       } }
       return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
@@ -1616,7 +1616,7 @@ test('Codex 仅在失败终止通知到达后结束为 error', async () => {
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'thread-failed' },
     { type: 'text-delta', text: 'CODINGNS_PROVIDER_EMPTY_RESPONSE: Codex Provider 未返回任何有效事件。' },
-    { type: 'finish', reason: 'error' },
+    { type: 'finish', reason: 'error', failure: { message: '上游请求过于频繁，请稍后重试', code: '429' } },
   ])
   driver.dispose()
 })
