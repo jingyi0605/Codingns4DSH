@@ -1951,3 +1951,27 @@ test('stage0 形态：fork 子会话被识别为父会话的外部 Agent，而�
   assert.notEqual(registry.getSession('stage0-child').modelId, 'deepseek-flash')
   await features.disable('cliAdapters')
 })
+
+test('委派 RPC 允许任务留空，交由派发内核回退到最近一条用户消息', async () => {
+  const table = new CodingNsRpcTable()
+  const features = new FeatureRegistry({ rpc: table })
+  features.register(createCliAdaptersFeature({ registry: new CodingNsCliAdapterRegistry([]) }))
+  await features.start('cliAdapters')
+  const handler = table.resolve('cli/delegate')?.handler
+
+  // popupSelect 打开时焦点在弹层，草稿里往往只剩 `/委派` 本身，prompt 因此是空串。
+  // 这里必须放行到派发内核（由它回退到最近一条人类消息），而不是在参数校验就抛错，
+  // 否则用户会看到「prompt 不能为空」而完全无法委派。
+  const result = await handler?.('delegate', { sessionId: 'session-delegate-empty', adapterId: 'codex', prompt: '' }) as Record<string, unknown> | undefined
+  assert.notEqual(result, undefined)
+  assert.equal(result?.ok, false)
+  // 缺少可续子代理/原生会话桥接时返回可读诊断，绝不能是参数校验错误。
+  assert.doesNotMatch(String(result?.error ?? ''), /prompt 不能为空/u)
+
+  // 显式传入非字符串仍要拒绝，避免把类型错误静默当成空任务。
+  await assert.rejects(
+    async () => { await handler?.('delegate', { sessionId: 'session-delegate-empty', adapterId: 'codex', prompt: 42 }) },
+    /prompt 必须是字符串/u,
+  )
+  await features.disable('cliAdapters')
+})
