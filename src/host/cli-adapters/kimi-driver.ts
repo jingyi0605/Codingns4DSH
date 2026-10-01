@@ -190,10 +190,18 @@ export class KimiCliDriver extends StandardStreamDriver {
             finished = true
             break
           }
-          if (value.id === promptId && value.error !== undefined) throw new Error('Kimi wire 请求失败')
+          if (value.id === promptId && value.error !== undefined) {
+            yield { type: 'finish', reason: 'error', failure: { message: readKimiError(value.error) } }
+            finished = true
+            break
+          }
           const result = mapKimiWireEvent(value, input.signal?.aborted ?? false)
           if (result.protocol) sawProtocol = true
-          if (result.error) throw new Error('Kimi wire 请求失败')
+          if (result.error) {
+            yield { type: 'finish', reason: 'error', failure: { message: readKimiError(value.error ?? value.message ?? value.detail) } }
+            finished = true
+            break
+          }
           for (const chunk of result.chunks) {
             if (chunk.type === 'finish') finished = true
             yield chunk
@@ -222,6 +230,18 @@ export class KimiCliDriver extends StandardStreamDriver {
       this.legacySyntax = false
     }
   }
+}
+
+function readKimiError(value: unknown): string {
+  if (typeof value === 'string' && value.trim() !== '') return value.trim()
+  if (isRecord(value)) {
+    for (const key of ['message', 'detail', 'error', 'reason']) {
+      if (typeof value[key] === 'string' && value[key].trim() !== '') return value[key].trim()
+    }
+    try { return JSON.stringify(value) }
+    catch { /* 兜底文本 */ }
+  }
+  return String(value)
 }
 
 function mapKimiWireEvent(value: Record<string, unknown>, cancelled: boolean): { protocol: boolean; error: boolean; chunks: CodingNsAgentEvent[] } {

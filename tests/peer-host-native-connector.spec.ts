@@ -59,6 +59,36 @@ test('页面 connector 将虚拟 Session 的原生 Remote 路由到 peerHost/nat
   }
 })
 
+test('页面 connector 将远端会话的 CLI 目录路由到目标 Host 并还原真实 sessionId', async () => {
+  const calls: Array<{ path: string; body: Record<string, unknown> }> = []
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const path = new URL(String(input), 'http://dsh.test').pathname
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+    calls.push({ path, body })
+    const nested = { result: { ok: true, value: { groups: [{ name: '远端模型', models: [] }] } } }
+    return response({ status: 200, headers: [['content-type', 'application/json']], body: JSON.stringify(nested) })
+  }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    transport.setAggregate(aggregate)
+    const sessionId = createVirtualSessionId('peer-1', 'session-1')
+    const result = await transport.hooks.rpc?.({
+      method: 'cli/models',
+      payload: { channel: '/codingns', payload: { sessionId, adapterId: 'codex' } },
+    })
+    assert.deepEqual(result, { ok: true, value: { groups: [{ name: '远端模型', models: [] }] } })
+    assert.equal(calls[0]?.path, '/codingns/peerHost/request')
+    const routed = calls[0]?.body.payload as Record<string, unknown>
+    assert.equal(routed.path, '/api/codingns/cli/models')
+    const forwarded = JSON.parse(String(routed.body)) as { payload: { sessionId: string; adapterId: string } }
+    assert.equal(forwarded.payload.sessionId, 'session-1')
+    assert.equal(forwarded.payload.adapterId, 'codex')
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
 test('页面 connector 的 Peer unary 失败保留稳定错误码而不是抛裸错误', async () => {
   const previousFetch = globalThis.fetch
   globalThis.fetch = (async () =>

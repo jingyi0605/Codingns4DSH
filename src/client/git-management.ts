@@ -12,7 +12,9 @@ import { backdropPointerDownHandler, useDismissOnOutsidePointer } from './popup-
 import { debugWarn } from '../shared/debug.js'
 import { dshSettingsToastStyle, dshThemeColor } from './theme.js'
 import { gitPanelClass, installGitPanelStyles } from './git-panel-styles.js'
+import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import type { SettingsNotice } from './features/types.js'
+import { notifyGitWorkspaceChanged } from './git-workspace-events.js'
 
 // 单列 Git 视图需要一个稳定的分段控件；这里保持 React 结构简单，避免引入额外依赖。
 function SegmentedControl<Value extends string>({ id, value, options, onChange, label, disabled }: { readonly id: string; readonly value: Value; readonly options: readonly { readonly value: Value; readonly label: string; readonly title?: string; readonly disabled?: boolean }[]; readonly onChange: (next: Value) => void; readonly label: string; readonly disabled?: boolean }): ReactElement {
@@ -39,13 +41,14 @@ type GitTabProps = {
   readonly useTabInfo: UseSidebarRightTabInfo
   readonly rpc: CodingNsRpcClient
   readonly remote?: unknown
+  readonly t: CodingNsTranslator
 }
-type GitTabTitleProps = { readonly useTabInfo: UseSidebarRightTabInfo }
-type GitServices = { readonly rpc: CodingNsRpcClient; readonly remote?: unknown }
+type GitTabTitleProps = { readonly useTabInfo: UseSidebarRightTabInfo; readonly t: CodingNsTranslator }
+type GitServices = { readonly rpc: CodingNsRpcClient; readonly remote?: unknown; readonly locale?: CodingNsLocale }
 type GitOperation = 'fetch' | 'pull' | 'push' | 'undo' | 'refresh'
 
-function gitOperationLabel(operation: GitOperation): string {
-  return operation === 'fetch' ? 'Fetch' : operation === 'pull' ? 'Pull' : operation === 'push' ? 'Push' : operation === 'undo' ? '撤销提交' : '刷新'
+function gitOperationLabel(operation: GitOperation, t: CodingNsTranslator): string {
+  return operation === 'fetch' ? t('git.opFetch') : operation === 'pull' ? t('git.opPull') : operation === 'push' ? t('git.opPush') : operation === 'undo' ? t('git.opUndo') : t('git.refresh')
 }
 
 interface GitSidebarTab {
@@ -105,6 +108,7 @@ interface MutableGitTreeDirectory {
 
 /** 注册 DSH 右侧 Sidebar 的 Git 标签类型，数据按 Workspace 复用。 */
 export function registerGitManagementUi(ctx: Context, services: GitServices): () => void {
+  const t = resolveCodingNsTranslator(services.locale)
   const disposers: Array<() => void> = []
   disposers.push(installGitPanelStyles())
   const sidebarRight = ctx.sidebarRight as typeof ctx.sidebarRight & GitSidebarRuntime
@@ -114,15 +118,16 @@ export function registerGitManagementUi(ctx: Context, services: GitServices): ()
       kind: GIT_KIND,
       multiple: false,
       priority: 'extension',
-      title: () => 'Git',
-      guide: [{ id: 'git', order: 40, title: () => 'Git', description: () => '查看改动、提交和版本历史', icon: GitPanelIcon }],
+      title: () => t('git.tabTitle'),
+      guide: [{ id: 'git', order: 40, title: () => t('git.tabTitle'), description: () => t('git.guideDescription'), icon: createGitPanelIcon(t) }],
     }))
     disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
       name: 'sidebar.right.pane.tab', key: GIT_PROVIDER_ID,
-      inject: () => ({ rpc: services.rpc, remote: services.remote }),
+      inject: () => ({ rpc: services.rpc, remote: services.remote, t }),
     }, GitPanel)))
     disposers.push(ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
       name: 'sidebar.right.pane.tab.title', key: GIT_PROVIDER_ID,
+      inject: () => ({ t }),
     }, GitTabTitle)))
     disposers.push(ctx.slots.inject('shell.overlay', () => ctx.slots.register({
       name: 'shell.overlay', id: 'codingns4dsh-git-workspace-recovery', order: 990,
@@ -146,19 +151,22 @@ function isDuplicateGitRegistration(error: unknown): boolean {
   return error instanceof Error && /sidebarRight: (?:tab type id|tab kind) .* already registered/u.test(error.message)
 }
 
-function GitPanelIcon({ size = 16 }: { readonly size?: number | undefined }): ReactElement {
-  return createElement('span', {
-    title: 'Git 仓库管理', 'aria-label': 'Git 仓库管理', style: { display: 'inline-flex', width: size, height: size, alignItems: 'center', justifyContent: 'center', color: dshThemeColor.labelSecondary, fontSize: Math.max(12, size - 2), fontWeight: 700 },
-  }, '⑂')
+function createGitPanelIcon(t: CodingNsTranslator): (props: { readonly size?: number | undefined }) => ReactElement {
+  return function GitPanelIcon({ size = 16 }: { readonly size?: number | undefined }): ReactElement {
+    return createElement('span', {
+      title: t('git.panelLabel'), 'aria-label': t('git.panelLabel'), style: { display: 'inline-flex', width: size, height: size, alignItems: 'center', justifyContent: 'center', color: dshThemeColor.labelSecondary, fontSize: Math.max(12, size - 2), fontWeight: 700 },
+    }, '⑂')
+  }
 }
 
-function GitTabTitle({ useTabInfo }: GitTabTitleProps): ReactElement {
+function GitTabTitle({ useTabInfo, t }: GitTabTitleProps): ReactElement {
   useTabInfo()
-  return createElement('span', { title: 'Git 仓库管理', 'aria-label': 'Git 仓库管理', style: tabTitleStyle }, 'Git')
+  return createElement('span', { title: t('git.panelLabel'), 'aria-label': t('git.panelLabel'), style: tabTitleStyle }, t('git.tabTitle'))
 }
 
 function GitPanel(props: GitTabProps): ReactElement {
   const sessionId = String(props.sessionId)
+  const t = props.t
   const tabInfo = props.useTabInfo()
   const [workspaceId, setWorkspaceId] = useState<string | undefined>()
   const [status, setStatus] = useState<GitStatus | null>(null)
@@ -241,7 +249,7 @@ function GitPanel(props: GitTabProps): ReactElement {
     }
     void resolveGitWorkspaceId(props.remote, sessionId).then((resolvedWorkspaceId) => {
       if (disposed) return
-      if (resolvedWorkspaceId === undefined) { notify('error', '当前没有可用的工作区'); return }
+      if (resolvedWorkspaceId === undefined) { notify('error', t('git.noWorkspace')); return }
       rememberGitWorkspaceSession(sessionId, resolvedWorkspaceId)
       writeGitWorkspaceOpen(resolvedWorkspaceId, true)
       setWorkspaceId(resolvedWorkspaceId)
@@ -264,11 +272,11 @@ function GitPanel(props: GitTabProps): ReactElement {
   }, [sessionId, tabInfo.tab.signal])
 
   const run = async (action: string, payload: Record<string, unknown>, onSuccess?: (value: unknown) => void, operation?: GitOperation): Promise<void> => {
-    if (workspaceId === undefined) { notify('error', '当前没有可用的工作区'); return }
+    if (workspaceId === undefined) { notify('error', t('git.noWorkspace')); return }
     setBusy(true)
     if (operation !== undefined) {
       setActiveOperation(operation)
-      setToast({ kind: 'info', message: `正在${gitOperationLabel(operation)}…` })
+      setToast({ kind: 'info', message: t('git.operationRunning', { operation: gitOperationLabel(operation, t) }) })
     } else {
       setToast(null)
     }
@@ -277,6 +285,7 @@ function GitPanel(props: GitTabProps): ReactElement {
     if (!preserveExpandedHistory) historyExpanded.current = false
     try {
       const value = await call(props.rpc, action, { workspaceId: targetWorkspaceId, ...payload })
+      if (action !== 'git/status') notifyGitWorkspaceChanged(targetWorkspaceId)
       onSuccess?.(value)
       const nextStatus = await call<GitStatus>(props.rpc, 'git/status', { workspaceId: targetWorkspaceId })
       setStatus(nextStatus)
@@ -291,7 +300,7 @@ function GitPanel(props: GitTabProps): ReactElement {
       } else {
         setHistory([]); setHistoryTotalCount(0); setBranches(null); writeCache(targetWorkspaceId, { status: nextStatus, history: [], historyTotalCount: 0, branches: null })
       }
-      notify('success', operation === undefined ? '操作已完成' : `${gitOperationLabel(operation)}已完成`)
+      notify('success', operation === undefined ? t('git.operationCompleted') : t('git.operationDone', { operation: gitOperationLabel(operation, t) }))
     }
     catch (error) { notify('error', error instanceof Error ? error.message : String(error)) }
     finally {
@@ -304,19 +313,19 @@ function GitPanel(props: GitTabProps): ReactElement {
 
   const commit = (): void => {
     const value = subject.trim()
-    if (!value) { notify('error', '请输入提交说明'); return }
+    if (!value) { notify('error', t('git.commitMessageRequired')); return }
     void run('git/commit', { subject: value }, () => setSubject(''))
   }
   const copyCommitHash = (commitHash: string): void => {
-    void copyText(commitHash).then((copied) => notify(copied ? 'success' : 'error', copied ? 'Git 版本号已复制' : '当前环境不支持复制'))
+    void copyText(commitHash).then((copied) => notify(copied ? 'success' : 'error', copied ? t('git.commitHashCopied') : t('git.copyUnsupported')))
   }
   const copyCommitMessage = (value: string): void => {
-    void copyText(value).then((copied) => notify(copied ? 'success' : 'error', copied ? '提交信息已复制' : '当前环境不支持复制'))
+    void copyText(value).then((copied) => notify(copied ? 'success' : 'error', copied ? t('git.commitMessageCopied') : t('git.copyUnsupported')))
   }
   const openCommitDiff = (commitHash: string): void => {
     if (workspaceId === undefined) return
     setBusy(true)
-    notify('info', '正在读取提交 Diff…')
+    notify('info', t('git.readingCommitDiff'))
     void call<GitCommitDiff>(props.rpc, 'git/commit-diff', { workspaceId, commitHash }).then((value) => {
       setDiffView(value)
       setToast(null)
@@ -325,7 +334,7 @@ function GitPanel(props: GitTabProps): ReactElement {
   const openFileDiff = (path: string, staged: boolean): void => {
     if (workspaceId === undefined) return
     setBusy(true)
-    notify('info', '正在读取文件 Diff…')
+    notify('info', t('git.readingFileDiff'))
     void call<GitDiff>(props.rpc, 'git/diff', { workspaceId, path, staged }).then((value) => {
       setFileDiff({ path, staged, diff: value })
       setToast(null)
@@ -354,57 +363,56 @@ function GitPanel(props: GitTabProps): ReactElement {
     createElement('header', { style: headerStyle },
       singleColumn ? createElement('div', { style: columnSwitchStyle },
         createElement(SegmentedControl<'files' | 'history'>, {
-          id: 'codingns4dsh-git-view', value: activeColumn, onChange: setActiveColumn, label: '切换文件与版本视图',
+          id: 'codingns4dsh-git-view', value: activeColumn, onChange: setActiveColumn, label: t('git.viewSwitcherLabel'),
           options: [
-            { value: 'files', label: '切换文件', title: '切换文件' },
-            { value: 'history', label: '切换版本', title: '切换版本' },
+            { value: 'files', label: t('git.switchToFiles'), title: t('git.switchToFiles') },
+            { value: 'history', label: t('git.switchToHistory'), title: t('git.switchToHistory') },
           ],
         }),
       ) : null,
       createElement('div', { style: headerActionsStyle },
-        createElement(GitOperationsMenu, { busy, activeOperation, hasRemote: Boolean(status?.snapshot.hasRemote || branches?.remote.length), canUndo: history.length > 0, hasMoreVersions: history.length < historyTotalCount, stagedCount: staged.length, unstagedCount: unstaged.length, onStageAll: stageAll, onDiscardAll: discardAll, onLoadMore: loadMoreHistory, onOperation: runGitOperation }),
+        createElement(GitOperationsMenu, { busy, activeOperation, hasRemote: Boolean(status?.snapshot.hasRemote || branches?.remote.length), canUndo: history.length > 0, hasMoreVersions: history.length < historyTotalCount, stagedCount: staged.length, unstagedCount: unstaged.length, onStageAll: stageAll, onDiscardAll: discardAll, onLoadMore: loadMoreHistory, onOperation: runGitOperation, t }),
       ),
     ),
     toast === null ? null : createElement('div', { role: toast.kind === 'error' ? 'alert' : 'status', 'aria-live': 'polite', style: { ...dshSettingsToastStyle, position: 'absolute', top: 8, right: 'auto', left: '50%', transform: 'translateX(-50%)', width: 'min(300px, calc(100% - 24px))', pointerEvents: 'none', borderColor: toast.kind === 'error' ? dshThemeColor.error : toast.kind === 'success' ? dshThemeColor.success : dshThemeColor.border } }, toast.message),
-    status === null ? createElement('div', { style: emptyStyle }, '正在读取 Git 状态…') : null,
+    status === null ? createElement('div', { style: emptyStyle }, t('git.readingStatus')) : null,
     status !== null && status.snapshot.enabled === false ? createElement('section', { style: sectionStyle },
-      createElement('strong', undefined, '当前目录还没有 Git 仓库'),
-      createElement('div', { style: mutedStyle }, '初始化后即可查看改动、提交和版本历史。'),
-      createElement('button', { type: 'button', disabled: busy, onClick: () => void run('git/init', {}), className: `${gitPanelClass.button} ${gitPanelClass.buttonPrimary}`, style: primaryButtonStyle }, '初始化 Git'),
+      createElement('strong', undefined, t('git.noRepository')),
+      createElement('div', { style: mutedStyle }, t('git.initHint')),
+      createElement('button', { type: 'button', disabled: busy, onClick: () => void run('git/init', {}), className: `${gitPanelClass.button} ${gitPanelClass.buttonPrimary}`, style: primaryButtonStyle }, t('git.init')),
     ) : null,
-    status !== null ? createElement('div', { style: summaryStyle }, `${staged.length} 个已暂存 · ${unstaged.length} 个未暂存 · ${historyTotalCount} 条提交（${historyScope === 'all' ? '全部分支' : '当前分支'}）`) : null,
-    diffView !== null ? createElement(DiffViewer, { diff: diffView, onClose: () => setDiffView(null) }) : null,
-    fileDiff !== null ? createElement(FileDiffViewer, { path: fileDiff.path, staged: fileDiff.staged, diff: fileDiff.diff, onClose: () => setFileDiff(null) }) : null,
+    status !== null ? createElement('div', { style: summaryStyle }, t('git.summary', { staged: staged.length, unstaged: unstaged.length, total: historyTotalCount, scope: historyScope === 'all' ? t('git.allBranches') : t('git.currentBranch') })) : null,
+    diffView !== null ? createElement(DiffViewer, { diff: diffView, onClose: () => setDiffView(null), t }) : null,
+    fileDiff !== null ? createElement(FileDiffViewer, { path: fileDiff.path, staged: fileDiff.staged, diff: fileDiff.diff, onClose: () => setFileDiff(null), t }) : null,
     status !== null && status.snapshot.enabled !== false ? createElement('div', { ref: contentGridRef, style: contentGridStyle },
       singleColumn && activeColumn !== 'files' ? null : createElement('div', { style: columnStyle },
         createElement('section', { style: commitSectionStyle },
           createElement('div', { style: sectionHeaderStyle },
-            createElement('strong', undefined, '提交更改'),
-            createElement('span', { style: mutedStyle }, staged.length === 0 ? '暂存区为空' : `${staged.length} 个已暂存`),
+            createElement('strong', undefined, t('git.commitChanges')),
+            createElement('span', { style: mutedStyle }, staged.length === 0 ? t('git.stagingEmpty') : t('git.stagedCount', { count: staged.length })),
           ),
           createElement('div', { style: commitEditorRowStyle },
-            createElement('textarea', { value: subject, disabled: busy || workspaceId === undefined, className: gitPanelClass.field, onChange: (event: { currentTarget: { value: string } }) => setSubject(event.currentTarget.value), onKeyDown: (event: { key: string; preventDefault: () => void }) => { if (event.key === 'Enter') event.preventDefault() }, placeholder: '在这里输入提交信息', rows: 1, style: commitSubjectStyle }),
-            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined, onClick: () => notify('info', '生成提交信息功能暂未开放'), className: `${gitPanelClass.button} ${gitPanelClass.field}`, style: draftButtonStyle, title: '生成提交信息', 'aria-label': '生成提交信息' }, '✦'),
+            createElement('textarea', { value: subject, disabled: busy || workspaceId === undefined, className: gitPanelClass.field, onChange: (event: { currentTarget: { value: string } }) => setSubject(event.currentTarget.value), onKeyDown: (event: { key: string; preventDefault: () => void }) => { if (event.key === 'Enter') event.preventDefault() }, placeholder: t('git.commitPlaceholder'), rows: 1, style: commitSubjectStyle }),
+            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined, onClick: () => notify('info', t('git.draftUnavailable')), className: `${gitPanelClass.button} ${gitPanelClass.field}`, style: draftButtonStyle, title: t('git.draftMessage'), 'aria-label': t('git.draftMessage') }, '✦'),
           ),
           createElement('div', { style: commitActionsStyle },
-            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined, onClick: () => void run('git/status', {}, (value) => setStatus(value as GitStatus)), className: `${gitPanelClass.button} ${gitPanelClass.field}`, style: refreshActionStyle }, '刷新'),
-            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined || staged.length === 0 || subject.trim().length === 0, onClick: commit, className: `${gitPanelClass.button} ${gitPanelClass.buttonPrimary}`, style: submitActionStyle }, '提交'),
+            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined, onClick: () => void run('git/status', {}, (value) => setStatus(value as GitStatus)), className: `${gitPanelClass.button} ${gitPanelClass.field}`, style: refreshActionStyle }, t('git.refresh')),
+            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined || staged.length === 0 || subject.trim().length === 0, onClick: commit, className: `${gitPanelClass.button} ${gitPanelClass.buttonPrimary}`, style: submitActionStyle }, t('git.commit')),
           ),
         ),
-        staged.length > 0 ? createElement(ChangeSection, { title: '暂存文件', items: staged, busy, onOpenDiff: openFileDiff, onAction: (action, path) => void run(`git/${action}`, { targets: [path] }), onBatchAction: (action, paths) => void run(`git/${action}`, { targets: paths }), onBulkAction: () => void run('git/unstage', { targets: staged.map((item) => item.path) }) }) : null,
-        unstaged.length > 0 ? createElement(ChangeSection, { title: '未提交文件', items: unstaged, busy, onOpenDiff: openFileDiff, onAction: (action, path) => void run(`git/${action}`, { targets: [path] }), onBatchAction: (action, paths) => void run(`git/${action}`, { targets: paths }), onBulkAction: () => void run('git/stage', { targets: unstaged.map((item) => item.path) }) }) : null,
+        staged.length > 0 ? createElement(ChangeSection, { title: t('git.stagedFiles'), staged: true, items: staged, busy, onOpenDiff: openFileDiff, onAction: (action, path) => void run(`git/${action}`, { targets: [path] }), onBatchAction: (action, paths) => void run(`git/${action}`, { targets: paths }), onBulkAction: () => void run('git/unstage', { targets: staged.map((item) => item.path) }), t }) : null,
+        unstaged.length > 0 ? createElement(ChangeSection, { title: t('git.unstagedFiles'), staged: false, items: unstaged, busy, onOpenDiff: openFileDiff, onAction: (action, path) => void run(`git/${action}`, { targets: [path] }), onBatchAction: (action, paths) => void run(`git/${action}`, { targets: paths }), onBulkAction: () => void run('git/stage', { targets: unstaged.map((item) => item.path) }), t }) : null,
       ),
       singleColumn && activeColumn !== 'history' ? null : createElement('div', { style: columnStyle },
-        createElement(HistorySection, { history, totalCount: historyTotalCount, hasMore: history.length < historyTotalCount, loadingMore: historyLoadingMore, onLoadMore: loadMoreHistory, branches, busy, scope: historyScope, hasRemote: Boolean(status?.snapshot.hasRemote || branches?.remote.length), onScopeChange: setHistoryScope, onSwitch: (branchName) => void run('git/switch', { branchName, create: false }, (value) => setBranches(normalizeBranchSnapshot(value as GitBranchSnapshot))), onCopy: copyCommitHash, onCopyMessage: copyCommitMessage, onViewDiff: openCommitDiff, onUndo: () => runGitOperation('undo') }),
+        createElement(HistorySection, { history, totalCount: historyTotalCount, hasMore: history.length < historyTotalCount, loadingMore: historyLoadingMore, onLoadMore: loadMoreHistory, branches, busy, scope: historyScope, hasRemote: Boolean(status?.snapshot.hasRemote || branches?.remote.length), onScopeChange: setHistoryScope, onSwitch: (branchName) => void run('git/switch', { branchName, create: false }, (value) => setBranches(normalizeBranchSnapshot(value as GitBranchSnapshot))), onCopy: copyCommitHash, onCopyMessage: copyCommitMessage, onViewDiff: openCommitDiff, onUndo: () => runGitOperation('undo'), t }),
       ),
     ) : null,
   )
 }
 
-function ChangeSection({ title, items, busy, onOpenDiff, onAction, onBatchAction, onBulkAction }: { readonly title: string; readonly items: readonly GitChangeItem[]; readonly busy: boolean; readonly onOpenDiff: (path: string, staged: boolean) => void; readonly onAction: (action: 'stage' | 'unstage' | 'discard', path: string) => void; readonly onBatchAction: (action: 'stage' | 'unstage' | 'discard', paths: readonly string[]) => void; readonly onBulkAction: () => void }): ReactElement {
+function ChangeSection({ title, staged, items, busy, onOpenDiff, onAction, onBatchAction, onBulkAction, t }: { readonly title: string; readonly staged: boolean; readonly items: readonly GitChangeItem[]; readonly busy: boolean; readonly onOpenDiff: (path: string, staged: boolean) => void; readonly onAction: (action: 'stage' | 'unstage' | 'discard', path: string) => void; readonly onBatchAction: (action: 'stage' | 'unstage' | 'discard', paths: readonly string[]) => void; readonly onBulkAction: () => void; readonly t: CodingNsTranslator }): ReactElement {
   const [hoveredPath, setHoveredPath] = useState<string | null>(null)
   const nodes = buildChangeTree(items)
-  const staged = title === '暂存文件'
   const renderNode = (node: GitTreeNode, depth: number): ReactElement => {
     if (node.kind === 'directory') {
       const directoryKey = `dir:${node.path}`
@@ -414,8 +422,8 @@ function ChangeSection({ title, items, busy, onOpenDiff, onAction, onBatchAction
         createElement('summary', { className: gitPanelClass.row, style: { ...treeRowStyle, paddingLeft: 8 + depth * 14 }, onMouseEnter: () => setHoveredPath(directoryKey), onMouseLeave: () => setHoveredPath(null) },
           createElement('span', { style: treeChevronStyle }, '⌄'), createElement('span', { style: folderIconStyle }, '▰'), createElement('span', { style: fileNameStyle, title: node.path }, node.name), createElement('span', { style: mutedStyle }, countTreeFiles(node)),
           isHovered ? createElement('div', { style: rowActionsStyle },
-            createElement('button', { type: 'button', disabled: busy, onClick: (event: { stopPropagation: () => void; preventDefault: () => void }) => { event.preventDefault(); event.stopPropagation(); onBatchAction(staged ? 'unstage' : 'stage', directoryTargets) }, className: gitPanelClass.action, style: iconActionStyle, title: staged ? '撤销目录暂存' : '将目录添加到暂存区', 'aria-label': staged ? '撤销目录暂存' : '将目录添加到暂存区' }, staged ? '↶' : '+'),
-            !staged ? createElement('button', { type: 'button', disabled: busy, onClick: (event: { stopPropagation: () => void; preventDefault: () => void }) => { event.preventDefault(); event.stopPropagation(); onBatchAction('discard', directoryTargets) }, className: `${gitPanelClass.action} ${gitPanelClass.actionDanger}`, style: iconActionStyle, title: '撤销目录变更', 'aria-label': '撤销目录变更' }, '×') : null,
+            createElement('button', { type: 'button', disabled: busy, onClick: (event: { stopPropagation: () => void; preventDefault: () => void }) => { event.preventDefault(); event.stopPropagation(); onBatchAction(staged ? 'unstage' : 'stage', directoryTargets) }, className: gitPanelClass.action, style: iconActionStyle, title: staged ? t('git.unstageDirectory') : t('git.stageDirectory'), 'aria-label': staged ? t('git.unstageDirectory') : t('git.stageDirectory') }, staged ? '↶' : '+'),
+            !staged ? createElement('button', { type: 'button', disabled: busy, onClick: (event: { stopPropagation: () => void; preventDefault: () => void }) => { event.preventDefault(); event.stopPropagation(); onBatchAction('discard', directoryTargets) }, className: `${gitPanelClass.action} ${gitPanelClass.actionDanger}`, style: iconActionStyle, title: t('git.discardDirectory'), 'aria-label': t('git.discardDirectory') }, '×') : null,
           ) : null,
         ),
         createElement('div', undefined, ...node.children.map((child) => renderNode(child, depth + 1))),
@@ -427,38 +435,38 @@ function ChangeSection({ title, items, busy, onOpenDiff, onAction, onBatchAction
       createElement('span', { title: node.path, style: fileNameStyle }, node.name),
       createElement('span', { style: fileStatusStyle }, changeStatus(node.item, staged)),
       isHovered ? createElement('div', { style: rowActionsStyle },
-        createElement('button', { type: 'button', disabled: busy, onClick: () => onAction(staged ? 'unstage' : 'stage', node.path), className: gitPanelClass.action, style: iconActionStyle, title: staged ? '撤销暂存' : '添加到暂存区', 'aria-label': staged ? '撤销暂存' : '添加到暂存区' }, staged ? '↶' : '+'),
-        !staged ? createElement('button', { type: 'button', disabled: busy, onClick: () => onAction('discard', node.path), className: `${gitPanelClass.action} ${gitPanelClass.actionDanger}`, style: iconActionStyle, title: '撤销变更', 'aria-label': '撤销变更' }, '×') : null,
+        createElement('button', { type: 'button', disabled: busy, onClick: () => onAction(staged ? 'unstage' : 'stage', node.path), className: gitPanelClass.action, style: iconActionStyle, title: staged ? t('git.unstageFile') : t('git.stageFile'), 'aria-label': staged ? t('git.unstageFile') : t('git.stageFile') }, staged ? '↶' : '+'),
+        !staged ? createElement('button', { type: 'button', disabled: busy, onClick: () => onAction('discard', node.path), className: `${gitPanelClass.action} ${gitPanelClass.actionDanger}`, style: iconActionStyle, title: t('git.discardFile'), 'aria-label': t('git.discardFile') }, '×') : null,
       ) : null,
     )
   }
   return createElement('section', { style: sectionStyle },
-    createElement('div', { style: sectionHeaderStyle }, createElement('strong', undefined, `${title} (${items.length})`), createElement('button', { type: 'button', disabled: busy, onClick: onBulkAction, className: gitPanelClass.action, style: iconActionStyle, title: staged ? '取消全部暂存' : '全部添加到暂存区', 'aria-label': staged ? '取消全部暂存' : '全部添加到暂存区' }, staged ? '↶' : '+')),
+    createElement('div', { style: sectionHeaderStyle }, createElement('strong', undefined, `${title} (${items.length})`), createElement('button', { type: 'button', disabled: busy, onClick: onBulkAction, className: gitPanelClass.action, style: iconActionStyle, title: staged ? t('git.unstageAll') : t('git.addAllToStaging'), 'aria-label': staged ? t('git.unstageAll') : t('git.addAllToStaging') }, staged ? '↶' : '+')),
     createElement('div', { style: treeStyle }, ...nodes.map((node) => renderNode(node, 0))),
   )
 }
 
-function GitOperationsMenu({ busy, activeOperation, hasRemote, canUndo, hasMoreVersions, stagedCount, unstagedCount, onStageAll, onDiscardAll, onLoadMore, onOperation }: { readonly busy: boolean; readonly activeOperation: GitOperation | null; readonly hasRemote: boolean; readonly canUndo: boolean; readonly hasMoreVersions: boolean; readonly stagedCount: number; readonly unstagedCount: number; readonly onStageAll: () => void; readonly onDiscardAll: () => void; readonly onLoadMore: () => void; readonly onOperation: (action: GitOperation) => void }): ReactElement {
+function GitOperationsMenu({ busy, activeOperation, hasRemote, canUndo, hasMoreVersions, stagedCount, unstagedCount, onStageAll, onDiscardAll, onLoadMore, onOperation, t }: { readonly busy: boolean; readonly activeOperation: GitOperation | null; readonly hasRemote: boolean; readonly canUndo: boolean; readonly hasMoreVersions: boolean; readonly stagedCount: number; readonly unstagedCount: number; readonly onStageAll: () => void; readonly onDiscardAll: () => void; readonly onLoadMore: () => void; readonly onOperation: (action: GitOperation) => void; readonly t: CodingNsTranslator }): ReactElement {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   useDismissOnOutsidePointer(rootRef, open, () => setOpen(false))
   // 菜单项统一在点击后收起；关闭动作与具体操作解耦，避免每个按钮各写一次。
   const run = (action: () => void): (() => void) => () => { setOpen(false); action() }
-  const operationText = activeOperation === null ? null : `${gitOperationLabel(activeOperation)}进行中…`
+  const operationText = activeOperation === null ? null : t('git.operationInProgress', { operation: gitOperationLabel(activeOperation, t) })
   const operationBadge = operationText === null ? null : createElement('span', { role: 'status', 'aria-live': 'polite', style: operationStatusStyle }, createElement('span', { className: gitPanelClass.progress, 'aria-hidden': 'true' }, '⟳'), operationText)
   return createElement('div', { ref: rootRef, style: menuStyle },
     operationBadge,
-    createElement('button', { type: 'button', disabled: busy, className: gitPanelClass.menuTrigger, style: iconActionStyle, title: 'Git 操作菜单', 'aria-label': 'Git 操作菜单', 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => setOpen((value) => !value) }, '⋯'),
-    open && createElement('div', { role: 'menu', 'aria-label': 'Git 操作菜单', className: gitPanelClass.menu, style: menuPopupStyle },
-      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || unstagedCount === 0, onClick: run(onStageAll), className: gitPanelClass.menuItem, style: menuItemStyle }, '暂存全部'),
-      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || stagedCount + unstagedCount === 0, onClick: run(onDiscardAll), className: `${gitPanelClass.menuItem} ${gitPanelClass.menuItemDanger}`, style: menuItemStyle }, '放弃全部改动'),
-      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !hasRemote, onClick: run(() => onOperation('fetch')), className: gitPanelClass.menuItem, style: menuItemStyle }, 'Fetch'),
-      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !hasRemote, 'aria-busy': activeOperation === 'pull', onClick: run(() => onOperation('pull')), className: gitPanelClass.menuItem, style: menuItemStyle }, activeOperation === 'pull' ? '⟳ Pull 进行中…' : 'Pull'),
+    createElement('button', { type: 'button', disabled: busy, className: gitPanelClass.menuTrigger, style: iconActionStyle, title: t('git.operationsMenu'), 'aria-label': t('git.operationsMenu'), 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => setOpen((value) => !value) }, '⋯'),
+    open && createElement('div', { role: 'menu', 'aria-label': t('git.operationsMenu'), className: gitPanelClass.menu, style: menuPopupStyle },
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || unstagedCount === 0, onClick: run(onStageAll), className: gitPanelClass.menuItem, style: menuItemStyle }, t('git.stageAll')),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || stagedCount + unstagedCount === 0, onClick: run(onDiscardAll), className: `${gitPanelClass.menuItem} ${gitPanelClass.menuItemDanger}`, style: menuItemStyle }, t('git.discardAllChanges')),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !hasRemote, onClick: run(() => onOperation('fetch')), className: gitPanelClass.menuItem, style: menuItemStyle }, t('git.opFetch')),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !hasRemote, 'aria-busy': activeOperation === 'pull', onClick: run(() => onOperation('pull')), className: gitPanelClass.menuItem, style: menuItemStyle }, activeOperation === 'pull' ? t('git.pullRunning') : t('git.opPull')),
       // 工作区有未提交改动不影响已提交对象的 Push；Git Push 只发送提交记录。
-      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !hasRemote, 'aria-busy': activeOperation === 'push', onClick: run(() => onOperation('push')), className: gitPanelClass.menuItem, style: menuItemStyle }, activeOperation === 'push' ? '⟳ Push 进行中…' : 'Push'),
-      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !hasMoreVersions, onClick: run(onLoadMore), className: gitPanelClass.menuItem, style: menuItemStyle, title: '查看所有版本' }, '查看更多版本（每次 100 条）'),
-      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !canUndo, onClick: run(() => onOperation('undo')), className: gitPanelClass.menuItem, style: menuItemStyle }, '撤销上次提交'),
-      createElement('button', { type: 'button', role: 'menuitem', disabled: busy, onClick: run(() => onOperation('refresh')), className: gitPanelClass.menuItem, style: menuItemStyle }, '刷新'),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !hasRemote, 'aria-busy': activeOperation === 'push', onClick: run(() => onOperation('push')), className: gitPanelClass.menuItem, style: menuItemStyle }, activeOperation === 'push' ? t('git.pushRunning') : t('git.opPush')),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !hasMoreVersions, onClick: run(onLoadMore), className: gitPanelClass.menuItem, style: menuItemStyle, title: t('git.viewAllVersions') }, t('git.loadMoreVersions')),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy || !canUndo, onClick: run(() => onOperation('undo')), className: gitPanelClass.menuItem, style: menuItemStyle }, t('git.undoLastCommit')),
+      createElement('button', { type: 'button', role: 'menuitem', disabled: busy, onClick: run(() => onOperation('refresh')), className: gitPanelClass.menuItem, style: menuItemStyle }, t('git.refresh')),
     ),
   )
 }
@@ -470,50 +478,50 @@ interface ParsedDiffLine {
   readonly newLineNo: number | null
 }
 
-function DiffViewer({ diff, onClose }: { readonly diff: GitCommitDiff; readonly onClose: () => void }): ReactElement {
+function DiffViewer({ diff, onClose, t }: { readonly diff: GitCommitDiff; readonly onClose: () => void; readonly t: CodingNsTranslator }): ReactElement {
   const providedFiles = diff.files ?? []
   const files = providedFiles.length > 0 ? providedFiles : parseDiffFiles(diff.content)
   return createElement('div', { style: diffOverlayStyle, onPointerDown: backdropPointerDownHandler(onClose) },
-    createElement('section', { role: 'dialog', 'aria-modal': true, 'aria-label': '提交 Diff', style: diffStyle },
-      createElement('div', { style: sectionHeaderStyle }, createElement('strong', undefined, `提交 Diff · ${diff.commitHash.slice(0, 8)}`), createElement('button', { type: 'button', onClick: onClose, className: gitPanelClass.action, style: iconActionStyle, title: '关闭 Diff', 'aria-label': '关闭 Diff' }, '×')),
+    createElement('section', { role: 'dialog', 'aria-modal': true, 'aria-label': t('git.commitDiff'), style: diffStyle },
+      createElement('div', { style: sectionHeaderStyle }, createElement('strong', undefined, t('git.commitDiffTitle', { hash: diff.commitHash.slice(0, 8) })), createElement('button', { type: 'button', onClick: onClose, className: gitPanelClass.action, style: iconActionStyle, title: t('git.closeDiff'), 'aria-label': t('git.closeDiff') }, '×')),
       createElement('div', { style: diffBodyStyle },
         createElement('section', { style: diffFilesSectionStyle },
-          createElement('div', { style: diffSectionHeaderStyle }, createElement('strong', undefined, '变更文件'), createElement('span', { style: diffCountStyle }, String(files.length))),
-          files.length === 0 ? createElement('div', { style: diffEmptyStyle }, '没有检测到文件变更。') : createElement('div', { style: diffFileListStyle }, ...files.map((file) => createElement('div', { key: `${file.status}:${file.oldPath ?? ''}:${file.path}`, style: diffFileRowStyle }, createElement('span', { style: diffFileStatusStyle, 'data-status': file.status }, diffFileStatusLabel(file.status)), createElement('div', { style: diffFileNameStyle }, createElement('strong', undefined, file.path), file.oldPath ? createElement('span', { style: diffFileOldPathStyle }, `原路径：${file.oldPath}`) : null), file.binary ? createElement('span', { style: diffBinaryStyle }, '二进制') : null))),
+          createElement('div', { style: diffSectionHeaderStyle }, createElement('strong', undefined, t('git.changedFiles')), createElement('span', { style: diffCountStyle }, String(files.length))),
+          files.length === 0 ? createElement('div', { style: diffEmptyStyle }, t('git.noFileChanges')) : createElement('div', { style: diffFileListStyle }, ...files.map((file) => createElement('div', { key: `${file.status}:${file.oldPath ?? ''}:${file.path}`, style: diffFileRowStyle }, createElement('span', { style: diffFileStatusStyle, 'data-status': file.status }, diffFileStatusLabel(file.status, t)), createElement('div', { style: diffFileNameStyle }, createElement('strong', undefined, file.path), file.oldPath ? createElement('span', { style: diffFileOldPathStyle }, t('git.originalPath', { path: file.oldPath })) : null), file.binary ? createElement('span', { style: diffBinaryStyle }, t('git.binary')) : null))),
         ),
         createElement('section', { style: diffDiffSectionStyle },
-          createElement('div', { style: diffSectionHeaderStyle }, createElement('strong', undefined, 'Diff'), diff.truncated ? createElement('span', { style: diffTruncatedStyle }, '内容已截断') : null),
-          createElement(DiffLines, { content: diff.content }),
+          createElement('div', { style: diffSectionHeaderStyle }, createElement('strong', undefined, 'Diff'), diff.truncated ? createElement('span', { style: diffTruncatedStyle }, t('git.truncated')) : null),
+          createElement(DiffLines, { content: diff.content, t }),
         ),
       ),
     ),
   )
 }
 
-function DiffLines({ content }: { readonly content: string }): ReactElement {
+function DiffLines({ content, t }: { readonly content: string; readonly t: CodingNsTranslator }): ReactElement {
   const lines = parseDiffLines(content)
-  if (lines.length === 0) return createElement('div', { style: diffEmptyStyle }, '当前没有可显示的文本差异。')
+  if (lines.length === 0) return createElement('div', { style: diffEmptyStyle }, t('git.noTextDiff'))
   return createElement('div', { style: diffLinesStyle }, ...lines.map((line, index) => createElement('div', { key: `${index}:${line.kind}:${line.text}`, style: diffLineStyle(line.kind) }, createElement('span', { style: diffLineNumberStyle }, line.oldLineNo === null ? '' : String(line.oldLineNo)), createElement('span', { style: diffLineNumberStyle }, line.newLineNo === null ? '' : String(line.newLineNo)), createElement('code', { style: diffCodeStyle }, `${diffLinePrefix(line.kind)}${line.text}`))))
 }
 
-function FileDiffViewer({ path, staged, diff, onClose }: { readonly path: string; readonly staged: boolean; readonly diff: GitDiff; readonly onClose: () => void }): ReactElement {
+function FileDiffViewer({ path, staged, diff, onClose, t }: { readonly path: string; readonly staged: boolean; readonly diff: GitDiff; readonly onClose: () => void; readonly t: CodingNsTranslator }): ReactElement {
   return createElement('div', { style: diffOverlayStyle, onPointerDown: backdropPointerDownHandler(onClose) },
-    createElement('section', { role: 'dialog', 'aria-modal': true, 'aria-label': '文件 Diff', style: diffStyle },
+    createElement('section', { role: 'dialog', 'aria-modal': true, 'aria-label': t('git.fileDiff'), style: diffStyle },
       createElement('div', { style: sectionHeaderStyle },
-        createElement('strong', { style: fileDiffTitleStyle, title: path }, `文件 Diff · ${path}`),
+        createElement('strong', { style: fileDiffTitleStyle, title: path }, t('git.fileDiffTitle', { path })),
         createElement('div', { style: rowActionsStyle },
-          createElement('span', { style: diffCountStyle }, staged ? '已暂存' : '未暂存'),
-          createElement('button', { type: 'button', onClick: onClose, className: gitPanelClass.action, style: iconActionStyle, title: '关闭 Diff', 'aria-label': '关闭 Diff' }, '×'),
+          createElement('span', { style: diffCountStyle }, staged ? t('git.staged') : t('git.unstaged')),
+          createElement('button', { type: 'button', onClick: onClose, className: gitPanelClass.action, style: iconActionStyle, title: t('git.closeDiff'), 'aria-label': t('git.closeDiff') }, '×'),
         ),
       ),
       createElement('div', { style: diffBodyStyle },
         createElement('section', { style: diffDiffSectionStyle },
           createElement('div', { style: diffSectionHeaderStyle },
-            createElement('strong', undefined, staged ? '暂存区 Diff（相对 HEAD）' : '工作区 Diff'),
-            diff.binary ? createElement('span', { style: diffBinaryStyle }, '二进制文件') : null,
-            diff.truncated ? createElement('span', { style: diffTruncatedStyle }, '内容已截断') : null,
+            createElement('strong', undefined, staged ? t('git.stagedDiffHead') : t('git.worktreeDiff')),
+            diff.binary ? createElement('span', { style: diffBinaryStyle }, t('git.binaryFile')) : null,
+            diff.truncated ? createElement('span', { style: diffTruncatedStyle }, t('git.truncated')) : null,
           ),
-          createElement(DiffLines, { content: diff.content }),
+          createElement(DiffLines, { content: diff.content, t }),
         ),
       ),
     ),
@@ -561,7 +569,7 @@ function parseDiffFiles(content: string): readonly GitCommitChangedFile[] {
   return result
 }
 
-function diffFileStatusLabel(status: string): string { return status === 'A' ? '新增' : status === 'D' ? '删除' : status === 'R' ? '重命名' : status === 'C' ? '复制' : '修改' }
+function diffFileStatusLabel(status: string, t: CodingNsTranslator): string { return status === 'A' ? t('git.statusAdded') : status === 'D' ? t('git.statusDeleted') : status === 'R' ? t('git.statusRenamed') : status === 'C' ? t('git.statusCopied') : t('git.statusModified') }
 function diffLinePrefix(kind: ParsedDiffLine['kind']): string { return kind === 'add' ? '+' : kind === 'remove' ? '-' : kind === 'context' ? ' ' : '' }
 /** Diff 行的配色与 DSH 内置 DiffBlock 完全对齐：同一组状态色 + 行底色 + 左侧 3px 色条。 */
 function diffLineStyle(kind: ParsedDiffLine['kind']): CSSProperties {
@@ -572,11 +580,11 @@ function diffLineStyle(kind: ParsedDiffLine['kind']): CSSProperties {
   return diffLineBaseStyle
 }
 
-function HistorySection({ history, totalCount, hasMore, loadingMore, onLoadMore, branches, busy, scope, hasRemote, onScopeChange, onSwitch, onCopy, onCopyMessage, onViewDiff, onUndo }: { readonly history: readonly GitHistoryItem[]; readonly totalCount: number; readonly hasMore: boolean; readonly loadingMore: boolean; readonly onLoadMore: () => void; readonly branches: GitBranchSnapshot | null; readonly busy: boolean; readonly scope: GitHistoryScope; readonly hasRemote: boolean; readonly onScopeChange: (scope: GitHistoryScope) => void; readonly onSwitch: (branchName: string) => void; readonly onCopy: (commitHash: string) => void; readonly onCopyMessage: (message: string) => void; readonly onViewDiff: (commitHash: string) => void; readonly onUndo: () => void }): ReactElement {
+function HistorySection({ history, totalCount, hasMore, loadingMore, onLoadMore, branches, busy, scope, hasRemote, onScopeChange, onSwitch, onCopy, onCopyMessage, onViewDiff, onUndo, t }: { readonly history: readonly GitHistoryItem[]; readonly totalCount: number; readonly hasMore: boolean; readonly loadingMore: boolean; readonly onLoadMore: () => void; readonly branches: GitBranchSnapshot | null; readonly busy: boolean; readonly scope: GitHistoryScope; readonly hasRemote: boolean; readonly onScopeChange: (scope: GitHistoryScope) => void; readonly onSwitch: (branchName: string) => void; readonly onCopy: (commitHash: string) => void; readonly onCopyMessage: (message: string) => void; readonly onViewDiff: (commitHash: string) => void; readonly onUndo: () => void; readonly t: CodingNsTranslator }): ReactElement {
   const graph = buildHistoryGraph(history)
   const graphWidth = graph.laneCount * GRAPH_LANE_WIDTH
   const rows: ReactElement[] = []
-  for (const group of groupHistoryByDate(history)) {
+  for (const group of groupHistoryByDate(history, t)) {
     const firstIndex = group.items[0]?.index ?? 0
     rows.push(createElement('div', { key: `date:${group.key}`, style: historyDateHeaderStyle },
       createElement(GitGraphRails, { lanes: graph.rows[firstIndex]?.top ?? [], width: graphWidth, minHeight: 16 }),
@@ -585,37 +593,37 @@ function HistorySection({ history, totalCount, hasMore, loadingMore, onLoadMore,
     for (const { item, index, timeLabel } of group.items) {
       rows.push(createElement(HistoryGraphRow, {
         key: item.commitHash, item, timeLabel, row: graph.rows[index] ?? EMPTY_GRAPH_ROW, width: graphWidth,
-        busy, hasRemote, isHead: hasHeadRef(item), onCopy, onCopyMessage, onViewDiff, onUndo,
+        busy, hasRemote, isHead: hasHeadRef(item), onCopy, onCopyMessage, onViewDiff, onUndo, t,
       }))
     }
   }
   return createElement('section', { style: sectionStyle },
     createElement('div', { style: sectionHeaderStyle },
-      createElement('strong', { title: '提交图：彩色实线＝泳道（分支拓扑），蓝色虚线＝尚未推送到远程的提交；鼠标悬浮节点可看该提交的归属与分支' }, `Git 版本 (${totalCount})`),
+      createElement('strong', { title: t('git.graphLegend') }, t('git.versionCount', { count: totalCount })),
       createElement('div', { style: historyHeaderActionsStyle },
         createElement('select', {
-          value: scope, disabled: busy, className: gitPanelClass.select, style: scopeSelectStyle, title: '版本范围：只列当前分支，或列出全部本地分支与远程跟踪分支', 'aria-label': '版本范围',
+          value: scope, disabled: busy, className: gitPanelClass.select, style: scopeSelectStyle, title: t('git.scopeHint'), 'aria-label': t('git.scopeLabel'),
           onChange: (event: { currentTarget: { value: string } }) => onScopeChange(event.currentTarget.value === 'all' ? 'all' : 'head'),
         },
-        createElement('option', { value: 'head' }, '当前分支'),
-        createElement('option', { value: 'all' }, '全部分支'),
+        createElement('option', { value: 'head' }, t('git.currentBranch')),
+        createElement('option', { value: 'all' }, t('git.allBranches')),
         ),
-        branches === null ? null : createElement('select', { value: branches.currentBranch, disabled: busy, className: gitPanelClass.select, style: branchSelectStyle, title: '切换分支', 'aria-label': '切换分支', onChange: (event: { currentTarget: { value: string } }) => onSwitch(event.currentTarget.value) }, ...branches.local.map((branch) => createElement('option', { key: branch.name, value: branch.name }, branch.name))),
+        branches === null ? null : createElement('select', { value: branches.currentBranch, disabled: busy, className: gitPanelClass.select, style: branchSelectStyle, title: t('git.switchBranch'), 'aria-label': t('git.switchBranch'), onChange: (event: { currentTarget: { value: string } }) => onSwitch(event.currentTarget.value) }, ...branches.local.map((branch) => createElement('option', { key: branch.name, value: branch.name }, branch.name))),
       ),
     ),
     history.length === 0
-      ? createElement('div', { style: mutedStyle }, '暂无提交')
+      ? createElement('div', { style: mutedStyle }, t('git.noCommits'))
       // 行间不能留间距：每行的竖线只画到行底，一旦行与行之间有缝隙，泳道就会断成一段一段。
       : createElement('div', { style: historyListStyle }, ...rows),
-    hasMore ? createElement('button', { type: 'button', disabled: busy || loadingMore, onClick: onLoadMore, className: `${gitPanelClass.button} ${gitPanelClass.field}`, style: loadMoreButtonStyle }, loadingMore ? '正在加载…' : '查看更多版本（每次 100 条）') : null,
+    hasMore ? createElement('button', { type: 'button', disabled: busy || loadingMore, onClick: onLoadMore, className: `${gitPanelClass.button} ${gitPanelClass.field}`, style: loadMoreButtonStyle }, loadingMore ? t('git.loading') : t('git.loadMoreVersions')) : null,
   )
 }
 
 const EMPTY_GRAPH_ROW: GitGraphRow = { lane: 0, color: 0, through: [], merges: [], branches: [], top: [], bottom: [] }
 
-function HistoryGraphRow({ item, timeLabel, row, width, busy, hasRemote, isHead, onCopy, onCopyMessage, onViewDiff, onUndo }: { readonly item: GitHistoryItem; readonly timeLabel: string; readonly row: GitGraphRow; readonly width: number; readonly busy: boolean; readonly hasRemote: boolean; readonly isHead: boolean; readonly onCopy: (commitHash: string) => void; readonly onCopyMessage: (message: string) => void; readonly onViewDiff: (commitHash: string) => void; readonly onUndo: () => void }): ReactElement {
+function HistoryGraphRow({ item, timeLabel, row, width, busy, hasRemote, isHead, onCopy, onCopyMessage, onViewDiff, onUndo, t }: { readonly item: GitHistoryItem; readonly timeLabel: string; readonly row: GitGraphRow; readonly width: number; readonly busy: boolean; readonly hasRemote: boolean; readonly isHead: boolean; readonly onCopy: (commitHash: string) => void; readonly onCopyMessage: (message: string) => void; readonly onViewDiff: (commitHash: string) => void; readonly onUndo: () => void; readonly t: CodingNsTranslator }): ReactElement {
   const refs = sortHistoryRefs(item.refs ?? [])
-  const nodeTitle = describeCommitNode(item, refs, hasRemote)
+  const nodeTitle = describeCommitNode(item, refs, hasRemote, t)
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement | null>(null)
   useDismissOnOutsidePointer(menuRef, menuOpen, () => setMenuOpen(false))
@@ -631,20 +639,20 @@ function HistoryGraphRow({ item, timeLabel, row, width, busy, hasRemote, isHead,
         createElement('span', { style: fileNameStyle, title: item.subject }, item.subject),
         createElement('time', {
           style: historyTimeStyle, dateTime: item.authoredAt,
-          title: item.authorName === '' ? item.authoredAt : `${item.authoredAt} · 作者 ${item.authorName}`,
+          title: item.authorName === '' ? item.authoredAt : t('git.authorSuffix', { date: item.authoredAt, author: item.authorName }),
         }, timeLabel),
         createElement('div', { ref: menuRef, style: menuStyle },
-          createElement('button', { type: 'button', className: gitPanelClass.menuTrigger, style: iconActionStyle, title: '版本操作菜单', 'aria-label': '版本操作菜单', 'aria-haspopup': 'menu', 'aria-expanded': menuOpen, onClick: () => setMenuOpen((value) => !value) }, '⋯'),
-          menuOpen && createElement('div', { role: 'menu', 'aria-label': '版本操作菜单', className: gitPanelClass.menu, style: menuPopupStyle },
-            createElement('button', { type: 'button', role: 'menuitem', onClick: runMenu(() => onViewDiff(item.commitHash)), className: gitPanelClass.menuItem, style: menuItemStyle }, '查看更改文件与 Diff'),
-            createElement('button', { type: 'button', role: 'menuitem', onClick: runMenu(() => onCopy(item.commitHash)), className: gitPanelClass.menuItem, style: menuItemStyle }, '复制 Commit Hash'),
-            createElement('button', { type: 'button', role: 'menuitem', onClick: runMenu(() => onCopyMessage(buildCommitMessageText(item.subject, item.body))), className: gitPanelClass.menuItem, style: menuItemStyle }, '复制提交信息'),
-            createElement('button', { type: 'button', role: 'menuitem', onClick: runMenu(() => onCopy(item.commitHash)), className: gitPanelClass.menuItem, style: menuItemStyle }, '复制 Git 版本号'),
-            isHead ? createElement('button', { type: 'button', role: 'menuitem', disabled: busy, onClick: runMenu(onUndo), className: `${gitPanelClass.menuItem} ${gitPanelClass.menuItemDanger}`, style: menuItemStyle }, '撤销上次提交') : null,
+          createElement('button', { type: 'button', className: gitPanelClass.menuTrigger, style: iconActionStyle, title: t('git.versionMenu'), 'aria-label': t('git.versionMenu'), 'aria-haspopup': 'menu', 'aria-expanded': menuOpen, onClick: () => setMenuOpen((value) => !value) }, '⋯'),
+          menuOpen && createElement('div', { role: 'menu', 'aria-label': t('git.versionMenu'), className: gitPanelClass.menu, style: menuPopupStyle },
+            createElement('button', { type: 'button', role: 'menuitem', onClick: runMenu(() => onViewDiff(item.commitHash)), className: gitPanelClass.menuItem, style: menuItemStyle }, t('git.viewChangesAndDiff')),
+            createElement('button', { type: 'button', role: 'menuitem', onClick: runMenu(() => onCopy(item.commitHash)), className: gitPanelClass.menuItem, style: menuItemStyle }, t('git.copyCommitHash')),
+            createElement('button', { type: 'button', role: 'menuitem', onClick: runMenu(() => onCopyMessage(buildCommitMessageText(item.subject, item.body))), className: gitPanelClass.menuItem, style: menuItemStyle }, t('git.copyCommitMessage')),
+            createElement('button', { type: 'button', role: 'menuitem', onClick: runMenu(() => onCopy(item.commitHash)), className: gitPanelClass.menuItem, style: menuItemStyle }, t('git.copyVersionHash')),
+            isHead ? createElement('button', { type: 'button', role: 'menuitem', disabled: busy, onClick: runMenu(onUndo), className: `${gitPanelClass.menuItem} ${gitPanelClass.menuItemDanger}`, style: menuItemStyle }, t('git.undoLastCommit')) : null,
           ),
         ),
       ),
-      refs.length === 0 ? null : createElement('div', { style: historyRefListStyle }, ...refs.map((ref) => createElement('span', { key: `${ref.kind}:${ref.name}`, title: refTitle(ref), className: gitPanelClass.ref, style: historyRefPillStyle(ref.kind, ref.remoteName) }, `${refGlyph(ref.kind)} ${ref.name}`))),
+      refs.length === 0 ? null : createElement('div', { style: historyRefListStyle }, ...refs.map((ref) => createElement('span', { key: `${ref.kind}:${ref.name}`, title: refTitle(ref, t), className: gitPanelClass.ref, style: historyRefPillStyle(ref.kind, ref.remoteName) }, `${refGlyph(ref.kind)} ${ref.name}`))),
     ),
   )
 }
@@ -709,26 +717,26 @@ function refGlyph(kind: GitHistoryRef['kind']): string {
   return kind === 'head' ? '●' : kind === 'remote' ? '☁' : kind === 'tag' ? '⚑' : '⑂'
 }
 
-function refTitle(ref: GitHistoryRef): string {
-  const kind = ref.kind === 'head' ? '当前分支' : ref.kind === 'remote' ? '远程分支' : ref.kind === 'tag' ? '标签' : '本地分支'
-  return `${kind}：${ref.name}`
+function refTitle(ref: GitHistoryRef, t: CodingNsTranslator): string {
+  const kind = ref.kind === 'head' ? t('git.currentBranch') : ref.kind === 'remote' ? t('git.remoteBranch') : ref.kind === 'tag' ? t('git.tag') : t('git.localBranch')
+  return t('git.refTitle', { kind, name: ref.name })
 }
 
 /** 归属不单独显示文字，只作为节点 tooltip：颜色与虚实已经表达了归属，说明放在悬浮提示里。 */
-function describeCommitOrigin(origin: GitHistoryOrigin | undefined, hasRemote: boolean): string | null {
+function describeCommitOrigin(origin: GitHistoryOrigin | undefined, hasRemote: boolean, t: CodingNsTranslator): string | null {
   if (origin === undefined) return null
-  if (origin === 'local') return hasRemote ? '本地提交：只在本地分支上，尚未推送到远程（蓝色虚线）' : '本地提交：只在本地分支上（当前仓库没有远程，蓝色虚线）'
-  if (origin === 'synced') return '已同步：当前分支与远程跟踪分支都包含该提交（彩色实线）'
-  if (origin === 'remote') return '远程提交：只有远程跟踪分支包含该提交，本地还没有（可先 Fetch/Pull）'
-  return '其他分支：只有其他本地分支包含该提交，当前分支与远程都没有（蓝色虚线）'
+  if (origin === 'local') return hasRemote ? t('git.originLocalWithRemote') : t('git.originLocalOnly')
+  if (origin === 'synced') return t('git.originSynced')
+  if (origin === 'remote') return t('git.originRemote')
+  return t('git.originOtherBranch')
 }
 
 /** 悬浮节点时显示：短哈希、归属状态、该提交上的分支与标签名称。 */
-function describeCommitNode(item: GitHistoryItem, refs: readonly GitHistoryRef[], hasRemote: boolean): string {
-  const status = describeCommitOrigin(item.origin, hasRemote) ?? '归属未知：Host 未返回提交归属（按泳道配色）'
+function describeCommitNode(item: GitHistoryItem, refs: readonly GitHistoryRef[], hasRemote: boolean, t: CodingNsTranslator): string {
+  const status = describeCommitOrigin(item.origin, hasRemote, t) ?? t('git.originUnknown')
   const parts = [`${item.commitHash.slice(0, 8)} ${item.subject}`, status]
-  if (refs.length > 0) parts.push(`分支与标签：${refs.map((ref) => refTitle(ref)).join('；')}`)
-  if (item.authorName !== '') parts.push(`作者：${item.authorName}`)
+  if (refs.length > 0) parts.push(t('git.branchesAndTags', { refs: refs.map((ref) => refTitle(ref, t)).join(t('git.refSeparator')) }))
+  if (item.authorName !== '') parts.push(t('git.author', { name: item.authorName }))
   return parts.join('\n')
 }
 
@@ -1010,10 +1018,10 @@ interface GitHistoryGroup {
   readonly items: readonly { readonly item: GitHistoryItem; readonly index: number; readonly timeLabel: string }[]
 }
 
-function groupHistoryByDate(history: readonly GitHistoryItem[]): readonly GitHistoryGroup[] {
+function groupHistoryByDate(history: readonly GitHistoryItem[], t: CodingNsTranslator): readonly GitHistoryGroup[] {
   const groups: Array<{ readonly key: string; readonly label: string; readonly items: Array<{ readonly item: GitHistoryItem; readonly index: number; readonly timeLabel: string }> }> = []
   for (const [index, item] of history.entries()) {
-    const timestamp = formatHistoryTimestamp(item.authoredAt)
+    const timestamp = formatHistoryTimestamp(item.authoredAt, t)
     const current = groups.at(-1)
     if (current?.key === timestamp.key) {
       current.items.push({ item, index, timeLabel: timestamp.timeLabel })
@@ -1024,12 +1032,12 @@ function groupHistoryByDate(history: readonly GitHistoryItem[]): readonly GitHis
   return groups
 }
 
-function formatHistoryTimestamp(value: string): { readonly key: string; readonly dateLabel: string; readonly timeLabel: string } {
+function formatHistoryTimestamp(value: string, t: CodingNsTranslator): { readonly key: string; readonly dateLabel: string; readonly timeLabel: string } {
   const timestamp = Date.parse(value)
-  if (Number.isNaN(timestamp)) return { key: 'unknown', dateLabel: '未知日期', timeLabel: '未知时间' }
+  if (Number.isNaN(timestamp)) return { key: 'unknown', dateLabel: t('git.unknownDate'), timeLabel: t('git.unknownTime') }
   const parts = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(timestamp)
   const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? ''
-  return { key: `${get('year')}-${get('month')}-${get('day')}`, dateLabel: `${get('month')}月${get('day')}日`, timeLabel: `${get('hour')}:${get('minute')}` }
+  return { key: `${get('year')}-${get('month')}-${get('day')}`, dateLabel: t('git.dateLabel', { month: get('month'), day: get('day') }), timeLabel: `${get('hour')}:${get('minute')}` }
 }
 function buildCommitMessageText(subject: string, body: string): string { const normalizedSubject = subject.trim(); const normalizedBody = body.trim(); return normalizedBody ? `${normalizedSubject}\n\n${normalizedBody}` : normalizedSubject }
 
@@ -1067,8 +1075,8 @@ const panelStyle: CSSProperties = { position: 'relative', userSelect: 'none', bo
 const headerStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 28 }
 const tabTitleStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', minWidth: 0, color: dshThemeColor.labelPrimary, fontSize: 12 }
 const headerActionsStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4 }
-// SegmentedControl 自带 indicator 与键盘走查，这里只负责在单列布局下占位与对齐。
-const columnSwitchStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', minWidth: 0 }
+// SegmentedControl 自带 indicator 与键盘走查；外层占满面板宽度后再将控件居中。
+const columnSwitchStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', minWidth: 0 }
 const summaryStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: 12 }
 const contentGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', alignItems: 'start', gap: 12 }
 const columnStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }
@@ -1143,11 +1151,11 @@ const menuItemStyle: CSSProperties = { padding: '6px 8px' }
 export const gitManagementFeature: CodingNsClientFeatureModule = {
   descriptor: {
     name: 'gitManagement', version: '0.1.0', enabledByDefault: true, dependencies: [], runtime: 'client',
-    ui: { label: 'Git 仓库管理', description: '查看改动并管理提交', order: 40, defaultOpen: false },
+    ui: { label: 'Git repository management', labelKey: 'feature.gitManagement.label', description: 'View changes and manage commits', descriptionKey: 'feature.gitManagement.description', order: 40, defaultOpen: false },
   },
   start(context) {
     const uiContext = context.services.uiContext
     if (uiContext === undefined) throw new Error('Git 管理模块缺少 DSH UI 上下文')
-    context.resources.add(registerGitManagementUi(uiContext, { rpc: context.services.rpc, remote: context.services.remote }))
+    context.resources.add(registerGitManagementUi(uiContext, { rpc: context.services.rpc, remote: context.services.remote, locale: context.services.locale }))
   },
 }

@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { CodingNsCliModel, CodingNsCliModelCatalog } from '../../shared/contracts/cli-adapter.js'
-import { CLAUDE_CATALOG, enrichEfforts } from './model-catalog.js'
+import { CLAUDE_CATALOG, CLAUDE_EFFORT_LEVELS, enrichEfforts, fillProviderEfforts } from './model-catalog.js'
 import { terminateChildProcess } from './process-utils.js'
 
 const DEFAULT_TIMEOUT_MS = 8_000
@@ -22,6 +22,11 @@ export interface ClaudeModelDiscoveryOptions {
 }
 
 interface ClaudeSettings { readonly env?: Record<string, unknown> }
+/** initialize 探测结果：模型清单，以及 CLI 明确回报不支持思考档位的模型 ID。 */
+interface ClaudeInitializeDiscovery {
+  readonly models: readonly CodingNsCliModel[]
+  readonly noEffortIds: readonly string[]
+}
 interface ClaudeDiscoveryChild {
   readonly stdout: { on(event: 'data', listener: (chunk: unknown) => void): void }
   readonly stderr: { on(event: 'data', listener: (chunk: unknown) => void): void }
@@ -36,14 +41,23 @@ export async function discoverClaudeModelCatalog(options: ClaudeModelDiscoveryOp
   const configDir = options.configDir ?? options.env?.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
   const runtimeEnv = { ...process.env, ...(options.env ?? {}), ...readClaudeEnv(configDir, options.workspaceDir ?? process.cwd()) }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const tasks: Array<Promise<readonly CodingNsCliModel[]>> = [readInitializeModels(options.command, runtimeEnv, options.spawn ?? spawn, timeoutMs)]
   const gatewayUrl = resolveModelsUrl(runtimeEnv.ANTHROPIC_BASE_URL)
-  if (gatewayUrl) tasks.push(readGatewayModels(gatewayUrl, runtimeEnv, options.fetch ?? fetch, timeoutMs))
-  const settled = await Promise.allSettled(tasks)
-  const discovered = settled.filter((result): result is PromiseFulfilledResult<readonly CodingNsCliModel[]> => result.status === 'fulfilled').flatMap((result) => result.value)
+  const settled = await Promise.allSettled([
+    readInitializeModels(options.command, runtimeEnv, options.spawn ?? spawn, timeoutMs),
+    ...(gatewayUrl ? [readGatewayModels(gatewayUrl, runtimeEnv, options.fetch ?? fetch, timeoutMs)] : []),
+  ])
+  const initialize = settled[0].status === 'fulfilled' ? settled[0].value : undefined
+  const gateway = gatewayUrl && settled[1]?.status === 'fulfilled' ? settled[1].value : undefined
+  const discovered = [...(initialize?.models ?? []), ...(gateway ?? [])]
   const configured = configuredModels(runtimeEnv)
   const merged = mergeModels([...CLAUDE_CATALOG.groups[0]!.models, ...discovered, ...configured])
-  return enrichEfforts({ groups: [{ id: 'claude', name: 'Claude', models: merged }], currentModel: null, currentEffort: null }, CLAUDE_CATALOG)
+  const enriched = enrichEfforts({ groups: [{ id: 'claude', name: 'Claude', models: merged }], currentModel: null, currentEffort: null }, CLAUDE_CATALOG)
+  // 中转站自定义命名的模型在官方目录里匹配不到 ID，但 `--effort` 是 CLI 的
+  // 会话级参数，档位不随模型变化。优先复用 CLI initialize 明确回报过的档位，
+  // 没有回报时才退回该 CLI 已验证的静态档位表，避免这些模型的强度切换在 UI
+  // 上静默消失。CLI 明确回报不支持档位的模型必须排除在外。
+  const confirmed = [...new Set((initialize?.models ?? []).flatMap((model) => model.efforts))]
+  return fillProviderEfforts(enriched, confirmed.length > 0 ? confirmed : CLAUDE_EFFORT_LEVELS, new Set(initialize?.noEffortIds ?? []))
 }
 
 function readClaudeEnv(configDir: string, workspaceDir: string): Record<string, string> {
@@ -75,7 +89,7 @@ function mergeModels(models: readonly CodingNsCliModel[]): CodingNsCliModel[] {
   return result
 }
 
-async function readInitializeModels(command: string, env: Record<string, string | undefined>, runSpawn: typeof spawn, timeoutMs: number): Promise<readonly CodingNsCliModel[]> {
+async function readInitializeModels(command: string, env: Record<string, string | undefined>, runSpawn: typeof spawn, timeoutMs: number): Promise<ClaudeInitializeDiscovery> {
   const child = runSpawn(command, ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'], { env: env as NodeJS.ProcessEnv, cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: process.platform === 'win32' }) as unknown as ClaudeDiscoveryChild
   return new Promise((resolve, reject) => {
     let stdout = ''
@@ -94,8 +108,9 @@ async function readInitializeModels(command: string, env: Record<string, string 
   })
 }
 
-function parseInitialize(output: string): CodingNsCliModel[] {
+function parseInitialize(output: string): ClaudeInitializeDiscovery {
   const models: CodingNsCliModel[] = []
+  const noEffortIds: string[] = []
   for (const line of output.split(/\r?\n/u)) {
     try {
       const message = JSON.parse(line) as { type?: unknown; response?: { subtype?: unknown; request_id?: unknown; response?: { models?: unknown } } }
@@ -108,12 +123,15 @@ function parseInitialize(output: string): CodingNsCliModel[] {
         const id = value.trim() === 'default' ? DEFAULT_MODEL_ID : value.trim()
         const displayName = (item as { displayName?: unknown }).displayName
         const efforts = (item as { supportedEffortLevels?: unknown }).supportedEffortLevels
-        models.push({ id, name: typeof displayName === 'string' && displayName.trim() ? displayName.trim() : value.trim(), efforts: Array.isArray(efforts) ? efforts.filter((level): level is string => typeof level === 'string') : [] })
+        const levels = Array.isArray(efforts) ? efforts.filter((level): level is string => typeof level === 'string') : []
+        // CLI 明确回报不支持思考档位时，该模型必须保持空档位，不能被 Provider 级兜底覆盖。
+        if (levels.length === 0 && (item as { supportsEffort?: unknown }).supportsEffort === false) noEffortIds.push(id)
+        models.push({ id, name: typeof displayName === 'string' && displayName.trim() ? displayName.trim() : value.trim(), efforts: levels })
       }
     } catch { /* 忽略 CLI 输出中的非 JSON 行。 */ }
   }
   if (models.length === 0) throw new Error('CLAUDE_MODELS_RESPONSE_EMPTY')
-  return mergeModels(models)
+  return { models: mergeModels(models), noEffortIds }
 }
 
 async function readGatewayModels(url: string, env: Record<string, string | undefined>, request: typeof fetch, timeoutMs: number): Promise<readonly CodingNsCliModel[]> {

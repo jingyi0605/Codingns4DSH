@@ -10,6 +10,7 @@ import type {
 } from '../../shared/contracts/terminal.js'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { debugInfo, debugWarn } from '../../shared/debug.js'
+import { resolveCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 
 export type { TerminalAttachmentId, WebTerminalId } from '../../shared/contracts/terminal.js'
 export type TerminalEnvironment = CodingNsTerminalEnvironment
@@ -93,7 +94,7 @@ interface WorkspaceBindingResolution {
 export class CodingNsTerminalView {
   readonly state: TerminalObservable<TerminalViewState>
   id: WebTerminalId
-  private readonly store = new ObservableValue<TerminalViewState>({ phase: 'idle', title: '终端', writable: false })
+  private readonly store: ObservableValue<TerminalViewState>
   private readonly lifetime = new AbortController()
   private followController: AbortController | undefined
   private pendingRender: PendingRender | undefined
@@ -112,8 +113,12 @@ export class CodingNsTerminalView {
     private readonly createWhenMissing: boolean,
     private readonly shellPath?: string,
     private readonly onWorkspaceResolved?: (workspaceId: string, id: WebTerminalId) => WorkspaceBindingResolution | undefined,
+    // 追加在末尾：既有调用方与测试按位置传 shellPath / onWorkspaceResolved，不能前移。
+    private readonly t: CodingNsTranslator = resolveCodingNsTranslator(),
   ) {
     this.id = id
+    // 标签兜底标题必须走词典：字段初始化阶段还取不到构造参数，因此在构造函数里建 store。
+    this.store = new ObservableValue<TerminalViewState>({ phase: 'idle', title: t('terminal.title'), writable: false })
     this.state = this.store
   }
 
@@ -331,7 +336,7 @@ export class CodingNsWebTerminals extends Service {
   /** Remote 注入前不能执行关闭请求；就绪后统一冲刷，避免把启动竞态显示成永久错误。 */
   private cleanupQueued = false
 
-  constructor(ctx: Context, private readonly remote: TerminalRemoteSource) {
+  constructor(ctx: Context, private readonly remote: TerminalRemoteSource, private readonly t: CodingNsTranslator = resolveCodingNsTranslator()) {
     super(ctx, 'webTerminals')
     for (const request of readCloseRequests()) this.closeRequests.set(String(request.id), request)
     void this.flushCleanup()
@@ -355,6 +360,7 @@ export class CodingNsWebTerminals extends Service {
       saved === undefined,
       shellPath,
       (resolvedWorkspaceId, currentId) => this.rememberWorkspace(sessionId, contentId, currentId, resolvedWorkspaceId),
+      this.t,
     )
     this.views.set(mapKey, { contentId, view })
     return view
@@ -384,7 +390,7 @@ export class CodingNsWebTerminals extends Service {
     const id = terminalId ?? record?.view.id ?? this.boundTerminalId(sessionId, contentId)
     if (id === undefined) return
     debugInfo('codingns4dsh: client terminal close request', { sessionId, key, contentId, workspaceId: this.workspaceIds.get(sessionId) ?? null, terminalId: id, hasView: record !== undefined })
-    const request: CloseRequest = { sessionId, id, title: record?.view.state.getSnapshot().title ?? '终端' }
+    const request: CloseRequest = { sessionId, id, title: record?.view.state.getSnapshot().title ?? this.t('terminal.title') }
     this.closeRequests.set(String(id), request)
     persistCloseRequests(this.closeRequests.values())
     deleteBinding(sessionId, contentId)
@@ -491,9 +497,21 @@ function unwrap<T>(result: RemoteResult<T>): T {
   throw result.error
 }
 
+/**
+ * 终端 Remote 尚未注入时的稳定错误。
+ *
+ * 调用方按类型判断可用性，不能比较本地化后的 message 文本。
+ */
+export class TerminalRemoteUnavailableError extends Error {
+  constructor() {
+    super('终端服务尚未就绪，请稍后重试')
+    this.name = 'TerminalRemoteUnavailableError'
+  }
+}
+
 function resolveRemote(source: TerminalRemoteSource): TerminalRemote {
   const remote = typeof source === 'function' ? source() : source
-  if (remote === undefined) throw new Error('终端服务尚未就绪，请稍后重试')
+  if (remote === undefined) throw new TerminalRemoteUnavailableError()
   return remote
 }
 
@@ -509,7 +527,7 @@ function errorMessage(error: unknown): string {
 }
 
 function isTerminalRemoteUnavailable(error: unknown): boolean {
-  return errorMessage(error) === '终端服务尚未就绪，请稍后重试'
+  return error instanceof TerminalRemoteUnavailableError
 }
 
 function bindingKey(sessionId: string, contentId: string): string {

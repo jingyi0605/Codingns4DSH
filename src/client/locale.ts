@@ -2,6 +2,14 @@ import { useMemo, useSyncExternalStore } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
+import * as debugDictionary from './locales/debug.js'
+import * as fileWorkspaceDictionary from './locales/fileWorkspace.js'
+import * as gitDictionary from './locales/git.js'
+import * as panelsDictionary from './locales/panels.js'
+import * as peerHostDictionary from './locales/peerHost.js'
+import * as peerHostWorkspaceDictionary from './locales/peerHostWorkspace.js'
+import * as terminalAuthDictionary from './locales/terminalAuth.js'
+import * as usageDictionary from './locales/usage.js'
 
 /** Codingns4DSH 自有词典命名空间。词典缺少的语言由 DSH 自动回退到英文。 */
 export const CODINGNS_LOCALE_NS = 'codingns' as const
@@ -16,7 +24,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 export type CodingNsLocale = Pick<LocaleRuntime, 'bind' | 'getSnapshot' | 'subscribe' | 'register'>
 export type CodingNsTranslator = Translate<string>
 
-const en: Record<string, string> = {
+const CORE_EN: Record<string, string> = {
   'common.brand': 'Codingns4DSH',
   'settings.title': 'Codingns4DSH features',
   'settings.subtitle': 'Configure modules without changing DSH global settings.',
@@ -238,6 +246,18 @@ const en: Record<string, string> = {
   'cli.agentSelector': 'Agent selector',
   'cli.modelSelector': 'Model and thinking level selector',
   'cli.adapterToggle': '{name} toggle',
+  'cli.subagentBridge': 'Managed subagents',
+  'cli.subagentBridgeDescription': 'Route subagent calls made by external Agents into DSH-native continuable subagent sessions (Command Code, Claude Code, Codex, Gemini, Grok, MiniMax Code).',
+  'cli.subagentBridgeToggle': 'Managed subagents toggle',
+  'cli.subagentBridgeEnabled': 'Managed subagents enabled',
+  'cli.subagentBridgeDisabled': 'Managed subagents disabled',
+  'delegate.label': 'Delegate',
+  'delegate.description': 'Dispatch this task to an external Agent as a DSH-native subagent session',
+  'delegate.searchPlaceholder': 'Search external Agents',
+  'delegate.searchEmpty': 'No external Agent is installed and enabled',
+  'delegate.searchNoResults': 'No matching Agent',
+  'delegate.started': 'Delegated to {name}; it runs in its own native subagent session.',
+  'delegate.failed': 'Delegation failed',
   'cli.loadingModel': 'Loading models…',
   'cli.noModelsAvailable': 'No models available',
   'cli.model': 'Model',
@@ -249,29 +269,12 @@ const en: Record<string, string> = {
   'cli.noAgents': 'No external Agent is currently available.',
   'cli.viewDetails': 'View {name} details',
   'cli.closeDetails': 'Close Agent details',
-  'cli.sessions': 'External Agent sessions',
-  'cli.readingSessions': 'Reading external sessions…',
-  'cli.noSessions': 'No external Agent sessions have been created.',
-  'cli.session': '{id} session',
-  'cli.open': 'Open',
-  'cli.opening': 'Opening…',
-  'cli.remove': 'Remove',
-  'cli.removing': 'Removing…',
-  'cli.removeFromSidebar': 'Remove {name} from sidebar',
   'cli.modelCatalog': 'Model catalog',
   'cli.agentNotInstalled': 'Agent is not installed; the model catalog cannot be read.',
   'cli.agentDisabled': 'Agent is disabled; enable it before reading the model catalog.',
   'cli.readingModels': 'Reading model catalog…',
   'cli.done': 'Done',
   'cli.noModels': 'No models found.',
-  'cli.statusMissing': 'Original session was deleted',
-  'cli.statusCorrupt': 'Original session is corrupted',
-  'cli.statusUnreachable': 'The original session cannot be checked right now',
-  'cli.statusEphemeral': 'No separate original session',
-  'cli.statusActive': 'Running',
-  'cli.statusError': 'Error',
-  'cli.statusArchived': 'Archived',
-  'cli.statusPaused': 'Paused',
   'cli.currentAgent': 'Current Agent: {name}{locked}',
   'cli.locked': ' (locked)',
   'cli.selectAgent': 'Select Agent',
@@ -325,7 +328,7 @@ const en: Record<string, string> = {
   'workspace.quickPhrasesClose': 'Close quick sessions',
 }
 
-const zh: Record<string, string> = {
+const CORE_ZH: Record<string, string> = {
   'common.brand': 'Codingns4DSH',
   'settings.title': 'Codingns4DSH 功能模块',
   'settings.subtitle': '按模块配置 Codingns4DSH 功能，不影响 DSH 的全局设置。',
@@ -547,6 +550,18 @@ const zh: Record<string, string> = {
   'cli.agentSelector': 'Agent 选择器',
   'cli.modelSelector': '模型与思考强度选择器',
   'cli.adapterToggle': '{name}启用开关',
+  'cli.subagentBridge': '子代理托管',
+  'cli.subagentBridgeDescription': '把外部 Agent 自己开的子代理调用转投为 DSH 原生可续子会话（Command Code、Claude Code、Codex、Gemini、Grok、MiniMax Code）。',
+  'cli.subagentBridgeToggle': '子代理托管开关',
+  'cli.subagentBridgeEnabled': '子代理托管已开启',
+  'cli.subagentBridgeDisabled': '子代理托管已关闭',
+  'delegate.label': '委派',
+  'delegate.description': '把当前任务派发给外部 Agent，作为 DSH 原生子智能体会话运行',
+  'delegate.searchPlaceholder': '搜索外部 Agent',
+  'delegate.searchEmpty': '没有已安装并启用的外部 Agent',
+  'delegate.searchNoResults': '没有匹配的 Agent',
+  'delegate.started': '已委派给 {name}，它将在独立的原生子智能体会话中运行。',
+  'delegate.failed': '委派失败',
   'cli.loadingModel': '加载模型…',
   'cli.noModelsAvailable': '无可用模型',
   'cli.model': '模型',
@@ -558,29 +573,12 @@ const zh: Record<string, string> = {
   'cli.noAgents': '当前没有可用的外部 Agent。',
   'cli.viewDetails': '查看 {name} 详情',
   'cli.closeDetails': '关闭 Agent 详情',
-  'cli.sessions': '外部 Agent 会话',
-  'cli.readingSessions': '正在读取外部会话…',
-  'cli.noSessions': '尚未创建外部 Agent 会话。',
-  'cli.session': '{id} 会话',
-  'cli.open': '打开',
-  'cli.opening': '打开中…',
-  'cli.remove': '移除',
-  'cli.removing': '移除中…',
-  'cli.removeFromSidebar': '从侧栏移除 {name}',
   'cli.modelCatalog': '模型目录',
   'cli.agentNotInstalled': 'Agent 未安装，无法读取模型目录。',
   'cli.agentDisabled': 'Agent 已停用，启用后才能读取模型目录。',
   'cli.readingModels': '正在读取模型目录…',
   'cli.done': '完成',
   'cli.noModels': '没有读取到模型。',
-  'cli.statusMissing': '原始会话已删除',
-  'cli.statusCorrupt': '原始会话已损坏',
-  'cli.statusUnreachable': '暂时无法检查原始会话',
-  'cli.statusEphemeral': '无独立原始会话',
-  'cli.statusActive': '运行中',
-  'cli.statusError': '异常',
-  'cli.statusArchived': '已归档',
-  'cli.statusPaused': '已暂停',
   'cli.currentAgent': '当前 Agent：{name}{locked}',
   'cli.locked': '（已锁定）',
   'cli.selectAgent': '选择 Agent',
@@ -634,6 +632,36 @@ const zh: Record<string, string> = {
   'workspace.quickPhrasesClose': '关闭快捷会话',
 }
 
+/**
+ * 合并核心词典与各域片段。
+ *
+ * 每个域片段只声明自己的键；一旦两个片段出现同名键，后面的会静默覆盖前面的，
+ * 因此 scripts/check-client-i18n.mjs 会把重复键判为错误。
+ */
+const en: Record<string, string> = {
+  ...CORE_EN,
+  ...gitDictionary.en,
+  ...debugDictionary.en,
+  ...peerHostDictionary.en,
+  ...peerHostWorkspaceDictionary.en,
+  ...usageDictionary.en,
+  ...fileWorkspaceDictionary.en,
+  ...terminalAuthDictionary.en,
+  ...panelsDictionary.en,
+}
+
+const zh: Record<string, string> = {
+  ...CORE_ZH,
+  ...gitDictionary.zh,
+  ...debugDictionary.zh,
+  ...peerHostDictionary.zh,
+  ...peerHostWorkspaceDictionary.zh,
+  ...usageDictionary.zh,
+  ...fileWorkspaceDictionary.zh,
+  ...terminalAuthDictionary.zh,
+  ...panelsDictionary.zh,
+}
+
 /** 在当前 Client Cordis 作用域注册中英文词典。 */
 export function registerCodingNsLocale(ctx: Context): () => void {
   return ctx.locale.register(CODINGNS_LOCALE_NS, { en, zh })
@@ -661,4 +689,23 @@ function localeSnapshotHandle(locale: CodingNsLocale): {
 /** 非 React 注册回调使用的翻译函数。 */
 export function codingNsTranslator(locale: CodingNsLocale): CodingNsTranslator {
   return locale.bind(CODINGNS_LOCALE_NS)
+}
+
+/**
+ * 命令式模块的翻译函数入口。
+ *
+ * 正式运行总是由功能模块注入 DSH locale 服务；只有单测或非 Cordis 宿主没有
+ * locale 时，才退回内置中文词典，保证命令式模块仍可独立运行。
+ */
+export function resolveCodingNsTranslator(locale?: CodingNsLocale): CodingNsTranslator {
+  return locale === undefined ? staticCodingNsTranslator() : codingNsTranslator(locale)
+}
+
+/** 无 locale 服务时的内置中文兜底；插值规则与 DSH 的 `{name}` 保持一致。 */
+function staticCodingNsTranslator(): CodingNsTranslator {
+  return (key, params) => {
+    const template = zh[key] ?? key
+    if (params === undefined) return template
+    return template.replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match))
+  }
 }

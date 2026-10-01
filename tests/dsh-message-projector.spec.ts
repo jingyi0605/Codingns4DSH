@@ -289,6 +289,19 @@ test('Provider 没有任何有效事件时 complete 不得伪装成 stop', async
   })
 })
 
+test('Provider 终态携带真实失败详情时投影到 DSH finish', async () => {
+  const projector = new CodingNsDshMessageProjector({ adapterId: 'codex', sessionId: 'session-real-failure' })
+  const chunks = await projector.push({
+    type: 'finish',
+    reason: 'error',
+    failure: { message: '上游返回 401：API key 无效', code: 'AUTH_FAILED' },
+  })
+  assert.deepEqual(chunks.at(-1), {
+    type: 'finish',
+    reason: { kind: 'error', failure: { message: '上游返回 401：API key 无效', code: 'AUTH_FAILED' } },
+  })
+})
+
 test('公共消息投影层使用 DSH 原生权限和问题组件并回传统一回答', async () => {
   const approvals = []
   const questions = []

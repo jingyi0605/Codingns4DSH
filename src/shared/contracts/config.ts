@@ -38,6 +38,21 @@ export interface CodingNsSettings {
   cliSessions?: CodingNsCliSessionRecord[]
   /** 适配器级最近选择；新建会话时作为默认模型和思考强度。 */
   agentAdapterPreferences?: Record<string, CodingNsCliAdapterPreference>
+  /** 外部 CLI 子代理托管：把外部 Agent 自己的子代理调用转为 DSH 原生可续子会话。 */
+  subagentBridge?: SubagentBridgeSettings
+}
+
+/** 外部 CLI 子代理托管设置；关闭时所有驱动保持原样。 */
+export interface SubagentBridgeSettings {
+  enabled: boolean
+}
+
+export const DEFAULT_SUBAGENT_BRIDGE_SETTINGS: SubagentBridgeSettings = { enabled: false }
+
+/** 归一化子代理托管设置：只有显式 true 才算开启。 */
+export function normalizeSubagentBridgeSettings(value: unknown): SubagentBridgeSettings {
+  const record = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  return { enabled: record.enabled === true }
 }
 
 /** 用量查询设置：超时控制单次网络查询，间隔控制自动刷新。 */
@@ -349,6 +364,7 @@ export const CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD = 'workspaceSessionEnh
 export const CODINGNS_FILE_MANAGEMENT_FIELD = 'fileManagement'
 export const CODINGNS_MOBILE_ACCESS_FIELD = 'mobileAccess'
 export const CODINGNS_SUBSCRIPTION_USAGE_FIELD = 'subscriptionUsage'
+export const CODINGNS_SUBAGENT_BRIDGE_FIELD = 'subagentBridge'
 export const DEFAULT_CODINGNS_CONTROL_BASE_URL = 'https://channel.codingns.com:1443'
 export const DEFAULT_CODINGNS_CONTROL_BASE_URLS = [DEFAULT_CODINGNS_CONTROL_BASE_URL]
 /** 控制站的网页登录地址，用于注册 Codingns4DSH 账号。 */
@@ -388,6 +404,7 @@ export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   modules: {},
   agentAdapters: {},
   agentAdapterPreferences: {},
+  subagentBridge: DEFAULT_SUBAGENT_BRIDGE_SETTINGS,
   terminalEnhancement: DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   fileManagement: DEFAULT_FILE_MANAGEMENT_SETTINGS,

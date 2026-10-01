@@ -1,0 +1,68 @@
+import type { CodingNsCliAdapterDescriptor } from '../shared/contracts/cli-adapter.js'
+
+/**
+ * `/委派` 命令的纯逻辑层。
+ *
+ * 这里不导入任何 DSH Client 包，因此可以被 Node 单测直接加载；命令注册、
+ * DSH 服务探测和界面文案留在 `delegate-command.ts`。
+ */
+
+/** 命令名（不带前导斜杠）；`/` 菜单里的稳定标识。 */
+export const DELEGATE_COMMAND_NAME = 'delegate'
+
+/** 一个可选的外部 Agent 适配器选项（纯数据，供 popupSelect 渲染）。 */
+export interface DelegateAdapterOption {
+  readonly id: string
+  readonly label: string
+  readonly detail?: string
+}
+
+/**
+ * 把适配器目录映射为委派选项。
+ *
+ * 只列出已安装且已启用的外部 Agent：`dsh` 是 DSH 自身，不是可委派的外部目标；
+ * 未安装或已停用的适配器即使出现在列表里也会在 Host 侧被拒绝。
+ */
+export function delegateAdapterOptions(
+  catalog: readonly CodingNsCliAdapterDescriptor[],
+): readonly DelegateAdapterOption[] {
+  const options: DelegateAdapterOption[] = []
+  for (const adapter of catalog) {
+    if (adapter.id === 'dsh') continue
+    if (!adapter.installed || !adapter.enabled) continue
+    const detail = adapter.version?.trim()
+    options.push({
+      id: adapter.id,
+      label: adapter.name.trim() === '' ? adapter.id : adapter.name,
+      ...(detail === undefined || detail === '' ? {} : { detail }),
+    })
+  }
+  return options
+}
+
+/**
+ * 从当前草稿里取出委派任务描述。
+ *
+ * 只认「委派」命令自己的两种拼写，且必须位于草稿开头：行内出现的 `/委派` 属于普通
+ * 文本，而其它命令（如 `/model deepseek`）的草稿也不该被当成委派任务。取不到时由
+ * Host 回退到会话最近一条用户消息。
+ */
+export function extractDelegateTask(draft: string, adapterId?: string, adapterName?: string): string {
+  const trimmed = draft.trimStart()
+  const match = /^\/(delegate|委派)\s*([\s\S]*)$/u.exec(trimmed)
+  if (match === null) return ''
+  let rest = (match[2] ?? '').trim()
+  for (const token of [adapterId, adapterName]) {
+    if (token === undefined || token.trim() === '') continue
+    const prefix = token.trim()
+    if (rest === prefix) {
+      rest = ''
+      break
+    }
+    if (rest.startsWith(`${prefix} `)) {
+      rest = rest.slice(prefix.length).trim()
+      break
+    }
+  }
+  return rest
+}

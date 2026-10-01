@@ -1,9 +1,12 @@
 import type { PwaPushPayload } from './pwa-push.js'
+import { hostBrowserText, type HostLocale } from '../../browser-text.js'
 
 /** 会话事件通知的最小输入，避免通知模块依赖 DSH 私有 Session 类型。 */
 export interface PwaSessionNotificationInput {
   readonly session: unknown
   readonly event: unknown
+  /** Host 侧语言；缺省回退 `zh`，与改造前行为一致。 */
+  readonly locale?: HostLocale
 }
 
 /**
@@ -13,6 +16,7 @@ export interface PwaSessionNotificationInput {
  * 因此这里只读取稳定字符串字段并按语义分类；无法识别的事件安静忽略。
  */
 export function createPwaSessionNotification(input: PwaSessionNotificationInput): PwaPushPayload | null {
+  const locale = input.locale ?? 'zh'
   const sessionId = readSessionId(input.session)
   if (sessionId === null) return null
   const eventType = readEventType(input.event)
@@ -21,16 +25,16 @@ export function createPwaSessionNotification(input: PwaSessionNotificationInput)
   const url = `/?sessionId=${encodeURIComponent(sessionId)}`
   if (normalized === 'turn_end' || normalized.endsWith('_turn_end')) {
     return {
-      title: 'DSH 会话已完成',
-      body: `会话 ${sessionId} 已完成当前轮次。`,
+      title: hostBrowserText(locale, 'push.turnEndTitle'),
+      body: hostBrowserText(locale, 'push.turnEndBody', { sessionId }),
       tag: `codingns4dsh-turn-${sessionId}`,
       url,
     }
   }
   if (isWaitingEvent(normalized)) {
     return {
-      title: 'DSH 等待你的输入',
-      body: `会话 ${sessionId} 正在等待确认或回答。`,
+      title: hostBrowserText(locale, 'push.waitingTitle'),
+      body: hostBrowserText(locale, 'push.waitingBody', { sessionId }),
       tag: `codingns4dsh-input-${sessionId}`,
       url,
     }

@@ -3,6 +3,10 @@ import { DEFAULT_FILE_MANAGEMENT_SETTINGS } from '../../shared/contracts/config.
 import { startFileManagementDom } from '../file-management-dom.js'
 import { FileManagementPanel } from './file-management-panel.js'
 import { registerSessionChangedFilesView } from '../session-changed-files-view.js'
+import { resolveCodingNsTranslator } from '../locale.js'
+
+/** descriptor 的 label/description 只是词典缺失时的兜底，取内置中文词典。 */
+const fallbackT = resolveCodingNsTranslator()
 
 /** 文件管理增强：只在模块启用期间挂载右键菜单和文本编辑器。 */
 export const fileManagementFeature: CodingNsClientFeatureModule = {
@@ -13,8 +17,8 @@ export const fileManagementFeature: CodingNsClientFeatureModule = {
     dependencies: [],
     runtime: 'client',
     ui: {
-      label: '文件管理增强',
-      description: '增强文件侧栏操作',
+      label: fallbackT('feature.fileManagement.label'),
+      description: fallbackT('feature.fileManagement.description'),
       labelKey: 'feature.fileManagement.label',
       descriptionKey: 'feature.fileManagement.description',
       order: 40,
@@ -24,14 +28,14 @@ export const fileManagementFeature: CodingNsClientFeatureModule = {
   start(context) {
     const readOptions = () => {
       const value = { ...DEFAULT_FILE_MANAGEMENT_SETTINGS, ...context.services.settings.getSnapshot().value?.fileManagement }
-      return { menuEnhancement: value.menuEnhancement, fileEditor: value.fileEditor }
+      return { menuEnhancement: value.menuEnhancement, fileEditor: value.fileEditor, locale: context.services.locale }
     }
     const dom = startFileManagementDom(context.services.rpc, readOptions())
     let disposeSessionView: (() => void) | undefined
     const syncSessionView = (): void => {
       const value = { ...DEFAULT_FILE_MANAGEMENT_SETTINGS, ...context.services.settings.getSnapshot().value?.fileManagement }
       if (value.sessionChangedFiles && disposeSessionView === undefined) {
-        disposeSessionView = registerSessionChangedFilesView(context.services.uiContext, context.services.rpc, context.services.remote)
+        disposeSessionView = registerSessionChangedFilesView(context.services.uiContext, context.services.rpc, context.services.remote, context.services.locale)
       } else if (!value.sessionChangedFiles && disposeSessionView !== undefined) {
         disposeSessionView()
         disposeSessionView = undefined

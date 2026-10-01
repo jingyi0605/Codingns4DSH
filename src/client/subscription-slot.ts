@@ -1,15 +1,16 @@
 import { createElement, useEffect, useRef, useState } from 'react'
-import type { ReactElement } from 'react'
+import type { ReactElement, RefObject } from 'react'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { isSubscriptionUsageFresh } from '../shared/contracts/subscription.js'
-import type { CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
+import type { CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
 import { DEFAULT_SUBSCRIPTION_USAGE_SETTINGS } from '../shared/contracts/config.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCliRpc } from './cli-catalog.js'
+import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { providerIconUrl } from './provider-icons.js'
 import { subscribeSessionAdapters } from './session-adapter-cache.js'
-import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
+import { dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from './theme.js'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import type { SessionSnapshot } from './cli-slots.js'
 
@@ -27,9 +28,22 @@ interface SubscriptionSlotProps {
   readonly useSession?: SessionSelector
   /** 读取当前自动查询间隔（分钟）；缺省或 0 表示不自动查询。 */
   readonly getRefreshIntervalMins?: () => number
+  /** DSH 语言服务；缺省时退回内置中文词典（仅单测或非 Cordis 宿主）。 */
+  readonly locale?: CodingNsLocale
 }
 
 const SUBSCRIPTION_STYLE_ID = 'codingns4dsh-subscription-responsive-style'
+
+/**
+ * 没有 locale 服务时的静态兜底：命名空间绑定固定指向内置中文词典，
+ * 且不产生任何语言变更通知。生产路径由 registerSubscriptionSlot 注入 DSH locale。
+ */
+const FALLBACK_LOCALE = {
+  bind: () => resolveCodingNsTranslator(undefined),
+  getSnapshot: () => ({ revision: 0 }),
+  subscribe: () => () => {},
+  register: () => () => {},
+} as unknown as CodingNsLocale
 
 /**
  * 进程内用量结果缓存：同一适配器/提供商在刷新间隔内直接复用上次结果，
@@ -37,29 +51,39 @@ const SUBSCRIPTION_STYLE_ID = 'codingns4dsh-subscription-responsive-style'
  */
 const subscriptionUsageCache = new Map<string, { readonly usage: CliSubscriptionUsage; readonly capturedAt: number }>()
 
+/** 图标重置按钮的悬停/按下/聚焦/禁用只能由注入样式表表达，内联样式无法命中伪类。 */
+const RESET_BUTTON_CSS = '.codingns4dsh-subscription-reset{display:inline-flex;align-items:center;justify-content:center;flex:none;width:26px;height:26px;padding:0;border:1px solid var(--dsw-alias-border-l2,#d9d9d9);border-radius:50%;background:transparent;color:var(--dsw-alias-label-secondary,GrayText);cursor:pointer;transition:background .15s ease,color .15s ease}.codingns4dsh-subscription-reset:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08));color:var(--dsw-alias-label-primary,CanvasText)}.codingns4dsh-subscription-reset:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active,rgba(127,127,127,.14))}.codingns4dsh-subscription-reset:focus-visible{outline:none;box-shadow:0 0 0 var(--dsw-focus-ring-width,2px) var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#1677ff))}.codingns4dsh-subscription-reset:disabled{opacity:.4;cursor:not-allowed}@media (prefers-reduced-motion: reduce){.codingns4dsh-subscription-reset{transition:none}}'
+
 /** 移动端订阅入口只保留图标，完整数据仍可在点击后的弹层中查看。 */
 function installSubscriptionStyles(): void {
   if (typeof document === 'undefined' || document.querySelector(`style[data-plugin-css="${SUBSCRIPTION_STYLE_ID}"]`) !== null) return
   const style = document.createElement('style')
   style.dataset.plugin = 'codingns4dsh'
   style.dataset.pluginCss = SUBSCRIPTION_STYLE_ID
-  style.textContent = '@media (max-width: 768px){.codingns4dsh-subscription-trigger{gap:0!important;padding-left:4px!important;padding-right:4px!important}.codingns4dsh-subscription-label,.codingns4dsh-subscription-value{display:none!important}.codingns4dsh-subscription-popover{position:fixed!important;left:12px!important;right:12px!important;bottom:48px!important;width:auto!important;min-width:0!important;max-width:none!important;max-height:calc(100vh - 72px)!important;overflow:auto!important}}'
+  style.textContent = '@media (max-width: 768px){.codingns4dsh-subscription-trigger{gap:0!important;padding-left:4px!important;padding-right:4px!important}.codingns4dsh-subscription-label,.codingns4dsh-subscription-value{display:none!important}.codingns4dsh-subscription-popover{position:fixed!important;left:12px!important;right:12px!important;bottom:48px!important;width:auto!important;min-width:0!important;max-width:none!important;max-height:calc(100vh - 72px)!important;overflow:auto!important}}' + RESET_BUTTON_CSS
   document.head.appendChild(style)
 }
 
 /** 在 DSH 原生步骤统计左侧显示当前 Agent 的订阅余量。 */
-export function registerSubscriptionSlot(slots: SlotRegistry, rpc: CodingNsRpcClient, getRefreshIntervalMins?: () => number): () => void {
+export function registerSubscriptionSlot(slots: SlotRegistry, rpc: CodingNsRpcClient, getRefreshIntervalMins?: () => number, locale?: CodingNsLocale): () => void {
   installSubscriptionStyles()
+  const t = resolveCodingNsTranslator(locale)
   return slots.inject('conversation.composer.dock', () => slots.register({
     name: 'conversation.composer.dock',
     id: 'codingns4dsh-subscription',
     order: -20,
-    label: 'Agent 订阅余量',
-    inject: (sessionId: string) => ({ rpc, sessionId, ...(getRefreshIntervalMins === undefined ? {} : { getRefreshIntervalMins }) }),
+    label: t('usage.slotLabel'),
+    inject: (sessionId: string) => ({
+      rpc,
+      sessionId,
+      locale: locale ?? FALLBACK_LOCALE,
+      ...(getRefreshIntervalMins === undefined ? {} : { getRefreshIntervalMins }),
+    }),
   }, CommandCodeSubscriptionSlot))
 }
 
 function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement | null {
+  const t = useCodingNsTranslator(props.locale ?? FALLBACK_LOCALE)
   const [usage, setUsage] = useState<CliSubscriptionUsage | null>(null)
   const [adapterId, setAdapterId] = useState<string | null>(null)
   const [providerId, setProviderId] = useState<string | null>(null)
@@ -68,6 +92,13 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const [loading, setLoading] = useState(false)
   const [clock, setClock] = useState(() => Date.now())
   const rootRef = useRef<HTMLDivElement>(null)
+  const resetDialogRef = useRef<HTMLDivElement>(null)
+  // 重置成功后的刷新不能重跑加载 effect，否则 usage 会被清空导致底部入口闪断。
+  const refreshRef = useRef<null | (() => Promise<void>)>(null)
+  const [resetOpen, setResetOpen] = useState(false)
+  const [resetPending, setResetPending] = useState(false)
+  const [resetResult, setResetResult] = useState<CliSubscriptionResetOutcome | null>(null)
+  const [resetError, setResetError] = useState<string | null>(null)
   const modelSelectionRevision = props.useSession?.((value) => JSON.stringify(value.modelSelection))
   // 切换 Agent 可能只改变 Host 侧会话配置，DSH 会话快照不一定会更新；订阅适配器
   // 缓存的变更才能真正触发重新查询，否则底部会一直显示上一个 Agent 的订阅数据。
@@ -82,6 +113,10 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       setAdapterId(null)
       setProviderId(null)
       setOpen(false)
+      setResetOpen(false)
+      setResetPending(false)
+      setResetResult(null)
+      setResetError(null)
       return
     }
     let active = true
@@ -90,6 +125,10 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     setAdapterId(null)
     setProviderId(null)
     setOpen(false)
+    setResetOpen(false)
+    setResetPending(false)
+    setResetResult(null)
+    setResetError(null)
     const refresh = async (): Promise<void> => {
       setLoading(true)
       try {
@@ -131,11 +170,13 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         if (active) setLoading(false)
       }
     }
+    refreshRef.current = refresh
     void refresh()
     const intervalMins = props.getRefreshIntervalMins?.() ?? DEFAULT_SUBSCRIPTION_USAGE_SETTINGS.refreshIntervalMins
     const timer = intervalMins > 0 ? globalThis.setInterval(() => { void refresh() }, intervalMins * 60_000) : undefined
     return () => {
       active = false
+      refreshRef.current = null
       if (timer !== undefined) globalThis.clearInterval(timer)
     }
   }, [props.rpc, props.sessionId, props.getRefreshIntervalMins, modelSelectionRevision, adapterRevision])
@@ -146,7 +187,38 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     return () => globalThis.clearInterval(timer)
   }, [eligible, usage])
 
+  const closeResetDialog = (): void => {
+    if (resetPending) return
+    setResetOpen(false)
+    setResetResult(null)
+    setResetError(null)
+  }
+
+  const confirmReset = (): void => {
+    if (resetPending || adapterId === null) return
+    const cacheKey = `${adapterId}|${providerId ?? ''}`
+    setResetPending(true)
+    setResetError(null)
+    void (async () => {
+      try {
+        const result = await callCliRpc<CliSubscriptionResetResult>(props.rpc, 'subscription/reset', {
+          adapterId,
+          ...(providerId === null ? {} : { providerId }),
+        })
+        setResetResult(result.outcome)
+        // 重置改变了窗口与次数，必须绕过进程内缓存重新读取。
+        subscriptionUsageCache.delete(cacheKey)
+        await refreshRef.current?.()
+      } catch (error) {
+        setResetError(error instanceof Error ? error.message : '')
+      } finally {
+        setResetPending(false)
+      }
+    })()
+  }
+
   useDismissOnOutsidePointer(rootRef, open, () => setOpen(false))
+  useDismissOnOutsidePointer(resetDialogRef, resetOpen && !resetPending, closeResetDialog)
 
   // 未拿到真实订阅数据时不占用底部栏空间；加载状态不能伪装成订阅存在。
   if (!eligible || usage === null || (usage.sub2api === undefined && usage.deepseek === undefined && usage.providerBalance === undefined && resolveDisplayWindow(usage) === null)) return null
@@ -155,19 +227,39 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const providerBalance = usage.providerBalance
   const displayWindow = sub2api === undefined && deepseek === undefined && providerBalance === undefined ? resolveDisplayWindow(usage) : null
   const remaining = displayWindow?.remainingPercent ?? null
-  const resetLabel = displayWindow === null ? null : formatCountdown(displayWindow.resetsAt, clock)
-  const providerName = subscriptionProviderName(adapterId, providerId, usage)
+  const resetLabel = displayWindow === null ? null : formatCountdown(displayWindow.resetsAt, t, clock)
+  const providerName = subscriptionProviderName(adapterId, providerId, usage, t)
   const deepseekBalance = deepseek === undefined ? null : selectDeepseekBalance(deepseek)
-  const providerLogoSource = usage.provider?.logoDataUrl ?? (isRemoteWebContext() ? '' : usage.provider?.logoUrl ?? '')
-  const deepseekIconSource = providerLogoSource || (providerBalance === undefined ? providerIconUrl('dsh') : '')
+  const providerBalanceRemaining = providerBalance === undefined ? null : balancePercent(providerBalance.remaining, providerBalance.total)
+  const providerBalancePlan = providerBalance?.planName?.trim() || null
+  // 官方余额读取器可能没有可直连的 Provider Logo；此时统一回退到当前
+  // 适配器注册的内置图标，ZCode 等 Agent 不再显示空 src 的破图。
+  const adapterIconSource = providerIconUrl(adapterId ?? 'dsh') ?? ''
+  const providerLogoSource = usage.provider?.logoDataUrl?.trim() || (!isRemoteWebContext() ? usage.provider?.logoUrl?.trim() : '') || adapterIconSource
+  const deepseekIconSource = providerLogoSource
   const label = sub2api === undefined && deepseek === undefined && providerBalance === undefined
-    ? `${providerName} 订阅余量 ${formatPercent(remaining ?? 0)}%`
+    ? t('usage.remainingLabel', { provider: providerName, percent: formatPercent(remaining ?? 0) })
     : sub2api !== undefined
-      ? `${providerName} 上游余额 ${formatSub2ApiMoney(sub2api.balance, sub2api.unit)}`
+      ? t('usage.upstreamBalanceLabel', { provider: providerName, amount: formatSub2ApiMoney(sub2api.balance, sub2api.unit) })
       : deepseek !== undefined
-        ? `${providerName} 余额 ${deepseekBalance === null ? '不可用' : formatDeepseekMoney(deepseekBalance.totalBalance, deepseekBalance.currency)}`
-        : `${providerName} 余量 ${formatProviderBalance(providerBalance)}`
+        ? t('usage.balanceLabel', { provider: providerName, amount: deepseekBalance === null ? t('usage.unavailable') : formatDeepseekMoney(deepseekBalance.totalBalance, deepseekBalance.currency) })
+        : providerBalancePlan === null
+          ? t('usage.providerBalanceLabel', { provider: providerName, amount: formatProviderBalance(providerBalance) })
+          : t('usage.providerBalancePlanLabel', { provider: providerName, plan: providerBalancePlan, amount: formatProviderBalance(providerBalance) })
   const logoSource = providerLogoSource || (sub2api === undefined ? '' : (sub2api.logoDataUrl ?? (isRemoteWebContext() ? '' : sub2api.logoUrl)))
+  const resetCredits = usage.resetCredits
+  // 重置只对官方 Codex 订阅开放；第三方上游走 sub2api 面板，不会带出重置券。
+  const resetRequest = adapterId === 'codex' && resetCredits !== null
+    ? {
+        enabled: resetCredits.availableCount > 0 && !resetPending,
+        onRequest: (): void => {
+          setOpen(false)
+          setResetResult(null)
+          setResetError(null)
+          setResetOpen(true)
+        },
+      }
+    : null
   const triggerContent = sub2api === undefined && deepseek === undefined && providerBalance === undefined
     ? createElement('span', { 'aria-hidden': true, style: progressRingStyle() },
       createElement('span', { style: { ...progressRingVisualStyle, background: progressRingVisualBackground(remaining === null ? 0 : remaining / 100, false) } },
@@ -184,13 +276,15 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       )
       : deepseek !== undefined
         ? createElement('span', { 'aria-hidden': true, style: deepseekBalanceIdentityStyle },
-        deepseekIconSource !== undefined && createElement('img', { src: deepseekIconSource, alt: '', width: 18, height: 18, style: deepseekLogoStyle }),
+        deepseekIconSource !== '' && createElement('img', { src: deepseekIconSource, alt: '', width: 18, height: 18, style: deepseekLogoStyle }),
         createElement('span', { className: 'codingns4dsh-subscription-value', style: deepseekBalanceStyle }, deepseekBalance === null ? '--' : formatDeepseekMoney(deepseekBalance.totalBalance, deepseekBalance.currency)),
         )
-        : createElement('span', { 'aria-hidden': true, style: deepseekBalanceIdentityStyle },
-          deepseekIconSource !== undefined && createElement('img', { src: deepseekIconSource, alt: '', width: 18, height: 18, style: deepseekLogoStyle }),
-          createElement('span', { className: 'codingns4dsh-subscription-value', style: deepseekBalanceStyle }, formatProviderBalance(providerBalance)),
-        )
+        : providerBalanceRemaining !== null
+          ? createRemainingRing(providerBalanceRemaining)
+          : createElement('span', { 'aria-hidden': true, style: deepseekBalanceIdentityStyle },
+            deepseekIconSource !== '' && createElement('img', { src: deepseekIconSource, alt: '', width: 18, height: 18, style: deepseekLogoStyle }),
+            createElement('span', { className: 'codingns4dsh-subscription-value', style: deepseekBalanceStyle }, formatProviderBalance(providerBalance)),
+          )
   return createElement('div', { ref: rootRef, style: subscriptionRootStyle },
     createElement('button', {
       type: 'button',
@@ -204,111 +298,313 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       triggerContent,
       createElement('span', { className: 'codingns4dsh-subscription-label', style: subscriptionLabelStyle },
         sub2api === undefined && deepseek === undefined && providerBalance === undefined
-          ? (resetLabel ?? '订阅余量')
-          : sub2api !== undefined ? `今日 ${formatSub2ApiMoney(sub2api.today.cost, sub2api.unit)}` : deepseek !== undefined ? '账户余额' : '官方余量',
+          ? (resetLabel ?? t('usage.subscriptionRemaining'))
+          : sub2api !== undefined ? t('usage.todayCostShort', { amount: formatSub2ApiMoney(sub2api.today.cost, sub2api.unit) }) : deepseek !== undefined ? t('usage.accountBalance') : providerBalancePlan ?? t('usage.officialRemaining'),
       ),
     ),
-    open && createElement(SubscriptionPopover, { usage, providerName }),
+    open && createElement(SubscriptionPopover, { usage, providerName, t, nowMs: clock, reset: resetRequest }),
+    resetOpen && createElement(ResetConfirmDialog, {
+      count: resetCredits?.availableCount ?? 0,
+      pending: resetPending,
+      result: resetResult,
+      error: resetError,
+      t,
+      onCancel: closeResetDialog,
+      onConfirm: confirmReset,
+      onClose: closeResetDialog,
+      dialogRef: resetDialogRef,
+    }),
   )
 }
 
-function SubscriptionPopover({ usage, providerName }: { readonly usage: CliSubscriptionUsage; readonly providerName: string }): ReactElement {
-  if (usage.sub2api !== undefined) return createElement(Sub2ApiPopover, { usage: usage.sub2api, providerName })
-  if (usage.deepseek !== undefined) return createElement(DeepseekPopover, { usage: usage.deepseek, providerName })
-  if (usage.providerBalance !== undefined) return createElement(ProviderBalancePopover, { usage: usage.providerBalance, providerName })
+interface SubscriptionResetRequest {
+  readonly enabled: boolean
+  readonly onRequest: () => void
+}
+
+function SubscriptionPopover({ usage, providerName, t, nowMs, reset }: {
+  readonly usage: CliSubscriptionUsage
+  readonly providerName: string
+  readonly t: CodingNsTranslator
+  readonly nowMs: number
+  readonly reset: SubscriptionResetRequest | null
+}): ReactElement {
+  if (usage.sub2api !== undefined) return createElement(Sub2ApiPopover, { usage: usage.sub2api, providerName, t })
+  if (usage.deepseek !== undefined) return createElement(DeepseekPopover, { usage: usage.deepseek, providerName, t })
+  if (usage.providerBalance !== undefined) return createElement(ProviderBalancePopover, { usage: usage.providerBalance, providerName, t, nowMs })
   const windows = [
-    { id: 'primary', label: formatSubscriptionWindowLabel(usage.primary, '5 小时额度'), window: usage.primary },
-    { id: 'secondary', label: formatSubscriptionWindowLabel(usage.secondary, '周额度'), window: usage.secondary },
-    { id: 'monthly', label: formatSubscriptionWindowLabel(usage.monthly, '月额度'), window: usage.monthly },
+    { id: 'primary', label: formatSubscriptionWindowLabel(usage.primary, t('usage.windowFiveHour'), t), window: usage.primary },
+    { id: 'secondary', label: formatSubscriptionWindowLabel(usage.secondary, t('usage.windowWeekly'), t), window: usage.secondary },
+    { id: 'monthly', label: formatSubscriptionWindowLabel(usage.monthly, t('usage.windowMonthly'), t), window: usage.monthly },
   ] as const
-  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': `${providerName} 订阅使用情况`, style: subscriptionPopoverStyle },
+  const credits = usage.credits ?? null
+  const creditText = credits === null
+    ? null
+    : credits.unlimited
+      ? t('usage.creditUnlimited')
+      : credits.balance !== null
+        ? formatCreditBalance(credits.balance)
+        : credits.hasCredits ? '0.00' : '--'
+  const expiries = usage.resetCredits === null
+    ? []
+    : usage.resetCredits.credits
+      .map((credit) => credit.expiresAt)
+      .filter((expiry): expiry is number => expiry !== null)
+      .sort((left, right) => left - right)
+  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.popoverSubscriptionUsage', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
-      createElement('strong', undefined, `${providerName} 订阅`),
+      createElement('strong', undefined, t('usage.popoverSubscriptionTitle', { provider: providerName })),
       usage.planType && createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatPlanType(usage.planType)),
     ),
     ...windows.map(({ id, label, window }) => window === null ? null : createElement('section', { key: id, style: windowStyle },
       createElement('div', { style: windowHeadingStyle }, createElement('span', undefined, label), createElement('span', undefined, `${formatPercent(window.remainingPercent)}%`)),
-      createElement('div', { role: 'progressbar', 'aria-label': `${label}剩余 ${formatPercent(window.remainingPercent)}%`, 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': window.remainingPercent, style: barStyle },
+      createElement('div', { role: 'progressbar', 'aria-label': t('usage.windowRemaining', { label, percent: formatPercent(window.remainingPercent) }), 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': window.remainingPercent, style: barStyle },
         createElement('span', { style: { ...barFillStyle, width: `${window.remainingPercent}%` } }),
       ),
-      window.resetsAt !== null && createElement('div', { style: resetStyle }, `重置于 ${formatCountdown(window.resetsAt)}`),
+      window.resetsAt !== null && createElement('div', { style: resetStyle }, t('usage.resetsIn', { time: formatCountdown(window.resetsAt, t) })),
     )),
+    (creditText !== null || usage.resetCredits !== null) && createElement('section', { style: resetCreditsSectionStyle },
+      creditText !== null && createElement('div', { style: resetCreditsRowStyle },
+        createElement('span', undefined, t('usage.creditBalanceLabel')),
+        createElement('span', { style: resetCreditsValueStyle }, creditText),
+      ),
+      usage.resetCredits !== null && createElement('div', { style: resetCreditsRowStyle },
+        createElement('span', undefined, t('usage.resetCreditsLabel')),
+        createElement('span', { style: resetCreditsValueGroupStyle },
+          createElement('span', { style: resetCreditsValueStyle }, t('usage.resetCreditsCount', { count: usage.resetCredits.availableCount })),
+          reset !== null && createElement('button', {
+            type: 'button',
+            className: 'codingns4dsh-subscription-reset',
+            disabled: !reset.enabled,
+            onClick: reset.onRequest,
+            title: reset.enabled ? t('usage.resetTooltipReady') : t('usage.resetTooltipNone'),
+            'aria-label': t('usage.resetButton'),
+          }, createElement(ResetIcon, undefined)),
+        ),
+      ),
+      expiries.slice(0, 3).map((expiry, index) => createElement('div', { key: `${expiry}-${index}`, style: resetCreditsExpiryStyle },
+        t('usage.resetCreditsExpiresAt', { time: formatResetExpiry(expiry, t, nowMs) }),
+      )),
+      expiries.length > 3 && createElement('div', { style: resetCreditsExpiryStyle }, t('usage.resetCreditsMore', { count: expiries.length - 3 })),
+    ),
   )
+}
+
+/** 重置按钮复用会话变更视图的刷新字形，保持插件内图标语言一致。 */
+function ResetIcon(): ReactElement {
+  return createElement('svg', { width: 14, height: 14, viewBox: '0 0 20 20', fill: 'none', 'aria-hidden': true },
+    createElement('path', { d: 'M16 8.5A6.2 6.2 0 1 0 16.1 12', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round' }),
+    createElement('path', { d: 'M16 4.5v4h-4', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+  )
+}
+
+function ResetConfirmDialog({ count, pending, result, error, t, onCancel, onConfirm, onClose, dialogRef }: {
+  readonly count: number
+  readonly pending: boolean
+  readonly result: CliSubscriptionResetOutcome | null
+  readonly error: string | null
+  readonly t: CodingNsTranslator
+  readonly onCancel: () => void
+  readonly onConfirm: () => void
+  readonly onClose: () => void
+  readonly dialogRef: RefObject<HTMLDivElement>
+}): ReactElement {
+  const finished = result !== null || error !== null
+  const message = pending
+    ? t('usage.resetDialogPending')
+    : result !== null
+      ? resetOutcomeMessage(result, t)
+      : error !== null && error.trim() !== ''
+        ? error
+        : t('usage.resetDialogBody', { count })
+  const messageColor = error !== null
+    ? dshThemeColor.error
+    : result === 'reset' || result === 'alreadyRedeemed' ? dshThemeColor.success : dshThemeColor.labelTertiary
+  return createElement('div', { className: 'codingns4dsh-subscription-reset-overlay', role: 'presentation', style: resetDialogOverlayStyle },
+    createElement('div', {
+      ref: dialogRef,
+      role: 'dialog',
+      'aria-modal': true,
+      'aria-label': t('usage.resetDialogTitle'),
+      style: resetDialogStyle,
+    },
+      createElement('div', { style: { display: 'grid', gap: 4 } },
+        createElement('strong', { style: { fontSize: 14, lineHeight: 1.4 } }, t('usage.resetDialogTitle')),
+        createElement('span', { style: { color: messageColor, fontSize: 12, lineHeight: '18px' } }, message),
+      ),
+      createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 } },
+        finished
+          ? createElement('button', { type: 'button', onClick: onClose, style: dshSettingsPrimaryButtonStyle }, t('usage.resetDialogClose'))
+          : createElement('button', { type: 'button', disabled: pending, onClick: onCancel, style: dshSettingsButtonStyle, autoFocus: true }, t('usage.resetDialogCancel')),
+        !finished && createElement('button', { type: 'button', disabled: pending, onClick: onConfirm, style: dshSettingsPrimaryButtonStyle }, t('usage.resetDialogConfirm')),
+      ),
+    ),
+  )
+}
+
+function resetOutcomeMessage(outcome: CliSubscriptionResetOutcome, t: CodingNsTranslator): string {
+  switch (outcome) {
+    case 'reset': return t('usage.resetOutcomeReset')
+    case 'alreadyRedeemed': return t('usage.resetOutcomeAlreadyRedeemed')
+    case 'nothingToReset': return t('usage.resetOutcomeNothingToReset')
+    case 'noCredit': return t('usage.resetOutcomeNoCredit')
+  }
 }
 
 /** 根据服务端返回的窗口时长生成准确的额度标签，避免把七天窗口误显示成五小时。 */
-function formatSubscriptionWindowLabel(window: CliSubscriptionWindow | null, fallback: string): string {
+function formatSubscriptionWindowLabel(window: CliSubscriptionWindow | null, fallback: string, t: CodingNsTranslator): string {
   const durationMins = window?.windowDurationMins
   if (durationMins === null || durationMins === undefined || !Number.isFinite(durationMins) || durationMins <= 0) return fallback
-  if (durationMins % (24 * 60) === 0) return `${durationMins / (24 * 60)} 天额度`
-  if (durationMins % 60 === 0) return `${durationMins / 60} 小时额度`
-  return `${durationMins} 分钟额度`
+  if (durationMins % (24 * 60) === 0) return t('usage.windowDays', { count: durationMins / (24 * 60) })
+  if (durationMins % 60 === 0) return t('usage.windowHours', { count: durationMins / 60 })
+  return t('usage.windowMinutes', { count: durationMins })
 }
 
-function ProviderBalancePopover({ usage, providerName }: { readonly usage: ProviderBalanceUsage; readonly providerName: string }): ReactElement {
-  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': `${providerName} 官方余量`, style: subscriptionPopoverStyle },
+function ProviderBalancePopover({ usage, providerName, t, nowMs }: { readonly usage: ProviderBalanceUsage; readonly providerName: string; readonly t: CodingNsTranslator; readonly nowMs: number }): ReactElement {
+  const models = summarizeProviderBalance(usage)
+  const overallPercent = balancePercent(usage.remaining, usage.total)
+  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.officialRemainingPopover', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
-      createElement('strong', undefined, `${providerName} 官方余量`),
+      createElement('span', { style: providerBalanceHeadingStyle },
+        createElement('strong', undefined, providerName),
+        usage.planName?.trim() && createElement('span', { style: providerBalancePlanStyle }, usage.planName.trim()),
+      ),
       createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatProviderBalance(usage)),
     ),
-    usage.used !== null && usage.total !== null && createElement('div', { style: upstreamMetaStyle }, `已用 ${formatProviderBalanceValue(usage.used, usage.unit)} / ${formatProviderBalanceValue(usage.total, usage.unit)}`),
-    usage.details.length === 0
-      ? createElement('div', { style: resetStyle }, '暂无更多统计')
-      : usage.details.map((item) => createElement('div', { key: item.label, style: deepseekBalanceDetailsStyle }, createElement('span', undefined, item.label), createElement('span', undefined, String(item.value)))),
+    overallPercent !== null && createElement(BalanceProgress, {
+      label: t('usage.officialRemainingPopover', { provider: providerName }),
+      percent: overallPercent,
+      value: `${formatProviderBalanceAmount(usage.remaining ?? 0, usage.unit)} / ${formatProviderBalanceAmount(usage.total ?? 0, usage.unit)}`,
+      style: overallBalanceStyle,
+    }),
+    usage.used !== null && createElement('div', { style: balanceMetaStyle }, t('usage.usedShort', { amount: formatProviderBalanceAmount(usage.used, usage.unit) })),
+    models.length === 0
+      ? createElement('div', { style: resetStyle }, t('usage.noMoreStats'))
+      : models.map((model) => createElement('section', { key: model.name, style: providerBalanceModelStyle },
+        createElement('div', { style: windowHeadingStyle },
+          createElement('span', undefined, model.name),
+          createElement('span', undefined, model.total === null ? formatProviderBalanceAmount(model.remaining ?? 0, usage.unit) : `${formatProviderBalanceAmount(model.remaining ?? 0, usage.unit)} / ${formatProviderBalanceAmount(model.total, usage.unit)}`),
+        ),
+        model.total !== null && model.remaining !== null && createElement(BalanceProgress, {
+          label: model.name,
+          percent: balancePercent(model.remaining, model.total) ?? 0,
+          value: '',
+        }),
+        createElement('div', { style: balanceMetaStyle },
+          model.used === null ? null : createElement('span', undefined, t('usage.usedShort', { amount: formatProviderBalanceAmount(model.used, usage.unit) })),
+          model.periodEnd === null ? null : createElement('span', undefined, t('usage.expiresIn', { time: formatExpiryCountdown(model.periodEnd, t, nowMs) })),
+        ),
+      )),
   )
 }
 
-function DeepseekPopover({ usage, providerName }: { readonly usage: DeepseekUsage; readonly providerName: string }): ReactElement {
-  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': `${providerName} 账户余额`, style: subscriptionPopoverStyle },
+function BalanceProgress({ label, percent, value, style }: { readonly label: string; readonly percent: number; readonly value: string; readonly style?: Record<string, string | number> }): ReactElement {
+  const normalized = Math.max(0, Math.min(100, percent))
+  return createElement('div', { style: style ?? providerBalanceProgressStyle },
+    createElement('div', { style: balanceProgressHeaderStyle },
+      createElement('span', { style: visuallyHiddenStyle }, label),
+      value !== '' && createElement('span', { style: balanceProgressValueStyle }, value),
+      createElement('span', { style: balanceProgressPercentStyle }, `${Math.round(normalized)}%`),
+    ),
+    createElement('div', { role: 'progressbar', 'aria-label': label, 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': normalized, style: providerBalanceBarStyle },
+      createElement('span', { style: { ...providerBalanceBarFillStyle, width: `${normalized}%` } }),
+    ),
+  )
+}
+
+interface ProviderBalanceModel {
+  readonly name: string
+  remaining: number | null
+  used: number | null
+  total: number | null
+  periodEnd: string | null
+}
+
+function summarizeProviderBalance(usage: ProviderBalanceUsage): ProviderBalanceModel[] {
+  const models = new Map<string, ProviderBalanceModel>()
+  for (const item of usage.details) {
+    const label = item.label.trim()
+    const matched = PROVIDER_DETAIL_SUFFIXES.find(({ suffix }) => label.endsWith(` ${suffix}`))
+    if (matched === undefined) continue
+    const name = label.slice(0, -(matched.suffix.length + 1)).trim()
+    if (name === '') continue
+    const model = models.get(name) ?? { name, remaining: null, used: null, total: null, periodEnd: null }
+    if (matched.kind === 'remaining') model.remaining = typeof item.value === 'number' ? item.value : null
+    else if (matched.kind === 'used') model.used = typeof item.value === 'number' ? item.value : null
+    else if (matched.kind === 'total') model.total = typeof item.value === 'number' ? item.value : null
+    else model.periodEnd = typeof item.value === 'string' ? item.value : null
+    models.set(name, model)
+  }
+  return [...models.values()]
+}
+
+const PROVIDER_DETAIL_SUFFIXES = [
+  { suffix: String.fromCodePoint(0x5269, 0x4f59), kind: 'remaining' },
+  { suffix: String.fromCodePoint(0x5df2, 0x7528), kind: 'used' },
+  { suffix: String.fromCodePoint(0x603b, 0x91cf), kind: 'total' },
+  { suffix: String.fromCodePoint(0x5468, 0x671f, 0x7ed3, 0x675f), kind: 'periodEnd' },
+  { suffix: 'remaining', kind: 'remaining' },
+  { suffix: 'used', kind: 'used' },
+  { suffix: 'total', kind: 'total' },
+  { suffix: 'period end', kind: 'periodEnd' },
+] as const
+
+function balancePercent(remaining: number | null, total: number | null): number | null {
+  if (remaining === null || total === null || !Number.isFinite(remaining) || !Number.isFinite(total) || total <= 0) return null
+  return Math.max(0, Math.min(100, remaining / total * 100))
+}
+
+function DeepseekPopover({ usage, providerName, t }: { readonly usage: DeepseekUsage; readonly providerName: string; readonly t: CodingNsTranslator }): ReactElement {
+  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.providerAccountBalance', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
-      createElement('strong', undefined, `${providerName} 账户余额`),
-      createElement('span', { style: { color: usage.isAvailable === false ? dshThemeColor.error : dshThemeColor.labelTertiary } }, usage.isAvailable === false ? '不可用' : '可用'),
+      createElement('strong', undefined, t('usage.providerAccountBalance', { provider: providerName })),
+      createElement('span', { style: { color: usage.isAvailable === false ? dshThemeColor.error : dshThemeColor.labelTertiary } }, usage.isAvailable === false ? t('usage.unavailable') : t('usage.available')),
     ),
     usage.balances.map((balance) => createElement('section', { key: balance.currency, style: deepseekBalanceSectionStyle },
       createElement('div', { style: windowHeadingStyle }, createElement('span', undefined, balance.currency), createElement('strong', undefined, formatDeepseekMoney(balance.totalBalance, balance.currency))),
       createElement('div', { style: deepseekBalanceDetailsStyle },
-        createElement('span', undefined, `赠送 ${formatDeepseekMoney(balance.grantedBalance, balance.currency)}`),
-        createElement('span', undefined, `充值 ${formatDeepseekMoney(balance.toppedUpBalance, balance.currency)}`),
+        createElement('span', undefined, t('usage.granted', { amount: formatDeepseekMoney(balance.grantedBalance, balance.currency) })),
+        createElement('span', undefined, t('usage.toppedUp', { amount: formatDeepseekMoney(balance.toppedUpBalance, balance.currency) })),
       ),
     )),
-    createElement('div', { style: deepseekUnavailableStatsStyle }, '官方 DeepSeek API 当前只提供账户余额接口，暂无请求量、Token 或费用明细。'),
+    createElement('div', { style: deepseekUnavailableStatsStyle }, t('usage.deepseekApiNote')),
   )
 }
 
-function Sub2ApiPopover({ usage, providerName }: { readonly usage: Sub2ApiUsage; readonly providerName: string }): ReactElement {
-  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': `${providerName} 上游用量`, style: subscriptionPopoverStyle },
+function Sub2ApiPopover({ usage, providerName, t }: { readonly usage: Sub2ApiUsage; readonly providerName: string; readonly t: CodingNsTranslator }): ReactElement {
+  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.upstreamUsageTitle', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
-      createElement('strong', undefined, `${providerName} 上游用量`),
+      createElement('strong', undefined, t('usage.upstreamUsageTitle', { provider: providerName })),
       createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatSub2ApiMoney(usage.balance, usage.unit)),
     ),
     createElement('div', { style: upstreamMetaStyle },
       createElement('span', { style: upstreamTypeStyle }, usage.upstreamType),
       usage.upstreamUrl === ''
-        ? createElement('span', { style: upstreamMutedStyle }, '地址未提供')
+        ? createElement('span', { style: upstreamMutedStyle }, t('usage.addressMissing'))
         : createElement('a', { href: usage.upstreamUrl, target: '_blank', rel: 'noreferrer', title: usage.upstreamUrl, style: upstreamLinkStyle }, usage.upstreamUrl),
     ),
     createElement('div', { style: sub2apiStatsGridStyle },
-      createSub2ApiStat('今日请求数', formatInteger(usage.today.requests)),
-      createSub2ApiStat('今日 Token 用量', formatSub2ApiTokens(usage.today.totalTokens)),
-      createSub2ApiStat('今日费用', formatSub2ApiMoney(usage.today.cost, usage.unit)),
-      createSub2ApiStat('累计请求数', formatInteger(usage.total.requests)),
-      createSub2ApiStat('累计 Token 用量', formatSub2ApiTokens(usage.total.totalTokens)),
-      createSub2ApiStat('累计费用', formatSub2ApiMoney(usage.total.cost, usage.unit)),
-      createSub2ApiStat('今日缓存命中率', formatSub2ApiPercent(usage.today.cacheHitRate)),
-      createSub2ApiStat('累计缓存命中率', formatSub2ApiPercent(usage.total.cacheHitRate)),
+      createSub2ApiStat(t('usage.statTodayRequests'), formatInteger(usage.today.requests)),
+      createSub2ApiStat(t('usage.statTodayTokens'), formatSub2ApiTokens(usage.today.totalTokens)),
+      createSub2ApiStat(t('usage.statTodayCost'), formatSub2ApiMoney(usage.today.cost, usage.unit)),
+      createSub2ApiStat(t('usage.statTotalRequests'), formatInteger(usage.total.requests)),
+      createSub2ApiStat(t('usage.statTotalTokens'), formatSub2ApiTokens(usage.total.totalTokens)),
+      createSub2ApiStat(t('usage.statTotalCost'), formatSub2ApiMoney(usage.total.cost, usage.unit)),
+      createSub2ApiStat(t('usage.statTodayCacheHitRate'), formatSub2ApiPercent(usage.today.cacheHitRate)),
+      createSub2ApiStat(t('usage.statTotalCacheHitRate'), formatSub2ApiPercent(usage.total.cacheHitRate)),
     ),
     createElement('section', { style: sub2apiSectionStyle },
-      createElement('strong', { style: sub2apiSectionTitleStyle }, '按模型统计'),
+      createElement('strong', { style: sub2apiSectionTitleStyle }, t('usage.byModel')),
       usage.models.length === 0
-        ? createElement('div', { style: resetStyle }, '暂无按模型统计')
+        ? createElement('div', { style: resetStyle }, t('usage.noModelStats'))
         : createElement('div', { style: sub2apiTableScrollStyle },
           createElement('table', { style: sub2apiTableStyle },
             createElement('thead', undefined, createElement('tr', undefined,
-              createElement('th', { style: sub2apiThStyle }, '模型'),
-              createElement('th', { style: sub2apiThStyle }, '请求'),
-              createElement('th', { style: sub2apiThStyle }, 'Token'),
-              createElement('th', { style: sub2apiThStyle }, '费用'),
-              createElement('th', { style: sub2apiThStyle }, '缓存'),
+              createElement('th', { style: sub2apiThStyle }, t('usage.colModel')),
+              createElement('th', { style: sub2apiThStyle }, t('usage.colRequests')),
+              createElement('th', { style: sub2apiThStyle }, t('usage.colToken')),
+              createElement('th', { style: sub2apiThStyle }, t('usage.colCost')),
+              createElement('th', { style: sub2apiThStyle }, t('usage.colCache')),
             )),
             createElement('tbody', undefined, ...usage.models.map((model) => createModelRow(model, usage.unit))),
           ),
@@ -340,19 +636,19 @@ function resolveDisplayWindow(usage: CliSubscriptionUsage): CliSubscriptionWindo
 function selectDeepseekBalance(usage: DeepseekUsage): DeepseekUsage['balances'][number] | null {
   return usage.balances.find((balance) => balance.currency.toUpperCase() === 'USD') ?? usage.balances[0] ?? null
 }
-function isSubscriptionAdapter(adapterId: unknown): adapterId is 'command-code' | 'codex' | 'claude-code' | 'dsh' | 'grok' | 'kimi' | 'opencode' {
-  return adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'kimi' || adapterId === 'opencode'
+function isSubscriptionAdapter(adapterId: unknown): adapterId is 'command-code' | 'codex' | 'claude-code' | 'dsh' | 'grok' | 'kimi' | 'opencode' | 'zcode' {
+  return adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'kimi' || adapterId === 'opencode' || adapterId === 'zcode'
 }
 function isRemoteWebContext(): boolean {
   return (globalThis as { __CODINGNS4DSH_REMOTE_WEB_CONTEXT__?: unknown }).__CODINGNS4DSH_REMOTE_WEB_CONTEXT__ === true
 }
-function subscriptionProviderName(adapterId: string | null, providerId: string | null, usage: CliSubscriptionUsage): string {
+function subscriptionProviderName(adapterId: string | null, providerId: string | null, usage: CliSubscriptionUsage, t: CodingNsTranslator): string {
   if (usage.provider?.displayName) return usage.provider.displayName
   if (adapterId === 'dsh' && providerId !== null) {
-    if (/^(?:deepseek(?:-official)?|official-deepseek)$/iu.test(providerId)) return 'DeepSeek 官方'
+    if (/^(?:deepseek(?:-official)?|official-deepseek)$/iu.test(providerId)) return t('usage.providerDeepseekOfficial')
     return formatProviderName(providerId)
   }
-  if (adapterId === 'dsh' && usage.sub2api !== undefined) return `${usage.sub2api.upstreamType} 上游`
+  if (adapterId === 'dsh' && usage.sub2api !== undefined) return t('usage.providerUpstream', { name: usage.sub2api.upstreamType })
   switch (adapterId) {
     case 'command-code': return 'Command Code'
     case 'codex': return 'Codex'
@@ -361,6 +657,7 @@ function subscriptionProviderName(adapterId: string | null, providerId: string |
     case 'grok': return 'Grok'
     case 'kimi': return 'Kimi Code'
     case 'opencode': return 'OpenCode'
+    case 'zcode': return 'ZCode'
     default: return 'Agent'
   }
 }
@@ -387,23 +684,59 @@ function formatProviderBalance(usage: ProviderBalanceUsage | undefined): string 
 }
 function formatProviderBalanceValue(value: number, unit: string | null): string {
   const normalized = unit?.trim().toUpperCase() ?? ''
+  const amount = formatProviderBalanceAmount(value, unit)
+  if (normalized === '%' || normalized === 'USD') return amount
+  return `${amount}${normalized === '' ? '' : ` ${normalized}`}`
+}
+function formatProviderBalanceAmount(value: number, unit: string | null): string {
+  const normalized = unit?.trim().toUpperCase() ?? ''
   if (normalized === '%') return `${value.toFixed(0)}%`
   if (normalized === 'USD') return `$${value.toFixed(2)}`
-  return `${value.toFixed(2)}${normalized === '' ? '' : ` ${normalized}`}`
+  return isTokenUnit(normalized) ? formatCompactTokenCount(value) : value.toFixed(2)
 }
-function formatSub2ApiTokens(value: number): string { return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value) }
+function formatSub2ApiTokens(value: number): string { return formatCompactTokenCount(value) }
+function formatCompactTokenCount(value: number): string {
+  if (!Number.isFinite(value)) return '--'
+  const absolute = Math.abs(value)
+  const format = (divisor: number, suffix: string): string => {
+    const amount = value / divisor
+    const rounded = Math.round(amount * 10) / 10
+    return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}${suffix}`
+  }
+  if (absolute >= 1_000_000_000) return format(1_000_000_000, 'B')
+  if (absolute >= 1_000_000) return format(1_000_000, 'M')
+  if (absolute >= 1_000) return format(1_000, 'K')
+  return String(Math.round(value))
+}
+function isTokenUnit(unit: string): boolean { return /^(?:TOKENS?|TOKEN_COUNT)$/u.test(unit) }
 function formatSub2ApiPercent(value: number): string { return `${Math.max(0, Math.min(100, value)).toFixed(1)}%` }
 function formatInteger(value: number): string { return new Intl.NumberFormat('zh-CN').format(Math.max(0, Math.round(value))) }
 function formatPlanType(value: string): string { return value.replace(/^individual-/u, '').replace(/(^|-)([a-z])/gu, (_match, _separator, letter: string) => ` ${letter.toUpperCase()}`).trim() }
-function formatCountdown(timestampSeconds: number | null, nowMs = Date.now()): string | null {
+function formatCountdown(timestampSeconds: number | null, t: CodingNsTranslator, nowMs = Date.now()): string | null {
   if (timestampSeconds === null) return null
   const minutes = Math.max(0, Math.ceil((timestampSeconds * 1000 - nowMs) / 60_000))
   const days = Math.floor(minutes / 1440)
   const hours = Math.floor((minutes % 1440) / 60)
   const remainder = minutes % 60
-  if (days > 0) return `${days}天${hours}小时后`
-  if (hours > 0) return `${hours}小时${remainder > 0 ? `${remainder}分钟` : ''}后`
-  return `${remainder}分钟后`
+  if (days > 0) return t('usage.countdownDaysHours', { days, hours })
+  if (hours > 0) return remainder > 0 ? t('usage.countdownHoursMinutes', { hours, minutes: remainder }) : t('usage.countdownHours', { hours })
+  return t('usage.countdownMinutes', { minutes: remainder })
+}
+function formatExpiryCountdown(value: string, t: CodingNsTranslator, nowMs: number): string {
+  const timestamp = Date.parse(value)
+  if (Number.isNaN(timestamp)) return value
+  if (timestamp <= nowMs) return t('usage.expired')
+  return formatCountdown(timestamp / 1000, t, nowMs) ?? t('usage.expired')
+}
+function formatResetExpiry(expiry: number, t: CodingNsTranslator, nowMs: number): string {
+  if (expiry * 1000 <= nowMs) return t('usage.resetCreditsExpired')
+  return formatCountdown(expiry, t, nowMs) ?? t('usage.resetCreditsExpired')
+}
+
+/** 点数余额保留两位小数展示；无法解析时原样保留上游字符串。 */
+function formatCreditBalance(value: string): string {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric.toFixed(2) : value
 }
 
 const subscriptionRootStyle = { position: 'relative' as const, minWidth: 0, display: 'inline-flex', alignItems: 'center' }
@@ -414,8 +747,20 @@ const sub2apiLogoStyle = { display: 'block', borderRadius: 4, objectFit: 'contai
 const deepseekBalanceIdentityStyle = { display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' as const, fontVariantNumeric: 'tabular-nums' as const }
 const deepseekLogoStyle = { display: 'block', borderRadius: 5, objectFit: 'contain' as const }
 const deepseekBalanceStyle = { display: 'inline-flex', alignItems: 'center', color: dshThemeColor.labelSecondary, fontSize: 13, fontWeight: 600, fontVariantNumeric: 'tabular-nums' as const }
+const providerBalanceHeadingStyle = { display: 'grid', gap: 2, minWidth: 0 }
+const providerBalancePlanStyle = { color: dshThemeColor.labelTertiary, fontSize: 11, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
 const deepseekBalanceSectionStyle = { display: 'grid', gap: 6, marginTop: 10, padding: '10px 0 2px', borderTop: `1px solid ${dshThemeColor.border}` }
 const deepseekBalanceDetailsStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelTertiary, fontSize: 12 }
+const overallBalanceStyle = { display: 'grid', gap: 5, marginTop: 10 }
+const providerBalanceModelStyle = { display: 'grid', gap: 6, marginTop: 12, paddingTop: 10, borderTop: `1px solid ${dshThemeColor.border}` }
+const providerBalanceProgressStyle = { display: 'grid', gap: 5, marginTop: 10 }
+const balanceProgressHeaderStyle = { display: 'flex', justifyContent: 'space-between', gap: 8, minWidth: 0, color: dshThemeColor.labelTertiary, fontSize: 11, fontVariantNumeric: 'tabular-nums' as const }
+const balanceProgressValueStyle = { color: dshThemeColor.labelSecondary, fontWeight: 600 }
+const balanceProgressPercentStyle = { color: dshThemeColor.labelTertiary, fontVariantNumeric: 'tabular-nums' as const }
+const balanceMetaStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelTertiary, fontSize: 11, lineHeight: '16px', fontVariantNumeric: 'tabular-nums' as const }
+const visuallyHiddenStyle = { position: 'absolute' as const, width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden' as const, clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap' as const, border: 0 }
+const providerBalanceBarStyle = { height: 7, overflow: 'hidden' as const, borderRadius: 4, background: dshThemeColor.border }
+const providerBalanceBarFillStyle = { display: 'block', height: '100%', borderRadius: 4, background: dshThemeColor.accent, transition: 'width .2s ease' }
 const deepseekUnavailableStatsStyle = { marginTop: 12, paddingTop: 10, borderTop: `1px solid ${dshThemeColor.border}`, color: dshThemeColor.labelTertiary, fontSize: 12, lineHeight: '17px' }
 const progressRingVisualStyle = { boxSizing: 'border-box' as const, width: '100%', height: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 2, borderRadius: 'inherit' }
 const progressRingValueStyle = { boxSizing: 'border-box' as const, width: '100%', height: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, borderRadius: 'inherit', background: dshThemeColor.menuBackground, fontSize: 7, lineHeight: 1, fontWeight: 700, color: dshThemeColor.labelPrimary, whiteSpace: 'nowrap' as const }
@@ -431,6 +776,13 @@ const barStyle = { height: 7, overflow: 'hidden' as const, borderRadius: 4, back
 const barFillStyle = { display: 'block', height: '100%', borderRadius: 4, background: dshThemeColor.accent, transition: 'width .2s ease' }
 const resetStyle = { color: dshThemeColor.labelTertiary, fontSize: 12 }
 const subscriptionPopoverStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1200, bottom: 'calc(100% + 8px)', left: 0, width: 'max-content', minWidth: 280, maxWidth: 'min(400px, calc(100vw - 24px))', boxSizing: 'border-box' as const, padding: 14, borderRadius: 12 }
+const resetCreditsSectionStyle = { display: 'grid', gap: 6, marginTop: 10, padding: '10px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 10, background: dshThemeColor.surfaceSubtle }
+const resetCreditsRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelSecondary, fontSize: 13 }
+const resetCreditsValueGroupStyle = { display: 'inline-flex', alignItems: 'center', gap: 8 }
+const resetCreditsValueStyle = { color: dshThemeColor.labelPrimary, fontWeight: 600, fontVariantNumeric: 'tabular-nums' as const }
+const resetCreditsExpiryStyle = { color: dshThemeColor.labelTertiary, fontSize: 11, lineHeight: '16px', fontVariantNumeric: 'tabular-nums' as const }
+const resetDialogOverlayStyle = { position: 'fixed' as const, inset: 0, zIndex: 1400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, boxSizing: 'border-box' as const, background: dshThemeColor.overlay }
+const resetDialogStyle = { ...dshPopupSurfaceStyle, width: 'min(100%, 420px)', boxSizing: 'border-box' as const, padding: 16, borderRadius: 12, display: 'grid', gap: 12 }
 const sub2apiStatsGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, paddingTop: 12 }
 const sub2apiStatStyle = { display: 'grid', gap: 2, minWidth: 0 }
 const sub2apiStatLabelStyle = { color: dshThemeColor.labelTertiary, fontSize: 11 }
@@ -442,6 +794,16 @@ const sub2apiThStyle = { padding: '4px 5px', textAlign: 'left' as const, color: 
 const sub2apiTdStyle = { padding: '5px', borderTop: `1px solid ${dshThemeColor.border}`, color: dshThemeColor.labelSecondary, overflowWrap: 'anywhere' as const }
 function progressRingStyle(): Record<string, string | number> { return { position: 'relative', display: 'inline-flex', flex: '0 0 28px', width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: '50%', padding: 0, border: 0, boxShadow: `inset 0 0 0 1px ${dshThemeColor.border}`, background: 'transparent' } }
 function progressRingVisualBackground(progress: number, loading: boolean): string { return loading ? dshThemeColor.border : `conic-gradient(${dshThemeColor.accent} ${Math.max(0, Math.min(1, progress)) * 360}deg, ${dshThemeColor.border} 0deg)` }
+function createRemainingRing(percent: number): ReactElement {
+  return createElement('span', { 'aria-hidden': true, style: progressRingStyle() },
+    createElement('span', { style: { ...progressRingVisualStyle, background: progressRingVisualBackground(percent / 100, false) } },
+      createElement('span', { style: progressRingValueStyle },
+        createElement('span', undefined, formatRingPercentage(percent)),
+        createElement('span', { style: progressRingSuffixStyle }, '%'),
+      ),
+    ),
+  )
+}
 
 export { CommandCodeSubscriptionSlot }
 export const registerCommandCodeSubscriptionSlot = registerSubscriptionSlot

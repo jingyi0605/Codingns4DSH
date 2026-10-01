@@ -17,6 +17,8 @@ export const PEER_HOST_HTTP_PROXY_RULES = [
   { prefix: '/api/codingns/peerHost/nativeStreamOpen', methods: ['POST'] },
   { prefix: '/api/codingns/peerHost/nativeStreamNext', methods: ['POST'] },
   { prefix: '/api/codingns/peerHost/nativeStreamClose', methods: ['POST'] },
+  // 远端对话框的适配器、模型与会话绑定必须读取目标 Host 的 CodingNS RPC。
+  { prefix: '/api/codingns/cli', methods: ['POST'] },
   { prefix: '/api/workspaces', methods: ['GET'] },
   { prefix: '/api/sessions', methods: ['GET', 'POST'] },
   { prefix: '/api/file-tree', methods: ['GET'] },

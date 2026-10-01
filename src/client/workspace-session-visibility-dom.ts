@@ -5,6 +5,7 @@ import {
   resolveWorkspaceId,
   type WorkspaceRecord,
 } from './workspace-session-archive-dom.js'
+import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 
 /** 工作区隐藏注入节点的标记，便于重复扫描和停用时完整清理。 */
 export const WORKSPACE_SESSION_HIDDEN_ATTRIBUTE = 'data-codingns-hidden-workspace'
@@ -37,6 +38,8 @@ export interface WorkspaceSessionVisibilityDomOptions {
   readonly hiddenWorkspaceIds?: readonly string[]
   /** 持久化由功能模块完成；回调失败时控制器会恢复上一次可见状态。 */
   readonly onHiddenWorkspaceIdsChange?: (ids: readonly string[]) => Promise<void> | void
+  /** DSH 语言运行时；注入到原生菜单里的动作文案从它取词。 */
+  readonly locale?: CodingNsLocale
 }
 
 /**
@@ -52,6 +55,7 @@ export function startWorkspaceSessionVisibilityDom(
   const Observer = options.MutationObserver
     ?? (typeof MutationObserver === 'undefined' ? undefined : MutationObserver)
   const remote = options.remote
+  const t = resolveCodingNsTranslator(options.locale)
   let hiddenWorkspaceIds = new Set(normalizeIds(options.hiddenWorkspaceIds ?? []))
   let workspaces: readonly WorkspaceRecord[] = []
   let disposed = false
@@ -137,15 +141,15 @@ export function startWorkspaceSessionVisibilityDom(
       knownNativeMenus = new Set(menus)
       if (menus.length > 0) menuContextPending = false
       if (activeMenuKind === 'filter') {
-        injectFilterMenuAction(dom, menus, showHiddenWorkspaces, () => {
+        injectFilterMenuAction(dom, selectFilterMenus(menus, menuWorkspaceIds, activeMenuWorkspaceId), showHiddenWorkspaces, () => {
           showHiddenWorkspaces = !showHiddenWorkspaces
           scheduleScan()
         }, (menu) => closeFilterMenu(activeFilterTrigger, menu, () => {
           suppressFilterTrigger = true
           return () => { suppressFilterTrigger = false }
-        }))
+        }), t)
       } else {
-        injectWorkspaceMenuActions(menus, dom, activeMenuWorkspaceId, workspaceIds, menuWorkspaceIds, (workspaceId) => updateVisibility(workspaceId, true))
+        injectWorkspaceMenuActions(selectWorkspaceMenus(menus), dom, activeMenuWorkspaceId, workspaceIds, menuWorkspaceIds, (workspaceId) => updateVisibility(workspaceId, true), t)
       }
       // 点击触发器与 Portal 菜单挂载不是同一个同步阶段。菜单尚未出现时
       // 必须保留上下文，否则后续 MutationObserver 扫描无法判断这是筛选菜单。
@@ -154,7 +158,7 @@ export function startWorkspaceSessionVisibilityDom(
         activeMenuKind = undefined
       }
       if (showHiddenWorkspaces) {
-        injectHiddenWorkspaceFooter(dom, headers, workspaces, hiddenWorkspaceIds, (workspaceId) => updateVisibility(workspaceId, false))
+        injectHiddenWorkspaceFooter(dom, headers, workspaces, hiddenWorkspaceIds, (workspaceId) => updateVisibility(workspaceId, false), t)
       }
     } finally {
       if (!disposed && observer !== undefined && dom.documentElement !== null) {
@@ -275,8 +279,6 @@ function isWorkspaceFilterTrigger(element: HTMLElement): boolean {
 
 function findWorkspaceMenus(dom: Pick<Document, 'querySelectorAll'>): HTMLElement[] {
   const explicit = [...dom.querySelectorAll<HTMLElement>('[role="menu"], [role="listbox"], [data-menu-content], [data-radix-menu-content]')]
-  const matchingExplicit = explicit.filter(isWorkspaceFilterMenu)
-  if (matchingExplicit.length > 0) return matchingExplicit
   if (explicit.length > 0) return explicit
   // 某些 DSH 构建不会给 Portal 菜单设置 role。不能遍历页面所有 div 并对每个
   // 节点读取 textContent，那会在长会话页面上反复遍历整棵消息树，退化为 O(N²)。
@@ -296,6 +298,39 @@ function findWorkspaceMenus(dom: Pick<Document, 'querySelectorAll'>): HTMLElemen
   return candidates.filter((element) => !candidates.some((other) => other !== element && element.contains(other)))
 }
 
+/**
+ * 菜单 Portal 在关闭时可能短暂保留旧节点。先过滤不可见节点，再按菜单内容
+ * 区分筛选菜单和工作区操作菜单，避免旧筛选菜单抢走当前工作区菜单的注入目标。
+ */
+function selectFilterMenus(
+  menus: readonly HTMLElement[],
+  menuWorkspaceIds: WeakMap<HTMLElement, string>,
+  activeWorkspaceId: string | undefined,
+): HTMLElement[] {
+  const visible = menus.filter(isVisibleMenu)
+  const candidates = (visible.length > 0 ? visible : menus).filter(isWorkspaceFilterMenu)
+  if (candidates.length > 0) return [candidates[candidates.length - 1]!]
+  const fallback = (visible.length > 0 ? visible : menus).filter((menu) => (
+    menuWorkspaceIds.get(menu) === undefined
+      && (activeWorkspaceId === undefined || resolveWorkspaceId(menu) !== activeWorkspaceId)
+      && menu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_MENU_ATTRIBUTE}]`) === null
+  ))
+  return fallback.length > 0 ? [fallback[fallback.length - 1]!] : []
+}
+
+function selectWorkspaceMenus(menus: readonly HTMLElement[]): HTMLElement[] {
+  const visible = menus.filter(isVisibleMenu)
+  const candidates = (visible.length > 0 ? visible : menus).filter((menu) => !isWorkspaceFilterMenu(menu))
+  const available = candidates.length > 0 ? candidates : (visible.length > 0 ? visible : menus)
+  return available.length > 0 ? [available[available.length - 1]!] : []
+}
+
+function isVisibleMenu(menu: HTMLElement): boolean {
+  if (menu.hasAttribute('hidden') || menu.getAttribute('aria-hidden') === 'true' || menu.getAttribute('data-state') === 'closed') return false
+  const style = menu.style
+  return style.display !== 'none' && style.visibility !== 'hidden'
+}
+
 function isWorkspaceFilterMenu(element: HTMLElement): boolean {
   return /(?:分组方式|排序方式|筛选会话|group(?:ing)?|sort(?:ing)?|filter(?:\s+sessions?)?)/iu.test(element.textContent ?? '')
 }
@@ -307,8 +342,10 @@ function injectWorkspaceMenuActions(
   workspaceIds: ReadonlySet<string>,
   menuWorkspaceIds: WeakMap<HTMLElement, string>,
   onHide: (workspaceId: string) => void,
+  t: CodingNsTranslator,
 ): void {
   for (const menu of menus) {
+    for (const stale of menu.querySelectorAll<HTMLElement>(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`)) stale.remove()
     const workspaceId = activeWorkspaceId ?? resolveWorkspaceId(menu) ?? menuWorkspaceIds.get(menu)
     if (workspaceId === undefined) continue
     if (!workspaceIds.has(workspaceId)) continue
@@ -321,9 +358,9 @@ function injectWorkspaceMenuActions(
     action.setAttribute('role', 'menuitem')
     action.setAttribute(WORKSPACE_SESSION_HIDDEN_MENU_ATTRIBUTE, '')
     action.setAttribute(WORKSPACE_SESSION_HIDDEN_MENU_WORKSPACE_ATTRIBUTE, workspaceId)
-    action.setAttribute('aria-label', '隐藏工作区')
+    action.setAttribute('aria-label', t('workspaceVisibility.hide'))
     applyNativeMenuItemStyle(action, menu)
-    action.textContent = '隐藏工作区'
+    action.textContent = t('workspaceVisibility.hide')
     const actionIcon = createHiddenIcon(dom)
     action.insertBefore(actionIcon, action.firstChild)
     action.addEventListener('click', () => {
@@ -343,11 +380,13 @@ function injectFilterMenuAction(
   checked: boolean,
   onChange: () => void,
   onClose: (menu: HTMLElement) => void,
+  t: CodingNsTranslator,
 ): void {
   // 没有可读文本时，Portal 最近追加的菜单就是当前视图菜单；避免把选项
   // 错注入到页面中其他仍然存在的菜单。
   const menu = menus.find(isWorkspaceFilterMenu) ?? menus[menus.length - 1]
   if (menu === undefined) return
+  for (const stale of menu.querySelectorAll<HTMLElement>(`[${WORKSPACE_SESSION_HIDDEN_MENU_ATTRIBUTE}]`)) stale.remove()
   const existing = menu.querySelector<HTMLElement>(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`)
   if (existing !== null) {
     existing.setAttribute('aria-checked', String(checked))
@@ -361,9 +400,9 @@ function injectFilterMenuAction(
   action.setAttribute('role', 'menuitem')
   action.setAttribute('aria-checked', String(checked))
   action.setAttribute(WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE, '')
-  action.setAttribute('aria-label', '显示隐藏的工作区')
+  action.setAttribute('aria-label', t('workspaceVisibility.showHidden'))
   applyNativeMenuItemStyle(action, menu)
-  action.textContent = '显示隐藏的工作区'
+  action.textContent = t('workspaceVisibility.showHidden')
   const actionIcon = createHiddenIcon(dom)
   action.insertBefore(actionIcon, action.firstChild)
   updateFilterMenuCheckmark(dom, action, checked)
@@ -427,6 +466,7 @@ function injectHiddenWorkspaceFooter(
   workspaces: readonly WorkspaceRecord[],
   hiddenWorkspaceIds: ReadonlySet<string>,
   onRestore: (workspaceId: string) => void,
+  t: CodingNsTranslator,
 ): void {
   const recordsById = new Map(workspaces.map((workspace) => [workspace.workspaceId, workspace]))
   for (const header of headers) {
@@ -458,9 +498,9 @@ function injectHiddenWorkspaceFooter(
   const toggle = dom.createElement('button')
   toggle.type = 'button'
   toggle.setAttribute('aria-expanded', 'false')
-  toggle.setAttribute('aria-label', `隐藏的工作区 ${hidden.length}`)
+  toggle.setAttribute('aria-label', t('workspaceVisibility.hiddenCount', { count: hidden.length }))
   Object.assign(toggle.style, menuItemStyle)
-  toggle.textContent = `隐藏的工作区 ${hidden.length}`
+  toggle.textContent = t('workspaceVisibility.hiddenCount', { count: hidden.length })
   const toggleIcon = createHiddenIcon(dom)
   toggle.insertBefore(toggleIcon, toggle.firstChild)
   const list = dom.createElement('div')
@@ -470,7 +510,7 @@ function injectHiddenWorkspaceFooter(
     const restore = dom.createElement('button')
     restore.type = 'button'
     restore.setAttribute('role', 'menuitem')
-    restore.setAttribute('aria-label', `恢复工作区 ${workspace.title}`)
+    restore.setAttribute('aria-label', t('workspaceVisibility.restore', { title: workspace.title }))
     restore.textContent = workspace.title
     restore.title = workspace.path ?? workspace.workspaceId
     Object.assign(restore.style, menuItemStyle, { paddingLeft: '28px' })

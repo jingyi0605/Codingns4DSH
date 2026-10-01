@@ -149,6 +149,63 @@ test('Pi RPC 保留工具执行的参数、增量结果和完成状态', async (
   driver.dispose()
 })
 
+test('Codex 恢复线程后按 DSH 选择纠正线程模型，避免沿用被污染的旧模型', async () => {
+  const calls: { method: string; params: Record<string, unknown> }[] = []
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string; params: Record<string, unknown> }
+        calls.push({ method: request.method, params: request.params ?? {} })
+        if (request.method === 'initialize') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+          return
+        }
+        if (request.method === 'thread/resume') {
+          // 线程持久化的模型是历史路由错误写入的 DSH 主模型。
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'resumed-thread' }, model: 'deepseek-v4.1-flash' } })}\n`)
+          return
+        }
+        if (request.method === 'thread/settings/update') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { model: request.params.model } })}\n`)
+          return
+        }
+        if (request.method === 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'resumed-turn', status: 'inProgress' } } })}\n`)
+          setImmediate(() => {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/agentMessage/delta', params: { threadId: 'resumed-thread', turnId: 'resumed-turn', itemId: 'message-1', delta: '完成' } })}\n`)
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'resumed-thread', turn: { id: 'resumed-turn', status: 'completed' } } })}\n`)
+          })
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({
+    sessionId: 'codex-model-align',
+    messages: [],
+    prompt: '继续',
+    providerSessionId: 'resumed-thread',
+    modelId: 'gpt-6.1-sol',
+  })) chunks.push(chunk)
+
+  const correction = calls.find((call) => call.method === 'thread/settings/update')
+  assert.notEqual(correction, undefined)
+  assert.deepEqual(correction?.params, { threadId: 'resumed-thread', model: 'gpt-6.1-sol' })
+  // 纠正必须发生在 turn/start 之前，否则本轮仍会用旧模型发出请求。
+  assert.equal(calls.findIndex((call) => call.method === 'thread/settings/update')
+    < calls.findIndex((call) => call.method === 'turn/start'), true)
+  assert.equal(chunks.some((chunk) => chunk.type === 'text-delta' && chunk.text === '完成'), true)
+  driver.dispose()
+})
+
 test('Codex app-server 保留 item 工具生命周期和失败结果', async () => {
   const driver = new CodexAppServerDriver({
     binaries: ['fake-codex'],
@@ -1294,7 +1351,7 @@ test('Pi prompt 被拒绝时结束为 error', async () => {
   })
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'pi-error', messages: [], prompt: '你好' })) chunks.push(chunk)
-  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'error' })
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'error', failure: { message: '拒绝' } })
   driver.dispose()
 })
 
@@ -1324,7 +1381,7 @@ test('Pi turn_end 的 Provider 错误不会被 agent_settled 覆盖为成功', a
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'pi-provider-error', messages: [], prompt: '你好' })) chunks.push(chunk)
   assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-event'), [])
-  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'error' })
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'error', failure: { message: '认证失败' } })
   driver.dispose()
 })
 
@@ -1548,7 +1605,7 @@ test('Codex 仅在失败终止通知到达后结束为 error', async () => {
         else if (request.method === 'thread/start') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'thread-failed' } } })}\n`)
         else if (request.method === 'turn/start') {
           stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'turn-failed', status: 'inProgress' } } })}\n`)
-          setImmediate(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'thread-failed', turn: { id: 'turn-failed', status: 'failed', error: { message: '模型调用失败' } } } })}\n`))
+          setImmediate(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'thread-failed', turn: { id: 'turn-failed', status: 'failed', error: { code: 429, type: 'rate_limit_exceeded', message: '上游请求过于频繁，请稍后重试' } } } })}\n`))
         }
       } }
       return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
@@ -1559,7 +1616,7 @@ test('Codex 仅在失败终止通知到达后结束为 error', async () => {
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'thread-failed' },
     { type: 'text-delta', text: 'CODINGNS_PROVIDER_EMPTY_RESPONSE: Codex Provider 未返回任何有效事件。' },
-    { type: 'finish', reason: 'error' },
+    { type: 'finish', reason: 'error', failure: { message: '上游请求过于频繁，请稍后重试', code: '429' } },
   ])
   driver.dispose()
 })

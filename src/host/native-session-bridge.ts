@@ -283,67 +283,74 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
       // 保留已有容量并跳过等价事件，让用量更新直接落到同一个组件上。
       const previous = latestRequestContext(session)
       const contextKey = `${sessionId}\u0000${context.provider}\u0000${context.model}`
+      // 该路由的稳定锚点：进程内确认的 Provider usage 优先，进程重启后从
+      // 会话日志里该路由的首个 usage 恢复。Provider 容量会随服务端变化，
+      // 路由内以首个 usage 为准；占位值、迟到值和 catalog 提示都不能改写它。
+      const anchoredWindow = confirmedContextWindows.get(contextKey)
+        ?? routeFirstUsageContextWindow(session, context.provider, context.model)
       if (previous !== null && previous.provider === context.provider && previous.model === context.model) {
-        const historicalWindow = historicalUsageContextWindow(session)
         if (context.contextWindow === undefined) {
-          if (historicalWindow !== undefined && previous.contextWindow !== historicalWindow) {
+          // Registry 在一轮开始时只能提供适配器身份：恢复该路由自己的稳定
+          // 容量，而不是继承上一条 request/context——相邻记录可能来自其他
+          // Provider，容量口径不同（例如 DSH 主模型的通用 1M 占位值）。
+          if (anchoredWindow !== undefined && previous.contextWindow !== anchoredWindow) {
             session.append('request/context', {
               provider: context.provider,
               model: context.model,
-              contextWindow: historicalWindow,
+              contextWindow: anchoredWindow,
             })
           }
           return true
         }
-        if (previous.contextWindow === context.contextWindow
-          && context.confirmed === true
-          && historicalWindow !== undefined
-          && historicalWindow !== context.contextWindow) {
-          session.append('request/context', {
-            provider: context.provider,
-            model: context.model,
-            contextWindow: historicalWindow,
-          })
-          confirmedContextWindows.set(contextKey, historicalWindow)
-          return true
-        }
         if (previous.contextWindow === context.contextWindow) {
-          if (context.confirmed === true && context.source !== 'catalog' && context.contextWindow !== undefined) {
+          if (context.confirmed === true && context.source !== 'catalog') {
+            if (anchoredWindow !== undefined && anchoredWindow !== context.contextWindow) {
+              // 当前记录与输入一致但与已知锚点冲突：输入是占位或迟到值，
+              // 把该路由的容量写回锚点，避免错误值固化。
+              session.append('request/context', {
+                provider: context.provider,
+                model: context.model,
+                contextWindow: anchoredWindow,
+              })
+              return true
+            }
             confirmedContextWindows.set(contextKey, context.contextWindow)
           }
           return true
         }
-        // 已经确认过的同一路由容量是会话级事实。迟到/全局 usage 不能覆盖它。
-        // DSH 每个新 step 会先写入一次通用 1M 占位值。catalog 提示必须能把
-        // 这个占位值恢复为已知容量，但真实 Provider usage 仍由锁定值保护。
-        if (confirmedContextWindows.has(contextKey) && context.source !== 'catalog') return true
-        // 进程重启后仍可从历史 usage 恢复稳定容量，避免尾部遗留的错误
-        // request/context=1M 在第二轮开始时再次成为当前窗口。
-        if (context.confirmed === true && historicalWindow !== undefined && historicalWindow !== context.contextWindow) {
-          if (previous.contextWindow !== historicalWindow) {
+        // 已经确认过的同一路由容量是会话级事实。迟到/全局 usage、新 step 的
+        // 占位值以及过期的 catalog 提示都不能覆盖它；与事实一致的修正（例如
+        // 占位值覆盖后 Provider usage 再次到达）则允许写回，让 ContextMeter
+        // 无需等待下一轮就能恢复正确分母。
+        if (anchoredWindow !== undefined && context.contextWindow !== anchoredWindow) {
+          if (previous.contextWindow !== anchoredWindow) {
             session.append('request/context', {
               provider: context.provider,
               model: context.model,
-              contextWindow: historicalWindow,
+              contextWindow: anchoredWindow,
             })
           }
-          confirmedContextWindows.set(contextKey, historicalWindow)
           return true
         }
-        // 允许本次运行首次明确确认的 usage 修正历史遗留的路由占位值，
-        // 例如旧日志中的 1M 随后被 Codex usage 明确纠正为 258400。
         if (context.confirmed !== true) return true
+        session.append('request/context', {
+          provider: context.provider,
+          model: context.model,
+          contextWindow: context.contextWindow,
+        })
+        if (context.source !== 'catalog') confirmedContextWindows.set(contextKey, context.contextWindow)
+        return true
       }
-      // Registry 在一轮开始时只能提供适配器身份，不能提供 Provider 容量。
-      // 继承上一条已知容量，避免先写无容量事件导致 ContextMeter 卸载；
-      // 真正的 usage 到达后，投影器会用 Provider 的最新容量覆盖它。
-      const contextWindow = context.contextWindow ?? previous?.contextWindow
+      // 跨路由时只恢复该路由自己的稳定容量；没有锚点时写入无容量事件，
+      // 让 Provider usage 建立第一手容量，而不是借用其他 Provider 的分母。
+      const contextWindow = anchoredWindow ?? context.contextWindow
       session.append('request/context', {
         provider: context.provider,
         model: context.model,
         ...(contextWindow === undefined ? {} : { contextWindow }),
       })
-      if (context.confirmed === true && context.source !== 'catalog' && context.contextWindow !== undefined) {
+      if (context.confirmed === true && context.source !== 'catalog'
+        && context.contextWindow !== undefined && context.contextWindow === contextWindow) {
         confirmedContextWindows.set(contextKey, context.contextWindow)
       }
       return true
@@ -357,14 +364,20 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     if (session === null || sessionFormat(session) === 'unsupported' || position === null) return false
     try {
       const previousContext = latestRequestContext(session)
-      const normalizedUsage = previousContext?.contextWindow !== undefined
+      // 只有该路由已确认的容量才能纠正 usage 样本；未确认的 request/context
+      // 可能是新 step 的占位值，不能反过来把 Provider 的真实容量改坏。
+      const anchoredWindow = previousContext === null
+        ? undefined
+        : confirmedContextWindows.get(`${sessionId}\u0000${previousContext.provider}\u0000${previousContext.model}`)
+          ?? routeFirstUsageContextWindow(session, previousContext.provider, previousContext.model)
+      const normalizedUsage = anchoredWindow !== undefined
         && usage.contextWindow !== undefined
-        && usage.contextWindow !== previousContext.contextWindow
+        && usage.contextWindow !== anchoredWindow
         ? {
             ...usage,
-            contextWindow: previousContext.contextWindow,
+            contextWindow: anchoredWindow,
             ...(usage.contextTokens === undefined ? {} : {
-              contextUsageRatio: Number(Math.min(1, usage.contextTokens / previousContext.contextWindow).toFixed(6)),
+              contextUsageRatio: Number(Math.min(1, usage.contextTokens / anchoredWindow).toFixed(6)),
             }),
           }
         : usage
@@ -723,30 +736,34 @@ function latestRequestContext(session: AppendableSession): RequestContextSnapsho
   return null
 }
 
-function historicalUsageContextWindow(session: AppendableSession): number | undefined {
+/**
+ * 按路由统计首个 usage 的上下文容量：同时依次穿越 request/context 与
+ * assistant/attempt，把每条 usage 归属到最近一次声明的路由。窗口在会话内
+ * 恒定，首个 usage 是该路由最可信的第一手事实；后续被占位值污染或 Provider
+ * 服务端变化产生的不同值都不能视为“新事实”。
+ */
+function routeFirstUsageContextWindow(session: AppendableSession, provider: string, model: string): number | undefined {
   let events: readonly unknown[]
   try { events = session.snapshotEvents() } catch { return undefined }
-  const counts = new Map<number, number>()
+  let matchesRoute = false
   for (const candidate of events) {
-    const event = isRecord(candidate) && candidate.type === 'assistant/attempt' ? candidate : null
-    const data = isRecord(event?.data) ? event.data : null
+    const event = isRecord(candidate) ? candidate : null
+    if (event?.type === 'request/context') {
+      const data = isRecord(event.data) ? event.data : null
+      matchesRoute = data?.provider === provider && data.model === model
+      continue
+    }
+    if (event?.type !== 'assistant/attempt' || !matchesRoute) continue
+    const data = isRecord(event.data) ? event.data : null
     const stream = Array.isArray(data?.stream) ? data.stream : []
     for (const entry of stream) {
       const chunk = isRecord(entry) && isRecord(entry.chunk) ? entry.chunk : null
       const usage = isRecord(chunk?.usage) ? chunk.usage : null
       const window = usage?.contextWindow
-      if (typeof window === 'number' && Number.isFinite(window) && window > 0) counts.set(window, (counts.get(window) ?? 0) + 1)
+      if (typeof window === 'number' && Number.isFinite(window) && window > 0) return window
     }
   }
-  let selected: number | undefined
-  let count = 0
-  for (const [window, occurrences] of counts) {
-    if (occurrences >= count) {
-      selected = window
-      count = occurrences
-    }
-  }
-  return selected
+  return undefined
 }
 
 function activeStep(session: AppendableSession): { turn: number; step: number } | null {

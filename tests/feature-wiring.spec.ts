@@ -352,6 +352,16 @@ test('远程设置 RPC 返回版本并只允许修改 Codingns4DSH 字段', asyn
     handler('set', { ops: [{ op: 'set', path: ['subscriptionUsage', 'unknownField'], value: 1 }] }),
     /禁止修改设置字段/u,
   )
+  // 外部 Agent 子代理托管的开关同样经设置 RPC 写入，未知子字段必须被拒绝。
+  await handler('set', { ops: [{ op: 'set', path: ['subagentBridge', 'enabled'], value: true }] })
+  assert.deepEqual(received, {
+    ops: [{ op: 'set', path: ['subagentBridge', 'enabled'], value: true }],
+    expectedRevision: undefined,
+  })
+  await assert.rejects(
+    handler('set', { ops: [{ op: 'set', path: ['subagentBridge', 'unknownField'], value: 1 }] }),
+    /禁止修改设置字段/u,
+  )
 })
 
 test('移动端访问增强的设置路径与模块开关可通过 RPC 写入', async () => {
@@ -485,7 +495,8 @@ test('本地端口映射面板归属局域网访问，不混入中转访问服�
 test('外部 Agent 作为独立 Client 设置模块登记且默认启用', () => {
   assert.equal(cliAdaptersFeature.descriptor.name, 'cliAdapters')
   assert.equal(cliAdaptersFeature.descriptor.runtime, 'client')
-  assert.equal(cliAdaptersFeature.descriptor.ui?.label, '外部Agent集成')
+  // 设置卡片文案必须走词典键；label/description 只是词典缺失时的兜底。
+  assert.equal(cliAdaptersFeature.descriptor.ui?.labelKey, 'feature.cliAdapters.label')
   assert.equal(cliAdaptersFeature.descriptor.ui?.alwaysEnabled, undefined)
   assert.equal(cliAdaptersFeature.settingsPanel?.name, 'CliAdaptersPanel')
 })
@@ -494,7 +505,7 @@ test('终端增强作为默认关闭且重启生效的独立设置模块登记',
   assert.equal(terminalEnhancementFeature.descriptor.name, 'terminalEnhancement')
   assert.equal(terminalEnhancementFeature.descriptor.enabledByDefault, false)
   assert.equal(terminalEnhancementFeature.descriptor.activation, 'restart')
-  assert.equal(terminalEnhancementFeature.descriptor.ui?.label, '终端增强')
+  assert.equal(terminalEnhancementFeature.descriptor.ui?.labelKey, 'feature.terminal.label')
   assert.equal(terminalEnhancementFeature.settingsPanel?.name, 'TerminalEnhancementPanel')
 })
 
@@ -504,7 +515,7 @@ test('工作区会话增强作为依赖外部 Agent 的实时 Client 模块登�
   assert.equal(workspaceSessionEnhancementFeature.descriptor.enabledByDefault, false)
   assert.deepEqual(workspaceSessionEnhancementFeature.descriptor.dependencies, ['cliAdapters'])
   assert.equal(workspaceSessionEnhancementFeature.descriptor.activation, undefined)
-  assert.equal(workspaceSessionEnhancementFeature.descriptor.ui?.label, '工作区会话增强')
+  assert.equal(workspaceSessionEnhancementFeature.descriptor.ui?.labelKey, 'feature.workspaceSession.label')
   assert.equal(workspaceSessionEnhancementFeature.settingsPanel?.name, 'WorkspaceSessionEnhancementPanel')
 })
 
@@ -516,7 +527,7 @@ test('移动端访问增强作为默认启用、依赖布局能力的 Client 模
   assert.deepEqual(mobileAccessFeature.descriptor.requires, [
     { capability: 'layout.columns', required: false, fallback: 'disable' },
   ])
-  assert.equal(mobileAccessFeature.descriptor.ui?.label, '移动端访问增强')
+  assert.equal(mobileAccessFeature.descriptor.ui?.labelKey, 'feature.mobileAccess.label')
   assert.equal(mobileAccessFeature.settingsPanel?.name, 'MobileAccessPanel')
 })
 
@@ -524,7 +535,7 @@ test('工作区调试面板作为可独立启停的 Client 模块登记', () => 
   assert.equal(debugFeature.descriptor.name, 'debug')
   assert.equal(debugFeature.descriptor.runtime, 'client')
   assert.equal(debugFeature.descriptor.enabledByDefault, true)
-  assert.equal(debugFeature.descriptor.ui?.label, '工作区调试')
+  assert.equal(debugFeature.descriptor.ui?.labelKey, 'feature.debug.label')
   assert.equal(debugFeature.settingsPanel, undefined)
 })
 

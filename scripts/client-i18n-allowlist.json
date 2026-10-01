@@ -1,0 +1,32 @@
+[
+  {
+    "file": "src/client/remote-web-context.ts",
+    "kind": "template-literal",
+    "reason": "注入到 iframe 的远程上下文脚本：内容为 DSH 原生欢迎弹窗选择器与脚本注释，不渲染插件自身文案"
+  },
+  {
+    "file": "src/client/settings-anchor.ts",
+    "text": "button[aria-label=\"设置\"], button[aria-label=\"Settings\"]",
+    "reason": "必须原样匹配 DSH 原生设置按钮的本地化 aria-label（zh/en），不能改写"
+  },
+  {
+    "file": "src/client/dsh-h5-bootstrap.ts",
+    "text": "旧 WebRTC generation 已失效",
+    "reason": "远程桥接的错误文案，语言在 H5 宿主侧决定，按错误码本地化属下一轮"
+  },
+  {
+    "file": "src/client/dsh-h5-bootstrap.ts",
+    "text": "读取远程 DSH Web 超时",
+    "reason": "远程桥接的错误文案，语言在 H5 宿主侧决定，按错误码本地化属下一轮"
+  },
+  {
+    "file": "src/client/dsh-h5-bootstrap.ts",
+    "text": "等待 DSH session.ready 超时",
+    "reason": "远程桥接的错误文案，语言在 H5 宿主侧决定，按错误码本地化属下一轮"
+  },
+  {
+    "file": "src/client/remote-web-context.ts",
+    "text": "Remote DSH WebSocket 流失败",
+    "reason": "远程 Web 桥接的错误细节，由外部 H5 页面原样展示，按错误码本地化属下一轮"
+  }
+]

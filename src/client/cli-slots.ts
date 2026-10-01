@@ -5,6 +5,7 @@ import type { CSSProperties } from 'react'
 import type { CodingNsCliAdapterDescriptor, CodingNsCliModel, CodingNsCliModelCatalog, CodingNsCliSessionConfig } from '../shared/contracts/cli-adapter.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { adapterCatalogWithDsh, callCliRpc, findModel, firstModel } from './cli-catalog.js'
+import { resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 import { providerIconUrl } from './provider-icons.js'
 import { publishSessionAdapter } from './session-adapter-cache.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
@@ -46,8 +47,14 @@ function installComposerStyles(): void {
   style.textContent = [
     'html[data-codingns-agent]:not([data-codingns-agent="dsh"]) [data-slot="conversation.input.model"],',
     'body[data-codingns-agent]:not([data-codingns-agent="dsh"]) [data-slot="conversation.input.model"]{display:none!important}',
-    // DSH 原生输入栏默认允许工具行换行；选择器过长时保持单行并让右侧区域收缩。
-    '[data-composer-card] > div:has([data-slot="conversation.input.right"]){flex-wrap:nowrap!important}',
+    // DSH 在控制行放不下时给行加 data-model-compact，原生模型席位据此把文本收成图标。
+    // 这里不再强制工具行 nowrap：保留原生 flex-wrap 语义，DSH 的测量口径才能反映真实占用，
+    // 放不下时先收起模型，而不是把左侧工具组（权限/规划组）压到内容溢出与相邻按钮重叠。
+    // 插件模型选择器跟随同一判定：紧凑时收起名称与思考等级，只留图标与下拉箭头。
+    '.codingns4dsh-model-icon{display:none}',
+    '[data-composer-card] [data-model-compact] .codingns4dsh-model-root .codingns4dsh-model-name,',
+    '[data-composer-card] [data-model-compact] .codingns4dsh-model-root .codingns4dsh-model-effort{display:none!important}',
+    '[data-composer-card] [data-model-compact] .codingns4dsh-model-root .codingns4dsh-model-icon{display:block!important;flex:none}',
     '[data-composer-card] > div:has([data-slot="conversation.input.right"]) > div:has(> [data-slot="conversation.input.right"]){min-width:0;width:0;flex:1 1 0}',
     '[data-composer-card] > div:has([data-slot="conversation.input.right"]) [data-slot="conversation.input.right"] > .codingns4dsh-model-root{min-width:0;max-width:min(360px,45cqw);flex:1 1 min(360px,45cqw)}',
     '[data-composer-card] > div:has([data-slot="conversation.input.right"]) [data-slot="conversation.input.model"] > select{width:100%;min-width:0;max-width:min(150px,45cqw);flex:1 1 min(150px,45cqw);overflow:hidden;white-space:nowrap}',
@@ -58,8 +65,9 @@ function installComposerStyles(): void {
     // 650 取自实测「适配器名称开始与左侧控件冲突」的临界宽度（容器查询按行的内容盒计，
     // 比输入框的可见宽度小左右各 8px 内边距）。
     '@container (width<=650px){[data-composer-card] .codingns4dsh-agent-trigger > .codingns4dsh-agent-label{display:none}[data-composer-card] .codingns4dsh-agent-trigger > svg{display:none!important}[data-composer-card] .codingns4dsh-agent-trigger{padding-left:4px;padding-right:4px;gap:0}}',
-    // 移动端工具栏空间有限，收掉控件组自身的间距。
-    '@media (max-width: 768px){[data-composer-card] > div:has([data-slot="conversation.input.right"]) > div:has(> [data-slot="conversation.input.right"]),[data-composer-card] [data-slot="conversation.input.right"],.uV2eYG_standardControls,.uV2eYG_trailing{gap:0!important;column-gap:0!important}}',
+    // 移动端工具栏空间有限，收掉控件组自身的间距；控件组按 CSS Modules 本地名匹配，
+    // 不绑定构建哈希（npm 分发的 Web 构建是 uV2eYG_*，Desktop 内嵌构建是 yhfFVG_*）。
+    '@media (max-width: 768px){[data-composer-card] > div:has([data-slot="conversation.input.right"]) > div:has(> [data-slot="conversation.input.right"]),[data-composer-card] [data-slot="conversation.input.right"],[data-composer-card] [class*="_standardControls"],[data-composer-card] [class*="_trailing"]{gap:0!important;column-gap:0!important}}',
     // ContextMeter 在 pressure 尚未合并时会暂时返回 null；dock 保留同样的行高，数值回来时只更新内容。
     '[data-composer-card] + div{box-sizing:border-box;min-height:26px;align-items:center}',
     '[data-composer-card] + div svg[viewBox="0 0 14 14"] circle:last-child{transition:stroke-dasharray .18s ease,stroke .18s ease}',
@@ -205,11 +213,11 @@ function AgentSlot(props: CliSlotProps): ReactElement {
 
   useEffect(() => {
     let active = true
-    void callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(props.rpc, 'catalog', {})
+    void callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(props.rpc, 'catalog', sessionId === undefined ? {} : { sessionId })
       .then((value) => { if (active) setAgents(adapterCatalogWithDsh(value)) })
       .catch(() => undefined)
     return () => { active = false }
-  }, [props.rpc])
+  }, [props.rpc, sessionId])
 
   useEffect(() => { if (locked) setOpen(false) }, [locked])
 
@@ -366,7 +374,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     let active = true
     const adapterId = selection.adapterId
     setRefreshingAdapterId(adapterId)
-    void callCliRpc<CodingNsCliModelCatalog>(props.rpc, 'models', { adapterId })
+    void callCliRpc<CodingNsCliModelCatalog>(props.rpc, 'models', { adapterId, ...(sessionId === undefined ? {} : { sessionId }) })
       .then((value) => {
         if (!active) return
         setCatalogState({ adapterId, value })
@@ -393,7 +401,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       .catch(() => { if (active) setCatalogState({ adapterId, value: { groups: [], currentModel: null, currentEffort: null } }) })
       .finally(() => { if (active) setRefreshingAdapterId(null) })
     return () => { active = false }
-  }, [props.rpc, selection.adapterId])
+  }, [props.rpc, selection.adapterId, sessionId])
 
   useEffect(() => { if (selection.adapterId === 'dsh') setOpen(false) }, [selection.adapterId])
 
@@ -403,7 +411,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const efforts = model?.efforts ?? []
   const effortValue = selection.effortId ?? (efforts.length > 0 ? defaultEffort(efforts) : undefined) ?? 'default'
   const modelLabel = model?.name ?? (loading ? t('cli.loadingModel') : t('cli.noModelsAvailable'))
-  const effortLabel = efforts.find((effort) => effort === effortValue) ?? 'Default'
+  const effortLabel = efforts.find((effort) => effort === effortValue) ?? t('cli.defaultEffort')
   const modelUnavailable = model === undefined
   const triggerDisabled = !loading && modelUnavailable
   const chooseModel = (next: CodingNsCliModel): void => {
@@ -445,16 +453,17 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
         ]
       : [
           createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, t('cli.back')),
-          createElement('div', { key: 'title', style: nativeGroupTitleStyle }, `${t('cli.thinking')}（${modelLabel}）`),
+          createElement('div', { key: 'title', style: nativeGroupTitleStyle }, t('cli.thinkingLevelTitle', { model: modelLabel })),
           ...(efforts.length > 0 ? efforts : ['default']).map((effort) => createElement('button', { key: effort, type: 'button', role: 'menuitemradio', 'aria-checked': effort === effortValue, onClick: () => chooseEffort(effort), style: nativeOptionStyle },
-            createElement('span', { style: { flex: '1 1 auto' } }, effort === 'default' ? 'Default' : effort), effort === effortValue && createElement('span', { 'aria-hidden': true }, '✓'),
+            createElement('span', { style: { flex: '1 1 auto' } }, effort === 'default' ? t('cli.defaultEffort') : effort), effort === effortValue && createElement('span', { 'aria-hidden': true }, '✓'),
           )),
         ]
   return createElement('div', { ref: rootRef, className: 'codingns4dsh-model-root', style: { position: 'relative', minWidth: 0, maxWidth: '100%', flex: '1 1 min(360px, 45cqw)', display: 'inline-flex' } },
     createElement('button', { type: 'button', disabled: triggerDisabled, 'aria-label': t('cli.chooseModel', { model: modelLabel, effort: effortLabel }), 'aria-busy': loading, 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => { setPane('root'); setOpen((value) => !value) }, style: nativeTriggerStyle },
+      !loading && createElement(resolveDataIcon(), { className: 'codingns4dsh-model-icon', size: 16 }),
       loading && createElement('span', { className: 'codingns4dsh-cli-spinner', 'aria-hidden': true, style: modelSpinnerStyle }),
       createElement(ModelName, { label: modelLabel, loading }),
-      !loading && createElement('span', { style: { color: dshThemeColor.labelCaption, whiteSpace: 'nowrap' } }, effortLabel),
+      !loading && createElement('span', { className: 'codingns4dsh-model-effort', style: { color: dshThemeColor.labelCaption, whiteSpace: 'nowrap' } }, effortLabel),
       !loading && createElement(NativeDropdownChevron, { open }),
     ),
     open && createElement('div', { role: 'menu', 'aria-label': t('cli.chooseModelMenu'), style: nativeMenuStyle }, ...menu),

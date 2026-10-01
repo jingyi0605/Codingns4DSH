@@ -34,3 +34,31 @@ test('没有原生 Team 或 Agent 时明确降级且拒绝调用', () => {
   assert.equal(proxy.diagnostic().code, 'DSH_TEAM_NATIVE_UNAVAILABLE')
   assert.throws(() => proxy.invoke('members', { sessionId: 'session-1' }), /DSH_TEAM_NATIVE_UNAVAILABLE/u)
 })
+
+// 官方 TeamService 的方法依赖 this（spawnTeammate 读 this.roster）。把方法从服务
+// 对象上取出后解绑调用会抛 "Cannot read properties of undefined (reading 'roster')"，
+// 因此 Proxy 必须用 apply 保留 owner。这里用依赖 this 的服务复现真实形状。
+test('原生 Team Proxy 转发时保留 TeamService 的 this 绑定', async () => {
+  const agent = { id: 'session-1', session: { id: 'session-1' } }
+  const service = {
+    roster: { spawn: (request: { name: string }) => ({ member: { id: `child-${request.name}` } }) },
+    membership(current: unknown) {
+      assert.equal(this.roster !== undefined, true)
+      return { role: 'lead', current }
+    },
+    listMembers() {
+      assert.equal(this.roster !== undefined, true)
+      return [{ id: 'session-1', role: 'lead' }]
+    },
+    async spawnTeammate(_current: unknown, request: { name: string }) {
+      assert.equal(this.roster !== undefined, true)
+      return await this.roster.spawn(request)
+    },
+  }
+  const proxy = new DshNativeTeamProxy(service, { get: (id) => id === 'session-1' ? agent : undefined, list: () => [agent] })
+  const status = proxy.invoke('status', { sessionId: 'session-1' }) as { membership: unknown }
+  assert.deepEqual(status.membership, { role: 'lead', current: agent })
+  assert.deepEqual(proxy.invoke('members', { sessionId: 'session-1' }), [{ id: 'session-1', role: 'lead' }])
+  const spawned = await proxy.invoke('spawn', { sessionId: 'session-1', name: 'reviewer' })
+  assert.deepEqual(spawned, { member: { id: 'child-reviewer' } })
+})

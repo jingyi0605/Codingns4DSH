@@ -122,6 +122,14 @@ test('工作区菜单隐藏动作与筛选恢复列表不破坏原生菜单', as
   assert.equal(dom.querySelector(`[${WORKSPACE_SESSION_HIDDEN_LIST_ATTRIBUTE}]`), footer)
 
   filterMenu.remove()
+  // 过滤菜单关闭时，Portal 可能暂时保留一个不可见的旧节点；打开工作区菜单
+  // 时必须选择当前可见菜单，不能把“显示隐藏的工作区”注入旧节点。
+  const staleFilterMenu = new FakeElement('div')
+  staleFilterMenu.setAttribute('role', 'menu')
+  staleFilterMenu.setAttribute('aria-hidden', 'true')
+  staleFilterMenu.textContent = '分组方式 排序方式 筛选会话'
+  staleFilterMenu.append(menuItem('按工作区'), menuItem('最近更新'), menuItem('全部对话'))
+  root.appendChild(staleFilterMenu)
   workspaceA.menuTrigger.dispatch('click')
   const menu = new FakeElement('div')
   menu.setAttribute('role', 'menu')
@@ -130,6 +138,8 @@ test('工作区菜单隐藏动作与筛选恢复列表不破坏原生菜单', as
   await nextTurn()
   const hideAction = menu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_MENU_ATTRIBUTE}]`)
   assert.ok(hideAction)
+  assert.equal(staleFilterMenu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_MENU_ATTRIBUTE}]`), null)
+  assert.equal(menu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`), null)
   hideAction.dispatch('click')
   await timerTurn()
   await nextTurn()
@@ -137,6 +147,7 @@ test('工作区菜单隐藏动作与筛选恢复列表不破坏原生菜单', as
   assert.equal(workspaceA.container.hasAttribute(WORKSPACE_SESSION_HIDDEN_ATTRIBUTE), true)
   assert.equal(menu.parentElement, root)
   menu.remove()
+  staleFilterMenu.remove()
 
   const currentFooter = dom.querySelector(`[${WORKSPACE_SESSION_HIDDEN_LIST_ATTRIBUTE}]`)
   const toggle = currentFooter?.querySelector('button')

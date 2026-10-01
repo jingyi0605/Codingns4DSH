@@ -14,6 +14,8 @@ import { firstToolText, serializeToolValue } from './tool-observation.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { commandEnvironment, resolveCommandPath, terminateChildProcess } from './process-utils.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
+import { commandCodeBridgeArgs, commandCodeBridgeEnvironment } from '../cli-bridge/injections.js'
+import { getSubagentBridge } from '../cli-bridge/bridge-holder.js'
 
 const WINDOWS = process.platform === 'win32'
 const COMMAND_CODE_BINARIES = WINDOWS
@@ -386,7 +388,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
         // 自动续跑是同一个 DSH 运行里的下一段；消息序号必须跨尝试连续，
         // 否则新进程会从 command-code-message-1 重新编号，公共投影层会把它
         // 当成同一条消息继续追加，而不是开启新段。
-        const state = createStreamState(() => turn.aborted, turn.messageSequence)
+        const state = createStreamState(() => turn.aborted, turn.messageSequence, input.sessionId)
         const child = this.spawnAttempt(turn, input, binary)
         const code = await this.readAttempt(turn, child, state)
         turn.messageSequence = state.messageSequence
@@ -423,7 +425,14 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     binary: string,
   ): ChildProcessWithoutNullStreams {
     const args = this.buildTurnArgs(input, turn)
-    const child = this.runSpawn(binary, args, { cwd: input.cwd ?? process.cwd(), env: this.cachedEnvironment ?? commandEnvironment(binary), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: WINDOWS })
+    const bridgeEnvironment = commandCodeBridgeEnvironment(input.sessionId, this.descriptor.id)
+    const child = this.runSpawn(binary, args, {
+      cwd: input.cwd ?? process.cwd(),
+      env: { ...(this.cachedEnvironment ?? commandEnvironment(binary)), ...bridgeEnvironment },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      shell: WINDOWS,
+    })
     // 自动续跑会替换活动进程；已退出的旧尝试不能继续留在进程表里等待 terminate。
     if (turn.child !== undefined) this.processes.delete(turn.child)
     this.processes.add(child)
@@ -438,6 +447,8 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     // 否则会把 CLI 已经落盘的进度覆盖成空会话。
     const prompt = turn.attempt > 1 ? this.autoContinuePrompt : promptWithAttachmentPaths(input.prompt, input.attachments ?? [])
     const args = ['--session', turn.transcriptPath, '-p', prompt, '--output-format', 'json', '--tools-all', '--yolo', '--max-turns', String(this.maxTurns)]
+    // 子代理托管开启时加载桥接 mod：内建 agent 调用会被转投成 DSH 原生子会话。
+    args.push(...commandCodeBridgeArgs(input.sessionId))
     for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--add-dir', directory)
     if (input.modelId) args.push('-m', input.modelId)
     if (input.effortId && input.effortId !== 'default' && input.effortId !== 'Default') args.push('--effort', input.effortId)
@@ -566,7 +577,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   }
 }
 
-function createStreamState(aborted: () => boolean, messageSequence = 0): CommandCodeStreamState {
+function createStreamState(aborted: () => boolean, messageSequence = 0, sessionId: string | null = null): CommandCodeStreamState {
   return {
     messageSequence,
     messageId: null,
@@ -575,7 +586,7 @@ function createStreamState(aborted: () => boolean, messageSequence = 0): Command
     sawText: false,
     perRequestUsageSeen: false,
     turnUsageSeen: false,
-    sessionId: null,
+    sessionId,
     aborted,
     maxTurnsReached: false,
   }
@@ -715,7 +726,12 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
         state.maxTurnsReached = true
         break
       }
-      chunks.push({ type: 'finish', reason: state.aborted() ? 'cancel' : resultReason(event) })
+      const reason = state.aborted() ? 'cancel' : resultReason(event)
+      chunks.push({
+        type: 'finish',
+        reason,
+        ...(reason === 'error' ? { failure: commandCodeFailure(event) } : {}),
+      })
       break
     }
     default:
@@ -726,7 +742,10 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
     const tool = readToolChunk(event, type === 'tool_queued' || type === 'tool_started' ? 'started' : 'running')
     if (tool !== null) chunks.push(tool)
   } else if (isToolResult(type)) {
-    const failed = type.includes('error') || type.includes('fail') || type.includes('denied') || type.includes('blocked')
+    // 子代理托管命中时，mod 用 block 结束内建 agent 调用，真正的执行已经发生在
+    // DSH 原生子会话里；这里必须投影成完成态，而不是普通 hook 拦截的失败态。
+    const redirected = type.includes('blocked') && consumeBridgeRedirect(state, event)
+    const failed = !redirected && (type.includes('error') || type.includes('fail') || type.includes('denied') || type.includes('blocked'))
     const tool = readToolChunk(event, failed ? 'failed' : 'completed')
     if (tool !== null) {
       chunks.push(tool)
@@ -736,6 +755,18 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
     }
   }
   return chunks
+}
+
+/** 该 blocked 事件是否来自桥接转投；命中后消费一次记录，避免重复投影。 */
+function consumeBridgeRedirect(state: CommandCodeStreamState, event: Record<string, unknown>): boolean {
+  if (state.sessionId === null || state.sessionId === '') return false
+  const callId = firstToolText(event.callId, event.call_id, event.toolCallId, event.tool_call_id, event.toolUseId, event.tool_use_id, event.id)
+  if (callId === undefined || callId === '') return false
+  try {
+    return getSubagentBridge()?.consumeRedirect(state.sessionId, callId) !== undefined
+  } catch {
+    return false
+  }
 }
 
 function beginMessage(state: CommandCodeStreamState): void {
@@ -799,7 +830,7 @@ function readToolChunk(event: Record<string, unknown>, status: 'started' | 'runn
   const fn = recordValue(event.function)
   const toolName = textValue(event.name ?? event.toolName ?? event.tool_name ?? event.tool ?? fn?.name) || 'tool'
   const error = textValue(event.error ?? event.reason ?? event.message)
-  const output = textValue(event.output ?? event.result ?? event.content)
+  const output = textValue(event.output ?? event.result ?? event.content ?? event.hookOutput)
   const input = event.input ?? fn?.arguments ?? event.arguments
   const agentId = firstToolText(event.agentId, event.agent_id)
   const detail = serializeToolValue(event.detail ?? event.metadata ?? event.description)
@@ -833,6 +864,16 @@ function resultReason(event: Record<string, unknown>): 'stop' | 'cancel' | 'erro
   if (event.error !== undefined || subtype === 'error' || stopReason.includes('error') || stopReason.includes('fail')) return 'error'
   if (stopReason.includes('interrupt') || stopReason.includes('cancel') || stopReason === 'aborted') return 'cancel'
   return 'stop'
+}
+
+function commandCodeFailure(event: Record<string, unknown>): { message: string; code?: string } {
+  const result = recordValue(event.result)
+  const candidate = event.error ?? event.errorMessage ?? event.error_message ?? result?.error ?? result?.errorMessage ?? result?.message ?? event.message
+  const message = textValue(candidate) ?? (typeof candidate === 'string' ? candidate.trim() : '')
+  const codeValue = result?.code ?? result?.errorCode ?? event.code ?? event.errorCode
+  const code = typeof codeValue === 'string' && codeValue.trim() !== '' ? codeValue.trim() : undefined
+  const actual = message.trim() || 'Command Code Provider 未返回具体失败信息。'
+  return code === undefined ? { message: actual } : { message: actual, code }
 }
 
 /**

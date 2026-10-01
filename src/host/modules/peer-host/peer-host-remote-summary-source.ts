@@ -11,6 +11,8 @@ import type { AggregateSessionSource, AggregateWorkspaceSource, PeerHostWorkspac
 export interface PeerHostRemoteSummaryTransport {
   rpc(request: { readonly scope: HostScope; readonly method: 'session/list'; readonly payload?: unknown; readonly signal?: AbortSignal }): Promise<unknown>
   stream(request: { readonly scope: HostScope; readonly method: 'workspace/follow'; readonly payload?: unknown; readonly signal?: AbortSignal }): AsyncIterable<unknown>
+  /** 读取目标 Host 的 CodingNS 私有摘要；失败时只丢失适配器标签，不影响会话导航。 */
+  cli?(request: { readonly scope: HostScope; readonly endpoint: 'cli/session/adapter-map'; readonly payload?: unknown; readonly signal?: AbortSignal }): Promise<unknown>
 }
 
 interface WorkspaceBaseline {
@@ -37,11 +39,12 @@ export function createPeerHostRemoteSummarySource(input: {
       // 没有可见工作区时不必访问目标 Host：省一次代理往返，也避免把"没有可见
       // 工作区"和"远端不可达"混成同一个错误。
       if (visible !== null && visible.size === 0) return []
-      const [baseline, sessions] = await Promise.all([
+      const [baseline, sessions, adapterMap] = await Promise.all([
         readWorkspaceBaseline(input.transport, input.scope, signal),
         readSessionList(input.transport, input.scope, signal),
+        readAdapterMap(input.transport, input.scope, signal),
       ])
-      return buildRemoteSummary(baseline, sessions, visible)
+      return buildRemoteSummary(baseline, sessions, visible, adapterMap)
     },
   }
 }
@@ -108,6 +111,7 @@ function buildRemoteSummary(
   baseline: WorkspaceBaseline,
   sessions: readonly Record<string, unknown>[],
   visibleWorkspaceIds: ReadonlySet<string> | null,
+  adapterMap: ReadonlyMap<string, string>,
 ): readonly AggregateWorkspaceSource[] {
   const sessionsById = new Map<string, Record<string, unknown>>()
   for (const session of sessions) {
@@ -133,6 +137,10 @@ function buildRemoteSummary(
         title: readSessionTitle(session, sessionId),
         status: session?.running === true ? 'running' : 'idle',
         updatedAt: readTime(session),
+        ...(() => {
+          const adapterId = readString(session, ['adapterId']) ?? adapterMap.get(sessionId)
+          return adapterId === undefined ? {} : { adapterId }
+        })(),
       }
       if (archived.has(sessionId)) archivedSessions.push(entry)
       else visible.push(entry)
@@ -146,6 +154,30 @@ function buildRemoteSummary(
       ...(archivedSessions.length === 0 ? {} : { archivedSessions }),
     }]
   })
+}
+
+async function readAdapterMap(
+  transport: PeerHostRemoteSummaryTransport,
+  scope: HostScope,
+  signal: AbortSignal | undefined,
+): Promise<ReadonlyMap<string, string>> {
+  if (transport.cli === undefined) return new Map()
+  try {
+    const value = await transport.cli({ scope, endpoint: 'cli/session/adapter-map', payload: {}, ...(signal === undefined ? {} : { signal }) })
+    const envelope = asRecord(value)
+    const rows = envelope?.ok === true ? envelope.value : value
+    if (!Array.isArray(rows)) return new Map()
+    const result = new Map<string, string>()
+    for (const row of rows) {
+      const record = asRecord(row)
+      const sessionId = readString(record, ['sessionId'])
+      const adapterId = readString(record, ['adapterId'])
+      if (sessionId !== null && adapterId !== null) result.set(sessionId, adapterId)
+    }
+    return result
+  } catch {
+    return new Map()
+  }
 }
 
 function readSessionTitle(session: Record<string, unknown> | null, sessionId: string): string {

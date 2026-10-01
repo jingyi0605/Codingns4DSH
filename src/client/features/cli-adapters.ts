@@ -4,11 +4,10 @@ import type {
   CodingNsCliAdapterDescriptor,
   CodingNsCliModel,
   CodingNsCliModelCatalog,
-  CodingNsCliSessionRecord,
 } from '../../shared/contracts/cli-adapter.js'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
-import { archiveCliSession, callCliRpc, errorMessage, listCliSessions, restoreCliSession } from '../cli-catalog.js'
-import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
+import { callCliRpc, errorMessage } from '../cli-catalog.js'
+import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsHelpStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { backdropPointerDownHandler } from '../popup-dismiss.js'
 import { registerExternalToolStreamUi } from '../external-tool-stream.js'
@@ -24,8 +23,8 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
     dependencies: [],
     runtime: 'client',
     ui: {
-      label: '外部Agent集成',
-      description: '管理外部 Agent',
+      label: 'External Agent integration',
+      description: 'View installed external Agents, versions, command paths, available models, and enable them independently. External Agent context panels keep only the occupancy percentage and totals.',
       labelKey: 'feature.cliAdapters.label',
       descriptionKey: 'feature.cliAdapters.description',
       order: 30,
@@ -42,6 +41,16 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
       },
     })
     context.resources.add(() => contextBreakdownDom.dispose())
+    // `/委派` 只依赖 DSH 的 commandUi 契约；服务缺失时该模块内部降级为不注册，
+    // 因此这里不把它挂在 slots 可用性之后。
+    const uiContext = context.services.uiContext
+    if (uiContext !== undefined) {
+      const { registerDelegateCommand } = await import('../delegate-command.js')
+      context.resources.add(registerDelegateCommand(uiContext, {
+        rpc: context.services.rpc,
+        locale: context.services.locale,
+      }))
+    }
     const slots = context.services.slots
     if (slots === undefined) return
     context.resources.add(registerExternalToolStreamUi(context.services))
@@ -53,18 +62,20 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
   settingsPanel: CliAdaptersPanel,
 }
 
-/** 设置页中的 Agent 列表和详情模态框。 */
-export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProps): ReactElement {
+/**
+ * 设置页中的 Agent 列表和详情模态框。
+ *
+ * 面板只管理 Agent 本身：安装状态、版本、命令、启用开关与模型目录。外部会话由
+ * DSH 原生侧栏和工作区归档入口承载，这里不再重复一份会话列表。
+ */
+export function CliAdaptersPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
   const t = useCodingNsTranslator(services.locale)
   const [catalog, setCatalog] = useState<readonly CodingNsCliAdapterDescriptor[]>([])
   const [selected, setSelected] = useState<CodingNsCliAdapterDescriptor | null>(null)
   const [models, setModels] = useState<CodingNsCliModelCatalog | null>(null)
   const [loading, setLoading] = useState(false)
   const [busyAdapterId, setBusyAdapterId] = useState<string | null>(null)
-  const [sessions, setSessions] = useState<readonly CodingNsCliSessionRecord[]>([])
-  const [sessionsLoading, setSessionsLoading] = useState(false)
-  const [restoringSessionId, setRestoringSessionId] = useState<string | null>(null)
-  const [archivingSessionId, setArchivingSessionId] = useState<string | null>(null)
+  const [bridgeBusy, setBridgeBusy] = useState(false)
   const [modelsError, setModelsError] = useState('')
   const disabled = !enabled
 
@@ -76,20 +87,6 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
       .then((value) => { if (active) setCatalog(value) })
       .catch((error: unknown) => { if (active) notify({ kind: 'error', message: errorMessage(error) }) })
       .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [disabled, services.rpc])
-
-  useEffect(() => {
-    if (disabled) {
-      setSessions([])
-      return
-    }
-    let active = true
-    setSessionsLoading(true)
-    void listCliSessions(services.rpc)
-      .then((value) => { if (active) setSessions(value) })
-      .catch((error: unknown) => { if (active) notify({ kind: 'error', message: errorMessage(error) }) })
-      .finally(() => { if (active) setSessionsLoading(false) })
     return () => { active = false }
   }, [disabled, services.rpc])
 
@@ -109,13 +106,30 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
 
   const rowStyle = dshSettingsListRowStyle
   const buttonStyle = { ...dshSettingsButtonStyle, cursor: disabled ? 'not-allowed' : 'pointer' }
+  const bridgeEnabled = snapshot.value?.subagentBridge?.enabled === true
+  const bridgeWritable = snapshot.status !== 'loading' && snapshot.writable
+  const toggleSubagentBridge = async (next: boolean): Promise<void> => {
+    setBridgeBusy(true)
+    try {
+      const accepted = await services.settings.mutate([{ op: 'set', path: ['subagentBridge', 'enabled'], value: next }])
+      if (!accepted) {
+        notify({ kind: 'error', message: t('settings.moduleWriteRejected') })
+        return
+      }
+      notify({ kind: 'success', message: t(next ? 'cli.subagentBridgeEnabled' : 'cli.subagentBridgeDisabled') })
+    } catch (error) {
+      notify({ kind: 'error', message: errorMessage(error) })
+    } finally {
+      setBridgeBusy(false)
+    }
+  }
   const toggleAdapter = async (adapter: CodingNsCliAdapterDescriptor, next: boolean): Promise<void> => {
     setBusyAdapterId(adapter.id)
     try {
       await callCliRpc(services.rpc, 'adapter/set', { adapterId: adapter.id, enabled: next })
       const refreshed = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(services.rpc, 'catalog', {})
       setCatalog(refreshed)
-      notify({ kind: 'success', message: next ? `已启用 ${adapter.name}` : `已停用 ${adapter.name}` })
+      notify({ kind: 'success', message: t(next ? 'cli.adapterEnabled' : 'cli.adapterDisabled', { name: adapter.name }) })
     } catch (error) {
       notify({ kind: 'error', message: errorMessage(error) })
     } finally {
@@ -123,34 +137,27 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
     }
   }
 
-  const restoreSession = async (record: CodingNsCliSessionRecord): Promise<void> => {
-    setRestoringSessionId(record.dshSessionId)
-    try {
-      await restoreCliSession(services.rpc, record)
-      notify({ kind: 'success', message: `已打开 ${record.title ?? record.adapterId} 会话` })
-    } catch (error) {
-      notify({ kind: 'error', message: errorMessage(error) })
-    } finally {
-      setRestoringSessionId(null)
-    }
-  }
-
-  const archiveSession = async (record: CodingNsCliSessionRecord): Promise<void> => {
-    setArchivingSessionId(record.dshSessionId)
-    try {
-      await archiveCliSession(services.rpc, record.dshSessionId)
-      setSessions((current) => current.filter((item) => item.dshSessionId !== record.dshSessionId))
-      notify({ kind: 'success', message: `已移除 ${record.title ?? record.adapterId} 会话` })
-    } catch (error) {
-      notify({ kind: 'error', message: errorMessage(error) })
-    } finally {
-      setArchivingSessionId(null)
-    }
-  }
-
   return createElement(
     'div',
     { 'aria-disabled': disabled, style: { ...dshFormRootStyle, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
+    createElement('div', { style: { ...rowStyle, marginBottom: 12 } },
+      createElement('div', { style: { flex: '1 1 auto', minWidth: 0 } },
+        createElement('span', { style: { fontWeight: 600 } }, t('cli.subagentBridge')),
+        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeDescription')),
+      ),
+      createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' } },
+        createElement('input', {
+          type: 'checkbox',
+          role: 'switch',
+          'aria-label': t('cli.subagentBridgeToggle'),
+          checked: bridgeEnabled,
+          disabled: !bridgeWritable || bridgeBusy,
+          onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleSubagentBridge(event.currentTarget.checked) },
+          style: { accentColor: dshThemeColor.accent },
+        }),
+        createElement('span', undefined, bridgeEnabled ? t('cli.enabled') : t('cli.disabled')),
+      ),
+    ),
     loading && createElement('div', { role: 'status' }, t('cli.readingAgents')),
     !loading && catalog.length === 0 && createElement('div', { role: 'status', style: { opacity: 0.7 } }, t('cli.noAgents')),
     createElement('div', undefined,
@@ -171,15 +178,6 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
         ),
       )),
     ),
-    createElement(CliSessionList, {
-      sessions,
-      loading: sessionsLoading,
-      restoringSessionId,
-      archivingSessionId,
-      onRestore: (record) => { void restoreSession(record) },
-      onArchive: (record) => { void archiveSession(record) },
-      t,
-    }),
     selected !== null && createElement(AdapterDetailsDialog, {
       adapter: selected,
       models,
@@ -189,64 +187,6 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
       t,
     }),
   )
-}
-
-interface CliSessionListProps {
-  readonly sessions: readonly CodingNsCliSessionRecord[]
-  readonly loading: boolean
-  readonly restoringSessionId: string | null
-  readonly archivingSessionId: string | null
-  readonly onRestore: (record: CodingNsCliSessionRecord) => void
-  readonly onArchive: (record: CodingNsCliSessionRecord) => void
-  readonly t: ReturnType<typeof useCodingNsTranslator>
-}
-
-/** 外部会话索引入口；打开后交给 DSH 原生会话页面渲染消息。 */
-function CliSessionList({ sessions, loading, restoringSessionId, archivingSessionId, onRestore, onArchive, t }: CliSessionListProps): ReactElement {
-  return createElement('section', { 'aria-labelledby': 'codingns-cli-session-title', style: { marginTop: 20 } },
-    createElement('h4', { id: 'codingns-cli-session-title', style: { margin: '0 0 8px' } }, t('cli.sessions')),
-    loading && createElement('div', { role: 'status' }, t('cli.readingSessions')),
-    !loading && sessions.length === 0 && createElement('div', { style: { opacity: 0.7 } }, t('cli.noSessions')),
-    !loading && sessions.length > 0 && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-      ...sessions.map((record) => createElement('div', {
-        key: record.dshSessionId,
-        style: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: `1px solid ${dshThemeColor.border}` },
-      },
-        createElement('div', { style: { flex: '1 1 auto', minWidth: 0 } },
-          createElement('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 } }, record.title ?? t('cli.session', { id: record.adapterId })),
-          createElement('div', {
-            title: record.providerStateReason,
-            style: { marginTop: 2, color: record.providerState === 'missing' ? dshThemeColor.error : dshThemeColor.labelTertiary, fontSize: 12 },
-          }, `${record.adapterId} · ${sessionStatusLabel(record, t)}`),
-        ),
-        createElement('button', {
-          type: 'button',
-          onClick: () => onRestore(record),
-          disabled: restoringSessionId !== null,
-          'aria-label': `${t('cli.open')} ${record.title ?? t('cli.session', { id: record.adapterId })}`,
-          style: { ...dshSettingsButtonStyle, flex: '0 0 auto', cursor: restoringSessionId === null ? 'pointer' : 'not-allowed' },
-        }, restoringSessionId === record.dshSessionId ? t('cli.opening') : t('cli.open')),
-        record.providerState === 'missing' && createElement('button', {
-          type: 'button',
-          onClick: () => onArchive(record),
-          disabled: archivingSessionId !== null,
-          'aria-label': t('cli.removeFromSidebar', { name: record.title ?? t('cli.session', { id: record.adapterId }) }),
-          style: { ...dshSettingsButtonStyle, flex: '0 0 auto', color: dshThemeColor.error, cursor: archivingSessionId === null ? 'pointer' : 'not-allowed' },
-        }, archivingSessionId === record.dshSessionId ? t('cli.removing') : t('cli.remove')),
-      )),
-    ),
-  )
-}
-
-function sessionStatusLabel(record: CodingNsCliSessionRecord, t: ReturnType<typeof useCodingNsTranslator>): string {
-  if (record.providerState === 'missing') return t('cli.statusMissing')
-  if (record.providerState === 'corrupt') return t('cli.statusCorrupt')
-  if (record.providerState === 'unreachable') return t('cli.statusUnreachable')
-  if (record.providerState === 'ephemeral') return t('cli.statusEphemeral')
-  if (record.status === 'active') return t('cli.statusActive')
-  if (record.status === 'error') return t('cli.statusError')
-  if (record.status === 'archived') return t('cli.statusArchived')
-  return t('cli.statusPaused')
 }
 
 interface AdapterDetailsDialogProps {
@@ -280,7 +220,7 @@ function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle, 
         createElement('dt', undefined, t('cli.version')), createElement('dd', { style: { margin: 0 } }, adapter.version ?? t('cli.notDetectedVersion')),
         createElement('dt', undefined, t('cli.commandPath')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.command ?? t('cli.notDetectedCommand')),
         createElement('dt', undefined, t('cli.protocol')), createElement('dd', { style: { margin: 0 } }, adapter.protocol ?? t('cli.undeclared')),
-        createElement('dt', undefined, t('cli.capabilities')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.capabilities?.join('、') ?? t('cli.undeclared')),
+        createElement('dt', undefined, t('cli.capabilities')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.capabilities?.join(t('common.listSeparator')) ?? t('cli.undeclared')),
       ),
       createElement('h4', { style: { margin: '16px 0 8px' } }, t('cli.modelCatalog')),
       !adapter.installed && createElement('div', { style: { opacity: 0.7 } }, t('cli.agentNotInstalled')),
@@ -310,6 +250,6 @@ function ModelRow({ model, t }: { readonly model: CodingNsCliModel; readonly t: 
   return createElement('div', { style: { padding: '8px 10px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 6 } },
     createElement('div', { style: { fontWeight: 600 } }, model.name),
     model.description && createElement('div', { style: { marginTop: 3, opacity: 0.7, fontSize: 13 } }, model.description),
-    createElement('div', { style: { marginTop: 5, opacity: 0.7, fontSize: 13 } }, t('cli.thinkingLevel', { value: model.efforts.length > 0 ? model.efforts.join('、') : t('cli.defaultEffort') })),
+    createElement('div', { style: { marginTop: 5, opacity: 0.7, fontSize: 13 } }, t('cli.thinkingLevel', { value: model.efforts.length > 0 ? model.efforts.join(t('common.listSeparator')) : t('cli.defaultEffort') })),
   )
 }

@@ -8,13 +8,21 @@ import { PiAgentDriver } from './pi-driver.js'
 import { CodexAppServerDriver } from './codex-driver.js'
 import { GrokBuildDriver } from './grok-driver.js'
 import { OpenCodeDriver } from './opencode-driver.js'
+import { MiniMaxCodeDriver } from './mcode-driver.js'
+import { ZcodeAppServerDriver } from './zcode-driver.js'
 import { CodingNsCliAdapterRegistry } from './registry.js'
 import { CodingNsCliSessionStore } from './session-store.js'
 import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
 import { CommandCodeSubscriptionService } from './command-code-subscription.js'
 import { ProviderSubscriptionService } from './provider-subscription.js'
-import { normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
+import { normalizeSubagentBridgeSettings, normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsHostServices } from '../features/types.js'
+import { setAdapterRegistry } from './registry-holder.js'
+import { createDshVirtualProviderRegistration } from './dsh-virtual-providers.js'
+import { dispatchBridgeSubagent, type BridgeAgentRegistry } from '../cli-bridge/dispatch.js'
+import { startSubagentBridgeServer, type SubagentBridgeServer } from '../cli-bridge/bridge-server.js'
+import { setSubagentBridge } from '../cli-bridge/bridge-holder.js'
+import { delegateCapability, dispatchDelegateSubagent, type DelegateAgentRegistry } from './delegate-dispatch.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -25,7 +33,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       dependencies: [],
       runtime: 'host',
     },
-    start(context) {
+    async start(context) {
       // 用量查询超时对所有适配器统一生效：同一个 timeoutMs 下发给全部网络读取器，
       // 设置变更时整体重建，避免旧超时继续生效。
       const buildSubscriptions = (settings: CodingNsSettings | undefined): ProviderSubscriptionService => {
@@ -33,10 +41,15 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         return new ProviderSubscriptionService({ commandCode: new CommandCodeSubscriptionService({ timeoutMs }), timeoutMs })
       }
       let subscriptions = buildSubscriptions(context.services.settings?.get())
-      const sessionStore = new CodingNsCliSessionStore(context.services.settings === undefined ? {} : { settings: context.services.settings })
+      // 注入的 registry 自带 SessionStore；只有自建时才有本地 store 变量。
+      const sessionStore = options.registry?.sessionRecords
+        ?? new CodingNsCliSessionStore(context.services.settings === undefined ? {} : { settings: context.services.settings })
       const nativeSessions = context.services.nativeSessions
+      // fork 子会话的绑定来自父会话，启动迁移也必须补齐祖先链。
       if (nativeSessions !== undefined) {
-        const migration = sessionStore.migrateLegacySessions(nativeSessions.list())
+        const migration = sessionStore.migrateLegacySessions(
+          expandMigrationChain(nativeSessions, nativeSessions.list()),
+        )
         if (migration.migrated > 0 || migration.unresolved > 0) {
           console.info('codingns4dsh: 旧外部会话适配器迁移完成', migration)
         }
@@ -50,12 +63,22 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         new CodexAppServerDriver(),
         new OpenCodeDriver(),
         new GrokBuildDriver(),
+        new MiniMaxCodeDriver(),
+        new ZcodeAppServerDriver(),
       ], context.services.settings?.get().agentAdapters, {
         sessionStore,
         ...(context.services.settings === undefined ? {} : { settings: context.services.settings }),
         ...(context.services.nativeSessions === undefined ? {} : { nativeSessions: context.services.nativeSessions }),
       })
+      setAdapterRegistry(registry)
+      context.resources.add(() => {
+        if (registry === undefined) return
+        setAdapterRegistry(undefined)
+      })
       registry.applyEnabledSettings(context.services.settings?.get().agentAdapters)
+      const virtualProviders = createDshVirtualProviderRegistration(context.services.dshContext)
+      virtualProviders?.setProviders(registry.enabledAdapterIds())
+      if (virtualProviders !== undefined) context.resources.add(() => virtualProviders.dispose())
       registry.warmCatalog()
       if (nativeSessions !== undefined) {
         const disposeNativeEvents = nativeSessions.subscribe({
@@ -64,8 +87,11 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             const eventType = nativeEventType(event)
             if (sessionId === undefined || eventType === undefined) return
             // 旧会话可能不在启动时的 SessionStore.list() 中，直到用户点击
-            // 侧栏才加载。加载事件本身携带完整快照，此时补做一次迁移。
-            if (sessionStore.get(sessionId) === undefined) sessionStore.migrateLegacySessions([session])
+            // 侧栏才加载。加载事件本身携带完整快照，此时补做一次迁移；
+            // fork 子会话的绑定来自父会话，必须把祖先链一起交给迁移。
+            if (sessionStore.get(sessionId) === undefined) {
+              sessionStore.migrateLegacySessions(collectMigrationChain(nativeSessions, session))
+            }
             const current = sessionStore.get(sessionId)
             if (current === undefined || current.status === 'archived') return
             if (eventType === 'turn/start') {
@@ -88,7 +114,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           case 'session/adapter-map':
             // DSH 历史会话的 seed 事件不会发布 session/event；每次读取映射时
             // 重新检查当前已加载对象，覆盖“用户刚点击打开旧会话”的路径。
-            if (nativeSessions !== undefined) sessionStore.migrateLegacySessions(nativeSessions.list())
+            // 子会话的父会话可能尚未出现在 list() 里，按需补齐祖先链。
+            if (nativeSessions !== undefined) {
+              sessionStore.migrateLegacySessions(expandMigrationChain(nativeSessions, nativeSessions.list()))
+            }
             return sessionStore.adapterBindings()
           case 'session/archive': return registry.archiveSession(readSessionId(payload))
           case 'session/steer': return registry.steer(readSessionId(payload), readPrompt(payload), false)
@@ -108,17 +137,75 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             const subscription = readSubscriptionRequest(payload)
             return subscriptions.read(subscription.adapterId, subscription.providerId)
           }
+          case 'subscription/reset': {
+            const subscription = readSubscriptionResetRequest(payload)
+            return subscriptions.reset(subscription.adapterId, subscription.providerId)
+          }
+          // `/委派` 的 Host 边界：先给 Client 一个可读的能力诊断，再落地异步派发。
+          case 'delegate/capability': {
+            return delegateCapability({
+              agents: readOptionalContextService(context.services.dshContext, 'agents') as DelegateAgentRegistry | undefined,
+              nativeSessions: context.services.nativeSessions,
+            })
+          }
+          case 'delegate': {
+            const request = readDelegateRequest(payload)
+            return dispatchDelegateSubagent(request, {
+              agents: readOptionalContextService(context.services.dshContext, 'agents') as DelegateAgentRegistry | undefined,
+              nativeSessions: context.services.nativeSessions,
+            })
+          }
           default: throw new Error(`未知 CLI RPC: cli/${action}`)
         }
       }))
+
+      // 外部 CLI 子代理托管：开启时启动本机回环桥接，把外部 CLI 的子代理调用
+      // 转投成 DSH 原生可续子会话；关闭或模块停用时收回端口并清空驱动句柄。
+      let bridgeServer: SubagentBridgeServer | undefined
+      let bridgeSync: Promise<void> = Promise.resolve()
+      const syncSubagentBridge = async (enabled: boolean): Promise<void> => {
+        if (enabled === (bridgeServer !== undefined)) return
+        if (!enabled) {
+          const server = bridgeServer
+          bridgeServer = undefined
+          setSubagentBridge(undefined)
+          await server?.close()
+          return
+        }
+        try {
+          const agents = readOptionalContextService(context.services.dshContext, 'agents')
+          const server = await startSubagentBridgeServer({
+            dispatch: (request) => dispatchBridgeSubagent(request, {
+              agents: agents as BridgeAgentRegistry | undefined,
+              nativeSessions: context.services.nativeSessions,
+            }),
+          })
+          bridgeServer = server
+          setSubagentBridge(server.runtime)
+        } catch (error) {
+          console.warn('codingns4dsh: 外部 Agent 子代理桥接启动失败', error)
+        }
+      }
+      const scheduleSubagentBridgeSync = (enabled: boolean): void => {
+        bridgeSync = bridgeSync.then(() => syncSubagentBridge(enabled), () => syncSubagentBridge(enabled))
+      }
+      await syncSubagentBridge(normalizeSubagentBridgeSettings(context.services.settings?.get().subagentBridge).enabled)
+      context.resources.add(async () => {
+        const server = bridgeServer
+        bridgeServer = undefined
+        setSubagentBridge(undefined)
+        await server?.close()
+      })
 
       const settings = context.services.settings
       if (settings !== undefined) {
         context.resources.add(settings.watch((next) => {
           registry.applyEnabledSettings(next.agentAdapters)
+          virtualProviders?.setProviders(registry.enabledAdapterIds())
           registry.syncPreferences(next.agentAdapterPreferences)
           sessionStore.sync(next.cliSessions)
           subscriptions = buildSubscriptions(next)
+          scheduleSubagentBridgeSync(normalizeSubagentBridgeSettings(next.subagentBridge).enabled)
         }))
       }
 
@@ -131,6 +218,16 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             yield* next()
             return
           }
+          // fork 子会话继承父会话历史，但可能还没被任何 RPC 触碰过；用户直接在
+          // 子会话里发消息时，这里必须补一次迁移，否则子会话会被当成默认 DSH
+          // 会话，用户看到的仍是 DSH 主模型而不是原来的外部 Agent。子会话的
+          // 绑定来自父会话，所以父会话必须一起进入同一批迁移。
+          if (sessionId !== '' && nativeSessions !== undefined) {
+            const nativeSession = nativeSessions.get(sessionId)
+            if (nativeSession !== undefined) {
+              sessionStore.migrateLegacySessions(collectMigrationChain(nativeSessions, nativeSession))
+            }
+          }
           const storedConfig = sessionId ? registry.getSession(sessionId) : { adapterId: 'dsh' }
           // DSH 原生请求仍会携带当前模型提供方。旧会话在重载后可能暂时
           // 被恢复成 dsh，但 provider 已明确指向外部 Agent；继续旁路会让
@@ -142,17 +239,26 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             inferMessageAdapter(messages),
             registry,
           )
-          const config = storedConfig.adapterId === 'dsh' && selectedExternalAdapter !== undefined
+          // DSH 的 modelSelection 只描述 DSH 自己那条模型路由（例如 glor/deepseek）。
+          // 只有它明确指向即将接管的外部适配器时，model/effort 才属于该适配器；
+          // 当适配器是从会话历史推断出来的（fork 子会话继承父会话的外部消息，而
+          // provider 仍是 DSH 主模型）时，沿用该 model 会把别的 Provider 的模型名
+          // 写进外部 Agent——Codex 会用它 thread/start 并直接 404，整个会话从此
+          // 无法继续。此时必须留空，由适配器自己的偏好决定模型。
+          const selectionOwnedByAdapter = selectedExternalAdapter !== undefined
+            && dshSelection.providerId === selectedExternalAdapter
+          let config: CodingNsCliSessionConfig = storedConfig.adapterId === 'dsh' && selectedExternalAdapter !== undefined
             ? {
                 adapterId: selectedExternalAdapter,
-                ...(dshSelection.modelId === undefined ? {} : { modelId: dshSelection.modelId }),
-                ...(dshSelection.effortId === undefined ? {} : { effortId: dshSelection.effortId }),
+                ...(selectionOwnedByAdapter && dshSelection.modelId !== undefined ? { modelId: dshSelection.modelId } : {}),
+                ...(selectionOwnedByAdapter && dshSelection.effortId !== undefined ? { effortId: dshSelection.effortId } : {}),
               }
             : storedConfig
           // DSH 首轮请求可能只通过 provider 临时选择外部 Agent，第二轮请求通常不再携带
           // provider。必须在路由决定后立即持久化绑定，否则下一轮会在进入 Registry 前退回 dsh。
+          // 采用规范化结果，让本轮也使用适配器自己的模型偏好，而不是 DSH 主模型。
           if (sessionId !== '' && storedConfig.adapterId === 'dsh' && selectedExternalAdapter !== undefined) {
-            registry.setSession(sessionId, config)
+            config = registry.setSession(sessionId, config)
           }
           if (config.adapterId === 'dsh') {
             const selection = dshSelection
@@ -231,7 +337,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         })
         if (typeof dispose === 'function') context.resources.add(() => { (dispose as () => void)() })
       }
-      context.resources.add(async () => { await registry.dispose(); await sessionStore.flush() })
+      context.resources.add(async () => { await registry.dispose(); await sessionStore.flush(); setAdapterRegistry(undefined) })
     },
   }
 }
@@ -239,6 +345,16 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
 function requireTeam(context: { services: CodingNsHostServices }) {
   if (context.services.nativeTeam === undefined) throw new Error('DSH_TEAM_NATIVE_UNAVAILABLE')
   return context.services.nativeTeam
+}
+
+/** DSH Context 可能在测试或嵌入式宿主里缺少目标服务；缺失时按不可用处理。 */
+function readOptionalContextService(ctx: CodingNsHostServices['dshContext'], name: string): unknown {
+  if (ctx === undefined) return undefined
+  try {
+    return ctx.get(name)
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -299,10 +415,36 @@ function readSubscriptionRequest(value: unknown): { adapterId: string; providerI
   }
 }
 
+/** 重置请求必须显式给出适配器；缺省回退 command-code 会让重置落到错误的 Agent。 */
+function readSubscriptionResetRequest(value: unknown): { adapterId: string; providerId?: string } {
+  const record = asRecord(value)
+  if (record === null || record.adapterId === undefined) throw new Error('adapterId 不能为空')
+  return readSubscriptionRequest(value)
+}
+
 function readSessionId(value: unknown): string {
   const record = asRecord(value)
   if (typeof record?.sessionId !== 'string' || record.sessionId.trim() === '') throw new Error('sessionId 不能为空')
   return record.sessionId.trim()
+}
+
+/** `/委派` 请求：父会话、目标适配器与自包含任务描述。 */
+function readDelegateRequest(value: unknown): { sessionId: string; adapterId: string; prompt: string; modelId?: string } {
+  const record = asRecord(value)
+  const sessionId = readSessionId(value)
+  const adapterId = readAdapterId(value)
+  // 这里不能复用 readPrompt：它把空 prompt 当成非法参数直接抛错，而 `/委派` 允许任务
+  // 留空——popupSelect 打开时焦点在弹层，草稿里往往只剩 `/委派` 本身。留空交给派发内核
+  // 回退到会话最近一条人类消息，因此只做类型与去空白处理，空串原样传下去。
+  const rawPrompt = record?.prompt
+  if (rawPrompt !== undefined && typeof rawPrompt !== 'string') throw new Error('prompt 必须是字符串')
+  const prompt = typeof rawPrompt === 'string' ? rawPrompt.trim() : ''
+  return {
+    sessionId,
+    adapterId,
+    prompt,
+    ...(typeof record?.modelId === 'string' && record.modelId.trim() !== '' ? { modelId: record.modelId.trim() } : {}),
+  }
 }
 
 function readSessionConfig(value: unknown): CodingNsCliSessionConfig {
@@ -373,6 +515,50 @@ function readModelSelectionCandidates(value: Record<string, any> | null): Record
     if (lastUsed !== null) result.push(lastUsed)
     if (next !== null) result.push(next)
     if (pending !== null) result.push(pending)
+  }
+  return result
+}
+
+/**
+ * 分叉子会话的绑定来自父会话，迁移时必须把祖先链一起交给 SessionStore。
+ * 只传子会话会让继承逻辑找不到父记录，子会话继续停留在 dsh。
+ */
+function collectMigrationChain(
+  nativeSessions: CodingNsHostServices['nativeSessions'],
+  session: unknown,
+): readonly unknown[] {
+  const chain: unknown[] = [session]
+  const seen = new Set<string>()
+  let current = session
+  for (let depth = 0; depth < 16; depth += 1) {
+    const record = asRecord(current)
+    const header = asRecord(record?.header)
+    const parentSessionId = typeof header?.parentSession === 'string' ? header.parentSession.trim() : ''
+    if (parentSessionId === '' || seen.has(parentSessionId)) break
+    seen.add(parentSessionId)
+    const parent = nativeSessions?.get(parentSessionId)
+    if (parent === undefined) break
+    chain.push(parent)
+    current = parent
+  }
+  return chain
+}
+
+/** 对一批会话逐个补齐祖先链，保持原有顺序并去重。 */
+function expandMigrationChain(
+  nativeSessions: CodingNsHostServices['nativeSessions'],
+  sessions: readonly unknown[],
+): readonly unknown[] {
+  const result: unknown[] = []
+  const seen = new Set<string>()
+  for (const session of sessions) {
+    for (const entry of collectMigrationChain(nativeSessions, session)) {
+      const record = asRecord(entry)
+      const id = typeof record?.id === 'string' ? record.id : ''
+      if (id !== '' && seen.has(id)) continue
+      if (id !== '') seen.add(id)
+      result.push(entry)
+    }
   }
   return result
 }

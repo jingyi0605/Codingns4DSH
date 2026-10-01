@@ -20,8 +20,14 @@
  * 因此 Web 与 Desktop 都成立。
  */
 
-/** 原生设置齿轮按钮；Web 浏览器下 `settings.launcher` 无条目，由它作为 fallback 渲染。 */
-export const SETTINGS_BUTTON_SELECTOR = 'button[aria-label="设置"]'
+/**
+ * 原生设置齿轮按钮；Web 浏览器下 `settings.launcher` 无条目，由它作为 fallback 渲染。
+ *
+ * DSH 的 `aria-label` 来自 locale 词典（`dsh-client-ui-settings-general` 的 `trigger`
+ * 键：zh 为「设置」、en 为 `Settings`），因此选择器必须同时覆盖 DSH 0.2.0-rc.2 支持
+ * 的两种语言，不能把中文标签当作唯一的语言无关契约。其它语言走槽位出口兜底。
+ */
+export const SETTINGS_BUTTON_SELECTOR = 'button[aria-label="设置"], button[aria-label="Settings"]'
 
 /**
  * `settings.launcher` 槽位出口；Desktop 下由 DSH 账户菜单占位，齿轮 fallback 被替换。

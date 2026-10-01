@@ -1,6 +1,7 @@
 import { providerVisual, type ProviderVisual } from './provider-icons.js'
 import { sessionAdapterId, subscribeSessionAdapters } from './session-adapter-cache.js'
 import { resolveDshSessionId } from './workspace-session-fiber.js'
+import { resolveCodingNsTranslator, type CodingNsLocale } from './locale.js'
 
 export const WORKSPACE_SESSION_ROW_SELECTOR = '[role="treeitem"]'
 export const WORKSPACE_SESSION_LOGO_ATTRIBUTE = 'data-codingns-session-logo'
@@ -17,6 +18,8 @@ export interface WorkspaceSessionLogoDomOptions {
   readonly MutationObserver?: typeof MutationObserver
   readonly adapterIdForSession?: (sessionId: string) => string | undefined
   readonly visualForAdapter?: (adapterId: string | undefined) => ProviderVisual
+  /** DSH 语言运行时；只影响未知 Agent 兜底展示名的语言。 */
+  readonly locale?: CodingNsLocale
 }
 
 /**
@@ -34,7 +37,8 @@ export function startWorkspaceSessionLogoDom(
   // SessionStore 只记录显式选择；没有外部绑定时，DSH Registry 的权威默认值就是 dsh。
   const adapterIdForSession = options.adapterIdForSession
     ?? ((sessionId: string): string => sessionAdapterId(sessionId) ?? 'dsh')
-  const visualForAdapter = options.visualForAdapter ?? providerVisual
+  const t = resolveCodingNsTranslator(options.locale)
+  const visualForAdapter = options.visualForAdapter ?? ((adapterId: string | undefined): ProviderVisual => providerVisual(adapterId, t))
   let disposed = false
   let scanQueued = false
 

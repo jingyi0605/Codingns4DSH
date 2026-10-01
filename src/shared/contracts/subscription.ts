@@ -8,6 +8,21 @@ export interface CliSubscriptionWindow {
   readonly totalCredits?: number
 }
 
+/** Codex 账户消费点数（credits）；与重置次数相互独立，余额由上游以十进制字符串返回。 */
+export interface CliSubscriptionCredits {
+  readonly hasCredits: boolean
+  readonly unlimited: boolean
+  readonly balance: string | null
+}
+
+/** 消耗一次订阅重置后的稳定结果，与 Codex app-server 的 outcome 对齐。 */
+export type CliSubscriptionResetOutcome = 'reset' | 'alreadyRedeemed' | 'nothingToReset' | 'noCredit'
+
+/** Host 执行订阅重置后返回给 Client 的安全摘要。 */
+export interface CliSubscriptionResetResult {
+  readonly outcome: CliSubscriptionResetOutcome
+}
+
 /** Host 读取 Provider 订阅后返回给 Client 的安全摘要。 */
 export interface CliSubscriptionUsage {
   readonly authenticated: boolean
@@ -16,6 +31,7 @@ export interface CliSubscriptionUsage {
   readonly secondary: CliSubscriptionWindow | null
   readonly monthly: CliSubscriptionWindow | null
   readonly rateLimitReachedType: string | null
+  /** 官方 Codex 的可囤积重置券；明细行的 expiresAt 为 Unix 秒。读取器不支持时为 null。 */
   readonly resetCredits: null | {
     readonly availableCount: number
     readonly credits: readonly {
@@ -25,6 +41,8 @@ export interface CliSubscriptionUsage {
       readonly description: string | null
     }[]
   }
+  /** 官方 Codex 账户点数（credits）余额；与重置次数相互独立。 */
+  readonly credits?: CliSubscriptionCredits | null
   readonly capturedAt: string
   /** 统一模型提供商摘要；同一提供商可被多个 Agent 复用。 */
   readonly provider?: CliSubscriptionProvider

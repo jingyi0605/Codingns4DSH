@@ -40,7 +40,7 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, 
     })
   }
   const updateSetting = (field: WorkspaceToggleField, nextValue: boolean): void => {
-    updateField(field, nextValue, '工作区会话设置已保存')
+    updateField(field, nextValue, t('workspace.sessionSettingsSaved'))
   }
 
   return createElement('div', {

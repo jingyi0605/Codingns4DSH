@@ -574,3 +574,106 @@ test('Registry 重绑期间的新 Provider 探测不会被旧身份的在途探�
   await firstList
   assert.equal(store.get('dsh-rebind-probe')?.providerStateReason, 'provider-new')
 })
+
+test('fork 子会话继承父会话的外部适配器，不落回默认 DSH 会话', () => {
+  const store = new CodingNsCliSessionStore()
+  // 真实 stage0 形态：父会话被用户显式选为 command-code，子会话 isSeeded
+  // 只继承了父会话的 request/context，没有任何 codingns4dsh 插件痕迹。
+  const parent = {
+    id: 'session-parent',
+    header: { id: 'session-parent', cwd: '/workspace', createdAt: 1790738653345, isSeeded: false },
+    snapshotEvents() {
+      return [
+        { type: 'request/context', data: { provider: 'deepseek-official', model: 'deepseek-flash' } },
+        { type: 'request/context', data: { provider: 'command-code', model: 'deepseek/deepseek-v4.1-flash' } },
+        {
+          type: 'assistant/message',
+          data: { message: { source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' } } },
+        },
+      ]
+    },
+  }
+  const child = {
+    id: 'session-child',
+    header: {
+      id: 'session-child',
+      cwd: '/workspace',
+      createdAt: 1790819437613,
+      isSeeded: true,
+      parentSession: 'session-parent',
+    },
+    snapshotEvents() {
+      return [
+        { type: 'request/context', data: { provider: 'deepseek-official', model: 'deepseek-flash' } },
+        { type: 'request/context', data: { provider: 'command-code', model: 'deepseek/deepseek-v4.1-flash' } },
+        {
+          type: 'assistant/message',
+          data: { message: { source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' } } },
+        },
+      ]
+    },
+  }
+
+  // 父会话必须先由外部运行时绑定；迁移只做回填，不发明绑定。
+  store.upsert('session-parent', { adapterId: 'command-code', modelId: 'deepseek/deepseek-v4.1-flash' })
+  // 子会话排在父会话之前，继承必须能跨顺序解析。
+  const migrated = store.migrateLegacySessions([child, parent])
+
+  assert.equal(migrated.migrated, 1)
+  assert.equal(store.get('session-child')?.adapterId, 'command-code')
+  assert.equal(store.get('session-child')?.modelId, 'deepseek/deepseek-v4.1-flash')
+  assert.deepEqual(
+    store.adapterBindings().slice().sort((left, right) => left.sessionId.localeCompare(right.sessionId)),
+    [
+      { sessionId: 'session-child', adapterId: 'command-code' },
+      { sessionId: 'session-parent', adapterId: 'command-code' },
+    ],
+  )
+})
+
+test('父会话不是外部 Agent 时，fork 子会话不得凭空继承', () => {
+  const store = new CodingNsCliSessionStore()
+  const parent = {
+    id: 'plain-parent',
+    header: { id: 'plain-parent', isSeeded: false },
+    snapshotEvents() {
+      return [{ type: 'request/context', data: { provider: 'deepseek-official', model: 'deepseek-flash' } }]
+    },
+  }
+  const child = {
+    id: 'plain-child',
+    header: { id: 'plain-child', isSeeded: true, parentSession: 'plain-parent' },
+    snapshotEvents() {
+      return [{ type: 'request/context', data: { provider: 'deepseek-official', model: 'deepseek-flash' } }]
+    },
+  }
+
+  const migrated = store.migrateLegacySessions([parent, child])
+
+  assert.deepEqual(migrated, { migrated: 0, unresolved: 0 })
+  assert.equal(store.get('plain-child'), undefined)
+})
+
+test('迁移写入的绑定必须能被 Registry.getSession 读取并用于路由', () => {
+  const store = new CodingNsCliSessionStore()
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'command-code', name: 'Command Code' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'cc' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } as const },
+  }], {}, { sessionStore: store })
+
+  assert.deepEqual(registry.getSession('late-child'), { adapterId: 'dsh' })
+
+  store.upsert('late-parent', { adapterId: 'command-code', modelId: 'deepseek/deepseek-v4.1-flash' })
+  store.migrateLegacySessions([{
+    id: 'late-child',
+    header: { id: 'late-child', isSeeded: true, parentSession: 'late-parent' },
+    snapshotEvents() { return [] },
+  }])
+
+  assert.deepEqual(registry.getSession('late-child'), {
+    adapterId: 'command-code',
+    modelId: 'deepseek/deepseek-v4.1-flash',
+  })
+})

@@ -32,7 +32,7 @@ import { createPeerHostDiagnosticSink, toPeerHostDiagnosticSnapshot } from '../m
 import { AggregatedHostTransportService } from '../modules/peer-host/aggregated-host-transport.js'
 import { createDshNativeSummarySource } from '../modules/peer-host/dsh-native-summary-source.js'
 import { createPeerHostRemoteSummarySource, readPeerHostRemoteWorkspaceCandidates, type PeerHostRemoteWorkspaceCandidate } from '../modules/peer-host/peer-host-remote-summary-source.js'
-import { callPeerNativeRpc, openPeerNativeStream, readNativeRpcEnvelope } from '../modules/peer-host/peer-host-native-transport.js'
+import { callPeerCliRpc, callPeerNativeRpc, openPeerNativeStream, readNativeRpcEnvelope } from '../modules/peer-host/peer-host-native-transport.js'
 import { createAggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { encodeNativeResponseBytes, isDshNativeRemoteMethod, rewriteNativeRequestIds, rewriteNativeResponseIds } from '../modules/peer-host/peer-host-native-protocol.js'
 
@@ -127,6 +127,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
               transport: {
                 rpc: (request) => callPeerNativeRpc(httpProxy, record.id, request),
                 stream: (request) => openPeerNativeStream(httpProxy, record.id, request),
+                cli: (request) => callPeerCliRpc(httpProxy, record.id, request),
               },
               // 默认只投影用户显式添加的远端工作区；未添加时不展示该 Host 的任何工作区。
               visibleWorkspaceIds: record.visibleWorkspaceIds ?? [],

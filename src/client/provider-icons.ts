@@ -1,3 +1,5 @@
+import { resolveCodingNsTranslator, type CodingNsTranslator } from './locale.js'
+
 export interface ProviderVisual {
   readonly adapterId: string | null
   readonly displayName: string
@@ -30,6 +32,8 @@ const PROVIDER_DEFINITIONS: Readonly<Record<string, ProviderDefinition>> = {
   codex: { adapterId: 'codex', displayName: 'Codex', color: '#10a37f' },
   opencode: { adapterId: 'opencode', displayName: 'OpenCode', color: '#14b8a6' },
   grok: { adapterId: 'grok', displayName: 'Grok', color: '#71717a' },
+  mcode: { adapterId: 'mcode', displayName: 'MiniMax Code', color: '#f97316' },
+  zcode: { adapterId: 'zcode', displayName: 'ZCode', color: '#38bdf8' },
 }
 
 const PROVIDER_ICONS: Record<string, string> = {}
@@ -47,14 +51,20 @@ export function providerIconUrl(adapterId: string): string | undefined {
   return PROVIDER_ICONS[adapterId]
 }
 
-/** 未绑定和未知值都返回中性占位，绝不冒充任一已知品牌。 */
-export function providerVisual(adapterId: string | undefined): ProviderVisual {
+/**
+ * 未绑定和未知值都返回中性占位，绝不冒充任一已知品牌。
+ *
+ * 第二个参数是 Codingns4DSH 词典翻译函数；未提供时退回内置中文词典，
+ * 保证不接 locale 的调用方与单测仍能拿到稳定的展示名。
+ */
+export function providerVisual(adapterId: string | undefined, t?: CodingNsTranslator): ProviderVisual {
+  const translate = t ?? resolveCodingNsTranslator()
   if (adapterId === undefined || adapterId.trim() === '') {
-    return { adapterId: null, displayName: '未绑定 Agent', iconUrl: undefined, color: PROVIDER_NEUTRAL_COLOR }
+    return { adapterId: null, displayName: translate('provider.unbound'), iconUrl: undefined, color: PROVIDER_NEUTRAL_COLOR }
   }
   const definition = PROVIDER_DEFINITIONS[adapterId]
   if (definition === undefined) {
-    return { adapterId, displayName: `未知 Agent（${adapterId}）`, iconUrl: undefined, color: PROVIDER_NEUTRAL_COLOR }
+    return { adapterId, displayName: translate('provider.unknown', { adapterId }), iconUrl: undefined, color: PROVIDER_NEUTRAL_COLOR }
   }
   return { ...definition, iconUrl: PROVIDER_ICONS[adapterId] }
 }

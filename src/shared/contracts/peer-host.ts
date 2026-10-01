@@ -102,6 +102,8 @@ export interface PeerHostSessionRecord {
   readonly updatedAt: number
   /** DSH 原生会话是否仍处于待首条消息的临时状态。 */
   readonly blank: boolean
+  /** 远端 CodingNS CLI 会话绑定的适配器；旧 Host 未提供时保持缺省。 */
+  readonly adapterId?: string
 }
 
 /** 当前 Host 和 PeerHost 统一使用的工作区摘要。 */

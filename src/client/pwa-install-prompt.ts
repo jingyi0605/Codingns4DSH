@@ -9,6 +9,7 @@
  *
  * 样式内联并带 `env(safe-area-inset-bottom)`，避免被 Home 指示条遮住。
  */
+import { resolveCodingNsTranslator, type CodingNsLocale } from './locale.js'
 
 export interface PwaInstallSnapshot {
   readonly loopback?: boolean
@@ -45,7 +46,9 @@ export interface PwaInstallPromptElementLike {
 export interface PwaInstallPromptOptions {
   readonly window?: PwaInstallPromptWindowLike | undefined
   readonly document?: PwaInstallPromptDocumentLike | undefined
-  /** 文案；缺省使用中文。 */
+  /** DSH 语言运行时；未提供时退回内置中文词典。 */
+  readonly locale?: CodingNsLocale | undefined
+  /** 文案覆盖；缺省由 `locale` 词典生成。 */
   readonly text?: { readonly install: string; readonly hint: string; readonly dismiss: string; readonly iosHint: string } | undefined
   /** 用户点击“安装”后的回调（用于写入本地诊断/埋点）。 */
   readonly onOutcome?: ((outcome: string) => void) | undefined
@@ -59,18 +62,17 @@ export interface PwaInstallPromptController {
 
 export const PWA_INSTALL_DISMISS_KEY = 'codingns4dsh.pwa.installPromptDismissed'
 
-const DEFAULT_TEXT = {
-  install: '安装到主屏幕',
-  hint: '安装后可从主屏幕直接打开，获得独立窗口与更完整的屏幕空间。',
-  dismiss: '以后再说',
-  iosHint: '点击「分享」→「添加到主屏幕」即可安装。',
-}
-
 /** 启动安装引导条；不满足条件时不创建任何节点。 */
 export function startPwaInstallPrompt(options: PwaInstallPromptOptions = {}): PwaInstallPromptController {
   const hostWindow = options.window ?? (globalThis as unknown as PwaInstallPromptWindowLike)
   const hostDocument = options.document ?? (globalThis as unknown as PwaInstallPromptDocumentLike)
-  const text = options.text ?? DEFAULT_TEXT
+  const t = resolveCodingNsTranslator(options.locale)
+  const text = options.text ?? {
+    install: t('pwaPrompt.install'),
+    hint: t('pwaPrompt.hint'),
+    dismiss: t('pwaPrompt.dismiss'),
+    iosHint: t('pwaPrompt.iosHint'),
+  }
   let element: PwaInstallPromptElementLike | undefined
   let removeListeners: (() => void) | undefined
 

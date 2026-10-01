@@ -132,16 +132,29 @@ test('Agent 选择器位于模型左侧并显示完整 Provider Logo', async () 
   assert.match(slotSource, /transform: !locked && open \?/u)
   assert.doesNotMatch(slotSource, /⌄/u)
 
-  for (const adapterId of ['dsh', 'command-code', 'claude-code', 'kimi', 'gemini', 'pi', 'codex', 'opencode', 'grok']) {
+  for (const adapterId of ['dsh', 'command-code', 'claude-code', 'kimi', 'gemini', 'pi', 'codex', 'opencode', 'grok', 'zcode']) {
     assert.match(iconSource, new RegExp(`(?:['"]${adapterId}['"]|\\b${adapterId}):`, 'u'), `${adapterId} 缺少 Logo 映射`)
   }
   assert.match(bundleSource, /data:image\/(?:png|svg\+xml);base64,/u, 'Client 单文件包应内联 Provider Logo')
 })
 
-test('输入工具栏保持单行并动态滚动显示超长模型名称', async () => {
-  const source = await readFile(join(projectRoot, 'src/client/cli-slots.ts'), 'utf8')
+test('输入工具栏放不下时按 DSH 判定收起模型字段，超长名称保持滚动展示', async () => {
+  const [source, quickPhraseSource] = await Promise.all([
+    readFile(join(projectRoot, 'src/client/cli-slots.ts'), 'utf8'),
+    readFile(join(projectRoot, 'src/client/quick-phrase-slot.ts'), 'utf8'),
+  ])
 
-  assert.match(source, /data-composer-card\].*flex-wrap:nowrap!important/u)
+  // 放不下时由 DSH 给控制行加 data-model-compact；插件不能强制 nowrap，
+  // 否则工具行改为压缩权限/规划组，测量口径失真且内容溢出重叠。
+  assert.doesNotMatch(source, /flex-wrap:nowrap!important/u)
+  assert.match(source, /\[data-composer-card\] \[data-model-compact\] \.codingns4dsh-model-root \.codingns4dsh-model-name,/u)
+  assert.match(source, /\[data-composer-card\] \[data-model-compact\] \.codingns4dsh-model-root \.codingns4dsh-model-effort\{display:none!important\}/u)
+  assert.match(source, /\[data-composer-card\] \[data-model-compact\] \.codingns4dsh-model-root \.codingns4dsh-model-icon\{display:block!important;flex:none\}/u)
+  // 收起图标经适配层解析，不绑定具体 DSH 版本的导出名。
+  assert.match(source, /resolveDataIcon\(\)/u)
+  assert.doesNotMatch(source, /IconDataOutline/u)
+  assert.match(source, /className: 'codingns4dsh-model-icon'/u)
+  assert.match(source, /className: 'codingns4dsh-model-effort'/u)
   assert.match(source, /data-composer-card\].*width:0;flex:1 1 0/u)
   assert.match(source, /codingns4dsh-model-root/u)
   assert.match(source, /conversation\.input\.model.*select\{[\s\S]*max-width:min\(150px,45cqw\)/u)
@@ -153,6 +166,15 @@ test('输入工具栏保持单行并动态滚动显示超长模型名称', async
   assert.doesNotMatch(source, /const modelNameStyle = \{[^}]*textOverflow/u)
   assert.match(source, /const agentRootStyle = \{[^}]*flex: '0 0 auto'/u)
   assert.match(source, /const agentTriggerLabelStyle = \{ flex: '0 0 auto', whiteSpace: 'nowrap'/u)
+  // 顺序兜底：权限/规划组固定排在快捷短语之后，不依赖 JS 挂载时序。
+  assert.match(quickPhraseSource, /\[data-composer-card\] \[class\*="_modes"\]\{order:\$\{QUICK_PHRASE_PERMISSION_ORDER\}\}/u)
+})
+
+test('快捷短语模态框层级高于宿主侧栏', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/quick-phrase-slot.ts'), 'utf8')
+  assert.match(source, /const QUICK_PHRASE_MODAL_Z_INDEX = 10001/u)
+  assert.match(source, /zIndex: QUICK_PHRASE_MODAL_Z_INDEX/u)
+  assert.match(source, /zIndex: QUICK_PHRASE_MODAL_Z_INDEX \+ 1/u)
 })
 
 test('上下文计量 dock 保留稳定行高，避免数值投影短暂缺失时工具栏抖动', async () => {
@@ -168,4 +190,41 @@ test('订阅悬浮框按内容自适应且不产生横向滚动', async () => {
   assert.match(source, /tableLayout: 'fixed'/u)
   assert.match(source, /overflow: 'visible'/u)
   assert.doesNotMatch(source, /sub2apiTableScrollStyle = \{ overflowX:/u)
+})
+
+test('官方余额统一复用适配器 Logo，并以进度条和到期倒计时展示', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/subscription-slot.ts'), 'utf8')
+  assert.match(source, /const adapterIconSource = providerIconUrl\(adapterId \?\? 'dsh'\)/u)
+  assert.match(source, /const providerBalanceRemaining = providerBalance === undefined \? null : balancePercent\(providerBalance\.remaining, providerBalance\.total\)/u)
+  assert.match(source, /providerBalanceRemaining !== null\s*\? createRemainingRing\(providerBalanceRemaining\)/u)
+  assert.match(source, /usage\.providerBalancePlanLabel/u)
+  assert.match(source, /usage\.planName\?\.trim\(\)/u)
+  assert.match(source, /role: 'progressbar'/u)
+  assert.match(source, /function summarizeProviderBalance/u)
+  assert.match(source, /function formatExpiryCountdown/u)
+  assert.match(source, /usage\.expiresIn/u)
+  assert.doesNotMatch(source, /src: deepseekIconSource, alt: '', width: 18, height: 18[\s\S]*deepseekIconSource !== undefined/u)
+})
+
+test('Codex 订阅展示重置次数与点数，并经确认模态框触发重置', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/subscription-slot.ts'), 'utf8')
+  assert.match(source, /usage\.creditBalanceLabel/u)
+  assert.match(source, /usage\.resetCreditsLabel/u)
+  assert.match(source, /usage\.resetCreditsExpiresAt/u)
+  assert.match(source, /usage\.resetButton/u)
+  assert.match(source, /'subscription\/reset'/u)
+  assert.match(source, /createElement\(ResetConfirmDialog/u)
+  assert.match(source, /useDismissOnOutsidePointer\(resetDialogRef, resetOpen && !resetPending, closeResetDialog\)/u)
+  assert.match(source, /'aria-modal': true/u)
+  assert.match(source, /subscriptionUsageCache\.delete\(cacheKey\)/u)
+  assert.match(source, /refreshRef\.current = refresh/u)
+  // 点数保留两位小数，重置次数与图标按钮同一行。
+  assert.match(source, /formatCreditBalance\(credits\.balance\)/u)
+  assert.match(source, /numeric\.toFixed\(2\)/u)
+  assert.match(source, /resetCreditsValueGroupStyle/u)
+  assert.match(source, /function ResetIcon\(\)/u)
+  assert.match(source, /'aria-label': t\('usage\.resetButton'\)/u)
+  // 图标按钮的伪类只能落在注入样式表里，内联样式无法表达。
+  assert.match(source, /\.codingns4dsh-subscription-reset:hover:not\(:disabled\)/u)
+  assert.match(source, /\.codingns4dsh-subscription-reset:disabled\{opacity:\.4;cursor:not-allowed\}/u)
 })

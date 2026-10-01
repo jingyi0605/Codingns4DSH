@@ -229,7 +229,7 @@ const CODINGNS_RPC_ENDPOINTS = [
   'fileManagement/session-changes', 'fileManagement/read', 'fileManagement/download', 'fileManagement/write', 'fileManagement/create-file', 'fileManagement/create-directory', 'fileManagement/rename', 'fileManagement/copy', 'fileManagement/move', 'fileManagement/delete', 'fileManagement/git-ignore',
   'lanAccessDsh/addresses', 'lanAccessDsh/detect', 'lanAccessDsh/get', 'lanAccessDsh/settings/get', 'lanAccessDsh/settings/set', 'lanAccessDsh/login/get', 'lanAccessDsh/login/set', 'lanAccessDsh/login/session/open', 'lanAccessDsh/login/session/refresh', 'lanAccessDsh/start', 'lanAccessDsh/stop',
   'peerHost/list', 'peerHost/diagnostics', 'peerHost/create', 'peerHost/update', 'peerHost/remove', 'peerHost/enable', 'peerHost/disable', 'peerHost/check', 'peerHost/reconnect', 'peerHost/login', 'peerHost/logout', 'peerHost/status', 'peerHost/request', 'peerHost/wsEndpoint', 'peerHost/aggregate', 'peerHost/workspaceOrder', 'peerHost/credentialStatus', 'peerHost/workspaceCandidates', 'peerHost/setWorkspaceVisibility', 'peerHost/replaceVisibleWorkspaces', 'peerHost/native', 'peerHost/nativeLocal', 'peerHost/nativeStream', 'peerHost/nativeStreamOpen', 'peerHost/nativeStreamNext', 'peerHost/nativeStreamClose',
-  'cli/catalog', 'cli/models', 'cli/adapter/set', 'cli/session/get', 'cli/session/set', 'cli/session/list', 'cli/session/adapter-map', 'cli/session/archive', 'cli/session/steer', 'cli/session/follow-up', 'cli/session/interrupt', 'cli/subscription', 'cli/team/status', 'cli/team/members', 'cli/team/tasks', 'cli/team/task', 'cli/team/spawn', 'cli/team/message', 'cli/team/task/create', 'cli/team/task/update', 'cli/team/wait', 'cli/team/interrupt',
+  'cli/catalog', 'cli/models', 'cli/adapter/set', 'cli/session/get', 'cli/session/set', 'cli/session/list', 'cli/session/adapter-map', 'cli/session/archive', 'cli/session/steer', 'cli/session/follow-up', 'cli/session/interrupt', 'cli/subscription', 'cli/subscription/reset', 'cli/team/status', 'cli/team/members', 'cli/team/tasks', 'cli/team/task', 'cli/team/spawn', 'cli/team/message', 'cli/team/task/create', 'cli/team/task/update', 'cli/team/wait', 'cli/team/interrupt',
 ] as const
 
 /** 创建远程设置处理器；只允许 Codingns4DSH 自己的 namespace 和路径编辑。 */
@@ -329,6 +329,9 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
   }
   if (path[0] === 'subscriptionUsage') {
     return path.length === 2 && ['timeoutSecs', 'refreshIntervalMins'].includes(path[1] ?? '')
+  }
+  if (path[0] === 'subagentBridge') {
+    return path.length === 2 && path[1] === 'enabled'
   }
   if (path[0] === 'fileManagement') {
     return path.length === 2 && ['menuEnhancement', 'fileEditor', 'sessionChangedFiles'].includes(path[1] ?? '')

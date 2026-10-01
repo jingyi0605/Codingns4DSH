@@ -254,7 +254,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ answers: questionAnswersList(response) }),
     })
-    if (result.status < 200 || result.status >= 300) throw new Error(`OpenCode 问题回复失败（HTTP ${result.status}）`)
+    if (result.status < 200 || result.status >= 300) throw new Error(`OpenCode 问题回复失败（HTTP ${result.status}）：${openCodeErrorDetail(result.data)}`)
   }
 
   dispose(): void {
@@ -279,7 +279,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     const response = await this.http.json<unknown>(withOpenCodeDirectory(server, `/session/${encodeURIComponent(sessionId)}/message`, input.cwd), {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), ...(input.signal === undefined ? {} : { signal: input.signal }),
     })
-    if (response.status < 200 || response.status >= 300) throw new Error(`OpenCode message 请求失败（HTTP ${response.status}）`)
+    if (response.status < 200 || response.status >= 300) throw new Error(`OpenCode message 请求失败（HTTP ${response.status}）：${openCodeErrorDetail(response.data)}`)
     return response.data
   }
 
@@ -290,7 +290,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     })
     const record = asRecord(response.data)
     const id = typeof record?.id === 'string' ? record.id : typeof record?.sessionID === 'string' ? record.sessionID : null
-    if (response.status < 200 || response.status >= 300 || id === null) throw new Error(`OpenCode 创建会话失败（HTTP ${response.status}）`)
+    if (response.status < 200 || response.status >= 300 || id === null) throw new Error(`OpenCode 创建会话失败（HTTP ${response.status}）：${openCodeErrorDetail(response.data)}`)
     return id
   }
 
@@ -713,6 +713,15 @@ function eventSessionId(event: Record<string, unknown>): string | undefined {
     part?.sessionID,
     part?.sessionId,
   )
+}
+
+function openCodeErrorDetail(value: unknown): string {
+  const record = asRecord(value)
+  const detail = record === null ? undefined : [record.message, record.error, record.detail, record.reason]
+    .find((item): item is string => typeof item === 'string' && item.trim() !== '')
+  if (detail !== undefined) return detail.trim().slice(0, 16_384)
+  if (typeof value === 'string' && value.trim() !== '') return value.trim().slice(0, 16_384)
+  return 'Provider 未返回具体错误信息'
 }
 
 function parseModelCatalog(value: unknown): CodingNsCliModelCatalog {

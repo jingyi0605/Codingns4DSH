@@ -367,7 +367,7 @@ test('原生会话桥接从历史 usage 恢复稳定窗口，纠正尾部遗留�
   assert.equal(events.at(-1)?.data?.contextWindow, 258400)
 })
 
-test('原生会话桥接在路由切换时继承已知上下文容量', () => {
+test('原生会话桥接在路由切换时不继承其他 Provider 的上下文容量', () => {
   const events: Array<Record<string, any>> = [
     { type: 'request/context', seq: 0, data: { provider: 'glor', model: 'deepseek-v4.1-flash', contextWindow: 1000000 } },
   ]
@@ -387,6 +387,8 @@ test('原生会话桥接在路由切换时继承已知上下文容量', () => {
     },
   } as never)
 
+  // 相邻请求可能来自别的主模型（DSH 的通用 1M 占位），跨路由继承会让新
+  // 路由显示错误的分母；没有该路由事实时先写无容量事件，交给 Provider usage。
   assert.equal(bridge.appendRequestContext?.('native-context-route', {
     provider: 'opencode',
     model: 'deepseek/deepseek-flash',
@@ -394,8 +396,200 @@ test('原生会话桥接在路由切换时继承已知上下文容量', () => {
   assert.deepEqual(events.at(-1), {
     type: 'request/context',
     seq: 1,
-    data: { provider: 'opencode', model: 'deepseek/deepseek-flash', contextWindow: 1000000 },
+    data: { provider: 'opencode', model: 'deepseek/deepseek-flash' },
   })
+})
+
+test('已确认容量不被新 step 的占位值改写，Provider usage 可随时写回', () => {
+  const events: Array<Record<string, any>> = [
+    { type: 'request/context', seq: 0, data: { provider: 'codex', model: 'gpt-6.1-sol', contextWindow: 1000000 } },
+  ]
+  const session = {
+    snapshotEvents() { return [...events] },
+    append(type: string, data: unknown) {
+      const event = { type, seq: events.length, data }
+      events.push(event)
+      return event
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'sessions'
+        ? { get(id: string) { return id === 'native-context-reassert' ? session : undefined }, list() { return [session] } }
+        : undefined
+    },
+  } as never)
+
+  assert.equal(bridge.appendRequestContext?.('native-context-reassert', {
+    provider: 'codex',
+    model: 'gpt-6.1-sol',
+    contextWindow: 258400,
+    confirmed: true,
+  }), true)
+  assert.equal(events.at(-1)?.data?.contextWindow, 258400)
+  // DSH 每个新 step 会先写入一次通用占位值（这里是 1M 的旧污染形态）
+  events.push({ type: 'request/context', seq: events.length, data: { provider: 'codex', model: 'gpt-6.1-sol', contextWindow: 1000000 } })
+  // 真实用法到达时必须能把分母写回已确认容量，不能因“已确认保护”被丢弃
+  assert.equal(bridge.appendRequestContext?.('native-context-reassert', {
+    provider: 'codex',
+    model: 'gpt-6.1-sol',
+    contextWindow: 258400,
+    confirmed: true,
+  }), true)
+  assert.equal(events.at(-1)?.data?.contextWindow, 258400)
+  // 迟到的错误值仍然不能覆盖已确认容量
+  assert.equal(bridge.appendRequestContext?.('native-context-reassert', {
+    provider: 'codex',
+    model: 'gpt-6.1-sol',
+    contextWindow: 1000000,
+    confirmed: true,
+  }), true)
+  assert.equal(events.at(-1)?.data?.contextWindow, 258400)
+})
+
+test('跨路由回访与进程重启后从该路由首个 usage 恢复容量', () => {
+  const events: Array<Record<string, any>> = [
+    { type: 'request/context', seq: 0, data: { provider: 'glor', model: 'deepseek-v4.1-flash', contextWindow: 1000000 } },
+    { type: 'assistant/attempt', seq: 1, data: { stream: [{ chunk: { type: 'usage', usage: { contextWindow: 1000000 } } }] } },
+    { type: 'request/context', seq: 2, data: { provider: 'codex', model: 'gpt-6.1-sol', contextWindow: 258400 } },
+    { type: 'assistant/attempt', seq: 3, data: { stream: [{ chunk: { type: 'usage', usage: { contextWindow: 258400 } } }] } },
+    { type: 'request/context', seq: 4, data: { provider: 'glor', model: 'deepseek-v4.1-flash', contextWindow: 1000000 } },
+    // 修复前的历史遗留：跨路由继承把 codex 分母污染回通用 1M
+    { type: 'request/context', seq: 5, data: { provider: 'codex', model: 'gpt-6.1-sol', contextWindow: 1000000 } },
+  ]
+  const session = {
+    snapshotEvents() { return [...events] },
+    append(type: string, data: unknown) {
+      const event = { type, seq: events.length, data }
+      events.push(event)
+      return event
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'sessions'
+        ? { get(id: string) { return id === 'native-context-routeinfo' ? session : undefined }, list() { return [session] } }
+        : undefined
+    },
+  } as never)
+
+  // Registry 新一轮只提供适配器身份：按路由归属的首个 usage 恢复 258400，
+  // 不受其他 Provider 的 usage 与尾部污染值影响（进程重启后同样成立）。
+  assert.equal(bridge.appendRequestContext?.('native-context-routeinfo', {
+    provider: 'codex',
+    model: 'gpt-6.1-sol',
+  }), true)
+  assert.equal(events.at(-1)?.data?.contextWindow, 258400)
+})
+
+test('catalog 提示与已确认容量冲突时不写入', () => {
+  const events: Array<Record<string, any>> = [
+    { type: 'request/context', seq: 0, data: { provider: 'codex', model: 'gpt-6.1-sol', contextWindow: 1000000 } },
+    { type: 'assistant/attempt', seq: 1, data: { stream: [{ chunk: { type: 'usage', usage: { contextWindow: 258400 } } }] } },
+  ]
+  const session = {
+    snapshotEvents() { return [...events] },
+    append(type: string, data: unknown) {
+      const event = { type, seq: events.length, data }
+      events.push(event)
+      return event
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'sessions'
+        ? { get(id: string) { return id === 'native-context-catalog-stale' ? session : undefined }, list() { return [session] } }
+        : undefined
+    },
+  } as never)
+
+  assert.equal(bridge.appendRequestContext?.('native-context-catalog-stale', {
+    provider: 'codex',
+    model: 'gpt-6.1-sol',
+    contextWindow: 258400,
+    confirmed: true,
+  }), true)
+  events.push({ type: 'request/context', seq: events.length, data: { provider: 'codex', model: 'gpt-6.1-sol', contextWindow: 1000000 } })
+  // 模型表更新滞后的 catalog 提示：不得覆盖已确认的 Provider 事实
+  assert.equal(bridge.appendRequestContext?.('native-context-catalog-stale', {
+    provider: 'codex',
+    model: 'gpt-6.1-sol',
+    contextWindow: 500000,
+    confirmed: true,
+    source: 'catalog',
+  }), true)
+  assert.equal(events.at(-1)?.data?.contextWindow, 258400)
+})
+
+test('usage 样本以已确认容量为准，不被未确认的占位值改写', () => {
+  const events: Array<Record<string, any>> = [
+    { type: 'turn/start', seq: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+    { type: 'request/context', seq: 2, data: { provider: 'codex', model: 'gpt-6.1-sol', contextWindow: 1000000 } },
+  ]
+  const session = {
+    snapshotEvents() { return [...events] },
+    append(type: string, data: unknown) {
+      const event = { type, seq: events.length, data }
+      events.push(event)
+      return event
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'sessions'
+        ? { get(id: string) { return id === 'native-usage-trust' ? session : undefined }, list() { return [session] } }
+        : undefined
+    },
+  } as never)
+
+  // 没有已确认容量时，未验证的占位值不能反过来覆盖 Provider 的真实 usage
+  assert.equal(bridge.appendUsageSample?.('native-usage-trust', {
+    inputTokens: 120,
+    outputTokens: 8,
+    contextWindow: 258400,
+    contextTokens: 9120,
+  }), true)
+  assert.equal(events.at(-1)?.data?.stream?.[0]?.chunk?.usage?.contextWindow, 258400)
+})
+
+test('迟到错误值的 usage 样本仍以已确认容量落盘', () => {
+  const events: Array<Record<string, any>> = [
+    { type: 'turn/start', seq: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+    { type: 'request/context', seq: 2, data: { provider: 'codex', model: 'gpt-6.1-sol', contextWindow: 1000000 } },
+  ]
+  const session = {
+    snapshotEvents() { return [...events] },
+    append(type: string, data: unknown) {
+      const event = { type, seq: events.length, data }
+      events.push(event)
+      return event
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'sessions'
+        ? { get(id: string) { return id === 'native-usage-late' ? session : undefined }, list() { return [session] } }
+        : undefined
+    },
+  } as never)
+
+  assert.equal(bridge.appendRequestContext?.('native-usage-late', {
+    provider: 'codex',
+    model: 'gpt-6.1-sol',
+    contextWindow: 258400,
+    confirmed: true,
+  }), true)
+  assert.equal(bridge.appendUsageSample?.('native-usage-late', {
+    inputTokens: 120,
+    outputTokens: 8,
+    contextWindow: 1000000,
+    contextTokens: 9120,
+  }), true)
+  const usage = events.at(-1)?.data?.stream?.[0]?.chunk?.usage
+  assert.equal(usage?.contextWindow, 258400)
+  assert.equal(usage?.contextUsageRatio, Number(Math.min(1, 9120 / 258400).toFixed(6)))
 })
 
 test('原生会话桥接把即时 usage 写入非 surface assistant/attempt', () => {

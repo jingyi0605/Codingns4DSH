@@ -11,7 +11,7 @@
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.0-beta.2`** · DSH **`0.2.0-rc.2`**（仅正式兼容并验证该版本）· Node **`>= 22.19`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.0-rc.2`** · DSH **`0.2.0-rc.2`**（仅正式兼容并验证该版本）· Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965**
 
@@ -84,6 +84,8 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
 | Codex | `codex` | `codex` | JSON-RPC（app-server） | 全部 + 权限确认、提问、插话 |
 | OpenCode | `opencode` | `opencode`，或 `OPENCODE_SERVER_URL`（默认 `http://127.0.0.1:4096`） | HTTP + SSE | 全部 + 权限确认、提问 |
 | Grok Build | `grok` | `grok`、`grok-build` | ACP | 模型、流式、工具、思考、用量、权限确认 |
+| MiniMax Code | `mcode` | `mcode` | ACP / stream-json | 模型、流式、恢复、打断、工具、思考、用量 |
+| ZCode | `zcode` | `zcode`、桌面端内置运行时 | JSON-RPC 裸信封 | 模型、流式、恢复、打断、用量 |
 
 **模型** 模型列表 · **流式** 实时输出 · **恢复** 重启后继续 · **打断** 取消当前回合 · **工具** 对话中渲染工具调用 · **思考** 推理/思考强度 · **用量** token 或订阅额度 · **权限确认 / 提问** 变成 DSH 原生交互 · **插话** 回合中追加消息。
 
@@ -123,7 +125,7 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
   </table>
 </div>
 
-用量来自 Agent 自身的额度接口或已配置的上游用量来源；数据只在 Host 上读取，不写入浏览器存储。
+用量来自 Agent 自身的额度接口或已配置的上游用量来源；数据只在 Host 上读取，不写入浏览器存储。Codex 官方订阅的弹层还会显示「剩余点数」（credits 余额，保留两位小数）与「重置次数」（与重置图标按钮同行展示，含每张到期时间）；点击后经确认模态框消耗 1 次重置次数立即恢复当前用量窗口，整条链路走 codex app-server 官方协议，Host 不接触订阅凭据。
 
 ### 工作区调试
 
@@ -227,7 +229,7 @@ DSH 设置按钮旁的账户入口会显示登录状态、访问路径与延迟�
 DSH 的 `web` Profile 会在首次使用时自动初始化，不需要手动创建配置文件，也不需要执行 `--dump-config`：
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.0-beta.2
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.0-rc.2
 dsh web
 ```
 
@@ -237,7 +239,7 @@ dsh web
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.0-beta.2
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.0-rc.2
 dsh codingns
 ```
 
@@ -258,7 +260,7 @@ dsh plugin --profile web remove @jingyi0605/codingns4dsh
 ```bash
 git clone https://github.com/jingyi0605/Codingns4DSH.git && cd Codingns4DSH
 pnpm install && pnpm build
-dsh plugin --profile web add "$PWD"                # 或 npm pack 后 add ./jingyi0605-codingns4dsh-0.2.0-beta.2.tgz
+dsh plugin --profile web add "$PWD"                # 或 npm pack 后 add ./jingyi0605-codingns4dsh-0.2.0-rc.2.tgz
 dsh web
 ```
 

@@ -112,7 +112,11 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     const onAbort = (): void => { terminateChildProcess(child) }
     input.signal?.addEventListener('abort', onAbort, { once: true })
     if (input.signal?.aborted) onAbort()
-    child.stderr.on('data', () => undefined)
+    let stderr = ''
+    child.stderr.on('data', (chunk) => {
+      // 只保留有限长度的 Provider 原始诊断，避免异常输出撑爆 DSH 会话。
+      stderr = `${stderr}${String(chunk)}`.slice(-16_384)
+    })
     try {
       const lines = readline.createInterface({ input: child.stdout })
       try {
@@ -139,7 +143,10 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
       } finally { lines.close() }
       if (!emittedFinish) {
         if (input.signal?.aborted) yield { type: 'finish', reason: 'cancel' }
-        else throw new Error(`${this.descriptor.name} 执行失败`)
+        else {
+          const detail = stderr.trim()
+          throw new Error(detail === '' ? `${this.descriptor.name} 执行失败` : `${this.descriptor.name} 执行失败：${detail}`)
+        }
       }
     } finally {
       input.signal?.removeEventListener('abort', onAbort)
@@ -147,6 +154,9 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
       terminateChildProcess(child)
     }
   }
+
+  /** 已探测到的 CLI 路径；供子类在同步的 buildArgs 里做参数能力探测。 */
+  protected get resolvedBinary(): string | null { return this.cachedBinary }
 
   dispose(): void {
     for (const child of this.processes) terminateChildProcess(child)
@@ -213,8 +223,26 @@ function genericEventChunks(value: Record<string, unknown>, cancelled: boolean):
   const usage = isRecord(value.usage) ? value.usage : isRecord(event.usage) ? event.usage : null
   const usageEvent = usageChunk(usage)
   if (usageEvent) chunks.push(usageEvent)
-  if (['result', 'turn_end', 'done', 'complete', 'completed', 'final'].includes(eventType) || type === 'result') chunks.push({ type: 'finish', reason: cancelled ? 'cancel' : 'stop' })
+  const failure = readFailure(value, event)
+  if (failure !== undefined) {
+    chunks.push({ type: 'finish', reason: cancelled ? 'cancel' : 'error', ...(cancelled ? {} : { failure }) })
+  } else if (['result', 'turn_end', 'done', 'complete', 'completed', 'final'].includes(eventType) || type === 'result') {
+    chunks.push({ type: 'finish', reason: cancelled ? 'cancel' : 'stop' })
+  }
   return chunks
+}
+
+function readFailure(value: Record<string, unknown>, event: Record<string, any>): { message: string; code?: string } | undefined {
+  const candidate = event.error ?? event.errorMessage ?? event.error_message ?? value.error ?? value.errorMessage ?? value.error_message
+  const message = typeof candidate === 'string'
+    ? candidate.trim()
+    : isRecord(candidate)
+      ? [candidate.message, candidate.detail, candidate.description].find((item): item is string => typeof item === 'string' && item.trim() !== '')?.trim()
+      : undefined
+  if (!message) return undefined
+  const codeValue = isRecord(candidate) ? candidate.code ?? candidate.errorCode ?? candidate.error_code : value.code ?? value.errorCode
+  const code = typeof codeValue === 'string' && codeValue.trim() !== '' ? codeValue.trim() : undefined
+  return code === undefined ? { message } : { message, code }
 }
 
 function parseHelpModels(output: string): CodingNsCliModelCatalog {

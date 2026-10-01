@@ -1,4 +1,5 @@
 import { resolveSettingsAnchor, settingsAnchorContainer } from './settings-anchor.js'
+import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 
 export const PEER_HOST_BUTTON_ATTRIBUTE = 'data-codingns-peer-host-button'
 export const PEER_HOST_OPEN_EVENT = 'codingns4dsh:peer-host-open'
@@ -9,6 +10,13 @@ export interface PeerHostConnectionButtonController {
 
 export interface PeerHostConnectionButtonOptions {
   readonly document?: Document
+  /**
+   * 浏览器 locale 服务。
+   *
+   * 命令式模块没有 React 上下文，只能由功能模块注入；缺省时退回内置中文词典，
+   * 仅用于单测或非 Cordis 宿主。
+   */
+  readonly locale?: CodingNsLocale
   readonly onOpen?: () => void
 }
 
@@ -16,6 +24,7 @@ export interface PeerHostConnectionButtonOptions {
 export function startPeerHostConnectionButton(options: PeerHostConnectionButtonOptions = {}): PeerHostConnectionButtonController {
   const dom = options.document ?? (typeof document === 'undefined' ? undefined : document)
   if (dom === undefined) return { dispose() {} }
+  const t = resolveCodingNsTranslator(options.locale)
   let disposed = false
   let observer: MutationObserver | undefined
   const scan = (): void => {
@@ -29,7 +38,7 @@ export function startPeerHostConnectionButton(options: PeerHostConnectionButtonO
     if (parent === null || parent === undefined) return
     let button = parent.querySelector<HTMLButtonElement>(`button[${PEER_HOST_BUTTON_ATTRIBUTE}]`)
     if (button === null) {
-      button = createPeerHostButton(dom)
+      button = createPeerHostButton(dom, t)
       button.addEventListener('click', (event) => {
         event.preventDefault()
         event.stopPropagation()
@@ -52,12 +61,21 @@ export function startPeerHostConnectionButton(options: PeerHostConnectionButtonO
   }
 }
 
-export function createPeerHostButton(dom: Pick<Document, 'createElement'>): HTMLButtonElement {
+/**
+ * 创建按钮本体。
+ *
+ * 第二个参数供内部注入翻译函数；缺省退回内置中文词典，保证该导出在单测中仍可单独调用。
+ */
+export function createPeerHostButton(
+  dom: Pick<Document, 'createElement'>,
+  t: CodingNsTranslator = resolveCodingNsTranslator(),
+): HTMLButtonElement {
   const button = dom.createElement('button')
   button.type = 'button'
   button.setAttribute(PEER_HOST_BUTTON_ATTRIBUTE, '')
-  button.setAttribute('aria-label', '管理其他 DSH Host')
-  button.title = '管理其他 DSH Host'
+  const label = t('peerHostWorkspace.manageHosts')
+  button.setAttribute('aria-label', label)
+  button.title = label
   button.textContent = 'Host'
   Object.assign(button.style, {
     minWidth: '30px',

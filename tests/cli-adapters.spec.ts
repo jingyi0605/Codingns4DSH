@@ -8,11 +8,13 @@ import { createCliAdaptersFeature } from '../data/build/dist/host/cli-adapters/f
 import { CommandCodeDriver } from '../data/build/dist/host/cli-adapters/command-code-driver.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
+import { CodingNsCliSessionStore } from '../data/build/dist/host/cli-adapters/session-store.js'
 import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
 import { FeatureRegistry } from '../data/build/dist/features/registry.js'
 import { CommandCodeSubscriptionService } from '../data/build/dist/host/cli-adapters/command-code-subscription.js'
 import { ClaudeCodeSubscriptionService, DeepseekSubscriptionService, OpenCodeSubscriptionService, ProviderSubscriptionService, Sub2ApiUsageService } from '../data/build/dist/host/cli-adapters/provider-subscription.js'
 import { identifyModelProvider, normalizeProviderBaseUrl } from '../data/build/dist/host/cli-adapters/provider-registry.js'
+import { knownCodexContextWindow } from '../data/build/dist/host/cli-adapters/model-catalog.js'
 
 test('Command Code 驱动只把带版本号的候选命令视为已安装', async () => {
   const calls: string[][] = []
@@ -888,6 +890,56 @@ test('CLI 功能模块登记 cli RPC，停用后注销命名空间', async () =>
   assert.deepEqual(table.namespaces(), [])
 })
 
+test('CLI 功能模块向 DSH 注册外部 Provider 的图片能力，流仍由 llm/stream 接管', async () => {
+  const table = new CodingNsRpcTable()
+  let registeredProviders: string[] = []
+  let disposed = false
+  let virtualAdapter: {
+    resolveModel(provider: string, model: string): Promise<{ provider: string; id: string; inputModalities: readonly string[] }>
+  } | undefined
+  const llm = {
+    registerAdapter(providers: string[], adapter: typeof virtualAdapter & Record<string, unknown>) {
+      // DSH 0.2 在首次注册路由时会同步读取这两个可选契约；真实运行时若缺少
+      // providerRetryPolicy，cliAdapters 会在登记 cli RPC 之前启动失败。
+      const contract = adapter as unknown as {
+        providerRetryPolicy(provider: string): unknown
+        imageRequestPricing(provider: string, model: string): unknown
+      }
+      contract.providerRetryPolicy(providers[0] ?? 'codex')
+      contract.imageRequestPricing(providers[0] ?? 'codex', 'gpt-5.5')
+      registeredProviders = [...providers]
+      virtualAdapter = adapter as NonNullable<typeof virtualAdapter>
+      const registration = (() => { disposed = true }) as (() => void) & { replace?: (next: string[]) => void }
+      registration.replace = (next) => { registeredProviders = [...next] }
+      return registration
+    },
+  }
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } as const },
+  }])
+  const features = new FeatureRegistry({
+    rpc: table,
+    dshContext: { get(name: string) { return name === 'llm' ? llm : undefined } } as never,
+  })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+
+  assert.deepEqual(registeredProviders, ['codex'])
+  assert.notEqual(virtualAdapter, undefined)
+  assert.deepEqual(await virtualAdapter!.resolveModel('codex', 'gpt-5.5'), {
+    provider: 'codex',
+    id: 'gpt-5.5',
+    name: 'gpt-5.5',
+    inputModalities: ['text', 'image'],
+  })
+
+  await features.disable('cliAdapters')
+  assert.equal(disposed, true)
+})
+
 test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流的旁路行为', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
@@ -953,6 +1005,56 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   })
   await features.disable('cliAdapters')
   assert.equal(listener, undefined)
+})
+
+test('fork 子会话从继承的历史推断外部适配器时，不得把 DSH 主模型写入外部 Agent', async () => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  const received: { prompt: string; modelId?: string }[] = []
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) {
+      received.push({ prompt: input.prompt, ...(input.modelId === undefined ? {} : { modelId: input.modelId }) })
+      yield { type: 'text-delta', text: 'Codex 回复' }
+      yield { type: 'finish', reason: 'stop' }
+    },
+  }])
+  const events = {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+      listener = next
+      return () => { listener = undefined }
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table, events })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+
+  // fork 子会话：继承的历史里有父会话的外部 Agent 消息（provider=codex），
+  // 但本轮 DSH 路由仍然是主模型 glor/deepseek-v4.1-flash。
+  // 修复前这段历史会让 Codex 接管，同时把 deepseek-v4.1-flash 当成 Codex 模型，
+  // thread/start 直接 404，会话再也无法继续。
+  const chunks: unknown[] = []
+  for await (const chunk of listener!({
+    sessionId: 'fork-child',
+    modelSelection: {
+      lastUsed: { provider: 'glor', model: 'deepseek-v4.1-flash', reasoningEffort: 'high' },
+    },
+    messages: [
+      { role: 'assistant', source: { kind: 'model', plugin: 'codingns4dsh', provider: 'codex', model: 'codex' }, content: '父会话的外部 Agent 回复' },
+      { role: 'user', source: { kind: 'user' }, content: '继续' },
+    ],
+  }, async function* () { yield { type: 'finish', reason: { kind: 'stop' } } })) chunks.push(chunk)
+
+  assert.equal(received.length, 1)
+  assert.equal(received[0]?.prompt, '继续')
+  // 关键断言：绝不能把 DSH 主模型名透给 Codex。
+  assert.notEqual(received[0]?.modelId, 'deepseek-v4.1-flash')
+  assert.equal(chunks.some((chunk) => (chunk as { type?: string }).type === 'text-delta'), true)
+  // 绑定必须落盘为 codex，且不得留下 DSH 主模型。
+  assert.deepEqual(registry.getSession('fork-child'), { adapterId: 'codex' })
+  await features.disable('cliAdapters')
 })
 
 test('DSH 请求明确携带外部 provider 时恢复外部适配器路由', async () => {
@@ -1369,6 +1471,14 @@ test('Codex 新会话在首个 usage 到达前也使用 256K 上下文窗口', a
   assert.equal(chunks.at(-1)?.type, 'finish')
 })
 
+test('Codex 已知模型表覆盖当前主力模型并容忍大小写与空白', () => {
+  assert.equal(knownCodexContextWindow('gpt-5.6-sol'), 258400)
+  assert.equal(knownCodexContextWindow('gpt-6.1-sol'), 258400)
+  assert.equal(knownCodexContextWindow(' GPT-6-Astra '), 258400)
+  assert.equal(knownCodexContextWindow('unknown-model'), undefined)
+  assert.equal(knownCodexContextWindow(undefined), undefined)
+})
+
 test('CLI 功能模块把异常和取消映射成 DSH 原生终止原因且不会留下运行中工具', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
@@ -1758,5 +1868,118 @@ test('DSH 权限服务不可用时不下发权限字段，驱动沿用保守默�
   for await (const _chunk of listener!({ sessionId: 'codex-no-permission', messages: [{ role: 'user', content: '检查权限' }] }, async function* () {})) { /* 消费完整流 */ }
 
   assert.equal(received?.permission, undefined)
+  await features.disable('cliAdapters')
+})
+
+test('stage0 形态：fork 子会话被识别为父会话的外部 Agent，而不是默认 DSH 会话', async () => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  const handled: string[] = []
+
+  // 真实 stage0 日志形态：外部 Agent 只回了一段文本、没调工具，因此日志里
+  // 完全没有 codingns4dsh 痕迹，只有继承下来的 request/context。
+  const parent = {
+    id: 'stage0-parent',
+    header: { id: 'stage0-parent', cwd: '/workspace', createdAt: 1790738653345, isSeeded: false },
+    snapshotEvents: () => [
+      { type: 'request/context', data: { provider: 'deepseek-official', model: 'deepseek-flash' } },
+      { type: 'request/context', data: { provider: 'command-code', model: 'deepseek/deepseek-v4.1-flash' } },
+      { type: 'assistant/message', data: { message: { source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' } } } },
+    ],
+  }
+  const child = {
+    id: 'stage0-child',
+    header: { id: 'stage0-child', cwd: '/workspace', createdAt: 1790819437613, isSeeded: true, parentSession: 'stage0-parent' },
+    snapshotEvents: () => [
+      { type: 'request/context', data: { provider: 'deepseek-official', model: 'deepseek-flash' } },
+      { type: 'request/context', data: { provider: 'command-code', model: 'deepseek/deepseek-v4.1-flash' } },
+      { type: 'assistant/message', data: { message: { source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' } } } },
+    ],
+  }
+
+  const sessionStore = new CodingNsCliSessionStore()
+  // 父会话此前由用户在界面上显式选择过 command-code。
+  sessionStore.upsert('stage0-parent', { adapterId: 'command-code', modelId: 'deepseek/deepseek-v4.1-flash' })
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'command-code', name: 'Command Code' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'cc' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) {
+      handled.push(input.prompt)
+      yield { type: 'text-delta', text: '来自 Command Code' }
+      yield { type: 'finish', reason: 'stop' }
+    },
+  }], {}, { sessionStore })
+
+  const events = {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+      listener = next
+      return () => { listener = undefined }
+    },
+  }
+  const features = new FeatureRegistry({
+    rpc: table,
+    events,
+    nativeSessions: {
+      available: true,
+      supportsEvents: false,
+      store: undefined,
+      controller: undefined,
+      get(sessionId: string) {
+        if (sessionId === 'stage0-child') return child
+        if (sessionId === 'stage0-parent') return parent
+        return undefined
+      },
+      // 子会话已加载，父会话尚未进入 list()：祖先链必须按 header 补齐。
+      list() { return [child] },
+      async listRemote() { return [] },
+      async ensure() { return null },
+      async flush() {},
+      subscribe() { return () => {} },
+    },
+  })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+
+  const chunks: unknown[] = []
+  for await (const chunk of listener!({
+    sessionId: 'stage0-child',
+    modelSelection: { lastUsed: { provider: 'deepseek-official', model: 'deepseek-flash' } },
+    messages: [
+      { role: 'assistant', source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' }, content: '父会话回复' },
+      { role: 'user', source: { kind: 'user' }, content: '继续' },
+    ],
+  }, async function* () { yield { type: 'finish', reason: { kind: 'stop' } } })) chunks.push(chunk)
+
+  // 关键断言：子会话被路由到原来的外部 Agent，而不是回落到 DSH 主会话。
+  assert.deepEqual(handled, ['继续'])
+  assert.equal(chunks.some((chunk) => (chunk as { type?: string; text?: string }).type === 'text-delta'), true)
+  assert.equal(registry.getSession('stage0-child').adapterId, 'command-code')
+  // DSH 主模型名绝不能进入外部 Agent。
+  assert.notEqual(registry.getSession('stage0-child').modelId, 'deepseek-flash')
+  await features.disable('cliAdapters')
+})
+
+test('委派 RPC 允许任务留空，交由派发内核回退到最近一条用户消息', async () => {
+  const table = new CodingNsRpcTable()
+  const features = new FeatureRegistry({ rpc: table })
+  features.register(createCliAdaptersFeature({ registry: new CodingNsCliAdapterRegistry([]) }))
+  await features.start('cliAdapters')
+  const handler = table.resolve('cli/delegate')?.handler
+
+  // popupSelect 打开时焦点在弹层，草稿里往往只剩 `/委派` 本身，prompt 因此是空串。
+  // 这里必须放行到派发内核（由它回退到最近一条人类消息），而不是在参数校验就抛错，
+  // 否则用户会看到「prompt 不能为空」而完全无法委派。
+  const result = await handler?.('delegate', { sessionId: 'session-delegate-empty', adapterId: 'codex', prompt: '' }) as Record<string, unknown> | undefined
+  assert.notEqual(result, undefined)
+  assert.equal(result?.ok, false)
+  // 缺少可续子代理/原生会话桥接时返回可读诊断，绝不能是参数校验错误。
+  assert.doesNotMatch(String(result?.error ?? ''), /prompt 不能为空/u)
+
+  // 显式传入非字符串仍要拒绝，避免把类型错误静默当成空任务。
+  await assert.rejects(
+    async () => { await handler?.('delegate', { sessionId: 'session-delegate-empty', adapterId: 'codex', prompt: 42 }) },
+    /prompt 必须是字符串/u,
+  )
   await features.disable('cliAdapters')
 })

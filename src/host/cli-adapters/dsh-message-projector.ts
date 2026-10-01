@@ -187,8 +187,9 @@ export class CodingNsDshMessageProjector {
           ...this.closeMessageBlock('text'),
         ]
         this.finished = true
-        this.toolHistory.finalize(event.reason, failureMessage)
-        closed.push({ type: 'finish', reason: toDshFinishReason(event.reason, failureMessage) })
+        const actualFailure = failureMessage ?? event.failure?.message
+        this.toolHistory.finalize(event.reason, actualFailure)
+        closed.push({ type: 'finish', reason: toDshFinishReason(event.reason, actualFailure, event.failure?.code) })
         return closed
       default:
         return assertNeverNormalizedEvent(event)
@@ -282,12 +283,12 @@ function assertNeverNormalizedEvent(value: never): never {
   throw new Error(`未支持的 DSH 事件类型: ${String((value as { readonly type?: unknown }).type ?? 'unknown')}`)
 }
 
-function toDshFinishReason(reason: 'stop' | 'cancel' | 'error', failureMessage?: string): Record<string, unknown> {
+function toDshFinishReason(reason: 'stop' | 'cancel' | 'error', failureMessage?: string, failureCode?: string): Record<string, unknown> {
   if (reason === 'cancel') {
     return { kind: 'aborted', failure: { message: failureMessage ?? '外部 Agent 执行已取消', code: 'ABORTED' } }
   }
   if (reason === 'error') {
-    return { kind: 'error', failure: { message: failureMessage ?? '外部 Agent 执行失败', code: 'PROVIDER_ERROR' } }
+    return { kind: 'error', failure: { message: failureMessage ?? '外部 Agent 执行失败', code: failureCode ?? 'PROVIDER_ERROR' } }
   }
   return { kind: 'stop' }
 }

@@ -166,7 +166,10 @@ export type {
 } from './contracts/git.js'
 export type { SessionChangedFiles } from './contracts/file-management.js'
 export type {
+  CliSubscriptionCredits,
   CliSubscriptionProvider,
+  CliSubscriptionResetOutcome,
+  CliSubscriptionResetResult,
   CliSubscriptionUsage,
   CliSubscriptionWindow,
   DeepseekBalance,

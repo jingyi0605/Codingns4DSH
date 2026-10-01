@@ -26,6 +26,14 @@ export interface PeerHostNativeTransportRequest {
   readonly signal?: AbortSignal
 }
 
+/** 通过同一 HTTP 白名单读取目标 Host 的 CodingNS 私有 RPC。 */
+export interface PeerHostCliTransportRequest {
+  readonly scope: HostScope
+  readonly endpoint: 'cli/session/adapter-map'
+  readonly payload?: unknown
+  readonly signal?: AbortSignal
+}
+
 export type PeerHostNativeEndpoint = 'peerHost/nativeLocal' | 'peerHost/nativeStreamOpen' | 'peerHost/nativeStreamNext' | 'peerHost/nativeStreamClose'
 
 export function peerHostNativeEnvelope(endpoint: PeerHostNativeEndpoint, payload: unknown): string {
@@ -38,6 +46,16 @@ export async function callPeerNativeRpc(httpProxy: PeerHostHttpProxyService, pee
     path: '/api/codingns/peerHost/nativeLocal',
     method: 'POST',
     body: peerHostNativeEnvelope('peerHost/nativeLocal', { method: request.method, payload: request.payload, scope: request.scope }),
+  })
+  return readNativeRpcEnvelope(response.body)
+}
+
+export async function callPeerCliRpc(httpProxy: PeerHostHttpProxyService, peerHostId: string, request: PeerHostCliTransportRequest): Promise<unknown> {
+  const response = await httpProxy.request(peerHostId, {
+    scope: request.scope,
+    path: `/api/codingns/${request.endpoint}`,
+    method: 'POST',
+    body: JSON.stringify({ rpcId: `peer-host-cli-${randomUUID()}`, method: request.endpoint, payload: request.payload ?? {} }),
   })
   return readNativeRpcEnvelope(response.body)
 }

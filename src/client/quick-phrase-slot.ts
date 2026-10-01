@@ -6,12 +6,16 @@ import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { DEFAULT_QUICK_PHRASES, type CodingNsSettings, type QuickPhrase } from '../shared/contracts/config.js'
 import type { CodingNsSettingsStore } from '../dsh-capabilities/settings-store.js'
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
-import { applyQuickPhraseOrder, QUICK_PHRASE_FALLBACK_MARGIN, QUICK_PHRASE_TRIGGER_ORDER, readQuickPhraseMargin } from './quick-phrase-layout.js'
+import { applyQuickPhraseOrder, matchesDshCssModuleClass, QUICK_PHRASE_FALLBACK_MARGIN, QUICK_PHRASE_PERMISSION_ORDER, QUICK_PHRASE_TRIGGER_ORDER, readQuickPhraseMargin } from './quick-phrase-layout.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 
 const QUICK_PHRASE_FALLBACK_SIZE = 28
 const QUICK_PHRASE_FALLBACK_ICON_SIZE = 14
 const QUICK_PHRASE_STYLE_ID = 'codingns4dsh-quick-phrase-responsive-style'
+/** 高于 DSH 侧栏和普通模态框，避免弹层被宿主布局覆盖。 */
+const QUICK_PHRASE_MODAL_Z_INDEX = 10001
+/** 用属性选择器粗筛带 `_add` 类名的按钮，精确匹配再交给 matchesDshCssModuleClass。 */
+const ADD_BUTTON_CANDIDATE_SELECTOR = 'button[class*="_add"]'
 
 /** 移动端弹层脱离对话窗口边界，使用整个视口宽度。 */
 function installQuickPhraseStyles(): void {
@@ -19,7 +23,12 @@ function installQuickPhraseStyles(): void {
   const style = document.createElement('style')
   style.dataset.plugin = 'codingns4dsh'
   style.dataset.pluginCss = QUICK_PHRASE_STYLE_ID
-  style.textContent = '@media (max-width: 768px){.codingns4dsh-quick-phrase-overlay{left:0!important;right:0!important;width:100vw!important}}'
+  style.textContent = [
+    '@media (max-width: 768px){.codingns4dsh-quick-phrase-overlay{left:0!important;right:0!important;width:100vw!important}}',
+    // 与 applyQuickPhraseOrder 同一顺序：权限/规划组永远排在快捷短语之后。
+    // JS 落位依赖挂载时序（找不到添加按钮时静默跳过），CSS 固定值兜底，结构在即生效。
+    `[data-composer-card] [class*="_modes"]{order:${QUICK_PHRASE_PERMISSION_ORDER}}`,
+  ].join('')
   document.head.appendChild(style)
 }
 
@@ -343,13 +352,17 @@ function QuickPhraseSlot(props: QuickPhraseSlotProps): ReactElement | null {
 function findAddButton(root: HTMLElement): HTMLButtonElement | null {
   let scope: HTMLElement | null = root.parentElement
   while (scope !== null) {
-    const button = Array.from(scope.querySelectorAll<HTMLButtonElement>('button.uV2eYG_add'))
-      .find(isVisibleElement) ?? null
+    const button = findAddButtonIn(scope)
     if (button !== null) return button
     scope = scope.parentElement
   }
-  return Array.from(document.querySelectorAll<HTMLButtonElement>('button.uV2eYG_add'))
-    .find(isVisibleElement) ?? null
+  return findAddButtonIn(document)
+}
+
+/** 添加附件按钮：类名带 CSS Modules 本地名 `add` 且可见。哈希前缀随构建变化，不参与匹配。 */
+function findAddButtonIn(scope: ParentNode): HTMLButtonElement | null {
+  return Array.from(scope.querySelectorAll<HTMLButtonElement>(ADD_BUTTON_CANDIDATE_SELECTOR))
+    .find((button) => matchesDshCssModuleClass(button.className, 'add') && isVisibleElement(button)) ?? null
 }
 
 function findPositioningParent(root: HTMLElement): HTMLElement | null {
@@ -402,7 +415,7 @@ const quickPhraseTriggerStyle = {
 const quickPhraseOverlayStyle = {
   position: 'fixed' as const,
   inset: 0,
-  zIndex: 1400,
+  zIndex: QUICK_PHRASE_MODAL_Z_INDEX,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -425,7 +438,7 @@ const quickPhraseTitleStyle = { display: 'block', color: dshThemeColor.labelPrim
 const quickPhraseHintStyle = { margin: '6px 0 0', color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 }
 const quickPhraseCloseStyle = { width: 32, height: 32, flex: '0 0 auto', border: 0, borderRadius: 16, color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, fontSize: 24, lineHeight: 1, cursor: 'pointer' }
 const quickPhraseIconButtonStyle = { width: 32, height: 32, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, border: 0, borderRadius: 8, color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, cursor: 'pointer' }
-const quickPhraseEditorOverlayStyle = { ...quickPhraseOverlayStyle, zIndex: 1410, background: 'transparent' }
+const quickPhraseEditorOverlayStyle = { ...quickPhraseOverlayStyle, zIndex: QUICK_PHRASE_MODAL_Z_INDEX + 1, background: 'transparent' }
 const quickPhraseEditorStyle = { ...dshPopupSurfaceStyle, width: 'min(100%, 520px)', boxSizing: 'border-box' as const, padding: 24, borderRadius: 12 }
 const quickPhraseEditorHeaderStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, paddingBottom: 16, borderBottom: `1px solid ${dshThemeColor.border}` }
 const quickPhraseEditorInputStyle = { width: '100%', minHeight: 92, marginTop: 16, boxSizing: 'border-box' as const, padding: '10px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, color: dshThemeColor.labelPrimary, background: dshThemeColor.inputBackground, fontSize: 14, lineHeight: 1.5, resize: 'vertical' as const }

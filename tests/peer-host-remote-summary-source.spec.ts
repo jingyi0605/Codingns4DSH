@@ -74,6 +74,23 @@ test('远端摘要用 workspace/follow 首帧和 session/list 组装工作区会
   assert.equal(closed, 1)
 })
 
+test('远端摘要合并目标 Host 的 CLI 会话适配器映射', async () => {
+  const source = createPeerHostRemoteSummarySource({
+    scope,
+    transport: {
+      async rpc() { return { items: [{ sessionId: 'session-a', cwd: '/repo', updatedAt: 1 }] } },
+      stream() { return asyncIterableOf([{ type: 'baseline', value: { items: [{ workspaceId: 'workspace-a', path: '/repo', sessionIds: ['session-a'] }], archivedSessionIds: [] } }]) },
+      async cli() { return { ok: true, value: [{ sessionId: 'session-a', adapterId: 'codex' }] } },
+    },
+  })
+  assert.deepEqual(await source.load(), [{
+    workspaceId: 'workspace-a',
+    displayName: 'workspace-a',
+    path: '/repo',
+    sessions: [{ sessionId: 'session-a', title: 'repo', status: 'idle', updatedAt: 1, blank: false, adapterId: 'codex' }],
+  }])
+})
+
 test('远端摘要对缺失字段和空 baseline 保持容错', async () => {
   const source = createPeerHostRemoteSummarySource({
     scope,

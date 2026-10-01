@@ -275,7 +275,12 @@ export type CodingNsAgentEvent =
       readonly contextTokens?: number
       readonly contextUsageRatio?: number
     }
-  | { readonly type: 'finish'; readonly reason: 'stop' | 'cancel' | 'error' }
+  | {
+      readonly type: 'finish'
+      readonly reason: 'stop' | 'cancel' | 'error'
+      /** Provider 终态携带的真实失败详情；没有详情时由 Host 生成兜底信息。 */
+      readonly failure?: { readonly message: string; readonly code?: string }
+    }
   | { readonly type: 'session-binding'; readonly providerSessionId: string; readonly rawStoreRef?: string }
   | {
       readonly type: 'permission-request'

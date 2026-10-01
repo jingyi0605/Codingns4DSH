@@ -189,6 +189,11 @@ export class CodingNsCliAdapterRegistry {
     return this.enabled.get(adapterId) ?? false
   }
 
+  /** 返回当前启用的外部 Provider 路由，供 DSH 虚拟 Provider 注册使用。 */
+  enabledAdapterIds(): readonly CodingNsCliAdapterId[] {
+    return [...this.drivers.keys()].filter((adapterId) => this.isEnabled(adapterId))
+  }
+
   enabledSnapshot(): Record<string, boolean> {
     return Object.fromEntries(this.enabled.entries())
   }
@@ -318,10 +323,35 @@ export class CodingNsCliAdapterRegistry {
     void this.settings.update({ agentAdapterPreferences: snapshot }).catch(() => undefined)
   }
 
+  /**
+   * 会话索引。迁移 fork 子会话的继承绑定需要在 Registry 外部补写记录，
+   * 因此这里暴露只读引用，避免调用方自己再建一份索引。
+   */
+  get sessionRecords(): CodingNsCliSessionStore | undefined {
+    return this.sessionStore
+  }
+
   getSession(sessionId: string): CodingNsCliSessionConfig {
     const session = this.sessions.get(sessionId)
     if (session !== undefined && (session.adapterId === 'dsh' || this.isEnabled(session.adapterId))) {
       return session.adapterId === 'dsh' ? mergeDshNativeSelection(session, this.nativeSessions?.get(sessionId)) : session
+    }
+    // 迁移可能在 Registry 构造之后才完成（用户点击打开旧会话、或 fork 子会话
+    // 刚被加载）。此时必须读取 SessionStore，否则子会话会被当成 DSH 主会话，
+    // 用户看到的仍是“默认 DSH Agent”。
+    const stored = this.sessionStore?.get(sessionId)
+    if (stored !== undefined && stored.adapterId !== 'dsh' && this.isEnabled(stored.adapterId)) {
+      const config: CodingNsCliSessionConfig = {
+        adapterId: stored.adapterId,
+        ...(stored.modelId === undefined ? {} : { modelId: stored.modelId }),
+        ...(stored.effortId === undefined ? {} : { effortId: stored.effortId }),
+        ...(stored.providerId === undefined ? {} : { providerId: stored.providerId }),
+        ...(stored.providerSessionId === undefined ? {} : { providerSessionId: stored.providerSessionId }),
+        ...(stored.rawStoreRef === undefined ? {} : { rawStoreRef: stored.rawStoreRef }),
+        ...(stored.parentSessionId === undefined ? {} : { parentSessionId: stored.parentSessionId }),
+      }
+      this.sessions.set(sessionId, config)
+      return config
     }
     const remembered = this.preferences.get('dsh') ?? this.findRememberedPreference('dsh')
     return mergeDshNativeSelection({
@@ -334,6 +364,17 @@ export class CodingNsCliAdapterRegistry {
   /** 只有驱动自己维护 Provider turn 边界时，Host 才能把它映射到 DSH step。 */
   supportsSegmentedTurns(adapterId: CodingNsCliAdapterId): boolean {
     return this.drivers.get(adapterId)?.supportsSegmentedTurns === true
+  }
+
+  /** 供原生 Subagent Provider 执行首轮；不创建普通外部会话索引。 */
+  async *runSubagentTurn(input: CodingNsCliTurnInput & { readonly adapterId: CodingNsCliAdapterId }): AsyncIterable<CodingNsAgentEvent> {
+    const driver = this.requireEnabledDriver(input.adapterId)
+    yield* driver.executeTurn(input)
+  }
+
+  /** 子会话 Provider 绑定完成后立即落盘，确保冷恢复不会丢失适配器身份。 */
+  async flushSessionBindings(): Promise<void> {
+    await this.sessionStore?.flush()
   }
 
   async *execute(input: CodingNsCliTurnInput & { readonly adapterId: CodingNsCliAdapterId }): AsyncIterable<CodingNsAgentEvent> {

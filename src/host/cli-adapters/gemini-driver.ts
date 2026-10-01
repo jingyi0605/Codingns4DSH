@@ -10,6 +10,7 @@ import { GEMINI_CATALOG, isProviderDefaultModel, resolveGeminiEfforts } from './
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks, promptWithAttachmentPaths } from './attachment-utils.js'
+import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 
 /** Gemini 官方 ACP 优先；不支持 ACP 的旧 CLI 自动回退 headless stream-json。 */
 export class GeminiCliDriver extends StandardStreamDriver {
@@ -138,8 +139,8 @@ export class GeminiCliDriver extends StandardStreamDriver {
       }, { signal: input.signal })
       rpc.notify('initialized', {})
       const session = input.providerSessionId
-        ? await rpc.request('session/load', { sessionId: input.providerSessionId, cwd: input.cwd ?? process.cwd(), mcpServers: [] }, { signal: input.signal })
-        : await rpc.request('session/new', { cwd: input.cwd ?? process.cwd(), mcpServers: [] }, { signal: input.signal })
+        ? await rpc.request('session/load', { sessionId: input.providerSessionId, cwd: input.cwd ?? process.cwd(), mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id) }, { signal: input.signal })
+        : await rpc.request('session/new', { cwd: input.cwd ?? process.cwd(), mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id) }, { signal: input.signal })
       const sessionId = readSessionId(session) ?? input.providerSessionId ?? input.sessionId
       yield { type: 'session-binding', providerSessionId: sessionId }
       if (input.modelId && !isProviderDefaultModel(input.modelId)) {
@@ -356,7 +357,10 @@ function geminiAcpMessageToChunk(message: Record<string, any>): CodingNsAgentEve
   const usage = usageChunk(update)
   if (usage) return usage
   if (type.includes('turn_completed') || type.includes('turn_complete') || type.includes('completed') || type.includes('prompt_end') || type === 'done' || type === 'result') return { type: 'finish', reason: 'stop' }
-  if (type.includes('error') || type.includes('failed')) return { type: 'finish', reason: 'error' }
+  if (type.includes('error') || type.includes('failed')) {
+    const failure = readGeminiFailure(update)
+    return { type: 'finish', reason: 'error', ...(failure === undefined ? {} : { failure }) }
+  }
   return null
 }
 
@@ -411,8 +415,20 @@ function geminiStreamResultChunks(value: Record<string, unknown>, cancelled: boo
   }
   const status = typeof value.status === 'string' ? value.status.toLowerCase() : ''
   const reason = cancelled ? 'cancel' : status === 'error' || status === 'failed' ? 'error' : 'stop'
-  chunks.push({ type: 'finish', reason })
+  if (reason === 'error') {
+    const failure = readGeminiFailure(value)
+    chunks.push({ type: 'finish', reason, ...(failure === undefined ? {} : { failure }) })
+  }
+  else chunks.push({ type: 'finish', reason })
   return chunks
+}
+
+function readGeminiFailure(value: Record<string, any>): { message: string; code?: string } | undefined {
+  const error = isRecord(value.error) ? value.error : value
+  const message = firstString(error, ['message', 'errorMessage', 'error_message', 'detail', 'reason'])
+  if (message === null) return undefined
+  const code = firstString(error, ['code', 'errorCode', 'error_code'])
+  return code === null ? { message } : { message, code }
 }
 
 export { GeminiCliDriver as GeminiDriver }
