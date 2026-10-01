@@ -170,6 +170,13 @@ test('输入工具栏放不下时按 DSH 判定收起模型字段，超长名称
   assert.match(quickPhraseSource, /\[data-composer-card\] \[class\*="_modes"\]\{order:\$\{QUICK_PHRASE_PERMISSION_ORDER\}\}/u)
 })
 
+test('快捷短语模态框层级高于宿主侧栏', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/quick-phrase-slot.ts'), 'utf8')
+  assert.match(source, /const QUICK_PHRASE_MODAL_Z_INDEX = 10001/u)
+  assert.match(source, /zIndex: QUICK_PHRASE_MODAL_Z_INDEX/u)
+  assert.match(source, /zIndex: QUICK_PHRASE_MODAL_Z_INDEX \+ 1/u)
+})
+
 test('上下文计量 dock 保留稳定行高，避免数值投影短暂缺失时工具栏抖动', async () => {
   const source = await readFile(join(projectRoot, 'src/client/cli-slots.ts'), 'utf8')
   assert.match(source, /\[data-composer-card\] \+ div\{box-sizing:border-box;min-height:26px;align-items:center\}/u)
