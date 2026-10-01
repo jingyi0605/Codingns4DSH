@@ -24,6 +24,7 @@ interface CodexSegmentedTurn {
   removeNotificationListener: () => void
   removeAbortListener: () => void
   terminalReason: 'stop' | 'cancel' | 'error' | null
+  failure: { message: string; code?: string } | undefined
   done: boolean
   pendingChunk: CodingNsAgentEvent | undefined
   currentAssistantMessageId: string | undefined
@@ -180,6 +181,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       let turnStartResolved = false
       const notificationsBeforeTurnStart: JsonRpcMessage[] = []
       let terminalReason: 'stop' | 'cancel' | 'error' | null = null
+      let failure: { message: string; code?: string } | undefined
       let sawMeaningfulEvent = false
       const acceptNotification = (message: JsonRpcMessage, allowUnidentifiedTool: boolean): void => {
         // Codex 自动压缩可能在独立的内部 turn 中运行。它不属于当前用户 turn，
@@ -203,6 +205,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         const reason = readCodexTerminalReason(message)
         if (reason !== null) {
           terminalReason = reason
+          if (reason === 'error') failure = codexFailure(message)
           eventQueue.close()
         }
       }
@@ -268,9 +271,10 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       if (danglingCompaction !== undefined) yield stabilizeCodexEvent(session, danglingCompaction)
       if (!input.signal?.aborted && terminalReason !== 'cancel' && !sawMeaningfulEvent) {
         yield { type: 'text-delta', text: 'CODINGNS_PROVIDER_EMPTY_RESPONSE: Codex Provider 未返回任何有效事件。' }
-        yield { type: 'finish', reason: 'error' }
+        yield { type: 'finish', reason: 'error', ...(failure === undefined ? {} : { failure }) }
       } else {
-        yield { type: 'finish', reason: input.signal?.aborted ? 'cancel' : terminalReason ?? 'stop' }
+        const reason = input.signal?.aborted ? 'cancel' : terminalReason ?? 'stop'
+        yield { type: 'finish', reason }
       }
     } finally { /* app-server 在会话结束前保持连接。 */ }
   }
@@ -340,6 +344,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       queue: eventQueue,
       removeNotificationListener: () => undefined,
       terminalReason: null,
+      failure: undefined,
       done: false,
       pendingChunk: undefined,
       currentAssistantMessageId: undefined,
@@ -365,6 +370,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       const reason = readCodexTerminalReason(message)
       if (reason !== null) {
         active.terminalReason = reason
+        if (reason === 'error') active.failure = codexFailure(message)
         eventQueue.close()
       }
     }
@@ -420,7 +426,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
           active.removeNotificationListener()
           const danglingCompaction = closeDanglingAutoCompaction(session)
           if (danglingCompaction !== undefined) yield stabilizeCodexEvent(session, danglingCompaction)
-          yield { type: 'finish', reason: active.terminalReason ?? 'stop' }
+          const reason = active.terminalReason ?? 'stop'
+          yield { type: 'finish', reason, ...(reason === 'error' && active.failure !== undefined ? { failure: active.failure } : {}) }
           return
         }
         if (input.signal?.aborted) throw new Error('请求已取消')
@@ -1278,6 +1285,22 @@ function readCodexTerminalReason(message: JsonRpcMessage): 'stop' | 'cancel' | '
   if (method === 'turn/failed' || method === 'turn/error') return 'error'
   if (method === 'turn/interrupted' || method === 'turn/cancelled' || method === 'turn/aborted') return 'cancel'
   return 'stop'
+}
+
+function codexFailure(message: JsonRpcMessage): { message: string; code?: string } {
+  const params = isRecord(message.params) ? message.params : message
+  const turn = isRecord(params.turn) ? params.turn : params
+  const error = isRecord(turn.error) ? turn.error : turn.error ?? params.error
+  const detail = textValue(isRecord(error) ? error.message ?? error.detail ?? error.description : error)
+    ?? (isRecord(error) ? textValue(error.type) : null)
+    ?? 'Codex Provider 未返回具体失败信息。'
+  const codeValue = isRecord(error) ? error.code ?? error.errorCode ?? error.error_code ?? error.type ?? error.status ?? error.statusCode : undefined
+  const code = typeof codeValue === 'number' && Number.isFinite(codeValue)
+    ? String(codeValue)
+    : typeof codeValue === 'string' && codeValue.trim() !== ''
+      ? codeValue.trim()
+      : undefined
+  return code === undefined ? { message: detail } : { message: detail, code }
 }
 
 /** Codex 版本间曾使用不同的 turn 终态通知名，统一收敛到同一结束路径。 */

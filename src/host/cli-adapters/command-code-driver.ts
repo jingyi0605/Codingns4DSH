@@ -726,7 +726,12 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
         state.maxTurnsReached = true
         break
       }
-      chunks.push({ type: 'finish', reason: state.aborted() ? 'cancel' : resultReason(event) })
+      const reason = state.aborted() ? 'cancel' : resultReason(event)
+      chunks.push({
+        type: 'finish',
+        reason,
+        ...(reason === 'error' ? { failure: commandCodeFailure(event) } : {}),
+      })
       break
     }
     default:
@@ -859,6 +864,16 @@ function resultReason(event: Record<string, unknown>): 'stop' | 'cancel' | 'erro
   if (event.error !== undefined || subtype === 'error' || stopReason.includes('error') || stopReason.includes('fail')) return 'error'
   if (stopReason.includes('interrupt') || stopReason.includes('cancel') || stopReason === 'aborted') return 'cancel'
   return 'stop'
+}
+
+function commandCodeFailure(event: Record<string, unknown>): { message: string; code?: string } {
+  const result = recordValue(event.result)
+  const candidate = event.error ?? event.errorMessage ?? event.error_message ?? result?.error ?? result?.errorMessage ?? result?.message ?? event.message
+  const message = textValue(candidate) ?? (typeof candidate === 'string' ? candidate.trim() : '')
+  const codeValue = result?.code ?? result?.errorCode ?? event.code ?? event.errorCode
+  const code = typeof codeValue === 'string' && codeValue.trim() !== '' ? codeValue.trim() : undefined
+  const actual = message.trim() || 'Command Code Provider 未返回具体失败信息。'
+  return code === undefined ? { message: actual } : { message: actual, code }
 }
 
 /**

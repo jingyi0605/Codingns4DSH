@@ -116,11 +116,11 @@ export class PiAgentDriver implements CodingNsCliDriver {
         message: promptWithAttachmentPaths(input.prompt, input.attachments ?? []),
         ...(images.length > 0 ? { images } : {}),
       }, input.signal)
-      let finishReason: 'stop' | 'cancel' | 'error'
+      let finishResult: { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }
       while (true) {
         const item = await stream.next()
         if (item.done) {
-          finishReason = item.value
+          finishResult = item.value
           break
         }
         const discoveredId = readSessionId(item.value)
@@ -131,10 +131,10 @@ export class PiAgentDriver implements CodingNsCliDriver {
         const chunk = piMessageToChunk(item.value)
         if (chunk !== null) yield chunk
       }
-      if (finishReason === 'cancel') {
+      if (finishResult.reason === 'cancel') {
         await this.interrupt(input.sessionId)
       }
-      yield { type: 'finish', reason: finishReason }
+      yield { type: 'finish', reason: finishResult.reason, ...(finishResult.failure === undefined ? {} : { failure: finishResult.failure }) }
     } finally { /* 跨轮复用：仅 dispose() 才回收长期进程。 */ }
   }
 
@@ -205,16 +205,20 @@ async function* streamPiPrompt(
   rpc: JsonRpcProcess,
   prompt: Record<string, unknown>,
   signal: AbortSignal | undefined,
-): AsyncGenerator<JsonRpcMessage, 'stop' | 'cancel' | 'error', void> {
+): AsyncGenerator<JsonRpcMessage, { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }, void> {
   const queue: JsonRpcMessage[] = []
   let wake: (() => void) | undefined
   let promptSettled = false
   let terminalReason: 'stop' | 'cancel' | 'error' | null = null
+  let failure: { message: string; code?: string } | undefined
   const notify = (): void => { wake?.(); wake = undefined }
   const listener = (message: JsonRpcMessage): void => {
     queue.push(message)
     const type = piEventType(message)
-    if (type === 'error' || type === 'agent_error' || type === 'agent_failed' || piEventHasError(message)) terminalReason = 'error'
+    if (type === 'error' || type === 'agent_error' || type === 'agent_failed' || piEventHasError(message)) {
+      terminalReason = 'error'
+      failure = piFailure(message)
+    }
     else if (type === 'agent_settled' && terminalReason === null) terminalReason = 'stop'
     notify()
   }
@@ -225,9 +229,10 @@ async function* streamPiPrompt(
 
   void rpc.request('prompt', prompt, { signal, killOnAbort: false, wireFormat: 'pi' }).then(
     () => { promptSettled = true; notify() },
-    () => {
+    (error: unknown) => {
       promptSettled = true
       terminalReason = signal?.aborted ? 'cancel' : 'error'
+      if (terminalReason === 'error') failure = errorMessageFromUnknown(error)
       notify()
     },
   )
@@ -240,7 +245,7 @@ async function* streamPiPrompt(
       }
       await new Promise<void>((resolve) => { wake = resolve })
     }
-    return terminalReason
+    return { reason: terminalReason, ...(failure === undefined ? {} : { failure }) }
   } finally {
     signal?.removeEventListener('abort', onAbort)
     removeListener()
@@ -257,6 +262,20 @@ function piEventHasError(message: JsonRpcMessage): boolean {
   const event = isRecord(params.message) ? params.message : params
   const stopReason = textValue(event.stopReason ?? params.stopReason)
   return stopReason === 'error' || stopReason === 'failed' || typeof event.errorMessage === 'string' && event.errorMessage.trim() !== ''
+}
+
+function piFailure(message: JsonRpcMessage): { message: string; code?: string } {
+  const params = isRecord(message.params) ? message.params : message
+  const event = isRecord(params.message) ? params.message : params
+  const value = event.errorMessage ?? event.error ?? params.errorMessage ?? params.error ?? event.stopReason
+  const detail = typeof value === 'string' && value.trim() !== '' ? value.trim() : 'Pi Agent Provider 未返回具体失败信息。'
+  const codeValue = event.errorCode ?? params.errorCode ?? event.code ?? params.code
+  const code = typeof codeValue === 'string' && codeValue.trim() !== '' ? codeValue.trim() : undefined
+  return code === undefined ? { message: detail } : { message: detail, code }
+}
+
+function errorMessageFromUnknown(error: unknown): { message: string } {
+  return { message: error instanceof Error ? error.message : String(error) }
 }
 
 function parsePiCliCatalog(output: string): CodingNsCliModelCatalog {

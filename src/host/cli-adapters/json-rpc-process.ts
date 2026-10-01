@@ -18,8 +18,8 @@ export class JsonRpcRequestError extends Error {
   readonly code: number | undefined
   readonly data: unknown
 
-  constructor(code: number | undefined, data: unknown) {
-    super('JSON-RPC 请求失败')
+  constructor(code: number | undefined, data: unknown, message = 'JSON-RPC 请求失败') {
+    super(message)
     this.name = 'JsonRpcRequestError'
     this.code = code
     this.data = data
@@ -247,17 +247,17 @@ export class JsonRpcProcess {
         if (value.id !== undefined && value.id !== null && value.type === 'response' && typeof value.success === 'boolean') {
           const pending = this.pending.get(value.id as number | string)
           if (pending === undefined) continue
-          if (value.success === false) pending.reject(new Error('JSON-RPC 请求失败'))
+          if (value.success === false) pending.reject(new Error(readRpcFailure(value)))
           else pending.resolve(value.data)
           continue
         }
         if (value.id !== undefined && value.id !== null && (value.result !== undefined || value.error !== undefined)) {
           const pending = this.pending.get(value.id as number | string)
           if (pending === undefined) continue
-          // Provider 错误可能带命令行、路径或凭据片段，只向上层暴露稳定错误，不回传原文。
           if (isRecord(value.error)) pending.reject(new JsonRpcRequestError(
             typeof value.error.code === 'number' ? value.error.code : undefined,
             value.error.data,
+            readRpcFailure(value),
           ))
           else pending.resolve(value.result)
           continue
@@ -314,6 +314,19 @@ export class JsonRpcProcess {
       try { listener(error) } catch { /* 监听器异常不能阻止其他会话清理 */ }
     }
   }
+}
+
+/** 保留 Provider 返回的具体错误，同时限制长度，避免把整段响应写入会话。 */
+function readRpcFailure(value: Record<string, unknown>): string {
+  const error = isRecord(value.error) ? value.error : value
+  const direct = [error.message, error.errorMessage, error.error_message, error.detail, error.reason]
+    .find((item): item is string => typeof item === 'string' && item.trim() !== '')
+  if (direct !== undefined) return direct.trim().slice(0, 16_384)
+  const data = isRecord(error.data) ? error.data : undefined
+  const nested = data === undefined ? undefined : [data.message, data.errorMessage, data.error_message, data.detail]
+    .find((item): item is string => typeof item === 'string' && item.trim() !== '')
+  if (nested !== undefined) return nested.trim().slice(0, 16_384)
+  return 'JSON-RPC 请求失败'
 }
 
 function isRecord(value: unknown): value is JsonRpcMessage {

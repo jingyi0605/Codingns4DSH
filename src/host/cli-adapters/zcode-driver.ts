@@ -243,7 +243,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       }
       if (terminalReason === 'error') {
         // 失败详情已经在通知监听器中捕获；这里统一发唯一终态。
-        yield { type: 'finish', reason: 'error' }
+        yield { type: 'finish', reason: 'error', failure: zcodeFailure(session) }
       } else if (terminalReason !== null) {
         yield { type: 'finish', reason: input.signal?.aborted ? 'cancel' : terminalReason }
       } else {
@@ -497,6 +497,12 @@ function failureChunk(session: ZcodeSession): CodingNsAgentEvent {
     type: 'text-snapshot',
     text: `ZCode 回合失败${code ? ` [${code}]` : ''}${detail ? `：${detail}` : ''}${hint}`,
   }
+}
+
+function zcodeFailure(session: ZcodeSession): { message: string; code?: string } {
+  const message = session.failureMessage?.trim() || 'ZCode Provider 未返回具体失败信息。'
+  const code = session.failureCode?.trim()
+  return code ? { message, code } : { message }
 }
 
 async function readSessionUsage(rpc: JsonRpcProcess, sessionId: string): Promise<CodingNsAgentEvent | null> {

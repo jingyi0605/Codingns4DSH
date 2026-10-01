@@ -91,21 +91,21 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         const requestId = interactionRequestId(notification)
         if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, notification.id)
       })
-      let finishReason: 'stop' | 'cancel' | 'error'
+      let finishResult: { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }
       while (true) {
         const item = await stream.next()
         if (item.done) {
-          finishReason = item.value
+          finishResult = item.value
           break
         }
         const chunk = acpMessageToChunk(item.value)
         if (chunk !== null) yield chunk
       }
-      if (finishReason === 'cancel') {
+      if (finishResult.reason === 'cancel') {
         try { await rpc.request('session/cancel', { sessionId: providerSessionId }, { killOnAbort: false }) }
         catch { /* 不同 ACP 版本的取消方法可能不同，请求级取消已经先行发出。 */ }
       }
-      yield { type: 'finish', reason: finishReason }
+      yield { type: 'finish', reason: finishResult.reason, ...(finishResult.failure === undefined ? {} : { failure: finishResult.failure }) }
     } finally { /* ACP 进程和会话跨轮复用，统一由 dispose() 回收。 */ }
   }
 
@@ -164,12 +164,13 @@ async function* streamGrokPrompt(
   prompt: readonly Record<string, unknown>[],
   signal: AbortSignal | undefined,
   onNotification: (message: JsonRpcMessage) => void,
-): AsyncGenerator<JsonRpcMessage, 'stop' | 'cancel' | 'error', void> {
+): AsyncGenerator<JsonRpcMessage, { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }, void> {
   const queue: JsonRpcMessage[] = []
   const requestController = new AbortController()
   let wake: (() => void) | undefined
   let drainDeadline: number | null = null
   let terminalReason: 'stop' | 'cancel' | 'error' | null = null
+  let failure: { message: string; code?: string } | undefined
   const notify = (): void => { wake?.(); wake = undefined }
   const beginDrain = (): void => {
     if (drainDeadline === null) drainDeadline = Date.now() + GROK_DRAIN_WAIT_MS
@@ -184,6 +185,10 @@ async function* streamGrokPrompt(
       return
     }
     terminalReason = mergeGrokReason(terminalReason, notificationReason)
+    if (notificationReason === 'error') {
+      const detail = grokFailure(message)
+      if (detail !== undefined) failure = detail
+    }
     // 部分 Grok 版本只发终态通知而不回复 prompt，主动取消可清理待处理请求。
     requestController.abort()
     beginDrain()
@@ -232,7 +237,7 @@ async function* streamGrokPrompt(
       ])
       wake = undefined
     }
-    return terminalReason ?? 'stop'
+    return { reason: terminalReason ?? 'stop', ...(failure === undefined ? {} : { failure }) }
   } finally {
     signal?.removeEventListener('abort', onAbort)
     removeListener()
@@ -265,6 +270,16 @@ function grokNotificationReason(message: JsonRpcMessage): 'stop' | 'error' | nul
   if (type.includes('error') || type.includes('failed')) return 'error'
   if (type.includes('turn_completed') || type.includes('turn_complete') || type === 'completed' || type === 'done') return 'stop'
   return null
+}
+
+function grokFailure(message: JsonRpcMessage): { message: string; code?: string } | undefined {
+  const params = isRecord(message.params) ? message.params : message
+  const update = isRecord(params.update) ? params.update : params
+  const error = isRecord(update.error) ? update.error : update
+  const detail = firstToolText(error.message, error.errorMessage, error.error_message, error.detail, error.reason)
+  if (detail === undefined) return undefined
+  const code = firstToolText(error.code, error.errorCode, error.error_code)
+  return code === undefined ? { message: detail } : { message: detail, code }
 }
 
 function acpMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | null {

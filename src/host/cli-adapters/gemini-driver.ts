@@ -357,7 +357,10 @@ function geminiAcpMessageToChunk(message: Record<string, any>): CodingNsAgentEve
   const usage = usageChunk(update)
   if (usage) return usage
   if (type.includes('turn_completed') || type.includes('turn_complete') || type.includes('completed') || type.includes('prompt_end') || type === 'done' || type === 'result') return { type: 'finish', reason: 'stop' }
-  if (type.includes('error') || type.includes('failed')) return { type: 'finish', reason: 'error' }
+  if (type.includes('error') || type.includes('failed')) {
+    const failure = readGeminiFailure(update)
+    return { type: 'finish', reason: 'error', ...(failure === undefined ? {} : { failure }) }
+  }
   return null
 }
 
@@ -412,8 +415,20 @@ function geminiStreamResultChunks(value: Record<string, unknown>, cancelled: boo
   }
   const status = typeof value.status === 'string' ? value.status.toLowerCase() : ''
   const reason = cancelled ? 'cancel' : status === 'error' || status === 'failed' ? 'error' : 'stop'
-  chunks.push({ type: 'finish', reason })
+  if (reason === 'error') {
+    const failure = readGeminiFailure(value)
+    chunks.push({ type: 'finish', reason, ...(failure === undefined ? {} : { failure }) })
+  }
+  else chunks.push({ type: 'finish', reason })
   return chunks
+}
+
+function readGeminiFailure(value: Record<string, any>): { message: string; code?: string } | undefined {
+  const error = isRecord(value.error) ? value.error : value
+  const message = firstString(error, ['message', 'errorMessage', 'error_message', 'detail', 'reason'])
+  if (message === null) return undefined
+  const code = firstString(error, ['code', 'errorCode', 'error_code'])
+  return code === null ? { message } : { message, code }
 }
 
 export { GeminiCliDriver as GeminiDriver }

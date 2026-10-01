@@ -206,7 +206,8 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
     const onAbort = (): void => { terminateChildProcess(child) }
     input.signal?.addEventListener('abort', onAbort, { once: true })
     if (input.signal?.aborted) onAbort()
-    child.stderr.on('data', () => undefined)
+    let stderr = ''
+    child.stderr.on('data', (chunk) => { stderr = `${stderr}${String(chunk)}`.slice(-16_384) })
     try {
       child.stdin.end(`${promptWithAttachmentPaths(input.prompt, input.attachments ?? [])}\n`, 'utf8')
       const lines = readline.createInterface({ input: child.stdout })
@@ -230,7 +231,10 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
       } finally { lines.close() }
       if (!emittedFinish) {
         if (input.signal?.aborted) yield { type: 'finish', reason: 'cancel' }
-        else throw new Error('MiniMax Code 执行失败')
+        else {
+          const detail = stderr.trim()
+          throw new Error(detail === '' ? 'MiniMax Code 执行失败' : `MiniMax Code 执行失败：${detail}`)
+        }
       }
     } finally {
       input.signal?.removeEventListener('abort', onAbort)
@@ -459,12 +463,20 @@ function mcodeExecEventToChunk(value: Record<string, unknown>, input: CodingNsCl
   if (type === 'exec.completed') {
     const result = isRecord(value.result) ? value.result : null
     const status = typeof result?.status === 'string' ? result.status : 'succeeded'
-    return { type: 'finish', reason: input.signal?.aborted ? 'cancel' : status === 'succeeded' ? 'stop' : 'error' }
+    if (input.signal?.aborted || status === 'succeeded') return { type: 'finish', reason: input.signal?.aborted ? 'cancel' : 'stop' }
+    return { type: 'finish', reason: 'error', failure: mcodeFailure(value) }
   }
   if (type === 'exec.failed' || type === 'error') {
-    return { type: 'finish', reason: 'error' }
+    return { type: 'finish', reason: 'error', failure: mcodeFailure(value) }
   }
   return null
+}
+
+function mcodeFailure(value: Record<string, any>): { message: string; code?: string } {
+  const error = isRecord(value.error) ? value.error : value
+  const message = firstToolText(error.message, error.errorMessage, error.error_message, error.detail, error.reason) ?? 'MiniMax Code Provider 未返回具体失败信息。'
+  const code = firstToolText(error.code, error.errorCode, error.error_code)
+  return code === undefined ? { message } : { message, code }
 }
 
 function approveFirstAcpOption(message: JsonRpcMessage, permission: CodingNsCliPermissionState | undefined): unknown {
