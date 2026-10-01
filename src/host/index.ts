@@ -349,6 +349,27 @@ export {
   readLegacyImportedSessionRecords,
 } from './cli-adapters/legacy-session-settings.js'
 export { CommandCodeDriver } from './cli-adapters/command-code-driver.js'
+export {
+  startSubagentBridgeServer,
+  type SubagentBridgeServer,
+  type SubagentBridgeDispatchRequest,
+  type SubagentBridgeDispatchResult,
+} from './cli-bridge/bridge-server.js'
+export {
+  createSubagentBridgeRuntime,
+  getSubagentBridge,
+  setSubagentBridge,
+  type SubagentBridgeRuntime,
+  type SubagentBridgeRedirect,
+} from './cli-bridge/bridge-holder.js'
+export { dispatchBridgeSubagent, type BridgeAgentRegistry, type SubagentBridgeDispatchDeps } from './cli-bridge/dispatch.js'
+export {
+  dispatchNativeSubagent,
+  NATIVE_SUBAGENT_TIMEOUT_MS,
+  type NativeParentAgent,
+  type NativeSubagentDispatchRequest,
+  type NativeSubagentDispatchResult,
+} from './cli-adapters/native-subagent-dispatch.js'
 export { CommandCodeSubscriptionService, readCommandCodeApiKey } from './cli-adapters/command-code-subscription.js'
 export {
   ProviderSubscriptionService,

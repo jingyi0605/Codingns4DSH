@@ -15,10 +15,13 @@ import { CodingNsCliSessionStore } from './session-store.js'
 import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
 import { CommandCodeSubscriptionService } from './command-code-subscription.js'
 import { ProviderSubscriptionService } from './provider-subscription.js'
-import { normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
+import { normalizeSubagentBridgeSettings, normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsHostServices } from '../features/types.js'
 import { setAdapterRegistry } from './registry-holder.js'
 import { createDshVirtualProviderRegistration } from './dsh-virtual-providers.js'
+import { dispatchBridgeSubagent, type BridgeAgentRegistry } from '../cli-bridge/dispatch.js'
+import { startSubagentBridgeServer, type SubagentBridgeServer } from '../cli-bridge/bridge-server.js'
+import { setSubagentBridge } from '../cli-bridge/bridge-holder.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -29,7 +32,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       dependencies: [],
       runtime: 'host',
     },
-    start(context) {
+    async start(context) {
       // 用量查询超时对所有适配器统一生效：同一个 timeoutMs 下发给全部网络读取器，
       // 设置变更时整体重建，避免旧超时继续生效。
       const buildSubscriptions = (settings: CodingNsSettings | undefined): ProviderSubscriptionService => {
@@ -141,6 +144,44 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         }
       }))
 
+      // 外部 CLI 子代理托管：开启时启动本机回环桥接，把外部 CLI 的子代理调用
+      // 转投成 DSH 原生可续子会话；关闭或模块停用时收回端口并清空驱动句柄。
+      let bridgeServer: SubagentBridgeServer | undefined
+      let bridgeSync: Promise<void> = Promise.resolve()
+      const syncSubagentBridge = async (enabled: boolean): Promise<void> => {
+        if (enabled === (bridgeServer !== undefined)) return
+        if (!enabled) {
+          const server = bridgeServer
+          bridgeServer = undefined
+          setSubagentBridge(undefined)
+          await server?.close()
+          return
+        }
+        try {
+          const agents = readOptionalContextService(context.services.dshContext, 'agents')
+          const server = await startSubagentBridgeServer({
+            dispatch: (request) => dispatchBridgeSubagent(request, {
+              agents: agents as BridgeAgentRegistry | undefined,
+              nativeSessions: context.services.nativeSessions,
+            }),
+          })
+          bridgeServer = server
+          setSubagentBridge(server.runtime)
+        } catch (error) {
+          console.warn('codingns4dsh: 外部 Agent 子代理桥接启动失败', error)
+        }
+      }
+      const scheduleSubagentBridgeSync = (enabled: boolean): void => {
+        bridgeSync = bridgeSync.then(() => syncSubagentBridge(enabled), () => syncSubagentBridge(enabled))
+      }
+      await syncSubagentBridge(normalizeSubagentBridgeSettings(context.services.settings?.get().subagentBridge).enabled)
+      context.resources.add(async () => {
+        const server = bridgeServer
+        bridgeServer = undefined
+        setSubagentBridge(undefined)
+        await server?.close()
+      })
+
       const settings = context.services.settings
       if (settings !== undefined) {
         context.resources.add(settings.watch((next) => {
@@ -149,6 +190,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           registry.syncPreferences(next.agentAdapterPreferences)
           sessionStore.sync(next.cliSessions)
           subscriptions = buildSubscriptions(next)
+          scheduleSubagentBridgeSync(normalizeSubagentBridgeSettings(next.subagentBridge).enabled)
         }))
       }
 
@@ -288,6 +330,16 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
 function requireTeam(context: { services: CodingNsHostServices }) {
   if (context.services.nativeTeam === undefined) throw new Error('DSH_TEAM_NATIVE_UNAVAILABLE')
   return context.services.nativeTeam
+}
+
+/** DSH Context 可能在测试或嵌入式宿主里缺少目标服务；缺失时按不可用处理。 */
+function readOptionalContextService(ctx: CodingNsHostServices['dshContext'], name: string): unknown {
+  if (ctx === undefined) return undefined
+  try {
+    return ctx.get(name)
+  } catch {
+    return undefined
+  }
 }
 
 /**

@@ -43,6 +43,29 @@ export async function withTeamSubagentSelection<T>(parentId: string, adapterId: 
   try { return await action() } finally { pendingSelections.delete(key) }
 }
 
+const creationChains = new Map<string, Promise<unknown>>()
+
+/**
+ * 创建阶段的排队版本：保留“同一父会话同一 Provider 一次只创建一条”的并发约束，
+ * 但把并行批次排成队列而不是直接拒绝。桥接拦截外部 CLI 的并行子代理时使用。
+ */
+export function enqueueTeamSubagentSelection<T>(parentId: string, adapterId: string, modelId: string | undefined, action: () => Promise<T>): Promise<T> {
+  const key = selectionKey(parentId, adapterId)
+  const run = async (): Promise<T> => {
+    if (pendingSelections.has(key)) throw new Error('同一 Agent 的子代理创建正在进行中')
+    pendingSelections.set(key, modelId === undefined ? {} : { modelId })
+    try { return await action() } finally { pendingSelections.delete(key) }
+  }
+  const previous = creationChains.get(key) ?? Promise.resolve()
+  const next = previous.then(run, run)
+  const settled = next.then(() => undefined, () => undefined)
+  creationChains.set(key, settled)
+  void settled.then(() => {
+    if (creationChains.get(key) === settled) creationChains.delete(key)
+  })
+  return next
+}
+
 /** 在 Subagent scope 注册外部 Provider；返回值用于 Host 停用时释放注册。 */
 export function registerNativeTeamSubagentProviders(service: NativeSubagentService): () => void {
   if ((typeof service !== 'object' && typeof service !== 'function')) return () => undefined
@@ -56,7 +79,8 @@ export function registerNativeTeamSubagentProviders(service: NativeSubagentServi
       inheritsParentContext: false,
       start() { throw new Error('外部 Agent Team 提供方只支持可续聊子代理') },
       async prepareContinuable(request) {
-        request.signal.throwIfAborted()
+        // DSH 可能把缺省的 signal 原样转发（undefined），这里保持容错。
+        request.signal?.throwIfAborted()
         const registry = getAdapterRegistry()
         if (registry === undefined) throw new Error('外部 Agent 适配器尚未就绪')
         const adapter = (await registry.catalog()).find((item) => item.id === adapterId)

@@ -330,6 +330,9 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
   if (path[0] === 'subscriptionUsage') {
     return path.length === 2 && ['timeoutSecs', 'refreshIntervalMins'].includes(path[1] ?? '')
   }
+  if (path[0] === 'subagentBridge') {
+    return path.length === 2 && path[1] === 'enabled'
+  }
   if (path[0] === 'fileManagement') {
     return path.length === 2 && ['menuEnhancement', 'fileEditor', 'sessionChangedFiles'].includes(path[1] ?? '')
   }
