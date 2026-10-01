@@ -7,7 +7,7 @@ import type {
 } from '../../shared/contracts/cli-adapter.js'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
 import { callCliRpc, errorMessage } from '../cli-catalog.js'
-import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
+import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsHelpStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { backdropPointerDownHandler } from '../popup-dismiss.js'
 import { registerExternalToolStreamUi } from '../external-tool-stream.js'
@@ -58,13 +58,14 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
  * 面板只管理 Agent 本身：安装状态、版本、命令、启用开关与模型目录。外部会话由
  * DSH 原生侧栏和工作区归档入口承载，这里不再重复一份会话列表。
  */
-export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProps): ReactElement {
+export function CliAdaptersPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
   const t = useCodingNsTranslator(services.locale)
   const [catalog, setCatalog] = useState<readonly CodingNsCliAdapterDescriptor[]>([])
   const [selected, setSelected] = useState<CodingNsCliAdapterDescriptor | null>(null)
   const [models, setModels] = useState<CodingNsCliModelCatalog | null>(null)
   const [loading, setLoading] = useState(false)
   const [busyAdapterId, setBusyAdapterId] = useState<string | null>(null)
+  const [bridgeBusy, setBridgeBusy] = useState(false)
   const [modelsError, setModelsError] = useState('')
   const disabled = !enabled
 
@@ -95,6 +96,23 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
 
   const rowStyle = dshSettingsListRowStyle
   const buttonStyle = { ...dshSettingsButtonStyle, cursor: disabled ? 'not-allowed' : 'pointer' }
+  const bridgeEnabled = snapshot.value?.subagentBridge?.enabled === true
+  const bridgeWritable = snapshot.status !== 'loading' && snapshot.writable
+  const toggleSubagentBridge = async (next: boolean): Promise<void> => {
+    setBridgeBusy(true)
+    try {
+      const accepted = await services.settings.mutate([{ op: 'set', path: ['subagentBridge', 'enabled'], value: next }])
+      if (!accepted) {
+        notify({ kind: 'error', message: t('settings.moduleWriteRejected') })
+        return
+      }
+      notify({ kind: 'success', message: t(next ? 'cli.subagentBridgeEnabled' : 'cli.subagentBridgeDisabled') })
+    } catch (error) {
+      notify({ kind: 'error', message: errorMessage(error) })
+    } finally {
+      setBridgeBusy(false)
+    }
+  }
   const toggleAdapter = async (adapter: CodingNsCliAdapterDescriptor, next: boolean): Promise<void> => {
     setBusyAdapterId(adapter.id)
     try {
@@ -112,6 +130,24 @@ export function CliAdaptersPanel({ services, enabled, notify }: FeaturePanelProp
   return createElement(
     'div',
     { 'aria-disabled': disabled, style: { ...dshFormRootStyle, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
+    createElement('div', { style: { ...rowStyle, marginBottom: 12 } },
+      createElement('div', { style: { flex: '1 1 auto', minWidth: 0 } },
+        createElement('span', { style: { fontWeight: 600 } }, t('cli.subagentBridge')),
+        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeDescription')),
+      ),
+      createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' } },
+        createElement('input', {
+          type: 'checkbox',
+          role: 'switch',
+          'aria-label': t('cli.subagentBridgeToggle'),
+          checked: bridgeEnabled,
+          disabled: !bridgeWritable || bridgeBusy,
+          onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleSubagentBridge(event.currentTarget.checked) },
+          style: { accentColor: dshThemeColor.accent },
+        }),
+        createElement('span', undefined, bridgeEnabled ? t('cli.enabled') : t('cli.disabled')),
+      ),
+    ),
     loading && createElement('div', { role: 'status' }, t('cli.readingAgents')),
     !loading && catalog.length === 0 && createElement('div', { role: 'status', style: { opacity: 0.7 } }, t('cli.noAgents')),
     createElement('div', undefined,
