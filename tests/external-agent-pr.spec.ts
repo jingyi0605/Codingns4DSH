@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -80,6 +81,10 @@ test('ZCode 裸信封完成创建、发送、正文和用量事件', async () =>
           stdout.write(`${JSON.stringify({ id: request.id, result: { session: { sessionId: 'sess-1' } } })}\n`)
           return
         }
+        if (request.method === 'session/subscribe') {
+          stdout.write(`${JSON.stringify({ id: request.id, result: { sessionId: 'sess-1', eventSeq: 0, events: [] } })}\n`)
+          return
+        }
         if (request.method === 'session/send') {
           stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`)
           stdout.write(`${JSON.stringify({ method: 'state.updated', params: { reason: 'prompt_started', patch: { status: 'running' } } })}\n`)
@@ -101,6 +106,136 @@ test('ZCode 裸信封完成创建、发送、正文和用量事件', async () =>
   ])
   assert.equal(spawnCount, 1)
   driver.dispose()
+})
+
+test('ZCode 订阅 desktop-continuous 事件并转换 session/event 正文', async () => {
+  const calls: string[] = []
+  const driver = new ZcodeAppServerDriver({
+    binaries: ['fake-zcode'],
+    spawnSync: (() => ({ status: 0, stdout: 'zcode 1.0.0', stderr: '' })) as never,
+    spawn: fakeRpcSpawn((request, stdout) => {
+      calls.push(String(request.method))
+      if (request.method === 'session/create') {
+        stdout.write(`${JSON.stringify({ id: request.id, result: { session: { sessionId: 'sess-event' } } })}\n`)
+      } else if (request.method === 'session/subscribe') {
+        stdout.write(`${JSON.stringify({ id: request.id, result: { sessionId: 'sess-event', eventSeq: 0, events: [] } })}\n`)
+      } else if (request.method === 'session/send') {
+        stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`)
+        stdout.write(`${JSON.stringify({ method: 'state.updated', params: { reason: 'prompt_started', patch: { status: 'running' } } })}\n`)
+        stdout.write(`${JSON.stringify({ method: 'session/event', params: { type: 'model.streaming', payload: { kind: 'reasoning_delta', assistantMessageId: 'msg-1', delta: '思考' } } })}\n`)
+        stdout.write(`${JSON.stringify({ method: 'session/event', params: { type: 'model.streaming', payload: { kind: 'text_delta', assistantMessageId: 'msg-1', delta: '完成' } } })}\n`)
+        stdout.write(`${JSON.stringify({ method: 'computer-use/operation-event', params: { kind: 'turn-completed' } })}\n`)
+      } else if (request.method === 'session/usage') {
+        stdout.write(`${JSON.stringify({ id: request.id, result: { inputTokens: 2, outputTokens: 3 } })}\n`)
+      }
+    }),
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'dsh-zcode-event', messages: [], prompt: '执行' })) chunks.push(chunk)
+  assert.deepEqual(calls.slice(0, 3), ['session/create', 'session/subscribe', 'session/send'])
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'sess-event' },
+    { type: 'reasoning-delta', text: '思考', messageId: 'msg-1' },
+    { type: 'text-delta', text: '完成', messageId: 'msg-1' },
+    { type: 'usage', inputTokens: 2, outputTokens: 3 },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
+test('ZCode 在正文增量缺失时使用 turn.completed 快照收尾', async () => {
+  const driver = new ZcodeAppServerDriver({
+    binaries: ['fake-zcode'],
+    spawnSync: (() => ({ status: 0, stdout: 'zcode 1.0.0', stderr: '' })) as never,
+    spawn: fakeRpcSpawn((request, stdout) => {
+      if (request.method === 'session/create') {
+        stdout.write(`${JSON.stringify({ id: request.id, result: { session: { sessionId: 'sess-snapshot' } } })}\n`)
+      } else if (request.method === 'session/subscribe') {
+        stdout.write(`${JSON.stringify({ id: request.id, result: { sessionId: 'sess-snapshot', eventSeq: 0, events: [] } })}\n`)
+      } else if (request.method === 'session/send') {
+        stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`)
+        stdout.write(`${JSON.stringify({ method: 'state.updated', params: { reason: 'prompt_started', patch: { status: 'running' } } })}\n`)
+        stdout.write(`${JSON.stringify({ method: 'computer-use/operation-event', params: { kind: 'turn-completed' } })}\n`)
+        stdout.write(`${JSON.stringify({ method: 'session/event', params: { type: 'turn.completed', payload: { response: '快照完成' } } })}\n`)
+      } else if (request.method === 'session/usage') {
+        stdout.write(`${JSON.stringify({ id: request.id, result: { inputTokens: 1, outputTokens: 1 } })}\n`)
+      }
+    }),
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'dsh-zcode-snapshot', messages: [], prompt: '执行' })) chunks.push(chunk)
+  assert.equal(chunks.some((chunk) => chunk.type === 'text-snapshot' && chunk.text === '快照完成'), true)
+  assert.equal(chunks.at(-1)?.type, 'finish')
+  driver.dispose()
+})
+
+test('ZCode 设置选择普通套餐时不被同时存在的 Start Plan JWT 遮蔽', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codingns-zcode-provider-selection-'))
+  const settingsPath = join(root, '.zcode', 'v2', 'setting.json')
+  const credentialsPath = join(root, '.zcode', 'v2', 'credentials.json')
+  const builtinPath = join(root, 'zcode-builtin.json')
+  const previousHome = process.env.HOME
+  const rules = [
+    {
+      providerId: 'account:bigmodel-individual-coding-plan',
+      config: { access: { mode: 'individual-coding-plan' }, builtinModelIds: ['GLM-5.3', 'GLM-5.3-Flash'] },
+    },
+    {
+      providerId: 'account:bigmodel-start-plan',
+      config: { access: { mode: 'start-plan' }, builtinModelIds: ['GLM-5.3-Flash'] },
+    },
+  ]
+  await mkdir(join(root, '.zcode', 'v2'), { recursive: true })
+  writeFileSync(credentialsPath, JSON.stringify({
+    zcodejwttoken: 'jwt-token',
+    'account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:test:api-key': 'coding-plan-key',
+  }), 'utf8')
+  writeFileSync(settingsPath, JSON.stringify({ providerFamilyConnectionSelections: { bigmodel: { kind: 'individual-coding-plan' } } }), 'utf8')
+  writeFileSync(builtinPath, JSON.stringify({ revision: 1, config: { providerConfigRules: { providerRules: rules } } }), 'utf8')
+  process.env.HOME = root
+  const updates: Record<string, any>[] = []
+  const runtime = {
+    appId: 'zcode', appName: 'ZCode', installRoot: root, entry: '/tmp/zcode.cjs', appVersion: '3.14.4',
+    env: { ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: builtinPath },
+  }
+  const driver = new ZcodeAppServerDriver({
+    binaries: ['fake-zcode'],
+    spawnSync: (() => ({ status: 1, stdout: '', stderr: '' })) as never,
+    spawn: fakeRpcSpawn((request, stdout) => {
+      if (request.method === 'provider/updateAccountConfig') {
+        updates.push(request.params as Record<string, any>)
+        stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`)
+      } else if (request.method === 'session/create') {
+        stdout.write(`${JSON.stringify({ id: request.id, result: {
+          session: { sessionId: 'selection-session' },
+          settings: { model: {
+            available: [
+              { ref: { providerId: 'account:bigmodel-individual-coding-plan', modelId: 'GLM-5.3' }, providerLabel: 'BigModel Individual', label: 'GLM-5.3', reasoning: { levels: [{ value: 'low' }, { value: 'high' }, { value: 'max' }] } },
+              { ref: { providerId: 'account:bigmodel-start-plan', modelId: 'GLM-5.3-Flash' }, providerLabel: 'BigModel Start', label: 'GLM-5.3-Flash', reasoning: { levels: [{ value: 'low' }] } },
+            ],
+            current: { providerId: 'account:bigmodel-individual-coding-plan', modelId: 'GLM-5.3', options: { reasoningLevel: 'max' } },
+          } },
+        } })}\n`)
+      }
+    }),
+  })
+  ;(driver as unknown as { resolveRuntime: () => typeof runtime }).resolveRuntime = () => runtime
+  try {
+    const catalog = await driver.listModels()
+    assert.equal(catalog.currentModel, 'account:bigmodel-individual-coding-plan/GLM-5.3')
+    assert.deepEqual(catalog.groups.map((group) => group.id), [
+      'account:bigmodel-individual-coding-plan',
+      'account:bigmodel-start-plan',
+    ])
+    assert.equal(updates.length, 1)
+    assert.equal((updates[0]?.states as Record<string, any>)['account:bigmodel-individual-coding-plan'].current, true)
+    assert.equal((updates[0]?.states as Record<string, any>)['account:bigmodel-individual-coding-plan'].entitled, true)
+    assert.equal((updates[0]?.states as Record<string, any>)['account:bigmodel-start-plan'].current, false)
+  } finally {
+    driver.dispose()
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+  }
 })
 
 test('MiniMax Code 过滤同进程内其他会话的通知，避免跨会话串扰', async () => {
