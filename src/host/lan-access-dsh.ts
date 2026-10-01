@@ -506,6 +506,9 @@ export function isPeerHostRouteRequest(request: LanAccessDshPwaRequest): boolean
     { prefix: '/api/codingns/peerHost/nativeStreamOpen', methods: ['POST'] },
     { prefix: '/api/codingns/peerHost/nativeStreamNext', methods: ['POST'] },
     { prefix: '/api/codingns/peerHost/nativeStreamClose', methods: ['POST'] },
+    // 远端对话框的适配器、模型、会话绑定和命令目录都通过 CodingNS CLI RPC
+    // 读取；这是 Host-to-Host 数据面，必须与 Host API 代理的白名单保持一致。
+    { prefix: '/api/codingns/cli', methods: ['POST'] },
     { prefix: '/api/workspaces', methods: ['GET'] },
     { prefix: '/api/sessions', methods: ['GET', 'POST'] },
     { prefix: '/api/file-tree', methods: ['GET'] },
