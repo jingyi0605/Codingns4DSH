@@ -11,7 +11,7 @@
 
 [简体中文](README.md) · **English**
 
-**Current release `@jingyi0605/codingns4dsh@0.2.0-beta.2`** · DSH **`0.2.0-rc.2`** (the only formally supported and validated version) · Node **`>= 22.19`** · macOS / Linux / Windows
+**Current release `@jingyi0605/codingns4dsh@0.2.0-rc.2`** · DSH **`0.2.0-rc.2`** (the only formally supported and validated version) · Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ group 1092985965**
 
@@ -223,7 +223,7 @@ The “access” line tells you whether you entered DSH Web locally, over the LA
 DSH automatically initializes the `web` profile on first use. You do not need to create a config file or run `--dump-config`:
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.0-beta.2
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.0-rc.2
 dsh web
 ```
 
@@ -233,7 +233,7 @@ If you do not want to modify the built-in `web` profile, create a separate profi
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.0-beta.2
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.0-rc.2
 dsh codingns
 ```
 
@@ -254,7 +254,7 @@ dsh plugin --profile web remove @jingyi0605/codingns4dsh
 ```bash
 git clone https://github.com/jingyi0605/Codingns4DSH.git && cd Codingns4DSH
 pnpm install && pnpm build
-dsh plugin --profile web add "$PWD"                # or: npm pack, then add ./jingyi0605-codingns4dsh-0.2.0-beta.2.tgz
+dsh plugin --profile web add "$PWD"                # or: npm pack, then add ./jingyi0605-codingns4dsh-0.2.0-rc.2.tgz
 dsh web
 ```
 
