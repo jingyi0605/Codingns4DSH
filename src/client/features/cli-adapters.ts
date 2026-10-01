@@ -41,6 +41,16 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
       },
     })
     context.resources.add(() => contextBreakdownDom.dispose())
+    // `/委派` 只依赖 DSH 的 commandUi 契约；服务缺失时该模块内部降级为不注册，
+    // 因此这里不把它挂在 slots 可用性之后。
+    const uiContext = context.services.uiContext
+    if (uiContext !== undefined) {
+      const { registerDelegateCommand } = await import('../delegate-command.js')
+      context.resources.add(registerDelegateCommand(uiContext, {
+        rpc: context.services.rpc,
+        locale: context.services.locale,
+      }))
+    }
     const slots = context.services.slots
     if (slots === undefined) return
     context.resources.add(registerExternalToolStreamUi(context.services))
