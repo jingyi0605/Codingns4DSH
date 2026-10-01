@@ -14,6 +14,7 @@ import { dshSettingsToastStyle, dshThemeColor } from './theme.js'
 import { gitPanelClass, installGitPanelStyles } from './git-panel-styles.js'
 import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import type { SettingsNotice } from './features/types.js'
+import { notifyGitWorkspaceChanged } from './git-workspace-events.js'
 
 // 单列 Git 视图需要一个稳定的分段控件；这里保持 React 结构简单，避免引入额外依赖。
 function SegmentedControl<Value extends string>({ id, value, options, onChange, label, disabled }: { readonly id: string; readonly value: Value; readonly options: readonly { readonly value: Value; readonly label: string; readonly title?: string; readonly disabled?: boolean }[]; readonly onChange: (next: Value) => void; readonly label: string; readonly disabled?: boolean }): ReactElement {
@@ -284,6 +285,7 @@ function GitPanel(props: GitTabProps): ReactElement {
     if (!preserveExpandedHistory) historyExpanded.current = false
     try {
       const value = await call(props.rpc, action, { workspaceId: targetWorkspaceId, ...payload })
+      if (action !== 'git/status') notifyGitWorkspaceChanged(targetWorkspaceId)
       onSuccess?.(value)
       const nextStatus = await call<GitStatus>(props.rpc, 'git/status', { workspaceId: targetWorkspaceId })
       setStatus(nextStatus)

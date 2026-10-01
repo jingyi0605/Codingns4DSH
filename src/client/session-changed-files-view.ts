@@ -1,10 +1,11 @@
-import { createElement, useEffect, useMemo, useState } from 'react'
+import { createElement, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type { GitChangeItem, GitDiff, GitStatus } from '../shared/contracts/git.js'
 import type { SessionChangedFiles } from '../shared/contracts/file-management.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCodingNsRpc } from './settings-bridge.js'
 import { resolveGitWorkspaceId } from './git-management.js'
+import { notifyGitWorkspaceChanged, subscribeGitWorkspaceChanged } from './git-workspace-events.js'
 import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 
 export const SESSION_CHANGED_FILES_VIEW_ID = 'codingns4dsh/session-changed-files'
@@ -63,8 +64,11 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
+  const requestGeneration = useRef(0)
 
   const load = async (): Promise<void> => {
+    const generation = requestGeneration.current + 1
+    requestGeneration.current = generation
     setLoading(true)
     setError(undefined)
     try {
@@ -74,29 +78,39 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
         call<SessionChangedFiles>(props.rpc, 'fileManagement/session-changes', { sessionId: props.sessionId, workspaceId: resolved }),
         call<GitStatus>(props.rpc, 'git/status', { workspaceId: resolved }),
       ])
-      const touched = new Set(sessionFiles.paths.map(normalizePath))
-      const next = status.changes.filter((item) => touched.has(normalizePath(item.path)) || item.oldPath !== null && touched.has(normalizePath(item.oldPath)))
+      if (generation !== requestGeneration.current) return
+      const next = selectSessionChangedFiles(sessionFiles, status)
       setWorkspaceId(resolved)
       setChanges(next)
       props.reportCount?.(props.sessionId, next.length)
       setSelectedPath((current) => current !== undefined && next.some((item) => item.path === current) ? current : next[0]?.path)
     } catch (cause) {
+      if (generation !== requestGeneration.current) return
       setError(cause instanceof Error ? cause.message : String(cause))
       setChanges([])
       setWorkspaceId(undefined)
       props.reportCount?.(props.sessionId, 0)
     } finally {
-      setLoading(false)
+      if (generation === requestGeneration.current) setLoading(false)
     }
   }
 
   useEffect(() => {
     setDiff(undefined)
     setCollapsed(new Set())
+    setWorkspaceId(undefined)
     void load()
     const timer = globalThis.setInterval(() => { void load() }, 5_000)
-    return () => globalThis.clearInterval(timer)
-  }, [props.sessionId, props.remote])
+    return () => {
+      requestGeneration.current += 1
+      globalThis.clearInterval(timer)
+    }
+  }, [props.rpc, props.sessionId, props.remote])
+
+  useEffect(() => {
+    if (workspaceId === undefined) return
+    return subscribeGitWorkspaceChanged(workspaceId, () => { void load() })
+  }, [props.remote, props.rpc, props.sessionId, workspaceId])
 
   useEffect(() => {
     if (workspaceId === undefined || selectedPath === undefined) {
@@ -119,6 +133,7 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
     setBusy(true)
     try {
       await call<GitStatus>(props.rpc, `git/${action}`, { workspaceId, targets })
+      notifyGitWorkspaceChanged(workspaceId)
       await load()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -277,7 +292,16 @@ function isSlotIdRegistered(
 function SessionChangedFilesCounter(props: SessionChangedFilesCounterProps): null {
   useEffect(() => {
     let disposed = false
+    let generation = 0
+    let disposeWorkspaceSubscription: (() => void) | undefined
+    const updateWorkspaceSubscription = (workspaceId: string | undefined): void => {
+      disposeWorkspaceSubscription?.()
+      disposeWorkspaceSubscription = workspaceId === undefined
+        ? undefined
+        : subscribeGitWorkspaceChanged(workspaceId, () => { void load() })
+    }
     const load = async (): Promise<void> => {
+      const currentGeneration = ++generation
       try {
         const workspaceId = await resolveGitWorkspaceId(props.remote, props.sessionId)
         if (workspaceId === undefined) throw new Error('当前会话没有可用的工作区')
@@ -285,17 +309,22 @@ function SessionChangedFilesCounter(props: SessionChangedFilesCounterProps): nul
           call<SessionChangedFiles>(props.rpc, 'fileManagement/session-changes', { sessionId: props.sessionId, workspaceId }),
           call<GitStatus>(props.rpc, 'git/status', { workspaceId }),
         ])
-        if (disposed) return
-        const touched = new Set(sessionFiles.paths.map(normalizePath))
-        const count = status.changes.filter((item) => touched.has(normalizePath(item.path)) || item.oldPath !== null && touched.has(normalizePath(item.oldPath))).length
+        if (disposed || currentGeneration !== generation) return
+        updateWorkspaceSubscription(workspaceId)
+        const count = selectSessionChangedFiles(sessionFiles, status).length
         props.reportCount(props.sessionId, count)
       } catch {
-        if (!disposed) props.reportCount(props.sessionId, 0)
+        if (!disposed && currentGeneration === generation) props.reportCount(props.sessionId, 0)
       }
     }
     void load()
     const timer = globalThis.setInterval(() => { void load() }, 5_000)
-    return () => { disposed = true; globalThis.clearInterval(timer) }
+    return () => {
+      disposed = true
+      generation += 1
+      globalThis.clearInterval(timer)
+      disposeWorkspaceSubscription?.()
+    }
   }, [props.remote, props.rpc, props.reportCount, props.sessionId])
   return null
 }
@@ -306,6 +335,12 @@ function renderDiff(content: string): readonly ReactElement[] {
     key: index,
     style: diffLineStyle(line),
   }, `${line}${index < lines.length - 1 ? '\n' : ''}`))
+}
+
+/** 只显示当前 Git 状态中仍属于本会话触及范围的文件。 */
+export function selectSessionChangedFiles(sessionFiles: SessionChangedFiles, status: GitStatus): readonly GitChangeItem[] {
+  const touched = new Set(sessionFiles.paths.map(normalizePath))
+  return status.changes.filter((item) => touched.has(normalizePath(item.path)) || item.oldPath !== null && touched.has(normalizePath(item.oldPath)))
 }
 
 function RefreshIcon(): ReactElement {

@@ -6,7 +6,7 @@ import test from 'node:test'
 import { readSessionChangedFiles } from '../data/build/dist/host/session-changes.js'
 import { createFileManagementFeature } from '../data/build/dist/host/features/file-management.js'
 import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
-import { registerSessionChangedFilesView } from '../data/build/dist/client/session-changed-files-view.js'
+import { registerSessionChangedFilesView, selectSessionChangedFiles } from '../data/build/dist/client/session-changed-files-view.js'
 
 test('会话修改文件优先从 DSH 原生 tool/call 事件提取并过滤工作区外路径', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codingns-session-changes-'))
@@ -43,6 +43,20 @@ test('原生事件没有文件路径时回退读取会话 JSONL', async () => {
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('提交后 Git 状态清空时会话修改文件选择结果归零', () => {
+  const sessionFiles = { paths: ['src/one.ts', 'src/two.ts'] }
+  const beforeCommit = {
+    snapshot: { workspaceId: 'workspace-1', repoRoot: '/workspace', enabled: true, branch: 'main', ahead: 0, behind: 0, hasRemote: false, isDirty: true, lastFetchedAt: null },
+    changes: [
+      { path: 'src/one.ts', status: 'M', staged: true, oldPath: null, binary: false, stagedStatus: 'M', worktreeStatus: null },
+      { path: 'src/two.ts', status: 'M', staged: false, oldPath: null, binary: false, stagedStatus: null, worktreeStatus: 'M' },
+    ],
+  }
+  const afterCommit = { ...beforeCommit, snapshot: { ...beforeCommit.snapshot, isDirty: false }, changes: [] }
+  assert.equal(selectSessionChangedFiles(sessionFiles, beforeCommit).length, 2)
+  assert.equal(selectSessionChangedFiles(sessionFiles, afterCommit).length, 0)
 })
 
 test('文件管理 Host 注册会话修改查询 RPC', () => {
