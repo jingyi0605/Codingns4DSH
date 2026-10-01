@@ -279,7 +279,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           // 条 usage 到达前失去投影。
           const input = {
             sessionId,
-            messages,
+            messages: turnInput.messages,
             prompt: turnInput.prompt,
             ...(turnInput.attachments.length === 0 ? {} : { attachments: turnInput.attachments }),
             ...(permission === undefined ? {} : { permission }),
@@ -598,13 +598,42 @@ async function setAdapterEnabled(
   return { adapterId, enabled }
 }
 
-function extractTurnInput(messages: readonly CodingNsCliMessage[], dshContext?: CodingNsHostServices['dshContext']): { readonly prompt: string; readonly attachments: readonly CodingNsCliAttachment[] } {
+function extractTurnInput(
+  messages: readonly CodingNsCliMessage[],
+  dshContext?: CodingNsHostServices['dshContext'],
+): {
+  readonly prompt: string
+  readonly attachments: readonly CodingNsCliAttachment[]
+  /** 当前轮已拼入 prompt 的引用上下文不再作为历史消息重复交给驱动。 */
+  readonly messages: readonly CodingNsCliMessage[]
+} {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
-    if (message !== undefined && isInjectedStepNotice(message)) return { prompt: extractText(message.content), attachments: [] }
-    if (message !== undefined && isHumanUserMessage(message)) return extractMessageInput(message.content, dshContext)
+    if (message !== undefined && isInjectedStepNotice(message)) {
+      return { prompt: extractText(message.content), attachments: [], messages }
+    }
+    if (message !== undefined && isHumanUserMessage(message)) {
+      const direct = extractMessageInput(message.content, dshContext)
+      const referenceIndexes = messages
+        .slice(index + 1)
+        .map((candidate, offset) => isSessionReferenceContext(candidate) ? index + 1 + offset : -1)
+        .filter((candidateIndex): candidateIndex is number => candidateIndex >= 0)
+      const referenceText = referenceIndexes
+        .map(referenceIndex => messages[referenceIndex])
+        .filter((candidate): candidate is CodingNsCliMessage => candidate !== undefined)
+        .map(candidate => extractText(candidate.content))
+        .filter(text => text.trim() !== '')
+      const forwarded = referenceIndexes.length === 0
+        ? messages
+        : messages.filter((_candidate, candidateIndex) => !referenceIndexes.includes(candidateIndex))
+      return {
+        prompt: [direct.prompt, ...referenceText].filter(text => text.trim() !== '').join('\n\n').trim(),
+        attachments: direct.attachments,
+        messages: forwarded,
+      }
+    }
   }
-  return { prompt: '', attachments: [] }
+  return { prompt: '', attachments: [], messages }
 }
 
 /** DSH 为工具分段注入的继续提示必须成为下一次 Provider 请求的 prompt。 */
@@ -621,6 +650,12 @@ function isHumanUserMessage(message: CodingNsCliMessage): boolean {
   if (message.source === undefined) return true
   if (!isRecord(message.source)) return false
   return message.source.kind === undefined || message.source.kind === 'user'
+}
+
+/** DSH 为当前用户消息生成的只读跨会话快照，允许进入外部 Agent 的当前 prompt。 */
+function isSessionReferenceContext(message: CodingNsCliMessage): boolean {
+  if (message.role !== 'user' || !isRecord(message.source)) return false
+  return message.source.kind === 'session-reference' && message.source.form === 'recall'
 }
 
 function extractText(content: unknown): string {
