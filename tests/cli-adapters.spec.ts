@@ -1071,6 +1071,50 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   assert.equal(listener, undefined)
 })
 
+test('外部适配器把当前轮 session-reference 快照拼入 prompt', async () => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  let capturedPrompt = ''
+  let capturedMessages: readonly unknown[] = []
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'fake-reference', name: 'Fake Reference' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'fake-reference' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) {
+      capturedPrompt = input.prompt
+      capturedMessages = input.messages
+      yield { type: 'finish', reason: 'stop' }
+    },
+  }])
+  const events = {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+      listener = next
+      return () => { listener = undefined }
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table, events })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  await table.resolve('cli/session/set')?.handler('session/set', { sessionId: 'reference-target', adapterId: 'fake-reference' })
+
+  const referenceText = '## Referenced sessions\n\n<referenced-sessions>\n[{"label":"源会话","conversation":[{"role":"assistant","text":"源会话正文"}]}]\n</referenced-sessions>'
+  const directMessage = { role: 'user', source: { kind: 'user' }, content: '请总结 @源会话' }
+  const chunks: unknown[] = []
+  for await (const chunk of listener!({
+    sessionId: 'reference-target',
+    messages: [
+      directMessage,
+      { role: 'user', source: { kind: 'session-reference', form: 'recall', version: 1 }, content: referenceText },
+    ],
+  }, async function* () { yield { type: 'text-delta', text: '默认' } })) chunks.push(chunk)
+
+  assert.equal(capturedPrompt, `请总结 @源会话\n\n${referenceText}`)
+  // 当前引用已经进入 prompt，不再留在驱动历史中，避免 Command Code 把当前用户消息重复写入 transcript。
+  assert.deepEqual(capturedMessages, [directMessage])
+  assert.equal(chunks.at(-1)?.type, 'finish')
+  await features.disable('cliAdapters')
+})
+
 test('fork 子会话从继承的历史推断外部适配器时，不得把 DSH 主模型写入外部 Agent', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
