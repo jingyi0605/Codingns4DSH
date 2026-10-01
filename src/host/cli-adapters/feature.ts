@@ -433,7 +433,12 @@ function readDelegateRequest(value: unknown): { sessionId: string; adapterId: st
   const record = asRecord(value)
   const sessionId = readSessionId(value)
   const adapterId = readAdapterId(value)
-  const prompt = readPrompt(value)
+  // 这里不能复用 readPrompt：它把空 prompt 当成非法参数直接抛错，而 `/委派` 允许任务
+  // 留空——popupSelect 打开时焦点在弹层，草稿里往往只剩 `/委派` 本身。留空交给派发内核
+  // 回退到会话最近一条人类消息，因此只做类型与去空白处理，空串原样传下去。
+  const rawPrompt = record?.prompt
+  if (rawPrompt !== undefined && typeof rawPrompt !== 'string') throw new Error('prompt 必须是字符串')
+  const prompt = typeof rawPrompt === 'string' ? rawPrompt.trim() : ''
   return {
     sessionId,
     adapterId,
