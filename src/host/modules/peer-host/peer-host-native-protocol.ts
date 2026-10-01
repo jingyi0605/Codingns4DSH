@@ -35,6 +35,9 @@ export const DSH_NATIVE_REMOTE_METHODS = Object.freeze([
   'session/selectModel',
   'session/updateQueue',
   'session/workspacePathApplications',
+  // 对话框的 / 命令目录由目标 Host 提供；否则虚拟会话会误读本机命令集合。
+  'commands/list',
+  'commands/execute',
   'officeToPdf/generation',
   'officeToPdf/render',
   'workspaceFiles/changes',

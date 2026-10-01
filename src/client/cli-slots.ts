@@ -213,11 +213,11 @@ function AgentSlot(props: CliSlotProps): ReactElement {
 
   useEffect(() => {
     let active = true
-    void callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(props.rpc, 'catalog', {})
+    void callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(props.rpc, 'catalog', sessionId === undefined ? {} : { sessionId })
       .then((value) => { if (active) setAgents(adapterCatalogWithDsh(value)) })
       .catch(() => undefined)
     return () => { active = false }
-  }, [props.rpc])
+  }, [props.rpc, sessionId])
 
   useEffect(() => { if (locked) setOpen(false) }, [locked])
 
@@ -374,7 +374,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     let active = true
     const adapterId = selection.adapterId
     setRefreshingAdapterId(adapterId)
-    void callCliRpc<CodingNsCliModelCatalog>(props.rpc, 'models', { adapterId })
+    void callCliRpc<CodingNsCliModelCatalog>(props.rpc, 'models', { adapterId, ...(sessionId === undefined ? {} : { sessionId }) })
       .then((value) => {
         if (!active) return
         setCatalogState({ adapterId, value })
@@ -401,7 +401,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       .catch(() => { if (active) setCatalogState({ adapterId, value: { groups: [], currentModel: null, currentEffort: null } }) })
       .finally(() => { if (active) setRefreshingAdapterId(null) })
     return () => { active = false }
-  }, [props.rpc, selection.adapterId])
+  }, [props.rpc, selection.adapterId, sessionId])
 
   useEffect(() => { if (selection.adapterId === 'dsh') setOpen(false) }, [selection.adapterId])
 

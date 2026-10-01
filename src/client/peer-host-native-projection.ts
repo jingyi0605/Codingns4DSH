@@ -1,5 +1,6 @@
 import type { AggregateHostResult, AggregateWorkspaceSummary, PeerHostSessionRecord } from '../shared/contracts/peer-host.js'
 import { createVirtualSessionId, createVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
+import { publishSessionAdapter } from './session-adapter-cache.js'
 
 /** DSH `workspace/follow` 的 WorkspaceView 最小结构；字段只用于原生侧栏展示与分组。 */
 export interface PeerHostVirtualWorkspaceView {
@@ -21,6 +22,7 @@ export interface PeerHostVirtualSessionSummary {
   readonly running: boolean
   readonly blank: boolean
   readonly cwd?: string
+  readonly adapterId?: string
   readonly projections: { readonly kind: 'cached'; readonly values: { readonly title: string } }
 }
 
@@ -132,6 +134,7 @@ function projectSession(
   session: PeerHostSessionRecord,
   cwd: string,
 ): PeerHostVirtualSessionSummary {
+  if (session.adapterId !== undefined) publishSessionAdapter(virtualSessionId, session.adapterId)
   return {
     agentAvailable: true,
     sessionId: virtualSessionId,
@@ -142,6 +145,7 @@ function projectSession(
     cwd,
     // DSH 列表行的标题只读投影值：cached 块只填没有原生水位的键，适合跨 Host 摘要。
     projections: { kind: 'cached', values: { title: session.title } },
+    ...(session.adapterId === undefined ? {} : { adapterId: session.adapterId }),
   }
 }
 
@@ -175,6 +179,7 @@ function sameSessions(previous: readonly PeerHostVirtualSessionSummary[], next: 
       && session.updatedAt === candidate.updatedAt
       && session.running === candidate.running
       && session.blank === candidate.blank
+      && session.adapterId === candidate.adapterId
       && session.projections.values.title === candidate.projections.values.title
   })
 }

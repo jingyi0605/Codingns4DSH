@@ -15,6 +15,7 @@ import { startPeerHostWorkspaceTag } from '../peer-host-workspace-tag.js'
 import { startPeerHostWorkspaceTab } from '../peer-host-workspace-tab.js'
 import { registerPeerHostAggregateRefresh, requestPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
 import { useCodingNsTranslator } from '../locale.js'
+import { publishSessionAdapter } from '../session-adapter-cache.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
 const PEER_HOST_AGGREGATE_REFRESH_MS = 30_000
@@ -122,6 +123,7 @@ export function createPeerHostPageTransport(
 } {
   const fetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined
   const scopes = new Map<string, HostScope>()
+  const remoteHostScopes = new Map<string, HostScope>()
   const request = async (channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> => {
     if (fetchImpl === undefined) throw new Error('当前页面没有 fetch')
     const body = JSON.stringify({ type: 'client-request', rpcId: createRequestId(), method: endpoint, payload })
@@ -160,6 +162,61 @@ export function createPeerHostPageTransport(
     if (object === null) return undefined
     for (const item of Object.values(object)) { const found = findScope(item); if (found !== undefined) return found }
     return undefined
+  }
+  const cliEndpoint = (channel: string, endpoint: string): string | undefined => {
+    if (channel === '/codingns' && endpoint.startsWith('cli/')) return endpoint
+    if (channel === '/api' && endpoint.startsWith('codingns/cli/')) return endpoint.slice('codingns/'.length)
+    return undefined
+  }
+  const rewriteCliPayload = (value: unknown, scope: HostScope, key = ''): unknown => {
+    if (typeof value === 'string') {
+      const parsed = parseVirtualSessionId(value)
+      const isSessionField = key === 'sessionId' || key === 'parentSessionId' || key === 'childSessionId'
+      return isSessionField && parsed !== null && parsed.hostId === (scope.targetHostId ?? scope.hostId) ? parsed.sessionId : value
+    }
+    if (Array.isArray(value)) return value.map((item) => rewriteCliPayload(item, scope, key))
+    const record = asRecord(value)
+    if (record === null) return value
+    return Object.fromEntries(Object.entries(record).map(([childKey, child]) => [childKey, rewriteCliPayload(child, scope, childKey)]))
+  }
+  const remoteCliRpc = async (scope: HostScope, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> => {
+    if (scope.targetHostId === null) throw new Error('PeerHost CLI 请求缺少目标 Host')
+    const response = asRecord(await codingNsCall('peerHost/request', {
+      peerHostId: scope.targetHostId,
+      scope,
+      path: `/api/codingns/${endpoint}`,
+      method: 'POST',
+      body: JSON.stringify({ rpcId: createRequestId(), method: endpoint, payload: rewriteCliPayload(payload, scope) }),
+    }, signal))
+    const status = typeof response?.status === 'number' ? response.status : 500
+    const body = typeof response?.body === 'string' ? response.body : ''
+    if (status < 200 || status >= 300) throw new Error(`远端 Host CLI RPC 失败: HTTP ${status}`)
+    try {
+      const envelope = asRecord(JSON.parse(body))
+      return envelope?.result
+    } catch {
+      throw new Error('远端 Host CLI RPC 响应不是 JSON')
+    }
+  }
+  const mergeRemoteAdapterMap = async (localResult: unknown, signal?: AbortSignal): Promise<unknown> => {
+    const localEnvelope = asRecord(localResult)
+    if (localEnvelope?.ok !== true || !Array.isArray(localEnvelope.value)) return localResult
+    const rows = [...localEnvelope.value]
+    for (const [targetHostId, scope] of remoteHostScopes) {
+      try {
+        const remoteEnvelope = asRecord(await remoteCliRpc(scope, 'cli/session/adapter-map', {}, signal))
+        if (remoteEnvelope?.ok !== true || !Array.isArray(remoteEnvelope.value)) continue
+        for (const raw of remoteEnvelope.value) {
+          const row = asRecord(raw)
+          const sessionId = typeof row?.sessionId === 'string' ? row.sessionId : ''
+          const adapterId = typeof row?.adapterId === 'string' ? row.adapterId : ''
+          if (sessionId !== '' && adapterId !== '') rows.push({ sessionId: createVirtualSessionId(targetHostId, sessionId), adapterId })
+        }
+      } catch {
+        // 旧版目标 Host 没有 CLI 映射时保留本机结果，远端会话仍可打开。
+      }
+    }
+    return { ...localEnvelope, value: rows }
   }
   const openRemoteStream = (method: string, payload: unknown, scope: HostScope, signal?: AbortSignal): AsyncIterable<unknown> => (async function* () {
     const opened = asRecord(await codingNsCall('peerHost/nativeStream', { method, payload, scope }, signal))
@@ -224,6 +281,20 @@ export function createPeerHostPageTransport(
       const value = asRecord(payload)
       const channel = typeof value?.channel === 'string' ? value.channel : '/codingns'
       const body = value?.payload
+      const cli = cliEndpoint(channel, method)
+      if (cli === 'cli/session/adapter-map') {
+        return await mergeRemoteAdapterMap(await request(channel, method, body, signal), signal) as TResponse
+      }
+      if (cli !== undefined) {
+        const scope = findScope(body)
+        if (scope !== undefined && scope.targetHostId !== null) {
+          try {
+            return await remoteCliRpc(scope, cli, body, signal) as TResponse
+          } catch (error) {
+            return { ok: false, error: { code: 'gateway/internal', message: error instanceof Error ? error.message : String(error) } } as TResponse
+          }
+        }
+      }
       if (channel === '/api' && isDshNativeRemoteMethod(method)) {
         const scope = findScope(body)
         if (scope !== undefined && scope.targetHostId !== null) {
@@ -282,7 +353,11 @@ export function createPeerHostPageTransport(
     },
     setAggregate(aggregate) {
       scopes.clear()
+      remoteHostScopes.clear()
       for (const host of aggregate) {
+        if (host.targetHostId !== null) {
+          remoteHostScopes.set(host.targetHostId, { hostId: host.hostId, targetHostId: host.targetHostId, workspaceId: '__aggregate__', sessionId: null, scopeGeneration: 0 })
+        }
         for (const workspace of host.workspaces) {
           const virtualHostId = host.targetHostId ?? host.hostId
           const virtualWorkspaceId = createVirtualWorkspaceId(virtualHostId, workspace.workspaceId)
@@ -353,9 +428,17 @@ export function installPeerHostConnectionRouting(options: {
   const isPeerScoped = (channel: string, endpoint: string, payload: unknown): boolean => channel === '/api'
     && isDshNativeRemoteMethod(endpoint)
     && options.matchesScope(payload)
+  const isPeerCli = (channel: string, endpoint: string, payload: unknown): boolean => {
+    const cliEndpoint = channel === '/codingns' && endpoint.startsWith('cli/')
+      ? endpoint
+      : channel === '/api' && endpoint.startsWith('codingns/cli/')
+        ? endpoint.slice('codingns/'.length)
+        : undefined
+    return cliEndpoint !== undefined && (cliEndpoint === 'cli/session/adapter-map' || options.matchesScope(payload))
+  }
 
   rpc.call = async (channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> => {
-    if (isPeerScoped(channel, endpoint, payload)) {
+    if (isPeerScoped(channel, endpoint, payload) || isPeerCli(channel, endpoint, payload)) {
       return await options.hooks.rpc!({ method: endpoint, payload: { channel, payload }, ...(signal === undefined ? {} : { signal }) })
     }
     const result = await originalCall.call(rpc, channel, endpoint, payload, signal)
@@ -418,6 +501,9 @@ function mergeSessionListResult(result: unknown, projection: PeerHostNativeProje
     const id = asRecord(item)?.sessionId
     return typeof id === 'string' ? [id] : []
   }))
+  for (const session of virtual) {
+    if (session.adapterId !== undefined) publishSessionAdapter(session.sessionId, session.adapterId)
+  }
   const items = [...value.items, ...virtual.filter((session) => !known.has(session.sessionId))]
   return { ...envelope, value: { ...value, items } }
 }
