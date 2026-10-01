@@ -9,6 +9,7 @@ import { GROK_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { isRegularFile, probeStoredSession, resolveSessionDirectory } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks } from './attachment-utils.js'
+import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 
 export interface GrokBuildDriverOptions {
   readonly binaries?: readonly string[]
@@ -77,7 +78,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       if (providerSessionId === '') {
         const session = await rpc.request('session/new', {
           cwd: input.cwd ?? process.cwd(),
-          mcpServers: [],
+          mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),
         ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}),
         }, { signal: input.signal })
         providerSessionId = readSessionId(session) ?? input.sessionId
@@ -135,7 +136,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     rpc.notify('initialized', {})
     if (input.providerSessionId) {
       try {
-        const loaded = await rpc.request('session/load', { sessionId: input.providerSessionId, cwd: input.cwd ?? process.cwd(), mcpServers: [] })
+        const loaded = await rpc.request('session/load', { sessionId: input.providerSessionId, cwd: input.cwd ?? process.cwd(), mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id) })
         state.providerSessionId = readSessionId(loaded) ?? input.providerSessionId
       } catch { /* 旧版 ACP 没有 load，下一轮在同一进程创建新会话 */ }
     }

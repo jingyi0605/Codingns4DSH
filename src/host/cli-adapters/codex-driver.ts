@@ -10,6 +10,7 @@ import { CODEX_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { isQuestionEvent, questionAnswersRecord, readAgentQuestions } from './interaction-events.js'
+import { codexBridgeArgs, codexBridgeDeveloperInstructions } from '../cli-bridge/injections.js'
 
 export interface CodexAppServerDriverOptions {
   readonly binaries?: readonly string[]
@@ -694,7 +695,9 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     if (previous !== undefined && previous.cwd === input.cwd) return previous
     if (previous?.segmentedTurn !== undefined) this.closeSegmentedTurn(previous, previous.segmentedTurn)
     previous?.rpc.dispose()
-    const rpc = new JsonRpcProcess({ command, args: CODEX_APP_SERVER_ARGS, cwd: input.cwd, spawn: this.runSpawn })
+    // 子代理托管开启时用 `-c` 覆盖注入 MCP 替身工具；工具由桥接转投成 DSH 原生子会话。
+    const bridgeArgs = codexBridgeArgs(input.sessionId, this.descriptor.id)
+    const rpc = new JsonRpcProcess({ command, args: [...CODEX_APP_SERVER_ARGS, ...bridgeArgs], cwd: input.cwd, spawn: this.runSpawn })
     const session = {
       rpc,
       cwd: input.cwd,
@@ -1315,11 +1318,13 @@ function isCodexToolEvent(method: string, type: string): boolean {
  * 的默认值，只在 turn 上覆盖会让首次工具调用落到与 DSH 不同的模式。
  */
 function codexThreadParams(input: CodingNsCliTurnInput): Record<string, unknown> {
+  const developerInstructions = codexBridgeDeveloperInstructions(input.sessionId)
   return {
     cwd: input.cwd ?? process.cwd(),
     sandbox: codexSandboxMode(input),
     approvalPolicy: codexApprovalPolicy(input),
     ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}),
+    ...(developerInstructions === undefined ? {} : { developerInstructions }),
   }
 }
 

@@ -8,6 +8,7 @@ import { discoverClaudeModelCatalog } from './claude-model-options.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
+import { claudeBridgeArgs } from '../cli-bridge/injections.js'
 
 export class ClaudeCodeDriver extends StandardStreamDriver {
   private readonly sessionRoots: readonly string[]
@@ -43,6 +44,8 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   }
   protected buildArgs(input: CodingNsCliTurnInput): readonly string[] {
     const args = ['-p', promptWithAttachmentPaths(input.prompt, input.attachments ?? []), '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions']
+    // 子代理托管开启时注入 MCP 替身工具并停用内建 Task 子代理。
+    args.push(...claudeBridgeArgs(input.sessionId, this.descriptor.id))
     for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--add-dir', directory)
     if (input.providerSessionId) args.push('--resume', input.providerSessionId)
     if (input.modelId && !isProviderDefaultModel(input.modelId)) args.push('--model', input.modelId)

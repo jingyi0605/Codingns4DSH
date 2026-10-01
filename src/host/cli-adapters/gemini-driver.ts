@@ -10,6 +10,7 @@ import { GEMINI_CATALOG, isProviderDefaultModel, resolveGeminiEfforts } from './
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks, promptWithAttachmentPaths } from './attachment-utils.js'
+import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 
 /** Gemini 官方 ACP 优先；不支持 ACP 的旧 CLI 自动回退 headless stream-json。 */
 export class GeminiCliDriver extends StandardStreamDriver {
@@ -138,8 +139,8 @@ export class GeminiCliDriver extends StandardStreamDriver {
       }, { signal: input.signal })
       rpc.notify('initialized', {})
       const session = input.providerSessionId
-        ? await rpc.request('session/load', { sessionId: input.providerSessionId, cwd: input.cwd ?? process.cwd(), mcpServers: [] }, { signal: input.signal })
-        : await rpc.request('session/new', { cwd: input.cwd ?? process.cwd(), mcpServers: [] }, { signal: input.signal })
+        ? await rpc.request('session/load', { sessionId: input.providerSessionId, cwd: input.cwd ?? process.cwd(), mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id) }, { signal: input.signal })
+        : await rpc.request('session/new', { cwd: input.cwd ?? process.cwd(), mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id) }, { signal: input.signal })
       const sessionId = readSessionId(session) ?? input.providerSessionId ?? input.sessionId
       yield { type: 'session-binding', providerSessionId: sessionId }
       if (input.modelId && !isProviderDefaultModel(input.modelId)) {

@@ -17,6 +17,7 @@ import { probeStoredSession } from './session-probe.js'
 import { buildAcpPromptBlocks, promptWithAttachmentPaths } from './attachment-utils.js'
 import { firstToolText, serializeToolValue } from './tool-observation.js'
 import { terminateChildProcess, WINDOWS } from './process-utils.js'
+import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 
 export interface MiniMaxCodeDriverOptions {
   readonly binaries?: readonly string[]
@@ -116,7 +117,7 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
     session.permission = input.permission
     if (session.acpSessionId === '') {
       const attached = input.providerSessionId === undefined
-        ? await session.rpc.request('session/new', { cwd: input.cwd ?? process.cwd(), mcpServers: [] }, { signal: input.signal, killOnAbort: false })
+        ? await session.rpc.request('session/new', { cwd: input.cwd ?? process.cwd(), mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id) }, { signal: input.signal, killOnAbort: false })
         : await this.loadSessionWithFallback(session, input)
       session.acpSessionId = readAcpSessionId(attached) ?? input.providerSessionId ?? `mvs_acp_fallback_${Date.now().toString(36)}`
     }
@@ -298,13 +299,13 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
         return await session.rpc.request('session/load', {
           sessionId: input.providerSessionId,
           cwd: input.cwd ?? process.cwd(),
-          mcpServers: [],
+          mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),
         }, { signal: input.signal, killOnAbort: false })
       } catch {
         session.providerSessionId = input.sessionId
       }
     }
-    return await session.rpc.request('session/new', { cwd: input.cwd ?? process.cwd(), mcpServers: [] }, { signal: input.signal, killOnAbort: false })
+    return await session.rpc.request('session/new', { cwd: input.cwd ?? process.cwd(), mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id) }, { signal: input.signal, killOnAbort: false })
   }
 
   private effortCatalog(): CodingNsCliModelCatalog {
