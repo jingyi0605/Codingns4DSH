@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsCliSandboxMode, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliServiceTier, CodingNsAgentPermissionResponse, CodingNsCliSandboxMode, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
@@ -53,8 +53,20 @@ interface CodexSession {
    * 模型变化或线程被错误模型污染时显式纠正。
    */
   threadModelId: string | undefined
-  /** 旧版 Codex 没有 thread/settings/update；失败一次后不再每轮重试。 */
-  threadModelCorrectionUnsupported: boolean
+  /**
+   * 线程当前真正生效的服务档位。
+   *
+   * `thread/start` 的响应会回显 `serviceTier`，但 `thread/settings/update` 只返回
+   * `{}`：档位纠正后无法从响应读回，只能按“已下发值”记录。这样下一轮才能判断
+   * 用户是否真的改了档位，而不是每轮重复下发同一次设置。
+   */
+  threadServiceTierId: string | undefined
+  /**
+   * 旧版 Codex 没有 `thread/settings/update`；失败一次后不再每轮重试。
+   *
+   * 模型与服务档位的纠正共用该方法，因此也共用这个能力开关。
+   */
+  threadSettingsUpdateUnsupported: boolean
   turnId: string | null
   providerSessionId: string
   readonly pendingPermissions: Map<string, PendingCodexPermission>
@@ -129,10 +141,21 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       }, { signal: controller.signal })
       rpc.notify('initialized', {})
       // config/read 让 Codex 完成一次配置加载；model/list 才返回带 effort 元数据的目录。
-      await rpc.request('config/read', {}, { signal: controller.signal })
+      const config = await rpc.request('config/read', {}, { signal: controller.signal })
       const response = await rpc.request('model/list', {}, { signal: controller.signal })
       const catalog = parseCodexCatalog(response)
-      return catalog.groups.length > 0 ? catalog : CODEX_CATALOG
+      if (catalog.groups.length === 0) return CODEX_CATALOG
+      // 配置里的 service_tier 是线程未显式选择时真正生效的档位：app-server 会继承
+      // 它，但**不会**继承 model/list 的 defaultServiceTier。取错来源会让界面显示
+      // “Fast 已开启”，而线程实际以标准档运行。
+      const configuredTier = readConfiguredServiceTier(config)
+      const withDefault = configuredTier === undefined ? catalog : { ...catalog, defaultServiceTier: configuredTier }
+      // 服务档位是官方订阅能力。目录本身在第三方配置下也会返回 serviceTiers，
+      // 必须再用账号类型确认，否则界面会给出一个切换后不生效的开关。
+      // 没有任何模型声明档位时不必多花一次 RPC，保留“未确认”语义。
+      if (!catalogHasServiceTiers(withDefault)) return withDefault
+      const officialSubscription = await readCodexOfficialSubscription(rpc, controller.signal)
+      return officialSubscription === undefined ? withDefault : { ...withDefault, officialSubscription }
     } catch {
       return CODEX_CATALOG
     } finally {
@@ -171,8 +194,10 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         session.threadId = readId(thread) ?? input.providerSessionId ?? input.sessionId
         session.providerSessionId = session.threadId
         session.threadModelId = readThreadModel(thread)
+        session.threadServiceTierId = readThreadServiceTier(thread)
       }
       await this.alignThreadModel(session, input)
+      await this.alignThreadServiceTier(session, input)
       await this.ensureContextCapacity(session, input)
       yield* drainCompactionEvents(session)
       yield { type: 'session-binding', providerSessionId: session.providerSessionId }
@@ -299,6 +324,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         session.threadId = readId(thread) ?? input.providerSessionId ?? input.sessionId
         session.providerSessionId = session.threadId
         session.threadModelId = readThreadModel(thread)
+        session.threadServiceTierId = readThreadServiceTier(thread)
       }
       // 只有 Host 显式声明续段时才复用挂起的 Provider 运行。新用户回合、注入
       // 失败或取消后的下一次执行必须丢弃旧段：旧段要么已经跑完，要么其队列
@@ -312,9 +338,10 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         this.closeSegmentedTurn(session, session.segmentedTurn)
       }
       // 分段 step 仍属于同一个 Provider turn；恢复它时不能插入 compact turn，
-      // 也不能改写线程模型（同一个 Provider turn 中途换模型会被 Codex 拒绝）。
+      // 也不能改写线程模型或服务档位（同一个 Provider turn 中途换档会被 Codex 拒绝）。
       const hasSuspendedTurn = suspended !== undefined
       if (!hasSuspendedTurn) await this.alignThreadModel(session, input)
+      if (!hasSuspendedTurn) await this.alignThreadServiceTier(session, input)
       if (!hasSuspendedTurn) await this.ensureContextCapacity(session, input)
       if (!hasSuspendedTurn) yield* drainCompactionEvents(session)
       active = suspended ?? await this.startSegmentedTurn(session, input)
@@ -479,7 +506,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
    * 这里只在两者确实不同时下发一次纠正，避免每个 step 都产生额外 RPC。
    */
   private async alignThreadModel(session: CodexSession, input: CodingNsCliTurnInput): Promise<void> {
-    if (session.threadId === '' || session.threadModelCorrectionUnsupported) return
+    if (session.threadId === '' || session.threadSettingsUpdateUnsupported) return
     const desired = isProviderDefaultModel(input.modelId) ? undefined : input.modelId?.trim()
     if (desired === undefined || desired === '') return
     if (session.threadModelId === desired) return
@@ -493,7 +520,38 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     } catch (error) {
       // 旧版 Codex 可能没有该方法；纠正失败不能阻断本轮，模型仍由 turn 自身决定。
       // 只有“方法不存在”才永久关闭纠正，避免网络类瞬时失败让会话再也无法换模型。
-      if (isMethodNotFound(error)) session.threadModelCorrectionUnsupported = true
+      if (isMethodNotFound(error)) session.threadSettingsUpdateUnsupported = true
+    }
+  }
+
+  /**
+   * 让线程真正生效的服务档位与 DSH 当前选择保持一致。
+   *
+   * 服务档位（Codex 官方订阅的 Fast）与模型一样是线程级设置：`thread/start` 与
+   * `thread/resume` 之后，线程会保留已持久化的档位。用户在 DSH 里关掉 Fast 时，
+   * 如果不显式下发 `default`，后续回合仍会以加速档运行并持续消耗更多额度。
+   *
+   * `thread/settings/update` 的响应不回显档位，因此这里按“已下发值”记账。只在
+   * 期望值与记账值确实不同时下发，避免每个 step 都产生额外 RPC。旧版 Codex 没有
+   * 该方法时永久关闭纠正，模型侧能力不受影响。
+   */
+  private async alignThreadServiceTier(session: CodexSession, input: CodingNsCliTurnInput): Promise<void> {
+    if (session.threadId === '' || session.threadSettingsUpdateUnsupported) return
+    const desired = codexServiceTier(input.serviceTierId)
+    // 未声明档位表示 Host 没有该选择（非 Codex 会话或旧版调用方），不能擅自改写线程档位。
+    if (desired === undefined) return
+    if (session.threadServiceTierId === desired) return
+    try {
+      await session.rpc.request(
+        'thread/settings/update',
+        { threadId: session.threadId, serviceTier: desired },
+        { signal: input.signal, killOnAbort: false },
+      )
+      session.threadServiceTierId = desired
+    } catch (error) {
+      // 与模型纠正共用同一个能力开关：方法不存在说明这是旧版 Codex，
+      // 瞬时失败则保留重试机会，否则一次抖动会让会话再也无法切换档位。
+      if (isMethodNotFound(error)) session.threadSettingsUpdateUnsupported = true
     }
   }
 
@@ -713,7 +771,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       contextTokens: undefined as number | undefined,
       threadId: '',
       threadModelId: undefined as string | undefined,
-      threadModelCorrectionUnsupported: false,
+      threadServiceTierId: undefined as string | undefined,
+      threadSettingsUpdateUnsupported: false,
       turnId: null as string | null,
       providerSessionId: input.providerSessionId ?? input.sessionId,
       pendingPermissions: new Map<string, PendingCodexPermission>(),
@@ -825,10 +884,12 @@ function parseCodexCatalog(value: unknown): CodingNsCliModelCatalog {
           return effort?.trim() ? [effort.trim()] : []
         }))]
       : []
+    const serviceTiers = parseCodexServiceTiers(entry.serviceTiers)
     return [{
       id,
       name: typeof entry.displayName === 'string' && entry.displayName.trim() ? entry.displayName : id,
       efforts,
+      ...(serviceTiers.length === 0 ? {} : { serviceTiers }),
     }]
   })
   if (items.length === 0) return emptyCatalog()
@@ -836,6 +897,71 @@ function parseCodexCatalog(value: unknown): CodingNsCliModelCatalog {
     groups: [{ id: 'codex', name: 'Codex', models: [...new Map(items.map((item) => [item.id, item])).values()] }],
     currentModel: null,
     currentEffort: null,
+  }
+}
+
+/**
+ * 读取 `model/list` 的服务档位声明。
+ *
+ * 只接受带非空 id 的条目；`name` 缺失时回退成 id，避免界面出现空标签。
+ * 已废弃的 `additionalSpeedTiers` 不参与解析：它给出的是 `fast` 这类别名，
+ * 而线协议需要的是 `serviceTiers[].id`（`priority`），直接映射会下发无效取值。
+ */
+function parseCodexServiceTiers(value: unknown): CodingNsCliServiceTier[] {
+  const entries = Array.isArray(value) ? value : []
+  const tiers = entries.flatMap((entry) => {
+    if (typeof entry === 'string') {
+      const id = entry.trim()
+      return id === '' ? [] : [{ id, name: id }]
+    }
+    if (!isRecord(entry)) return []
+    const id = typeof entry.id === 'string' ? entry.id.trim() : ''
+    if (id === '') return []
+    const name = typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : id
+    const description = typeof entry.description === 'string' && entry.description.trim() ? entry.description.trim() : undefined
+    return [{ id, name, ...(description === undefined ? {} : { description }) }]
+  })
+  return [...new Map(tiers.map((tier) => [tier.id, tier])).values()]
+}
+
+/** 目录里是否有任何模型声明了服务档位；没有时无需再查询账号类型。 */
+function catalogHasServiceTiers(catalog: CodingNsCliModelCatalog): boolean {
+  return catalog.groups.some((group) => group.models.some((model) => (model.serviceTiers?.length ?? 0) > 0))
+}
+
+/**
+ * 读取 Codex 配置里的 `service_tier`。
+ *
+ * 这是线程未显式选择时真正生效的档位：app-server 在 `thread/start` 时继承它。
+ * `null` 表示配置未设置，此时线程以标准档运行；读不到字段时返回 undefined，
+ * 让目录保持“未配置”而不是伪造一个档位。
+ */
+function readConfiguredServiceTier(config: unknown): string | null | undefined {
+  if (!isRecord(config)) return undefined
+  const root = isRecord(config.config) ? config.config : config
+  if (!('service_tier' in root)) return undefined
+  const value = root.service_tier
+  if (value === null || value === undefined) return null
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
+}
+
+/**
+ * 用 `account/read` 确认当前 Codex 是否登录了官方订阅账号。
+ *
+ * 服务档位只在 ChatGPT 订阅账号下真正生效：`account.type === 'chatgpt'` 才是
+ * 官方订阅；`apiKey`、`null`（第三方 Provider 或未登录）都必须判定为不可用。
+ * 旧版 Codex 没有该方法时返回 undefined，让目录保留“未确认”，UI 按不可用处理——
+ * 与其展示一个切换后不生效的开关，不如不展示。
+ */
+async function readCodexOfficialSubscription(rpc: JsonRpcProcess, signal: AbortSignal): Promise<boolean | undefined> {
+  try {
+    const response = await rpc.request('account/read', {}, { signal })
+    if (!isRecord(response)) return false
+    const account = isRecord(response.account) ? response.account : null
+    // account 为 null 表示未登录官方账号（含第三方 Provider 配置），按不可用处理。
+    return account?.type === 'chatgpt'
+  } catch {
+    return undefined
   }
 }
 
@@ -1342,13 +1468,26 @@ function isCodexToolEvent(method: string, type: string): boolean {
  */
 function codexThreadParams(input: CodingNsCliTurnInput): Record<string, unknown> {
   const developerInstructions = codexBridgeDeveloperInstructions(input.sessionId)
+  const serviceTier = codexServiceTier(input.serviceTierId)
   return {
     cwd: input.cwd ?? process.cwd(),
     sandbox: codexSandboxMode(input),
     approvalPolicy: codexApprovalPolicy(input),
     ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}),
+    ...(serviceTier === undefined ? {} : { serviceTier }),
     ...(developerInstructions === undefined ? {} : { developerInstructions }),
   }
+}
+
+/**
+ * 把 DSH 的档位选择归一成 Codex 的线协议取值。
+ *
+ * 未选择档位（undefined 或空串）表示“不下发”，由调用方决定是保留线程现状还是
+ * 显式回落；`default` 是 Codex 自己的标准速度取值，原样透传。
+ */
+function codexServiceTier(value: string | undefined): string | undefined {
+  const tier = value?.trim()
+  return tier === undefined || tier === '' ? undefined : tier
 }
 
 function codexTurnStartParams(input: CodingNsCliTurnInput, threadId: string): Record<string, unknown> {
@@ -1453,5 +1592,19 @@ function readThreadModel(value: unknown): string | undefined {
   const direct = value.model
   if (typeof direct === 'string' && direct.trim() !== '') return direct.trim()
   const nested = isRecord(value.thread) ? value.thread.model : undefined
+  return typeof nested === 'string' && nested.trim() !== '' ? nested.trim() : undefined
+}
+
+/**
+ * 读取线程当前生效的服务档位。
+ *
+ * `thread/start` 在响应顶层返回 `serviceTier`；旧版协议可能嵌在 `thread` 中，
+ * 也可能完全不返回。读不到时返回 undefined，调用方按“未知”处理并在下一轮纠正。
+ */
+function readThreadServiceTier(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined
+  const direct = value.serviceTier ?? value.service_tier
+  if (typeof direct === 'string' && direct.trim() !== '') return direct.trim()
+  const nested = isRecord(value.thread) ? value.thread.serviceTier ?? value.thread.service_tier : undefined
   return typeof nested === 'string' && nested.trim() !== '' ? nested.trim() : undefined
 }
