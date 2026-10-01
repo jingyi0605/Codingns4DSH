@@ -90,7 +90,14 @@ export interface CodingNsWebTerminalInfo {
   readonly cwd: string
   readonly cols: number
   readonly rows: number
-  readonly state: 'running' | 'exited' | 'failed'
+  /**
+   * 浏览器可见的终端状态。
+   *
+   * `lost` 与 `exited` 必须分开：`exited` 表示 shell 真的结束并带退出码，`lost`
+   * 表示运行时消失（服务器被外部结束等），此时退出码不可信，用户应重建而不是
+   * 看到一个假的"进程已退出"。
+   */
+  readonly state: 'running' | 'exited' | 'failed' | 'lost'
   readonly exitCode: number | null
   readonly error?: string
   readonly controllerId?: string

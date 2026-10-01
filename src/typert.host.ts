@@ -22,7 +22,7 @@ const terminalInfoSchema = z.object({
   cwd: z.string().readonly(),
   cols: z.number().readonly(),
   rows: z.number().readonly(),
-  state: z.union([z.literal('running'), z.literal('failed'), z.literal('exited')]).readonly(),
+  state: z.union([z.literal('running'), z.literal('failed'), z.literal('exited'), z.literal('lost')]).readonly(),
   exitCode: z.union([z.literal(null), z.number()]).readonly(),
   error: z.string().readonly().optional(),
   controllerId: attachmentIdSchema.readonly().optional(),

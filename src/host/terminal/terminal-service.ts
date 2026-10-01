@@ -25,9 +25,17 @@ export interface CreatePersistentTerminalInput {
   readonly cwd: string
   readonly cols: number
   readonly rows: number
-  /** 仅保存在当前 Host 内存中的运行时退出通知，不进入终端持久记录。 */
-  readonly onExit?: (exitCode: number | null) => void | Promise<void>
+  /** 仅保存在当前 Host 内存中的运行时结束通知，不进入终端持久记录。 */
+  readonly onExit?: (exitCode: number | null, kind: TerminalExitKind) => void | Promise<void>
 }
+
+/**
+ * 持久运行时结束的语义。
+ *
+ * `exited` 表示 shell 真的结束并给出退出码；`lost` 表示运行时消失但没有可信的
+ * 退出码（服务器被外部结束、socket 被清理）。连接层的断开不属于这里。
+ */
+export type TerminalExitKind = 'exited' | 'lost'
 
 export interface FollowPersistentTerminalInput {
   readonly identity: TerminalRecordIdentity
@@ -58,7 +66,7 @@ export class CodingNsTerminalService {
   private readonly controllers = new Map<string, ControllerBinding>()
   private readonly followers = new Map<string, Set<ActiveFollower>>()
   private readonly operations = new Map<string, Promise<unknown>>()
-  private readonly exitCallbacks = new Map<string, (exitCode: number | null) => void | Promise<void>>()
+  private readonly exitCallbacks = new Map<string, (exitCode: number | null, kind: TerminalExitKind) => void | Promise<void>>()
   private initialized = false
 
   constructor(
@@ -140,8 +148,9 @@ export class CodingNsTerminalService {
             : await this.update(existing, { state: 'running', error: '' })
           return this.info(running)
         }
-        await this.update(existing, { state: 'lost', error: '持久终端运行时不存在' })
-        throw new TerminalServiceError('TERMINAL_RUNTIME_LOST', '持久终端运行时不存在')
+        // 运行时确实没了：同一个 terminalId 允许重建，这样 Sidebar 标签、标题和
+        // 尺寸都能保留。旧实现只把记录标成 lost 再抛错，用户点"重建终端"永远失败。
+        return this.rebuild(existing, input)
       }
 
       const timestamp = this.now().toISOString()
@@ -173,7 +182,9 @@ export class CodingNsTerminalService {
         if (!runtime.alive) throw new Error('backend 创建后未报告存活状态')
         if (input.onExit !== undefined) this.exitCallbacks.set(identityKey(identity), input.onExit)
         const running = await this.update(record, { state: 'running', error: '' })
-        if (input.onExit !== undefined) await this.runtimes.monitor(running, (exitCode) => { void this.markExited(identity, exitCode) })
+        if (input.onExit !== undefined) {
+          await this.runtimes.monitor(running, (exitCode) => { void this.finishRuntime(identity, exitCode) })
+        }
         return this.info(running)
       } catch (error) {
         this.exitCallbacks.delete(identityKey(identity))
@@ -187,6 +198,61 @@ export class CodingNsTerminalService {
   getRecord(identity: TerminalRecordIdentity): PersistentTerminalRecord | undefined {
     this.requireInitialized()
     return this.store.get(identity)
+  }
+
+  /**
+   * 用同一个 terminalId 重建已经丢失的运行时。
+   *
+   * 保留 cwd、标题、shell 与工作区归属，只换一个新的 runtimeSessionKey；旧的
+   * tmux 会话/PTY 已经不存在，先按幂等方式清理一次再创建。
+   */
+  private async rebuild(
+    existing: PersistentTerminalRecord,
+    input: CreatePersistentTerminalInput,
+  ): Promise<CodingNsWebTerminalInfo> {
+    await this.update(existing, { state: 'lost', error: '持久终端运行时不存在' })
+    try { await this.runtimes.terminate(existing) } catch { /* 旧运行时已经不存在 */ }
+    await this.runtimes.detachTerminal(existing)
+    this.exitCallbacks.delete(identityKey(existing))
+    const identity: TerminalRecordIdentity = { ...input.scope, terminalId: existing.terminalId }
+    const timestamp = this.now().toISOString()
+    const record: PersistentTerminalRecord = {
+      ...existing,
+      ...input.scope,
+      runtimeSessionKey: randomUUID(),
+      runtimeType: input.runtimeType,
+      shellPath: input.shell.path,
+      shellProfileId: input.shell.profileId,
+      shellName: input.shell.name,
+      shellArgs: [...input.shell.args],
+      ...(input.commandPath === undefined ? {} : { commandPath: input.commandPath }),
+      ...(input.commandArgs === undefined ? {} : { commandArgs: [...input.commandArgs] }),
+      ...(input.commandEnv === undefined ? {} : { commandEnv: { ...input.commandEnv } }),
+      ...(input.launchProfileId === undefined ? {} : { launchProfileId: input.launchProfileId }),
+      cwd: input.cwd,
+      title: input.title?.trim() || existing.title,
+      cols: input.cols,
+      rows: input.rows,
+      state: 'starting',
+      exitCode: null,
+      error: '',
+      updatedAt: timestamp,
+    }
+    await this.store.put(record)
+    try {
+      const runtime = await this.runtimes.create(record)
+      if (!runtime.alive) throw new Error('backend 重建后未报告存活状态')
+      if (input.onExit !== undefined) this.exitCallbacks.set(identityKey(identity), input.onExit)
+      const running = await this.update(record, { state: 'running', error: '' })
+      if (input.onExit !== undefined) {
+        await this.runtimes.monitor(running, (exitCode) => { void this.finishRuntime(identity, exitCode) })
+      }
+      return this.info(running)
+    } catch (error) {
+      this.exitCallbacks.delete(identityKey(identity))
+      await this.update(record, { state: 'error', error: errorMessage(error) })
+      throw error
+    }
   }
 
   async inspect(identity: TerminalRecordIdentity) {
@@ -210,9 +276,15 @@ export class CodingNsTerminalService {
         }
         try {
           const identity = await this.runtimes.inspect(current)
-          await this.update(current, identity.alive
-            ? { state: 'running', error: '' }
-            : { state: 'lost', error: identity.detail ?? '持久终端运行时不存在' })
+          if (identity.alive) {
+            await this.update(current, { state: 'running', error: '' })
+            return
+          }
+          // 运行时不在了：有真实退出码才算 exited，否则只能报告 lost。
+          // 少了这一步，DSH 重启后会把"用户已经退出的终端"一直显示成丢失。
+          await this.update(current, identity.exitCode === undefined || identity.exitCode === null
+            ? { state: 'lost', exitCode: null, error: identity.detail ?? '持久终端运行时不存在' }
+            : { state: 'exited', exitCode: identity.exitCode, error: '' })
         } catch (error) {
           await this.update(current, { state: 'error', error: errorMessage(error) })
         }
@@ -245,7 +317,7 @@ export class CodingNsTerminalService {
         cols: record.cols,
         rows: record.rows,
         onData: (data) => queue.pushOutput(data),
-        onExit: (exitCode) => { void this.handleRuntimeExit(input.identity, exitCode, queue) },
+        onExit: (exitCode) => { void this.handleAttachmentExit(input.identity, exitCode, queue) },
       })
     } catch (error) {
       this.removeFollower(key, follower)
@@ -384,28 +456,54 @@ export class CodingNsTerminalService {
     }
   }
 
-  private async handleRuntimeExit(
+  /**
+   * 浏览器 attach 客户端结束了。
+   *
+   * tmux 客户端在"服务器消失""会话被销毁""只是这次连接断了"时都会退出，退出码
+   * 本身不能证明 shell 结束。因此这里必须回查运行时的真实状态：只有确实拿到
+   * shell 的退出码才算 `exited`，否则只能标记 `lost`，让用户重新连接而不是看到
+   * 一个假的"进程已退出（1）"。
+   */
+  private async handleAttachmentExit(
     identity: TerminalRecordIdentity,
     exitCode: number | null,
     queue: TerminalFrameQueue,
   ): Promise<void> {
     try {
-      await this.markExited(identity, exitCode)
+      await this.finishRuntime(identity, exitCode)
     } finally {
-      // 先发 exited 元数据，再结束 Remote 流；否则官方 Client 会把正常退出误判为 attach 故障。
+      // 先发终态元数据，再结束 Remote 流；否则官方 Client 会把正常退出误判为 attach 故障。
       queue.finish()
     }
   }
 
-  private async markExited(identity: TerminalRecordIdentity, exitCode: number | null): Promise<void> {
+  /** 以运行时的实际状态收尾：能确认真实退出码才算 exited，否则是 lost。 */
+  private async finishRuntime(identity: TerminalRecordIdentity, exitCode: number | null): Promise<void> {
     await this.enqueue(identity, async () => {
       const record = this.store.get(identity)
       if (record === undefined || record.state !== 'running') return
-      const exited = await this.update(record, { state: 'exited', exitCode, error: '' })
-      this.broadcastState(identity, exited)
+      let runtime
+      try {
+        runtime = await this.runtimes.inspect(record)
+      } catch (error) {
+        const failed = await this.update(record, { state: 'error', error: errorMessage(error) })
+        this.broadcastState(identity, failed)
+        return
+      }
+      if (runtime.alive) return
+      const confirmed = runtime.exitCode ?? null
+      const kind: TerminalExitKind = runtime.exitCode === undefined || runtime.exitCode === null ? 'lost' : 'exited'
+      const finished = kind === 'exited'
+        ? await this.update(record, { state: 'exited', exitCode: confirmed, error: '' })
+        : await this.update(record, {
+          state: 'lost',
+          exitCode: null,
+          error: runtime.detail ?? `持久终端连接中断（客户端退出码 ${exitCode ?? '未知'}）`,
+        })
+      this.broadcastState(identity, finished)
       const callback = this.exitCallbacks.get(identityKey(identity))
       this.exitCallbacks.delete(identityKey(identity))
-      await callback?.(exitCode)
+      await callback?.(confirmed, kind)
     })
   }
 
@@ -415,7 +513,9 @@ export class CodingNsTerminalService {
       ? 'running'
       : record.state === 'closed' || record.state === 'exited'
         ? 'exited'
-        : 'failed'
+        : record.state === 'lost'
+          ? 'lost'
+          : 'failed'
     return {
       id: record.terminalId,
       title: record.title,

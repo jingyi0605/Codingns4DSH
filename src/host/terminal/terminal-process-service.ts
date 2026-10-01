@@ -109,7 +109,7 @@ export class TerminalProcessService {
         cwd,
         cols: request.cols,
         rows: request.rows,
-        onExit: (exitCode) => { void this.handleExit(instanceId, exitCode) },
+        onExit: (exitCode, kind) => { void this.handleExit(instanceId, exitCode, kind) },
       })
       if (request.commandMode === 'shell-input') {
         await this.options.terminalService.writeInitialInput(identity, buildShellInput(profile))
@@ -169,9 +169,19 @@ export class TerminalProcessService {
     }
   }
 
-  private async handleExit(instanceId: string, exitCode: number | null): Promise<void> {
+  private async handleExit(instanceId: string, exitCode: number | null, kind: 'exited' | 'lost'): Promise<void> {
     const current = this.store.getInstance(instanceId)
     if (current === undefined || !isActive(current.state)) return
+    // 连接层断开不能写成 exited；调试面板必须能区分"进程结束"和"运行时丢失"。
+    if (kind === 'lost') {
+      await this.store.putInstance({
+        ...current,
+        state: 'lost',
+        error: '终端运行时已丢失（不是进程正常退出）',
+        stoppedAt: this.now().toISOString(),
+      })
+      return
+    }
     await this.store.putInstance({ ...current, state: 'exited', exitCode, stoppedAt: this.now().toISOString() })
   }
 
