@@ -104,6 +104,14 @@ test('聚合页终端列表位于顶部横向标签栏，不占用内容区侧�
   assert.doesNotMatch(styles, /list\}\{[^}]*width:180px/u)
 })
 
+test('创建终端先写入当前列表并串行收敛库存刷新，避免内容视图闪退', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
+
+  assert.match(source, /const reloadSequence = useRef\(0\)/u)
+  assert.match(source, /if \(sequence !== reloadSequence\.current\) return next/u)
+  assert.match(source, /setTerminals\(\(current\) => current\.some\(\(item\) => item\.id === info\.id\)/u)
+})
+
 test('终端 Guide Entry 交给 Slots 注入器处理延迟声明', async () => {
   const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
 
