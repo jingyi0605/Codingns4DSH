@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createDshTransportDebugLogger } from '../data/build/dist/transport/debug.js'
+import { CODINGNS4DSH_DEBUG_LEVEL_ENV } from '../data/build/dist/shared/debug.js'
 
 test('Tunnel 调试日志默认关闭时不调用 sink', () => {
   const records: unknown[] = []
@@ -49,4 +50,21 @@ test('调试日志保留 DSH 请求路由元数据但剥掉查询串与正文', 
     status: 200,
     errorCode: 'WEB_REQUEST_FAILED',
   })
+})
+
+test('warn 调试级别过滤 Transport 普通追踪，只保留异常事件', () => {
+  const previous = process.env[CODINGNS4DSH_DEBUG_LEVEL_ENV]
+  process.env[CODINGNS4DSH_DEBUG_LEVEL_ENV] = 'warn'
+  try {
+    const records: Readonly<Record<string, unknown>>[] = []
+    const logger = createDshTransportDebugLogger({ sink: (record) => records.push(record) })
+    logger.log('session.receive', { bytes: 10 })
+    logger.log('gateway.stream.error', { code: 'FAILED' })
+    logger.log('web.client.debug', { event: 'client.request.failed', fields: { status: 502 } })
+    assert.equal(logger.level, 'warn')
+    assert.deepEqual(records.map((record) => record.event), ['gateway.stream.error', 'web.client.debug'])
+  } finally {
+    if (previous === undefined) delete process.env[CODINGNS4DSH_DEBUG_LEVEL_ENV]
+    else process.env[CODINGNS4DSH_DEBUG_LEVEL_ENV] = previous
+  }
 })
