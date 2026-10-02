@@ -244,7 +244,8 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight, local
     await withBusy(async () => {
       const result = await call<{ instance: DebugInstance; terminal: { readonly id: string } }>(rpc, 'debug/profile/launch', { sessionId: String(sessionId), workspaceId, generation: 0, profileId: profile.id, cols: 120, rows: 32 })
       setInstances((current) => [...current.filter((item) => item.id !== result.instance.id), result.instance])
-      sidebarRight.openTabIn(String(sessionId) as Parameters<typeof sidebarRight.openTabIn>[0], 'terminal', { params: { terminalId: result.terminal.id } })
+      // 终端页签是工作区聚合入口，具体 terminalId 由页内库存列表管理。
+      sidebarRight.openTabIn(String(sessionId) as Parameters<typeof sidebarRight.openTabIn>[0], 'terminal')
     })
   }
 

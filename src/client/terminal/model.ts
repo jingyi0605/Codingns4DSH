@@ -53,6 +53,13 @@ export interface TerminalLaunchShells {
   readonly selectedShell?: string
 }
 
+/** 工作区终端库存快照；同一工作区的所有会话共享这份列表。 */
+export interface TerminalInventorySnapshot {
+  readonly workspaceId: string
+  readonly terminals: readonly WebTerminalInfo[]
+  readonly revision: number
+}
+
 export interface TerminalCloseFailure {
   readonly sessionId: string
   readonly id: WebTerminalId
@@ -362,6 +369,18 @@ export class CodingNsTerminalView {
   }
 
   /**
+   * 恢复阶段 Host 列表为空时，判断当前标签是否仍有本地生命周期保护。
+   * 新建终端在 create 完成前不能被恢复流程关闭；已连接且 Host 报告 running
+   * 的终端也不能因为一次空列表响应被误判为残留。
+   */
+  isRecoveryProtected(): boolean {
+    const state = this.store.getSnapshot()
+    if (state.phase === 'closed' || state.phase === 'failed') return false
+    if (this.createWhenMissing && (state.phase === 'idle' || state.phase === 'loading' || state.phase === 'creating')) return true
+    return state.info?.id === this.id && state.info.state === 'running'
+  }
+
+  /**
    * 连接层断开后的自动重连。
    *
    * 指数退避到 5 秒封顶：DSH 重启、中继抖动或 tmux 服务器短暂不可达时，用户
@@ -420,6 +439,10 @@ export class CodingNsWebTerminals extends Service {
   readonly closeFailures: TerminalObservable<readonly TerminalCloseFailure[]> = this.closeFailureStore
   private readonly remoteReadyStore = new ObservableValue(false)
   readonly remoteReadyState: TerminalObservable<boolean> = this.remoteReadyStore
+  private readonly inventoryRevisionStore = new ObservableValue(0)
+  /** 任一工作区库存变化都会递增；聚合页用它触发跨会话刷新。 */
+  readonly inventoryRevision: TerminalObservable<number> = this.inventoryRevisionStore
+  private readonly inventories = new Map<string, TerminalInventorySnapshot>()
   private readonly closeRequests = new Map<string, CloseRequest>()
   /** Remote 注入前不能执行关闭请求；就绪后统一冲刷，避免把启动竞态显示成永久错误。 */
   private cleanupQueued = false
@@ -430,35 +453,65 @@ export class CodingNsWebTerminals extends Service {
     void this.flushCleanup()
   }
 
-  view(sessionId: string, key: string, contentId: string, terminalId?: WebTerminalId, shellPath?: string): CodingNsTerminalView {
+  view(sessionId: string, key: string, contentId: string, terminalId?: WebTerminalId, shellPath?: string, createFresh = false, persistBinding = true): CodingNsTerminalView {
     const mapKey = JSON.stringify([sessionId, key])
     const existing = this.views.get(mapKey)
     if (existing !== undefined) return existing.view
     const workspaceId = this.workspaceIds.get(sessionId)
-    const saved = terminalId
-      ?? (workspaceId === undefined ? undefined : readWorkspaceBindingWithMigration(workspaceId, contentId))
-      ?? readBinding(sessionId, contentId)
+    const sessionBinding = readBinding(sessionId, contentId)
+    // “新建”是一次性动作：首次消费标记时忽略工作区单终端绑定，生成新的身份；
+    // 标签重载后若已有会话绑定，则恢复刚创建的终端，避免再次创建重复进程。
+    const fresh = createFresh && sessionBinding === undefined
+    const saved = fresh
+      ? terminalId
+      : terminalId
+        ?? sessionBinding
+        ?? (workspaceId === undefined ? undefined : readWorkspaceBindingWithMigration(workspaceId, contentId))
     const id = saved ?? crypto.randomUUID() as WebTerminalId
     debugInfo('codingns4dsh: client terminal view', { sessionId, key, contentId, workspaceId: workspaceId ?? null, savedId: saved ?? null, terminalId: id, bindingSource: terminalId !== undefined ? 'argument' : workspaceId !== undefined && readWorkspaceBindingWithMigration(workspaceId, contentId) !== undefined ? 'workspace-storage' : readBinding(sessionId, contentId) !== undefined ? 'session-storage' : 'new' })
-    if (saved === undefined) writeBinding(sessionId, contentId, id)
+    if (persistBinding && (fresh || saved === undefined)) writeBinding(sessionId, contentId, id)
     const view = new CodingNsTerminalView(
       sessionId,
       id,
       this.remote,
-      saved === undefined,
+      fresh || saved === undefined,
       shellPath,
-      (resolvedWorkspaceId, currentId) => this.rememberWorkspace(sessionId, contentId, currentId, resolvedWorkspaceId),
+      persistBinding
+        ? (resolvedWorkspaceId, currentId) => this.rememberWorkspace(sessionId, contentId, currentId, resolvedWorkspaceId, !fresh && terminalId === undefined)
+        : (resolvedWorkspaceId) => { this.workspaceIds.set(sessionId, resolvedWorkspaceId); return undefined },
       this.t,
     )
     this.views.set(mapKey, { contentId, view })
     return view
   }
 
+  /** 聚合页按 Host terminalId 获取内部视图，不再依赖 Sidebar 标签身份。 */
+  viewForTerminal(sessionId: string, terminalId: WebTerminalId, shellPath?: string): CodingNsTerminalView {
+    const key = `aggregate:${terminalId}`
+    return this.view(sessionId, key, key, terminalId, shellPath, false, false)
+  }
+
   /** 返回某个 Sidebar 内容已经保存的 Host 终端身份，用于恢复时去重。 */
   boundTerminalId(sessionId: string, contentId: string): WebTerminalId | undefined {
     const workspaceId = this.workspaceIds.get(sessionId)
-    return (workspaceId === undefined ? undefined : readWorkspaceBindingWithMigration(workspaceId, contentId))
-      ?? readBinding(sessionId, contentId)
+    return readBinding(sessionId, contentId)
+      ?? (workspaceId === undefined ? undefined : readWorkspaceBindingWithMigration(workspaceId, contentId))
+  }
+
+  /**
+   * 判断恢复阶段是否应保留某个标签。
+   *
+   * Host 列表为空有两种含义：新建终端的 create 还没有完成，或者 Host 已经
+   * 关闭终端而 Sidebar 只剩残留标签。只有当前 Client 视图明确处于创建中或
+   * 仍收到 Host 的 running 状态时，空列表才属于前一种情况。
+   */
+  isTerminalRecoveryProtected(sessionId: string, contentId: string, terminalId: WebTerminalId): boolean {
+    for (const record of this.views.values()) {
+      if (record.view.sessionId !== sessionId || record.contentId !== contentId) continue
+      if (record.view.id !== terminalId) continue
+      return record.view.isRecoveryProtected()
+    }
+    return false
   }
 
   async launchShells(sessionId: string, signal: AbortSignal): Promise<TerminalLaunchShells> {
@@ -472,6 +525,30 @@ export class CodingNsWebTerminals extends Service {
 
   selectShell(path: string): void { writeString(SHELL_KEY, path) }
 
+  /** 在聚合页内创建一个新的 Host 终端，并把它加入工作区库存。 */
+  async createTerminal(sessionId: string, shellPath?: string): Promise<WebTerminalInfo> {
+    const terminalId = crypto.randomUUID() as WebTerminalId
+    const view = this.view(sessionId, `aggregate:${terminalId}`, `aggregate:${terminalId}`, terminalId, shellPath, true, false)
+    await view.refresh()
+    const info = view.state.getSnapshot().info
+    if (info === undefined) throw new Error(view.state.getSnapshot().error ?? '终端创建失败')
+    await this.refreshInventory(sessionId)
+    return info
+  }
+
+  /** 只关闭指定 terminalId；其他会话中对应的 attach 视图只做 detach。 */
+  async closeTerminal(sessionId: string, terminalId: WebTerminalId): Promise<void> {
+    const records = [...this.views.entries()].filter(([, record]) => record.view.id === terminalId)
+    const primary = records.find(([, record]) => record.view.sessionId === sessionId)?.[1]
+    if (primary !== undefined) await primary.view.close()
+    else unwrap(await resolveRemote(this.remote).close(sessionId, terminalId))
+    for (const [mapKey, record] of records) {
+      this.views.delete(mapKey)
+      if (record !== primary) await record.view.dispose()
+    }
+    await this.refreshInventory(sessionId)
+  }
+
   close(sessionId: string, key: string, contentId: string, terminalId?: WebTerminalId): void {
     const mapKey = JSON.stringify([sessionId, key])
     const record = this.views.get(mapKey)
@@ -484,7 +561,7 @@ export class CodingNsWebTerminals extends Service {
     deleteBinding(sessionId, contentId)
     const workspaceId = this.workspaceIds.get(sessionId)
     if (workspaceId !== undefined) {
-      deleteWorkspaceBinding(workspaceId)
+      deleteWorkspaceBindingIfMatches(workspaceId, id)
       deleteLegacyWorkspaceBinding(workspaceId, contentId)
     }
     this.views.delete(mapKey)
@@ -499,6 +576,7 @@ export class CodingNsWebTerminals extends Service {
       const environment = unwrap(await resolveRemote(this.remote).environment(sessionId))
       if (environment.workspaceId !== undefined) this.workspaceIds.set(sessionId, environment.workspaceId)
       const result = unwrap(await resolveRemote(this.remote).list(sessionId))
+      this.rememberInventory(sessionId, result)
       debugInfo('codingns4dsh: client terminal recover', { sessionId, workspaceId: environment.workspaceId, terminalIds: result.map((entry) => entry.id) })
       return result
     })().finally(() => this.recoveries.delete(sessionId))
@@ -523,18 +601,43 @@ export class CodingNsWebTerminals extends Service {
     this.views.clear()
     this.workspaceIds.clear()
     this.recoveries.clear()
+    this.inventories.clear()
   }
 
-  private rememberWorkspace(sessionId: string, contentId: string, id: WebTerminalId, workspaceId: string): WorkspaceBindingResolution {
+  /** 强制刷新当前会话对应工作区的库存。 */
+  async refreshInventory(sessionId: string): Promise<readonly WebTerminalInfo[]> {
+    return this.recover(sessionId)
+  }
+
+  /** 返回当前会话最近一次拿到的工作区库存；首次加载时为空。 */
+  inventoryForSession(sessionId: string): readonly WebTerminalInfo[] {
+    const workspaceId = this.workspaceIds.get(sessionId) ?? `session:${sessionId}`
+    return this.inventories.get(workspaceId)?.terminals ?? []
+  }
+
+  private rememberWorkspace(sessionId: string, contentId: string, id: WebTerminalId, workspaceId: string, useWorkspaceBinding: boolean): WorkspaceBindingResolution {
     this.workspaceIds.set(sessionId, workspaceId)
-    const existing = readWorkspaceBindingWithMigration(workspaceId, contentId)
+    // 显式恢复和“新建”都必须保留自己的 terminalId；只有普通无参数入口
+    // 才使用旧的单终端工作区绑定兼容行为。
+    const existing = useWorkspaceBinding ? readWorkspaceBindingWithMigration(workspaceId, contentId) : undefined
     const resolvedId = existing ?? id
     // 修正首次渲染时已经写入的会话键，避免第二个会话继续携带临时 ID。
     writeBinding(sessionId, contentId, resolvedId)
-    // 旧版本的工作区键带 contentId；统一重写成只含 Workspace ID 的新键。
-    writeWorkspaceBinding(workspaceId, contentId, resolvedId)
-    deleteLegacyWorkspaceBinding(workspaceId, contentId)
+    if (useWorkspaceBinding) {
+      // 旧版本的工作区键带 contentId；统一重写成只含 Workspace ID 的新键。
+      writeWorkspaceBinding(workspaceId, contentId, resolvedId)
+      deleteLegacyWorkspaceBinding(workspaceId, contentId)
+    }
     return { id: resolvedId, existing: existing !== undefined }
+  }
+
+  private rememberInventory(sessionId: string, terminals: readonly WebTerminalInfo[]): void {
+    const workspaceId = this.workspaceIds.get(sessionId) ?? `session:${sessionId}`
+    const previous = this.inventories.get(workspaceId)
+    if (previous !== undefined && sameInventory(previous.terminals, terminals)) return
+    const revision = this.inventoryRevisionStore.getSnapshot() + 1
+    this.inventories.set(workspaceId, { workspaceId, terminals: [...terminals], revision })
+    this.inventoryRevisionStore.set(revision)
   }
 
   private async cleanup(request: CloseRequest, view?: CodingNsTerminalView): Promise<void> {
@@ -618,6 +721,16 @@ function isTerminalRemoteUnavailable(error: unknown): boolean {
   return error instanceof TerminalRemoteUnavailableError
 }
 
+function sameInventory(left: readonly WebTerminalInfo[], right: readonly WebTerminalInfo[]): boolean {
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index]!
+    const b = right[index]!
+    if (a.id !== b.id || a.title !== b.title || a.cwd !== b.cwd || a.cols !== b.cols || a.rows !== b.rows || a.state !== b.state || a.exitCode !== b.exitCode || a.shell.path !== b.shell.path || a.shell.name !== b.shell.name) return false
+  }
+  return true
+}
+
 function bindingKey(sessionId: string, contentId: string): string {
   return `${BINDING_PREFIX}${JSON.stringify([sessionId, contentId])}`
 }
@@ -660,6 +773,11 @@ function writeWorkspaceBinding(workspaceId: string, _contentId: string, id: WebT
 
 function deleteWorkspaceBinding(workspaceId: string, _contentId?: string): void {
   try { localStorage.removeItem(workspaceBindingKey(workspaceId)) } catch { /* 浏览器禁用存储时仅失去跨刷新绑定。 */ }
+}
+
+function deleteWorkspaceBindingIfMatches(workspaceId: string, id: WebTerminalId): void {
+  if (readWorkspaceBinding(workspaceId) !== id) return
+  deleteWorkspaceBinding(workspaceId)
 }
 
 function deleteLegacyWorkspaceBinding(workspaceId: string, contentId: string): void {

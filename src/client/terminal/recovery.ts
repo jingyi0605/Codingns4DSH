@@ -5,6 +5,8 @@ import { debugInfo, debugWarn } from '../../shared/debug.js'
 export interface TerminalSidebarTab {
   readonly id: string
   readonly kind: string
+  /** DSH TabRecord 的稳定内容地址；旧版 tabsIn 可能没有该字段。 */
+  readonly contentId?: string
 }
 
 interface TerminalNavigationSnapshot {
@@ -78,47 +80,30 @@ export function createTerminalSessionRecovery(
       terminalIds: terminals.map((terminal) => terminal.id),
       existingTabs: existing.map((tab) => ({ id: tab.id, kind: tab.kind })),
     })
-    const opened = new Set<string>()
-    const available = new Set(terminals.map((terminal) => terminal.id))
-    /**
-     * Host 列表为空时不能做任何"残留标签"清理。
-     *
-     * 用户点"新建终端"后，Sidebar 标签会立刻出现并触发 TerminalCleanup 的恢复，
-     * 而 Host 侧的 create 还在进行中、list 暂时为空。此刻把"不在列表里"当作残留
-     * 证据就会把刚建好的标签直接关掉，右侧栏随即退回"开始"引导页。
-     */
-    const canPrune = terminals.length > 0
-    for (const tab of existing) {
-      if (tab.kind !== terminalKind) continue
-      const id = terminalIdOf(sidebar, sessionId, tab)
-      if (id === undefined) {
-        // 没有 terminalId 的标签可能是旧版残留，也可能是刚点开、参数尚未写入的
-        // 新标签；两者无法区分，而误关活终端远比残留一个标签严重，因此一律保留。
-        for (const terminal of terminals) opened.add(terminal.id)
-        debugInfo('codingns4dsh: client terminal sidebar recovery legacy tab', { sessionId, tabId: tab.id })
-      } else {
-        if (canPrune && !available.has(id)) {
-          // Host 已经关闭该终端时，旧 Sidebar 标签只是残留记录，必须走
-          // Sidebar 的正式关闭路径，才能同步更新布局和标签生命周期。
-          sidebar.closeIn?.(sessionId, tab.id)
-          debugInfo('codingns4dsh: client terminal sidebar recovery removed stale tab', { sessionId, tabId: tab.id, terminalId: id })
-          continue
-        }
-        opened.add(id)
+    const terminalTabs = existing.filter((tab) => tab.kind === terminalKind)
+    if (terminals.length === 0) {
+      // 聚合页代表整个工作区；库存为空时移除页签本身，不再按旧 terminalId
+      // 判断某个标签是否残留。新的关闭回调只负责布局移除，不会调用 Host close。
+      for (const tab of terminalTabs) {
+        sidebar.closeIn?.(sessionId, tab.id)
+        debugInfo('codingns4dsh: client terminal aggregate tab removed for empty inventory', { sessionId, tabId: tab.id })
       }
+      return terminals
     }
-    for (const terminal of terminals) {
-      if (opened.has(terminal.id)) {
-        debugInfo('codingns4dsh: client terminal sidebar recovery skip existing', { sessionId, terminalId: terminal.id })
-        continue
-      }
+    if (terminalTabs.length === 0) {
       if (typeof sidebar.openTabIn !== 'function') {
-        debugWarn('codingns4dsh: client terminal sidebar recovery unavailable', { sessionId, terminalId: terminal.id, reason: 'openTabIn-undefined' })
-        continue
+        debugWarn('codingns4dsh: client terminal aggregate recovery unavailable', { sessionId, reason: 'openTabIn-undefined' })
+        return terminals
       }
-      sidebar.openTabIn(sessionId, terminalKind, { params: { terminalId: terminal.id } })
-      debugInfo('codingns4dsh: client terminal sidebar recovery opened', { sessionId, terminalId: terminal.id })
-      opened.add(terminal.id)
+      sidebar.openTabIn(sessionId, terminalKind)
+      debugInfo('codingns4dsh: client terminal aggregate tab opened', { sessionId, terminalCount: terminals.length })
+      return terminals
+    }
+    // 升级迁移：旧版本可能为每个 Host 终端保存一个 Sidebar 标签。保留一个
+    // 作为聚合页，其余只走 Sidebar 关闭流程，绝不按旧导航参数关闭 Host。
+    for (const tab of terminalTabs.slice(1)) {
+      sidebar.closeIn?.(sessionId, tab.id)
+      debugInfo('codingns4dsh: client terminal legacy tab collapsed', { sessionId, tabId: tab.id })
     }
     return terminals
   }
@@ -139,17 +124,6 @@ function readTabs(sidebar: TerminalSidebarRecoveryPort, sessionId: string): read
 function readOpenTabs(sidebar: TerminalSidebarRecoveryPort): readonly { readonly sessionId: string; readonly tabId: string; readonly kind: string }[] {
   try { return sidebar.openTabs?.getSnapshot() ?? [] }
   catch { return [] }
-}
-
-function terminalIdOf(sidebar: TerminalSidebarRecoveryPort, sessionId: string, tab: TerminalSidebarTab): string | undefined {
-  try {
-    const params = sidebar.tabDomain?.occurrence(sessionId, tab).navigation.getSnapshot().params
-    if (typeof params !== 'object' || params === null) return undefined
-    const terminalId = (params as { readonly terminalId?: unknown }).terminalId
-    return typeof terminalId === 'string' && terminalId.trim() !== '' ? terminalId : undefined
-  } catch {
-    return undefined
-  }
 }
 
 function messageOf(value: unknown): string { return value instanceof Error ? value.message : String(value) }
