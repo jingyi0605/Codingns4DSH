@@ -286,3 +286,30 @@
     - `README.md`、`requirements.md`、`design.md`、`tasks.md` 互相引用一致
   - 对应需求：`requirements.md` 全部需求
   - 对应设计：`design.md` 全文
+
+---
+
+## 阶段 4：首批适配器实现（20261002）
+
+本阶段是基于本 Spec 的后续实现记录；原有阶段 1～3 保留为选型和接入规范的追踪清单。
+
+- [x] 4.1 CodeBuddy 与 WorkBuddy
+  - 状态：DONE
+  - 结果：共用 ACP 驱动，隔离产品配置根和安装发现；WorkBuddy 只扫描桌面应用内置 CLI。
+- [x] 4.2 Cursor CLI 与 Kiro CLI
+  - 状态：DONE
+  - 结果：共用最小 ACP 基座，固定各自启动参数；未验证的 Usage、Fork、压缩和权限交互不声明。
+- [x] 4.3 Qoder 与 Qoder CN
+  - 状态：DONE
+  - 结果：共用官方 ACP 驱动，隔离 token 与用户配置环境，支持权限请求应答；模型刷新不创建 ACP 会话。
+- [x] 4.4 Antigravity
+  - 状态：DONE
+  - 结果：复用 stream-json 事件归一化并增加 stdin NDJSON 输入；调用 `agy models` 动态加载模型并合并思考档位；不声明危险 headless 模式之外的权限能力。
+- [x] 4.5 登记、图标、回归测试与文档
+  - 状态：DONE
+  - 结果：七个 adapter ID 已登记，新增 SVG 图标、驱动测试、README 能力表和开发记录。
+  - 验证：`pnpm run typecheck`、`pnpm run version:check`、`pnpm run capability:check`、`node --test --test-concurrency=1 tests/*.spec.ts`（1073 项通过）。
+- [x] 4.6 AGY 模型探测异步化与后台预热
+  - 状态：DONE
+  - 结果：`agy models` 改用异步子进程；Host 启动后按驱动声明后台预热模型目录；静态回退目录按短周期重试，避免错误缓存真实模型列表。
+  - 验证：Antigravity 驱动真实模型目录回放返回 8 个模型；`pnpm test`（1079 项通过）。
