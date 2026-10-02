@@ -13,7 +13,7 @@ import { createPeerHostNativeProjection, type PeerHostNativeProjection } from '.
 import { installPeerHostNativeStoreProjection, refreshPeerHostNativeSessions } from '../peer-host-native-store-projection.js'
 import { startPeerHostWorkspaceTag } from '../peer-host-workspace-tag.js'
 import { startPeerHostWorkspaceTab } from '../peer-host-workspace-tab.js'
-import { registerPeerHostAggregateRefresh, requestPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
+import { isPeerHostAggregateRefreshRegistered, registerPeerHostAggregateRefresh, requestPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { publishSessionAdapter } from '../session-adapter-cache.js'
 
@@ -21,6 +21,8 @@ import { publishSessionAdapter } from '../session-adapter-cache.js'
 const PEER_HOST_AGGREGATE_REFRESH_MS = 30_000
 /** 新建会话尚未出现在聚合摘要时，临时保留其远端作用域的最长时间。 */
 const PEER_HOST_PENDING_SESSION_SCOPE_TTL_MS = 30_000
+/** 远端会话流刷新聚合的合并窗口，避免每个文本增量都触发完整摘要读取。 */
+const PEER_HOST_SESSION_REFRESH_DEBOUNCE_MS = 200
 
 /** PeerHost Client 模块的边界声明；远端凭据和目标连接始终由 Host 侧持有。 */
 export const peerHostFeature: CodingNsClientFeatureModule = {
@@ -124,6 +126,38 @@ export function createPeerHostPageTransport(
   const fetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined
   const scopes = new Map<string, HostScope>()
   const remoteHostScopes = new Map<string, HostScope>()
+  let aggregateRefreshTimer: ReturnType<typeof setTimeout> | undefined
+  let aggregateRefreshInFlight: Promise<void> | undefined
+  let aggregateRefreshQueued = false
+  let aggregateRefreshLastStartedAt: number | undefined
+  const scheduleAggregateRefresh = (): void => {
+    if (!isPeerHostAggregateRefreshRegistered()) return
+    aggregateRefreshQueued = true
+    if (aggregateRefreshTimer !== undefined || aggregateRefreshInFlight !== undefined) return
+    const elapsed = aggregateRefreshLastStartedAt === undefined ? 0 : Date.now() - aggregateRefreshLastStartedAt
+    const delay = Math.max(0, PEER_HOST_SESSION_REFRESH_DEBOUNCE_MS - elapsed)
+    aggregateRefreshTimer = setTimeout(() => {
+      aggregateRefreshTimer = undefined
+      if (!aggregateRefreshQueued) return
+      aggregateRefreshQueued = false
+      if (!isPeerHostAggregateRefreshRegistered()) return
+      aggregateRefreshLastStartedAt = Date.now()
+      let result: void | Promise<void>
+      try {
+        result = requestPeerHostAggregateRefresh()
+      } catch {
+        result = undefined
+      }
+      if (result === undefined) {
+        if (aggregateRefreshQueued) scheduleAggregateRefresh()
+        return
+      }
+      aggregateRefreshInFlight = Promise.resolve(result).catch(() => undefined).finally(() => {
+        aggregateRefreshInFlight = undefined
+        if (aggregateRefreshQueued) scheduleAggregateRefresh()
+      })
+    }, delay)
+  }
   const request = async (channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> => {
     if (fetchImpl === undefined) throw new Error('当前页面没有 fetch')
     const body = JSON.stringify({ type: 'client-request', rpcId: createRequestId(), method: endpoint, payload })
@@ -331,7 +365,23 @@ export function createPeerHostPageTransport(
       if (channel === '/api' && isDshNativeRemoteMethod(method)) {
         const scope = findScope(body)
         if (scope !== undefined && scope.targetHostId !== null) {
-          return openRemoteStream(method, body, scope, signal) as AsyncIterable<TChunk>
+          const stream = openRemoteStream(method, body, scope, signal) as AsyncIterable<TChunk>
+          if (method !== 'session/follow') return stream
+          // session/follow 承载远端新建、续接过程中的实时事件。聚合摘要本身仍按轮询
+          // 读取，但由这里把事件转成合并刷新，侧栏无需切换到别的会话才能更新状态。
+          return (async function* (): AsyncIterable<TChunk> {
+            let emitted = false
+            try {
+              for await (const chunk of stream) {
+                emitted = true
+                scheduleAggregateRefresh()
+                yield chunk
+              }
+            } finally {
+              // 某些实现只在回合结束时写入 updatedAt/status，流结束也必须补一次刷新。
+              if (!emitted) scheduleAggregateRefresh()
+            }
+          })()
         }
       }
       // 本机流（含 $events 等非白名单流）必须回到 DSH Gateway：本地 baseline 不能

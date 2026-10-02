@@ -16,7 +16,7 @@ import {
 import type { PeerHostRoute } from '../../shared/contracts/peer-host.js'
 import type { PeerHostRecord, PeerHostClientRecord } from '../../shared/contracts/peer-host.js'
 import type { DshHostStatus } from '../../shared/contracts/host-status.js'
-import { createVirtualSessionId, createVirtualWorkspaceId, normalizePeerHostColor, type HostScope } from '../../shared/contracts/peer-host.js'
+import { createVirtualSessionId, createVirtualWorkspaceId, normalizePeerHostColor, parseVirtualSessionId, parseVirtualWorkspaceId, type HostScope } from '../../shared/contracts/peer-host.js'
 import type { AggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { PeerHostAggregateService } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { resolveDshNativeDispatch } from '../modules/peer-host/peer-host-native-dispatch.js'
@@ -34,7 +34,7 @@ import { createDshNativeSummarySource } from '../modules/peer-host/dsh-native-su
 import { createPeerHostRemoteSummarySource, readPeerHostRemoteWorkspaceCandidates, type PeerHostRemoteWorkspaceCandidate } from '../modules/peer-host/peer-host-remote-summary-source.js'
 import { callPeerCliRpc, callPeerNativeRpc, openPeerNativeStream, readNativeRpcEnvelope } from '../modules/peer-host/peer-host-native-transport.js'
 import { createAggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
-import { encodeNativeResponseBytes, isDshNativeRemoteMethod, rewriteNativeRequestIds, rewriteNativeResponseIds } from '../modules/peer-host/peer-host-native-protocol.js'
+import { encodeNativeResponseBytes, isDshNativeRemoteMethod, rewriteNativeRequestIds, rewriteNativeResponseIds, type VirtualIdResolver } from '../modules/peer-host/peer-host-native-protocol.js'
 import { resolveCodingNsDebugLevel } from '../../shared/debug.js'
 
 /** 原生 Remote 流句柄的存活窗口；每次轮询续期，超时仍未再被轮询即回收。 */
@@ -366,7 +366,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             const scope = parseScope(input.scope)
             // 远端流与 unary 一样需要双向 ID 改写：请求要换回目标 Host 的真实 ID，
             // 帧里的 ID 要重新编码成虚拟 ID，否则原生会话流认不出目标 Host 的会话。
-            const payload = rewriteNativeRequestIds(method, input.payload, workspaceRegistry)
+            const payload = rewriteNativeRequestIds(method, input.payload, createScopedNativeIdResolver(workspaceRegistry, scope))
             // 句柄由 nativeStreamNext/Close 轮询管理，不绑定本次 HTTP 请求的 signal：
             // 该 signal 会在 nativeStream 响应返回后立即中止，导致第一次 next 直接结束。
             const stream = aggregatedTransport.openStream({ scope, method, payload })
@@ -424,7 +424,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             const method = requiredString(input.method, 'method')
             if (!isDshNativeRemoteMethod(method)) throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `未知 DSH 原生 Remote 方法: ${method}`)
             const scope = parseScope(input.scope)
-            const rewritten = rewriteNativeRequestIds(method, input.payload, workspaceRegistry)
+            const rewritten = rewriteNativeRequestIds(method, input.payload, createScopedNativeIdResolver(workspaceRegistry, scope))
             const value = await aggregatedTransport.rpc({ scope, method, payload: rewritten })
             const virtualHostId = scope.targetHostId ?? scope.hostId
             return encodeNativeResponseBytes(rewriteNativeResponseIds(value, (id) => createVirtualWorkspaceId(virtualHostId, id), (id) => createVirtualSessionId(virtualHostId, id)))
@@ -611,6 +611,35 @@ function parseColor(value: unknown): string | null {
 function requiredString(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.trim() === '') throw new TypeError(`${field} 不能为空`)
   return value.trim()
+}
+
+/**
+ * 为原生 Remote 请求补充“聚合尚未确认”的临时 ID 解析。
+ *
+ * session/create 返回后，客户端会马上打开 session/follow；此时 Host 侧聚合
+ * Registry 可能还没有新会话，但请求 scope 已经携带了真实 sessionId。只允许
+ * 解析与当前目标 Host、工作区和会话 scope 完全匹配的虚拟 ID，避免把任意旧 ID
+ * 当成可路由资源。
+ */
+export function createScopedNativeIdResolver(registry: VirtualWorkspaceRegistry, scope: HostScope): VirtualIdResolver {
+  return {
+    resolveWorkspace(id) {
+      const known = registry.resolveWorkspace(id)
+      if (known !== null) return known
+      if (scope.targetHostId === null) return null
+      const parsed = parseVirtualWorkspaceId(id)
+      if (parsed === null || parsed.hostId !== scope.targetHostId || parsed.workspaceId !== scope.workspaceId) return null
+      return { workspaceId: parsed.workspaceId, targetHostId: scope.targetHostId }
+    },
+    resolveSession(id) {
+      const known = registry.resolveSession(id)
+      if (known !== null) return known
+      if (scope.targetHostId === null || scope.sessionId === null) return null
+      const parsed = parseVirtualSessionId(id)
+      if (parsed === null || parsed.hostId !== scope.targetHostId || parsed.sessionId !== scope.sessionId) return null
+      return { sessionId: parsed.sessionId, targetHostId: scope.targetHostId }
+    },
+  }
 }
 
 function parseScope(value: unknown): import('../../shared/contracts/peer-host.js').HostScope {
