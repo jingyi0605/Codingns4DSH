@@ -1,0 +1,119 @@
+# 设计文档 - 终端工作区聚合与内置列表
+
+状态：实施中。
+
+## 1. 设计目标
+
+1. 用工作区终端库存作为唯一事实来源，移除 Host 终端与 Sidebar 标签的一对一绑定。
+2. 让 Sidebar 只承载一个聚合页入口，终端身份和生命周期全部在插件内部管理。
+3. 兼容旧布局、空库存和创建竞态，避免关闭或恢复动作误伤 Host 进程。
+
+## 2. 架构
+
+```text
+DSH session A ─┐
+DSH session B ─┼─ 一个 terminal 聚合页签
+DSH session C ─┘          │
+                          ├─ 工作区终端库存
+                          ├─ 终端列表
+                          └─ 选中 terminalId 的 CodingNsTerminalView
+                                      │
+                                      ▼
+                              Host workspace terminal list/create/close
+```
+
+### 2.1 组件职责
+
+| 组件 | 职责 |
+| --- | --- |
+| `CodingNsWebTerminals` | 保存按工作区划分的库存快照、revision、终端视图和 Host 操作。 |
+| `createTerminalSessionRecovery` | 每个会话最多打开一个聚合页；库存为空时关闭聚合页；迁移旧多标签。 |
+| `TerminalBody` | 在顶部横向标签栏渲染内部列表，在下方渲染选中终端内容，处理页内新建、选择、重命名、关闭。 |
+| `TerminalTitle` | 固定显示“终端”，不再绑定某个 Host 终端标题。 |
+| `TerminalCleanup` | 监听库存 revision，触发所有已知会话的聚合页同步。 |
+
+## 3. 状态模型
+
+### 3.1 工作区库存
+
+`CodingNsWebTerminals` 增加按 `workspaceId` 保存的库存快照和可订阅 revision。每次 `recover`、创建成功、关闭成功或 Host 列表刷新后更新快照：
+
+```ts
+interface TerminalInventory {
+  readonly workspaceId: string
+  readonly terminals: readonly WebTerminalInfo[]
+  readonly revision: number
+}
+```
+
+同一工作区的所有会话读取同一库存；sessionId 仅作为 Remote 调用上下文和当前 attach 会话，不参与终端唯一性。
+
+### 3.2 聚合页参数
+
+聚合页不把 `terminalId` 写入 Sidebar navigation params。创建入口只传递一次性的 `autoCreate`/Shell 选择意图，恢复页只读取库存。旧标签仍可读取 `terminalId`，迁移时不使用它关闭 Host。
+
+### 3.3 终端视图
+
+新增明确的 `viewForTerminal(sessionId, terminalId, shellPath?)` 或等价内部方法，使用 `[sessionId, terminalId]` 作为视图缓存键。聚合页只挂载选中视图；隐藏其他视图只 detach，不调用 Host close。
+
+## 4. 关键流程
+
+### 4.1 打开和恢复
+
+1. `TerminalCleanup` 为当前 mounted session 调用 recovery。
+2. recovery 请求 Host 工作区库存。
+3. 库存非空且当前会话没有聚合页时，调用 `openTabIn(sessionId, 'terminal')` 一次。
+4. 当前会话存在多个旧 terminal 标签时，保留一个并用 Sidebar 关闭路径移除多余布局记录，关闭回调不得结束 Host 进程。
+5. 库存为空时，关闭当前会话所有聚合页；已知其他会话由库存 revision 再次收敛。
+
+### 4.2 页内新建
+
+1. 用户在聚合页点击新建并选择 Shell。
+2. `CodingNsWebTerminals.createTerminal` 生成唯一 `terminalId`，调用 Host create。
+3. Host 返回成功后更新工作区库存和 revision。
+4. 聚合页选择新终端并挂载其视图。
+
+### 4.3 页内关闭
+
+1. 用户在列表项点击关闭。
+2. 仅按该项 `terminalId` 调用 Host close。
+3. close 成功后刷新库存；库存为空时所有会话聚合页自动关闭。
+4. 聚合页标签自身的关闭动作只移除 Sidebar 布局，不触发 Host close。
+
+## 5. 恢复和兼容
+
+- 新版本不再注册 `multiple:true`，避免 DSH 按打开次数生成多个内容地址。
+- terminal guide 只作为创建入口存在，不代表已有终端页签；终端类型本身仍声明 `multiple: false`。
+- DSH 当前同时注册 Git 和 Debug guide 时不会把终端作为唯一默认页；入口点击后才打开聚合页，并通过 `autoCreate` 传递一次性创建意图。
+- 旧版每终端标签迁移时只做 Sidebar 记录收敛，不根据旧标签触发 Host close。
+- 无法读取 workspaceId 时退回当前 session 的库存和会话级兼容行为，不写入错误的工作区绑定。
+
+## 6. 测试策略
+
+### 6.1 单元测试
+
+- 库存按 workspaceId 去重和 revision 通知。
+- 创建第二个终端得到不同 terminalId。
+- 关闭一个终端只关闭对应 Host 记录。
+- 空库存关闭聚合页；创建竞态保留新终端。
+- 旧多个 Sidebar 标签只收敛为一个且不调用 Host close。
+
+### 6.2 UI/恢复测试
+
+- tab definition 为单实例且不声明 per-terminal guide。
+- recovery 每个 session 最多打开一个 terminal tab。
+- 聚合页内部选择、新建、关闭和空状态行为有源代码契约测试。
+
+### 6.3 集成验证
+
+```text
+pnpm run typecheck
+pnpm run build
+pnpm test
+```
+
+## 7. 风险
+
+- DSH 旧布局可能在升级首次恢复时包含多个 terminal 标签，必须先执行无 Host close 的迁移。
+- 没有终端时不能删除创建入口，否则用户无法建立第一个终端；隐藏目标是已打开的聚合页签。
+- Host 没有事件推送，库存同步以显式 refresh + revision 为准；连接断开时保留当前视图并允许重试。
