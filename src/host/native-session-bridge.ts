@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
+import { debugWarn } from '../shared/debug.js'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentQuestion,
@@ -478,22 +479,41 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
   }
   const injectNativeNextStep = (sessionId: string, summary = '外部工具已完成，继续处理当前任务。'): boolean => {
     const agent = nativeAgent(ctx, sessionId)
-    if (agent === null || typeof (agent as { inject?: unknown }).inject !== 'function') return false
+    if (agent === null || typeof (agent as { inject?: unknown }).inject !== 'function') {
+      // 子代理会话一旦注入失败，DSH 不会发起第二次 llm/stream，子会话就停在当前
+      // step 上并以失败结算；这里必须留下可诊断痕迹，否则外部表现只是
+      // 「子代理 failed before it finished」，无法区分是能力缺失还是准入被拒。
+      debugWarn('codingns4dsh: 无法注入 next-step，子会话将无法继续', {
+        sessionId,
+        agentFound: agent !== null,
+      })
+      return false
+    }
     injectedStepSequence += 1
     const boundedSummary = summary.trim().slice(0, 120) || '外部工具已完成，继续处理当前任务。'
+    const producerOwned = usesProducerOwnedSource(appendableSession(store?.get(sessionId)))
     try {
       if (on !== undefined) pendingStepTransitions.add(sessionId)
       ;(agent as { inject(message: unknown): void }).inject({
         id: `codingns-external-step-${injectedStepSequence}-${randomUUID()}`,
         role: 'user',
         content: [{ type: 'text', text: boundedSummary }],
-        source: usesProducerOwnedSource(appendableSession(store?.get(sessionId)))
+        source: producerOwned
           ? { kind: 'model-selection', form: 'notice', summary: boundedSummary }
           : { kind: 'plugin', plugin: 'codingns4dsh', form: 'notice', summary: boundedSummary },
       })
       return true
-    } catch {
+    } catch (error) {
       pendingStepTransitions.delete(sessionId)
+      // v4 会话拒绝 `kind: 'plugin'` 来源（"format v4 message requires a
+      // producer-owned source kind"）时会走到这里。记录来源形态与真实异常，
+      // 才能判断是会话 generation 判定错误还是消息本身不合法。
+      debugWarn('codingns4dsh: next-step 注入被拒绝，子会话将无法继续', {
+        sessionId,
+        producerOwned,
+        sessionFormat: sessionFormat(appendableSession(store?.get(sessionId))),
+        error: error instanceof Error ? error.message : String(error),
+      })
       return false
     }
   }
