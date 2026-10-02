@@ -126,16 +126,20 @@ function TerminalBody({ sessionId, useTabInfo, webTerminals, settings, theme, lo
   const [selectedId, setSelectedId] = useState<WebTerminalId | undefined>()
   const [loading, setLoading] = useState(true)
   const autoCreated = useRef(false)
+  const reloadSequence = useRef(0)
 
   const reload = useCallback(async (): Promise<readonly WebTerminalInfo[]> => {
+    const sequence = reloadSequence.current + 1
+    reloadSequence.current = sequence
     setLoading(true)
     try {
       const next = await webTerminals.refreshInventory(String(sessionId))
+      if (sequence !== reloadSequence.current) return next
       setTerminals(next)
       setSelectedId((current) => next.some((item) => item.id === current) ? current : next[0]?.id)
       return next
     } finally {
-      setLoading(false)
+      if (sequence === reloadSequence.current) setLoading(false)
     }
   }, [sessionId, webTerminals])
 
@@ -144,6 +148,7 @@ function TerminalBody({ sessionId, useTabInfo, webTerminals, settings, theme, lo
     if (!params.autoCreate || autoCreated.current || loading || terminals.length > 0) return
     autoCreated.current = true
     void webTerminals.createTerminal(String(sessionId), params.shellPath).then((info) => {
+      setTerminals((current) => current.some((item) => item.id === info.id) ? current : [...current, info])
       setSelectedId(info.id)
       return reload()
     }).catch(() => { autoCreated.current = false })
@@ -176,14 +181,14 @@ function TerminalBody({ sessionId, useTabInfo, webTerminals, settings, theme, lo
         variant: 'primary',
         size: 'sm',
         className: terminalClass.newButton,
-        onClick: () => { void webTerminals.createTerminal(String(sessionId)).then((created) => { setSelectedId(created.id); return reload() }) },
+        onClick: () => { void webTerminals.createTerminal(String(sessionId)).then((created) => { setTerminals((current) => current.some((item) => item.id === created.id) ? current : [...current, created]); setSelectedId(created.id); return reload() }) },
       }, t('terminal.new')),
     ),
     createElement('div', { className: terminalClass.content }, view === undefined ? null : createElement(CodingNsXtermView, {
       view,
       settings,
       themeRevision,
-      onNewTerminal: () => { void webTerminals.createTerminal(String(sessionId)).then((created) => { setSelectedId(created.id); return reload() }) },
+      onNewTerminal: () => { void webTerminals.createTerminal(String(sessionId)).then((created) => { setTerminals((current) => current.some((item) => item.id === created.id) ? current : [...current, created]); setSelectedId(created.id); return reload() }) },
       t,
     })),
   )
