@@ -148,6 +148,44 @@ test('页面 connector 通过 nativeStream 读取远端 session/follow 并关闭
   }
 })
 
+test('页面 connector 收到远端 session/follow 帧后合并触发聚合刷新', async (t) => {
+  // 合并窗口用模拟定时器推进，避免真实等待时长受机器负载影响：流在窗口内结束时
+  // 只应产生一次刷新，而不是每个帧各刷新一次。
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const previousFetch = globalThis.fetch
+  let nextCount = 0
+  let refreshCount = 0
+  const disposeRefresh = registerPeerHostAggregateRefresh(() => { refreshCount += 1 })
+  globalThis.fetch = (async (input) => {
+    const path = new URL(String(input), 'http://dsh.test').pathname
+    if (path.endsWith('/nativeStream')) return response({ streamId: 'stream-refresh' })
+    if (path.endsWith('/nativeStreamNext')) {
+      nextCount += 1
+      return response(nextCount === 1 ? { done: false, value: { type: 'snapshot' } } : { done: true })
+    }
+    if (path.endsWith('/nativeStreamClose')) return response({ closed: true })
+    throw new Error(`unexpected path: ${path}`)
+  }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    transport.setAggregate(aggregate)
+    const stream = transport.hooks.openStream?.({
+      method: 'session/follow',
+      payload: { channel: '/api', payload: { sessionId: createVirtualSessionId('peer-1', 'session-1') } },
+    })
+    assert.ok(stream)
+    for await (const _value of stream) { /* 消费完整流：帧和流结束都在同一个合并窗口内登记。 */ }
+    assert.equal(refreshCount, 0, '合并窗口未到前不应立刻刷新')
+    t.mock.timers.tick(200)
+    assert.equal(refreshCount, 1, '窗口内多个事件只触发一次刷新')
+    t.mock.timers.tick(1_000)
+    assert.equal(refreshCount, 1, '没有新事件时不应重复刷新')
+  } finally {
+    disposeRefresh()
+    globalThis.fetch = previousFetch
+  }
+})
+
 test('页面 connector 将本地 workspace/follow 回退到 DSH Gateway stream', async () => {
   const previousWebSocket = (globalThis as typeof globalThis & { WebSocket?: unknown }).WebSocket
   class FakeWebSocket {

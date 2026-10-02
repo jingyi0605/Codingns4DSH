@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createScopedNativeIdResolver } from '../data/build/dist/host/features/peer-host.js'
 import {
   DSH_NATIVE_REMOTE_METHODS,
   decodeNativeResponseBytes,
@@ -8,6 +9,8 @@ import {
   rewriteNativeRequestIds,
   rewriteNativeResponseIds,
 } from '../data/build/dist/host/modules/peer-host/peer-host-native-protocol.js'
+import { VirtualWorkspaceRegistry } from '../data/build/dist/host/modules/peer-host/peer-host-virtual-registry.js'
+import { createVirtualSessionId } from '../data/build/dist/shared/index.js'
 
 const resolver = {
   resolveWorkspace: (id: string) => id === 'codingns:peer-host:v1:workspace:peer-a:remote-ws'
@@ -17,6 +20,27 @@ const resolver = {
     ? { sessionId: 'remote-session', targetHostId: 'peer-a' }
     : null,
 }
+
+test('新建会话尚未进入聚合 Registry 时，按作用域改写临时虚拟会话 ID', () => {
+  const registry = new VirtualWorkspaceRegistry()
+  const scope = {
+    hostId: 'host-local',
+    targetHostId: 'peer-a',
+    workspaceId: 'remote-ws',
+    sessionId: 'new-session',
+    scopeGeneration: 0,
+  }
+  const scopedResolver = createScopedNativeIdResolver(registry, scope)
+  const request = rewriteNativeRequestIds('session/follow', {
+    args: { request: { address: { kind: 'session', sessionId: createVirtualSessionId('peer-a', 'new-session') } } },
+  }, scopedResolver)
+  assert.deepEqual(request, { args: { request: { address: { kind: 'session', sessionId: 'new-session' } } } })
+
+  const unrelated = rewriteNativeRequestIds('session/follow', {
+    sessionId: createVirtualSessionId('peer-a', 'other-session'),
+  }, scopedResolver)
+  assert.equal((unrelated as { sessionId: string }).sessionId, createVirtualSessionId('peer-a', 'other-session'))
+})
 
 test('DSH 原生 Workspace/Session Remote 方法使用正式命名空间', () => {
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('workspace/follow'))
