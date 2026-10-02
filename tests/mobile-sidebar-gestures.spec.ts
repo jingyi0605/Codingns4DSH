@@ -77,13 +77,14 @@ class FakeDocument {
   }
 }
 
-function touchEvent(x: number, y: number, options: { target?: unknown; cancelable?: boolean } = {}): { touches: { clientX: number; clientY: number }[]; target?: unknown; cancelable: boolean; prevented: number; preventDefault(): void } {
+function touchEvent(x: number, y: number, options: { target?: unknown; cancelable?: boolean; path?: readonly unknown[] } = {}): { touches: { clientX: number; clientY: number }[]; target?: unknown; cancelable: boolean; prevented: number; preventDefault(): void; composedPath(): readonly unknown[] } {
   const event = {
     touches: [{ clientX: x, clientY: y }],
     target: options.target,
     cancelable: options.cancelable ?? true,
     prevented: 0,
     preventDefault(): void { event.prevented += 1 },
+    composedPath(): readonly unknown[] { return options.path ?? [] },
   }
   return event
 }
@@ -248,6 +249,100 @@ test('方向锁定后不再触发，且输入框内的触摸被忽略', () => {
   harness.window.emit('touchstart', touchEvent(120, 300, { target: editable }))
   harness.window.emit('touchmove', touchEvent(220, 300))
   assert.deepEqual(harness.calls, [])
+
+  // xterm 使用 Shadow DOM，事件 target 可能是终端宿主；宿主的稳定标记也必须跳过。
+  const terminalHost = {
+    closest: (selector: string) => selector.includes('[data-sidebar-terminal]') ? terminalHost : null,
+  }
+  harness.window.emit('touchstart', touchEvent(120, 300, { target: terminalHost }))
+  harness.window.emit('touchmove', touchEvent(220, 300))
+  assert.deepEqual(harness.calls, [])
+})
+
+test('横向滚动容器优先接收右滑，不收起右栏', () => {
+  const harness = createHarness()
+  harness.window.emit('touchstart', touchEvent(280, 300))
+  harness.window.emit('touchmove', touchEvent(190, 300))
+  assert.deepEqual(harness.calls, ['right'])
+  assert.equal(harness.isExpanded(), true)
+  harness.window.emit('touchend', { touches: [] })
+
+  const rightbarRoot = {
+    closest: (selector: string) => selector === '[data-sidebar-right-session]' ? rightbarRoot : null,
+    parentElement: null,
+  }
+  const scrollable = {
+    scrollWidth: 720,
+    clientWidth: 320,
+    scrollLeft: 200,
+    style: { overflowX: 'auto' },
+    parentElement: rightbarRoot,
+  }
+  const text = { parentElement: scrollable, closest: () => null }
+
+  harness.window.emit('touchstart', touchEvent(120, 300, { target: text }))
+  const move = touchEvent(220, 300, { target: text })
+  harness.window.emit('touchmove', move)
+
+  assert.deepEqual(harness.calls, ['right'])
+  assert.equal(harness.isExpanded(), true)
+  assert.equal(move.prevented, 0)
+
+  // Shadow DOM 重定向后，event.target 可能只有宿主；composedPath 仍应找到滚动祖先。
+  const shadowHost = { closest: () => null }
+  harness.window.emit('touchstart', touchEvent(120, 300, { target: shadowHost, path: [text, scrollable] }))
+  const shadowMove = touchEvent(220, 300, { target: shadowHost, path: [text, scrollable] })
+  harness.window.emit('touchmove', shadowMove)
+  assert.deepEqual(harness.calls, ['right'])
+  assert.equal(shadowMove.prevented, 0)
+
+  // 左滑不负责收起右栏，即使布局尺寸尚未更新也必须交给内部内容。
+  const pendingLayout = { scrollWidth: 320, clientWidth: 320, style: { overflowX: 'auto' }, parentElement: null }
+  const pendingTarget = { parentElement: pendingLayout, closest: () => null }
+  harness.window.emit('touchstart', touchEvent(220, 300, { target: pendingTarget }))
+  const pendingMove = touchEvent(120, 300, { target: pendingTarget })
+  harness.window.emit('touchmove', pendingMove)
+  assert.deepEqual(harness.calls, ['right'])
+  assert.equal(pendingMove.prevented, 0)
+
+  // 右栏宿主本身没有暴露滚动尺寸时，左滑仍不能调用任何收起服务。
+  const rightbarPanel = {
+    closest: (selector: string) => selector === '[data-sidebar-right-session]' ? rightbarPanel : null,
+  }
+  harness.window.emit('touchstart', touchEvent(220, 300, { target: rightbarPanel }))
+  const rightbarMove = touchEvent(120, 300, { target: rightbarPanel })
+  harness.window.emit('touchmove', rightbarMove)
+  assert.deepEqual(harness.calls, ['right'])
+  assert.equal(rightbarMove.prevented, 0)
+
+  harness.window.emit('touchend', { touches: [] })
+  harness.window.emit('touchstart', touchEvent(120, 300, { target: rightbarPanel }))
+  const closeMove = touchEvent(220, 300, { target: rightbarPanel })
+  harness.window.emit('touchmove', closeMove)
+  assert.deepEqual(harness.calls, ['right', 'right'])
+  assert.equal(harness.isExpanded(), false)
+})
+
+test('聊天区域的横向滚动祖先不吞掉左右侧栏唤起手势', () => {
+  const harness = createHarness()
+  const chatScroller = {
+    scrollWidth: 720,
+    clientWidth: 320,
+    scrollLeft: 200,
+    style: { overflowX: 'auto' },
+    parentElement: null,
+  }
+  const chatTarget = { parentElement: chatScroller, closest: () => null }
+
+  // 右栏未展开时，即使聊天内容自身可以横向滚动，左右唤起仍由全局手势负责。
+  harness.window.emit('touchstart', touchEvent(120, 300, { target: chatTarget }))
+  harness.window.emit('touchmove', touchEvent(220, 300, { target: chatTarget }))
+  assert.deepEqual(harness.calls, ['left'])
+  harness.window.emit('touchend', { touches: [] })
+
+  harness.window.emit('touchstart', touchEvent(280, 300, { target: chatTarget }))
+  harness.window.emit('touchmove', touchEvent(190, 300, { target: chatTarget }))
+  assert.deepEqual(harness.calls, ['left', 'left'])
 })
 
 test('关闭开关或缺少端口时不注册监听，并给出可解释诊断', () => {
