@@ -6,6 +6,7 @@ import type {
   CodingNsCliModelCatalog,
 } from '../../shared/contracts/cli-adapter.js'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
+import { normalizeSubagentBridgeSettings, SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS } from '../../shared/contracts/config.js'
 import { callCliRpc, errorMessage } from '../cli-catalog.js'
 import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsHelpStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
@@ -108,6 +109,10 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
   const buttonStyle = { ...dshSettingsButtonStyle, cursor: disabled ? 'not-allowed' : 'pointer' }
   const bridgeEnabled = snapshot.value?.subagentBridge?.enabled === true
   const bridgeWritable = snapshot.status !== 'loading' && snapshot.writable
+  const bridgeConcurrency = normalizeSubagentBridgeSettings(snapshot.value?.subagentBridge).maxConcurrentSubagents
+  const [concurrencyText, setConcurrencyText] = useState(() => String(bridgeConcurrency))
+  // 设置被外部改写（例如另一个页面保存）时同步输入框，但不在用户输入过程中反复覆盖。
+  useEffect(() => { setConcurrencyText(String(bridgeConcurrency)) }, [bridgeConcurrency])
   const toggleSubagentBridge = async (next: boolean): Promise<void> => {
     setBridgeBusy(true)
     try {
@@ -117,6 +122,25 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
         return
       }
       notify({ kind: 'success', message: t(next ? 'cli.subagentBridgeEnabled' : 'cli.subagentBridgeDisabled') })
+    } catch (error) {
+      notify({ kind: 'error', message: errorMessage(error) })
+    } finally {
+      setBridgeBusy(false)
+    }
+  }
+  const saveBridgeConcurrency = async (): Promise<void> => {
+    // 越界或非数值输入按上下限收敛，避免把 NaN/0 写进设置后彻底锁死派发。
+    const next = normalizeSubagentBridgeSettings({ maxConcurrentSubagents: Number(concurrencyText) }).maxConcurrentSubagents
+    setConcurrencyText(String(next))
+    if (next === bridgeConcurrency) return
+    setBridgeBusy(true)
+    try {
+      const accepted = await services.settings.mutate([{ op: 'set', path: ['subagentBridge', 'maxConcurrentSubagents'], value: next }])
+      if (!accepted) {
+        notify({ kind: 'error', message: t('settings.moduleWriteRejected') })
+        return
+      }
+      notify({ kind: 'success', message: t('cli.subagentBridgeConcurrencySaved') })
     } catch (error) {
       notify({ kind: 'error', message: errorMessage(error) })
     } finally {
@@ -157,6 +181,23 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
         }),
         createElement('span', undefined, bridgeEnabled ? t('cli.enabled') : t('cli.disabled')),
       ),
+    ),
+    createElement('div', { style: { ...rowStyle, marginBottom: 12, opacity: bridgeEnabled ? 1 : 0.5 } },
+      createElement('div', { style: { flex: '1 1 auto', minWidth: 0 } },
+        createElement('span', { style: { fontWeight: 600 } }, t('cli.subagentBridgeConcurrency')),
+        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeConcurrencyHelp')),
+      ),
+      createElement('input', {
+        type: 'number',
+        min: SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.min,
+        max: SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.max,
+        'aria-label': t('cli.subagentBridgeConcurrency'),
+        value: concurrencyText,
+        disabled: !bridgeWritable || bridgeBusy,
+        onChange: (event: { currentTarget: { value: string } }) => { setConcurrencyText(event.currentTarget.value) },
+        onBlur: () => { void saveBridgeConcurrency() },
+        style: { flex: '0 0 auto', width: 88, padding: '4px 8px' },
+      }),
     ),
     loading && createElement('div', { role: 'status' }, t('cli.readingAgents')),
     !loading && catalog.length === 0 && createElement('div', { role: 'status', style: { opacity: 0.7 } }, t('cli.noAgents')),

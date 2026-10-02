@@ -10,6 +10,7 @@ import {
   SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS,
   SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MINS_LIMITS,
   SUBSCRIPTION_USAGE_TIMEOUT_SECS_LIMITS,
+  SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS,
   type CodingNsConfig,
   type CodingNsSettings,
 } from '../shared/contracts/config.js'
@@ -33,7 +34,11 @@ export const CodingNsSettingsSchema = z.object({
   })).default({}),
   subagentBridge: z.object({
     enabled: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.subagentBridge?.enabled ?? false),
-  }).default(DEFAULT_CODINGNS_SETTINGS.subagentBridge ?? { enabled: false }),
+    maxConcurrentSubagents: z.number()
+      .min(SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.min)
+      .max(SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.max)
+      .default(DEFAULT_CODINGNS_SETTINGS.subagentBridge?.maxConcurrentSubagents ?? 8),
+  }).default(DEFAULT_CODINGNS_SETTINGS.subagentBridge ?? { enabled: false, maxConcurrentSubagents: 8 }),
   // 会话索引是 Host 摘要数据，不能让它进入浏览器状态或模型上下文。
   cliSessions: z.array(z.any()).default(DEFAULT_CODINGNS_SETTINGS.cliSessions ?? []),
   lanAccessDsh: z.object({

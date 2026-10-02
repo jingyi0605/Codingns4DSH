@@ -47,14 +47,36 @@ export interface CodingNsSettings {
 /** 外部 CLI 子代理托管设置；关闭时所有驱动保持原样。 */
 export interface SubagentBridgeSettings {
   enabled: boolean
+  /**
+   * 同一父会话可同时保留的托管子代理数。
+   *
+   * 外部 CLI（如 Command Code）会在一批里并发开出远超上限的子代理调用；超限
+   * 调用过去直接失败并静默回退到 CLI 内建子代理，父会话与界面都看不出差异。
+   * 与 DSH 自身的 `maxActiveSubagents`（缺省 8）保持同一量级，并允许用户按机器
+   * 负载调整。
+   */
+  maxConcurrentSubagents: number
 }
 
-export const DEFAULT_SUBAGENT_BRIDGE_SETTINGS: SubagentBridgeSettings = { enabled: false }
+/** 并发子代理数上限：下限 1 保证至少能派发，上限避免一次性压垮本机。 */
+export const SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS = { min: 1, max: 32 } as const
 
-/** 归一化子代理托管设置：只有显式 true 才算开启。 */
+export const DEFAULT_SUBAGENT_BRIDGE_SETTINGS: SubagentBridgeSettings = {
+  enabled: false,
+  maxConcurrentSubagents: 8,
+}
+
+/** 归一化子代理托管设置：只有显式 true 才算开启；并发数按上下限收敛。 */
 export function normalizeSubagentBridgeSettings(value: unknown): SubagentBridgeSettings {
   const record = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
-  return { enabled: record.enabled === true }
+  return {
+    enabled: record.enabled === true,
+    maxConcurrentSubagents: clampSettingsInteger(
+      record.maxConcurrentSubagents,
+      SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS,
+      DEFAULT_SUBAGENT_BRIDGE_SETTINGS.maxConcurrentSubagents,
+    ),
+  }
 }
 
 /** 用量查询设置：超时控制单次网络查询，间隔控制自动刷新。 */

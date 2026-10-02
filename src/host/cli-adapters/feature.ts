@@ -23,6 +23,7 @@ import { dispatchBridgeSubagent, type BridgeAgentRegistry } from '../cli-bridge/
 import { startSubagentBridgeServer, type SubagentBridgeServer } from '../cli-bridge/bridge-server.js'
 import { setSubagentBridge } from '../cli-bridge/bridge-holder.js'
 import { delegateCapability, dispatchDelegateSubagent, type DelegateAgentRegistry } from './delegate-dispatch.js'
+import { setMaxNativeSubagentsPerParent } from './native-subagent-dispatch.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -189,7 +190,16 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       const scheduleSubagentBridgeSync = (enabled: boolean): void => {
         bridgeSync = bridgeSync.then(() => syncSubagentBridge(enabled), () => syncSubagentBridge(enabled))
       }
-      await syncSubagentBridge(normalizeSubagentBridgeSettings(context.services.settings?.get().subagentBridge).enabled)
+      const syncSubagentBridgeSettings = (raw: unknown): void => {
+        const bridgeSettings = normalizeSubagentBridgeSettings(raw)
+        // 并发上限先于桥接启停生效：桥接开启后立刻到达的并行调用必须看到用户配置，
+        // 否则第一批派发仍会撞上缺省上限。
+        setMaxNativeSubagentsPerParent(bridgeSettings.maxConcurrentSubagents)
+        scheduleSubagentBridgeSync(bridgeSettings.enabled)
+      }
+      // 初始值必须在任何派发之前落地：桥接开启后第一批并行调用就会读取上限。
+      syncSubagentBridgeSettings(context.services.settings?.get().subagentBridge)
+      await bridgeSync
       context.resources.add(async () => {
         const server = bridgeServer
         bridgeServer = undefined
@@ -205,7 +215,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           registry.syncPreferences(next.agentAdapterPreferences)
           sessionStore.sync(next.cliSessions)
           subscriptions = buildSubscriptions(next)
-          scheduleSubagentBridgeSync(normalizeSubagentBridgeSettings(next.subagentBridge).enabled)
+          syncSubagentBridgeSettings(next.subagentBridge)
         }))
       }
 

@@ -1,11 +1,38 @@
+import { DEFAULT_SUBAGENT_BRIDGE_SETTINGS } from '../../shared/contracts/config.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { externalTeamProvider, withTeamSubagentSelection, type NativeSubagentService } from './native-team-subagent.js'
 
 /** 同步子代理首轮的最长等待时间；桥接与 agent_subagent 共用同一预算。 */
 export const NATIVE_SUBAGENT_TIMEOUT_MS = 15 * 60_000
-/** 同一父会话最多同时保留的子代理任务数；与 Codex 标准并发数一致。 */
-export const MAX_NATIVE_SUBAGENTS_PER_PARENT = 5
+/**
+ * 同一父会话可同时保留的子代理任务数缺省值。
+ *
+ * 外部 CLI（如 Command Code）会在一批里并发开出远超上限的子代理调用；这个上限
+ * 过去硬编码为 5，超限调用直接失败并静默回退到 CLI 内建子代理，父会话与界面都
+ * 看不出差异。现在由设置 `subagentBridge.maxConcurrentSubagents` 覆盖，缺省与
+ * DSH 自身的 `maxActiveSubagents`（8）对齐。
+ */
+export const MAX_NATIVE_SUBAGENTS_PER_PARENT = DEFAULT_SUBAGENT_BRIDGE_SETTINGS.maxConcurrentSubagents
 const TURN_END_SETTLE_MS = 50
+
+let maxNativeSubagentsPerParent = MAX_NATIVE_SUBAGENTS_PER_PARENT
+
+/**
+ * 更新同一父会话的并发子代理上限。
+ *
+ * 设置值缺失、越界或非有限时回落到缺省值：把上限写成 0 或 NaN 会让派发彻底
+ * 锁死，这比沿用缺省值危险得多。
+ */
+export function setMaxNativeSubagentsPerParent(value: number | undefined): void {
+  maxNativeSubagentsPerParent = typeof value === 'number' && Number.isFinite(value) && value >= 1
+    ? Math.floor(value)
+    : MAX_NATIVE_SUBAGENTS_PER_PARENT
+}
+
+export function getMaxNativeSubagentsPerParent(): number {
+  return maxNativeSubagentsPerParent
+}
+
 /**
  * DSH 会把 startContinuable 收到的 signal 原样转发给 Provider 的 prepareContinuable，
  * 缺省时不会补一个可用的 signal。桥接路径没有调用方 signal，必须兜底，
@@ -219,7 +246,8 @@ function normalizeTargetFile(value: string): string {
 function reserveParentTask(parentId: string, taskKey: string): void {
   const state = parentTaskStates.get(parentId) ?? { active: 0, targets: new Set<string>() }
   if (state.targets.has(taskKey)) throw new Error(`同一父会话已在处理相同目标：${taskKey.replace(/^file:/u, '')}`)
-  if (state.active >= MAX_NATIVE_SUBAGENTS_PER_PARENT) throw new Error(`同一父会话最多同时运行 ${String(MAX_NATIVE_SUBAGENTS_PER_PARENT)} 个子代理，请等待已有任务收到 turn/end。`)
+  const limit = getMaxNativeSubagentsPerParent()
+  if (state.active >= limit) throw new Error(`同一父会话最多同时运行 ${String(limit)} 个子代理，请等待已有任务收到 turn/end，或在「外部 Agent 集成」里调高「并发子代理上限」。`)
   state.active += 1
   state.targets.add(taskKey)
   parentTaskStates.set(parentId, state)

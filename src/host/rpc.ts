@@ -331,7 +331,7 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
     return path.length === 2 && ['timeoutSecs', 'refreshIntervalMins'].includes(path[1] ?? '')
   }
   if (path[0] === 'subagentBridge') {
-    return path.length === 2 && path[1] === 'enabled'
+    return path.length === 2 && ['enabled', 'maxConcurrentSubagents'].includes(path[1] ?? '')
   }
   if (path[0] === 'fileManagement') {
     return path.length === 2 && ['menuEnhancement', 'fileEditor', 'sessionChangedFiles'].includes(path[1] ?? '')
