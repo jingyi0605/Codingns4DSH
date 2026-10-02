@@ -297,7 +297,7 @@ dsh web
 - **终端** —— macOS/Linux 持久模式需要 `tmux`；启停模块与修改绑定范围需重启；终端按工作区寻址。
 - **局域网** —— 确认卡片启动状态与访问地址、防火墙放行、两台设备同网络；多个 DSH 实例时手动选择探测到的端口；开启登录保护后需先登录。
 - **中转** —— 检查 Control API 可达性，会话过期则重新登录，刷新设备后绑定 Host。
-- **日志** —— 默认不输出调试日志；需要排查启动或 RPC 时使用 `CODINGNS4DSH_DEBUG=1 dsh --profile stage0 --no-open`。旧变量 `CODINGNS4DSH_TUNNEL_DEBUG=1` 仍兼容；pnpm 安装日志在 `$DSH_HOME/profiles/<profile>/.plugin-manager/logs/`。
+- **日志** —— 默认不输出调试日志；需要完整排查启动或 RPC 时使用 `CODINGNS4DSH_DEBUG=1 dsh --profile stage0 --no-open`。只查看警告和错误时使用 `CODINGNS4DSH_DEBUG_LEVEL=warn dsh --profile stage0 --no-open`，也可简写为 `CODINGNS4DSH_DEBUG=warn`。旧变量 `CODINGNS4DSH_TUNNEL_DEBUG=1` 仍兼容；pnpm 安装日志在 `$DSH_HOME/profiles/<profile>/.plugin-manager/logs/`。
 - **反馈** —— 附上 DSH 与 Codingns4DSH 版本、操作系统、涉及模块和完整错误：[GitHub Issues](https://github.com/jingyi0605/Codingns4DSH/issues) 或 QQ **1092985965**。
 
 ---
