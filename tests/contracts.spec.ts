@@ -54,7 +54,7 @@ test('Codingns4DSH 设置用模块名字典表达开关，结构不随模块数�
     modules: {},
     agentAdapters: {},
     agentAdapterPreferences: {},
-    subagentBridge: { enabled: false },
+    subagentBridge: { enabled: false, maxConcurrentSubagents: 8 },
     terminalEnhancement: DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
     workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
     fileManagement: DEFAULT_FILE_MANAGEMENT_SETTINGS,

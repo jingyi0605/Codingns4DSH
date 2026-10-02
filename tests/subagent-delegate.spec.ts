@@ -4,7 +4,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { delegateCapability, dispatchDelegateSubagent } from '../data/build/dist/host/cli-adapters/delegate-dispatch.js'
+import { getMaxNativeSubagentsPerParent, setMaxNativeSubagentsPerParent } from '../data/build/dist/host/cli-adapters/native-subagent-dispatch.js'
 import { setNativeSubagents } from '../data/build/dist/host/cli-adapters/native-subagent-holder.js'
+import { normalizeSubagentBridgeSettings, SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS } from '../data/build/dist/shared/contracts/config.js'
 import { setAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry-holder.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 import { DELEGATE_COMMAND_NAME, delegateAdapterOptions, extractDelegateTask } from '../data/build/dist/client/delegate-plan.js'
@@ -284,7 +286,7 @@ test('同一会话把同一任务重复委派给多个外部 Agent 时按目标�
   }
 })
 
-test('同一父会话最多保留五个后台子代理，第六个任务直接返回并发错误', async () => {
+test('同一父会话的并发子代理上限缺省为 8，超过上限的任务直接返回并发错误', async () => {
   let started = 0
   const service = {
     registerProvider: () => () => undefined,
@@ -295,15 +297,61 @@ test('同一父会话最多保留五个后台子代理，第六个任务直接�
   setAdapterRegistry(registry)
   const agents = { get: (id: string) => (id === 'parent-limit' ? { id: 'agent-parent-limit', session: { header: { id: 'parent-limit' } } } : undefined) }
   try {
-    const results = await Promise.all([1, 2, 3, 4, 5, 6].map((index) => dispatchDelegateSubagent(
+    const results = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8, 9].map((index) => dispatchDelegateSubagent(
       { sessionId: 'parent-limit', adapterId: 'codex', prompt: `处理目标${index}.md` },
       { agents, nativeSessions: SESSIONS as never },
     )))
-    assert.equal(started, 5)
-    assert.equal(results.filter((item) => item.ok).length, 5)
-    assert.match(results.find((item) => !item.ok)?.error ?? '', /最多同时运行 5 个/u)
+    assert.equal(started, 8)
+    assert.equal(results.filter((item) => item.ok).length, 8)
+    assert.match(results.find((item) => !item.ok)?.error ?? '', /最多同时运行 8 个/u)
   } finally {
+    setMaxNativeSubagentsPerParent(undefined)
     setNativeSubagents(undefined)
     setAdapterRegistry(undefined)
   }
+})
+
+test('并发子代理上限可由设置调高，且非法值回落到缺省值', async () => {
+  let started = 0
+  const service = {
+    registerProvider: () => () => undefined,
+    startContinuable: async () => { started += 1; return { childId: `child-cfg-${started}`, messageId: `m${started}` } },
+  }
+  const registry = registryWith(['codex'])
+  setNativeSubagents(service as never)
+  setAdapterRegistry(registry)
+  const agents = { get: (id: string) => (id === 'parent-cfg' ? { id: 'agent-parent-cfg', session: { header: { id: 'parent-cfg' } } } : undefined) }
+  const dispatch = (index: number) => dispatchDelegateSubagent(
+    { sessionId: 'parent-cfg', adapterId: 'codex', prompt: `处理配置目标${index}.md` },
+    { agents, nativeSessions: SESSIONS as never },
+  )
+  try {
+    // 调高到 12：过去硬编码的 5 会拒绝第 6 个，这里必须全部放行。
+    setMaxNativeSubagentsPerParent(12)
+    const raised = await Promise.all([1, 2, 3, 4, 5, 6].map((index) => dispatch(index)))
+    assert.equal(started, 6)
+    assert.equal(raised.filter((item) => item.ok).length, 6)
+    // 非法值（0 / NaN / 负数）不能把派发彻底锁死，必须回落到缺省值。
+    for (const invalid of [0, -1, Number.NaN]) {
+      setMaxNativeSubagentsPerParent(invalid)
+      assert.equal(getMaxNativeSubagentsPerParent(), 8)
+    }
+  } finally {
+    setMaxNativeSubagentsPerParent(undefined)
+    setNativeSubagents(undefined)
+    setAdapterRegistry(undefined)
+  }
+})
+
+test('子代理托管设置归一化：并发上限按上下限收敛并带缺省值', () => {
+  // 缺省值与 DSH 自身的 maxActiveSubagents 对齐。
+  assert.equal(normalizeSubagentBridgeSettings(undefined).maxConcurrentSubagents, 8)
+  assert.equal(normalizeSubagentBridgeSettings({ enabled: true }).maxConcurrentSubagents, 8)
+  assert.equal(normalizeSubagentBridgeSettings({ maxConcurrentSubagents: 12 }).maxConcurrentSubagents, 12)
+  // 越界值收敛到上下限，非数值回落到缺省值。
+  assert.equal(normalizeSubagentBridgeSettings({ maxConcurrentSubagents: 999 }).maxConcurrentSubagents, SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.max)
+  assert.equal(normalizeSubagentBridgeSettings({ maxConcurrentSubagents: 0 }).maxConcurrentSubagents, SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.min)
+  assert.equal(normalizeSubagentBridgeSettings({ maxConcurrentSubagents: 'many' }).maxConcurrentSubagents, 8)
+  // 关闭状态不受并发数影响。
+  assert.equal(normalizeSubagentBridgeSettings({ enabled: false, maxConcurrentSubagents: 3 }).enabled, false)
 })

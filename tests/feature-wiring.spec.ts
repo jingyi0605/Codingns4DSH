@@ -362,6 +362,18 @@ test('远程设置 RPC 返回版本并只允许修改 Codingns4DSH 字段', asyn
     handler('set', { ops: [{ op: 'set', path: ['subagentBridge', 'unknownField'], value: 1 }] }),
     /禁止修改设置字段/u,
   )
+  // 并发上限是子代理托管的第二个可写字段：过去它硬编码为 5，外部 Agent 并发
+  // 开出一批子代理时超限调用会被静默回退，用户无从调整。
+  await handler('set', { ops: [{ op: 'set', path: ['subagentBridge', 'maxConcurrentSubagents'], value: 12 }] })
+  assert.deepEqual(received, {
+    ops: [{ op: 'set', path: ['subagentBridge', 'maxConcurrentSubagents'], value: 12 }],
+    expectedRevision: undefined,
+  })
+  // 嵌套路径不能被放行，避免绕过白名单写到任意子字段。
+  await assert.rejects(
+    handler('set', { ops: [{ op: 'set', path: ['subagentBridge', 'maxConcurrentSubagents', 'nested'], value: 1 }] }),
+    /禁止修改设置字段/u,
+  )
 })
 
 test('移动端访问增强的设置路径与模块开关可通过 RPC 写入', async () => {

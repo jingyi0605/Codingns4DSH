@@ -1055,6 +1055,24 @@ test('注入消息的 source 语法跟随会话 generation 而不是运行时版
   assert.deepEqual(messages[1]?.source, { kind: 'plugin', plugin: 'codingns4dsh', form: 'notice', summary: '工具已完成' })
 })
 
+test('next-step 注入失败时返回 false 且不吞掉原因，便于定位子会话停摆', () => {
+  // 子代理会话注入失败后 DSH 不会发起第二次 llm/stream，子会话会停在当前 step
+  // 并以 error 结算；这里固定「失败必须返回 false 且不抛异常」的契约。
+  const failing = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      if (name === 'agents') return { get() { return { inject() { throw new Error('format v4 message requires a producer-owned source kind') } } } }
+      if (name === 'sessions') return { get() { return { snapshotEvents() { return [{ type: 'session', version: 4, seq: 0 }] }, append() { return undefined } } }, list() { return [] } }
+      return undefined
+    },
+  } as never, '0.2.0-rc.2')
+  // 注入被拒不能把异常抛回 llm/stream：那会污染整轮投影，掩盖真实原因。
+  assert.equal(failing.injectNextStep?.('v4-reject', '工具已完成'), false)
+
+  // Agent 不存在时同样必须安静失败，而不是抛错中断外部 Agent。
+  const missing = createCodingNsNativeSessionBridge({ get() { return undefined } } as never)
+  assert.equal(missing.injectNextStep?.('missing-agent'), false)
+})
+
 test('原生会话桥接通过 WorkspaceController 同步侧栏归档状态', async () => {
   const calls: string[] = []
   const bridge = createCodingNsNativeSessionBridge({

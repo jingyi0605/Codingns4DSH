@@ -376,6 +376,122 @@ test('Claude Code 参数注入：托管开启时携带 MCP 替身与禁用的 Ta
   }
 })
 
+test('桥接派发：成功转投登记重定向，供驱动把 hook_blocked 投影为完成态', async () => {
+  const runtime = enableBridge()
+  const service = {
+    registerProvider: () => () => undefined,
+    startContinuable: async () => ({ childId: 'child-redirect', messageId: 'm1' }),
+  }
+  const events = [
+    { type: 'assistant/message', seq: 1, data: { message: { content: [{ type: 'text', text: '子代理输出' }] } } },
+    { type: 'tool/result', seq: 2, data: {} },
+    { type: 'turn/end', seq: 3, data: { reason: { kind: 'completed' } } },
+  ]
+  const sessions = {
+    available: true,
+    get: (id: string) => (id === 'child-redirect' ? { snapshotEvents: () => events } : undefined),
+    subscribe: () => () => undefined,
+    list: () => [],
+  }
+  const driver = {
+    descriptor: { id: 'command-code', name: 'Command Code', protocol: 'command', capabilities: [] },
+    detect: async () => ({ installed: true, version: '1.0.0', command: '/fake/command-code' }),
+    listModels: async () => ({ groups: [], currentModel: null, currentEffort: null }),
+    executeTurn: async function* () { /* 桥接派发不经过普通轮次 */ },
+  }
+  const registry = new CodingNsCliAdapterRegistry([driver as never])
+  registry.setSession('s-redirect', { adapterId: 'command-code' })
+  setNativeSubagents(service as never)
+  setAdapterRegistry(registry)
+  try {
+    const result = await dispatchBridgeSubagent(
+      { sessionId: 's-redirect', prompt: '分析当前项目', toolCallId: 'call_redirect_1' },
+      {
+        agents: { get: (id: string) => (id === 's-redirect' ? { id: 'agent-redirect', session: { header: { id: 's-redirect' } } } : undefined) },
+        nativeSessions: sessions as never,
+      },
+    )
+    assert.equal(result.ok, true)
+    // 不登记重定向时，CLI 的 tool_hook_blocked 会被投影成失败工具调用，
+    // 用户看到的是「子代理失败」，即使派发本身成功。
+    const redirect = runtime.consumeRedirect('s-redirect', 'call_redirect_1')
+    assert.ok(redirect !== undefined)
+    assert.equal(redirect.childSessionId, 'child-redirect')
+    assert.equal(redirect.ok, true)
+    // 同一 toolCallId 只消费一次，避免重复投影。
+    assert.equal(runtime.consumeRedirect('s-redirect', 'call_redirect_1'), undefined)
+  } finally {
+    setNativeSubagents(undefined)
+    setAdapterRegistry(undefined)
+    setSubagentBridge(undefined)
+  }
+})
+
+test('桥接派发：派发失败时不登记重定向，失败必须保持可见', async () => {
+  const runtime = enableBridge()
+  // 缺少原生 Subagent 能力：派发必然失败。
+  setNativeSubagents(undefined)
+  try {
+    const result = await dispatchBridgeSubagent(
+      { sessionId: 's-fail', prompt: '分析当前项目', toolCallId: 'call_fail_1' },
+      {
+        agents: { get: () => ({ id: 'agent-fail', session: { header: { id: 's-fail' } } }) },
+        nativeSessions: { available: true, get: () => undefined, subscribe: () => () => undefined, list: () => [] } as never,
+      },
+    )
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /原生 Subagent 能力不可用/)
+    // 失败绝不能伪装成「已由 DSH 子代理完成」，否则工具态会显示成功。
+    assert.equal(runtime.consumeRedirect('s-fail', 'call_fail_1'), undefined)
+  } finally {
+    setSubagentBridge(undefined)
+  }
+})
+
+test('Command Code 托管 mod：桥接失败时 block 并给出可读原因，不回退内建子代理', async () => {
+  const mod = await import('../data/build/dist/host/cli-bridge/command-code-mod.js')
+  const hooks: Array<Record<string, unknown>> = []
+  const previous = { ...process.env }
+  // 指向必然不可达的端口：fetch 立刻失败。
+  process.env.CODINGNS_BRIDGE_URL = 'http://127.0.0.1:1'
+  process.env.CODINGNS_BRIDGE_TOKEN = 'token'
+  process.env.CODINGNS_DSH_SESSION_ID = 's-mod'
+  try {
+    ;(mod.default as (api: unknown) => void)({
+      hooks: (value: Record<string, unknown>) => { hooks.push(value) },
+    })
+    assert.equal(hooks.length, 1)
+    const beforeToolCall = hooks[0]!.beforeToolCall as (context: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>
+    const outcome = await beforeToolCall({ toolName: 'agent', toolCallId: 'call_mod_1', input: { prompt: '分析当前项目' } })
+    // 过去这里返回 undefined，CLI 会悄悄改用内建子代理；必须改为 block 让失败可见。
+    assert.equal(outcome?.block, true)
+    const context = String(outcome?.additionalContext ?? '')
+    assert.match(context, /子代理托管派发失败/u)
+    assert.match(context, /没有回退到 Command Code 内建子代理/u)
+    // 非 agent 工具与空提示词仍然不接管，保持 CLI 原生行为。
+    assert.equal(await beforeToolCall({ toolName: 'bash', toolCallId: 'call_mod_2', input: { command: 'ls' } }), undefined)
+    assert.equal(await beforeToolCall({ toolName: 'agent', toolCallId: 'call_mod_3', input: { prompt: '   ' } }), undefined)
+  } finally {
+    process.env = previous
+  }
+})
+
+test('Command Code 托管 mod：未注入桥接配置时不注册任何 hook', async () => {
+  const mod = await import('../data/build/dist/host/cli-bridge/command-code-mod.js')
+  const hooks: Array<Record<string, unknown>> = []
+  const previous = { ...process.env }
+  delete process.env.CODINGNS_BRIDGE_URL
+  delete process.env.CODINGNS_BRIDGE_TOKEN
+  delete process.env.CODINGNS_DSH_SESSION_ID
+  try {
+    ;(mod.default as (api: unknown) => void)({ hooks: (value: Record<string, unknown>) => { hooks.push(value) } })
+    // 托管关闭时驱动不注入配置：内建子代理必须照常工作。
+    assert.equal(hooks.length, 0)
+  } finally {
+    process.env = previous
+  }
+})
+
 test('MiniMax Code ACP：session/new 携带桥接 MCP server', async () => {
   let sessionNewParams: Record<string, unknown> | undefined
   const driver = new MiniMaxCodeDriver({
