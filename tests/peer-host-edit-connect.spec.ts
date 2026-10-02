@@ -293,6 +293,37 @@ test('可见工作区默认不显示，显式添加后才进入聚合摘要', as
   }
 })
 
+test('聚合刷新会自动重试握手并复用已保存凭据，不依赖手工点击测试', async () => {
+  const host = await harness()
+  try {
+    const created = await host.call('peerHost/create', {
+      displayName: '开发机',
+      route: { kind: 'lan', baseUrl: 'http://127.0.0.1:13080', normalizedOrigin: '' },
+    }) as { id: string }
+    await host.call('peerHost/update', {
+      peerHostId: created.id,
+      displayName: '开发机',
+      route: { kind: 'lan', baseUrl: 'http://127.0.0.1:13080', normalizedOrigin: '' },
+      username: 'alice',
+      password: 'password-secret',
+    })
+    await host.call('peerHost/setWorkspaceVisibility', { peerHostId: created.id, workspaceId: 'workspace-1', visible: true })
+
+    // 模拟进程重启后只剩配置状态；聚合刷新应自动做握手并继续使用加密保存的登录态。
+    await host.call('peerHost/disable', { peerHostId: created.id })
+    await host.call('peerHost/enable', { peerHostId: created.id })
+    host.calls.length = 0
+    await host.call('peerHost/aggregate', {})
+
+    assert.equal(host.calls.includes('/api/public/host-handshake'), true)
+    assert.equal(host.calls.includes('/api/auth/refresh'), false)
+    const records = await host.call('peerHost/list', {}) as Array<{ status: string }>
+    assert.equal(records[0]?.status, 'ready')
+  } finally {
+    await host.dispose()
+  }
+})
+
 test('非法配色被拒绝，避免把任意 CSS 写进侧栏', async () => {
   const host = await harness()
   try {
