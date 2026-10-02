@@ -31,6 +31,34 @@ test('Agent 安装状态在 Host 启动后预热并按未安装短周期自动�
   }
 })
 
+test('声明预热的 Agent 在后台加载模型目录且 warmCatalog 不等待外部 CLI', async () => {
+  let modelRequests = 0
+  let releaseModels: ((value: CodingNsCliModelCatalog) => void) | undefined
+  const pendingModels = new Promise<CodingNsCliModelCatalog>((resolve) => { releaseModels = resolve })
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'warm-agent', name: 'Warm Agent' },
+    warmModelCatalog: true,
+    async detect() { return { installed: true, version: '1.0.0', command: 'warm-agent' } },
+    async listModels() {
+      modelRequests += 1
+      return pendingModels
+    },
+    async *executeTurn() { yield { type: 'finish' as const, reason: 'stop' as const } },
+  }], {}, { modelCacheTtlMs: 1_000 })
+
+  try {
+    assert.equal(registry.warmCatalog(), undefined)
+    assert.equal(modelRequests, 0)
+    await waitFor(() => modelRequests === 1)
+    releaseModels?.(catalog('warm-model'))
+    assert.equal(firstModelId(await registry.models('warm-agent')), 'warm-model')
+    assert.equal(modelRequests, 1)
+  } finally {
+    releaseModels?.(catalog('warm-model'))
+    await registry.dispose()
+  }
+})
+
 test('模型目录合并并发请求并在后台刷新失败时保留最后成功结果', async () => {
   let modelRequests = 0
   const registry = new CodingNsCliAdapterRegistry([{
@@ -100,6 +128,34 @@ test('空模型目录和首次失败都按短周期在后台重试', async () =>
     })
   } finally {
     await Promise.all([emptyRegistry.dispose(), failedRegistry.dispose()])
+  }
+})
+
+test('静态回退目录按短重试周期刷新，不会阻塞真实模型目录恢复', async () => {
+  let modelRequests = 0
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'fallback-agent', name: 'Fallback Agent' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'fallback-agent' } },
+    async listModels() {
+      modelRequests += 1
+      return modelRequests === 1
+        ? {
+            groups: [{ id: 'fallback', name: 'Fallback', models: [{ id: 'provider-default', name: '默认', efforts: [] }] }],
+            currentModel: null,
+            currentEffort: null,
+            fallback: true,
+          }
+        : catalog('recovered-model')
+    },
+    async *executeTurn() { yield { type: 'finish' as const, reason: 'stop' as const } },
+  }], {}, { modelRetryTtlMs: 20, modelCacheTtlMs: 1_000 })
+
+  try {
+    assert.equal(firstModelId(await registry.models('fallback-agent')), 'provider-default')
+    await waitFor(async () => firstModelId(await registry.models('fallback-agent')) === 'recovered-model')
+    assert.ok(modelRequests >= 2)
+  } finally {
+    await registry.dispose()
   }
 })
 

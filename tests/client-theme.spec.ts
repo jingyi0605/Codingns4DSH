@@ -132,7 +132,7 @@ test('Agent 选择器位于模型左侧并显示完整 Provider Logo', async () 
   assert.match(slotSource, /transform: !locked && open \?/u)
   assert.doesNotMatch(slotSource, /⌄/u)
 
-  for (const adapterId of ['dsh', 'command-code', 'claude-code', 'kimi', 'gemini', 'pi', 'codex', 'opencode', 'grok', 'zcode']) {
+  for (const adapterId of ['dsh', 'command-code', 'claude-code', 'kimi', 'gemini', 'pi', 'codex', 'opencode', 'grok', 'zcode', 'codebuddy', 'workbuddy', 'cursor-cli', 'kiro-cli', 'qoder', 'qoder-cn', 'antigravity']) {
     assert.match(iconSource, new RegExp(`(?:['"]${adapterId}['"]|\\b${adapterId}):`, 'u'), `${adapterId} 缺少 Logo 映射`)
   }
   assert.match(bundleSource, /data:image\/(?:png|svg\+xml);base64,/u, 'Client 单文件包应内联 Provider Logo')
@@ -227,4 +227,16 @@ test('Codex 订阅展示重置次数与点数，并经确认模态框触发重�
   // 图标按钮的伪类只能落在注入样式表里，内联样式无法表达。
   assert.match(source, /\.codingns4dsh-subscription-reset:hover:not\(:disabled\)/u)
   assert.match(source, /\.codingns4dsh-subscription-reset:disabled\{opacity:\.4;cursor:not-allowed\}/u)
+})
+
+test('设置页 Agent 列表复用 Provider Logo，并在移动端拆成名称与元数据两行', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/features/cli-adapters.ts'), 'utf8')
+  assert.match(source, /import \{ providerIconUrl \} from '\.\.\/provider-icons\.js'/u)
+  assert.match(source, /className: cliAdapterClass\.icon/u)
+  assert.match(source, /createElement\('img', \{[\s\S]*src: icon/u)
+  assert.match(source, /@media \(max-width:768px\)/u)
+  assert.match(source, /grid-template-columns:minmax\(0,1fr\) auto/u)
+  assert.match(source, /grid-column:1;grid-row:2/u)
+  assert.match(source, /grid-column:2;grid-row:2/u)
+  assert.match(source, /white-space:normal;overflow-wrap:anywhere/u)
 })

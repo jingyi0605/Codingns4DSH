@@ -1320,7 +1320,9 @@ test('DSH 原生 Provider 只有 finish(stop) 时输出明确错误而不是空�
     },
   }
   const features = new FeatureRegistry({ rpc: table, events })
-  features.register(createCliAdaptersFeature())
+  // 本测试只验证 DSH 原生 Provider 的空响应，不需要装载真实外部 CLI；
+  // 注入空 Registry 避免 AGY 后台模型预热干扰测试时序。
+  features.register(createCliAdaptersFeature({ registry: new CodingNsCliAdapterRegistry([]) }))
   await features.start('cliAdapters')
   const chunks = []
   for await (const chunk of listener!({ sessionId: 'native-empty', provider: 'deepseek-official' }, async function* () {
