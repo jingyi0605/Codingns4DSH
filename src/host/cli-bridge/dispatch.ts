@@ -3,6 +3,7 @@ import { dispatchNativeSubagent, type NativeParentAgent } from '../cli-adapters/
 import { getNativeSubagents } from '../cli-adapters/native-subagent-holder.js'
 import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS } from '../cli-adapters/native-team-subagent.js'
 import { getAdapterRegistry } from '../cli-adapters/registry-holder.js'
+import { getSubagentBridge } from './bridge-holder.js'
 import type { SubagentBridgeDispatchRequest, SubagentBridgeDispatchResult } from './bridge-server.js'
 
 /** DSH Agent 注册表的最小结构；测试可注入替身。 */
@@ -60,6 +61,17 @@ export async function dispatchBridgeSubagent(
       background: false,
       select: (action) => enqueueTeamSubagentSelection(parentId, adapterId, modelId, action),
     })
+    // 成功的转投必须登记重定向：CLI 侧收到的是 `tool_hook_blocked`，驱动只有命中
+    // 这条记录才会把它投影成完成态。不登记时成功派发也会显示为失败的工具调用。
+    if (result.ok && request.toolCallId !== undefined && request.toolCallId !== '') {
+      try {
+        getSubagentBridge()?.recordRedirect(request.sessionId, request.toolCallId, {
+          childSessionId: result.childSessionId,
+          ok: true,
+          toolCalls: result.toolCalls,
+        })
+      } catch { /* 桥接句柄缺失只影响工具态显示，不能改变派发结果 */ }
+    }
     return {
       ok: result.ok,
       completed: result.completed,
