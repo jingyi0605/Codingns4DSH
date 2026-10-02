@@ -72,7 +72,7 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
 
 ## 支持的外部 Agent
 
-在 Host 上按命令名检测，版本与模型列表从 CLI 自身读取；检测到的 Agent 默认启用，可单独启停。内置的 **DeepSeek Harness** Agent 始终可用。
+在 Host 上按命令名检测，版本与模型列表优先从 CLI 自身读取；没有安全只读目录接口的 Agent 只提供 Provider 默认模型，避免刷新模型时创建会话。检测到的 Agent 默认启用，可单独启停。内置的 **DeepSeek Harness** Agent 始终可用。
 
 | Agent | id | 命令 | 协议 | 能力 |
 | --- | --- | --- | --- | --- |
@@ -86,6 +86,13 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
 | Grok Build | `grok` | `grok`、`grok-build` | ACP | 模型、流式、工具、思考、用量、权限确认 |
 | MiniMax Code | `mcode` | `mcode` | ACP / stream-json | 模型、流式、恢复、打断、工具、思考、用量 |
 | ZCode | `zcode` | `zcode`、桌面端内置运行时 | JSON-RPC 裸信封 | 模型、流式、恢复、打断、用量 |
+| CodeBuddy | `codebuddy` | `codebuddy`、`codebuddy.cmd` | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考 |
+| WorkBuddy | `workbuddy` | WorkBuddy 桌面应用内置 `codebuddy` | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考 |
+| Cursor CLI | `cursor-cli` | `cursor-agent`、`agent` | ACP（`acp`） | 模型、流式、恢复、打断、工具、思考 |
+| Kiro CLI | `kiro-cli` | `kiro-cli` | ACP（`acp --agent-engine v3 --auth-method cli`） | 模型、流式、恢复、打断、工具、思考 |
+| Qoder | `qoder` | `qoder`、`qodercli` | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考、权限确认 |
+| Qoder CN | `qoder-cn` | `qodercn`、`qoderclicn` | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考、权限确认 |
+| Antigravity | `antigravity` | `agy` | stream-json（stdin NDJSON） | 模型、流式、恢复、打断、工具、思考 |
 
 **模型** 模型列表 · **流式** 实时输出 · **恢复** 重启后继续 · **打断** 取消当前回合 · **工具** 对话中渲染工具调用 · **思考** 推理/思考强度 · **用量** token 或订阅额度 · **权限确认 / 提问** 变成 DSH 原生交互 · **插话** 回合中追加消息。
 

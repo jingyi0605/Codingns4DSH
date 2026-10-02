@@ -68,6 +68,8 @@ export interface CodingNsCliModelCatalog {
   readonly groups: readonly CodingNsCliModelGroup[]
   readonly currentModel: string | null
   readonly currentEffort: string | null
+  /** 目录来自静态回退而非 Provider 实时确认；Registry 不应按长缓存保存。 */
+  readonly fallback?: boolean
   /**
    * Provider 是否确认当前使用官方订阅。
    *

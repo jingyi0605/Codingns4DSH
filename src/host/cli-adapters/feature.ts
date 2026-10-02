@@ -10,6 +10,11 @@ import { GrokBuildDriver } from './grok-driver.js'
 import { OpenCodeDriver } from './opencode-driver.js'
 import { MiniMaxCodeDriver } from './mcode-driver.js'
 import { ZcodeAppServerDriver } from './zcode-driver.js'
+import { CodeBuddyCliDriver, WorkBuddyCliDriver } from './codebuddy-driver.js'
+import { CursorCliDriver } from './cursor-driver.js'
+import { KiroCliDriver } from './kiro-driver.js'
+import { QoderCliDriver } from './qoder-driver.js'
+import { AntigravityDriver } from './antigravity-driver.js'
 import { CodingNsCliAdapterRegistry } from './registry.js'
 import { CodingNsCliSessionStore } from './session-store.js'
 import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
@@ -67,6 +72,13 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         new GrokBuildDriver(),
         new MiniMaxCodeDriver(),
         new ZcodeAppServerDriver(),
+        new CodeBuddyCliDriver(),
+        new WorkBuddyCliDriver(),
+        new CursorCliDriver(),
+        new KiroCliDriver(),
+        new QoderCliDriver(),
+        new QoderCliDriver({ variant: 'qoder-cn' }),
+        new AntigravityDriver(),
       ], context.services.settings?.get().agentAdapters, {
         sessionStore,
         ...(context.services.settings === undefined ? {} : { settings: context.services.settings }),
@@ -301,7 +313,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             ...(config.rawStoreRef ? { rawStoreRef: config.rawStoreRef } : {}),
             ...(cwd === undefined ? {} : { cwd }),
             ...(isAbortSignal(value?.signal) ? { signal: value.signal } : {}),
-            ...(registry.supportsSegmentedTurns(config.adapterId)
+            ...((registry.supportsSegmentedTurns(config.adapterId) || registry.supportsToolStepSplitting(config.adapterId))
               && nativeSessions?.available === true
               && nativeSessions.injectNextStep !== undefined
               && (nativeSessions.canInjectNextStep === undefined

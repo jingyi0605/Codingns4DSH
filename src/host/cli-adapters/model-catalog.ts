@@ -132,6 +132,50 @@ export const ZCODE_CATALOG = staticCatalog('zcode', 'ZCode', [
   { id: 'provider-default', name: '跟随 ZCode 默认模型', efforts: [] },
 ])
 
+/** Antigravity 在模型命令不可用时使用的保守回退目录。 */
+export const ANTIGRAVITY_CATALOG: CodingNsCliModelCatalog = {
+  ...staticCatalog('antigravity', 'Antigravity', [
+    { id: 'provider-default', name: '跟随 Antigravity 默认模型', efforts: [] },
+  ]),
+  fallback: true,
+}
+
+const ANTIGRAVITY_EFFORTS = ['low', 'medium', 'high'] as const
+const ANTIGRAVITY_EFFORT_SUFFIX = /^(?<base>.+)-(?<effort>low|medium|high)$/u
+const ANTIGRAVITY_EFFORT_LABEL = /\s*\((?:low|medium|high)\)$/iu
+
+/** 解析 `agy models` 的制表符目录，并把带档位后缀的条目合并到同一模型。 */
+export function parseAntigravityModels(output: string): CodingNsCliModelCatalog {
+  const grouped = new Map<string, { name: string; efforts: string[] }>()
+  for (const rawLine of output.split(/\r?\n/u)) {
+    const line = rawLine.trim()
+    if (line === '' || /^fetching available models\.\.\.$/iu.test(line)) continue
+    const match = line.match(/^([^\s]+)[\t ]+(.+)$/u)
+    if (!match) continue
+    const id = match[1]!.trim()
+    const label = match[2]!.trim()
+    const suffix = id.match(ANTIGRAVITY_EFFORT_SUFFIX)
+    const baseId = suffix?.groups?.base?.trim() || id
+    const effort = suffix?.groups?.effort
+    const entry = grouped.get(baseId) ?? {
+      name: label.replace(ANTIGRAVITY_EFFORT_LABEL, '').trim() || label,
+      efforts: [],
+    }
+    if (effort !== undefined && !entry.efforts.includes(effort)) entry.efforts.push(effort)
+    grouped.set(baseId, entry)
+  }
+  if (grouped.size === 0) return ANTIGRAVITY_CATALOG
+  const models = [
+    { id: 'provider-default', name: '跟随 Antigravity 默认模型', efforts: [] as readonly string[] },
+    ...[...grouped.entries()].map(([id, entry]) => ({
+      id,
+      name: entry.name || id,
+      efforts: ANTIGRAVITY_EFFORTS.filter((effort) => entry.efforts.includes(effort)),
+    })),
+  ]
+  return staticCatalog('antigravity', 'Antigravity', models)
+}
+
 /** 把 CLI 帮助解析到的模型补上已知档位，未知模型保持空数组。 */
 export function enrichEfforts(catalog: CodingNsCliModelCatalog, known: CodingNsCliModelCatalog): CodingNsCliModelCatalog {
   const effortById = new Map(known.groups.flatMap((group) => group.models.map((model) => [model.id.toLowerCase(), model.efforts] as const)))

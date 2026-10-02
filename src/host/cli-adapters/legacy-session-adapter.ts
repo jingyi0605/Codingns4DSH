@@ -12,6 +12,13 @@ export const KNOWN_CLI_ADAPTER_IDS = new Set<CodingNsCliAdapterId>([
   'grok',
   'mcode',
   'zcode',
+  'codebuddy',
+  'workbuddy',
+  'cursor-cli',
+  'kiro-cli',
+  'qoder',
+  'qoder-cn',
+  'antigravity',
 ])
 
 export interface LegacySessionAdapterEvidence {

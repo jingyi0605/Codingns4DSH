@@ -143,9 +143,34 @@ export class CodingNsCliAdapterRegistry {
   private readonly settings: DshHostSettingsScope<CodingNsSettings> | undefined
   private readonly preferences = new Map<CodingNsCliAdapterId, { modelId?: string; effortId?: string; serviceTierId?: string }>()
 
-  /** Host 启动后预热安装状态；定时器让同步 CLI 探测不阻塞功能模块装配。 */
+  /**
+   * Host 启动后预热安装状态，并按驱动声明后台预热模型目录。
+   *
+   * 模型探测可能启动完整外部服务，必须留在后台；只有调用方显式请求
+   * `models()` 时才等待结果。未声明预热的驱动保持原有按需加载，避免启动时
+   * 同时拉起所有外部 CLI。
+   */
   warmCatalog(): void {
-    for (const driver of this.drivers.values()) this.scheduleDetectionRefresh(driver.descriptor.id, 0)
+    for (const driver of this.drivers.values()) {
+      const adapterId = driver.descriptor.id
+      this.scheduleDetectionRefresh(adapterId, 0)
+      if (driver.warmModelCatalog !== true || !this.isEnabled(adapterId)) continue
+      this.requestedModelCatalogs.add(adapterId)
+      // 定时器把第一次 detect 也移出当前调用栈；某些 CLI 的版本探测仍是同步
+      // 子进程调用，不能让 warmCatalog() 本身承担这段启动时间。
+      const timer = setTimeout(() => {
+        if (!this.disposed) void this.warmModelCatalog(driver).catch(() => undefined)
+      }, 0)
+      unrefTimer(timer)
+    }
+  }
+
+  /** 等安装探测完成后再刷新模型，避免为同一个 CLI 启动两次检测进程。 */
+  private async warmModelCatalog(driver: CodingNsCliDriver): Promise<void> {
+    if (this.disposed) return
+    const detection = await this.readDetection(driver)
+    if (this.disposed || !this.isEnabled(driver.descriptor.id) || !detection.installed) return
+    await this.refreshModels(driver)
   }
 
   async catalog(): Promise<CodingNsCliAdapterDescriptor[]> {
@@ -377,9 +402,14 @@ export class CodingNsCliAdapterRegistry {
     }, this.nativeSessions?.get(sessionId))
   }
 
-  /** 只有驱动自己维护 Provider turn 边界时，Host 才能把它映射到 DSH step。 */
+  /** 只有已验证能维护连续事件流的驱动，Host 才把工具边界映射到 DSH step。 */
   supportsSegmentedTurns(adapterId: CodingNsCliAdapterId): boolean {
     return this.drivers.get(adapterId)?.supportsSegmentedTurns === true
+  }
+
+  /** Qoder 等 ACP 驱动由 Registry 挂起同一个迭代器完成通用工具分步。 */
+  supportsToolStepSplitting(adapterId: CodingNsCliAdapterId): boolean {
+    return this.drivers.get(adapterId)?.supportsToolStepSplitting === true
   }
 
   /** 供原生 Subagent Provider 执行首轮；不创建普通外部会话索引。 */
@@ -902,7 +932,7 @@ function detectionFingerprint(detection: CodingNsCliDetection): string {
 }
 
 function catalogHasModels(catalog: CodingNsCliModelCatalog): boolean {
-  return catalog.groups.some((group) => group.models.length > 0)
+  return catalog.fallback !== true && catalog.groups.some((group) => group.models.length > 0)
 }
 
 function mergePreferenceRecords(

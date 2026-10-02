@@ -8,12 +8,64 @@ import type {
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
 import { normalizeSubagentBridgeSettings, SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS } from '../../shared/contracts/config.js'
 import { callCliRpc, errorMessage } from '../cli-catalog.js'
-import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsHelpStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
+import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsFieldStyle, dshSettingsHelpStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { backdropPointerDownHandler } from '../popup-dismiss.js'
 import { registerExternalToolStreamUi } from '../external-tool-stream.js'
 import { startContextBreakdownDom } from '../context-breakdown-dom.js'
 import { fetchSessionAdapters, replaceSessionAdapters, sessionAdapterId } from '../session-adapter-cache.js'
+import { providerIconUrl } from '../provider-icons.js'
+
+const CLI_ADAPTER_STYLE_ID = 'codingns4dsh-cli-adapter-settings-style'
+const cliAdapterClass = {
+  panel: 'codingns4dsh-cli-adapter-panel',
+  listHeader: 'codingns4dsh-cli-adapter-list-header',
+  listCard: 'codingns4dsh-cli-adapter-list-card',
+  row: 'codingns4dsh-cli-adapter-row',
+  main: 'codingns4dsh-cli-adapter-main',
+  identity: 'codingns4dsh-cli-adapter-identity',
+  icon: 'codingns4dsh-cli-adapter-icon',
+  name: 'codingns4dsh-cli-adapter-name',
+  metadata: 'codingns4dsh-cli-adapter-metadata',
+  status: 'codingns4dsh-cli-adapter-status',
+  version: 'codingns4dsh-cli-adapter-version',
+  toggle: 'codingns4dsh-cli-adapter-toggle',
+} as const
+
+/** 设置页 Agent 行的响应式布局；内联样式无法表达移动端换行规则，因此集中注入。 */
+function installCliAdapterStyles(): void {
+  if (typeof document === 'undefined' || document.querySelector(`style[data-plugin-css="${CLI_ADAPTER_STYLE_ID}"]`) !== null) return
+  const style = document.createElement('style')
+  style.dataset.plugin = 'codingns4dsh'
+  style.dataset.pluginCss = CLI_ADAPTER_STYLE_ID
+  style.textContent = `
+.${cliAdapterClass.panel}{display:flex;flex-direction:column;gap:12px;width:100%;min-width:0}
+.${cliAdapterClass.listCard}{overflow:hidden;border:1px solid var(--dsw-alias-border-l2,#e5e7eb);border-radius:14px;background:var(--dsw-alias-bg-layer-1,Canvas);box-shadow:0 1px 3px rgba(15,23,42,.04)}
+.${cliAdapterClass.listHeader}{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 6px 10px;color:var(--dsw-alias-label-tertiary,GrayText);border-bottom:1px solid var(--dsw-alias-border-l4,#eef0f2);font-size:13px;font-weight:600;letter-spacing:.02em}
+.${cliAdapterClass.row}{display:flex;align-items:center;width:100%;min-width:0;min-height:76px;gap:16px;padding:13px 18px;box-sizing:border-box;background:transparent}
+.${cliAdapterClass.row}+.${cliAdapterClass.row}{border-top:1px solid var(--dsw-alias-border-l4,#eef0f2)}
+.${cliAdapterClass.main}{display:flex;align-items:center;gap:13px;flex:1 1 auto;min-width:0}
+.${cliAdapterClass.identity}{display:flex;flex-direction:column;justify-content:center;gap:5px;min-width:0}
+.${cliAdapterClass.icon}{display:inline-flex;align-items:center;justify-content:center;flex:0 0 44px;width:44px;height:44px;padding:7px;box-sizing:border-box;object-fit:contain;border:1px solid var(--dsw-alias-border-l4,#eef0f2);border-radius:12px;background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.06)))}
+.${cliAdapterClass.name}{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:1.25}
+.${cliAdapterClass.metadata}{display:inline-flex;align-items:center;gap:8px;min-width:0;color:var(--dsw-alias-label-tertiary,GrayText);font-size:12px;line-height:1.2}
+.${cliAdapterClass.status},.${cliAdapterClass.version}{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.${cliAdapterClass.status}{padding:3px 7px;border-radius:5px;background:var(--dsw-alias-state-success-bg,rgba(22,163,74,.12))}
+.${cliAdapterClass.toggle}{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;color:var(--dsw-alias-label-secondary,GrayText);font-size:13px;font-weight:500}
+.${cliAdapterClass.toggle} input{width:18px;height:18px;margin:0;accent-color:var(--dsw-alias-state-success-primary,#16a34a)}
+@media (max-width:768px){
+  .${cliAdapterClass.row}{display:grid!important;grid-template-columns:minmax(0,1fr) auto;align-items:center!important;gap:7px 10px!important;min-height:0!important;padding:12px 14px!important}
+  .${cliAdapterClass.main}{grid-column:1 / -1;display:flex!important;align-items:center!important;width:100%;gap:10px!important}
+  .${cliAdapterClass.identity}{gap:4px}
+  .${cliAdapterClass.name}{white-space:normal;overflow-wrap:anywhere;text-overflow:clip}
+  .${cliAdapterClass.metadata}{grid-column:1;grid-row:2;display:flex;flex-wrap:wrap;gap:7px!important;min-width:0;max-width:100%}
+  .${cliAdapterClass.status},.${cliAdapterClass.version}{max-width:100%;min-width:0!important}
+  .${cliAdapterClass.toggle}{grid-column:2;grid-row:2;justify-self:end;align-self:center;min-width:0;max-width:100%;white-space:nowrap}
+  .${cliAdapterClass.toggle} span{max-width:7em;overflow:hidden;text-overflow:ellipsis}
+}
+`
+  document.head.appendChild(style)
+}
 
 /** 外部 Agent 集成模块。Agent 进程在 Host 运行，浏览器只读取目录和状态。 */
 export const cliAdaptersFeature: CodingNsClientFeatureModule = {
@@ -80,6 +132,8 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
   const [modelsError, setModelsError] = useState('')
   const disabled = !enabled
 
+  useEffect(() => { installCliAdapterStyles() }, [])
+
   useEffect(() => {
     if (disabled) return
     let active = true
@@ -105,7 +159,6 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
     return () => { active = false }
   }, [disabled, selected, services.rpc])
 
-  const rowStyle = dshSettingsListRowStyle
   const buttonStyle = { ...dshSettingsButtonStyle, cursor: disabled ? 'not-allowed' : 'pointer' }
   const bridgeEnabled = snapshot.value?.subagentBridge?.enabled === true
   const bridgeWritable = snapshot.status !== 'loading' && snapshot.writable
@@ -163,28 +216,25 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
 
   return createElement(
     'div',
-    { 'aria-disabled': disabled, style: { ...dshFormRootStyle, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
-    createElement('div', { style: { ...rowStyle, marginBottom: 12 } },
-      createElement('div', { style: { flex: '1 1 auto', minWidth: 0 } },
-        createElement('span', { style: { fontWeight: 600 } }, t('cli.subagentBridge')),
+    { className: cliAdapterClass.panel, 'aria-disabled': disabled, style: { ...dshFormRootStyle, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
+    createElement('label', { style: dshSettingsListRowStyle },
+      createElement('span', { style: { flex: '1 1 auto', minWidth: 0 } },
+        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('cli.subagentBridge')),
         createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeDescription')),
       ),
-      createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' } },
-        createElement('input', {
-          type: 'checkbox',
-          role: 'switch',
-          'aria-label': t('cli.subagentBridgeToggle'),
-          checked: bridgeEnabled,
-          disabled: !bridgeWritable || bridgeBusy,
-          onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleSubagentBridge(event.currentTarget.checked) },
-          style: { accentColor: dshThemeColor.accent },
-        }),
-        createElement('span', undefined, bridgeEnabled ? t('cli.enabled') : t('cli.disabled')),
-      ),
+      createElement('input', {
+        type: 'checkbox',
+        role: 'switch',
+        'aria-label': t('cli.subagentBridgeToggle'),
+        checked: bridgeEnabled,
+        disabled: !bridgeWritable || bridgeBusy,
+        onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleSubagentBridge(event.currentTarget.checked) },
+        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
+      }),
     ),
-    createElement('div', { style: { ...rowStyle, marginBottom: 12, opacity: bridgeEnabled ? 1 : 0.5 } },
-      createElement('div', { style: { flex: '1 1 auto', minWidth: 0 } },
-        createElement('span', { style: { fontWeight: 600 } }, t('cli.subagentBridgeConcurrency')),
+    createElement('label', { style: { ...dshSettingsListRowStyle, opacity: bridgeEnabled ? 1 : 0.5 } },
+      createElement('span', { style: { flex: '1 1 auto', minWidth: 0 } },
+        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('cli.subagentBridgeConcurrency')),
         createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeConcurrencyHelp')),
       ),
       createElement('input', {
@@ -196,24 +246,34 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
         disabled: !bridgeWritable || bridgeBusy,
         onChange: (event: { currentTarget: { value: string } }) => { setConcurrencyText(event.currentTarget.value) },
         onBlur: () => { void saveBridgeConcurrency() },
-        style: { flex: '0 0 auto', width: 88, padding: '4px 8px' },
+        style: { ...dshSettingsFieldStyle, flex: '0 0 auto', width: 96, minHeight: 32, padding: '5px 8px', fontSize: 13 },
       }),
     ),
     loading && createElement('div', { role: 'status' }, t('cli.readingAgents')),
     !loading && catalog.length === 0 && createElement('div', { role: 'status', style: { opacity: 0.7 } }, t('cli.noAgents')),
-    createElement('div', undefined,
-      ...catalog.map((adapter) => createElement('div', { key: adapter.id, style: rowStyle },
+    createElement('div', { className: cliAdapterClass.listHeader },
+      createElement('span', undefined, t('cli.agentList')),
+      catalog.length > 0 && createElement('span', undefined, t('cli.agentCount', { count: catalog.length })),
+    ),
+    createElement('div', { className: cliAdapterClass.listCard },
+      ...catalog.map((adapter) => createElement('div', { key: adapter.id, className: cliAdapterClass.row },
         createElement('button', {
           type: 'button',
+          className: cliAdapterClass.main,
           onClick: () => setSelected(adapter),
           style: { flex: '1 1 auto', minWidth: 0, display: 'flex', alignItems: 'center', gap: 12, padding: 0, border: 0, color: 'inherit', textAlign: 'left', background: 'transparent', cursor: 'pointer' },
           'aria-label': t('cli.viewDetails', { name: adapter.name }),
         },
-          createElement('span', { style: { flex: '1 1 auto', minWidth: 0, fontWeight: 600 } }, adapter.name),
-          createElement('span', { style: { color: adapter.installed ? dshThemeColor.success : dshThemeColor.labelTertiary } }, adapter.installed ? t('cli.installed') : t('cli.notInstalled')),
-          createElement('span', { style: { minWidth: 70, color: dshThemeColor.labelTertiary } }, adapter.version ?? t('cli.notDetectedVersion')),
+          createElement(AdapterIcon, { adapter }),
+          createElement('div', { className: cliAdapterClass.identity },
+            createElement('span', { className: cliAdapterClass.name, style: { fontWeight: 600 } }, adapter.name),
+            createElement('div', { className: cliAdapterClass.metadata },
+              createElement('span', { className: cliAdapterClass.status, style: { color: adapter.installed ? dshThemeColor.success : dshThemeColor.labelTertiary, background: adapter.installed ? 'rgba(22,163,74,.12)' : dshThemeColor.surfaceSubtle } }, adapter.installed ? t('cli.installed') : t('cli.notInstalled')),
+              createElement('span', { className: cliAdapterClass.version }, adapter.version ?? t('cli.notDetectedVersion')),
+            ),
+          ),
         ),
-        createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' } },
+        createElement('label', { className: cliAdapterClass.toggle, style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' } },
           createElement('input', { type: 'checkbox', role: 'switch', 'aria-label': t('cli.adapterToggle', { name: adapter.name }), checked: adapter.enabled, disabled: !adapter.installed || busyAdapterId === adapter.id, onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleAdapter(adapter, event.currentTarget.checked) }, style: { accentColor: dshThemeColor.accent } }),
           createElement('span', undefined, adapter.enabled ? t('cli.enabled') : t('cli.disabled')),
         ),
@@ -228,6 +288,27 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
       t,
     }),
   )
+}
+
+const CIRCULAR_ADAPTER_ICON_IDS = new Set(['gemini', 'grok'])
+
+/** 设置页列表中的 Agent logo；资产缺失时用首字母占位，避免出现破图或空白。 */
+function AdapterIcon({ adapter }: { readonly adapter: CodingNsCliAdapterDescriptor }): ReactElement {
+  const icon = providerIconUrl(adapter.id)
+  if (icon === undefined) {
+    return createElement('span', {
+      className: cliAdapterClass.icon,
+      'aria-hidden': true,
+      style: { borderRadius: 6, background: dshThemeColor.surfaceSubtle, color: dshThemeColor.labelSecondary, fontSize: 12, fontWeight: 700 },
+    }, adapter.name.trim().charAt(0).toUpperCase() || '?')
+  }
+  return createElement('img', {
+    className: cliAdapterClass.icon,
+    src: icon,
+    alt: '',
+    'aria-hidden': true,
+    style: CIRCULAR_ADAPTER_ICON_IDS.has(adapter.id) ? { borderRadius: '50%' } : undefined,
+  })
 }
 
 interface AdapterDetailsDialogProps {

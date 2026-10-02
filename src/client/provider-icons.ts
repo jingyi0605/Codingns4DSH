@@ -34,6 +34,13 @@ const PROVIDER_DEFINITIONS: Readonly<Record<string, ProviderDefinition>> = {
   grok: { adapterId: 'grok', displayName: 'Grok', color: '#71717a' },
   mcode: { adapterId: 'mcode', displayName: 'MiniMax Code', color: '#f97316' },
   zcode: { adapterId: 'zcode', displayName: 'ZCode', color: '#38bdf8' },
+  codebuddy: { adapterId: 'codebuddy', displayName: 'CodeBuddy', color: '#2563eb' },
+  workbuddy: { adapterId: 'workbuddy', displayName: 'WorkBuddy', color: '#0f766e' },
+  'cursor-cli': { adapterId: 'cursor-cli', displayName: 'Cursor CLI', color: '#111827' },
+  'kiro-cli': { adapterId: 'kiro-cli', displayName: 'Kiro CLI', color: '#7c3aed' },
+  qoder: { adapterId: 'qoder', displayName: 'Qoder', color: '#ea580c' },
+  'qoder-cn': { adapterId: 'qoder-cn', displayName: 'Qoder CN', color: '#c2410c' },
+  antigravity: { adapterId: 'antigravity', displayName: 'Antigravity', color: '#1d4ed8' },
 }
 
 const PROVIDER_ICONS: Record<string, string> = {}

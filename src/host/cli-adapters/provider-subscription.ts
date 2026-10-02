@@ -9,6 +9,7 @@ import { OfficialProviderSubscriptionService, type OfficialProviderSubscriptionO
 import { ZcodeSubscriptionService, type ZcodeSubscriptionOptions } from './zcode-subscription.js'
 import { JsonRpcProcess, JsonRpcRequestError } from './json-rpc-process.js'
 import { detectBinary } from './rpc-driver-utils.js'
+import { QoderSubscriptionService, type QoderSubscriptionOptions } from './qoder-subscription.js'
 
 type FetchLike = typeof fetch
 
@@ -24,6 +25,8 @@ export class ProviderSubscriptionService {
   readonly kimi: KimiSubscriptionService
   readonly grok: GrokSubscriptionService
   readonly zcode: ZcodeSubscriptionService
+  readonly qoder: QoderSubscriptionService
+  readonly qoderCn: QoderSubscriptionService
 
   constructor(options: ProviderSubscriptionOptions = {}) {
     // 全局超时只作为缺省值；单项服务显式给出的 timeoutMs 优先。
@@ -38,10 +41,14 @@ export class ProviderSubscriptionService {
     this.kimi = new KimiSubscriptionService({ ...shared, ...options.kimi })
     this.grok = new GrokSubscriptionService({ ...shared, ...options.grok })
     this.zcode = new ZcodeSubscriptionService({ ...shared, ...options.zcode })
+    this.qoder = new QoderSubscriptionService({ ...shared, variant: 'qoder', ...options.qoder })
+    this.qoderCn = new QoderSubscriptionService({ ...shared, variant: 'qoder-cn', ...options.qoderCn })
   }
 
   read(adapterId: string, providerId?: string): Promise<CliSubscriptionUsage | null> {
     if (adapterId === 'dsh') return this.readDsh(providerId)
+    if (adapterId === 'qoder') return this.qoder.read()
+    if (adapterId === 'qoder-cn') return this.qoderCn.read()
     if (adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'grok' || adapterId === 'opencode') {
       return this.readSub2ApiFirst(adapterId)
     }
@@ -107,6 +114,8 @@ export interface ProviderSubscriptionOptions {
   readonly kimi?: KimiSubscriptionOptions
   readonly grok?: GrokSubscriptionOptions
   readonly zcode?: ZcodeSubscriptionOptions
+  readonly qoder?: QoderSubscriptionOptions
+  readonly qoderCn?: QoderSubscriptionOptions
   /** 所有读取器共用的网络超时（毫秒）；单项服务显式给出时优先。 */
   readonly timeoutMs?: number
 }

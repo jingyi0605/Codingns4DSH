@@ -44,8 +44,12 @@ export interface CodingNsCliSessionProbeResult {
  */
 export interface CodingNsCliDriver {
   readonly descriptor: Omit<CodingNsCliAdapterDescriptor, 'installed' | 'enabled' | 'version' | 'command'>
+  /** Host 启动后是否应在后台预热模型目录。默认关闭，避免拉起所有外部 CLI。 */
+  readonly warmModelCatalog?: boolean
   /** 驱动是否已经自行维护 Provider turn 的 step 边界。 */
   readonly supportsSegmentedTurns?: boolean
+  /** 驱动可以由 Registry 在工具完成后挂起并续读同一个事件迭代器。 */
+  readonly supportsToolStepSplitting?: boolean
   /** 丢弃等待下一个 DSH step 的 Provider 运行；只有自行分段的驱动需要实现。 */
   discardSegmentedTurn?(sessionId: string): void
   detect(): Promise<Pick<CodingNsCliAdapterDescriptor, 'installed' | 'version' | 'command'>>

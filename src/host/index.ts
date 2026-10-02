@@ -382,6 +382,7 @@ export {
   type Sub2ApiSource,
   type Sub2ApiUsageOptions,
 } from './cli-adapters/provider-subscription.js'
+export { QoderSubscriptionService, readLatestQoderQuota, type QoderSubscriptionOptions } from './cli-adapters/qoder-subscription.js'
 export { OfficialProviderSubscriptionService, type OfficialProviderSubscriptionOptions } from './cli-adapters/official-provider-subscription.js'
 export {
   MODEL_PROVIDER_DEFINITIONS,
@@ -401,6 +402,25 @@ export { PiAgentDriver } from './cli-adapters/pi-driver.js'
 export { CodexAppServerDriver } from './cli-adapters/codex-driver.js'
 export { OpenCodeDriver } from './cli-adapters/opencode-driver.js'
 export { GrokBuildDriver } from './cli-adapters/grok-driver.js'
+export { AntigravityDriver } from './cli-adapters/antigravity-driver.js'
+export { AcpCliDriver } from './cli-adapters/acp-cli-driver.js'
+export { CursorCliDriver } from './cli-adapters/cursor-driver.js'
+export { KiroCliDriver } from './cli-adapters/kiro-driver.js'
+export {
+  CodeBuddyCliDriver,
+  CodeBuddyDriver,
+  WorkBuddyCliDriver,
+  CODEBUDDY_PROFILE,
+  WORKBUDDY_PROFILE,
+  type CodeBuddyRuntimeProfile,
+  type CodeBuddyDriverOptions,
+} from './cli-adapters/codebuddy-driver.js'
+export {
+  QoderCliDriver,
+  QODER_PROFILES,
+  type QoderCliProfile,
+  type QoderCliDriverOptions,
+} from './cli-adapters/qoder-driver.js'
 export { StandardStreamDriver } from './cli-adapters/standard-stream-driver.js'
 export { JsonRpcProcess } from './cli-adapters/json-rpc-process.js'
 export { HttpSseClient } from './cli-adapters/http-sse-client.js'

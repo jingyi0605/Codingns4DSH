@@ -1,9 +1,43 @@
-import type { CodingNsAgentEvent } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 
 type SnapshotChunk = Extract<CodingNsAgentEvent, { readonly type: 'reasoning-snapshot' | 'text-snapshot' }>
 type UsageChunk = Extract<CodingNsAgentEvent, { readonly type: 'usage' }>
 
 export type CodingNsNormalizedAgentEvent = Exclude<CodingNsAgentEvent, SnapshotChunk>
+
+/** 适配器没有稳定 assistant item 标识时，为公共投影层维护的段状态。 */
+export interface CodingNsSegmentState {
+  segment: number
+  readonly toolNames: Map<string, string>
+}
+
+export function createCodingNsSegmentState(): CodingNsSegmentState {
+  return { segment: 0, toolNames: new Map() }
+}
+
+/** 给已解析的正文和工具事件补齐公共消息边界所需的稳定字段。 */
+export function decorateCodingNsSegmentEvent(
+  chunk: CodingNsAgentEvent,
+  input: CodingNsCliTurnInput,
+  state: CodingNsSegmentState,
+  adapterId: string,
+): CodingNsAgentEvent {
+  if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') {
+    return {
+      ...chunk,
+      messageId: chunk.messageId ?? `assistant-${adapterId}-${input.sessionId}-${state.segment}`,
+    }
+  }
+  if (chunk.type !== 'tool-event') return chunk
+  const remembered = chunk.callId === undefined ? undefined : state.toolNames.get(chunk.callId)
+  const toolName = chunk.toolName === 'tool' ? remembered : chunk.toolName
+  if (chunk.callId !== undefined && toolName !== undefined && toolName !== 'tool') state.toolNames.set(chunk.callId, toolName)
+  return toolName === undefined || toolName === chunk.toolName ? chunk : { ...chunk, toolName }
+}
+
+export function advanceCodingNsSegment(chunk: CodingNsAgentEvent, state: CodingNsSegmentState): void {
+  if (chunk.type === 'tool-event' && (chunk.status === 'completed' || chunk.status === 'failed')) state.segment += 1
+}
 
 /**
  * 把驱动差异收敛成 DSH 可消费的增量流。
