@@ -109,6 +109,34 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
         : lanConnector(record, accessToken, scope)
       const localHostId = process.env.CODINGNS4DSH_HOST_ID?.trim() || ownerUserId
       const localSummarySource = createDshNativeSummarySource(context.services.dshContext, context.services.nativeSessions)
+      /**
+       * 聚合前确保目标 Host 已完成握手和认证。
+       *
+       * PeerHost 的记录状态是运行时缓存，不是登录凭据本身：远端返回 401 后
+       * 状态会暂时变成 session_required，下一次聚合必须主动用持久化的 refresh
+       * token/账号密码恢复，否则只要没有手工点“测试”，该目标就会永远被跳过。
+       */
+      const preparePeerHost = async (input: PeerHostRecord): Promise<PeerHostRecord | null> => {
+        if (input.status === 'disabled' || input.status === 'identity_changed') return null
+        let record = input
+        if (record.status === 'session_required') {
+          await sessions.refresh(record.id).catch(() => undefined)
+          record = (await store.get(record.id)) ?? record
+        } else if (record.status !== 'ready') {
+          // configured/unreachable/version_mismatch 等状态都可能只是上一次启动
+          // 或网络抖动留下的缓存；自动重试等价于管理面板的“测试”。
+          record = await handshake.check(record.id)
+        }
+        if (record.status !== 'ready') return null
+        // 即使 access token 尚未到期，也检查一次当前认证状态；临近过期时这里
+        // 会 refresh，refresh token 失效时会用保存的账号密码静默重登。
+        try {
+          await sessions.getAccessToken(record.id)
+        } catch {
+          return null
+        }
+        return (await store.get(record.id)) ?? record
+      }
       const buildSources = async (): Promise<readonly AggregateHostSource[]> => {
         if (options.aggregateSources !== undefined) return options.aggregateSources()
         const sources: AggregateHostSource[] = [createAggregateHostSource({
@@ -117,8 +145,9 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
           hostLabel: '当前 Host',
           source: localSummarySource,
         })]
-        for (const record of await store.list()) {
-          if (record.status !== 'ready') continue
+        const preparedRecords = await Promise.all((await store.list()).map((record) => preparePeerHost(record).catch(() => null)))
+        for (const record of preparedRecords) {
+          if (record === null || record.status !== 'ready') continue
           sources.push(createAggregateHostSource({
             hostId: localHostId,
             targetHostId: record.id,
@@ -140,14 +169,9 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
       }
       /** 远端工作区候选的唯一读取入口；不过滤可见性，供"添加工作区"选择器使用。 */
       const readRemoteWorkspaceCandidates = async (peerHostId: string): Promise<readonly PeerHostRemoteWorkspaceCandidate[]> => {
-        let record = await store.get(peerHostId)
-        if (record === null) throw new CodingNsRpcError('PEER_HOST_NOT_FOUND', 'PeerHost 不存在')
-        // 票据过期但保存过账号时先静默重登：用户不该为了看一眼工作区列表
-        // 再回管理面板手工登录一次。
-        if (record.status === 'session_required') {
-          await sessions.refresh(peerHostId).catch(() => undefined)
-          record = await store.get(peerHostId)
-        }
+        const configured = await store.get(peerHostId)
+        if (configured === null) throw new CodingNsRpcError('PEER_HOST_NOT_FOUND', 'PeerHost 不存在')
+        const record = await preparePeerHost(configured)
         if (record === null || record.status !== 'ready') {
           throw new CodingNsRpcError('PEER_HOST_NOT_READY', 'PeerHost 尚未通过握手检查')
         }
