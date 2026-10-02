@@ -224,6 +224,108 @@ test('Client 在解析工作区后按工作区键复用终端绑定', async () =
   }
 })
 
+test('显式新建终端不会复用工作区已有 terminalId', async () => {
+  const previousStorage = globalThis.localStorage
+  const values = new Map<string, string>()
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => { values.set(key, String(value)) },
+      removeItem: (key) => { values.delete(key) },
+    },
+  })
+  try {
+    const { calls, remote } = createRemote(true)
+    const closed: string[] = []
+    let nextId = 1
+    remote.environment = async () => success({ ...environment, workspaceId: 'workspace-stable' })
+    remote.create = async (_sessionId, request) => {
+      calls.create += 1
+      return success({ ...terminalInfo, id: request.id ?? `terminal-created-${nextId++}` })
+    }
+    remote.close = async (_sessionId, id) => { calls.close += 1; closed.push(id); return success(undefined) }
+    const service = new CodingNsWebTerminals(new Context(), remote)
+    const first = service.view('session-a', 'tab-a', 'content-a')
+    await first.refresh()
+    const second = service.view('session-a', 'tab-b', 'content-b', undefined, undefined, true)
+    await second.refresh()
+
+    assert.notEqual(second.id, first.id)
+    assert.equal(calls.create, 2)
+    service.close('session-a', 'tab-b', 'content-b', second.id)
+    await waitFor(() => calls.close === 1, '关闭第二个终端未调用 Host close')
+    assert.deepEqual(closed, [second.id])
+    assert.equal(values.get('dsh.codingns.terminal.binding.v1.' + JSON.stringify(['workspace', 'workspace-stable'])), first.id)
+    await service.dispose()
+  } finally {
+    if (previousStorage === undefined) delete (globalThis as { localStorage?: unknown }).localStorage
+    else Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: previousStorage })
+  }
+})
+
+test('新建终端标签重载后仍恢复自身 terminalId', async () => {
+  const previousStorage = globalThis.localStorage
+  const values = new Map<string, string>([
+    ['dsh.codingns.terminal.binding.v1.' + JSON.stringify(['workspace', 'workspace-stable']), 'terminal-1'],
+    ['dsh.codingns.terminal.binding.v1.' + JSON.stringify(['session-a', 'content-b']), 'terminal-2'],
+  ])
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => { values.set(key, String(value)) },
+      removeItem: (key) => { values.delete(key) },
+    },
+  })
+  try {
+    const { calls, remote } = createRemote(true)
+    remote.environment = async () => success({ ...environment, workspaceId: 'workspace-stable' })
+    remote.list = async () => success([{ ...terminalInfo, id: 'terminal-2' }])
+    const service = new CodingNsWebTerminals(new Context(), remote)
+    const view = service.view('session-a', 'tab-b', 'content-b', 'terminal-2', undefined, true)
+    await view.refresh()
+
+    assert.equal(view.id, 'terminal-2')
+    assert.equal(calls.create, 0)
+    assert.equal(view.state.getSnapshot().info?.id, 'terminal-2')
+    await service.dispose()
+  } finally {
+    if (previousStorage === undefined) delete (globalThis as { localStorage?: unknown }).localStorage
+    else Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: previousStorage })
+  }
+})
+
+test('恢复已有 terminalId 时不会被工作区绑定覆盖', async () => {
+  const previousStorage = globalThis.localStorage
+  const values = new Map<string, string>([
+    ['dsh.codingns.terminal.binding.v1.' + JSON.stringify(['workspace', 'workspace-stable']), 'terminal-1'],
+  ])
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => { values.set(key, String(value)) },
+      removeItem: (key) => { values.delete(key) },
+    },
+  })
+  try {
+    const { remote } = createRemote(true)
+    remote.environment = async () => success({ ...environment, workspaceId: 'workspace-stable' })
+    remote.list = async () => success([{ ...terminalInfo, id: 'terminal-2' }])
+    const service = new CodingNsWebTerminals(new Context(), remote)
+    const view = service.view('session-a', 'tab-a', 'content-a', 'terminal-2')
+    await view.refresh()
+
+    assert.equal(view.id, 'terminal-2')
+    assert.equal(view.state.getSnapshot().info?.id, 'terminal-2')
+    await service.dispose()
+  } finally {
+    if (previousStorage === undefined) delete (globalThis as { localStorage?: unknown }).localStorage
+    else Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: previousStorage })
+  }
+})
+
 test('Client 首次渲染异步解析工作区时不会覆盖已有终端', async () => {
   const previousStorage = globalThis.localStorage
   const values = new Map<string, string>([
@@ -253,6 +355,19 @@ test('Client 首次渲染异步解析工作区时不会覆盖已有终端', asyn
     if (previousStorage === undefined) delete (globalThis as { localStorage?: unknown }).localStorage
     else Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: previousStorage })
   }
+})
+
+test('工作区绑定刚被删除时，残留标签不会用显式 terminalId 重建已关闭终端', async () => {
+  const { calls, remote } = createRemote(false)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-stable' })
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  const view = service.view('session-b', 'tab-b', 'content-b', 'terminal-1')
+
+  await view.refresh()
+
+  assert.equal(calls.create, 0)
+  assert.match(view.state.getSnapshot().error ?? '', /Host 中不存在该终端/u)
+  await service.dispose()
 })
 
 test('Client 会把 0.1.7 早期带 contentId 的工作区键迁移为稳定键', async () => {

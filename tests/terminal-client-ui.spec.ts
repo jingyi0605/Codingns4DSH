@@ -18,13 +18,12 @@ test('终端入口复用 DSH 内置按钮与菜单，不退回原生表单控件
   assert.doesNotMatch(source, /border:\s*['"]1px solid currentColor/u)
 })
 
-test('终端标题双击会进入编辑并阻止标签页父级事件吞掉交互', async () => {
+test('聚合页内终端列表支持双击重命名', async () => {
   const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
 
-  assert.match(source, /onDoubleClick:[ \t]*beginEditing/u)
-  assert.match(source, /onClick:[ \t]*beginEditing/u)
-  assert.match(source, /event\.detail\s*===\s*undefined\s*\|\|\s*event\.detail\s*>=\s*2/u)
-  assert.match(source, /onPointerDown:[ \t]*stopPropagation/u)
+  assert.match(source, /function TerminalListRow/u)
+  assert.match(source, /onDoubleClick:[ \t]*\(\) => setEditing\(true\)/u)
+  assert.match(source, /terminalClass\.listClose/u)
 })
 
 test('消息列表会话头部不再显示终端恢复按钮', async () => {
@@ -67,15 +66,42 @@ test('xterm 不会用 Shell 默认标题覆盖调试终端标题', async () => {
   assert.match(source, /if \(!preserveHostTitle\) void view\.rename\(value\)/u)
 })
 
-test('终端 UI 对 rc3 缺失的 Sidebar 扩展能力走兼容分支', async () => {
+test('终端 UI 通过聚合库存恢复跨会话页签', async () => {
   const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
 
-  assert.match(source, /registerCloseHandler\?/u)
-  assert.match(source, /typeof registerCloseHandler !== 'function'/u)
-  assert.match(source, /legacyCloseFallback/u)
+  assert.match(source, /inventoryRevision/u)
+  assert.match(source, /recoverSession\(sessionId\)/u)
   assert.match(source, /ctx\.slots\.inject\('sidebar\.right\.tab\.guide\.entry'/u)
-  assert.match(source, /info\.tab\.signal\.addEventListener\('abort'/u)
-  assert.doesNotMatch(source, /PropsRuntime<'sidebar\.right\.tab\.guide\.entry'>/u)
+})
+
+test('聚合页关闭按钮只按 terminalId 关闭目标 Host 终端', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
+
+  assert.match(source, /webTerminals\.closeTerminal\(String\(sessionId\), item\.id\)/u)
+  assert.doesNotMatch(source, /closeTerminalTabs/u)
+})
+
+test('新建终端入口打开聚合页并使用一次性自动创建标记', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
+
+  assert.match(source, /params: \{ autoCreate: true \}/u)
+  assert.match(source, /params: \{ autoCreate: true, shellPath: path \}/u)
+  assert.match(source, /params\.autoCreate/u)
+})
+
+test('终端类型按 kind 只保留一个聚合页签', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
+
+  assert.match(source, /kind: TERMINAL_KIND,[\s\S]*multiple: false/u)
+  assert.match(source, /terminalClass\.aggregateRoot/u)
+})
+
+test('聚合页终端列表位于顶部横向标签栏，不占用内容区侧向空间', async () => {
+  const styles = await readFile(join(projectRoot, 'src/client/terminal/styles.ts'), 'utf8')
+
+  assert.match(styles, /aggregateRoot\}\{[^}]*flex-direction:column/u)
+  assert.match(styles, /list\}\{[^}]*overflow-x:auto/u)
+  assert.doesNotMatch(styles, /list\}\{[^}]*width:180px/u)
 })
 
 test('终端 Guide Entry 交给 Slots 注入器处理延迟声明', async () => {

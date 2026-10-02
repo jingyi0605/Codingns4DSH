@@ -13,7 +13,7 @@ const terminal = (id: string) => ({
   exitCode: null,
 })
 
-test('工作区终端在新会话的 Sidebar 缺少标签时只补一次并复用 Host 身份', async () => {
+test('工作区终端在新会话的 Sidebar 缺少标签时只补一个聚合页签', async () => {
   const tabs = new Map<string, { id: string; kind: string }[]>()
   const opened: Array<{ sessionId: string; terminalId: string }> = []
   let recoverCalls = 0
@@ -38,8 +38,8 @@ test('工作区终端在新会话的 Sidebar 缺少标签时只补一次并复�
 
   assert.equal(recoverCalls, 2)
   assert.deepEqual(opened, [
-    { sessionId: 'session-a', terminalId: 'workspace-terminal' },
-    { sessionId: 'session-b', terminalId: 'workspace-terminal' },
+    { sessionId: 'session-a', terminalId: '' },
+    { sessionId: 'session-b', terminalId: '' },
   ])
 })
 
@@ -73,7 +73,22 @@ test('旧版没有导航参数的终端标签仍按已有标签处理', async ()
   assert.equal(opened, 0)
 })
 
-test('Host 已关闭终端时恢复流程会移除其它会话的残留标签', async () => {
+test('多终端库存仍然只补一个聚合页签', async () => {
+  const opened: string[] = []
+  const recovery = createTerminalSessionRecovery({
+    async recover() { return [terminal('terminal-1'), terminal('terminal-2')] },
+    boundTerminalId: (_sessionId, contentId) => contentId === 'content-old' ? 'terminal-1' : undefined,
+  }, {
+    tabsIn: () => [{ id: 'tab-old', kind: 'terminal', contentId: 'content-old' }],
+    openTabIn: (_sessionId, _kind, options) => { opened.push(String(options?.params && (options.params as { terminalId?: string }).terminalId)) },
+  }, 'terminal')
+
+  await recovery.ensure('session-a')
+
+  assert.deepEqual(opened, [])
+})
+
+test('Host 仍有库存时恢复流程保留现有聚合页签', async () => {
   const tabs = new Map<string, { id: string; kind: string }[]>([
     ['session-a', [{ id: 'tab-a', kind: 'terminal' }]],
     ['session-b', [{ id: 'tab-b', kind: 'terminal' }]],
@@ -98,12 +113,12 @@ test('Host 已关闭终端时恢复流程会移除其它会话的残留标签', 
 
   await recovery.ensure('session-a')
 
-  assert.deepEqual(closed, [{ sessionId: 'session-a', tabId: 'tab-a' }])
-  assert.deepEqual(tabs.get('session-a'), [])
+  assert.deepEqual(closed, [])
+  assert.deepEqual(tabs.get('session-a'), [{ id: 'tab-a', kind: 'terminal' }])
   assert.deepEqual(tabs.get('session-b'), [{ id: 'tab-b', kind: 'terminal' }])
 })
 
-test('Host 列表为空时不做任何残留标签清理（新建终端的竞态）', async () => {
+test('Host 列表为空时移除聚合页签记录', async () => {
   const closed: Array<{ sessionId: string; tabId: string }> = []
   const sidebar = {
     // 用户点"新建终端"后刚出现的标签：还没有 terminalId 导航参数。
@@ -111,16 +126,17 @@ test('Host 列表为空时不做任何残留标签清理（新建终端的竞态
     closeIn: (sessionId: string, tabId: string) => { closed.push({ sessionId, tabId }) },
   }
   const recovery = createTerminalSessionRecovery({
-    // Host 列表此刻为空：view 的 create 还在进行中。
+    // 聚合页只由 Host 库存决定是否存在。
     async recover() { return [] },
+    isTerminalRecoveryProtected: () => true,
   }, sidebar, 'terminal')
 
   await recovery.ensure('session-a')
 
-  assert.deepEqual(closed, [], '新建终端不能因为 Host 列表暂时为空就被关闭')
+  assert.deepEqual(closed, [{ sessionId: 'session-a', tabId: 'brand-new-tab' }])
 })
 
-test('Host 列表为空时带 terminalId 的标签同样保留', async () => {
+test('Host 列表为空且标签没有创建中视图时会移除明确的残留标签', async () => {
   const closed: Array<{ sessionId: string; tabId: string }> = []
   const sidebar = {
     tabsIn: () => [{ id: 'tab-1', kind: 'terminal' }],
@@ -135,5 +151,5 @@ test('Host 列表为空时带 terminalId 的标签同样保留', async () => {
 
   await recovery.ensure('session-a')
 
-  assert.deepEqual(closed, [], 'Host 列表为空不构成"该终端已关闭"的证据')
+  assert.deepEqual(closed, [{ sessionId: 'session-a', tabId: 'tab-1' }], 'Host 列表为空且没有创建中视图时应清理残留标签')
 })
