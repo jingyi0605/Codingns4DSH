@@ -61,17 +61,12 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
       enabledByDefault: false,
       dependencies: [],
       runtime: 'host',
-      requires: [
-        { capability: 'peer-host.store', required: false, fallback: 'degrade' },
-        { capability: 'peer-host.handshake', required: false, fallback: 'degrade' },
-        { capability: 'peer-host.http-proxy', required: false, fallback: 'degrade' },
-        { capability: 'peer-host.ws-proxy', required: false, fallback: 'degrade' },
-        { capability: 'peer-host.aggregate', required: false, fallback: 'degrade' },
-        { capability: 'peer-host.aggregated-transport', required: false, fallback: 'degrade' },
-        { capability: 'peer-host.target-capabilities', required: false, fallback: 'degrade' },
-        { capability: 'peer-host.local-plugin-baseline', required: false, fallback: 'degrade' },
-        { capability: 'peer-host.relay-route', required: false, fallback: 'degrade' },
-      ],
+      // PeerHost 的 Host 服务由本 Feature 在 start() 中按当前状态目录创建，
+      // 不属于 DSH Context 的启动前注入能力。把它们写进 requires 会在
+      // capabilityProfile 已经冻结之后才去查找尚未创建的局部实例，导致每次
+      // 启动都产生 CAPABILITY_UNAVAILABLE，但对实际启动没有任何帮助。
+      // 真正由 DSH 提供的能力仍由 capability registry 在入口处统一探测；
+      // Relay 也继续在连接器内部按显式 transport 注入情况降级。
     },
     async start(context) {
       const stateDirectory = options.stateDirectory ?? process.env.CODINGNS4DSH_STATE_DIR?.trim() ?? join(homedir(), '.config', 'codingns4dsh')
