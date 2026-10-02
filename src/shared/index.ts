@@ -323,7 +323,11 @@ export type {
 export type { DshHostStatus } from './contracts/host-status.js'
 export {
   CODINGNS4DSH_DEBUG_ENV,
+  CODINGNS4DSH_DEBUG_LEVEL_ENV,
+  CODINGNS4DSH_DEBUG_WARN_ENV,
+  type CodingNsDebugLevel,
   debugInfo,
   debugWarn,
   resolveCodingNsDebugEnabled,
+  resolveCodingNsDebugLevel,
 } from './debug.js'

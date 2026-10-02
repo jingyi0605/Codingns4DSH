@@ -24,6 +24,7 @@ import { startSubagentBridgeServer, type SubagentBridgeServer } from '../cli-bri
 import { setSubagentBridge } from '../cli-bridge/bridge-holder.js'
 import { delegateCapability, dispatchDelegateSubagent, type DelegateAgentRegistry } from './delegate-dispatch.js'
 import { setMaxNativeSubagentsPerParent } from './native-subagent-dispatch.js'
+import { debugInfo } from '../../shared/debug.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -52,7 +53,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           expandMigrationChain(nativeSessions, nativeSessions.list()),
         )
         if (migration.migrated > 0 || migration.unresolved > 0) {
-          console.info('codingns4dsh: 旧外部会话适配器迁移完成', migration)
+          debugInfo('codingns4dsh: 旧外部会话适配器迁移完成', migration)
         }
       }
       const registry = options.registry ?? new CodingNsCliAdapterRegistry([

@@ -61,9 +61,13 @@ export type { DshH5BrowserBootstrapOptions, DshH5BrowserBootstrapResult, DshH5Br
 export { CODINGNS_RPC_CHANNEL } from './shared/contracts/transport.js'
 export {
   CODINGNS4DSH_DEBUG_ENV,
+  CODINGNS4DSH_DEBUG_LEVEL_ENV,
+  CODINGNS4DSH_DEBUG_WARN_ENV,
+  type CodingNsDebugLevel,
   debugInfo,
   debugWarn,
   resolveCodingNsDebugEnabled,
+  resolveCodingNsDebugLevel,
 } from './shared/debug.js'
 export {
   CODINGNS_CONTROL_BASE_URL_FIELD,
@@ -157,7 +161,9 @@ export {
   createHostSignalingTicketRequest,
   requestHostSignalingTicket,
   createDshTransportDebugLogger,
+  isDshTransportWarningEvent,
   resolveDshTransportDebugEnabled,
+  resolveDshTransportDebugLevel,
 } from './transport/index.js'
 export {
   bindDshConnection,

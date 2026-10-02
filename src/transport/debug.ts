@@ -1,4 +1,4 @@
-import { resolveCodingNsDebugEnabled } from '../shared/debug.js'
+import { resolveCodingNsDebugLevel, type CodingNsDebugLevel } from '../shared/debug.js'
 
 /**
  * DSH Tunnel 调试日志。
@@ -11,11 +11,13 @@ export type DshTransportDebugSide = 'h5' | 'host' | 'relay' | 'unknown'
 
 export interface DshTransportDebugLogger {
   readonly enabled: boolean
+  readonly level: CodingNsDebugLevel
   log(event: string, fields?: Readonly<Record<string, unknown>>): void
 }
 
 export interface DshTransportDebugOptions {
   readonly enabled?: boolean
+  readonly level?: CodingNsDebugLevel
   readonly side?: DshTransportDebugSide
   readonly component?: string
   readonly sink?: (record: Readonly<Record<string, unknown>>) => void
@@ -23,17 +25,22 @@ export interface DshTransportDebugOptions {
 
 /** 创建一个可注入测试 sink 的调试 logger。默认开关由当前运行环境决定。 */
 export function createDshTransportDebugLogger(options: DshTransportDebugOptions = {}): DshTransportDebugLogger {
-  const enabled = options.enabled ?? resolveDshTransportDebugEnabled()
+  const level = options.level ?? (options.enabled === undefined
+    ? resolveDshTransportDebugLevel()
+    : options.enabled ? 'info' : 'off')
+  const enabled = level !== 'off'
   const side = options.side ?? 'unknown'
   const component = options.component ?? 'transport'
   const sink = options.sink ?? ((record) => {
     // console.info 在 Node 和浏览器中都能稳定显示，并且不会把正文拼进字符串。
-    console.info('[codingns4dsh:tunnel]', record)
+    if (level === 'warn') console.warn('[codingns4dsh:tunnel]', record)
+    else console.info('[codingns4dsh:tunnel]', record)
   })
   return {
     enabled,
+    level,
     log(event, fields = {}) {
-      if (!enabled) return
+      if (!enabled || (level === 'warn' && !isDshTransportWarningEvent(event, fields))) return
       sink({
         at: new Date().toISOString(),
         side,
@@ -43,6 +50,22 @@ export function createDshTransportDebugLogger(options: DshTransportDebugOptions 
       })
     },
   }
+}
+
+/** 诊断级别为 warn 时，只保留能代表异常或降级的 Transport 事件。 */
+export function isDshTransportWarningEvent(event: string, fields: Readonly<Record<string, unknown>> = {}): boolean {
+  if (/(?:^|\.)(?:warn|warning|error|failed|invalid|rejected|drop|unavailable|timeout)(?:$|\.)/iu.test(event)) return true
+  if (typeof fields.status === 'number' && fields.status >= 400) return true
+  if (typeof fields.state === 'string' && /^(failed|disconnected|closed|degraded)$/iu.test(fields.state)) return true
+  if (typeof fields.event === 'string' && fields.event !== event) {
+    const nestedFields = isRecord(fields.fields) ? fields.fields : {}
+    return isDshTransportWarningEvent(fields.event, nestedFields)
+  }
+  return false
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
@@ -86,5 +109,10 @@ function sanitizeDebugPath(value: string): string {
 
 /** 解析统一的 Codingns4DSH 调试开关，保留旧隧道变量作为兼容别名。 */
 export function resolveDshTransportDebugEnabled(): boolean {
-  return resolveCodingNsDebugEnabled()
+  return resolveDshTransportDebugLevel() !== 'off'
+}
+
+/** 返回 Transport 调试日志级别。 */
+export function resolveDshTransportDebugLevel(): CodingNsDebugLevel {
+  return resolveCodingNsDebugLevel()
 }

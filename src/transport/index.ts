@@ -23,7 +23,15 @@ export {
   type TunnelClientContext,
 } from './frame.js'
 export { DshTunnelMultiplexer, type DshTunnelMultiplexerOptions, type TunnelFlowControl } from './multiplexer.js'
-export { createDshTransportDebugLogger, resolveDshTransportDebugEnabled, type DshTransportDebugLogger, type DshTransportDebugOptions, type DshTransportDebugSide } from './debug.js'
+export {
+  createDshTransportDebugLogger,
+  isDshTransportWarningEvent,
+  resolveDshTransportDebugEnabled,
+  resolveDshTransportDebugLevel,
+  type DshTransportDebugLogger,
+  type DshTransportDebugOptions,
+  type DshTransportDebugSide,
+} from './debug.js'
 export { DshCodingNsTransport, type DshCodingNsTransportOptions } from './dsh-transport.js'
 export {
   DSH_ENVELOPE_PROTOCOL,

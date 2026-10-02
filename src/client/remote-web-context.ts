@@ -357,16 +357,20 @@ function createBridgeScript(): string {
     // 自己的 Relay/WebRTC，否则会把信令 WebSocket 当成本地 DSH Web 路径转发，
     // 形成递归连接并持续触发 /signaling/signal 失败。
     globalThis.__CODINGNS4DSH_REMOTE_WEB_CONTEXT__ = true;
-    const bridgeDebugEnabled = (() => {
+    const bridgeDebugLevel = (() => {
       try {
-        const query = new URL(parent.location.href).searchParams.get('dshDebug');
-        return /^(1|true|yes|on)$/iu.test(query || '');
-      } catch { return false; }
+        const params = new URL(parent.location.href).searchParams;
+        const query = params.get('dshDebugLevel') || params.get('dshDebug') || '';
+        if (/^(warn|warning|error)$/iu.test(query)) return 'warn';
+        if (/^(1|true|yes|on|info|debug)$/iu.test(query)) return 'info';
+      } catch { /* 读取父页面地址失败时保持关闭。 */ }
+      return 'off';
     })();
     const bridgeLog = (event, fields = {}) => {
-      if (!bridgeDebugEnabled) return;
+      if (bridgeDebugLevel === 'off') return;
+      if (bridgeDebugLevel === 'warn' && !/(?:^|\\.)(?:warn|warning|error|failed|invalid|rejected|drop|unavailable|timeout)(?:$|\\.)/iu.test(String(event))) return;
       const payload = { at: new Date().toISOString(), side: 'h5', component: 'remote-web-bridge', event, ...fields };
-      console.info('[codingns4dsh:tunnel]', payload);
+      (bridgeDebugLevel === 'warn' ? console.warn : console.info)('[codingns4dsh:tunnel]', payload);
       parent.postMessage({ kind: 'dsh-web-debug', event, fields: payload }, '*');
     };
     const pending = new Map();

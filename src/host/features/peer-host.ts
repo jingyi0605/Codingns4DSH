@@ -35,6 +35,7 @@ import { createPeerHostRemoteSummarySource, readPeerHostRemoteWorkspaceCandidate
 import { callPeerCliRpc, callPeerNativeRpc, openPeerNativeStream, readNativeRpcEnvelope } from '../modules/peer-host/peer-host-native-transport.js'
 import { createAggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { encodeNativeResponseBytes, isDshNativeRemoteMethod, rewriteNativeRequestIds, rewriteNativeResponseIds } from '../modules/peer-host/peer-host-native-protocol.js'
+import { resolveCodingNsDebugLevel } from '../../shared/debug.js'
 
 /** 原生 Remote 流句柄的存活窗口；每次轮询续期，超时仍未再被轮询即回收。 */
 const NATIVE_STREAM_TTL_MS = 600_000
@@ -91,9 +92,15 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
       let workspaceOrderHydrated = false
       const nativeStreams = new Map<string, { readonly iterator: AsyncIterator<unknown>; readonly scope: HostScope; readonly expiresAt: number }>()
       const dshNativeDispatch = resolveDshNativeDispatch(context.services.dshContext)
+      const debugLevel = resolveCodingNsDebugLevel()
       const diagnostics = createPeerHostDiagnosticSink({
-        enabled: process.env.CODINGNS4DSH_DEBUG === '1',
-        sink: (event, snapshot) => console.info('[codingns4dsh:peer-host]', { event, ...snapshot }),
+        enabled: debugLevel !== 'off',
+        sink: (event, snapshot) => {
+          const failed = snapshot.status !== 'ready' || snapshot.lastErrorCode !== null
+          if (debugLevel === 'warn' && !failed) return
+          if (failed) console.warn('[codingns4dsh:peer-host]', { event, ...snapshot })
+          else console.info('[codingns4dsh:peer-host]', { event, ...snapshot })
+        },
       })
       const lanConnector = options.connectRemote ?? createPeerHostRemoteConnector()
       const relayConnector = createPeerHostRelayConnector({ ...(options.relayTransport === undefined ? {} : { transport: options.relayTransport }) })
