@@ -126,6 +126,8 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
   let samples: TouchSample[] = []
   let tracking = false
   let claimed = false
+  let rightbarTouch = false
+  let scrollableTouch = false
   let rightbarHistoryPushed = false
   // 只有宿主没有提供左栏 DOM 状态时才使用这个乐观状态，保证测试环境和
   // 尚未完成 DOM 挂载的 WebView 仍能连续完成“打开后左滑关闭”。
@@ -136,21 +138,74 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
   const onTouchStart = (event: unknown): void => {
     const touch = firstTouch(event)
     if (touch === null) return
-    if (isEditableTarget(touch.target)) return
+    // 横向滚动容器优先接收触摸。右栏里的代码块、长文本和表格经常需要
+    // 左右拖动；如果这里继续记录样本，window 的全局监听会把右滑误判为
+    // “收起右栏”，浏览器也会因为后续 preventDefault 而丢掉原生滚动。
+    if (isEditableTouch(touch)) {
+      tracking = false
+      claimed = false
+      rightbarTouch = false
+      scrollableTouch = false
+      samples = []
+      return
+    }
     tracking = true
     claimed = false
+    scrollableTouch = hasHorizontalScrollableTarget(touch)
+    // 右栏展开但宿主未暴露稳定 DOM 标记时，用横向滚动能力作为保守兜底；右栏
+    // 未展开时，聊天区域的横向滚动仍应让全局侧栏唤起手势通过。
+    rightbarTouch = isExpandedRightbar() && (isRightbarTarget(touch) || scrollableTouch)
     samples = [{ x: touch.x, y: touch.y, t: now() }]
   }
   const onTouchMove = (event: unknown): void => {
     if (!tracking) return
     const touch = firstTouch(event)
     if (touch === null) return
+    // 某些 WebView 在 touchstart 时只暴露宿主节点，直到 touchmove 才能从
+    // composedPath() 看到真正的滚动节点；这里再次检查，避免已经开始采样后
+    // 仍被全局侧栏手势抢走。
+    if (isEditableTouch(touch)) {
+      tracking = false
+      claimed = false
+      rightbarTouch = false
+      scrollableTouch = false
+      samples = []
+      return
+    }
     samples.push({ x: touch.x, y: touch.y, t: now() })
+    // 事件目标在部分 WebView 中会在 touchmove 才暴露真实宿主；右栏归属也要
+    // 同步补探测，但横向滚动让位只对右栏生效，不能吞掉聊天界面的唤起手势。
+    rightbarTouch ||= isExpandedRightbar() && isRightbarTarget(touch)
+    if (rightbarTouch) scrollableTouch ||= hasHorizontalScrollableTarget(touch)
+    const config = resolveConfig(options)
+    const horizontalDirection = detectHorizontalDirection(samples, config)
+    const contentConsumes = horizontalDirection !== null
+      && canScrollableTargetConsume(touch, horizontalDirection)
+    const shouldYieldToContent = rightbarTouch
+      && horizontalDirection !== null
+      && (horizontalDirection < 0 || (scrollableTouch && contentConsumes))
+    if (shouldYieldToContent) {
+      // 右栏右滑只有在内容位于可向右滚动的位置时才让位；左滑不负责收起右栏，
+      // 始终交给右栏内部的横向内容。这样右栏边缘的右滑仍然可以正常关闭。
+      tracking = false
+      claimed = false
+      rightbarTouch = false
+      scrollableTouch = false
+      samples = []
+      return
+    }
     if (!claimed && samples.length <= 24) {
       const decision = detectSidebarGesture(samples, resolveConfig(options))
       if (decision.reason === 'ok') {
+        const handled = applyAction(decision.action, horizontalDirection ?? undefined)
+        if (!handled) {
+          // 右栏展开时的物理左滑没有侧栏动作，释放本次触摸，避免既阻止
+          // 原生内容交互又在后续 move 中重复判定。
+          tracking = false
+          samples = []
+          return
+        }
         claimed = true
-        applyAction(decision.action)
         preventDefault(event)
         return
       }
@@ -166,6 +221,8 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
   const onTouchEnd = (): void => {
     tracking = false
     claimed = false
+    rightbarTouch = false
+    scrollableTouch = false
     samples = []
   }
   const onPopState = (): void => {
@@ -174,23 +231,24 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
     if (options.ports.sidebarRight?.isExpanded() === true) options.ports.sidebarRight.toggleExpanded()
   }
 
-  const applyAction = (action: SidebarGestureAction): void => {
-    if (action === 'ignore') return
+  const applyAction = (action: SidebarGestureAction, physicalDirection?: -1 | 1): boolean => {
+    if (action === 'ignore') return false
+    const sidebarRight = options.ports.sidebarRight
+    if (sidebarRight?.isExpanded() === true) {
+      if (physicalDirection === 1) {
+        triggerVibration(10)
+        sidebarRight.toggleExpanded()
+        rightbarHistoryPushed = false
+        return true
+      }
+      // 右栏打开时，物理左滑只交给内部内容，不再触发任何收起动作。
+      return false
+    }
     // 仅在手势真正触发开合后反馈，避免滚动和方向锁定失败时误振动。
     triggerVibration(10)
-    const sidebarRight = options.ports.sidebarRight
     if (action === 'left') {
-      // 与左栏保持对称：右栏由左滑呼出后，下一次反向右滑应先收回右栏，
-      // 不能把同一次操作解释成呼出左栏。右栏状态由端口提供，是唯一事实来源。
-      if (sidebarRight?.isExpanded() === true) {
-        sidebarRight.toggleExpanded()
-        // 该历史记录只服务于“返回键关闭右栏”；手势已经主动关闭时不应再
-        // 在后续 popstate 中重复尝试关闭。
-        rightbarHistoryPushed = false
-        return
-      }
       toggleLeftSidebar()
-      return
+      return true
     }
     // 默认映射下物理左滑会得到 `right` 动作。左栏已经展开时，用户的意图
     // 是收回刚刚呼出的左栏，而不是再打开右栏；优先关闭左栏才能保持手势
@@ -198,15 +256,15 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
     // 分支处理。
     if (readLeftCollapsed() === false && options.ports.layout !== undefined) {
       toggleLeftSidebar()
-      return
+      return true
     }
-    if (sidebarRight === undefined) return
+    if (sidebarRight === undefined) return false
     const wasExpanded = sidebarRight.isExpanded() === true
     sidebarRight.toggleExpanded()
     if (wasExpanded) {
       // 同方向再次触发也可能关闭右栏，保持历史状态与实际面板一致。
       rightbarHistoryPushed = false
-      return
+      return true
     }
     if (!wasExpanded && sidebarRight.isExpanded() === true && hostWindow?.history !== undefined) {
       // 全屏右栏压入一条历史记录：Android 返回手势与 iOS 边缘返回先关右栏。
@@ -217,11 +275,20 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
         rightbarHistoryPushed = false
       }
     }
+    return true
   }
 
   const readLeftCollapsed = (): boolean | undefined => {
     const reported = options.readLeftCollapsed?.()
     return reported ?? leftCollapsedFallback
+  }
+
+  const isExpandedRightbar = (): boolean => {
+    try {
+      return options.ports.sidebarRight?.isExpanded() === true
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -345,6 +412,7 @@ interface TouchPoint {
   readonly x: number
   readonly y: number
   readonly target: unknown
+  readonly path: readonly unknown[]
 }
 
 function firstTouch(event: unknown): TouchPoint | null {
@@ -356,7 +424,90 @@ function firstTouch(event: unknown): TouchPoint | null {
   const x = (first as { clientX?: unknown }).clientX
   const y = (first as { clientY?: unknown }).clientY
   if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) return null
-  return { x, y, target: (event as { target?: unknown }).target }
+  return { x, y, target: (event as { target?: unknown }).target, path: composedPathOf(event) }
+}
+
+function isEditableTouch(touch: TouchPoint): boolean {
+  const targets = [touch.target, ...touch.path]
+  return targets.some((target) => isEditableTarget(target))
+}
+
+function hasHorizontalScrollableTarget(touch: TouchPoint): boolean {
+  const targets = [touch.target, ...touch.path]
+  return targets.some((target) => isHorizontalScrollableTarget(target))
+}
+
+function isRightbarTarget(touch: TouchPoint): boolean {
+  const visited = new Set<object>()
+  for (const target of [touch.target, ...touch.path]) {
+    let current: unknown = target
+    for (let depth = 0; depth < 64 && isObjectLike(current); depth += 1) {
+      if (visited.has(current)) break
+      visited.add(current)
+      const closest = (current as { closest?: unknown }).closest
+      if (typeof closest === 'function') {
+        try {
+          if ((closest as (selector: string) => unknown).call(current, '[data-sidebar-right-session]') !== null) return true
+        } catch {
+          // 事件路径中的 Window、Document 或 ShadowRoot 可能没有可用的 closest。
+        }
+      }
+      current = parentElementOf(current)
+    }
+  }
+  return false
+}
+
+function detectHorizontalDirection(samples: readonly TouchSample[], config: SidebarGestureConfig): -1 | 1 | null {
+  if (samples.length < 2) return null
+  const first = samples[0]!
+  const last = samples[samples.length - 1]!
+  const dx = last.x - first.x
+  const dy = last.y - first.y
+  const thresholdPx = Number.isFinite(config.thresholdPx) ? config.thresholdPx : Number.NaN
+  const ratio = config.directionRatio ?? DEFAULT_GESTURE_DIRECTION_RATIO
+  if (!(Number.isFinite(thresholdPx)
+    && thresholdPx > 0
+    && Math.abs(dx) >= thresholdPx
+    && Math.abs(dx) >= Math.abs(dy) * ratio)) return null
+  return dx > 0 ? 1 : -1
+}
+
+function canScrollableTargetConsume(touch: TouchPoint, direction: -1 | 1): boolean {
+  const visited = new Set<object>()
+  for (const target of [touch.target, ...touch.path]) {
+    let current: unknown = target
+    for (let depth = 0; depth < 64 && isObjectLike(current); depth += 1) {
+      if (visited.has(current)) break
+      visited.add(current)
+      if (canScrollableElementConsume(current, direction)) return true
+      current = parentElementOf(current)
+    }
+  }
+  return false
+}
+
+function canScrollableElementConsume(element: object, direction: -1 | 1): boolean {
+  const overflowX = readOverflowX(element)
+  if (overflowX !== 'auto' && overflowX !== 'scroll' && overflowX !== 'overlay') return false
+  const scrollWidth = finiteNumber((element as { scrollWidth?: unknown }).scrollWidth)
+  const clientWidth = finiteNumber((element as { clientWidth?: unknown }).clientWidth)
+  const scrollLeft = finiteNumber((element as { scrollLeft?: unknown }).scrollLeft)
+  if (scrollWidth === undefined || clientWidth === undefined || scrollLeft === undefined) return false
+  const maxScrollLeft = Math.max(0, scrollWidth - clientWidth)
+  if (maxScrollLeft <= 1) return false
+  return direction > 0 ? scrollLeft > 1 : scrollLeft < maxScrollLeft - 1
+}
+
+function composedPathOf(event: object): readonly unknown[] {
+  const method = (event as { composedPath?: unknown }).composedPath
+  if (typeof method !== 'function') return []
+  try {
+    const path = (method as () => unknown).call(event)
+    return Array.isArray(path) ? path : []
+  } catch {
+    return []
+  }
 }
 
 function preventDefault(event: unknown): void {
@@ -377,11 +528,81 @@ function isEditableTarget(target: unknown): boolean {
   try {
     return (closest as (selector: string) => unknown).call(
       target,
-      'input, textarea, select, [contenteditable="true"], .xterm, .cm-editor',
+      'input, textarea, select, [contenteditable="true"], [data-sidebar-terminal], .xterm, .cm-editor',
     ) !== null
   } catch {
     return false
   }
+}
+
+/**
+ * 判断触摸点是否位于可横向滚动的元素或其后代中。
+ *
+ * 必须同时具备横向滚动样式和实际的 `scrollWidth > clientWidth`。只设置
+ * `overflow: auto` 的聊天纵向列表不能因此抢走左右侧栏唤起手势。
+ */
+export function isHorizontalScrollableTarget(target: unknown): boolean {
+  let current: unknown = target
+  const visited = new Set<object>()
+  for (let depth = 0; depth < 32 && isObjectLike(current); depth += 1) {
+    if (visited.has(current)) return false
+    visited.add(current)
+    if (isHorizontalScrollableElement(current)) return true
+    current = parentElementOf(current)
+  }
+  return false
+}
+
+function isHorizontalScrollableElement(element: object): boolean {
+  const scrollWidth = finiteNumber((element as { scrollWidth?: unknown }).scrollWidth)
+  const clientWidth = finiteNumber((element as { clientWidth?: unknown }).clientWidth)
+  const overflowX = readOverflowX(element)
+  const canScrollX = overflowX === 'auto' || overflowX === 'scroll' || overflowX === 'overlay'
+  if (!canScrollX) return false
+  return scrollWidth !== undefined && clientWidth !== undefined && scrollWidth > clientWidth + 1
+}
+
+function readOverflowX(element: object): string | undefined {
+  const style = (element as { style?: { overflow?: unknown; overflowX?: unknown } }).style
+  const inline = typeof style?.overflowX === 'string' && style.overflowX.trim() !== ''
+    ? style.overflowX
+    : typeof style?.overflow === 'string' && style.overflow.trim() !== ''
+      ? style.overflow
+      : undefined
+  if (inline !== undefined) return normalizeOverflowValue(inline)
+  const ownerDocument = (element as { ownerDocument?: unknown }).ownerDocument
+  const view = isObjectLike(ownerDocument)
+    ? (ownerDocument as { defaultView?: unknown }).defaultView
+    : undefined
+  const getComputedStyle = isObjectLike(view)
+    ? (view as { getComputedStyle?: unknown }).getComputedStyle
+    : undefined
+  if (typeof getComputedStyle !== 'function') return undefined
+  try {
+    const computed = (getComputedStyle as (element: object) => { overflowX?: unknown }).call(view, element)
+    return typeof computed?.overflowX === 'string' ? normalizeOverflowValue(computed.overflowX) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function normalizeOverflowValue(value: string): string {
+  return value.trim().toLowerCase().split(/\s+/u)[0] ?? ''
+}
+
+function parentElementOf(value: object): unknown {
+  const parentElement = (value as { parentElement?: unknown }).parentElement
+  if (isObjectLike(parentElement)) return parentElement
+  const parentNode = (value as { parentNode?: unknown }).parentNode
+  return isObjectLike(parentNode) ? parentNode : undefined
+}
+
+function isObjectLike(value: unknown): value is object {
+  return typeof value === 'object' && value !== null
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function now(): number {
