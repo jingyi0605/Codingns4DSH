@@ -9,6 +9,8 @@ import type { Context } from '@deepseek-ai/cordis'
 
 export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
+  /** 向 DSH 原生事件总线发布 Host 状态，供客户端会话状态投影消费。 */
+  emit?(name: string, ...args: any[]): unknown
 }
 
 /**

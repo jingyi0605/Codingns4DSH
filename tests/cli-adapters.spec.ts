@@ -1030,6 +1030,7 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
   let capturedPrompt = ''
+  const sessionStatuses: Array<readonly [string, boolean]> = []
   const registry = new CodingNsCliAdapterRegistry([{
     descriptor: { id: 'fake', name: 'Fake' },
     async detect() { return { installed: true, version: '1.0.0', command: 'fake' } },
@@ -1046,6 +1047,11 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
     on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
       listener = next
       return () => { listener = undefined }
+    },
+    emit(name: string, ...args: unknown[]) {
+      if (name === 'api-session/status' && typeof args[0] === 'string' && typeof args[1] === 'boolean') {
+        sessionStatuses.push([args[0], args[1]])
+      }
     },
   }
   const features = new FeatureRegistry({ rpc: table, events })
@@ -1069,6 +1075,7 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
     { type: 'finish', reason: { kind: 'stop' } },
   ])
   assert.equal(capturedPrompt, '你好')
+  assert.deepEqual(sessionStatuses, [['s1', true], ['s1', false]])
 
   const passthrough = []
   for await (const chunk of listener!({ sessionId: 'unknown', messages: [] }, async function* () { yield { type: 'text-delta', text: '默认' } })) passthrough.push(chunk)

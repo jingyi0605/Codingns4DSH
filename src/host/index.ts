@@ -117,7 +117,7 @@ export function apply(ctx?: Context): void {
       settingsProvider: settingsContext.settings,
       dshWebPort: webServerPort,
       dshWebAuthenticatedUrl: hostCtx.connection.authenticatedUrl(`http://127.0.0.1:${String(webServerPort)}`),
-      events: { on: hostCtx.on.bind(hostCtx) },
+      events: { on: hostCtx.on.bind(hostCtx), emit: hostCtx.emit.bind(hostCtx) },
       nativeSessions: createCodingNsNativeSessionBridge(hostCtx, dshVersion),
       nativeTeam: new DshNativeTeamProxy(
         readOptionalService(hostCtx, 'agentTeams') as NativeTeamService | undefined,

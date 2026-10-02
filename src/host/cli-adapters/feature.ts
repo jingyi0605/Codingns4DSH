@@ -333,6 +333,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           const discardSuspendedTurn = (): void => registry.discardSegmentedTurn(sessionId)
           input.signal?.addEventListener('abort', discardSuspendedTurn, { once: true })
           if (input.signal?.aborted) discardSuspendedTurn()
+          // DSH UI 的会话未读绿点由 api-session/status 的 true -> false 转换驱动。
+          // 外部适配器绕过 DSH 原生 Agent Loop，必须在真正执行外部流前补发同一状态，
+          // 否则外部子会话完成后虽已写入历史，侧栏却永远不会生成 completionUnread。
+          publishExternalSessionStatus(context.services.events, sessionId, true)
           try {
             for await (const chunk of registry.execute({ ...input, adapterId: config.adapterId })) {
               if (chunk.type === 'step-boundary') {
@@ -357,6 +361,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             for (const dshChunk of await projector.fail(message, input.signal?.aborted ?? false)) yield dshChunk
           } finally {
             input.signal?.removeEventListener('abort', discardSuspendedTurn)
+            publishExternalSessionStatus(context.services.events, sessionId, false)
           }
         })
         if (typeof dispose === 'function') context.resources.add(() => { (dispose as () => void)() })
@@ -369,6 +374,16 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
 function requireTeam(context: { services: CodingNsHostServices }) {
   if (context.services.nativeTeam === undefined) throw new Error('DSH_TEAM_NATIVE_UNAVAILABLE')
   return context.services.nativeTeam
+}
+
+/** 发布外部回合运行状态，让 DSH 原生 UI 能正确维护完成未读标记。 */
+function publishExternalSessionStatus(events: CodingNsHostServices['events'], sessionId: string, running: boolean): void {
+  if (sessionId.trim() === '' || events?.emit === undefined) return
+  try {
+    events.emit('api-session/status', sessionId, running)
+  } catch {
+    // 状态提示是 UI 增强能力，不能因为精简 Host 没有完整事件转发器而阻断回合。
+  }
 }
 
 /** DSH Context 可能在测试或嵌入式宿主里缺少目标服务；缺失时按不可用处理。 */
