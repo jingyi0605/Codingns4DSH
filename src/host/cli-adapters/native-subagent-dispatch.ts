@@ -68,6 +68,8 @@ export interface NativeSubagentDispatchResult {
   readonly ok: boolean
   /** 只有收到子会话 `turn/end` 才为 true。 */
   readonly completed: boolean
+  /** 创建成功后先进入 running；首轮终态再进入 completed/failed/interrupted。 */
+  readonly status: 'running' | 'completed' | 'failed' | 'interrupted'
   readonly background: boolean
   readonly text: string
   readonly toolCalls: number
@@ -80,6 +82,71 @@ interface ParentTaskState {
 }
 
 const parentTaskStates = new Map<string, ParentTaskState>()
+
+export interface NativeSubagentLifecycle {
+  readonly childSessionId: string
+  readonly parentSessionId: string
+  readonly adapterId: string
+  readonly status: 'creating' | 'running' | 'completed' | 'failed' | 'interrupted'
+  readonly completed: boolean
+  readonly text?: string
+  readonly error?: string
+  readonly toolCalls?: number
+}
+
+const lifecycleStates = new Map<string, NativeSubagentLifecycle>()
+const lifecycleWaiters = new Map<string, Promise<ChildResult>>()
+const MAX_LIFECYCLE_STATES = 2048
+
+function saveLifecycle(value: NativeSubagentLifecycle): void {
+  lifecycleStates.set(value.childSessionId, value)
+  while (lifecycleStates.size > MAX_LIFECYCLE_STATES) {
+    const oldest = lifecycleStates.keys().next().value as string | undefined
+    if (oldest === undefined) break
+    lifecycleStates.delete(oldest)
+  }
+}
+
+function lifecycleFromResult(
+  base: NativeSubagentLifecycle,
+  result: ChildResult,
+): NativeSubagentLifecycle {
+  return {
+    ...base,
+    status: result.status,
+    completed: result.completed && result.status === 'completed',
+    text: result.text,
+    ...(result.error === undefined ? {} : { error: result.error }),
+    toolCalls: result.toolCalls,
+  }
+}
+
+export function readNativeSubagentLifecycle(childSessionId: string): NativeSubagentLifecycle | undefined {
+  return lifecycleStates.get(childSessionId.trim())
+}
+
+/** 等待后台子会话进入终态；进程重启后只能返回已持有的最后状态。 */
+export async function waitNativeSubagentLifecycle(
+  childSessionId: string,
+  timeoutMs = NATIVE_SUBAGENT_TIMEOUT_MS,
+): Promise<NativeSubagentLifecycle | undefined> {
+  const id = childSessionId.trim()
+  if (id === '') return undefined
+  const current = lifecycleStates.get(id)
+  if (current === undefined) return undefined
+  if (current.status !== 'running' && current.status !== 'creating') return current
+  const pending = lifecycleWaiters.get(id)
+  if (pending === undefined) return current
+  const bounded = Math.max(1, Math.min(Math.floor(timeoutMs), NATIVE_SUBAGENT_TIMEOUT_MS))
+  await Promise.race([
+    pending,
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, bounded)
+      timer.unref?.()
+    }),
+  ])
+  return lifecycleStates.get(id) ?? current
+}
 
 /**
  * 派发一个外部适配器子代理：startContinuable 创建原生可续子会话，
@@ -109,26 +176,45 @@ export async function dispatchNativeSubagent(
       signal: request.signal ?? fallbackSignal,
     }))
     startedChildId = started.childId
+    const lifecycle: NativeSubagentLifecycle = {
+      childSessionId: started.childId,
+      parentSessionId: request.parentId,
+      adapterId: request.adapterId,
+      status: 'running',
+      completed: false,
+    }
+    saveLifecycle(lifecycle)
+    const completion = waitForChildFirstTurn(sessions, started.childId, request.background ? undefined : request.signal).then((result) => {
+      saveLifecycle(lifecycleFromResult(lifecycle, result))
+      return result
+    })
+    lifecycleWaiters.set(started.childId, completion)
     if (request.background) {
       // 后台派发只提前返回“已启动”，额度仍占用到首个 turn/end，防止父会话不断重复派发。
-      void waitForChildFirstTurn(sessions, started.childId, undefined).finally(release)
+      void completion.finally(() => {
+        lifecycleWaiters.delete(started.childId!)
+        release()
+      })
       return {
         adapterId: request.adapterId,
         childSessionId: started.childId,
         ok: true,
         completed: false,
+        status: 'running',
         background: true,
         text: '子代理已启动，等待首轮 turn/end。',
         toolCalls: 0,
       }
     }
-    const result = await waitForChildFirstTurn(sessions, started.childId, request.signal)
+    const result = await completion
+    lifecycleWaiters.delete(started.childId)
     release()
     return {
       adapterId: request.adapterId,
       childSessionId: started.childId,
       ok: result.ok,
       completed: result.completed,
+      status: result.status,
       background: false,
       text: result.text,
       toolCalls: result.toolCalls,
@@ -137,6 +223,10 @@ export async function dispatchNativeSubagent(
   } catch (error) {
     release()
     const message = error instanceof Error ? error.message : String(error)
+    if (startedChildId !== undefined) {
+      const current = lifecycleStates.get(startedChildId)
+      if (current !== undefined) saveLifecycle({ ...current, status: 'failed', completed: false, error: message })
+    }
     throw new Error(startedChildId === undefined ? message : `子代理 ${startedChildId} 派发失败：${message}`)
   }
 }
@@ -144,6 +234,7 @@ export async function dispatchNativeSubagent(
 interface ChildResult {
   readonly ok: boolean
   readonly completed: boolean
+  readonly status: 'completed' | 'failed' | 'interrupted'
   readonly text: string
   readonly toolCalls: number
   readonly error?: string | undefined
@@ -167,7 +258,8 @@ function waitForChildFirstTurn(sessions: CodingNsNativeSessionBridge, childId: s
       signal?.removeEventListener('abort', onAbort)
       const readableError = error?.trim() || (ok ? undefined : '子代理未能完成首轮，且未提供错误原因。')
       const output = text.trim() !== '' ? text : (readableError ?? '子代理已完成，但没有文本输出。')
-      resolve({ ok, completed, text: output, toolCalls, ...(readableError === undefined ? {} : { error: readableError }) })
+      const status = signal?.aborted || error === '子代理请求已取消。' ? 'interrupted' : ok && completed ? 'completed' : 'failed'
+      resolve({ ok, completed, status, text: output, toolCalls, ...(readableError === undefined ? {} : { error: readableError }) })
     }
     const onAbort = (): void => finish(false, false, '子代理请求已取消。')
     const processEvent = (event: unknown): void => {

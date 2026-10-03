@@ -1,4 +1,4 @@
-import type { FeatureModule } from '../../shared/contracts/feature.js'
+import type { FeatureModule, FeatureResourceScope } from '../../shared/contracts/feature.js'
 import type { CodingNsCliApprovalPolicy, CodingNsCliAttachment, CodingNsCliMessage, CodingNsCliPermissionState, CodingNsCliSandboxMode, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
 import { CommandCodeDriver } from './command-code-driver.js'
 import { ClaudeCodeDriver } from './claude-driver.js'
@@ -29,6 +29,8 @@ import { startSubagentBridgeServer, type SubagentBridgeServer } from '../cli-bri
 import { setSubagentBridge } from '../cli-bridge/bridge-holder.js'
 import { delegateCapability, dispatchDelegateSubagent, type DelegateAgentRegistry } from './delegate-dispatch.js'
 import { setMaxNativeSubagentsPerParent } from './native-subagent-dispatch.js'
+import { containsDelegationCarrier, rewriteDelegationMessages } from './delegation-mention-rewrite.js'
+import { clearDelegationAuthorization, setDelegationAuthorization } from './delegation-authorization.js'
 import { debugInfo } from '../../shared/debug.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
@@ -117,6 +119,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         })
         context.resources.add(disposeNativeEvents)
       }
+      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources)
       context.resources.add(context.services.rpc.register('cli', (action, payload) => {
         switch (action) {
           case 'catalog': return registry.catalog()
@@ -256,7 +259,24 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           // 被恢复成 dsh，但 provider 已明确指向外部 Agent；继续旁路会让
           // 第二轮直接落入 DSH 空流，并丢失外部驱动的 usage/context 修正。
           const dshSelection = readDshSelection(value)
-          const messages = Array.isArray(value?.messages) ? value.messages.filter(isMessage) : []
+          let messages = Array.isArray(value?.messages) ? value.messages.filter(isMessage) : []
+          // 委派 carrier 只在普通对话提交时消费。选择 Agent 本身不会经过这里，也不会创建
+          // 子会话；Agent Loop 请求会在 agent/pre-step 边界完成改写。这里仅保留
+          // 非 Agent Loop 手工 llm/stream 调用的错误消费和外部 Agent 局部解析。
+          if (containsDelegationCarrier(messages)) {
+            const delegation = rewriteDelegationMessages(messages, await registry.catalog())
+            if (delegation.kind === 'error') {
+              yield* delegationErrorStream(`${delegation.error.code}: ${delegation.error.message}`)
+              return
+            }
+            if (delegation.kind === 'rewritten') {
+              // DSH Agent Loop 传入的 options 是深冻结对象，不能把改写结果写回
+              // `value.messages`。外部适配器只消费本地快照，原生 Agent 的 carrier
+              // 已在 agent/pre-step 中被替换并持久化。
+              setDelegationAuthorization(sessionId, delegation.value.targets.map((target) => target.adapterId))
+              messages = [...delegation.value.messages]
+            }
+          } else if (sessionId !== '') clearDelegationAuthorization(sessionId)
           const selectedExternalAdapter = selectExternalAdapter(
             dshSelection.providerId,
             inferMessageAdapter(messages),
@@ -386,6 +406,77 @@ function publishExternalSessionStatus(events: CodingNsHostServices['events'], se
   }
 }
 
+/**
+ * 在 Agent Loop 的可变输入边界消费委派 carrier。
+ *
+ * `llm/stream` 收到的 LOOP 请求由 DSH 深冻结，监听器只能读取；如果在那里改写
+ * `messages`，会直接抛出只读属性异常。`agent/pre-step` 返回新的决策消息，随后由
+ * Agent Loop 负责把改写后的内容写入当前会话并构造下一次只读 LLM 请求。
+ */
+function registerDelegationAgentHooks(
+  dshContext: CodingNsHostServices['dshContext'],
+  registry: CodingNsCliAdapterRegistry,
+  resources: FeatureResourceScope,
+): void {
+  if (dshContext === undefined || typeof dshContext.on !== 'function') return
+  const disposers: Array<() => void> = []
+  const register = (name: string, listener: (...args: any[]) => unknown): void => {
+    const disposer = dshContext.on(name as never, listener as never, { global: true } as never)
+    if (typeof disposer === 'function') disposers.push(disposer as () => void)
+  }
+
+  register('agent/pre-step', async (payload: unknown, next: () => Promise<unknown>) => {
+    const record = asRecord(payload)
+    const sessionId = readAgentSessionId(record?.agent)
+    const messages = Array.isArray(record?.messages) ? record.messages.filter(isMessage) : []
+    let delegation: ReturnType<typeof rewriteDelegationMessages> | undefined
+    if (containsDelegationCarrier(messages)) {
+      delegation = rewriteDelegationMessages(messages, await registry.catalog())
+      if (delegation.kind === 'error') clearDelegationAuthorization(sessionId)
+      else if (delegation.kind === 'rewritten') {
+        setDelegationAuthorization(sessionId, delegation.value.targets.map((target) => target.adapterId))
+      }
+    }
+
+    const decision = await next()
+    if (delegation?.kind !== 'rewritten' || !isEnterPreStepDecision(decision)) return decision
+
+    // `next()` 可能已经追加系统上下文或模型切换通知，只替换它前面的本轮用户消息。
+    const suffix = decision.messages.slice(messages.length)
+    return {
+      ...decision,
+      messages: [...delegation.value.messages, ...suffix],
+    }
+  })
+
+  // 正常结束、异常结束和中断最终都会进入 idle；在此清理本轮授权，避免下一轮
+  // 没有 carrier 时继承上一轮的目标白名单。
+  register('agent/status', (payload: unknown) => {
+    const record = asRecord(payload)
+    if (record?.status === 'idle') clearDelegationAuthorization(readAgentSessionId(record?.agent))
+  })
+  register('agent/disposed', (payload: unknown) => {
+    clearDelegationAuthorization(readAgentSessionId(asRecord(payload)?.agent))
+  })
+
+  resources.add(() => {
+    for (const dispose of disposers.reverse()) dispose()
+  })
+}
+
+function isEnterPreStepDecision(value: unknown): value is { kind: 'enter'; messages: readonly CodingNsCliMessage[] } {
+  const record = asRecord(value)
+  return record?.kind === 'enter' && Array.isArray(record.messages)
+}
+
+function readAgentSessionId(value: unknown): string {
+  const record = asRecord(value)
+  if (typeof record?.id === 'string' && record.id.trim() !== '') return record.id.trim()
+  const session = asRecord(record?.session)
+  const header = asRecord(session?.header)
+  return typeof header?.id === 'string' ? header.id.trim() : ''
+}
+
 /** DSH Context 可能在测试或嵌入式宿主里缺少目标服务；缺失时按不可用处理。 */
 function readOptionalContextService(ctx: CodingNsHostServices['dshContext'], name: string): unknown {
   if (ctx === undefined) return undefined
@@ -420,6 +511,14 @@ async function* guardDshNativeStream(next: () => AsyncIterable<unknown>): AsyncI
   yield { type: 'text-delta', index: 1, text: message }
   yield { type: 'block-end', index: 1, block: { type: 'text', text: message } }
   yield { type: 'finish', reason: { kind: 'error', failure: { message, code: 'PROVIDER_ERROR' } } }
+}
+
+/** carrier 解析失败也必须以可读的 DSH 错误事件结束当前轮次。 */
+async function* delegationErrorStream(message: string): AsyncIterable<unknown> {
+  yield { type: 'block-start', index: 1, blockType: 'text' }
+  yield { type: 'text-delta', index: 1, text: message }
+  yield { type: 'block-end', index: 1, block: { type: 'text', text: message } }
+  yield { type: 'finish', reason: { kind: 'error', failure: { message, code: 'DELEGATE_ERROR' } } }
 }
 
 function isDshFinishChunk(value: unknown): boolean {
@@ -472,9 +571,8 @@ function readDelegateRequest(value: unknown): { sessionId: string; adapterId: st
   const record = asRecord(value)
   const sessionId = readSessionId(value)
   const adapterId = readAdapterId(value)
-  // 这里不能复用 readPrompt：它把空 prompt 当成非法参数直接抛错，而 `/委派` 允许任务
-  // 留空——popupSelect 打开时焦点在弹层，草稿里往往只剩 `/委派` 本身。留空交给派发内核
-  // 回退到会话最近一条人类消息，因此只做类型与去空白处理，空串原样传下去。
+  // 这里不能复用 readPrompt：旧 Client 可能仍传入空 prompt，空串要交给派发内核返回
+  // 结构化空任务错误；不得读取历史消息补齐任务。
   const rawPrompt = record?.prompt
   if (rawPrompt !== undefined && typeof rawPrompt !== 'string') throw new Error('prompt 必须是字符串')
   const prompt = typeof rawPrompt === 'string' ? rawPrompt.trim() : ''

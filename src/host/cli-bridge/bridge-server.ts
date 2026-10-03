@@ -8,6 +8,10 @@ import type { SubagentBridgeRuntime } from './bridge-holder.js'
 export interface SubagentBridgeDispatchRequest {
   readonly sessionId: string
   readonly prompt: string
+  readonly action?: 'start' | 'wait' | 'read' | undefined
+  readonly childSessionId?: string | undefined
+  readonly dependsOn?: readonly string[] | undefined
+  readonly timeoutMs?: number | undefined
   readonly agent?: string | undefined
   readonly model?: string | undefined
   readonly description?: string | undefined
@@ -19,6 +23,7 @@ export interface SubagentBridgeDispatchRequest {
 export interface SubagentBridgeDispatchResult {
   readonly ok: boolean
   readonly completed?: boolean | undefined
+  readonly status?: 'creating' | 'running' | 'completed' | 'failed' | 'interrupted' | undefined
   readonly text: string
   readonly childSessionId?: string | undefined
   readonly toolCalls?: number | undefined
@@ -101,7 +106,7 @@ async function handleRequest(
   }
   const input = readDispatchRequest(parsed)
   if (input === undefined) {
-    respondJson(response, 400, { ok: false, error: 'sessionId 与 prompt 不能为空' })
+    respondJson(response, 400, { ok: false, error: 'sessionId 不能为空，start 操作的 prompt 不能为空' })
     return
   }
   const result = await dispatch(input)
@@ -141,7 +146,8 @@ function readDispatchRequest(value: unknown): SubagentBridgeDispatchRequest | un
   const record = value as Record<string, unknown>
   const sessionId = typeof record.sessionId === 'string' ? record.sessionId.trim() : ''
   const prompt = typeof record.prompt === 'string' ? record.prompt : ''
-  if (sessionId === '' || prompt.trim() === '') return undefined
+  const action = record.action === 'wait' || record.action === 'read' || record.action === 'start' ? record.action : 'start'
+  if (sessionId === '' || action === 'start' && prompt.trim() === '') return undefined
   const optional = (key: string): string | undefined => {
     const raw = record[key]
     return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined
@@ -149,6 +155,10 @@ function readDispatchRequest(value: unknown): SubagentBridgeDispatchRequest | un
   return {
     sessionId,
     prompt,
+    action,
+    ...(typeof record.childSessionId === 'string' && record.childSessionId.trim() !== '' ? { childSessionId: record.childSessionId.trim() } : {}),
+    ...(Array.isArray(record.dependsOn) ? { dependsOn: record.dependsOn.filter((item): item is string => typeof item === 'string' && item.trim() !== '').map((item) => item.trim()) } : {}),
+    ...(typeof record.timeoutMs === 'number' && Number.isFinite(record.timeoutMs) ? { timeoutMs: record.timeoutMs } : {}),
     ...(optional('agent') === undefined ? {} : { agent: optional('agent') }),
     ...(optional('model') === undefined ? {} : { model: optional('model') }),
     ...(optional('description') === undefined ? {} : { description: optional('description') }),

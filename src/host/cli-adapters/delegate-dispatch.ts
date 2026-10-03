@@ -15,7 +15,7 @@ export interface DelegateDispatchDeps {
   readonly nativeSessions?: CodingNsNativeSessionBridge | undefined
 }
 
-/** 一次委派请求：任务提示词 + 目标外部适配器。prompt 为空时回退到会话最近一条人类消息。 */
+/** 一次委派请求：任务提示词 + 目标外部适配器。空 prompt 始终拒绝，不读取历史消息。 */
 export interface DelegateDispatchRequest {
   readonly sessionId: string
   readonly adapterId: string
@@ -29,6 +29,7 @@ export interface DelegateDispatchResult {
   readonly childSessionId?: string | undefined
   /** 委派接口只在首轮收到 turn/end 后才报告完成。 */
   readonly completed?: boolean | undefined
+  readonly status: 'failed' | 'running' | 'completed' | 'interrupted'
   readonly error?: string | undefined
 }
 
@@ -81,32 +82,27 @@ export async function dispatchDelegateSubagent(
 ): Promise<DelegateDispatchResult> {
   const adapterId = request.adapterId.trim()
   if (!EXTERNAL_SUBAGENT_IDS.includes(adapterId as typeof EXTERNAL_SUBAGENT_IDS[number])) {
-    return { ok: false, adapterId, error: `不支持的外部 Agent: ${adapterId === '' ? '(未指定)' : adapterId}` }
+    return { ok: false, adapterId, status: 'failed', error: `不支持的外部 Agent: ${adapterId === '' ? '(未指定)' : adapterId}` }
   }
   const capability = delegateCapability(deps)
-  if (!capability.supported) return { ok: false, adapterId, error: capability.message }
+  if (!capability.supported) return { ok: false, adapterId, status: 'failed', error: capability.message }
   const native = getNativeSubagents()
   const sessions = deps.nativeSessions
   if (native?.startContinuable === undefined || sessions === undefined) {
-    return { ok: false, adapterId, error: capability.message }
+    return { ok: false, adapterId, status: 'failed', error: capability.message }
   }
-  // 菜单路径下 popupSelect 会接管焦点，草稿里往往只剩 `/委派` 本身；此时沿用会话
-  // 最近一条人类消息作为任务，让「先跟主 Agent 说需求、再连续委派给多个外部 Agent」
-  // 成为可用流程。显式写在 `/委派` 后面的文字始终优先。
-  const prompt = request.prompt.trim() === ''
-    ? readLatestUserPrompt(sessions, request.sessionId)
-    : request.prompt.trim()
+  const prompt = request.prompt.trim()
   if (prompt === '') {
-    return { ok: false, adapterId, error: '委派任务描述不能为空：请在 /委派 后写明任务，或先向当前会话发一条需求。' }
+    return { ok: false, adapterId, status: 'failed', error: '委派任务描述不能为空：请在当前对话中写明任务。' }
   }
   const parentAgent = findAgentBySession(deps.agents, request.sessionId)
   if (parentAgent === undefined) {
-    return { ok: false, adapterId, error: `找不到会话对应的 DSH Agent: ${request.sessionId}` }
+    return { ok: false, adapterId, status: 'failed', error: `找不到会话对应的 DSH Agent: ${request.sessionId}` }
   }
   const parentId = parentAgent.session?.header?.id ?? parentAgent.id ?? request.sessionId
   const adapter = (await getAdapterRegistry()?.catalog())?.find((item) => item.id === adapterId)
   if (adapter === undefined || !adapter.installed || !adapter.enabled) {
-    return { ok: false, adapterId, error: `${adapterId} 未安装或未启用` }
+    return { ok: false, adapterId, status: 'failed', error: `${adapterId} 未安装或未启用` }
   }
   const modelId = request.modelId?.trim() === '' ? undefined : request.modelId?.trim()
   try {
@@ -120,52 +116,10 @@ export async function dispatchDelegateSubagent(
       // 委派是异步的：父会话不等首轮结果，但创建阶段仍必须串行化。
       select: (action) => enqueueTeamSubagentSelection(parentId, adapterId, modelId, action),
     })
-    return { ok: result.ok, adapterId, childSessionId: result.childSessionId, completed: result.completed }
+    return { ok: result.ok, adapterId, childSessionId: result.childSessionId, completed: result.completed, status: result.status }
   } catch (error) {
-    return { ok: false, adapterId, error: error instanceof Error ? error.message : String(error) }
+    return { ok: false, adapterId, status: 'failed', error: error instanceof Error ? error.message : String(error) }
   }
-}
-
-/**
- * 从会话事件流里取最近一条真实用户消息的文本。
- *
- * 只接受 `user/message`，并跳过插件注入的上下文（compaction 检查点、step 继续提示）
- * 与没有 source 的旧事件：这些不是用户需求，拿它们当任务会把无关内容发给外部 Agent。
- */
-function readLatestUserPrompt(sessions: CodingNsNativeSessionBridge, sessionId: string): string {
-  const session = sessions.get(sessionId) as { snapshotEvents?: () => readonly unknown[] } | undefined
-  const events = session?.snapshotEvents?.() ?? []
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const row = asRecord(events[index])
-    if (row?.type !== 'user/message') continue
-    const data = asRecord(row.data)
-    if (data === undefined) continue
-    if (!isHumanSource(data.source)) continue
-    const text = readContentText(data.content)
-    if (text !== '') return text
-  }
-  return ''
-}
-
-/** 插件注入的 user/message 带 plugin/compact-checkpoint 等来源，必须排除。 */
-function isHumanSource(source: unknown): boolean {
-  const row = asRecord(source)
-  if (row === undefined) return false
-  const kind = row.kind
-  return kind === undefined || kind === 'user'
-}
-
-function readContentText(content: unknown): string {
-  if (typeof content === 'string') return content.trim()
-  if (!Array.isArray(content)) return ''
-  return content
-    .map((part) => {
-      const row = asRecord(part)
-      return row?.type === 'text' && typeof row.text === 'string' ? row.text : ''
-    })
-    .filter((text) => text !== '')
-    .join('\n')
-    .trim()
 }
 
 function asRecord(value: unknown): Record<string, any> | undefined {

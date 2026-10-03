@@ -20,7 +20,7 @@ interface JsonRpcRequest {
 
 const TOOL_DEFINITION = {
   name: 'agent_subagent',
-  description: 'Delegate a self-contained subtask to a DSH-native subagent session and return its result; multiple calls in one batch run in parallel. Use it whenever the user asks for parallel sessions/agents, subagents, or to delegate/offload parts of the work. Provide a complete, self-contained `prompt` for every call.',
+  description: 'Plan and execute external Agent subtasks in independent DSH sessions. Use action=start to create, action=wait to await a child session, and action=read to inspect it. Respect depends_on before starting dependent work.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -29,8 +29,12 @@ const TOOL_DEFINITION = {
       model: { type: 'string', description: '可选模型覆盖。' },
       description: { type: 'string', description: '给子代理的简短标题。' },
       subagent_type: { type: 'string', description: '子代理类型提示（explore/plan/general）。' },
+      action: { type: 'string', enum: ['start', 'wait', 'read'] },
+      child_session_id: { type: 'string' },
+      timeout_ms: { type: 'number' },
+      depends_on: { type: 'array', items: { type: 'string' } },
     },
-    required: ['prompt'],
+    required: [],
     additionalProperties: false,
   },
 } as const
@@ -94,8 +98,9 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
   const name = typeof record?.name === 'string' ? record.name : ''
   if (name !== TOOL_DEFINITION.name) return textResult(`未知工具: ${name}`, true)
   const args = asRecord(record?.arguments) ?? {}
+  const action = args.action === 'wait' || args.action === 'read' ? args.action : 'start'
   const prompt = typeof args.prompt === 'string' ? args.prompt : ''
-  if (prompt.trim() === '') return textResult('prompt 不能为空', true)
+  if (action === 'start' && prompt.trim() === '') return textResult('start 操作的 prompt 不能为空', true)
   if (BRIDGE_URL === '' || BRIDGE_TOKEN === '' || SESSION_ID === '') return textResult('Codingns4DSH 子代理桥接未配置', true)
   try {
     const response = await fetch(`${BRIDGE_URL}/v1/dispatch`, {
@@ -104,6 +109,10 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
       body: JSON.stringify({
         sessionId: SESSION_ID,
         prompt,
+        action,
+        ...(typeof args.child_session_id === 'string' && args.child_session_id.trim() !== '' ? { childSessionId: args.child_session_id.trim() } : {}),
+        ...(Array.isArray(args.depends_on) ? { dependsOn: args.depends_on.filter((item): item is string => typeof item === 'string' && item.trim() !== '').map((item) => item.trim()) } : {}),
+        ...(typeof args.timeout_ms === 'number' && Number.isFinite(args.timeout_ms) ? { timeoutMs: args.timeout_ms } : {}),
         ...(typeof args.agent === 'string' && args.agent.trim() !== '' ? { agent: args.agent.trim() } : { agent: ADAPTER_ID }),
         ...(typeof args.model === 'string' && args.model.trim() !== '' ? { model: args.model.trim() } : {}),
         ...(typeof args.description === 'string' && args.description.trim() !== '' ? { description: args.description.trim() } : {}),
@@ -117,7 +126,17 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
       return textResult(`子代理桥接请求失败：${detail}`, true)
     }
     if (payload?.ok !== true) {
-      const detail = typeof payload?.error === 'string' && payload.error.trim() !== '' ? payload.error.trim() : '桥接端未返回具体错误。'
+      const safePayload = payload ?? {}
+      const status = safePayload.status
+      if (status === 'creating' || status === 'running') {
+        return textResult(JSON.stringify({
+          status,
+          completed: safePayload.completed === true,
+          ...(typeof safePayload.childSessionId === 'string' ? { childSessionId: safePayload.childSessionId } : {}),
+          text: typeof safePayload.text === 'string' ? safePayload.text : '子代理仍在运行。',
+        }), false)
+      }
+      const detail = typeof safePayload.error === 'string' && safePayload.error.trim() !== '' ? safePayload.error.trim() : '桥接端未返回具体错误。'
       return textResult(`子代理执行失败：${detail}`, true)
     }
     const text = typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : '子代理已完成，但没有文本输出。'
