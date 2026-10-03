@@ -412,7 +412,10 @@ export class CodingNsCliAdapterRegistry {
   getSession(sessionId: string): CodingNsCliSessionConfig {
     const session = this.sessions.get(sessionId)
     if (session !== undefined && (session.adapterId === 'dsh' || this.isEnabled(session.adapterId))) {
-      return session.adapterId === 'dsh' ? mergeDshNativeSelection(session, this.nativeSessions?.get(sessionId)) : session
+      if (session.adapterId === 'dsh') return mergeDshNativeSelection(session, this.nativeSessions?.get(sessionId))
+      // Provider 绑定可能在 llm/stream 的 session-binding 事件中先写入持久化索引，
+      // 而旧的内存配置仍被页面复用；补齐缺失字段，避免续接时重新开空会话。
+      return mergeStoredSessionFields(session, this.sessionStore?.get(sessionId))
     }
     // 迁移可能在 Registry 构造之后才完成（用户点击打开旧会话、或 fork 子会话
     // 刚被加载）。此时必须读取 SessionStore，否则子会话会被当成 DSH 主会话，
@@ -477,6 +480,10 @@ export class CodingNsCliAdapterRegistry {
       ...(input.modelId?.trim() ? { modelId: input.modelId.trim() } : {}),
       ...(input.effortId?.trim() ? { effortId: input.effortId.trim() } : {}),
       ...(input.serviceTierId?.trim() ? { serviceTierId: input.serviceTierId.trim() } : {}),
+      // 续接请求自身带有 Provider 身份时必须写回当前内存配置；否则首轮
+      // 恰好发生在页面恢复/迁移窗口内，会在下一轮丢失 --resume 所需的 ID。
+      ...(input.providerSessionId?.trim() ? { providerSessionId: input.providerSessionId.trim() } : {}),
+      ...(input.rawStoreRef?.trim() ? { rawStoreRef: input.rawStoreRef.trim() } : {}),
     }
     // 除了 Client 的 session/set，Host 内部和未来的调用方也可能直接执行一轮。
     // 最近使用应由真实执行参数更新，不能依赖某个 UI 一定先发 RPC。
@@ -1148,6 +1155,22 @@ function mergeDshNativeSelection(
     ...(config.providerId === undefined && providerId !== undefined ? { providerId } : {}),
     ...(config.modelId === undefined && modelId !== undefined ? { modelId } : {}),
     ...(config.effortId === undefined && effortId !== undefined ? { effortId } : {}),
+  }
+}
+
+/** 以内存配置为主、用持久化记录补齐 Provider 续接所需的身份字段。 */
+function mergeStoredSessionFields(
+  config: CodingNsCliSessionConfig,
+  stored: CodingNsCliSessionRecord | undefined,
+): CodingNsCliSessionConfig {
+  if (stored === undefined || stored.adapterId !== config.adapterId) return config
+  return {
+    ...config,
+    ...(config.providerSessionId === undefined && stored.providerSessionId !== undefined ? { providerSessionId: stored.providerSessionId } : {}),
+    ...(config.rawStoreRef === undefined && stored.rawStoreRef !== undefined ? { rawStoreRef: stored.rawStoreRef } : {}),
+    ...(config.modelId === undefined && stored.modelId !== undefined ? { modelId: stored.modelId } : {}),
+    ...(config.effortId === undefined && stored.effortId !== undefined ? { effortId: stored.effortId } : {}),
+    ...(config.serviceTierId === undefined && stored.serviceTierId !== undefined ? { serviceTierId: stored.serviceTierId } : {}),
   }
 }
 

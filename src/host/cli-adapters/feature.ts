@@ -602,6 +602,7 @@ function readSessionConfig(value: unknown): CodingNsCliSessionConfig {
     ...(typeof record?.serviceTierId === 'string' && record.serviceTierId.trim() ? { serviceTierId: record.serviceTierId.trim() } : {}),
     ...(typeof record?.providerId === 'string' && record.providerId.trim() ? { providerId: record.providerId.trim() } : {}),
     ...(typeof record?.providerSessionId === 'string' && record.providerSessionId.trim() ? { providerSessionId: record.providerSessionId.trim() } : {}),
+    ...(typeof record?.rawStoreRef === 'string' && record.rawStoreRef.trim() ? { rawStoreRef: record.rawStoreRef.trim() } : {}),
   }
 }
 
@@ -756,7 +757,9 @@ function selectExternalAdapter(
 function inferMessageAdapter(messages: readonly CodingNsCliMessage[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const source = asRecord((messages[index] as unknown as Record<string, unknown>).source)
-    if (source?.kind !== 'model' || source.plugin !== 'codingns4dsh') continue
+    // 旧会话和 DSH 原生投影的 source 形状不完全一致；只要是模型消息就读取
+    // provider，最终仍由 selectExternalAdapter 校验是否为已启用外部适配器。
+    if (source?.kind !== 'model') continue
     const provider = source.provider
     if (typeof provider === 'string' && provider.trim() !== '') return provider.trim()
   }
