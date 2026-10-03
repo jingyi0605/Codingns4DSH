@@ -114,14 +114,16 @@ test('codingnsTerminal 的 agentId 承载会话身份并双向改写', () => {
 test('原生响应中的列表、header 和 projection key 可重新编码为虚拟 ID', () => {
   const value = rewriteNativeResponseIds({
     workspaceIds: ['remote-ws'],
-    items: [{ workspaceId: 'remote-ws', sessionIds: ['remote-session'] }],
+    items: [{ workspaceId: 'remote-ws', sessionIds: ['remote-session'], archivedSessionIds: ['remote-archived'] }],
+    archivedSessionIds: ['remote-archived'],
     header: { id: 'remote-session', parentSession: 'remote-parent' },
     projections: { 'remote-session': { sessionId: 'remote-session' } },
   }, (id) => `codingns:peer-host:v1:workspace:peer-a:${id}`,
   (id) => `codingns:peer-host:v1:session:peer-a:${id}`)
   assert.deepEqual(value, {
     workspaceIds: ['codingns:peer-host:v1:workspace:peer-a:remote-ws'],
-    items: [{ workspaceId: 'codingns:peer-host:v1:workspace:peer-a:remote-ws', sessionIds: ['codingns:peer-host:v1:session:peer-a:remote-session'] }],
+    items: [{ workspaceId: 'codingns:peer-host:v1:workspace:peer-a:remote-ws', sessionIds: ['codingns:peer-host:v1:session:peer-a:remote-session'], archivedSessionIds: ['codingns:peer-host:v1:session:peer-a:remote-archived'] }],
+    archivedSessionIds: ['codingns:peer-host:v1:session:peer-a:remote-archived'],
     header: { id: 'codingns:peer-host:v1:session:peer-a:remote-session', parentSession: 'codingns:peer-host:v1:session:peer-a:remote-parent' },
     projections: { 'remote-session': { sessionId: 'codingns:peer-host:v1:session:peer-a:remote-session' } },
   })

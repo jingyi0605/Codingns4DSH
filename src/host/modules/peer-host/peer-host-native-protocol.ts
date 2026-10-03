@@ -193,5 +193,10 @@ function isSessionField(key: string): boolean {
   if (key === 'workspaceFileScopeId') return true
   // CodingNs4DSH 终端 Remote 用 agentId（lookup: agent，codec 为 SessionId）承载会话身份。
   if (key === 'agentId') return true
-  return key === 'sessionId' || key === 'beforeSessionId' || key === 'sessionIds' || key === 'parentSessionId' || key === 'childSessionId'
+  return key === 'sessionId'
+    || key === 'beforeSessionId'
+    || key === 'sessionIds'
+    || key === 'archivedSessionIds'
+    || key === 'parentSessionId'
+    || key === 'childSessionId'
 }
