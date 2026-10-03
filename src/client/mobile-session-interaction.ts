@@ -87,7 +87,7 @@ export function startMobileSessionInteractionDom(
   const blurComposer = (): void => {
     const activeElement = (hostDocument as unknown as { activeElement?: unknown } | undefined)?.activeElement
     const element = asElement(activeElement)
-    if (element === null || !isComposerTarget(element)) return
+    if (element === null || !isComposerInputTarget(element)) return
     try { element.blur?.() } catch { /* 浏览器焦点已被销毁时忽略。 */ }
   }
 
@@ -95,12 +95,14 @@ export function startMobileSessionInteractionDom(
     const target = asElement(eventTarget(event))
     if (target === null) return
     userActivation = { target, at: now() }
-    if (!isComposerTarget(target)) blurComposer()
+    // Composer 内的按钮（添加文件、权限、模型和发送）由 DSH 自己维护焦点。
+    // 捕获阶段提前 blur 会破坏移动端按钮的 click/菜单切换链路。
+    if (!isComposerInteractionTarget(target)) blurComposer()
   }
 
   const onFocusIn = (event: unknown): void => {
     const target = asElement(eventTarget(event))
-    if (target === null || !isComposerTarget(target)) return
+    if (target === null || !isComposerInputTarget(target)) return
     const activation = userActivation
     const allowed = activation !== undefined
       && now() - activation.at <= FOCUS_ACTIVATION_WINDOW_MS
@@ -118,7 +120,7 @@ export function startMobileSessionInteractionDom(
     touchStart = record
     const target = asElement(point.target)
     userActivation = { target: target ?? emptyElement(), at: record.at }
-    if (target === null || !isComposerTarget(target)) blurComposer()
+    if (target === null || !isComposerInteractionTarget(target)) blurComposer()
   }
 
   const onTouchEnd = (event: unknown): void => {
@@ -244,7 +246,7 @@ function isRowControl(target: unknown, row: ElementLike): boolean {
   }
 }
 
-function isComposerTarget(target: ElementLike): boolean {
+function isComposerInputTarget(target: ElementLike): boolean {
   try {
     return target.closest?.('[data-composer-input="true"]') !== null
   } catch {
@@ -252,9 +254,26 @@ function isComposerTarget(target: ElementLike): boolean {
   }
 }
 
+/** Composer 内所有控件都应保留 DSH 自己的点击与焦点语义。 */
+function isComposerInteractionTarget(target: ElementLike): boolean {
+  try {
+    return isComposerInputTarget(target) || target.closest?.('[data-composer-card]') !== null
+  } catch {
+    return false
+  }
+}
+
 function activationInsideComposer(activation: ElementLike, target: ElementLike): boolean {
   if (activation === target) return true
-  try { return target.contains?.(activation) === true || activation.closest?.('[data-composer-input="true"]') === target.closest?.('[data-composer-input="true"]') } catch { return false }
+  try {
+    if (target.contains?.(activation) === true) return true
+    const activationSurface = activation.closest?.('[data-composer-card]')
+    const targetSurface = target.closest?.('[data-composer-card]')
+    if (activationSurface !== null && activationSurface === targetSurface) return true
+    return activation.closest?.('[data-composer-input="true"]') === target.closest?.('[data-composer-input="true"]')
+  } catch {
+    return false
+  }
 }
 
 function asElement(value: unknown): ElementLike | null {
@@ -296,7 +315,7 @@ function blurElementLater(element: ElementLike): void {
   try { element.blur?.() } catch { /* 忽略失效的焦点节点。 */ }
   const schedule = typeof queueMicrotask === 'function' ? queueMicrotask : (callback: () => void) => { setTimeout(callback, 0) }
   schedule(() => {
-    try { if (isComposerTarget(element)) element.blur?.() } catch { /* 节点已卸载。 */ }
+    try { if (isComposerInputTarget(element)) element.blur?.() } catch { /* 节点已卸载。 */ }
   })
 }
 
