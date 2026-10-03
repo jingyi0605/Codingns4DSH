@@ -64,7 +64,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     })
   }
   protected buildArgs(input: CodingNsCliTurnInput): readonly string[] {
-    const args = ['-p', promptWithAttachmentPaths(input.prompt, input.attachments ?? []), '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions']
+    const args = ['-p', promptWithAttachmentPaths(input.prompt, input.attachments ?? []), '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--permission-mode', 'bypassPermissions']
     // 子代理托管开启时注入 MCP 替身工具并停用内建 Task 子代理。
     args.push(...claudeBridgeArgs(input.sessionId, this.descriptor.id))
     for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--add-dir', directory)

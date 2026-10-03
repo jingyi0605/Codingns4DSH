@@ -32,6 +32,7 @@ test('Claude、Gemini、Kimi 的标准流驱动统一转换文本和完成事件
     const chunks = []
     for await (const chunk of driver.executeTurn({ sessionId: 's1', messages: [], prompt: '你好' })) chunks.push(chunk)
     assert.equal(calls[0]?.[0], 'fake-agent')
+    if (Driver === ClaudeCodeDriver) assert.equal(calls[0]?.includes('--include-partial-messages'), true)
     assert.deepEqual(chunks.filter((chunk) => chunk.type !== 'session-binding'), [
       { type: 'text-delta', text: '完成' },
       { type: 'finish', reason: 'stop' },

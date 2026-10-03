@@ -386,7 +386,7 @@ test('Claude Code 参数注入：托管开启时携带 MCP 替身与禁用的 Ta
     buildArgs(input: Record<string, unknown>): readonly string[]
   }).buildArgs({ sessionId, messages: [], prompt: 'hi' })
   try {
-    assert.deepEqual(build('s-claude'), ['-p', 'hi', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'bypassPermissions'])
+    assert.deepEqual(build('s-claude'), ['-p', 'hi', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--permission-mode', 'bypassPermissions'])
     enableBridge()
     const args = build('s-claude')
     assert.ok(args.includes('--mcp-config'))
