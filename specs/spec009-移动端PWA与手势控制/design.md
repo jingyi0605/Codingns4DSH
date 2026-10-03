@@ -101,9 +101,9 @@ DSH Web 前端（React）
 
 #### 2.3.4 手势开合侧栏
 
-1. 控制器在 `touchstart` 记录起点；起点落在边缘热区（默认 24px）则直接放弃（交给系统手势）。
-2. `touchmove` 累积样本：若水平位移未显著大于垂直位移（默认比值 1.5）且未达阈值（默认 64px），继续观察；判定失败即释放，不 `preventDefault`，滚动不受影响。
-3. 判定通过：按方向映射取动作——右滑 → 左栏 `ctx.layout.toggleSidebar()`；左滑 → 右栏 `ctx.sidebarRight.toggleExpanded()`（`swap` 模式互换）。
+1. 控制器在 `touchstart` 记录单指起点；多指、可编辑目标、消息中的可横向滚动组件或起点落在边缘热区（默认 24px）时直接放弃，分别交给缩放、输入控件、表格/代码块内容或系统返回手势。
+2. `touchmove` 累积样本：水平位移必须达到 `max(设置值, 视口宽度 × 50%)`，且水平/垂直位移比达到 1.5；同时最近 120ms 的水平速度至少为 0.4px/ms（约 400px/s），窗口样本不足时按整段速度保守计算。距离或速度未达标时继续观察，方向锁定失败则立即释放；只有成功判定才 `preventDefault`，滚动不受影响。
+3. 判定通过：按方向映射取动作——右滑 → 左栏 `ctx.layout.toggleSidebar()`；左滑 → 右栏 `ctx.sidebarRight.toggleExpanded()`（`swap` 模式互换），同一触摸只触发一次。
 4. 调用前读取状态：右栏若将进入全屏（窄屏 `autoFullscreen`），压入一条 history 记录；`popstate` 时若右栏展开则关闭右栏并阻止默认后退。
 5. 控制器只调服务；关闭/禁用时移除全部监听，无定时器残留。
 
@@ -151,7 +151,7 @@ DSH Web 前端（React）
 | `sidebarGestures` | `boolean` | 是 | 手势总开关 | 默认 `true` |
 | `sidebarGestureMapping` | `'swipe-inward' \| 'swap'` | 是 | 方向映射 | 默认 `swipe-inward`（右滑=左栏，左滑=右栏） |
 | `sidebarGestureEdge` | `'avoid' \| 'edge'` | 是 | 起手是否允许贴边 | 默认 `avoid`（避开 24px 系统热区） |
-| `sidebarGestureThresholdPx` | `number` | 是 | 触发阈值 | 24–200，默认 64，越界收敛 |
+| `sidebarGestureThresholdPx` | `number` | 是 | 额外的距离门槛；实际阈值取它与视口宽度 50% 的较大值 | 24–200，默认 64，越界收敛 |
 
 #### 3.2.3 `LanAccessDshPwaAsset`
 
@@ -279,8 +279,8 @@ Service Worker：
 | 状态 | 含义 | 进入条件 | 退出条件 |
 | --- | --- | --- | --- |
 | `idle` | 未跟踪 | 初始 / 手势结束 | `touchstart` |
-| `tracking` | 已记录起点 | 起点不在热区且在可手势区域 | 达到阈值 / 判定失败 / `touchend` |
-| `claimed` | 判定通过并触达阈值 | 水平位移达标且方向锁定 | 触发服务调用 |
+| `tracking` | 已记录单指起点 | 起点不在热区且在可手势区域 | 方向判定失败 / 多指 / `touchend` |
+| `claimed` | 距离、方向和速度均通过 | 水平位移至少为视口 50% 且速度达到约 400px/s | 触发服务调用 |
 | `rejected` | 放弃本次手势 | 起点在热区 / 方向不满足 / 目标不可用 | 回到 `idle` |
 
 ## 5. 错误处理
@@ -348,7 +348,7 @@ Service Worker：
 - SW 脚本：版本常量、无导航缓存、白名单、注销消息处理。
 - 注入行构造：`html` 行内容与顺序、短路径开关（禁用时不出现在表中）、异常隔离。
 - `applyViewportFitTap`：改写、幂等、无 meta 时不动、异常回退。
-- `detectSidebarGesture`：四方向、阈值边界、方向锁、边缘热区、编辑目标、配置非法值。
+- `detectSidebarGesture`：四方向、50% 视口距离边界、速度边界、方向锁、边缘热区、编辑目标、配置非法值和多指排除。
 - 设置 normalizer：缺省回填、越界收敛、旧配置兼容。
 
 ### 7.2 集成测试

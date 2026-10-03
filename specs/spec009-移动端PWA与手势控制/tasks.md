@@ -228,26 +228,26 @@
 
 - [x]  3.2 实现手势判定纯函数与单测
 
-  - 这一步到底做什么：实现 `detectSidebarGesture(samples, config)`：边缘热区判定、方向锁定（水平/垂直比）、阈值、映射（`swipe-inward`/`swap`）、编辑目标排除，返回 `{ action, reason }`。
+  - 这一步到底做什么：实现 `detectSidebarGesture(samples, config)`：边缘热区判定、方向锁定（水平/垂直比）、至少 50% 视口距离、约 400px/s 速度门槛、映射（`swipe-inward`/`swap`）、编辑目标排除，返回 `{ action, reason }`。
   - 做完你能看到什么：手势逻辑不依赖 DOM 即可被测试与调参。
   - 先依赖什么：3.1。
   - 开始前先看：`design.md` §3.3.6；调查报告 §4.5（前端无手势的证据）。
   - 主要改哪里：`src/client/mobile-sidebar-gestures.ts`（新）、`tests/mobile-sidebar-gestures.spec.ts`（新）。
   - 这一步先不做什么：不挂真实监听、不调服务、不读 DOM。
-  - 怎么算完成：四方向、阈值边界、方向锁、热区、编辑目标、非法配置全部有断言。
+  - 怎么算完成：四方向、50% 距离与速度边界、方向锁、热区、编辑目标、多指、非法配置全部有断言。
   - 怎么验证：定向 `pnpm test`。
   - 对应需求：需求 5、6。
   - 对应设计：§3.3.6、§7.1。
 
 - [x]  3.3 接入手势控制器（服务调用、历史集成、注入面）
 
-  - 这一步到底做什么：新增 `MobileSidebarGestureController`，用 pointer/touch 事件驱动纯函数决策；只调用 `ctx.layout.toggleSidebar()` 与 `ctx.sidebarRight.toggleExpanded()`；右栏进入全屏时压 history，`popstate` 关闭右栏；在 `src/client/index.ts` 的 inject 数组补 `layout`，并在移动端访问增强模块的 start 中按设置启停。
+  - 这一步到底做什么：新增 `MobileSidebarGestureController`，用 touch 事件驱动纯函数决策；只调用 `ctx.layout.toggleSidebar()` 与 `ctx.sidebarRight.toggleExpanded()`；右栏进入全屏时压 history，`popstate` 关闭右栏；在 `src/client/index.ts` 的 inject 数组补 `layout`，并在移动端访问增强模块的 start 中按设置启停。
   - 做完你能看到什么：手机横滑能开合侧栏，滚动与文本选择不受影响。
   - 先依赖什么：3.2。
   - 开始前先看：`design.md` §2.3.4、§3.3.6、§6.5；调查报告 §4.4、§4.6。
   - 主要改哪里：`src/client/index.ts`、`src/client/mobile-sidebar-gestures.ts`、`src/client/features/mobile-access.ts`、`tests/mobile-sidebar-gestures.spec.ts`。
   - 这一步先不做什么：不改 DOM class 或 DSH store、不接管系统边缘手势、不在非触摸环境启用。
-  - 怎么算完成：fake DOM + fake 端口测试证明只调服务；卸载后无监听；能力缺失时不注册。
+  - 怎么算完成：fake DOM + fake 端口测试证明只调服务；距离、速度、多指和滚动让位均符合预期；卸载后无监听；能力缺失时不注册。
   - 怎么验证：定向测试 + 真机手势回放（iOS/Android 各一份）。
   - 对应需求：需求 5、6、9。
   - 对应设计：§2.3.4、§6.5。

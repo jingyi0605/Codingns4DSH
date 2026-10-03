@@ -104,7 +104,7 @@
 
 #### 验收标准
 
-1. WHEN 用户在允许区域内水平滑动超过阈值 THEN System SHALL 调用 `ctx.layout.toggleSidebar()`（左栏）或 `ctx.sidebarRight.toggleExpanded()`（右边栏）。
+1. WHEN 用户在允许区域内以单指水平滑动，且位移达到 `max(设置值, 视口宽度 × 50%)`、最近 120ms 水平速度达到约 400px/s、方向锁定通过 THEN System SHALL 调用 `ctx.layout.toggleSidebar()`（左栏）或 `ctx.sidebarRight.toggleExpanded()`（右边栏）。
 2. WHEN 手势控制器判定动作 THEN System SHALL 只通过上述服务改变布局，不直接修改 DOM class 或其他插件的状态。
 3. WHEN 手势需要感知当前状态（例如“收起时才展开”） THEN System SHALL 通过能力层封装的读取方式（左栏读 `data-sidebar-collapsed`，右栏用 `isExpanded()`）获取，读取失败时退化为无条件切换或禁用。
 4. WHEN 判定逻辑被执行 THEN System SHALL 是纯函数（输入触点样本与配置，输出动作或忽略），可被单元测试直接覆盖。
@@ -117,9 +117,9 @@
 #### 验收标准
 
 1. WHEN 触点起始位置落在系统边缘热区 THEN System SHALL（默认配置下）不接管该手势，交给系统处理。
-2. WHEN 手势进行中 THEN System SHALL 依据方向锁定（水平位移显著大于垂直位移）才接管，并避免破坏列表滚动与文本选择。
+2. WHEN 手势进行中 THEN System SHALL 依据方向锁定（水平位移显著大于垂直位移）才接管，多指、编辑目标、消息区域横向滚动内容和右栏横向滚动内容不被抢占，并避免破坏列表滚动与文本选择。
 3. WHEN 右边栏以全屏方式打开 THEN System SHALL 让系统返回手势表现为“关闭右栏”而不是离开会话（历史记录集成；不可行时如实降级并提示）。
-4. WHEN 手势被取消或未达阈值 THEN System SHALL 恢复默认行为，不留下残余状态。
+4. WHEN 手势被取消、未同时达到距离与速度门槛或未达方向锁定条件 THEN System SHALL 恢复默认行为，不留下残余状态。
 
 ### 需求 7：设置与界面
 

@@ -1,6 +1,6 @@
 # spec009：移动端 PWA 与手势控制
 
-状态：阶段 1–5 已实现并完成代码级验证，落地过程与验证结果见 `docs/开发记录/20260929-PWA与移动端手势实现记录.md`；真机验收项待按部署清单在设备上执行。实现与规划的一处偏离：PNG 图标改为在 `src/host/modules/pwa/pwa-icons.ts` 程序化生成，不再落包内 `assets/pwa/` 二进制。
+状态：阶段 1–5 已实现并完成代码级验证，基础落地过程与验证结果见 `docs/开发记录/20260929-PWA与移动端手势实现记录.md`，手势阈值与速度策略优化见 `docs/开发记录/20261003-移动端手势阈值与速度判定优化记录.md`；真机验收项待按部署清单在设备上执行。实现与规划的一处偏离：PNG 图标改为在 `src/host/modules/pwa/pwa-icons.ts` 程序化生成，不再落包内 `assets/pwa/` 二进制。
 
 ## 这份 Spec 解决什么问题
 
@@ -37,7 +37,7 @@
 - Service Worker：合成 `/sw.js`、只在安全上下文注册、版本化更新、注销逃生口、禁止缓存登录页与 `/__codingns/*`。
 - 安装引导：Android `beforeinstallprompt` 引导条；iOS “分享 → 添加到主屏幕”指引；已安装（standalone）时不再展示。
 - 通知：本地通知 → VAPID 远程推送（订阅、存储、发送、iOS 限制说明）。
-- 手势：移动端横滑开合左（`toggleSidebar`）右（`toggleExpanded`）侧栏，方向锁定、边缘避让、阈值可配、与系统返回手势共存。
+- 手势：移动端横滑开合左（`toggleSidebar`）右（`toggleExpanded`）侧栏，采用单指、方向锁定、至少半屏距离、约 400px/s 速度门槛、消息横向滚动组件让位、边缘避让，与系统返回手势共存。
 - 设置与面板：PWA 开关挂在“局域网访问 DSH”面板；手势开关、方向、边缘模式与灵敏度统一挂在“移动端访问增强”面板。
 - 能力登记：`web.index-inject`、`web.index-tap`、`layout.columns`、`sidebar.right.expand` 四条新能力与三版本 fixture。
 - 安全边界：登录放行白名单、回环旁路提示、合成响应不进入上游转发路径、NGINX 部署注意事项。
