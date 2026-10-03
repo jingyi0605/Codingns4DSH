@@ -53,6 +53,8 @@ export interface CodingNsCliDriver {
   /** 丢弃等待下一个 DSH step 的 Provider 运行；只有自行分段的驱动需要实现。 */
   discardSegmentedTurn?(sessionId: string): void
   detect(): Promise<Pick<CodingNsCliAdapterDescriptor, 'installed' | 'version' | 'command'>>
+  /** 安装探测失败时的脱敏原因，供设置页解释“为什么未识别”。 */
+  getDiscoveryDiagnostic?(): string | undefined
   listModels(): Promise<CodingNsCliModelCatalog>
   probeSession?(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult>
   executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent>

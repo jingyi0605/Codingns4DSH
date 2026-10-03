@@ -96,6 +96,10 @@ function snapshotEvents(record: Record<string, unknown>): readonly unknown[] {
 }
 
 function addCandidate(candidates: Set<string>, value: string | undefined): void {
+  if (value === 'codebuddy-cn') {
+    candidates.add('codebuddy')
+    return
+  }
   if (value !== undefined && KNOWN_CLI_ADAPTER_IDS.has(value)) candidates.add(value)
 }
 

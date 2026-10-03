@@ -13,6 +13,8 @@ export interface CodingNsCliAdapterDescriptor {
   readonly enabled: boolean
   readonly version: string | null
   readonly command: string | null
+  /** 最近一次安装探测的脱敏诊断；例如 CLI 已找到但启动依赖缺失。 */
+  readonly diagnostic?: string
 }
 
 export type CodingNsCliCapability =
@@ -50,6 +52,8 @@ export interface CodingNsCliModel {
   readonly name: string
   readonly description?: string
   readonly efforts: readonly string[]
+  /** 思考强度的展示名称；键仍是 Provider 实际接受的 effortId。 */
+  readonly effortLabels?: Readonly<Record<string, string>>
   /**
    * Provider 为该模型声明的服务档位；空数组或缺省表示不支持档位切换。
    *

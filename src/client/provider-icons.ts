@@ -55,7 +55,7 @@ export function installProviderIcons(icons: Readonly<Record<string, string>>): v
 }
 
 export function providerIconUrl(adapterId: string): string | undefined {
-  return PROVIDER_ICONS[adapterId]
+  return PROVIDER_ICONS[normalizeProviderAdapterId(adapterId)]
 }
 
 /**
@@ -69,11 +69,17 @@ export function providerVisual(adapterId: string | undefined, t?: CodingNsTransl
   if (adapterId === undefined || adapterId.trim() === '') {
     return { adapterId: null, displayName: translate('provider.unbound'), iconUrl: undefined, color: PROVIDER_NEUTRAL_COLOR }
   }
-  const definition = PROVIDER_DEFINITIONS[adapterId]
+  const normalizedAdapterId = normalizeProviderAdapterId(adapterId)
+  const definition = PROVIDER_DEFINITIONS[normalizedAdapterId]
   if (definition === undefined) {
     return { adapterId, displayName: translate('provider.unknown', { adapterId }), iconUrl: undefined, color: PROVIDER_NEUTRAL_COLOR }
   }
-  return { ...definition, iconUrl: PROVIDER_ICONS[adapterId] }
+  return { ...definition, iconUrl: PROVIDER_ICONS[normalizedAdapterId] }
+}
+
+/** 兼容旧版 CN profile 的会话快照，但不重新暴露第二个 Provider。 */
+function normalizeProviderAdapterId(adapterId: string): string {
+  return adapterId === 'codebuddy-cn' ? 'codebuddy' : adapterId
 }
 
 export { PROVIDER_DEFINITIONS, PROVIDER_ICONS }

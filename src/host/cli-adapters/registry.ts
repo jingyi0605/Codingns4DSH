@@ -53,7 +53,9 @@ interface CommandCodeHistoryDriver {
   sendMessage(providerSessionId: string, rawStoreRef: string, content: string): Promise<CommandCodeSendMessageResult>
 }
 
-type CodingNsCliDetection = Pick<CodingNsCliAdapterDescriptor, 'installed' | 'version' | 'command'>
+type CodingNsCliDetection = Pick<CodingNsCliAdapterDescriptor, 'installed' | 'version' | 'command'> & {
+  readonly diagnostic?: string
+}
 
 interface TimedCacheEntry<Value> {
   readonly value: Value
@@ -347,7 +349,8 @@ export class CodingNsCliAdapterRegistry {
     // 不能让这次短暂快照抹掉当前进程已经恢复的选择。
     if (Object.keys(value).length === 0 && this.preferences.size > 0) return
     this.preferences.clear()
-    for (const [adapterId, preference] of Object.entries(value)) {
+    for (const [rawAdapterId, preference] of Object.entries(value)) {
+      const adapterId = rawAdapterId === 'codebuddy-cn' ? 'codebuddy' : rawAdapterId
       const modelId = preference?.modelId?.trim()
       const effortId = preference?.effortId?.trim()
       const serviceTierId = preference?.serviceTierId?.trim()
@@ -795,7 +798,10 @@ export class CodingNsCliAdapterRegistry {
       let detection: CodingNsCliDetection
       let failed = false
       try {
-        detection = await driver.detect()
+        const detected = await driver.detect()
+        const getDiagnostic = driver.getDiscoveryDiagnostic
+        const diagnostic = getDiagnostic === undefined ? undefined : getDiagnostic.call(driver)
+        detection = diagnostic === undefined ? detected : { ...detected, diagnostic }
       } catch {
         failed = true
         detection = previous?.value ?? { installed: false, version: null, command: null }
@@ -1072,7 +1078,7 @@ function positiveTtl(value: number | undefined, fallback: number): number {
 }
 
 function detectionFingerprint(detection: CodingNsCliDetection): string {
-  return JSON.stringify([detection.installed, detection.command, detection.version])
+  return JSON.stringify([detection.installed, detection.command, detection.version, detection.diagnostic])
 }
 
 function catalogHasModels(catalog: CodingNsCliModelCatalog): boolean {

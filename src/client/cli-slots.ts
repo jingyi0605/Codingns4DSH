@@ -17,6 +17,7 @@ import {
 import { resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 import { providerIconUrl } from './provider-icons.js'
 import { publishSessionAdapter } from './session-adapter-cache.js'
+import { getModelCatalogCache, loadModelCatalog } from './model-catalog-cache.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
@@ -112,46 +113,6 @@ const selectionLoads = new Map<string, Promise<CodingNsCliSessionConfig>>()
 /** 记录每个会话最新的写入，旧响应不能覆盖用户较新的选择。 */
 const selectionUpdates = new Map<string, { readonly revision: number; readonly promise: Promise<CodingNsCliSessionConfig> }>()
 const selectionRevisions = new Map<string, number>()
-/** 同一个页面内的模型目录共享结果，避免 Agent/模型 Slot 重挂载重复等待 CLI。 */
-const modelCatalogCaches = new WeakMap<object, Map<string, CodingNsCliModelCatalog>>()
-const modelCatalogLoads = new WeakMap<object, Map<string, Promise<CodingNsCliModelCatalog>>>()
-
-function modelCatalogCache(rpc: CodingNsRpcClient): Map<string, CodingNsCliModelCatalog> {
-  const key = rpc as object
-  let cache = modelCatalogCaches.get(key)
-  if (cache === undefined) {
-    cache = new Map()
-    modelCatalogCaches.set(key, cache)
-  }
-  return cache
-}
-
-function modelCatalogLoadCache(rpc: CodingNsRpcClient): Map<string, Promise<CodingNsCliModelCatalog>> {
-  const key = rpc as object
-  let cache = modelCatalogLoads.get(key)
-  if (cache === undefined) {
-    cache = new Map()
-    modelCatalogLoads.set(key, cache)
-  }
-  return cache
-}
-
-function loadModelCatalog(rpc: CodingNsRpcClient, adapterId: string, sessionId?: string): Promise<CodingNsCliModelCatalog> {
-  const cache = modelCatalogLoadCache(rpc)
-  const running = cache.get(adapterId)
-  if (running !== undefined) return running
-  const request = callCliRpc<CodingNsCliModelCatalog>(rpc, 'models', { adapterId, ...(sessionId === undefined ? {} : { sessionId }) })
-    .then((value) => {
-      modelCatalogCache(rpc).set(adapterId, value)
-      return value
-    })
-    .finally(() => {
-      if (cache.get(adapterId) === request) cache.delete(adapterId)
-    })
-  cache.set(adapterId, request)
-  return request
-}
-
 /** 在 Agent 和模型两个 Slot 之间共享当前会话选择。 */
 function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [SelectionState, (next: SelectionState) => void] {
   const [selection, setSelection] = useState<SelectionState>(() => sessionId ? selections.get(sessionId) ?? DEFAULT_SELECTION : DEFAULT_SELECTION)
@@ -416,6 +377,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const [selection, update] = useSelection(sessionId, props.rpc)
   const [catalogState, setCatalogState] = useState<ModelCatalogState | null>(null)
   const [refreshingAdapterId, setRefreshingAdapterId] = useState<string | null>(null)
+  const [catalogRetry, setCatalogRetry] = useState(0)
   const [open, setOpen] = useState(false)
   const [pane, setPane] = useState<ModelPane>('root')
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -436,14 +398,22 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       return
     }
     let active = true
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
     const adapterId = selection.adapterId
-    const cached = modelCatalogCache(props.rpc).get(adapterId)
+    const cached = getModelCatalogCache(props.rpc).get(adapterId)
     if (cached !== undefined) setCatalogState({ adapterId, value: cached })
     setRefreshingAdapterId(adapterId)
     void loadModelCatalog(props.rpc, adapterId, sessionId)
       .then((value) => {
         if (!active) return
         setCatalogState({ adapterId, value })
+        if (value.fallback === true) {
+          // 回退目录通常来自启动竞态或产品快照尚未落盘；等待 Host 的短周期
+          // 重试后重新执行一次 RPC，避免当前页面永久停留在默认模型。
+          retryTimer = setTimeout(() => {
+            if (active) setCatalogRetry((value) => value + 1)
+          }, 15_000)
+        }
         const normalize = (): void => {
           if (!active) return
           // session/set 可能正在回填适配器级记忆值；必须等它完成后再补默认值，
@@ -480,13 +450,16 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
         if (!active) return
         // 已有目录时保留 stale 值；暂时探测失败不能把思考强度列表清空，
         // 否则用户会看到模型选择器反复回到“正在加载”。
-        if (modelCatalogCache(props.rpc).get(adapterId) === undefined) {
+        if (getModelCatalogCache(props.rpc).get(adapterId) === undefined) {
           setCatalogState({ adapterId, value: { groups: [], currentModel: null, currentEffort: null } })
         }
       })
       .finally(() => { if (active) setRefreshingAdapterId(null) })
-    return () => { active = false }
-  }, [props.rpc, selection.adapterId, sessionId])
+    return () => {
+      active = false
+      if (retryTimer !== undefined) clearTimeout(retryTimer)
+    }
+  }, [props.rpc, selection.adapterId, sessionId, catalogRetry])
 
   useEffect(() => { if (selection.adapterId === 'dsh') setOpen(false) }, [selection.adapterId])
 
@@ -496,7 +469,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const efforts = model?.efforts ?? []
   const effortValue = selection.effortId ?? (efforts.length > 0 ? defaultEffort(efforts) : undefined) ?? 'default'
   const modelLabel = model?.name ?? (loading ? t('cli.loadingModel') : t('cli.noModelsAvailable'))
-  const effortLabel = efforts.find((effort) => effort === effortValue) ?? t('cli.defaultEffort')
+  const effortLabel = effortDisplayName(model, effortValue, t('cli.defaultEffort'))
   const modelUnavailable = model === undefined
   const triggerDisabled = !loading && modelUnavailable
   const chooseModel = (next: CodingNsCliModel): void => {
@@ -578,7 +551,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
           createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, t('cli.back')),
           createElement('div', { key: 'title', style: nativeGroupTitleStyle }, t('cli.thinkingLevelTitle', { model: modelLabel })),
           ...(efforts.length > 0 ? efforts : ['default']).map((effort) => createElement('button', { key: effort, type: 'button', role: 'menuitemradio', 'aria-checked': effort === effortValue, onClick: () => chooseEffort(effort), style: nativeOptionStyle },
-            createElement('span', { style: { flex: '1 1 auto' } }, effort === 'default' ? t('cli.defaultEffort') : effort), effort === effortValue && createElement('span', { 'aria-hidden': true }, '✓'),
+            createElement('span', { style: { flex: '1 1 auto' } }, effortDisplayName(model, effort, t('cli.defaultEffort'))), effort === effortValue && createElement('span', { 'aria-hidden': true }, '✓'),
           )),
         ]
   return createElement('div', { ref: rootRef, className: 'codingns4dsh-model-root', style: { position: 'relative', minWidth: 0, maxWidth: '100%', flex: '1 1 min(360px, 45cqw)', display: 'inline-flex' } },
@@ -591,6 +564,11 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     ),
     open && createElement('div', { role: 'menu', 'aria-label': t('cli.chooseModelMenu'), style: nativeMenuStyle }, ...menu),
   )
+}
+
+function effortDisplayName(model: CodingNsCliModel | undefined, effort: string, defaultLabel: string): string {
+  if (effort === 'default') return defaultLabel
+  return model?.effortLabels?.[effort] ?? effort
 }
 
 const nativeTriggerStyle = { width: '100%', minWidth: 0, maxWidth: 'min(360px, 45cqw)', height: 28, color: dshThemeColor.labelSecondary, cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 24, padding: '0 4px 0 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 13, lineHeight: '20px' }

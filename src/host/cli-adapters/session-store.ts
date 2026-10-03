@@ -169,7 +169,7 @@ export class CodingNsCliSessionStore {
   upsert(sessionId: string, patch: CodingNsCliSessionPatch & CodingNsCliSessionConfig): CodingNsCliSessionRecord {
     const now = new Date().toISOString()
     const previous = this.records.get(sessionId)
-    const adapterId = patch.adapterId ?? previous?.adapterId ?? 'dsh'
+    const adapterId = normalizeAdapterId(patch.adapterId ?? previous?.adapterId ?? 'dsh')
     const sameAdapter = previous?.adapterId === adapterId
     const base = sameAdapter ? previous : undefined
     const providerSessionId = patch.providerSessionId?.trim()
@@ -260,7 +260,7 @@ export class CodingNsCliSessionStore {
     const origin = isSessionOrigin(value.origin) ? value.origin : undefined
     this.records.set(value.dshSessionId, {
       dshSessionId: value.dshSessionId,
-      adapterId: value.adapterId,
+      adapterId: normalizeAdapterId(value.adapterId),
       ...(stringValue(value.modelId) ? { modelId: stringValue(value.modelId)! } : {}),
       ...(stringValue(value.effortId) ? { effortId: stringValue(value.effortId)! } : {}),
       ...(stringValue(value.serviceTierId) ? { serviceTierId: stringValue(value.serviceTierId)! } : {}),
@@ -300,6 +300,11 @@ export class CodingNsCliSessionStore {
         console.warn('codingns4dsh: 外部会话索引持久化失败', error)
       })
   }
+}
+
+/** 旧版本曾把同一 CLI 的国内 profile 持久化为独立 ID，统一迁移回 codebuddy。 */
+function normalizeAdapterId(value: string): string {
+  return value === 'codebuddy-cn' ? 'codebuddy' : value
 }
 
 function isStatus(value: unknown): value is CodingNsCliSessionStatus {
