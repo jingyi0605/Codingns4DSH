@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { copyFileSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, copyFileSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import readline from 'node:readline'
 import type {
   CodingNsCliModelCatalog,
@@ -16,6 +16,23 @@ import { commandEnvironment, resolveCommandPath, terminateChildProcess } from '.
 import { promptWithAttachmentPaths } from './attachment-utils.js'
 import { commandCodeBridgeArgs, commandCodeBridgeEnvironment } from '../cli-bridge/injections.js'
 import { getSubagentBridge } from '../cli-bridge/bridge-holder.js'
+import {
+  CommandCodeHistory,
+  type CommandCodeHistoryDelta,
+  type CommandCodeHistoryDirection,
+  type CommandCodeHistoryMessage,
+  type CommandCodeHistoryPage,
+  type CommandCodeHistorySubscription,
+  type CommandCodeContextUsage,
+  type CommandCodeHistoryOptions,
+  type CommandCodeForkResult,
+  type CommandCodeSessionStats,
+  type CommandCodeResumeSessionResult,
+  type CommandCodeSendMessageResult,
+  type CommandCodeStartSessionResult,
+  type CommandCodeSessionDiscovery,
+  type CommandCodeSessionSummary,
+} from './command-code-history.js'
 
 const WINDOWS = process.platform === 'win32'
 const COMMAND_CODE_BINARIES = WINDOWS
@@ -161,7 +178,13 @@ interface CommandCodeTurn {
   readonly sessionId: string
   /** 当前活动子进程；撞到 --max-turns 自动续跑时会被替换成新进程。 */
   child: ChildProcessWithoutNullStreams | undefined
-  readonly transcriptPath: string
+  /** 首轮重放使用的临时 transcript；原生恢复时为空，避免覆盖 Provider 会话。 */
+  readonly transcriptPath: string | undefined
+  /** Provider 返回的真实会话 ID；存在时后续进程必须使用 --resume。 */
+  providerSessionId: string | undefined
+  /** Provider canonical transcript 的 Host 私有路径。 */
+  rawStoreRef: string | undefined
+  readonly cwd: string
   readonly queue: CommandCodeEventQueue
   /** 当前 assistant 消息身份；正文/推理增量必须携带它，公共投影层才能切块。 */
   currentMessageId: string | undefined
@@ -182,6 +205,8 @@ interface CommandCodeTurn {
   maxTurnsReached: boolean
   /** 已产生的 assistant 消息序号；跨自动续跑保持单调，避免消息身份重复。 */
   messageSequence: number
+  /** 最近一次 CLI 尝试的 stderr 尾部，仅用于失败诊断。 */
+  stderrTail: string
 }
 
 /** 单次运行内的消息标识与增量补齐状态。 */
@@ -193,10 +218,15 @@ interface CommandCodeStreamState {
   sawText: boolean
   perRequestUsageSeen: boolean
   turnUsageSeen: boolean
+  /** Provider 原生会话 ID，用于 session-binding 与恢复。 */
   sessionId: string | null
+  /** DSH 父会话 ID，用于外部 CLI 子代理桥接重定向。 */
+  bridgeSessionId: string
   aborted: () => boolean
   /** 本次尝试是否以 `--max-turns` 上限结束；上限不是终态，需要自动续跑。 */
   maxTurnsReached: boolean
+  /** 已经从 Provider 收到运行终态，避免 run_end 与 result 重复结束。 */
+  terminalEmitted: boolean
 }
 
 export interface CommandCodeDriverOptions {
@@ -210,6 +240,8 @@ export interface CommandCodeDriverOptions {
   readonly autoContinueMaxAttempts?: number
   /** 自动续跑时发给 CLI 的输入文本。 */
   readonly autoContinuePrompt?: string
+  /** 可注入 Provider status 读取器；用于在 transcript 没有窗口字段时校准上下文容量。 */
+  readonly readStatus?: CommandCodeHistoryOptions['readStatus']
 }
 
 /**
@@ -222,9 +254,21 @@ const DEFAULT_AUTO_CONTINUE_ATTEMPTS = 3
 const AUTO_CONTINUE_PROMPT = '继续'
 /** CLI 在 -p 模式撞到 --max-turns 时的退出码（MAX_TURNS_REACHED）。 */
 const COMMAND_CODE_MAX_TURNS_EXIT_CODE = 8
+/** 发送 SIGINT 后等待 CLI 自己收尾的时间；超时再强制清理进程树。 */
+const COMMAND_CODE_INTERRUPT_GRACE_MS = 1_500
+
+/** 将 DSH 权限状态映射为 Command Code 参数；未知状态保持 CLI 默认审批。 */
+function commandCodePermissionArgs(permission: CodingNsCliTurnInput['permission']): string[] {
+  if (permission?.sandboxMode === 'danger-full-access' && permission.approvalPolicy === 'never') return ['--yolo']
+  if (permission?.sandboxMode === 'workspace-write' && permission.approvalPolicy === 'never') return ['--permission-mode', 'accept-edits']
+  if (permission?.sandboxMode === 'read-only') return ['--plan']
+  return []
+}
 
 /**
- * Command Code 驱动：沿用 `--session + -p + --output-format json` 的 NDJSON 事件流。
+ * Command Code 驱动：使用 `--session` 建立首轮输入，随后绑定 Provider 原生会话并用
+ * `--resume + -p + --output-format json` 续接。首轮历史只作为 CLI 的输入快照，不能替代
+ * Provider 自己维护的 canonical transcript。
  *
  * 与 Codex 驱动保持同一套消息优化：正文/推理增量携带 assistant 消息身份，工具完成后
  * 的下一条 assistant 消息之前结束当前 DSH step，因此一个 Provider 运行会被切成多个
@@ -236,7 +280,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     id: 'command-code',
     name: 'Command Code',
     protocol: 'command',
-    capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage'] as const,
+    capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'history'] as const,
   } as const
   /** 驱动自己维护 Provider turn 边界，Host 可以把工具边界映射为 DSH step。 */
   readonly supportsSegmentedTurns = true
@@ -247,6 +291,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   private readonly maxTurns: number
   private readonly autoContinueMaxAttempts: number
   private readonly autoContinuePrompt: string
+  private readonly history: CommandCodeHistory
   private cachedBinary: string | null = null
   private cachedEnvironment: Record<string, string | undefined> | undefined
   private readonly processes = new Set<ChildProcessWithoutNullStreams>()
@@ -266,6 +311,69 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       DEFAULT_AUTO_CONTINUE_ATTEMPTS,
     )
     this.autoContinuePrompt = options.autoContinuePrompt?.trim() || AUTO_CONTINUE_PROMPT
+    const readStatus = options.readStatus ?? ((workspacePath: string) => this.readCommandCodeStatus(workspacePath))
+    this.history = new CommandCodeHistory(this.homeDirectory, { readStatus })
+  }
+
+  /** 读取 Command Code 原生会话目录，供 Provider History 层使用。 */
+  detectSessions(workspacePath: string): Promise<readonly CommandCodeSessionSummary[]> {
+    return this.history.detectSessions(workspacePath)
+  }
+
+  detectSessionsDetailed(workspacePath: string): Promise<CommandCodeSessionDiscovery> {
+    return this.history.detectSessionsDetailed(workspacePath)
+  }
+
+  startSession(workspacePath: string, options: { readonly initialPrompt?: string } = {}): Promise<CommandCodeStartSessionResult> {
+    return this.history.startSession(workspacePath, options)
+  }
+
+  resumeSession(providerSessionId: string, rawStoreRef: string): Promise<CommandCodeResumeSessionResult> {
+    return this.history.resumeSession(providerSessionId, rawStoreRef)
+  }
+
+  sendMessage(providerSessionId: string, rawStoreRef: string, content: string): Promise<CommandCodeSendMessageResult> {
+    return this.history.sendMessage(providerSessionId, rawStoreRef, content)
+  }
+
+  readSessionHistory(providerSessionId: string, rawStoreRef: string, cursor: string | null, limit: number, direction: CommandCodeHistoryDirection = 'forward'): Promise<CommandCodeHistoryPage> {
+    return this.history.readSessionHistory(providerSessionId, rawStoreRef, cursor, limit, direction)
+  }
+
+  readSessionHistoryDelta(providerSessionId: string, rawStoreRef: string, cursor: string | null, limit: number, direction: CommandCodeHistoryDirection = 'forward'): Promise<CommandCodeHistoryDelta> {
+    return this.history.readSessionHistoryDelta(providerSessionId, rawStoreRef, cursor, limit, direction)
+  }
+
+  subscribeSession(providerSessionId: string, rawStoreRef: string, cursor: string | null, limit: number, onEvent: (event: { readonly messages: readonly CommandCodeHistoryMessage[]; readonly cursor: string | null }) => Promise<void> | void): CommandCodeHistorySubscription {
+    return this.history.subscribeSession(providerSessionId, rawStoreRef, cursor, limit, onEvent)
+  }
+
+  readSessionTitle(providerSessionId: string, rawStoreRef: string): Promise<string> {
+    return this.history.readSessionTitle(providerSessionId, rawStoreRef)
+  }
+
+  renameSessionTitle(providerSessionId: string, rawStoreRef: string, title: string): Promise<string> {
+    return this.history.renameSessionTitle(providerSessionId, rawStoreRef, title)
+  }
+
+  updateSessionArchiveState(providerSessionId: string, rawStoreRef: string, isArchived: boolean): Promise<{ readonly rawStoreRef: string; readonly isArchived: boolean }> {
+    return this.history.updateSessionArchiveState(providerSessionId, rawStoreRef, isArchived)
+  }
+
+  deleteSession(providerSessionId: string, rawStoreRef: string): Promise<void> {
+    return this.history.deleteSession(providerSessionId, rawStoreRef)
+  }
+
+  readContextUsage(providerSessionId: string, rawStoreRef: string): Promise<CommandCodeContextUsage | null> {
+    return this.history.readContextUsage(providerSessionId, rawStoreRef)
+  }
+
+  readSessionStats(providerSessionId: string, rawStoreRef: string): Promise<CommandCodeSessionStats | null> {
+    return this.history.readSessionStats(providerSessionId, rawStoreRef)
+  }
+
+  forkSession(providerSessionId: string, workspacePath: string, options: { readonly rawStoreRef: string; readonly sourceType: 'session' | 'message'; readonly sourceMessageId?: string | null }): Promise<CommandCodeForkResult> {
+    return this.history.forkSession(providerSessionId, workspacePath, options)
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
@@ -335,18 +443,94 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     }
 
     const config = readJson(join(this.homeDirectory, 'config.json'))
-    const currentModel = typeof config?.model === 'string' ? config.model : null
+    // status --json 反映 CLI 当前真实模型；配置文件可能仍是旧值，优先使用运行时状态。
+    let statusModel: string | null = null
+    try {
+      const status = this.runSpawnSync(detection.command, ['status', '--json'], { encoding: 'utf8', timeout: 5_000, windowsHide: true, shell: WINDOWS, ...(this.cachedEnvironment === undefined ? {} : { env: this.cachedEnvironment }) })
+      const parsed = parseJson(status.stdout ?? '')
+      statusModel = typeof parsed?.model === 'string' && parsed.model.trim() !== '' ? parsed.model.trim() : null
+    } catch { /* 状态读取失败时回退配置文件 */ }
+    const currentModel = statusModel ?? (typeof config?.model === 'string' ? config.model : null)
     const configuredEffort = currentModel !== null && isRecord(config?.reasoningEffort) ? config.reasoningEffort[currentModel] : undefined
     const currentEffort = typeof configuredEffort === 'string' && VALID_EFFORTS.has(configuredEffort) ? configuredEffort : null
     const result = { groups, currentModel, currentEffort } satisfies CodingNsCliModelCatalog
     return result
   }
 
-  async probeSession(_input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
-    return {
-      state: 'ephemeral',
-      reason: 'Command Code 当前使用单轮临时 transcript，不存在可恢复的 Provider 原始会话',
+  /** 读取 Provider 当前 status；历史层只在模型一致时使用其中的上下文窗口。 */
+  private async readCommandCodeStatus(workspacePath: string): Promise<Record<string, unknown> | null> {
+    const command = this.cachedBinary ?? this.binaries[0]
+    if (command === undefined) return null
+    try {
+      const result = this.runSpawnSync(command, ['status', '--json'], {
+        cwd: workspacePath,
+        encoding: 'utf8',
+        timeout: 5_000,
+        windowsHide: true,
+        shell: WINDOWS,
+        env: this.cachedEnvironment ?? commandEnvironment(command),
+      })
+      return parseJson(result.stdout ?? '')
+    } catch {
+      return null
     }
+  }
+
+  async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
+    throwIfCommandCodeProbeAborted(input.signal)
+    const providerSessionId = input.providerSessionId?.trim()
+    if (!providerSessionId) return { state: 'unknown', reason: '缺少 Provider 会话标识' }
+    const candidates = new Set<string>()
+    const rawStoreRef = input.rawStoreRef?.trim()
+    const safeRawStoreRef = rawStoreRef !== undefined && isSafeCommandCodeTranscriptPath(rawStoreRef, this.homeDirectory)
+      ? rawStoreRef
+      : undefined
+    if (safeRawStoreRef !== undefined) candidates.add(safeRawStoreRef)
+    const discovered = resolveCanonicalTranscriptPath(
+      join(this.homeDirectory, 'projects', `${providerSessionId}.jsonl`),
+      this.homeDirectory,
+      input.cwd,
+    )
+    if (discovered !== null) candidates.add(discovered)
+    const checkpoint = resolveCommandCodeCheckpointPath(this.homeDirectory, input.cwd ?? process.cwd(), providerSessionId)
+    if (checkpoint !== null) candidates.add(checkpoint)
+    if (candidates.size === 0) return { state: 'missing', reason: 'Command Code 原生会话文件不存在' }
+
+    let lastFailure: CodingNsCliSessionProbeResult | undefined
+    for (const candidate of candidates) {
+      throwIfCommandCodeProbeAborted(input.signal)
+      if (!existsSync(candidate)) continue
+      try {
+        if (!statSync(candidate).isFile()) {
+          lastFailure = { state: 'missing', reason: 'Command Code 原生会话路径不是文件', rawStoreRef: candidate }
+          continue
+        }
+        // 探测只需验证首条记录；CLI 正在追加时末尾可能存在半行，不能因此拒绝
+        // 一个仍可由 --resume 找到的会话。完整历史解析由独立的读取入口负责。
+        const firstRecord = readFirstJsonRecord(candidate)
+        if (firstRecord === null) {
+          lastFailure = { state: 'corrupt', reason: 'Command Code 原生会话首条记录不是有效 JSONL', rawStoreRef: candidate }
+          continue
+        }
+        if (candidate.endsWith('.checkpoints.jsonl')) {
+          const hasCheckpoint = textValue(firstRecord.id ?? firstRecord.messageId).trim() !== ''
+          if (!hasCheckpoint) {
+            lastFailure = { state: 'corrupt', reason: 'Command Code 原生会话检查点为空', rawStoreRef: candidate }
+            continue
+          }
+          return { state: 'available', reason: 'Command Code 原生会话检查点可用', rawStoreRef: candidate }
+        }
+        const recordedId = textValue(firstRecord.id ?? firstRecord.sessionId).trim()
+        if (recordedId !== '' && recordedId !== providerSessionId) {
+          lastFailure = { state: 'corrupt', reason: 'Command Code 原生会话标识与绑定不一致', rawStoreRef: candidate }
+          continue
+        }
+        return { state: 'available', reason: 'Command Code 原生会话可用', rawStoreRef: candidate }
+      } catch (error) {
+        lastFailure = { state: 'unreachable', reason: `无法读取 Command Code 原生会话：${error instanceof Error ? error.message : String(error)}`, rawStoreRef: candidate }
+      }
+    }
+    return lastFailure ?? { state: 'missing', reason: 'Command Code 原生会话文件不存在', ...(safeRawStoreRef ? { rawStoreRef: safeRawStoreRef } : {}) }
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
@@ -356,7 +540,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     const segmented = input.splitToolSteps === true
     const turn = segmented ? this.acquireTurn(input, binary) : this.startTurn(input, binary)
     let suspended = false
-    const onAbort = (): void => { turn.aborted = true; this.disposeTurn(turn) }
+    const onAbort = (): void => { this.requestGracefulStop(turn) }
     input.signal?.addEventListener('abort', onAbort, { once: true })
     if (input.signal?.aborted) onAbort()
     try {
@@ -396,12 +580,19 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   }
 
   private startTurn(input: CodingNsCliTurnInput, binary: string): CommandCodeTurn {
-    const transcriptPath = join(tmpdir(), `codingns4dsh-cc-${safeId(input.sessionId)}.jsonl`)
-    writeTranscript(transcriptPath, input)
+    const providerSessionId = input.providerSessionId?.trim() || undefined
+    const transcriptPath = providerSessionId === undefined
+      ? join(tmpdir(), `codingns4dsh-cc-${safeId(input.sessionId)}.jsonl`)
+      : undefined
+    if (transcriptPath !== undefined) writeTranscript(transcriptPath, input)
+    const cwd = input.cwd ?? process.cwd()
     const turn: CommandCodeTurn = {
       sessionId: input.sessionId,
       child: undefined,
       transcriptPath,
+      providerSessionId,
+      rawStoreRef: input.rawStoreRef?.trim() || undefined,
+      cwd,
       queue: createEventQueue(),
       currentMessageId: undefined,
       sawCompletedTool: false,
@@ -414,7 +605,10 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       attempt: 0,
       maxTurnsReached: false,
       messageSequence: 0,
+      stderrTail: '',
     }
+    // 普通回合也登记活动 turn；Registry 的 interrupt 不应只对分段回合生效。
+    this.turns.set(input.sessionId, turn)
     void this.runTurnAttempts(turn, input, binary)
     return turn
   }
@@ -436,10 +630,11 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     try {
       while (true) {
         turn.attempt += 1
+        turn.stderrTail = ''
         // 自动续跑是同一个 DSH 运行里的下一段；消息序号必须跨尝试连续，
         // 否则新进程会从 command-code-message-1 重新编号，公共投影层会把它
         // 当成同一条消息继续追加，而不是开启新段。
-        const state = createStreamState(() => turn.aborted, turn.messageSequence, input.sessionId)
+        const state = createStreamState(() => turn.aborted, turn.messageSequence, turn.providerSessionId ?? null, turn.sessionId)
         const child = this.spawnAttempt(turn, input, binary)
         const code = await this.readAttempt(turn, child, state)
         turn.messageSequence = state.messageSequence
@@ -447,11 +642,11 @@ export class CommandCodeDriver implements CodingNsCliDriver {
 
         const capped = state.maxTurnsReached || code === COMMAND_CODE_MAX_TURNS_EXIT_CODE
         const autoContinueUsed = turn.attempt - 1
-        if (capped && !turn.aborted && !turn.terminal && autoContinueUsed < this.autoContinueMaxAttempts) {
+        if (capped && !turn.aborted && !turn.terminal && turn.providerSessionId !== undefined && autoContinueUsed < this.autoContinueMaxAttempts) {
           // 续跑必须落在同一个会话上。CLI 可能把 transcript 写回会话文件、也可能
           // 写进按 cwd 归档的 canonical 目录；两种落点都要先归位到同一个文件，
           // 否则“继续”会开出一个没有上文的新会话，等于白跑一轮预算。
-          syncCommandCodeTranscript(turn.transcriptPath, this.homeDirectory, input.cwd)
+          if (turn.transcriptPath !== undefined) syncCommandCodeTranscript(turn.transcriptPath, this.homeDirectory, input.cwd, turn.providerSessionId)
           continue
         }
         if (capped && !turn.aborted && !turn.terminal) {
@@ -479,7 +674,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     const bridgeEnvironment = commandCodeBridgeEnvironment(input.sessionId, this.descriptor.id)
     const child = this.runSpawn(binary, args, {
       cwd: input.cwd ?? process.cwd(),
-      env: { ...(this.cachedEnvironment ?? commandEnvironment(binary)), ...bridgeEnvironment },
+      env: { ...(this.cachedEnvironment ?? commandEnvironment(binary)), ...(input.runtimeEnv ?? {}), ...bridgeEnvironment },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       shell: WINDOWS,
@@ -487,23 +682,59 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     // 自动续跑会替换活动进程；已退出的旧尝试不能继续留在进程表里等待 terminate。
     if (turn.child !== undefined) this.processes.delete(turn.child)
     this.processes.add(child)
-    // 必须消费 stderr，错误内容不能回传给 DSH，避免泄露命令参数或文件片段。
-    child.stderr?.on('data', () => undefined)
+    // 必须消费 stderr，错误内容只保留尾部用于诊断，避免泄露整段命令输出。
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      turn.stderrTail = `${turn.stderrTail}${chunk.toString()}`.slice(-512)
+    })
     turn.child = child
     return child
   }
 
   private buildTurnArgs(input: CodingNsCliTurnInput, turn: CommandCodeTurn): string[] {
-    // 续跑沿用同一个 transcript 文件，只把输入换成续跑提示；不能再次写入历史，
+    // 续跑沿用同一个 Provider 会话，只把输入换成续跑提示；不能再次写入历史，
     // 否则会把 CLI 已经落盘的进度覆盖成空会话。
     const prompt = turn.attempt > 1 ? this.autoContinuePrompt : promptWithAttachmentPaths(input.prompt, input.attachments ?? [])
-    const args = ['--session', turn.transcriptPath, '-p', prompt, '--output-format', 'json', '--tools-all', '--yolo', '--max-turns', String(this.maxTurns)]
+    const args = turn.providerSessionId !== undefined
+      ? ['-p', prompt, '--output-format', 'json', '--skip-onboarding', '--max-turns', String(this.maxTurns), '--resume', turn.providerSessionId]
+      : ['--session', turn.transcriptPath!, '-p', prompt, '--output-format', 'json', '--skip-onboarding', '--max-turns', String(this.maxTurns)]
+    // 只有 Host 明确确认“完全访问且永不询问”时才允许 --yolo。
+    // 权限状态缺省表示尚未读取，必须保持 CLI 的保守默认，不能把未知状态升级为完全访问。
+    args.push(...commandCodePermissionArgs(input.permission))
+    if (input.plan === true && !args.includes('--plan')) args.push('--plan')
+    // Command Code 只允许从已有 --resume 会话分叉；首轮临时 transcript 不能带该参数。
+    if (input.forkSession === true && turn.providerSessionId !== undefined) args.push('--fork-session')
+    if (input.enableAskUserQuestion === true || input.runtimeEnv?.CMD_TOOLS_ASK_USER_QUESTION_ENABLE === 'true') {
+      args.push('--tools-enable', 'ask_user_question')
+    }
     // 子代理托管开启时加载桥接 mod：内建 agent 调用会被转投成 DSH 原生子会话。
     args.push(...commandCodeBridgeArgs(input.sessionId))
     for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--add-dir', directory)
-    if (input.modelId) args.push('-m', input.modelId)
-    if (input.effortId && input.effortId !== 'default' && input.effortId !== 'Default') args.push('--effort', input.effortId)
+    if (input.modelId && input.modelId !== 'provider-default') args.push('--model', input.modelId)
+    const effort = input.effortId?.trim().toLowerCase()
+    if (effort !== undefined && VALID_EFFORTS.has(effort)) args.push('--effort', effort)
     return args
+  }
+
+  /** 中断当前会话并清理 CLI 进程；不存在活动运行时视为幂等成功。 */
+  async interrupt(sessionId: string): Promise<void> {
+    const turn = this.turns.get(sessionId)
+    if (turn === undefined) return
+    this.requestGracefulStop(turn)
+  }
+
+  /** 先让 CLI 保存检查点并自行退出，超时后才清理进程树。 */
+  private requestGracefulStop(turn: CommandCodeTurn): void {
+    turn.aborted = true
+    const child = turn.child
+    if (child === undefined) {
+      this.disposeTurn(turn)
+      return
+    }
+    try { child.kill('SIGINT') } catch { /* 进程可能已经退出 */ }
+    const timer = setTimeout(() => {
+      if (!turn.disposed) this.disposeTurn(turn)
+    }, COMMAND_CODE_INTERRUPT_GRACE_MS)
+    timer.unref?.()
   }
 
   /** 读取一次尝试的 stdout，直到进程结束；队列在整个运行结束前保持打开。 */
@@ -519,6 +750,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
         }
       : null
     let exitCode: number | null = null
+    let exitSignal: string | null = null
     let resolveClose: (() => void) | null = null
     const closed = new Promise<void>((resolve) => { resolveClose = resolve })
     if (emitter !== null) {
@@ -529,21 +761,36 @@ export class CommandCodeDriver implements CodingNsCliDriver {
         turn.failure ??= error
         resolveClose?.()
       })
-      emitter.on('close', (code: number | null) => {
+      emitter.on('close', (code: number | null, signal?: string | null) => {
         exitCode = code
+        exitSignal = signal ?? null
         if (state.maxTurnsReached) turn.maxTurnsReached = true
         resolveClose?.()
       })
     }
     try {
       const lines = readline.createInterface({ input: child.stdout })
+      let lineNumber = 0
       try {
         for await (const line of lines) {
           if (!line.trim()) continue
+          lineNumber += 1
           const item = parseJson(line)
-          if (item === null) continue
+          if (item === null) {
+            // CLI 升级后可能输出非对象或损坏的 NDJSON；保留行号诊断，不能静默吞掉。
+            console.warn(`[codingns4dsh] Command Code 忽略非法 NDJSON（第 ${lineNumber} 行）`)
+            continue
+          }
           const event = item.type === 'event' && isRecord(item.event) ? item.event : item
-          for (const chunk of commandCodeEventChunks(event, state)) {
+          for (const rawChunk of commandCodeEventChunks(event, state)) {
+            let chunk = rawChunk
+            if (rawChunk.type === 'session-binding') {
+              turn.providerSessionId = rawChunk.providerSessionId
+              turn.rawStoreRef = resolveCommandCodeTranscriptPath(this.homeDirectory, turn.cwd, rawChunk.providerSessionId)
+              // Provider ID 一旦确认就立即暴露 canonical 路径；文件可能稍后才落盘，
+              // 但 Registry 必须先保存稳定绑定，冷恢复时才能直接定位原生会话。
+              chunk = { ...rawChunk, rawStoreRef: turn.rawStoreRef }
+            }
             if (chunk.type === 'finish') turn.terminal = true
             turn.queue.push(chunk)
           }
@@ -559,6 +806,22 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       if (state.maxTurnsReached) turn.maxTurnsReached = true
     } else {
       await closed
+    }
+    if (!turn.terminal && !state.maxTurnsReached) {
+      if (turn.aborted || exitSignal === 'SIGINT' || exitSignal === 'SIGTERM') {
+        turn.terminal = true
+        turn.queue.push({ type: 'finish', reason: 'cancel' })
+      } else if (turn.failure !== null || (exitCode !== null && exitCode !== 0) || exitSignal !== null) {
+        const message = turn.failure?.message
+          || (turn.stderrTail.trim() !== '' ? `Command Code 执行失败：${turn.stderrTail.trim()}` : `Command Code 进程退出（代码 ${exitCode ?? exitSignal ?? 'unknown'}）`)
+        turn.failure = null
+        turn.terminal = true
+        turn.queue.push({
+          type: 'finish',
+          reason: 'error',
+          failure: { message, code: exitCode === null ? 'COMMAND_CODE_SPAWN_ERROR' : `COMMAND_CODE_EXIT_${exitCode}` },
+        })
+      }
     }
     return exitCode
   }
@@ -624,11 +887,18 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       this.processes.delete(child)
       terminateChildProcess(child)
     }
-    try { rmSync(turn.transcriptPath, { force: true }) } catch { /* 临时文件清理尽力而为 */ }
+    if (turn.transcriptPath !== undefined) {
+      try { rmSync(turn.transcriptPath, { force: true }) } catch { /* 临时文件清理尽力而为 */ }
+    }
   }
 }
 
-function createStreamState(aborted: () => boolean, messageSequence = 0, sessionId: string | null = null): CommandCodeStreamState {
+function createStreamState(
+  aborted: () => boolean,
+  messageSequence = 0,
+  sessionId: string | null = null,
+  bridgeSessionId = '',
+): CommandCodeStreamState {
   return {
     messageSequence,
     messageId: null,
@@ -638,8 +908,10 @@ function createStreamState(aborted: () => boolean, messageSequence = 0, sessionI
     perRequestUsageSeen: false,
     turnUsageSeen: false,
     sessionId,
+    bridgeSessionId,
     aborted,
     maxTurnsReached: false,
+    terminalEmitted: false,
   }
 }
 
@@ -690,6 +962,12 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
   }
 
   switch (type) {
+    case 'run_start':
+    case 'run-start':
+    case 'session_created':
+    case 'session-created':
+      // 这些事件只标记 Provider 生命周期，不应制造正文或终态。
+      break
     case 'turn_start':
     case 'turn-start':
       beginMessage(state)
@@ -753,17 +1031,34 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
     }
     case 'run_end':
     case 'run-end':
-      // run_end 只是“CLI 侧整个 run 收尾了”，最终结算仍以紧随其后的 result 行为准。
-      // 这里只识别轮次上限：上限不是终态，等进程退出后决定续跑还是报错。
-      if (isMaxTurnsOutcome(event)) state.maxTurnsReached = true
+      if (!state.sawText) {
+        const finalText = readFinalText(event)
+        if (finalText) {
+          ensureMessage(state)
+          state.sawText = true
+          state.emittedText = finalText
+          chunks.push(textDelta(finalText, state))
+        }
+      }
+      if (isMaxTurnsOutcome(event)) {
+        // 撞到 CLI 的轮次上限不是终态，但 run_end 可能同时携带本次已生成的
+        // 最后一段正文。正文必须先投影出去，续跑只负责继续执行，不能吞掉这段结果。
+        state.maxTurnsReached = true
+        break
+      }
+      if (!state.terminalEmitted) {
+        state.terminalEmitted = true
+        chunks.push({ type: 'finish', reason: state.aborted() ? 'cancel' : resultReason(event) })
+      }
       break
     case 'result': {
+      if (state.terminalEmitted) break
       if (!state.perRequestUsageSeen) {
         const usage = usageChunk(recordValue(event.usage))
         if (usage !== null) chunks.push(usage)
       }
       if (!state.sawText) {
-        const finalText = textValue(event.finalText ?? recordValue(event.result)?.finalText ?? (typeof event.result === 'string' ? event.result : undefined))
+        const finalText = readFinalText(event)
         if (finalText) {
           ensureMessage(state)
           state.sawText = true
@@ -778,6 +1073,7 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
         break
       }
       const reason = state.aborted() ? 'cancel' : resultReason(event)
+      state.terminalEmitted = true
       chunks.push({
         type: 'finish',
         reason,
@@ -785,7 +1081,19 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
       })
       break
     }
+    case 'error':
+    case 'fatal_error':
+    case 'run_error':
+      if (!state.terminalEmitted) {
+        state.terminalEmitted = true
+        chunks.push({ type: 'finish', reason: state.aborted() ? 'cancel' : 'error', ...(state.aborted() ? {} : { failure: commandCodeFailure(event) }) })
+      }
+      break
     default:
+      if (type !== '' && !isToolStart(type) && !isToolResult(type)) {
+        // 未知事件不应改变正常流，但必须留下可定位的升级诊断。
+        console.warn(`[codingns4dsh] Command Code 忽略未知事件：${type}`)
+      }
       break
   }
 
@@ -808,13 +1116,26 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
   return chunks
 }
 
+function readFinalText(event: Record<string, unknown>): string {
+  const result = recordValue(event.result)
+  return textValue(
+    event.finalText
+      ?? result?.finalText
+      ?? result?.output
+      ?? result?.text
+      ?? (typeof event.result === 'string' ? event.result : undefined)
+      ?? event.output
+      ?? event.text,
+  )
+}
+
 /** 该 blocked 事件是否来自桥接转投；命中后消费一次记录，避免重复投影。 */
 function consumeBridgeRedirect(state: CommandCodeStreamState, event: Record<string, unknown>): boolean {
-  if (state.sessionId === null || state.sessionId === '') return false
+  if (state.bridgeSessionId === '') return false
   const callId = firstToolText(event.callId, event.call_id, event.toolCallId, event.tool_call_id, event.toolUseId, event.tool_use_id, event.id)
   if (callId === undefined || callId === '') return false
   try {
-    return getSubagentBridge()?.consumeRedirect(state.sessionId, callId) !== undefined
+    return getSubagentBridge()?.consumeRedirect(state.bridgeSessionId, callId) !== undefined
   } catch {
     return false
   }
@@ -850,30 +1171,49 @@ function reasoningDelta(text: string, state: CommandCodeStreamState): CodingNsAg
 /** 用完整的 assistant content 补齐缺失的正文/推理增量（只发送尚未发送的尾部）。 */
 function appendContentFallback(chunks: CodingNsAgentEvent[], content: unknown, state: CommandCodeStreamState): void {
   if (!Array.isArray(content)) return
-  let text = ''
-  let reasoning = ''
+  let snapshotText = ''
+  let snapshotReasoning = ''
+  let pendingKind: 'text' | 'reasoning' | null = null
+  let pendingDelta = ''
+  const flushPending = (): void => {
+    if (pendingKind === null || pendingDelta === '') return
+    chunks.push(pendingKind === 'text' ? textDelta(pendingDelta, state) : reasoningDelta(pendingDelta, state))
+    pendingKind = null
+    pendingDelta = ''
+  }
   for (const block of content) {
     const value = recordValue(block)
     if (value === null) continue
     const blockType = textValue(value.type).toLowerCase()
     const isReasoning = blockType.includes('thinking') || blockType.includes('reasoning')
       || typeof value.thinking === 'string' || typeof value.reasoning === 'string'
-    if (isReasoning) reasoning += textValue(value.thinking ?? value.reasoning ?? value.text ?? value.content)
-    else text += textValue(value.text ?? value.content)
+    const blockText = textValue(isReasoning
+      ? value.thinking ?? value.reasoning ?? value.text ?? value.content
+      : value.text ?? value.content)
+    if (isReasoning) {
+      snapshotReasoning += blockText
+      if (snapshotReasoning.length > state.emittedReasoning.length) {
+        const delta = snapshotReasoning.slice(state.emittedReasoning.length)
+        ensureMessage(state)
+        state.emittedReasoning = snapshotReasoning
+        if (pendingKind !== 'reasoning') flushPending()
+        pendingKind = 'reasoning'
+        pendingDelta += delta
+      }
+    } else {
+      snapshotText += blockText
+      if (snapshotText.length > state.emittedText.length) {
+        const delta = snapshotText.slice(state.emittedText.length)
+        ensureMessage(state)
+        state.emittedText = snapshotText
+        state.sawText = true
+        if (pendingKind !== 'text') flushPending()
+        pendingKind = 'text'
+        pendingDelta += delta
+      }
+    }
   }
-  if (text.length > state.emittedText.length) {
-    const delta = text.slice(state.emittedText.length)
-    ensureMessage(state)
-    state.emittedText = text
-    state.sawText = true
-    chunks.push(textDelta(delta, state))
-  }
-  if (reasoning.length > state.emittedReasoning.length) {
-    const delta = reasoning.slice(state.emittedReasoning.length)
-    ensureMessage(state)
-    state.emittedReasoning = reasoning
-    chunks.push(reasoningDelta(delta, state))
-  }
+  flushPending()
 }
 
 function readToolChunk(event: Record<string, unknown>, status: 'started' | 'running' | 'completed' | 'failed'): CodingNsAgentToolEvent | null {
@@ -962,8 +1302,11 @@ function syncCommandCodeTranscript(
   transcriptPath: string,
   homeDirectory: string,
   cwd: string | undefined,
+  providerSessionId?: string,
 ): void {
-  const canonicalPath = resolveCanonicalTranscriptPath(transcriptPath, homeDirectory, cwd)
+  const canonicalPath = providerSessionId === undefined
+    ? resolveCanonicalTranscriptPath(transcriptPath, homeDirectory, cwd)
+    : resolveCommandCodeTranscriptPath(homeDirectory, cwd ?? process.cwd(), providerSessionId)
   if (canonicalPath === null) return
   try {
     if (statSync(canonicalPath).mtimeMs <= statSync(transcriptPath).mtimeMs) return
@@ -997,6 +1340,59 @@ function resolveCanonicalTranscriptPath(
   }
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate
+  }
+  return null
+}
+
+/** 按 Provider 会话 ID 计算 Command Code 的 canonical transcript 路径。 */
+function resolveCommandCodeTranscriptPath(homeDirectory: string, cwd: string, providerSessionId: string): string {
+  return join(homeDirectory, 'projects', workspaceSlug(cwd), `${providerSessionId}.jsonl`)
+}
+
+/** Provider 索引只能指向 Command Code 项目目录中的 JSONL，避免旧配置污染探测边界。 */
+function isSafeCommandCodeTranscriptPath(candidate: string, homeDirectory: string): boolean {
+  const projectsRootPath = resolve(join(homeDirectory, 'projects'))
+  let projectsRoot = projectsRootPath
+  try { if (existsSync(projectsRootPath)) projectsRoot = realpathSync(projectsRootPath) } catch { return false }
+  const resolvedCandidate = resolve(candidate)
+  let actualCandidate = resolvedCandidate
+  try { if (existsSync(resolvedCandidate)) actualCandidate = realpathSync(resolvedCandidate) } catch { return false }
+  const relativePath = relative(projectsRoot, actualCandidate)
+  const segments = relativePath.split(/[\\/]+/u).filter(Boolean)
+  return relativePath !== ''
+    && !relativePath.startsWith('..')
+    && segments.length === 2
+    && actualCandidate.endsWith('.jsonl')
+}
+
+/** 只读 JSONL 首条记录，避免探测大 transcript 时把整份文件载入内存。 */
+function readFirstJsonRecord(path: string): Record<string, unknown> | null {
+  const descriptor = openSync(path, 'r')
+  try {
+    const buffer = Buffer.allocUnsafe(64 * 1024)
+    const bytes = readSync(descriptor, buffer, 0, buffer.length, 0)
+    const firstLine = buffer.subarray(0, bytes).toString('utf8').split(/\r?\n/u).find((line) => line.trim() !== '')
+    return firstLine === undefined ? null : parseJson(firstLine)
+  } finally {
+    closeSync(descriptor)
+  }
+}
+
+/**
+ * Command Code 的 `--session <临时路径>` 在部分版本只落检查点文件，不创建主 transcript。
+ * 检查点足以证明会话仍可被 `--resume` 找到，但不包含完整消息历史，因此只用于探测回退。
+ */
+function resolveCommandCodeCheckpointPath(homeDirectory: string, cwd: string, providerSessionId: string): string | null {
+  const expected = join(homeDirectory, 'projects', workspaceSlug(cwd), `${providerSessionId}.checkpoints.jsonl`)
+  if (existsSync(expected)) return expected
+  const projectsRoot = join(homeDirectory, 'projects')
+  try {
+    for (const entry of readdirSync(projectsRoot)) {
+      const candidate = join(projectsRoot, entry, `${providerSessionId}.checkpoints.jsonl`)
+      if (existsSync(candidate)) return candidate
+    }
+  } catch {
+    // projects 目录不存在说明 CLI 还没写过检查点。
   }
   return null
 }
@@ -1044,6 +1440,14 @@ function readSessionId(event: Record<string, unknown>): string | null {
   return value === '' ? null : value
 }
 
+/** 会话探测由 Registry 控制超时；文件扫描期间也必须尊重取消信号。 */
+function throwIfCommandCodeProbeAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) return
+  const error = new Error('Command Code 会话探测已取消')
+  error.name = 'AbortError'
+  throw error
+}
+
 function textValue(value: unknown): string {
   return typeof value === 'string' ? value : value === undefined || value === null ? '' : structuredText(value)
 }
@@ -1062,15 +1466,79 @@ function writeTranscript(path: string, input: CodingNsCliTurnInput): void {
   let parentId: string | null = null
   const lines = [JSON.stringify({ type: 'session', version: 3, id: input.sessionId, timestamp: new Date().toISOString(), cwd: input.cwd ?? process.cwd() })]
   history.forEach((message, index) => {
-    if (message.role !== 'user' && message.role !== 'assistant') return
+    if (message.role !== 'user' && message.role !== 'assistant' && message.role !== 'tool') return
+    const content = extractText(message.content, message)
+    if (content.length === 0) return
     const id = message.id ?? `message-${index}`
-    lines.push(JSON.stringify({ type: 'message', id, parentId, timestamp: new Date().toISOString(), message: { role: message.role, content: [{ type: 'text', text: extractText(message.content) }] } }))
+    const role = message.role === 'tool' ? 'user' : message.role
+    lines.push(JSON.stringify({ type: 'message', id, parentId, timestamp: new Date().toISOString(), message: { role, content } }))
     parentId = id
   })
   writeFileSync(path, `${lines.join('\n')}\n`, 'utf8')
 }
 
-function extractText(content: unknown): string { if (typeof content === 'string') return content; if (!Array.isArray(content)) return ''; return content.filter(isRecord).map((part) => typeof part.text === 'string' ? part.text : '').join('\n').trim() }
+type CommandCodeTranscriptBlock =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'thinking'; readonly thinking: string }
+  | { readonly type: 'tool_use'; readonly id: string; readonly name: string; readonly input: unknown }
+  | { readonly type: 'tool_result'; readonly tool_use_id: string; readonly content: readonly { readonly type: 'text'; readonly text: string }[] }
+
+/** 把 DSH 消息块转换为 Command Code 原生 transcript 块，保留工具和推理语义。 */
+function extractText(content: unknown, message: { readonly role: string; readonly toolCallId?: string; readonly source?: { readonly callId?: string } }): readonly CommandCodeTranscriptBlock[] {
+  if (message.role === 'tool') {
+    const toolCallId = message.toolCallId ?? message.source?.callId
+    if (toolCallId === undefined || toolCallId.trim() === '') return []
+    return [{ type: 'tool_result', tool_use_id: toolCallId, content: extractToolResultContent(content) }]
+  }
+  if (typeof content === 'string') return content === '' ? [] : [{ type: 'text', text: content }]
+  if (!Array.isArray(content)) return []
+  const blocks: CommandCodeTranscriptBlock[] = []
+  for (const part of content) {
+    if (!isRecord(part)) continue
+    if (part.type === 'tool-call') {
+      const id = typeof part.id === 'string' ? part.id.trim() : ''
+      const name = typeof part.name === 'string' ? part.name.trim() : ''
+      if (id === '' || name === '') continue
+      blocks.push({ type: 'tool_use', id, name, input: parseToolInput(part.arguments ?? part.input) })
+      continue
+    }
+    if (part.type === 'tool-result') {
+      const toolUseId = firstText(part.toolCallId, part.tool_use_id, part.toolUseId)
+      if (toolUseId !== '') blocks.push({ type: 'tool_result', tool_use_id: toolUseId, content: extractToolResultContent(part.content ?? part.output ?? part.result) })
+      continue
+    }
+    if (part.type === 'thinking' || part.type === 'reasoning') {
+      const thinking = firstText(part.thinking, part.reasoning, part.text, part.content)
+      if (thinking !== '') blocks.push({ type: 'thinking', thinking })
+      continue
+    }
+    const text = typeof part.text === 'string' ? part.text : ''
+    if (text !== '') blocks.push({ type: 'text', text })
+  }
+  return blocks
+}
+
+function extractToolResultContent(content: unknown): readonly { readonly type: 'text'; readonly text: string }[] {
+  if (typeof content === 'string') return [{ type: 'text', text: content }]
+  if (Array.isArray(content)) {
+    const parts = content.filter(isRecord).map((part) => {
+      if (typeof part.text === 'string') return { type: 'text' as const, text: part.text }
+      return null
+    }).filter((part): part is { readonly type: 'text'; readonly text: string } => part !== null)
+    if (parts.length > 0) return parts
+  }
+  return [{ type: 'text', text: structuredText(content) }]
+}
+
+function parseToolInput(value: unknown): unknown {
+  if (typeof value !== 'string') return value ?? {}
+  try { return JSON.parse(value) as unknown } catch { return value }
+}
+
+function firstText(...values: unknown[]): string {
+  return values.find((value): value is string => typeof value === 'string' && value !== '') ?? ''
+}
+
 function safeId(value: string): string { return value.replace(/[^a-zA-Z0-9._-]+/gu, '_').slice(0, 96) || 'default' }
 function parseJson(value: string): Record<string, unknown> | null { try { const parsed: unknown = JSON.parse(value); return isRecord(parsed) ? parsed : null } catch { return null } }
 function readJson(path: string): Record<string, unknown> | null { if (!existsSync(path)) return null; try { const parsed: unknown = JSON.parse(readFileSync(path, 'utf8')); return isRecord(parsed) ? parsed : null } catch { return null } }

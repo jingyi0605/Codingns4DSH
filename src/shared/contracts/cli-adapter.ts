@@ -27,6 +27,7 @@ export type CodingNsCliCapability =
   | 'tool-events'
   | 'reasoning'
   | 'usage'
+  | 'history'
   | 'permission'
   | 'questions'
   | 'steer'
@@ -195,6 +196,14 @@ export interface CodingNsCliTurnInput {
   readonly attachments?: readonly CodingNsCliAttachment[]
   /** DSH 会话权限状态；缺省表示 Host 未读到，驱动沿用保守默认。 */
   readonly permission?: CodingNsCliPermissionState
+  /** Provider 原生计划模式；由 Host 显式指定时才下发。 */
+  readonly plan?: boolean
+  /** 从当前 Provider 会话派生独立会话；由 Host 显式指定时才下发。 */
+  readonly forkSession?: boolean
+  /** 启用 Provider 的结构化提问工具；由 Host 显式指定时才下发。 */
+  readonly enableAskUserQuestion?: boolean
+  /** 传给外部 CLI 的受控运行时环境；不会写入会话索引。 */
+  readonly runtimeEnv?: Readonly<Record<string, string>>
   readonly modelId?: string
   readonly effortId?: string
   /** Provider 服务档位；`default` 表示标准速度，缺省表示不下发、沿用 Provider 默认。 */
@@ -251,10 +260,12 @@ export interface CodingNsAgentQuestionResponse {
 
 export interface CodingNsCliMessage {
   readonly id?: string
-  readonly role: 'user' | 'assistant' | 'system'
+  readonly role: 'user' | 'assistant' | 'system' | 'tool'
   readonly content: unknown
+  /** 工具结果对应的调用 ID；仅 `role:'tool'` 消息使用。 */
+  readonly toolCallId?: string
   /** DSH 原生消息来源；插件上下文不能被当成人类输入再次发送给外部 Agent。 */
-  readonly source?: { readonly kind?: string; readonly plugin?: string; readonly form?: string }
+  readonly source?: { readonly kind?: string; readonly plugin?: string; readonly form?: string; readonly callId?: string }
 }
 
 /**

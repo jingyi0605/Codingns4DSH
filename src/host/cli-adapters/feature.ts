@@ -313,6 +313,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           }
           const cwd = resolveSessionCwd(context.services.nativeSessions, sessionId, value)
           const turnInput = extractTurnInput(messages, context.services.dshContext)
+          const turnOptions = readCliTurnOptions(value)
+          const runtimeEnv = readCliRuntimeEnv(value)
           // 权限状态必须与 DSH 会话当前生效值同源。驱动不能自行假设“完全权限”，
           // 也不能把缺省当成“已确认无限制”：解析失败时留空，由驱动沿用保守默认。
           const permission = resolveSessionPermission(context.services.dshContext, sessionId)
@@ -326,6 +328,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             prompt: turnInput.prompt,
             ...(turnInput.attachments.length === 0 ? {} : { attachments: turnInput.attachments }),
             ...(permission === undefined ? {} : { permission }),
+            ...(turnOptions.plan === true ? { plan: true } : {}),
+            ...(turnOptions.forkSession === true ? { forkSession: true } : {}),
+            ...(turnOptions.enableAskUserQuestion === true ? { enableAskUserQuestion: true } : {}),
+            ...(runtimeEnv === undefined ? {} : { runtimeEnv }),
             ...(config.modelId ? { modelId: config.modelId } : {}),
             ...(config.effortId ? { effortId: config.effortId } : {}),
             ...(config.serviceTierId ? { serviceTierId: config.serviceTierId } : {}),
@@ -641,6 +647,38 @@ function readDshSelection(value: Record<string, any> | null): { modelId?: string
     ...(effortId === undefined ? {} : { effortId }),
     ...(providerId === undefined ? {} : { providerId }),
   }
+}
+
+/** 读取 DSH/Host 明确下发给外部 CLI 的运行选项；缺省值不改变 Provider 行为。 */
+function readCliTurnOptions(value: Record<string, any> | null): {
+  readonly plan?: boolean
+  readonly forkSession?: boolean
+  readonly enableAskUserQuestion?: boolean
+} {
+  const candidates = [
+    value,
+    asRecord(value?.options),
+    asRecord(value?.request),
+    asRecord(asRecord(value?.request)?.options),
+    asRecord(value?.config),
+  ]
+  const read = (keys: readonly string[]): boolean => candidates.some((candidate) => keys.some((key) => candidate?.[key] === true))
+  const plan = read(['plan'])
+  const forkSession = read(['forkSession', 'fork'])
+  const enableAskUserQuestion = read(['enableAskUserQuestion', 'askUserQuestion'])
+  return {
+    ...(plan ? { plan: true } : {}),
+    ...(forkSession ? { forkSession: true } : {}),
+    ...(enableAskUserQuestion ? { enableAskUserQuestion: true } : {}),
+  }
+}
+
+/** 父仓库通过运行时环境开启 ask_user_question；保留同一兼容入口。 */
+function readCliRuntimeEnv(value: Record<string, any> | null): Readonly<Record<string, string>> | undefined {
+  const candidate = asRecord(value?.runtimeEnv) ?? asRecord(asRecord(value?.options)?.runtimeEnv)
+  if (candidate === null) return undefined
+  const entries = Object.entries(candidate).filter(([, item]) => typeof item === 'string') as [string, string][]
+  return entries.length === 0 ? undefined : Object.fromEntries(entries)
 }
 
 /** DSH Session 快照把最近选择放在 modelSelection.lastUsed/next。 */
@@ -997,6 +1035,6 @@ function nativeEventType(value: unknown): string | undefined {
   const record = asRecord(value)
   return typeof record?.type === 'string' ? record.type : undefined
 }
-function isMessage(value: unknown): value is CodingNsCliMessage { const record = asRecord(value); return (record?.role === 'user' || record?.role === 'assistant' || record?.role === 'system') && 'content' in record }
+function isMessage(value: unknown): value is CodingNsCliMessage { const record = asRecord(value); return (record?.role === 'user' || record?.role === 'assistant' || record?.role === 'system' || record?.role === 'tool') && 'content' in record }
 function isAbortSignal(value: unknown): value is AbortSignal { return asRecord(value)?.aborted === true || (asRecord(value)?.addEventListener instanceof Function) }
 function safeError(error: unknown): string { return error instanceof Error ? error.message.slice(0, 512) : String(error).slice(0, 512) }
