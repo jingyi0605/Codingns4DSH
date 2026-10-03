@@ -1289,6 +1289,35 @@ test('Agent 注册表隔离会话配置并拒绝未知 Agent', async () => {
   assert.throws(() => registry.setSession('s1', { adapterId: 'missing' }), /Agent 不可用/u)
 })
 
+test('Agent 模型与思考强度偏好按选择顺序串行持久化', async () => {
+  const writes: readonly unknown[][] = []
+  let active = 0
+  let maxActive = 0
+  const settings = {
+    get() { return { agentAdapterPreferences: {} } },
+    async update(patch: { agentAdapterPreferences?: unknown }) {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      await new Promise((resolve) => setTimeout(resolve, 2))
+      if (patch.agentAdapterPreferences !== undefined) writes.push([patch.agentAdapterPreferences])
+      active -= 1
+    },
+  }
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'fake', name: 'Fake' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'fake' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } },
+  }], {}, { settings: settings as never })
+
+  registry.setSession('preference-race', { adapterId: 'fake', modelId: 'model-a', effortId: 'high' })
+  registry.setSession('preference-race', { adapterId: 'fake', modelId: 'model-b', effortId: 'low' })
+  await registry.dispose()
+
+  assert.equal(maxActive, 1)
+  assert.deepEqual((writes.at(-1)?.[0] as Record<string, unknown>).fake, { modelId: 'model-b', effortId: 'low' })
+})
+
 test('Agent 注册表允许把会话切回内置 DSH Agent', () => {
   const registry = new CodingNsCliAdapterRegistry([])
   assert.deepEqual(registry.setSession('session-dsh', { adapterId: 'dsh' }), { adapterId: 'dsh' })

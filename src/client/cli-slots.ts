@@ -104,11 +104,53 @@ interface SelectionState extends CodingNsCliSessionConfig {}
 const DEFAULT_SELECTION: SelectionState = { adapterId: 'dsh' }
 const selections = new Map<string, SelectionState>()
 const selectionListeners = new Map<string, Set<() => void>>()
+/** Slot 会随 DSH 会话状态重挂载；保留最近选择，避免重挂载时再次闪回默认值。 */
+const selectionLastUsed = new Map<string, number>()
+const MAX_SELECTION_CACHE = 256
 /** 两个 Slot 共用同一条初始化读取，避免响应顺序造成状态回退。 */
 const selectionLoads = new Map<string, Promise<CodingNsCliSessionConfig>>()
 /** 记录每个会话最新的写入，旧响应不能覆盖用户较新的选择。 */
 const selectionUpdates = new Map<string, { readonly revision: number; readonly promise: Promise<CodingNsCliSessionConfig> }>()
 const selectionRevisions = new Map<string, number>()
+/** 同一个页面内的模型目录共享结果，避免 Agent/模型 Slot 重挂载重复等待 CLI。 */
+const modelCatalogCaches = new WeakMap<object, Map<string, CodingNsCliModelCatalog>>()
+const modelCatalogLoads = new WeakMap<object, Map<string, Promise<CodingNsCliModelCatalog>>>()
+
+function modelCatalogCache(rpc: CodingNsRpcClient): Map<string, CodingNsCliModelCatalog> {
+  const key = rpc as object
+  let cache = modelCatalogCaches.get(key)
+  if (cache === undefined) {
+    cache = new Map()
+    modelCatalogCaches.set(key, cache)
+  }
+  return cache
+}
+
+function modelCatalogLoadCache(rpc: CodingNsRpcClient): Map<string, Promise<CodingNsCliModelCatalog>> {
+  const key = rpc as object
+  let cache = modelCatalogLoads.get(key)
+  if (cache === undefined) {
+    cache = new Map()
+    modelCatalogLoads.set(key, cache)
+  }
+  return cache
+}
+
+function loadModelCatalog(rpc: CodingNsRpcClient, adapterId: string, sessionId?: string): Promise<CodingNsCliModelCatalog> {
+  const cache = modelCatalogLoadCache(rpc)
+  const running = cache.get(adapterId)
+  if (running !== undefined) return running
+  const request = callCliRpc<CodingNsCliModelCatalog>(rpc, 'models', { adapterId, ...(sessionId === undefined ? {} : { sessionId }) })
+    .then((value) => {
+      modelCatalogCache(rpc).set(adapterId, value)
+      return value
+    })
+    .finally(() => {
+      if (cache.get(adapterId) === request) cache.delete(adapterId)
+    })
+  cache.set(adapterId, request)
+  return request
+}
 
 /** 在 Agent 和模型两个 Slot 之间共享当前会话选择。 */
 function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [SelectionState, (next: SelectionState) => void] {
@@ -139,7 +181,16 @@ function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [S
       listeners.delete(listener)
       if (listeners.size === 0) {
         selectionListeners.delete(sessionId)
-        selections.delete(sessionId)
+        // DSH 的 Slot 会因发送/切换会话短暂卸载；删除这里的状态会让下一次挂载
+        // 重新走 session/get，旧响应还可能覆盖用户刚刚选中的模型。
+        selectionLastUsed.set(sessionId, Date.now())
+        if (selectionLastUsed.size > MAX_SELECTION_CACHE) {
+          const oldest = [...selectionLastUsed.entries()].sort((left, right) => left[1] - right[1])[0]?.[0]
+          if (oldest !== undefined) {
+            selectionLastUsed.delete(oldest)
+            selections.delete(oldest)
+          }
+        }
       }
     }
   }, [rpc, sessionId])
@@ -171,6 +222,7 @@ function publishSelection(sessionId: string, next: SelectionState): void {
     ...(next.serviceTierId ? { serviceTierId: next.serviceTierId } : {}),
   }
   selections.set(sessionId, normalized)
+  selectionLastUsed.set(sessionId, Date.now())
   publishSessionAdapter(sessionId, normalized.adapterId)
   for (const listener of selectionListeners.get(sessionId) ?? []) listener()
 }
@@ -373,7 +425,9 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const catalog = catalogState?.adapterId === selection.adapterId ? catalogState.value : null
   // 目录必须和当前适配器绑定；切换后的第一次渲染立即进入加载态，不能短暂展示旧目录。
   const loading = selection.adapterId !== 'dsh'
-    && (catalog === null || refreshingAdapterId === selection.adapterId)
+    // 有 stale 目录时直接可用，后台刷新不应阻塞模型/思考强度选择。
+    && catalog === null
+    && refreshingAdapterId === selection.adapterId
 
   useEffect(() => {
     if (selection.adapterId === 'dsh') {
@@ -383,8 +437,10 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     }
     let active = true
     const adapterId = selection.adapterId
+    const cached = modelCatalogCache(props.rpc).get(adapterId)
+    if (cached !== undefined) setCatalogState({ adapterId, value: cached })
     setRefreshingAdapterId(adapterId)
-    void callCliRpc<CodingNsCliModelCatalog>(props.rpc, 'models', { adapterId, ...(sessionId === undefined ? {} : { sessionId }) })
+    void loadModelCatalog(props.rpc, adapterId, sessionId)
       .then((value) => {
         if (!active) return
         setCatalogState({ adapterId, value })
@@ -420,7 +476,14 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
           void pending.promise.then(normalize).catch(normalize)
         }
       })
-      .catch(() => { if (active) setCatalogState({ adapterId, value: { groups: [], currentModel: null, currentEffort: null } }) })
+      .catch(() => {
+        if (!active) return
+        // 已有目录时保留 stale 值；暂时探测失败不能把思考强度列表清空，
+        // 否则用户会看到模型选择器反复回到“正在加载”。
+        if (modelCatalogCache(props.rpc).get(adapterId) === undefined) {
+          setCatalogState({ adapterId, value: { groups: [], currentModel: null, currentEffort: null } })
+        }
+      })
       .finally(() => { if (active) setRefreshingAdapterId(null) })
     return () => { active = false }
   }, [props.rpc, selection.adapterId, sessionId])

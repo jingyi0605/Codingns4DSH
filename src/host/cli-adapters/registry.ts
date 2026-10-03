@@ -143,7 +143,7 @@ export class CodingNsCliAdapterRegistry {
     // DSH 0.1.7 不会把旧 `codingns` 设置段自动映射到 scoped Config entry。
     // 先用旧值恢复当前进程，再把缺失值写入新配置，后续重启即可走正常路径。
     if (options.settings !== undefined && hasMissingPreferences(configuredPreferences, legacyPreferences)) {
-      void options.settings.update({ agentAdapterPreferences: preferenceSnapshot(this.preferences) }).catch(() => undefined)
+      this.persistPreferences()
     }
     for (const driver of drivers) {
       if (this.drivers.has(driver.descriptor.id)) throw new Error(`重复 Agent: ${driver.descriptor.id}`)
@@ -172,6 +172,8 @@ export class CodingNsCliAdapterRegistry {
   private readonly nativeSessions: CodingNsNativeSessionBridge | undefined
   private readonly settings: DshHostSettingsScope<CodingNsSettings> | undefined
   private readonly preferences = new Map<CodingNsCliAdapterId, { modelId?: string; effortId?: string; serviceTierId?: string }>()
+  /** 设置服务更新必须按选择顺序落盘；并发 update 会让旧快照覆盖新模型/档位。 */
+  private preferenceWriteTail: Promise<void> = Promise.resolve()
 
   /**
    * Host 启动后预热安装状态，并按驱动声明后台预热模型目录。
@@ -387,9 +389,16 @@ export class CodingNsCliAdapterRegistry {
       ...(serviceTierId ? { serviceTierId } : {}),
     }
     this.preferences.set(adapterId, preference)
+    this.persistPreferences()
+  }
+
+  private persistPreferences(): void {
     if (this.settings === undefined) return
     const snapshot = preferenceSnapshot(this.preferences)
-    void this.settings.update({ agentAdapterPreferences: snapshot }).catch(() => undefined)
+    this.preferenceWriteTail = this.preferenceWriteTail
+      .catch(() => undefined)
+      .then(() => this.settings!.update({ agentAdapterPreferences: snapshot }))
+      .catch(() => undefined)
   }
 
   /**
@@ -754,6 +763,7 @@ export class CodingNsCliAdapterRegistry {
     await Promise.all([...this.segmentedTurns.values()].map(({ iterator }) => iterator === null ? Promise.resolve() : closeAgentIterator(iterator)))
     this.segmentedTurns.clear()
     await Promise.all([...this.drivers.values()].map((driver) => driver.dispose?.()))
+    await this.preferenceWriteTail
   }
 
   private async readDetection(driver: CodingNsCliDriver): Promise<CodingNsCliDetection> {
