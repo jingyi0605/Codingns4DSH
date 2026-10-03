@@ -1,4 +1,6 @@
 import type { CodingNsCliAdapterDescriptor } from '../shared/contracts/cli-adapter.js'
+import { insertDelegationCarrier } from '../shared/delegation-carrier.js'
+export { encodeDelegationCarrier, insertDelegationCarrier, parseDelegationCarriers } from '../shared/delegation-carrier.js'
 
 /**
  * `/委派` 命令的纯逻辑层。
@@ -44,8 +46,8 @@ export function delegateAdapterOptions(
  * 从当前草稿里取出委派任务描述。
  *
  * 只认「委派」命令自己的两种拼写，且必须位于草稿开头：行内出现的 `/委派` 属于普通
- * 文本，而其它命令（如 `/model deepseek`）的草稿也不该被当成委派任务。取不到时由
- * Host 回退到会话最近一条用户消息。
+ * 文本，而其它命令（如 `/model deepseek`）的草稿也不该被当成委派任务。当前 M1
+ * 主链路由 carrier + Host rewrite 负责，函数仅保留给旧 Client 草稿兼容测试。
  */
 export function extractDelegateTask(draft: string, adapterId?: string, adapterName?: string): string {
   const trimmed = draft.trimStart()
@@ -65,4 +67,9 @@ export function extractDelegateTask(draft: string, adapterId?: string, adapterNa
     }
   }
   return rest
+}
+
+/** 把选择结果追加到草稿；重复目标按 adapterId 去重。 */
+export function appendDelegateCarrier(draft: string, adapterId: string, adapterName: string): string {
+  return insertDelegationCarrier(draft, adapterId, adapterName)
 }

@@ -3,10 +3,43 @@ import type { CodingNsCliAdapterDescriptor } from '../shared/contracts/cli-adapt
 import type { CodingNsRpcClient } from './features/types.js'
 import type { CodingNsLocale } from './locale.js'
 import { callCliRpc } from './cli-catalog.js'
-import { DELEGATE_COMMAND_NAME, delegateAdapterOptions, extractDelegateTask } from './delegate-plan.js'
+import { appendDelegateCarrier, DELEGATE_COMMAND_NAME, delegateAdapterOptions } from './delegate-plan.js'
 import { setDelegatePopupOptions, startDelegateUiDom } from './delegate-ui-dom.js'
 import { resolveDelegateIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 import { debugInfo, debugWarn } from '../shared/debug.js'
+import { encodeDelegationCarrier } from '../shared/delegation-carrier.js'
+
+const DELEGATE_REFERENCE_SOURCE = 'codingns-delegate'
+const delegateReferenceLabels = new Map<string, string>()
+
+interface TokenSpan {
+  readonly start: number
+  readonly end: number
+  readonly draftRev: number
+}
+
+interface ReferenceInsert {
+  readonly source: string
+  readonly ref: string
+  readonly label: string
+  readonly appearance?: 'session' | 'file' | 'folder'
+  readonly clipboardText: string
+}
+
+interface InputTriggerSource {
+  readonly trigger: '@'
+  readonly name: string
+  candidates(session: { readonly sessionId: string }, request: { readonly query: string; readonly signal: AbortSignal }): Promise<readonly { readonly name: string; readonly label: string; readonly value?: string; readonly icon?: 'session' }[]>
+  onPick(pick: { readonly candidate: { readonly name: string; readonly label?: string; readonly value?: string }; readonly span: TokenSpan }): { readonly insert: ReferenceInsert }
+  readonly codec: {
+    clipboardText(ref: string): string
+    serialize(ref: string, signal: AbortSignal): Promise<string>
+  }
+}
+
+interface InputTriggersService {
+  registerSource(source: InputTriggerSource): () => void
+}
 
 /**
  * `/委派` 命令：把一个任务异步派发给所选外部 Agent，落地为 DSH 原生可续子会话。
@@ -50,16 +83,13 @@ interface DelegateCapability {
   readonly message: string
 }
 
-interface DelegateResult {
-  readonly ok: boolean
-  readonly adapterId: string
-  readonly childSessionId?: string
-  readonly error?: string
-}
-
 /** Client 侧可用的会话输入面；用来读取草稿并把委派任务取出来。 */
 interface SessionInputFace {
-  readonly state: { getSnapshot(): { readonly draft: string } }
+  readonly state: { getSnapshot(): { readonly draft: string; readonly draftRev?: number } }
+  /** DSH 0.2 的输入外壳提供当前光标选择；旧版本没有该方法。 */
+  caretSpan?(): { readonly start: number; readonly end: number }
+  insertReference?(reference: ReferenceInsert, span: TokenSpan): boolean
+  setDraft?(text: string): void
   notify(level: 'info' | 'error', text: string): void
 }
 
@@ -114,6 +144,7 @@ function registerDelegateCommandIn(ctx: Context, options: RegisterDelegateComman
   }
   const t = options.locale.bind('codingns')
   try {
+    registerDelegateReferenceSource(ctx, options)
     // 注册必须由本作用域的 effect 持有：commandUi.register 的 disposer 只在显式
     // 调用时才移除命令，effect 保证停用时一定会调用它。
     ctx.effect(() => commandUi.register({
@@ -141,14 +172,34 @@ function registerDelegateCommandIn(ctx: Context, options: RegisterDelegateComman
           return list
         },
         async onSelect(option, session) {
-          const task = readDelegateTask(ctx, session.sessionId, option.id, option.label)
-          const result = await callCliRpc<DelegateResult>(options.rpc, 'delegate', {
-            sessionId: session.sessionId,
-            adapterId: option.id,
-            prompt: task,
-          })
-          if (!result.ok) throw new Error(result.error ?? t('delegate.failed'))
-          notifySession(ctx, session.sessionId, 'info', t('delegate.started', { name: option.label }))
+          const input = readSessionInput(ctx, session.sessionId)
+          if (input === undefined) {
+            return
+          }
+          const snapshot = input.state.getSnapshot()
+          const draft = snapshot.draft ?? ''
+          delegateReferenceLabels.set(option.id, option.label)
+          const selection = input.caretSpan?.()
+          const span = snapshot.draftRev === undefined
+            ? undefined
+            : delegateCommandSpan(draft, snapshot.draftRev, selection) ?? (selection === undefined ? undefined : { ...selection, draftRev: snapshot.draftRev })
+          const inserted = span !== undefined && input.insertReference?.({
+            source: DELEGATE_REFERENCE_SOURCE,
+            ref: option.id,
+            label: option.label,
+            appearance: 'session',
+            clipboardText: `@${option.label}`,
+          }, span) === true
+          if (inserted) {
+            return
+          }
+          if (input.setDraft === undefined) {
+            input?.notify('error', t('delegate.draftUnsupported'))
+            return
+          }
+          // 旧版 DSH 没有结构化引用能力时保留 carrier 字符串回退；当前 rc.2
+          // 会走上面的 ReferenceChip 路径，不会再把内部 HTML 注释直接显示出来。
+          input.setDraft(appendDelegateCarrier(draft, option.id, option.label))
         },
       },
     }), 'codingns4dsh: delegate command')
@@ -159,29 +210,86 @@ function registerDelegateCommandIn(ctx: Context, options: RegisterDelegateComman
   }
 }
 
-/** 读取当前草稿里 `/委派` 之后的任务描述；取不到时留空，由 Host 回退到最近一条用户消息。 */
-function readDelegateTask(ctx: Context, sessionId: string, adapterId: string, adapterLabel: string): string {
-  const draft = readDraft(ctx, sessionId)
-  return extractDelegateTask(draft, adapterId, adapterLabel)
+/**
+ * 找到当前 `/委派` 命令令牌，供 popupSelect 选择结果直接替换为 chip。
+ * 命令弹层的 onSelect 在消费令牌前触发，此时公开的 caretSpan 可能只是折叠光标，
+ * 因而不能依赖它来推断命令范围。
+ */
+function delegateCommandSpan(
+  draft: string,
+  draftRev: number,
+  selection?: { readonly start: number; readonly end: number },
+): TokenSpan | undefined {
+  const caret = selection?.end ?? draft.length
+  const token = /\/(?:delegate|委派)(?=\s|$)/gu
+  let match: RegExpExecArray | null
+  while ((match = token.exec(draft)) !== null) {
+    const start = match.index
+    const end = start + match[0].length
+    const before = draft[start - 1]
+    // 只接受命令边界；普通文本中的同名字符串不能被误替换。
+    if (start > 0 && before !== undefined && !/\s/u.test(before)) continue
+    if (caret >= start && caret <= end + 1) return { start, end, draftRev }
+    // 选择菜单可能把光标留在令牌末尾之后的一个空格，仍视为当前命令。
+    if (caret > end && draft.slice(end, caret).trim() === '') return { start, end, draftRev }
+  }
+  return undefined
 }
 
-function readDraft(ctx: Context, sessionId: string): string {
+/** 注册结构化 Agent 引用源：显示层使用 chip，提交层再序列化为 Host carrier。 */
+function registerDelegateReferenceSource(ctx: Context, options: RegisterDelegateCommandOptions): void {
+  const inputTriggers = readService<InputTriggersService>(ctx, 'inputTriggers')
+  if (inputTriggers === undefined || typeof inputTriggers.registerSource !== 'function') return
+  const source: InputTriggerSource = {
+    trigger: '@',
+    name: DELEGATE_REFERENCE_SOURCE,
+    async candidates(session, request) {
+      try {
+        const catalog = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(options.rpc, 'catalog', { sessionId: session.sessionId })
+        const query = request.query.trim().toLowerCase()
+        const available = delegateAdapterOptions(catalog)
+        // 让输入框中的 chip 也能按同一份目录补 Provider Logo。
+        setDelegatePopupOptions(available)
+        return available
+          .filter((option) => query === '' || option.id.toLowerCase().includes(query) || option.label.toLowerCase().includes(query))
+          .map((option) => {
+            delegateReferenceLabels.set(option.id, option.label)
+            return { name: option.id, label: option.label, value: option.id, icon: 'session' as const }
+          })
+      } catch {
+        return []
+      }
+    },
+    onPick(pick) {
+      const ref = pick.candidate.value ?? pick.candidate.name
+      const label = pick.candidate.label?.trim() || delegateReferenceLabels.get(ref) || ref
+      delegateReferenceLabels.set(ref, label)
+      return { insert: { source: DELEGATE_REFERENCE_SOURCE, ref, label, appearance: 'session', clipboardText: `@${label}` } }
+    },
+    codec: {
+      clipboardText(ref) {
+        return `@${delegateReferenceLabels.get(ref) || ref}`
+      },
+      async serialize(ref) {
+        const label = delegateReferenceLabels.get(ref) || ref
+        return encodeDelegationCarrier(ref, label)
+      },
+    },
+  }
   try {
-    const actx = readSessions(ctx)?.scope(sessionId)
-    if (actx === undefined) return ''
-    return readConversation(ctx)?.input.for(actx).state.getSnapshot().draft ?? ''
-  } catch {
-    return ''
+    ctx.effect(() => inputTriggers.registerSource(source), 'codingns4dsh: delegate reference source')
+  } catch (error) {
+    debugWarn('codingns4dsh: Agent 引用源注册失败', { error: error instanceof Error ? error.message : String(error) })
   }
 }
 
-function notifySession(ctx: Context, sessionId: string, level: 'info' | 'error', text: string): void {
+function readSessionInput(ctx: Context, sessionId: string): SessionInputFace | undefined {
   try {
     const actx = readSessions(ctx)?.scope(sessionId)
-    if (actx === undefined) return
-    readConversation(ctx)?.input.for(actx).notify(level, text)
+    if (actx === undefined) return undefined
+    return readConversation(ctx)?.input.for(actx)
   } catch {
-    // 通知失败不影响已经落地的委派。
+    return undefined
   }
 }
 

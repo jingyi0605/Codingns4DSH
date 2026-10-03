@@ -30,6 +30,16 @@ export const DELEGATE_MENU_ROW_ATTRIBUTE = 'data-codingns-delegate-row'
 export const DELEGATE_MENU_PROXY_ATTRIBUTE = 'data-codingns-delegate-proxy'
 /** 插件在委派弹层适配器行前插入的图标标记。 */
 export const DELEGATE_POPUP_LOGO_ATTRIBUTE = 'data-codingns-delegate-logo'
+/** 委派输入 chip 前插入的 Provider Logo 标记。 */
+export const DELEGATE_CHIP_LOGO_ATTRIBUTE = 'data-codingns-delegate-chip-logo'
+/** DSH 消息时间线中由插件投影的委派 Agent chip 标记。 */
+export const DELEGATE_TIMELINE_CHIP_ATTRIBUTE = 'data-codingns-delegate-timeline-chip'
+/** 时间线 chip 保存的原始 carrier，停用插件时用于恢复 React 之外的 DOM。 */
+export const DELEGATE_TIMELINE_RAW_ATTRIBUTE = 'data-codingns-delegate-timeline-raw'
+/** DSH 时间线中由 Host 改写消息投影的委派任务卡片标记。 */
+export const DELEGATE_TIMELINE_CARD_ATTRIBUTE = 'data-codingns-delegation-card'
+/** 委派卡片保存原始指令，停用插件时用于恢复 React 之外的 DOM。 */
+export const DELEGATE_TIMELINE_CARD_RAW_ATTRIBUTE = 'data-codingns-delegation-card-raw'
 /** 插件样式标签的幂等键。 */
 export const DELEGATE_UI_STYLE_ID = 'codingns4dsh-delegate-ui-style'
 
@@ -44,6 +54,17 @@ const LABEL_TEXT_SELECTOR = '[class*="labelText"]'
 const DELEGATE_UI_STYLE_TEXT = `[${DELEGATE_MENU_ROW_ATTRIBUTE}]:not([${DELEGATE_MENU_PROXY_ATTRIBUTE}]){display:none!important}`
   + `[${DELEGATE_MENU_PROXY_ATTRIBUTE}][data-active="true"]{background:var(--dsw-alias-interactive-bg-hover)}`
   + `[${DELEGATE_POPUP_LOGO_ATTRIBUTE}]{width:16px;height:16px;flex:none;object-fit:contain;border-radius:3px;margin-right:2px}`
+  + `[${DELEGATE_CHIP_LOGO_ATTRIBUTE}]{width:14px;height:14px;flex:none;align-self:center;object-fit:contain;border-radius:3px;margin-right:2px}`
+  // ReferenceInsert 的 session 图标是通用 SVG；已有品牌 Logo 时隐藏它，避免出现双图标。
+  + `[data-composer-chip="codingns-delegate"]:has([${DELEGATE_CHIP_LOGO_ATTRIBUTE}]) svg{display:none!important}`
+  + `[${DELEGATE_TIMELINE_CHIP_ATTRIBUTE}]{display:inline-flex;align-items:center;vertical-align:baseline;gap:3px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);white-space:nowrap;font-size:.95em;line-height:1.45}`
+  + `[${DELEGATE_TIMELINE_CHIP_ATTRIBUTE}] img{width:14px;height:14px;flex:none;object-fit:contain;border-radius:3px}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}]{display:flex;flex-direction:column;gap:8px;margin:2px 0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2));border-radius:10px;background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.06));line-height:1.5}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-title]{display:flex;align-items:center;gap:6px;font-weight:600}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-targets]{display:flex;flex-wrap:wrap;gap:5px}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-target]{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:999px;background:var(--dsw-alias-interactive-bg-hover);font-size:.9em}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-task]{white-space:pre-wrap;overflow-wrap:anywhere}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-status]{color:var(--dsw-alias-label-secondary,GrayText);font-size:.88em}`
 
 /** 克隆行 → 真实行；真实行被 React 重建时据此判定需要重建克隆。 */
 const proxySources = new WeakMap<Element, Element>()
@@ -107,12 +128,15 @@ export function startDelegateUiDom(options: DelegateUiDomOptions): DelegateUiDom
 
   const runScan = (): void => {
     if (disposed || dom === undefined) return
-    // 提前退出：菜单与弹层都没打开时，文档里任何一次改动都不该触发整棵树的查询。
-    // 观察器挂在 documentElement 且带 subtree，流式输出期间改动极频繁，这步是必需的。
+    // 菜单只在存在 listbox 时扫描；输入 chip 则始终检查，因为它可能在菜单关闭后
+    // 才完成 Decorator 渲染。观察器挂在 documentElement 且带 subtree，扫描必须保持幂等。
     const listboxes = [...dom.querySelectorAll(MENU_LISTBOX_SELECTOR)]
-    if (listboxes.length === 0) return
-    relocateMenuRow(listboxes, options.menuLabel())
-    decoratePopupRows(listboxes, options.popupPlaceholder(), iconUrl)
+    if (listboxes.length > 0) {
+      relocateMenuRow(listboxes, options.menuLabel())
+      decoratePopupRows(listboxes, options.popupPlaceholder(), iconUrl)
+    }
+    decorateReferenceChips(dom, iconUrl)
+    decorateTimelineMessages(dom, iconUrl)
   }
 
   const scan = (): void => {
@@ -329,6 +353,230 @@ function decoratePopupRows(listboxes: readonly Element[], placeholder: string, i
   }
 }
 
+/**
+ * 给 DSH 原生 ReferenceChip 补上外部 Agent 的品牌图标。
+ *
+ * ReferenceInsert 的 appearance 只支持 session/file/folder，不能传入
+ * Provider 资产。只扫描本插件自己的 chip，并按 chip 标题反查委派目录；
+ * 目录尚未就绪时保留 DSH 的通用 session 图标，避免误标其它引用。
+ */
+function decorateReferenceChips(dom: Document, iconUrl: (adapterId: string) => string | undefined): void {
+  for (const chip of dom.querySelectorAll('[data-composer-chip="codingns-delegate"]')) {
+    const labelNode = chip.querySelector('[title]')
+    const label = labelNode?.getAttribute('title')?.trim()
+      || labelNode?.textContent?.trim()
+      || chip.textContent?.trim()
+      || ''
+    const adapterId = adapterIdForLabel(label)
+    if (adapterId === undefined) continue
+    const src = iconUrl(adapterId)
+    if (src === undefined || src === '') continue
+    const existing = chip.querySelector(`[${DELEGATE_CHIP_LOGO_ATTRIBUTE}]`)
+    if (existing !== null) {
+      if (existing.getAttribute('src') !== src) existing.setAttribute('src', src)
+      continue
+    }
+    const logo = dom.createElement('img')
+    logo.setAttribute(DELEGATE_CHIP_LOGO_ATTRIBUTE, adapterId)
+    logo.setAttribute('src', src)
+    logo.setAttribute('alt', '')
+    logo.setAttribute('aria-hidden', 'true')
+    chip.insertBefore(logo, chip.firstChild)
+  }
+}
+
+/**
+ * 将已经提交到 DSH 时间线的 carrier 投影为可读的 Agent chip。
+ *
+ * DSH 的输入 codec 只有一个序列化结果：Host 需要的 carrier；因此 durable
+ * `user/message` 也会携带这段传输文本。这里仅处理 DSH 的 userRow/bubble，
+ * 不触碰 assistant、代码块和普通页面文本，避免把模型内容中的 carrier 改写。
+ */
+function decorateTimelineMessages(dom: Document, iconUrl: (adapterId: string) => string | undefined): void {
+  const rows = [...dom.querySelectorAll('[class*="userRow"]')]
+  // 发送尚未落成 durable user/message 时，DSH 的队列预览只有
+  // data-submission-echo + preview 类名；也要同步清理，避免用户在短暂回显阶段看到 carrier。
+  for (const row of dom.querySelectorAll('[data-submission-echo]')) {
+    if (!rows.includes(row)) rows.push(row)
+  }
+  for (const row of rows) {
+    const bubble = row.querySelector('[class*="bubble"]') ?? row.querySelector('[class*="preview"]')
+    if (bubble === null) continue
+    decorateTimelineNode(bubble, dom, iconUrl)
+  }
+}
+
+function decorateTimelineNode(node: Node, dom: Document, iconUrl: (adapterId: string) => string | undefined): void {
+  if (node.nodeType === 3) {
+    const value = node.nodeValue ?? ''
+    if (value.includes('<!--codingns:delegate:') || value.includes('[CodingNS 委派指令]')) replaceTimelineTextNode(node, value, dom, iconUrl)
+    return
+  }
+  if (node.nodeType !== 1
+    || (node as Element).hasAttribute(DELEGATE_TIMELINE_CHIP_ATTRIBUTE)
+    || (node as Element).hasAttribute(DELEGATE_TIMELINE_CARD_ATTRIBUTE)) return
+  for (const child of [...node.childNodes]) decorateTimelineNode(child, dom, iconUrl)
+}
+
+const TIMELINE_CARRIER_PATTERN = /<!--codingns:delegate:v1:([^:>]+):([^>]+)-->/gu
+
+export interface DelegationTimelineMention {
+  readonly raw: string
+  readonly adapterId: string
+  readonly label: string
+  readonly start: number
+  readonly end: number
+}
+
+export interface DelegationTimelineTarget {
+  readonly adapterId: string
+  readonly label: string
+}
+
+export interface DelegationTimelineCard {
+  readonly raw: string
+  readonly task: string
+  readonly targets: readonly DelegationTimelineTarget[]
+}
+
+const DELEGATION_INSTRUCTION_PATTERN = /\[CodingNS 委派指令\]\s*\n任务：([\s\S]*?)\n允许使用的外部 Agent：\s*\n([\s\S]*?)(?=\n请先根据任务语义制定简短的角色和步骤计划：|\n然后调用已有 agent_subagent 工具执行委派。|$)/u
+const DELEGATION_TARGET_PATTERN = /^-\s*([^\s（(]+)\s*[（(]([^，,）)]+)(?:[，,][^）)]*)?[）)]\s*$/gmu
+
+/** 解析 Host 改写后的委派指令，提取用户真正关心的任务和目标 Agent。 */
+export function parseDelegationTimelineCard(value: string): DelegationTimelineCard | undefined {
+  const match = DELEGATION_INSTRUCTION_PATTERN.exec(value)
+  if (match === null) return undefined
+  // 旧版 slash 命令可能把命令本身序列化为 `/`，Host instruction 中会留下
+  // `/ 任务`；它不是用户任务的一部分，必须在卡片里隐藏。
+  const task = (match[1] ?? '').trim().replace(/^\/\s*/u, '').trim()
+  if (task === '') return undefined
+  const targets: DelegationTimelineTarget[] = []
+  for (const target of (match[2] ?? '').matchAll(DELEGATION_TARGET_PATTERN)) {
+    const adapterId = target[1]?.trim() ?? ''
+    const label = target[2]?.trim() ?? ''
+    if (adapterId === '' || label === '' || targets.some((item) => item.adapterId === adapterId)) continue
+    targets.push({ adapterId, label })
+  }
+  if (targets.length === 0) return undefined
+  return { raw: value, task, targets }
+}
+
+/** 解析时间线文本中的有效 carrier；无效编码原样保留，避免误删用户内容。 */
+export function parseDelegationTimelineCarriers(value: string): readonly DelegationTimelineMention[] {
+  const mentions: DelegationTimelineMention[] = []
+  for (const match of value.matchAll(TIMELINE_CARRIER_PATTERN)) {
+    const carrierStart = match.index ?? -1
+    const carrier = match[0] ?? ''
+    const adapterId = decodeCarrierPart(match[1])
+    const label = decodeCarrierPart(match[2])
+    if (carrierStart < 0 || carrier === '' || adapterId === undefined || label === undefined) continue
+    const mention = `@${label}`
+    const start = carrierStart >= mention.length && value.slice(carrierStart - mention.length, carrierStart) === mention
+      ? carrierStart - mention.length
+      : carrierStart
+    const raw = value.slice(start, carrierStart + carrier.length)
+    mentions.push({ raw, adapterId, label, start, end: start + raw.length })
+  }
+  return mentions
+}
+
+function replaceTimelineTextNode(node: Node, value: string, dom: Document, iconUrl: (adapterId: string) => string | undefined): void {
+  const card = parseDelegationTimelineCard(value)
+  if (card !== undefined && node.parentNode !== null) {
+    node.parentNode.replaceChild(buildTimelineCard(dom, card, iconUrl), node)
+    return
+  }
+  const matches = parseDelegationTimelineCarriers(value)
+  if (matches.length === 0 || node.parentNode === null) return
+  const fragment = dom.createDocumentFragment()
+  let cursor = 0
+  for (const match of matches) {
+    if (match.start < cursor) continue
+    if (match.start > cursor) fragment.append(dom.createTextNode(value.slice(cursor, match.start)))
+    fragment.append(buildTimelineChip(dom, match.raw, match.adapterId, match.label, iconUrl(match.adapterId)))
+    cursor = match.end
+  }
+  if (cursor === 0) return
+  if (cursor < value.length) fragment.append(dom.createTextNode(value.slice(cursor)))
+  node.parentNode.replaceChild(fragment, node)
+}
+
+function buildTimelineCard(
+  dom: Document,
+  card: DelegationTimelineCard,
+  iconUrl: (adapterId: string) => string | undefined,
+): HTMLElement {
+  const root = dom.createElement('div')
+  root.setAttribute(DELEGATE_TIMELINE_CARD_ATTRIBUTE, '')
+  root.setAttribute(DELEGATE_TIMELINE_CARD_RAW_ATTRIBUTE, card.raw)
+
+  const title = dom.createElement('div')
+  title.setAttribute('data-codingns-delegation-card-title', '')
+  title.textContent = '委派任务'
+
+  const targets = dom.createElement('div')
+  targets.setAttribute('data-codingns-delegation-card-targets', '')
+  for (const target of card.targets) {
+    const badge = dom.createElement('span')
+    badge.setAttribute('data-codingns-delegation-card-target', target.adapterId)
+    const logoUrl = iconUrl(target.adapterId)
+    if (logoUrl !== undefined && logoUrl !== '') {
+      const logo = dom.createElement('img')
+      logo.src = logoUrl
+      logo.alt = ''
+      logo.setAttribute('aria-hidden', 'true')
+      badge.append(logo)
+    }
+    const label = dom.createElement('span')
+    label.textContent = `${target.label}（${target.adapterId}）`
+    badge.append(label)
+    targets.append(badge)
+  }
+
+  const task = dom.createElement('div')
+  task.setAttribute('data-codingns-delegation-card-task', '')
+  task.textContent = card.task
+  const status = dom.createElement('div')
+  status.setAttribute('data-codingns-delegation-card-status', '')
+  status.textContent = '委派中'
+  root.append(title, targets, task, status)
+  return root
+}
+
+function decodeCarrierPart(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined
+  try {
+    const decoded = decodeURIComponent(value).trim()
+    return decoded === '' ? undefined : decoded
+  } catch {
+    return undefined
+  }
+}
+
+function buildTimelineChip(
+  dom: Document,
+  raw: string,
+  adapterId: string,
+  label: string,
+  iconUrl: string | undefined,
+): HTMLElement {
+  const chip = dom.createElement('span')
+  chip.setAttribute(DELEGATE_TIMELINE_CHIP_ATTRIBUTE, adapterId)
+  chip.setAttribute(DELEGATE_TIMELINE_RAW_ATTRIBUTE, raw)
+  chip.setAttribute('title', `@${label}`)
+  if (iconUrl !== undefined && iconUrl !== '') {
+    const logo = dom.createElement('img')
+    logo.setAttribute('src', iconUrl)
+    logo.setAttribute('alt', '')
+    logo.setAttribute('aria-hidden', 'true')
+    chip.append(logo)
+  }
+  const text = dom.createElement('span')
+  text.textContent = `@${label}`
+  chip.append(text)
+  return chip
+}
+
 /** 通过插件自己的搜索占位符识别委派弹层，避免影响其它 popupSelect 命令。 */
 function findDelegatePopupListbox(listboxes: readonly Element[], placeholder: string): Element | undefined {
   for (const listbox of listboxes) {
@@ -357,6 +605,17 @@ function removeProxies(scope: Element): void {
 function removeDelegateNodes(dom: Document): void {
   for (const proxy of dom.querySelectorAll(`[${DELEGATE_MENU_PROXY_ATTRIBUTE}]`)) proxy.remove()
   for (const logo of dom.querySelectorAll(`[${DELEGATE_POPUP_LOGO_ATTRIBUTE}]`)) logo.remove()
+  for (const logo of dom.querySelectorAll(`[${DELEGATE_CHIP_LOGO_ATTRIBUTE}]`)) logo.remove()
+  for (const chip of dom.querySelectorAll(`[${DELEGATE_TIMELINE_CHIP_ATTRIBUTE}]`)) {
+    const raw = chip.getAttribute(DELEGATE_TIMELINE_RAW_ATTRIBUTE)
+    const parent = chip.parentNode
+    if (raw !== null && parent !== null) parent.replaceChild(dom.createTextNode(raw), chip)
+  }
+  for (const card of dom.querySelectorAll(`[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}]`)) {
+    const raw = card.getAttribute(DELEGATE_TIMELINE_CARD_RAW_ATTRIBUTE)
+    const parent = card.parentNode
+    if (raw !== null && parent !== null) parent.replaceChild(dom.createTextNode(raw), card)
+  }
   for (const row of dom.querySelectorAll(`[${DELEGATE_MENU_ROW_ATTRIBUTE}]`)) row.removeAttribute(DELEGATE_MENU_ROW_ATTRIBUTE)
   // 隐藏规则是插件全局样式，停用时必须一并收回，避免残留选择器影响后续渲染。
   dom.querySelector(`style[data-plugin-css="${DELEGATE_UI_STYLE_ID}"]`)?.remove()
