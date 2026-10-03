@@ -20,7 +20,7 @@ export interface TouchSample {
 }
 
 export interface SidebarGestureConfig {
-  /** 触发阈值（像素）。 */
+  /** 兼容设置中的触发阈值（像素）；实际阈值不会低于视口宽度的 50%。 */
   readonly thresholdPx: number
   /** 起手区域：`avoid` 避开系统边缘热区。 */
   readonly edgeMode: 'avoid' | 'edge'
@@ -32,16 +32,26 @@ export interface SidebarGestureConfig {
   readonly edgeZonePx?: number
   /** 方向锁定比（水平位移至少是垂直位移的多少倍），默认 1.5。 */
   readonly directionRatio?: number
+  /** 最低水平速度（像素/毫秒），默认 0.4，即约 400 像素/秒。 */
+  readonly minVelocityPxPerMs?: number
+  /** 速度采样窗口（毫秒），默认 120。 */
+  readonly velocityWindowMs?: number
 }
 
 export interface SidebarGestureDecision {
   readonly action: SidebarGestureAction
   /** 稳定原因码，用于诊断与测试断言。 */
-  readonly reason: 'ok' | 'samples' | 'config' | 'edge' | 'threshold' | 'direction'
+  readonly reason: 'ok' | 'samples' | 'config' | 'edge' | 'threshold' | 'direction' | 'velocity'
 }
 
 export const DEFAULT_GESTURE_EDGE_ZONE_PX = 24
 export const DEFAULT_GESTURE_DIRECTION_RATIO = 1.5
+/** 侧栏全局手势至少跨过半个视口，避免轻微横移误触。 */
+export const DEFAULT_GESTURE_DISTANCE_RATIO = 0.5
+/** 采用约 400px/s 的最低水平速度，避免缓慢拖动触发开合。 */
+export const DEFAULT_GESTURE_MIN_VELOCITY_PX_PER_MS = 0.4
+/** 只看最近一小段轨迹，避免停顿稀释释放瞬间的滑动速度。 */
+export const DEFAULT_GESTURE_VELOCITY_WINDOW_MS = 120
 /** 与 DSH 窄屏断点保持一致；超过该宽度不安装全局触摸监听。 */
 export const DEFAULT_MOBILE_GESTURE_VIEWPORT_MAX_PX = 1024
 
@@ -59,9 +69,14 @@ export function detectSidebarGesture(samples: readonly TouchSample[], config: Si
   }
   const dx = last.x - first.x
   const dy = last.y - first.y
-  if (Math.abs(dx) < thresholdPx) return { action: 'ignore', reason: 'threshold' }
+  const effectiveThresholdPx = resolveEffectiveThresholdPx(thresholdPx, viewportWidth)
+  if (Math.abs(dx) < effectiveThresholdPx) return { action: 'ignore', reason: 'threshold' }
   const ratio = config.directionRatio ?? DEFAULT_GESTURE_DIRECTION_RATIO
   if (Math.abs(dx) < Math.abs(dy) * ratio) return { action: 'ignore', reason: 'direction' }
+  const minVelocity = config.minVelocityPxPerMs ?? DEFAULT_GESTURE_MIN_VELOCITY_PX_PER_MS
+  if (!Number.isFinite(minVelocity) || minVelocity <= 0) return { action: 'ignore', reason: 'config' }
+  const velocity = horizontalVelocity(samples, config.velocityWindowMs ?? DEFAULT_GESTURE_VELOCITY_WINDOW_MS)
+  if (velocity === undefined || velocity < minVelocity) return { action: 'ignore', reason: 'velocity' }
   const inward = dx > 0 ? 'left' : 'right'
   const action = config.mapping === 'swap' ? (inward === 'left' ? 'right' : 'left') : inward
   return { action, reason: 'ok' }
@@ -136,6 +151,10 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
   const onResize = (): void => { refresh() }
 
   const onTouchStart = (event: unknown): void => {
+    if (touchCount(event) !== 1) {
+      resetTracking()
+      return
+    }
     const touch = firstTouch(event)
     if (touch === null) return
     // 横向滚动容器优先接收触摸。右栏里的代码块、长文本和表格经常需要
@@ -152,13 +171,17 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
     tracking = true
     claimed = false
     scrollableTouch = hasHorizontalScrollableTarget(touch)
-    // 右栏展开但宿主未暴露稳定 DOM 标记时，用横向滚动能力作为保守兜底；右栏
-    // 未展开时，聊天区域的横向滚动仍应让全局侧栏唤起手势通过。
+    // 横向滚动能力是内容优先级的稳定信号；消息中的表格、代码块和长文本都应
+    // 保留左右拖动，不应因为右栏当前未展开就被全局侧栏手势抢走。
     rightbarTouch = isExpandedRightbar() && (isRightbarTarget(touch) || scrollableTouch)
-    samples = [{ x: touch.x, y: touch.y, t: now() }]
+    samples = [{ x: touch.x, y: touch.y, t: eventTime(event) }]
   }
   const onTouchMove = (event: unknown): void => {
     if (!tracking) return
+    if (touchCount(event) > 1) {
+      resetTracking()
+      return
+    }
     const touch = firstTouch(event)
     if (touch === null) return
     // 某些 WebView 在 touchstart 时只暴露宿主节点，直到 touchmove 才能从
@@ -172,21 +195,18 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
       samples = []
       return
     }
-    samples.push({ x: touch.x, y: touch.y, t: now() })
-    // 事件目标在部分 WebView 中会在 touchmove 才暴露真实宿主；右栏归属也要
-    // 同步补探测，但横向滚动让位只对右栏生效，不能吞掉聊天界面的唤起手势。
+    samples.push({ x: touch.x, y: touch.y, t: eventTime(event) })
+    // 事件目标在部分 WebView 中会在 touchmove 才暴露真实宿主；右栏归属和横向
+    // 滚动祖先都要同步补探测，避免 Shadow DOM 或消息表格漏掉让位判断。
     rightbarTouch ||= isExpandedRightbar() && isRightbarTarget(touch)
-    if (rightbarTouch) scrollableTouch ||= hasHorizontalScrollableTarget(touch)
+    scrollableTouch ||= hasHorizontalScrollableTarget(touch)
     const config = resolveConfig(options)
     const horizontalDirection = detectHorizontalDirection(samples, config)
-    const contentConsumes = horizontalDirection !== null
-      && canScrollableTargetConsume(touch, horizontalDirection)
-    const shouldYieldToContent = rightbarTouch
-      && horizontalDirection !== null
-      && (horizontalDirection < 0 || (scrollableTouch && contentConsumes))
+    const shouldYieldToContent = horizontalDirection !== null
+      && (scrollableTouch || (rightbarTouch && horizontalDirection < 0))
     if (shouldYieldToContent) {
-      // 右栏右滑只有在内容位于可向右滚动的位置时才让位；左滑不负责收起右栏，
-      // 始终交给右栏内部的横向内容。这样右栏边缘的右滑仍然可以正常关闭。
+      // 可横向滚动内容无论当前是否处于滚动边界都优先接收手势，避免消息表格、
+      // 代码块在边界处的拖动被误判为侧栏开合；右栏非滚动面板的左滑仍交给面板。
       tracking = false
       claimed = false
       rightbarTouch = false
@@ -194,7 +214,7 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
       samples = []
       return
     }
-    if (!claimed && samples.length <= 24) {
+    if (!claimed) {
       const decision = detectSidebarGesture(samples, resolveConfig(options))
       if (decision.reason === 'ok') {
         const handled = applyAction(decision.action, horizontalDirection ?? undefined)
@@ -219,11 +239,7 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
     if (claimed) preventDefault(event)
   }
   const onTouchEnd = (): void => {
-    tracking = false
-    claimed = false
-    rightbarTouch = false
-    scrollableTouch = false
-    samples = []
+    resetTracking()
   }
   const onPopState = (): void => {
     if (!rightbarHistoryPushed) return
@@ -326,6 +342,14 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
     if (reported === undefined) leftCollapsedFallback = before === undefined ? false : !before
   }
 
+  const resetTracking = (): void => {
+    tracking = false
+    claimed = false
+    rightbarTouch = false
+    scrollableTouch = false
+    samples = []
+  }
+
   const attach = (): void => {
     if (active) return
     active = true
@@ -408,6 +432,10 @@ function resolveConfig(options: MobileSidebarGestureOptions): SidebarGestureConf
   }
 }
 
+function resolveEffectiveThresholdPx(thresholdPx: number, viewportWidth: number): number {
+  return Math.max(thresholdPx, viewportWidth * DEFAULT_GESTURE_DISTANCE_RATIO)
+}
+
 interface TouchPoint {
   readonly x: number
   readonly y: number
@@ -425,6 +453,14 @@ function firstTouch(event: unknown): TouchPoint | null {
   const y = (first as { clientY?: unknown }).clientY
   if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) return null
   return { x, y, target: (event as { target?: unknown }).target, path: composedPathOf(event) }
+}
+
+function touchCount(event: unknown): number {
+  if (typeof event !== 'object' || event === null) return 0
+  const list = (event as { touches?: unknown }).touches
+  if (typeof list !== 'object' || list === null) return 0
+  const length = (list as { length?: unknown }).length
+  return typeof length === 'number' && Number.isFinite(length) ? length : 0
 }
 
 function isEditableTouch(touch: TouchPoint): boolean {
@@ -468,35 +504,32 @@ function detectHorizontalDirection(samples: readonly TouchSample[], config: Side
   const ratio = config.directionRatio ?? DEFAULT_GESTURE_DIRECTION_RATIO
   if (!(Number.isFinite(thresholdPx)
     && thresholdPx > 0
-    && Math.abs(dx) >= thresholdPx
+    && Math.abs(dx) >= resolveEffectiveThresholdPx(thresholdPx, config.viewportWidth)
     && Math.abs(dx) >= Math.abs(dy) * ratio)) return null
   return dx > 0 ? 1 : -1
 }
 
-function canScrollableTargetConsume(touch: TouchPoint, direction: -1 | 1): boolean {
-  const visited = new Set<object>()
-  for (const target of [touch.target, ...touch.path]) {
-    let current: unknown = target
-    for (let depth = 0; depth < 64 && isObjectLike(current); depth += 1) {
-      if (visited.has(current)) break
-      visited.add(current)
-      if (canScrollableElementConsume(current, direction)) return true
-      current = parentElementOf(current)
+/** 计算最近速度窗口内的水平速度；反向回滑不算作有效速度。 */
+function horizontalVelocity(samples: readonly TouchSample[], windowMs: number): number | undefined {
+  if (samples.length < 2 || !Number.isFinite(windowMs) || windowMs <= 0) return undefined
+  const first = samples[0]!
+  const last = samples[samples.length - 1]!
+  const totalDx = last.x - first.x
+  if (totalDx === 0) return 0
+
+  let baseline = first
+  for (const sample of samples) {
+    const elapsed = last.t - sample.t
+    if (elapsed > 0 && elapsed <= windowMs) {
+      baseline = sample
+      break
     }
   }
-  return false
-}
-
-function canScrollableElementConsume(element: object, direction: -1 | 1): boolean {
-  const overflowX = readOverflowX(element)
-  if (overflowX !== 'auto' && overflowX !== 'scroll' && overflowX !== 'overlay') return false
-  const scrollWidth = finiteNumber((element as { scrollWidth?: unknown }).scrollWidth)
-  const clientWidth = finiteNumber((element as { clientWidth?: unknown }).clientWidth)
-  const scrollLeft = finiteNumber((element as { scrollLeft?: unknown }).scrollLeft)
-  if (scrollWidth === undefined || clientWidth === undefined || scrollLeft === undefined) return false
-  const maxScrollLeft = Math.max(0, scrollWidth - clientWidth)
-  if (maxScrollLeft <= 1) return false
-  return direction > 0 ? scrollLeft > 1 : scrollLeft < maxScrollLeft - 1
+  const elapsed = last.t - baseline.t
+  if (!(elapsed > 0)) return undefined
+  const dx = last.x - baseline.x
+  if (dx === 0 || Math.sign(dx) !== Math.sign(totalDx)) return 0
+  return Math.abs(dx) / elapsed
 }
 
 function composedPathOf(event: object): readonly unknown[] {
@@ -536,7 +569,8 @@ function isEditableTarget(target: unknown): boolean {
 }
 
 /**
- * 判断触摸点是否位于可横向滚动的元素或其后代中。
+ * 判断触摸点是否位于可横向滚动的元素或其后代中。消息里的表格、代码块和长文本
+ * 包装器都依赖这个判断获得全局侧栏手势让位。
  *
  * 必须同时具备横向滚动样式和实际的 `scrollWidth > clientWidth`。只设置
  * `overflow: auto` 的聊天纵向列表不能因此抢走左右侧栏唤起手势。
@@ -608,4 +642,12 @@ function finiteNumber(value: unknown): number | undefined {
 function now(): number {
   const performanceLike = (globalThis as unknown as { performance?: { now?: () => number } }).performance
   return typeof performanceLike?.now === 'function' ? performanceLike.now() : Date.now()
+}
+
+function eventTime(event: unknown): number {
+  if (typeof event === 'object' && event !== null) {
+    const timeStamp = (event as { timeStamp?: unknown }).timeStamp
+    if (typeof timeStamp === 'number' && Number.isFinite(timeStamp)) return timeStamp
+  }
+  return now()
 }
