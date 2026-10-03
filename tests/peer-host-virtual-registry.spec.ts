@@ -72,6 +72,52 @@ test('Registry 保留混合 Workspace 顺序并持久化 move 结果', async () 
   assert.deepEqual(saved, { version: 1, orderedWorkspaceIds: [remote, local] })
 })
 
+test('Registry 串行化并发 move，避免顺序文件写入互相覆盖', async () => {
+  let saveCount = 0
+  let activeSaves = 0
+  let maxActiveSaves = 0
+  let signalFirstSave!: () => void
+  const firstSaveStarted = new Promise<void>((resolve) => { signalFirstSave = resolve })
+  let unblock!: () => void
+  const saveBlocked = new Promise<void>((resolve) => { unblock = resolve })
+  let firstSave = true
+  let saved: unknown = null
+  const registry = new VirtualWorkspaceRegistry({
+    orderStore: {
+      load: () => ({ version: 1, orderedWorkspaceIds: [] }),
+      save: async (order) => {
+        saveCount += 1
+        activeSaves += 1
+        maxActiveSaves = Math.max(maxActiveSaves, activeSaves)
+        saved = order
+        if (firstSave) {
+          firstSave = false
+          signalFirstSave()
+          await saveBlocked
+        }
+        activeSaves -= 1
+      },
+    },
+  })
+  const localResult = result('local-host', null, 'w-local', 's-local')
+  const remoteResult = result('peer-a', 'peer-a', 'w-remote', 's-remote')
+  registry.replace([localResult, remoteResult])
+  const [local, remote] = registry.listWorkspaceIds()
+  assert.ok(local && remote)
+
+  const first = registry.move(remote, local)
+  await firstSaveStarted
+  const second = registry.move(local, remote)
+  await Promise.resolve()
+  assert.equal(saveCount, 1)
+  assert.equal(maxActiveSaves, 1)
+  unblock()
+  await Promise.all([first, second])
+  assert.equal(maxActiveSaves, 1)
+  assert.deepEqual(registry.listWorkspaceIds(), [local, remote])
+  assert.deepEqual(saved, { version: 1, orderedWorkspaceIds: [local, remote] })
+})
+
 test('Registry hydrate 过滤未知顺序项并追加新 Workspace', async () => {
   const registry = new VirtualWorkspaceRegistry({ orderStore: {
     load: () => ({ version: 1, orderedWorkspaceIds: ['missing', createVirtualWorkspaceId('peer-a', 'w-2')] }),
@@ -94,4 +140,16 @@ test('远端 Workspace 暂时离线后恢复到原混合顺序', () => {
   assert.deepEqual(registry.listPersistedWorkspaceIds(), [localId, remoteId])
   registry.replace([local, remote])
   assert.deepEqual(registry.listWorkspaceIds(), [localId, remoteId])
+})
+
+test('原生列表先到达的未知虚拟 Workspace 可先写入墓碑顺序', async () => {
+  const registry = new VirtualWorkspaceRegistry()
+  const local = createVirtualWorkspaceId('local-host', 'local')
+  const remote = createVirtualWorkspaceId('peer-a', 'remote')
+
+  const order = await registry.move(remote, local)
+
+  assert.deepEqual(order, [remote, local])
+  assert.deepEqual(registry.listPersistedWorkspaceIds(), [remote, local])
+  assert.deepEqual(registry.listWorkspaceIds(), [])
 })

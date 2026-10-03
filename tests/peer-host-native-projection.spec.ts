@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createPeerHostNativeProjection } from '../data/build/dist/client/peer-host-native-projection.js'
+import { createPeerHostNativeProjection, createPeerHostWorkspaceDisplayPath } from '../data/build/dist/client/peer-host-native-projection.js'
 import { createVirtualSessionId, createVirtualWorkspaceId } from '../data/build/dist/shared/index.js'
 
 interface SessionShape {
@@ -79,7 +79,7 @@ test('投影只输出虚拟 ID、标题与运行态，本机资源不参与投�
 
   assert.deepEqual(projection.workspaces(), [{
     workspaceId: createVirtualWorkspaceId('peer-1', 'workspace-1'),
-    path: '/Users/dev/project-a',
+    path: createPeerHostWorkspaceDisplayPath(createVirtualWorkspaceId('peer-1', 'workspace-1')),
     // Host 归属改由侧栏彩色标签表达，标题保持纯工作区名。
     title: '远端工作区',
     sessionIds: [createVirtualSessionId('peer-1', 'session-1')],
