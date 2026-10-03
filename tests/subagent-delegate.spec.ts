@@ -10,6 +10,8 @@ import { normalizeSubagentBridgeSettings, SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS 
 import { setAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry-holder.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 import { DELEGATE_COMMAND_NAME, delegateAdapterOptions, extractDelegateTask } from '../data/build/dist/client/delegate-plan.js'
+import { appendDelegateCarrier, parseDelegationCarriers } from '../data/build/dist/client/delegate-plan.js'
+import { rewriteDelegationMessages } from '../data/build/dist/host/cli-adapters/delegation-mention-rewrite.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -53,6 +55,32 @@ test('委派任务从草稿里取令牌之后的内容，行内斜杠不当作�
   assert.equal(extractDelegateTask(''), '')
 })
 
+test('carrier 只携带稳定 adapterId，Host 改写后移除 mention 并保留任务', () => {
+  const draft = appendDelegateCarrier('请实现并运行测试', 'command-code', 'Command Code')
+  const parsed = parseDelegationCarriers(draft)
+  assert.deepEqual(parsed.carriers, [{ version: 1, adapterId: 'command-code', label: 'Command Code' }])
+  assert.equal(parsed.text, '请实现并运行测试')
+  const rewritten = rewriteDelegationMessages([{ role: 'user', content: draft }], [{
+    id: 'command-code', name: 'Command Code', installed: true, enabled: true, version: '1', command: 'command-code', capabilities: ['stream'],
+  }])
+  assert.equal(rewritten.kind, 'rewritten')
+  if (rewritten.kind === 'rewritten') {
+    assert.match(rewritten.value.instruction, /command-code/u)
+    assert.match(rewritten.value.instruction, /请实现并运行测试/u)
+    assert.doesNotMatch(String(rewritten.value.messages[0]!.content), /codingns:delegate/u)
+  }
+})
+
+test('Host 拒绝损坏 carrier、停用目标和空任务，不读取历史消息', () => {
+  const catalog = [{ id: 'codex', name: 'Codex', installed: true, enabled: false, version: '1', command: 'codex' }]
+  const unavailable = rewriteDelegationMessages([{ role: 'user', content: '@Codex<!--codingns:delegate:v1:codex:Codex-->' }], catalog)
+  assert.equal(unavailable.kind, 'error')
+  if (unavailable.kind === 'error') assert.equal(unavailable.error.code, 'DELEGATE_TARGET_UNAVAILABLE')
+  const invalid = rewriteDelegationMessages([{ role: 'user', content: '<!--codingns:delegate:v9:codex:Codex-->任务' }], catalog)
+  assert.equal(invalid.kind, 'error')
+  if (invalid.kind === 'error') assert.equal(invalid.error.code, 'DELEGATE_CARRIER_INVALID')
+})
+
 test('委派能力在缺少原生可续子代理或会话桥接时给出可读诊断', () => {
   setNativeSubagents(undefined)
   const missingNative = delegateCapability({ nativeSessions: SESSIONS as never })
@@ -94,7 +122,7 @@ test('委派异步派发：立刻返回子会话 ID，不等待子代理首轮�
         nativeSessions: SESSIONS as never,
       },
     )
-    assert.deepEqual(result, { ok: true, adapterId: 'codex', childSessionId: 'child-99', completed: false })
+    assert.deepEqual(result, { ok: true, adapterId: 'codex', childSessionId: 'child-99', completed: false, status: 'running' })
     assert.equal(started.length, 1)
     // Provider 名必须与原生 Subagent 注册名一致，否则 startContinuable 找不到实现。
     assert.equal(started[0]!.provider, 'codingns-external-codex')
@@ -206,25 +234,29 @@ test('不同适配器的委派可以真正并行创建，不被单飞守卫拒�
   }
 })
 
-test('/委派 命令已注册进 Client bundle，并走 Host 的委派 RPC 边界', async () => {
+test('/委派 命令已注册进 Client bundle，并由选择动作写入 carrier', async () => {
   const bundle = await readFile(join(root, 'data/build/dist/client/bundle.js'), 'utf8')
   // 菜单行与 popupSelect 选项：命令名必须与 Host 侧常量一致。
   assert.match(bundle, /DELEGATE_COMMAND_NAME = "delegate"/u)
   assert.match(bundle, /kind: "popupSelect"/u)
   assert.match(bundle, /callCliRpc\(options\.rpc, "delegate\/capability"/u)
-  assert.match(bundle, /callCliRpc\(options\.rpc, "delegate"/u)
+  assert.match(bundle, /codingns:delegate:v1/u)
 
   const commandSource = await readFile(join(root, 'src/client/delegate-command.ts'), 'utf8')
   // 服务缺失必须降级为“不注册”，不能让整个 Client 因为可选能力而失败。
   assert.match(commandSource, /readCommandUi\(ctx\)/u)
   assert.match(commandSource, /commandUi\.register/u)
+  assert.match(commandSource, /setDraft/u)
+  assert.doesNotMatch(commandSource, /callCliRpc<[^>]+>\(options\.rpc, 'delegate'/u)
+  // 选择 Agent 只是编辑当前草稿；单轮提交后才会真正委派，不能留下“继续输入后提交”的持久提示。
+  assert.doesNotMatch(commandSource, /notify\('info', t\('delegate\.selected'/u)
 
   const hostSource = await readFile(join(root, 'src/host/cli-adapters/feature.ts'), 'utf8')
   assert.match(hostSource, /case 'delegate\/capability'/u)
   assert.match(hostSource, /case 'delegate':/u)
 })
 
-test('任务留空时回退到会话最近一条人类消息，并跳过插件注入的上下文', async () => {
+test('任务留空时直接拒绝，不读取会话历史', async () => {
   const started: Array<Record<string, any>> = []
   const service = {
     registerProvider: () => () => undefined,
@@ -233,7 +265,7 @@ test('任务留空时回退到会话最近一条人类消息，并跳过插件�
       return { childId: 'child-1', messageId: 'm1' }
     },
   }
-  // 事件流里混入 compaction 检查点与 step 继续提示：都不是用户需求，必须跳过。
+  // 即使事件流里有真实用户消息，空任务也不能偷偷回退到历史。
   const events = [
     { type: 'user/message', seq: 1, data: { content: [{ type: 'text', text: '请分析当前项目的模块划分' }], source: { kind: 'user' } } },
     { type: 'user/message', seq: 2, data: { content: [{ type: 'text', text: '插件注入的压缩检查点' }], source: { kind: 'compact-checkpoint', compactionId: 'c1' } } },
@@ -249,8 +281,10 @@ test('任务留空时回退到会话最近一条人类消息，并跳过插件�
       { sessionId: 'parent-fallback', adapterId: 'codex', prompt: '' },
       { agents, nativeSessions: sessions as never },
     )
-    assert.equal(result.ok, true)
-    assert.deepEqual(started[0]!.request.prompt, [{ type: 'text', text: '请分析当前项目的模块划分' }])
+    assert.equal(result.ok, false)
+    assert.equal(result.status, 'failed')
+    assert.match(result.error ?? '', /任务描述不能为空/u)
+    assert.equal(started.length, 0)
   } finally {
     setNativeSubagents(undefined)
     setAdapterRegistry(undefined)

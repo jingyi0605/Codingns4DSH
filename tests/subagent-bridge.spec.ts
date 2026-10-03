@@ -147,7 +147,9 @@ test('桥接服务：令牌校验、状态查询与派发响应', async () => {
 
 test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', async () => {
   const server = await startSubagentBridgeServer({
-    dispatch: async () => ({ ok: true, text: '子代理完成', childSessionId: 'child-9' }),
+    dispatch: async (request) => request.action === 'wait'
+      ? { ok: false, status: 'running', completed: false, text: '子代理仍在运行。', childSessionId: 'child-9' }
+      : { ok: true, text: '子代理完成', childSessionId: 'child-9' },
   })
   const child = spawn(process.execPath, [bridgeMcpEntryPath()], {
     env: {
@@ -188,6 +190,7 @@ test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', 
     send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })
     send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
     send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'agent_subagent', arguments: { prompt: '分析 src' } } })
+    send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'agent_subagent', arguments: { action: 'wait', child_session_id: 'child-9', timeout_ms: 1 } } })
 
     const initialized = await waitFor(1)
     assert.equal(initialized.result.serverInfo.name, 'codingns-subagent-bridge')
@@ -198,6 +201,9 @@ test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', 
     const call = await waitFor(3)
     assert.equal(call.result.isError, undefined)
     assert.deepEqual(call.result.content, [{ type: 'text', text: '子代理完成' }])
+    const waiting = await waitFor(4)
+    assert.equal(waiting.result.isError, undefined)
+    assert.match(String(waiting.result.content?.[0]?.text), /"status":"running"/u)
   } finally {
     child.kill()
     await server.close()
@@ -251,6 +257,21 @@ test('桥接派发：解析父会话并把子代理绑定为原生可续子会�
     assert.equal(started[0]!.request.parent.id, 'agent-s1')
     // DSH 会把 signal 原样转发给 Provider；缺省时必须兜底，否则 prepareContinuable 直接崩溃。
     assert.ok(started[0]!.signal instanceof AbortSignal)
+    const deps = {
+      agents: { get: (id: string) => (id === 's1' ? { id: 'agent-s1', session: { header: { id: 's1' } } } : undefined) },
+      nativeSessions: sessions as never,
+    }
+    const read = await dispatchBridgeSubagent({ sessionId: 's1', action: 'read', childSessionId: 'child-77' }, deps)
+    assert.equal(read.status, 'completed')
+    assert.equal(read.completed, true)
+    const waited = await dispatchBridgeSubagent({ sessionId: 's1', action: 'wait', childSessionId: 'child-77', timeoutMs: 1 }, deps)
+    assert.equal(waited.status, 'completed')
+    const crossParent = await dispatchBridgeSubagent({ sessionId: 's2', action: 'read', childSessionId: 'child-77' }, {
+      ...deps,
+      agents: { get: (id: string) => (id === 's2' ? { id: 'agent-s2', session: { header: { id: 's2' } } } : undefined) },
+    })
+    assert.equal(crossParent.ok, false)
+    assert.match(String(crossParent.error), /找不到父会话下的子会话/u)
   } finally {
     setNativeSubagents(undefined)
     setAdapterRegistry(undefined)

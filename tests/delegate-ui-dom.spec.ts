@@ -3,8 +3,12 @@ import test from 'node:test'
 import {
   DELEGATE_MENU_PROXY_ATTRIBUTE,
   DELEGATE_MENU_ROW_ATTRIBUTE,
+  DELEGATE_CHIP_LOGO_ATTRIBUTE,
   DELEGATE_POPUP_LOGO_ATTRIBUTE,
+  DELEGATE_TIMELINE_CARD_ATTRIBUTE,
   DELEGATE_UI_STYLE_ID,
+  parseDelegationTimelineCard,
+  parseDelegationTimelineCarriers,
   setDelegatePopupOptions,
   startDelegateUiDom,
 } from '../data/build/dist/client/delegate-ui-dom.js'
@@ -449,6 +453,77 @@ test('委派弹层的适配器行带上对应 Provider 图标', async () => {
   } finally {
     controller.dispose()
   }
+})
+
+test('委派输入 ReferenceChip 显示 Provider Logo 和 Agent 名称', async () => {
+  const dom = new FakeDocument()
+  setDelegatePopupOptions([{ id: 'codex', label: 'Codex' }])
+  const chip = element(dom, 'span', { 'data-composer-chip': 'codingns-delegate' })
+  const label = element(dom, 'span', { title: 'Codex' })
+  label.textContent = 'Codex'
+  chip.appendChild(label)
+  dom.body.appendChild(chip)
+  const controller = startDelegateUiDom({
+    document: dom as never,
+    MutationObserver: FakeObserver as never,
+    menuLabel: () => '委派',
+    popupPlaceholder: () => '搜索外部 Agent',
+    iconUrlForAdapter: (adapterId) => ICONS[adapterId],
+  })
+  await nextTurn()
+  try {
+    const logo = chip.querySelector(`[${DELEGATE_CHIP_LOGO_ATTRIBUTE}]`)
+    assert.equal(logo?.getAttribute('src'), ICONS.codex)
+    assert.equal(logo, chip.firstChild)
+    assert.equal(label.textContent, 'Codex')
+  } finally {
+    controller.dispose()
+  }
+})
+
+test('时间线 carrier 解析出稳定 Agent 标识和展示名称', () => {
+  const source = '请先实现 @Claude Code<!--codingns:delegate:v1:claude-code:Claude%20Code-->，再交给 @Codex<!--codingns:delegate:v1:codex:Codex--> 复核'
+  assert.deepEqual(parseDelegationTimelineCarriers(source), [
+    {
+      raw: '@Claude Code<!--codingns:delegate:v1:claude-code:Claude%20Code-->',
+      adapterId: 'claude-code',
+      label: 'Claude Code',
+      start: 5,
+      end: 70,
+    },
+    {
+      raw: '@Codex<!--codingns:delegate:v1:codex:Codex-->',
+      adapterId: 'codex',
+      label: 'Codex',
+      start: 75,
+      end: 120,
+    },
+  ])
+  assert.equal(parseDelegationTimelineCarriers('<!--codingns:delegate:v1:codex:%E0%A4%A-->').length, 0)
+  const withOtherMention = '联系 @someone 后交给 @Codex<!--codingns:delegate:v1:codex:Codex-->'
+  const [mention] = parseDelegationTimelineCarriers(withOtherMention)
+  assert.equal(mention?.raw, '@Codex<!--codingns:delegate:v1:codex:Codex-->')
+})
+
+test('Host 改写后的委派指令解析为任务卡片数据', () => {
+  const instruction = [
+    '[CodingNS 委派指令]',
+    '任务：/ 检查登录流程并补充回归测试',
+    '允许使用的外部 Agent：',
+    '- command-code（Command Code，能力：stream、tool-events）',
+    '- codex（Codex，能力：models）',
+    '请先根据任务语义制定简短的角色和步骤计划：明确每一步的目标 Agent、职责和 dependsOn。',
+    '然后调用已有 agent_subagent 工具执行委派。',
+  ].join('\n')
+  assert.deepEqual(parseDelegationTimelineCard(instruction), {
+    raw: instruction,
+    task: '检查登录流程并补充回归测试',
+    targets: [
+      { adapterId: 'command-code', label: 'Command Code' },
+      { adapterId: 'codex', label: 'Codex' },
+    ],
+  })
+  assert.equal(parseDelegationTimelineCard('[CodingNS 委派指令]\n任务：空目标\n允许使用的外部 Agent：\n'), undefined)
 })
 
 test('界面增强对不认识的菜单结构完全静默，停用后移除全部插件节点', async () => {
