@@ -19,6 +19,7 @@ class FakeElement {
   closest(selector: string): FakeElement | null {
     for (let current: FakeElement | null = this; current !== null; current = current.parent) {
       if (selector === '[data-composer-input="true"]' && current.attrs['data-composer-input'] === 'true') return current
+      if (selector === '[data-composer-card]' && current.attrs['data-composer-card'] !== undefined) return current
       if (selector === '[role="treeitem"][aria-selected]' && current.attrs.role === 'treeitem' && current.attrs['aria-selected'] !== undefined) return current
       if (selector === 'button, a, input, textarea, select, [contenteditable="true"]' && current.attrs.control === 'true') return current
     }
@@ -95,6 +96,22 @@ test('Composer 只在用户点按输入框时保留焦点', () => {
   document.emit('touchstart', { target: composer, touches: [{ clientX: 20, clientY: 20 }] })
   document.emit('focusin', { target: composer })
   assert.equal(composer.blurCount, before)
+  controller.dispose()
+})
+
+test('点击 Composer 内的添加按钮不应被全局失焦逻辑拦截', () => {
+  const composerSurface = new FakeElement({ 'data-composer-card': '' })
+  const composerInput = new FakeElement({ 'data-composer-input': 'true' }, composerSurface)
+  const addButton = new FakeElement({ control: 'true' }, composerSurface)
+  const window = new FakeWindow()
+  const document = new FakeDocument()
+  const controller = startMobileSessionInteractionDom({ window, document })
+  document.activeElement = composerInput
+
+  document.emit('pointerdown', { target: addButton })
+  document.emit('touchstart', { target: addButton, touches: [{ clientX: 20, clientY: 20 }] })
+
+  assert.equal(composerInput.blurCount, 0)
   controller.dispose()
 })
 
