@@ -234,11 +234,23 @@ export function readDshPeerHostPrebootShimMode(): DshPeerHostPrebootShimMode | u
  * `tests/dsh-peer-host-preboot-shim.spec.ts` 对同一批场景分别断言两条路径。
  */
 export function createDshPeerHostPrebootShimScript(dshVersion: string = SUPPORTED_DSH_VERSION): string {
+  return patchDshPeerHostPrebootShimScript(createDshPeerHostPrebootShimScriptRaw(dshVersion))
+}
+
+function createDshPeerHostPrebootShimScriptRaw(dshVersion: string = SUPPORTED_DSH_VERSION): string {
   const serialized = JSON.stringify(dshVersion)
   // 兼容范围只声明下界时，启动页脚本无法做 semver 比较：生成期就把范围判定
   // 烘焙成常量，不支持的版本继续生成空操作脚本。
   const supported = isDshVersionCompatible(dshVersion)
   return `(function(){var g=globalThis;if(g.${DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL})return;var v=${serialized};if(${!supported})return;var old=g.__DSH_TRANSPORT__;if(old!==void 0&&old!==null&&typeof old!=="object"){g.${DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL}={version:v,getState:function(){return"external"},getMode:function(){return"external"},activate:function(){return"external"},deactivate:function(){return"external"},dispose:function(){}};return}var desktop=false;if(g.dshDesktopBoot!==void 0)desktop=true;else try{desktop=!!(g.location&&g.location.protocol&&g.location.protocol.toLowerCase()==="dsh-app:")}catch(e){desktop=false}var active;var state="installed";var baseline=old&&typeof old==="object"?old:{};var nativeFetch=typeof g.fetch==="function"?g.fetch.bind(g):void 0;function baselineRpc(){var r=baseline.rpc;return r&&typeof r==="object"?r:void 0}function resolveFetch(){if(active&&typeof active.fetch==="function")return active.fetch;if(typeof baseline.fetch==="function")return baseline.fetch;return nativeFetch}function baselineOpen(){var r=baselineRpc();return r&&typeof r.open==="function"?r.open:void 0}function fallbackCall(channel,endpoint,payload,signal){var f=resolveFetch();if(typeof f!=="function")return Promise.reject(new Error("当前页面没有 fetch"));var id=(g.crypto&&typeof g.crypto.randomUUID==="function"?g.crypto.randomUUID():String(Date.now())+String(Math.random()));var body=JSON.stringify({type:"client-request",rpcId:id,method:endpoint,payload:payload});return f(String(channel)+"/"+String(endpoint),{method:"POST",headers:{"content-type":"application/json"},body:body,signal:signal}).then(function(r){if(!r.ok)throw new Error("transport failure: HTTP "+r.status);return r.json()}).then(function(x){return x.result})}function call(channel,endpoint,payload,signal){if(active&&typeof active.rpc==="function")return active.rpc({method:endpoint,payload:{channel:channel,payload:payload},signal:signal});var r=baselineRpc();if(r&&typeof r.call==="function")return r.call(channel,endpoint,payload,signal);return fallbackCall(channel,endpoint,payload,signal)}var facade={get ownsHost(){return true},fetch:function(input,init){var f=resolveFetch();if(typeof f!=="function")return Promise.reject(new Error("当前页面没有 fetch"));return f(input,init)},reconnect:function(s){if(active&&typeof active.reconnect==="function")return active.reconnect(s);if(typeof baseline.reconnect==="function")return baseline.reconnect(s);return Promise.resolve()},close:function(){if(active&&typeof active.close==="function")return active.close();if(typeof baseline.close==="function")return baseline.close();return Promise.resolve()}};Object.defineProperties(facade,{generation:{enumerable:false,get:function(){if(active&&typeof active.generation==="function")return active.generation();if(typeof baseline.generation==="function")return baseline.generation()}},onGenerationChange:{enumerable:false,get:function(){return active&&active.onGenerationChange?active.onGenerationChange:baseline.onGenerationChange}},streamBaseUrl:{enumerable:true,get:function(){return baseline.streamBaseUrl}}});if(!desktop){Object.defineProperty(facade,"rpc",{enumerable:true,configurable:false,value:{call:call,get open(){if(active&&typeof active.openStream==="function")return function(channel,endpoint,payload,signal,uplink){try{return active.openStream({method:endpoint,payload:{channel:channel,payload:payload,uplink:uplink},signal:signal})}catch(error){if(!(error instanceof Error)||error.message!=="CODINGNS_BASELINE_STREAM")throw error}var opener=baselineOpen();if(typeof opener==="function")return opener(channel,endpoint,payload,signal,uplink);throw new Error("当前页面没有可用 DSH Remote stream")};return baselineOpen()}}});Object.defineProperty(facade,"openStream",{enumerable:true,configurable:false,get:function(){return active&&active.openStream}})}Object.defineProperty(facade,"loadBundle",{enumerable:true,configurable:false,get:function(){return active&&active.loadBundle?active.loadBundle:baseline.loadBundle}});var restore;if(desktop){restore=Object.getOwnPropertyDescriptor(g,"__DSH_TRANSPORT__");try{Object.defineProperty(g,"__DSH_TRANSPORT__",{configurable:true,enumerable:true,get:function(){return facade},set:function(next){if(next&&typeof next==="object")baseline=next}})}catch(e){g.__DSH_TRANSPORT__=facade}}else{g.__DSH_TRANSPORT__=facade}g.${DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL}={version:v,getState:function(){return state},getMode:function(){return desktop?"desktop":"web"},activate:function(t){if(t===void 0){state="requires-reload";return state}active=t;state="active";return state},deactivate:function(){active=void 0;state="installed";return state},dispose:function(){active=void 0;state="disposed";if(desktop){if(restore===void 0)delete g.__DSH_TRANSPORT__;else Object.defineProperty(g,"__DSH_TRANSPORT__",restore)}else if(g.__DSH_TRANSPORT__===facade){if(old===void 0)delete g.__DSH_TRANSPORT__;else g.__DSH_TRANSPORT__=old}if(g.${DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL})delete g.${DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL}}};})()`
+}
+
+/** 给内联启动页脚本补上 DSH 官方的 multipart 响应恢复逻辑。 */
+function patchDshPeerHostPrebootShimScript(script: string): string {
+  const marker = 'function fallbackCall(channel,endpoint,payload,signal)'
+  const parser = 'function readDshRpcResponse(r){return(async function(){var c=r.headers&&r.headers.get("content-type");c=c&&c.split(";",1)[0].trim().toLowerCase();if(c!=="multipart/form-data")return await r.json();var fields=new Map();for(var iterator=(await r.formData()).entries(),step=iterator.next();!step.done;step=iterator.next()){var pair=step.value;if(fields.has(pair[0]))throw new TypeError("connection: invalid binary response fields");fields.set(pair[0],pair[1])}var metadata=fields.get("metadata");fields.delete("metadata");if(typeof metadata!=="string")throw new TypeError("connection: invalid binary response fields");var envelope=JSON.parse(metadata);var result=envelope&&typeof envelope==="object"&&!Array.isArray(envelope)?envelope.result:void 0;if(!envelope||typeof envelope!=="object"||Array.isArray(envelope)||!result||typeof result!=="object"||Array.isArray(result)||result.ok!==true)throw new TypeError("connection: invalid binary response result");var attachments=envelope.attachments;if(!Array.isArray(attachments)||attachments.length===0)throw new TypeError("connection: invalid binary response result");var root={value:result.value};for(var index=0;index<attachments.length;index++){var attachment=attachments[index];var path=attachment&&attachment.path;var part=attachment&&attachment.part;if(!attachment||typeof attachment!=="object"||Array.isArray(attachment)||attachment.codec!=="bytes"||typeof part!=="string"||!Array.isArray(path))throw new TypeError("connection: invalid binary response attachment");var data=fields.get(part);fields.delete(part);if(!(data instanceof Blob))throw new TypeError("connection: invalid binary response fields");var parent=root;var key="value";for(var pathIndex=0;pathIndex<path.length;pathIndex++){var segment=path[pathIndex];var value=Reflect.get(parent,key);if(typeof value!=="object"||value===null)throw new TypeError("connection: invalid binary response path");if(Array.isArray(value)){if(typeof segment!=="number"||!Number.isSafeInteger(segment)||segment<0||segment>=value.length)throw new TypeError("connection: invalid binary response path")}else if(typeof segment!=="string")throw new TypeError("connection: invalid binary response path");if(!Object.hasOwn(value,segment))throw new TypeError("connection: invalid binary response path");parent=value;key=segment}if(Reflect.get(parent,key)!==null)throw new TypeError("connection: invalid binary response placeholder");Object.defineProperty(parent,key,{value:new Uint8Array(await data.arrayBuffer()),enumerable:true,writable:true,configurable:true})}if(fields.size!==0)throw new TypeError("connection: invalid binary response fields");return Object.assign({},envelope,{result:Object.assign({},result,{value:root.value})})})()}function fallbackCall(channel,endpoint,payload,signal)'
+  const patched = script.replace(marker, parser)
+  return patched.replace('return r.json()}).then(function(x){return x.result})}function call(', 'return readDshRpcResponse(r)}).then(function(x){return x.result})}function call(')
 }
 
 async function fallbackRpc(channel: string, endpoint: string, payload: unknown, signal: AbortSignal | undefined, fetcher: unknown): Promise<unknown> {
@@ -251,8 +263,66 @@ async function fallbackRpc(channel: string, endpoint: string, payload: unknown, 
     ...(signal === undefined ? {} : { signal }),
   })
   if (!response.ok) throw new Error(`transport failure: HTTP ${response.status}`)
-  const envelope = await response.json() as { result?: unknown }
+  const envelope = await readDshRpcResponse(response)
   return envelope.result
+}
+
+/** 解析 DSH Connection 的 JSON 或 multipart 二进制响应。 */
+async function readDshRpcResponse(response: Response): Promise<Record<string, unknown>> {
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+  if (contentType !== 'multipart/form-data') return await response.json() as Record<string, unknown>
+
+  const fields = new Map<string, FormDataEntryValue>()
+  for (const [name, value] of (await response.formData()).entries()) {
+    if (fields.has(name)) throw new TypeError('connection: invalid binary response fields')
+    fields.set(name, value)
+  }
+  const metadata = fields.get('metadata')
+  fields.delete('metadata')
+  if (typeof metadata !== 'string') throw new TypeError('connection: invalid binary response fields')
+  const parsedMetadata: unknown = JSON.parse(metadata)
+  const envelope = isRecord(parsedMetadata) ? parsedMetadata : null
+  const result = envelope !== null && isRecord(envelope.result) ? envelope.result : null
+  if (envelope === null || result === null || result.ok !== true) throw new TypeError('connection: invalid binary response result')
+  const attachments = envelope.attachments
+  if (!Array.isArray(attachments) || attachments.length === 0) throw new TypeError('connection: invalid binary response result')
+  const root = { value: result.value }
+  for (const rawAttachment of attachments) {
+    const attachment = isRecord(rawAttachment) ? rawAttachment : null
+    const path = attachment?.path
+    const part = attachment?.part
+    if (attachment?.codec !== 'bytes' || typeof part !== 'string' || !Array.isArray(path)) {
+      throw new TypeError('connection: invalid binary response attachment')
+    }
+    const data = fields.get(part)
+    fields.delete(part)
+    if (!(data instanceof Blob)) throw new TypeError('connection: invalid binary response fields')
+    let parent: object = root
+    let key: string | number = 'value'
+    for (const segment of path) {
+      const value = Reflect.get(parent, key)
+      if (typeof value !== 'object' || value === null) throw new TypeError('connection: invalid binary response path')
+      if (Array.isArray(value)) {
+        if (typeof segment !== 'number' || !Number.isSafeInteger(segment) || segment < 0 || segment >= value.length) {
+          throw new TypeError('connection: invalid binary response path')
+        }
+      } else if (typeof segment !== 'string') {
+        throw new TypeError('connection: invalid binary response path')
+      }
+      if (!Object.hasOwn(value, segment)) throw new TypeError('connection: invalid binary response path')
+      parent = value
+      key = segment
+    }
+    if (Reflect.get(parent, key) !== null) throw new TypeError('connection: invalid binary response placeholder')
+    Object.defineProperty(parent, key, {
+      value: new Uint8Array(await data.arrayBuffer()),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    })
+  }
+  if (fields.size !== 0) throw new TypeError('connection: invalid binary response fields')
+  return { ...envelope, result: { ...result, value: root.value } }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

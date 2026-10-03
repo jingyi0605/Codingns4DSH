@@ -39,6 +39,67 @@ async function withCleanGlobals(run: (globals: ShimGlobal) => void | Promise<voi
   }
 }
 
+function binaryResponse(bytes: Uint8Array): Response {
+  const form = new FormData()
+  form.append('metadata', JSON.stringify({
+    type: 'server-response',
+    rpcId: 'preboot-binary-response',
+    result: {
+      ok: true,
+      value: {
+        offset: 0,
+        data: null,
+        eof: true,
+        absolutePath: '/workspace/image.png',
+        version: 'v1',
+        bytes: bytes.byteLength,
+      },
+    },
+    attachments: [{ codec: 'bytes', part: 'bytes-0', path: ['data'] }],
+  }))
+  form.append('bytes-0', new Blob([bytes], { type: 'application/octet-stream' }), 'image.bin')
+  return new Response(form, { status: 200 })
+}
+
+test('未激活的模块 preboot fallback RPC 可解析本机二进制 Remote 响应', async () => {
+  await withCleanGlobals(async (globals) => {
+    const bytes = new Uint8Array([0, 45, 60, 255])
+    globals.__DSH_TRANSPORT__ = {
+      fetch: async (input: RequestInfo | URL) => {
+        assert.equal(String(input), 'api/workspaceFiles/readBytes')
+        return binaryResponse(bytes)
+      },
+    }
+    const shim = installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
+    const transport = globals.__DSH_TRANSPORT__ as { rpc: { call: (...args: unknown[]) => Promise<unknown> } }
+    const result = await transport.rpc.call('/api', 'workspaceFiles/readBytes', { path: 'image.png' }) as { ok: boolean; value: { data: Uint8Array } }
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.value.data, bytes)
+    shim.dispose()
+  })
+})
+
+test('启动页内联 preboot fallback RPC 可解析本机二进制 Remote 响应', async () => {
+  const bytes = new Uint8Array([0, 45, 60, 255])
+  const sandbox: Record<string, unknown> = {
+    fetch: async (input: RequestInfo | URL) => {
+      assert.equal(String(input), '/api/workspaceFiles/readBytes')
+      return binaryResponse(bytes)
+    },
+    Blob,
+    FormData,
+    Response,
+    Uint8Array,
+  }
+  runInNewContext(createDshPeerHostPrebootShimScript(), sandbox)
+  const transport = sandbox.__DSH_TRANSPORT__ as { rpc: { call: (...args: unknown[]) => Promise<unknown> } }
+  const result = await transport.rpc.call('/api', 'workspaceFiles/readBytes', { path: 'image.png' }) as { ok: boolean; value: { data: Uint8Array } }
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.value.data, bytes)
+  const shim = sandbox[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL] as { dispose: () => void }
+  shim.dispose()
+})
+
 test('0.2.0-rc.1/rc.2 Web shim 可幂等安装并在激活后切换 rpc.call', async () => {
   await withCleanGlobals(async (globals) => {
     const first = installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
