@@ -21,9 +21,9 @@ function samples(points: readonly [number, number][]): TouchSample[] {
 
 test('横滑判定：方向、阈值与映射', () => {
   const base = { thresholdPx: 64, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth: 390 }
-  assert.deepEqual(detectSidebarGesture(samples([[120, 300], [200, 302]]), base), { action: 'left', reason: 'ok' })
-  assert.deepEqual(detectSidebarGesture(samples([[280, 300], [190, 305]]), base), { action: 'right', reason: 'ok' })
-  assert.deepEqual(detectSidebarGesture(samples([[120, 300], [200, 302]]), { ...base, mapping: 'swap' }), { action: 'right', reason: 'ok' })
+  assert.deepEqual(detectSidebarGesture(samples([[120, 300], [330, 302]]), base), { action: 'left', reason: 'ok' })
+  assert.deepEqual(detectSidebarGesture(samples([[280, 300], [60, 305]]), base), { action: 'right', reason: 'ok' })
+  assert.deepEqual(detectSidebarGesture(samples([[120, 300], [330, 302]]), { ...base, mapping: 'swap' }), { action: 'right', reason: 'ok' })
   assert.deepEqual(detectSidebarGesture(samples([[120, 300], [150, 300]]), base), { action: 'ignore', reason: 'threshold' })
   assert.deepEqual(detectSidebarGesture(samples([[120, 300]]), base), { action: 'ignore', reason: 'samples' })
   assert.deepEqual(detectSidebarGesture(samples([[0, 0], [10, 0]]), { ...base, thresholdPx: 0 }), { action: 'ignore', reason: 'config' })
@@ -32,12 +32,42 @@ test('横滑判定：方向、阈值与映射', () => {
 test('纵向滑动与贴边起手交回系统手势/滚动', () => {
   const base = { thresholdPx: 64, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth: 390 }
   // 斜向但纵向占优：不能抢走列表滚动（水平位移已过阈值，仅靠方向锁定拦下）。
-  assert.deepEqual(detectSidebarGesture(samples([[200, 100], [280, 300]]), base), { action: 'ignore', reason: 'direction' })
+  assert.deepEqual(detectSidebarGesture(samples([[200, 100], [400, 300]]), base), { action: 'ignore', reason: 'direction' })
   // 默认避开边缘热区，避免与 iOS/Android 返回手势打架。
   assert.deepEqual(detectSidebarGesture(samples([[8, 300], [200, 300]]), base), { action: 'ignore', reason: 'edge' })
   assert.deepEqual(detectSidebarGesture(samples([[388, 300], [200, 300]]), base), { action: 'ignore', reason: 'edge' })
   // 显式允许贴边时才生效。
-  assert.deepEqual(detectSidebarGesture(samples([[8, 300], [200, 300]]), { ...base, edgeMode: 'edge' }), { action: 'left', reason: 'ok' })
+  assert.deepEqual(detectSidebarGesture(samples([[8, 300], [220, 300]]), { ...base, edgeMode: 'edge' }), { action: 'left', reason: 'ok' })
+})
+
+test('横滑必须跨过半个视口并达到最低速度', () => {
+  const base = { thresholdPx: 64, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth: 390 }
+  // 390px 视口的硬下限为 195px，旧设置中的 64px 不能降低它。
+  assert.deepEqual(detectSidebarGesture(samples([[120, 300], [314, 300]]), base), { action: 'ignore', reason: 'threshold' })
+  assert.deepEqual(detectSidebarGesture([
+    { x: 120, y: 300, t: 0 },
+    { x: 215, y: 300, t: 16 },
+    { x: 315, y: 300, t: 32 },
+  ], base), { action: 'left', reason: 'ok' })
+  // 长距离但慢速拖动不能触发；两点间隔超过速度窗口时回退到整段速度。
+  assert.deepEqual(detectSidebarGesture([
+    { x: 120, y: 300, t: 0 },
+    { x: 320, y: 300, t: 600 },
+  ], base), { action: 'ignore', reason: 'velocity' })
+  // 速度足够但距离不足仍不能触发。
+  assert.deepEqual(detectSidebarGesture([
+    { x: 120, y: 300, t: 0 },
+    { x: 220, y: 300, t: 16 },
+  ], base), { action: 'ignore', reason: 'threshold' })
+  const wide = { ...base, viewportWidth: 1024 }
+  assert.deepEqual(detectSidebarGesture([
+    { x: 200, y: 300, t: 0 },
+    { x: 711, y: 300, t: 16 },
+  ], wide), { action: 'ignore', reason: 'threshold' })
+  assert.deepEqual(detectSidebarGesture([
+    { x: 200, y: 300, t: 0 },
+    { x: 712, y: 300, t: 16 },
+  ], wide), { action: 'left', reason: 'ok' })
 })
 
 class FakeWindow {
@@ -77,11 +107,15 @@ class FakeDocument {
   }
 }
 
-function touchEvent(x: number, y: number, options: { target?: unknown; cancelable?: boolean; path?: readonly unknown[] } = {}): { touches: { clientX: number; clientY: number }[]; target?: unknown; cancelable: boolean; prevented: number; preventDefault(): void; composedPath(): readonly unknown[] } {
+let syntheticTouchTime = 0
+
+function touchEvent(x: number, y: number, options: { target?: unknown; cancelable?: boolean; path?: readonly unknown[]; timeStamp?: number; touches?: readonly [number, number][] } = {}): { touches: { clientX: number; clientY: number }[]; target?: unknown; cancelable: boolean; prevented: number; timeStamp: number; preventDefault(): void; composedPath(): readonly unknown[] } {
+  const points = options.touches ?? [[x, y] as [number, number]]
   const event = {
-    touches: [{ clientX: x, clientY: y }],
+    touches: points.map(([clientX, clientY]) => ({ clientX, clientY })),
     target: options.target,
     cancelable: options.cancelable ?? true,
+    timeStamp: options.timeStamp ?? (syntheticTouchTime += 16),
     prevented: 0,
     preventDefault(): void { event.prevented += 1 },
     composedPath(): readonly unknown[] { return options.path ?? [] },
@@ -122,13 +156,13 @@ test('手势控制器只通过服务开合侧栏，并在右栏全屏时压入�
   assert.equal(harness.window.listenerCount('touchmove'), 1)
 
   harness.window.emit('touchstart', touchEvent(120, 300))
-  harness.window.emit('touchmove', touchEvent(200, 304))
+  harness.window.emit('touchmove', touchEvent(330, 304))
   assert.deepEqual(harness.calls, ['left'])
   assert.deepEqual(harness.vibrations, [10])
 
   harness.window.emit('touchend', { touches: [] })
   harness.window.emit('touchstart', touchEvent(280, 300))
-  harness.window.emit('touchmove', touchEvent(190, 302))
+  harness.window.emit('touchmove', touchEvent(60, 302))
   // 第一次右滑已经呼出左栏，随后左滑应收回左栏，不能误打开右栏。
   assert.deepEqual(harness.calls, ['left', 'left'])
   assert.deepEqual(harness.vibrations, [10, 10])
@@ -138,7 +172,7 @@ test('手势控制器只通过服务开合侧栏，并在右栏全屏时压入�
   // 左栏收回后再次左滑才打开右栏；返回手势先关右栏，而不是退出会话。
   harness.window.emit('touchend', { touches: [] })
   harness.window.emit('touchstart', touchEvent(280, 300))
-  harness.window.emit('touchmove', touchEvent(190, 302))
+  harness.window.emit('touchmove', touchEvent(60, 302))
   assert.deepEqual(harness.calls, ['left', 'left', 'right'])
   assert.equal(harness.isExpanded(), true)
   assert.deepEqual(harness.window.pushed, [{ codingnsRightbar: true }])
@@ -174,7 +208,7 @@ test('DOM 状态表明左栏已展开时，默认映射的物理左滑关闭左�
   })
 
   window.emit('touchstart', touchEvent(280, 300))
-  window.emit('touchmove', touchEvent(190, 302))
+  window.emit('touchmove', touchEvent(60, 302))
   assert.deepEqual(calls, ['left'])
   assert.equal(leftCollapsed, true)
   assert.equal(rightExpanded, false)
@@ -186,7 +220,7 @@ test('右栏已展开时，反向物理右滑关闭右栏且不再切换左栏',
 
   // 默认映射下物理左滑呼出右栏。
   harness.window.emit('touchstart', touchEvent(280, 300))
-  harness.window.emit('touchmove', touchEvent(190, 302))
+  harness.window.emit('touchmove', touchEvent(60, 302))
   assert.deepEqual(harness.calls, ['right'])
   assert.equal(harness.isExpanded(), true)
   assert.deepEqual(harness.window.pushed, [{ codingnsRightbar: true }])
@@ -194,7 +228,7 @@ test('右栏已展开时，反向物理右滑关闭右栏且不再切换左栏',
   // 反向右滑只关闭右栏，不应同时呼出左栏。
   harness.window.emit('touchend', { touches: [] })
   harness.window.emit('touchstart', touchEvent(120, 300))
-  harness.window.emit('touchmove', touchEvent(200, 302))
+  harness.window.emit('touchmove', touchEvent(330, 302))
   assert.deepEqual(harness.calls, ['right', 'right'])
   assert.equal(harness.isExpanded(), false)
 
@@ -231,7 +265,7 @@ test('swap 映射下物理左滑同样关闭已展开的左栏', () => {
   })
 
   window.emit('touchstart', touchEvent(280, 300))
-  window.emit('touchmove', touchEvent(190, 302))
+  window.emit('touchmove', touchEvent(60, 302))
   assert.deepEqual(calls, ['left'])
   assert.equal(leftCollapsed, true)
   assert.equal(rightExpanded, false)
@@ -257,12 +291,17 @@ test('方向锁定后不再触发，且输入框内的触摸被忽略', () => {
   harness.window.emit('touchstart', touchEvent(120, 300, { target: terminalHost }))
   harness.window.emit('touchmove', touchEvent(220, 300))
   assert.deepEqual(harness.calls, [])
+
+  // 捏合或多指滑动不参与侧栏手势，避免缩放过程中误触发开合。
+  harness.window.emit('touchstart', touchEvent(120, 300, { touches: [[120, 300], [140, 300]] }))
+  harness.window.emit('touchmove', touchEvent(330, 300))
+  assert.deepEqual(harness.calls, [])
 })
 
 test('横向滚动容器优先接收右滑，不收起右栏', () => {
   const harness = createHarness()
   harness.window.emit('touchstart', touchEvent(280, 300))
-  harness.window.emit('touchmove', touchEvent(190, 300))
+  harness.window.emit('touchmove', touchEvent(60, 300))
   assert.deepEqual(harness.calls, ['right'])
   assert.equal(harness.isExpanded(), true)
   harness.window.emit('touchend', { touches: [] })
@@ -281,7 +320,7 @@ test('横向滚动容器优先接收右滑，不收起右栏', () => {
   const text = { parentElement: scrollable, closest: () => null }
 
   harness.window.emit('touchstart', touchEvent(120, 300, { target: text }))
-  const move = touchEvent(220, 300, { target: text })
+  const move = touchEvent(330, 300, { target: text })
   harness.window.emit('touchmove', move)
 
   assert.deepEqual(harness.calls, ['right'])
@@ -291,7 +330,7 @@ test('横向滚动容器优先接收右滑，不收起右栏', () => {
   // Shadow DOM 重定向后，event.target 可能只有宿主；composedPath 仍应找到滚动祖先。
   const shadowHost = { closest: () => null }
   harness.window.emit('touchstart', touchEvent(120, 300, { target: shadowHost, path: [text, scrollable] }))
-  const shadowMove = touchEvent(220, 300, { target: shadowHost, path: [text, scrollable] })
+  const shadowMove = touchEvent(330, 300, { target: shadowHost, path: [text, scrollable] })
   harness.window.emit('touchmove', shadowMove)
   assert.deepEqual(harness.calls, ['right'])
   assert.equal(shadowMove.prevented, 0)
@@ -299,8 +338,8 @@ test('横向滚动容器优先接收右滑，不收起右栏', () => {
   // 左滑不负责收起右栏，即使布局尺寸尚未更新也必须交给内部内容。
   const pendingLayout = { scrollWidth: 320, clientWidth: 320, style: { overflowX: 'auto' }, parentElement: null }
   const pendingTarget = { parentElement: pendingLayout, closest: () => null }
-  harness.window.emit('touchstart', touchEvent(220, 300, { target: pendingTarget }))
-  const pendingMove = touchEvent(120, 300, { target: pendingTarget })
+  harness.window.emit('touchstart', touchEvent(300, 300, { target: pendingTarget }))
+  const pendingMove = touchEvent(60, 300, { target: pendingTarget })
   harness.window.emit('touchmove', pendingMove)
   assert.deepEqual(harness.calls, ['right'])
   assert.equal(pendingMove.prevented, 0)
@@ -309,21 +348,21 @@ test('横向滚动容器优先接收右滑，不收起右栏', () => {
   const rightbarPanel = {
     closest: (selector: string) => selector === '[data-sidebar-right-session]' ? rightbarPanel : null,
   }
-  harness.window.emit('touchstart', touchEvent(220, 300, { target: rightbarPanel }))
-  const rightbarMove = touchEvent(120, 300, { target: rightbarPanel })
+  harness.window.emit('touchstart', touchEvent(300, 300, { target: rightbarPanel }))
+  const rightbarMove = touchEvent(60, 300, { target: rightbarPanel })
   harness.window.emit('touchmove', rightbarMove)
   assert.deepEqual(harness.calls, ['right'])
   assert.equal(rightbarMove.prevented, 0)
 
   harness.window.emit('touchend', { touches: [] })
   harness.window.emit('touchstart', touchEvent(120, 300, { target: rightbarPanel }))
-  const closeMove = touchEvent(220, 300, { target: rightbarPanel })
+  const closeMove = touchEvent(330, 300, { target: rightbarPanel })
   harness.window.emit('touchmove', closeMove)
   assert.deepEqual(harness.calls, ['right', 'right'])
   assert.equal(harness.isExpanded(), false)
 })
 
-test('聊天区域的横向滚动祖先不吞掉左右侧栏唤起手势', () => {
+test('消息区域的横向滚动祖先优先接收手势，不触发侧栏', () => {
   const harness = createHarness()
   const chatScroller = {
     scrollWidth: 720,
@@ -334,15 +373,17 @@ test('聊天区域的横向滚动祖先不吞掉左右侧栏唤起手势', () =>
   }
   const chatTarget = { parentElement: chatScroller, closest: () => null }
 
-  // 右栏未展开时，即使聊天内容自身可以横向滚动，左右唤起仍由全局手势负责。
+  // 模拟消息中的表格或代码块包装器：右栏未展开时也必须由内容接收右滑。
   harness.window.emit('touchstart', touchEvent(120, 300, { target: chatTarget }))
-  harness.window.emit('touchmove', touchEvent(220, 300, { target: chatTarget }))
-  assert.deepEqual(harness.calls, ['left'])
+  harness.window.emit('touchmove', touchEvent(330, 300, { target: chatTarget }))
+  assert.deepEqual(harness.calls, [])
   harness.window.emit('touchend', { touches: [] })
 
+  // 即使内容已经位于左边界，左滑也不能回退成侧栏开合，避免边界拖动误触。
+  chatScroller.scrollLeft = 0
   harness.window.emit('touchstart', touchEvent(280, 300, { target: chatTarget }))
-  harness.window.emit('touchmove', touchEvent(190, 300, { target: chatTarget }))
-  assert.deepEqual(harness.calls, ['left', 'left'])
+  harness.window.emit('touchmove', touchEvent(60, 300, { target: chatTarget }))
+  assert.deepEqual(harness.calls, [])
 })
 
 test('关闭开关或缺少端口时不注册监听，并给出可解释诊断', () => {

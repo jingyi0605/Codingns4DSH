@@ -13,6 +13,7 @@ function touchEvent(x: number, y: number) {
   return {
     touches: [{ clientX: x, clientY: y }],
     cancelable: true,
+    timeStamp: x === 120 ? 1 : 17,
     preventDefault() {},
   }
 }
@@ -44,7 +45,7 @@ test('侧栏手势默认使用触摸 Window 的 navigator 振动', () => {
   })
 
   for (const listener of listeners.get('touchstart') ?? []) listener(touchEvent(120, 300))
-  for (const listener of listeners.get('touchmove') ?? []) listener(touchEvent(200, 300))
+  for (const listener of listeners.get('touchmove') ?? []) listener(touchEvent(330, 300))
 
   assert.deepEqual(patterns, [10])
   controller.dispose()
