@@ -108,6 +108,76 @@ test('页面 connector 将虚拟 Session 的原生 Remote 路由到 peerHost/nat
   }
 })
 
+test('页面 connector 将无参数的 session/modelCatalog 路由到当前远程 Host', async () => {
+  const calls: Array<{ path: string; body: Record<string, unknown> }> = []
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const path = new URL(String(input), 'http://dsh.test').pathname
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+    calls.push({ path, body })
+    return response({ groups: [{ id: 'deepseek-api', name: 'DeepSeek API', models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] }] })
+  }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    transport.setAggregate(aggregate)
+    const sessionId = createVirtualSessionId('peer-1', 'session-1')
+    // 先打开远程会话，记录当前 Host；modelCatalog 的 DSH 原生契约没有请求参数。
+    await transport.hooks.rpc?.({
+      method: 'session/page',
+      payload: { channel: '/api', payload: { sessionId } },
+    })
+    calls.length = 0
+    const result = await transport.hooks.rpc?.({
+      method: 'session/modelCatalog',
+      payload: { channel: '/api', payload: {} },
+    })
+    assert.deepEqual(result, {
+      ok: true,
+      value: { groups: [{ id: 'deepseek-api', name: 'DeepSeek API', models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] }] },
+    })
+    assert.equal(calls[0]?.path, '/codingns/peerHost/native')
+    const routed = calls[0]?.body.payload as Record<string, unknown>
+    assert.equal(routed.method, 'session/modelCatalog')
+    assert.deepEqual(routed.scope, { hostId: 'host-local', targetHostId: 'peer-1', workspaceId: 'workspace-1', sessionId: 'session-1', scopeGeneration: 0 })
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('页面 connector 在远程工作区作用域变化时使 DSH 模型目录失效', async () => {
+  const previousFetch = globalThis.fetch
+  let resetCount = 0
+  globalThis.fetch = (async () => response({ page: 'remote' })) as typeof fetch
+  const uiContext = {
+    get(name: string): unknown {
+      if (name !== 'modelDirectories') return undefined
+      return { catalog: { resetGeneration: () => { resetCount += 1 } } }
+    },
+  }
+  try {
+    const transport = createPeerHostPageTransport(undefined, uiContext)
+    transport.setAggregate(aggregate)
+    const sessionId = createVirtualSessionId('peer-1', 'session-1')
+    await transport.hooks.rpc?.({
+      method: 'session/page',
+      payload: { channel: '/api', payload: { sessionId } },
+    })
+    assert.equal(resetCount, 1, '首次进入远程工作区必须清掉本地模型目录')
+    await transport.hooks.rpc?.({
+      method: 'session/page',
+      payload: { channel: '/api', payload: { sessionId } },
+    })
+    assert.equal(resetCount, 1, '同一远程工作区内的请求不能重复刷新模型目录')
+    await transport.hooks.rpc?.({
+      method: 'workspace/follow',
+      payload: { channel: '/api', payload: { workspaceId: 'local-workspace' } },
+    })
+    assert.equal(resetCount, 2, '切回本机工作区必须重新读取本地模型目录')
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
 test('页面 connector 将远端会话的 CLI 目录路由到目标 Host 并还原真实 sessionId', async () => {
   const calls: Array<{ path: string; body: Record<string, unknown> }> = []
   const previousFetch = globalThis.fetch
@@ -133,6 +203,50 @@ test('页面 connector 将远端会话的 CLI 目录路由到目标 Host 并还�
     const forwarded = JSON.parse(String(routed.body)) as { payload: { sessionId: string; adapterId: string } }
     assert.equal(forwarded.payload.sessionId, 'session-1')
     assert.equal(forwarded.payload.adapterId, 'codex')
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('页面 connector 在新建远程会话尚无 sessionId 时，CLI 目录沿用当前远程工作区', async () => {
+  const calls: Array<{ path: string; body: Record<string, unknown> }> = []
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const path = new URL(String(input), 'http://dsh.test').pathname
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+    calls.push({ path, body })
+    if (path.endsWith('/peerHost/request')) {
+      const nested = { result: { ok: true, value: path.endsWith('/peerHost/request') && JSON.stringify(body).includes('cli/models')
+        ? { groups: [{ id: 'remote', name: '远端模型', models: [{ id: 'remote-model', name: '远端模型' }] }] }
+        : [{ id: 'remote-adapter', name: '远端适配器', installed: true, enabled: true }] } }
+      return response({ status: 200, headers: [['content-type', 'application/json']], body: JSON.stringify(nested) })
+    }
+    return response({ page: 'remote' })
+  }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    transport.setAggregate(aggregate)
+    await transport.hooks.rpc?.({
+      method: 'workspace/follow',
+      payload: { channel: '/api', payload: { workspaceId: createVirtualWorkspaceId('peer-1', 'workspace-1') } },
+    })
+    assert.equal(transport.matchesScope({}, 'cli/catalog'), true)
+    calls.length = 0
+    const adapterResult = await transport.hooks.rpc?.({
+      method: 'cli/catalog',
+      payload: { channel: '/codingns', payload: {} },
+    })
+    const modelResult = await transport.hooks.rpc?.({
+      method: 'cli/models',
+      payload: { channel: '/codingns', payload: { adapterId: 'remote-adapter' } },
+    })
+    assert.deepEqual(adapterResult, { ok: true, value: [{ id: 'remote-adapter', name: '远端适配器', installed: true, enabled: true }] })
+    assert.deepEqual(modelResult, { ok: true, value: { groups: [{ id: 'remote', name: '远端模型', models: [{ id: 'remote-model', name: '远端模型' }] }] } })
+    assert.deepEqual(calls.map((call) => call.path), ['/codingns/peerHost/request', '/codingns/peerHost/request'])
+    for (const call of calls) {
+      const routed = call.body.payload as Record<string, unknown>
+      assert.deepEqual(routed.scope, { hostId: 'host-local', targetHostId: 'peer-1', workspaceId: 'workspace-1', sessionId: null, scopeGeneration: 0 })
+    }
   } finally {
     globalThis.fetch = previousFetch
   }
