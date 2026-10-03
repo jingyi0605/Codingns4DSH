@@ -35,7 +35,7 @@ test('用量查询设置默认值与边界收敛', () => {
 
 test('用量查询超时统一下发给所有适配器读取器，单项覆盖优先', () => {
   const service = new ProviderSubscriptionService({ timeoutMs: 4_500 })
-  for (const reader of [service.codex, service.claudeCode, service.sub2api, service.deepseek, service.official, service.kimi, service.grok, service.zcode]) {
+  for (const reader of [service.codex, service.claudeCode, service.sub2api, service.deepseek, service.official, service.kimi, service.grok, service.zcode, service.codebuddy]) {
     assert.equal(reader.timeoutMs, 4_500)
   }
 
@@ -43,6 +43,7 @@ test('用量查询超时统一下发给所有适配器读取器，单项覆盖�
   assert.equal(overridden.codex.timeoutMs, 900)
   assert.equal(overridden.kimi.timeoutMs, 4_500)
   assert.equal(overridden.grok.timeoutMs, 4_500)
+  assert.equal(overridden.codebuddy.timeoutMs, 4_500)
 })
 
 test('Kimi 用量读取归一化五小时、周与月窗口', async () => {

@@ -10,6 +10,9 @@ import { ZcodeSubscriptionService, type ZcodeSubscriptionOptions } from './zcode
 import { JsonRpcProcess, JsonRpcRequestError } from './json-rpc-process.js'
 import { detectBinary } from './rpc-driver-utils.js'
 import { QoderSubscriptionService, type QoderSubscriptionOptions } from './qoder-subscription.js'
+import { NewApiSubscriptionService, type NewApiSubscriptionOptions, isOfficialAgentBaseUrl } from './new-api-subscription.js'
+import { CodeBuddySubscriptionService, type CodeBuddySubscriptionOptions } from './codebuddy-subscription.js'
+import { CustomUpstreamClassifier, mergeCustomUpstreamCandidates, type CustomUpstreamClassifierOptions, type CustomUpstreamReadResult } from './custom-upstream-classifier.js'
 
 type FetchLike = typeof fetch
 
@@ -20,6 +23,8 @@ export class ProviderSubscriptionService {
   readonly claudeCode: ClaudeCodeSubscriptionService
   readonly opencode: OpenCodeSubscriptionService
   readonly sub2api: Sub2ApiUsageService
+  readonly newApi: NewApiSubscriptionService
+  readonly customUpstreamClassifier: CustomUpstreamClassifier
   readonly deepseek: DeepseekSubscriptionService
   readonly official: OfficialProviderSubscriptionService
   readonly kimi: KimiSubscriptionService
@@ -27,6 +32,7 @@ export class ProviderSubscriptionService {
   readonly zcode: ZcodeSubscriptionService
   readonly qoder: QoderSubscriptionService
   readonly qoderCn: QoderSubscriptionService
+  readonly codebuddy: CodeBuddySubscriptionService
 
   constructor(options: ProviderSubscriptionOptions = {}) {
     // 全局超时只作为缺省值；单项服务显式给出的 timeoutMs 优先。
@@ -36,6 +42,8 @@ export class ProviderSubscriptionService {
     this.claudeCode = new ClaudeCodeSubscriptionService({ ...shared, ...options.claudeCode })
     this.opencode = new OpenCodeSubscriptionService(options.opencode)
     this.sub2api = new Sub2ApiUsageService({ ...shared, ...options.sub2api })
+    this.newApi = new NewApiSubscriptionService({ ...shared, ...options.newApi })
+    this.customUpstreamClassifier = new CustomUpstreamClassifier(options.customUpstream)
     this.deepseek = new DeepseekSubscriptionService({ ...shared, ...options.deepseek })
     this.official = new OfficialProviderSubscriptionService({ ...shared, ...options.official })
     this.kimi = new KimiSubscriptionService({ ...shared, ...options.kimi })
@@ -43,22 +51,19 @@ export class ProviderSubscriptionService {
     this.zcode = new ZcodeSubscriptionService({ ...shared, ...options.zcode })
     this.qoder = new QoderSubscriptionService({ ...shared, variant: 'qoder', ...options.qoder })
     this.qoderCn = new QoderSubscriptionService({ ...shared, variant: 'qoder-cn', ...options.qoderCn })
+    this.codebuddy = new CodeBuddySubscriptionService({ ...shared, ...options.codebuddy })
   }
 
   read(adapterId: string, providerId?: string): Promise<CliSubscriptionUsage | null> {
+    if (adapterId === 'codebuddy-cn') adapterId = 'codebuddy'
     if (adapterId === 'dsh') return this.readDsh(providerId)
     if (adapterId === 'qoder') return this.qoder.read()
     if (adapterId === 'qoder-cn') return this.qoderCn.read()
-    if (adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'grok' || adapterId === 'opencode') {
-      return this.readSub2ApiFirst(adapterId)
+    if (adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'grok' || adapterId === 'opencode' || adapterId === 'command-code' || adapterId === 'zcode' || adapterId === 'codebuddy' || adapterId === 'workbuddy') {
+      return this.readSub2ApiFirst(adapterId, providerId)
     }
     switch (adapterId) {
-      case 'command-code': return this.commandCode?.read() ?? Promise.resolve(null)
-      case 'codex': return this.codex.read()
-      case 'claude-code': return this.claudeCode.read()
-      case 'opencode': return this.opencode.read()
       case 'kimi': return this.kimi.read().then((usage) => usage === null ? null : withProvider(usage, identifyModelProvider({ name: 'kimi-coding' }), ''))
-      case 'zcode': return this.zcode.read()
       default: return Promise.resolve(null)
     }
   }
@@ -66,7 +71,7 @@ export class ProviderSubscriptionService {
   /** 消耗一次官方订阅重置；仅官方 Codex 订阅支持，第三方上游必须显式拒绝。 */
   async reset(adapterId: string, providerId?: string): Promise<CliSubscriptionResetResult> {
     if (adapterId !== 'codex') throw new Error('当前 Agent 不支持重置订阅')
-    if (this.sub2api.hasThirdPartySource(adapterId, providerId)) {
+    if (this.sub2api.hasThirdPartySource(adapterId, providerId) || this.newApi.hasSource(adapterId, providerId)) {
       throw new Error('Codex 正在使用第三方上游，无法重置官方订阅')
     }
     return this.codex.reset()
@@ -80,26 +85,54 @@ export class ProviderSubscriptionService {
       return this.official.read(currentProviderId, configuredSource)
     }
     if (matchedProvider?.reader === 'deepseek-balance' && isOfficialDeepseekSource(currentProviderId, configuredSource)) return this.deepseek.read(configuredSource ?? undefined)
-    if (matchedProvider?.reader === 'sub2api') return this.sub2api.read('dsh', currentProviderId)
+    const customUpstream = !isOfficialDeepseekSource(currentProviderId, configuredSource)
+      ? await this.readCustomUpstream('dsh', currentProviderId)
+      : null
+    if (customUpstream !== null) return customUpstream.usage
+    if (matchedProvider?.reader === 'sub2api') return null
     // 已识别的官方提供商但没有可用读取器时，不尝试把官方 API 当成 Sub2API。
     if (matchedProvider !== undefined && configuredSource !== null) return null
-    if (isThirdPartyDeepseekProvider(currentProviderId)) return this.sub2api.read('dsh', currentProviderId)
-    // 明确配置了第三方来源时，始终沿用 sub2api 适配器，避免把失败的上游误判为官方余额。
-    const hasThirdPartySource = this.sub2api.hasSource('dsh')
-    if (hasThirdPartySource) return this.sub2api.read('dsh')
+    if (isThirdPartyDeepseekProvider(currentProviderId)) return null
+    // 没有第三方来源时才允许读取官方 DeepSeek 余额。
     const official = await this.deepseek.read()
     return official === null || matchedProvider === undefined ? official : withProvider(official, matchedProvider, configuredSource?.baseUrl)
   }
 
-  private async readSub2ApiFirst(adapterId: string): Promise<CliSubscriptionUsage | null> {
-    // 已配置第三方上游时，官方额度接口没有意义；即使 Sub2API 探测失败也必须隐藏，
-    // 不能把旧的官方订阅窗口误显示成当前上游的用量。
-    const hasThirdPartySource = this.sub2api.hasThirdPartySource(adapterId)
-    if (hasThirdPartySource) return this.sub2api.read(adapterId)
+  private async readSub2ApiFirst(adapterId: string, providerId?: string): Promise<CliSubscriptionUsage | null> {
+    // 统一分类后只调用一个读取器；已分类来源临时失败时不切换协议。
+    const customUpstream = await this.readCustomUpstream(adapterId, providerId)
+    if (customUpstream !== null) return customUpstream.usage
     if (adapterId === 'codex') return this.codex.read().then((usage) => usage === null ? null : withProvider(usage, identifyModelProvider({ name: 'openai-codex' }), ''))
     if (adapterId === 'claude-code') return this.claudeCode.read().then((usage) => usage === null ? null : withProvider(usage, identifyModelProvider({ name: 'anthropic' }), ''))
     if (adapterId === 'grok') return this.grok.read().then((usage) => usage === null ? null : withProvider(usage, identifyModelProvider({ name: 'xai' }), ''))
+    if (adapterId === 'command-code') return this.commandCode?.read() ?? null
+    if (adapterId === 'zcode') return this.zcode.read()
+    if (adapterId === 'codebuddy' || adapterId === 'workbuddy') return this.codebuddy.read(adapterId)
     return null
+  }
+
+  private async readCustomUpstream(adapterId: string, providerId?: string): Promise<CustomUpstreamReadResult | null> {
+    const newApiConfigured = this.newApi.hasConfiguredSource(adapterId, providerId)
+    const sub2apiConfigured = this.sub2api.hasConfiguredSource(adapterId, providerId)
+    // 只要一侧有显式来源，就不把另一侧从本机环境自动发现的无关来源混进来。
+    // 两侧都没有显式来源时，才同时使用各自的 Agent 配置自动发现结果。
+    const newApiSources = sub2apiConfigured && !newApiConfigured ? [] : this.newApi.resolveSources(adapterId, providerId)
+    const sub2apiSources = newApiConfigured && !sub2apiConfigured ? [] : this.sub2api.resolveSources(adapterId, providerId)
+      .filter((source) => !isOfficialAgentBaseUrl(adapterId, source.baseUrl))
+    // 同一自定义来源的协议不能由配置项名称预先决定：一个 Agent 的配置文件
+    // 可能实际接入 New-API，也可能接入 Sub2API。统一分类器需要对每个候选
+    // 同时做两侧协议探测，再缓存最终分类，才能覆盖所有支持自定义 Provider
+    // 的适配器（尤其是 Command Code、ZCode、CodeBuddy 和 WorkBuddy）。
+    const candidates = mergeCustomUpstreamCandidates(newApiSources, sub2apiSources).map((candidate) => ({
+      ...candidate,
+      newApi: true,
+      sub2api: true,
+    }))
+    if (candidates.length === 0) return null
+    return this.customUpstreamClassifier.read(adapterId, providerId, candidates, {
+      newApi: (source) => this.newApi.readWithKind(adapterId, providerId, source),
+      sub2api: (source) => this.sub2api.readWithKind(adapterId, providerId, source),
+    })
   }
 }
 
@@ -109,6 +142,8 @@ export interface ProviderSubscriptionOptions {
   readonly claudeCode?: ClaudeCodeSubscriptionOptions
   readonly opencode?: OpenCodeSubscriptionOptions
   readonly sub2api?: Sub2ApiUsageOptions
+  readonly newApi?: NewApiSubscriptionOptions
+  readonly customUpstream?: CustomUpstreamClassifierOptions
   readonly deepseek?: DeepseekSubscriptionOptions
   readonly official?: OfficialProviderSubscriptionOptions
   readonly kimi?: KimiSubscriptionOptions
@@ -116,6 +151,7 @@ export interface ProviderSubscriptionOptions {
   readonly zcode?: ZcodeSubscriptionOptions
   readonly qoder?: QoderSubscriptionOptions
   readonly qoderCn?: QoderSubscriptionOptions
+  readonly codebuddy?: CodeBuddySubscriptionOptions
   /** 所有读取器共用的网络超时（毫秒）；单项服务显式给出时优先。 */
   readonly timeoutMs?: number
 }
@@ -191,7 +227,16 @@ export class DeepseekSubscriptionService {
 export interface Sub2ApiUsageOptions {
   readonly fetch?: FetchLike
   readonly timeoutMs?: number
-  readonly sources?: Partial<Record<'codex' | 'claude-code' | 'dsh' | 'grok' | 'opencode', Sub2ApiSource | readonly Sub2ApiSource[]>>
+  /**
+   * 按适配器或 Provider 保存自定义来源。这里使用开放键集合，确保新增
+   * Command Code、ZCode、CodeBuddy、WorkBuddy 等适配器时不会丢失配置。
+   */
+  readonly sources?: Partial<Record<string, Sub2ApiSource | readonly Sub2ApiSource[]>>
+}
+
+export interface Sub2ApiReadResult {
+  readonly usage: CliSubscriptionUsage | null
+  readonly kind: 'sub2api'
 }
 
 /** 通过 Provider 的上游 base URL 检测 Sub2API；只返回脱敏后的统计摘要。 */
@@ -207,54 +252,125 @@ export class Sub2ApiUsageService {
   }
 
   hasSource(adapterId: string, providerId?: string): boolean {
-    const configured = this.configuredSources?.[adapterId as keyof NonNullable<Sub2ApiUsageOptions['sources']>]
+    const configured = this.configuredSource(adapterId, providerId)
     if (configured !== undefined) return Array.isArray(configured) ? configured.length > 0 : true
     return resolveSub2ApiSources(adapterId, providerId).length > 0
   }
 
+  /** 判断当前来源是否由调用方显式注入；用于隔离本机自动发现的其它来源。 */
+  hasConfiguredSource(adapterId: string, providerId?: string): boolean {
+    if (this.configuredSources === undefined) return false
+    return (providerId !== undefined && this.configuredSources[providerId] !== undefined)
+      || this.configuredSources[adapterId] !== undefined
+  }
+
+  resolveSources(adapterId: string, providerId?: string): Sub2ApiSource[] {
+    const configured = this.configuredSource(adapterId, providerId)
+    const single = configured as Sub2ApiSource | undefined
+    return configured === undefined
+      ? resolveSub2ApiSources(adapterId, providerId)
+      : Array.isArray(configured) ? [...configured] : single === undefined ? [] : [single]
+  }
+
   /** 只判断是否存在第三方上游；官方 Codex/Claude 源必须允许回退原生订阅读取器。 */
   hasThirdPartySource(adapterId: string, providerId?: string): boolean {
-    const configured = this.configuredSources?.[adapterId as keyof NonNullable<Sub2ApiUsageOptions['sources']>]
+    const configured = this.configuredSource(adapterId, providerId)
     const sources = configured === undefined
       ? resolveSub2ApiSources(adapterId, providerId)
       : Array.isArray(configured) ? configured : [configured]
     return sources.some((source) => !isOfficialAgentSource(adapterId, source))
   }
 
-  async read(adapterId: string, providerId?: string): Promise<CliSubscriptionUsage | null> {
-    const configured = this.configuredSources?.[adapterId as keyof NonNullable<Sub2ApiUsageOptions['sources']>]
-    const sources = configured === undefined ? resolveSub2ApiSources(adapterId, providerId) : Array.isArray(configured) ? configured : [configured]
+  async read(adapterId: string, providerId?: string, source?: Sub2ApiSource): Promise<CliSubscriptionUsage | null> {
+    const result = await this.readWithKind(adapterId, providerId, source)
+    return result?.usage ?? null
+  }
+
+  async readWithKind(adapterId: string, providerId?: string, source?: Sub2ApiSource): Promise<Sub2ApiReadResult | null> {
+    const sources = source === undefined ? this.resolveSources(adapterId, providerId) : [source]
     for (const source of sources) {
-      const result = await this.readSource(source, providerId)
+      const result = await this.readSourceWithKind(source, providerId)
       if (result !== null) return result
     }
     return null
   }
 
-  private async readSource(source: Sub2ApiSource, providerId?: string): Promise<CliSubscriptionUsage | null> {
-    const baseUrl = source.baseUrl.trim().replace(/\/+$/u, '')
+  private async readSourceWithKind(source: Sub2ApiSource, providerId?: string): Promise<Sub2ApiReadResult | null> {
+    // 请求地址与分类缓存使用同一套 URL 清洗规则，避免 query/hash 中的凭据
+    // 被带到上游，也避免同一来源因尾部 /v1 或查询参数产生不同请求路径。
+    const baseUrl = sanitizeUpstreamUrl(source.baseUrl)
+    if (baseUrl === '') return null
     const usagePath = /\/v1$/u.test(baseUrl) ? '/usage' : '/v1/usage'
+    const billingPath = /\/v1$/u.test(baseUrl) ? '/sub2api/billing' : '/v1/sub2api/billing'
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.timeoutMs)
     try {
-      const response = await this.request(`${baseUrl}${usagePath}`, {
-        headers: { Authorization: source.apiKey.trim().startsWith('Bearer ') ? source.apiKey.trim() : `Bearer ${source.apiKey.trim()}`, Accept: 'application/json' },
-        signal: controller.signal,
-      })
-      if (!response.ok) return null
-      const usage = normalizeSub2ApiUsage(await response.json(), baseUrl)
-      if (usage === null) return null
-      const logoUrl = buildLogoUrl(baseUrl)
-      const logoDataUrl = logoUrl === '' ? '' : await readLogoDataUrl(logoUrl, this.request, this.timeoutMs)
-      const providerDefinition = identifyModelProvider({ name: providerId, baseUrl }) ?? thirdPartyProvider({ name: providerId, baseUrl })
-      const providerLogoDataUrl = logoDataUrl || await readLogoDataUrl(providerDefinition.logoUrl, this.request, this.timeoutMs)
-      return { authenticated: true, planType: usage.planName, primary: null, secondary: null, monthly: null, rateLimitReachedType: null, resetCredits: null, capturedAt: new Date().toISOString(), provider: providerSummary(providerDefinition, baseUrl, providerLogoDataUrl, 'sub2api'), sub2api: { ...usage, logoUrl, logoDataUrl } }
+      const headers = {
+        Authorization: source.apiKey.trim().startsWith('Bearer ') ? source.apiKey.trim() : `Bearer ${source.apiKey.trim()}`,
+        Accept: 'application/json',
+      }
+
+      // /v1/usage 是统计主接口。统计服务不可用或响应字段不完整时，仍继续
+      // 读取 /v1/sub2api/billing，用其明确的 object 标记锁定 Sub2API 类型。
+      let usageRaw: unknown = null
+      let usageStatus = 0
+      try {
+        const response = await this.request(`${baseUrl}${usagePath}`, { headers, signal: controller.signal })
+        usageStatus = response.status
+        if (response.ok) usageRaw = await response.json() as unknown
+      } catch {
+        // 主接口失败不代表来源类型未知，下面仍尝试 billing 探针。
+      }
+
+      const usage = normalizeSub2ApiUsage(usageRaw, baseUrl)
+      if (usage !== null) {
+        const logoUrl = buildLogoUrl(baseUrl)
+        const logoDataUrl = logoUrl === '' ? '' : await readLogoDataUrl(logoUrl, this.request, this.timeoutMs)
+        const providerDefinition = identifyModelProvider({ name: providerId, baseUrl }) ?? thirdPartyProvider({ name: providerId, baseUrl })
+        const providerLogoDataUrl = logoDataUrl || await readLogoDataUrl(providerDefinition.logoUrl, this.request, this.timeoutMs)
+        return {
+          usage: { authenticated: true, planType: usage.planName, primary: null, secondary: null, monthly: null, rateLimitReachedType: null, resetCredits: null, capturedAt: new Date().toISOString(), provider: providerSummary(providerDefinition, baseUrl, providerLogoDataUrl, 'sub2api'), sub2api: { ...usage, logoUrl, logoDataUrl } },
+          kind: 'sub2api',
+        }
+      }
+      if (isSub2ApiUsageSignature(usageRaw)) return { usage: null, kind: 'sub2api' }
+
+      // 无效凭据时 billing 只会重复返回鉴权错误，避免额外请求；404/5xx
+      // 等临时失败则继续探测，因为 billing 是产品级强特征。
+      if (usageStatus === 401 || usageStatus === 403) return null
+      try {
+        const response = await this.request(`${baseUrl}${billingPath}`, { headers, signal: controller.signal })
+        if (!response.ok) return null
+        const billing = await response.json() as unknown
+        return isSub2ApiUsageSignature(billing) ? { usage: null, kind: 'sub2api' } : null
+      } catch {
+        return null
+      }
     } catch {
       return null
     } finally {
       clearTimeout(timer)
     }
   }
+
+  private configuredSource(adapterId: string, providerId?: string): Sub2ApiSource | readonly Sub2ApiSource[] | undefined {
+    if (this.configuredSources === undefined) return undefined
+    return (providerId !== undefined && this.configuredSources[providerId] !== undefined)
+      ? this.configuredSources[providerId]
+      : this.configuredSources[adapterId]
+  }
+}
+
+/** 判断 Sub2API 用量端点的协议结构；统计明细为空时仍保留协议分类。 */
+export function isSub2ApiUsageSignature(value: unknown): boolean {
+  const root = recordValue(value)
+  if (root === null) return false
+  const payload = recordValue(root.data) ?? root
+  if (textValue(payload.object) === 'sub2api.key_billing') return true
+  const hasMode = textValue(payload.mode) !== null && typeof payload.isValid === 'boolean'
+  const usage = recordValue(payload.usage)
+  const hasUsagePoints = usage !== null && (recordValue(usage.today) !== null || recordValue(usage.total) !== null)
+  return hasMode || hasUsagePoints || Array.isArray(payload.daily_usage) || Array.isArray(payload.model_stats)
 }
 
 export interface CodexSubscriptionOptions {

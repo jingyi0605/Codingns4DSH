@@ -192,6 +192,13 @@ test('订阅悬浮框按内容自适应且不产生横向滚动', async () => {
   assert.doesNotMatch(source, /sub2apiTableScrollStyle = \{ overflowX:/u)
 })
 
+test('CodeBuddy 会话启用订阅用量查询并显示底部入口', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/subscription-slot.ts'), 'utf8')
+  assert.match(source, /adapterId is 'command-code' \| 'codex' \| 'claude-code' \| 'codebuddy'/u)
+  assert.match(source, /adapterId === 'claude-code' \|\| adapterId === 'codebuddy' \|\| adapterId === 'dsh'/u)
+  assert.match(source, /callCliRpc<CliSubscriptionUsage \| null>\(props\.rpc, 'subscription'/u)
+})
+
 test('官方余额统一复用适配器 Logo，并以进度条和到期倒计时展示', async () => {
   const source = await readFile(join(projectRoot, 'src/client/subscription-slot.ts'), 'utf8')
   assert.match(source, /const adapterIconSource = providerIconUrl\(adapterId \?\? 'dsh'\)/u)

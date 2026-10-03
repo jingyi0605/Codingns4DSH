@@ -59,7 +59,7 @@ export interface CliSubscriptionProvider {
   readonly id: string
   readonly displayName: string
   readonly baseUrl: string
-  readonly capability: 'official-balance' | 'official-usage' | 'subscription-window' | 'sub2api' | 'unsupported'
+  readonly capability: 'official-balance' | 'official-usage' | 'subscription-window' | 'sub2api' | 'new-api' | 'unsupported'
   readonly logoUrl: string
   readonly logoDataUrl?: string
 }
@@ -92,6 +92,10 @@ export interface ProviderBalanceUsage {
   readonly inputTokens: number | null
   readonly outputTokens: number | null
   readonly planName: string | null
+  /** API Key 或令牌的到期时间；普通 API Key 未提供时保持 null。 */
+  readonly expiresAt?: number | null
+  /** 上游明确返回的 Key 状态；无法确认时保持 null。 */
+  readonly keyExpired?: boolean | null
   readonly details: readonly {
     readonly label: string
     readonly value: string | number

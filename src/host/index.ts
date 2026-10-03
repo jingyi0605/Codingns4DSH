@@ -377,11 +377,39 @@ export {
   ClaudeCodeSubscriptionService,
   DeepseekSubscriptionService,
   Sub2ApiUsageService,
+  type Sub2ApiReadResult,
   OpenCodeSubscriptionService,
   type DeepseekSubscriptionOptions,
   type Sub2ApiSource,
   type Sub2ApiUsageOptions,
+  isSub2ApiUsageSignature,
 } from './cli-adapters/provider-subscription.js'
+export {
+  NewApiSubscriptionService,
+  normalizeNewApiUsage,
+  normalizeNewApiBilling,
+  resolveNewApiSources,
+  isOfficialAgentBaseUrl,
+  type NewApiReadResult,
+  type NewApiSource,
+  type NewApiSubscriptionOptions,
+} from './cli-adapters/new-api-subscription.js'
+export {
+  CustomUpstreamClassifier,
+  mergeCustomUpstreamCandidates,
+  type CustomUpstreamCandidate,
+  type CustomUpstreamClassification,
+  type CustomUpstreamClassifierOptions,
+  type CustomUpstreamKind,
+  type CustomUpstreamReadResult,
+  type CustomUpstreamReaders,
+  type CustomUpstreamSource,
+} from './cli-adapters/custom-upstream-classifier.js'
+export {
+  CodeBuddySubscriptionService,
+  normalizeCodeBuddySummary,
+  type CodeBuddySubscriptionOptions,
+} from './cli-adapters/codebuddy-subscription.js'
 export { QoderSubscriptionService, readLatestQoderQuota, type QoderSubscriptionOptions } from './cli-adapters/qoder-subscription.js'
 export { OfficialProviderSubscriptionService, type OfficialProviderSubscriptionOptions } from './cli-adapters/official-provider-subscription.js'
 export {
@@ -409,8 +437,11 @@ export { KiroCliDriver } from './cli-adapters/kiro-driver.js'
 export {
   CodeBuddyCliDriver,
   CodeBuddyDriver,
+  CodeBuddyCnCliDriver,
+  CodeBuddyCnDriver,
   WorkBuddyCliDriver,
   CODEBUDDY_PROFILE,
+  CODEBUDDY_CN_PROFILE,
   WORKBUDDY_PROFILE,
   type CodeBuddyRuntimeProfile,
   type CodeBuddyDriverOptions,

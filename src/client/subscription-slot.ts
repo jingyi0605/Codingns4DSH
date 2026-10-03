@@ -244,8 +244,8 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       : deepseek !== undefined
         ? t('usage.balanceLabel', { provider: providerName, amount: deepseekBalance === null ? t('usage.unavailable') : formatDeepseekMoney(deepseekBalance.totalBalance, deepseekBalance.currency) })
         : providerBalancePlan === null
-          ? t('usage.providerBalanceLabel', { provider: providerName, amount: formatProviderBalance(providerBalance) })
-          : t('usage.providerBalancePlanLabel', { provider: providerName, plan: providerBalancePlan, amount: formatProviderBalance(providerBalance) })
+          ? t('usage.providerBalanceLabel', { provider: providerName, amount: formatProviderBalance(providerBalance, t('usage.upstreamNotProvided')) })
+          : t('usage.providerBalancePlanLabel', { provider: providerName, plan: providerBalancePlan, amount: formatProviderBalance(providerBalance, t('usage.upstreamNotProvided')) })
   const logoSource = providerLogoSource || (sub2api === undefined ? '' : (sub2api.logoDataUrl ?? (isRemoteWebContext() ? '' : sub2api.logoUrl)))
   const resetCredits = usage.resetCredits
   // 重置只对官方 Codex 订阅开放；第三方上游走 sub2api 面板，不会带出重置券。
@@ -283,7 +283,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
           ? createRemainingRing(providerBalanceRemaining)
           : createElement('span', { 'aria-hidden': true, style: deepseekBalanceIdentityStyle },
             deepseekIconSource !== '' && createElement('img', { src: deepseekIconSource, alt: '', width: 18, height: 18, style: deepseekLogoStyle }),
-            createElement('span', { className: 'codingns4dsh-subscription-value', style: deepseekBalanceStyle }, formatProviderBalance(providerBalance)),
+            createElement('span', { className: 'codingns4dsh-subscription-value', style: deepseekBalanceStyle }, formatProviderBalance(providerBalance, t('usage.upstreamNotProvided'))),
           )
   return createElement('div', { ref: rootRef, style: subscriptionRootStyle },
     createElement('button', {
@@ -463,21 +463,31 @@ function formatSubscriptionWindowLabel(window: CliSubscriptionWindow | null, fal
 function ProviderBalancePopover({ usage, providerName, t, nowMs }: { readonly usage: ProviderBalanceUsage; readonly providerName: string; readonly t: CodingNsTranslator; readonly nowMs: number }): ReactElement {
   const models = summarizeProviderBalance(usage)
   const overallPercent = balancePercent(usage.remaining, usage.total)
+  const details = usage.details.filter((item) => !isProviderModelDetail(item.label))
   return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.officialRemainingPopover', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
       createElement('span', { style: providerBalanceHeadingStyle },
         createElement('strong', undefined, providerName),
         usage.planName?.trim() && createElement('span', { style: providerBalancePlanStyle }, usage.planName.trim()),
       ),
-      createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatProviderBalance(usage)),
+      createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatProviderBalance(usage, t('usage.upstreamNotProvided'))),
     ),
-    overallPercent !== null && createElement(BalanceProgress, {
+    overallPercent !== null && usage.remaining !== null && usage.total !== null && createElement(BalanceProgress, {
       label: t('usage.officialRemainingPopover', { provider: providerName }),
       percent: overallPercent,
-      value: `${formatProviderBalanceAmount(usage.remaining ?? 0, usage.unit)} / ${formatProviderBalanceAmount(usage.total ?? 0, usage.unit)}`,
+      value: `${formatProviderBalanceAmount(usage.remaining, usage.unit)} / ${formatProviderBalanceAmount(usage.total, usage.unit)}`,
       style: overallBalanceStyle,
     }),
     usage.used !== null && createElement('div', { style: balanceMetaStyle }, t('usage.usedShort', { amount: formatProviderBalanceAmount(usage.used, usage.unit) })),
+    createElement('section', { style: providerDetailsSectionStyle },
+      createElement('strong', { style: providerBalanceSectionTitleStyle }, t('usage.providerDetails')),
+      details.length === 0
+        ? createElement('div', { style: resetStyle }, t('usage.upstreamNotProvided'))
+        : details.map((item, index) => createElement('div', { key: `${item.label}-${index}`, style: providerDetailRowStyle },
+          createElement('span', undefined, item.label),
+          createElement('span', { style: providerDetailValueStyle }, formatProviderDetailValue(item.value, t)),
+        )),
+    ),
     models.length === 0
       ? createElement('div', { style: resetStyle }, t('usage.noMoreStats'))
       : models.map((model) => createElement('section', { key: model.name, style: providerBalanceModelStyle },
@@ -536,6 +546,17 @@ function summarizeProviderBalance(usage: ProviderBalanceUsage): ProviderBalanceM
     models.set(name, model)
   }
   return [...models.values()]
+}
+
+function isProviderModelDetail(label: string): boolean {
+  const normalized = label.trim()
+  return PROVIDER_DETAIL_SUFFIXES.some(({ suffix }) => normalized.endsWith(` ${suffix}`))
+}
+
+function formatProviderDetailValue(value: string | number, t: CodingNsTranslator): string {
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : t('usage.upstreamNotProvided')
+  const normalized = value.trim()
+  return normalized === '' || normalized === '--' ? t('usage.upstreamNotProvided') : normalized
 }
 
 const PROVIDER_DETAIL_SUFFIXES = [
@@ -636,8 +657,9 @@ function resolveDisplayWindow(usage: CliSubscriptionUsage): CliSubscriptionWindo
 function selectDeepseekBalance(usage: DeepseekUsage): DeepseekUsage['balances'][number] | null {
   return usage.balances.find((balance) => balance.currency.toUpperCase() === 'USD') ?? usage.balances[0] ?? null
 }
-function isSubscriptionAdapter(adapterId: unknown): adapterId is 'command-code' | 'codex' | 'claude-code' | 'dsh' | 'grok' | 'kimi' | 'opencode' | 'zcode' {
-  return adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'kimi' || adapterId === 'opencode' || adapterId === 'zcode'
+/** 已具备用量读取契约的适配器才挂载底部订阅入口。 */
+function isSubscriptionAdapter(adapterId: unknown): adapterId is 'command-code' | 'codex' | 'claude-code' | 'codebuddy' | 'dsh' | 'grok' | 'kimi' | 'opencode' | 'zcode' {
+  return adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'codebuddy' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'kimi' || adapterId === 'opencode' || adapterId === 'zcode'
 }
 function isRemoteWebContext(): boolean {
   return (globalThis as { __CODINGNS4DSH_REMOTE_WEB_CONTEXT__?: unknown }).__CODINGNS4DSH_REMOTE_WEB_CONTEXT__ === true
@@ -658,6 +680,9 @@ function subscriptionProviderName(adapterId: string | null, providerId: string |
     case 'kimi': return 'Kimi Code'
     case 'opencode': return 'OpenCode'
     case 'zcode': return 'ZCode'
+    case 'codebuddy': return 'CodeBuddy'
+    case 'codebuddy-cn': return 'CodeBuddy'
+    case 'workbuddy': return 'WorkBuddy'
     default: return 'Agent'
   }
 }
@@ -678,8 +703,8 @@ function formatDeepseekMoney(value: number, currency: string): string {
   if (normalizedCurrency === 'CNY') return `¥${amount}`
   return `${amount} ${normalizedCurrency}`
 }
-function formatProviderBalance(usage: ProviderBalanceUsage | undefined): string {
-  if (usage === undefined || usage.remaining === null) return '--'
+function formatProviderBalance(usage: ProviderBalanceUsage | undefined, unavailable = '--'): string {
+  if (usage === undefined || usage.remaining === null) return unavailable
   return formatProviderBalanceValue(usage.remaining, usage.unit)
 }
 function formatProviderBalanceValue(value: number, unit: string | null): string {
@@ -752,6 +777,10 @@ const providerBalancePlanStyle = { color: dshThemeColor.labelTertiary, fontSize:
 const deepseekBalanceSectionStyle = { display: 'grid', gap: 6, marginTop: 10, padding: '10px 0 2px', borderTop: `1px solid ${dshThemeColor.border}` }
 const deepseekBalanceDetailsStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelTertiary, fontSize: 12 }
 const overallBalanceStyle = { display: 'grid', gap: 5, marginTop: 10 }
+const providerDetailsSectionStyle = { display: 'grid', gap: 6, marginTop: 12, paddingTop: 10, borderTop: `1px solid ${dshThemeColor.border}` }
+const providerBalanceSectionTitleStyle = { fontSize: 12, color: dshThemeColor.labelSecondary }
+const providerDetailRowStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelTertiary, fontSize: 12, lineHeight: '17px' }
+const providerDetailValueStyle = { color: dshThemeColor.labelSecondary, textAlign: 'right' as const, overflowWrap: 'anywhere' as const }
 const providerBalanceModelStyle = { display: 'grid', gap: 6, marginTop: 12, paddingTop: 10, borderTop: `1px solid ${dshThemeColor.border}` }
 const providerBalanceProgressStyle = { display: 'grid', gap: 5, marginTop: 10 }
 const balanceProgressHeaderStyle = { display: 'flex', justifyContent: 'space-between', gap: 8, minWidth: 0, color: dshThemeColor.labelTertiary, fontSize: 11, fontVariantNumeric: 'tabular-nums' as const }
