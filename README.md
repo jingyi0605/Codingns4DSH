@@ -86,7 +86,7 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
 | Grok Build | `grok` | `grok`、`grok-build` | ACP | 模型、流式、工具、思考、用量、权限确认 |
 | MiniMax Code | `mcode` | `mcode` | ACP / stream-json | 模型、流式、恢复、打断、工具、思考、用量 |
 | ZCode | `zcode` | `zcode`、桌面端内置运行时 | JSON-RPC 裸信封 | 模型、流式、恢复、打断、用量 |
-| CodeBuddy | `codebuddy` | `codebuddy`、`codebuddy.cmd` | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考 |
+| CodeBuddy（自动识别 CN/国际版） | `codebuddy` | `codebuddy`、`codebuddy-code`、`cbc` 及 Windows `.cmd` 入口；按环境变量与认证域名自动选择区域 | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考、用量 |
 | WorkBuddy | `workbuddy` | WorkBuddy 桌面应用内置 `codebuddy` | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考 |
 | Cursor CLI | `cursor-cli` | `cursor-agent`、`agent` | ACP（`acp`） | 模型、流式、恢复、打断、工具、思考 |
 | Kiro CLI | `kiro-cli` | `kiro-cli` | ACP（`acp --agent-engine v3 --auth-method cli`） | 模型、流式、恢复、打断、工具、思考 |
@@ -133,6 +133,8 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
 </div>
 
 用量来自 Agent 自身的额度接口或已配置的上游用量来源；数据只在 Host 上读取，不写入浏览器存储。Codex 官方订阅的弹层还会显示「剩余点数」（credits 余额，保留两位小数）与「重置次数」（与重置图标按钮同行展示，含每张到期时间）；点击后经确认模态框消耗 1 次重置次数立即恢复当前用量窗口，整条链路走 codex app-server 官方协议，Host 不接触订阅凭据。
+
+CodeBuddy 与 WorkBuddy 的 ACP `usage_update` 和本地会话用量已经接入；官方套餐 billing 仍由 Host 侧按认证域名读取，认证或接口不可用时安全返回空值。CodeBuddy CN 与国际版共用一个适配器，当前区域自动决定认证、模型目录和套餐来源，不会把另一地区账号的数据串过来。
 
 ### 工作区调试
 
