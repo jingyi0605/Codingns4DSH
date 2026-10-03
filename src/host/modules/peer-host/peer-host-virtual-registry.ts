@@ -11,6 +11,7 @@ import type {
 import {
   createVirtualSessionId,
   createVirtualWorkspaceId,
+  parseVirtualWorkspaceId,
 } from '../../../shared/contracts/peer-host.js'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
@@ -61,6 +62,9 @@ export class VirtualWorkspaceRegistry {
   private readonly sessions = new Map<VirtualSessionId, VirtualSessionEntry>()
   private order: VirtualWorkspaceId[] = []
   private orderStore: AggregateWorkspaceOrderStore | undefined
+  // 一个 Host 可能同时服务多个页面；顺序文件使用固定临时路径，移动操作必须
+  // 串行化，否则并发 rename 会互相覆盖或读到已被另一个操作替换的临时文件。
+  private moveQueue: Promise<void> = Promise.resolve()
 
   constructor(options: { readonly order?: readonly VirtualWorkspaceId[]; readonly orderStore?: AggregateWorkspaceOrderStore } = {}) {
     this.order = uniqueIds(options.order ?? [])
@@ -161,15 +165,29 @@ export class VirtualWorkspaceRegistry {
 
   /** 将 Workspace 移到 before 之前；before 为 null 表示移动到末尾。 */
   async move(virtualWorkspaceId: VirtualWorkspaceId, beforeVirtualWorkspaceId: VirtualWorkspaceId | null): Promise<readonly VirtualWorkspaceId[]> {
-    if (!this.workspaces.has(virtualWorkspaceId)) throw new Error(`未知虚拟 Workspace: ${virtualWorkspaceId}`)
-    if (beforeVirtualWorkspaceId === virtualWorkspaceId) return this.listWorkspaceIds()
-    if (beforeVirtualWorkspaceId !== null && !this.workspaces.has(beforeVirtualWorkspaceId)) throw new Error(`未知目标 Workspace: ${beforeVirtualWorkspaceId}`)
+    const operation = this.moveQueue.then(() => this.moveNow(virtualWorkspaceId, beforeVirtualWorkspaceId))
+    this.moveQueue = operation.then(() => undefined, () => undefined)
+    return operation
+  }
+
+  private async moveNow(virtualWorkspaceId: VirtualWorkspaceId, beforeVirtualWorkspaceId: VirtualWorkspaceId | null): Promise<readonly VirtualWorkspaceId[]> {
+    // 原生 Remote 的 workspace/list 可能早于聚合摘要到达。只要 ID 是合法的
+    // 虚拟 Workspace，就先纳入持久顺序；下一次 aggregate 会补齐真实记录。
+    // 这样拖拽不会因为短暂的摘要竞态被拒绝。
+    assertVirtualWorkspaceId(virtualWorkspaceId)
+    if (beforeVirtualWorkspaceId === virtualWorkspaceId) return this.listPersistedWorkspaceIds()
+    if (beforeVirtualWorkspaceId !== null) assertVirtualWorkspaceId(beforeVirtualWorkspaceId)
     const next = this.order.filter((id) => id !== virtualWorkspaceId)
+    if (beforeVirtualWorkspaceId !== null && !this.order.includes(beforeVirtualWorkspaceId)) {
+      // 目标项也可能只存在于原生 Remote 列表；先作为墓碑锚点加入顺序。
+      next.push(beforeVirtualWorkspaceId)
+    }
     if (beforeVirtualWorkspaceId === null) next.push(virtualWorkspaceId)
     else next.splice(next.indexOf(beforeVirtualWorkspaceId), 0, virtualWorkspaceId)
     this.order = next
     await this.persistOrder()
-    return this.listWorkspaceIds()
+    // 返回完整持久顺序，客户端才能立即渲染刚刚移动的延迟聚合项。
+    return this.listPersistedWorkspaceIds()
   }
 
   async persistOrder(): Promise<void> {
@@ -182,6 +200,10 @@ export class VirtualWorkspaceRegistry {
     for (const id of existing) if (!next.includes(id)) next.push(id)
     return next
   }
+}
+
+function assertVirtualWorkspaceId(value: string): asserts value is VirtualWorkspaceId {
+  if (parseVirtualWorkspaceId(value) === null) throw new Error(`非法虚拟 Workspace ID: ${value}`)
 }
 
 function uniqueIds(ids: readonly string[]): string[] {

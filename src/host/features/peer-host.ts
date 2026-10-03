@@ -14,7 +14,7 @@ import {
   PeerHostStore,
 } from '../modules/peer-host/peer-host-store.js'
 import type { PeerHostRoute } from '../../shared/contracts/peer-host.js'
-import type { PeerHostRecord, PeerHostClientRecord } from '../../shared/contracts/peer-host.js'
+import type { AggregateHostResult, PeerHostRecord, PeerHostClientRecord } from '../../shared/contracts/peer-host.js'
 import type { DshHostStatus } from '../../shared/contracts/host-status.js'
 import { createVirtualSessionId, createVirtualWorkspaceId, normalizePeerHostColor, parseVirtualSessionId, parseVirtualWorkspaceId, type HostScope } from '../../shared/contracts/peer-host.js'
 import type { AggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
@@ -341,7 +341,13 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
           }
           case 'wsEndpoint': return wsEndpoint
           case 'aggregate': {
-            const results = await aggregate.load(await buildSources())
+            // 顺序 Registry 必须认识本地工作区，即使本地 session 摘要在启动瞬间
+            // 还没有准备好。否则 order 只会留下远端 ID，客户端拖拽到本地项时
+            // 只能拒绝请求，表现为远端永远被固定在列表顶部。
+            const results = ensureLocalWorkspaceSummaries(
+              await aggregate.load(await buildSources()),
+              context.services.dshContext,
+            )
             workspaceRegistry.replace(results)
             if (!workspaceOrderHydrated) {
               await workspaceRegistry.hydrateOrder()
@@ -353,15 +359,20 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             const action = input.action === undefined ? 'get' : requiredString(input.action, 'action')
             if (action === 'get') {
               return {
-                orderedWorkspaceIds: workspaceRegistry.listWorkspaceIds(),
+                // 返回完整墓碑顺序；远端摘要短暂缺失时，客户端仍需知道其拖拽位置。
+                orderedWorkspaceIds: workspaceRegistry.listPersistedWorkspaceIds(),
                 persistedWorkspaceIds: workspaceRegistry.listPersistedWorkspaceIds(),
               }
             }
             if (action === 'move') {
-              const workspaceId = requiredString(input.virtualWorkspaceId, 'virtualWorkspaceId')
+              const workspaceId = resolveWorkspaceOrderId(
+                requiredString(input.virtualWorkspaceId, 'virtualWorkspaceId'),
+                workspaceRegistry,
+                localHostId,
+              )
               const before = input.beforeVirtualWorkspaceId === null || input.beforeVirtualWorkspaceId === undefined
                 ? null
-                : requiredString(input.beforeVirtualWorkspaceId, 'beforeVirtualWorkspaceId')
+                : resolveWorkspaceOrderId(requiredString(input.beforeVirtualWorkspaceId, 'beforeVirtualWorkspaceId'), workspaceRegistry, localHostId)
               return { orderedWorkspaceIds: await workspaceRegistry.move(workspaceId, before) }
             }
             throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `未知 PeerHost workspaceOrder 操作: ${action}`)
@@ -675,6 +686,72 @@ function parseScope(value: unknown): import('../../shared/contracts/peer-host.js
   const sessionId = scope.sessionId === null ? null : requiredString(scope.sessionId, 'scope.sessionId')
   if (typeof scope.scopeGeneration !== 'number' || !Number.isSafeInteger(scope.scopeGeneration) || scope.scopeGeneration < 0) throw new TypeError('scope.scopeGeneration 无效')
   return { hostId, targetHostId, workspaceId, sessionId, scopeGeneration: scope.scopeGeneration }
+}
+
+/**
+ * 用 DSH 原生注册表补齐本地工作区。
+ *
+ * 本地摘要还在启动、会话服务暂时不可读时，聚合 source 可能只返回远端结果。
+ * 顺序 Registry 仍必须知道本地 ID，否则客户端无法把本地项转换成混合顺序中的
+ * 虚拟 ID。这里仅补齐排序所需的最小记录，真实会话仍由本机 DSH Store 提供。
+ */
+export function ensureLocalWorkspaceSummaries(
+  results: readonly AggregateHostResult[],
+  ctx: CodingNsHostServices['dshContext'],
+): readonly AggregateHostResult[] {
+  if (ctx === undefined) return results
+  const local = results.find((host) => host.targetHostId === null)
+  if (local === undefined) return results
+  let registry: unknown
+  try { registry = ctx.get('workspaceRegistry') } catch { return results }
+  if (!isRecordValue(registry) || typeof registry.list !== 'function') return results
+  let raw: readonly unknown[]
+  try {
+    const listed = registry.list()
+    raw = Array.isArray(listed) ? listed : []
+  } catch {
+    return results
+  }
+  const known = new Set(local.workspaces.map((workspace) => workspace.workspaceId))
+  const missing = raw.flatMap((item) => {
+    if (!isRecordValue(item)) return []
+    const workspaceId = textValue(item.id) ?? textValue(item.workspaceId) ?? textValue(item.key)
+    if (workspaceId === undefined || known.has(workspaceId)) return []
+    const path = textValue(item.path) ?? textValue(item.cwd) ?? workspaceId
+    return [{
+      key: `${local.hostId}:${workspaceId}`,
+      hostId: local.hostId,
+      targetHostId: null,
+      workspaceId,
+      displayName: textValue(item.displayName) ?? textValue(item.title) ?? textValue(item.name) ?? workspaceId,
+      path,
+      hostLabel: local.hostLabel,
+      availability: 'ready' as const,
+      sessions: [],
+    }]
+  })
+  if (missing.length === 0) return results
+  return results.map((host) => host.targetHostId === null
+    ? { ...host, workspaces: [...host.workspaces, ...missing] }
+    : host)
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function textValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+}
+
+/** 将初始化竞态期间原生列表传来的本地裸 ID解析为顺序 Registry 的虚拟 ID。 */
+function resolveWorkspaceOrderId(value: string, registry: VirtualWorkspaceRegistry, localHostId: string): string {
+  if (parseVirtualWorkspaceId(value) !== null) return value
+  const local = registry.list().find((workspace) => workspace.targetHostId === null && workspace.workspaceId === value)
+  if (local !== undefined) return local.virtualWorkspaceId
+  // 启动竞态下 Registry 可能还没有完成首轮 aggregate；本地 Host ID 是稳定的，
+  // 先生成同一格式的虚拟 ID并写入墓碑顺序，后续 aggregate 会补齐记录。
+  return createVirtualWorkspaceId(localHostId, value)
 }
 
 export function toPeerHostClientRecord(record: PeerHostRecord): PeerHostClientRecord {

@@ -58,7 +58,19 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
       context.resources.add(() => { shim.deactivate() })
       // 原生侧栏在插件 apply 时按引用捕获 `workspaces.list`，只能就地投影这个对象；
       // 没有 shim 就没有原生 Remote 路由，此时不注入，避免出现点不开的远端条目。
-      context.resources.add(installPeerHostNativeStoreProjection({ uiContext: context.services.uiContext, projection }))
+      context.resources.add(installPeerHostNativeStoreProjection({
+        uiContext: context.services.uiContext,
+        projection,
+        moveWorkspace: (workspaceId, beforeWorkspaceId) => management.moveWorkspace(workspaceId, beforeWorkspaceId),
+        refreshWorkspaceOrder: async () => {
+          // 原生侧栏可能在首次聚合完成前就收到远端 Workspace；拖拽入口此时
+          // 先补一次聚合和顺序快照，再继续原操作，避免把虚拟 ID误判成未知项。
+          const aggregate = await management.aggregate()
+          const order = await management.workspaceOrder()
+          transport!.setAggregate(aggregate, order.orderedWorkspaceIds)
+          return order.orderedWorkspaceIds
+        },
+      }))
       // Desktop 的 Transport 只有 `{ ownsHost, streamBaseUrl }`，shim 不提供 `rpc`，
       // 因此 DSH 用原生 `createWebConnectionRpc` 建立了 Connection。这里在 Connection
       // 就绪后就地补聚合分流：`rpc.call` 上放行聚合请求，本机流在 Remote 服务的
@@ -88,11 +100,28 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
     context.resources.add(() => workspaceTab.dispose())
     // 虚拟会话必须进入原生 SessionManager 目录（否则 sessions.retain 解析失败），
     // 因此聚合变化后触发一次原生列表刷新，由页面 Transport 在 session/list 响应里补齐。
+    let refreshGeneration = 0
     const refresh = async (): Promise<void> => {
+      const generation = ++refreshGeneration
+      const orderReference = projection.workspaceOrder()
       try {
         const aggregate = await management.aggregate()
+        // Host 端先完成 aggregate 再 hydrate 顺序；按同一顺序读取可避免拿到空的初始 order，
+        // 同时保持 aggregate 的旧返回形状，旧 Host 不支持该 RPC 时仍回退为追加远端项。
+        let orderedWorkspaceIds: readonly string[] | undefined
+        try {
+          orderedWorkspaceIds = (await management.workspaceOrder()).orderedWorkspaceIds
+        } catch {
+          orderedWorkspaceIds = undefined
+        }
+        // 定时器、可见性事件和原生归档事件可能并发触发刷新；旧请求不能覆盖
+        // 更新的聚合或拖拽顺序，否则列表会短暂跳回旧位置。
+        if (generation !== refreshGeneration) return
+        // 聚合读取期间如果用户完成了一次拖拽，保留本地刚确认的顺序；本轮只更新
+        // 工作区内容，下一轮再从 Host 读取顺序，避免旧的 order 响应覆盖拖拽结果。
+        const refreshedOrder = projection.workspaceOrder() === orderReference ? orderedWorkspaceIds : undefined
         tag.setAggregate(aggregate)
-        if (transport?.setAggregate(aggregate) === true) {
+        if (transport?.setAggregate(aggregate, refreshedOrder) === true) {
           await refreshPeerHostNativeSessions(context.services.uiContext)
         }
       } catch {
@@ -121,8 +150,8 @@ export function createPeerHostPageTransport(
   uiContext?: { get(name: string): unknown },
 ): {
   readonly hooks: CodingNsTransportHooks
-  readonly matchesScope: (value: unknown) => boolean
-  readonly setAggregate: (aggregate: readonly AggregateHostResult[]) => boolean
+  readonly matchesScope: (value: unknown, method?: string) => boolean
+  readonly setAggregate: (aggregate: readonly AggregateHostResult[], orderedWorkspaceIds?: readonly string[]) => boolean
 } {
   const fetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined
   const scopes = new Map<string, HostScope>()
@@ -500,7 +529,7 @@ export function createPeerHostPageTransport(
         : scopeForCliRequest(cli, value)
       return scope !== undefined && scope.targetHostId !== null
     },
-    setAggregate(aggregate) {
+    setAggregate(aggregate, orderedWorkspaceIds) {
       scopes.clear()
       remoteHostScopes.clear()
       for (const host of aggregate) {
@@ -539,7 +568,8 @@ export function createPeerHostPageTransport(
         }
         scopes.set(sessionId, pending.scope)
       }
-      return projection.setAggregate(aggregate)
+      refreshModelCatalogForScope(activeRemoteScope)
+      return projection.setAggregate(aggregate, orderedWorkspaceIds)
     },
   }
 }

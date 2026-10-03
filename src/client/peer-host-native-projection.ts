@@ -28,13 +28,31 @@ export interface PeerHostVirtualSessionSummary {
 
 export interface PeerHostNativeProjection {
   /** 记录新的聚合快照；返回 true 表示与上一次不同，调用方据此刷新原生数据。 */
-  setAggregate(results: readonly AggregateHostResult[]): boolean
+  setAggregate(results: readonly AggregateHostResult[], orderedWorkspaceIds?: readonly string[]): boolean
+  /** 更新 Host 侧持久化的全局 Workspace 顺序；顺序变化必须触发原生 Store 刷新。 */
+  setWorkspaceOrder(orderedWorkspaceIds: readonly string[]): boolean
+  /** 当前 Host 侧返回的混合 Workspace 顺序。 */
+  workspaceOrder(): readonly string[]
+  /** 当前本地 Host 的稳定 ID，用于把原生裸 Workspace ID 映射到虚拟顺序 ID。 */
+  localHostId(): string | undefined
   /** 当前全部虚拟工作区（供原生 Workspace Store 合并）。 */
   workspaces(): readonly PeerHostVirtualWorkspaceView[]
   /** 当前全部虚拟会话摘要（供 `session/list` 响应合并）。 */
   sessions(): readonly PeerHostVirtualSessionSummary[]
   /** 订阅聚合变化；原生 Store 的订阅会转发到这里。 */
   subscribe(listener: () => void): () => void
+}
+
+/**
+ * 为混合工作区生成只用于原生侧栏树归属的稳定路径。
+ *
+ * DSH 会把 `workspace.path` 的目录前缀关系解释成父子工作区。不同 Host 的真实
+ * 路径以及本地工作区之间都可能发生前缀重叠，因此列表层不能继续暴露真实目录。
+ * 这里使用不对应本机文件系统的 URI，并把完整虚拟 ID 编码成单一段，保证所有
+ * 工作区都是同一层的兄弟节点。文件和会话请求仍使用所属 Host 的真实路径。
+ */
+export function createPeerHostWorkspaceDisplayPath(virtualWorkspaceId: string): string {
+  return `codingns-peer-host://${encodeURIComponent(virtualWorkspaceId)}`
 }
 
 /**
@@ -47,18 +65,40 @@ export interface PeerHostNativeProjection {
 export function createPeerHostNativeProjection(): PeerHostNativeProjection {
   let workspaces: readonly PeerHostVirtualWorkspaceView[] = []
   let sessions: readonly PeerHostVirtualSessionSummary[] = []
+  let orderedWorkspaceIds: readonly string[] = []
+  let localHostId: string | undefined
   const listeners = new Set<() => void>()
   return {
-    setAggregate(results) {
+    setAggregate(results, nextOrderedWorkspaceIds) {
       const next = projectAggregate(results)
-      const changed = !sameWorkspaces(workspaces, next.workspaces) || !sameSessions(sessions, next.sessions)
+      // 某次摘要失败可能暂时不带本地 Host；保留上一次稳定 ID，避免原生裸 ID
+      // 在这一轮被误当成未知项而跳到远端工作区之后。
+      const nextLocalHostId = next.localHostId ?? localHostId
+      const nextOrder = nextOrderedWorkspaceIds === undefined
+        ? orderedWorkspaceIds
+        : normalizeWorkspaceOrder(nextOrderedWorkspaceIds)
+      const changed = !sameWorkspaces(workspaces, next.workspaces)
+        || !sameSessions(sessions, next.sessions)
+        || !sameIds(orderedWorkspaceIds, nextOrder)
+        || localHostId !== nextLocalHostId
       if (!changed) return false
       // 无变化时保留原引用：下游 Store 快照与 useSyncExternalStore 依赖引用稳定。
       workspaces = next.workspaces
       sessions = next.sessions
+      orderedWorkspaceIds = sameIds(orderedWorkspaceIds, nextOrder) ? orderedWorkspaceIds : nextOrder
+      localHostId = nextLocalHostId
       for (const listener of [...listeners]) listener()
       return true
     },
+    setWorkspaceOrder(nextOrderedWorkspaceIds) {
+      const next = normalizeWorkspaceOrder(nextOrderedWorkspaceIds)
+      if (sameIds(orderedWorkspaceIds, next)) return false
+      orderedWorkspaceIds = next
+      for (const listener of [...listeners]) listener()
+      return true
+    },
+    workspaceOrder: () => orderedWorkspaceIds,
+    localHostId: () => localHostId,
     workspaces: () => workspaces,
     sessions: () => sessions,
     subscribe(listener) {
@@ -73,9 +113,11 @@ export function createPeerHostNativeProjection(): PeerHostNativeProjection {
 function projectAggregate(results: readonly AggregateHostResult[]): {
   readonly workspaces: readonly PeerHostVirtualWorkspaceView[]
   readonly sessions: readonly PeerHostVirtualSessionSummary[]
+  readonly localHostId: string | undefined
 } {
   const workspaces: PeerHostVirtualWorkspaceView[] = []
   const sessions: PeerHostVirtualSessionSummary[] = []
+  const localHostId = results.find((host) => host.targetHostId === null)?.hostId
   for (const host of results) {
     // 本地 Host 的资源由 DSH 自己提供；只投影远端，避免与原生条目重复。
     if (host.targetHostId === null) continue
@@ -86,7 +128,11 @@ function projectAggregate(results: readonly AggregateHostResult[]): {
       sessions.push(...projected.sessions)
     }
   }
-  return { workspaces, sessions }
+  return { workspaces, sessions, localHostId }
+}
+
+function normalizeWorkspaceOrder(ids: readonly string[]): readonly string[] {
+  return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.trim() !== ''))]
 }
 
 function projectWorkspace(
@@ -94,9 +140,10 @@ function projectWorkspace(
   workspace: AggregateWorkspaceSummary,
 ): { readonly workspace: PeerHostVirtualWorkspaceView; readonly sessions: readonly PeerHostVirtualSessionSummary[] } {
   const virtualWorkspaceId = createVirtualWorkspaceId(virtualHostId, workspace.workspaceId)
-  // 原生文件面板按工作区 path 解析目录，必须用远端真实根目录而不是 workspaceId，
-  // 否则目标端会拿 workspaceId 当文件路径并报 `no entry at "<workspaceId>"`。
-  const path = workspace.path
+  // 真实路径保留给会话摘要和远端请求；Workspace Store 的 path 使用独立显示值，
+  // 防止 DSH 把本地与远端目录前缀识别成父子关系。
+  const displayPath = createPeerHostWorkspaceDisplayPath(virtualWorkspaceId)
+  const realPath = workspace.path
   const sessionIds: string[] = []
   const archivedSessionIds: string[] = []
   const sessions: PeerHostVirtualSessionSummary[] = []
@@ -107,7 +154,7 @@ function projectWorkspace(
     const virtualSessionId = createVirtualSessionId(virtualHostId, realSessionId)
     sessionIds.push(virtualSessionId)
     if (archived) archivedSessionIds.push(virtualSessionId)
-    sessions.push(projectSession(virtualSessionId, session, path))
+    sessions.push(projectSession(virtualSessionId, session, realPath))
     updatedAt = Math.max(updatedAt, session.updatedAt)
   }
   for (const session of workspace.sessions) append(session, false)
@@ -115,7 +162,7 @@ function projectWorkspace(
   return {
     workspace: {
       workspaceId: virtualWorkspaceId,
-      path,
+      path: displayPath,
       // Host 归属不再写进标题文本：侧栏由彩色标签表达，标题保持干净，可搜索、
       // 可重命名，也不会污染 hover 卡片与重命名初值。
       title: workspace.displayName,
@@ -179,6 +226,7 @@ function sameSessions(previous: readonly PeerHostVirtualSessionSummary[], next: 
       && session.updatedAt === candidate.updatedAt
       && session.running === candidate.running
       && session.blank === candidate.blank
+      && session.cwd === candidate.cwd
       && session.adapterId === candidate.adapterId
       && session.projections.values.title === candidate.projections.values.title
   })
