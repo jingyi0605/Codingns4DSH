@@ -168,7 +168,7 @@ export function createPeerHostPageTransport(
       if (response.status !== 404 && response.status !== 405) break
     }
     if (response === undefined || !response.ok) throw new Error(`transport failure: HTTP ${response?.status ?? 500}`)
-    const envelope = await response.json() as { result?: unknown }
+    const envelope = await readPageRpcResponse(response)
     return envelope.result
   }
   const codingNsCall = async (endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> => {
@@ -564,6 +564,73 @@ function createRequestId(): string {
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+/**
+ * 解析页面 DSH Gateway 的 JSON 或 multipart 响应。
+ *
+ * `workspaceFiles/readBytes` 等 Remote 会把 Uint8Array 放到 multipart 附件里；
+ * 页面 Transport 不能直接调用 `response.json()`，否则 multipart 的 `--` 边界会被
+ * JSON 解析器当成负数开头，产生误导性的“No number after minus sign”错误。
+ */
+async function readPageRpcResponse(response: Response): Promise<Record<string, unknown>> {
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+  if (contentType !== 'multipart/form-data') return await response.json() as Record<string, unknown>
+
+  const fields = new Map<string, FormDataEntryValue>()
+  for (const [name, value] of (await response.formData()).entries()) {
+    if (fields.has(name)) throw new TypeError('connection: invalid binary response fields')
+    fields.set(name, value)
+  }
+  const metadata = fields.get('metadata')
+  if (typeof metadata !== 'string') throw new TypeError('connection: invalid binary response fields')
+  const envelope = asRecord(JSON.parse(metadata))
+  const result = asRecord(envelope?.result)
+  if (envelope === null || result === null) throw new TypeError('connection: invalid server-response envelope')
+  fields.delete('metadata')
+  if (result.ok !== true) {
+    if (fields.size !== 0) throw new TypeError('connection: invalid binary response fields')
+    return envelope
+  }
+  const attachments = envelope.attachments
+  if (!Array.isArray(attachments) || attachments.length === 0) throw new TypeError('connection: invalid binary response result')
+  const root = { value: result.value }
+  for (const rawAttachment of attachments) {
+    const attachment = asRecord(rawAttachment)
+    const path = attachment?.path
+    const part = attachment?.part
+    if (attachment?.codec !== 'bytes' || typeof part !== 'string' || !Array.isArray(path)) {
+      throw new TypeError('connection: invalid binary response attachment')
+    }
+    const data = fields.get(part)
+    if (!(data instanceof Blob)) throw new TypeError('connection: invalid binary response fields')
+    let parent: object = root
+    let key: string | number = 'value'
+    for (const segment of path) {
+      const value = Reflect.get(parent, key)
+      if (typeof value !== 'object' || value === null) throw new TypeError('connection: invalid binary response path')
+      if (Array.isArray(value)) {
+        if (typeof segment !== 'number' || !Number.isSafeInteger(segment) || segment < 0 || segment >= value.length) {
+          throw new TypeError('connection: invalid binary response path')
+        }
+      } else if (typeof segment !== 'string') {
+        throw new TypeError('connection: invalid binary response path')
+      }
+      if (!Object.hasOwn(value, segment)) throw new TypeError('connection: invalid binary response path')
+      parent = value
+      key = segment
+    }
+    if (Reflect.get(parent, key) !== null) throw new TypeError('connection: invalid binary response placeholder')
+    Object.defineProperty(parent, key, {
+      value: new Uint8Array(await data.arrayBuffer()),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    })
+    fields.delete(part)
+  }
+  if (fields.size !== 0) throw new TypeError('connection: invalid binary response fields')
+  return { ...envelope, result: { ...result, value: root.value } }
 }
 
 /** 打开当前页面 DSH Gateway 的单个 Remote 流；协议与 dsh-api-gateway 保持一致。 */

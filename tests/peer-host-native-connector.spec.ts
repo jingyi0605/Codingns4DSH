@@ -31,6 +31,55 @@ function response(value: unknown): Response {
   return new Response(JSON.stringify({ result: { ok: true, value } }), { status: 200, headers: { 'content-type': 'application/json' } })
 }
 
+function binaryResponse(value: Record<string, unknown>, bytes: Uint8Array): Response {
+  const form = new FormData()
+  form.append('metadata', JSON.stringify({
+    type: 'server-response',
+    rpcId: 'local-binary-response',
+    result: { ok: true, value },
+    attachments: [{ codec: 'bytes', part: 'bytes-0', path: ['data'] }],
+  }))
+  form.append('bytes-0', new Blob([bytes], { type: 'application/octet-stream' }), 'bytes.bin')
+  return new Response(form, { status: 200 })
+}
+
+test('页面 connector 可解析本机 workspaceFiles/readBytes 的 multipart 二进制响应', async () => {
+  const previousFetch = globalThis.fetch
+  const bytes = new Uint8Array([0, 45, 60, 255])
+  globalThis.fetch = (async (input) => {
+    const path = new URL(String(input), 'http://dsh.test').pathname
+    assert.equal(path, '/api/workspaceFiles/readBytes')
+    return binaryResponse({
+      offset: 0,
+      data: null,
+      eof: true,
+      absolutePath: '/workspace/image.png',
+      version: 'v1',
+      bytes: bytes.byteLength,
+    }, bytes)
+  }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    const result = await transport.hooks.rpc?.({
+      method: 'workspaceFiles/readBytes',
+      payload: { channel: '/api', payload: { path: 'image.png' } },
+    })
+    assert.deepEqual(result, {
+      ok: true,
+      value: {
+        offset: 0,
+        data: bytes,
+        eof: true,
+        absolutePath: '/workspace/image.png',
+        version: 'v1',
+        bytes: bytes.byteLength,
+      },
+    })
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
 test('页面 connector 将虚拟 Session 的原生 Remote 路由到 peerHost/native', async () => {
   const calls: Array<{ path: string; body: Record<string, unknown> }> = []
   const previousFetch = globalThis.fetch
