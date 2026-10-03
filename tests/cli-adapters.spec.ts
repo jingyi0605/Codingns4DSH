@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { createCliAdaptersFeature } from '../data/build/dist/host/cli-adapters/feature.js'
 import { CommandCodeDriver } from '../data/build/dist/host/cli-adapters/command-code-driver.js'
+import { CommandCodeHistory } from '../data/build/dist/host/cli-adapters/command-code-history.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 import { CodingNsCliSessionStore } from '../data/build/dist/host/cli-adapters/session-store.js'
@@ -14,7 +15,7 @@ import { FeatureRegistry } from '../data/build/dist/features/registry.js'
 import { CommandCodeSubscriptionService } from '../data/build/dist/host/cli-adapters/command-code-subscription.js'
 import { ClaudeCodeSubscriptionService, DeepseekSubscriptionService, OpenCodeSubscriptionService, ProviderSubscriptionService, Sub2ApiUsageService } from '../data/build/dist/host/cli-adapters/provider-subscription.js'
 import { identifyModelProvider, normalizeProviderBaseUrl } from '../data/build/dist/host/cli-adapters/provider-registry.js'
-import { knownCodexContextWindow } from '../data/build/dist/host/cli-adapters/model-catalog.js'
+import { knownCodexContextWindow, knownCommandCodeContextWindow } from '../data/build/dist/host/cli-adapters/model-catalog.js'
 
 test('Command Code 驱动只把带版本号的候选命令视为已安装', async () => {
   const calls: string[][] = []
@@ -92,6 +93,20 @@ test('Command Code 驱动识别完整模型目录和工具调用事件', async (
     { id: 'gpt-6-astra', name: 'gpt-6-astra', description: 'most capable', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
     { id: 'qwen/qwen3.8-27b', name: 'qwen/qwen3.8-27b', description: 'compact', efforts: ['low', 'medium', 'xhigh'] },
   ])
+})
+
+test('Command Code 模型目录优先使用 status --json 的当前模型', async () => {
+  const driver = new CommandCodeDriver({
+    homeDirectory: '/definitely/missing',
+    spawnSync: ((command: string, args: string[]) => {
+      if (args[0] === '--version') return { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+      if (args[0] === '--list-models') return { status: 0, stdout: 'OpenAI\ngpt-6-astra  capable\n', stderr: '' }
+      if (args[0] === 'status') return { status: 0, stdout: JSON.stringify({ model: 'gpt-6-astra' }), stderr: '' }
+      return { status: 0, stdout: '', stderr: '' }
+    }) as never,
+    binaries: ['command-code'],
+  })
+  assert.equal((await driver.listModels()).currentModel, 'gpt-6-astra')
 })
 
 test('Command Code 的 BYOK 模型按末段回退拿到内置思考强度', async () => {
@@ -207,6 +222,461 @@ test('Command Code 驱动写入历史 transcript、转换 JSON 事件并清理�
   assert.equal(killed, true)
 })
 
+test('Command Code 仅返回 run_end 时也能提取正文并正常结束', async () => {
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: ((_command: string, _args: string[]) => ({
+      stdout: Readable.from([`${JSON.stringify({ type: 'run_end', result: { finalText: '仅有 run_end 正文', stopReason: 'stop' } })}\n`]),
+      stderr: { on() { return this } },
+      kill() { return true },
+    })) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'run-end-only', messages: [], prompt: '执行', cwd: '/workspace' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'text-delta', text: '仅有 run_end 正文', messageId: 'command-code-message-1' },
+    { type: 'finish', reason: 'stop' },
+  ])
+})
+
+test('Command Code run_end 命中 max_turns 时仍保留该事件携带的最后正文', async () => {
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: ((_command: string, _args: string[]) => ({
+      stdout: Readable.from([`${JSON.stringify({ type: 'run_end', result: { finalText: '上限前已生成', stopReason: 'max_turns' } })}\n`]),
+      stderr: { on() { return this } },
+      kill() { return true },
+    })) as never,
+    autoContinueMaxAttempts: 0,
+  })
+
+  const chunks = []
+  await assert.rejects(async () => {
+    for await (const chunk of driver.executeTurn({ sessionId: 'run-end-max-turns', messages: [], prompt: '执行', cwd: '/workspace' })) chunks.push(chunk)
+  }, /COMMAND_CODE_MAX_TURNS/u)
+  assert.equal(chunks.find((chunk) => chunk.type === 'text-delta')?.text, '上限前已生成')
+})
+
+test('Command Code transcript 保留工具调用、工具结果和推理块', async () => {
+  let transcript = ''
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: ((_command: string, args: string[]) => {
+      transcript = readFileSync(args[1]!, 'utf8')
+      return {
+        stdout: Readable.from([`${JSON.stringify({ type: 'result', finalText: '完成' })}\n`]),
+        stderr: { on() { return this } },
+        kill() { return true },
+      }
+    }) as never,
+  })
+
+  for await (const _chunk of driver.executeTurn({
+    sessionId: 'tool-history-session',
+    messages: [
+      { id: 'user-1', role: 'user', content: '之前的问题' },
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '内部推理' },
+          { type: 'tool-call', id: 'call-1', name: 'read_file', arguments: '{"paths":["a.ts"]}' },
+          { type: 'text', text: '调用工具' },
+        ],
+      },
+      {
+        id: 'tool-1',
+        role: 'tool',
+        toolCallId: 'call-1',
+        source: { kind: 'tool', callId: 'call-1' },
+        content: [{ type: 'text', text: '文件内容' }],
+      },
+      { id: 'current', role: 'user', content: '现在的问题' },
+    ],
+    prompt: '现在的问题',
+    cwd: '/workspace',
+  })) {}
+
+  const records = transcript.trim().split('\n').slice(1).map((line) => JSON.parse(line) as { message: { role: string; content: Array<Record<string, unknown>> } })
+  const assistant = records.find((record) => record.message.role === 'assistant')
+  assert.ok(assistant)
+  assert.deepEqual(assistant.message.content.find((part) => part.type === 'tool_use'), {
+    type: 'tool_use', id: 'call-1', name: 'read_file', input: { paths: ['a.ts'] },
+  })
+  assert.deepEqual(assistant.message.content.find((part) => part.type === 'thinking'), { type: 'thinking', thinking: '内部推理' })
+  assert.deepEqual(assistant.message.content.find((part) => part.type === 'text'), { type: 'text', text: '调用工具' })
+  assert.equal(assistant.message.content.some((part) => part.type === 'text' && part.text === '内部推理'), false)
+  const toolResult = records.find((record) => record.message.content.some((part) => part.type === 'tool_result'))
+  assert.ok(toolResult)
+  assert.equal(toolResult.message.role, 'user')
+  assert.deepEqual(toolResult.message.content.find((part) => part.type === 'tool_result'), {
+    type: 'tool_result', tool_use_id: 'call-1', content: [{ type: 'text', text: '文件内容' }],
+  })
+  assert.doesNotMatch(transcript, /现在的问题/u)
+})
+
+test('Command Code Provider History 对照父仓库支持发现、分页、增量、标题、归档、统计和 fork', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns4dsh-cc-history-home-'))
+  try {
+    const project = join(home, 'projects', 'workspace')
+    const source = join(project, 'provider-1.jsonl')
+    mkdirSync(project, { recursive: true })
+    writeFileSync(source, [
+      JSON.stringify({ type: 'session', version: 3, id: 'provider-1', cwd: '/workspace', timestamp: '2026-10-03T00:00:00.000Z' }),
+      JSON.stringify({ type: 'message', id: 'm1', timestamp: '2026-10-03T00:00:01.000Z', message: { role: 'user', content: [{ type: 'text', text: '检查项目' }] } }),
+      JSON.stringify({ type: 'message', id: 'm2', timestamp: '2026-10-03T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'thinking', thinking: '先读取文件' }, { type: 'tool_use', id: 'call-1', name: 'read_file', input: { paths: ['a.ts'] } }] } }),
+      JSON.stringify({ type: 'message', id: 'm3', timestamp: '2026-10-03T00:00:03.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-1', content: [{ type: 'text', text: '内容' }] }] } }),
+      JSON.stringify({ type: 'message', id: 'm4', timestamp: '2026-10-03T00:00:04.000Z', message: { role: 'assistant', content: [{ type: 'text', text: '已完成' }] } }),
+      JSON.stringify({ type: 'usage', model: 'gpt-5.6-sol', usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 40, cacheWriteTokens: 0, contextWindow: 1_050_000 }, timestamp: '2026-10-03T00:00:05.000Z' }),
+      '',
+    ].join('\n'))
+    const history = new CommandCodeHistory(home)
+    const discovery = await history.detectSessionsDetailed('/workspace')
+    assert.equal(discovery.isComplete, true)
+    assert.equal(discovery.sessions[0]?.messageCount, 5)
+    const started = await history.startSession('/workspace', { initialPrompt: '新会话' })
+    assert.equal((await history.resumeSession(started.session.providerSessionId, started.session.rawStoreRef)).providerSessionId, started.session.providerSessionId)
+    assert.equal((await history.sendMessage(started.session.providerSessionId, started.session.rawStoreRef, '追加消息')).message.content, '追加消息')
+    const delta = await history.readSessionHistoryDelta('provider-1', source, null, 20)
+    assert.equal(delta.mode, 'seed')
+    const unchanged = await history.readSessionHistoryDelta('provider-1', source, delta.nextCursor, 20)
+    assert.equal(unchanged.mode, 'unchanged')
+    const page = await history.readSessionHistory('provider-1', source, null, 2)
+    assert.equal(page.messages.length, 2)
+    assert.equal(page.messages[1]?.kind, 'thinking')
+    assert.equal((await history.readSessionHistory('provider-1', source, null, 20)).messages.find((message) => message.kind === 'tool_result')?.content, '内容')
+    assert.equal(await history.readSessionTitle('provider-1', source), '检查项目')
+    assert.equal(await history.renameSessionTitle('provider-1', source, '新的标题'), '新的标题')
+    assert.equal(await history.readSessionTitle('provider-1', source), '新的标题')
+    assert.deepEqual(await history.readContextUsage('provider-1', source), {
+      provider: 'command-code', promptTokens: 100, outputTokens: 20, cacheReadTokens: 40, cacheWriteTokens: 0,
+      contextWindow: 1_050_000, usageRatio: 100 / 1_050_000, modelId: 'gpt-5.6-sol', capturedAt: '2026-10-03T00:00:05.000Z',
+    })
+    assert.equal((await history.readSessionStats('provider-1', source))?.totalTokens, 120)
+    assert.equal((await history.updateSessionArchiveState('provider-1', source, true)).isArchived, true)
+    const fork = await history.forkSession('provider-1', '/workspace', { rawStoreRef: source, sourceType: 'message' })
+    assert.equal(fork.inheritedPrefixMessageCount, 2)
+    assert.equal(fork.session.provider, 'command-code')
+    await history.deleteSession(fork.session.providerSessionId, fork.session.rawStoreRef)
+    await history.deleteSession(started.session.providerSessionId, started.session.rawStoreRef)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Command Code Provider History 按原生记录 ID 回退定位文件并去重 usage 快照', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns4dsh-cc-history-dedup-'))
+  try {
+    const directory = join(home, 'projects', 'legacy', 'nested')
+    const source = join(directory, 'transcript.jsonl')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(source, [
+      JSON.stringify({ type: 'session', id: 'provider-real-id', cwd: '/workspace', timestamp: '2026-10-03T00:00:00.000Z' }),
+      JSON.stringify({ type: 'message', id: 'user-1', timestamp: '2026-10-03T00:00:01.000Z', message: { role: 'user', content: [{ type: 'text', text: '开始' }] } }),
+      JSON.stringify({ type: 'message', id: 'tool-1', timestamp: '2026-10-03T00:00:02.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-1', content: [{ type: 'text', text: '工具完成' }] }] } }),
+      JSON.stringify({ type: 'message', id: 'usage-1', timestamp: '2026-10-03T00:00:03.000Z', usage: { inputTokens: 100, outputTokens: 10 }, message: { role: 'assistant', content: [{ type: 'text', text: '中间' }] } }),
+      JSON.stringify({ type: 'message', id: 'usage-1', timestamp: '2026-10-03T00:00:04.000Z', usage: { inputTokens: 200, outputTokens: 20 }, message: { role: 'assistant', content: [{ type: 'text', text: '最终' }] } }),
+      JSON.stringify({ type: 'title', title: '旧标题' }),
+      JSON.stringify({ type: 'title', title: '新标题' }),
+      '',
+    ].join('\n'))
+    const history = new CommandCodeHistory(home)
+    const page = await history.readSessionHistory('provider-real-id', source, null, 20)
+    assert.equal(page.messages.find((message) => message.kind === 'tool_result')?.content, '工具完成')
+    assert.equal(await history.readSessionTitle('provider-real-id', source), '新标题')
+    const stats = await history.readSessionStats('provider-real-id', source)
+    assert.equal(stats?.inputTokens, 200)
+    assert.equal(stats?.outputTokens, 20)
+    assert.equal(stats?.steps, 1)
+    assert.equal(stats?.turns, 1)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Command Code Provider History 兼容原生 aiTitle/meta.title 并使用不透明游标', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns4dsh-cc-history-title-'))
+  try {
+    const directory = join(home, 'projects', 'workspace')
+    const source = join(directory, 'provider-title.jsonl')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(source, [
+      JSON.stringify({ type: 'session', id: 'provider-title', cwd: '/workspace' }),
+      JSON.stringify({ type: 'message', id: 'm1', message: { role: 'user', content: [{ type: 'text', text: '第一条' }] } }),
+      JSON.stringify({ type: 'message', id: 'm2', message: { role: 'assistant', content: [{ type: 'text', text: '第二条' }] } }),
+      JSON.stringify({ aiTitle: 'AI 标题' }),
+      JSON.stringify({ meta: { title: '最终标题' } }),
+      '',
+    ].join('\n'))
+    const history = new CommandCodeHistory(home)
+    assert.equal(await history.readSessionTitle('provider-title', source), '最终标题')
+    const page = await history.readSessionHistory('provider-title', source, null, 1)
+    assert.match(page.cursor ?? '', /^[A-Za-z0-9_-]+$/u)
+    assert.equal(page.nextCursor !== null, true)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Command Code Provider History 将 JSONL 末尾半行标记为不完整发现', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns4dsh-cc-history-tail-'))
+  try {
+    const directory = join(home, 'projects', 'workspace')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(join(directory, 'provider-tail.jsonl'), `${JSON.stringify({ type: 'session', id: 'provider-tail', cwd: '/workspace' })}\n{"type":"message"`)
+    const discovery = await new CommandCodeHistory(home).detectSessionsDetailed('/workspace')
+    assert.equal(discovery.isComplete, false)
+    assert.equal(discovery.incompleteTailCount, 1)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Command Code Provider History 仅在 status 模型与会话模型一致时采用运行时上下文窗口', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns4dsh-cc-history-context-'))
+  try {
+    const directory = join(home, 'projects', 'workspace')
+    const source = join(directory, 'provider-context.jsonl')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(source, [
+      JSON.stringify({ type: 'session', id: 'provider-context', cwd: '/workspace', timestamp: '2026-10-03T00:00:00.000Z' }),
+      JSON.stringify({ type: 'message', id: 'usage-1', model: 'vendor/custom', timestamp: '2026-10-03T00:00:01.000Z', usage: { inputTokens: 100, outputTokens: 20 }, message: { role: 'assistant', content: [{ type: 'text', text: '完成' }] } }),
+      '',
+    ].join('\n'))
+    const history = new CommandCodeHistory(home, { readStatus: async () => ({ model: 'vendor/custom', context_window: 1_000 }) })
+    assert.equal((await history.readContextUsage('provider-context', source))?.contextWindow, 1_000)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Command Code 会话探测拒绝 projects 目录之外的 rawStoreRef', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns4dsh-cc-safe-probe-'))
+  const outside = join(home, 'outside.jsonl')
+  writeFileSync(outside, `${JSON.stringify({ type: 'session', id: 'provider-1' })}\n`)
+  try {
+    const driver = new CommandCodeDriver({ homeDirectory: home, binaries: ['command-code'] })
+    assert.equal((await driver.probeSession({ providerSessionId: 'provider-1', rawStoreRef: outside })).state, 'missing')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Command Code 首轮发现 Provider 会话后绑定 canonical transcript', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns4dsh-cc-home-'))
+  try {
+    const canonical = join(home, 'projects', 'workspace', 'provider-1.jsonl')
+    let receivedArgs: string[] = []
+    const driver = new CommandCodeDriver({
+      homeDirectory: home,
+      binaries: ['command-code'],
+      spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+        ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+        : { status: 0, stdout: '', stderr: '' }) as never,
+      spawn: ((_command: string, args: string[]) => {
+        receivedArgs = args
+        mkdirSync(join(home, 'projects', 'workspace'), { recursive: true })
+        writeFileSync(canonical, `${JSON.stringify({ type: 'session', id: 'provider-1' })}\n`)
+        return {
+          stdout: Readable.from([
+            `${JSON.stringify({ type: 'event', event: { type: 'run_start', sessionId: 'provider-1' } })}\n`,
+            `${JSON.stringify({ type: 'result', finalText: '完成' })}\n`,
+          ]),
+          stderr: { on() { return this } },
+          kill() { return true },
+        }
+      }) as never,
+    })
+
+    const chunks = []
+    for await (const chunk of driver.executeTurn({ sessionId: 'binding-session', messages: [], prompt: '执行', cwd: '/workspace' })) chunks.push(chunk)
+    assert.equal(receivedArgs[0], '--session')
+    assert.deepEqual(chunks[0], {
+      type: 'session-binding',
+      providerSessionId: 'provider-1',
+      rawStoreRef: canonical,
+    })
+    assert.deepEqual(await driver.probeSession({ providerSessionId: 'provider-1', rawStoreRef: canonical, cwd: '/workspace' }), {
+      state: 'available',
+      reason: 'Command Code 原生会话可用',
+      rawStoreRef: canonical,
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Command Code 恢复 Provider 会话使用 --resume 且不写临时 transcript', async () => {
+  let receivedArgs: string[] = []
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: ((_command: string, args: string[]) => {
+      receivedArgs = args
+      return {
+        stdout: Readable.from([`${JSON.stringify({ type: 'result', finalText: '恢复完成' })}\n`]),
+        stderr: { on() { return this } },
+        kill() { return true },
+      }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({
+    sessionId: 'resume-session',
+    providerSessionId: 'provider-1',
+    rawStoreRef: '/tmp/provider-1.jsonl',
+    messages: [{ role: 'user', content: '历史' }],
+    prompt: '继续任务',
+  })) chunks.push(chunk)
+  assert.equal(receivedArgs[0], '-p')
+  assert.equal(receivedArgs.includes('--session'), false)
+  assert.deepEqual(receivedArgs.slice(receivedArgs.indexOf('--resume'), receivedArgs.indexOf('--resume') + 2), ['--resume', 'provider-1'])
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'stop' })
+})
+
+test('Command Code 只有 checkpoints transcript 时仍能探测可恢复会话', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns4dsh-cc-checkpoint-home-'))
+  try {
+    const checkpoint = join(home, 'projects', 'workspace', 'provider-1.checkpoints.jsonl')
+    mkdirSync(join(home, 'projects', 'workspace'), { recursive: true })
+    writeFileSync(checkpoint, `${JSON.stringify({ id: 'checkpoint-1', messageId: 'message-1', turnNumber: 1 })}\n`)
+    const driver = new CommandCodeDriver({ homeDirectory: home, binaries: ['command-code'] })
+    assert.deepEqual(await driver.probeSession({ providerSessionId: 'provider-1', cwd: '/workspace' }), {
+      state: 'available',
+      reason: 'Command Code 原生会话检查点可用',
+      rawStoreRef: checkpoint,
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Command Code 按 DSH 权限状态映射安全参数，不把未知权限升级为 --yolo', async () => {
+  const cases = [
+    { name: 'unknown', permission: undefined, forbidden: ['--yolo', '--plan', '--permission-mode'] },
+    { name: 'read-only', permission: { sandboxMode: 'read-only', approvalPolicy: 'ask' }, required: ['--plan'], forbidden: ['--yolo'] },
+    { name: 'workspace-ask', permission: { sandboxMode: 'workspace-write', approvalPolicy: 'ask' }, forbidden: ['--yolo', '--permission-mode'] },
+    { name: 'workspace-never', permission: { sandboxMode: 'workspace-write', approvalPolicy: 'never' }, required: ['--permission-mode', 'accept-edits'], forbidden: ['--yolo'] },
+    { name: 'danger-never', permission: { sandboxMode: 'danger-full-access', approvalPolicy: 'never' }, required: ['--yolo'], forbidden: ['--permission-mode', '--plan'] },
+  ] as const
+
+  for (const [index, item] of cases.entries()) {
+    let receivedArgs: string[] = []
+    const driver = new CommandCodeDriver({
+      binaries: ['command-code'],
+      spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+        ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+        : { status: 0, stdout: '', stderr: '' }) as never,
+      spawn: ((_command: string, args: string[]) => {
+        receivedArgs = args
+        return {
+          stdout: Readable.from([`${JSON.stringify({ type: 'result', finalText: '完成' })}\n`]),
+          stderr: { on() { return this } },
+          kill() { return true },
+        }
+      }) as never,
+    })
+    for await (const _chunk of driver.executeTurn({
+      sessionId: `permission-${index}`,
+      messages: [],
+      prompt: '执行',
+      permission: item.permission,
+    })) {}
+    assert.equal(receivedArgs.includes('--skip-onboarding'), true, item.name)
+    for (const argument of item.required ?? []) assert.equal(receivedArgs.includes(argument), true, `${item.name}: ${argument}`)
+    for (const argument of item.forbidden ?? []) assert.equal(receivedArgs.includes(argument), false, `${item.name}: ${argument}`)
+  }
+})
+
+test('Command Code 普通回合可被 interrupt 优雅中断，并以 SIGINT 优先通知 CLI', async () => {
+  const signals: string[] = []
+  let stdout: Readable
+  stdout = new Readable({ read() {} })
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: (() => ({
+      stdout,
+      stderr: { on() { return this } },
+      kill(signal?: string) {
+        if (signal !== undefined) signals.push(signal)
+        stdout.push(null)
+        return true
+      },
+    })) as never,
+  })
+
+  const iterator = driver.executeTurn({ sessionId: 'interrupt-session', messages: [], prompt: '执行' })[Symbol.asyncIterator]()
+  const next = iterator.next()
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  await driver.interrupt('interrupt-session')
+  await next
+  assert.equal(signals[0], 'SIGINT')
+  await iterator.return?.()
+  driver.dispose()
+})
+
+test('Command Code 支持父仓库的计划、fork 和结构化提问参数', async () => {
+  let receivedArgs: string[] = []
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: ((_command: string, args: string[]) => {
+      receivedArgs = args
+      return {
+        stdout: Readable.from([`${JSON.stringify({ type: 'result', finalText: '完成' })}\n`]),
+        stderr: { on() { return this } },
+        kill() { return true },
+      }
+    }) as never,
+  })
+  for await (const _chunk of driver.executeTurn({
+    sessionId: 'command-code-options',
+    messages: [],
+    prompt: '规划任务',
+    providerSessionId: 'existing-provider-session',
+    plan: true,
+    forkSession: true,
+    enableAskUserQuestion: true,
+  })) {}
+  assert.equal(receivedArgs.includes('--plan'), true)
+  assert.equal(receivedArgs.includes('--fork-session'), true)
+  assert.deepEqual(receivedArgs.slice(receivedArgs.indexOf('--tools-enable'), receivedArgs.indexOf('--tools-enable') + 2), ['--tools-enable', 'ask_user_question'])
+})
+
+test('Command Code 兼容父仓库通过 runtimeEnv 开启结构化提问工具', async () => {
+  let receivedArgs: string[] = []
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: ((_command: string, args: string[]) => {
+      receivedArgs = args
+      return { stdout: Readable.from([`${JSON.stringify({ type: 'result', finalText: '完成' })}\n`]), stderr: { on() { return this } }, kill() { return true } }
+    }) as never,
+  })
+  for await (const _chunk of driver.executeTurn({ sessionId: 'runtime-env-question', messages: [], prompt: '提问', runtimeEnv: { CMD_TOOLS_ASK_USER_QUESTION_ENABLE: 'true' } })) {}
+  assert.deepEqual(receivedArgs.slice(receivedArgs.indexOf('--tools-enable'), receivedArgs.indexOf('--tools-enable') + 2), ['--tools-enable', 'ask_user_question'])
+})
+
 test('Command Code usage 保留缓存桶，并按完整输入计算未缓存输入', async () => {
   const driver = new CommandCodeDriver({
     binaries: ['command-code'],
@@ -244,8 +714,7 @@ test('Command Code 按 assistant 消息切换 DSH step 并只结算每次请求�
 
   const first = []
   for await (const chunk of driver.executeTurn({ sessionId: 'segmented-cc', messages: [], prompt: '先运行 pwd', splitToolSteps: true })) first.push(chunk)
-  assert.deepEqual(first, [
-    { type: 'session-binding', providerSessionId: 'cc-session-1' },
+  assert.deepEqual(first.slice(1), [
     { type: 'text-delta', text: '先检查', messageId: 'command-code-message-1' },
     { type: 'usage', inputTokens: 100, outputTokens: 10, cacheReadTokens: 40, cacheWriteTokens: 0, uncachedInputTokens: 60, totalTokens: 110, cacheHitRate: 40 },
     { type: 'tool-event', toolName: 'shell_command', callId: 'call-a', input: '{"command":"pwd"}', status: 'started' },
@@ -253,6 +722,9 @@ test('Command Code 按 assistant 消息切换 DSH step 并只结算每次请求�
     { type: 'tool-event', toolName: 'shell_command', callId: 'call-a', output: '[{"type":"text","text":"/workspace"}]', outputMode: 'snapshot', status: 'completed' },
     { type: 'step-boundary' },
   ])
+  assert.equal(first[0]?.type, 'session-binding')
+  assert.equal(first[0]?.providerSessionId, 'cc-session-1')
+  assert.match(first[0]?.rawStoreRef ?? '', /cc-session-1\.jsonl$/u)
 
   const second = []
   for await (const chunk of driver.executeTurn({ sessionId: 'segmented-cc', messages: [], prompt: '继续', splitToolSteps: true, resumeSegmentedTurn: true })) second.push(chunk)
@@ -356,6 +828,7 @@ test('Command Code 撞到 --max-turns 后在续跑中完成时正常结束', asy
       spawns += 1
       const lines = spawns === 1
         ? [
+            `${JSON.stringify({ type: 'event', event: { type: 'run_start', sessionId: 'resume-ok-cc-provider' } })}\n`,
             `${JSON.stringify({ type: 'event', event: { type: 'text_delta', delta: '先做一半' } })}\n`,
             `${JSON.stringify({ type: 'result', subtype: 'max_turns', stopReason: 'max_turns', finalText: '', usage: { inputTokens: 10, outputTokens: 2 } })}\n`,
           ]
@@ -414,6 +887,37 @@ test('Command Code 未被 Host 声明为续段时不会复用上一次运行的�
     { type: 'text-delta', text: '新回合', messageId: 'command-code-message-1' },
     { type: 'finish', reason: 'stop' },
   ])
+  driver.dispose()
+})
+
+test('Command Code 非零退出保留 stderr 尾部并返回结构化错误', async () => {
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.74.0', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: (() => ({
+      stdout: Readable.from([]),
+      stderr: {
+        on(event: string, listener: (chunk: Buffer) => void) {
+          if (event === 'data') listener(Buffer.from('permission denied'))
+          return this
+        },
+      },
+      kill() { return true },
+      on(event: string, listener: (code: number) => void) {
+        if (event === 'close') queueMicrotask(() => listener(13))
+        return this
+      },
+    })) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'stderr-error', messages: [], prompt: '执行' })) chunks.push(chunk)
+  assert.deepEqual(chunks.at(-1), {
+    type: 'finish',
+    reason: 'error',
+    failure: { message: 'Command Code 执行失败：permission denied', code: 'COMMAND_CODE_EXIT_13' },
+  })
   driver.dispose()
 })
 
@@ -1616,6 +2120,53 @@ test('Codex 已知模型表覆盖当前主力模型并容忍大小写与空白',
   assert.equal(knownCodexContextWindow(' GPT-6-Astra '), 258400)
   assert.equal(knownCodexContextWindow('unknown-model'), undefined)
   assert.equal(knownCodexContextWindow(undefined), undefined)
+})
+
+test('Command Code 已知模型表提供父仓库一致的上下文窗口', () => {
+  assert.equal(knownCommandCodeContextWindow('deepseek/deepseek-v4.1-flash'), 1_000_000)
+  assert.equal(knownCommandCodeContextWindow(' GPT-5.6-SOL '), 1_050_000)
+  assert.equal(knownCommandCodeContextWindow('unknown-model'), undefined)
+  assert.equal(knownCommandCodeContextWindow(undefined), undefined)
+})
+
+test('Command Code 新会话在首个 usage 到达前写入已知上下文窗口', async () => {
+  const contexts: unknown[] = []
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'command-code', name: 'Command Code' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'command-code' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() {
+      yield { type: 'finish', reason: 'stop' } as const
+    },
+  }], {}, {
+    nativeSessions: {
+      available: true,
+      store: undefined,
+      controller: undefined,
+      get() { return { header: { cwd: '/workspace' } } },
+      list() { return [] },
+      async ensure() { return null },
+      async flush() {},
+      appendRequestContext(_sessionId: string, context: unknown) { contexts.push(context); return true },
+      subscribe() { return () => {} },
+    },
+  })
+
+  for await (const _chunk of registry.execute({
+    adapterId: 'command-code',
+    sessionId: 'command-code-new-context',
+    modelId: 'deepseek/deepseek-v4.1-flash',
+    messages: [],
+    prompt: '第一句话',
+  })) { /* 消费完整流 */ }
+
+  assert.deepEqual(contexts, [{
+    provider: 'command-code',
+    model: 'deepseek/deepseek-v4.1-flash',
+    contextWindow: 1_000_000,
+    confirmed: true,
+    source: 'catalog',
+  }])
 })
 
 test('CLI 功能模块把异常和取消映射成 DSH 原生终止原因且不会留下运行中工具', async () => {
