@@ -18,10 +18,40 @@ import type {
 } from './driver.js'
 import { CodingNsCliSessionStore } from './session-store.js'
 import { readLegacyImportedAdapterPreferences } from './legacy-session-settings.js'
-import { knownCodexContextWindow } from './model-catalog.js'
+import { knownCodexContextWindow, knownCommandCodeContextWindow } from './model-catalog.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import type { CodingNsSettings, CodingNsCliAdapterPreference } from '../../shared/contracts/config.js'
 import type { DshHostSettingsScope } from '../../dsh-capabilities/host/config-forms-adapter.js'
+import type {
+  CommandCodeHistoryDelta,
+  CommandCodeHistoryDirection,
+  CommandCodeHistoryPage,
+  CommandCodeSessionDiscovery,
+  CommandCodeSessionSummary,
+  CommandCodeContextUsage,
+  CommandCodeForkResult,
+  CommandCodeSessionStats,
+  CommandCodeResumeSessionResult,
+  CommandCodeSendMessageResult,
+  CommandCodeStartSessionResult,
+} from './command-code-history.js'
+
+interface CommandCodeHistoryDriver {
+  detectSessions(workspacePath: string): Promise<readonly CommandCodeSessionSummary[]>
+  detectSessionsDetailed(workspacePath: string): Promise<CommandCodeSessionDiscovery>
+  readSessionHistory(providerSessionId: string, rawStoreRef: string, cursor: string | null, limit: number, direction?: CommandCodeHistoryDirection): Promise<CommandCodeHistoryPage>
+  readSessionHistoryDelta(providerSessionId: string, rawStoreRef: string, cursor: string | null, limit: number, direction?: CommandCodeHistoryDirection): Promise<CommandCodeHistoryDelta>
+  readSessionTitle(providerSessionId: string, rawStoreRef: string): Promise<string>
+  renameSessionTitle(providerSessionId: string, rawStoreRef: string, title: string): Promise<string>
+  updateSessionArchiveState(providerSessionId: string, rawStoreRef: string, isArchived: boolean): Promise<{ readonly rawStoreRef: string; readonly isArchived: boolean }>
+  deleteSession(providerSessionId: string, rawStoreRef: string): Promise<void>
+  readContextUsage(providerSessionId: string, rawStoreRef: string): Promise<CommandCodeContextUsage | null>
+  readSessionStats(providerSessionId: string, rawStoreRef: string): Promise<CommandCodeSessionStats | null>
+  forkSession(providerSessionId: string, workspacePath: string, options: { readonly rawStoreRef: string; readonly sourceType: 'session' | 'message'; readonly sourceMessageId?: string | null }): Promise<CommandCodeForkResult>
+  startSession(workspacePath: string, options?: { readonly initialPrompt?: string }): Promise<CommandCodeStartSessionResult>
+  resumeSession(providerSessionId: string, rawStoreRef: string): Promise<CommandCodeResumeSessionResult>
+  sendMessage(providerSessionId: string, rawStoreRef: string, content: string): Promise<CommandCodeSendMessageResult>
+}
 
 type CodingNsCliDetection = Pick<CodingNsCliAdapterDescriptor, 'installed' | 'version' | 'command'>
 
@@ -473,7 +503,11 @@ export class CodingNsCliAdapterRegistry {
       // 每轮都写入稳定的适配器身份。旧日志只有通用 codingns-external 标记，
       // 这条 request/context 是升级后自动迁移时唯一可靠的回填依据。
       try {
-        const contextWindow = input.adapterId === 'codex' ? knownCodexContextWindow(input.modelId) : undefined
+        const contextWindow = input.adapterId === 'codex'
+          ? knownCodexContextWindow(input.modelId)
+          : input.adapterId === 'command-code'
+            ? knownCommandCodeContextWindow(input.modelId)
+            : undefined
         this.nativeSessions?.appendRequestContext?.(input.sessionId, {
           provider: input.adapterId,
           model: input.modelId ?? input.adapterId,
@@ -568,6 +602,63 @@ export class CodingNsCliAdapterRegistry {
       .map(({ rawStoreRef: _rawStoreRef, ...record }) => record)
   }
 
+  /** 读取 Provider 原生会话；当前只对实现了 Command Code History 的驱动开放。 */
+  async listProviderSessions(adapterId: string, workspacePath: string): Promise<readonly CommandCodeSessionSummary[]> {
+    return this.requireHistoryDriver(adapterId).detectSessions(workspacePath)
+  }
+
+  async listProviderSessionsDetailed(adapterId: string, workspacePath: string): Promise<CommandCodeSessionDiscovery> {
+    return this.requireHistoryDriver(adapterId).detectSessionsDetailed(workspacePath)
+  }
+
+  async readProviderHistory(adapterId: string, providerSessionId: string, rawStoreRef: string, cursor: string | null, limit: number, direction: CommandCodeHistoryDirection = 'forward'): Promise<CommandCodeHistoryPage> {
+    return this.requireHistoryDriver(adapterId).readSessionHistory(providerSessionId, rawStoreRef, cursor, limit, direction)
+  }
+
+  async readProviderHistoryDelta(adapterId: string, providerSessionId: string, rawStoreRef: string, cursor: string | null, limit: number, direction: CommandCodeHistoryDirection = 'forward'): Promise<CommandCodeHistoryDelta> {
+    return this.requireHistoryDriver(adapterId).readSessionHistoryDelta(providerSessionId, rawStoreRef, cursor, limit, direction)
+  }
+
+  async readProviderSessionTitle(adapterId: string, providerSessionId: string, rawStoreRef: string): Promise<string> {
+    return this.requireHistoryDriver(adapterId).readSessionTitle(providerSessionId, rawStoreRef)
+  }
+
+  async renameProviderSessionTitle(adapterId: string, providerSessionId: string, rawStoreRef: string, title: string): Promise<string> {
+    return this.requireHistoryDriver(adapterId).renameSessionTitle(providerSessionId, rawStoreRef, title)
+  }
+
+  async updateProviderSessionArchive(adapterId: string, providerSessionId: string, rawStoreRef: string, isArchived: boolean): Promise<{ readonly rawStoreRef: string; readonly isArchived: boolean }> {
+    return this.requireHistoryDriver(adapterId).updateSessionArchiveState(providerSessionId, rawStoreRef, isArchived)
+  }
+
+  async deleteProviderSession(adapterId: string, providerSessionId: string, rawStoreRef: string): Promise<void> {
+    return this.requireHistoryDriver(adapterId).deleteSession(providerSessionId, rawStoreRef)
+  }
+
+  async readProviderContextUsage(adapterId: string, providerSessionId: string, rawStoreRef: string): Promise<CommandCodeContextUsage | null> {
+    return this.requireHistoryDriver(adapterId).readContextUsage(providerSessionId, rawStoreRef)
+  }
+
+  async readProviderSessionStats(adapterId: string, providerSessionId: string, rawStoreRef: string): Promise<CommandCodeSessionStats | null> {
+    return this.requireHistoryDriver(adapterId).readSessionStats(providerSessionId, rawStoreRef)
+  }
+
+  async forkProviderSession(adapterId: string, providerSessionId: string, workspacePath: string, options: { readonly rawStoreRef: string; readonly sourceType: 'session' | 'message'; readonly sourceMessageId?: string | null }): Promise<CommandCodeForkResult> {
+    return this.requireHistoryDriver(adapterId).forkSession(providerSessionId, workspacePath, options)
+  }
+
+  async startProviderSession(adapterId: string, workspacePath: string, options: { readonly initialPrompt?: string } = {}): Promise<CommandCodeStartSessionResult> {
+    return this.requireHistoryDriver(adapterId).startSession(workspacePath, options)
+  }
+
+  async resumeProviderSession(adapterId: string, providerSessionId: string, rawStoreRef: string): Promise<CommandCodeResumeSessionResult> {
+    return this.requireHistoryDriver(adapterId).resumeSession(providerSessionId, rawStoreRef)
+  }
+
+  async sendProviderMessage(adapterId: string, providerSessionId: string, rawStoreRef: string, content: string): Promise<CommandCodeSendMessageResult> {
+    return this.requireHistoryDriver(adapterId).sendMessage(providerSessionId, rawStoreRef, content)
+  }
+
   async archiveSession(sessionId: string): Promise<CodingNsCliSessionRecord | undefined> {
     const current = this.sessionStore?.get(sessionId)
     if (current === undefined) return undefined
@@ -578,7 +669,13 @@ export class CodingNsCliAdapterRegistry {
       throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', '外部会话正在归档')
     }
     this.archivingSessions.add(sessionId)
+    let providerArchived = false
     try {
+      const historyDriver = this.drivers.get(current.adapterId) as (CodingNsCliDriver & Partial<CommandCodeHistoryDriver>) | undefined
+      if (current.providerSessionId !== undefined && current.rawStoreRef !== undefined && typeof historyDriver?.updateSessionArchiveState === 'function') {
+        await historyDriver.updateSessionArchiveState(current.providerSessionId, current.rawStoreRef, true)
+        providerArchived = true
+      }
       // 完整 DSH 中先改变原生侧栏可见性；调用失败时不修改插件索引，避免两边状态分叉。
       if (this.nativeSessions !== undefined) {
         const archived = await this.nativeSessions.archive?.(sessionId) ?? false
@@ -590,6 +687,15 @@ export class CodingNsCliAdapterRegistry {
       if (record === undefined) return undefined
       const { rawStoreRef: _rawStoreRef, ...safe } = record
       return safe
+    } catch (error) {
+      // Provider 元数据先写是为了避免 DSH 已归档而 Provider 仍显示活动；原生归档
+      // 失败时尽力回滚文件标记，不能让两套索引长期分叉。
+      if (providerArchived && current.providerSessionId !== undefined && current.rawStoreRef !== undefined) {
+        const historyDriver = this.drivers.get(current.adapterId) as (CodingNsCliDriver & Partial<CommandCodeHistoryDriver>) | undefined
+        const rollback = historyDriver?.updateSessionArchiveState?.(current.providerSessionId, current.rawStoreRef, false)
+        await rollback?.catch(() => undefined)
+      }
+      throw error
     } finally {
       this.archivingSessions.delete(sessionId)
     }
@@ -868,6 +974,27 @@ export class CodingNsCliAdapterRegistry {
     const driver = this.drivers.get(adapterId)
     if (driver === undefined) throw new CodingNsRpcError('CODINGNS_CLI_UNAVAILABLE', `Agent 不可用: ${adapterId}`)
     return driver
+  }
+
+  private requireHistoryDriver(adapterId: string): CommandCodeHistoryDriver {
+    const driver = this.requireEnabledDriver(adapterId) as CodingNsCliDriver & Partial<CommandCodeHistoryDriver>
+    if (typeof driver.detectSessions !== 'function'
+      || typeof driver.detectSessionsDetailed !== 'function'
+      || typeof driver.readSessionHistory !== 'function'
+      || typeof driver.readSessionHistoryDelta !== 'function'
+      || typeof driver.readSessionTitle !== 'function'
+      || typeof driver.renameSessionTitle !== 'function'
+      || typeof driver.updateSessionArchiveState !== 'function'
+      || typeof driver.deleteSession !== 'function'
+      || typeof driver.readContextUsage !== 'function'
+      || typeof driver.readSessionStats !== 'function'
+      || typeof driver.forkSession !== 'function'
+      || typeof driver.startSession !== 'function'
+      || typeof driver.resumeSession !== 'function'
+      || typeof driver.sendMessage !== 'function') {
+      throw new CodingNsRpcError('CODINGNS_CLI_UNSUPPORTED', `Agent 不支持 Provider History: ${adapterId}`)
+    }
+    return driver as CommandCodeHistoryDriver
   }
 
   private requireEnabledDriver(adapterId: CodingNsCliAdapterId): CodingNsCliDriver {

@@ -151,12 +151,22 @@ test('OpenCode 仅把权威 404 认定为删除，服务异常认定为不可达
   assert.equal((await offline.probeSession({ providerSessionId: 'remote-1' })).state, 'unreachable')
 })
 
-test('无绑定会话保持未知，Command Code 明确标记为临时会话', async () => {
+test('无绑定会话保持未知，Command Code 会校验原生会话文件', async () => {
   const files = fixture()
   try {
     const claude = new ClaudeCodeDriver({ sessionRoots: [files.root] })
     assert.equal((await claude.probeSession({})).state, 'unknown')
     const command = new CommandCodeDriver({ binaries: [] })
-    assert.equal((await command.probeSession({ providerSessionId: 'ignored' })).state, 'ephemeral')
+    assert.equal((await command.probeSession({ providerSessionId: 'ignored' })).state, 'missing')
   } finally { files.dispose() }
+})
+
+test('Command Code 会话探测响应取消信号', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  const driver = new CommandCodeDriver({ binaries: [] })
+  await assert.rejects(
+    driver.probeSession({ providerSessionId: 'cancelled', signal: controller.signal }),
+    (error: unknown) => error instanceof Error && error.name === 'AbortError',
+  )
 })

@@ -111,6 +111,92 @@ export function knownCodexContextWindow(modelId: string | undefined): number | u
   return CODEX_CONTEXT_WINDOWS.get(modelId.trim().toLowerCase())
 }
 
+/**
+ * Command Code 已知模型的上下文窗口。
+ *
+ * Command Code 的状态命令只返回当前配置模型，不能覆盖通过 `-m` 选择的会话模型。
+ * 这里复用父仓库随 CLI 目录验证过的窗口；未知模型返回 undefined，避免把错误分母
+ * 写进 DSH 原生会话。
+ */
+const COMMAND_CODE_CONTEXT_WINDOWS = new Map<string, number>([
+  ['claude-fable-5', 1_000_000],
+  ['claude-fable-5-1', 1_000_000],
+  ['claude-haiku-4-5-20251001', 200_000],
+  ['claude-opus-4-7', 1_000_000],
+  ['claude-opus-4-8', 1_000_000],
+  ['claude-opus-5', 1_000_000],
+  ['claude-sonnet-4-6', 1_000_000],
+  ['claude-sonnet-5', 1_000_000],
+  ['deepseek/deepseek-v4-flash', 1_000_000],
+  ['deepseek/deepseek-v4-flash-fast', 1_000_000],
+  ['deepseek/deepseek-v4-flash-vision-exp', 1_000_000],
+  ['deepseek/deepseek-v4-pro', 1_000_000],
+  ['deepseek/deepseek-v4.1-flash', 1_000_000],
+  ['google/gemini-3.1-flash-lite', 1_000_000],
+  ['google/gemini-3.5-flash', 1_000_000],
+  ['google/gemini-3.5-flash-lite', 1_000_000],
+  ['google/gemini-3.6-flash', 1_000_000],
+  ['google/gemini-3.7-flash', 1_048_576],
+  ['google/gemini-3.8-flash', 1_000_000],
+  ['gpt-5.3-codex', 400_000],
+  ['gpt-5.4', 400_000],
+  ['gpt-5.4-mini', 400_000],
+  ['gpt-5.5', 400_000],
+  ['gpt-5.6-luna', 1_050_000],
+  ['gpt-5.6-sol', 1_050_000],
+  ['gpt-5.6-terra', 1_050_000],
+  ['gpt-6-astra', 1_050_000],
+  ['inclusionai/ling-3.0-flash-free', 256_000],
+  ['inclusionai/ling-3.0-flash-sante:free', 262_144],
+  ['meituan/longcat-2.0:free', 1_048_576],
+  ['meta/muse-spark-1.1', 1_048_576],
+  ['meta/muse-spark-1.2', 1_048_576],
+  ['meta/muse-spark-1.2-contributor', 1_048_576],
+  ['meta/muse-spark-1.3', 1_048_576],
+  ['meta/muse-spark-1.3-contributor', 1_048_576],
+  ['minimax/minimax-m2.7-free', 197_000],
+  ['minimax/minimax-m3-free', 1_000_000],
+  ['minimaxai/minimax-m2.5', 200_000],
+  ['minimaxai/minimax-m3', 1_000_000],
+  ['minimaxai/minimax-m3-free', 1_000_000],
+  ['moonshotai/kimi-k2.5', 256_000],
+  ['moonshotai/kimi-k2.6', 256_000],
+  ['moonshotai/kimi-k2.7-code', 256_000],
+  ['moonshotai/kimi-k2.7-code-highspeed', 262_000],
+  ['moonshotai/kimi-k3', 1_000_000],
+  ['nvidia/nemotron-3-ultra-550b-a55b', 1_000_000],
+  ['poolside/laguna-s-2.1-free', 256_000],
+  ['qwen/qwen3.7-flash', 1_000_000],
+  ['qwen/qwen3.7-max', 1_000_000],
+  ['qwen/qwen3.7-plus', 1_000_000],
+  ['qwen/qwen3.8-27b', 262_144],
+  ['qwen/qwen3.8-flash', 1_000_000],
+  ['qwen/qwen3.8-max', 1_000_000],
+  ['qwen/qwen3.8-max-0902', 1_000_000],
+  ['sakana/fugu-ultra', 1_000_000],
+  ['stepfun/step-3.5-flash', 1_000_000],
+  ['stepfun/step-3.7-flash', 256_000],
+  ['tencent/hy3', 262_144],
+  ['tencent/hy3-paid', 262_144],
+  ['tencent/hy4-preview', 1_048_576],
+  ['thinkingmachines/inkling', 256_000],
+  ['thinkingmachines/inkling-small', 1_000_000],
+  ['xai/grok-4.5', 500_000],
+  ['xai/grok-4.6', 500_000],
+  ['xiaomi/mimo-v2.5', 1_000_000],
+  ['xiaomi/mimo-v2.5-pro', 1_000_000],
+  ['z-ai/glm-5.3-flash', 1_048_576],
+  ['zai-org/glm-5', 200_000],
+  ['zai-org/glm-5.2', 1_000_000],
+  ['zai-org/glm-5.2-fast', 1_000_000],
+  ['zai-org/glm-5.3', 1_000_000],
+])
+
+export function knownCommandCodeContextWindow(modelId: string | undefined): number | undefined {
+  if (modelId === undefined) return undefined
+  return COMMAND_CODE_CONTEXT_WINDOWS.get(modelId.trim().toLowerCase())
+}
+
 export const GROK_CATALOG = staticCatalog('grok', 'Grok', [
   { id: 'provider-default', name: '跟随 Grok 默认模型', efforts: ['low', 'medium', 'high', 'xhigh'] },
   { id: 'grok-4.6', efforts: ['low', 'medium', 'high', 'xhigh'] },
