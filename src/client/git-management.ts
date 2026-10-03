@@ -761,11 +761,34 @@ function buildChangeTree(items: readonly GitChangeItem[]): readonly GitTreeNode[
     const fileName = parts.at(-1)!
     current.set(fileName, { kind: 'file', name: fileName, path: item.path, item })
   }
-  return finalizeChangeTree(root)
+  // 与父仓库 CodingNS 的 Git 文件树保持一致：连续的单子目录折叠成一行，
+  // 让真正有分支的目录保留展开层级，避免深层目录把面板高度撑得过长。
+  return compactChangeTreeNodes(finalizeChangeTree(root))
 }
 
 function finalizeChangeTree(nodes: Map<string, MutableGitTreeDirectory | GitTreeFile>): readonly GitTreeNode[] {
   return [...nodes.values()].map((node) => node.kind === 'directory' ? { kind: 'directory' as const, name: node.name, path: node.path, children: finalizeChangeTree(node.children) } : node).sort((left, right) => left.kind === right.kind ? left.name.localeCompare(right.name) : left.kind === 'directory' ? -1 : 1)
+}
+
+/** 将只有一个子目录的连续路径合并，复用父仓库的 compactSessionTreeNodes 语义。 */
+function compactChangeTreeNodes(nodes: readonly GitTreeNode[]): readonly GitTreeNode[] {
+  return nodes.map((node) => {
+    if (node.kind !== 'directory') return node
+
+    const compactedChildren = compactChangeTreeNodes(node.children)
+    let name = node.name
+    let path = node.path
+    let children = compactedChildren
+
+    while (children.length === 1 && children[0]?.kind === 'directory') {
+      const child = children[0]
+      name = `${name}/${child.name}`
+      path = child.path
+      children = child.children
+    }
+
+    return { kind: 'directory', name, path, children }
+  })
 }
 
 function collectTreeTargets(node: GitTreeNode): readonly string[] {
