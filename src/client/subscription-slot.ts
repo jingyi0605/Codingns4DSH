@@ -528,6 +528,7 @@ const NEW_API_DETAIL_LABELS = {
   cacheHitRateLogs: `${String.fromCodePoint(0x7f13, 0x5b58, 0x547d, 0x4e2d, 0x7387)}${String.fromCodePoint(0xff08, 0x6700, 0x8fd1, 0x65e5, 0x5fd7, 0xff09)}`,
   modelsLogs: `${String.fromCodePoint(0x6309, 0x6a21, 0x578b, 0x7edf, 0x8ba1)}${String.fromCodePoint(0xff08, 0x6700, 0x8fd1, 0x65e5, 0x5fd7, 0xff09)}`,
   dailyLogs: `${String.fromCodePoint(0x6309, 0x65e5, 0x7edf, 0x8ba1)}${String.fromCodePoint(0xff08, 0x6700, 0x8fd1, 0x65e5, 0x5fd7, 0xff09)}`,
+  remainingBalance: String.fromCodePoint(0x4f59, 0x989d, 0x2f, 0x5269, 0x4f59, 0x989d, 0x5ea6),
   unavailable: String.fromCodePoint(0x4e0a, 0x6e38, 0x672a, 0x63d0, 0x4f9b),
   unknownUnit: String.fromCodePoint(0x4e0a, 0x6e38, 0x5355, 0x4f4d, 0x672a, 0x660e, 0x786e),
   upstreamUnit: String.fromCodePoint(0x4e0a, 0x6e38, 0x5355, 0x4f4d),
@@ -563,7 +564,7 @@ function formatNewApiHeadline(usage: ProviderBalanceUsage, details: readonly Pro
 
 function resolveNewApiRemaining(usage: ProviderBalanceUsage, details: readonly ProviderBalanceUsage['details'][number][]): number | null {
   if (usage.remaining !== null && Number.isFinite(usage.remaining)) return usage.remaining
-  const detail = details.find((item) => item.label === '余额/剩余额度')
+  const detail = details.find((item) => item.label === NEW_API_DETAIL_LABELS.remainingBalance)
   return typeof detail?.value === 'number' && Number.isFinite(detail.value) ? detail.value : null
 }
 

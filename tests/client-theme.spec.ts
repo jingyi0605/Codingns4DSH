@@ -195,7 +195,10 @@ test('订阅悬浮框按内容自适应且不产生横向滚动', async () => {
 test('CodeBuddy 会话启用订阅用量查询并显示底部入口', async () => {
   const source = await readFile(join(projectRoot, 'src/client/subscription-slot.ts'), 'utf8')
   assert.match(source, /adapterId is 'command-code' \| 'codex' \| 'claude-code' \| 'codebuddy'/u)
-  assert.match(source, /adapterId === 'claude-code' \|\| adapterId === 'codebuddy' \|\| adapterId === 'dsh'/u)
+  // 逐项断言而不是匹配整条 `||` 链：适配器增删会改变顺序，但不该让本用例失效。
+  for (const adapterId of ['claude-code', 'codebuddy', 'codebuddy-cn', 'dsh']) {
+    assert.match(source, new RegExp(`adapterId === '${adapterId}'`, 'u'), `订阅入口缺少 ${adapterId} 适配器`)
+  }
   assert.match(source, /callCliRpc<CliSubscriptionUsage \| null>\(props\.rpc, 'subscription'/u)
 })
 

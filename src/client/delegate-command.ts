@@ -501,7 +501,8 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
       const catalog = await loadModelCatalog(options.rpc, adapter.id, sessionId)
       popupModels = catalog.groups.flatMap((group) => group.models.map((model) => {
         const efforts = model.efforts.map((effort) => model.effortLabels?.[effort] ?? effort)
-        const details = [model.description, efforts.length === 0 ? undefined : `思考强度：${efforts.join('、')}`].filter((value): value is string => value !== undefined && value.trim() !== '')
+        const effortsLabel = efforts.length === 0 ? undefined : t('cli.thinkingLevel', { value: efforts.join(t('common.listSeparator')) })
+        const details = [model.description, effortsLabel].filter((value): value is string => value !== undefined && value.trim() !== '')
         return { id: model.id, label: model.name || model.id, ...(details.length === 0 ? {} : { detail: details.join(' · ') }) }
       }))
       if (popup === undefined || popupMode !== 'model' || popupRequestId !== requestId || popupSessionId !== sessionId || popupAdapter?.id !== adapter.id) return
