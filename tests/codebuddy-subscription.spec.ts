@@ -75,6 +75,9 @@ test('WorkBuddy 独立读取 WorkBuddy 认证与计费域名，不串用 CodeBud
   const requests: Array<{ url: string; headers: Headers }> = []
   const service = new CodeBuddySubscriptionService({
     homeDirectory,
+    // 显式给出 WorkBuddy 认证文件：默认路径按 process.platform 推导，Linux CI 上
+    // 会落到 .local/share，与本用例准备的 macOS 目录不一致。
+    authFiles: [join(authDirectory, 'workbuddy-desktop.info')],
     fetch: (async (url: string, init?: RequestInit) => {
       requests.push({ url, headers: new Headers(init?.headers) })
       if (url.endsWith('get-user-resource-summary')) return Response.json({ data: {

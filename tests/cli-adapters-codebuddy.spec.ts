@@ -200,9 +200,40 @@ test('WorkBuddy 默认配置根复用桌面应用的认证目录', () => {
   driver.dispose()
 })
 
+test('WorkBuddy 在官方未提供的平台直接判定不可用，不尝试启动', async () => {
+  const calls: string[] = []
+  const driver = new WorkBuddyCliDriver({
+    platform: 'linux',
+    commandPath: '/tmp/missing-workbuddy-codebuddy',
+    spawnSync: ((command: string) => {
+      calls.push(command)
+      return { status: 0, stdout: 'codebuddy 2.159.0', stderr: '' }
+    }) as never,
+  })
+  // WorkBuddy 只随桌面应用分发（darwin/win32），Linux 上必须拒绝而不是猜测路径。
+  assert.deepEqual(await driver.detect(), { installed: false, version: null, command: null })
+  assert.deepEqual(calls, [])
+  await assert.rejects(
+    async () => { for await (const _event of driver.executeTurn({ sessionId: 'linux-session', messages: [], prompt: '检查' })) void _event },
+    /WorkBuddy CLI 未安装/u,
+  )
+  driver.dispose()
+})
+
+test('CodeBuddy 支持 Linux，不受 WorkBuddy 平台限制影响', async () => {
+  const driver = new CodeBuddyCliDriver({
+    platform: 'linux',
+    binaries: ['fake-codebuddy'],
+    spawnSync: detected,
+  })
+  assert.deepEqual(await driver.detect(), { installed: true, version: '2.159.0', command: 'fake-codebuddy' })
+  driver.dispose()
+})
+
 test('WorkBuddy sidecar 优先复用已认证 host 并消费 HTTP ACP SSE', async () => {
   const harness = await createFakeWorkBuddyHarness(false)
   const driver = new WorkBuddyCliDriver({
+    platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,
     sidecarSocketPath: harness.socketPath,
@@ -227,6 +258,7 @@ test('WorkBuddy sidecar 优先复用已认证 host 并消费 HTTP ACP SSE', asyn
 test('WorkBuddy sidecar 缺少 sidecar.pid 时扫描 UUID 控制 socket', async () => {
   const harness = await createFakeWorkBuddyHarness(false, true)
   const driver = new WorkBuddyCliDriver({
+    platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     configRoot: harness.configRoot,
     environment: harness.environment,
@@ -246,6 +278,7 @@ test('WorkBuddy sidecar 缺少 sidecar.pid 时扫描 UUID 控制 socket', async 
 test('WorkBuddy 没有 sidecar 控制 socket 时返回可操作诊断', async () => {
   const root = mkdtempSync('/tmp/codingns-workbuddy-no-sidecar-')
   const driver = new WorkBuddyCliDriver({
+    platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     configRoot: join(root, 'config'),
     environment: { TMPDIR: root },
@@ -267,6 +300,7 @@ test('WorkBuddy sidecar 中断会取消仍在读取的 HTTP ACP prompt body', as
   const harness = await createFakeWorkBuddyHarness(true)
   const controller = new AbortController()
   const driver = new WorkBuddyCliDriver({
+    platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,
     sidecarSocketPath: harness.socketPath,
@@ -336,6 +370,7 @@ test('CodeBuddy 没有显式区域变量时按认证域名自动选择 CN', asyn
 
 test('WorkBuddy 将 Auto 三档识别为默认模型的思考强度，不混入模型列表', async () => {
   const driver = new WorkBuddyCliDriver({
+    platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,
     modelCatalogPaths: ['/tmp/workbuddy-product-config.json'],
@@ -365,6 +400,7 @@ test('WorkBuddy 将 Auto 三档识别为默认模型的思考强度，不混入�
 
 test('WorkBuddy 解包 local_storage 的 data envelope 后读取当前模型目录', async () => {
   const driver = new WorkBuddyCliDriver({
+    platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,
     modelCatalogPaths: ['/tmp/workbuddy-local-storage.info'],
@@ -396,6 +432,7 @@ test('WorkBuddy 解包 local_storage 的 data envelope 后读取当前模型目�
 
 test('WorkBuddy 从全局模型目录补齐不在 cli agent 中的 Auto 三档', async () => {
   const driver = new WorkBuddyCliDriver({
+    platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,
     modelCatalogPaths: ['/tmp/workbuddy-current-shape.info'],
@@ -465,6 +502,7 @@ test('CodeBuddy 与 WorkBuddy 的静态目录明确标记为回退目录', async
     readFileSync: readFailure,
   })
   const workBuddy = new WorkBuddyCliDriver({
+    platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,
     readFileSync: readFailure,
@@ -512,6 +550,7 @@ test('CodeBuddy 自动识别 CN 后优先读取官方 product.internal.json 模�
 test('WorkBuddy 选择 Auto 思考强度时下发对应的真实模型 ID', async () => {
   const requests: Array<{ method?: string; params?: Record<string, unknown> }> = []
   const driver = new WorkBuddyCliDriver({
+    platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,
     spawn: (() => {
@@ -652,6 +691,7 @@ test('CodeBuddy JSONL 用量补偿正确拆分 Token、缓存和上下文', () =
 
 test('WorkBuddy refusal 透传 ACP 错误而不是结束空 assistant', async () => {
   const driver = new WorkBuddyCliDriver({
+    platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,
     spawn: fakeAcpSpawn({
@@ -669,6 +709,7 @@ test('WorkBuddy refusal 透传 ACP 错误而不是结束空 assistant', async ()
 
 test('WorkBuddy 空 prompt 响应生成明确错误终态', async () => {
   const driver = new WorkBuddyCliDriver({
+    platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,
     spawn: fakeAcpSpawn({}),
@@ -684,6 +725,7 @@ test('WorkBuddy 空 prompt 响应生成明确错误终态', async () => {
 
 test('WorkBuddy 通知先结束但 prompt 响应为空时仍报告空响应错误', async () => {
   const driver = new WorkBuddyCliDriver({
+    platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,
     spawn: fakeAcpSpawn({}, {
