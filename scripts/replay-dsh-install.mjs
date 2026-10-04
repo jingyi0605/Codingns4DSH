@@ -10,9 +10,13 @@ const tarball = process.argv[2]
 if (!tarball) throw new Error('用法：node scripts/replay-dsh-install.mjs <tarball>')
 
 const packageName = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).name
+// 版本事实源取自 version.json：回放脚本不再硬编码 DSH 版本，升级时无需改动。
+const versionFile = JSON.parse(await readFile(new URL('../version.json', import.meta.url), 'utf8'))
+const expectedDshVersion = versionFile.dshTestedVersion
+const expectedCompatibility = versionFile.dshCompatibility
 const runtimeDsh = process.env.DSH_RUNTIME_DSH
   ?? '/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh'
-if (!existsSync(runtimeDsh)) throw new Error(`找不到 DSH 0.2.0-rc.2 runtime：${runtimeDsh}`)
+if (!existsSync(runtimeDsh)) throw new Error(`找不到 DSH ${expectedDshVersion} runtime：${runtimeDsh}`)
 
 const home = await mkdtemp(join(tmpdir(), 'dsh-codingns-replay-'))
 const profile = join(home, 'profiles', 'replay')
@@ -29,14 +33,14 @@ const manifest = JSON.parse(await readFile(packageJsonPath, 'utf8'))
 if (manifest.version !== JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version) {
   throw new Error(`安装后的包版本不一致：${manifest.version}`)
 }
-if (manifest.peerDependencies?.['@deepseek-ai/dsh'] !== '>=0.2.0-rc.2 <=0.2.0-rc.2') {
-  throw new Error('安装后的包没有精确声明 DSH 0.2.0-rc.2 peer ABI')
+if (manifest.peerDependencies?.['@deepseek-ai/dsh'] !== expectedCompatibility) {
+  throw new Error(`安装后的包没有声明与 version.json 一致的 DSH peer ABI：${String(manifest.peerDependencies?.['@deepseek-ai/dsh'])}`)
 }
 if (!dump.includes(packageName)) throw new Error('Profile dump-config 未包含 CodingNS bundle')
 
 const moduleResolution = []
 const runtimeNodeModules = process.env.DSH_RUNTIME_NODE_MODULES
-  ?? join(homedir(), '.local/share/codingns/deepseek-harness/0.2.0-rc.2/node_modules')
+  ?? join(homedir(), `.local/share/codingns/deepseek-harness/${expectedDshVersion}/node_modules`)
 const resolutionAnchors = [
   { anchor: join(profile, 'package.json'), source: 'profile' },
   { anchor: join(runtimeNodeModules, '.codingns-replay-anchor.cjs'), source: 'dsh-runtime' },
@@ -48,7 +52,7 @@ for (const moduleName of manifest.dsh?.client?.inject ?? []) {
     const { path, source } = resolved
     const moduleManifest = JSON.parse(await readFile(path, 'utf8'))
     moduleResolution.push({ name: moduleName, version: moduleManifest.version, path, source })
-    if (moduleManifest.version !== '0.2.0-rc.2') throw new Error(`${moduleName}@${moduleManifest.version} 不是 rc.2`)
+    if (moduleManifest.version !== expectedDshVersion) throw new Error(`${moduleName}@${moduleManifest.version} 不是 ${expectedDshVersion}`)
   } catch (error) {
     moduleResolution.push({ name: moduleName, error: error instanceof Error ? error.message : String(error) })
     throw error
@@ -134,7 +138,7 @@ await relayCarrier.close()
 const report = {
   package: packageName,
   version: manifest.version,
-  dsh: '0.2.0-rc.2',
+  dsh: expectedDshVersion,
   profile,
   packageRoot,
   moduleResolution,

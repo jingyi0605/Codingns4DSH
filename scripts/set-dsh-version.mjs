@@ -6,9 +6,20 @@ const nextVersion = process.argv[2]?.trim()
 const requestedCompatibility = process.argv[3]?.trim()
 const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u
 const compatibilityPattern = /^>=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?: <=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)?$/u
-if (!nextVersion || !semver.test(nextVersion)) throw new Error('用法: pnpm run version:set-dsh 0.2.0-rc.2 [兼容范围]')
+
+/**
+ * 上游在某个 DSH 版本中删除、且本仓库无任何 import 的包。
+ *
+ * 值说明「从哪个版本开始不存在」，仅用于告警文案。这类包不能再被写进 manifest：
+ * 版本同步门禁要求所有 `@deepseek-ai/dsh-*` 精确等于测试版本，而该版本在 npm
+ * 上并不存在，写进去会让 pnpm install 直接失败。
+ */
+const UPSTREAM_REMOVED_DSH_PACKAGES = {
+  '@deepseek-ai/dsh-invariants': '0.2.1-alpha.1 起上游不再发布，仓库内零引用',
+}
+if (!nextVersion || !semver.test(nextVersion)) throw new Error('用法: pnpm run version:set-dsh 0.2.1-alpha.1 [兼容范围]')
 if (requestedCompatibility !== undefined && !compatibilityPattern.test(requestedCompatibility)) {
-  throw new Error('DSH 兼容范围必须形如 ">=0.2.0-rc.2" 或 ">=0.2.0-rc.2 <=0.2.0-rc.2"')
+  throw new Error('DSH 兼容范围必须形如 ">=0.2.0-rc.2" 或 ">=0.2.0-rc.2 <=0.2.1-alpha.1"')
 }
 
 const root = fileURLToPath(new URL('../', import.meta.url))
@@ -29,10 +40,19 @@ const manifest = await readJson('package.json')
 manifest.engines.dsh = nextCompatibility
 manifest.peerDependencies ??= {}
 manifest.peerDependencies['@deepseek-ai/dsh'] = nextCompatibility
+const retiredPackages = []
 for (const sectionName of ['dependencies', 'devDependencies']) {
   const section = manifest[sectionName] ?? {}
   for (const name of Object.keys(section)) {
-    if (name.startsWith('@deepseek-ai/dsh-')) section[name] = nextVersion
+    if (!name.startsWith('@deepseek-ai/dsh-')) continue
+    // 上游删除的包不能跟着改版本号：改成一个不存在的版本会让 pnpm install 直接失败。
+    // 这类包必须显式登记，由脚本从 manifest 移除并告警，避免每次升级都手工排查。
+    if (UPSTREAM_REMOVED_DSH_PACKAGES[name] !== undefined) {
+      delete section[name]
+      retiredPackages.push(`${name}（${UPSTREAM_REMOVED_DSH_PACKAGES[name]}）`)
+      continue
+    }
+    section[name] = nextVersion
   }
 }
 await writeJson('package.json', manifest)
@@ -73,6 +93,7 @@ for (const relativePath of ['README.md', 'README.en.md', 'profile/README.md']) {
 
 console.log(`已将 DSH 测试版本切换为 ${nextVersion}`)
 console.log(`当前插件兼容范围: ${nextCompatibility}`)
+if (retiredPackages.length > 0) console.log(`已移除上游不再发布的 DSH 包：${retiredPackages.join('、')}`)
 console.log('请随后运行 pnpm install --lockfile-only 和 pnpm run version:check')
 
 function createDefaultCompatibility(version, previousCompatibility) {
