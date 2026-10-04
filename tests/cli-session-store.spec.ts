@@ -121,6 +121,21 @@ test('设置服务写入失败时不会让 Host 会话索引队列崩溃', async
   await assert.doesNotReject(store.flush())
 })
 
+test('SessionStore 停用后不再调用已失效的设置上下文', async () => {
+  let updates = 0
+  const store = new CodingNsCliSessionStore({
+    settings: {
+      get() { return { cliSessions: [] } },
+      async update() { updates += 1 },
+    } as never,
+  })
+
+  store.dispose()
+  store.upsert('dsh-inactive-context', { adapterId: 'codex' })
+  await store.flush()
+  assert.equal(updates, 0)
+})
+
 test('旧原生外部会话只在日志明确给出适配器时自动迁移，且归档映射仍可展示', async () => {
   const store = new CodingNsCliSessionStore()
   const migrated = store.migrateLegacySessions([

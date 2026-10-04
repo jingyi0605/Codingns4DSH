@@ -1055,6 +1055,32 @@ test('注入消息的 source 语法跟随会话 generation 而不是运行时版
   assert.deepEqual(messages[1]?.source, { kind: 'plugin', plugin: 'codingns4dsh', form: 'notice', summary: '工具已完成' })
 })
 
+test('真实 Session header 的 v4 generation 优先于过期运行时版本', () => {
+  const messages: unknown[] = []
+  const session = {
+    // DSH v4 的版本在 Session.header，不会出现在 snapshotEvents() 中。
+    header: { version: 4 },
+    snapshotEvents() { return [{ type: 'permission/preset', seq: 0 }] },
+    append() { return undefined },
+  }
+  const agent = { inject(message: unknown) { messages.push(message) } }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      if (name === 'sessions') return { get(id: string) { return id === 'header-v4' ? session : undefined }, list() { return [session] } }
+      if (name === 'agents') return { get(id: string) { return id === 'header-v4' ? agent : undefined } }
+      return undefined
+    },
+  } as never, '0.1.6-alpha.2')
+
+  assert.equal(bridge.formatVersion?.('header-v4'), 4)
+  assert.equal(bridge.injectNextStep?.('header-v4', '工具已完成'), true)
+  assert.deepEqual((messages[0] as { source: unknown }).source, {
+    kind: 'model-selection',
+    form: 'notice',
+    summary: '工具已完成',
+  })
+})
+
 test('next-step 注入失败时返回 false 且不吞掉原因，便于定位子会话停摆', () => {
   // 子代理会话注入失败后 DSH 不会发起第二次 llm/stream，子会话会停在当前 step
   // 并以 error 结算；这里固定「失败必须返回 false 且不抛异常」的契约。

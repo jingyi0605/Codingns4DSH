@@ -69,6 +69,7 @@ export class CodingNsCliSessionStore {
   private readonly persistence: CodingNsCliSessionPersistence | undefined
   private readonly legacyImportedRecords: readonly CodingNsCliSessionRecord[]
   private writeTail: Promise<void> = Promise.resolve()
+  private disposed = false
 
   constructor(options: CodingNsCliSessionStoreOptions = {}) {
     this.settings = options.settings
@@ -252,6 +253,11 @@ export class CodingNsCliSessionStore {
     await this.writeTail
   }
 
+  /** 停止上下文销毁后的异步设置写入；内存索引仍保留给当前清理流程读取。 */
+  dispose(): void {
+    this.disposed = true
+  }
+
   private hydrateRecord(value: unknown, resetActive: boolean): void {
     if (!isRecord(value)) return
     if (typeof value.dshSessionId !== 'string' || value.dshSessionId.trim() === '') return
@@ -288,10 +294,12 @@ export class CodingNsCliSessionStore {
   }
 
   private schedulePersist(): void {
+    if (this.disposed) return
     const snapshot = this.list({ includeArchived: true })
     this.writeTail = this.writeTail
       .catch(() => undefined)
       .then(async () => {
+        if (this.disposed) return
         if (this.persistence !== undefined) await this.persistence.write(snapshot)
         if (this.settings !== undefined) await this.settings.update({ cliSessions: snapshot })
       })

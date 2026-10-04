@@ -678,6 +678,8 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
 }
 
 interface AppendableSession {
+  /** DSH Session 的持久化头；版本不属于事件日志。 */
+  readonly header?: unknown
   snapshotEvents(): readonly unknown[]
   append(type: string, data: unknown, options?: unknown): unknown
   readonly surface?: { readonly nodes?: readonly number[] }
@@ -721,13 +723,23 @@ function appendableSession(value: unknown): AppendableSession | null {
  */
 function sessionFormat(session: AppendableSession | null): CodingNsNativeSessionFormat {
   if (session === null) return 'unknown'
+  // DSH 原生 Session 把 generation 放在 header，snapshotEvents() 只返回事件。
+  // 先读 header，避免真实 v4 会话因首条事件通常是 permission/preset 而降级到
+  // 运行时版本推断，进而把已被 v4 禁止的 plugin source 写入会话。
+  const header = isRecord(session.header) ? session.header : undefined
+  const headerVersion = header === undefined ? null : finiteInteger(header.version)
+  if (headerVersion !== null) return normalizeSessionFormatVersion(headerVersion)
   let events: readonly unknown[]
   try { events = session.snapshotEvents() } catch { return 'unknown' }
-  const header = events[0]
-  if (!isRecord(header)) return 'unknown'
-  const data = isRecord(header.data) ? header.data : undefined
-  const version = finiteInteger(header.version) ?? (data === undefined ? null : finiteInteger(data.version))
+  const eventHeader = events[0]
+  if (!isRecord(eventHeader)) return 'unknown'
+  const data = isRecord(eventHeader.data) ? eventHeader.data : undefined
+  const version = finiteInteger(eventHeader.version) ?? (data === undefined ? null : finiteInteger(data.version))
   if (version === null) return 'unknown'
+  return normalizeSessionFormatVersion(version)
+}
+
+function normalizeSessionFormatVersion(version: number): CodingNsNativeSessionFormat {
   if (version === 3 || version === 4) return version
   return version > 4 ? 'unsupported' : 'unknown'
 }
