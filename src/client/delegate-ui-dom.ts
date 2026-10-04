@@ -427,9 +427,9 @@ function decorateEmptyStatePlaceholders(dom: Document, hintFactory?: () => strin
 function isHeroComposerPlaceholder(placeholder: Element): boolean {
   let current: Node | null = placeholder.parentNode
   while (current !== null) {
-    const className = typeof (current as Element).getAttribute === 'function'
-      ? (current as Element).getAttribute('class') ?? ''
-      : ''
+    const element = current as Element
+    if (typeof element.getAttribute === 'function' && element.getAttribute('data-phase') === 'hero') return true
+    const className = typeof element.getAttribute === 'function' ? element.getAttribute('class') ?? '' : ''
     if (className.split(/\s+/u).some((name) => name.endsWith('_hero'))) return true
     current = current.parentNode
   }

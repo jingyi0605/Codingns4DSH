@@ -368,7 +368,7 @@ test('委派菜单行被搬进「添加」分类，真实行隐藏且不被移�
 
 test('空状态输入提示追加 # 委派说明，已开始会话的提示保持不变', async () => {
   const dom = new FakeDocument()
-  const heroRoot = element(dom, 'div', { class: 'uV2eYG_hero' })
+  const heroRoot = element(dom, 'div', { 'data-phase': 'hero' })
   const heroGrow = element(dom, 'div')
   heroRoot.appendChild(heroGrow)
   heroGrow.appendChild(element(dom, 'div', { 'data-composer-input': 'true', 'data-phase': 'plain' }))
