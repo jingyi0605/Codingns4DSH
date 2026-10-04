@@ -48,9 +48,10 @@
 #### 验收标准
 
 1. WHEN 工作区存在多个终端 THEN System SHALL 展示每个终端的标题、Shell 和运行状态。
-2. WHEN 用户选择列表项 THEN System SHALL 只挂载所选终端的 xterm 视图，并保持其他终端进程运行。
+2. WHEN 用户选择列表项 THEN System SHALL 切换所选终端的可见视图；其他终端视图保持挂载并保留 Host attach，使再次点击无需重新连接。
 3. WHEN 用户在页内新建或关闭终端 THEN System SHALL 只对对应 `terminalId` 调用 Host create/close。
 4. WHEN 用户重命名终端 THEN System SHALL 更新 Host 记录和列表标题。
+5. WHEN 聚合页重新挂载或另一个 DSH 会话订阅同一终端 THEN Host SHALL 复用该 `terminalId` 的内存 resident connection，并立即发送当前状态与有限输出缓存。
 
 ### 需求 3：跨会话库存同步
 
@@ -61,6 +62,7 @@
 1. WHEN 任一会话创建或关闭终端 THEN System SHALL 刷新共享库存并通知其他聚合页。
 2. WHEN Host 返回的库存不包含某个终端 THEN System SHALL 从所有会话的列表中移除该终端。
 3. WHEN Host 暂时不可用 THEN System SHALL 保留当前已连接视图并显示可重试状态，不误删正在运行的终端。
+4. WHEN resident connection 因连接层故障断开且运行时仍存活 THEN Host SHALL 结束失效 follower、后台重建 resident，并保持终端 `running` 状态。
 
 ### 需求 4：无终端时隐藏页签
 

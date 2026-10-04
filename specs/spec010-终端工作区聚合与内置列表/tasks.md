@@ -129,3 +129,57 @@
   - 这一步先不做什么：不追加新的终端功能。
   - 怎么算完成：关键需求、自动化检查全部通过。
   - 怎么验证：`pnpm run typecheck`、`pnpm run build`、终端定向测试通过；`pnpm test` 全量 1091 项通过（含 PeerHost `session/follow` 合并刷新用例改为模拟定时器后的稳定结果）。
+
+- [x] 3.3 Host 调试日志与闪退原因定位准备
+  - 状态：DONE
+  - 这一步到底做什么：为 controller、持久终端服务、runtime manager 和 tmux/local-pty backend 增加同一终端的请求、作用域、运行时身份、attach、退出及状态迁移日志。
+  - 做完你能看到什么：开启 `CODINGNS4DSH_DEBUG=1` 后，可以沿 `terminal create request` → `runtime create` → `runtime inspect/attach` → `runtime exit/state update` 判断窗口闪退发生在哪一层。
+  - 先依赖什么：2.4。
+  - 主要改哪里：`src/host/terminal/terminal-controller.ts`、`src/host/terminal/terminal-service.ts`、`src/host/terminal/runtime-manager.ts`、`src/host/terminal/backends/`。
+  - 这一步先不做什么：不改变终端协议、作用域判定和生命周期语义；日志不记录终端输入内容或环境变量。
+  - 怎么算完成：stage0 以调试开关启动后能输出 Host 终端完整生命周期，创建失败时包含错误和运行时状态。
+  - 怎么验证：stage0 已用 `CODINGNS4DSH_DEBUG=1 pnpm run dsh:stage0` 启动；启动日志已确认 Host controller、terminal service 正常加载，等待下一次创建终端回放。
+
+## 阶段 4：终端连接常驻与即时切换
+
+- [x] 4.1 保持聚合页内所有终端连接
+  - 状态：DONE
+  - 这一步到底做什么：让每个库存终端的 Client view 和 Host follow attach 在聚合页生命周期内保持常驻，未选中终端只隐藏内容。
+  - 做完你能看到什么：点击其他终端标签时直接显示已有屏幕，不再出现重新连接状态，也不重复调用 Host attach。
+  - 先依赖什么：2.2、3.3。
+  - 主要改哪里：`src/client/terminal/ui.ts`、`src/client/terminal/xterm-view.ts`。
+  - 这一步先不做什么：不改变 Host terminal runtime、terminal/follow 协议和显式 close 语义。
+  - 怎么算完成：聚合页为每个 `terminalId` 保持稳定 React key、view 和 xterm；active 切换只改变可见性。
+  - 怎么验证：UI 契约测试、typecheck、stage0 Web 回放切换标签时 Host attach 日志不增加。
+
+- [x] 4.2 连接常驻回归与文档
+  - 状态：DONE
+  - 这一步到底做什么：覆盖常驻视图、隐藏视图和离开聚合页后的正常 detach，回写 Spec 与开发记录。
+  - 做完你能看到什么：关闭终端仍会释放对应 view/attach，切换终端不会释放连接。
+  - 先依赖什么：4.1。
+  - 主要改哪里：`tests/terminal-client-ui.spec.ts`、Spec 文档和开发记录。
+  - 这一步先不做什么：不为了缓存 attach 而重做 Host 侧输出回放协议。
+  - 怎么算完成：定向终端测试和完整项目检查通过。
+  - 怎么验证：`pnpm run typecheck`、`pnpm run build`、`pnpm test`、`git diff --check`。
+
+## 阶段 5：Host 常驻连接与即时订阅
+
+- [x] 5.1 在 Host 内存中复用终端连接
+  - 状态：DONE
+  - 这一步到底做什么：把 backend attachment 从浏览器 follow 生命周期中解耦，每个 running 终端只保留一条 Host resident connection。
+  - 做完你能看到什么：多个 DSH 会话订阅同一个终端时不会重复创建 tmux/local-pty attach，点击终端标签直接得到当前连接状态。
+  - 先依赖什么：4.1、4.2。
+  - 主要改哪里：`src/host/terminal/terminal-service.ts`、`tests/terminal-lifecycle.spec.ts`。
+  - 这一步先不做什么：不改变终端进程的持久记录格式，不把浏览器 attachment 写入磁盘。
+  - 怎么算完成：`follow` 只注册 follower，输入/尺寸复用 resident；显式 close、Host dispose 和 runtime 真实退出仍能正确释放。
+  - 怎么验证：终端生命周期测试断言两个 follow 共用一个 backend attachment，订阅结束后 resident 仍存在，显式 dispose 后才释放。
+
+- [x] 5.2 缓存有限输出并处理连接层异常
+  - 状态：DONE
+  - 这一步到底做什么：在 Host 内存中保留最多 1 MB 原始输出，新订阅先收到 snapshot/state 再恢复缓存；resident 连接断开时结束旧 follower 并后台重建。
+  - 做完你能看到什么：重新打开或切换会话时终端内容可立即恢复，tmux 客户端短暂断线不会把仍运行的 Shell 标为 exited。
+  - 先依赖什么：5.1。
+  - 主要改哪里：`src/host/terminal/terminal-service.ts`、`docs/开发记录/20261003-终端连接常驻与即时切换修复记录.md`。
+  - 这一步先不做什么：不无限缓存输出，不把连接状态持久化到 JSON 文件。
+  - 怎么算完成：新 follow 能收到订阅前产生的输出；自然退出先广播 exited/lost 状态再结束流。
+  - 怎么验证：`pnpm run typecheck`、`pnpm run build`、`node --test tests/terminal-lifecycle.spec.ts tests/terminal-process.spec.ts`。

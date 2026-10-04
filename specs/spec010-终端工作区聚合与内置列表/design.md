@@ -18,6 +18,10 @@ DSH session C ─┘          │
                           ├─ 终端列表
                           └─ 选中 terminalId 的 CodingNsTerminalView
                                       │
+                                      ├─ 所有终端 view/attach 常驻内存
+                                      ├─ Host 每个 terminalId 一条 resident attachment
+                                      ├─ resident 保留有限原始输出供新订阅恢复
+                                      └─ 只切换 active 可见层
                                       ▼
                               Host workspace terminal list/create/close
 ```
@@ -54,7 +58,11 @@ interface TerminalInventory {
 
 ### 3.3 终端视图
 
-新增明确的 `viewForTerminal(sessionId, terminalId, shellPath?)` 或等价内部方法，使用 `[sessionId, terminalId]` 作为视图缓存键。聚合页只挂载选中视图；隐藏其他视图只 detach，不调用 Host close。
+新增明确的 `viewForTerminal(sessionId, terminalId, shellPath?)` 或等价内部方法，使用 `[sessionId, terminalId]` 作为视图缓存键。聚合页只显示选中视图；隐藏其他视图不调用 Host close，也不主动 detach。
+
+Host `CodingNsTerminalService` 为每个 running 终端建立一条不绑定浏览器 generation 的 resident attachment。`follow` 只注册内存 follower，并复用 resident 的输入、尺寸和输出通道。resident 缓存有限的原始输出；新 follower 先收到当前状态，再收到缓存输出，因页面重挂载或跨会话订阅而产生的瞬时连接不会清空已显示内容。
+
+聚合页改为同时挂载库存中的所有 `CodingNsXtermView`。未选中的视图通过 `display:none` 隐藏，但继续保持 `view.mount()`、xterm 屏幕和 Host follow attach；只有整个 Sidebar 页签卸载时才 detach。选中状态变化时重新执行 FitAddon 尺寸同步和焦点设置。
 
 ## 4. 关键流程
 
@@ -116,4 +124,4 @@ pnpm test
 
 - DSH 旧布局可能在升级首次恢复时包含多个 terminal 标签，必须先执行无 Host close 的迁移。
 - 没有终端时不能删除创建入口，否则用户无法建立第一个终端；隐藏目标是已打开的聚合页签。
-- Host 没有事件推送，库存同步以显式 refresh + revision 为准；连接断开时保留当前视图并允许重试。
+- Host 没有事件推送，库存同步以显式 refresh + revision 为准；连接断开时保留当前视图并允许重试。终端切换不再主动断开连接，Host 只在显式关闭、运行时退出、插件卸载时清理 resident attachment；连接层异常会先结束旧 follower，再后台重建 resident。
