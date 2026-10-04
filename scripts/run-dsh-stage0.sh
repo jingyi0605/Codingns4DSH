@@ -7,6 +7,7 @@ dsh_bin=${DSH_STAGE0_LAUNCHER:-"$HOME/.local/share/codingns/deepseek-harness/0.2
 dsh_home=${DSH_STAGE0_HOME:-"$HOME/.dsh-stage0-020"}
 state_dir=${CODINGNS4DSH_STAGE0_STATE_DIR:-"$HOME/.config/codingns4dsh/stage0-020"}
 port=${DSH_STAGE0_PORT:-17891}
+stage0_patch="$repo_root/dsh-stage0.patch.yml"
 
 if [[ ! -f "$dsh_bin" ]]; then
   printf '找不到 DSH 0.2.0-rc.2 启动器: %s\n' "$dsh_bin" >&2
@@ -68,7 +69,7 @@ fi
 if [[ "${1-}" == "--dump-config" ||
   "${1-}" == "--dump-config-schema" ||
   "${1-}" == "--dump-default-config" ]]; then
-  dsh_args=(--profile stage0 "$@")
+  dsh_args=(--profile stage0 --patch "$stage0_patch" "$@")
   if (( ${#bootstrap_args[@]} > 0 )); then
     dsh_args=("${bootstrap_args[@]}" "${dsh_args[@]}")
   fi
@@ -80,7 +81,7 @@ if [[ "${1-}" == "plugin" ]]; then
 fi
 
 if (( ${#dsh_args[@]} == 0 )); then
-  dsh_args=(--profile stage0 --port "$port" --no-open "$@")
+  dsh_args=(--profile stage0 --patch "$stage0_patch" --port "$port" --no-open "$@")
   if (( ${#bootstrap_args[@]} > 0 )); then
     dsh_args=("${bootstrap_args[@]}" "${dsh_args[@]}")
   fi

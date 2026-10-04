@@ -29,3 +29,11 @@ test('阶段 0 区分 Connection Fetch 路由和未确认的 Upgrade 扩展', as
   assert.match(hostRpc, /createSharedFetchHandler\(channel: '\/api'\)/u)
   assert.doesNotMatch(hostRpc, /registerUpgrade|upgrade\.register/u)
 })
+
+test('阶段 0 启动器显式关闭官方终端实现', async () => {
+  const launcher = await readProjectFile('scripts/run-dsh-stage0.sh')
+  const patch = await readProjectFile('dsh-stage0.patch.yml')
+  assert.match(launcher, /--patch "\$stage0_patch"/u)
+  assert.match(patch, /@deepseek-ai\/dsh-api-terminal-controller[\s\S]*disabled: true/u)
+  assert.match(patch, /@deepseek-ai\/dsh-client-ui-sidebar-terminal[\s\S]*disabled: true/u)
+})

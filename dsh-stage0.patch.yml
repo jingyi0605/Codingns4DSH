@@ -1,0 +1,12 @@
+# stage0 使用源码链接包时，DSH 不会自动读取 npm 包的 dsh.bundle.patch。
+# 官方终端与 CodingNS 聚合终端注册同一个 Sidebar 类型，必须成对关闭，
+# 否则旧的官方组件会先占用 keyed Slot，用户看不到 CodingNS 内部终端列表。
+- id: terminal-controller
+  name: '@deepseek-ai/dsh-api-terminal-controller'
+  disabled: true
+- id: ui-sidebar-terminal
+  name: '@deepseek-ai/dsh-client-ui-sidebar-terminal'
+  disabled: true
+- id: client-hmr
+  name: '@deepseek-ai/dsh-client-hmr'
+  disabled: true
