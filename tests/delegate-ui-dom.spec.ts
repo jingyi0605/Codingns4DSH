@@ -4,7 +4,7 @@ import {
   DELEGATE_MENU_PROXY_ATTRIBUTE,
   DELEGATE_MENU_ROW_ATTRIBUTE,
   DELEGATE_CHIP_LOGO_ATTRIBUTE,
-  DELEGATE_EMPTY_PLACEHOLDER_HINT_ATTRIBUTE,
+  DELEGATE_PLACEHOLDER_MARK_ATTRIBUTE,
   DELEGATE_POPUP_LOGO_ATTRIBUTE,
   DELEGATE_TIMELINE_CARD_ATTRIBUTE,
   DELEGATE_UI_STYLE_ID,
@@ -366,18 +366,14 @@ test('委派菜单行被搬进「添加」分类，真实行隐藏且不被移�
   }
 })
 
-test('空状态输入提示追加 # 委派说明，已开始会话的提示保持不变', async () => {
+test('新建会话和已有会话输入框统一显示委派占位文本', async () => {
   const dom = new FakeDocument()
-  const heroRoot = element(dom, 'div', { 'data-phase': 'hero' })
   const heroGrow = element(dom, 'div')
-  heroRoot.appendChild(heroGrow)
-  heroGrow.appendChild(element(dom, 'div', { 'data-composer-input': 'true', 'data-phase': 'plain' }))
   const heroPlaceholder = element(dom, 'div', { 'data-composer-placeholder': 'true' })
   heroPlaceholder.textContent = '描述你想要构建的内容, / 调用指令, @ 文件或对话'
   heroGrow.appendChild(heroPlaceholder)
-  dom.body.appendChild(heroRoot)
+  dom.body.appendChild(heroGrow)
   const activeGrow = element(dom, 'div')
-  activeGrow.appendChild(element(dom, 'div', { 'data-composer-input': 'true', 'data-phase': 'active' }))
   const activePlaceholder = element(dom, 'div', { 'data-composer-placeholder': 'true' })
   activePlaceholder.textContent = '发消息或创建任务'
   activeGrow.appendChild(activePlaceholder)
@@ -387,18 +383,18 @@ test('空状态输入提示追加 # 委派说明，已开始会话的提示保�
     MutationObserver: FakeObserver as never,
     menuLabel: () => '委派',
     popupPlaceholder: () => '搜索外部 Agent',
-    emptyStateHint: () => '输入 # 呼出委派菜单',
+    composerPlaceholder: () => '/调用指令,@文件或对话,#呼出委派菜单',
   })
   await nextTurn()
   try {
-    assert.equal(heroPlaceholder.textContent, '描述你想要构建的内容, / 调用指令, @ 文件或对话')
-    assert.equal(heroPlaceholder.querySelector(`[${DELEGATE_EMPTY_PLACEHOLDER_HINT_ATTRIBUTE}]`)?.textContent, ' · 输入 # 呼出委派菜单')
-    assert.equal(activePlaceholder.textContent, '发消息或创建任务')
+    assert.equal(heroPlaceholder.textContent, '/调用指令,@文件或对话,#呼出委派菜单')
+    assert.equal(activePlaceholder.textContent, '/调用指令,@文件或对话,#呼出委派菜单')
+    assert.equal(heroPlaceholder.hasAttribute(DELEGATE_PLACEHOLDER_MARK_ATTRIBUTE), true)
   } finally {
     controller.dispose()
   }
   assert.equal(heroPlaceholder.textContent, '描述你想要构建的内容, / 调用指令, @ 文件或对话')
-  assert.equal(heroPlaceholder.querySelector(`[${DELEGATE_EMPTY_PLACEHOLDER_HINT_ATTRIBUTE}]`), null)
+  assert.equal(activePlaceholder.textContent, '发消息或创建任务')
 })
 
 test('点击「添加」分类里的委派行会转发交互到真实行', async () => {

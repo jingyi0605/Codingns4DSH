@@ -135,7 +135,7 @@ export function registerDelegateCommand(ctx: Context, options: RegisterDelegateC
   const ui = startDelegateUiDom({
     menuLabel: () => t('delegate.label'),
     popupPlaceholder: () => t('delegate.searchPlaceholder'),
-    emptyStateHint: () => t('delegate.emptyStateHint'),
+    composerPlaceholder: () => t('delegate.composerPlaceholder'),
     cardTitle: () => t('delegate.cardTitle'),
     cardStatus: () => t('delegate.cardStatus'),
     cardTarget: (value) => t('delegate.cardTarget', {
