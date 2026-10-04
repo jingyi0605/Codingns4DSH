@@ -7,7 +7,7 @@ import {
   isCodingNsSettingsEntryId,
   DEFAULT_CODINGNS_SETTINGS,
   MOBILE_VIEWPORT_MAX_PX_LIMITS,
-  SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS,
+  SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS,
   SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MINS_LIMITS,
   SUBSCRIPTION_USAGE_TIMEOUT_SECS_LIMITS,
   SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS,
@@ -114,12 +114,14 @@ export const CodingNsSettingsSchema = z.object({
     sidebarGestures: z.union([z.boolean(), z.const(undefined)]),
     sidebarGestureMapping: z.union([z.const('swipe-inward'), z.const('swap'), z.const(undefined)]),
     sidebarGestureEdge: z.union([z.const('avoid'), z.const('edge'), z.const(undefined)]),
-    sidebarGestureThresholdPx: z.union([
+    sidebarGestureDistancePercent: z.union([
       z.number().step(1)
-        .min(SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.min)
-        .max(SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.max),
+        .min(SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS.min)
+        .max(SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS.max),
       z.const(undefined),
     ]),
+    // 旧像素门槛保留在 schema 里，保证升级后仍能读到并换算成比例；新写入不再使用。
+    sidebarGestureThresholdPx: z.union([z.number(), z.const(undefined)]),
   }).default({
     hideSidebarOnMobile: DEFAULT_CODINGNS_SETTINGS.mobileAccess.hideSidebarOnMobile,
     optimizeSettingsOnMobile: DEFAULT_CODINGNS_SETTINGS.mobileAccess.optimizeSettingsOnMobile,

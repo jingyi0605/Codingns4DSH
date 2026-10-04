@@ -8,7 +8,7 @@ import {
   MOBILE_VIEWPORT_MAX_PX_LIMITS,
   normalizeLanAccessDshPwaSettings,
   normalizeMobileAccessSettings,
-  SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS,
+  SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS,
 } from '../../shared/contracts/config.js'
 import type { LanAccessDshPwaSettings } from '../../shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
@@ -308,24 +308,25 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
           ),
         ),
         createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-          createElement('span', { style: dshSettingsFieldLabelStyle }, t('mobile.sidebarGestureThreshold')),
+          createElement('span', { style: dshSettingsFieldLabelStyle }, t('mobile.sidebarGestureDistance')),
           createElement('input', {
             type: 'number',
-            min: SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.min,
-            max: SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.max,
-            value: gestures.sidebarGestureThresholdPx,
+            min: SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS.min,
+            max: SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS.max,
+            step: 5,
+            value: gestures.sidebarGestureDistancePercent,
             disabled: controlsDisabled,
             onChange: (event: { currentTarget: { value: string } }) => {
               const next = Number(event.currentTarget.value)
               if (!Number.isFinite(next)) return
-              updateGestureField('sidebarGestureThresholdPx', Math.min(
-                SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.max,
-                Math.max(SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS.min, Math.round(next)),
+              updateGestureField('sidebarGestureDistancePercent', Math.min(
+                SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS.max,
+                Math.max(SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS.min, Math.round(next)),
               ))
             },
             style: fieldStyle,
           }),
-          createElement('span', { style: dshSettingsHelpStyle }, t('mobile.sidebarGestureThresholdHelp')),
+          createElement('span', { style: dshSettingsHelpStyle }, t('mobile.sidebarGestureDistanceHelp')),
         ),
       ),
     ),

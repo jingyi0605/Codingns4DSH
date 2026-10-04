@@ -20,73 +20,143 @@ export interface TouchSample {
 }
 
 export interface SidebarGestureConfig {
-  /** 兼容设置中的触发阈值（像素）；实际阈值不会低于视口宽度的 50%。 */
-  readonly thresholdPx: number
+  /**
+   * 触发手势所需的水平位移占视口宽度的比例（0–1，默认 0.25）。
+   *
+   * 用比例而不是像素：同一个像素值在 360px 手机与 1024px 平板上的手势占比相差
+   * 近三倍，只有比例才能让「灵敏度」设置在各类设备上表达同一件事。
+   */
+  readonly distanceRatio: number
   /** 起手区域：`avoid` 避开系统边缘热区。 */
   readonly edgeMode: 'avoid' | 'edge'
   /** 方向映射：`swipe-inward` 为右滑开合左栏、左滑开合右栏；`swap` 互换。 */
   readonly mapping: 'swipe-inward' | 'swap'
   /** 当前视口宽度；用于判断右侧热区。 */
   readonly viewportWidth: number
-  /** 边缘热区宽度，默认 24px。 */
+  /** 边缘热区宽度，默认 12px。 */
   readonly edgeZonePx?: number
   /** 方向锁定比（水平位移至少是垂直位移的多少倍），默认 1.5。 */
   readonly directionRatio?: number
-  /** 最低水平速度（像素/毫秒），默认 0.4，即约 400 像素/秒。 */
-  readonly minVelocityPxPerMs?: number
-  /** 速度采样窗口（毫秒），默认 120。 */
-  readonly velocityWindowMs?: number
+  /** 甩动通道的最低整段平均速度（像素/毫秒），默认 0.5，即约 500 像素/秒。 */
+  readonly flickMinVelocityPxPerMs?: number
+  /** 甩动通道需要的最小水平位移（像素），默认 48。 */
+  readonly flickMinDistancePx?: number
 }
 
 export interface SidebarGestureDecision {
   readonly action: SidebarGestureAction
   /** 稳定原因码，用于诊断与测试断言。 */
-  readonly reason: 'ok' | 'samples' | 'config' | 'edge' | 'threshold' | 'direction' | 'velocity'
+  readonly reason: 'ok' | 'samples' | 'config' | 'edge' | 'threshold' | 'direction' | 'flick'
 }
 
-export const DEFAULT_GESTURE_EDGE_ZONE_PX = 24
+/** 边缘热区只避让最窄的一条，给系统返回手势留空间又不至于让单手起手失效。 */
+export const DEFAULT_GESTURE_EDGE_ZONE_PX = 12
 export const DEFAULT_GESTURE_DIRECTION_RATIO = 1.5
-/** 侧栏全局手势至少跨过半个视口，避免轻微横移误触。 */
-export const DEFAULT_GESTURE_DISTANCE_RATIO = 0.5
-/** 采用约 400px/s 的最低水平速度，避免缓慢拖动触发开合。 */
-export const DEFAULT_GESTURE_MIN_VELOCITY_PX_PER_MS = 0.4
-/** 只看最近一小段轨迹，避免停顿稀释释放瞬间的滑动速度。 */
-export const DEFAULT_GESTURE_VELOCITY_WINDOW_MS = 120
+/**
+ * 距离通道门槛：跨过视口宽度的 25% 即触发。
+ *
+ * 该通道不再做速度二次否决。旧实现要求「距离与末端速度同时达标」，而人手松手前
+ * 必然减速，导致正常滑动被速度门槛系统性误杀，用户需要重复滑动。
+ */
+export const DEFAULT_GESTURE_DISTANCE_RATIO = 0.25
+/** 比例设置的合法区间；与共享契约的 15–80 百分比一一对应。 */
+export const MIN_GESTURE_DISTANCE_RATIO = 0.15
+export const MAX_GESTURE_DISTANCE_RATIO = 0.8
+/**
+ * 甩动通道：距离不足时的快速甩动逃生通道，任一达标即可触发。
+ *
+ * 这是 iOS `UISwipeGestureRecognizer`、Android `ViewConfiguration` 与主流手势库
+ * （react-swipeable、use-gesture）的通行做法：明确的快速甩动即使位移较短也应当响应。
+ */
+export const DEFAULT_GESTURE_FLICK_MIN_VELOCITY_PX_PER_MS = 0.5
+export const DEFAULT_GESTURE_FLICK_MIN_DISTANCE_PX = 48
 /** 与 DSH 窄屏断点保持一致；超过该宽度不安装全局触摸监听。 */
 export const DEFAULT_MOBILE_GESTURE_VIEWPORT_MAX_PX = 1024
 
-/** 纯函数：只依据样本与配置给出动作，不读 DOM、不调服务。 */
+/**
+ * 纯函数：只依据样本与配置给出动作，不读 DOM、不调服务。
+ *
+ * 判定采用「距离 OR 甩动」双通道：
+ * 1. 方向锁先排除纵向滚动意图；
+ * 2. 水平位移达到 `视口宽度 × distanceRatio` 直接触发；
+ * 3. 位移不足时，若达到 `flickMinDistancePx` 且整段平均速度达到 `flickMinVelocityPxPerMs`，
+ *    按快速甩动触发。
+ *
+ * 速度使用**整段平均速度**而不是末端窗口速度：自然滑动在松手前会减速，用末端速度
+ * 判「是否快速甩动」会误杀正常滑动。
+ */
 export function detectSidebarGesture(samples: readonly TouchSample[], config: SidebarGestureConfig): SidebarGestureDecision {
-  const thresholdPx = Number.isFinite(config.thresholdPx) ? config.thresholdPx : Number.NaN
+  const evaluated = evaluateHorizontalGesture(samples, config)
+  if (evaluated.direction === null) return { action: 'ignore', reason: evaluated.reason }
+  const inward = evaluated.direction > 0 ? 'left' : 'right'
+  const action = config.mapping === 'swap' ? (inward === 'left' ? 'right' : 'left') : inward
+  return { action, reason: 'ok' }
+}
+
+/**
+ * 手势判定的唯一实现：返回有效方向或忽略原因。
+ *
+ * `detectSidebarGesture` 与控制器内的方向探测共用它，保证「能触发」和「能识别物理
+ * 方向」永远是同一套条件——否则甩动通道触发的手势会拿不到方向，右栏收起等依赖物理
+ * 方向的动作就会静默失效。
+ */
+function evaluateHorizontalGesture(
+  samples: readonly TouchSample[],
+  config: SidebarGestureConfig,
+): { readonly direction: -1 | 1 | null; readonly reason: SidebarGestureDecision['reason'] } {
+  const distanceRatio = Number.isFinite(config.distanceRatio) ? config.distanceRatio : Number.NaN
   const viewportWidth = Number.isFinite(config.viewportWidth) ? config.viewportWidth : 0
-  if (!Number.isFinite(thresholdPx) || thresholdPx <= 0 || viewportWidth <= 0) return { action: 'ignore', reason: 'config' }
-  if (samples.length < 2) return { action: 'ignore', reason: 'samples' }
+  // 比例必须落在合法区间：0 会让任何抖动都触发，超过 1 则永远无法跨过。
+  if (!Number.isFinite(distanceRatio) || distanceRatio <= 0 || distanceRatio > 1 || viewportWidth <= 0) {
+    return { direction: null, reason: 'config' }
+  }
+  if (samples.length < 2) return { direction: null, reason: 'samples' }
   const first = samples[0]!
   const last = samples[samples.length - 1]!
   const edgeZone = config.edgeZonePx ?? DEFAULT_GESTURE_EDGE_ZONE_PX
   if (config.edgeMode === 'avoid' && (first.x <= edgeZone || first.x >= viewportWidth - edgeZone)) {
-    return { action: 'ignore', reason: 'edge' }
+    return { direction: null, reason: 'edge' }
   }
   const dx = last.x - first.x
   const dy = last.y - first.y
-  const effectiveThresholdPx = resolveEffectiveThresholdPx(thresholdPx, viewportWidth)
-  if (Math.abs(dx) < effectiveThresholdPx) return { action: 'ignore', reason: 'threshold' }
+  const distance = Math.abs(dx)
+  const vertical = Math.abs(dy)
   const ratio = config.directionRatio ?? DEFAULT_GESTURE_DIRECTION_RATIO
-  if (Math.abs(dx) < Math.abs(dy) * ratio) return { action: 'ignore', reason: 'direction' }
-  const minVelocity = config.minVelocityPxPerMs ?? DEFAULT_GESTURE_MIN_VELOCITY_PX_PER_MS
-  if (!Number.isFinite(minVelocity) || minVelocity <= 0) return { action: 'ignore', reason: 'config' }
-  const velocity = horizontalVelocity(samples, config.velocityWindowMs ?? DEFAULT_GESTURE_VELOCITY_WINDOW_MS)
-  if (velocity === undefined || velocity < minVelocity) return { action: 'ignore', reason: 'velocity' }
-  const inward = dx > 0 ? 'left' : 'right'
-  const action = config.mapping === 'swap' ? (inward === 'left' ? 'right' : 'left') : inward
-  return { action, reason: 'ok' }
+  const flickMinDistance = config.flickMinDistancePx ?? DEFAULT_GESTURE_FLICK_MIN_DISTANCE_PX
+  if (!Number.isFinite(flickMinDistance) || flickMinDistance < 0) return { direction: null, reason: 'config' }
+  const distanceThresholdPx = resolveDistanceThresholdPx(distanceRatio, viewportWidth)
+  const verticalDominant = distance < vertical * ratio
+
+  // 距离通道：横向位移达标即触发，不再做速度二次否决。
+  if (distance >= distanceThresholdPx) {
+    if (verticalDominant) return { direction: null, reason: 'direction' }
+    return { direction: dx > 0 ? 1 : -1, reason: 'ok' }
+  }
+
+  // 横向未达标。纵向占优时是否放弃，取决于运动量是否足够做出可靠判断。
+  // 起手阶段位移很小，轻微纵向漂移不代表滚动意图；此时必须保持跟踪，
+  // 否则一次正常横滑会被提前判死，用户就得再滑一次。
+  if (verticalDominant) {
+    const movement = Math.max(distance, vertical)
+    if (movement < flickMinDistance) return { direction: null, reason: 'threshold' }
+    return { direction: null, reason: 'direction' }
+  }
+
+  // 甩动通道：横向意图明确但位移不足，快速甩动同样应当响应。
+  const flickMinVelocity = config.flickMinVelocityPxPerMs ?? DEFAULT_GESTURE_FLICK_MIN_VELOCITY_PX_PER_MS
+  if (!Number.isFinite(flickMinVelocity) || flickMinVelocity <= 0) return { direction: null, reason: 'config' }
+  if (distance < flickMinDistance) return { direction: null, reason: 'threshold' }
+  const velocity = averageHorizontalVelocity(samples)
+  if (velocity === undefined || velocity < flickMinVelocity) return { direction: null, reason: 'flick' }
+  return { direction: dx > 0 ? 1 : -1, reason: 'ok' }
 }
 
 export interface SidebarGestureSettings {
   readonly sidebarGestures: boolean
   readonly sidebarGestureMapping: 'swipe-inward' | 'swap'
   readonly sidebarGestureEdge: 'avoid' | 'edge'
-  readonly sidebarGestureThresholdPx: number
+  /** 触发手势所需的水平位移占视口宽度的百分比（15–80）。 */
+  readonly sidebarGestureDistancePercent: number
 }
 
 export interface SidebarGesturePorts {
@@ -425,15 +495,16 @@ function resolveConfig(options: MobileSidebarGestureOptions): SidebarGestureConf
       ? (globalThis as unknown as { innerWidth: number }).innerWidth
       : 0
   return {
-    thresholdPx: settings.sidebarGestureThresholdPx,
+    distanceRatio: settings.sidebarGestureDistancePercent / 100,
     edgeMode: settings.sidebarGestureEdge,
     mapping: settings.sidebarGestureMapping,
     viewportWidth,
   }
 }
 
-function resolveEffectiveThresholdPx(thresholdPx: number, viewportWidth: number): number {
-  return Math.max(thresholdPx, viewportWidth * DEFAULT_GESTURE_DISTANCE_RATIO)
+/** 把视口比例换算成像素门槛；这是判定距离的唯一入口。 */
+function resolveDistanceThresholdPx(distanceRatio: number, viewportWidth: number): number {
+  return viewportWidth * distanceRatio
 }
 
 interface TouchPoint {
@@ -495,40 +566,19 @@ function isRightbarTarget(touch: TouchPoint): boolean {
 }
 
 function detectHorizontalDirection(samples: readonly TouchSample[], config: SidebarGestureConfig): -1 | 1 | null {
-  if (samples.length < 2) return null
-  const first = samples[0]!
-  const last = samples[samples.length - 1]!
-  const dx = last.x - first.x
-  const dy = last.y - first.y
-  const thresholdPx = Number.isFinite(config.thresholdPx) ? config.thresholdPx : Number.NaN
-  const ratio = config.directionRatio ?? DEFAULT_GESTURE_DIRECTION_RATIO
-  if (!(Number.isFinite(thresholdPx)
-    && thresholdPx > 0
-    && Math.abs(dx) >= resolveEffectiveThresholdPx(thresholdPx, config.viewportWidth)
-    && Math.abs(dx) >= Math.abs(dy) * ratio)) return null
-  return dx > 0 ? 1 : -1
+  const evaluated = evaluateHorizontalGesture(samples, config)
+  return evaluated.direction
 }
 
-/** 计算最近速度窗口内的水平速度；反向回滑不算作有效速度。 */
-function horizontalVelocity(samples: readonly TouchSample[], windowMs: number): number | undefined {
-  if (samples.length < 2 || !Number.isFinite(windowMs) || windowMs <= 0) return undefined
+/** 整段平均水平速度（像素/毫秒）；反向回滑按 0 处理，避免折返被当成甩动。 */
+function averageHorizontalVelocity(samples: readonly TouchSample[]): number | undefined {
+  if (samples.length < 2) return undefined
   const first = samples[0]!
   const last = samples[samples.length - 1]!
-  const totalDx = last.x - first.x
-  if (totalDx === 0) return 0
-
-  let baseline = first
-  for (const sample of samples) {
-    const elapsed = last.t - sample.t
-    if (elapsed > 0 && elapsed <= windowMs) {
-      baseline = sample
-      break
-    }
-  }
-  const elapsed = last.t - baseline.t
+  const elapsed = last.t - first.t
   if (!(elapsed > 0)) return undefined
-  const dx = last.x - baseline.x
-  if (dx === 0 || Math.sign(dx) !== Math.sign(totalDx)) return 0
+  const dx = last.x - first.x
+  if (dx === 0) return 0
   return Math.abs(dx) / elapsed
 }
 

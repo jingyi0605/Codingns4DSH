@@ -324,7 +324,10 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
   if (path[0] === 'mobileAccess') {
     return path.length === 2 && [
       'hideSidebarOnMobile', 'mobileViewportMaxPx',
-      'sidebarGestures', 'sidebarGestureMapping', 'sidebarGestureEdge', 'sidebarGestureThresholdPx',
+      'sidebarGestures', 'sidebarGestureMapping', 'sidebarGestureEdge', 'sidebarGestureDistancePercent',
+      // 旧像素门槛继续放行：已安装的 PWA 可能仍在运行缓存里的旧 bundle，
+      // 直接拒绝会让用户的设置保存报错。写入后由 normalizer 换算成比例。
+      'sidebarGestureThresholdPx',
     ].includes(path[1] ?? '')
   }
   if (path[0] === 'subscriptionUsage') {

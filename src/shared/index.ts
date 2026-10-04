@@ -21,8 +21,8 @@ export {
   DEFAULT_FILE_MANAGEMENT_SETTINGS,
   DEFAULT_MOBILE_ACCESS_SETTINGS,
   DEFAULT_SIDEBAR_GESTURE_SETTINGS,
-  SIDEBAR_GESTURE_THRESHOLD_PX_LIMITS,
-  DEFAULT_SIDEBAR_GESTURE_THRESHOLD_PX,
+  SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS,
+  DEFAULT_SIDEBAR_GESTURE_DISTANCE_PERCENT,
   MOBILE_VIEWPORT_MAX_PX_LIMITS,
   normalizeMobileAccessSettings,
   normalizeSidebarGestureSettings,
@@ -56,6 +56,7 @@ export {
   type FileManagementSettings,
   type MobileAccessSettings,
   type SidebarGestureSettings,
+  type SidebarGestureSettingsInput,
   type SubscriptionUsageSettings,
 } from './contracts/config.js'
 export type {
