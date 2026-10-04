@@ -5,13 +5,13 @@
 **把外部 Agent CLI、持久终端、工作区调试和远程访问，装进 DSH 原生界面。**
 
 [![npm version](https://img.shields.io/npm/v/%40jingyi0605%2Fcodingns4dsh?logo=npm)](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)
-[![DSH compatibility](https://img.shields.io/badge/DSH-0.2.0--rc.2-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH compatibility](https://img.shields.io/badge/DSH-0.2.1--alpha.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-3C873A?logo=node.js&logoColor=white)](https://nodejs.org)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.0-rc.3`** · DSH **`0.2.0-rc.2`**（仅正式兼容并验证该版本）· Node **`>= 22.19`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.1-beta.1`** · DSH **`0.2.1-alpha.1`**（仅正式兼容并验证该版本）· Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965**
 
@@ -231,14 +231,14 @@ DSH 设置按钮旁的账户入口会显示登录状态、访问路径与延迟�
 
 ## 安装
 
-**环境要求**：DSH `0.2.0-rc.2`· Node.js `>= 22.19` · `PATH` 中有 `pnpm`（`dsh plugin` 转发给 pnpm）· 可选：Agent CLI，以及 macOS/Linux 上用于持久终端的 `tmux`（`brew install tmux` / `sudo apt install tmux`）。
+**环境要求**：DSH `0.2.1-alpha.1`· Node.js `>= 22.19` · `PATH` 中有 `pnpm`（`dsh plugin` 转发给 pnpm）· 可选：Agent CLI，以及 macOS/Linux 上用于持久终端的 `tmux`（`brew install tmux` / `sudo apt install tmux`）。
 
 ### 最简单的安装方式：使用内置 `web` Profile
 
 DSH 的 `web` Profile 会在首次使用时自动初始化，不需要手动创建配置文件，也不需要执行 `--dump-config`：
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.0-rc.3
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.1-beta.1
 dsh web
 ```
 
@@ -248,7 +248,7 @@ dsh web
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.0-rc.3
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.1-beta.1
 dsh codingns
 ```
 
@@ -269,7 +269,7 @@ dsh plugin --profile web remove @jingyi0605/codingns4dsh
 ```bash
 git clone https://github.com/jingyi0605/Codingns4DSH.git && cd Codingns4DSH
 pnpm install && pnpm build
-dsh plugin --profile web add "$PWD"                # 或 npm pack 后 add ./jingyi0605-codingns4dsh-0.2.0-rc.3.tgz
+dsh plugin --profile web add "$PWD"                # 或 npm pack 后 add ./jingyi0605-codingns4dsh-0.2.1-beta.1.tgz
 dsh web
 ```
 

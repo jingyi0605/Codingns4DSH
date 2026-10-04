@@ -8,6 +8,7 @@ import {
   createCapabilityProfile,
   type DshCapabilityRoute,
 } from '../data/build/dist/index.js'
+import { SUPPORTED_DSH_COMPATIBILITY, SUPPORTED_DSH_VERSION } from '../data/build/dist/shared/index.js'
 import { FeatureRegistry, FeatureRegistryError } from '../data/build/dist/features/index.js'
 import { CODINGNS_BOOTSTRAP_DSH_VERSION, DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL, installDshPeerHostPrebootShim } from '../data/build/dist/bootstrap/index.js'
 
@@ -72,7 +73,7 @@ test('能力矩阵覆盖插件当前测试的四个 DSH 版本', () => {
   const settingsRoutes = DSH_CAPABILITY_MATRIX.filter((route) => route.capability === 'settings.store')
   assert.ok(settingsRoutes.some((route) => route.supportedDsh.includes('0.1.5-rc.3')))
   assert.ok(settingsRoutes.some((route) => route.supportedDsh.includes('0.1.7-rc.2')))
-  assert.ok(settingsRoutes.some((route) => route.supportedDsh.includes('0.2.0-rc.2')))
+  assert.ok(settingsRoutes.some((route) => route.supportedDsh === SUPPORTED_DSH_COMPATIBILITY))
   assert.ok(settingsRoutes.every((route) => route.consumers.length > 0))
 })
 
@@ -179,7 +180,7 @@ test('PeerHost 三版本 fixture 明确区分原生导航、Remote Web Context �
   }
 })
 
-test('0.2.0-rc.2 Host fixture 按服务形状解析到 020 路由', () => {
+test('0.2 世代 Host fixture 按服务形状解析到 020 路由', () => {
   const context = {
     settings: { describe: () => [], mutate: async () => undefined, configure: () => () => undefined },
     connection: {
@@ -217,15 +218,19 @@ test('0.2.0-rc.2 Host fixture 按服务形状解析到 020 路由', () => {
     ['web.index-inject', 'index-inject-rows-020'],
     ['web.index-tap', 'index-tap-020'],
   ] as const
-  const profile = createDshCapabilityRegistry('0.2.0-rc.2', 'host', context).getProfile(context)
-  for (const [capability, routeId] of expectations) {
-    const resolution = profile.capabilities.get(capability)
-    assert.equal(resolution?.routeId, routeId, capability)
-    assert.equal(resolution?.status, 'ready', capability)
+  // 0.2 世代的所有版本共用同一套结构路由：旧测试版本（rc.2）与当前测试版本
+  // 必须解析到同一批 routeId，否则升级会让已发布环境静默降级。
+  for (const dshVersion of ['0.2.0-rc.2', SUPPORTED_DSH_VERSION]) {
+    const profile = createDshCapabilityRegistry(dshVersion, 'host', context).getProfile(context)
+    for (const [capability, routeId] of expectations) {
+      const resolution = profile.capabilities.get(capability)
+      assert.equal(resolution?.routeId, routeId, `${dshVersion} ${capability}`)
+      assert.equal(resolution?.status, 'ready', `${dshVersion} ${capability}`)
+    }
   }
 })
 
-test('0.2.0-rc.2 Client fixture 按服务形状与图标事实解析到 020 路由', () => {
+test('0.2 世代 Client fixture 按服务形状与图标事实解析到 020 路由', () => {
   const context = {
     configForms: { get: () => undefined },
     locale: {},
@@ -253,11 +258,13 @@ test('0.2.0-rc.2 Client fixture 按服务形状与图标事实解析到 020 路�
     ['layout.columns', 'layout-columns-020'],
     ['sidebar.right.expand', 'sidebar-right-expand-020'],
   ] as const
-  const profile = createDshCapabilityRegistry('0.2.0-rc.2', 'client', context, facts).getProfile(context)
-  for (const [capability, routeId] of expectations) {
-    const resolution = profile.capabilities.get(capability)
-    assert.equal(resolution?.routeId, routeId, capability)
-    assert.equal(resolution?.status, 'ready', capability)
+  for (const dshVersion of ['0.2.0-rc.2', SUPPORTED_DSH_VERSION]) {
+    const profile = createDshCapabilityRegistry(dshVersion, 'client', context, facts).getProfile(context)
+    for (const [capability, routeId] of expectations) {
+      const resolution = profile.capabilities.get(capability)
+      assert.equal(resolution?.routeId, routeId, `${dshVersion} ${capability}`)
+      assert.equal(resolution?.status, 'ready', `${dshVersion} ${capability}`)
+    }
   }
 })
 
@@ -278,7 +285,7 @@ test('移动端 PWA 与手势能力已进入矩阵并覆盖支持版本', () => 
     const routes = DSH_CAPABILITY_MATRIX.filter((route) => route.capability === capability)
     assert.ok(routes.length > 0, capability)
     assert.ok(routes.every((route) => route.consumers.length > 0), capability)
-    assert.ok(routes.some((route) => route.supportedDsh.includes('0.2.0-rc.2')), capability)
+    assert.ok(routes.some((route) => route.supportedDsh === SUPPORTED_DSH_COMPATIBILITY), capability)
   }
 })
 
@@ -377,13 +384,17 @@ test('必需能力缺失只影响该模块，同一轮同步里其余模块照�
   assert.equal(registry.getState('after'), 'enabled')
 })
 
-test('0.2 代能力路由只声明正式验证的 rc.2', () => {
-  const modernRoutes = DSH_CAPABILITY_MATRIX.filter((route) => route.supportedDsh.includes('0.2.0-rc.2'))
+test('0.2 代能力路由复用兼容范围常量，不写裸版本字面量', () => {
+  // 0.2 代路由全部走 DSH_COMPATIBILITY：写裸字面量会让 check-version-sync 的
+  // 上界推断与真实范围脱节，升级时出现「矩阵看着改了、门禁算的还是旧值」。
+  const modernRoutes = DSH_CAPABILITY_MATRIX.filter((route) => route.supportedDsh === SUPPORTED_DSH_COMPATIBILITY)
   assert.ok(modernRoutes.length > 0)
-  assert.ok(modernRoutes.every((route) => route.supportedDsh === '>=0.2.0-rc.2 <=0.2.0-rc.2'))
+  // introducedIn 由 supportedDsh 的下界推导，因此跟随兼容范围下界（0.2.0-rc.2），
+  // 而不是跟随测试版本；升级测试版本不应改写这些路由的“引入版本”。
+  assert.ok(modernRoutes.every((route) => route.introducedIn === '0.2.0-rc.2'))
 
-  const registry = new DshCapabilityRegistry('0.2.0-rc.2', 'host')
-  registry.register(route({ id: 'modern', supportedDsh: '>=0.2.0-rc.2 <=0.2.0-rc.2', create: () => 'modern' }))
+  const registry = new DshCapabilityRegistry(SUPPORTED_DSH_VERSION, 'host')
+  registry.register(route({ id: 'modern', supportedDsh: SUPPORTED_DSH_COMPATIBILITY, create: () => 'modern' }))
   const profile = registry.resolve({})
   assert.equal(profile.capabilities.get('settings.store')?.routeId, 'modern')
   assert.equal(profile.capabilities.get('settings.store')?.value, 'modern')

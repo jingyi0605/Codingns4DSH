@@ -1081,6 +1081,38 @@ test('真实 Session header 的 v4 generation 优先于过期运行时版本', (
   })
 })
 
+test('0.2 世代运行时版本判定为 modern，缺会话头时仍写入 producer-owned 来源', () => {
+  // 0.2.x 的判据依赖 `minor > 1` 子句（0.2.0-rc.2 与 0.2.1-alpha.1 的 minor 都是 2，
+  // 不是 1）。一旦该子句被写漏，0.2 世代会被误判为旧版。
+  //
+  // 注意会话必须**不带可识别的 generation**：`usesProducerOwnedSource` 优先按
+  // 会话头判定（format 4 → true、format 3 → false），只有会话头缺失时才回退到
+  // 运行时版本推断。若夹具写成 `version: 4`，这条用例会被短路成恒真、失去意义。
+  for (const dshVersion of ['0.2.0-rc.2', '0.2.1-alpha.1']) {
+    const messages: unknown[] = []
+    const session = {
+      snapshotEvents() { return [{ type: 'permission/preset', seq: 0 }] },
+      append() { return undefined },
+    }
+    const agent = { inject(message: unknown) { messages.push(message) } }
+    const bridge = createCodingNsNativeSessionBridge({
+      get(name: string) {
+        if (name === 'sessions') return { get() { return session }, list() { return [session] } }
+        if (name === 'agents') return { get() { return agent } }
+        return undefined
+      },
+    } as never, dshVersion)
+
+    assert.equal(bridge.injectNextStep?.('modern', '工具已完成'), true, dshVersion)
+    // 旧版推断会写成 `kind: 'plugin'`；v4 的准入会拒绝该形状。
+    assert.deepEqual((messages[0] as { source: unknown }).source, {
+      kind: 'model-selection',
+      form: 'notice',
+      summary: '工具已完成',
+    }, dshVersion)
+  }
+})
+
 test('next-step 注入失败时返回 false 且不吞掉原因，便于定位子会话停摆', () => {
   // 子代理会话注入失败后 DSH 不会发起第二次 llm/stream，子会话会停在当前 step
   // 并以 error 结算；这里固定「失败必须返回 false 且不抛异常」的契约。

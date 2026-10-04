@@ -5,6 +5,7 @@ import {
   startDshHostDeviceRuntime,
 } from '../data/build/dist/host/index.js'
 import type { HostDtlsIdentityMaterial } from '../data/build/dist/host/index.js'
+import { SUPPORTED_DSH_VERSION } from '../data/build/dist/shared/index.js'
 
 const identity: HostDtlsIdentityMaterial = {
   privateKeyPem: 'private',
@@ -89,9 +90,9 @@ test('DSH Host 首次启动注册独立设备并保存 device credential', async
     heartbeatIntervalMs: 0,
   } as never)
   assert.equal(runtime.credential.deviceId, 'dsh-device-1')
-  assert.equal(registrationRequest?.dshVersion, '0.2.0-rc.2 (配置: stage0)')
+  assert.equal(registrationRequest?.dshVersion, `${SUPPORTED_DSH_VERSION} (配置: stage0)`)
   assert.equal(typeof registrationRequest?.computerName, 'string')
-  assert.equal(heartbeatDetails?.dshVersion, '0.2.0-rc.2 (配置: stage0)')
+  assert.equal(heartbeatDetails?.dshVersion, `${SUPPORTED_DSH_VERSION} (配置: stage0)`)
   assert.equal(typeof heartbeatDetails?.computerName, 'string')
   assert.equal(heartbeatDetails?.dtlsFingerprint, identity.fingerprint)
   assert.equal((await store.read())?.deviceCredential, 'secret-device-credential-1')

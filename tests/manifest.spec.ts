@@ -52,7 +52,7 @@ test('package manifest declares the DSH bundle and client entry', () => {
   assert.equal(manifest.peerDependencies['@deepseek-ai/dsh'], SUPPORTED_DSH_COMPATIBILITY)
   // Host 入口在独立 npm Profile 中运行，不能依赖发布包的 devDependencies。
   assert.equal(manifest.dependencies['@deepseek-ai/schemastery'], '^3.18.4')
-  assert.equal(manifest.dependencies['@deepseek-ai/dsh-typert-protocol'], '0.2.0-rc.2')
+  assert.equal(manifest.dependencies['@deepseek-ai/dsh-typert-protocol'], SUPPORTED_DSH_VERSION)
   const versionFile = JSON.parse(readFileSync(join(root, 'version.json'), 'utf8'))
   assert.equal(manifest.version, versionFile.pluginVersion)
   assert.equal(versionFile.pluginVersion, manifest.version)

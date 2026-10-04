@@ -123,11 +123,16 @@ test('0.2.0-rc.1/rc.2 Web shim 可幂等安装并在激活后切换 rpc.call', a
     assert.equal(first.getState(), 'installed')
     first.dispose()
     assert.equal(globals.__DSH_TRANSPORT__, undefined)
-    // 兼容范围只声明下界后，同一个 shim 必须能在更新的 rc 版本上安装。
+    // 兼容范围只声明下界后，同一个 shim 必须能在更新的 0.2 世代版本上安装：
+    // 老测试版本（rc.2）与当前测试版本都走同一套注入脚本。
     const updated = installDshPeerHostPrebootShim({ dshVersion: '0.2.0-rc.2' })
     assert.equal(updated.getState(), 'installed')
     assert.equal(updated.version, '0.2.0-rc.2')
     updated.dispose()
+    const current = installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
+    assert.equal(current.getState(), 'installed')
+    assert.equal(current.version, CODINGNS_BOOTSTRAP_DSH_VERSION)
+    current.dispose()
   })
 })
 

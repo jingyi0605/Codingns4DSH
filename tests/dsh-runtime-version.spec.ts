@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { detectRuntimeDshVersion } from '../data/build/dist/host/dsh-runtime-version.js'
+import { SUPPORTED_DSH_VERSION } from '../data/build/dist/shared/index.js'
 
 async function withRuntimeArg(runtimeRoot: string, callback: () => void, hostEntry = '/tmp/dsh-desktop-host/lib/index.js'): Promise<void> {
   const originalArgv = process.argv.slice()
@@ -31,12 +32,12 @@ test('Host 从 Desktop Runtime 根目录读取实际 DSH 包版本', async () =>
   try {
     const packageRoot = join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh')
     await mkdir(packageRoot, { recursive: true })
-    await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.0-rc.2' }), 'utf8')
+    await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: SUPPORTED_DSH_VERSION }), 'utf8')
     const hostEntry = join(runtimeRoot, 'host', 'lib', 'index.js')
     await mkdir(join(runtimeRoot, 'host', 'lib'), { recursive: true })
     await writeFile(hostEntry, '', 'utf8')
     await withRuntimeArg(runtimeRoot, () => {
-      assert.equal(detectRuntimeDshVersion(), '0.2.0-rc.2')
+      assert.equal(detectRuntimeDshVersion(), SUPPORTED_DSH_VERSION)
     }, hostEntry)
   } finally {
     await rm(runtimeRoot, { recursive: true, force: true })
@@ -48,8 +49,8 @@ test('Host 版本环境变量优先于 Desktop Runtime 参数', async () => {
   try {
     await writeFile(join(runtimeRoot, 'package.json'), JSON.stringify({ dependencies: { '@deepseek-ai/dsh': '0.1.6-alpha.2' } }), 'utf8')
     await withRuntimeArg(runtimeRoot, () => {
-      process.env.DSH_RUNTIME_VERSION = '0.2.0-rc.2'
-      assert.equal(detectRuntimeDshVersion(), '0.2.0-rc.2')
+      process.env.DSH_RUNTIME_VERSION = SUPPORTED_DSH_VERSION
+      assert.equal(detectRuntimeDshVersion(), SUPPORTED_DSH_VERSION)
     })
   } finally {
     await rm(runtimeRoot, { recursive: true, force: true })

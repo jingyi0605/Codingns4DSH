@@ -5,9 +5,15 @@ import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { SUPPORTED_DSH_VERSION } from '../data/build/dist/shared/index.js'
 
 const sourceScript = fileURLToPath(new URL('../profile/scripts/check-dsh-install.mjs', import.meta.url))
 const sourceManifest = fileURLToPath(new URL('../profile/package.json', import.meta.url))
+
+/** 版本号里的 `.` 在正则中是通配符，直接拼进 RegExp 会误匹配，必须先转义。 */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+}
 
 /**
  * 把安装期检查脚本复制到临时 Profile 中运行。
@@ -66,7 +72,16 @@ test.after(() => {
   for (const dir of cleanups) rmSync(dir, { recursive: true, force: true })
 })
 
-test('Profile 安装检查接受 DSH 0.2.0-rc.2 的精确兼容范围', () => {
+test('Profile 安装检查接受当前测试 DSH 版本的兼容范围', () => {
+  const sandbox = makeSandbox()
+  cleanups.push(sandbox)
+  const result = runSandbox(sandbox, { env: { ...scrubbedEnv(), DSH_RUNTIME_VERSION: SUPPORTED_DSH_VERSION, PATH: '' } })
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  assert.match(result.stdout, new RegExp(`DSH ${escapeRegExp(SUPPORTED_DSH_VERSION)}（来源 env）`, 'u'))
+})
+
+test('Profile 安装检查接受范围内更早的 0.2 世代版本', () => {
+  // 兼容范围只声明下界：已发布的 rc.2 环境不能因为插件升级而被拒绝安装。
   const sandbox = makeSandbox()
   cleanups.push(sandbox)
   const result = runSandbox(sandbox, { env: { ...scrubbedEnv(), DSH_RUNTIME_VERSION: '0.2.0-rc.2', PATH: '' } })
@@ -96,11 +111,11 @@ test('PATH 上的旧 dsh 不再阻断安装，只作为提示', () => {
 test('Runtime 根探测优先于 PATH，并识别真实 DSH 版本', () => {
   const sandbox = makeSandbox()
   const stale = makeStaleDsh('0.1.7-rc.2')
-  const resources = makeFakeResources('0.2.0-rc.2')
+  const resources = makeFakeResources(SUPPORTED_DSH_VERSION)
   cleanups.push(sandbox, stale, resources)
   const result = runSandbox(sandbox, { env: scrubbedEnv(stale), resourcesPath: resources })
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
-  assert.match(result.stdout, /DSH 0\.2\.0-rc\.2（来源 runtime）/u)
+  assert.match(result.stdout, new RegExp(`DSH ${escapeRegExp(SUPPORTED_DSH_VERSION)}（来源 runtime）`, 'u'))
   assert.doesNotMatch(result.stderr, /已跳过阻断/u)
 })
 
