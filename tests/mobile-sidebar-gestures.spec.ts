@@ -1,73 +1,176 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  DEFAULT_GESTURE_DISTANCE_RATIO,
   GESTURE_DIAGNOSTIC_CAPABILITY_MISSING,
+  MAX_GESTURE_DISTANCE_RATIO,
+  MIN_GESTURE_DISTANCE_RATIO,
   detectSidebarGesture,
   startMobileSidebarGestures,
   type SidebarGestureSettings,
   type TouchSample,
 } from '../data/build/dist/client/mobile-sidebar-gestures.js'
+import {
+  DEFAULT_SIDEBAR_GESTURE_DISTANCE_PERCENT,
+  SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS,
+} from '../data/build/dist/shared/contracts/config.js'
+
+test('手势比例区间与共享设置契约保持一致', () => {
+  // 两处范围一旦各自演化，设置页允许的值就会被判定层当成非法配置而静默失效。
+  assert.equal(MIN_GESTURE_DISTANCE_RATIO * 100, SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS.min)
+  assert.equal(MAX_GESTURE_DISTANCE_RATIO * 100, SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS.max)
+  // 契约边界值必须都能通过判定层，否则用户能把设置存成永远不触发的状态。
+  for (const percent of [SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS.min, SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS.max]) {
+    assert.notEqual(
+      detectSidebarGesture(samples([[0, 300], [390, 300]]), {
+        distanceRatio: percent / 100,
+        edgeMode: 'edge',
+        mapping: 'swipe-inward',
+        viewportWidth: 390,
+      }).reason,
+      'config',
+      `${percent}% 是契约允许值，不应被判为非法配置`,
+    )
+  }
+  // 默认值必须落在合法区间内，否则开箱配置就会被钳位改写。
+  assert.ok(
+    DEFAULT_GESTURE_DISTANCE_RATIO * 100 >= SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS.min
+    && DEFAULT_GESTURE_DISTANCE_RATIO * 100 <= SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS.max,
+  )
+  assert.equal(DEFAULT_GESTURE_DISTANCE_RATIO * 100, DEFAULT_SIDEBAR_GESTURE_DISTANCE_PERCENT)
+})
 
 const SETTINGS: SidebarGestureSettings = {
   sidebarGestures: true,
   sidebarGestureMapping: 'swipe-inward',
   sidebarGestureEdge: 'avoid',
-  sidebarGestureThresholdPx: 64,
+  sidebarGestureDistancePercent: 25,
 }
 
 function samples(points: readonly [number, number][]): TouchSample[] {
   return points.map(([x, y], index) => ({ x, y, t: index * 16 }))
 }
 
+/** 生成带时间戳的轨迹；速度类断言必须自己控制 t，不能依赖 samples() 的固定步长。 */
+function trace(points: readonly (readonly [number, number, number])[]): TouchSample[] {
+  return points.map(([x, y, t]) => ({ x, y, t }))
+}
+
+/**
+ * 只走距离通道的慢速轨迹：速度取 0.2px/ms，稳定低于甩动通道的 0.5px/ms 门槛。
+ *
+ * 这样断言的就纯粹是距离门槛本身。用 samples() 的 16ms 步长会让任何位移都变成
+ * 高速甩动，从而经由甩动通道触发，掩盖距离门槛的真实边界。
+ */
+function slowTrace(fromX: number, dx: number): TouchSample[] {
+  return [{ x: fromX, y: 300, t: 0 }, { x: fromX + dx, y: 300, t: Math.round(Math.abs(dx) * 5) }]
+}
+
 test('横滑判定：方向、阈值与映射', () => {
-  const base = { thresholdPx: 64, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth: 390 }
+  const base = { distanceRatio: 0.25, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth: 390 }
   assert.deepEqual(detectSidebarGesture(samples([[120, 300], [330, 302]]), base), { action: 'left', reason: 'ok' })
   assert.deepEqual(detectSidebarGesture(samples([[280, 300], [60, 305]]), base), { action: 'right', reason: 'ok' })
   assert.deepEqual(detectSidebarGesture(samples([[120, 300], [330, 302]]), { ...base, mapping: 'swap' }), { action: 'right', reason: 'ok' })
   assert.deepEqual(detectSidebarGesture(samples([[120, 300], [150, 300]]), base), { action: 'ignore', reason: 'threshold' })
   assert.deepEqual(detectSidebarGesture(samples([[120, 300]]), base), { action: 'ignore', reason: 'samples' })
-  assert.deepEqual(detectSidebarGesture(samples([[0, 0], [10, 0]]), { ...base, thresholdPx: 0 }), { action: 'ignore', reason: 'config' })
+  // 比例为 0 会让任何抖动都触发，超过 1 则永远跨不过，都按非法配置处理。
+  assert.deepEqual(detectSidebarGesture(samples([[0, 0], [10, 0]]), { ...base, distanceRatio: 0 }), { action: 'ignore', reason: 'config' })
+  assert.deepEqual(detectSidebarGesture(samples([[0, 0], [10, 0]]), { ...base, distanceRatio: 1.2 }), { action: 'ignore', reason: 'config' })
 })
 
 test('纵向滑动与贴边起手交回系统手势/滚动', () => {
-  const base = { thresholdPx: 64, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth: 390 }
+  const base = { distanceRatio: 0.25, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth: 390 }
   // 斜向但纵向占优：不能抢走列表滚动（水平位移已过阈值，仅靠方向锁定拦下）。
   assert.deepEqual(detectSidebarGesture(samples([[200, 100], [400, 300]]), base), { action: 'ignore', reason: 'direction' })
-  // 默认避开边缘热区，避免与 iOS/Android 返回手势打架。
+  // 默认避开边缘热区，避免与 iOS/Android 返回手势打架；热区已收窄到 12px。
   assert.deepEqual(detectSidebarGesture(samples([[8, 300], [200, 300]]), base), { action: 'ignore', reason: 'edge' })
-  assert.deepEqual(detectSidebarGesture(samples([[388, 300], [200, 300]]), base), { action: 'ignore', reason: 'edge' })
+  assert.deepEqual(detectSidebarGesture(samples([[384, 300], [200, 300]]), base), { action: 'ignore', reason: 'edge' })
+  // 12px 之外可以正常起手：这是收窄热区要换来的单手操作体验。
+  assert.deepEqual(detectSidebarGesture(samples([[14, 300], [220, 300]]), base), { action: 'left', reason: 'ok' })
   // 显式允许贴边时才生效。
   assert.deepEqual(detectSidebarGesture(samples([[8, 300], [220, 300]]), { ...base, edgeMode: 'edge' }), { action: 'left', reason: 'ok' })
 })
 
-test('横滑必须跨过半个视口并达到最低速度', () => {
-  const base = { thresholdPx: 64, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth: 390 }
-  // 390px 视口的硬下限为 195px，旧设置中的 64px 不能降低它。
-  assert.deepEqual(detectSidebarGesture(samples([[120, 300], [314, 300]]), base), { action: 'ignore', reason: 'threshold' })
-  assert.deepEqual(detectSidebarGesture([
-    { x: 120, y: 300, t: 0 },
-    { x: 215, y: 300, t: 16 },
-    { x: 315, y: 300, t: 32 },
-  ], base), { action: 'left', reason: 'ok' })
-  // 长距离但慢速拖动不能触发；两点间隔超过速度窗口时回退到整段速度。
-  assert.deepEqual(detectSidebarGesture([
-    { x: 120, y: 300, t: 0 },
-    { x: 320, y: 300, t: 600 },
-  ], base), { action: 'ignore', reason: 'velocity' })
-  // 速度足够但距离不足仍不能触发。
-  assert.deepEqual(detectSidebarGesture([
-    { x: 120, y: 300, t: 0 },
-    { x: 220, y: 300, t: 16 },
-  ], base), { action: 'ignore', reason: 'threshold' })
+test('距离通道：跨过设定比例即触发，不再被速度二次否决', () => {
+  const base = { distanceRatio: 0.25, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth: 390 }
+  // 390px 视口的 25% 门槛为 97.5px；用慢速轨迹隔离出距离门槛本身。
+  // 位移已超过甩动下限 48px，因此慢速时走的是甩动通道并因速度不足被拒（flick）。
+  assert.deepEqual(detectSidebarGesture(slowTrace(120, 97), base), { action: 'ignore', reason: 'flick' })
+  assert.deepEqual(detectSidebarGesture(slowTrace(120, 98), base), { action: 'left', reason: 'ok' })
+  // 关键回归：位移达标后即使整段很慢也必须触发。旧实现用「距离 AND 末端速度」
+  // 判定，正常滑动松手前会减速，导致用户需要重复滑动。
+  assert.deepEqual(detectSidebarGesture(trace([[120, 300, 0], [320, 300, 800]]), base), { action: 'left', reason: 'ok' })
+  assert.deepEqual(detectSidebarGesture(trace([[120, 300, 0], [200, 300, 300], [320, 300, 900]]), base), { action: 'left', reason: 'ok' })
   const wide = { ...base, viewportWidth: 1024 }
-  assert.deepEqual(detectSidebarGesture([
-    { x: 200, y: 300, t: 0 },
-    { x: 711, y: 300, t: 16 },
-  ], wide), { action: 'ignore', reason: 'threshold' })
-  assert.deepEqual(detectSidebarGesture([
-    { x: 200, y: 300, t: 0 },
-    { x: 712, y: 300, t: 16 },
-  ], wide), { action: 'left', reason: 'ok' })
+  // 1024px 视口 25% 门槛为 256px；位移不足时走甩动通道被速度拒绝。
+  assert.deepEqual(detectSidebarGesture(slowTrace(200, 255), wide), { action: 'ignore', reason: 'flick' })
+  assert.deepEqual(detectSidebarGesture(slowTrace(200, 256), wide), { action: 'left', reason: 'ok' })
+})
+
+test('甩动通道：距离不足时快速轻甩同样触发', () => {
+  const base = { distanceRatio: 0.25, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth: 390 }
+  // 60px 远低于 97.5px 门槛，但 100ms 内完成（平均 0.6px/ms）属于明确的快速甩动。
+  assert.deepEqual(detectSidebarGesture(trace([[120, 300, 0], [180, 300, 100]]), base), { action: 'left', reason: 'ok' })
+  assert.deepEqual(detectSidebarGesture(trace([[280, 300, 0], [220, 300, 100]]), base), { action: 'right', reason: 'ok' })
+  // 同样距离但慢慢拖过去：不触发。
+  assert.deepEqual(detectSidebarGesture(trace([[120, 300, 0], [180, 300, 400]]), base), { action: 'ignore', reason: 'flick' })
+  // 位移不足甩动下限：可能是抖动或内容拖动，连甩动通道都不进入。
+  assert.deepEqual(detectSidebarGesture(trace([[120, 300, 0], [150, 300, 30]]), base), { action: 'ignore', reason: 'threshold' })
+  // 甩动通道的速度门槛可用配置覆盖，便于真机调参。
+  assert.deepEqual(
+    detectSidebarGesture(trace([[120, 300, 0], [180, 300, 300]]), { ...base, flickMinVelocityPxPerMs: 0.1 }),
+    { action: 'left', reason: 'ok' },
+  )
+  assert.deepEqual(
+    detectSidebarGesture(trace([[120, 300, 0], [180, 300, 100]]), { ...base, flickMinVelocityPxPerMs: 0 }),
+    { action: 'ignore', reason: 'config' },
+  )
+})
+
+test('距离通道与甩动通道是 OR 关系，两侧任一达标即触发', () => {
+  const base = { distanceRatio: 0.25, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth: 390 }
+  // 只满足距离（慢速长滑）
+  assert.equal(detectSidebarGesture(trace([[60, 300, 0], [260, 300, 900]]), base).reason, 'ok')
+  // 只满足甩动（快速短甩）
+  assert.equal(detectSidebarGesture(trace([[160, 300, 0], [215, 300, 90]]), base).reason, 'ok')
+  // 两者都不满足
+  assert.equal(detectSidebarGesture(trace([[160, 300, 0], [190, 300, 500]]), base).reason, 'threshold')
+})
+
+test('起手阶段的轻微纵向漂移不会提前终止手势', () => {
+  const base = { distanceRatio: 0.25, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth: 390 }
+  // 真实手指起手常有几像素纵向漂移。位移还小的时候必须保持跟踪（返回 threshold），
+  // 不能返回 direction 让控制器释放跟踪——那正是「需要滑两次」的直接原因。
+  assert.equal(detectSidebarGesture(trace([[120, 300, 0], [125, 308, 16]]), base).reason, 'threshold')
+  assert.equal(detectSidebarGesture(trace([[120, 300, 0], [126, 312, 16], [130, 314, 32]]), base).reason, 'threshold')
+  // 运动量足够且纵向占优时，才判定为滚动意图并释放。
+  assert.equal(detectSidebarGesture(trace([[120, 300, 0], [130, 400, 100]]), base).reason, 'direction')
+  // 纵向漂移但横向仍占优：继续判定并最终触发。
+  assert.equal(detectSidebarGesture(trace([[120, 300, 0], [180, 308, 80], [260, 310, 160]]), base).reason, 'ok')
+})
+
+test('比例设置直接决定各视口门槛，不再被硬下限吞掉', () => {
+  const at = (viewportWidth: number, distanceRatio: number) => ({ distanceRatio, edgeMode: 'avoid' as const, mapping: 'swipe-inward' as const, viewportWidth })
+  // 同一比例在 360px 与 1024px 上换算出的像素门槛严格成比例：这正是改用比例的目的。
+  // 用慢速轨迹隔离距离门槛，避免甩动通道提前触发。
+  for (const [viewportWidth, expectedPx] of [[360, 90], [390, 98], [430, 108], [1024, 256]] as const) {
+    assert.deepEqual(
+      detectSidebarGesture(slowTrace(100, expectedPx - 1), at(viewportWidth, 0.25)),
+      { action: 'ignore', reason: 'flick' },
+      `${viewportWidth}px 视口位移不足 ${expectedPx}px 不应触发`,
+    )
+    assert.deepEqual(
+      detectSidebarGesture(slowTrace(100, expectedPx), at(viewportWidth, 0.25)),
+      { action: 'left', reason: 'ok' },
+      `${viewportWidth}px 视口位移达到 ${expectedPx}px 应触发`,
+    )
+  }
+  // 调低比例让手势更灵敏：15% 在 390px 上只需 58.5px。
+  assert.deepEqual(detectSidebarGesture(slowTrace(100, 58), at(390, 0.15)), { action: 'ignore', reason: 'flick' })
+  assert.deepEqual(detectSidebarGesture(slowTrace(100, 59), at(390, 0.15)), { action: 'left', reason: 'ok' })
+  // 调高比例让手势更严格：80% 在 390px 上需要 312px。
+  assert.deepEqual(detectSidebarGesture(slowTrace(40, 311), at(390, 0.8)), { action: 'ignore', reason: 'flick' })
+  assert.deepEqual(detectSidebarGesture(slowTrace(40, 312), at(390, 0.8)), { action: 'left', reason: 'ok' })
 })
 
 class FakeWindow {

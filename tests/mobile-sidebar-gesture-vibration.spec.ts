@@ -6,7 +6,7 @@ const settings = {
   sidebarGestures: true,
   sidebarGestureMapping: 'swipe-inward' as const,
   sidebarGestureEdge: 'avoid' as const,
-  sidebarGestureThresholdPx: 64,
+  sidebarGestureDistancePercent: 40,
 }
 
 function touchEvent(x: number, y: number) {

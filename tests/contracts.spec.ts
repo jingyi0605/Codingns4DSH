@@ -73,7 +73,7 @@ test('移动端访问设置缺省回填、越界收敛', () => {
     sidebarGestures: true,
     sidebarGestureMapping: 'swipe-inward',
     sidebarGestureEdge: 'avoid',
-    sidebarGestureThresholdPx: 64,
+    sidebarGestureDistancePercent: 25,
   }
   assert.deepEqual(DEFAULT_MOBILE_ACCESS_SETTINGS, defaultMobileAccess)
   assert.deepEqual(normalizeMobileAccessSettings(undefined), DEFAULT_MOBILE_ACCESS_SETTINGS)
@@ -83,6 +83,10 @@ test('移动端访问设置缺省回填、越界收敛', () => {
   assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 10 }), { ...defaultMobileAccess, mobileViewportMaxPx: 480 })
   assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 99999 }), { ...defaultMobileAccess, mobileViewportMaxPx: 1280 })
   assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 'wide' }), defaultMobileAccess)
+  // 手势比例越界收敛：低于 15% 夹到 15%，高于 80% 夹到 80%。
+  assert.deepEqual(normalizeMobileAccessSettings({ sidebarGestureDistancePercent: 5 }), { ...defaultMobileAccess, sidebarGestureDistancePercent: 15 })
+  assert.deepEqual(normalizeMobileAccessSettings({ sidebarGestureDistancePercent: 95 }), { ...defaultMobileAccess, sidebarGestureDistancePercent: 80 })
+  assert.deepEqual(normalizeMobileAccessSettings({ sidebarGestureDistancePercent: 55 }), { ...defaultMobileAccess, sidebarGestureDistancePercent: 55 })
   // 非对象输入不能抛出，也不能把字符串当成真值开关。
   assert.deepEqual(normalizeMobileAccessSettings('on'), defaultMobileAccess)
   assert.deepEqual(normalizeMobileAccessSettings({ hideSidebarOnMobile: 'yes' }), { ...defaultMobileAccess, hideSidebarOnMobile: false })
@@ -91,6 +95,39 @@ test('移动端访问设置缺省回填、越界收敛', () => {
     sidebarGestures: false,
     sidebarGestureMapping: 'swap',
   })
+})
+
+test('旧像素门槛一次性迁移为视口比例', () => {
+  // 旧实现的有效阈值是 max(像素值, 视口宽度 × 40%)：低于该下限的像素值从未生效，
+  // 用户实际一直在用 40% 的默认手感。这类旧值迁移到新默认 25%，才能获得灵敏度修复。
+  for (const legacyPx of [24, 48, 64, 80, 97]) {
+    assert.equal(
+      normalizeMobileAccessSettings({ sidebarGestureThresholdPx: legacyPx }).sidebarGestureDistancePercent,
+      25,
+      `未生效的旧值 ${legacyPx}px 迁移后应落到新默认值`,
+    )
+  }
+  // 高于新默认值的旧值按 390px 参考视口线性换算，并保持「旧值越大越严格」的单调性。
+  for (const [legacyPx, expectedPercent] of [[120, 31], [140, 36], [156, 40], [195, 50], [200, 51]] as const) {
+    assert.equal(
+      normalizeMobileAccessSettings({ sidebarGestureThresholdPx: legacyPx }).sidebarGestureDistancePercent,
+      expectedPercent,
+      `旧值 ${legacyPx}px 应换算为 ${expectedPercent}%`,
+    )
+  }
+  // 新字段优先，旧字段不参与二次换算，避免迁移结果被反复改写。
+  assert.equal(
+    normalizeMobileAccessSettings({ sidebarGestureDistancePercent: 30, sidebarGestureThresholdPx: 195 }).sidebarGestureDistancePercent,
+    30,
+  )
+  // 旧字段同样支持从 workspaceSessionEnhancement 读取。
+  assert.equal(
+    normalizeMobileAccessSettings({}, { sidebarGestureThresholdPx: 195 }).sidebarGestureDistancePercent,
+    50,
+  )
+  // 非法旧值不参与换算，回落到默认值。
+  assert.equal(normalizeMobileAccessSettings({ sidebarGestureThresholdPx: 'wide' }).sidebarGestureDistancePercent, 25)
+  assert.equal(normalizeMobileAccessSettings({ sidebarGestureThresholdPx: -10 }).sidebarGestureDistancePercent, 25)
 })
 
 test('重启生效模块固定使用进程启动时捕获的状态', () => {

@@ -407,7 +407,7 @@ test('移动端访问增强的设置路径与模块开关可通过 RPC 写入', 
       { op: 'set', path: ['mobileAccess', 'sidebarGestures'], value: true },
       { op: 'set', path: ['mobileAccess', 'sidebarGestureMapping'], value: 'swipe-inward' },
       { op: 'set', path: ['mobileAccess', 'sidebarGestureEdge'], value: 'avoid' },
-      { op: 'set', path: ['mobileAccess', 'sidebarGestureThresholdPx'], value: 80 },
+      { op: 'set', path: ['mobileAccess', 'sidebarGestureDistancePercent'], value: 50 },
     ],
   })
   assert.deepEqual(received, {
@@ -415,8 +415,18 @@ test('移动端访问增强的设置路径与模块开关可通过 RPC 写入', 
       { op: 'set', path: ['mobileAccess', 'sidebarGestures'], value: true },
       { op: 'set', path: ['mobileAccess', 'sidebarGestureMapping'], value: 'swipe-inward' },
       { op: 'set', path: ['mobileAccess', 'sidebarGestureEdge'], value: 'avoid' },
-      { op: 'set', path: ['mobileAccess', 'sidebarGestureThresholdPx'], value: 80 },
+      { op: 'set', path: ['mobileAccess', 'sidebarGestureDistancePercent'], value: 50 },
     ],
+    expectedRevision: undefined,
+  })
+
+  // 旧像素字段继续放行：已安装的 PWA 可能仍在运行缓存里的旧 bundle，
+  // 拒绝写入会让用户的设置保存直接报错。
+  await handler('set', {
+    ops: [{ op: 'set', path: ['mobileAccess', 'sidebarGestureThresholdPx'], value: 80 }],
+  })
+  assert.deepEqual(received, {
+    ops: [{ op: 'set', path: ['mobileAccess', 'sidebarGestureThresholdPx'], value: 80 }],
     expectedRevision: undefined,
   })
 
