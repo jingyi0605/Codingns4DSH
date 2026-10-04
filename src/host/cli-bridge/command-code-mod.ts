@@ -74,6 +74,7 @@ async function dispatchToBridge(
         ...(toolCallId === undefined || toolCallId === '' ? {} : { toolCallId }),
         ...(typeof input.description === 'string' && input.description.trim() !== '' ? { description: input.description.trim() } : {}),
         ...(typeof input.subagent_type === 'string' && input.subagent_type.trim() !== '' ? { subagentType: input.subagent_type.trim() } : {}),
+        ...(typeof input.agent === 'string' && input.agent.trim() !== '' ? { agent: input.agent.trim() } : {}),
         ...(typeof input.model === 'string' && input.model.trim() !== '' ? { model: input.model.trim() } : {}),
       }),
       signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),

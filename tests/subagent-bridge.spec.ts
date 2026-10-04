@@ -19,6 +19,7 @@ import { dispatchBridgeSubagent } from '../data/build/dist/host/cli-bridge/dispa
 import { setNativeSubagents } from '../data/build/dist/host/cli-adapters/native-subagent-holder.js'
 import { registerNativeTeamSubagentProviders } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
 import { setAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry-holder.js'
+import { setDelegationAuthorization } from '../data/build/dist/host/cli-adapters/delegation-authorization.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 import { CodingNsCliSessionStore } from '../data/build/dist/host/cli-adapters/session-store.js'
 import { CommandCodeDriver } from '../data/build/dist/host/cli-adapters/command-code-driver.js'
@@ -340,7 +341,7 @@ test('Command Code 转投：hook_blocked 命中桥接记录时投影为完成并
   try {
     const chunks = []
     for await (const chunk of driver.executeTurn({ sessionId: 's-cc', messages: [], prompt: '分析当前项目' })) chunks.push(chunk)
-    assert.deepEqual(chunks, [
+    assert.deepEqual(chunks.filter(({ type }) => type !== 'session-binding'), [
       { type: 'tool-event', toolName: 'agent', callId: 'call_00', input: '{"prompt":"分析"}', status: 'started' },
       { type: 'tool-event', toolName: 'agent', callId: 'call_00', output: '子代理结果文本', outputMode: 'snapshot', status: 'completed' },
       { type: 'text-delta', text: '完成', messageId: 'command-code-message-1' },
@@ -374,7 +375,7 @@ test('Command Code 未命中的 hook_blocked 仍按失败投影', async () => {
   try {
     const chunks = []
     for await (const chunk of driver.executeTurn({ sessionId: 's-cc-2', messages: [], prompt: '分析' })) chunks.push(chunk)
-    assert.deepEqual(chunks[0], { type: 'tool-event', toolName: 'agent', callId: 'call_1', output: '被其他 mod 拦截', outputMode: 'snapshot', status: 'failed' })
+    assert.deepEqual(chunks.filter(({ type }) => type !== 'session-binding')[0], { type: 'tool-event', toolName: 'agent', callId: 'call_1', output: '被其他 mod 拦截', outputMode: 'snapshot', status: 'failed' })
   } finally {
     driver.dispose()
     setSubagentBridge(undefined)
@@ -445,6 +446,53 @@ test('桥接派发：成功转投登记重定向，供驱动把 hook_blocked 投
     setNativeSubagents(undefined)
     setAdapterRegistry(undefined)
     setSubagentBridge(undefined)
+  }
+})
+
+test('Command Code 父会话的单目标授权优先路由到所选 Claude Code', async () => {
+  const started: Array<{ provider: string }> = []
+  const service = {
+    registerProvider: () => () => undefined,
+    startContinuable: async (spec: { provider: string }) => {
+      started.push({ provider: spec.provider })
+      return { childId: 'child-claude', messageId: 'm-claude' }
+    },
+  }
+  const events = [
+    { type: 'assistant/message', seq: 1, data: { message: { content: [{ type: 'text', text: 'Claude 输出' }] } } },
+    { type: 'turn/end', seq: 2, data: { reason: { kind: 'completed' } } },
+  ]
+  const sessions = {
+    available: true,
+    get: (id: string) => (id === 'child-claude' ? { snapshotEvents: () => events } : undefined),
+    subscribe: () => () => undefined,
+    list: () => [],
+  }
+  const makeDriver = (id: string) => ({
+    descriptor: { id, name: id, protocol: 'command', capabilities: [] },
+    detect: async () => ({ installed: true, version: '1.0.0', command: `/fake/${id}` }),
+    listModels: async () => ({ groups: [], currentModel: null, currentEffort: null }),
+    executeTurn: async function* () {},
+  })
+  const registry = new CodingNsCliAdapterRegistry([makeDriver('command-code') as never, makeDriver('claude-code') as never])
+  registry.setSession('s-claude-route', { adapterId: 'command-code' })
+  setDelegationAuthorization('s-claude-route', [{ adapterId: 'claude-code' }])
+  setNativeSubagents(service as never)
+  setAdapterRegistry(registry)
+  try {
+    const result = await dispatchBridgeSubagent(
+      { sessionId: 's-claude-route', prompt: '点评文件', toolCallId: 'call-claude-route' },
+      {
+        agents: { get: (id: string) => (id === 's-claude-route' ? { id: 'agent-claude-route', session: { header: { id: 's-claude-route' } } } : undefined) },
+        nativeSessions: sessions as never,
+      },
+    )
+    assert.equal(result.ok, true)
+    assert.deepEqual(started, [{ provider: 'codingns-external-claude-code' }])
+  } finally {
+    setDelegationAuthorization('s-claude-route', [])
+    setNativeSubagents(undefined)
+    setAdapterRegistry(undefined)
   }
 })
 

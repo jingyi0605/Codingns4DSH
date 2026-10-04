@@ -1,6 +1,6 @@
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { dispatchNativeSubagent, readNativeSubagentLifecycle, waitNativeSubagentLifecycle, type NativeParentAgent } from '../cli-adapters/native-subagent-dispatch.js'
-import { isDelegationTargetAllowed } from '../cli-adapters/delegation-authorization.js'
+import { getSingleDelegationTarget, isDelegationTargetAllowed } from '../cli-adapters/delegation-authorization.js'
 import { getNativeSubagents } from '../cli-adapters/native-subagent-holder.js'
 import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS } from '../cli-adapters/native-team-subagent.js'
 import { getAdapterRegistry } from '../cli-adapters/registry-holder.js'
@@ -49,13 +49,18 @@ export async function dispatchBridgeSubagent(
     if (lifecycle === undefined || lifecycle.parentSessionId !== parentId) return bridgeFailure(`DELEGATE_CHILD_NOT_FOUND: 找不到父会话下的子会话：${childSessionId}`)
     return { ok: lifecycle.status === 'completed', completed: lifecycle.completed, status: lifecycle.status, text: lifecycle.text ?? '子代理尚未产生文本结果。', childSessionId: lifecycle.childSessionId, ...(lifecycle.error === undefined ? {} : { error: lifecycle.error }) }
   }
-  const adapterId = (request.agent ?? resolveSessionAdapter(request.sessionId) ?? '').trim()
+  const authorizedTarget = getSingleDelegationTarget(request.sessionId)
+  const adapterId = (request.agent ?? authorizedTarget?.adapterId ?? resolveSessionAdapter(request.sessionId) ?? '').trim()
   if (!EXTERNAL_SUBAGENT_IDS.includes(adapterId as typeof EXTERNAL_SUBAGENT_IDS[number])) {
     return bridgeFailure(`不支持的外部 Agent: ${adapterId === '' ? '(未指定)' : adapterId}`)
   }
   const registry = getAdapterRegistry()
   if (registry !== undefined) {
-    const adapter = (await registry.catalog()).find((item) => item.id === adapterId)
+    // dsh 是 DSH 自带的内置 Agent，不在外部 CLI Registry 中登记驱动；其子
+    // 会话由原生 spawn Provider 负责，不能因为 catalog 没有外部条目而拒绝。
+    const adapter = adapterId === 'dsh'
+      ? { installed: true, enabled: true }
+      : (await registry.catalog()).find((item) => item.id === adapterId)
     if (adapter === undefined || !adapter.installed || !adapter.enabled) {
       return bridgeFailure(`${adapterId} 未安装或未启用`)
     }
@@ -65,7 +70,9 @@ export async function dispatchBridgeSubagent(
   if (dependencyStates.some((state) => state === undefined || state.parentSessionId !== parentId || state.status !== 'completed')) {
     return bridgeFailure('DELEGATE_DEPENDENCY_NOT_READY: 前置子会话尚未 completed，请先 wait/read。')
   }
-  const modelId = request.model?.trim() === '' ? undefined : request.model?.trim()
+  const modelId = request.model?.trim() === ''
+    ? authorizedTarget?.modelId
+    : request.model?.trim() ?? authorizedTarget?.modelId
   try {
     const result = await dispatchNativeSubagent(native, deps.nativeSessions, {
       adapterId,
