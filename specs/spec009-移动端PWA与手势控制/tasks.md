@@ -228,13 +228,13 @@
 
 - [x]  3.2 实现手势判定纯函数与单测
 
-  - 这一步到底做什么：实现 `detectSidebarGesture(samples, config)`：边缘热区判定、方向锁定（水平/垂直比）、至少 50% 视口距离、约 400px/s 速度门槛、映射（`swipe-inward`/`swap`）、编辑目标排除，返回 `{ action, reason }`。
+  - 这一步到底做什么：实现 `detectSidebarGesture(samples, config)`：边缘热区判定、方向锁定（水平/垂直比）、距离比例门槛（默认 25%，可设 15–80）、甩动通道（位移 ≥ 48px 且平均速度 ≥ 0.5px/ms）、映射（`swipe-inward`/`swap`）、编辑目标排除，返回 `{ action, reason }`。
   - 做完你能看到什么：手势逻辑不依赖 DOM 即可被测试与调参。
   - 先依赖什么：3.1。
   - 开始前先看：`design.md` §3.3.6；调查报告 §4.5（前端无手势的证据）。
   - 主要改哪里：`src/client/mobile-sidebar-gestures.ts`（新）、`tests/mobile-sidebar-gestures.spec.ts`（新）。
   - 这一步先不做什么：不挂真实监听、不调服务、不读 DOM。
-  - 怎么算完成：四方向、50% 距离与速度边界、方向锁、热区、编辑目标、多指、非法配置全部有断言。
+  - 怎么算完成：四方向、距离比例与速度边界、方向锁、热区、编辑目标、多指、非法配置全部有断言。
   - 怎么验证：定向 `pnpm test`。
   - 对应需求：需求 5、6。
   - 对应设计：§3.3.6、§7.1。
@@ -254,7 +254,7 @@
 
 - [x]  3.4 手势设置契约与面板控件
 
-  - 这一步到底做什么：在 `MobileAccessSettings` 增加 `sidebarGestures`、`sidebarGestureMapping`、`sidebarGestureEdge`、`sidebarGestureThresholdPx`，实现 normalizer 与移动端访问增强面板控件（开关、下拉、数字输入），默认开启并兼容读取旧工作区字段。
+  - 这一步到底做什么：在 `MobileAccessSettings` 增加 `sidebarGestures`、`sidebarGestureMapping`、`sidebarGestureEdge`、`sidebarGestureDistancePercent`，实现 normalizer 与移动端访问增强面板控件（开关、下拉、数字输入），默认开启并兼容读取旧工作区字段与旧像素门槛。
   - 做完你能看到什么：用户可开关手势、切换方向映射、调整灵敏度。
   - 先依赖什么：3.3。
   - 开始前先看：`docs/开发规范/20260922-设置选项与表单开发规则.md`；`design.md` §3.2.2。

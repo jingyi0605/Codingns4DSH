@@ -104,7 +104,7 @@
 
 #### 验收标准
 
-1. WHEN 用户在允许区域内以单指水平滑动，且位移达到 `max(设置值, 视口宽度 × 50%)`、最近 120ms 水平速度达到约 400px/s、方向锁定通过 THEN System SHALL 调用 `ctx.layout.toggleSidebar()`（左栏）或 `ctx.sidebarRight.toggleExpanded()`（右边栏）。
+1. WHEN 用户在允许区域内以单指水平滑动，且位移达到 `视口宽度 × 距离比例`（设置项，默认 25%）或构成一次快速甩动（位移 ≥ 48px 且整段平均速度 ≥ 0.5px/ms），且方向锁定通过 THEN System SHALL 调用 `ctx.layout.toggleSidebar()`（左栏）或 `ctx.sidebarRight.toggleExpanded()`（右边栏）。
 2. WHEN 手势控制器判定动作 THEN System SHALL 只通过上述服务改变布局，不直接修改 DOM class 或其他插件的状态。
 3. WHEN 手势需要感知当前状态（例如“收起时才展开”） THEN System SHALL 通过能力层封装的读取方式（左栏读 `data-sidebar-collapsed`，右栏用 `isExpanded()`）获取，读取失败时退化为无条件切换或禁用。
 4. WHEN 判定逻辑被执行 THEN System SHALL 是纯函数（输入触点样本与配置，输出动作或忽略），可被单元测试直接覆盖。
