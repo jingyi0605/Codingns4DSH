@@ -225,13 +225,15 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
         t,
       })),
       createElement(Button, {
-        variant: 'primary',
+        variant: 'ghost',
         size: 'sm',
         className: terminalClass.newButton,
         icon: createElement(resolvePlusIcon()),
+        'aria-label': t('terminal.new'),
+        title: t('terminal.new'),
         disabled: creating,
         onClick: () => { void createNewTerminal() },
-      }, creating ? t('terminalView.starting') : t('terminal.new')),
+      }),
     ])
   const content = createElement('div', { className: terminalClass.content }, terminals.length === 0
       ? createElement('div', { role: 'status', className: terminalClass.empty },

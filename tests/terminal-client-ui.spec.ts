@@ -127,13 +127,17 @@ test('终端类型按 kind 只保留一个聚合页签', async () => {
 })
 
 test('聚合页终端列表位于顶部横向标签栏，不占用内容区侧向空间', async () => {
-  const styles = await readFile(join(projectRoot, 'src/client/terminal/styles.ts'), 'utf8')
+  const [styles, source] = await Promise.all([
+    readFile(join(projectRoot, 'src/client/terminal/styles.ts'), 'utf8'),
+    readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8'),
+  ])
 
   assert.match(styles, /aggregateRoot\}\{[^}]*flex-direction:column/u)
   assert.match(styles, /list\}\{[^}]*overflow-x:auto/u)
   assert.match(styles, /list\}\{[^}]*height:40px[^}]*align-items:center/u)
   assert.match(styles, /listRow\}\{[^}]*height:32px/u)
-  assert.match(styles, /newButton\}\{[^}]*max-height:30px/u)
+  assert.match(styles, /newButton\}\{[^}]*width:30px[^}]*max-height:30px/u)
+  assert.match(source, /className: terminalClass\.newButton,[\s\S]*icon: createElement\(resolvePlusIcon\(\)\),[\s\S]*'aria-label': t\('terminal\.new'\)/u)
   assert.doesNotMatch(styles, /list\}\{[^}]*width:180px/u)
 })
 
