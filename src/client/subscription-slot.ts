@@ -151,7 +151,10 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         const intervalMins = props.getRefreshIntervalMins?.() ?? DEFAULT_SUBSCRIPTION_USAGE_SETTINGS.refreshIntervalMins
         const cacheKey = `${adapterId}|${selection.providerId ?? ''}`
         const cached = subscriptionUsageCache.get(cacheKey)
-        if (cached !== undefined && isSubscriptionUsageFresh(cached.capturedAt, Date.now(), intervalMins)) {
+        // New-API 的余额和 Token 日志可能随 Key/钱包状态快速变化，且旧结果
+        // 容易把历史日志投影到当前站点；每次刷新都重新读取，Sub2API 仍复用原缓存。
+        const canReuseCachedUsage = cached !== undefined && cached.usage.provider?.capability !== 'new-api'
+        if (canReuseCachedUsage && isSubscriptionUsageFresh(cached.capturedAt, Date.now(), intervalMins)) {
           if (active) setUsage(cached.usage)
           return
         }
@@ -225,6 +228,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const sub2api = usage.sub2api
   const deepseek = usage.deepseek
   const providerBalance = usage.providerBalance
+  const isNewApiProvider = providerBalance !== undefined && usage.provider?.capability === 'new-api'
   const displayWindow = sub2api === undefined && deepseek === undefined && providerBalance === undefined ? resolveDisplayWindow(usage) : null
   const remaining = displayWindow?.remainingPercent ?? null
   const resetLabel = displayWindow === null ? null : formatCountdown(displayWindow.resetsAt, t, clock)
@@ -232,6 +236,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const deepseekBalance = deepseek === undefined ? null : selectDeepseekBalance(deepseek)
   const providerBalanceRemaining = providerBalance === undefined ? null : balancePercent(providerBalance.remaining, providerBalance.total)
   const providerBalancePlan = providerBalance?.planName?.trim() || null
+  const newApiHeadline = isNewApiProvider && providerBalance !== undefined ? formatNewApiHeadline(providerBalance) : null
   // 官方余额读取器可能没有可直连的 Provider Logo；此时统一回退到当前
   // 适配器注册的内置图标，ZCode 等 Agent 不再显示空 src 的破图。
   const adapterIconSource = providerIconUrl(adapterId ?? 'dsh') ?? ''
@@ -243,9 +248,11 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       ? t('usage.upstreamBalanceLabel', { provider: providerName, amount: formatSub2ApiMoney(sub2api.balance, sub2api.unit) })
       : deepseek !== undefined
         ? t('usage.balanceLabel', { provider: providerName, amount: deepseekBalance === null ? t('usage.unavailable') : formatDeepseekMoney(deepseekBalance.totalBalance, deepseekBalance.currency) })
-        : providerBalancePlan === null
-          ? t('usage.providerBalanceLabel', { provider: providerName, amount: formatProviderBalance(providerBalance, t('usage.upstreamNotProvided')) })
-          : t('usage.providerBalancePlanLabel', { provider: providerName, plan: providerBalancePlan, amount: formatProviderBalance(providerBalance, t('usage.upstreamNotProvided')) })
+        : isNewApiProvider
+          ? newApiHeadline === null ? providerName : `${providerName} ${newApiHeadline}`
+          : providerBalancePlan === null
+            ? t('usage.providerBalanceLabel', { provider: providerName, amount: formatProviderBalance(providerBalance, t('usage.upstreamNotProvided')) })
+            : t('usage.providerBalancePlanLabel', { provider: providerName, plan: providerBalancePlan, amount: formatProviderBalance(providerBalance, t('usage.upstreamNotProvided')) })
   const logoSource = providerLogoSource || (sub2api === undefined ? '' : (sub2api.logoDataUrl ?? (isRemoteWebContext() ? '' : sub2api.logoUrl)))
   const resetCredits = usage.resetCredits
   // 重置只对官方 Codex 订阅开放；第三方上游走 sub2api 面板，不会带出重置券。
@@ -279,7 +286,12 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         deepseekIconSource !== '' && createElement('img', { src: deepseekIconSource, alt: '', width: 18, height: 18, style: deepseekLogoStyle }),
         createElement('span', { className: 'codingns4dsh-subscription-value', style: deepseekBalanceStyle }, deepseekBalance === null ? '--' : formatDeepseekMoney(deepseekBalance.totalBalance, deepseekBalance.currency)),
         )
-        : providerBalanceRemaining !== null
+        : isNewApiProvider
+          ? createElement('span', { 'aria-hidden': true, style: deepseekBalanceIdentityStyle },
+            deepseekIconSource !== '' && createElement('img', { src: deepseekIconSource, alt: '', width: 18, height: 18, style: deepseekLogoStyle }),
+            newApiHeadline !== null && createElement('span', { className: 'codingns4dsh-subscription-value', style: deepseekBalanceStyle }, newApiHeadline),
+          )
+          : providerBalanceRemaining !== null
           ? createRemainingRing(providerBalanceRemaining)
           : createElement('span', { 'aria-hidden': true, style: deepseekBalanceIdentityStyle },
             deepseekIconSource !== '' && createElement('img', { src: deepseekIconSource, alt: '', width: 18, height: 18, style: deepseekLogoStyle }),
@@ -299,7 +311,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       createElement('span', { className: 'codingns4dsh-subscription-label', style: subscriptionLabelStyle },
         sub2api === undefined && deepseek === undefined && providerBalance === undefined
           ? (resetLabel ?? t('usage.subscriptionRemaining'))
-          : sub2api !== undefined ? t('usage.todayCostShort', { amount: formatSub2ApiMoney(sub2api.today.cost, sub2api.unit) }) : deepseek !== undefined ? t('usage.accountBalance') : providerBalancePlan ?? t('usage.officialRemaining'),
+          : sub2api !== undefined ? t('usage.todayCostShort', { amount: formatSub2ApiMoney(sub2api.today.cost, sub2api.unit) }) : deepseek !== undefined ? t('usage.accountBalance') : isNewApiProvider ? providerName : providerBalancePlan ?? t('usage.officialRemaining'),
       ),
     ),
     open && createElement(SubscriptionPopover, { usage, providerName, t, nowMs: clock, reset: resetRequest }),
@@ -331,7 +343,10 @@ function SubscriptionPopover({ usage, providerName, t, nowMs, reset }: {
 }): ReactElement {
   if (usage.sub2api !== undefined) return createElement(Sub2ApiPopover, { usage: usage.sub2api, providerName, t })
   if (usage.deepseek !== undefined) return createElement(DeepseekPopover, { usage: usage.deepseek, providerName, t })
-  if (usage.providerBalance !== undefined) return createElement(ProviderBalancePopover, { usage: usage.providerBalance, providerName, t, nowMs })
+  if (usage.providerBalance !== undefined) {
+    if (usage.provider?.capability === 'new-api') return createElement(NewApiPopover, { usage: usage.providerBalance, providerName, t })
+    return createElement(ProviderBalancePopover, { usage: usage.providerBalance, providerName, t, nowMs })
+  }
   const windows = [
     { id: 'primary', label: formatSubscriptionWindowLabel(usage.primary, t('usage.windowFiveHour'), t), window: usage.primary },
     { id: 'secondary', label: formatSubscriptionWindowLabel(usage.secondary, t('usage.windowWeekly'), t), window: usage.secondary },
@@ -458,6 +473,151 @@ function formatSubscriptionWindowLabel(window: CliSubscriptionWindow | null, fal
   if (durationMins % (24 * 60) === 0) return t('usage.windowDays', { count: durationMins / (24 * 60) })
   if (durationMins % 60 === 0) return t('usage.windowHours', { count: durationMins / 60 })
   return t('usage.windowMinutes', { count: durationMins })
+}
+
+/**
+ * New-API 的普通 Key 没有 Sub2API 那种统一的完整统计对象。
+ * 这里只投影读取器明确拿到的真实数值，隐藏内部 quota、Key 状态和占位文本，
+ * 并把日志返回的模型/日期汇总拆成短表格，避免一整串文本撑坏弹层。
+ */
+function NewApiPopover({ usage, providerName, t }: { readonly usage: ProviderBalanceUsage; readonly providerName: string; readonly t: CodingNsTranslator }): ReactElement {
+  const labels = NEW_API_DETAIL_LABELS
+  const details = usage.details.filter((item) => isNewApiDisplayValue(item.value))
+  const find = (...labels: string[]): string | number | null => {
+    for (const label of labels) {
+      const item = details.find((candidate) => candidate.label === label)
+      if (item !== undefined) return item.value
+    }
+    return null
+  }
+  const stats: { readonly label: string; readonly value: string }[] = []
+  const remaining = resolveNewApiRemaining(usage, details)
+  if (remaining !== null) stats.push({ label: t('usage.newApiBalance'), value: formatNewApiBalanceAmount(remaining, usage.unit) })
+  // Token 接口的 total_used 是内部 quota，即使 unit 写成 TOKENS 也不把它
+  // 当作真实 Token；只有日志明确聚合出的 Token 才能展示。
+  const todayTokens = find(labels.todayTokensLogs)
+  if (todayTokens !== null) stats.push({ label: t('usage.statTodayTokens'), value: formatNewApiMetric(todayTokens, usage.unit, true) })
+  const totalTokens = find(labels.totalTokensLogs)
+  if (totalTokens !== null) stats.push({ label: t('usage.statTotalTokens'), value: formatNewApiMetric(totalTokens, usage.unit, true) })
+  const feeUnit = resolveNewApiFeeUnit(usage, details, labels)
+  const todayCost = find(labels.todayCost)
+  if (todayCost !== null && feeUnit !== null) stats.push({ label: t('usage.statTodayCost'), value: formatNewApiMetric(todayCost, feeUnit, false) })
+  const totalCost = find(labels.totalCost)
+  if (totalCost !== null && feeUnit !== null) stats.push({ label: t('usage.statTotalCost'), value: formatNewApiMetric(totalCost, feeUnit, false) })
+  const cacheHitRate = find(labels.cacheHitRateLogs)
+  if (cacheHitRate !== null) stats.push({ label: t('usage.statTotalCacheHitRate'), value: String(cacheHitRate) })
+  const models = parseNewApiStats(find(labels.modelsLogs))
+  const daily = parseNewApiStats(find(labels.dailyLogs))
+  const headline = formatNewApiHeadline(usage, details)
+  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.upstreamUsageTitle', { provider: providerName }), style: subscriptionPopoverStyle },
+    createElement('div', { style: popoverHeadingStyle },
+      createElement('strong', undefined, t('usage.upstreamUsageTitle', { provider: providerName })),
+      headline !== null && createElement('span', { style: { color: dshThemeColor.labelTertiary } }, headline),
+    ),
+    stats.length > 0 && createElement('div', { style: sub2apiStatsGridStyle }, ...stats.map((stat) => createSub2ApiStat(stat.label, stat.value))),
+    models.length > 0 && createNewApiStatsTable(t('usage.byModel'), models, t('usage.colModel'), t('usage.colRequests'), t('usage.colToken')),
+    daily.length > 0 && createNewApiStatsTable(t('usage.byDay'), daily, t('usage.colDate'), t('usage.colRequests'), t('usage.colToken')),
+  )
+}
+
+const NEW_API_DETAIL_LABELS = {
+  todayTokensLogs: `${String.fromCodePoint(0x4eca, 0x65e5)} Token${String.fromCodePoint(0xff08, 0x6700, 0x8fd1, 0x65e5, 0x5fd7, 0xff09)}`,
+  totalTokensLogs: `${String.fromCodePoint(0x7d2f, 0x8ba1)} Token${String.fromCodePoint(0xff08, 0x6700, 0x8fd1, 0x65e5, 0x5fd7, 0xff09)}`,
+  todayCost: String.fromCodePoint(0x4eca, 0x65e5, 0x8d39, 0x7528),
+  totalCost: String.fromCodePoint(0x7d2f, 0x8ba1, 0x8d39, 0x7528),
+  cacheHitRateLogs: `${String.fromCodePoint(0x7f13, 0x5b58, 0x547d, 0x4e2d, 0x7387)}${String.fromCodePoint(0xff08, 0x6700, 0x8fd1, 0x65e5, 0x5fd7, 0xff09)}`,
+  modelsLogs: `${String.fromCodePoint(0x6309, 0x6a21, 0x578b, 0x7edf, 0x8ba1)}${String.fromCodePoint(0xff08, 0x6700, 0x8fd1, 0x65e5, 0x5fd7, 0xff09)}`,
+  dailyLogs: `${String.fromCodePoint(0x6309, 0x65e5, 0x7edf, 0x8ba1)}${String.fromCodePoint(0xff08, 0x6700, 0x8fd1, 0x65e5, 0x5fd7, 0xff09)}`,
+  unavailable: String.fromCodePoint(0x4e0a, 0x6e38, 0x672a, 0x63d0, 0x4f9b),
+  unknownUnit: String.fromCodePoint(0x4e0a, 0x6e38, 0x5355, 0x4f4d, 0x672a, 0x660e, 0x786e),
+  upstreamUnit: String.fromCodePoint(0x4e0a, 0x6e38, 0x5355, 0x4f4d),
+  delimiter: String.fromCodePoint(0xff1b),
+} as const
+
+function resolveNewApiFeeUnit(usage: ProviderBalanceUsage, details: readonly ProviderBalanceUsage['details'][number][], labels: typeof NEW_API_DETAIL_LABELS): string | null {
+  if (usage.currency?.trim().toUpperCase() === 'USD') return 'USD'
+  const declared = details.find((item) => item.label === labels.upstreamUnit)
+  return typeof declared?.value === 'string' && declared.value.trim().toUpperCase() === 'USD' ? 'USD' : null
+}
+
+function isNewApiDisplayValue(value: string | number): boolean {
+  if (typeof value === 'number') return Number.isFinite(value)
+  const normalized = value.trim()
+  return normalized !== '' && normalized !== '--' && normalized !== NEW_API_DETAIL_LABELS.unavailable && normalized !== NEW_API_DETAIL_LABELS.unknownUnit
+}
+
+function formatNewApiMetric(value: string | number, unit: string | null, token: boolean): string {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numeric)) return String(value)
+  if (token) return formatCompactTokenCount(numeric)
+  return formatProviderBalanceAmount(numeric, unit)
+}
+
+function formatNewApiHeadline(usage: ProviderBalanceUsage, details: readonly ProviderBalanceUsage['details'][number][] = usage.details): string | null {
+  // New-API 可能同时返回 unlimited_quota=true 与明确的 remaining。这里只
+  // 显示明确余额；令牌额度标记不是账户余额，不能投影成“无限额度”。
+  const remaining = resolveNewApiRemaining(usage, details)
+  if (remaining !== null && Number.isFinite(remaining)) return formatNewApiBalanceValue(remaining, usage.unit)
+  return null
+}
+
+function resolveNewApiRemaining(usage: ProviderBalanceUsage, details: readonly ProviderBalanceUsage['details'][number][]): number | null {
+  if (usage.remaining !== null && Number.isFinite(usage.remaining)) return usage.remaining
+  const detail = details.find((item) => item.label === '余额/剩余额度')
+  return typeof detail?.value === 'number' && Number.isFinite(detail.value) ? detail.value : null
+}
+
+function formatNewApiBalanceValue(value: number, unit: string | null): string {
+  const normalized = unit?.trim().toUpperCase() ?? ''
+  if (normalized === '') return formatNewApiDecimal(value)
+  if (normalized !== 'USD') return formatProviderBalanceValue(value, unit)
+  return `$${formatNewApiDecimal(value)}`
+}
+
+function formatNewApiBalanceAmount(value: number, unit: string | null): string {
+  const normalized = unit?.trim().toUpperCase() ?? ''
+  if (normalized === '') return formatNewApiDecimal(value)
+  if (normalized !== 'USD') return formatProviderBalanceAmount(value, unit)
+  return `$${formatNewApiDecimal(value)}`
+}
+
+function formatNewApiDecimal(value: number): string {
+  if (!Number.isFinite(value)) return '--'
+  if (value === 0) return '0.00'
+  if (Math.abs(value) >= 0.01) return value.toFixed(2)
+  const precision = 6
+  return value.toFixed(precision).replace(/0+$/u, '').replace(/\.$/u, '')
+}
+
+interface NewApiStatsRow { readonly name: string; readonly tokens: string; readonly requests: string }
+
+function parseNewApiStats(value: string | number | null): NewApiStatsRow[] {
+  if (typeof value !== 'string') return []
+  return value.split(NEW_API_DETAIL_LABELS.delimiter).flatMap((part) => {
+    const match = /^\s*(.+?):\s*([\d,.]+(?:[KMB])?)\s*Token\s*\/\s*([\d,]+)\s*次\s*$/u.exec(part)
+    if (match === null) return []
+    return [{ name: match[1]!.trim(), tokens: match[2]!, requests: match[3]! }]
+  })
+}
+
+function createNewApiStatsTable(title: string, rows: readonly NewApiStatsRow[], nameLabel: string, requestsLabel: string, tokensLabel: string): ReactElement {
+  return createElement('section', { style: sub2apiSectionStyle },
+    createElement('strong', { style: sub2apiSectionTitleStyle }, title),
+    createElement('div', { style: sub2apiTableScrollStyle },
+      createElement('table', { style: sub2apiTableStyle },
+        createElement('thead', undefined, createElement('tr', undefined,
+          createElement('th', { style: sub2apiThStyle }, nameLabel),
+          createElement('th', { style: sub2apiThStyle }, requestsLabel),
+          createElement('th', { style: sub2apiThStyle }, tokensLabel),
+        )),
+        createElement('tbody', undefined, ...rows.map((row) => createElement('tr', { key: `${row.name}-${row.requests}` },
+          createElement('td', { style: sub2apiTdStyle }, row.name),
+          createElement('td', { style: sub2apiTdStyle }, row.requests),
+          createElement('td', { style: sub2apiTdStyle }, row.tokens),
+        ))),
+      ),
+    ),
+  )
 }
 
 function ProviderBalancePopover({ usage, providerName, t, nowMs }: { readonly usage: ProviderBalanceUsage; readonly providerName: string; readonly t: CodingNsTranslator; readonly nowMs: number }): ReactElement {
@@ -658,8 +818,8 @@ function selectDeepseekBalance(usage: DeepseekUsage): DeepseekUsage['balances'][
   return usage.balances.find((balance) => balance.currency.toUpperCase() === 'USD') ?? usage.balances[0] ?? null
 }
 /** 已具备用量读取契约的适配器才挂载底部订阅入口。 */
-function isSubscriptionAdapter(adapterId: unknown): adapterId is 'command-code' | 'codex' | 'claude-code' | 'codebuddy' | 'dsh' | 'grok' | 'kimi' | 'opencode' | 'zcode' {
-  return adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'codebuddy' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'kimi' || adapterId === 'opencode' || adapterId === 'zcode'
+function isSubscriptionAdapter(adapterId: unknown): adapterId is 'command-code' | 'codex' | 'claude-code' | 'codebuddy' | 'codebuddy-cn' | 'dsh' | 'grok' | 'kimi' | 'opencode' | 'workbuddy' | 'zcode' {
+  return adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'codebuddy' || adapterId === 'codebuddy-cn' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'kimi' || adapterId === 'opencode' || adapterId === 'workbuddy' || adapterId === 'zcode'
 }
 function isRemoteWebContext(): boolean {
   return (globalThis as { __CODINGNS4DSH_REMOTE_WEB_CONTEXT__?: unknown }).__CODINGNS4DSH_REMOTE_WEB_CONTEXT__ === true
@@ -716,7 +876,9 @@ function formatProviderBalanceValue(value: number, unit: string | null): string 
 function formatProviderBalanceAmount(value: number, unit: string | null): string {
   const normalized = unit?.trim().toUpperCase() ?? ''
   if (normalized === '%') return `${value.toFixed(0)}%`
-  if (normalized === 'USD') return `$${value.toFixed(2)}`
+  // 小于 0.01 的非零余额不能被固定两位小数舍成 $0.00；复用
+  // New-API 的金额格式化规则，正常金额保留两位，小额保留非零有效位。
+  if (normalized === 'USD') return `$${formatNewApiDecimal(value)}`
   return isTokenUnit(normalized) ? formatCompactTokenCount(value) : value.toFixed(2)
 }
 function formatSub2ApiTokens(value: number): string { return formatCompactTokenCount(value) }

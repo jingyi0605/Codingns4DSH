@@ -142,7 +142,13 @@ export class CustomUpstreamClassifier {
     let confidence: CustomUpstreamClassification['confidence'] = 'unknown'
     let usage: CliSubscriptionUsage | null = null
 
-    if (newApiResult !== null && sub2apiResult !== null) {
+    if (newApiResult?.kind === 'new-api-billing-compatible' && sub2apiResult !== null) {
+      // 只有 billing 兼容接口命中时证据较弱；如果同一来源同时返回完整
+      // Sub2API 用量结构，优先保留 Sub2API 的按日、按模型数据。
+      kind = 'sub2api'
+      confidence = 'strong'
+      usage = sub2apiResult.usage
+    } else if (newApiResult !== null && sub2apiResult !== null) {
       kind = 'ambiguous'
       confidence = 'ambiguous'
     } else if (newApiResult !== null) {

@@ -402,7 +402,10 @@ export class NewApiSubscriptionService {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.timeoutMs)
     try {
-      const tokenResponse = await this.requestJson(`${apiRoot}/api/usage/token`, headers, controller.signal)
+      // New-API 官方路由通常注册为带斜杠的路径。先按统一协议请求无斜杠地址；
+      // 某些反向代理会把它返回 404/405，而不是自动重定向，此时再补一次斜杠。
+      // 认证失败不能重试成另一种结果，避免把失效 Key 误判为可用来源。
+      const tokenResponse = await this.requestJsonWithTrailingSlashFallback(`${apiRoot}/api/usage/token`, headers, controller.signal)
       // 401/403 是凭据无效；不能把 billing 的错误响应误当成有效余额。
       if (tokenResponse?.status === 401 || tokenResponse?.status === 403) return null
       const tokenUsage = tokenResponse?.value ?? null
@@ -410,12 +413,29 @@ export class NewApiSubscriptionService {
       // billing 是补充接口，即使 Token 主接口成功也要读取，用来补齐累计用量和到期时间。
       // 两个补充请求共享同一超时并行执行，避免一个慢接口阻塞另一个可用结果。
       const billingRoot = `${apiRoot}/v1`
-      const [subscriptionResponse, usageResponse, logResponse] = await Promise.all([
+      const [subscriptionResponse, usageResponse, logResponse, accountResponse, tokenListResponse, statusResponse] = await Promise.all([
         this.requestJson(`${billingRoot}/dashboard/billing/subscription`, headers, controller.signal),
         this.requestJson(`${billingRoot}/dashboard/billing/usage`, headers, controller.signal),
         this.requestJson(`${apiRoot}/api/log/token`, headers, controller.signal),
+        // One-API 兼容部署可能不把余额放进 /api/usage/token，而是放在
+        // 用户摘要或令牌列表的 quota/used_quota/remain_quota 字段中。
+        this.requestJson(`${apiRoot}/api/user/self`, headers, controller.signal),
+        this.requestJsonWithTrailingSlashFallback(`${apiRoot}/api/token`, headers, controller.signal),
+        this.requestJson(`${apiRoot}/api/status`, headers, controller.signal),
       ])
       const tokenResult = tokenUsage === null ? null : normalizeNewApiUsage(tokenUsage, baseUrl)
+      const quotaInfo = readNewApiQuotaInfo(statusResponse?.value)
+      const accountResult = normalizeNewApiAccount(
+        accountResponse?.value,
+        baseUrl,
+        tokenResult?.providerBalance?.unit ?? quotaInfo.unit,
+        quotaInfo.quotaPerUnit,
+      ) ?? normalizeNewApiAccount(
+        tokenListResponse?.value,
+        baseUrl,
+        tokenResult?.providerBalance?.unit ?? quotaInfo.unit,
+        quotaInfo.quotaPerUnit,
+      )
       const billingResult = normalizeNewApiBilling(
         subscriptionResponse?.value ?? null,
         usageResponse?.value ?? null,
@@ -425,7 +445,14 @@ export class NewApiSubscriptionService {
         tokenResult?.providerBalance?.unit ?? null,
       )
       const logSummary = summarizeNewApiLogs(logResponse?.value)
-      if (tokenResult !== null) return { usage: enrichNewApiLogs(mergeNewApiUsage(tokenResult, billingResult), logSummary), kind: 'new-api' }
+      if (tokenResult !== null) {
+        const merged = mergeNewApiAccount(mergeNewApiUsage(tokenResult, billingResult), accountResult)
+        return { usage: enrichNewApiLogs(merged, logSummary), kind: 'new-api' }
+      }
+      if (accountResult !== null) {
+        const merged = mergeNewApiAccount(billingResult ?? accountResult, accountResult)
+        return { usage: enrichNewApiLogs(merged, logSummary), kind: 'new-api' }
+      }
       if (billingResult !== null) return { usage: enrichNewApiLogs(billingResult, logSummary), kind: 'new-api-billing-compatible' }
       return null
     } finally {
@@ -441,6 +468,12 @@ export class NewApiSubscriptionService {
     } catch {
       return null
     }
+  }
+
+  private async requestJsonWithTrailingSlashFallback(url: string, headers: Record<string, string>, signal: AbortSignal): Promise<{ readonly status: number; readonly value: unknown } | null> {
+    const first = await this.requestJson(url, headers, signal)
+    if (first === null || (first.status !== 404 && first.status !== 405)) return first
+    return this.requestJson(`${url}/`, headers, signal)
   }
 }
 
@@ -579,9 +612,88 @@ export function normalizeNewApiBilling(
       { label: '重置时间', value: '上游未提供' },
       { label: 'API Key 到期时间', value: permanent ? '永久有效' : expiresAt === null ? '上游未提供' : new Date(expiresAt * 1000).toISOString() },
       { label: 'API Key 是否过期', value: keyExpired === null ? '上游未提供' : keyExpired ? '已过期' : '有效' },
+      { label: '无限额度', value: rawLimit === 100000000 ? '是' : '否' },
     ],
   }
   return buildUsage(baseUrl, null, providerBalance, keyExpired === true ? 'expired' : null)
+}
+
+/** 读取 One-API 兼容账户摘要中的 quota/used_quota/remain_quota。 */
+function normalizeNewApiAccount(value: unknown, baseUrl: string, unit: string | null, quotaPerUnit: number | null): CliSubscriptionUsage | null {
+  const root = recordValue(value)
+  const rawData = root?.data ?? value
+  const candidate = Array.isArray(rawData) ? recordValue(rawData[0]) : recordValue(rawData)
+  if (candidate === null) return null
+  // One-API 的 `quota` 表示账户剩余额度，`used_quota` 表示累计已用额度；
+  // 只有显式的 `total_quota` 才是总额度，不能把 quota 当成总额再减一次。
+  const rawRemaining = numberValue(candidate.remain_quota ?? candidate.remaining ?? candidate.remainQuota ?? candidate.quota)
+  const rawUsed = numberValue(candidate.used_quota ?? candidate.usedQuota)
+  const rawTotal = numberValue(candidate.total_quota ?? candidate.totalQuota)
+  if (rawRemaining === null && rawUsed === null && rawTotal === null) return null
+  const convert = (value: number | null): number | null => {
+    if (value === null) return null
+    if (unit?.trim().toUpperCase() === 'USD' && quotaPerUnit !== null && quotaPerUnit > 1) return value / quotaPerUnit
+    return value
+  }
+  const remaining = convert(rawRemaining ?? (rawTotal !== null && rawUsed !== null ? Math.max(0, rawTotal - rawUsed) : null))
+  const used = convert(rawUsed)
+  const total = convert(rawTotal ?? (rawUsed !== null && rawRemaining !== null ? rawUsed + rawRemaining : null))
+  const providerBalance: ProviderBalanceUsage = {
+    upstreamUrl: sanitizeUpstreamUrl(baseUrl),
+    currency: unit,
+    unit,
+    balance: remaining,
+    remaining,
+    used,
+    total,
+    requests: numberValue(candidate.request_count ?? candidate.requestCount),
+    inputTokens: null,
+    outputTokens: null,
+    planName: textValue(candidate.group ?? candidate.group_name ?? candidate.groupName),
+    expiresAt: unixSeconds(candidate.expires_at ?? candidate.expire_time ?? candidate.expireTime),
+    keyExpired: typeof candidate.status === 'string' ? /expired|disabled|inactive/iu.test(candidate.status) : null,
+    details: [
+      { label: '余额/剩余额度', value: remaining ?? '上游未提供' },
+      { label: unit === null ? '上游原始额度' : '累计用量', value: used ?? '上游未提供' },
+      { label: '余额来源', value: 'One-API quota' },
+    ],
+  }
+  return buildUsage(baseUrl, null, providerBalance, providerBalance.keyExpired === true ? 'expired' : null)
+}
+
+function readNewApiQuotaInfo(value: unknown): { readonly unit: string | null; readonly quotaPerUnit: number | null } {
+  const root = recordValue(value)
+  const data = recordValue(root?.data) ?? root
+  if (data === null) return { unit: null, quotaPerUnit: null }
+  const type = textValue(data.quota_display_type ?? data.quotaDisplayType ?? data.display_type ?? data.displayType)
+  const perUnit = numberValue(data.quota_per_unit ?? data.quotaPerUnit)
+  return { unit: type === null ? null : type.toUpperCase(), quotaPerUnit: perUnit }
+}
+
+function mergeNewApiAccount(usage: CliSubscriptionUsage, account: CliSubscriptionUsage | null): CliSubscriptionUsage {
+  if (account?.providerBalance === undefined) return usage
+  const current = usage.providerBalance
+  if (current === undefined) return account
+  const source = account.providerBalance
+  const hasValue = (value: number | null): value is number => value !== null && Number.isFinite(value)
+  const details = mergeProviderDetails(current.details, source.details)
+  return {
+    ...usage,
+    providerBalance: {
+      ...current,
+      currency: current.currency ?? source.currency,
+      unit: current.unit ?? source.unit,
+      balance: hasValue(current.remaining) ? current.balance : source.balance,
+      remaining: hasValue(current.remaining) ? current.remaining : source.remaining,
+      used: hasValue(current.used) ? current.used : source.used,
+      total: hasValue(current.total) ? current.total : source.total,
+      requests: current.requests ?? source.requests,
+      planName: current.planName ?? source.planName,
+      expiresAt: current.expiresAt ?? source.expiresAt ?? null,
+      keyExpired: current.keyExpired ?? source.keyExpired ?? null,
+      details,
+    },
+  }
 }
 
 /**

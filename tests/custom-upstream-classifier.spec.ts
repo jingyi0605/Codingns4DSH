@@ -81,6 +81,18 @@ test('只有 billing 接口命中时标记为弱 New-API 兼容结果', async ()
   assert.equal(result?.classification.reader, 'new-api')
 })
 
+test('完整 Sub2API 命中时覆盖弱 New-API billing 兼容结果', async () => {
+  const classifier = new CustomUpstreamClassifier()
+  const result = await classifier.read('opencode', undefined, [{ source: source(), newApi: true, sub2api: true }], {
+    newApi: async () => ({ usage: usage(), kind: 'new-api-billing-compatible' }),
+    sub2api: async () => ({ usage: usage(), kind: 'sub2api' }),
+  })
+  assert.equal(result?.classification.kind, 'sub2api')
+  assert.equal(result?.classification.reader, 'sub2api')
+  assert.equal(result?.classification.confidence, 'strong')
+  assert.ok(result?.usage)
+})
+
 test('两个协议都命中时返回 ambiguous，不静默套用任一协议', async () => {
   const classifier = new CustomUpstreamClassifier()
   const result = await classifier.read('codebuddy', 'provider-a', [{ source: source(), newApi: true, sub2api: true }], {

@@ -29,6 +29,9 @@ test('New-API 以 token 主接口为准并合并两个 billing 接口', async ()
     'https://new-api.example.test/v1/dashboard/billing/subscription',
     'https://new-api.example.test/v1/dashboard/billing/usage',
     'https://new-api.example.test/api/log/token',
+    'https://new-api.example.test/api/user/self',
+    'https://new-api.example.test/api/token',
+    'https://new-api.example.test/api/status',
   ])
   assert.equal(result?.provider?.capability, 'new-api')
   assert.equal(result?.providerBalance?.remaining, 800)
@@ -109,6 +112,47 @@ test('New-API token 鉴权失败时不把 billing 错误响应伪装成余额', 
   })
   assert.equal(await service.read('dsh'), null)
   assert.deepEqual(calls, ['https://new-api.example.test/api/usage/token'])
+})
+
+test('New-API token 无斜杠路由不存在时回退到带斜杠路由', async () => {
+  const calls: string[] = []
+  const service = new NewApiSubscriptionService({
+    sources: { dsh: { baseUrl: 'https://new-api.example.test', apiKey: 'valid-secret' } },
+    fetch: (async (url: string) => {
+      calls.push(url)
+      if (url === 'https://new-api.example.test/api/usage/token') return new Response('{}', { status: 404 })
+      if (url === 'https://new-api.example.test/api/usage/token/') {
+        return new Response(JSON.stringify({ data: { object: 'token_usage', remaining: 1.25, unit: 'USD', is_active: true } }), { status: 200 })
+      }
+      if (url.endsWith('/dashboard/billing/subscription')) return new Response(JSON.stringify({ object: 'billing_subscription', access_until: 1_800_000_000 }), { status: 200 })
+      if (url.endsWith('/dashboard/billing/usage')) return new Response(JSON.stringify({ object: 'list', total_usage: 0 }), { status: 200 })
+      return new Response(JSON.stringify({ success: true, data: [] }), { status: 200 })
+    }) as typeof fetch,
+  })
+  const result = await service.read('dsh')
+  assert.equal(result?.providerBalance?.remaining, 1.25)
+  assert.deepEqual(calls.slice(0, 2), [
+    'https://new-api.example.test/api/usage/token',
+    'https://new-api.example.test/api/usage/token/',
+  ])
+})
+
+test('One-API quota 账户字段可补充 Token 接口缺失的余额', async () => {
+  const service = new NewApiSubscriptionService({
+    sources: { dsh: { baseUrl: 'https://one-api.example.test', apiKey: 'valid-secret' } },
+    fetch: (async (url: string) => {
+      if (url.endsWith('/api/usage/token')) return new Response(JSON.stringify({ data: { object: 'token_usage', unlimited_quota: true, is_active: true } }), { status: 200 })
+      if (url.endsWith('/api/user/self')) return new Response(JSON.stringify({ data: { quota: 250000, used_quota: 125000 } }), { status: 200 })
+      if (url.endsWith('/api/status')) return new Response(JSON.stringify({ data: { quota_display_type: 'USD', quota_per_unit: 500000 } }), { status: 200 })
+      if (url.endsWith('/dashboard/billing/subscription')) return new Response('{}', { status: 401 })
+      if (url.endsWith('/dashboard/billing/usage')) return new Response('{}', { status: 401 })
+      return new Response(JSON.stringify({ success: true, data: [] }), { status: 200 })
+    }) as typeof fetch,
+  })
+  const result = await service.read('dsh')
+  assert.equal(result?.providerBalance?.remaining, 0.5)
+  assert.equal(result?.providerBalance?.used, 0.25)
+  assert.equal(result?.providerBalance?.unit, 'USD')
 })
 
 test('New-API 缺失字段保持 null 并显示上游未提供', () => {
