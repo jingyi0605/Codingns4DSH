@@ -12,3 +12,17 @@ docs/配图
 .DS_Store
 output/imagegen/dsh-cover-api/dsh-bilibili-cover-api-16x9.png
 tmp
+# WorkBuddy 项目的打包产物误落在仓库根目录：引用的本地模块（rolldown-runtime.js 等）
+# 与源包 packages/workbuddy-server 都不在本仓库，项目源码和配置也从未引用它们。
+/app-server-background-services.js
+/cli-prewarm-pool.js
+/code-cache.js
+/contract.js
+/daemon-app-server-entry.js
+/daemon-app-server-main.js
+/daemon-bootstrap.js
+/process-cpu-sampler.js
+/server.js
+/sidecar-entry.js
+# Host 在运行时生成的工作区级调试状态（src/host/debug.ts 写入）
+.codingns/
