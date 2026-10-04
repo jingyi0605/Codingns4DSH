@@ -1,17 +1,17 @@
 {
   "name": "codingns4dsh-profile",
-  "version": "0.2.0-rc.3",
+  "version": "0.2.1-beta.1",
   "license": "GPL-3.0-or-later",
   "private": true,
   "type": "module",
   "engines": {
-    "dsh": ">=0.2.0-rc.2 <=0.2.0-rc.2"
+    "dsh": ">=0.2.0-rc.2"
   },
   "scripts": {
     "preinstall": "node scripts/check-dsh-install.mjs"
   },
   "dependencies": {
-    "@jingyi0605/codingns4dsh": "0.2.0-rc.3"
+    "@jingyi0605/codingns4dsh": "0.2.1-beta.1"
   },
   "dsh": {
     "profile": {

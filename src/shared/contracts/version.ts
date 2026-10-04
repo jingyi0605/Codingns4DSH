@@ -1,11 +1,18 @@
 /** 当前经过完整验证的 DSH 版本；源文件由根目录 version.json 同步。 */
-export const DSH_VERSION = '0.2.0-rc.2' as const
+export const DSH_VERSION = '0.2.1-alpha.1' as const
 
 /** DSH 测试版本别名，供新代码表达语义，保留 DSH_VERSION 兼容旧调用方。 */
 export const DSH_TESTED_VERSION = DSH_VERSION
 
-/** 插件正式验证的 DSH 版本范围；rc.2 的 Client ABI 未经验证不得放宽上限。 */
-export const DSH_COMPATIBILITY = '>=0.2.0-rc.2 <=0.2.0-rc.2' as const
+/**
+ * 插件正式验证的 DSH 版本范围，只声明下界。
+ *
+ * 0.2.0-rc.2 与 0.2.1-alpha.1 属于同一 API 世代：插件消费的 7 个宿主包接口面
+ * 未变（仅 dsh-client-ui-primitives 新增 InlineEditor），会话格式仍为 v4。因此
+ * 不再按预发布版本逐个收紧上限——收紧会让已发布的 rc.2 环境在升级瞬间被整体
+ * 拒绝。出现新的 API 世代或结构变化时，应新增能力路由，而不是靠范围比较。
+ */
+export const DSH_COMPATIBILITY = '>=0.2.0-rc.2' as const
 
 /**
  * 兼容范围下界，即插件仍然接受的最低 DSH 版本。
@@ -31,7 +38,7 @@ export function isLegacyDshVersion(version: string): boolean {
 }
 
 /** Codingns4DSH 插件自身的 npm 版本。 */
-export const CODINGNS_VERSION = '0.2.0-rc.3' as const
+export const CODINGNS_VERSION = '0.2.1-beta.1' as const
 
 interface ParsedVersion {
   readonly major: number
