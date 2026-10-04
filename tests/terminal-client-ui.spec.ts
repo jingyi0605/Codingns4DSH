@@ -135,7 +135,7 @@ test('聚合页终端列表位于顶部横向标签栏，不占用内容区侧�
   assert.match(styles, /aggregateRoot\}\{[^}]*flex-direction:column/u)
   assert.match(styles, /list\}\{[^}]*overflow-x:auto/u)
   assert.match(styles, /list\}\{[^}]*height:40px[^}]*align-items:center/u)
-  assert.match(styles, /listRow\}\{[^}]*height:32px/u)
+  assert.match(styles, /listRow\}\{[^}]*height:28px/u)
   assert.match(styles, /newButton\}\{[^}]*width:30px[^}]*max-height:30px/u)
   assert.match(source, /className: terminalClass\.newButton,[\s\S]*icon: createElement\(resolvePlusIcon\(\)\),[\s\S]*'aria-label': t\('terminal\.new'\)/u)
   assert.doesNotMatch(styles, /list\}\{[^}]*width:180px/u)
