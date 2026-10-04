@@ -61,6 +61,11 @@ export interface TerminalRuntimeAttachment {
   readonly identity: TerminalRuntimeIdentity
 }
 
+/** 可从持久运行时读取已经产生的屏幕历史；不支持时由上层回退到输出重放。 */
+export interface TerminalRuntimeHistory {
+  captureHistory(session: TerminalRuntimeSession, lines: number): Promise<string | undefined>
+}
+
 export interface TerminalRuntimeWriteInput {
   readonly attachmentId: string
   readonly data: string
@@ -104,6 +109,13 @@ export function supportsServerInput(
   adapter: TerminalRuntimeAdapter,
 ): adapter is TerminalRuntimeAdapter & TerminalRuntimeServerInput {
   return typeof (adapter as Partial<TerminalRuntimeServerInput>).sendInput === 'function'
+}
+
+/** 探测 backend 是否能直接读取持久终端历史。 */
+export function supportsHistory(
+  adapter: TerminalRuntimeAdapter,
+): adapter is TerminalRuntimeAdapter & TerminalRuntimeHistory {
+  return typeof (adapter as Partial<TerminalRuntimeHistory>).captureHistory === 'function'
 }
 
 export type TerminalRuntimeErrorCode =

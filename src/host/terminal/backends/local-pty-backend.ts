@@ -12,6 +12,7 @@ import {
   type TerminalRuntimeSession,
   type TerminalRuntimeWriteInput,
 } from '../runtime-adapter.js'
+import { debugInfo, debugWarn } from '../../../shared/debug.js'
 
 export interface LocalPtyBackendOptions {
   readonly platform?: string
@@ -57,6 +58,13 @@ export class LocalPtyTerminalBackend implements TerminalRuntimeAdapter {
 
   async create(input: TerminalRuntimeCreateInput): Promise<TerminalRuntimeIdentity> {
     this.assertSupported(input.session)
+    debugInfo('codingns4dsh: local pty create start', {
+      runtimeSessionKey: input.session.runtimeSessionKey,
+      shellPath: input.session.shellPath,
+      cwd: input.session.cwd,
+      cols: input.cols,
+      rows: input.rows,
+    })
     const existing = this.processes.get(input.session.runtimeSessionKey)
     if (existing?.alive) return identityOf(input.session, existing.pty.pid, true)
 
@@ -71,6 +79,10 @@ export class LocalPtyTerminalBackend implements TerminalRuntimeAdapter {
         name: 'xterm-256color',
       })
     } catch (error) {
+      debugWarn('codingns4dsh: local pty create failed', {
+        runtimeSessionKey: input.session.runtimeSessionKey,
+        error: error instanceof Error ? error.message : String(error),
+      })
       throw new TerminalRuntimeError('TERMINAL_RUNTIME_CREATE_FAILED', '本机 PTY 创建失败', { cause: error })
     }
 
@@ -83,10 +95,12 @@ export class LocalPtyTerminalBackend implements TerminalRuntimeAdapter {
       }
     })
     const exitSubscription = pty.onExit(({ exitCode }) => {
+      debugInfo('codingns4dsh: local pty exit', { runtimeSessionKey: input.session.runtimeSessionKey, pid: pty.pid, exitCode })
       if (state !== undefined) this.handleExit(input.session.runtimeSessionKey, state, exitCode)
     })
     state = { pty, dataSubscription, exitSubscription, alive: true, replay: '' }
     this.processes.set(input.session.runtimeSessionKey, state)
+    debugInfo('codingns4dsh: local pty create success', { runtimeSessionKey: input.session.runtimeSessionKey, pid: pty.pid })
     return identityOf(input.session, pty.pid, true)
   }
 

@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import type { PersistentTerminalRecord, TerminalRecordIdentity } from '../../shared/contracts/terminal.js'
 import { TerminalAttachmentRegistry, type ManagedTerminalAttachment } from './attachment-registry.js'
-import { supportsServerInput } from './runtime-adapter.js'
+import { supportsHistory, supportsServerInput } from './runtime-adapter.js'
 import type {
   TerminalRuntimeAdapter,
   TerminalRuntimeIdentity,
   TerminalRuntimeSession,
   TerminalRuntimeType,
 } from './runtime-adapter.js'
+import { debugInfo, debugWarn } from '../../shared/debug.js'
 
 export interface RuntimeAttachmentInput {
   readonly identity: TerminalRecordIdentity
@@ -41,16 +42,39 @@ export class TerminalRuntimeManager {
   }
 
   create(record: PersistentTerminalRecord): Promise<TerminalRuntimeIdentity> {
+    debugInfo('codingns4dsh: terminal runtime create start', { record: runtimeSummary(record) })
     return this.adapter(record.runtimeType).create({ session: runtimeSession(record), cols: record.cols, rows: record.rows })
+      .then((identity) => {
+        debugInfo('codingns4dsh: terminal runtime create result', { record: runtimeSummary(record), runtime: identitySummary(identity) })
+        return identity
+      })
+      .catch((error) => {
+        debugWarn('codingns4dsh: terminal runtime create failed', { record: runtimeSummary(record), error: errorMessage(error) })
+        throw error
+      })
   }
 
   inspect(record: PersistentTerminalRecord): Promise<TerminalRuntimeIdentity> {
     return this.adapter(record.runtimeType).inspect(runtimeSession(record))
+      .then((identity) => {
+        debugInfo('codingns4dsh: terminal runtime inspect', { record: runtimeSummary(record), runtime: identitySummary(identity) })
+        return identity
+      })
+      .catch((error) => {
+        debugWarn('codingns4dsh: terminal runtime inspect failed', { record: runtimeSummary(record), error: errorMessage(error) })
+        throw error
+      })
   }
 
   async attach(record: PersistentTerminalRecord, input: RuntimeAttachmentInput): Promise<ManagedTerminalAttachment> {
     const backend = this.adapter(record.runtimeType)
     const subscriptionId = randomUUID()
+    debugInfo('codingns4dsh: terminal runtime attach start', {
+      record: runtimeSummary(record),
+      attachmentId: input.requestedAttachmentId,
+      generation: input.generation,
+      subscriptionId,
+    })
     let runtimeAttachmentId: string | undefined
     const earlyData: string[] = []
     let earlyExit: number | null | undefined
@@ -66,6 +90,12 @@ export class TerminalRuntimeManager {
         if (this.registry.isCurrent(subscriptionId, input.generation, runtimeAttachmentId)) input.onData(data)
       },
       onExit: (exitCode) => {
+        debugInfo('codingns4dsh: terminal runtime attach exit', {
+          record: runtimeSummary(record),
+          attachmentId: input.requestedAttachmentId,
+          subscriptionId,
+          exitCode,
+        })
         if (runtimeAttachmentId === undefined) {
           earlyExit = exitCode
           return
@@ -90,6 +120,14 @@ export class TerminalRuntimeManager {
     if (earlyExit !== undefined && this.registry.isCurrent(subscriptionId, input.generation, runtimeAttachmentId)) {
       input.onExit(earlyExit)
     }
+    debugInfo('codingns4dsh: terminal runtime attach success', {
+      record: runtimeSummary(record),
+      attachmentId: input.requestedAttachmentId,
+      subscriptionId,
+      runtimeAttachmentId,
+      earlyDataBytes: earlyData.reduce((total, data) => total + Buffer.byteLength(data), 0),
+      earlyExit: earlyExit ?? null,
+    })
     return managed
   }
 
@@ -135,9 +173,17 @@ export class TerminalRuntimeManager {
     await this.adapter(attachment.runtimeType).resize({ attachmentId: attachment.runtimeAttachmentId, cols, rows })
   }
 
+  /** 读取持久 backend 的屏幕历史；不支持的 backend 返回 undefined。 */
+  async captureHistory(record: PersistentTerminalRecord, lines: number): Promise<string | undefined> {
+    const backend = this.adapter(record.runtimeType)
+    if (!supportsHistory(backend)) return undefined
+    return backend.captureHistory(runtimeSession(record), lines)
+  }
+
   async detach(subscriptionId: string): Promise<void> {
     const attachment = this.registry.remove(subscriptionId)
     if (attachment === undefined) return
+    debugInfo('codingns4dsh: terminal runtime detach', { subscriptionId, attachment: attachmentSummary(attachment) })
     await this.adapter(attachment.runtimeType).detach(attachment.runtimeAttachmentId)
   }
 
@@ -152,8 +198,12 @@ export class TerminalRuntimeManager {
   /** 为 Host 进程状态提供退出监听，不获取终端输入控制权。 */
   async monitor(record: PersistentTerminalRecord, onExit: (exitCode: number | null) => void): Promise<void> {
     const key = monitorKey(record)
-    if (this.monitors.has(key)) return
+    if (this.monitors.has(key)) {
+      debugInfo('codingns4dsh: terminal runtime monitor reused', { record: runtimeSummary(record) })
+      return
+    }
     const backend = this.adapter(record.runtimeType)
+    debugInfo('codingns4dsh: terminal runtime monitor start', { record: runtimeSummary(record) })
     const attachment = await backend.attach({
       session: runtimeSession(record),
       cols: record.cols,
@@ -161,10 +211,12 @@ export class TerminalRuntimeManager {
       onData: () => undefined,
       onExit: (exitCode) => {
         this.monitors.delete(key)
+        debugInfo('codingns4dsh: terminal runtime monitor exit', { record: runtimeSummary(record), exitCode })
         onExit(exitCode)
       },
     })
     this.monitors.set(key, { runtimeType: record.runtimeType, attachmentId: attachment.attachmentId })
+    debugInfo('codingns4dsh: terminal runtime monitor attached', { record: runtimeSummary(record), attachmentId: attachment.attachmentId })
   }
 
   async detachMonitor(record: PersistentTerminalRecord): Promise<void> {
@@ -183,8 +235,10 @@ export class TerminalRuntimeManager {
   }
 
   async terminate(record: PersistentTerminalRecord): Promise<void> {
+    debugInfo('codingns4dsh: terminal runtime terminate start', { record: runtimeSummary(record) })
     await this.detachMonitor(record)
     await this.adapter(record.runtimeType).terminate(runtimeSession(record))
+    debugInfo('codingns4dsh: terminal runtime terminate success', { record: runtimeSummary(record) })
   }
 
   private adapter(runtimeType: TerminalRuntimeType): TerminalRuntimeAdapter {
@@ -217,3 +271,35 @@ function runtimeSession(record: PersistentTerminalRecord): TerminalRuntimeSessio
     cwd: record.cwd,
   }
 }
+
+function runtimeSummary(record: PersistentTerminalRecord): Record<string, unknown> {
+  return {
+    hostId: record.hostId,
+    workspaceId: record.workspaceId,
+    terminalId: record.terminalId,
+    runtimeType: record.runtimeType,
+    runtimeSessionKey: record.runtimeSessionKey,
+    state: record.state,
+  }
+}
+
+function identitySummary(identity: TerminalRuntimeIdentity): Record<string, unknown> {
+  return {
+    alive: identity.alive,
+    runtimePid: identity.runtimePid ?? null,
+    shellPid: identity.shellPid ?? null,
+    exitCode: identity.exitCode ?? null,
+    detail: identity.detail ?? null,
+  }
+}
+
+function attachmentSummary(attachment: ManagedTerminalAttachment): Record<string, unknown> {
+  return {
+    terminalId: attachment.terminalId,
+    runtimeType: attachment.runtimeType,
+    runtimeAttachmentId: attachment.runtimeAttachmentId,
+    generation: attachment.generation,
+  }
+}
+
+function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }

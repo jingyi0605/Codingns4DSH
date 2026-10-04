@@ -108,6 +108,36 @@ test('follow 第一帧始终是 snapshot，后续输出序号连续', async () =
   await iterator.return()
 })
 
+test('Host 常驻连接供多个会话复用，新增 follow 立即收到当前状态', async () => {
+  const { adapter, service, identity } = await setup()
+  const firstController = new AbortController()
+  const first = service.follow({ identity, attachmentId: 'browser-a', generation: 'generation-a', signal: firstController.signal })[Symbol.asyncIterator]()
+  assert.equal((await first.next()).value.type, 'snapshot')
+  assert.equal((await first.next()).value.type, 'state')
+  const resident = [...adapter.attachments.values()][0]
+  resident.onData('before-second')
+  assert.deepEqual((await first.next()).value, { type: 'output', sequence: 1, data: 'before-second' })
+
+  const secondController = new AbortController()
+  const second = service.follow({ identity, attachmentId: 'browser-b', generation: 'generation-b', signal: secondController.signal })[Symbol.asyncIterator]()
+  const secondSnapshot = await second.next()
+  assert.equal(secondSnapshot.value.type, 'snapshot')
+  assert.equal(secondSnapshot.value.screen, 'before-second')
+  assert.equal((await second.next()).value.type, 'state')
+  // 第二个浏览器订阅不能再创建一个 tmux/local-pty backend attachment。
+  assert.equal(adapter.attachments.size, 1)
+  resident.onData('shared-output')
+  assert.deepEqual((await first.next()).value, { type: 'output', sequence: 2, data: 'shared-output' })
+  assert.deepEqual((await second.next()).value, { type: 'output', sequence: 1, data: 'shared-output' })
+
+  firstController.abort()
+  secondController.abort()
+  await first.return()
+  await second.return()
+  assert.equal(adapter.attachments.size, 1, '浏览器订阅结束不能释放 Host 常驻连接')
+  await service.dispose()
+})
+
 test('插件卸载只 detach，不 terminate 持久运行时', async () => {
   const { adapter, service, identity } = await setup()
   const controller = new AbortController()
@@ -203,17 +233,39 @@ test('shell 自然退出先发送 exited 状态再结束 follow 流', async () =
   assert.equal((await iterator.next()).done, true)
 })
 
-test('attach 客户端断开但运行时仍在时不得写成 exited', async () => {
+test('Host resident 连接断开但运行时仍在时保留 follow 并重绑控制', async () => {
   const { adapter, service, identity } = await setup()
   const controller = new AbortController()
   const iterator = service.follow({ identity, attachmentId: 'browser-a', generation: 'generation-a', signal: controller.signal })[Symbol.asyncIterator]()
   await iterator.next()
   await iterator.next()
   const runtimeAttachment = [...adapter.attachments.values()][0]
-  // 客户端以 1 退出（tmux 客户端在连接层故障时就是 1），但 shell 还活着。
+  // Host resident 客户端以 1 退出，但持久 Shell 还活着。
   runtimeAttachment.onExit(1)
 
-  // 只结束这一条流，不广播终态；记录必须保持 running，让客户端重连。
+  // Shell 仍存活时，Host 重新建立 resident；已有浏览器流不能被提前结束。
+  for (let attempt = 0; attempt < 100 && adapter.nextAttachment < 2; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  assert.equal(adapter.nextAttachment, 2)
+  const replacement = [...adapter.attachments.values()][0]
+  assert.notEqual(replacement, runtimeAttachment)
+  // 旧 attachment 的迟到退出回调不能影响已经建立的新 resident。
+  runtimeAttachment.onExit(1)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(adapter.attachments.size, 1)
+  replacement.onData('restored-screen')
+  const restored = await iterator.next()
+  assert.equal(restored.value.type, 'snapshot')
+  assert.equal(restored.value.screen, 'restored-screen')
+  replacement.onData('still-alive')
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  const output = await iterator.next()
+  assert.equal(output.value.type, 'output')
+  await service.write(identity, 'browser-a', 'echo')
+  assert.equal(replacement.lastInput, 'echo')
+
+  controller.abort()
   assert.equal((await iterator.next()).done, true)
   const listed = service.listSession('host-a', 'session-a')[0]
   assert.equal(listed.state, 'running')
@@ -270,6 +322,7 @@ test('运行时丢失后同一 terminalId 可以重建并保留工作区身份',
   assert.equal(after?.state, 'running')
   // 旧运行时已经被清理，不能再有残留 attach。
   assert.equal(adapter.sessions.size, 1)
+  assert.equal(adapter.attachments.size, 1)
 })
 
 test('已关闭的终端不允许用相同标识重建', async () => {

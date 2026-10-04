@@ -21,6 +21,7 @@ import {
 } from './shell-detection.js'
 import { CodingNsTerminalService, TerminalServiceError } from './terminal-service.js'
 import { debugInfo, debugWarn } from '../../shared/debug.js'
+import { stripTerminalDeviceAttributeResponses } from '../../shared/terminal-input.js'
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
@@ -136,7 +137,14 @@ export class CodingNsTerminalController extends TypertRemoteService {
       sessionId,
       workspaceId,
       registryResolved: workspaceId !== undefined && !isSessionWorkspaceId(workspaceId),
-      terminalIds: result.map((terminal) => terminal.id),
+      terminals: result.map((terminal) => ({
+        id: terminal.id,
+        state: terminal.state,
+        title: terminal.title,
+        cwd: terminal.cwd,
+        workspaceId,
+        error: terminal.error ?? null,
+      })),
     })
     return result
   }
@@ -151,11 +159,14 @@ export class CodingNsTerminalController extends TypertRemoteService {
     const scope = this.scope(agent)
     this.rememberWorkspace(agent)
     const existing = this.options.service.list(scope).find((terminal) => terminal.id === request.id)
-    debugInfo('codingns4dsh: terminal create', {
+    debugInfo('codingns4dsh: terminal create request', {
       sessionId: agent.id,
       terminalId: request.id,
       scope,
       existing: existing?.id ?? null,
+      currentTerminalIds: this.options.service.list(scope).map((terminal) => terminal.id),
+      cols: request.cols,
+      rows: request.rows,
     })
     if (existing !== undefined) return existing
     if (this.options.service.list(scope).length >= this.maxTerminals) {
@@ -163,7 +174,7 @@ export class CodingNsTerminalController extends TypertRemoteService {
     }
     const selected = this.selectShell(request.shellPath)
     try {
-      return await this.options.service.create({
+      const result = await this.options.service.create({
         scope,
         terminalId: request.id,
         runtimeType: this.options.runtimeType?.(selected.profileId, this.platform)
@@ -173,7 +184,20 @@ export class CodingNsTerminalController extends TypertRemoteService {
         cols: request.cols,
         rows: request.rows,
       })
+      debugInfo('codingns4dsh: terminal create success', {
+        sessionId: agent.id,
+        terminalId: request.id,
+        scope,
+        result: { id: result.id, state: result.state, controllerId: result.controllerId ?? null, error: result.error ?? null },
+      })
+      return result
     } catch (error) {
+      debugWarn('codingns4dsh: terminal create failed', {
+        sessionId: agent.id,
+        terminalId: request.id,
+        scope,
+        error: errorMessage(error),
+      })
       throw remoteTerminalError(error)
     }
   }
@@ -181,9 +205,12 @@ export class CodingNsTerminalController extends TypertRemoteService {
   @Remote({ mode: 'stream' })
   retain(sessionId: string, id: string, signal: AbortSignal): AsyncIterable<CodingNsTerminalRetentionFrame> {
     try {
-      const identity = this.options.service.findIdentity(this.options.hostId, sessionId, id, this.workspaceForSession(sessionId))
+      const workspaceId = this.workspaceForSession(sessionId)
+      const identity = this.options.service.findIdentity(this.options.hostId, sessionId, id, workspaceId)
+      debugInfo('codingns4dsh: terminal retain', { sessionId, terminalId: id, workspaceId, identity })
       return translateTerminalStream(this.options.service.retain(identity, signal))
     } catch (error) {
+      debugWarn('codingns4dsh: terminal retain failed', { sessionId, terminalId: id, error: errorMessage(error) })
       throw remoteTerminalError(error)
     }
   }
@@ -197,8 +224,10 @@ export class CodingNsTerminalController extends TypertRemoteService {
   ): AsyncIterable<CodingNsTerminalFrame> {
     if (!/^[\w-]{1,128}$/u.test(attachmentId)) throw new TypeError('终端 attach 标识无效')
     try {
+      const identity = this.identity(agent, id)
+      debugInfo('codingns4dsh: terminal follow request', { sessionId: agent.id, terminalId: id, attachmentId, identity })
       return translateTerminalStream(this.options.service.follow({
-        identity: this.identity(agent, id),
+        identity,
         attachmentId,
         // attachmentId 由原生 Client 每次物理 attach 重新生成，正好作为短命
         // generation；它不会进入持久记录，也不会让旧 attach 的回调控制新流。
@@ -206,13 +235,36 @@ export class CodingNsTerminalController extends TypertRemoteService {
         signal,
       }))
     } catch (error) {
+      debugWarn('codingns4dsh: terminal follow failed', { sessionId: agent.id, terminalId: id, attachmentId, error: errorMessage(error) })
       throw remoteTerminalError(error)
     }
   }
 
   @Remote
   async write(agent: DshTerminalAgent, id: string, attachmentId: string, data: string): Promise<void> {
-    if (new TextEncoder().encode(data).byteLength > this.maxInputBytes) throw new TypeError('终端输入超过允许上限')
+    const encoder = new TextEncoder()
+    const originalBytes = encoder.encode(data).byteLength
+    data = stripTerminalDeviceAttributeResponses(data)
+    if (data.length === 0) {
+      debugInfo('codingns4dsh: terminal device response filtered', {
+        sessionId: agent.id,
+        terminalId: id,
+        attachmentId,
+        originalBytes,
+      })
+      return
+    }
+    const remainingBytes = encoder.encode(data).byteLength
+    if (remainingBytes !== originalBytes) {
+      debugInfo('codingns4dsh: terminal device response filtered before write', {
+        sessionId: agent.id,
+        terminalId: id,
+        attachmentId,
+        originalBytes,
+        remainingBytes,
+      })
+    }
+    if (remainingBytes > this.maxInputBytes) throw new TypeError('终端输入超过允许上限')
     try {
       await this.options.service.write(this.identity(agent, id), attachmentId, data)
     } catch (error) {

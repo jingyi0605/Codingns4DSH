@@ -16,6 +16,7 @@ import {
   type TerminalRuntimeSession,
   type TerminalRuntimeWriteInput,
 } from '../runtime-adapter.js'
+import { debugInfo, debugWarn } from '../../../shared/debug.js'
 
 export interface TmuxCommandResult {
   readonly status: number | null
@@ -128,6 +129,16 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     this.assertSupported(input.session)
     const tmuxPath = this.requireTmuxPath()
     await this.ensureServer()
+    debugInfo('codingns4dsh: tmux create start', {
+      runtimeSessionKey: input.session.runtimeSessionKey,
+      cwd: input.session.cwd,
+      shellPath: input.session.shellPath,
+      commandPath: input.session.commandPath ?? null,
+      shellArgCount: input.session.shellArgs.length,
+      commandArgCount: input.session.commandArgs?.length ?? 0,
+      cols: input.cols,
+      rows: input.rows,
+    })
     const current = await this.inspect(input.session)
     if (current.alive) return current
     const name = tmuxSessionName(input.session.runtimeSessionKey)
@@ -143,6 +154,12 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
       ...tmuxLaunchCommand(input.session, this.exitCodePath(name)),
     ])
     if (result.status !== 0) {
+      debugWarn('codingns4dsh: tmux create command failed', {
+        runtimeSessionKey: input.session.runtimeSessionKey,
+        status: result.status,
+        stderr: result.stderr,
+        stdout: result.stdout,
+      })
       throw new TerminalRuntimeError(
         result.status === null ? 'TERMINAL_RUNTIME_UNAVAILABLE' : 'TERMINAL_RUNTIME_CREATE_FAILED',
         sanitizeCommandError('tmux 会话创建失败', result.stderr),
@@ -151,6 +168,13 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     // 会话级尺寸策略必须在任何客户端 attach 之前锁定，否则第一次 attach 就会
     // 按客户端尺寸改写窗口。
     const sized = this.runner.run(tmuxPath, ['-S', this.server.socket, ...sessionSizeArguments(name)])
+    debugInfo('codingns4dsh: tmux create command result', {
+      runtimeSessionKey: input.session.runtimeSessionKey,
+      status: result.status,
+      stderr: result.stderr,
+      sizeStatus: sized.status,
+      sizeStderr: sized.stderr,
+    })
     if (sized.status !== 0 && !isMissingSession(sized.stderr)) {
       throw new TerminalRuntimeError('TERMINAL_RUNTIME_CREATE_FAILED', sanitizeCommandError('tmux 会话尺寸策略设置失败', sized.stderr))
     }
@@ -168,6 +192,11 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     }
     const name = tmuxSessionName(session.runtimeSessionKey)
     const result = this.runner.run(this.tmuxPath, ['-S', this.server.socket, 'has-session', '-t', name])
+    debugInfo('codingns4dsh: tmux inspect result', {
+      runtimeSessionKey: session.runtimeSessionKey,
+      status: result.status,
+      stderr: result.stderr,
+    })
     if (result.status === null) {
       throw new TerminalRuntimeError('TERMINAL_RUNTIME_UNAVAILABLE', sanitizeCommandError('tmux 不可执行', result.stderr))
     }
@@ -233,6 +262,12 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
       if (!state.detached) input.onData(data)
     })
     pty.onExit(({ exitCode }) => {
+      debugInfo('codingns4dsh: tmux client exit', {
+        runtimeSessionKey: input.session.runtimeSessionKey,
+        attachmentId,
+        exitCode,
+        detached: state.detached,
+      })
       if (this.attachments.get(attachmentId) === state) this.attachments.delete(attachmentId)
       if (!state.detached) input.onExit?.(exitCode)
     })
@@ -258,6 +293,33 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     try { state.pty.resize(size.cols, size.rows) } catch { /* 客户端可能已经退出 */ }
   }
 
+  /**
+   * 从 tmux 的 server buffer 读取历史，而不是依赖 attach 首屏的 ANSI 重绘。
+   * attach 首屏只描述当前视口，无法让浏览器端 xterm 生成 scrollback。
+   */
+  async captureHistory(session: TerminalRuntimeSession, lines: number): Promise<string | undefined> {
+    this.assertSupported(session)
+    const tmuxPath = this.requireTmuxPath()
+    const name = tmuxSessionName(session.runtimeSessionKey)
+    const count = Math.min(50000, Math.max(1, Math.trunc(lines)))
+    const result = this.runner.run(tmuxPath, [
+      '-S', this.server.socket,
+      'capture-pane', '-p', '-J', '-S', `-${count}`, '-t', name,
+    ])
+    debugInfo('codingns4dsh: tmux capture history', {
+      runtimeSessionKey: session.runtimeSessionKey,
+      lines: count,
+      status: result.status,
+      characters: result.stdout.length,
+      stderr: result.stderr,
+    })
+    if (result.status !== 0) {
+      if (isMissingSession(result.stderr)) return undefined
+      throw new TerminalRuntimeError('TERMINAL_RUNTIME_LOST', sanitizeCommandError('tmux 历史读取失败', result.stderr))
+    }
+    return result.stdout
+  }
+
   async detach(attachmentId: string): Promise<void> {
     const state = this.attachments.get(attachmentId)
     if (state === undefined) return
@@ -275,6 +337,11 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
       if (state.sessionName === name) await this.detach(attachmentId)
     }
     const result = this.runner.run(tmuxPath, ['-S', this.server.socket, 'kill-session', '-t', name])
+    debugInfo('codingns4dsh: tmux terminate result', {
+      runtimeSessionKey: session.runtimeSessionKey,
+      status: result.status,
+      stderr: result.stderr,
+    })
     // tmux 的“目标不存在”视为幂等成功。
     if (result.status !== 0 && !isMissingSession(result.stderr)) {
       throw new TerminalRuntimeError('TERMINAL_RUNTIME_CREATE_FAILED', sanitizeCommandError('tmux 会话关闭失败', result.stderr))
