@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { closeSync, copyFileSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import readline from 'node:readline'
 import type {
@@ -178,7 +178,7 @@ interface CommandCodeTurn {
   readonly sessionId: string
   /** 当前活动子进程；撞到 --max-turns 自动续跑时会被替换成新进程。 */
   child: ChildProcessWithoutNullStreams | undefined
-  /** 首轮重放使用的临时 transcript；原生恢复时为空，避免覆盖 Provider 会话。 */
+  /** 首轮使用的持久 transcript；原生恢复时为空。 */
   readonly transcriptPath: string | undefined
   /** Provider 返回的真实会话 ID；存在时后续进程必须使用 --resume。 */
   providerSessionId: string | undefined
@@ -513,12 +513,10 @@ export class CommandCodeDriver implements CodingNsCliDriver {
           continue
         }
         if (candidate.endsWith('.checkpoints.jsonl')) {
-          const hasCheckpoint = textValue(firstRecord.id ?? firstRecord.messageId).trim() !== ''
-          if (!hasCheckpoint) {
-            lastFailure = { state: 'corrupt', reason: 'Command Code 原生会话检查点为空', rawStoreRef: candidate }
-            continue
-          }
-          return { state: 'available', reason: 'Command Code 原生会话检查点可用', rawStoreRef: candidate }
+          // checkpoint 只保存回退点，Command Code 的 --resume 索引仍要求同名
+          // `.jsonl` transcript。仅有 checkpoint 的旧会话不能宣称可恢复。
+          lastFailure = { state: 'missing', reason: 'Command Code 只有 checkpoint，没有可恢复 transcript', rawStoreRef: candidate }
+          continue
         }
         const recordedId = textValue(firstRecord.id ?? firstRecord.sessionId).trim()
         if (recordedId !== '' && recordedId !== providerSessionId) {
@@ -580,18 +578,33 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   }
 
   private startTurn(input: CodingNsCliTurnInput, binary: string): CommandCodeTurn {
-    const providerSessionId = input.providerSessionId?.trim() || undefined
-    const transcriptPath = providerSessionId === undefined
-      ? join(tmpdir(), `codingns4dsh-cc-${safeId(input.sessionId)}.jsonl`)
-      : undefined
-    if (transcriptPath !== undefined) writeTranscript(transcriptPath, input)
     const cwd = input.cwd ?? process.cwd()
+    const requestedProviderSessionId = input.providerSessionId?.trim() || undefined
+    // 旧 synthetic ID 可能只对应 checkpoint；回退时必须以当前 DSH 会话 ID
+    // 作为文件名，保证后续 session-binding、索引和 --resume 使用同一个标识。
+    const canonicalKey = requestedProviderSessionId !== undefined
+      && !isLegacySyntheticSessionId(requestedProviderSessionId)
+      ? requestedProviderSessionId
+      : input.sessionId
+    const canonicalPath = resolveCommandCodeTranscriptPath(this.homeDirectory, cwd, canonicalKey)
+    const hasCanonicalTranscript = existsSync(canonicalPath) && isSafeCommandCodeTranscriptPath(canonicalPath, this.homeDirectory)
+    const hasRequestedRawTranscript = input.rawStoreRef?.trim() !== undefined
+      && existsSync(input.rawStoreRef.trim())
+      && isSafeCommandCodeTranscriptPath(input.rawStoreRef.trim(), this.homeDirectory)
+    // 旧版本会把只有 checkpoint 的外部路径登记成 synthetic session ID；该 ID
+    // 无法被 Command Code 的 --resume 索引解析。没有可读 JSONL 时重新从 DSH
+    // 历史建立 canonical transcript，避免把坏绑定继续传给 Provider。
+    const canResume = requestedProviderSessionId !== undefined
+      && (hasCanonicalTranscript || hasRequestedRawTranscript || !isLegacySyntheticSessionId(requestedProviderSessionId))
+    const providerSessionId = canResume ? requestedProviderSessionId : input.sessionId
+    const transcriptPath = canResume ? undefined : canonicalPath
+    if (transcriptPath !== undefined) writeTranscript(transcriptPath, input)
     const turn: CommandCodeTurn = {
       sessionId: input.sessionId,
       child: undefined,
       transcriptPath,
       providerSessionId,
-      rawStoreRef: input.rawStoreRef?.trim() || undefined,
+      rawStoreRef: canResume ? input.rawStoreRef?.trim() || undefined : transcriptPath,
       cwd,
       queue: createEventQueue(),
       currentMessageId: undefined,
@@ -606,6 +619,11 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       maxTurnsReached: false,
       messageSequence: 0,
       stderrTail: '',
+    }
+    // 首轮固定使用 canonical transcript；CLI 事件里的 checkpoint ID 不可用于
+    // --resume，因此先登记稳定的 DSH 会话 ID，后续回合沿用同一路径恢复。
+    if (!canResume && transcriptPath !== undefined) {
+      turn.queue.push({ type: 'session-binding', providerSessionId: providerSessionId!, rawStoreRef: transcriptPath })
     }
     // 普通回合也登记活动 turn；Registry 的 interrupt 不应只对分段回合生效。
     this.turns.set(input.sessionId, turn)
@@ -638,6 +656,12 @@ export class CommandCodeDriver implements CodingNsCliDriver {
         const child = this.spawnAttempt(turn, input, binary)
         const code = await this.readAttempt(turn, child, state)
         turn.messageSequence = state.messageSequence
+        // 首轮使用临时 `--session` 文件。Provider 会话 ID 在流中确认后，必须在
+        // 本次尝试结束时把临时 transcript 提升到 canonical 路径；否则下一轮拿着
+        // 已登记的 ID 执行 `--resume` 时，Command Code 找不到对应原生会话。
+        if (turn.transcriptPath !== undefined && turn.providerSessionId !== undefined) {
+          syncCommandCodeTranscript(turn.transcriptPath, this.homeDirectory, input.cwd, turn.providerSessionId)
+        }
         if (turn.disposed || turn.finished) return
 
         const capped = state.maxTurnsReached || code === COMMAND_CODE_MAX_TURNS_EXIT_CODE
@@ -646,7 +670,6 @@ export class CommandCodeDriver implements CodingNsCliDriver {
           // 续跑必须落在同一个会话上。CLI 可能把 transcript 写回会话文件、也可能
           // 写进按 cwd 归档的 canonical 目录；两种落点都要先归位到同一个文件，
           // 否则“继续”会开出一个没有上文的新会话，等于白跑一轮预算。
-          if (turn.transcriptPath !== undefined) syncCommandCodeTranscript(turn.transcriptPath, this.homeDirectory, input.cwd, turn.providerSessionId)
           continue
         }
         if (capped && !turn.aborted && !turn.terminal) {
@@ -694,7 +717,9 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     // 续跑沿用同一个 Provider 会话，只把输入换成续跑提示；不能再次写入历史，
     // 否则会把 CLI 已经落盘的进度覆盖成空会话。
     const prompt = turn.attempt > 1 ? this.autoContinuePrompt : promptWithAttachmentPaths(input.prompt, input.attachments ?? [])
-    const args = turn.providerSessionId !== undefined
+    const args = turn.transcriptPath !== undefined && turn.attempt === 1
+      ? ['--session', turn.transcriptPath, '-p', prompt, '--output-format', 'json', '--skip-onboarding', '--max-turns', String(this.maxTurns)]
+      : turn.providerSessionId !== undefined
       ? ['-p', prompt, '--output-format', 'json', '--skip-onboarding', '--max-turns', String(this.maxTurns), '--resume', turn.providerSessionId]
       : ['--session', turn.transcriptPath!, '-p', prompt, '--output-format', 'json', '--skip-onboarding', '--max-turns', String(this.maxTurns)]
     // 只有 Host 明确确认“完全访问且永不询问”时才允许 --yolo。
@@ -785,6 +810,9 @@ export class CommandCodeDriver implements CodingNsCliDriver {
           for (const rawChunk of commandCodeEventChunks(event, state)) {
             let chunk = rawChunk
             if (rawChunk.type === 'session-binding') {
+              // `--session <path>` 模式下 CLI 发出的 sessionId 是 checkpoint
+              // 内部 ID，不是可供 --resume 查找的 transcript ID；保持 Host 绑定。
+              if (turn.transcriptPath !== undefined) continue
               turn.providerSessionId = rawChunk.providerSessionId
               turn.rawStoreRef = resolveCommandCodeTranscriptPath(this.homeDirectory, turn.cwd, rawChunk.providerSessionId)
               // Provider ID 一旦确认就立即暴露 canonical 路径；文件可能稍后才落盘，
@@ -887,9 +915,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       this.processes.delete(child)
       terminateChildProcess(child)
     }
-    if (turn.transcriptPath !== undefined) {
-      try { rmSync(turn.transcriptPath, { force: true }) } catch { /* 临时文件清理尽力而为 */ }
-    }
+    // 首轮 transcript 已经是 canonical 文件，必须保留给下一轮 --resume 及冷恢复。
   }
 }
 
@@ -966,6 +992,10 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
     case 'run-start':
     case 'session_created':
     case 'session-created':
+    case 'model_request_start':
+    case 'model-request-start':
+    case 'model_trace':
+    case 'model-trace':
       // 这些事件只标记 Provider 生命周期，不应制造正文或终态。
       break
     case 'turn_start':
@@ -1295,8 +1325,8 @@ function isMaxTurnsOutcome(event: Record<string, unknown>): boolean {
  *
  * 实测 CLI 的落盘位置取决于会话文件里是否已有历史：空会话（只有 session 头）时
  * 会把消息写进 `~/.commandcode/projects/<slug>/<id>.jsonl`，带上历史时则写回
- * `--session` 指定的文件。两种落点都要先归位，否则自动续跑的“继续”会落在一个
- * 没有上文的会话上。归位只做“canonical 比本地新”的单向复制，不覆盖更新的本地文件。
+ * `--session` 指定的文件。两种落点都要统一，否则下一轮恢复会落在一个没有上文的
+ * 会话上。两边都存在时按修改时间同步最新内容，首轮则创建 canonical 文件。
  */
 function syncCommandCodeTranscript(
   transcriptPath: string,
@@ -1308,11 +1338,21 @@ function syncCommandCodeTranscript(
     ? resolveCanonicalTranscriptPath(transcriptPath, homeDirectory, cwd)
     : resolveCommandCodeTranscriptPath(homeDirectory, cwd ?? process.cwd(), providerSessionId)
   if (canonicalPath === null) return
+  if (providerSessionId !== undefined && !isSafeCommandCodeTranscriptTarget(canonicalPath, homeDirectory)) return
   try {
-    if (statSync(canonicalPath).mtimeMs <= statSync(transcriptPath).mtimeMs) return
-    copyFileSync(canonicalPath, transcriptPath)
+    if (!existsSync(transcriptPath) || !statSync(transcriptPath).isFile()) return
+    const sourceMtime = statSync(transcriptPath).mtimeMs
+    if (!existsSync(canonicalPath)) {
+      mkdirSync(dirname(canonicalPath), { recursive: true })
+      copyFileSync(transcriptPath, canonicalPath)
+      return
+    }
+    if (!statSync(canonicalPath).isFile()) return
+    const canonicalMtime = statSync(canonicalPath).mtimeMs
+    if (sourceMtime > canonicalMtime) copyFileSync(transcriptPath, canonicalPath)
+    else if (canonicalMtime > sourceMtime) copyFileSync(canonicalPath, transcriptPath)
   } catch {
-    // transcript 归位是续跑优化；文件缺失或不可读时保持现状即可。
+    // transcript 归位是恢复前的必要同步；文件竞态或不可读时保持当前运行结果。
   }
 }
 
@@ -1346,7 +1386,7 @@ function resolveCanonicalTranscriptPath(
 
 /** 按 Provider 会话 ID 计算 Command Code 的 canonical transcript 路径。 */
 function resolveCommandCodeTranscriptPath(homeDirectory: string, cwd: string, providerSessionId: string): string {
-  return join(homeDirectory, 'projects', workspaceSlug(cwd), `${providerSessionId}.jsonl`)
+  return join(homeDirectory, 'projects', workspaceSlug(cwd), `${safeId(providerSessionId)}.jsonl`)
 }
 
 /** Provider 索引只能指向 Command Code 项目目录中的 JSONL，避免旧配置污染探测边界。 */
@@ -1363,6 +1403,22 @@ function isSafeCommandCodeTranscriptPath(candidate: string, homeDirectory: strin
     && !relativePath.startsWith('..')
     && segments.length === 2
     && actualCandidate.endsWith('.jsonl')
+    // checkpoint 不是 --resume 使用的 transcript，即使扩展名同为 .jsonl
+    // 也不能把它当作可恢复会话绑定。
+    && !actualCandidate.endsWith('.checkpoints.jsonl')
+}
+
+/** 允许同步创建的 canonical transcript 目标，路径必须严格位于 projects/<slug>/*.jsonl。 */
+function isSafeCommandCodeTranscriptTarget(candidate: string, homeDirectory: string): boolean {
+  const projectsRoot = resolve(join(homeDirectory, 'projects'))
+  const resolvedCandidate = resolve(candidate)
+  const relativePath = relative(projectsRoot, resolvedCandidate)
+  const segments = relativePath.split(/[\\/]+/u).filter(Boolean)
+  return relativePath !== ''
+    && !relativePath.startsWith('..')
+    && segments.length === 2
+    && resolvedCandidate.endsWith('.jsonl')
+    && !resolvedCandidate.endsWith('.checkpoints.jsonl')
 }
 
 /** 只读 JSONL 首条记录，避免探测大 transcript 时把整份文件载入内存。 */
@@ -1462,6 +1518,7 @@ function recordValue(value: unknown): Record<string, any> | null {
 }
 
 function writeTranscript(path: string, input: CodingNsCliTurnInput): void {
+  mkdirSync(dirname(path), { recursive: true })
   const history = input.messages.length > 0 ? input.messages.slice(0, -1) : []
   let parentId: string | null = null
   const lines = [JSON.stringify({ type: 'session', version: 3, id: input.sessionId, timestamp: new Date().toISOString(), cwd: input.cwd ?? process.cwd() })]
@@ -1540,6 +1597,11 @@ function firstText(...values: unknown[]): string {
 }
 
 function safeId(value: string): string { return value.replace(/[^a-zA-Z0-9._-]+/gu, '_').slice(0, 96) || 'default' }
+
+/** 旧驱动生成的 Host synthetic ID；没有 canonical transcript 时必须放弃 --resume。 */
+function isLegacySyntheticSessionId(value: string): boolean {
+  return value.startsWith('codingns4dsh-cc-session-') || value.startsWith('dsh-codingns-cc-session-')
+}
 function parseJson(value: string): Record<string, unknown> | null { try { const parsed: unknown = JSON.parse(value); return isRecord(parsed) ? parsed : null } catch { return null } }
 function readJson(path: string): Record<string, unknown> | null { if (!existsSync(path)) return null; try { const parsed: unknown = JSON.parse(readFileSync(path, 'utf8')); return isRecord(parsed) ? parsed : null } catch { return null } }
 function isRecord(value: unknown): value is Record<string, any> { return typeof value === 'object' && value !== null && !Array.isArray(value) }

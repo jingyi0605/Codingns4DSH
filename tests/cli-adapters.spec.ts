@@ -212,7 +212,7 @@ test('Command Code 驱动写入历史 transcript、转换 JSON 事件并清理�
   assert.equal(receivedArgs[2], '-p')
   assert.match(transcript, /之前的问题/u)
   assert.doesNotMatch(transcript, /现在的问题/u)
-  assert.deepEqual(chunks, [
+  assert.deepEqual(chunks.filter(({ type }) => type !== 'session-binding'), [
     { type: 'reasoning-delta', text: '思考', messageId: 'command-code-message-1' },
     { type: 'text-delta', text: '结果', messageId: 'command-code-message-1' },
     { type: 'tool-event', toolName: 'read_directory', callId: 'call-1', input: '{"path":"."}', status: 'running' },
@@ -237,7 +237,7 @@ test('Command Code 仅返回 run_end 时也能提取正文并正常结束', asyn
 
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'run-end-only', messages: [], prompt: '执行', cwd: '/workspace' })) chunks.push(chunk)
-  assert.deepEqual(chunks, [
+  assert.deepEqual(chunks.filter(({ type }) => type !== 'session-binding'), [
     { type: 'text-delta', text: '仅有 run_end 正文', messageId: 'command-code-message-1' },
     { type: 'finish', reason: 'stop' },
   ])
@@ -475,7 +475,7 @@ test('Command Code 会话探测拒绝 projects 目录之外的 rawStoreRef', asy
 test('Command Code 首轮发现 Provider 会话后绑定 canonical transcript', async () => {
   const home = mkdtempSync(join(tmpdir(), 'codingns4dsh-cc-home-'))
   try {
-    const canonical = join(home, 'projects', 'workspace', 'provider-1.jsonl')
+    const canonical = join(home, 'projects', 'workspace', 'binding-session.jsonl')
     let receivedArgs: string[] = []
     const driver = new CommandCodeDriver({
       homeDirectory: home,
@@ -486,7 +486,7 @@ test('Command Code 首轮发现 Provider 会话后绑定 canonical transcript', 
       spawn: ((_command: string, args: string[]) => {
         receivedArgs = args
         mkdirSync(join(home, 'projects', 'workspace'), { recursive: true })
-        writeFileSync(canonical, `${JSON.stringify({ type: 'session', id: 'provider-1' })}\n`)
+        writeFileSync(args[1]!, `${JSON.stringify({ type: 'session', id: 'binding-session' })}\n`)
         return {
           stdout: Readable.from([
             `${JSON.stringify({ type: 'event', event: { type: 'run_start', sessionId: 'provider-1' } })}\n`,
@@ -503,14 +503,67 @@ test('Command Code 首轮发现 Provider 会话后绑定 canonical transcript', 
     assert.equal(receivedArgs[0], '--session')
     assert.deepEqual(chunks[0], {
       type: 'session-binding',
-      providerSessionId: 'provider-1',
-      rawStoreRef: canonical,
+      providerSessionId: 'binding-session',
+      rawStoreRef: join(home, 'projects', 'workspace', 'binding-session.jsonl'),
     })
-    assert.deepEqual(await driver.probeSession({ providerSessionId: 'provider-1', rawStoreRef: canonical, cwd: '/workspace' }), {
+    assert.deepEqual(await driver.probeSession({ providerSessionId: 'binding-session', rawStoreRef: canonical, cwd: '/workspace' }), {
       state: 'available',
       reason: 'Command Code 原生会话可用',
       rawStoreRef: canonical,
     })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Command Code 首轮结束会把临时 transcript 提升到 canonical，后续可 resume', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns4dsh-cc-promote-home-'))
+  const canonical = join(home, 'projects', 'workspace', 'promote-session.jsonl')
+  let firstArgs: string[] = []
+  let resumeArgs: string[] = []
+  let spawns = 0
+  try {
+    const driver = new CommandCodeDriver({
+      homeDirectory: home,
+      binaries: ['command-code'],
+      spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+        ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+        : { status: 0, stdout: '', stderr: '' }) as never,
+      spawn: ((_command: string, args: string[]) => {
+        spawns += 1
+        if (spawns === 1) {
+          firstArgs = args
+          const transcript = args[args.indexOf('--session') + 1]!
+          writeFileSync(transcript, `${JSON.stringify({ type: 'session', id: 'promote-session' })}\n`)
+        } else {
+          resumeArgs = args
+        }
+        return {
+          stdout: Readable.from([
+            `${JSON.stringify({ type: 'event', event: { type: 'run_start', sessionId: 'provider-promoted' } })}\n`,
+            `${JSON.stringify({ type: 'result', finalText: spawns === 1 ? '首轮完成' : '恢复完成' })}\n`,
+          ]),
+          stderr: { on() { return this } },
+          kill() { return true },
+        }
+      }) as never,
+    })
+
+    for await (const _chunk of driver.executeTurn({ sessionId: 'promote-session', messages: [], prompt: '执行', cwd: '/workspace' })) {}
+    assert.equal(firstArgs[0], '--session')
+    assert.equal(readFileSync(canonical, 'utf8').includes('promote-session'), true)
+
+    for await (const _chunk of driver.executeTurn({
+      sessionId: 'promote-session',
+      providerSessionId: 'promote-session',
+      rawStoreRef: canonical,
+      messages: [],
+      prompt: '继续',
+      cwd: '/workspace',
+    })) {}
+    assert.equal(resumeArgs.includes('--session'), false)
+    assert.deepEqual(resumeArgs.slice(resumeArgs.indexOf('--resume'), resumeArgs.indexOf('--resume') + 2), ['--resume', 'promote-session'])
+    driver.dispose()
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
@@ -555,9 +608,54 @@ test('Command Code 只有 checkpoints transcript 时仍能探测可恢复会话'
     writeFileSync(checkpoint, `${JSON.stringify({ id: 'checkpoint-1', messageId: 'message-1', turnNumber: 1 })}\n`)
     const driver = new CommandCodeDriver({ homeDirectory: home, binaries: ['command-code'] })
     assert.deepEqual(await driver.probeSession({ providerSessionId: 'provider-1', cwd: '/workspace' }), {
-      state: 'available',
-      reason: 'Command Code 原生会话检查点可用',
+      state: 'missing',
+      reason: 'Command Code 只有 checkpoint，没有可恢复 transcript',
       rawStoreRef: checkpoint,
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Command Code 旧 synthetic 绑定只有 checkpoint 时回退到当前 DSH 会话 transcript', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns4dsh-cc-legacy-checkpoint-'))
+  const workspace = join(home, 'projects', 'workspace')
+  const checkpoint = join(workspace, 'codingns4dsh-cc-session-old.checkpoints.jsonl')
+  let receivedArgs: string[] = []
+  try {
+    mkdirSync(workspace, { recursive: true })
+    writeFileSync(checkpoint, `${JSON.stringify({ id: 'checkpoint-1', messageId: 'message-1' })}\n`)
+    const driver = new CommandCodeDriver({
+      homeDirectory: home,
+      binaries: ['command-code'],
+      spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+        ? { status: 0, stdout: 'command-code 1.74.1', stderr: '' }
+        : { status: 0, stdout: '', stderr: '' }) as never,
+      spawn: ((_command: string, args: string[]) => {
+        receivedArgs = args
+        return {
+          stdout: Readable.from([`${JSON.stringify({ type: 'result', finalText: '重新建立' })}\n`]),
+          stderr: { on() { return this } },
+          kill() { return true },
+        }
+      }) as never,
+    })
+    const chunks = []
+    for await (const chunk of driver.executeTurn({
+      sessionId: 'dsh-session-current',
+      providerSessionId: 'codingns4dsh-cc-session-old',
+      rawStoreRef: checkpoint,
+      messages: [{ role: 'user', content: '历史任务' }],
+      prompt: '继续任务',
+      cwd: '/workspace',
+    })) chunks.push(chunk)
+    assert.equal(receivedArgs[0], '--session')
+    assert.match(receivedArgs[1] ?? '', /dsh-session-current\.jsonl$/u)
+    assert.equal(receivedArgs.includes('--resume'), false)
+    assert.deepEqual(chunks[0], {
+      type: 'session-binding',
+      providerSessionId: 'dsh-session-current',
+      rawStoreRef: receivedArgs[1],
     })
   } finally {
     rmSync(home, { recursive: true, force: true })
@@ -691,7 +789,7 @@ test('Command Code usage 保留缓存桶，并按完整输入计算未缓存输�
   })
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'cache-session', messages: [], prompt: '测试' })) chunks.push(chunk)
-  assert.deepEqual(chunks, [
+  assert.deepEqual(chunks.filter(({ type }) => type !== 'session-binding'), [
     { type: 'usage', inputTokens: 100, outputTokens: 20, cacheReadTokens: 40, cacheWriteTokens: 5, uncachedInputTokens: 55, totalTokens: 120, cacheHitRate: 40 },
     { type: 'text-delta', text: '完成', messageId: 'command-code-message-1' },
     { type: 'finish', reason: 'stop' },
@@ -723,12 +821,12 @@ test('Command Code 按 assistant 消息切换 DSH step 并只结算每次请求�
     { type: 'step-boundary' },
   ])
   assert.equal(first[0]?.type, 'session-binding')
-  assert.equal(first[0]?.providerSessionId, 'cc-session-1')
-  assert.match(first[0]?.rawStoreRef ?? '', /cc-session-1\.jsonl$/u)
+  assert.equal(first[0]?.providerSessionId, 'segmented-cc')
+  assert.match(first[0]?.rawStoreRef ?? '', /segmented-cc\.jsonl$/u)
 
   const second = []
   for await (const chunk of driver.executeTurn({ sessionId: 'segmented-cc', messages: [], prompt: '继续', splitToolSteps: true, resumeSegmentedTurn: true })) second.push(chunk)
-  assert.deepEqual(second, [
+  assert.deepEqual(second.filter(({ type }) => type !== 'session-binding'), [
     { type: 'reasoning-delta', text: '整理结论', messageId: 'command-code-message-2' },
     { type: 'text-delta', text: '完成', messageId: 'command-code-message-2' },
     { type: 'usage', inputTokens: 180, outputTokens: 5, cacheReadTokens: 150, cacheWriteTokens: 0, uncachedInputTokens: 30, totalTokens: 185, cacheHitRate: 83.3333 },
@@ -882,7 +980,7 @@ test('Command Code 未被 Host 声明为续段时不会复用上一次运行的�
   assert.equal(spawns, 2)
   // 第一个（被挂起的）进程必须在启动新回合前就被终止，不能被旧流继续写入。
   assert.deepEqual(kills, [1, 2])
-  assert.deepEqual(second, [
+  assert.deepEqual(second.filter(({ type }) => type !== 'session-binding'), [
     { type: 'usage', inputTokens: 7, outputTokens: 3 },
     { type: 'text-delta', text: '新回合', messageId: 'command-code-message-1' },
     { type: 'finish', reason: 'stop' },
@@ -1085,6 +1183,23 @@ test('Sub2API 非成功响应不产生订阅组件数据', async () => {
     }) as typeof fetch,
   })
   assert.equal(await service.read('grok'), null)
+})
+
+test('Sub2API 用量接口临时失败时可用 billing 协议特征完成分类', async () => {
+  const calls: string[] = []
+  const service = new Sub2ApiUsageService({
+    sources: { 'command-code': { baseUrl: 'https://upstream.example.test', apiKey: 'secret' } },
+    fetch: (async (url: string) => {
+      calls.push(url)
+      if (url.endsWith('/v1/usage')) return new Response('{}', { status: 503 })
+      assert.equal(url, 'https://upstream.example.test/v1/sub2api/billing')
+      return new Response(JSON.stringify({ object: 'sub2api.key_billing', billing_scope: 'token', effective_rate_multiplier: 1 }), { status: 200 })
+    }) as typeof fetch,
+  })
+  const result = await service.readWithKind('command-code')
+  assert.equal(result?.kind, 'sub2api')
+  assert.equal(result?.usage, null)
+  assert.deepEqual(calls, ['https://upstream.example.test/v1/usage', 'https://upstream.example.test/v1/sub2api/billing'])
 })
 
 test('Codex 检测到第三方上游但 Sub2API 不可用时不回退官方订阅', async () => {
@@ -1563,6 +1678,7 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
   let capturedPrompt = ''
+  const registryInputs: Array<Record<string, unknown>> = []
   const sessionStatuses: Array<readonly [string, boolean]> = []
   const registry = new CodingNsCliAdapterRegistry([{
     descriptor: { id: 'fake', name: 'Fake' },
@@ -1570,6 +1686,7 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
     async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
     async *executeTurn(input) {
       capturedPrompt = input.prompt
+      registryInputs.push(input as unknown as Record<string, unknown>)
       yield { type: 'text-delta', text: '来自 CLI' }
       yield { type: 'finish', reason: 'stop' }
       yield { type: 'text-delta', text: '不应出现在 finish 之后' }
@@ -1593,9 +1710,21 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   await table.resolve('cli/session/set')?.handler('session/set', { sessionId: 's1', adapterId: 'fake' })
   assert.notEqual(listener, undefined)
 
+  const delegatedChunks = []
+  for await (const chunk of listener!({
+    sessionId: 's1',
+    messages: [{ role: 'user', source: { kind: 'user' }, content: '@Fake<!--codingns:delegate:v1:fake:Fake-->请修复这个问题' }],
+  }, async function* () { yield { type: 'text-delta', text: '默认' } })) delegatedChunks.push(chunk)
+  assert.equal(delegatedChunks.some((chunk) => (chunk as { text?: string }).text?.includes('DELEGATE')), false)
+  assert.match(capturedPrompt, /fake/u)
+  assert.match(capturedPrompt, /请修复这个问题/u)
+  assert.match(capturedPrompt, /agent_subagent/u)
+  assert.doesNotMatch(capturedPrompt, /codingns:delegate/u)
+
   const chunks = []
   for await (const chunk of listener!({
     sessionId: 's1',
+    options: { plan: true, forkSession: true, enableAskUserQuestion: true },
     messages: [
       { role: 'user', source: { kind: 'plugin', plugin: 'dsh-system-prompt', form: 'catalog' }, content: '不应发送给外部 Agent' },
       { role: 'user', source: { kind: 'user' }, content: '你好' },
@@ -1608,7 +1737,19 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
     { type: 'finish', reason: { kind: 'stop' } },
   ])
   assert.equal(capturedPrompt, '你好')
-  assert.deepEqual(sessionStatuses, [['s1', true], ['s1', false]])
+  assert.deepEqual(registryInputs.at(-1), {
+    adapterId: 'fake',
+    sessionId: 's1',
+    messages: [
+      { role: 'user', source: { kind: 'plugin', plugin: 'dsh-system-prompt', form: 'catalog' }, content: '不应发送给外部 Agent' },
+      { role: 'user', source: { kind: 'user' }, content: '你好' },
+    ],
+    prompt: '你好',
+    plan: true,
+    forkSession: true,
+    enableAskUserQuestion: true,
+  })
+  assert.deepEqual(sessionStatuses, [['s1', true], ['s1', false], ['s1', true], ['s1', false]])
 
   const passthrough = []
   for await (const chunk of listener!({ sessionId: 'unknown', messages: [] }, async function* () { yield { type: 'text-delta', text: '默认' } })) passthrough.push(chunk)
@@ -1631,6 +1772,64 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   })
   await features.disable('cliAdapters')
   assert.equal(listener, undefined)
+})
+
+test('委派 carrier 在 Agent Loop 的 pre-step 边界改写，兼容深冻结的 llm 请求', async () => {
+  const table = new CodingNsRpcTable()
+  let llmListener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  let preStepListener: ((payload: unknown, next: () => Promise<unknown>) => Promise<unknown>) | undefined
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'command-code', name: 'Command Code' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'command-code' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } as const },
+  }])
+  const events = {
+    on(name: string, listener: (...args: any[]) => any) {
+      if (name === 'llm/stream') llmListener = listener as typeof llmListener
+      return () => undefined
+    },
+  }
+  const dshContext = {
+    get: () => undefined,
+    on(name: string, listener: (...args: any[]) => any) {
+      if (name === 'agent/pre-step') preStepListener = listener as typeof preStepListener
+      return () => undefined
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table, events, dshContext: dshContext as never })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  assert.notEqual(preStepListener, undefined)
+  assert.notEqual(llmListener, undefined)
+
+  const carrier = '@Command Code<!--codingns:delegate:v1:command-code:Command%20Code-->写个笑话'
+  const decision = await preStepListener!({
+    agent: { id: 'delegate-frozen' },
+    messages: [{ role: 'user', source: { kind: 'user' }, content: carrier }],
+    turn: 1,
+    step: 1,
+    signal: new AbortController().signal,
+  }, async () => ({
+    kind: 'enter',
+    messages: [{ role: 'user', source: { kind: 'user' }, content: carrier }],
+  })) as { kind: string; messages: readonly { content?: unknown }[] }
+  assert.equal(decision.kind, 'enter')
+  assert.equal(String(decision.messages[0]?.content).includes('codingns:delegate:'), false)
+  assert.match(String(decision.messages[0]?.content), /agent_subagent/u)
+
+  const frozenOptions = Object.freeze({
+    sessionId: 'delegate-frozen',
+    // 直接模拟 DSH Agent Loop 交给 llm/stream 的深冻结原始 carrier；正常路径会在
+    // pre-step 前先改写它，这里专门保证即使调用方漏过边界也不会再次原地赋值崩溃。
+    messages: Object.freeze([{ role: 'user', source: { kind: 'user' }, content: carrier }]),
+  })
+  const chunks = []
+  for await (const chunk of llmListener!(frozenOptions, async function* () {
+    yield { type: 'text-delta', text: '默认 DSH' }
+  })) chunks.push(chunk)
+  assert.deepEqual(chunks, [{ type: 'text-delta', text: '默认 DSH' }])
+  await features.disable('cliAdapters')
 })
 
 test('外部适配器把当前轮 session-reference 快照拼入 prompt', async () => {
@@ -2693,7 +2892,7 @@ test('委派 RPC 允许任务留空，交由派发内核回退到最近一条用
   assert.notEqual(result, undefined)
   assert.equal(result?.ok, false)
   // 缺少可续子代理/原生会话桥接时返回可读诊断，绝不能是参数校验错误。
-  assert.doesNotMatch(String(result?.error ?? ''), /prompt 不能为空/u)
+  assert.match(String(result?.error ?? ''), /可续子代理|任务描述不能为空/u)
 
   // 显式传入非字符串仍要拒绝，避免把类型错误静默当成空任务。
   await assert.rejects(
