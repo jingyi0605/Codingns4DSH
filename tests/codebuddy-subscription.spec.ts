@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CodeBuddySubscriptionService } from '../data/build/dist/host/cli-adapters/codebuddy-subscription.js'
@@ -60,6 +60,43 @@ test('CodeBuddy 统一适配器按认证域名读取 CN，WorkBuddy 继续按认
   assert.equal(calls, 2)
 })
 
+test('WorkBuddy 独立读取 WorkBuddy 认证与计费域名，不串用 CodeBuddy 用量', async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), 'codingns-workbuddy-subscription-'))
+  const authDirectory = join(homeDirectory, 'Library/Application Support/CodeBuddyExtension/Data/Public/auth')
+  mkdirSync(authDirectory, { recursive: true })
+  writeFileSync(join(authDirectory, 'Tencent-Cloud.coding-copilot.info'), JSON.stringify({
+    account: { uid: 'codebuddy-user' },
+    auth: { domain: 'www.codebuddy.cn', accessToken: 'codebuddy-token' },
+  }), 'utf8')
+  writeFileSync(join(authDirectory, 'workbuddy-desktop.info'), JSON.stringify({
+    account: { uid: 'workbuddy-user' },
+    auth: { domain: 'www.workbuddy.cn', accessToken: 'workbuddy-token' },
+  }), 'utf8')
+  const requests: Array<{ url: string; headers: Headers }> = []
+  const service = new CodeBuddySubscriptionService({
+    homeDirectory,
+    fetch: (async (url: string, init?: RequestInit) => {
+      requests.push({ url, headers: new Headers(init?.headers) })
+      if (url.endsWith('get-user-resource-summary')) return Response.json({ data: {
+        SubscriptionPackageName: 'WorkBuddy 体验版',
+        Packages: [{ PackageCode: 'workbuddy-credit', CycleTotalCapacity: 100, CycleRemainCapacity: 80 }],
+      } })
+      return Response.json({ data: { Accounts: [] } })
+    }) as typeof fetch,
+  })
+
+  const result = await service.read('workbuddy')
+  assert.equal(requests.length, 3)
+  assert.equal(requests[0]?.url, 'https://www.workbuddy.cn/billing/meter/get-user-resource-summary')
+  assert.equal(requests[0]?.headers.get('authorization'), 'Bearer workbuddy-token')
+  assert.equal(requests[0]?.headers.get('x-user-id'), 'workbuddy-user')
+  assert.equal(requests[0]?.headers.get('x-product'), 'WorkBuddy')
+  assert.equal(result?.provider?.id, 'workbuddy')
+  assert.equal(result?.providerBalance?.total, 100)
+  assert.equal(result?.providerBalance?.remaining, 80)
+  assert.doesNotMatch(JSON.stringify(result), /codebuddy/u)
+})
+
 test('计费接口失败时按 origin 回退并安全返回空值', async () => {
   const authFile = writeAuth('www.codebuddy.ai')
   const calls: string[] = []
@@ -76,6 +113,24 @@ test('计费接口失败时按 origin 回退并安全返回空值', async () => 
     'https://first.example.test/billing/meter/get-user-resource-summary',
     'https://second.example.test/billing/meter/get-user-resource-summary',
   ])
+})
+
+test('CodeBuddy 国际版默认不会回退到 WorkBuddy 计费域名', async () => {
+  const authFile = writeAuth('www.codebuddy.ai')
+  const calls: string[] = []
+  const service = new CodeBuddySubscriptionService({
+    authFiles: [authFile],
+    fetch: (async (url: string) => {
+      calls.push(url)
+      return new Response('{}', { status: 403 })
+    }) as typeof fetch,
+  })
+  assert.equal(await service.read('codebuddy'), null)
+  assert.deepEqual(calls, [
+    'https://www.codebuddy.ai/billing/meter/get-user-resource-summary',
+    'https://staging-codebuddy.tencent.com/billing/meter/get-user-resource-summary',
+  ])
+  assert.doesNotMatch(calls.join('\n'), /workbuddy/u)
 })
 
 test('企业账号优先读取企业月度额度接口', async () => {
