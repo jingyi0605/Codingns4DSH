@@ -20,7 +20,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type { SidebarRightTabInfo } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
-import { resolveChevronDownIcon } from '../../dsh-capabilities/client/primitives-adapter.js'
+import { resolveChevronDownIcon, resolvePlusIcon } from '../../dsh-capabilities/client/primitives-adapter.js'
 import { CodingNsWebTerminals, type WebTerminalId, type WebTerminalInfo } from './model.js'
 import { createTerminalSessionRecovery, type TerminalSidebarMountedSource, type TerminalSidebarRecoveryPort } from './recovery.js'
 import { installTerminalStyles, terminalClass } from './styles.js'
@@ -228,6 +228,7 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
         variant: 'primary',
         size: 'sm',
         className: terminalClass.newButton,
+        icon: createElement(resolvePlusIcon()),
         disabled: creating,
         onClick: () => { void createNewTerminal() },
       }, creating ? t('terminalView.starting') : t('terminal.new')),

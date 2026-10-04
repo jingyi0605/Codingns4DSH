@@ -14,6 +14,7 @@ test('终端入口复用 DSH 内置按钮与菜单，不退回原生表单控件
   assert.match(source, /resolveChevronDownIcon\(\)/u)
   assert.doesNotMatch(source, /IconChevronDownOutline(?:14|Regular|Medium)/u)
   assert.match(source, /variant: 'ghost'/u)
+  assert.match(source, /icon: createElement\(resolvePlusIcon\(\)\)/u)
   assert.doesNotMatch(source, /createElement\(['"]select['"]/u)
   assert.doesNotMatch(source, /border:\s*['"]1px solid currentColor/u)
 })
