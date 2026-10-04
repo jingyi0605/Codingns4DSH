@@ -10,6 +10,10 @@ on:
         description: '要校验并发布的版本 tag'
         required: true
         default: 'v0.1.7-rc.2'
+      dist_tag:
+        description: 'npm dist-tag；留空时按版本自动选择（预发布 next，其余 latest）'
+        required: false
+        default: ''
 
 concurrency:
   group: npm-publish-${{ github.ref }}
@@ -61,6 +65,12 @@ jobs:
         id: npm-tag
         shell: bash
         run: |
+          override='${{ inputs.dist_tag }}'
+          if [[ -n "$override" ]]; then
+            echo "dist_tag=$override" >> "$GITHUB_OUTPUT"
+            echo "::notice::使用手动指定的 dist-tag：$override"
+            exit 0
+          fi
           version="$(node -p "require('./package.json').version")"
           if [[ "$version" == *-* ]]; then
             echo 'dist_tag=next' >> "$GITHUB_OUTPUT"
