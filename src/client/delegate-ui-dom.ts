@@ -40,6 +40,8 @@ export const DELEGATE_TIMELINE_RAW_ATTRIBUTE = 'data-codingns-delegate-timeline-
 export const DELEGATE_TIMELINE_CARD_ATTRIBUTE = 'data-codingns-delegation-card'
 /** 委派卡片保存原始指令，停用插件时用于恢复 React 之外的 DOM。 */
 export const DELEGATE_TIMELINE_CARD_RAW_ATTRIBUTE = 'data-codingns-delegation-card-raw'
+/** DSH 空状态输入提示保存原始文案的标记。 */
+export const DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE = 'data-codingns-delegate-placeholder-base'
 /** 插件样式标签的幂等键。 */
 export const DELEGATE_UI_STYLE_ID = 'codingns4dsh-delegate-ui-style'
 
@@ -49,6 +51,7 @@ const MENU_OPTION_ID_PREFIX = 'dsh-slash-option-'
 const ITEM_NAME_SELECTOR = '[class*="itemName"]'
 const SECTION_TITLE_SELECTOR = '[class*="sectionTitle"]'
 const LABEL_TEXT_SELECTOR = '[class*="labelText"]'
+const DELEGATION_INSTRUCTION_MARKER = '[CodingNS 委派指令]'
 
 // 隐藏规则排除克隆行：即使克隆意外带上了标记，也不会连克隆一起隐藏。
 const DELEGATE_UI_STYLE_TEXT = `[${DELEGATE_MENU_ROW_ATTRIBUTE}]:not([${DELEGATE_MENU_PROXY_ATTRIBUTE}]){display:none!important}`
@@ -59,12 +62,15 @@ const DELEGATE_UI_STYLE_TEXT = `[${DELEGATE_MENU_ROW_ATTRIBUTE}]:not([${DELEGATE
   + `[data-composer-chip="codingns-delegate"]:has([${DELEGATE_CHIP_LOGO_ATTRIBUTE}]) svg{display:none!important}`
   + `[${DELEGATE_TIMELINE_CHIP_ATTRIBUTE}]{display:inline-flex;align-items:center;vertical-align:baseline;gap:3px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);white-space:nowrap;font-size:.95em;line-height:1.45}`
   + `[${DELEGATE_TIMELINE_CHIP_ATTRIBUTE}] img{width:14px;height:14px;flex:none;object-fit:contain;border-radius:3px}`
-  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}]{display:flex;flex-direction:column;gap:8px;margin:2px 0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2));border-radius:10px;background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.06));line-height:1.5}`
-  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-title]{display:flex;align-items:center;gap:6px;font-weight:600}`
-  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-targets]{display:flex;flex-wrap:wrap;gap:5px}`
-  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-target]{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:999px;background:var(--dsw-alias-interactive-bg-hover);font-size:.9em}`
-  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-task]{white-space:pre-wrap;overflow-wrap:anywhere}`
-  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-status]{color:var(--dsw-alias-label-secondary,GrayText);font-size:.88em}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}]{box-sizing:border-box;display:flex;flex-direction:column;align-self:stretch;width:100%;max-width:100%;min-width:0;gap:8px;margin:2px 0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2));border-radius:10px;background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.06));line-height:1.5;overflow-wrap:anywhere}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-title]{display:flex;align-items:center;min-width:0;gap:6px;font-weight:600;overflow-wrap:anywhere}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-targets]{display:flex;flex-wrap:wrap;min-width:0;width:100%;max-width:100%;gap:5px}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-target]{box-sizing:border-box;display:inline-flex;align-items:center;flex:0 1 auto;min-width:0;max-width:100%;gap:3px;padding:1px 7px;border-radius:999px;background:var(--dsw-alias-interactive-bg-hover);font-size:.9em;white-space:normal;overflow-wrap:anywhere;word-break:break-word}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-target] img{flex:0 0 auto;width:14px;height:14px;object-fit:contain;border-radius:3px}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-target] span{min-width:0;overflow-wrap:anywhere;word-break:break-word}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-task]{box-sizing:border-box;width:100%;max-width:100%;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}`
+  + `[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-status]{min-width:0;color:var(--dsw-alias-label-secondary,GrayText);font-size:.88em;overflow-wrap:anywhere;word-break:break-word}`
+  + `@media (max-width:768px){[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}]{gap:6px;margin:2px 0;padding:8px 10px;border-radius:8px;font-size:.95em}[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-targets]{gap:4px}[${DELEGATE_TIMELINE_CARD_ATTRIBUTE}] [data-codingns-delegation-card-target]{padding:2px 6px;font-size:.88em}}`
 
 /** 克隆行 → 真实行；真实行被 React 重建时据此判定需要重建克隆。 */
 const proxySources = new WeakMap<Element, Element>()
@@ -99,6 +105,14 @@ export interface DelegateUiDomOptions {
   readonly popupPlaceholder: () => string
   /** 适配器图标地址；缺省读取插件 Provider 图标表。 */
   readonly iconUrlForAdapter?: (adapterId: string) => string | undefined
+  /** 时间线卡片标题；未提供时使用英文兼容回退。 */
+  readonly cardTitle?: () => string
+  /** 时间线卡片状态；未提供时使用英文兼容回退。 */
+  readonly cardStatus?: () => string
+  /** 时间线卡片目标标签；未提供时使用英文兼容回退。 */
+  readonly cardTarget?: (value: { readonly label: string; readonly adapterId: string; readonly modelId?: string }) => string
+  /** 空状态输入框追加的委派快捷键提示；未提供时不改写原生提示。 */
+  readonly emptyStateHint?: () => string
 }
 
 /**
@@ -136,7 +150,8 @@ export function startDelegateUiDom(options: DelegateUiDomOptions): DelegateUiDom
       decoratePopupRows(listboxes, options.popupPlaceholder(), iconUrl)
     }
     decorateReferenceChips(dom, iconUrl)
-    decorateTimelineMessages(dom, iconUrl)
+    decorateTimelineMessages(dom, iconUrl, options)
+    decorateEmptyStatePlaceholders(dom, options.emptyStateHint)
   }
 
   const scan = (): void => {
@@ -386,13 +401,50 @@ function decorateReferenceChips(dom: Document, iconUrl: (adapterId: string) => s
 }
 
 /**
+ * 在 DSH 原生 Hero 空状态提示后补充委派快捷键说明。
+ *
+ * DSH 没有公开修改内置 placeholder 的接口；这里只处理带有
+ * DSH Hero composer（祖先带有 CSS module 的 `_hero` class）中的空状态输入框，
+ * 并保存原文，避免把已经开始的会话提示或 React 重绘后的文案重复拼接。
+ */
+function decorateEmptyStatePlaceholders(dom: Document, hintFactory?: () => string): void {
+  const hint = hintFactory?.().trim()
+  if (hint === undefined || hint === '') return
+  for (const placeholder of dom.querySelectorAll('[data-composer-placeholder]')) {
+    if (!isHeroComposerPlaceholder(placeholder)) continue
+    const base = placeholder.getAttribute(DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE)
+      ?? placeholder.textContent?.trim()
+      ?? ''
+    if (base === '') continue
+    if (!placeholder.hasAttribute(DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE)) {
+      placeholder.setAttribute(DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE, base)
+    }
+    const decorated = `${base} · ${hint}`
+    if (placeholder.textContent !== decorated) placeholder.textContent = decorated
+  }
+}
+
+function isHeroComposerPlaceholder(placeholder: Element): boolean {
+  let current: Node | null = placeholder.parentNode
+  while (current !== null) {
+    const className = typeof (current as Element).getAttribute === 'function'
+      ? (current as Element).getAttribute('class') ?? ''
+      : ''
+    if (className.split(/\s+/u).some((name) => name.endsWith('_hero'))) return true
+    current = current.parentNode
+  }
+  // 兼容早期 DSH fixture；正式 0.2.x 通过上面的 InputBar `_hero` class 判定。
+  return (placeholder.parentNode as Element | null)?.querySelector('[data-composer-input][data-phase="hero"]') !== null
+}
+
+/**
  * 将已经提交到 DSH 时间线的 carrier 投影为可读的 Agent chip。
  *
  * DSH 的输入 codec 只有一个序列化结果：Host 需要的 carrier；因此 durable
  * `user/message` 也会携带这段传输文本。这里仅处理 DSH 的 userRow/bubble，
  * 不触碰 assistant、代码块和普通页面文本，避免把模型内容中的 carrier 改写。
  */
-function decorateTimelineMessages(dom: Document, iconUrl: (adapterId: string) => string | undefined): void {
+function decorateTimelineMessages(dom: Document, iconUrl: (adapterId: string) => string | undefined, options: DelegateUiDomOptions): void {
   const rows = [...dom.querySelectorAll('[class*="userRow"]')]
   // 发送尚未落成 durable user/message 时，DSH 的队列预览只有
   // data-submission-echo + preview 类名；也要同步清理，避免用户在短暂回显阶段看到 carrier。
@@ -402,23 +454,24 @@ function decorateTimelineMessages(dom: Document, iconUrl: (adapterId: string) =>
   for (const row of rows) {
     const bubble = row.querySelector('[class*="bubble"]') ?? row.querySelector('[class*="preview"]')
     if (bubble === null) continue
-    decorateTimelineNode(bubble, dom, iconUrl)
+    decorateTimelineNode(bubble, dom, iconUrl, options)
   }
 }
 
-function decorateTimelineNode(node: Node, dom: Document, iconUrl: (adapterId: string) => string | undefined): void {
+function decorateTimelineNode(node: Node, dom: Document, iconUrl: (adapterId: string) => string | undefined, options: DelegateUiDomOptions): void {
   if (node.nodeType === 3) {
     const value = node.nodeValue ?? ''
-    if (value.includes('<!--codingns:delegate:') || value.includes('[CodingNS 委派指令]')) replaceTimelineTextNode(node, value, dom, iconUrl)
+    if (value.includes('<!--codingns:delegate:') || value.includes(DELEGATION_INSTRUCTION_MARKER)) replaceTimelineTextNode(node, value, dom, iconUrl, options)
     return
   }
   if (node.nodeType !== 1
     || (node as Element).hasAttribute(DELEGATE_TIMELINE_CHIP_ATTRIBUTE)
     || (node as Element).hasAttribute(DELEGATE_TIMELINE_CARD_ATTRIBUTE)) return
-  for (const child of [...node.childNodes]) decorateTimelineNode(child, dom, iconUrl)
+  for (const child of [...node.childNodes]) decorateTimelineNode(child, dom, iconUrl, options)
 }
 
-const TIMELINE_CARRIER_PATTERN = /<!--codingns:delegate:v1:([^:>]+):([^>]+)-->/gu
+const TIMELINE_CARRIER_V1_PATTERN = /<!--codingns:delegate:v1:([^:>]+):([^>]+)-->/gu
+const TIMELINE_CARRIER_V2_PATTERN = /<!--codingns:delegate:v2:([^:>]+):([^:>]+):([^>]+)-->/gu
 
 export interface DelegationTimelineMention {
   readonly raw: string
@@ -431,6 +484,7 @@ export interface DelegationTimelineMention {
 export interface DelegationTimelineTarget {
   readonly adapterId: string
   readonly label: string
+  readonly modelId?: string
 }
 
 export interface DelegationTimelineCard {
@@ -440,7 +494,8 @@ export interface DelegationTimelineCard {
 }
 
 const DELEGATION_INSTRUCTION_PATTERN = /\[CodingNS 委派指令\]\s*\n任务：([\s\S]*?)\n允许使用的外部 Agent：\s*\n([\s\S]*?)(?=\n请先根据任务语义制定简短的角色和步骤计划：|\n然后调用已有 agent_subagent 工具执行委派。|$)/u
-const DELEGATION_TARGET_PATTERN = /^-\s*([^\s（(]+)\s*[（(]([^，,）)]+)(?:[，,][^）)]*)?[）)]\s*$/gmu
+const DEFAULT_ADAPTER_MODEL_LABEL = String.fromCodePoint(0x9002, 0x914d, 0x5668, 0x9ed8, 0x8ba4)
+const DELEGATION_TARGET_PATTERN = /^-\s*([^\s（(]+)\s*[（(]([^，,）)]+)(?:[，,]\s*模型：([^，,）)]*))?(?:[，,][^）)]*)?[）)]\s*$/gmu
 
 /** 解析 Host 改写后的委派指令，提取用户真正关心的任务和目标 Agent。 */
 export function parseDelegationTimelineCard(value: string): DelegationTimelineCard | undefined {
@@ -454,8 +509,9 @@ export function parseDelegationTimelineCard(value: string): DelegationTimelineCa
   for (const target of (match[2] ?? '').matchAll(DELEGATION_TARGET_PATTERN)) {
     const adapterId = target[1]?.trim() ?? ''
     const label = target[2]?.trim() ?? ''
+    const modelId = target[3]?.trim() ?? ''
     if (adapterId === '' || label === '' || targets.some((item) => item.adapterId === adapterId)) continue
-    targets.push({ adapterId, label })
+    targets.push({ adapterId, label, ...(modelId !== '' && modelId !== DEFAULT_ADAPTER_MODEL_LABEL ? { modelId } : {}) })
   }
   if (targets.length === 0) return undefined
   return { raw: value, task, targets }
@@ -464,26 +520,30 @@ export function parseDelegationTimelineCard(value: string): DelegationTimelineCa
 /** 解析时间线文本中的有效 carrier；无效编码原样保留，避免误删用户内容。 */
 export function parseDelegationTimelineCarriers(value: string): readonly DelegationTimelineMention[] {
   const mentions: DelegationTimelineMention[] = []
-  for (const match of value.matchAll(TIMELINE_CARRIER_PATTERN)) {
-    const carrierStart = match.index ?? -1
-    const carrier = match[0] ?? ''
-    const adapterId = decodeCarrierPart(match[1])
-    const label = decodeCarrierPart(match[2])
-    if (carrierStart < 0 || carrier === '' || adapterId === undefined || label === undefined) continue
-    const mention = `@${label}`
-    const start = carrierStart >= mention.length && value.slice(carrierStart - mention.length, carrierStart) === mention
-      ? carrierStart - mention.length
-      : carrierStart
-    const raw = value.slice(start, carrierStart + carrier.length)
-    mentions.push({ raw, adapterId, label, start, end: start + raw.length })
+  const collect = (pattern: RegExp, labelGroup: number): void => {
+    for (const match of value.matchAll(pattern)) {
+      const carrierStart = match.index ?? -1
+      const carrier = match[0] ?? ''
+      const adapterId = decodeCarrierPart(match[1])
+      const label = decodeCarrierPart(match[labelGroup])
+      if (carrierStart < 0 || carrier === '' || adapterId === undefined || label === undefined) continue
+      const mention = `@${label}`
+      const start = carrierStart >= mention.length && value.slice(carrierStart - mention.length, carrierStart) === mention
+        ? carrierStart - mention.length
+        : carrierStart
+      const raw = value.slice(start, carrierStart + carrier.length)
+      mentions.push({ raw, adapterId, label, start, end: start + raw.length })
+    }
   }
-  return mentions
+  collect(TIMELINE_CARRIER_V1_PATTERN, 2)
+  collect(TIMELINE_CARRIER_V2_PATTERN, 3)
+  return mentions.sort((a, b) => a.start - b.start)
 }
 
-function replaceTimelineTextNode(node: Node, value: string, dom: Document, iconUrl: (adapterId: string) => string | undefined): void {
+function replaceTimelineTextNode(node: Node, value: string, dom: Document, iconUrl: (adapterId: string) => string | undefined, options: DelegateUiDomOptions): void {
   const card = parseDelegationTimelineCard(value)
   if (card !== undefined && node.parentNode !== null) {
-    node.parentNode.replaceChild(buildTimelineCard(dom, card, iconUrl), node)
+    node.parentNode.replaceChild(buildTimelineCard(dom, card, iconUrl, options.cardTitle, options.cardStatus, options.cardTarget), node)
     return
   }
   const matches = parseDelegationTimelineCarriers(value)
@@ -505,6 +565,9 @@ function buildTimelineCard(
   dom: Document,
   card: DelegationTimelineCard,
   iconUrl: (adapterId: string) => string | undefined,
+  cardTitle: () => string = () => 'Delegation task',
+  cardStatus: () => string = () => 'Delegating',
+  cardTarget: (value: { readonly label: string; readonly adapterId: string; readonly modelId?: string }) => string = ({ label, adapterId, modelId }) => `${label} (${adapterId}${modelId === undefined ? '' : ` · ${modelId}`})`,
 ): HTMLElement {
   const root = dom.createElement('div')
   root.setAttribute(DELEGATE_TIMELINE_CARD_ATTRIBUTE, '')
@@ -512,7 +575,7 @@ function buildTimelineCard(
 
   const title = dom.createElement('div')
   title.setAttribute('data-codingns-delegation-card-title', '')
-  title.textContent = '委派任务'
+  title.textContent = cardTitle()
 
   const targets = dom.createElement('div')
   targets.setAttribute('data-codingns-delegation-card-targets', '')
@@ -528,7 +591,7 @@ function buildTimelineCard(
       badge.append(logo)
     }
     const label = dom.createElement('span')
-    label.textContent = `${target.label}（${target.adapterId}）`
+    label.textContent = cardTarget(target)
     badge.append(label)
     targets.append(badge)
   }
@@ -538,7 +601,7 @@ function buildTimelineCard(
   task.textContent = card.task
   const status = dom.createElement('div')
   status.setAttribute('data-codingns-delegation-card-status', '')
-  status.textContent = '委派中'
+  status.textContent = cardStatus()
   root.append(title, targets, task, status)
   return root
 }
@@ -615,6 +678,11 @@ function removeDelegateNodes(dom: Document): void {
     const raw = card.getAttribute(DELEGATE_TIMELINE_CARD_RAW_ATTRIBUTE)
     const parent = card.parentNode
     if (raw !== null && parent !== null) parent.replaceChild(dom.createTextNode(raw), card)
+  }
+  for (const placeholder of dom.querySelectorAll(`[${DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE}]`)) {
+    const base = placeholder.getAttribute(DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE)
+    if (base !== null) placeholder.textContent = base
+    placeholder.removeAttribute(DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE)
   }
   for (const row of dom.querySelectorAll(`[${DELEGATE_MENU_ROW_ATTRIBUTE}]`)) row.removeAttribute(DELEGATE_MENU_ROW_ATTRIBUTE)
   // 隐藏规则是插件全局样式，停用时必须一并收回，避免残留选择器影响后续渲染。
