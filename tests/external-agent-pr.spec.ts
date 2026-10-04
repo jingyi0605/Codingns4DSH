@@ -10,7 +10,7 @@ import { MiniMaxCodeDriver } from '../data/build/dist/host/cli-adapters/mcode-dr
 import { ZcodeAppServerDriver } from '../data/build/dist/host/cli-adapters/zcode-driver.js'
 import { createAgentSubagentTool } from '../data/build/dist/host/cli-adapters/subagent-tool.js'
 import { setNativeSubagents } from '../data/build/dist/host/cli-adapters/native-subagent-holder.js'
-import { registerNativeTeamSubagentProviders } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
+import { registerNativeTeamSubagentProviders, withTeamSubagentSelection } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
 import { setAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry-holder.js'
 
 function fakeRpcSpawn(onRequest: (request: Record<string, unknown>, stdout: PassThrough) => void) {
@@ -292,7 +292,7 @@ test('原生 Subagent 首轮已在订阅前结束时从快照补齐（真实 DSH
     { agent: { id: 'parent-1', options: { subagentDepth: 0 }, session: { header: { id: 'parent-1' } } } },
   )
   assert.deepEqual(result, {
-    agent: 'mcode', childSessionId: 'child-1', providerSessionId: 'child-1', ok: true, completed: true, result: '快照结果', toolCalls: 0,
+    agent: 'mcode', childSessionId: 'child-1', providerSessionId: 'child-1', ok: true, completed: true, status: 'completed', result: '快照结果', toolCalls: 0,
   })
   assert.equal(handlers, undefined)
   setNativeSubagents(undefined)
@@ -325,7 +325,7 @@ test('原生 Subagent 同步等待能消费订阅期间的实时事件并正常�
     new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 3_000)),
   ])
   assert.deepEqual(result, {
-    agent: 'mcode', childSessionId: 'child-live', providerSessionId: 'child-live', ok: true, completed: true, result: '实时结果', toolCalls: 1,
+    agent: 'mcode', childSessionId: 'child-live', providerSessionId: 'child-live', ok: true, completed: true, status: 'completed', result: '实时结果', toolCalls: 1,
   })
   setNativeSubagents(undefined)
 })
@@ -352,7 +352,7 @@ test('原生 Subagent 只有收到 turn/end 才完成，并透传终态真实错
   handlers!.onEvent?.(child, nativeEvent('turn/end', 2, { reason: { kind: 'error', error: { message: '上游真实失败：额度不足' } } }))
   const result = await pending
   assert.deepEqual(result, {
-    agent: 'mcode', childSessionId: 'child-error', providerSessionId: 'child-error', ok: false, completed: true,
+    agent: 'mcode', childSessionId: 'child-error', providerSessionId: 'child-error', ok: false, completed: true, status: 'failed',
     result: '失败前的片段', toolCalls: 0, error: '上游真实失败：额度不足',
   })
   setNativeSubagents(undefined)
@@ -380,9 +380,68 @@ test('agent_subagent 工具定义满足 dsh-tools 注册契约且向 startContin
   assert.equal(received?.request?.parent, parentAgent)
   assert.equal(received?.request?.parent?.options?.subagentDepth, 0)
   assert.deepEqual(result, {
-    agent: 'mcode', childSessionId: 'child-real', providerSessionId: 'child-real', ok: true, completed: false, background: true, result: '子代理已启动，等待首轮 turn/end。',
+    agent: 'mcode', childSessionId: 'child-real', providerSessionId: 'child-real', ok: true, completed: false, status: 'running', background: true, result: '子代理已启动，等待首轮 turn/end。',
   })
   setNativeSubagents(undefined)
+})
+
+test('agent_subagent 支持等待/读取后台子会话，并阻止依赖步骤提前启动', async () => {
+  let handlers: { onEvent?: (session: unknown, event: unknown) => void } | undefined
+  const children = new Map<string, { header: { id: string }; snapshotEvents: () => readonly unknown[] }>()
+  const sessions = {
+    get: (id: string) => children.get(id),
+    subscribe: (value: { onEvent?: (session: unknown, event: unknown) => void }) => { handlers = value; return () => { handlers = undefined } },
+  } as never
+  let sequence = 0
+  setNativeSubagents({
+    registerProvider: () => undefined,
+    startContinuable: async () => {
+      sequence += 1
+      const id = `child-m2-${sequence}`
+      children.set(id, { header: { id }, snapshotEvents: () => [] })
+      return { childId: id, messageId: `message-${sequence}` }
+    },
+  })
+  const tool = createAgentSubagentTool({ nativeSessions: sessions })
+  const exec = { agent: { id: 'parent-m2', options: { subagentDepth: 0 }, session: { header: { id: 'parent-m2' } } } }
+  try {
+    const started = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { agent: 'mcode', prompt: '先实现', run_in_background: true }, exec,
+    )
+    assert.equal(started.status, 'running')
+    const childId = String(started.childSessionId)
+    const blocked = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { agent: 'mcode', prompt: '后续测试', depends_on: [childId] }, exec,
+    )
+    assert.equal(blocked.ok, false)
+    assert.match(String(blocked.error), /DELEGATE_DEPENDENCY_NOT_READY/u)
+    const waiting = (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { action: 'wait', child_session_id: childId, timeout_ms: 2_000 }, exec,
+    )
+    for (let index = 0; index < 50 && handlers === undefined; index += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+    handlers?.onEvent?.(children.get(childId), nativeEvent('assistant/message', 1, { message: { content: [{ type: 'text', text: '实现完成' }] } }))
+    handlers?.onEvent?.(children.get(childId), nativeEvent('turn/end', 2, { reason: { kind: 'completed' } }))
+    const waited = await waiting
+    assert.equal(waited.status, 'completed')
+    assert.equal(waited.completed, true)
+    const read = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { action: 'read', child_session_id: childId }, exec,
+    )
+    assert.equal(read.status, 'completed')
+    const otherParent = { agent: { id: 'parent-m2-other', options: { subagentDepth: 0 }, session: { header: { id: 'parent-m2-other' } } } }
+    const crossParentRead = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { action: 'read', child_session_id: childId }, otherParent,
+    )
+    assert.equal(crossParentRead.ok, false)
+    assert.match(String(crossParentRead.error), /找不到父会话下的子会话/u)
+    const crossParentWait = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { action: 'wait', child_session_id: childId, timeout_ms: 1 }, otherParent,
+    )
+    assert.equal(crossParentWait.ok, false)
+    assert.match(String(crossParentWait.error), /找不到父会话下的子会话/u)
+  } finally {
+    setNativeSubagents(undefined)
+  }
 })
 
 test('原生 Provider 注册可去重并在释放后重新装配', async () => {
@@ -404,4 +463,28 @@ test('原生 Provider 注册可去重并在释放后重新装配', async () => {
   registerNativeTeamSubagentProviders(service as never)
   assert.equal(providers.length, 20)
   setAdapterRegistry(undefined)
+})
+
+test('子代理 Provider 在 Agent id 与会话 id 不同的宿主中仍传递授权模型', async () => {
+  const providers: Array<{ name: string; prepareContinuable: (request: any) => Promise<unknown> }> = []
+  let captured: unknown
+  setAdapterRegistry({
+    catalog: async () => [{ id: 'mcode', installed: true, enabled: true }],
+    setSession: (_sessionId: string, config: unknown) => { captured = config },
+    flushSessionBindings: async () => undefined,
+  } as never)
+  const dispose = registerNativeTeamSubagentProviders({ registerProvider: (provider: any) => { providers.push(provider); return () => undefined } } as never)
+  try {
+    await withTeamSubagentSelection('session-parent', 'mcode', 'model-explicit', async () => {
+      await providers.find((provider) => provider.name === 'codingns-external-mcode')!.prepareContinuable({
+        sessionId: 'child-model',
+        parent: { id: 'agent-parent', session: { header: { id: 'session-parent' } } },
+        signal: new AbortController().signal,
+      })
+    })
+    assert.deepEqual(captured, { adapterId: 'mcode', parentSessionId: 'session-parent', origin: 'subagent', modelId: 'model-explicit' })
+  } finally {
+    dispose()
+    setAdapterRegistry(undefined)
+  }
 })

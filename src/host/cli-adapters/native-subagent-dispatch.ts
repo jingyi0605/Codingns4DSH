@@ -149,7 +149,7 @@ export async function waitNativeSubagentLifecycle(
 }
 
 /**
- * 派发一个外部适配器子代理：startContinuable 创建原生可续子会话，
+ * 派发一个目标适配器子代理：startContinuable 创建原生可续子会话，
  * 非后台模式等待子会话首轮结束并回收文本与工具计数。
  */
 export async function dispatchNativeSubagent(
@@ -169,10 +169,19 @@ export async function dispatchNativeSubagent(
   const select = request.select ?? (<T>(action: () => Promise<T>): Promise<T> =>
     withTeamSubagentSelection(request.parentId, request.adapterId, request.modelId, action))
   try {
+    const agentOptions = request.adapterId === 'dsh' && request.modelId !== undefined && request.modelId !== 'provider-default'
+      ? { model: request.modelId }
+      : undefined
     const started = await select(() => service.startContinuable!({
       provider: externalTeamProvider(request.adapterId),
       label: request.prompt.replace(/\s+/gu, ' ').slice(0, 120),
-      request: { prompt: [{ type: 'text', text: request.prompt }], parent: request.parentAgent },
+      request: {
+        prompt: [{ type: 'text', text: request.prompt }],
+        parent: request.parentAgent,
+        // DSH 内置 spawn Provider 支持 agentOptions；外部 CLI Provider 不支持，
+        // 所以只有 dsh 目标才把二级选择器的模型下发到原生子 Agent。
+        ...(agentOptions === undefined ? {} : { agentOptions }),
+      },
       signal: request.signal ?? fallbackSignal,
     }))
     startedChildId = started.childId

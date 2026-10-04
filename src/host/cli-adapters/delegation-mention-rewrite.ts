@@ -5,6 +5,8 @@ export interface DelegationRewriteTarget {
   readonly adapterId: string
   readonly label: string
   readonly capabilities: readonly string[]
+  /** carrier v2 中用户明确选择的模型；旧 v1 carrier 不带此字段。 */
+  readonly modelId?: string
 }
 
 export interface DelegationRewriteResult {
@@ -50,12 +52,15 @@ export function rewriteDelegationMessages(
   const unavailable: string[] = []
   const targets: DelegationRewriteTarget[] = []
   for (const carrier of parsed.carriers) {
-    const descriptor = catalog.find((item) => item.id === carrier.adapterId)
+    const descriptor = carrier.adapterId === 'dsh'
+      ? { id: 'dsh', name: 'DeepSeek Harness', installed: true, enabled: true, capabilities: ['continuable', 'reasoning'] as const }
+      : catalog.find((item) => item.id === carrier.adapterId)
     if (descriptor === undefined || !descriptor.installed || !descriptor.enabled) unavailable.push(carrier.adapterId)
     if (descriptor !== undefined) targets.push({
       adapterId: descriptor.id,
       label: carrier.label || descriptor.name,
       capabilities: descriptor.capabilities ?? [],
+      ...(carrier.modelId === undefined ? {} : { modelId: carrier.modelId }),
     })
   }
   if (unavailable.length > 0) {
@@ -90,7 +95,7 @@ export function rewriteDelegationMessages(
 }
 
 function buildDelegationInstruction(task: string, targets: readonly DelegationRewriteTarget[]): string {
-  const allowed = targets.map((target) => `- ${target.adapterId}（${target.label}，能力：${target.capabilities.length === 0 ? '未声明' : target.capabilities.join('、')}）`).join('\n')
+  const allowed = targets.map((target) => `- ${target.adapterId}（${target.label}，模型：${target.modelId ?? '适配器默认'}，能力：${target.capabilities.length === 0 ? '未声明' : target.capabilities.join('、')}）`).join('\n')
   return [
     '[CodingNS 委派指令]',
     `任务：${task}`,

@@ -15,7 +15,7 @@ export interface DelegateDispatchDeps {
   readonly nativeSessions?: CodingNsNativeSessionBridge | undefined
 }
 
-/** 一次委派请求：任务提示词 + 目标外部适配器。空 prompt 始终拒绝，不读取历史消息。 */
+/** 一次委派请求：任务提示词 + 目标 Agent 适配器。空 prompt 始终拒绝，不读取历史消息。 */
 export interface DelegateDispatchRequest {
   readonly sessionId: string
   readonly adapterId: string
@@ -100,7 +100,11 @@ export async function dispatchDelegateSubagent(
     return { ok: false, adapterId, status: 'failed', error: `找不到会话对应的 DSH Agent: ${request.sessionId}` }
   }
   const parentId = parentAgent.session?.header?.id ?? parentAgent.id ?? request.sessionId
-  const adapter = (await getAdapterRegistry()?.catalog())?.find((item) => item.id === adapterId)
+  // dsh 是 DSH 自带的内置 Agent，不在外部 CLI Registry 中注册驱动；它的
+  // 子会话由原生 `spawn` Provider 创建，因此不能按外部目录缺失处理。
+  const adapter = adapterId === 'dsh'
+    ? { installed: true, enabled: true }
+    : (await getAdapterRegistry()?.catalog())?.find((item) => item.id === adapterId)
   if (adapter === undefined || !adapter.installed || !adapter.enabled) {
     return { ok: false, adapterId, status: 'failed', error: `${adapterId} 未安装或未启用` }
   }

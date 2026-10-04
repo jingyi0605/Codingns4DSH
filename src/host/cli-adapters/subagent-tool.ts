@@ -2,7 +2,7 @@ import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { getNativeSubagents } from './native-subagent-holder.js'
 import { EXTERNAL_SUBAGENT_IDS } from './native-team-subagent.js'
 import { dispatchNativeSubagent, NATIVE_SUBAGENT_TIMEOUT_MS, readNativeSubagentLifecycle, waitNativeSubagentLifecycle, type NativeParentAgent } from './native-subagent-dispatch.js'
-import { isDelegationTargetAllowed } from './delegation-authorization.js'
+import { getDelegationModel, isDelegationTargetAllowed } from './delegation-authorization.js'
 
 export function createAgentSubagentTool(options: { readonly nativeSessions?: CodingNsNativeSessionBridge | undefined } = {}): Record<string, unknown> {
   return {
@@ -55,10 +55,16 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
         }
         return { ok: lifecycle.status === 'completed', ...lifecycle }
       }
-      if (!EXTERNAL_SUBAGENT_IDS.includes(adapterId as typeof EXTERNAL_SUBAGENT_IDS[number]) || prompt === '') throw new Error('agent 与 prompt 均不能为空且必须使用受支持的外部 Agent')
+      if (!EXTERNAL_SUBAGENT_IDS.includes(adapterId as typeof EXTERNAL_SUBAGENT_IDS[number]) || prompt === '') throw new Error('agent 与 prompt 均不能为空且必须使用受支持的 Agent')
       if (!isDelegationTargetAllowed(parentId, adapterId)) {
         throw new Error(`DELEGATE_TARGET_NOT_ALLOWED: 当前对话未授权使用 ${adapterId}`)
       }
+      // 委派 carrier 中的模型是用户在二级选择器里明确选定的事实。父模型可能
+      // 自己猜一个 model 参数，不能覆盖该授权；旧 v1 carrier 没有模型时仍沿用
+      // 工具参数/适配器默认值，保持向后兼容。
+      const authorizedModelId = getDelegationModel(parentId, adapterId)
+      const requestedModelId = typeof args.model === 'string' && args.model.trim() !== '' ? args.model.trim() : undefined
+      const modelId = authorizedModelId ?? requestedModelId
       const dependsOn = Array.isArray(args.depends_on)
         ? args.depends_on.filter((value): value is string => typeof value === 'string' && value.trim() !== '').map((value) => value.trim())
         : []
@@ -81,7 +87,7 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
         prompt,
         parentAgent,
         parentId,
-        modelId: typeof args.model === 'string' && args.model.trim() !== '' ? args.model.trim() : undefined,
+        ...(modelId === undefined ? {} : { modelId }),
         background: args.run_in_background === true,
         signal: exec.signal,
       })

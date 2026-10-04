@@ -102,6 +102,7 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
       context.resources.add(registerDelegateCommand(uiContext, {
         rpc: context.services.rpc,
         locale: context.services.locale,
+        dshVersion: context.services.dshVersion,
       }))
     }
     const slots = context.services.slots

@@ -19,18 +19,24 @@ export interface DelegateAdapterOption {
   readonly detail?: string
 }
 
+/** 适配器选中后展示的模型选项。 */
+export interface DelegateModelOption {
+  readonly id: string
+  readonly label: string
+  readonly detail?: string
+}
+
 /**
  * 把适配器目录映射为委派选项。
  *
- * 只列出已安装且已启用的外部 Agent：`dsh` 是 DSH 自身，不是可委派的外部目标；
- * 未安装或已停用的适配器即使出现在列表里也会在 Host 侧被拒绝。
+ * 只列出已安装且已启用的 Agent。`dsh` 由 Host 作为内置适配器提供，和外部 CLI
+ * 一样允许用户明确选择；未安装或已停用的适配器即使出现在目录里也会在 Host 侧拒绝。
  */
 export function delegateAdapterOptions(
   catalog: readonly CodingNsCliAdapterDescriptor[],
 ): readonly DelegateAdapterOption[] {
   const options: DelegateAdapterOption[] = []
   for (const adapter of catalog) {
-    if (adapter.id === 'dsh') continue
     if (!adapter.installed || !adapter.enabled) continue
     const detail = adapter.version?.trim()
     options.push({
@@ -70,6 +76,6 @@ export function extractDelegateTask(draft: string, adapterId?: string, adapterNa
 }
 
 /** 把选择结果追加到草稿；重复目标按 adapterId 去重。 */
-export function appendDelegateCarrier(draft: string, adapterId: string, adapterName: string): string {
-  return insertDelegationCarrier(draft, adapterId, adapterName)
+export function appendDelegateCarrier(draft: string, adapterId: string, adapterName: string, modelId?: string): string {
+  return insertDelegationCarrier(draft, adapterId, adapterName, modelId)
 }

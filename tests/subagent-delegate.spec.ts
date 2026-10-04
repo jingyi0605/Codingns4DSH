@@ -12,6 +12,7 @@ import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters
 import { DELEGATE_COMMAND_NAME, delegateAdapterOptions, extractDelegateTask } from '../data/build/dist/client/delegate-plan.js'
 import { appendDelegateCarrier, parseDelegationCarriers } from '../data/build/dist/client/delegate-plan.js'
 import { rewriteDelegationMessages } from '../data/build/dist/host/cli-adapters/delegation-mention-rewrite.js'
+import { externalTeamProvider } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -29,14 +30,17 @@ function registryWith(adapterIds: readonly string[]): CodingNsCliAdapterRegistry
   return registry
 }
 
-test('委派适配器选项只保留已安装且已启用的外部 Agent', () => {
+test('委派适配器选项包含内置 dsh，并过滤未安装或已停用适配器', () => {
   const options = delegateAdapterOptions([
     { id: 'dsh', name: 'DeepSeek Harness', installed: true, enabled: true, version: null, command: null },
     { id: 'codex', name: 'Codex', installed: true, enabled: true, version: '1.2.3', command: '/codex' },
     { id: 'kimi', name: 'Kimi', installed: true, enabled: false, version: '1.0.0', command: '/kimi' },
     { id: 'pi', name: 'Pi', installed: false, enabled: true, version: null, command: null },
   ])
-  assert.deepEqual(options, [{ id: 'codex', label: 'Codex', detail: '1.2.3' }])
+  assert.deepEqual(options, [
+    { id: 'dsh', label: 'DeepSeek Harness' },
+    { id: 'codex', label: 'Codex', detail: '1.2.3' },
+  ])
 })
 
 test('委派任务从草稿里取令牌之后的内容，行内斜杠不当作委派', () => {
@@ -68,6 +72,20 @@ test('carrier 只携带稳定 adapterId，Host 改写后移除 mention 并保留
     assert.match(rewritten.value.instruction, /command-code/u)
     assert.match(rewritten.value.instruction, /请实现并运行测试/u)
     assert.doesNotMatch(String(rewritten.value.messages[0]!.content), /codingns:delegate/u)
+  }
+})
+
+test('carrier v2 携带用户明确选择的模型并在 Host 改写授权中保留', () => {
+  const draft = appendDelegateCarrier('请使用指定模型完成任务', 'command-code', 'Command Code', 'deepseek/deepseek-v4.1-flash')
+  const parsed = parseDelegationCarriers(draft)
+  assert.deepEqual(parsed.carriers, [{ version: 2, adapterId: 'command-code', label: 'Command Code', modelId: 'deepseek/deepseek-v4.1-flash' }])
+  const rewritten = rewriteDelegationMessages([{ role: 'user', content: draft }], [{
+    id: 'command-code', name: 'Command Code', installed: true, enabled: true, version: '1', command: 'command-code', capabilities: ['stream'],
+  }])
+  assert.equal(rewritten.kind, 'rewritten')
+  if (rewritten.kind === 'rewritten') {
+    assert.equal(rewritten.value.targets[0]?.modelId, 'deepseek/deepseek-v4.1-flash')
+    assert.match(rewritten.value.instruction, /模型：deepseek\/deepseek-v4\.1-flash/u)
   }
 })
 
@@ -129,6 +147,29 @@ test('委派异步派发：立刻返回子会话 ID，不等待子代理首轮�
     assert.deepEqual(started[0]!.request.prompt, [{ type: 'text', text: '分析当前项目' }])
     assert.equal(started[0]!.request.parent.id, 'agent-1')
     assert.equal(started[0]!.label, '分析当前项目')
+  } finally {
+    setNativeSubagents(undefined)
+    setAdapterRegistry(undefined)
+  }
+})
+
+test('内置 dsh 委派使用 spawn Provider 并下发用户选择的模型', async () => {
+  const started: Array<Record<string, any>> = []
+  setNativeSubagents({
+    registerProvider: () => () => undefined,
+    startContinuable: async (spec: Record<string, any>) => { started.push(spec); return { childId: 'child-dsh', messageId: 'm-dsh' } },
+  } as never)
+  // dsh 没有外部 CLI Registry driver，派发不能依赖 registry.catalog()。
+  setAdapterRegistry(registryWith(['codex']))
+  try {
+    const result = await dispatchDelegateSubagent(
+      { sessionId: 'parent-dsh', adapterId: 'dsh', modelId: 'deepseek-chat', prompt: '执行 DSH 子任务' },
+      { agents: { get: (id: string) => (id === 'parent-dsh' ? { id: 'agent-dsh', session: { header: { id: 'parent-dsh' } } } : undefined) }, nativeSessions: SESSIONS as never },
+    )
+    assert.equal(result.ok, true)
+    assert.equal(externalTeamProvider('dsh'), 'spawn')
+    assert.equal(started[0]?.provider, 'spawn')
+    assert.deepEqual(started[0]?.request?.agentOptions, { model: 'deepseek-chat' })
   } finally {
     setNativeSubagents(undefined)
     setAdapterRegistry(undefined)
@@ -247,6 +288,10 @@ test('/委派 命令已注册进 Client bundle，并由选择动作写入 carrie
   assert.match(commandSource, /readCommandUi\(ctx\)/u)
   assert.match(commandSource, /commandUi\.register/u)
   assert.match(commandSource, /setDraft/u)
+  // `#` 快捷入口必须独立于可选的 inputTriggers 服务；移动端服务晚加载时仍要能弹出适配器列表。
+  assert.match(commandSource, /const disposeHashShortcut = registerDelegateHashShortcut\(ctx, options\)/u)
+  assert.match(commandSource, /inputTriggers !== undefined && typeof inputTriggers\.registerSource === 'function'/u)
+  assert.match(commandSource, /input\.caretSpan\?\.\(\)/u)
   assert.doesNotMatch(commandSource, /callCliRpc<[^>]+>\(options\.rpc, 'delegate'/u)
   // 选择 Agent 只是编辑当前草稿；单轮提交后才会真正委派，不能留下“继续输入后提交”的持久提示。
   assert.doesNotMatch(commandSource, /notify\('info', t\('delegate\.selected'/u)

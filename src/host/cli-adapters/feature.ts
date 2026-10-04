@@ -1,5 +1,5 @@
 import type { FeatureModule, FeatureResourceScope } from '../../shared/contracts/feature.js'
-import type { CodingNsCliApprovalPolicy, CodingNsCliAttachment, CodingNsCliMessage, CodingNsCliPermissionState, CodingNsCliSandboxMode, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsCliApprovalPolicy, CodingNsCliAttachment, CodingNsCliMessage, CodingNsCliModelCatalog, CodingNsCliPermissionState, CodingNsCliSandboxMode, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
 import { CommandCodeDriver } from './command-code-driver.js'
 import { ClaudeCodeDriver } from './claude-driver.js'
 import { GeminiCliDriver } from './gemini-driver.js'
@@ -123,7 +123,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       context.resources.add(context.services.rpc.register('cli', (action, payload) => {
         switch (action) {
           case 'catalog': return registry.catalog()
-          case 'models': return registry.models(readAdapterId(payload))
+          case 'models': {
+            const adapterId = readAdapterId(payload)
+            return adapterId === 'dsh' ? readDshModelCatalog(context.services.dshContext) : registry.models(adapterId)
+          }
           case 'adapter/set': return setAdapterEnabled(context.services.settings, registry, payload)
           case 'session/get': return registry.getSession(readSessionId(payload))
           case 'session/set': return registry.setSession(readSessionId(payload), readSessionConfig(payload))
@@ -273,7 +276,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
               // DSH Agent Loop 传入的 options 是深冻结对象，不能把改写结果写回
               // `value.messages`。外部适配器只消费本地快照，原生 Agent 的 carrier
               // 已在 agent/pre-step 中被替换并持久化。
-              setDelegationAuthorization(sessionId, delegation.value.targets.map((target) => target.adapterId))
+              setDelegationAuthorization(sessionId, delegation.value.targets)
               messages = [...delegation.value.messages]
             }
           } else if (sessionId !== '') clearDelegationAuthorization(sessionId)
@@ -392,7 +395,14 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         })
         if (typeof dispose === 'function') context.resources.add(() => { (dispose as () => void)() })
       }
-      context.resources.add(async () => { await registry.dispose(); await sessionStore.flush(); setAdapterRegistry(undefined) })
+      context.resources.add(async () => {
+        // DSH 先停用设置上下文再执行异步资源清理时，旧的写队列不能继续调用
+        // configEditor，否则会出现 inactive context 并污染退出日志。
+        sessionStore.dispose()
+        await registry.dispose()
+        await sessionStore.flush()
+        setAdapterRegistry(undefined)
+      })
     },
   }
 }
@@ -440,7 +450,7 @@ function registerDelegationAgentHooks(
       delegation = rewriteDelegationMessages(messages, await registry.catalog())
       if (delegation.kind === 'error') clearDelegationAuthorization(sessionId)
       else if (delegation.kind === 'rewritten') {
-        setDelegationAuthorization(sessionId, delegation.value.targets.map((target) => target.adapterId))
+        setDelegationAuthorization(sessionId, delegation.value.targets)
       }
     }
 
@@ -491,6 +501,47 @@ function readOptionalContextService(ctx: CodingNsHostServices['dshContext'], nam
   } catch {
     return undefined
   }
+}
+
+/** 将 DSH 原生 session/modelCatalog 归一化为委派选择器复用的模型目录契约。 */
+async function readDshModelCatalog(ctx: CodingNsHostServices['dshContext']): Promise<CodingNsCliModelCatalog> {
+  const controller = readOptionalContextService(ctx, 'sessionController')
+  if (isRecord(controller) && typeof controller.modelCatalog === 'function') {
+    try {
+      const raw = await controller.modelCatalog()
+      const record = asRecord(raw)
+      const groups = Array.isArray(record?.groups)
+        ? record.groups.flatMap((group) => normalizeDshModelGroup(group))
+        : []
+      const defaultSelection = asRecord(record?.default)
+      const defaultModel = typeof defaultSelection?.model === 'string' && defaultSelection.model.trim() !== '' ? defaultSelection.model.trim() : null
+      const defaultEffort = typeof defaultSelection?.reasoningEffort === 'string' && defaultSelection.reasoningEffort.trim() !== '' ? defaultSelection.reasoningEffort.trim() : null
+      if (groups.length > 0) return { groups, currentModel: defaultModel, currentEffort: defaultEffort }
+      if (defaultModel !== null) return { groups: [{ id: 'dsh', name: 'DeepSeek Harness', models: [{ id: defaultModel, name: defaultModel, efforts: defaultEffort === null ? [] : [defaultEffort] }] }], currentModel: defaultModel, currentEffort: defaultEffort }
+    } catch (error) {
+      debugInfo('codingns4dsh: DSH 模型目录读取失败', { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  // 精简 Host 没有 sessionController 时仍给出稳定的“跟随 DSH 当前模型”选项，
+  // 这样 dsh 目标不会退化成无模型可选，实际请求继续沿用 DSH 当前路由。
+  return { groups: [{ id: 'dsh', name: 'DeepSeek Harness', models: [{ id: 'provider-default', name: '跟随 DSH 当前模型', efforts: [] }] }], currentModel: 'provider-default', currentEffort: null, fallback: true }
+}
+
+function normalizeDshModelGroup(value: unknown): CodingNsCliModelCatalog['groups'][number] {
+  const record = asRecord(value)
+  const id = typeof record?.id === 'string' && record.id.trim() !== '' ? record.id.trim() : 'dsh'
+  const name = typeof record?.name === 'string' && record.name.trim() !== '' ? record.name.trim() : id
+  const models = Array.isArray(record?.models) ? record.models.flatMap((item) => {
+    const model = asRecord(item)
+    const modelId = typeof model?.id === 'string' ? model.id.trim() : ''
+    if (modelId === '') return []
+    const reasoning = asRecord(model?.reasoning)
+    const efforts = Array.isArray(reasoning?.efforts)
+      ? reasoning.efforts.flatMap((effort) => typeof asRecord(effort)?.id === 'string' ? [String(asRecord(effort)?.id)] : [])
+      : []
+    return [{ id: modelId, name: typeof model?.name === 'string' && model.name.trim() !== '' ? model.name.trim() : modelId, ...(typeof model?.description === 'string' && model.description.trim() !== '' ? { description: model.description.trim() } : {}), efforts }]
+  }) : []
+  return { id, name, models }
 }
 
 /**
