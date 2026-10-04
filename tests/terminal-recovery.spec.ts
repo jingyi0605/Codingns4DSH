@@ -43,6 +43,51 @@ test('工作区终端在新会话的 Sidebar 缺少标签时只补一个聚合�
   ])
 })
 
+test('用户关闭聚合页签后不会被库存恢复逻辑重新打开', async () => {
+  const tabs = new Map<string, { id: string; kind: string }[]>([
+    ['session-a', [{ id: 'tab-a', kind: 'terminal' }]],
+  ])
+  let opened = 0
+  const sidebar = {
+    tabsIn: (sessionId: string) => tabs.get(sessionId) ?? [],
+    openTabIn: (sessionId: string, kind: string) => {
+      opened += 1
+      tabs.set(sessionId, [{ id: `tab-${opened}`, kind }])
+    },
+  }
+  const recovery = createTerminalSessionRecovery({
+    async recover() { return [terminal('still-running')] },
+  }, sidebar, 'terminal')
+
+  await recovery.ensure('session-a')
+  tabs.set('session-a', [])
+  await recovery.ensure('session-a')
+
+  assert.equal(opened, 0, '用户主动关闭的聚合页签不应被自动补回')
+})
+
+test('恢复请求进行中关闭聚合页签也不会被重新打开', async () => {
+  const tabs = new Map<string, { id: string; kind: string }[]>([
+    ['session-a', [{ id: 'tab-a', kind: 'terminal' }]],
+  ])
+  let release: (value: readonly ReturnType<typeof terminal>[]) => void = () => undefined
+  const listed = new Promise<readonly ReturnType<typeof terminal>[]>((resolve) => { release = resolve })
+  let opened = 0
+  const recovery = createTerminalSessionRecovery({
+    async recover() { return listed },
+  }, {
+    tabsIn: (sessionId: string) => tabs.get(sessionId) ?? [],
+    openTabIn: () => { opened += 1 },
+  }, 'terminal')
+
+  const pending = recovery.ensure('session-a')
+  tabs.set('session-a', [])
+  release([terminal('still-running')])
+  await pending
+
+  assert.equal(opened, 0, '恢复请求等待期间关闭的聚合页签不应被重新打开')
+})
+
 test('已有带 terminalId 的 Sidebar 标签不会被恢复逻辑重复打开', async () => {
   let opened = 0
   const sidebar = {
@@ -152,4 +197,73 @@ test('Host 列表为空且标签没有创建中视图时会移除明确的残留
   await recovery.ensure('session-a')
 
   assert.deepEqual(closed, [{ sessionId: 'session-a', tabId: 'tab-1' }], 'Host 列表为空且没有创建中视图时应清理残留标签')
+})
+
+test('旧 autoCreate 导航参数不会永久阻止空库存清理', async () => {
+  const closed: string[] = []
+  const sidebar = {
+    tabsIn: () => [{ id: 'tab-stale', kind: 'terminal' }],
+    tabDomain: {
+      occurrence: () => ({ navigation: { getSnapshot: () => ({ params: { autoCreate: true } }) } }),
+    },
+    closeIn: (_sessionId: string, tabId: string) => { closed.push(tabId) },
+  }
+  const recovery = createTerminalSessionRecovery({ async recover() { return [] } }, sidebar, 'terminal', () => false)
+
+  await recovery.ensure('session-a')
+  assert.deepEqual(closed, ['tab-stale'])
+})
+
+test('创建中的 autoCreate 页签在空库存响应期间保持打开', async () => {
+  const closed: string[] = []
+  const sidebar = {
+    tabsIn: () => [{ id: 'tab-creating', kind: 'terminal' }],
+    tabDomain: {
+      occurrence: () => ({ navigation: { getSnapshot: () => ({ params: { autoCreate: true } }) } }),
+    },
+    closeIn: (_sessionId: string, tabId: string) => { closed.push(tabId) },
+  }
+  const recovery = createTerminalSessionRecovery({ async recover() { return [] } }, sidebar, 'terminal', () => true)
+
+  await recovery.ensure('session-a')
+  assert.deepEqual(closed, [])
+})
+
+test('失效恢复请求不会复用旧列表或覆盖新一代投影', async () => {
+  let releaseFirst: (value: readonly ReturnType<typeof terminal>[]) => void = () => undefined
+  let releaseSecond: (value: readonly ReturnType<typeof terminal>[]) => void = () => undefined
+  const first = new Promise<readonly ReturnType<typeof terminal>[]>((resolve) => { releaseFirst = resolve })
+  const second = new Promise<readonly ReturnType<typeof terminal>[]>((resolve) => { releaseSecond = resolve })
+  let recoverCalls = 0
+  const opened: string[] = []
+  const tabs = new Map<string, { id: string; kind: string }[]>()
+  const recovery = createTerminalSessionRecovery({
+    async recover() {
+      recoverCalls += 1
+      return recoverCalls === 1 ? first : second
+    },
+  }, {
+    tabsIn: (sessionId: string) => tabs.get(sessionId) ?? [],
+    openTabIn: (sessionId: string, kind: string) => {
+      opened.push(kind)
+      tabs.set(sessionId, [{ id: `tab-${opened.length}`, kind }])
+    },
+  }, 'terminal')
+
+  const stale = recovery.ensure('session-a')
+  // 关闭终端产生库存修订时，当前 pending 必须失效并允许新一代查询启动。
+  recovery.invalidate('session-a')
+  const current = recovery.ensure('session-a')
+  assert.equal(recoverCalls, 2)
+
+  releaseFirst([terminal('closed-before-refresh')])
+  await stale
+  // 旧请求完成不能因为 finally 删除新 pending，也不能重复打开聚合页。
+  const deduplicated = recovery.ensure('session-a')
+  assert.strictEqual(deduplicated, current)
+  assert.deepEqual(opened, [])
+
+  releaseSecond([terminal('still-running')])
+  await current
+  assert.deepEqual(opened, ['terminal'])
 })

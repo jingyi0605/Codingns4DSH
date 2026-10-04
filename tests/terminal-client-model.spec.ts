@@ -87,6 +87,53 @@ test('Client 视图卸载只 detach，不调用 Host close', async () => {
   assert.equal(calls.close, 0)
 })
 
+test('聚合页常驻视图的多个挂载引用只建立一次 follow', async () => {
+  const { calls, remote } = createRemote(true)
+  const view = new CodingNsTerminalView('session-1', 'terminal-1', remote, false, '/bin/zsh')
+  const firstUnmount = view.mount()
+  const secondUnmount = view.mount()
+
+  await waitFor(() => view.state.getSnapshot().render !== undefined, '常驻终端 snapshot 未到达 Client')
+  const render = view.state.getSnapshot().render
+  assert.ok(render)
+  view.acknowledge(render.revision)
+  assert.equal(calls.environment, 1)
+  assert.equal(calls.list, 1)
+
+  firstUnmount()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(calls.followAborts, 0, '仍有挂载引用时不应释放 Host follow')
+
+  secondUnmount()
+  await waitFor(() => calls.followAborts === 1, '最后一个挂载引用释放后应 detach Host follow')
+  await view.dispose()
+})
+
+test('聚合终端视图卸载 DOM 后保留 Host follow，重新打开无需重新连接', async () => {
+  const { calls, remote } = createRemote(true)
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  const view = service.viewForTerminal('session-1', 'terminal-1', '/bin/zsh')
+  const unmount = view.mount()
+
+  await waitFor(() => view.state.getSnapshot().render !== undefined, '聚合终端 snapshot 未到达 Client')
+  const render = view.state.getSnapshot().render
+  assert.ok(render)
+  view.acknowledge(render.revision)
+
+  // 聚合页切换或右栏隐藏会卸载 DOM，但模型仍由工作区库存持有。
+  unmount()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(calls.followAborts, 0, '聚合视图卸载 DOM 不应释放 Host follow')
+
+  const remount = view.mount()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(calls.followAborts, 0, '重新打开聚合页不应重新建立连接')
+  remount()
+
+  await service.dispose()
+  assert.equal(calls.followAborts, 1, '服务销毁时才释放聚合视图的 Host follow')
+})
+
 test('Sidebar 显式关闭才结束 Host 终端', async () => {
   const { calls, remote } = createRemote(true)
   const service = new CodingNsWebTerminals(new Context(), remote)
@@ -106,6 +153,21 @@ test('Sidebar 显式关闭才结束 Host 终端', async () => {
   unmount()
   await service.dispose()
   assert.equal(calls.close, 1)
+})
+
+test('旧 Sidebar 关闭路径完成后会刷新共享工作区库存', async () => {
+  let closed = false
+  const { remote } = createRemote(true)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-stable' })
+  remote.list = async () => success(closed ? [] : [terminalInfo])
+  remote.close = async () => { closed = true; return success(undefined) }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  await service.recover('session-b')
+  assert.deepEqual(service.inventoryForSession('session-b'), [terminalInfo])
+
+  service.close('session-a', 'tab-1', 'content-1', terminalInfo.id)
+  await waitFor(() => service.inventoryForSession('session-b').length === 0, '旧 Sidebar 关闭后共享库存未刷新')
+  await service.dispose()
 })
 
 test('重复尺寸变化只向 Host 发送一次 resize', async () => {
@@ -186,6 +248,55 @@ test('恢复终端先解析工作区再读取工作区终端列表', async () =>
   await service.dispose()
 })
 
+test('聚合终端使用工作区库存快照直连，不重复读取环境和列表', async () => {
+  const { calls, remote } = createRemote(true)
+  remote.environment = async () => { calls.environment += 1; return success({ ...environment, workspaceId: 'workspace-stable' }) }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  await service.recover('session-1')
+
+  const view = service.viewForTerminal('session-1', terminalInfo.id, terminalInfo.shell.path)
+  const unmount = view.mount()
+  await waitFor(() => view.state.getSnapshot().render !== undefined, '库存快照终端未能直接连接')
+
+  assert.equal(calls.environment, 1)
+  assert.equal(calls.list, 1)
+  assert.equal(view.state.getSnapshot().info?.id, terminalInfo.id)
+  unmount()
+  await service.dispose()
+})
+
+test('切换会话时即使环境快照尚未到达也直接恢复运行中的终端', async () => {
+  const { calls, remote } = createRemote(true)
+  remote.environment = async () => { calls.environment += 1; return success({ ...environment, workspaceId: 'workspace-stable' }) }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  await service.recover('session-1')
+
+  // 模拟新会话刚切入：库存已有 workspace terminal，但该 session 的环境请求尚未完成。
+  ;(service as unknown as { environments: Map<string, unknown>; workspaceIds: Map<string, string> }).environments.clear()
+  ;(service as unknown as { environments: Map<string, unknown>; workspaceIds: Map<string, string> }).workspaceIds.set('session-2', 'workspace-stable')
+  const view = service.viewForTerminal('session-2', terminalInfo.id, terminalInfo.shell.path)
+  const unmount = view.mount()
+  await waitFor(() => view.state.getSnapshot().render !== undefined, '环境快照缺失时终端未能直接恢复')
+
+  assert.equal(calls.environment, 1)
+  assert.equal(view.state.getSnapshot().info?.id, terminalInfo.id)
+  unmount()
+  await service.dispose()
+})
+
+test('同一会话重复恢复复用已缓存的终端环境', async () => {
+  const { calls, remote } = createRemote(true)
+  remote.environment = async () => { calls.environment += 1; return success({ ...environment, workspaceId: 'workspace-stable' }) }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+
+  await service.recover('session-1')
+  await service.recover('session-1')
+
+  assert.equal(calls.environment, 1)
+  assert.equal(calls.list, 2)
+  await service.dispose()
+})
+
 test('并发恢复同一会话只执行一次工作区查询', async () => {
   const { calls, remote } = createRemote(true)
   const service = new CodingNsWebTerminals(new Context(), remote)
@@ -194,6 +305,123 @@ test('并发恢复同一会话只执行一次工作区查询', async () => {
   assert.equal(calls.environment, 1)
   assert.equal(calls.list, 1)
   await service.dispose()
+})
+
+test('关闭终端刷新工作区库存时会使其他会话的旧列表响应失效', async () => {
+  let releaseStale: ((value: readonly (typeof terminalInfo)[]) => void) | undefined
+  const staleList = new Promise<readonly (typeof terminalInfo)[]>((resolve) => { releaseStale = resolve })
+  const listCalls = new Map<string, number>()
+  const { remote } = createRemote(false)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-stable' })
+  remote.list = async (sessionId) => {
+    const count = (listCalls.get(sessionId) ?? 0) + 1
+    listCalls.set(sessionId, count)
+    if (sessionId === 'session-a' && count === 1) return success(await staleList)
+    return success([])
+  }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  const staleRecovery = service.recover('session-a')
+  await waitFor(() => listCalls.get('session-a') === 1, '会话 A 的旧列表请求未挂起')
+  await service.recover('session-b')
+  await service.refreshInventory('session-b')
+  releaseStale?.([terminalInfo])
+  await staleRecovery
+
+  assert.deepEqual(service.inventoryForSession('session-a'), [])
+  assert.deepEqual(service.inventoryForSession('session-b'), [])
+  await service.dispose()
+})
+
+test('工作区尚未解析时刷新也会阻止旧列表覆盖共享库存', async () => {
+  let releaseEnvironment: (() => void) | undefined
+  const pendingEnvironment = new Promise<void>((resolve) => { releaseEnvironment = resolve })
+  let environmentStarted = false
+  const listCalls = new Map<string, number>()
+  const { remote } = createRemote(false)
+  remote.environment = async (sessionId) => {
+    if (sessionId === 'session-a' && !environmentStarted) {
+      environmentStarted = true
+      await pendingEnvironment
+    }
+    return success({ ...environment, workspaceId: 'workspace-stable' })
+  }
+  remote.list = async (sessionId) => {
+    const count = (listCalls.get(sessionId) ?? 0) + 1
+    listCalls.set(sessionId, count)
+    if (sessionId === 'session-a') return success(count === 1 ? [terminalInfo] : [])
+    return success(count === 1 ? [terminalInfo] : [])
+  }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  await service.recover('session-b')
+  const staleRecovery = service.recover('session-a')
+  await waitFor(() => environmentStarted, '会话 A 的工作区查询未挂起')
+
+  await service.refreshInventory('session-b')
+  releaseEnvironment?.()
+  const recovered = await staleRecovery
+
+  assert.deepEqual(recovered, [])
+  assert.deepEqual(service.inventoryForSession('session-a'), [])
+  assert.deepEqual(service.inventoryForSession('session-b'), [])
+  await service.dispose()
+})
+
+test('同一聚合页连续新建终端会保留独立身份并可单独关闭', async () => {
+  const active = new Map<string, typeof terminalInfo>()
+  const { remote } = createRemote(false)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-stable' })
+  remote.list = async () => success([...active.values()])
+  remote.create = async (_sessionId, request) => {
+    const info = { ...terminalInfo, id: request.id }
+    active.set(info.id, info)
+    return success(info)
+  }
+  remote.close = async (_sessionId, id) => { active.delete(id); return success(undefined) }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+
+  const first = await service.createTerminal('session-1')
+  const second = await service.createTerminal('session-1')
+  assert.notEqual(first.id, second.id)
+  assert.deepEqual(service.inventoryForSession('session-1').map((item) => item.id), [first.id, second.id])
+
+  await service.closeTerminal('session-1', first.id)
+  assert.deepEqual(service.inventoryForSession('session-1').map((item) => item.id), [second.id])
+  await service.dispose()
+})
+
+test('共享库存按 terminalId 去重，避免同一记录显示多份', async () => {
+  const { remote } = createRemote(false)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-stable' })
+  remote.list = async () => success([terminalInfo, { ...terminalInfo, title: '重复记录' }])
+  const service = new CodingNsWebTerminals(new Context(), remote)
+
+  const terminals = await service.recover('session-1')
+  assert.deepEqual(terminals.map((item) => item.id), [terminalInfo.id])
+  assert.equal(service.inventoryForSession('session-1').length, 1)
+  await service.dispose()
+})
+
+test('Client 重启后再次新建终端不会复用上一次 terminalId', async () => {
+  const active = new Map<string, typeof terminalInfo>()
+  const { remote } = createRemote(false)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-stable' })
+  remote.list = async () => success([...active.values()])
+  remote.create = async (_sessionId, request) => {
+    const info = { ...terminalInfo, id: request.id }
+    active.set(info.id, info)
+    return success(info)
+  }
+  remote.close = async (_sessionId, id) => { active.delete(id); return success(undefined) }
+
+  const firstClient = new CodingNsWebTerminals(new Context(), remote)
+  const first = await firstClient.createTerminal('session-1')
+  await firstClient.dispose()
+
+  const restartedClient = new CodingNsWebTerminals(new Context(), remote)
+  const second = await restartedClient.createTerminal('session-1')
+  assert.notEqual(second.id, first.id)
+  assert.deepEqual(restartedClient.inventoryForSession('session-1').map((item) => item.id), [first.id, second.id])
+  await restartedClient.dispose()
 })
 
 test('Client 在解析工作区后按工作区键复用终端绑定', async () => {

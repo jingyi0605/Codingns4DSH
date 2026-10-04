@@ -27,9 +27,14 @@ import { installTerminalStyles, terminalClass } from './styles.js'
 import { CodingNsXtermView } from './xterm-view.js'
 import { codingNsTranslator, useCodingNsTranslator, type CodingNsLocale } from '../locale.js'
 import type { CodingNsSettingsStore } from '../../dsh-capabilities/settings-store.js'
+import { debugInfo, debugWarn } from '../../shared/debug.js'
 
 export const TERMINAL_PROVIDER_ID = 'codingns4dsh/terminal'
 export const TERMINAL_KIND = 'terminal'
+const AUTO_CREATE_INTENT_TTL_MS = 5000
+const pendingAutoCreateSessions = new Map<string, number>()
+/** 已消费的导航意图按会话保留，避免切换会话后旧 autoCreate 再次触发创建。 */
+const consumedAutoCreateNavigations = new Map<string, string>()
 
 interface TerminalParams {
   readonly shellPath?: string
@@ -85,13 +90,15 @@ export function registerCodingNsTerminalUi(
     subscribe: (listener) => ctx.on('theme/change', listener),
   }
   const recoverySidebar = ctx.sidebarRight as unknown as TerminalSidebarRecoveryPort
-  const recovery = createTerminalSessionRecovery(webTerminals, recoverySidebar, TERMINAL_KIND)
+  const recovery = createTerminalSessionRecovery(webTerminals, recoverySidebar, TERMINAL_KIND, hasPendingAutoCreateIntent)
   disposers.push(installTerminalStyles())
   const tabDefinition = {
     id: TERMINAL_PROVIDER_ID,
     kind: TERMINAL_KIND,
     // 一个 Sidebar 页签代表整个工作区终端集合；终端实例在页内列表切换。
     multiple: false,
+    // 聚合页隐藏时仍保留所有 XtermView 和 Host follow，重新打开只需切换可见性。
+    keepMounted: true,
     priority: 'extension',
     title: () => t('terminal.title'),
     guide: [{ id: 'terminal', order: 20, title: () => t('terminal.title'), description: () => t('terminal.description'), icon: TerminalGuideIcon }],
@@ -100,7 +107,7 @@ export function registerCodingNsTerminalUi(
   disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab', key: TERMINAL_PROVIDER_ID,
     inject: () => ({ webTerminals, settings, theme, locale: ctx.locale }),
-  }, TerminalBody)))
+  }, CodingNsTerminalAggregateBody)))
   disposers.push(ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab.title', key: TERMINAL_PROVIDER_ID,
     inject: () => ({ locale: ctx.locale }),
@@ -111,21 +118,37 @@ export function registerCodingNsTerminalUi(
   }, TerminalGuide)))
   disposers.push(ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay', id: 'codingns4dsh-terminal-cleanup', order: 1000,
-    inject: () => ({ webTerminals, locale: ctx.locale, sidebarRight: recoverySidebar, recoverSession: recovery.ensure }),
+    inject: () => ({
+      webTerminals,
+      locale: ctx.locale,
+      sidebarRight: recoverySidebar,
+      recoverSession: recovery.ensure,
+      invalidateRecovery: recovery.invalidate,
+    }),
   }, TerminalCleanup)))
   return () => { for (const dispose of disposers.reverse()) dispose() }
 }
 
-function TerminalBody({ sessionId, useTabInfo, webTerminals, settings, theme, locale }: TerminalTabProps): ReactElement | null {
+/** 聚合终端页使用独立组件名，避免 HMR 把旧单终端 TerminalBody 的 Hook 树复用过来。 */
+function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, settings, theme, locale }: TerminalTabProps): ReactElement | null {
   const t = useCodingNsTranslator(locale)
   const info = useTabInfo()
   const params = terminalParams(info)
+  const navigationKey = terminalNavigationKey(info, String(sessionId))
+  // recovery 创建的聚合页也会有 navigation revision，但那只是页签导航版本，
+  // 不能把它当成“新建终端”命令。创建只能由明确参数或 Guide 写入的一次性意图触发。
+  const hasAutoCreateIntent = params.autoCreate === true || hasPendingAutoCreateIntent(String(sessionId))
+  const autoCreate = hasAutoCreateIntent && consumedAutoCreateNavigations.get(String(sessionId)) !== navigationKey
   const revision = useSyncExternalStore(webTerminals.inventoryRevision.subscribe.bind(webTerminals.inventoryRevision), webTerminals.inventoryRevision.getSnapshot.bind(webTerminals.inventoryRevision))
   const themeRevision = useSyncExternalStore(theme.subscribe, theme.getSnapshot)
   const [terminals, setTerminals] = useState<readonly WebTerminalInfo[]>([])
   const [selectedId, setSelectedId] = useState<WebTerminalId | undefined>()
   const [loading, setLoading] = useState(true)
-  const autoCreated = useRef(false)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | undefined>()
+  /** React 状态更新前可能收到连续点击；用同步锁保证只发出一个 create 请求。 */
+  const creatingRef = useRef(false)
+  const autoCreatedFor = useRef<string | undefined>(undefined)
   const reloadSequence = useRef(0)
 
   const reload = useCallback(async (): Promise<readonly WebTerminalInfo[]> => {
@@ -143,31 +166,55 @@ function TerminalBody({ sessionId, useTabInfo, webTerminals, settings, theme, lo
     }
   }, [sessionId, webTerminals])
 
-  useEffect(() => { void reload().catch(() => setLoading(false)) }, [reload, revision])
-  useEffect(() => {
-    if (!params.autoCreate || autoCreated.current || loading || terminals.length > 0) return
-    autoCreated.current = true
-    void webTerminals.createTerminal(String(sessionId), params.shellPath).then((info) => {
+  const createNewTerminal = useCallback(async (): Promise<void> => {
+    if (creatingRef.current) return
+    creatingRef.current = true
+    setCreating(true)
+    setCreateError(undefined)
+    debugInfo('codingns4dsh: client terminal aggregate create begin', { sessionId: String(sessionId), shellPath: params.shellPath ?? null })
+    try {
+      const info = await webTerminals.createTerminal(String(sessionId), params.shellPath)
       setTerminals((current) => current.some((item) => item.id === info.id) ? current : [...current, info])
       setSelectedId(info.id)
-      return reload()
-    }).catch(() => { autoCreated.current = false })
-  }, [loading, params.autoCreate, params.shellPath, reload, sessionId, terminals.length, webTerminals])
-  useEffect(() => {
-    if (loading || terminals.length > 0 || params.autoCreate) return
-    info.tab.actions.close()
-  }, [info.tab.actions, loading, params.autoCreate, terminals.length])
+      await reload()
+      // 创建成功后再消费本地意图。创建期间 recovery 仍需看到它，避免空列表
+      // 的迟到响应把正在创建的聚合页关闭。
+      pendingAutoCreateSessions.delete(String(sessionId))
+      debugInfo('codingns4dsh: client terminal aggregate create success', { sessionId: String(sessionId), terminalId: info.id })
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setCreateError(message)
+      debugWarn('codingns4dsh: client terminal aggregate create failed', { sessionId: String(sessionId), error: message })
+    } finally {
+      creatingRef.current = false
+      setCreating(false)
+    }
+  }, [params.shellPath, reload, sessionId, webTerminals])
 
+  useEffect(() => { void reload().catch(() => setLoading(false)) }, [reload, revision])
+  useEffect(() => {
+    // 创建失败后保留错误状态，等待用户显式重试，避免 effect 在失败后无限重复 create。
+    if (!autoCreate || autoCreatedFor.current === navigationKey || loading || creating || createError !== undefined || terminals.length > 0) return
+    // autoCreate 是打开当前聚合页时的一次性导航意图。创建成功后必须保持已消费状态，
+    // 否则用户关闭最后一个终端使库存变空时，effect 会把它误当成首次打开并再次创建。
+    autoCreatedFor.current = navigationKey
+    consumedAutoCreateNavigations.set(String(sessionId), navigationKey)
+    void createNewTerminal()
+  }, [autoCreate, createError, createNewTerminal, creating, loading, navigationKey, sessionId, terminals.length])
   const selected = terminals.find((item) => item.id === selectedId)
-  const view = selected === undefined ? undefined : webTerminals.viewForTerminal(String(sessionId), selected.id, selected.shell.path)
-  useEffect(() => info.tab.visible ? view?.mount() : undefined, [info.tab.visible, view])
-  if (!info.tab.visible || selected === undefined || view === undefined) return null
-  return createElement('section', { className: terminalClass.aggregateRoot },
-    createElement('nav', { className: terminalClass.list, 'aria-label': t('terminal.title') },
+  // 库存刷新删除当前项时，selectedId 的修正和 terminals 更新不一定同一帧完成。
+  // 先用首项作为 active，避免短暂渲染空状态导致所有 view 卸载并重新连接。
+  const activeId = selected?.id ?? terminals[0]?.id
+  // 聚合页声明 keepMounted 后，隐藏页签仍必须保留列表和每个 XtermView。
+  // DSH 会隐藏外层 pane；这里把 visible 只传给视图作为 attach 生命周期信号，
+  // 不能直接返回 null，否则切回页签会重新创建 DOM 并重新 follow。
+  // DSH 0.2.x 的保留页签会复用旧终端页的 div 根节点。沿用 div 形状，
+  // 让升级后的聚合布局在旧页签实例上也能正常完成 React reconciliation。
+  const navigation = createElement('nav', { className: terminalClass.list, 'aria-label': t('terminal.title') }, [
       ...terminals.map((item) => createElement(TerminalListRow, {
         key: item.id,
         item,
-        selected: item.id === selected.id,
+        selected: item.id === activeId,
         onSelect: () => setSelectedId(item.id),
         onClose: () => { void webTerminals.closeTerminal(String(sessionId), item.id).then(() => reload()) },
         onRename: async (title) => {
@@ -181,17 +228,28 @@ function TerminalBody({ sessionId, useTabInfo, webTerminals, settings, theme, lo
         variant: 'primary',
         size: 'sm',
         className: terminalClass.newButton,
-        onClick: () => { void webTerminals.createTerminal(String(sessionId)).then((created) => { setTerminals((current) => current.some((item) => item.id === created.id) ? current : [...current, created]); setSelectedId(created.id); return reload() }) },
-      }, t('terminal.new')),
-    ),
-    createElement('div', { className: terminalClass.content }, view === undefined ? null : createElement(CodingNsXtermView, {
-      view,
-      settings,
-      themeRevision,
-      onNewTerminal: () => { void webTerminals.createTerminal(String(sessionId)).then((created) => { setTerminals((current) => current.some((item) => item.id === created.id) ? current : [...current, created]); setSelectedId(created.id); return reload() }) },
-      t,
-    })),
+        disabled: creating,
+        onClick: () => { void createNewTerminal() },
+      }, creating ? t('terminalView.starting') : t('terminal.new')),
+    ])
+  const content = createElement('div', { className: terminalClass.content }, terminals.length === 0
+      ? createElement('div', { role: 'status', className: terminalClass.empty },
+        createElement('p', undefined, createError ?? (creating ? t('terminalView.starting') : t('terminal.description'))),
+        createError === undefined ? null : createElement(Button, { variant: 'primary', size: 'sm', onClick: () => { void createNewTerminal() } }, t('terminal.retry')),
+      )
+      : terminals.map((item) => createElement(CodingNsXtermView, {
+        key: item.id,
+        view: webTerminals.viewForTerminal(String(sessionId), item.id, item.shell.path),
+        settings,
+        themeRevision,
+        active: item.id === activeId,
+        visible: info.tab.visible,
+        onNewTerminal: () => { void createNewTerminal() },
+        t,
+      }))
   )
+  const aggregateElement = createElement('div', { className: `${terminalClass.aggregateRoot} ${terminalClass.content}` }, navigation, content)
+  return aggregateElement
 }
 
 function TerminalTitle({ useTabInfo, locale }: TerminalTitleProps): ReactElement {
@@ -225,7 +283,17 @@ function TerminalListRow({ item, selected, onSelect, onClose, onRename, t }: {
         createElement('span', undefined, item.title),
         createElement('small', undefined, item.shell.name),
       ),
-    createElement('button', { type: 'button', className: terminalClass.listClose, 'aria-label': t('terminal.close'), onClick: onClose }, '×'),
+    createElement('button', {
+      type: 'button',
+      className: terminalClass.listClose,
+      'aria-label': t('terminal.close'),
+      // 阻止点击子终端关闭按钮冒泡到 DSH 外层页签，避免误关聚合页。
+      onClick: (event: { stopPropagation: () => void; preventDefault: () => void }) => {
+        event.preventDefault()
+        event.stopPropagation()
+        onClose()
+      },
+    }, '×'),
   )
 }
 
@@ -259,7 +327,11 @@ function TerminalGuide({ sessionId, useTabInfo, webTerminals, recoverSession, ti
   createElement(Button, {
     variant: 'ghost',
     className: terminalClass.guideMain,
-    onClick: () => info.tab.actions.openTab(TERMINAL_KIND, { replaceTab: true, params: { autoCreate: true } }),
+    // Tab actions 的 replaceTab 是布尔开关；传 true 由 DSH 自动绑定当前标签 ID。
+    onClick: () => {
+      markPendingAutoCreateIntent(String(sessionId))
+      info.tab.actions.openTab(TERMINAL_KIND, { replaceTab: true, params: { autoCreate: true } })
+    },
   },
   createElement(TerminalGuideIcon, { size: description === undefined ? 22 : 26, className: terminalClass.guideIcon }),
   createElement('span', { className: terminalClass.guideText },
@@ -284,6 +356,7 @@ function TerminalGuide({ sessionId, useTabInfo, webTerminals, recoverSession, ti
       if (state.phase !== 'ready') return
       webTerminals.selectShell(path)
       setOpen(false)
+      markPendingAutoCreateIntent(String(sessionId))
       info.tab.actions.openTab(TERMINAL_KIND, {
         params: { autoCreate: true, shellPath: path },
         replaceTab: true,
@@ -320,9 +393,10 @@ interface TerminalCleanupProps {
   readonly locale: CodingNsLocale
   readonly sidebarRight: TerminalSidebarRecoveryPort
   readonly recoverSession: (sessionId: string) => Promise<readonly unknown[]>
+  readonly invalidateRecovery: (sessionId: string) => void
 }
 
-function TerminalCleanup({ webTerminals, locale, sidebarRight, recoverSession }: TerminalCleanupProps): ReactElement | null {
+function TerminalCleanup({ webTerminals, locale, sidebarRight, recoverSession, invalidateRecovery }: TerminalCleanupProps): ReactElement | null {
   const t = useCodingNsTranslator(locale)
   const openTabs = readSidebarOpenTabs(sidebarRight)
   const openTabSnapshot = useSyncExternalStore(
@@ -346,13 +420,19 @@ function TerminalCleanup({ webTerminals, locale, sidebarRight, recoverSession }:
     mounted?.getSnapshot ?? noMountedSession,
     mounted?.getSnapshot ?? noMountedSession,
   )
+  const previousInventoryRevision = useRef(inventoryRevision)
   useEffect(() => {
     // 0.1.7 才提供 mounted 会话 observable；旧版本保留原有 Guide 挂载路径。
     if (!remoteReady || mounted === undefined) return
+    const inventoryChanged = previousInventoryRevision.current !== inventoryRevision
+    previousInventoryRevision.current = inventoryRevision
     const sessionIds = new Set(openTabSnapshot.map((tab) => String(tab.sessionId).trim()).filter(Boolean))
     if (mountedSessionId !== undefined) sessionIds.add(String(mountedSessionId).trim())
-    for (const sessionId of sessionIds) void recoverSession(sessionId).catch(() => undefined)
-  }, [openTabSnapshot, recoverSession, remoteReady, mountedSessionId, inventoryRevision])
+    for (const sessionId of sessionIds) {
+      if (inventoryChanged) invalidateRecovery(sessionId)
+      void recoverSession(sessionId).catch(() => undefined)
+    }
+  }, [openTabSnapshot, recoverSession, remoteReady, mountedSessionId, inventoryRevision, invalidateRecovery])
   const failures = useSyncExternalStore(webTerminals.closeFailures.subscribe.bind(webTerminals.closeFailures), webTerminals.closeFailures.getSnapshot.bind(webTerminals.closeFailures))
   if (failures.length === 0) return null
   return createElement('div', { className: terminalClass.cleanupStack },
@@ -383,8 +463,40 @@ function noOpenTabs(): readonly { readonly sessionId: string; readonly tabId: st
 function noSubscribe(): () => void { return () => undefined }
 
 function terminalParams(info: SidebarRightTabInfo): TerminalParams {
-  const params = info.tab.navigation.params
-  return typeof params === 'object' && params !== null ? params as TerminalParams : {}
+  // DSH 0.2.x 的 navigation 是 SnapshotStore，参数位于 getSnapshot() 返回值；
+  // 旧版适配层可能仍直接暴露 params，因此保留直接读取作为兼容兜底。
+  const navigation = info.tab.navigation as unknown
+  const snapshot = isRecord(navigation) && typeof navigation.getSnapshot === 'function'
+    ? navigation.getSnapshot()
+    : navigation
+  const params = isRecord(snapshot) ? snapshot.params : undefined
+  return isRecord(params) ? params as TerminalParams : {}
+}
+
+function terminalNavigationKey(info: SidebarRightTabInfo, sessionId: string): string {
+  // TabRecord.id 在同一页签生命周期内稳定；导航 revision 会因 recovery
+  // 或重新聚焦而递增，不能用它判断是否应再次创建 Host 终端。
+  const tab = info.tab as unknown as { readonly id?: unknown }
+  const tabId = typeof tab.id === 'string' ? tab.id : ''
+  return `${sessionId}:${tabId}`
+}
+
+function markPendingAutoCreateIntent(sessionId: string): void {
+  pendingAutoCreateSessions.set(sessionId, Date.now())
+}
+
+function hasPendingAutoCreateIntent(sessionId: string): boolean {
+  const createdAt = pendingAutoCreateSessions.get(sessionId)
+  if (createdAt === undefined) return false
+  if (Date.now() - createdAt > AUTO_CREATE_INTENT_TTL_MS) {
+    pendingAutoCreateSessions.delete(sessionId)
+    return false
+  }
+  return true
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 function messageOf(value: unknown): string { return value instanceof Error ? value.message : String(value) }

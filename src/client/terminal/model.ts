@@ -11,6 +11,7 @@ import type {
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { debugInfo, debugWarn } from '../../shared/debug.js'
 import { resolveCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
+import { stripTerminalDeviceAttributeResponses } from '../../shared/terminal-input.js'
 
 export type { TerminalAttachmentId, WebTerminalId } from '../../shared/contracts/terminal.js'
 export type TerminalEnvironment = CodingNsTerminalEnvironment
@@ -97,7 +98,12 @@ interface WorkspaceBindingResolution {
   readonly existing: boolean
 }
 
-/** 一个 Sidebar 标签对应的终端模型；DOM 卸载只 detach，显式 close 才结束 Host 进程。 */
+interface TerminalInitialState {
+  readonly environment?: TerminalEnvironment
+  readonly info?: WebTerminalInfo
+}
+
+/** 一个 Sidebar 标签对应的终端模型；普通视图卸载只 detach，聚合视图可常驻 follow。 */
 export class CodingNsTerminalView {
   readonly state: TerminalObservable<TerminalViewState>
   id: WebTerminalId
@@ -114,6 +120,16 @@ export class CodingNsTerminalView {
   private lastResize: { readonly attachmentId: TerminalAttachmentId; readonly cols: number; readonly rows: number } | undefined
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined
   private reconnectAttempts = 0
+  /**
+   * 聚合终端由工作区库存拥有生命周期。
+   *
+   * 聚合页在切换右栏页签时可能会卸载 DOM，但 Host 里的终端仍然运行；
+   * 这类视图不能因为一次 DOM 卸载就释放 follow，否则再次点开标签必然
+  * 重新经历 environment/list/follow。显式 close 和 dispose 仍会强制释放。
+  */
+  private readonly keepAlive: boolean
+  private readonly initialState: TerminalInitialState | undefined
+  private initialStateConsumed = false
 
   constructor(
     readonly sessionId: string,
@@ -124,22 +140,44 @@ export class CodingNsTerminalView {
     private readonly onWorkspaceResolved?: (workspaceId: string, id: WebTerminalId) => WorkspaceBindingResolution | undefined,
     // 追加在末尾：既有调用方与测试按位置传 shellPath / onWorkspaceResolved，不能前移。
     private readonly t: CodingNsTranslator = resolveCodingNsTranslator(),
+    keepAlive = false,
+    initialState?: TerminalInitialState,
   ) {
     this.id = id
+    this.keepAlive = keepAlive
+    this.initialState = initialState
     // 标签兜底标题必须走词典：字段初始化阶段还取不到构造参数，因此在构造函数里建 store。
-    this.store = new ObservableValue<TerminalViewState>({ phase: 'idle', title: t('terminal.title'), writable: false })
+    this.store = new ObservableValue<TerminalViewState>({
+      phase: initialState?.info === undefined ? 'idle' : 'disconnected',
+      ...(initialState?.environment === undefined ? {} : { environment: initialState.environment }),
+      ...(initialState?.info === undefined ? {} : { info: initialState.info }),
+      title: initialState?.info?.title ?? t('terminal.title'),
+      writable: false,
+    })
     this.state = this.store
   }
 
   mount(): () => void {
     this.mounted += 1
-    if (this.mounted === 1) void this.refresh()
+    if (this.mounted === 1) {
+      const initial = this.initialState
+      if (!this.initialStateConsumed && initial?.info !== undefined) {
+        this.initialStateConsumed = true
+        // 库存快照已经证明终端仍在运行时，直接订阅 Host 常驻连接，
+        // 不再为切换会话重新读取 environment/list。环境快照尚未到达时也
+        // 可以 follow：environment 只影响输入上限和外观默认值，不能阻塞恢复。
+        if (initial.info.state === 'running') this.connect()
+        else void this.refresh()
+      } else {
+        void this.refresh()
+      }
+    }
     let active = true
     return () => {
       if (!active) return
       active = false
       this.mounted = Math.max(0, this.mounted - 1)
-      if (this.mounted === 0) this.detach()
+      if (this.mounted === 0 && !this.keepAlive) this.detach()
     }
   }
 
@@ -193,6 +231,8 @@ export class CodingNsTerminalView {
   }
 
   write(data: string): void {
+    data = stripTerminalDeviceAttributeResponses(data)
+    if (data === '') return
     const state = this.store.getSnapshot()
     const attachmentId = this.attachmentId
     if (!state.writable || attachmentId === undefined || data === '') return
@@ -443,6 +483,12 @@ export class CodingNsWebTerminals extends Service {
   /** 任一工作区库存变化都会递增；聚合页用它触发跨会话刷新。 */
   readonly inventoryRevision: TerminalObservable<number> = this.inventoryRevisionStore
   private readonly inventories = new Map<string, TerminalInventorySnapshot>()
+  /** 已解析过的会话环境；切换回已有会话时无需再次请求 Host environment。 */
+  private readonly environments = new Map<string, TerminalEnvironment>()
+  /** 每个会话最近一次库存请求的序号；旧请求返回时不得覆盖新建结果。 */
+  private readonly inventoryRequestIds = new Map<string, number>()
+  /** 任意工作区刷新都会递增；尚未解析工作区的旧请求也必须随之失效。 */
+  private inventoryEpoch = 0
   private readonly closeRequests = new Map<string, CloseRequest>()
   /** Remote 注入前不能执行关闭请求；就绪后统一冲刷，避免把启动竞态显示成永久错误。 */
   private cleanupQueued = false
@@ -453,7 +499,7 @@ export class CodingNsWebTerminals extends Service {
     void this.flushCleanup()
   }
 
-  view(sessionId: string, key: string, contentId: string, terminalId?: WebTerminalId, shellPath?: string, createFresh = false, persistBinding = true): CodingNsTerminalView {
+  view(sessionId: string, key: string, contentId: string, terminalId?: WebTerminalId, shellPath?: string, createFresh = false, persistBinding = true, keepAlive = false, initialState?: TerminalInitialState): CodingNsTerminalView {
     const mapKey = JSON.stringify([sessionId, key])
     const existing = this.views.get(mapKey)
     if (existing !== undefined) return existing.view
@@ -480,6 +526,8 @@ export class CodingNsWebTerminals extends Service {
         ? (resolvedWorkspaceId, currentId) => this.rememberWorkspace(sessionId, contentId, currentId, resolvedWorkspaceId, !fresh && terminalId === undefined)
         : (resolvedWorkspaceId) => { this.workspaceIds.set(sessionId, resolvedWorkspaceId); return undefined },
       this.t,
+      keepAlive,
+      initialState,
     )
     this.views.set(mapKey, { contentId, view })
     return view
@@ -488,7 +536,15 @@ export class CodingNsWebTerminals extends Service {
   /** 聚合页按 Host terminalId 获取内部视图，不再依赖 Sidebar 标签身份。 */
   viewForTerminal(sessionId: string, terminalId: WebTerminalId, shellPath?: string): CodingNsTerminalView {
     const key = `aggregate:${terminalId}`
-    return this.view(sessionId, key, key, terminalId, shellPath, false, false)
+    const info = this.inventoryForSession(sessionId).find((item) => item.id === terminalId)
+    const environment = this.environmentForSession(sessionId)
+    const initialState: TerminalInitialState | undefined = info === undefined && environment === undefined
+      ? undefined
+      : {
+        ...(info === undefined ? {} : { info }),
+        ...(environment === undefined ? {} : { environment }),
+      }
+    return this.view(sessionId, key, key, terminalId, shellPath, false, false, true, initialState)
   }
 
   /** 返回某个 Sidebar 内容已经保存的 Host 终端身份，用于恢复时去重。 */
@@ -528,7 +584,7 @@ export class CodingNsWebTerminals extends Service {
   /** 在聚合页内创建一个新的 Host 终端，并把它加入工作区库存。 */
   async createTerminal(sessionId: string, shellPath?: string): Promise<WebTerminalInfo> {
     const terminalId = crypto.randomUUID() as WebTerminalId
-    const view = this.view(sessionId, `aggregate:${terminalId}`, `aggregate:${terminalId}`, terminalId, shellPath, true, false)
+    const view = this.view(sessionId, `aggregate:${terminalId}`, `aggregate:${terminalId}`, terminalId, shellPath, true, false, true)
     await view.refresh()
     const info = view.state.getSnapshot().info
     if (info === undefined) throw new Error(view.state.getSnapshot().error ?? '终端创建失败')
@@ -544,7 +600,8 @@ export class CodingNsWebTerminals extends Service {
     else unwrap(await resolveRemote(this.remote).close(sessionId, terminalId))
     for (const [mapKey, record] of records) {
       this.views.delete(mapKey)
-      if (record !== primary) await record.view.dispose()
+      // close() 只结束 Host 终端，dispose() 负责释放聚合视图保留的 follow。
+      await record.view.dispose()
     }
     await this.refreshInventory(sessionId)
   }
@@ -571,15 +628,41 @@ export class CodingNsWebTerminals extends Service {
   async recover(sessionId: string): Promise<readonly WebTerminalInfo[]> {
     const pending = this.recoveries.get(sessionId)
     if (pending !== undefined) return pending
+    const requestId = (this.inventoryRequestIds.get(sessionId) ?? 0) + 1
+    this.inventoryRequestIds.set(sessionId, requestId)
+    const inventoryEpoch = this.inventoryEpoch
     // 官方 list wire 只有 sessionId；先用 agent-scoped environment 让 Host 解析工作区。
-    const recovery = (async () => {
-      const environment = unwrap(await resolveRemote(this.remote).environment(sessionId))
+    // 使用可选变量避免 TS 将闭包中的自引用判定为“赋值前使用”；
+    // Promise 创建后才会执行异步主体，因此运行时仍能安全比较身份。
+    let recovery: Promise<readonly WebTerminalInfo[]> | undefined
+    recovery = (async () => {
+      const environment = await this.resolveEnvironment(sessionId)
       if (environment.workspaceId !== undefined) this.workspaceIds.set(sessionId, environment.workspaceId)
-      const result = unwrap(await resolveRemote(this.remote).list(sessionId))
-      this.rememberInventory(sessionId, result)
+      const result = dedupeInventory(unwrap(await resolveRemote(this.remote).list(sessionId)))
+      const currentRequestId = this.inventoryRequestIds.get(sessionId)
+      if (currentRequestId !== requestId || this.inventoryEpoch !== inventoryEpoch) {
+        // 工作区尚未解析时，刷新方无法提前把这个会话加入失效集合。
+        // 旧 list 结果不能交给 Sidebar，否则关闭后的终端会被重新投影出来；
+        // 让当前会话重新发起一轮查询，直到拿到刷新后的库存。
+        debugInfo('codingns4dsh: client terminal recover stale retry', {
+          sessionId,
+          terminalIds: result.map((entry) => entry.id),
+          requestId,
+          currentRequestId,
+          inventoryEpoch,
+          currentInventoryEpoch: this.inventoryEpoch,
+        })
+        // 当前请求尚未进入 finally；先移除自身，才能让 retry 创建新一代
+        // Promise，而不是再次命中这个仍在执行的旧请求。
+        if (recovery !== undefined && this.recoveries.get(sessionId) === recovery) this.recoveries.delete(sessionId)
+        return this.recover(sessionId)
+      }
       debugInfo('codingns4dsh: client terminal recover', { sessionId, workspaceId: environment.workspaceId, terminalIds: result.map((entry) => entry.id) })
+      this.rememberInventory(sessionId, result)
       return result
-    })().finally(() => this.recoveries.delete(sessionId))
+    })().finally(() => {
+      if (recovery !== undefined && this.recoveries.get(sessionId) === recovery) this.recoveries.delete(sessionId)
+    })
     this.recoveries.set(sessionId, recovery)
     return recovery
   }
@@ -602,11 +685,48 @@ export class CodingNsWebTerminals extends Service {
     this.workspaceIds.clear()
     this.recoveries.clear()
     this.inventories.clear()
+    this.environments.clear()
+    this.inventoryRequestIds.clear()
+    this.inventoryEpoch = 0
   }
 
   /** 强制刷新当前会话对应工作区的库存。 */
   async refreshInventory(sessionId: string): Promise<readonly WebTerminalInfo[]> {
+    this.inventoryEpoch += 1
+    // 聚合页创建/关闭后必须绕过同一工作区所有会话的旧 list 请求；否则
+    // 另一个会话的迟到响应仍可能把关闭后的终端写回共享库存。
+    const workspaceId = this.workspaceIds.get(sessionId)
+    const invalidated = new Set<string>()
+    for (const [knownSessionId, knownWorkspaceId] of this.workspaceIds) {
+      if (knownSessionId === sessionId || (workspaceId !== undefined && knownWorkspaceId === workspaceId)) {
+        invalidated.add(knownSessionId)
+      }
+    }
+    invalidated.add(sessionId)
+    for (const knownSessionId of invalidated) this.invalidateRecovery(knownSessionId)
     return this.recover(sessionId)
+  }
+
+  /** 令指定会话尚未完成的库存请求失效，并清掉可复用的旧 Promise。 */
+  private invalidateRecovery(sessionId: string): void {
+    this.inventoryRequestIds.set(sessionId, (this.inventoryRequestIds.get(sessionId) ?? 0) + 1)
+    this.recoveries.delete(sessionId)
+  }
+
+  private async resolveEnvironment(sessionId: string): Promise<TerminalEnvironment> {
+    const cached = this.environments.get(`session:${sessionId}`)
+    if (cached !== undefined) return cached
+    const environment = unwrap(await resolveRemote(this.remote).environment(sessionId))
+    this.environments.set(`session:${sessionId}`, environment)
+    if (environment.workspaceId !== undefined) this.environments.set(`workspace:${environment.workspaceId}`, environment)
+    return environment
+  }
+
+  private environmentForSession(sessionId: string): TerminalEnvironment | undefined {
+    const session = this.environments.get(`session:${sessionId}`)
+    if (session !== undefined) return session
+    const workspaceId = this.workspaceIds.get(sessionId)
+    return workspaceId === undefined ? undefined : this.environments.get(`workspace:${workspaceId}`)
   }
 
   /** 返回当前会话最近一次拿到的工作区库存；首次加载时为空。 */
@@ -633,10 +753,11 @@ export class CodingNsWebTerminals extends Service {
 
   private rememberInventory(sessionId: string, terminals: readonly WebTerminalInfo[]): void {
     const workspaceId = this.workspaceIds.get(sessionId) ?? `session:${sessionId}`
+    const normalized = dedupeInventory(terminals)
     const previous = this.inventories.get(workspaceId)
-    if (previous !== undefined && sameInventory(previous.terminals, terminals)) return
+    if (previous !== undefined && sameInventory(previous.terminals, normalized)) return
     const revision = this.inventoryRevisionStore.getSnapshot() + 1
-    this.inventories.set(workspaceId, { workspaceId, terminals: [...terminals], revision })
+    this.inventories.set(workspaceId, { workspaceId, terminals: normalized, revision })
     this.inventoryRevisionStore.set(revision)
   }
 
@@ -649,6 +770,15 @@ export class CodingNsWebTerminals extends Service {
       this.closeRequests.delete(String(request.id))
       persistCloseRequests(this.closeRequests.values())
       this.closeFailureStore.set(this.closeFailureStore.getSnapshot().filter((item) => item.id !== request.id))
+      // 兼容旧 Sidebar 的显式关闭路径：关闭成功后也必须刷新工作区库存，
+      // 否则其他会话会继续看到已经关闭的终端记录。
+      void this.refreshInventory(request.sessionId).catch((error: unknown) => {
+        debugWarn('codingns4dsh: client terminal inventory refresh after close failed', {
+          sessionId: request.sessionId,
+          terminalId: request.id,
+          error: errorMessage(error),
+        })
+      })
     } catch (error) {
       if (isTerminalRemoteUnavailable(error)) {
         debugInfo('codingns4dsh: client terminal cleanup deferred', { sessionId: request.sessionId, terminalId: request.id })
@@ -729,6 +859,13 @@ function sameInventory(left: readonly WebTerminalInfo[], right: readonly WebTerm
     if (a.id !== b.id || a.title !== b.title || a.cwd !== b.cwd || a.cols !== b.cols || a.rows !== b.rows || a.state !== b.state || a.exitCode !== b.exitCode || a.shell.path !== b.shell.path || a.shell.name !== b.shell.name) return false
   }
   return true
+}
+
+/** Host 列表按 terminalId 去重，避免重复记录共享同一个关闭动作。 */
+function dedupeInventory(terminals: readonly WebTerminalInfo[]): readonly WebTerminalInfo[] {
+  const unique = new Map<WebTerminalId, WebTerminalInfo>()
+  for (const terminal of terminals) unique.set(terminal.id, terminal)
+  return [...unique.values()]
 }
 
 function bindingKey(sessionId: string, contentId: string): string {
