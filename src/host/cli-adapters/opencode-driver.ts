@@ -37,7 +37,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   private readonly runSpawn: typeof spawn
   private readonly serverArgs: readonly string[]
   private readonly http: HttpSseClient
-  private cachedBinary: string | null = null
+  private cachedBinary: { command: string; version: string | null } | null = null
   private cachedServer: string | null = null
   private readonly managedServers = new Map<string, { url: string; child: ChildProcessWithoutNullStreams }>()
   private readonly sessions = new Map<string, string>()
@@ -58,7 +58,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
     const server = await this.findServer()
     const binary = this.findBinary()
-    if (server !== null) return { installed: true, version: server.version, command: server.url }
+    if (server !== null) return { installed: true, version: server.version ?? binary?.version ?? null, command: server.url }
     if (binary !== null) return { installed: true, version: binary.version, command: binary.command }
     return { installed: false, version: null, command: null }
   }
@@ -347,7 +347,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   }
 
   private async startServer(cwd: string): Promise<string | null> {
-    const command = this.cachedBinary ?? this.findBinary()?.command
+    const command = this.cachedBinary?.command ?? this.findBinary()?.command
     if (command === null || command === undefined) return null
     const port = 4096 + this.managedServers.size
     const url = `http://127.0.0.1:${port}`
@@ -399,14 +399,15 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   }
 
   private findBinary(): { command: string; version: string | null } | null {
-    if (this.cachedBinary !== null) return { command: this.cachedBinary, version: null }
+    if (this.cachedBinary !== null) return this.cachedBinary
     for (const command of this.binaries) {
       try {
         const result = this.runSpawnSync(command, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS })
         const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
         if (result.status === 0) {
-          this.cachedBinary = command
-          return { command, version: output.match(/\d+\.\d+\.\d+/u)?.[0] ?? null }
+          const version = output.match(/\d+\.\d+\.\d+/u)?.[0] ?? null
+          this.cachedBinary = { command, version }
+          return this.cachedBinary
         }
       } catch { /* PATH 中没有命令 */ }
       const resolved = resolveCommandPath(command, this.runSpawnSync)
@@ -415,8 +416,9 @@ export class OpenCodeDriver implements CodingNsCliDriver {
         const result = this.runSpawnSync(resolved, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS, env: commandEnvironment(resolved) })
         const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
         if (result.status === 0) {
-          this.cachedBinary = resolved
-          return { command: resolved, version: output.match(/\d+\.\d+\.\d+/u)?.[0] ?? null }
+          const version = output.match(/\d+\.\d+\.\d+/u)?.[0] ?? null
+          this.cachedBinary = { command: resolved, version }
+          return this.cachedBinary
         }
       } catch { /* 登录 Shell 找到的命令也可能已失效 */ }
     }

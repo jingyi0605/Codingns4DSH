@@ -18,6 +18,20 @@ test('OpenCode 驱动探测本地 server 并读取模型目录', async () => {
   })
 })
 
+test('OpenCode server 未返回版本时回退读取 CLI 版本', async () => {
+  const fetch = async (url: string): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({
+    fetch,
+    serverUrls: ['http://opencode.test'],
+    binaries: ['opencode'],
+    spawnSync: (() => ({ status: 0, stdout: 'opencode 3.4.5', stderr: '' })) as never,
+  })
+  assert.deepEqual(await driver.detect(), { installed: true, version: '3.4.5', command: 'http://opencode.test' })
+})
+
 test('OpenCode 模型目录保留 variants 思维强度并兼容 providers 数组', async () => {
   const fetch = async (url: string): Promise<Response> => {
     if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
