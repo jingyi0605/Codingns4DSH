@@ -25,7 +25,6 @@ import {
   dshSettingsSummaryLabelStyle,
   dshSettingsSummaryStyle,
   dshSettingsSummaryTextStyle,
-  dshSettingsTitleStyle,
   dshSettingsToastStyle,
   dshThemeColor,
 } from './theme.js'
@@ -33,8 +32,7 @@ import { useCodingNsTranslator } from './locale.js'
 import { CODINGNS_VERSION, DSH_COMPATIBILITY, isLegacyDshVersion } from '../shared/contracts/version.js'
 import type { CodingNsSettingsSnapshot, CodingNsSettingsStore } from '../dsh-capabilities/settings-store.js'
 import type { SettingsNotice } from './features/types.js'
-
-const CODINGNS_GITHUB_URL = 'https://github.com/jingyi0605/Codingns4DSH'
+import { CodingNsSettingsPromo, CODINGNS_GITHUB_URL } from './settings-promo.js'
 
 // pnpm 会为不同 peer 上下文保留独立的 ui-slots 类型实例；插件在自己实际使用的
 // 根实例上重申公开契约，避免依赖声明合并偶然穿过依赖副本。
@@ -60,7 +58,8 @@ export interface CodingNsSectionProps extends PropsRuntime<'settings.section'> {
  * DSH 设置页中的 Codingns4DSH 区块。
  *
  * 它只做一件事：遍历注册表中带界面描述的模块并渲染卡片。卡片内容来自模块
- * 自己的 settingsPanel，所以新增模块不会在这里产生分支。
+ * 自己的 settingsPanel，所以新增模块不会在这里产生分支。页面最上方是
+ * GitHub Star 推广条（{@link CodingNsSettingsPromo}），属于纯展示内容。
  */
 export function CodingNsSettingsSection({ settings, registry, services, restartStates = {} }: CodingNsSectionProps): ReactElement {
   // useSyncExternalStore 要求 subscribe/getSnapshot 保持稳定引用，否则 React
@@ -86,8 +85,9 @@ export function CodingNsSettingsSection({ settings, registry, services, restartS
       'aria-live': 'polite',
       style: { ...dshSettingsToastStyle, borderColor: toast.kind === 'error' ? dshThemeColor.error : toast.kind === 'success' ? dshThemeColor.success : dshThemeColor.border },
     }, toast.message),
+    createElement(CodingNsSettingsPromo, { locale: services.locale }),
+    // 标题交给 DSH 设置页自己的导航项；这里只保留一句作用域说明，避免同一页出现两级标题。
     createElement('header', { style: dshSettingsHeaderStyle },
-      createElement('h2', { style: dshSettingsTitleStyle }, t('settings.title')),
       createElement('p', { style: dshSettingsSubtitleStyle }, t('settings.subtitle')),
     ),
     createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
