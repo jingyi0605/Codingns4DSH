@@ -41,7 +41,7 @@ export const DELEGATE_TIMELINE_CARD_ATTRIBUTE = 'data-codingns-delegation-card'
 /** 委派卡片保存原始指令，停用插件时用于恢复 React 之外的 DOM。 */
 export const DELEGATE_TIMELINE_CARD_RAW_ATTRIBUTE = 'data-codingns-delegation-card-raw'
 /** DSH 空状态输入提示保存原始文案的标记。 */
-export const DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE = 'data-codingns-delegate-placeholder-base'
+export const DELEGATE_EMPTY_PLACEHOLDER_HINT_ATTRIBUTE = 'data-codingns-delegate-placeholder-hint'
 /** 插件样式标签的幂等键。 */
 export const DELEGATE_UI_STYLE_ID = 'codingns4dsh-delegate-ui-style'
 
@@ -405,22 +405,23 @@ function decorateReferenceChips(dom: Document, iconUrl: (adapterId: string) => s
  *
  * DSH 没有公开修改内置 placeholder 的接口；这里只处理带有
  * DSH Hero composer（祖先带有 CSS module 的 `_hero` class）中的空状态输入框，
- * 并保存原文，避免把已经开始的会话提示或 React 重绘后的文案重复拼接。
+ * 只追加独立的提示节点，不改写 DSH 自己的文本节点，避免 React 重绘时覆盖
+ * `/` 和 `@` 的原生说明。
  */
 function decorateEmptyStatePlaceholders(dom: Document, hintFactory?: () => string): void {
   const hint = hintFactory?.().trim()
   if (hint === undefined || hint === '') return
   for (const placeholder of dom.querySelectorAll('[data-composer-placeholder]')) {
     if (!isHeroComposerPlaceholder(placeholder)) continue
-    const base = placeholder.getAttribute(DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE)
-      ?? placeholder.textContent?.trim()
-      ?? ''
-    if (base === '') continue
-    if (!placeholder.hasAttribute(DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE)) {
-      placeholder.setAttribute(DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE, base)
+    const existing = placeholder.querySelector(`[${DELEGATE_EMPTY_PLACEHOLDER_HINT_ATTRIBUTE}]`)
+    if (existing !== null) {
+      if (existing.textContent !== ` · ${hint}`) existing.textContent = ` · ${hint}`
+      continue
     }
-    const decorated = `${base} · ${hint}`
-    if (placeholder.textContent !== decorated) placeholder.textContent = decorated
+    const suffix = dom.createElement('span')
+    suffix.setAttribute(DELEGATE_EMPTY_PLACEHOLDER_HINT_ATTRIBUTE, '')
+    suffix.textContent = ` · ${hint}`
+    placeholder.appendChild(suffix)
   }
 }
 
@@ -679,11 +680,7 @@ function removeDelegateNodes(dom: Document): void {
     const parent = card.parentNode
     if (raw !== null && parent !== null) parent.replaceChild(dom.createTextNode(raw), card)
   }
-  for (const placeholder of dom.querySelectorAll(`[${DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE}]`)) {
-    const base = placeholder.getAttribute(DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE)
-    if (base !== null) placeholder.textContent = base
-    placeholder.removeAttribute(DELEGATE_EMPTY_PLACEHOLDER_BASE_ATTRIBUTE)
-  }
+  for (const hint of dom.querySelectorAll(`[${DELEGATE_EMPTY_PLACEHOLDER_HINT_ATTRIBUTE}]`)) hint.remove()
   for (const row of dom.querySelectorAll(`[${DELEGATE_MENU_ROW_ATTRIBUTE}]`)) row.removeAttribute(DELEGATE_MENU_ROW_ATTRIBUTE)
   // 隐藏规则是插件全局样式，停用时必须一并收回，避免残留选择器影响后续渲染。
   dom.querySelector(`style[data-plugin-css="${DELEGATE_UI_STYLE_ID}"]`)?.remove()
