@@ -1,5 +1,10 @@
 [
   {
+    "file": "src/client/delegate-ui-dom.ts",
+    "text": "[CodingNS 委派指令]",
+    "reason": "Host 委派载荷的协议标记，用于识别并投影时间线卡片，不是用户界面文案"
+  },
+  {
     "file": "src/client/remote-web-context.ts",
     "kind": "template-literal",
     "reason": "注入到 iframe 的远程上下文脚本：内容为 DSH 原生欢迎弹窗选择器与脚本注释，不渲染插件自身文案"
