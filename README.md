@@ -11,7 +11,7 @@
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.0-rc3`** · DSH **`0.2.0-rc.2`**（仅正式兼容并验证该版本）· Node **`>= 22.19`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.0-rc.3`** · DSH **`0.2.0-rc.2`**（仅正式兼容并验证该版本）· Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965**
 
@@ -238,7 +238,7 @@ DSH 设置按钮旁的账户入口会显示登录状态、访问路径与延迟�
 DSH 的 `web` Profile 会在首次使用时自动初始化，不需要手动创建配置文件，也不需要执行 `--dump-config`：
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.0-rc3
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.0-rc.3
 dsh web
 ```
 
@@ -248,7 +248,7 @@ dsh web
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.0-rc3
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.0-rc.3
 dsh codingns
 ```
 
@@ -269,7 +269,7 @@ dsh plugin --profile web remove @jingyi0605/codingns4dsh
 ```bash
 git clone https://github.com/jingyi0605/Codingns4DSH.git && cd Codingns4DSH
 pnpm install && pnpm build
-dsh plugin --profile web add "$PWD"                # 或 npm pack 后 add ./jingyi0605-codingns4dsh-0.2.0-rc3.tgz
+dsh plugin --profile web add "$PWD"                # 或 npm pack 后 add ./jingyi0605-codingns4dsh-0.2.0-rc.3.tgz
 dsh web
 ```
 
