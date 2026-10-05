@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { FeatureResourceScopeImpl } from '../data/build/dist/features/index.js'
 import { CodingNsCliSessionStore } from '../data/build/dist/host/cli-adapters/session-store.js'
@@ -24,6 +27,8 @@ import {
   WORKSPACE_SESSION_LOGO_ATTRIBUTE,
   startWorkspaceSessionLogoDom,
 } from '../data/build/dist/client/workspace-session-logo-dom.js'
+
+const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 const KNOWN_ADAPTERS = [
   ['claude-code', 'Claude Code', '#d97757'],
@@ -500,3 +505,20 @@ function findAll(root, selector) {
   visit(root)
   return matches
 }
+
+test('用量查询设置入口使用齿轮图标按钮并保留可访问名称', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/features/workspace-session-enhancement-panel.ts'), 'utf8')
+  // 文字收成图标后，可访问名称、悬停提示、弹窗语义和禁用态必须保留。
+  assert.match(source, /'aria-label': t\('workspace\.subscriptionUsageSettings'\)/u)
+  assert.match(source, /title: t\('workspace\.subscriptionUsageSettings'\)/u)
+  assert.match(source, /'aria-haspopup': 'dialog'/u)
+  // 按钮子节点是齿轮图标（对读屏隐藏），不再是「设置」文字。
+  assert.match(source, /\}, createUsageSettingsGearIcon\(\)\),/u)
+  assert.match(source, /function createUsageSettingsGearIcon\(\): ReactElement/u)
+  assert.match(source, /'aria-hidden': true/u)
+  // 图标按钮沿用共享按钮表面，样式只在本文件内收窄；面板不得注入 document 级样式
+  // 去改写 DSH 自己的设置按钮（左下角全局入口保持原生外观）。
+  assert.match(source, /\.\.\.dshSettingsButtonStyle,/u)
+  assert.match(source, /style: usageSettingsIconButtonStyle,/u)
+  assert.doesNotMatch(source, /document\.head|createElement\('style'\)/u)
+})

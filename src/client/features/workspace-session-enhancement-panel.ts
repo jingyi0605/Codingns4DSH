@@ -1,5 +1,5 @@
 import { createElement, useState } from 'react'
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import {
   CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD,
   DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
@@ -16,6 +16,20 @@ import {
 import { useCodingNsTranslator } from '../locale.js'
 
 type WorkspaceToggleField = 'showAdapterLogo' | 'showArchivedSessions' | 'showWorkspaceHiding' | 'showSubscriptionUsage' | 'showQuickPhrases' | 'rememberConversationRightbarRatio'
+
+/** 用量查询设置入口的图标按钮：沿用共享按钮表面，只收成方形并居中图标。 */
+const usageSettingsIconButtonStyle: CSSProperties = {
+  ...dshSettingsButtonStyle,
+  flex: '0 0 auto',
+  width: 36,
+  height: 36,
+  minHeight: 36,
+  padding: 0,
+  boxSizing: 'border-box',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+}
 
 /** 工作区会话增强的单列设置面板。 */
 export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
@@ -113,10 +127,11 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, 
         'aria-haspopup': 'dialog',
         'aria-expanded': usageSettingsOpen,
         'aria-label': t('workspace.subscriptionUsageSettings'),
+        title: t('workspace.subscriptionUsageSettings'),
         disabled,
         onClick: () => setUsageSettingsOpen(true),
-        style: dshSettingsButtonStyle,
-      }, t('workspace.subscriptionUsageSettings')),
+        style: usageSettingsIconButtonStyle,
+      }, createUsageSettingsGearIcon()),
     ),
     createElement('label', {
       style: dshSettingsListRowStyle,
@@ -174,6 +189,41 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, 
       snapshot,
       notify,
       onClose: () => setUsageSettingsOpen(false),
+    }),
+  )
+}
+
+/**
+ * 用量查询设置入口的齿轮图标。
+ *
+ * 文字收成图形后，可访问名称由按钮自身的 aria-label/title 保留；图标只做装饰，
+ * 对读屏和指针都隐藏，避免重复朗读和吞掉点击。
+ */
+function createUsageSettingsGearIcon(): ReactElement {
+  return createElement('svg', {
+    width: 17,
+    height: 17,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    focusable: false,
+    'aria-hidden': true,
+    style: { display: 'block', pointerEvents: 'none' },
+  },
+    createElement('path', {
+      d: 'M19.43 12.98c.04-.32.07-.65.07-.98s-.02-.66-.07-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.4 7.4 0 0 0-1.7-.98L14.5 2.42A.49.49 0 0 0 14.01 2h-4a.49.49 0 0 0-.49.42L9.14 5.07c-.61.25-1.18.58-1.7.98l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65c-.04.32-.08.65-.08.98s.03.66.08.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.12.21.37.3.61.22l2.49-1c.52.4 1.09.73 1.7.98l.38 2.65c.04.24.25.42.49.42h4c.24 0 .45-.18.49-.42l.38-2.65c.61-.25 1.18-.58 1.7-.98l2.49 1c.24.09.49-.01.61-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65Z',
+      fill: 'currentColor',
+      fillOpacity: 0.22,
+      stroke: 'currentColor',
+      strokeWidth: 1.35,
+      strokeLinejoin: 'round',
+    }),
+    createElement('circle', {
+      cx: 12,
+      cy: 12,
+      r: 3.1,
+      fill: dshThemeColor.accent,
+      stroke: 'currentColor',
+      strokeWidth: 1.15,
     }),
   )
 }
