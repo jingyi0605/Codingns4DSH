@@ -108,6 +108,7 @@ export class CodingNsTerminalController extends TypertRemoteService {
       // 旧版 DSH 没有 Workspace Registry；不要把 cwd 伪装成稳定 Workspace ID，
       // 否则旧版 Client 会把同目录的不同会话错误合并。
       ...(isSessionWorkspaceId(workspaceId) ? {} : { workspaceId }),
+      platform: normalizeTerminalPlatform(this.platform),
       maxInputBytes: this.maxInputBytes,
       maxCols: this.maxCols,
       maxRows: this.maxRows,
@@ -430,6 +431,10 @@ export class CodingNsTerminalController extends TypertRemoteService {
       return undefined
     }
   }
+}
+
+function normalizeTerminalPlatform(platform: string): 'darwin' | 'linux' | 'win32' | 'unsupported' {
+  return platform === 'darwin' || platform === 'linux' || platform === 'win32' ? platform : 'unsupported'
 }
 
 function isSessionWorkspaceId(value: string): boolean {

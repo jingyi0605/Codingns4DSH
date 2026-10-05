@@ -169,6 +169,21 @@ test('终端工具栏保留修饰键并发送常用控制字符', async () => {
   assert.match(source, /c: 'c'/u)
 })
 
+test('终端修饰键标签按 Host 平台切换，不依赖浏览器平台', async () => {
+  const [source, contract, typert] = await Promise.all([
+    readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8'),
+    readFile(join(projectRoot, 'src/shared/contracts/terminal.ts'), 'utf8'),
+    readFile(join(projectRoot, 'src/typert.host.ts'), 'utf8'),
+  ])
+
+  assert.match(source, /environment\?\.platform/u)
+  assert.match(source, /platform === 'darwin'.*Cmd/u)
+  assert.match(source, /platform === 'linux'.*Super/u)
+  assert.match(source, /return 'Win'/u)
+  assert.match(contract, /platform\?: 'darwin' \| 'linux' \| 'win32' \| 'unsupported'/u)
+  assert.match(typert, /platform: z\.union\(\[z\.literal\('darwin'\)/u)
+})
+
 test('聚合页始终渲染页内终端列表导航', async () => {
   const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
 
