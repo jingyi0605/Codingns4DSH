@@ -18,8 +18,19 @@ export interface AcpCliDriverOptions {
   readonly binaries?: readonly string[]
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
+  /** 传给 Provider 子进程的环境覆盖；不会改写 Host 自身的 process.env。 */
+  readonly environment?: Readonly<Record<string, string | undefined>>
   /** ACP 的启动参数；每个产品的参数必须在驱动文件中显式写出。 */
   readonly args: readonly string[]
+  /**
+   * 按当前会话选择生成启动参数。Cursor 的 ACP 只能在进程启动时固定模型，
+   * 因此不能把所有产品都强行塞进 session/set_model。
+   */
+  readonly buildArgs?: (input: CodingNsCliTurnInput) => readonly string[]
+  /** Provider 是否支持在已经建立的 ACP 会话内切换模型。 */
+  readonly runtimeModelSelection?: boolean
+  /** 读取 Provider 自己公开的只读模型目录；返回 null 表示本次读取失败。 */
+  readonly readModelCatalog?: (command: string, runSpawnSync: typeof spawnSync) => CodingNsCliModelCatalog | null
   readonly id: string
   readonly name: string
   /** 只保留已经验证的能力，默认不声明 usage/fork/压缩/权限交互。 */
@@ -33,6 +44,7 @@ export interface AcpCliDriverOptions {
 interface AcpSession {
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
+  readonly argsKey: string
   acpSessionId: string
 }
 
@@ -48,9 +60,13 @@ export class AcpCliDriver implements CodingNsCliDriver {
   readonly supportsToolStepSplitting = true
   private readonly binaries: readonly string[]
   private readonly args: readonly string[]
+  private readonly buildArgsForTurn: (input: CodingNsCliTurnInput) => readonly string[]
+  private readonly runtimeModelSelection: boolean
+  private readonly readModelCatalog: AcpCliDriverOptions['readModelCatalog']
   private readonly fallbackCatalog: CodingNsCliModelCatalog
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
+  private readonly environment: Readonly<Record<string, string | undefined>>
   private readonly probeReason: string
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
@@ -65,8 +81,19 @@ export class AcpCliDriver implements CodingNsCliDriver {
     }
     this.binaries = options.binaries ?? []
     this.args = options.args
+    this.buildArgsForTurn = options.buildArgs ?? (() => this.args)
+    this.runtimeModelSelection = options.runtimeModelSelection ?? true
+    this.readModelCatalog = options.readModelCatalog
     this.fallbackCatalog = options.fallbackCatalog ?? emptyCatalog()
-    this.runSpawnSync = options.spawnSync ?? spawnSync
+    const baseSpawnSync = options.spawnSync ?? spawnSync
+    this.environment = options.environment ?? {}
+    this.runSpawnSync = Object.keys(this.environment).length === 0
+      ? baseSpawnSync
+      : ((command, args, spawnOptions) => baseSpawnSync(command, args, {
+        ...spawnOptions,
+        // detectBinary 先注入 commandEnvironment；Provider 的显式环境必须最后覆盖它。
+        env: { ...process.env, ...(spawnOptions?.env ?? {}), ...this.environment },
+      })) as typeof spawnSync
     this.runSpawn = options.spawn ?? spawn
     this.probeReason = options.probeReason ?? 'Provider 未公开可安全读取的会话索引，未执行有副作用的探测'
   }
@@ -78,9 +105,16 @@ export class AcpCliDriver implements CodingNsCliDriver {
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {
+    if (this.readModelCatalog !== undefined) {
+      const command = (await this.detect()).command
+      if (command === null) return this.fallbackCatalog
+      try {
+        const catalog = this.readModelCatalog(command, this.runSpawnSync)
+        if (catalog !== null && catalog.groups.some((group) => group.models.length > 0)) return catalog
+      } catch { /* 目录读取失败时继续使用明确的静态回退。 */ }
+    }
     // ACP 的 session/new 会创建 Provider 会话，不能拿“列模型”当探测手段。
-    // Cursor/Kiro 尚未提供只读模型目录端点；没有静态目录时返回空目录，
-    // 由 Client 按 Provider 默认模型运行。
+    // 没有只读目录时返回静态回退，由 Client 按 Provider 默认模型运行。
     return this.fallbackCatalog
   }
 
@@ -92,7 +126,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) throw new Error(`${this.descriptor.name} 未安装`)
-    const session = await this.getSession(input, command)
+    const session = await this.getSession(input, command, this.buildArgsForTurn(input))
     let providerSessionId = session.acpSessionId
     if (providerSessionId === '') {
       const created = input.providerSessionId === undefined
@@ -106,7 +140,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     }
     yield { type: 'session-binding', providerSessionId }
 
-    if (input.modelId && input.modelId !== 'provider-default') {
+    if (this.runtimeModelSelection && input.modelId && input.modelId !== 'provider-default') {
       await session.rpc.request('session/set_model', { sessionId: providerSessionId, modelId: input.modelId }, { signal: input.signal, killOnAbort: false }).catch(() => undefined)
     }
 
@@ -158,12 +192,13 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.cachedBinary = null
   }
 
-  private async getSession(input: CodingNsCliTurnInput, command: string): Promise<AcpSession> {
+  private async getSession(input: CodingNsCliTurnInput, command: string, args: readonly string[]): Promise<AcpSession> {
+    const argsKey = JSON.stringify(args)
     const previous = this.sessions.get(input.sessionId)
-    if (previous !== undefined && previous.cwd === input.cwd && !previous.rpc.isClosed) return previous
+    if (previous !== undefined && previous.cwd === input.cwd && previous.argsKey === argsKey && !previous.rpc.isClosed) return previous
     previous?.rpc.dispose()
-    const rpc = new JsonRpcProcess({ command, args: this.args, cwd: input.cwd, spawn: this.runSpawn })
-    const state: AcpSession = { rpc, cwd: input.cwd, acpSessionId: '' }
+    const rpc = new JsonRpcProcess({ command, args, cwd: input.cwd, env: this.environment, spawn: this.runSpawn })
+    const state: AcpSession = { rpc, cwd: input.cwd, argsKey, acpSessionId: '' }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, state)
     rpc.addExitListener(() => {
