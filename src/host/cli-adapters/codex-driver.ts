@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliServiceTier, CodingNsAgentPermissionResponse, CodingNsCliSandboxMode, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
@@ -110,6 +111,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
   private readonly sessionRoots: readonly string[]
+  /** Codex 配置根目录；`config.toml` 与 `auth.json` 都位于这里。 */
+  private readonly codexHome: string
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, CodexSession>()
@@ -119,7 +122,32 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
     const codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex')
+    this.codexHome = codexHome
     this.sessionRoots = options.sessionRoots ?? [join(codexHome, 'sessions'), join(codexHome, 'archived_sessions')]
+  }
+
+  /**
+   * Codex 目录语义指纹。
+   *
+   * 目录里的 `officialSubscription` 与 `defaultServiceTier` 完全由 `config.toml`
+   * 的 `model_provider` / `openai_base_url` / `service_tier` 和 `auth.json` 的登录
+   * 模式决定。用户在 cc-switch 之类的工具里切供应商时，只改写这两个文件，
+   * `codex` 可执行文件不变，安装探测指纹也就不会变——若不单独比对它们，
+   * 10 分钟 TTL 的目录缓存会把「第三方」判定一直沿用下去，官方订阅的 Fast
+   * 档位开关就会长期不出现。
+   *
+   * 只对解析出的**非敏感字段**做哈希：`auth.json` 里的 token 永远不进入指纹，
+   * 因此这里返回的内容不能反推凭据。
+   */
+  catalogFingerprint(): string | undefined {
+    const config = readTextFile(join(this.codexHome, 'config.toml'))
+    const auth = readTextFile(join(this.codexHome, 'auth.json'))
+    // 两个文件都读不到时返回 undefined，表示无法判断；Registry 不会据此失效缓存，
+    // 避免在非标准部署下把目录变成每次都重新探测。
+    if (config === undefined && auth === undefined) return undefined
+    const configSummary = config === undefined ? 'missing' : summarizeCodexConfig(config)
+    const authSummary = auth === undefined ? 'missing' : summarizeCodexAuth(auth)
+    return createHash('sha256').update(`${configSummary}\u0000${authSummary}`).digest('hex').slice(0, 16)
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
@@ -963,6 +991,73 @@ async function readCodexOfficialSubscription(rpc: JsonRpcProcess, signal: AbortS
   } catch {
     return undefined
   }
+}
+
+/** 同步读取文本文件；不存在或不可读时返回 undefined，调用方按“无法判断”处理。 */
+function readTextFile(path: string): string | undefined {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 从 `config.toml` 摘出影响目录语义的字段。
+ *
+ * 这里刻意不做完整 TOML 解析：只需覆盖两种常见写法——顶层 `key = "value"`，
+ * 以及 `[model_providers.xxx]` 段内的 `base_url`。手写正则比引入解析依赖更稳，
+ * 也不会因为 Codex 新增字段而改变指纹。凭据不在 config.toml 中，无需脱敏。
+ */
+function summarizeCodexConfig(config: string): string {
+  const fields: string[] = []
+  let section = ''
+  for (const rawLine of config.split(/\r?\n/u)) {
+    const line = rawLine.trim()
+    if (line === '' || line.startsWith('#')) continue
+    const sectionMatch = line.match(/^\[(?<name>[^\]]+)\]$/u)
+    if (sectionMatch !== null) {
+      section = sectionMatch.groups?.name?.trim() ?? ''
+      continue
+    }
+    const assignment = line.match(/^(?<key>[A-Za-z0-9_.-]+)\s*=\s*(?<value>.*)$/u)
+    if (assignment === null) continue
+    const key = assignment.groups?.key ?? ''
+    const value = (assignment.groups?.value ?? '').trim()
+    // 顶层：决定 Provider 与档位；Provider 段内：只有 base_url 影响上游身份。
+    const topLevelKeys = ['model_provider', 'model', 'service_tier', 'openai_base_url', 'profile']
+    const isTopLevel = section === '' && topLevelKeys.includes(key)
+    const isProviderBaseUrl = section.startsWith('model_providers.') && key === 'base_url'
+    if (!isTopLevel && !isProviderBaseUrl) continue
+    fields.push(`${section}.${key}=${value}`)
+  }
+  return fields.join('\n')
+}
+
+/**
+ * 从 `auth.json` 摘出登录模式，**不读取任何凭据**。
+ *
+ * 官方订阅与 API key 两种登录方式的 `auth_mode` 不同；`OPENAI_API_KEY` 只取
+ * 「有没有设置」这一位布尔信息，token 与 key 原文永远不进入指纹。
+ */
+function summarizeCodexAuth(auth: string): string {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(auth)
+  } catch {
+    // auth.json 不是合法 JSON（例如切换过程中被截断）：用长度当指纹，
+    // 下一次读取到完整文件时指纹自然变化并触发失效。
+    return `invalid:${auth.length}`
+  }
+  if (!isRecord(parsed)) return 'invalid:not-object'
+  const mode = typeof parsed.auth_mode === 'string' ? parsed.auth_mode : 'unknown'
+  const hasApiKey = typeof parsed.OPENAI_API_KEY === 'string' && parsed.OPENAI_API_KEY.trim() !== ''
+  // 只比较 token 的“有无”与 account_id 是否变化，不比较 token 内容：
+  // 官方订阅每次刷新都会轮换 access_token，把 token 纳入指纹会让目录每次刷新都失效。
+  const tokens = isRecord(parsed.tokens) ? parsed.tokens : undefined
+  const hasTokens = tokens !== undefined && typeof tokens.refresh_token === 'string'
+  const accountId = tokens !== undefined && typeof tokens.account_id === 'string' ? tokens.account_id : ''
+  return `${mode}|apiKey=${hasApiKey}|tokens=${hasTokens}|account=${accountId}`
 }
 
 function codexMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | null {

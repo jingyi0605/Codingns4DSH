@@ -55,6 +55,24 @@ export interface CodingNsCliDriver {
   detect(): Promise<Pick<CodingNsCliAdapterDescriptor, 'installed' | 'version' | 'command'>>
   /** 安装探测失败时的脱敏原因，供设置页解释“为什么未识别”。 */
   getDiscoveryDiagnostic?(): string | undefined
+  /**
+   * 影响模型目录语义的 Provider 配置指纹（同步、廉价、脱敏）。
+   *
+   * 目录里的账号级事实（例如 Codex 的 `officialSubscription`、`defaultServiceTier`）
+   * 由 Provider 自己的配置文件决定，而不是由 CLI 版本决定。用户在外部工具里切换
+   * 供应商或登录状态时，CLI 可执行文件没有任何变化，安装探测指纹因此不会变，
+   * 长 TTL 的目录缓存会把旧的账号判定一直沿用下去——界面就会长期缺少依赖该判定
+   * 的控件（例如 Codex 官方订阅的 Fast 服务档位开关）。
+   *
+   * Registry 在每次读取目录前比对该指纹：一旦变化就立刻作废目录缓存并重新探测，
+   * 不必等待 TTL 到期，也不必重启 Host。
+   *
+   * 实现约束：
+   * - 只返回脱敏摘要（哈希或规范化后的非敏感字段），绝不能包含凭据原文；
+   * - 必须是同步且廉价的读取，因为它位于每次目录读取的热路径上；
+   * - 读不到配置时返回 `undefined`，表示“无法判断”，Registry 不会据此失效缓存。
+   */
+  catalogFingerprint?(): string | undefined
   listModels(): Promise<CodingNsCliModelCatalog>
   probeSession?(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult>
   executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent>

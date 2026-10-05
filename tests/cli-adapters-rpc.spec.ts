@@ -2019,3 +2019,137 @@ test('Codex 未声明服务档位时不下发 serviceTier，旧版无该方法�
   assert.equal(state.turnStarts, 1)
   driver.dispose()
 })
+
+test('Codex Provider 配置指纹只覆盖影响目录语义的字段且不含凭据', async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const home = mkdtempSync(join(tmpdir(), 'codingns-codex-home-'))
+  // 驱动按 CODEX_HOME 解析配置目录；用环境变量把它指向临时目录。
+  const previousHome = process.env.CODEX_HOME
+  process.env.CODEX_HOME = home
+  try {
+    const official = new CodexAppServerDriver({ binaries: ['fake-codex'] })
+    // 两个文件都不存在：返回 undefined 表示“无法判断”，不能据此失效缓存。
+    assert.equal(official.catalogFingerprint(), undefined)
+
+    writeFileSync(join(home, 'config.toml'), 'model = "gpt-6.1-sol"\nservice_tier = "default"\n')
+    writeFileSync(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', OPENAI_API_KEY: null, tokens: { refresh_token: 'rt-1', account_id: 'acct-1' } }))
+    const subscribed = official.catalogFingerprint()
+    assert.equal(typeof subscribed, 'string')
+    // 凭据原文绝不能进入指纹。
+    assert.equal(subscribed!.includes('rt-1'), false)
+
+    // 仅轮换 access_token（官方订阅每次刷新都会变）：指纹必须保持不变，
+    // 否则目录会在每次 token 刷新后无谓失效。
+    writeFileSync(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', OPENAI_API_KEY: null, tokens: { refresh_token: 'rt-1', access_token: 'at-rotated', account_id: 'acct-1' } }))
+    assert.equal(official.catalogFingerprint(), subscribed)
+
+    // 切换到第三方 Provider：这是真正改变目录语义的变化，指纹必须变化。
+    writeFileSync(join(home, 'config.toml'), 'model = "gpt-6.1-sol"\nmodel_provider = "relay"\nservice_tier = "default"\n\n[model_providers.relay]\nbase_url = "https://api.glor-ai.top:1443"\n')
+    assert.notEqual(official.catalogFingerprint(), subscribed)
+
+    // 登录方式从订阅切成纯 API key：同样必须触发失效。
+    const thirdParty = official.catalogFingerprint()
+    writeFileSync(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'sk-secret-value', tokens: null }))
+    const apiKey = official.catalogFingerprint()
+    assert.notEqual(apiKey, thirdParty)
+    assert.equal(apiKey!.includes('sk-secret-value'), false)
+    official.dispose()
+  } finally {
+    if (previousHome === undefined) delete process.env.CODEX_HOME
+    else process.env.CODEX_HOME = previousHome
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Codex 供应商切换后 Host 立即作废目录缓存，不必等待 TTL', async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const { CodingNsCliAdapterRegistry } = await import('../data/build/dist/host/cli-adapters/registry.js')
+
+  const home = mkdtempSync(join(tmpdir(), 'codingns-codex-switch-'))
+  const previousHome = process.env.CODEX_HOME
+  process.env.CODEX_HOME = home
+  writeFileSync(join(home, 'config.toml'), 'model_provider = "relay"\nservice_tier = "default"\n')
+  writeFileSync(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'sk-x', tokens: null }))
+
+  let accountType: string | null = null
+  let modelListCalls = 0
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        const reply = (result: unknown): void => { stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`) }
+        if (request.method === 'initialize') return reply({})
+        if (request.method === 'config/read') return reply({ config: { service_tier: 'default' } })
+        if (request.method === 'model/list') {
+          modelListCalls += 1
+          return reply({ data: [{ id: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol', supportedReasoningEfforts: [{ reasoningEffort: 'high' }], serviceTiers: [{ id: 'priority', name: 'Fast' }] }] })
+        }
+        if (request.method === 'account/read') return reply({ account: accountType === null ? null : { type: accountType }, requiresOpenaiAuth: accountType !== null })
+        return reply({})
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  // TTL 设成 10 分钟，模拟真实默认值：只有指纹比对能让它提前失效。
+  const registry = new CodingNsCliAdapterRegistry([driver], {}, { modelCacheTtlMs: 10 * 60_000, modelRetryTtlMs: 10 * 60_000 })
+  try {
+    const thirdParty = await registry.models('codex')
+    assert.equal(thirdParty.officialSubscription, false)
+    assert.equal(modelListCalls, 1)
+
+    // 同配置再读一次：命中缓存，不重复探测。
+    const cached = await registry.models('codex')
+    assert.equal(cached, thirdParty)
+    assert.equal(modelListCalls, 1)
+
+    // 用户切回官方订阅：config.toml 与 auth.json 被外部工具改写，CLI 版本不变。
+    accountType = 'chatgpt'
+    writeFileSync(join(home, 'config.toml'), 'model = "gpt-6.1-sol"\nservice_tier = "default"\n')
+    writeFileSync(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', OPENAI_API_KEY: null, tokens: { refresh_token: 'rt-2', account_id: 'acct-2' } }))
+
+    // 关键断言：不必等 TTL，也不必重启 Host，下一次读取就必须拿到官方订阅判定。
+    const official = await registry.models('codex')
+    assert.equal(official.officialSubscription, true)
+    assert.notEqual(official, thirdParty)
+    assert.equal(modelListCalls, 2)
+
+    // 官方订阅下 Fast 档位开关的展示条件随之成立。
+    const { canSelectServiceTier } = await import('../data/build/dist/client/service-tier.js')
+    assert.equal(canSelectServiceTier(official, official.groups[0]!.models[0]), true)
+  } finally {
+    if (previousHome === undefined) delete process.env.CODEX_HOME
+    else process.env.CODEX_HOME = previousHome
+    rmSync(home, { recursive: true, force: true })
+    await registry.dispose()
+  }
+})
+
+test('Provider 未声明配置指纹的适配器保持原缓存行为', async () => {
+  const { CodingNsCliAdapterRegistry } = await import('../data/build/dist/host/cli-adapters/registry.js')
+  let listCalls = 0
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'no-fingerprint', name: 'NoFingerprint' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'fake' } },
+    async listModels() {
+      listCalls += 1
+      return { groups: [{ id: 'g', name: 'G', models: [{ id: 'm', name: 'M', efforts: [] }] }], currentModel: null, currentEffort: null }
+    },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } },
+  }], {}, { modelCacheTtlMs: 10 * 60_000 })
+  try {
+    await registry.models('no-fingerprint')
+    await registry.models('no-fingerprint')
+    // 没有指纹可比对时沿用长 TTL 缓存，不能退化成每次重新探测。
+    assert.equal(listCalls, 1)
+  } finally {
+    await registry.dispose()
+  }
+})

@@ -11,6 +11,7 @@ import type {
   CodingNsCliTeamDiagnostic,
 } from '../../shared/contracts/cli-adapter.js'
 import { CodingNsRpcError } from '../rpc-table.js'
+import { debugInfo } from '../../shared/debug.js'
 import type {
   CodingNsCliDriver,
   CodingNsCliSessionProbeInput,
@@ -96,6 +97,15 @@ export class CodingNsCliAdapterRegistry {
   private readonly modelTimers = new Map<CodingNsCliAdapterId, ReturnType<typeof setTimeout>>()
   private readonly modelGenerations = new Map<CodingNsCliAdapterId, number>()
   private readonly requestedModelCatalogs = new Set<CodingNsCliAdapterId>()
+  /**
+   * 上次构建目录时驱动声明的 Provider 配置指纹。
+   *
+   * 与安装探测指纹不同：用户在外部工具里切换供应商或登录状态时，CLI 可执行文件
+   * 完全没变，`detectionFingerprint` 因此不变，长 TTL 的目录缓存会把旧的账号判定
+   * 一直沿用下去——界面就会长期缺少依赖该判定的控件（Codex 官方订阅的 Fast 档位
+   * 开关正是如此）。这里按驱动声明的指纹在每次读取目录时校验，配置一变立即失效。
+   */
+  private readonly catalogFingerprints = new Map<CodingNsCliAdapterId, string>()
   /**
    * 已切到下一个 DSH step、但仍在继续产出 Provider 流的运行。
    *
@@ -217,6 +227,11 @@ export class CodingNsCliAdapterRegistry {
   async models(adapterId: CodingNsCliAdapterId): Promise<CodingNsCliModelCatalog> {
     const driver = this.requireEnabledDriver(adapterId)
     this.requestedModelCatalogs.add(adapterId)
+    // Provider 配置（供应商、登录方式、默认档位）变化时必须先作废目录，否则
+    // 账号级判定会跟着 10 分钟 TTL 一起被沿用，界面上的档位开关等控件长期缺失。
+    if (this.invalidateOnCatalogFingerprintChange(adapterId, driver)) {
+      return this.refreshModels(driver)
+    }
     const cached = this.modelCache.get(adapterId)
     if (cached !== undefined) {
       if (cached.expiresAt <= Date.now()) void this.refreshModels(driver).catch(() => undefined)
@@ -769,6 +784,7 @@ export class CodingNsCliAdapterRegistry {
     this.modelCache.clear()
     this.modelFailures.clear()
     this.modelGenerations.clear()
+    this.catalogFingerprints.clear()
     this.requestedModelCatalogs.clear()
     await Promise.all([...this.segmentedTurns.values()].map(({ iterator }) => iterator === null ? Promise.resolve() : closeAgentIterator(iterator)))
     this.segmentedTurns.clear()
@@ -841,6 +857,10 @@ export class CodingNsCliAdapterRegistry {
     const previous = this.modelCache.get(adapterId)
     const refresh = (async () => {
       try {
+        // 指纹必须在探测开始前捕获：若在 listModels() 返回后再读，探测期间发生的
+        // 第二次供应商切换会被记成“已应用”，而目录其实来自切换前的配置，之后
+        // 指纹比对会一直命中，旧判定又被锁进缓存。
+        const probeFingerprint = readCatalogFingerprint(driver)
         const catalog = await driver.listModels()
         if (this.disposed || generation !== this.cacheGeneration) return previous?.value ?? catalog
         if (modelGeneration !== (this.modelGenerations.get(adapterId) ?? 0)) return this.refreshModels(driver)
@@ -849,6 +869,8 @@ export class CodingNsCliAdapterRegistry {
         const hasModels = catalogHasModels(catalog)
         const keepPrevious = !hasModels && previous !== undefined && catalogHasModels(previous.value)
         const value = keepPrevious ? previous.value : catalog
+        // 指纹与目录一起落库：只有真正代表这份目录的配置才会在下次比对时命中。
+        if (probeFingerprint !== undefined) this.catalogFingerprints.set(adapterId, probeFingerprint)
         const ttl = hasModels ? this.modelCacheTtlMs : this.modelRetryTtlMs
         this.modelCache.set(adapterId, { value, expiresAt: Date.now() + ttl })
         this.scheduleModelRefresh(adapterId, ttl)
@@ -905,6 +927,27 @@ export class CodingNsCliAdapterRegistry {
     this.modelRefreshes.delete(adapterId)
     this.modelCache.delete(adapterId)
     this.modelFailures.delete(adapterId)
+  }
+
+  /**
+   * 比对驱动的 Provider 配置指纹，变化时立即作废该适配器的目录缓存。
+   *
+   * 返回 true 表示调用方必须等待一次全新探测，不能复用任何旧值——包括
+   * stale-while-revalidate 的旧值：账号判定从「第三方」变成「官方订阅」时，
+   * 继续先回旧值会让界面在本次渲染里仍然缺少依赖该判定的控件。
+   *
+   * 驱动没有声明 `catalogFingerprint` 或当前读不到配置（返回 undefined）时保持
+   * 原行为，不把「无法判断」当成「已变化」，避免目录退化成每次都重新探测。
+   */
+  private invalidateOnCatalogFingerprintChange(adapterId: CodingNsCliAdapterId, driver: CodingNsCliDriver): boolean {
+    const fingerprint = readCatalogFingerprint(driver)
+    if (fingerprint === undefined) return false
+    // 指纹在目录构建成功时写入，因此这里的旧值一定对应缓存里的那份目录。
+    const previous = this.catalogFingerprints.get(adapterId)
+    if (previous === undefined || previous === fingerprint) return false
+    debugInfo('codingns4dsh: cli catalog fingerprint changed', { adapterId })
+    this.invalidateModelCache(adapterId)
+    return true
   }
 
   private clearTimer(
@@ -1079,6 +1122,23 @@ function positiveTtl(value: number | undefined, fallback: number): number {
 
 function detectionFingerprint(detection: CodingNsCliDetection): string {
   return JSON.stringify([detection.installed, detection.command, detection.version, detection.diagnostic])
+}
+
+/**
+ * 读取驱动的 Provider 配置指纹。
+ *
+ * 驱动未声明该方法、抛错或返回空白时一律视为「无法判断」，调用方不得据此失效
+ * 缓存——指纹只是让配置变化立刻生效的加速手段，不能成为目录可用的前提。
+ */
+function readCatalogFingerprint(driver: CodingNsCliDriver): string | undefined {
+  const read = driver.catalogFingerprint
+  if (read === undefined) return undefined
+  try {
+    const value = read.call(driver)
+    return typeof value === 'string' && value.trim() !== '' ? value : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function catalogHasModels(catalog: CodingNsCliModelCatalog): boolean {
