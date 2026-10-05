@@ -610,10 +610,14 @@ function effortDisplayName(model: CodingNsCliModel | undefined, effort: string, 
 
 const nativeTriggerStyle = { width: '100%', minWidth: 0, maxWidth: 'min(360px, 45cqw)', height: 28, color: dshThemeColor.labelSecondary, cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 24, padding: '0 4px 0 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 13, lineHeight: '20px' }
 const modelNameStyle = { minWidth: 0, maxWidth: 150, flex: '0 1 150px', display: 'block', overflow: 'hidden', whiteSpace: 'nowrap' as const }
-const nativeMenuStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1100, right: 0, bottom: 'calc(100% + 8px)', minWidth: 240, maxWidth: 'min(420px, calc(100vw - 32px))', maxHeight: 'min(360px, calc(100vh - 96px))', overflowY: 'auto' as const, padding: 4, border: 0, borderRadius: 20 }
-const nativeMenuCellStyle = { width: '100%', minHeight: 40, color: 'inherit', cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left' as const, fontSize: 14, lineHeight: '22px' }
-// 档位行与相邻菜单行保持同一高度和内边距，Switch 右对齐到与菜单箭头同一列。
-const serviceTierRowStyle = { width: '100%', minHeight: 40, color: 'inherit', borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, lineHeight: '22px' }
+const nativeMenuStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1100, right: 0, bottom: 'calc(100% + 8px)', minWidth: 240, maxWidth: 'min(420px, calc(100vw - 32px))', maxHeight: 'min(360px, calc(100vh - 96px))', overflowX: 'hidden' as const, overflowY: 'auto' as const, padding: 4, border: 0, borderRadius: 20 }
+// 菜单行同时用于 <button> 和 <div>：button 由 DSH 全局样式给了 border-box，
+// div 没有，若只写 width:100%+padding，div 会按 content-box 多出左右各 10px，
+// 把整行撑出面板并触发横向滚动条（档位开关因此被推到贴住右边缘）。
+// 显式声明 border-box，让两种元素的内边距都算进宽度。
+const nativeMenuCellStyle = { width: '100%', minHeight: 40, boxSizing: 'border-box' as const, color: 'inherit', cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left' as const, fontSize: 14, lineHeight: '22px' }
+// 档位行与相邻菜单行保持同一高度、内边距与盒模型，Switch 右对齐到与菜单箭头同一列。
+const serviceTierRowStyle = { width: '100%', minHeight: 40, boxSizing: 'border-box' as const, color: 'inherit', borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, lineHeight: '22px' }
 const serviceTierLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
 const nativeMenuLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
 const nativeMenuValueStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, textAlign: 'right' as const, color: dshThemeColor.labelTertiary }

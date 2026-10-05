@@ -116,3 +116,36 @@ test('未确认官方订阅但目录声明了档位时，判定值得复检', ()
   assert.equal(needsServiceTierRevalidation(null), false)
 })
 
+test('档位行与菜单行共用同一盒模型，避免撑破弹层产生横向滚动条', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const { dirname, join } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const source = await readFile(join(root, 'src/client/cli-slots.ts'), 'utf8')
+
+  const styleOf = (name: string): string => {
+    const start = source.indexOf(`const ${name} = {`)
+    assert.notEqual(start, -1, `未找到样式 ${name}`)
+    return source.slice(start, source.indexOf('\n', start))
+  }
+  const cell = styleOf('nativeMenuCellStyle')
+  const tierRow = styleOf('serviceTierRowStyle')
+
+  // 根因回归：nativeMenuCellStyle 用在 <button> 上（DSH 全局给了 border-box），
+  // serviceTierRowStyle 用在 <div> 上。div 默认 content-box 时 width:100% 会把
+  // 左右各 10px 的内边距额外算出去，整行比相邻行宽 20px，撑出横向滚动条，
+  // 档位开关被推到贴住弹层右缘、与模型/思考等级的箭头错位。
+  assert.match(cell, /boxSizing: 'border-box'/u, '菜单行必须显式声明 border-box，不能依赖 button 的默认样式')
+  assert.match(tierRow, /boxSizing: 'border-box'/u, '档位行是 div，必须显式声明 border-box 才能与菜单行等宽')
+
+  // 三行必须共用同一套内边距与最小高度，否则即使盒模型一致也会错位。
+  for (const [name, style] of [['菜单行', cell], ['档位行', tierRow]] as const) {
+    assert.match(style, /minHeight: 40/u, `${name}的最小高度必须与相邻行一致`)
+    assert.match(style, /padding: '0 10px'/u, `${name}的左右内边距必须与相邻行一致`)
+  }
+
+  // 弹层横向不得可滚动：纵向滚动是设计内的，横向滚动只会来自子元素溢出。
+  const menu = styleOf('nativeMenuStyle')
+  assert.match(menu, /overflowX: 'hidden'/u, '弹层必须禁止横向滚动，溢出应作为缺陷暴露而不是被滚动条掩盖')
+  assert.match(menu, /overflowY: 'auto'/u, '纵向滚动是既有设计，不能一并去掉')
+})
