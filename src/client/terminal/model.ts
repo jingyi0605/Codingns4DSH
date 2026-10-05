@@ -264,14 +264,17 @@ export class CodingNsTerminalView {
       .catch((error: unknown) => this.fail(error))
   }
 
-  resize(cols: number, rows: number): void {
+  resize(cols: number, rows: number, options?: { readonly force?: boolean }): void {
     const state = this.store.getSnapshot()
     const attachmentId = this.attachmentId
     if (!state.writable || attachmentId === undefined) return
     const nextCols = Math.max(1, Math.min(Math.floor(cols), state.environment?.maxCols ?? 500))
     const nextRows = Math.max(1, Math.min(Math.floor(rows), state.environment?.maxRows ?? 200))
     const request = { attachmentId, cols: nextCols, rows: nextRows }
-    if (sameResize(this.lastResize, request)) return
+    // force 用于视图重新可见（激活/回到前台）时夺回尺寸所有权：Host 记录的窗口
+    // 尺寸可能已被其它客户端或本客户端更早的宽度改写，只有重发一次当前尺寸才能
+    // 让 tmux 与当前视图一致，否则历史行按旧宽度排版，内容会超出容器被裁剪。
+    if (options?.force !== true && sameResize(this.lastResize, request)) return
     this.lastResize = request
     this.writes = this.writes
       .then(async () => { unwrap(await resolveRemote(this.remote).resize(this.sessionId, this.id, attachmentId, nextCols, nextRows)) })

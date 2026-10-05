@@ -189,6 +189,30 @@ test('重复尺寸变化只向 Host 发送一次 resize', async () => {
   await view.dispose()
 })
 
+test('force 尺寸声明在尺寸相同时也会重发一次 resize', async () => {
+  const { calls, remote } = createRemote(true)
+  const view = new CodingNsTerminalView('session-1', 'terminal-1', remote, false)
+  const unmount = view.mount()
+  await waitFor(() => view.state.getSnapshot().render !== undefined, '终端 snapshot 未到达 Client')
+  const render = view.state.getSnapshot().render
+  assert.ok(render)
+  view.acknowledge(render.revision)
+
+  view.resize(80, 24)
+  await waitFor(() => calls.resize.length === 1, '首次 resize 未发送')
+  // 尺寸没变时普通 resize 会被去重；force 用于视图重新可见时夺回尺寸所有权，
+  // 保证 tmux 窗口被其它客户端改写后还能回到本视图的宽度。
+  view.resize(80, 24)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(calls.resize.length, 1)
+  view.resize(80, 24, { force: true })
+  await waitFor(() => calls.resize.length === 2, 'force resize 未重发')
+  assert.deepEqual(calls.resize, [[80, 24], [80, 24]])
+
+  unmount()
+  await view.dispose()
+})
+
 test('终端 Remote 晚于 Client 注册时可以在就绪后重试', async () => {
   const { remote } = createRemote()
   let currentRemote

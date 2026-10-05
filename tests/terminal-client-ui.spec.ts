@@ -66,6 +66,25 @@ test('终端布局和 xterm 默认值与 DSH 0.1.6 内置终端一致', async ()
   assert.match(xterm, /if \(host\.clientWidth === 0 \|\| host\.clientHeight === 0\)/u)
 })
 
+test('视图激活与回到前台时夺回终端尺寸所有权', async () => {
+  const [modelSource, xtermSource] = await Promise.all([
+    readFile(join(projectRoot, 'src/client/terminal/model.ts'), 'utf8'),
+    readFile(join(projectRoot, 'src/client/terminal/xterm-view.ts'), 'utf8'),
+  ])
+
+  // force 允许在本地尺寸未变时重发一次：tmux 窗口尺寸可能已被其它客户端或本视图
+  // 更早的宽度改写，不重发就会保留旧宽度，历史行按旧宽度排版而超出容器被裁剪。
+  assert.match(modelSource, /resize\(cols: number, rows: number, options\?: \{ readonly force\?: boolean \}\)/u)
+  assert.match(modelSource, /if \(options\?\.force !== true && sameResize\(this\.lastResize, request\)\) return/u)
+  // 只在"激活边沿"和"回到前台"触发夺回，且带最小间隔；不响应 Host 尺寸变化本身，
+  // 避免多个客户端看到对方尺寸后互相夺回形成振荡。
+  assert.match(xtermSource, /const becameActive = active && !previousActiveRef\.current/u)
+  assert.match(xtermSource, /TERMINAL_SIZE_CLAIM_INTERVAL_MS = 1000/u)
+  assert.match(xtermSource, /addEventListener\('visibilitychange', onVisibilityChange\)/u)
+  assert.match(xtermSource, /fitTerminal\(terminal, fitRef\.current, view, claim \? \{ force: true \} : undefined\)/u)
+  assert.match(xtermSource, /view\.resize\(terminal\.cols, terminal\.rows, options\)/u)
+})
+
 test('终端外观设置按实际值展示且光标闪烁位于字号之前', async () => {
   const source = await readFile(join(projectRoot, 'src/client/features/terminal-enhancement-panel.ts'), 'utf8')
   const blinkIndex = source.indexOf("createElement(Field, { label: t('terminal.cursorBlink') }")

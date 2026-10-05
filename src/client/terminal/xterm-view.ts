@@ -25,6 +25,8 @@ const TERMINAL_TOUCH_MOMENTUM_FRICTION = 0.97
 const TERMINAL_TOUCH_MOMENTUM_MAX_DURATION_MS = 3600
 const TERMINAL_TOUCH_MOMENTUM_MAX_IDLE_FRAMES = 3
 const TERMINAL_TOUCH_MOMENTUM_RELEASE_IDLE_MS = 100
+/** 视图夺回终端尺寸的最小间隔，避免可见性抖动时反复重发。 */
+const TERMINAL_SIZE_CLAIM_INTERVAL_MS = 1000
 
 export interface CodingNsXtermViewProps {
   readonly view: CodingNsTerminalView
@@ -55,6 +57,8 @@ export function CodingNsXtermView({
   const fitRef = useRef<FitAddon | null>(null)
   const scheduleReflowRef = useRef<(() => void) | null>(null)
   const lastRevision = useRef(0)
+  const sizeClaimAtRef = useRef(0)
+  const previousActiveRef = useRef(active)
   const state = useSyncExternalStore(view.state.subscribe.bind(view.state), view.state.getSnapshot.bind(view.state))
   const settingsSnapshot = useSyncExternalStore(settings.subscribe.bind(settings), settings.getSnapshot.bind(settings))
   const appearance = settingsSnapshot.value?.terminalEnhancement.appearance
@@ -357,13 +361,22 @@ export function CodingNsXtermView({
   }, [hasTerminal, view])
 
   useEffect(() => {
+    const becameActive = active && !previousActiveRef.current
+    previousActiveRef.current = active
     const terminal = terminalRef.current
     const host = hostRef.current
     if (terminal === null || host === null) return
     applyAppearance(terminal, appearance, host, state.environment?.scrollback ?? 1000)
     terminal.options.disableStdin = !state.writable
     if (state.writable && host.clientWidth > 0 && host.clientHeight > 0) {
-      fitTerminal(terminal, fitRef.current, view)
+      // 视图刚变为激活时把 tmux 窗口尺寸抢回本视图：Host 记录的尺寸可能已被其它
+      // 客户端或本视图更早的宽度改写，历史行会按旧宽度排版，内容超出容器被裁剪
+      // 或右侧留白。只在激活边沿触发（不响应 Host 尺寸变化本身），避免多个
+      // 客户端看到对方尺寸后互相夺回。
+      const now = Date.now()
+      const claim = becameActive && now - sizeClaimAtRef.current >= TERMINAL_SIZE_CLAIM_INTERVAL_MS
+      if (claim) sizeClaimAtRef.current = now
+      fitTerminal(terminal, fitRef.current, view, claim ? { force: true } : undefined)
       terminal.focus()
     } else if (state.info !== undefined) {
       terminal.resize(state.info.cols, state.info.rows)
@@ -378,6 +391,25 @@ export function CodingNsXtermView({
     themeRevision,
     view,
   ])
+
+  useEffect(() => {
+    if (!active || !hasTerminal) return
+    // 页面从后台回到前台（移动端切回、窗口重新聚焦）时，Host 尺寸可能已被其它
+    // 客户端改写；回到前台的视图重发一次自己的 fit 尺寸，把 tmux 抢回本视图。
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState !== 'visible') return
+      const terminal = terminalRef.current
+      const host = hostRef.current
+      if (terminal === null || host === null) return
+      if (host.clientWidth === 0 || host.clientHeight === 0) return
+      const now = Date.now()
+      if (now - sizeClaimAtRef.current < TERMINAL_SIZE_CLAIM_INTERVAL_MS) return
+      sizeClaimAtRef.current = now
+      fitTerminal(terminal, fitRef.current, view, { force: true })
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [active, hasTerminal, view])
 
   useEffect(() => {
     const terminal = terminalRef.current
@@ -567,7 +599,12 @@ function terminalTheme(appearance: TerminalAppearanceSettings, computed: CSSStyl
   }
 }
 
-function fitTerminal(terminal: Terminal, fit: FitAddon | null, view: CodingNsTerminalView): void {
+function fitTerminal(
+  terminal: Terminal,
+  fit: FitAddon | null,
+  view: CodingNsTerminalView,
+  options?: { readonly force?: boolean },
+): void {
   if (fit === null) return
   const dimensions = resolveTerminalDimensions(terminal, fit)
   if (dimensions === undefined) return
@@ -577,7 +614,7 @@ function fitTerminal(terminal: Terminal, fit: FitAddon | null, view: CodingNsTer
   if (terminal.cols !== dimensions.cols || terminal.rows !== dimensions.rows) {
     terminal.resize(dimensions.cols, dimensions.rows)
   }
-  view.resize(terminal.cols, terminal.rows)
+  view.resize(terminal.cols, terminal.rows, options)
 }
 
 function resolveTerminalDimensions(terminal: Terminal, fit: FitAddon): { cols: number; rows: number } | undefined {
