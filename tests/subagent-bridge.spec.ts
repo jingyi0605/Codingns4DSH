@@ -10,6 +10,7 @@ import {
   acpBridgeMcpServers,
   bridgeMcpEntryPath,
   claudeBridgeArgs,
+  codexConfigOverride,
   codexBridgeArgs,
   codexBridgeDeveloperInstructions,
   commandCodeBridgeArgs,
@@ -80,6 +81,15 @@ test('子代理桥接注入：开启时产出各适配器扩展面，关闭时�
     const codexInstructions = codexBridgeDeveloperInstructions('s1')
     assert.ok(codexInstructions !== undefined)
     assert.ok(codexInstructions.includes('codingns.agent_subagent'))
+
+    // Windows 的 JsonRpcProcess 通过 cmd.exe 启动 `.cmd` 包装器；覆盖项必须
+    // 保持为一个 argv，且 MCP args 必须继续是 TOML 数组，不能被 shell 拆成字符串。
+    const windowsCodex = codexBridgeArgs('s1', 'codex', 'win32')
+    const windowsArgsOverride = windowsCodex[windowsCodex.indexOf('-c', 2) + 1] ?? ''
+    assert.match(windowsArgsOverride, /^"mcp_servers\.codingns\.args=\['/u)
+    assert.match(windowsArgsOverride, /'\]"$/u)
+    assert.doesNotMatch(windowsArgsOverride, /=\["/u)
+    assert.equal(codexConfigOverride('mcp_servers.codingns.args', "['C:\\Program Files\\codingns\\mcp-stdio-entry.js']", 'win32'), '"mcp_servers.codingns.args=[\'C:\\Program Files\\codingns\\mcp-stdio-entry.js\']"')
   } finally {
     setSubagentBridge(undefined)
   }
