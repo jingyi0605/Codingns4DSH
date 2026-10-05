@@ -227,6 +227,16 @@ test('订阅弹层按上游分组渲染多组额度', async () => {
   assert.match(source, /if \(group\.id === 'third-party'\) return t\('usage\.quotaGroupThirdParty'\)/u)
 })
 
+test('思考档位随模型切换显式回落默认值，不把旧档位漏给不支持它的模型', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/cli-slots.ts'), 'utf8')
+  // 切到 Claude 这类没有档位的模型时必须显式写 `default`：省略会让 Host 保留旧值，
+  // 继续给该模型下发 `--effort` 并让整轮被 CLI 拒绝。
+  assert.match(source, /effortId: nextEffort \?\? 'default'/u)
+  assert.match(source, /effortId: effort \?\? 'default'/u)
+  // 目录已加载但当前模型不声明该档位时，显示也不能再沿用旧值
+  assert.match(source, /efforts\.includes\(storedEffort\)/u)
+})
+
 test('官方余额统一复用适配器 Logo，并以进度条和到期倒计时展示', async () => {
   const source = await readFile(join(projectRoot, 'src/client/subscription-slot.ts'), 'utf8')
   assert.match(source, /const adapterIconSource = providerIconUrl\(adapterId \?\? 'dsh'\)/u)

@@ -449,7 +449,9 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
             update({
               adapterId,
               modelId: model.id,
-              ...(effort ? { effortId: effort } : {}),
+              // 新模型不支持旧档位时显式回落 `default`：省略会让 Host 保留旧值，
+              // 继续给 Claude 这类模型下发 `--effort` 并让整轮失败。
+              effortId: effort ?? 'default',
               ...(tier ? { serviceTierId: tier } : {}),
             })
           }
@@ -504,7 +506,13 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
 
   const model = catalog === null ? undefined : findModel(catalog, selection.modelId) ?? firstModel(catalog)
   const efforts = model?.efforts ?? []
-  const effortValue = selection.effortId ?? (efforts.length > 0 ? defaultEffort(efforts) : undefined) ?? 'default'
+  // 目录已经加载、但当前模型不声明该档位时不能再沿用旧值：切到 Claude 这类没有
+  // 思考档位的模型后，残留的 Gemini 档位既会显示错，也会被下发成 `--effort`，
+  // 让 CLI 以 `invalid model selection` 直接拒绝整轮。
+  const storedEffort = selection.effortId
+  const effortValue = storedEffort !== undefined && (model === undefined || efforts.includes(storedEffort))
+    ? storedEffort
+    : defaultEffort(efforts) ?? 'default'
   const modelLabel = model?.name ?? (loading ? t('cli.loadingModel') : t('cli.noModelsAvailable'))
   const effortLabel = effortDisplayName(model, effortValue, t('cli.defaultEffort'))
   const modelUnavailable = model === undefined
@@ -513,11 +521,12 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     const nextEffort = next.efforts.includes(effortValue) ? effortValue : defaultEffort(next.efforts)
     // 档位必须随模型切换一起携带：新模型不声明该档位时显式回落 `default`，
     // 不能省略——省略会让 Host 保留旧档位，继续下发该模型不支持的 serviceTier。
+    // 思考档位同理：Claude 系列不支持 `--effort`，省略会让旧档位漏进命令行。
     const nextTier = carriedServiceTierId(next, selection.serviceTierId)
     update({
       adapterId: selection.adapterId,
       modelId: next.id,
-      ...(nextEffort ? { effortId: nextEffort } : {}),
+      effortId: nextEffort ?? 'default',
       ...(nextTier ? { serviceTierId: nextTier } : {}),
     })
     setOpen(false)
