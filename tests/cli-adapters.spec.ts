@@ -1045,6 +1045,32 @@ test('Command Code 订阅服务只返回脱敏窗口并统一毫秒重置时间'
   }
 })
 
+test('Command Code Go V1 套餐识别版本后缀并计算月额度', async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), 'codingns4dsh-command-code-go-v1-'))
+  writeFileSync(join(homeDirectory, 'auth.json'), JSON.stringify({ apiKey: 'secret-key' }), 'utf8')
+  try {
+    const service = new CommandCodeSubscriptionService({
+      homeDirectory,
+      fetch: (async (url: string) => {
+        if (url.endsWith('/credits')) {
+          return new Response(JSON.stringify({ credits: { monthlyCredits: 7.762470198 }, windowLimits: {} }), { status: 200 })
+        }
+        return new Response(JSON.stringify({ data: { planId: 'individual-go-v1', currentPeriodEnd: '2026-11-05T11:46:02.000Z' } }), { status: 200 })
+      }) as typeof fetch,
+    })
+    const result = await service.read()
+    assert.ok(result?.monthly !== null && result?.monthly !== undefined)
+    assert.ok(Math.abs(result.monthly.usedPercent - 22.37529802) < 1e-12)
+    assert.equal(result.monthly.remainingPercent, 77.62470198)
+    assert.equal(result.monthly.windowDurationMins, null)
+    assert.equal(result.monthly.resetsAt, 1_793_879_162)
+    assert.equal(result.monthly.remainingCredits, 7.762470198)
+    assert.equal(result.monthly.totalCredits, 10)
+  } finally {
+    rmSync(homeDirectory, { recursive: true, force: true })
+  }
+})
+
 test('Claude Code 订阅服务读取 OAuth 用量并且不返回访问令牌', async () => {
   const homeDirectory = mkdtempSync(join(tmpdir(), 'codingns4dsh-claude-subscription-'))
   writeFileSync(join(homeDirectory, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'oauth-secret', subscriptionType: 'max' } }), 'utf8')

@@ -92,10 +92,13 @@ function normalizeMonthlyWindow(remainingCredits: number, totalCredits: number |
 }
 
 function resolveMonthlyCreditLimit(planId: string | null): number | null {
-  const normalized = planId?.trim().toLowerCase() ?? ''
-  if (normalized.endsWith('-go') || normalized === 'go') return 10
-  if (normalized.endsWith('-goat') || normalized === 'goat') return 70
-  if (normalized.endsWith('-max') || normalized === 'max') return 150
+  // Command Code 会在套餐标识后追加版本号，例如 `individual-go-v1`。
+  // 不能再用 `endsWith('-go')` 判断，否则新版 Go 套餐会落入未知档位，
+  // monthlyCredits 虽然读取成功，百分比却只能按 0 处理。
+  const segments: readonly string[] = planId?.trim().toLowerCase().match(/[a-z0-9]+/g) ?? []
+  if (segments.includes('go')) return 10
+  if (segments.includes('goat')) return 70
+  if (segments.includes('max')) return 150
   return null
 }
 
