@@ -24,6 +24,12 @@ runtime_env=(
   "CODINGNS4DSH_LOGIN_COOKIE_NAME=dsh_codingns_stage0020"
 )
 
+# 有一次性迁移出的文件凭据时，stage0 使用它避免依赖 SSH 会话的 macOS 钥匙串；
+# 文件不存在时保留 Cursor CLI 默认行为，避免破坏其他登录方式。
+if [[ -f "$HOME/.cursor/auth.json" ]]; then
+  runtime_env+=("AGENT_CLI_CREDENTIAL_STORE=file")
+fi
+
 # DSH 的启动器会在某些路径下自然结束，原来的 `exec` 让调用方只能看到
 # shell 提示符，无法知道是正常结束、启动失败还是被信号终止。这里保留一层
 # 很薄的等待器，既把信号转发给 DSH，也在退出时报告最终状态。
