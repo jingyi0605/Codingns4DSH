@@ -20,7 +20,15 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type { SidebarRightTabInfo } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
-import { resolveChevronDownIcon, resolvePlusIcon } from '../../dsh-capabilities/client/primitives-adapter.js'
+import type { CodingNsTerminalEnvironment } from '../../shared/contracts/terminal.js'
+import {
+  resolveChevronDownIcon,
+  resolvePlusIcon,
+  resolveRefreshIcon,
+  resolveShortcutKeys,
+  resolveTerminalArrowIcon,
+  resolveToolIcon,
+} from '../../dsh-capabilities/client/primitives-adapter.js'
 import { CodingNsWebTerminals, type WebTerminalId, type WebTerminalInfo } from './model.js'
 import { createTerminalSessionRecovery, type TerminalSidebarMountedSource, type TerminalSidebarRecoveryPort } from './recovery.js'
 import { installTerminalStyles, terminalClass } from './styles.js'
@@ -146,8 +154,12 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | undefined>()
+  const [refreshing, setRefreshing] = useState(false)
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const [heldModifiers, setHeldModifiers] = useState<TerminalHeldModifiers>(EMPTY_HELD_MODIFIERS)
   /** React 状态更新前可能收到连续点击；用同步锁保证只发出一个 create 请求。 */
   const creatingRef = useRef(false)
+  const refreshingRef = useRef(false)
   const autoCreatedFor = useRef<string | undefined>(undefined)
   const reloadSequence = useRef(0)
 
@@ -205,36 +217,94 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
   // 库存刷新删除当前项时，selectedId 的修正和 terminals 更新不一定同一帧完成。
   // 先用首项作为 active，避免短暂渲染空状态导致所有 view 卸载并重新连接。
   const activeId = selected?.id ?? terminals[0]?.id
+  const activeView = activeId === undefined
+    ? undefined
+    : webTerminals.viewForTerminal(String(sessionId), activeId, terminals.find((item) => item.id === activeId)?.shell.path)
+  const activePlatform = useSyncExternalStore(
+    activeView?.state.subscribe.bind(activeView.state) ?? noSubscribe,
+    () => activeView?.state.getSnapshot().environment?.platform,
+    () => activeView?.state.getSnapshot().environment?.platform,
+  )
+  const refreshTerminal = useCallback(async (): Promise<void> => {
+    if (refreshingRef.current) return
+    refreshingRef.current = true
+    setRefreshing(true)
+    try {
+      // 工具栏刷新是显式动作：强制重建 follow，避免保活连接卡死时刷新无效。
+      await Promise.all([reload(), activeView?.refresh({ force: true })])
+    } catch (cause) {
+      debugWarn('codingns4dsh: client terminal toolbar refresh failed', { sessionId: String(sessionId), error: messageOf(cause) })
+    } finally {
+      refreshingRef.current = false
+      setRefreshing(false)
+    }
+  }, [activeView, reload, sessionId])
   // 聚合页声明 keepMounted 后，隐藏页签仍必须保留列表和每个 XtermView。
   // DSH 会隐藏外层 pane；这里把 visible 只传给视图作为 attach 生命周期信号，
   // 不能直接返回 null，否则切回页签会重新创建 DOM 并重新 follow。
   // DSH 0.2.x 的保留页签会复用旧终端页的 div 根节点。沿用 div 形状，
   // 让升级后的聚合布局在旧页签实例上也能正常完成 React reconciliation。
-  const navigation = createElement('nav', { className: terminalClass.list, 'aria-label': t('terminal.title') }, [
-      ...terminals.map((item) => createElement(TerminalListRow, {
-        key: item.id,
-        item,
-        selected: item.id === activeId,
-        onSelect: () => setSelectedId(item.id),
-        onClose: () => { void webTerminals.closeTerminal(String(sessionId), item.id).then(() => reload()) },
-        onRename: async (title) => {
-          const target = webTerminals.viewForTerminal(String(sessionId), item.id, item.shell.path)
-          await target.rename(title)
-          await reload()
-        },
-        t,
-      })),
-      createElement(Button, {
-        variant: 'ghost',
-        size: 'sm',
-        className: terminalClass.newButton,
-        icon: createElement(resolvePlusIcon()),
-        'aria-label': t('terminal.new'),
-        title: t('terminal.new'),
-        disabled: creating,
-        onClick: () => { void createNewTerminal() },
-      }),
-    ])
+  const navigation = createElement('div', { className: terminalClass.listDock },
+    createElement('nav', { className: terminalClass.list, 'aria-label': t('terminal.title') },
+      createElement('div', { className: terminalClass.listTabs },
+        ...terminals.map((item) => createElement(TerminalListRow, {
+          key: item.id,
+          item,
+          selected: item.id === activeId,
+          onSelect: () => setSelectedId(item.id),
+          onClose: () => { void webTerminals.closeTerminal(String(sessionId), item.id).then(() => reload()) },
+          onRename: async (title) => {
+            const target = webTerminals.viewForTerminal(String(sessionId), item.id, item.shell.path)
+            await target.rename(title)
+            await reload()
+          },
+          t,
+        })),
+        createElement(Button, {
+          variant: 'ghost',
+          size: 'sm',
+          className: terminalClass.newButton,
+          icon: createElement(resolvePlusIcon()),
+          'aria-label': t('terminal.new'),
+          title: t('terminal.new'),
+          disabled: creating,
+          onClick: () => { void createNewTerminal() },
+        }),
+      ),
+      createElement('div', { className: terminalClass.listActions },
+        createElement(Button, {
+          variant: 'ghost',
+          size: 'sm',
+          className: `${terminalClass.refreshButton} ${terminalClass.desktopOnly}`,
+          icon: createElement(resolveRefreshIcon(), { size: 16 }),
+          'aria-label': t('terminal.refresh'),
+          title: t('terminal.refresh'),
+          disabled: refreshing,
+          onClick: () => { void refreshTerminal() },
+        }),
+        createElement(Button, {
+          variant: 'ghost',
+          size: 'sm',
+          className: terminalClass.toolsButton,
+          icon: createElement(resolveToolIcon(), { size: 16 }),
+          'aria-label': t('terminal.tools'),
+          title: t('terminal.tools'),
+          'aria-haspopup': 'true',
+          'aria-expanded': toolsOpen,
+          onClick: () => setToolsOpen((value) => !value),
+        }),
+      ),
+    ),
+    toolsOpen ? createElement(TerminalToolsPanel, {
+      view: activeView,
+      platform: activePlatform,
+      heldModifiers,
+      refreshing,
+      onRefresh: refreshTerminal,
+      onToggleModifier: (modifier) => setHeldModifiers((current) => ({ ...current, [modifier]: !current[modifier] })),
+      t,
+    }) : null,
+  )
   const content = createElement('div', { className: terminalClass.content }, terminals.length === 0
       ? createElement('div', { role: 'status', className: terminalClass.empty },
         createElement('p', undefined, createError ?? (creating ? t('terminalView.starting') : t('terminal.description'))),
@@ -253,6 +323,127 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
   )
   const aggregateElement = createElement('div', { className: `${terminalClass.aggregateRoot} ${terminalClass.content}` }, navigation, content)
   return aggregateElement
+}
+
+type TerminalModifier = 'ctrl' | 'alt' | 'win'
+type TerminalPlatform = NonNullable<CodingNsTerminalEnvironment['platform']>
+type TerminalToolCommand = 'tab' | 'escape' | 'enter' | 'backspace' | 'up' | 'down' | 'left' | 'right' | 'c' | 'd' | 'l' | 'z'
+type TerminalHeldModifiers = Readonly<Record<TerminalModifier, boolean>>
+
+const EMPTY_HELD_MODIFIERS: TerminalHeldModifiers = { ctrl: false, alt: false, win: false }
+
+function TerminalToolsPanel({ view, platform, heldModifiers, refreshing, onRefresh, onToggleModifier, t }: {
+  readonly view: ReturnType<CodingNsWebTerminals['viewForTerminal']> | undefined
+  readonly platform: TerminalPlatform | undefined
+  readonly heldModifiers: TerminalHeldModifiers
+  readonly refreshing: boolean
+  readonly onRefresh: () => Promise<void>
+  readonly onToggleModifier: (modifier: TerminalModifier) => void
+  readonly t: ReturnType<typeof codingNsTranslator>
+}): ReactElement {
+  const modifier = (kind: TerminalModifier, label: string): ReactElement => createElement(Button, {
+    key: kind,
+    variant: 'toolbar',
+    size: 'sm',
+    className: `${terminalClass.toolAction} ${heldModifiers[kind] ? terminalClass.toolModifierActive : ''}`,
+    'aria-label': label,
+    title: label,
+    'aria-pressed': heldModifiers[kind],
+    disabled: view === undefined,
+    onClick: () => onToggleModifier(kind),
+  }, createElement(resolveShortcutKeys(), { keys: [terminalModifierKey(kind, platform)] }))
+  const command = (kind: TerminalToolCommand, label: string): ReactElement => createElement(Button, {
+    key: kind,
+    variant: 'toolbar',
+    size: 'sm',
+    className: terminalClass.toolAction,
+    'aria-label': label,
+    title: label,
+    disabled: view === undefined,
+    onClick: () => { if (view !== undefined) view.write(terminalShortcutData(kind, heldModifiers)) },
+  }, terminalToolControl(kind))
+  return createElement('div', { className: terminalClass.toolsPanel, role: 'toolbar', 'aria-label': t('terminal.tools') },
+    createElement(Button, {
+      variant: 'toolbar',
+      size: 'sm',
+      className: `${terminalClass.toolAction} ${terminalClass.mobileOnly}`,
+      icon: createElement(resolveRefreshIcon(), { size: 16 }),
+      'aria-label': t('terminal.refresh'),
+      title: t('terminal.refresh'),
+      disabled: refreshing,
+      onClick: () => { void onRefresh() },
+    }),
+    modifier('ctrl', terminalModifierLabel('ctrl', platform, t)),
+    modifier('alt', terminalModifierLabel('alt', platform, t)),
+    modifier('win', terminalModifierLabel('win', platform, t)),
+    command('tab', t('terminal.shortcutTab')),
+    command('escape', t('terminal.shortcutEscape')),
+    command('enter', t('terminal.shortcutEnter')),
+    command('backspace', t('terminal.shortcutBackspace')),
+    command('up', t('terminal.shortcutUp')),
+    command('down', t('terminal.shortcutDown')),
+    command('left', t('terminal.shortcutLeft')),
+    command('right', t('terminal.shortcutRight')),
+    command('c', t('terminal.shortcutC')),
+    command('d', t('terminal.shortcutD')),
+    command('l', t('terminal.shortcutL')),
+    command('z', t('terminal.shortcutZ')),
+  )
+}
+
+function terminalModifierKey(modifier: TerminalModifier, platform: TerminalPlatform | undefined): string {
+  if (modifier === 'alt' && platform === 'darwin') return 'Option'
+  if (modifier !== 'win') return modifier === 'ctrl' ? 'Ctrl' : 'Alt'
+  if (platform === 'darwin') return 'Cmd'
+  if (platform === 'linux') return 'Super'
+  return 'Win'
+}
+
+function terminalModifierLabel(modifier: TerminalModifier, platform: TerminalPlatform | undefined, t: ReturnType<typeof codingNsTranslator>): string {
+  if (modifier === 'ctrl') return t('terminal.holdCtrl')
+  if (modifier === 'alt' && platform === 'darwin') return t('terminal.holdOption')
+  if (modifier === 'win' && platform === 'darwin') return t('terminal.holdCommand')
+  if (modifier === 'win' && platform === 'linux') return t('terminal.holdSuper')
+  if (modifier === 'alt') return t('terminal.holdAlt')
+  return t('terminal.holdWin')
+}
+
+function terminalToolControl(command: TerminalToolCommand): ReactElement {
+  if (command === 'up' || command === 'down' || command === 'left' || command === 'right') {
+    return createElement(resolveTerminalArrowIcon(command), { size: 16 })
+  }
+  const label: Record<Exclude<TerminalToolCommand, 'up' | 'down' | 'left' | 'right'>, string> = {
+    tab: 'Tab',
+    escape: 'Esc',
+    enter: 'Enter',
+    backspace: '⌫',
+    c: 'C',
+    d: 'D',
+    l: 'L',
+    z: 'Z',
+  }
+  return createElement(resolveShortcutKeys(), { keys: [label[command]] })
+}
+
+function terminalShortcutData(command: TerminalToolCommand, modifiers: TerminalHeldModifiers): string {
+  const base: Record<TerminalToolCommand, string> = {
+    tab: '\t',
+    escape: '\x1b',
+    enter: '\r',
+    backspace: '\x7f',
+    up: '\x1b[A',
+    down: '\x1b[B',
+    left: '\x1b[D',
+    right: '\x1b[C',
+    c: 'c',
+    d: 'd',
+    l: 'l',
+    z: 'z',
+  }
+  let value = base[command]
+  if (modifiers.ctrl && /^[a-z]$/u.test(command)) value = String.fromCharCode(command.charCodeAt(0) - 96)
+  if (modifiers.alt || modifiers.win) value = `\x1b${value}`
+  return value
 }
 
 function TerminalTitle({ useTabInfo, locale }: TerminalTitleProps): ReactElement {

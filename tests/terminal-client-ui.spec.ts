@@ -141,6 +141,34 @@ test('聚合页终端列表位于顶部横向标签栏，不占用内容区侧�
   assert.doesNotMatch(styles, /list\}\{[^}]*width:180px/u)
 })
 
+test('终端标签栏提供 PC 独立刷新按钮和最右侧工具入口', async () => {
+  const [styles, source] = await Promise.all([
+    readFile(join(projectRoot, 'src/client/terminal/styles.ts'), 'utf8'),
+    readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8'),
+  ])
+
+  assert.match(source, /terminalClass\.refreshButton[\s\S]*terminalClass\.desktopOnly/u)
+  assert.match(source, /terminalClass\.toolsButton[\s\S]*aria-expanded/u)
+  assert.match(source, /terminalClass\.toolsPanel/u)
+  assert.match(source, /resolveToolIcon\(\)/u)
+  assert.match(source, /variant: 'toolbar'/u)
+  assert.doesNotMatch(source, /function TerminalToolIcon/u)
+  assert.match(styles, /desktopOnly\}\{display:inline-flex/u)
+  assert.match(styles, /mobileOnly\}\{display:none/u)
+  assert.match(styles, /@media \(max-width:640px\)[\s\S]*desktopOnly\}\{display:none\}[\s\S]*mobileOnly\}\{display:inline-flex/u)
+})
+
+test('终端工具栏保留修饰键并发送常用控制字符', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
+
+  assert.match(source, /holdCtrl/u)
+  assert.match(source, /holdAlt/u)
+  assert.match(source, /holdWin/u)
+  assert.match(source, /view\.write\(terminalShortcutData\(kind, heldModifiers\)\)/u)
+  assert.match(source, /String\.fromCharCode\(command\.charCodeAt\(0\) - 96\)/u)
+  assert.match(source, /c: 'c'/u)
+})
+
 test('聚合页始终渲染页内终端列表导航', async () => {
   const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
 

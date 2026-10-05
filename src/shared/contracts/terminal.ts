@@ -114,6 +114,8 @@ export interface CodingNsTerminalEnvironment {
   readonly cwd: string
   /** DSH Workspace Registry 的稳定身份；缺失时 Client 仅使用会话级兼容键。 */
   readonly workspaceId?: string
+  /** Host 运行平台；旧版 Host 未返回时 Client 使用兼容默认显示。 */
+  readonly platform?: 'darwin' | 'linux' | 'win32' | 'unsupported'
   readonly maxInputBytes: number
   readonly maxCols: number
   readonly maxRows: number
