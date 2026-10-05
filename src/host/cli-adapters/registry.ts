@@ -10,6 +10,8 @@ import type {
   CodingNsCliTurnInput,
   CodingNsCliTeamDiagnostic,
   CodingNsCliSessionUsage,
+  CodingNsCliSkillDescriptor,
+  CodingNsCliSkillListInput,
 } from '../../shared/contracts/cli-adapter.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import { debugInfo } from '../../shared/debug.js'
@@ -245,6 +247,22 @@ export class CodingNsCliAdapterRegistry {
       throw failure.error
     }
     return this.refreshModels(driver)
+  }
+
+  /** 读取当前外部会话绑定 Agent 的 Skill 目录；不把路径或文件内容暴露给 Client。 */
+  async listSkills(sessionId: string, options: Omit<CodingNsCliSkillListInput, 'sessionId'> = {}): Promise<readonly CodingNsCliSkillDescriptor[]> {
+    const session = this.getSession(sessionId)
+    if (session.adapterId === 'dsh') throw new CodingNsRpcError('CODINGNS_CLI_UNSUPPORTED', '当前 DSH Agent 不支持外部 Skill 目录')
+    const driver = this.requireEnabledDriver(session.adapterId)
+    if (typeof driver.listSkills !== 'function') throw new CodingNsRpcError('CODINGNS_CLI_UNSUPPORTED', `Agent 不支持 Skill 目录: ${session.adapterId}`)
+    const storedCwd = this.sessionStore?.get(sessionId)?.cwd
+    const cwd = options.cwd ?? storedCwd
+    return driver.listSkills({
+      sessionId,
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(options.forceReload === true ? { forceReload: true } : {}),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    })
   }
 
   setEnabled(adapterId: CodingNsCliAdapterId, enabled: boolean): boolean {

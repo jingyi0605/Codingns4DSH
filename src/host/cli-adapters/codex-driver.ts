@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliServiceTier, CodingNsAgentPermissionResponse, CodingNsCliSandboxMode, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliServiceTier, CodingNsAgentPermissionResponse, CodingNsCliSandboxMode, CodingNsCliTurnInput, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
@@ -79,6 +79,14 @@ interface CodexSession {
   pendingCompactionEvents: CodingNsAgentEvent[]
   /** 自动压缩的待闭合事务：item/started 开启，item/completed 或 turn 终结时闭合。 */
   autoCompaction: { readonly compactionId: string | undefined; open: boolean } | undefined
+  /** 当前 app-server 进程按工作目录读取到的 Skill 摘要；路径只留在 Host。 */
+  skillsCwd: string | undefined
+  readonly skills: Map<string, CodexSkillEntry>
+}
+
+interface CodexSkillEntry extends CodingNsCliSkillDescriptor {
+  /** Codex `turn/start` 的 skill 输入项需要此路径；绝不返回给 Client。 */
+  readonly path?: string
 }
 
 // 只有 Provider 已明确报告超过窗口时才主动压缩；接近上限仍交给 Codex
@@ -103,7 +111,7 @@ interface PendingCodexPermission {
 
 /** Codex app-server 的 JSON-RPC 驱动，Host 只暴露统一文本流，不暴露线程和 token。 */
 export class CodexAppServerDriver implements CodingNsCliDriver {
-  readonly descriptor = { id: 'codex', name: 'Codex', protocol: 'json-rpc', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions', 'steer'] as const } as const
+  readonly descriptor = { id: 'codex', name: 'Codex', protocol: 'json-rpc', capabilities: ['models', 'skills', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions', 'steer'] as const } as const
   // Codex 一个 Provider turn 可能同时包含多个工具调用。只有 assistant item
   // 切换后才分段，不能在每个工具完成后注入下一 step。
   readonly supportsSegmentedTurns = true
@@ -201,6 +209,27 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         return isRecord(record?.payload) && record.payload.id === id
       },
     })
+  }
+
+  /**
+   * 读取 Codex 当前工作目录的 Skill 目录。
+   *
+   * Skill 路径和内容只在本驱动缓存，Client 只能拿到可展示的摘要；这样既能
+   * 给 DSH `/skills` 提供目录，也不会把任意本地绝对路径变成浏览器输入。
+   */
+  async listSkills(input: CodingNsCliSkillListInput): Promise<readonly CodingNsCliSkillDescriptor[]> {
+    const command = this.cachedBinary ?? (await this.detect()).command
+    if (command === null) return []
+    const sessionInput: CodingNsCliTurnInput = {
+      sessionId: input.sessionId,
+      messages: [],
+      prompt: '',
+      ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    }
+    const session = await this.getSession(sessionInput, command)
+    await this.refreshSkillCatalog(session, input.cwd, input.forceReload === true, input.signal)
+    return [...session.skills.values()].map(({ path: _path, ...descriptor }) => descriptor)
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
@@ -594,13 +623,49 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
 
   /** turn/start 遇到上下文超限时压缩一次并重试，兼容关闭自动压缩的 Codex 配置。 */
   private async startTurn(session: CodexSession, input: CodingNsCliTurnInput): Promise<unknown> {
+    await this.prepareSkillInputs(session, input)
     try {
-      return await session.rpc.request('turn/start', codexTurnStartParams(input, session.threadId), { signal: input.signal, killOnAbort: false })
+      return await session.rpc.request('turn/start', codexTurnStartParams(input, session.threadId, session.skills), { signal: input.signal, killOnAbort: false })
     } catch (error) {
       if (!isContextWindowError(error)) throw error
       await this.compactThread(session, input)
-      return session.rpc.request('turn/start', codexTurnStartParams(input, session.threadId), { signal: input.signal, killOnAbort: false })
+      return session.rpc.request('turn/start', codexTurnStartParams(input, session.threadId, session.skills), { signal: input.signal, killOnAbort: false })
     }
+  }
+
+  /** 只为显式 `$skill-name` 预取目录；没有显式调用时保留 Codex 自己的隐式匹配。 */
+  private async prepareSkillInputs(session: CodexSession, input: CodingNsCliTurnInput): Promise<void> {
+    const names = codexSkillNames(input.prompt)
+    if (names.length === 0) return
+    const cwd = input.cwd ?? process.cwd()
+    if (session.skillsCwd !== cwd) session.skills.clear()
+    if (session.skillsCwd !== cwd || session.skills.size === 0) {
+      try {
+        await this.refreshSkillCatalog(session, cwd, false, input.signal)
+      } catch (error) {
+        // 旧版 app-server 可能还没有 skills/list；保留 `$name` 文本，让 Codex
+        // 继续走它自己的解析路径，而不是把一次能力探测失败变成整轮失败。
+        if (!isMethodNotFound(error)) throw error
+        return
+      }
+    }
+  }
+
+  private async refreshSkillCatalog(
+    session: CodexSession,
+    cwd: string | undefined,
+    forceReload: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const resolvedCwd = cwd ?? process.cwd()
+    const response = await session.rpc.request('skills/list', {
+      cwds: [resolvedCwd],
+      ...(forceReload ? { forceReload: true } : {}),
+    }, { signal, killOnAbort: false })
+    const entries = parseCodexSkills(response, resolvedCwd)
+    session.skills.clear()
+    for (const entry of entries) session.skills.set(entry.name, entry)
+    session.skillsCwd = resolvedCwd
   }
 
   /** thread/compact/start 立即返回，真正完成由 contextCompaction turn 的终态通知表示。 */
@@ -811,9 +876,17 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       suppressedCompactionTurnIds: new Set<string>(),
       pendingCompactionEvents: [] as CodingNsAgentEvent[],
       autoCompaction: undefined as CodexSession['autoCompaction'],
+      skillsCwd: undefined,
+      skills: new Map<string, CodexSkillEntry>(),
     }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, session)
+    // Codex 目录发生变化时丢弃 Host 侧路径缓存；下一次显式调用会重新读取目录。
+    rpc.addNotificationListener((message) => {
+      if (message.method !== 'skills/changed') return
+      session.skills.clear()
+      session.skillsCwd = undefined
+    })
     await rpc.request('initialize', { clientInfo: { name: 'codingns4dsh', version: '0.1.1' }, capabilities: { experimentalApi: true } }, { signal: input.signal, killOnAbort: false })
     rpc.notify('initialized', {})
     rpc.setServerRequestHandler((request) => {
@@ -1585,13 +1658,18 @@ function codexServiceTier(value: string | undefined): string | undefined {
   return tier === undefined || tier === '' ? undefined : tier
 }
 
-function codexTurnStartParams(input: CodingNsCliTurnInput, threadId: string): Record<string, unknown> {
+function codexTurnStartParams(input: CodingNsCliTurnInput, threadId: string, skills: ReadonlyMap<string, CodexSkillEntry>): Record<string, unknown> {
   const cwd = resolve(input.cwd ?? process.cwd())
   const inputBlocks: Record<string, unknown>[] = []
   const attachments = input.attachments ?? []
   if (input.prompt.trim() !== '' || attachments.length === 0) inputBlocks.push({ type: 'text', text: input.prompt })
   for (const attachment of attachments) {
     if (attachment.kind === 'image') inputBlocks.push({ type: 'localImage', path: attachment.path })
+  }
+  for (const name of codexSkillNames(input.prompt)) {
+    const skill = skills.get(name)
+    if (skill?.enabled !== true || skill.path === undefined) continue
+    inputBlocks.push({ type: 'skill', name: skill.name, path: skill.path })
   }
   return {
     threadId,
@@ -1601,6 +1679,64 @@ function codexTurnStartParams(input: CodingNsCliTurnInput, threadId: string): Re
     approvalPolicy: codexApprovalPolicy(input),
     ...(input.effortId ? { effort: input.effortId } : {}),
   }
+}
+
+/** 从用户文本提取 Codex 的显式 Skill mention，保持顺序并去重。 */
+function codexSkillNames(prompt: string): readonly string[] {
+  const names: string[] = []
+  const seen = new Set<string>()
+  for (const match of prompt.matchAll(/(?:^|\s)\$([A-Za-z0-9][A-Za-z0-9._-]*)/gu)) {
+    const name = match[1]?.trim()
+    if (name === undefined || name === '' || seen.has(name)) continue
+    seen.add(name)
+    names.push(name)
+  }
+  return names
+}
+
+/** 兼容不同 Codex app-server 版本的 `skills/list` 响应包装。 */
+function parseCodexSkills(value: unknown, cwd: string): readonly CodexSkillEntry[] {
+  const root = isRecord(value) && Array.isArray(value.data) ? value.data : []
+  const scoped = root
+    .filter(isRecord)
+    .find((item) => item.cwd === cwd)
+  const rawSkills = Array.isArray(scoped?.skills)
+    ? scoped.skills
+    : root.every((item) => isRecord(item) && typeof item.name === 'string')
+      ? root
+      : []
+  const result: CodexSkillEntry[] = []
+  for (const raw of rawSkills) {
+    if (!isRecord(raw)) continue
+    const name = typeof raw.name === 'string' ? raw.name.trim() : ''
+    if (name === '') continue
+    const interfaceInfo = isRecord(raw.interface) ? raw.interface : null
+    const description = firstNonEmptyString(
+      raw.description,
+      interfaceInfo?.shortDescription,
+      interfaceInfo?.displayName,
+      name,
+    ) ?? name
+    const displayName = firstNonEmptyString(interfaceInfo?.displayName)
+    const path = firstNonEmptyString(raw.path, raw.skillPath)
+    if (result.some((item) => item.name === name)) continue
+    result.push({
+      id: name,
+      name,
+      description,
+      enabled: raw.enabled !== false,
+      ...(displayName === undefined ? {} : { displayName }),
+      ...(path === undefined ? {} : { path }),
+    })
+  }
+  return result
+}
+
+function firstNonEmptyString(...values: readonly unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim() !== '') return value.trim()
+  }
+  return undefined
 }
 
 /**

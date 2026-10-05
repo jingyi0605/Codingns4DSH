@@ -137,6 +137,8 @@ export type {
   CodingNsCliModel,
   CodingNsCliModelCatalog,
   CodingNsCliModelGroup,
+  CodingNsCliSkillDescriptor,
+  CodingNsCliSkillListInput,
   CodingNsCliTeamDiagnostic,
   CodingNsAgentPermissionResponse,
   CodingNsCliSessionConfig,

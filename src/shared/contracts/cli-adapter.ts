@@ -19,6 +19,8 @@ export interface CodingNsCliAdapterDescriptor {
 
 export type CodingNsCliCapability =
   | 'models'
+  /** Provider 原生 Agent Skill 目录与显式调用能力。 */
+  | 'skills'
   | 'stream'
   | 'resume'
   /** DSH 0.2 continuable child 生命周期；声明不代表已接入原生 Team。 */
@@ -92,6 +94,23 @@ export interface CodingNsCliModelCatalog {
    * null）。用错来源会让开关显示“Fast 已开启”，而线程实际以标准档运行。
    */
   readonly defaultServiceTier?: string | null
+}
+
+/** Host 向 Client 暴露的 Skill 摘要；路径和 Skill 内容只留在 Host。 */
+export interface CodingNsCliSkillDescriptor {
+  readonly id: string
+  readonly name: string
+  readonly description: string
+  readonly enabled: boolean
+  readonly displayName?: string
+}
+
+/** 驱动读取 Provider Skill 目录时使用的 Host 内部请求。 */
+export interface CodingNsCliSkillListInput {
+  readonly sessionId: string
+  readonly cwd?: string
+  readonly forceReload?: boolean
+  readonly signal?: AbortSignal
 }
 
 /** DSH 0.2 Agent Team 能力诊断；明确区分“未接入”与“可用”。 */

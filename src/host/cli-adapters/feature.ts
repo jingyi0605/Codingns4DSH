@@ -127,6 +127,14 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             const adapterId = readAdapterId(payload)
             return adapterId === 'dsh' ? readDshModelCatalog(context.services.dshContext) : registry.models(adapterId)
           }
+          case 'skills': {
+            const request = readSkillsRequest(payload)
+            const cwd = resolveSessionCwd(context.services.nativeSessions, request.sessionId, null)
+            return registry.listSkills(request.sessionId, {
+              ...(cwd === undefined ? {} : { cwd }),
+              ...(request.forceReload ? { forceReload: true } : {}),
+            })
+          }
           case 'adapter/set': return setAdapterEnabled(context.services.settings, registry, payload)
           case 'session/get': return registry.getSession(readSessionId(payload))
           case 'session/set': return registry.setSession(readSessionId(payload), readSessionConfig(payload))
@@ -666,6 +674,14 @@ function readSessionListOptions(value: unknown): { includeArchived?: boolean; ad
   return {
     ...(adapterId ? { adapterId } : {}),
     ...(includeArchived === true ? { includeArchived: true } : {}),
+  }
+}
+
+function readSkillsRequest(value: unknown): { readonly sessionId: string; readonly forceReload: boolean } {
+  const record = asRecord(value)
+  return {
+    sessionId: readSessionId(value),
+    forceReload: record?.forceReload === true,
   }
 }
 

@@ -5,6 +5,8 @@ import type {
   CodingNsCliModelCatalog,
   CodingNsCliTurnInput,
   CodingNsAgentPermissionResponse,
+  CodingNsCliSkillDescriptor,
+  CodingNsCliSkillListInput,
 } from '../../shared/contracts/cli-adapter.js'
 
 /** 外部 Provider 原始会话的只读存在性状态。 */
@@ -74,6 +76,8 @@ export interface CodingNsCliDriver {
    */
   catalogFingerprint?(): string | undefined
   listModels(): Promise<CodingNsCliModelCatalog>
+  /** 读取 Provider 原生 Skill 目录；未声明 `skills` 能力的驱动不得实现此方法。 */
+  listSkills?(input: CodingNsCliSkillListInput): Promise<readonly CodingNsCliSkillDescriptor[]>
   probeSession?(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult>
   executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent>
   respondPermission?(sessionId: string, response: CodingNsAgentPermissionResponse): Promise<void> | void
