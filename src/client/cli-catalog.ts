@@ -9,17 +9,17 @@ import { debugInfo, debugWarn } from '../shared/debug.js'
 import type { CodingNsRpcClient } from './features/types.js'
 
 /** Client 侧访问 Host CLI 命名空间的统一入口。 */
-export async function callCliRpc<T>(rpc: CodingNsRpcClient, action: string, payload: unknown): Promise<T> {
+export async function callCliRpc<T>(rpc: CodingNsRpcClient, action: string, payload: unknown, signal?: AbortSignal): Promise<T> {
   let response
   try {
     debugInfo('codingns4dsh: cli rpc request', { channel: CODINGNS_RPC_CHANNEL, action })
-    response = await rpc.call(CODINGNS_RPC_CHANNEL, `cli/${action}`, payload)
+    response = await rpc.call(CODINGNS_RPC_CHANNEL, `cli/${action}`, payload, signal)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (!/HTTP (?:404|405)\b/u.test(message)) throw error
     debugWarn('codingns4dsh: cli rpc fallback', { action, error: message })
     try {
-      response = await rpc.call('/api', `codingns/cli/${action}`, payload)
+      response = await rpc.call('/api', `codingns/cli/${action}`, payload, signal)
     } catch (fallbackError) {
       console.error('codingns4dsh: cli rpc fallback failed', { action, error: fallbackError })
       throw fallbackError

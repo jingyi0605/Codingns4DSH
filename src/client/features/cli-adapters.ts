@@ -99,10 +99,15 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
     const uiContext = context.services.uiContext
     if (uiContext !== undefined) {
       const { registerDelegateCommand } = await import('../delegate-command.js')
+      const { registerSkillCommand } = await import('../skill-command.js')
       context.resources.add(registerDelegateCommand(uiContext, {
         rpc: context.services.rpc,
         locale: context.services.locale,
         dshVersion: context.services.dshVersion,
+      }))
+      context.resources.add(registerSkillCommand(uiContext, {
+        rpc: context.services.rpc,
+        locale: context.services.locale,
       }))
     }
     const slots = context.services.slots
