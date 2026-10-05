@@ -51,6 +51,58 @@ test('原生流派发保持方法拆分与帧透传', async () => {
   assert.deepEqual(calls[0], { namespace: 'session', method: 'follow', args: { request: { address: { kind: 'session' } } } })
 })
 
+test('DSH Service 启动稍晚时，原生 unary 调用有限等待后成功', async () => {
+  let attempts = 0
+  const calls: Recorded[] = []
+  const gateway = {
+    async invoke(request: Recorded) {
+      calls.push(request)
+      attempts += 1
+      if (attempts < 3) throw Object.assign(new Error('active Service "sessionController" is unavailable'), { code: 'gateway/service-unavailable' })
+      return { items: [] }
+    },
+    async stream() { return (async function* () {})() },
+  }
+  const dispatch = resolveDshNativeDispatch({ get: (name) => name === 'typertGateway' ? gateway : undefined } as never)
+  assert.ok(dispatch)
+  assert.deepEqual(await dispatch.rpc('session/list', { args: { _request: {} } }), { items: [] })
+  assert.equal(attempts, 3)
+  assert.equal(calls.length, 3)
+})
+
+test('DSH Service 启动稍晚时，原生流式调用有限等待后成功', async () => {
+  let attempts = 0
+  const gateway = {
+    async invoke() { return { items: [] } },
+    async stream(request: Recorded) {
+      attempts += 1
+      if (attempts < 3) throw Object.assign(new Error('active Service "workspaceController" is unavailable'), { code: 'gateway/service-unavailable' })
+      return (async function* () { yield request })()
+    },
+  }
+  const dispatch = resolveDshNativeDispatch({ get: (name) => name === 'typertGateway' ? gateway : undefined } as never)
+  assert.ok(dispatch)
+  const frames: unknown[] = []
+  for await (const frame of await dispatch.stream('workspace/follow', { args: { request: { address: { kind: 'workspace' } } } })) frames.push(frame)
+  assert.equal(attempts, 3)
+  assert.deepEqual(frames, [{ namespace: 'workspace', method: 'follow', args: { request: { address: { kind: 'workspace' } } } }])
+})
+
+test('DSH Gateway 业务错误不触发原生调用重试', async () => {
+  let attempts = 0
+  const gateway = {
+    async invoke() {
+      attempts += 1
+      throw Object.assign(new Error('session not found'), { code: 'session/not-found' })
+    },
+    async stream() { return (async function* () {})() },
+  }
+  const dispatch = resolveDshNativeDispatch({ get: (name) => name === 'typertGateway' ? gateway : undefined } as never)
+  assert.ok(dispatch)
+  await assert.rejects(() => dispatch.rpc('session/list', { args: {} }), (error: unknown) => (error as { code?: string }).code === 'session/not-found')
+  assert.equal(attempts, 1)
+})
+
 test('缺少 Typert Gateway 或方法名非法时给出稳定诊断', async () => {
   assert.equal(resolveDshNativeDispatch(undefined), undefined)
   assert.equal(resolveDshNativeDispatch({ get: () => undefined } as never), undefined)
