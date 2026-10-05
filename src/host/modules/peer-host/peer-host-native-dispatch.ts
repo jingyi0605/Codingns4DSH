@@ -2,6 +2,14 @@ import type { Context } from '@deepseek-ai/cordis'
 import { CodingNsRpcError } from '../../rpc-table.js'
 
 /**
+ * DSH Web 会先开放 Connection，再异步激活部分 Host Service。
+ * PeerHost 的首批列表/订阅请求可能撞在这个窗口内，因此只对明确的
+ * `gateway/service-unavailable` 做有限退避；业务错误必须立即透传。
+ */
+const SERVICE_UNAVAILABLE_RETRY_DELAYS_MS = [50, 100, 200, 400, 800, 1600] as const
+const GATEWAY_SERVICE_UNAVAILABLE = 'gateway/service-unavailable'
+
+/**
  * 目标 Host 的 DSH 原生 Remote 派发入口。
  *
  * DSH 的线上载荷是 `{ args: { <wire 名>: <值> } }`，由 Gateway 按 descriptor 解码成
@@ -35,13 +43,58 @@ export function resolveDshNativeDispatch(ctx: Context | undefined): DshNativeDis
   return {
     async rpc(method, payload, signal) {
       const target = endpoint(method)
-      return await service.invoke!({ ...target, args: readWireArgs(payload), ...(signal === undefined ? {} : { signal }) })
+      const args = readWireArgs(payload)
+      return await invokeWithServiceReadinessRetry(
+        () => service.invoke!({ ...target, args, ...(signal === undefined ? {} : { signal }) }),
+        signal,
+      )
     },
     async stream(method, payload, signal) {
       const target = endpoint(method)
-      return await service.stream!({ ...target, args: readWireArgs(payload), ...(signal === undefined ? {} : { signal }) })
+      const args = readWireArgs(payload)
+      return await invokeWithServiceReadinessRetry(
+        () => Promise.resolve(service.stream!({ ...target, args, ...(signal === undefined ? {} : { signal }) })),
+        signal,
+      )
     },
   }
+}
+
+async function invokeWithServiceReadinessRetry<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      const waitMs = SERVICE_UNAVAILABLE_RETRY_DELAYS_MS[attempt]
+      if (waitMs === undefined || !isGatewayServiceUnavailable(error) || signal?.aborted === true) throw error
+      await waitForRetry(waitMs, signal)
+    }
+  }
+}
+
+function isGatewayServiceUnavailable(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === GATEWAY_SERVICE_UNAVAILABLE
+}
+
+function waitForRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted === true) return Promise.reject(signal.reason ?? new Error('DSH 原生 Remote 请求已取消'))
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+    }
+    const abort = () => {
+      cleanup()
+      reject(signal?.reason ?? new Error('DSH 原生 Remote 请求已取消'))
+    }
+    timer = setTimeout(() => {
+      cleanup()
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted === true) abort()
+  })
 }
 
 /** 解出 DSH Remote 的名字参数；`{args}` 之外的内层调用允许直接给名字参数。 */
