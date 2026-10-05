@@ -1,4 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type {
   CodingNsCliModelCatalog,
   CodingNsAgentEvent,
@@ -18,6 +22,16 @@ import { buildOpenCodeAttachmentParts } from './attachment-utils.js'
 const WINDOWS = process.platform === 'win32'
 const DEFAULT_BINARIES = WINDOWS ? ['opencode.exe', 'opencode'] : ['opencode']
 const DEFAULT_URLS = ['http://127.0.0.1:4096']
+/** OpenCode 首次加载 Provider 目录可能需要数秒，不能用半秒的固定窗口判定启动失败。 */
+const SERVER_START_TIMEOUT_MS = 10_000
+const SERVER_START_POLL_INTERVAL_MS = 100
+/**
+ * OpenCode 的自定义 Provider 可能不返回模型 variants，但 DSH 仍需展示模型的真实思考强度。
+ * DeepSeek V4.1 Flash 的有效档位由上游模型目录定义为 low、high、max。
+ */
+const KNOWN_OPENCODE_EFFORTS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['deepseek-v4.1-flash', ['low', 'high', 'max']],
+])
 
 export interface OpenCodeDriverOptions {
   readonly binaries?: readonly string[]
@@ -79,6 +93,23 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     return emptyCatalog()
   }
 
+  /**
+   * OpenCode 的 Provider 配置在进程外修改，不能依赖 CLI 版本判断目录是否变化。
+   * 只对配置文件内容做摘要，不把 API key 等原文带入指纹。
+   */
+  catalogFingerprint(): string | undefined {
+    const paths = openCodeConfigPaths()
+    const parts: string[] = []
+    for (const path of paths) {
+      try {
+        const value = readFileSync(path, 'utf8')
+        parts.push(`${path}:${createHash('sha256').update(value).digest('hex').slice(0, 16)}`)
+      } catch { /* 配置文件不存在时继续检查其他候选路径。 */ }
+    }
+    if (parts.length === 0) return undefined
+    return createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 16)
+  }
+
   async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
     const providerSessionId = input.providerSessionId?.trim()
     if (!providerSessionId) return { state: 'unknown', reason: '缺少 Provider 会话标识' }
@@ -111,6 +142,8 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const server = await this.ensureServer(false, input.cwd)
     if (server === null) throw new Error('OpenCode server 未运行，请先启动 `opencode serve`')
+    const modelId = await this.resolveModelId(server, input.modelId)
+    const effectiveInput = modelId === input.modelId ? input : { ...input, ...(modelId === undefined ? {} : { modelId }) }
     let sessionId = input.providerSessionId ?? this.sessions.get(input.sessionId)
     if (sessionId !== undefined && !(await this.providerSessionMatchesDirectory(server, sessionId, input.cwd, input.signal))) {
       sessionId = undefined
@@ -121,7 +154,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       sessionId = await this.createSession(server, input)
       this.sessions.set(input.sessionId, sessionId)
     }
-    const contextWindow = await this.resolveModelContextWindow(server, input.modelId)
+    const contextWindow = await this.resolveModelContextWindow(server, modelId)
     if (input.cwd?.trim()) this.sessionCwds.set(sessionId, input.cwd.trim())
     this.interactionTargets.set(input.sessionId, server)
 
@@ -139,7 +172,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     // 先调用 next() 让 SSE 请求真正建立，再发送 prompt，避免首个事件竞态丢失。
     let pendingEvent = eventIterator.next()
     let sendError: unknown = null
-    const send = this.sendPrompt(server, sessionId, input).catch((error: unknown) => {
+    const send = this.sendPrompt(server, sessionId, effectiveInput).catch((error: unknown) => {
       sendError = error
       // message 请求失败时，OpenCode 的全局 SSE 通常不会自行结束；主动中止，
       // 否则调用方会一直等不到错误，只看到没有任何输出。
@@ -335,6 +368,29 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     }
   }
 
+  /**
+   * 页面或 Host 可能暂存旧的 Provider 模型 ID。OpenCode 对失效 ID 有时只发
+   * `stop`/usage 空事件，必须在发消息前把它和实时目录对齐；同一 Provider 只有
+   * 一个模型时可安全迁移，否则保留原值让服务端返回明确错误。
+   */
+  private async resolveModelId(server: string, modelId: string | undefined): Promise<string | undefined> {
+    const parsed = parseOpenCodeModel(modelId)
+    if (parsed === null) return modelId
+    try {
+      const response = await this.http.json<unknown>(`${server}/config/providers`)
+      if (response.status < 200 || response.status >= 300) return modelId
+      const catalog = parseModelCatalog(response.data)
+      const group = catalog.groups.find((item) => item.id === parsed.providerID)
+      if (group === undefined || group.models.some((item) => item.id === modelId)) return modelId
+      if (group.models.length === 1) return group.models[0]!.id
+      const available = group.models.map((item) => item.id).join('、')
+      throw new Error(`OpenCode 模型不可用：${modelId}；Provider ${parsed.providerID} 当前可用模型：${available}`)
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('OpenCode 模型不可用：')) throw error
+      return modelId
+    }
+  }
+
   private async ensureServer(probeOnly: boolean, cwd: string | undefined): Promise<string | null> {
     const workspace = cwd ?? process.cwd()
     const managed = this.managedServers.get(workspace)
@@ -364,12 +420,17 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     child.stdout.on('data', () => undefined)
     child.stderr.on('data', () => undefined)
     this.managedServers.set(cwd, { url, child })
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    const deadline = Date.now() + SERVER_START_TIMEOUT_MS
+    while (Date.now() < deadline) {
       try {
         const health = await this.http.json<unknown>(`${url}/global/health`)
         if (health.status >= 200 && health.status < 300) return url
       } catch { /* 服务尚未监听 */ }
-      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+      // 子进程已经退出时无需把整个启动超时耗尽；正常运行的 OpenCode
+      // 进程在首次加载配置和 Provider 时允许有完整的启动窗口。
+      const childExitCode = (child as unknown as { readonly exitCode?: number | null }).exitCode
+      if (childExitCode !== null && childExitCode !== undefined) break
+      await new Promise<void>((resolve) => setTimeout(resolve, SERVER_START_POLL_INTERVAL_MS))
     }
     this.stopManagedServer(cwd)
     return null
@@ -431,6 +492,19 @@ function parseOpenCodeModel(modelId: string | undefined): { providerID: string; 
   const separator = modelId!.indexOf('/')
   if (separator <= 0 || separator === modelId!.length - 1) return null
   return { providerID: modelId!.slice(0, separator), modelID: modelId!.slice(separator + 1) }
+}
+
+function openCodeConfigPaths(): readonly string[] {
+  const configHome = process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), '.config')
+  const dataHome = process.env.XDG_DATA_HOME?.trim() || join(homedir(), '.local', 'share')
+  const configured = process.env.OPENCODE_CONFIG?.trim()
+  return [...new Set([
+    ...(configured ? [configured] : []),
+    join(configHome, 'opencode', 'opencode.json'),
+    join(configHome, 'opencode', 'opencode.jsonc'),
+    ...(process.platform === 'darwin' ? [join(homedir(), 'Library', 'Application Support', 'opencode', 'opencode.json')] : []),
+    join(dataHome, 'opencode', 'auth.json'),
+  ])]
 }
 
 /** 从 OpenCode provider 配置缓存每个模型的上下文窗口。 */
@@ -742,7 +816,7 @@ function parseModelCatalog(value: unknown): CodingNsCliModelCatalog {
           id: `${providerId}/${id}`,
           name: typeof info?.name === 'string' ? info.name : id,
           ...(typeof info?.description === 'string' ? { description: info.description } : {}),
-          efforts: parseOpenCodeEfforts(info),
+          efforts: parseOpenCodeEfforts(info, `${providerId}/${id}`),
         }
       })
       return items.length > 0 ? [{ id: providerId, name: typeof provider.name === 'string' ? provider.name : providerId, models: items }] : []
@@ -761,7 +835,7 @@ function parseModelCatalog(value: unknown): CodingNsCliModelCatalog {
         id: `${providerId}/${id}`,
         name: typeof info?.name === 'string' ? info.name : id,
         ...(typeof info?.description === 'string' ? { description: info.description } : {}),
-        efforts: parseOpenCodeEfforts(info),
+        efforts: parseOpenCodeEfforts(info, `${providerId}/${id}`),
       }
     })
     if (items.length > 0) groups.push({ id: providerId, name: providerId, models: items })
@@ -769,19 +843,22 @@ function parseModelCatalog(value: unknown): CodingNsCliModelCatalog {
   return { groups, currentModel: null, currentEffort: null }
 }
 
-function parseOpenCodeEfforts(value: Record<string, any> | null): readonly string[] {
+function parseOpenCodeEfforts(value: Record<string, any> | null, modelId?: string): readonly string[] {
   if (value === null) return []
   const variants = Array.isArray(value.variants)
     ? value.variants
     : asRecord(value.variants) !== null ? Object.keys(value.variants as Record<string, unknown>) : []
   const allowed = new Set(['off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
-  return [...new Set(variants.flatMap((variant) => {
+  const parsed = [...new Set(variants.flatMap((variant) => {
     const variantRecord = asRecord(variant)
     const raw = typeof variant === 'string' ? variant : variantRecord !== null ? variantRecord.id ?? variantRecord.value ?? variantRecord.name : null
     if (typeof raw !== 'string') return []
     const normalized = raw.trim().toLowerCase()
     return allowed.has(normalized) ? [normalized === 'none' ? 'off' : normalized] : []
   }))]
+  if (parsed.length > 0 || modelId === undefined) return parsed
+  const modelName = modelId.trim().toLowerCase().split('/').pop() ?? ''
+  return KNOWN_OPENCODE_EFFORTS.get(modelName) ?? []
 }
 
 function asRecord(value: unknown): Record<string, any> | null { return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, any> : null }

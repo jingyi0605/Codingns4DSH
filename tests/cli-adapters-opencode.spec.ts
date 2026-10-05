@@ -46,6 +46,25 @@ test('OpenCode 模型目录保留 variants 思维强度并兼容 providers 数�
   })
 })
 
+test('OpenCode DeepSeek V4.1 Flash 在 Provider 未声明 variants 时使用真实思考强度', async () => {
+  const fetch = async (url: string): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/config/providers')) return new Response(JSON.stringify({
+      providers: {
+        deepseek: {
+          models: {
+            'deepseek-v4.1-flash': { capabilities: { reasoning: false }, variants: {} },
+          },
+        },
+      },
+    }), { status: 200 })
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  const catalog = await driver.listModels()
+  assert.deepEqual(catalog.groups[0]?.models[0]?.efforts, ['low', 'high', 'max'])
+})
+
 test('OpenCode SSE 事件转换为标准文本流并绑定远端会话', async () => {
   const encoder = new TextEncoder()
   const requests: unknown[] = []
@@ -338,4 +357,83 @@ test('OpenCode 未发现外部服务时按工作区托管 serve，并在 dispose
   driver.dispose()
   assert.equal(spawned, true)
   assert.equal(killed, true)
+})
+
+test('OpenCode 托管 serve 延迟就绪时仍能读取模型目录', async () => {
+  let spawned = false
+  let killed = false
+  let healthAttempts = 0
+  const fetch = async (url: string): Promise<Response> => {
+    if (url.endsWith('/global/health')) {
+      if (!spawned) return new Response('{}', { status: 503 })
+      healthAttempts += 1
+      if (healthAttempts < 26) return new Response('{}', { status: 503 })
+      return new Response(JSON.stringify({ version: '1.18.34' }), { status: 200 })
+    }
+    if (url.endsWith('/config/providers')) {
+      return new Response(JSON.stringify({ providers: { openai: { models: { 'gpt-5.6': { name: 'GPT-5.6' } } } } }), { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({
+    fetch,
+    serverUrls: ['http://external-opencode.test'],
+    binaries: ['opencode'],
+    spawnSync: (() => ({ status: 0, stdout: 'opencode 1.18.34', stderr: '' })) as never,
+    spawn: (() => {
+      spawned = true
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      return { stdout, stderr, exitCode: null, kill() { killed = true; stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  assert.deepEqual(await driver.listModels(), {
+    groups: [{ id: 'openai', name: 'openai', models: [{ id: 'openai/gpt-5.6', name: 'GPT-5.6', efforts: [] }] }],
+    currentModel: null,
+    currentEffort: null,
+  })
+  assert.ok(healthAttempts >= 26)
+  await driver.dispose()
+  assert.equal(killed, true)
+})
+
+test('OpenCode 旧模型已不在目录时自动切换到同 Provider 的唯一模型', async () => {
+  const encoder = new TextEncoder()
+  const requests: Array<Record<string, any>> = []
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/config/providers')) {
+      return new Response(JSON.stringify({ providers: { deepseek: { models: { 'deepseek-v4.1-flash': {} } } } }), { status: 200 })
+    }
+    if (url.endsWith('/session') && init.method === 'POST') return new Response(JSON.stringify({ id: 'remap-session' }), { status: 200 })
+    if (url.endsWith('/message')) {
+      requests.push(JSON.parse(String(init.body)) as Record<string, any>)
+      return new Response('{}', { status: 200 })
+    }
+    if (url.endsWith('/event')) {
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"message.updated","properties":{"info":{"id":"assistant-1","role":"assistant"}}}\n\n'))
+        controller.enqueue(encoder.encode('event: message.part.updated\ndata: {"properties":{"part":{"messageID":"assistant-1","id":"text-1","type":"text","text":"已恢复"}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"session.status","status":"idle"}\n\n'))
+        controller.close()
+      } })
+      return new Response(body, { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({
+    sessionId: 'stale-model',
+    messages: [],
+    prompt: '继续测试',
+    modelId: 'deepseek/deepseek-flash',
+  })) chunks.push(chunk)
+  assert.deepEqual(requests[0]?.model, { providerID: 'deepseek', modelID: 'deepseek-v4.1-flash' })
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'remap-session' },
+    { type: 'text-delta', text: '已恢复' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
 })
