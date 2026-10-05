@@ -9,6 +9,7 @@ import type {
 import type { CodingNsCliDriver } from './driver.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { usageChunk } from './rpc-driver-utils.js'
+import { reasoningText, textContent } from './reasoning-content.js'
 import { commandEnvironment, resolveCommandPath, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 
@@ -252,17 +253,24 @@ export function genericEventChunks(value: Record<string, unknown>, cancelled: bo
   const eventType = typeof event.type === 'string' ? event.type.toLowerCase() : eventName || type
   const messageId = firstToolText(event.messageId, event.message_id, event.itemId, event.item_id, value.messageId, value.message_id)
   const withMessageId = messageId === undefined ? {} : { messageId }
+  const explicitReasoning = reasoningText(event)
   if (eventType.includes('think') || eventType.includes('reason')) {
     const delta = isRecord(event.delta) ? event.delta : event
-    const reasoning = typeof event.delta === 'string' ? event.delta : typeof event.text_delta === 'string' ? event.text_delta : typeof delta.text === 'string' ? delta.text : typeof delta.content === 'string' ? delta.content : null
+    const reasoning = explicitReasoning
+      ?? (typeof event.delta === 'string' ? event.delta : typeof event.text_delta === 'string' ? event.text_delta : typeof delta.text === 'string' ? delta.text : typeof delta.content === 'string' ? delta.content : null)
     if (reasoning) chunks.push({ type: 'reasoning-delta', text: reasoning, ...withMessageId })
   } else {
     const delta = isRecord(event.delta) ? event.delta : event
     const text = typeof event.delta === 'string' ? event.delta : typeof event.text_delta === 'string' ? event.text_delta : typeof delta.text === 'string' ? delta.text : typeof delta.content === 'string' ? delta.content : null
+    if (explicitReasoning) chunks.push({ type: 'reasoning-delta', text: explicitReasoning, ...withMessageId })
     if (text !== null && text.length > 0 && !['result', 'final', 'error'].includes(eventType)) chunks.push({ type: 'text-delta', text, ...withMessageId })
     const message = isRecord(event.message) ? event.message : null
-    const messageContent = message === null ? null : typeof message.content === 'string' ? message.content : null
+    const messageContent = message === null ? null : textContent(message.content)
     if (messageContent) chunks.push({ type: 'text-delta', text: messageContent, ...withMessageId })
+    if (message === null && text === null) {
+      const content = textContent(event.content)
+      if (content) chunks.push({ type: 'text-delta', text: content, ...withMessageId })
+    }
   }
   const nestedTool = isToolRecord(event.tool_call)
     ? event.tool_call

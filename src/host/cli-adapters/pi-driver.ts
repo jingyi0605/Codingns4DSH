@@ -10,6 +10,7 @@ import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { commandEnvironment, WINDOWS } from './process-utils.js'
 import { buildPiImages, promptWithAttachmentPaths } from './attachment-utils.js'
+import { reasoningText } from './reasoning-content.js'
 
 export interface PiAgentDriverOptions {
   readonly binaries?: readonly string[]
@@ -330,6 +331,8 @@ function piMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | nu
     || rootType === 'message_start'
     || rootType === 'message_end') return null
   const type = assistantEvent !== null && typeof assistantEvent.type === 'string' ? assistantEvent.type : rootType
+  const reasoning = reasoningText(assistantEvent ?? params)
+  if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning }
   const text = textValue(assistantEvent?.delta ?? params.delta ?? params.text ?? params.content ?? params.message)
   if (type.includes('text_delta') || type === 'text-delta' || type === 'assistant_message_event' && text) return text ? { type: 'text-delta', text } : null
   if (type.includes('thinking') || type.includes('reasoning')) return text ? { type: 'reasoning-delta', text } : null

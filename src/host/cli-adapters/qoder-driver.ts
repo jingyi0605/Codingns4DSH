@@ -16,6 +16,7 @@ import { buildAcpPromptBlocks } from './attachment-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 import { isRecord, usageChunk } from './rpc-driver-utils.js'
 import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { reasoningText } from './reasoning-content.js'
 
 /** Qoder 的两个发行身份共用协议和驱动，只在这里保存产品差异。 */
 export type QoderCliVariant = 'qoder' | 'qoder-cn'
@@ -508,6 +509,8 @@ function qoderAcpMessageToChunk(
   const update = isRecord(params.update) ? params.update : params
   const rawType = firstToolText(update.sessionUpdate, update.type, message.method) ?? ''
   const type = rawType.toLowerCase()
+  const reasoning = reasoningText(update)
+  if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning, messageId: qoderMessageId(update) ?? `qoder-assistant-${input.sessionId}-${assistantMessageSegment}` }
   const text = acpText(update.delta ?? update.text ?? update.content ?? update.message ?? update.detail)
   if (type.includes('request_permission') || type.includes('permission')) {
     const requestId = permissionRequestId(message)

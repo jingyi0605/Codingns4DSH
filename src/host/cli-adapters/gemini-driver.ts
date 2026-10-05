@@ -11,6 +11,7 @@ import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks, promptWithAttachmentPaths } from './attachment-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
+import { reasoningText } from './reasoning-content.js'
 
 /** Gemini 官方 ACP 优先；不支持 ACP 的旧 CLI 自动回退 headless stream-json。 */
 export class GeminiCliDriver extends StandardStreamDriver {
@@ -316,6 +317,8 @@ function geminiAcpMessageToChunk(message: Record<string, any>): CodingNsAgentEve
   const update = isRecord(params.update) ? params.update : params
   const method = typeof message.method === 'string' ? message.method.toLowerCase() : ''
   const type = typeof update.sessionUpdate === 'string' ? update.sessionUpdate.toLowerCase() : typeof update.type === 'string' ? update.type.toLowerCase() : ''
+  const reasoning = reasoningText(update)
+  if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning }
   const text = acpText(update.delta ?? update.text ?? update.content ?? update.message)
   if (method.includes('permission') || type.includes('permission')) {
     const requestId = interactionRequestId(message)

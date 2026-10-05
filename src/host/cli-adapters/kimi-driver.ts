@@ -11,6 +11,7 @@ import { promptWithAttachmentPaths, buildKimiAttachments } from './attachment-ut
 import { isQuestionEvent, readAgentQuestions } from './interaction-events.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { commandEnvironment, terminateChildProcess } from './process-utils.js'
+import { reasoningText, textContent } from './reasoning-content.js'
 
 interface KimiPendingInteraction {
   readonly rpcId: string | number
@@ -267,12 +268,10 @@ function mapKimiWireEvent(value: Record<string, unknown>, cancelled: boolean): {
   const permissionId = firstString(event, value, ['request_id', 'requestId', 'permission_id'])
   if (permissionId && type.includes('permission')) chunks.push({ type: 'permission-request', requestId: permissionId, kind: firstString(event, value, ['kind', 'type']) ?? 'unknown' })
   const contentType = typeof event.type === 'string' ? event.type.toLowerCase() : ''
-  const text = isQuestionEvent(type) || type.includes('permission')
-    ? ''
-    : type === 'contentpart' && contentType === 'think'
-      ? firstString(event, event, ['think'])
-      : textFrom(event)
-  if (text) {
+  const reasoning = isQuestionEvent(type) || type.includes('permission') ? null : reasoningText(event)
+  const text = isQuestionEvent(type) || type.includes('permission') ? null : textContent(event) ?? textFrom(event)
+  if (reasoning) chunks.push({ type: 'reasoning-delta', text: reasoning })
+  if (text && !reasoning) {
     if (type.includes('think') || type.includes('reason') || contentType === 'think') chunks.push({ type: 'reasoning-delta', text })
     else if (!type.includes('result') && !type.includes('complete') && !type.includes('done')) chunks.push({ type: 'text-delta', text })
   }

@@ -10,6 +10,7 @@ import { isRegularFile, probeStoredSession, resolveSessionDirectory } from './se
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks } from './attachment-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
+import { reasoningText } from './reasoning-content.js'
 
 export interface GrokBuildDriverOptions {
   readonly binaries?: readonly string[]
@@ -286,6 +287,8 @@ function acpMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | n
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
   const type = typeof update.sessionUpdate === 'string' ? update.sessionUpdate : typeof update.type === 'string' ? update.type : typeof message.method === 'string' ? message.method : ''
+  const reasoning = reasoningText(update)
+  if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning }
   const text = textValue(update.delta ?? update.text ?? update.content ?? update.message ?? update.detail)
   if (type.includes('permission')) {
     const requestId = permissionRequestId(message) ?? (typeof update.requestId === 'string' ? update.requestId : typeof update.id === 'string' ? update.id : null)

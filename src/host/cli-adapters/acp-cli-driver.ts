@@ -12,6 +12,7 @@ import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } 
 import { buildAcpPromptBlocks } from './attachment-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
+import { reasoningText } from './reasoning-content.js'
 
 export interface AcpCliDriverOptions {
   readonly binaries?: readonly string[]
@@ -216,6 +217,8 @@ function acpMessageToChunk(message: JsonRpcMessage, cancelled: boolean): CodingN
   const content = isRecord(update.content) ? update.content : undefined
   const messageId = firstToolText(update.messageId, update.message_id, update.itemId, update.item_id, content?.messageId, content?.message_id, content?.id)
   const withMessageId = messageId === undefined ? {} : { messageId }
+  const reasoning = reasoningText(update)
+  if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning, ...withMessageId }
   if (type.includes('thought') || type.includes('reason')) return text === null ? null : { type: 'reasoning-delta', text, ...withMessageId }
   if (type.includes('agent_message') || type.includes('message_chunk') || type === 'text' || type.includes('text_delta')) return text === null ? null : { type: 'text-delta', text, ...withMessageId }
   if (type.includes('tool') || type.includes('command')) return toolChunk(update, type)

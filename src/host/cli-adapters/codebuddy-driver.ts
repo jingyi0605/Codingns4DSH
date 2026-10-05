@@ -21,6 +21,7 @@ import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks } from './attachment-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
+import { reasoningText } from './reasoning-content.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 import { commandEnvironment, resolveCommandPath, WINDOWS } from './process-utils.js'
 import { isProviderDefaultModel } from './model-catalog.js'
@@ -1414,6 +1415,8 @@ function codeBuddyMessageToChunk(message: JsonRpcMessage): CodingNsAgentEvent | 
   const method = typeof message.method === 'string' ? message.method.toLowerCase() : ''
   const rawType = update.sessionUpdate ?? update.type ?? method
   const type = typeof rawType === 'string' ? rawType.toLowerCase() : ''
+  const reasoning = reasoningText(update)
+  if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning }
   const text = acpText(update.delta ?? update.text ?? update.content ?? update.message)
   const content = isRecord(update.content) ? update.content : undefined
   const messageId = firstToolText(update.messageId, update.message_id, update.itemId, update.item_id, content?.messageId, content?.message_id, content?.id)

@@ -9,6 +9,7 @@ import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
 import { WINDOWS, commandEnvironment } from './process-utils.js'
+import { reasoningText } from './reasoning-content.js'
 import { claudeBridgeArgs } from '../cli-bridge/injections.js'
 
 export class ClaudeCodeDriver extends StandardStreamDriver {
@@ -122,6 +123,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   protected parseEvent(value: Record<string, unknown>, input: CodingNsCliTurnInput): readonly CodingNsAgentEvent[] {
     const event = value.type === 'stream_event' && typeof value.event === 'object' && value.event !== null ? value.event as Record<string, unknown> : value
     const delta = typeof event.delta === 'object' && event.delta !== null ? event.delta as Record<string, unknown> : null
+    if (event.type === 'content_block_delta' && delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') return [{ type: 'reasoning-delta', text: delta.thinking }]
     if (event.type === 'content_block_delta' && delta?.type === 'text_delta' && typeof delta.text === 'string') return [{ type: 'text-delta', text: delta.text }]
     if (event.type === 'content_block_start' && isToolRecord(event.content_block) && event.content_block.type === 'tool_use') {
       const tool = claudeToolUse(event.content_block)
@@ -141,6 +143,8 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
           const tool = claudeToolResult(item)
           return tool === null ? [] : [tool]
         }
+        const reasoning = reasoningText(item)
+        if (reasoning !== null) return [{ type: 'reasoning-delta', text: reasoning }]
         return typeof item.text === 'string' ? [{ type: 'text-delta', text: item.text }] : []
       })
     }
