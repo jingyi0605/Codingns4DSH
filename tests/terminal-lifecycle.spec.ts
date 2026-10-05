@@ -16,6 +16,9 @@ class FakeRuntimeAdapter {
   resizes = []
   terminated = []
   detached = []
+  /** capture-pane -J 合并后的历史文本。 */
+  history = ''
+  captures = []
   nextAttachment = 0
 
   async create({ session }) {
@@ -32,6 +35,11 @@ class FakeRuntimeAdapter {
     const attachmentId = `runtime-attach-${++this.nextAttachment}`
     this.attachments.set(attachmentId, input)
     return { attachmentId, identity: this.identity(input.session) }
+  }
+
+  async captureHistory(session, lines) {
+    this.captures.push([session.runtimeSessionKey, lines])
+    return this.history
   }
 
   async write({ attachmentId, data }) {
@@ -89,6 +97,18 @@ async function setup() {
     rows: 24,
   })
   return { adapter, service, identity: { ...scope, terminalId: 'terminal-a' } }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('等待条件超时')
+    await sleep(20)
+  }
 }
 
 test('follow 第一帧始终是 snapshot，后续输出序号连续', async () => {
@@ -163,6 +183,49 @@ test('相同终端尺寸不会重复触发 backend resize', async () => {
   await service.resize(identity, 'browser-a', 80, 24)
   await service.resize(identity, 'browser-a', 100, 30)
   assert.deepEqual(adapter.resizes, [[100, 30]])
+
+  controller.abort()
+  await iterator.return()
+})
+
+test('窗口列宽变化后重放合并后的历史，客户端才能按新宽度重排', async () => {
+  const { adapter, service, identity } = await setup()
+  adapter.history = '历史行一\n历史行二\n历史行三'
+  const controller = new AbortController()
+  const iterator = service.follow({ identity, attachmentId: 'browser-a', generation: 'generation-a', signal: controller.signal })[Symbol.asyncIterator]()
+  assert.equal((await iterator.next()).value.type, 'snapshot')
+  assert.equal((await iterator.next()).value.type, 'state')
+
+  const capturesBefore = adapter.captures.length
+  await service.resize(identity, 'browser-a', 100, 30)
+  assert.equal((await iterator.next()).value.type, 'state')
+  // tmux 不会重排已输出的历史；必须重新抓取 -J 合并后的长逻辑行并作为
+  // snapshot 重放，浏览器端 xterm 才有机会按新列宽整体重排。
+  await waitFor(() => adapter.captures.length > capturesBefore)
+  const reflow = await iterator.next()
+  assert.equal(reflow.value.type, 'snapshot')
+  assert.equal(reflow.value.screen, '历史行一\r\n历史行二\r\n历史行三')
+
+  controller.abort()
+  await iterator.return()
+})
+
+test('只有列宽变化触发历史重放，行高变化（软键盘动画）不重放', async () => {
+  const { adapter, service, identity } = await setup()
+  const controller = new AbortController()
+  const iterator = service.follow({ identity, attachmentId: 'browser-a', generation: 'generation-a', signal: controller.signal })[Symbol.asyncIterator]()
+  await iterator.next()
+  await iterator.next()
+
+  const capturesBefore = adapter.captures.length
+  await service.resize(identity, 'browser-a', 80, 40)
+  assert.equal((await iterator.next()).value.type, 'state')
+  await sleep(450)
+  assert.equal(adapter.captures.length, capturesBefore, '行高变化不应触发历史重放')
+
+  await service.resize(identity, 'browser-a', 100, 40)
+  assert.equal((await iterator.next()).value.type, 'state')
+  await waitFor(() => adapter.captures.length > capturesBefore)
 
   controller.abort()
   await iterator.return()

@@ -84,6 +84,7 @@ export class CodingNsTerminalService {
   private readonly followers = new Map<string, Set<ActiveFollower>>()
   private readonly operations = new Map<string, Promise<unknown>>()
   private readonly exitCallbacks = new Map<string, (exitCode: number | null, kind: TerminalExitKind) => void | Promise<void>>()
+  private readonly historyReflowTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private initialized = false
 
   constructor(
@@ -477,9 +478,57 @@ export class CodingNsTerminalService {
     const record = this.requireAvailable(identity)
     // ResizeObserver 可能重复报告同一尺寸；相同尺寸不应再次向 PTY 发送 SIGWINCH。
     if (record.cols === cols && record.rows === rows) return
+    const widthChanged = record.cols !== cols
     await this.runtimes.resize(controller.subscriptionId, cols, rows)
     await this.update(record, { cols, rows })
     this.broadcastState(identity)
+    if (widthChanged) this.scheduleHistoryReflow(identity)
+  }
+
+  /**
+   * tmux 只会按新宽度渲染后续输出，不会重排已有内容；浏览器端 xterm 收到的
+   * tmux 重绘行是逐行光栅化的，也不带可重排的换行标记。窗口宽度变化后必须
+   * 重新用 capture-pane -J 把历史合并成长逻辑行再重放，客户端才会按新列宽
+   * 整体重排，否则历史行永远停在旧宽度、右侧留白。
+   */
+  private scheduleHistoryReflow(identity: TerminalRecordIdentity): void {
+    const key = identityKey(identity)
+    const pending = this.historyReflowTimers.get(key)
+    if (pending !== undefined) clearTimeout(pending)
+    const timer = setTimeout(() => {
+      this.historyReflowTimers.delete(key)
+      void this.reflowHistory(identity)
+    }, HISTORY_REFLOW_DEBOUNCE_MS)
+    this.historyReflowTimers.set(key, timer)
+  }
+
+  private async reflowHistory(identity: TerminalRecordIdentity): Promise<void> {
+    const key = identityKey(identity)
+    if ((this.followers.get(key)?.size ?? 0) === 0) return
+    const record = this.store.get(identity)
+    if (record === undefined || record.state !== 'running') return
+    try {
+      const captured = await this.runtimes.captureHistory(record, RESIDENT_HISTORY_LINES)
+      if (captured === undefined) return
+      const current = this.store.get(identity)
+      if (current === undefined || current.state !== 'running') return
+      const resident = this.residents.get(key)
+      if (resident !== undefined) resident.replay = captured
+      for (const follower of this.followers.get(key) ?? []) {
+        follower.queue.pushSnapshot(this.info(current, follower.attachmentId), captured)
+      }
+      debugInfo('codingns4dsh: terminal history reflow snapshot pushed', {
+        identity,
+        cols: current.cols,
+        historyLines: countLines(captured),
+        historyCharacters: captured.length,
+      })
+    } catch (error) {
+      debugWarn('codingns4dsh: terminal history reflow failed', {
+        identity,
+        error: errorMessage(error),
+      })
+    }
   }
 
   async rename(identity: TerminalRecordIdentity, title: string): Promise<void> {
@@ -538,6 +587,8 @@ export class CodingNsTerminalService {
 
   /** 插件卸载只断开 attach，持久 backend 必须继续运行。 */
   async dispose(): Promise<void> {
+    for (const timer of this.historyReflowTimers.values()) clearTimeout(timer)
+    this.historyReflowTimers.clear()
     for (const followers of this.followers.values()) for (const follower of followers) follower.queue.finish()
     this.followers.clear()
     this.controllers.clear()
@@ -1068,6 +1119,8 @@ const MAX_RESIDENT_REPLAY_CHARACTERS = 1024 * 1024
 const RESIDENT_BOOTSTRAP_WINDOW_MS = 100
 /** 初次恢复读取的 tmux 历史行数；xterm 会再按自身 scrollback 上限裁剪。 */
 const RESIDENT_HISTORY_LINES = 2000
+/** 拖拽窗口/键盘动画会连续触发 resize；合并成一次历史重放，避免反复重放整块历史。 */
+const HISTORY_REFLOW_DEBOUNCE_MS = 300
 
 function countLines(value: string): number {
   if (value.length === 0) return 0
