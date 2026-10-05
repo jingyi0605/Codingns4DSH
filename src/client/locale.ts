@@ -653,7 +653,7 @@ const CORE_ZH: Record<string, string> = {
   'subscriptionUsage.cancel': '取消',
   'subscriptionUsage.save': '保存',
   'subscriptionUsage.saved': '用量查询设置已保存',
-  'workspace.showQuickPhrases': '显示快捷会话',
+  'workspace.showQuickPhrases': '在对话框中显示快捷短语组件',
   'workspace.quickPhrasesDescription': '在 Codingns4DSH 内本地保存可复用的会话指令，并将快捷会话按钮显示在输入工具区。',
   'workspace.rememberConversationRightbarRatio': '记忆对话窗口与右侧栏的宽度比例',
   'workspace.rememberConversationRightbarRatioDescription': '刷新后恢复右侧栏比例；比例仅保存在当前浏览器中。',
