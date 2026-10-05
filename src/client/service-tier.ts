@@ -77,6 +77,21 @@ export function activeServiceTier(
 }
 
 /**
+ * 目录是否「声明了档位、但未确认官方订阅」——即档位开关缺席的原因可能只是判定过期。
+ *
+ * 这一状态有两种来源，界面上无法区分：
+ * - 真实第三方中转/纯 API key：档位确实不会生效，应当持续不展示；
+ * - 判定过期：用户在外部工具（cc-switch 等）里刚切回官方订阅，而页面还持有旧目录。
+ *
+ * 因此它只用来决定「值得再探测一次」，不能用来决定「应该展示开关」。重新探测由
+ * Host 的 Provider 配置指纹保证廉价：配置没变时 Host 直接返回缓存，不会重启 CLI。
+ */
+export function needsServiceTierRevalidation(catalog: CodingNsCliModelCatalog | null): boolean {
+  if (catalog === null || catalog.officialSubscription === true) return false
+  return catalog.groups.some((group) => group.models.some((model) => modelServiceTiers(model).length > 0))
+}
+
+/**
  * 在“只改了其它字段”的部分更新里保留当前档位选择。
  *
  * 这是本功能最容易被写坏的地方：档位与模型/思考等级共用同一份会话配置，任何一次

@@ -139,3 +139,100 @@ test('移除外部会话调用 Host 的原生归档链路', async () => {
     payload: { sessionId: 'dsh-session-1' },
   }])
 })
+
+test('Client 目录缓存超过 TTL 后重新读取，供应商切换不再被永久缓存', async () => {
+  const {
+    MODEL_CATALOG_CACHE_TTL_MS,
+    invalidateModelCatalogCache,
+    shouldRevalidateModelCatalog,
+  } = await import('../data/build/dist/client/model-catalog-cache.js')
+  let calls = 0
+  const rpc = {
+    call: async (_channel: string, endpoint: string) => {
+      assert.equal(endpoint, 'cli/models')
+      calls += 1
+      return {
+        ok: true as const,
+        value: {
+          groups: [{ id: 'codex', name: 'Codex', models: [{ id: 'gpt-6.1-sol', name: 'GPT', efforts: ['high'], serviceTiers: [{ id: 'priority', name: 'Fast' }] }] }],
+          currentModel: null,
+          currentEffort: null,
+          // 第一次是第三方配置，第二次已切回官方订阅。
+          officialSubscription: calls > 1,
+          defaultServiceTier: 'default',
+        },
+      }
+    },
+  }
+
+  const before = await loadModelCatalog(rpc, 'codex', 'session-tier')
+  assert.equal(before.officialSubscription, false)
+  assert.equal(calls, 1)
+
+  // TTL 内命中缓存：不重复请求。
+  const cachedAgain = await loadModelCatalog(rpc, 'codex', 'session-tier')
+  assert.equal(cachedAgain, before)
+  assert.equal(calls, 1)
+
+  // 显式失效（选择器在“判定可能过期”时会调用它）后必须重新请求。
+  invalidateModelCatalogCache(rpc, 'codex')
+  const after = await loadModelCatalog(rpc, 'codex', 'session-tier')
+  assert.equal(calls, 2)
+  assert.equal(after.officialSubscription, true)
+  assert.equal(canSelectServiceTierForTest(after), true)
+
+  // 复检节流：同一适配器首次允许复检，间隔内再次请求必须被挡下，
+  // 避免真实第三方接入在每次挂载时反复探测。
+  assert.equal(shouldRevalidateModelCatalog(rpc, 'codex', true), true)
+  assert.equal(shouldRevalidateModelCatalog(rpc, 'codex', true), false)
+  // 不需要复检时一律返回 false，且不占用节流窗口。
+  assert.equal(shouldRevalidateModelCatalog(rpc, 'codex', false), false)
+  // 节流按适配器隔离：另一个适配器不受影响。
+  assert.equal(shouldRevalidateModelCatalog(rpc, 'claude-code', true), true)
+  assert.equal(MODEL_CATALOG_CACHE_TTL_MS, 60_000)
+})
+
+function canSelectServiceTierForTest(catalog: { officialSubscription?: boolean, groups: readonly { models: readonly { serviceTiers?: readonly unknown[] }[] }[] }): boolean {
+  return catalog.officialSubscription === true
+    && catalog.groups.some((group) => group.models.some((model) => (model.serviceTiers?.length ?? 0) > 0))
+}
+
+test('复检节流不会吞掉主流程的失效判定（轮询与主流程共用同一窗口）', async () => {
+  const {
+    invalidateModelCatalogCache,
+    shouldRevalidateModelCatalog,
+  } = await import('../data/build/dist/client/model-catalog-cache.js')
+  const { needsServiceTierRevalidation } = await import('../data/build/dist/client/service-tier.js')
+  let calls = 0
+  const rpc = {
+    call: async () => {
+      calls += 1
+      return {
+        ok: true as const,
+        value: {
+          groups: [{ id: 'codex', name: 'Codex', models: [{ id: 'm', name: 'M', efforts: [], serviceTiers: [{ id: 'priority', name: 'Fast' }] }] }],
+          currentModel: null,
+          currentEffort: null,
+          // 第一次第三方、第二次官方订阅。
+          officialSubscription: calls > 1,
+          defaultServiceTier: 'default',
+        },
+      }
+    },
+  }
+
+  const first = await loadModelCatalog(rpc, 'codex', 'session-poll')
+  assert.equal(first.officialSubscription, false)
+  assert.equal(needsServiceTierRevalidation(first), true)
+
+  // 主流程（选择器 effect）必须能拿到这一轮复检许可，否则轮询触发重跑后
+  // 仍会复用旧缓存，用户切回官方订阅后开关永远不出现。
+  assert.equal(shouldRevalidateModelCatalog(rpc, 'codex', needsServiceTierRevalidation(first)), true)
+  invalidateModelCatalogCache(rpc, 'codex')
+  const healed = await loadModelCatalog(rpc, 'codex', 'session-poll')
+  assert.equal(healed.officialSubscription, true)
+
+  // 恢复后不再需要复检，也不应继续占用窗口。
+  assert.equal(needsServiceTierRevalidation(healed), false)
+  assert.equal(shouldRevalidateModelCatalog(rpc, 'codex', needsServiceTierRevalidation(healed)), false)
+})

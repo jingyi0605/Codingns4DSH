@@ -7,6 +7,7 @@ import {
   effectiveServiceTierId,
   isServiceTierEnabled,
   modelServiceTiers,
+  needsServiceTierRevalidation,
   toggledServiceTierId,
   STANDARD_SERVICE_TIER_ID,
 } from '../data/build/dist/client/service-tier.js'
@@ -100,3 +101,18 @@ test('切到不支持该档位的模型时显式回落标准速度，而不是�
   // 模型未知（目录还没回来）时保守回落，避免向未知模型下发档位。
   assert.equal(carriedServiceTierId(undefined, 'priority'), STANDARD_SERVICE_TIER_ID)
 })
+
+test('未确认官方订阅但目录声明了档位时，判定值得复检', () => {
+  const withTier = model({ serviceTiers: [fastTier] })
+  // 第三方接入的典型形态：模型声明档位、账号判定为 false。
+  assert.equal(needsServiceTierRevalidation(catalog({ officialSubscription: false, groups: [{ id: 'codex', name: 'Codex', models: [withTier] }] })), true)
+  // 未确认（字段缺省）同样是“可能过期”，需要复检。
+  assert.equal(needsServiceTierRevalidation(catalog({ groups: [{ id: 'codex', name: 'Codex', models: [withTier] }] })), true)
+  // 已确认官方订阅时无需复检：开关该显示就显示。
+  assert.equal(needsServiceTierRevalidation(catalog({ officialSubscription: true, groups: [{ id: 'codex', name: 'Codex', models: [withTier] }] })), false)
+  // 目录没有任何档位声明：无论订阅判定如何都不必复检。
+  assert.equal(needsServiceTierRevalidation(catalog({ officialSubscription: false, groups: [{ id: 'x', name: 'X', models: [model()] }] })), false)
+  assert.equal(needsServiceTierRevalidation(catalog({ officialSubscription: false })), false)
+  assert.equal(needsServiceTierRevalidation(null), false)
+})
+
