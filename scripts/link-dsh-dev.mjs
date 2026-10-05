@@ -6,7 +6,20 @@ import { fileURLToPath } from 'node:url'
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packageManifest = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8'))
 const profileName = process.argv[2] ?? 'stage0'
-const configuredDshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+const explicitDshHome = process.env.DSH_HOME?.trim()
+const defaultDshHome = profileName === 'stage0'
+  ? process.env.DSH_STAGE0_HOME?.trim() || join(homedir(), '.dsh-stage0-020')
+  : join(homedir(), '.dsh')
+
+// stage0 是源码开发入口，不能把仓库链接进 Desktop 共用的 ~/.dsh。
+// 允许测试或其他隔离环境传入自定义 DSH_HOME，但明确拒绝 Desktop 默认根，
+// 这样即使用户忘记设置 DSH_STAGE0_HOME，也不会污染桌面 Profile。
+if (profileName === 'stage0' && explicitDshHome !== undefined &&
+  resolve(explicitDshHome) === resolve(join(homedir(), '.dsh'))) {
+  throw new Error('拒绝把 stage0 源码链接到 Desktop DSH_HOME（~/.dsh）；请使用 DSH_STAGE0_HOME 或 ~/.dsh-stage0-020')
+}
+
+const configuredDshHome = explicitDshHome || defaultDshHome
 const profileRoot = join(configuredDshHome, 'profiles', profileName)
 const target = join(profileRoot, 'node_modules', packageManifest.name)
 
@@ -17,6 +30,7 @@ if (!existsSync(join(profileRoot, 'package.json'))) {
   throw new Error(`找不到 DSH Profile: ${profileRoot}`)
 }
 if (!existsSync(join(profileRoot, 'node_modules'))) mkdirSync(join(profileRoot, 'node_modules'), { recursive: true })
+if (!existsSync(dirname(target))) mkdirSync(dirname(target), { recursive: true })
 
 if (existsSync(target)) {
   const current = lstatSync(target).isSymbolicLink() ? realpathSync(target) : undefined

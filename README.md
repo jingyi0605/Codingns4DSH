@@ -264,16 +264,25 @@ dsh plugin --profile web add @jingyi0605/codingns4dsh@<版本>
 dsh plugin --profile web remove @jingyi0605/codingns4dsh
 ```
 
-**从源码安装**（npm 不可用，或直接运行本地检出）：
+**从源码安装到 Stage0**（仅用于开发验证）：
 
 ```bash
 git clone https://github.com/jingyi0605/Codingns4DSH.git && cd Codingns4DSH
 pnpm install && pnpm build
-dsh plugin --profile web add "$PWD"                # 或 npm pack 后 add ./jingyi0605-codingns4dsh-0.2.1-beta.1.tgz
-dsh web
+DSH_STAGE0_HOME="$HOME/.dsh-stage0-020" pnpm dev:link stage0
+pnpm dsh:stage0
 ```
 
-安装目录是链接依赖，改完源码后重新 `pnpm build`（或保持 `pnpm dev:watch`）并重启 DSH。
+源码链接只允许进入专用的 Stage0 Profile。不要对 Desktop Profile 执行
+`dsh plugin ... add "$PWD"`，也不要把 `pnpm pack` 产生的 `.tgz` 安装到 Desktop；
+这两种方式都会把开发中的代码带进桌面端。需要在临时目录回放安装包时，使用
+`pnpm replay:dsh-install ./<包文件>.tgz`，脚本会创建一次性的 `DSH_HOME`，不会接触
+`~/.dsh` 或 `~/.dsh-stage0-020`。
+
+Desktop 只通过 GUI 插件页安装已发布的 registry 版本，并固定版本号；Desktop 的
+`~/.dsh/profiles/desktop` 与 Stage0 的 `~/.dsh-stage0-020/profiles/stage0` 不共享
+插件目录、设置目录、会话目录或开发链接。修改源码后，在 Stage0 中重新 `pnpm build`
+（或保持 `pnpm dev:watch`）并重启 Stage0 DSH。
 
 **磁盘状态**：设置保存在 `$DSH_HOME/settings.yaml`（默认 `~/.dsh/settings.yaml`）的 `codingns:` 命名空间。
 
@@ -323,7 +332,11 @@ pnpm typecheck
 pnpm run capability:check   # DSH 能力注册表退休检查
 ```
 
-开发循环：`pnpm dev:watch` 配合 `pnpm dev:link <profile>`，然后重启 DSH。版本源是 `version.json`（`version:set-plugin` / `version:set-dsh`，由 `version:check` 守卫）。
+开发循环：`pnpm dev:watch` 配合
+`DSH_STAGE0_HOME="$HOME/.dsh-stage0-020" pnpm dev:link stage0`，然后只重启 Stage0 DSH。
+`pnpm dev:link stage0` 在未设置变量时也会默认使用专用 Stage0 HOME；若显式把
+`DSH_HOME` 指向 `~/.dsh`，脚本会拒绝执行。版本源是 `version.json`
+（`version:set-plugin` / `version:set-dsh`，由 `version:check` 守卫）。
 
 目录：`src/host`（Host 层）、`src/client`（浏览器层）、`src/dsh-capabilities`（DSH 能力注册与版本路由）、`src/shared/contracts`、`src/transport`（隧道与 WebRTC）、`src/features`（模块注册表）、`tests/`、`specs/`、`docs/`、`data/build`（已忽略）。
 
