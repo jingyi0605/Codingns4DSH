@@ -96,8 +96,8 @@ export function CodingNsXtermView({
     terminalRef.current = terminal
     fitRef.current = fit
     lastRevision.current = 0
-    // xterm 自己拥有 scrollable viewport。滚轮回调只能决定是否交给 xterm 继续处理：
-    // 有历史时返回 true，交给原生 viewport；没有历史时返回 false，避免被解释为
+    // xterm 自己拥有自绘 scrollable viewport。滚轮回调只能决定是否交给 xterm 继续处理：
+    // 有历史时返回 true，交给 xterm 的滚动容器；没有历史时返回 false，避免被解释为
     // shell 的上下方向键（例如切换历史命令）。
     const wheel = (event: WheelEvent): boolean => {
       if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return false
@@ -261,12 +261,36 @@ export function CodingNsXtermView({
     }
     const xtermRoot = terminal.element
     if (xtermRoot === undefined) return
-    const viewport = xtermRoot?.querySelector<HTMLElement>('.xterm-viewport')
-    const scrollTarget = viewport ?? xtermRoot ?? container
+    // xterm 6 使用 .xterm-scrollable-element 的自绘滚动条；.xterm-viewport
+    // 只是兼容节点，不能再把触摸事件和可用宽度交给它。
+    const scrollTarget = xtermRoot?.querySelector<HTMLElement>('.xterm-scrollable-element') ?? xtermRoot ?? container
     const interactionTarget = xtermRoot ?? container
-    const syncScrollbar = (): void => {
+    let scrollbarHideTimer: number | undefined
+    let lastViewportY = terminal.buffer.active.viewportY
+    const hideScrollbar = (): void => {
+      if (scrollbarHideTimer !== undefined) {
+        window.clearTimeout(scrollbarHideTimer)
+        scrollbarHideTimer = undefined
+      }
+      xtermRoot.dataset.codingnsScrollbar = 'hidden'
+    }
+    const revealScrollbar = (): void => {
+      if (terminal.buffer.active.baseY <= 0) {
+        hideScrollbar()
+        return
+      }
+      xtermRoot.dataset.codingnsScrollbar = 'visible'
+      if (scrollbarHideTimer !== undefined) window.clearTimeout(scrollbarHideTimer)
+      scrollbarHideTimer = window.setTimeout(() => {
+        scrollbarHideTimer = undefined
+        xtermRoot.dataset.codingnsScrollbar = 'hidden'
+      }, TERMINAL_SCROLLBAR_HIDE_DELAY_MS)
+    }
+    const syncScrollbarState = (): void => {
       const hasScrollback = terminal.buffer.active.baseY > 0
       xtermRoot.dataset.codingnsScrollback = hasScrollback ? 'true' : 'false'
+      if (!hasScrollback) hideScrollbar()
+      else if (xtermRoot.dataset.codingnsScrollbar === undefined) xtermRoot.dataset.codingnsScrollbar = 'hidden'
       debugInfo('codingns4dsh: client terminal scrollbar state', {
         terminalId: view.id,
         hasScrollback,
@@ -274,7 +298,7 @@ export function CodingNsXtermView({
         viewportY: terminal.buffer.active.viewportY,
       })
     }
-    syncScrollbar()
+    syncScrollbarState()
     scrollTarget.style.touchAction = 'pan-y'
     scrollTarget.style.overscrollBehavior = 'contain'
     if ('webkitOverflowScrolling' in scrollTarget.style) {
@@ -285,7 +309,10 @@ export function CodingNsXtermView({
     interactionTarget.addEventListener('touchend', touchEnd, { passive: true })
     interactionTarget.addEventListener('touchcancel', touchCancel, { passive: true })
     const scroll = terminal.onScroll((viewportY) => {
-      syncScrollbar()
+      const didScroll = viewportY !== lastViewportY
+      lastViewportY = viewportY
+      syncScrollbarState()
+      if (didScroll) revealScrollbar()
       debugInfo('codingns4dsh: client terminal viewport scroll', {
         terminalId: view.id,
         viewportY,
@@ -306,7 +333,7 @@ export function CodingNsXtermView({
       // 变化永远不会触发历史行重排。view.resize 内部仍会按权限决定是否下发 PTY。
       if (host.clientWidth === 0 || host.clientHeight === 0) return
       fitTerminal(terminal, fit, view)
-      syncScrollbar()
+      syncScrollbarState()
     }
     let measureFrame: number | undefined
     const scheduleMeasure = (): void => {
@@ -355,6 +382,7 @@ export function CodingNsXtermView({
       if (measureFrame !== undefined) window.cancelAnimationFrame(measureFrame)
       if (reflowFrame !== undefined) window.cancelAnimationFrame(reflowFrame)
       if (reflowTimer !== undefined) window.clearTimeout(reflowTimer)
+      if (scrollbarHideTimer !== undefined) window.clearTimeout(scrollbarHideTimer)
       scheduleReflowRef.current = null
       input.dispose()
       scroll.dispose()
@@ -448,8 +476,12 @@ export function CodingNsXtermView({
         fitTerminal(terminal, fitRef.current, view)
         scheduleReflowRef.current?.()
       }
-      if (terminal.element !== undefined) terminal.element.dataset.codingnsScrollback = terminal.buffer.active.baseY > 0 ? 'true' : 'false'
-      const viewport = terminal.element?.querySelector<HTMLElement>('.xterm-viewport')
+      if (terminal.element !== undefined) {
+        const hasScrollback = terminal.buffer.active.baseY > 0
+        terminal.element.dataset.codingnsScrollback = hasScrollback ? 'true' : 'false'
+        if (!hasScrollback) terminal.element.dataset.codingnsScrollbar = 'hidden'
+      }
+      const viewport = terminal.element?.querySelector<HTMLElement>('.xterm-scrollable-element')
       debugInfo('codingns4dsh: client terminal frame rendered', {
         terminalId: view.id,
         frameType: render.frame.type,
@@ -781,17 +813,18 @@ const terminalHostStyle = {
 
 const shadowCss = `${xtermCss}
 :host{display:block;width:100%;height:100%;min-width:0;min-height:0;color:inherit;background:inherit}
-.codingns-xterm{width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;touch-action:pan-y;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
-.xterm{width:100%;height:100%;min-width:0;min-height:0}
-.xterm-scrollable-element{min-width:0;max-width:100%}
-.xterm-viewport{background:var(--dsw-alias-bg-base);touch-action:pan-y;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;overflow-y:scroll;scrollbar-gutter:stable;scrollbar-width:auto;scrollbar-color:var(--dsw-alias-label-tertiary,#777) transparent}
-.xterm-viewport::-webkit-scrollbar{width:10px}
-.xterm-viewport::-webkit-scrollbar-track{background:transparent}
-.xterm-viewport::-webkit-scrollbar-thumb{background:var(--dsw-alias-label-tertiary,#777);border-radius:5px}
-.xterm-viewport::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-label-secondary,#aaa)}
-.xterm .xterm-scrollable-element>.scrollbar.vertical{width:14px!important;pointer-events:auto!important}
-.xterm[data-codingns-scrollback="false"] .xterm-scrollable-element>.scrollbar.vertical{opacity:0!important;pointer-events:none!important}
-.xterm[data-codingns-scrollback="true"] .xterm-scrollable-element>.scrollbar.vertical{opacity:1!important;pointer-events:auto!important;background:rgba(128,128,128,.22)}
-.xterm[data-codingns-scrollback="true"] .xterm-scrollable-element>.scrollbar.vertical>.slider{background:var(--dsw-alias-label-secondary,#aaa)!important;border-radius:7px;min-height:24px}
+.codingns-xterm{box-sizing:border-box;width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;touch-action:pan-y;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+.xterm{box-sizing:border-box;width:100%;height:100%;min-width:0;min-height:0}
+.xterm-scrollable-element{box-sizing:border-box;width:100%;min-width:0;max-width:100%}
+/* xterm 6 已由 xterm-scrollable-element 接管滚动；隐藏兼容 viewport，避免产生第二个滚动条槽位。 */
+.xterm-viewport{background:var(--dsw-alias-bg-base);touch-action:pan-y;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;overflow:hidden;scrollbar-gutter:stable;scrollbar-width:none}
+.xterm-viewport::-webkit-scrollbar{display:none}
+.xterm-viewport::-webkit-scrollbar-track{display:none}
+.xterm-viewport::-webkit-scrollbar-thumb{display:none}
+.xterm-viewport::-webkit-scrollbar-thumb:hover{display:none}
+.xterm .xterm-scrollable-element>.scrollbar.vertical{width:6px!important;right:2px!important;pointer-events:none!important;opacity:0!important;background:transparent!important;transition:opacity 180ms ease!important}
+.xterm[data-codingns-scrollbar="visible"] .xterm-scrollable-element>.scrollbar.vertical{opacity:.7!important;pointer-events:auto!important}
+.xterm .xterm-scrollable-element>.scrollbar.vertical>.slider{width:6px!important;left:0!important;min-height:24px;border-radius:999px;background:rgba(170,178,190,.72)!important;box-shadow:0 1px 4px rgba(0,0,0,.28);transition:background-color 180ms ease,box-shadow 180ms ease!important}
+.xterm[data-codingns-scrollbar="visible"] .xterm-scrollable-element>.scrollbar.vertical>.slider:hover{background:rgba(224,229,237,.9)!important;box-shadow:0 1px 6px rgba(0,0,0,.4)}
 .xterm .xterm-scrollable-element>.scrollbar.horizontal{display:none!important}
 `
