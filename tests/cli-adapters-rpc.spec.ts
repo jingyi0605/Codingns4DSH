@@ -110,6 +110,60 @@ test('Codex turn/start 将图片附件作为 localImage 传递，并为文件保
   driver.dispose()
 })
 
+test('Codex Skill 目录可被列出，并在显式 mention 时补充原生 skill 输入项', async () => {
+  let turnStartParams: Record<string, unknown> | undefined
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string; params?: Record<string, unknown> }
+        if (request.method === 'initialize') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+          return
+        }
+        if (request.method === 'skills/list') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { data: [{ cwd: '/workspace', skills: [{ name: 'pdf', description: '处理 PDF 文档', enabled: true, path: '/workspace/.agents/skills/pdf/SKILL.md', interface: { displayName: 'PDF 工具' } }, { name: 'disabled', description: '不可用', enabled: false, path: '/workspace/.agents/skills/disabled/SKILL.md' }] }] } })}\n`)
+          return
+        }
+        if (request.method === 'thread/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'skill-thread' } } })}\n`)
+          return
+        }
+        if (request.method === 'turn/start') {
+          turnStartParams = request.params
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'skill-turn', status: 'inProgress' } } })}\n`)
+          setImmediate(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'skill-thread', turn: { id: 'skill-turn', status: 'completed' } } })}\n`))
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const catalog = await driver.listSkills({ sessionId: 'codex-skills', cwd: '/workspace', forceReload: true })
+  assert.deepEqual(catalog, [
+    { id: 'pdf', name: 'pdf', description: '处理 PDF 文档', enabled: true, displayName: 'PDF 工具' },
+    { id: 'disabled', name: 'disabled', description: '不可用', enabled: false },
+  ])
+
+  for await (const _chunk of driver.executeTurn({
+    sessionId: 'codex-skills',
+    messages: [],
+    prompt: '$pdf 请检查这个文档',
+    cwd: '/workspace',
+  })) { /* 只验证发出的 RPC 参数 */ }
+
+  assert.deepEqual(turnStartParams?.input, [
+    { type: 'text', text: '$pdf 请检查这个文档' },
+    { type: 'skill', name: 'pdf', path: '/workspace/.agents/skills/pdf/SKILL.md' },
+  ])
+  driver.dispose()
+})
+
 test('RPC 驱动在命令不存在时返回未安装和空模型目录', async () => {
   const driver = new PiAgentDriver({ binaries: ['missing-agent'], spawnSync: (() => ({ status: 127, stdout: '', stderr: '' })) as never })
   assert.deepEqual(await driver.detect(), { installed: false, version: null, command: null })

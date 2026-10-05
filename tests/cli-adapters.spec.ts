@@ -1430,6 +1430,27 @@ test('Agent 注册表隔离会话配置并拒绝未知 Agent', async () => {
   assert.throws(() => registry.setSession('s1', { adapterId: 'missing' }), /Agent 不可用/u)
 })
 
+test('Agent 注册表按当前会话路由 Skill 目录，并拒绝没有 Skill 能力的 Agent', async () => {
+  let received: unknown
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'skills-agent', name: 'Skills Agent', capabilities: ['skills'] },
+    async detect() { return { installed: true, version: '1.0.0', command: 'skills-agent' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async listSkills(input) {
+      received = input
+      return [{ id: 'demo', name: 'demo', description: '演示技能', enabled: true }]
+    },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } },
+  }])
+
+  registry.setSession('skills-session', { adapterId: 'skills-agent' })
+  assert.deepEqual(await registry.listSkills('skills-session', { cwd: '/workspace', forceReload: true }), [
+    { id: 'demo', name: 'demo', description: '演示技能', enabled: true },
+  ])
+  assert.deepEqual(received, { sessionId: 'skills-session', cwd: '/workspace', forceReload: true })
+  await assert.rejects(registry.listSkills('missing-session'), /当前 DSH Agent 不支持外部 Skill 目录/u)
+})
+
 test('Agent 注册表把最近一次 Provider usage 快照提供给 Client 展示', async () => {
   const registry = new CodingNsCliAdapterRegistry([{
     descriptor: { id: 'qoder-cn', name: 'Qoder CN' },
