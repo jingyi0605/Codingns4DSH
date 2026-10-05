@@ -115,19 +115,24 @@ export function usageChunk(value: unknown): CodingNsAgentEvent | null {
       ?? usage.cache_creation_input_tokens
       ?? cacheWriteInputTokens,
   )
-  if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === undefined && cacheWriteTokens === undefined) return null
   const totalTokens = optionalNumberValue(usage.totalTokens ?? usage.total_tokens ?? usage.totalTokenCount)
   const contextWindow = optionalNumberValue(usage.contextWindow ?? usage.context_window ?? usage.contextLimit ?? usage.context_limit)
   const contextTokens = optionalNumberValue(usage.contextTokens ?? usage.context_tokens)
   const explicitContextUsageRatio = optionalNumberValue(usage.contextUsageRatio ?? usage.context_usage_ratio)
+  const providerCredits = optionalNumberValue(usage.providerCredits ?? usage.provider_credits ?? usage.credits)
   const contextUsageRatio = explicitContextUsageRatio
     ?? (contextWindow !== undefined && contextTokens !== undefined && contextWindow > 0
       ? Number(Math.min(1, contextTokens / contextWindow).toFixed(6))
       : undefined)
   const hasCacheBreakdown = explicitUncachedInputTokens !== undefined || cacheReadTokens !== undefined || cacheWriteTokens !== undefined
+  const hasContextUsage = contextWindow !== undefined || contextTokens !== undefined || contextUsageRatio !== undefined
+  const hasProviderCredits = providerCredits !== undefined
   const cachedInputTokens = (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
   const inputExcludesCache = explicitUncachedInputTokens !== undefined || cacheReadInputTokens !== undefined || cacheWriteInputTokens !== undefined
   const fullInputTokens = inputTokens + (inputExcludesCache ? cachedInputTokens : 0)
+  // Qoder 1.1.65 会在真实请求中返回 0 token，但同时返回上下文比例或积分。
+  // 这类事件仍是有效用量，不能按“没有 token”丢弃。
+  if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === undefined && cacheWriteTokens === undefined && !hasContextUsage && !hasProviderCredits) return null
   return {
     type: 'usage',
     inputTokens,
@@ -136,6 +141,7 @@ export function usageChunk(value: unknown): CodingNsAgentEvent | null {
     ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
     ...(hasCacheBreakdown ? { uncachedInputTokens: inputExcludesCache ? inputTokens : Math.max(0, inputTokens - cachedInputTokens) } : {}),
     ...(totalTokens === undefined && !hasCacheBreakdown ? {} : { totalTokens: totalTokens ?? fullInputTokens + outputTokens }),
+    ...(providerCredits === undefined ? {} : { providerCredits }),
     ...(contextWindow === undefined ? {} : { contextWindow }),
     ...(contextTokens === undefined ? {} : { contextTokens }),
     ...(contextUsageRatio === undefined ? {} : { contextUsageRatio }),

@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type SpawnSyncOptions } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentPermissionResponse,
@@ -60,6 +60,8 @@ export interface QoderCliDriverOptions {
   readonly spawn?: typeof spawn
   /** 测试或托管环境可覆盖进程环境；不会改变宿主进程的 process.env。 */
   readonly environment?: Readonly<Record<string, string | undefined>>
+  /** 测试时覆盖 Qoder 用户目录；生产环境使用当前用户 Home。 */
+  readonly homeDirectory?: string
 }
 
 interface PendingPermission {
@@ -110,6 +112,7 @@ export class QoderCliDriver implements CodingNsCliDriver {
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
   private readonly baseEnvironment: Readonly<Record<string, string | undefined>>
+  private readonly homeDirectory: string
   private cachedBinary: string | null = null
   private readonly sessions = new Map<string, QoderSession>()
   private readonly processes = new Set<JsonRpcProcess>()
@@ -122,6 +125,7 @@ export class QoderCliDriver implements CodingNsCliDriver {
     this.binaries = options.binaries ?? this.profile.binaries
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
+    this.homeDirectory = options.homeDirectory ?? homedir()
     this.baseEnvironment = qoderEnvironment(this.profile, options.environment ?? process.env)
     this.descriptor = {
       id: this.profile.id,
@@ -195,6 +199,7 @@ export class QoderCliDriver implements CodingNsCliDriver {
     let promptResult: unknown
     let promptError: unknown
     let rpcExited = false
+    let streamedUsage: Extract<CodingNsAgentEvent, { type: 'usage' }> | null = null
     const removeExitListener = session.rpc.addExitListener(() => { rpcExited = true; eventQueue.close() })
     const promptBlocks = await buildAcpPromptBlocks(input.prompt, input.attachments ?? [])
     const sendPromise = session.rpc.request('session/prompt', {
@@ -225,7 +230,8 @@ export class QoderCliDriver implements CodingNsCliDriver {
         if (next !== null && typeof next === 'object' && '__response' in next) break
         if (next.done) break
         const chunk = qoderAcpMessageToChunk(next.value, input, toolNames, assistantMessageSegment)
-        if (chunk !== null) yield chunk
+        if (chunk?.type === 'usage') streamedUsage = mergeQoderUsage(streamedUsage, chunk)
+        else if (chunk !== null) yield chunk
         if (chunk?.type === 'tool-event' && (chunk.status === 'completed' || chunk.status === 'failed')) {
           assistantMessageSegment += 1
         }
@@ -233,6 +239,13 @@ export class QoderCliDriver implements CodingNsCliDriver {
       await sendPromise.catch(() => undefined)
       if (promptError !== undefined && !input.signal?.aborted) throw promptError
       if (rpcExited && !input.signal?.aborted) throw new Error(`${this.profile.name} ACP 进程已退出`)
+      // Qoder 可能在通知流、session/prompt 终态或本地 transcript 中分别
+      // 报告 usage；统一合并后只投影一条，避免不完整通知覆盖真实上下文。
+      const usage = mergeQoderUsage(
+        mergeQoderUsage(streamedUsage, qoderUsageChunk(promptResult)),
+        readQoderTranscriptUsage(this.homeDirectory, this.profile, input.cwd, session.acpSessionId),
+      )
+      if (usage !== null) yield usage
       yield { type: 'finish', reason: qoderPromptReason(promptResult, input.signal) }
     } catch (error) {
       if (!input.signal?.aborted) throw error
@@ -497,6 +510,145 @@ function qoderPromptReason(value: unknown, signal: AbortSignal | undefined): 'st
   if (reason.includes('cancel')) return 'cancel'
   if (reason.includes('error') || reason.includes('fail')) return 'error'
   return 'stop'
+}
+
+type QoderUsageEvent = Extract<CodingNsAgentEvent, { type: 'usage' }>
+
+/**
+ * 把 Qoder ACP 终态中的 usage 和 quota token_count 合并成公共事件。
+ *
+ * Qoder CN 1.1.65 的真实响应同时存在两套字段：`result.usage` 使用 camelCase，
+ * `_meta.quota.token_count` 可能携带 token 计数。若前者只返回 0，不能覆盖后者
+ * 的非零值，因此这里对 token 桶做“非零优先”合并，再交给公共归一化函数。
+ */
+export function qoderUsageChunk(value: unknown): QoderUsageEvent | null {
+  if (!isRecord(value)) return null
+  const usage = isRecord(value.usage) ? value.usage : value
+  const meta = isRecord(value._meta) ? value._meta : undefined
+  const quota = meta !== undefined && isRecord(meta.quota) ? meta.quota : undefined
+  const tokenCount = quota !== undefined && isRecord(quota.token_count) ? quota.token_count : undefined
+  if (tokenCount === undefined) {
+    const result = usageChunk(usage)
+    return result?.type === 'usage' ? result : null
+  }
+  const merged: Record<string, unknown> = { ...tokenCount, ...usage }
+  for (const [camel, snake] of [
+    ['inputTokens', 'input_tokens'],
+    ['outputTokens', 'output_tokens'],
+    ['totalTokens', 'total_tokens'],
+  ] as const) {
+    const direct = usage[camel] ?? usage[snake]
+    const fallback = tokenCount[camel] ?? tokenCount[snake]
+    if ((typeof direct !== 'number' || direct === 0) && typeof fallback === 'number' && fallback > 0) merged[camel] = fallback
+  }
+  const result = usageChunk(merged)
+  return result?.type === 'usage' ? result : null
+}
+
+/** 合并 ACP 终态和 transcript：终态优先，缺失字段从 transcript 补齐。 */
+function mergeQoderUsage(primary: QoderUsageEvent | null, fallback: QoderUsageEvent | null): QoderUsageEvent | null {
+  if (primary === null) return fallback
+  if (fallback === null || primary.type !== 'usage' || fallback.type !== 'usage') return primary
+  const merged = { ...fallback, ...primary }
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens'] as const) {
+    const direct = primary[key] ?? 0
+    const transcript = fallback[key]
+    if (direct === 0 && transcript !== undefined && transcript > 0) merged[key] = transcript
+  }
+  return merged
+}
+
+/**
+ * Qoder 不保证 ACP 终态携带完整 usage。CLI 会把 assistant message 的原始 usage
+ * 写入 ~/.qoder(-cn)/projects/<cwd>/<session>.jsonl，作为同一回合的只读后备来源。
+ */
+function readQoderTranscriptUsage(
+  homeDirectory: string,
+  profile: QoderCliProfile,
+  cwd: string | undefined,
+  sessionId: string,
+): QoderUsageEvent | null {
+  if (!/^[A-Za-z0-9._-]+$/u.test(sessionId)) return null
+  const projectKey = resolve(cwd ?? process.cwd()).replace(/[\\/]/gu, '-')
+  const path = join(homeDirectory, profile.userConfigDirectory, 'projects', projectKey, `${sessionId}.jsonl`)
+  let lines: string[]
+  try {
+    lines = readFileSync(path, 'utf8').split(/\r?\n/u).filter((line) => line.trim() !== '')
+  } catch {
+    return null
+  }
+  // Qoder 的 runtime-config 优先；当前 CLI 版本常把容量只写进 qodercli.log 的
+  // auto-compact 记录，因此没有 runtime-config 时再按同一 Provider 会话回读日志。
+  let contextWindow: number | undefined
+  for (const line of lines) {
+    try {
+      const entry: unknown = JSON.parse(line)
+      if (!isRecord(entry) || entry.type !== 'runtime-config') continue
+      const value = entry.contextWindow
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) contextWindow = value
+    } catch {
+      // 下面的 usage 扫描会再次跳过同一条损坏记录。
+    }
+  }
+  contextWindow ??= readQoderLogContextWindow(homeDirectory, profile, sessionId)
+  for (const line of lines.reverse()) {
+    try {
+      const entry: unknown = JSON.parse(line)
+      if (!isRecord(entry)) continue
+      const message = isRecord(entry.message) ? entry.message : entry
+      if (!isRecord(message.usage)) continue
+      const usage = qoderUsageChunk(message.usage)
+      if (usage !== null && usage.type === 'usage' && contextWindow !== undefined && usage.contextWindow === undefined) {
+        const contextTokens = usage.contextTokens
+          ?? (usage.contextUsageRatio === undefined ? undefined : Math.round(usage.contextUsageRatio * contextWindow))
+        return {
+          ...usage,
+          contextWindow,
+          ...(contextTokens === undefined ? {} : { contextTokens }),
+        }
+      }
+      if (usage !== null) return usage
+    } catch {
+      // transcript 允许尾部存在未完成 JSON；跳过损坏行继续查找最近完整消息。
+    }
+  }
+  return null
+}
+
+/**
+ * 读取 Qoder CLI 为同一 Provider 会话记录的真实上下文窗口。
+ *
+ * Qoder CN 1.1.65 的 JSONL assistant usage 只带 context_usage_ratio，
+ * 上下文窗口会记录在 qodercli.log 的 auto-compact 行中，例如
+ * `[auto-compact][session:<id>] ... window=200000`。该值是 Provider 的
+ * 实际运行窗口，不能用插件自己的默认值替代。
+ */
+function readQoderLogContextWindow(homeDirectory: string, profile: QoderCliProfile, sessionId: string): number | undefined {
+  const logsDirectory = join(homeDirectory, profile.userConfigDirectory, 'logs', 'runs')
+  let directories: string[]
+  try {
+    directories = readdirSync(logsDirectory)
+      .map((name) => join(logsDirectory, name))
+      .filter((path) => {
+        try { return statSync(path).isDirectory() } catch { return false }
+      })
+      .sort()
+      .reverse()
+  } catch {
+    return undefined
+  }
+  const escapedSessionId = sessionId.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+  const autoCompact = new RegExp(`\\[auto-compact\\]\\[session:${escapedSessionId}\\][^\\n]*?\\bwindow=(\\d+)`, 'gu')
+  const runtimeConfig = new RegExp(`session.runtime_config[^\\n]*?session=${escapedSessionId}[^\\n]*?context_window=(\\d+)`, 'gu')
+  for (const directory of directories) {
+    let log: string
+    try { log = readFileSync(join(directory, 'qodercli.log'), 'utf8') } catch { continue }
+    const values = [...log.matchAll(autoCompact), ...log.matchAll(runtimeConfig)]
+      .map((match) => Number(match[1]))
+      .filter((value) => Number.isSafeInteger(value) && value > 0)
+    if (values.length > 0) return values.at(-1)
+  }
+  return undefined
 }
 
 function qoderAcpMessageToChunk(

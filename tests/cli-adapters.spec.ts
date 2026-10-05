@@ -1404,6 +1404,27 @@ test('Agent 注册表隔离会话配置并拒绝未知 Agent', async () => {
   assert.throws(() => registry.setSession('s1', { adapterId: 'missing' }), /Agent 不可用/u)
 })
 
+test('Agent 注册表把最近一次 Provider usage 快照提供给 Client 展示', async () => {
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'qoder-cn', name: 'Qoder CN' },
+    async detect() { return { installed: true, version: '1.1.65', command: 'qodercn' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() {
+      yield { type: 'usage', inputTokens: 0, outputTokens: 0, totalTokens: 0, contextWindow: 200000, contextTokens: 32124, contextUsageRatio: 0.16062, providerCredits: 0.7166 }
+      yield { type: 'finish', reason: 'stop' }
+    },
+  }])
+  for await (const _event of registry.execute({ adapterId: 'qoder-cn', sessionId: 'qoder-usage-session', messages: [], prompt: '测试用量' })) { /* 消费一轮 */ }
+  const session = registry.getSession('qoder-usage-session')
+  assert.equal(session.adapterId, 'qoder-cn')
+  assert.deepEqual({
+    inputTokens: session.lastUsage?.inputTokens,
+    contextUsageRatio: session.lastUsage?.contextUsageRatio,
+    providerCredits: session.lastUsage?.providerCredits,
+  }, { inputTokens: 0, contextUsageRatio: 0.16062, providerCredits: 0.7166 })
+  await registry.dispose()
+})
+
 test('Agent 模型与思考强度偏好按选择顺序串行持久化', async () => {
   const writes: readonly unknown[][] = []
   let active = 0

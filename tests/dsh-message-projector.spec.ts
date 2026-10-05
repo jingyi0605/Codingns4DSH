@@ -204,6 +204,43 @@ test('Provider usage 到达时先写入非 surface 采样，ContextMeter 不等�
   assert.deepEqual(finish.at(-1), { type: 'finish', reason: { kind: 'stop' } })
 })
 
+test('Qoder token 桶为空时用真实 contextTokens 建立 ContextMeter 占用', async () => {
+  const samples = []
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'qoder-cn',
+    modelId: 'qwen3.8-flash',
+    sessionId: 'session-qoder-context',
+    nativeSessions: {
+      appendUsageSample(sessionId, usage) { samples.push({ sessionId, usage }); return true },
+    },
+  })
+
+  assert.deepEqual(await projector.push({
+    type: 'usage',
+    inputTokens: 0,
+    outputTokens: 0,
+    contextWindow: 200000,
+    contextTokens: 23508,
+    contextUsageRatio: 0.11754,
+  }), [])
+  assert.deepEqual(samples, [{
+    sessionId: 'session-qoder-context',
+    usage: {
+      inputTokens: 23508,
+      outputTokens: 0,
+      contextWindow: 200000,
+      contextTokens: 23508,
+      contextUsageRatio: 0.11754,
+    },
+  }])
+
+  // 正式 assistant usage 仍保持 Qoder 上游返回的 0，不把上下文占用伪装成计费 token。
+  assert.deepEqual(await projector.push({ type: 'finish', reason: 'stop' }), [
+    { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ])
+})
+
 test('公共消息投影层在工具终态到达时立即完成原生组件', async () => {
   const order = []
   const projector = new CodingNsDshMessageProjector({

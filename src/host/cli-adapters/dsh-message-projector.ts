@@ -33,7 +33,7 @@ export type CodingNsDshStreamChunk = Readonly<Record<string, unknown>>
  * 这里必须以该字段为准；直接把驱动事件里的 `inputTokens` 当成未缓存输入写进 DSH，
  * 会让 token-meter 把缓存读取重复计入分母：缓存命中率被腰斩，上下文占用翻倍。
  */
-function toDshTokenUsage(event: Extract<CodingNsAgentEvent, { type: 'usage' }>): {
+function toDshTokenUsage(event: Extract<CodingNsAgentEvent, { type: 'usage' }>, useContextFallback = false): {
   readonly inputTokens: number
   readonly outputTokens: number
   readonly cacheReadTokens?: number
@@ -41,7 +41,18 @@ function toDshTokenUsage(event: Extract<CodingNsAgentEvent, { type: 'usage' }>):
   readonly totalTokens?: number
 } {
   // 没有缓存分桶时 `inputTokens` 本身就是全部输入，也就是未缓存输入。
-  const inputTokens = event.uncachedInputTokens ?? event.inputTokens
+  const providerInputTokens = event.uncachedInputTokens ?? event.inputTokens
+  // Qoder 当前把 input/output token 桶返回为 0，但同时提供真实的上下文占用。
+  // DSH token-meter 只读取标准 inputTokens 桶，因此仅在非 surface 样本中用
+  // contextTokens 建立占用分子；正式 assistant usage 仍保留 Provider 原值。
+  const inputTokens = useContextFallback
+    && providerInputTokens === 0
+    && event.outputTokens === 0
+    && event.cacheReadTokens === undefined
+    && event.cacheWriteTokens === undefined
+    && event.contextTokens !== undefined
+    ? event.contextTokens
+    : providerInputTokens
   return {
     inputTokens: Math.max(0, inputTokens),
     outputTokens: event.outputTokens,
@@ -128,8 +139,9 @@ export class CodingNsDshMessageProjector {
   private recordUsageSample(event: Extract<CodingNsAgentEvent, { type: 'usage' }>): void {
     // assistant/attempt 同样是 DSH 会话记录，usage 必须按 DSH 的互斥桶口径落盘。
     const usage: CodingNsNativeUsageSample = {
-      ...toDshTokenUsage(event),
+      ...toDshTokenUsage(event, this.options.adapterId === 'qoder' || this.options.adapterId === 'qoder-cn'),
       ...(event.cacheHitRate === undefined ? {} : { cacheHitRate: event.cacheHitRate }),
+      ...(event.providerCredits === undefined ? {} : { providerCredits: event.providerCredits }),
       ...(event.contextWindow === undefined ? {} : { contextWindow: event.contextWindow }),
       ...(event.contextTokens === undefined ? {} : { contextTokens: event.contextTokens }),
       ...(event.contextUsageRatio === undefined ? {} : { contextUsageRatio: event.contextUsageRatio }),

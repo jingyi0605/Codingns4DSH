@@ -130,6 +130,20 @@ export interface CodingNsCliSessionConfig {
   /** 原生 Team 投影中的 Team 和成员标识。 */
   readonly teamId?: string
   readonly teamMemberId?: string
+  /** 最近一次 Provider 用量快照；仅供 Client 展示，不参与会话恢复。 */
+  readonly lastUsage?: CodingNsCliSessionUsage
+}
+
+/** 外部 Provider 最近一次用量快照；Qoder 等 Provider 可只提供上下文比例或额度。 */
+export interface CodingNsCliSessionUsage {
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly totalTokens?: number
+  readonly contextWindow?: number
+  readonly contextTokens?: number
+  readonly contextUsageRatio?: number
+  readonly providerCredits?: number
+  readonly capturedAt: number
 }
 
 /** Client 展示会话 Agent 时使用的最小脱敏绑定。 */
@@ -333,6 +347,8 @@ export type CodingNsAgentEvent =
       readonly totalTokens?: number
       /** 缓存读取 / 完整输入，百分比取值 0 到 100。 */
       readonly cacheHitRate?: number
+      /** Provider 以额度或积分报告的本回合消耗；不把它伪装成 token。 */
+      readonly providerCredits?: number
       /** Provider 明确报告的上下文窗口及当前占用，用于会话上下文用量展示。 */
       readonly contextWindow?: number
       readonly contextTokens?: number

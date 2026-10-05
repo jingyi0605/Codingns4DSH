@@ -105,6 +105,8 @@ export interface CodingNsNativeUsageSample {
   readonly uncachedInputTokens?: number
   readonly totalTokens?: number
   readonly cacheHitRate?: number
+  /** Provider 报告的额度消耗，保留原始单位，不折算为 token。 */
+  readonly providerCredits?: number
   readonly contextWindow?: number
   readonly contextTokens?: number
   readonly contextUsageRatio?: number
@@ -876,6 +878,7 @@ function compactUsage(usage: CodingNsNativeUsageSample): Record<string, number> 
     ...(usage.uncachedInputTokens === undefined ? {} : { uncachedInputTokens: usage.uncachedInputTokens }),
     ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
     ...(usage.cacheHitRate === undefined ? {} : { cacheHitRate: usage.cacheHitRate }),
+    ...(usage.providerCredits === undefined ? {} : { providerCredits: usage.providerCredits }),
     ...(usage.contextWindow === undefined ? {} : { contextWindow: usage.contextWindow }),
     ...(usage.contextTokens === undefined ? {} : { contextTokens: usage.contextTokens }),
     ...(usage.contextUsageRatio === undefined ? {} : { contextUsageRatio: usage.contextUsageRatio }),

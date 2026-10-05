@@ -9,6 +9,7 @@ import type {
   CodingNsCliSessionRecord,
   CodingNsCliTurnInput,
   CodingNsCliTeamDiagnostic,
+  CodingNsCliSessionUsage,
 } from '../../shared/contracts/cli-adapter.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import { debugInfo } from '../../shared/debug.js'
@@ -76,6 +77,7 @@ const DEFAULT_MODEL_RETRY_TTL_MS = 15_000
 export class CodingNsCliAdapterRegistry {
   private readonly drivers = new Map<CodingNsCliAdapterId, CodingNsCliDriver>()
   private readonly sessions = new Map<string, CodingNsCliSessionConfig>()
+  private readonly lastUsages = new Map<string, CodingNsCliSessionUsage>()
   private readonly enabled = new Map<CodingNsCliAdapterId, boolean>()
   private readonly providerProbeTtlMs: number
   private readonly missingConfirmationDelayMs: number
@@ -292,6 +294,7 @@ export class CodingNsCliAdapterRegistry {
     if (config.adapterId !== 'dsh') this.requireEnabledDriver(config.adapterId)
     const previous = this.sessions.get(sessionId)
     const sameAdapter = previous?.adapterId === config.adapterId
+    if (previous !== undefined && !sameAdapter) this.lastUsages.delete(sessionId)
     const remembered = this.preferences.get(config.adapterId) ?? this.findRememberedPreference(config.adapterId)
     const providerSessionId = config.providerSessionId?.trim()
     const providerIdentityChanged = providerSessionId !== undefined
@@ -433,7 +436,7 @@ export class CodingNsCliAdapterRegistry {
       if (session.adapterId === 'dsh') return mergeDshNativeSelection(session, this.nativeSessions?.get(sessionId))
       // Provider 绑定可能在 llm/stream 的 session-binding 事件中先写入持久化索引，
       // 而旧的内存配置仍被页面复用；补齐缺失字段，避免续接时重新开空会话。
-      return mergeStoredSessionFields(session, this.sessionStore?.get(sessionId))
+      return { ...mergeStoredSessionFields(session, this.sessionStore?.get(sessionId)), ...lastUsageField(this.lastUsages.get(sessionId)) }
     }
     // 迁移可能在 Registry 构造之后才完成（用户点击打开旧会话、或 fork 子会话
     // 刚被加载）。此时必须读取 SessionStore，否则子会话会被当成 DSH 主会话，
@@ -451,7 +454,7 @@ export class CodingNsCliAdapterRegistry {
         ...(stored.parentSessionId === undefined ? {} : { parentSessionId: stored.parentSessionId }),
       }
       this.sessions.set(sessionId, config)
-      return config
+      return { ...config, ...lastUsageField(this.lastUsages.get(sessionId)) }
     }
     const remembered = this.preferences.get('dsh') ?? this.findRememberedPreference('dsh')
     return mergeDshNativeSelection({
@@ -493,6 +496,7 @@ export class CodingNsCliAdapterRegistry {
     }
     this.executingSessions.add(input.sessionId)
     const previous = this.sessions.get(input.sessionId)
+    if (previous !== undefined && previous.adapterId !== input.adapterId) this.lastUsages.delete(input.sessionId)
     let current = {
       ...(previous ?? { adapterId: input.adapterId }),
       ...(input.modelId?.trim() ? { modelId: input.modelId.trim() } : {}),
@@ -567,6 +571,7 @@ export class CodingNsCliAdapterRegistry {
         const next = await iterator.next()
         if (next.done) break
         const event = next.value
+        if (event.type === 'usage') this.lastUsages.set(input.sessionId, usageSnapshot(event))
         if (event.type === 'session-binding') {
           const providerIdentityChanged = event.providerSessionId !== current.providerSessionId
           const { rawStoreRef: previousRawStoreRef, ...currentWithoutRawStoreRef } = current
@@ -790,6 +795,7 @@ export class CodingNsCliAdapterRegistry {
     this.requestedModelCatalogs.clear()
     await Promise.all([...this.segmentedTurns.values()].map(({ iterator }) => iterator === null ? Promise.resolve() : closeAgentIterator(iterator)))
     this.segmentedTurns.clear()
+    this.lastUsages.clear()
     await Promise.all([...this.drivers.values()].map((driver) => driver.dispose?.()))
     await this.preferenceWriteTail
   }
@@ -1240,6 +1246,23 @@ function mergeStoredSessionFields(
     ...(config.effortId === undefined && stored.effortId !== undefined ? { effortId: stored.effortId } : {}),
     ...(config.serviceTierId === undefined && stored.serviceTierId !== undefined ? { serviceTierId: stored.serviceTierId } : {}),
   }
+}
+
+function usageSnapshot(event: Extract<CodingNsAgentEvent, { type: 'usage' }>): CodingNsCliSessionUsage {
+  return {
+    inputTokens: event.inputTokens,
+    outputTokens: event.outputTokens,
+    ...(event.totalTokens === undefined ? {} : { totalTokens: event.totalTokens }),
+    ...(event.contextWindow === undefined ? {} : { contextWindow: event.contextWindow }),
+    ...(event.contextTokens === undefined ? {} : { contextTokens: event.contextTokens }),
+    ...(event.contextUsageRatio === undefined ? {} : { contextUsageRatio: event.contextUsageRatio }),
+    ...(event.providerCredits === undefined ? {} : { providerCredits: event.providerCredits }),
+    capturedAt: Date.now(),
+  }
+}
+
+function lastUsageField(usage: CodingNsCliSessionUsage | undefined): { readonly lastUsage?: CodingNsCliSessionUsage } {
+  return usage === undefined ? {} : { lastUsage: usage }
 }
 
 function asRecord(value: unknown): Record<string, any> | null {

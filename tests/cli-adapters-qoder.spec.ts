@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { QoderCliDriver, parseQoderModelList } from '../data/build/dist/host/cli-adapters/qoder-driver.js'
 import { readLatestQoderQuota } from '../data/build/dist/host/cli-adapters/qoder-subscription.js'
 
@@ -139,6 +139,171 @@ test('Qoder ACP 创建会话、附件、工具事件和完成终态', async () =
   driver.dispose()
 })
 
+test('Qoder ACP 读取 session/prompt 终态中的真实 usage 与上下文字段', async () => {
+  const driver = new QoderCliDriver({
+    binaries: ['fake-qoder'],
+    spawnSync: (() => ({ status: 0, stdout: 'qoder 1.1.65', stderr: '' })) as never,
+    spawn: fakeRpcSpawn((request, stdout) => {
+      if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      else if (request.method === 'session/new') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'usage-result-session' } })}\n`)
+      else if (request.method === 'session/prompt') stdout.write(`${JSON.stringify({
+        jsonrpc: '2.0', id: request.id, result: {
+          stopReason: 'end_turn',
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+          _meta: { quota: { token_count: { input_tokens: 41, output_tokens: 5, total_tokens: 46 } } },
+        },
+      })}\n`)
+    }),
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'dsh-qoder-usage-result', messages: [], prompt: '读取用量' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'usage-result-session' },
+    { type: 'usage', inputTokens: 41, outputTokens: 5, totalTokens: 46 },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
+test('Qoder ACP 在终态 token 为 0 时回读 transcript 的 credits 和上下文比例', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns-qoder-home-'))
+  const cwd = mkdtempSync(join(tmpdir(), 'codingns-qoder-project-'))
+  const projectKey = resolve(cwd).replace(/[\\/]/gu, '-')
+  const transcriptDirectory = join(home, '.qoder-cn', 'projects', projectKey)
+  mkdirSync(transcriptDirectory, { recursive: true })
+  writeFileSync(join(transcriptDirectory, 'transcript-session.jsonl'), `${JSON.stringify({
+    type: 'runtime-config',
+    contextWindow: 200000,
+  })}\n${JSON.stringify({
+    message: {
+      role: 'assistant',
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        context_usage_ratio: 0.16062,
+        credits: 0.7154040079999999,
+      },
+    },
+  })}\n`, 'utf8')
+  const driver = new QoderCliDriver({
+    variant: 'qoder-cn',
+    homeDirectory: home,
+    binaries: ['fake-qodercn'],
+    spawnSync: (() => ({ status: 0, stdout: 'qodercn 1.1.65', stderr: '' })) as never,
+    spawn: fakeRpcSpawn((request, stdout) => {
+      if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      else if (request.method === 'session/new') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'transcript-session' } })}\n`)
+      else if (request.method === 'session/prompt') stdout.write(`${JSON.stringify({
+        jsonrpc: '2.0', id: request.id, result: {
+          stopReason: 'end_turn',
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+          _meta: { quota: { token_count: { input_tokens: 0, output_tokens: 0 } } },
+        },
+      })}\n`)
+    }),
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'dsh-qoder-transcript', cwd, messages: [], prompt: '读取历史用量' })) chunks.push(chunk)
+  assert.deepEqual(chunks.find((chunk) => chunk.type === 'usage'), {
+    type: 'usage',
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    providerCredits: 0.7154040079999999,
+    contextUsageRatio: 0.16062,
+    contextWindow: 200000,
+    contextTokens: 32124,
+  })
+  driver.dispose()
+})
+
+test('Qoder ACP 在 runtime-config 缺失时从同会话 CLI 日志回读上下文窗口', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns-qoder-log-home-'))
+  const cwd = mkdtempSync(join(tmpdir(), 'codingns-qoder-log-project-'))
+  const projectKey = resolve(cwd).replace(/[\\/]/gu, '-')
+  const transcriptDirectory = join(home, '.qoder-cn', 'projects', projectKey)
+  const logsDirectory = join(home, '.qoder-cn', 'logs', 'runs', '2026-10-06T00-00-00-run')
+  mkdirSync(transcriptDirectory, { recursive: true })
+  mkdirSync(logsDirectory, { recursive: true })
+  writeFileSync(join(transcriptDirectory, 'log-session.jsonl'), `${JSON.stringify({
+    message: { role: 'assistant', usage: { input_tokens: 0, output_tokens: 0, credits: 0.5926, context_usage_ratio: 0.11753888888888889 } },
+  })}\n`, 'utf8')
+  writeFileSync(join(logsDirectory, 'qodercli.log'), '2026-10-06 INFO [auto-compact][session:log-session][main] threshold check: state=below, window=200000, window_source=caller\\n', 'utf8')
+  const driver = new QoderCliDriver({
+    variant: 'qoder-cn',
+    homeDirectory: home,
+    binaries: ['fake-qodercn'],
+    spawnSync: (() => ({ status: 0, stdout: 'qodercn 1.1.65', stderr: '' })) as never,
+    spawn: fakeRpcSpawn((request, stdout) => {
+      if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      else if (request.method === 'session/new') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'log-session' } })}\n`)
+      else if (request.method === 'session/prompt') stdout.write(`${JSON.stringify({
+        jsonrpc: '2.0', id: request.id, result: { stopReason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0 } },
+      })}\n`)
+    }),
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'dsh-qoder-log', cwd, messages: [], prompt: '读取上下文' })) chunks.push(chunk)
+  assert.deepEqual(chunks.find((chunk) => chunk.type === 'usage'), {
+    type: 'usage',
+    inputTokens: 0,
+    outputTokens: 0,
+    providerCredits: 0.5926,
+    contextUsageRatio: 0.11753888888888889,
+    contextWindow: 200000,
+    contextTokens: 23508,
+  })
+  driver.dispose()
+})
+
+test('Qoder ACP 不让通知流中的不完整 usage 阻断 transcript 补全', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'codingns-qoder-stream-usage-home-'))
+  const cwd = mkdtempSync(join(tmpdir(), 'codingns-qoder-stream-usage-project-'))
+  const projectKey = resolve(cwd).replace(/[\\/]/gu, '-')
+  const transcriptDirectory = join(home, '.qoder-cn', 'projects', projectKey)
+  mkdirSync(transcriptDirectory, { recursive: true })
+  writeFileSync(join(transcriptDirectory, 'stream-usage-session.jsonl'), `${JSON.stringify({
+    type: 'runtime-config',
+    contextWindow: 200000,
+  })}\n${JSON.stringify({
+    message: { role: 'assistant', usage: { input_tokens: 0, output_tokens: 0, credits: 0.5926, context_usage_ratio: 0.11753888888888889 } },
+  })}\n`, 'utf8')
+  const driver = new QoderCliDriver({
+    variant: 'qoder-cn',
+    homeDirectory: home,
+    binaries: ['fake-qodercn'],
+    spawnSync: (() => ({ status: 0, stdout: 'qodercn 1.1.65', stderr: '' })) as never,
+    spawn: fakeRpcSpawn((request, stdout) => {
+      if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      else if (request.method === 'session/new') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'stream-usage-session' } })}\n`)
+      else if (request.method === 'session/prompt') {
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {
+          sessionId: 'stream-usage-session',
+          update: { sessionUpdate: 'usage', usage: { input_tokens: 0, output_tokens: 0 } },
+        } })}\n`)
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { stopReason: 'end_turn' } })}\n`)
+      }
+    }),
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'dsh-qoder-stream-usage', cwd, messages: [], prompt: '读取上下文' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'stream-usage-session' },
+    {
+      type: 'usage',
+      inputTokens: 0,
+      outputTokens: 0,
+      providerCredits: 0.5926,
+      contextUsageRatio: 0.11753888888888889,
+      contextWindow: 200000,
+      contextTokens: 23508,
+    },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
 test('Qoder ACP 在工具前后切换正文 messageId，并保持真实工具名', async () => {
   const driver = new QoderCliDriver({
     binaries: ['fake-qoder'],
@@ -248,7 +413,7 @@ test('Qoder CN 订阅读取器解析 CLI 日志中的 quota 余量并脱敏', ()
     usedPercent: 0.01,
     remainingPercent: 99.99,
     windowDurationMins: null,
-    resetsAt: 1792134942733,
+    resetsAt: 1792134942,
     remainingCredits: 298,
     totalCredits: 300,
   })
