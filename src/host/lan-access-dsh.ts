@@ -151,7 +151,7 @@ export function createNodeLanAccessDshRuntime(dshWebPort?: number): LanAccessDsh
     },
     detectDshPorts: async () => detectDshPortsFromRuntime(dshWebPort),
     listen: (config, onConnection) => new Promise((resolve, reject) => {
-      const server = createServer((socket) => onConnection(socket))
+      const server = createServer((socket) => onConnection(socket as unknown as LanAccessDshStream))
       const onError = (error: Error): void => {
         server.removeListener('error', onError)
         reject(error)
@@ -174,7 +174,7 @@ export function createNodeLanAccessDshRuntime(dshWebPort?: number): LanAccessDsh
     }),
     connect: (dshPort, onConnect, onError) => {
       const socket = connect({ port: dshPort, host: '127.0.0.1' })
-      socket.once('connect', () => onConnect(socket))
+      socket.once('connect', () => onConnect(socket as unknown as LanAccessDshStream))
       socket.once('error', (error: unknown) => onError(error instanceof Error ? error : new Error(String(error))))
     },
   }

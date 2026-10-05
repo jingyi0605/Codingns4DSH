@@ -1,6 +1,6 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import readline from 'node:readline'
-import { commandEnvironment, terminateChildProcess, WINDOWS } from './process-utils.js'
+import { commandEnvironment, terminateChildProcess, WINDOWS, type CodingNsChildProcess } from './process-utils.js'
 
 /** JSON-RPC 消息的最小形状。不同 Agent 的扩展字段保持在 unknown 中。 */
 export interface JsonRpcMessage {
@@ -55,7 +55,7 @@ export interface JsonRpcRequestOptions {
 export class JsonRpcProcess {
   private readonly options: JsonRpcProcessOptions
   private readonly runSpawn: typeof spawn
-  private child: ChildProcessWithoutNullStreams | null = null
+  private child: CodingNsChildProcess | null = null
   private nextId = 1
   private readonly pending = new Map<number | string, { resolve: (value: unknown) => void; reject: (error: Error) => void; wireFormat: JsonRpcWireFormat }>()
   private closed = false
@@ -203,7 +203,7 @@ export class JsonRpcProcess {
       // CLI 可能是 Node 包装脚本，直接 kill 包装进程不会连带真正的 Node 子进程。
       // POSIX 下单独进程组后才能可靠地一次清理整棵进程树。
       detached: process.platform !== 'win32',
-    })
+    }) as CodingNsChildProcess
     this.child = child
     this.exitPromise = childExitPromise(child)
     // stderr 必须持续消费，但绝不能把命令参数、环境变量或文件片段回传给 DSH。
@@ -219,7 +219,7 @@ export class JsonRpcProcess {
     }
   }
 
-  private async consumeLines(child: ChildProcessWithoutNullStreams): Promise<void> {
+  private async consumeLines(child: CodingNsChildProcess): Promise<void> {
     const lines = readline.createInterface({ input: child.stdout })
     try {
       for await (const line of lines) {
@@ -333,7 +333,7 @@ function isRecord(value: unknown): value is JsonRpcMessage {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function childExitPromise(child: ChildProcessWithoutNullStreams): Promise<void> {
+function childExitPromise(child: CodingNsChildProcess): Promise<void> {
   return new Promise((resolve) => {
     const eventChild = child as unknown as { once?: (event: string, listener: () => void) => unknown }
     if (typeof eventChild.once !== 'function') {
@@ -351,7 +351,7 @@ function childExitPromise(child: ChildProcessWithoutNullStreams): Promise<void> 
   })
 }
 
-function terminateChild(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
+function terminateChild(child: CodingNsChildProcess, signal: NodeJS.Signals): void {
   const pid = child.pid
   if (process.platform !== 'win32' && typeof pid === 'number' && pid > 0) {
     try { process.kill(-pid, signal) } catch { /* 进程组可能已经退出 */ }

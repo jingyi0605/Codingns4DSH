@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import type {
   CodingNsCliModelCatalog,
   CodingNsAgentEvent,
@@ -12,7 +12,7 @@ import { isProviderDefaultModel } from './model-catalog.js'
 import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { isQuestionEvent, questionAnswersList, readAgentQuestions } from './interaction-events.js'
 import { usageChunk } from './rpc-driver-utils.js'
-import { commandEnvironment, resolveCommandPath, terminateChildProcess } from './process-utils.js'
+import { commandEnvironment, resolveCommandPath, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { buildOpenCodeAttachmentParts } from './attachment-utils.js'
 
 const WINDOWS = process.platform === 'win32'
@@ -39,7 +39,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   private readonly http: HttpSseClient
   private cachedBinary: { command: string; version: string | null } | null = null
   private cachedServer: string | null = null
-  private readonly managedServers = new Map<string, { url: string; child: ChildProcessWithoutNullStreams }>()
+  private readonly managedServers = new Map<string, { url: string; child: CodingNsChildProcess }>()
   private readonly sessions = new Map<string, string>()
   /** Provider 会话的实际工作目录；目录变化时禁止复用旧会话。 */
   private readonly sessionCwds = new Map<string, string>()
@@ -351,7 +351,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     if (command === null || command === undefined) return null
     const port = 4096 + this.managedServers.size
     const url = `http://127.0.0.1:${port}`
-    let child: ChildProcessWithoutNullStreams
+    let child: CodingNsChildProcess
     try {
       child = this.runSpawn(command, [...this.serverArgs, '--port', String(port)], {
         cwd,
@@ -359,7 +359,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         shell: WINDOWS,
-      })
+      }) as CodingNsChildProcess
     } catch { return null }
     child.stdout.on('data', () => undefined)
     child.stderr.on('data', () => undefined)

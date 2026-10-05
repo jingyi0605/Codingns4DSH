@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve } from 'node:path'
@@ -12,7 +12,7 @@ import type {
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { firstToolText, serializeToolValue } from './tool-observation.js'
 import { usageChunk } from './rpc-driver-utils.js'
-import { commandEnvironment, resolveCommandPath, terminateChildProcess } from './process-utils.js'
+import { commandEnvironment, resolveCommandPath, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
 import { commandCodeBridgeArgs, commandCodeBridgeEnvironment } from '../cli-bridge/injections.js'
 import { getSubagentBridge } from '../cli-bridge/bridge-holder.js'
@@ -177,7 +177,7 @@ interface CommandCodeEventQueue {
 interface CommandCodeTurn {
   readonly sessionId: string
   /** 当前活动子进程；撞到 --max-turns 自动续跑时会被替换成新进程。 */
-  child: ChildProcessWithoutNullStreams | undefined
+  child: CodingNsChildProcess | undefined
   /** 首轮使用的持久 transcript；原生恢复时为空。 */
   readonly transcriptPath: string | undefined
   /** Provider 返回的真实会话 ID；存在时后续进程必须使用 --resume。 */
@@ -294,7 +294,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   private readonly history: CommandCodeHistory
   private cachedBinary: string | null = null
   private cachedEnvironment: Record<string, string | undefined> | undefined
-  private readonly processes = new Set<ChildProcessWithoutNullStreams>()
+  private readonly processes = new Set<CodingNsChildProcess>()
   private readonly turns = new Map<string, CommandCodeTurn>()
 
   constructor(options: CommandCodeDriverOptions = {}) {
@@ -692,7 +692,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     turn: CommandCodeTurn,
     input: CodingNsCliTurnInput,
     binary: string,
-  ): ChildProcessWithoutNullStreams {
+  ): CodingNsChildProcess {
     const args = this.buildTurnArgs(input, turn)
     const bridgeEnvironment = commandCodeBridgeEnvironment(input.sessionId, this.descriptor.id)
     const child = this.runSpawn(binary, args, {
@@ -701,7 +701,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       shell: WINDOWS,
-    })
+    }) as CodingNsChildProcess
     // 自动续跑会替换活动进程；已退出的旧尝试不能继续留在进程表里等待 terminate。
     if (turn.child !== undefined) this.processes.delete(turn.child)
     this.processes.add(child)
@@ -765,7 +765,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   /** 读取一次尝试的 stdout，直到进程结束；队列在整个运行结束前保持打开。 */
   private async readAttempt(
     turn: CommandCodeTurn,
-    child: ChildProcessWithoutNullStreams,
+    child: CodingNsChildProcess,
     state: CommandCodeStreamState,
   ): Promise<number | null> {
     // 测试替身可能只提供 stdout/kill，没有 ChildProcess 的事件接口。

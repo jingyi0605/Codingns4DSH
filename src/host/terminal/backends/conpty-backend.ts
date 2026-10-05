@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import {
@@ -167,7 +167,7 @@ export function conptyPipeName(runtimeSessionKey: string): string {
 
 function launchDetachedBroker(input: Parameters<NonNullable<ConptyBackendOptions['launchBroker']>>[0]): void {
   const scriptPath = fileURLToPath(new URL('../broker/conpty-broker-process.js', import.meta.url))
-  const child: ChildProcessWithoutNullStreams = spawn(process.execPath, [
+  const child: ChildProcess = spawn(process.execPath, [
     scriptPath,
     '--pipe', input.pipeName,
     '--shell', input.shellPath,

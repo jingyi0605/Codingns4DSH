@@ -1,4 +1,4 @@
-import { spawnSync, type SpawnSyncResult } from 'node:child_process'
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import type { CodingNsCliModelCatalog, CodingNsAgentEvent } from '../../shared/contracts/cli-adapter.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { commandEnvironment, resolveCommandPath, WINDOWS } from './process-utils.js'
@@ -155,4 +155,5 @@ function optionalNumberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : undefined
 }
 
-export type { SpawnSyncResult }
+/** 固定 utf8 编码后的同步进程结果；Node 类型包没有这个历史别名。 */
+export type SpawnSyncResult = SpawnSyncReturns<string>

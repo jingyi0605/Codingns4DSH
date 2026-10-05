@@ -33,7 +33,7 @@ interface ClaudeDiscoveryChild {
   readonly stdin: { end(data: string): void }
   on(event: 'error', listener: (error: Error) => void): void
   on(event: 'close', listener: (code: number | null) => void): void
-  kill(signal?: string): boolean
+  kill(signal?: number | NodeJS.Signals): boolean
 }
 
 /** 从 Claude CLI、兼容网关和本地配置合并真实模型目录。凭据只用于请求。 */

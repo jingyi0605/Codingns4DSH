@@ -1,9 +1,17 @@
-import { spawnSync } from 'node:child_process'
+import { spawnSync, type ChildProcessByStdio } from 'node:child_process'
 import { dirname } from 'node:path'
+import type { Readable, Writable } from 'node:stream'
+
+/**
+ * CodingNS 启动的 CLI 都把 stdout/stderr 接到管道；stdin 是否接管取决于
+ * 适配器协议，因此使用可空 stdin 的统一进程句柄，而不是误用
+ * ChildProcessWithoutNullStreams。
+ */
+export type CodingNsChildProcess = ChildProcessByStdio<Writable | null, Readable, Readable>
 
 interface KillableChild {
-  readonly pid?: number | null
-  kill(signal?: string): boolean
+  readonly pid?: number | undefined
+  kill(signal?: number | NodeJS.Signals): boolean
 }
 
 /** Windows 的 npm CLI 通常是 .cmd 包装器，必须经由 shell 才能启动。 */

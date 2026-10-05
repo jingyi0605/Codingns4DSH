@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import readline from 'node:readline'
@@ -16,7 +16,7 @@ import { buildMcodeCatalog, parseMcodeModelCatalog, readMcodeConfigYaml } from '
 import { probeStoredSession } from './session-probe.js'
 import { buildAcpPromptBlocks, promptWithAttachmentPaths } from './attachment-utils.js'
 import { firstToolText, serializeToolValue } from './tool-observation.js'
-import { terminateChildProcess, WINDOWS } from './process-utils.js'
+import { terminateChildProcess, WINDOWS, type CodingNsChildProcess } from './process-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 
 export interface MiniMaxCodeDriverOptions {
@@ -64,7 +64,7 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
   private mcodeCatalog: CodingNsCliModelCatalog | undefined
   private readonly sessions = new Map<string, McodeSession>()
   private readonly processes = new Set<JsonRpcProcess>()
-  private readonly execChildren = new Map<string, ChildProcessWithoutNullStreams>()
+  private readonly execChildren = new Map<string, CodingNsChildProcess>()
 
   constructor(options: MiniMaxCodeDriverOptions = {}) {
     this.binaries = options.binaries ?? ['mcode', 'mcode.cmd']
@@ -199,7 +199,7 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       shell: WINDOWS,
-    }) as ChildProcessWithoutNullStreams
+    }) as CodingNsChildProcess
     this.execChildren.set(input.sessionId, child)
     let emittedFinish = false
     let emittedBinding = input.providerSessionId !== undefined
@@ -209,6 +209,7 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
     let stderr = ''
     child.stderr.on('data', (chunk) => { stderr = `${stderr}${String(chunk)}`.slice(-16_384) })
     try {
+      if (child.stdin === null) throw new Error('MiniMax Code CLI 未打开 stdin 管道')
       child.stdin.end(`${promptWithAttachmentPaths(input.prompt, input.attachments ?? [])}\n`, 'utf8')
       const lines = readline.createInterface({ input: child.stdout })
       try {

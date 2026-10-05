@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import readline from 'node:readline'
 import type {
   CodingNsCliAdapterDescriptor,
@@ -9,7 +9,7 @@ import type {
 import type { CodingNsCliDriver } from './driver.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { usageChunk } from './rpc-driver-utils.js'
-import { commandEnvironment, resolveCommandPath, terminateChildProcess } from './process-utils.js'
+import { commandEnvironment, resolveCommandPath, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 
 const WINDOWS = process.platform === 'win32'
@@ -41,7 +41,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
   private readonly modelArgs: readonly string[]
   private cachedBinary: string | null = null
   private cachedEnvironment: Record<string, string | undefined> | undefined
-  private readonly processes = new Set<ChildProcessWithoutNullStreams>()
+  private readonly processes = new Set<CodingNsChildProcess>()
 
   protected constructor(
     descriptor: Omit<CodingNsCliAdapterDescriptor, 'installed' | 'enabled' | 'version' | 'command'>,
@@ -105,11 +105,11 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) throw new Error(`${this.descriptor.name} 未安装`)
-    let child: ChildProcessWithoutNullStreams
+    let child: CodingNsChildProcess
     try {
       child = this.runSpawn(command, this.buildArgs(input), {
         cwd: input.cwd ?? process.cwd(), env: this.cachedEnvironment ?? { ...process.env }, stdio: [this.usesStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true, shell: WINDOWS,
-      })
+      }) as CodingNsChildProcess
     } catch (error) {
       // spawn 在命令路径或参数非法时可能同步抛错；必须收敛成当前回合错误，
       // 不能让异常越过适配器边界把整个 Host 进程带崩。
@@ -202,7 +202,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
   protected get usesStdin(): boolean { return false }
 
   /** 向使用 stdin 的 CLI 写入一轮输入；子类负责遵循其线协议。 */
-  protected writeStdin(_child: ChildProcessWithoutNullStreams, _input: CodingNsCliTurnInput): void {}
+  protected writeStdin(_child: CodingNsChildProcess, _input: CodingNsCliTurnInput): void {}
 
   /** 续接会话时由需要强一致性的 Provider 校验原生会话 ID。 */
   protected validateProviderSessionBinding(_input: CodingNsCliTurnInput, _providerSessionId: string): void {}
@@ -309,8 +309,9 @@ export function genericEventChunks(value: Record<string, unknown>, cancelled: bo
   return chunks
 }
 
-function closeStdin(child: ChildProcessWithoutNullStreams): void {
-  const stdin = child.stdin as unknown as { writableEnded?: boolean; end(): void }
+function closeStdin(child: CodingNsChildProcess): void {
+  const stdin = child.stdin
+  if (stdin === null) return
   if (stdin.writableEnded === true) return
   try { stdin.end() } catch { /* 子进程可能已提前关闭 stdin */ }
 }

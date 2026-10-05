@@ -1,11 +1,11 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { dirname } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, genericEventChunks } from './standard-stream-driver.js'
 import { ANTIGRAVITY_CATALOG, isProviderDefaultModel, parseAntigravityModels } from './model-catalog.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
-import { terminateChildProcess } from './process-utils.js'
+import { terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 
 const ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS = 30_000
@@ -29,14 +29,14 @@ async function runBufferedModels(
       reject(new Error('Antigravity 模型目录探测已取消'))
       return
     }
-    let child: ChildProcessWithoutNullStreams
+    let child: CodingNsChildProcess
     try {
       child = runSpawn(command, ['models'], {
         env: environment,
         windowsHide: true,
         shell: process.platform === 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
-      }) as ChildProcessWithoutNullStreams
+      }) as CodingNsChildProcess
     } catch (error) {
       reject(error)
       return
@@ -146,10 +146,11 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     }
   }
 
-  protected writeStdin(child: ChildProcessWithoutNullStreams, input: CodingNsCliTurnInput): void {
+  protected writeStdin(child: CodingNsChildProcess, input: CodingNsCliTurnInput): void {
     const prompt = promptWithAttachmentPaths(input.prompt, input.attachments ?? [])
     // Antigravity 的 stream-json 输入协议要求每一轮一个 user 事件，且
     // message 必须是带 content 字符串的对象；直接传字符串会让 AGY 退出。
+    if (child.stdin === null) throw new Error('Antigravity CLI 未打开 stdin 管道')
     child.stdin.end(`${JSON.stringify({ event: 'user', message: { content: prompt } })}\n`, 'utf8')
   }
 
