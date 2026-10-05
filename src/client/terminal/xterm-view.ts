@@ -294,6 +294,9 @@ export function CodingNsXtermView({
       if (!preserveHostTitle) void view.rename(value)
     })
     const measure = (): void => {
+      // 手机虚拟键盘通常只收缩 visualViewport，不会改变 DSH 外层布局视口。
+      // 先把 xterm 宿主裁到可视视口底边，再计算行列，避免最后几行和光标落到键盘下面。
+      syncTerminalViewport(host)
       // 显示层即使在 connecting/read-only 阶段也必须跟随容器尺寸；否则
       // ResizeObserver 会捕获首次 render 的 writable=false，后续移动端布局
       // 变化永远不会触发历史行重排。view.resize 内部仍会按权限决定是否下发 PTY。
@@ -332,15 +335,19 @@ export function CodingNsXtermView({
     resize.observe(host)
     resize.observe(container)
     const visualViewport = window.visualViewport
-    const handleViewportResize = (): void => schedulePostAttachReflow()
-    visualViewport?.addEventListener('resize', handleViewportResize)
-    window.addEventListener('resize', handleViewportResize)
+    const handleViewportChange = (): void => schedulePostAttachReflow()
+    visualViewport?.addEventListener('resize', handleViewportChange)
+    // iOS 在弹出键盘时可能先滚动 visual viewport，再触发 resize；两个事件都要处理，
+    // 否则页面被浏览器上移后，光标仍可能被键盘边缘遮住。
+    visualViewport?.addEventListener('scroll', handleViewportChange)
+    window.addEventListener('resize', handleViewportChange)
     schedulePostAttachReflow()
 
     return () => {
       resize.disconnect()
-      visualViewport?.removeEventListener('resize', handleViewportResize)
-      window.removeEventListener('resize', handleViewportResize)
+      visualViewport?.removeEventListener('resize', handleViewportChange)
+      visualViewport?.removeEventListener('scroll', handleViewportChange)
+      window.removeEventListener('resize', handleViewportChange)
       if (measureFrame !== undefined) window.cancelAnimationFrame(measureFrame)
       if (reflowFrame !== undefined) window.cancelAnimationFrame(reflowFrame)
       if (reflowTimer !== undefined) window.clearTimeout(reflowTimer)
@@ -356,6 +363,7 @@ export function CodingNsXtermView({
       terminal.dispose()
       terminalRef.current = null
       fitRef.current = null
+      host.style.height = '100%'
       root.replaceChildren()
     }
   }, [hasTerminal, view])
@@ -368,6 +376,9 @@ export function CodingNsXtermView({
     if (terminal === null || host === null) return
     applyAppearance(terminal, appearance, host, state.environment?.scrollback ?? 1000)
     terminal.options.disableStdin = !state.writable
+    // 聚合页切换到一个原本隐藏的终端时，虚拟键盘可能已经打开且不会再次派发
+    // visualViewport 事件；切换完成后立即按当前可视高度裁剪一次。
+    if (active) syncTerminalViewport(host)
     if (state.writable && host.clientWidth > 0 && host.clientHeight > 0) {
       // 视图刚变为激活时把 tmux 窗口尺寸抢回本视图：Host 记录的尺寸可能已被其它
       // 客户端或本视图更早的宽度改写，历史行会按旧宽度排版，内容超出容器被裁剪
@@ -615,6 +626,40 @@ function fitTerminal(
     terminal.resize(dimensions.cols, dimensions.rows)
   }
   view.resize(terminal.cols, terminal.rows, options)
+}
+
+/**
+ * 让终端宿主节点的底边停在当前可视视口之内。
+ *
+ * 移动端软键盘出现时，布局视口通常仍保持原高度，只有 `visualViewport.height`
+ * 变小。只调用 FitAddon 不够，因为它读取到的父节点高度没有变化；这里按屏幕
+ * 实际可见底边收缩宿主，键盘收起后再恢复 `100%`。
+ */
+function syncTerminalViewport(host: HTMLElement): void {
+  const screen = host.parentElement
+  if (screen === null) return
+  const hostRect = host.getBoundingClientRect()
+  const screenRect = screen.getBoundingClientRect()
+  if (screenRect.width <= 0 || screenRect.height <= 0 || hostRect.width <= 0) return
+
+  const screenStyle = getComputedStyle(screen)
+  const contentBottom = screenRect.bottom
+    - parseCssPixels(screenStyle.paddingBottom)
+    - parseCssPixels(screenStyle.borderBottomWidth)
+  const viewportHeight = window.visualViewport?.height ?? window.innerHeight
+  if (!Number.isFinite(contentBottom) || !Number.isFinite(viewportHeight) || viewportHeight <= 0) return
+
+  const visibleBottom = Math.min(contentBottom, viewportHeight)
+  const normalHeight = Math.max(1, Math.floor(contentBottom - hostRect.top))
+  if (visibleBottom >= contentBottom - 1) {
+    if (host.style.height !== '100%') host.style.height = '100%'
+    return
+  }
+
+  // 留出 1px，避免浮点数和键盘动画期间的边界抖动把最后一行裁掉。
+  const visibleHeight = Math.max(1, Math.floor(visibleBottom - hostRect.top - 1))
+  const nextHeight = `${Math.min(normalHeight, visibleHeight)}px`
+  if (host.style.height !== nextHeight) host.style.height = nextHeight
 }
 
 function resolveTerminalDimensions(terminal: Terminal, fit: FitAddon): { cols: number; rows: number } | undefined {

@@ -309,3 +309,16 @@ test('终端输入会过滤设备识别回显并支持鼠标与触摸历史滚�
   assert.match(source, /-webkit-overflow-scrolling:touch/u)
   assert.match(source, /::-webkit-scrollbar-thumb/u)
 })
+
+test('移动端虚拟键盘出现时终端宿主收缩到可视视口之上', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/terminal/xterm-view.ts'), 'utf8')
+
+  // 布局视口不会随软键盘收缩，必须按 visualViewport 的高度裁剪宿主，
+  // 并监听 scroll（iOS 可能先平移可视视口，再触发 resize）。
+  assert.match(source, /syncTerminalViewport\(host\)/u)
+  assert.match(source, /if \(active\) syncTerminalViewport\(host\)/u)
+  assert.match(source, /window\.visualViewport\?\.height \?\? window\.innerHeight/u)
+  assert.match(source, /visualViewport\?\.addEventListener\('scroll', handleViewportChange\)/u)
+  assert.match(source, /host\.style\.height = '100%'/u)
+  assert.match(source, /const visibleHeight = Math\.max\(1, Math\.floor\(visibleBottom - hostRect\.top - 1\)\)/u)
+})
