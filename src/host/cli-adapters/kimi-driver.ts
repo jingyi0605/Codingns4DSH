@@ -271,8 +271,8 @@ function mapKimiWireEvent(value: Record<string, unknown>, cancelled: boolean): {
   const reasoning = isQuestionEvent(type) || type.includes('permission') ? null : reasoningText(event)
   const text = isQuestionEvent(type) || type.includes('permission') ? null : textContent(event) ?? textFrom(event)
   if (reasoning) chunks.push({ type: 'reasoning-delta', text: reasoning })
-  if (text && !reasoning) {
-    if (type.includes('think') || type.includes('reason') || contentType === 'think') chunks.push({ type: 'reasoning-delta', text })
+  if (text) {
+    if (!reasoning && (type.includes('think') || type.includes('reason') || contentType === 'think')) chunks.push({ type: 'reasoning-delta', text })
     else if (!type.includes('result') && !type.includes('complete') && !type.includes('done')) chunks.push({ type: 'text-delta', text })
   }
   const nestedTool = isToolRecord(event.tool_call)

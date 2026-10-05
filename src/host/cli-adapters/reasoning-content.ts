@@ -21,7 +21,7 @@ function collectReasoning(value: unknown, allowPlainText: boolean): string | nul
 
   const type = typeof value.type === 'string' ? value.type.toLowerCase() : ''
   if (isReasoningType(type)) {
-    return firstParts(value.thinking, value.reasoning, value.text, value.content, value.delta)
+    return firstParts(value.thinking, value.reasoning, value.think, value.thought, value.text, value.content, value.delta)
   }
 
   const explicit = firstParts(value.reasoning, value.thinking, value.think, value.thought, value.reasoning_content, value.thinking_content)
