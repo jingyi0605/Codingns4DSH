@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import test from 'node:test'
 import { PassThrough, Readable } from 'node:stream'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { ClaudeCodeDriver } from '../data/build/dist/host/cli-adapters/claude-driver.js'
 import { CommandCodeDriver } from '../data/build/dist/host/cli-adapters/command-code-driver.js'
 import { GeminiCliDriver } from '../data/build/dist/host/cli-adapters/gemini-driver.js'
@@ -34,6 +34,45 @@ test('文本 CLI 适配器把附件路径和可访问目录传给 Provider', () 
   const geminiArgs = (new GeminiCliDriver({ binaries: ['fake-gemini'] }) as unknown as { buildArgs(value: typeof input): readonly string[] }).buildArgs(input)
   assert.equal(geminiArgs[1], expectedPrompt)
   assert.deepEqual(geminiArgs.slice(-2), ['--include-directories', '/tmp/codingns-attachments'])
+})
+
+test('Claude Code 为无扩展名图片建立受支持后缀的临时路径并在回合结束清理', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codingns-claude-image-'))
+  const imagePath = join(root, '1588ddd5b29f1b5a0e43492ea636c5f79bff288357d2c17f928f008822a9bab7')
+  const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+  writeFileSync(imagePath, imageBytes)
+  let receivedArgs: string[] = []
+  let preparedPath: string | undefined
+  try {
+    const driver = new ClaudeCodeDriver({
+      binaries: ['fake-claude'],
+      spawnSync: detection,
+      spawn: ((_command: string, args: string[]) => {
+        receivedArgs = args
+        const prompt = args[args.indexOf('-p') + 1] ?? ''
+        preparedPath = prompt.match(/@([^\n]+)$/u)?.[1]
+        assert.ok(preparedPath?.endsWith('.png'))
+        assert.deepEqual(readFileSync(preparedPath!), imageBytes)
+        return {
+          stdout: Readable.from([`${JSON.stringify({ type: 'result' })}\n`]),
+          stderr: { on() { return this } },
+          kill() { return true },
+        }
+      }) as never,
+    })
+    for await (const _chunk of driver.executeTurn({
+      sessionId: 'claude-image-attachments', messages: [], prompt: '请查看截图',
+      attachments: [{ kind: 'image', path: imagePath }],
+    })) { /* 检查发送参数和临时文件生命周期。 */ }
+    const prompt = receivedArgs[receivedArgs.indexOf('-p') + 1] ?? ''
+    assert.match(prompt, /附件「attachment-0\.png」：@[^\n]+\.png$/u)
+    assert.equal(existsSync(preparedPath!), false)
+    const addDirIndex = receivedArgs.lastIndexOf('--add-dir')
+    assert.equal(receivedArgs[addDirIndex + 1], dirname(preparedPath!))
+    driver.dispose()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('Command Code 把附件路径写入 prompt 并开放附件目录', async () => {
