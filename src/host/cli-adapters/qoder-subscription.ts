@@ -162,6 +162,8 @@ function numberValue(value: unknown): number | null {
 function timestamp(value: unknown): number | null {
   const n = numberValue(value)
   if (n === null) return null
-  return n > 10_000_000_000 ? Math.trunc(n) : Math.trunc(n * 1_000)
+  // DSH 的 resetsAt 契约使用 Unix 秒；Qoder quota 接口的 expiresAt 使用 Unix 毫秒。
+  // 统一转换为秒，避免把毫秒直接交给倒计时造成数百万天的显示结果。
+  return n > 10_000_000_000 ? Math.trunc(n / 1_000) : Math.trunc(n)
 }
 function clamp(value: number): number { return Math.max(0, Math.min(100, value)) }

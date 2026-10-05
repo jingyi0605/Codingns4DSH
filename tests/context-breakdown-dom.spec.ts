@@ -6,7 +6,7 @@ import {
   startContextBreakdownDom,
 } from '../data/build/dist/client/context-breakdown-dom.js'
 
-test('只对 codex 会话的上下文面板打隐藏标记，停用后移除', async () => {
+test('只对外部真实上下文会话的面板隐藏启发式明细，停用后移除', async () => {
   const codexDom = new FakeDocument()
   codexDom.body.appendChild(conversation('session-codex').root)
   const codexPanel = contextPanel()
@@ -18,6 +18,18 @@ test('只对 codex 会话的上下文面板打隐藏标记，停用后移除', a
   })
   await nextTurn()
   assert.equal(codexPanel.hasAttribute(CONTEXT_BREAKDOWN_HIDDEN_ATTRIBUTE), true)
+
+  const qoderDom = new FakeDocument()
+  qoderDom.body.appendChild(conversation('session-qoder').root)
+  const qoderPanel = contextPanel()
+  qoderDom.body.appendChild(qoderPanel)
+  const qoderController = startContextBreakdownDom({
+    document: qoderDom,
+    MutationObserver: FakeObserver,
+    adapterIdForSession: () => 'qoder-cn',
+  })
+  await nextTurn()
+  assert.equal(qoderPanel.hasAttribute(CONTEXT_BREAKDOWN_HIDDEN_ATTRIBUTE), true)
 
   const kimiDom = new FakeDocument()
   kimiDom.body.appendChild(conversation('session-kimi').root)
@@ -33,6 +45,8 @@ test('只对 codex 会话的上下文面板打隐藏标记，停用后移除', a
 
   codexController.dispose()
   assert.equal(codexPanel.hasAttribute(CONTEXT_BREAKDOWN_HIDDEN_ATTRIBUTE), false, '停用后必须移除标记')
+  qoderController.dispose()
+  assert.equal(qoderPanel.hasAttribute(CONTEXT_BREAKDOWN_HIDDEN_ATTRIBUTE), false, '停用后必须移除标记')
   kimiController.dispose()
 })
 

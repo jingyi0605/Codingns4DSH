@@ -25,7 +25,7 @@ export const CONTEXT_BREAKDOWN_STYLE_ID = 'codingns4dsh-context-breakdown-style'
 /** 对话根节点上承载当前会话 id 的 DSH 属性。 */
 export const CONTEXT_BREAKDOWN_CONVERSATION_ATTRIBUTE = 'data-conversation-session'
 /** 默认隐藏构成明细的适配器：它们自己组装请求，启发式估算与真实上下文不同源。 */
-export const DEFAULT_CONTEXT_BREAKDOWN_HIDDEN_ADAPTERS: readonly string[] = ['codex']
+export const DEFAULT_CONTEXT_BREAKDOWN_HIDDEN_ADAPTERS: readonly string[] = ['codex', 'qoder', 'qoder-cn']
 /** 适配器未知时请求刷新映射的最小间隔，避免面板长时间停留时反复查询。 */
 const ADAPTER_REFRESH_INTERVAL_MS = 5_000
 const CONTEXT_BREAKDOWN_STYLE_TEXT = `[${CONTEXT_BREAKDOWN_HIDDEN_ATTRIBUTE}]>dl{display:none!important}`
@@ -43,7 +43,7 @@ export interface ContextBreakdownDomOptions {
   readonly MutationObserver?: typeof MutationObserver
   /** 会话到适配器的解析；默认读取 Host 映射缓存。 */
   readonly adapterIdForSession?: (sessionId: string) => string | undefined
-  /** 需要隐藏构成明细的适配器，默认只有 codex。 */
+  /** 需要隐藏构成明细的适配器，默认是能报告真实上下文的外部适配器。 */
   readonly hiddenAdapterIds?: readonly string[]
   /** 会话适配器未知时按需刷新映射；缺省则只依赖已有缓存。 */
   readonly refreshAdapters?: () => void | Promise<void>

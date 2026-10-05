@@ -886,6 +886,8 @@ function subscriptionProviderName(adapterId: string | null, providerId: string |
     case 'grok': return 'Grok'
     case 'kimi': return 'Kimi Code'
     case 'opencode': return 'OpenCode'
+    case 'qoder': return 'Qoder'
+    case 'qoder-cn': return 'Qoder CN'
     case 'zcode': return 'ZCode'
     case 'codebuddy': return 'CodeBuddy'
     case 'codebuddy-cn': return 'CodeBuddy'
