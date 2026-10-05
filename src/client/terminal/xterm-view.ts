@@ -27,6 +27,10 @@ const TERMINAL_TOUCH_MOMENTUM_MAX_IDLE_FRAMES = 3
 const TERMINAL_TOUCH_MOMENTUM_RELEASE_IDLE_MS = 100
 /** 视图夺回终端尺寸的最小间隔，避免可见性抖动时反复重发。 */
 const TERMINAL_SIZE_CLAIM_INTERVAL_MS = 1000
+/** 终端文本与可视容器边缘之间至少保留 5px 的安全距离。 */
+const TERMINAL_CONTENT_EDGE_GAP = 5
+/** 终端滚动条停止滚动后的自动隐藏延迟。 */
+const TERMINAL_SCROLLBAR_HIDE_DELAY_MS = 3000
 
 export interface CodingNsXtermViewProps {
   readonly view: CodingNsTerminalView
@@ -667,11 +671,41 @@ function resolveTerminalDimensions(terminal: Terminal, fit: FitAddon): { cols: n
   const root = terminal.element
   if (root === undefined || root.clientWidth <= 0 || root.clientHeight <= 0) return fallback
   const cell = resolveRendererCell(terminal)
-  if (cell === undefined) return fallback
+  if (cell === undefined) {
+    // 首帧还没有渲染器尺寸时只能使用 FitAddon 的结果；舍弃一列，
+    // 让宿主自身的左右内边距负责最后的可视安全区。
+    return fallback === undefined
+      ? undefined
+      : { ...fallback, cols: Math.max(2, fallback.cols - 1) }
+  }
   const computed = getComputedStyle(root)
-  const paddingX = parseCssPixels(computed.paddingLeft) + parseCssPixels(computed.paddingRight)
+  const paddingLeft = parseCssPixels(computed.paddingLeft)
+  const paddingRight = parseCssPixels(computed.paddingRight)
   const paddingY = parseCssPixels(computed.paddingTop) + parseCssPixels(computed.paddingBottom)
-  const width = root.clientWidth - paddingX - (terminal.options.scrollback === 0 ? 0 : 14)
+  // xterm 6 的滚动条是 xterm-scrollable-element 里的绝对定位节点。
+  // 不能用固定的 14px 或 root.clientWidth 猜它的槽位：父容器可能有小数宽度，
+  // 主题也可能改变滚动条宽度。直接以滚动条左边界作为文本的硬截止线，才能保证
+  // 列数和实际可见区域使用同一套坐标。
+  const rootRect = root.getBoundingClientRect()
+  const scrollable = root.querySelector<HTMLElement>('.xterm-scrollable-element')
+  const scrollbar = terminal.options.scrollback === 0
+    ? undefined
+    : scrollable?.querySelector<HTMLElement>('.scrollbar.vertical')
+  const scrollbarRect = scrollbar?.getBoundingClientRect()
+  const scrollableRect = scrollable?.getBoundingClientRect()
+  const contentRight = scrollbarRect !== undefined && scrollbarRect.width > 0
+    ? Math.min(rootRect.right, scrollbarRect.left)
+    : scrollableRect !== undefined && scrollableRect.width > 0
+      ? Math.min(rootRect.right, scrollableRect.right)
+      : rootRect.right
+  // 宿主已经通过 border-box 保留左右 8px；滚动条左边界到 root 右边界之间也
+  // 已经有自己的槽位。只有这两层空间不足 TERMINAL_CONTENT_EDGE_GAP 时，才补足
+  // 剩余安全距离，不能再额外扣除一个完整字符宽度，否则底部历史文本会提前换行。
+  const scrollbarInset = scrollbarRect !== undefined && scrollbarRect.width > 0
+    ? Math.max(0, rootRect.right - scrollbarRect.left)
+    : 0
+  const safeEdgeGap = Math.max(0, TERMINAL_CONTENT_EDGE_GAP - scrollbarInset)
+  const width = contentRight - rootRect.left - paddingLeft - paddingRight - safeEdgeGap
   const height = root.clientHeight - paddingY
   if (width <= 0 || height <= 0) return fallback
   return {
@@ -734,10 +768,13 @@ function visibleColor(value: string, fallback: string): string {
 }
 
 const terminalHostStyle = {
+  boxSizing: 'border-box',
   width: '100%',
   height: '100%',
   minWidth: 0,
   minHeight: 0,
+  paddingLeft: 8,
+  paddingRight: 8,
   color: 'var(--dsw-alias-label-primary)',
   background: 'var(--dsw-alias-bg-base)',
 } as const

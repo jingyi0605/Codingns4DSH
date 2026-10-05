@@ -41,7 +41,8 @@ test('终端布局和 xterm 默认值与 DSH 0.1.6 内置终端一致', async ()
   ])
 
   assert.match(styles, /border-radius:24px/u)
-  assert.match(styles, /padding:8px/u)
+  assert.match(styles, /padding-top:8px/u)
+  assert.match(styles, /screen\}\{[^}]*padding:0/u)
   assert.match(styles, /--dsw-alias-bg-base/u)
   assert.match(styles, /--dsw-alias-label-primary/u)
   // 聚合页是横向 flex 容器；终端项必须允许收缩，否则 xterm 的旧列宽会把移动端撑出视口。
@@ -57,11 +58,17 @@ test('终端布局和 xterm 默认值与 DSH 0.1.6 内置终端一致', async ()
   assert.match(xterm, /schedulePostAttachReflow/u)
   assert.match(xterm, /resolveTerminalDimensions/u)
   assert.match(xterm, /root\.clientWidth/u)
+  assert.match(xterm, /boxSizing: 'border-box'/u)
+  assert.match(xterm, /paddingLeft: 8/u)
+  assert.match(xterm, /paddingRight: 8/u)
   // 列宽必须取自渲染服务的 cell 尺寸；.xterm-char-measure-element 被 DOM renderer
   // 的宽度缓存复用，内容会变成最近测量的任意字符（如中文全角），用它推列宽会让
   // 移动端列数近乎减半，文本提前换行并留下大片右侧空白。
   assert.match(xterm, /resolveRendererCell/u)
   assert.match(xterm, /_renderService\?\.dimensions/u)
+  assert.match(xterm, /fallback\.cols - 1/u)
+  assert.match(xterm, /const scrollbarInset =/u)
+  assert.match(xterm, /TERMINAL_CONTENT_EDGE_GAP - scrollbarInset/u)
   assert.doesNotMatch(xterm, /measureWidth/u)
   assert.match(xterm, /if \(host\.clientWidth === 0 \|\| host\.clientHeight === 0\)/u)
 })
