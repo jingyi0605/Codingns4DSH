@@ -459,7 +459,9 @@ function TerminalStatus({
     retry ? createElement(Button, {
       variant: 'outline',
       size: 'sm',
-      onClick: () => { void view.refresh() },
+      // 状态条上的重试是用户显式要求的恢复动作，必须放弃可能已经变成僵尸的
+      // 保活连接；否则 refresh() 会直接复用旧 follow，按钮看起来没有反应。
+      onClick: () => { void view.refresh({ force: true }) },
     }, state.phase === 'disconnected' ? t('terminalView.reconnect') : t('terminal.retry')) : null,
     lost ? createElement(Button, {
       variant: 'outline',

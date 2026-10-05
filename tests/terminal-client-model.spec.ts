@@ -649,3 +649,110 @@ test('DSH 0.1.5/0.1.6 缺少 workspaceId 时保持会话级终端显示逻辑', 
     await service.dispose()
   }
 })
+
+test('聚合终端从后台切回时复用保活连接而不是停在读取终端环境', async () => {
+  const { calls, remote } = createRemote(true)
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  const view = service.viewForTerminal('session-1', terminalInfo.id, terminalInfo.shell.path)
+  const unmount = view.mount()
+
+  await waitFor(() => view.state.getSnapshot().render !== undefined, '聚合终端 snapshot 未到达 Client')
+  view.acknowledge(view.state.getSnapshot().render.revision)
+  assert.equal(view.state.getSnapshot().phase, 'connected')
+  assert.equal(view.state.getSnapshot().writable, true)
+  const environmentCalls = calls.environment
+  const listCalls = calls.list
+
+  // 切到别的会话时 DSH 只隐藏右栏子树：模型解除挂载引用，保活连接必须保留。
+  unmount()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(calls.followAborts, 0, '后台期间不应释放 Host follow')
+
+  // 切回该会话：终端必须立刻恢复可输入，而不是停在“正在读取终端环境”。
+  const remount = view.mount()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(view.state.getSnapshot().phase, 'connected', '切回会话后终端停在非连接状态')
+  assert.equal(view.state.getSnapshot().writable, true, '切回会话后终端不可输入')
+  assert.equal(calls.environment, environmentCalls, '切回会话不应重新读取终端环境')
+  assert.equal(calls.list, listCalls, '切回会话不应重新读取终端库存')
+  assert.equal(calls.followAborts, 0, '切回会话不应重建连接')
+
+  remount()
+  await service.dispose()
+})
+
+test('显式重连会释放保活连接并重新读取 Host 状态', async () => {
+  const { calls, remote } = createRemote(true)
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  const view = service.viewForTerminal('session-1', terminalInfo.id, terminalInfo.shell.path)
+  const unmount = view.mount()
+
+  await waitFor(() => view.state.getSnapshot().render !== undefined, '聚合终端 snapshot 未到达 Client')
+  const firstRevision = view.state.getSnapshot().render.revision
+  view.acknowledge(firstRevision)
+
+  await view.refresh({ force: true })
+
+  await waitFor(() => calls.followAborts === 1, '强制刷新没有释放旧连接')
+  await waitFor(() => (view.state.getSnapshot().render?.revision ?? 0) > firstRevision, '强制刷新后没有重新连接')
+  assert.equal(view.state.getSnapshot().phase, 'connected')
+  assert.equal(calls.environment, 2)
+  assert.equal(calls.list, 2)
+
+  unmount()
+  await service.dispose()
+})
+
+test('重建终端会释放旧 follow 并重新建立连接', async () => {
+  const { calls, remote } = createRemote(true)
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  const view = service.viewForTerminal('session-1', terminalInfo.id, terminalInfo.shell.path)
+  const unmount = view.mount()
+
+  await waitFor(() => view.state.getSnapshot().render !== undefined, '聚合终端 snapshot 未到达 Client')
+  const firstRevision = view.state.getSnapshot().render.revision
+  view.acknowledge(firstRevision)
+
+  await view.rebuild()
+
+  await waitFor(() => calls.followAborts === 1, '重建没有释放旧连接')
+  await waitFor(() => (view.state.getSnapshot().render?.revision ?? 0) > firstRevision, '重建后没有重新连接')
+  assert.equal(view.state.getSnapshot().phase, 'connected')
+  assert.equal(calls.create, 1)
+
+  unmount()
+  await service.dispose()
+})
+
+test('不可见的聚合视图完成加载后不会停在读取终端环境', async () => {
+  const { remote } = createRemote(true)
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  const view = service.viewForTerminal('session-1', terminalInfo.id, terminalInfo.shell.path)
+
+  // 加载尚未完成就切走：此时还没有保活连接，状态不能停在 loading。
+  const unmount = view.mount()
+  unmount()
+  await waitFor(() => view.state.getSnapshot().phase === 'disconnected', '不可见视图停在了 loading')
+
+  await service.dispose()
+})
+
+test('加载请求悬挂时会超时失败，不会永久停在读取终端环境', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { remote } = createRemote(true)
+  // 模拟页面在后台被冻结后请求永远不返回。
+  remote.environment = () => new Promise(() => {})
+  const view = new CodingNsTerminalView('session-1', 'terminal-1', remote, true, '/bin/zsh')
+  const unmount = view.mount()
+
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(view.state.getSnapshot().phase, 'loading')
+
+  t.mock.timers.tick(20_001)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(view.state.getSnapshot().phase, 'failed', '悬挂的加载请求没有超时')
+  assert.match(String(view.state.getSnapshot().error), /超时/u)
+
+  unmount()
+  await view.dispose()
+})

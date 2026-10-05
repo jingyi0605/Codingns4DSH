@@ -30,7 +30,6 @@ const terminalInfoSchema = z.object({
 const environmentSchema = z.object({
   cwd: z.string().readonly(),
   workspaceId: z.string().readonly().optional(),
-  platform: z.union([z.literal('darwin'), z.literal('linux'), z.literal('win32'), z.literal('unsupported')]).readonly().optional(),
   maxInputBytes: z.number().readonly(),
   maxCols: z.number().readonly(),
   maxRows: z.number().readonly(),

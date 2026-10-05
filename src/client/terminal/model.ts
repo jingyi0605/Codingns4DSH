@@ -168,7 +168,11 @@ export class CodingNsTerminalView {
         // 可以 follow：environment 只影响输入上限和外观默认值，不能阻塞恢复。
         if (initial.info.state === 'running') this.connect()
         else void this.refresh()
-      } else {
+      } else if (!this.resumeFollow()) {
+        // 聚合视图在后台（会话或页签不可见）期间保持 follow 连接，重新可见时
+        // 若重走 refresh()，load() 会先把状态降级成 loading，而 connect() 又会
+        // 因为 followController 仍在而直接返回，终端就会停在“正在读取终端环境”
+        // 且输入被禁用，直到恰好产生新输出。这里直接复用已有连接。
         void this.refresh()
       }
     }
@@ -181,9 +185,20 @@ export class CodingNsTerminalView {
     }
   }
 
-  async refresh(): Promise<void> {
-    if (this.loading !== undefined) return this.loading
+  /**
+   * 重新加载终端环境与库存。
+   *
+   * 默认复用仍然活跃的 follow 连接：只有连接确实不存在时才向 Host 重新发起
+   * environment/list。`force` 供“重新连接/刷新”这类显式动作使用，会先释放
+   * 现有 follow 再重建，避免保活连接变成无法恢复的僵尸订阅。
+   */
+  async refresh(options?: { readonly force?: boolean }): Promise<void> {
     if (this.lifetime.signal.aborted) return
+    if (this.loading !== undefined) return this.loading
+    if (options?.force === true) {
+      this.clearReconnect()
+      this.releaseFollow()
+    } else if (this.resumeFollow()) return
     this.loading = this.load().finally(() => { this.loading = undefined })
     return this.loading
   }
@@ -198,6 +213,9 @@ export class CodingNsTerminalView {
     if (this.loading !== undefined) return this.loading
     this.clearReconnect()
     this.reconnectAttempts = 0
+    // 重建会替换 Host 终端进程，旧 follow 订阅必须释放；否则 connect() 会认为
+    // 连接仍然活跃而直接返回，状态停在 loading。
+    this.releaseFollow()
     this.patch({ phase: 'loading', writable: false })
     const task = this.loadWithRebuild().finally(() => { this.loading = undefined })
     this.loading = task
@@ -207,18 +225,18 @@ export class CodingNsTerminalView {
   private async loadWithRebuild(): Promise<void> {
     try {
       const remote = resolveRemote(this.remote)
-      const environment = unwrap(await remote.environment(this.sessionId, this.lifetime.signal))
+      const environment = unwrap(await this.request(remote.environment(this.sessionId, this.lifetime.signal)))
       this.patch({ phase: 'creating', environment })
-      const info = unwrap(await remote.create(this.sessionId, {
+      const info = unwrap(await this.request(remote.create(this.sessionId, {
         id: this.id,
         ...(this.shellPath === undefined ? {} : { shellPath: this.shellPath }),
         cols: Math.min(80, environment.maxCols),
         rows: Math.min(24, environment.maxRows),
-      }, this.lifetime.signal))
+      }, this.lifetime.signal)))
       debugInfo('codingns4dsh: client terminal rebuilt', { sessionId: this.sessionId, terminalId: info.id })
       const { error: _error, ...rest } = this.store.getSnapshot()
       this.store.set({ ...rest, environment, info, title: info.title })
-      if (this.mounted > 0) this.connect()
+      this.finishLoad()
     } catch (error) {
       if (!this.lifetime.signal.aborted) this.fail(error)
     }
@@ -295,7 +313,7 @@ export class CodingNsTerminalView {
     this.patch({ phase: 'loading', writable: false })
     try {
       const remote = resolveRemote(this.remote)
-      const environment = unwrap(await remote.environment(this.sessionId, this.lifetime.signal))
+      const environment = unwrap(await this.request(remote.environment(this.sessionId, this.lifetime.signal)))
       debugInfo('codingns4dsh: client terminal environment', { sessionId: this.sessionId, workspaceId: environment.workspaceId, cwd: environment.cwd })
       let createWhenMissing = this.createWhenMissing
       if (environment.workspaceId !== undefined) {
@@ -310,29 +328,61 @@ export class CodingNsTerminalView {
           createWhenMissing = createWhenMissing && !binding.existing
         }
       }
-      const listed = unwrap(await remote.list(this.sessionId))
+      const listed = unwrap(await this.request(remote.list(this.sessionId)))
       debugInfo('codingns4dsh: client terminal list', { sessionId: this.sessionId, workspaceId: environment.workspaceId, terminalIds: listed.map((entry) => entry.id), requestedId: this.id, createWhenMissing })
       let info = listed.find((entry) => entry.id === this.id)
       if (info === undefined && createWhenMissing) {
         this.patch({ phase: 'creating', environment })
-        info = unwrap(await remote.create(this.sessionId, {
+        info = unwrap(await this.request(remote.create(this.sessionId, {
           id: this.id,
           ...(this.shellPath === undefined ? {} : { shellPath: this.shellPath }),
           cols: Math.min(80, environment.maxCols),
           rows: Math.min(24, environment.maxRows),
-        }, this.lifetime.signal))
+        }, this.lifetime.signal)))
         debugInfo('codingns4dsh: client terminal created', { sessionId: this.sessionId, workspaceId: environment.workspaceId, terminalId: info.id })
       }
       if (info === undefined) throw new Error('Host 中不存在该终端，且恢复流程禁止自动创建替代进程')
       this.patch({ environment, info, title: info.title })
-      if (this.mounted > 0) this.connect()
+      this.finishLoad()
     } catch (error) {
       if (!this.lifetime.signal.aborted) this.fail(error)
     }
   }
 
+  /**
+   * 加载阶段的 Host 请求等待上限。
+   *
+   * 页面被浏览器冻结（切到后台）期间发出的请求可能永远不会返回；没有上限时
+   * 视图会永久停在“正在读取终端环境”，用户点重试也只会复用同一个挂起 Promise。
+   */
+  private request<T>(task: Promise<T>): Promise<T> {
+    return withLoadTimeout(task, TERMINAL_LOAD_TIMEOUT_MS, this.t('terminalView.loadTimeout'))
+  }
+
+  /**
+   * 加载完成后的状态收敛。
+   *
+   * 可见时建立或复用 follow；不可见且没有保活连接时不能停在 loading，否则
+   * 切回会话的瞬间会先渲染成“正在读取终端环境”。
+   */
+  private finishLoad(): void {
+    if (this.mounted > 0) {
+      this.connect()
+      return
+    }
+    if (this.followController === undefined && this.store.getSnapshot().phase === 'loading') {
+      this.patch({ phase: 'disconnected', writable: false })
+    }
+  }
+
   private connect(): void {
-    if (this.followController !== undefined || this.lifetime.signal.aborted || this.mounted === 0) return
+    if (this.followController !== undefined) {
+      // 保活连接仍然存在（例如加载期间用户切回会话）：不重建 follow，但必须
+      // 恢复可见状态，否则会停在 load() 设置好的 loading。
+      this.resumeFollow()
+      return
+    }
+    if (this.lifetime.signal.aborted || this.mounted === 0) return
     this.clearReconnect()
     const controller = new AbortController()
     this.followController = controller
@@ -340,6 +390,41 @@ export class CodingNsTerminalView {
     this.lastResize = undefined
     this.patch({ phase: 'connecting', writable: false })
     void this.consume(controller.signal)
+  }
+
+  /**
+   * 复用仍然活跃的 follow 连接，并恢复可见状态。
+   *
+   * 聚合视图在后台保活期间连接不会释放，重新可见只是显示层切换，不需要重新
+   * 读取环境或库存；把它降级成 loading 会让终端变成只读，且只能等下一次
+   * 输出帧才能恢复。
+   *
+   * @returns 是否复用了已有连接；false 表示必须重新加载。
+   */
+  private resumeFollow(): boolean {
+    const controller = this.followController
+    if (controller === undefined || controller.signal.aborted) return false
+    const state = this.store.getSnapshot()
+    if (state.phase === 'closed' || state.phase === 'failed') return false
+    this.clearReconnect()
+    if (state.render !== undefined) {
+      // 收到过画面说明连接已经建立，重新可见只是显示层切换。
+      if (state.phase !== 'connected' || !state.writable) this.patch({ phase: 'connected', writable: true })
+    } else if (state.phase !== 'connecting') {
+      // 仍在等待 Host 首帧：回到 connecting，避免停在 loading 或只读态。
+      this.patch({ phase: 'connecting', writable: false })
+    }
+    return true
+  }
+
+  /** 只释放 follow 连接与附件，不改变对外状态；detach、重建和强制刷新共用。 */
+  private releaseFollow(): void {
+    this.pendingRender?.resolve()
+    this.pendingRender = undefined
+    this.followController?.abort(new Error('终端视图重新连接'))
+    this.followController = undefined
+    this.attachmentId = undefined
+    this.lastResize = undefined
   }
 
   private async consume(signal: AbortSignal): Promise<void> {
@@ -388,12 +473,7 @@ export class CodingNsTerminalView {
 
   private detach(): void {
     this.clearReconnect()
-    this.pendingRender?.resolve()
-    this.pendingRender = undefined
-    this.followController?.abort(new Error('终端视图已 detach'))
-    this.followController = undefined
-    this.attachmentId = undefined
-    this.lastResize = undefined
+    this.releaseFollow()
     if (!this.lifetime.signal.aborted && this.store.getSnapshot().phase !== 'closed') {
       const { render: _render, ...state } = this.store.getSnapshot()
       this.store.set({ ...state, phase: 'disconnected', writable: false })
@@ -807,6 +887,36 @@ export class CodingNsWebTerminals extends Service {
     } finally {
       this.cleanupQueued = false
     }
+  }
+}
+
+/** 加载阶段单次 Host 请求的等待上限；超过后按失败处理，用户可以显式重试。 */
+const TERMINAL_LOAD_TIMEOUT_MS = 20_000
+
+/**
+ * 给加载阶段的请求加等待上限。
+ *
+ * 页面被浏览器冻结（切到后台）期间发出的请求可能永远不会返回；没有上限时
+ * 视图会永久停在“正在读取终端环境”，重试也只会复用同一个挂起的 Promise。
+ * 底层请求不保证可取消，因此这里只结束等待，并先给原请求挂上拒绝处理器，
+ * 避免它稍后失败时产生 unhandled rejection。
+ */
+async function withLoadTimeout<T>(task: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  const guarded = task.then(
+    (value) => ({ state: 'value' as const, value }),
+    (error: unknown) => ({ state: 'error' as const, error }),
+  )
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const expired = new Promise<{ readonly state: 'timeout' }>((resolve) => {
+    timer = setTimeout(() => resolve({ state: 'timeout' }), timeoutMs)
+  })
+  try {
+    const outcome = await Promise.race([guarded, expired])
+    if (outcome.state === 'value') return outcome.value
+    if (outcome.state === 'error') throw outcome.error
+    throw new Error(message)
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
 }
 
