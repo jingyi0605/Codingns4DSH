@@ -44,8 +44,12 @@ export interface CodingNsClientServices {
   readonly slots?: SlotRegistry
   /** DSH 布局服务；手势只用它开合左侧会话列表。 */
   readonly layout?: { toggleSidebar(): void }
-  /** DSH 右侧栏服务；手势用它读取状态并开合右栏。 */
-  readonly sidebarRight?: { isExpanded(): boolean; toggleExpanded(): void }
+  /** DSH 右侧栏服务；手势用它读取状态并开合右栏，移动端会话切换监听 mounted。 */
+  readonly sidebarRight?: {
+    isExpanded(): boolean
+    toggleExpanded(): void
+    mounted?: { subscribe(listener: () => void): () => void }
+  }
   /** 通知与推送客户端；局域网 PWA 面板用它请求权限、订阅与注销 Service Worker。 */
   readonly notifications?: PwaNotificationClient
   /** 当前 Client Cordis 上下文；只供需要注册 DSH UI Slot 的功能模块使用。 */

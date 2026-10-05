@@ -47,7 +47,7 @@ import { createPwaNotificationClient } from './pwa-notifications.js'
 export { vibrateMobile } from './mobile-vibration.js'
 export type { MobileVibrationGlobalLike, MobileVibrationNavigatorLike, MobileVibrationPattern } from './mobile-vibration.js'
 export { isShortMobileTap, startMobileSessionInteractionDom } from './mobile-session-interaction.js'
-export type { MobileSessionInteractionController, MobileSessionInteractionDocumentLike, MobileSessionInteractionOptions, MobileSessionInteractionWindowLike } from './mobile-session-interaction.js'
+export type { MobileSessionInteractionController, MobileSessionInteractionDocumentLike, MobileSessionInteractionOptions, MobileSessionInteractionSidebarRightLike, MobileSessionInteractionWindowLike } from './mobile-session-interaction.js'
 export { PeerHostSessionController } from './peer-host-session-controller.js'
 
 export { ensureCryptoRandomUUID } from './lan-access.js'

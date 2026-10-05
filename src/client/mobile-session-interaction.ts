@@ -23,6 +23,14 @@ export interface MobileSessionInteractionOptions {
   readonly window?: MobileSessionInteractionWindowLike
   readonly document?: MobileSessionInteractionDocumentLike
   readonly mobileViewportMaxPx?: number
+  /** DSH 右栏服务；移动端切换会话后收起自动恢复的右栏。 */
+  readonly sidebarRight?: MobileSessionInteractionSidebarRightLike | undefined
+}
+
+export interface MobileSessionInteractionSidebarRightLike {
+  isExpanded(): boolean
+  toggleExpanded(): void
+  readonly mounted?: { readonly subscribe: (listener: () => void) => () => void }
 }
 
 export interface MobileSessionInteractionController {
@@ -81,6 +89,8 @@ export function startMobileSessionInteractionDom(
   let userActivation: { readonly target: ElementLike; readonly at: number } | undefined
   let suppressedClick: { readonly row: ElementLike; readonly at: number } | undefined
   let dispatchingSyntheticClick = false
+  let mountedUnsubscribe: (() => void) | undefined
+  let collapseTimers: ReturnType<typeof setTimeout>[] = []
 
   const now = (): number => Date.now()
 
@@ -133,6 +143,7 @@ export function startMobileSessionInteractionDom(
     if (!isShortMobileTap(start, end)) return
     const row = sessionRow(point.target)
     if (row === null || isRowControl(point.target, row)) return
+    collapseRightbar()
     // 阻止 iOS 在 touchend 后补发延迟 click；马上交给 React 的 onClick。
     preventDefault(event)
     suppressedClick = { row, at: end.at }
@@ -152,6 +163,7 @@ export function startMobileSessionInteractionDom(
       preventDefault(event)
       stopPropagation(event)
     }
+    if (row !== null && !isRowControl(eventTarget(event), row)) collapseRightbar()
     suppressedClick = undefined
   }
 
@@ -175,6 +187,7 @@ export function startMobileSessionInteractionDom(
     hostDocument.addEventListener('focusin', onFocusIn as (event: never) => void, capture)
     hostDocument.addEventListener('click', onClickCapture as (event: never) => void, capture)
     hostDocument.addEventListener('dblclick', onDoubleClickCapture as (event: never) => void, capture)
+    subscribeMountedSession()
   }
 
   const removeListeners = (): void => {
@@ -187,9 +200,59 @@ export function startMobileSessionInteractionDom(
     hostDocument.removeEventListener('focusin', onFocusIn as (event: never) => void, true)
     hostDocument.removeEventListener('click', onClickCapture as (event: never) => void, true)
     hostDocument.removeEventListener('dblclick', onDoubleClickCapture as (event: never) => void, true)
+    mountedUnsubscribe?.()
+    mountedUnsubscribe = undefined
+    for (const timer of collapseTimers) clearTimeout(timer)
+    collapseTimers = []
     touchStart = undefined
     userActivation = undefined
     suppressedClick = undefined
+  }
+
+  /**
+   * DSH 的右栏布局按会话保存。移动端切换到新会话时，宿主会先挂载会话，
+   * 随后恢复该会话上次的展开状态；这里仅在移动端把这次自动恢复收回，
+   * 让主界面稳定停留在消息区。用户之后仍可通过右滑或原生按钮主动打开。
+   */
+  const collapseRightbar = (): boolean => {
+    const sidebarRight = options.sidebarRight
+    if (sidebarRight === undefined) return false
+    try {
+      if (!sidebarRight.isExpanded()) return false
+      sidebarRight.toggleExpanded()
+      // 右栏服务的 store 更新是同步的；收起成功后取消后续重试，避免用户
+      // 紧接着主动打开右栏时被旧的会话切换任务再次收起。
+      for (const timer of collapseTimers) clearTimeout(timer)
+      collapseTimers = []
+      return true
+    } catch {
+      // 会话正在卸载或宿主尚未完成右栏挂载时，下一次重试再处理。
+      return false
+    }
+  }
+
+  const scheduleRightbarCollapse = (): void => {
+    if (!active || options.sidebarRight === undefined) return
+    for (const timer of collapseTimers) clearTimeout(timer)
+    collapseTimers = []
+    if (collapseRightbar()) return
+    collapseTimers = [
+      setTimeout(collapseRightbar, 0),
+      setTimeout(collapseRightbar, 60),
+      setTimeout(collapseRightbar, 240),
+    ]
+  }
+
+  const subscribeMountedSession = (): void => {
+    const subscribe = options.sidebarRight?.mounted?.subscribe
+    if (typeof subscribe !== 'function') return
+    try {
+      mountedUnsubscribe = subscribe(scheduleRightbarCollapse)
+    } catch {
+      mountedUnsubscribe = undefined
+    }
+    // 进入移动端时也恢复一次默认消息界面，避免从桌面窄化窗口时把右栏带过来。
+    scheduleRightbarCollapse()
   }
 
   const refresh = (): boolean => {

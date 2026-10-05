@@ -121,3 +121,39 @@ test('短触摸判定拒绝长按与滑动', () => {
   assert.equal(isShortMobileTap({ point: { x: 10, y: 10, target }, at: 100 }, { point: { x: 11, y: 10, target }, at: 900 }), false)
   assert.equal(isShortMobileTap({ point: { x: 10, y: 10, target }, at: 100 }, { point: { x: 30, y: 10, target }, at: 200 }), false)
 })
+
+test('移动端切换会话后收起右栏，桌面端不注册该逻辑', () => {
+  let expanded = false
+  let toggleCount = 0
+  let mountedListener: (() => void) | undefined
+  const sidebarRight = {
+    isExpanded: () => expanded,
+    toggleExpanded: () => { expanded = !expanded; toggleCount += 1 },
+    mounted: {
+      subscribe: (listener: () => void) => {
+        mountedListener = listener
+        return () => { mountedListener = undefined }
+      },
+    },
+  }
+  const mobileWindow = new FakeWindow()
+  const mobileDocument = new FakeDocument()
+  const mobileController = startMobileSessionInteractionDom({ window: mobileWindow, document: mobileDocument, sidebarRight })
+  expanded = true
+  mountedListener?.()
+  assert.equal(expanded, false)
+  assert.equal(toggleCount, 1)
+  mobileController.dispose()
+
+  const desktopWindow = new FakeWindow()
+  desktopWindow.innerWidth = 1280
+  const desktopDocument = new FakeDocument()
+  expanded = true
+  toggleCount = 0
+  mountedListener = undefined
+  const desktopController = startMobileSessionInteractionDom({ window: desktopWindow, document: desktopDocument, sidebarRight })
+  mountedListener?.()
+  assert.equal(expanded, true)
+  assert.equal(toggleCount, 0)
+  desktopController.dispose()
+})
