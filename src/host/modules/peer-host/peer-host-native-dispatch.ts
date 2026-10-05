@@ -6,7 +6,10 @@ import { CodingNsRpcError } from '../../rpc-table.js'
  * PeerHost 的首批列表/订阅请求可能撞在这个窗口内，因此只对明确的
  * `gateway/service-unavailable` 做有限退避；业务错误必须立即透传。
  */
-const SERVICE_UNAVAILABLE_RETRY_DELAYS_MS = [50, 100, 200, 400, 800, 1600] as const
+// DSH 的 Connection 就绪超时默认是 15 秒；语音模型、会话恢复和插件组合
+// 可能让 Controller 在这个窗口末端才出现。派发层必须覆盖同一量级的等待，
+// 否则首批并发请求会在 Controller 刚好激活前全部失败。
+const SERVICE_UNAVAILABLE_RETRY_DELAYS_MS = [100, 200, 400, 800, 1600, 3200, 6400, 10000] as const
 const GATEWAY_SERVICE_UNAVAILABLE = 'gateway/service-unavailable'
 
 /**
