@@ -155,7 +155,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           case 'team/interrupt': return requireTeam(context).invoke('interrupt', payload)
           case 'subscription': {
             const subscription = readSubscriptionRequest(payload)
-            return subscriptions.read(subscription.adapterId, subscription.providerId)
+            return subscriptions.read(subscription.adapterId, subscription.providerId, subscription.modelId)
           }
           case 'subscription/reset': {
             const subscription = readSubscriptionResetRequest(payload)
@@ -600,13 +600,15 @@ function readAdapterId(value: unknown): string {
   return record.adapterId.trim()
 }
 
-function readSubscriptionRequest(value: unknown): { adapterId: string; providerId?: string } {
+function readSubscriptionRequest(value: unknown): { adapterId: string; providerId?: string; modelId?: string } {
   const record = asRecord(value)
   if (record === null || record.adapterId === undefined) return { adapterId: 'command-code' }
   const adapterId = readAdapterId(value)
   return {
     adapterId,
     ...(typeof record.providerId === 'string' && record.providerId.trim() !== '' ? { providerId: record.providerId.trim() } : {}),
+    // Antigravity 用会话模型区分 Gemini 与 Claude/GPT 两个独立配额组。
+    ...(typeof record.modelId === 'string' && record.modelId.trim() !== '' ? { modelId: record.modelId.trim() } : {}),
   }
 }
 

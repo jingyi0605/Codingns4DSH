@@ -192,14 +192,39 @@ test('订阅悬浮框按内容自适应且不产生横向滚动', async () => {
   assert.doesNotMatch(source, /sub2apiTableScrollStyle = \{ overflowX:/u)
 })
 
-test('CodeBuddy 会话启用订阅用量查询并显示底部入口', async () => {
+test('Antigravity 与 CodeBuddy 会话启用订阅用量查询并显示底部入口', async () => {
   const source = await readFile(join(projectRoot, 'src/client/subscription-slot.ts'), 'utf8')
-  assert.match(source, /adapterId is 'command-code' \| 'codex' \| 'claude-code' \| 'codebuddy'/u)
+  assert.match(source, /adapterId is 'antigravity' \| 'command-code' \| 'codex' \| 'claude-code' \| 'codebuddy'/u)
   // 逐项断言而不是匹配整条 `||` 链：适配器增删会改变顺序，但不该让本用例失效。
-  for (const adapterId of ['claude-code', 'codebuddy', 'codebuddy-cn', 'dsh']) {
+  for (const adapterId of ['antigravity', 'claude-code', 'codebuddy', 'codebuddy-cn', 'dsh']) {
     assert.match(source, new RegExp(`adapterId === '${adapterId}'`, 'u'), `订阅入口缺少 ${adapterId} 适配器`)
   }
   assert.match(source, /callCliRpc<CliSubscriptionUsage \| null>\(props\.rpc, 'subscription'/u)
+})
+
+test('订阅弹层展示账号名并按会话模型区分配额组', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/subscription-slot.ts'), 'utf8')
+  // 账号名来自上游可确认的登录标识，拿不到时整行不渲染
+  assert.match(source, /usage\.accountName\?\.trim\(\) \|\| null/u)
+  assert.match(source, /accountName !== null && createElement\('span', \{ style: accountMetaStyle \}, accountName\)/u)
+  // 生效档位与账号持有的付费档位不一致时两个都要显示
+  assert.match(source, /const paidPlanLabel = usage\.paidPlanType\?\.trim\(\) \|\| null/u)
+  assert.match(source, /planText !== null && createElement\('span'/u)
+  // Antigravity 的 Gemini 与 Claude/GPT 是两个独立配额组：读取键与请求都必须带模型
+  assert.match(source, /const cacheKey = `\$\{adapterId\}\|\$\{selection\.providerId \?\? ''\}\|\$\{selection\.modelId \?\? ''\}`/u)
+  assert.match(source, /\.\.\.\(selection\.modelId \? \{ modelId: selection\.modelId \} : \{\}\)/u)
+})
+
+test('订阅弹层按上游分组渲染多组额度', async () => {
+  const source = await readFile(join(projectRoot, 'src/client/subscription-slot.ts'), 'utf8')
+  // 分组存在时展开全部组；没有分组才退回单组 primary/secondary/monthly
+  assert.match(source, /const quotaGroups = usage\.groups \?\? \[\]/u)
+  assert.match(source, /quotaGroups\.length > 0/u)
+  assert.match(source, /formatSubscriptionGroupLabel\(group, t\)/u)
+  assert.match(source, /formatSubscriptionGroupWindowLabel\(entry, t\)/u)
+  // 已知分组名走词条，未知分组回退上游展示名
+  assert.match(source, /if \(group\.id === 'gemini'\) return t\('usage\.quotaGroupGemini'\)/u)
+  assert.match(source, /if \(group\.id === 'third-party'\) return t\('usage\.quotaGroupThirdParty'\)/u)
 })
 
 test('官方余额统一复用适配器 Logo，并以进度条和到期倒计时展示', async () => {

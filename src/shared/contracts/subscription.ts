@@ -15,6 +15,30 @@ export interface CliSubscriptionCredits {
   readonly balance: string | null
 }
 
+/** 配额窗口类型；客户端据此取本地化文案，不依赖上游英文标签。 */
+export type CliSubscriptionQuotaWindowKind = 'five-hour' | 'weekly' | 'monthly' | 'other'
+
+/** 一个配额分组里的窗口。 */
+export interface CliSubscriptionGroupWindow {
+  readonly kind: CliSubscriptionQuotaWindowKind
+  /** 上游展示名；`kind` 为 `other` 时客户端回退到它。 */
+  readonly label: string | null
+  readonly window: CliSubscriptionWindow
+}
+
+/**
+ * 一组共享额度的模型。
+ *
+ * Antigravity 把 Gemini 与 Claude/GPT 分成两组互相独立的额度，每组各有 5 小时与周窗口；
+ * `primary`/`secondary` 只表达“当前会话模型所属组”，完整分组走这里。
+ */
+export interface CliSubscriptionGroup {
+  /** 稳定分组 id（`gemini` / `third-party` / 上游名 slug），供客户端本地化。 */
+  readonly id: string
+  readonly displayName: string
+  readonly windows: readonly CliSubscriptionGroupWindow[]
+}
+
 /** 消耗一次订阅重置后的稳定结果，与 Codex app-server 的 outcome 对齐。 */
 export type CliSubscriptionResetOutcome = 'reset' | 'alreadyRedeemed' | 'nothingToReset' | 'noCredit'
 
@@ -27,9 +51,18 @@ export interface CliSubscriptionResetResult {
 export interface CliSubscriptionUsage {
   readonly authenticated: boolean
   readonly planType: string | null
+  /**
+   * 账号实际持有的付费档位（如 Antigravity 的 `paidTier = Google AI Pro`）。
+   * 与 `planType`（后端生效档位）不同时说明订阅权益没有映射到该 Agent 的额度上。
+   */
+  readonly paidPlanType?: string | null
+  /** 上游可确认的账号标识（如 Antigravity 的登录邮箱）；读取器拿不到时为 undefined。 */
+  readonly accountName?: string | null
   readonly primary: CliSubscriptionWindow | null
   readonly secondary: CliSubscriptionWindow | null
   readonly monthly: CliSubscriptionWindow | null
+  /** 按模型分组的多窗口额度；读取器只能给出单窗口时保持 undefined。 */
+  readonly groups?: readonly CliSubscriptionGroup[]
   readonly rateLimitReachedType: string | null
   /** 官方 Codex 的可囤积重置券；明细行的 expiresAt 为 Unix 秒。读取器不支持时为 null。 */
   readonly resetCredits: null | {

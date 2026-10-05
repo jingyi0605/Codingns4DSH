@@ -12,6 +12,7 @@ import { detectBinary } from './rpc-driver-utils.js'
 import { QoderSubscriptionService, type QoderSubscriptionOptions } from './qoder-subscription.js'
 import { NewApiSubscriptionService, type NewApiSubscriptionOptions, isOfficialAgentBaseUrl } from './new-api-subscription.js'
 import { CodeBuddySubscriptionService, type CodeBuddySubscriptionOptions } from './codebuddy-subscription.js'
+import { AntigravitySubscriptionService, type AntigravitySubscriptionOptions } from './antigravity-subscription.js'
 import { CustomUpstreamClassifier, mergeCustomUpstreamCandidates, type CustomUpstreamClassifierOptions, type CustomUpstreamReadResult } from './custom-upstream-classifier.js'
 
 type FetchLike = typeof fetch
@@ -33,6 +34,7 @@ export class ProviderSubscriptionService {
   readonly qoder: QoderSubscriptionService
   readonly qoderCn: QoderSubscriptionService
   readonly codebuddy: CodeBuddySubscriptionService
+  readonly antigravity: AntigravitySubscriptionService
 
   constructor(options: ProviderSubscriptionOptions = {}) {
     // 全局超时只作为缺省值；单项服务显式给出的 timeoutMs 优先。
@@ -52,13 +54,17 @@ export class ProviderSubscriptionService {
     this.qoder = new QoderSubscriptionService({ ...shared, variant: 'qoder', ...options.qoder })
     this.qoderCn = new QoderSubscriptionService({ ...shared, variant: 'qoder-cn', ...options.qoderCn })
     this.codebuddy = new CodeBuddySubscriptionService({ ...shared, ...options.codebuddy })
+    this.antigravity = new AntigravitySubscriptionService({ ...shared, ...options.antigravity })
   }
 
-  read(adapterId: string, providerId?: string): Promise<CliSubscriptionUsage | null> {
+  read(adapterId: string, providerId?: string, modelId?: string): Promise<CliSubscriptionUsage | null> {
     if (adapterId === 'codebuddy-cn') adapterId = 'codebuddy'
     if (adapterId === 'dsh') return this.readDsh(providerId)
     if (adapterId === 'qoder') return this.qoder.read()
     if (adapterId === 'qoder-cn') return this.qoderCn.read()
+    // Antigravity 没有自定义上游入口，始终读官方账户余量；模型决定 Gemini 与
+    // Claude/GPT 两个独立配额组里读哪一组。
+    if (adapterId === 'antigravity') return this.antigravity.read({ modelId })
     if (adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'grok' || adapterId === 'opencode' || adapterId === 'command-code' || adapterId === 'zcode' || adapterId === 'codebuddy' || adapterId === 'workbuddy') {
       return this.readSub2ApiFirst(adapterId, providerId)
     }
@@ -152,6 +158,7 @@ export interface ProviderSubscriptionOptions {
   readonly qoder?: QoderSubscriptionOptions
   readonly qoderCn?: QoderSubscriptionOptions
   readonly codebuddy?: CodeBuddySubscriptionOptions
+  readonly antigravity?: AntigravitySubscriptionOptions
   /** 所有读取器共用的网络超时（毫秒）；单项服务显式给出时优先。 */
   readonly timeoutMs?: number
 }

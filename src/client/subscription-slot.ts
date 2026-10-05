@@ -3,7 +3,7 @@ import type { ReactElement, RefObject } from 'react'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { isSubscriptionUsageFresh } from '../shared/contracts/subscription.js'
-import type { CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
+import type { CliSubscriptionGroup, CliSubscriptionGroupWindow, CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
 import { DEFAULT_SUBSCRIPTION_USAGE_SETTINGS } from '../shared/contracts/config.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCliRpc } from './cli-catalog.js'
@@ -132,7 +132,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     const refresh = async (): Promise<void> => {
       setLoading(true)
       try {
-        const selection = await callCliRpc<{ readonly adapterId?: string; readonly providerId?: string }>(props.rpc, 'session/get', { sessionId })
+        const selection = await callCliRpc<{ readonly adapterId?: string; readonly providerId?: string; readonly modelId?: string }>(props.rpc, 'session/get', { sessionId })
         const adapterId = selection.adapterId
         if (!active || !isSubscriptionAdapter(adapterId)) {
           if (active) {
@@ -149,7 +149,8 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
           setProviderId(selection.providerId ?? null)
         }
         const intervalMins = props.getRefreshIntervalMins?.() ?? DEFAULT_SUBSCRIPTION_USAGE_SETTINGS.refreshIntervalMins
-        const cacheKey = `${adapterId}|${selection.providerId ?? ''}`
+        // 模型也是读取键的一部分：Antigravity 的 Gemini 与 Claude/GPT 是两个独立配额组。
+        const cacheKey = `${adapterId}|${selection.providerId ?? ''}|${selection.modelId ?? ''}`
         const cached = subscriptionUsageCache.get(cacheKey)
         // New-API 的余额和 Token 日志可能随 Key/钱包状态快速变化，且旧结果
         // 容易把历史日志投影到当前站点；每次刷新都重新读取，Sub2API 仍复用原缓存。
@@ -161,6 +162,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         const next = await callCliRpc<CliSubscriptionUsage | null>(props.rpc, 'subscription', {
           adapterId,
           ...(selection.providerId ? { providerId: selection.providerId } : {}),
+          ...(selection.modelId ? { modelId: selection.modelId } : {}),
         })
         if (next !== null) subscriptionUsageCache.set(cacheKey, { usage: next, capturedAt: Date.now() })
         if (active) setUsage(next)
@@ -352,6 +354,27 @@ function SubscriptionPopover({ usage, providerName, t, nowMs, reset }: {
     { id: 'secondary', label: formatSubscriptionWindowLabel(usage.secondary, t('usage.windowWeekly'), t), window: usage.secondary },
     { id: 'monthly', label: formatSubscriptionWindowLabel(usage.monthly, t('usage.windowMonthly'), t), window: usage.monthly },
   ] as const
+  const renderWindow = (key: string, label: string, window: CliSubscriptionWindow | null): ReactElement | null => window === null ? null
+    : createElement('section', { key, style: windowStyle },
+      createElement('div', { style: windowHeadingStyle }, createElement('span', undefined, label), createElement('span', undefined, `${formatPercent(window.remainingPercent)}%`)),
+      createElement('div', { role: 'progressbar', 'aria-label': t('usage.windowRemaining', { label, percent: formatPercent(window.remainingPercent) }), 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': window.remainingPercent, style: barStyle },
+        createElement('span', { style: { ...barFillStyle, width: `${window.remainingPercent}%` } }),
+      ),
+      window.resetsAt !== null && createElement('div', { style: resetStyle }, t('usage.resetsIn', { time: formatCountdown(window.resetsAt, t) })),
+    )
+  // 上游按模型分组给额度（Antigravity 的 Gemini 组与 Claude/GPT 组各自有 5 小时与周窗口）。
+  // 有分组时按组渲染完整明细，`primary`/`secondary` 只负责底部入口的单一进度。
+  const quotaGroups = usage.groups ?? []
+  const windowSections = quotaGroups.length > 0
+    ? quotaGroups.flatMap((group) => [
+        createElement('div', { key: `group:${group.id}`, style: quotaGroupTitleStyle }, formatSubscriptionGroupLabel(group, t)),
+        ...group.windows.map((entry) => renderWindow(
+          `group:${group.id}:${entry.kind}:${entry.label ?? ''}`,
+          formatSubscriptionGroupWindowLabel(entry, t),
+          entry.window,
+        )),
+      ])
+    : windows.map(({ id, label, window }) => renderWindow(id, label, window))
   const credits = usage.credits ?? null
   const creditText = credits === null
     ? null
@@ -366,18 +389,26 @@ function SubscriptionPopover({ usage, providerName, t, nowMs, reset }: {
       .map((credit) => credit.expiresAt)
       .filter((expiry): expiry is number => expiry !== null)
       .sort((left, right) => left - right)
+  const accountName = usage.accountName?.trim() || null
+  const planLabel = usage.planType === null ? null : formatPlanType(usage.planType)
+  const paidPlanLabel = usage.paidPlanType?.trim() || null
+  // 生效档位与账号持有的付费档位不一致时必须两个都显示：否则界面会把
+  // “后端还没把 Pro 额度给到这个 Agent”显示成“账号没有订阅”。
+  const planText = planLabel === null
+    ? paidPlanLabel
+    : paidPlanLabel === null || paidPlanLabel === planLabel
+      ? planLabel
+      : `${planLabel} · ${paidPlanLabel}`
   return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.popoverSubscriptionUsage', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
-      createElement('strong', undefined, t('usage.popoverSubscriptionTitle', { provider: providerName })),
-      usage.planType && createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatPlanType(usage.planType)),
-    ),
-    ...windows.map(({ id, label, window }) => window === null ? null : createElement('section', { key: id, style: windowStyle },
-      createElement('div', { style: windowHeadingStyle }, createElement('span', undefined, label), createElement('span', undefined, `${formatPercent(window.remainingPercent)}%`)),
-      createElement('div', { role: 'progressbar', 'aria-label': t('usage.windowRemaining', { label, percent: formatPercent(window.remainingPercent) }), 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': window.remainingPercent, style: barStyle },
-        createElement('span', { style: { ...barFillStyle, width: `${window.remainingPercent}%` } }),
+      createElement('div', { style: popoverHeadingTextStyle },
+        createElement('strong', undefined, t('usage.popoverSubscriptionTitle', { provider: providerName })),
+        // 账号名来自上游可确认的登录标识；拿不到时整行不渲染。
+        accountName !== null && createElement('span', { style: accountMetaStyle }, accountName),
       ),
-      window.resetsAt !== null && createElement('div', { style: resetStyle }, t('usage.resetsIn', { time: formatCountdown(window.resetsAt, t) })),
-    )),
+      planText !== null && createElement('span', { style: { color: dshThemeColor.labelTertiary } }, planText),
+    ),
+    ...windowSections,
     (creditText !== null || usage.resetCredits !== null) && createElement('section', { style: resetCreditsSectionStyle },
       creditText !== null && createElement('div', { style: resetCreditsRowStyle },
         createElement('span', undefined, t('usage.creditBalanceLabel')),
@@ -473,6 +504,21 @@ function formatSubscriptionWindowLabel(window: CliSubscriptionWindow | null, fal
   if (durationMins % (24 * 60) === 0) return t('usage.windowDays', { count: durationMins / (24 * 60) })
   if (durationMins % 60 === 0) return t('usage.windowHours', { count: durationMins / 60 })
   return t('usage.windowMinutes', { count: durationMins })
+}
+
+/** 上游分组名本地化：只有已知分组用词条，其余原样显示上游名称。 */
+function formatSubscriptionGroupLabel(group: CliSubscriptionGroup, t: CodingNsTranslator): string {
+  if (group.id === 'gemini') return t('usage.quotaGroupGemini')
+  if (group.id === 'third-party') return t('usage.quotaGroupThirdParty')
+  return group.displayName
+}
+
+/** 窗口文案按类型取词条，未知类型回退到上游标签。 */
+function formatSubscriptionGroupWindowLabel(entry: CliSubscriptionGroupWindow, t: CodingNsTranslator): string {
+  if (entry.kind === 'five-hour') return t('usage.windowFiveHour')
+  if (entry.kind === 'weekly') return t('usage.windowWeekly')
+  if (entry.kind === 'monthly') return t('usage.windowMonthly')
+  return entry.label ?? ''
 }
 
 /**
@@ -819,8 +865,8 @@ function selectDeepseekBalance(usage: DeepseekUsage): DeepseekUsage['balances'][
   return usage.balances.find((balance) => balance.currency.toUpperCase() === 'USD') ?? usage.balances[0] ?? null
 }
 /** 已具备用量读取契约的适配器才挂载底部订阅入口。 */
-function isSubscriptionAdapter(adapterId: unknown): adapterId is 'command-code' | 'codex' | 'claude-code' | 'codebuddy' | 'codebuddy-cn' | 'dsh' | 'grok' | 'kimi' | 'opencode' | 'workbuddy' | 'zcode' {
-  return adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'codebuddy' || adapterId === 'codebuddy-cn' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'kimi' || adapterId === 'opencode' || adapterId === 'workbuddy' || adapterId === 'zcode'
+function isSubscriptionAdapter(adapterId: unknown): adapterId is 'antigravity' | 'command-code' | 'codex' | 'claude-code' | 'codebuddy' | 'codebuddy-cn' | 'dsh' | 'grok' | 'kimi' | 'opencode' | 'qoder' | 'qoder-cn' | 'workbuddy' | 'zcode' {
+  return adapterId === 'antigravity' || adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'codebuddy' || adapterId === 'codebuddy-cn' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'kimi' || adapterId === 'opencode' || adapterId === 'qoder' || adapterId === 'qoder-cn' || adapterId === 'workbuddy' || adapterId === 'zcode'
 }
 function isRemoteWebContext(): boolean {
   return (globalThis as { __CODINGNS4DSH_REMOTE_WEB_CONTEXT__?: unknown }).__CODINGNS4DSH_REMOTE_WEB_CONTEXT__ === true
@@ -958,6 +1004,8 @@ const progressRingVisualStyle = { boxSizing: 'border-box' as const, width: '100%
 const progressRingValueStyle = { boxSizing: 'border-box' as const, width: '100%', height: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, borderRadius: 'inherit', background: dshThemeColor.menuBackground, fontSize: 7, lineHeight: 1, fontWeight: 700, color: dshThemeColor.labelPrimary, whiteSpace: 'nowrap' as const }
 const progressRingSuffixStyle = { fontSize: 5.5, lineHeight: 1, color: dshThemeColor.labelTertiary, transform: 'translateY(1px)' }
 const popoverHeadingStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 18, paddingBottom: 10, borderBottom: `1px solid ${dshThemeColor.border}`, fontSize: 14 }
+const popoverHeadingTextStyle = { display: 'grid', gap: 2, minWidth: 0 }
+const accountMetaStyle = { overflow: 'hidden', color: dshThemeColor.labelTertiary, fontSize: 11, lineHeight: '16px', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
 const upstreamMetaStyle = { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, paddingTop: 8, color: dshThemeColor.labelTertiary, fontSize: 11, lineHeight: '16px' }
 const upstreamTypeStyle = { flex: '0 0 auto', color: dshThemeColor.labelSecondary, fontWeight: 600 }
 const upstreamLinkStyle = { minWidth: 0, overflow: 'hidden', color: dshThemeColor.accent, textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, textDecoration: 'none' }
@@ -967,6 +1015,7 @@ const windowHeadingStyle = { display: 'flex', justifyContent: 'space-between', g
 const barStyle = { height: 7, overflow: 'hidden' as const, borderRadius: 4, background: dshThemeColor.border }
 const barFillStyle = { display: 'block', height: '100%', borderRadius: 4, background: dshThemeColor.accent, transition: 'width .2s ease' }
 const resetStyle = { color: dshThemeColor.labelTertiary, fontSize: 12 }
+const quotaGroupTitleStyle = { paddingTop: 12, color: dshThemeColor.labelSecondary, fontSize: 12, fontWeight: 600, letterSpacing: '.02em' }
 const subscriptionPopoverStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1200, bottom: 'calc(100% + 8px)', left: 0, width: 'max-content', minWidth: 280, maxWidth: 'min(400px, calc(100vw - 24px))', boxSizing: 'border-box' as const, padding: 14, borderRadius: 12 }
 const resetCreditsSectionStyle = { display: 'grid', gap: 6, marginTop: 10, padding: '10px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 10, background: dshThemeColor.surfaceSubtle }
 const resetCreditsRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelSecondary, fontSize: 13 }
