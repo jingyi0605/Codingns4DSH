@@ -17,6 +17,8 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   private readonly sessionRoots: readonly string[]
   private readonly claudeConfigDir: string | undefined
   private readonly discoveryFetch: typeof fetch | undefined
+  /** 参数分片按会话和内容块索引隔离，避免并发会话或多个工具互相串入。 */
+  private readonly toolInputStates = new Map<string, Map<number, ClaudeToolInputState>>()
   /**
    * `--effort` 探测结论，绑定到具体的 CLI 路径与版本。
    *
@@ -76,9 +78,11 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
    */
   override async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const prepared = await prepareClaudeTurnInput(input)
+    this.toolInputStates.delete(input.sessionId)
     try {
       yield* super.executeTurn(prepared.input)
     } finally {
+      this.toolInputStates.delete(input.sessionId)
       await prepared.cleanup()
     }
   }
@@ -136,31 +140,38 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   override dispose(): void {
     this.effortProbe = undefined
     this.detectedVersion = null
+    this.toolInputStates.clear()
     super.dispose()
   }
 
   protected parseEvent(value: Record<string, unknown>, input: CodingNsCliTurnInput): readonly CodingNsAgentEvent[] {
     const event = value.type === 'stream_event' && typeof value.event === 'object' && value.event !== null ? value.event as Record<string, unknown> : value
     const delta = typeof event.delta === 'object' && event.delta !== null ? event.delta as Record<string, unknown> : null
+    if (event.type === 'message_start') this.toolInputStates.delete(input.sessionId)
     if (event.type === 'content_block_delta' && delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') return [{ type: 'reasoning-delta', text: delta.thinking }]
     if (event.type === 'content_block_delta' && delta?.type === 'text_delta' && typeof delta.text === 'string') return [{ type: 'text-delta', text: delta.text }]
     if (event.type === 'content_block_start' && isToolRecord(event.content_block) && event.content_block.type === 'tool_use') {
-      const tool = claudeToolUse(event.content_block)
-      return tool === null ? [] : [tool]
+      return this.startClaudeTool(input.sessionId, event)
     }
+    if (event.type === 'content_block_delta' && delta?.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
+      const state = this.toolInputStates.get(input.sessionId)?.get(claudeBlockIndex(event))
+      if (state !== undefined) state.partialJson += delta.partial_json
+      return []
+    }
+    if (event.type === 'content_block_stop') return this.finishClaudeToolInput(input.sessionId, event)
     if ((value.type === 'assistant' || value.type === 'user') && typeof value.message === 'object' && value.message !== null) {
       const message = value.message as Record<string, unknown>
       const content = Array.isArray(message.content) ? message.content : []
-      return content.flatMap((part): CodingNsAgentEvent[] => {
+      return content.flatMap((part): readonly CodingNsAgentEvent[] => {
         if (!part || typeof part !== 'object') return []
         const item = part as Record<string, unknown>
         if (item.type === 'tool_use') {
           const tool = claudeToolUse(item)
-          return tool === null ? [] : [tool]
+          return tool === null ? [] : [...this.completeClaudeTool(input.sessionId, tool)]
         }
         if (item.type === 'tool_result') {
           const tool = claudeToolResult(item)
-          return tool === null ? [] : [tool]
+          return tool === null ? [] : [...this.flushClaudeToolBeforeResult(input.sessionId, tool.callId), tool]
         }
         const reasoning = reasoningText(item)
         if (reasoning !== null) return [{ type: 'reasoning-delta', text: reasoning }]
@@ -168,6 +179,77 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
       })
     }
     return super.parseEvent(value, input)
+  }
+
+  /** 开始事件的空 input 是占位；原生调用头不可改写，必须等完整参数。 */
+  private startClaudeTool(sessionId: string, event: Record<string, unknown>): readonly CodingNsAgentEvent[] {
+    const tool = claudeToolUse(event.content_block as Record<string, unknown>)
+    if (tool === null) return []
+    if (tool.input !== undefined && tool.input.trim() !== '' && parseClaudeToolInput(tool.input) !== '{}') return [tool]
+    const states = this.toolInputStates.get(sessionId) ?? new Map<number, ClaudeToolInputState>()
+    states.set(claudeBlockIndex(event), { tool, partialJson: '' })
+    this.toolInputStates.set(sessionId, states)
+    return []
+  }
+
+  /** 参数块结束后才发完整调用；缺失或损坏的增量由 assistant 完整快照补齐。 */
+  private finishClaudeToolInput(sessionId: string, event: Record<string, unknown>): readonly CodingNsAgentEvent[] {
+    const states = this.toolInputStates.get(sessionId)
+    const index = claudeBlockIndex(event)
+    const state = states?.get(index)
+    if (state === undefined) return []
+    const input = parseClaudeToolInput(state.partialJson)
+    if (input === undefined) return []
+    states?.delete(index)
+    return [{ ...state.tool, input }]
+  }
+
+  /** assistant 完整快照是调用参数的最终事实，消费掉对应的暂存块避免重复。 */
+  private completeClaudeTool(sessionId: string, tool: ClaudeToolEvent): readonly CodingNsAgentEvent[] {
+    const callId = tool.callId
+    if (callId === undefined) return [tool]
+    const states = this.toolInputStates.get(sessionId)
+    if (states !== undefined) {
+      for (const [index, state] of states) {
+        if (state.tool.callId === callId) states.delete(index)
+      }
+    }
+    return [tool]
+  }
+
+  /** 没有 assistant 快照时，以工具结果到达作为空参数调用的最后回退点。 */
+  private flushClaudeToolBeforeResult(sessionId: string, callId: string | undefined): readonly CodingNsAgentEvent[] {
+    if (callId === undefined) return []
+    const states = this.toolInputStates.get(sessionId)
+    if (states === undefined) return []
+    for (const [index, state] of states) {
+      if (state.tool.callId !== callId) continue
+      states.delete(index)
+      return [{ ...state.tool, input: parseClaudeToolInput(state.partialJson) ?? state.tool.input ?? '{}' }]
+    }
+    return []
+  }
+}
+
+type ClaudeToolEvent = Extract<CodingNsAgentEvent, { type: 'tool-event' }>
+
+interface ClaudeToolInputState {
+  readonly tool: ClaudeToolEvent
+  partialJson: string
+}
+
+function claudeBlockIndex(event: Record<string, unknown>): number {
+  return typeof event.index === 'number' ? event.index : 0
+}
+
+function parseClaudeToolInput(value: string): string | undefined {
+  if (value.trim() === '') return undefined
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+    return JSON.stringify(parsed)
+  } catch {
+    return undefined
   }
 }
 
@@ -227,7 +309,7 @@ function claudeImageExtension(attachment: CodingNsCliAttachment, bytes: Uint8Arr
   return undefined
 }
 
-function claudeToolUse(item: Record<string, unknown>): CodingNsAgentEvent | null {
+function claudeToolUse(item: Record<string, unknown>): ClaudeToolEvent | null {
   const toolName = firstToolText(item.name, item.toolName)
   if (toolName === undefined) return null
   const callId = firstToolText(item.id, item.tool_use_id, item.toolUseId)
@@ -245,7 +327,7 @@ function claudeToolUse(item: Record<string, unknown>): CodingNsAgentEvent | null
   }
 }
 
-function claudeToolResult(item: Record<string, unknown>): CodingNsAgentEvent | null {
+function claudeToolResult(item: Record<string, unknown>): ClaudeToolEvent | null {
   const callId = firstToolText(item.tool_use_id, item.toolUseId, item.callId)
   if (callId === undefined) return null
   const failed = item.is_error === true || item.isError === true
