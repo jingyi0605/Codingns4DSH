@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { CodingNsCliModelCatalog } from '../../shared/contracts/cli-adapter.js'
 
 /**
@@ -260,6 +263,142 @@ export function parseAntigravityModels(output: string): CodingNsCliModelCatalog 
     })),
   ]
   return staticCatalog('antigravity', 'Antigravity', models)
+}
+
+/**
+ * Antigravity 各模型的上下文窗口。
+ *
+ * `agy` 的 stream-json 事件只携带 `input_tokens` / `output_tokens` /
+ * `thinking_tokens` / `cache_read_tokens` / `total_tokens` 五项用量，任何事件都
+ * 不报告上下文容量。唯一第一手来源是 CLI 自己拉取模型目录时调用的
+ * `v1internal:fetchAvailableModels`，其 `models[*].maxTokens` 即窗口；本机实测
+ * （agy 1.2.17，2026-10-05）：Gemini 系 1048576、Claude 系 250000、
+ * GPT-OSS 120B 131072。该值随服务端变化，只作为 token-meter 的分母提示。
+ */
+const ANTIGRAVITY_CONTEXT_WINDOWS = new Map<string, number>([
+  // `agy models` 暴露的模型 id（档位后缀已由 parseAntigravityModels 剥离）
+  ['gemini-3.8-flash', 1_048_576],
+  ['gemini-3.7-flash', 1_048_576],
+  ['gemini-3.6-flash', 1_048_576],
+  ['gemini-3.5-flash', 1_048_576],
+  ['gemini-3.5-flash-lite', 1_048_576],
+  ['gemini-3.1-pro', 1_048_576],
+  ['gemini-3.1-flash-lite', 1_048_576],
+  ['gemini-3-flash', 1_048_576],
+  ['gemini-2.5-pro', 1_048_576],
+  ['gemini-2.5-flash', 1_048_576],
+  ['claude-sonnet-4-6', 250_000],
+  ['claude-opus-4-6-thinking', 250_000],
+  ['gpt-oss-120b', 131_072],
+  // AGY 设置文件里展示名去掉档位括号后的写法（Claude 的版本号用点号）
+  ['claude-sonnet-4.6', 250_000],
+  ['claude-opus-4.6', 250_000],
+])
+
+/**
+ * `provider-default` 时 AGY 用的是它自己设置里选中的模型，而不是 DSH 侧的空 id。
+ * 目录接口的 `defaultAgentModelId` 是 `gemini-3.6-flash-high`（1048576），因此
+ * 读不到设置文件时按这个默认模型取窗口。
+ */
+const ANTIGRAVITY_DEFAULT_CONTEXT_WINDOW = 1_048_576
+
+export interface AntigravityContextWindowOptions {
+  readonly homeDirectory?: string
+  readonly readFile?: (path: string) => string
+}
+
+/**
+ * 解析 Antigravity 会话的上下文窗口。
+ *
+ * 显式模型 id 直接查表；`provider-default` 时读取 AGY 自己的设置文件
+ * （`~/.gemini/antigravity-cli/settings.json` 的 `model` 展示名），把展示名还原成
+ * CLI 模型 id 后查表，避免把 Gemini 的 1M 分母套到 Claude 的 250K 会话上。
+ * 未知模型返回 undefined：宁可没有分母，也不写入错误容量。
+ */
+export function knownAntigravityContextWindow(
+  modelId: string | undefined,
+  options: AntigravityContextWindowOptions = {},
+): number | undefined {
+  const resolved = resolveAntigravityModelId(modelId, options)
+  if (resolved !== null) {
+    const window = ANTIGRAVITY_CONTEXT_WINDOWS.get(resolved)
+    if (window !== undefined) return window
+    // 显式指定的未知模型没有可信窗口；只有 provider-default 才退回默认模型。
+    if (!isProviderDefaultModel(modelId)) return undefined
+  }
+  return ANTIGRAVITY_DEFAULT_CONTEXT_WINDOW
+}
+
+/**
+ * 解析 Antigravity 会话实际使用的模型。
+ *
+ * 显式模型 id 直接返回；`provider-default` 时读取 AGY 自己的设置文件
+ * （`~/.gemini/antigravity-cli/settings.json` 的 `model` 展示名）并还原成模型键。
+ * 读不到时返回 null，调用方按 AGY 默认 Agent 模型（Gemini 系）处理。
+ */
+export function resolveAntigravityModelId(
+  modelId: string | undefined,
+  options: AntigravityContextWindowOptions = {},
+): string | null {
+  const normalized = modelId?.trim().toLowerCase()
+  if (normalized !== undefined && normalized !== '' && normalized !== 'provider-default') return normalized
+  return readAntigravitySelectedModel(options)
+}
+
+/**
+ * Antigravity 的缓存字段语义随模型 Provider 不同，实测（agy 1.2.17）：
+ *
+ * - Claude 模型沿用 Anthropic 口径：`input_tokens` 只含未缓存输入，缓存命中单独放在
+ *   `cache_read_tokens`（首轮 3968 + 9619，第二轮 682 + 13120）。
+ * - Gemini / GPT-OSS 模型：`input_tokens` 是完整提示规模，`cache_read_tokens` 在本机
+ *   全部 16 条历史样本里恒为 0。
+ *
+ * 两者都满足 `total_tokens = input_tokens + output_tokens`，无法用总量区分；只有
+ * Claude 口径需要把缓存读取从输入里排除，因此按模型前缀判定。
+ */
+export function antigravityUsageExcludesCacheFromInput(modelId: string | null): boolean {
+  return modelId !== null && modelId.startsWith('claude')
+}
+
+/**
+ * AGY 是否接受该模型的 `--effort`。
+ *
+ * 实测（agy 1.2.17，逐个模型下发并读取 CLI 的校验报错）：
+ *
+ * - Gemini：`low` / `medium` / `high`（`--effort xhigh` 报 “available: low, medium, high”）
+ * - GPT-OSS 120B：只有 `medium`（`--effort low` 报 “available: medium”）
+ * - Claude 系列：完全不支持（`--effort is not supported for model "claude-sonnet-4-6"`），
+ *   换 `-thinking` 等 id 写法同样是这个错误
+ *
+ * Claude 的档位列表必须在目录里保持为空，并且旧会话残留的档位不能被下发：
+ * AGY 会把它当成 `invalid model selection` 直接拒绝整轮。
+ */
+export function antigravitySupportsEffort(modelId: string | null): boolean {
+  return modelId === null || !modelId.trim().toLowerCase().startsWith('claude')
+}
+
+/** 把 AGY 设置里的模型展示名还原成查表用的模型键。 */
+export function antigravityModelIdFromLabel(label: string): string | null {
+  const normalized = label.trim().toLowerCase()
+    // 展示名尾部的 "(High)"/"(Thinking)" 是档位或说明标注，不属于模型键。
+    .replace(/\s*\([^)]*\)\s*$/u, '')
+    .replace(/\s+/gu, '-')
+  if (normalized === '') return null
+  return normalized.replace(ANTIGRAVITY_EFFORT_SUFFIX, '$<base>')
+}
+
+function readAntigravitySelectedModel(options: AntigravityContextWindowOptions): string | null {
+  const read = options.readFile ?? ((path: string) => readFileSync(path, 'utf8'))
+  const home = options.homeDirectory ?? homedir()
+  try {
+    const parsed: unknown = JSON.parse(read(join(home, '.gemini', 'antigravity-cli', 'settings.json')))
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
+    const label = (parsed as Record<string, unknown>).model
+    return typeof label === 'string' ? antigravityModelIdFromLabel(label) : null
+  } catch {
+    // 设置文件缺失或损坏时退回 AGY 的默认 Agent 模型窗口。
+    return null
+  }
 }
 
 /** 把 CLI 帮助解析到的模型补上已知档位，未知模型保持空数组。 */
