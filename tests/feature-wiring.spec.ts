@@ -7,6 +7,7 @@ import { createAuthFeature } from '../data/build/dist/host/features/index.js'
 import {
   cliAdaptersFeature,
   debugFeature,
+  globalVoiceAssistantFeature,
   lanAccessFeature,
   mobileAccessFeature,
   reverseProxyFeature,
@@ -76,6 +77,28 @@ test('设置开关驱动模块启停，常驻模块不受开关影响', async ()
   // 常驻模块即使在设置里被写成 false 也保持启用。
   await sync(settingsOf({ lanAccess: false }))
   assert.equal(registry.getState('lanAccess'), 'enabled')
+})
+
+test('全局智能助理默认关闭且模块开关允许通过设置 RPC 写入', async () => {
+  assert.equal(globalVoiceAssistantFeature.descriptor.enabledByDefault, false)
+  assert.deepEqual(enabledFeatureNames([globalVoiceAssistantFeature.descriptor], undefined), [])
+  assert.deepEqual(
+    enabledFeatureNames([globalVoiceAssistantFeature.descriptor], settingsOf({ globalVoiceAssistant: true })),
+    ['globalVoiceAssistant'],
+  )
+
+  let received: unknown
+  const handler = createCodingNsSettingsRpcHandler({
+    writable: true,
+    describe: () => [{ ns: 'codingns', revision: 1, value: settingsOf({}) }],
+    get: () => settingsOf({}),
+    mutate: async (_namespace: string, ops: unknown) => { received = ops },
+  } as never)
+
+  await handler('set', {
+    ops: [{ op: 'set', path: ['modules', 'globalVoiceAssistant'], value: true }],
+  })
+  assert.deepEqual(received, [{ op: 'set', path: ['modules', 'globalVoiceAssistant'], value: true }])
 })
 
 test('reconcile 会带上依赖，也不会在停用阶段误伤被依赖的模块', async () => {
