@@ -166,21 +166,21 @@ test('聚合页终端列表位于顶部横向标签栏，不占用内容区侧�
   assert.doesNotMatch(styles, /list\}\{[^}]*width:180px/u)
 })
 
-test('终端标签栏提供 PC 独立刷新按钮和最右侧工具入口', async () => {
+test('终端标签栏在 PC 与移动端均提供刷新按钮和最右侧工具入口', async () => {
   const [styles, source] = await Promise.all([
     readFile(join(projectRoot, 'src/client/terminal/styles.ts'), 'utf8'),
     readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8'),
   ])
 
-  assert.match(source, /terminalClass\.refreshButton[\s\S]*terminalClass\.desktopOnly/u)
+  assert.match(source, /listActions[\s\S]*className: terminalClass\.refreshButton[\s\S]*className: terminalClass\.toolsButton/u)
+  assert.doesNotMatch(source, /terminalClass\.refreshButton\s*\}\s*\$\{terminalClass\.desktopOnly\}/u)
   assert.match(source, /terminalClass\.toolsButton[\s\S]*aria-expanded/u)
   assert.match(source, /terminalClass\.toolsPanel/u)
   assert.match(source, /resolveToolIcon\(\)/u)
   assert.match(source, /variant: 'toolbar'/u)
   assert.doesNotMatch(source, /function TerminalToolIcon/u)
-  assert.match(styles, /desktopOnly\}\{display:inline-flex/u)
-  assert.match(styles, /mobileOnly\}\{display:none/u)
-  assert.match(styles, /@media \(max-width:640px\)[\s\S]*desktopOnly\}\{display:none\}[\s\S]*mobileOnly\}\{display:inline-flex/u)
+  assert.doesNotMatch(source.match(/function TerminalToolsPanel[\s\S]*?\n\}/u)?.[0] ?? '', /resolveRefreshIcon|onRefresh|refreshing/u)
+  assert.doesNotMatch(styles, /desktopOnly|mobileOnly/u)
 })
 
 test('终端工具栏保留修饰键并发送常用控制字符', async () => {

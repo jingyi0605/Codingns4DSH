@@ -275,7 +275,7 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
         createElement(Button, {
           variant: 'ghost',
           size: 'sm',
-          className: `${terminalClass.refreshButton} ${terminalClass.desktopOnly}`,
+          className: terminalClass.refreshButton,
           icon: createElement(resolveRefreshIcon(), { size: 16 }),
           'aria-label': t('terminal.refresh'),
           title: t('terminal.refresh'),
@@ -299,8 +299,6 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
       view: activeView,
       platform: activePlatform,
       heldModifiers,
-      refreshing,
-      onRefresh: refreshTerminal,
       onToggleModifier: (modifier) => setHeldModifiers((current) => ({ ...current, [modifier]: !current[modifier] })),
       t,
     }) : null,
@@ -332,12 +330,10 @@ type TerminalHeldModifiers = Readonly<Record<TerminalModifier, boolean>>
 
 const EMPTY_HELD_MODIFIERS: TerminalHeldModifiers = { ctrl: false, alt: false, win: false }
 
-function TerminalToolsPanel({ view, platform, heldModifiers, refreshing, onRefresh, onToggleModifier, t }: {
+function TerminalToolsPanel({ view, platform, heldModifiers, onToggleModifier, t }: {
   readonly view: ReturnType<CodingNsWebTerminals['viewForTerminal']> | undefined
   readonly platform: TerminalPlatform | undefined
   readonly heldModifiers: TerminalHeldModifiers
-  readonly refreshing: boolean
-  readonly onRefresh: () => Promise<void>
   readonly onToggleModifier: (modifier: TerminalModifier) => void
   readonly t: ReturnType<typeof codingNsTranslator>
 }): ReactElement {
@@ -363,16 +359,6 @@ function TerminalToolsPanel({ view, platform, heldModifiers, refreshing, onRefre
     onClick: () => { if (view !== undefined) view.write(terminalShortcutData(kind, heldModifiers)) },
   }, terminalToolControl(kind))
   return createElement('div', { className: terminalClass.toolsPanel, role: 'toolbar', 'aria-label': t('terminal.tools') },
-    createElement(Button, {
-      variant: 'toolbar',
-      size: 'sm',
-      className: `${terminalClass.toolAction} ${terminalClass.mobileOnly}`,
-      icon: createElement(resolveRefreshIcon(), { size: 16 }),
-      'aria-label': t('terminal.refresh'),
-      title: t('terminal.refresh'),
-      disabled: refreshing,
-      onClick: () => { void onRefresh() },
-    }),
     modifier('ctrl', terminalModifierLabel('ctrl', platform, t)),
     modifier('alt', terminalModifierLabel('alt', platform, t)),
     modifier('win', terminalModifierLabel('win', platform, t)),
