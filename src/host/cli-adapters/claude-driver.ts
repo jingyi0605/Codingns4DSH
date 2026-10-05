@@ -10,10 +10,11 @@ import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
 import { WINDOWS, commandEnvironment } from './process-utils.js'
-import { reasoningText } from './reasoning-content.js'
 import { claudeBridgeArgs } from '../cli-bridge/injections.js'
 
 export class ClaudeCodeDriver extends StandardStreamDriver {
+  /** Claude 的 stream-json 可以在工具完成后暂停并由 Registry 续读同一进程。 */
+  readonly supportsToolStepSplitting = true
   private readonly sessionRoots: readonly string[]
   private readonly claudeConfigDir: string | undefined
   private readonly discoveryFetch: typeof fetch | undefined
@@ -173,9 +174,12 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
           const tool = claudeToolResult(item)
           return tool === null ? [] : [...this.flushClaudeToolBeforeResult(input.sessionId, tool.callId), tool]
         }
-        const reasoning = reasoningText(item)
-        if (reasoning !== null) return [{ type: 'reasoning-delta', text: reasoning }]
-        return typeof item.text === 'string' ? [{ type: 'text-delta', text: item.text }] : []
+        // 开启 `--include-partial-messages` 后，正文和思考已经由
+        // `stream_event/content_block_delta` 实时下发。这里的 assistant/user
+        // 记录只是同一块内容的结算快照，不能再投影到 DSH；否则运行时若把
+        // 快照和实时块同时写入同一个 assistant，会把整段正文追加第二遍。
+        // 工具生命周期仍由上面的 tool_use/tool_result 分支读取。
+        return []
       })
     }
     return super.parseEvent(value, input)
