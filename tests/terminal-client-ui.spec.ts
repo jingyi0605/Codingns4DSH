@@ -57,6 +57,12 @@ test('终端布局和 xterm 默认值与 DSH 0.1.6 内置终端一致', async ()
   assert.match(xterm, /schedulePostAttachReflow/u)
   assert.match(xterm, /resolveTerminalDimensions/u)
   assert.match(xterm, /root\.clientWidth/u)
+  // 列宽必须取自渲染服务的 cell 尺寸；.xterm-char-measure-element 被 DOM renderer
+  // 的宽度缓存复用，内容会变成最近测量的任意字符（如中文全角），用它推列宽会让
+  // 移动端列数近乎减半，文本提前换行并留下大片右侧空白。
+  assert.match(xterm, /resolveRendererCell/u)
+  assert.match(xterm, /_renderService\?\.dimensions/u)
+  assert.doesNotMatch(xterm, /measureWidth/u)
   assert.match(xterm, /if \(host\.clientWidth === 0 \|\| host\.clientHeight === 0\)/u)
 })
 

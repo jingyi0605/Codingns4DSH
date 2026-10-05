@@ -584,21 +584,44 @@ function resolveTerminalDimensions(terminal: Terminal, fit: FitAddon): { cols: n
   const fallback = fit.proposeDimensions()
   const root = terminal.element
   if (root === undefined || root.clientWidth <= 0 || root.clientHeight <= 0) return fallback
-  const measure = root.querySelector<HTMLElement>('.xterm-char-measure-element')
-  const row = root.querySelector<HTMLElement>('.xterm-rows > div')
-  const measureWidth = measure?.getBoundingClientRect().width ?? 0
-  const cellWidth = measureWidth > 0 ? measureWidth / 32 : 0
-  const cellHeight = row?.getBoundingClientRect().height ?? 0
+  const cell = resolveRendererCell(terminal)
+  if (cell === undefined) return fallback
   const computed = getComputedStyle(root)
   const paddingX = parseCssPixels(computed.paddingLeft) + parseCssPixels(computed.paddingRight)
   const paddingY = parseCssPixels(computed.paddingTop) + parseCssPixels(computed.paddingBottom)
   const width = root.clientWidth - paddingX - (terminal.options.scrollback === 0 ? 0 : 14)
   const height = root.clientHeight - paddingY
-  if (cellWidth <= 0 || cellHeight <= 0 || width <= 0 || height <= 0) return fallback
+  if (width <= 0 || height <= 0) return fallback
   return {
-    cols: Math.max(2, Math.floor(width / cellWidth)),
-    rows: Math.max(1, Math.floor(height / cellHeight)),
+    cols: Math.max(2, Math.floor(width / cell.width)),
+    rows: Math.max(1, Math.floor(height / cell.height)),
   }
+}
+
+interface TerminalCoreLike {
+  readonly _core?: {
+    readonly _renderService?: {
+      readonly dimensions?: {
+        readonly css?: {
+          readonly cell?: { readonly width: number; readonly height: number }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * 读取 xterm 渲染服务的单元格尺寸。`.xterm-char-measure-element` 会被 DOM renderer
+ * 的宽度缓存复用，其文本内容会随最近一次测量的字符变化（例如中文全角字符）。
+ * 用它除以 32 推算列宽会把列数按该字符宽度计算，宽字符时列数近乎减半，表现为
+ * 文本提前换行、右侧留出大片空白。这里改用官方 FitAddon 依赖的 renderService
+ * cell 尺寸（CharSizeService 固定按 32 个 'W' 测量），列宽不再受终端内容影响。
+ */
+function resolveRendererCell(terminal: Terminal): { width: number; height: number } | undefined {
+  const dimensions = (terminal as unknown as TerminalCoreLike)._core?._renderService?.dimensions
+  const cell = dimensions?.css?.cell
+  if (cell === undefined || !(cell.width > 0) || !(cell.height > 0)) return undefined
+  return { width: cell.width, height: cell.height }
 }
 
 function parseCssPixels(value: string): number {
