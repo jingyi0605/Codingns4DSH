@@ -120,6 +120,19 @@ const selectionLoads = new Map<string, Promise<CodingNsCliSessionConfig>>()
 /** 记录每个会话最新的写入，旧响应不能覆盖用户较新的选择。 */
 const selectionUpdates = new Map<string, { readonly revision: number; readonly promise: Promise<CodingNsCliSessionConfig> }>()
 const selectionRevisions = new Map<string, number>()
+
+/** 等待会话 Agent 选择写入 Host，避免切换后立即打开命令菜单仍读到旧 Agent。 */
+export async function waitForCliSessionSelection(sessionId: string): Promise<void> {
+  if (sessionId.trim() === '') return
+  for (;;) {
+    const pending = selectionUpdates.get(sessionId)
+    if (pending === undefined) return
+    await pending.promise
+    // Agent 和模型可能连续更新；只有等待中的写入仍是最新值时才可以继续。
+    if (selectionUpdates.get(sessionId) === pending) return
+  }
+}
+
 /** 在 Agent 和模型两个 Slot 之间共享当前会话选择。 */
 function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [SelectionState, (next: SelectionState) => void] {
   const [selection, setSelection] = useState<SelectionState>(() => sessionId ? selections.get(sessionId) ?? DEFAULT_SELECTION : DEFAULT_SELECTION)

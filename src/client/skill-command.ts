@@ -3,6 +3,7 @@ import type { CodingNsCliSkillDescriptor } from '../shared/contracts/cli-adapter
 import type { CodingNsRpcClient } from './features/types.js'
 import type { CodingNsLocale } from './locale.js'
 import { callCliRpc } from './cli-catalog.js'
+import { waitForCliSessionSelection } from './cli-slots.js'
 import { debugInfo, debugWarn } from '../shared/debug.js'
 
 const SKILL_COMMAND_NAME = 'skills'
@@ -77,6 +78,7 @@ export function registerSkillCommand(ctx: Context, options: RegisterSkillCommand
             noResults: t('skills.searchNoResults'),
           }),
           async options(session, signal) {
+            await waitForCliSessionSelection(session.sessionId)
             const catalog = await callCliRpc<readonly CodingNsCliSkillDescriptor[]>(options.rpc, 'skills', {
               sessionId: session.sessionId,
               forceReload: true,
