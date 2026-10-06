@@ -58,15 +58,13 @@ export class CommandCodeSubscriptionService {
   }
 }
 
-export function readCommandCodeApiKey(homeDirectory: string): string | null {
+export function readCommandCodeApiKey(homeDirectory: string, environment: Readonly<Record<string, string | undefined>> = process.env): string | null {
+  // 与 Command Code CLI 使用同一优先级，避免订阅卡片和实际请求读取不同账户。
+  const configuredKey = textValue(environment.COMMAND_CODE_API_KEY)
+  if (configuredKey !== null) return configuredKey
   const path = join(homeDirectory, 'auth.json')
   if (!existsSync(path)) return null
-  try {
-    const auth = JSON.parse(readFileSync(path, 'utf8')) as unknown
-    return textValue(recordValue(auth)?.apiKey) || textValue(process.env.COMMANDCODE_API_KEY)
-  } catch {
-    return textValue(process.env.COMMANDCODE_API_KEY)
-  }
+  try { return textValue(recordValue(JSON.parse(readFileSync(path, 'utf8')))?.apiKey) } catch { return null }
 }
 
 function normalizeWindow(value: unknown): CommandCodeSubscriptionWindow | null {
