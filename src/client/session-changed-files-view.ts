@@ -51,6 +51,9 @@ interface MutableDirectory {
   children: Map<string, MutableDirectory | FileNode>
 }
 
+/** 后台轮询只负责兜底发现外部文件变化，不能和页面交互争夺刷新节奏。 */
+const SESSION_CHANGED_FILES_BACKGROUND_REFRESH_MS = 30_000
+
 /** 会话“修改文件”视图；数据只通过插件 RPC 和现有 Git RPC 读取。 */
 export function SessionChangedFilesView(props: SessionChangedFilesViewProps): ReactElement {
   const t = props.t
@@ -65,44 +68,63 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const requestGeneration = useRef(0)
+  const inFlightLoad = useRef<Promise<void>>()
 
-  const load = async (): Promise<void> => {
+  const load = (foreground = false): Promise<void> => {
+    // 同一轮请求尚未结束时，后续的定时器和本地通知只复用它，避免旧响应交错覆盖新状态。
+    if (inFlightLoad.current !== undefined) return inFlightLoad.current
     const generation = requestGeneration.current + 1
     requestGeneration.current = generation
-    setLoading(true)
-    setError(undefined)
-    try {
-      const resolved = await resolveGitWorkspaceId(props.remote, props.sessionId)
-      if (resolved === undefined) throw new Error('当前会话没有可用的工作区')
-      const [sessionFiles, status] = await Promise.all([
-        call<SessionChangedFiles>(props.rpc, 'fileManagement/session-changes', { sessionId: props.sessionId, workspaceId: resolved }),
-        call<GitStatus>(props.rpc, 'git/status', { workspaceId: resolved }),
-      ])
-      if (generation !== requestGeneration.current) return
-      const next = selectSessionChangedFiles(sessionFiles, status)
-      setWorkspaceId(resolved)
-      setChanges(next)
-      props.reportCount?.(props.sessionId, next.length)
-      setSelectedPath((current) => current !== undefined && next.some((item) => item.path === current) ? current : next[0]?.path)
-    } catch (cause) {
-      if (generation !== requestGeneration.current) return
-      setError(cause instanceof Error ? cause.message : String(cause))
-      setChanges([])
-      setWorkspaceId(undefined)
-      props.reportCount?.(props.sessionId, 0)
-    } finally {
-      if (generation === requestGeneration.current) setLoading(false)
+    if (foreground) {
+      setLoading(true)
+      setError(undefined)
     }
+    const task = (async (): Promise<void> => {
+      try {
+        const resolved = await resolveGitWorkspaceId(props.remote, props.sessionId)
+        if (resolved === undefined) throw new Error('当前会话没有可用的工作区')
+        const [sessionFiles, status] = await Promise.all([
+          call<SessionChangedFiles>(props.rpc, 'fileManagement/session-changes', { sessionId: props.sessionId, workspaceId: resolved }),
+          call<GitStatus>(props.rpc, 'git/status', { workspaceId: resolved }),
+        ])
+        if (generation !== requestGeneration.current) return
+        const next = selectSessionChangedFiles(sessionFiles, status)
+        setWorkspaceId((current) => current === resolved ? current : resolved)
+        setChanges((current) => mergeChangedFiles(current, next))
+        props.reportCount?.(props.sessionId, next.length)
+        setSelectedPath((current) => current !== undefined && next.some((item) => item.path === current) ? current : next[0]?.path)
+        setError(undefined)
+      } catch (cause) {
+        if (generation !== requestGeneration.current) return
+        // 后台失败时保留上一次成功快照，避免网络抖动把列表闪成空白；首屏失败仍显示错误态。
+        if (foreground) {
+          setError(cause instanceof Error ? cause.message : String(cause))
+          setChanges([])
+          setWorkspaceId(undefined)
+          props.reportCount?.(props.sessionId, 0)
+        } else {
+          setError(cause instanceof Error ? cause.message : String(cause))
+        }
+      } finally {
+        if (generation === requestGeneration.current && foreground) setLoading(false)
+      }
+    })()
+    const tracked = task.finally(() => {
+      if (inFlightLoad.current === tracked) inFlightLoad.current = undefined
+    })
+    inFlightLoad.current = tracked
+    return tracked
   }
 
   useEffect(() => {
     setDiff(undefined)
     setCollapsed(new Set())
     setWorkspaceId(undefined)
-    void load()
-    const timer = globalThis.setInterval(() => { void load() }, 5_000)
+    void load(true)
+    const timer = globalThis.setInterval(() => { void load() }, SESSION_CHANGED_FILES_BACKGROUND_REFRESH_MS)
     return () => {
       requestGeneration.current += 1
+      inFlightLoad.current = undefined
       globalThis.clearInterval(timer)
     }
   }, [props.rpc, props.sessionId, props.remote])
@@ -134,7 +156,7 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
     try {
       await call<GitStatus>(props.rpc, `git/${action}`, { workspaceId, targets })
       notifyGitWorkspaceChanged(workspaceId)
-      await load()
+      await load(true)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -168,7 +190,7 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
       createElement('strong', { style: { fontSize: 15 } }, t('sessionFiles.title')),
       createElement('span', { style: countStyle }, t('sessionFiles.count', { count: changes.length })),
       createElement('span', { style: { flex: 1 } }),
-      createElement('button', { type: 'button', disabled: loading || busy, onClick: () => void load(), style: toolbarRefreshButtonStyle, title: t('sessionFiles.refresh'), 'aria-label': t('sessionFiles.refresh') },
+      createElement('button', { type: 'button', disabled: loading || busy, onClick: () => void load(true), style: toolbarRefreshButtonStyle, title: t('sessionFiles.refresh'), 'aria-label': t('sessionFiles.refresh') },
         createElement(RefreshIcon)),
       createElement('button', { type: 'button', disabled: busy || unstaged.length === 0, onClick: () => void stageTargets(unstaged.map((item) => item.path), 'stage'), style: toolbarStageButtonStyle, title: t('sessionFiles.stageAll'), 'aria-label': t('sessionFiles.stageAll') },
         createElement(StageIcon)),
@@ -293,35 +315,49 @@ function SessionChangedFilesCounter(props: SessionChangedFilesCounterProps): nul
   useEffect(() => {
     let disposed = false
     let generation = 0
+    let hasSuccessfulLoad = false
+    let subscribedWorkspaceId: string | undefined
+    let inFlight: Promise<void> | undefined
     let disposeWorkspaceSubscription: (() => void) | undefined
     const updateWorkspaceSubscription = (workspaceId: string | undefined): void => {
+      if (subscribedWorkspaceId === workspaceId) return
       disposeWorkspaceSubscription?.()
+      subscribedWorkspaceId = workspaceId
       disposeWorkspaceSubscription = workspaceId === undefined
         ? undefined
         : subscribeGitWorkspaceChanged(workspaceId, () => { void load() })
     }
-    const load = async (): Promise<void> => {
+    const load = (): Promise<void> => {
+      if (inFlight !== undefined) return inFlight
       const currentGeneration = ++generation
-      try {
-        const workspaceId = await resolveGitWorkspaceId(props.remote, props.sessionId)
-        if (workspaceId === undefined) throw new Error('当前会话没有可用的工作区')
-        const [sessionFiles, status] = await Promise.all([
-          call<SessionChangedFiles>(props.rpc, 'fileManagement/session-changes', { sessionId: props.sessionId, workspaceId }),
-          call<GitStatus>(props.rpc, 'git/status', { workspaceId }),
-        ])
-        if (disposed || currentGeneration !== generation) return
-        updateWorkspaceSubscription(workspaceId)
-        const count = selectSessionChangedFiles(sessionFiles, status).length
-        props.reportCount(props.sessionId, count)
-      } catch {
-        if (!disposed && currentGeneration === generation) props.reportCount(props.sessionId, 0)
-      }
+      const task = (async (): Promise<void> => {
+        try {
+          const workspaceId = await resolveGitWorkspaceId(props.remote, props.sessionId)
+          if (workspaceId === undefined) throw new Error('当前会话没有可用的工作区')
+          const [sessionFiles, status] = await Promise.all([
+            call<SessionChangedFiles>(props.rpc, 'fileManagement/session-changes', { sessionId: props.sessionId, workspaceId }),
+            call<GitStatus>(props.rpc, 'git/status', { workspaceId }),
+          ])
+          if (disposed || currentGeneration !== generation) return
+          updateWorkspaceSubscription(workspaceId)
+          const count = selectSessionChangedFiles(sessionFiles, status).length
+          hasSuccessfulLoad = true
+          props.reportCount(props.sessionId, count)
+        } catch {
+          // 计数器只在首轮失败时归零，后台短暂失败不能让标题反复跳回 0。
+          if (!disposed && currentGeneration === generation && !hasSuccessfulLoad) props.reportCount(props.sessionId, 0)
+        }
+      })()
+      const tracked = task.finally(() => { if (inFlight === tracked) inFlight = undefined })
+      inFlight = tracked
+      return tracked
     }
     void load()
-    const timer = globalThis.setInterval(() => { void load() }, 5_000)
+    const timer = globalThis.setInterval(() => { void load() }, SESSION_CHANGED_FILES_BACKGROUND_REFRESH_MS)
     return () => {
       disposed = true
       generation += 1
+      inFlight = undefined
       globalThis.clearInterval(timer)
       disposeWorkspaceSubscription?.()
     }
@@ -335,6 +371,27 @@ function renderDiff(content: string): readonly ReactElement[] {
     key: index,
     style: diffLineStyle(line),
   }, `${line}${index < lines.length - 1 ? '\n' : ''}`))
+}
+
+/** 只替换真正变化的行对象，后台刷新时保持未变化文件的引用和交互状态。 */
+function mergeChangedFiles(current: readonly GitChangeItem[], next: readonly GitChangeItem[]): readonly GitChangeItem[] {
+  if (current.length === next.length && current.every((item, index) => sameChange(item, next[index]))) return current
+  const previous = new Map(current.map((item) => [item.path, item] as const))
+  return next.map((item) => {
+    const old = previous.get(item.path)
+    return old !== undefined && sameChange(old, item) ? old : item
+  })
+}
+
+function sameChange(left: GitChangeItem | undefined, right: GitChangeItem | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right
+  return left.path === right.path
+    && left.status === right.status
+    && left.staged === right.staged
+    && left.oldPath === right.oldPath
+    && left.binary === right.binary
+    && left.stagedStatus === right.stagedStatus
+    && left.worktreeStatus === right.worktreeStatus
 }
 
 /** 只显示当前 Git 状态中仍属于本会话触及范围的文件。 */
