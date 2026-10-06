@@ -98,7 +98,7 @@ console.log('请随后运行 pnpm install --lockfile-only 和 pnpm run version:c
 
 function createDefaultCompatibility(version, previousCompatibility) {
   const floor = /^>=([^ ]+)/u.exec(previousCompatibility ?? '')?.[1]
-  // 兼容范围只声明下界后，切换测试版本默认沿用现有下界，避免悄悄收紧插件支持范围。
+  // 未显式传入范围时沿用现有下界，避免版本切换悄悄收紧插件支持范围。
   if (floor !== undefined && semver.test(floor) && compareVersion(floor, version) <= 0) return `>=${floor}`
   return `>=${version}`
 }

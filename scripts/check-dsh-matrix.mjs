@@ -24,13 +24,13 @@ for (const [name, version] of dshDependencies) {
   if (importer?.[1]?.trim() !== expected) failures.push(`pnpm-lock importer 中 ${name} 为 ${importer?.[1]?.trim() ?? '缺失'}，必须为 ${expected}`)
 }
 
-// 只声明下界是允许的；声明上界时必须覆盖当前测试版本，否则门禁会把已安装的
+// 允许声明上下界；声明上界时必须覆盖当前测试版本，否则门禁会把已安装的
 // 运行时判为范围外。
 if (manifest.engines?.dsh !== compatibility) failures.push(`engines.dsh 与 version.json.dshCompatibility 不一致：${String(manifest.engines?.dsh)} != ${compatibility}`)
 if (manifest.peerDependencies?.['@deepseek-ai/dsh'] !== compatibility) failures.push(`peerDependencies.@deepseek-ai/dsh 与 version.json.dshCompatibility 不一致：${String(manifest.peerDependencies?.['@deepseek-ai/dsh'])} != ${compatibility}`)
 
 // Desktop runtime 校验按「兼容范围」而非「精确等于测试版本」：
-// 插件已把 engines.dsh 放宽为只声明下界，正是为了让仍在 rc.2 的桌面端继续可用。
+// rc.2 到当前测试版本 alpha.1 都可用，范围外版本必须明确拒绝。
 // 若这里用精确比较，就会出现「安装期放行、矩阵检查拒绝」的自相矛盾。
 const runtimeRoot = process.argv[2] ?? process.env.DSH_DESKTOP_RUNTIME_ROOT
 if (runtimeRoot) {
@@ -81,7 +81,7 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 }
 
-/** 与 src/dsh-capabilities/registry.ts 同构的范围判定；只声明下界时不校验上限。 */
+/** 与 src/dsh-capabilities/registry.ts 同构的范围判定；声明上界时同时校验上限。 */
 function isVersionInRange(version, range) {
   const match = /^>=([^ ]+)(?: <=([^ ]+))?$/u.exec(range)
   const actual = parseVersion(version)

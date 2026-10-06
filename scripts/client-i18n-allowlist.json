@@ -33,5 +33,15 @@
     "file": "src/client/remote-web-context.ts",
     "text": "Remote DSH WebSocket 流失败",
     "reason": "远程 Web 桥接的错误细节，由外部 H5 页面原样展示，按错误码本地化属下一轮"
+  },
+  {
+    "file": "src/client/terminal/model.ts",
+    "text": "当前 attach 没有终端输入控制权",
+    "reason": "仅用于识别 Host 重连期间的瞬态错误并清理残留状态，不直接渲染文案"
+  },
+  {
+    "file": "src/client/terminal/xterm-view.ts",
+    "kind": "template-literal",
+    "reason": "注入终端 Shadow DOM 的 CSS 注释，描述浏览器标点压缩行为，不是用户界面文案"
   }
 ]

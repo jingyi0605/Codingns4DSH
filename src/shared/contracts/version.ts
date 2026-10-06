@@ -5,14 +5,14 @@ export const DSH_VERSION = '0.2.1-alpha.1' as const
 export const DSH_TESTED_VERSION = DSH_VERSION
 
 /**
- * 插件正式验证的 DSH 版本范围，只声明下界。
+ * 插件正式验证的 DSH 版本范围，覆盖 rc.2 到当前验证的 alpha.1。
  *
  * 0.2.0-rc.2 与 0.2.1-alpha.1 属于同一 API 世代：插件消费的 7 个宿主包接口面
  * 未变（仅 dsh-client-ui-primitives 新增 InlineEditor），会话格式仍为 v4。因此
- * 不再按预发布版本逐个收紧上限——收紧会让已发布的 rc.2 环境在升级瞬间被整体
- * 拒绝。出现新的 API 世代或结构变化时，应新增能力路由，而不是靠范围比较。
+ * 这里保留明确上界，是为了让 npm/DSH 安装期也能识别 0.2.1-alpha.1 这个跨 patch
+ * 预发布版本；出现新的 API 世代或结构变化时，应重新验证并更新范围与能力路由。
  */
-export const DSH_COMPATIBILITY = '>=0.2.0-rc.2' as const
+export const DSH_COMPATIBILITY = '>=0.2.0-rc.2 <=0.2.1-alpha.1' as const
 
 /**
  * 兼容范围下界，即插件仍然接受的最低 DSH 版本。

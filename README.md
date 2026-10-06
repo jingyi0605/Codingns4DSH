@@ -11,7 +11,7 @@
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.1-beta.1`** · DSH **`0.2.1-alpha.1`**（仅正式兼容并验证该版本）· Node **`>= 22.19`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.1-beta.1`** · DSH **`>=0.2.0-rc.2 <=0.2.1-alpha.1`**（已验证 `0.2.1-alpha.1`）· Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965**
 
@@ -231,7 +231,7 @@ DSH 设置按钮旁的账户入口会显示登录状态、访问路径与延迟�
 
 ## 安装
 
-**环境要求**：DSH `0.2.1-alpha.1`· Node.js `>= 22.19` · `PATH` 中有 `pnpm`（`dsh plugin` 转发给 pnpm）· 可选：Agent CLI，以及 macOS/Linux 上用于持久终端的 `tmux`（`brew install tmux` / `sudo apt install tmux`）。
+**环境要求**：DSH `>=0.2.0-rc.2 <=0.2.1-alpha.1`（已验证 `0.2.1-alpha.1`）· Node.js `>= 22.19` · `PATH` 中有 `pnpm`（`dsh plugin` 转发给 pnpm）· 可选：Agent CLI，以及 macOS/Linux 上用于持久终端的 `tmux`（`brew install tmux` / `sudo apt install tmux`）。
 
 ### 最简单的安装方式：使用内置 `web` Profile
 

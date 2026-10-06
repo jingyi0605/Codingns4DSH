@@ -11,7 +11,7 @@
 
 [简体中文](README.md) · **English**
 
-**Current release `@jingyi0605/codingns4dsh@0.2.1-beta.1`** · DSH **`0.2.1-alpha.1`** (the only formally supported and validated version) · Node **`>= 22.19`** · macOS / Linux / Windows
+**Current release `@jingyi0605/codingns4dsh@0.2.1-beta.1`** · DSH **`>=0.2.0-rc.2 <=0.2.1-alpha.1`** (tested with `0.2.1-alpha.1`) · Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ group 1092985965**
 
@@ -216,7 +216,7 @@ The “access” line tells you whether you entered DSH Web locally, over the LA
 
 ## Installation
 
-**Requirements**: DSH `0.2.1-alpha.1` · Node.js `>= 22.19` · `pnpm` on `PATH` (`dsh plugin` forwards to pnpm) · optional: Agent CLIs, and `tmux` on macOS/Linux for persistent terminals (`brew install tmux` / `sudo apt install tmux`).
+**Requirements**: DSH `>=0.2.0-rc.2 <=0.2.1-alpha.1` (tested with `0.2.1-alpha.1`) · Node.js `>= 22.19` · `pnpm` on `PATH` (`dsh plugin` forwards to pnpm) · optional: Agent CLIs, and `tmux` on macOS/Linux for persistent terminals (`brew install tmux` / `sudo apt install tmux`).
 
 ### Simplest install: use the built-in `web` profile
 

@@ -81,7 +81,7 @@ test('Profile 安装检查接受当前测试 DSH 版本的兼容范围', () => {
 })
 
 test('Profile 安装检查接受范围内更早的 0.2 世代版本', () => {
-  // 兼容范围只声明下界：已发布的 rc.2 环境不能因为插件升级而被拒绝安装。
+  // 兼容范围覆盖 rc.2：已发布的旧环境不能因为插件升级而被拒绝安装。
   const sandbox = makeSandbox()
   cleanups.push(sandbox)
   const result = runSandbox(sandbox, { env: { ...scrubbedEnv(), DSH_RUNTIME_VERSION: '0.2.0-rc.2', PATH: '' } })

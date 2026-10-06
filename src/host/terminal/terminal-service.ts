@@ -398,7 +398,7 @@ export class CodingNsTerminalService {
     let snapshot = resident.replay
     try {
       const captured = await this.runtimes.captureHistory(record, RESIDENT_HISTORY_LINES)
-      if (captured !== undefined) {
+      if (captured !== undefined && (captured.length > 0 || snapshot.length === 0)) {
         resident.replay = captured
         snapshot = captured
         debugInfo('codingns4dsh: terminal history snapshot ready', {
@@ -794,7 +794,7 @@ export class CodingNsTerminalService {
       // 作为恢复快照，后续 output 仍由常驻连接增量推送。
       try {
         const captured = await this.runtimes.captureHistory(record, RESIDENT_HISTORY_LINES)
-        if (captured !== undefined) {
+        if (captured !== undefined && (captured.length > 0 || replay.length === 0)) {
           replay = captured
           resident.replay = captured
           debugInfo('codingns4dsh: terminal resident history captured', {

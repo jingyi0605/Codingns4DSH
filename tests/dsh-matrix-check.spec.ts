@@ -13,9 +13,8 @@ const matrixScript = fileURLToPath(new URL('../scripts/check-dsh-matrix.mjs', im
  * `check:dsh-matrix` 的 Desktop runtime 分支必须按「兼容范围」判定，而不是
  * 「精确等于测试版本」。
  *
- * 背景：插件的 `engines.dsh` 只声明下界（`>=0.2.0-rc.2`），正是为了让仍在
- * rc.2 的桌面端继续可用。若矩阵检查用精确相等，就会出现「安装期放行、矩阵
- * 检查拒绝」的自相矛盾——桌面端明明在支持范围内，门禁却报失败。
+ * 背景：插件的 `engines.dsh` 声明覆盖 rc.2 到当前验证的 alpha.1，桌面端只要
+ * 落在这个范围内就应通过；越过 alpha.1 的预发布版本必须重新验证后再放行。
  */
 const cleanups = []
 test.after(() => {
@@ -43,6 +42,13 @@ test('Desktop runtime 落在兼容范围内时通过（兼容范围下界即当�
 test('Desktop runtime 等于当前测试版本时通过', () => {
   const result = runMatrix(makeRuntimeRoot(SUPPORTED_DSH_VERSION))
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+})
+
+test('Desktop runtime 超过当前验证版本时被拒绝', () => {
+  const result = runMatrix(makeRuntimeRoot('0.2.1-beta.1'))
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /不在插件兼容范围/u)
+  assert.match(result.stderr, /0\.2\.1-beta\.1/u)
 })
 
 test('Desktop runtime 超出兼容范围下界时被拒绝', () => {
@@ -73,5 +79,5 @@ test('Desktop runtime 支持 node_modules 平铺布局', () => {
 })
 
 test('兼容范围与 Desktop 判定共用同一事实源', () => {
-  assert.equal(SUPPORTED_DSH_COMPATIBILITY, '>=0.2.0-rc.2')
+  assert.equal(SUPPORTED_DSH_COMPATIBILITY, '>=0.2.0-rc.2 <=0.2.1-alpha.1')
 })
