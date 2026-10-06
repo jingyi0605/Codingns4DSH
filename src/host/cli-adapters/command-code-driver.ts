@@ -428,19 +428,15 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     for (const command of this.binaries) {
       const direct = this.detectCommand(command)
       if (direct !== null) return direct
-      if (!this.lookupAfterDetectionFailure) continue
       const resolved = resolveCommandPath(command, this.runSpawnSync)
-      if (resolved === null) continue
+      if (resolved === null || resolved === command) continue
       const fallback = this.detectCommand(resolved)
       if (fallback !== null) return fallback
     }
     return { installed: false, version: null, command: null }
   }
 
-  private lookupAfterDetectionFailure = false
-
   private detectCommand(command: string): { installed: true; version: string; command: string } | null {
-    this.lookupAfterDetectionFailure = false
     try {
       const result = this.runSpawnSync(command, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS, env: commandEnvironment(command) })
       const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
@@ -450,10 +446,8 @@ export class CommandCodeDriver implements CodingNsCliDriver {
         this.cachedEnvironment = commandEnvironment(command)
         return { installed: true, version, command }
       }
-      this.lookupAfterDetectionFailure = result.status === null
     } catch {
       // PATH 中不存在候选命令属于正常的未安装状态。
-      this.lookupAfterDetectionFailure = true
     }
     return null
   }
