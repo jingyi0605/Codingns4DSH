@@ -307,9 +307,14 @@ test('Skill 目录直接注册到斜杠菜单，并按输入文本筛选后写�
   assert.match(source, /registerSkillInputTriggerSource/u)
   assert.match(source, /request\.query\.trim\(\)\.toLocaleLowerCase\(\)/u)
   assert.match(source, /skill\.name, skill\.displayName, skill\.description/u)
+  assert.match(source, /showGroupTitle: false/u)
+  assert.match(source, /description: skill\.description/u)
+  assert.match(source, /warm\(session\)/u)
   assert.match(source, /`\$\$\{name\} `/u)
-  // 原 `/skills` 二级命令保留，旧版 DSH 没有 inputTriggers 时仍可使用。
-  assert.match(source, /name: SKILL_COMMAND_NAME/u)
+  // Skill 只能注册为原生 `/` source，不能再留下 commandUi 的二级 popupSelect。
+  assert.match(source, /ctx\.inject\(\['inputTriggers'\]/u)
+  assert.doesNotMatch(source, /kind: 'popupSelect'/u)
+  assert.doesNotMatch(source, /commandUi\.register/u)
 })
 
 test('任务留空时直接拒绝，不读取会话历史', async () => {
