@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
+import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import { GrokBuildDriver } from '../data/build/dist/host/cli-adapters/grok-driver.js'
 import { PiAgentDriver } from '../data/build/dist/host/cli-adapters/pi-driver.js'
 
@@ -1303,9 +1304,11 @@ test('Codex fileChange 使用工作区可写沙箱、编辑工具名和原生审
   driver.dispose()
 })
 
-test('Codex requestUserInput 转成公共问题事件并回传结构化回答', async () => {
+test('Codex requestUserInput 经原生问题组件回传回答并保留工具历史', async () => {
   let answer: unknown = null
   let threadStartParams: Record<string, unknown> | undefined
+  const calls = []
+  const results = []
   const driver = new CodexAppServerDriver({
     binaries: ['fake-agent'],
     spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
@@ -1326,6 +1329,9 @@ test('Codex requestUserInput 转成公共问题事件并回传结构化回答', 
             id: 88,
             method: 'item/tool/requestUserInput',
             params: {
+              threadId: 'thread-question',
+              turnId: 'turn-question',
+              itemId: 'question-item',
               questions: [{ id: 'framework', question: '选择框架', header: '框架', options: [{ label: 'React' }, { label: 'Vue' }] }],
             },
           })}\n`)
@@ -1338,23 +1344,56 @@ test('Codex requestUserInput 转成公共问题事件并回传结构化回答', 
     }) as never,
   })
 
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'codex',
+    sessionId: 'codex-question',
+    nativeSessions: {
+      appendToolCall(sessionId, call) {
+        calls.push(call)
+        return { sessionId, turn: 1, step: 1, callId: call.callId, callSeq: 1 }
+      },
+      appendToolResult(handle, result) {
+        results.push({ handle, result })
+        return true
+      },
+      async askQuestions(sessionId, request) {
+        assert.equal(sessionId, 'codex-question')
+        assert.equal(request.requestId, '88')
+        // 用户尚未回答时，工具历史就应包含问题；完成结果必须等回传成功后再写入。
+        assert.equal(calls.length, 1)
+        assert.deepEqual(JSON.parse(calls[0].arguments).questions, request.questions)
+        assert.equal(results.length, 0)
+        assert.equal(answer, null)
+        return { requestId: request.requestId, answers: [{ id: 'framework', selected: ['React'] }] }
+      },
+    },
+    respondQuestion(response) { driver.respondQuestion('codex-question', response) },
+  })
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'codex-question', messages: [], prompt: '创建页面' })) {
     chunks.push(chunk)
-    if (chunk.type === 'question-request') {
-      driver.respondQuestion('codex-question', {
-        requestId: chunk.requestId,
-        answers: [{ id: 'framework', selected: ['React'] }],
-      })
-    }
+    await projector.push(chunk)
   }
 
   assert.deepEqual(chunks.find((chunk) => chunk.type === 'question-request'), {
     type: 'question-request',
     requestId: '88',
+    callId: 'question-item',
     questions: [{ id: 'framework', question: '选择框架', header: '框架', options: [{ label: 'React' }, { label: 'Vue' }] }],
   })
   assert.deepEqual(answer, { answers: { framework: { answers: ['React'] } } })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].callId, 'question-item')
+  assert.equal(calls[0].name, 'question')
+  assert.equal(calls[0].adapterId, 'codex')
+  assert.equal(results.length, 1)
+  assert.equal(results[0].handle.callId, 'question-item')
+  assert.equal(results[0].result.isError, false)
+  assert.deepEqual(JSON.parse(results[0].result.output), {
+    requestId: '88',
+    answers: [{ id: 'framework', selected: ['React'] }],
+    providerAnswers: [['React']],
+  })
   assert.match(String(threadStartParams?.developerInstructions), /request_user_input/u)
   assert.match(String(threadStartParams?.developerInstructions), /request_user_input_async/u)
   driver.dispose()

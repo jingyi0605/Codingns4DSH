@@ -1199,7 +1199,14 @@ function codexMessageToChunk(message: Record<string, any>): CodingNsAgentEvent |
   if (isQuestionEvent(`${method} ${type}`)) {
     const requestId = readRequestId(message) ?? readRequestId(params)
     const questions = readAgentQuestions(params.questions ?? item.questions ?? params)
-    if (requestId !== null && questions.length > 0) return { type: 'question-request', requestId, questions }
+    // JSON-RPC id 用于回复请求，官方 itemId 才是模型的工具调用 ID，供原生历史关联问题和答案。
+    const callId = firstToolText(params.itemId)
+    if (requestId !== null && questions.length > 0) return {
+      type: 'question-request',
+      requestId,
+      questions,
+      ...(callId === undefined ? {} : { callId }),
+    }
   }
   if (method.includes('permission') || method.includes('Approval') || type.includes('permission') || type.includes('approval')) {
     const requestId = readRequestId(message) ?? readRequestId(params)
