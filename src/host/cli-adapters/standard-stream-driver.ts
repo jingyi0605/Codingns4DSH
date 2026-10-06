@@ -319,7 +319,9 @@ export function genericEventChunks(value: Record<string, unknown>, cancelled: bo
 
 function closeStdin(child: CodingNsChildProcess): void {
   const stdin = child.stdin
-  if (stdin === null) return
+  // 测试替身和部分已关闭的子进程可能没有 stdin；真实 spawn(stdio: pipe)
+  // 仍然会提供 Writable，这里的守卫只负责把清理变成幂等操作。
+  if (stdin === null || stdin === undefined) return
   if (stdin.writableEnded === true) return
   try { stdin.end() } catch { /* 子进程可能已提前关闭 stdin */ }
 }
