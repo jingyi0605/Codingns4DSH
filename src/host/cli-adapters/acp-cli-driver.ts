@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentPermissionResponse,
+  CodingNsAgentQuestion,
   CodingNsAgentQuestionResponse,
   CodingNsCliCapability,
   CodingNsCliModelCatalog,
@@ -15,7 +16,7 @@ import { buildAcpPromptBlocks } from './attachment-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 import { reasoningText } from './reasoning-content.js'
-import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
+import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest } from './acp-elicitation.js'
 
 export interface AcpCliDriverOptions {
   readonly binaries?: readonly string[]
@@ -23,6 +24,8 @@ export interface AcpCliDriverOptions {
   readonly spawn?: typeof spawn
   /** 传给 Provider 子进程的环境覆盖；不会改写 Host 自身的 process.env。 */
   readonly environment?: Readonly<Record<string, string | undefined>>
+  /** 仅在 ACP 会话进程启动时加载的扩展环境；不参与版本、路径或模型探测。 */
+  readonly sessionEnvironment?: Readonly<Record<string, string | undefined>>
   /** ACP 的启动参数；每个产品的参数必须在驱动文件中显式写出。 */
   readonly args: readonly string[]
   /**
@@ -32,6 +35,8 @@ export interface AcpCliDriverOptions {
   readonly buildArgs?: (input: CodingNsCliTurnInput) => readonly string[]
   /** Provider 是否支持在已经建立的 ACP 会话内切换模型。 */
   readonly runtimeModelSelection?: boolean
+  /** 产品通过原生 ACP 请求设置会话模型、权限和思考强度；失败时禁止继续发送 prompt。 */
+  readonly configureSession?: (rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput) => Promise<void>
   /** 读取 Provider 自己公开的只读模型目录；返回 null 表示本次读取失败。 */
   readonly readModelCatalog?: (command: string, runSpawnSync: typeof spawnSync) => CodingNsCliModelCatalog | null
   readonly id: string
@@ -42,6 +47,16 @@ export interface AcpCliDriverOptions {
   readonly fallbackCatalog?: CodingNsCliModelCatalog
   /** 产品没有可靠的本地会话索引时保持 unknown，不扫描猜测路径。 */
   readonly probeReason?: string
+  /** Provider 自定义的问题请求解析器；标准 ACP form 由默认解析器处理。 */
+  readonly readQuestionRequest?: (message: JsonRpcMessage) => AcpPendingQuestionRequest | null
+}
+
+/** ACP 交互问题在 Host 中等待 DSH 回答时保留的请求状态。 */
+export interface AcpPendingQuestionRequest {
+  readonly requestId: string
+  readonly rpcId: number | string
+  readonly questions: readonly CodingNsAgentQuestion[]
+  readonly respond: (response: CodingNsAgentQuestionResponse) => unknown
 }
 
 interface AcpSession {
@@ -50,7 +65,7 @@ interface AcpSession {
   readonly argsKey: string
   acpSessionId: string
   readonly permissions: Map<string, AcpPermissionRequest>
-  readonly questions: Map<string, AcpElicitationRequest>
+  readonly questions: Map<string, AcpPendingQuestionRequest>
 }
 
 interface AcpPermissionRequest {
@@ -74,12 +89,15 @@ export class AcpCliDriver implements CodingNsCliDriver {
   private readonly args: readonly string[]
   private readonly buildArgsForTurn: (input: CodingNsCliTurnInput) => readonly string[]
   private readonly runtimeModelSelection: boolean
+  private readonly configureSession: AcpCliDriverOptions['configureSession']
   private readonly readModelCatalog: AcpCliDriverOptions['readModelCatalog']
   private readonly fallbackCatalog: CodingNsCliModelCatalog
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
   private readonly environment: Readonly<Record<string, string | undefined>>
+  private readonly sessionEnvironment: Readonly<Record<string, string | undefined>>
   private readonly probeReason: string
+  private readonly readQuestionRequest: (message: JsonRpcMessage) => AcpPendingQuestionRequest | null
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, AcpSession>()
@@ -95,10 +113,12 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.args = options.args
     this.buildArgsForTurn = options.buildArgs ?? (() => this.args)
     this.runtimeModelSelection = options.runtimeModelSelection ?? true
+    this.configureSession = options.configureSession
     this.readModelCatalog = options.readModelCatalog
     this.fallbackCatalog = options.fallbackCatalog ?? emptyCatalog()
     const baseSpawnSync = options.spawnSync ?? spawnSync
     this.environment = options.environment ?? {}
+    this.sessionEnvironment = { ...this.environment, ...(options.sessionEnvironment ?? {}) }
     this.runSpawnSync = Object.keys(this.environment).length === 0
       ? baseSpawnSync
       : ((command, args, spawnOptions) => baseSpawnSync(command, args, {
@@ -108,6 +128,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
       })) as typeof spawnSync
     this.runSpawn = options.spawn ?? spawn
     this.probeReason = options.probeReason ?? 'Provider 未公开可安全读取的会话索引，未执行有副作用的探测'
+    this.readQuestionRequest = options.readQuestionRequest ?? readStandardQuestionRequest
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
@@ -155,7 +176,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     const pending = session?.questions.get(response.requestId)
     if (session === undefined || pending === undefined) throw new Error(`${this.descriptor.name} 问题请求不存在`)
     session.questions.delete(response.requestId)
-    session.rpc.respond(pending.rpcId, acpElicitationResponse(pending, response))
+    session.rpc.respond(pending.rpcId, pending.respond(response))
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
@@ -175,6 +196,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     }
     yield { type: 'session-binding', providerSessionId }
 
+    await this.configureSession?.(session.rpc, providerSessionId, input)
     if (this.runtimeModelSelection && input.modelId && input.modelId !== 'provider-default') {
       await session.rpc.request('session/set_model', { sessionId: providerSessionId, modelId: input.modelId }, { signal: input.signal, killOnAbort: false }).catch(() => undefined)
     }
@@ -193,7 +215,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
           response = next.value
           break
         }
-        const rawChunk = acpMessageToChunk(next.value, input.signal?.aborted ?? false)
+        const rawChunk = acpMessageToChunk(next.value, input.signal?.aborted ?? false, this.readQuestionRequest)
         const chunk = rawChunk === null ? null : decorateCodingNsSegmentEvent(rawChunk, input, segmentState, this.descriptor.id)
         if (chunk === null) continue
         if (chunk.type === 'finish') emittedFinish = true
@@ -232,7 +254,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     const previous = this.sessions.get(input.sessionId)
     if (previous !== undefined && previous.cwd === input.cwd && previous.argsKey === argsKey && !previous.rpc.isClosed) return previous
     previous?.rpc.dispose()
-    const rpc = new JsonRpcProcess({ command, args, cwd: input.cwd, env: this.environment, spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args, cwd: input.cwd, env: this.sessionEnvironment, spawn: this.runSpawn })
     const state: AcpSession = { rpc, cwd: input.cwd, argsKey, acpSessionId: '', permissions: new Map(), questions: new Map() }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, state)
@@ -243,7 +265,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     // ACP 标准权限请求必须等待 DSH 原生审批；未知扩展请求仍快速取消，避免
     // Provider 因没有对应能力而永久挂起。
     rpc.setServerRequestHandler((message) => {
-      const elicitation = readAcpElicitationRequest(message)
+      const elicitation = this.readQuestionRequest(message)
       if (elicitation !== null) {
         state.questions.set(elicitation.requestId, elicitation)
         return new Promise<never>(() => undefined)
@@ -296,7 +318,11 @@ export class AcpCliDriver implements CodingNsCliDriver {
   }
 }
 
-function acpMessageToChunk(message: JsonRpcMessage, cancelled: boolean): CodingNsAgentEvent | null {
+function acpMessageToChunk(
+  message: JsonRpcMessage,
+  cancelled: boolean,
+  readQuestionRequest: (message: JsonRpcMessage) => AcpPendingQuestionRequest | null,
+): CodingNsAgentEvent | null {
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
   const rawType = update.sessionUpdate ?? update.type ?? message.method
@@ -305,6 +331,8 @@ function acpMessageToChunk(message: JsonRpcMessage, cancelled: boolean): CodingN
   const content = isRecord(update.content) ? update.content : undefined
   const messageId = firstToolText(update.messageId, update.message_id, update.itemId, update.item_id, content?.messageId, content?.message_id, content?.id)
   const withMessageId = messageId === undefined ? {} : { messageId }
+  const elicitation = readQuestionRequest(message)
+  if (elicitation !== null) return { type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }
   const permission = readAcpPermissionRequest(message)
   if (permission !== null) {
     return {
@@ -316,8 +344,6 @@ function acpMessageToChunk(message: JsonRpcMessage, cancelled: boolean): CodingN
       ...(permission.detail === undefined ? {} : { detail: permission.detail }),
     }
   }
-  const elicitation = readAcpElicitationRequest(message)
-  if (elicitation !== null) return { type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }
   const reasoning = reasoningText(update)
   if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning, ...withMessageId }
   if (type.includes('thought') || type.includes('reason')) return text === null ? null : { type: 'reasoning-delta', text, ...withMessageId }
@@ -430,4 +456,15 @@ function acpText(value: unknown): string | null {
     }
   }
   return null
+}
+
+function readStandardQuestionRequest(message: JsonRpcMessage): AcpPendingQuestionRequest | null {
+  const request = readAcpElicitationRequest(message)
+  if (request === null) return null
+  return {
+    requestId: request.requestId,
+    rpcId: request.rpcId,
+    questions: request.questions,
+    respond: (response) => acpElicitationResponse(request, response),
+  }
 }

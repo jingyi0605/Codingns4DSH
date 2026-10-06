@@ -64,7 +64,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         }
       }
       const registry = options.registry ?? new CodingNsCliAdapterRegistry([
-        new CommandCodeDriver(),
+        new CommandCodeDriver({ enableAcp: true }),
         new ClaudeCodeDriver(),
         new KimiCliDriver(),
         new GeminiCliDriver(),

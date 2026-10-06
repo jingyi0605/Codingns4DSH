@@ -7,6 +7,9 @@ import type {
   CodingNsCliModelCatalog,
   CodingNsAgentEvent,
   CodingNsAgentToolEvent,
+  CodingNsAgentPermissionResponse,
+  CodingNsAgentQuestionResponse,
+  CodingNsCliCapability,
   CodingNsCliSkillDescriptor,
   CodingNsCliSkillListInput,
   CodingNsCliTurnInput,
@@ -19,6 +22,8 @@ import { promptWithAttachmentPaths } from './attachment-utils.js'
 import { parseSkillFrontmatter } from './skill-filesystem.js'
 import { commandCodeBridgeArgs, commandCodeBridgeEnvironment } from '../cli-bridge/injections.js'
 import { getSubagentBridge } from '../cli-bridge/bridge-holder.js'
+import { AcpCliDriver, type AcpPendingQuestionRequest } from './acp-cli-driver.js'
+import type { JsonRpcMessage, JsonRpcProcess } from './json-rpc-process.js'
 import {
   CommandCodeHistory,
   type CommandCodeHistoryDelta,
@@ -252,6 +257,8 @@ export interface CommandCodeDriverOptions {
   readonly autoContinuePrompt?: string
   /** 可注入 Provider status 读取器；用于在 transcript 没有窗口字段时校准上下文容量。 */
   readonly readStatus?: CommandCodeHistoryOptions['readStatus']
+  /** 正式 Host 运行时启用 `cmd acp`，支持 DSH 原生权限和问题回传。 */
+  readonly enableAcp?: boolean
 }
 
 /**
@@ -262,6 +269,16 @@ export interface CommandCodeDriverOptions {
 const DEFAULT_MAX_TURNS = 500
 const DEFAULT_AUTO_CONTINUE_ATTEMPTS = 3
 const AUTO_CONTINUE_PROMPT = '继续'
+
+/** Command Code ACP 自由文本兼容 loader 的 URL；只注入子进程，不改写安装包。 */
+const COMMAND_CODE_ACP_LOADER_URL = new URL('./command-code-acp-loader.js', import.meta.url).href
+
+function commandCodeAcpEnvironment(): Readonly<Record<string, string>> {
+  // file URL 会把空格编码成 %20，避免 Windows 的 NODE_OPTIONS 按空格拆路径。
+  const loaderOption = `--loader=${COMMAND_CODE_ACP_LOADER_URL}`
+  const existing = process.env.NODE_OPTIONS?.trim()
+  return { NODE_OPTIONS: existing === undefined || existing === '' ? loaderOption : `${existing} ${loaderOption}` }
+}
 /** CLI 在 -p 模式撞到 --max-turns 时的退出码（MAX_TURNS_REACHED）。 */
 const COMMAND_CODE_MAX_TURNS_EXIT_CODE = 8
 /** 发送 SIGINT 后等待 CLI 自己收尾的时间；超时再强制清理进程树。 */
@@ -286,14 +303,12 @@ function commandCodePermissionArgs(permission: CodingNsCliTurnInput['permission'
  * usage 和原生组件映射全部交给公共消息投影层。
  */
 export class CommandCodeDriver implements CodingNsCliDriver {
-  // Command Code 的公开 json 输出只有结果事件；没有 DSH 可回写的权限或问题 wire。
-  // `--tools-enable ask_user_question` 只是 CLI 内部工具开关，不能伪造为 question-request。
-  readonly descriptor = {
-    id: 'command-code',
-    name: 'Command Code',
-    protocol: 'command',
-    capabilities: ['models', 'skills', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'history'] as const,
-  } as const
+  readonly descriptor: {
+    readonly id: 'command-code'
+    readonly name: 'Command Code'
+    readonly protocol: 'command' | 'acp'
+    readonly capabilities: readonly CodingNsCliCapability[]
+  }
   /** 驱动自己维护 Provider turn 边界，Host 可以把工具边界映射为 DSH step。 */
   readonly supportsSegmentedTurns = true
   private readonly homeDirectory: string
@@ -304,6 +319,9 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   private readonly autoContinueMaxAttempts: number
   private readonly autoContinuePrompt: string
   private readonly history: CommandCodeHistory
+  private readonly acpDriver: AcpCliDriver | undefined
+  readonly respondPermission: (sessionId: string, response: CodingNsAgentPermissionResponse) => void | Promise<void>
+  readonly respondQuestion: (sessionId: string, response: CodingNsAgentQuestionResponse) => void | Promise<void>
   /** 按规范化 cwd 缓存 Skill 摘要；forceReload 用于响应目录变更。 */
   private readonly skillCatalogs = new Map<string, readonly CommandCodeSkillEntry[]>()
   private cachedBinary: string | null = null
@@ -327,6 +345,35 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     this.autoContinuePrompt = options.autoContinuePrompt?.trim() || AUTO_CONTINUE_PROMPT
     const readStatus = options.readStatus ?? ((workspacePath: string) => this.readCommandCodeStatus(workspacePath))
     this.history = new CommandCodeHistory(this.homeDirectory, { readStatus })
+    const legacyCapabilities: readonly CodingNsCliCapability[] = ['models', 'skills', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'history']
+    const acpCapabilities: readonly CodingNsCliCapability[] = [...legacyCapabilities, 'permission', 'questions']
+    this.descriptor = { id: 'command-code', name: 'Command Code', protocol: options.enableAcp === true ? 'acp' : 'command', capabilities: options.enableAcp === true ? acpCapabilities : legacyCapabilities }
+    if (options.enableAcp === true) {
+      this.acpDriver = new AcpCliDriver({
+        binaries: this.binaries,
+        spawnSync: this.runSpawnSync,
+        spawn: this.runSpawn,
+        args: ['acp'],
+        buildArgs: (input) => commandCodeAcpArgs(input),
+        runtimeModelSelection: false,
+        configureSession: configureCommandCodeAcpSession,
+        sessionEnvironment: commandCodeAcpEnvironment(),
+        id: 'command-code',
+        name: 'Command Code',
+        capabilities: acpCapabilities,
+        readQuestionRequest: readCommandCodeQuestionRequest,
+        probeReason: 'Command Code ACP 不公开可安全读取的会话索引',
+      })
+      this.respondPermission = (sessionId, response) => this.acpDriver!.respondPermission(sessionId, response)
+      this.respondQuestion = (sessionId, response) => this.acpDriver!.respondQuestion(sessionId, response)
+    } else {
+      this.acpDriver = undefined
+      // 保持旧实例的运行时能力声明：未启用 ACP 时不暴露这两个可回写接口。
+      this.respondPermission = () => { throw new Error('Command Code ACP 未启用') }
+      this.respondQuestion = () => { throw new Error('Command Code ACP 未启用') }
+      delete (this as unknown as { respondPermission?: unknown }).respondPermission
+      delete (this as unknown as { respondQuestion?: unknown }).respondQuestion
+    }
   }
 
   /** 读取 Command Code 原生会话目录，供 Provider History 层使用。 */
@@ -519,6 +566,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   }
 
   async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
+    if (this.acpDriver !== undefined) return this.acpDriver.probeSession(input)
     throwIfCommandCodeProbeAborted(input.signal)
     const providerSessionId = input.providerSessionId?.trim()
     if (!providerSessionId) return { state: 'unknown', reason: '缺少 Provider 会话标识' }
@@ -575,6 +623,11 @@ export class CommandCodeDriver implements CodingNsCliDriver {
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const skillPaths = await this.resolveSkillPaths(input)
+    const turnInput = skillPaths.length === 0 ? input : { ...input, skillPaths }
+    if (this.acpDriver !== undefined) {
+      yield* this.acpDriver.executeTurn(turnInput)
+      return
+    }
     const binary = this.cachedBinary ?? (await this.detect()).command
     if (binary === null) throw new Error('Command Code 未安装')
 
@@ -595,6 +648,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   }
 
   dispose(): void {
+    this.acpDriver?.dispose()
     for (const turn of [...this.turns.values()]) this.disposeTurn(turn)
     this.turns.clear()
     for (const child of this.processes) terminateChildProcess(child)
@@ -788,6 +842,10 @@ export class CommandCodeDriver implements CodingNsCliDriver {
 
   /** 中断当前会话并清理 CLI 进程；不存在活动运行时视为幂等成功。 */
   async interrupt(sessionId: string): Promise<void> {
+    if (this.acpDriver !== undefined) {
+      await this.acpDriver.interrupt(sessionId)
+      return
+    }
     const turn = this.turns.get(sessionId)
     if (turn === undefined) return
     this.requestGracefulStop(turn)
@@ -1844,5 +1902,110 @@ function isLegacySyntheticSessionId(value: string): boolean {
 }
 function parseJson(value: string): Record<string, unknown> | null { try { const parsed: unknown = JSON.parse(value); return isRecord(parsed) ? parsed : null } catch { return null } }
 function readJson(path: string): Record<string, unknown> | null { if (!existsSync(path)) return null; try { const parsed: unknown = JSON.parse(readFileSync(path, 'utf8')); return isRecord(parsed) ? parsed : null } catch { return null } }
+
+/** 保留启动选择作为进程复用条件；ACP 的实际会话状态由原生协议显式设置。 */
+function commandCodeAcpArgs(input: CodingNsCliTurnInput): readonly string[] {
+  const args = ['acp', ...commandCodePermissionArgs(input.permission)]
+  if (input.plan === true && !args.includes('--plan')) args.push('--plan')
+  if (input.enableAskUserQuestion === true || input.runtimeEnv?.CMD_TOOLS_ASK_USER_QUESTION_ENABLE === 'true') {
+    args.push('--tools-enable', 'ask_user_question')
+  }
+  for (const path of input.skillPaths ?? []) args.push('--skill', path)
+  if (input.modelId !== undefined && input.modelId !== 'provider-default') args.push('--model', input.modelId)
+  const effort = input.effortId?.trim().toLowerCase()
+  if (effort !== undefined && VALID_EFFORTS.has(effort)) args.push('--effort', effort)
+  return args
+}
+
+/**
+ * Command Code 1.74.3 的 acp 子命令不执行普通 CLI action 的参数初始化。
+ * 仅传 --model/--effort/--permission-mode 会被静默忽略，恢复的会话还会沿用旧模型。
+ * 必须在 prompt 前设置线程状态，且不能吞掉模型或权限设置失败。
+ */
+async function configureCommandCodeAcpSession(rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput): Promise<void> {
+  const requestOptions = { signal: input.signal, killOnAbort: false }
+  if (input.modelId !== undefined && input.modelId !== 'provider-default') {
+    await rpc.request('session/set_model', { sessionId, modelId: input.modelId }, requestOptions)
+  }
+  await rpc.request('session/set_mode', { sessionId, modeId: commandCodeAcpMode(input) }, requestOptions)
+  const effort = input.effortId?.trim().toLowerCase()
+  if (effort !== undefined && VALID_EFFORTS.has(effort)) {
+    await rpc.request('session/set_config_option', { sessionId, configId: 'effort', value: effort }, requestOptions)
+  }
+}
+
+/** ACP 使用权限引擎的模式 ID，与普通 CLI 的 accept-edits/yolo 别名不同。 */
+function commandCodeAcpMode(input: CodingNsCliTurnInput): string {
+  const permission = input.permission
+  if (input.plan === true || permission?.sandboxMode === 'read-only') return 'plan'
+  if (permission?.approvalPolicy !== 'never') return 'default'
+  if (permission.sandboxMode === 'danger-full-access') return 'bypass'
+  if (permission.sandboxMode === 'workspace-write') return 'auto-accept'
+  return 'default'
+}
+
+/** Command Code 将 ask_user_question 编译成 `session/request_permission`。 */
+function readCommandCodeQuestionRequest(message: JsonRpcMessage): AcpPendingQuestionRequest | null {
+  const method = message.method?.toLowerCase()
+  if (method !== 'session/request_permission' || (typeof message.id !== 'string' && typeof message.id !== 'number')) return null
+  const params = isRecord(message.params) ? message.params : {}
+  const tool = isRecord(params.toolCall) ? params.toolCall : isRecord(params.tool_call) ? params.tool_call : {}
+  const kind = firstToolText(tool.kind, params.kind)?.toLowerCase()
+  const toolName = firstToolText(tool.name, tool.toolName, tool.tool_name)
+  if (kind !== 'other' && toolName !== 'ask_user_question') return null
+  const rawInput = isRecord(tool.rawInput) ? tool.rawInput : isRecord(tool.raw_input) ? tool.raw_input : {}
+  const questionText = firstToolText(rawInput.question, rawInput.prompt, params.question, params.prompt)
+  const rawOptions = Array.isArray(rawInput.options)
+    ? rawInput.options
+    : Array.isArray(params.questionOptions)
+      ? params.questionOptions
+      : []
+  if (questionText === undefined || rawOptions.length === 0) return null
+  const options = rawOptions.flatMap((rawOption) => {
+    if (typeof rawOption === 'string' && rawOption.trim() !== '') return [{ label: rawOption.trim() }]
+    if (!isRecord(rawOption)) return []
+    const label = firstToolText(rawOption.label, rawOption.name, rawOption.title, rawOption.value)
+    if (label === undefined) return []
+    const description = firstToolText(rawOption.description, rawOption.detail)
+    return [{ label, ...(description === undefined ? {} : { description }) }]
+  })
+  if (options.length === 0) return null
+  const protocolOptions = Array.isArray(params.options) ? params.options : []
+  const optionIds = options.map((_, index) => {
+    const protocolOption = isRecord(protocolOptions[index]) ? protocolOptions[index] : {}
+    return firstToolText(protocolOption.optionId, protocolOption.option_id, protocolOption.id) ?? `option_${index}`
+  })
+  const requestId = String(message.id)
+  const questionId = `command-code-question-${requestId}`
+  const header = firstToolText(rawInput.header, params.header)
+  return {
+    requestId,
+    rpcId: message.id,
+    questions: [{
+      id: questionId,
+      question: questionText,
+      ...(header === undefined ? {} : { header }),
+      options,
+    }],
+    respond: (response) => {
+      const answer = response.answers.find((item) => item.id === questionId) ?? response.answers[0]
+      const custom = answer?.custom?.trim() ?? ''
+      const selected = answer?.selected[0]?.trim() ?? ''
+      const selectedIndex = options.findIndex((option) => option.label === selected)
+      if (custom !== '') {
+        // `optionId` 使用保留值，未加载兼容桥时会安全地取消，不会误选第一项。
+        // loader 会从 _meta 读取原文，并把它作为 ask_user_question 的工具答案。
+        return {
+          outcome: { outcome: 'selected', optionId: '__codingns_custom__' },
+          answers: [{ questionIndex: 0, selectedOptions: [custom] }],
+          _meta: { 'codingns/questionAnswer': custom },
+        }
+      }
+      if (selected === '' || selectedIndex < 0) return { outcome: { outcome: 'cancelled' } }
+      return { outcome: { outcome: 'selected', optionId: optionIds[selectedIndex] } }
+    },
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, any> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 function emptyCatalog(): CodingNsCliModelCatalog { return { groups: [], currentModel: null, currentEffort: null } }
