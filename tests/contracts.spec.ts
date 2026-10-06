@@ -49,6 +49,7 @@ function descriptorOf(name: string, options: {
 test('Codingns4DSH 设置用模块名字典表达开关，结构不随模块数量变化', () => {
   assert.equal(CODINGNS_SETTINGS_NAMESPACE, 'codingns')
   assert.equal(CODINGNS_MODULES_FIELD, 'modules')
+  assert.equal(DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS.showSkillQuickReference, true)
   assert.deepEqual(DEFAULT_CODINGNS_SETTINGS, {
     controlBaseUrl: DEFAULT_CODINGNS_CONTROL_BASE_URL,
     controlBaseUrls: [DEFAULT_CODINGNS_CONTROL_BASE_URL],

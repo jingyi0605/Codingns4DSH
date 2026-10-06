@@ -310,7 +310,9 @@ test('Skill 目录直接注册到斜杠菜单，并按输入文本筛选后写�
   assert.match(source, /showGroupTitle: false/u)
   assert.match(source, /description: skill\.description/u)
   assert.match(source, /warm\(session\)/u)
-  assert.match(source, /`\/\$\{name\} `/u)
+  assert.match(source, /source: SKILL_INPUT_SOURCE/u)
+  assert.match(source, /clipboardText: `\/\$\{name\}`/u)
+  assert.match(source, /async serialize\(ref\)/u)
   // 原生 inputTriggers 优先；只有目录成功返回后才撤销 commandUi 兜底，避免空目录时两条入口同时消失。
   assert.match(source, /ctx\.inject\(\['inputTriggers'\]/u)
   assert.match(source, /kind: 'popupSelect'/u)
@@ -318,6 +320,11 @@ test('Skill 目录直接注册到斜杠菜单，并按输入文本筛选后写�
   assert.match(source, /state\.catalogReady/u)
   assert.match(source, /!catalog\.some\(\(skill\) => skill\.enabled\)/u)
   assert.match(source, /onCatalogReady\(catalog\)/u)
+
+  const workspaceSource = await readFile(join(root, 'src/client/features/workspace-session-enhancement.ts'), 'utf8')
+  assert.match(workspaceSource, /showSkillQuickReference/u)
+  assert.match(workspaceSource, /registerSkillCommand/u)
+  assert.match(workspaceSource, /startSkillReferenceDom/u)
 })
 
 test('任务留空时直接拒绝，不读取会话历史', async () => {
