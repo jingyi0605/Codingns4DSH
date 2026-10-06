@@ -509,3 +509,41 @@ function canUseTmux(tmuxPath = findTmux(), run = spawnSync, env = process.env) {
     killTestServer(tmuxPath, socket, directory, run, env)
   }
 }
+
+test('tmux 可用性探测在成功和失败时都只清理自己的独立 socket', () => {
+  for (const status of [0, 1, null]) {
+    const calls = []
+    const env = { ...process.env, TMUX: '/tmp/current-terminal.sock,123,0' }
+    const usable = canUseTmux('/tmux', (_command, args, options) => {
+      calls.push({ args, options })
+      return { status, stdout: '', stderr: '' }
+    }, env)
+    assert.equal(usable, status === 0)
+    assert.equal(calls.length, 2)
+    const socket = calls[0].args[1]
+    assert.notEqual(socket, env.TMUX.split(',')[0])
+    assert.deepEqual(calls[1].args, ['-S', socket, 'kill-server'])
+    assert.deepEqual(calls[0].args.slice(0, 4), ['-S', socket, '-f', '/dev/null'])
+    assert.equal(calls[0].options.env.TMUX, env.TMUX)
+    assert.equal(existsSync(join(socket, '..')), false, '探测目录必须在所有启动结果下回收')
+  }
+})
+
+test('真实 tmux：继承 TMUX 的可用性探测不会结束原服务器和会话', { skip: !canUseTmux() }, () => {
+  const tmuxPath = findTmux()
+  const directory = serverDirectory()
+  const socket = join(directory, `${TMUX_SERVER_SOCKET_NAME}.sock`)
+  try {
+    const created = spawnSync(tmuxPath, ['-S', socket, '-f', '/dev/null', 'new-session', '-d', '-s', 'original', '/bin/sh'], { encoding: 'utf8' })
+    assert.equal(created.status, 0, created.stderr)
+    const pid = spawnSync(tmuxPath, ['-S', socket, 'display-message', '-p', '-t', 'original', '#{pid}'], { encoding: 'utf8' }).stdout.trim()
+    assert.match(pid, /^\d+$/u)
+    const env = { ...process.env, TMUX: `${socket},${pid},0` }
+    assert.equal(canUseTmux(tmuxPath, spawnSync, env), true)
+    const surviving = spawnSync(tmuxPath, ['-S', socket, 'display-message', '-p', '-t', 'original', '#{pid}'], { encoding: 'utf8' })
+    assert.equal(surviving.status, 0, surviving.stderr)
+    assert.equal(surviving.stdout.trim(), pid, '探测结束后原会话与服务器必须保持原身份')
+  } finally {
+    killTestServer(tmuxPath, socket, directory)
+  }
+})
