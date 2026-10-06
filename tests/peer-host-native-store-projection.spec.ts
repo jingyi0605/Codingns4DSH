@@ -128,6 +128,7 @@ function remoteWorkspace(): Record<string, unknown> {
       targetHostId: 'peer-1',
       workspaceId: 'workspace-1',
       displayName: '远端工作区',
+      path: '/Users/dev/project-a',
       hostLabel: '开发机',
       availability: 'ready',
       sessions: [{
@@ -170,7 +171,7 @@ test('虚拟工作区就地并入原生 Workspace Store，卸载后还原', () =
   assert.deepEqual((listRef.getSnapshot().items as Array<Record<string, unknown>>).map((item) => item.workspaceId), ['local-workspace'])
 })
 
-test('底层 Remote 已经写入虚拟工作区时仍隔离真实路径', () => {
+test('底层 Remote 已经写入虚拟工作区时仍使用稳定显示路径', () => {
   const remote = createVirtualWorkspaceId('peer-1', 'workspace-1')
   const stores = fakeNativeStores([{
     workspaceId: remote,
@@ -212,7 +213,7 @@ test('本地与远端工作区按 Host 全局顺序混排，远端恢复后回�
   assert.deepEqual((stores.list.getSnapshot().items as Array<Record<string, unknown>>).map((item) => item.workspaceId), ['local-a', remote, 'local-c'])
 })
 
-test('本地目录树也转换为扁平显示路径，空白会话仍能复用当前工作区', () => {
+test('工作区排序使用稳定显示路径，空白会话仍能复用真实 cwd', () => {
   const localA = createVirtualWorkspaceId('host-local', 'local-a')
   const localC = createVirtualWorkspaceId('host-local', 'local-c')
   const stores = fakeNativeStores([
@@ -224,12 +225,9 @@ test('本地目录树也转换为扁平显示路径，空白会话仍能复用�
   projection.setAggregate([localWorkspaceAggregate()] as never, [localA, localC])
 
   const items = stores.list.getSnapshot().items as Array<Record<string, unknown>>
-  assert.deepEqual(items.map((item) => item.path), [
-    createPeerHostWorkspaceDisplayPath(localA),
-    createPeerHostWorkspaceDisplayPath(localC),
-  ])
+  assert.deepEqual(items.map((item) => item.path), ['/Users/dev/root', '/Users/dev/root/child'])
   const session = (stores.sessionList.getSnapshot().byId as Record<string, Record<string, unknown>>)['local-session']
-  assert.equal(session?.cwd, createPeerHostWorkspaceDisplayPath(localA))
+  assert.equal(session?.cwd, '/Users/dev/root')
 })
 
 test('聚合与顺序快照不完整时保留原顺序，避免未知条目跳到末尾', () => {

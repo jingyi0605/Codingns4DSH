@@ -19,6 +19,10 @@ const resolver = {
   resolveSession: (id: string) => id === 'codingns:peer-host:v1:session:peer-a:remote-session'
     ? { sessionId: 'remote-session', targetHostId: 'peer-a' }
     : null,
+  resolveWorkspacePath: (path: string) => {
+    const prefix = 'codingns-peer-host://codingns%3Apeer-host%3Av1%3Aworkspace%3Apeer-a%3Aremote-ws'
+    return path === prefix ? '/Users/remote/project' : path.startsWith(`${prefix}/`) ? `/Users/remote/project${path.slice(prefix.length)}` : null
+  },
 }
 
 test('新建会话尚未进入聚合 Registry 时，按作用域改写临时虚拟会话 ID', () => {
@@ -73,6 +77,22 @@ test('原生请求只改写 Workspace/Session 资源 ID，不污染 requestId �
     requestId: 'codingns:peer-host:v1:session:peer-a:remote-session',
     content: [{ text: 'workspaceId=sessionId 不应解析' }],
   })
+})
+
+test('文件请求中的虚拟 Workspace 路径在 Host 边界还原为真实路径', () => {
+  const value = rewriteNativeRequestIds('workspaceFiles/list', {
+    workspaceFileScopeId: 'codingns:peer-host:v1:session:peer-a:remote-session',
+    path: 'codingns-peer-host://codingns%3Apeer-host%3Av1%3Aworkspace%3Apeer-a%3Aremote-ws',
+  }, resolver)
+  assert.deepEqual(value, {
+    workspaceFileScopeId: 'remote-session',
+    path: '/Users/remote/project',
+  })
+
+  const nested = rewriteNativeRequestIds('workspaceFiles/read', {
+    path: 'codingns-peer-host://codingns%3Apeer-host%3Av1%3Aworkspace%3Apeer-a%3Aremote-ws/src/index.ts',
+  }, resolver)
+  assert.deepEqual(nested, { path: '/Users/remote/project/src/index.ts' })
 })
 
 test('session/follow 流沿用同一套请求与帧 ID 改写', () => {
