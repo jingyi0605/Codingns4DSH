@@ -6,6 +6,7 @@ import type { CodingNsRpcClient } from './features/types.js'
 import { callCodingNsRpc } from './settings-bridge.js'
 import { resolveGitWorkspaceId } from './git-management.js'
 import { notifyGitWorkspaceChanged, subscribeGitWorkspaceChanged } from './git-workspace-events.js'
+import { backdropPointerDownHandler } from './popup-dismiss.js'
 import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 
 export const SESSION_CHANGED_FILES_VIEW_ID = 'codingns4dsh/session-changed-files'
@@ -62,6 +63,8 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
   const [changes, setChanges] = useState<readonly GitChangeItem[]>([])
   const [selectedPath, setSelectedPath] = useState<string>()
   const [diff, setDiff] = useState<GitDiff>()
+  const [diffLoading, setDiffLoading] = useState(false)
+  const [mobileDiffOpen, setMobileDiffOpen] = useState(false)
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [hoveredPath, setHoveredPath] = useState<string>()
   const [loading, setLoading] = useState(true)
@@ -118,6 +121,8 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
 
   useEffect(() => {
     setDiff(undefined)
+    setDiffLoading(false)
+    setMobileDiffOpen(false)
     setCollapsed(new Set())
     setWorkspaceId(undefined)
     void load(true)
@@ -137,16 +142,29 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
   useEffect(() => {
     if (workspaceId === undefined || selectedPath === undefined) {
       setDiff(undefined)
+      setDiffLoading(false)
       return
     }
     const selected = changes.find((item) => item.path === selectedPath)
-    if (selected === undefined) return
+    if (selected === undefined) {
+      setDiff(undefined)
+      setDiffLoading(false)
+      return
+    }
     let cancelled = false
+    setDiff(undefined)
+    setDiffLoading(true)
     void call<GitDiff>(props.rpc, 'git/diff', { workspaceId, path: selected.path, staged: selected.staged })
       .then((value) => { if (!cancelled) setDiff(value) })
       .catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause)) })
+      .finally(() => { if (!cancelled) setDiffLoading(false) })
     return () => { cancelled = true }
   }, [changes, props.rpc, selectedPath, workspaceId])
+
+  useEffect(() => {
+    if (!compactLayout) setMobileDiffOpen(false)
+    if (selectedPath === undefined || !changes.some((item) => item.path === selectedPath)) setMobileDiffOpen(false)
+  }, [changes, compactLayout, selectedPath])
 
   const tree = useMemo(() => buildTree(changes), [changes])
   const unstaged = changes.filter((item) => !item.staged)
@@ -172,6 +190,11 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
     })
   }
   const hasChanges = changes.length > 0
+  const selectedChange = selectedPath === undefined ? undefined : changes.find((item) => item.path === selectedPath)
+  const selectPath = (path: string): void => {
+    setSelectedPath(path)
+    if (compactLayout) setMobileDiffOpen(true)
+  }
   const viewRootStyle: CSSProperties = { ...rootStyle, padding: compactLayout ? '0 16px' : rootStyle.padding }
   const viewToolbarStyle: CSSProperties = {
     ...toolbarStyle,
@@ -200,14 +223,34 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
       createElement('div', { style: viewTreePaneStyle },
         loading ? createElement('div', { style: emptyStyle }, t('sessionFiles.loading'))
           : changes.length === 0 ? createElement('div', { style: emptyStyle }, t('sessionFiles.empty'))
-            : tree.map((node) => renderNode(node, 0, collapsed, hoveredPath, selectedPath, toggle, setSelectedPath, setHoveredPath, stageTargets, t)),
+            : tree.map((node) => renderNode(node, 0, collapsed, hoveredPath, selectedPath, toggle, selectPath, setHoveredPath, stageTargets, t)),
       ),
-      hasChanges ? createElement('div', { style: diffPaneStyle },
+      !compactLayout && hasChanges ? createElement('div', { style: diffPaneStyle },
         selectedPath === undefined ? createElement('div', { style: emptyStyle }, t('sessionFiles.selectFile'))
-          : diff?.content ? createElement('pre', { style: diffStyle }, renderDiff(diff.content))
+          : diffLoading ? createElement('div', { style: emptyStyle }, t('sessionFiles.loadingDiff'))
+            : diff?.content ? createElement('pre', { style: diffStyle }, renderDiff(diff.content))
             : createElement('div', { style: emptyStyle }, t('sessionFiles.noDiff')),
       ) : null,
     ),
+    compactLayout && mobileDiffOpen && selectedPath !== undefined ? createElement('div', {
+      style: mobileDiffOverlayStyle,
+      onPointerDown: backdropPointerDownHandler(() => setMobileDiffOpen(false)),
+    }, createElement('section', {
+      role: 'dialog',
+      'aria-modal': true,
+      'aria-label': selectedChange?.path ?? t('sessionFiles.title'),
+      style: mobileDiffModalStyle,
+    },
+    createElement('header', { style: mobileDiffHeaderStyle },
+      createElement('strong', { style: mobileDiffTitleStyle, title: selectedChange?.path }, selectedChange?.path ?? t('sessionFiles.title')),
+      createElement('button', { type: 'button', onClick: () => setMobileDiffOpen(false), style: mobileDiffCloseStyle, title: t('sessionFiles.close'), 'aria-label': t('sessionFiles.close') }, '×'),
+    ),
+    createElement('div', { style: mobileDiffBodyStyle },
+      diffLoading ? createElement('div', { style: emptyStyle }, t('sessionFiles.loadingDiff'))
+        : diff?.content ? createElement('pre', { style: diffStyle }, renderDiff(diff.content))
+          : createElement('div', { style: emptyStyle }, t('sessionFiles.noDiff')),
+    ),
+    )) : null,
   )
 }
 
@@ -545,6 +588,12 @@ const toolbarStageButtonStyle: CSSProperties = { ...toolbarIconButtonStyle, colo
 const emptyStyle: CSSProperties = { padding: 24, color: 'var(--dsw-alias-label-tertiary,#777)', textAlign: 'center' }
 const errorStyle: CSSProperties = { padding: '8px 16px', color: 'var(--dsw-alias-state-danger,#c43d3d)', borderBottom: '1px solid var(--dsw-alias-border-l3,#ddd)' }
 const diffStyle: CSSProperties = { margin: 0, padding: 16, minHeight: '100%', overflow: 'visible', whiteSpace: 'pre-wrap', wordBreak: 'break-word', font: '12px/1.55 var(--dsw-font-mono,ui-monospace,monospace)' }
+const mobileDiffOverlayStyle: CSSProperties = { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'stretch', justifyContent: 'center', padding: 10, boxSizing: 'border-box', background: 'rgba(0,0,0,.48)' }
+const mobileDiffModalStyle: CSSProperties = { display: 'flex', flexDirection: 'column', width: '100%', maxWidth: 720, maxHeight: '100%', minHeight: 0, overflow: 'hidden', borderRadius: 10, background: 'var(--dsw-alias-bg-layer-1,#fff)', boxShadow: '0 12px 40px rgba(0,0,0,.3)' }
+const mobileDiffHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minHeight: 46, padding: '0 12px', borderBottom: '1px solid var(--dsw-alias-border-l3,#ddd)', flex: '0 0 auto' }
+const mobileDiffTitleStyle: CSSProperties = { minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }
+const mobileDiffCloseStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, border: 0, borderRadius: 6, padding: 0, background: 'transparent', color: 'var(--dsw-alias-label-secondary,#777)', cursor: 'pointer', fontSize: 22, lineHeight: 1 }
+const mobileDiffBodyStyle: CSSProperties = { minHeight: 0, overflow: 'auto', background: 'var(--dsw-alias-bg-layer-1,transparent)' }
 const diffHeaderLineStyle: CSSProperties = { display: 'block', color: 'var(--dsw-alias-label-tertiary,#777)' }
 const diffHunkLineStyle: CSSProperties = { display: 'block', color: 'var(--dsw-alias-state-business-primary,#356ae6)', background: 'rgba(53,106,230,.08)' }
 const diffAddedLineStyle: CSSProperties = { display: 'block', color: '#137333', background: 'rgba(34,197,94,.12)' }
