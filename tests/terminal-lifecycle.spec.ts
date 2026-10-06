@@ -344,6 +344,43 @@ test('Host resident 连接断开但运行时仍在时保留 follow 并重绑控�
   assert.equal(listed.exitCode, null)
 })
 
+test('Host resident 重连期间输入等待控制权恢复，不误报 attach 无控制权', async () => {
+  const { adapter, service, identity } = await setup()
+  const controller = new AbortController()
+  const iterator = service.follow({ identity, attachmentId: 'browser-a', generation: 'generation-a', signal: controller.signal })[Symbol.asyncIterator]()
+  await iterator.next()
+  await iterator.next()
+  const runtimeAttachment = [...adapter.attachments.values()][0]
+
+  let releaseHistory
+  const historyReady = new Promise((resolve) => { releaseHistory = resolve })
+  let historyStarted = false
+  const captureHistory = adapter.captureHistory.bind(adapter)
+  adapter.captureHistory = async (session, lines) => {
+    if (adapter.nextAttachment >= 2 && !historyStarted) {
+      historyStarted = true
+      await historyReady
+    }
+    return captureHistory(session, lines)
+  }
+
+  runtimeAttachment.onExit(1)
+  await waitFor(() => historyStarted)
+  const replacement = [...adapter.attachments.values()][0]
+  let settled = false
+  const write = service.write(identity, 'browser-a', 'echo')
+  void write.then(() => { settled = true }, () => { settled = true })
+  await sleep(20)
+  assert.equal(settled, false, '重连期间输入不应立即失败')
+
+  releaseHistory()
+  await write
+  assert.equal(replacement.lastInput, 'echo')
+
+  controller.abort()
+  await iterator.return()
+})
+
 test('attach 客户端断开且运行时消失时报告 lost，不借用客户端退出码', async () => {
   const { adapter, service, identity } = await setup()
   const controller = new AbortController()

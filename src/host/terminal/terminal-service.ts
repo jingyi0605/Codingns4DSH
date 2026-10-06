@@ -81,6 +81,8 @@ export class CodingNsTerminalService {
   private readonly controllers = new Map<string, Map<string, ControllerBinding>>()
   private readonly residents = new Map<string, ResidentConnection>()
   private readonly residentPromises = new Map<string, Promise<ResidentConnection>>()
+  /** resident 断线重连期间暂存恢复任务，输入和 resize 必须等待它完成。 */
+  private readonly residentRecoveryPromises = new Map<string, Promise<void>>()
   private readonly followers = new Map<string, Set<ActiveFollower>>()
   private readonly operations = new Map<string, Promise<unknown>>()
   private readonly exitCallbacks = new Map<string, (exitCode: number | null, kind: TerminalExitKind) => void | Promise<void>>()
@@ -453,7 +455,7 @@ export class CodingNsTerminalService {
   }
 
   async write(identity: TerminalRecordIdentity, attachmentId: string, data: string): Promise<void> {
-    const controller = this.requireController(identity, attachmentId)
+    const controller = await this.waitForController(identity, attachmentId)
     await this.runtimes.write(controller.subscriptionId, data)
   }
 
@@ -474,7 +476,7 @@ export class CodingNsTerminalService {
 
   async resize(identity: TerminalRecordIdentity, attachmentId: string, cols: number, rows: number): Promise<void> {
     validateSize(cols, rows)
-    const controller = this.requireController(identity, attachmentId)
+    const controller = await this.waitForController(identity, attachmentId)
     const record = this.requireAvailable(identity)
     // ResizeObserver 可能重复报告同一尺寸；相同尺寸不应再次向 PTY 发送 SIGWINCH。
     if (record.cols === cols && record.rows === rows) return
@@ -598,14 +600,29 @@ export class CodingNsTerminalService {
     for (const followers of this.followers.values()) for (const follower of followers) follower.queue.finish()
     this.followers.clear()
     this.controllers.clear()
+    this.residentRecoveryPromises.clear()
     this.residents.clear()
     this.exitCallbacks.clear()
     await this.runtimes.dispose()
   }
 
-  private requireController(identity: TerminalRecordIdentity, attachmentId: string): ControllerBinding {
+  /**
+   * resident 重连会短暂撤销旧 subscription 的控制权。
+   *
+   * 这不是用户失去输入权限，而是 Host 正在把同一持久终端重新挂回新连接。
+   * 等待这次恢复可以消除输入请求与控制权重绑之间的竞态，避免客户端收到一条
+   * 会永久留在界面底部的假错误。
+   */
+  private async waitForController(identity: TerminalRecordIdentity, attachmentId: string): Promise<ControllerBinding> {
     this.requireAvailable(identity)
-    const controller = this.controllers.get(identityKey(identity))?.get(attachmentId)
+    const key = identityKey(identity)
+    let controller = this.controllers.get(key)?.get(attachmentId)
+    const recovery = this.residentRecoveryPromises.get(key)
+    if (controller === undefined && recovery !== undefined) {
+      try { await recovery } catch { /* 恢复失败时由下面的统一错误收敛 */ }
+      controller = this.controllers.get(key)?.get(attachmentId)
+    }
+    this.requireAvailable(identity)
     if (controller === undefined) {
       throw new TerminalServiceError('TERMINAL_CONTROL_UNAVAILABLE', '当前 attach 没有终端输入控制权')
     }
@@ -858,7 +875,18 @@ export class CodingNsTerminalService {
     // 这条 backend 连接已经不能继续向浏览器送数据。先撤销输入控制权；
     // 是否结束订阅要等 finishRuntime 判断出“连接断开”还是“Shell 退出”之后决定。
     this.controllers.delete(key)
-    try { await this.runtimes.detach(resident.subscriptionId) } catch { /* backend 已经回收 attachment */ }
+    const recovery = this.recoverResidentAfterExit(identity, key, resident.subscriptionId, exitCode)
+    this.residentRecoveryPromises.set(key, recovery)
+    try {
+      await recovery
+    } finally {
+      if (this.residentRecoveryPromises.get(key) === recovery) this.residentRecoveryPromises.delete(key)
+    }
+  }
+
+  /** 断线后确认运行时状态，并在仍存活时重建 resident 与浏览器控制权。 */
+  private async recoverResidentAfterExit(identity: TerminalRecordIdentity, key: string, subscriptionId: string, exitCode: number | null): Promise<void> {
+    try { await this.runtimes.detach(subscriptionId) } catch { /* backend 已经回收 attachment */ }
     await this.finishRuntime(identity, exitCode)
     const current = this.store.get(identity)
     if (current?.state === 'running') {
