@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsAgentQuestionResponse, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
@@ -12,6 +12,19 @@ import { buildAcpPromptBlocks } from './attachment-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 import { reasoningText } from './reasoning-content.js'
 import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
+import { readAgentQuestions } from './interaction-events.js'
+
+interface GrokQuestionPending {
+  readonly callId: string
+  readonly questions: readonly CodingNsAgentQuestion[]
+  rpcId?: number | string
+  response?: CodingNsAgentQuestionResponse
+}
+
+interface GrokQuestionTool {
+  readonly callId: string
+  readonly questions: readonly CodingNsAgentQuestion[]
+}
 
 export interface GrokBuildDriverOptions {
   readonly binaries?: readonly string[]
@@ -29,7 +42,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
   private readonly sessionRoots: readonly string[]
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
-  private readonly sessions = new Map<string, { rpc: JsonRpcProcess; cwd: string | undefined; providerSessionId: string; requests: Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>; questions: Map<string, AcpElicitationRequest> }>()
+  private readonly sessions = new Map<string, { rpc: JsonRpcProcess; cwd: string | undefined; providerSessionId: string; requests: Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>; questions: Map<string, AcpElicitationRequest>; grokQuestions: Map<string, GrokQuestionPending>; grokQuestionCallIds: Set<string>; grokQuestionEventIds: Set<string> }>()
 
   constructor(options: GrokBuildDriverOptions = {}) {
     this.binaries = options.binaries ?? ['grok', 'grok-build']
@@ -82,6 +95,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     const state = await this.getSession(input, command)
     const rpc = state.rpc
     let providerSessionId = state.providerSessionId
+    let stream: ReturnType<typeof streamGrokPrompt> | undefined
     try {
       if (providerSessionId === '') {
         const session = await rpc.request('session/new', {
@@ -95,9 +109,17 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         this.sessions.set(providerSessionId, state)
       }
       yield { type: 'session-binding', providerSessionId }
-      const stream = streamGrokPrompt(rpc, providerSessionId, await buildAcpPromptBlocks(input.prompt, input.attachments ?? []), input.signal, (notification) => {
+      const prompt = [
+        { type: 'text', text: GROK_QUESTION_GUIDANCE },
+        ...await buildAcpPromptBlocks(input.prompt, input.attachments ?? []),
+      ]
+      stream = streamGrokPrompt(rpc, providerSessionId, prompt, input.signal, (notification) => {
         const elicitation = readAcpElicitationRequest(notification)
         if (elicitation !== null) state.questions.set(elicitation.requestId, elicitation)
+        const grokTool = readGrokQuestionTool(notification)
+        if (grokTool !== null) rememberGrokQuestion(state, grokTool)
+        // 反向请求的 RPC id 只由请求处理器登记，避免用户回答和处理器调度交错时
+        // 已回答的问题被重新登记。tool_call 可以先显示问题卡并暂存用户答案。
         const requestId = interactionRequestId(notification)
         if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, { rpcId: notification.id, ...permissionOptions(notification) })
       })
@@ -109,14 +131,33 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           break
         }
         const chunk = acpMessageToChunk(item.value)
-        if (chunk !== null) yield chunk
+        if (chunk === null) continue
+        if (chunk.type === 'question-request' && state.grokQuestionCallIds.has(chunk.requestId)) {
+          if (state.grokQuestionEventIds.has(chunk.requestId)) continue
+          state.grokQuestionEventIds.add(chunk.requestId)
+        }
+        // 问题的 tool_call_update 只是同一次交互的生命周期回声，不能再生成普通
+        // 工具记录，否则历史里会重新出现空参数或重复的问题调用。
+        if (chunk.type === 'tool-event' && chunk.callId !== undefined && state.grokQuestionCallIds.has(chunk.callId)) continue
+        yield chunk
       }
       if (finishResult.reason === 'cancel') {
         try { await rpc.request('session/cancel', { sessionId: providerSessionId }, { killOnAbort: false }) }
         catch { /* 不同 ACP 版本的取消方法可能不同，请求级取消已经先行发出。 */ }
       }
       yield { type: 'finish', reason: finishResult.reason, ...(finishResult.failure === undefined ? {} : { failure: finishResult.failure }) }
-    } finally { /* ACP 进程和会话跨轮复用，统一由 dispose() 回收。 */ }
+    } finally {
+      // 原生问题卡取消或消费者提前结束时，也要释放反向请求与流监听器。
+      await stream?.return({ reason: 'cancel' })
+      for (const pending of state.grokQuestions.values()) {
+        if (pending.rpcId === undefined || rpc.isClosed) continue
+        rpc.respond(pending.rpcId, { outcome: 'cancelled' })
+      }
+      state.grokQuestions.clear()
+      state.grokQuestionCallIds.clear()
+      state.grokQuestionEventIds.clear()
+      // ACP 进程和会话跨轮复用，统一由 dispose() 回收。
+    }
   }
 
   respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
@@ -131,10 +172,19 @@ export class GrokBuildDriver implements CodingNsCliDriver {
 
   respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
     const state = this.sessions.get(sessionId)
-    const pending = state?.questions.get(response.requestId)
-    if (state === undefined || pending === undefined) throw new Error('Grok 问题请求不存在')
+    const pending = state?.grokQuestions.get(response.requestId)
+    if (pending !== undefined) {
+      pending.response = response
+      if (pending.rpcId !== undefined) {
+        state!.grokQuestions.delete(response.requestId)
+        state!.rpc.respond(pending.rpcId, grokQuestionResponse(pending, response))
+      }
+      return
+    }
+    const elicitation = state?.questions.get(response.requestId)
+    if (state === undefined || elicitation === undefined) throw new Error('Grok 问题请求不存在')
     state.questions.delete(response.requestId)
-    state.rpc.respond(pending.rpcId, acpElicitationResponse(pending, response))
+    state.rpc.respond(elicitation.rpcId, acpElicitationResponse(elicitation, response))
   }
 
   dispose(): void { for (const process of this.processes) process.dispose(); this.processes.clear(); this.sessions.clear(); this.cachedBinary = null }
@@ -145,7 +195,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     previous?.rpc.dispose()
     const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], cwd: input.cwd, spawn: this.runSpawn })
     this.processes.add(rpc)
-    const state = { rpc, cwd: input.cwd, providerSessionId: '', requests: new Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>(), questions: new Map<string, AcpElicitationRequest>() }
+    const state = { rpc, cwd: input.cwd, providerSessionId: '', requests: new Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>(), questions: new Map<string, AcpElicitationRequest>(), grokQuestions: new Map<string, GrokQuestionPending>(), grokQuestionCallIds: new Set<string>(), grokQuestionEventIds: new Set<string>() }
     await rpc.request('initialize', {
       protocolVersion: 1,
       clientInfo: { name: 'codingns4dsh', version: '0.1.1' },
@@ -167,6 +217,18 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         state.questions.set(elicitation.requestId, elicitation)
         return new Promise<never>(() => undefined)
       }
+      const grokRequest = readGrokQuestionRequest(message)
+      if (grokRequest !== null) {
+        rememberGrokQuestion(state, grokRequest, message.id)
+        const pending = state.grokQuestions.get(grokRequest.callId)
+        if (pending?.response !== undefined && pending.rpcId !== undefined) {
+          state.grokQuestions.delete(pending.callId)
+          state.rpc.respond(pending.rpcId, grokQuestionResponse(pending, pending.response))
+        }
+        return new Promise<never>(() => undefined)
+      }
+      // 参数不合法的私有提问也使用 Grok 的取消形状，避免发送嵌套 ACP outcome。
+      if (isGrokQuestionMethod(message.method)) return { outcome: 'cancelled' }
       if (message.method === 'elicitation/create') return { action: 'cancel' }
       const requestId = interactionRequestId(message)
       if (requestId === null || message.id === undefined || message.id === null) return { outcome: { outcome: 'cancelled' } }
@@ -180,6 +242,15 @@ export class GrokBuildDriver implements CodingNsCliDriver {
 }
 
 const GROK_DRAIN_WAIT_MS = 250
+
+/** 内建提问与 MCP 的连接状态无关，宿主能力说明必须随每轮请求一起传递。 */
+const GROK_QUESTION_GUIDANCE = [
+  '<codingns_host_capabilities>',
+  'DSH 宿主支持 Grok Build 内建 ask_user_question 工具，会显示原生问题卡并回传用户的结构化回答。',
+  'ask_user_question 属于 grok_build 内建工具，不依赖 MCP 服务器；MCP 正在连接的提示只影响提示中列出的 MCP 服务器。',
+  '当用户明确要求使用提问组件，或需要通过问题卡收集用户选择时，请直接调用 ask_user_question 并等待用户回答，再继续验证或处理答案。',
+  '</codingns_host_capabilities>',
+].join('\n')
 
 /**
  * Grok 可能先返回 prompt 响应，再补发最后一批 session/update。
@@ -309,12 +380,85 @@ function grokFailure(message: JsonRpcMessage): { message: string; code?: string 
   return code === undefined ? { message: detail } : { message: detail, code }
 }
 
+/** Grok 的提问不是 ACP elicitation，而是 x.ai 私有的反向 ext_method。 */
+function readGrokQuestionRequest(message: Record<string, any>): GrokQuestionTool | null {
+  // Grok 1.0.x 的真实线路使用 `_x.ai/` 扩展命名空间；保留旧版无下划线
+  // 别名兼容历史客户端，但不能把真实请求落入普通未知请求处理。
+  if (!isGrokQuestionMethod(message.method)) return null
+  const params = isRecord(message.params) ? message.params : {}
+  const callId = firstToolText(params.toolCallId, params.tool_call_id, params.callId, params.call_id)
+  const questions = readAgentQuestions(params.questions)
+  if (callId === undefined || questions.length === 0) return null
+  return { callId, questions }
+}
+
+function isGrokQuestionMethod(method: unknown): boolean {
+  return method === '_x.ai/ask_user_question' || method === 'x.ai/ask_user_question'
+}
+
+/** 只认 Grok Build 的结构化 ask_user_question tool_call，不能按普通工具落库。 */
+function readGrokQuestionTool(message: Record<string, any>): GrokQuestionTool | null {
+  const params = isRecord(message.params) ? message.params : message
+  const update = isRecord(params.update) ? params.update : params
+  const tool = isToolRecord(update.toolCall) ? update.toolCall : isToolRecord(update.tool_call) ? update.tool_call : update
+  const metaSource = isRecord(tool._meta) ? tool._meta : isRecord(update._meta) ? update._meta : {}
+  const xaiTool = isRecord(metaSource['x.ai/tool']) ? metaSource['x.ai/tool'] : null
+  if (xaiTool?.namespace !== 'grok_build' || xaiTool.name !== 'ask_user_question') return null
+  const callId = firstToolText(tool.toolCallId, tool.tool_call_id, tool.callId, tool.call_id, update.toolCallId, update.tool_call_id)
+  const rawInput = tool.rawInput ?? tool.input ?? update.rawInput
+  const questionsSource = isRecord(rawInput) && Array.isArray(rawInput.questions) ? rawInput.questions : rawInput
+  const questions = readAgentQuestions(questionsSource)
+  if (callId === undefined || questions.length === 0) return null
+  return { callId, questions }
+}
+
+type GrokQuestionState = {
+  readonly grokQuestions: Map<string, GrokQuestionPending>
+  readonly grokQuestionCallIds: Set<string>
+}
+
+function rememberGrokQuestion(state: GrokQuestionState, question: GrokQuestionTool, rpcId?: number | string | null): void {
+  state.grokQuestionCallIds.add(question.callId)
+  const pending = state.grokQuestions.get(question.callId)
+  if (pending === undefined) {
+    state.grokQuestions.set(question.callId, {
+      callId: question.callId,
+      questions: question.questions,
+      ...(rpcId === undefined || rpcId === null ? {} : { rpcId }),
+    })
+    return
+  }
+  if (rpcId !== undefined && rpcId !== null) pending.rpcId = rpcId
+}
+
+/** 将 DSH 的 id-keyed 答案改写成 Grok 以问题原文为 key 的私有 outcome。 */
+function grokQuestionResponse(pending: GrokQuestionPending, response: CodingNsAgentQuestionResponse): Record<string, unknown> {
+  const answers: Record<string, string[]> = {}
+  const annotations: Record<string, { notes: string }> = {}
+  for (const answer of response.answers) {
+    const question = pending.questions.find((item) => item.id === answer.id || item.question === answer.id)
+    const key = question?.question ?? answer.id
+    const custom = answer.custom?.trim()
+    const selected = [...answer.selected]
+    if (selected.length === 0 && custom !== undefined && custom !== '') selected.push('Other')
+    if (selected.length > 0) answers[key] = selected
+    if (custom !== undefined && custom !== '') annotations[key] = { notes: custom }
+  }
+  return {
+    outcome: 'accepted',
+    answers,
+    ...(Object.keys(annotations).length === 0 ? {} : { annotations }),
+  }
+}
+
 function acpMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | null {
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
   const type = (typeof update.sessionUpdate === 'string' ? update.sessionUpdate : typeof update.type === 'string' ? update.type : typeof message.method === 'string' ? message.method : '').toLowerCase()
   const elicitation = readAcpElicitationRequest(message)
   if (elicitation !== null) return { type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }
+  const grokQuestion = readGrokQuestionTool(message) ?? readGrokQuestionRequest(message)
+  if (grokQuestion !== null) return { type: 'question-request', requestId: grokQuestion.callId, callId: grokQuestion.callId, questions: grokQuestion.questions }
   const reasoning = reasoningText(update)
   if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning }
   const text = textValue(update.delta ?? update.text ?? update.content ?? update.message ?? update.detail)
