@@ -386,6 +386,7 @@ export { dispatchBridgeSubagent, type BridgeAgentRegistry, type SubagentBridgeDi
 export {
   dispatchNativeSubagent,
   NATIVE_SUBAGENT_TIMEOUT_MS,
+  BACKGROUND_NATIVE_SUBAGENT_TIMEOUT_MS,
   type NativeParentAgent,
   type NativeSubagentDispatchRequest,
   type NativeSubagentDispatchResult,

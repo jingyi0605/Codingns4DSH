@@ -2,8 +2,10 @@ import { DEFAULT_SUBAGENT_BRIDGE_SETTINGS } from '../../shared/contracts/config.
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { externalTeamProvider, withTeamSubagentSelection, type NativeSubagentService } from './native-team-subagent.js'
 
-/** 同步子代理首轮的最长等待时间；桥接与 agent_subagent 共用同一预算。 */
+/** 同步子代理首轮的最长等待时间；后台任务不会把这个预算绑定到调用方。 */
 export const NATIVE_SUBAGENT_TIMEOUT_MS = 15 * 60_000
+/** 后台子代理的执行保护上限；工具调用已经立即返回，长任务只通过生命周期查询观察。 */
+export const BACKGROUND_NATIVE_SUBAGENT_TIMEOUT_MS = 60 * 60_000
 /**
  * 同一父会话可同时保留的子代理任务数缺省值。
  *
@@ -76,6 +78,99 @@ export interface NativeSubagentDispatchResult {
   readonly error?: string | undefined
 }
 
+export interface NativeSubagentMessageRequest {
+  readonly parentAgent: NativeParentAgent
+  readonly parentId: string
+  readonly childSessionId: string
+  readonly message: string
+  readonly signal?: AbortSignal | undefined
+}
+
+export interface NativeSubagentMessageResult {
+  readonly ok: boolean
+  readonly childSessionId: string
+  readonly messageId?: string | undefined
+  readonly error?: string | undefined
+}
+
+/** 向已创建的直接子代理发送后续消息，使用 DSH 原生 sendMessage 的父身份校验。 */
+export async function sendNativeSubagentMessage(
+  service: NativeSubagentService,
+  request: NativeSubagentMessageRequest,
+): Promise<NativeSubagentMessageResult> {
+  const childSessionId = request.childSessionId.trim()
+  const message = request.message.trim()
+  if (childSessionId === '' || message === '') {
+    return { ok: false, childSessionId, error: '子会话 ID 和消息内容不能为空。' }
+  }
+  if (typeof service.sendMessage !== 'function') {
+    return { ok: false, childSessionId, error: '当前 DSH 未提供可续子会话 sendMessage 能力。' }
+  }
+  try {
+    const result = await service.sendMessage(
+      request.parentAgent,
+      childSessionId,
+      [{ type: 'text', text: message }],
+      { signal: request.signal ?? fallbackSignal },
+    )
+    return {
+      ok: true,
+      childSessionId,
+      ...(typeof result === 'string' && result.trim() !== '' ? { messageId: result } : {}),
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      childSessionId,
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+/** 读取子会话当前事件游标；后续 follow-up 只消费游标之后的新一轮。 */
+export function nativeSubagentEventCursor(sessions: CodingNsNativeSessionBridge, childSessionId: string): number {
+  const session = sessions.get(childSessionId.trim()) as { snapshotEvents?: () => readonly unknown[] } | undefined
+  let cursor = 0
+  for (const event of session?.snapshotEvents?.() ?? []) {
+    const row = asRecord(event)
+    const seq = row?.seq
+    if (typeof seq === 'number' && Number.isFinite(seq)) cursor = Math.max(cursor, seq)
+  }
+  return cursor
+}
+
+/** 后续消息被 DSH 接受后，重新打开该子会话的生命周期观察窗口。 */
+export function trackNativeSubagentFollowup(
+  sessions: CodingNsNativeSessionBridge,
+  childSessionId: string,
+  afterSeq: number,
+): void {
+  const id = childSessionId.trim()
+  const current = lifecycleStates.get(id)
+  if (current === undefined || lifecycleWaiters.has(id)) return
+  const lifecycle: NativeSubagentLifecycle = {
+    childSessionId: current.childSessionId,
+    parentSessionId: current.parentSessionId,
+    adapterId: current.adapterId,
+    status: 'running',
+    completed: false,
+    ...(current.toolCalls === undefined ? {} : { toolCalls: current.toolCalls }),
+  }
+  saveLifecycle(lifecycle)
+  const completion = waitForChildFirstTurn(
+    sessions,
+    id,
+    undefined,
+    BACKGROUND_NATIVE_SUBAGENT_TIMEOUT_MS,
+    afterSeq,
+  ).then((result) => {
+    saveLifecycle(lifecycleFromResult(lifecycle, result))
+    return result
+  })
+  lifecycleWaiters.set(id, completion)
+  void completion.finally(() => { lifecycleWaiters.delete(id) })
+}
+
 interface ParentTaskState {
   active: number
   targets: Set<string>
@@ -92,11 +187,15 @@ export interface NativeSubagentLifecycle {
   readonly text?: string
   readonly error?: string
   readonly toolCalls?: number
+  /** failed 子代理是否已经被父 Agent 读取并复核。 */
+  readonly failureReviewed?: boolean
 }
 
 const lifecycleStates = new Map<string, NativeSubagentLifecycle>()
 const lifecycleWaiters = new Map<string, Promise<ChildResult>>()
 const MAX_LIFECYCLE_STATES = 2048
+/** 已经拦截过父会话当前轮次的结束事件，避免重复注入相同提醒。 */
+const guardedParentTurns = new Set<string>()
 
 function saveLifecycle(value: NativeSubagentLifecycle): void {
   lifecycleStates.set(value.childSessionId, value)
@@ -118,11 +217,96 @@ function lifecycleFromResult(
     text: result.text,
     ...(result.error === undefined ? {} : { error: result.error }),
     toolCalls: result.toolCalls,
+    ...(result.status === 'failed' ? { failureReviewed: false } : {}),
   }
 }
 
 export function readNativeSubagentLifecycle(childSessionId: string): NativeSubagentLifecycle | undefined {
   return lifecycleStates.get(childSessionId.trim())
+}
+
+/**
+ * 标记一次 failed 子代理已经被父 Agent 查看。
+ *
+ * 查看本身不替父 Agent 做决定；调用方仍必须根据错误和已有报告选择重新创建、
+ * 通过 send 接管，或明确结束当前任务。这里单独记录查看事实，避免父会话在没有
+ * 读取失败状态时直接收尾。
+ */
+export function reviewNativeSubagentFailure(childSessionId: string): NativeSubagentLifecycle | undefined {
+  const id = childSessionId.trim()
+  const current = lifecycleStates.get(id)
+  if (current === undefined || current.status !== 'failed' || current.failureReviewed === true) return current
+  const reviewed: NativeSubagentLifecycle = { ...current, failureReviewed: true }
+  saveLifecycle(reviewed)
+  return reviewed
+}
+
+/** failed 且尚未查看的子代理必须阻塞父会话收尾。 */
+export function nativeSubagentFailureNeedsReview(lifecycle: NativeSubagentLifecycle): boolean {
+  return lifecycle.status === 'failed' && lifecycle.failureReviewed !== true
+}
+
+/** 给模型的失败复核提示；正常运行和成功终态不增加额外字段。 */
+export function nativeSubagentFailureReviewFields(lifecycle: NativeSubagentLifecycle): Record<string, unknown> {
+  if (lifecycle.status !== 'failed') return {}
+  return {
+    failureReviewed: lifecycle.failureReviewed === true,
+    failureReviewRequired: lifecycle.failureReviewed !== true,
+    failureGuidance: '请评估是否需要 action=start 重新创建子代理，或用 action=send 接管并继续；确认无需继续后才能结束主任务。',
+  }
+}
+
+export interface NativeSubagentParentBarrier {
+  readonly parentSessionId: string
+  readonly blocked: boolean
+  readonly pending: readonly NativeSubagentLifecycle[]
+  readonly activeCount: number
+  readonly injected: boolean
+}
+
+/** 读取父会话下仍未完成或尚未复核失败的子代理。 */
+export function readNativeSubagentParentPending(parentSessionId: string): readonly NativeSubagentLifecycle[] {
+  const id = parentSessionId.trim()
+  if (id === '') return []
+  return [...lifecycleStates.values()]
+    .filter((state) => state.parentSessionId === id && (state.status === 'creating' || state.status === 'running' || nativeSubagentFailureNeedsReview(state)))
+}
+
+/**
+ * 父会话 turn/end 前的收尾屏障。
+ *
+ * DSH 没有可取消的原生 turn/end 事件，最安全的做法是在检测到仍有后台子代理
+ * 时注入下一步用户上下文，让父 Agent 继续等待并汇总。注入成功后同一父轮次不
+ * 再重复注入；下一次 turn/start 会由 `markNativeSubagentParentTurnStarted` 解锁。
+ */
+export function guardNativeSubagentParentTurn(
+  sessions: CodingNsNativeSessionBridge,
+  parentSessionId: string,
+): NativeSubagentParentBarrier {
+  const id = parentSessionId.trim()
+  const pending = readNativeSubagentParentPending(id)
+  const activeCount = Math.max(parentTaskStates.get(id)?.active ?? 0, pending.length)
+  if (id === '' || activeCount === 0) {
+    guardedParentTurns.delete(id)
+    return { parentSessionId: id, blocked: false, pending, activeCount: 0, injected: false }
+  }
+  if (guardedParentTurns.has(id)) {
+    return { parentSessionId: id, blocked: true, pending, activeCount, injected: false }
+  }
+  const childIds = pending.map((state) => `${state.childSessionId}(${state.status})`).join(', ')
+  const hasFailed = pending.some((state) => nativeSubagentFailureNeedsReview(state))
+  const summary = hasFailed
+    ? `存在 failed 子代理，主任务暂不能收尾。请先使用 agent_subagent 的 action=read/wait 查看失败原因和已有报告，再评估是否需要 action=start 重新创建，或 action=send 接管继续；确认无需继续后才能汇总报告：${childIds}。`
+    : `子代理尚未结束，主任务暂不能收尾。请先使用 agent_subagent 的 action=wait/read 检查：${childIds || `${String(activeCount)} 个子代理正在创建`}。所有子代理进入终态后再汇总报告。`
+  const injected = sessions.injectNextStep?.(id, summary) === true
+  if (injected) guardedParentTurns.add(id)
+  return { parentSessionId: id, blocked: true, pending, activeCount, injected }
+}
+
+/** 父会话真正开始下一轮后清除上一轮的收尾屏障。 */
+export function markNativeSubagentParentTurnStarted(parentSessionId: string): void {
+  const id = parentSessionId.trim()
+  if (id !== '') guardedParentTurns.delete(id)
 }
 
 /** 等待后台子会话进入终态；进程重启后只能返回已持有的最后状态。 */
@@ -193,7 +377,12 @@ export async function dispatchNativeSubagent(
       completed: false,
     }
     saveLifecycle(lifecycle)
-    const completion = waitForChildFirstTurn(sessions, started.childId, request.background ? undefined : request.signal).then((result) => {
+    const completion = waitForChildFirstTurn(
+      sessions,
+      started.childId,
+      request.background ? undefined : request.signal,
+      request.background ? BACKGROUND_NATIVE_SUBAGENT_TIMEOUT_MS : NATIVE_SUBAGENT_TIMEOUT_MS,
+    ).then((result) => {
       saveLifecycle(lifecycleFromResult(lifecycle, result))
       return result
     })
@@ -234,7 +423,7 @@ export async function dispatchNativeSubagent(
     const message = error instanceof Error ? error.message : String(error)
     if (startedChildId !== undefined) {
       const current = lifecycleStates.get(startedChildId)
-      if (current !== undefined) saveLifecycle({ ...current, status: 'failed', completed: false, error: message })
+      if (current !== undefined) saveLifecycle({ ...current, status: 'failed', completed: false, error: message, failureReviewed: false })
     }
     throw new Error(startedChildId === undefined ? message : `子代理 ${startedChildId} 派发失败：${message}`)
   }
@@ -249,7 +438,13 @@ interface ChildResult {
   readonly error?: string | undefined
 }
 
-function waitForChildFirstTurn(sessions: CodingNsNativeSessionBridge, childId: string, signal: AbortSignal | undefined): Promise<ChildResult> {
+function waitForChildFirstTurn(
+  sessions: CodingNsNativeSessionBridge,
+  childId: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  afterSeq = 0,
+): Promise<ChildResult> {
   return new Promise((resolve) => {
     let text = ''
     let toolCalls = 0
@@ -274,6 +469,7 @@ function waitForChildFirstTurn(sessions: CodingNsNativeSessionBridge, childId: s
     const processEvent = (event: unknown): void => {
       const row = asRecord(event)
       if (row === undefined) return
+      if (typeof row.seq === 'number' && row.seq <= afterSeq) return
       const key = typeof row.seq === 'number' || typeof row.eventSeq === 'number' ? String(row.seq ?? row.eventSeq) : JSON.stringify(row)
       if (seen.has(key)) return
       seen.add(key)
@@ -297,7 +493,7 @@ function waitForChildFirstTurn(sessions: CodingNsNativeSessionBridge, childId: s
     } })
     const snapshot = sessions.get(childId) as { snapshotEvents?: () => readonly unknown[] } | undefined
     for (const event of snapshot?.snapshotEvents?.() ?? []) processEvent(event)
-    timeout = setTimeout(() => finish(false, false, `子代理首轮在 ${String(Math.round(NATIVE_SUBAGENT_TIMEOUT_MS / 60_000))} 分钟内未收到 turn/end。`), NATIVE_SUBAGENT_TIMEOUT_MS)
+    timeout = setTimeout(() => finish(false, false, `子代理首轮在 ${String(Math.round(timeoutMs / 60_000))} 分钟内未收到 turn/end。`), timeoutMs)
     timeout.unref?.()
   })
 }
@@ -328,8 +524,11 @@ function readErrorText(value: unknown): string | undefined {
 
 /** 从任务提示中提取目标文件；没有文件时用规范化提示词作为去重键。 */
 export function nativeSubagentTaskKey(prompt: string): string {
-  const files = [...prompt.matchAll(/[^\s"'`，。！？；：:（）()<>《》「」【】]+?\.(?:md|markdown|txt|json|ya?ml|toml|ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|css|html|vue|svelte|csv|xlsx?)(?=$|[\s"'`，。！？；：:（）()<>《》「」【】])/giu)]
+  const files = [...prompt.matchAll(/[^\s"'`，。！？；：、:（）()<>《》「」【】]+?\.(?:md|markdown|txt|json|ya?ml|toml|ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|css|html|vue|svelte|csv|xlsx?)(?=$|[\s"'`，。！？；：、:（）()<>《》「」【】])/giu)]
     .map((match) => normalizeTargetFile(match[0]!))
+    // AGENTS.md/README.md 是任务上下文，不是目标文件。多个并行任务都会引用
+    // 它们；把这些公共说明文件拿来去重会把完全不同的任务误判成重复。
+    .filter((file) => !['agents.md', 'readme.md', 'readme.en.md'].includes(file.toLocaleLowerCase()))
     .filter((file) => file !== '')
   const uniqueFiles = [...new Set(files)].sort()
   if (uniqueFiles.length > 0) return `file:${uniqueFiles.join('|').toLocaleLowerCase()}`

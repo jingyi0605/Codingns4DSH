@@ -71,6 +71,9 @@ async function dispatchToBridge(
       body: JSON.stringify({
         sessionId,
         prompt,
+        // Command Code 的 agent 工具是同步 hook；这里明确改为后台派发，
+        // 否则 hook 会一直等到子会话 turn/end，外部工具调用容易撞上 300 秒上限。
+        runInBackground: true,
         ...(toolCallId === undefined || toolCallId === '' ? {} : { toolCallId }),
         ...(typeof input.description === 'string' && input.description.trim() !== '' ? { description: input.description.trim() } : {}),
         ...(typeof input.subagent_type === 'string' && input.subagent_type.trim() !== '' ? { subagentType: input.subagent_type.trim() } : {}),
@@ -82,13 +85,34 @@ async function dispatchToBridge(
     if (!response.ok) {
       return { ok: false, failure: failureText(`桥接返回 HTTP ${String(response.status)}`, await readBridgeError(response)) }
     }
-    const payload = await response.json() as { readonly ok?: unknown; readonly text?: unknown; readonly error?: unknown }
+    const payload = await response.json() as {
+      readonly ok?: unknown
+      readonly status?: unknown
+      readonly completed?: unknown
+      readonly childSessionId?: unknown
+      readonly text?: unknown
+      readonly toolCalls?: unknown
+      readonly error?: unknown
+    }
     if (payload.ok !== true) {
       const detail = typeof payload.error === 'string' && payload.error.trim() !== '' ? payload.error.trim() : ''
       return { ok: false, failure: failureText('桥接拒绝了这次子代理派发', detail) }
     }
-    const text = typeof payload.text === 'string' ? payload.text : ''
-    return { ok: true, text: text.trim() === '' ? '(子代理没有文本输出)' : text }
+    const text = typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : '(子代理没有文本输出)'
+    // 把子会话身份带回外部 Agent；否则它只能知道“已启动”，却无法继续
+    // 调用 action=read/wait 观察结果。
+    return {
+      ok: true,
+      text: JSON.stringify({
+        ok: true,
+        ...(typeof payload.status === 'string' ? { status: payload.status } : {}),
+        ...(typeof payload.completed === 'boolean' ? { completed: payload.completed } : {}),
+        ...(typeof payload.childSessionId === 'string' ? { childSessionId: payload.childSessionId } : {}),
+        ...(typeof payload.toolCalls === 'number' ? { toolCalls: payload.toolCalls } : {}),
+        text,
+        ...(typeof payload.error === 'string' && payload.error.trim() !== '' ? { error: payload.error } : {}),
+      }),
+    }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     return { ok: false, failure: failureText('无法连接 DSH 子代理桥接', reason) }

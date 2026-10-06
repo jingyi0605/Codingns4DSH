@@ -9,7 +9,10 @@ const BRIDGE_URL = (process.env.CODINGNS_BRIDGE_URL ?? '').replace(/\/+$/u, '')
 const BRIDGE_TOKEN = process.env.CODINGNS_BRIDGE_TOKEN ?? ''
 const SESSION_ID = process.env.CODINGNS_DSH_SESSION_ID ?? ''
 const ADAPTER_ID = process.env.CODINGNS_ADAPTER_ID ?? ''
-const DISPATCH_TIMEOUT_MS = 16 * 60_000
+// MCP 客户端通常把单次 tools/call 限制在 300 秒左右。start 永远后台返回；
+// wait 也只做一次有界观察，超时后由模型再次调用 read/wait 继续轮询。
+const DISPATCH_TIMEOUT_MS = 260_000
+const MAX_WAIT_TIMEOUT_MS = 240_000
 
 interface JsonRpcRequest {
   readonly jsonrpc?: string
@@ -20,7 +23,7 @@ interface JsonRpcRequest {
 
 const TOOL_DEFINITION = {
   name: 'agent_subagent',
-  description: 'Plan and execute external Agent subtasks in independent DSH sessions. Use action=start to create, action=wait to await a child session, and action=read to inspect it. Respect depends_on before starting dependent work.',
+  description: 'Start external Agent subtasks asynchronously in independent DSH sessions. action=start returns immediately with child_session_id; action=send delivers a follow-up message; use action=read for an immediate status check or action=wait for a bounded wait (at most 240 seconds per call). A failed child must be inspected with read/wait before deciding whether to recreate or take over. Respect depends_on before starting dependent work.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -29,8 +32,10 @@ const TOOL_DEFINITION = {
       model: { type: 'string', description: '可选模型覆盖。' },
       description: { type: 'string', description: '给子代理的简短标题。' },
       subagent_type: { type: 'string', description: '子代理类型提示（explore/plan/general）。' },
-      action: { type: 'string', enum: ['start', 'wait', 'read'] },
+      action: { type: 'string', enum: ['start', 'read', 'wait', 'send'] },
+      run_in_background: { type: 'boolean', description: 'start 是否立即返回；缺省为 true。' },
       child_session_id: { type: 'string' },
+      message: { type: 'string', description: '发送给已创建子代理的后续消息；action=send 时必填。' },
       timeout_ms: { type: 'number' },
       depends_on: { type: 'array', items: { type: 'string' } },
     },
@@ -98,9 +103,11 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
   const name = typeof record?.name === 'string' ? record.name : ''
   if (name !== TOOL_DEFINITION.name) return textResult(`未知工具: ${name}`, true)
   const args = asRecord(record?.arguments) ?? {}
-  const action = args.action === 'wait' || args.action === 'read' ? args.action : 'start'
+  const action = args.action === 'wait' || args.action === 'read' || args.action === 'send' ? args.action : 'start'
   const prompt = typeof args.prompt === 'string' ? args.prompt : ''
+  const message = typeof args.message === 'string' ? args.message : ''
   if (action === 'start' && prompt.trim() === '') return textResult('start 操作的 prompt 不能为空', true)
+  if (action === 'send' && message.trim() === '' && prompt.trim() === '') return textResult('send 操作的 message 不能为空', true)
   if (BRIDGE_URL === '' || BRIDGE_TOKEN === '' || SESSION_ID === '') return textResult('Codingns4DSH 子代理桥接未配置', true)
   try {
     const response = await fetch(`${BRIDGE_URL}/v1/dispatch`, {
@@ -110,9 +117,11 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
         sessionId: SESSION_ID,
         prompt,
         action,
+        ...(message.trim() === '' ? {} : { message }),
+        ...(action === 'start' ? { runInBackground: args.run_in_background !== false } : {}),
         ...(typeof args.child_session_id === 'string' && args.child_session_id.trim() !== '' ? { childSessionId: args.child_session_id.trim() } : {}),
         ...(Array.isArray(args.depends_on) ? { dependsOn: args.depends_on.filter((item): item is string => typeof item === 'string' && item.trim() !== '').map((item) => item.trim()) } : {}),
-        ...(typeof args.timeout_ms === 'number' && Number.isFinite(args.timeout_ms) ? { timeoutMs: args.timeout_ms } : {}),
+        ...(action === 'wait' ? { timeoutMs: boundedWaitTimeout(args.timeout_ms) } : {}),
         ...(typeof args.agent === 'string' && args.agent.trim() !== '' ? { agent: args.agent.trim() } : { agent: ADAPTER_ID }),
         ...(typeof args.model === 'string' && args.model.trim() !== '' ? { model: args.model.trim() } : {}),
         ...(typeof args.description === 'string' && args.description.trim() !== '' ? { description: args.description.trim() } : {}),
@@ -130,20 +139,52 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
       const status = safePayload.status
       if (status === 'creating' || status === 'running') {
         return textResult(JSON.stringify({
+          ok: false,
           status,
           completed: safePayload.completed === true,
           ...(typeof safePayload.childSessionId === 'string' ? { childSessionId: safePayload.childSessionId } : {}),
           text: typeof safePayload.text === 'string' ? safePayload.text : '子代理仍在运行。',
         }), false)
       }
+      if (status === 'failed' || status === 'interrupted') {
+        return textResult(JSON.stringify({
+          ok: false,
+          status,
+          completed: safePayload.completed === true,
+          ...(typeof safePayload.childSessionId === 'string' ? { childSessionId: safePayload.childSessionId } : {}),
+          ...(typeof safePayload.failureReviewed === 'boolean' ? { failureReviewed: safePayload.failureReviewed } : {}),
+          ...(typeof safePayload.failureReviewRequired === 'boolean' ? { failureReviewRequired: safePayload.failureReviewRequired } : {}),
+          ...(typeof safePayload.failureGuidance === 'string' ? { failureGuidance: safePayload.failureGuidance } : {}),
+          text: typeof safePayload.text === 'string' ? safePayload.text : '子代理已失败，请检查状态。',
+          ...(typeof safePayload.error === 'string' ? { error: safePayload.error } : {}),
+        }), false)
+      }
       const detail = typeof safePayload.error === 'string' && safePayload.error.trim() !== '' ? safePayload.error.trim() : '桥接端未返回具体错误。'
       return textResult(`子代理执行失败：${detail}`, true)
     }
-    const text = typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : '子代理已完成，但没有文本输出。'
-    return textResult(text, false)
+    // 启动结果必须把 childSessionId/status 交给模型；只返回文本会让后台任务
+    // 无法被后续 read/wait 追踪。统一以 JSON 文本承载，同时保留原始字段。
+    return textResult(JSON.stringify({
+      ok: true,
+      ...(typeof payload.status === 'string' ? { status: payload.status } : {}),
+      ...(typeof payload.completed === 'boolean' ? { completed: payload.completed } : {}),
+      ...(typeof payload.childSessionId === 'string' ? { childSessionId: payload.childSessionId } : {}),
+      ...(typeof payload.messageId === 'string' ? { messageId: payload.messageId } : {}),
+      ...(typeof payload.toolCalls === 'number' ? { toolCalls: payload.toolCalls } : {}),
+      ...(typeof payload.failureReviewed === 'boolean' ? { failureReviewed: payload.failureReviewed } : {}),
+      ...(typeof payload.failureReviewRequired === 'boolean' ? { failureReviewRequired: payload.failureReviewRequired } : {}),
+      ...(typeof payload.failureGuidance === 'string' ? { failureGuidance: payload.failureGuidance } : {}),
+      text: typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : '子代理已完成，但没有文本输出。',
+      ...(typeof payload.error === 'string' && payload.error.trim() !== '' ? { error: payload.error } : {}),
+    }), false)
   } catch (error) {
     return textResult(`子代理桥接不可达：${error instanceof Error ? error.message : String(error)}`, true)
   }
+}
+
+function boundedWaitTimeout(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return MAX_WAIT_TIMEOUT_MS
+  return Math.max(1, Math.min(Math.floor(value), MAX_WAIT_TIMEOUT_MS))
 }
 
 function textResult(text: string, isError: boolean): Record<string, unknown> {

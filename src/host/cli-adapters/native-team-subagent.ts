@@ -45,6 +45,8 @@ export interface NativeSubagentService {
     }
     readonly signal?: AbortSignal
   }): Promise<{ readonly childId: string; readonly messageId: string }>
+  /** DSH 0.2 可续子会话的后续消息入口；sender 必须是精确的父 Agent。 */
+  sendMessage?(sender: unknown, targetId: string, content: readonly { readonly type: 'text'; readonly text: string }[], options?: { readonly signal?: AbortSignal }): Promise<string> | string
 }
 
 interface PendingSelection { readonly modelId?: string }

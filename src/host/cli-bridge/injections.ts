@@ -117,8 +117,8 @@ function mcpServerConfig(env: Record<string, string>): Record<string, unknown> {
 export function bridgeSubagentGuidance(toolName: string): string {
   return [
     `When the user asks to use parallel sessions, parallel agents, subagents, or to delegate/offload work, call the MCP tool \`${toolName}\``,
-    '— do not complete the whole task inline. Each call runs one self-contained subtask as a DSH-native subagent session,',
-    'and multiple calls in the same batch run in parallel; the tool returns the subtask result.',
+    '— do not complete the whole task inline. Each call starts one self-contained subtask as a DSH-native subagent session and returns immediately with a child session id.',
+    'Issue independent calls in the same batch without waiting for one another; use action=read for an immediate status check, action=send to deliver a follow-up message, and action=wait for a bounded wait before starting dependent work. If a child is failed, you must read/wait its status first, then assess whether to recreate it or take over with send.',
     'Provide a complete, self-contained `prompt` for every call; optionally pass `agent` (external coding agent id) and `model`.',
   ].join(' ')
 }

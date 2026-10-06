@@ -1,5 +1,5 @@
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
-import { dispatchNativeSubagent, readNativeSubagentLifecycle, waitNativeSubagentLifecycle, type NativeParentAgent } from '../cli-adapters/native-subagent-dispatch.js'
+import { dispatchNativeSubagent, nativeSubagentEventCursor, nativeSubagentFailureNeedsReview, nativeSubagentFailureReviewFields, readNativeSubagentLifecycle, reviewNativeSubagentFailure, sendNativeSubagentMessage, trackNativeSubagentFollowup, waitNativeSubagentLifecycle, type NativeParentAgent } from '../cli-adapters/native-subagent-dispatch.js'
 import { getSingleDelegationTarget, isDelegationTargetAllowed } from '../cli-adapters/delegation-authorization.js'
 import { getNativeSubagents } from '../cli-adapters/native-subagent-holder.js'
 import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS } from '../cli-adapters/native-team-subagent.js'
@@ -47,7 +47,20 @@ export async function dispatchBridgeSubagent(
       ? readNativeSubagentLifecycle(childSessionId)
       : await waitNativeSubagentLifecycle(childSessionId, request.timeoutMs)
     if (lifecycle === undefined || lifecycle.parentSessionId !== parentId) return bridgeFailure(`DELEGATE_CHILD_NOT_FOUND: 找不到父会话下的子会话：${childSessionId}`)
-    return { ok: lifecycle.status === 'completed', completed: lifecycle.completed, status: lifecycle.status, text: lifecycle.text ?? '子代理尚未产生文本结果。', childSessionId: lifecycle.childSessionId, ...(lifecycle.error === undefined ? {} : { error: lifecycle.error }) }
+    const reviewed = reviewNativeSubagentFailure(childSessionId) ?? lifecycle
+    return { ok: reviewed.status === 'completed', completed: reviewed.completed, status: reviewed.status, text: reviewed.text ?? '子代理尚未产生文本结果。', childSessionId: reviewed.childSessionId, ...(reviewed.error === undefined ? {} : { error: reviewed.error }), ...nativeSubagentFailureReviewFields(reviewed) }
+  }
+  if (action === 'send') {
+    const childSessionId = request.childSessionId?.trim() ?? ''
+    const lifecycle = readNativeSubagentLifecycle(childSessionId)
+    if (lifecycle === undefined || lifecycle.parentSessionId !== parentId) return bridgeFailure(`DELEGATE_CHILD_NOT_FOUND: 找不到父会话下的子会话：${childSessionId}`)
+    const reviewed = reviewNativeSubagentFailure(childSessionId) ?? lifecycle
+    const message = (request.message ?? request.prompt).trim()
+    const cursor = nativeSubagentEventCursor(deps.nativeSessions, childSessionId)
+    const sent = await sendNativeSubagentMessage(native, { parentAgent, parentId, childSessionId, message })
+    if (!sent.ok) return { ok: false, completed: false, status: 'failed', text: sent.error ?? '子代理消息发送失败。', childSessionId, error: sent.error ?? '子代理消息发送失败。', ...nativeSubagentFailureReviewFields(reviewed) }
+    trackNativeSubagentFollowup(deps.nativeSessions, childSessionId, cursor)
+    return { ok: true, completed: false, status: 'running', text: '后续消息已发送给子代理。', childSessionId, ...(sent.messageId === undefined ? {} : { messageId: sent.messageId }) }
   }
   const authorizedTarget = getSingleDelegationTarget(request.sessionId)
   const adapterId = (request.agent ?? authorizedTarget?.adapterId ?? resolveSessionAdapter(request.sessionId) ?? '').trim()
@@ -68,7 +81,10 @@ export async function dispatchBridgeSubagent(
   if (!isDelegationTargetAllowed(parentId, adapterId)) return bridgeFailure(`DELEGATE_TARGET_NOT_ALLOWED: 当前对话未授权使用 ${adapterId}`)
   const dependencyStates = (request.dependsOn ?? []).map((id) => readNativeSubagentLifecycle(id))
   if (dependencyStates.some((state) => state === undefined || state.parentSessionId !== parentId || state.status !== 'completed')) {
-    return bridgeFailure('DELEGATE_DEPENDENCY_NOT_READY: 前置子会话尚未 completed，请先 wait/read。')
+    const failedDependency = dependencyStates.find((state) => state !== undefined && nativeSubagentFailureNeedsReview(state))
+    return bridgeFailure(failedDependency === undefined
+      ? 'DELEGATE_DEPENDENCY_NOT_READY: 前置子会话尚未 completed，请先 wait/read。'
+      : 'DELEGATE_DEPENDENCY_FAILED_REVIEW_REQUIRED: 前置子代理 failed，必须先 read/wait 查看失败状态，再评估重新创建或接管。')
   }
   const modelId = request.model?.trim() === ''
     ? authorizedTarget?.modelId
@@ -80,20 +96,26 @@ export async function dispatchBridgeSubagent(
       parentAgent,
       parentId,
       modelId,
-      background: false,
+      // 外部 CLI 的桥接调用由调用方决定是否后台运行。MCP/Command Code 入口
+      // 会显式传 true，避免工具调用被迫等待子会话首轮完成；保留缺省同步语义
+      // 兼容 Host 内部直接调用 dispatchBridgeSubagent 的旧消费者。
+      background: request.runInBackground === true,
       select: (action) => enqueueTeamSubagentSelection(parentId, adapterId, modelId, action),
     })
     // 成功的转投必须登记重定向：CLI 侧收到的是 `tool_hook_blocked`，驱动只有命中
-    // 这条记录才会把它投影成完成态。不登记时成功派发也会显示为失败的工具调用。
+    // 这条记录才会把它投影成桥接返回的运行/完成态。不登记时成功派发也会显示为失败。
     if (result.ok && request.toolCallId !== undefined && request.toolCallId !== '') {
       try {
         getSubagentBridge()?.recordRedirect(request.sessionId, request.toolCallId, {
           childSessionId: result.childSessionId,
           ok: true,
+          completed: result.completed,
+          status: result.status,
           toolCalls: result.toolCalls,
         })
       } catch { /* 桥接句柄缺失只影响工具态显示，不能改变派发结果 */ }
     }
+    const lifecycle = readNativeSubagentLifecycle(result.childSessionId)
     return {
       ok: result.ok,
       completed: result.completed,
@@ -102,6 +124,7 @@ export async function dispatchBridgeSubagent(
       childSessionId: result.childSessionId,
       toolCalls: result.toolCalls,
       ...(result.error === undefined ? {} : { error: result.error }),
+      ...(lifecycle === undefined ? {} : nativeSubagentFailureReviewFields(lifecycle)),
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

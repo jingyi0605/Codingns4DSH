@@ -102,7 +102,7 @@ function buildDelegationInstruction(task: string, targets: readonly DelegationRe
     '允许使用的外部 Agent：',
     allowed,
     '请先根据任务语义制定简短的角色和步骤计划：明确每一步的目标 Agent、职责和 dependsOn。实现、测试、复核等角色由当前 Agent 理解任务后分配，不由 Host 猜测。',
-    '然后调用已有 agent_subagent 工具执行委派。每个子任务必须使用上面列出的稳定 adapterId，保持子任务在独立子会话中运行；有 dependsOn 的后置步骤必须先 wait/read 前置 child session 直到 completed，再启动后置步骤。当前 Agent 负责向用户说明创建、运行、完成和失败状态，不要把创建成功当作任务完成。',
+    '然后调用已有 agent_subagent 工具执行委派。每个子任务必须使用上面列出的稳定 adapterId，保持子任务在独立子会话中运行；有 dependsOn 的后置步骤必须先 wait/read 前置 child session 直到 completed，再启动后置步骤。任何 failed 子代理都必须先 read/wait 查看状态，评估是否重新创建或用 send 接管；当前 Agent 负责向用户说明创建、运行、完成和失败状态，不要把创建成功当作任务完成。',
   ].join('\n')
 }
 

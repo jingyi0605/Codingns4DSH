@@ -28,7 +28,7 @@ import { dispatchBridgeSubagent, type BridgeAgentRegistry } from '../cli-bridge/
 import { startSubagentBridgeServer, type SubagentBridgeServer } from '../cli-bridge/bridge-server.js'
 import { setSubagentBridge } from '../cli-bridge/bridge-holder.js'
 import { delegateCapability, dispatchDelegateSubagent, type DelegateAgentRegistry } from './delegate-dispatch.js'
-import { setMaxNativeSubagentsPerParent } from './native-subagent-dispatch.js'
+import { guardNativeSubagentParentTurn, markNativeSubagentParentTurnStarted, setMaxNativeSubagentsPerParent } from './native-subagent-dispatch.js'
 import { containsDelegationCarrier, rewriteDelegationMessages } from './delegation-mention-rewrite.js'
 import { clearDelegationAuthorization, setDelegationAuthorization } from './delegation-authorization.js'
 import { debugInfo } from '../../shared/debug.js'
@@ -111,9 +111,11 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             const current = sessionStore.get(sessionId)
             if (current === undefined || current.status === 'archived') return
             if (eventType === 'turn/start') {
+              markNativeSubagentParentTurnStarted(sessionId)
               sessionStore.upsert(sessionId, { ...current, status: 'active' })
             } else if (eventType === 'turn/end') {
-              sessionStore.upsert(sessionId, { ...current, status: 'idle' })
+              const barrier = guardNativeSubagentParentTurn(nativeSessions, sessionId)
+              sessionStore.upsert(sessionId, { ...current, status: barrier.blocked ? 'active' : 'idle' })
             }
           },
         })

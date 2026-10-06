@@ -5,10 +5,13 @@
  * 磁盘：token 与端口只存在于当前进程，并通过注入通道下发给外部 CLI 子进程。
  */
 
-/** 一次被桥接接管的子代理调用结果，供驱动把 hook_blocked 投影为完成态。 */
+/** 一次被桥接接管的子代理调用结果，供驱动把 hook_blocked 投影为真实状态。 */
 export interface SubagentBridgeRedirect {
   readonly childSessionId: string
   readonly ok: boolean
+  /** 后台派发只表示已创建；必须保留 running，不能伪装成 completed。 */
+  readonly completed?: boolean | undefined
+  readonly status?: 'running' | 'completed' | 'failed' | 'interrupted' | undefined
   readonly toolCalls: number
 }
 

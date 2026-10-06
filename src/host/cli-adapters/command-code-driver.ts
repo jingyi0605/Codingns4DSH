@@ -276,6 +276,8 @@ function commandCodePermissionArgs(permission: CodingNsCliTurnInput['permission'
  * usage 和原生组件映射全部交给公共消息投影层。
  */
 export class CommandCodeDriver implements CodingNsCliDriver {
+  // Command Code 的公开 json 输出只有结果事件；没有 DSH 可回写的权限或问题 wire。
+  // `--tools-enable ask_user_question` 只是 CLI 内部工具开关，不能伪造为 question-request。
   readonly descriptor = {
     id: 'command-code',
     name: 'Command Code',
@@ -1132,10 +1134,20 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
     if (tool !== null) chunks.push(tool)
   } else if (isToolResult(type)) {
     // 子代理托管命中时，mod 用 block 结束内建 agent 调用，真正的执行已经发生在
-    // DSH 原生子会话里；这里必须投影成完成态，而不是普通 hook 拦截的失败态。
-    const redirected = type.includes('blocked') && consumeBridgeRedirect(state, event)
-    const failed = !redirected && (type.includes('error') || type.includes('fail') || type.includes('denied') || type.includes('blocked'))
-    const tool = readToolChunk(event, failed ? 'failed' : 'completed')
+    // DSH 原生子会话里；这里必须投影为桥接返回的 running/completed/failed 状态，
+    // 而不是把后台创建误报为完成或把普通 hook 拦截误报为托管成功。
+    const redirected = type.includes('blocked') ? consumeBridgeRedirect(state, event) : undefined
+    const failed = redirected === undefined && (type.includes('error') || type.includes('fail') || type.includes('denied') || type.includes('blocked'))
+    // 后台托管的 hook_blocked 只代表“已创建子会话”。如果这里投影成 completed，
+    // 父 Agent 会跳过 wait/read，子会话随后失败也就没有机会回到父会话。
+    const redirectedStatus = redirected === undefined
+      ? undefined
+      : redirected.completed === false || redirected.status === 'running'
+        ? 'running' as const
+        : redirected.ok && redirected.status !== 'failed' && redirected.status !== 'interrupted'
+          ? 'completed' as const
+          : 'failed' as const
+    const tool = readToolChunk(event, redirectedStatus ?? (failed ? 'failed' : 'completed'))
     if (tool !== null) {
       chunks.push(tool)
       // 工具完成后的正文属于下一条 assistant 消息。即使 CLI 没有发送
@@ -1160,14 +1172,14 @@ function readFinalText(event: Record<string, unknown>): string {
 }
 
 /** 该 blocked 事件是否来自桥接转投；命中后消费一次记录，避免重复投影。 */
-function consumeBridgeRedirect(state: CommandCodeStreamState, event: Record<string, unknown>): boolean {
-  if (state.bridgeSessionId === '') return false
+function consumeBridgeRedirect(state: CommandCodeStreamState, event: Record<string, unknown>) {
+  if (state.bridgeSessionId === '') return undefined
   const callId = firstToolText(event.callId, event.call_id, event.toolCallId, event.tool_call_id, event.toolUseId, event.tool_use_id, event.id)
-  if (callId === undefined || callId === '') return false
+  if (callId === undefined || callId === '') return undefined
   try {
-    return getSubagentBridge()?.consumeRedirect(state.bridgeSessionId, callId) !== undefined
+    return getSubagentBridge()?.consumeRedirect(state.bridgeSessionId, callId)
   } catch {
-    return false
+    return undefined
   }
 }
 

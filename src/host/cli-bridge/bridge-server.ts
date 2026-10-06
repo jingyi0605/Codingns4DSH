@@ -8,7 +8,10 @@ import type { SubagentBridgeRuntime } from './bridge-holder.js'
 export interface SubagentBridgeDispatchRequest {
   readonly sessionId: string
   readonly prompt: string
-  readonly action?: 'start' | 'wait' | 'read' | undefined
+  readonly action?: 'start' | 'wait' | 'read' | 'send' | undefined
+  readonly message?: string | undefined
+  /** start 是否只创建后台子会话并立即返回；外部 CLI 桥接默认由调用方显式传 true。 */
+  readonly runInBackground?: boolean | undefined
   readonly childSessionId?: string | undefined
   readonly dependsOn?: readonly string[] | undefined
   readonly timeoutMs?: number | undefined
@@ -26,7 +29,11 @@ export interface SubagentBridgeDispatchResult {
   readonly status?: 'creating' | 'running' | 'completed' | 'failed' | 'interrupted' | undefined
   readonly text: string
   readonly childSessionId?: string | undefined
+  readonly messageId?: string | undefined
   readonly toolCalls?: number | undefined
+  readonly failureReviewed?: boolean | undefined
+  readonly failureReviewRequired?: boolean | undefined
+  readonly failureGuidance?: string | undefined
   readonly error?: string | undefined
 }
 
@@ -40,8 +47,9 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024
 /**
  * 本机回环桥接服务：只监听 127.0.0.1，每次启动生成随机令牌。
  *
- * 一次派发可能阻塞十几分钟等待子代理首轮，因此关闭 HTTP 请求超时；
- * 认证失败、路由不存在和内部错误都返回稳定的 JSON 结构。
+ * 显式 foreground 派发可能阻塞较长时间，因此关闭 HTTP 请求超时；默认的外部
+ * MCP/Command Code start 走后台路径，会在创建子会话后立即返回。认证失败、
+ * 路由不存在和内部错误都返回稳定的 JSON 结构。
  */
 export async function startSubagentBridgeServer(options: {
   readonly dispatch: (request: SubagentBridgeDispatchRequest) => Promise<SubagentBridgeDispatchResult>
@@ -146,8 +154,9 @@ function readDispatchRequest(value: unknown): SubagentBridgeDispatchRequest | un
   const record = value as Record<string, unknown>
   const sessionId = typeof record.sessionId === 'string' ? record.sessionId.trim() : ''
   const prompt = typeof record.prompt === 'string' ? record.prompt : ''
-  const action = record.action === 'wait' || record.action === 'read' || record.action === 'start' ? record.action : 'start'
-  if (sessionId === '' || action === 'start' && prompt.trim() === '') return undefined
+  const action = record.action === 'wait' || record.action === 'read' || record.action === 'send' || record.action === 'start' ? record.action : 'start'
+  const message = typeof record.message === 'string' ? record.message : ''
+  if (sessionId === '' || action === 'start' && prompt.trim() === '' || action === 'send' && message.trim() === '' && prompt.trim() === '') return undefined
   const optional = (key: string): string | undefined => {
     const raw = record[key]
     return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined
@@ -156,6 +165,8 @@ function readDispatchRequest(value: unknown): SubagentBridgeDispatchRequest | un
     sessionId,
     prompt,
     action,
+    ...(message.trim() === '' ? {} : { message }),
+    ...(typeof record.runInBackground === 'boolean' ? { runInBackground: record.runInBackground } : {}),
     ...(typeof record.childSessionId === 'string' && record.childSessionId.trim() !== '' ? { childSessionId: record.childSessionId.trim() } : {}),
     ...(Array.isArray(record.dependsOn) ? { dependsOn: record.dependsOn.filter((item): item is string => typeof item === 'string' && item.trim() !== '').map((item) => item.trim()) } : {}),
     ...(typeof record.timeoutMs === 'number' && Number.isFinite(record.timeoutMs) ? { timeoutMs: record.timeoutMs } : {}),
