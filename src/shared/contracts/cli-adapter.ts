@@ -249,6 +249,8 @@ export interface CodingNsCliTurnInput {
   readonly signal?: AbortSignal
   readonly providerSessionId?: string
   readonly rawStoreRef?: string
+  /** Host 内部解析出的显式 Skill 目录；不接受 Client 直接注入。 */
+  readonly skillPaths?: readonly string[]
   /** 仅由 Host 的 DSH 分段桥接使用；让支持的 Provider 在工具完成处结束当前 step。 */
   readonly splitToolSteps?: boolean
   /**

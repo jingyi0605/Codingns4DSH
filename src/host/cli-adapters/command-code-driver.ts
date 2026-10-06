@@ -7,6 +7,8 @@ import type {
   CodingNsCliModelCatalog,
   CodingNsAgentEvent,
   CodingNsAgentToolEvent,
+  CodingNsCliSkillDescriptor,
+  CodingNsCliSkillListInput,
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
@@ -14,6 +16,7 @@ import { firstToolText, serializeToolValue } from './tool-observation.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { commandEnvironment, resolveCommandPath, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
+import { parseSkillFrontmatter } from './skill-filesystem.js'
 import { commandCodeBridgeArgs, commandCodeBridgeEnvironment } from '../cli-bridge/injections.js'
 import { getSubagentBridge } from '../cli-bridge/bridge-holder.js'
 import {
@@ -184,6 +187,8 @@ interface CommandCodeTurn {
   providerSessionId: string | undefined
   /** Provider canonical transcript 的 Host 私有路径。 */
   rawStoreRef: string | undefined
+  /** 当前消息显式引用的 Skill 路径；路径只进入 CLI 参数，不暴露给 Client。 */
+  readonly skillPaths: readonly string[]
   readonly cwd: string
   readonly queue: CommandCodeEventQueue
   /** 当前 assistant 消息身份；正文/推理增量必须携带它，公共投影层才能切块。 */
@@ -207,6 +212,11 @@ interface CommandCodeTurn {
   messageSequence: number
   /** 最近一次 CLI 尝试的 stderr 尾部，仅用于失败诊断。 */
   stderrTail: string
+}
+
+interface CommandCodeSkillEntry extends CodingNsCliSkillDescriptor {
+  /** `--skill` 需要的 Host 私有目录路径。 */
+  readonly path: string
 }
 
 /** 单次运行内的消息标识与增量补齐状态。 */
@@ -282,7 +292,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     id: 'command-code',
     name: 'Command Code',
     protocol: 'command',
-    capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'history'] as const,
+    capabilities: ['models', 'skills', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'history'] as const,
   } as const
   /** 驱动自己维护 Provider turn 边界，Host 可以把工具边界映射为 DSH step。 */
   readonly supportsSegmentedTurns = true
@@ -294,6 +304,8 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   private readonly autoContinueMaxAttempts: number
   private readonly autoContinuePrompt: string
   private readonly history: CommandCodeHistory
+  /** 按规范化 cwd 缓存 Skill 摘要；forceReload 用于响应目录变更。 */
+  private readonly skillCatalogs = new Map<string, readonly CommandCodeSkillEntry[]>()
   private cachedBinary: string | null = null
   private cachedEnvironment: Record<string, string | undefined> | undefined
   private readonly processes = new Set<CodingNsChildProcess>()
@@ -324,6 +336,40 @@ export class CommandCodeDriver implements CodingNsCliDriver {
 
   detectSessionsDetailed(workspacePath: string): Promise<CommandCodeSessionDiscovery> {
     return this.history.detectSessionsDetailed(workspacePath)
+  }
+
+  /** 读取 Command Code 与 `.agents` 兼容目录中的 Skill 摘要，不返回本地路径。 */
+  async listSkills(input: CodingNsCliSkillListInput): Promise<readonly CodingNsCliSkillDescriptor[]> {
+    if (input.signal?.aborted) throw new Error('Skill 目录读取已取消')
+    const command = this.cachedBinary ?? (await this.detect()).command
+    if (command === null) return []
+    const cwd = resolve(input.cwd ?? process.cwd())
+    const entries = this.readSkillCatalog(cwd, input.forceReload === true)
+    return entries.map(({ path: _path, ...descriptor }) => descriptor)
+  }
+
+  /** 只为显式 `/skill-name` 或 `$skill-name` 下发匹配的 Skill 目录。 */
+  private async resolveSkillPaths(input: CodingNsCliTurnInput): Promise<readonly string[]> {
+    const names = commandCodeSkillNames(input.prompt)
+    if (names.length === 0) return []
+    if (input.signal?.aborted) throw new Error('Skill 目录读取已取消')
+    const entries = this.readSkillCatalog(resolve(input.cwd ?? process.cwd()), false)
+    const byName = new Map(entries.map((entry) => [entry.name, entry]))
+    const paths: string[] = []
+    for (const name of names) {
+      const entry = byName.get(name)
+      if (entry?.enabled !== true || paths.includes(entry.path)) continue
+      paths.push(entry.path)
+    }
+    return paths
+  }
+
+  private readSkillCatalog(cwd: string, forceReload: boolean): readonly CommandCodeSkillEntry[] {
+    const cached = this.skillCatalogs.get(cwd)
+    if (!forceReload && cached !== undefined) return cached
+    const entries = scanCommandCodeSkills(cwd, this.homeDirectory)
+    this.skillCatalogs.set(cwd, entries)
+    return entries
   }
 
   startSession(workspacePath: string, options: { readonly initialPrompt?: string } = {}): Promise<CommandCodeStartSessionResult> {
@@ -534,11 +580,12 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
+    const skillPaths = await this.resolveSkillPaths(input)
     const binary = this.cachedBinary ?? (await this.detect()).command
     if (binary === null) throw new Error('Command Code 未安装')
 
     const segmented = input.splitToolSteps === true
-    const turn = segmented ? this.acquireTurn(input, binary) : this.startTurn(input, binary)
+    const turn = segmented ? this.acquireTurn(input, binary, skillPaths) : this.startTurn(input, binary, skillPaths)
     let suspended = false
     const onAbort = (): void => { this.requestGracefulStop(turn) }
     input.signal?.addEventListener('abort', onAbort, { once: true })
@@ -558,6 +605,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     this.turns.clear()
     for (const child of this.processes) terminateChildProcess(child)
     this.processes.clear()
+    this.skillCatalogs.clear()
     this.cachedBinary = null
   }
 
@@ -568,18 +616,18 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   }
 
   /** 只有 Host 显式声明续段时才复用常驻进程；新的用户回合必须重新启动。 */
-  private acquireTurn(input: CodingNsCliTurnInput, binary: string): CommandCodeTurn {
+  private acquireTurn(input: CodingNsCliTurnInput, binary: string, skillPaths: readonly string[]): CommandCodeTurn {
     const existing = this.turns.get(input.sessionId)
     if (existing !== undefined) {
       if (input.resumeSegmentedTurn === true && !existing.disposed && !existing.finished) return existing
       this.disposeTurn(existing)
     }
-    const turn = this.startTurn(input, binary)
+    const turn = this.startTurn(input, binary, skillPaths)
     this.turns.set(input.sessionId, turn)
     return turn
   }
 
-  private startTurn(input: CodingNsCliTurnInput, binary: string): CommandCodeTurn {
+  private startTurn(input: CodingNsCliTurnInput, binary: string, skillPaths: readonly string[]): CommandCodeTurn {
     const cwd = input.cwd ?? process.cwd()
     const requestedProviderSessionId = input.providerSessionId?.trim() || undefined
     // 旧 synthetic ID 可能只对应 checkpoint；回退时必须以当前 DSH 会话 ID
@@ -607,6 +655,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       transcriptPath,
       providerSessionId,
       rawStoreRef: canResume ? input.rawStoreRef?.trim() || undefined : transcriptPath,
+      skillPaths,
       cwd,
       queue: createEventQueue(),
       currentMessageId: undefined,
@@ -733,6 +782,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     if (input.enableAskUserQuestion === true || input.runtimeEnv?.CMD_TOOLS_ASK_USER_QUESTION_ENABLE === 'true') {
       args.push('--tools-enable', 'ask_user_question')
     }
+    for (const path of turn.skillPaths) args.push('--skill', path)
     // 子代理托管开启时加载桥接 mod：内建 agent 调用会被转投成 DSH 原生子会话。
     args.push(...commandCodeBridgeArgs(input.sessionId))
     for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--add-dir', directory)
@@ -1476,6 +1526,190 @@ function workspaceSlug(workspacePath: string): string {
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
     .toLowerCase()
+}
+
+/** 从用户文本提取显式 Skill mention，和 Codex 的 `/name`、`$name` 语义保持一致。 */
+function commandCodeSkillNames(prompt: string): readonly string[] {
+  const names: string[] = []
+  const seen = new Set<string>()
+  for (const match of prompt.matchAll(/(?:^|\s)(?:\$|\/)([A-Za-z0-9][A-Za-z0-9._-]*)(?=\s|$)/gu)) {
+    const name = match[1]?.trim()
+    if (name === undefined || name === '' || seen.has(name)) continue
+    seen.add(name)
+    names.push(name)
+  }
+  return names
+}
+
+/**
+ * 按 Command Code 的优先级扫描项目级、用户级和额外 Skill 根目录。
+ *
+ * 只把合法的 `SKILL.md` 摘要交给 Client；绝对路径保留在 Host，供显式 mention
+ * 通过 `--skill` 下发。重名时高优先级目录胜出，避免同一 Skill 被重复注入。
+ */
+function scanCommandCodeSkills(cwd: string, homeDirectory: string): readonly CommandCodeSkillEntry[] {
+  const projectRoot = commandCodeProjectRoot(cwd)
+  const userHome = basename(homeDirectory) === '.commandcode' ? dirname(homeDirectory) : homeDirectory
+  const disabledSkills = readCommandCodeDisabledSkills(projectRoot, homeDirectory)
+  const roots = [
+    join(projectRoot, '.commandcode', 'skills'),
+    ...commandCodeProjectAgentsSkillRoots(cwd, userHome),
+    join(homeDirectory, 'skills'),
+    join(userHome, '.agents', 'skills'),
+    ...readCommandCodeConfiguredSkillRoots(projectRoot, homeDirectory),
+  ]
+  const entries: CommandCodeSkillEntry[] = []
+  const seenNames = new Set<string>()
+  const visitedDirectories = new Set<string>()
+  for (const root of roots) scanCommandCodeSkillRoot(root, entries, seenNames, visitedDirectories, disabledSkills)
+  return entries
+}
+
+/** Command Code 会从当前目录向上查找项目 `.agents/skills`，最多跨十级。 */
+function commandCodeProjectAgentsSkillRoots(cwd: string, userHome: string): readonly string[] {
+  const roots: string[] = []
+  let current = resolve(cwd)
+  for (let depth = 0; depth <= 10; depth += 1) {
+    if (current === resolve(userHome)) break
+    roots.push(join(current, '.agents', 'skills'))
+    const parent = dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  return roots
+}
+
+function commandCodeProjectRoot(cwd: string): string {
+  let current = resolve(cwd)
+  const fallback = current
+  while (true) {
+    if (existsSync(join(current, '.git'))) return current
+    const parent = dirname(current)
+    if (parent === current) return fallback
+    current = parent
+  }
+}
+
+function readCommandCodeConfiguredSkillRoots(projectRoot: string, homeDirectory: string): readonly string[] {
+  const settingsLayers = [
+    { path: join(projectRoot, '.commandcode', 'settings.local.json'), base: projectRoot },
+    { path: join(projectRoot, '.commandcode', 'settings.json'), base: projectRoot },
+    { path: join(homeDirectory, 'settings.json'), base: basename(homeDirectory) === '.commandcode' ? dirname(homeDirectory) : homeDirectory },
+  ]
+  const layer = settingsLayers.find(({ path }) => Array.isArray(readJson(path)?.skills))
+  if (layer === undefined) return []
+  const settings = readJson(layer.path)
+  if (!Array.isArray(settings?.skills)) return []
+  const roots: string[] = []
+  for (const value of settings.skills) {
+    if (typeof value !== 'string' || value.trim() === '') continue
+    const configured = value.trim()
+    const userHome = basename(homeDirectory) === '.commandcode' ? dirname(homeDirectory) : homeDirectory
+    roots.push(configured.startsWith('~/')
+      ? resolve(userHome, configured.slice(2))
+      : resolve(layer.base, configured))
+  }
+  return roots
+}
+
+function scanCommandCodeSkillRoot(
+  root: string,
+  entries: CommandCodeSkillEntry[],
+  seenNames: Set<string>,
+  visitedDirectories: Set<string>,
+  disabledSkills: ReadonlySet<string>,
+): void {
+  if (!existsSync(root)) return
+  let canonicalRoot: string
+  try {
+    if (!statSync(root).isDirectory()) return
+    canonicalRoot = realpathSync(root)
+  } catch {
+    return
+  }
+  const walk = (directory: string, depth: number): void => {
+    if (depth > 32) return
+    let canonicalDirectory: string
+    try {
+      canonicalDirectory = realpathSync(directory)
+    } catch {
+      return
+    }
+    if (visitedDirectories.has(canonicalDirectory)) return
+    visitedDirectories.add(canonicalDirectory)
+    const ownSkillFile = join(canonicalDirectory, 'SKILL.md')
+    try {
+      if (statSync(ownSkillFile).isFile()) {
+        const entry = parseCommandCodeSkillFile(ownSkillFile)
+        if (entry !== null && !seenNames.has(entry.name)) {
+          seenNames.add(entry.name)
+          entries.push(disabledSkills.has(entry.name) ? { ...entry, enabled: false } : entry)
+        }
+        return
+      }
+    } catch {
+      // 当前目录不是 Skill 目录，继续检查可能的分组子目录。
+    }
+    let children
+    try {
+      children = readdirSync(canonicalDirectory, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const child of children) {
+      if (child.name === '.git' || child.name === 'node_modules') continue
+      const childPath = join(canonicalDirectory, child.name)
+      if (child.isDirectory()) {
+        walk(childPath, depth + 1)
+      }
+    }
+  }
+  // 首次遍历也使用规范路径，确保额外目录的符号链接遵守去重规则。
+  walk(canonicalRoot, 0)
+}
+
+/** disabledSkills 是用户设置与项目设置的并集，保持 Command Code 的禁用语义。 */
+function readCommandCodeDisabledSkills(projectRoot: string, homeDirectory: string): ReadonlySet<string> {
+  const disabled = new Set<string>()
+  const paths = [
+    join(homeDirectory, 'settings.json'),
+    join(projectRoot, '.commandcode', 'settings.json'),
+    join(projectRoot, '.commandcode', 'settings.local.json'),
+  ]
+  for (const path of paths) {
+    const settings = readJson(path)
+    if (!Array.isArray(settings?.disabledSkills)) continue
+    for (const value of settings.disabledSkills) {
+      if (typeof value === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value.trim())) disabled.add(value.trim())
+    }
+  }
+  return disabled
+}
+
+function parseCommandCodeSkillFile(path: string): CommandCodeSkillEntry | null {
+  let source: string
+  try {
+    source = readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+  const match = source.match(/^(?:\uFEFF)?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u)
+  if (match === null) return null
+  const fields = parseSkillFrontmatter(match[1] ?? '')
+  if (fields === null) return null
+  const name = typeof fields.name === 'string' ? fields.name.trim() : ''
+  const description = typeof fields.description === 'string' ? fields.description.trim() : ''
+  const directoryName = basename(dirname(path))
+  if (name.length > 64 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name)
+    || name !== directoryName
+    || description === '') return null
+  return {
+    id: name,
+    name,
+    description,
+    enabled: fields['user-invocable'] !== false,
+    path: dirname(path),
+  }
 }
 
 function buildMaxTurnsReachedMessage(autoContinueCount: number, maxTurns: number): string {
