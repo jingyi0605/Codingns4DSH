@@ -75,10 +75,15 @@ test('bundle patch and example profile use DSH native shapes', async () => {
   assert.match(patch, /id:\s*directory-picker-browse[\s\S]*?name:\s*'@deepseek-ai\/dsh-host-directory-picker-browse'/u)
   assert.match(patch, /id:\s*ui-directory-picker-browse[\s\S]*?name:\s*'@deepseek-ai\/dsh-client-ui-directory-picker-browse'/u)
   assert.doesNotMatch(patch, /dsh-(?:host|client-ui)-directory-picker-native/u, 'Bundle patch 不得重新启用原生目录选择器')
+  assert.doesNotMatch(patch, /dsh-realtime-voice|dsh-multi-model-provider/u, '可选模型 Bundle 不得由补丁重复插入')
   const profile = JSON.parse(await readFile(join(root, 'profile/package.json'), 'utf8'))
-  assert.deepEqual(profile.dsh.profile.bundles, ['@jingyi0605/codingns4dsh'])
+  assert.deepEqual(profile.dsh.profile.bundles, [
+    'dsh-multi-model-provider',
+    '@jingyi0605/codingns4dsh',
+  ])
   assert.equal(profile.version, manifest.version)
   assert.equal(profile.dependencies['@jingyi0605/codingns4dsh'], manifest.version)
+  assert.equal(profile.dependencies['dsh-multi-model-provider'], '0.1.0-rc.11')
   assert.equal(profile.engines.dsh, SUPPORTED_DSH_COMPATIBILITY)
   assert.equal(profile.scripts.preinstall, 'node scripts/check-dsh-install.mjs')
   const profileVersion = JSON.parse(await readFile(join(root, 'profile/version.json'), 'utf8'))

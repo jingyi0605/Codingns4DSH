@@ -21,8 +21,22 @@ export {
   createAuthFeature,
   createCliAdaptersFeature,
   createLanAccessDshFeature,
+  createAssistantVoiceActionBridge,
+  GlobalVoiceCoordinator,
+  VoiceAgentService,
 } from './host/features/index.js'
-export type { CodingNsHostServices } from './host/features/index.js'
+export type {
+  CodingNsHostServices,
+  AssistantVoiceActionBridge,
+  AssistantVoiceActionBridgeOptions,
+  VoiceAction,
+  VoiceActionControl,
+  VoiceActionRegistration,
+  VoiceAgentCapabilities,
+  VoiceConversation,
+  VoiceEvent,
+  StartConversationOptions,
+} from './host/features/index.js'
 export {
   CODINGNS_TUNNEL_DATA_CHANNEL_LABEL,
   FileHostDtlsIdentityStore,

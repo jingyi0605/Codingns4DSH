@@ -6,6 +6,8 @@ import {
   CODINGNS_SETTINGS_NAMESPACE,
   isCodingNsSettingsEntryId,
   DEFAULT_CODINGNS_SETTINGS,
+  DEFAULT_ASSISTANT_SETTINGS,
+  DEFAULT_ASSISTANT_VOICE_SETTINGS,
   MOBILE_VIEWPORT_MAX_PX_LIMITS,
   SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS,
   SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MINS_LIMITS,
@@ -39,6 +41,23 @@ export const CodingNsSettingsSchema = z.object({
       .max(SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.max)
       .default(DEFAULT_CODINGNS_SETTINGS.subagentBridge?.maxConcurrentSubagents ?? 8),
   }).default(DEFAULT_CODINGNS_SETTINGS.subagentBridge ?? { enabled: false, maxConcurrentSubagents: 8 }),
+  assistant: z.object({
+    managedWorkspaceIds: z.array(z.string().min(1).max(512)).default(DEFAULT_ASSISTANT_SETTINGS.managedWorkspaceIds),
+    voice: z.object({
+      initialized: z.boolean().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.initialized),
+      provider: z.union([z.const('dsh-speech-to-text'), z.const('sherpa-onnx')])
+        .default(DEFAULT_ASSISTANT_VOICE_SETTINGS.provider),
+      modelId: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.modelId ?? ''),
+      asrEncoder: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.asrEncoder),
+      asrDecoder: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.asrDecoder),
+      asrJoiner: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.asrJoiner),
+      asrTokens: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.asrTokens),
+      vadModel: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.vadModel),
+      ttsModel: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.ttsModel),
+      ttsTokens: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.ttsTokens),
+      ttsLexicon: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.ttsLexicon),
+    }).default(DEFAULT_ASSISTANT_VOICE_SETTINGS),
+  }).default(DEFAULT_ASSISTANT_SETTINGS),
   // 会话索引是 Host 摘要数据，不能让它进入浏览器状态或模型上下文。
   cliSessions: z.array(z.any()).default(DEFAULT_CODINGNS_SETTINGS.cliSessions ?? []),
   lanAccessDsh: z.object({

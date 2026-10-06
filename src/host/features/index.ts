@@ -9,6 +9,7 @@ import { createHostStatusFeature } from './host-status.js'
 import { createGitManagementFeature } from './git-management.js'
 import { createFileManagementFeature } from './file-management.js'
 import { createPeerHostFeature } from './peer-host.js'
+import { createGlobalVoiceRpcFeature } from './global-voice-rpc.js'
 import type { CodingNsHostServices } from './types.js'
 
 export interface HostFeatureOptions {
@@ -28,6 +29,7 @@ export function createHostFeatures(options: HostFeatureOptions = {}): readonly F
     createGitManagementFeature(),
     createFileManagementFeature(),
     createPeerHostFeature(),
+    createGlobalVoiceRpcFeature(),
   ]
 }
 
@@ -44,4 +46,28 @@ export { createHostStatusFeature } from './host-status.js'
 export { createGitManagementFeature } from './git-management.js'
 export { createFileManagementFeature } from './file-management.js'
 export { createPeerHostFeature, toPeerHostClientRecord } from './peer-host.js'
+export {
+  buildAssistantSummary,
+  normalizeSpeechText,
+  redactSensitiveValues,
+  sanitizeSpeechText,
+  summarizeAssistantSessions,
+} from './assistant-summary.js'
+export { VoiceAgentService } from './voice-agent-service.js'
+export { GlobalVoiceCoordinator } from './global-voice-coordinator.js'
+export { createGlobalVoiceRpcFeature } from './global-voice-rpc.js'
+export { SherpaVoiceRuntime, float32ToPcm16, pcm16ToFloat32 } from './sherpa-voice-runtime.js'
+export { createAssistantVoiceStreamHandler } from './assistant-voice-stream.js'
+export { AssistantVoiceTurnRouter } from './assistant-voice-turn.js'
+export { createAssistantVoiceActionBridge } from './voice-agent-actions.js'
+export type { AssistantVoiceActionBridge, AssistantVoiceActionBridgeOptions } from './voice-agent-actions.js'
+export type {
+  StartConversationOptions,
+  VoiceAction,
+  VoiceActionControl,
+  VoiceActionRegistration,
+  VoiceAgentCapabilities,
+  VoiceConversation,
+  VoiceEvent,
+} from './voice-agent-service.js'
 export type { CodingNsHostServices } from './types.js'

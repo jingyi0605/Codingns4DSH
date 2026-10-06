@@ -138,6 +138,12 @@ export function apply(ctx?: Context): void {
         requestBody: 'buffered',
         fetch: handler,
       }),
+      registerAssistantVoiceStreamRoute: (handler) => hostCtx.connection.fetch.register({
+        path: '/api/codingns/assistant/voice/stream',
+        methods: ['POST'],
+        requestBody: 'streaming',
+        fetch: handler,
+      }),
     }
     const debug = new DebugWorkspaceService({
       resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveWorkspaceRoot(hostCtx, workspaceId),
@@ -284,8 +290,22 @@ export {
   createGitManagementFeature,
   createFileManagementFeature,
   createPeerHostFeature,
+  createAssistantVoiceActionBridge,
+  VoiceAgentService,
+  GlobalVoiceCoordinator,
 } from './features/index.js'
-export type { CodingNsHostServices } from './features/index.js'
+export type {
+  CodingNsHostServices,
+  AssistantVoiceActionBridge,
+  AssistantVoiceActionBridgeOptions,
+  StartConversationOptions,
+  VoiceAction,
+  VoiceActionControl,
+  VoiceActionRegistration,
+  VoiceAgentCapabilities,
+  VoiceConversation,
+  VoiceEvent,
+} from './features/index.js'
 export { CodingNsSettingsSchema, registerCodingNsSettings } from './settings.js'
 export { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler, registerCodingNsRpc } from './rpc.js'
 export {

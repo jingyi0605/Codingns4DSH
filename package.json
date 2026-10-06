@@ -172,5 +172,8 @@
     "werift": "^0.24.4",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "sherpa-onnx-node": "1.13.8"
   }
 }

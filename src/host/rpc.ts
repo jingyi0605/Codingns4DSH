@@ -218,6 +218,8 @@ function writeRpcResponse(response: ServerResponse, rpcId: string, result: Codin
 const CODINGNS_RPC_ENDPOINTS = [
   'auth/snapshot', 'auth/login', 'auth/logout', 'auth/devices', 'auth/bind', 'auth/unbind', 'auth/signalingTicket', 'auth/dsh/device/list', 'auth/dsh/device/start', 'auth/dsh/device/stop', 'auth/dsh/device/status', 'auth/dsh/relayTicket',
   'host/status',
+  'assistant/index', 'assistant/summary', 'assistant/turn',
+  'assistant/voice/capabilities', 'assistant/voice/setup', 'assistant/voice/start', 'assistant/voice/stop', 'assistant/voice/heartbeat', 'assistant/voice/interrupt', 'assistant/voice/register-client', 'assistant/voice/unregister-client', 'assistant/voice/event', 'assistant/voice/text',
   'settings/get', 'settings/set',
   'terminal/status',
   'terminalProcess/profile/list', 'terminalProcess/profile/create', 'terminalProcess/profile/delete',
@@ -312,7 +314,7 @@ function operationsToPatch(operations: readonly CodingNsSettingsOperation[]): Re
 }
 
 function isAllowedSettingsPath(path: readonly string[]): boolean {
-  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage'].includes(path[0] ?? '')
+  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage', 'assistant'].includes(path[0] ?? '')
   if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'mobileAccess', 'peerHost', 'globalVoiceAssistant'].includes(path[1] ?? '')
   if (path[0] === 'workspaceSessionEnhancement') {
     return path.length === 2 && [
@@ -332,6 +334,9 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
   }
   if (path[0] === 'subscriptionUsage') {
     return path.length === 2 && ['timeoutSecs', 'refreshIntervalMins'].includes(path[1] ?? '')
+  }
+  if (path[0] === 'assistant') {
+    return path.length === 2 && path[1] === 'managedWorkspaceIds'
   }
   if (path[0] === 'subagentBridge') {
     return path.length === 2 && ['enabled', 'maxConcurrentSubagents'].includes(path[1] ?? '')

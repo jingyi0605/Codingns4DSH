@@ -10,6 +10,51 @@ export interface CodingNsCliAdapterPreference {
   readonly serviceTierId?: string | undefined
 }
 
+/** 全局智能助理设置；默认空范围，必须由用户显式勾选工作区。 */
+export type AssistantVoiceProvider = 'dsh-speech-to-text' | 'sherpa-onnx'
+
+/** 全局语音助理初始化配置；模型目录由 Host 自动下载并写入。 */
+export interface AssistantVoiceSettings {
+  initialized: boolean
+  provider: AssistantVoiceProvider
+  /** 已安装的实时模型目录 ID；旧配置没有该字段时按空值兼容。 */
+  modelId?: string
+  asrEncoder: string
+  asrDecoder: string
+  asrJoiner: string
+  asrTokens: string
+  vadModel: string
+  ttsModel: string
+  ttsTokens: string
+  ttsLexicon: string
+}
+
+export const DEFAULT_ASSISTANT_VOICE_SETTINGS: AssistantVoiceSettings = {
+  initialized: false,
+  provider: 'dsh-speech-to-text',
+  modelId: '',
+  asrEncoder: '',
+  asrDecoder: '',
+  asrJoiner: '',
+  asrTokens: '',
+  vadModel: '',
+  ttsModel: '',
+  ttsTokens: '',
+  ttsLexicon: '',
+}
+
+export interface AssistantSettings {
+  /** 允许助理读取和派发的工作区 ID。 */
+  managedWorkspaceIds: string[]
+  /** 语音提供方与本地模型路径；未初始化时点击入口只打开模型选择页。 */
+  voice: AssistantVoiceSettings
+}
+
+export const DEFAULT_ASSISTANT_SETTINGS: AssistantSettings = {
+  managedWorkspaceIds: [],
+  voice: DEFAULT_ASSISTANT_VOICE_SETTINGS,
+}
+
 /** Codingns4DSH 在 DSH 设置文档中持久化的用户选项。 */
 export interface CodingNsSettings {
   /** Control API 地址不是秘密，可以由 Web 设置页保存到 Host 设置。 */
@@ -28,6 +73,8 @@ export interface CodingNsSettings {
   mobileAccess: MobileAccessSettings
   /** 用量查询设置：超时控制单次网络查询，间隔控制自动刷新。 */
   subscriptionUsage: SubscriptionUsageSettings
+  /** 全局智能助理设置；不绑定当前页面会话。 */
+  assistant: AssistantSettings
   /**
    * 功能模块启用意图：模块名 -> 是否启用。
    *
@@ -443,6 +490,7 @@ export const CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD = 'workspaceSessionEnh
 export const CODINGNS_FILE_MANAGEMENT_FIELD = 'fileManagement'
 export const CODINGNS_MOBILE_ACCESS_FIELD = 'mobileAccess'
 export const CODINGNS_SUBSCRIPTION_USAGE_FIELD = 'subscriptionUsage'
+export const CODINGNS_ASSISTANT_FIELD = 'assistant'
 export const CODINGNS_SUBAGENT_BRIDGE_FIELD = 'subagentBridge'
 export const DEFAULT_CODINGNS_CONTROL_BASE_URL = 'https://channel.codingns.com:1443'
 export const DEFAULT_CODINGNS_CONTROL_BASE_URLS = [DEFAULT_CODINGNS_CONTROL_BASE_URL]
@@ -489,6 +537,7 @@ export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   fileManagement: DEFAULT_FILE_MANAGEMENT_SETTINGS,
   mobileAccess: DEFAULT_MOBILE_ACCESS_SETTINGS,
   subscriptionUsage: DEFAULT_SUBSCRIPTION_USAGE_SETTINGS,
+  assistant: DEFAULT_ASSISTANT_SETTINGS,
   lanAccessDsh: {
     autoStart: false,
     listenHost: '0.0.0.0',
