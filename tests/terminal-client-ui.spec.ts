@@ -71,6 +71,11 @@ test('终端布局和 xterm 默认值与 DSH 0.1.6 内置终端一致', async ()
   assert.match(xterm, /TERMINAL_CONTENT_EDGE_GAP - scrollbarInset/u)
   assert.doesNotMatch(xterm, /measureWidth/u)
   assert.match(xterm, /if \(host\.clientWidth === 0 \|\| host\.clientHeight === 0\)/u)
+  // xterm 的字宽缓存用 32 个连续字符测量宽度，Chrome 对连续全角标点默认做标点
+  // 压缩（「。」从 13px 压到 6.72px），letter-spacing 被多补约 6.3px/处，中文行
+  // 标点密集时渲染内容向右累积溢出网格宽度，行尾一两个字被裁剪。测量容器与渲染
+  // 行必须同时用 space-all 关闭标点压缩，字宽测量才会与单字实际渲染一致。
+  assert.match(xterm, /\.xterm-width-cache-measure-container,\.xterm-rows\{text-spacing-trim:space-all\}/u)
 })
 
 test('视图激活与回到前台时夺回终端尺寸所有权', async () => {

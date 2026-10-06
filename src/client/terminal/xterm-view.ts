@@ -710,9 +710,12 @@ function resolveTerminalDimensions(terminal: Terminal, fit: FitAddon): { cols: n
       ? undefined
       : { ...fallback, cols: Math.max(2, fallback.cols - 1) }
   }
+  // 宿主元素（host）有 paddingLeft: 8, paddingRight: 8，但 root 是 terminal.element（.xterm），
+  // 它的 padding 为 0。由于此函数只接收 terminal 对象而不是 host，无法直接读取宿主 padding，
+  // 因此硬编码宿主 padding 值（与 terminalHostStyle 保持一致）。
+  const HOST_PADDING_LEFT = 8
+  const HOST_PADDING_RIGHT = 8
   const computed = getComputedStyle(root)
-  const paddingLeft = parseCssPixels(computed.paddingLeft)
-  const paddingRight = parseCssPixels(computed.paddingRight)
   const paddingY = parseCssPixels(computed.paddingTop) + parseCssPixels(computed.paddingBottom)
   // xterm 6 的滚动条是 xterm-scrollable-element 里的绝对定位节点。
   // 不能用固定的 14px 或 root.clientWidth 猜它的槽位：父容器可能有小数宽度，
@@ -725,19 +728,15 @@ function resolveTerminalDimensions(terminal: Terminal, fit: FitAddon): { cols: n
     : scrollable?.querySelector<HTMLElement>('.scrollbar.vertical')
   const scrollbarRect = scrollbar?.getBoundingClientRect()
   const scrollableRect = scrollable?.getBoundingClientRect()
-  const contentRight = scrollbarRect !== undefined && scrollbarRect.width > 0
-    ? Math.min(rootRect.right, scrollbarRect.left)
-    : scrollableRect !== undefined && scrollableRect.width > 0
-      ? Math.min(rootRect.right, scrollableRect.right)
-      : rootRect.right
-  // 宿主已经通过 border-box 保留左右 8px；滚动条左边界到 root 右边界之间也
-  // 已经有自己的槽位。只有这两层空间不足 TERMINAL_CONTENT_EDGE_GAP 时，才补足
-  // 剩余安全距离，不能再额外扣除一个完整字符宽度，否则底部历史文本会提前换行。
+  // 宿主已经通过 border-box 保留左右 8px；滚动条槽位（宽度+右边距）由 xterm 管理。
+  // 计算文字可用宽度时，从容器右边界扣除滚动条占用空间和安全边距，确保文字不会
+  // 贴到滚动条或容器边缘。滚动条存在时优先以其左边界为截止线，避免文字与滚动条重叠。
   const scrollbarInset = scrollbarRect !== undefined && scrollbarRect.width > 0
     ? Math.max(0, rootRect.right - scrollbarRect.left)
     : 0
   const safeEdgeGap = Math.max(0, TERMINAL_CONTENT_EDGE_GAP - scrollbarInset)
-  const width = contentRight - rootRect.left - paddingLeft - paddingRight - safeEdgeGap
+  // 从容器总宽度中扣除宿主 padding、滚动条槽位和右侧安全距离
+  const width = rootRect.width - HOST_PADDING_LEFT - HOST_PADDING_RIGHT - scrollbarInset - safeEdgeGap
   const height = root.clientHeight - paddingY
   if (width <= 0 || height <= 0) return fallback
   return {
@@ -827,4 +826,9 @@ const shadowCss = `${xtermCss}
 .xterm .xterm-scrollable-element>.scrollbar.vertical>.slider{width:6px!important;left:0!important;min-height:24px;border-radius:999px;background:rgba(170,178,190,.72)!important;box-shadow:0 1px 4px rgba(0,0,0,.28);transition:background-color 180ms ease,box-shadow 180ms ease!important}
 .xterm[data-codingns-scrollbar="visible"] .xterm-scrollable-element>.scrollbar.vertical>.slider:hover{background:rgba(224,229,237,.9)!important;box-shadow:0 1px 6px rgba(0,0,0,.4)}
 .xterm .xterm-scrollable-element>.scrollbar.horizontal{display:none!important}
+/* xterm 的字宽缓存会把单个字符重复 32 次测量宽度，Chrome 对连续的全角标点默认做
+   标点压缩（「。」从 13px 压到 6.72px），导致 letter-spacing 在每处标点被多补约
+   6.3px，行内标点密集时渲染内容向右累积溢出网格宽度，行尾一两个字被裁剪。
+   space-all 关闭标点压缩，让字宽测量与单字实际渲染一致，全角标点按两格渲染。 */
+.xterm-width-cache-measure-container,.xterm-rows{text-spacing-trim:space-all}
 `
