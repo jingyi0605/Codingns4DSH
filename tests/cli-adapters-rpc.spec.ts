@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
+import { readFileSync } from 'node:fs'
 import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import { GrokBuildDriver } from '../data/build/dist/host/cli-adapters/grok-driver.js'
@@ -955,6 +956,171 @@ test('Grok ACP 保留 tool_call 与 tool_call_update 的结构化字段', async 
   ])
   driver.dispose()
 })
+
+test('Grok ask_user_question 真实事件经过原生问题入口闭环保留 toolCallId 并使用私有 outcome', { timeout: 5_000 }, async () => {
+  const replay = createGrokQuestionReplay()
+  const chunks = []
+  const cards = []
+  const calls = []
+  const results = []
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'grok', sessionId: 'grok-question',
+    nativeSessions: {
+      async askQuestions(sessionId, request) {
+        cards.push({ sessionId, request })
+        return { requestId: request.requestId, answers: [{ id: request.questions[0].id, selected: ['是 (Recommended)'] }] }
+      },
+      appendToolCall(sessionId, call) {
+        calls.push(call)
+        return { sessionId, turn: 1, step: 1, callId: call.callId, callSeq: 1 }
+      },
+      appendToolResult(handle, result) { results.push({ handle, result }); return true },
+    },
+    respondQuestion: (response) => replay.driver.respondQuestion('grok-question', response),
+  })
+  for await (const chunk of replay.driver.executeTurn({ sessionId: 'grok-question', messages: [], prompt: '请使用提问组件向我提问' })) {
+    chunks.push(chunk)
+    if (chunk.type === 'question-request') {
+      assert.equal(chunk.requestId, replay.callId)
+      assert.equal(chunk.callId, replay.callId)
+      assert.deepEqual(chunk.questions, [{
+        id: 'question-1',
+        question: '你好！正在测试提问功能。请回答：',
+        options: [{ label: '是 (Recommended)', description: '是的，这是测试正常。' }, { label: '否', description: '不是，我需要更多信息。' }],
+      }])
+    }
+    await projector.push(chunk)
+  }
+  assert.deepEqual(replay.replies, [{ id: 77, result: {
+    outcome: 'accepted', answers: { '你好！正在测试提问功能。请回答：': ['是 (Recommended)'] },
+  } }])
+  assert.equal(chunks.filter((chunk) => chunk.type === 'question-request').length, 1)
+  assert.equal(cards.length, 1)
+  assert.deepEqual(cards[0], { sessionId: 'grok-question', request: {
+    requestId: replay.callId, questions: chunks.find((chunk) => chunk.type === 'question-request').questions,
+  } })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].callId, replay.callId)
+  assert.deepEqual(JSON.parse(calls[0].arguments), cards[0].request)
+  assert.equal(results.length, 1)
+  assert.equal(results[0].handle.callId, replay.callId)
+  assert.deepEqual(JSON.parse(results[0].result.output).answers, [{ id: 'question-1', selected: ['是 (Recommended)'] }])
+  assert.equal(chunks.some((chunk) => chunk.type === 'tool-event'), false)
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'stop' })
+  assert.match(String(replay.prompt[0]?.text), /ask_user_question 属于 grok_build 内建工具，不依赖 MCP 服务器/u)
+  assert.deepEqual(replay.prompt.at(-1), { type: 'text', text: '请使用提问组件向我提问' })
+  replay.driver.dispose()
+})
+
+test('Grok 问题卡回答先于私有请求时暂存答案，连续回合仍可提问', { timeout: 5_000 }, async () => {
+  const replay = createGrokQuestionReplay({ deferRequest: true, method: 'x.ai/ask_user_question' })
+  for (let turn = 0; turn < 2; turn++) {
+    let questionCount = 0
+    for await (const chunk of replay.driver.executeTurn({ sessionId: 'grok-early-answer', messages: [], prompt: '提问' })) {
+      if (chunk.type !== 'question-request') continue
+      questionCount++
+      replay.driver.respondQuestion('grok-early-answer', {
+        requestId: chunk.requestId, answers: [{ id: 'question-1', selected: [], custom: '用户自由文本' }],
+      })
+      assert.equal(replay.replies.length, turn)
+      replay.sendRequest()
+    }
+    assert.equal(questionCount, 1)
+  }
+  assert.deepEqual(replay.replies, [77, 78].map((id) => ({ id, result: {
+    outcome: 'accepted',
+    answers: { '你好！正在测试提问功能。请回答：': ['Other'] },
+    annotations: { '你好！正在测试提问功能。请回答：': { notes: '用户自由文本' } },
+  } })))
+  replay.driver.dispose()
+})
+
+test('Grok 问题卡关闭时回传私有 cancelled 并清理旧回合', { timeout: 5_000 }, async () => {
+  const replay = createGrokQuestionReplay()
+  for await (const chunk of replay.driver.executeTurn({ sessionId: 'grok-dismiss-question', messages: [], prompt: '提问' })) {
+    if (chunk.type === 'question-request') {
+      // 让反向请求处理器登记 RPC id，再模拟原生问题卡关闭导致消费者提前结束。
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      break
+    }
+  }
+  assert.deepEqual(replay.replies, [{ id: 77, result: { outcome: 'cancelled' } }])
+  replay.driver.dispose()
+})
+
+test('Grok 多选和补充文字按问题原文回传，不使用 ACP elicitation 格式', { timeout: 5_000 }, async () => {
+  const replay = createGrokQuestionReplay({ questions: [
+    { question: '选择语言', options: [{ label: 'TypeScript', description: '前端' }, { label: 'Rust', description: '后端' }], multiSelect: true },
+    { question: '补充要求', options: [{ label: '默认', description: '使用默认配置' }] },
+  ] })
+  for await (const chunk of replay.driver.executeTurn({ sessionId: 'grok-multiple', messages: [], prompt: '提问' })) {
+    if (chunk.type !== 'question-request') continue
+    assert.equal(chunk.questions[0].multiSelect, true)
+    replay.driver.respondQuestion('grok-multiple', { requestId: chunk.requestId, answers: [
+      { id: 'question-1', selected: ['TypeScript', 'Rust'], custom: '保持兼容' },
+      { id: 'question-2', selected: [], custom: '使用中文' },
+    ] })
+  }
+  assert.deepEqual(replay.replies, [{ id: 77, result: {
+    outcome: 'accepted',
+    answers: { '选择语言': ['TypeScript', 'Rust'], '补充要求': ['Other'] },
+    annotations: { '选择语言': { notes: '保持兼容' }, '补充要求': { notes: '使用中文' } },
+  } }])
+  replay.driver.dispose()
+})
+
+/** 保存用户真实 updates.jsonl 的参数；反向请求信封按上游公开类型补齐。 */
+function createGrokQuestionReplay(options: { deferRequest?: boolean; method?: string; questions?: readonly Record<string, unknown>[] } = {}) {
+  const updates = readFileSync(new URL('./fixtures/grok-1.0.46-question-updates.jsonl', import.meta.url), 'utf8')
+    .trim().split('\n').map((line) => JSON.parse(line))
+  if (options.questions !== undefined) {
+    updates[0].params.update.rawInput.questions = options.questions
+    updates[1].params.update.rawInput.questions = options.questions
+  }
+  const { sessionId, update } = updates[0].params
+  const callId = update.toolCallId as string
+  const replies: { id: number | string; result: Record<string, unknown> }[] = []
+  let prompt: Record<string, unknown>[] = []
+  let sendRequest = (): void => { throw new Error('回放尚未启动') }
+  let questionRpcId = 76
+  const driver = new GrokBuildDriver({
+    binaries: ['fake-grok'],
+    spawnSync: (() => ({ status: 0, stdout: 'grok 1.0.46', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const emit = (message: unknown): void => { stdout.write(`${JSON.stringify(message)}\n`) }
+      let promptId: number | string
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data)
+        if (request.method === 'session/prompt') {
+          promptId = request.id
+          prompt = request.params.prompt
+          questionRpcId++
+          for (const notification of updates) emit(notification)
+          sendRequest = () => emit({ jsonrpc: '2.0', id: questionRpcId, method: options.method ?? '_x.ai/ask_user_question', params: {
+            sessionId, toolCallId: callId, questions: updates[1].params.update.rawInput.questions, mode: 'default',
+          } })
+          if (!options.deferRequest) sendRequest()
+          return
+        }
+        if (request.result?.outcome !== undefined) {
+          replies.push({ id: request.id, result: request.result })
+          emit({ method: 'session/update', params: { sessionId, update: {
+            sessionUpdate: 'tool_call_update', toolCallId: callId, status: 'completed', rawOutput: request.result,
+          } } })
+          emit({ method: '_x.ai/session/update', params: { sessionId, update: { sessionUpdate: 'turn_completed' } } })
+          emit({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } })
+          return
+        }
+        if (request.method === 'session/new') emit({ jsonrpc: '2.0', id: request.id, result: { sessionId } })
+        else if (request.id !== undefined) emit({ jsonrpc: '2.0', id: request.id, result: {} })
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  return { driver, callId, replies, get prompt() { return prompt }, sendRequest() { sendRequest() } }
+}
 
 test('Grok ACP 传递缓存 token 并计算缓存命中率', async () => {
   const driver = new GrokBuildDriver({
