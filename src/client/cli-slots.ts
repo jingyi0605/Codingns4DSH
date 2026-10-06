@@ -133,6 +133,11 @@ export async function waitForCliSessionSelection(sessionId: string): Promise<voi
   }
 }
 
+/** 读取当前会话 Agent 选择版本，供按会话缓存的目录在切换 Agent 后失效。 */
+export function cliSessionSelectionRevision(sessionId: string): number {
+  return selectionRevisions.get(sessionId) ?? 0
+}
+
 /** 在 Agent 和模型两个 Slot 之间共享当前会话选择。 */
 function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [SelectionState, (next: SelectionState) => void] {
   const [selection, setSelection] = useState<SelectionState>(() => sessionId ? selections.get(sessionId) ?? DEFAULT_SELECTION : DEFAULT_SELECTION)
