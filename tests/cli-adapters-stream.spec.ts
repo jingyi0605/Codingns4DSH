@@ -28,7 +28,7 @@ test('Claude、Gemini、Kimi 的标准流驱动统一转换文本和完成事件
           stdout.end()
           stderr.end()
         })
-        return { stdout, stderr, kill() { killed = true; return true } }
+        return { stdout, stderr, stdin: new PassThrough(), kill() { killed = true; return true } }
       }) as never,
     })
     const chunks = []

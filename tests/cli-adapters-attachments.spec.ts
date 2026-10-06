@@ -38,46 +38,41 @@ test('文本 CLI 适配器把附件路径和可访问目录传给 Provider', () 
   assert.deepEqual(geminiArgs.slice(-2), ['--include-directories', '/tmp/codingns-attachments'])
 })
 
-test('Claude Code 为无扩展名图片建立受支持后缀的临时路径并在回合结束清理', async () => {
+test('Claude Code 将无扩展名 PNG、JPEG、GIF、WebP 作为原生图片内容块传递', async () => {
   const root = mkdtempSync(join(tmpdir(), 'codingns-claude-image-'))
   const imagePath = join(root, '1588ddd5b29f1b5a0e43492ea636c5f79bff288357d2c17f928f008822a9bab7')
-  const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
-  writeFileSync(imagePath, imageBytes)
-  let receivedArgs: string[] = []
-  let preparedPath: string | undefined
-  let preparedPrompt = ''
+  const formats = [
+    { mimeType: 'image/png', bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]) },
+    { mimeType: 'image/jpeg', bytes: Buffer.from([0xff, 0xd8, 0xff, 1, 2, 3]) },
+    { mimeType: 'image/gif', bytes: Buffer.from('GIF89a图片') },
+    { mimeType: 'image/webp', bytes: Buffer.from('RIFF0000WEBP图片') },
+  ]
   try {
-    const driver = new ClaudeCodeDriver({
-      binaries: ['fake-claude'],
-      spawnSync: detection,
-      spawn: ((_command: string, args: string[]) => {
-        receivedArgs = args
-        const stdin = new PassThrough()
-        stdin.on('data', (chunk) => {
-          const message = JSON.parse(String(chunk)) as { type?: unknown; message?: { content?: Array<{ text?: unknown }> } }
-          if (message.type !== 'user') return
-          preparedPrompt = typeof message.message?.content?.[0]?.text === 'string' ? message.message.content[0].text : ''
-          preparedPath = preparedPrompt.match(/@([^\n]+)$/u)?.[1]
-          assert.ok(preparedPath?.endsWith('.png'))
-          assert.deepEqual(readFileSync(preparedPath!), imageBytes)
-        })
-        return {
-          stdout: Readable.from([`${JSON.stringify({ type: 'result' })}\n`]),
-          stderr: { on() { return this } },
-          stdin,
-          kill() { return true },
-        }
-      }) as never,
-    })
-    for await (const _chunk of driver.executeTurn({
-      sessionId: 'claude-image-attachments', messages: [], prompt: '请查看截图',
-      attachments: [{ kind: 'image', path: imagePath }],
-    })) { /* 检查发送参数和临时文件生命周期。 */ }
-    assert.match(preparedPrompt, /附件「attachment-0\.png」：@[^\n]+\.png$/u)
-    assert.equal(existsSync(preparedPath!), false)
-    const addDirIndex = receivedArgs.lastIndexOf('--add-dir')
-    assert.equal(receivedArgs[addDirIndex + 1], dirname(preparedPath!))
-    driver.dispose()
+    for (const format of formats) {
+      writeFileSync(imagePath, format.bytes)
+      let received: unknown
+      const driver = new ClaudeCodeDriver({
+        binaries: ['fake-claude'], spawnSync: detection,
+        spawn: (() => {
+          const stdin = new PassThrough()
+          stdin.on('data', (chunk) => {
+            const message = JSON.parse(String(chunk)) as { type?: string; message?: { content?: unknown } }
+            if (message.type === 'user') received = message.message?.content
+          })
+          return { stdout: Readable.from([`${JSON.stringify({ type: 'result' })}\n`]), stderr: new PassThrough(), stdin, kill() { return true } }
+        }) as never,
+      })
+      for await (const _chunk of driver.executeTurn({
+        sessionId: 'claude-image-attachments', messages: [], prompt: '请查看截图',
+        attachments: [{ kind: 'image', path: imagePath }],
+      })) { /* 图片格式由内容识别，整个请求不依赖磁盘后缀。 */ }
+      assert.deepEqual(received, [
+        { type: 'text', text: '请查看截图' },
+        { type: 'image', source: { type: 'base64', media_type: format.mimeType, data: format.bytes.toString('base64') } },
+      ])
+      assert.deepEqual(readFileSync(imagePath), format.bytes)
+      driver.dispose()
+    }
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -91,6 +86,7 @@ test('Command Code 把附件路径写入 prompt 并开放附件目录', async ()
   writeFileSync(filePath, '附件内容')
   let receivedArgs: string[] = []
   const driver = new CommandCodeDriver({
+    homeDirectory: root,
     binaries: ['fake-command-code'],
     spawnSync: detection,
     spawn: ((_command: string, args: string[]) => {
@@ -121,7 +117,7 @@ test('Command Code 把附件路径写入 prompt 并开放附件目录', async ()
   }
 })
 
-test('Kimi wire 传递附件元数据并保留路径提示', async () => {
+test('Kimi wire 普通文件保留路径提示，不发送上游不存在的 attachments 字段', async () => {
   const root = mkdtempSync(join(tmpdir(), 'codingns-kimi-'))
   const filePath = join(root, 'notes.txt')
   writeFileSync(filePath, 'Kimi 附件')
@@ -151,7 +147,7 @@ test('Kimi wire 传递附件元数据并保留路径提示', async () => {
       attachments: [{ kind: 'file', path: filePath, name: 'notes.txt', mimeType: 'text/plain' }],
     })) { /* 只检查 wire 请求。 */ }
     assert.equal(promptParams?.user_input, `读取附件\n请读取并处理以下消息附件：\n附件「notes.txt」：@${filePath}`)
-    assert.deepEqual(promptParams?.attachments, [{ file_path: filePath, file_name: 'notes.txt', mime_type: 'text/plain', file_size: Buffer.byteLength('Kimi 附件') }])
+    assert.equal(promptParams?.attachments, undefined)
   } finally {
     driver.dispose()
     rmSync(root, { recursive: true, force: true })
@@ -244,7 +240,9 @@ test('Grok ACP 将完整附件块数组直接发给 session/prompt', async () =>
       sessionId: 'grok-attachments', messages: [], prompt: '看图',
       attachments: [{ kind: 'image', path: imagePath, name: 'photo.png', mimeType: 'image/png' }],
     })) { /* 只检查 ACP 请求。 */ }
-    assert.deepEqual(prompt, [
+    const blocks = prompt as Array<Record<string, unknown>>
+    assert.match(String(blocks[0]?.text), /codingns_host_capabilities/u)
+    assert.deepEqual(blocks.slice(1), [
       { type: 'text', text: '看图' },
       { type: 'image', data: Buffer.from([7, 8, 9]).toString('base64'), mimeType: 'image/png' },
     ])
@@ -254,11 +252,12 @@ test('Grok ACP 将完整附件块数组直接发给 session/prompt', async () =>
   }
 })
 
-test('Pi RPC 将图片以内联 base64 images 传递并提示普通路径', async () => {
+test('Pi RPC 内联无后缀图片，只提示普通文件路径', async () => {
   const root = mkdtempSync(join(tmpdir(), 'codingns-pi-'))
-  const imagePath = join(root, 'photo.jpg')
+  const imagePath = join(root, '42e1a977e447f19b9123260c4f17cbb8572bd4ca7847328eb12d7cf0e051c294')
   const filePath = join(root, 'notes.md')
-  writeFileSync(imagePath, Buffer.from([10, 11, 12]))
+  const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jh1sAAAAASUVORK5CYII=', 'base64')
+  writeFileSync(imagePath, imageBytes)
   writeFileSync(filePath, 'Pi 文件')
   let promptRequest: Record<string, unknown> | undefined
   const driver = new PiAgentDriver({
@@ -282,12 +281,12 @@ test('Pi RPC 将图片以内联 base64 images 传递并提示普通路径', asyn
     for await (const _chunk of driver.executeTurn({
       sessionId: 'pi-attachments', messages: [], prompt: '处理文件',
       attachments: [
-        { kind: 'image', path: imagePath, name: 'photo.jpg', mimeType: 'image/jpeg' },
+        { kind: 'image', path: imagePath },
         { kind: 'file', path: filePath, name: 'notes.md', mimeType: 'text/markdown' },
       ],
     })) { /* 只检查 RPC 请求。 */ }
-    assert.equal(promptRequest?.message, `处理文件\n请读取并处理以下消息附件：\n附件「photo.jpg」：@${imagePath}\n附件「notes.md」：@${filePath}`)
-    assert.deepEqual(promptRequest?.images, [{ type: 'image', data: Buffer.from([10, 11, 12]).toString('base64'), mimeType: 'image/jpeg' }])
+    assert.equal(promptRequest?.message, `处理文件\n请读取并处理以下消息附件：\n附件「notes.md」：@${filePath}`)
+    assert.deepEqual(promptRequest?.images, [{ type: 'image', data: imageBytes.toString('base64'), mimeType: 'image/png' }])
   } finally {
     driver.dispose()
     rmSync(root, { recursive: true, force: true })
