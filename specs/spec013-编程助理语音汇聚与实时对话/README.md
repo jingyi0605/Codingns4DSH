@@ -1,6 +1,8 @@
 # spec013：编程助理语音汇聚与实时对话
 
-状态：阶段 1 契约验证已完成；阶段 2 起待开始
+状态：阶段 1–3、阶段 4.0、4.1、4.1.1、4.2、4.3、4.4 已完成；5.2 保持 IN_REVIEW，等待真实 HTTPS Web 麦克风、扬声器和 barge-in 设备验收。
+
+> 架构说明（2026-10-06）：默认语音数据面由 CodingNS 自有 Client PCM 采集、Host 全局租约和按需加载的 `sherpa-onnx-node` 组成；CodingNS 自己负责设备管理、模型初始化、会话汇聚、意图路由和动作桥。不接入 DSH `speechToText` 回退；实时运行时不可用时明确提示并保留普通文字输入。
 
 ## 这份 Spec 解决什么问题
 
@@ -16,16 +18,17 @@ CodingNS 已经能把多个工作区和多个 Host 的会话聚合到一个界�
 本 Spec 新增一个编程助理模块，做三件事：
 
 - **汇聚与索引**：把所有工作区、所有 Host 的会话整理成一份可查询的索引，并能生成项目进展摘要。
-- **实时语音对话**：让用户用说话的方式提问和下达指令，助理用语音回答。
-- **复刻 voiceAgent 服务**：`dsh-realtime-voice` 这个第三方插件提供了一个我们需要的全双工语音服务契约，但它注册在浏览器侧、且绑定了它自己的云端模型供应商。本 Spec 先验证它的契约，再在 CodingNS 里复刻一个等价的、Host 侧可用的版本。
+- **全局实时语音对话**：在 Host 级保持一个不绑定当前页面会话的全局语音会话，使用浏览器设备采集 PCM 并交给按需加载的 Sherpa-ONNX；Host 统一处理租约、事件代次和动作边界。
+- **接入本地运行时并复刻 voiceAgent 契约**：CodingNS 通过 `VoiceRuntimeAdapter` 接入按需加载的 Sherpa-ONNX，保留自己的 Host 侧契约和业务动作边界，不复制第三方插件 UI 或供应商协议。
 
 ## 阅读顺序
 
 1. `requirements.md`：用户可见能力、数据边界和不可伪造的约束。
 2. `design.md`：汇聚索引、语音服务、意图路由三层的职责划分与接口。
 3. `tasks.md`：按阶段执行并回写验证证据。
-4. `docs/20261004-voiceAgent服务契约调查.md`：`dsh-realtime-voice` 的实际代码契约（复刻依据）。
+4. `docs/20261004-voiceAgent服务契约调查.md`：历史 `voiceAgent` 契约调查，仅用于控制面兼容对照。
 5. `docs/20261004-会话汇聚与语音能力调查.md`：DSH 核心会话查询与语音服务的实际能力边界。
+6. `docs/调查报告/20261005-sherpa-onnx-node本项目功能可行性验证.md`：可选 Sherpa 替代运行时的真实模型和设备探测结果。
 
 ## 范围
 
@@ -33,7 +36,7 @@ CodingNS 已经能把多个工作区和多个 Host 的会话聚合到一个界�
 
 - **用户手动选定**的受管工作区范围（不是全部工作区）内的会话索引、状态汇总和进展摘要生成。
 - **仅索引未归档会话**；已归档会话只保留历史记录，不进入索引、不参与摘要、不触发更新。
-- 基于 DSH 核心 `ctx.speechToText` 的语音输入接入。
+- 基于 CodingNS 自有数据面的全局语音输入；Sherpa-ONNX 负责本地实时 ASR，实时运行时不可用时只显示结构化错误并保留普通文字输入。
 - 复刻 `voiceAgent` 服务的契约面：`startConversation`、`registerActions`、`capabilities`、会话句柄方法与事件流。
 - 意图路由：把一句自然语言映射为「汇总」或「派发到指定会话」。
 - 向指定会话投递消息（复用 `sessionController.prompt`），包括 `steer` 模式。
@@ -41,12 +44,12 @@ CodingNS 已经能把多个工作区和多个 Host 的会话聚合到一个界�
 
 ### 不覆盖
 
-- **不做回声消除与开口打断（barge-in）**。第一版用按住说话（PTT）。原因见 `design.md` §7。
+- **浏览器设备与 Host 推理分层**。Client 通过 `MediaDevices`、`getUserMedia` 和 `AudioWorklet` 管理设备并输出 PCM；Host 通过 `VoiceRuntimeAdapter` 动态加载 `sherpa-onnx-node`，设备 ID 只留在浏览器来源内，Host 只接收带租约的 PCM 流。
 - **不索引已归档会话**。归档即退出索引；取消归档后重新纳入。
 - **不自动纳入新工作区**。新增工作区默认不受管，需用户显式勾选。
 - 不改 DSH 核心，不修改 `@deepseek-ai/*` 任何包。
-- 不绑定任何特定云端语音供应商；`dsh-realtime-voice` 只是契约参考，不是依赖。
-- 不复制 `dsh-voice-mode` 的代码（它没有服务接缝，且是全局单会话设计）。
+- 不把供应商协议泄漏到 CodingNS 业务层；供应商细节只能停留在 `VoiceRuntimeAdapter` 边界。
+- 不复制第三方插件的 UI、供应商业务动作或当前会话绑定；语音运行时不能替代 CodingNS 的全局协调、索引、意图和派发层。
 - 不做移动端专项适配（沿用 spec009 已有能力，不新增手势）。
 
 ## 为什么要限制索引范围

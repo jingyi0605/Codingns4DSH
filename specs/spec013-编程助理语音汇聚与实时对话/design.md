@@ -1,6 +1,6 @@
 # 设计文档 - 编程助理语音汇聚与实时对话
 
-状态：Draft（阶段 1 已据实测回写）
+状态：Draft（阶段 1 已据实测回写；2026-10-05 已接入按需加载的 `sherpa-onnx-node`）
 
 ## 1. 概述
 
@@ -8,7 +8,7 @@
 
 - 建立覆盖**受管工作区范围内、未归档会话**的索引，作为一切汇总与派发的事实来源。
 - 让用户**手动控制**助理能看哪些工作区，范围之外不读取。
-- 用 DSH 核心已有能力完成语音输入，不引入新的识别依赖。
+- 通过可替换的 `VoiceRuntimeAdapter` 接入按需加载的 `sherpa-onnx-node`，由 Sherpa 提供流式 ASR、可选 VAD 和本地模型能力；CodingNS 负责 Client 设备、Host 租约、事件归一化、范围索引和动作桥。
 - 复刻 `voiceAgent` 服务契约，使语音对话能力归属 CodingNS 自己，不被第三方插件的发布节奏与供应商绑定牵制。
 - 把「问进展」和「下指令」建模为两个已注册动作，意图路由只负责选择动作与抽取参数。
 - 派发复用 `sessionController.prompt`，不新建第二条投递通道。
@@ -16,14 +16,15 @@
 
 ### 1.2 覆盖需求
 
-- `requirements.md` 需求 1 至需求 9，以及全部非功能需求。
+- `requirements.md` 需求 1 至需求 10，以及全部非功能需求。
 
 ### 1.3 技术约束
 
 - **不修改 DSH 核心**。只消费其公开服务。
-- Host 侧可用的核心服务：`ctx.sessionQuery`、`ctx.sessionController`、`ctx.workspaceRegistry`、`ctx.llm`、`ctx.speechToText`、`ctx.settings`。
+- Host 侧可用的核心服务：`ctx.sessionQuery`、`ctx.sessionController`、`ctx.workspaceRegistry`、`ctx.llm`、`ctx.settings`。
 - Client 侧可用的核心服务：`ctx.sessions`（`list` / `scope` / `refresh` / `open`）、`ctx.workspaces`、`ctx.conversation.input`、`ctx.uiSession`。
-- 传输沿用现有 `cli/*` RPC 与 `llm/stream` 对话路由。
+- Client 通过适配器调用浏览器实时设备 API；连续音频由 CodingNS 同源 PCM 流路由承载，JSON RPC 只传租约、状态、转写和动作结果。
+- 浏览器 Client 是 Web 场景唯一的硬件入口：设备枚举与选择留在 Client，Host 只接收带租约的控制与状态事件；局域网访问必须满足浏览器安全上下文要求。
 - 语音能力按 spec005 的 capability 边界挂载，不做散落的版本判断。
 - **索引范围恒为「受管工作区 ∩ 未归档」**，任何绕过该范围的读取都是缺陷。
 - **`sessionQuery.filterSessions()` 无 archived 谓词**（已核实谓词只有 `id`/`cwd`/`created-at`/`parent`/`availability`），归档过滤必须在索引层自行完成。
@@ -33,20 +34,25 @@
 ### 2.1 系统结构
 
 ```text
-                     用户按住说话
+                     用户唤醒或插话
                           │
-                          ▼
-              ┌───────────────────────┐
-              │  语音输入（Client）    │
-              │  MediaRecorder → PCM   │
-              └───────────┬───────────┘
-                          │ 16kHz 单声道 WAV
-                          ▼
-              ┌───────────────────────┐
-              │  ctx.speechToText     │  ← DSH 核心，本地 SenseVoice
-              │  （Host）             │
-              └───────────┬───────────┘
-                          │ 转写文本
+             ┌────────────▼────────────┐
+             │ Client 设备管理与音频采集 │
+             │ MediaDevices/getUserMedia│
+             │ AudioWorklet/播放控制    │
+             └────────────┬────────────┘
+                          │ 同源 HTTPS PCM 数据面
+             ┌────────────▼────────────┐
+             │ Host 全局语音协调器      │
+             │ Host 级唯一租约/epoch      │
+             └────────────┬────────────┘
+                          │ VoiceRuntimeAdapter
+             ┌────────────▼────────────┐
+             │ sherpa-onnx-node        │
+             │ ASR · VAD · TTS          │
+             │ Host 模型运行时          │
+             └────────────┬────────────┘
+                          │ 事件/动作
                           ▼
               ┌───────────────────────┐
               │  意图路由（Host）      │  ← 本 Spec 新增
@@ -78,7 +84,7 @@
    └──────────────────┘
 ```
 
-三层职责必须分开：**语音层只负责音频进出，汇聚层只负责事实，意图层只负责路由**。任何一层都不应该知道另外两层的实现细节。
+全局语音协调器不保存目标 `sessionId`。三层职责必须分开：**语音运行时只负责音频进出，汇聚层只负责事实，意图层只负责路由**。派发器收到带索引代次的目标引用后，必须重新检查受管范围与归档状态。
 
 索引层额外承担两个**裁剪**职责：按受管工作区过滤、排除已归档会话。这两步在架构上属于汇聚层，不泄漏到意图层与语音层。
 
@@ -93,6 +99,11 @@
 | `assistant-intent.ts` | 纯逻辑：自然语言 → 意图 | 转写文本、索引 | `AssistantIntent` |
 | `voice-agent-service.ts` | 复刻的 `voiceAgent` 服务 | 供应商适配、动作注册表 | 会话句柄、事件流 |
 | `voice-agent-actions.ts` | 把汇总与派发注册为动作 | 上述模块 | 注册句柄 |
+| `global-voice-coordinator.ts` | Host/Profile 级全局语音会话、逻辑租约、epoch 和运行时事件 | `VoiceRuntimeAdapter`、索引快照 | 全局语音状态与动作输入 |
+| `sherpa-onnx-node`（按需外部包） | Host 侧流式 ASR、可选 VAD/TTS | 动态 import、模型环境配置 | partial/final/audio 事件 |
+| `shared/contracts/voice-runtime.ts` | CodingNS 运行时能力、事件、epoch 和租约边界 | 适配器事件 | 稳定内部契约 |
+| `sherpa-voice-adapter.ts`、`voice-capture.ts` | 对接浏览器设备、PCM 流、epoch 和句级播报 | `MediaDevices`、同源流路由、`speechSynthesis` | 全局输入、设备切换、barge-in |
+| `voice-output.ts` | 文本清理、按句播报队列和可中断降级 | 摘要文本、浏览器输出 | 播报状态 |
 
 纯逻辑模块（`assistant-summary`、`assistant-intent`）不依赖 DSH 服务，可以直接单元测试，这是本设计刻意的选择：**意图解析和摘要格式化是最容易出错、也最需要测试的部分，不应与 I/O 纠缠**。
 
@@ -407,14 +418,14 @@ interface VoiceAction {
 | --- | --- | --- |
 | 注册位置 | 浏览器 Client 侧 | **Host 侧**，使会话汇聚与派发同进程可达 |
 | 服务名 | `voiceAgent`，另有别名 `realtimeVoice` | `voiceAgent`（别名可选，见下） |
-| 供应商 | 绑定 GPT Realtime / 豆包 Duplex | 适配器接口，第一版接本地 STT + PTT |
-| 模型运行时 | 依赖 `dsh-multi-model-provider/realtimeModelRuntime` | **不依赖**，避免其版本漂移 |
+| 运行时 | 绑定外部实时供应商 | CodingNS 按需动态加载 `sherpa-onnx-node`；包或模型缺失时返回结构化不可用状态 |
+| 模型运行时 | 依赖 `dsh-multi-model-provider/realtimeModelRuntime` | Sherpa 模型由环境配置提供；CodingNS 业务模块只依赖 `VoiceRuntimeAdapter` |
 | 动作匹配 | `ownerId.startsWith(ownerPrefix)` | 一致 |
 | 超时语义 | 默认 300000ms，可按 action 覆盖 | 一致 |
 | 事件名 | 9 种归一化事件（含未在契约文件声明的 `interrupted`） | 一致，并在契约中**完整声明** |
 | 错误文案 | `'Unknown action: <name>'`、`'Invalid action arguments.'` | 一致（便于对照测试） |
 
-**注册位置从 Client 改到 Host 是本复刻最重要的决定。** 参考实现把服务放在浏览器侧，导致 Host 侧的会话大脑无法直接调用它，必须自建 host↔client RPC 桥。而汇聚与派发所需的 `sessionQuery`、`sessionController` 都在 Host 进程内，把语音服务也放 Host 侧可以省掉这座桥。
+**业务服务注册位置从 Client 改到 Host 是本复刻最重要的决定，但硬件采集仍然属于 Client。** 参考实现把语音服务和供应商运行时放在浏览器侧，导致 Host 侧的会话大脑无法直接调用它。新设计让 Host 持有全局协调、索引和动作桥，Client 通过 `VoiceRuntimeAdapter` 管理浏览器设备并把 PCM 送入同源流路由；控制、动作和状态通过 CodingNS RPC 连接两侧，不把 PCM 复制到 JSON 历史。
 
 **关于 `realtimeVoice` 别名**：参考实现在 `client/client.js:914` 注册了这个别名，但它**既不在 README 中、也不在 `spec/runtime-contract.json` 中**。本 Spec 不把该别名纳入契约（它是参考实现的临时兼容别名）；若后续需要兼容已有消费方，再单独评估。
 
@@ -448,14 +459,17 @@ interface VoiceAction {
 
 ### 6.4 capabilities 诚实原则
 
-`capabilities()` 必须返回**实际支持**的能力。第一版：
+`capabilities()` 必须返回**实际支持**的能力。Sherpa 运行时只有在包和模型成功加载后才报告实时能力；运行时不可用时只报告结构化不可用状态，不得调用 DSH `speechToText` 回退或把句级转写伪装成全双工。没有独立音频下行流时不得报告 `streamingAudio` 或 `streamingOutput` 为 true：
 
 ```ts
 {
   secureContext: <按环境>,
-  realtime: false,        // 第一版不是云端实时会话
+  realtime: <运行时适配器探测结果>,
   recognition: true,
   audioInput: true,
+  wakeWord: <运行时适配器探测结果>,
+  bargeIn: <运行时适配器探测结果>,
+  streamingAudio: <下行音频流与运行时适配器共同探测结果>,
   readAloud: <按 TTS 可用性>,
   voices: <按 TTS 可用性>,
 }
@@ -463,19 +477,62 @@ interface VoiceAction {
 
 `requirements.md` 需求 5 验收标准 2 明确禁止声称未实现的能力。
 
-## 7. 为什么第一版不做 barge-in
+## 7. 全双工运行时与成熟开源实现
 
-这是本设计最重要的取舍，理由是成本结构：
+全局语音能力通过 `VoiceRuntimeAdapter` 接入按需加载的 `sherpa-onnx-node`。浏览器 Client 负责设备、权限和 PCM，Host 负责 Sherpa ASR、租约、索引和动作桥；适配器不能读取当前页面会话，也不能直接调用派发器。
 
-`dsh-voice-mode` 有 **33 个测试文件，其中 11 个是音频正确性**（`aec`、`barge-in-manual`、`barge-in-detect`、`endpoint`、`endpoint-short`、`resample`、`tts-playback`、`segmenter`、`wakeword`、`wake-standby`、`wake-flow`）。这份清单本身就是成本估算：**开口打断的难点不是调用识别接口，而是回声消除、播放队列正确性和端点检测。**
+连续音频帧走独立的 HTTPS 流路由，不进入 JSON RPC；原生包通过动态 import 加载，供应商协议和设备硬件细节停留在运行时适配器边界。
 
-因此第一版：
+运行时必须满足以下行为：
 
-- 输入用按住说话（PTT），用户手势明确开始与结束，不需要端点检测。
-- 播报期间不监听麦克风，不需要回声消除。
-- 用户想打断时松开/按下按钮即可，交互语义清晰。
+- 音频输入由浏览器以带序号、可取消的流式 PCM 数据面传递，不能把连续对话降级成整段录音上传。控制面 RPC 与音频数据面必须分离，CodingNS 不能把每个音频帧复制进无界 JSON 历史。
+- 播放和输入使用同一全局会话 epoch。`interrupt()` 后，旧 epoch 的播放帧和转写事件必须丢弃。
+- 唤醒词只改变 standby/listening 状态。目标解析仍然依赖当前受管范围内的索引快照。
+- 播放中检测到用户开口时先停止播放，再开始新的语音轮次；这就是 barge-in。
+- Host/Profile 只允许一个麦克风租约；第二个标签页必须得到结构化的 busy 错误。租约必须绑定页面实例的唯一 owner ID，不能只记录 Host 进程。
+- 浏览器设备权限拒绝、设备断开或来源不是安全上下文时，能力报告必须诚实，并保留普通文字输入；不能把失败的设备采集显示成已启动，也不能调用 DSH `ctx.speechToText` 回退。
+- Client 负责监听 `devicechange` 和 MediaStreamTrack `ended`；适配器在设备断开或切换时递增 epoch，旧设备帧一律丢弃。
+- 本地 TTS 第一版按句生成并可中断播放；只有增加真正的下行音频流和流式 TTS 后才能把输出能力报告为 streaming。
 
-**这不影响需求 1 至需求 7 的任何验收标准**，因为那些需求关心的是「说得出、听得懂、派得准」，而不是「能不能抢话」。barge-in 作为后续增强，届时以 `dsh-voice-mode` 的音频处理作为参考（MIT 许可，可读）。
+### 7.1 按需安装与模型生命周期
+
+安装分为两个层级：
+
+```text
+核心 CodingNS 插件
+  └─ 可选 voice-runtime-sherpa 包
+       ├─ sherpa-onnx-node + 当前平台原生包
+       └─ 用户选择的 ASR / VAD / KWS / TTS 模型
+```
+
+基础 Profile 不安装语音运行时。启用语音时，Host 按 `CODINGNS4DSH_VOICE_RUNTIME_PACKAGE` 动态解析包并准备 ASR、VAD、TTS 模型；包或模型缺失时只报告结构化能力缺失并保留普通文字输入。模型缓存必须包含版本、平台、语言和 SHA-256，下载使用临时文件，校验通过后原子改名。
+
+### 7.2 音频数据面
+
+已有 `/codingns` JSON RPC 只负责 `start`、`stop`、`interrupt`、能力探测、状态事件和动作结果；连续 PCM 使用同源 HTTPS 流路由，不进入 CodingNS JSON RPC：
+
+```text
+浏览器 MediaDevices/AudioWorklet
+  ↓ POST /api/codingns/assistant/voice/stream（JSON 行首部 + PCM16）
+Host SherpaVoiceRuntime / GlobalVoiceCoordinator
+  ↑ NDJSON partial / final / state / error 事件
+assistant/voice/start|stop|interrupt 负责 Host 租约和控制
+```
+
+Sherpa 会话绑定 Host 租约和一个 epoch；断线、取消、generation 变化都必须释放识别流和播放队列。运行时不可用时返回结构化错误，不提供 `assistant/voice/transcribe` 回退。
+
+成熟开源插件的复用限定在音频运行时。其页面按钮、供应商业务动作和当前会话绑定均不得直接复制；事件通过适配器归一化后再进入 CodingNS。
+
+### 7.3 浏览器客户端设备管理
+
+设备管理必须位于浏览器 Client，而不是 Host：
+
+1. CodingNS Client 负责实时协议、PCM 管线和权限提示，在本地来源内枚举输入设备、保存选择，并把选中的 `deviceId` 注入 `getUserMedia()` 约束。设备 ID 不进入 Host RPC，也不复制供应商页面。
+2. 设备偏好只保存 `deviceId` 的来源内引用和可读标签快照。浏览器可能在权限撤销、来源变化或设备重连后更换标识，因此每次启动都要重新枚举并验证，不能把失效 ID 当作永久硬件 ID。
+3. CodingNS Client 负责 PCM 重采样、设备生命周期和流式发送；原始音频只进入独立 HTTPS 流，不进入 Host JSON RPC。
+4. 局域网 Web 页面必须由 HTTPS/WSS 或浏览器认可的安全来源提供。HTTP 局域网地址不能通过 CodingNS RPC、iframe 或 Host 代理绕过浏览器的安全上下文限制。
+5. 播放设备选择只对支持 `setSinkId()` 的本地音频元素生效。浏览器 `speechSynthesis` 使用浏览器/操作系统默认输出时，UI 必须显示“默认输出”，不得伪装成已选择指定设备。
+6. Client 断开、刷新、权限撤销、设备拔出和语音停用都必须停止 MediaStreamTrack、断开 AudioWorklet、取消音频流，随后由 CodingNS 释放 Host 租约。
 
 ## 8. 测试策略
 
@@ -493,7 +550,7 @@ interface VoiceAction {
 - 索引构建：多工作区、含远端 Host 条目、含无标题会话。
 - 摘要生成：单会话读取失败不影响整体；等待处理项来自审批/提问事件而非 `running`。
 - 派发：`queue` 与 `steer` 选择正确；目标不存在时结构化错误；目标不唯一时澄清；空任务被拒；范围外目标被拒。
-- 语音：转写为空不提交；麦克风被拒不影响键盘路径。
+- 语音：转写为空不提交；浏览器设备枚举、选择、权限拒绝、设备断开、设备切换、租约冲突和安全上下文失败均有测试；麦克风被拒不影响键盘路径。
 
 ### 8.3 性能验证
 
@@ -516,11 +573,18 @@ interface VoiceAction {
 
 | 风险 | 影响 | 应对 |
 | --- | --- | --- |
-| TTS 不在 DSH 核心 | 播报需自选实现 | 第一版可用浏览器 `speechSynthesis` 兜底；后续接本地 VITS/Kokoro |
+| Sherpa `OfflineTts` 不是流式 TTS | 无法直接提供 token 级下行音频 | 第一版使用浏览器 `speechSynthesis` 或按句生成的本地 VITS；只有独立下行流和流式 TTS 完成后才报告 streaming output |
+| Runtime 包含原生二进制和模型 | 安装体积与平台兼容性增加 | 核心插件不捆绑；按平台动态安装，模型按能力下载并校验缓存 |
+| Sherpa Node 包无 TypeScript 声明且以 CommonJS default 导出 | 静态导入会污染核心构建或在 ESM 下漏 API | 独立 Runtime 包提供类型外观，动态导入后使用 `module.default ?? module` |
+| Sherpa 包或模型不可用 | 不能满足全局实时输入 | 能力探测失败时返回结构化不可用状态，保留普通文字输入，不能调用 DSH `speechToText` 或伪造全双工能力 |
+| 当前测试机没有麦克风输入设备 | 无法完成真实采集和权限验收 | 浏览器 Stage0 设备测试；Host 侧 `node-cpal` 仅作可选后端 |
+| Web 页面设备权限受浏览器来源限制 | HTTP 局域网地址无法可靠调用 `getUserMedia` | 通过 HTTPS/WSS 提供 Web 页面和数据面；检测 `isSecureContext`，失败时给出可操作提示 |
+| 浏览器设备 ID 会因权限/来源/重连变化 | 保存的选择可能失效或误切到其他设备 | 每次启动重新枚举并验证，失效时要求用户重新选择；设备切换递增 epoch |
+| 浏览器 `speechSynthesis` 不支持指定输出设备 | 用户以为播放已切换到指定扬声器 | 只对 `HTMLMediaElement.setSinkId()` 能力报告选择结果，`speechSynthesis` 明确显示默认输出 |
 | 官方语音输入 bundle **可能未挂载** | 需求 4 的 `speechToText` 服务不可用 | 实测该 bundle 已在 profile 的 bundles 列表中，但 `cordis.patch.yml` 无对应条目 —— 任务 4.1 必须先确认或在 GUI 插件页启用 |
 | 远端 Host 会话内容读取路径待确认 | 远端会话可能只能报标题 | 先按「远端只报标题与状态」降级，验证后再扩展 |
 | 等待审批状态来源不统一 | 可能漏报待处理项 | 需求 7 验收标准 4 已强制要求独立来源；实测 `approval/asked` 事件存在 |
-| `dsh-realtime-voice` 无 `.d.ts` | 契约来自实现而非类型 | 已在调查文档中标注，复刻以 `runtime-contract.json` v8 + 代码为准 |
+| `sherpa-onnx-node` 无项目级静态依赖 | 原生 addon 与平台绑定 | 使用动态 import 和本地最小类型外观；不把原生包静态导入 CodingNS 业务构建 |
 | ~~`sessionQuery` 冷会话读取成本未知~~ | ~~摘要可能变慢~~ | ✅ **风险已关闭**：限定范围后实测 1.03 秒（见 §3.5） |
 | 归档过滤需自行实现 | 可能漏掉归档判定，导致读入 454 个已归档会话 | `sessionQuery.filterSessions()` 无 archived 谓词（已核实）；必须在索引层用 `workspaceRegistry.archivedSessionIds` 过滤，并有专项测试 |
 | 受管范围为空时行为未定义 | 用户可能看到"没有进展"的误导提示 | 需求 8 验收标准 7 已强制要求明确提示"尚未选择工作区" |
@@ -528,9 +592,12 @@ interface VoiceAction {
 
 ## 10. 开放问题
 
-1. 语音播报走浏览器 `speechSynthesis` 还是本地 VITS？前者零依赖但音色一般，后者需要模型下载。
+1. 第一版默认播报走浏览器 `speechSynthesis`，还是在用户显式选择后下载本地 VITS？两者都不改变 Host 侧汇聚和派发。
 2. 索引缓存放在 Host 内存还是持久化？限定范围后构建只需 1.03 秒，倾向于不持久化。
 3. 远端 Host 的会话内容能否通过 spec006 的通道读取，还是只能拿到摘要级信息？
 4. `readSurface()` 在最大会话（表层可能达数 MB）上是否需要二次截断？需实测后再定。
 5. 受管范围是否需要在远端 Host 上单独配置？当前设计假设范围是本机全局的。
 6. 归档会话是否需要"取消归档后自动重新纳入"之外的手动控制？当前设计是自动的。
+7. Sherpa 运行时使用独立同源 PCM 流路由；控制面 JSON RPC 不承载连续音频。
+8. 预置唤醒词的语言、音素文件和许可范围是什么？在未完成中文转音素前，不开放任意文本唤醒词。
+9. Web 端的 HTTPS 证书由现有网关、反向代理还是用户自签发？在真实局域网设备验收前必须确定证书信任和 WSS 地址，否则浏览器麦克风权限无法通过。

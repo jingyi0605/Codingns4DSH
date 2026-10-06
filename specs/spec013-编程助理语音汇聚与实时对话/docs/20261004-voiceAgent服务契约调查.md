@@ -367,6 +367,12 @@ dist-tags: { "latest": "0.1.0-rc.11", "next": "0.1.0-rc.19" }
 
 **对 spec013 的意义**：契约文件本身**不是完全可信的唯一来源**，必须以代码为准。这也是为什么本调查的每条结论都标注了文件与行号。
 
+补充核对 `dsh-realtime-voice@0.3.3` 发布包：`client/client.js:372` 和 `:561` 的
+`startConversation()` 会等待 `navigator.mediaDevices.getUserMedia()` 完成后才返回会话；
+`client/client.js:779` 的 `recognize({ captureAudio: true })` 会在创建识别句柄时立即发起
+采集请求。该包没有公开 `deviceId` 或 `setSinkId` 参数，因此 CodingNS 只能在 Client
+边界短暂注入 `getUserMedia` 约束，不能把设备标识上传到 Host，也不能宣称已控制输出设备。
+
 ## 11. 已核实 vs 未核实
 
 | 项 | 状态 |

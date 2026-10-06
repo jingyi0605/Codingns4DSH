@@ -21,12 +21,15 @@ CodingNS 的会话已经分布在多个工作区，还可能分布在多个 Host
 - **归档会话**：被用户归档的会话，由 `ctx.workspaceRegistry` 的 `archivedSessionIds` 标识。归档会话**只保留历史记录**，不进入索引、不参与摘要、不接收派发。
 - **会话索引**：把**受管工作区范围内、未归档**的会话整理成一份可查询的快照，包含标题、状态、所属工作区、最近活动时间和最近内容摘要。
 - **进展摘要**：基于会话索引和会话内容生成的、用自然语言描述的当前状态，供语音播报。
-- **voiceAgent 契约**：`dsh-realtime-voice` 暴露的全双工语音服务接口，包含 `startConversation`、`registerActions`、`capabilities` 和会话句柄。本 Spec 复刻其契约，不依赖其实现。
+- **voiceAgent 契约**：CodingNS 自有的语音服务接口，包含 `startConversation`、`registerActions`、`capabilities` 和会话句柄。Host 通过 `VoiceRuntimeAdapter` 按需接入 `sherpa-onnx-node`，保留自己的业务动作边界；历史 `dsh-realtime-voice` 只用于契约对照。
 - **动作（action）**：语音对话中，模型决定调用某个已注册的能力，例如「汇总进展」或「派发任务」。一次动作调用对应一次 `execute(args, control)`。
 - **派发**：把一条任务文本投递到指定会话，对应 DSH 的 `sessionController.prompt`。
 - **steer**：向一个**正在运行**的会话轮次注入新输入，使其立即改变方向；区别于 `queue`（排队等待当前轮次结束）。
-- **PTT**：按住说话（push-to-talk）。用户按住按钮期间录音，松开后提交。
-- **barge-in（开口打断）**：助理正在说话时，用户开口即打断播放。**本 Spec 第一版不做。**
+- **全局语音会话**：Host/Profile 级唯一语音上下文，不绑定当前打开的 DSH 会话；目标会话只在意图解析和派发阶段产生。
+- **常开麦克风**：语音运行时持续采集音频，由唤醒词和端点状态决定何时把语音交给助理。
+- **barge-in（开口打断）**：助理正在播放时，用户开口即可停止当前播放并进入新的语音轮次。
+- **VoiceRuntimeAdapter**：语音运行时适配边界，连接 Client 设备与 Profile 的成熟 ASR/VAD/TTS、流式音频和打断；不负责 CodingNS 的会话索引与派发。
+- **客户端音频设备管理**：运行在浏览器 Client 的设备枚举、用户选择、权限状态、设备断开与重新连接管理；设备标识只在所属浏览器来源内使用，不上传为 Host 的硬件标识。
 
 ## 范围说明
 
@@ -37,7 +40,8 @@ CodingNS 的会话已经分布在多个工作区，还可能分布在多个 Host
 - 会话状态汇总：运行中、已完成、失败、等待审批/回答。
 - 基于索引的进展摘要生成（自然语言，可播报）。
 - 归档与取消归档的实时响应：归档即退出索引，取消归档即重新纳入。
-- 基于 DSH 核心 `ctx.speechToText` 的语音转写接入，支持按住说话。
+- 基于按需加载的 `sherpa-onnx-node` 提供流式 ASR、可选 VAD 和本地模型能力；包或模型不可用时返回结构化不可用状态，不调用 DSH 核心 `ctx.speechToText` 回退。
+- 浏览器 Client 由 CodingNS 自己负责输入设备枚举、选择、权限提示、设备变化处理和采集状态；Host 不直接访问 Web 客户端的麦克风，只接收同源 HTTPS PCM 流。
 - 复刻 `voiceAgent` 服务契约：`capabilities`、`startConversation`、`registerActions`、会话句柄方法与事件流。
 - 意图路由：自然语言 → 汇总意图 / 派发意图。
 - 向指定会话投递消息，支持 `queue` 与 `steer` 两种模式。
@@ -50,11 +54,12 @@ CodingNS 的会话已经分布在多个工作区，还可能分布在多个 Host
 - **自动纳入工作区**。新增工作区默认不受管，必须由用户显式勾选。
 - **对已归档会话派发**。目标已归档时拒绝并说明，不自动取消归档。
 - **删除或修改归档会话的日志**。本 Spec 只读，不动历史数据。
-- **回声消除与开口打断**。第一版用按住说话，不做 barge-in。理由见 `design.md` §7。
+- **全双工音频运行时**不再属于 Out of Scope；必须通过可替换适配器接入按需加载的 Sherpa-ONNX，并完成契约和假运行时测试。真实设备验收另需明确授权的 Stage0 测试。
 - 修改 DSH 核心或任何 `@deepseek-ai/*` 包。
-- 依赖或 fork `dsh-realtime-voice`、`dsh-voice-mode`、`@biliye/dsh-voice-call` 等第三方语音插件。
-- 绑定特定云端语音供应商。
-- 唤醒词（wake word）。第一版明确由用户手势发起。
+- 把第三方插件的 UI、当前会话绑定或供应商方言直接复制进 CodingNS。语音运行时不能替代 CodingNS 的全局协调、索引、意图和派发边界。
+- 绑定特定云端语音供应商或在未告知用户的情况下上传音频。
+- 绕过浏览器的麦克风权限或在非安全上下文中强行访问设备。局域网 Web 访问必须由 HTTPS/WSS 等安全来源承载；浏览器不支持时只能给出明确提示并保留普通文字输入。
+- 以页面当前会话作为全局语音上下文，或让唤醒词直接决定派发目标。
 - 语音以外的输入方式改造（不改变现有键盘交互）。
 - 派发内容的语义审查：System 不判断「这个任务该不该派」，只负责准确投递和回报结果。
 
@@ -103,22 +108,27 @@ CodingNS 的会话已经分布在多个工作区，还可能分布在多个 Host
 4. WHEN 摘要长度超过播报预算 THEN System SHALL 按优先级压缩（等待处理 > 出错 > 运行中 > 已完成），而不是从头截断。
 5. WHEN 用户追问某个会话细节 THEN System SHALL 能基于同一份索引回答，不需要重新询问用户是哪个工作区。
 
-### 需求 4：语音输入可用
+### 需求 4：全双工语音输入与实时打断
 
-**用户故事：** 作为用户，我希望按住按钮说话就能把话变成文字，以便不用打字。
+**用户故事：** 作为用户，我希望不必盯着页面就能通过唤醒词进行持续语音对话，并在助理播报时随时插话；运行时不可用时能看到明确错误并继续使用文字输入。
 
 #### 验收标准
 
-1. WHEN 用户按住说话按钮 THEN System SHALL 采集麦克风音频并在松开后提交转写。
-2. WHEN 转写完成 THEN System SHALL 使用 DSH 核心 `ctx.speechToText` 服务，并复用已下载的本地 SenseVoice 模型，不需要用户额外配置密钥。
-3. WHEN 转写结果为空或明显无效 THEN System SHALL 不提交，并给出可读提示。
-4. WHEN 麦克风权限被拒绝或设备不可用 THEN System SHALL 给出明确错误，且不影响键盘输入等既有功能。
-5. WHEN 用户松开按钮 THEN System SHALL 立即停止录音，不得继续采集。
-6. WHEN 转写正在进行 THEN System SHALL 向用户显示进行中状态，不得静默等待。
+1. WHEN 全局语音会话启动 THEN System SHALL 在 Host/Profile 级取得唯一语音租约，并让当前 Client 采集音频；不得绑定当前页面会话。
+2. WHEN 采集到音频帧 THEN System SHALL 经 `VoiceRuntimeAdapter` 交给 Host Sherpa 运行时的流式 PCM 数据面，不得等到整段录音结束后才处理。
+3. WHEN 唤醒词被识别 THEN System SHALL 从 standby 进入 listening，并把后续语音交给语音对话；唤醒词本身不得选择派发目标。
+4. WHEN 助理正在播放且检测到用户开口 THEN System SHALL 停止当前播放、丢弃旧播放 epoch 的迟到帧，并立即开始新的语音轮次。
+5. WHEN 转写结果为空或明显无效 THEN System SHALL 不提交，并给出可读提示。
+6. WHEN 麦克风权限被拒绝或设备不可用 THEN System SHALL 给出明确错误，且不影响键盘输入等既有功能。
+7. WHEN 实时运行时不可用 THEN System SHALL 返回结构化不可用状态，不得调用 DSH 核心 `ctx.speechToText` 或其他语音转写回退，并保留普通文字输入。
+8. WHEN 语音会话结束或被打断 THEN System SHALL 释放麦克风租约和音频资源，不得继续采集。
+9. WHEN 本地 TTS 被启用 THEN System SHALL 按句生成可中断的音频片段，并在每个片段开始前检查播放 epoch；在没有真正流式 TTS 实现前，不得将 `streamingOutput` 报告为 true。
+10. WHEN Client 采集并传输 PCM 帧 THEN System SHALL 保留其可取消的持续流、序号、采样率、声道数和 epoch 语义；CodingNS 不得把每一帧复制成无界 JSON 历史记录。
+11. WHEN PCM 音频流断开或 Host generation 变化 THEN System SHALL 立即停止旧流、丢弃旧 epoch 的帧，并回到可恢复的 standby 或降级状态。
 
 ### 需求 5：复刻 voiceAgent 服务契约
 
-**用户故事：** 作为维护者，我希望 CodingNS 有一个和 `dsh-realtime-voice` 行为等价、但归属自己的语音服务，以便不依赖第三方插件的发布节奏和供应商绑定。
+**用户故事：** 作为维护者，我希望 CodingNS 有一个和参考实现契约兼容、但归属自己的语音服务，以便不依赖第三方插件的发布节奏和供应商绑定。
 
 #### 验收标准
 
@@ -132,9 +142,23 @@ CodingNS 的会话已经分布在多个工作区，还可能分布在多个 Host
 8. WHEN 动作被自动结算 THEN System SHALL 发出 `action-result` 事件，包含 `callId`、`name`、`ok`、`output`、`error`，且 `output` 做递归 4000 字符截断。
 9. WHEN 动作的触发 THEN System SHALL 由事件发出路径自动分发，不引入独立的 invoke API。
 10. WHEN `execute` 调用 `control.resolve(result)` THEN System SHALL 幂等结算并返回 boolean。
-11. WHEN 与 `dsh-realtime-voice` 的 `spec/runtime-contract.json` 对比 THEN System SHALL 在契约面（方法名、事件名、owner 匹配规则、超时语义、错误文案）上保持一致；实现细节与供应商适配**允许**不同。
+11. WHEN 对照 `dsh-realtime-voice` 的 `voiceAgent` 契约 THEN System SHALL 在控制面的方法名、事件名、owner 匹配规则、超时语义和错误文案上保持一致；默认语音数据面通过 `VoiceRuntimeAdapter` 接入按需加载的 `sherpa-onnx-node`，不复制供应商协议，也不接入 DSH `speechToText` 回退。
 12. WHEN 参考实现的契约文件与实际代码不一致（例如 `interrupted` 事件未在契约文件中声明）THEN System SHALL 以**代码行为**为准，并在调查文档中记录该差异。
 13. WHEN 复刻实现与参考实现在行为上有意不一致 THEN System SHALL 在 `docs/` 中记录差异及理由。
+
+### 需求 9：语音运行时与模型按需安装
+
+**用户故事：** 作为用户，我希望基础插件不因为语音功能变重，只有启用全局助理时才安装本地运行时和模型。
+
+#### 验收标准
+
+1. WHEN 用户未启用全局语音助理 THEN System SHALL 不启动语音会话或占用麦克风，核心插件仍可正常启动和使用键盘功能。
+2. WHEN 用户启用全局语音助理 THEN System SHALL 按需动态解析 `sherpa-onnx-node` 与当前平台匹配的原生包，不得在核心模块顶层静态导入原生包。
+3. WHEN 用户选择 Sherpa 语言或能力 THEN System SHALL 只下载对应的 ASR、VAD、KWS 或 TTS 模型，不得把所有模型打进插件包。
+4. WHEN 可选替代运行时模型下载完成 THEN System SHALL 校验文件摘要、写入版本化缓存，并在校验失败时删除不完整文件。
+5. WHEN Sherpa Runtime 或模型不可用 THEN System SHALL 返回结构化能力缺失状态，不得声称支持全双工能力，也不得影响键盘输入。
+6. WHEN 用户卸载或停用语音助理 THEN System SHALL 停止采集、释放运行时资源，并保留普通会话功能。
+7. WHEN Runtime 包升级 THEN System SHALL 使不兼容的模型缓存失效，不能静默复用旧模型。
 
 ### 需求 6：向指定会话派发
 
@@ -194,6 +218,24 @@ CodingNS 的会话已经分布在多个工作区，还可能分布在多个 Host
 8. WHEN 归档状态发生变化（归档或取消归档）THEN System SHALL 在无需重启的前提下更新索引。
 9. WHEN 索引读取会话 THEN System SHALL NOT 因读取而使已归档会话重新变为活跃状态。
 
+### 需求 10：浏览器客户端音频设备管理
+
+**用户故事：** 作为通过局域网 Web 页面使用 CodingNS 的用户，我希望语音助理使用我当前浏览器设备的麦克风，而不是要求运行 CodingNS 的 Host 主机拥有麦克风；我还希望能选择、切换并查看当前使用的设备。
+
+#### 验收标准
+
+1. WHEN 全局语音入口在浏览器 Client 中初始化 THEN System SHALL 由 CodingNS Client 通过 `navigator.mediaDevices.enumerateDevices()` 探测音频输入设备并保留设备状态；不得把 Host 的 `node-cpal` 设备列表当作 Web 客户端设备列表。
+2. WHEN 用户首次启用麦克风 THEN System SHALL 由 CodingNS Client 通过 `getUserMedia({ audio: ... })` 触发浏览器原生权限提示，并由全局入口明确说明正在使用麦克风；不得在用户未触发语音入口时静默申请权限。
+3. WHEN 用户选择输入设备 THEN System SHALL 由 CodingNS Client 将选择作为本地偏好保存并在下次启动尝试恢复；设备 ID 失效、权限变化或设备被拔出时必须重新枚举并报告状态，不得静默切换到未知设备。
+4. WHEN Client 建立采集流 THEN System SHALL 优先使用用户选择的 `deviceId`，通过 `AudioWorklet` 或等价实时 Web Audio 管线输出 16 kHz、单声道、PCM16 帧；CodingNS 适配器不得要求 Host 读取浏览器原始设备。
+5. WHEN 浏览器触发 `devicechange`、MediaStreamTrack `ended` 或权限状态变更 THEN System SHALL 由 CodingNS Client 停止旧采集流、刷新设备状态、清理旧音频 epoch，并报告可恢复状态；不得继续发送旧设备的 PCM。
+6. WHEN 同一 Host 存在多个浏览器标签页或多个 Client THEN System SHALL 通过每页面唯一 owner ID 取得全局租约，只允许一个 Client 持有麦克风采集租约；租约释放和页面关闭必须可恢复，设备 ID 和设备摘要不上传到 Host 之外的服务。
+7. WHEN 用户在局域网地址访问 Web 页面 THEN System SHALL 检查当前来源是否为安全上下文，并在不满足浏览器 `getUserMedia` 要求时明确提示用户改用 HTTPS/WSS 或受支持的安全来源；不得通过 RPC、iframe 或 Host 代理绕过该限制。
+8. WHEN 麦克风权限被拒绝、浏览器不支持 `getUserMedia`/`AudioWorklet`、设备不存在或设备被其他应用占用 THEN System SHALL 返回结构化设备错误，保留普通文字输入，不得让全局助理进入“已启动但无音频”的假状态。
+9. WHEN 用户切换输入设备 THEN System SHALL 由 CodingNS Client 在停止旧轨道后再创建新轨道，并让新的音频流使用新的 sequence/epoch；旧设备的迟到帧必须被丢弃。
+10. WHEN 用户选择播放设备且浏览器支持 `HTMLMediaElement.setSinkId()` THEN System SHALL 对本地音频元素应用该选择并报告是否成功；使用浏览器 `speechSynthesis` 时只能报告浏览器/操作系统默认输出设备，不得声称已控制输出设备。
+11. WHEN Client 断开、页面刷新或语音助理停用 THEN System SHALL 停止所有 MediaStreamTrack、断开 AudioWorklet、释放 Host 租约，并保留用户的设备偏好供下次恢复。
+
 ## 非功能需求
 
 ### 非功能需求 1：性能
@@ -215,7 +257,7 @@ CodingNS 的会话已经分布在多个工作区，还可能分布在多个 Host
 
 ### 非功能需求 3：可维护性
 
-1. WHEN 需要新增一种语音供应商 THEN System SHALL 通过实现供应商适配接口接入，不修改意图路由与会话汇聚代码。
+1. WHEN 需要新增一种语音运行时 THEN System SHALL 通过实现 `VoiceRuntimeAdapter` 接入，不修改意图路由与会话汇聚代码。
 2. WHEN 需要新增一种语音意图 THEN System SHALL 通过注册 action 接入，不修改语音服务本身。
 3. WHEN 排查问题 THEN System SHALL 记录：转写文本、识别到的意图、解析出的目标会话、投递模式与结果。
 4. WHEN 复刻实现与参考实现出现行为分歧 THEN System SHALL 以 `docs/` 中的契约记录为准，并在变更时同步更新该记录。
@@ -223,14 +265,15 @@ CodingNS 的会话已经分布在多个工作区，还可能分布在多个 Host
 ### 非功能需求 4：安全与隐私
 
 1. WHEN 采集麦克风音频 THEN System SHALL 明确告知用户正在录音，并在松开后立即停止。
-2. WHEN 使用本地识别 THEN System SHALL 保证音频不出本机；若使用云端识别，SHALL 在启用前明确告知。
+2. WHEN 使用本地识别 THEN System SHALL 保证音频不出本机；若使用云端识别，SHALL 在启用前明确告知。浏览器设备列表和 `deviceId` 不得上传给 Host 之外的服务。
 3. WHEN 读取会话内容用于摘要 THEN System SHALL 只读取生成摘要所需的有界内容，不建立额外的持久副本。
 4. WHEN 会话内容包含凭据或密钥 THEN System SHALL 在摘要与播报中避免原样输出敏感字段。
 5. WHEN 派发任务 THEN System SHALL 不因为语音渠道而绕过 DSH 已有的权限与审批边界。
 
 ## 成功定义
 
-- 用户在设置中勾选若干工作区后，按住说话、说「现在进展怎么样」，能听到一段覆盖**这些工作区中未归档会话**状态的语音摘要。
+- 用户在设置中勾选若干工作区后，唤醒全局语音助理并说「现在进展怎么样」，能听到一段覆盖**这些工作区中未归档会话**状态的流式语音摘要；助理播报时插话可以立即打断。
+- 用户通过局域网 HTTPS Web 页面启用语音后，能够在该浏览器中枚举、选择和切换麦克风；助理使用所选 Client 设备，不要求 Host 主机拥有麦克风。
 - 摘要不包含已归档会话，也不会把早已结束的工作报成当前进展。
 - 用户说「让 X 会话去做 Y」，任务被准确投递到目标会话，并回报目标与模式。
 - 目标不唯一、或目标不在受管范围内时，助理会反问或明确告知，而不是猜。
