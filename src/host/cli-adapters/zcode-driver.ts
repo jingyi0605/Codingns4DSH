@@ -12,11 +12,12 @@ import type {
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage } from './json-rpc-process.js'
-import { detectBinary, emptyCatalog, usageChunk } from './rpc-driver-utils.js'
+import { detectBinary, emptyCatalog } from './rpc-driver-utils.js'
 import { ZCODE_CATALOG } from './model-catalog.js'
 import { desktopCliRuntimeCommand, resolveZCodeDesktopRuntime, type CodingNsDesktopAppRuntime } from './desktop-app-runtime.js'
 import { promptWithAttachmentPaths, withAttachmentPaths } from './attachment-utils.js'
 import { readZcodeInteraction, zcodePermissionMode, type ZcodeInteraction } from './zcode-interactions.js'
+import { ZcodeTurnTelemetry } from './zcode-telemetry.js'
 
 export interface ZcodeCliDriverOptions {
   readonly binaries?: readonly string[]
@@ -44,6 +45,8 @@ interface ZcodeSession {
   acceptingInteractions: boolean
   readonly interactions: Map<string, { interaction: ZcodeInteraction; promise: Promise<unknown>; resolve: (value: unknown) => void; settled: boolean }>
   readonly emittedInteractions: Set<string>
+  lastUsage: unknown
+  supportsContextSnapshot: boolean
 }
 
 interface ZcodeTurnEventQueue {
@@ -182,6 +185,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       const catalog = catalogFromZcodeSnapshot(created)
       this.rememberDefaultEfforts(created)
       if (catalog.groups.length > 0) this.cachedCatalog = catalog
+      session.supportsContextSnapshot = isRecord(created) && isRecord(created.projection)
     }
     yield { type: 'session-binding', providerSessionId: session.acpSessionId }
 
@@ -192,6 +196,10 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     }, { signal: input.signal, killOnAbort: false })
     await this.applyModelSelection(session, input)
     await this.subscribeSessionEvents(session, input.signal)
+
+    const telemetry = new ZcodeTurnTelemetry(session.acpSessionId)
+    const baseline = input.providerSessionId !== undefined || session.lastUsage !== undefined
+      ? await readZcodeSessionData(session.rpc, 'session/usage', session.acpSessionId) ?? session.lastUsage : undefined
 
     const eventQueue = createZcodeTurnEventQueue()
     let rpcExited = false
@@ -236,6 +244,8 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
         if (next.done) break
         if (input.signal?.aborted) break
         if (sendError !== null && !input.signal?.aborted) throw sendError
+        const tool = telemetry.observe(next.value)
+        if (tool !== null) yield tool
         const chunk = zcodeMessageToChunk(next.value, session, input)
         if (chunk !== null) yield chunk
         terminalReason = readZcodeTerminalReason(next.value, session, input) ?? terminalReason
@@ -258,14 +268,19 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
           terminalReason = 'cancel'
         } else {
           // usage 查询属于正常终态的一部分，不能因为 idle 事件先到就跳过。
-          const usage = await readSessionUsage(session.rpc, session.acpSessionId)
+          const rawUsage = await readZcodeSessionData(session.rpc, 'session/usage', session.acpSessionId)
+          session.lastUsage = rawUsage
+          if (telemetry.needsContextSnapshot && session.supportsContextSnapshot) {
+            telemetry.readContextSnapshot(await readZcodeSessionData(session.rpc, 'session/read', session.acpSessionId))
+          }
+          const usage = telemetry.finish(rawUsage, baseline)
           if (usage !== null) yield usage
-          const appUsage = await readApplicationUsage(session.rpc)
-          if (appUsage !== null) yield appUsage
           terminalReason = 'stop'
         }
       }
       if (terminalReason === 'error') {
+        const usage = telemetry.finish(null, baseline)
+        if (usage !== null) yield usage
         // 失败详情已经在通知监听器中捕获；这里统一发唯一终态。
         yield { type: 'finish', reason: 'error', failure: zcodeFailure(session) }
       } else if (terminalReason !== null) {
@@ -377,6 +392,8 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       acceptingInteractions: false,
       interactions: new Map(),
       emittedInteractions: new Set(),
+      lastUsage: undefined,
+      supportsContextSnapshot: false,
     }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, session)
@@ -589,16 +606,17 @@ function zcodeFailure(session: ZcodeSession): { message: string; code?: string }
   return code ? { message, code } : { message }
 }
 
-async function readSessionUsage(rpc: JsonRpcProcess, sessionId: string): Promise<CodingNsAgentEvent | null> {
+async function readZcodeSessionData(rpc: JsonRpcProcess, method: 'session/usage' | 'session/read', sessionId: string): Promise<unknown> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 1_500)
+  timer.unref?.()
   try {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 3_000)
-    timer.unref?.()
-    const usage = await rpc.request('session/usage', { sessionId }, { signal: controller.signal })
-    clearTimeout(timer)
-    return usageChunk(usage)
+    return await rpc.request(method, { sessionId, ...(method === 'session/read' ? { messageLimit: 1 } : {}) },
+      { signal: controller.signal, killOnAbort: false })
   } catch {
     return null
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -889,23 +907,6 @@ function readJsonFile(path: string): Record<string, any> | null {
 
 function isMethodUnavailable(error: unknown): boolean {
   return error instanceof JsonRpcRequestError && (error.code === -32601 || error.code === -32001)
-}
-
-async function readApplicationUsage(rpc: JsonRpcProcess): Promise<CodingNsAgentEvent | null> {
-  for (const method of ['v4/usage/stats', 'usage/stats']) {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 500)
-    try {
-      const value = await rpc.request(method, { range: 'all' }, { signal: controller.signal, killOnAbort: false })
-      const summary = isRecord(value) && isRecord(value.summary) ? value.summary : value
-      return usageChunk(summary)
-    } catch {
-      // 旧版只提供 session/usage；继续尝试兼容方法。
-    } finally {
-      clearTimeout(timer)
-    }
-  }
-  return null
 }
 
 function createZcodeTurnEventQueue(): ZcodeTurnEventQueue {
