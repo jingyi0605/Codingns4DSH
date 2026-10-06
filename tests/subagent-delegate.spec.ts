@@ -311,11 +311,13 @@ test('Skill 目录直接注册到斜杠菜单，并按输入文本筛选后写�
   assert.match(source, /description: skill\.description/u)
   assert.match(source, /warm\(session\)/u)
   assert.match(source, /`\/\$\{name\} `/u)
-  // 原生 inputTriggers 优先；没有该服务时才允许旧版 commandUi 兜底，不能两个入口并存。
+  // 原生 inputTriggers 优先；只有目录成功返回后才撤销 commandUi 兜底，避免空目录时两条入口同时消失。
   assert.match(source, /ctx\.inject\(\['inputTriggers'\]/u)
   assert.match(source, /kind: 'popupSelect'/u)
   assert.match(source, /state\.disposeFallback\?\.\(\)/u)
-  assert.match(source, /state\.inputTriggerReady/u)
+  assert.match(source, /state\.catalogReady/u)
+  assert.match(source, /!catalog\.some\(\(skill\) => skill\.enabled\)/u)
+  assert.match(source, /onCatalogReady\(catalog\)/u)
 })
 
 test('任务留空时直接拒绝，不读取会话历史', async () => {
