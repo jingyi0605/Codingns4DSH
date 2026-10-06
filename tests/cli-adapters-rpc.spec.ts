@@ -1305,6 +1305,7 @@ test('Codex fileChange 使用工作区可写沙箱、编辑工具名和原生审
 
 test('Codex requestUserInput 转成公共问题事件并回传结构化回答', async () => {
   let answer: unknown = null
+  let threadStartParams: Record<string, unknown> | undefined
   const driver = new CodexAppServerDriver({
     binaries: ['fake-agent'],
     spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
@@ -1312,10 +1313,11 @@ test('Codex requestUserInput 转成公共问题事件并回传结构化回答', 
       const stdout = new PassThrough()
       const stderr = new PassThrough()
       const stdin = { write(data: string): void {
-        const request = JSON.parse(data) as { id?: number; method?: string; result?: unknown }
+        const request = JSON.parse(data) as { id?: number; method?: string; params?: Record<string, unknown>; result?: unknown }
         if (request.method === 'initialize') {
           stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
         } else if (request.method === 'thread/start') {
+          threadStartParams = request.params
           stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'thread-question' } } })}\n`)
         } else if (request.method === 'turn/start') {
           stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'turn-question' } } })}\n`)
@@ -1353,6 +1355,8 @@ test('Codex requestUserInput 转成公共问题事件并回传结构化回答', 
     questions: [{ id: 'framework', question: '选择框架', header: '框架', options: [{ label: 'React' }, { label: 'Vue' }] }],
   })
   assert.deepEqual(answer, { answers: { framework: { answers: ['React'] } } })
+  assert.match(String(threadStartParams?.developerInstructions), /request_user_input/u)
+  assert.match(String(threadStartParams?.developerInstructions), /request_user_input_async/u)
   driver.dispose()
 })
 
