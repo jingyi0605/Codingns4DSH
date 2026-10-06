@@ -109,6 +109,7 @@ export const CodingNsSettingsSchema = z.object({
     hiddenWorkspaceIds: z.array(z.string().min(1).max(512)).default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.hiddenWorkspaceIds),
     showSubscriptionUsage: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.showSubscriptionUsage),
     showQuickPhrases: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.showQuickPhrases),
+    showSkillQuickReference: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.showSkillQuickReference),
     rememberConversationRightbarRatio: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.rememberConversationRightbarRatio),
     quickPhrases: z.array(z.object({
       id: z.string().min(1).max(128),

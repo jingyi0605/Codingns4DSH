@@ -202,6 +202,8 @@ export interface WorkspaceSessionEnhancementSettings {
   showSubscriptionUsage: boolean
   /** 是否在输入工具区显示快捷会话入口。 */
   showQuickPhrases: boolean
+  /** 是否索引当前会话所选 Agent 的 Skill，并通过指令快速引用。 */
+  showSkillQuickReference: boolean
   /** 是否记忆对话窗口与右侧栏的宽度比例；具体比例保存在当前浏览器。 */
   rememberConversationRightbarRatio: boolean
   /** 插件本地保存的快捷会话条目。 */
@@ -521,6 +523,7 @@ export const DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS: WorkspaceSessionEnh
   hiddenWorkspaceIds: [],
   showSubscriptionUsage: true,
   showQuickPhrases: true,
+  showSkillQuickReference: true,
   rememberConversationRightbarRatio: false,
   quickPhrases: DEFAULT_QUICK_PHRASES.map((phrase) => ({ ...phrase })),
   quickPhrasesSeeded: true,

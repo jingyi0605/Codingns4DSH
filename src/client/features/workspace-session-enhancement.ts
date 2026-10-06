@@ -16,6 +16,8 @@ import { registerSubscriptionSlot } from '../subscription-slot.js'
 import { registerQuickPhraseSlot } from '../quick-phrase-slot.js'
 import { startWorkspaceSessionRightbarDom, type WorkspaceSessionRightbarDomController } from '../workspace-session-rightbar-dom.js'
 import { resolveCodingNsTranslator } from '../locale.js'
+import { registerSkillCommand } from '../skill-command.js'
+import { startSkillReferenceDom, type SkillReferenceDomController } from '../skill-reference-dom.js'
 
 /** descriptor 的 label/description 只是词典缺失时的兜底，取内置中文词典。 */
 const fallbackT = resolveCodingNsTranslator()
@@ -48,6 +50,8 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
     let adapterRefreshTimer: ReturnType<typeof globalThis.setInterval> | undefined
     let disposeSubscription: (() => void) | undefined
     let disposeQuickPhrases: (() => void) | undefined
+    let disposeSkillCommand: (() => void) | undefined
+    let skillReferenceDom: SkillReferenceDomController | undefined
     let lastSubscriptionUsageSignature: string | null = null
 
     const disableLogo = (): void => {
@@ -122,6 +126,20 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
       disposeQuickPhrases?.()
       disposeQuickPhrases = undefined
     }
+    const enableSkillQuickReference = (): void => {
+      if (skillReferenceDom === undefined) skillReferenceDom = startSkillReferenceDom()
+      if (disposeSkillCommand !== undefined || context.services.uiContext === undefined) return
+      disposeSkillCommand = registerSkillCommand(context.services.uiContext, {
+        rpc: context.services.rpc,
+        locale: context.services.locale,
+      })
+    }
+    const disableSkillQuickReference = (): void => {
+      disposeSkillCommand?.()
+      disposeSkillCommand = undefined
+      skillReferenceDom?.dispose()
+      skillReferenceDom = undefined
+    }
     const disposeAll = (): void => {
       disableLogo()
       archiveDom?.dispose()
@@ -130,6 +148,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
       disableRightbarMemory()
       disableSubscription()
       disableQuickPhrases()
+      disableSkillQuickReference()
     }
     const enableLogo = (): void => {
       if (logoDom !== undefined) return
@@ -177,6 +196,10 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
         ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS.showQuickPhrases
       if (showQuickPhrases) enableQuickPhrases()
       else disableQuickPhrases()
+      const showSkillQuickReference = workspaceSettings?.showSkillQuickReference
+        ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS.showSkillQuickReference
+      if (showSkillQuickReference) enableSkillQuickReference()
+      else disableSkillQuickReference()
       const rememberConversationRightbarRatio = workspaceSettings?.rememberConversationRightbarRatio
         ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS.rememberConversationRightbarRatio
       if (rememberConversationRightbarRatio) enableRightbarMemory()

@@ -5,6 +5,7 @@ import type { CodingNsLocale } from './locale.js'
 import { callCliRpc } from './cli-catalog.js'
 import { cliSessionSelectionRevision, waitForCliSessionSelection } from './cli-slots.js'
 import { debugInfo, debugWarn } from '../shared/debug.js'
+import { publishSkillCatalog } from './skill-reference-dom.js'
 
 const SKILL_COMMAND_NAME = 'skills'
 const SKILL_INPUT_SOURCE = 'codingns-skills'
@@ -39,8 +40,23 @@ interface SelectOption {
 interface SessionInputFace {
   readonly state: { getSnapshot(): { readonly draft: string; readonly draftRev?: number } }
   caretSpan?(): { readonly start: number; readonly end: number; readonly draftRev?: number }
+  insertReference?(reference: ReferenceInsert, span: TokenSpan): boolean
   setDraft?(text: string): void
   notify(level: 'info' | 'error', text: string): void
+}
+
+interface TokenSpan {
+  readonly start: number
+  readonly end: number
+  readonly draftRev: number
+}
+
+interface ReferenceInsert {
+  readonly source: string
+  readonly ref: string
+  readonly label: string
+  readonly appearance?: 'session' | 'file' | 'folder'
+  readonly clipboardText: string
 }
 
 interface SessionsService {
@@ -71,7 +87,11 @@ interface SkillInputTriggerSource {
   warm?(session: { readonly sessionId: string }): void
   lexicon?(session: { readonly sessionId: string }): readonly string[] | undefined
   subscribeLexicon?(session: { readonly sessionId: string }, listener: () => void): () => void
-  onPick(pick: { readonly candidate: { readonly name: string; readonly value?: string } }): { readonly text: string }
+  onPick(pick: { readonly candidate: { readonly name: string; readonly label?: string; readonly value?: string } }): { readonly insert: ReferenceInsert } | { readonly text: string }
+  readonly codec: {
+    clipboardText(ref: string): string
+    serialize(ref: string, signal: AbortSignal): Promise<string>
+  }
 }
 
 interface SkillInputCandidate {
@@ -166,7 +186,7 @@ function registerSkillCommandFallback(
         },
         onSelect(option, session) {
           const input = readSessionInput(ctx, session.sessionId)
-          if (input === undefined || input.setDraft === undefined) {
+          if (input === undefined || (input.setDraft === undefined && input.insertReference === undefined)) {
             input?.notify('error', t('skills.draftUnsupported'))
             return
           }
@@ -175,6 +195,18 @@ function registerSkillCommandFallback(
           const selection = input.caretSpan?.()
           const span = skillCommandSpan(draft, snapshot.draftRev ?? selection?.draftRev ?? 0, selection)
           const token = `/${option.id} `
+          const reference: ReferenceInsert = {
+            source: SKILL_INPUT_SOURCE,
+            ref: option.id,
+            label: option.label,
+            appearance: 'session',
+            clipboardText: `/${option.id}`,
+          }
+          if (span !== undefined && input.insertReference?.(reference, span) === true) return
+          if (input.setDraft === undefined) {
+            input.notify('error', t('skills.draftUnsupported'))
+            return
+          }
           if (span !== undefined) {
             input.setDraft(`${draft.slice(0, span.start)}${token}${draft.slice(span.end)}`)
             return
@@ -245,8 +277,25 @@ function registerSkillInputTriggerSource(
     },
     onPick(pick) {
       const name = pick.candidate.value?.trim() || pick.candidate.name.trim()
-      return { text: name === '' ? '' : `/${name} ` }
+      if (name === '') return { text: '' }
+      return {
+        insert: {
+          source: SKILL_INPUT_SOURCE,
+          ref: name,
+          label: pick.candidate.label?.trim() || name,
+          appearance: 'session',
+          clipboardText: `/${name}`,
+        },
+      }
     },
+    codec: {
+      clipboardText(ref) {
+        return `/${ref}`
+      },
+      async serialize(ref) {
+        return `/${ref}`
+      },
+    }
   }
   try {
     ctx.effect(() => inputTriggers.registerSource(source), 'codingns4dsh: skill slash source')
@@ -277,6 +326,7 @@ async function loadSkillCatalog(
     forceReload: true,
   }, signal)
   skillCatalogCache.set(sessionId, { selectionRevision, loadedAt: Date.now(), catalog })
+  publishSkillCatalog(sessionId, catalog)
   return catalog
 }
 

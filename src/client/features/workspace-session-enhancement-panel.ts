@@ -15,7 +15,7 @@ import {
 } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 
-type WorkspaceToggleField = 'showAdapterLogo' | 'showArchivedSessions' | 'showWorkspaceHiding' | 'showSubscriptionUsage' | 'showQuickPhrases' | 'rememberConversationRightbarRatio'
+type WorkspaceToggleField = 'showAdapterLogo' | 'showArchivedSessions' | 'showWorkspaceHiding' | 'showSubscriptionUsage' | 'showQuickPhrases' | 'showSkillQuickReference' | 'rememberConversationRightbarRatio'
 
 /** 用量查询设置入口的图标按钮：沿用共享按钮表面，只收成方形并居中图标。 */
 const usageSettingsIconButtonStyle: CSSProperties = {
@@ -82,6 +82,23 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, 
         checked: value.showAdapterLogo,
         disabled,
         onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('showAdapterLogo', event.currentTarget.checked),
+        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
+      }),
+    ),
+    createElement('label', {
+      style: dshSettingsListRowStyle,
+    },
+      createElement('span', { style: { minWidth: 0 } },
+        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.showSkillQuickReference')),
+        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.skillQuickReferenceDescription')),
+      ),
+      createElement('input', {
+        type: 'checkbox',
+        role: 'switch',
+        'aria-label': t('workspace.showSkillQuickReference'),
+        checked: value.showSkillQuickReference,
+        disabled,
+        onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('showSkillQuickReference', event.currentTarget.checked),
         style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
       }),
     ),
