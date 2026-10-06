@@ -79,10 +79,10 @@ const terminalCss = `
 .${terminalClass.toolAction}[aria-pressed="true"],.${terminalClass.toolModifierActive}{background:var(--dsw-alias-button-ghost-active-fill,var(--dsw-alias-interactive-bg-active));box-shadow:inset 0 0 0 .5px var(--dsw-alias-button-ghost-active-border,var(--dsw-alias-border-l3))}
 .${terminalClass.listRow}{box-sizing:border-box;display:flex;align-items:center;height:28px;min-width:110px;max-width:220px;border-radius:var(--dsw-radius-sm,6px);background:transparent;flex:none}
 .${terminalClass.listRowSelected}{background:var(--dsw-alias-interactive-bg-hover);box-shadow:var(--dsw-elevation-soft,0 1px 2px rgba(0,0,0,.08))}
-.${terminalClass.listSelect}{box-sizing:border-box;min-width:0;height:28px;min-height:28px;flex:1;text-align:left;color:inherit;border:0;background:transparent;cursor:pointer;padding:0 8px;display:flex;align-items:center;gap:5px;font:inherit;line-height:20px}
+.${terminalClass.listSelect}{box-sizing:border-box;min-width:0;height:28px;min-height:28px;flex:1;text-align:left;color:inherit;border:0;background:transparent;cursor:pointer;padding:0 8px;display:flex;align-items:center;gap:5px;font:inherit;font-size:12px;line-height:20px}
 .${terminalClass.listSelect} span{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
 .${terminalClass.listSelect} small{color:var(--dsw-alias-label-caption);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.${terminalClass.listInput}{box-sizing:border-box;min-width:0;height:24px;min-height:24px;flex:1;margin:0 4px;color:inherit;background:var(--dsw-alias-bg-base);border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm,6px);padding:0 6px;font:inherit;line-height:20px}
+.${terminalClass.listInput}{box-sizing:border-box;min-width:0;height:24px;min-height:24px;flex:1;margin:0 4px;color:inherit;background:var(--dsw-alias-bg-base);border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm,6px);padding:0 6px;font:inherit;font-size:12px;line-height:20px}
 .${terminalClass.listClose}{box-sizing:border-box;width:28px;height:28px;min-height:28px;padding:0;border:0;color:var(--dsw-alias-label-secondary);background:transparent;cursor:pointer;font:inherit;font-size:16px;line-height:20px;flex:none}
 .${terminalClass.listClose}:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
 .${terminalClass.content}{box-sizing:border-box;width:100%;min-width:0;min-height:0;display:flex;flex:1 1 auto;overflow:hidden}
