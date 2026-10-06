@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { SUPPORTED_DSH_VERSION } from '../data/build/dist/shared/index.js'
 
 const sourceScript = fileURLToPath(new URL('../profile/scripts/check-dsh-install.mjs', import.meta.url))
@@ -29,18 +29,6 @@ function makeSandbox() {
   return root
 }
 
-/** 造一个只有旧版 dsh 的目录，用来复现「PATH 旧 dsh 误判」场景。 */
-function makeStaleDsh(version) {
-  const dir = mkdtempSync(join(tmpdir(), 'codingns-stale-dsh-'))
-  const windows = process.platform === 'win32'
-  writeFileSync(
-    join(dir, windows ? 'dsh.cmd' : 'dsh'),
-    windows ? `@echo ${version}\r\n` : `#!/bin/sh\necho ${version}\n`,
-    { mode: 0o755 },
-  )
-  return dir
-}
-
 /** 造一个只含 @deepseek-ai/dsh 清单的假 Runtime 根，供 process.resourcesPath 探测。 */
 function makeFakeResources(version) {
   const resources = mkdtempSync(join(tmpdir(), 'codingns-resources-'))
@@ -50,20 +38,35 @@ function makeFakeResources(version) {
   return resources
 }
 
-/** 无 DSH_* 环境、PATH 只含给定旧 dsh 的干净子进程环境。 */
-function scrubbedEnv(staleDshDir) {
-  const env = { ...process.env, DSH_RUNTIME_VERSION: undefined, DSH_VERSION: undefined, DSH_HOME: undefined }
-  if (staleDshDir !== undefined) {
-    env.PATH = `${staleDshDir}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}`
-  }
-  return env
+/** 清除运行时版本来源和宿主 PATH，不能探测开发机上的真实 dsh。 */
+function scrubbedEnv() {
+  return { ...process.env, DSH_RUNTIME_VERSION: undefined, DSH_VERSION: undefined, DSH_HOME: undefined, PATH: '' }
 }
 
-function runSandbox(sandbox, { env, resourcesPath }) {
+/**
+ * 仅在隔离子进程中模拟版本命令的返回值，脚本的版本解析和安装判定仍真实执行。
+ * 全量测试并发时，临时可执行文件的首次启动可能超过生产探测的 2 秒上限；
+ * 测试不应因此从「旧版本提示」随机变成「未检测到运行时」，也不应放宽生产超时。
+ */
+function runSandbox(sandbox, { env, resourcesPath, commandResult }) {
   const script = join(sandbox, 'scripts', 'check-dsh-install.mjs')
-  if (resourcesPath === undefined) return spawnSync(process.execPath, [script], { encoding: 'utf8', env })
+  if (resourcesPath === undefined && commandResult === undefined) return spawnSync(process.execPath, [script], { encoding: 'utf8', env })
   const runner = join(sandbox, 'runner.mjs')
-  writeFileSync(runner, `process.resourcesPath = ${JSON.stringify(resourcesPath)}\nawait import(${JSON.stringify(script)})\n`)
+  const setup = []
+  if (resourcesPath !== undefined) setup.push(`process.resourcesPath = ${JSON.stringify(resourcesPath)}`)
+  if (commandResult !== undefined) setup.push(`
+import assert from 'node:assert/strict'
+import childProcess from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+childProcess.spawnSync = (command, args) => {
+  assert.equal(command, process.platform === 'win32' ? 'dsh.cmd' : 'dsh')
+  assert.deepEqual(args, ['--version'])
+  return ${JSON.stringify(commandResult)}
+}
+syncBuiltinESMExports()
+`)
+  setup.push(`await import(${JSON.stringify(pathToFileURL(script).href)})`)
+  writeFileSync(runner, `${setup.join('\n')}\n`)
   return spawnSync(process.execPath, [runner], { encoding: 'utf8', env })
 }
 
@@ -100,20 +103,51 @@ test('Profile 安装检查仍拒绝兼容范围下界之前的 DSH', () => {
 
 test('PATH 上的旧 dsh 不再阻断安装，只作为提示', () => {
   const sandbox = makeSandbox()
-  const stale = makeStaleDsh('0.1.7-rc.2')
-  cleanups.push(sandbox, stale)
-  const result = runSandbox(sandbox, { env: scrubbedEnv(stale) })
+  cleanups.push(sandbox)
+  const result = runSandbox(sandbox, {
+    env: scrubbedEnv(),
+    commandResult: { status: 0, stdout: '0.1.7-rc.2\n', stderr: '' },
+  })
   assert.equal(result.status, 0, `PATH 旧 dsh 不应阻断安装：\n${result.stdout}\n${result.stderr}`)
   assert.match(result.stderr, /PATH 上的 dsh 0\.1\.7-rc\.2 不在/u)
   assert.match(result.stderr, /已跳过阻断/u)
 })
 
+test('PATH 上的兼容 dsh 仍只作为提示，不能证明当前运行时兼容', () => {
+  const sandbox = makeSandbox()
+  cleanups.push(sandbox)
+  const result = runSandbox(sandbox, {
+    env: scrubbedEnv(),
+    commandResult: { status: 0, stdout: `${SUPPORTED_DSH_VERSION}\n`, stderr: '' },
+  })
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  assert.match(result.stderr, new RegExp(`PATH 上的 dsh ${escapeRegExp(SUPPORTED_DSH_VERSION)} 在`, 'u'))
+  assert.match(result.stderr, /已跳过阻断/u)
+  assert.doesNotMatch(result.stdout, /安装期版本检查通过/u)
+})
+
+test('PATH 版本探测超时不阻断安装，保留运行期再次校验提示', () => {
+  const sandbox = makeSandbox()
+  cleanups.push(sandbox)
+  const result = runSandbox(sandbox, {
+    env: scrubbedEnv(),
+    commandResult: { status: null, stdout: '', stderr: '', error: { code: 'ETIMEDOUT' } },
+  })
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  assert.match(result.stderr, /未检测到当前 DSH 运行时/u)
+  assert.match(result.stderr, /运行期仍会再次校验/u)
+  assert.doesNotMatch(result.stdout, /安装期版本检查通过/u)
+})
+
 test('Runtime 根探测优先于 PATH，并识别真实 DSH 版本', () => {
   const sandbox = makeSandbox()
-  const stale = makeStaleDsh('0.1.7-rc.2')
   const resources = makeFakeResources(SUPPORTED_DSH_VERSION)
-  cleanups.push(sandbox, stale, resources)
-  const result = runSandbox(sandbox, { env: scrubbedEnv(stale), resourcesPath: resources })
+  cleanups.push(sandbox, resources)
+  const result = runSandbox(sandbox, {
+    env: scrubbedEnv(),
+    resourcesPath: resources,
+    commandResult: { status: 0, stdout: '0.1.7-rc.2\n', stderr: '' },
+  })
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
   assert.match(result.stdout, new RegExp(`DSH ${escapeRegExp(SUPPORTED_DSH_VERSION)}（来源 runtime）`, 'u'))
   assert.doesNotMatch(result.stderr, /已跳过阻断/u)
