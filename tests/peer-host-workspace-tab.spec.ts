@@ -50,6 +50,7 @@ function fakeApi(overrides: Partial<Record<string, unknown>> = {}) {
     api: {
       async list() { calls.push('list'); return overrides.list ?? [] },
       async workspaceCandidates(hostId: string) { calls.push(`candidates:${hostId}`); return overrides.candidates ?? [] },
+      async aggregate() { calls.push('aggregate'); return overrides.aggregate ?? [] },
       async setWorkspaceVisibility(hostId: string, workspaceId: string, visible: boolean) {
         calls.push(`visibility:${hostId}:${workspaceId}:${visible}`)
       },
@@ -121,6 +122,8 @@ test('标签页使用注入样式表与 DSH 主题令牌，不依赖内联样式
   assert.match(css, /:hover/u)
   assert.match(css, /:focus-visible/u)
   assert.match(css, /:disabled/u)
+  // 表格自身带横向滚动，Flex 默认会把其最小高度降为零；候选较多时必须禁止压缩。
+  assert.match(css, /-tableWrap\{flex:none;overflow-x:auto/u)
 
   // 注入节点用类名而不是内联样式。
   const tabs = dom.dialog.querySelectorAll(`[${PEER_HOST_WORKSPACE_TAB_ATTRIBUTE}]`)[0]
@@ -136,6 +139,22 @@ test('标签页使用注入样式表与 DSH 主题令牌，不依赖内联样式
   controller.dispose()
   // 停用后样式表必须移除，不在页面里留垃圾。
   assert.equal(dom.document.querySelectorAll('style').some((node) => node.getAttribute('data-plugin-css') !== null), false)
+})
+
+test('已有同名样式节点时替换旧布局规则，不重复插入样式表', () => {
+  const dom = fakeDialogDocument()
+  const staleStyle = dom.document.createElement('style')
+  staleStyle.setAttribute('data-plugin-css', 'codingns4dsh-peer-host-workspace-tab-style')
+  staleStyle.textContent = '.codingns4dsh-peer-host-tableWrap{overflow-x:auto}'
+  dom.document.head.appendChild(staleStyle)
+  const { api } = fakeApi()
+  const controller = startPeerHostWorkspaceTab({ api, document: dom.document as never, MutationObserver: undefined })
+
+  const styles = dom.document.querySelectorAll('style').filter((node) => node.getAttribute('data-plugin-css') !== null)
+  assert.equal(styles.length, 1)
+  assert.equal(styles[0], staleStyle)
+  assert.match(staleStyle.textContent, /-tableWrap\{flex:none;overflow-x:auto/u)
+  controller.dispose()
 })
 
 test('Host 芯片通过自定义属性传递配色，并单独展示状态徽标', async () => {
@@ -175,7 +194,10 @@ test('切到“远程 HOST”才读取 Host 与候选工作区，并可登记可
   const dom = fakeDialogDocument()
   const { api, calls } = fakeApi({
     list: [readyRecord()],
-    candidates: [{ workspaceId: 'workspace-1', displayName: '项目 A', path: '/Users/dev/project-a', sessionCount: 2 }],
+    candidates: [
+      { workspaceId: 'workspace-1', displayName: '项目 A', path: '/Users/dev/project-a', sessionCount: 2 },
+      { workspaceId: 'workspace-2', displayName: '项目 B', path: '/Users/dev/project-b', sessionCount: 0 },
+    ],
   })
   const added: string[] = []
   const controller = startPeerHostWorkspaceTab({
@@ -193,17 +215,120 @@ test('切到“远程 HOST”才读取 Host 与候选工作区，并可登记可
   const hostButton = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-host]')[0]
   assert.equal(hostButton?.textContent, '开发机')
   await click(hostButton as FakeElement)
-  assert.deepEqual(calls, ['list', 'candidates:peer-1'])
+  assert.deepEqual(calls, ['list', 'candidates:peer-1', 'aggregate'])
 
   const candidate = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-candidate]')[0]
   assert.equal(candidate?.getAttribute('data-codingns-peer-host-tab-candidate'), 'workspace-1')
   await click(candidate as FakeElement)
   assert.equal(calls.at(-1), 'visibility:peer-1:workspace-1:true')
   assert.deepEqual(added, ['peer-1:workspace-1'])
+  // 登记接口返回后立即进入“已添加”表格，不等待下一轮 aggregate。
+  assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]').length, 1)
 
   // 面板上给出成功反馈，用户知道关闭后会发生什么。
   const status = dom.dialog.querySelectorAll('[role="status"]').map((node) => node.textContent)
   assert.ok(status.some((text) => text?.includes('已添加')))
+  controller.dispose()
+})
+
+test('聚合暂时缺少目标 Host 时，仍按可见 ID 回退显示已添加工作区', async () => {
+  const dom = fakeDialogDocument()
+  const { api } = fakeApi({
+    list: [{ ...readyRecord(), visibleWorkspaceIds: ['workspace-1'] }],
+    candidates: [
+      { workspaceId: 'workspace-1', displayName: '项目 A', path: '/Users/dev/project-a', sessionCount: 2 },
+      { workspaceId: 'workspace-2', displayName: '项目 B', path: '/Users/dev/project-b', sessionCount: 0 },
+    ],
+    // 模拟 aggregate 因认证/网络抖动没有返回该 Host；不能因此把已添加行隐藏。
+    aggregate: [{ hostId: 'local-host', targetHostId: null, hostLabel: '当前 Host', availability: 'ready', workspaces: [] }],
+  })
+  const controller = startPeerHostWorkspaceTab({ api, document: dom.document as never, MutationObserver: undefined })
+  const tabs = dom.dialog.querySelectorAll(`[${PEER_HOST_WORKSPACE_TAB_ATTRIBUTE}]`)[0]
+  await click(tabs?.children[1] as FakeElement)
+  await click(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-host]')[0] as FakeElement)
+
+  const tableRows = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]')
+  assert.equal(tableRows.length, 1)
+  assert.match(tableRows[0]?.textContent ?? '', /项目 A/u)
+  await click(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-candidate]')[0] as FakeElement)
+  assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]').length, 2)
+  controller.dispose()
+})
+
+test('候选工作区暂时为空时，仍显示聚合返回的已添加工作区表格', async () => {
+  const dom = fakeDialogDocument()
+  const { api } = fakeApi({
+    list: [readyRecord()],
+    candidates: [],
+    aggregate: [{
+      hostId: 'local-host',
+      targetHostId: 'peer-1',
+      hostLabel: '开发机',
+      availability: 'ready',
+      workspaces: [{
+        key: 'peer-1:workspace-1',
+        hostId: 'local-host',
+        targetHostId: 'peer-1',
+        workspaceId: 'workspace-1',
+        displayName: '项目 A',
+        path: '/Users/dev/project-a',
+        hostLabel: '开发机',
+        availability: 'ready',
+        sessions: [],
+      }],
+    }],
+  })
+  const controller = startPeerHostWorkspaceTab({ api, document: dom.document as never, MutationObserver: undefined })
+  const tabs = dom.dialog.querySelectorAll(`[${PEER_HOST_WORKSPACE_TAB_ATTRIBUTE}]`)[0]
+  await click(tabs?.children[1] as FakeElement)
+  await click(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-host]')[0] as FakeElement)
+
+  assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]').length, 1)
+  controller.dispose()
+})
+
+test('远程 HOST 将已添加工作区按名称、会话数、Host 和路径显示为表格', async () => {
+  const dom = fakeDialogDocument()
+  const { api } = fakeApi({
+    // 模拟旧记录中的 ID 形态与当前候选 ID 不一致；表格应以聚合摘要为准。
+    list: [{ ...readyRecord(), visibleWorkspaceIds: ['legacy-workspace-id'] }],
+    candidates: [
+      { workspaceId: 'workspace-1', displayName: '项目 A', path: '/Users/dev/project-a', sessionCount: 2 },
+      { workspaceId: 'workspace-2', displayName: '项目 B', path: '/Users/dev/project-b', sessionCount: 0 },
+    ],
+    aggregate: [{
+      hostId: 'local-host',
+      targetHostId: 'peer-1',
+      hostLabel: '开发机',
+      availability: 'ready',
+      workspaces: [{
+        key: 'peer-1:workspace-1',
+        hostId: 'local-host',
+        targetHostId: 'peer-1',
+        workspaceId: 'workspace-1',
+        displayName: '项目 A',
+        path: '/Users/dev/project-a',
+        hostLabel: '开发机',
+        availability: 'ready',
+        sessions: [
+          { sessionId: 'session-1', title: '会话 1', status: 'idle', updatedAt: 1, blank: false },
+          { sessionId: 'session-2', title: '会话 2', status: 'idle', updatedAt: 2, blank: false },
+        ],
+      }],
+    }],
+  })
+  const controller = startPeerHostWorkspaceTab({ api, document: dom.document as never, MutationObserver: undefined })
+  const tabs = dom.dialog.querySelectorAll(`[${PEER_HOST_WORKSPACE_TAB_ATTRIBUTE}]`)[0]
+  await click(tabs?.children[1] as FakeElement)
+  await click(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-host]')[0] as FakeElement)
+
+  const tableRows = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]')
+  assert.equal(tableRows.length, 1)
+  assert.match(tableRows[0]?.textContent ?? '', /项目 A2 个会话开发机\/Users\/dev\/project-a/u)
+  // 未添加的候选仍保留在下方，用户可以继续登记。
+  const candidates = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-candidate]')
+  assert.equal(candidates.length, 1)
+  assert.equal(candidates[0]?.getAttribute('data-codingns-peer-host-tab-candidate'), 'workspace-2')
   controller.dispose()
 })
 
@@ -438,6 +563,7 @@ function matches(element: FakeElement, selector: string): boolean {
   if (selector === '[role="status"]') return element.getAttribute('role') === 'status'
   if (selector === '[data-codingns-peer-host-tab-host]') return element.getAttribute('data-codingns-peer-host-tab-host') !== null
   if (selector === '[data-codingns-peer-host-tab-candidate]') return element.getAttribute('data-codingns-peer-host-tab-candidate') !== null
+  if (selector === '[data-codingns-peer-host-tab-added-workspace]') return element.getAttribute('data-codingns-peer-host-tab-added-workspace') !== null
   const classMatch = /^\[class\*="([^"]+)"\]$/u.exec(selector)
   if (classMatch !== null) return (element.getAttribute('class') ?? '').includes(classMatch[1]!)
   return false
