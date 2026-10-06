@@ -2,9 +2,12 @@
 
 这是独立的 Codingns4DSH Profile，插件版本为 `0.2.1-beta.1`，仅兼容并验证 DSH `0.2.1-alpha.1`。
 
-Profile 只选择 `codingns4dsh` Bundle。`cordis.patch.yml` 保持 `[]`，因为启动期
-Transport 必须由外部 pre-Cordis 启动胶水在 DSH Client/Cordis 创建前登记，不能由
-普通动态插件覆盖默认 `connection`。
+Profile 选择 `dsh-multi-model-provider` 和 `codingns4dsh` Bundle。
+全局语音助理由 CodingNS 自己负责 Host 租约、浏览器设备、PCM 数据面、摘要和动作闭环，
+通过插件的可选依赖按需加载 `sherpa-onnx-node@1.13.8`。语音模型仍由用户单独配置，
+不进入插件包，也不会在没有模型时伪装成可用能力。
+`cordis.patch.yml` 仍只登记 Bundle 级补丁；启动期 Transport 由外部 pre-Cordis
+启动胶水在 DSH Client/Cordis 创建前登记。
 
 发布后，在 DSH 的 Profile 中安装精确版本的插件 Bundle：
 
