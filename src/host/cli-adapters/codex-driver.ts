@@ -633,7 +633,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     }
   }
 
-  /** 只为显式 `$skill-name` 预取目录；没有显式调用时保留 Codex 自己的隐式匹配。 */
+  /** 只为显式 `/skill-name` 或 `$skill-name` 预取目录；没有显式调用时保留 Codex 自己的隐式匹配。 */
   private async prepareSkillInputs(session: CodexSession, input: CodingNsCliTurnInput): Promise<void> {
     const names = codexSkillNames(input.prompt)
     if (names.length === 0) return
@@ -643,7 +643,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       try {
         await this.refreshSkillCatalog(session, cwd, false, input.signal)
       } catch (error) {
-        // 旧版 app-server 可能还没有 skills/list；保留 `$name` 文本，让 Codex
+        // 旧版 app-server 可能还没有 skills/list；保留原始 Skill 文本，让 Codex
         // 继续走它自己的解析路径，而不是把一次能力探测失败变成整轮失败。
         if (!isMethodNotFound(error)) throw error
         return
@@ -1681,11 +1681,11 @@ function codexTurnStartParams(input: CodingNsCliTurnInput, threadId: string, ski
   }
 }
 
-/** 从用户文本提取 Codex 的显式 Skill mention，保持顺序并去重。 */
+/** 从用户文本提取显式 Skill mention，兼容 DSH 原生 `/name` 与旧版 `$name` 写法。 */
 function codexSkillNames(prompt: string): readonly string[] {
   const names: string[] = []
   const seen = new Set<string>()
-  for (const match of prompt.matchAll(/(?:^|\s)\$([A-Za-z0-9][A-Za-z0-9._-]*)/gu)) {
+  for (const match of prompt.matchAll(/(?:^|\s)(?:\$|\/)([A-Za-z0-9][A-Za-z0-9._-]*)(?=\s|$)/gu)) {
     const name = match[1]?.trim()
     if (name === undefined || name === '' || seen.has(name)) continue
     seen.add(name)
