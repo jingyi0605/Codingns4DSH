@@ -114,7 +114,8 @@ export class PiAgentDriver implements CodingNsCliDriver {
       yield { type: 'session-binding', providerSessionId: session.providerSessionId }
       const images = await buildPiImages(input.attachments ?? [])
       const stream = streamPiPrompt(rpc, {
-        message: promptWithAttachmentPaths(input.prompt, input.attachments ?? []),
+        // 图片已通过原生 images 字段传递，不再引导模型把无后缀图片当普通文件读取。
+        message: promptWithAttachmentPaths(input.prompt, (input.attachments ?? []).filter((attachment) => attachment.kind === 'file')),
         ...(images.length > 0 ? { images } : {}),
       }, input.signal)
       let finishResult: { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }

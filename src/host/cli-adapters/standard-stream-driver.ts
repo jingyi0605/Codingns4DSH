@@ -12,6 +12,7 @@ import { usageChunk } from './rpc-driver-utils.js'
 import { reasoningText, textContent } from './reasoning-content.js'
 import { commandEnvironment, resolveCommandPath, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
+import { withAttachmentPaths } from './attachment-utils.js'
 
 const WINDOWS = process.platform === 'win32'
 
@@ -104,6 +105,10 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
+    yield* withAttachmentPaths(input, (prepared) => this.executePreparedTurn(prepared))
+  }
+
+  private async *executePreparedTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) throw new Error(`${this.descriptor.name} 未安装`)
     let child: CodingNsChildProcess

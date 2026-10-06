@@ -1,15 +1,14 @@
-import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
-import { basename, dirname, extname, join, resolve } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliAttachment, CodingNsCliModelCatalog, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import { homedir } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
+import type { CodingNsAgentEvent, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
 import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel } from './model-catalog.js'
 import { discoverClaudeModelCatalog } from './claude-model-options.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
-import { promptWithAttachmentPaths } from './attachment-utils.js'
+import { buildClaudeUserContent } from './attachment-utils.js'
 import { WINDOWS, commandEnvironment, type CodingNsChildProcess } from './process-utils.js'
 import { claudeBridgeArgs } from '../cli-bridge/injections.js'
 import { readAgentQuestions } from './interaction-events.js'
@@ -73,6 +72,7 @@ interface ClaudeQuestionBinding {
 interface ClaudeInteractionState {
   write: ((data: string) => void) | undefined
   readonly pending: Map<string, ClaudePendingInteraction>
+  readonly userContent: readonly Record<string, unknown>[]
 }
 
 export class ClaudeCodeDriver extends StandardStreamDriver {
@@ -119,11 +119,10 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
       request_id: `initialize:${input.sessionId}`,
       request: { subtype: 'initialize' },
     })}\n`)
-    const prompt = promptWithAttachmentPaths(input.prompt, input.attachments ?? [])
     state.write(`${JSON.stringify({
       type: 'user',
       session_id: '',
-      message: { role: 'user', content: [{ type: 'text', text: prompt }] },
+      message: { role: 'user', content: state.userContent },
       parent_tool_use_id: null,
     })}\n`)
   }
@@ -227,24 +226,20 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   }
 
   /**
-   * Claude Code 的 `@路径` 图片解析器只按路径后缀判断格式。DSH 附件对象使用
-   * 内容寻址路径，通常没有扩展名（例如 `.../objects/15/<sha256>`），即使文件
-   * 本身是 PNG 也会被 CLI 判定为 `Unsupported image format: .`。
-   *
-   * 发送前为这类图片建立带受支持后缀的临时副本，回合结束后立即清理。只改写
-   * Claude 的输入路径，不改变 DSH 附件存储，也不把临时路径写入会话历史。
+   * 图片通过原生 stdin 内容块发送，避免 @路径解析器按后缀拒绝无扩展名图片。
+   * 同一通路支持 PNG/JPEG/GIF/WebP；文件附件继续开放其原始目录供工具读取。
    */
   override async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
-    const prepared = await prepareClaudeTurnInput(input)
+    const userContent = await buildClaudeUserContent(input.prompt, input.attachments ?? [])
     this.toolInputStates.delete(input.sessionId)
-    const interaction: ClaudeInteractionState = { write: undefined, pending: new Map() }
+    const interaction: ClaudeInteractionState = { write: undefined, pending: new Map(), userContent }
     this.interactions.set(input.sessionId, interaction)
     try {
-      yield* super.executeTurn(prepared.input)
+      // 图片已内联，不能再让文本驱动生成副本或把相同图片作为 @路径发送第二遍。
+      yield* super.executeTurn({ ...input, attachments: (input.attachments ?? []).filter((attachment) => attachment.kind === 'file') })
     } finally {
       this.toolInputStates.delete(input.sessionId)
       if (this.interactions.get(input.sessionId) === interaction) this.interactions.delete(input.sessionId)
-      await prepared.cleanup()
     }
   }
 
@@ -463,62 +458,6 @@ function parseClaudeToolInput(value: string): string | undefined {
   } catch {
     return undefined
   }
-}
-
-const CLAUDE_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png'])
-
-interface PreparedClaudeTurnInput {
-  readonly input: CodingNsCliTurnInput
-  readonly cleanup: () => Promise<void>
-}
-
-async function prepareClaudeTurnInput(input: CodingNsCliTurnInput): Promise<PreparedClaudeTurnInput> {
-  const attachments = input.attachments ?? []
-  if (!attachments.some((attachment) => attachment.kind === 'image' && !CLAUDE_IMAGE_EXTENSIONS.has(extname(attachment.path).toLowerCase()))) {
-    return { input, cleanup: async () => {} }
-  }
-
-  let temporaryDirectory: string | undefined
-  const prepared: CodingNsCliAttachment[] = []
-  try {
-    for (const [index, attachment] of attachments.entries()) {
-      if (attachment.kind !== 'image' || CLAUDE_IMAGE_EXTENSIONS.has(extname(attachment.path).toLowerCase())) {
-        prepared.push(attachment)
-        continue
-      }
-      const bytes = await readFile(attachment.path)
-      const extension = claudeImageExtension(attachment, bytes)
-      if (extension === undefined) {
-        prepared.push(attachment)
-        continue
-      }
-      temporaryDirectory ??= await mkdtemp(join(tmpdir(), 'codingns-claude-image-'))
-      const path = join(temporaryDirectory, `attachment-${index}${extension}`)
-      await copyFile(attachment.path, path)
-      prepared.push({ ...attachment, path })
-    }
-  } catch (error) {
-    if (temporaryDirectory !== undefined) await rm(temporaryDirectory, { recursive: true, force: true })
-    throw error
-  }
-  if (temporaryDirectory === undefined) return { input, cleanup: async () => {} }
-  return {
-    input: { ...input, attachments: prepared },
-    cleanup: async () => { await rm(temporaryDirectory!, { recursive: true, force: true }) },
-  }
-}
-
-function claudeImageExtension(attachment: CodingNsCliAttachment, bytes: Uint8Array): string | undefined {
-  const mime = attachment.mimeType?.split(';', 1)[0]?.trim().toLowerCase()
-  if (mime === 'image/png') return '.png'
-  if (mime === 'image/jpeg' || mime === 'image/jpg') return '.jpg'
-  const nameExtension = extname(attachment.name ?? '').toLowerCase()
-  if (CLAUDE_IMAGE_EXTENSIONS.has(nameExtension)) return nameExtension
-  if (bytes.length >= 8
-    && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
-    && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) return '.png'
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return '.jpg'
-  return undefined
 }
 
 function claudeToolUse(item: Record<string, unknown>): ClaudeToolEvent | null {

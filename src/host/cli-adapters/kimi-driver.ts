@@ -7,10 +7,10 @@ import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } 
 import { KIMI_CATALOG, enrichEfforts, isProviderDefaultModel } from './model-catalog.js'
 import { probeStoredSession, readFirstJsonRecord, resolveSessionDirectory } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
-import { promptWithAttachmentPaths, buildKimiAttachments } from './attachment-utils.js'
+import { promptWithAttachmentPaths, buildKimiUserInput } from './attachment-utils.js'
 import { isQuestionEvent, readAgentQuestions } from './interaction-events.js'
 import { usageChunk } from './rpc-driver-utils.js'
-import { commandEnvironment, terminateChildProcess } from './process-utils.js'
+import { commandEnvironment, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { reasoningText, textContent } from './reasoning-content.js'
 
 interface KimiPendingInteraction {
@@ -60,6 +60,15 @@ export class KimiCliDriver extends StandardStreamDriver {
     } else if (input.cwd) args.push('--work-dir', input.cwd)
     if (input.modelId && !isProviderDefaultModel(input.modelId)) args.push('--model', input.modelId)
     return args
+  }
+
+  /** 旧 print 协议只抽取文本；由共享层补齐图片后缀后再交给 ReadMediaFile。 */
+  protected get usesStdin(): boolean { return true }
+
+  protected writeStdin(child: CodingNsChildProcess, input: CodingNsCliTurnInput): void {
+    if (child.stdin === null) throw new Error('Kimi CLI 未打开 stdin 管道')
+    const text = promptWithAttachmentPaths(input.prompt, input.attachments ?? [])
+    child.stdin.end(`${JSON.stringify({ role: 'user', content: [{ type: 'text', text }] })}\n`, 'utf8')
   }
 
   respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
@@ -150,7 +159,7 @@ export class KimiCliDriver extends StandardStreamDriver {
           capabilities: { supports_question: true },
         },
       })}\n`)
-      const wireAttachments = input.attachments?.length ? await buildKimiAttachments(input.attachments) : []
+      const userInput = await buildKimiUserInput(input.prompt, input.attachments ?? [])
       let promptSent = false
       const sendPrompt = (): void => {
         if (promptSent) return
@@ -160,8 +169,7 @@ export class KimiCliDriver extends StandardStreamDriver {
           id: promptId,
           method: 'prompt',
           params: {
-            user_input: promptWithAttachmentPaths(input.prompt, input.attachments ?? []),
-            ...(wireAttachments.length > 0 ? { attachments: wireAttachments } : {}),
+            user_input: userInput,
           },
         })}\n`)
       }

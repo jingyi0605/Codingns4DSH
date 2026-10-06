@@ -15,7 +15,7 @@ import { detectBinary, emptyCatalog, usageChunk } from './rpc-driver-utils.js'
 import { MINIMAX_CODE_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { buildMcodeCatalog, parseMcodeModelCatalog, readMcodeConfigYaml } from './mcode-catalog.js'
 import { probeStoredSession } from './session-probe.js'
-import { buildAcpPromptBlocks, promptWithAttachmentPaths } from './attachment-utils.js'
+import { buildAcpPromptBlocks, promptWithAttachmentPaths, withAttachmentPaths } from './attachment-utils.js'
 import { firstToolText, serializeToolValue } from './tool-observation.js'
 import { terminateChildProcess, WINDOWS, type CodingNsChildProcess } from './process-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
@@ -119,7 +119,7 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
     if (command === null) throw new Error('MiniMax Code 未安装')
     const effort = input.effortId?.trim()
     if (EXEC_ONLY_EFFORT && effort !== undefined && effort !== '' && effort !== 'default' && isCatalogEffort(input.modelId, effort, this.effortCatalog())) {
-      yield* this.executeExecTurn(input, command)
+      yield* withAttachmentPaths(input, (prepared) => this.executeExecTurn(prepared, command))
       return
     }
     const session = await this.getSession(input, command)

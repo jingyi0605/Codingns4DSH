@@ -18,7 +18,7 @@ import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessio
 import { firstToolText, serializeToolValue } from './tool-observation.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { commandEnvironment, resolveCommandPath, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
-import { promptWithAttachmentPaths } from './attachment-utils.js'
+import { prepareAttachmentPaths, promptWithAttachmentPaths } from './attachment-utils.js'
 import { parseSkillFrontmatter } from './skill-filesystem.js'
 import { commandCodeBridgeArgs, commandCodeBridgeEnvironment } from '../cli-bridge/injections.js'
 import { getSubagentBridge } from '../cli-bridge/bridge-holder.js'
@@ -217,6 +217,8 @@ interface CommandCodeTurn {
   messageSequence: number
   /** 最近一次 CLI 尝试的 stderr 尾部，仅用于失败诊断。 */
   stderrTail: string
+  /** 图片副本随整个 Provider turn 释放，跨 DSH step 和自动续跑持续可读。 */
+  attachmentCleanup?: () => void
 }
 
 interface CommandCodeSkillEntry extends CodingNsCliSkillDescriptor {
@@ -632,7 +634,18 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     if (binary === null) throw new Error('Command Code 未安装')
 
     const segmented = input.splitToolSteps === true
-    const turn = segmented ? this.acquireTurn(input, binary, skillPaths) : this.startTurn(input, binary, skillPaths)
+    const existing = this.turns.get(input.sessionId)
+    const resuming = segmented && input.resumeSegmentedTurn === true && existing !== undefined && !existing.disposed && !existing.finished
+    const prepared = resuming ? undefined : await prepareAttachmentPaths(input)
+    let turn: CommandCodeTurn
+    try {
+      const preparedInput = prepared?.input ?? input
+      turn = segmented ? this.acquireTurn(preparedInput, binary, skillPaths) : this.startTurn(preparedInput, binary, skillPaths)
+      if (prepared !== undefined) turn.attachmentCleanup = prepared.cleanup
+    } catch (error) {
+      prepared?.cleanup()
+      throw error
+    }
     let suspended = false
     const onAbort = (): void => { this.requestGracefulStop(turn) }
     input.signal?.addEventListener('abort', onAbort, { once: true })
@@ -1019,6 +1032,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       this.processes.delete(child)
       terminateChildProcess(child)
     }
+    turn.attachmentCleanup?.()
     // 首轮 transcript 已经是 canonical 文件，必须保留给下一轮 --resume 及冷恢复。
   }
 }

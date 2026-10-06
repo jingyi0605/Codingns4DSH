@@ -13,7 +13,7 @@ import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage } from './json
 import { detectBinary, emptyCatalog, usageChunk } from './rpc-driver-utils.js'
 import { ZCODE_CATALOG } from './model-catalog.js'
 import { desktopCliRuntimeCommand, resolveZCodeDesktopRuntime, type CodingNsDesktopAppRuntime } from './desktop-app-runtime.js'
-import { promptWithAttachmentPaths } from './attachment-utils.js'
+import { promptWithAttachmentPaths, withAttachmentPaths } from './attachment-utils.js'
 
 export interface ZcodeCliDriverOptions {
   readonly binaries?: readonly string[]
@@ -136,6 +136,10 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
+    yield* withAttachmentPaths(input, (prepared) => this.executePreparedTurn(prepared))
+  }
+
+  private async *executePreparedTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     if (!(await this.detect()).installed) throw new Error('ZCode 未安装')
     const session = await this.getSession(input)
     // 每轮都清掉上一轮的终态痕迹；常驻 session 可能连续发送多轮。
