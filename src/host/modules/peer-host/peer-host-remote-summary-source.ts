@@ -41,7 +41,9 @@ export function createPeerHostRemoteSummarySource(input: {
       if (visible !== null && visible.size === 0) return []
       const [baseline, sessions, adapterMap] = await Promise.all([
         readWorkspaceBaseline(input.transport, input.scope, signal),
-        readSessionList(input.transport, input.scope, signal),
+        // 工作区可见性不依赖会话元数据。目标 DSH 的 session/list 协议或启动时序
+        // 异常时仍要保留工作区行，否则一次会话读取失败会把整个远端 Host 变成空列表。
+        readSessionList(input.transport, input.scope, signal).catch(() => []),
         readAdapterMap(input.transport, input.scope, signal),
       ])
       return buildRemoteSummary(baseline, sessions, visible, adapterMap)
