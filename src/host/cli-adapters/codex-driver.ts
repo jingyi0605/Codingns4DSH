@@ -173,7 +173,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   async listModels(): Promise<CodingNsCliModelCatalog> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) return emptyCatalog()
-    const rpc = new JsonRpcProcess({ command, args: CODEX_APP_SERVER_ARGS, spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args: CODEX_APP_SERVER_ARGS, explicitWindowsShell: true, spawn: this.runSpawn })
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 12_000)
     try {
@@ -861,7 +861,9 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     previous?.rpc.dispose()
     // 子代理托管开启时用 `-c` 覆盖注入 MCP 替身工具；工具由桥接转投成 DSH 原生子会话。
     const bridgeArgs = codexBridgeArgs(input.sessionId, this.descriptor.id)
-    const rpc = new JsonRpcProcess({ command, args: [...CODEX_APP_SERVER_ARGS, ...bridgeArgs], cwd: input.cwd, spawn: this.runSpawn })
+    // Codex 的 `-c` 覆盖项必须与 app-server 的其余启动参数放在同一侧；
+    // 统一置于子命令前，避免不同版本对全局/子命令参数的解析差异。
+    const rpc = new JsonRpcProcess({ command, args: [...bridgeArgs, ...CODEX_APP_SERVER_ARGS], cwd: input.cwd, explicitWindowsShell: true, spawn: this.runSpawn })
     const session = {
       rpc,
       cwd: input.cwd,

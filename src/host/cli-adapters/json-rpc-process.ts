@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import readline from 'node:readline'
-import { commandEnvironment, terminateChildProcess, WINDOWS, type CodingNsChildProcess } from './process-utils.js'
+import { commandEnvironment, terminateChildProcess, windowsShellInvocation, WINDOWS, type CodingNsChildProcess } from './process-utils.js'
 
 /** JSON-RPC 消息的最小形状。不同 Agent 的扩展字段保持在 unknown 中。 */
 export interface JsonRpcMessage {
@@ -35,6 +35,8 @@ export interface JsonRpcProcessOptions {
   readonly cwd?: string | undefined
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly spawn?: typeof spawn
+  /** Codex 需要显式构造 cmd.exe `/c`，避免 shell:true 拼接带 TOML 的 argv。 */
+  readonly explicitWindowsShell?: boolean
   /** 进程级默认信封；单次请求可覆盖。 */
   readonly wireFormat?: JsonRpcWireFormat
 }
@@ -194,12 +196,17 @@ export class JsonRpcProcess {
   private ensureStarted(): void {
     if (this.closed) throw new Error('Agent 进程已关闭')
     if (this.child !== null) return
-    const child = this.runSpawn(this.options.command, this.options.args ?? [], {
+    const useExplicitWindowsShell = WINDOWS && this.options.explicitWindowsShell === true
+    const invocation = useExplicitWindowsShell
+      ? windowsShellInvocation(this.options.command, this.options.args ?? [])
+      : { command: this.options.command, args: this.options.args ?? [] }
+    const child = this.runSpawn(invocation.command, [...invocation.args], {
       cwd: this.options.cwd,
       env: { ...commandEnvironment(this.options.command), ...(this.options.env ?? {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
-      shell: WINDOWS,
+      shell: WINDOWS && !useExplicitWindowsShell,
+      ...(useExplicitWindowsShell ? { windowsVerbatimArguments: true } : {}),
       // CLI 可能是 Node 包装脚本，直接 kill 包装进程不会连带真正的 Node 子进程。
       // POSIX 下单独进程组后才能可靠地一次清理整棵进程树。
       detached: process.platform !== 'win32',
