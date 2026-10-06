@@ -95,7 +95,13 @@ const CODEX_COMPACTION_THRESHOLD = 1
 const CODEX_COMPACTION_TIMEOUT_MS = 60_000
 // Codex CLI 默认会启用 computer_use；DSH 没有对应的桌面控制宿主，必须在
 // app-server 进程启动时关闭该 feature，避免模型进入无法完成的控制回合。
-const CODEX_APP_SERVER_ARGS = ['app-server', '--disable', 'computer_use'] as const
+const CODEX_APP_SERVER_ARGS = [
+  'app-server',
+  '--disable', 'computer_use',
+  // Codex 默认关闭 request_user_input；不开启时模型只能把“提问”写成普通文本，
+  // app-server 不会发出 item/tool/requestUserInput，DSH 也就没有问题事件可投影。
+  '--enable', 'default_mode_request_user_input',
+] as const
 
 interface PendingCodexPermission {
   readonly resolve: (value: unknown) => void
