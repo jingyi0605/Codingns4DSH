@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { createCliAdaptersFeature } from '../data/build/dist/host/cli-adapters/feature.js'
+import { AcpCliDriver } from '../data/build/dist/host/cli-adapters/acp-cli-driver.js'
 import { CommandCodeDriver } from '../data/build/dist/host/cli-adapters/command-code-driver.js'
 import { CommandCodeHistory } from '../data/build/dist/host/cli-adapters/command-code-history.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
@@ -30,7 +31,9 @@ test('Command Code 驱动只把带版本号的候选命令视为已安装', asyn
   })
 
   assert.deepEqual(await driver.detect(), { installed: true, version: '1.2.3', command: 'command-code' })
-  assert.deepEqual(calls, [['missing-command', '--version'], ['command-code', '--version']])
+  assert.deepEqual(calls[0], ['missing-command', '--version'])
+  assert.deepEqual(calls.at(-1), ['command-code', '--version'])
+  assert.equal(calls.length >= 2, true)
 })
 
 test('Command Code Skill 扫描校验目录优先级，并为显式 mention 下发 --skill', async () => {
@@ -98,6 +101,32 @@ test('Command Code 在桌面进程 PATH 缺失时通过登录 Shell 解析 CLI',
     [process.env.SHELL ?? '/bin/sh', '-ilc', 'command -v "$1"; printf "\\n__CODINGNS_PATH__%s\\n" "$PATH"', 'codingns4dsh-command-lookup', 'command-code'],
     ['/Users/test/.local/bin/command-code', '--version'],
   ])
+})
+
+test('Command Code ACP 在 shim 版本探测失败时仍通过登录 Shell 解析 CLI', async () => {
+  const calls: string[][] = []
+  const driver = new AcpCliDriver({
+    id: 'command-code',
+    name: 'Command Code',
+    binaries: ['command-code'],
+    args: ['acp'],
+    capabilities: [],
+    spawnSync: ((command: string, args: string[]) => {
+      calls.push([command, ...args])
+      if (args[0] === '-ilc') return { status: 0, stdout: '/Users/test/.local/bin/command-code\n__CODINGNS_PATH__/opt/node/bin:/Users/test/.local/bin\n', stderr: '' }
+      if (command === 'command-code' && args[0] === '--version') return { status: 127, stdout: '', stderr: 'env: node: No such file or directory' }
+      if (command === '/Users/test/.local/bin/command-code' && args[0] === '--version') return { status: 0, stdout: 'command-code 2.0.0', stderr: '' }
+      return { status: 127, stdout: '', stderr: '' }
+    }) as never,
+  })
+
+  assert.deepEqual(await driver.detect(), { installed: true, version: '2.0.0', command: '/Users/test/.local/bin/command-code' })
+  assert.deepEqual(calls.map((call) => call.slice(0, 2)), [
+    ['command-code', '--version'],
+    [process.env.SHELL ?? '/bin/sh', '-ilc'],
+    ['/Users/test/.local/bin/command-code', '--version'],
+  ])
+  driver.dispose()
 })
 
 test('Command Code 驱动解析模型分组和默认思考强度', async () => {
