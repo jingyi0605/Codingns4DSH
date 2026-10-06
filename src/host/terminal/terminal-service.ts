@@ -478,11 +478,17 @@ export class CodingNsTerminalService {
     const record = this.requireAvailable(identity)
     // ResizeObserver 可能重复报告同一尺寸；相同尺寸不应再次向 PTY 发送 SIGWINCH。
     if (record.cols === cols && record.rows === rows) return
+    // 列宽变化必然改变 tmux 后续输出的换行；行数的大幅变化（移动端虚拟键盘收放、
+    // 拖拽窗口高度）同样会让 tmux 把可见区域按旧列宽的历史物理行重新光栅化给
+    // 客户端，覆盖上一次重排的结果，屏幕底部会残留旧列宽的“提前换行”行。两种
+    // 变化都要调度一次历史重排（防抖合并），让重排放置在最后一次屏幕重绘之后；
+    // ±1 行的可视区域抖动（移动端地址栏收放）不重排，避免频繁重置浏览位置。
     const widthChanged = record.cols !== cols
+    const rowsDelta = Math.abs(record.rows - rows)
     await this.runtimes.resize(controller.subscriptionId, cols, rows)
     await this.update(record, { cols, rows })
     this.broadcastState(identity)
-    if (widthChanged) this.scheduleHistoryReflow(identity)
+    if (widthChanged || rowsDelta >= TERMINAL_REFLOW_ROWS_THRESHOLD) this.scheduleHistoryReflow(identity)
   }
 
   /**
@@ -1119,8 +1125,21 @@ const MAX_RESIDENT_REPLAY_CHARACTERS = 1024 * 1024
 const RESIDENT_BOOTSTRAP_WINDOW_MS = 100
 /** 初次恢复读取的 tmux 历史行数；xterm 会再按自身 scrollback 上限裁剪。 */
 const RESIDENT_HISTORY_LINES = 2000
-/** 拖拽窗口/键盘动画会连续触发 resize；合并成一次历史重放，避免反复重放整块历史。 */
-const HISTORY_REFLOW_DEBOUNCE_MS = 300
+/**
+ * 拖拽窗口/键盘动画会连续触发 resize；合并成一次历史重放，避免反复重放整块历史。
+ *
+ * 该值同时决定“尺寸变化结束”到“重放送达”的间隔：期间客户端显示的是 tmux 重绘的
+ * 旧列宽物理行。取值要兼顾合并动画的连续事件与尽快恢复，150ms 在两端之间折衷。
+ */
+const HISTORY_REFLOW_DEBOUNCE_MS = 150
+/**
+ * 行数变化达到该幅度时同样值得重排历史。
+ *
+ * 行数的大幅变化（虚拟键盘收放）会让 tmux 重绘可见区域，把旧列宽的历史物理行
+ * 重新带回客户端；±1 行的可视区域抖动（移动端地址栏收放）不触发重排，避免频繁
+ * 重置用户的浏览位置。
+ */
+const TERMINAL_REFLOW_ROWS_THRESHOLD = 2
 
 function countLines(value: string): number {
   if (value.length === 0) return 0

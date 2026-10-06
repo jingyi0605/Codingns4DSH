@@ -210,22 +210,31 @@ test('窗口列宽变化后重放合并后的历史，客户端才能按新宽�
   await iterator.return()
 })
 
-test('只有列宽变化触发历史重放，行高变化（软键盘动画）不重放', async () => {
+test('列宽变化与大幅行高变化触发历史重放，±1 行可视抖动不重放', async () => {
   const { adapter, service, identity } = await setup()
   const controller = new AbortController()
   const iterator = service.follow({ identity, attachmentId: 'browser-a', generation: 'generation-a', signal: controller.signal })[Symbol.asyncIterator]()
   await iterator.next()
   await iterator.next()
 
-  const capturesBefore = adapter.captures.length
-  await service.resize(identity, 'browser-a', 80, 40)
+  // ±1 行的可视区域抖动（移动端地址栏收放）不触发重放，避免频繁重置浏览位置。
+  const stableCaptures = adapter.captures.length
+  await service.resize(identity, 'browser-a', 80, 23)
+  assert.equal((await iterator.next()).value.type, 'state')
+  await service.resize(identity, 'browser-a', 80, 24)
   assert.equal((await iterator.next()).value.type, 'state')
   await sleep(450)
-  assert.equal(adapter.captures.length, capturesBefore, '行高变化不应触发历史重放')
+  assert.equal(adapter.captures.length, stableCaptures, '±1 行抖动不应触发历史重放')
 
-  await service.resize(identity, 'browser-a', 100, 40)
+  // 大幅行高变化（虚拟键盘收放）同样会让 tmux 重绘可见区域，把旧列宽的历史物理行
+  // 重新带回客户端、覆盖上一次重排；必须调度重放，让重排放置在最后一次屏幕重绘
+  // 之后，否则屏幕底部会残留旧列宽的“提前换行”行。
+  await service.resize(identity, 'browser-a', 80, 40)
   assert.equal((await iterator.next()).value.type, 'state')
-  await waitFor(() => adapter.captures.length > capturesBefore)
+  await waitFor(() => adapter.captures.length > stableCaptures)
+  // 重放以 snapshot 帧推送，浏览器据此按新尺寸整体重排。
+  const reflow = await iterator.next()
+  assert.equal(reflow.value.type, 'snapshot')
 
   controller.abort()
   await iterator.return()
