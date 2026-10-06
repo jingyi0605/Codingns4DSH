@@ -8,6 +8,8 @@ import type {
   CodingNsAgentEvent,
   CodingNsAgentQuestionResponse,
   CodingNsAgentPermissionResponse,
+  CodingNsCliSkillDescriptor,
+  CodingNsCliSkillListInput,
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
@@ -44,7 +46,7 @@ export interface OpenCodeDriverOptions {
 
 /** OpenCode 的 server/SSE 适配器，向上只暴露 Codingns4DSH 标准流。 */
 export class OpenCodeDriver implements CodingNsCliDriver {
-  readonly descriptor = { id: 'opencode', name: 'OpenCode', protocol: 'http-sse', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] as const } as const
+  readonly descriptor = { id: 'opencode', name: 'OpenCode', protocol: 'http-sse', capabilities: ['models', 'skills', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] as const } as const
   private readonly binaries: readonly string[]
   private readonly serverUrls: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
@@ -92,6 +94,43 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       } catch { /* OpenCode 版本间接口不同，继续尝试其他路径。 */ }
     }
     return emptyCatalog()
+  }
+
+  /** 只读取 OpenCode 原生目录，保留额外路径、插件和 Provider 配置的发现语义。 */
+  async listSkills(input: CodingNsCliSkillListInput): Promise<readonly CodingNsCliSkillDescriptor[]> {
+    if (input.signal?.aborted) throw new Error('Skill 目录读取已取消')
+    const cwd = input.cwd?.trim() || process.cwd()
+    const server = await this.ensureServer(true, cwd)
+    if (server !== null) {
+      try {
+        const options = input.signal === undefined ? {} : { signal: input.signal }
+        const response = await this.http.json<unknown>(withOpenCodeDirectory(server, '/skill', cwd), options)
+        const native = parseOpenCodeSkillCatalog(response.status, response.data)
+        if (native !== null) {
+          // 原生 command 优先于同名 Skill；不能让用户选择 Skill 后执行另一个模板。
+          const commands = await this.http.json<unknown>(withOpenCodeDirectory(server, '/command', cwd), options).catch(() => null)
+          if (input.signal?.aborted) throw new Error('Skill 目录读取已取消')
+          if (commands === null || commands.status < 200 || commands.status >= 300 || !Array.isArray(commands.data)) return native
+          const conflicts = new Set(commands.data.flatMap((raw) => {
+            const command = asRecord(raw)
+            return typeof command?.name === 'string' && typeof command.source === 'string' && command.source !== 'skill' ? [command.name] : []
+          }))
+          return native.map((skill) => ({ ...skill, enabled: skill.enabled && !conflicts.has(skill.name) }))
+        }
+      } catch { /* 原生接口不可用时使用 CLI，不猜测其他版本的路由参数。 */ }
+    }
+    if (input.signal?.aborted) throw new Error('Skill 目录读取已取消')
+    // 浏览目录不启动 Server；CLI 的 debug skill 使用与 Server 相同的 Skill 服务。
+    const binary = this.findBinary()
+    if (binary === null) return []
+    try {
+      const result = this.runSpawnSync(binary.command, ['debug', 'skill'], {
+        cwd, encoding: 'utf8', timeout: 5_000, maxBuffer: 8 * 1024 * 1024,
+        windowsHide: true, shell: WINDOWS, env: commandEnvironment(binary.command),
+      })
+      if (result.status !== 0) return []
+      return parseOpenCodeSkillCatalog(200, JSON.parse(String(result.stdout))) ?? []
+    } catch { return [] }
   }
 
   /**
@@ -263,10 +302,14 @@ export class OpenCodeDriver implements CodingNsCliDriver {
         if (sendError !== null && !aborted) throw sendError
         if (!aborted) throw error
       }
-      if (!finished && !aborted) {
+      // 全局 SSE 可能先出现 idle，command 请求还在展开模板；必须等发送结果，
+      // 否则原生 Skill 错误会被提前发出的 finish 吞掉。
+      if (!aborted) {
         const response = await send
-        if (sendError !== null && !aborted) throw sendError
+        if (sendError !== null) throw sendError
+        if (!finished) {
           for (const chunk of responseChunks(response, cumulative, partTypes, contextWindow)) { emitted = true; yield chunk }
+        }
       }
       if (aborted || input.signal?.aborted) yield { type: 'finish', reason: 'cancel' }
       else if (finished || emitted) yield { type: 'finish', reason: 'stop' }
@@ -313,6 +356,25 @@ export class OpenCodeDriver implements CodingNsCliDriver {
 
   private async sendPrompt(server: string, sessionId: string, input: CodingNsCliTurnInput): Promise<unknown> {
     const attachments = await buildOpenCodeAttachmentParts(input.attachments ?? [])
+    // `/name` 必须进入 command API 才会展开 Skill 模板、参数和基准目录。
+    // 先用原生目录确认名称，普通路径/未知命令继续沿用 message API。
+    const mention = input.prompt.match(/^\s*[/$]([A-Za-z0-9][A-Za-z0-9._:-]*)(?:\s+([\s\S]*))?$/u)
+    if (mention !== null) {
+      const catalog = await this.listSkills({ sessionId: input.sessionId, ...(input.cwd === undefined ? {} : { cwd: input.cwd }), ...(input.signal === undefined ? {} : { signal: input.signal }) })
+      if (catalog.some((skill) => skill.name === mention[1] && skill.enabled)) {
+        const body = {
+          command: mention[1], arguments: mention[2] ?? '',
+          ...(attachments.length === 0 ? {} : { parts: attachments }),
+          ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}),
+          ...(input.effortId ? { variant: input.effortId } : {}),
+        }
+        const response = await this.http.json<unknown>(withOpenCodeDirectory(server, `/session/${encodeURIComponent(sessionId)}/command`, input.cwd), {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), ...(input.signal === undefined ? {} : { signal: input.signal }),
+        })
+        if (response.status < 200 || response.status >= 300) throw new Error(`OpenCode Skill 命令执行失败（HTTP ${response.status}）：${openCodeErrorDetail(response.data)}`)
+        return response.data
+      }
+    }
     const parts: Record<string, unknown>[] = []
     if (input.prompt.trim() !== '' || attachments.length === 0) parts.push({ type: 'text', text: input.prompt })
     parts.push(...attachments)
@@ -503,6 +565,29 @@ function parseOpenCodeModel(modelId: string | undefined): { providerID: string; 
   const separator = modelId!.indexOf('/')
   if (separator <= 0 || separator === modelId!.length - 1) return null
   return { providerID: modelId!.slice(0, separator), modelID: modelId!.slice(separator + 1) }
+}
+
+/** OpenCode `/skill` 在不同版本返回数组或 `{ skills: [...] }`，统一成公开摘要。 */
+function parseOpenCodeSkillCatalog(status: number, value: unknown): readonly CodingNsCliSkillDescriptor[] | null {
+  if (status < 200 || status >= 300) return null
+  const root = asRecord(value)
+  const rawSkills = Array.isArray(value) ? value : Array.isArray(root?.skills) ? root.skills : null
+  if (rawSkills === null) return null
+  return rawSkills.flatMap((raw): CodingNsCliSkillDescriptor[] => {
+    const skill = asRecord(raw)
+    if (skill === null || typeof skill.name !== 'string' || skill.name.trim() === '') return []
+    const name = skill.name.trim()
+    const description = typeof skill.description === 'string' ? skill.description.trim() : ''
+    if (description === '') return []
+    const enabled = skill.enabled !== false && skill.userInvocable !== false && skill.user_invocable !== false
+    return [{
+      id: name,
+      name,
+      description,
+      enabled,
+      ...(typeof skill.displayName === 'string' && skill.displayName.trim() !== '' ? { displayName: skill.displayName.trim() } : {}),
+    }]
+  })
 }
 
 function openCodeConfigPaths(): readonly string[] {

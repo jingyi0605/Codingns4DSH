@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
@@ -13,6 +13,7 @@ import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 import { reasoningText } from './reasoning-content.js'
 import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 import { readAgentQuestions } from './interaction-events.js'
+import { commandEnvironment, WINDOWS } from './process-utils.js'
 
 interface GrokQuestionPending {
   readonly callId: string
@@ -35,7 +36,7 @@ export interface GrokBuildDriverOptions {
 
 /** Grok Build 的 ACP stdio 驱动。ACP 会话和权限细节只在 Host 进程内处理。 */
 export class GrokBuildDriver implements CodingNsCliDriver {
-  readonly descriptor = { id: 'grok', name: 'Grok Build', protocol: 'acp', capabilities: ['models', 'stream', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] as const } as const
+  readonly descriptor = { id: 'grok', name: 'Grok Build', protocol: 'acp', capabilities: ['models', 'skills', 'stream', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] as const } as const
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
@@ -78,6 +79,31 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     } finally { rpc.dispose() }
   }
 
+  /** Grok 的原生目录同时应用信任、禁用、兼容来源和插件命名规则。 */
+  async listSkills(input: CodingNsCliSkillListInput): Promise<readonly CodingNsCliSkillDescriptor[]> {
+    if (input.signal?.aborted) throw new Error('Skill 目录读取已取消')
+    const cwd = input.cwd?.trim() || process.cwd()
+    const command = this.cachedBinary ?? (await this.detect()).command
+    if (command !== null) {
+      try {
+        const result = this.runSpawnSync(command, ['inspect', '--json'], {
+          cwd,
+          encoding: 'utf8',
+          timeout: 5_000,
+          maxBuffer: 8 * 1024 * 1024,
+          windowsHide: true,
+          shell: WINDOWS,
+          env: commandEnvironment(command),
+        })
+        if (result.status === 0) {
+          const catalog = parseGrokSkillCatalog(`${result.stdout ?? ''}`)
+          if (catalog !== null) return catalog
+        }
+      } catch { /* 原生目录暂不可用时保持空目录，不能绕过 Grok 的目录信任。 */ }
+    }
+    return []
+  }
+
   async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
     return probeStoredSession(input, {
       roots: this.sessionRoots,
@@ -109,8 +135,10 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         this.sessions.set(providerSessionId, state)
       }
       yield { type: 'session-binding', providerSessionId }
+      // Skill 斜杠命令由 Grok 在用户输入开头解析，不能把普通提示插到命令前。
+      const nativeCommand = /^\s*\/[A-Za-z0-9][A-Za-z0-9._:-]*(?:\s|$)/u.test(input.prompt)
       const prompt = [
-        { type: 'text', text: GROK_QUESTION_GUIDANCE },
+        ...(nativeCommand ? [] : [{ type: 'text', text: GROK_QUESTION_GUIDANCE }]),
         ...await buildAcpPromptBlocks(input.prompt, input.attachments ?? []),
       ]
       stream = streamGrokPrompt(rpc, providerSessionId, prompt, input.signal, (notification) => {
@@ -537,6 +565,32 @@ function readSessionId(value: unknown): string | null {
   if (typeof value.sessionId === 'string') return value.sessionId
   if (isRecord(value.session) && typeof value.session.id === 'string') return value.session.id
   return typeof value.id === 'string' ? value.id : null
+}
+
+/** 解析 Grok 原生 `inspect --json`，保留它对禁用 Skill 和兼容来源的判定。 */
+function parseGrokSkillCatalog(output: string): readonly CodingNsCliSkillDescriptor[] | null {
+  const start = output.indexOf('{')
+  if (start < 0) return null
+  let value: unknown
+  try { value = JSON.parse(output.slice(start)) } catch { return null }
+  if (!isRecord(value) || !Array.isArray(value.skills)) return null
+  return value.skills.flatMap((raw): CodingNsCliSkillDescriptor[] => {
+    if (!isRecord(raw) || typeof raw.name !== 'string' || raw.name.trim() === '') return []
+    // 重名 Skill 必须使用 Provider 返回的限定名，否则可能调用到内建命令。
+    const name = typeof raw.invocableAs === 'string' && raw.invocableAs.trim() !== ''
+      ? raw.invocableAs.trim().replace(/^\//u, '')
+      : raw.name.trim()
+    const description = typeof raw.description === 'string' ? raw.description.trim() : ''
+    if (description === '') return []
+    const disabled = raw.disabled === true || raw.enabled === false || raw.userInvocable === false || raw.compatibilityStatus === 'disabled'
+      || (typeof raw.disabledReason === 'string' && raw.disabledReason.trim() !== '')
+    return [{
+      id: name,
+      name,
+      description,
+      enabled: !disabled,
+    }]
+  })
 }
 
 function parseGrokCatalog(value: unknown): CodingNsCliModelCatalog {

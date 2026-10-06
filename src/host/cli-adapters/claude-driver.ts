@@ -1,7 +1,8 @@
 import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { basename, dirname, extname, join } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliAttachment, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import { basename, dirname, extname, join, resolve } from 'node:path'
+import type { CodingNsAgentEvent, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliAttachment, CodingNsCliModelCatalog, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
 import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel } from './model-catalog.js'
@@ -12,6 +13,48 @@ import { promptWithAttachmentPaths } from './attachment-utils.js'
 import { WINDOWS, commandEnvironment, type CodingNsChildProcess } from './process-utils.js'
 import { claudeBridgeArgs } from '../cli-bridge/injections.js'
 import { readAgentQuestions } from './interaction-events.js'
+import { scanCompatibleSkills } from './skill-filesystem.js'
+
+export interface ClaudeCodeDriverOptions extends StandardStreamDriverOptions {
+  /** 测试或托管环境可显式指定用户级 Skill 根目录。 */
+  readonly skillRoots?: readonly string[]
+  /** 企业托管配置目录；默认使用 Claude Code 对应平台的原生位置。 */
+  readonly managedSettingsDir?: string
+}
+
+function defaultClaudeManagedSettingsDir(): string {
+  if (process.platform === 'darwin') return '/Library/Application Support/ClaudeCode'
+  if (process.platform === 'win32') return join(process.env.ProgramFiles ?? 'C:\\Program Files', 'ClaudeCode')
+  return '/etc/claude-code'
+}
+
+/** 仅读取 Skill 可见性相关字段，避免凭据或其他设置进入目录响应。 */
+function claudeSkillSettings(cwd: string, configDir: string, managedDir: string): {
+  readonly skillOverrides: Record<string, unknown>
+  readonly strictPluginOnlyCustomization: boolean
+} {
+  let projectRoot = cwd
+  let current = cwd
+  while (true) {
+    if (existsSync(join(current, '.git'))) { projectRoot = current; break }
+    const parent = dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  const skillOverrides: Record<string, unknown> = {}
+  let strictPluginOnlyCustomization = false
+  // 用户 < 项目 < 本地 < 企业，和 Claude 的设置来源优先级一致。
+  const paths = [join(configDir, 'settings.json'), join(projectRoot, '.claude', 'settings.json'), join(projectRoot, '.claude', 'settings.local.json'), join(managedDir, 'managed-settings.json')]
+  for (const path of paths) {
+    try {
+      const settings: unknown = JSON.parse(readFileSync(path, 'utf8'))
+      if (!isToolRecord(settings)) continue
+      if (isToolRecord(settings.skillOverrides)) Object.assign(skillOverrides, settings.skillOverrides)
+      if (path === paths.at(-1)) strictPluginOnlyCustomization = settings.strictPluginOnlyCustomization === true
+    } catch { /* 缺少或无法解析的配置交给 Claude 自身诊断，不污染 Skill 菜单。 */ }
+  }
+  return { skillOverrides, strictPluginOnlyCustomization }
+}
 
 interface ClaudePendingInteraction {
   readonly kind: 'permission' | 'question'
@@ -38,6 +81,8 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   private readonly sessionRoots: readonly string[]
   private readonly claudeConfigDir: string | undefined
   private readonly discoveryFetch: typeof fetch | undefined
+  private readonly skillRoots: readonly string[] | undefined
+  private readonly managedSettingsDir: string
   /** 参数分片按会话和内容块索引隔离，避免并发会话或多个工具互相串入。 */
   private readonly toolInputStates = new Map<string, Map<number, ClaudeToolInputState>>()
   /**
@@ -50,11 +95,13 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   /** 最近一次 detect 得到的版本；CLI 原地升级后据此让探测缓存失效。 */
   private detectedVersion: string | null = null
 
-  constructor(options: StandardStreamDriverOptions = {}) {
-    super({ id: 'claude-code', name: 'Claude Code', protocol: 'stream-json', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] }, { binaries: ['claude'] }, options)
+  constructor(options: ClaudeCodeDriverOptions = {}) {
+    super({ id: 'claude-code', name: 'Claude Code', protocol: 'stream-json', capabilities: ['models', 'skills', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] }, { binaries: ['claude'] }, options)
     this.sessionRoots = options.sessionRoots ?? [join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')]
     this.claudeConfigDir = options.claudeConfigDir
     this.discoveryFetch = options.fetch
+    this.skillRoots = options.skillRoots
+    this.managedSettingsDir = options.managedSettingsDir ?? defaultClaudeManagedSettingsDir()
   }
   private readonly interactions = new Map<string, ClaudeInteractionState>()
 
@@ -149,6 +196,27 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     // CLI 明确不支持 `--effort` 时，驱动不会下发该参数；此时目录也不能展示档位，
     // 否则用户看到的是一个切换后不生效的选项。探测不确定时保持目录原样。
     return this.probeEffortSupport() === 'unsupported' ? clearEfforts(catalog) : catalog
+  }
+
+  /** Claude Code 原生按 SKILL.md 目录发现 Skill；正文仍由 Claude 自己加载。 */
+  async listSkills(input: CodingNsCliSkillListInput): Promise<readonly CodingNsCliSkillDescriptor[]> {
+    if (input.signal?.aborted) throw new Error('Skill 目录读取已取消')
+    const cwd = resolve(input.cwd?.trim() || process.cwd())
+    const configDir = this.claudeConfigDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+    const settings = claudeSkillSettings(cwd, configDir, this.managedSettingsDir)
+    if (settings.strictPluginOnlyCustomization === true) return []
+    const roots = this.skillRoots ?? [join(this.managedSettingsDir, '.claude', 'skills'), join(configDir, 'skills')]
+    const entries = scanCompatibleSkills(cwd, {
+      projectDirectories: ['.claude/skills'],
+      userDirectories: roots,
+      userFirst: true,
+      stopAtGitRoot: true,
+    })
+    return entries.map(({ path: _path, ...descriptor }) => ({
+      ...descriptor,
+      // 子目录限定名仍是同一个 Skill，普通名称的禁用设置也必须作用于它。
+      enabled: descriptor.enabled && (settings.skillOverrides[descriptor.name] ?? settings.skillOverrides[descriptor.name.split(':').at(-1) ?? '']) !== 'off',
+    }))
   }
   async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
     return probeStoredSession(input, {

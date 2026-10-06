@@ -55,7 +55,7 @@ export interface SkillReferenceMention {
 export function findSkillReferenceMentions(value: string, names: ReadonlySet<string>): readonly SkillReferenceMention[] {
   const byLowerName = new Map([...names].map((name) => [name.toLocaleLowerCase(), name]))
   const matches: SkillReferenceMention[] = []
-  const tokenPattern = /\/[A-Za-z0-9][A-Za-z0-9._-]*(?=\s|$)/gu
+  const tokenPattern = /\/[A-Za-z0-9][A-Za-z0-9._:/-]*(?=\s|$)/gu
   for (const match of value.matchAll(tokenPattern)) {
     const token = match[0] ?? ''
     const start = match.index ?? -1
