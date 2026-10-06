@@ -301,6 +301,17 @@ test('/委派 命令已注册进 Client bundle，并由选择动作写入 carrie
   assert.match(hostSource, /case 'delegate':/u)
 })
 
+test('Skill 目录直接注册到斜杠菜单，并按输入文本筛选后写入显式 mention', async () => {
+  const source = await readFile(join(root, 'src/client/skill-command.ts'), 'utf8')
+  assert.match(source, /trigger: '\/'/u)
+  assert.match(source, /registerSkillInputTriggerSource/u)
+  assert.match(source, /request\.query\.trim\(\)\.toLocaleLowerCase\(\)/u)
+  assert.match(source, /skill\.name, skill\.displayName, skill\.description/u)
+  assert.match(source, /`\$\$\{name\} `/u)
+  // 原 `/skills` 二级命令保留，旧版 DSH 没有 inputTriggers 时仍可使用。
+  assert.match(source, /name: SKILL_COMMAND_NAME/u)
+})
+
 test('任务留空时直接拒绝，不读取会话历史', async () => {
   const started: Array<Record<string, any>> = []
   const service = {
