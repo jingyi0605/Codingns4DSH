@@ -79,6 +79,38 @@ test('MiniMax Code ACP 传递附件、绑定会话并转换文本终态', async 
   driver.dispose()
 })
 
+test('MiniMax Code ACP 权限请求进入统一事件并回传 Provider 选项', async () => {
+  let promptId: number | string = 0
+  let reply: Record<string, unknown> | undefined
+  const driver = new MiniMaxCodeDriver({
+    binaries: ['fake-mcode'],
+    spawnSync: (() => ({ status: 0, stdout: 'mcode 1.0.0', stderr: '' })) as never,
+    spawn: fakeRpcSpawn((request, stdout) => {
+      if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      else if (request.method === 'session/new') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'mvs-permission' } })}\n`)
+      else if (request.method === 'session/prompt') {
+        promptId = request.id as number | string
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 19, method: 'session/request_permission', params: { options: [{ optionId: 'allow-custom', kind: 'allow_once' }, { optionId: 'deny-custom', kind: 'reject_once' }], toolCall: { title: 'shell', toolCallId: 'shell-1' }, detail: '执行命令' } })}\n`)
+      } else if (request.id === 19) {
+        reply = request
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } })}\n`)
+      }
+    }),
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'dsh-mcode-permission', messages: [], prompt: '执行' })) {
+    chunks.push(chunk)
+    if (chunk.type === 'permission-request') driver.respondPermission('dsh-mcode-permission', { requestId: chunk.requestId, approved: true })
+  }
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'mvs-permission' },
+    { type: 'permission-request', requestId: '19', kind: 'shell', toolName: 'shell', callId: 'shell-1', detail: '执行命令' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  assert.deepEqual(reply, { jsonrpc: '2.0', id: 19, result: { outcome: { outcome: 'selected', optionId: 'allow-custom' } } })
+  driver.dispose()
+})
+
 test('ZCode 裸信封完成创建、发送、正文和用量事件', async () => {
   let spawnCount = 0
   const driver = new ZcodeAppServerDriver({
