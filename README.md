@@ -100,6 +100,8 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
 
 权限确认和提问都由 DSH 原生组件承载。Web Client Bundle 必须注入 `@deepseek-ai/dsh-client-ui-user-questions`，否则即使 Host 收到问题事件也没有问题面板。支持交互式回传的适配器会把 Provider 请求转换为公共的 `permission-request` 或 `question-request` 事件，交给 DSH 原生审批/问题组件，再按 Provider 协议和原始请求 ID 回传。ACP 适配器接入标准 `session/request_permission` 与 `elicitation/create` form（表单式询问）；Grok Build 的 `grok_build/ask_user_question` tool_call 由 `_x.ai/ask_user_question` 私有 ext_method 回传 `outcome`；Codex app-server 启动时显式开启 `default_mode_request_user_input`，才会产生 `item/tool/requestUserInput` 请求。Command Code 的 `ask_user_question` 在 ACP 中也使用 `session/request_permission`，通过 `toolCall.kind=other` 和 `toolCall.rawInput.question/options` 区分问题。固定选项按原始 `optionId` 回传；自由文本通过 ACP 回包 `_meta["codingns/questionAnswer"]` 携带，并由只作用于子进程内存的 Node loader 接回 Command Code 工具结果，不修改用户安装包。URL elicitation（URL 询问）需要浏览器安全确认流程，当前不宣告该能力。Antigravity 仍只根据 DSH 权限状态下发 CLI 安全模式。
 
+Command Code ACP 的模型、权限和思考强度通过 `session/set_model`、`session/set_mode` 和 `session/set_config_option` 在发送提问前设置；恢复会话同样重新应用当前选择。普通 CLI 启动参数不能代替 ACP 会话配置，设置失败时立即中止。订阅查询遵循 CLI 的凭据优先级：`COMMAND_CODE_API_KEY` 环境变量优先，其次是 `~/.commandcode/auth.json`，避免订阅卡片与实际请求使用不同账户。
+
 ---
 
 ## 功能详解
