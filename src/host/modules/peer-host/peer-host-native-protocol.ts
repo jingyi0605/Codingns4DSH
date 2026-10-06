@@ -81,6 +81,8 @@ export function isDshNativeRemoteMethod(value: string): value is DshNativeRemote
 export type VirtualIdResolver = {
   resolveWorkspace(id: VirtualWorkspaceId): { readonly workspaceId: string; readonly targetHostId: string | null } | null
   resolveSession(id: VirtualSessionId): { readonly sessionId: string; readonly targetHostId: string | null } | null
+  /** 将列表层使用的虚拟 Workspace 路径还原成目标 Host 的真实路径。 */
+  resolveWorkspacePath?(path: string): string | null
 }
 
 /**
@@ -95,6 +97,7 @@ export function rewriteNativeRequestIds(
   if (payload === undefined) return payload
   return rewriteValue(payload, (key, value) => {
     if (typeof value !== 'string') return value
+    if (isPathField(key)) return resolver.resolveWorkspacePath?.(value) ?? value
     if (isWorkspaceField(key)) {
       return resolver.resolveWorkspace(value)?.workspaceId ?? value
     }
@@ -187,6 +190,10 @@ function decodeBase64(value: string): Uint8Array {
 
 function isWorkspaceField(key: string): boolean {
   return key === 'workspaceId' || key === 'beforeWorkspaceId' || key === 'workspaceIds'
+}
+
+function isPathField(key: string): boolean {
+  return key === 'path' || key === 'workspacePath'
 }
 
 function isSessionField(key: string): boolean {

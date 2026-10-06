@@ -44,12 +44,13 @@ export interface PeerHostNativeProjection {
 }
 
 /**
- * 为混合工作区生成只用于原生侧栏树归属的稳定路径。
+ * 为需要稳定显示标识的调用方生成虚拟 URI。
  *
  * DSH 会把 `workspace.path` 的目录前缀关系解释成父子工作区。不同 Host 的真实
  * 路径以及本地工作区之间都可能发生前缀重叠，因此列表层不能继续暴露真实目录。
- * 这里使用不对应本机文件系统的 URI，并把完整虚拟 ID 编码成单一段，保证所有
- * 工作区都是同一层的兄弟节点。文件和会话请求仍使用所属 Host 的真实路径。
+ * 这里使用不对应本机文件系统的 URI，并把完整虚拟 ID 编码成单一段。Workspace
+ * Store 使用这个值保证不同 Host 的同路径工作区仍是并列条目；真正的文件请求会在
+ * Host 转发边界按虚拟 Workspace ID还原为目标 Host 的真实路径。
  */
 export function createPeerHostWorkspaceDisplayPath(virtualWorkspaceId: string): string {
   return `codingns-peer-host://${encodeURIComponent(virtualWorkspaceId)}`
@@ -140,10 +141,10 @@ function projectWorkspace(
   workspace: AggregateWorkspaceSummary,
 ): { readonly workspace: PeerHostVirtualWorkspaceView; readonly sessions: readonly PeerHostVirtualSessionSummary[] } {
   const virtualWorkspaceId = createVirtualWorkspaceId(virtualHostId, workspace.workspaceId)
-  // 真实路径保留给会话摘要和远端请求；Workspace Store 的 path 使用独立显示值，
-  // 防止 DSH 把本地与远端目录前缀识别成父子关系。
-  const displayPath = createPeerHostWorkspaceDisplayPath(virtualWorkspaceId)
   const realPath = workspace.path
+  // 列表层必须使用虚拟路径，避免不同 Host 的真实目录被 DSH 合并成同一棵树。
+  // 会话 cwd 仍保留真实路径；文件请求在 Host 边界再把虚拟根目录还原。
+  const displayPath = createPeerHostWorkspaceDisplayPath(virtualWorkspaceId)
   const sessionIds: string[] = []
   const archivedSessionIds: string[] = []
   const sessions: PeerHostVirtualSessionSummary[] = []

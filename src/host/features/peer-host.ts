@@ -898,6 +898,25 @@ export function createScopedNativeIdResolver(registry: VirtualWorkspaceRegistry,
       if (parsed === null || parsed.hostId !== scope.targetHostId || parsed.sessionId !== scope.sessionId) return null
       return { sessionId: parsed.sessionId, targetHostId: scope.targetHostId }
     },
+    resolveWorkspacePath(path) {
+      const prefix = 'codingns-peer-host://'
+      if (!path.startsWith(prefix) || scope.targetHostId === null) return null
+      const encoded = path.slice(prefix.length)
+      const separator = encoded.indexOf('/')
+      const encodedWorkspaceId = separator < 0 ? encoded : encoded.slice(0, separator)
+      let virtualWorkspaceId: string
+      try {
+        virtualWorkspaceId = decodeURIComponent(encodedWorkspaceId)
+      } catch {
+        return null
+      }
+      const parsed = parseVirtualWorkspaceId(virtualWorkspaceId)
+      if (parsed === null || parsed.targetHostId !== scope.targetHostId) return null
+      const realPath = registry.get(virtualWorkspaceId)?.path
+      if (realPath === undefined || separator < 0) return realPath ?? null
+      const suffix = encoded.slice(separator)
+      return `${realPath.replace(/[\\/]+$/u, '')}/${suffix.replace(/^[/\\]+/u, '')}`
+    },
   }
 }
 

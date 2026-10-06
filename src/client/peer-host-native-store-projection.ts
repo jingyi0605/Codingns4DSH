@@ -121,7 +121,9 @@ function mergeWorkspaceSnapshot(
   const injected = virtual.filter((workspace) => !known.has(workspace.workspaceId))
   const archivedSessionIds = mergeArchivedSessionIds(record.archivedSessionIds, virtual)
   const orderedItems = orderWorkspaceItems([...items, ...injected], orderedWorkspaceIds, localHostId)
-  const mergedItems = normalizeWorkspaceDisplayPaths(orderedItems, localHostId)
+  // 只规范化远端虚拟条目的显示路径；本地条目必须保留真实路径，文件面板才能继续
+  // 使用本机目录。远端文件请求会在 Host 转发边界把这个虚拟路径还原。
+  const mergedItems = normalizeRemoteWorkspaceDisplayPaths(orderedItems)
   const itemsChanged = mergedItems.length !== items.length || mergedItems.some((item, index) => item !== items[index])
   if (!itemsChanged && archivedSessionIds === undefined) return snapshot
   return {
@@ -131,26 +133,14 @@ function mergeWorkspaceSnapshot(
   }
 }
 
-/**
- * 原生 Remote 返回的远端工作区可能已经存在于底层 Store，此时不会走 injected
- * 分支；本地条目也可能因真实目录前缀形成树层级。按虚拟 ID统一规范化 path，
- * 保证所有工作区在 DSH 列表中都是同层兄弟节点。
- */
-function normalizeWorkspaceDisplayPaths(items: readonly unknown[], localHostId: string | undefined): readonly unknown[] {
+/** 原生 Remote 可能先把远端条目写入底层 Store，仍需强制保持扁平虚拟显示路径。 */
+function normalizeRemoteWorkspaceDisplayPaths(items: readonly unknown[]): readonly unknown[] {
   let changed = false
   const normalized = items.map((item) => {
     const record = asRecord(item)
     const workspaceId = record?.workspaceId
-    if (record === null || typeof workspaceId !== 'string') return item
-    const parsed = parseVirtualWorkspaceId(workspaceId)
-    // 底层 Store 的本地条目仍是裸 ID；聚合确认本地 Host 后也为它们生成
-    // 虚拟显示路径，消除本地工作区之间原有的目录树父子关系，保证远端可以
-    // 与任意本地条目互相拖拽。
-    const virtualWorkspaceId = parsed !== null
-      ? workspaceId
-      : localHostId === undefined ? undefined : createVirtualWorkspaceId(localHostId, workspaceId)
-    if (virtualWorkspaceId === undefined) return item
-    const displayPath = createPeerHostWorkspaceDisplayPath(virtualWorkspaceId)
+    if (record === null || typeof workspaceId !== 'string' || parseVirtualWorkspaceId(workspaceId) === null) return item
+    const displayPath = createPeerHostWorkspaceDisplayPath(workspaceId)
     if (record.path === displayPath) return item
     changed = true
     return { ...record, path: displayPath }
@@ -159,9 +149,8 @@ function normalizeWorkspaceDisplayPaths(items: readonly unknown[], localHostId: 
 }
 
 /**
- * 原生会话列表只把空白会话的 cwd 用于判断是否能复用。工作区树扁平化后，
- * 让空白行看到同一个显示路径即可保留该判断；正式会话继续保留真实 cwd，
- * 避免 Git、文件面板或远端工具拿到虚拟 URI。
+ * 原生会话列表只把空白会话的 cwd 用于判断是否能复用；同步工作区真实路径即可
+ * 保留该判断，正式会话也继续保留真实 cwd，避免 Git、文件面板或远端工具拿到虚拟 URI。
  */
 function installSessionDisplayPathProjection(
   workspaceStore: NativeSnapshotStoreHandle,
