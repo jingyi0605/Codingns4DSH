@@ -24,6 +24,8 @@ test('远端摘要用 workspace/follow 首帧和 session/list 组装工作区会
           items: [
             { sessionId: 'session-a', cwd: '/Users/dev/project-a', running: true, updatedAt: 42, blank: false, projections: { values: { title: '修复登录问题' } } },
             { sessionId: 'session-b', cwd: 'C:\\work\\project-b', updatedAt: 11, blank: true },
+            { sessionId: 'session-done', cwd: '/Users/dev/project-a', updatedAt: 10, blank: false, completed: true },
+            { sessionId: 'session-error', cwd: '/Users/dev/project-a', updatedAt: 9, blank: false, status: 'failed' },
             { sessionId: 'session-archived', cwd: '/Users/dev/project-a', updatedAt: 7, blank: false },
             { sessionId: 'session-subagent', cwd: '/Users/dev/project-a', updatedAt: 8, blank: true, origin: 'subagent' },
           ],
@@ -32,7 +34,7 @@ test('远端摘要用 workspace/follow 首帧和 session/list 组装工作区会
       stream(request) {
         calls.push(`${request.method}:${String(request.scope.targetHostId)}:${JSON.stringify(request.payload ?? null)}`)
         const frames = [
-          { type: 'baseline', value: { items: [{ workspaceId: 'workspace-a', title: '项目 A', path: '/Users/dev/project-a', sessionIds: ['session-a', 'session-b', 'session-archived', 'session-subagent'] }], archivedSessionIds: ['session-archived'], pinnedSessionIds: [] } },
+          { type: 'baseline', value: { items: [{ workspaceId: 'workspace-a', title: '项目 A', path: '/Users/dev/project-a', sessionIds: ['session-a', 'session-b', 'session-done', 'session-error', 'session-archived', 'session-subagent'] }], archivedSessionIds: ['session-archived'], pinnedSessionIds: [] } },
           { type: 'upsert', workspace: { workspaceId: 'workspace-b' } },
         ]
         let index = 0
@@ -61,6 +63,8 @@ test('远端摘要用 workspace/follow 首帧和 session/list 组装工作区会
       { sessionId: 'session-a', title: '修复登录问题', status: 'running', updatedAt: 42, blank: false },
       // 临时占位不伪造 cwd 目录名；原生 UI 会根据 blank 显示“新建会话”。
       { sessionId: 'session-b', title: '', status: 'idle', updatedAt: 11, blank: true },
+      { sessionId: 'session-done', title: 'project-a', status: 'completed', updatedAt: 10, blank: false },
+      { sessionId: 'session-error', title: 'project-a', status: 'failed', updatedAt: 9, blank: false },
     ],
     // 归档会话单独归类：原生侧栏默认隐藏，但归档入口与取消归档路由需要它们。
     archivedSessions: [

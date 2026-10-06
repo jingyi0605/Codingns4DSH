@@ -6,11 +6,25 @@ import type { TerminalProcessService } from '../terminal/terminal-process-servic
 import type { DebugWorkspaceService } from '../debug.js'
 import type { CodingNsNativeTeamProxy } from '../cli-adapters/native-team-proxy.js'
 import type { Context } from '@deepseek-ai/cordis'
+import type { AssistantSessionSourceRecord } from './assistant-session-index.js'
+import type { AssistantWaitingKind } from '../../shared/contracts/assistant.js'
 
 export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
   /** 向 DSH 原生事件总线发布 Host 状态，供客户端会话状态投影消费。 */
   emit?(name: string, ...args: any[]): unknown
+}
+
+export interface AssistantHostGateway {
+  list(managedWorkspaceIds: readonly string[]): Promise<{
+    readonly sessions: readonly AssistantSessionSourceRecord[]
+    readonly archivedSessionIds: readonly string[]
+    /** 远端来源没有本地事件总线；调用方必须在下次请求时重新取快照。 */
+    readonly volatile?: boolean
+    readonly readSummary?: (session: AssistantSessionSourceRecord) => Promise<string | null>
+    readonly readWaiting?: (session: AssistantSessionSourceRecord) => Promise<AssistantWaitingKind | null>
+  }>
+  dispatch(request: { readonly hostId: string; readonly requestId: string; readonly sessionId: string; readonly mode: 'queue' | 'steer'; readonly content: readonly [{ readonly type: 'text'; readonly text: string }]}): Promise<void>
 }
 
 /**
@@ -47,8 +61,12 @@ export interface CodingNsHostServices {
   readonly registerDebugProxyRoute?: (handler: (request: Request) => Promise<Response>) => () => Promise<void>
   /** PeerHost 固定握手入口；只允许模块返回脱敏能力摘要。 */
   readonly registerPeerHostHandshakeRoute?: (handler: (request: Request) => Promise<Response>) => () => Promise<void>
+  /** 全局助理二进制 PCM 流入口；只由语音模块注册和注销。 */
+  readonly registerAssistantVoiceStreamRoute?: (handler: (request: Request) => Promise<Response>) => () => Promise<void>
   /** 由 Host 权威解析 Workspace ID，Client 不可覆盖。 */
   readonly resolveWorkspaceRoot?: (workspaceId: string) => string | null
   /** 返回 Host 当前已知的工作区根目录，用于文件管理路径校验。 */
   readonly listWorkspaceRoots?: () => readonly string[]
+  /** PeerHost 已装配时提供跨 Host 的助理摘要与派发通道。 */
+  readonly assistantGateway?: AssistantHostGateway
 }

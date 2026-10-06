@@ -135,7 +135,7 @@ function buildRemoteSummary(
         sessionId,
         blank: session?.blank === true,
         title: readSessionTitle(session, sessionId),
-        status: session?.running === true ? 'running' : 'idle',
+        status: readRemoteSessionStatus(session),
         updatedAt: readTime(session),
         ...(() => {
           const adapterId = readString(session, ['adapterId']) ?? adapterMap.get(sessionId)
@@ -154,6 +154,16 @@ function buildRemoteSummary(
       ...(archivedSessions.length === 0 ? {} : { archivedSessions }),
     }]
   })
+}
+
+function readRemoteSessionStatus(session: Record<string, unknown> | null): string {
+  if (session === null) return 'idle'
+  const explicit = readString(session, ['status', 'state'])
+  if (explicit !== null) return explicit
+  if (session.error === true || session.failed === true) return 'error'
+  if (session.completed === true || session.done === true) return 'completed'
+  if (session.running === true || session.active === true) return 'running'
+  return 'idle'
 }
 
 async function readAdapterMap(

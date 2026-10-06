@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createScopedNativeIdResolver } from '../data/build/dist/host/features/peer-host.js'
+import { createScopedNativeIdResolver, summarizeAssistantRemoteRecords, summarizeAssistantRemoteWaiting } from '../data/build/dist/host/features/peer-host.js'
 import {
   DSH_NATIVE_REMOTE_METHODS,
   decodeNativeResponseBytes,
@@ -93,6 +93,21 @@ test('session/follow 流沿用同一套请求与帧 ID 改写', () => {
     records: [],
     header: { id: 'codingns:peer-host:v1:session:peer-a:remote-session', cwd: '/repo' },
   })
+})
+
+test('远端 session/follow 摘要只消费有界语义记录，不把流式 chunk 当正文', () => {
+  assert.equal(summarizeAssistantRemoteRecords([
+    { type: 'assistant/chunk', text: '不应进入摘要' },
+    { type: 'user/message', content: '请检查构建' },
+    { type: 'assistant/message', content: [{ type: 'text', text: '构建已通过' }] },
+    { type: 'tool/call', name: 'shell' },
+  ]), '用户：请检查构建；助理：构建已通过；工具：shell')
+})
+
+test('远端 session/follow 语义记录能识别等待审批与提问', () => {
+  assert.equal(summarizeAssistantRemoteWaiting([{ type: 'approval/request' }]), 'approval')
+  assert.equal(summarizeAssistantRemoteWaiting([{ type: 'approval/request' }, { type: 'approval/resolve' }]), null)
+  assert.equal(summarizeAssistantRemoteWaiting([{ type: 'user-questions/request' }]), 'question')
 })
 
 test('codingnsTerminal 的 agentId 承载会话身份并双向改写', () => {
