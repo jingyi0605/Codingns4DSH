@@ -81,7 +81,7 @@ Detected on the Host by command name; version and models come from the CLI itsel
 | Kimi CLI | `kimi` | `kimi`, `kimi-cli` | stream-json | all of the above + approvals, questions, steering | — |
 | Gemini CLI | `gemini` | `gemini` | ACP | models, streaming, resume, interrupt, tools, thinking, usage, approvals, questions | ACP permissions and form elicitation |
 | Pi Agent | `pi` | `pi`, `pi-agent` | JSON-RPC | models, streaming, resume, interrupt, tools, thinking, usage, steering | No verifiable DSH approval/question response wire in the current protocol |
-| Codex | `codex` | `codex` | JSON-RPC (app-server) | all + approvals, questions, steering | — |
+| Codex | `codex` | `codex` | JSON-RPC (app-server) | all + approvals, questions, steering | app-server enables `request_user_input`; DSH renders the native question panel |
 | OpenCode | `opencode` | `opencode`, or `OPENCODE_SERVER_URL` (default `http://127.0.0.1:4096`) | HTTP + SSE | all + approvals, questions | — |
 | Grok Build | `grok` | `grok`, `grok-build` | ACP | models, streaming, tools, thinking, usage, approvals, questions | ACP permissions and form elicitation |
 | MiniMax Code | `mcode` | `mcode` | ACP / stream-json | models, streaming, resume, interrupt, tools, thinking, usage, approvals, questions | Interactive requests use ACP; the explicit-effort `exec` path has no interactive response wire |
@@ -98,7 +98,7 @@ Detected on the Host by command name; version and models come from the CLI itsel
 
 Unlisted capabilities are unsupported by that CLI or version. Install and log in to each Agent outside DSH; Codingns4DSH never stores Agent credentials.
 
-Approvals and questions are rendered by DSH's native components. Adapters with an interactive response wire normalize Provider requests into `permission-request` or `question-request` events, pass them to the native approval/question components, then send the typed answer back with the Provider's original request ID. ACP adapters use the standard `session/request_permission` and `elicitation/create` form requests; URL elicitation requires a browser security-consent flow and is not advertised. Agents without a verifiable response wire keep those capabilities undeclared; Command Code and Antigravity only map DSH permission state to CLI safety modes.
+Approvals and questions are rendered by DSH's native components. The Web Client Bundle must inject `@deepseek-ai/dsh-client-ui-user-questions`; otherwise the Host may receive a question event without having a question panel to mount. Adapters with an interactive response wire normalize Provider requests into `permission-request` or `question-request` events, pass them to the native approval/question components, then send the typed answer back with the Provider's original request ID. ACP adapters use the standard `session/request_permission` and `elicitation/create` form requests; the Codex app-server explicitly enables `default_mode_request_user_input` so it emits `item/tool/requestUserInput` requests. URL elicitation requires a browser security-consent flow and is not advertised. Agents without a verifiable response wire keep those capabilities undeclared; Command Code and Antigravity only map DSH permission state to CLI safety modes.
 
 ---
 

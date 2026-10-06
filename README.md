@@ -81,7 +81,7 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
 | Kimi CLI | `kimi` | `kimi`、`kimi-cli` | stream-json | 上述全部 + 权限确认、提问、插话 | — |
 | Gemini CLI | `gemini` | `gemini` | ACP | 模型、流式、恢复、打断、工具、思考、用量、权限确认、提问 | ACP 权限与 form elicitation（表单式询问） |
 | Pi Agent | `pi` | `pi`、`pi-agent` | JSON-RPC | 模型、流式、恢复、打断、工具、思考、用量、插话 | 当前协议没有可验证的 DSH 权限/提问回传 |
-| Codex | `codex` | `codex` | JSON-RPC（app-server） | 全部 + 权限确认、提问、插话 | — |
+| Codex | `codex` | `codex` | JSON-RPC（app-server） | 全部 + 权限确认、提问、插话 | app-server 显式开启 `request_user_input`，由 DSH 原生问题面板承载 |
 | OpenCode | `opencode` | `opencode`，或 `OPENCODE_SERVER_URL`（默认 `http://127.0.0.1:4096`） | HTTP + SSE | 全部 + 权限确认、提问 | — |
 | Grok Build | `grok` | `grok`、`grok-build` | ACP | 模型、流式、工具、思考、用量、权限确认、提问 | ACP 权限与 form elicitation（表单式询问） |
 | MiniMax Code | `mcode` | `mcode` | ACP / stream-json | 模型、流式、恢复、打断、工具、思考、用量、权限确认、提问 | 默认 ACP 路径支持交互；显式思考档位的 `exec` 路径没有交互式回传；上游贡献者：[chenjunyi000](https://github.com/chenjunyi000)；提交 PR [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6)、[#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
@@ -98,7 +98,7 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
 
 未列出的能力表示该 CLI 或其版本不支持；Agent 的安装与登录都在 DSH 之外完成，Codingns4DSH 不保存 Agent 凭据。
 
-权限确认和提问都由 DSH 原生组件承载。支持交互式回传的适配器会把 Provider 请求转换为公共的 `permission-request` 或 `question-request` 事件，交给 DSH 原生审批/问题组件，再按 Provider 协议和原始请求 ID 回传。ACP 适配器接入标准 `session/request_permission` 与 `elicitation/create` form（表单式询问）；URL elicitation（URL 询问）需要浏览器安全确认流程，当前不宣告该能力。没有可验证回传协议的 Agent 保持能力未声明；Command Code 和 Antigravity 只根据 DSH 权限状态下发 CLI 安全模式。
+权限确认和提问都由 DSH 原生组件承载。Web Client Bundle 必须注入 `@deepseek-ai/dsh-client-ui-user-questions`，否则即使 Host 收到问题事件也没有问题面板。支持交互式回传的适配器会把 Provider 请求转换为公共的 `permission-request` 或 `question-request` 事件，交给 DSH 原生审批/问题组件，再按 Provider 协议和原始请求 ID 回传。ACP 适配器接入标准 `session/request_permission` 与 `elicitation/create` form（表单式询问）；Codex app-server 启动时显式开启 `default_mode_request_user_input`，才会产生 `item/tool/requestUserInput` 请求。URL elicitation（URL 询问）需要浏览器安全确认流程，当前不宣告该能力。没有可验证回传协议的 Agent 保持能力未声明；Command Code 和 Antigravity 只根据 DSH 权限状态下发 CLI 安全模式。
 
 ---
 
