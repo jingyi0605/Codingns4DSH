@@ -9,6 +9,8 @@ import { pathToFileURL } from 'node:url'
 import { MiniMaxCodeDriver } from '../data/build/dist/host/cli-adapters/mcode-driver.js'
 import { ZcodeAppServerDriver } from '../data/build/dist/host/cli-adapters/zcode-driver.js'
 import { createAgentSubagentTool } from '../data/build/dist/host/cli-adapters/subagent-tool.js'
+import { nativeSubagentTaskKey } from '../data/build/dist/host/cli-adapters/native-subagent-dispatch.js'
+import { guardNativeSubagentParentTurn, markNativeSubagentParentTurnStarted, waitNativeSubagentLifecycle } from '../data/build/dist/host/cli-adapters/native-subagent-dispatch.js'
 import { setNativeSubagents } from '../data/build/dist/host/cli-adapters/native-subagent-holder.js'
 import { registerNativeTeamSubagentProviders, withTeamSubagentSelection } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
 import { setAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry-holder.js'
@@ -25,6 +27,14 @@ function fakeRpcSpawn(onRequest: (request: Record<string, unknown>, stdout: Pass
     return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
   }) as never
 }
+
+test('子代理任务去重不会把公共 AGENTS.md 当成并行任务目标', () => {
+  const first = nativeSubagentTaskKey('请先阅读 AGENTS.md，然后检查 ACP 适配器并修复 Gemini。')
+  const second = nativeSubagentTaskKey('请先阅读 AGENTS.md，然后检查 JSON-RPC 适配器并修复 Codex。')
+  assert.notEqual(first, second)
+  assert.match(first, /^prompt:/u)
+  assert.match(second, /^prompt:/u)
+})
 
 test('MiniMax Code ACP 传递附件、绑定会话并转换文本终态', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codingns-mcode-'))
@@ -288,7 +298,7 @@ test('原生 Subagent 首轮已在订阅前结束时从快照补齐（真实 DSH
   })
   const tool = createAgentSubagentTool({ nativeSessions: sessions })
   const result = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
-    { agent: 'mcode', prompt: '执行子任务' },
+    { agent: 'mcode', prompt: '执行子任务', run_in_background: false },
     { agent: { id: 'parent-1', options: { subagentDepth: 0 }, session: { header: { id: 'parent-1' } } } },
   )
   assert.deepEqual(result, {
@@ -311,7 +321,7 @@ test('原生 Subagent 同步等待能消费订阅期间的实时事件并正常�
   })
   const tool = createAgentSubagentTool({ nativeSessions: sessions })
   const pending = (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
-    { agent: 'mcode', prompt: '执行子任务' },
+    { agent: 'mcode', prompt: '执行子任务', run_in_background: false },
     { agent: { id: 'parent-live', options: { subagentDepth: 0 }, session: { header: { id: 'parent-live' } } } },
   )
   // 订阅在 startContinuable 之后建立，等它就绪再投递事件。
@@ -333,15 +343,17 @@ test('原生 Subagent 同步等待能消费订阅期间的实时事件并正常�
 test('原生 Subagent 只有收到 turn/end 才完成，并透传终态真实错误', async () => {
   let handlers: { onEvent?: (session: unknown, event: unknown) => void } | undefined
   const child = { header: { id: 'child-error' }, snapshotEvents: () => [] }
+  const injected: string[] = []
   const sessions = {
     get: (id: string) => id === 'child-error' ? child : undefined,
     subscribe: (value: { onEvent?: (session: unknown, event: unknown) => void }) => { handlers = value; return () => { handlers = undefined } },
+    injectNextStep: (sessionId: string, summary?: string) => { injected.push(`${sessionId}:${summary ?? ''}`); return true },
   } as never
   setNativeSubagents({ registerProvider: () => undefined, startContinuable: async () => ({ childId: 'child-error', messageId: 'message-error' }) })
   const tool = createAgentSubagentTool({ nativeSessions: sessions })
   const controller = new AbortController()
   const pending = (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
-    { agent: 'mcode', prompt: '失败任务' },
+    { agent: 'mcode', prompt: '失败任务', run_in_background: false },
     { agent: { id: 'parent-error', options: { subagentDepth: 0 }, session: { header: { id: 'parent-error' } } }, signal: controller.signal },
   )
   for (let i = 0; i < 50 && handlers === undefined; i += 1) await new Promise((resolve) => setTimeout(resolve, 10))
@@ -353,8 +365,22 @@ test('原生 Subagent 只有收到 turn/end 才完成，并透传终态真实错
   const result = await pending
   assert.deepEqual(result, {
     agent: 'mcode', childSessionId: 'child-error', providerSessionId: 'child-error', ok: false, completed: true, status: 'failed',
-    result: '失败前的片段', toolCalls: 0, error: '上游真实失败：额度不足',
+    result: '失败前的片段', toolCalls: 0, error: '上游真实失败：额度不足', failureReviewed: false,
+    failureReviewRequired: true,
+    failureGuidance: '请评估是否需要 action=start 重新创建子代理，或用 action=send 接管并继续；确认无需继续后才能结束主任务。',
   })
+  const blocked = guardNativeSubagentParentTurn(sessions, 'parent-error')
+  assert.equal(blocked.blocked, true)
+  assert.equal(blocked.injected, true)
+  assert.match(injected[0]!, /failed/u)
+  const reviewed = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+    { action: 'read', child_session_id: 'child-error' },
+    { agent: { id: 'parent-error', options: { subagentDepth: 0 }, session: { header: { id: 'parent-error' } } } },
+  )
+  assert.equal(reviewed.failureReviewed, true)
+  assert.equal(reviewed.failureReviewRequired, false)
+  assert.match(String(reviewed.failureGuidance), /重新创建|接管/u)
+  assert.equal(guardNativeSubagentParentTurn(sessions, 'parent-error').blocked, false)
   setNativeSubagents(undefined)
 })
 
@@ -383,6 +409,105 @@ test('agent_subagent 工具定义满足 dsh-tools 注册契约且向 startContin
     agent: 'mcode', childSessionId: 'child-real', providerSessionId: 'child-real', ok: true, completed: false, status: 'running', background: true, result: '子代理已启动，等待首轮 turn/end。',
   })
   setNativeSubagents(undefined)
+})
+
+test('agent_subagent 默认后台返回并允许同一父会话并发创建', async () => {
+  let started = 0
+  setNativeSubagents({
+    registerProvider: () => undefined,
+    startContinuable: async () => {
+      started += 1
+      return { childId: `child-default-${String(started)}`, messageId: `message-default-${String(started)}` }
+    },
+  })
+  const tool = createAgentSubagentTool({ nativeSessions: { get: () => undefined, subscribe: () => () => undefined } as never })
+  const exec = { agent: { id: 'parent-default', options: { subagentDepth: 0 }, session: { header: { id: 'parent-default' } } } }
+  try {
+    const results = await Promise.all([
+      (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+        { agent: 'mcode', prompt: '默认后台任务一' }, exec,
+      ),
+      (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+        { agent: 'mcode', prompt: '默认后台任务二' }, exec,
+      ),
+    ])
+    assert.equal(started, 2)
+    assert.deepEqual(results.map((result) => result.status), ['running', 'running'])
+    assert.deepEqual(results.map((result) => result.background), [true, true])
+  } finally {
+    setNativeSubagents(undefined)
+  }
+})
+
+test('子代理完整生命周期：创建、读取、发送报告、结束，并阻止父会话提前收尾', async () => {
+  let handler: { onEvent?: (session: unknown, event: unknown) => void } | undefined
+  const child = { header: { id: 'child-lifecycle' }, snapshotEvents: () => [] }
+  const injected: string[] = []
+  const sentMessages: Array<{ targetId: string; text: string }> = []
+  const sessions = {
+    get: (id: string) => id === 'child-lifecycle' ? child : undefined,
+    subscribe: (value: { onEvent?: (session: unknown, event: unknown) => void }) => {
+      handler = value
+      return () => { handler = undefined }
+    },
+    injectNextStep: (sessionId: string, summary?: string) => {
+      injected.push(`${sessionId}:${summary ?? ''}`)
+      return true
+    },
+  } as never
+  setNativeSubagents({
+    registerProvider: () => undefined,
+    startContinuable: async () => ({ childId: 'child-lifecycle', messageId: 'message-lifecycle' }),
+    sendMessage: async (_sender, targetId, content) => {
+      sentMessages.push({ targetId, text: content[0]?.text ?? '' })
+      return 'message-follow-up'
+    },
+  })
+  const tool = createAgentSubagentTool({ nativeSessions: sessions })
+  const exec = { agent: { id: 'parent-lifecycle', options: { subagentDepth: 0 }, session: { header: { id: 'parent-lifecycle' } } } }
+  try {
+    const started = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { agent: 'mcode', prompt: '执行完整生命周期模拟' }, exec,
+    )
+    assert.equal(started.status, 'running')
+    const childId = String(started.childSessionId)
+    const running = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { action: 'read', child_session_id: childId }, exec,
+    )
+    assert.equal(running.status, 'running')
+    const sent = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { action: 'send', child_session_id: childId, message: '请补充最终报告' }, exec,
+    )
+    assert.equal(sent.ok, true)
+    assert.equal(sent.messageId, 'message-follow-up')
+    assert.deepEqual(sentMessages, [{ targetId: childId, text: '请补充最终报告' }])
+
+    // 父会话尝试 turn/end 时必须被屏障拦截，并注入下一步等待指令。
+    const blocked = guardNativeSubagentParentTurn(sessions, 'parent-lifecycle')
+    assert.equal(blocked.blocked, true)
+    assert.equal(blocked.injected, true)
+    assert.equal(injected.length, 1)
+    assert.match(injected[0]!, /child-lifecycle/u)
+    // 同一父轮次只注入一次，避免重复消息造成父 Agent 自激循环。
+    assert.equal(guardNativeSubagentParentTurn(sessions, 'parent-lifecycle').injected, false)
+
+    // 子代理发送报告文本与工具结果，最后以 turn/end 结束。
+    handler?.onEvent?.(child, nativeEvent('assistant/message', 1, { message: { content: [{ type: 'text', text: '子代理报告：模拟完成' }] } }))
+    handler?.onEvent?.(child, nativeEvent('tool/result', 2, { name: 'report', content: '报告已发送' }))
+    handler?.onEvent?.(child, nativeEvent('turn/end', 3, { reason: { kind: 'completed' } }))
+    const finished = await waitNativeSubagentLifecycle(childId, 2_000)
+    assert.equal(finished?.status, 'completed')
+    assert.equal(finished?.completed, true)
+    assert.equal(finished?.text, '子代理报告：模拟完成')
+    assert.equal(finished?.toolCalls, 1)
+
+    // 终态后父会话屏障放行；下一轮开始时清除上一轮的 guard。
+    markNativeSubagentParentTurnStarted('parent-lifecycle')
+    const allowed = guardNativeSubagentParentTurn(sessions, 'parent-lifecycle')
+    assert.equal(allowed.blocked, false)
+  } finally {
+    setNativeSubagents(undefined)
+  }
 })
 
 test('agent_subagent 支持等待/读取后台子会话，并阻止依赖步骤提前启动', async () => {

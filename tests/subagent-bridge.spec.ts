@@ -157,10 +157,16 @@ test('桥接服务：令牌校验、状态查询与派发响应', async () => {
 })
 
 test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', async () => {
+  const dispatched: Array<Record<string, unknown>> = []
   const server = await startSubagentBridgeServer({
-    dispatch: async (request) => request.action === 'wait'
-      ? { ok: false, status: 'running', completed: false, text: '子代理仍在运行。', childSessionId: 'child-9' }
-      : { ok: true, text: '子代理完成', childSessionId: 'child-9' },
+    dispatch: async (request) => {
+      dispatched.push({ ...request })
+      return request.action === 'wait'
+        ? { ok: false, status: 'running', completed: false, text: '子代理仍在运行。', childSessionId: 'child-9' }
+        : request.action === 'send'
+          ? { ok: true, status: 'running', completed: false, text: '后续消息已发送给子代理。', childSessionId: 'child-9', messageId: 'message-9' }
+        : { ok: true, status: 'running', completed: false, text: '子代理已启动，等待首轮 turn/end。', childSessionId: 'child-9' }
+    },
   })
   const child = spawn(process.execPath, [bridgeMcpEntryPath()], {
     env: {
@@ -202,6 +208,7 @@ test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', 
     send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
     send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'agent_subagent', arguments: { prompt: '分析 src' } } })
     send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'agent_subagent', arguments: { action: 'wait', child_session_id: 'child-9', timeout_ms: 1 } } })
+    send({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'agent_subagent', arguments: { action: 'send', child_session_id: 'child-9', message: '请补充报告' } } })
 
     const initialized = await waitFor(1)
     assert.equal(initialized.result.serverInfo.name, 'codingns-subagent-bridge')
@@ -209,12 +216,85 @@ test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', 
     const tools = await waitFor(2)
     assert.equal(tools.result.tools.length, 1)
     assert.equal(tools.result.tools[0].name, 'agent_subagent')
+    assert.match(String(tools.result.tools[0].description), /returns immediately/u)
     const call = await waitFor(3)
     assert.equal(call.result.isError, undefined)
-    assert.deepEqual(call.result.content, [{ type: 'text', text: '子代理完成' }])
+    assert.deepEqual(call.result.content, [{ type: 'text', text: JSON.stringify({ ok: true, status: 'running', completed: false, childSessionId: 'child-9', text: '子代理已启动，等待首轮 turn/end。' }) }])
+    assert.equal(dispatched.find((request) => request.action === 'start')?.runInBackground, true)
     const waiting = await waitFor(4)
     assert.equal(waiting.result.isError, undefined)
     assert.match(String(waiting.result.content?.[0]?.text), /"status":"running"/u)
+    const sent = await waitFor(5)
+    assert.equal(sent.result.isError, undefined)
+    assert.match(String(sent.result.content?.[0]?.text), /"messageId":"message-9"/u)
+    assert.equal(dispatched.find((request) => request.action === 'send')?.message, '请补充报告')
+  } finally {
+    child.kill()
+    await server.close()
+  }
+})
+
+test('MCP 入口：独立 start 请求并行处理，不串行等待前一个子代理', async () => {
+  let active = 0
+  let maxActive = 0
+  const server = await startSubagentBridgeServer({
+    dispatch: async (request) => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      await delay(40)
+      active -= 1
+      return {
+        ok: true,
+        status: 'running' as const,
+        completed: false,
+        text: '子代理已启动。',
+        childSessionId: `child-${request.prompt}`,
+      }
+    },
+  })
+  const child = spawn(process.execPath, [bridgeMcpEntryPath()], {
+    env: {
+      ...process.env,
+      CODINGNS_BRIDGE_URL: server.runtime.baseUrl,
+      CODINGNS_BRIDGE_TOKEN: server.runtime.token,
+      CODINGNS_DSH_SESSION_ID: 's-parallel',
+      CODINGNS_ADAPTER_ID: 'command-code',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  const responses = new Map<unknown, any>()
+  let buffer = ''
+  child.stdout.setEncoding('utf8')
+  child.stdout.on('data', (chunk: string) => {
+    buffer += chunk
+    let index = buffer.indexOf('\n')
+    while (index >= 0) {
+      const line = buffer.slice(0, index).trim()
+      buffer = buffer.slice(index + 1)
+      if (line !== '') {
+        const message = JSON.parse(line)
+        responses.set(message.id, message)
+      }
+      index = buffer.indexOf('\n')
+    }
+  })
+  const send = (id: number, prompt: string): void => {
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'agent_subagent', arguments: { prompt } } })}\n`)
+  }
+  const waitFor = async (id: number): Promise<any> => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (responses.has(id)) return responses.get(id)
+      await delay(20)
+    }
+    throw new Error(`MCP 并行响应超时: ${String(id)}`)
+  }
+  try {
+    send(1, '任务一')
+    send(2, '任务二')
+    const [first, second] = await Promise.all([waitFor(1), waitFor(2)])
+    assert.equal(first.result.isError, undefined)
+    assert.equal(second.result.isError, undefined)
+    assert.equal(maxActive, 2)
   } finally {
     child.kill()
     await server.close()
@@ -228,6 +308,11 @@ test('桥接派发：解析父会话并把子代理绑定为原生可续子会�
     startContinuable: async (spec: Record<string, any>) => {
       started.push(spec)
       return { childId: 'child-77', messageId: 'm1' }
+    },
+    sendMessage: async (_sender: unknown, targetId: string, content: readonly { type: 'text'; text: string }[]) => {
+      assert.equal(targetId, 'child-77')
+      assert.equal(content[0]?.text, '请补充报告')
+      return 'm2'
     },
   }
   const events = [
@@ -277,12 +362,67 @@ test('桥接派发：解析父会话并把子代理绑定为原生可续子会�
     assert.equal(read.completed, true)
     const waited = await dispatchBridgeSubagent({ sessionId: 's1', action: 'wait', childSessionId: 'child-77', timeoutMs: 1 }, deps)
     assert.equal(waited.status, 'completed')
+    const followup = await dispatchBridgeSubagent({ sessionId: 's1', action: 'send', childSessionId: 'child-77', message: '请补充报告' }, deps)
+    assert.equal(followup.ok, true)
+    assert.equal(followup.status, 'running')
+    assert.equal(followup.completed, false)
+    assert.equal(followup.messageId, 'm2')
+    // 后续追踪从发送前的事件游标开始，旧首轮 turn/end 不能立即把 follow-up 标记为完成。
+    const followupState = await dispatchBridgeSubagent({ sessionId: 's1', action: 'read', childSessionId: 'child-77' }, deps)
+    assert.equal(followupState.status, 'running')
     const crossParent = await dispatchBridgeSubagent({ sessionId: 's2', action: 'read', childSessionId: 'child-77' }, {
       ...deps,
       agents: { get: (id: string) => (id === 's2' ? { id: 'agent-s2', session: { header: { id: 's2' } } } : undefined) },
     })
     assert.equal(crossParent.ok, false)
     assert.match(String(crossParent.error), /找不到父会话下的子会话/u)
+  } finally {
+    setNativeSubagents(undefined)
+    setAdapterRegistry(undefined)
+  }
+})
+
+test('桥接失败状态：父 Agent 必须先 read/wait 复核后才能继续收尾', async () => {
+  const service = {
+    registerProvider: () => () => undefined,
+    startContinuable: async () => ({ childId: 'child-bridge-error', messageId: 'm-error' }),
+  }
+  const sessions = {
+    get: (id: string) => id === 'child-bridge-error'
+      ? {
+          snapshotEvents: () => [
+            { type: 'assistant/message', seq: 1, data: { message: { content: [{ type: 'text', text: '失败前报告' }] } } },
+            { type: 'turn/end', seq: 2, data: { reason: { kind: 'error', error: { message: '子代理额度不足' } } } },
+          ],
+        }
+      : undefined,
+    subscribe: () => () => undefined,
+    list: () => [],
+  }
+  const driver = {
+    descriptor: { id: 'command-code', name: 'Command Code', protocol: 'command', capabilities: [] },
+    detect: async () => ({ installed: true, version: '1.0.0', command: '/fake/command-code' }),
+    listModels: async () => ({ groups: [], currentModel: null, currentEffort: null }),
+    executeTurn: async function* () { /* 失败复核测试不经过普通轮次 */ },
+  }
+  const registry = new CodingNsCliAdapterRegistry([driver as never])
+  registry.setSession('s-bridge-error', { adapterId: 'command-code' })
+  setNativeSubagents(service as never)
+  setAdapterRegistry(registry)
+  const deps = {
+    agents: { get: (id: string) => (id === 's-bridge-error' ? { id: 'agent-bridge-error', session: { header: { id: 's-bridge-error' } } } : undefined) },
+    nativeSessions: sessions as never,
+  }
+  try {
+    const failed = await dispatchBridgeSubagent({ sessionId: 's-bridge-error', prompt: '模拟失败', runInBackground: false }, deps)
+    assert.equal(failed.status, 'failed')
+    assert.equal(failed.failureReviewed, false)
+    assert.equal(failed.failureReviewRequired, true)
+    assert.match(String(failed.failureGuidance), /重新创建|接管/u)
+    const reviewed = await dispatchBridgeSubagent({ sessionId: 's-bridge-error', action: 'read', childSessionId: 'child-bridge-error' }, deps)
+    assert.equal(reviewed.failureReviewed, true)
+    assert.equal(reviewed.failureReviewRequired, false)
+    assert.match(String(reviewed.error), /额度不足/u)
   } finally {
     setNativeSubagents(undefined)
     setAdapterRegistry(undefined)
@@ -366,6 +506,40 @@ test('Command Code 转投：hook_blocked 命中桥接记录时投影为完成并
   }
 })
 
+test('Command Code 后台转投：hook_blocked 投影为 running，不能伪装成完成', async () => {
+  const runtime = enableBridge()
+  runtime.recordRedirect('s-cc-running', 'call_running', {
+    childSessionId: 'child-running',
+    ok: true,
+    completed: false,
+    status: 'running',
+    toolCalls: 0,
+  })
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.69.0', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: (() => ({
+      stdout: Readable.from([
+        `${JSON.stringify({ type: 'event', event: { type: 'tool_hook_blocked', toolCallId: 'call_running', toolName: 'agent', hookOutput: '{"status":"running","childSessionId":"child-running"}' } })}\n`,
+        `${JSON.stringify({ type: 'event', event: { type: 'result', subtype: 'success', stopReason: 'end_turn', finalText: '继续等待' } })}\n`,
+      ]),
+      stderr: { on() { return this } },
+      kill() { return true },
+    })) as never,
+  })
+  try {
+    const chunks = []
+    for await (const chunk of driver.executeTurn({ sessionId: 's-cc-running', messages: [], prompt: '并行分析' })) chunks.push(chunk)
+    const tool = chunks.find((chunk) => chunk.type === 'tool-event')
+    assert.equal(tool?.status, 'running')
+  } finally {
+    driver.dispose()
+    setSubagentBridge(undefined)
+  }
+})
+
 test('Command Code 未命中的 hook_blocked 仍按失败投影', async () => {
   enableBridge()
   const driver = new CommandCodeDriver({
@@ -397,7 +571,7 @@ test('Claude Code 参数注入：托管开启时携带 MCP 替身与禁用的 Ta
     buildArgs(input: Record<string, unknown>): readonly string[]
   }).buildArgs({ sessionId, messages: [], prompt: 'hi' })
   try {
-    assert.deepEqual(build('s-claude'), ['-p', 'hi', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--permission-mode', 'bypassPermissions'])
+    assert.deepEqual(build('s-claude'), ['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--permission-prompts', 'host', '--include-partial-messages', '--verbose'])
     enableBridge()
     const args = build('s-claude')
     assert.ok(args.includes('--mcp-config'))
