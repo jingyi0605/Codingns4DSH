@@ -514,6 +514,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   }
 
   private async *consumeSegment(session: CodexSession, active: CodexSegmentedTurn, input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
+    let hasAssistantContent = false
     while (true) {
       let chunk: CodingNsAgentEvent | null
       if (active.pendingChunk !== undefined) {
@@ -542,6 +543,13 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       if (chunk === null) continue
 
       for (const part of expandCodexCompactionChunk(session, chunk)) {
+        // DSH 按 step 结算一条正文消息，工具历史却在提问时立即写入。
+        // 先结算已经输出的前文，再把尚未回答的问题交给下一段，保证历史顺序。
+        if (part.type === 'question-request' && hasAssistantContent) {
+          active.pendingChunk = part
+          yield { type: 'step-boundary' }
+          return
+        }
         // 一个 assistant item 可能在多个工具调用之间切换。把新 item 的首个
         // 正文留给下一次 llm/stream，当前流只返回边界，确保 DSH 先创建新 step。
         if ((part.type === 'text-delta' || part.type === 'reasoning-delta')
@@ -562,7 +570,13 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         if (stabilizedChunk.type === 'tool-event' && (stabilizedChunk.status === 'completed' || stabilizedChunk.status === 'failed')) {
           active.sawCompletedTool = true
         }
+        if ((stabilizedChunk.type === 'text-delta' || stabilizedChunk.type === 'reasoning-delta') && stabilizedChunk.text !== '') {
+          hasAssistantContent = true
+        }
         yield stabilizedChunk
+        // 提问没有普通工具的 completed 通知。调用方已等待原生问题组件并回传
+        // 答案后才会继续读取，因此从这里恢复时可沿用工具完成后的消息分段规则。
+        if (stabilizedChunk.type === 'question-request') active.sawCompletedTool = true
       }
     }
   }
