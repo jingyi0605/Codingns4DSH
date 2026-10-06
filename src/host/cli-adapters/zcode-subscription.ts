@@ -3,7 +3,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir, platform, userInfo } from 'node:os'
 import { join } from 'node:path'
 import type { CliSubscriptionUsage, ProviderBalanceUsage } from '../../shared/contracts/subscription.js'
-import { resolveZCodeDesktopRuntime, type CodingNsDesktopAppRuntime } from './desktop-app-runtime.js'
+import { resolveZCodeDesktopRuntime } from './desktop-app-runtime.js'
+import type { ZcodeProviderConfigOptions } from './zcode-provider-config.js'
 
 type FetchLike = typeof fetch
 
@@ -11,16 +12,11 @@ const ZCODE_JWT_TOKEN_KEY = 'zcodejwttoken'
 const ZCODE_BALANCE_ORIGIN = 'https://zcode.z.ai'
 
 /** ZCode Start Plan 的 billing/balance 读取器；凭据与设备标识始终只在 Host 内处理。 */
-export interface ZcodeSubscriptionOptions {
+export interface ZcodeSubscriptionOptions extends ZcodeProviderConfigOptions {
   readonly fetch?: FetchLike
   readonly timeoutMs?: number
-  readonly homeDirectory?: string
-  readonly credentialsPath?: string
   readonly telemetryPath?: string
-  readonly credentialSecret?: string
   readonly appVersion?: string
-  /** 测试或桌面运行时探测失败时注入运行时快照。 */
-  readonly runtime?: CodingNsDesktopAppRuntime | null
 }
 
 interface ZcodeBalancePlan {

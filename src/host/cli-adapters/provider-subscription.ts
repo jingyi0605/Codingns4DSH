@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import type { CliSubscriptionCredits, CliSubscriptionProvider, CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekBalance, DeepseekUsage, Sub2ApiDailyUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../../shared/contracts/subscription.js'
-import { identifyModelProvider, normalizeProviderBaseUrl, thirdPartyProvider, type ProviderDefinition } from './provider-registry.js'
+import { identifyModelProvider, MODEL_PROVIDER_DEFINITIONS, normalizeProviderBaseUrl, thirdPartyProvider, type ProviderDefinition } from './provider-registry.js'
 import { OfficialProviderSubscriptionService, type OfficialProviderSubscriptionOptions } from './official-provider-subscription.js'
 import { ZcodeSubscriptionService, type ZcodeSubscriptionOptions } from './zcode-subscription.js'
 import { JsonRpcProcess, JsonRpcRequestError } from './json-rpc-process.js'
@@ -14,6 +14,7 @@ import { NewApiSubscriptionService, type NewApiSubscriptionOptions, isOfficialAg
 import { CodeBuddySubscriptionService, type CodeBuddySubscriptionOptions } from './codebuddy-subscription.js'
 import { AntigravitySubscriptionService, type AntigravitySubscriptionOptions } from './antigravity-subscription.js'
 import { CustomUpstreamClassifier, mergeCustomUpstreamCandidates, type CustomUpstreamClassifierOptions, type CustomUpstreamReadResult } from './custom-upstream-classifier.js'
+import { readZcodeProviderConfigs, type ZcodeProviderConfigOptions } from './zcode-provider-config.js'
 
 type FetchLike = typeof fetch
 
@@ -35,6 +36,7 @@ export class ProviderSubscriptionService {
   readonly qoderCn: QoderSubscriptionService
   readonly codebuddy: CodeBuddySubscriptionService
   readonly antigravity: AntigravitySubscriptionService
+  private readonly zcodeProviderOptions: ZcodeProviderConfigOptions
 
   constructor(options: ProviderSubscriptionOptions = {}) {
     // 全局超时只作为缺省值；单项服务显式给出的 timeoutMs 优先。
@@ -51,6 +53,7 @@ export class ProviderSubscriptionService {
     this.kimi = new KimiSubscriptionService({ ...shared, ...options.kimi })
     this.grok = new GrokSubscriptionService({ ...shared, ...options.grok })
     this.zcode = new ZcodeSubscriptionService({ ...shared, ...options.zcode })
+    this.zcodeProviderOptions = options.zcode ?? {}
     this.qoder = new QoderSubscriptionService({ ...shared, variant: 'qoder', ...options.qoder })
     this.qoderCn = new QoderSubscriptionService({ ...shared, variant: 'qoder-cn', ...options.qoderCn })
     this.codebuddy = new CodeBuddySubscriptionService({ ...shared, ...options.codebuddy })
@@ -65,7 +68,8 @@ export class ProviderSubscriptionService {
     // Antigravity 没有自定义上游入口，始终读官方账户余量；模型决定 Gemini 与
     // Claude/GPT 两个独立配额组里读哪一组。
     if (adapterId === 'antigravity') return this.antigravity.read({ modelId })
-    if (adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'grok' || adapterId === 'opencode' || adapterId === 'command-code' || adapterId === 'zcode' || adapterId === 'codebuddy' || adapterId === 'workbuddy') {
+    if (adapterId === 'zcode') return this.readZcode(providerId, modelId)
+    if (adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'grok' || adapterId === 'opencode' || adapterId === 'command-code' || adapterId === 'codebuddy' || adapterId === 'workbuddy') {
       return this.readSub2ApiFirst(adapterId, providerId)
     }
     switch (adapterId) {
@@ -112,18 +116,42 @@ export class ProviderSubscriptionService {
     if (adapterId === 'claude-code') return this.claudeCode.read().then((usage) => usage === null ? null : withProvider(usage, identifyModelProvider({ name: 'anthropic' }), ''))
     if (adapterId === 'grok') return this.grok.read().then((usage) => usage === null ? null : withProvider(usage, identifyModelProvider({ name: 'xai' }), ''))
     if (adapterId === 'command-code') return this.commandCode?.read() ?? null
-    if (adapterId === 'zcode') return this.zcode.read()
     if (adapterId === 'codebuddy' || adapterId === 'workbuddy') return this.codebuddy.read(adapterId)
     return null
   }
 
-  private async readCustomUpstream(adapterId: string, providerId?: string): Promise<CustomUpstreamReadResult | null> {
+  /** 余额属于当前模型的原生 Provider，不能用其它账号或 Start Plan 冒充。 */
+  private async readZcode(providerId?: string, modelId?: string): Promise<CliSubscriptionUsage | null> {
+    const slash = modelId?.indexOf('/') ?? -1
+    const selectedId = slash > 0 ? modelId!.slice(0, slash)
+      : providerId !== 'zcode' ? providerId : undefined
+    const explicitlyConfigured = this.newApi.hasConfiguredSource('zcode', selectedId)
+      || this.sub2api.hasConfiguredSource('zcode', selectedId)
+    if (explicitlyConfigured) return (await this.readCustomUpstream('zcode', selectedId))?.usage ?? null
+    if (selectedId === undefined) return this.zcode.read()
+    const provider = readZcodeProviderConfigs(selectedId, this.zcodeProviderOptions)[0]
+    if (provider === undefined) return null
+    if (provider.accessMode === 'start-plan' || provider.accessMode === 'off-peak') return this.zcode.read()
+    const source = provider.source
+    if (source === null) return null
+    const origin = normalizeProviderBaseUrl(source.baseUrl)
+    const matched = identifyModelProvider({ name: selectedId, baseUrl: source.baseUrl })
+      ?? MODEL_PROVIDER_DEFINITIONS.find((definition) => definition.officialHosts.some((host) => origin === `https://${host}`))
+    if (matched?.reader === 'deepseek-balance') return this.deepseek.read(source)
+    if (matched?.reader === 'openrouter-balance' || matched?.reader === 'minimax-usage' || matched?.reader === 'zai-usage' || matched?.reader === 'github-copilot-usage') {
+      return this.official.read(matched.id, source)
+    }
+    if (isOfficialAgentBaseUrl('zcode', source.baseUrl) || matched !== undefined && matched.reader !== 'sub2api') return null
+    return (await this.readCustomUpstream('zcode', selectedId, [source]))?.usage ?? null
+  }
+
+  private async readCustomUpstream(adapterId: string, providerId?: string, discoveredSources?: readonly Sub2ApiSource[]): Promise<CustomUpstreamReadResult | null> {
     const newApiConfigured = this.newApi.hasConfiguredSource(adapterId, providerId)
     const sub2apiConfigured = this.sub2api.hasConfiguredSource(adapterId, providerId)
     // 只要一侧有显式来源，就不把另一侧从本机环境自动发现的无关来源混进来。
     // 两侧都没有显式来源时，才同时使用各自的 Agent 配置自动发现结果。
-    const newApiSources = sub2apiConfigured && !newApiConfigured ? [] : this.newApi.resolveSources(adapterId, providerId)
-    const sub2apiSources = newApiConfigured && !sub2apiConfigured ? [] : this.sub2api.resolveSources(adapterId, providerId)
+    const newApiSources = discoveredSources ?? (sub2apiConfigured && !newApiConfigured ? [] : this.newApi.resolveSources(adapterId, providerId))
+    const sub2apiSources = discoveredSources ?? (newApiConfigured && !sub2apiConfigured ? [] : this.sub2api.resolveSources(adapterId, providerId))
       .filter((source) => !isOfficialAgentBaseUrl(adapterId, source.baseUrl))
     // 同一自定义来源的协议不能由配置项名称预先决定：一个 Agent 的配置文件
     // 可能实际接入 New-API，也可能接入 Sub2API。统一分类器需要对每个候选
@@ -1334,7 +1362,7 @@ function isOfficialDeepseekUrl(value: string): boolean {
 function deepseekApiRoot(value: string): string {
   try {
     const url = new URL(value)
-    url.pathname = url.pathname.replace(/\/v1\/?$/u, '').replace(/\/+$/u, '')
+    url.pathname = url.pathname.replace(/\/+$/u, '').replace(/\/(?:anthropic(?:\/v1)?|v1)$/u, '')
     url.search = ''
     url.hash = ''
     return url.toString().replace(/\/$/u, '')

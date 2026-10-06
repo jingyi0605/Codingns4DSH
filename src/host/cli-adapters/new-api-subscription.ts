@@ -4,10 +4,10 @@ import type {
   CliSubscriptionWindow,
   ProviderBalanceUsage,
 } from '../../shared/contracts/subscription.js'
-import { createDecipheriv, createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { homedir, userInfo } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { readZcodeProviderConfigs } from './zcode-provider-config.js'
 
 type FetchLike = typeof fetch
 
@@ -93,7 +93,7 @@ function discoverNewApiSources(adapterId: string, providerId?: string): NewApiSo
     readConfigSources(readJson(join(process.env.GROK_HOME ?? join(home, '.grok'), 'config.json')), providerId).forEach(add)
   }
   if (adapterId === 'command-code') readCommandCodeSources(providerId).forEach(add)
-  if (adapterId === 'zcode') readZcodeSources().forEach(add)
+  if (adapterId === 'zcode') readZcodeSources(providerId).forEach(add)
   if (adapterId === 'codebuddy' || adapterId === 'workbuddy') readCodeBuddySources(adapterId, providerId).forEach(add)
   if (adapterId === 'dsh') {
     if (providerId !== undefined && providerId.trim() !== '') add(readNamedDshSource(providerId))
@@ -151,59 +151,17 @@ function readDshYamlSource(path: string, providerId: string): NewApiSource | nul
   return baseUrl === null || apiKey === null ? null : { baseUrl, apiKey }
 }
 
-function readZcodeSources(): NewApiSource[] {
+function readZcodeSources(providerId?: string): NewApiSource[] {
   const paths = [process.env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE, process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, join(homedir(), '.zcode', 'v2', 'provider_config.json')].filter((value): value is string => typeof value === 'string' && value.trim() !== '')
   const result = paths.flatMap((path) => {
     const value = readJson(path)
-    return [...readConfigSources(value), ...readZcodeRuleSources(value)]
+    const rules = recordValue(recordValue(value?.config)?.providerConfigRules)?.providerRules
+    // 旧导出格式可能直接把地址和密钥放在规则上；兼容时仍只读当前 Provider。
+    if (Array.isArray(rules)) return rules.filter((rule) => providerId === undefined || recordValue(rule)?.providerId === providerId)
+      .flatMap((rule) => readConfigSources(rule))
+    return readConfigSources(value, providerId)
   })
-  return result
-}
-
-/** ZCode 的 Provider 规则和凭据分开保存；这里只拼出明确声明了 endpoint 的来源。 */
-function readZcodeRuleSources(value: Record<string, unknown> | null): NewApiSource[] {
-  const config = recordValue(value?.config)
-  const rules = recordValue(config?.providerConfigRules)?.providerRules
-  if (!Array.isArray(rules)) return []
-  return rules.flatMap((item) => {
-    const rule = recordValue(item)
-    const providerId = textValue(rule?.providerId)
-    const ruleConfig = recordValue(rule?.config)
-    const baseUrl = textValue(ruleConfig?.baseURL ?? ruleConfig?.baseUrl ?? ruleConfig?.base_url ?? ruleConfig?.apiBaseUrl ?? ruleConfig?.api_base_url ?? ruleConfig?.endpoint ?? rule?.baseURL ?? rule?.baseUrl ?? rule?.endpoint)
-    const apiKey = textValue(ruleConfig?.apiKey ?? ruleConfig?.api_key ?? rule?.apiKey ?? rule?.api_key)
-      ?? (providerId === null ? null : readZcodeProviderApiKey(providerId))
-    return baseUrl === null || apiKey === null ? [] : [{ baseUrl, apiKey }]
-  })
-}
-
-function readZcodeProviderApiKey(providerId: string): string | null {
-  const path = process.env.ZCODE_CREDENTIALS_FILE ?? join(homedir(), '.zcode', 'v2', 'credentials.json')
-  const credentials = readJson(path)
-  if (credentials === null) return null
-  const prefix = `account-provider:coding-plan:${providerId}:account:`
-  const key = Object.keys(credentials).find((candidate) => candidate.startsWith(prefix) && candidate.endsWith(':api-key'))
-  const value = key === undefined ? null : textValue(credentials[key])
-  return value === null ? null : decryptZcodeCredential(value)
-}
-
-function decryptZcodeCredential(value: string): string {
-  if (!value.startsWith('enc:v1:')) return value
-  const [ivRaw, authTagRaw, cipherRaw] = value.slice('enc:v1:'.length).split('.')
-  if (ivRaw === undefined || authTagRaw === undefined || cipherRaw === undefined) return ''
-  try {
-    const iv = Buffer.from(ivRaw, 'base64url')
-    const authTag = Buffer.from(authTagRaw, 'base64url')
-    const cipherText = Buffer.from(cipherRaw, 'base64url')
-    if (iv.length !== 12 || authTag.length !== 16) return ''
-    let username = 'unknown'
-    try { username = userInfo().username } catch { /* 沙箱环境可能无法读取用户名。 */ }
-    const secret = `zcode-credential-fallback:${process.platform}:${homedir()}:${username}`
-    const decipher = createDecipheriv('aes-256-gcm', createHash('sha256').update(secret).digest(), iv)
-    decipher.setAuthTag(authTag)
-    return Buffer.concat([decipher.update(cipherText), decipher.final()]).toString('utf8').trim()
-  } catch {
-    return ''
-  }
+  return [...readZcodeProviderConfigs(providerId).flatMap((provider) => provider.source === null ? [] : [provider.source]), ...result]
 }
 
 function readCommandCodeSources(providerId?: string): NewApiSource[] {
