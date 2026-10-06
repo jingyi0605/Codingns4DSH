@@ -74,20 +74,31 @@ Notes: the sidebar terminal exists as soon as the plugin is installed — **Term
 
 Detected on the Host by command name; version and models come from the CLI itself. Detected Agents are enabled by default and can be toggled individually. The built-in **DeepSeek Harness** Agent is always available.
 
-| Agent | id | Command | Protocol | Capabilities |
-| --- | --- | --- | --- | --- |
-| Command Code | `command-code` | `command-code`, `commandcode`, `cmdc` | single-shot CLI | models, streaming, resume, interrupt, tools, thinking, usage |
-| Claude Code | `claude-code` | `claude` | stream-json | models, streaming, resume, interrupt, tools, thinking, usage |
-| Kimi CLI | `kimi` | `kimi`, `kimi-cli` | stream-json | all of the above + approvals, questions, steering |
-| Gemini CLI | `gemini` | `gemini` | ACP | models, streaming, resume, interrupt, tools, thinking, usage, approvals |
-| Pi Agent | `pi` | `pi`, `pi-agent` | JSON-RPC | models, streaming, resume, interrupt, tools, thinking, usage, steering |
-| Codex | `codex` | `codex` | JSON-RPC (app-server) | all + approvals, questions, steering |
-| OpenCode | `opencode` | `opencode`, or `OPENCODE_SERVER_URL` (default `http://127.0.0.1:4096`) | HTTP + SSE | all + approvals, questions |
-| Grok Build | `grok` | `grok`, `grok-build` | ACP | models, streaming, tools, thinking, usage, approvals |
+| Agent | id | Command | Protocol | Capabilities | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Command Code | `command-code` | `command-code`, `commandcode`, `cmdc` | single-shot CLI | models, streaming, resume, interrupt, tools, thinking, usage | DSH permission state maps to CLI safety modes; no verifiable interactive approval/question wire |
+| Claude Code | `claude-code` | `claude` | stream-json | models, streaming, resume, interrupt, tools, thinking, usage, approvals, questions | `can_use_tool` approvals and `AskUserQuestion` |
+| Kimi CLI | `kimi` | `kimi`, `kimi-cli` | stream-json | all of the above + approvals, questions, steering | — |
+| Gemini CLI | `gemini` | `gemini` | ACP | models, streaming, resume, interrupt, tools, thinking, usage, approvals, questions | ACP permissions and form elicitation |
+| Pi Agent | `pi` | `pi`, `pi-agent` | JSON-RPC | models, streaming, resume, interrupt, tools, thinking, usage, steering | No verifiable DSH approval/question response wire in the current protocol |
+| Codex | `codex` | `codex` | JSON-RPC (app-server) | all + approvals, questions, steering | — |
+| OpenCode | `opencode` | `opencode`, or `OPENCODE_SERVER_URL` (default `http://127.0.0.1:4096`) | HTTP + SSE | all + approvals, questions | — |
+| Grok Build | `grok` | `grok`, `grok-build` | ACP | models, streaming, tools, thinking, usage, approvals, questions | ACP permissions and form elicitation |
+| MiniMax Code | `mcode` | `mcode` | ACP / stream-json | models, streaming, resume, interrupt, tools, thinking, usage, approvals, questions | Interactive requests use ACP; the explicit-effort `exec` path has no interactive response wire |
+| ZCode | `zcode` | `zcode`, bundled desktop runtime | JSON-RPC bare envelope | models, streaming, resume, interrupt, usage | No verifiable DSH approval/question response wire |
+| CodeBuddy (auto-detects CN/international) | `codebuddy` | `codebuddy`, `codebuddy-code`, `cbc`, and Windows `.cmd` entry points; region selected from environment and auth domain | ACP (`--acp`) | models, streaming, resume, interrupt, tools, thinking, usage, approvals, questions | Supports stdio ACP and HTTP sidecar ACP |
+| WorkBuddy | `workbuddy` | `codebuddy` bundled in the WorkBuddy desktop app | ACP (`--acp`) | models, streaming, resume, interrupt, tools, thinking, approvals, questions | Permissions and form elicitation use the HTTP ACP sidecar |
+| Cursor CLI | `cursor-cli` | `cursor-agent`, `agent` | ACP (`acp`) | models, streaming, resume, interrupt, tools, thinking, approvals, questions | Standard ACP permissions and form elicitation |
+| Kiro CLI | `kiro-cli` | `kiro-cli` | ACP (`acp --agent-engine v3 --auth-method cli`) | models, streaming, resume, interrupt, tools, thinking, approvals, questions | Standard ACP permissions and form elicitation |
+| Qoder | `qoder` | `qoder`, `qodercli` | ACP (`--acp`) | models, streaming, resume, interrupt, tools, thinking, approvals, questions | Standard ACP permissions and form elicitation |
+| Qoder CN | `qoder-cn` | `qodercn`, `qoderclicn` | ACP (`--acp`) | models, streaming, resume, interrupt, tools, thinking, approvals, questions | Standard ACP permissions and form elicitation |
+| Antigravity | `antigravity` | `agy` | stream-json (stdin NDJSON) | models, streaming, resume, interrupt, tools, thinking | Permission state maps to CLI safety modes; no interactive approval/question wire |
 
 **models** model list · **streaming** live output · **resume** continue after restart · **interrupt** cancel a turn · **tools** tool calls in the conversation · **thinking** reasoning/effort · **usage** token or subscription limits · **approvals / questions** native DSH interactions · **steering** inject a message mid-turn.
 
 Unlisted capabilities are unsupported by that CLI or version. Install and log in to each Agent outside DSH; Codingns4DSH never stores Agent credentials.
+
+Approvals and questions are rendered by DSH's native components. Adapters with an interactive response wire normalize Provider requests into `permission-request` or `question-request` events, pass them to the native approval/question components, then send the typed answer back with the Provider's original request ID. ACP adapters use the standard `session/request_permission` and `elicitation/create` form requests; URL elicitation requires a browser security-consent flow and is not advertised. Agents without a verifiable response wire keep those capabilities undeclared; Command Code and Antigravity only map DSH permission state to CLI safety modes.
 
 ---
 

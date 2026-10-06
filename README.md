@@ -76,27 +76,29 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
 
 | Agent | id | 命令 | 协议 | 能力 | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| Command Code | `command-code` | `command-code`、`commandcode`、`cmdc` | 单轮 CLI | 模型、流式、恢复、打断、工具、思考、用量 | — |
-| Claude Code | `claude-code` | `claude` | stream-json | 模型、流式、恢复、打断、工具、思考、用量 | — |
+| Command Code | `command-code` | `command-code`、`commandcode`、`cmdc` | 单轮 CLI | 模型、流式、恢复、打断、工具、思考、用量 | 权限按 DSH 状态映射为 CLI 安全模式；没有可回传的交互式权限/提问协议 |
+| Claude Code | `claude-code` | `claude` | stream-json | 模型、流式、恢复、打断、工具、思考、用量、权限确认、提问 | `can_use_tool` 权限确认与 `AskUserQuestion` 提问 |
 | Kimi CLI | `kimi` | `kimi`、`kimi-cli` | stream-json | 上述全部 + 权限确认、提问、插话 | — |
-| Gemini CLI | `gemini` | `gemini` | ACP | 模型、流式、恢复、打断、工具、思考、用量、权限确认 | — |
-| Pi Agent | `pi` | `pi`、`pi-agent` | JSON-RPC | 模型、流式、恢复、打断、工具、思考、用量、插话 | — |
+| Gemini CLI | `gemini` | `gemini` | ACP | 模型、流式、恢复、打断、工具、思考、用量、权限确认、提问 | ACP 权限与 form elicitation（表单式询问） |
+| Pi Agent | `pi` | `pi`、`pi-agent` | JSON-RPC | 模型、流式、恢复、打断、工具、思考、用量、插话 | 当前协议没有可验证的 DSH 权限/提问回传 |
 | Codex | `codex` | `codex` | JSON-RPC（app-server） | 全部 + 权限确认、提问、插话 | — |
 | OpenCode | `opencode` | `opencode`，或 `OPENCODE_SERVER_URL`（默认 `http://127.0.0.1:4096`） | HTTP + SSE | 全部 + 权限确认、提问 | — |
-| Grok Build | `grok` | `grok`、`grok-build` | ACP | 模型、流式、工具、思考、用量、权限确认 | — |
-| MiniMax Code | `mcode` | `mcode` | ACP / stream-json | 模型、流式、恢复、打断、工具、思考、用量 | 上游贡献者：[chenjunyi000](https://github.com/chenjunyi000)；提交 PR [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6)、[#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
+| Grok Build | `grok` | `grok`、`grok-build` | ACP | 模型、流式、工具、思考、用量、权限确认、提问 | ACP 权限与 form elicitation（表单式询问） |
+| MiniMax Code | `mcode` | `mcode` | ACP / stream-json | 模型、流式、恢复、打断、工具、思考、用量、权限确认、提问 | 默认 ACP 路径支持交互；显式思考档位的 `exec` 路径没有交互式回传；上游贡献者：[chenjunyi000](https://github.com/chenjunyi000)；提交 PR [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6)、[#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
 | ZCode | `zcode` | `zcode`、桌面端内置运行时 | JSON-RPC 裸信封 | 模型、流式、恢复、打断、用量 | 上游贡献者：[chenjunyi000](https://github.com/chenjunyi000)；提交 PR [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6)、[#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
-| CodeBuddy（自动识别 CN/国际版） | `codebuddy` | `codebuddy`、`codebuddy-code`、`cbc` 及 Windows `.cmd` 入口；按环境变量与认证域名自动选择区域 | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考、用量 | CodexHost 上游贡献者：[mouzhi](https://github.com/mouzhi)；首次适配 [f30b000](https://github.com/BytePioneer-AI/codex-host/commit/f30b000f88950c40844b071eec2f6f385c6bcb49) |
-| WorkBuddy | `workbuddy` | WorkBuddy 桌面应用内置 `codebuddy` | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考 | CodexHost 上游贡献者：[BytePioneer-AI（ChongWen）](https://github.com/BytePioneer-AI)；首次适配 [6e9f365](https://github.com/BytePioneer-AI/codex-host/commit/6e9f365e2bf8ac61716f8250475530ae790f2d2f) |
-| Cursor CLI | `cursor-cli` | `cursor-agent`、`agent` | ACP（`acp`） | 模型、流式、恢复、打断、工具、思考 | CodexHost 上游贡献者：[mouzhi](https://github.com/mouzhi)；首次适配 [ad6ba8e](https://github.com/BytePioneer-AI/codex-host/commit/ad6ba8e04d294c473d2dcad99880496ff39c1f7e) |
-| Kiro CLI | `kiro-cli` | `kiro-cli` | ACP（`acp --agent-engine v3 --auth-method cli`） | 模型、流式、恢复、打断、工具、思考 | CodexHost 上游贡献者：[gy212](https://github.com/gy212)；首次适配 [79675cd](https://github.com/BytePioneer-AI/codex-host/commit/79675cdbfdc042eb37a849c3eb1539e9efc40a0d) |
-| Qoder | `qoder` | `qoder`、`qodercli` | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考、权限确认 | CodexHost 上游贡献者：[gy212](https://github.com/gy212)、[BytePioneer-AI（ChongWen）](https://github.com/BytePioneer-AI)；PR #289 合并 [8926130](https://github.com/BytePioneer-AI/codex-host/commit/8926130af1426a467747b66d8d2dbf68f7764a7b) |
-| Qoder CN | `qoder-cn` | `qodercn`、`qoderclicn` | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考、权限确认 | CodexHost 上游贡献者：[gy212](https://github.com/gy212)、[BytePioneer-AI（ChongWen）](https://github.com/BytePioneer-AI)；PR #289 合并 [8926130](https://github.com/BytePioneer-AI/codex-host/commit/8926130af1426a467747b66d8d2dbf68f7764a7b) |
+| CodeBuddy（自动识别 CN/国际版） | `codebuddy` | `codebuddy`、`codebuddy-code`、`cbc` 及 Windows `.cmd` 入口；按环境变量与认证域名自动选择区域 | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考、用量、权限确认、提问 | 支持 stdio ACP 与 HTTP sidecar（旁路服务） ACP；CodexHost 上游贡献者：[mouzhi](https://github.com/mouzhi)；首次适配 [f30b000](https://github.com/BytePioneer-AI/codex-host/commit/f30b000f88950c40844b071eec2f6f385c6bcb49) |
+| WorkBuddy | `workbuddy` | WorkBuddy 桌面应用内置 `codebuddy` | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考、权限确认、提问 | 通过 HTTP ACP sidecar（旁路服务）接入权限与 form elicitation（表单式询问）；CodexHost 上游贡献者：[BytePioneer-AI（ChongWen）](https://github.com/BytePioneer-AI)；首次适配 [6e9f365](https://github.com/BytePioneer-AI/codex-host/commit/6e9f365e2bf8ac61716f8250475530ae790f2d2f) |
+| Cursor CLI | `cursor-cli` | `cursor-agent`、`agent` | ACP（`acp`） | 模型、流式、恢复、打断、工具、思考、权限确认、提问 | ACP 标准权限与 form elicitation（表单式询问）；CodexHost 上游贡献者：[mouzhi](https://github.com/mouzhi)；首次适配 [ad6ba8e](https://github.com/BytePioneer-AI/codex-host/commit/ad6ba8e04d294c473d2dcad99880496ff39c1f7e) |
+| Kiro CLI | `kiro-cli` | `kiro-cli` | ACP（`acp --agent-engine v3 --auth-method cli`） | 模型、流式、恢复、打断、工具、思考、权限确认、提问 | ACP 标准权限与 form elicitation（表单式询问）；CodexHost 上游贡献者：[gy212](https://github.com/gy212)；首次适配 [79675cd](https://github.com/BytePioneer-AI/codex-host/commit/79675cdbfdc042eb37a849c3eb1539e9efc40a0d) |
+| Qoder | `qoder` | `qoder`、`qodercli` | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考、权限确认、提问 | ACP 标准权限与 form elicitation（表单式询问）；CodexHost 上游贡献者：[gy212](https://github.com/gy212)、[BytePioneer-AI（ChongWen）](https://github.com/BytePioneer-AI)；PR #289 合并 [8926130](https://github.com/BytePioneer-AI/codex-host/commit/8926130af1426a467747b66d8d2dbf68f7764a7b) |
+| Qoder CN | `qoder-cn` | `qodercn`、`qoderclicn` | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考、权限确认、提问 | ACP 标准权限与 form elicitation（表单式询问）；CodexHost 上游贡献者：[gy212](https://github.com/gy212)、[BytePioneer-AI（ChongWen）](https://github.com/BytePioneer-AI)；PR #289 合并 [8926130](https://github.com/BytePioneer-AI/codex-host/commit/8926130af1426a467747b66d8d2dbf68f7764a7b) |
 | Antigravity | `antigravity` | `agy` | stream-json（stdin NDJSON） | 模型、流式、恢复、打断、工具、思考 | CodexHost 上游贡献者：[gy212](https://github.com/gy212)；首次适配 [ed4e785](https://github.com/BytePioneer-AI/codex-host/commit/ed4e785116642eafc08e4186e92e83f3816c7765) |
 
 **模型** 模型列表 · **流式** 实时输出 · **恢复** 重启后继续 · **打断** 取消当前回合 · **工具** 对话中渲染工具调用 · **思考** 推理/思考强度 · **用量** token 或订阅额度 · **权限确认 / 提问** 变成 DSH 原生交互 · **插话** 回合中追加消息。
 
 未列出的能力表示该 CLI 或其版本不支持；Agent 的安装与登录都在 DSH 之外完成，Codingns4DSH 不保存 Agent 凭据。
+
+权限确认和提问都由 DSH 原生组件承载。支持交互式回传的适配器会把 Provider 请求转换为公共的 `permission-request` 或 `question-request` 事件，交给 DSH 原生审批/问题组件，再按 Provider 协议和原始请求 ID 回传。ACP 适配器接入标准 `session/request_permission` 与 `elicitation/create` form（表单式询问）；URL elicitation（URL 询问）需要浏览器安全确认流程，当前不宣告该能力。没有可验证回传协议的 Agent 保持能力未声明；Command Code 和 Antigravity 只根据 DSH 权限状态下发 CLI 安全模式。
 
 ---
 
