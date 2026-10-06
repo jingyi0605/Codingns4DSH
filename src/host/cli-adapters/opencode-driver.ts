@@ -587,7 +587,23 @@ function eventToChunk(
   if (isQuestionEvent(type)) {
     const requestId = firstToolText(part.id, part.requestID, part.requestId, properties?.id)
     const questions = readAgentQuestions(part.questions ?? properties?.questions ?? part)
-    if (requestId !== undefined && questions.length > 0) return { type: 'question-request', requestId, questions }
+    const tool = asRecord(part.tool) ?? asRecord(properties?.tool)
+    const callId = firstToolText(
+      part.callID,
+      part.callId,
+      part.toolCallId,
+      tool?.callID,
+      tool?.callId,
+      tool?.toolCallId,
+      properties?.callID,
+      properties?.callId,
+    )
+    if (requestId !== undefined && questions.length > 0) return {
+      type: 'question-request',
+      requestId,
+      questions,
+      ...(callId === undefined ? {} : { callId }),
+    }
   }
   if (type.toLowerCase().includes('permission')) {
     const requestId = firstToolText(part.id, part.requestID, part.requestId, properties?.id)

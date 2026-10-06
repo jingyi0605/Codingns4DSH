@@ -52,6 +52,27 @@ test('公共工具投影层聚合生命周期并提取 Provider 文本块', () =
   assert.deepEqual(sink.results[0]?.result, { output: 'Found 2 items', isError: false })
 })
 
+test('空的 question 工具输入等待问题事件补齐后再落盘', () => {
+  const sink = createSink()
+  const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'question-history')
+  projector.observe({ type: 'tool-event', toolName: 'question', callId: 'question-call', input: '{}', status: 'running' })
+  assert.deepEqual(sink.calls, [])
+
+  const input = JSON.stringify({
+    requestId: 'que-history',
+    questions: [{ id: 'status', question: '选择状态', options: [{ label: '完成' }, { label: '进行中' }] }],
+  })
+  projector.observe({ type: 'tool-event', toolName: 'question', callId: 'question-call', input, status: 'running' })
+  assert.deepEqual(sink.calls[0]?.call, { callId: 'question-call', name: 'question', arguments: input })
+  projector.observe({ type: 'tool-event', toolName: 'question', callId: 'question-call', input: '{}', status: 'running' })
+  assert.deepEqual(sink.calls[0]?.call, { callId: 'question-call', name: 'question', arguments: input })
+
+  const output = JSON.stringify({ requestId: 'que-history', answers: [{ id: 'status', selected: ['完成'] }], providerAnswers: [['完成']] })
+  projector.observe({ type: 'tool-event', toolName: 'question', callId: 'question-call', output, outputMode: 'snapshot', status: 'completed' })
+  projector.finalize('stop')
+  assert.deepEqual(sink.results[0]?.result, { output, isError: false })
+})
+
 test('公共工具投影层在没有事件总线时立即追加原生工具事件', () => {
   const calls: string[] = []
   const bridge = {

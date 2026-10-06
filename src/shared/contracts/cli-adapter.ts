@@ -392,6 +392,8 @@ export type CodingNsAgentEvent =
       readonly type: 'question-request'
       readonly requestId: string
       readonly questions: readonly CodingNsAgentQuestion[]
+      /** Provider 原生问题工具的调用 ID，用于把问题详情并入同一个 tool/call。 */
+      readonly callId?: string
     }
   | {
       /** Provider 上下文压缩生命周期；由公共消息投影层写入 DSH 原生事件。 */

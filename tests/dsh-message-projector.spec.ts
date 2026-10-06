@@ -54,6 +54,70 @@ test('公共消息投影层统一处理正文、思考、工具、用量和唯�
   assert.equal(results.length, 1)
 })
 
+test('问题请求把问题和实际 Provider 答案写入同一个原生工具调用', async () => {
+  const calls = []
+  const results = []
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'opencode',
+    sessionId: 'question-audit',
+    nativeSessions: {
+      appendToolCall(sessionId, call) {
+        calls.push({ sessionId, call })
+        return { sessionId, turn: 1, step: 1, callId: call.callId, callSeq: 1 }
+      },
+      appendToolResult(handle, result) {
+        results.push({ handle, result })
+        return true
+      },
+      askQuestions: async () => ({
+        requestId: 'que-audit',
+        answers: [{ id: 'language', selected: ['TypeScript'] }],
+      }),
+    },
+    respondQuestion: async () => undefined,
+  })
+
+  await projector.push({
+    type: 'question-request',
+    requestId: 'que-audit',
+    callId: 'call-audit',
+    questions: [{ id: 'language', question: '选择语言', options: [{ label: 'TypeScript' }, { label: 'Rust' }] }],
+  })
+  // Provider 随后可能再发一条自然语言 tool/result；原生结果已经落盘后不能覆盖审计答案。
+  await projector.push({
+    type: 'tool-event',
+    toolName: 'question',
+    callId: 'call-audit',
+    output: 'User has answered your questions: "选择语言"="TypeScript".',
+    outputMode: 'snapshot',
+    status: 'completed',
+  })
+
+  assert.deepEqual(calls, [{
+    sessionId: 'question-audit',
+    call: {
+      callId: 'call-audit',
+      name: 'question',
+      arguments: JSON.stringify({
+        requestId: 'que-audit',
+        questions: [{ id: 'language', question: '选择语言', options: [{ label: 'TypeScript' }, { label: 'Rust' }] }],
+      }),
+      adapterId: 'opencode',
+    },
+  }])
+  assert.deepEqual(results, [{
+    handle: { sessionId: 'question-audit', turn: 1, step: 1, callId: 'call-audit', callSeq: 1 },
+    result: {
+      output: JSON.stringify({
+        requestId: 'que-audit',
+        answers: [{ id: 'language', selected: ['TypeScript'] }],
+        providerAnswers: [['TypeScript']],
+      }),
+      isError: false,
+    },
+  }])
+})
+
 test('用量带上下文窗口时写入 DSH request/context 元数据', async () => {
   const contexts = []
   const projector = new CodingNsDshMessageProjector({

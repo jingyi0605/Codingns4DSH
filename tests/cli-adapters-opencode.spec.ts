@@ -294,7 +294,7 @@ test('OpenCode 把权限和问题 SSE 转成公共交互事件并回复原生接
     if (url.endsWith('/event')) {
       const body = new ReadableStream<Uint8Array>({ start(controller) {
         controller.enqueue(encoder.encode('data: {"type":"permission.asked","properties":{"id":"permission-1","sessionID":"remote-interaction","permission":"edit","patterns":["src/a.ts"]}}\n\n'))
-        controller.enqueue(encoder.encode('data: {"type":"question.asked","properties":{"id":"question-1","sessionID":"remote-interaction","questions":[{"question":"选择框架","header":"框架","options":[{"label":"React"},{"label":"Vue"}]}]}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"question.asked","properties":{"id":"question-1","sessionID":"remote-interaction","tool":{"callID":"question-call-1"},"questions":[{"question":"选择框架","header":"框架","options":[{"label":"React"},{"label":"Vue"}]}]}}\n\n'))
         controller.enqueue(encoder.encode('data: {"type":"session.status","properties":{"status":{"type":"idle"}}}\n\n'))
         controller.close()
       } })
@@ -323,6 +323,7 @@ test('OpenCode 把权限和问题 SSE 转成公共交互事件并回复原生接
     {
       type: 'question-request',
       requestId: 'question-1',
+      callId: 'question-call-1',
       questions: [{ id: 'question-1', question: '选择框架', header: '框架', options: [{ label: 'React' }, { label: 'Vue' }] }],
     },
     { type: 'finish', reason: 'stop' },

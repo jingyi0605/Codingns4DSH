@@ -281,6 +281,17 @@ export class CodingNsDshMessageProjector {
   private async requestQuestions(event: Extract<CodingNsAgentEvent, { type: 'question-request' }>): Promise<void> {
     const responder = this.options.respondQuestion
     if (responder === undefined) throw new Error('外部 Agent 发送了问题请求，但适配器没有问题回复接口')
+    // Provider 的 question.asked 往往先于工具结果抵达，且工具输入快照可能是空对象。
+    // 先用原生问题事件补齐同一个 tool/call 的可审计输入，避免历史里只显示 `{}`。
+    if (event.callId !== undefined) {
+      this.toolHistory.observe({
+        type: 'tool-event',
+        toolName: 'question',
+        callId: event.callId,
+        input: JSON.stringify({ requestId: event.requestId, questions: event.questions }),
+        status: 'running',
+      })
+    }
     const response = await this.options.nativeSessions?.askQuestions?.(this.options.sessionId, {
       requestId: event.requestId,
       questions: event.questions,
@@ -288,6 +299,23 @@ export class CodingNsDshMessageProjector {
     }) ?? null
     if (response === null) throw new Error('DSH 原生问题组件不可用或问题已取消')
     await responder(response)
+    if (event.callId !== undefined) {
+      this.toolHistory.observe({
+        type: 'tool-event',
+        toolName: 'question',
+        callId: event.callId,
+        output: JSON.stringify({
+          requestId: event.requestId,
+          answers: response.answers,
+          providerAnswers: response.answers.map((answer) => [
+            ...answer.selected,
+            ...(answer.custom?.trim() ? [answer.custom.trim()] : []),
+          ]),
+        }),
+        outputMode: 'snapshot',
+        status: 'completed',
+      })
+    }
   }
 }
 

@@ -85,7 +85,9 @@ export class CodingNsDshToolHistoryProjector {
     const current = this.records.get(key)
     if (current === undefined && this.observedCalls >= CALL_COUNT_LIMIT) return null
     const toolName = meaningfulToolName(event.toolName, current?.toolName)
-    const input = event.input ?? current?.input
+    const input = shouldIgnoreEmptyQuestionInput(event.input, current?.input, toolName)
+      ? undefined
+      : event.input ?? current?.input
     const record = current ?? {
       callId,
       toolName,
@@ -202,6 +204,9 @@ export class CodingNsDshToolHistoryProjector {
   private persistNativeRecord(record: ToolRecord): boolean {
     const append = this.nativeSessions?.appendToolCall
     if (append === undefined || this.sessionId.trim() === '') return false
+    // OpenCode 的 question 工具可能先发空 `{}` 输入，问题详情随后通过
+    // question.asked 事件抵达；先暂缓原生 tool/call，避免空参数永久落盘。
+    if (record.handle === null && isPendingQuestionRecord(record)) return false
     if (record.handle === null) record.handle = this.appendCall(record, append)
     if (!record.settled || record.resultAppended || record.handle === null) return record.handle !== null
     const appendResult = this.nativeSessions?.appendToolResult
@@ -246,6 +251,7 @@ export class CodingNsDshToolHistoryProjector {
     const append = this.nativeSessions?.appendExternalToolEvent
     const marker = record.externalMarker
     if (append === undefined || marker === undefined || this.sessionId.trim() === '') return false
+    if (!record.externalPersisted && isPendingQuestionRecord(record)) return false
     if (!record.externalPersisted) {
       const start: CodingNsDshExternalToolMarker = marker.phase === 'start'
         ? marker
@@ -447,6 +453,22 @@ function collectTextBlocks(value: unknown): string[] {
 function meaningfulToolName(incoming: string, previous: string | undefined): string {
   const normalized = incoming.trim() || 'tool'
   return normalized === 'tool' && previous !== undefined ? previous : normalized
+}
+
+function isPendingQuestionRecord(record: Pick<ToolRecord, 'toolName' | 'input' | 'settled'>): boolean {
+  if (record.settled || canonicalToolName(record.toolName) !== 'question') return false
+  return isPendingQuestionInput(record.input)
+}
+
+function shouldIgnoreEmptyQuestionInput(incoming: string | undefined, current: string | undefined, toolName: string): boolean {
+  return canonicalToolName(toolName) === 'question'
+    && isPendingQuestionInput(incoming)
+    && !isPendingQuestionInput(current)
+}
+
+function isPendingQuestionInput(input: string | undefined): boolean {
+  const trimmed = input?.trim()
+  return trimmed === undefined || trimmed === '' || trimmed === '{}'
 }
 
 function isNativeStepStart(value: unknown): boolean {
