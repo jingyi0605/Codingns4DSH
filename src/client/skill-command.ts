@@ -90,7 +90,7 @@ interface SkillCatalogCache {
 const skillCatalogCache = new Map<string, SkillCatalogCache>()
 
 interface SkillRegistrationState {
-  inputTriggerReady: boolean
+  catalogReady: boolean
   disposeFallback: (() => void) | undefined
 }
 
@@ -101,20 +101,23 @@ export interface RegisterSkillCommandOptions {
 
 /** 把 Codex 原生 Skill 目录接入 DSH `/` 菜单。 */
 export function registerSkillCommand(ctx: Context, options: RegisterSkillCommandOptions): () => void {
-  const state: SkillRegistrationState = { inputTriggerReady: false, disposeFallback: undefined }
+  const state: SkillRegistrationState = { catalogReady: false, disposeFallback: undefined }
+  const markCatalogReady = (catalog: readonly CodingNsCliSkillDescriptor[]): void => {
+    if (!catalog.some((skill) => skill.enabled) || state.catalogReady) return
+    state.catalogReady = true
+    state.disposeFallback?.()
+    state.disposeFallback = undefined
+  }
   // 原生 inputTriggers 是首选入口；旧版/裁剪版 DSH 没有该服务时，保留可用的
   // commandUi 入口，避免 Skill 能力完全消失。两个服务的装配顺序不固定，原生
-  // source 成功注册后会主动撤销这个兜底入口。
+  // source 只有在目录成功返回后才主动撤销这个兜底入口。
   const commandFiber = ctx.inject(['commandUi'], (scope) => {
-    if (state.inputTriggerReady) return
-    const dispose = registerSkillCommandFallback(scope, options)
+    if (state.catalogReady) return
+    const dispose = registerSkillCommandFallback(scope, options, markCatalogReady)
     state.disposeFallback = dispose
   })
   const triggerFiber = ctx.inject(['inputTriggers'], (scope) => {
-    if (!registerSkillInputTriggerSource(scope, options)) return
-    state.inputTriggerReady = true
-    state.disposeFallback?.()
-    state.disposeFallback = undefined
+    registerSkillInputTriggerSource(scope, options, markCatalogReady)
   })
   return () => {
     state.disposeFallback?.()
@@ -124,7 +127,11 @@ export function registerSkillCommand(ctx: Context, options: RegisterSkillCommand
 }
 
 /** 在没有原生 inputTriggers 时保留旧版 DSH 的可用 Skill 菜单。 */
-function registerSkillCommandFallback(ctx: Context, options: RegisterSkillCommandOptions): (() => void) | undefined {
+function registerSkillCommandFallback(
+  ctx: Context,
+  options: RegisterSkillCommandOptions,
+  onCatalogReady: (catalog: readonly CodingNsCliSkillDescriptor[]) => void,
+): (() => void) | undefined {
   const commandUi = readCommandUi(ctx)
   if (commandUi === undefined) {
     debugWarn('codingns4dsh: /skills 未注册，当前 DSH 未提供 commandUi 服务')
@@ -148,6 +155,7 @@ function registerSkillCommandFallback(ctx: Context, options: RegisterSkillComman
         async options(session, signal) {
           await waitForCliSessionSelection(session.sessionId)
           const catalog = await loadSkillCatalog(options.rpc, session.sessionId, signal, true)
+          onCatalogReady(catalog)
           return catalog
             .filter((skill) => skill.enabled)
             .map((skill) => ({
@@ -183,7 +191,11 @@ function registerSkillCommandFallback(ctx: Context, options: RegisterSkillComman
 }
 
 /** 注册直接的 `/` Skill 搜索源。 */
-function registerSkillInputTriggerSource(ctx: Context, options: RegisterSkillCommandOptions): boolean {
+function registerSkillInputTriggerSource(
+  ctx: Context,
+  options: RegisterSkillCommandOptions,
+  onCatalogReady: (catalog: readonly CodingNsCliSkillDescriptor[]) => void,
+): boolean {
   const inputTriggers = readService<InputTriggersService>(ctx, 'inputTriggers')
   if (inputTriggers === undefined || typeof inputTriggers.registerSource !== 'function') {
     debugWarn('codingns4dsh: Skill `/` 搜索源未注册，当前 DSH 未提供 inputTriggers 服务')
@@ -202,6 +214,7 @@ function registerSkillInputTriggerSource(ctx: Context, options: RegisterSkillCom
         // 空查询表示用户刚打开 `/` 菜单，每次重新读取一次目录；继续输入时
         // 只在当前选择版本的短期缓存上过滤，避免每个字符都拉起 app-server RPC。
         const catalog = await loadSkillCatalog(options.rpc, session.sessionId, request.signal, query === '')
+        onCatalogReady(catalog)
         return catalog
           .filter((skill) => skill.enabled)
           .filter((skill) => query === '' || [skill.name, skill.displayName, skill.description]
@@ -221,6 +234,7 @@ function registerSkillInputTriggerSource(ctx: Context, options: RegisterSkillCom
       const controller = new AbortController()
       void waitForCliSessionSelection(session.sessionId)
         .then(() => loadSkillCatalog(options.rpc, session.sessionId, controller.signal, true))
+        .then((catalog) => { onCatalogReady(catalog) })
         .catch((error: unknown) => {
           debugWarn('codingns4dsh: 预热 Skill `/` 搜索目录失败', { error: error instanceof Error ? error.message : String(error) })
         })
