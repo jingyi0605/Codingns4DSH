@@ -576,9 +576,12 @@ test('Claude Code 参数注入：托管开启时携带 MCP 替身与禁用的 Ta
     buildArgs(input: Record<string, unknown>): readonly string[]
   }).buildArgs({ sessionId, messages: [], prompt: 'hi' })
   try {
-    assert.deepEqual(build('s-claude'), ['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--permission-prompts', 'host', '--include-partial-messages', '--verbose'])
+    // 原生权限与提问使用 stdio 处理器，托管开关不能把协议入口退回旧的 host 参数。
+    const baseArgs = ['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--permission-prompt-tool', 'stdio', '--include-partial-messages', '--verbose']
+    assert.deepEqual(build('s-claude'), baseArgs)
     enableBridge()
     const args = build('s-claude')
+    assert.deepEqual(args.slice(0, baseArgs.length), baseArgs)
     assert.ok(args.includes('--mcp-config'))
     assert.ok(args.includes('--disallowedTools'))
     assert.equal(args.at(-1), 'Task')
