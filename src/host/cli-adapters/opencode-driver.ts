@@ -229,8 +229,16 @@ export class OpenCodeDriver implements CodingNsCliDriver {
             // OpenCode 的 message.part.updated 经常早于 message.updated 到达。
             // 工具调用是当前轮次最重要的实时事件，不能像正文一样等到
             // assistant 消息结算后才投影，否则原生工具节点会被追加到正文底部。
-            // 用户消息没有 tool 字段，因此仍然暂存并等待 role 校验。
+            // 但如果同一消息已经有待确认的正文，必须保持原始事件顺序，不能让
+            // 后到的工具越过前面的正文；等 message.updated 确认 assistant 后再按
+            // 入站顺序冲刷这组 part。用户消息没有 tool 字段，因此仍然暂存并等待
+            // role 校验。
             if (isOpenCodeToolEvent(parsed)) {
+              const pending = pendingMessageParts.get(messageId)
+              if (pending !== undefined && pending.length > 0) {
+                pending.push(parsed)
+                continue
+              }
               const chunk = eventToChunk(parsed, cumulative, undefined, partTypes, contextWindow)
               if (chunk !== null) {
                 emitted = true
@@ -244,7 +252,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
             continue
           }
           if (messageId !== undefined && !assistantMessageIds.has(messageId)) continue
-              const chunk = eventToChunk(parsed, cumulative, assistantMessageIds, partTypes, contextWindow)
+          const chunk = eventToChunk(parsed, cumulative, assistantMessageIds, partTypes, contextWindow)
           if (chunk !== null) {
             emitted = true
             yield chunk
@@ -636,13 +644,17 @@ function eventToChunk(
     if (eventDelta !== undefined) {
       if (!eventDelta) return null
       cumulative.set(key, (cumulative.get(key) ?? 0) + eventDelta.length)
-      return reasoning ? { type: 'reasoning-delta', text: eventDelta } : { type: 'text-delta', text: eventDelta }
+      return reasoning
+        ? { type: 'reasoning-delta', text: eventDelta, ...(messageId === undefined ? {} : { messageId }) }
+        : { type: 'text-delta', text: eventDelta, ...(messageId === undefined ? {} : { messageId }) }
     }
     const previous = cumulative.get(key) ?? 0
     const snapshotDelta = text.slice(previous)
     cumulative.set(key, text.length)
     if (!snapshotDelta) return null
-    return reasoning ? { type: 'reasoning-delta', text: snapshotDelta } : { type: 'text-delta', text: snapshotDelta }
+    return reasoning
+      ? { type: 'reasoning-delta', text: snapshotDelta, ...(messageId === undefined ? {} : { messageId }) }
+      : { type: 'text-delta', text: snapshotDelta, ...(messageId === undefined ? {} : { messageId }) }
   }
   const toolName = firstToolText(part.tool, part.name)
   if (partType === 'tool' && toolName !== undefined) {
