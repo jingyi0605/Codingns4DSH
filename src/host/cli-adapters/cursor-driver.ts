@@ -9,7 +9,7 @@ export interface CursorCliDriverOptions {
   readonly spawn?: typeof spawn
 }
 
-/** Cursor CLI 的实验性 ACP 路径；不声明 Usage、Fork、回滚、压缩或权限交互。 */
+/** Cursor CLI 的实验性 ACP 路径；权限走 ACP 标准 server request。 */
 export class CursorCliDriver extends AcpCliDriver {
   constructor(options: CursorCliDriverOptions = {}) {
     const base: AcpCliDriverOptions = {
@@ -23,7 +23,7 @@ export class CursorCliDriver extends AcpCliDriver {
       buildArgs: cursorAcpArgs,
       runtimeModelSelection: false,
       readModelCatalog: readCursorModelCatalog,
-      capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning'],
+      capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'permission', 'questions'],
       ...(options.spawnSync === undefined ? {} : { spawnSync: options.spawnSync }),
       ...(options.spawn === undefined ? {} : { spawn: options.spawn }),
       fallbackCatalog: cursorFallbackCatalog(),

@@ -1,7 +1,7 @@
 import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsCliAttachment, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliAttachment, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
 import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel } from './model-catalog.js'
@@ -9,8 +9,28 @@ import { discoverClaudeModelCatalog } from './claude-model-options.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
-import { WINDOWS, commandEnvironment } from './process-utils.js'
+import { WINDOWS, commandEnvironment, type CodingNsChildProcess } from './process-utils.js'
 import { claudeBridgeArgs } from '../cli-bridge/injections.js'
+import { readAgentQuestions } from './interaction-events.js'
+
+interface ClaudePendingInteraction {
+  readonly kind: 'permission' | 'question'
+  readonly input: Record<string, unknown>
+  readonly toolName: string
+  readonly toolUseId?: string
+  readonly questions?: readonly ClaudeQuestionBinding[]
+}
+
+interface ClaudeQuestionBinding {
+  readonly id: string
+  /** Claude 的公开协议按 question 文本作为 answers 的键。 */
+  readonly providerKey: string
+}
+
+interface ClaudeInteractionState {
+  write: ((data: string) => void) | undefined
+  readonly pending: Map<string, ClaudePendingInteraction>
+}
 
 export class ClaudeCodeDriver extends StandardStreamDriver {
   /** Claude 的 stream-json 可以在工具完成后暂停并由 Registry 续读同一进程。 */
@@ -31,11 +51,69 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   private detectedVersion: string | null = null
 
   constructor(options: StandardStreamDriverOptions = {}) {
-    super({ id: 'claude-code', name: 'Claude Code', protocol: 'stream-json', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage'] }, { binaries: ['claude'] }, options)
+    super({ id: 'claude-code', name: 'Claude Code', protocol: 'stream-json', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] }, { binaries: ['claude'] }, options)
     this.sessionRoots = options.sessionRoots ?? [join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')]
     this.claudeConfigDir = options.claudeConfigDir
     this.discoveryFetch = options.fetch
   }
+  private readonly interactions = new Map<string, ClaudeInteractionState>()
+
+  /** Claude 的 SDK wire 通过 stdin 接收首条 user 消息并回传 control_response。 */
+  protected get usesStdin(): boolean { return true }
+
+  protected writeStdin(child: CodingNsChildProcess, input: CodingNsCliTurnInput): void {
+    const state = this.interactions.get(input.sessionId)
+    if (state === undefined || child.stdin === null) return
+    state.write = (data) => { child.stdin?.write(data) }
+    // Claude Agent SDK 在首条 user 消息前先发公开 initialize control_request；
+    // 保留这个握手，确保 CLI 开启同一条双向权限通道。
+    state.write(`${JSON.stringify({
+      type: 'control_request',
+      request_id: `initialize:${input.sessionId}`,
+      request: { subtype: 'initialize' },
+    })}\n`)
+    const prompt = promptWithAttachmentPaths(input.prompt, input.attachments ?? [])
+    state.write(`${JSON.stringify({
+      type: 'user',
+      session_id: '',
+      message: { role: 'user', content: [{ type: 'text', text: prompt }] },
+      parent_tool_use_id: null,
+    })}\n`)
+  }
+
+  respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
+    const state = this.interactions.get(sessionId)
+    const pending = state?.pending.get(response.requestId)
+    if (state === undefined || pending?.kind !== 'permission') throw new Error('Claude Code 权限请求已结束')
+    state.pending.delete(response.requestId)
+    this.writeControlResponse(state, response.requestId, response.approved
+      ? { behavior: 'allow', updatedInput: pending.input, ...(pending.toolUseId ? { toolUseID: pending.toolUseId } : {}) }
+      : { behavior: 'deny', message: response.reason?.trim() || '用户拒绝了权限请求', ...(pending.toolUseId ? { toolUseID: pending.toolUseId } : {}) })
+  }
+
+  respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
+    const state = this.interactions.get(sessionId)
+    const pending = state?.pending.get(response.requestId)
+    if (state === undefined || pending?.kind !== 'question' || pending.questions === undefined) throw new Error('Claude Code 问题请求已结束')
+    state.pending.delete(response.requestId)
+    const answers = Object.fromEntries(pending.questions.map((question) => {
+      const answer = response.answers.find((item) => item.id === question.id)
+      const values = answer === undefined ? [] : [...answer.selected, ...(answer.custom?.trim() ? [answer.custom.trim()] : [])]
+      return [question.providerKey, values.join(', ')]
+    }))
+    this.writeControlResponse(state, response.requestId, {
+      behavior: 'allow',
+      updatedInput: { ...pending.input, answers },
+      ...(pending.toolUseId ? { toolUseID: pending.toolUseId } : {}),
+    })
+  }
+
+  private writeControlResponse(state: ClaudeInteractionState, requestId: string, response: Record<string, unknown>): void {
+    const write = state.write
+    if (write === undefined) throw new Error('Claude Code 控制通道不可用，无法回传交互结果')
+    write(`${JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response } })}\n`)
+  }
+
   /** 每次探测都记录版本，让 `--effort` 缓存能随 CLI 原地升级失效。 */
   override async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
     const detected = await super.detect()
@@ -80,16 +158,20 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   override async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const prepared = await prepareClaudeTurnInput(input)
     this.toolInputStates.delete(input.sessionId)
+    const interaction: ClaudeInteractionState = { write: undefined, pending: new Map() }
+    this.interactions.set(input.sessionId, interaction)
     try {
       yield* super.executeTurn(prepared.input)
     } finally {
       this.toolInputStates.delete(input.sessionId)
+      if (this.interactions.get(input.sessionId) === interaction) this.interactions.delete(input.sessionId)
       await prepared.cleanup()
     }
   }
 
   protected buildArgs(input: CodingNsCliTurnInput): readonly string[] {
-    const args = ['-p', promptWithAttachmentPaths(input.prompt, input.attachments ?? []), '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--permission-mode', 'bypassPermissions']
+    const args = ['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--permission-prompts', 'host', '--include-partial-messages', '--verbose']
+    args.push(...claudePermissionArgs(input.permission))
     // 子代理托管开启时注入 MCP 替身工具并停用内建 Task 子代理。
     args.push(...claudeBridgeArgs(input.sessionId, this.descriptor.id))
     for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--add-dir', directory)
@@ -142,10 +224,13 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     this.effortProbe = undefined
     this.detectedVersion = null
     this.toolInputStates.clear()
+    this.interactions.clear()
     super.dispose()
   }
 
   protected parseEvent(value: Record<string, unknown>, input: CodingNsCliTurnInput): readonly CodingNsAgentEvent[] {
+    const interaction = this.parseInteraction(value, input.sessionId)
+    if (interaction !== null) return [interaction]
     const event = value.type === 'stream_event' && typeof value.event === 'object' && value.event !== null ? value.event as Record<string, unknown> : value
     const delta = typeof event.delta === 'object' && event.delta !== null ? event.delta as Record<string, unknown> : null
     if (event.type === 'message_start') this.toolInputStates.delete(input.sessionId)
@@ -183,6 +268,42 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
       })
     }
     return super.parseEvent(value, input)
+  }
+
+  private parseInteraction(value: Record<string, unknown>, sessionId: string): CodingNsAgentEvent | null {
+    if (value.type !== 'control_request' || typeof value.request_id !== 'string' || !isRecord(value.request)) return null
+    const requestId = value.request_id.trim()
+    const request = value.request
+    if (requestId === '' || request.subtype !== 'can_use_tool' || typeof request.tool_name !== 'string' || !isRecord(request.input)) return null
+    const toolName = request.tool_name.trim()
+    const input = request.input
+    const state = this.interactions.get(sessionId)
+    if (state === undefined) return null
+    const toolUseId = typeof request.tool_use_id === 'string' && request.tool_use_id.trim() !== '' ? request.tool_use_id : undefined
+    if (toolName === 'AskUserQuestion') {
+      const questions = readAgentQuestions(input.questions ?? input)
+      if (questions.length === 0) {
+        this.writeControlResponse(state, requestId, { behavior: 'deny', message: 'Claude Code 的问题请求格式无效', ...(toolUseId ? { toolUseID: toolUseId } : {}) })
+        return null
+      }
+      state.pending.set(requestId, {
+        kind: 'question', input, toolName, ...(toolUseId ? { toolUseId } : {}),
+        questions: questions.map((question, index) => ({ id: question.id, providerKey: readClaudeQuestionKey(input, question, index) })),
+      })
+      return { type: 'question-request', requestId, questions }
+    }
+    state.pending.set(requestId, {
+      kind: 'permission', input, toolName, ...(toolUseId ? { toolUseId } : {}),
+    })
+    const reason = typeof request.decision_reason === 'string' && request.decision_reason.trim() !== ''
+      ? request.decision_reason.trim()
+      : typeof request.blocked_path === 'string' && request.blocked_path.trim() !== ''
+        ? `访问路径：${request.blocked_path.trim()}`
+        : undefined
+    return {
+      type: 'permission-request', requestId, kind: toolName, toolName,
+      ...(toolUseId ? { callId: toolUseId } : {}), ...(reason ? { detail: reason } : {}),
+    }
   }
 
   /** 开始事件的空 input 是占位；原生调用头不可改写，必须等完整参数。 */
@@ -348,6 +469,31 @@ function claudeToolResult(item: Record<string, unknown>): ClaudeToolEvent | null
     ...(agentId ? { agentId } : {}),
     ...(detail !== undefined ? { detail } : {}),
   }
+}
+
+/** 把 DSH 的生效权限映射到 Claude Code 公开的 permission-mode。 */
+function claudePermissionArgs(permission: CodingNsCliTurnInput['permission']): readonly string[] {
+  if (permission?.sandboxMode === 'danger-full-access' && permission.approvalPolicy === 'never') return ['--permission-mode', 'bypassPermissions']
+  if (permission?.sandboxMode === 'workspace-write' && permission.approvalPolicy === 'never') return ['--permission-mode', 'acceptEdits']
+  if (permission?.sandboxMode === 'read-only') return ['--permission-mode', 'plan']
+  if (permission?.approvalPolicy === 'ask' && permission.sandboxMode !== undefined) return ['--permission-mode', 'manual']
+  // 缺省字段表示 Host 尚未读到权限事实；不猜测为 bypass，沿用 Claude 的默认审批。
+  return []
+}
+
+function readClaudeQuestionKey(input: Record<string, unknown>, question: CodingNsAgentQuestion, _index: number): string {
+  // Claude SDK 的 AskUserQuestion answers 以完整 question 文本为键，而不是 DSH
+  // 侧生成的 question-N ID。保留 Provider 原文，避免回答被 CLI 丢弃。
+  const source = Array.isArray(input.questions) ? input.questions : []
+  for (const item of source) {
+    if (!isRecord(item)) continue
+    if (typeof item.question === 'string' && item.question.trim() === question.question) return item.question
+  }
+  return question.question
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** 简短别名，便于按适配器名称装配。 */

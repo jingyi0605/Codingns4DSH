@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsAgentQuestionResponse, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
@@ -11,6 +11,7 @@ import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } 
 import { buildAcpPromptBlocks } from './attachment-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 import { reasoningText } from './reasoning-content.js'
+import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 
 export interface GrokBuildDriverOptions {
   readonly binaries?: readonly string[]
@@ -21,14 +22,14 @@ export interface GrokBuildDriverOptions {
 
 /** Grok Build 的 ACP stdio 驱动。ACP 会话和权限细节只在 Host 进程内处理。 */
 export class GrokBuildDriver implements CodingNsCliDriver {
-  readonly descriptor = { id: 'grok', name: 'Grok Build', protocol: 'acp', capabilities: ['models', 'stream', 'tool-events', 'reasoning', 'usage', 'permission'] as const } as const
+  readonly descriptor = { id: 'grok', name: 'Grok Build', protocol: 'acp', capabilities: ['models', 'stream', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] as const } as const
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
   private readonly sessionRoots: readonly string[]
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
-  private readonly sessions = new Map<string, { rpc: JsonRpcProcess; cwd: string | undefined; providerSessionId: string; requests: Map<string, number | string> }>()
+  private readonly sessions = new Map<string, { rpc: JsonRpcProcess; cwd: string | undefined; providerSessionId: string; requests: Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>; questions: Map<string, AcpElicitationRequest> }>()
 
   constructor(options: GrokBuildDriverOptions = {}) {
     this.binaries = options.binaries ?? ['grok', 'grok-build']
@@ -48,7 +49,13 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     if (command === null) return emptyCatalog()
     const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], spawn: this.runSpawn })
     try {
-      await rpc.request('initialize', { protocolVersion: 1, clientInfo: { name: 'codingns4dsh', version: '0.1.1' }, capabilities: {} })
+      await rpc.request('initialize', {
+        protocolVersion: 1,
+        clientInfo: { name: 'codingns4dsh', version: '0.1.1' },
+        // 保留 Grok 旧版使用的 capabilities，同时发送 ACP 标准字段。
+        capabilities: ACP_FORM_CLIENT_CAPABILITIES,
+        clientCapabilities: ACP_FORM_CLIENT_CAPABILITIES,
+      })
       rpc.notify('initialized', {})
       const session = await rpc.request('session/new', { cwd: process.cwd(), mcpServers: [] })
       const parsed = parseGrokCatalog(session)
@@ -89,8 +96,10 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       }
       yield { type: 'session-binding', providerSessionId }
       const stream = streamGrokPrompt(rpc, providerSessionId, await buildAcpPromptBlocks(input.prompt, input.attachments ?? []), input.signal, (notification) => {
+        const elicitation = readAcpElicitationRequest(notification)
+        if (elicitation !== null) state.questions.set(elicitation.requestId, elicitation)
         const requestId = interactionRequestId(notification)
-        if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, notification.id)
+        if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, { rpcId: notification.id, ...permissionOptions(notification) })
       })
       let finishResult: { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }
       while (true) {
@@ -113,11 +122,19 @@ export class GrokBuildDriver implements CodingNsCliDriver {
   respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
     const state = this.sessions.get(sessionId)
     if (state === undefined) throw new Error('Grok 权限请求已结束')
-    const rpcId = state.requests.get(response.requestId)
-    if (rpcId === undefined) throw new Error('Grok 权限请求不存在')
+    const pending = state.requests.get(response.requestId)
+    if (pending === undefined) throw new Error('Grok 权限请求不存在')
     state.requests.delete(response.requestId)
-    const optionId = response.approved ? 'allow-once' : 'reject-once'
-    state.rpc.respond(rpcId, { outcome: { outcome: 'selected', optionId } })
+    const optionId = response.approved ? pending.allowOptionId : pending.rejectOptionId
+    state.rpc.respond(pending.rpcId, { outcome: { outcome: 'selected', optionId } })
+  }
+
+  respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
+    const state = this.sessions.get(sessionId)
+    const pending = state?.questions.get(response.requestId)
+    if (state === undefined || pending === undefined) throw new Error('Grok 问题请求不存在')
+    state.questions.delete(response.requestId)
+    state.rpc.respond(pending.rpcId, acpElicitationResponse(pending, response))
   }
 
   dispose(): void { for (const process of this.processes) process.dispose(); this.processes.clear(); this.sessions.clear(); this.cachedBinary = null }
@@ -128,11 +145,13 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     previous?.rpc.dispose()
     const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], cwd: input.cwd, spawn: this.runSpawn })
     this.processes.add(rpc)
-    const state = { rpc, cwd: input.cwd, providerSessionId: '', requests: new Map<string, number | string>() }
+    const state = { rpc, cwd: input.cwd, providerSessionId: '', requests: new Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>(), questions: new Map<string, AcpElicitationRequest>() }
     await rpc.request('initialize', {
       protocolVersion: 1,
       clientInfo: { name: 'codingns4dsh', version: '0.1.1' },
-      capabilities: {},
+      // 旧版 Grok 读取 capabilities；标准 ACP 读取 clientCapabilities。
+      capabilities: ACP_FORM_CLIENT_CAPABILITIES,
+      clientCapabilities: ACP_FORM_CLIENT_CAPABILITIES,
     })
     rpc.notify('initialized', {})
     if (input.providerSessionId) {
@@ -143,8 +162,15 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     }
     // ACP 权限是 Grok 发起的 server request，先挂起响应，待标准权限入口明确回复原始 id。
     rpc.setServerRequestHandler((message) => {
+      const elicitation = readAcpElicitationRequest(message)
+      if (elicitation !== null) {
+        state.questions.set(elicitation.requestId, elicitation)
+        return new Promise<never>(() => undefined)
+      }
+      if (message.method === 'elicitation/create') return { action: 'cancel' }
       const requestId = interactionRequestId(message)
-      if (requestId !== null && message.id !== undefined && message.id !== null) state.requests.set(requestId, message.id)
+      if (requestId === null || message.id === undefined || message.id === null) return { outcome: { outcome: 'cancelled' } }
+      state.requests.set(requestId, { rpcId: message.id, ...permissionOptions(message) })
       return new Promise<never>(() => undefined)
     })
     this.sessions.set(input.sessionId, state)
@@ -286,13 +312,20 @@ function grokFailure(message: JsonRpcMessage): { message: string; code?: string 
 function acpMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | null {
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
-  const type = typeof update.sessionUpdate === 'string' ? update.sessionUpdate : typeof update.type === 'string' ? update.type : typeof message.method === 'string' ? message.method : ''
+  const type = (typeof update.sessionUpdate === 'string' ? update.sessionUpdate : typeof update.type === 'string' ? update.type : typeof message.method === 'string' ? message.method : '').toLowerCase()
+  const elicitation = readAcpElicitationRequest(message)
+  if (elicitation !== null) return { type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }
   const reasoning = reasoningText(update)
   if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning }
   const text = textValue(update.delta ?? update.text ?? update.content ?? update.message ?? update.detail)
   if (type.includes('permission')) {
     const requestId = permissionRequestId(message) ?? (typeof update.requestId === 'string' ? update.requestId : typeof update.id === 'string' ? update.id : null)
-    if (requestId !== null) return { type: 'permission-request', requestId, kind: typeof update.kind === 'string' ? update.kind : 'unknown', ...(text ? { detail: text } : {}) }
+    if (requestId !== null) {
+      const tool = isToolRecord(update.toolCall) ? update.toolCall : isToolRecord(update.tool_call) ? update.tool_call : update
+      const toolName = firstToolText(tool.title, tool.name, tool.toolName, tool.tool_name, update.toolName)
+      const callId = firstToolText(tool.toolCallId, tool.tool_call_id, tool.callId, tool.call_id, update.callId, update.call_id)
+      return { type: 'permission-request', requestId, kind: typeof update.kind === 'string' ? update.kind : toolName ?? 'unknown', ...(toolName ? { toolName } : {}), ...(callId ? { callId } : {}), ...(text ? { detail: text } : {}) }
+    }
   }
   if (type.includes('agent_message') || type.includes('text') || type === 'message') return text ? { type: 'text-delta', text } : null
   if (type.includes('thought') || type.includes('reason')) return text ? { type: 'reasoning-delta', text } : null
@@ -338,6 +371,21 @@ function permissionRequestId(message: Record<string, any>): string | null {
 
 function interactionRequestId(message: Record<string, any>): string | null {
   return permissionRequestId(message)
+}
+
+function permissionOptions(message: Record<string, any>): { readonly allowOptionId: string; readonly rejectOptionId: string } {
+  const params = isRecord(message.params) ? message.params : {}
+  const options = Array.isArray(params.options) ? params.options : []
+  const ids = options.flatMap((option) => {
+    if (!isRecord(option)) return []
+    const id = firstToolText(option.optionId, option.option_id, option.id)
+    if (id === undefined) return []
+    return [{ id, kind: firstToolText(option.kind, option.type)?.toLowerCase() ?? '' }]
+  })
+  return {
+    allowOptionId: ids.find((option) => /allow|approve|accept/u.test(option.kind))?.id ?? ids[0]?.id ?? 'allow-once',
+    rejectOptionId: ids.find((option) => /reject|deny|decline|cancel/u.test(option.kind))?.id ?? ids[1]?.id ?? 'reject-once',
+  }
 }
 
 function readSessionId(value: unknown): string | null {

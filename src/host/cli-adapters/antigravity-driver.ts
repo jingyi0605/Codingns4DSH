@@ -98,7 +98,8 @@ export interface AntigravityDriverOptions {
 
 /**
  * Antigravity 的 stream-json print 模式：输入从 stdin 以 NDJSON 写入，输出仍是
- * 逐行 JSON。它只有全放行权限模式，因此故意不声明 permission/questions。
+ * 逐行 JSON。公开 CLI 没有 Host 回传 approval/question 的 wire 事件，因此不声明
+ * permission/questions；权限只能使用 CLI 已公开的 plan、accept-edits 和全放行模式。
  */
 export class AntigravityDriver extends StandardStreamDriver implements CodingNsCliDriver {
   private readonly observedText = new WeakMap<object, string>()
@@ -341,7 +342,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     // `--input-format stream-json` 本身会进入 AGY 的 print mode；不要再拼接裸
     // `--print`，也不要把 `--input-format` 放在 `--print` 后面，否则 AGY 会把
     // 选项误当成 prompt，或报 `flag needs an argument: -print`。
-    const args = ['--input-format', 'stream-json', '--output-format', 'stream-json', '--dangerously-skip-permissions']
+    const args = ['--input-format', 'stream-json', '--output-format', 'stream-json', ...antigravityPermissionArgs(input.permission)]
     if (input.providerSessionId) args.unshift('--conversation', input.providerSessionId)
     const directories = new Set<string>([input.cwd ?? process.cwd()])
     for (const attachment of input.attachments ?? []) directories.add(dirname(attachment.path))
@@ -355,6 +356,17 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     }
     return args
   }
+}
+
+/**
+ * Antigravity 没有公开的 permission-request/response wire。未知或需要询问的
+ * 状态必须进入 plan，避免在无 DSH 回传通道时默默执行工具；只有 DSH 已明确
+ * 给出“永不询问”的权限事实时才可自动放行。
+ */
+function antigravityPermissionArgs(permission: CodingNsCliTurnInput['permission']): readonly string[] {
+  if (permission?.sandboxMode === 'danger-full-access' && permission.approvalPolicy === 'never') return ['--dangerously-skip-permissions']
+  if (permission?.sandboxMode === 'workspace-write' && permission.approvalPolicy === 'never') return ['--mode', 'accept-edits']
+  return ['--mode', 'plan']
 }
 
 /** 将 AGY 的最终正文快照与前面已发出的增量对齐，避免重复渲染。 */

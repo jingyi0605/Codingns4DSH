@@ -15,7 +15,7 @@ export class KiroCliDriver extends AcpCliDriver {
       name: 'Kiro CLI',
       binaries: options.binaries ?? ['kiro-cli'],
       args: ['acp', '--agent-engine', 'v3', '--auth-method', 'cli'],
-      capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning'],
+      capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'permission', 'questions'],
       ...(options.spawnSync === undefined ? {} : { spawnSync: options.spawnSync }),
       ...(options.spawn === undefined ? {} : { spawn: options.spawn }),
       probeReason: 'Kiro 会话存储为嵌套目录，尚未完成只读索引验证；未按 JSONL 规则猜测路径',

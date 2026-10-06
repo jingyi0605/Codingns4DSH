@@ -5,9 +5,9 @@ import { join, resolve } from 'node:path'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentPermissionResponse,
+  CodingNsAgentQuestionResponse,
   CodingNsCliModelCatalog,
   CodingNsCliPermissionState,
-  CodingNsAgentQuestionResponse,
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
@@ -17,6 +17,7 @@ import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 import { isRecord, usageChunk } from './rpc-driver-utils.js'
 import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { reasoningText } from './reasoning-content.js'
+import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 
 /** Qoder 的两个发行身份共用协议和驱动，只在这里保存产品差异。 */
 export type QoderCliVariant = 'qoder' | 'qoder-cn'
@@ -79,6 +80,7 @@ interface QoderSession {
   acpSessionId: string
   permission: CodingNsCliPermissionState | undefined
   pendingPermissions: Map<string, PendingPermission>
+  pendingQuestions: Map<string, AcpElicitationRequest>
   eventQueue: QoderTurnEventQueue | undefined
 }
 
@@ -105,7 +107,7 @@ export class QoderCliDriver implements CodingNsCliDriver {
     readonly id: 'qoder' | 'qoder-cn'
     readonly name: 'Qoder' | 'Qoder CN'
     readonly protocol: 'acp'
-    readonly capabilities: readonly ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission']
+    readonly capabilities: readonly ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions']
   }
   private readonly profile: QoderCliProfile
   private readonly binaries: readonly string[]
@@ -131,7 +133,7 @@ export class QoderCliDriver implements CodingNsCliDriver {
       id: this.profile.id,
       name: this.profile.name,
       protocol: 'acp',
-      capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission'],
+      capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'],
     }
   }
 
@@ -211,7 +213,8 @@ export class QoderCliDriver implements CodingNsCliDriver {
       onNotification: (message) => {
         // JsonRpcProcess 会先通知监听器，再在下一个微任务调用 server handler。
         // 先登记权限 deferred，确保 UI 消费 permission-request 后可以立即应答。
-        if (message.method === 'session/request_permission') this.ensurePermission(session, message)
+        if (message.method === 'session/request_permission' && permissionRequestId(message) !== null) this.ensurePermission(session, message)
+        if (message.method === 'elicitation/create' && readAcpElicitationRequest(message) !== null) this.ensureQuestion(session, message)
         if (belongsToSession(message, session.acpSessionId)) eventQueue.push(message)
       },
     }).then((value) => { promptResult = value; return value }, (error: unknown) => { promptError = error; return undefined })
@@ -266,9 +269,12 @@ export class QoderCliDriver implements CodingNsCliDriver {
     pending.resolve({ outcome: { outcome: 'selected', optionId: response.approved ? pending.allowOptionId : pending.rejectOptionId } })
   }
 
-  /** Qoder 当前 ACP 文档没有独立问题请求；保留接口以便未来协议扩展时不破坏驱动。 */
-  respondQuestion(_sessionId: string, _response: CodingNsAgentQuestionResponse): void {
-    throw new Error(`${this.profile.name} ACP 不支持问题请求`)
+  respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
+    const session = this.sessions.get(sessionId)
+    const pending = session?.pendingQuestions.get(response.requestId)
+    if (session === undefined || pending === undefined) throw new Error(`${this.profile.name} 问题请求不存在`)
+    session.pendingQuestions.delete(response.requestId)
+    session.rpc.respond(pending.rpcId, acpElicitationResponse(pending, response))
   }
 
   async interrupt(sessionId: string): Promise<void> {
@@ -298,6 +304,7 @@ export class QoderCliDriver implements CodingNsCliDriver {
       acpSessionId: '',
       permission: input.permission,
       pendingPermissions: new Map(),
+      pendingQuestions: new Map(),
       eventQueue: undefined,
     }
     this.sessions.set(input.sessionId, session)
@@ -307,9 +314,15 @@ export class QoderCliDriver implements CodingNsCliDriver {
       if (this.sessions.get(input.sessionId)?.rpc === session.rpc) this.sessions.delete(input.sessionId)
     })
     session.rpc.setServerRequestHandler((request) => {
-      if (request.method !== 'session/request_permission') throw new Error('请求不受支持')
+      const elicitation = readAcpElicitationRequest(request)
+      if (elicitation !== null) {
+        session.pendingQuestions.set(elicitation.requestId, elicitation)
+        return new Promise<never>(() => undefined)
+      }
+      if (request.method === 'elicitation/create') return { action: 'cancel' }
+      if (request.method !== 'session/request_permission') return { outcome: { outcome: 'cancelled' } }
       const requestId = permissionRequestId(request)
-      if (requestId === null) throw new Error('权限请求缺少 request id')
+      if (requestId === null) return { outcome: { outcome: 'cancelled' } }
       return this.ensurePermission(session, request)
     })
     try {
@@ -318,7 +331,7 @@ export class QoderCliDriver implements CodingNsCliDriver {
         clientInfo: { name: 'codingns4dsh', version: '0.2.0' },
         // Qoder 1.1 的 ACP schema 不接受空的 fs/terminal capability 对象；
         // Qoder 自己负责工具执行，Host 只声明基础协议能力即可。
-        clientCapabilities: {},
+        clientCapabilities: ACP_FORM_CLIENT_CAPABILITIES,
       }, { signal: input.signal, killOnAbort: false })
       session.rpc.notify('initialized', {})
       return session
@@ -360,6 +373,11 @@ export class QoderCliDriver implements CodingNsCliDriver {
     }
     session.pendingPermissions.set(requestId, pending)
     return promise
+  }
+
+  private ensureQuestion(session: QoderSession, request: JsonRpcMessage): void {
+    const elicitation = readAcpElicitationRequest(request)
+    if (elicitation !== null) session.pendingQuestions.set(elicitation.requestId, elicitation)
   }
 }
 
@@ -661,6 +679,8 @@ function qoderAcpMessageToChunk(
   const update = isRecord(params.update) ? params.update : params
   const rawType = firstToolText(update.sessionUpdate, update.type, message.method) ?? ''
   const type = rawType.toLowerCase()
+  const elicitation = readAcpElicitationRequest(message)
+  if (elicitation !== null) return { type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }
   const reasoning = reasoningText(update)
   if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning, messageId: qoderMessageId(update) ?? `qoder-assistant-${input.sessionId}-${assistantMessageSegment}` }
   const text = acpText(update.delta ?? update.text ?? update.content ?? update.message ?? update.detail)

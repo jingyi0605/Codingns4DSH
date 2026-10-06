@@ -1,6 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process'
 import type {
   CodingNsAgentEvent,
+  CodingNsAgentPermissionResponse,
+  CodingNsAgentQuestionResponse,
   CodingNsCliCapability,
   CodingNsCliModelCatalog,
   CodingNsCliTurnInput,
@@ -13,6 +15,7 @@ import { buildAcpPromptBlocks } from './attachment-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 import { reasoningText } from './reasoning-content.js'
+import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 
 export interface AcpCliDriverOptions {
   readonly binaries?: readonly string[]
@@ -46,13 +49,22 @@ interface AcpSession {
   readonly cwd: string | undefined
   readonly argsKey: string
   acpSessionId: string
+  readonly permissions: Map<string, AcpPermissionRequest>
+  readonly questions: Map<string, AcpElicitationRequest>
+}
+
+interface AcpPermissionRequest {
+  readonly rpcId: number | string
+  readonly allowOptionId: string
+  readonly rejectOptionId: string
 }
 
 /**
  * Cursor/Kiro 共用的最小 ACP 驱动。
  *
- * ACP 的权限请求在这两个适配器上没有可验证的 DSH 应答能力，因此统一拒绝；
- * 驱动不声明 permission/questions/usage/fork 等能力，避免把协议字段误当能力。
+ * ACP 标准权限和 form elicitation 请求由本驱动保留原始 JSON-RPC id，并通过
+ * 统一权限/问题事件交给 DSH 原生组件；未知的扩展 server request 仍然快速取消，
+ * 避免 Provider 永久等待。URL elicitation 需要浏览器安全同意流程，本驱动不宣告。
  */
 export class AcpCliDriver implements CodingNsCliDriver {
   readonly descriptor
@@ -121,6 +133,29 @@ export class AcpCliDriver implements CodingNsCliDriver {
   async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
     if (!input.providerSessionId?.trim()) return { state: 'unknown', reason: '缺少 Provider 会话标识' }
     return { state: 'unknown', reason: this.probeReason }
+  }
+
+  /** 回复 ACP 标准 `session/request_permission`，只使用 Provider 给出的选项 id。 */
+  respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
+    const session = this.sessions.get(sessionId)
+    const pending = session?.permissions.get(response.requestId)
+    if (session === undefined || pending === undefined) throw new Error(`${this.descriptor.name} 权限请求不存在`)
+    session.permissions.delete(response.requestId)
+    session.rpc.respond(pending.rpcId, {
+      outcome: {
+        outcome: 'selected',
+        optionId: response.approved ? pending.allowOptionId : pending.rejectOptionId,
+      },
+    })
+  }
+
+  /** 回复 ACP 标准 `elicitation/create` 的 form 内容。 */
+  respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
+    const session = this.sessions.get(sessionId)
+    const pending = session?.questions.get(response.requestId)
+    if (session === undefined || pending === undefined) throw new Error(`${this.descriptor.name} 问题请求不存在`)
+    session.questions.delete(response.requestId)
+    session.rpc.respond(pending.rpcId, acpElicitationResponse(pending, response))
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
@@ -198,15 +233,33 @@ export class AcpCliDriver implements CodingNsCliDriver {
     if (previous !== undefined && previous.cwd === input.cwd && previous.argsKey === argsKey && !previous.rpc.isClosed) return previous
     previous?.rpc.dispose()
     const rpc = new JsonRpcProcess({ command, args, cwd: input.cwd, env: this.environment, spawn: this.runSpawn })
-    const state: AcpSession = { rpc, cwd: input.cwd, argsKey, acpSessionId: '' }
+    const state: AcpSession = { rpc, cwd: input.cwd, argsKey, acpSessionId: '', permissions: new Map(), questions: new Map() }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, state)
     rpc.addExitListener(() => {
       this.processes.delete(rpc)
       if (this.sessions.get(input.sessionId)?.rpc === rpc) this.sessions.delete(input.sessionId)
     })
-    // 没有 DSH 权限应答通道时拒绝 Provider 的交互式授权，防止轮次永久等待。
-    rpc.setServerRequestHandler(() => ({ outcome: { outcome: 'cancelled' } }))
+    // ACP 标准权限请求必须等待 DSH 原生审批；未知扩展请求仍快速取消，避免
+    // Provider 因没有对应能力而永久挂起。
+    rpc.setServerRequestHandler((message) => {
+      const elicitation = readAcpElicitationRequest(message)
+      if (elicitation !== null) {
+        state.questions.set(elicitation.requestId, elicitation)
+        return new Promise<never>(() => undefined)
+      }
+      if (message.method === 'elicitation/create') return { action: 'cancel' }
+      const permission = readAcpPermissionRequest(message)
+      if (permission === null || message.id === undefined || message.id === null) {
+        return { outcome: { outcome: 'cancelled' } }
+      }
+      state.permissions.set(permission.requestId, {
+        rpcId: message.id,
+        allowOptionId: permission.allowOptionId,
+        rejectOptionId: permission.rejectOptionId,
+      })
+      return new Promise<never>(() => undefined)
+    })
     try {
       await this.initialize(rpc, input.signal)
       return state
@@ -221,7 +274,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     await rpc.request('initialize', {
       protocolVersion: 1,
       clientInfo: { name: 'codingns4dsh', version: '0.1.1' },
-      clientCapabilities: {},
+      clientCapabilities: ACP_FORM_CLIENT_CAPABILITIES,
     }, { signal, killOnAbort: false })
     rpc.notify('initialized', {})
   }
@@ -252,6 +305,19 @@ function acpMessageToChunk(message: JsonRpcMessage, cancelled: boolean): CodingN
   const content = isRecord(update.content) ? update.content : undefined
   const messageId = firstToolText(update.messageId, update.message_id, update.itemId, update.item_id, content?.messageId, content?.message_id, content?.id)
   const withMessageId = messageId === undefined ? {} : { messageId }
+  const permission = readAcpPermissionRequest(message)
+  if (permission !== null) {
+    return {
+      type: 'permission-request',
+      requestId: permission.requestId,
+      kind: permission.kind,
+      ...(permission.toolName === undefined ? {} : { toolName: permission.toolName }),
+      ...(permission.callId === undefined ? {} : { callId: permission.callId }),
+      ...(permission.detail === undefined ? {} : { detail: permission.detail }),
+    }
+  }
+  const elicitation = readAcpElicitationRequest(message)
+  if (elicitation !== null) return { type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }
   const reasoning = reasoningText(update)
   if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning, ...withMessageId }
   if (type.includes('thought') || type.includes('reason')) return text === null ? null : { type: 'reasoning-delta', text, ...withMessageId }
@@ -265,6 +331,46 @@ function acpMessageToChunk(message: JsonRpcMessage, cancelled: boolean): CodingN
   }
   if (type.includes('turn_completed') || type.includes('turn_complete') || type === 'completed' || type === 'done' || type === 'prompt_end') return { type: 'finish', reason: cancelled ? 'cancel' : 'stop' }
   return null
+}
+
+/** 读取 ACP v1/v2 标准权限请求；未知扩展字段不会被当成权限。 */
+function readAcpPermissionRequest(message: JsonRpcMessage): {
+  readonly requestId: string
+  readonly kind: string
+  readonly toolName?: string
+  readonly callId?: string
+  readonly detail?: string
+  readonly allowOptionId: string
+  readonly rejectOptionId: string
+} | null {
+  const method = typeof message.method === 'string' ? message.method.toLowerCase() : ''
+  const params = isRecord(message.params) ? message.params : {}
+  // ACP v1 的可回传权限只有 server request；session/update 中同名扩展没有
+  // 可验证的响应方法，不能把它投影成可回传的 DSH 权限事件。
+  if (method !== 'session/request_permission') return null
+  const requestId = message.id ?? params.requestId ?? params.request_id ?? params.id
+  if (typeof requestId !== 'string' && typeof requestId !== 'number') return null
+  const tool = isRecord(params.toolCall) ? params.toolCall : isRecord(params.tool_call) ? params.tool_call : {}
+  const toolName = firstToolText(tool.title, tool.name, tool.toolName, params.toolName, params.tool_name)
+  const callId = firstToolText(tool.toolCallId, tool.tool_call_id, tool.callId, tool.call_id, params.callId, params.call_id)
+  const detail = firstToolText(params.detail, params.reason, params.message, tool.detail)
+  const kind = firstToolText(params.kind, params.permissionKind, tool.kind) ?? toolName ?? 'unknown'
+  const options = Array.isArray(params.options) ? params.options : []
+  const ids = options.flatMap((option) => {
+    if (!isRecord(option)) return []
+    const id = firstToolText(option.optionId, option.option_id, option.id)
+    if (id === undefined) return []
+    const optionKind = firstToolText(option.kind, option.type)?.toLowerCase() ?? ''
+    return [{ id, kind: optionKind }]
+  })
+  return {
+    requestId: String(requestId), kind,
+    ...(toolName === undefined ? {} : { toolName }),
+    ...(callId === undefined ? {} : { callId }),
+    ...(detail === undefined ? {} : { detail }),
+    allowOptionId: ids.find((option) => /allow|approve|accept/u.test(option.kind))?.id ?? ids[0]?.id ?? 'allow-once',
+    rejectOptionId: ids.find((option) => /reject|deny|decline|cancel/u.test(option.kind))?.id ?? ids[1]?.id ?? 'reject-once',
+  }
 }
 
 function toolChunk(update: Record<string, any>, type: string): CodingNsAgentEvent | null {

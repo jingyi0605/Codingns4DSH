@@ -6,6 +6,8 @@ import { createConnection } from 'node:net'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import type {
   CodingNsAgentEvent,
+  CodingNsAgentPermissionResponse,
+  CodingNsAgentQuestionResponse,
   CodingNsCliCapability,
   CodingNsCliModelCatalog,
   CodingNsCliTurnInput,
@@ -25,6 +27,7 @@ import { reasoningText } from './reasoning-content.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 import { commandEnvironment, resolveCommandPath, WINDOWS } from './process-utils.js'
 import { isProviderDefaultModel } from './model-catalog.js'
+import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 
 /** WorkBuddy 将 Auto 拆成三个模型 ID，但它们实际是 Auto 的思考档位。 */
 const WORKBUDDY_AUTO_TIER_MODELS = [
@@ -82,6 +85,18 @@ export interface CodeBuddyDriverOptions {
   readonly sidecarSocketPath?: string
   /** 覆盖 WorkBuddy Electron 启动器路径。 */
   readonly workbuddyElectronPath?: string
+}
+
+interface CodeBuddyPermissionRequest {
+  readonly rpcId: number | string
+  readonly allowOptionId: string
+  readonly rejectOptionId: string
+  readonly client?: WorkBuddyHttpAcpClient
+}
+
+interface CodeBuddyQuestionRequest {
+  readonly request: AcpElicitationRequest
+  readonly client?: WorkBuddyHttpAcpClient
 }
 
 const CODEBUDDY_HOME = join(homedir(), '.codebuddy')
@@ -142,7 +157,7 @@ export const WORKBUDDY_PROFILE: CodeBuddyRuntimeProfile = {
  * 仍由独立订阅读取器负责，不混入 ACP 能力声明。
  */
 const CONSERVATIVE_CAPABILITIES: readonly CodingNsCliCapability[] = [
-  'models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage',
+  'models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions',
 ]
 
 /** 无副作用模型探测的最低回退项；登记层可以传入更完整的真实目录覆盖它。 */
@@ -195,6 +210,8 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
   private detectionDiagnostic: string | undefined
   private readonly processes = new Map<string, { readonly rpc: JsonRpcProcess; providerSessionId: string }>()
   private readonly sidecarProcesses = new Map<string, { readonly client: WorkBuddyHttpAcpClient; readonly sidecar: WorkBuddySidecarClient; readonly sidecarSessionId: string; readonly providerSessionId: string; readonly dispose: () => Promise<void> }>()
+  private readonly permissions = new Map<string, Map<string, CodeBuddyPermissionRequest>>()
+  private readonly questions = new Map<string, Map<string, CodeBuddyQuestionRequest>>()
 
   constructor(options: CodeBuddyDriverOptions = {}) {
     this.profile = options.profile ?? CODEBUDDY_PROFILE
@@ -228,6 +245,36 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
   get discoveryError(): string | undefined { return this.detectionDiagnostic }
 
   getDiscoveryDiagnostic(): string | undefined { return this.detectionDiagnostic }
+
+  /** 回复 ACP 标准权限请求。 */
+  async respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): Promise<void> {
+    const pending = this.permissions.get(sessionId)?.get(response.requestId)
+    if (pending === undefined) throw new Error(`${this.profile.displayName} 权限请求不存在`)
+    this.permissions.get(sessionId)!.delete(response.requestId)
+    const result = { outcome: { outcome: 'selected', optionId: response.approved ? pending.allowOptionId : pending.rejectOptionId } }
+    if (pending.client !== undefined) {
+      await pending.client.respond(pending.rpcId, result)
+      return
+    }
+    const process = this.processes.get(sessionId)?.rpc
+    if (process === undefined) throw new Error(`${this.profile.displayName} ACP 进程已结束`)
+    process.respond(pending.rpcId, result)
+  }
+
+  /** 回复 ACP 标准 form elicitation。 */
+  async respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): Promise<void> {
+    const pending = this.questions.get(sessionId)?.get(response.requestId)
+    if (pending === undefined) throw new Error(`${this.profile.displayName} 问题请求不存在`)
+    this.questions.get(sessionId)!.delete(response.requestId)
+    const result = acpElicitationResponse(pending.request, response)
+    if (pending.client !== undefined) {
+      await pending.client.respond(pending.request.rpcId, result)
+      return
+    }
+    const process = this.processes.get(sessionId)?.rpc
+    if (process === undefined) throw new Error(`${this.profile.displayName} ACP 进程已结束`)
+    process.respond(pending.request.rpcId, result)
+  }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
     this.detectionDiagnostic = undefined
@@ -298,13 +345,28 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
     })
     const processState = { rpc, providerSessionId: '' }
     this.processes.set(input.sessionId, processState)
-    // 未声明 permission/questions 时，私有交互必须快速拒绝，不能让一轮永久等待。
-    rpc.setServerRequestHandler(() => ({ outcome: { outcome: 'cancelled' } }))
+    const permissions = new Map<string, CodeBuddyPermissionRequest>()
+    this.permissions.set(input.sessionId, permissions)
+    const questions = new Map<string, CodeBuddyQuestionRequest>()
+    this.questions.set(input.sessionId, questions)
+    // ACP 标准权限和 form elicitation 交给 DSH 原生组件；未知扩展请求快速取消。
+    rpc.setServerRequestHandler((message) => {
+      const elicitation = readAcpElicitationRequest(message)
+      if (elicitation !== null) {
+        questions.set(elicitation.requestId, { request: elicitation })
+        return new Promise<never>(() => undefined)
+      }
+      if (message.method === 'elicitation/create') return { action: 'cancel' }
+      const permission = codeBuddyPermissionRequest(message)
+      if (permission === null || message.id === undefined || message.id === null) return { outcome: { outcome: 'cancelled' } }
+      permissions.set(permission.requestId, { rpcId: message.id, allowOptionId: permission.allowOptionId, rejectOptionId: permission.rejectOptionId })
+      return new Promise<never>(() => undefined)
+    })
     try {
       await rpc.request('initialize', {
         protocolVersion: 1,
         clientInfo: { name: 'codingns4dsh', version: '0.1.1' },
-        clientCapabilities: {},
+        clientCapabilities: ACP_FORM_CLIENT_CAPABILITIES,
       }, sidecarSignalOptions(input.signal))
       rpc.notify('initialized', {})
 
@@ -385,6 +447,8 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
       }
     } finally {
       if (this.processes.get(input.sessionId) === processState) this.processes.delete(input.sessionId)
+      this.permissions.delete(input.sessionId)
+      this.questions.delete(input.sessionId)
       await rpc.disposeAndWait()
     }
   }
@@ -431,6 +495,28 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
       if (endpoint === '') throw new Error('WorkBuddy sidecar 未返回 ACP 地址')
       client = new WorkBuddyHttpAcpClient(endpoint)
       await client.connect(input.signal)
+      const acpClient = client
+      const permissions = new Map<string, CodeBuddyPermissionRequest>()
+      this.permissions.set(input.sessionId, permissions)
+      const questions = new Map<string, CodeBuddyQuestionRequest>()
+      this.questions.set(input.sessionId, questions)
+      acpClient.setServerRequestHandler((message) => {
+        const elicitation = readAcpElicitationRequest(message)
+        if (elicitation !== null) {
+          questions.set(elicitation.requestId, { request: elicitation, client: acpClient })
+          return true
+        }
+        if (message.method === 'elicitation/create') return false
+        const permission = codeBuddyPermissionRequest(message)
+        if (permission === null || message.id === undefined || message.id === null) return false
+        permissions.set(permission.requestId, {
+          rpcId: message.id,
+          allowOptionId: permission.allowOptionId,
+          rejectOptionId: permission.rejectOptionId,
+          client: acpClient,
+        })
+        return true
+      })
       const state = {
         client,
         sidecar,
@@ -443,7 +529,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
       await client.request('initialize', {
         protocolVersion: 1,
         clientInfo: { name: 'codingns4dsh', version: '0.1.1' },
-        clientCapabilities: {},
+        clientCapabilities: ACP_FORM_CLIENT_CAPABILITIES,
       }, sidecarSignalOptions(input.signal))
       await client.notify('initialized', {}, input.signal)
 
@@ -511,6 +597,8 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
         yield emptyResponseFinish(promptFailure(promptResponse))
       }
     } finally {
+      this.permissions.delete(input.sessionId)
+      this.questions.delete(input.sessionId)
       await cleanup()
     }
   }
@@ -738,6 +826,7 @@ class WorkBuddyHttpAcpClient {
   private closed = false
   private readonly activeControllers = new Set<AbortController>()
   private readonly responseReleases = new WeakMap<Response, () => void>()
+  private serverRequestHandler: ((message: JsonRpcMessage) => boolean) | undefined
 
   constructor(private readonly endpoint: string) {}
 
@@ -773,6 +862,10 @@ class WorkBuddyHttpAcpClient {
     }
   }
 
+  setServerRequestHandler(handler: ((message: JsonRpcMessage) => boolean) | undefined): void {
+    this.serverRequestHandler = handler
+  }
+
   async *streamRequest(method: string, params: unknown = {}, signal?: AbortSignal, _killOnAbort = true): AsyncGenerator<JsonRpcMessage, unknown, void> {
     const id = this.nextId++
     const response = await this.post({ jsonrpc: '2.0', id, method, params }, signal)
@@ -784,7 +877,14 @@ class WorkBuddyHttpAcpClient {
           continue
         }
         if (typeof message.method === 'string' && message.id !== undefined && message.id !== null) {
-          void this.respond(message.id, { outcome: { outcome: 'cancelled' } }, signal)
+          const handled = this.serverRequestHandler?.(message) === true
+          if (!handled) {
+            const result = message.method === 'elicitation/create'
+              ? { action: 'cancel' }
+              : { outcome: { outcome: 'cancelled' } }
+            void this.respond(message.id, result, signal)
+          }
+          if (handled) yield message
           continue
         }
         yield message
@@ -816,7 +916,7 @@ class WorkBuddyHttpAcpClient {
     }
   }
 
-  private async respond(id: number | string, result: unknown, signal?: AbortSignal): Promise<void> {
+  async respond(id: number | string, result: unknown, signal?: AbortSignal): Promise<void> {
     try {
       const response = await this.post({ jsonrpc: '2.0', id, result }, signal)
       try {
@@ -1422,6 +1522,19 @@ function codeBuddyMessageToChunk(message: JsonRpcMessage): CodingNsAgentEvent | 
   const messageId = firstToolText(update.messageId, update.message_id, update.itemId, update.item_id, content?.messageId, content?.message_id, content?.id)
   const withMessageId = messageId === undefined ? {} : { messageId }
 
+  const permission = codeBuddyPermissionRequest(message)
+  if (permission !== null) {
+    return {
+      type: 'permission-request',
+      requestId: permission.requestId,
+      kind: permission.kind,
+      ...(permission.toolName === undefined ? {} : { toolName: permission.toolName }),
+      ...(permission.callId === undefined ? {} : { callId: permission.callId }),
+      ...(permission.detail === undefined ? {} : { detail: permission.detail }),
+    }
+  }
+  const elicitation = readAcpElicitationRequest(message)
+  if (elicitation !== null) return { type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }
   if (type.includes('permission') || type.includes('interruption')) return null
   if (type.includes('thought') || type.includes('reason')) return text ? { type: 'reasoning-delta', text, ...withMessageId } : null
   if (type.includes('user') && type.includes('message')) return null
@@ -1467,6 +1580,42 @@ function codeBuddyMessageToChunk(message: JsonRpcMessage): CodingNsAgentEvent | 
     return { type: 'finish', reason: 'error', ...(failure === undefined ? {} : { failure }) }
   }
   return null
+}
+
+/** 读取 CodeBuddy/WorkBuddy 使用的 ACP 标准权限请求。 */
+function codeBuddyPermissionRequest(message: JsonRpcMessage): {
+  readonly requestId: string
+  readonly kind: string
+  readonly toolName?: string
+  readonly callId?: string
+  readonly detail?: string
+  readonly allowOptionId: string
+  readonly rejectOptionId: string
+} | null {
+  const method = typeof message.method === 'string' ? message.method.toLowerCase() : ''
+  const params = isRecord(message.params) ? message.params : {}
+  // 只有标准 server request 有明确的 response id；notification 扩展没有可验证
+  // 的回传方法，不能把它伪装成可审批的 DSH 权限事件。
+  if (method !== 'session/request_permission') return null
+  const requestId = message.id ?? params.requestId ?? params.request_id ?? params.id
+  if (typeof requestId !== 'string' && typeof requestId !== 'number') return null
+  const tool = isRecord(params.toolCall) ? params.toolCall : isRecord(params.tool_call) ? params.tool_call : {}
+  const toolName = firstToolText(tool.title, tool.name, tool.toolName, tool.tool_name, params.toolName, params.tool_name)
+  const callId = firstToolText(tool.toolCallId, tool.tool_call_id, tool.callId, tool.call_id, params.callId, params.call_id)
+  const detail = firstToolText(params.detail, params.reason, params.message, tool.detail)
+  const options = Array.isArray(params.options) ? params.options : []
+  const ids = options.flatMap((option) => {
+    if (!isRecord(option)) return []
+    const id = firstToolText(option.optionId, option.option_id, option.id)
+    if (id === undefined) return []
+    return [{ id, kind: firstToolText(option.kind, option.type)?.toLowerCase() ?? '' }]
+  })
+  return {
+    requestId: String(requestId), kind: firstToolText(params.kind, params.permissionKind, tool.kind) ?? toolName ?? 'unknown',
+    ...(toolName === undefined ? {} : { toolName }), ...(callId === undefined ? {} : { callId }), ...(detail === undefined ? {} : { detail }),
+    allowOptionId: ids.find((option) => /allow|approve|accept/u.test(option.kind))?.id ?? ids[0]?.id ?? 'allow-once',
+    rejectOptionId: ids.find((option) => /reject|deny|decline|cancel/u.test(option.kind))?.id ?? ids[1]?.id ?? 'reject-once',
+  }
 }
 
 /** 解析 CodeBuddy ACP usage_update；仅投影会话上下文，不推断账户套餐额度。 */

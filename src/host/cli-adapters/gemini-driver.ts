@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsAgentQuestionResponse, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
 import { JsonRpcProcess } from './json-rpc-process.js'
@@ -12,17 +12,19 @@ import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } 
 import { buildAcpPromptBlocks, promptWithAttachmentPaths } from './attachment-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 import { reasoningText } from './reasoning-content.js'
+import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 
 /** Gemini 官方 ACP 优先；不支持 ACP 的旧 CLI 自动回退 headless stream-json。 */
 export class GeminiCliDriver extends StandardStreamDriver {
   private readonly sessionRoots: readonly string[]
   private readonly interactions = new Map<string, {
     readonly rpc: JsonRpcProcess
-    readonly permissions: Map<string, number | string>
+    readonly permissions: Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>
+    readonly questions: Map<string, AcpElicitationRequest>
   }>()
 
   constructor(options: StandardStreamDriverOptions = {}) {
-    super({ id: 'gemini', name: 'Gemini CLI', protocol: 'acp', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission'] }, { binaries: ['gemini'] }, options)
+    super({ id: 'gemini', name: 'Gemini CLI', protocol: 'acp', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] }, { binaries: ['gemini'] }, options)
     this.sessionRoots = options.sessionRoots ?? [join(process.env.GEMINI_CLI_HOME ?? join(homedir(), '.gemini'), 'tmp')]
   }
 
@@ -61,7 +63,7 @@ export class GeminiCliDriver extends StandardStreamDriver {
   }
 
   protected buildArgs(input: CodingNsCliTurnInput): readonly string[] {
-    const args = ['-p', promptWithAttachmentPaths(input.prompt, input.attachments ?? []), '--output-format', 'stream-json', '--yolo']
+    const args = ['-p', promptWithAttachmentPaths(input.prompt, input.attachments ?? []), '--output-format', 'stream-json', ...geminiPermissionArgs(input.permission)]
     for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--include-directories', directory)
     if (input.providerSessionId) args.push('--resume', input.providerSessionId)
     if (input.modelId && !isProviderDefaultModel(input.modelId)) args.push('--model', input.modelId)
@@ -85,10 +87,18 @@ export class GeminiCliDriver extends StandardStreamDriver {
 
   respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
     const state = this.interactions.get(sessionId)
-    const rpcId = state?.permissions.get(response.requestId)
-    if (state === undefined || rpcId === undefined) throw new Error('Gemini 权限请求不存在')
+    const pending = state?.permissions.get(response.requestId)
+    if (state === undefined || pending === undefined) throw new Error('Gemini 权限请求不存在')
     state.permissions.delete(response.requestId)
-    state.rpc.respond(rpcId, { outcome: { outcome: 'selected', optionId: response.approved ? 'allow-once' : 'reject-once' } })
+    state.rpc.respond(pending.rpcId, { outcome: { outcome: 'selected', optionId: response.approved ? pending.allowOptionId : pending.rejectOptionId } })
+  }
+
+  respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
+    const state = this.interactions.get(sessionId)
+    const pending = state?.questions.get(response.requestId)
+    if (state === undefined || pending === undefined) throw new Error('Gemini 问题请求不存在')
+    state.questions.delete(response.requestId)
+    state.rpc.respond(pending.rpcId, acpElicitationResponse(pending, response))
   }
 
   override dispose(): void {
@@ -116,27 +126,35 @@ export class GeminiCliDriver extends StandardStreamDriver {
     const runtimeSettings = await createGeminiRuntimeSettings(input.modelId, input.effortId)
     const rpc = new JsonRpcProcess({
       command,
-      args: ['--experimental-acp'],
+      args: ['--experimental-acp', ...geminiPermissionArgs(input.permission)],
       cwd: input.cwd,
       ...(runtimeSettings === null ? {} : { env: runtimeSettings.env }),
       spawn: this.runSpawn,
     })
     const interaction = {
       rpc,
-      permissions: new Map<string, number | string>(),
+      permissions: new Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>(),
+      questions: new Map<string, AcpElicitationRequest>(),
     }
     this.interactions.set(input.sessionId, interaction)
     rpc.setServerRequestHandler((message) => {
+      const elicitation = readAcpElicitationRequest(message)
+      if (elicitation !== null) {
+        interaction.questions.set(elicitation.requestId, elicitation)
+        return new Promise<never>(() => undefined)
+      }
+      if (message.method === 'elicitation/create') return { action: 'cancel' }
       const requestId = interactionRequestId(message)
       if (requestId === null || message.id === undefined || message.id === null) return { outcome: { outcome: 'cancelled' } }
-      interaction.permissions.set(requestId, message.id)
+      const options = permissionOptions(message)
+      interaction.permissions.set(requestId, { rpcId: message.id, ...options })
       return new Promise<never>(() => undefined)
     })
     try {
       await rpc.request('initialize', {
         protocolVersion: 1,
         clientInfo: { name: 'codingns4dsh', version: '0.1.1' },
-        clientCapabilities: {},
+        clientCapabilities: ACP_FORM_CLIENT_CAPABILITIES,
       }, { signal: input.signal })
       rpc.notify('initialized', {})
       const session = input.providerSessionId
@@ -170,6 +188,14 @@ export class GeminiCliDriver extends StandardStreamDriver {
       await runtimeSettings?.dispose()
     }
   }
+}
+
+/** Gemini 官方 approval-mode 与 DSH 会话权限的一一映射。未知状态必须保留 default。 */
+function geminiPermissionArgs(permission: CodingNsCliTurnInput['permission']): readonly string[] {
+  if (permission?.sandboxMode === 'danger-full-access' && permission.approvalPolicy === 'never') return ['--approval-mode', 'yolo']
+  if (permission?.sandboxMode === 'workspace-write' && permission.approvalPolicy === 'never') return ['--approval-mode', 'auto_edit']
+  if (permission?.sandboxMode === 'read-only') return ['--approval-mode', 'plan']
+  return ['--approval-mode', 'default']
 }
 
 function geminiPromptReason(value: unknown, signal: AbortSignal | undefined): 'stop' | 'cancel' | 'error' {
@@ -317,12 +343,23 @@ function geminiAcpMessageToChunk(message: Record<string, any>): CodingNsAgentEve
   const update = isRecord(params.update) ? params.update : params
   const method = typeof message.method === 'string' ? message.method.toLowerCase() : ''
   const type = typeof update.sessionUpdate === 'string' ? update.sessionUpdate.toLowerCase() : typeof update.type === 'string' ? update.type.toLowerCase() : ''
+  const elicitation = readAcpElicitationRequest(message)
+  if (elicitation !== null) return { type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }
   const reasoning = reasoningText(update)
   if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning }
-  const text = acpText(update.delta ?? update.text ?? update.content ?? update.message)
+  const text = acpText(update.delta ?? update.text ?? update.content ?? update.message ?? update.detail)
   if (method.includes('permission') || type.includes('permission')) {
     const requestId = interactionRequestId(message)
-    if (requestId) return { type: 'permission-request', requestId, kind: firstString(update, ['kind', 'permission']) ?? 'unknown', ...(text ? { detail: text } : {}) }
+    if (requestId) {
+      const tool = isRecord(update.toolCall) ? update.toolCall : isRecord(update.tool_call) ? update.tool_call : update
+      const toolName = firstString(tool, ['title', 'name', 'toolName', 'tool_name'])
+      const callId = firstString(tool, ['toolCallId', 'tool_call_id', 'callId', 'call_id'])
+      return {
+        type: 'permission-request', requestId,
+        kind: firstString(update, ['kind', 'permission']) ?? toolName ?? 'unknown',
+        ...(toolName ? { toolName } : {}), ...(callId ? { callId } : {}), ...(text ? { detail: text } : {}),
+      }
+    }
   }
   if (type.includes('thought') || type.includes('reason') || method.includes('reason')) return text ? { type: 'reasoning-delta', text } : null
   // ACP 可能回放用户消息；它不是模型正文。
@@ -379,6 +416,21 @@ function interactionRequestId(message: Record<string, any>): string | null {
   if (!method.includes('permission') && !type.includes('permission')) return null
   const value = update.requestId ?? update.request_id ?? update.id ?? message.id
   return typeof value === 'string' || typeof value === 'number' ? String(value) : null
+}
+
+function permissionOptions(message: Record<string, any>): { readonly allowOptionId: string; readonly rejectOptionId: string } {
+  const params = isRecord(message.params) ? message.params : {}
+  const options = Array.isArray(params.options) ? params.options : []
+  const ids = options.flatMap((option) => {
+    if (!isRecord(option)) return []
+    const id = firstString(option, ['optionId', 'option_id', 'id'])
+    if (!id) return []
+    return [{ id, kind: firstString(option, ['kind', 'type'])?.toLowerCase() ?? '' }]
+  })
+  return {
+    allowOptionId: ids.find((option) => /allow|approve|accept/u.test(option.kind))?.id ?? ids[0]?.id ?? 'allow-once',
+    rejectOptionId: ids.find((option) => /reject|deny|decline|cancel/u.test(option.kind))?.id ?? ids[1]?.id ?? 'reject-once',
+  }
 }
 
 function readSessionId(value: unknown): string | null {

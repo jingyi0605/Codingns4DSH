@@ -4,8 +4,9 @@ import { join } from 'node:path'
 import readline from 'node:readline'
 import type {
   CodingNsAgentEvent,
+  CodingNsAgentPermissionResponse,
+  CodingNsAgentQuestionResponse,
   CodingNsCliModelCatalog,
-  CodingNsCliPermissionState,
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
@@ -18,6 +19,7 @@ import { buildAcpPromptBlocks, promptWithAttachmentPaths } from './attachment-ut
 import { firstToolText, serializeToolValue } from './tool-observation.js'
 import { terminateChildProcess, WINDOWS, type CodingNsChildProcess } from './process-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
+import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest as parseAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 
 export interface MiniMaxCodeDriverOptions {
   readonly binaries?: readonly string[]
@@ -32,7 +34,14 @@ interface McodeSession {
   /** '' 表示尚未创建 ACP 会话；创建后为 CLI 原生 mvs_* 标识。 */
   acpSessionId: string
   providerSessionId: string
-  permission: CodingNsCliPermissionState | undefined
+  readonly permissions: Map<string, McodePermissionRequest>
+  readonly questions: Map<string, AcpElicitationRequest>
+}
+
+interface McodePermissionRequest {
+  readonly rpcId: number | string
+  readonly allowOptionId: string
+  readonly rejectOptionId: string
 }
 
 /** 显式非默认档位时 exec 是官方唯一精确下发思考档位的入口。 */
@@ -53,7 +62,7 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
     id: 'mcode',
     name: 'MiniMax Code',
     protocol: 'acp',
-    capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage'],
+    capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'],
   } as const
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
@@ -114,7 +123,6 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
       return
     }
     const session = await this.getSession(input, command)
-    session.permission = input.permission
     if (session.acpSessionId === '') {
       const attached = input.providerSessionId === undefined
         ? await session.rpc.request('session/new', { cwd: input.cwd ?? process.cwd(), mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id) }, { signal: input.signal, killOnAbort: false })
@@ -146,6 +154,7 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
       // 其他会话迟到的 closing message 会混入当前回合，按 sessionId 过滤。
       if (isRecord(message.params) && typeof message.params.sessionId === 'string'
         && message.params.sessionId !== session.acpSessionId) return
+      if (message.method === 'elicitation/create' && parseAcpElicitationRequest(message) !== null) this.ensureQuestion(session, message)
       eventQueue.push(message)
     }, signal: input.signal, killOnAbort: false })
       .then((value) => { sendError = undefined; promptResult = value; return value }, (error: unknown) => { sendError = error })
@@ -181,6 +190,28 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
       removeExitListener()
       eventQueue.close()
     }
+  }
+
+  /** 回复 ACP 标准权限请求；exec 单发路径没有 ACP server request。 */
+  respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
+    const session = this.sessions.get(sessionId)
+    const pending = session?.permissions.get(response.requestId)
+    if (session === undefined || pending === undefined) throw new Error('MiniMax Code 权限请求不存在')
+    session.permissions.delete(response.requestId)
+    session.rpc.respond(pending.rpcId, {
+      outcome: {
+        outcome: 'selected',
+        optionId: response.approved ? pending.allowOptionId : pending.rejectOptionId,
+      },
+    })
+  }
+
+  respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
+    const session = this.sessions.get(sessionId)
+    const pending = session?.questions.get(response.requestId)
+    if (session === undefined || pending === undefined) throw new Error('MiniMax Code 问题请求不存在')
+    session.questions.delete(response.requestId)
+    session.rpc.respond(pending.rpcId, acpElicitationResponse(pending, response))
   }
 
   /** 显式思考档位路径：`mcode exec --effort` 单发，提示词经 stdin 下发。 */
@@ -274,7 +305,8 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
       cwd: input.cwd,
       acpSessionId: '',
       providerSessionId: input.providerSessionId ?? input.sessionId,
-      permission: input.permission,
+      permissions: new Map(),
+      questions: new Map(),
     }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, session)
@@ -283,11 +315,25 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
       if (this.sessions.get(input.sessionId)?.rpc === rpc) this.sessions.delete(input.sessionId)
     })
     rpc.setServerRequestHandler((request) => {
-      if (request.method === 'session/request_permission') return approveFirstAcpOption(request, session.permission)
-      throw new Error('请求不受支持')
+      const elicitation = parseAcpElicitationRequest(request)
+      if (elicitation !== null) {
+        session.questions.set(elicitation.requestId, elicitation)
+        return new Promise<never>(() => undefined)
+      }
+      if (request.method === 'elicitation/create') return { action: 'cancel' }
+      const permission = readMcodePermissionRequest(request)
+      if (permission === null || request.id === undefined || request.id === null) {
+        return { outcome: { outcome: 'cancelled' } }
+      }
+      session.permissions.set(permission.requestId, {
+        rpcId: request.id,
+        allowOptionId: permission.allowOptionId,
+        rejectOptionId: permission.rejectOptionId,
+      })
+      return new Promise<never>(() => undefined)
     })
     try {
-      await rpc.request('initialize', { protocolVersion: 1, clientCapabilities: {} }, { signal: input.signal, killOnAbort: false })
+      await rpc.request('initialize', { protocolVersion: 1, clientCapabilities: ACP_FORM_CLIENT_CAPABILITIES }, { signal: input.signal, killOnAbort: false })
       rpc.notify('initialized', {})
     } catch (error) {
       rpc.dispose()
@@ -319,6 +365,11 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
     const data = configYaml === null ? null : parseMcodeModelCatalog(configYaml)
     if (data !== null) this.mcodeCatalog = buildMcodeCatalog(data)
     return this.mcodeCatalog ?? MINIMAX_CODE_CATALOG
+  }
+
+  private ensureQuestion(session: McodeSession, message: JsonRpcMessage): void {
+    const request = parseAcpElicitationRequest(message)
+    if (request !== null) session.questions.set(request.requestId, request)
   }
 }
 
@@ -384,6 +435,19 @@ function mcodePromptReason(result: unknown, signal: AbortSignal | undefined): 's
 
 /** ACP session/update → 单个统一事件；终态由 finish 通道单独表达。 */
 function mcodeAcpMessageToChunk(message: JsonRpcMessage, input: CodingNsCliTurnInput): CodingNsAgentEvent | null {
+  const elicitation = parseAcpElicitationRequest(message)
+  if (elicitation !== null) return { type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }
+  const permission = readMcodePermissionRequest(message)
+  if (permission !== null) {
+    return {
+      type: 'permission-request',
+      requestId: permission.requestId,
+      kind: permission.kind,
+      ...(permission.toolName === undefined ? {} : { toolName: permission.toolName }),
+      ...(permission.callId === undefined ? {} : { callId: permission.callId }),
+      ...(permission.detail === undefined ? {} : { detail: permission.detail }),
+    }
+  }
   if (message.method !== 'session/update') return null
   const params = isRecord(message.params) ? message.params : {}
   const update = isRecord(params.update) ? params.update : null
@@ -415,6 +479,39 @@ function mcodeAcpMessageToChunk(message: JsonRpcMessage, input: CodingNsCliTurnI
     return usageChunk(isRecord(update.usage) ? update.usage : update)
   }
   return null
+}
+
+/** 仅识别 ACP 标准权限请求，未知 server request 继续走自动取消策略。 */
+function readMcodePermissionRequest(message: JsonRpcMessage): {
+  readonly requestId: string
+  readonly kind: string
+  readonly toolName?: string
+  readonly callId?: string
+  readonly detail?: string
+  readonly allowOptionId: string
+  readonly rejectOptionId: string
+} | null {
+  if (message.method !== 'session/request_permission' || !isRecord(message.params)) return null
+  const params = message.params
+  const tool = isRecord(params.toolCall) ? params.toolCall : isRecord(params.tool_call) ? params.tool_call : {}
+  const requestId = message.id ?? params.requestId ?? params.request_id
+  if (typeof requestId !== 'string' && typeof requestId !== 'number') return null
+  const options = Array.isArray(params.options) ? params.options : []
+  const ids = options.flatMap((option) => {
+    if (!isRecord(option)) return []
+    const id = firstToolText(option.optionId, option.option_id, option.id)
+    if (id === undefined) return []
+    return [{ id, kind: firstToolText(option.kind, option.type)?.toLowerCase() ?? '' }]
+  })
+  return {
+    requestId: String(requestId),
+    kind: firstToolText(params.kind, params.permissionKind, tool.kind) ?? firstToolText(tool.title, tool.name) ?? 'unknown',
+    ...(firstToolText(tool.title, tool.name, params.toolName, params.tool_name) === undefined ? {} : { toolName: firstToolText(tool.title, tool.name, params.toolName, params.tool_name)! }),
+    ...(firstToolText(tool.toolCallId, tool.tool_call_id, tool.callId, tool.call_id, params.callId, params.call_id) === undefined ? {} : { callId: firstToolText(tool.toolCallId, tool.tool_call_id, tool.callId, tool.call_id, params.callId, params.call_id)! }),
+    ...(firstToolText(params.detail, params.reason, params.message, tool.detail) === undefined ? {} : { detail: firstToolText(params.detail, params.reason, params.message, tool.detail)! }),
+    allowOptionId: ids.find((option) => /allow|approve|accept/u.test(option.kind))?.id ?? ids[0]?.id ?? 'allow-once',
+    rejectOptionId: ids.find((option) => /reject|deny|decline|cancel/u.test(option.kind))?.id ?? ids[1]?.id ?? 'reject-once',
+  }
 }
 
 /** exec stream-json 事件 → 单个统一事件；exec.completed/failed 是终态。 */
@@ -478,24 +575,6 @@ function mcodeFailure(value: Record<string, any>): { message: string; code?: str
   const message = firstToolText(error.message, error.errorMessage, error.error_message, error.detail, error.reason) ?? 'MiniMax Code Provider 未返回具体失败信息。'
   const code = firstToolText(error.code, error.errorCode, error.error_code)
   return code === undefined ? { message } : { message, code }
-}
-
-function approveFirstAcpOption(message: JsonRpcMessage, permission: CodingNsCliPermissionState | undefined): unknown {
-  // 当前 Host 没有把 ACP 的逐次审批请求接到 DSH 审批 UI；只有 DSH 明确给出
-  // 完全访问且策略为 never 时才能自动选择 Provider 的一次性授权。其余情况拒绝，
-  // 避免把 read-only、workspace-write 或缺省权限偷偷升级成可执行权限。
-  if (permission?.sandboxMode !== 'danger-full-access' || permission.approvalPolicy !== 'never') {
-    return { outcome: { outcome: 'cancelled' } }
-  }
-  const params = isRecord(message.params) ? message.params : null
-  const options = Array.isArray(params?.options) ? params!.options : []
-  const allowOnce = options.find((option) => isRecord(option) && option.kind === 'allow_once')
-  const allowAlways = options.find((option) => isRecord(option) && option.kind === 'allow_always')
-  const choice = allowOnce ?? allowAlways ?? options[0]
-  const optionId = isRecord(choice) && choice.id !== undefined ? choice.id : undefined
-  return optionId !== undefined
-    ? { outcome: { outcome: 'selected', optionId } }
-    : { outcome: { outcome: 'cancelled' } }
 }
 
 function readAcpSessionId(created: unknown): string | undefined {
