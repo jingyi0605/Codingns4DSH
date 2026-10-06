@@ -254,10 +254,43 @@ test('OpenCode 只投影 assistant 消息，并优先使用事件 delta', async 
   for await (const chunk of driver.executeTurn({ sessionId: 's-filter', messages: [], prompt: '执行' })) chunks.push(chunk)
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'remote-filter' },
-    { type: 'reasoning-delta', text: '先检查目录' },
-    { type: 'text-delta', text: 'The' },
-    { type: 'text-delta', text: ' answer' },
-    { type: 'reasoning-delta', text: '补充检查' },
+    { type: 'reasoning-delta', text: '先检查目录', messageId: 'assistant-message' },
+    { type: 'text-delta', text: 'The', messageId: 'assistant-message' },
+    { type: 'text-delta', text: ' answer', messageId: 'assistant-message' },
+    { type: 'reasoning-delta', text: '补充检查', messageId: 'assistant-message' },
+    { type: 'finish', reason: 'stop' },
+  ])
+})
+
+test('OpenCode 保留 assistant messageID，工具前后正文按原始事件顺序输出', async () => {
+  const encoder = new TextEncoder()
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/session') && init.method === 'POST') return new Response(JSON.stringify({ id: 'remote-message-order' }), { status: 200 })
+    if (url.endsWith('/message')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/event')) {
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        // part.updated 可能先于 message.updated；文本和工具必须保持入站顺序。
+        controller.enqueue(encoder.encode('data: {"type":"message.part.updated","properties":{"part":{"id":"before-text","messageID":"assistant-before","type":"text","text":"工具前"}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"message.part.updated","properties":{"part":{"id":"before-tool","messageID":"assistant-before","type":"tool","tool":"question","callID":"question-call","state":{"status":"completed","output":"已回答"}}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"message.updated","properties":{"info":{"id":"assistant-before","role":"assistant"}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"message.part.updated","properties":{"part":{"id":"after-text","messageID":"assistant-after","type":"text","text":"工具后"}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"message.updated","properties":{"info":{"id":"assistant-after","role":"assistant"}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"session.status","status":"idle"}\n\n'))
+        controller.close()
+      } })
+      return new Response(body, { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 's-message-order', messages: [], prompt: '执行' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'remote-message-order' },
+    { type: 'text-delta', text: '工具前', messageId: 'assistant-before' },
+    { type: 'tool-event', toolName: 'question', callId: 'question-call', output: '已回答', outputMode: 'snapshot', status: 'completed' },
+    { type: 'text-delta', text: '工具后', messageId: 'assistant-after' },
     { type: 'finish', reason: 'stop' },
   ])
 })
