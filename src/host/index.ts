@@ -27,11 +27,15 @@ import { DshNativeTeamProxy, type AgentRegistry, type NativeTeamService } from '
 import { createAgentSubagentTool } from './cli-adapters/subagent-tool.js'
 import { registerNativeTeamSubagentProviders, type NativeSubagentService } from './cli-adapters/native-team-subagent.js'
 import { setNativeSubagents } from './cli-adapters/native-subagent-holder.js'
+import { installSidebarSessionCompat } from '../dsh-capabilities/host/sidebar-session-compat.js'
 
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
   const dshVersion = detectRuntimeDshVersion()
   debugInfo('codingns4dsh: host apply entered', { dshVersion })
+
+  // 原生侧栏早于本插件 Client 启动；取消误报修复必须在首屏资源下发时生效。
+  ctx.inject(['clientModules', 'webServer'], (webCtx) => installSidebarSessionCompat(webCtx, dshVersion))
 
   // DSH 0.1.7 的官方 v3->v4 迁移器要求每个 tool/call 先有 assistant/message
   // 声明。旧版外部 Agent 曾直接写入 tool/call，必须在任何会话 open 前修复。
