@@ -663,6 +663,10 @@ test('Command Code 旧 synthetic 绑定只有 checkpoint 时回退到当前 DSH 
 })
 
 test('Command Code 按 DSH 权限状态映射安全参数，不把未知权限升级为 --yolo', async () => {
+  const capabilityProbe = new CommandCodeDriver({ binaries: ['command-code'] })
+  assert.equal(capabilityProbe.descriptor.capabilities.includes('permission'), false)
+  assert.equal(capabilityProbe.descriptor.capabilities.includes('questions'), false)
+  capabilityProbe.dispose()
   const cases = [
     { name: 'unknown', permission: undefined, forbidden: ['--yolo', '--plan', '--permission-mode'] },
     { name: 'read-only', permission: { sandboxMode: 'read-only', approvalPolicy: 'ask' }, required: ['--plan'], forbidden: ['--yolo'] },

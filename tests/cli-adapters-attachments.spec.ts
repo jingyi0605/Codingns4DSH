@@ -28,7 +28,9 @@ test('文本 CLI 适配器把附件路径和可访问目录传给 Provider', () 
   const expectedPrompt = '请检查附件\n请读取并处理以下消息附件：\n附件「photo.png」：@/tmp/codingns-attachments/photo.png\n附件「readme.md」：@/tmp/codingns-attachments/readme.md'
 
   const claudeArgs = (new ClaudeCodeDriver({ binaries: ['fake-claude'] }) as unknown as { buildArgs(value: typeof input): readonly string[] }).buildArgs(input)
-  assert.equal(claudeArgs[1], expectedPrompt)
+  assert.equal(claudeArgs.includes('--print'), true)
+  assert.equal(claudeArgs.includes('-p'), false)
+  assert.equal(claudeArgs.includes(expectedPrompt), false)
   assert.deepEqual(claudeArgs.slice(-2), ['--add-dir', '/tmp/codingns-attachments'])
 
   const geminiArgs = (new GeminiCliDriver({ binaries: ['fake-gemini'] }) as unknown as { buildArgs(value: typeof input): readonly string[] }).buildArgs(input)
@@ -43,19 +45,26 @@ test('Claude Code 为无扩展名图片建立受支持后缀的临时路径并�
   writeFileSync(imagePath, imageBytes)
   let receivedArgs: string[] = []
   let preparedPath: string | undefined
+  let preparedPrompt = ''
   try {
     const driver = new ClaudeCodeDriver({
       binaries: ['fake-claude'],
       spawnSync: detection,
       spawn: ((_command: string, args: string[]) => {
         receivedArgs = args
-        const prompt = args[args.indexOf('-p') + 1] ?? ''
-        preparedPath = prompt.match(/@([^\n]+)$/u)?.[1]
-        assert.ok(preparedPath?.endsWith('.png'))
-        assert.deepEqual(readFileSync(preparedPath!), imageBytes)
+        const stdin = new PassThrough()
+        stdin.on('data', (chunk) => {
+          const message = JSON.parse(String(chunk)) as { type?: unknown; message?: { content?: Array<{ text?: unknown }> } }
+          if (message.type !== 'user') return
+          preparedPrompt = typeof message.message?.content?.[0]?.text === 'string' ? message.message.content[0].text : ''
+          preparedPath = preparedPrompt.match(/@([^\n]+)$/u)?.[1]
+          assert.ok(preparedPath?.endsWith('.png'))
+          assert.deepEqual(readFileSync(preparedPath!), imageBytes)
+        })
         return {
           stdout: Readable.from([`${JSON.stringify({ type: 'result' })}\n`]),
           stderr: { on() { return this } },
+          stdin,
           kill() { return true },
         }
       }) as never,
@@ -64,8 +73,7 @@ test('Claude Code 为无扩展名图片建立受支持后缀的临时路径并�
       sessionId: 'claude-image-attachments', messages: [], prompt: '请查看截图',
       attachments: [{ kind: 'image', path: imagePath }],
     })) { /* 检查发送参数和临时文件生命周期。 */ }
-    const prompt = receivedArgs[receivedArgs.indexOf('-p') + 1] ?? ''
-    assert.match(prompt, /附件「attachment-0\.png」：@[^\n]+\.png$/u)
+    assert.match(preparedPrompt, /附件「attachment-0\.png」：@[^\n]+\.png$/u)
     assert.equal(existsSync(preparedPath!), false)
     const addDirIndex = receivedArgs.lastIndexOf('--add-dir')
     assert.equal(receivedArgs[addDirIndex + 1], dirname(preparedPath!))

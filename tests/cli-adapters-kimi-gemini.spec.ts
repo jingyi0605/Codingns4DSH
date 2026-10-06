@@ -14,6 +14,18 @@ class InspectableGeminiCliDriver extends GeminiCliDriver {
   }
 }
 
+test('Gemini 按 DSH 权限状态下发官方 approval-mode，不默认绕过审批', () => {
+  const driver = new InspectableGeminiCliDriver({ binaries: ['fake-gemini'] })
+  const buildArgs = (permission: CodingNsCliTurnInput['permission'] | undefined): readonly string[] => (driver as unknown as {
+    buildArgs(input: CodingNsCliTurnInput): readonly string[]
+  }).buildArgs({ sessionId: 'gemini-permission-args', messages: [], prompt: '检查', ...(permission === undefined ? {} : { permission }) })
+  assert.deepEqual(buildArgs(undefined).slice(-2), ['--approval-mode', 'default'])
+  assert.deepEqual(buildArgs({ sandboxMode: 'read-only', approvalPolicy: 'ask' }).slice(-2), ['--approval-mode', 'plan'])
+  assert.deepEqual(buildArgs({ sandboxMode: 'workspace-write', approvalPolicy: 'never' }).slice(-2), ['--approval-mode', 'auto_edit'])
+  assert.deepEqual(buildArgs({ sandboxMode: 'danger-full-access', approvalPolicy: 'never' }).slice(-2), ['--approval-mode', 'yolo'])
+  driver.dispose()
+})
+
 test('Kimi wire 优先并转换会话、思考、工具、用量和完成事件', async () => {
   const calls: string[][] = []
   const driver = new KimiCliDriver({
@@ -179,7 +191,7 @@ test('Gemini ACP 完成初始化、session/new、prompt 并转换更新事件', 
     modelId: 'auto-gemini-3',
     effortId: 'medium',
   })) chunks.push(chunk)
-  assert.deepEqual(calls[0], ['fake-gemini', '--experimental-acp'])
+  assert.deepEqual(calls[0], ['fake-gemini', '--experimental-acp', '--approval-mode', 'default'])
   assert.deepEqual(requests.find((request) => request.method === 'session/set_model')?.params, {
     sessionId: 'gemini-session-1',
     modelId: 'auto-gemini-3',
@@ -200,6 +212,44 @@ test('Gemini ACP 完成初始化、session/new、prompt 并转换更新事件', 
     { type: 'tool-event', toolName: 'read_file', callId: 'gemini-call-1', output: '源码', outputMode: 'snapshot', status: 'completed' },
     { type: 'finish', reason: 'stop' },
   ])
+})
+
+test('Gemini ACP 权限请求进入统一事件并回传 Provider 选项', async () => {
+  let promptId = 0
+  let reply: Record<string, unknown> | undefined
+  const driver = new GeminiCliDriver({
+    binaries: ['fake-gemini'],
+    spawnSync: fakeDetection,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const stdin = { write(data: string): boolean {
+        const request = JSON.parse(data) as { id?: number | string; method?: string }
+        if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        else if (request.method === 'session/new') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'gemini-permission' } })}\n`)
+        else if (request.method === 'session/prompt') {
+          promptId = request.id ?? 0
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 13, method: 'session/request_permission', params: { options: [{ optionId: 'allow-custom', kind: 'allow_once' }, { optionId: 'deny-custom', kind: 'reject_once' }], toolCall: { title: 'read_file', toolCallId: 'read-1' }, detail: '读取文件' } })}\n`)
+        } else if (request.id === 13) {
+          reply = request as unknown as Record<string, unknown>
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } })}\n`)
+        }
+        return true
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'gemini-permission-dsh', messages: [], prompt: '读取' })) {
+    chunks.push(chunk)
+    if (chunk.type === 'permission-request') driver.respondPermission('gemini-permission-dsh', { requestId: chunk.requestId, approved: true })
+  }
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'gemini-permission' },
+    { type: 'permission-request', requestId: '13', kind: 'read_file', toolName: 'read_file', callId: 'read-1', detail: '读取文件' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  assert.deepEqual(reply, { jsonrpc: '2.0', id: 13, result: { outcome: { outcome: 'selected', optionId: 'allow-custom' } } })
+  driver.dispose()
 })
 
 test('Gemini ACP 连续两轮复用同一 Provider 会话并正常返回正文', async () => {

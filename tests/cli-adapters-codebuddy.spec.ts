@@ -646,9 +646,48 @@ test('CodeBuddy ACP 将会话、正文、思考和工具事件收敛到公共流
     { type: 'text-delta', text: '完成后', messageId: 'assistant-codebuddy-dsh-session-1' },
     { type: 'finish', reason: 'stop' },
   ])
-  assert.equal(driver.descriptor.capabilities.includes('permission'), false)
-  assert.equal(driver.descriptor.capabilities.includes('questions'), false)
+  assert.equal(driver.descriptor.capabilities.includes('permission'), true)
+  assert.equal(driver.descriptor.capabilities.includes('questions'), true)
   assert.equal(driver.descriptor.capabilities.includes('usage'), true)
+  driver.dispose()
+})
+
+test('CodeBuddy ACP 权限请求进入统一事件并回传原始 request id', async () => {
+  let promptId = 0
+  let reply: Record<string, unknown> | undefined
+  const driver = new CodeBuddyCliDriver({
+    binaries: ['fake-codebuddy'],
+    spawnSync: detected,
+    useSidecar: false,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const stdin = { write(data: string): boolean {
+        const request = JSON.parse(data) as { id?: number | string; method?: string }
+        if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        else if (request.method === 'session/new') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'codebuddy-permission' } })}\n`)
+        else if (request.method === 'session/prompt') {
+          promptId = request.id ?? 0
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 'permission-rpc', method: 'session/request_permission', params: { options: [{ optionId: 'allow-custom', kind: 'allow_once' }, { optionId: 'deny-custom', kind: 'reject_once' }], toolCall: { title: '运行命令', toolCallId: 'call-1' }, detail: '需要执行命令' } })}\n`)
+        } else if (request.id === 'permission-rpc') {
+          reply = request as unknown as Record<string, unknown>
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } })}\n`)
+        }
+        return true
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codebuddy-permission-dsh', messages: [], prompt: '执行' })) {
+    chunks.push(chunk)
+    if (chunk.type === 'permission-request') driver.respondPermission('codebuddy-permission-dsh', { requestId: chunk.requestId, approved: true })
+  }
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'codebuddy-permission' },
+    { type: 'permission-request', requestId: 'permission-rpc', kind: '运行命令', toolName: '运行命令', callId: 'call-1', detail: '需要执行命令' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  assert.deepEqual(reply, { jsonrpc: '2.0', id: 'permission-rpc', result: { outcome: { outcome: 'selected', optionId: 'allow-custom' } } })
   driver.dispose()
 })
 

@@ -105,6 +105,85 @@ test('Cursor ACP 使用 cursor-agent acp，映射文本和工具事件且不伪�
   driver.dispose()
 })
 
+test('通用 ACP 将 Cursor 权限请求交给 DSH 回传 Provider 选项', async () => {
+  let promptId = 0
+  let reply: Record<string, unknown> | undefined
+  const driver = new CursorCliDriver({
+    binaries: ['fake-cursor-agent'],
+    spawnSync: fakeDetection,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const stdin = { write(data: string): boolean {
+        const request = JSON.parse(data) as { id?: number | string; method?: string }
+        if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        else if (request.method === 'session/new') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'cursor-permission' } })}\n`)
+        else if (request.method === 'session/prompt') {
+          promptId = request.id ?? 0
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 77, method: 'session/request_permission', params: { options: [{ optionId: 'allow-custom', kind: 'allow_once' }, { optionId: 'deny-custom', kind: 'reject_once' }], toolCall: { title: 'shell', toolCallId: 'shell-1' }, detail: '运行 shell' } })}\n`)
+        } else if (request.id === 77) {
+          reply = request as unknown as Record<string, unknown>
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } })}\n`)
+        }
+        return true
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'cursor-permission-dsh', messages: [], prompt: '执行' })) {
+    chunks.push(chunk)
+    if (chunk.type === 'permission-request') driver.respondPermission('cursor-permission-dsh', { requestId: chunk.requestId, approved: true })
+  }
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'cursor-permission' },
+    { type: 'permission-request', requestId: '77', kind: 'shell', toolName: 'shell', callId: 'shell-1', detail: '运行 shell' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  assert.deepEqual(reply, { jsonrpc: '2.0', id: 77, result: { outcome: { outcome: 'selected', optionId: 'allow-custom' } } })
+  driver.dispose()
+})
+
+test('通用 ACP 将 elicitation/create 映射为 DSH 问题并回传 form content', async () => {
+  let promptId = 0
+  let reply: Record<string, unknown> | undefined
+  const driver = new CursorCliDriver({
+    binaries: ['fake-cursor-agent'],
+    spawnSync: fakeDetection,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const stdin = { write(data: string): boolean {
+        const request = JSON.parse(data) as { id?: number | string; method?: string }
+        if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        else if (request.method === 'session/new') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'cursor-question' } })}\n`)
+        else if (request.method === 'session/prompt') {
+          promptId = request.id ?? 0
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 78, method: 'elicitation/create', params: { mode: 'form', message: '选择策略', requestedSchema: { type: 'object', properties: { strategy: { type: 'string', title: '策略', enum: ['safe', 'fast'] } } } } })}\n`)
+        } else if (request.id === 78) {
+          reply = request as unknown as Record<string, unknown>
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } })}\n`)
+        }
+        return true
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'cursor-question-dsh', messages: [], prompt: '执行' })) {
+    chunks.push(chunk)
+    if (chunk.type === 'question-request') driver.respondQuestion('cursor-question-dsh', {
+      requestId: chunk.requestId,
+      answers: [{ id: 'strategy', selected: ['safe'] }],
+    })
+  }
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'cursor-question' },
+    { type: 'question-request', requestId: '78', questions: [{ id: 'strategy', question: '选择策略', header: '策略', options: [{ label: 'safe' }, { label: 'fast' }] }] },
+    { type: 'finish', reason: 'stop' },
+  ])
+  assert.deepEqual(reply, { jsonrpc: '2.0', id: 78, result: { action: 'accept', content: { strategy: 'safe' } } })
+  driver.dispose()
+})
+
 test('Kiro ACP 固定 v3/cli 参数，会话探测不扫描猜测的 JSONL 存储', async () => {
   const calls: string[][] = []
   const driver = new KiroCliDriver({
@@ -120,9 +199,10 @@ test('Kiro ACP 固定 v3/cli 参数，会话探测不扫描猜测的 JSONL 存�
         return true
       } }
       return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
-    }) as never,
+  }) as never,
   })
   assert.equal(driver.supportsToolStepSplitting, true)
+  assert.equal(driver.descriptor.capabilities.includes('permission'), true)
   assert.deepEqual(await driver.listModels(), { groups: [], currentModel: null, currentEffort: null })
   assert.deepEqual(calls, [])
   const chunks = []

@@ -338,6 +338,8 @@ test('Qoder ACP 声明由 Registry 挂起事件流完成工具分步', () => {
   const driver = new QoderCliDriver({ binaries: ['missing-qoder'], spawnSync: (() => ({ status: 127, stdout: '', stderr: '' })) as never })
   assert.equal(driver.supportsSegmentedTurns, undefined)
   assert.equal(driver.supportsToolStepSplitting, true)
+  assert.equal(driver.descriptor.capabilities.includes('questions'), true)
+  assert.equal(typeof driver.respondQuestion, 'function')
   driver.dispose()
 })
 

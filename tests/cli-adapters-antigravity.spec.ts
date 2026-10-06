@@ -94,10 +94,11 @@ test('Antigravity 通过 stdin stream-json 输入一轮并转换标准事件', a
   ])
   assert.deepEqual(calls[0], [
     'fake-agy', '--input-format', 'stream-json', '--output-format', 'stream-json',
-    '--dangerously-skip-permissions', '--add-dir', process.cwd(),
+    '--mode', 'plan', '--add-dir', process.cwd(),
   ])
   assert.deepEqual(JSON.parse(inputs[0] ?? '{}'), { event: 'user', message: { content: '你好' } })
   assert.equal(driver.descriptor.capabilities?.includes('permission'), false)
+  assert.equal(driver.descriptor.capabilities?.includes('questions'), false)
   driver.dispose()
 })
 
@@ -311,9 +312,29 @@ test('Antigravity 续接会话时传递 conversation，result.response 作为正
   ])
   assert.deepEqual(calls[0], [
     'fake-agy', '--conversation', 'agy-existing', '--input-format', 'stream-json',
-    '--output-format', 'stream-json', '--dangerously-skip-permissions', '--add-dir', process.cwd(),
+    '--output-format', 'stream-json', '--mode', 'plan', '--add-dir', process.cwd(),
   ])
   driver.dispose()
+})
+
+test('Antigravity 只有 DSH 明确永不询问时才允许自动放行，其他权限状态保持保守模式', async () => {
+  const states = [
+    { permission: { sandboxMode: 'danger-full-access', approvalPolicy: 'never' }, expected: ['--dangerously-skip-permissions'] },
+    { permission: { sandboxMode: 'workspace-write', approvalPolicy: 'never' }, expected: ['--mode', 'accept-edits'] },
+    { permission: { sandboxMode: 'workspace-write', approvalPolicy: 'ask' }, expected: ['--mode', 'plan'] },
+    { permission: { sandboxMode: 'read-only', approvalPolicy: 'never' }, expected: ['--mode', 'plan'] },
+    { permission: undefined, expected: ['--mode', 'plan'] },
+  ] as const
+  for (const [index, state] of states.entries()) {
+    const { driver, calls } = scriptedDriver([[
+      { event: 'result', result: { conversation_id: `agy-permission-${index}`, response: '完成', status: 'SUCCESS', num_turns: 1 } },
+    ]])
+    await collect(driver, state.permission === undefined ? {} : { permission: state.permission })
+    const permissionIndex = calls[0]?.findIndex((argument) => argument === state.expected[0]) ?? -1
+    assert.notEqual(permissionIndex, -1)
+    assert.deepEqual(calls[0]?.slice(permissionIndex, permissionIndex + state.expected.length), state.expected)
+    driver.dispose()
+  }
 })
 
 test('Antigravity 不重复追加 result.response，并保留 tool step 生命周期', async () => {

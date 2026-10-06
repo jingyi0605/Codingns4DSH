@@ -46,6 +46,109 @@ test('Claude、Gemini、Kimi 的标准流驱动统一转换文本和完成事件
   }
 })
 
+test('Claude Code 通过公开 control_request/control_response 接入权限与结构化问题', async () => {
+  const responses: Array<Record<string, any>> = []
+  const driver = new ClaudeCodeDriver({
+    binaries: ['fake-claude'],
+    spawnSync: (() => ({ status: 0, stdout: 'claude 1.2.3', stderr: '' })) as never,
+    spawn: ((_command: string, args: string[]) => {
+      assert.equal(args.includes('--permission-prompts'), true)
+      assert.equal(args.includes('host'), true)
+      assert.deepEqual(args.slice(args.indexOf('--permission-mode'), args.indexOf('--permission-mode') + 2), ['--permission-mode', 'manual'])
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = new PassThrough()
+      stdin.on('data', (chunk) => {
+        const message = JSON.parse(String(chunk)) as Record<string, any>
+        if (message.type !== 'control_response') return
+        responses.push(message)
+        const requestId = message.response?.request_id
+        if (requestId === 'approval-1') {
+          stdout.write(`${JSON.stringify({
+            type: 'control_request',
+            request_id: 'question-1',
+            request: {
+              subtype: 'can_use_tool',
+              tool_name: 'AskUserQuestion',
+              tool_use_id: 'question-tool-1',
+              input: {
+                questions: [{
+                  question: '使用哪种语言？',
+                  header: '语言',
+                  options: [{ label: 'TypeScript' }, { label: 'Rust' }],
+                }],
+              },
+            },
+          })}\n`)
+        } else if (requestId === 'question-1') {
+          stdout.write(`${JSON.stringify({ type: 'result', subtype: 'success' })}\n`)
+          stdout.end()
+          stderr.end()
+        }
+      })
+      queueMicrotask(() => stdout.write(`${JSON.stringify({
+        type: 'control_request',
+        request_id: 'approval-1',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'Bash',
+          tool_use_id: 'bash-tool-1',
+          input: { command: 'pwd' },
+          decision_reason: '需要执行命令',
+        },
+      })}\n`))
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); stdin.end(); return true } }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({
+    sessionId: 'claude-interaction',
+    messages: [],
+    prompt: '执行',
+    permission: { sandboxMode: 'workspace-write', approvalPolicy: 'ask' },
+  })) {
+    chunks.push(chunk)
+    if (chunk.type === 'permission-request') driver.respondPermission('claude-interaction', { requestId: chunk.requestId, approved: true })
+    if (chunk.type === 'question-request') driver.respondQuestion('claude-interaction', {
+      requestId: chunk.requestId,
+      answers: [{ id: 'question-1', selected: ['TypeScript'] }],
+    })
+  }
+
+  assert.deepEqual(chunks, [
+    { type: 'permission-request', requestId: 'approval-1', kind: 'Bash', toolName: 'Bash', callId: 'bash-tool-1', detail: '需要执行命令' },
+    { type: 'question-request', requestId: 'question-1', questions: [{ id: 'question-1', question: '使用哪种语言？', header: '语言', options: [{ label: 'TypeScript' }, { label: 'Rust' }] }] },
+    { type: 'finish', reason: 'stop' },
+  ])
+  assert.deepEqual(responses, [
+    {
+      type: 'control_response',
+      response: {
+        subtype: 'success', request_id: 'approval-1',
+        response: { behavior: 'allow', updatedInput: { command: 'pwd' }, toolUseID: 'bash-tool-1' },
+      },
+    },
+    {
+      type: 'control_response',
+      response: {
+        subtype: 'success', request_id: 'question-1',
+        response: {
+          behavior: 'allow',
+          updatedInput: {
+            questions: [{ question: '使用哪种语言？', header: '语言', options: [{ label: 'TypeScript' }, { label: 'Rust' }] }],
+            answers: { '使用哪种语言？': 'TypeScript' },
+          },
+          toolUseID: 'question-tool-1',
+        },
+      },
+    },
+  ])
+  assert.equal(driver.descriptor.capabilities?.includes('permission'), true)
+  assert.equal(driver.descriptor.capabilities?.includes('questions'), true)
+  driver.dispose()
+})
+
 test('Claude stream-json 保留 tool_use 与 tool_result 的完整生命周期', async () => {
   const driver = new ClaudeCodeDriver({
     binaries: ['fake-claude'],
