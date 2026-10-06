@@ -127,6 +127,10 @@ test('ZCode 裸信封完成创建、发送、正文和用量事件', async () =>
           stdout.write(`${JSON.stringify({ id: request.id, result: { sessionId: 'sess-1', eventSeq: 0, events: [] } })}\n`)
           return
         }
+        if (request.method === 'session/setMode') {
+          stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`)
+          return
+        }
         if (request.method === 'session/send') {
           stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`)
           stdout.write(`${JSON.stringify({ method: 'state.updated', params: { reason: 'prompt_started', patch: { status: 'running' } } })}\n`)
@@ -161,6 +165,8 @@ test('ZCode 订阅 desktop-continuous 事件并转换 session/event 正文', asy
         stdout.write(`${JSON.stringify({ id: request.id, result: { session: { sessionId: 'sess-event' } } })}\n`)
       } else if (request.method === 'session/subscribe') {
         stdout.write(`${JSON.stringify({ id: request.id, result: { sessionId: 'sess-event', eventSeq: 0, events: [] } })}\n`)
+      } else if (request.method === 'session/setMode') {
+        stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`)
       } else if (request.method === 'session/send') {
         stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`)
         stdout.write(`${JSON.stringify({ method: 'state.updated', params: { reason: 'prompt_started', patch: { status: 'running' } } })}\n`)
@@ -174,7 +180,7 @@ test('ZCode 订阅 desktop-continuous 事件并转换 session/event 正文', asy
   })
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'dsh-zcode-event', messages: [], prompt: '执行' })) chunks.push(chunk)
-  assert.deepEqual(calls.slice(0, 3), ['session/create', 'session/subscribe', 'session/send'])
+  assert.deepEqual(calls.slice(0, 4), ['session/create', 'session/setMode', 'session/subscribe', 'session/send'])
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'sess-event' },
     { type: 'reasoning-delta', text: '思考', messageId: 'msg-1' },
@@ -194,6 +200,8 @@ test('ZCode 在正文增量缺失时使用 turn.completed 快照收尾', async (
         stdout.write(`${JSON.stringify({ id: request.id, result: { session: { sessionId: 'sess-snapshot' } } })}\n`)
       } else if (request.method === 'session/subscribe') {
         stdout.write(`${JSON.stringify({ id: request.id, result: { sessionId: 'sess-snapshot', eventSeq: 0, events: [] } })}\n`)
+      } else if (request.method === 'session/setMode') {
+        stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`)
       } else if (request.method === 'session/send') {
         stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`)
         stdout.write(`${JSON.stringify({ method: 'state.updated', params: { reason: 'prompt_started', patch: { status: 'running' } } })}\n`)
