@@ -57,7 +57,8 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   private readonly sessions = new Map<string, string>()
   /** Provider 会话的实际工作目录；目录变化时禁止复用旧会话。 */
   private readonly sessionCwds = new Map<string, string>()
-  private readonly interactionTargets = new Map<string, string>()
+  /** 交互请求属于启动该轮次的 OpenCode 目录实例，回传时必须复用同一目录。 */
+  private readonly interactionTargets = new Map<string, { server: string; cwd: string | undefined }>()
   private readonly modelContextWindows = new Map<string, number>()
 
   constructor(options: OpenCodeDriverOptions = {}) {
@@ -156,7 +157,8 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     }
     const contextWindow = await this.resolveModelContextWindow(server, modelId)
     if (input.cwd?.trim()) this.sessionCwds.set(sessionId, input.cwd.trim())
-    this.interactionTargets.set(input.sessionId, server)
+    const interactionTarget = { server, cwd: input.cwd }
+    this.interactionTargets.set(input.sessionId, interactionTarget)
 
     const streamController = new AbortController()
     let aborted = false
@@ -262,16 +264,16 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       else if (finished || emitted) yield { type: 'finish', reason: 'stop' }
       else throw new Error('OpenCode 未返回可识别的事件')
     } finally {
-      if (this.interactionTargets.get(input.sessionId) === server) this.interactionTargets.delete(input.sessionId)
+      if (this.interactionTargets.get(input.sessionId) === interactionTarget) this.interactionTargets.delete(input.sessionId)
       input.signal?.removeEventListener('abort', abort)
       streamController.abort()
     }
   }
 
   async respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): Promise<void> {
-    const server = this.interactionTargets.get(sessionId)
-    if (server === undefined) throw new Error('OpenCode 权限请求已结束')
-    const result = await this.http.json(`${server}/permission/${encodeURIComponent(response.requestId)}/reply`, {
+    const target = this.interactionTargets.get(sessionId)
+    if (target === undefined) throw new Error('OpenCode 权限请求已结束')
+    const result = await this.http.json(withOpenCodeDirectory(target.server, `/permission/${encodeURIComponent(response.requestId)}/reply`, target.cwd), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ reply: response.approved ? 'once' : 'reject' }),
@@ -280,9 +282,9 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   }
 
   async respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): Promise<void> {
-    const server = this.interactionTargets.get(sessionId)
-    if (server === undefined) throw new Error('OpenCode 问题请求已结束')
-    const result = await this.http.json(`${server}/question/${encodeURIComponent(response.requestId)}/reply`, {
+    const target = this.interactionTargets.get(sessionId)
+    if (target === undefined) throw new Error('OpenCode 问题请求已结束')
+    const result = await this.http.json(withOpenCodeDirectory(target.server, `/question/${encodeURIComponent(response.requestId)}/reply`, target.cwd), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ answers: questionAnswersList(response) }),
@@ -293,6 +295,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   dispose(): void {
     this.sessions.clear()
     this.sessionCwds.clear()
+    this.interactionTargets.clear()
     this.modelContextWindows.clear()
     for (const managed of this.managedServers.values()) terminateChildProcess(managed.child)
     this.managedServers.clear()

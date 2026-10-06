@@ -333,6 +333,41 @@ test('OpenCode 把权限和问题 SSE 转成公共交互事件并回复原生接
   ])
 })
 
+test('OpenCode 权限和问题回传复用产生请求的工作目录', async () => {
+  const encoder = new TextEncoder()
+  const replies: string[] = []
+  const cwd = '/Users/jackson/Code/头脑风暴'
+  const encodedCwd = encodeURIComponent(cwd)
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith(`/session?directory=${encodedCwd}`) && init.method === 'POST') return new Response(JSON.stringify({ id: 'remote-interaction-cwd' }), { status: 200 })
+    if (url.endsWith(`/message?directory=${encodedCwd}`)) return new Response('{}', { status: 200 })
+    if (url.includes('/reply?directory=')) {
+      replies.push(url)
+      return new Response('{}', { status: 200 })
+    }
+    if (url.endsWith(`/event?directory=${encodedCwd}`)) {
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"permission.asked","properties":{"id":"permission-cwd","sessionID":"remote-interaction-cwd","permission":"edit"}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"question.asked","properties":{"id":"question-cwd","sessionID":"remote-interaction-cwd","questions":[{"question":"选择目录","options":[{"label":"工作区"}]}]}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"session.status","status":"idle"}\n\n'))
+        controller.close()
+      } })
+      return new Response(body, { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  for await (const chunk of driver.executeTurn({ sessionId: 'opencode-interaction-cwd', messages: [], prompt: '执行', cwd })) {
+    if (chunk.type === 'permission-request') await driver.respondPermission('opencode-interaction-cwd', { requestId: chunk.requestId, approved: true })
+    if (chunk.type === 'question-request') await driver.respondQuestion('opencode-interaction-cwd', { requestId: chunk.requestId, answers: [{ id: 'question-cwd', selected: ['工作区'] }] })
+  }
+  assert.deepEqual(replies, [
+    `http://opencode.test/permission/permission-cwd/reply?directory=${encodedCwd}`,
+    `http://opencode.test/question/question-cwd/reply?directory=${encodedCwd}`,
+  ])
+})
+
 test('OpenCode 未发现外部服务时按工作区托管 serve，并在 dispose 时只回收自有进程', async () => {
   let spawned = false
   let killed = false
