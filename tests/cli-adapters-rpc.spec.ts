@@ -10,7 +10,7 @@ import { PiAgentDriver } from '../data/build/dist/host/cli-adapters/pi-driver.js
 test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async () => {
   for (const [Driver, expectedArgs] of [
     [PiAgentDriver, ['--mode', 'rpc']],
-    [CodexAppServerDriver, ['app-server', '--disable', 'computer_use', '--enable', 'default_mode_request_user_input']],
+    [CodexAppServerDriver, ['-c', 'features.request_permissions_tool=true', 'app-server', '--disable', 'computer_use', '--enable', 'default_mode_request_user_input']],
     [GrokBuildDriver, ['agent', '--no-leader', 'stdio']],
   ] as const) {
     const calls: string[][] = []
@@ -2029,6 +2029,10 @@ test('Codex thread/resume 与 turn/start 使用同一份权限状态', async () 
   assert.equal(state.threadResume?.threadId, 'existing-thread')
   assert.equal(state.threadResume?.sandbox, 'danger-full-access')
   assert.equal(state.threadResume?.approvalPolicy, 'never')
+  // 恢复已有会话也必须提供宿主交互契约，同时保留 never 策略。
+  assert.match(String(state.threadResume?.developerInstructions), /request_permissions/u)
+  assert.match(String(state.threadResume?.developerInstructions), /审批策略为 never/u)
+  assert.match(String(state.threadResume?.developerInstructions), /request_user_input/u)
   assert.deepEqual(state.turnStart?.sandboxPolicy, { type: 'dangerFullAccess' })
   assert.equal(state.turnStart?.approvalPolicy, 'never')
   driver.dispose()
