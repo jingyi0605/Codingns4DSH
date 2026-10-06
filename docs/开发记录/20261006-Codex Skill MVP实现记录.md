@@ -11,7 +11,7 @@
 - `turn/start` 在 Skill 目录返回路径时追加 `{ type: 'skill', name, path }`；旧版 app-server 不支持 `skills/list` 时保留 `$skill-name` 文本并继续执行，避免破坏旧 Codex。
 - Host CLI Registry 新增 `cli/skills` RPC，响应会剥离 Host-only 路径字段。
 - Client 新增 `/skills` 菜单命令。选择条目后把命令替换成 `$skill-name`，提交时由 Codex 驱动完成原生输入转换；直接输入 `$skill-name` 也支持。
-- 其他 Agent 暂不声明 `skills` 能力，因此不会出现错误的 Skill 菜单。后续 Agent 只需实现同一 `listSkills` 契约，并在自身协议中完成输入映射。
+- Claude Code、OpenCode、Grok Build 已按各自原生目录/协议补齐 `skills` 能力；其余未实现原生目录的 Agent 仍不声明该能力，因此不会出现错误的 Skill 菜单。
 
 ## 数据边界
 
@@ -42,6 +42,6 @@ DSH / 菜单
 
 ## MVP 限制
 
-- 当前只接入 Codex 原生 Skill；其他 Agent 仍按原有路径运行。
+- MVP 阶段仅接入 Codex；后续已补齐 Command Code、Claude Code、OpenCode 和 Grok，见 [原生 Skill 接入记录](20261006-Claude、OpenCode与Grok原生Skill接入记录.md)。
 - 菜单选择使用可回退的 `$skill-name` 草稿文本，不改变 DSH 输入组件的内部结构。
 - Codex app-server 必须返回 Skill 路径才能追加结构化输入项；若只返回摘要，仍保留文本 mention，由 Codex 自己处理。

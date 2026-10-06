@@ -76,14 +76,14 @@ DSH 原生部分不会被替换：对话、会话列表、侧栏、设置、权�
 
 | Agent | id | 命令 | 协议 | 能力 | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| Command Code | `command-code` | `command-code`、`commandcode`、`cmdc` | CLI + ACP | 模型、流式、恢复、打断、工具、思考、用量、权限、提问 | 正式 Host 运行时使用 `cmd acp`；DSH 权限映射为 `--plan`、`--permission-mode accept-edits` 或 `--yolo`，问题通过 Command Code 的 `session/request_permission` 扩展回传 |
-| Claude Code | `claude-code` | `claude` | stream-json | 模型、流式、恢复、打断、工具、思考、用量、权限确认、提问 | `can_use_tool` 权限确认与 `AskUserQuestion` 提问 |
+| Command Code | `command-code` | `command-code`、`commandcode`、`cmdc` | CLI + ACP | 模型、Skill、流式、恢复、打断、工具、思考、用量、权限、提问 | 正式 Host 运行时使用 `cmd acp`；DSH 权限映射为 `--plan`、`--permission-mode accept-edits` 或 `--yolo`，问题通过 Command Code 的 `session/request_permission` 扩展回传 |
+| Claude Code | `claude-code` | `claude` | stream-json | 模型、Skill、流式、恢复、打断、工具、思考、用量、权限确认、提问 | 原生 `.claude/skills` 目录与 `/name` 调用，`can_use_tool` 权限确认与 `AskUserQuestion` 提问 |
 | Kimi CLI | `kimi` | `kimi`、`kimi-cli` | stream-json | 上述全部 + 权限确认、提问、插话 | — |
 | Gemini CLI | `gemini` | `gemini` | ACP | 模型、流式、恢复、打断、工具、思考、用量、权限确认、提问 | ACP 权限与 form elicitation（表单式询问） |
 | Pi Agent | `pi` | `pi`、`pi-agent` | JSON-RPC | 模型、流式、恢复、打断、工具、思考、用量、插话 | 当前协议没有可验证的 DSH 权限/提问回传 |
 | Codex | `codex` | `codex` | JSON-RPC（app-server） | 全部 + 权限确认、提问、插话 | app-server 显式开启 `request_user_input`，由 DSH 原生问题面板承载 |
-| OpenCode | `opencode` | `opencode`，或 `OPENCODE_SERVER_URL`（默认 `http://127.0.0.1:4096`） | HTTP + SSE | 全部 + 权限确认、提问 | — |
-| Grok Build | `grok` | `grok`、`grok-build` | ACP | 模型、流式、工具、思考、用量、权限确认、提问 | ACP 权限与 Grok 私有 `_x.ai/ask_user_question` 结构化提问 |
+| OpenCode | `opencode` | `opencode`，或 `OPENCODE_SERVER_URL`（默认 `http://127.0.0.1:4096`） | HTTP + SSE | 全部 + Skill、权限确认、提问 | 原生 `/skill` 或 `debug skill` 目录，`session/.../command` 展开显式 Skill |
+| Grok Build | `grok` | `grok`、`grok-build` | ACP | 模型、Skill、流式、工具、思考、用量、权限确认、提问 | 原生 `grok inspect --json` Skill 目录、ACP 权限与 Grok 私有 `_x.ai/ask_user_question` 结构化提问 |
 | MiniMax Code | `mcode` | `mcode` | ACP / stream-json | 模型、流式、恢复、打断、工具、思考、用量、权限确认、提问 | 默认 ACP 路径支持交互；显式思考档位的 `exec` 路径没有交互式回传；上游贡献者：[chenjunyi000](https://github.com/chenjunyi000)；提交 PR [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6)、[#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
 | ZCode | `zcode` | `zcode`、桌面端内置运行时 | JSON-RPC 裸信封 | 模型、流式、恢复、打断、用量 | 上游贡献者：[chenjunyi000](https://github.com/chenjunyi000)；提交 PR [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6)、[#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
 | CodeBuddy（自动识别 CN/国际版） | `codebuddy` | `codebuddy`、`codebuddy-code`、`cbc` 及 Windows `.cmd` 入口；按环境变量与认证域名自动选择区域 | ACP（`--acp`） | 模型、流式、恢复、打断、工具、思考、用量、权限确认、提问 | 支持 stdio ACP 与 HTTP sidecar（旁路服务） ACP；CodexHost 上游贡献者：[mouzhi](https://github.com/mouzhi)；首次适配 [f30b000](https://github.com/BytePioneer-AI/codex-host/commit/f30b000f88950c40844b071eec2f6f385c6bcb49) |
