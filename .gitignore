@@ -26,3 +26,19 @@ tmp
 /sidecar-entry.js
 # Host 在运行时生成的工作区级调试状态（src/host/debug.ts 写入）
 .codingns/
+# 本机 AI 编程 CLI / Agent 运行器留下的工具状态目录：只属于本机会话，
+# 不是项目源码，不进入版本库。新增同类工具时在这里补一行即可。
+.commandcode/
+.codex/
+.claude/
+.cursor/
+.gemini/
+.qwen/
+.opencode/
+.kimi/
+.zcode/
+.continue/
+.windsurf/
+.roo/
+.trae/
+.aider*/
