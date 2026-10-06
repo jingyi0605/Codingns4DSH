@@ -153,12 +153,12 @@ test('Codex Skill 目录可被列出，并在显式 mention 时补充原生 skil
   for await (const _chunk of driver.executeTurn({
     sessionId: 'codex-skills',
     messages: [],
-    prompt: '$pdf 请检查这个文档',
+    prompt: '/pdf 请检查这个文档',
     cwd: '/workspace',
   })) { /* 只验证发出的 RPC 参数 */ }
 
   assert.deepEqual(turnStartParams?.input, [
-    { type: 'text', text: '$pdf 请检查这个文档' },
+    { type: 'text', text: '/pdf 请检查这个文档' },
     { type: 'skill', name: 'pdf', path: '/workspace/.agents/skills/pdf/SKILL.md' },
   ])
   driver.dispose()

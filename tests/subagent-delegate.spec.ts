@@ -310,11 +310,12 @@ test('Skill 目录直接注册到斜杠菜单，并按输入文本筛选后写�
   assert.match(source, /showGroupTitle: false/u)
   assert.match(source, /description: skill\.description/u)
   assert.match(source, /warm\(session\)/u)
-  assert.match(source, /`\$\$\{name\} `/u)
-  // Skill 只能注册为原生 `/` source，不能再留下 commandUi 的二级 popupSelect。
+  assert.match(source, /`\/\$\{name\} `/u)
+  // 原生 inputTriggers 优先；没有该服务时才允许旧版 commandUi 兜底，不能两个入口并存。
   assert.match(source, /ctx\.inject\(\['inputTriggers'\]/u)
-  assert.doesNotMatch(source, /kind: 'popupSelect'/u)
-  assert.doesNotMatch(source, /commandUi\.register/u)
+  assert.match(source, /kind: 'popupSelect'/u)
+  assert.match(source, /state\.disposeFallback\?\.\(\)/u)
+  assert.match(source, /state\.inputTriggerReady/u)
 })
 
 test('任务留空时直接拒绝，不读取会话历史', async () => {
