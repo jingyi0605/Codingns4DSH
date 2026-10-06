@@ -96,6 +96,10 @@ const CODEX_COMPACTION_TIMEOUT_MS = 60_000
 // Codex CLI 默认会启用 computer_use；DSH 没有对应的桌面控制宿主，必须在
 // app-server 进程启动时关闭该 feature，避免模型进入无法完成的控制回合。
 const CODEX_APP_SERVER_ARGS = [
+  // 原生 request_permissions 默认关闭。必须在插件进程内启用，模型才能主动
+  // 发出 item/permissions/requestApproval，而不是靠试写文件碰沙箱边界。
+  // 用配置覆盖而非 --enable：旧版会忽略未知 feature 配置，保留原命令审批通道。
+  '-c', 'features.request_permissions_tool=true',
   'app-server',
   '--disable', 'computer_use',
   // Codex 默认关闭 request_user_input；不开启时模型只能把“提问”写成普通文本，
@@ -117,6 +121,21 @@ const CODEX_QUESTION_DEVELOPER_INSTRUCTIONS = [
   'CodingNS 提供的是阻塞式原生问题面板。',
   '需要向用户提问时，必须调用同步的 request_user_input 工具，提供 1 到 3 个完整问题和可选项，并等待结构化回答。',
   '不要调用 request_user_input_async，也不要只用普通文本声称问题已经发送；在收到问题回答前不要结束当前回合。',
+].join('\n')
+
+/**
+ * 权限申请属于宿主接入契约，由适配器提供指令，不要求用户指定工具、参数和路径。
+ * 指令负责让模型选择原生申请通道；实际执行边界仍由每轮下发的沙箱策略强制执行。
+ * 这里不缓存权限档位，避免用户在后续回合切换权限后沿用旧的行为说明。
+ */
+const CODEX_PERMISSION_DEVELOPER_INSTRUCTIONS = [
+  'CodingNS 通过 DSH 原生审批面板处理权限申请，权限边界和审批策略以当前回合的运行时上下文为准。',
+  '操作需要额外权限且当前审批策略允许交互时，优先调用原生 request_permissions 工具，申请完成任务所需的最小文件或网络权限，并等待结构化审批结果。',
+  '用户要求主动触发或验证权限申请时，应自行选择当前允许范围之外的最小权限并调用 request_permissions；工作区、/tmp、/private/tmp 和 TMPDIR 可能已可写，在这些目录执行普通写入不等于发起审批。',
+  '只有当前工具列表没有 request_permissions 时，才使用原生命令工具的 require_escalated 审批通道；工具参数和目标路径由你确定，不要要求用户编写提权命令。',
+  '审批策略为 never 时不要申请或反复重试；如果当前已有所需权限，如实说明无需额外授权，不要声称已发生用户审批。',
+  '审批返回后检查实际授予的权限范围，只执行被授予范围内的操作；测试批准结果时选择不会覆盖已有文件的最小操作，并验证真实执行结果。',
+  '权限未授予、被拒绝或取消时停止对应的受限操作，不要用其他工具或路径绕过同一次拒绝；申请已发送、命令成功和用户已批准是不同事实，报告结论必须依据实际审批及执行结果。',
 ].join('\n')
 
 interface PendingCodexPermission {
@@ -1681,9 +1700,11 @@ function isCodexToolEvent(method: string, type: string): boolean {
  */
 function codexThreadParams(input: CodingNsCliTurnInput): Record<string, unknown> {
   const bridgeInstructions = codexBridgeDeveloperInstructions(input.sessionId)
-  const developerInstructions = bridgeInstructions === undefined
-    ? CODEX_QUESTION_DEVELOPER_INSTRUCTIONS
-    : `${CODEX_QUESTION_DEVELOPER_INSTRUCTIONS}\n\n${bridgeInstructions}`
+  const developerInstructions = [
+    CODEX_QUESTION_DEVELOPER_INSTRUCTIONS,
+    CODEX_PERMISSION_DEVELOPER_INSTRUCTIONS,
+    bridgeInstructions,
+  ].filter((instructions) => instructions !== undefined).join('\n\n')
   const serviceTier = codexServiceTier(input.serviceTierId)
   return {
     cwd: input.cwd ?? process.cwd(),
@@ -1691,7 +1712,7 @@ function codexThreadParams(input: CodingNsCliTurnInput): Record<string, unknown>
     approvalPolicy: codexApprovalPolicy(input),
     ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}),
     ...(serviceTier === undefined ? {} : { serviceTier }),
-    ...(developerInstructions === undefined ? {} : { developerInstructions }),
+    developerInstructions,
   }
 }
 
