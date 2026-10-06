@@ -121,6 +121,33 @@ test('远端摘要对缺失字段和空 baseline 保持容错', async () => {
   assert.deepEqual(await empty.load(), [])
 })
 
+test('session/list 协议失败时仍保留已显式添加的远端工作区', async () => {
+  const source = createPeerHostRemoteSummarySource({
+    scope,
+    visibleWorkspaceIds: ['workspace-a'],
+    transport: {
+      async rpc() {
+        throw new Error('目标 Host 暂时不支持 session/list')
+      },
+      stream() {
+        return asyncIterableOf([{
+          type: 'baseline',
+          value: {
+            items: [{ workspaceId: 'workspace-a', title: '项目 A', path: '/repo/a', sessionIds: ['session-a'] }],
+            archivedSessionIds: [],
+          },
+        }])
+      },
+    },
+  })
+  assert.deepEqual(await source.load(), [{
+    workspaceId: 'workspace-a',
+    displayName: '项目 A',
+    path: '/repo/a',
+    sessions: [{ sessionId: 'session-a', title: 'session-a', status: 'idle', updatedAt: 0, blank: false }],
+  }])
+})
+
 test('显式添加的工作区白名单只投影集合内的远端工作区', async () => {
   const source = createPeerHostRemoteSummarySource({
     scope,
