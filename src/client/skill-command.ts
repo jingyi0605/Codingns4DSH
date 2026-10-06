@@ -6,35 +6,8 @@ import { callCliRpc } from './cli-catalog.js'
 import { cliSessionSelectionRevision, waitForCliSessionSelection } from './cli-slots.js'
 import { debugInfo, debugWarn } from '../shared/debug.js'
 
-const SKILL_COMMAND_NAME = 'skills'
 const SKILL_INPUT_SOURCE = 'codingns-skills'
 const SKILL_CATALOG_CACHE_TTL_MS = 30_000
-
-interface CommandUiService {
-  register(contribution: CommandContribution): () => void
-}
-
-interface CommandContribution {
-  readonly name: string
-  label?(): string
-  description?(): string
-  available(session: { readonly sessionId: string }): boolean
-  readonly ui: PopupSelectSpec
-}
-
-interface PopupSelectSpec {
-  readonly kind: 'popupSelect'
-  readonly searchMode?: 'substring' | 'fuzzy-label'
-  searchLabels?(): { readonly placeholder: string; readonly empty: string; readonly noResults: string }
-  options(session: { readonly sessionId: string }, signal: AbortSignal): Promise<readonly SelectOption[]>
-  onSelect(option: SelectOption, session: { readonly sessionId: string }): void | Promise<void>
-}
-
-interface SelectOption {
-  readonly id: string
-  readonly label: string
-  readonly detail?: string
-}
 
 /** DSH 输入框的 `/` 触发源；服务由 DSH 会话输入模块提供。 */
 interface InputTriggersService {
@@ -44,15 +17,26 @@ interface InputTriggersService {
 interface SkillInputTriggerSource {
   readonly trigger: '/'
   readonly name: string
-  candidates(session: { readonly sessionId: string }, request: { readonly query: string; readonly signal: AbortSignal }): Promise<readonly SkillInputCandidate[]>
+  readonly order?: number
+  readonly showGroupTitle?: boolean
+  candidates(session: { readonly sessionId: string }, request: {
+    readonly query: string
+    readonly quoted?: boolean
+    readonly position?: 'leading' | 'inline'
+    readonly drilled?: boolean
+    readonly signal: AbortSignal
+  }): Promise<readonly SkillInputCandidate[]>
+  warm?(session: { readonly sessionId: string }): void
+  lexicon?(session: { readonly sessionId: string }): readonly string[] | undefined
+  subscribeLexicon?(session: { readonly sessionId: string }, listener: () => void): () => void
   onPick(pick: { readonly candidate: { readonly name: string; readonly value?: string } }): { readonly text: string }
 }
 
 interface SkillInputCandidate {
   readonly name: string
-  readonly label: string
+  readonly label?: string
+  readonly description?: string
   readonly value?: string
-  readonly detail?: string
 }
 
 interface SkillCatalogCache {
@@ -63,21 +47,6 @@ interface SkillCatalogCache {
 
 const skillCatalogCache = new Map<string, SkillCatalogCache>()
 
-interface SessionInputFace {
-  readonly state: { getSnapshot(): { readonly draft: string; readonly draftRev?: number } }
-  caretSpan?(): { readonly start: number; readonly end: number; readonly draftRev?: number }
-  setDraft?(text: string): void
-  notify(level: 'info' | 'error', text: string): void
-}
-
-interface SessionsService {
-  scope(id: string): Context | undefined
-}
-
-interface ConversationService {
-  readonly input: { for(actx: Context): SessionInputFace }
-}
-
 export interface RegisterSkillCommandOptions {
   readonly rpc: CodingNsRpcClient
   readonly locale: CodingNsLocale
@@ -85,84 +54,29 @@ export interface RegisterSkillCommandOptions {
 
 /** 把 Codex 原生 Skill 目录接入 DSH `/` 菜单。 */
 export function registerSkillCommand(ctx: Context, options: RegisterSkillCommandOptions): () => void {
-  const commandFiber = ctx.inject(['commandUi'], (scope) => {
-    const commandUi = readCommandUi(scope)
-    if (commandUi === undefined) {
-      debugWarn('codingns4dsh: /skills 未注册，当前 DSH 未提供 commandUi 服务')
-      return
-    }
-    const t = options.locale.bind('codingns')
-    try {
-      scope.effect(() => commandUi.register({
-        name: SKILL_COMMAND_NAME,
-        label: () => t('skills.label'),
-        description: () => t('skills.description'),
-        available: () => true,
-        ui: {
-          kind: 'popupSelect',
-          searchMode: 'fuzzy-label',
-          searchLabels: () => ({
-            placeholder: t('skills.searchPlaceholder'),
-            empty: t('skills.searchEmpty'),
-            noResults: t('skills.searchNoResults'),
-          }),
-          async options(session, signal) {
-            await waitForCliSessionSelection(session.sessionId)
-            const catalog = await loadSkillCatalog(options.rpc, session.sessionId, signal, true)
-            return catalog
-              .filter((skill) => skill.enabled)
-              .map((skill) => ({
-                id: skill.name,
-                label: skill.displayName ?? skill.name,
-                ...(skill.description.trim() === '' ? {} : { detail: skill.description }),
-              }))
-          },
-          async onSelect(option, session) {
-            const input = readSessionInput(scope, session.sessionId)
-            if (input === undefined || input.setDraft === undefined) {
-              input?.notify('error', t('skills.draftUnsupported'))
-              return
-            }
-            const snapshot = input.state.getSnapshot()
-            const draft = snapshot.draft ?? ''
-            const selection = input.caretSpan?.()
-            const span = skillCommandSpan(draft, snapshot.draftRev ?? selection?.draftRev ?? 0, selection)
-            const token = `$${option.id} `
-            if (span !== undefined) {
-              input.setDraft(`${draft.slice(0, span.start)}${token}${draft.slice(span.end)}`)
-              return
-            }
-            const caret = selection?.end ?? draft.length
-            input.setDraft(`${draft.slice(0, caret)}${token}${draft.slice(caret)}`)
-          },
-        },
-      }), 'codingns4dsh: skills command')
-      debugInfo('codingns4dsh: /skills 命令已注册')
-    } catch (error) {
-      debugWarn('codingns4dsh: /skills 命令注册失败', { error: error instanceof Error ? error.message : String(error) })
-    }
-  })
-  // `/` 触发源直接把当前 Agent 的 Skill 目录投影进原生斜杠菜单，
-  // 不再要求用户先点击 `/skills` 再进入二级列表。
+  // DSH >= 0.2.0-rc.2 已提供 inputTriggers。Skill 必须只注册为原生 `/` source，
+  // 否则 commandUi 的旧 popupSelect 会在服务装配竞态下留下二级菜单入口。
   const triggerFiber = ctx.inject(['inputTriggers'], (scope) => {
     registerSkillInputTriggerSource(scope, options)
   })
   return () => {
-    void commandFiber.dispose()
     void triggerFiber.dispose()
   }
 }
 
-/** 注册直接的 `/` Skill 搜索源；服务不存在时由 DSH 原生命令菜单兜底。 */
-function registerSkillInputTriggerSource(ctx: Context, options: RegisterSkillCommandOptions): void {
+/** 注册直接的 `/` Skill 搜索源。 */
+function registerSkillInputTriggerSource(ctx: Context, options: RegisterSkillCommandOptions): boolean {
   const inputTriggers = readService<InputTriggersService>(ctx, 'inputTriggers')
   if (inputTriggers === undefined || typeof inputTriggers.registerSource !== 'function') {
     debugWarn('codingns4dsh: Skill `/` 搜索源未注册，当前 DSH 未提供 inputTriggers 服务')
-    return
+    return false
   }
   const source: SkillInputTriggerSource = {
     trigger: '/',
     name: SKILL_INPUT_SOURCE,
+    order: 2,
+    // Skill 行直接进入同一个 `/` 菜单，不再增加“技能”二级标题。
+    showGroupTitle: false,
     async candidates(session, request) {
       try {
         await waitForCliSessionSelection(session.sessionId)
@@ -178,12 +92,22 @@ function registerSkillInputTriggerSource(ctx: Context, options: RegisterSkillCom
             name: skill.name,
             label: skill.displayName ?? skill.name,
             value: skill.name,
-            ...(skill.description.trim() === '' ? {} : { detail: skill.description }),
+            ...(skill.description.trim() === '' ? {} : { description: skill.description }),
           }))
       } catch (error) {
         debugWarn('codingns4dsh: 读取 Skill `/` 搜索目录失败', { error: error instanceof Error ? error.message : String(error) })
         return []
       }
+    },
+    warm(session) {
+      const controller = new AbortController()
+      void loadSkillCatalog(options.rpc, session.sessionId, controller.signal, true).catch((error: unknown) => {
+        debugWarn('codingns4dsh: 预热 Skill `/` 搜索目录失败', { error: error instanceof Error ? error.message : String(error) })
+      })
+    },
+    lexicon(session) {
+      const catalog = skillCatalogCache.get(session.sessionId)?.catalog
+      return catalog?.filter((skill) => skill.enabled).map((skill) => skill.name)
     },
     onPick(pick) {
       const name = pick.candidate.value?.trim() || pick.candidate.name.trim()
@@ -193,8 +117,10 @@ function registerSkillInputTriggerSource(ctx: Context, options: RegisterSkillCom
   try {
     ctx.effect(() => inputTriggers.registerSource(source), 'codingns4dsh: skill slash source')
     debugInfo('codingns4dsh: Skill `/` 搜索源已注册')
+    return true
   } catch (error) {
     debugWarn('codingns4dsh: Skill `/` 搜索源注册失败', { error: error instanceof Error ? error.message : String(error) })
+    return false
   }
 }
 
@@ -218,50 +144,6 @@ async function loadSkillCatalog(
   }, signal)
   skillCatalogCache.set(sessionId, { selectionRevision, loadedAt: Date.now(), catalog })
   return catalog
-}
-
-function skillCommandSpan(
-  draft: string,
-  draftRev: number,
-  selection?: { readonly start: number; readonly end: number },
-): { readonly start: number; readonly end: number; readonly draftRev: number } | undefined {
-  const caret = selection?.end ?? draft.length
-  const token = /\/(?:skills|技能)(?=\s|$)/gu
-  let match: RegExpExecArray | null
-  while ((match = token.exec(draft)) !== null) {
-    const start = match.index
-    const end = start + match[0].length
-    const before = draft[start - 1]
-    if (start > 0 && before !== undefined && !/\s/u.test(before)) continue
-    if (caret >= start && caret <= end + 1) return { start, end, draftRev }
-    if (caret > end && draft.slice(end, caret).trim() === '') return { start, end, draftRev }
-  }
-  return undefined
-}
-
-function readSessionInput(ctx: Context, sessionId: string): SessionInputFace | undefined {
-  try {
-    const actx = readSessions(ctx)?.scope(sessionId)
-    if (actx === undefined) return undefined
-    return readConversation(ctx)?.input.for(actx)
-  } catch {
-    return undefined
-  }
-}
-
-function readCommandUi(ctx: Context): CommandUiService | undefined {
-  const service = readService<CommandUiService>(ctx, 'commandUi')
-  return service !== undefined && typeof service.register === 'function' ? service : undefined
-}
-
-function readSessions(ctx: Context): SessionsService | undefined {
-  const service = readService<SessionsService>(ctx, 'sessions')
-  return service !== undefined && typeof service.scope === 'function' ? service : undefined
-}
-
-function readConversation(ctx: Context): ConversationService | undefined {
-  const service = readService<ConversationService>(ctx, 'conversation')
-  return service !== undefined && typeof service.input?.for === 'function' ? service : undefined
 }
 
 function readService<T>(ctx: Context, name: string): T | undefined {
