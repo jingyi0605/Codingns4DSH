@@ -87,8 +87,18 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     if (state === undefined || pending?.kind !== 'permission') throw new Error('Claude Code 权限请求已结束')
     state.pending.delete(response.requestId)
     this.writeControlResponse(state, response.requestId, response.approved
-      ? { behavior: 'allow', updatedInput: pending.input, ...(pending.toolUseId ? { toolUseID: pending.toolUseId } : {}) }
-      : { behavior: 'deny', message: response.reason?.trim() || '用户拒绝了权限请求', ...(pending.toolUseId ? { toolUseID: pending.toolUseId } : {}) })
+      ? {
+          behavior: 'allow',
+          updatedInput: pending.input,
+          decisionClassification: 'user_temporary',
+          ...(pending.toolUseId ? { toolUseID: pending.toolUseId } : {}),
+        }
+      : {
+          behavior: 'deny',
+          message: response.reason?.trim() || '用户拒绝了权限请求',
+          decisionClassification: 'user_reject',
+          ...(pending.toolUseId ? { toolUseID: pending.toolUseId } : {}),
+        })
   }
 
   respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
@@ -104,6 +114,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     this.writeControlResponse(state, response.requestId, {
       behavior: 'allow',
       updatedInput: { ...pending.input, answers },
+      decisionClassification: 'user_temporary',
       ...(pending.toolUseId ? { toolUseID: pending.toolUseId } : {}),
     })
   }
@@ -170,7 +181,10 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   }
 
   protected buildArgs(input: CodingNsCliTurnInput): readonly string[] {
-    const args = ['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--permission-prompts', 'host', '--include-partial-messages', '--verbose']
+    // Claude Agent SDK 在 canUseTool 回调存在时使用这个隐藏的 stdio 协议入口。
+    // `--permission-prompts host` 只决定提示由谁回答，没有注册 stdio
+    // 权限处理器；CLI 因而不向模型提供 AskUserQuestion。
+    const args = ['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--permission-prompt-tool', 'stdio', '--include-partial-messages', '--verbose']
     args.push(...claudePermissionArgs(input.permission))
     // 子代理托管开启时注入 MCP 替身工具并停用内建 Task 子代理。
     args.push(...claudeBridgeArgs(input.sessionId, this.descriptor.id))
@@ -283,7 +297,12 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     if (toolName === 'AskUserQuestion') {
       const questions = readAgentQuestions(input.questions ?? input)
       if (questions.length === 0) {
-        this.writeControlResponse(state, requestId, { behavior: 'deny', message: 'Claude Code 的问题请求格式无效', ...(toolUseId ? { toolUseID: toolUseId } : {}) })
+        this.writeControlResponse(state, requestId, {
+          behavior: 'deny',
+          message: 'Claude Code 的问题请求格式无效',
+          decisionClassification: 'user_reject',
+          ...(toolUseId ? { toolUseID: toolUseId } : {}),
+        })
         return null
       }
       state.pending.set(requestId, {
