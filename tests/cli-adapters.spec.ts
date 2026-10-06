@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -31,6 +31,53 @@ test('Command Code 驱动只把带版本号的候选命令视为已安装', asyn
 
   assert.deepEqual(await driver.detect(), { installed: true, version: '1.2.3', command: 'command-code' })
   assert.deepEqual(calls, [['missing-command', '--version'], ['command-code', '--version']])
+})
+
+test('Command Code Skill 扫描校验目录优先级，并为显式 mention 下发 --skill', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codingns4dsh-cc-skills-'))
+  const workspace = join(root, 'workspace')
+  const home = join(root, 'home')
+  const projectSkill = join(workspace, '.commandcode', 'skills', 'demo')
+  const shadowedSkill = join(workspace, '.agents', 'skills', 'demo')
+  const hiddenSkill = join(workspace, '.commandcode', 'skills', 'hidden')
+  const invalidSkill = join(workspace, '.commandcode', 'skills', 'invalid')
+  const globalSkill = join(home, 'skills', 'global')
+  for (const directory of [projectSkill, shadowedSkill, hiddenSkill, invalidSkill, globalSkill]) mkdirSync(directory, { recursive: true })
+  writeFileSync(join(projectSkill, 'SKILL.md'), '---\nname: demo\ndescription: >-\n  项目 Skill\nmetadata:\n  name: 不应覆盖顶层名称\n---\n正文\n')
+  writeFileSync(join(shadowedSkill, 'SKILL.md'), '---\nname: demo\ndescription: 被项目目录覆盖\n---\n正文\n')
+  writeFileSync(join(hiddenSkill, 'SKILL.md'), '---\nname: hidden\ndescription: 仅模型调用\nuser-invocable: false\n---\n正文\n')
+  writeFileSync(join(invalidSkill, 'SKILL.md'), '---\nname: invalid\n---\n正文\n')
+  writeFileSync(join(globalSkill, 'SKILL.md'), '---\nname: global\ndescription: 用户 Skill\n---\n正文\n')
+  let receivedArgs: string[] = []
+  try {
+    const driver = new CommandCodeDriver({
+      homeDirectory: home,
+      binaries: ['command-code'],
+      spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+        ? { status: 0, stdout: 'command-code 1.2.3', stderr: '' }
+        : { status: 0, stdout: '', stderr: '' }) as never,
+      spawn: ((_command: string, args: string[]) => {
+        receivedArgs = args
+        return {
+          stdout: Readable.from([`${JSON.stringify({ type: 'result', finalText: '完成' })}\n`]),
+          stderr: { on() { return this } },
+          kill() { return true },
+        }
+      }) as never,
+    })
+
+    const catalog = await driver.listSkills({ sessionId: 'cc-skills', cwd: workspace, forceReload: true })
+    assert.deepEqual(catalog.filter((item) => item.name === 'demo' || item.name === 'hidden' || item.name === 'global'), [
+      { id: 'demo', name: 'demo', description: '项目 Skill', enabled: true },
+      { id: 'hidden', name: 'hidden', description: '仅模型调用', enabled: false },
+      { id: 'global', name: 'global', description: '用户 Skill', enabled: true },
+    ])
+    for await (const _chunk of driver.executeTurn({ sessionId: 'cc-skills', messages: [], prompt: '/demo 请执行', cwd: workspace })) {}
+    assert.deepEqual(receivedArgs.slice(receivedArgs.indexOf('--skill'), receivedArgs.indexOf('--skill') + 2), ['--skill', realpathSync(projectSkill)])
+    driver.dispose()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('Command Code 在桌面进程 PATH 缺失时通过登录 Shell 解析 CLI', async () => {
@@ -1434,7 +1481,7 @@ test('Agent 注册表隔离会话配置并拒绝未知 Agent', async () => {
   assert.throws(() => registry.setSession('s1', { adapterId: 'missing' }), /Agent 不可用/u)
 })
 
-test('Agent 注册表按当前会话路由 Skill 目录，并拒绝没有 Skill 能力的 Agent', async () => {
+test('Agent 注册表按当前会话路由 Skill 目录，并对没有 Skill 能力的 Agent 返回空目录', async () => {
   let received: unknown
   const registry = new CodingNsCliAdapterRegistry([{
     descriptor: { id: 'skills-agent', name: 'Skills Agent', capabilities: ['skills'] },
@@ -1445,6 +1492,11 @@ test('Agent 注册表按当前会话路由 Skill 目录，并拒绝没有 Skill 
       return [{ id: 'demo', name: 'demo', description: '演示技能', enabled: true }]
     },
     async *executeTurn() { yield { type: 'finish', reason: 'stop' } },
+  }, {
+    descriptor: { id: 'grok', name: 'Grok Build', capabilities: ['models'] },
+    async detect() { return { installed: true, version: '1.0.0', command: 'grok' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } },
   }])
 
   registry.setSession('skills-session', { adapterId: 'skills-agent' })
@@ -1452,7 +1504,9 @@ test('Agent 注册表按当前会话路由 Skill 目录，并拒绝没有 Skill 
     { id: 'demo', name: 'demo', description: '演示技能', enabled: true },
   ])
   assert.deepEqual(received, { sessionId: 'skills-session', cwd: '/workspace', forceReload: true })
-  await assert.rejects(registry.listSkills('missing-session'), /当前 DSH Agent 不支持外部 Skill 目录/u)
+  assert.deepEqual(await registry.listSkills('missing-session'), [])
+  registry.setSession('grok-session', { adapterId: 'grok' })
+  assert.deepEqual(await registry.listSkills('grok-session'), [])
 })
 
 test('Agent 注册表把最近一次 Provider usage 快照提供给 Client 展示', async () => {

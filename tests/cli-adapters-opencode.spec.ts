@@ -157,7 +157,7 @@ test('OpenCode 在 assistant role 到达前立即投影工具并读取嵌套参�
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'remote-live-tool' },
     { type: 'tool-event', toolName: 'bash', callId: 'live-bash-call', input: '{"command":"pwd && ls"}', status: 'running' },
-    { type: 'text-delta', text: '已执行' },
+    { type: 'text-delta', text: '已执行', messageId: 'live-assistant' },
     { type: 'finish', reason: 'stop' },
   ])
 })
@@ -501,7 +501,7 @@ test('OpenCode 旧模型已不在目录时自动切换到同 Provider 的唯一�
   assert.deepEqual(requests[0]?.model, { providerID: 'deepseek', modelID: 'deepseek-v4.1-flash' })
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'remap-session' },
-    { type: 'text-delta', text: '已恢复' },
+    { type: 'text-delta', text: '已恢复', messageId: 'assistant-1' },
     { type: 'finish', reason: 'stop' },
   ])
   driver.dispose()

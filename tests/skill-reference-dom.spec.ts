@@ -16,3 +16,9 @@ test('Skill 引用匹配保留规范名称并支持行首令牌', () => {
   ])
   assert.deepEqual(findSkillReferenceMentions('path/to/pdf', new Set(['pdf'])), [])
 })
+
+test('Skill 引用支持 Provider 限定名称，仍然排除 URL 和普通路径', () => {
+  const text = '/local:summary 参数 /apps/web:deploy 执行 https://example.com/local:summary'
+  const mentions = findSkillReferenceMentions(text, new Set(['local:summary', 'apps/web:deploy']))
+  assert.deepEqual(mentions.map((item) => item.name), ['local:summary', 'apps/web:deploy'])
+})
