@@ -217,3 +217,21 @@ test('ZCode 只读会话拒绝权限提升，即使上层误给出批准', { tim
     assert.equal(replay.responses[0].result.decision, 'deny')
   } finally { replay.driver.dispose() }
 })
+
+test('ZCode 原生工具流、问题请求和结果只投影一张问题卡片', async () => {
+  const replay = createReplay(questionRequest, undefined, true)
+  const calls: any[] = []; const results: any[] = []
+  const projector = new CodingNsDshMessageProjector({ adapterId: 'zcode', sessionId: 'dsh', nativeSessions: {
+    askQuestions: async (_id: string, request: any) => ({ requestId: request.requestId, answers: [{ id: 'question-1', selected: ['42'] }] }),
+    appendToolCall: (_id: string, call: any) => { calls.push(call); return { callId: call.callId } },
+    appendToolResult: (handle: any, result: any) => { results.push({ ...handle, ...result }); return true },
+  } as never, respondQuestion: (response) => replay.driver.respondQuestion('dsh', response) })
+  try {
+    for await (const event of replay.driver.executeTurn({ sessionId: 'dsh', messages: [], prompt: '测试' })) await projector.push(event)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].name, 'question')
+    assert.equal(calls[0].callId, 'call-question')
+    assert.equal(results.length, 1)
+    assert.match(results[0].output, /42/u)
+  } finally { replay.driver.dispose() }
+})
