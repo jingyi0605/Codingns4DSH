@@ -19,30 +19,6 @@ export const WINDOWS = process.platform === 'win32'
 let loginShellPath: string | undefined
 
 /**
- * Windows 的 `.cmd` 入口必须由 cmd.exe 执行，但不能把 argv 直接交给
- * `spawn(..., { shell: true })`：Node 会把数组原样用空格拼接，参数中的空格、
- * 引号和 shell 元字符会在第二次解析时失去边界。这里显式构造唯一的 `/c`
- * 命令字符串，让 Node 只负责传递一个 shell 参数。
- */
-export function windowsShellInvocation(
-  command: string,
-  args: readonly string[],
-  platform: NodeJS.Platform = process.platform,
-  comSpec = process.env.ComSpec ?? 'cmd.exe',
-): { readonly command: string; readonly args: readonly string[] } {
-  if (platform !== 'win32') return { command, args }
-  const commandLine = [command, ...args].map(quoteCmdArgument).join(' ')
-  return { command: comSpec, args: ['/d', '/s', '/c', `"${commandLine}"`] }
-}
-
-/** cmd.exe 的普通 argv 引号；配置值自身保留 TOML 引号，不在注入层提前包裹。 */
-function quoteCmdArgument(value: string): string {
-  if (value === '') return '""'
-  if (/^[A-Za-z0-9_./\\:-]+$/u.test(value)) return value
-  return `"${value.replace(/"/gu, '""')}"`
-}
-
-/**
  * 桌面应用通常不是从登录终端启动，继承到的 PATH 只有系统目录。
  * 先尝试当前进程的 PATH，失败后再从用户登录 Shell 解析命令位置。
  */

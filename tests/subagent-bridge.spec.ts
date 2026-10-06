@@ -26,7 +26,6 @@ import { CodingNsCliSessionStore } from '../data/build/dist/host/cli-adapters/se
 import { CommandCodeDriver } from '../data/build/dist/host/cli-adapters/command-code-driver.js'
 import { ClaudeCodeDriver } from '../data/build/dist/host/cli-adapters/claude-driver.js'
 import { MiniMaxCodeDriver } from '../data/build/dist/host/cli-adapters/mcode-driver.js'
-import { windowsShellInvocation } from '../data/build/dist/host/cli-adapters/process-utils.js'
 
 const ACTIVE_RUNTIME = { baseUrl: 'http://127.0.0.1:45999', token: 'secret-token' }
 
@@ -83,18 +82,14 @@ test('子代理桥接注入：开启时产出各适配器扩展面，关闭时�
     assert.ok(codexInstructions !== undefined)
     assert.ok(codexInstructions.includes('codingns.agent_subagent'))
 
-    // Windows 的 JsonRpcProcess 通过显式 cmd.exe `/c` 命令启动 `.cmd` 包装器；
-    // 注入层只返回真实 argv，shell 转义由进程层统一完成，MCP args 继续是 TOML 数组。
+    // Windows 的 JsonRpcProcess 通过 cmd.exe 启动 `.cmd` 包装器；覆盖项必须
+    // 保持为一个 argv，且 MCP args 必须继续是 TOML 数组，不能被 shell 拆成字符串。
     const windowsCodex = codexBridgeArgs('s1', 'codex', 'win32')
     const windowsArgsOverride = windowsCodex[windowsCodex.indexOf('-c', 2) + 1] ?? ''
-    assert.equal(windowsArgsOverride, `mcp_servers.codingns.args=['${bridgeMcpEntryPath()}']`)
+    assert.match(windowsArgsOverride, /^"mcp_servers\.codingns\.args=\['/u)
+    assert.match(windowsArgsOverride, /'\]"$/u)
     assert.doesNotMatch(windowsArgsOverride, /=\["/u)
-    assert.equal(codexConfigOverride('mcp_servers.codingns.args', "['C:\\Program Files\\codingns\\mcp-stdio-entry.js']"), "mcp_servers.codingns.args=['C:\\Program Files\\codingns\\mcp-stdio-entry.js']")
-    const invocation = windowsShellInvocation('codex.cmd', ['app-server', '-c', "mcp_servers.codingns.args=['C:\\Program Files\\codingns\\mcp-stdio-entry.js']"], 'win32', 'C:\\Windows\\System32\\cmd.exe')
-    assert.deepEqual(invocation, {
-      command: 'C:\\Windows\\System32\\cmd.exe',
-      args: ['/d', '/s', '/c', "\"codex.cmd app-server -c \"mcp_servers.codingns.args=['C:\\Program Files\\codingns\\mcp-stdio-entry.js']\"\""],
-    })
+    assert.equal(codexConfigOverride('mcp_servers.codingns.args', "['C:\\Program Files\\codingns\\mcp-stdio-entry.js']", 'win32'), '"mcp_servers.codingns.args=[\'C:\\Program Files\\codingns\\mcp-stdio-entry.js\']"')
   } finally {
     setSubagentBridge(undefined)
   }

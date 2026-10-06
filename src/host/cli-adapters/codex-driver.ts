@@ -103,6 +103,22 @@ const CODEX_APP_SERVER_ARGS = [
   '--enable', 'default_mode_request_user_input',
 ] as const
 
+/**
+ * DSH 的问题面板只实现了 Codex 的同步 `request_user_input` 回路。
+ *
+ * Codex 0.153.0 起还会按模型目录暴露 `request_user_input_async`。该工具只
+ * 追加带 `delivery: "async"` 的 AgentMessage，然后立即返回 accepted，没有可供
+ * DSH 通过 `item/tool/requestUserInput` 回复的 JSON-RPC 请求。若不在模型上下文
+ * 中明确约束，模型可能把“已提问”写成普通文本，回合随即结束，用户看不到可提交
+ * 的问题面板。这里使用 Codex 官方建议的宿主侧 workaround：强制模型选择同步
+ * 工具，并等待结构化答案。
+ */
+const CODEX_QUESTION_DEVELOPER_INSTRUCTIONS = [
+  'CodingNS 提供的是阻塞式原生问题面板。',
+  '需要向用户提问时，必须调用同步的 request_user_input 工具，提供 1 到 3 个完整问题和可选项，并等待结构化回答。',
+  '不要调用 request_user_input_async，也不要只用普通文本声称问题已经发送；在收到问题回答前不要结束当前回合。',
+].join('\n')
+
 interface PendingCodexPermission {
   readonly resolve: (value: unknown) => void
   readonly response: 'legacy' | 'command' | 'file-change' | 'permissions'
@@ -173,7 +189,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   async listModels(): Promise<CodingNsCliModelCatalog> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) return emptyCatalog()
-    const rpc = new JsonRpcProcess({ command, args: CODEX_APP_SERVER_ARGS, explicitWindowsShell: true, spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args: CODEX_APP_SERVER_ARGS, spawn: this.runSpawn })
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 12_000)
     try {
@@ -861,9 +877,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     previous?.rpc.dispose()
     // 子代理托管开启时用 `-c` 覆盖注入 MCP 替身工具；工具由桥接转投成 DSH 原生子会话。
     const bridgeArgs = codexBridgeArgs(input.sessionId, this.descriptor.id)
-    // Codex 的 `-c` 覆盖项必须与 app-server 的其余启动参数放在同一侧；
-    // 统一置于子命令前，避免不同版本对全局/子命令参数的解析差异。
-    const rpc = new JsonRpcProcess({ command, args: [...bridgeArgs, ...CODEX_APP_SERVER_ARGS], cwd: input.cwd, explicitWindowsShell: true, spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args: [...CODEX_APP_SERVER_ARGS, ...bridgeArgs], cwd: input.cwd, spawn: this.runSpawn })
     const session = {
       rpc,
       cwd: input.cwd,
@@ -1643,7 +1657,10 @@ function isCodexToolEvent(method: string, type: string): boolean {
  * 的默认值，只在 turn 上覆盖会让首次工具调用落到与 DSH 不同的模式。
  */
 function codexThreadParams(input: CodingNsCliTurnInput): Record<string, unknown> {
-  const developerInstructions = codexBridgeDeveloperInstructions(input.sessionId)
+  const bridgeInstructions = codexBridgeDeveloperInstructions(input.sessionId)
+  const developerInstructions = bridgeInstructions === undefined
+    ? CODEX_QUESTION_DEVELOPER_INSTRUCTIONS
+    : `${CODEX_QUESTION_DEVELOPER_INSTRUCTIONS}\n\n${bridgeInstructions}`
   const serviceTier = codexServiceTier(input.serviceTierId)
   return {
     cwd: input.cwd ?? process.cwd(),
