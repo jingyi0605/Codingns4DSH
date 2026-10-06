@@ -87,6 +87,45 @@ test('Client 视图卸载只 detach，不调用 Host close', async () => {
   assert.equal(calls.close, 0)
 })
 
+test('Client 收到恢复首帧后清理 attach 控制权瞬态错误', async () => {
+  const { remote } = createRemote()
+  let releaseSecondFrame
+  const secondFrame = new Promise((resolve) => { releaseSecondFrame = resolve })
+  let followCount = 0
+  remote.follow = async function* (_sessionId, _id, _attachmentId, signal) {
+    yield { type: 'snapshot', sequence: 0, screen: '$ ', info: terminalInfo }
+    if (followCount++ === 0) {
+      await secondFrame
+      yield { type: 'snapshot', sequence: 1, screen: '$ ', info: terminalInfo }
+    }
+    await new Promise((resolve) => {
+      if (signal?.aborted) resolve(undefined)
+      else signal?.addEventListener('abort', () => resolve(undefined), { once: true })
+    })
+  }
+  let rejectFirstWrite = true
+  remote.write = async () => {
+    if (rejectFirstWrite) {
+      rejectFirstWrite = false
+      throw new Error('当前 attach 没有终端输入控制权')
+    }
+    return success(undefined)
+  }
+
+  const view = new CodingNsTerminalView('session-1', 'terminal-1', remote, true, '/bin/zsh')
+  const unmount = view.mount()
+  await waitFor(() => view.state.getSnapshot().render !== undefined, '终端 snapshot 未到达 Client')
+  view.acknowledge(view.state.getSnapshot().render.revision)
+  view.write('pwd\r')
+  await waitFor(() => view.state.getSnapshot().phase === 'failed', '未记录 attach 控制权错误')
+  releaseSecondFrame()
+  await waitFor(() => view.state.getSnapshot().phase === 'connected' && view.state.getSnapshot().error === undefined, '恢复首帧未清理瞬态错误')
+  assert.equal(view.state.getSnapshot().writable, true)
+
+  unmount()
+  await view.dispose()
+})
+
 test('聚合页常驻视图的多个挂载引用只建立一次 follow', async () => {
   const { calls, remote } = createRemote(true)
   const view = new CodingNsTerminalView('session-1', 'terminal-1', remote, false, '/bin/zsh')

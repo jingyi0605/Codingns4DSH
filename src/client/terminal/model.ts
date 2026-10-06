@@ -470,7 +470,17 @@ export class CodingNsTerminalView {
     let resolveWaiting = (): void => {}
     const waiting = new Promise<void>((resolve) => { resolveWaiting = resolve })
     this.pendingRender = { revision: this.revision, resolve: resolveWaiting }
-    this.patch({ phase: 'connected', writable: true, render: { revision: this.revision, frame } })
+    const currentError = this.store.getSnapshot().error
+    // Host resident 重连期间的旧 attach 可能短暂拒绝一次输入。收到新连接的
+    // 首帧后，控制权已经恢复，这条瞬态错误不能继续盖在可用终端底部；输入上限
+    // 等真实校验错误仍保留，避免成功输出把用户的有效提示清掉。
+    const recoveredControl = currentError?.includes('当前 attach 没有终端输入控制权') === true
+    this.patch({
+      phase: 'connected',
+      writable: true,
+      render: { revision: this.revision, frame },
+    })
+    if (recoveredControl) this.clearError()
     await waiting
   }
 
@@ -531,6 +541,11 @@ export class CodingNsTerminalView {
 
   private patch(patch: Partial<TerminalViewState>): void {
     this.store.set({ ...this.store.getSnapshot(), ...patch })
+  }
+
+  private clearError(): void {
+    const { error: _error, ...state } = this.store.getSnapshot()
+    this.store.set(state)
   }
 
   private fail(error: unknown): void {
