@@ -1697,14 +1697,20 @@ function codexSkillNames(prompt: string): readonly string[] {
 /** 兼容不同 Codex app-server 版本的 `skills/list` 响应包装。 */
 function parseCodexSkills(value: unknown, cwd: string): readonly CodexSkillEntry[] {
   const root = isRecord(value) && Array.isArray(value.data) ? value.data : []
+  const normalizedCwd = resolve(cwd)
   const scoped = root
     .filter(isRecord)
-    .find((item) => item.cwd === cwd)
+    .find((item) => typeof item.cwd === 'string' && resolve(item.cwd) === normalizedCwd)
+  // 当前请求只传了一个 cwd。部分 Codex 版本会返回规范化前后的路径，
+  // 甚至省略 cwd；此时唯一作用域就是本次请求的结果，不能把它误判成空目录。
+  const singleScope = root.length === 1 && isRecord(root[0]) && Array.isArray(root[0].skills)
   const rawSkills = Array.isArray(scoped?.skills)
     ? scoped.skills
-    : root.every((item) => isRecord(item) && typeof item.name === 'string')
-      ? root
-      : []
+    : singleScope
+      ? root[0].skills
+      : root.every((item) => isRecord(item) && typeof item.name === 'string')
+        ? root
+        : []
   const result: CodexSkillEntry[] = []
   for (const raw of rawSkills) {
     if (!isRecord(raw)) continue

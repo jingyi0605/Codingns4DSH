@@ -125,7 +125,7 @@ test('Codex Skill 目录可被列出，并在显式 mention 时补充原生 skil
           return
         }
         if (request.method === 'skills/list') {
-          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { data: [{ cwd: '/workspace', skills: [{ name: 'pdf', description: '处理 PDF 文档', enabled: true, path: '/workspace/.agents/skills/pdf/SKILL.md', interface: { displayName: 'PDF 工具' } }, { name: 'disabled', description: '不可用', enabled: false, path: '/workspace/.agents/skills/disabled/SKILL.md' }] }] } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { data: [{ cwd: '/workspace/', skills: [{ name: 'pdf', description: '处理 PDF 文档', enabled: true, path: '/workspace/.agents/skills/pdf/SKILL.md', interface: { displayName: 'PDF 工具' } }, { name: 'disabled', description: '不可用', enabled: false, path: '/workspace/.agents/skills/disabled/SKILL.md' }] }] } })}\n`)
           return
         }
         if (request.method === 'thread/start') {
