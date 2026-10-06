@@ -432,14 +432,15 @@ test('真实 tmux 会话可创建、跨检查保持身份并显式关闭', { ski
     assert.equal(status, 'status off')
     const exitEmpty = spawnSync(tmuxPath, ['-S', socket, 'show-options', '-g', 'exit-empty'], { encoding: 'utf8' }).stdout.trim()
     assert.equal(exitEmpty, 'exit-empty off')
-  } finally {
     await backend.terminate(realSession)
+    assert.equal((await backend.inspect(realSession)).alive, false)
+    // 关闭最后一个会话后服务器必须仍然存活（exit-empty off）。
+    const alive = spawnSync(tmuxPath, ['-S', socket, 'display-message', '-p', '#{pid}'], { encoding: 'utf8' })
+    assert.equal(alive.status, 0)
+  } finally {
+    // 即使断言失败，也只回收本用例的独立服务器，不能留下孤儿进程。
+    killTestServer(tmuxPath, socket, directory)
   }
-  assert.equal((await backend.inspect(realSession)).alive, false)
-  // 关闭最后一个会话后服务器必须仍然存活（exit-empty off），客户端不会再收到 [server exited]。
-  const alive = spawnSync(tmuxPath, ['-S', socket, 'display-message', '-p', '#{pid}'], { encoding: 'utf8' })
-  assert.equal(alive.status, 0)
-  killTestServer(tmuxPath, socket, directory)
 })
 
 test('真实 tmux：关闭最后一个终端不会让服务器退出', { skip: !canUseTmux() }, async () => {
@@ -470,9 +471,12 @@ test('真实 tmux：关闭最后一个终端不会让服务器退出', { skip: !
  * `exit-empty off` 之后服务器不会自己退出，测试必须显式收尾，否则每次跑测试都会
  * 在临时目录里留下一个孤儿 tmux 服务器。
  */
-function killTestServer(tmuxPath, socket, directory) {
-  spawnSync(tmuxPath, ['-S', socket, 'kill-server'], { encoding: 'utf8' })
-  rmSync(directory, { recursive: true, force: true })
+function killTestServer(tmuxPath, socket, directory, run = spawnSync, env = process.env) {
+  try {
+    run(tmuxPath, ['-S', socket, 'kill-server'], { encoding: 'utf8', timeout: 3_000, env })
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 }
 
 function findTmux() {
@@ -485,12 +489,23 @@ function findTmux() {
   return null
 }
 
-/** 沙箱可能能找到 tmux 二进制，但禁止访问 tmux socket；此时跳过真实集成测试。 */
-function canUseTmux() {
-  const tmuxPath = findTmux()
+/**
+ * 在独立服务器里探测可用性，禁止连接继承 TMUX 指向的当前终端或用户默认服务器。
+ * 沙箱可能允许找到二进制但禁止访问 socket；此时跳过真实集成测试。
+ */
+function canUseTmux(tmuxPath = findTmux(), run = spawnSync, env = process.env) {
   if (tmuxPath === null) return false
-  const started = spawnSync(tmuxPath, ['start-server'], { encoding: 'utf8' })
-  if (started.status !== 0) return false
-  spawnSync(tmuxPath, ['kill-server'], { encoding: 'utf8' })
-  return true
+  const directory = serverDirectory()
+  const socket = join(directory, `${TMUX_SERVER_SOCKET_NAME}.sock`)
+  try {
+    // 空服务器会按默认 exit-empty 策略立即退出；创建一个测试会话才是真实探测。
+    // -f /dev/null 保证不执行用户自己的 tmux 配置。
+    const started = run(tmuxPath, ['-S', socket, '-f', '/dev/null', 'new-session', '-d', '-s', 'availability', '/bin/sh'], {
+      encoding: 'utf8', timeout: 3_000, env,
+    })
+    return started.status === 0
+  } finally {
+    // 启动失败或超时也可能留下服务器，收尾必须始终使用同一个测试 socket。
+    killTestServer(tmuxPath, socket, directory, run, env)
+  }
 }
