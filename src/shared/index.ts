@@ -148,6 +148,7 @@ export type {
   CodingNsCliTeamDiagnostic,
   CodingNsAgentPermissionResponse,
   CodingNsCliSessionConfig,
+  CodingNsCliSessionUsage,
   CodingNsCliSessionRecord,
   CodingNsCliProviderSessionState,
   CodingNsCliSessionStatus,
