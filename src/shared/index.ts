@@ -9,12 +9,15 @@ export {
   CODINGNS_FILE_MANAGEMENT_FIELD,
   CODINGNS_MOBILE_ACCESS_FIELD,
   CODINGNS_SUBSCRIPTION_USAGE_FIELD,
+  CODINGNS_ASSISTANT_FIELD,
   CODINGNS_MODULES_FIELD,
   CODINGNS_SETTINGS_NAMESPACE,
   CODINGNS_SETTINGS_ENTRY_IDS,
   DEFAULT_CODINGNS_CONTROL_BASE_URL,
   DEFAULT_CODINGNS_CONTROL_BASE_URLS,
   DEFAULT_CODINGNS_SETTINGS,
+  DEFAULT_ASSISTANT_SETTINGS,
+  DEFAULT_ASSISTANT_VOICE_SETTINGS,
   DEFAULT_QUICK_PHRASES,
   DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
@@ -58,6 +61,9 @@ export {
   type SidebarGestureSettings,
   type SidebarGestureSettingsInput,
   type SubscriptionUsageSettings,
+  type AssistantSettings,
+  type AssistantVoiceProvider,
+  type AssistantVoiceSettings,
 } from './contracts/config.js'
 export type {
   FeatureContext,
@@ -323,6 +329,35 @@ export type {
   RelaySignalingServerMessage,
   RelaySignalingTicketResponse,
 } from './contracts/signaling.js'
+export type {
+  AssistantProgressSummary,
+  AssistantSessionStatus,
+  AssistantSummaryCategory,
+  AssistantSummaryOptions,
+  AssistantSummarySection,
+  AssistantWaitingKind,
+  SessionIndexEntry,
+} from './contracts/assistant.js'
+export type {
+  VoicePcmFrame,
+  VoiceRuntimeAdapter,
+  VoiceRuntimeCapabilities,
+  VoiceRuntimeEvent,
+  VoiceRuntimeListener,
+  VoiceRuntimeState,
+  VoiceClientDevice,
+  VoiceClientDeviceManager,
+  VoiceClientDeviceSnapshot,
+} from './contracts/voice-runtime.js'
+export { UnavailableVoiceRuntimeAdapter } from './contracts/voice-runtime.js'
+export { VoiceStreamDecoder, encodeVoiceStreamEvent, encodeVoiceStreamMessage, encodeVoiceStreamOpen, parseVoiceStreamMessage } from './voice-stream.js'
+export { sanitizeVoiceText } from './voice-text.js'
+export {
+  ASSISTANT_VOICE_MODEL_CATALOG,
+  findAssistantVoiceModel,
+  type AssistantVoiceModel,
+  type AssistantVoiceModelFile,
+} from './voice-models.js'
 export type { DshHostStatus } from './contracts/host-status.js'
 export {
   CODINGNS4DSH_DEBUG_ENV,

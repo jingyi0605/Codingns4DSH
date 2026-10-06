@@ -11,6 +11,7 @@ import { debugFeature } from './debug.js'
 import { gitManagementFeature } from '../git-management.js'
 import { fileManagementFeature } from './file-management.js'
 import { peerHostFeature } from './peer-host.js'
+import { globalVoiceAssistantFeature } from './global-voice-assistant.js'
 import type { CodingNsClientFeatureModule, CodingNsClientServices } from './types.js'
 
 /** Client 侧功能模块清单：新增模块在这里登记一行，不需要改动设置页和入口。 */
@@ -26,6 +27,7 @@ export const CLIENT_FEATURES: readonly CodingNsClientFeatureModule[] = [
   gitManagementFeature,
   fileManagementFeature,
   peerHostFeature,
+  globalVoiceAssistantFeature,
 ]
 
 /** 设置页要显示的一个模块及其界面描述。 */
@@ -54,6 +56,8 @@ export function settingsModules(
 }
 
 export { lanAccessFeature, loginProtectionFeature, reverseProxyFeature, cliAdaptersFeature, workspaceSessionEnhancementFeature, mobileAccessFeature, terminalEnhancementFeature, debugFeature, gitManagementFeature, fileManagementFeature, peerHostFeature }
+export { globalVoiceAssistantFeature } from './global-voice-assistant.js'
+export { ClientSherpaVoiceAdapter } from '../sherpa-voice-adapter.js'
 export { createPeerHostPageTransport, installPeerHostConnectionRouting } from './peer-host.js'
 export { startBrowserRelayConnection } from './reverse-proxy.js'
 export { LanAccessPanel } from './lan-access-panel.js'
