@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { homedir, userInfo } from 'node:os'
 import type {
   CodingNsAgentEvent,
+  CodingNsAgentPermissionResponse,
+  CodingNsAgentQuestionResponse,
   CodingNsCliModelCatalog,
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
@@ -14,6 +16,7 @@ import { detectBinary, emptyCatalog, usageChunk } from './rpc-driver-utils.js'
 import { ZCODE_CATALOG } from './model-catalog.js'
 import { desktopCliRuntimeCommand, resolveZCodeDesktopRuntime, type CodingNsDesktopAppRuntime } from './desktop-app-runtime.js'
 import { promptWithAttachmentPaths, withAttachmentPaths } from './attachment-utils.js'
+import { readZcodeInteraction, zcodePermissionMode, type ZcodeInteraction } from './zcode-interactions.js'
 
 export interface ZcodeCliDriverOptions {
   readonly binaries?: readonly string[]
@@ -36,6 +39,11 @@ interface ZcodeSession {
   subscribed: boolean
   /** 当前回合是否已经收到正文，用于避免用 turn.completed 快照重复输出。 */
   sawText: boolean
+  /** 当前回合的 DSH 权限，用于审批应答时阻止只读模式被提升。 */
+  permission: CodingNsCliTurnInput['permission']
+  acceptingInteractions: boolean
+  readonly interactions: Map<string, { interaction: ZcodeInteraction; promise: Promise<unknown>; resolve: (value: unknown) => void; settled: boolean }>
+  readonly emittedInteractions: Set<string>
 }
 
 interface ZcodeTurnEventQueue {
@@ -61,7 +69,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     id: 'zcode',
     name: 'ZCode',
     protocol: 'json-rpc',
-    capabilities: ['models', 'stream', 'resume', 'interrupt', 'reasoning', 'usage'],
+    capabilities: ['models', 'stream', 'resume', 'interrupt', 'reasoning', 'usage', 'permission', 'questions'],
   } as const
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
@@ -71,6 +79,8 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   private readonly sessions = new Map<string, ZcodeSession>()
   private readonly processes = new Set<JsonRpcProcess>()
   private cachedCatalog: CodingNsCliModelCatalog | null = null
+  /** 模型目录声明的默认思考档位；切换 DeepSeek 时服务端要求显式传入。 */
+  private readonly defaultEfforts = new Map<string, string>()
 
   constructor(options: ZcodeCliDriverOptions = {}) {
     this.binaries = options.binaries ?? ['zcode', 'zcode.cmd']
@@ -102,6 +112,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
         persistence: 'deferred',
       })
       const catalog = catalogFromZcodeSnapshot(created)
+      this.rememberDefaultEfforts(created)
       if (catalog.groups.length > 0) this.cachedCatalog = catalog
       return catalog.groups.length > 0 ? catalog : ZCODE_CATALOG
     } catch {
@@ -142,6 +153,8 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   private async *executePreparedTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     if (!(await this.detect()).installed) throw new Error('ZCode 未安装')
     const session = await this.getSession(input)
+    session.permission = input.permission
+    session.emittedInteractions.clear()
     // 每轮都清掉上一轮的终态痕迹；常驻 session 可能连续发送多轮。
     session.sawRunning = false
     session.sawText = false
@@ -167,10 +180,16 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       }
       session.acpSessionId = readSessionId(created) ?? input.sessionId
       const catalog = catalogFromZcodeSnapshot(created)
+      this.rememberDefaultEfforts(created)
       if (catalog.groups.length > 0) this.cachedCatalog = catalog
     }
     yield { type: 'session-binding', providerSessionId: session.acpSessionId }
 
+    // 每轮覆盖原生模式，尤其是 resume 后或同一会话从全权限切回只读时。
+    await session.rpc.request('session/setMode', {
+      sessionId: session.acpSessionId,
+      mode: zcodePermissionMode(input),
+    }, { signal: input.signal, killOnAbort: false })
     await this.applyModelSelection(session, input)
     await this.subscribeSessionEvents(session, input.signal)
 
@@ -180,44 +199,43 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       rpcExited = true
       eventQueue.close()
     })
-    let sendResolved = false
     let sendError: unknown = null
-    // session/resume 的重放通知不能进入当前回合；监听器先于 send 注册并缓存
-    // 响应前的通知，send 响应返回后再统一消费。监听器必须挂会话级（请求级的
-    // 会在 send 响应返回即被移除，回合终态事件就再也进不来）。
-    const notificationsBeforeSend: JsonRpcMessage[] = []
+    // resume/subscribe 已完成；send 响应前的交互也必须立即消费，避免双向等待。
     const onNotification = (message: JsonRpcMessage): void => {
+      if (!session.acceptingInteractions) return
       // turn.terminal 详情略晚于 turn-failed 事件到达，宽限期结束前必须已经
       // 记下真实 errorCode/errorMessage。
       captureZcodeFailureDetail(message, session)
-      if (!sendResolved) {
-        notificationsBeforeSend.push(message)
-        return
-      }
+      const interaction = readZcodeInteraction(message)
+      if (interaction !== null) pendingZcodeInteraction(session, interaction)
       eventQueue.push(message)
     }
     const removeNotificationListener = session.rpc.addNotificationListener(onNotification)
+    session.acceptingInteractions = true
     const sendPromise = session.rpc.request('session/send', {
       sessionId: session.acpSessionId,
-      content: promptWithAttachmentPaths(input.prompt, input.attachments ?? []),
+      content: promptWithAttachmentPaths(zcodePrompt(input.prompt), input.attachments ?? []),
     }, { signal: input.signal, killOnAbort: false })
-      .then(() => undefined, (error: unknown) => { sendError = error })
+      .then(() => undefined, (error: unknown) => {
+        sendError = error
+        eventQueue.push({ method: 'codingns/send-failed' })
+      })
     const onAbort = (): void => {
+      session.acceptingInteractions = false
+      cancelZcodeInteractions(session)
+      eventQueue.close()
       void session.rpc.request('session/stop', { sessionId: session.acpSessionId }).catch(() => undefined)
     }
     if (input.signal?.aborted) onAbort()
     else input.signal?.addEventListener('abort', onAbort, { once: true })
 
     try {
-      await sendPromise
-      if (sendError !== null && !input.signal?.aborted) throw new Error('ZCode 消息发送失败')
-      sendResolved = true
-      for (const message of notificationsBeforeSend.splice(0)) eventQueue.push(message)
-
       let terminalReason: 'stop' | 'cancel' | 'error' | null = null
       while (true) {
         const next = await eventQueue.next()
         if (next.done) break
+        if (input.signal?.aborted) break
+        if (sendError !== null && !input.signal?.aborted) throw sendError
         const chunk = zcodeMessageToChunk(next.value, session, input)
         if (chunk !== null) yield chunk
         terminalReason = readZcodeTerminalReason(next.value, session, input) ?? terminalReason
@@ -233,6 +251,8 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
         }
       }
       if (rpcExited && !input.signal?.aborted) throw new Error('Agent 进程已退出')
+      if (!input.signal?.aborted) await sendPromise
+      if (sendError !== null && !input.signal?.aborted) throw sendError
       if (terminalReason === 'stop' || terminalReason === null) {
         if (input.signal?.aborted) {
           terminalReason = 'cancel'
@@ -259,26 +279,55 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       yield { type: 'finish', reason: 'cancel' }
     } finally {
       input.signal?.removeEventListener('abort', onAbort)
+      session.acceptingInteractions = false
       removeNotificationListener()
       removeExitListener()
       eventQueue.close()
+      cancelZcodeInteractions(session)
     }
   }
 
   async interrupt(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (session === undefined) return
+    session.acceptingInteractions = false
+    cancelZcodeInteractions(session)
     await session.rpc.request('session/stop', { sessionId: session.acpSessionId }).catch(() => undefined)
   }
 
+  respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
+    const session = this.sessions.get(sessionId)
+    const pending = session?.interactions.get(response.requestId)
+    if (session === undefined || pending?.interaction.event.type !== 'permission-request' || pending.settled) throw new Error('ZCode 权限请求不存在')
+    // 只读会话不能通过 ExitPlanMode 审批悄悄提升到可写模式。
+    const effective = session.permission?.sandboxMode === 'read-only'
+      ? { ...response, approved: false, reason: 'DSH 当前会话为只读模式' } : response
+    pending.settled = true
+    const result = pending.interaction.permissionResponse(effective)
+    pending.resolve(result)
+  }
+
+  respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
+    const session = this.sessions.get(sessionId)
+    const pending = session?.interactions.get(response.requestId)
+    if (session === undefined || pending?.interaction.event.type !== 'question-request' || pending.settled) throw new Error('ZCode 问题请求不存在')
+    pending.settled = true
+    const result = pending.interaction.questionResponse(response)
+    pending.resolve(result)
+  }
+
   dispose(): void {
-    for (const session of this.sessions.values()) session.rpc.dispose()
+    for (const session of this.sessions.values()) {
+      cancelZcodeInteractions(session)
+      session.rpc.dispose()
+    }
     this.sessions.clear()
     for (const rpc of this.processes) rpc.dispose()
     this.processes.clear()
     this.cachedRuntime = undefined
     this.cachedBinary = null
     this.cachedCatalog = null
+    this.defaultEfforts.clear()
   }
 
   private resolveRuntime(): CodingNsDesktopAppRuntime | null {
@@ -311,6 +360,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   private async getSession(input: CodingNsCliTurnInput): Promise<ZcodeSession> {
     const previous = this.sessions.get(input.sessionId)
     if (previous !== undefined && previous.cwd === input.cwd && !previous.rpc.isClosed) return previous
+    if (previous !== undefined) cancelZcodeInteractions(previous)
     previous?.rpc.dispose()
     const rpc = this.startAppServer()
     const session: ZcodeSession = {
@@ -323,16 +373,26 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       sawText: false,
       failureCode: undefined,
       failureMessage: undefined,
+      permission: input.permission,
+      acceptingInteractions: false,
+      interactions: new Map(),
+      emittedInteractions: new Set(),
     }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, session)
     rpc.addExitListener(() => {
+      cancelZcodeInteractions(session)
       this.processes.delete(rpc)
       if (this.sessions.get(input.sessionId)?.rpc === rpc) this.sessions.delete(input.sessionId)
     })
     // ZCode Protocol 没有 initialize 握手（服务端会回 Method not found），
     // 服务端反向请求（运行时偏好 / Provider 运行时认证头）必须在首个请求前就绪。
-    rpc.setServerRequestHandler((request) => handleZcodeServerRequest(request))
+    rpc.setServerRequestHandler((request) => {
+      const interaction = readZcodeInteraction(request)
+      // 创建、恢复和回合结束后的历史交互不能挂起；没有活动消费者时安全拒绝。
+      return interaction === null || !session.acceptingInteractions
+        ? handleZcodeServerRequest(request) : pendingZcodeInteraction(session, interaction).promise
+    })
     return session
   }
 
@@ -358,13 +418,26 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   private async applyModelSelection(session: ZcodeSession, input: CodingNsCliTurnInput): Promise<void> {
     if ((input.modelId === undefined || input.modelId.trim() === '' || input.modelId === 'provider-default') &&
       (input.effortId === undefined || input.effortId.trim() === '')) return
-    const selection = resolveZcodeModelSelection(input.modelId, input.effortId, this.cachedCatalog)
+    const selection = resolveZcodeModelSelection(input.modelId, input.effortId, this.cachedCatalog, this.defaultEfforts)
     if (selection === null) throw new Error(`ZCode 模型选择无效: ${input.modelId ?? 'provider-default'}`)
     await session.rpc.request('session/setModel', {
       sessionId: session.acpSessionId,
       model: selection,
       persistAsWorkspaceLastUsed: false,
     }, { signal: input.signal, killOnAbort: false })
+  }
+
+  private rememberDefaultEfforts(value: unknown): void {
+    const root = isRecord(value) && isRecord(value.snapshot) ? value.snapshot : value
+    const available = isRecord(root) ? root.settings?.model?.available : undefined
+    if (!Array.isArray(available)) return
+    for (const model of available) {
+      const ref = model?.ref
+      const effort = model?.reasoning?.defaultLevel
+      if (typeof ref?.providerId === 'string' && typeof ref?.modelId === 'string' && typeof effort === 'string') {
+        this.defaultEfforts.set(`${ref.providerId}/${ref.modelId}`, effort)
+      }
+    }
   }
 
   /** ZCode Protocol 默认只发送状态与遥测通知；订阅后才会推送正文事件。 */
@@ -395,6 +468,13 @@ function captureZcodeFailureDetail(message: JsonRpcMessage, session: ZcodeSessio
 
 /** ZCode 回合通知 → 单个统一事件；终态由 readZcodeTerminalReason 单独表达。 */
 function zcodeMessageToChunk(message: JsonRpcMessage, session: ZcodeSession, input: CodingNsCliTurnInput): CodingNsAgentEvent | null {
+  const interaction = readZcodeInteraction(message)
+  if (interaction !== null) {
+    const id = interaction.event.requestId
+    if (session.emittedInteractions.has(id)) return null
+    session.emittedInteractions.add(id)
+    return interaction.event
+  }
   const method = typeof message.method === 'string' ? message.method : ''
   if (method === '' || method.startsWith('startup/') || method.startsWith('process/')) return null
   const params = isRecord(message.params) ? message.params : {}
@@ -522,6 +602,11 @@ async function readSessionUsage(rpc: JsonRpcProcess, sessionId: string): Promise
   }
 }
 
+/** 原生参数在交互 RPC 发出前就会校验，必须在模型调用工具前说明约束。 */
+function zcodePrompt(prompt: string): string {
+  return `${prompt}\n\n<codingns_host_capabilities>\nDSH 支持 ZCode 原生权限审批和 AskUserQuestion。调用 AskUserQuestion 时，questions 为 1–4 个；每题必须填写 question、header、multiSelect；options 为 2–4 个，每项必须填写 label、description，问题和选项标签不得重复。不要自行添加“其他”选项，界面已有自由文本入口。答案按选项文本校验；取消不能视为已回答。\n</codingns_host_capabilities>`
+}
+
 function zcodeWorkspace(cwd: string | undefined): { workspacePath: string; workspaceKey: string } {
   const workspacePath = cwd?.trim() !== '' && cwd !== undefined ? cwd : process.cwd()
   return { workspacePath, workspaceKey: workspacePath }
@@ -593,6 +678,7 @@ function resolveZcodeModelSelection(
   modelId: string | undefined,
   effortId: string | undefined,
   catalog: CodingNsCliModelCatalog | null,
+  defaultEfforts: ReadonlyMap<string, string>,
 ): Record<string, unknown> | null {
   const requested = modelId?.trim() ?? ''
   const effectiveRequested = !requested || requested === 'provider-default' ? catalog?.currentModel ?? '' : requested
@@ -601,7 +687,8 @@ function resolveZcodeModelSelection(
   const found = entries.find(({ model }) => model.id === effectiveRequested)
     ?? (entries.length > 0 && !effectiveRequested.includes('/') ? entries.find(({ model }) => model.id.endsWith(`/${effectiveRequested}`)) : undefined)
   if (found === undefined) return null
-  const effort = effortId?.trim()
+  const currentEffort = catalog?.currentModel === found.model.id ? catalog.currentEffort ?? undefined : undefined
+  const effort = effortId?.trim() || currentEffort || defaultEfforts.get(found.model.id)
   if (effort !== undefined && effort !== '' && !found.model.efforts.includes(effort)) {
     throw new Error(`ZCode 思维强度不可用: ${effort}`)
   }
@@ -672,8 +759,11 @@ function readZcodeJwtToken(): string | null {
 /** 处理 ZCode Protocol 的客户端反向请求；模型请求必须提供账号 API Key。 */
 function handleZcodeServerRequest(request: JsonRpcMessage): unknown {
   if (request.method === 'session/requestRuntimePreferences') {
-    return { nativeSearchEnhancementsEnabled: false, memoryEnabled: false, askUserQuestionAutoResolutionEnabled: true }
+    // DSH 的问题组件等待用户回答，不允许 ZCode 五分钟后自行替用户回答。
+    return { nativeSearchEnhancementsEnabled: false, memoryEnabled: false, askUserQuestionAutoResolutionEnabled: false }
   }
+  if (request.method === 'interaction/requestPermission') return { decision: 'deny' }
+  if (request.method === 'interaction/requestUserInput') return { action: 'cancel' }
   if (request.method === 'interaction/requestProviderRuntimeHeaders') {
     const params = isRecord(request.params) ? request.params : {}
     const providerId = typeof params.providerId === 'string' ? params.providerId.trim() : ''
@@ -831,6 +921,7 @@ function createZcodeTurnEventQueue(): ZcodeTurnEventQueue {
       return { value: undefined, done: true }
     },
     push(message: JsonRpcMessage): void {
+      if (closed) return
       pending.push(message)
       wake?.()
       wake = undefined
@@ -841,4 +932,23 @@ function createZcodeTurnEventQueue(): ZcodeTurnEventQueue {
       wake = undefined
     },
   }
+}
+
+/** 同一交互可能按新 RPC id 重新通知；共用应答 Promise，只展示一次面板。 */
+function pendingZcodeInteraction(session: ZcodeSession, interaction: ZcodeInteraction) {
+  const id = interaction.event.requestId
+  const previous = session.interactions.get(id)
+  if (previous !== undefined) return previous
+  let resolve!: (value: unknown) => void
+  const promise = new Promise<unknown>((done) => { resolve = done })
+  const pending = { interaction, promise, resolve, settled: false }
+  session.interactions.set(id, pending)
+  return pending
+}
+
+function cancelZcodeInteractions(session: ZcodeSession): void {
+  for (const pending of session.interactions.values()) {
+    if (!pending.settled) pending.resolve(pending.interaction.cancelled)
+  }
+  session.interactions.clear()
 }
