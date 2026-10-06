@@ -252,9 +252,11 @@ export class CodingNsCliAdapterRegistry {
   /** 读取当前外部会话绑定 Agent 的 Skill 目录；不把路径或文件内容暴露给 Client。 */
   async listSkills(sessionId: string, options: Omit<CodingNsCliSkillListInput, 'sessionId'> = {}): Promise<readonly CodingNsCliSkillDescriptor[]> {
     const session = this.getSession(sessionId)
-    if (session.adapterId === 'dsh') throw new CodingNsRpcError('CODINGNS_CLI_UNSUPPORTED', '当前 DSH Agent 不支持外部 Skill 目录')
+    // DSH 原生 Skill 由 DSH 自己的 `skills/list` Remote 提供；外部目录 RPC
+    // 对它以及旧 Client 误请求的适配器统一视为空目录，避免能力探测刷错误日志。
+    if (session.adapterId === 'dsh') return []
     const driver = this.requireEnabledDriver(session.adapterId)
-    if (typeof driver.listSkills !== 'function') throw new CodingNsRpcError('CODINGNS_CLI_UNSUPPORTED', `Agent 不支持 Skill 目录: ${session.adapterId}`)
+    if (!driver.descriptor.capabilities?.includes('skills') || typeof driver.listSkills !== 'function') return []
     const storedCwd = this.sessionStore?.get(sessionId)?.cwd
     const cwd = options.cwd ?? storedCwd
     return driver.listSkills({

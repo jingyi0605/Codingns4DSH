@@ -65,6 +65,10 @@ export function createCodingNsRpcHandler(table: CodingNsRpcTable): CodingNsConne
         // 未登录是正常的业务状态，不能把它伪装成 Host 故障；RPC 仍返回失败，
         // 让客户端根据稳定错误码决定是否等待登录。
         console.warn('codingns4dsh: host rpc request rejected', details)
+      } else if (code === 'CODINGNS_CLI_UNSUPPORTED') {
+        // 适配器能力按声明路由；旧 Client 或尚未接入的 Provider 误请求属于
+        // 预期能力缺失，不应按 Host 故障刷 console.error。
+        debugInfo('codingns4dsh: host rpc capability unavailable', details)
       } else {
         console.error('codingns4dsh: host rpc handler failed', details)
       }

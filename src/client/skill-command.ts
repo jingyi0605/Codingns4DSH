@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type { CodingNsCliSkillDescriptor } from '../shared/contracts/cli-adapter.js'
+import type { CodingNsCliAdapterDescriptor, CodingNsCliSessionConfig, CodingNsCliSkillDescriptor } from '../shared/contracts/cli-adapter.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import type { CodingNsLocale } from './locale.js'
 import { callCliRpc } from './cli-catalog.js'
@@ -107,7 +107,13 @@ interface SkillCatalogCache {
   readonly catalog: readonly CodingNsCliSkillDescriptor[]
 }
 
+interface SkillCapabilityCache {
+  readonly selectionRevision: number
+  readonly supported: boolean
+}
+
 const skillCatalogCache = new Map<string, SkillCatalogCache>()
+const skillCapabilityCache = new Map<string, SkillCapabilityCache>()
 
 interface SkillRegistrationState {
   catalogReady: boolean
@@ -119,7 +125,7 @@ export interface RegisterSkillCommandOptions {
   readonly locale: CodingNsLocale
 }
 
-/** 把 Codex 原生 Skill 目录接入 DSH `/` 菜单。 */
+/** 把声明了 Skill 能力的外部 Agent 目录接入 DSH `/` 菜单。 */
 export function registerSkillCommand(ctx: Context, options: RegisterSkillCommandOptions): () => void {
   const state: SkillRegistrationState = { catalogReady: false, disposeFallback: undefined }
   const markCatalogReady = (catalog: readonly CodingNsCliSkillDescriptor[]): void => {
@@ -307,7 +313,7 @@ function registerSkillInputTriggerSource(
   }
 }
 
-/** 按会话与 Agent 选择版本缓存目录，避免输入每个字符都请求 Codex。 */
+/** 按会话与 Agent 选择版本缓存目录，避免输入每个字符都请求外部 CLI。 */
 async function loadSkillCatalog(
   rpc: CodingNsRpcClient,
   sessionId: string,
@@ -321,6 +327,12 @@ async function loadSkillCatalog(
     && Date.now() - cached.loadedAt < SKILL_CATALOG_CACHE_TTL_MS) {
     return cached.catalog
   }
+  const supported = await supportsSelectedAgentSkills(rpc, sessionId, selectionRevision)
+  if (!supported) {
+    skillCatalogCache.set(sessionId, { selectionRevision, loadedAt: Date.now(), catalog: [] })
+    publishSkillCatalog(sessionId, [])
+    return []
+  }
   const catalog = await callCliRpc<readonly CodingNsCliSkillDescriptor[]>(rpc, 'skills', {
     sessionId,
     forceReload: true,
@@ -328,6 +340,26 @@ async function loadSkillCatalog(
   skillCatalogCache.set(sessionId, { selectionRevision, loadedAt: Date.now(), catalog })
   publishSkillCatalog(sessionId, catalog)
   return catalog
+}
+
+/** 让原生 DSH Skill UI 处理 dsh 会话，插件只为声明了 skills 的外部适配器请求目录。 */
+async function supportsSelectedAgentSkills(
+  rpc: CodingNsRpcClient,
+  sessionId: string,
+  selectionRevision: number,
+): Promise<boolean> {
+  const cached = skillCapabilityCache.get(sessionId)
+  if (cached?.selectionRevision === selectionRevision) return cached.supported
+  const session = await callCliRpc<CodingNsCliSessionConfig>(rpc, 'session/get', { sessionId })
+  if (session.adapterId === 'dsh') {
+    skillCapabilityCache.set(sessionId, { selectionRevision, supported: false })
+    return false
+  }
+  const catalog = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(rpc, 'catalog', {})
+  const adapter = catalog.find((item) => item.id === session.adapterId)
+  const supported = adapter?.capabilities?.includes('skills') === true
+  skillCapabilityCache.set(sessionId, { selectionRevision, supported })
+  return supported
 }
 
 function skillCommandSpan(
