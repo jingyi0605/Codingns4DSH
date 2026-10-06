@@ -5,6 +5,7 @@ import { ClaudeCodeDriver } from '../data/build/dist/host/cli-adapters/claude-dr
 import { GeminiCliDriver } from '../data/build/dist/host/cli-adapters/gemini-driver.js'
 import { KimiCliDriver } from '../data/build/dist/host/cli-adapters/kimi-driver.js'
 import { CodingNsAgentEventNormalizer } from '../data/build/dist/host/cli-adapters/stream-normalizer.js'
+import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 
 test('Claude、Gemini、Kimi 的标准流驱动统一转换文本和完成事件', async () => {
   for (const [Driver, event] of [
@@ -48,18 +49,20 @@ test('Claude、Gemini、Kimi 的标准流驱动统一转换文本和完成事件
 
 test('Claude Code 通过公开 control_request/control_response 接入权限与结构化问题', async () => {
   const responses: Array<Record<string, any>> = []
+  const inputs: Array<Record<string, any>> = []
   const driver = new ClaudeCodeDriver({
     binaries: ['fake-claude'],
     spawnSync: (() => ({ status: 0, stdout: 'claude 1.2.3', stderr: '' })) as never,
     spawn: ((_command: string, args: string[]) => {
-      assert.equal(args.includes('--permission-prompts'), true)
-      assert.equal(args.includes('host'), true)
+      assert.equal(args.includes('--permission-prompt-tool'), true)
+      assert.deepEqual(args.slice(args.indexOf('--permission-prompt-tool'), args.indexOf('--permission-prompt-tool') + 2), ['--permission-prompt-tool', 'stdio'])
       assert.deepEqual(args.slice(args.indexOf('--permission-mode'), args.indexOf('--permission-mode') + 2), ['--permission-mode', 'manual'])
       const stdout = new PassThrough()
       const stderr = new PassThrough()
       const stdin = new PassThrough()
       stdin.on('data', (chunk) => {
         const message = JSON.parse(String(chunk)) as Record<string, any>
+        inputs.push(message)
         if (message.type !== 'control_response') return
         responses.push(message)
         const requestId = message.response?.request_id
@@ -126,7 +129,7 @@ test('Claude Code 通过公开 control_request/control_response 接入权限与�
       type: 'control_response',
       response: {
         subtype: 'success', request_id: 'approval-1',
-        response: { behavior: 'allow', updatedInput: { command: 'pwd' }, toolUseID: 'bash-tool-1' },
+        response: { behavior: 'allow', updatedInput: { command: 'pwd' }, decisionClassification: 'user_temporary', toolUseID: 'bash-tool-1' },
       },
     },
     {
@@ -139,14 +142,93 @@ test('Claude Code 通过公开 control_request/control_response 接入权限与�
             questions: [{ question: '使用哪种语言？', header: '语言', options: [{ label: 'TypeScript' }, { label: 'Rust' }] }],
             answers: { '使用哪种语言？': 'TypeScript' },
           },
+          decisionClassification: 'user_temporary',
           toolUseID: 'question-tool-1',
         },
       },
     },
   ])
+  assert.deepEqual(inputs.slice(0, 2), [
+    { type: 'control_request', request_id: 'initialize:claude-interaction', request: { subtype: 'initialize' } },
+    { type: 'user', session_id: '', message: { role: 'user', content: [{ type: 'text', text: '执行' }] }, parent_tool_use_id: null },
+  ])
   assert.equal(driver.descriptor.capabilities?.includes('permission'), true)
   assert.equal(driver.descriptor.capabilities?.includes('questions'), true)
   driver.dispose()
+})
+
+test('Claude stdio 提问在完全权限下仍进入 DSH 组件，多选和自定义回答按原题文本回传', async () => {
+  const questions = [
+    { question: '  选择需要的能力  ', header: '能力', options: [{ label: '流式' }, { label: '续接' }], multiSelect: true },
+    { question: '补充需求', header: '需求', options: [{ label: '默认' }, { label: '自定义' }], multiSelect: false },
+  ]
+  const responses: Array<Record<string, any>> = []
+  const asked: Array<Record<string, any>> = []
+  const driver = new ClaudeCodeDriver({
+    binaries: ['fake-claude'],
+    spawnSync: (() => ({ status: 0, stdout: 'claude 2.1.288', stderr: '' })) as never,
+    spawn: ((_command: string, args: string[]) => {
+      assert.deepEqual(args.slice(args.indexOf('--permission-prompt-tool'), args.indexOf('--permission-prompt-tool') + 2), ['--permission-prompt-tool', 'stdio'])
+      assert.deepEqual(args.slice(args.indexOf('--permission-mode'), args.indexOf('--permission-mode') + 2), ['--permission-mode', 'bypassPermissions'])
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = new PassThrough()
+      stdin.on('data', (chunk) => {
+        const message = JSON.parse(String(chunk)) as Record<string, any>
+        if (message.type === 'user') {
+          stdout.write(`${JSON.stringify({
+            type: 'control_request', request_id: 'question-native',
+            request: { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', tool_use_id: 'question-use', input: { questions } },
+          })}\n`)
+        }
+        if (message.type !== 'control_response') return
+        responses.push(message)
+        // 模拟 CLI 消费答案后恢复同一轮输出，组件不能把问题变成一个新回合。
+        stdout.write(`${JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: '已收到回答' } } })}\n`)
+        stdout.write(`${JSON.stringify({ type: 'result', subtype: 'success' })}\n`)
+        stdout.end()
+        stderr.end()
+      })
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); stdin.end(); return true } }
+    }) as never,
+  })
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'claude-code', sessionId: 'claude-native-question',
+    nativeSessions: {
+      async askQuestions(sessionId, request) {
+        asked.push({ sessionId, request })
+        return {
+          requestId: request.requestId,
+          answers: [{ id: 'question-1', selected: ['流式', '续接'] }, { id: 'question-2', selected: [], custom: '  保留中文  ' }],
+        }
+      },
+    } as never,
+    respondQuestion: (response) => driver.respondQuestion('claude-native-question', response),
+  })
+  const chunks = []
+  try {
+    for await (const event of driver.executeTurn({
+      sessionId: 'claude-native-question', messages: [], prompt: '测试提问组件',
+      permission: { sandboxMode: 'danger-full-access', approvalPolicy: 'never' },
+    })) chunks.push(...await projector.push(event))
+    assert.equal(asked.length, 1)
+    assert.equal(asked[0]?.sessionId, 'claude-native-question')
+    assert.equal(asked[0]?.request.questions[0].multiSelect, true)
+    assert.deepEqual(responses, [{
+      type: 'control_response', response: {
+        subtype: 'success', request_id: 'question-native',
+        response: {
+          behavior: 'allow',
+          updatedInput: { questions, answers: { '  选择需要的能力  ': '流式, 续接', '补充需求': '保留中文' } },
+          decisionClassification: 'user_temporary', toolUseID: 'question-use',
+        },
+      },
+    }])
+    assert.equal(chunks.some((chunk) => chunk.type === 'text-delta' && chunk.text === '已收到回答'), true)
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: { kind: 'stop' } })
+  } finally {
+    driver.dispose()
+  }
 })
 
 test('Claude stream-json 保留 tool_use 与 tool_result 的完整生命周期', async () => {
