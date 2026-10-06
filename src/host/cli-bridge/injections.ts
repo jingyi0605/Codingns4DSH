@@ -82,13 +82,13 @@ export function codexBridgeArgs(sessionId: string, adapterId: string, platform: 
   if (env === undefined) return []
   const envToml = `{${Object.entries(env).map(([key, value]) => `${key}=${tomlString(value, platform)}`).join(',')}}`
   return [
-    '-c', codexConfigOverride('mcp_servers.codingns.command', tomlString(process.execPath, platform), platform),
-    '-c', codexConfigOverride('mcp_servers.codingns.args', `[${tomlString(MCP_ENTRY_PATH, platform)}]`, platform),
-    '-c', codexConfigOverride('mcp_servers.codingns.env', envToml, platform),
+    '-c', codexConfigOverride('mcp_servers.codingns.command', tomlString(process.execPath, platform)),
+    '-c', codexConfigOverride('mcp_servers.codingns.args', `[${tomlString(MCP_ENTRY_PATH, platform)}]`),
+    '-c', codexConfigOverride('mcp_servers.codingns.env', envToml),
     // Codex 对 MCP 工具调用强制审批：approvalPolicy=never 的会话会直接失败
     // （"MCP tool call requires approval, but approval policy is never"）。
     // 托管工具属于基础设施级委派，固定为自动批准，避免把 DSH 权限模型外包给 Codex。
-    '-c', codexConfigOverride('mcp_servers.codingns.default_tools_approval_mode', tomlString('approve', platform), platform),
+    '-c', codexConfigOverride('mcp_servers.codingns.default_tools_approval_mode', tomlString('approve', platform)),
   ]
 }
 
@@ -132,18 +132,9 @@ function isSubagentChildSession(sessionId: string): boolean {
   }
 }
 
-/**
- * 把 Codex 的 `key=value` 覆盖项作为一个完整 argv 传给进程。
- *
- * JsonRpcProcess 在 Windows 上必须经由 cmd.exe 启动 `.cmd` 包装器。cmd 会
- * 重新解析拼接后的命令行；如果这里不保护整个覆盖项，值中的空格和 TOML
- * 引号会被拆开，`args=[...]` 就会退化为字符串。Linux/macOS 不经过 shell，
- * 保持原始参数以免改变既有行为。
- */
-export function codexConfigOverride(key: string, value: string, platform: NodeJS.Platform = process.platform): string {
-  const argument = `${key}=${value}`
-  if (platform !== 'win32') return argument
-  return `"${argument.replace(/"/gu, '""')}"`
+/** 构造 Codex 的 `key=value` argv；Windows 的 shell 转义由进程层统一处理。 */
+export function codexConfigOverride(key: string, value: string): string {
+  return `${key}=${value}`
 }
 
 /**
