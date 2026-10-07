@@ -295,8 +295,10 @@ pnpm dsh:stage0
 
 Desktop 只通过 GUI 插件页安装已发布的 registry 版本，并固定版本号；Desktop 的
 `~/.dsh/profiles/desktop` 与 Stage0 的 `~/.dsh-stage0-020/profiles/stage0` 不共享
-插件目录、设置目录、会话目录或开发链接。修改源码后，在 Stage0 中重新 `pnpm build`
-（或保持 `pnpm dev:watch`）并重启 Stage0 DSH。
+插件目录、设置目录、会话目录或开发链接。Stage0 普通启动会自动托管 `dev:watch`：
+先等待 Host 和 Client 首次编译成功，再启动 DSH；此后 Host 产物使用原生 HMR
+（热模块替换），Client 产物更新后浏览器自动整页刷新，避免终端重复注册。
+关闭 Stage0 时会一并结束本次启动的编译监听及其派生进程。
 
 **磁盘状态**：设置保存在 `$DSH_HOME/settings.yaml`（默认 `~/.dsh/settings.yaml`）的 `codingns:` 命名空间。
 
@@ -346,8 +348,12 @@ pnpm typecheck
 pnpm run capability:check   # DSH 能力注册表退休检查
 ```
 
-开发循环：`pnpm dev:watch` 配合
-`DSH_STAGE0_HOME="$HOME/.dsh-stage0-020" pnpm dev:link stage0`，然后只重启 Stage0 DSH。
+开发循环：首次执行 `DSH_STAGE0_HOME="$HOME/.dsh-stage0-020" pnpm dev:link stage0` 后，
+只需运行 `dsh-stage0` 或 `pnpm run dsh:stage0`，保存源码后自动编译并重载。
+如果已有单独的 `pnpm run dev:watch`，使用 `DSH_STAGE0_WATCH=0 dsh-stage0`，
+避免重复启动编译器；此时仍保留自动重载，外部监听由原终端管理。
+`--dump-config`、配置 Schema 查询、帮助与插件管理命令不会启动编译监听。
+实现和验证见[Stage0 自动编译与热重载接入记录](docs/开发记录/20261007-Stage0自动编译与热重载接入记录.md)。
 `pnpm dev:link stage0` 在未设置变量时也会默认使用专用 Stage0 HOME；若显式把
 `DSH_HOME` 指向 `~/.dsh`，脚本会拒绝执行。版本源是 `version.json`
 （`version:set-plugin` / `version:set-dsh`，由 `version:check` 守卫）。
