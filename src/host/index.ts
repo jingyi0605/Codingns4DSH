@@ -109,7 +109,8 @@ export function apply(ctx?: Context): void {
     })
     debugInfo('codingns4dsh: host index injection registration ready')
     debugInfo('codingns4dsh: host settings registration begin')
-    const settings = registerCodingNsSettings(settingsContext)
+    // 注入回调是子 Fiber；配置必须从拥有插件 Config 的入口 Fiber 读取。
+    const settings = registerCodingNsSettings(settingsContext, () => ctx.fiber.config)
     indexInjectionSettings = settings
     debugInfo('codingns4dsh: host settings registered')
     const workspaceRoots = new Map<string, string>()

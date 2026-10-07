@@ -183,8 +183,12 @@ function nullableNumberSchema(min: number, max: number): z<number | null> {
  *
  * 必须在已经注入 `settings` 的上下文里调用。返回的 scope 既用于读取当前值，
  * 也通过 watch 驱动功能模块启停。
+ * readRuntimeConfig 必须读取入口 Fiber 已校验的 Config，供原生表单尚未激活时使用。
  */
-export function registerCodingNsSettings(ctx: Context): DshHostSettingsScope<CodingNsSettings> {
+export function registerCodingNsSettings(
+  ctx: Context,
+  readRuntimeConfig?: () => unknown,
+): DshHostSettingsScope<CodingNsSettings> {
   const settings = ctx.settings as unknown as DshHostSettingsProvider
   const legacyRegister = (settings as DshHostSettingsProvider & {
     readonly register?: (
@@ -200,20 +204,25 @@ export function registerCodingNsSettings(ctx: Context): DshHostSettingsScope<Cod
     }) as DshHostSettingsScope<CodingNsSettings>
   }
   debugInfo('codingns4dsh: host settings source=config-forms')
-  return createConfigSettingsScope(ctx, settings)
+  return createConfigSettingsScope(ctx, settings, readRuntimeConfig)
 }
 
 /** 将 DSH 0.1.7 SettingsForms 适配成 Host 业务沿用的 SettingsScope。 */
-function createConfigSettingsScope(ctx: Context, settings: DshHostSettingsProvider): DshHostSettingsScope<CodingNsSettings> {
+function createConfigSettingsScope(
+  ctx: Context,
+  settings: DshHostSettingsProvider,
+  readRuntimeConfig?: () => unknown,
+): DshHostSettingsScope<CodingNsSettings> {
   const provider = settings
-  let previous = readConfigSettings(provider)
+  const read = (): CodingNsSettings => readConfigSettings(provider, readRuntimeConfig)
+  let previous = read()
   const listeners = new Set<(next: CodingNsSettings, prev: CodingNsSettings) => void | Promise<void>>()
   const eventContext = ctx as Context & {
     on?: (name: string, listener: (namespace: string) => void) => () => void
   }
   const disposeEvent = eventContext.on?.('settings/document-updated', (namespace) => {
     if (!isCodingNsSettingsNamespace(namespace)) return
-    const next = readConfigSettings(provider)
+    const next = read()
     const prev = previous
     previous = next
     if (next === prev) return
@@ -223,7 +232,7 @@ function createConfigSettingsScope(ctx: Context, settings: DshHostSettingsProvid
     ctx.effect(() => disposeEvent, 'codingns4dsh: ConfigForm 设置监听')
   }
   return {
-    get: () => readConfigSettings(provider),
+    get: read,
     watch: (listener) => {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -239,13 +248,24 @@ function createConfigSettingsScope(ctx: Context, settings: DshHostSettingsProvid
   }
 }
 
-function readConfigSettings(settings: Pick<DshHostSettingsProvider, 'describe'>): CodingNsSettings {
+function readConfigSettings(
+  settings: Pick<DshHostSettingsProvider, 'describe'>,
+  readRuntimeConfig?: () => unknown,
+): CodingNsSettings {
   const descriptor = findConfigSettingsDescriptor(settings)
-  if (descriptor === undefined) {
-    console.warn('codingns4dsh: host ConfigForms 未找到设置 namespace，使用默认值')
-    return DEFAULT_CODINGNS_SETTINGS
+  if (descriptor !== undefined) return descriptor.value as CodingNsSettings
+
+  // 原生热重载时插件仍处于加载态，SettingsForms 只投影已经激活的 entry。
+  // 此时读取当前插件 Fiber 已解析的配置，不能用默认值冻结终端等启动开关。
+  // 根 Config 是 volatile 引用；每次解引用，设置后续更新仍来自同一份原生配置。
+  const config = readRuntimeConfig?.()
+  if (config !== undefined) {
+    const value = config as CodingNsSettings & { get?: () => CodingNsSettings }
+    // Fiber 配置已经通过 schema 校验；volatile 值被深冻结，不能再次原地校验。
+    return structuredClone(typeof value.get === 'function' ? value.get() : value)
   }
-  return descriptor.value as CodingNsSettings
+  console.warn('codingns4dsh: host ConfigForms 未找到设置 namespace，使用默认值')
+  return DEFAULT_CODINGNS_SETTINGS
 }
 
 /** DSH 0.1.7 使用插件 entry id；旧 SettingsScope 使用显式 namespace。 */
@@ -265,7 +285,10 @@ function findConfigSettingsDescriptor(settings: Pick<DshHostSettingsProvider, 'd
 }
 
 function resolveConfigSettingsNamespace(settings: Pick<DshHostSettingsProvider, 'describe'>): string {
-  return findConfigSettingsDescriptor(settings)?.ns ?? CODINGNS_SETTINGS_NAMESPACE
+  const namespace = findConfigSettingsDescriptor(settings)?.ns
+  // 未激活的 entry 不能编辑；不要把现代 Profile 写入误路由到旧版 namespace。
+  if (namespace === undefined) throw new Error('DSH ConfigForms 设置条目尚未激活，无法写入 CodingNS 设置')
+  return namespace
 }
 
 function isCodingNsSettingsNamespace(namespace: unknown): namespace is string {
