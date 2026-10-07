@@ -766,8 +766,9 @@ function asRecord(value: unknown): Record<string, any> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, any> : null
 }
 
-function readText(value: Record<string, any> | null, keys: readonly string[]): string | null {
-  if (value === null) return null
+/** 原生列表缺失元数据时，null 和 Map.get() 返回的 undefined 都表示没有字段。 */
+function readText(value: Record<string, any> | null | undefined, keys: readonly string[]): string | null {
+  if (value === null || value === undefined) return null
   for (const key of keys) if (typeof value[key] === 'string' && value[key].trim() !== '') return value[key].trim()
   return null
 }
@@ -826,8 +827,8 @@ function readWaiting(value: Record<string, any> | null): 'approval' | 'question'
   return null
 }
 
-function readTimestamp(value: Record<string, any> | null, keys: readonly string[]): number | null {
-  if (value === null) return null
+function readTimestamp(value: Record<string, any> | null | undefined, keys: readonly string[]): number | null {
+  if (value === null || value === undefined) return null
   for (const key of keys) {
     if (typeof value[key] === 'number' && Number.isFinite(value[key])) return value[key]
     if (typeof value[key] === 'string') {
