@@ -328,6 +328,27 @@ test('文字和语音共用连续历史：停止语音保留记录，范围变�
   await assert.rejects(f.call('conversation/start', { requestId: 'after-reset', text: '你好' }), /先创建/u)
 })
 
+test('真实 Host RPC 关联语音租约和聚合记录，挂断归档且下一次通话独立', async (t) => {
+  t.mock.method(SherpaVoiceRuntime.prototype, 'start', async function () { (this as any).started = true })
+  t.mock.method(SherpaVoiceRuntime.prototype, 'stop', async function () { (this as any).started = false })
+  const f = await fixture(t)
+  await f.configure()
+  await f.update({ assistant: { ...f.settings().assistant, voice: { ...f.settings().assistant.voice, initialized: true, provider: 'sherpa-onnx', asrEncoder: '/fixture/e', asrDecoder: '/fixture/d', asrJoiner: '/fixture/j', asrTokens: '/fixture/t' } } })
+  const lease = await f.call<{ epoch: number }>('voice/start', { ownerId: 'page', voiceSessionId: 'first-call' })
+  await f.call('voice/chat/start', { ownerId: 'page', epoch: lease.epoch, requestId: 'call-turn', text: '查询当前情况' }); await setImmediate()
+  await f.call('voice/stop', { ownerId: 'page' })
+  const ended = (await f.call<AssistantLifecycleSnapshot>('lifecycle/read')).conversation
+  assert.equal(ended.voiceSessions!.length, 1)
+  assert.equal(ended.voiceSessions![0]!.id, 'first-call'); assert.equal(ended.voiceSessions![0]!.messages.length, 2)
+  assert.notEqual(ended.voiceSessions![0]!.endedAt, null)
+  assert.ok(ended.messages.every((message) => message.voiceSessionId === 'first-call'))
+  await f.call('voice/start', { ownerId: 'page', voiceSessionId: 'second-call' })
+  await f.call('voice/stop', { ownerId: 'page' })
+  const sessions = (await f.call<AssistantLifecycleSnapshot>('lifecycle/read')).conversation.voiceSessions!
+  assert.deepEqual(sessions.map((session) => session.id), ['first-call', 'second-call'])
+  assert.equal(sessions[1]!.messages.length, 0)
+})
+
 test('重置撤销迟到的模型回复和识别模型初始化，不允许旧任务恢复配置', async (t) => {
   let release!: () => void
   const gate = new Promise<void>((resolve) => { release = resolve })

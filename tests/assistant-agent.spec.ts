@@ -99,6 +99,29 @@ test('Host 没有注册搜索时保持管理问答可用，不把搜索权限或
   await f.adapter.dispose()
 })
 
+test('工具审计遮蔽凭据并限制长度，保持实际参数和结果原样执行', async () => {
+  const audit: any[] = []
+  const args = { query: '公开资料', apiKey: 'sensitive-key', nested: { password: 'private-password' } }
+  const result = { isError: false, content: [{ type: 'text', text: 'Bearer private-token password=top-secret ' + 'x'.repeat(8000) }] }
+  const original = structuredClone({ args, result })
+  const f = fixture(async (scope) => {
+    await scope.step()
+    const exec = { callId: 'search', name: 'web_search', arguments: args, agent: { id: scope.options.sessionId } }
+    await scope.listeners.get('tools/execute')(exec, async () => result)
+    scope.listeners.get('tools/result')(exec, result)
+    scope.listeners.get('tools/result')({ ...exec, agent: { id: 'other-root' } }, result)
+    scope.output('已找到。')
+  }, ['web_search'])
+  try {
+    await f.adapter.reply(model, '提示词', [{ role: 'user', text: '查询' }], new AbortController().signal, () => {}, undefined, (call) => audit.push(call))
+    assert.deepEqual(audit.map((call) => call.state), ['running', 'completed'])
+    assert.ok(!audit[0].arguments.includes('sensitive-key')); assert.ok(!audit[0].arguments.includes('private-password'))
+    assert.ok(!audit[1].result.includes('private-token')); assert.ok(!audit[1].result.includes('top-secret'))
+    assert.ok(audit[1].result.length <= 6000)
+    assert.deepEqual({ args, result }, original)
+  } finally { await f.adapter.dispose() }
+})
+
 test('超过九轮仍复用原生 Agent，自动压缩保留宿主的驱动与上下文，不按轮数重建', async () => {
   const f = fixture(async (scope) => { await scope.step(); scope.output('回答') })
   const history: any[] = []

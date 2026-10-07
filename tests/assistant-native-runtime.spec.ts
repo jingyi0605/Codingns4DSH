@@ -11,6 +11,7 @@ import { AssistantDispatcher } from '../src/host/features/assistant-dispatch.js'
 import { createAssistantScope } from '../src/host/features/assistant-scope.js'
 import { configureAssistantSettings } from '../src/host/features/assistant-lifecycle-settings.js'
 import { DEFAULT_ASSISTANT_SETTINGS } from '../src/shared/contracts/config.js'
+import type { AssistantToolCall } from '../src/shared/contracts/assistant.js'
 
 // 只加载 Stage0 核心库到独立内存 Context，不加载启动器、Profile、持久化或服务器。
 const runtime = process.env.CODINGNS_STAGE0_RUNTIME_DIR || join(homedir(), '.local/share/codingns/deepseek-harness/0.2.1-alpha.1/node_modules/@deepseek-ai')
@@ -67,16 +68,20 @@ test('真实原生 Agent Loop 执行管理工具并续跑短答，其他根 Agen
     const catalog = await llm.catalog()
     const saved = configureAssistantSettings(DEFAULT_ASSISTANT_SETTINGS, { name: '哆哆', model: { provider: 'api', model: 'fixed' }, avatarId: 'codingns-default' }, catalog, [])
     const partial: string[] = []
+    const audit: AssistantToolCall[] = []
     let received!: () => void; let completed = false
     const firstText = new Promise<void>((resolve) => { received = resolve })
     const answering = adapter.reply({ ...saved.model!, label: 'Fixed' }, '只管理工作区，不执行代码，简短回答。', [{ role: 'user', text: '有哪些项目？' }], new AbortController().signal,
-      (text) => { partial.push(text); received() }).then((text) => { completed = true; return text })
+      (text) => { partial.push(text); received() }, undefined, (call) => audit.push(call)).then((text) => { completed = true; return text })
     await firstText
     assert.deepEqual(partial, ['目前管理项目一。'], '真实原生 Agent 在 finish 和 whenIdle 前已经转发文字')
     assert.equal(completed, false)
     release()
     assert.equal(await answering, '目前管理项目一。')
     assert.equal(queried, 1)
+    assert.deepEqual(audit.map((call) => call.state), ['running', 'completed'])
+    assert.equal(audit[1]!.kind, 'workspace'); assert.equal(audit[1]!.id, 'query')
+    assert.match(audit[1]!.result, /项目一/)
     assert.equal(requests.length, 2, '原生工具结果驱动下一步模型调用')
     assert.ok(requests.every((request) => request.provider === 'api' && request.model === 'fixed'), '已保存模型进入真实 DSH Agent Loop 的模型请求和工具续跑')
     assert.ok(requests.every((request) => request.reasoningEffort === 'off' && request.maxTokens === 1024))
@@ -93,6 +98,7 @@ test('真实原生 Agent Loop 执行管理工具并续跑短答，其他根 Agen
     assert.equal(requests[2].reasoningEffort, 'high')
     assert.equal(requests[2].model, 'fast', '普通 Agent 的模型不受助理保存影响')
     assert.ok(requests[2].tools.some((tool: any) => tool.name === 'forbidden_execution'))
+    assert.equal(audit.length, 2, '其他 Agent 和白名单外的执行不混入本次通话')
   } finally { release(); await adapter.dispose(); await other?.dispose(); await ctx.fiber.dispose() }
 })
 
@@ -144,12 +150,16 @@ test('真实原生搜索工具驱动助理续跑，搜索失败可见，抓取�
   let other: any
   try {
     const question = { role: 'user' as const, text: '北京天气怎么样？' }
-    const answer = await adapter.reply({ provider: 'api', model: 'fast', label: 'Fast' }, '简短回答。', [question], new AbortController().signal, () => {})
+    const audit: AssistantToolCall[] = []
+    const observe = (call: AssistantToolCall) => audit.push(call)
+    const answer = await adapter.reply({ provider: 'api', model: 'fast', label: 'Fast' }, '简短回答。', [question], new AbortController().signal, () => {}, undefined, observe)
     assert.equal(queries, 1)
     assert.equal(requests.length, 2)
     assert.match(JSON.stringify(requests[1].messages), /北京今天晴，25度/)
     assert.match(JSON.stringify(requests[1].messages), /https:\/\/example.com\/weather/)
     assert.match(answer, /25度/)
+    assert.deepEqual(audit.map((call) => call.state), ['running', 'completed'])
+    assert.equal(audit[1]!.kind, 'web-search'); assert.match(audit[1]!.result, /example.com\/weather/)
     assert.ok(requests.every((request) => request.reasoningEffort === 'off'))
     assert.ok(requests.every((request) => request.tools.length === 5 && request.tools.some((tool: any) => tool.name === 'web_search') && request.tools.every((tool: any) => tool.name === 'web_search' || tool.name.startsWith('assistant_'))))
     assert.equal(requests[0].system, undefined, '原生 Agent Loop 把系统提示词投影到消息历史，不使用单次 LLM 的 system 参数')
@@ -161,10 +171,12 @@ test('真实原生搜索工具驱动助理续跑，搜索失败可见，抓取�
       assert.ok(result.isError || result.type === 'error' || result.error, name)
     }
     unavailable = true
-    await adapter.reply({ provider: 'api', model: 'fast', label: 'Fast' }, '简短回答。', [question, { role: 'assistant', text: answer }, question], new AbortController().signal, () => {})
+    await adapter.reply({ provider: 'api', model: 'fast', label: 'Fast' }, '简短回答。', [question, { role: 'assistant', text: answer }, question], new AbortController().signal, () => {}, undefined, observe)
     assert.equal(queries, 2)
     assert.equal(requests.length, 4)
     assert.match(JSON.stringify(requests[3].messages), /搜索提供商暂时不可用/)
+    assert.deepEqual(audit.map((call) => call.state), ['running', 'completed', 'running', 'failed'])
+    assert.match(audit[3]!.result, /搜索提供商暂时不可用/)
     other = await ctx.agents.create({ sessionId: 'ordinary-search-root', agentOptions: { provider: 'api', model: 'fast', reasoningEffort: 'high' } })
     other.agent.followup({ id: 'other-question', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '普通会话' }] })
     await other.agent.whenIdle()
