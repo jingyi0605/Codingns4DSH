@@ -1,6 +1,7 @@
 import type { AssistantChatMessage, AssistantChatRun, AssistantIndexSnapshot } from '../../shared/contracts/assistant.js'
 import { AssistantTextChat } from './assistant-text-chat.js'
 import type { AssistantConversation } from './assistant-conversation.js'
+import { createAssistantVoiceSystem } from './assistant-prompts.js'
 
 export interface AssistantVoiceChatContext {
   readonly index: AssistantIndexSnapshot
@@ -60,7 +61,7 @@ export class AssistantVoiceChat {
     // 在模型目录的异步读取之前登记本轮；关闭、清空和新话语都能取消尚未启动的请求。
     const isCurrent = (): boolean => !entry.cancelled && this.active === entry && context.isCurrent()
     const start = this.conversation === undefined
-      ? this.chat.start({ requestId, provider: context.provider, model: context.model, generation: context.index.generation, messages: [...this.history.slice(-18), { role: 'user', text }] }, context.index, isCurrent, context.createSystem)
+      ? this.chat.start({ requestId, provider: context.provider, model: context.model, generation: context.index.generation, messages: [...this.history.slice(-18), { role: 'user', text }] }, context.index, isCurrent, (index) => createAssistantVoiceSystem(context.createSystem(index)))
       : this.conversation.start(requestId, text, { ...context, isCurrent }, 'voice')
     entry.start = start
       .then((run) => {
