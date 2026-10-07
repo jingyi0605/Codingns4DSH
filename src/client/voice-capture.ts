@@ -25,10 +25,17 @@ export class ClientVoiceCapture {
   private sequence = 0
   private started = false
   private inputRate = 16_000
+  private muted = false
 
   constructor(options: ClientVoiceCaptureOptions) { this.options = options }
 
   get isStarted(): boolean { return this.started }
+
+  /** 静音保留采集时钟和租约；同时关闭轨道与发送零值，避免继续上传实际麦克风声音。 */
+  setMuted(muted: boolean): void {
+    this.muted = muted
+    for (const track of this.stream?.getAudioTracks() ?? []) track.enabled = !muted
+  }
 
   async start(): Promise<void> {
     if (this.started) return
@@ -50,6 +57,7 @@ export class ClientVoiceCapture {
     }
     const stream = await mediaDevices.getUserMedia(constraints)
     this.stream = stream
+    this.setMuted(this.muted)
     try {
       const Context = (globalThis as typeof globalThis & { AudioContext?: new (options?: AudioContextOptions) => CaptureAudioContext; webkitAudioContext?: new (options?: AudioContextOptions) => CaptureAudioContext }).AudioContext
         ?? (globalThis as typeof globalThis & { webkitAudioContext?: new (options?: AudioContextOptions) => CaptureAudioContext }).webkitAudioContext
@@ -132,7 +140,7 @@ export class ClientVoiceCapture {
 
   private emitSamples(samples: Float32Array): void {
     if (!this.started) return
-    const bytes = resampleFloat32ToPcm16(samples, this.inputRate, this.options.targetSampleRate ?? 16_000)
+    const bytes = resampleFloat32ToPcm16(this.muted ? new Float32Array(samples.length) : samples, this.inputRate, this.options.targetSampleRate ?? 16_000)
     if (bytes.byteLength === 0) return
     const frame: VoicePcmFrame = { sequence: ++this.sequence, bytes, sampleRate: this.options.targetSampleRate ?? 16_000, channels: 1 }
     void Promise.resolve(this.options.onFrame(frame)).catch((error) => this.options.onEnded?.(error instanceof Error ? error : new Error(String(error))))

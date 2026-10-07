@@ -1,0 +1,17 @@
+MOSS-TTS-Nano CPU 推理代码（2026-10-07）
+
+来源：https://github.com/OpenMOSS/MOSS-TTS-Nano
+版本：8b7bcc9341b3b4ef3a3a58ba1338a7d85ff133eb
+assets/moss/ort_cpu_runtime.py 保留上游代码；许可原文见 assets/moss/LICENSE（Apache-2.0）。
+本项目 worker.py 是独立 Host 包装，只加载 CPU ONNX 核心。
+模型和参考录音按用户操作下载，不随 npm 包分发。官方预设的项目许可不代表
+参考声音身份的完整商用授权；开放录音保留各自来源与许可信息。
+
+按需下载的独立 Python 运行环境（2026-10-07）
+
+来源：https://github.com/astral-sh/python-build-standalone/releases/tag/20251014
+CPython 3.12.12，固定发布包及 SHA-256 摘要；不随 npm 包分发。
+用户点击启用语音后才下载到 Host 专用语音资源目录，解压时保留发布包附带许可文件。
+CPython 与其依赖遵循各自许可，项目与分发说明：
+https://github.com/astral-sh/python-build-standalone
+https://docs.python.org/3.12/license.html

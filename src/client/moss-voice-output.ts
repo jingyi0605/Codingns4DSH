@@ -1,0 +1,156 @@
+import { ASSISTANT_TTS_PATH, readAssistantTtsParameters, type AssistantTtsParameters } from '../shared/assistant-tts.js'
+
+type SinkAudioContext = AudioContext & { setSinkId?: (id: string) => Promise<void> }
+
+/** 可取消的 PCM 播放器；同一轮的各段串行生成，生成与播放并行。 */
+export class MossVoiceOutput {
+  private context: SinkAudioContext | undefined
+  private abort: AbortController | undefined
+  private readonly sources = new Set<AudioBufferSourceNode>()
+  private sequence = 0
+  private outputDeviceId = ''
+  private nextStart = 0
+  private gain: GainNode | undefined
+
+  constructor(private readonly options: { fetch?: typeof fetch; context?: () => AudioContext } = {}) {}
+
+  get outputDeviceSupported(): boolean { return typeof (globalThis.AudioContext?.prototype as SinkAudioContext | undefined)?.setSinkId === 'function' }
+
+  /** 在点击开始或试听时调用，保留浏览器要求的用户手势。 */
+  async prepare(): Promise<void> {
+    if (this.context === undefined || this.context.state === 'closed') this.context = (this.options.context?.() ?? new AudioContext()) as SinkAudioContext
+    if (this.gain === undefined) { this.gain = this.context.createGain(); this.gain.connect(this.context.destination) }
+    if (this.context.state === 'suspended') await this.context.resume()
+    if (this.outputDeviceId !== '' && typeof this.context.setSinkId === 'function') await this.context.setSinkId(this.outputDeviceId)
+  }
+
+  async setOutputDevice(id: string): Promise<void> {
+    if (!this.outputDeviceSupported) throw new Error('当前浏览器不支持 MOSS 播放设备选择')
+    if (this.context !== undefined) await this.context.setSinkId!(id)
+    this.outputDeviceId = id
+  }
+
+  async speak(text: string, voiceId?: string, onStart?: () => void, parameters?: Partial<AssistantTtsParameters>): Promise<boolean> {
+    this.cancel()
+    const sequence = this.sequence
+    if (!await this.append(text, voiceId, onStart, parameters) || sequence !== this.sequence) return false
+    return this.finish()
+  }
+
+  /** 由文本队列串行调用；收到生成结束即可提交下一段，不取消仍在播放的前一段。 */
+  async append(text: string, voiceId?: string, onStart?: () => void, parameters?: Partial<AssistantTtsParameters>): Promise<boolean> {
+    const playback = readAssistantTtsParameters(parameters)
+    const sequence = this.sequence
+    const continuation = this.abort !== undefined
+    const abort = this.abort ?? new AbortController(); this.abort = abort
+    const readerSignal = abort.signal
+    try {
+      await this.prepare()
+      if (readerSignal.aborted) return false
+      // 只提前准备有限音频；继续播放时逐步放行，仍只使用一个 Host 推理进程。
+      await this.waitUntil(() => this.sources.size === 0 || this.nextStart - this.context!.currentTime <= 5, readerSignal)
+      if (readerSignal.aborted) return false
+      this.gain!.gain.value = playback.volume
+      const response = await (this.options.fetch ?? globalThis.fetch)(new URL(ASSISTANT_TTS_PATH, globalThis.location?.origin ?? 'http://localhost'), {
+        method: 'POST', credentials: 'same-origin', signal: readerSignal,
+        headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
+        body: JSON.stringify({ text, parameters: playback, ...(voiceId === undefined ? {} : { voiceId }) }),
+      })
+      if (!response.ok) {
+        const value = await response.json().catch(() => ({})) as { error?: unknown }
+        throw new Error(typeof value.error === 'string' ? value.error : `Host TTS 请求失败（${response.status}）`)
+      }
+      if (response.body === null) throw new Error('Host TTS 响应缺少音频流')
+      const reader = response.body.getReader(); const decoder = new TextDecoder()
+      let buffer = ''; let completed = false; let played = false
+      try {
+        while (true) {
+          const next = await reader.read()
+          if (readerSignal.aborted) return false
+          if (next.done) break
+          buffer += decoder.decode(next.value, { stream: true })
+          if (buffer.length > 2 * 1024 * 1024) throw new Error('Host TTS 音频事件过大')
+          let boundary = buffer.indexOf('\n')
+          while (boundary >= 0) {
+            const line = buffer.slice(0, boundary).trim(); buffer = buffer.slice(boundary + 1)
+            if (line !== '') {
+              const event = JSON.parse(line) as Record<string, unknown>
+              if (completed) throw new Error('Host TTS 在完成后继续返回音频')
+              if (event.type === 'error') throw new Error(String(event.message))
+              if (event.type === 'done') completed = true
+              else if (event.type === 'audio') {
+                if (!played && continuation) this.nextStart += playback.segmentPauseMs / 1000
+                await this.waitUntil(() => this.sources.size === 0 || this.nextStart - this.context!.currentTime <= 5, readerSignal)
+                if (readerSignal.aborted) return false
+                this.enqueue(decodeMossPcm(event), Number(event.sampleRate), playback.rate)
+                if (!played) { played = true; onStart?.() }
+              } else throw new Error('Host TTS 返回未知事件')
+            }
+            boundary = buffer.indexOf('\n')
+          }
+        }
+      } finally { await reader.cancel().catch(() => undefined); reader.releaseLock() }
+      if (!completed || !played || buffer.trim() !== '') throw new Error('Host TTS 音频流未完整结束')
+      return !readerSignal.aborted && sequence === this.sequence
+    } catch (error) {
+      if (readerSignal.aborted || sequence !== this.sequence) return false
+      this.cancel()
+      throw error
+    }
+  }
+
+  /** 文本队列耗尽后再等音频播完；取消旧轮次不会误清理新轮次的请求。 */
+  async finish(): Promise<boolean> {
+    const abort = this.abort
+    if (abort === undefined) return true
+    const sequence = this.sequence
+    await this.waitUntil(() => this.sources.size === 0, abort.signal)
+    if (this.abort === abort) this.abort = undefined
+    return !abort.signal.aborted && sequence === this.sequence
+  }
+
+  cancel(): void {
+    this.sequence++; this.abort?.abort(); this.abort = undefined
+    for (const source of this.sources) { source.onended = null; try { source.stop() } catch { /* 已经播放完 */ } source.disconnect() }
+    this.sources.clear(); this.nextStart = 0
+  }
+
+  dispose(): void { this.cancel(); this.gain?.disconnect(); this.gain = undefined; const context = this.context; this.context = undefined; void context?.close().catch(() => undefined) }
+
+  private enqueue(samples: Float32Array, sampleRate: number, rate: number): void {
+    const context = this.context!
+    // 最多保留 30 秒待播音频，让异常快速生成也不能无限积压浏览器内存。
+    if (this.nextStart - context.currentTime > 30) throw new Error('MOSS 播放队列过长，请缩短文本')
+    const buffer = context.createBuffer(1, samples.length, sampleRate)
+    buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0)
+    const source = context.createBufferSource(); source.buffer = buffer; source.playbackRate.value = rate; source.connect(this.gain!)
+    source.onended = () => { this.sources.delete(source); source.disconnect() }
+    this.sources.add(source)
+    const start = Math.max(context.currentTime + 0.02, this.nextStart)
+    // 后一块按实际变速后的时长接续，避免调快时留空隙、调慢时相互重叠。
+    source.start(start); this.nextStart = start + buffer.duration / rate
+  }
+
+  private async waitUntil(ready: () => boolean, signal: AbortSignal): Promise<void> {
+    if (ready() || signal.aborted) return
+    await new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const finish = (): void => { if (timer !== undefined) clearTimeout(timer); signal.removeEventListener('abort', finish); resolve() }
+      const check = (): void => { if (signal.aborted || ready()) finish(); else timer = setTimeout(check, 30) }
+      signal.addEventListener('abort', finish, { once: true }); check()
+    })
+  }
+}
+
+/** PCM 固定为 48kHz、单声道、16 位小端，与 Host 工作进程协议一致。 */
+export function decodeMossPcm(event: Record<string, unknown>): Float32Array {
+  if (event.sampleRate !== 48_000 || typeof event.data !== 'string' || event.data.length > 1024 * 1024) throw new Error('Host TTS PCM 格式无效')
+  const raw = atob(event.data)
+  if (raw.length === 0 || raw.length % 2 !== 0) throw new Error('Host TTS PCM 长度无效')
+  const samples = new Float32Array(raw.length / 2)
+  for (let index = 0; index < samples.length; index++) {
+    const value = raw.charCodeAt(index * 2) | raw.charCodeAt(index * 2 + 1) << 8
+    samples[index] = (value >= 32768 ? value - 65536 : value) / 32768
+  }
+  return samples
+}

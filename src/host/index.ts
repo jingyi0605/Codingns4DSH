@@ -28,6 +28,7 @@ import { createAgentSubagentTool } from './cli-adapters/subagent-tool.js'
 import { registerNativeTeamSubagentProviders, type NativeSubagentService } from './cli-adapters/native-team-subagent.js'
 import { setNativeSubagents } from './cli-adapters/native-subagent-holder.js'
 import { installSidebarSessionCompat } from '../dsh-capabilities/host/sidebar-session-compat.js'
+import { registerAssistantVoiceStreamRoutes } from './features/assistant-voice-stream.js'
 import { registerStage0DevHmr } from './stage0-dev-hmr.js'
 
 export function apply(ctx?: Context): void {
@@ -150,12 +151,7 @@ export function apply(ctx?: Context): void {
         requestBody: 'buffered',
         fetch: handler,
       }),
-      registerAssistantVoiceStreamRoute: (handler) => hostCtx.connection.fetch.register({
-        path: '/api/codingns/assistant/voice/stream',
-        methods: ['POST'],
-        requestBody: 'streaming',
-        fetch: handler,
-      }),
+      registerAssistantVoiceStreamRoute: (handler) => registerAssistantVoiceStreamRoutes(hostCtx.connection.fetch, handler),
     }
     const debug = new DebugWorkspaceService({
       resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveWorkspaceRoot(hostCtx, workspaceId),

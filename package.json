@@ -119,10 +119,12 @@
     "data/build/dist/**/*.js.map",
     "data/build/dist/**/*.d.ts.map",
     "assets/provider-icons/**",
+    "assets/moss/**",
     "dsh.bundle.patch",
     "profile/**",
     "version.json",
     "README.md",
+    "THIRD_PARTY_NOTICES",
     "package.json",
     "scripts/check-dsh-install.mjs"
   ],

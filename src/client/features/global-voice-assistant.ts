@@ -11,6 +11,8 @@ import { inspectBrowserVoiceSecurity } from '../voice-security.js'
 import { getGlobalVoiceAdapter, registerGlobalVoiceAdapter } from '../global-voice-runtime-registry.js'
 import { VoiceInitializationDialog } from './voice-initialization-dialog.js'
 import { VoiceConversationDialog } from './voice-conversation-dialog.js'
+import { AssistantDebugDialog } from './assistant-debug-dialog.js'
+import type { VoiceConversationMessage } from '../../shared/contracts/voice-runtime.js'
 
 interface VoiceSnapshot {
   readonly active?: boolean
@@ -69,9 +71,10 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   const [snapshot, setSnapshot] = useState<VoiceSnapshot>({ state: 'disabled' })
   const [setupOpen, setSetupOpen] = useState(false)
   const [conversationOpen, setConversationOpen] = useState(false)
+  const [debugOpen, setDebugOpen] = useState(false)
   const [conversationPending, setConversationPending] = useState(false)
   const [partialText, setPartialText] = useState('')
-  const [transcript, setTranscript] = useState<readonly string[]>([])
+  const [transcript, setTranscript] = useState<readonly VoiceConversationMessage[]>([])
   const [settingsValue, setSettingsValue] = useState(() => services.settings.getSnapshot().value)
   const ownerIdRef = useRef<string | undefined>(undefined)
   const eventSequenceRef = useRef(0)
@@ -112,8 +115,14 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
         }
         if (event.type === 'partial') setPartialText(event.text)
         else if (event.type === 'final' && event.text.trim() !== '') {
-          setTranscript((previous) => [...previous, event.text.trim()])
+          setTranscript((previous) => [...previous, { id: event.requestId ?? createVoiceLeaseOwnerId(), role: 'user', text: event.text.trim() }])
           setPartialText('')
+        } else if (event.type === 'reply') {
+          setTranscript((previous) => {
+            const id = `reply:${event.requestId}`
+            const message: VoiceConversationMessage = { id, role: 'assistant', text: event.text }
+            return previous.some((item) => item.id === id) ? previous.map((item) => item.id === id ? message : item) : [...previous, message]
+          })
         }
         if (event.type === 'state') setSnapshot({ state: event.state, active: event.state !== 'disabled', ownerId })
         else if (event.type === 'barge-in') setSnapshot({ state: 'interrupted', active: true, ownerId })
@@ -123,7 +132,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
             : event.code === 'voice_invalid_transcript'
               ? t('voice.invalidTranscript')
               : event.message
-          setSnapshot({ state: 'error', active: true, ownerId, message })
+          setSnapshot({ state: 'error', active: adapter.ownerId !== undefined, ownerId, message })
           if (!event.recoverable) {
             void adapter.stop().catch(() => undefined)
           }
@@ -194,10 +203,6 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   }
 
   const openConversation = (): void => {
-    if (needsSetup) {
-      setSetupOpen(true)
-      return
-    }
     setConversationOpen(true)
   }
 
@@ -314,8 +319,14 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       onStart: () => { void startConversation() },
       onStop: () => { void stopConversation() },
       onClose: closeConversation,
-      onClear: () => { setTranscript([]); setPartialText('') },
+      onClear: () => {
+        setTranscript([]); setPartialText('')
+        void Promise.resolve(adapter?.clearConversation?.()).catch((error: unknown) => setSnapshot((previous) => ({ ...previous, state: 'error', message: error instanceof Error ? error.message : String(error) })))
+      },
+      onDebug: () => setDebugOpen(true),
+      onConfigure: () => setSetupOpen(true),
     }) : null,
+    debugOpen ? createElement(AssistantDebugDialog, { services, onClose: () => setDebugOpen(false) }) : null,
   )
 }
 
