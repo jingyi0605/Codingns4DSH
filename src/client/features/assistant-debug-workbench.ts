@@ -262,7 +262,7 @@ export function AssistantPromptEditor({ kind, value, disabled, onSave, onChange,
 /** 范围成员与正文索引分开显示，空项目也必须出现在范围内。 */
 export function AssistantScopeSessionsView({ snapshot, managedIds, t }: { readonly snapshot: AssistantDebugSnapshot; readonly managedIds: readonly string[]; readonly t: CodingNsTranslator }): ReactElement {
   const sessions = snapshot.scopeSessions
-  return createElement('section', { style: sectionStyle }, createElement('strong', null, t('assistant.debug.tab.sessions')), managedIds.length === 0 ? createElement('span', null, t('assistant.debug.scopeEmpty')) : null,
+  return createElement('section', { style: sectionStyle }, createElement('strong', null, t('assistant.debug.tab.sessions')), createElement('span', { style: dshSettingsHelpStyle }, t('assistant.debug.sessionStateHelp')), managedIds.length === 0 ? createElement('span', null, t('assistant.debug.scopeEmpty')) : null,
     ...managedIds.map((id) => createElement('div', { key: id, style: { display: 'grid', gap: 8 } },
       createElement('strong', null, t('assistant.debug.projectCount', { name: snapshot.workspaces.find((workspace) => workspace.workspaceId === id)?.name ?? sessions.find((entry) => entry.workspaceId === id)?.workspaceName ?? id, count: sessions.filter((entry) => entry.workspaceId === id).length })),
       ...sessions.filter((entry) => entry.workspaceId === id).map((entry) => sessionCard(entry, t, false)), sessions.some((entry) => entry.workspaceId === id) ? null : createElement('span', { style: dshSettingsHelpStyle }, t('assistant.debug.projectEmpty')),
@@ -373,8 +373,9 @@ export function AssistantChatMessagesView({ history, submitted, run, t }: { read
 }
 
 function sessionCard(entry: SessionIndexEntry, t: CodingNsTranslator, indexed: boolean): ReactElement {
-  return createElement('details', { key: `${entry.hostId}:${entry.sessionId}`, style: cardStyle }, createElement('summary', { style: { cursor: 'pointer' } }, t('assistant.debug.sessionTitle', { title: entry.title ?? shortSessionTitle(entry.sessionId, t), status: t(`assistant.debug.status.${entry.status ?? 'unknown'}`) })),
-    entry.sourceVersion === undefined ? null : createElement('span', { style: dshSettingsHelpStyle }, t('assistant.debug.sessionVersion', { source: entry.sourceVersion, indexed: entry.indexedVersion ?? 0 })),
+  const indexState = entry.indexState === 'waiting' ? entry.waiting !== null ? 'waiting-user' : entry.activity === 'unknown' ? 'waiting-status' : 'waiting' : entry.indexState
+  return createElement('details', { key: `${entry.hostId}:${entry.sessionId}`, style: cardStyle }, createElement('summary', { style: { cursor: 'pointer' } }, t('assistant.debug.sessionTitle', { title: entry.title ?? shortSessionTitle(entry.sessionId, t), status: t(`assistant.debug.status.${entry.status ?? 'unknown'}`) }), indexState === undefined ? null : createElement('span', { style: { marginLeft: 12, ...dshSettingsHelpStyle } }, t(`assistant.debug.sessionIndex.${indexState}`))),
+    entry.sourceVersion === undefined ? null : createElement('span', { style: dshSettingsHelpStyle }, t(indexed ? 'assistant.debug.sessionMaterialVersion' : 'assistant.debug.sessionVersion', { source: entry.sourceVersion, indexed: entry.indexedVersion ?? 0 })),
     entry.waiting === null ? null : createElement('span', null, t(`assistant.debug.waiting.${entry.waiting}`)), createElement('span', { style: dshSettingsHelpStyle }, `${entry.hostId} / ${entry.sessionId}`), entry.updatedAt === null ? null : createElement('span', { style: dshSettingsHelpStyle }, t('assistant.debug.updated', { time: new Date(entry.updatedAt).toLocaleString() })), !indexed ? null : createElement('span', { style: { whiteSpace: 'pre-wrap', lineHeight: 1.6 } }, entry.summary || t('assistant.debug.noSummary')),
   )
 }
