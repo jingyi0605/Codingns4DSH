@@ -125,8 +125,8 @@ export class CodingNsTerminalView {
    *
    * 聚合页在切换右栏页签时可能会卸载 DOM，但 Host 里的终端仍然运行；
    * 这类视图不能因为一次 DOM 卸载就释放 follow，否则再次点开标签必然
-  * 重新经历 environment/list/follow。显式 close 和 dispose 仍会强制释放。
-  */
+   * 重新经历 environment/list/follow。显式 close 和 dispose 仍会强制释放。
+   */
   private readonly keepAlive: boolean
   private readonly initialState: TerminalInitialState | undefined
   private initialStateConsumed = false
@@ -567,6 +567,14 @@ interface CloseRequest {
 const BINDING_PREFIX = 'dsh.codingns.terminal.binding.v1.'
 const CLOSE_REQUEST_KEY = 'dsh.codingns.terminal.close.v1'
 const SHELL_KEY = 'dsh.codingns.terminal.shell.v1'
+/** 旧版会话级选择记录，仅用于迁移到工作区。 */
+const SELECTION_PREFIX = 'dsh.codingns.terminal.selection.v1.'
+const WORKSPACE_STATE_PREFIX = 'dsh.codingns.terminal.workspace-state.v1.'
+
+interface TerminalWorkspaceState {
+  selectedId?: WebTerminalId
+  cardOpen?: boolean
+}
 
 /** Codingns4DSH 自有的浏览器终端服务，不依赖官方 terminal-controller Client 实现。 */
 export class CodingNsWebTerminals extends Service {
@@ -581,6 +589,14 @@ export class CodingNsWebTerminals extends Service {
   /** 任一工作区库存变化都会递增；聚合页用它触发跨会话刷新。 */
   readonly inventoryRevision: TerminalObservable<number> = this.inventoryRevisionStore
   private readonly inventories = new Map<string, TerminalInventorySnapshot>()
+  /** 库存、选中标签和卡片开关都属于工作区；会话只提供调用上下文。 */
+  private readonly workspaceStates = new Map<string, TerminalWorkspaceState>()
+  private readonly selectionRevisionStore = new ObservableValue(0)
+  readonly selectionRevision: TerminalObservable<number> = this.selectionRevisionStore
+  private readonly cardRevisionStore = new ObservableValue(0)
+  readonly cardRevision: TerminalObservable<number> = this.cardRevisionStore
+  /** 工作区尚未解析时的显式开关意图；解析后必须覆盖旧工作区开关。 */
+  private readonly pendingCardStates = new Map<string, boolean>()
   /** 已解析过的会话环境；切换回已有会话时无需再次请求 Host environment。 */
   private readonly environments = new Map<string, TerminalEnvironment>()
   /** 每个会话最近一次库存请求的序号；旧请求返回时不得覆盖新建结果。 */
@@ -622,7 +638,7 @@ export class CodingNsWebTerminals extends Service {
       shellPath,
       persistBinding
         ? (resolvedWorkspaceId, currentId) => this.rememberWorkspace(sessionId, contentId, currentId, resolvedWorkspaceId, !fresh && terminalId === undefined)
-        : (resolvedWorkspaceId) => { this.workspaceIds.set(sessionId, resolvedWorkspaceId); return undefined },
+        : (resolvedWorkspaceId) => { this.rememberSessionWorkspace(sessionId, resolvedWorkspaceId); return undefined },
       this.t,
       keepAlive,
       initialState,
@@ -681,12 +697,15 @@ export class CodingNsWebTerminals extends Service {
 
   /** 在聚合页内创建一个新的 Host 终端，并把它加入工作区库存。 */
   async createTerminal(sessionId: string, shellPath?: string): Promise<WebTerminalInfo> {
+    // 新建入口表示显式打开；完成时不再写开关，避免覆盖创建期间的关闭动作。
+    this.setTerminalCardOpen(sessionId, true)
     const terminalId = crypto.randomUUID() as WebTerminalId
     const view = this.view(sessionId, `aggregate:${terminalId}`, `aggregate:${terminalId}`, terminalId, shellPath, true, false, true)
     await view.refresh()
     const info = view.state.getSnapshot().info
     if (info === undefined) throw new Error(view.state.getSnapshot().error ?? '终端创建失败')
     await this.refreshInventory(sessionId)
+    this.selectTerminal(sessionId, info.id)
     return info
   }
 
@@ -735,7 +754,7 @@ export class CodingNsWebTerminals extends Service {
     let recovery: Promise<readonly WebTerminalInfo[]> | undefined
     recovery = (async () => {
       const environment = await this.resolveEnvironment(sessionId)
-      if (environment.workspaceId !== undefined) this.workspaceIds.set(sessionId, environment.workspaceId)
+      if (environment.workspaceId !== undefined) this.rememberSessionWorkspace(sessionId, environment.workspaceId)
       const result = dedupeInventory(unwrap(await resolveRemote(this.remote).list(sessionId)))
       const currentRequestId = this.inventoryRequestIds.get(sessionId)
       if (currentRequestId !== requestId || this.inventoryEpoch !== inventoryEpoch) {
@@ -783,6 +802,8 @@ export class CodingNsWebTerminals extends Service {
     this.workspaceIds.clear()
     this.recoveries.clear()
     this.inventories.clear()
+    this.workspaceStates.clear()
+    this.pendingCardStates.clear()
     this.environments.clear()
     this.inventoryRequestIds.clear()
     this.inventoryEpoch = 0
@@ -820,6 +841,14 @@ export class CodingNsWebTerminals extends Service {
     return environment
   }
 
+  private rememberSessionWorkspace(sessionId: string, workspaceId: string): void {
+    this.workspaceIds.set(sessionId, workspaceId)
+    const pending = this.pendingCardStates.get(sessionId)
+    if (pending === undefined) return
+    this.pendingCardStates.delete(sessionId)
+    this.setTerminalCardOpen(sessionId, pending)
+  }
+
   private environmentForSession(sessionId: string): TerminalEnvironment | undefined {
     const session = this.environments.get(`session:${sessionId}`)
     if (session !== undefined) return session
@@ -833,8 +862,70 @@ export class CodingNsWebTerminals extends Service {
     return this.inventories.get(workspaceId)?.terminals ?? []
   }
 
+  /** 工作区状态使用显式作用域键，旧环境缺少 workspaceId 时才退回会话。 */
+  scopeForSession(sessionId: string): string {
+    const workspaceId = this.workspaceIds.get(sessionId)
+    return JSON.stringify(workspaceId === undefined ? ['session', sessionId] : ['workspace', workspaceId])
+  }
+
+  /** 同工作区所有会话读取同一选择；组件卸载和页面刷新不清除记录。 */
+  selectedTerminalId(sessionId: string): WebTerminalId | undefined {
+    return this.workspaceStateForSession(sessionId).selectedId
+  }
+
+  /** 用户选择和库存回退都走同一个入口；存储不可用时仍保留内存记录。 */
+  selectTerminal(sessionId: string, id: WebTerminalId | undefined): void {
+    const state = this.workspaceStateForSession(sessionId)
+    if (state.selectedId === id) return
+    const next = { ...state }
+    if (id === undefined) delete next.selectedId
+    else next.selectedId = id
+    this.saveWorkspaceState(sessionId, next)
+    this.selectionRevisionStore.set(this.selectionRevisionStore.getSnapshot() + 1)
+  }
+
+  /** 卡片是否打开由工作区共享，不由某个会话的布局缺失推断。 */
+  terminalCardOpen(sessionId: string): boolean | undefined {
+    return this.workspaceStateForSession(sessionId).cardOpen
+  }
+
+  setTerminalCardOpen(sessionId: string, open: boolean): void {
+    if (!this.workspaceIds.has(sessionId)) this.pendingCardStates.set(sessionId, open)
+    const state = this.workspaceStateForSession(sessionId)
+    if (state.cardOpen === open) return
+    this.saveWorkspaceState(sessionId, { ...state, cardOpen: open })
+    this.cardRevisionStore.set(this.cardRevisionStore.getSnapshot() + 1)
+  }
+
+  private workspaceStateForSession(sessionId: string): TerminalWorkspaceState {
+    const scope = this.scopeForSession(sessionId)
+    const current = this.workspaceStates.get(scope)
+    if (current !== undefined) return current
+    const sessionScope = JSON.stringify(['session', sessionId])
+    const legacyKey = `${SELECTION_PREFIX}${JSON.stringify(sessionId)}`
+    const legacyId = readString(legacyKey)
+    // 工作区记录始终优先；首次解析工作区时迁移尚未绑定工作区的选择与开关。
+    const state = readWorkspaceState(scope)
+      ?? this.workspaceStates.get(sessionScope)
+      ?? readWorkspaceState(sessionScope)
+      ?? (legacyId === null ? {} : { selectedId: legacyId })
+    this.saveWorkspaceState(sessionId, state)
+    if (scope !== sessionScope) {
+      this.workspaceStates.delete(sessionScope)
+      removeString(`${WORKSPACE_STATE_PREFIX}${sessionScope}`)
+      removeString(legacyKey)
+    }
+    return state
+  }
+
+  private saveWorkspaceState(sessionId: string, state: TerminalWorkspaceState): void {
+    const scope = this.scopeForSession(sessionId)
+    this.workspaceStates.set(scope, state)
+    writeString(`${WORKSPACE_STATE_PREFIX}${scope}`, JSON.stringify(state))
+  }
+
   private rememberWorkspace(sessionId: string, contentId: string, id: WebTerminalId, workspaceId: string, useWorkspaceBinding: boolean): WorkspaceBindingResolution {
-    this.workspaceIds.set(sessionId, workspaceId)
+    this.rememberSessionWorkspace(sessionId, workspaceId)
     // 显式恢复和“新建”都必须保留自己的 terminalId；只有普通无参数入口
     // 才使用旧的单终端工作区绑定兼容行为。
     const existing = useWorkspaceBinding ? readWorkspaceBindingWithMigration(workspaceId, contentId) : undefined
@@ -852,6 +943,9 @@ export class CodingNsWebTerminals extends Service {
   private rememberInventory(sessionId: string, terminals: readonly WebTerminalInfo[]): void {
     const workspaceId = this.workspaceIds.get(sessionId) ?? `session:${sessionId}`
     const normalized = dedupeInventory(terminals)
+    // 选择与库存使用同一工作区边界；关闭当前终端只需修正一次共享选择。
+    const selectedId = this.selectedTerminalId(sessionId)
+    if (!normalized.some((item) => item.id === selectedId)) this.selectTerminal(sessionId, normalized[0]?.id)
     const previous = this.inventories.get(workspaceId)
     if (previous !== undefined && sameInventory(previous.terminals, normalized)) return
     const revision = this.inventoryRevisionStore.getSnapshot() + 1
@@ -1078,6 +1172,24 @@ function persistCloseRequests(requests: Iterable<CloseRequest>): void {
 function readString(key: string): string | null {
   if (typeof localStorage === 'undefined') return null
   try { return localStorage.getItem(key) } catch { return null }
+}
+
+function readWorkspaceState(scope: string): TerminalWorkspaceState | undefined {
+  const raw = readString(`${WORKSPACE_STATE_PREFIX}${scope}`)
+  if (raw === null) return undefined
+  try {
+    const state: unknown = JSON.parse(raw)
+    if (typeof state !== 'object' || state === null) return undefined
+    const record = state as Record<string, unknown>
+    return {
+      ...(typeof record.selectedId === 'string' ? { selectedId: record.selectedId } : {}),
+      ...(typeof record.cardOpen === 'boolean' ? { cardOpen: record.cardOpen } : {}),
+    }
+  } catch { return undefined }
+}
+
+function removeString(key: string): void {
+  try { localStorage.removeItem(key) } catch { /* 受限环境继续使用内存记录。 */ }
 }
 
 function writeString(key: string, value: string): void {

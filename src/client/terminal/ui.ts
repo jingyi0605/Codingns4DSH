@@ -29,7 +29,7 @@ import {
   resolveTerminalArrowIcon,
   resolveToolIcon,
 } from '../../dsh-capabilities/client/primitives-adapter.js'
-import { CodingNsWebTerminals, type WebTerminalId, type WebTerminalInfo } from './model.js'
+import { CodingNsWebTerminals, type WebTerminalInfo } from './model.js'
 import { createTerminalSessionRecovery, type TerminalSidebarMountedSource, type TerminalSidebarRecoveryPort } from './recovery.js'
 import { installTerminalStyles, terminalClass } from './styles.js'
 import { CodingNsXtermView } from './xterm-view.js'
@@ -82,6 +82,7 @@ interface TerminalGuideProps extends TerminalGuideEntryOwnerProps {
   readonly useTabInfo: () => SidebarRightTabInfo
   readonly webTerminals: CodingNsWebTerminals
   readonly recoverSession: (sessionId: string) => Promise<readonly unknown[]>
+  readonly openWorkspaceCard: (sessionId: string) => void
   readonly locale: CodingNsLocale
 }
 
@@ -112,6 +113,9 @@ export function registerCodingNsTerminalUi(
     guide: [{ id: 'terminal', order: 20, title: () => t('terminal.title'), description: () => t('terminal.description'), icon: TerminalGuideIcon }],
   } as const
   disposers.push(ctx.sidebarRightTabs.register(tabDefinition))
+  if (typeof recoverySidebar.registerCloseHandler === 'function') {
+    disposers.push(recoverySidebar.registerCloseHandler(TERMINAL_KIND, (sessionId, tab) => recovery.close(String(sessionId), tab.id)))
+  }
   disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab', key: TERMINAL_PROVIDER_ID,
     inject: () => ({ webTerminals, settings, theme, locale: ctx.locale }),
@@ -122,7 +126,7 @@ export function registerCodingNsTerminalUi(
   }, TerminalTitle)))
   disposers.push(ctx.slots.inject('sidebar.right.tab.guide.entry', () => ctx.slots.register({
     name: 'sidebar.right.tab.guide.entry', key: TERMINAL_PROVIDER_ID,
-    inject: () => ({ webTerminals, recoverSession: recovery.ensure, locale: ctx.locale }),
+    inject: () => ({ webTerminals, recoverSession: recovery.ensure, openWorkspaceCard: recovery.open, locale: ctx.locale }),
   }, TerminalGuide)))
   disposers.push(ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay', id: 'codingns4dsh-terminal-cleanup', order: 1000,
@@ -149,8 +153,12 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
   const autoCreate = hasAutoCreateIntent && consumedAutoCreateNavigations.get(String(sessionId)) !== navigationKey
   const revision = useSyncExternalStore(webTerminals.inventoryRevision.subscribe.bind(webTerminals.inventoryRevision), webTerminals.inventoryRevision.getSnapshot.bind(webTerminals.inventoryRevision))
   const themeRevision = useSyncExternalStore(theme.subscribe, theme.getSnapshot)
-  const [terminals, setTerminals] = useState<readonly WebTerminalInfo[]>([])
-  const [selectedId, setSelectedId] = useState<WebTerminalId | undefined>()
+  // 会话只定位工作区；库存和选择都由工作区共享，切换会话不会重置子标签。
+  const terminals = webTerminals.inventoryForSession(String(sessionId))
+  const selectedId = useSyncExternalStore(
+    webTerminals.selectionRevision.subscribe.bind(webTerminals.selectionRevision),
+    () => webTerminals.selectedTerminalId(String(sessionId)),
+  )
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | undefined>()
@@ -168,11 +176,7 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
     reloadSequence.current = sequence
     setLoading(true)
     try {
-      const next = await webTerminals.refreshInventory(String(sessionId))
-      if (sequence !== reloadSequence.current) return next
-      setTerminals(next)
-      setSelectedId((current) => next.some((item) => item.id === current) ? current : next[0]?.id)
-      return next
+      return await webTerminals.refreshInventory(String(sessionId))
     } finally {
       if (sequence === reloadSequence.current) setLoading(false)
     }
@@ -186,8 +190,6 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
     debugInfo('codingns4dsh: client terminal aggregate create begin', { sessionId: String(sessionId), shellPath: params.shellPath ?? null })
     try {
       const info = await webTerminals.createTerminal(String(sessionId), params.shellPath)
-      setTerminals((current) => current.some((item) => item.id === info.id) ? current : [...current, info])
-      setSelectedId(info.id)
       await reload()
       // 创建成功后再消费本地意图。创建期间 recovery 仍需看到它，避免空列表
       // 的迟到响应把正在创建的聚合页关闭。
@@ -214,7 +216,7 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
     void createNewTerminal()
   }, [autoCreate, createError, createNewTerminal, creating, loading, navigationKey, sessionId, terminals.length])
   const selected = terminals.find((item) => item.id === selectedId)
-  // 库存刷新删除当前项时，selectedId 的修正和 terminals 更新不一定同一帧完成。
+  // 库存刷新删除当前项时，选择记录的修正和库存更新不一定同一帧完成。
   // 先用首项作为 active，避免短暂渲染空状态导致所有 view 卸载并重新连接。
   const activeId = selected?.id ?? terminals[0]?.id
   const activeView = activeId === undefined
@@ -251,7 +253,7 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
           key: item.id,
           item,
           selected: item.id === activeId,
-          onSelect: () => setSelectedId(item.id),
+          onSelect: () => webTerminals.selectTerminal(String(sessionId), item.id),
           onClose: () => { void webTerminals.closeTerminal(String(sessionId), item.id).then(() => reload()) },
           onRename: async (title) => {
             const target = webTerminals.viewForTerminal(String(sessionId), item.id, item.shell.path)
@@ -477,7 +479,7 @@ function TerminalListRow({ item, selected, onSelect, onClose, onRename, t }: {
   )
 }
 
-function TerminalGuide({ sessionId, useTabInfo, webTerminals, recoverSession, title, description, locale }: TerminalGuideProps): ReactElement {
+function TerminalGuide({ sessionId, useTabInfo, webTerminals, recoverSession, openWorkspaceCard, title, description, locale }: TerminalGuideProps): ReactElement {
   const t = useCodingNsTranslator(locale)
   const info = useTabInfo()
   const [open, setOpen] = useState(false)
@@ -509,6 +511,7 @@ function TerminalGuide({ sessionId, useTabInfo, webTerminals, recoverSession, ti
     className: terminalClass.guideMain,
     // Tab actions 的 replaceTab 是布尔开关；传 true 由 DSH 自动绑定当前标签 ID。
     onClick: () => {
+      openWorkspaceCard(String(sessionId))
       markPendingAutoCreateIntent(String(sessionId))
       info.tab.actions.openTab(TERMINAL_KIND, { replaceTab: true, params: { autoCreate: true } })
     },
@@ -536,6 +539,7 @@ function TerminalGuide({ sessionId, useTabInfo, webTerminals, recoverSession, ti
       if (state.phase !== 'ready') return
       webTerminals.selectShell(path)
       setOpen(false)
+      openWorkspaceCard(String(sessionId))
       markPendingAutoCreateIntent(String(sessionId))
       info.tab.actions.openTab(TERMINAL_KIND, {
         params: { autoCreate: true, shellPath: path },
@@ -594,6 +598,10 @@ function TerminalCleanup({ webTerminals, locale, sidebarRight, recoverSession, i
     webTerminals.inventoryRevision.getSnapshot.bind(webTerminals.inventoryRevision),
     webTerminals.inventoryRevision.getSnapshot.bind(webTerminals.inventoryRevision),
   )
+  const cardRevision = useSyncExternalStore(
+    webTerminals.cardRevision.subscribe.bind(webTerminals.cardRevision),
+    webTerminals.cardRevision.getSnapshot.bind(webTerminals.cardRevision),
+  )
   const mounted = readSidebarMounted(sidebarRight)
   const mountedSessionId = useSyncExternalStore(
     mounted?.subscribe ?? noSubscribe,
@@ -612,7 +620,7 @@ function TerminalCleanup({ webTerminals, locale, sidebarRight, recoverSession, i
       if (inventoryChanged) invalidateRecovery(sessionId)
       void recoverSession(sessionId).catch(() => undefined)
     }
-  }, [openTabSnapshot, recoverSession, remoteReady, mountedSessionId, inventoryRevision, invalidateRecovery])
+  }, [openTabSnapshot, recoverSession, remoteReady, mountedSessionId, inventoryRevision, cardRevision, invalidateRecovery])
   const failures = useSyncExternalStore(webTerminals.closeFailures.subscribe.bind(webTerminals.closeFailures), webTerminals.closeFailures.getSnapshot.bind(webTerminals.closeFailures))
   if (failures.length === 0) return null
   return createElement('div', { className: terminalClass.cleanupStack },
