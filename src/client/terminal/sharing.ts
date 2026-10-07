@@ -5,6 +5,8 @@ import type { CodingNsTerminalView } from './model.js'
 import { debugWarn } from '../../shared/debug.js'
 import { resolveCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 
+export type TerminalLogPreviewState = { readonly snapshot: TerminalTextSnapshot } | { readonly error: string }
+
 /** 终端视图只登记读取器，不把 xterm 实例泄漏给会话输入框。 */
 export class TerminalSharing {
   private readonly readers = new Map<CodingNsTerminalView, TerminalTextReader>()
@@ -12,8 +14,18 @@ export class TerminalSharing {
   private referenceReady = false
   private disposeReference: (() => void) | undefined
   private newTargets = new WeakMap<TerminalTextSnapshot, Promise<string>>()
+  private preview: TerminalLogPreviewState | undefined
+  private readonly previewListeners = new Set<() => void>()
 
   constructor(private readonly t: CodingNsTranslator = resolveCodingNsTranslator()) {}
+
+  /** 快照与订阅函数均保持稳定，悬浮预览不依赖右栏终端是否挂载。 */
+  readonly getPreviewSnapshot = (): TerminalLogPreviewState | undefined => this.preview
+  readonly subscribePreview = (listener: () => void): (() => void) => {
+    this.previewListeners.add(listener)
+    return () => { this.previewListeners.delete(listener) }
+  }
+  readonly closePreview = (): void => { this.setPreview(undefined) }
 
   attachBridge(bridge: TerminalSharingBridge): () => void {
     this.newTargets = new WeakMap()
@@ -38,6 +50,12 @@ export class TerminalSharing {
           signal.throwIfAborted()
           return formatTerminalSnapshot(decodeTerminalSnapshot(ref), t)
         },
+      }, (ref) => {
+        // 服务停用后拒绝旧回调，损坏引用只影响预览，不让点击异常进入编辑器。
+        if (dispose === undefined || this.disposeReference !== dispose) return false
+        try { this.setPreview({ snapshot: decodeTerminalSnapshot(ref) }) }
+        catch { this.setPreview({ error: t('terminalShare.preview.invalid') }) }
+        return true
       })
     } catch (cause) {
       debugWarn('codingns4dsh: 终端引用源注册失败，暂停日志卡片分享', { error: cause instanceof Error ? cause.message : String(cause) })
@@ -102,9 +120,17 @@ export class TerminalSharing {
     this.bridge = undefined
     this.newTargets = new WeakMap()
     this.readers.clear()
+    this.previewListeners.clear()
+  }
+
+  private setPreview(value: TerminalLogPreviewState | undefined): void {
+    if (this.preview === value) return
+    this.preview = value
+    for (const listener of [...this.previewListeners]) listener()
   }
 
   private releaseReferences(): void {
+    this.closePreview()
     this.disposeReference?.()
     this.disposeReference = undefined
     this.referenceReady = false

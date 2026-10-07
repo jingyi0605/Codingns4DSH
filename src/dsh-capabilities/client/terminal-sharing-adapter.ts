@@ -43,13 +43,14 @@ interface ReferenceRegistry {
     candidates(): Promise<readonly never[]>
     onPick(): { readonly text: string }
     readonly codec: TerminalReferenceCodec
+    openReference(session: unknown, reference: Pick<TerminalDraftReference, 'ref' | 'appearance'>): boolean
   }): () => void
 }
 
 export interface TerminalSharingBridge {
   targets(signal?: AbortSignal, query?: { readonly sessionId: string; readonly limit: number }): Promise<readonly TerminalShareTarget[]>
   source(sessionId: string): { readonly hostId: string; readonly workspaceId: string }
-  registerReferences(name: string, codec: TerminalReferenceCodec): (() => void) | undefined
+  registerReferences(name: string, codec: TerminalReferenceCodec, openReference: (ref: string) => boolean): (() => void) | undefined
   createTarget(sourceSessionId: string): Promise<string>
   insert(sessionId: string, text: string, reference?: TerminalDraftReference): Promise<void>
 }
@@ -109,9 +110,12 @@ export function createTerminalSharingBridge(context: unknown): TerminalSharingBr
       const workspace = workspaces.find((item) => array(item?.sessionIds).includes(sessionId))
       return { hostId: parseVirtualSessionId(sessionId)?.hostId ?? 'local', workspaceId: string(workspace?.workspaceId) }
     },
-    registerReferences(name, codec) {
+    registerReferences(name, codec, openReference) {
       const triggers = service<ReferenceRegistry>(context, 'inputTriggers')
-      return triggers?.registerSource?.({ name, trigger: '@', candidates: async () => [], onPick: () => ({ text: '' }), codec })
+      return triggers?.registerSource?.({ name, trigger: '@', candidates: async () => [], onPick: () => ({ text: '' }), codec,
+        // 点击由原生编辑器路由到引用源，不监听或修改编辑器 DOM。
+        openReference: (_session, reference) => openReference(reference.ref),
+      })
     },
     async createTarget(sourceSessionId) {
       const workspace = array(record(workspaceSnapshot())?.items).map(record)

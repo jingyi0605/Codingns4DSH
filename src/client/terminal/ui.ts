@@ -43,6 +43,7 @@ import type { TerminalSharingBridge } from '../../dsh-capabilities/client/termin
 import type { TerminalTextSnapshot } from '../../shared/contracts/terminal-share.js'
 import { TerminalSharing } from './sharing.js'
 import { TerminalShareMenu } from './share-menu.js'
+import { TerminalLogPreview } from './log-preview.js'
 
 export const TERMINAL_PROVIDER_ID = 'codingns4dsh/terminal'
 export const TERMINAL_KIND = 'terminal'
@@ -122,6 +123,10 @@ export function registerCodingNsTerminalUi(
   const recoverySidebar = ctx.sidebarRight as unknown as TerminalSidebarRecoveryPort
   const recovery = createTerminalSessionRecovery(webTerminals, recoverySidebar, TERMINAL_KIND, hasPendingAutoCreateIntent)
   disposers.push(installTerminalStyles())
+  disposers.push(ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay', id: 'codingns4dsh-terminal-log-preview', order: 1001,
+    inject: () => ({ sharing, locale: ctx.locale }),
+  }, TerminalLogPreview)))
   const tabDefinition = {
     id: TERMINAL_PROVIDER_ID,
     kind: TERMINAL_KIND,
