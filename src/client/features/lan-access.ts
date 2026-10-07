@@ -33,8 +33,8 @@ export const lanAccessFeature: CodingNsClientFeatureModule = {
   start: (context) => {
     ensureCryptoRandomUUID()
     let prompt: PwaInstallPromptController | undefined
-    // 局域网入口在手机浏览器中复用 DSH 原生会话列表；交互修正控制器自身
-    // 按窄屏和触摸能力门禁，桌面端不会注册全局监听。
+    // 会话列表交互按窄屏与触摸能力启用；输入焦点保护另外覆盖宽屏 iPad，
+    // 只允许直接点按输入组件后唤起键盘，普通桌面仍保留原生自动焦点。
     const mobileSessionInteraction: MobileSessionInteractionController = startMobileSessionInteractionDom({
       sidebarRight: context.services.sidebarRight,
     })

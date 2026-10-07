@@ -4,7 +4,7 @@
  * DSH 的会话行是带 `role="treeitem"` 的普通 div，桌面端依赖浏览器把触摸
  * 转换成 click。iOS 独立窗口在这条链路上会额外触发双击与延迟 click，导致
  * 会话标题的双击重命名被误触发。这里把短触摸明确转换为一次 click，并屏蔽
- * 移动端的双击重命名；Composer 的焦点则只接受来自用户点按输入框的动作。
+ * 移动端的双击重命名；输入焦点由独立控制器保护，覆盖宽屏 iPad。
  */
 
 import {
@@ -12,18 +12,15 @@ import {
   type MobileRightbarServiceLike,
   type MobileRightbarVisibilityController,
 } from './mobile-rightbar-visibility.js'
+import {
+  startTouchInputFocusGuard,
+  type TouchInputFocusWindowLike,
+  type TouchInputFocusDocumentLike,
+} from './touch-input-focus.js'
 
-export interface MobileSessionInteractionWindowLike {
-  readonly innerWidth?: number
-  readonly navigator?: { readonly maxTouchPoints?: number }
-  addEventListener(type: string, listener: (event: never) => void, options?: unknown): void
-  removeEventListener(type: string, listener: (event: never) => void, options?: unknown): void
-}
+export interface MobileSessionInteractionWindowLike extends TouchInputFocusWindowLike {}
 
-export interface MobileSessionInteractionDocumentLike {
-  addEventListener(type: string, listener: (event: never) => void, options?: unknown): void
-  removeEventListener(type: string, listener: (event: never) => void, options?: unknown): void
-}
+export interface MobileSessionInteractionDocumentLike extends TouchInputFocusDocumentLike {}
 
 export interface MobileSessionInteractionOptions {
   readonly window?: MobileSessionInteractionWindowLike
@@ -53,20 +50,14 @@ interface TouchRecord {
 }
 
 interface ElementLike {
-  readonly tagName?: string
-  readonly parentElement?: ElementLike | null
-  readonly className?: string
   getAttribute?(name: string): string | null
   closest?(selector: string): ElementLike | null
-  contains?(node: unknown): boolean
-  blur?(): void
   click?(): void
 }
 
 const DEFAULT_MOBILE_VIEWPORT_MAX_PX = 1024
 const TAP_MAX_DURATION_MS = 700
 const TAP_MAX_DISTANCE_PX = 12
-const FOCUS_ACTIVATION_WINDOW_MS = 700
 const NATIVE_CLICK_SUPPRESSION_WINDOW_MS = 900
 
 /** 纯函数：判断触摸是否足够像一次点按。 */
@@ -77,7 +68,7 @@ export function isShortMobileTap(start: TouchRecord, end: TouchRecord): boolean 
     && Math.hypot(dx, dy) <= TAP_MAX_DISTANCE_PX
 }
 
-/** 启动移动端会话交互修正；桌面视口不注册任何全局监听。 */
+/** 会话手势只在窄屏启用；键盘保护同时覆盖宽屏 iPad，普通桌面不受影响。 */
 export function startMobileSessionInteractionDom(
   options: MobileSessionInteractionOptions = {},
 ): MobileSessionInteractionController {
@@ -86,53 +77,21 @@ export function startMobileSessionInteractionDom(
   const hostDocument = options.document
     ?? (globalThis as unknown as { document?: MobileSessionInteractionDocumentLike }).document
   const viewportMaxPx = options.mobileViewportMaxPx ?? DEFAULT_MOBILE_VIEWPORT_MAX_PX
+  const inputFocus = startTouchInputFocusGuard({ window: hostWindow, document: hostDocument, mobileViewportMaxPx: viewportMaxPx })
   let active = false
   let disposed = false
   let touchStart: TouchRecord | undefined
-  let userActivation: { readonly target: ElementLike; readonly at: number } | undefined
   let suppressedClick: { readonly row: ElementLike; readonly at: number } | undefined
   let dispatchingSyntheticClick = false
   let rightbarVisibility: MobileRightbarVisibilityController | undefined
 
   const now = (): number => Date.now()
 
-  const blurComposer = (): void => {
-    const activeElement = (hostDocument as unknown as { activeElement?: unknown } | undefined)?.activeElement
-    const element = asElement(activeElement)
-    if (element === null || !isComposerInputTarget(element)) return
-    try { element.blur?.() } catch { /* 浏览器焦点已被销毁时忽略。 */ }
-  }
-
-  const onPointerDown = (event: unknown): void => {
-    const target = asElement(eventTarget(event))
-    if (target === null) return
-    userActivation = { target, at: now() }
-    // Composer 内的按钮（添加文件、权限、模型和发送）由 DSH 自己维护焦点。
-    // 捕获阶段提前 blur 会破坏移动端按钮的 click/菜单切换链路。
-    if (!isComposerInteractionTarget(target)) blurComposer()
-  }
-
-  const onFocusIn = (event: unknown): void => {
-    const target = asElement(eventTarget(event))
-    if (target === null || !isComposerInputTarget(target)) return
-    const activation = userActivation
-    const allowed = activation !== undefined
-      && now() - activation.at <= FOCUS_ACTIVATION_WINDOW_MS
-      && activationInsideComposer(activation.target, target)
-    if (allowed) return
-    // React/Lexical 可能在会话切换完成后的微任务中再次 focus；同步 blur 后再补
-    // 一次微任务，确保 Android WebView 和 iOS Web App 都不会留下软键盘。
-    blurElementLater(target)
-  }
-
   const onTouchStart = (event: unknown): void => {
     const point = firstTouch(event)
     if (point === null) return
     const record = { point, at: now() }
     touchStart = record
-    const target = asElement(point.target)
-    userActivation = { target: target ?? emptyElement(), at: record.at }
-    if (target === null || !isComposerInteractionTarget(target)) blurComposer()
   }
 
   const onTouchEnd = (event: unknown): void => {
@@ -180,13 +139,10 @@ export function startMobileSessionInteractionDom(
     if (active || hostDocument === undefined) return
     active = true
     const capture = { capture: true, passive: false }
-    hostDocument.addEventListener('pointerdown', onPointerDown as (event: never) => void, capture)
-    hostDocument.addEventListener('mousedown', onPointerDown as (event: never) => void, capture)
-    hostDocument.addEventListener('touchstart', onTouchStart as (event: never) => void, capture)
-    hostDocument.addEventListener('touchend', onTouchEnd as (event: never) => void, capture)
-    hostDocument.addEventListener('focusin', onFocusIn as (event: never) => void, capture)
-    hostDocument.addEventListener('click', onClickCapture as (event: never) => void, capture)
-    hostDocument.addEventListener('dblclick', onDoubleClickCapture as (event: never) => void, capture)
+    hostDocument.addEventListener('touchstart', onTouchStart, capture)
+    hostDocument.addEventListener('touchend', onTouchEnd, capture)
+    hostDocument.addEventListener('click', onClickCapture, capture)
+    hostDocument.addEventListener('dblclick', onDoubleClickCapture, capture)
     if (options.sidebarRight !== undefined) {
       rightbarVisibility = startMobileRightbarVisibility({
         sidebarRight: options.sidebarRight,
@@ -199,30 +155,27 @@ export function startMobileSessionInteractionDom(
   const removeListeners = (): void => {
     if (!active || hostDocument === undefined) return
     active = false
-    hostDocument.removeEventListener('pointerdown', onPointerDown as (event: never) => void, true)
-    hostDocument.removeEventListener('mousedown', onPointerDown as (event: never) => void, true)
-    hostDocument.removeEventListener('touchstart', onTouchStart as (event: never) => void, true)
-    hostDocument.removeEventListener('touchend', onTouchEnd as (event: never) => void, true)
-    hostDocument.removeEventListener('focusin', onFocusIn as (event: never) => void, true)
-    hostDocument.removeEventListener('click', onClickCapture as (event: never) => void, true)
-    hostDocument.removeEventListener('dblclick', onDoubleClickCapture as (event: never) => void, true)
+    hostDocument.removeEventListener('touchstart', onTouchStart, true)
+    hostDocument.removeEventListener('touchend', onTouchEnd, true)
+    hostDocument.removeEventListener('click', onClickCapture, true)
+    hostDocument.removeEventListener('dblclick', onDoubleClickCapture, true)
     rightbarVisibility?.dispose()
     rightbarVisibility = undefined
     touchStart = undefined
-    userActivation = undefined
     suppressedClick = undefined
   }
 
   const refresh = (): boolean => {
     if (disposed) return false
     const wanted = isMobileTouchViewport(hostWindow, viewportMaxPx)
+    const guardsInput = inputFocus.refresh()
     if (wanted) addListeners()
     else removeListeners()
-    return active
+    return active || guardsInput
   }
 
   const onResize = (): void => { refresh() }
-  hostWindow?.addEventListener('resize', onResize as (event: never) => void)
+  hostWindow?.addEventListener('resize', onResize)
   refresh()
 
   return {
@@ -230,8 +183,9 @@ export function startMobileSessionInteractionDom(
     dispose() {
       if (disposed) return
       disposed = true
+      inputFocus.dispose()
       removeListeners()
-      hostWindow?.removeEventListener('resize', onResize as (event: never) => void)
+      hostWindow?.removeEventListener('resize', onResize)
     },
   }
 }
@@ -267,42 +221,8 @@ function isRowControl(target: unknown, row: ElementLike): boolean {
   }
 }
 
-function isComposerInputTarget(target: ElementLike): boolean {
-  try {
-    return target.closest?.('[data-composer-input="true"]') !== null
-  } catch {
-    return false
-  }
-}
-
-/** Composer 内所有控件都应保留 DSH 自己的点击与焦点语义。 */
-function isComposerInteractionTarget(target: ElementLike): boolean {
-  try {
-    return isComposerInputTarget(target) || target.closest?.('[data-composer-card]') !== null
-  } catch {
-    return false
-  }
-}
-
-function activationInsideComposer(activation: ElementLike, target: ElementLike): boolean {
-  if (activation === target) return true
-  try {
-    if (target.contains?.(activation) === true) return true
-    const activationSurface = activation.closest?.('[data-composer-card]')
-    const targetSurface = target.closest?.('[data-composer-card]')
-    if (activationSurface !== null && activationSurface === targetSurface) return true
-    return activation.closest?.('[data-composer-input="true"]') === target.closest?.('[data-composer-input="true"]')
-  } catch {
-    return false
-  }
-}
-
 function asElement(value: unknown): ElementLike | null {
   return typeof value === 'object' && value !== null ? value as ElementLike : null
-}
-
-function emptyElement(): ElementLike {
-  return { closest: () => null }
 }
 
 function eventTarget(event: unknown): unknown {
@@ -330,14 +250,6 @@ function readTouch(value: unknown, target: unknown): TouchPoint | null {
   return typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y)
     ? { x, y, target }
     : null
-}
-
-function blurElementLater(element: ElementLike): void {
-  try { element.blur?.() } catch { /* 忽略失效的焦点节点。 */ }
-  const schedule = typeof queueMicrotask === 'function' ? queueMicrotask : (callback: () => void) => { setTimeout(callback, 0) }
-  schedule(() => {
-    try { if (isComposerInputTarget(element)) element.blur?.() } catch { /* 节点已卸载。 */ }
-  })
 }
 
 function preventDefault(event: unknown): void {
