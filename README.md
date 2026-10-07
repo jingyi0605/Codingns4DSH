@@ -189,6 +189,8 @@ PeerHost 是当前 Host 的代理能力，不会切换当前登录 Host。启用
 
 模型目录跟随原生前台会话所属 Host；后台远端请求不会改变本机或其他 Host 的模型列表，切换 Host 时清空旧目录并重新加载。Desktop 根地址下的作用域修复与验证见[开发记录](docs/开发记录/20261007-PeerHost前台模型目录作用域隔离修复记录.md)。
 
+外部适配器模型缓存也按会话所属 Host 隔离，同 Host 的会话继续复用；模型配置与右栏文件、终端请求始终按资源 ID 路由。相关回归见[兼容验证记录](docs/开发记录/20261007-PeerHost远程适配器模型与右栏兼容验证记录.md)。
+
 当前已验证的路径包括固定握手、HTTP/WS 正向白名单、Host-to-Host 局域网 `/ws` connector、实时事件过滤、有限指数退避、generation 重建和脱敏诊断。DSH 原生导航或 conversation 容器未提供稳定扩展点时，界面会显示明确的 `degraded`/`unsupported` 状态，不创建 iframe，也不会把远端 Web Context 冒充成原生三栏聚合。
 
 中转 PeerHost 仍保持 `relay_unavailable/degraded`：现有浏览器中转 ticket 和任意公网 URL 不能替代经过验证的 Host-to-Host JSON/WS Transport。当前 Host 的既有局域网访问、中转访问、登录和单 Host 会话语义不受 PeerHost 影响。
