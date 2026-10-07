@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import * as debugDictionary from './locales/debug.js'
+import * as assistantDebugDictionary from './locales/assistantDebug.js'
 import * as fileWorkspaceDictionary from './locales/fileWorkspace.js'
 import * as gitDictionary from './locales/git.js'
 import * as panelsDictionary from './locales/panels.js'
@@ -70,17 +71,21 @@ const CORE_EN: Record<string, string> = {
   'voice.unnamedOutput': 'Unnamed output',
   'voice.outputUpdated': 'Output device updated.',
   'voice.dialog.title': 'Global voice assistant (Testing)',
-  'voice.dialog.description': 'Open this window first. Start voice when you are ready; recognized text appears here in real time.',
-  'voice.dialog.realtimeHint': 'Realtime Sherpa-ONNX mode. Partial recognition appears while you speak.',
+  'voice.dialog.description': 'Start when you are ready. Recognized speech and assistant replies appear here in real time.',
+  'voice.dialog.realtimeHint': 'Realtime recognition with LLM follow-up conversations. Brief replies use the same project index and model as text debugging.',
   'voice.dialog.unavailable': 'Realtime Sherpa-ONNX is unavailable. Check the local runtime and model configuration; fallback transcription is disabled.',
-  'voice.dialog.liveText': 'Live transcription',
+  'voice.dialog.liveText': 'Conversation',
+  'voice.dialog.user': 'You',
+  'voice.dialog.assistant': 'Global assistant',
   'voice.dialog.empty': 'Nothing recognized yet.',
   'voice.dialog.start': 'Start realtime conversation',
   'voice.dialog.stop': 'Stop conversation',
   'voice.dialog.close': 'Close',
-  'voice.dialog.clear': 'Clear text',
+  'voice.dialog.clear': 'Clear conversation',
   'voice.dialog.status.loading': 'Preparing microphone…',
   'voice.dialog.status.listening': 'Listening',
+  'voice.dialog.status.thinking': 'Thinking',
+  'voice.dialog.status.speaking': 'Speaking',
   'voice.dialog.status.recording': 'Recording',
   'voice.dialog.status.error': 'Error',
   'voice.dialog.status.active': 'Active',
@@ -500,17 +505,21 @@ const CORE_ZH: Record<string, string> = {
   'voice.unnamedOutput': '未命名输出设备',
   'voice.outputUpdated': '输出设备已更新。',
   'voice.dialog.title': '全局语音助理（测试中）',
-  'voice.dialog.description': '先打开此窗口，再按需要开始语音；识别文字会实时显示在这里。',
-  'voice.dialog.realtimeHint': 'Sherpa-ONNX 实时模式，说话时会显示实时识别结果。',
+  'voice.dialog.description': '点击开始后说话，识别文字和助理回复会实时显示在这里。',
+  'voice.dialog.realtimeHint': '支持连续追问，沿用文字调试的项目索引和模型，简短回复并播报。',
   'voice.dialog.unavailable': 'Sherpa-ONNX 实时模式不可用，请检查本地运行时和模型配置；已禁用回退转写。',
-  'voice.dialog.liveText': '实时文字转换',
+  'voice.dialog.liveText': '实时对话',
+  'voice.dialog.user': '你',
+  'voice.dialog.assistant': '全局助理',
   'voice.dialog.empty': '暂时还没有识别文字。',
   'voice.dialog.start': '开始实时对话',
   'voice.dialog.stop': '停止对话',
   'voice.dialog.close': '关闭',
-  'voice.dialog.clear': '清空文字',
+  'voice.dialog.clear': '清空对话',
   'voice.dialog.status.loading': '正在准备麦克风……',
   'voice.dialog.status.listening': '正在聆听',
+  'voice.dialog.status.thinking': '正在思考',
+  'voice.dialog.status.speaking': '正在播报',
   'voice.dialog.status.recording': '正在录音',
   'voice.dialog.status.error': '出错',
   'voice.dialog.status.active': '运行中',
@@ -893,6 +902,7 @@ const CORE_ZH: Record<string, string> = {
  */
 const en: Record<string, string> = {
   ...CORE_EN,
+  ...assistantDebugDictionary.en,
   ...gitDictionary.en,
   ...debugDictionary.en,
   ...peerHostDictionary.en,
@@ -906,6 +916,7 @@ const en: Record<string, string> = {
 
 const zh: Record<string, string> = {
   ...CORE_ZH,
+  ...assistantDebugDictionary.zh,
   ...gitDictionary.zh,
   ...debugDictionary.zh,
   ...peerHostDictionary.zh,

@@ -16,6 +16,7 @@ import {
 import type { PeerHostRoute } from '../../shared/contracts/peer-host.js'
 import type { AggregateHostResult, PeerHostRecord, PeerHostClientRecord } from '../../shared/contracts/peer-host.js'
 import type { AssistantWaitingKind } from '../../shared/contracts/assistant.js'
+import { assistantWorkspaceMatches } from '../../shared/assistant-lifecycle.js'
 import type { DshHostStatus } from '../../shared/contracts/host-status.js'
 import { createVirtualSessionId, createVirtualWorkspaceId, normalizePeerHostColor, parseVirtualSessionId, parseVirtualWorkspaceId, type HostScope } from '../../shared/contracts/peer-host.js'
 import type { AggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
@@ -151,7 +152,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
           if (record === null || record.status !== 'ready') continue
           const selectedWorkspaceIds = assistantWorkspaceIds === undefined
             ? (record.visibleWorkspaceIds ?? [])
-            : (record.visibleWorkspaceIds ?? []).filter((workspaceId) => assistantWorkspaceIds.some((selected) => selected === workspaceId || selected === `${record.id}:${workspaceId}`))
+            : (record.visibleWorkspaceIds ?? []).filter((workspaceId) => assistantWorkspaceIds.some((selected) => assistantWorkspaceMatches(selected, record.id, workspaceId)))
           if (assistantWorkspaceIds !== undefined && selectedWorkspaceIds.length === 0) continue
           sources.push(createAggregateHostSource({
             hostId: localHostId,
@@ -229,6 +230,10 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
       })
       context.resources.add(() => aggregatedTransport.close())
       const assistantGateway = {
+        async workspaces() {
+          return (await store.list()).filter((record) => record.status !== 'disabled' && record.status !== 'identity_changed')
+            .flatMap((record) => (record.visibleWorkspaceIds ?? []).map((id) => ({ workspaceId: createVirtualWorkspaceId(record.id, id), name: `${record.displayName} / ${id}`, path: null })))
+        },
         async list(managedWorkspaceIds: readonly string[]) {
           const results = ensureLocalWorkspaceSummaries(await aggregate.load(await buildSources(managedWorkspaceIds)), context.services.dshContext)
           const sessions = [] as import('./assistant-session-index.js').AssistantSessionSourceRecord[]
@@ -239,15 +244,15 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             if (result.targetHostId === null) continue
             for (const workspace of result.workspaces) {
               const hostId = workspace.targetHostId ?? workspace.hostId
-              const workspaceId = managedWorkspaceIds.find((selected) => selected === workspace.workspaceId || selected === `${hostId}:${workspace.workspaceId}`) ?? workspace.workspaceId
+              const workspaceId = managedWorkspaceIds.find((selected) => assistantWorkspaceMatches(selected, hostId, workspace.workspaceId)) ?? workspace.workspaceId
               for (const session of workspace.sessions) {
                 if (session.scope.sessionId === null) continue
-                sessions.push(toAssistantSourceRecord(session.scope.sessionId, assistantTitle(session.title, workspace.path, session.scope.sessionId), session.status, workspaceId, workspace.displayName, hostId, session.updatedAt))
+                sessions.push(toAssistantSourceRecord(session.scope.sessionId, assistantTitle(session.title, workspace.path, session.scope.sessionId), session.status, workspaceId, workspace.displayName, hostId, session.updatedAt, session.activity))
               }
               for (const session of workspace.archivedSessions ?? []) {
                 if (session.scope.sessionId === null) continue
                 archivedSessionIds.push(session.scope.sessionId)
-                sessions.push(toAssistantSourceRecord(session.scope.sessionId, assistantTitle(session.title, workspace.path, session.scope.sessionId), session.status, workspaceId, workspace.displayName, hostId, session.updatedAt))
+                sessions.push(toAssistantSourceRecord(session.scope.sessionId, assistantTitle(session.title, workspace.path, session.scope.sessionId), session.status, workspaceId, workspace.displayName, hostId, session.updatedAt, session.activity))
               }
             }
           }
@@ -260,10 +265,11 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             const cached = remoteDetails.get(key)
             if (cached !== undefined) return cached
             const promise = (async () => {
-              const scope = {
+                const virtualWorkspace = parseVirtualWorkspaceId(session.workspaceId)
+                const scope = {
                 hostId: localHostId,
                 targetHostId: session.hostId,
-                workspaceId: session.workspaceId,
+                  workspaceId: virtualWorkspace?.workspaceId ?? (session.workspaceId.startsWith(`${session.hostId}:`) ? session.workspaceId.slice(session.hostId.length + 1) : session.workspaceId),
                 sessionId: session.sessionId,
                 scopeGeneration: 0,
               } as const
@@ -309,12 +315,13 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             readWaiting: async (session: import('./assistant-session-index.js').AssistantSessionSourceRecord) => (await readRemoteDetails(session)).waiting,
           }
         },
-        async dispatch(request: { readonly hostId: string; readonly requestId: string; readonly sessionId: string; readonly mode: 'queue' | 'steer'; readonly content: readonly [{ readonly type: 'text'; readonly text: string }] }) {
+        async dispatch(request: { readonly hostId: string; readonly requestId: string; readonly sessionId: string; readonly mode: 'queue' | 'steer'; readonly content: readonly [{ readonly type: 'text'; readonly text: string }] }, signal?: AbortSignal) {
           if (request.hostId === localHostId) throw new Error('本地 Host 不应经过 PeerHost 派发')
           await aggregatedTransport.rpc({
             scope: { hostId: localHostId, targetHostId: request.hostId, workspaceId: '__assistant__', sessionId: request.sessionId, scopeGeneration: 0 },
             method: 'session/prompt',
             payload: { requestId: request.requestId, sessionId: request.sessionId, mode: request.mode, content: request.content },
+            ...(signal === undefined ? {} : { signal }),
           })
         },
       }
@@ -671,6 +678,7 @@ function toAssistantSourceRecord(
   workspaceName: string,
   hostId: string,
   updatedAt: number,
+  activity?: 'running' | 'idle' | 'unknown',
 ): import('./assistant-session-index.js').AssistantSessionSourceRecord {
   const normalized = status.toLocaleLowerCase()
   const running = /running|active|working|queued/u.test(normalized)
@@ -683,6 +691,7 @@ function toAssistantSourceRecord(
     workspaceName,
     hostId,
     running,
+    activity: activity ?? (running ? 'running' : /completed|complete|done|success|error|failed/u.test(normalized) ? 'idle' : 'unknown'),
     completed,
     ...(error ? { error: true } : {}),
     updatedAt: Number.isFinite(updatedAt) ? updatedAt : null,

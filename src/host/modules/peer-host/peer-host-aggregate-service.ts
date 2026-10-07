@@ -4,6 +4,7 @@ export interface AggregateSessionSource {
   readonly sessionId: string
   readonly title: string
   readonly status: string
+  readonly activity?: 'running' | 'idle' | 'unknown'
   readonly updatedAt: number
   /** DSH 原生会话是否仍处于待首条消息的临时状态。 */
   readonly blank: boolean
@@ -148,6 +149,7 @@ function toSessionRecord(
     },
     title: session.title,
     status: session.status,
+    ...(session.activity === undefined ? {} : { activity: session.activity }),
     updatedAt: session.updatedAt,
     // 旧摘要 source 可能没有该字段；缺省按正式会话兼容，远端原生 source 会提供真实值。
     blank: session.blank === true,

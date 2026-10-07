@@ -138,6 +138,7 @@ function buildRemoteSummary(
         blank: session?.blank === true,
         title: readSessionTitle(session, sessionId),
         status: readRemoteSessionStatus(session),
+        activity: readRemoteSessionActivity(session),
         updatedAt: readTime(session),
         ...(() => {
           const adapterId = readString(session, ['adapterId']) ?? adapterMap.get(sessionId)
@@ -166,6 +167,15 @@ function readRemoteSessionStatus(session: Record<string, unknown> | null): strin
   if (session.completed === true || session.done === true) return 'completed'
   if (session.running === true || session.active === true) return 'running'
   return 'idle'
+}
+
+/** 导航可以保留默认 idle，自动索引必须有明确的空闲证明。 */
+function readRemoteSessionActivity(session: Record<string, unknown> | null): 'running' | 'idle' | 'unknown' {
+  if (session === null) return 'unknown'
+  const status = readString(session, ['status', 'state'])
+  if (session.running === true || session.active === true || status !== null && /running|active|working|queued/u.test(status)) return 'running'
+  if (session.running === false || session.completed === true || session.done === true || status !== null && /idle|completed|complete|done|success|error|failed/u.test(status)) return 'idle'
+  return 'unknown'
 }
 
 async function readAdapterMap(
