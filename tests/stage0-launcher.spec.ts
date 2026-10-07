@@ -40,6 +40,7 @@ function createEnvironment(mode: 'exit' | 'signal', launcher: string, root: stri
     DSH_STAGE0_HOME: home,
     CODINGNS4DSH_STAGE0_STATE_DIR: join(root, 'state'),
     DSH_STAGE0_PORT: '0',
+    DSH_STAGE0_WATCH: '0',
     CODINGNS4DSH_DEBUG: 'warn',
     CODINGNS_TEST_FAKE_DSH_MODE: mode,
   }
