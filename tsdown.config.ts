@@ -12,6 +12,9 @@ export default defineConfig({
   format: 'cjs',
   platform: 'browser',
   target: 'es2022',
+  // 浏览器没有 Node process；在编译期消除 React DOM 等依赖的环境分支。
+  // 只替换 NODE_ENV，保留共享调试模块对 Host 环境变量的受控读取。
+  define: { 'process.env.NODE_ENV': '"production"' },
   loader: {
     '.png': 'dataurl',
     '.svg': 'dataurl',
