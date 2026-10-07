@@ -3,6 +3,7 @@ import test from 'node:test'
 import { createPeerHostPageTransport, installPeerHostConnectionRouting } from '../data/build/dist/client/features/peer-host.js'
 import { createVirtualSessionId, createVirtualWorkspaceId } from '../data/build/dist/shared/index.js'
 import { callCliRpc } from '../data/build/dist/client/cli-catalog.js'
+import { loadModelCatalog } from '../data/build/dist/client/model-catalog-cache.js'
 import { createNavigationFixture } from './peer-host-navigation-fixture.ts'
 
 const peerSession = (host = 'stage0', session = 'session-1') => createVirtualSessionId(host, session)
@@ -28,6 +29,7 @@ async function withDesktopNavigation(run: (page: ReturnType<typeof createNavigat
   transport: ReturnType<typeof createPeerHostPageTransport>
   call(method: string, payload?: unknown): Promise<unknown>
   cli(action: string, payload: unknown): Promise<unknown>
+  models(adapterId: string, sessionId: string): Promise<ReturnType<typeof catalog>>
   open(method: string, payload: unknown): AsyncIterable<unknown>
   calls: RoutedCall[]
   resets: unknown[]
@@ -84,6 +86,7 @@ async function withDesktopNavigation(run: (page: ReturnType<typeof createNavigat
     await run({ ...navigation, transport, calls, resets, stop,
       call: (method, payload = { args: {} }) => rpc.call('/api', method, payload),
       cli: (action, payload) => callCliRpc(rpc as never, action, payload),
+      models: (adapterId, sessionId) => loadModelCatalog(rpc as never, adapterId, sessionId),
       open: (method, payload) => remote.openRemoteStream(method, payload),
     })
   } finally {
@@ -190,6 +193,20 @@ test('远端适配器和模型读写按自身会话路由，保持模型、思�
     assert.equal(page.resets.length, 1, '其他会话的适配器读写不能触发前台目录重置')
     assert.deepEqual(providers(await page.call('session/modelCatalog')), ['stage0'])
   }, { sessionId: peerSession('stage0') })
+})
+
+test('同一页面 RPC 的外部模型缓存分别读取本机和多个远端 Host 的目录', async () => {
+  await withDesktopNavigation(async page => {
+    for (const [sessionId, expected] of [['local-session', 'glor'], [peerSession('stage0'), 'stage0'], [peerSession('mac'), 'mac']] as const) {
+      const value = await page.models('codex', sessionId)
+      assert.deepEqual(value.groups.map(group => group.id), [expected])
+    }
+    const calls = page.calls.length
+    assert.deepEqual((await page.models('codex', peerSession('stage0', 'session-2'))).groups.map(group => group.id), ['stage0'])
+    assert.deepEqual((await page.models('codex', 'another-local-session')).groups.map(group => group.id), ['glor'])
+    assert.equal(page.calls.length, calls, '同一 Host 的不同会话应继续复用缓存')
+    assert.deepEqual(providers(await page.call('session/modelCatalog')), ['glor'])
+  })
 })
 
 test('远端 DSH 模型选择与发送保持资源作用域，前台切回本机不改写远端操作', async () => {
