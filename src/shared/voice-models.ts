@@ -17,6 +17,48 @@ export interface AssistantVoiceModel {
   readonly files: readonly AssistantVoiceModelFile[]
 }
 
+export type AssistantVoiceModelPaths = Readonly<Record<AssistantVoiceModelFile['setting'], string>>
+
+/** 文件存在、通过模型验证、被选为当前模型是三个独立事实。 */
+export interface AssistantVoiceModelStatus {
+  readonly modelId: string
+  readonly state: 'missing' | 'partial' | 'downloaded'
+  readonly current: boolean
+  readonly totalBytes: number
+  readonly files: readonly {
+    readonly name: string
+    readonly path: string
+    readonly bytes: number
+    readonly partialBytes: number
+    readonly present: boolean
+  }[]
+  readonly validation: {
+    readonly state: 'unchecked' | 'passed' | 'failed'
+    readonly checkedAt: number | null
+    readonly error: string | null
+  }
+}
+
+export interface AssistantVoiceModelsSnapshot {
+  readonly models: readonly AssistantVoiceModelStatus[]
+  readonly currentModelId: string | null
+  readonly runtimeRunning: boolean
+  readonly runtimeReady: boolean
+  readonly operation: { readonly modelId: string; readonly kind: 'setup' | 'verify' | 'repair' } | null
+}
+
+/** 下载量只属于当前文件；总大小未知时不能用文件数量伪造字节百分比。 */
+export interface AssistantVoiceModelProgress {
+  readonly modelId: string
+  readonly phase: 'checking' | 'downloading' | 'verifying' | 'initializing' | 'completed'
+  readonly fileName: string | null
+  /** 当前文件的序号从 1 开始；尚未检查文件时为 0。 */
+  readonly fileIndex: number
+  readonly fileCount: number
+  readonly downloadedBytes: number
+  readonly totalBytes: number | null
+}
+
 const STREAMING_FILES: readonly AssistantVoiceModelFile[] = [
   { setting: 'asrEncoder', name: 'encoder-epoch-99-avg-1.int8.onnx' },
   { setting: 'asrDecoder', name: 'decoder-epoch-99-avg-1.int8.onnx' },

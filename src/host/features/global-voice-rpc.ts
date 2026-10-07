@@ -16,7 +16,8 @@ import { debugInfo } from '../../shared/debug.js'
 import { createAssistantVoiceStreamHandler } from './assistant-voice-stream.js'
 import { SherpaVoiceRuntime } from './sherpa-voice-runtime.js'
 import { DEFAULT_ASSISTANT_VOICE_SETTINGS, type AssistantVoiceSettings } from '../../shared/contracts/config.js'
-import { installAssistantVoiceModel } from './voice-model-setup.js'
+import { AssistantVoiceModelManager, type AssistantVoiceModelProbe } from './voice-model-management.js'
+import type { AssistantVoiceModelProgress, AssistantVoiceModelsSnapshot } from '../../shared/voice-models.js'
 
 /**
  * 全局智能助理 Host 边界。
@@ -24,7 +25,7 @@ import { installAssistantVoiceModel } from './voice-model-setup.js'
  * 这里故意不接收 sessionId：会话索引、意图和派发各自通过快照协作，语音租约
  * 只属于 Host。这样刷新页面或切换当前对话不会改变助理的目标范围。
  */
-export function createGlobalVoiceRpcFeature(): FeatureModule<CodingNsHostServices> {
+export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?: AssistantVoiceModelProbe } = {}): FeatureModule<CodingNsHostServices> {
   return {
     descriptor: {
       name: 'globalVoiceRpc',
@@ -135,6 +136,70 @@ export function createGlobalVoiceRpcFeature(): FeatureModule<CodingNsHostService
       // 语音运行时只提交 action 事件；动作本身再次读取索引并经过派发器复核。
       actionBridge.register()
       const coordinator = new GlobalVoiceCoordinator({ adapter: runtime })
+      const models = new AssistantVoiceModelManager(options.probeVoiceModel)
+      const modelAbort = new AbortController()
+      context.resources.add(() => modelAbort.abort())
+      // Host 只保留最近一次初始化状态；请求 ID 隔离不同页面，下载期间禁止重入。
+      let setupPending = false
+      let modelOperation: AssistantVoiceModelsSnapshot['operation'] = null
+      let setupProgress: { readonly requestId: string; readonly progress: AssistantVoiceModelProgress } | null = null
+      const setupVoiceModel = async (payload: unknown): Promise<{ modelId: string; downloaded: boolean }> => {
+        const modelId = readVoiceModelId(payload)
+        if (setupPending) throw new Error('语音模型正在下载或初始化，请等待完成')
+        if (coordinator.snapshot().active || runtime.running) throw new Error('请先停止当前实时语音，再更换语音模型')
+        const settings = context.services.settings
+        if (settings === undefined) throw new Error('当前 Host 不支持保存语音设置')
+        const requestId = readVoiceSetupRequestId(payload) ?? randomUUID()
+        const repair = isRecord(payload) && payload.repair === true
+        setupPending = true
+        modelOperation = { modelId, kind: repair ? 'repair' : 'setup' }
+        setupProgress = null
+        try {
+          const installed = await models.prepare(modelId, readAssistantVoiceSettings(context.services), (progress) => {
+            setupProgress = { requestId, progress }
+          }, modelAbort.signal, repair)
+          modelAbort.signal.throwIfAborted()
+          const next: AssistantVoiceSettings = {
+            ...DEFAULT_ASSISTANT_VOICE_SETTINGS,
+            ...readAssistantVoiceSettings(context.services),
+            initialized: true,
+            provider: 'sherpa-onnx',
+            modelId,
+            asrEncoder: installed.paths.asrEncoder,
+            asrDecoder: installed.paths.asrDecoder,
+            asrJoiner: installed.paths.asrJoiner,
+            asrTokens: installed.paths.asrTokens,
+            // 实时对话使用浏览器输出；不让历史配置中的离线 VAD/TTS 偷偷生效。
+            vadModel: '',
+            ttsModel: '',
+            ttsTokens: '',
+            ttsLexicon: '',
+          }
+          await settings.update({ assistant: { ...settings.get().assistant, voice: next } })
+          runtime.configureEnvironment(buildSherpaRuntimeEnvironment(next))
+          updateVoiceAgentCapabilities()
+          setupProgress = {
+            requestId,
+            progress: { modelId, phase: 'completed', fileName: null, fileIndex: installed.model.files.length,
+              fileCount: installed.model.files.length, downloadedBytes: 0, totalBytes: null },
+          }
+          return { modelId, downloaded: installed.downloaded }
+        } catch (error) {
+          setupProgress = null
+          throw error
+        } finally {
+          setupPending = false
+          modelOperation = null
+        }
+      }
+      const verifyVoiceModel = async (payload: unknown) => {
+        const modelId = readVoiceModelId(payload)
+        if (setupPending) throw new Error('已有模型操作正在进行，请等待完成')
+        setupPending = true
+        modelOperation = { modelId, kind: 'verify' }
+        try { return await models.verify(modelId, readAssistantVoiceSettings(context.services), modelAbort.signal) }
+        finally { setupPending = false; modelOperation = null }
+      }
       if (context.services.registerAssistantVoiceStreamRoute !== undefined) {
         context.resources.add(context.services.registerAssistantVoiceStreamRoute(createAssistantVoiceStreamHandler({ coordinator })))
       }
@@ -173,42 +238,21 @@ export function createGlobalVoiceRpcFeature(): FeatureModule<CodingNsHostService
               ...coordinator.snapshot(),
               voiceAgent: agent.capabilities(),
             }
-          case 'voice/setup': {
-            const modelId = readVoiceModelId(payload)
-            if (coordinator.snapshot().active || runtime.running) {
-              throw new Error('请先停止当前实时语音，再更换语音模型')
-            }
-            const installed = await installAssistantVoiceModel(modelId)
-            const current = readAssistantVoiceSettings(context.services)
-            const next: AssistantVoiceSettings = {
-              ...DEFAULT_ASSISTANT_VOICE_SETTINGS,
-              ...current,
-              initialized: true,
-              provider: 'sherpa-onnx',
-              modelId,
-              asrEncoder: installed.paths.asrEncoder,
-              asrDecoder: installed.paths.asrDecoder,
-              asrJoiner: installed.paths.asrJoiner,
-              asrTokens: installed.paths.asrTokens,
-              // 实时对话使用浏览器输出；不让历史配置中的离线 VAD/TTS 偷偷生效。
-              vadModel: '',
-              ttsModel: '',
-              ttsTokens: '',
-              ttsLexicon: '',
-            }
-            if (context.services.settings === undefined) throw new Error('当前 Host 不支持保存语音设置')
-            await context.services.settings.update({
-              assistant: {
-                ...context.services.settings.get().assistant,
-                voice: next,
-              },
+          case 'voice/models':
+            return await models.snapshot(readAssistantVoiceSettings(context.services), {
+              running: runtime.running, ready: runtime.capabilities.realtime, operation: modelOperation,
             })
-            runtime.configureEnvironment(buildSherpaRuntimeEnvironment(next))
-            updateVoiceAgentCapabilities()
-            return { modelId, downloaded: installed.downloaded }
+          case 'voice/model/verify':
+            return await verifyVoiceModel(payload)
+          case 'voice/setup':
+            return await setupVoiceModel(payload)
+          case 'voice/setup-progress': {
+            const requestId = readVoiceSetupRequestId(payload)
+            return requestId !== undefined && setupProgress?.requestId === requestId ? setupProgress.progress : null
           }
           case 'voice/start':
             {
+              if (setupPending) throw new Error('请等待语音模型初始化完成，再启动实时语音')
               const ownerId = readOwner(payload)
               if (isRecord(payload) && payload.mode === 'fallback') {
                 return {
@@ -715,6 +759,12 @@ function readVoiceModelId(payload: unknown): string {
     throw new TypeError('实时语音初始化缺少模型选择')
   }
   return payload.modelId.trim()
+}
+
+/** 老客户端没有请求 ID 时仍可初始化；进度查询只接受具体请求的 ID。 */
+function readVoiceSetupRequestId(payload: unknown): string | undefined {
+  return isRecord(payload) && typeof payload.requestId === 'string' && payload.requestId.trim() !== ''
+    ? payload.requestId.trim() : undefined
 }
 
 function validateAssistantVoiceSettings(settings: AssistantVoiceSettings): string | undefined {

@@ -1,4 +1,5 @@
 import type { VoicePcmFrame, VoiceRuntimeAdapter, VoiceRuntimeCapabilities, VoiceRuntimeEvent, VoiceRuntimeListener } from '../../shared/contracts/voice-runtime.js'
+import type { AssistantVoiceModelPaths } from '../../shared/voice-models.js'
 
 interface SherpaOnlineStream {
   acceptWaveform(value: { samples: Float32Array; sampleRate: number }): void
@@ -164,16 +165,9 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
     const asrJoiner = required(this.env.CODINGNS4DSH_VOICE_ASR_JOINER, 'CODINGNS4DSH_VOICE_ASR_JOINER')
     const asrTokens = required(this.env.CODINGNS4DSH_VOICE_ASR_TOKENS, 'CODINGNS4DSH_VOICE_ASR_TOKENS')
     if (OnlineRecognizer === undefined) throw new Error('Sherpa-ONNX Node 未导出 OnlineRecognizer')
-    this.recognizer = new OnlineRecognizer({
-      featConfig: { sampleRate: this.sampleRate, featureDim: 80 },
-      modelConfig: { transducer: { encoder: asrEncoder, decoder: asrDecoder, joiner: asrJoiner }, tokens: asrTokens, numThreads: readPositiveInteger(this.env.CODINGNS4DSH_VOICE_THREADS) ?? 2, provider: 'cpu' },
-      decodingMethod: 'greedy_search',
-      maxActivePaths: 4,
-      enableEndpoint: true,
-      rule1MinTrailingSilence: 2.4,
-      rule2MinTrailingSilence: 1.2,
-      rule3MinUtteranceLength: 20,
-    })
+    this.recognizer = new OnlineRecognizer(createSherpaRecognizerConfig(
+      { asrEncoder, asrDecoder, asrJoiner, asrTokens }, this.sampleRate, readPositiveInteger(this.env.CODINGNS4DSH_VOICE_THREADS) ?? 2,
+    ))
     const vadModel = this.env.CODINGNS4DSH_VOICE_VAD_MODEL
     if (this.module.Vad !== undefined && vadModel !== undefined && vadModel.trim() !== '') {
       this.vad = new this.module.Vad({ sileroVad: { model: vadModel, threshold: 0.5, minSilenceDuration: 0.5, minSpeechDuration: 0.1, windowSize: 512 }, sampleRate: this.sampleRate, numThreads: 1, provider: 'cpu' }, 30)
@@ -196,6 +190,16 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
   }
 
   private emit(event: VoiceRuntimeEvent): void { for (const listener of [...this.listeners]) { try { listener(event) } catch { /* 订阅者故障不能破坏 ASR */ } } }
+}
+
+/** 正式运行时和独立验证进程共用配置，避免“验证通过”与实际启动参数不一致。 */
+export function createSherpaRecognizerConfig(paths: AssistantVoiceModelPaths, sampleRate = 16_000, numThreads = 2): Record<string, unknown> {
+  return {
+    featConfig: { sampleRate, featureDim: 80 },
+    modelConfig: { transducer: { encoder: paths.asrEncoder, decoder: paths.asrDecoder, joiner: paths.asrJoiner }, tokens: paths.asrTokens, numThreads, provider: 'cpu' },
+    decodingMethod: 'greedy_search', maxActivePaths: 4, enableEndpoint: true,
+    rule1MinTrailingSilence: 2.4, rule2MinTrailingSilence: 1.2, rule3MinUtteranceLength: 20,
+  }
 }
 
 export function pcm16ToFloat32(bytes: Uint8Array): Float32Array {
