@@ -44,7 +44,7 @@ export class AssistantVoiceInitialization {
       signal.throwIfAborted()
       this.phase = 'recognition'
       const current = await this.snapshot()
-      // 自定义目录 ID 不应被轻量默认值静默覆盖，保留高级模型管理的处理边界。
+      // 自定义目录 ID 不应被中英双语默认值静默覆盖，保留高级模型管理的处理边界。
       if (!current.recognitionReady) {
         if (findAssistantVoiceModel(current.modelId) === undefined) throw new Error('当前为自定义识别模型，请在高级模型管理中验证配置')
         await this.services.prepareModel(current.modelId)

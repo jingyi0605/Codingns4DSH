@@ -75,6 +75,8 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   const [initialConfiguration, setInitialConfiguration] = useState(false)
   const [conversationPending, setConversationPending] = useState(false)
   const [partialText, setPartialText] = useState('')
+  const [liveUserText, setLiveUserText] = useState('')
+  const [liveAssistantText, setLiveAssistantText] = useState('')
   const [settingsValue, setSettingsValue] = useState(() => services.settings.getSnapshot().value)
   const ownerIdRef = useRef<string | undefined>(undefined)
   const eventSequenceRef = useRef(0)
@@ -124,8 +126,9 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
         }
         if (event.type === 'partial') setPartialText(event.text)
         else if (event.type === 'final' && event.text.trim() !== '') {
-          setPartialText('')
+          setPartialText(''); setLiveUserText(event.text); setLiveAssistantText('')
         }
+        else if (event.type === 'reply') setLiveAssistantText(event.text)
         if (event.type === 'state') setSnapshot({ state: event.state, active: event.state !== 'disabled', ownerId })
         else if (event.type === 'barge-in') setSnapshot({ state: 'interrupted', active: true, ownerId })
         else if (event.type === 'error') {
@@ -171,6 +174,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     if (conversationPending || snapshot.active === true) return
     setConversationPending(true)
     setPartialText('')
+    setLiveUserText(''); setLiveAssistantText('')
     setSnapshot((previous) => ({ ...previous, state: 'loading', active: false, ownerId }))
     try {
       if (adapter === undefined) throw new Error(realtimeUnavailableMessage ?? t('voice.dialog.unavailable'))
@@ -328,6 +332,8 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       state: snapshot.state,
       message: snapshot.message,
       partialText,
+      liveUserText,
+      liveAssistantText,
       realtimeAvailable: adapter !== undefined,
       unavailableMessage: realtimeUnavailableMessage,
       onStart: startConversation,

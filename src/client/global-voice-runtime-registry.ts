@@ -8,6 +8,10 @@ export interface GlobalVoiceAdapter extends VoiceRuntimeAdapter {
   readonly inputDeviceId: string | undefined
   readonly outputDeviceId: string | undefined
   readonly outputDeviceSupported: boolean
+  readonly isMicrophoneMuted?: boolean
+  readonly isSpeakerMuted?: boolean
+  setMicrophoneMuted?(muted: boolean): void
+  setSpeakerMuted?(muted: boolean): void
   start(ownerId?: string): Promise<void>
   stop(): Promise<void>
   interrupt(): Promise<void>

@@ -11,7 +11,6 @@ import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 import { readNativeWorkspaceListStore, readNativeWorkspaceSnapshot, type NativeWorkspaceRecord } from '../native-workspace-store.js'
 import { dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshSettingsFieldStyle, dshSettingsHelpStyle, dshThemeColor } from '../theme.js'
 import { AssistantAvatarSlot } from '../avatar/slot.js'
-import { AssistantAvatarPortrait } from '../avatar/portrait.js'
 import { AssistantAvatarPortraitEditor } from '../avatar/portrait-editor.js'
 import type { AssistantAvatarModel } from '../../shared/assistant-avatar.js'
 import { AssistantAppearanceEditor } from '../avatar/settings-panel.js'
@@ -30,6 +29,9 @@ import { AssistantComposer, AssistantControlsStyle, AssistantIconButton, Assista
 import type { AssistantMaintenanceConfirmation } from './assistant-workbench-controls.js'
 import { readAssistantComposerCommand, validateAssistantFiles, encodeAssistantFiles } from './assistant-composer-input.js'
 import { AssistantConfigurationSession } from './assistant-configuration-session.js'
+import { AssistantRealtimeCall, AssistantVoiceSessionCard } from './assistant-realtime-call.js'
+import { AssistantConversationMessageView } from './assistant-conversation-message.js'
+import { assistantConversationTimeline } from '../../shared/assistant-voice-sessions.js'
 export { AssistantComposer } from './assistant-workbench-controls.js'
 
 export interface AssistantDraft {
@@ -49,6 +51,8 @@ export interface AssistantWorkbenchProps {
   readonly state?: string | undefined
   readonly message?: string | undefined
   readonly partialText: string
+  readonly liveUserText?: string
+  readonly liveAssistantText?: string
   readonly realtimeAvailable: boolean
   readonly unavailableMessage?: string | undefined
   readonly onStart: () => void | Promise<void>
@@ -113,6 +117,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
   const messagesEnd = useRef<HTMLDivElement>(null)
   const configuring = view === 'configuration' || !lifecycle.profile.initialized
   const initializing = !lifecycle.profile.initialized
+  const calling = !configuring && (props.active || props.pending)
   const running = lifecycle.conversation.active?.state === 'running'
   const locked = busy || lifecycle.conversation.compressing || props.pending
   const writable = settings.writable && settings.status === 'ready'
@@ -249,6 +254,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
     const active = lifecycle.conversation.active
     if (active !== null && active.state !== 'running') ownedRequests.current.delete(active.requestId)
   }, [lifecycle.conversation.active?.requestId, lifecycle.conversation.active?.state])
+  useEffect(() => { if (!props.active && !props.pending) void refresh().catch(() => undefined) }, [props.active, props.pending, refresh])
 
   const save = (): void => { void run(async () => {
     cancelRequests(); await voiceProps.current.onStop()
@@ -305,7 +311,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
     configuring ? createElement(AssistantControlsStyle) : null,
     createElement('section', { role: 'dialog', 'aria-modal': true, 'aria-label': t('awb.title'), 'data-codingns-assistant-workbench': configuring ? 'configuration' : 'chat',
       style: { ...dialog, ...(!configuring ? { height: 'min(740px, calc(100dvh - 24px))', minHeight: 0 } : {}) } },
-      createElement('header', { style: { ...row, flexShrink: 0, padding: configuring ? 22 : '20px 26px', borderBottom: `1px solid ${dshThemeColor.border}` } },
+      calling ? null : createElement('header', { style: { ...row, flexShrink: 0, padding: configuring ? 22 : '20px 26px', borderBottom: `1px solid ${dshThemeColor.border}` } },
         createElement('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'grid', gap: 5 } },
           createElement('div', { 'data-codingns-assistant-heading': true, style: { ...row, gap: 8 } },
             createElement('strong', { style: { fontSize: 17, overflowWrap: 'anywhere' } }, initializing ? t('awb.setupTitle') : lifecycle.profile.name),
@@ -315,11 +321,15 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
         lifecycle.profile.initialized ? createElement(AssistantIconButton, { icon: configuring ? 'chat' : 'settings', label: t(configuring ? 'awb.chat' : 'awb.configure'), onClick: switchView, disabled: locked }) : null,
         createElement(AssistantIconButton, { icon: 'close', label: t('awb.close'), onClick: close, disabled: busy })),
       createElement('div', { 'data-codingns-assistant-scroll': true,
-        style: { flex: '1 1 auto', padding: configuring ? '11px 22px' : 'clamp(16px, 3vw, 28px)', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, display: 'flex', flexDirection: 'column', gap: configuring ? 11 : 16 } },
+        style: { flex: '1 1 auto', padding: calling ? 0 : configuring ? '11px 22px' : 'clamp(16px, 3vw, 28px)', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, display: 'flex', flexDirection: 'column', gap: configuring ? 11 : 16 } },
         !loaded ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, t('awb.loading'), ' ', button(t('awb.retry'), () => { void refresh().catch((cause) => setError(message(cause))) })) : null,
         noticeText ? createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13, overflowWrap: 'anywhere' } }, noticeText) : null,
         notice ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, notice) : null,
-        configuring ? createElement('div', { 'data-codingns-assistant-configuration': true, style: { ...assistantSettingTextStyle, display: 'grid', gap: 11, minWidth: 0 } },
+        calling ? createElement(AssistantRealtimeCall, { services, name: lifecycle.profile.name, model: selectedAssistantAvatar(appearance), t,
+          session: lifecycle.conversation.voiceSessions?.find((session) => session.endedAt === null), pending: props.pending, state: props.state,
+          userText: props.partialText || props.liveUserText || '', assistantText: props.liveAssistantText || '',
+          onHangup: async () => { try { await props.onStop(); await refresh() } catch (cause) { setError(message(cause)) } } })
+          : configuring ? createElement('div', { 'data-codingns-assistant-configuration': true, style: { ...assistantSettingTextStyle, display: 'grid', gap: 11, minWidth: 0 } },
           initializing ? createElement('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'stretch', gap: 22 } },
             createElement('div', { style: { flex: '1 1 330px', minWidth: 0 } },
               createElement(AssistantConfigurationFields, { draft, catalog, appearance: previewAppearance, initializing, services: configuration.services, t, disabled: locked || !writable || !loaded, onChange: changeDraft })),
@@ -332,7 +342,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
             props.partialText ? createElement('div', { role: 'status', style: help }, props.partialText) : null,
             createElement('div', { ref: messagesEnd }))),
       // 配置操作位于滚动区之外，统一外边距并让长表单的保存按钮始终可见。
-      configuring ? createElement('footer', { 'data-codingns-assistant-configuration-footer': true,
+      calling ? null : configuring ? createElement('footer', { 'data-codingns-assistant-configuration-footer': true,
         style: { ...row, flexShrink: 0, justifyContent: initializing ? 'space-between' : 'flex-end', padding: 22,
           borderTop: `1px solid ${dshThemeColor.border}`, background: dshThemeColor.pageBackground } },
         initializing ? createElement('p', { style: { ...help, flex: '1 1 220px' } }, t('awb.setupLater')) : null,
@@ -359,20 +369,18 @@ export function AssistantConversationView({ conversation, name, t, services, mod
   readonly services?: CodingNsClientServices; readonly model?: AssistantAvatarModel
 }): ReactElement {
   const messages = [...conversation.messages, ...(conversation.pendingMessage === null ? [] : [conversation.pendingMessage])]
+  const timeline = assistantConversationTimeline(conversation)
   const active = conversation.active
   const streaming = active !== null && active.state !== 'cancelled' && active.text !== '' && !messages.some((message) => message.id === `${active.requestId}-assistant`)
-  const heading = (role: 'user' | 'assistant'): ReactElement => createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 7, marginBottom: 5 } },
-    role !== 'assistant' || services === undefined || model === undefined ? null : createElement(AssistantAvatarPortrait, { services, model }),
-    createElement('small', { style: { color: dshThemeColor.labelSecondary } }, role === 'user' ? t('voice.dialog.user') : name))
   return createElement('div', { 'data-codingns-assistant-messages': true, style: { display: 'grid', gap: 12 } },
     conversation.summary ? createElement('details', null, createElement('summary', { style: help }, t('awb.summary')), createElement('p', { style: { ...help, whiteSpace: 'pre-wrap' } }, conversation.summary)) : null,
-    messages.length === 0 && !streaming ? createElement('p', { style: { ...help, textAlign: 'center', padding: '20px 0' } }, t('awb.empty')) : null,
-    ...messages.map((message) => createElement('article', { key: message.id, 'data-codingns-assistant-message': message.role, style: messageStyle(message.role) },
-      heading(message.role), message.text,
-      message.attachments?.length ? createElement('div', { 'data-codingns-assistant-message-attachments': true, style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 } },
-        ...message.attachments.map((item) => createElement('span', { key: item.attachment.attachmentId, title: item.attachment.name,
-          style: { fontSize: 12, padding: '3px 8px', borderRadius: 8, border: `1px solid ${dshThemeColor.border}` } }, item.attachment.name || t('awb.attachments.unnamed')))) : null)),
-    !streaming ? null : createElement('article', { role: 'status', 'data-codingns-assistant-message': 'assistant', style: messageStyle('assistant') }, heading('assistant'), active.text))
+    timeline.length === 0 && !streaming ? createElement('p', { style: { ...help, textAlign: 'center', padding: '20px 0' } }, t('awb.empty')) : null,
+    ...timeline.map((item) => {
+      if (item.kind === 'voice') return createElement(AssistantVoiceSessionCard, { key: item.session.id, session: item.session, t, name, services, model })
+      const message = item.message
+      return createElement(AssistantConversationMessageView, { key: message.id, message, name, t, services, model })
+    }),
+    !streaming ? null : createElement(AssistantConversationMessageView, { streaming: true, message: { role: 'assistant', text: active.text }, name, t, services, model }))
 }
 
 export function AssistantConfigurationFields({ draft, catalog, appearance, initializing = false, includeAvatar = true, services, t, disabled, onChange }: {
@@ -536,4 +544,3 @@ const identityFieldStyle: CSSProperties = { ...dshSettingsFieldStyle, borderRadi
 const avatarStyle: CSSProperties = { display: 'grid', gap: 8, justifyItems: 'center' }
 const backdrop: CSSProperties = { position: 'fixed', inset: 0, zIndex: 10000, background: dshThemeColor.overlay, backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12, boxSizing: 'border-box' }
 const dialog: CSSProperties = { display: 'flex', flexDirection: 'column', width: 'min(940px, 100%)', maxHeight: 'calc(100dvh - 24px)', minHeight: 300, background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, border: `1px solid ${dshThemeColor.border}`, borderRadius: 20, boxShadow: '0 24px 80px rgba(0,0,0,.24)', overflow: 'hidden' }
-const messageStyle = (role: 'user' | 'assistant'): CSSProperties => ({ padding: '11px 14px', borderRadius: 10, background: role === 'user' ? dshThemeColor.surfaceSubtle : 'transparent', justifySelf: role === 'user' ? 'end' : 'stretch', maxWidth: '100%', boxSizing: 'border-box', fontSize: 14, lineHeight: 1.65, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' })

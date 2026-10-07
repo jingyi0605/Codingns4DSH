@@ -36,6 +36,8 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
   private clearOperation: Promise<void> | undefined
   private settleSpeech: (() => void) | undefined
   private replySequence = 0
+  private microphoneMuted = false
+  private speakerMuted = false
 
   constructor(options: SherpaClientVoiceAdapterOptions) {
     this.options = options
@@ -64,6 +66,19 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
   get inputDeviceId(): string | undefined { return this.selectedInputDeviceId }
   get outputDeviceId(): string | undefined { return this.selectedOutputDeviceId }
   get outputDeviceSupported(): boolean { return readAssistantTtsSettings(this.services.settings?.getSnapshot().value?.assistant.tts).backend === 'moss-onnx' && this.output.outputDeviceSupported }
+  get isMicrophoneMuted(): boolean { return this.microphoneMuted }
+  get isSpeakerMuted(): boolean { return this.speakerMuted }
+
+  setMicrophoneMuted(muted: boolean): void {
+    this.microphoneMuted = muted; this.capture?.setMuted(muted)
+    if (muted) this.emit({ type: 'partial', text: '', epoch: this.epoch })
+  }
+  setSpeakerMuted(muted: boolean): void {
+    this.speakerMuted = muted; this.output.setMuted(muted)
+    if (muted && readAssistantTtsSettings(this.services.settings?.getSnapshot().value?.assistant.tts).backend === 'browser') {
+      this.settleSpeech?.(); this.settleSpeech = undefined; globalThis.speechSynthesis?.cancel()
+    }
+  }
 
   subscribe(listener: VoiceRuntimeListener): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
 
@@ -89,12 +104,13 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
     const abort = new AbortController()
     this.responseAbort = abort
     this.active = true
+    this.setMicrophoneMuted(false); this.setSpeakerMuted(false)
     try {
       if (readAssistantTtsSettings(this.services.settings?.getSnapshot().value?.assistant.tts).backend === 'moss-onnx') {
         await this.output.prepare()
         if (this.output.outputDeviceSupported && this.selectedOutputDeviceId !== undefined) await this.output.setOutputDevice(this.selectedOutputDeviceId)
       }
-      const leaseRequest = this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/start', { ownerId: this.configuredOwner }, abort.signal)
+      const leaseRequest = this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/start', { ownerId: this.configuredOwner, voiceSessionId: createClientId() }, abort.signal)
       this.leaseRequest = leaseRequest
       const lease = await leaseRequest.finally(() => { if (this.leaseRequest === leaseRequest) this.leaseRequest = undefined })
       if (!lease.ok) throw new Error(lease.error.message)
@@ -196,6 +212,7 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
       return
     }
     this.output.cancel()
+    if (this.speakerMuted) return
     const synthesis = globalThis.speechSynthesis
     if (synthesis === undefined || typeof globalThis.SpeechSynthesisUtterance !== 'function') throw new Error('当前浏览器不支持语音播报')
     this.cancelOutput()
@@ -269,8 +286,9 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
       // 识别器继续收音，等待回复时保留思考／播报状态。
       if (this.reply === undefined || value.state !== 'listening') this.emit({ type: 'state', state: value.state as VoiceRuntimeState, epoch: eventEpoch })
     }
-    else if (value.type === 'partial' && typeof value.text === 'string') this.emit({ type: 'partial', text: value.text, epoch: eventEpoch })
+    else if (value.type === 'partial' && typeof value.text === 'string' && !this.microphoneMuted) this.emit({ type: 'partial', text: value.text, epoch: eventEpoch })
     else if (value.type === 'final' && typeof value.text === 'string') {
+      if (this.microphoneMuted) return
       if (value.text.trim() === '') return
       const requestId = createClientId()
       this.emit({ type: 'final', text: value.text, epoch: eventEpoch, requestId })

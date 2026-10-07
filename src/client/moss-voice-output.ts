@@ -11,6 +11,8 @@ export class MossVoiceOutput {
   private outputDeviceId = ''
   private nextStart = 0
   private gain: GainNode | undefined
+  private muted = false
+  private volume = 1
 
   constructor(private readonly options: { fetch?: typeof fetch; context?: () => AudioContext } = {}) {}
 
@@ -19,7 +21,7 @@ export class MossVoiceOutput {
   /** 在点击开始或试听时调用，保留浏览器要求的用户手势。 */
   async prepare(): Promise<void> {
     if (this.context === undefined || this.context.state === 'closed') this.context = (this.options.context?.() ?? new AudioContext()) as SinkAudioContext
-    if (this.gain === undefined) { this.gain = this.context.createGain(); this.gain.connect(this.context.destination) }
+    if (this.gain === undefined) { this.gain = this.context.createGain(); this.gain.gain.value = this.muted ? 0 : this.volume; this.gain.connect(this.context.destination) }
     if (this.context.state === 'suspended') await this.context.resume()
     if (this.outputDeviceId !== '' && typeof this.context.setSinkId === 'function') await this.context.setSinkId(this.outputDeviceId)
   }
@@ -29,6 +31,9 @@ export class MossVoiceOutput {
     if (this.context !== undefined) await this.context.setSinkId!(id)
     this.outputDeviceId = id
   }
+
+  /** 输出静音不中断推理或时间线，恢复后继续听当前播报。 */
+  setMuted(muted: boolean): void { this.muted = muted; if (this.gain !== undefined) this.gain.gain.value = muted ? 0 : this.volume }
 
   async speak(text: string, voiceId?: string, onStart?: () => void, parameters?: Partial<AssistantTtsParameters>): Promise<boolean> {
     this.cancel()
@@ -50,7 +55,8 @@ export class MossVoiceOutput {
       // 只提前准备有限音频；继续播放时逐步放行，仍只使用一个 Host 推理进程。
       await this.waitUntil(() => this.sources.size === 0 || this.nextStart - this.context!.currentTime <= 5, readerSignal)
       if (readerSignal.aborted) return false
-      this.gain!.gain.value = playback.volume
+      this.volume = playback.volume
+      this.gain!.gain.value = this.muted ? 0 : this.volume
       const response = await (this.options.fetch ?? globalThis.fetch)(new URL(ASSISTANT_TTS_PATH, globalThis.location?.origin ?? 'http://localhost'), {
         method: 'POST', credentials: 'same-origin', signal: readerSignal,
         headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
