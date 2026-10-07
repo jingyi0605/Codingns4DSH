@@ -66,6 +66,9 @@ export const CODINGNS_PWA_METADATA_MARKUP = [
   '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">',
   '<meta name="apple-mobile-web-app-title" content="DSH">',
   '<link rel="apple-touch-icon" sizes="180x180" href="/__codingns/pwa/apple-touch-icon.png">',
+  // 透明状态栏配合 viewport-fit=cover 会覆盖页面顶部；在应用根节点统一避让，
+  // border-box 保证安全区计入原有高度。按独立窗口生效，不受 iPad 横屏宽度影响。
+  '<style data-plugin-css="codingns4dsh-pwa-safe-area">@media (display-mode: standalone){#root{box-sizing:border-box;padding-top:env(safe-area-inset-top, 0px)}}</style>',
 ].join('')
 
 /**
