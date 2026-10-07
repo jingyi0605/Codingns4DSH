@@ -40,6 +40,7 @@
 1. WHEN 当前会话打开终端面板 THEN System SHALL 最多显示一个 `terminal` 类型 Sidebar 标签。
 2. WHEN 用户连续新建多个终端 THEN System SHALL 在同一个聚合页内显示多个终端记录，不能创建多个同类 Sidebar 标签。
 3. WHEN DSH 重启或切换会话 THEN System SHALL 根据工作区库存恢复一个聚合页，不按终端数量恢复标签。
+4. WHEN 用户打开或关闭终端聚合页 THEN System SHALL 按工作区共享卡片开关，并在其他同工作区会话进入或布局装配后同步该状态；不同工作区保持隔离。
 
 ### 需求 2：页内终端列表与内容
 
@@ -52,6 +53,7 @@
 3. WHEN 用户在页内新建或关闭终端 THEN System SHALL 只对对应 `terminalId` 调用 Host create/close。
 4. WHEN 用户重命名终端 THEN System SHALL 更新 Host 记录和列表标题。
 5. WHEN 聚合页重新挂载或另一个 DSH 会话订阅同一终端 THEN Host SHALL 复用该 `terminalId` 的内存 resident connection，并立即发送当前状态与有限输出缓存。
+6. WHEN 用户选择子终端后切换到同工作区其他会话或刷新页面 THEN System SHALL 恢复工作区最近一次选择；选中终端被关闭时统一回退到首项，库存为空时清除共享选择。
 
 ### 需求 3：跨会话库存同步
 
@@ -82,7 +84,8 @@
 
 1. WHEN 发现同一会话存在多个旧 `terminal` 标签 THEN System SHALL 只保留一个聚合页签并移除多余标签。
 2. WHEN 迁移旧标签 THEN System SHALL 不因移除 Sidebar 标签而调用 Host close。
-3. WHEN 用户关闭聚合页签 THEN System SHALL 只隐藏页签，不关闭工作区内全部 Host 终端；终端关闭必须通过页内操作完成。
+3. WHEN 用户关闭聚合页签 THEN System SHALL 同步隐藏同工作区所有会话的聚合页签，保留子终端选择，不关闭工作区内全部 Host 终端；终端关闭必须通过页内操作完成。
+4. WHEN 原生会话布局尚未装配导致打开请求无效 THEN System SHALL 允许后续恢复重试，不能把布局缺失推断为用户关闭。
 
 ## 非功能需求
 

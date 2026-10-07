@@ -30,11 +30,11 @@ DSH session C ─┘          │
 
 | 组件 | 职责 |
 | --- | --- |
-| `CodingNsWebTerminals` | 保存按工作区划分的库存快照、revision、终端视图和 Host 操作。 |
-| `createTerminalSessionRecovery` | 每个会话最多打开一个聚合页；库存为空时关闭聚合页；迁移旧多标签。 |
+| `CodingNsWebTerminals` | 保存按工作区划分的库存快照、选中子终端、卡片开关、revision、终端视图和 Host 操作。 |
+| `createTerminalSessionRecovery` | 将工作区卡片开关投影到各会话；每个会话最多打开一个聚合页；库存为空时关闭聚合页；迁移旧多标签。 |
 | `TerminalBody` | 在顶部横向标签栏渲染内部列表，在下方渲染选中终端内容，处理页内新建、选择、重命名、关闭。 |
 | `TerminalTitle` | 固定显示“终端”，不再绑定某个 Host 终端标题。 |
-| `TerminalCleanup` | 监听库存 revision，触发所有已知会话的聚合页同步。 |
+| `TerminalCleanup` | 监听库存与卡片开关 revision、当前会话和布局索引，触发已知会话的聚合页同步。 |
 
 ## 3. 状态模型
 
@@ -64,13 +64,21 @@ Host `CodingNsTerminalService` 为每个 running 终端建立一条不绑定浏�
 
 聚合页改为同时挂载库存中的所有 `CodingNsXtermView`。未选中的视图通过 `display:none` 隐藏，但继续保持 `view.mount()`、xterm 屏幕和 Host follow attach；只有整个 Sidebar 页签卸载时才 detach。选中状态变化时重新执行 FitAddon 尺寸同步和焦点设置。
 
+### 3.4 工作区选择与卡片状态
+
+同工作区各会话共用 `{ selectedId?, cardOpen? }` 状态，保存在浏览器内存和 `dsh.codingns.terminal.workspace-state.v1.` 存储命名空间。作用域键为 JSON 编码的 `['workspace', workspaceId]`；环境缺少工作区 ID 时才退回 `['session', sessionId]`。旧会话级选择记录仅在尚无工作区记录时迁移，不能覆盖已有共享选择。
+
+会话只负责定位工作区和提供 Host 调用上下文，组件直接订阅共享选择。卡片开关变更独立通知恢复组件，子标签选择不触发卡片库存重新查询。工作区尚未解析时发生的显式开关暂存为待处理意图，解析后覆盖旧开关；创建开始写入打开意图，创建结束不再改写卡片开关。
+
+用户关闭通过原生 `registerCloseHandler` 写入共享关闭状态，并同步移除同工作区其他会话的卡片。恢复、空库存清理和旧多标签迁移经过关闭钩子时，用投影标记阻止它们反向改写工作区开关。
+
 ## 4. 关键流程
 
 ### 4.1 打开和恢复
 
 1. `TerminalCleanup` 为当前 mounted session 调用 recovery。
 2. recovery 请求 Host 工作区库存。
-3. 库存非空且当前会话没有聚合页时，调用 `openTabIn(sessionId, 'terminal')` 一次。
+3. 工作区卡片开关未关闭、库存非空且当前会话没有聚合页时，调用 `openTabIn(sessionId, 'terminal')`；布局尚未装配时允许后续恢复重试，不把调用已发出当作卡片已打开。
 4. 当前会话存在多个旧 terminal 标签时，保留一个并用 Sidebar 关闭路径移除多余布局记录，关闭回调不得结束 Host 进程。
 5. 库存为空时，关闭当前会话所有聚合页；已知其他会话由库存 revision 再次收敛。
 
@@ -86,7 +94,7 @@ Host `CodingNsTerminalService` 为每个 running 终端建立一条不绑定浏�
 1. 用户在列表项点击关闭。
 2. 仅按该项 `terminalId` 调用 Host close。
 3. close 成功后刷新库存；库存为空时所有会话聚合页自动关闭。
-4. 聚合页标签自身的关闭动作只移除 Sidebar 布局，不触发 Host close。
+4. 聚合页标签自身的关闭动作更新工作区共享开关，并移除同工作区各会话的 Sidebar 布局，不触发 Host close；再次打开保留共享子终端选择。
 
 ## 5. 恢复和兼容
 
