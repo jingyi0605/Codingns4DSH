@@ -8,6 +8,7 @@ import { startMobileSidebarGestures } from '../data/build/dist/client/mobile-sid
 import {
   MOBILE_RIGHTBAR_VISIBILITY_ATTRIBUTE,
   notifyMobileRightbarManualOpen,
+  notifyMobileRightbarManualClose,
 } from '../data/build/dist/client/mobile-rightbar-visibility.js'
 
 class FakeElement {
@@ -89,11 +90,14 @@ class FakeDocument {
 
 class FakeMutationObserver {
   disconnected = false
-  readonly callback: () => void
-  constructor(callback: () => void) { this.callback = callback }
-  observe(): void {}
+  readonly callback: (records: readonly MutationRecord[]) => void
+  options: MutationObserverInit | undefined
+  readonly records: MutationRecord[] = []
+  constructor(callback: (records: readonly MutationRecord[]) => void) { this.callback = callback }
+  observe(_target: unknown, options: MutationObserverInit): void { this.options = options }
+  takeRecords(): MutationRecord[] { return this.records.splice(0) }
   disconnect(): void { this.disconnected = true }
-  commit(): void { if (!this.disconnected) this.callback() }
+  commit(records: readonly MutationRecord[] = this.takeRecords()): void { if (!this.disconnected) this.callback(records) }
 }
 
 /** 模拟挂载通知先到、Store 与 React 的 DOM 提交随后到达的真实时序。 */
@@ -123,7 +127,7 @@ function createRightbarHarness(width = 390) {
     },
   }
   class Observer extends FakeMutationObserver {
-    constructor(callback: () => void) { super(callback); observers.push(this) }
+    constructor(callback: (records: readonly MutationRecord[]) => void) { super(callback); observers.push(this) }
   }
   const controller = startMobileSessionInteractionDom({
     window, document, sidebarRight, MutationObserver: Observer as unknown as typeof MutationObserver,
@@ -136,7 +140,7 @@ function createRightbarHarness(width = 390) {
     set available(value: boolean) { available = value },
     get toggleCount() { return toggleCount },
     get visibility() { return document.documentElement.getAttribute(MOBILE_RIGHTBAR_VISIBILITY_ATTRIBUTE) },
-    commit() { for (const observer of observers) observer.commit() },
+    commit(records?: readonly MutationRecord[]) { for (const observer of observers) observer.commit(records) },
     mount() { for (const listener of [...mountedListeners]) listener() },
     openManually() {
       document.emit('click', { target: document.expandButton, isTrusted: true })
@@ -288,6 +292,72 @@ test('手动按钮呼出保持显示，原生关闭后即使同一轮恢复标�
   assert.equal(harness.expanded, false)
 })
 
+test('未授权面板从布局中隐藏，内部显式 visibility visible 也不能重新显示', (t) => {
+  const harness = createRightbarHarness()
+  t.after(() => harness.controller.dispose())
+  const style = [...harness.document.head.children][0]
+  // 宿主会对子停靠区域显式设置 visibility: visible；只隐藏祖先会被子节点覆盖。
+  assert.match(style?.textContent ?? '', /\[data-sidebar-right-panel\]\s*\{[^}]*display:\s*none\s*!important/u)
+})
+
+function openAttributeRecord(target: FakeElement, oldValue: string | null): MutationRecord {
+  return { type: 'attributes', target, attributeName: 'data-sidebar-right-open', oldValue } as unknown as MutationRecord
+}
+
+test('非按钮关闭与后台恢复在同一轮 DOM 提交时，仍撤销旧呼出许可', (t) => {
+  const harness = createRightbarHarness()
+  t.after(() => harness.controller.dispose())
+  harness.openManually()
+  const panel = new FakeElement({
+    'data-sidebar-right-panel': 'fullscreen', 'data-sidebar-right-session': 'session-a', 'data-sidebar-right-open': '',
+  })
+  // 观察器收到回调时面板已再次展开，必须从记录中识别中间的属性移除。
+  harness.commit([openAttributeRecord(panel, ''), openAttributeRecord(panel, null)])
+  assert.equal(harness.expanded, false)
+  assert.equal(harness.visibility, 'blocked')
+  assert.equal(harness.observers[0]?.options?.attributeOldValue, true)
+})
+
+test('后台会话关闭及展开属性同值写入不撤销当前会话的手动许可', (t) => {
+  const harness = createRightbarHarness()
+  t.after(() => harness.controller.dispose())
+  harness.openManually()
+  const background = new FakeElement({ 'data-sidebar-right-panel': 'fullscreen', 'data-sidebar-right-session': 'session-b' })
+  const panel = new FakeElement({
+    'data-sidebar-right-panel': 'fullscreen', 'data-sidebar-right-session': 'session-a', 'data-sidebar-right-open': '',
+  })
+  harness.commit([openAttributeRecord(background, ''), openAttributeRecord(panel, '')])
+  assert.equal(harness.expanded, true)
+  assert.equal(harness.visibility, 'allowed')
+})
+
+test('再次手动呼出会清除旧关闭记录，旧提交不能撤销新许可', (t) => {
+  const harness = createRightbarHarness()
+  t.after(() => harness.controller.dispose())
+  harness.openManually()
+  const panel = new FakeElement({
+    'data-sidebar-right-panel': 'fullscreen', 'data-sidebar-right-session': 'session-a',
+  })
+  harness.expanded = false
+  harness.observers[0]!.records.push(openAttributeRecord(panel, ''))
+  harness.openManually()
+  assert.equal(harness.observers[0]!.records.length, 0)
+  assert.equal(harness.expanded, true)
+  assert.equal(harness.visibility, 'allowed')
+})
+
+test('快捷键用于关闭时先撤销许可，同一轮后台恢复不能重新显示', (t) => {
+  const harness = createRightbarHarness()
+  t.after(() => harness.controller.dispose())
+  harness.openManually()
+  harness.document.emit('keydown', { key: 'Y', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, isTrusted: true })
+  assert.equal(harness.visibility, 'blocked')
+  harness.expanded = false
+  harness.expanded = true
+  harness.commit()
+  assert.equal(harness.expanded, false)
+})
+
 test('有效手势先授予许可再展开，反向手势关闭后后台恢复仍被阻止', (t) => {
   const harness = createRightbarHarness()
   const gestures = startMobileSidebarGestures({
@@ -296,6 +366,7 @@ test('有效手势先授予许可再展开，反向手势关闭后后台恢复�
     ports: { sidebarRight: harness.sidebarRight },
     settings: () => ({ sidebarGestures: true, sidebarGestureMapping: 'swipe-inward', sidebarGestureEdge: 'avoid', sidebarGestureDistancePercent: 40 }),
     onRightbarOpen: () => notifyMobileRightbarManualOpen(harness.document),
+    onRightbarClose: () => notifyMobileRightbarManualClose(harness.document),
   })
   t.after(() => { gestures.dispose(); harness.controller.dispose() })
   const touch = (x: number, timeStamp: number) => ({ touches: [{ clientX: x, clientY: 300 }], timeStamp })
@@ -317,6 +388,47 @@ test('有效手势先授予许可再展开，反向手势关闭后后台恢复�
   harness.expanded = true
   harness.commit()
   assert.equal(harness.expanded, false)
+})
+
+test('反向手势与浏览器返回关闭前撤销许可，同轮后台恢复也不能再次展开', (t) => {
+  for (const action of ['swipe', 'back']) {
+    const harness = createRightbarHarness()
+    Object.assign(harness.window, { history: { pushState() {} } })
+    let closed = 0
+    const gestures = startMobileSidebarGestures({
+      window: harness.window,
+      document: harness.document,
+      ports: { sidebarRight: harness.sidebarRight },
+      settings: () => ({ sidebarGestures: true, sidebarGestureMapping: 'swipe-inward', sidebarGestureEdge: 'avoid', sidebarGestureDistancePercent: 40 }),
+      onRightbarOpen: () => notifyMobileRightbarManualOpen(harness.document),
+      onRightbarClose: () => {
+        // 必须先撤销许可再让宿主关闭，而不是等下一次观察器回调。
+        assert.equal(harness.expanded, true)
+        notifyMobileRightbarManualClose(harness.document)
+        assert.equal(harness.visibility, 'blocked')
+        closed += 1
+      },
+    })
+    t.after(() => { gestures.dispose(); harness.controller.dispose() })
+    const touch = (x: number, timeStamp: number) => ({ touches: [{ clientX: x, clientY: 300 }], timeStamp })
+    harness.window.emit('touchstart', touch(300, 0))
+    harness.window.emit('touchmove', touch(70, 50))
+    harness.commit()
+    assert.equal(harness.expanded, true)
+    harness.window.emit('touchend', {})
+    if (action === 'back') harness.window.emit('popstate', {})
+    else {
+      harness.window.emit('touchstart', touch(70, 100))
+      harness.window.emit('touchmove', touch(300, 150))
+    }
+    assert.equal(closed, 1)
+    assert.equal(harness.expanded, false)
+    // 不交付关闭的 DOM 提交，直接恢复；许可仍必须保持撤销。
+    harness.expanded = true
+    harness.commit()
+    assert.equal(harness.expanded, false)
+    assert.equal(harness.visibility, 'blocked')
+  }
 })
 
 test('手动呼出只对当前会话有效，新建、切换和 Store 延迟接管都撤销许可', (t) => {
