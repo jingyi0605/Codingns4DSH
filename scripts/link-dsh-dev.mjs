@@ -45,7 +45,9 @@ if (existsSync(target)) {
 
 symlinkSync(repositoryRoot, target, process.platform === 'win32' ? 'junction' : 'dir')
 console.log(`开发链接已创建: ${target} -> ${repositoryRoot}`)
-console.log('以后只需保持 pnpm dev:watch 运行并重启 DSH，无需重新安装插件。')
+console.log(profileName === 'stage0'
+  ? '以后运行 dsh-stage0 或 pnpm run dsh:stage0 即可自动编译并重载，无需另开 dev:watch 或重新安装插件。'
+  : '以后只需保持 pnpm dev:watch 运行并重启 DSH，无需重新安装插件。')
 
 function timestamp() {
   return new Date().toISOString().replace(/[-:.TZ]/gu, '').slice(0, 14)

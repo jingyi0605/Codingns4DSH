@@ -28,11 +28,13 @@ import { createAgentSubagentTool } from './cli-adapters/subagent-tool.js'
 import { registerNativeTeamSubagentProviders, type NativeSubagentService } from './cli-adapters/native-team-subagent.js'
 import { setNativeSubagents } from './cli-adapters/native-subagent-holder.js'
 import { installSidebarSessionCompat } from '../dsh-capabilities/host/sidebar-session-compat.js'
+import { registerStage0DevHmr } from './stage0-dev-hmr.js'
 
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
   const dshVersion = detectRuntimeDshVersion()
   debugInfo('codingns4dsh: host apply entered', { dshVersion })
+  registerStage0DevHmr(ctx)
 
   // 原生侧栏早于本插件 Client 启动；取消误报修复必须在首屏资源下发时生效。
   ctx.inject(['clientModules', 'webServer'], (webCtx) => installSidebarSessionCompat(webCtx, dshVersion))
@@ -57,11 +59,16 @@ export function apply(ctx?: Context): void {
     }
     // DSH 的 v3->v4 转换发生在 persistence.open 内部。只在启动时异步扫描
     // 会晚于第一次点击历史会话，因此必须把修复挂到真正的读取边界之前。
+    const wrappedOpen = async function (this: unknown, ...args: unknown[]): Promise<unknown> {
+      await repairBeforeOpen()
+      return open.apply(this, args)
+    }
     try {
-      persistence.open = async function (...args: unknown[]): Promise<unknown> {
-        await repairBeforeOpen()
-        return open.apply(this, args)
-      }
+      persistence.open = wrappedOpen
+      // persistence 是其他插件拥有的服务；重载时只撤销自己安装的这一层。
+      sessionCtx.effect(() => () => {
+        if (persistence.open === wrappedOpen) persistence.open = open
+      }, 'codingns4dsh: 会话读取修复包装')
     } catch (error) {
       // 某些 Host 会冻结 Service 实例；启动扫描仍然可修复磁盘上的旧日志。
       console.warn('codingns4dsh: 无法包装 sessionPersistence.open', error)
@@ -236,7 +243,12 @@ export function apply(ctx?: Context): void {
           })
       }
       sync()
-      return settings.watch(sync)
+      const unwatch = settings.watch(sync)
+      // 原生 Host HMR 会销毁上一代 Fiber，必须连同功能资源一起收回。
+      return async () => {
+        unwatch()
+        await registry.reconcile([])
+      }
     }, 'codingns4dsh: 功能模块启停同步')
   })
 }

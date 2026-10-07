@@ -9,4 +9,21 @@
   disabled: true
 - id: client-hmr
   name: '@deepseek-ai/dsh-client-hmr'
+  # 官方 Client 会局部替换模块并遗留终端注册。Stage0 Host 单独复用官方
+  # 产物监听和 SSE，浏览器使用整页刷新，不加载官方 Client 半部。
   disabled: true
+- id: hmr
+  name: '@deepseek-ai/dsh-hmr'
+  config:
+    # Profile 的 baseUrl 不在仓库，必须显式指定监听根目录。
+    base: !!js process.env.CODINGNS4DSH_STAGE0_REPO_ROOT + '/'
+    root:
+      - data/build/dist
+    debounce: 800
+    # 默认忽略 data 会漏掉本仓库的全部产物；只排除无须 Host 重载的文件。
+    ignored:
+      - '**/node_modules/**'
+      - '**/.*'
+      - '**/*.map'
+      - '**/*.d.ts'
+      - 'data/build/dist/client/**'
