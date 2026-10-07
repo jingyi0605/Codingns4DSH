@@ -49,6 +49,7 @@ export function summarizeAssistantIndex(snapshot: AssistantIndexSnapshot): Assis
       renderGroup('出错', groups.error, '当前没有出错会话。'),
       renderGroup('运行中', groups.running, '当前没有运行中的会话。'),
       renderGroup('已完成', groups.completed, '当前没有刚完成的会话。'),
+      renderUnknownNotice(snapshot.entries),
       unreadableNotice,
     ].filter((text) => text !== '').join(' '),
   }
@@ -87,7 +88,7 @@ export function summarizeAssistantSessions(
   }))
   const unreadableNotice = renderUnreadableNotice(unreadableCount)
   const speechText = limitSpeechText(
-    sections.map((section) => section.text).join(' '),
+    [...sections.map((section) => section.text), renderUnknownNotice(entries, options.maxItemsPerCategory)].filter(Boolean).join(' '),
     options.maxChars,
     unreadableNotice,
   )
@@ -121,6 +122,12 @@ function groupEntries(entries: readonly SessionIndexEntry[]): AssistantSummaryGr
     }
   }
   return { waiting, error, running, completed }
+}
+
+/** 未知状态不进入四个业务组，但所有汇总入口都必须保留这条诊断。 */
+function renderUnknownNotice(entries: readonly SessionIndexEntry[], maxItems?: number): string {
+  const unknown = entries.filter((entry) => entry.waiting === null && entry.error !== true && !entry.running && !entry.completed)
+  return unknown.length === 0 ? '' : `有${unknown.length}个会话状态未知，不能据此判断没有进展。${renderGroup('状态未知', unknown.slice(0, maxItems), '')}`
 }
 
 function renderGroup(label: string, entries: readonly SessionIndexEntry[], emptyText: string): string {

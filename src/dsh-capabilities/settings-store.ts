@@ -24,6 +24,8 @@ export interface CodingNsSettingsStore<T> {
   set(field: string, value: unknown): Promise<boolean>
   unset(field: string): Promise<boolean>
   load?(): Promise<void>
+  /** Host 专用业务 RPC 修改设置后，显式重读权威快照；普通 load 保持缓存语义。 */
+  reload?(): Promise<void>
   dispose?(): void | Promise<void>
 }
 

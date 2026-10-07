@@ -1,6 +1,8 @@
 /** DSH 宿主能力的稳定标识。业务模块只依赖这些标识，不直接依赖 DSH 版本。 */
 export type DshCapabilityId =
   | 'settings.store'
+  | 'llm.text'
+  | 'assistant.agent'
   | 'connection.rpc'
   | 'connection.peer'
   | 'connection.attachment'

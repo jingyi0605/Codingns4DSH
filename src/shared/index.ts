@@ -62,9 +62,12 @@ export {
   type SidebarGestureSettingsInput,
   type SubscriptionUsageSettings,
   type AssistantSettings,
+  type AssistantProfileSettings,
   type AssistantVoiceProvider,
   type AssistantVoiceSettings,
 } from './contracts/config.js'
+export { DEFAULT_ASSISTANT_NAME, DEFAULT_ASSISTANT_PERSONALITY, ASSISTANT_PERSONALITY_MAX_CHARS, assistantWorkspaceMatches, readAssistantProfile, readAssistantPersonality, validateAssistantProfile, validateAssistantModel, validateAssistantPersonality } from './assistant-lifecycle.js'
+export type { AssistantConversationMessage, AssistantConversationSnapshot, AssistantLifecycleSnapshot } from './contracts/assistant.js'
 export type {
   FeatureContext,
   FeatureActivation,
@@ -331,6 +334,14 @@ export type {
   RelaySignalingTicketResponse,
 } from './contracts/signaling.js'
 export type {
+  AssistantIndexAnalysisRun,
+  AssistantIndexAnalysisRecord,
+  AssistantIndexEvidence,
+  AssistantIndexFact,
+  AssistantNextAction,
+  AssistantSessionAnalysis,
+  AssistantSessionIndexTask,
+  AssistantStructuredIndex,
   AssistantProgressSummary,
   AssistantSessionStatus,
   AssistantSummaryCategory,
@@ -360,6 +371,9 @@ export {
   type AssistantVoiceModelFile,
 } from './voice-models.js'
 export type { DshHostStatus } from './contracts/host-status.js'
+export { MOSS_BUILTIN_VOICES, ASSISTANT_VOICE_SITES, DEFAULT_ASSISTANT_TTS_SETTINGS, DEFAULT_ASSISTANT_TTS_PARAMETERS, ASSISTANT_TTS_PARAMETER_LIMITS, readAssistantTtsSettings, readAssistantTtsParameters, validateAssistantTtsParameters } from './assistant-tts.js'
+export type { AssistantTtsVoice, AssistantTtsSettings, AssistantTtsParameters, AssistantTtsSnapshot, AssistantTtsStatus } from './assistant-tts.js'
+export { ASSISTANT_PROMPT_MAX_CHARS, DEFAULT_ASSISTANT_PROMPTS, readAssistantPrompts, type AssistantPromptSettings } from './assistant-prompts.js'
 export {
   CODINGNS4DSH_DEBUG_ENV,
   CODINGNS4DSH_DEBUG_LEVEL_ENV,
@@ -370,3 +384,5 @@ export {
   resolveCodingNsDebugEnabled,
   resolveCodingNsDebugLevel,
 } from './debug.js'
+export { DEFAULT_LIGHT_VOICE_MODEL_ID } from './voice-initialization.js'
+export type { AssistantVoiceInitializationSnapshot, VoiceInitializationPhase } from './voice-initialization.js'

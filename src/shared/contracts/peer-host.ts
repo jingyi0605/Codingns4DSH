@@ -99,6 +99,8 @@ export interface PeerHostSessionRecord {
   readonly scope: HostScope
   readonly title: string
   readonly status: string
+  /** 来自真实执行状态的证明；不能把导航层默认 idle 当作完成证明。 */
+  readonly activity?: 'running' | 'idle' | 'unknown'
   readonly updatedAt: number
   /** DSH 原生会话是否仍处于待首条消息的临时状态。 */
   readonly blank: boolean

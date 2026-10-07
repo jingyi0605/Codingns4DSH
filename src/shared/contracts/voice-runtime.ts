@@ -1,4 +1,4 @@
-export type VoiceRuntimeState = 'disabled' | 'loading' | 'standby' | 'listening' | 'speaking' | 'interrupted' | 'error'
+export type VoiceRuntimeState = 'disabled' | 'loading' | 'standby' | 'listening' | 'thinking' | 'speaking' | 'interrupted' | 'error'
 
 export interface VoiceRuntimeCapabilities {
   readonly realtime: boolean
@@ -14,12 +14,19 @@ export type VoiceRuntimeEvent =
   | { readonly type: 'state'; readonly state: VoiceRuntimeState; readonly epoch: number }
   | { readonly type: 'wake'; readonly epoch: number }
   | { readonly type: 'partial'; readonly text: string; readonly epoch: number }
-  | { readonly type: 'final'; readonly text: string; readonly epoch: number }
+  | { readonly type: 'final'; readonly text: string; readonly epoch: number; readonly requestId?: string }
+  | { readonly type: 'reply'; readonly text: string; readonly epoch: number; readonly requestId: string; readonly final: boolean }
   | { readonly type: 'audio'; readonly bytes: Uint8Array; readonly sampleRate?: number; readonly channels?: 1; readonly epoch: number }
   | { readonly type: 'barge-in'; readonly epoch: number }
   | { readonly type: 'error'; readonly code: string; readonly message: string; readonly recoverable: boolean; readonly epoch: number }
 
 export type VoiceRuntimeListener = (event: VoiceRuntimeEvent) => void
+
+export interface VoiceConversationMessage {
+  readonly id: string
+  readonly role: 'user' | 'assistant'
+  readonly text: string
+}
 
 export interface VoicePcmFrame {
   readonly sequence: number
@@ -63,6 +70,8 @@ export interface VoiceRuntimeAdapter {
   interrupt(): Promise<void> | void
   sendPcm?(frame: VoicePcmFrame, epoch: number): Promise<void> | void
   speak?(text: string, epoch: number): Promise<void> | void
+  /** 清空展示时同步清除 Host 多轮历史和当前生成。 */
+  clearConversation?(): Promise<void> | void
   subscribe(listener: VoiceRuntimeListener): () => void
 }
 

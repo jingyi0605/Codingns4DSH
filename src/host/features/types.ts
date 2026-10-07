@@ -16,6 +16,8 @@ export interface CodingNsHostEvents {
 }
 
 export interface AssistantHostGateway {
+  /** 已显式加入聚合的工作区元数据；不读取远端会话正文。 */
+  workspaces?(): Promise<readonly { readonly workspaceId: string; readonly name: string; readonly path: string | null }[]>
   list(managedWorkspaceIds: readonly string[]): Promise<{
     readonly sessions: readonly AssistantSessionSourceRecord[]
     readonly archivedSessionIds: readonly string[]
@@ -24,7 +26,7 @@ export interface AssistantHostGateway {
     readonly readSummary?: (session: AssistantSessionSourceRecord) => Promise<string | null>
     readonly readWaiting?: (session: AssistantSessionSourceRecord) => Promise<AssistantWaitingKind | null>
   }>
-  dispatch(request: { readonly hostId: string; readonly requestId: string; readonly sessionId: string; readonly mode: 'queue' | 'steer'; readonly content: readonly [{ readonly type: 'text'; readonly text: string }]}): Promise<void>
+  dispatch(request: { readonly hostId: string; readonly requestId: string; readonly sessionId: string; readonly mode: 'queue' | 'steer'; readonly content: readonly [{ readonly type: 'text'; readonly text: string }]}, signal?: AbortSignal): Promise<void>
 }
 
 /**

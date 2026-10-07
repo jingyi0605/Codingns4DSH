@@ -153,6 +153,9 @@ export function createConfigFormSettingsStore(
     unset: async (field) => {
       return write([{ op: 'unset', path: [field] }], () => form.unset(field), () => form.unset(field))
     },
+    reload: async () => {
+      refresh()
+    },
     dispose: () => {
       unsubscribeForm()
       listeners.clear()

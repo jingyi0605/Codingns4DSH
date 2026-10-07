@@ -1,6 +1,9 @@
 import type { FeatureDescriptor } from './feature.js'
 import type { CodingNsCliSessionRecord } from './cli-adapter.js'
 import { isDshVersionAtLeast } from './version.js'
+import type { AssistantAppearanceSettings } from '../assistant-avatar.js'
+import { DEFAULT_ASSISTANT_PROMPTS, type AssistantPromptSettings } from '../assistant-prompts.js'
+import type { AssistantTtsSettings } from '../assistant-tts.js'
 
 /** 适配器最近一次使用的模型、思考强度与服务档位。 */
 export interface CodingNsCliAdapterPreference {
@@ -44,15 +47,34 @@ export const DEFAULT_ASSISTANT_VOICE_SETTINGS: AssistantVoiceSettings = {
 }
 
 export interface AssistantSettings {
+  /** 只有显式 initialized=true 表示已创建；缺省或 false 时旧配置仅预填创建表单。 */
+  profile?: AssistantProfileSettings
+  /** 缺省跟随 DSH 默认模型；固定选择同时用于项目索引与正式对话。 */
+  model?: { readonly provider: string; readonly model: string }
   /** 允许助理读取和派发的工作区 ID。 */
   managedWorkspaceIds: string[]
   /** 语音提供方与本地模型路径；未初始化时点击入口只打开模型选择页。 */
   voice: AssistantVoiceSettings
+  /** 统一形象配置；旧设置缺失时由展示层补默认值。 */
+  appearance?: AssistantAppearanceSettings
+  /** 索引总结与对话前置提示词；旧配置使用默认口语化提示词。 */
+  prompts?: AssistantPromptSettings
+  /** 独立音色与输出后端；缺省保留浏览器播报以兼容旧配置。 */
+  tts?: AssistantTtsSettings
+}
+
+export interface AssistantProfileSettings {
+  readonly name: string
+  /** 角色性格与背景，旧档案缺省时不额外限定角色；不作为项目事实。 */
+  readonly personality?: string
+  readonly initialized: boolean
+  readonly createdAt: number | null
 }
 
 export const DEFAULT_ASSISTANT_SETTINGS: AssistantSettings = {
   managedWorkspaceIds: [],
   voice: DEFAULT_ASSISTANT_VOICE_SETTINGS,
+  prompts: DEFAULT_ASSISTANT_PROMPTS,
 }
 
 /** Codingns4DSH 在 DSH 设置文档中持久化的用户选项。 */

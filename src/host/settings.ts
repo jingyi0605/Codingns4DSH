@@ -17,6 +17,10 @@ import {
   type CodingNsSettings,
 } from '../shared/contracts/config.js'
 import { debugInfo } from '../shared/debug.js'
+import { ASSISTANT_AVATAR_FLOATING_MINI_SIZE, ASSISTANT_AVATAR_FLOATING_STANDARD_SIZE, DEFAULT_ASSISTANT_APPEARANCE } from '../shared/assistant-avatar.js'
+import { ASSISTANT_PROMPT_MAX_CHARS, DEFAULT_ASSISTANT_PROMPTS } from '../shared/assistant-prompts.js'
+import { ASSISTANT_TTS_PARAMETER_LIMITS as ttsLimits, DEFAULT_ASSISTANT_TTS_PARAMETERS } from '../shared/assistant-tts.js'
+import { ASSISTANT_PERSONALITY_MAX_CHARS } from '../shared/assistant-lifecycle.js'
 
 /**
  * DSH 设置服务使用的 Codingns4DSH namespace schema。
@@ -42,7 +46,52 @@ export const CodingNsSettingsSchema = z.object({
       .default(DEFAULT_CODINGNS_SETTINGS.subagentBridge?.maxConcurrentSubagents ?? 8),
   }).default(DEFAULT_CODINGNS_SETTINGS.subagentBridge ?? { enabled: false, maxConcurrentSubagents: 8 }),
   assistant: z.object({
+    profile: z.union([z.object({
+      name: z.string().min(1).max(80), initialized: z.boolean(),
+      personality: z.union([z.string().max(ASSISTANT_PERSONALITY_MAX_CHARS), z.const(undefined)]),
+      createdAt: z.union([z.number().min(0), z.const(null)]),
+    }), z.const(undefined)]),
+    model: z.union([z.object({ provider: z.string().min(1).max(200), model: z.string().min(1).max(200) }), z.const(undefined)]),
     managedWorkspaceIds: z.array(z.string().min(1).max(512)).default(DEFAULT_ASSISTANT_SETTINGS.managedWorkspaceIds),
+    prompts: z.object({
+      index: z.string().max(ASSISTANT_PROMPT_MAX_CHARS).default(DEFAULT_ASSISTANT_PROMPTS.index),
+      chat: z.string().max(ASSISTANT_PROMPT_MAX_CHARS).default(DEFAULT_ASSISTANT_PROMPTS.chat),
+    }).default(DEFAULT_ASSISTANT_PROMPTS),
+    appearance: z.object({
+      floatingEnabled: z.boolean().default(false),
+      dialogEnabled: z.boolean().default(true),
+      floatingSize: z.number().min(ASSISTANT_AVATAR_FLOATING_MINI_SIZE).max(320).default(ASSISTANT_AVATAR_FLOATING_STANDARD_SIZE),
+      dialogSize: z.number().min(120).max(480).default(240),
+      selectedId: z.string().max(80).default('codingns-default'),
+      thirdPartyConsent: z.union([z.object({ version: z.string().min(1).max(80), acceptedAt: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER) }), z.const(undefined)]),
+      models: z.array(z.object({
+        id: z.string().min(1).max(80), name: z.string().min(1).max(80),
+        renderer: z.string().min(1).max(80), source: z.string().max(2048),
+        spriteVersion: z.union([z.const(1), z.const(2)]),
+        // 包字段由共享契约严格校验；schema 保留 JSON，不静默剥掉双展示与状态映射。
+        package: z.union([z.any(), z.const(undefined)]),
+        surfaces: z.union([z.any(), z.const(undefined)]),
+        stateSources: z.union([z.any(), z.const(undefined)]),
+        motionGroups: z.union([z.any(), z.const(undefined)]),
+        live2d: z.union([z.any(), z.const(undefined)]),
+      })).default([...DEFAULT_ASSISTANT_APPEARANCE.models]),
+    }).default({ ...DEFAULT_ASSISTANT_APPEARANCE, models: [...DEFAULT_ASSISTANT_APPEARANCE.models] }),
+    tts: z.object({
+      backend: z.union([z.const('browser'), z.const('moss-onnx')]).default('browser'),
+      selectedId: z.string().max(80).default('moss:Junhao'),
+      parameters: z.object({
+        rate: z.number().min(ttsLimits.rate.min).max(ttsLimits.rate.max).default(1),
+        volume: z.number().min(ttsLimits.volume.min).max(ttsLimits.volume.max).default(1),
+        segmentPauseMs: z.number().step(1).min(ttsLimits.segmentPauseMs.min).max(ttsLimits.segmentPauseMs.max).default(0),
+        chunkTokens: z.number().step(1).min(ttsLimits.chunkTokens.min).max(ttsLimits.chunkTokens.max).default(75),
+        seed: z.union([z.number().step(1).min(ttsLimits.seed.min).max(ttsLimits.seed.max), z.const(null)]).default(null),
+      }).default({ ...DEFAULT_ASSISTANT_TTS_PARAMETERS }),
+      voices: z.array(z.object({
+        id: z.string().min(1).max(80), name: z.string().min(1).max(80), language: z.string().max(16),
+        gender: z.union([z.const('male'), z.const('female'), z.const('unknown')]),
+        kind: z.const('reference'), reference: z.string().max(80), source: z.string().max(2048), license: z.string().max(160),
+      })).max(50).default([]),
+    }).default({ backend: 'browser', selectedId: 'moss:Junhao', voices: [], parameters: { ...DEFAULT_ASSISTANT_TTS_PARAMETERS } }),
     voice: z.object({
       initialized: z.boolean().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.initialized),
       provider: z.union([z.const('dsh-speech-to-text'), z.const('sherpa-onnx')])
@@ -57,7 +106,7 @@ export const CodingNsSettingsSchema = z.object({
       ttsTokens: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.ttsTokens),
       ttsLexicon: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.ttsLexicon),
     }).default(DEFAULT_ASSISTANT_VOICE_SETTINGS),
-  }).default(DEFAULT_ASSISTANT_SETTINGS),
+  }).default({ managedWorkspaceIds: DEFAULT_ASSISTANT_SETTINGS.managedWorkspaceIds, voice: DEFAULT_ASSISTANT_SETTINGS.voice }),
   // 会话索引是 Host 摘要数据，不能让它进入浏览器状态或模型上下文。
   cliSessions: z.array(z.any()).default(DEFAULT_CODINGNS_SETTINGS.cliSessions ?? []),
   lanAccessDsh: z.object({

@@ -7,6 +7,9 @@ import { debugInfo, debugWarn } from '../shared/debug.js'
 import { CodingNsRpcError, type CodingNsRpcHandler, type CodingNsRpcTable } from './rpc-table.js'
 import type { DshHostSettingsProvider } from '../dsh-capabilities/host/config-forms-adapter.js'
 import type { CodingNsSettingsOperation } from '../dsh-capabilities/settings-store.js'
+import { validateAssistantAppearance } from '../shared/assistant-avatar.js'
+import { validateAssistantPrompt, validateAssistantPrompts } from '../shared/assistant-prompts.js'
+import { validateAssistantModel, validateAssistantProfile } from '../shared/assistant-lifecycle.js'
 
 /** 0.2 Connection handler 的 Peer 参数；旧版 handler 仍可通过可选参数调用。 */
 /** CodingNS 自有的 Connection RPC 结果契约，避免绑定 DSH 具体导出名称。 */
@@ -137,7 +140,10 @@ async function handleChannelRequest(
   handler: CodingNsConnectionRpcHandler,
 ): Promise<void> {
   const abortController = new AbortController()
-  request.once('close', () => abortController.abort())
+  // IncomingMessage 的 close 也会在请求体正常读完时触发，不能据此取消下载。
+  // 只在请求体未收全，或响应尚未完成便断开连接时传播取消。
+  request.once('close', () => { if (!request.complete) abortController.abort() })
+  response.once('close', () => { if (!response.writableFinished) abortController.abort() })
   const rejection = connection.requestRejection({ headers: request.headers })
   if (rejection !== undefined) {
     response.statusCode = rejection
@@ -222,8 +228,14 @@ function writeRpcResponse(response: ServerResponse, rpcId: string, result: Codin
 const CODINGNS_RPC_ENDPOINTS = [
   'auth/snapshot', 'auth/login', 'auth/logout', 'auth/devices', 'auth/bind', 'auth/unbind', 'auth/signalingTicket', 'auth/dsh/device/list', 'auth/dsh/device/start', 'auth/dsh/device/stop', 'auth/dsh/device/status', 'auth/dsh/relayTicket',
   'host/status',
-  'assistant/index', 'assistant/summary', 'assistant/turn',
+  'assistant/index', 'assistant/index/rebuild', 'assistant/index/configure', 'assistant/index/cancel', 'assistant/debug', 'assistant/preview', 'assistant/summary', 'assistant/turn',
+  'assistant/chat/models', 'assistant/chat/start', 'assistant/chat/read', 'assistant/chat/cancel',
+  'assistant/lifecycle/read', 'assistant/lifecycle/configure', 'assistant/lifecycle/reset', 'assistant/configuration/capabilities',
+  'assistant/conversation/start', 'assistant/conversation/read', 'assistant/conversation/cancel', 'assistant/conversation/preview', 'assistant/conversation/clear', 'assistant/conversation/compress',
   'assistant/voice/capabilities', 'assistant/voice/models', 'assistant/voice/model/verify', 'assistant/voice/setup', 'assistant/voice/setup-progress', 'assistant/voice/start', 'assistant/voice/stop', 'assistant/voice/heartbeat', 'assistant/voice/interrupt', 'assistant/voice/register-client', 'assistant/voice/unregister-client', 'assistant/voice/event', 'assistant/voice/text',
+  'assistant/voice/chat/start', 'assistant/voice/chat/read', 'assistant/voice/chat/cancel', 'assistant/voice/chat/clear',
+  'assistant/voice/initialization', 'assistant/voice/initialize',
+  'assistant/tts/catalog', 'assistant/tts/setup', 'assistant/tts/select', 'assistant/tts/configure', 'assistant/tts/import', 'assistant/tts/remove',
   'settings/get', 'settings/set',
   'terminal/status',
   'terminalProcess/profile/list', 'terminalProcess/profile/create', 'terminalProcess/profile/delete',
@@ -304,6 +316,19 @@ function parseSettingsOp(value: unknown): CodingNsSettingsOperation {
   if (!isAllowedSettingsPath(path)) throw new CodingNsRpcError('CODINGNS_SETTINGS_FIELD_FORBIDDEN', `禁止修改设置字段: ${path.join('.')}`)
   if (value.op === 'unset') return { op: 'unset', path }
   if (!('value' in value)) throw new TypeError('set 操作缺少 value')
+  if (path[0] === 'assistant' && path[1] === 'profile') validateAssistantProfile(value.value)
+  if (path[0] === 'assistant' && path[1] === 'model') validateAssistantModel(value.value)
+  if (path.length === 1 && path[0] === 'assistant' && isRecord(value.value)) {
+    if ('profile' in value.value) validateAssistantProfile(value.value.profile)
+    if ('model' in value.value) validateAssistantModel(value.value.model)
+  }
+  if (path[0] === 'assistant' && path[1] === 'appearance') validateAssistantAppearance(value.value)
+  if (path.length === 1 && path[0] === 'assistant' && isRecord(value.value) && 'appearance' in value.value) validateAssistantAppearance(value.value.appearance)
+  if (path[0] === 'assistant' && path[1] === 'prompts') {
+    if (path.length === 3) validateAssistantPrompt(value.value)
+    else validateAssistantPrompts(value.value)
+  }
+  if (path.length === 1 && path[0] === 'assistant' && isRecord(value.value) && 'prompts' in value.value) validateAssistantPrompts(value.value.prompts)
   return { op: 'set', path, value: value.value }
 }
 
@@ -340,7 +365,7 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
     return path.length === 2 && ['timeoutSecs', 'refreshIntervalMins'].includes(path[1] ?? '')
   }
   if (path[0] === 'assistant') {
-    return path.length === 2 && path[1] === 'managedWorkspaceIds'
+    return (path.length === 2 && ['managedWorkspaceIds', 'appearance', 'prompts', 'profile', 'model'].includes(path[1] ?? '')) || (path.length === 3 && path[1] === 'prompts' && ['index', 'chat'].includes(path[2] ?? ''))
   }
   if (path[0] === 'subagentBridge') {
     return path.length === 2 && ['enabled', 'maxConcurrentSubagents'].includes(path[1] ?? '')
@@ -396,6 +421,8 @@ function failure(code: string, message: string): CodingNsConnectionRpcResult<unk
 
 function errorCode(error: unknown): string {
   if (error && typeof error === 'object' && 'errorCode' in error && typeof error.errorCode === 'string') return error.errorCode
+  // DSH 原生设置冲突通过 code 暴露稳定标识，不能降级成异常类名。
+  if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string') return error.code
   if (error instanceof Error && error.name) return error.name
   return 'CODINGNS_RPC_FAILED'
 }

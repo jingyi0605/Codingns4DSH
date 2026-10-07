@@ -23,6 +23,9 @@ export function createDshCapabilityRegistry(
   const add = <T>(route: DshCapabilityRoute<T>): void => registry.register(route)
 
   if (runtime === 'host') {
+    add({ id: 'assistant-agent-021', capability: 'assistant.agent', supportedDsh: '>=0.2.1-alpha.1 <=0.2.1-alpha.1', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.1',
+      detect: (ctx) => hasMethods(read(ctx, 'agents'), ['create']) && hasMethods(read(ctx, 'tools'), ['register', 'restrict', 'guard', 'presentAs']) && hasMethods(read(ctx, 'systemPrompt'), ['section', 'suppressRuntimeContext']) && typeof read(ctx, 'on') === 'function',
+      create: (ctx) => read(ctx, 'agents') })
     add({ id: 'settings-scope', capability: 'settings.store', supportedDsh: rangeLegacy, runtime, priority: 10, status: 'supported', introducedIn: '0.1.5-rc.3', detect: (ctx) => typeof (ctx as { settings?: { register?: unknown } }).settings?.register === 'function', create: (ctx) => (ctx as { settings: unknown }).settings })
     add({ id: 'config-settings', capability: 'settings.store', supportedDsh: rangeModern, runtime, priority: 20, status: 'supported', introducedIn: '0.1.7-rc.2', detect: (ctx) => typeof (ctx as { settings?: { describe?: unknown; mutate?: unknown } }).settings?.describe === 'function' && typeof (ctx as { settings?: { mutate?: unknown } }).settings?.mutate === 'function', create: (ctx) => (ctx as { settings: unknown }).settings })
     add({ id: 'connection-rpc', capability: 'connection.rpc', supportedDsh: rangeLegacy, runtime, priority: 10, status: 'supported', introducedIn: '0.1.5-rc.3', detect: (ctx) => (ctx as { connection?: unknown }).connection !== undefined, create: (ctx) => (ctx as { connection: unknown }).connection })
@@ -58,6 +61,12 @@ export interface DshCapabilityRuntimeFacts {
 
 /** DSH 0.2 Host 结构化能力。检测基于服务形状，不把版本判断散落到业务模块。 */
 function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): void {
+  add({
+    id: 'llm-text-021', capability: 'llm.text', supportedDsh: '>=0.2.1-alpha.1 <=0.2.1-alpha.1', runtime: 'host', priority: 10,
+    status: 'supported', introducedIn: '0.2.1-alpha.1',
+    detect: (ctx) => hasMethods(read(ctx, 'llm'), ['stream', 'listProviders', 'listModels']),
+    create: (ctx) => read(ctx, 'llm'),
+  })
   add({
     id: 'settings-forms-020', capability: 'settings.store', supportedDsh, runtime: 'host', priority: 30,
     status: 'supported', introducedIn: '0.2.0-rc.1',

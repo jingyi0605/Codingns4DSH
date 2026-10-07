@@ -96,6 +96,14 @@ export class CodingNsSettingsBridge implements CodingNsSettingsStore<CodingNsSet
     return this.remoteLoad
   }
 
+  async reload(): Promise<void> {
+    // 先等初次读取结束，再发出新读取，避免迟到的初始快照覆盖业务 RPC 的更新。
+    await this.remoteLoad?.catch(() => undefined)
+    const response = await this.call<RemoteSettingsResponse>('settings/get', {})
+    this.remoteLoaded = this.isRemote()
+    this.publish({ status: 'ready', value: response.value, revision: response.revision, writable: true })
+  }
+
   async set(field: string, value: unknown): Promise<boolean> {
     const local = this.local
     if (local !== undefined && !this.isRemote()) {
@@ -201,7 +209,8 @@ export async function callCodingNsRpc<T>(rpc: CodingNsRpcClient, endpoint: strin
   }
   if (!result.ok) {
     console.error('codingns4dsh: client rpc response error', { endpoint, error: result.error })
-    throw new Error(result.error.message)
+    // 保留 Host 的稳定错误码，让业务层区分版本冲突和真正的权限/网络失败。
+    throw Object.assign(new Error(result.error.message), { code: result.error.code })
   }
   debugInfo('codingns4dsh: client rpc response success', { endpoint })
   return result.value as T

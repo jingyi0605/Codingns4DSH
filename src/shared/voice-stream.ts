@@ -1,5 +1,8 @@
 import type { VoicePcmFrame, VoiceRuntimeEvent } from './contracts/voice-runtime.js'
 
+export const ASSISTANT_VOICE_STREAM_PATH = '/api/codingns/assistant/voice/stream'
+export const ASSISTANT_VOICE_EVENTS_PATH = '/api/codingns/assistant/voice/events'
+
 /** 浏览器到 Host 的 PCM 流首部。首部和后续帧都使用 UTF-8 JSON 行分隔。 */
 export interface VoiceStreamOpenMessage {
   readonly type: 'open'
@@ -42,6 +45,11 @@ export class VoiceStreamDecoder {
   private pending = new Uint8Array(0)
   private expectedBytes = 0
   private pendingPcm: VoiceStreamPcmMessage | undefined
+
+  /** 有限 POST 结束时校验尾部，截断的音频帧不能被静默接受。 */
+  finish(): void {
+    if (this.pending.length !== 0 || this.pendingPcm !== undefined) throw new Error('语音 PCM 流不完整')
+  }
 
   push(chunk: Uint8Array): Array<{ readonly message: VoiceStreamMessage; readonly pcm?: Uint8Array }> {
     if (chunk.length > 0) this.pending = concatBytes(this.pending, chunk) as Uint8Array<ArrayBuffer>

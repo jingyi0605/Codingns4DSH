@@ -17,6 +17,9 @@ export interface AssistantSessionSourceRecord extends AssistantScopeSession {
   /** 可选的语义标题事件，必须取最后一条。 */
   readonly titleEvents?: readonly (string | null | undefined)[]
   readonly summary?: string | null
+  readonly activity?: 'running' | 'idle' | 'unknown'
+  readonly sourceVersion?: number
+  readonly indexedVersion?: number
 }
 
 export interface AssistantSessionIndexBuildOptions {
@@ -131,6 +134,9 @@ export async function buildAssistantSessionIndex(
       updatedAt: session.updatedAt,
       waiting,
       summary,
+      ...(session.activity === undefined ? {} : { activity: session.activity }),
+      ...(session.sourceVersion === undefined ? {} : { sourceVersion: session.sourceVersion }),
+      ...(session.indexedVersion === undefined ? {} : { indexedVersion: session.indexedVersion }),
     })
   }
   return { generation: options.generation ?? 0, entries, excludedTargets, scope: filtered.state, unreadableCount }
