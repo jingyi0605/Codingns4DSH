@@ -58,11 +58,13 @@ interface TerminalInventory {
 
 ### 3.3 终端视图
 
-新增明确的 `viewForTerminal(sessionId, terminalId, shellPath?)` 或等价内部方法，使用 `[sessionId, terminalId]` 作为视图缓存键。聚合页只显示选中视图；隐藏其他视图不调用 Host close，也不主动 detach。
+`viewForTerminal(sessionId, terminalId, shellPath?)` 使用工作区作用域与 `terminalId` 缓存模型。同工作区所有会话共用同一个模型和 follow；工作区解析前创建的模型在解析后迁入工作区缓存，不能重复创建。会话仅提供当前可见卡片的 Remote 调用上下文。
 
-Host `CodingNsTerminalService` 为每个 running 终端建立一条不绑定浏览器 generation 的 resident attachment。`follow` 只注册内存 follower，并复用 resident 的输入、尺寸和输出通道。resident 缓存有限的原始输出；新 follower 先收到当前状态，再收到缓存输出，因页面重挂载或跨会话订阅而产生的瞬时连接不会清空已显示内容。
+Host `CodingNsTerminalService` 为每个 running 终端建立一条不绑定浏览器 generation 的 resident attachment（常驻连接）。`follow` 只注册内存 follower（输出订阅），并复用 resident 的输入、尺寸和输出通道。新页面首次订阅通过历史捕获或有限输出缓存恢复快照，随后接收状态与增量输出；同页面内切换会话不再创建新订阅。
 
-聚合页改为同时挂载库存中的所有 `CodingNsXtermView`。未选中的视图通过 `display:none` 隐藏，但继续保持 `view.mount()`、xterm 屏幕和 Host follow attach；只有整个 Sidebar 页签卸载时才 detach。选中状态变化时重新执行 FitAddon 尺寸同步和焦点设置。
+聚合页同时渲染库存中的所有 `CodingNsXtermView`。`TerminalSurfaceCache` 为每个模型保留唯一 xterm 屏幕，跨会话仅移动屏幕 DOM；隐藏子标签、卸载或关闭 Sidebar 卡片不销毁屏幕。屏幕持有 `view.mount()` 和状态订阅，隐藏期间继续写入与确认每一帧，保留缓冲区、光标、备用屏幕和滚动位置。只有模型 dispose 才销毁屏幕与连接。
+
+仅当前可见且选中的卡片同步外观、尺寸与焦点；隐藏卡片不能按 Host 尺寸重设共享屏幕。首次快照、实际尺寸变化、真实断线和显式刷新保留原有恢复行为。Host 对相同尺寸直接返回，不触发 backend resize 或历史重放。
 
 ### 3.4 工作区选择与卡片状态
 
@@ -132,4 +134,4 @@ pnpm test
 
 - DSH 旧布局可能在升级首次恢复时包含多个 terminal 标签，必须先执行无 Host close 的迁移。
 - 没有终端时不能删除创建入口，否则用户无法建立第一个终端；隐藏目标是已打开的聚合页签。
-- Host 没有事件推送，库存同步以显式 refresh + revision 为准；连接断开时保留当前视图并允许重试。终端切换不再主动断开连接，Host 只在显式关闭、运行时退出、插件卸载时清理 resident attachment；连接层异常会先结束旧 follower，再后台重建 resident。
+- Host 没有库存事件推送，库存同步以显式 refresh + revision 为准；连接断开时保留当前视图并允许重试。终端切换不再主动断开连接，Host 只在显式关闭、运行时退出、插件卸载时清理 resident attachment；连接层异常保留 follower，后台重建 resident 并重绑控制权。
