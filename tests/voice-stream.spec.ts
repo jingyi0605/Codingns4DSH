@@ -22,4 +22,8 @@ test('语音 PCM 流解码器能处理 JSON 行和二进制帧的任意分片', 
 test('语音 PCM 流拒绝超大或不完整帧', () => {
   const decoder = new VoiceStreamDecoder()
   assert.throws(() => decoder.push(new TextEncoder().encode('{"type":"pcm","sequence":0,"sampleRate":16000,"channels":1,"epoch":0,"byteLength":1048577}\n')), /无效/u)
+  const incomplete = new VoiceStreamDecoder()
+  incomplete.push(encodeVoiceStreamMessage({ type: 'pcm', sequence: 1, sampleRate: 16_000, channels: 1, epoch: 2, byteLength: 4 }))
+  incomplete.push(new Uint8Array([1, 2]))
+  assert.throws(() => incomplete.finish(), /不完整/u)
 })

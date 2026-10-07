@@ -5,6 +5,21 @@ import { callCliRpc } from '../data/build/dist/client/cli-catalog.js'
 import type { CodingNsSettings } from '../data/build/dist/shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../data/build/dist/shared/contracts/transport.js'
 
+test('Host 音色业务 RPC 修改后，reload 绕过 load 缓存并立即更新播报设置', async () => {
+  let backend = 'browser'; let reads = 0
+  const bridge = createCodingNsSettingsBridge(undefined, { call: async () => {
+    reads++
+    return { ok: true as const, value: { value: { ...settings, assistant: { tts: { backend } } }, revision: reads } }
+  } })
+  await bridge.load?.()
+  backend = 'moss-onnx'
+  await bridge.load?.()
+  assert.equal(reads, 1, '普通 load 保持缓存语义')
+  await bridge.reload?.()
+  assert.equal(reads, 2)
+  assert.equal(bridge.getSnapshot().value?.assistant.tts?.backend, 'moss-onnx')
+})
+
 const settings: CodingNsSettings = {
   controlBaseUrl: 'https://control.example.com',
   controlBaseUrls: ['https://control.example.com'],
