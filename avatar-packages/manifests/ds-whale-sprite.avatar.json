@@ -1,0 +1,13 @@
+{
+  "avatarManifestVersion": 1,
+  "id": "catalog-ds-whale-sprite",
+  "name": "大肥鱼 · Q版全身",
+  "author": "新增创作：YunYueSama；底层社区角色与参考作品作者见上游权利说明",
+  "license": "大肥鱼项目署名许可 1.0：仅覆盖作者有权授权的新增贡献；须标明 YunYueSama 和仓库地址。底层参考作品权利另行确认。",
+  "homepage": "https://github.com/YunYueSama/codex-deepseek-pet/blob/7661c8b304c5400701f91da01b1a643a207331de/ASSET_LICENSE.md",
+  "asset": {
+    "renderer": "spritesheet",
+    "source": "https://raw.githubusercontent.com/YunYueSama/codex-deepseek-pet/7661c8b304c5400701f91da01b1a643a207331de/codex-deepseek-pet/spritesheet.webp",
+    "spriteVersion": 2
+  }
+}

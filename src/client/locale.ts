@@ -4,6 +4,7 @@ import type { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import * as debugDictionary from './locales/debug.js'
 import * as assistantDebugDictionary from './locales/assistantDebug.js'
+import * as assistantAvatarDictionary from './locales/assistantAvatar.js'
 import * as fileWorkspaceDictionary from './locales/fileWorkspace.js'
 import * as gitDictionary from './locales/git.js'
 import * as panelsDictionary from './locales/panels.js'
@@ -902,6 +903,7 @@ const CORE_ZH: Record<string, string> = {
  */
 const en: Record<string, string> = {
   ...CORE_EN,
+  ...assistantAvatarDictionary.en,
   ...assistantDebugDictionary.en,
   ...gitDictionary.en,
   ...debugDictionary.en,
@@ -916,6 +918,7 @@ const en: Record<string, string> = {
 
 const zh: Record<string, string> = {
   ...CORE_ZH,
+  ...assistantAvatarDictionary.zh,
   ...assistantDebugDictionary.zh,
   ...gitDictionary.zh,
   ...debugDictionary.zh,

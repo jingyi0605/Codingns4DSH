@@ -1,0 +1,13 @@
+{
+  "avatarManifestVersion": 1,
+  "id": "catalog-nastya",
+  "name": "娜斯佳 Nastya",
+  "author": "Signalight",
+  "license": "CC BY-NC 4.0：署名 Signalight，非商业使用；素材与插件代码许可分开。",
+  "homepage": "https://github.com/Signalight/codex-to-dsh-pet/blob/ca3833893b46ce0c4528c720f3ec772e7b1cbaec/LEGAL.md",
+  "asset": {
+    "renderer": "spritesheet",
+    "source": "https://raw.githubusercontent.com/Signalight/codex-to-dsh-pet/ca3833893b46ce0c4528c720f3ec772e7b1cbaec/packages/dsh-codex-pet/assets/nastya/spritesheet.webp",
+    "spriteVersion": 2
+  }
+}

@@ -32,6 +32,10 @@ export interface DshConfigFormUnfencedWriter {
 export interface DshConfigFormSettingsOptions {
   /** DSH 0.1.7 后台可能持续更新同一 entry 的 Host-only 索引时使用。 */
   readonly writeUnfenced?: DshConfigFormUnfencedWriter
+  /** 清单等基于快照计算的写入必须保留调用方的版本校验。 */
+  readonly writeFenced?: (operations: Parameters<DshConfigFormUnfencedWriter>[0], expectedRevision: number) => ReturnType<DshConfigFormUnfencedWriter>
+  /** 冲突或业务 RPC 更新后，绕过原生镜像缓存读取 Host 权威快照。 */
+  readonly readLatest?: () => ReturnType<DshConfigFormUnfencedWriter>
 }
 
 /**
@@ -145,6 +149,9 @@ export function createConfigFormSettingsStore(
     getSnapshot: () => snapshot,
     subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener) },
     mutate: async (operations, revision) => {
+      if (revision !== undefined && options.writeFenced !== undefined) {
+        return publishWrite(await options.writeFenced(operations, revision))
+      }
       return write(operations, () => form.mutate(operations, revision))
     },
     set: async (field, value) => {
@@ -154,7 +161,8 @@ export function createConfigFormSettingsStore(
       return write([{ op: 'unset', path: [field] }], () => form.unset(field), () => form.unset(field))
     },
     reload: async () => {
-      refresh()
+      if (options.readLatest !== undefined) publishWrite(await options.readLatest())
+      else refresh()
     },
     dispose: () => {
       unsubscribeForm()

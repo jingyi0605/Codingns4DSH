@@ -1,0 +1,27 @@
+{
+  "avatarManifestVersion": 1,
+  "id": "catalog-ds-whale-live2d",
+  "name": "大肥鱼 · Live2D 桌前",
+  "author": "原作：上善无形；女仆设计：ZipZipPipe；Live2D：氵六青；插件：A8Chann",
+  "license": "CC BY-NC-SA 4.0：署名、非商业、相同方式共享；商业使用需各权利人另行授权。素材未改绘，安装器仅转换路径。",
+  "homepage": "https://github.com/A8Chann/dsh-pet-live2d/blob/185c02bfbb3b886e1a236b5c2ec035cc085b9ca2/NOTICE.md",
+  "asset": {
+    "renderer": "live2d",
+    "source": "https://raw.githubusercontent.com/A8Chann/dsh-pet-live2d/185c02bfbb3b886e1a236b5c2ec035cc085b9ca2/dsh-live2d-pet/pets/ds-whale-girl/c_0120.model3.json",
+    "spriteVersion": 2,
+    "motionGroups": {
+      "idle": "Idle",
+      "thinking": "Idle",
+      "listening": "Idle",
+      "waiting": "Idle",
+      "error": "SprayWater"
+    },
+    "live2d": {
+      "scale": 1,
+      "position": [
+        0,
+        0
+      ]
+    }
+  }
+}

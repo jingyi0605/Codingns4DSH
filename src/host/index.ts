@@ -29,11 +29,14 @@ import { registerNativeTeamSubagentProviders, type NativeSubagentService } from 
 import { setNativeSubagents } from './cli-adapters/native-subagent-holder.js'
 import { installSidebarSessionCompat } from '../dsh-capabilities/host/sidebar-session-compat.js'
 import { registerAssistantVoiceStreamRoutes } from './features/assistant-voice-stream.js'
-import { registerStage0DevHmr } from './stage0-dev-hmr.js'
+import { registerAssistantAvatarRoutes } from './features/assistant-avatar-runtime.js'
+import { isStage0Runtime, registerStage0DevHmr } from './stage0-dev-hmr.js'
+import { CODINGNS_STAGE0_GLOBAL } from '../shared/runtime-environment.js'
 
 export function apply(ctx?: Context): void {
   if (ctx === undefined) return
   const dshVersion = detectRuntimeDshVersion()
+  const stage0 = isStage0Runtime()
   debugInfo('codingns4dsh: host apply entered', { dshVersion })
   registerStage0DevHmr(ctx)
 
@@ -98,6 +101,7 @@ export function apply(ctx?: Context): void {
       try {
         injectDshWebTransportOwnership(table)
         table.push({ kind: 'global', name: DSH_VERSION_INJECTION_NAME, value: dshVersion })
+        table.push({ kind: 'global', name: CODINGNS_STAGE0_GLOBAL, value: stage0 })
         if (indexInjectionSettings !== undefined && indexInjectionCapabilityReady) {
           injectDshWebPwaMetadata(table, indexInjectionSettings.get().lanAccessDsh.pwa)
         }
@@ -152,6 +156,7 @@ export function apply(ctx?: Context): void {
         fetch: handler,
       }),
       registerAssistantVoiceStreamRoute: (handler) => registerAssistantVoiceStreamRoutes(hostCtx.connection.fetch, handler),
+      registerAssistantAvatarRuntimeRoute: (handler, legacy) => registerAssistantAvatarRoutes(hostCtx.connection.fetch, handler, legacy),
     }
     const debug = new DebugWorkspaceService({
       resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveWorkspaceRoot(hostCtx, workspaceId),
@@ -321,6 +326,11 @@ export type {
 } from './features/index.js'
 export { CodingNsSettingsSchema, registerCodingNsSettings } from './settings.js'
 export { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler, registerCodingNsRpc } from './rpc.js'
+export { AssistantAvatarPackages, assistantAvatarPackageDirectory } from './avatar/packages.js'
+export { AssistantAvatarCatalog } from './avatar/catalog.js'
+export { getAssistantAvatarPackages, registerAssistantAvatarFormatAdapter, registerAssistantAvatarSourceAdapter, registerAssistantAvatarMaterialAdapter } from './avatar/registry.js'
+export type { AssistantAvatarSourceAdapter } from './avatar/sources.js'
+export type { AssistantAvatarMaterialAdapter, AssistantAvatarMaterialContext } from './avatar/materials.js'
 export {
   AGGREGATED_HOST_RPC_ROUTES,
   AggregatedHostTransportError,

@@ -38,6 +38,7 @@ import { CodingNsWebTerminals, registerCodingNsTerminalUi } from './terminal/ind
 import type { TerminalRemote } from './terminal/model.js'
 import { startCodingNsAccountBar } from './account-bar.js'
 import { assertInjectedDshVersion } from './dsh-runtime-version.js'
+import { isInjectedStage0Runtime } from '../shared/runtime-environment.js'
 import { createDshCapabilityRegistry } from '../dsh-capabilities/index.js'
 import { TYPERT_REMOTE } from '../typert.remote-client.js'
 import { createPeerHostScopedClient } from './peer-host-scoped-client.js'
@@ -106,6 +107,17 @@ export {
 } from './mobile-settings-modal-dom.js'
 export { CodingNsTerminalView, CodingNsWebTerminals, registerCodingNsTerminalUi } from './terminal/index.js'
 export { registerSubscriptionSlot, registerCommandCodeSubscriptionSlot, CommandCodeSubscriptionSlot } from './subscription-slot.js'
+export { AssistantAvatarSlot } from './avatar/slot.js'
+export { AssistantAvatarPortrait, useAssistantAvatarPortrait } from './avatar/portrait.js'
+export { registerAssistantAvatarRenderer } from './avatar/registry.js'
+export type { AssistantAvatarSlotProps } from './avatar/slot.js'
+export type { AssistantAvatarRenderer, AssistantAvatarRendererProps } from './avatar/registry.js'
+export type { AssistantAvatarLoadProgress } from './avatar/loading.js'
+export type { AssistantAvatarPreview } from './avatar/preview-store.js'
+export { captureAssistantAvatarPreview } from './avatar/preview-capture.js'
+export { AssistantAvatarManager, AssistantAvatarAdapterRegistry, getAssistantAvatarManager, registerAssistantAvatarAdapter } from './avatar/manager.js'
+export type { AssistantAppearanceUpdate } from './avatar/manager.js'
+export type { AssistantAvatarAdapter, AssistantAvatarAdapterContext } from '../shared/assistant-avatar-adapters.js'
 
 /** Client Runner 用于等待服务就绪的 Cordis 依赖声明。 */
 export const inject = ['slots', 'connection', 'remote', 'remote.workspace', 'remote.session', 'sidebarRight', 'sidebarRightTabs', 'layout', 'theme', 'locale', 'uiConversation'] as const
@@ -159,6 +171,7 @@ export function apply(ctx?: Context): void {
     const peerHost = createPeerHostScopedClient(connection.rpc)
     const services: CodingNsClientServices = {
       dshVersion,
+      stage0: isInjectedStage0Runtime(),
       settings,
       rpc: connection.rpc,
       peerHost,
@@ -299,6 +312,15 @@ function createClientSettingsStore(ctx: Context, rpc: CodingNsRpcClient): Coding
         readonly value: CodingNsSettings
         readonly revision: number
       }>(rpc, 'settings/set', { ops }),
+      // 形象清单由当前快照计算，冲突时由管理器重读并重算，不能无条件覆盖。
+      writeFenced: async (ops, expectedRevision) => callCodingNsRpc<{
+        readonly value: CodingNsSettings
+        readonly revision: number
+      }>(rpc, 'settings/set', { ops, expectedRevision }),
+      readLatest: async () => callCodingNsRpc<{
+        readonly value: CodingNsSettings
+        readonly revision: number
+      }>(rpc, 'settings/get', {}),
     },
   )
 }

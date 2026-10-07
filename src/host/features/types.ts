@@ -65,6 +65,8 @@ export interface CodingNsHostServices {
   readonly registerPeerHostHandshakeRoute?: (handler: (request: Request) => Promise<Response>) => () => Promise<void>
   /** 全局助理二进制 PCM 流入口；只由语音模块注册和注销。 */
   readonly registerAssistantVoiceStreamRoute?: (handler: (request: Request) => Promise<Response>) => () => Promise<void>
+  /** 引擎与已安装素材入口；旧预设仅在已有配置需要时登记兼容路由。 */
+  readonly registerAssistantAvatarRuntimeRoute?: (handler: (request: Request) => Promise<Response>, legacy?: boolean) => () => Promise<void>
   /** 由 Host 权威解析 Workspace ID，Client 不可覆盖。 */
   readonly resolveWorkspaceRoot?: (workspaceId: string) => string | null
   /** 返回 Host 当前已知的工作区根目录，用于文件管理路径校验。 */

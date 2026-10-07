@@ -1,0 +1,259 @@
+{
+  "catalogVersion": 1,
+  "updatedAt": "2026-10-07",
+  "repositoryUrl": "https://github.com/jingyi0605/Codingns4DSH",
+  "packages": [
+    {
+      "number": 1,
+      "id": "ds-whale-live2d",
+      "name": "大肥鱼 · Live2D 桌前",
+      "repositoryUrl": "https://github.com/A8Chann/dsh-pet-live2d",
+      "author": "原作：上善无形；女仆设计：ZipZipPipe；Live2D：氵六青；插件：A8Chann",
+      "description": "蓝发女仆鲸鱼娘，带桌前道具、表情和动作。",
+      "remarks": "CC BY-NC-SA 4.0；需署名三位素材作者。只适配模型与动作，不包含原插件的换装和喂食界面。",
+      "format": "dsh-live2d-pet",
+      "sourceManifestUrl": "https://raw.githubusercontent.com/A8Chann/dsh-pet-live2d/185c02bfbb3b886e1a236b5c2ec035cc085b9ca2/dsh-live2d-pet/pets/ds-whale-girl/pet.json",
+      "manifestPath": "avatar-packages/manifests/ds-whale-live2d.avatar.json",
+      "licenseUrl": "https://github.com/A8Chann/dsh-pet-live2d/blob/185c02bfbb3b886e1a236b5c2ec035cc085b9ca2/NOTICE.md",
+      "revision": "185c02bfbb3b886e1a236b5c2ec035cc085b9ca2",
+      "installManifestUrl": "https://raw.githubusercontent.com/jingyi0605/Codingns4DSH/main/avatar-packages/manifests/ds-whale-live2d.avatar.json",
+      "previewUrl": "https://raw.githubusercontent.com/A8Chann/dsh-pet-live2d/185c02bfbb3b886e1a236b5c2ec035cc085b9ca2/dsh-live2d-pet/pets/ds-whale-girl/previews/idle.png",
+      "verification": {
+        "checkedAt": "2026-10-07",
+        "files": 58,
+        "bytes": 4146469
+      }
+    },
+    {
+      "number": 2,
+      "id": "ds-whale-sprite",
+      "name": "大肥鱼 · Q版全身",
+      "repositoryUrl": "https://github.com/YunYueSama/codex-deepseek-pet",
+      "author": "新增创作：YunYueSama；底层社区角色与参考作品作者见上游权利说明",
+      "description": "全身蓝发鲸鱼娘动作图集，适合轻量悬浮展示。",
+      "remarks": "自定义署名许可仅覆盖作者有权授权的贡献；底层角色与参考作品权利尚需确认，不视为完整商业授权。",
+      "format": "codex-pet",
+      "sourceManifestUrl": "https://raw.githubusercontent.com/YunYueSama/codex-deepseek-pet/7661c8b304c5400701f91da01b1a643a207331de/codex-deepseek-pet/pet.json",
+      "manifestPath": "avatar-packages/manifests/ds-whale-sprite.avatar.json",
+      "licenseUrl": "https://github.com/YunYueSama/codex-deepseek-pet/blob/7661c8b304c5400701f91da01b1a643a207331de/ASSET_LICENSE.md",
+      "revision": "7661c8b304c5400701f91da01b1a643a207331de",
+      "installManifestUrl": "https://raw.githubusercontent.com/jingyi0605/Codingns4DSH/main/avatar-packages/manifests/ds-whale-sprite.avatar.json",
+      "previewUrl": "https://raw.githubusercontent.com/YunYueSama/codex-deepseek-pet/7661c8b304c5400701f91da01b1a643a207331de/assets/whale/portrait.png",
+      "verification": {
+        "checkedAt": "2026-10-07",
+        "files": 1,
+        "bytes": 1190494
+      }
+    },
+    {
+      "number": 3,
+      "id": "nastya",
+      "name": "娜斯佳 Nastya",
+      "repositoryUrl": "https://github.com/Signalight/codex-to-dsh-pet",
+      "author": "Signalight",
+      "description": "红瞳 Q 版学者，是轻量 DSH 精灵图插件的原创示例角色。",
+      "remarks": "Codex v2；素材 CC BY-NC 4.0，需署名、非商业使用；插件代码的 MIT 不适用于图集。",
+      "format": "codex-pet",
+      "sourceManifestUrl": "https://raw.githubusercontent.com/Signalight/codex-to-dsh-pet/ca3833893b46ce0c4528c720f3ec772e7b1cbaec/packages/dsh-codex-pet/assets/nastya/pet.json",
+      "manifestPath": "avatar-packages/manifests/nastya.avatar.json",
+      "licenseUrl": "https://github.com/Signalight/codex-to-dsh-pet/blob/ca3833893b46ce0c4528c720f3ec772e7b1cbaec/LEGAL.md",
+      "revision": "ca3833893b46ce0c4528c720f3ec772e7b1cbaec",
+      "installManifestUrl": "https://raw.githubusercontent.com/jingyi0605/Codingns4DSH/main/avatar-packages/manifests/nastya.avatar.json",
+      "previewUrl": "https://raw.githubusercontent.com/Signalight/codex-to-dsh-pet/ca3833893b46ce0c4528c720f3ec772e7b1cbaec/assets/screenshots/screenshot-3.png",
+      "verification": {
+        "checkedAt": "2026-10-07",
+        "files": 1,
+        "bytes": 1842798
+      }
+    },
+    {
+      "number": 4,
+      "id": "xiaoman",
+      "name": "小满",
+      "repositoryUrl": "https://github.com/YaKun9/codex-pets",
+      "author": "YaKun9",
+      "description": "暖金毛色、红项圈的原创中华田园犬伙伴。",
+      "remarks": "Codex v2；CC BY-NC-SA 4.0；原创动物角色，需署名、非商业使用、改编同许可。",
+      "format": "codex-pet",
+      "sourceManifestUrl": "https://raw.githubusercontent.com/YaKun9/codex-pets/5de75e244de7d4f74d35ea14f226f583b986d7d3/original-xiaoman/pet.json",
+      "manifestPath": "avatar-packages/manifests/xiaoman.avatar.json",
+      "licenseUrl": "https://github.com/YaKun9/codex-pets/blob/5de75e244de7d4f74d35ea14f226f583b986d7d3/original-xiaoman/LICENSE.md",
+      "revision": "5de75e244de7d4f74d35ea14f226f583b986d7d3",
+      "installManifestUrl": "https://raw.githubusercontent.com/jingyi0605/Codingns4DSH/main/avatar-packages/manifests/xiaoman.avatar.json",
+      "previewUrl": "https://raw.githubusercontent.com/YaKun9/codex-pets/5de75e244de7d4f74d35ea14f226f583b986d7d3/original-xiaoman/preview.webp",
+      "verification": {
+        "checkedAt": "2026-10-07",
+        "files": 1,
+        "bytes": 2461848
+      }
+    },
+    {
+      "number": 5,
+      "id": "scout-corgi",
+      "name": "Scout · 水彩柯基",
+      "repositoryUrl": "https://github.com/YaKun9/codex-pets",
+      "author": "FunShow（@fanslead）",
+      "description": "背着青绿背包、挂着相机的水彩柯基探险家。",
+      "remarks": "Codex v2；CC BY-NC-SA 4.0；AI 辅助原创，作者是 FunShow，仓库维护者不是素材作者。",
+      "format": "codex-pet",
+      "sourceManifestUrl": "https://raw.githubusercontent.com/YaKun9/codex-pets/5de75e244de7d4f74d35ea14f226f583b986d7d3/original-scout-corgi/pet.json",
+      "manifestPath": "avatar-packages/manifests/scout-corgi.avatar.json",
+      "licenseUrl": "https://github.com/YaKun9/codex-pets/blob/5de75e244de7d4f74d35ea14f226f583b986d7d3/original-scout-corgi/LICENSE.md",
+      "revision": "5de75e244de7d4f74d35ea14f226f583b986d7d3",
+      "installManifestUrl": "https://raw.githubusercontent.com/jingyi0605/Codingns4DSH/main/avatar-packages/manifests/scout-corgi.avatar.json",
+      "previewUrl": "https://raw.githubusercontent.com/YaKun9/codex-pets/5de75e244de7d4f74d35ea14f226f583b986d7d3/original-scout-corgi/preview.webp",
+      "verification": {
+        "checkedAt": "2026-10-07",
+        "files": 1,
+        "bytes": 2939694
+      }
+    },
+    {
+      "number": 6,
+      "id": "bubu-codebrew-bear",
+      "name": "布布 · 编程熊",
+      "repositoryUrl": "https://github.com/YaKun9/codex-pets",
+      "author": "xxhh0822（@xxhh0822）",
+      "description": "使用笔记本电脑、身边放着咖啡杯的棕色编程熊。",
+      "remarks": "Codex v2；CC BY-NC-SA 4.0；AI 辅助原创，适合桌前构图。",
+      "format": "codex-pet",
+      "sourceManifestUrl": "https://raw.githubusercontent.com/YaKun9/codex-pets/5de75e244de7d4f74d35ea14f226f583b986d7d3/original-bubu-codebrew-bear/pet.json",
+      "manifestPath": "avatar-packages/manifests/bubu-codebrew-bear.avatar.json",
+      "licenseUrl": "https://github.com/YaKun9/codex-pets/blob/5de75e244de7d4f74d35ea14f226f583b986d7d3/original-bubu-codebrew-bear/LICENSE.md",
+      "revision": "5de75e244de7d4f74d35ea14f226f583b986d7d3",
+      "installManifestUrl": "https://raw.githubusercontent.com/jingyi0605/Codingns4DSH/main/avatar-packages/manifests/bubu-codebrew-bear.avatar.json",
+      "previewUrl": "https://raw.githubusercontent.com/YaKun9/codex-pets/5de75e244de7d4f74d35ea14f226f583b986d7d3/original-bubu-codebrew-bear/preview.webp",
+      "verification": {
+        "checkedAt": "2026-10-07",
+        "files": 1,
+        "bytes": 2387290
+      }
+    },
+    {
+      "number": 7,
+      "id": "live2d-haru",
+      "name": "Haru",
+      "repositoryUrl": "https://github.com/Live2D/CubismWebSamples",
+      "author": "Live2D Inc.（官方角色与模型）",
+      "description": "官方女性角色样例，包含表情和身体动作。",
+      "remarks": "Cubism 3 清单；保留官方署名；遵守无偿素材许可和角色条件；附带声音不纳入播放。 素材不可当作 MIT 或随 npm 再分发。",
+      "format": "cubism-model",
+      "sourceManifestUrl": "https://raw.githubusercontent.com/Live2D/CubismWebSamples/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/Samples/Resources/Haru/Haru.model3.json",
+      "manifestPath": "avatar-packages/manifests/live2d-haru.avatar.json",
+      "licenseUrl": "https://github.com/Live2D/CubismWebSamples/blob/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/LICENSE.md",
+      "revision": "b1de66b0b1f1cb881d95fb6158622aeb6a2827bd",
+      "installManifestUrl": "https://raw.githubusercontent.com/jingyi0605/Codingns4DSH/main/avatar-packages/manifests/live2d-haru.avatar.json",
+      "previewUrl": "https://www.live2d.com/wp-content/uploads/2026/06/sample-img-haru.jpg",
+      "verification": {
+        "checkedAt": "2026-10-07",
+        "files": 26,
+        "bytes": 3904098
+      }
+    },
+    {
+      "number": 8,
+      "id": "live2d-hiyori",
+      "name": "Hiyori Momose",
+      "repositoryUrl": "https://github.com/Live2D/CubismWebSamples",
+      "author": "Live2D Inc.（官方角色与模型）",
+      "description": "官方女性角色样例，适合人物与物理摆动展示。",
+      "remarks": "Cubism 3 清单；角色设计不得修改；保留官方署名，遵守无偿素材许可。 素材不可当作 MIT 或随 npm 再分发。",
+      "format": "cubism-model",
+      "sourceManifestUrl": "https://raw.githubusercontent.com/Live2D/CubismWebSamples/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/Samples/Resources/Hiyori/Hiyori.model3.json",
+      "manifestPath": "avatar-packages/manifests/live2d-hiyori.avatar.json",
+      "licenseUrl": "https://github.com/Live2D/CubismWebSamples/blob/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/LICENSE.md",
+      "revision": "b1de66b0b1f1cb881d95fb6158622aeb6a2827bd",
+      "installManifestUrl": "https://raw.githubusercontent.com/jingyi0605/Codingns4DSH/main/avatar-packages/manifests/live2d-hiyori.avatar.json",
+      "previewUrl": "https://www.live2d.com/wp-content/uploads/2026/06/sample-img-hiyori.jpg",
+      "verification": {
+        "checkedAt": "2026-10-07",
+        "files": 18,
+        "bytes": 4925855
+      }
+    },
+    {
+      "number": 9,
+      "id": "live2d-mao",
+      "name": "Mao Niziiro",
+      "repositoryUrl": "https://github.com/Live2D/CubismWebSamples",
+      "author": "Live2D Inc.（官方角色与模型）",
+      "description": "官方猫耳女性角色样例，带表情和动作。",
+      "remarks": "Cubism 3 清单；保留官方署名；遵守无偿素材许可和角色条件。 素材不可当作 MIT 或随 npm 再分发。",
+      "format": "cubism-model",
+      "sourceManifestUrl": "https://raw.githubusercontent.com/Live2D/CubismWebSamples/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/Samples/Resources/Mao/Mao.model3.json",
+      "manifestPath": "avatar-packages/manifests/live2d-mao.avatar.json",
+      "licenseUrl": "https://github.com/Live2D/CubismWebSamples/blob/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/LICENSE.md",
+      "revision": "b1de66b0b1f1cb881d95fb6158622aeb6a2827bd",
+      "installManifestUrl": "https://raw.githubusercontent.com/jingyi0605/Codingns4DSH/main/avatar-packages/manifests/live2d-mao.avatar.json",
+      "previewUrl": "https://www.live2d.com/wp-content/uploads/2026/06/sample-img-niziiromao.jpg",
+      "verification": {
+        "checkedAt": "2026-10-07",
+        "files": 22,
+        "bytes": 4324239
+      }
+    },
+    {
+      "number": 10,
+      "id": "live2d-mark",
+      "name": "Mark-kun",
+      "repositoryUrl": "https://github.com/Live2D/CubismWebSamples",
+      "author": "Live2D Inc.（官方角色与模型）",
+      "description": "官方卡通男性角色样例，适合简洁的角色展示。",
+      "remarks": "Cubism 3 清单；须保持卡通人物性质，不可改绘为写实或美型男子；保留官方署名。 素材不可当作 MIT 或随 npm 再分发。",
+      "format": "cubism-model",
+      "sourceManifestUrl": "https://raw.githubusercontent.com/Live2D/CubismWebSamples/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/Samples/Resources/Mark/Mark.model3.json",
+      "manifestPath": "avatar-packages/manifests/live2d-mark.avatar.json",
+      "licenseUrl": "https://github.com/Live2D/CubismWebSamples/blob/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/LICENSE.md",
+      "revision": "b1de66b0b1f1cb881d95fb6158622aeb6a2827bd",
+      "installManifestUrl": "https://raw.githubusercontent.com/jingyi0605/Codingns4DSH/main/avatar-packages/manifests/live2d-mark.avatar.json",
+      "previewUrl": "https://www.live2d.com/wp-content/uploads/2026/06/sample-img-mark.jpg",
+      "verification": {
+        "checkedAt": "2026-10-07",
+        "files": 12,
+        "bytes": 692333
+      }
+    },
+    {
+      "number": 11,
+      "id": "live2d-rice",
+      "name": "Rice Glassfield",
+      "repositoryUrl": "https://github.com/Live2D/CubismWebSamples",
+      "author": "Live2D Inc.（官方角色与模型）",
+      "description": "官方女性角色样例，可用于人物动作展示。",
+      "remarks": "Cubism 3 清单；保留官方署名；遵守无偿素材许可和角色条件。 素材不可当作 MIT 或随 npm 再分发。",
+      "format": "cubism-model",
+      "sourceManifestUrl": "https://raw.githubusercontent.com/Live2D/CubismWebSamples/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/Samples/Resources/Rice/Rice.model3.json",
+      "manifestPath": "avatar-packages/manifests/live2d-rice.avatar.json",
+      "licenseUrl": "https://github.com/Live2D/CubismWebSamples/blob/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/LICENSE.md",
+      "revision": "b1de66b0b1f1cb881d95fb6158622aeb6a2827bd",
+      "installManifestUrl": "https://raw.githubusercontent.com/jingyi0605/Codingns4DSH/main/avatar-packages/manifests/live2d-rice.avatar.json",
+      "previewUrl": "https://www.live2d.com/wp-content/uploads/2026/06/sample-img-rice.jpg",
+      "verification": {
+        "checkedAt": "2026-10-07",
+        "files": 10,
+        "bytes": 3153702
+      }
+    },
+    {
+      "number": 12,
+      "id": "live2d-wanko",
+      "name": "Wankoromochi · 年糕犬",
+      "repositoryUrl": "https://github.com/Live2D/CubismWebSamples",
+      "author": "Live2D Inc.（官方角色与模型）",
+      "description": "官方年糕主题犬形角色，适合宠物悬浮展示。",
+      "remarks": "Cubism 3 清单；须尊重年糕主题；保留官方署名，遵守无偿素材许可。 素材不可当作 MIT 或随 npm 再分发。",
+      "format": "cubism-model",
+      "sourceManifestUrl": "https://raw.githubusercontent.com/Live2D/CubismWebSamples/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/Samples/Resources/Wanko/Wanko.model3.json",
+      "manifestPath": "avatar-packages/manifests/live2d-wanko.avatar.json",
+      "licenseUrl": "https://github.com/Live2D/CubismWebSamples/blob/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/LICENSE.md",
+      "revision": "b1de66b0b1f1cb881d95fb6158622aeb6a2827bd",
+      "installManifestUrl": "https://raw.githubusercontent.com/jingyi0605/Codingns4DSH/main/avatar-packages/manifests/live2d-wanko.avatar.json",
+      "previewUrl": "https://www.live2d.com/wp-content/uploads/2026/06/sample-img-wanko.png",
+      "verification": {
+        "checkedAt": "2026-10-07",
+        "files": 10,
+        "bytes": 719056
+      }
+    }
+  ]
+}

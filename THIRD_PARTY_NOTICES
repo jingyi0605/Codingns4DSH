@@ -1,3 +1,112 @@
+CodingNS 全局助理形象的第三方声明（2026-10-07）
+
+本项目参考以下开源实现的双展示分工、引擎生命周期及精灵图帧布局：
+
+dsh-live2d-avatar
+https://github.com/clown139880/dsh-live2d-avatar
+Copyright (c) 2026 dsh-live2d-heroine contributors
+
+codex-to-dsh-pet
+https://github.com/Signalight/codex-to-dsh-pet
+Copyright (c) 2026 Signalight
+
+外部可选 Live2D 加载器：l2d@2.1.1（用户单独安装，不随插件预置）
+https://github.com/hacxy/l2d
+Copyright (c) 2025 Hacxy
+
+头像裁剪组件：react-easy-crop@5.5.6
+https://github.com/ValentinH/react-easy-crop
+Copyright (c) 2022 Valentin Hervieu
+拖动与缩放交互来自该组件，输出 PNG 和持久化由 CodingNS 实现。
+
+上述项目的 MIT 许可原文：
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+头像裁剪组件的运行时依赖：normalize-wheel@1.0.1
+https://github.com/facebook/fixed-data-table
+以下为随该依赖分发的 BSD 许可原文：
+
+BSD License
+
+For FixedDataTable software
+
+Copyright (c) 2015, Facebook, Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook nor the names of its contributors may be used to
+   endorse or promote products derived from this software without specific
+   prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+头像裁剪组件的运行时依赖：tslib@2.8.1
+https://github.com/microsoft/tslib
+以下为随该依赖分发的版权声明：
+
+Copyright (c) Microsoft Corporation.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
+
+Live2D SDK 与模型素材
+
+l2d 提供的浏览器运行时还包含 Live2D Cubism SDK；本插件不捆绑该运行时或 SDK，
+不在助理创建、形象目录读取或素材安装时自动安装第三方代码。这些部分遵循各自许可，
+不因加载器使用 MIT 而改变许可。运行时原文件及其中的版权声明保持原样。
+Copyright(c) Live2D Inc. All rights reserved.
+Live2D Open Software License：
+https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html
+Cubism SDK 使用与许可入口：
+https://www.live2d.com/en/sdk/license/
+
+本项目男女基础形象由生图工具生成，作为透明 PNG 随包提供；参考蓝白鲸鱼风格，
+不随包分发上游大肥鱼、Haru、Nastya 的模型、图集或引擎代码。
+自定义模型由用户提供资源地址，其角色、贴图、动作和音频使用范围由素材许可决定。
 MOSS-TTS-Nano CPU 推理代码（2026-10-07）
 
 来源：https://github.com/OpenMOSS/MOSS-TTS-Nano

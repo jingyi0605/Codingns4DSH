@@ -1,0 +1,13 @@
+{
+  "avatarManifestVersion": 1,
+  "id": "catalog-scout-corgi",
+  "name": "Scout · 水彩柯基",
+  "author": "FunShow（@fanslead）",
+  "license": "CC BY-NC-SA 4.0：署名 FunShow（@fanslead），非商业使用，改编相同方式共享。",
+  "homepage": "https://github.com/YaKun9/codex-pets/blob/5de75e244de7d4f74d35ea14f226f583b986d7d3/original-scout-corgi/LICENSE.md",
+  "asset": {
+    "renderer": "spritesheet",
+    "source": "https://raw.githubusercontent.com/YaKun9/codex-pets/5de75e244de7d4f74d35ea14f226f583b986d7d3/original-scout-corgi/spritesheet.webp",
+    "spriteVersion": 2
+  }
+}

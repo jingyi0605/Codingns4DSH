@@ -1,0 +1,13 @@
+{
+  "avatarManifestVersion": 1,
+  "id": "catalog-live2d-haru",
+  "name": "Haru",
+  "author": "Live2D Inc.（官方角色与模型）",
+  "license": "Live2D 无偿提供素材使用授权协议及角色个别条件。保留官方署名；遵守无偿素材许可和角色条件；附带声音不纳入播放。 角色版权归 Live2D Inc.，由 CodingNS 独立适配。",
+  "homepage": "https://www.live2d.com/eula/live2d-sample-model-terms_en.html",
+  "asset": {
+    "renderer": "live2d",
+    "source": "https://raw.githubusercontent.com/Live2D/CubismWebSamples/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/Samples/Resources/Haru/Haru.model3.json",
+    "spriteVersion": 2
+  }
+}

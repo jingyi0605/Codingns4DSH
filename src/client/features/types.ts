@@ -22,8 +22,12 @@ export interface CodingNsRpcClient {
 
 /** Client 侧功能模块在 start 中取用的服务集合。 */
 export interface CodingNsClientServices {
+  /** 助理配置窗口的内存草稿服务；普通运行时不设置。 */
+  readonly configurationDraft?: true
   /** 当前 DSH 实际运行版本，由 Host 注入。 */
   readonly dshVersion: string
+  /** 只由 Host 的专用 Stage0 启动标识开启，缺失时不显示开发诊断。 */
+  readonly stage0?: boolean
   readonly settings: CodingNsSettingsStore<CodingNsSettings>
   readonly rpc: CodingNsRpcClient
   /** PeerHost 远端资源适配器；请求始终绑定 HostScope。 */

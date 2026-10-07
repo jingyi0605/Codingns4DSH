@@ -1,0 +1,13 @@
+{
+  "avatarManifestVersion": 1,
+  "id": "catalog-live2d-mark",
+  "name": "Mark-kun",
+  "author": "Live2D Inc.（官方角色与模型）",
+  "license": "Live2D 无偿提供素材使用授权协议及角色个别条件。须保持卡通人物性质，不可改绘为写实或美型男子；保留官方署名。 角色版权归 Live2D Inc.，由 CodingNS 独立适配。",
+  "homepage": "https://www.live2d.com/eula/live2d-sample-model-terms_en.html",
+  "asset": {
+    "renderer": "live2d",
+    "source": "https://raw.githubusercontent.com/Live2D/CubismWebSamples/b1de66b0b1f1cb881d95fb6158622aeb6a2827bd/Samples/Resources/Mark/Mark.model3.json",
+    "spriteVersion": 2
+  }
+}
