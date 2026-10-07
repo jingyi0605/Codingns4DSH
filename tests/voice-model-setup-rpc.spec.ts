@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { memoryAssistantConversationStorage } from './assistant-fixtures.js'
 import test, { type TestContext } from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -12,6 +13,7 @@ import { DEFAULT_CODINGNS_SETTINGS, type CodingNsSettings } from '../data/build/
 import { ASSISTANT_VOICE_MODEL_CATALOG, type AssistantVoiceModelProgress, type AssistantVoiceModelsSnapshot } from '../data/build/dist/shared/voice-models.js'
 import type { CodingNsHostServices } from '../data/build/dist/host/features/types.js'
 import type { AssistantVoiceModelProbe } from '../data/build/dist/host/features/voice-model-management.js'
+import { DEFAULT_LIGHT_VOICE_MODEL_ID } from '../src/shared/voice-initialization.js'
 
 function deferred() {
   let resolve!: () => void
@@ -24,7 +26,7 @@ async function fixture(t: TestContext, onSave: () => Promise<void> = async () =>
   const directory = await mkdtemp(join(tmpdir(), 'codingns-voice-setup-rpc-'))
   const previous = process.env.DSH_HOME
   process.env.DSH_HOME = directory
-  let settings = DEFAULT_CODINGNS_SETTINGS
+  let settings = structuredClone(DEFAULT_CODINGNS_SETTINGS)
   let saves = 0
   const rpc = new CodingNsRpcTable()
   const services = { rpc, settings: {
@@ -38,7 +40,7 @@ async function fixture(t: TestContext, onSave: () => Promise<void> = async () =>
     await rm(directory, { recursive: true, force: true })
   })
   // 此处验证下载进度与 RPC 生命周期，四字节下载夹具不是真实 ONNX 模型。
-  registry.register(createGlobalVoiceRpcFeature({ probeVoiceModel }))
+  registry.register(createGlobalVoiceRpcFeature({ probeVoiceModel, conversationStorage: memoryAssistantConversationStorage() }))
   await registry.reconcile(['globalVoiceRpc'])
   const call = async (endpoint: string, payload: unknown = {}) => {
     const target = rpc.resolve(`assistant/${endpoint}`)!
@@ -46,6 +48,20 @@ async function fixture(t: TestContext, onSave: () => Promise<void> = async () =>
   }
   return { call, settings: () => settings, saves: () => saves }
 }
+
+test('配置窗口只准备识别资源，返回待保存路径，不写设置或启用运行时', async (t) => {
+  const f = await fixture(t)
+  t.mock.method(globalThis, 'fetch', async () => new Response(new Uint8Array([1, 2, 3, 4])))
+  const before = structuredClone(f.settings().assistant)
+  const prepared = await f.call('voice/setup', { modelId: DEFAULT_LIGHT_VOICE_MODEL_ID, prepareOnly: true }) as any
+  assert.equal(prepared.voice.initialized, true)
+  assert.equal(prepared.voice.modelId, DEFAULT_LIGHT_VOICE_MODEL_ID)
+  assert.ok(prepared.voice.asrEncoder)
+  assert.equal(f.saves(), 0)
+  assert.deepEqual(f.settings().assistant, before)
+  const models = await f.call('voice/models') as AssistantVoiceModelsSnapshot
+  assert.equal(models.runtimeRunning, false)
+})
 
 test('初始化期间可查询真实进度，隔离其他请求，禁止重复下载与启动语音', async (t) => {
   const saving = deferred()

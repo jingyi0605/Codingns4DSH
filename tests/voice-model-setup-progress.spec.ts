@@ -51,11 +51,11 @@ function modelsFixture(): AssistantVoiceModelsSnapshot {
     })),
   }
 }
-function renderManager(snapshot: AssistantVoiceModelsSnapshot | undefined, index = 0) {
+function renderManager(snapshot: AssistantVoiceModelsSnapshot | undefined, index = 0, embedded = false, enabled = true) {
   return renderToStaticMarkup(createElement(VoiceModelManagerView, {
     snapshot, modelId: ASSISTANT_VOICE_MODEL_CATALOG[index]!.id, refreshing: false, busy: undefined,
     progress: undefined, error: undefined, success: undefined, writable: true,
-    onSelect() {}, onRefresh() {}, onRun() {}, onClose() {}, t: resolveCodingNsTranslator(),
+    onSelect() {}, onRefresh() {}, onRun() {}, ...(embedded ? {} : { onClose() {} }), enabled, t: resolveCodingNsTranslator(),
   }))
 }
 function buttons(markup: string) {
@@ -96,6 +96,20 @@ test('运行中的语音允许独立验证但禁止切换；状态未知和其�
   assert.ok(unloaded.includes('状态待查询'))
   assert.ok(!unloaded.includes('未下载'))
   assert.equal(buttons(unloaded).get('下载并使用'), true)
+})
+
+test('内嵌识别设置保留完整管理能力，父页锁定时禁止验证、应用和选择', () => {
+  const snapshot = modelsFixture()
+  const markup = renderManager(snapshot, 1, true)
+  for (const text of ['语音识别模型', '将麦克风语音转换为文字', '当前模型', '中文轻量实时模型']) assert.ok(markup.includes(text), text)
+  assert.equal(buttons(markup).get('验证并使用'), false)
+  assert.equal(buttons(markup).get('验证可用性'), false)
+  assert.equal(buttons(markup).has('关闭'), false)
+  assert.ok(!markup.includes('overflow-y:auto'), '内嵌面板使用工作台的正文滚动，不增加嵌套滚动区')
+  const locked = renderManager(snapshot, 1, true, false)
+  for (const action of ['重新下载', '验证可用性', '验证并使用']) assert.equal(buttons(locked).get(action), true, action)
+  assert.equal((locked.match(/type="radio"[^>]*disabled=""/gu) ?? []).length, ASSISTANT_VOICE_MODEL_CATALOG.length)
+  assert.equal(buttons(locked).get('刷新状态'), false, '锁定写操作仍允许读取状态')
 })
 
 test('进度查询带请求标识且不并发积压，停止后忽略在途响应并取消查询', async (t) => {
