@@ -1,9 +1,25 @@
 import type { GlobalVoiceCoordinator } from './global-voice-coordinator.js'
-import { encodeVoiceStreamEvent, pcmFrameFromStream, VoiceStreamDecoder, type VoiceStreamOpenMessage } from '../../shared/voice-stream.js'
+import type { HostConnectionFetch } from '@deepseek-ai/dsh-client-connection'
+import { ASSISTANT_VOICE_EVENTS_PATH, ASSISTANT_VOICE_STREAM_PATH, encodeVoiceStreamEvent, pcmFrameFromStream, VoiceStreamDecoder, type VoiceStreamOpenMessage } from '../../shared/voice-stream.js'
 import type { VoiceRuntimeEvent } from '../../shared/contracts/voice-runtime.js'
+import { ASSISTANT_TTS_PATH, ASSISTANT_VOICE_SAMPLE_PATH } from '../../shared/assistant-tts.js'
 
 export interface AssistantVoiceStreamOptions {
   readonly coordinator: GlobalVoiceCoordinator
+  readonly tts?: (request: Request) => Promise<Response>
+}
+
+/**
+ * DSH 的 requestBody 是路由级配置。GET 必须单独登记为 buffered，
+ * 否则原生 HTTP 桥会给 GET 附加 ReadableStream 正文，被 Node 拒绝为 400。
+ * buffered 只约束请求读取，不影响事件响应持续下发。
+ */
+export function registerAssistantVoiceStreamRoutes(registry: HostConnectionFetch, handler: (request: Request) => Promise<Response>): () => Promise<void> {
+  const disposeUpload = registry.register({ path: ASSISTANT_VOICE_STREAM_PATH, methods: ['POST'], requestBody: 'streaming', fetch: handler })
+  const disposeEvents = registry.register({ path: ASSISTANT_VOICE_EVENTS_PATH, methods: ['GET'], requestBody: 'buffered', fetch: handler })
+  const disposeTts = registry.register({ path: ASSISTANT_TTS_PATH, methods: ['POST'], requestBody: 'buffered', fetch: handler })
+  const disposeSample = registry.register({ path: ASSISTANT_VOICE_SAMPLE_PATH, methods: ['GET'], requestBody: 'buffered', fetch: handler })
+  return async () => { try { await disposeSample() } finally { try { await disposeTts() } finally { try { await disposeEvents() } finally { await disposeUpload() } } } }
 }
 
 /**
@@ -12,6 +28,14 @@ export interface AssistantVoiceStreamOptions {
  */
 export function createAssistantVoiceStreamHandler(options: AssistantVoiceStreamOptions): (request: Request) => Promise<Response> {
   return async (request) => {
+    const url = new URL(request.url)
+    if (url.pathname === ASSISTANT_TTS_PATH || url.pathname === ASSISTANT_VOICE_SAMPLE_PATH) {
+      return options.tts?.(request) ?? Response.json({ error: 'Host TTS 未启用' }, { status: 503 })
+    }
+    // 新客户端把上传和事件下行拆开，避免依赖 fetch 请求流及其半双工限制。
+    if (request.method.toUpperCase() === 'GET') return createVoiceEventResponse(request, options.coordinator, url.searchParams.get('ownerId') ?? '')
+    if (request.method.toUpperCase() === 'POST' && url.searchParams.get('mode') === 'frames') return receiveVoiceFrames(request, options.coordinator)
+    // 保留旧客户端的流路由；新客户端不再使用无限长度的 POST 正文。
     if (request.method.toUpperCase() !== 'POST' || request.body === null) return Response.json({ error: '语音流必须使用 POST 流式正文' }, { status: 400 })
     const decoder = new VoiceStreamDecoder()
     const encoder = new TextEncoder()
@@ -70,10 +94,8 @@ export function createAssistantVoiceStreamHandler(options: AssistantVoiceStreamO
       }
     }
     function finish(): void {
-      if (closed) {
-        disposeEvents?.()
-        disposeEvents = undefined
-      }
+      disposeEvents?.()
+      disposeEvents = undefined
       closed = true
       try { controller?.close() } catch { /* 客户端已经取消响应 */ }
     }
@@ -89,4 +111,90 @@ export function createAssistantVoiceStreamHandler(options: AssistantVoiceStreamO
       },
     })
   }
+}
+
+/** 每个上传批次只转发音频，识别器和租约始终由协调器持有。 */
+async function receiveVoiceFrames(request: Request, coordinator: GlobalVoiceCoordinator): Promise<Response> {
+  if (request.body === null) return Response.json({ error: '语音帧缺少正文' }, { status: 400 })
+  const reader = request.body.getReader()
+  const decoder = new VoiceStreamDecoder()
+  const items: ReturnType<VoiceStreamDecoder['push']> = []
+  let byteLength = 0
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      byteLength += next.value.length
+      if (byteLength > 256 * 1024) return Response.json({ error: '语音上传批次过大' }, { status: 413 })
+      items.push(...decoder.push(next.value))
+    }
+    decoder.finish()
+    const open = items[0]?.message
+    if (open?.type !== 'open' || items.slice(1).some((item) => item.message.type !== 'pcm')) throw new Error('语音上传批次必须由一个首部和 PCM 帧组成')
+    try { coordinator.assertOwner(open.ownerId) } catch { return Response.json({ error: '当前页面没有全局语音租约' }, { status: 403 }) }
+    for (const item of items.slice(1)) {
+      if (item.message.type !== 'pcm' || item.pcm === undefined) throw new Error('语音 PCM 缺少正文')
+      if (item.message.epoch !== coordinator.snapshot().epoch) continue
+      await coordinator.sendPcm(open.ownerId, pcmFrameFromStream(item.message, item.pcm))
+    }
+    return new Response(null, { status: 204 })
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 })
+  } finally {
+    await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
+  }
+}
+
+/** GET 只承载即时事件，下行不再被尚未结束的音频上传阻塞。 */
+function createVoiceEventResponse(request: Request, coordinator: GlobalVoiceCoordinator, ownerId: string): Response {
+  try { coordinator.assertOwner(ownerId) } catch { return Response.json({ error: '当前页面没有全局语音租约' }, { status: 403 }) }
+  const encoder = new TextEncoder()
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined
+  let closed = false
+  let disposeEvents: (() => void) | undefined
+  let disposeState: (() => void) | undefined
+  let lastState = ''
+  let keepAlive: ReturnType<typeof setInterval> | undefined
+  const send = (event: VoiceRuntimeEvent): void => {
+    if (closed) return
+    try { controller?.enqueue(encoder.encode(encodeVoiceStreamEvent(event))) } catch { finish() }
+  }
+  const finish = (): void => {
+    if (closed) return
+    closed = true
+    disposeEvents?.()
+    disposeState?.()
+    if (keepAlive !== undefined) clearInterval(keepAlive)
+    request.signal.removeEventListener('abort', finish)
+    try { controller?.close() } catch { /* 浏览器已取消读取 */ }
+  }
+  const stream = new ReadableStream<Uint8Array>({
+    start(nextController) {
+      controller = nextController
+      disposeEvents = coordinator.subscribeRuntimeEvent((event) => { if (event.type !== 'state') send(event) })
+      // subscribe 会立即发出当前状态，让代理及时返回响应，并同步 Host epoch。
+      disposeState = coordinator.subscribe((snapshot) => {
+        const stateKey = `${snapshot.state}:${snapshot.epoch}:${snapshot.active}:${snapshot.ownerId}`
+        // Client 会经 RPC 回报状态；相同快照不能再次发回，避免状态回声循环。
+        if (stateKey !== lastState) send({ type: 'state', state: snapshot.state, epoch: snapshot.epoch })
+        lastState = stateKey
+        if (!snapshot.active || snapshot.ownerId !== ownerId) finish()
+      })
+      request.signal.addEventListener('abort', finish, { once: true })
+      // 静音时没有 partial；空行维持反向代理连接，Client 会直接忽略。
+      keepAlive = setInterval(() => {
+        try { controller?.enqueue(encoder.encode('\n')) } catch { finish() }
+      }, 10_000)
+      ;(keepAlive as ReturnType<typeof setInterval> & { unref?: () => void }).unref?.()
+      if (request.signal.aborted) finish()
+    },
+    cancel: finish,
+  })
+  return new Response(stream, { headers: {
+    'content-type': 'application/x-ndjson; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'x-accel-buffering': 'no',
+  } })
 }
