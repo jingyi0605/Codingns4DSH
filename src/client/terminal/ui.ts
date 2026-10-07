@@ -28,6 +28,7 @@ import {
   resolveShortcutKeys,
   resolveTerminalArrowIcon,
   resolveToolIcon,
+  resolveDelegateIcon,
 } from '../../dsh-capabilities/client/primitives-adapter.js'
 import { CodingNsWebTerminals, type WebTerminalInfo } from './model.js'
 import { createTerminalSessionRecovery, type TerminalSidebarMountedSource, type TerminalSidebarRecoveryPort } from './recovery.js'
@@ -36,6 +37,12 @@ import { CodingNsXtermView } from './xterm-view.js'
 import { codingNsTranslator, useCodingNsTranslator, type CodingNsLocale } from '../locale.js'
 import type { CodingNsSettingsStore } from '../../dsh-capabilities/settings-store.js'
 import { debugInfo, debugWarn } from '../../shared/debug.js'
+import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
+import { assertInjectedDshVersion } from '../dsh-runtime-version.js'
+import type { TerminalSharingBridge } from '../../dsh-capabilities/client/terminal-sharing-adapter.js'
+import type { TerminalTextSnapshot } from '../../shared/contracts/terminal-share.js'
+import { TerminalSharing } from './sharing.js'
+import { TerminalShareMenu } from './share-menu.js'
 
 export const TERMINAL_PROVIDER_ID = 'codingns4dsh/terminal'
 export const TERMINAL_KIND = 'terminal'
@@ -60,6 +67,7 @@ interface TerminalInjected {
   readonly settings: CodingNsSettingsStore<CodingNsSettings>
   readonly theme: TerminalThemeSource
   readonly locale: CodingNsLocale
+  readonly sharing: TerminalSharing
 }
 
 type TerminalTabProps = {
@@ -93,6 +101,19 @@ export function registerCodingNsTerminalUi(
   settings: CodingNsSettingsStore<CodingNsSettings>,
 ): () => void {
   const disposers: Array<() => void> = []
+  const sharing = new TerminalSharing(codingNsTranslator(ctx.locale))
+  disposers.push(() => sharing.dispose())
+  // 草稿服务单独注入，缺失时只影响分享入口，终端仍按原链路工作。
+  const shareFiber = ctx.inject(['sessions', 'conversation', 'uiWorkspace', 'workspaces'], (shareCtx) => {
+    const profile = createDshCapabilityRegistry(assertInjectedDshVersion(ctx), 'client', shareCtx).getProfile(shareCtx)
+    const resolution = profile.capabilities.get('conversation.draft-share')
+    if (resolution?.value === undefined) return
+    shareCtx.effect(() => sharing.attachBridge(resolution.value as TerminalSharingBridge), 'codingns4dsh: terminal sharing')
+    shareCtx.inject(['inputTriggers'], (referenceCtx) => {
+      referenceCtx.effect(() => sharing.attachReferences(), 'codingns4dsh: terminal references')
+    })
+  })
+  disposers.push(() => { void shareFiber.dispose() })
   const t = codingNsTranslator(ctx.locale)
   const theme: TerminalThemeSource = {
     getSnapshot: () => ctx.theme.getTheme().revision,
@@ -118,7 +139,7 @@ export function registerCodingNsTerminalUi(
   }
   disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab', key: TERMINAL_PROVIDER_ID,
-    inject: () => ({ webTerminals, settings, theme, locale: ctx.locale }),
+    inject: () => ({ webTerminals, settings, theme, sharing, locale: ctx.locale }),
   }, CodingNsTerminalAggregateBody)))
   disposers.push(ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab.title', key: TERMINAL_PROVIDER_ID,
@@ -142,7 +163,7 @@ export function registerCodingNsTerminalUi(
 }
 
 /** 聚合终端页使用独立组件名，避免 HMR 把旧单终端 TerminalBody 的 Hook 树复用过来。 */
-function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, settings, theme, locale }: TerminalTabProps): ReactElement | null {
+function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, settings, theme, locale, sharing }: TerminalTabProps): ReactElement | null {
   const t = useCodingNsTranslator(locale)
   const info = useTabInfo()
   const params = terminalParams(info)
@@ -164,6 +185,9 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
   const [createError, setCreateError] = useState<string | undefined>()
   const [refreshing, setRefreshing] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
+  const [shareSnapshot, setShareSnapshot] = useState<TerminalTextSnapshot>()
+  const [shareError, setShareError] = useState('')
+  const closeShare = useCallback(() => setShareSnapshot(undefined), [])
   const [heldModifiers, setHeldModifiers] = useState<TerminalHeldModifiers>(EMPTY_HELD_MODIFIERS)
   /** React 状态更新前可能收到连续点击；用同步锁保证只发出一个 create 请求。 */
   const creatingRef = useRef(false)
@@ -274,6 +298,20 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
         }),
       ),
       createElement('div', { className: terminalClass.listActions },
+        createElement(TerminalShareMenu, { sharing, snapshot: shareSnapshot, sessionId: String(sessionId), t, onClose: closeShare,
+          anchor: createElement(Button, {
+            variant: 'ghost', size: 'sm', className: terminalClass.shareButton,
+            icon: createElement(resolveDelegateIcon(), { size: 16 }),
+            'aria-label': t('terminalShare.title'), title: t('terminalShare.title'), disabled: activeView === undefined,
+            'aria-haspopup': 'menu', 'aria-expanded': shareSnapshot !== undefined,
+            onClick: () => {
+              if (shareSnapshot !== undefined) { closeShare(); return }
+              if (activeView === undefined) return
+              if (!sharing.isReady()) { setShareError(t('terminalShare.unavailable')); return }
+              try { setShareError(''); setShareSnapshot(sharing.capture(activeView)) }
+              catch (cause) { setShareError(messageOf(cause)) }
+            },
+          }) }),
         createElement(Button, {
           variant: 'ghost',
           size: 'sm',
@@ -318,11 +356,13 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
         active: item.id === activeId,
         visible: info.tab.visible,
         onNewTerminal: () => { void createNewTerminal() },
+        sharing,
         sessionId: String(sessionId),
         t,
       }))
   )
-  const aggregateElement = createElement('div', { className: `${terminalClass.aggregateRoot} ${terminalClass.content}` }, navigation, content)
+  const aggregateElement = createElement('div', { className: `${terminalClass.aggregateRoot} ${terminalClass.content}` }, navigation,
+    shareError === '' ? null : createElement('div', { role: 'alert', className: terminalClass.error }, shareError), content)
   return aggregateElement
 }
 

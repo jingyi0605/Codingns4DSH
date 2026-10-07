@@ -1,4 +1,4 @@
-import { createElement, useEffect, useRef, useSyncExternalStore } from 'react'
+import { createElement, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactElement } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { FitAddon } from '@xterm/addon-fit'
@@ -17,6 +17,8 @@ import { stripTerminalDeviceAttributeResponses } from '../../shared/terminal-inp
 import { debugInfo } from '../../shared/debug.js'
 import type { CodingNsTerminalView, TerminalViewState } from './model.js'
 import { terminalClass } from './styles.js'
+import type { TerminalSharing } from './sharing.js'
+import { installTerminalSelectionActions, TerminalSelectionActions, type TerminalSelectionActionsState } from './selection-actions.js'
 import { TerminalSurfaceCache } from './surface-cache.js'
 
 interface TerminalSurface {
@@ -26,6 +28,7 @@ interface TerminalSurface {
   readonly scheduleReflow: () => void
   lastRevision: number
   owner?: HTMLDivElement
+  onSelection?: (state: TerminalSelectionActionsState | undefined) => void
   dispose(): void
 }
 
@@ -51,6 +54,7 @@ export interface CodingNsXtermViewProps {
   readonly settings: CodingNsSettingsStore<CodingNsSettings>
   readonly themeRevision: number
   readonly onNewTerminal: () => void
+  readonly sharing?: TerminalSharing
   readonly sessionId?: string
   /** 聚合页是否正在显示这个终端；隐藏时仍保持 attach 和 xterm 状态。 */
   readonly active?: boolean
@@ -66,6 +70,7 @@ export function CodingNsXtermView({
   settings,
   themeRevision,
   onNewTerminal,
+  sharing,
   sessionId = view.sessionId,
   active = true,
   visible = true,
@@ -76,6 +81,8 @@ export function CodingNsXtermView({
   const surfaceRef = useRef<TerminalSurface | null>(null)
   const sizeClaimAtRef = useRef(0)
   const previousActiveRef = useRef(false)
+  const [selectionActions, setSelectionActions] = useState<TerminalSelectionActionsState>()
+  const dismissSelection = useCallback(() => setSelectionActions(undefined), [])
   const state = useSyncExternalStore(view.state.subscribe.bind(view.state), view.state.getSnapshot.bind(view.state))
   const settingsSnapshot = useSyncExternalStore(settings.subscribe.bind(settings), settings.getSnapshot.bind(settings))
   const appearance = settingsSnapshot.value?.terminalEnhancement.appearance
@@ -90,9 +97,10 @@ export function CodingNsXtermView({
     if (target === null || !hasTerminal || !visible || view.signal.aborted) return
     // 仅可见卡片更新调用上下文；后台卡片不能把共享模型切回旧会话。
     view.sessionId = sessionId
-    const surface = surfaces.get(view, () => createTerminalSurface(target, view, appearance, t))
+    const surface = surfaces.get(view, () => createTerminalSurface(target, view, appearance, sharing, t))
     surfaceRef.current = surface
     surface.owner = target
+    surface.onSelection = setSelectionActions
     target.replaceChildren(surface.host)
     surface.scheduleReflow()
     return () => {
@@ -101,8 +109,11 @@ export function CodingNsXtermView({
       if (surface.owner !== target) return
       surface.host.remove()
       delete surface.owner
+      delete surface.onSelection
     }
-  }, [hasTerminal, sessionId, view, visible])
+  }, [hasTerminal, sessionId, sharing, view, visible])
+
+  useEffect(() => { if (!active || !visible) dismissSelection() }, [active, visible, dismissSelection])
 
   useEffect(() => {
     const becameActive = active && visible && !previousActiveRef.current
@@ -165,6 +176,7 @@ export function CodingNsXtermView({
     style: active ? undefined : { display: 'none' },
   },
   createElement(TerminalStatus, { state, view, onNewTerminal, t }),
+  active && visible && sharing !== undefined ? createElement(TerminalSelectionActions, { selection: selectionActions, view, sessionId, sharing, t, onDismiss: dismissSelection }) : null,
   hasTerminal ? createElement('div', { className: terminalClass.screen },
     createElement('div', { ref: hostRef, style: { width: '100%', height: '100%' } }),
   ) : null,
@@ -179,6 +191,7 @@ function createTerminalSurface(
   target: HTMLDivElement,
   view: CodingNsTerminalView,
   appearance: TerminalAppearanceSettings,
+  sharing: TerminalSharing | undefined,
   t: CodingNsTranslator,
 ): TerminalSurface {
   const state = view.state.getSnapshot()
@@ -206,6 +219,8 @@ function createTerminalSurface(
   terminal.loadAddon(fit)
   terminal.open(container)
   terminal.textarea?.setAttribute('aria-label', t('terminal.title'))
+  const releaseSharing = sharing?.bind(view, terminal)
+  const releaseSelection = installTerminalSelectionActions(terminal, container, (selection) => retained.onSelection?.(selection))
   // xterm 自己拥有自绘 scrollable viewport。滚轮回调只能决定是否交给 xterm 继续处理：
   // 有历史时返回 true，交给 xterm 的滚动容器；没有历史时返回 false，避免被解释为
   // shell 的上下方向键（例如切换历史命令）。
@@ -485,6 +500,8 @@ function createTerminalSurface(
   const retained: TerminalSurface = { host, terminal, fit, scheduleReflow: schedulePostAttachReflow, lastRevision: 0, dispose: () => {
     releaseState()
     releaseMount()
+    releaseSharing?.()
+    releaseSelection()
     resize.disconnect()
     visualViewport?.removeEventListener('resize', handleViewportChange)
     visualViewport?.removeEventListener('scroll', handleViewportChange)

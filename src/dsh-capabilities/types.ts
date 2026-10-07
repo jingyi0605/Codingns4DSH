@@ -10,6 +10,7 @@ export type DshCapabilityId =
   | 'locale.runtime'
   | 'theme.runtime'
   | 'conversation.tool-call'
+  | 'conversation.draft-share'
   | 'sidebar.right'
   | 'typert.remote'
   | 'typert.context'

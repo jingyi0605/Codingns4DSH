@@ -20,6 +20,14 @@ export const terminalClass = {
   newButton: 'codingns4dsh-terminal-new-button',
   refreshButton: 'codingns4dsh-terminal-refresh-button',
   toolsButton: 'codingns4dsh-terminal-tools-button',
+  shareButton: 'codingns4dsh-terminal-share-button',
+  shareMenu: 'codingns4dsh-terminal-share-menu',
+  shareTargetRow: 'codingns4dsh-terminal-share-target-row',
+  shareTargetIcon: 'codingns4dsh-terminal-share-target-icon',
+  shareTargetTitle: 'codingns4dsh-terminal-share-target-title',
+  shareTargetTime: 'codingns4dsh-terminal-share-target-time',
+  selectionActions: 'codingns4dsh-terminal-selection-actions',
+  selectionError: 'codingns4dsh-terminal-selection-error',
   toolsPanel: 'codingns4dsh-terminal-tools-panel',
   toolAction: 'codingns4dsh-terminal-tool-action',
   toolModifierActive: 'codingns4dsh-terminal-tool-modifier-active',
@@ -49,6 +57,8 @@ export function installTerminalStyles(): () => void {
   return () => style.remove()
 }
 
+// 修饰键使用主题高亮色；悬停和实际按压时也保持选中态，避免被原生 toolbar 样式覆盖。
+// ShortcutKeys 自带灰色文字，选中时让它继承按钮的高对比前景色。
 const terminalCss = `
 .${terminalClass.guideEntry}{box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-1);border-radius:24px;align-items:stretch;width:100%;display:flex;overflow:hidden}
 .${terminalClass.guideMain}{text-align:left;border-radius:24px 0 0 24px;flex:1;justify-content:flex-start;gap:14px;min-width:0;height:auto;min-height:56px;padding:14px 20px}
@@ -70,15 +80,26 @@ const terminalCss = `
 .${terminalClass.listActions}{box-sizing:border-box;display:flex;align-items:center;gap:2px;flex:none;margin-left:4px;padding-left:4px;border-left:.5px solid var(--dsw-alias-border-l3);background:inherit}
 .${terminalClass.newButton}{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;align-self:center;width:30px;min-width:30px;height:30px;min-height:30px;max-height:30px;margin:0 0 0 4px;padding:0;white-space:nowrap}
 .${terminalClass.refreshButton},.${terminalClass.toolsButton}{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:30px;min-width:30px;height:30px;min-height:30px;max-height:30px;margin:0;padding:0;color:var(--dsw-alias-label-secondary)}
+.${terminalClass.shareButton}{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:30px;min-width:30px;height:30px;margin:0;padding:0;color:var(--dsw-alias-label-secondary)}
+.${terminalClass.shareButton}:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
+.${terminalClass.shareMenu}{z-index:10002;width:min(360px,calc(100vw - 24px));max-width:calc(100vw - 24px)}
+.${terminalClass.shareMenu} [role="menuitem"]{min-width:0;min-height:32px;font-size:13px;line-height:20px;border-radius:8px}
+.${terminalClass.shareMenu} [role="presentation"]{white-space:normal;overflow-wrap:anywhere}
+.${terminalClass.shareTargetRow}{display:flex;align-items:center;gap:8px;min-width:0;width:100%}
+.${terminalClass.shareTargetIcon}{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex:0 0 18px;overflow:hidden;font-size:11px;color:var(--dsw-alias-label-caption)}
+.${terminalClass.shareTargetIcon} img{display:block;width:18px;height:18px;object-fit:contain}
+.${terminalClass.shareTargetTitle}{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.${terminalClass.shareTargetTime}{flex:none;margin-left:4px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-caption);white-space:nowrap;font-variant-numeric:tabular-nums}
+.${terminalClass.selectionActions}{position:fixed;z-index:10001;display:flex;align-items:center;gap:2px;padding:3px;border:.5px solid var(--dsw-alias-border-l3);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);box-shadow:0 4px 16px #0002;max-width:calc(100vw - 16px)}
+.${terminalClass.selectionActions} button{white-space:nowrap}
+.${terminalClass.selectionError}{max-width:180px;overflow-wrap:anywhere;font-size:12px;padding:0 4px}
 .${terminalClass.refreshButton}:hover, .${terminalClass.toolsButton}:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
 .${terminalClass.toolsButton}[aria-expanded="true"]{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
 .${terminalClass.toolsPanel}{box-sizing:border-box;width:100%;min-width:0;display:flex;align-items:center;gap:4px;padding:4px 8px 6px;border-top:.5px solid var(--dsw-alias-border-l3);overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;overscroll-behavior:contain}
 .${terminalClass.toolsPanel}::-webkit-scrollbar{height:5px}
 .${terminalClass.toolsPanel}::-webkit-scrollbar-thumb{background:var(--dsw-alias-label-tertiary,#777);border-radius:3px}
 .${terminalClass.toolAction}{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:38px;min-width:38px;height:28px;min-height:28px;padding:0!important;border-radius:var(--dsw-radius-sm,6px)}
-/* 修饰键使用主题高亮色；悬停和实际按压时也保持选中态，避免被原生 toolbar 样式覆盖。 */
 .${terminalClass.toolsPanel} .${terminalClass.toolAction}[aria-pressed="true"],.${terminalClass.toolsPanel} .${terminalClass.toolModifierActive},.${terminalClass.toolsPanel} .${terminalClass.toolAction}[aria-pressed="true"]:is(:hover,:active){background:var(--dsw-alias-button-info-fill,#4176e6);color:var(--dsw-alias-label-primary-foreground,#fff);font-weight:600}
-/* ShortcutKeys 自带灰色文字，选中时让它继承按钮的高对比前景色。 */
 .${terminalClass.toolsPanel} .${terminalClass.toolAction}[aria-pressed="true"]>span,.${terminalClass.toolsPanel} .${terminalClass.toolModifierActive}>span{color:inherit}
 .${terminalClass.listRow}{box-sizing:border-box;display:flex;align-items:center;height:28px;min-width:110px;max-width:220px;border-radius:var(--dsw-radius-sm,6px);background:transparent;flex:none}
 .${terminalClass.listRowSelected}{background:var(--dsw-alias-interactive-bg-hover);box-shadow:var(--dsw-elevation-soft,0 1px 2px rgba(0,0,0,.08))}

@@ -2,6 +2,7 @@ import { DshCapabilityRegistry } from './registry.js'
 import { DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL } from '../bootstrap/dsh-peer-host-preboot-shim.js'
 import { DSH_COMPATIBILITY } from '../shared/contracts/version.js'
 import type { DshCapabilityRoute, DshCapabilityRuntime } from './types.js'
+import { createTerminalSharingBridge, supportsTerminalSharing } from './client/terminal-sharing-adapter.js'
 
 /**
  * 注册 Codingns4DSH 当前实际消费的 DSH 服务能力。
@@ -148,6 +149,13 @@ function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): v
 
 /** DSH 0.2 Client 结构化能力；图标和 UI 服务允许由新旧导出共同提供。 */
 function addDsh020ClientRoutes(add: CapabilityRouteAdder, supportedDsh: string, facts: DshCapabilityRuntimeFacts): void {
+  add({
+    // rc.2 只有纯文本镜像且在组件挂载后才导入草稿，不能保证跨会话插入安全。
+    id: 'conversation-draft-share-021', capability: 'conversation.draft-share', supportedDsh: '>=0.2.1-alpha.1 <=0.2.1-alpha.1', runtime: 'client', priority: 30,
+    status: 'supported', introducedIn: '0.2.1-alpha.1',
+    detect: supportsTerminalSharing,
+    create: createTerminalSharingBridge,
+  })
   add({
     id: 'config-forms-020', capability: 'settings.store', supportedDsh, runtime: 'client', priority: 30,
     status: 'supported', introducedIn: '0.2.0-rc.1',
