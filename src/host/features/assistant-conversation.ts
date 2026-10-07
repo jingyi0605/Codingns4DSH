@@ -324,5 +324,6 @@ function validateStoredMessage(message: AssistantConversationMessage): void {
       || typeof call.id !== 'string' || typeof call.name !== 'string' || !['workspace', 'web-search', 'attachment'].includes(call.kind)
       || !['running', 'completed', 'failed', 'cancelled'].includes(call.state) || !Number.isFinite(call.startedAt)
       || call.finishedAt !== null && !Number.isFinite(call.finishedAt) || typeof call.arguments !== 'string' || call.arguments.length > 4000
+      || call.textOffset !== undefined && (!Number.isSafeInteger(call.textOffset) || call.textOffset < 0)
       || typeof call.result !== 'string' || call.result.length > 6000))) throw new Error('助理沟通记录字段无效，原文件未修改')
 }

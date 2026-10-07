@@ -343,6 +343,47 @@ test('连续消息显示文字、语音、流式回复及摘要，不重复已�
   assert.equal((committed.match(/继续核对/gu) ?? []).length, 1)
 })
 
+test('文字对话在首段正文前展示工具，状态更新可见，完成后保留且不重复', () => {
+  const call = { id: 'search', name: 'web_search', kind: 'web-search' as const, state: 'running' as const, startedAt: 1, finishedAt: null, arguments: '{"queries":["北京天气"]}', result: '' }
+  const active = { requestId: 'search-turn', provider: 'api', model: 'm', generation: 1, state: 'running' as const, text: '', error: null, startedAt: 1, finishedAt: null, toolCalls: [call] }
+  const conversation: AssistantConversationSnapshot = { revision: 1, summary: '', messages: [],
+    pendingMessage: { id: 'search-turn-user', role: 'user', text: '查一下天气', source: 'text', createdAt: 1 }, active, compressing: false, error: null }
+  const render = (snapshot: AssistantConversationSnapshot) => renderToStaticMarkup(createElement(AssistantConversationView, { conversation: snapshot, name: '小鱼', t }))
+  const running = render(conversation)
+  for (const text of ['data-codingns-assistant-tool="web_search"', 'data-state="running"', '进行中', '北京天气']) assert.ok(running.includes(text), text)
+  assert.ok(!running.includes('Hello')); assert.match(running, /<details\b[^>]*>/u); assert.ok(!/<details\b[^>]*\bopen\b/u.test(running))
+  const completed = { ...active, state: 'completed' as const, text: '北京今天晴。', finishedAt: 3,
+    toolCalls: [{ ...call, state: 'completed' as const, finishedAt: 2, result: '<script>天气来源</script>' }] }
+  const committed = render({ ...conversation, active: completed, pendingMessage: null, messages: [conversation.pendingMessage!,
+    { id: 'search-turn-assistant', role: 'assistant', source: 'text', createdAt: 3, text: completed.text, toolCalls: completed.toolCalls }] })
+  assert.equal((committed.match(/data-codingns-assistant-tool="web_search"/gu) ?? []).length, 1)
+  assert.ok(committed.includes('已完成')); assert.ok(committed.includes('北京今天晴。'))
+  assert.ok(committed.includes('&lt;script&gt;天气来源&lt;/script&gt;')); assert.ok(!committed.includes('<script>'))
+  const failed = render({ ...conversation, active: { ...active, toolCalls: [{ ...call, state: 'failed', finishedAt: 2, result: '搜索提供商不可用' }] } })
+  assert.ok(failed.includes('失败')); assert.ok(failed.includes('搜索提供商不可用'))
+  const cancelled = render({ ...conversation, active: { ...active, toolCalls: [{ ...call, state: 'cancelled', finishedAt: 2 }] } })
+  assert.ok(cancelled.includes('已取消'))
+  const plain = render({ ...conversation, active: { ...active, text: '普通回答', toolCalls: [] } })
+  assert.ok(plain.includes('普通回答')); assert.ok(!plain.includes('data-codingns-assistant-tools'))
+})
+
+test('聊天把工具穿插在调用前后正文之间，流式状态更新和最终提交保持顺序', () => {
+  const first = '先看项目。'; const second = '接着查天气。'; const last = '最后回答。'
+  const tool = { id: 'project', name: 'assistant_list_workspaces', kind: 'workspace' as const, state: 'running' as const, startedAt: 1, finishedAt: null, arguments: '{}', result: '', textOffset: first.length }
+  const active = { requestId: 'timeline', provider: 'api', model: 'm', generation: 1, state: 'running' as const, text: first + second + last, error: null, startedAt: 1, finishedAt: null,
+    toolCalls: [tool, { ...tool, id: 'weather', name: 'web_search', kind: 'web-search' as const, textOffset: (first + second).length }] }
+  const conversation: AssistantConversationSnapshot = { revision: 1, summary: '', messages: [], pendingMessage: { id: 'timeline-user', role: 'user', text: '帮我看看', source: 'text', createdAt: 1 }, active, compressing: false, error: null }
+  const completed = { ...active, state: 'completed' as const, toolCalls: active.toolCalls.map((call) => ({ ...call, state: 'completed' as const, finishedAt: 2 })) }
+  const snapshots = [conversation, { ...conversation, active: completed }, { ...conversation, active: completed, pendingMessage: null, messages: [conversation.pendingMessage!,
+    { id: 'timeline-assistant', role: 'assistant' as const, source: 'text' as const, createdAt: 2, text: completed.text, toolCalls: completed.toolCalls }] }]
+  for (const snapshot of snapshots) {
+    const markup = renderToStaticMarkup(createElement(AssistantConversationView, { conversation: snapshot, name: '小鱼', t }))
+    const positions = ['帮我看看', first, 'data-codingns-assistant-tool="assistant_list_workspaces"', second, 'data-codingns-assistant-tool="web_search"', last].map((part) => markup.indexOf(part))
+    assert.ok(positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1]!)), '调用信息必须在对应正文段之间')
+    assert.equal((markup.match(/data-codingns-assistant-tool=/gu) ?? []).length, 2)
+  }
+})
+
 test('输入事件支持中文输入法与换行，禁用和空输入不能提交', () => {
   let sent = 0; let changed = ''
   const make = (value = '问题', disabled = false) => AssistantComposer({ t, value, disabled, onChange: (value) => { changed = value }, onSend: () => { sent++ }, label: 'awb.send' })

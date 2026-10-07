@@ -10,6 +10,7 @@ import { createAssistantConversationStorage, assistantConversationDirectory } fr
 import { mkdtemp, rm, readdir, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { assistantMessageTimeline } from '../src/shared/assistant-message-timeline.js'
 
 const model = { provider: 'api', model: 'chat', label: '模型' }
 const context: AssistantConversationContext = { ...model, index: { generation: 0, scope: { status: 'empty', reason: 'no-managed-workspaces', message: '尚未选择任何工作区' }, unreadableCount: 0, entries: [] }, isCurrent: () => true, createSystem: () => '仅普通交流，未提供当前项目事实。' }
@@ -115,6 +116,33 @@ test('压缩保留通话完整记录，清理才删除聚合卡片，旧版本�
   assert.deepEqual((await f.conversation.snapshot()).voiceSessions, [])
   const old = new AssistantConversation(f.engine, f.adapter, { async read() { return { schemaVersion: 1, revision: 0, summary: '', messages: [], contextFrom: 0 } }, async write() {} })
   t.after(() => old.dispose()); assert.deepEqual((await old.snapshot()).voiceSessions, [])
+})
+
+test('文字和通话归档恢复工具的正文位置，旧记录可读，损坏位置不会覆盖原文件', async (t) => {
+  const before = '先查一下。'; const after = '结果已确认。'
+  const f = fixture(t, async (_model, _system, _messages, _signal, onText, _options, onTool) => {
+    onText(before)
+    onTool!({ id: 'search', name: 'web_search', kind: 'web-search', state: 'completed', startedAt: 1, finishedAt: 2, arguments: '{}', result: '来源' })
+    onText(before + after)
+    return before + after
+  })
+  await f.send('text')
+  await f.conversation.beginVoiceSession('tab', 'call'); await f.send('voice', '问题', 'voice'); await f.conversation.endVoiceSession('tab')
+  const restored = new AssistantConversation(f.engine, f.adapter, f.storage); t.after(() => restored.dispose())
+  const snapshot = await restored.snapshot()
+  for (const message of [snapshot.messages[1]!, snapshot.voiceSessions![0]!.messages[1]!]) {
+    assert.equal(message.toolCalls![0]!.textOffset, before.length)
+    assert.deepEqual(assistantMessageTimeline(message.text, message.toolCalls).map((part) => part.kind), ['text', 'tool', 'text'])
+  }
+  const stored: any = await f.storage.read()
+  delete stored.messages[1].toolCalls[0].textOffset
+  const legacy = new AssistantConversation(f.engine, f.adapter, { async read() { return stored }, async write() { assert.fail('只读恢复不迁移文件') } })
+  t.after(() => legacy.dispose()); assert.equal((await legacy.snapshot()).messages[1]!.toolCalls![0]!.textOffset, undefined)
+  for (const textOffset of [-1, 1.5, '3']) {
+    const damaged = structuredClone(stored); damaged.messages[1].toolCalls[0].textOffset = textOffset
+    const invalid = new AssistantConversation(f.engine, f.adapter, { async read() { return damaged }, async write() { assert.fail('不得覆盖损坏文件') } })
+    t.after(() => invalid.dispose()); await assert.rejects(invalid.snapshot(), /字段无效/u)
+  }
 })
 
 test('重建 Host 结算遗留通话，损坏工具字段拒绝恢复且不会覆盖文件', async (t) => {

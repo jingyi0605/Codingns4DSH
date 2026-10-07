@@ -56,6 +56,34 @@ test('聚合卡片替代已结束通话气泡，旧语音消息和后续文字�
   assert.equal(assistantConversationTimeline({ ...conversation, messages: [], voiceSessions: [{ ...session, endedAt: null }] }).length, 0)
 })
 
+test('实时通话在没有回复正文时也展示工具，参数和结果独立于字幕', () => {
+  const toolCalls = [{ ...session.messages[1]!.toolCalls![1]!, state: 'running' as const, finishedAt: null, result: '' }]
+  const running = renderToStaticMarkup(createElement(AssistantRealtimeCallView, { ...callProps, assistantText: '', toolCalls }))
+  assert.ok(running.includes('data-codingns-assistant-tool="web_search"'))
+  assert.ok(running.includes('data-state="running"')); assert.ok(running.includes('公开资料'))
+  const failed = renderToStaticMarkup(createElement(AssistantRealtimeCallView, { ...callProps, toolCalls: session.messages[1]!.toolCalls }))
+  assert.ok(failed.includes('正在检查当前工作区。'))
+  assert.ok(failed.includes('data-state="failed"')); assert.ok(failed.includes('&lt;script&gt;搜索服务不可用&lt;/script&gt;'))
+  assert.ok(!failed.includes('<script>'))
+})
+
+test('实时字幕和多轮通话详情都按正文与工具的原始次序展示，不追加底部汇总', () => {
+  const before = '正在核对。'; const after = '天气已确认。'; const next = '继续看项目。'
+  const call = { ...session.messages[1]!.toolCalls![1]!, textOffset: before.length }
+  const live = renderToStaticMarkup(createElement(AssistantRealtimeCallView, { ...callProps, assistantText: before + after, toolCalls: [call] }))
+  assert.ok(live.indexOf(before) < live.indexOf('data-codingns-assistant-tool="web_search"'))
+  assert.ok(live.indexOf('data-codingns-assistant-tool="web_search"') < live.indexOf(after))
+  const history: AssistantVoiceSession = { ...session, messages: [session.messages[0]!,
+    { ...session.messages[1]!, text: before + after, toolCalls: [call] },
+    { ...session.messages[0]!, id: 'next-user', text: '下一轮问题' },
+    { ...session.messages[1]!, id: 'next-assistant', text: next, toolCalls: [{ ...session.messages[1]!.toolCalls![0]!, textOffset: 0 }] }] }
+  const details = renderToStaticMarkup(createElement(AssistantVoiceSessionDetailsView, { session: history, t, name: '小鱼' }))
+  const positions = ['请检查项目并搜索资料', before, 'data-codingns-assistant-tool="web_search"', after, '下一轮问题', 'data-codingns-assistant-tool="assistant_list_workspaces"', next].map((part) => details.indexOf(part))
+  assert.ok(positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1]!)), '跨轮工具只能留在所属消息中')
+  assert.equal((details.match(/data-codingns-assistant-tool=/gu) ?? []).length, 2)
+  assert.ok(!details.includes('能力调用记录'), '详情不再有底部集中汇总')
+})
+
 test('卡片统计有效发言和真实时长，详情显示完整沟通、工具成功与失败且转义结果', () => {
   assert.equal(voiceSessionMessageCount(session), 2); assert.equal(voiceSessionDuration(session), '02:05')
   assert.equal(voiceSessionDuration({ startedAt: 1000, endedAt: null }, 500), '00:00')
@@ -66,6 +94,7 @@ test('卡片统计有效发言和真实时长，详情显示完整沟通、工�
   const details = renderToStaticMarkup(createElement(AssistantVoiceSessionDetailsView, { session, t, name: '哆哆', model, services: {} as CodingNsClientServices }))
   for (const text of ['请检查项目并搜索资料', '工作区能力', '联网搜索', 'assistant_list_workspaces', 'web_search', '失败', '已完成', '已打断', '公开资料', '&lt;script&gt;']) assert.ok(details.includes(text), text)
   assert.ok(!details.includes('<script>'))
+  assert.equal((details.match(/data-codingns-assistant-tool="web_search"/g) ?? []).length, 1, '通话详情只展示一份工具记录')
   assert.ok(details.includes('data-codingns-assistant-message="user" data-codingns-message-side="right"'))
   assert.ok(details.includes('data-codingns-assistant-message="assistant" data-codingns-message-side="left"'))
   assert.equal((details.match(/data-codingns-avatar-portrait/g) ?? []).length, 1)

@@ -86,14 +86,19 @@ export class AssistantTextChat {
       (call) => {
         traceVoice('host.llm.tool', { ...diagnosticFields, action: call.name, state: call.state })
         if (abort.signal.aborted) return
+        // 记录首次执行的正文位置；并行调用按开始顺序显示，完成事件不能把卡片移动到回复底部。
         const calls = new Map((entry.run.toolCalls ?? []).map((item) => [item.id, item]))
-        calls.set(call.id, call)
+        calls.set(call.id, { ...call, textOffset: calls.get(call.id)?.textOffset ?? entry.run.text.length })
         entry.run = { ...entry.run, toolCalls: [...calls.values()].slice(-24) }
         this.publish(entry.run)
       })
       .then((text) => {
         if (abort.signal.aborted) return
-        entry.run = { ...entry.run, text, state: 'completed', finishedAt: Date.now() }
+        // 原生适配器结束时会 trim 正文；同步校正开头空白，保持流式和归档中的工具位置一致。
+        const trimmedPrefix = entry.run.text.trim() === text.trim()
+          ? (entry.run.text.length - entry.run.text.trimStart().length) - (text.length - text.trimStart().length) : 0
+        const toolCalls = entry.run.toolCalls?.map((call) => ({ ...call, textOffset: Math.max(0, (call.textOffset ?? 0) - trimmedPrefix) }))
+        entry.run = { ...entry.run, text, state: 'completed', finishedAt: Date.now(), ...(toolCalls === undefined ? {} : { toolCalls }) }
       })
       .catch((error) => { if (!abort.signal.aborted) entry.run = { ...entry.run, state: 'failed', error: sanitizeSpeechText(error instanceof Error ? error.message : String(error)).slice(0, 500), finishedAt: Date.now() } })
       .finally(() => {

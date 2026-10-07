@@ -198,7 +198,8 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
     document.addEventListener('keydown', escape)
     return () => document.removeEventListener('keydown', escape)
   }, [debugDialog, confirmation, close])
-  useEffect(() => { messagesEnd.current?.scrollIntoView?.({ block: 'nearest' }) }, [lifecycle.conversation.revision, lifecycle.conversation.active?.text, props.partialText])
+  const toolState = lifecycle.conversation.active?.toolCalls?.map((call) => `${call.id}:${call.state}`).join('|')
+  useEffect(() => { messagesEnd.current?.scrollIntoView?.({ block: 'nearest' }) }, [lifecycle.conversation.revision, lifecycle.conversation.active?.text, toolState, props.partialText])
 
   const run = async (operation: () => Promise<void>): Promise<void> => {
     if (pendingOperation.current) return
@@ -328,6 +329,8 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
         calling ? createElement(AssistantRealtimeCall, { services, name: lifecycle.profile.name, model: selectedAssistantAvatar(appearance), t,
           session: lifecycle.conversation.voiceSessions?.find((session) => session.endedAt === null), pending: props.pending, state: props.state,
           userText: props.partialText || props.liveUserText || '', assistantText: props.liveAssistantText || '',
+          toolCalls: lifecycle.conversation.pendingMessage?.source === 'voice' ? lifecycle.conversation.active?.toolCalls
+            : lifecycle.conversation.voiceSessions?.find((session) => session.endedAt === null)?.messages.at(-1)?.toolCalls,
           onHangup: async () => { try { await props.onStop(); await refresh() } catch (cause) { setError(message(cause)) } } })
           : configuring ? createElement('div', { 'data-codingns-assistant-configuration': true, style: { ...assistantSettingTextStyle, display: 'grid', gap: 11, minWidth: 0 } },
           initializing ? createElement('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'stretch', gap: 22 } },
@@ -371,7 +374,8 @@ export function AssistantConversationView({ conversation, name, t, services, mod
   const messages = [...conversation.messages, ...(conversation.pendingMessage === null ? [] : [conversation.pendingMessage])]
   const timeline = assistantConversationTimeline(conversation)
   const active = conversation.active
-  const streaming = active !== null && active.state !== 'cancelled' && active.text !== '' && !messages.some((message) => message.id === `${active.requestId}-assistant`)
+  // 模型先调用工具时也展示本轮，不能等到出现第一段正文才显示搜索过程。
+  const streaming = active !== null && active.state !== 'cancelled' && (active.text !== '' || Boolean(active.toolCalls?.length)) && !messages.some((message) => message.id === `${active.requestId}-assistant`)
   return createElement('div', { 'data-codingns-assistant-messages': true, style: { display: 'grid', gap: 12 } },
     conversation.summary ? createElement('details', null, createElement('summary', { style: help }, t('awb.summary')), createElement('p', { style: { ...help, whiteSpace: 'pre-wrap' } }, conversation.summary)) : null,
     timeline.length === 0 && !streaming ? createElement('p', { style: { ...help, textAlign: 'center', padding: '20px 0' } }, t('awb.empty')) : null,
@@ -380,7 +384,8 @@ export function AssistantConversationView({ conversation, name, t, services, mod
       const message = item.message
       return createElement(AssistantConversationMessageView, { key: message.id, message, name, t, services, model })
     }),
-    !streaming ? null : createElement(AssistantConversationMessageView, { streaming: true, message: { role: 'assistant', text: active.text }, name, t, services, model }))
+    !streaming ? null : createElement(AssistantConversationMessageView, { key: `${active.requestId}-assistant`, streaming: true,
+      message: { role: 'assistant', text: active.text, ...(active.toolCalls === undefined ? {} : { toolCalls: active.toolCalls }) }, name, t, services, model }))
 }
 
 export function AssistantConfigurationFields({ draft, catalog, appearance, initializing = false, includeAvatar = true, services, t, disabled, onChange }: {

@@ -4,9 +4,10 @@ import { setImmediate } from 'node:timers/promises'
 import { createAssistantLlmAdapter, type AssistantLlmAdapter } from '../data/build/dist/dsh-capabilities/host/assistant-llm-adapter.js'
 import { AssistantTextChat, createAssistantChatSystem } from '../data/build/dist/host/features/assistant-text-chat.js'
 import { AssistantIndexJournal } from '../data/build/dist/host/features/assistant-index-journal.js'
-import type { AssistantIndexSnapshot } from '../data/build/dist/shared/contracts/assistant.js'
+import type { AssistantChatRun, AssistantIndexSnapshot, AssistantToolCall } from '../data/build/dist/shared/contracts/assistant.js'
 import { createAssistantIndexSystem } from '../data/build/dist/host/features/assistant-prompts.js'
 import { DEFAULT_ASSISTANT_PROMPTS } from '../data/build/dist/shared/assistant-prompts.js'
+import { assistantMessageTimeline } from '../src/shared/assistant-message-timeline.js'
 
 const model = { provider: 'native', model: 'chat', label: '已配置模型' }
 const catalog = { models: [model], default: model, errors: [] }
@@ -162,6 +163,59 @@ test('过期索引、无效模型和无效历史在调用 LLM 前被拒绝', asy
   await assert.rejects(chat.start(request(), index, () => false), /范围或版本已变化/u)
   assert.equal(calls, 0)
   await assert.rejects(new AssistantTextChat(undefined).start(request(), index), /没有可用/u)
+})
+
+test('无正文时工具开始、完成和失败立即推送，更新同一调用保持顺序，取消屏蔽迟到事件', async (t) => {
+  let report!: (call: AssistantToolCall) => void
+  let finish!: (text: string) => void
+  const chat = new AssistantTextChat({ async catalog() { return catalog }, async reply(_model, _system, _messages, _signal, _onText, _options, onTool) {
+    report = onTool!
+    return new Promise<string>((resolve) => { finish = resolve })
+  } })
+  t.after(() => chat.dispose())
+  const updates: AssistantChatRun[] = []
+  chat.subscribe((run) => updates.push(run))
+  await chat.start(request(), index)
+  const search: AssistantToolCall = { id: 'search', name: 'web_search', kind: 'web-search', state: 'running', startedAt: 1, finishedAt: null, arguments: '{"queries":["北京天气"]}', result: '' }
+  report(search)
+  assert.equal(updates.length, 1)
+  assert.equal(updates[0]!.text, '')
+  assert.equal(updates[0]!.toolCalls![0]!.state, 'running')
+  report({ ...search, id: 'workspace', name: 'assistant_list_workspaces', kind: 'workspace' })
+  report({ ...search, state: 'completed', finishedAt: 2, result: '天气来源' })
+  assert.equal(updates.length, 3, '工具事件不等待正文或模型结算')
+  assert.deepEqual(updates[2]!.toolCalls!.map((call) => call.id), ['search', 'workspace'])
+  assert.equal(updates[0]!.toolCalls![0]!.state, 'running', '旧快照不能被新状态改写')
+  report({ ...search, id: 'failed', state: 'failed', finishedAt: 3, result: '提供商不可用' })
+  assert.equal(updates[3]!.toolCalls![2]!.state, 'failed')
+  chat.cancel('r1')
+  const count = updates.length
+  report({ ...search, state: 'completed', result: '迟到结果' })
+  assert.equal(updates.length, count)
+  finish('迟到正文'); await setImmediate()
+  assert.equal(chat.read('r1').text, '')
+  assert.equal(chat.read('r1').state, 'cancelled')
+})
+
+test('按工具首次开始时定位正文，后续状态不移动位置，完成 trim 不改变事件顺序', async (t) => {
+  const first = '先搜索。\n'; const second = '再核对。\n'; const last = '最终回答。'
+  const call: AssistantToolCall = { id: 'search', name: 'web_search', kind: 'web-search', state: 'running', startedAt: 1, finishedAt: null, arguments: '{}', result: '' }
+  const chat = new AssistantTextChat({ async catalog() { return catalog }, async reply(_model, _system, _messages, _signal, onText, _options, onTool) {
+    onText('  \n' + first); onTool!(call)
+    onText('  \n' + first + second); onTool!({ ...call, id: 'next' })
+    onTool!({ ...call, state: 'completed', finishedAt: 2, result: '搜索结果' })
+    onText('  \n' + first + second + last + '  \n')
+    return first + second + last
+  } })
+  t.after(() => chat.dispose())
+  const updates: AssistantChatRun[] = []
+  chat.subscribe((run) => updates.push(run))
+  await chat.start(request(), index)
+  const completed = await chat.wait('r1')
+  assert.equal(updates[1]!.toolCalls![0]!.textOffset, ('  \n' + first).length)
+  assert.equal(updates[4]!.toolCalls![0]!.textOffset, updates[1]!.toolCalls![0]!.textOffset)
+  assert.deepEqual(completed.toolCalls!.map((tool) => tool.textOffset), [first.length, (first + second).length])
+  assert.deepEqual(assistantMessageTimeline(completed.text, completed.toolCalls).map((part) => part.kind === 'text' ? part.text : part.call.id), [first, 'search', second, 'next', last])
 })
 
 test('异步读取模型期间范围变化或模块释放，不得随后启动模型', async () => {

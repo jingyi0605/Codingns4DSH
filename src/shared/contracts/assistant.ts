@@ -240,6 +240,8 @@ export interface AssistantToolCall {
   readonly finishedAt: number | null
   readonly arguments: string
   readonly result: string
+  /** 工具首次执行时累计正文的 UTF-16 长度；用于定位展示，不参与朗读。旧记录可缺省。 */
+  readonly textOffset?: number
 }
 
 /** 通话记录独立于模型压缩上下文；挂断后的内容仍可回看，不存储原始录音。 */
