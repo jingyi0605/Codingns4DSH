@@ -153,7 +153,7 @@ export function AssistantVoiceSessionCard({ session, t, name, services, model }:
         createElement('strong', { style: { fontSize: 13, fontWeight: 600 } }, t('awb.call.record')),
         createElement('span', { style: { fontSize: 11, color: dshThemeColor.labelSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
           t('awb.call.count', { count: voiceSessionMessageCount(session) }), ' · ',
-          createElement('time', { dateTime: startedAt.toISOString(), title: startedAt.toLocaleString() },
+          createElement('time', { dateTime: Number.isNaN(startedAt.valueOf()) ? undefined : startedAt.toISOString(), title: startedAt.toLocaleString() },
             startedAt.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })))),
       createElement('span', { title: t('awb.call.duration'), 'aria-label': `${t('awb.call.duration')} ${voiceSessionDuration(session)}`,
         style: { padding: '3px 7px', borderRadius: 6, background: dshThemeColor.cardBackground, color: dshThemeColor.labelSecondary,

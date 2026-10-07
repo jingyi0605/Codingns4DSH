@@ -73,7 +73,7 @@ function AssistantToolCallView({ call, t }: { readonly call: AssistantToolCall; 
           createElement('span', { role: 'status', style: { display: 'inline-flex', alignItems: 'center', gap: 4, color,
             padding: '1px 6px', borderRadius: 5, background: `color-mix(in srgb, ${color} 9%, transparent)`, fontSize: 11, whiteSpace: 'nowrap' } },
             createElement('span', { 'aria-hidden': true, style: { width: 4, height: 4, borderRadius: '50%', background: 'currentColor' } }), status),
-          createElement('time', { dateTime: startedAt.toISOString(), title: startedAt.toLocaleString(),
+          createElement('time', { dateTime: Number.isNaN(startedAt.valueOf()) ? undefined : startedAt.toISOString(), title: startedAt.toLocaleString(),
             style: { color: dshThemeColor.labelTertiary, fontSize: 10, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } },
             startedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }))),
         createElement(AssistantRecordChevron)),
