@@ -489,6 +489,50 @@ test('消息区域的横向滚动祖先优先接收手势，不触发侧栏', ()
   assert.deepEqual(harness.calls, [])
 })
 
+test('右栏标签条即使没有溢出也保留双向横滑，不触发侧栏开合', () => {
+  const harness = createHarness()
+  harness.window.emit('touchstart', touchEvent(280, 300))
+  harness.window.emit('touchmove', touchEvent(60, 300))
+  assert.deepEqual(harness.calls, ['right'])
+  harness.window.emit('touchend', {})
+
+  const strip = {
+    // 这里故意没有滚动宽度：标签条始终由原生交互接管，与是否溢出无关。
+    closest: (selector: string) => selector.includes('[data-sidebar-right-panel] [data-dockkit-strip]') ? strip : null,
+  }
+  for (const [start, end] of [[120, 330], [280, 60]]) {
+    harness.window.emit('touchstart', touchEvent(start!, 300, { target: strip }))
+    const move = touchEvent(end!, 300, { target: strip })
+    harness.window.emit('touchmove', move)
+    assert.equal(move.prevented, 0)
+    assert.deepEqual(harness.calls, ['right'])
+    harness.window.emit('touchend', {})
+  }
+  assert.equal(harness.isExpanded(), true)
+  harness.controller.dispose()
+})
+
+test('标签条在 composedPath 或后续 move 中出现时同样让位原生滚动', () => {
+  const harness = createHarness()
+  const strip = {
+    closest: (selector: string) => selector.includes('[data-sidebar-right-panel] [data-dockkit-strip]') ? strip : null,
+  }
+  const shadowHost = { closest: () => null }
+  harness.window.emit('touchstart', touchEvent(120, 300, { target: shadowHost, path: [strip] }))
+  const shadowMove = touchEvent(330, 300, { target: shadowHost, path: [strip] })
+  harness.window.emit('touchmove', shadowMove)
+  assert.equal(shadowMove.prevented, 0)
+  assert.deepEqual(harness.calls, [])
+  harness.window.emit('touchend', {})
+
+  harness.window.emit('touchstart', touchEvent(280, 300, { target: shadowHost }))
+  const lateMove = touchEvent(60, 300, { target: strip })
+  harness.window.emit('touchmove', lateMove)
+  assert.equal(lateMove.prevented, 0)
+  assert.deepEqual(harness.calls, [])
+  harness.controller.dispose()
+})
+
 test('关闭开关或缺少端口时不注册监听，并给出可解释诊断', () => {
   const disabled = createHarness({ settings: { ...SETTINGS, sidebarGestures: false } })
   assert.equal(disabled.window.listenerCount('touchstart'), 0)
