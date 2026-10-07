@@ -348,6 +348,7 @@ const agentFallbackIconStyle = { flexGrow: 0, flexShrink: 0, borderRadius: 5, co
 type ModelPane = 'root' | 'model' | 'effort'
 
 interface ModelCatalogState {
+  readonly sessionId: string | undefined
   readonly adapterId: string
   readonly value: CodingNsCliModelCatalog
 }
@@ -409,8 +410,8 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
 
   useDismissOnOutsidePointer(rootRef, open, () => { setOpen(false); setPane('root') })
 
-  const catalog = catalogState?.adapterId === selection.adapterId ? catalogState.value : null
-  // 目录必须和当前适配器绑定；切换后的第一次渲染立即进入加载态，不能短暂展示旧目录。
+  const catalog = catalogState?.adapterId === selection.adapterId && catalogState.sessionId === sessionId ? catalogState.value : null
+  // 目录必须和当前会话、适配器绑定；跨 Host 切换时不能短暂展示上一会话的目录。
   const loading = selection.adapterId !== 'dsh'
     // 有 stale 目录时直接可用，后台刷新不应阻塞模型/思考强度选择。
     && catalog === null
@@ -428,18 +429,18 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     let active = true
     let retryTimer: ReturnType<typeof setTimeout> | undefined
     const adapterId = selection.adapterId
-    const cached = getModelCatalogCache(props.rpc).get(adapterId)
-    if (cached !== undefined) setCatalogState({ adapterId, value: cached })
+    const cached = getModelCatalogCache(props.rpc, sessionId).get(adapterId)
+    if (cached !== undefined) setCatalogState({ sessionId, adapterId, value: cached })
     setRefreshingAdapterId(adapterId)
     // 档位判定过期时先作废 Client 缓存，让本次请求真正走到 Host 的指纹比对。
     // 用节流避免真实第三方接入下每次挂载都重复探测。
-    if (shouldRevalidateModelCatalog(props.rpc, adapterId, needsServiceTierRevalidation(cached ?? null))) {
-      invalidateModelCatalogCache(props.rpc, adapterId)
+    if (shouldRevalidateModelCatalog(props.rpc, adapterId, needsServiceTierRevalidation(cached ?? null), sessionId)) {
+      invalidateModelCatalogCache(props.rpc, adapterId, sessionId)
     }
     void loadModelCatalog(props.rpc, adapterId, sessionId)
       .then((value) => {
         if (!active) return
-        setCatalogState({ adapterId, value })
+        setCatalogState({ sessionId, adapterId, value })
         if (value.fallback === true) {
           // 回退目录通常来自启动竞态或产品快照尚未落盘；等待 Host 的短周期
           // 重试后重新执行一次 RPC，避免当前页面永久停留在默认模型。
@@ -485,8 +486,8 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
         if (!active) return
         // 已有目录时保留 stale 值；暂时探测失败不能把思考强度列表清空，
         // 否则用户会看到模型选择器反复回到“正在加载”。
-        if (getModelCatalogCache(props.rpc).get(adapterId) === undefined) {
-          setCatalogState({ adapterId, value: { groups: [], currentModel: null, currentEffort: null } })
+        if (getModelCatalogCache(props.rpc, sessionId).get(adapterId) === undefined) {
+          setCatalogState({ sessionId, adapterId, value: { groups: [], currentModel: null, currentEffort: null } })
         }
       })
       .finally(() => { if (active) setRefreshingAdapterId(null) })
