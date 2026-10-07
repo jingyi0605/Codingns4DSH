@@ -86,6 +86,20 @@ Host 保存 schemaVersion、revision、summary、messages、contextFrom（当前
 
 创建表单只发送四项身份字段，不查询项目目录、索引诊断或 MOSS 目录，不发起试聊或问候试听。创建后再订阅项目目录与查询音色可用性；原接口传完整能力字段的调用继续兼容，显式选择 MOSS 的失败如实返回。
 
+### 4.3 实时通话展示与归档
+
+识别默认值集中在 DEFAULT_VOICE_MODEL_ID，使用中英双语实时模型；模型目录顺序、声音向导和原初始化窗口复用此值，旧 DEFAULT_LIGHT_VOICE_MODEL_ID 导出保留为兼容别名。已有模型与路径保持不变。
+
+Client 开始通话时给 voice/start 传独立 voiceSessionId，Host 在有效租约后创建 AssistantVoiceSession（id、startedAt、endedAt、messages），时间由 Host 记录。连续对话消息附可选 voiceSessionId，通话保存自己的文字副本，避免模型压缩删除详情；仍在同一原子对话文件中保存，保留旧 schemaVersion 及 4 MB 上限。开始新轮次按 UTF-8 字节数检查容量并预留文字和工具摘要空间。挂断先结算完整回复及残句，再停止租约；自动失效同样归档。旧客户端未传 ID 时沿用原消息语义。Host 恢复时结算没有租约的遗留记录，时间以最后发言估算，不继续显示通话中。
+
+AssistantAgentAdapter 观察本助理会话的 tools/execute（执行前）及 tools/result（真实最终结果），不替换工具实现与权限校验。AssistantTextChat 按调用 ID 更新最多 24 个有界记录；参数最多 4000 字符、结果最多 6000 字符，常见凭据字段及字符串脱敏。通话保留 workspace／web-search／attachment 分类、状态、时间和摘要；打断时运行中记录转为 cancelled，半轮文字只保存在通话记录，不伪造完整问答加入模型历史。
+
+工作台通话中用 AssistantRealtimeCall 替代普通聊天与输入栏，沿用 AssistantAvatarSlot 展示当前形象，三项控制复用当前适配器。麦克风同时关闭轨道、上传零 PCM、过滤识别事件；MOSS 以 GainNode（音量节点）静音，浏览器声音静音时取消当前播报并跳过后续段。输出设备切换只在 AudioContext.setSinkId 可用时开放。底部文字显示识别及 LLM 增量，长文本自动滚到最新一行；文字不承诺与正在播放的音频逐字对齐。
+
+挂断后用 assistantConversationTimeline 将已结束通话对应气泡替换为一张卡片，普通文字和旧语音消息保持原样。卡片用非空角色发言计数，详情使用原生 dialog 模态框显示全文、打断标记及工具摘要；Escape 只关闭详情。明暗主题沿用 DSH 主题变量，小屏限制形象高度并保持三个按钮可见。
+
+聊天消息与通话详情共用 AssistantConversationMessageView，统一 14px 字号、1.65 行高、换行、角色标题和静态头像。通话详情显式指定用户右侧、助理左侧，消息最大宽度 88%；当前形象和 Client 服务从聊天卡片传入模态框，AssistantAvatarPortrait 复用已有头像缓存和用户裁剪，不为每条消息创建动画实例。普通聊天保持原有排列，附件、流式回复及空状态继续沿用原逻辑。
+
 ## 5. 错误处理
 
 模型目录为空、设置拒绝、素材缺失、语音不可用、索引不完整分别显示实际错误。保存失败不跳转；压缩失败保留原数据；重置失败可重试，不能继续旧生成。后台操作每次落盘及配置写入前核对撤销信号，避免重置后自动恢复旧设置。
