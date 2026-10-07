@@ -51,7 +51,7 @@ test('终端布局和 xterm 默认值与 DSH 0.1.6 内置终端一致', async ()
   assert.match(xterm, /minimumContrastRatio:\s*4\.5/u)
   assert.match(xterm, /fontSize:\s*appearance\.fontSize \?\? 13/u)
   assert.match(xterm, /ui-monospace, SFMono-Regular, Menlo, Consolas, monospace/u)
-  assert.match(xterm, /isSnapshot && host !== null[\s\S]*fitTerminal\(terminal, fitRef\.current, view\)/u)
+  assert.match(xterm, /isSnapshot && host\.clientWidth > 0[\s\S]*fitTerminal\(terminal, fit, view\)/u)
   assert.match(xterm, /normalizeTerminalSnapshot\(render\.frame\.screen\)/u)
   assert.match(xterm, /value\.replace\(\/\\r\?\\n\/gu, '\\r\\n'\)/u)
   // 首帧之后字体和移动端容器才可能稳定；必须连续重排，历史顶部行也要按新列数布局。
@@ -90,10 +90,10 @@ test('视图激活与回到前台时夺回终端尺寸所有权', async () => {
   assert.match(modelSource, /if \(options\?\.force !== true && sameResize\(this\.lastResize, request\)\) return/u)
   // 只在"激活边沿"和"回到前台"触发夺回，且带最小间隔；不响应 Host 尺寸变化本身，
   // 避免多个客户端看到对方尺寸后互相夺回形成振荡。
-  assert.match(xtermSource, /const becameActive = active && !previousActiveRef\.current/u)
+  assert.match(xtermSource, /const becameActive = active && visible && !previousActiveRef\.current/u)
   assert.match(xtermSource, /TERMINAL_SIZE_CLAIM_INTERVAL_MS = 1000/u)
   assert.match(xtermSource, /addEventListener\('visibilitychange', onVisibilityChange\)/u)
-  assert.match(xtermSource, /fitTerminal\(terminal, fitRef\.current, view, claim \? \{ force: true \} : undefined\)/u)
+  assert.match(xtermSource, /fitTerminal\(terminal, fit, view, claim \? \{ force: true \} : undefined\)/u)
   assert.match(xtermSource, /view\.resize\(terminal\.cols, terminal\.rows, options\)/u)
 })
 
@@ -250,7 +250,12 @@ test('聚合页常驻挂载所有终端视图，切换标签只隐藏当前视�
   assert.match(uiSource, /const activeId = selected\?\.id \?\? terminals\[0\]\?\.id/u)
   assert.match(uiSource, /active: item\.id === activeId/u)
   assert.match(uiSource, /visible: info\.tab\.visible/u)
-  assert.match(xtermSource, /useEffect\(\(\) => visible \? view\.mount\(\) : undefined/u)
+  assert.match(xtermSource, /surfaces\.get\(view, \(\) => createTerminalSurface/u)
+  assert.match(xtermSource, /target\.replaceChildren\(surface\.host\)/u)
+  assert.match(xtermSource, /if \(surface\.owner !== target\) return/u)
+  assert.match(xtermSource, /const releaseState = view\.state\.subscribe\(\(\) => renderTerminalSurface/u)
+  assert.match(xtermSource, /const releaseMount = view\.mount\(\)/u)
+  assert.doesNotMatch(xtermSource, /terminal\.resize\(state\.info\.cols, state\.info\.rows\)/u)
   assert.match(xtermSource, /style: active \? undefined : \{ display: 'none' \}/u)
 })
 
@@ -306,7 +311,7 @@ test('终端输入会过滤设备识别回显并支持鼠标与触摸历史滚�
   assert.match(source, /const nextVelocity = clampNumber/u)
   assert.match(source, /松手时沿上一次手势方向继续滚动/u)
   assert.match(source, /Math\.abs\(deltaY\) <= Math\.abs\(deltaX\)/u)
-  const wheelSource = source.match(/const wheel = \(event: WheelEvent\): boolean => \{[\s\S]*?\n    \}\n    terminal\.attachCustomWheelEventHandler\(wheel\)/u)?.[0]
+  const wheelSource = source.match(/const wheel = \(event: WheelEvent\): boolean => \{[\s\S]*?\n\s*\}\n\s*terminal\.attachCustomWheelEventHandler\(wheel\)/u)?.[0]
   assert.ok(wheelSource, '未找到终端滚轮处理器')
   assert.match(wheelSource, /terminal\.buffer\.active\.baseY > 0/u)
   assert.match(wheelSource, /return true/u)

@@ -5,6 +5,7 @@ import {
   CodingNsTerminalView,
   CodingNsWebTerminals,
 } from '../data/build/dist/client/terminal/model.js'
+import { TerminalSurfaceCache } from '../data/build/dist/client/terminal/surface-cache.js'
 
 const environment = {
   cwd: '/workspace',
@@ -30,12 +31,13 @@ function success(value) {
 }
 
 function createRemote(listed = false) {
-  const calls = { create: 0, close: 0, environment: 0, list: 0, write: [], resize: [], followAborts: 0 }
+  const calls = { create: 0, close: 0, environment: 0, list: 0, write: [], resize: [], follow: 0, followAborts: 0 }
   const remote = {
     async close() { calls.close += 1; return success(undefined) },
     async create() { calls.create += 1; return success(terminalInfo) },
     async environment() { calls.environment += 1; return success(environment) },
     async *follow(_sessionId, _id, _attachmentId, signal) {
+      calls.follow += 1
       yield { type: 'snapshot', sequence: 0, screen: '$ ', info: terminalInfo }
       await new Promise((resolve) => {
         if (signal?.aborted) resolve(undefined)
@@ -171,6 +173,130 @@ test('聚合终端视图卸载 DOM 后保留 Host follow，重新打开无需重
 
   await service.dispose()
   assert.equal(calls.followAborts, 1, '服务销毁时才释放聚合视图的 Host follow')
+})
+
+test('同工作区跨会话和子标签切换复用模型，只建立一次 follow', async () => {
+  const { calls, remote } = createRemote(true)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-shared' })
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  await service.recover('session-a')
+  await service.recover('session-b')
+  const first = service.viewForTerminal('session-a', terminalInfo.id)
+  const second = service.viewForTerminal('session-b', terminalInfo.id)
+  assert.equal(second, first, '同工作区终端不能按会话创建第二个模型')
+  const unmount = first.mount()
+  await waitFor(() => first.state.getSnapshot().render !== undefined, '首次连接没有快照')
+  first.acknowledge(first.state.getSnapshot().render.revision)
+  const beforeSwitch = first.state.getSnapshot()
+  unmount()
+  service.selectTerminal('session-b', terminalInfo.id)
+  const remount = second.mount()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(second.state.getSnapshot(), beforeSwitch, '切换应直接保留连接状态与画面')
+  assert.equal(calls.follow, 1)
+  assert.equal(calls.followAborts, 0)
+  remount()
+  await service.closeTerminal('session-b', terminalInfo.id)
+  assert.equal(first.signal.aborted, true, '从另一会话关闭应释放共享屏幕生命周期')
+  assert.equal(calls.close, 1)
+  assert.equal(calls.followAborts, 1)
+  await service.dispose()
+})
+
+test('工作区解析前创建的聚合模型迁移后仍被其他会话复用', async () => {
+  const { calls, remote } = createRemote(true)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-shared' })
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  const original = service.viewForTerminal('session-a', terminalInfo.id)
+  const unmount = original.mount()
+  await waitFor(() => original.state.getSnapshot().render !== undefined, '首次连接没有快照')
+  original.acknowledge(original.state.getSnapshot().render.revision)
+  await service.recover('session-b')
+  assert.equal(service.viewForTerminal('session-b', terminalInfo.id), original)
+  assert.equal(service.viewForTerminal('session-a', terminalInfo.id), original)
+  assert.equal(calls.follow, 1)
+  unmount()
+  await service.dispose()
+})
+
+test('不同工作区的同名终端模型和屏幕保持隔离', async () => {
+  const { remote } = createRemote(true)
+  remote.environment = async (sessionId) => success({ ...environment, workspaceId: `workspace-${sessionId}` })
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  await service.recover('a')
+  await service.recover('b')
+  const first = service.viewForTerminal('a', terminalInfo.id)
+  const second = service.viewForTerminal('b', terminalInfo.id)
+  assert.notEqual(first, second)
+  const cache = new TerminalSurfaceCache()
+  let disposed = 0
+  const create = () => ({ dispose() { disposed += 1 } })
+  assert.notEqual(cache.get(first, create), cache.get(second, create))
+  await service.closeTerminal('a', terminalInfo.id)
+  assert.equal(disposed, 1)
+  assert.equal(second.signal.aborted, false, '关闭不能释放其他工作区的同名终端')
+  await service.dispose()
+  assert.equal(disposed, 2)
+})
+
+test('常驻屏幕在卡片卸载期间继续消费输出，跨会话复用缓冲区和滚动位置', async () => {
+  const { calls, remote } = createRemote(true)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-shared' })
+  let publish
+  remote.follow = async function* (_sessionId, _id, _attachmentId, signal) {
+    calls.follow += 1
+    yield { type: 'snapshot', sequence: 0, screen: '历史\r\n', info: terminalInfo }
+    let sequence = 0
+    while (!signal.aborted) {
+      const data = await new Promise((resolve) => {
+        publish = resolve
+        signal.addEventListener('abort', () => resolve(undefined), { once: true })
+      })
+      if (data === undefined) break
+      yield { type: 'output', sequence: ++sequence, data }
+    }
+    calls.followAborts += 1
+  }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  await service.recover('session-a')
+  await service.recover('session-b')
+  const view = service.viewForTerminal('session-a', terminalInfo.id)
+  const cache = new TerminalSurfaceCache()
+  let created = 0
+  let disposed = 0
+  const create = () => {
+    created += 1
+    const surface = { buffer: '', viewportY: 5, revision: 0, dispose() { unsubscribe(); unmount(); disposed += 1 } }
+    const unsubscribe = view.state.subscribe(() => {
+      const render = view.state.getSnapshot().render
+      if (render === undefined || render.revision <= surface.revision) return
+      surface.revision = render.revision
+      surface.buffer = render.frame.type === 'snapshot' ? render.frame.screen : surface.buffer + render.frame.data
+      view.acknowledge(render.revision)
+    })
+    const unmount = view.mount()
+    return surface
+  }
+  const first = cache.get(view, create)
+  await waitFor(() => publish !== undefined, '常驻屏幕没有消费首次快照')
+  // 模拟卡片从前台消失：释放 React 的引用，屏幕持有的订阅继续消费后续帧。
+  const releaseCard = view.mount()
+  releaseCard()
+  publish('后台第一帧\r\n')
+  await waitFor(() => first.buffer.includes('后台第一帧'), '后台输出没有写入常驻屏幕')
+  await new Promise((resolve) => setImmediate(resolve))
+  publish('后台第二帧\r\n')
+  await waitFor(() => first.buffer.includes('后台第二帧'), '输出消费被渲染确认阻塞')
+  const second = cache.get(service.viewForTerminal('session-b', terminalInfo.id), create)
+  assert.equal(second, first)
+  assert.equal(second.buffer, '历史\r\n后台第一帧\r\n后台第二帧\r\n')
+  assert.equal(second.viewportY, 5)
+  assert.equal(created, 1)
+  assert.equal(calls.follow, 1)
+  assert.equal(calls.followAborts, 0)
+  await service.dispose()
+  assert.equal(disposed, 1)
+  assert.throws(() => cache.get(view, create), /已销毁/u)
 })
 
 test('Sidebar 显式关闭才结束 Host 终端', async () => {
