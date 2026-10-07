@@ -50,6 +50,15 @@ test('每个空类别都有明确说明', () => {
   assert.match(speech, /当前没有刚完成的会话/u)
 })
 
+test('未知状态的会话不会被汇总成没有进展', () => {
+  const sessions = [entry({ title: '索引检查', status: 'unknown', summary: '用户正在检查项目索引' })]
+  for (const summary of [summarizeAssistantEntries(sessions, scope), summarizeAssistantSessions(sessions, { scope })]) {
+    assert.match(summary.speechText, /有1个会话状态未知/u)
+    assert.match(summary.speechText, /索引检查/u)
+    assert.match(summary.speechText, /用户正在检查项目索引/u)
+  }
+})
+
 test('空范围不会被误报成没有进展', () => {
   const summary = summarizeAssistantEntries([], {
     status: 'empty',

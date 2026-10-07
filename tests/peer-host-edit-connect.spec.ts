@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { createPeerHostFeature } from '../data/build/dist/host/features/peer-host.js'
 import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
+import type { AssistantHostGateway } from '../src/host/features/types.js'
+import { createVirtualWorkspaceId } from '../src/shared/contracts/peer-host.js'
 
 /** 目标 Host 的握手响应；pluginVersion 必须与当前插件版本一致才会 ready。 */
 const PLUGIN_VERSION = (await import('../data/build/dist/shared/contracts/version.js')).CODINGNS_VERSION as string
@@ -24,6 +26,7 @@ function handshakeResponse(): Response {
 interface Harness {
   readonly rpc: CodingNsRpcTable
   readonly calls: string[]
+  readonly assistantGateway: AssistantHostGateway
   call(endpoint: string, payload: unknown): Promise<unknown>
   dispose(): Promise<void>
 }
@@ -74,6 +77,7 @@ async function harness(options: {
   return {
     rpc,
     calls,
+    assistantGateway: (context.services as unknown as { assistantGateway: AssistantHostGateway }).assistantGateway,
     async call(endpoint, payload) {
       const target = rpc.resolve(endpoint)
       if (target === null) throw new Error(`未登记的 RPC: ${endpoint}`)
@@ -291,6 +295,20 @@ test('可见工作区默认不显示，显式添加后才进入聚合摘要', as
   } finally {
     await host.dispose()
   }
+})
+
+test('助理工作区目录只返回显式加入的虚拟工作区，读取目录不访问远端正文或触发登录', async () => {
+  const host = await harness()
+  try {
+    const created = await host.call('peerHost/create', { displayName: '开发机', route: { kind: 'lan', baseUrl: 'http://127.0.0.1:13080', normalizedOrigin: '' } }) as { id: string }
+    assert.deepEqual(await host.assistantGateway.workspaces!(), [])
+    await host.call('peerHost/setWorkspaceVisibility', { peerHostId: created.id, workspaceId: 'workspace-1', visible: true })
+    const requests = host.calls.length
+    assert.deepEqual(await host.assistantGateway.workspaces!(), [{ workspaceId: createVirtualWorkspaceId(created.id, 'workspace-1'), name: '开发机 / workspace-1', path: null }])
+    assert.equal(host.calls.length, requests)
+    await host.call('peerHost/setWorkspaceVisibility', { peerHostId: created.id, workspaceId: 'workspace-1', visible: false })
+    assert.deepEqual(await host.assistantGateway.workspaces!(), [])
+  } finally { await host.dispose() }
 })
 
 test('聚合刷新会自动重试握手并复用已保存凭据，不依赖手工点击测试', async () => {

@@ -60,15 +60,15 @@ test('远端摘要用 workspace/follow 首帧和 session/list 组装工作区会
     displayName: '项目 A',
     path: '/Users/dev/project-a',
     sessions: [
-      { sessionId: 'session-a', title: '修复登录问题', status: 'running', updatedAt: 42, blank: false },
+      { sessionId: 'session-a', title: '修复登录问题', status: 'running', activity: 'running', updatedAt: 42, blank: false },
       // 临时占位不伪造 cwd 目录名；原生 UI 会根据 blank 显示“新建会话”。
-      { sessionId: 'session-b', title: '', status: 'idle', updatedAt: 11, blank: true },
-      { sessionId: 'session-done', title: 'project-a', status: 'completed', updatedAt: 10, blank: false },
-      { sessionId: 'session-error', title: 'project-a', status: 'failed', updatedAt: 9, blank: false },
+      { sessionId: 'session-b', title: '', status: 'idle', activity: 'unknown', updatedAt: 11, blank: true },
+      { sessionId: 'session-done', title: 'project-a', status: 'completed', activity: 'idle', updatedAt: 10, blank: false },
+      { sessionId: 'session-error', title: 'project-a', status: 'failed', activity: 'idle', updatedAt: 9, blank: false },
     ],
     // 归档会话单独归类：原生侧栏默认隐藏，但归档入口与取消归档路由需要它们。
     archivedSessions: [
-      { sessionId: 'session-archived', title: 'project-a', status: 'idle', updatedAt: 7, blank: false },
+      { sessionId: 'session-archived', title: 'project-a', status: 'idle', activity: 'unknown', updatedAt: 7, blank: false },
     ],
   }])
   assert.deepEqual(calls.sort(), [
@@ -91,7 +91,7 @@ test('远端摘要合并目标 Host 的 CLI 会话适配器映射', async () => 
     workspaceId: 'workspace-a',
     displayName: 'workspace-a',
     path: '/repo',
-    sessions: [{ sessionId: 'session-a', title: 'repo', status: 'idle', updatedAt: 1, blank: false, adapterId: 'codex' }],
+    sessions: [{ sessionId: 'session-a', title: 'repo', status: 'idle', activity: 'unknown', updatedAt: 1, blank: false, adapterId: 'codex' }],
   }])
 })
 
@@ -108,7 +108,7 @@ test('远端摘要对缺失字段和空 baseline 保持容错', async () => {
     displayName: 'workspace-b',
     // 目标未上报 path 时退回 workspaceId，保证原生视图字段完整。
     path: 'workspace-b',
-    sessions: [{ sessionId: 'missing-session', title: 'missing-session', status: 'idle', updatedAt: 0, blank: false }],
+    sessions: [{ sessionId: 'missing-session', title: 'missing-session', status: 'idle', activity: 'unknown', updatedAt: 0, blank: false }],
   }])
 
   const empty = createPeerHostRemoteSummarySource({
@@ -144,7 +144,7 @@ test('session/list 协议失败时仍保留已显式添加的远端工作区', a
     workspaceId: 'workspace-a',
     displayName: '项目 A',
     path: '/repo/a',
-    sessions: [{ sessionId: 'session-a', title: 'session-a', status: 'idle', updatedAt: 0, blank: false }],
+    sessions: [{ sessionId: 'session-a', title: 'session-a', status: 'idle', activity: 'unknown', updatedAt: 0, blank: false }],
   }])
 })
 
