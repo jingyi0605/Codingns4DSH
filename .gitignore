@@ -42,3 +42,7 @@ tmp
 .roo/
 .trae/
 .aider*/
+# Python 运行时字节码缓存：执行 assets/moss/worker.py 等脚本时自动生成，
+# 与解释器版本绑定，可随时重建，不是项目源码。
+__pycache__/
+*.pyc
