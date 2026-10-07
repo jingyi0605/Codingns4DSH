@@ -63,11 +63,12 @@ export const CODINGNS_PWA_METADATA_MARKUP = [
   '<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">',
   '<meta name="mobile-web-app-capable" content="yes">',
   '<meta name="apple-mobile-web-app-capable" content="yes">',
-  '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">',
+  // 由 iOS/iPadOS 把页面放在状态栏下方，避免安全区值为 0 时顶部按钮被覆盖。
+  '<meta name="apple-mobile-web-app-status-bar-style" content="default">',
   '<meta name="apple-mobile-web-app-title" content="DSH">',
   '<link rel="apple-touch-icon" sizes="180x180" href="/__codingns/pwa/apple-touch-icon.png">',
-  // 透明状态栏配合 viewport-fit=cover 会覆盖页面顶部；在应用根节点统一避让，
-  // border-box 保证安全区计入原有高度。按独立窗口生效，不受 iPad 横屏宽度影响。
+  // 独立窗口仍按浏览器报告的安全区保护内容；iOS 状态栏空间由 default 模式保留。
+  // border-box 保证安全区计入原有高度；这里不受移动端宽度门槛影响。
   '<style data-plugin-css="codingns4dsh-pwa-safe-area">@media (display-mode: standalone){#root{box-sizing:border-box;padding-top:env(safe-area-inset-top, 0px)}}</style>',
 ].join('')
 
