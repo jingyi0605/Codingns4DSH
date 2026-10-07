@@ -19,6 +19,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** 被覆盖的设置写入入口；新增设置面板时应一并登记。 */
 const WRITE_FILES = [
+  'src/client/avatar/settings-panel.ts',
   'src/client/settings-section.ts',
   'src/client/features/workspace-session-enhancement-panel.ts',
   'src/client/features/terminal-enhancement-panel.ts',
