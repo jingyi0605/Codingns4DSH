@@ -155,6 +155,9 @@ test('未登录的静态资源请求不会让登录页上的验证码失效', ()
 
   const page = fetchPage('/')
   assert.equal(page.status, 200)
+  // 登录页与主页面保持相同模式，避免主屏幕 PWA 在登录跳转后继续覆盖状态栏。
+  assert.match(page.body, /<meta name="apple-mobile-web-app-status-bar-style" content="default">/u)
+  assert.doesNotMatch(page.body, /black-translucent/u)
   const captchaId = /name="captchaId" value="([^"]+)"/u.exec(page.body)?.[1]
   assert.equal(typeof captchaId, 'string')
   const answer = solveCaptcha(fetchPage('/__codingns/captcha', `id=${encodeURIComponent(captchaId!)}`).body)

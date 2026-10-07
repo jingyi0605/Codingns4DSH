@@ -106,6 +106,9 @@ test('PWA 元数据与注册脚本只按开关追加，关闭时零副作用', (
   assert.match(markup, /apple-mobile-web-app-capable/u)
   assert.match(markup, /apple-touch-icon/u)
   assert.match(markup, /theme-color/u)
+  // iPad 保持桌面布局时也必须由系统保留状态栏空间，不能再次开启透明覆盖。
+  assert.match(markup, /<meta name="apple-mobile-web-app-status-bar-style" content="default">/u)
+  assert.doesNotMatch(markup, /black-translucent/u)
   // 元数据行必须排在脚本行之前，脚本行排在最后，避免迟到覆盖其它注入。
   assert.equal(table.indexOf(htmlRows[0]!), table.length - 2)
   assert.equal(table.indexOf(scriptRows[scriptRows.length - 1]!), table.length - 1)
