@@ -231,12 +231,13 @@ test('聚合页始终渲染页内终端列表导航', async () => {
   assert.match(source, /terminals\.map\(\(item\) => createElement\(CodingNsXtermView/u)
 })
 
-test('创建终端先写入当前列表并串行收敛库存刷新，避免内容视图闪退', async () => {
+test('聚合页读取服务库存并串行收敛刷新，避免卡片复用旧列表', async () => {
   const source = await readFile(join(projectRoot, 'src/client/terminal/ui.ts'), 'utf8')
 
   assert.match(source, /const reloadSequence = useRef\(0\)/u)
-  assert.match(source, /if \(sequence !== reloadSequence\.current\) return next/u)
-  assert.match(source, /setTerminals\(\(current\) => current\.some\(\(item\) => item\.id === info\.id\)/u)
+  assert.match(source, /if \(sequence === reloadSequence\.current\) setLoading\(false\)/u)
+  assert.match(source, /const terminals = webTerminals\.inventoryForSession\(String\(sessionId\)\)/u)
+  assert.doesNotMatch(source, /setTerminals/u)
 })
 
 test('聚合页常驻挂载所有终端视图，切换标签只隐藏当前视图', async () => {

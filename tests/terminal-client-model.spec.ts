@@ -311,6 +311,226 @@ test('恢复终端先解析工作区再读取工作区终端列表', async () =>
   await service.dispose()
 })
 
+test('同工作区会话共享子终端选择，切回与库存重排保留选择且不同工作区隔离', async () => {
+  const second = { ...terminalInfo, id: 'terminal-2' }
+  let inventory = [terminalInfo, second]
+  const { calls, remote } = createRemote(true)
+  remote.environment = async (sessionId) => success({ ...environment, workspaceId: sessionId === 'session-c' ? 'workspace-other' : 'workspace-shared' })
+  remote.list = async () => success(inventory)
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  try {
+    await service.recover('session-a')
+    service.selectTerminal('session-a', second.id)
+    await service.recover('session-b')
+    assert.equal(service.selectedTerminalId('session-b'), second.id)
+    await service.recover('session-c')
+    assert.equal(service.selectedTerminalId('session-c'), terminalInfo.id)
+
+    // 任一会话改变选择，其他同工作区会话立即读到新值；库存重排不重置选择。
+    service.selectTerminal('session-b', terminalInfo.id)
+    assert.equal(service.selectedTerminalId('session-a'), terminalInfo.id)
+    service.selectTerminal('session-b', second.id)
+    inventory = [second, { ...terminalInfo, title: '已重命名' }]
+    await service.refreshInventory('session-b')
+    await service.recover('session-a')
+    assert.equal(service.selectedTerminalId('session-a'), second.id)
+    assert.equal(service.selectedTerminalId('session-b'), second.id)
+    assert.equal(service.selectedTerminalId('session-c'), terminalInfo.id)
+    assert.equal(calls.create, 0)
+    assert.equal(calls.close, 0)
+  } finally {
+    await service.dispose()
+  }
+})
+
+test('页面刷新恢复标签记录，关闭选中终端后同步回退并清除空库存记录', async () => {
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const values = new Map<string, string>()
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => { values.set(key, String(value)) },
+    removeItem: (key) => { values.delete(key) },
+  } })
+  const second = { ...terminalInfo, id: 'terminal-2' }
+  let inventory = [terminalInfo, second]
+  const { remote } = createRemote(true)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-shared' })
+  remote.list = async () => success(inventory)
+  remote.close = async (_sessionId, id) => { inventory = inventory.filter((item) => item.id !== id); return success(undefined) }
+  const firstClient = new CodingNsWebTerminals(new Context(), remote)
+  let refreshedClient
+  try {
+    await firstClient.recover('session-a')
+    firstClient.selectTerminal('session-a', second.id)
+    await firstClient.dispose()
+
+    refreshedClient = new CodingNsWebTerminals(new Context(), remote)
+    // 新页面尚未解析工作区时没有会话级记录，初始空状态不能覆盖工作区记录。
+    assert.equal(refreshedClient.selectedTerminalId('session-a'), undefined)
+    await refreshedClient.recover('session-a')
+    await refreshedClient.recover('session-b')
+    assert.equal(refreshedClient.selectedTerminalId('session-b'), second.id, '未保存过选择的新会话也应读取工作区记录')
+    await refreshedClient.closeTerminal('session-a', second.id)
+    assert.equal(refreshedClient.selectedTerminalId('session-a'), terminalInfo.id)
+    assert.equal(refreshedClient.selectedTerminalId('session-b'), terminalInfo.id)
+    const stateKey = 'dsh.codingns.terminal.workspace-state.v1.' + JSON.stringify(['workspace', 'workspace-shared'])
+    assert.equal(JSON.parse(values.get(stateKey)).selectedId, terminalInfo.id)
+
+    await refreshedClient.closeTerminal('session-a', terminalInfo.id)
+    assert.equal(refreshedClient.selectedTerminalId('session-a'), undefined)
+    assert.equal(refreshedClient.selectedTerminalId('session-b'), undefined)
+    assert.equal(JSON.parse(values.get(stateKey)).selectedId, undefined)
+    assert.equal([...values.keys()].some((key) => key.startsWith('dsh.codingns.terminal.selection.v1.')), false)
+  } finally {
+    await firstClient.dispose()
+    await refreshedClient?.dispose()
+    if (previousStorage === undefined) delete (globalThis as { localStorage?: unknown }).localStorage
+    else Object.defineProperty(globalThis, 'localStorage', previousStorage)
+  }
+})
+
+test('会话级旧记录迁移到工作区后，新会话读取共享选择和卡片开关', async () => {
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const legacyKey = 'dsh.codingns.terminal.selection.v1.' + JSON.stringify('session-a')
+  const values = new Map<string, string>([[legacyKey, 'terminal-2']])
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => { values.set(key, String(value)) },
+    removeItem: (key) => { values.delete(key) },
+  } })
+  const { remote } = createRemote(true)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-shared' })
+  remote.list = async () => success([terminalInfo, { ...terminalInfo, id: 'terminal-2' }])
+  const firstClient = new CodingNsWebTerminals(new Context(), remote)
+  let refreshedClient
+  try {
+    // Guide 可能先于环境返回写入打开意图，解析工作区后必须迁移该意图。
+    firstClient.setTerminalCardOpen('session-a', true)
+    await firstClient.recover('session-a')
+    assert.equal(firstClient.selectedTerminalId('session-a'), 'terminal-2')
+    assert.equal(firstClient.terminalCardOpen('session-a'), true)
+    assert.equal(values.has(legacyKey), false)
+    await firstClient.recover('session-b')
+    assert.equal(firstClient.selectedTerminalId('session-b'), 'terminal-2')
+    firstClient.setTerminalCardOpen('session-b', false)
+    assert.equal(firstClient.terminalCardOpen('session-a'), false)
+    await firstClient.dispose()
+
+    refreshedClient = new CodingNsWebTerminals(new Context(), remote)
+    await refreshedClient.recover('session-new')
+    assert.equal(refreshedClient.selectedTerminalId('session-new'), 'terminal-2')
+    assert.equal(refreshedClient.terminalCardOpen('session-new'), false)
+    refreshedClient.setTerminalCardOpen('session-new', true)
+    await refreshedClient.recover('session-a')
+    assert.equal(refreshedClient.terminalCardOpen('session-a'), true)
+    assert.equal(refreshedClient.selectedTerminalId('session-a'), 'terminal-2')
+  } finally {
+    await firstClient.dispose()
+    await refreshedClient?.dispose()
+    if (previousStorage === undefined) delete (globalThis as { localStorage?: unknown }).localStorage
+    else Object.defineProperty(globalThis, 'localStorage', previousStorage)
+  }
+})
+
+test('浏览器存储读写失败且环境缺少工作区时，仍在内存记忆各卡片的标签', async () => {
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+    getItem() { throw new Error('Storage denied') },
+    setItem() { throw new Error('Storage denied') },
+    removeItem() { throw new Error('Storage denied') },
+  } })
+  const second = { ...terminalInfo, id: 'terminal-2' }
+  let inventory = [terminalInfo, second]
+  const { remote } = createRemote(true)
+  remote.list = async () => success(inventory)
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  try {
+    await service.recover('session-a')
+    service.selectTerminal('session-a', second.id)
+    await service.recover('session-b')
+    assert.equal(service.selectedTerminalId('session-b'), terminalInfo.id)
+    await service.recover('session-a')
+    assert.equal(service.selectedTerminalId('session-a'), second.id)
+    inventory = []
+    await service.refreshInventory('session-a')
+    assert.equal(service.selectedTerminalId('session-a'), undefined)
+    assert.equal(service.selectedTerminalId('session-b'), terminalInfo.id)
+  } finally {
+    await service.dispose()
+    if (previousStorage === undefined) delete (globalThis as { localStorage?: unknown }).localStorage
+    else Object.defineProperty(globalThis, 'localStorage', previousStorage)
+  }
+})
+
+test('新会话在工作区解析前显式开关卡片，解析后覆盖旧工作区状态', async () => {
+  const { remote } = createRemote(true)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-shared' })
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  try {
+    await service.recover('session-a')
+    service.setTerminalCardOpen('session-a', false)
+    service.setTerminalCardOpen('session-new', true)
+    await service.recover('session-new')
+    assert.equal(service.terminalCardOpen('session-a'), true, '新会话打开意图不能被工作区旧的关闭记录覆盖')
+
+    service.setTerminalCardOpen('session-other', false)
+    await service.recover('session-other')
+    assert.equal(service.terminalCardOpen('session-a'), false, '解析前的关闭意图也应同步到工作区')
+    assert.equal(service.terminalCardOpen('session-new'), false)
+    assert.equal(service.selectedTerminalId('session-a'), terminalInfo.id)
+  } finally {
+    await service.dispose()
+  }
+})
+
+test('创建期间主动关闭卡片，创建成功不会把工作区卡片重新打开', async () => {
+  const { remote } = createRemote(false)
+  const inventory = new Map<string, typeof terminalInfo>()
+  let releaseCreate
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-shared' })
+  remote.list = async () => success([...inventory.values()])
+  remote.create = async (_sessionId, request) => {
+    const info = { ...terminalInfo, id: request.id }
+    await new Promise((resolve) => { releaseCreate = resolve })
+    inventory.set(info.id, info)
+    return success(info)
+  }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  try {
+    const creating = service.createTerminal('session-a')
+    await waitFor(() => releaseCreate !== undefined, '终端创建未进入等待状态')
+    service.setTerminalCardOpen('session-a', false)
+    releaseCreate()
+    const created = await creating
+    await service.recover('session-b')
+    assert.equal(service.terminalCardOpen('session-a'), false)
+    assert.equal(service.terminalCardOpen('session-b'), false)
+    assert.equal(service.selectedTerminalId('session-b'), created.id)
+  } finally {
+    await service.dispose()
+  }
+})
+
+test('库存刷新等待期间切换标签，迟到列表不会覆盖最新选择', async () => {
+  const second = { ...terminalInfo, id: 'terminal-2' }
+  const { remote } = createRemote(true)
+  remote.list = async () => success([terminalInfo, second])
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  try {
+    await service.recover('session-a')
+    let releaseList
+    remote.list = async () => success(await new Promise((resolve) => { releaseList = resolve }))
+    const refresh = service.refreshInventory('session-a')
+    await waitFor(() => releaseList !== undefined, '库存刷新未进入等待状态')
+    service.selectTerminal('session-a', second.id)
+    releaseList([terminalInfo, second])
+    await refresh
+    assert.equal(service.selectedTerminalId('session-a'), second.id)
+  } finally {
+    await service.dispose()
+  }
+})
+
 test('聚合终端使用工作区库存快照直连，不重复读取环境和列表', async () => {
   const { calls, remote } = createRemote(true)
   remote.environment = async () => { calls.environment += 1; return success({ ...environment, workspaceId: 'workspace-stable' }) }
@@ -446,9 +666,11 @@ test('同一聚合页连续新建终端会保留独立身份并可单独关闭',
   const second = await service.createTerminal('session-1')
   assert.notEqual(first.id, second.id)
   assert.deepEqual(service.inventoryForSession('session-1').map((item) => item.id), [first.id, second.id])
+  assert.equal(service.selectedTerminalId('session-1'), second.id)
 
   await service.closeTerminal('session-1', first.id)
   assert.deepEqual(service.inventoryForSession('session-1').map((item) => item.id), [second.id])
+  assert.equal(service.selectedTerminalId('session-1'), second.id)
   await service.dispose()
 })
 

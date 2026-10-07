@@ -1,6 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createTerminalSessionRecovery } from '../data/build/dist/client/terminal/recovery.js'
+import { Context } from '@deepseek-ai/cordis'
+import { CodingNsWebTerminals } from '../data/build/dist/client/terminal/model.js'
+import { createTerminalSessionRecovery as createRecovery } from '../data/build/dist/client/terminal/recovery.js'
+
+/** 仅伪造模型的工作区状态接口，恢复逻辑仍使用真实实现。 */
+function createTerminalSessionRecovery(model, sidebar, kind, isAutoCreatePending?, workspaceForSession = (sessionId) => sessionId) {
+  const states = new Map<string, boolean>()
+  return createRecovery({
+    ...model,
+    scopeForSession: workspaceForSession,
+    terminalCardOpen: (sessionId) => states.get(workspaceForSession(sessionId)),
+    setTerminalCardOpen: (sessionId, open) => { states.set(workspaceForSession(sessionId), open) },
+  }, sidebar, kind, isAutoCreatePending)
+}
 
 const terminal = (id: string) => ({
   id,
@@ -60,6 +73,7 @@ test('用户关闭聚合页签后不会被库存恢复逻辑重新打开', async
   }, sidebar, 'terminal')
 
   await recovery.ensure('session-a')
+  recovery.close('session-a', 'tab-a')
   tabs.set('session-a', [])
   await recovery.ensure('session-a')
 
@@ -81,6 +95,7 @@ test('恢复请求进行中关闭聚合页签也不会被重新打开', async ()
   }, 'terminal')
 
   const pending = recovery.ensure('session-a')
+  recovery.close('session-a', 'tab-a')
   tabs.set('session-a', [])
   release([terminal('still-running')])
   await pending
@@ -266,4 +281,105 @@ test('失效恢复请求不会复用旧列表或覆盖新一代投影', async ()
   releaseSecond([terminal('still-running')])
   await current
   assert.deepEqual(opened, ['terminal'])
+})
+
+test('原生会话布局尚未装配时打开无效，装配后仍可恢复终端卡片', async () => {
+  let adopted = false
+  const tabs: { id: string; kind: string }[] = []
+  let opened = 0
+  const recovery = createTerminalSessionRecovery({
+    async recover() { return [terminal('still-running')] },
+  }, {
+    tabsIn: () => tabs,
+    openTabIn: (_sessionId, kind) => {
+      opened += 1
+      if (adopted) tabs.push({ id: 'terminal-tab', kind })
+    },
+  }, 'terminal')
+
+  await recovery.ensure('session-a')
+  assert.deepEqual(tabs, [], '未装配的原生布局应让打开请求无效')
+  adopted = true
+  await recovery.ensure('session-a')
+  await recovery.ensure('session-a')
+  assert.equal(opened, 2, '打开未生效不能被记录为用户关闭，也不能在成功后重复打开')
+  assert.deepEqual(tabs, [{ id: 'terminal-tab', kind: 'terminal' }])
+})
+
+test('同工作区会话共享终端卡片开关，新会话跟随且不同工作区不受影响', async () => {
+  const tabs = new Map<string, { id: string; kind: string }[]>()
+  let hostCloses = 0
+  const model = new CodingNsWebTerminals(new Context(), {
+    environment: async (sessionId) => ({ ok: true, value: {
+      workspaceId: sessionId === 'session-c' ? 'workspace-other' : 'workspace-shared',
+      cwd: '/workspace', maxInputBytes: 65536, maxCols: 500, maxRows: 200, scrollback: 1000,
+    } }),
+    list: async () => ({ ok: true, value: [terminal('terminal-1'), terminal('terminal-2')] }),
+    close: async () => { hostCloses += 1; return { ok: true, value: undefined } },
+  })
+  let recovery
+  const sidebar = {
+    tabsIn: (sessionId) => tabs.get(sessionId) ?? [],
+    openTabIn: (sessionId, kind) => { tabs.set(sessionId, [{ id: `tab-${sessionId}`, kind }]) },
+    closeIn: (sessionId, tabId) => {
+      // 与原生顺序一致：先调用关闭钩子，再提交布局移除。
+      recovery.close(sessionId, tabId)
+      tabs.set(sessionId, (tabs.get(sessionId) ?? []).filter((tab) => tab.id !== tabId))
+    },
+  }
+  recovery = createRecovery(model, sidebar, 'terminal')
+  try {
+    await recovery.ensure('session-a')
+    model.selectTerminal('session-a', 'terminal-2')
+    await recovery.ensure('session-b')
+    await recovery.ensure('session-c')
+    assert.equal(model.selectedTerminalId('session-b'), 'terminal-2')
+    assert.equal(tabs.get('session-b')?.length, 1)
+
+    sidebar.closeIn('session-a', 'tab-session-a')
+    assert.deepEqual(tabs.get('session-a'), [])
+    assert.deepEqual(tabs.get('session-b'), [])
+    assert.equal(tabs.get('session-c')?.length, 1)
+    await recovery.ensure('session-new')
+    assert.equal((tabs.get('session-new') ?? []).length, 0, '关闭的工作区卡片不能在新会话被自动打开')
+    assert.equal(model.selectedTerminalId('session-new'), 'terminal-2', '隐藏卡片仍保留共享子终端选择')
+
+    recovery.open('session-new')
+    await recovery.ensure('session-new')
+    await recovery.ensure('session-a')
+    await recovery.ensure('session-b')
+    assert.equal(tabs.get('session-a')?.length, 1)
+    assert.equal(tabs.get('session-b')?.length, 1)
+    assert.equal(tabs.get('session-new')?.length, 1)
+    assert.equal(model.selectedTerminalId('session-a'), 'terminal-2')
+    assert.equal(hostCloses, 0, '卡片同步只能修改布局，不能关闭 Host 进程')
+  } finally {
+    await model.dispose()
+  }
+})
+
+test('自动清理空库存和旧多标签经过关闭钩子时，不关闭工作区卡片开关', async () => {
+  const tabs = new Map<string, { id: string; kind: string }[]>([
+    ['session-a', [{ id: 'tab-a', kind: 'terminal' }, { id: 'tab-old', kind: 'terminal' }]],
+  ])
+  let inventory = [terminal('still-running')]
+  let recovery
+  const sidebar = {
+    tabsIn: (sessionId) => tabs.get(sessionId) ?? [],
+    openTabIn: (sessionId, kind) => { tabs.set(sessionId, [{ id: 'restored', kind }]) },
+    closeIn: (sessionId, tabId) => {
+      recovery.close(sessionId, tabId)
+      tabs.set(sessionId, (tabs.get(sessionId) ?? []).filter((tab) => tab.id !== tabId))
+    },
+  }
+  recovery = createTerminalSessionRecovery({ async recover() { return inventory } }, sidebar, 'terminal')
+
+  await recovery.ensure('session-a')
+  assert.deepEqual(tabs.get('session-a'), [{ id: 'tab-a', kind: 'terminal' }])
+  inventory = []
+  await recovery.ensure('session-a')
+  assert.deepEqual(tabs.get('session-a'), [])
+  inventory = [terminal('another-running')]
+  await recovery.ensure('session-a')
+  assert.deepEqual(tabs.get('session-a'), [{ id: 'restored', kind: 'terminal' }])
 })
