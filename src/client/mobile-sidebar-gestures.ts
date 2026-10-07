@@ -229,10 +229,11 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
     }
     const touch = firstTouch(event)
     if (touch === null) return
-    // 横向滚动容器优先接收触摸。右栏里的代码块、长文本和表格经常需要
+    // 输入控件、终端和右栏标签条始终交给原生交互；标签条即使尚未溢出，也
+    // 不应把滑动解释为收起右栏。代码块、长文本和表格等横向滚动内容经常需要
     // 左右拖动；如果这里继续记录样本，window 的全局监听会把右滑误判为
     // “收起右栏”，浏览器也会因为后续 preventDefault 而丢掉原生滚动。
-    if (isEditableTouch(touch)) {
+    if (isNativeInteractionTouch(touch)) {
       tracking = false
       claimed = false
       rightbarTouch = false
@@ -259,7 +260,7 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
     // 某些 WebView 在 touchstart 时只暴露宿主节点，直到 touchmove 才能从
     // composedPath() 看到真正的滚动节点；这里再次检查，避免已经开始采样后
     // 仍被全局侧栏手势抢走。
-    if (isEditableTouch(touch)) {
+    if (isNativeInteractionTouch(touch)) {
       tracking = false
       claimed = false
       rightbarTouch = false
@@ -537,9 +538,9 @@ function touchCount(event: unknown): number {
   return typeof length === 'number' && Number.isFinite(length) ? length : 0
 }
 
-function isEditableTouch(touch: TouchPoint): boolean {
+function isNativeInteractionTouch(touch: TouchPoint): boolean {
   const targets = [touch.target, ...touch.path]
-  return targets.some((target) => isEditableTarget(target))
+  return targets.some((target) => isNativeInteractionTarget(target))
 }
 
 function hasHorizontalScrollableTarget(touch: TouchPoint): boolean {
@@ -606,15 +607,15 @@ function preventDefault(event: unknown): void {
   }
 }
 
-/** 输入框、可选文本与终端内部的触摸不参与手势。 */
-function isEditableTarget(target: unknown): boolean {
+/** 输入控件、终端与右栏标签条内部的触摸交给原生交互。 */
+function isNativeInteractionTarget(target: unknown): boolean {
   if (typeof target !== 'object' || target === null) return false
   const closest = (target as { closest?: unknown }).closest
   if (typeof closest !== 'function') return false
   try {
     return (closest as (selector: string) => unknown).call(
       target,
-      'input, textarea, select, [contenteditable="true"], [data-sidebar-terminal], .xterm, .cm-editor',
+      'input, textarea, select, [contenteditable="true"], [data-sidebar-terminal], .xterm, .cm-editor, [data-sidebar-right-panel] [data-dockkit-strip]',
     ) !== null
   } catch {
     return false
