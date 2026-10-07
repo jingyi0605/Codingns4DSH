@@ -76,7 +76,10 @@ const terminalCss = `
 .${terminalClass.toolsPanel}::-webkit-scrollbar{height:5px}
 .${terminalClass.toolsPanel}::-webkit-scrollbar-thumb{background:var(--dsw-alias-label-tertiary,#777);border-radius:3px}
 .${terminalClass.toolAction}{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:38px;min-width:38px;height:28px;min-height:28px;padding:0!important;border-radius:var(--dsw-radius-sm,6px)}
-.${terminalClass.toolAction}[aria-pressed="true"],.${terminalClass.toolModifierActive}{background:var(--dsw-alias-button-ghost-active-fill,var(--dsw-alias-interactive-bg-active));box-shadow:inset 0 0 0 .5px var(--dsw-alias-button-ghost-active-border,var(--dsw-alias-border-l3))}
+/* 修饰键使用主题高亮色；悬停和实际按压时也保持选中态，避免被原生 toolbar 样式覆盖。 */
+.${terminalClass.toolsPanel} .${terminalClass.toolAction}[aria-pressed="true"],.${terminalClass.toolsPanel} .${terminalClass.toolModifierActive},.${terminalClass.toolsPanel} .${terminalClass.toolAction}[aria-pressed="true"]:is(:hover,:active){background:var(--dsw-alias-button-info-fill,#4176e6);color:var(--dsw-alias-label-primary-foreground,#fff);font-weight:600}
+/* ShortcutKeys 自带灰色文字，选中时让它继承按钮的高对比前景色。 */
+.${terminalClass.toolsPanel} .${terminalClass.toolAction}[aria-pressed="true"]>span,.${terminalClass.toolsPanel} .${terminalClass.toolModifierActive}>span{color:inherit}
 .${terminalClass.listRow}{box-sizing:border-box;display:flex;align-items:center;height:28px;min-width:110px;max-width:220px;border-radius:var(--dsw-radius-sm,6px);background:transparent;flex:none}
 .${terminalClass.listRowSelected}{background:var(--dsw-alias-interactive-bg-hover);box-shadow:var(--dsw-elevation-soft,0 1px 2px rgba(0,0,0,.08))}
 .${terminalClass.listSelect}{box-sizing:border-box;min-width:0;height:28px;min-height:28px;flex:1;text-align:left;color:inherit;border:0;background:transparent;cursor:pointer;padding:0 8px;display:flex;align-items:center;gap:5px;font:inherit;font-size:12px;line-height:20px}
