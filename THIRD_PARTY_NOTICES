@@ -1,5 +1,10 @@
 CodingNS 全局助理形象的第三方声明（2026-10-07）
 
+语音热词使用的中英双语 BPE（字节对编码）词表（2026-10-07）
+assets/voice/bilingual-zh-en-bpe.vocab 原样来自当前双语模型的公开词表：
+https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/blob/main/bpe.vocab
+仅用于原生热词分词，不包含模型权重；模型仍按用户操作单独下载。
+
 本项目参考以下开源实现的双展示分工、引擎生命周期及精灵图帧布局：
 
 dsh-live2d-avatar

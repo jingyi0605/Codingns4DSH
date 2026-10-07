@@ -1,5 +1,6 @@
 import type { VoicePcmFrame, VoiceRuntimeAdapter, VoiceRuntimeCapabilities, VoiceRuntimeEvent, VoiceRuntimeListener } from '../../shared/contracts/voice-runtime.js'
 import type { AssistantVoiceModelPaths } from '../../shared/voice-models.js'
+import { prepareSherpaHotwords, type AssistantVoiceHotword, type SherpaHotwordConfig } from './assistant-voice-hotwords.js'
 
 interface SherpaOnlineStream {
   acceptWaveform(value: { samples: Float32Array; sampleRate: number }): void
@@ -37,6 +38,7 @@ export interface SherpaVoiceRuntimeOptions {
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly packageName?: string
   readonly sampleRate?: number
+  readonly hotwords?: readonly AssistantVoiceHotword[]
 }
 
 /**
@@ -56,11 +58,13 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
   private started = false
   private epoch = 0
   private lastPartial = ''
+  private hotwords: readonly AssistantVoiceHotword[] | undefined
 
   constructor(options: SherpaVoiceRuntimeOptions = {}) {
     this.env = options.env ?? process.env
     this.packageName = options.packageName ?? this.env.CODINGNS4DSH_VOICE_RUNTIME_PACKAGE ?? 'sherpa-onnx-node'
     this.sampleRate = options.sampleRate ?? readPositiveInteger(this.env.CODINGNS4DSH_VOICE_SAMPLE_RATE) ?? 16000
+    this.hotwords = options.hotwords
   }
 
   /** 更新用户刚保存的模型配置；只能在没有活动租约时重载。 */
@@ -72,6 +76,13 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
     this.stream = undefined
     this.vad = undefined
     this.tts = undefined
+  }
+
+  /** 词表以通话为快照，更新只在下一次通话加载，不能打断当前识别流。 */
+  configureHotwords(words: readonly AssistantVoiceHotword[]): void {
+    if (this.started) throw new Error('Sherpa-ONNX 语音运行时正在运行，不能修改识别热词')
+    this.hotwords = words.map((word) => ({ ...word }))
+    this.recognizer = undefined
   }
 
   get capabilities(): VoiceRuntimeCapabilities {
@@ -156,7 +167,7 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
   }
 
   private async load(): Promise<void> {
-    if (this.module !== undefined) return
+    if (this.recognizer !== undefined) return
     const imported = await dynamicImport(this.packageName) as SherpaModule & { readonly default?: SherpaModule }
     this.module = imported.default ?? imported
     const OnlineRecognizer = this.module.OnlineRecognizer
@@ -165,9 +176,16 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
     const asrJoiner = required(this.env.CODINGNS4DSH_VOICE_ASR_JOINER, 'CODINGNS4DSH_VOICE_ASR_JOINER')
     const asrTokens = required(this.env.CODINGNS4DSH_VOICE_ASR_TOKENS, 'CODINGNS4DSH_VOICE_ASR_TOKENS')
     if (OnlineRecognizer === undefined) throw new Error('Sherpa-ONNX Node 未导出 OnlineRecognizer')
-    this.recognizer = new OnlineRecognizer(createSherpaRecognizerConfig(
-      { asrEncoder, asrDecoder, asrJoiner, asrTokens }, this.sampleRate, readPositiveInteger(this.env.CODINGNS4DSH_VOICE_THREADS) ?? 2,
-    ))
+    const hotwords = await prepareSherpaHotwords(asrTokens, this.hotwords)
+    try {
+      this.recognizer = new OnlineRecognizer(createSherpaRecognizerConfig(
+        { asrEncoder, asrDecoder, asrJoiner, asrTokens }, this.sampleRate, readPositiveInteger(this.env.CODINGNS4DSH_VOICE_THREADS) ?? 2,
+        undefined, hotwords,
+      ))
+    } finally {
+      // 原生构造器已经把词表读入内存，立即清除含私有名称的临时文件。
+      await hotwords?.dispose()
+    }
     const vadModel = this.env.CODINGNS4DSH_VOICE_VAD_MODEL
     if (this.module.Vad !== undefined && vadModel !== undefined && vadModel.trim() !== '') {
       this.vad = new this.module.Vad({ sileroVad: { model: vadModel, threshold: 0.5, minSilenceDuration: 0.5, minSpeechDuration: 0.1, windowSize: 512 }, sampleRate: this.sampleRate, numThreads: 1, provider: 'cpu' }, 30)
@@ -193,12 +211,14 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
 }
 
 /** 正式运行时和独立验证进程共用配置，避免“验证通过”与实际启动参数不一致。 */
-export function createSherpaRecognizerConfig(paths: AssistantVoiceModelPaths, sampleRate = 16_000, numThreads = 2): Record<string, unknown> {
+export function createSherpaRecognizerConfig(paths: AssistantVoiceModelPaths, sampleRate = 16_000, numThreads = 2, endpointSilenceSeconds = 1.2, hotwords?: SherpaHotwordConfig): Record<string, unknown> {
   return {
     featConfig: { sampleRate, featureDim: 80 },
-    modelConfig: { transducer: { encoder: paths.asrEncoder, decoder: paths.asrDecoder, joiner: paths.asrJoiner }, tokens: paths.asrTokens, numThreads, provider: 'cpu' },
-    decodingMethod: 'greedy_search', maxActivePaths: 4, enableEndpoint: true,
-    rule1MinTrailingSilence: 2.4, rule2MinTrailingSilence: 1.2, rule3MinUtteranceLength: 20,
+    modelConfig: { transducer: { encoder: paths.asrEncoder, decoder: paths.asrDecoder, joiner: paths.asrJoiner }, tokens: paths.asrTokens, numThreads, provider: 'cpu',
+      ...(hotwords === undefined ? {} : { modelingUnit: hotwords.modelingUnit, ...(hotwords.bpeVocab === undefined ? {} : { bpeVocab: hotwords.bpeVocab }) }) },
+    decodingMethod: 'modified_beam_search', maxActivePaths: 4, enableEndpoint: true,
+    ...(hotwords === undefined ? {} : { hotwordsFile: hotwords.hotwordsFile, hotwordsScore: 0.6 }),
+    rule1MinTrailingSilence: 2.4, rule2MinTrailingSilence: endpointSilenceSeconds, rule3MinUtteranceLength: 20,
   }
 }
 

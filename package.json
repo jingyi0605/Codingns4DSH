@@ -129,6 +129,7 @@
     "avatar-packages/catalog.json",
     "avatar-packages/manifests/*.avatar.json",
     "assets/moss/**",
+    "assets/voice/**",
     "dsh.bundle.patch",
     "profile/**",
     "version.json",

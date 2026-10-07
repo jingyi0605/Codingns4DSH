@@ -31,6 +31,7 @@ import { AssistantWaitingState } from './assistant-waiting-state.js'
 import { debugInfo } from '../../shared/debug.js'
 import { createAssistantVoiceStreamHandler } from './assistant-voice-stream.js'
 import { SherpaVoiceRuntime } from './sherpa-voice-runtime.js'
+import { buildAssistantVoiceHotwords, readAssistantVoiceHotwords } from './assistant-voice-hotwords.js'
 import { DEFAULT_ASSISTANT_SETTINGS, DEFAULT_ASSISTANT_VOICE_SETTINGS, type AssistantSettings, type AssistantVoiceSettings } from '../../shared/contracts/config.js'
 import { AssistantVoiceModelManager, type AssistantVoiceModelProbe } from './voice-model-management.js'
 import type { AssistantVoiceModelProgress, AssistantVoiceModelsSnapshot } from '../../shared/voice-models.js'
@@ -812,6 +813,12 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
                 }
                 if (!coordinator.snapshot().active) {
                   runtime.configureEnvironment(buildSherpaRuntimeEnvironment(voiceSettings))
+                  // 只读最新元数据，不等 LLM 索引总结，也不读取会话正文；失败仍保留领域词。
+                  let hotwords = buildAssistantVoiceHotwords([], [])
+                  try {
+                    hotwords = await readAssistantVoiceHotwords(readManagementSnapshot)
+                  } catch { /* 名称读取失败不能阻断通话，仍使用领域词。 */ }
+                  runtime.configureHotwords(hotwords)
                 }
                 const snapshot = await coordinator.start(ownerId)
                 if (isRecord(payload) && typeof payload.voiceSessionId === 'string') {
