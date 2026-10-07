@@ -55,7 +55,12 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
     const management = createPeerHostManagementApi(context.services.rpc)
     if (shim !== undefined) {
       shim.activate(transport!.hooks)
-      context.resources.add(() => { shim.deactivate() })
+      context.resources.add(() => {
+        shim.deactivate()
+        // 资源按逆序释放：此时 Desktop 路由和导航订阅已还原，重新加载本机目录，
+        // 避免停用 PeerHost 后仍展示最后一个远端 Host 的全局缓存。
+        refreshDshModelCatalog(context.services.uiContext)
+      })
       // 原生侧栏在插件 apply 时按引用捕获 `workspaces.list`，只能就地投影这个对象；
       // 没有 shim 就没有原生 Remote 路由，此时不注入，避免出现点不开的远端条目。
       context.resources.add(installPeerHostNativeStoreProjection({
@@ -85,6 +90,12 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
         })
         if (route !== undefined) context.resources.add(route)
       }
+      // uiWorkspace 可能晚于 CodingNS 就绪；跟随服务生命周期订阅真实选择状态。
+      // 模块请求、右栏保留资源和后台流都不能代替前台导航。
+      const navigation = context.services.uiContext?.inject(['uiWorkspace'], (scope) => {
+        scope.effect(() => transport!.watchNavigation(), 'codingns4dsh: PeerHost 模型目录导航')
+      })
+      if (navigation !== undefined) context.resources.add(() => navigation.dispose())
     }
     const panel = startPeerHostManagementPanel({ rpc: context.services.rpc, locale: context.services.locale })
     context.resources.add(() => panel.dispose())
@@ -152,19 +163,18 @@ export function createPeerHostPageTransport(
   readonly hooks: CodingNsTransportHooks
   readonly matchesScope: (value: unknown, method?: string) => boolean
   readonly setAggregate: (aggregate: readonly AggregateHostResult[], orderedWorkspaceIds?: readonly string[]) => boolean
+  /** 跟随原生前台选择刷新 Host 模型目录；返回导航订阅的清理函数。 */
+  readonly watchNavigation: () => () => void
 } {
   const fetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined
   const scopes = new Map<string, HostScope>()
   const remoteHostScopes = new Map<string, HostScope>()
-  // `session/modelCatalog`、`cli/catalog` 和 `cli/models` 在新建会话阶段可能没有
-  // Session 参数；记录最近一次远程工作区作用域，供这些无参数请求复用。
-  let activeRemoteScope: HostScope | undefined
   // DSH 的模型目录是 Host generation 级缓存；PeerHost 工作区切换不会触发 DSH
-  // 自己的 connection/reset，因此这里单独记录当前作用域并在变化时失效目录。
+  // 自己的 connection/reset，因此仅按前台导航的 Host 变化使目录失效。
   let activeModelCatalogScopeKey: string | undefined
   const modelCatalogScopeKey = (scope: HostScope | undefined): string | undefined => {
     if (scope?.targetHostId === null || scope?.targetHostId === undefined) return undefined
-    return `${scope.targetHostId}:${scope.workspaceId}:${scope.scopeGeneration}`
+    return scope.targetHostId
   }
   const refreshModelCatalogForScope = (scope: HostScope | undefined): void => {
     const nextKey = modelCatalogScopeKey(scope)
@@ -246,46 +256,34 @@ export function createPeerHostPageTransport(
   const scopeForNativeRequest = (method: string, value: unknown): HostScope | undefined => {
     const direct = findScope(value)
     if (direct !== undefined) return direct
-    if (method === 'session/modelCatalog') {
-      // 新建空白会话时模型目录先于 session/create 请求加载；当前路由中的虚拟
-      // workspace 是这时唯一可用的目标线索，优先于上一次请求留下的作用域。
-      const locationScope = currentLocationWorkspaceScope()
-      if (locationScope !== undefined) return locationScope
-      if (currentLocationIsLocalWorkspace()) {
-        activeRemoteScope = undefined
-        refreshModelCatalogForScope(undefined)
-        return undefined
-      }
-      if (activeRemoteScope !== undefined) return activeRemoteScope
-    }
-    return undefined
+    return method === 'session/modelCatalog' && !containsResourceId(value) ? navigationScope() : undefined
   }
   const scopeForCliRequest = (endpoint: string, value: unknown): HostScope | undefined => {
     const direct = findScope(value)
     if (direct !== undefined) return direct
-    // 新建远程会话的工具栏先于 session/create 拿到 sessionId；此时 catalog/models
-    // 只有 adapterId 或空对象，沿用当前远程工作区作用域，不能回落到本机 Host。
-    if (endpoint !== 'cli/catalog' && endpoint !== 'cli/models') return undefined
-    if (currentLocationIsLocalWorkspace()) {
-      activeRemoteScope = undefined
-      refreshModelCatalogForScope(undefined)
-      return undefined
-    }
-    return activeRemoteScope
+    // 显式指定本机 Session 的目录请求保持本机；只有无资源 ID 的工具栏目录
+    // 才跟随前台导航，不能被其他会话的 CLI 请求带到错误 Host。
+    if ((endpoint !== 'cli/catalog' && endpoint !== 'cli/models') || containsResourceId(value)) return undefined
+    return navigationScope()
   }
-  const rememberNativeScope = (method: string, scope: HostScope | undefined, value: unknown): void => {
-    if (scope !== undefined && scope.targetHostId !== null) {
-      activeRemoteScope = scope
-      refreshModelCatalogForScope(scope)
-      return
+  const navigationScope = (): HostScope | undefined => {
+    const selection = readNativeNavigationStore(uiContext)?.getSnapshot()
+    // 空选择和本机选择都是明确的本机状态；Desktop/PWA 的根地址不表达导航，
+    // 也不能让旧 URL 覆盖当前会话。新远端会话的 ID 由 pending 作用域补齐。
+    if (selection !== undefined) {
+      const direct = findScope(selection)
+      if (direct !== undefined) return direct
+      // 目录属于 Host，不依赖会话是否已进入聚合。pending 到期或摘要暂时缺行时，
+      // 虚拟 ID 仍明确携带目标 Host，不能把远端目录静默换成本机目录。
+      const selected = asRecord(selection)
+      const sessionId = selected?.sessionId ?? asRecord(selected?.subagentAddress)?.parentSessionId
+      const session = typeof sessionId === 'string' ? parseVirtualSessionId(sessionId) : null
+      const workspace = typeof selected?.workspaceId === 'string' ? parseVirtualWorkspaceId(selected.workspaceId) : null
+      const hostId = session?.hostId ?? workspace?.targetHostId
+      return hostId === null || hostId === undefined ? undefined : remoteHostScopes.get(hostId)
     }
-    // workspace/follow 和 session/follow 是 DSH 的长期基线/后台流，不代表当前导航。
-    // 只有显式携带本机 workspaceId 的导航才清理远程作用域，不能因本机旧会话的
-    // 后台流抵达，就清掉正在创建的远程会话作用域。
-    if (method === 'workspace/follow' && scope === undefined && containsLocalWorkspaceId(value)) {
-      activeRemoteScope = undefined
-      refreshModelCatalogForScope(undefined)
-    }
+    // 没有原生导航服务的旧宿主只依据显式工作区 URL；从不猜最近请求属于谁。
+    return currentLocationWorkspaceScope()
   }
   const currentLocationWorkspaceScope = (): HostScope | undefined => {
     if (typeof window === 'undefined') return undefined
@@ -297,22 +295,13 @@ export function createPeerHostPageTransport(
     if (parsed === null || parsed.targetHostId === null) return undefined
     return findScope(parsed.virtualWorkspaceId)
   }
-  const currentLocationIsLocalWorkspace = (): boolean => {
-    if (typeof window === 'undefined') return false
-    const match = window.location.pathname.match(/\/workspaces\/([^/]+)/u)
-    if (match?.[1] === undefined) return false
-    let workspaceId: string
-    try { workspaceId = decodeURIComponent(match[1]) } catch { return false }
-    const parsed = parseVirtualWorkspaceId(workspaceId)
-    return parsed === null || parsed.targetHostId === null
-  }
-  const containsLocalWorkspaceId = (value: unknown): boolean => {
-    if (Array.isArray(value)) return value.some(containsLocalWorkspaceId)
+  const containsResourceId = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(containsResourceId)
     const record = asRecord(value)
     if (record === null) return false
     for (const [key, child] of Object.entries(record)) {
-      if (key === 'workspaceId' && typeof child === 'string' && parseVirtualWorkspaceId(child) === null) return true
-      if (containsLocalWorkspaceId(child)) return true
+      if ((key === 'workspaceId' || key === 'sessionId' || key === 'parentSessionId') && typeof child === 'string' && child !== '') return true
+      if (containsResourceId(child)) return true
     }
     return false
   }
@@ -423,11 +412,13 @@ export function createPeerHostPageTransport(
       pendingSessionScopes.delete(sessionId)
       // 聚合确认后 scopes 会持有新的对象；只清理仍由 pending 持有的旧作用域。
       if (scopes.get(sessionId) === pending.scope) scopes.delete(sessionId)
+      refreshModelCatalogForScope(navigationScope())
     }, PEER_HOST_PENDING_SESSION_SCOPE_TTL_MS)
     // Node 测试进程不应因一个未确认的远端会话被定时器阻塞退出；浏览器没有 unref 时照常运行。
     ;(timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.()
     pendingSessionScopes.set(sessionId, { scope: created, expiresAt, timer })
     scopes.set(sessionId, created)
+    refreshModelCatalogForScope(navigationScope())
   }
   const hooks: CodingNsTransportHooks = {
     rpc: async <TResponse = unknown>({ method, payload, signal }: { method: string; payload: unknown; signal?: AbortSignal }): Promise<TResponse> => {
@@ -450,7 +441,6 @@ export function createPeerHostPageTransport(
       }
       if (channel === '/api' && isDshNativeRemoteMethod(method)) {
         const scope = scopeForNativeRequest(method, body)
-        rememberNativeScope(method, scope, body)
         if (scope !== undefined && scope.targetHostId !== null) {
           // DSH 的 client 契约要求 unary 结果是 `{ok, value}` / `{ok:false, error}` 信封：
           // 返回裸值会让网关在 `rebuiltFailure(result.error)` 读 undefined.code 而崩成 carrierFailure。
@@ -484,7 +474,6 @@ export function createPeerHostPageTransport(
       const body = value?.payload
       if (channel === '/api' && isDshNativeRemoteMethod(method)) {
         const scope = scopeForNativeRequest(method, body)
-        rememberNativeScope(method, scope, body)
         if (scope !== undefined && scope.targetHostId !== null) {
           const stream = openRemoteStream(method, body, scope, signal) as AsyncIterable<TChunk>
           if (method !== 'session/follow') return stream
@@ -529,6 +518,13 @@ export function createPeerHostPageTransport(
         : scopeForCliRequest(cli, value)
       return scope !== undefined && scope.targetHostId !== null
     },
+    watchNavigation() {
+      const store = readNativeNavigationStore(uiContext)
+      const refresh = (): void => refreshModelCatalogForScope(navigationScope())
+      const stop = store?.subscribe(refresh)
+      refresh()
+      return stop ?? (() => undefined)
+    },
     setAggregate(aggregate, orderedWorkspaceIds) {
       scopes.clear()
       remoteHostScopes.clear()
@@ -548,12 +544,6 @@ export function createPeerHostPageTransport(
           }
         }
       }
-      const locationScope = currentLocationWorkspaceScope()
-      if (locationScope !== undefined && locationScope.targetHostId !== null) activeRemoteScope = locationScope
-      if (activeRemoteScope !== undefined && activeRemoteScope.targetHostId !== null) {
-        const activeWorkspaceId = createVirtualWorkspaceId(activeRemoteScope.targetHostId, activeRemoteScope.workspaceId)
-        if (!scopes.has(activeWorkspaceId)) activeRemoteScope = undefined
-      }
       // 刚创建、尚未进入聚合的会话要保住作用域；聚合里已存在的以聚合为准。
       // 一旦聚合确认，pending 记录立即清掉；之后远端删除会随下一次聚合重建自然移除。
       const now = Date.now()
@@ -568,7 +558,7 @@ export function createPeerHostPageTransport(
         }
         scopes.set(sessionId, pending.scope)
       }
-      refreshModelCatalogForScope(activeRemoteScope)
+      refreshModelCatalogForScope(navigationScope())
       return projection.setAggregate(aggregate, orderedWorkspaceIds)
     },
   }
@@ -670,6 +660,25 @@ function readConnectionHandle(uiContext: { get(name: string): unknown } | undefi
     const connection = uiContext.get('connection')
     return typeof connection === 'object' && connection !== null ? connection as { rpc?: ConnectionRpcHandle } : undefined
   } catch {
+    return undefined
+  }
+}
+
+/** DSH 前台选择 Store；rc.2 和 alpha.1 都通过它持久化当前会话。 */
+interface NativeNavigationStore {
+  getSnapshot(): unknown
+  subscribe(listener: () => void): () => void
+}
+
+/** 只借用原生导航数据，不修改选择策略，也不从后台保留会话推断前台。 */
+function readNativeNavigationStore(uiContext: { get(name: string): unknown } | undefined): NativeNavigationStore | undefined {
+  try {
+    const service = asRecord(uiContext?.get('uiWorkspace'))
+    const store = asRecord(service?.selection)
+    if (typeof store?.getSnapshot !== 'function' || typeof store.subscribe !== 'function') return undefined
+    return store as unknown as NativeNavigationStore
+  } catch {
+    // 服务尚未挂载时由注入生命周期稍后订阅；无此服务的宿主退回显式 URL。
     return undefined
   }
 }
