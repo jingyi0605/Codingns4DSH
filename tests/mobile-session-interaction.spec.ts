@@ -178,14 +178,31 @@ test('Composer 只在用户点按输入框时保留焦点', () => {
   const document = new FakeDocument()
   const controller = startMobileSessionInteractionDom({ window, document })
   document.activeElement = composer
-  document.emit('touchstart', { target: title, touches: [{ clientX: 10, clientY: 10 }] })
+  document.emit('touchstart', { target: title, isTrusted: true, touches: [{ clientX: 10, clientY: 10 }] })
   document.emit('focusin', { target: composer })
   assert.ok(composer.blurCount >= 2)
 
   const before = composer.blurCount
-  document.emit('touchstart', { target: composer, touches: [{ clientX: 20, clientY: 20 }] })
+  document.emit('touchstart', { target: composer, isTrusted: true, touches: [{ clientX: 20, clientY: 20 }] })
   document.emit('focusin', { target: composer })
   assert.equal(composer.blurCount, before)
+  controller.dispose()
+})
+
+test('宽屏 iPad 同样拦截自动输入焦点，保留桌面布局的会话交互', () => {
+  const window = new FakeWindow()
+  window.innerWidth = 1366
+  Object.assign(window.navigator, { userAgent: 'Macintosh', maxTouchPoints: 5 })
+  const document = new FakeDocument()
+  const controller = startMobileSessionInteractionDom({ window, document })
+  const input = new FakeElement({ 'data-composer-input': 'true' })
+  document.activeElement = input
+  document.emit('focusin', { target: input })
+  assert.equal(input.blurCount, 1)
+  document.emit('pointerdown', { target: input, isTrusted: true })
+  document.emit('focusin', { target: input })
+  assert.equal(input.blurCount, 1)
+  assert.equal(document.listeners.get('dblclick')?.size ?? 0, 0)
   controller.dispose()
 })
 
