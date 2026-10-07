@@ -103,12 +103,14 @@ interface TerminalInitialState {
   readonly info?: WebTerminalInfo
 }
 
-/** 一个 Sidebar 标签对应的终端模型；普通视图卸载只 detach，聚合视图可常驻 follow。 */
+/** 工作区终端模型；旧单标签视图卸载只 detach，聚合视图常驻 follow 和屏幕。 */
 export class CodingNsTerminalView {
   readonly state: TerminalObservable<TerminalViewState>
   id: WebTerminalId
   private readonly store: ObservableValue<TerminalViewState>
   private readonly lifetime = new AbortController()
+  /** 屏幕与连接由模型拥有；React 卡片卸载不能结束它们的生命周期。 */
+  readonly signal = this.lifetime.signal
   private followController: AbortController | undefined
   private pendingRender: PendingRender | undefined
   private mounted = 0
@@ -132,7 +134,8 @@ export class CodingNsTerminalView {
   private initialStateConsumed = false
 
   constructor(
-    readonly sessionId: string,
+    /** 当前可见卡片的调用上下文；同工作区切换只更新此字段，不替换连接。 */
+    public sessionId: string,
     id: WebTerminalId,
     private readonly remote: TerminalRemoteSource,
     private readonly createWhenMissing: boolean,
@@ -556,6 +559,7 @@ export class CodingNsTerminalView {
 interface ViewRecord {
   readonly contentId: string
   readonly view: CodingNsTerminalView
+  readonly keepAlive: boolean
 }
 
 interface CloseRequest {
@@ -614,9 +618,19 @@ export class CodingNsWebTerminals extends Service {
   }
 
   view(sessionId: string, key: string, contentId: string, terminalId?: WebTerminalId, shellPath?: string, createFresh = false, persistBinding = true, keepAlive = false, initialState?: TerminalInitialState): CodingNsTerminalView {
-    const mapKey = JSON.stringify([sessionId, key])
+    const mapKey = JSON.stringify([keepAlive ? this.scopeForSession(sessionId) : sessionId, key])
     const existing = this.views.get(mapKey)
     if (existing !== undefined) return existing.view
+    // 首次创建时可能尚未解析工作区。解析后将原模型移入工作区键，不能再建一条 follow。
+    if (keepAlive) {
+      for (const [previousKey, record] of this.views) {
+        if (!record.keepAlive || record.contentId !== contentId || record.view.id !== terminalId) continue
+        if (this.scopeForSession(record.view.sessionId) !== this.scopeForSession(sessionId)) continue
+        this.views.delete(previousKey)
+        this.views.set(mapKey, record)
+        return record.view
+      }
+    }
     const workspaceId = this.workspaceIds.get(sessionId)
     const sessionBinding = readBinding(sessionId, contentId)
     // “新建”是一次性动作：首次消费标记时忽略工作区单终端绑定，生成新的身份；
@@ -643,11 +657,11 @@ export class CodingNsWebTerminals extends Service {
       keepAlive,
       initialState,
     )
-    this.views.set(mapKey, { contentId, view })
+    this.views.set(mapKey, { contentId, view, keepAlive })
     return view
   }
 
-  /** 聚合页按 Host terminalId 获取内部视图，不再依赖 Sidebar 标签身份。 */
+  /** 同工作区按 terminalId 复用模型、follow 和屏幕，会话只提供调用上下文。 */
   viewForTerminal(sessionId: string, terminalId: WebTerminalId, shellPath?: string): CodingNsTerminalView {
     const key = `aggregate:${terminalId}`
     const info = this.inventoryForSession(sessionId).find((item) => item.id === terminalId)
@@ -709,11 +723,15 @@ export class CodingNsWebTerminals extends Service {
     return info
   }
 
-  /** 只关闭指定 terminalId；其他会话中对应的 attach 视图只做 detach。 */
+  /** 只关闭当前工作区的指定 terminalId，并释放它的常驻屏幕与 follow。 */
   async closeTerminal(sessionId: string, terminalId: WebTerminalId): Promise<void> {
-    const records = [...this.views.entries()].filter(([, record]) => record.view.id === terminalId)
-    const primary = records.find(([, record]) => record.view.sessionId === sessionId)?.[1]
-    if (primary !== undefined) await primary.view.close()
+    const records = [...this.views.entries()].filter(([, record]) => record.view.id === terminalId
+      && this.scopeForSession(record.view.sessionId) === this.scopeForSession(sessionId))
+    const primary = records[0]?.[1]
+    if (primary !== undefined) {
+      primary.view.sessionId = sessionId
+      await primary.view.close()
+    }
     else unwrap(await resolveRemote(this.remote).close(sessionId, terminalId))
     for (const [mapKey, record] of records) {
       this.views.delete(mapKey)

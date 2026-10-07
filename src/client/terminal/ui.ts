@@ -318,6 +318,7 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
         active: item.id === activeId,
         visible: info.tab.visible,
         onNewTerminal: () => { void createNewTerminal() },
+        sessionId: String(sessionId),
         t,
       }))
   )

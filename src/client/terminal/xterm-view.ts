@@ -17,6 +17,20 @@ import { stripTerminalDeviceAttributeResponses } from '../../shared/terminal-inp
 import { debugInfo } from '../../shared/debug.js'
 import type { CodingNsTerminalView, TerminalViewState } from './model.js'
 import { terminalClass } from './styles.js'
+import { TerminalSurfaceCache } from './surface-cache.js'
+
+interface TerminalSurface {
+  readonly host: HTMLDivElement
+  readonly terminal: Terminal
+  readonly fit: FitAddon
+  readonly scheduleReflow: () => void
+  lastRevision: number
+  owner?: HTMLDivElement
+  dispose(): void
+}
+
+/** 每个工作区终端只有一块屏幕，切换会话时移动 DOM，保留缓冲区、光标与滚动位置。 */
+const surfaces = new TerminalSurfaceCache<TerminalSurface>()
 
 const TERMINAL_TOUCH_MOMENTUM_GAIN = 2
 const TERMINAL_TOUCH_MOMENTUM_MIN_LINES_PER_MS = 0.06
@@ -37,9 +51,10 @@ export interface CodingNsXtermViewProps {
   readonly settings: CodingNsSettingsStore<CodingNsSettings>
   readonly themeRevision: number
   readonly onNewTerminal: () => void
+  readonly sessionId?: string
   /** 聚合页是否正在显示这个终端；隐藏时仍保持 attach 和 xterm 状态。 */
   readonly active?: boolean
-  /** 外层 Sidebar 页签是否可见；不可见时释放整个终端页的 attach。 */
+  /** 外层 Sidebar 页签是否可见；不可见时隐藏屏幕，连接和输出消费保持常驻。 */
   readonly visible?: boolean
   /** 由 terminal/ui.ts 注入的翻译函数；缺省时退回内置中文词典（单测路径）。 */
   readonly t?: CodingNsTranslator
@@ -51,361 +66,50 @@ export function CodingNsXtermView({
   settings,
   themeRevision,
   onNewTerminal,
+  sessionId = view.sessionId,
   active = true,
   visible = true,
   t: injectedTranslator,
 }: CodingNsXtermViewProps): ReactElement {
   const t = injectedTranslator ?? resolveCodingNsTranslator()
   const hostRef = useRef<HTMLDivElement>(null)
-  const terminalRef = useRef<Terminal | null>(null)
-  const fitRef = useRef<FitAddon | null>(null)
-  const scheduleReflowRef = useRef<(() => void) | null>(null)
-  const lastRevision = useRef(0)
+  const surfaceRef = useRef<TerminalSurface | null>(null)
   const sizeClaimAtRef = useRef(0)
-  const previousActiveRef = useRef(active)
+  const previousActiveRef = useRef(false)
   const state = useSyncExternalStore(view.state.subscribe.bind(view.state), view.state.getSnapshot.bind(view.state))
   const settingsSnapshot = useSyncExternalStore(settings.subscribe.bind(settings), settings.getSnapshot.bind(settings))
   const appearance = settingsSnapshot.value?.terminalEnhancement.appearance
     ?? DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS.appearance
   const hasTerminal = state.info !== undefined
 
-  // 聚合页切换标签时不卸载 CodingNsXtermView，保持 view.mount() 计数和 Host
-  // follow attach。只有整个 Sidebar 页签不可见时才释放连接。
-  useEffect(() => visible ? view.mount() : undefined, [view, visible])
+  // 兼容尚未取得库存的首次打开；屏幕建好后由屏幕接管唯一的常驻挂载引用。
+  useEffect(() => visible && !hasTerminal ? view.mount() : undefined, [hasTerminal, view, visible])
 
   useEffect(() => {
-    const host = hostRef.current
-    if (host === null || !hasTerminal) return
-    const root = host.shadowRoot ?? host.attachShadow({ mode: 'open' })
-    const style = document.createElement('style')
-    style.textContent = shadowCss
-    const container = document.createElement('div')
-    container.className = 'codingns-xterm'
-    root.replaceChildren(style, container)
-
-    const terminal = new Terminal(terminalOptions(
-      appearance,
-      host,
-      state.environment?.scrollback ?? 1000,
-      !state.writable,
-    ))
-    const fit = new FitAddon()
-    terminal.loadAddon(fit)
-    terminal.open(container)
-    terminal.textarea?.setAttribute('aria-label', t('terminal.title'))
-    terminalRef.current = terminal
-    fitRef.current = fit
-    lastRevision.current = 0
-    // xterm 自己拥有自绘 scrollable viewport。滚轮回调只能决定是否交给 xterm 继续处理：
-    // 有历史时返回 true，交给 xterm 的滚动容器；没有历史时返回 false，避免被解释为
-    // shell 的上下方向键（例如切换历史命令）。
-    const wheel = (event: WheelEvent): boolean => {
-      if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return false
-      const hasScrollback = terminal.buffer.active.baseY > 0
-      if (!hasScrollback) {
-        // 保持 xterm 在无回滚区时的默认行为（应用鼠标模式仍可接收滚轮）。
-        return false
-      }
-      return true
-    }
-    terminal.attachCustomWheelEventHandler(wheel)
-    const input = terminal.onData((data) => {
-      // xterm 在重放 Host resident 的历史输出时会再次回答设备识别查询。
-      // 这些 ESC[?...c/ESC[>...c 响应不应被重复送入 shell，否则 zsh 会把响应内容回显为
-      // “1;2c0;276;0c”这类异常字符。其它键盘输入和光标查询保持原样。
-      const inputData = stripTerminalDeviceAttributeResponses(data)
-      if (inputData !== '') view.write(inputData)
-    })
-    let touchPoint: { x: number; y: number } | undefined
-    let pendingTouchLines = 0
-    let touchVelocityLinesPerMs = 0
-    let touchMomentumRemainder = 0
-    let touchMomentumFrame: number | undefined
-    let touchMomentumEligible = false
-    let lastTouchMoveAt = 0
-    const stopTouchMomentum = (): void => {
-      if (touchMomentumFrame !== undefined) {
-        window.cancelAnimationFrame(touchMomentumFrame)
-        touchMomentumFrame = undefined
-      }
-      touchMomentumRemainder = 0
-    }
-    const hasTerminalScrollback = (): boolean => {
-      return terminal.buffer.active.baseY > 0 || terminal.buffer.active.viewportY > 0
-    }
-    const scrollTouchLines = (lines: number): boolean => {
-      if (lines === 0 || !hasTerminalScrollback()) return false
-      const previousViewportY = terminal.buffer.active.viewportY
-      terminal.scrollLines(lines)
-      return terminal.buffer.active.viewportY !== previousViewportY
-    }
-    const startTouchMomentum = (): void => {
-      stopTouchMomentum()
-      if (
-        !touchMomentumEligible ||
-        !hasTerminalScrollback() ||
-        Math.abs(touchVelocityLinesPerMs) < TERMINAL_TOUCH_MOMENTUM_MIN_LINES_PER_MS
-      ) {
-        touchVelocityLinesPerMs = 0
-        return
-      }
-      let lastFrameAt = performance.now()
-      let elapsedTotalMs = 0
-      let idleFrameCount = 0
-      const step = (frameAt: number): void => {
-        const elapsedMs = Math.max(1, frameAt - lastFrameAt)
-        lastFrameAt = frameAt
-        elapsedTotalMs += elapsedMs
-        touchMomentumRemainder += touchVelocityLinesPerMs * elapsedMs
-        const lines = truncateTowardZero(touchMomentumRemainder)
-        if (lines !== 0) {
-          idleFrameCount = 0
-          touchMomentumRemainder -= lines
-          if (!scrollTouchLines(lines)) {
-            touchVelocityLinesPerMs = 0
-            stopTouchMomentum()
-            return
-          }
-        } else {
-          idleFrameCount += 1
-        }
-        touchVelocityLinesPerMs *= Math.pow(TERMINAL_TOUCH_MOMENTUM_FRICTION, elapsedMs / 16)
-        if (
-          idleFrameCount >= TERMINAL_TOUCH_MOMENTUM_MAX_IDLE_FRAMES ||
-          elapsedTotalMs >= TERMINAL_TOUCH_MOMENTUM_MAX_DURATION_MS ||
-          Math.abs(touchVelocityLinesPerMs) < TERMINAL_TOUCH_MOMENTUM_MIN_LINES_PER_MS
-        ) {
-          touchVelocityLinesPerMs = 0
-          stopTouchMomentum()
-          return
-        }
-        touchMomentumFrame = window.requestAnimationFrame(step)
-      }
-      touchMomentumFrame = window.requestAnimationFrame(step)
-    }
-    const touchStart = (event: TouchEvent): void => {
-      stopTouchMomentum()
-      touchVelocityLinesPerMs = 0
-      touchMomentumEligible = false
-      pendingTouchLines = 0
-      lastTouchMoveAt = performance.now()
-      const touch = event.touches[0]
-      touchPoint = touch === undefined ? undefined : { x: touch.clientX, y: touch.clientY }
-    }
-    const touchMove = (event: TouchEvent): void => {
-      if (touchPoint === undefined || event.touches.length !== 1) return
-      const touch = event.touches[0]
-      if (touch === undefined) return
-      const deltaX = touch.clientX - touchPoint.x
-      const deltaY = touch.clientY - touchPoint.y
-      touchPoint = { x: touch.clientX, y: touch.clientY }
-      // 斜向手势优先交给外层页面，避免终端抢走横向切换动作。
-      if (Math.abs(deltaY) <= Math.abs(deltaX)) return
-      event.preventDefault()
-      const now = performance.now()
-      const elapsedMs = Math.max(1, now - lastTouchMoveAt)
-      lastTouchMoveAt = now
-      const lineHeight = Math.max(1, host.clientHeight / Math.max(1, terminal.rows))
-      const deltaLines = -deltaY / lineHeight
-      pendingTouchLines += deltaLines
-      const lines = truncateTowardZero(pendingTouchLines)
-      if (lines === 0) {
-        // 位移还不足一整行时也更新速度；手指停住则立即清除旧速度，避免
-        // 松手时沿上一次手势方向继续滚动。
-        if (Math.abs(deltaY) < 0.5) {
-          touchVelocityLinesPerMs = 0
-          touchMomentumEligible = false
-        } else {
-          touchVelocityLinesPerMs = clampNumber(
-            (deltaLines / elapsedMs) * TERMINAL_TOUCH_MOMENTUM_GAIN,
-            -TERMINAL_TOUCH_MOMENTUM_MAX_LINES_PER_MS,
-            TERMINAL_TOUCH_MOMENTUM_MAX_LINES_PER_MS,
-          )
-          touchMomentumEligible = hasTerminalScrollback()
-        }
-        return
-      }
-      pendingTouchLines -= lines
-      const didScroll = scrollTouchLines(lines)
-      if (didScroll) {
-        const nextVelocity = clampNumber(
-          (deltaLines / elapsedMs) * TERMINAL_TOUCH_MOMENTUM_GAIN,
-          -TERMINAL_TOUCH_MOMENTUM_MAX_LINES_PER_MS,
-          TERMINAL_TOUCH_MOMENTUM_MAX_LINES_PER_MS,
-        )
-        touchVelocityLinesPerMs = touchVelocityLinesPerMs === 0
-          ? nextVelocity
-          : touchVelocityLinesPerMs * 0.35 + nextVelocity * 0.65
-        touchMomentumEligible = true
-      } else {
-        touchVelocityLinesPerMs = 0
-        touchMomentumEligible = false
-      }
-    }
-    const touchEnd = (): void => {
-      touchPoint = undefined
-      pendingTouchLines = 0
-      // 释放前已经静止一段时间，说明用户是在按住后松手，不应复用旧速度。
-      if (performance.now() - lastTouchMoveAt >= TERMINAL_TOUCH_MOMENTUM_RELEASE_IDLE_MS) {
-        touchVelocityLinesPerMs = 0
-        touchMomentumEligible = false
-      }
-      startTouchMomentum()
-    }
-    const touchCancel = (): void => {
-      touchPoint = undefined
-      pendingTouchLines = 0
-      touchVelocityLinesPerMs = 0
-      touchMomentumEligible = false
-      stopTouchMomentum()
-    }
-    const xtermRoot = terminal.element
-    if (xtermRoot === undefined) return
-    // xterm 6 使用 .xterm-scrollable-element 的自绘滚动条；.xterm-viewport
-    // 只是兼容节点，不能再把触摸事件和可用宽度交给它。
-    const scrollTarget = xtermRoot?.querySelector<HTMLElement>('.xterm-scrollable-element') ?? xtermRoot ?? container
-    const interactionTarget = xtermRoot ?? container
-    let scrollbarHideTimer: number | undefined
-    let lastViewportY = terminal.buffer.active.viewportY
-    const hideScrollbar = (): void => {
-      if (scrollbarHideTimer !== undefined) {
-        window.clearTimeout(scrollbarHideTimer)
-        scrollbarHideTimer = undefined
-      }
-      xtermRoot.dataset.codingnsScrollbar = 'hidden'
-    }
-    const revealScrollbar = (): void => {
-      if (terminal.buffer.active.baseY <= 0) {
-        hideScrollbar()
-        return
-      }
-      xtermRoot.dataset.codingnsScrollbar = 'visible'
-      if (scrollbarHideTimer !== undefined) window.clearTimeout(scrollbarHideTimer)
-      scrollbarHideTimer = window.setTimeout(() => {
-        scrollbarHideTimer = undefined
-        xtermRoot.dataset.codingnsScrollbar = 'hidden'
-      }, TERMINAL_SCROLLBAR_HIDE_DELAY_MS)
-    }
-    const syncScrollbarState = (): void => {
-      const hasScrollback = terminal.buffer.active.baseY > 0
-      xtermRoot.dataset.codingnsScrollback = hasScrollback ? 'true' : 'false'
-      if (!hasScrollback) hideScrollbar()
-      else if (xtermRoot.dataset.codingnsScrollbar === undefined) xtermRoot.dataset.codingnsScrollbar = 'hidden'
-      debugInfo('codingns4dsh: client terminal scrollbar state', {
-        terminalId: view.id,
-        hasScrollback,
-        baseY: terminal.buffer.active.baseY,
-        viewportY: terminal.buffer.active.viewportY,
-      })
-    }
-    syncScrollbarState()
-    scrollTarget.style.touchAction = 'pan-y'
-    scrollTarget.style.overscrollBehavior = 'contain'
-    if ('webkitOverflowScrolling' in scrollTarget.style) {
-      scrollTarget.style.webkitOverflowScrolling = 'touch'
-    }
-    interactionTarget.addEventListener('touchstart', touchStart, { passive: true })
-    interactionTarget.addEventListener('touchmove', touchMove, { passive: false })
-    interactionTarget.addEventListener('touchend', touchEnd, { passive: true })
-    interactionTarget.addEventListener('touchcancel', touchCancel, { passive: true })
-    const scroll = terminal.onScroll((viewportY) => {
-      const didScroll = viewportY !== lastViewportY
-      lastViewportY = viewportY
-      syncScrollbarState()
-      if (didScroll) revealScrollbar()
-      debugInfo('codingns4dsh: client terminal viewport scroll', {
-        terminalId: view.id,
-        viewportY,
-        baseY: terminal.buffer.active.baseY,
-      })
-    })
-    // 调试终端由 Host 预设“配置名(终端类型)”标题；Shell 启动时通常会发一个 zsh 等默认标题，不能覆盖它。
-    const preserveHostTitle = state.info !== undefined && state.info.title !== state.info.shell.name
-    const title = terminal.onTitleChange((value) => {
-      if (!preserveHostTitle) void view.rename(value)
-    })
-    const measure = (): void => {
-      // 手机虚拟键盘通常只收缩 visualViewport，不会改变 DSH 外层布局视口。
-      // 先把 xterm 宿主裁到可视视口底边，再计算行列，避免最后几行和光标落到键盘下面。
-      syncTerminalViewport(host)
-      // 显示层即使在 connecting/read-only 阶段也必须跟随容器尺寸；否则
-      // ResizeObserver 会捕获首次 render 的 writable=false，后续移动端布局
-      // 变化永远不会触发历史行重排。view.resize 内部仍会按权限决定是否下发 PTY。
-      if (host.clientWidth === 0 || host.clientHeight === 0) return
-      fitTerminal(terminal, fit, view)
-      syncScrollbarState()
-    }
-    let measureFrame: number | undefined
-    const scheduleMeasure = (): void => {
-      if (measureFrame !== undefined) return
-      measureFrame = window.requestAnimationFrame(() => {
-        measureFrame = undefined
-        measure()
-      })
-    }
-    let reflowTimer: number | undefined
-    let reflowFrame: number | undefined
-    const schedulePostAttachReflow = (): void => {
-      // xterm 的字符尺寸、移动端字体和 Sidebar 宽度可能在首帧之后才稳定。
-      // 只在 snapshot 写入回调里 fit 一次会留下旧 scrollback 的宽度，随后每行
-      // 看起来都向右漂移。连续安排两帧和一个短延迟，覆盖字体与容器的最终布局。
-      scheduleMeasure()
-      if (reflowFrame !== undefined) window.cancelAnimationFrame(reflowFrame)
-      reflowFrame = window.requestAnimationFrame(() => {
-        reflowFrame = undefined
-        scheduleMeasure()
-      })
-      if (reflowTimer !== undefined) window.clearTimeout(reflowTimer)
-      reflowTimer = window.setTimeout(() => {
-        reflowTimer = undefined
-        scheduleMeasure()
-      }, 240)
-    }
-    scheduleReflowRef.current = schedulePostAttachReflow
-    const resize = new ResizeObserver(scheduleMeasure)
-    resize.observe(host)
-    resize.observe(container)
-    const visualViewport = window.visualViewport
-    const handleViewportChange = (): void => schedulePostAttachReflow()
-    visualViewport?.addEventListener('resize', handleViewportChange)
-    // iOS 在弹出键盘时可能先滚动 visual viewport，再触发 resize；两个事件都要处理，
-    // 否则页面被浏览器上移后，光标仍可能被键盘边缘遮住。
-    visualViewport?.addEventListener('scroll', handleViewportChange)
-    window.addEventListener('resize', handleViewportChange)
-    schedulePostAttachReflow()
-
+    const target = hostRef.current
+    if (target === null || !hasTerminal || !visible || view.signal.aborted) return
+    // 仅可见卡片更新调用上下文；后台卡片不能把共享模型切回旧会话。
+    view.sessionId = sessionId
+    const surface = surfaces.get(view, () => createTerminalSurface(target, view, appearance, t))
+    surfaceRef.current = surface
+    surface.owner = target
+    target.replaceChildren(surface.host)
+    surface.scheduleReflow()
     return () => {
-      resize.disconnect()
-      visualViewport?.removeEventListener('resize', handleViewportChange)
-      visualViewport?.removeEventListener('scroll', handleViewportChange)
-      window.removeEventListener('resize', handleViewportChange)
-      if (measureFrame !== undefined) window.cancelAnimationFrame(measureFrame)
-      if (reflowFrame !== undefined) window.cancelAnimationFrame(reflowFrame)
-      if (reflowTimer !== undefined) window.clearTimeout(reflowTimer)
-      if (scrollbarHideTimer !== undefined) window.clearTimeout(scrollbarHideTimer)
-      scheduleReflowRef.current = null
-      input.dispose()
-      scroll.dispose()
-      interactionTarget.removeEventListener('touchstart', touchStart)
-      interactionTarget.removeEventListener('touchmove', touchMove)
-      interactionTarget.removeEventListener('touchend', touchEnd)
-      interactionTarget.removeEventListener('touchcancel', touchCancel)
-      stopTouchMomentum()
-      title.dispose()
-      terminal.dispose()
-      terminalRef.current = null
-      fitRef.current = null
-      host.style.height = '100%'
-      root.replaceChildren()
+      surfaceRef.current = null
+      // 会话切换可能先挂载新卡片再清理旧卡片，旧卡片不得拆走新卡片的屏幕。
+      if (surface.owner !== target) return
+      surface.host.remove()
+      delete surface.owner
     }
-  }, [hasTerminal, view])
+  }, [hasTerminal, sessionId, view, visible])
 
   useEffect(() => {
-    const becameActive = active && !previousActiveRef.current
-    previousActiveRef.current = active
-    const terminal = terminalRef.current
-    const host = hostRef.current
-    if (terminal === null || host === null) return
+    const becameActive = active && visible && !previousActiveRef.current
+    previousActiveRef.current = active && visible
+    const surface = surfaceRef.current
+    if (surface === null || !active || !visible) return
+    const { terminal, host, fit } = surface
     applyAppearance(terminal, appearance, host, state.environment?.scrollback ?? 1000)
     terminal.options.disableStdin = !state.writable
     // 聚合页切换到一个原本隐藏的终端时，虚拟键盘可能已经打开且不会再次派发
@@ -419,10 +123,8 @@ export function CodingNsXtermView({
       const now = Date.now()
       const claim = becameActive && now - sizeClaimAtRef.current >= TERMINAL_SIZE_CLAIM_INTERVAL_MS
       if (claim) sizeClaimAtRef.current = now
-      fitTerminal(terminal, fitRef.current, view, claim ? { force: true } : undefined)
+      fitTerminal(terminal, fit, view, claim ? { force: true } : undefined)
       terminal.focus()
-    } else if (state.info !== undefined) {
-      terminal.resize(state.info.cols, state.info.rows)
     }
   }, [
     active,
@@ -433,69 +135,27 @@ export function CodingNsXtermView({
     state.writable,
     themeRevision,
     view,
+    visible,
   ])
 
   useEffect(() => {
-    if (!active || !hasTerminal) return
+    if (!active || !visible || !hasTerminal) return
     // 页面从后台回到前台（移动端切回、窗口重新聚焦）时，Host 尺寸可能已被其它
     // 客户端改写；回到前台的视图重发一次自己的 fit 尺寸，把 tmux 抢回本视图。
     const onVisibilityChange = (): void => {
       if (document.visibilityState !== 'visible') return
-      const terminal = terminalRef.current
-      const host = hostRef.current
-      if (terminal === null || host === null) return
+      const surface = surfaceRef.current
+      if (surface === null) return
+      const { terminal, host, fit } = surface
       if (host.clientWidth === 0 || host.clientHeight === 0) return
       const now = Date.now()
       if (now - sizeClaimAtRef.current < TERMINAL_SIZE_CLAIM_INTERVAL_MS) return
       sizeClaimAtRef.current = now
-      fitTerminal(terminal, fitRef.current, view, { force: true })
+      fitTerminal(terminal, fit, view, { force: true })
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
-  }, [active, hasTerminal, view])
-
-  useEffect(() => {
-    const terminal = terminalRef.current
-    const host = hostRef.current
-    const render = state.render
-    if (terminal === null || render === undefined || render.revision <= lastRevision.current) return
-    lastRevision.current = render.revision
-    const isSnapshot = render.frame.type === 'snapshot'
-    if (isSnapshot) {
-      terminal.reset()
-      terminal.resize(render.frame.info.cols, render.frame.info.rows)
-    }
-    const data = render.frame.type === 'snapshot'
-      ? normalizeTerminalSnapshot(render.frame.screen)
-      : render.frame.data
-    terminal.write(data, () => {
-      // 快照中的尺寸来自 Host 上次记录，可能仍是桌面端列数。等完整历史写入
-      // 后再按当前 DOM 宽度 fit 一次，xterm 才会对整个 scrollback 执行重排；
-      // 否则只有后续新增的当前行会按移动端宽度换行。
-      if (isSnapshot && host !== null && host.clientWidth > 0 && host.clientHeight > 0) {
-        fitTerminal(terminal, fitRef.current, view)
-        scheduleReflowRef.current?.()
-      }
-      if (terminal.element !== undefined) {
-        const hasScrollback = terminal.buffer.active.baseY > 0
-        terminal.element.dataset.codingnsScrollback = hasScrollback ? 'true' : 'false'
-        if (!hasScrollback) terminal.element.dataset.codingnsScrollbar = 'hidden'
-      }
-      const viewport = terminal.element?.querySelector<HTMLElement>('.xterm-scrollable-element')
-      debugInfo('codingns4dsh: client terminal frame rendered', {
-        terminalId: view.id,
-        frameType: render.frame.type,
-        characters: data.length,
-        rows: terminal.rows,
-        bufferLength: terminal.buffer.active.length,
-        baseY: terminal.buffer.active.baseY,
-        viewportY: terminal.buffer.active.viewportY,
-        viewportScrollHeight: viewport?.scrollHeight ?? null,
-        viewportClientHeight: viewport?.clientHeight ?? null,
-      })
-      view.acknowledge(render.revision)
-    })
-  }, [state.render, view])
+  }, [active, hasTerminal, view, visible])
 
   return createElement('section', {
     className: terminalClass.root,
@@ -506,12 +166,393 @@ export function CodingNsXtermView({
   },
   createElement(TerminalStatus, { state, view, onNewTerminal, t }),
   hasTerminal ? createElement('div', { className: terminalClass.screen },
-    createElement('div', { ref: hostRef, style: terminalHostStyle }),
+    createElement('div', { ref: hostRef, style: { width: '100%', height: '100%' } }),
   ) : null,
   state.error === undefined || state.phase === 'disconnected' || state.info?.state === 'lost'
     ? null
     : createElement('p', { className: terminalClass.error, role: 'alert' }, t('terminalView.errorDetail', { message: state.error })),
   )
+}
+
+/** 创建一次常驻屏幕；事件、输出消费和连接只在终端模型销毁时释放。 */
+function createTerminalSurface(
+  target: HTMLDivElement,
+  view: CodingNsTerminalView,
+  appearance: TerminalAppearanceSettings,
+  t: CodingNsTranslator,
+): TerminalSurface {
+  const state = view.state.getSnapshot()
+  const host = document.createElement('div')
+  // DOM 样式赋值不会像 React 一样自动给数字补 px。
+  Object.assign(host.style, terminalHostStyle, {
+    paddingLeft: `${terminalHostStyle.paddingLeft}px`,
+    paddingRight: `${terminalHostStyle.paddingRight}px`,
+  })
+  target.replaceChildren(host)
+  const root = host.shadowRoot ?? host.attachShadow({ mode: 'open' })
+  const style = document.createElement('style')
+  style.textContent = shadowCss
+  const container = document.createElement('div')
+  container.className = 'codingns-xterm'
+  root.replaceChildren(style, container)
+
+  const terminal = new Terminal(terminalOptions(
+    appearance,
+    host,
+    state.environment?.scrollback ?? 1000,
+    !state.writable,
+  ))
+  const fit = new FitAddon()
+  terminal.loadAddon(fit)
+  terminal.open(container)
+  terminal.textarea?.setAttribute('aria-label', t('terminal.title'))
+  // xterm 自己拥有自绘 scrollable viewport。滚轮回调只能决定是否交给 xterm 继续处理：
+  // 有历史时返回 true，交给 xterm 的滚动容器；没有历史时返回 false，避免被解释为
+  // shell 的上下方向键（例如切换历史命令）。
+  const wheel = (event: WheelEvent): boolean => {
+    if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return false
+    const hasScrollback = terminal.buffer.active.baseY > 0
+    if (!hasScrollback) {
+      // 保持 xterm 在无回滚区时的默认行为（应用鼠标模式仍可接收滚轮）。
+      return false
+    }
+    return true
+  }
+  terminal.attachCustomWheelEventHandler(wheel)
+  const input = terminal.onData((data) => {
+    // xterm 在重放 Host resident 的历史输出时会再次回答设备识别查询。
+    // 这些 ESC[?...c/ESC[>...c 响应不应被重复送入 shell，否则 zsh 会把响应内容回显为
+    // “1;2c0;276;0c”这类异常字符。其它键盘输入和光标查询保持原样。
+    const inputData = stripTerminalDeviceAttributeResponses(data)
+    if (inputData !== '') view.write(inputData)
+  })
+  let touchPoint: { x: number; y: number } | undefined
+  let pendingTouchLines = 0
+  let touchVelocityLinesPerMs = 0
+  let touchMomentumRemainder = 0
+  let touchMomentumFrame: number | undefined
+  let touchMomentumEligible = false
+  let lastTouchMoveAt = 0
+  const stopTouchMomentum = (): void => {
+    if (touchMomentumFrame !== undefined) {
+      window.cancelAnimationFrame(touchMomentumFrame)
+      touchMomentumFrame = undefined
+    }
+    touchMomentumRemainder = 0
+  }
+  const hasTerminalScrollback = (): boolean => {
+    return terminal.buffer.active.baseY > 0 || terminal.buffer.active.viewportY > 0
+  }
+  const scrollTouchLines = (lines: number): boolean => {
+    if (lines === 0 || !hasTerminalScrollback()) return false
+    const previousViewportY = terminal.buffer.active.viewportY
+    terminal.scrollLines(lines)
+    return terminal.buffer.active.viewportY !== previousViewportY
+  }
+  const startTouchMomentum = (): void => {
+    stopTouchMomentum()
+    if (
+      !touchMomentumEligible ||
+      !hasTerminalScrollback() ||
+      Math.abs(touchVelocityLinesPerMs) < TERMINAL_TOUCH_MOMENTUM_MIN_LINES_PER_MS
+    ) {
+      touchVelocityLinesPerMs = 0
+      return
+    }
+    let lastFrameAt = performance.now()
+    let elapsedTotalMs = 0
+    let idleFrameCount = 0
+    const step = (frameAt: number): void => {
+      const elapsedMs = Math.max(1, frameAt - lastFrameAt)
+      lastFrameAt = frameAt
+      elapsedTotalMs += elapsedMs
+      touchMomentumRemainder += touchVelocityLinesPerMs * elapsedMs
+      const lines = truncateTowardZero(touchMomentumRemainder)
+      if (lines !== 0) {
+        idleFrameCount = 0
+        touchMomentumRemainder -= lines
+        if (!scrollTouchLines(lines)) {
+          touchVelocityLinesPerMs = 0
+          stopTouchMomentum()
+          return
+        }
+      } else {
+        idleFrameCount += 1
+      }
+      touchVelocityLinesPerMs *= Math.pow(TERMINAL_TOUCH_MOMENTUM_FRICTION, elapsedMs / 16)
+      if (
+        idleFrameCount >= TERMINAL_TOUCH_MOMENTUM_MAX_IDLE_FRAMES ||
+        elapsedTotalMs >= TERMINAL_TOUCH_MOMENTUM_MAX_DURATION_MS ||
+        Math.abs(touchVelocityLinesPerMs) < TERMINAL_TOUCH_MOMENTUM_MIN_LINES_PER_MS
+      ) {
+        touchVelocityLinesPerMs = 0
+        stopTouchMomentum()
+        return
+      }
+      touchMomentumFrame = window.requestAnimationFrame(step)
+    }
+    touchMomentumFrame = window.requestAnimationFrame(step)
+  }
+  const touchStart = (event: TouchEvent): void => {
+    stopTouchMomentum()
+    touchVelocityLinesPerMs = 0
+    touchMomentumEligible = false
+    pendingTouchLines = 0
+    lastTouchMoveAt = performance.now()
+    const touch = event.touches[0]
+    touchPoint = touch === undefined ? undefined : { x: touch.clientX, y: touch.clientY }
+  }
+  const touchMove = (event: TouchEvent): void => {
+    if (touchPoint === undefined || event.touches.length !== 1) return
+    const touch = event.touches[0]
+    if (touch === undefined) return
+    const deltaX = touch.clientX - touchPoint.x
+    const deltaY = touch.clientY - touchPoint.y
+    touchPoint = { x: touch.clientX, y: touch.clientY }
+    // 斜向手势优先交给外层页面，避免终端抢走横向切换动作。
+    if (Math.abs(deltaY) <= Math.abs(deltaX)) return
+    event.preventDefault()
+    const now = performance.now()
+    const elapsedMs = Math.max(1, now - lastTouchMoveAt)
+    lastTouchMoveAt = now
+    const lineHeight = Math.max(1, host.clientHeight / Math.max(1, terminal.rows))
+    const deltaLines = -deltaY / lineHeight
+    pendingTouchLines += deltaLines
+    const lines = truncateTowardZero(pendingTouchLines)
+    if (lines === 0) {
+      // 位移还不足一整行时也更新速度；手指停住则立即清除旧速度，避免
+      // 松手时沿上一次手势方向继续滚动。
+      if (Math.abs(deltaY) < 0.5) {
+        touchVelocityLinesPerMs = 0
+        touchMomentumEligible = false
+      } else {
+        touchVelocityLinesPerMs = clampNumber(
+          (deltaLines / elapsedMs) * TERMINAL_TOUCH_MOMENTUM_GAIN,
+          -TERMINAL_TOUCH_MOMENTUM_MAX_LINES_PER_MS,
+          TERMINAL_TOUCH_MOMENTUM_MAX_LINES_PER_MS,
+        )
+        touchMomentumEligible = hasTerminalScrollback()
+      }
+      return
+    }
+    pendingTouchLines -= lines
+    const didScroll = scrollTouchLines(lines)
+    if (didScroll) {
+      const nextVelocity = clampNumber(
+        (deltaLines / elapsedMs) * TERMINAL_TOUCH_MOMENTUM_GAIN,
+        -TERMINAL_TOUCH_MOMENTUM_MAX_LINES_PER_MS,
+        TERMINAL_TOUCH_MOMENTUM_MAX_LINES_PER_MS,
+      )
+      touchVelocityLinesPerMs = touchVelocityLinesPerMs === 0
+        ? nextVelocity
+        : touchVelocityLinesPerMs * 0.35 + nextVelocity * 0.65
+      touchMomentumEligible = true
+    } else {
+      touchVelocityLinesPerMs = 0
+      touchMomentumEligible = false
+    }
+  }
+  const touchEnd = (): void => {
+    touchPoint = undefined
+    pendingTouchLines = 0
+    // 释放前已经静止一段时间，说明用户是在按住后松手，不应复用旧速度。
+    if (performance.now() - lastTouchMoveAt >= TERMINAL_TOUCH_MOMENTUM_RELEASE_IDLE_MS) {
+      touchVelocityLinesPerMs = 0
+      touchMomentumEligible = false
+    }
+    startTouchMomentum()
+  }
+  const touchCancel = (): void => {
+    touchPoint = undefined
+    pendingTouchLines = 0
+    touchVelocityLinesPerMs = 0
+    touchMomentumEligible = false
+    stopTouchMomentum()
+  }
+  const xtermRoot = terminal.element!
+  // xterm 6 使用 .xterm-scrollable-element 的自绘滚动条；.xterm-viewport
+  // 只是兼容节点，不能再把触摸事件和可用宽度交给它。
+  const scrollTarget = xtermRoot?.querySelector<HTMLElement>('.xterm-scrollable-element') ?? xtermRoot ?? container
+  const interactionTarget = xtermRoot ?? container
+  let scrollbarHideTimer: number | undefined
+  let lastViewportY = terminal.buffer.active.viewportY
+  const hideScrollbar = (): void => {
+    if (scrollbarHideTimer !== undefined) {
+      window.clearTimeout(scrollbarHideTimer)
+      scrollbarHideTimer = undefined
+    }
+    xtermRoot.dataset.codingnsScrollbar = 'hidden'
+  }
+  const revealScrollbar = (): void => {
+    if (terminal.buffer.active.baseY <= 0) {
+      hideScrollbar()
+      return
+    }
+    xtermRoot.dataset.codingnsScrollbar = 'visible'
+    if (scrollbarHideTimer !== undefined) window.clearTimeout(scrollbarHideTimer)
+    scrollbarHideTimer = window.setTimeout(() => {
+      scrollbarHideTimer = undefined
+      xtermRoot.dataset.codingnsScrollbar = 'hidden'
+    }, TERMINAL_SCROLLBAR_HIDE_DELAY_MS)
+  }
+  const syncScrollbarState = (): void => {
+    const hasScrollback = terminal.buffer.active.baseY > 0
+    xtermRoot.dataset.codingnsScrollback = hasScrollback ? 'true' : 'false'
+    if (!hasScrollback) hideScrollbar()
+    else if (xtermRoot.dataset.codingnsScrollbar === undefined) xtermRoot.dataset.codingnsScrollbar = 'hidden'
+    debugInfo('codingns4dsh: client terminal scrollbar state', {
+      terminalId: view.id,
+      hasScrollback,
+      baseY: terminal.buffer.active.baseY,
+      viewportY: terminal.buffer.active.viewportY,
+    })
+  }
+  syncScrollbarState()
+  scrollTarget.style.touchAction = 'pan-y'
+  scrollTarget.style.overscrollBehavior = 'contain'
+  if ('webkitOverflowScrolling' in scrollTarget.style) {
+    scrollTarget.style.webkitOverflowScrolling = 'touch'
+  }
+  interactionTarget.addEventListener('touchstart', touchStart, { passive: true })
+  interactionTarget.addEventListener('touchmove', touchMove, { passive: false })
+  interactionTarget.addEventListener('touchend', touchEnd, { passive: true })
+  interactionTarget.addEventListener('touchcancel', touchCancel, { passive: true })
+  const scroll = terminal.onScroll((viewportY) => {
+    const didScroll = viewportY !== lastViewportY
+    lastViewportY = viewportY
+    syncScrollbarState()
+    if (didScroll) revealScrollbar()
+    debugInfo('codingns4dsh: client terminal viewport scroll', {
+      terminalId: view.id,
+      viewportY,
+      baseY: terminal.buffer.active.baseY,
+    })
+  })
+  // 调试终端由 Host 预设“配置名(终端类型)”标题；Shell 启动时通常会发一个 zsh 等默认标题，不能覆盖它。
+  const preserveHostTitle = state.info !== undefined && state.info.title !== state.info.shell.name
+  const title = terminal.onTitleChange((value) => {
+    if (!preserveHostTitle) void view.rename(value)
+  })
+  const measure = (): void => {
+    // 手机虚拟键盘通常只收缩 visualViewport，不会改变 DSH 外层布局视口。
+    // 先把 xterm 宿主裁到可视视口底边，再计算行列，避免最后几行和光标落到键盘下面。
+    syncTerminalViewport(host)
+    // 显示层即使在 connecting/read-only 阶段也必须跟随容器尺寸；否则
+    // ResizeObserver 会捕获首次 render 的 writable=false，后续移动端布局
+    // 变化永远不会触发历史行重排。view.resize 内部仍会按权限决定是否下发 PTY。
+    if (host.clientWidth === 0 || host.clientHeight === 0) return
+    fitTerminal(terminal, fit, view)
+    syncScrollbarState()
+  }
+  let measureFrame: number | undefined
+  const scheduleMeasure = (): void => {
+    if (measureFrame !== undefined) return
+    measureFrame = window.requestAnimationFrame(() => {
+      measureFrame = undefined
+      measure()
+    })
+  }
+  let reflowTimer: number | undefined
+  let reflowFrame: number | undefined
+  const schedulePostAttachReflow = (): void => {
+    // xterm 的字符尺寸、移动端字体和 Sidebar 宽度可能在首帧之后才稳定。
+    // 只在 snapshot 写入回调里 fit 一次会留下旧 scrollback 的宽度，随后每行
+    // 看起来都向右漂移。连续安排两帧和一个短延迟，覆盖字体与容器的最终布局。
+    scheduleMeasure()
+    if (reflowFrame !== undefined) window.cancelAnimationFrame(reflowFrame)
+    reflowFrame = window.requestAnimationFrame(() => {
+      reflowFrame = undefined
+      scheduleMeasure()
+    })
+    if (reflowTimer !== undefined) window.clearTimeout(reflowTimer)
+    reflowTimer = window.setTimeout(() => {
+      reflowTimer = undefined
+      scheduleMeasure()
+    }, 240)
+  }
+  const resize = new ResizeObserver(scheduleMeasure)
+  resize.observe(host)
+  resize.observe(container)
+  const visualViewport = window.visualViewport
+  const handleViewportChange = (): void => schedulePostAttachReflow()
+  visualViewport?.addEventListener('resize', handleViewportChange)
+  // iOS 在弹出键盘时可能先滚动 visual viewport，再触发 resize；两个事件都要处理，
+  // 否则页面被浏览器上移后，光标仍可能被键盘边缘遮住。
+  visualViewport?.addEventListener('scroll', handleViewportChange)
+  window.addEventListener('resize', handleViewportChange)
+  schedulePostAttachReflow()
+
+  const retained: TerminalSurface = { host, terminal, fit, scheduleReflow: schedulePostAttachReflow, lastRevision: 0, dispose: () => {
+    releaseState()
+    releaseMount()
+    resize.disconnect()
+    visualViewport?.removeEventListener('resize', handleViewportChange)
+    visualViewport?.removeEventListener('scroll', handleViewportChange)
+    window.removeEventListener('resize', handleViewportChange)
+    if (measureFrame !== undefined) window.cancelAnimationFrame(measureFrame)
+    if (reflowFrame !== undefined) window.cancelAnimationFrame(reflowFrame)
+    if (reflowTimer !== undefined) window.clearTimeout(reflowTimer)
+    if (scrollbarHideTimer !== undefined) window.clearTimeout(scrollbarHideTimer)
+    input.dispose()
+    scroll.dispose()
+    interactionTarget.removeEventListener('touchstart', touchStart)
+    interactionTarget.removeEventListener('touchmove', touchMove)
+    interactionTarget.removeEventListener('touchend', touchEnd)
+    interactionTarget.removeEventListener('touchcancel', touchCancel)
+    stopTouchMomentum()
+    title.dispose()
+    terminal.dispose()
+    host.remove()
+    root.replaceChildren()
+  } }
+  // 输出消费跟随屏幕生命周期，隐藏或跨会话移动时继续写入同一缓冲区。
+  const releaseState = view.state.subscribe(() => renderTerminalSurface(retained, view))
+  const releaseMount = view.mount()
+  renderTerminalSurface(retained, view)
+  return retained
+}
+
+/** 每帧只写入工作区共享屏幕一次，不依赖任何会话卡片的 React 渲染或可见性。 */
+function renderTerminalSurface(surface: TerminalSurface, view: CodingNsTerminalView): void {
+  const { terminal, host, fit } = surface
+  const state = view.state.getSnapshot()
+  terminal.options.disableStdin = !state.writable
+  const render = state.render
+  if (render === undefined || render.revision <= surface.lastRevision) return
+  surface.lastRevision = render.revision
+  const isSnapshot = render.frame.type === 'snapshot'
+  if (isSnapshot) {
+    terminal.reset()
+    terminal.resize(render.frame.info.cols, render.frame.info.rows)
+  }
+  const data = render.frame.type === 'snapshot'
+    ? normalizeTerminalSnapshot(render.frame.screen)
+    : render.frame.data
+  terminal.write(data, () => {
+    // 首次快照和真实尺寸变化仍需重排历史；移动已存在的屏幕不产生新快照。
+    if (isSnapshot && host.clientWidth > 0 && host.clientHeight > 0) {
+      fitTerminal(terminal, fit, view)
+      surface.scheduleReflow()
+    }
+    if (terminal.element !== undefined) {
+      const hasScrollback = terminal.buffer.active.baseY > 0
+      terminal.element.dataset.codingnsScrollback = hasScrollback ? 'true' : 'false'
+      if (!hasScrollback) terminal.element.dataset.codingnsScrollbar = 'hidden'
+    }
+    const viewport = terminal.element?.querySelector<HTMLElement>('.xterm-scrollable-element')
+    debugInfo('codingns4dsh: client terminal frame rendered', {
+      terminalId: view.id,
+      frameType: render.frame.type,
+      characters: data.length,
+      rows: terminal.rows,
+      bufferLength: terminal.buffer.active.length,
+      baseY: terminal.buffer.active.baseY,
+      viewportY: terminal.buffer.active.viewportY,
+      viewportScrollHeight: viewport?.scrollHeight ?? null,
+      viewportClientHeight: viewport?.clientHeight ?? null,
+    })
+    view.acknowledge(render.revision)
+  })
 }
 
 function TerminalStatus({
