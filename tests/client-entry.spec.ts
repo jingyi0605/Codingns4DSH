@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
+import { createContext, runInContext } from 'node:vm'
+import * as React from 'react'
 
 const clientBundle = join(dirname(fileURLToPath(import.meta.url)), '../data/build/dist/client/bundle.js')
 const clientSource = join(dirname(fileURLToPath(import.meta.url)), '../src/client/index.ts')
@@ -16,6 +18,40 @@ test('Client 入口以 DSH Loader factory 格式构建', async () => {
   assert.match(source, /id:\s*["']@jingyi0605\/codingns4dsh["']/u)
   assert.match(source, /factory:\s*\(require\)/u)
   assert.doesNotMatch(source, /require\(["']\.\/[^"']+\.(?:cjs|js)["']\)/u, 'DSH Client 不得依赖 Loader 无法解析的相对分块')
+})
+
+test('Client Loader factory 在没有 Node process 的浏览器环境中成功导入', async () => {
+  const source = await readFile(clientBundle, 'utf8')
+  type ClientExports = { readonly apply?: unknown; readonly inject?: unknown }
+  let loaded: { readonly id: string; readonly exports: ClientExports } | undefined
+  // 只提供宿主公开模块与导入阶段需要的浏览器接口，不注入任何 Node 全局。
+  const hostModules: Record<string, unknown> = {
+    react: React,
+    '@deepseek-ai/dsh-client-ui-primitives': {},
+  }
+  const sandbox = createContext({
+    console, TextEncoder, TextDecoder, URL, AbortController, queueMicrotask,
+    setTimeout, clearTimeout, setInterval, clearInterval, performance,
+    navigator: { userAgent: 'Mozilla/5.0 Chrome/130.0', language: 'zh-CN', platform: 'Linux', vendor: '' },
+    document: { documentElement: { style: {} } },
+    window: {
+      __ModuleLoader__: {
+        load({ id, factory }: { id: string; factory: (require: (specifier: string) => unknown) => ClientExports }) {
+          loaded = { id, exports: factory((specifier) => {
+            assert.ok(Object.hasOwn(hostModules, specifier), `未提供宿主模块：${specifier}`)
+            return hostModules[specifier]
+          }) }
+        },
+      },
+    },
+  })
+
+  assert.equal(runInContext('typeof process', sandbox), 'undefined')
+  assert.equal(runInContext('typeof Buffer', sandbox), 'undefined')
+  runInContext(source, sandbox, { filename: clientBundle, timeout: 10_000 })
+  assert.equal(loaded?.id, '@jingyi0605/codingns4dsh')
+  assert.equal(typeof loaded?.exports.apply, 'function')
+  assert.ok(Array.isArray(loaded?.exports.inject))
 })
 
 test('远程 DSH Web 自动确认内测声明，不触碰其他引导弹窗', async () => {
