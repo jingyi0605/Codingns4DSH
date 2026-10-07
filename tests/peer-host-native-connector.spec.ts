@@ -3,6 +3,7 @@ import test from 'node:test'
 import { createPeerHostPageTransport } from '../data/build/dist/client/features/peer-host.js'
 import { registerPeerHostAggregateRefresh } from '../data/build/dist/client/peer-host-aggregate-refresh.js'
 import { createVirtualSessionId, createVirtualWorkspaceId } from '../data/build/dist/shared/index.js'
+import { createNavigationFixture } from './peer-host-navigation-fixture.ts'
 
 const aggregate = [{
   hostId: 'host-local',
@@ -118,14 +119,11 @@ test('页面 connector 将无参数的 session/modelCatalog 路由到当前远�
     return response({ groups: [{ id: 'deepseek-api', name: 'DeepSeek API', models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] }] })
   }) as typeof fetch
   try {
-    const transport = createPeerHostPageTransport()
-    transport.setAggregate(aggregate)
     const sessionId = createVirtualSessionId('peer-1', 'session-1')
-    // 先打开远程会话，记录当前 Host；modelCatalog 的 DSH 原生契约没有请求参数。
-    await transport.hooks.rpc?.({
-      method: 'session/page',
-      payload: { channel: '/api', payload: { sessionId } },
-    })
+    const navigation = createNavigationFixture({ sessionId })
+    const transport = createPeerHostPageTransport(undefined, navigation.context)
+    transport.setAggregate(aggregate)
+    // 目录的原生契约没有参数，目标来自前台选择，而不是最近一次远端请求。
     calls.length = 0
     const result = await transport.hooks.rpc?.({
       method: 'session/modelCatalog',
@@ -148,16 +146,15 @@ test('页面 connector 在远程工作区作用域变化时使 DSH 模型目录�
   const previousFetch = globalThis.fetch
   let resetCount = 0
   globalThis.fetch = (async () => response({ page: 'remote' })) as typeof fetch
-  const uiContext = {
-    get(name: string): unknown {
-      if (name !== 'modelDirectories') return undefined
-      return { catalog: { resetGeneration: () => { resetCount += 1 } } }
-    },
-  }
+  const navigation = createNavigationFixture({ sessionId: 'local-session' })
+  navigation.services.set('modelDirectories', { catalog: { resetGeneration: () => { resetCount += 1 } } })
+  let stop: (() => void) | undefined
   try {
-    const transport = createPeerHostPageTransport(undefined, uiContext)
+    const transport = createPeerHostPageTransport(undefined, navigation.context)
     transport.setAggregate(aggregate)
+    stop = transport.watchNavigation()
     const sessionId = createVirtualSessionId('peer-1', 'session-1')
+    navigation.selection.set({ sessionId })
     await transport.hooks.rpc?.({
       method: 'session/page',
       payload: { channel: '/api', payload: { sessionId } },
@@ -168,12 +165,10 @@ test('页面 connector 在远程工作区作用域变化时使 DSH 模型目录�
       payload: { channel: '/api', payload: { sessionId } },
     })
     assert.equal(resetCount, 1, '同一远程工作区内的请求不能重复刷新模型目录')
-    await transport.hooks.rpc?.({
-      method: 'workspace/follow',
-      payload: { channel: '/api', payload: { workspaceId: 'local-workspace' } },
-    })
+    navigation.selection.set({ sessionId: 'local-session' })
     assert.equal(resetCount, 2, '切回本机工作区必须重新读取本地模型目录')
   } finally {
+    stop?.()
     globalThis.fetch = previousFetch
   }
 })
@@ -208,7 +203,7 @@ test('页面 connector 将远端会话的 CLI 目录路由到目标 Host 并还�
   }
 })
 
-test('页面 connector 在新建远程会话尚无 sessionId 时，CLI 目录沿用当前远程工作区', async () => {
+test('页面 connector 在前台选择只有远程工作区时，CLI 目录读取该工作区', async () => {
   const calls: Array<{ path: string; body: Record<string, unknown> }> = []
   const previousFetch = globalThis.fetch
   globalThis.fetch = (async (input, init) => {
@@ -224,12 +219,9 @@ test('页面 connector 在新建远程会话尚无 sessionId 时，CLI 目录沿
     return response({ page: 'remote' })
   }) as typeof fetch
   try {
-    const transport = createPeerHostPageTransport()
+    const navigation = createNavigationFixture({ workspaceId: createVirtualWorkspaceId('peer-1', 'workspace-1') })
+    const transport = createPeerHostPageTransport(undefined, navigation.context)
     transport.setAggregate(aggregate)
-    await transport.hooks.rpc?.({
-      method: 'workspace/follow',
-      payload: { channel: '/api', payload: { workspaceId: createVirtualWorkspaceId('peer-1', 'workspace-1') } },
-    })
     assert.equal(transport.matchesScope({}, 'cli/catalog'), true)
     calls.length = 0
     const adapterResult = await transport.hooks.rpc?.({

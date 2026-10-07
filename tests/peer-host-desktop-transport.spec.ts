@@ -5,7 +5,9 @@ import {
   CODINGNS_BOOTSTRAP_DSH_VERSION,
   installDshPeerHostPrebootShim,
 } from '../data/build/dist/bootstrap/index.js'
-import { createPeerHostPageTransport, installPeerHostConnectionRouting } from '../data/build/dist/client/features/index.js'
+import { createPeerHostPageTransport, installPeerHostConnectionRouting } from '../data/build/dist/client/features/peer-host.js'
+import { createVirtualSessionId } from '../data/build/dist/shared/index.js'
+import { createNavigationFixture } from './peer-host-navigation-fixture.ts'
 
 type ShimGlobal = typeof globalThis & {
   __DSH_TRANSPORT__?: unknown
@@ -175,5 +177,45 @@ test('缺少 Remote 服务时不安装 Desktop 路由，避免半接管', async 
       matchesScope: () => true,
     })
     assert.equal(route, undefined)
+  })
+})
+
+test('Desktop 本机基线与终端流保留原生上行通道、取消信号和连接选项', async () => {
+  await withDesktopPage(async () => {
+    const calls: unknown[][] = []
+    const rpc = { call: async () => ({ ok: true, value: null }) }
+    const originalOpen = (...args: unknown[]) => {
+      calls.push(args)
+      return (async function* () { yield { native: true } })()
+    }
+    const remote = { openRemoteStream: originalOpen }
+    const navigation = createNavigationFixture({ sessionId: createVirtualSessionId('peer-1', 'session-1') })
+    navigation.services.set('connection', { rpc })
+    const transport = createPeerHostPageTransport(undefined, navigation.context)
+    transport.setAggregate(remoteWorkspaceAggregate() as never)
+    const restore = installPeerHostConnectionRouting({
+      uiContext: navigation.context, remote, hooks: transport.hooks, matchesScope: transport.matchesScope,
+    })!
+    const signal = new AbortController().signal
+    const uplink = (async function* () { yield new Uint8Array([1, 2]) })()
+    try {
+      for (const method of ['$events', 'session/follow', 'terminal/follow']) {
+        const payload = { args: { sessionId: 'local-session' } }
+        const stream = remote.openRemoteStream(method, payload, signal, uplink, 'keep-native')
+        const frames: unknown[] = []
+        for await (const frame of stream) frames.push(frame)
+        assert.deepEqual(frames, [{ native: true }])
+        const call = calls.at(-1)!
+        assert.equal(call[0], method)
+        assert.equal(call[1], payload)
+        assert.equal(call[2], signal)
+        assert.equal(call[3], uplink)
+        assert.equal(call[4], 'keep-native')
+      }
+      assert.equal(Object.hasOwn(rpc, 'open'), false)
+    } finally {
+      restore()
+    }
+    assert.equal(remote.openRemoteStream, originalOpen)
   })
 })
