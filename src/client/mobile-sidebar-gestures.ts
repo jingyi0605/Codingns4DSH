@@ -186,6 +186,8 @@ export interface MobileSidebarGestureOptions {
   /** 读取左栏折叠状态（来自 `data-sidebar-collapsed` 等 DOM 钩子）；缺失时使用内部兜底状态。 */
   readonly readLeftCollapsed?: (() => boolean | undefined) | undefined
   readonly onDiagnostic?: ((code: string) => void) | undefined
+  /** 在右栏手动呼出前授予显示许可，必须早于宿主状态提交。 */
+  readonly onRightbarOpen?: (() => void) | undefined
   /** 手势成功后的可选触感反馈；缺省使用浏览器 navigator.vibrate。 */
   readonly vibrate?: ((pattern: number) => boolean | void) | undefined
   readonly window?: SidebarGestureWindowLike | undefined
@@ -346,6 +348,7 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
     }
     if (sidebarRight === undefined) return false
     const wasExpanded = sidebarRight.isExpanded() === true
+    if (!wasExpanded) options.onRightbarOpen?.()
     sidebarRight.toggleExpanded()
     if (wasExpanded) {
       // 同方向再次触发也可能关闭右栏，保持历史状态与实际面板一致。
