@@ -372,6 +372,9 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       const coordinator = new GlobalVoiceCoordinator({ adapter: runtime })
       let previousLease = coordinator.snapshot()
       context.resources.add(coordinator.subscribe((lease) => {
+        if (previousLease.active && (!lease.active || lease.ownerId !== previousLease.ownerId) && previousLease.ownerId !== null) {
+          void conversation.endVoiceSession(previousLease.ownerId).catch(() => undefined)
+        }
         if (!lease.active || lease.ownerId !== previousLease.ownerId) voiceChat.clear()
         else if (lease.epoch !== previousLease.epoch) voiceChat.cancelActive()
         previousLease = lease
@@ -811,6 +814,10 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
                   runtime.configureEnvironment(buildSherpaRuntimeEnvironment(voiceSettings))
                 }
                 const snapshot = await coordinator.start(ownerId)
+                if (isRecord(payload) && typeof payload.voiceSessionId === 'string') {
+                  try { await conversation.beginVoiceSession(ownerId, payload.voiceSessionId) }
+                  catch (error) { await coordinator.stop(ownerId); throw error }
+                }
                 updateVoiceAgentCapabilities()
                 return snapshot
               } catch (error) {
@@ -826,6 +833,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
             }
           case 'voice/stop': {
             coordinator.assertOwner(readOwner(payload))
+            await conversation.endVoiceSession(readOwner(payload))
             voiceChat.clear()
             return await coordinator.stop(readOwner(payload))
           }

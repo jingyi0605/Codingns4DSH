@@ -218,7 +218,9 @@ function toolCall(exec: { callId: string; name: string; arguments: unknown }): A
 function auditText(value: unknown, limit: number): string {
   const redact = (item: unknown, depth = 0): unknown => {
     if (depth > 6) return '…'
-    if (typeof item === 'string') return item.replace(/Bearer\s+[^\s"']+|sk-[A-Za-z0-9_-]{12,}/giu, '[已隐藏]').slice(0, limit)
+    if (typeof item === 'string') return item.replace(/Bearer\s+[^\s"']+|sk-[A-Za-z0-9_-]{12,}/giu, '[已隐藏]')
+      .replace(/((?:password|secret|authorization|api.?key|access.?token)"?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/giu, '$1[已隐藏]')
+      .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/giu, '$1[已隐藏]@').slice(0, limit)
     if (Array.isArray(item)) return item.slice(0, 30).map((child) => redact(child, depth + 1))
     if (typeof item !== 'object' || item === null) return item
     return Object.fromEntries(Object.entries(item).slice(0, 60).map(([key, child]) => [key,
