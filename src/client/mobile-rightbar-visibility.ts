@@ -1,5 +1,6 @@
 /** 移动端右栏显示权只属于用户，标签恢复与会话持久化不能自行展开面板。 */
 export const MOBILE_RIGHTBAR_MANUAL_OPEN_EVENT = 'codingns4dsh-mobile-rightbar-manual-open'
+export const MOBILE_RIGHTBAR_MANUAL_CLOSE_EVENT = 'codingns4dsh-mobile-rightbar-manual-close'
 export const MOBILE_RIGHTBAR_VISIBILITY_ATTRIBUTE = 'data-codingns-mobile-rightbar'
 const STYLE_ID = 'codingns4dsh-mobile-rightbar-visibility'
 
@@ -23,6 +24,11 @@ export function notifyMobileRightbarManualOpen(documentLike: { dispatchEvent?(ev
   documentLike?.dispatchEvent?.(new Event(MOBILE_RIGHTBAR_MANUAL_OPEN_EVENT))
 }
 
+/** 手势或返回操作关闭前撤销许可，不能等待 DOM 合并提交后才发现关闭。 */
+export function notifyMobileRightbarManualClose(documentLike: { dispatchEvent?(event: Event): boolean } | undefined): void {
+  documentLike?.dispatchEvent?.(new Event(MOBILE_RIGHTBAR_MANUAL_CLOSE_EVENT))
+}
+
 /** 由会话交互控制器按移动触摸视口启停，不轮询、不接管宿主标签和持久化数据。 */
 export function startMobileRightbarVisibility(options: {
   readonly sidebarRight: MobileRightbarServiceLike
@@ -42,11 +48,12 @@ export function startMobileRightbarVisibility(options: {
   let session = readSession()
 
   // 在宿主首次绘制前挡住自动恢复的面板，防止异步收起前闪现全屏右栏。
-  // 只隐藏右栏面板；列宽与实际展开状态仍交给宿主服务同步。
+  // 必须使用 display，而非 visibility：宿主的停靠子节点会显式设置
+  // visibility: visible，覆盖祖先继承的隐藏值。标签仍由 React 保持挂载。
   const style = dom?.createElement?.('style')
   if (style !== undefined) {
     style.id = STYLE_ID
-    style.textContent = `html[${MOBILE_RIGHTBAR_VISIBILITY_ATTRIBUTE}="blocked"] [data-sidebar-right-panel] { visibility: hidden !important; pointer-events: none !important; }`
+    style.textContent = `html[${MOBILE_RIGHTBAR_VISIBILITY_ATTRIBUTE}="blocked"] [data-sidebar-right-panel] { display: none !important; }`
     dom?.head?.appendChild(style)
   }
 
@@ -60,7 +67,7 @@ export function startMobileRightbarVisibility(options: {
     setVisibility()
   }
 
-  const reconcile = (): void => {
+  const reconcile = (records: readonly MutationRecord[] = []): void => {
     if (disposed || collapsing) return
     try {
       const current = readSession()
@@ -68,6 +75,9 @@ export function startMobileRightbarVisibility(options: {
         session = current
         block()
       }
+      // 关闭和后台恢复可能合并为一次 React/观察器提交，最终状态仍是展开。
+      // 从属性变更记录识别中间的关闭，避免旧许可被下一次恢复复用。
+      if (requested && rightbarWasClosed(records, session)) block()
       const expanded = sidebarRight.isExpanded()
       if (requested) {
         if (expanded) opened = true
@@ -94,6 +104,8 @@ export function startMobileRightbarVisibility(options: {
 
   const allowOpen = (): void => {
     if (disposed) return
+    // 新的用户动作取代之前的许可；未派发的旧关闭记录不能否决本次呼出。
+    observer?.takeRecords()
     session = readSession()
     requested = true
     opened = sidebarRight.isExpanded()
@@ -118,17 +130,21 @@ export function startMobileRightbarVisibility(options: {
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.isTrusted === false || event.repeat) return
     const shortcut = dom?.querySelector('[data-sidebar-right-expand], [data-sidebar-right-toggle]')?.getAttribute('aria-keyshortcuts')
-    if (shortcut?.split(/\s+/u).some((keys) => matchesShortcut(event, keys))) allowOpen()
+    if (!shortcut?.split(/\s+/u).some((keys) => matchesShortcut(event, keys))) return
+    if (sidebarRight.isExpanded()) block()
+    else allowOpen()
   }
 
   dom?.addEventListener('click', onClick, true)
   dom?.addEventListener('keydown', onKeyDown, true)
   dom?.addEventListener(MOBILE_RIGHTBAR_MANUAL_OPEN_EVENT, allowOpen)
+  dom?.addEventListener(MOBILE_RIGHTBAR_MANUAL_CLOSE_EVENT, block)
   const observer = dom?.documentElement === undefined || Observer === undefined ? undefined : new Observer(reconcile)
   observer?.observe(dom!.documentElement, {
     childList: true,
     subtree: true,
     attributes: true,
+    attributeOldValue: true,
     // 持久化恢复、标签恢复和原生关闭都通过这些钩子触发；不观察插件自己的属性。
     attributeFilter: ['data-sidebar-right-open', 'data-sidebar-right-session', 'hidden', 'data-rightbar-collapsed', 'data-rightbar-fullscreen'],
   })
@@ -146,10 +162,27 @@ export function startMobileRightbarVisibility(options: {
       dom?.removeEventListener('click', onClick, true)
       dom?.removeEventListener('keydown', onKeyDown, true)
       dom?.removeEventListener(MOBILE_RIGHTBAR_MANUAL_OPEN_EVENT, allowOpen)
+      dom?.removeEventListener(MOBILE_RIGHTBAR_MANUAL_CLOSE_EVENT, block)
       dom?.documentElement?.removeAttribute(MOBILE_RIGHTBAR_VISIBILITY_ATTRIBUTE)
       style?.remove()
     },
   }
+}
+
+/** 逆序还原属性值，只识别当前会话真正的关闭；同值写入和后台会话不撤销许可。 */
+function rightbarWasClosed(records: readonly MutationRecord[], session: unknown): boolean {
+  const values = new Map<Node, string | null>()
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const record = records[index]!
+    if (record.type !== 'attributes' || record.attributeName !== 'data-sidebar-right-open') continue
+    const target = record.target as Element
+    const nextValue = values.has(target) ? values.get(target) : target.getAttribute('data-sidebar-right-open')
+    values.set(target, record.oldValue)
+    if (record.oldValue !== null && nextValue === null
+      && target.getAttribute('data-sidebar-right-panel') !== null
+      && target.getAttribute('data-sidebar-right-session') === session) return true
+  }
+  return false
 }
 
 /** 按宿主公开的无障碍快捷键匹配，保留用户自定义键位，不硬编码平台默认值。 */

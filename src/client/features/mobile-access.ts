@@ -5,7 +5,7 @@ import {
   type MobileSidebarRailDomController,
 } from '../mobile-sidebar-rail-dom.js'
 import { startMobileSidebarGestures, type MobileSidebarGestureController } from '../mobile-sidebar-gestures.js'
-import { notifyMobileRightbarManualOpen } from '../mobile-rightbar-visibility.js'
+import { notifyMobileRightbarManualOpen, notifyMobileRightbarManualClose } from '../mobile-rightbar-visibility.js'
 import { startMobileRightbarTabsDom } from '../mobile-rightbar-tabs-dom.js'
 import { startMobileSettingsModalDom, type MobileSettingsModalController } from '../mobile-settings-modal-dom.js'
 import { MobileAccessPanel } from './mobile-access-panel.js'
@@ -56,6 +56,7 @@ export const mobileAccessFeature: CodingNsClientFeatureModule = {
     const gestures: MobileSidebarGestureController = startMobileSidebarGestures({
       ports: { layout: context.services.layout, sidebarRight: context.services.sidebarRight },
       onRightbarOpen: () => notifyMobileRightbarManualOpen(typeof document === 'undefined' ? undefined : document),
+      onRightbarClose: () => notifyMobileRightbarManualClose(typeof document === 'undefined' ? undefined : document),
       // 手势需要区分“左栏尚未呼出”和“左栏已经展开”：默认映射下物理左滑
       // 在后一种状态应关闭左栏，而不是打开右栏。移动端侧栏 DOM 控制器在
       // 框架上留下稳定标记，缺少该节点时由手势控制器内部状态兜底。

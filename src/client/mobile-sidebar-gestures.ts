@@ -188,6 +188,8 @@ export interface MobileSidebarGestureOptions {
   readonly onDiagnostic?: ((code: string) => void) | undefined
   /** 在右栏手动呼出前授予显示许可，必须早于宿主状态提交。 */
   readonly onRightbarOpen?: (() => void) | undefined
+  /** 手势或浏览器返回关闭前撤销移动端右栏的手动显示许可。 */
+  readonly onRightbarClose?: (() => void) | undefined
   /** 手势成功后的可选触感反馈；缺省使用浏览器 navigator.vibrate。 */
   readonly vibrate?: ((pattern: number) => boolean | void) | undefined
   readonly window?: SidebarGestureWindowLike | undefined
@@ -317,7 +319,10 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
   const onPopState = (): void => {
     if (!rightbarHistoryPushed) return
     rightbarHistoryPushed = false
-    if (options.ports.sidebarRight?.isExpanded() === true) options.ports.sidebarRight.toggleExpanded()
+    if (options.ports.sidebarRight?.isExpanded() === true) {
+      options.onRightbarClose?.()
+      options.ports.sidebarRight.toggleExpanded()
+    }
   }
 
   const applyAction = (action: SidebarGestureAction, physicalDirection?: -1 | 1): boolean => {
@@ -326,6 +331,7 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
     if (sidebarRight?.isExpanded() === true) {
       if (physicalDirection === 1) {
         triggerVibration(10)
+        options.onRightbarClose?.()
         sidebarRight.toggleExpanded()
         rightbarHistoryPushed = false
         return true
@@ -350,6 +356,7 @@ export function startMobileSidebarGestures(options: MobileSidebarGestureOptions)
     if (sidebarRight === undefined) return false
     const wasExpanded = sidebarRight.isExpanded() === true
     if (!wasExpanded) options.onRightbarOpen?.()
+    else options.onRightbarClose?.()
     sidebarRight.toggleExpanded()
     if (wasExpanded) {
       // 同方向再次触发也可能关闭右栏，保持历史状态与实际面板一致。
