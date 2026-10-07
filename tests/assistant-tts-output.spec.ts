@@ -20,6 +20,23 @@ function audio(autoFinish = true) {
 }
 const chunk = { type: 'audio', data: Buffer.from([0, 0, 255, 127, 0, 128]).toString('base64'), sampleRate: 48_000 }
 
+test('扬声器静音立即关闭增益，恢复音量且不停止现有音频或重启生成', async () => {
+  const device = audio(false); let requested = 0
+  const output = new MossVoiceOutput({ context: () => device.context, fetch: async () => {
+    requested++; return new Response([chunk, { type: 'done' }].map((event) => JSON.stringify(event) + '\n').join(''))
+  } })
+  try {
+    output.setMuted(true)
+    await output.append('静音中的回复', undefined, undefined, { volume: 0.35 })
+    assert.equal(device.gain.gain.value, 0)
+    output.setMuted(false); assert.equal(device.gain.gain.value, 0.35)
+    output.setMuted(true); assert.equal(device.gain.gain.value, 0)
+    assert.equal(device.stopped(), 0); assert.equal(requested, 1)
+    output.setMuted(false); await output.append('继续回复', undefined, undefined, { volume: 0.6 })
+    assert.equal(device.gain.gain.value, 0.6)
+  } finally { output.dispose() }
+})
+
 test('PCM 小端转换准确，错误采样率和损坏长度被拒绝', () => {
   assert.deepEqual([...decodeMossPcm(chunk)], [0, 32767 / 32768, -1])
   assert.throws(() => decodeMossPcm({ ...chunk, sampleRate: 16000 }), /格式无效/u)

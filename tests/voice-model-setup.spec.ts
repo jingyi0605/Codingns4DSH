@@ -3,8 +3,34 @@ import test from 'node:test'
 import { mkdtemp, rm, readFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ASSISTANT_VOICE_MODEL_CATALOG, type AssistantVoiceModelProgress } from '../data/build/dist/shared/voice-models.js'
+import { ASSISTANT_VOICE_MODEL_CATALOG, DEFAULT_VOICE_MODEL_ID, findAssistantVoiceModel, type AssistantVoiceModelProgress } from '../data/build/dist/shared/voice-models.js'
 import { installAssistantVoiceModel } from '../data/build/dist/host/features/voice-model-setup.js'
+
+test('中英双语是默认模型，Large 和轻量模型仍可显式选择', () => {
+  assert.equal(DEFAULT_VOICE_MODEL_ID, 'sherpa-onnx-streaming-zh-en')
+  assert.equal(ASSISTANT_VOICE_MODEL_CATALOG[0]!.id, DEFAULT_VOICE_MODEL_ID)
+  assert.ok(findAssistantVoiceModel('sherpa-onnx-streaming-zh-14m'))
+  assert.ok(findAssistantVoiceModel('sherpa-onnx-streaming-zh-large-2025-06-30'))
+})
+
+test('Large 下载保留正确的混合精度文件名，重复初始化复用缓存', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'codingns-voice-model-'))
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = directory
+  t.after(async () => { if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous; await rm(directory, { recursive: true, force: true }) })
+  const urls: string[] = []
+  t.mock.method(globalThis, 'fetch', async (url: string) => { urls.push(url); return new Response(new Uint8Array([1, 2, 3])) })
+  const model = findAssistantVoiceModel('sherpa-onnx-streaming-zh-large-2025-06-30')!
+  assert.equal(model.id, 'sherpa-onnx-streaming-zh-large-2025-06-30')
+  const installed = await installAssistantVoiceModel(model.id)
+  assert.equal(installed.downloaded, true)
+  assert.deepEqual(urls.map((url) => new URL(url).pathname.split('/').at(-1)), ['encoder.int8.onnx', 'decoder.onnx', 'joiner.int8.onnx', 'tokens.txt'])
+  for (const path of Object.values(installed.paths)) assert.deepEqual(await readFile(path), Buffer.from([1, 2, 3]))
+  assert.equal((await installAssistantVoiceModel(model.id)).downloaded, false)
+  assert.equal(urls.length, 4)
+  assert.ok(findAssistantVoiceModel('sherpa-onnx-streaming-zh-14m'), '旧模型 ID 继续兼容')
+  await assert.rejects(() => installAssistantVoiceModel('../../arbitrary-model'), /不支持/u)
+})
 
 test('复用缓存只检查文件，不显示虚假的下载进度', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'codingns-voice-cached-progress-'))

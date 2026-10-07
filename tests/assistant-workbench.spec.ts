@@ -108,6 +108,14 @@ test('日常视图名称右侧显示状态，底部输入栏支持附件和电�
   assert.equal(f.calls(), 0)
 })
 
+test('实时通话替换聊天内容和输入栏，沿用当前形象与独立挂断入口', () => {
+  const f = fixture(true)
+  const markup = renderToStaticMarkup(createElement(AssistantWorkbench, { ...props, active: true, services: f.services, state: 'speaking', liveUserText: '查询项目', liveAssistantText: '正在核对。' }))
+  for (const text of ['data-codingns-realtime-call', 'data-codingns-call-avatar', 'aria-label="挂断"', '切换扬声器', '查询项目', '正在核对。']) assert.ok(markup.includes(text), text)
+  assert.ok(!markup.includes('发送消息')); assert.ok(!markup.includes('aria-label="配置"'))
+  assert.equal(f.calls(), 0)
+})
+
 test('未创建时不把未登记的大肥鱼旧选择当作内置形象或预览，读取不改写旧配置', () => {
   const f = fixture(false)
   const assistant = f.snapshot.value.assistant

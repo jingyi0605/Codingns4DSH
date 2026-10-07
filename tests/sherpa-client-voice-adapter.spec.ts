@@ -93,6 +93,35 @@ test('事件连接断开自动停止采集并释放 Host 租约', async (t) => {
   assert.ok(events.some((event) => event.type === 'error' && !event.recoverable))
 })
 
+test('通话启动传独立 ID，静音过滤迟到识别输入，取消静音恢复而不申请新租约', async (t) => {
+  t.mock.method(ClientVoiceCapture.prototype, 'start', async () => undefined)
+  t.mock.method(ClientVoiceCapture.prototype, 'stop', async () => undefined)
+  const muted: boolean[] = []
+  t.mock.method(ClientVoiceCapture.prototype, 'setMuted', (value) => { muted.push(value) })
+  const calls: { endpoint: string; payload: any }[] = []
+  const services = { rpc: { call: async (_channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    return { ok: true, value: endpoint === 'assistant/voice/chat/start' ? { state: 'completed', text: '' } : { epoch: 8 } }
+  } } } as unknown as CodingNsClientServices
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined
+  t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({ start(next) { controller = next } })))
+  const adapter = new ClientSherpaVoiceAdapter({ ownerId: 'tab-a', services })
+  t.after(async () => { await adapter.stop(); controller?.close(); adapter.dispose() })
+  const events: VoiceRuntimeEvent[] = []; adapter.subscribe((event) => events.push(event))
+  const send = (text: string) => controller!.enqueue(new TextEncoder().encode(JSON.stringify({ type: 'final', text, epoch: 8 }) + '\n'))
+  await adapter.start()
+  assert.equal(typeof calls[0]!.payload.voiceSessionId, 'string')
+  adapter.setMicrophoneMuted(true); send('静音前迟到输入')
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(calls.filter((call) => call.endpoint === 'assistant/voice/chat/start').length, 0)
+  assert.equal(events.filter((event) => event.type === 'final').length, 0)
+  adapter.setMicrophoneMuted(false); send('恢复后的输入')
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(calls.filter((call) => call.endpoint === 'assistant/voice/chat/start').length, 1)
+  assert.equal(calls.filter((call) => call.endpoint === 'assistant/voice/start').length, 1)
+  assert.deepEqual(muted.slice(-2), [true, false])
+})
+
 test('获取租约后的设备准备失败仍然释放 Host 租约', async (t) => {
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { mediaDevices: { enumerateDevices: async () => { throw new Error('设备枚举失败') } } } })
