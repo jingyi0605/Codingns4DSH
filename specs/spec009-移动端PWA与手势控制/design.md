@@ -200,7 +200,7 @@ DSH Web 前端（React）
   - `<meta name="theme-color" content="…">`（与 DSH 主题色一致，深/浅各一条时用 `media`）
   - `<meta name="mobile-web-app-capable" content="yes">`
   - `<meta name="apple-mobile-web-app-capable" content="yes">`
-  - `<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">`
+  - `<meta name="apple-mobile-web-app-status-bar-style" content="default">`：主页面与登录页统一由 iOS/iPadOS 保留状态栏空间，避免安全区值为零时覆盖顶部按钮；不依赖移动端宽度判定。
   - `<meta name="apple-mobile-web-app-title" content="DSH">`
   - `<link rel="apple-touch-icon" sizes="180x180" href="/__codingns/pwa/apple-touch-icon.png">`
 - `script` 行（`placement: 'head'`，内联、体积 ≤ 2KB）：SW 注册脚本，逻辑见 §2.3.2；未启用/非安全上下文时自身短路。
