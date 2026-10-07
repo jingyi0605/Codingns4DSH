@@ -23,6 +23,14 @@ const conversation: AssistantConversationSnapshot = { revision: 1, summary: '', 
 const callProps = { t, name: '哆哆', pending: false, state: 'speaking', duration: '02:05', microphoneMuted: false, speakerMuted: false,
   userText: '检查 TypeScript 编译状态', assistantText: '正在检查当前工作区。', avatar: createElement('img', { src: '/avatar.png', alt: '当前助理形象' }), onMicrophone() {}, onSpeaker() {}, onHangup() {} }
 
+test('长回复的全部句子留在字幕中，统一区域可滚动，不再裁成末尾两行', () => {
+  const sentences = Array.from({ length: 12 }, (_, index) => `第${index + 1}句完整字幕。`)
+  const markup = renderToStaticMarkup(createElement(AssistantRealtimeCallView, { ...callProps, assistantText: sentences.join('\n') }))
+  for (const sentence of sentences) assert.ok(markup.includes(sentence))
+  assert.ok(markup.includes('overflow-y:auto')); assert.ok(markup.includes('tabindex="0"'))
+  assert.ok(!markup.includes('max-height:3.3em')); assert.ok(!markup.includes('scrollbar-width:none'))
+})
+
 test('通话界面显示形象、实时字幕和三项独立控制，静音状态与连接状态明确', () => {
   const markup = renderToStaticMarkup(createElement(AssistantRealtimeCallView, callProps))
   for (const text of ['data-codingns-realtime-call', '/avatar.png', '检查 TypeScript', '正在检查当前工作区', '02:05', 'aria-label="挂断"', 'aria-label="静音麦克风"', 'aria-expanded="false"']) assert.ok(markup.includes(text), text)

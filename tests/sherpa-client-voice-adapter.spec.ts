@@ -177,11 +177,11 @@ test('实际播报每次读取最新音色，过期轮次不发起 MOSS 请求',
   assert.equal(events.filter((event) => event.type === 'state' && event.state === 'speaking').length, 2)
 })
 
-async function conversationFixture(t: TestContext, handler: (endpoint: string, payload: any, signal?: AbortSignal) => Promise<unknown>) {
+async function conversationFixture(t: TestContext, handler: (endpoint: string, payload: any, signal?: AbortSignal) => Promise<unknown>, streaming = false) {
   t.mock.method(ClientVoiceCapture.prototype, 'start', async () => undefined)
   t.mock.method(ClientVoiceCapture.prototype, 'stop', async () => undefined)
   let controller!: ReadableStreamDefaultController<Uint8Array>
-  t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({ start(next) { controller = next } })))
+  t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({ start(next) { controller = next } }), { headers: streaming ? { 'x-codingns-voice-chat-stream': '1' } : {} }))
   const services = { rpc: { call: async (_channel: string, endpoint: string, payload: unknown, signal?: AbortSignal) => handler(endpoint, payload, signal) } } as unknown as CodingNsClientServices
   const adapter = new ClientSherpaVoiceAdapter({ ownerId: 'page', services })
   const events: VoiceRuntimeEvent[] = []
@@ -190,8 +190,98 @@ async function conversationFixture(t: TestContext, handler: (endpoint: string, p
   adapter.subscribe((event) => events.push(event))
   await adapter.start()
   t.after(async () => { await adapter.stop(); controller.close(); adapter.dispose() })
-  return { adapter, events, spoken, send: (type: 'final' | 'partial', text: string) => controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ type, text, epoch: 1 })}\n`)) }
+  return { adapter, events, spoken,
+    push: (run: unknown, epoch = 1) => controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ type: 'chat', run, epoch })}\n`)),
+    send: (type: 'final' | 'partial', text: string) => controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ type, text, epoch: 1 })}\n`)) }
 }
+
+test('推送早于启动响应也立即回显完整累计文字，慢播报和旧轮事件不覆盖新字幕', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let requestId = ''; let reads = 0; let releaseStart!: () => void
+  const f = await conversationFixture(t, async (endpoint, payload) => {
+    if (endpoint === 'assistant/voice/chat/start') {
+      requestId = payload.requestId
+      await new Promise<void>((resolve) => { releaseStart = resolve })
+      return { ok: true, value: { requestId, state: 'running', text: '' } }
+    }
+    if (endpoint === 'assistant/voice/chat/read') reads++
+    return { ok: true, value: { epoch: 1 } }
+  }, true)
+  let releaseSpeech!: () => void
+  t.mock.method(f.adapter, 'speak', async (text) => { f.spoken.push(text); if (f.spoken.length === 1) await new Promise<void>((resolve) => { releaseSpeech = resolve }) })
+  f.send('final', '请回复三句'); await new Promise<void>((resolve) => setImmediate(resolve))
+  f.push({ requestId, state: 'running', text: '第一句。' })
+  await new Promise<void>((resolve) => setImmediate(resolve)); releaseStart()
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(f.spoken, ['第一句。'])
+  f.push({ requestId, state: 'running', text: '第一句。第二句。' })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  f.push({ requestId: 'old', state: 'completed', text: '不能显示' })
+  f.push({ requestId, state: 'completed', text: '过期代次' }, 0)
+  f.push({ requestId, state: 'completed', text: '第一句。第二句。第三句。' })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(f.events.filter((event) => event.type === 'reply').map((event) => event.text), ['第一句。', '第一句。第二句。', '第一句。第二句。第三句。'])
+  assert.equal(reads, 0, '不等待 250 ms 轮询，事件到达立即回显')
+  releaseSpeech(); await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(f.spoken, ['第一句。', '第二句。', '第三句。'])
+})
+
+test('工具快照仅更新调用记录，空正文不播报，相同正文不重读参数或结果', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let requestId = ''; let reads = 0
+  const f = await conversationFixture(t, async (endpoint, payload) => {
+    if (endpoint === 'assistant/voice/chat/start') { requestId = payload.requestId; return { ok: true, value: { requestId, state: 'running', text: '' } } }
+    if (endpoint === 'assistant/voice/chat/read') reads++
+    return { ok: true, value: { epoch: 1 } }
+  }, true)
+  f.send('final', '查一下天气'); await new Promise<void>((resolve) => setImmediate(resolve))
+  const call = { id: 'search', name: 'web_search', kind: 'web-search', state: 'running', startedAt: 1, finishedAt: null, arguments: '不要朗读搜索参数', result: '不要朗读工具结果', textOffset: 0 }
+  f.push({ requestId, state: 'running', text: '', toolCalls: [call] })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(f.spoken, [])
+  f.push({ requestId, state: 'running', text: '正在查询。', toolCalls: [call] })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(f.spoken, ['正在查询。'])
+  f.push({ requestId, state: 'running', text: '正在查询。', toolCalls: [{ ...call, state: 'completed', finishedAt: 2 }] })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(f.spoken, ['正在查询。'], '工具状态更新不能重复播报正文')
+  f.push({ requestId, state: 'completed', text: '正在查询。北京今天晴。', toolCalls: [{ ...call, state: 'completed', finishedAt: 2 }] })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(f.spoken, ['正在查询。', '北京今天晴。'])
+  assert.ok(f.events.filter((event) => event.type === 'reply').every((event) => !/搜索参数|工具结果|web_search/.test(event.text)))
+  assert.equal(reads, 0)
+})
+
+test('推送暂时缺失才降级读取 RPC，模型完成仍完整回显并播报', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let reads = 0
+  const f = await conversationFixture(t, async (endpoint, payload) => {
+    if (endpoint === 'assistant/voice/chat/start') return { ok: true, value: { requestId: payload.requestId, state: 'running', text: '' } }
+    if (endpoint === 'assistant/voice/chat/read') { reads++; return { ok: true, value: { requestId: payload.requestId, state: 'completed', text: '推送缺失也有完整回复。' } } }
+    return { ok: true, value: { epoch: 1 } }
+  }, true)
+  f.send('final', '测试兼容'); await new Promise<void>((resolve) => setImmediate(resolve))
+  t.mock.timers.tick(250); await new Promise<void>((resolve) => setImmediate(resolve)); assert.equal(reads, 0)
+  t.mock.timers.tick(450); await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(reads, 1)
+  assert.ok(f.events.some((event) => event.type === 'reply' && event.text === '推送缺失也有完整回复。' && event.final))
+  assert.deepEqual(f.spoken, ['推送缺失也有完整回复。'])
+})
+
+test('推送失败立即显示错误并取消等待，已显示的完整前文不会当成成功播放', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let requestId = ''; let reads = 0
+  const f = await conversationFixture(t, async (endpoint, payload) => {
+    if (endpoint === 'assistant/voice/chat/start') { requestId = payload.requestId; return { ok: true, value: { requestId, state: 'running', text: '' } } }
+    if (endpoint === 'assistant/voice/chat/read') reads++
+    return { ok: true, value: { epoch: 1 } }
+  }, true)
+  f.send('final', '测试失败'); await new Promise<void>((resolve) => setImmediate(resolve))
+  f.push({ requestId, state: 'failed', text: '尚未播报的前文', error: '真实模型错误' })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.ok(f.events.some((event) => event.type === 'error' && event.message === '真实模型错误' && event.recoverable))
+  assert.deepEqual(f.spoken, []); assert.equal(reads, 0)
+})
 
 test('语音流式残句实时回显，完成后补播一次，识别事件持续接收', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })

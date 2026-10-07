@@ -43,6 +43,8 @@ import { DEFAULT_ASSISTANT_NAME, assistantWorkspaceMatches, readAssistantProfile
 import { createVirtualWorkspaceId } from '../../shared/contracts/peer-host.js'
 import { configureAssistantSettings } from './assistant-lifecycle-settings.js'
 import { AssistantVoiceInitialization } from './assistant-voice-initialization.js'
+import { installVoiceDiagnostics } from '../voice-diagnostics.js'
+import { measureVoice, traceVoice, sanitizeVoiceDiagnosticFields } from '../../shared/voice-diagnostics.js'
 
 /**
  * 全局智能助理 Host 边界。
@@ -61,6 +63,8 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       requires: [{ capability: 'assistant.agent', required: false, fallback: 'degrade' }],
     },
     start(context) {
+      const diagnostics = installVoiceDiagnostics(() => coordinator.snapshot().active)
+      if (diagnostics !== undefined) context.resources.add(diagnostics.dispose)
       let resetting = false
       // 每次读取当前档案，资源准备与旧配置都不能隐式创建助理。
       const assistantProfile = () => readAssistantProfile(context.services.settings?.get().assistant ?? DEFAULT_ASSISTANT_SETTINGS)
@@ -374,6 +378,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       let previousLease = coordinator.snapshot()
       context.resources.add(coordinator.subscribe((lease) => {
         if (previousLease.active && (!lease.active || lease.ownerId !== previousLease.ownerId) && previousLease.ownerId !== null) {
+          tts.endVoiceSession()
           void conversation.endVoiceSession(previousLease.ownerId).catch(() => undefined)
         }
         if (!lease.active || lease.ownerId !== previousLease.ownerId) voiceChat.clear()
@@ -457,7 +462,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         const { ownerId, epoch } = readVoiceChatLease(payload)
         const request = readAssistantRequest(payload)
         requireInitialized()
-        const chatContext = await readConversationContext()
+        const chatContext = await measureVoice('host.chat.context', { ownerId, epoch, requestId: request.requestId }, () => readConversationContext())
         return await voiceChat.start(ownerId, epoch, request.requestId, request.text, { ...chatContext, isCurrent: () => {
           const lease = coordinator.snapshot()
           return lease.active && lease.ownerId === ownerId && lease.epoch === epoch && chatContext.isCurrent()
@@ -555,7 +560,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         active: () => coordinator.snapshot().active || runtime.running,
       })
       if (context.services.registerAssistantVoiceStreamRoute !== undefined) {
-        context.resources.add(context.services.registerAssistantVoiceStreamRoute(createAssistantVoiceStreamHandler({ coordinator, tts: (request) => tts.http(request) })))
+        context.resources.add(context.services.registerAssistantVoiceStreamRoute(createAssistantVoiceStreamHandler({ coordinator, chat: voiceChat, tts: (request) => tts.http(request) })))
       }
       context.resources.add(async () => {
         await actionBridge.dispose()
@@ -817,16 +822,18 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
                   let hotwords = buildAssistantVoiceHotwords([], [])
                   try {
                     hotwords = await readAssistantVoiceHotwords(readManagementSnapshot)
-                  } catch { /* 名称读取失败不能阻断通话，仍使用领域词。 */ }
+                  } catch (error) { traceVoice('host.asr.hotwords_source_error', { errorName: error instanceof Error ? error.name : 'UnknownError' }) }
                   runtime.configureHotwords(hotwords)
                 }
                 const snapshot = await coordinator.start(ownerId)
+                tts.beginVoiceSession(ownerId)
                 if (isRecord(payload) && typeof payload.voiceSessionId === 'string') {
                   try { await conversation.beginVoiceSession(ownerId, payload.voiceSessionId) }
                   catch (error) { await coordinator.stop(ownerId); throw error }
                 }
                 updateVoiceAgentCapabilities()
-                return snapshot
+                traceVoice('host.call.started', { ownerId, epoch: snapshot.epoch, callId: isRecord(payload) && typeof payload.voiceSessionId === 'string' ? payload.voiceSessionId : undefined })
+                return { ...snapshot, diagnosticsEnabled: diagnostics !== undefined }
               } catch (error) {
                 if (isVoiceRuntimeUnavailableError(error)) {
                   return {
@@ -839,6 +846,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
               }
             }
           case 'voice/stop': {
+            traceVoice('host.call.stopping', { ownerId: readOwner(payload), epoch: coordinator.snapshot().epoch })
             coordinator.assertOwner(readOwner(payload))
             await conversation.endVoiceSession(readOwner(payload))
             voiceChat.clear()
@@ -868,7 +876,22 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
             return coordinator.acceptClientEvent(ownerId, event, sequence)
           }
           case 'voice/chat/start':
-            return await startVoiceChat(payload)
+            return await measureVoice('host.chat.start', { requestId: readChatRequestId(payload), ownerId: readOwner(payload) }, () => startVoiceChat(payload))
+          case 'voice/diagnostics': {
+            if (diagnostics === undefined) return { recorded: 0 }
+            const ownerId = readOwner(payload)
+            const value = asRecord(payload)
+            const records = value?.records
+            if (!Array.isArray(records) || records.length > 64) throw new Error('语音诊断每批最多 64 条记录')
+            let recorded = 0
+            for (const item of records) {
+              if (!isRecord(item) || typeof item.event !== 'string' || !item.event.startsWith('client.') || typeof item.timestamp !== 'number' || !Number.isFinite(item.timestamp) || Math.abs(item.timestamp - Date.now()) > 86400_000) continue
+              diagnostics.writer.record({ timestamp: item.timestamp, event: item.event, fields: { ...sanitizeVoiceDiagnosticFields(item.fields), ownerId } }, 'client')
+              recorded++
+            }
+            if (typeof value?.dropped === 'number' && value.dropped > 0) traceVoice('diagnostics.client_dropped', { ownerId, dropped: value.dropped })
+            return { recorded }
+          }
           case 'voice/chat/read': {
             const { ownerId, epoch } = readVoiceChatLease(payload)
             return voiceChat.read(ownerId, epoch, readChatRequestId(payload))

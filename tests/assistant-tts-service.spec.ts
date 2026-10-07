@@ -27,6 +27,55 @@ function request(payload: unknown, signal?: AbortSignal): Request {
   return new Request(`https://example.test${ASSISTANT_TTS_PATH}`, { method: 'POST', body: JSON.stringify(payload), ...(signal === undefined ? {} : { signal }) })
 }
 
+test('通话预热不阻塞首句，同一租约复用安装验证，试听与新通话重新检查', async (t) => {
+  const { service } = await fixture(t, true, { isVoiceActive: () => true })
+  await service.handle('tts/select', { id: 'moss:Junhao', backend: 'moss-onnx' })
+  const installed = (service as any).isInstalled.bind(service)
+  let validations = 0; let warmups = 0; let release!: () => void
+  const workers = new Set<MossTtsWorker>()
+  let warmSignal: AbortSignal | undefined
+  t.mock.method(service as any, 'isInstalled', async () => { validations++; return installed() })
+  t.mock.method(MossTtsWorker.prototype, 'prepare', async function (this: MossTtsWorker, signal) { workers.add(this); warmups++; warmSignal = signal; await new Promise<void>((resolve) => { release = resolve }) })
+  t.mock.method(MossTtsWorker.prototype, 'request', async function (this: MossTtsWorker, _action, _payload, audio) { workers.add(this); audio!({ bytes: new Uint8Array([0, 0]), sampleRate: 48000 }); return {} })
+  service.beginVoiceSession('page')
+  service.beginVoiceSession('page')
+  await (await service.http(request({ text: '第一句', ownerId: 'page' }))).text()
+  await (await service.http(request({ text: '第二句', ownerId: 'page' }))).text()
+  assert.equal(warmups, 1); assert.equal(validations, 1, '预热尚未结算也不阻塞首句，逐句不重复检查磁盘')
+  assert.equal(workers.size, 1, '异步脚本定位期间预热与首句必须共享同一个 Worker 实例')
+  release(); await new Promise<void>((resolve) => setImmediate(resolve))
+  await (await service.http(request({ text: '独立试听' }))).text()
+  await (await service.http(request({ text: '其他页面', ownerId: 'other' }))).text()
+  assert.equal(validations, 3)
+  service.endVoiceSession()
+  assert.equal(warmSignal?.aborted, true)
+  service.beginVoiceSession('new-page')
+  await (await service.http(request({ text: '下一次通话', ownerId: 'new-page' }))).text()
+  assert.equal(validations, 4); assert.equal(warmups, 2)
+  release()
+})
+
+test('推理失败使通话安装缓存失效，下一句重新验证；浏览器后端不预热', async (t) => {
+  const { service } = await fixture(t, true, { isVoiceActive: () => true })
+  let warmups = 0; let validations = 0
+  t.mock.method(MossTtsWorker.prototype, 'prepare', async () => { warmups++ })
+  service.beginVoiceSession('browser')
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(warmups, 0)
+  await service.handle('tts/select', { id: 'moss:Junhao', backend: 'moss-onnx' })
+  const installed = (service as any).isInstalled.bind(service)
+  t.mock.method(service as any, 'isInstalled', async () => { validations++; return installed() })
+  let failed = false
+  t.mock.method(MossTtsWorker.prototype, 'request', async (_action, _payload, audio) => {
+    if (!failed) { failed = true; throw new Error('模型读取失败') }
+    audio!({ bytes: new Uint8Array([0, 0]), sampleRate: 48000 }); return {}
+  })
+  service.beginVoiceSession('page')
+  assert.match(await (await service.http(request({ text: '失败句', ownerId: 'page' }))).text(), /模型读取失败/u)
+  await (await service.http(request({ text: '重试句', ownerId: 'page' }))).text()
+  assert.equal(validations, 2)
+})
+
 test('配置窗口导入只准备音色缓存，待保存的音色返回给草稿，正式后端和选择不变', async (t) => {
   const { service, value } = await fixture(t)
   t.mock.method(globalThis, 'fetch', async () => new Response('RIFF0000WAVEfixture'))

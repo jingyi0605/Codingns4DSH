@@ -18,6 +18,8 @@ exec(compile(functions, str(source), "exec"))
 if sys.argv[1] == "fail-start":
     emit({"type": "fatal", "message": "fixture startup failure"})
     sys.exit(1)
+if sys.argv[1] == "slow-start":
+    time.sleep(0.25)
 emit({"type": "ready"})
 for line in sys.stdin:
     request = json.loads(line)
@@ -29,6 +31,8 @@ for line in sys.stdin:
     if request["action"] == "encode":
         Path(request["codesPath"]).write_text("中文参考编码", encoding="utf-8")
     if request["action"] == "synthesize":
+        if request.get("diagnostics"):
+            emit({"id": request["id"], "type": "diagnostic", "fields": {"phase": "prefill", "durationMs": 12, "text": "禁止写入日志"}})
         emit({"id": request["id"], "type": "audio", "data": base64.b64encode(b"\x00\x00\xff\x7f").decode(), "sampleRate": 48000})
     emit({"id": request["id"], "type": "done", "result": {
         "pid": os.getpid(), "voice": request.get("voice"), "text": request.get("text"),

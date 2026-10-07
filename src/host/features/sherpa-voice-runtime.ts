@@ -1,5 +1,6 @@
 import type { VoicePcmFrame, VoiceRuntimeAdapter, VoiceRuntimeCapabilities, VoiceRuntimeEvent, VoiceRuntimeListener } from '../../shared/contracts/voice-runtime.js'
 import type { AssistantVoiceModelPaths } from '../../shared/voice-models.js'
+import { traceVoice, measureVoice } from '../../shared/voice-diagnostics.js'
 import { prepareSherpaHotwords, type AssistantVoiceHotword, type SherpaHotwordConfig } from './assistant-voice-hotwords.js'
 
 interface SherpaOnlineStream {
@@ -58,6 +59,8 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
   private started = false
   private epoch = 0
   private lastPartial = ''
+  private metrics = { frames: 0, audioMs: 0, decodeMs: 0, maxDecodeMs: 0, count: 0 }
+  private metricsAt = performance.now()
   private hotwords: readonly AssistantVoiceHotword[] | undefined
 
   constructor(options: SherpaVoiceRuntimeOptions = {}) {
@@ -110,7 +113,9 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
   async start(): Promise<void> {
     if (this.started) return
     this.emit({ type: 'state', state: 'loading', epoch: this.epoch })
-    await this.load()
+    await measureVoice('host.asr.load', { threads: readPositiveInteger(this.env.CODINGNS4DSH_VOICE_THREADS) ?? 2, endpointSilenceMs: readEndpointSilence(this.env.CODINGNS4DSH_VOICE_ENDPOINT_SILENCE_SECONDS) * 1000, epoch: this.epoch }, () => this.load())
+    this.metricsAt = performance.now()
+    this.metrics = { frames: 0, audioMs: 0, decodeMs: 0, maxDecodeMs: 0, count: 0 }
     if (this.recognizer === undefined) throw new Error('Sherpa-ONNX 流式 ASR 模型未配置')
     this.stream = this.recognizer.createStream()
     this.lastPartial = ''
@@ -121,6 +126,7 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
   async stop(): Promise<void> {
     if (!this.started) return
     this.finishStream()
+    this.reportMetrics()
     this.started = false
     this.stream = undefined
     this.lastPartial = ''
@@ -138,12 +144,15 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
   sendPcm(frame: VoicePcmFrame, epoch: number): void {
     if (!this.started || this.stream === undefined || this.recognizer === undefined) throw new Error('Sherpa-ONNX 语音运行时尚未启动')
     if (epoch !== this.epoch) return
+    const started = performance.now()
+    const audioMs = frame.bytes.length / 2 / frame.sampleRate * 1000
     const samples = pcm16ToFloat32(frame.bytes)
     this.vad?.acceptWaveform(samples)
     if (this.vad?.isDetected() === true) this.emit({ type: 'wake', epoch: this.epoch })
     this.stream.acceptWaveform({ samples, sampleRate: frame.sampleRate })
     while (this.recognizer.isReady(this.stream)) {
       this.recognizer.decode(this.stream)
+      this.metrics.count++
       const result = this.recognizer.getResult(this.stream)
       const text = typeof result.text === 'string' ? result.text.trim() : ''
       if (text !== '' && text !== this.lastPartial) {
@@ -156,6 +165,17 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
         this.recognizer.reset(this.stream)
       }
     }
+    const durationMs = performance.now() - started
+    this.metrics.frames++; this.metrics.audioMs += audioMs; this.metrics.decodeMs += durationMs
+    this.metrics.maxDecodeMs = Math.max(this.metrics.maxDecodeMs, durationMs)
+    if (durationMs >= 50) traceVoice('host.asr.slow_frame', { epoch, sequence: frame.sequence, audioMs, durationMs })
+    if (performance.now() - this.metricsAt >= 2000) this.reportMetrics()
+  }
+
+  private reportMetrics(): void {
+    if (this.metrics.frames === 0) return
+    traceVoice('host.asr.metrics', { epoch: this.epoch, ...this.metrics, durationMs: performance.now() - this.metricsAt, realTimeFactor: this.metrics.audioMs > 0 ? this.metrics.decodeMs / this.metrics.audioMs : 0 })
+    this.metrics = { frames: 0, audioMs: 0, decodeMs: 0, maxDecodeMs: 0, count: 0 }; this.metricsAt = performance.now()
   }
 
   speak(text: string, epoch: number): void {
@@ -180,8 +200,9 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
     try {
       this.recognizer = new OnlineRecognizer(createSherpaRecognizerConfig(
         { asrEncoder, asrDecoder, asrJoiner, asrTokens }, this.sampleRate, readPositiveInteger(this.env.CODINGNS4DSH_VOICE_THREADS) ?? 2,
-        undefined, hotwords,
+        readEndpointSilence(this.env.CODINGNS4DSH_VOICE_ENDPOINT_SILENCE_SECONDS), hotwords,
       ))
+      traceVoice('host.asr.hotwords', { count: hotwords?.count ?? 0 })
     } finally {
       // 原生构造器已经把词表读入内存，立即清除含私有名称的临时文件。
       await hotwords?.dispose()
@@ -207,19 +228,29 @@ export class SherpaVoiceRuntime implements VoiceRuntimeAdapter {
     }
   }
 
-  private emit(event: VoiceRuntimeEvent): void { for (const listener of [...this.listeners]) { try { listener(event) } catch { /* 订阅者故障不能破坏 ASR */ } } }
+  private emit(event: VoiceRuntimeEvent): void {
+    if (event.type === 'partial' || event.type === 'final') traceVoice(`host.asr.${event.type}`, { epoch: event.epoch, textLength: event.text.length })
+    for (const listener of [...this.listeners]) { try { listener(event) } catch { /* 订阅者故障不能破坏 ASR */ } }
+  }
 }
 
 /** 正式运行时和独立验证进程共用配置，避免“验证通过”与实际启动参数不一致。 */
-export function createSherpaRecognizerConfig(paths: AssistantVoiceModelPaths, sampleRate = 16_000, numThreads = 2, endpointSilenceSeconds = 1.2, hotwords?: SherpaHotwordConfig): Record<string, unknown> {
+export function createSherpaRecognizerConfig(paths: AssistantVoiceModelPaths, sampleRate = 16_000, numThreads = 2, endpointSilenceSeconds = 0.8, hotwords?: SherpaHotwordConfig): Record<string, unknown> {
   return {
     featConfig: { sampleRate, featureDim: 80 },
     modelConfig: { transducer: { encoder: paths.asrEncoder, decoder: paths.asrDecoder, joiner: paths.asrJoiner }, tokens: paths.asrTokens, numThreads, provider: 'cpu',
       ...(hotwords === undefined ? {} : { modelingUnit: hotwords.modelingUnit, ...(hotwords.bpeVocab === undefined ? {} : { bpeVocab: hotwords.bpeVocab }) }) },
     decodingMethod: 'modified_beam_search', maxActivePaths: 4, enableEndpoint: true,
     ...(hotwords === undefined ? {} : { hotwordsFile: hotwords.hotwordsFile, hotwordsScore: 0.6 }),
+    // 有语音的句尾等待缩至 0.8 秒；空白输入和最长句长规则保持原样。
     rule1MinTrailingSilence: 2.4, rule2MinTrailingSilence: endpointSilenceSeconds, rule3MinUtteranceLength: 20,
   }
+}
+
+/** 参数允许恢复 1.2 秒；保留至少 0.6 秒容纳短暂停顿，拒绝激进或无效值。 */
+function readEndpointSilence(value: string | undefined): number {
+  const seconds = Number(value)
+  return Number.isFinite(seconds) && seconds >= 0.6 && seconds <= 2.4 ? seconds : 0.8
 }
 
 export function pcm16ToFloat32(bytes: Uint8Array): Float32Array {

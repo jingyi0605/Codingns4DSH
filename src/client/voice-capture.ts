@@ -1,12 +1,14 @@
 import type { VoicePcmFrame } from '../shared/contracts/voice-runtime.js'
 import { inspectBrowserVoiceSecurity } from './voice-security.js'
 import { BrowserVoiceDeviceManager } from './voice-device-manager.js'
+import type { VoiceDiagnosticTrace } from '../shared/voice-diagnostics.js'
 
 export interface ClientVoiceCaptureOptions {
   readonly devices: BrowserVoiceDeviceManager
   readonly onFrame: (frame: VoicePcmFrame) => void | Promise<void>
   readonly onEnded?: (error: Error) => void
   readonly targetSampleRate?: number
+  readonly trace?: VoiceDiagnosticTrace
 }
 
 interface CaptureAudioContext extends AudioContext {
@@ -26,6 +28,9 @@ export class ClientVoiceCapture {
   private started = false
   private inputRate = 16_000
   private muted = false
+  private metricsAt = performance.now()
+  private lastFrameAt = 0
+  private metrics = { frames: 0, audioMs: 0, processMs: 0, maxProcessMs: 0, maxIntervalMs: 0 }
 
   constructor(options: ClientVoiceCaptureOptions) { this.options = options }
 
@@ -39,6 +44,7 @@ export class ClientVoiceCapture {
 
   async start(): Promise<void> {
     if (this.started) return
+    const started = performance.now()
     const security = inspectBrowserVoiceSecurity()
     if (!security.secure) throw new Error('当前页面不是安全上下文，请改用 HTTPS 或 localhost 后访问麦克风')
     const mediaDevices = globalThis.navigator?.mediaDevices
@@ -74,6 +80,8 @@ export class ClientVoiceCapture {
       if (context.audioWorklet !== undefined && typeof AudioWorkletNode === 'function') await this.startWorklet(context)
       else this.startScriptProcessor(context)
       this.started = true
+      this.metricsAt = performance.now(); this.lastFrameAt = 0
+      this.options.trace?.('client.capture.started', { durationMs: performance.now() - started, inputRate: this.inputRate, sampleRate: this.options.targetSampleRate ?? 16000, processor: typeof AudioWorkletNode === 'function' && this.processor instanceof AudioWorkletNode ? 'worklet' : 'script' })
       for (const track of stream.getAudioTracks()) track.addEventListener('ended', this.handleEnded, { once: true })
     } catch (error) {
       await this.stop()
@@ -82,6 +90,7 @@ export class ClientVoiceCapture {
   }
 
   async stop(): Promise<void> {
+    this.reportMetrics()
     const stream = this.stream
     const processor = this.processor
     this.started = false
@@ -140,10 +149,23 @@ export class ClientVoiceCapture {
 
   private emitSamples(samples: Float32Array): void {
     if (!this.started) return
+    const started = performance.now()
+    if (this.lastFrameAt > 0) this.metrics.maxIntervalMs = Math.max(this.metrics.maxIntervalMs, started - this.lastFrameAt)
+    this.lastFrameAt = started
     const bytes = resampleFloat32ToPcm16(this.muted ? new Float32Array(samples.length) : samples, this.inputRate, this.options.targetSampleRate ?? 16_000)
     if (bytes.byteLength === 0) return
     const frame: VoicePcmFrame = { sequence: ++this.sequence, bytes, sampleRate: this.options.targetSampleRate ?? 16_000, channels: 1 }
     void Promise.resolve(this.options.onFrame(frame)).catch((error) => this.options.onEnded?.(error instanceof Error ? error : new Error(String(error))))
+    const durationMs = performance.now() - started
+    this.metrics.frames++; this.metrics.audioMs += samples.length / this.inputRate * 1000
+    this.metrics.processMs += durationMs; this.metrics.maxProcessMs = Math.max(this.metrics.maxProcessMs, durationMs)
+    if (started - this.metricsAt >= 2000) this.reportMetrics()
+  }
+
+  private reportMetrics(): void {
+    if (this.metrics.frames === 0) return
+    this.options.trace?.('client.capture.metrics', { ...this.metrics, durationMs: performance.now() - this.metricsAt, muted: this.muted })
+    this.metrics = { frames: 0, audioMs: 0, processMs: 0, maxProcessMs: 0, maxIntervalMs: 0 }; this.metricsAt = performance.now()
   }
 }
 

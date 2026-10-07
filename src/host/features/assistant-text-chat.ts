@@ -3,6 +3,7 @@ import type { AssistantLlmAdapter } from '../../dsh-capabilities/host/assistant-
 import { sanitizeSpeechText } from './assistant-summary.js'
 import { createAssistantChatSystem } from './assistant-prompts.js'
 import { readAssistantAttachments } from '../../shared/assistant-attachments.js'
+import { traceVoice } from '../../shared/voice-diagnostics.js'
 export { createAssistantChatSystem } from './assistant-prompts.js'
 
 interface ChatEntry {
@@ -13,15 +14,26 @@ interface ChatEntry {
   readonly settle: (run: AssistantChatRun) => void
 }
 
-/** 有界的只读 LLM 调试轮次；后台生成，RPC 轮询文字，关闭窗口可以主动取消。 */
+/** 有界的 LLM 轮次；后台生成，累计快照可推送及读取，关闭窗口可以主动取消。 */
 export class AssistantTextChat {
   private readonly runs = new Map<string, ChatEntry>()
   private catalogCache: AssistantChatCatalog | undefined
   private disposed = false
   private cancellationRevision = 0
   private readonly revoked = new Set<string>()
+  private readonly listeners = new Set<(run: AssistantChatRun) => void>()
 
   constructor(private readonly adapter: AssistantLlmAdapter | undefined, private readonly label = 'LLM 对话') {}
+
+  /** 推送累计快照；旧 RPC 读取和等待结算接口继续保留。 */
+  subscribe(listener: (run: AssistantChatRun) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  private publish(run: AssistantChatRun): void {
+    for (const listener of this.listeners) { try { listener(run) } catch { /* 下行订阅异常不能中断模型生成 */ } }
+  }
 
   async catalog(): Promise<AssistantChatCatalog> {
     this.catalogCache = this.adapter === undefined
@@ -55,17 +67,40 @@ export class AssistantTextChat {
     const completion = new Promise<AssistantChatRun>((resolve) => { settle = resolve })
     const entry: ChatEntry = { run, abort, timer: undefined, completion, settle }
     this.runs.set(request.requestId, entry)
+    const started = performance.now()
+    const diagnosticFields = { requestId: request.requestId, provider: model.provider, model: model.model }
+    let firstText = false
+    traceVoice('host.llm.start', { ...diagnosticFields, messageCount: request.messages.length, systemLength: system.length })
     entry.timer = setTimeout(() => {
       const reason = `${this.label}超过 90 秒，请检查模型服务`
       entry.run = { ...entry.run, state: 'cancelled', error: reason, finishedAt: Date.now() }
       abort.abort(new Error(reason))
+      traceVoice('host.llm.timeout', { ...diagnosticFields, durationMs: performance.now() - started })
+      this.publish(entry.run)
       entry.settle(entry.run)
     }, 90_000)
-    void this.adapter.reply(model, system, request.messages, abort.signal, (text) => { if (!abort.signal.aborted) entry.run = { ...entry.run, text } }, undefined,
-      (call) => { if (!abort.signal.aborted) entry.run = { ...entry.run, toolCalls: [...(entry.run.toolCalls ?? []).filter((item) => item.id !== call.id), call].slice(-24) } })
-      .then((text) => { if (!abort.signal.aborted) entry.run = { ...entry.run, text, state: 'completed', finishedAt: Date.now() } })
+    void this.adapter.reply(model, system, request.messages, abort.signal, (text) => {
+      if (!firstText && text.trim() !== '') { firstText = true; traceVoice('host.llm.first_text', { ...diagnosticFields, firstTextMs: performance.now() - started }) }
+      if (!abort.signal.aborted && text !== entry.run.text) { entry.run = { ...entry.run, text }; this.publish(entry.run) }
+    }, undefined,
+      (call) => {
+        traceVoice('host.llm.tool', { ...diagnosticFields, action: call.name, state: call.state })
+        if (abort.signal.aborted) return
+        const calls = new Map((entry.run.toolCalls ?? []).map((item) => [item.id, item]))
+        calls.set(call.id, call)
+        entry.run = { ...entry.run, toolCalls: [...calls.values()].slice(-24) }
+        this.publish(entry.run)
+      })
+      .then((text) => {
+        if (abort.signal.aborted) return
+        entry.run = { ...entry.run, text, state: 'completed', finishedAt: Date.now() }
+      })
       .catch((error) => { if (!abort.signal.aborted) entry.run = { ...entry.run, state: 'failed', error: sanitizeSpeechText(error instanceof Error ? error.message : String(error)).slice(0, 500), finishedAt: Date.now() } })
-      .finally(() => { clearTimeout(entry.timer); entry.timer = undefined; entry.settle(entry.run) })
+      .finally(() => {
+        traceVoice('host.llm.finished', { ...diagnosticFields, state: entry.run.state, durationMs: performance.now() - started, textLength: entry.run.text.length, toolCount: entry.run.toolCalls?.length ?? 0 })
+        this.publish(entry.run)
+        clearTimeout(entry.timer); entry.timer = undefined; entry.settle(entry.run)
+      })
     return run
   }
 
@@ -88,7 +123,9 @@ export class AssistantTextChat {
     if (entry.run.state === 'running') {
       clearTimeout(entry.timer); entry.timer = undefined
       entry.abort.abort(new Error(`${this.label}已停止`))
+      traceVoice('host.llm.cancel', { requestId, durationMs: Date.now() - entry.run.startedAt })
       entry.run = { ...entry.run, state: 'cancelled', finishedAt: Date.now(), error: `${this.label}已停止` }
+      this.publish(entry.run)
       entry.settle(entry.run)
     }
     return entry.run
@@ -109,6 +146,7 @@ export class AssistantTextChat {
   dispose(): void {
     this.disposed = true
     this.cancelActive()
+    this.listeners.clear()
     this.runs.clear()
   }
 }

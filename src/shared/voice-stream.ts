@@ -1,7 +1,15 @@
 import type { VoicePcmFrame, VoiceRuntimeEvent } from './contracts/voice-runtime.js'
+import type { AssistantChatRun } from './contracts/assistant.js'
 
 export const ASSISTANT_VOICE_STREAM_PATH = '/api/codingns/assistant/voice/stream'
 export const ASSISTANT_VOICE_EVENTS_PATH = '/api/codingns/assistant/voice/events'
+
+/** 复用语音下行连接推送完整累计回复；与原有识别事件分开处理。 */
+export interface VoiceStreamChatEvent {
+  readonly type: 'chat'
+  readonly epoch: number
+  readonly run: AssistantChatRun
+}
 
 /** 浏览器到 Host 的 PCM 流首部。首部和后续帧都使用 UTF-8 JSON 行分隔。 */
 export interface VoiceStreamOpenMessage {
@@ -83,8 +91,8 @@ export class VoiceStreamDecoder {
   }
 }
 
-export function encodeVoiceStreamEvent(event: VoiceRuntimeEvent): string {
-  return `${JSON.stringify(serializeVoiceRuntimeEvent(event))}\n`
+export function encodeVoiceStreamEvent(event: VoiceRuntimeEvent | VoiceStreamChatEvent): string {
+  return `${JSON.stringify(event.type === 'chat' ? event : serializeVoiceRuntimeEvent(event))}\n`
 }
 
 export function parseVoiceStreamMessage(value: unknown): VoiceStreamMessage {

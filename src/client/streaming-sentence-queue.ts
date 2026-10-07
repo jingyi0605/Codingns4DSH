@@ -1,3 +1,5 @@
+import type { VoiceDiagnosticTrace } from '../shared/voice-diagnostics.js'
+
 /** 消费累计流式文字；短语按标点提前合成，长时间没有句末时也能开始播报。 */
 export class StreamingSentenceQueue {
   private text = ''
@@ -8,7 +10,7 @@ export class StreamingSentenceQueue {
   private waitingSince: number | undefined
 
   constructor(private readonly speak: (text: string) => Promise<void>, private readonly isCurrent: () => boolean,
-    private readonly now: () => number = Date.now) {}
+    private readonly now: () => number = Date.now, private readonly trace?: VoiceDiagnosticTrace) {}
 
   push(value: string, final = false): void {
     if (!this.isCurrent()) return
@@ -49,9 +51,14 @@ export class StreamingSentenceQueue {
     const text = value.trim()
     if (!text || !/[\p{L}\p{N}]/u.test(text)) return
     if (++this.pending > 32) throw new Error('助理逐句播报队列过长')
+    const queued = performance.now()
+    this.trace?.('sentence.queued', { textLength: text.length, pending: this.pending })
     // 串行提交 TTS；MOSS 的回调只等待生成完成，音频可以继续在前台播放。
     this.tail = this.tail.then(async () => {
-      try { if (this.error === undefined && this.isCurrent()) await this.speak(text) }
+      try {
+        this.trace?.('sentence.started', { textLength: text.length, pending: this.pending, waitMs: performance.now() - queued })
+        if (this.error === undefined && this.isCurrent()) await this.speak(text)
+      }
       catch (error) { this.error = error }
       finally { this.pending-- }
     })

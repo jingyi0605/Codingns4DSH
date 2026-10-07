@@ -3,10 +3,15 @@ import type { HostConnectionFetch } from '@deepseek-ai/dsh-client-connection'
 import { ASSISTANT_VOICE_EVENTS_PATH, ASSISTANT_VOICE_STREAM_PATH, encodeVoiceStreamEvent, pcmFrameFromStream, VoiceStreamDecoder, type VoiceStreamOpenMessage } from '../../shared/voice-stream.js'
 import type { VoiceRuntimeEvent } from '../../shared/contracts/voice-runtime.js'
 import { ASSISTANT_TTS_PATH, ASSISTANT_VOICE_SAMPLE_PATH } from '../../shared/assistant-tts.js'
+import { traceVoice, voiceDiagnosticError } from '../../shared/voice-diagnostics.js'
+import { setImmediate } from 'node:timers/promises'
+import type { AssistantVoiceChat } from './assistant-voice-chat.js'
+import type { VoiceStreamChatEvent } from '../../shared/voice-stream.js'
 
 export interface AssistantVoiceStreamOptions {
   readonly coordinator: GlobalVoiceCoordinator
   readonly tts?: (request: Request) => Promise<Response>
+  readonly chat?: AssistantVoiceChat
 }
 
 /**
@@ -33,7 +38,7 @@ export function createAssistantVoiceStreamHandler(options: AssistantVoiceStreamO
       return options.tts?.(request) ?? Response.json({ error: 'Host TTS 未启用' }, { status: 503 })
     }
     // 新客户端把上传和事件下行拆开，避免依赖 fetch 请求流及其半双工限制。
-    if (request.method.toUpperCase() === 'GET') return createVoiceEventResponse(request, options.coordinator, url.searchParams.get('ownerId') ?? '')
+    if (request.method.toUpperCase() === 'GET') return createVoiceEventResponse(request, options.coordinator, url.searchParams.get('ownerId') ?? '', options.chat)
     if (request.method.toUpperCase() === 'POST' && url.searchParams.get('mode') === 'frames') return receiveVoiceFrames(request, options.coordinator)
     // 保留旧客户端的流路由；新客户端不再使用无限长度的 POST 正文。
     if (request.method.toUpperCase() !== 'POST' || request.body === null) return Response.json({ error: '语音流必须使用 POST 流式正文' }, { status: 400 })
@@ -115,11 +120,15 @@ export function createAssistantVoiceStreamHandler(options: AssistantVoiceStreamO
 
 /** 每个上传批次只转发音频，识别器和租约始终由协调器持有。 */
 async function receiveVoiceFrames(request: Request, coordinator: GlobalVoiceCoordinator): Promise<Response> {
+  const started = performance.now()
+  const diagnosticId = request.headers.get('x-codingns-voice-diagnostic-id') ?? undefined
+  traceVoice('host.upload.received', { diagnosticId })
   if (request.body === null) return Response.json({ error: '语音帧缺少正文' }, { status: 400 })
   const reader = request.body.getReader()
   const decoder = new VoiceStreamDecoder()
   const items: ReturnType<VoiceStreamDecoder['push']> = []
   let byteLength = 0
+  let fields = {}
   try {
     while (true) {
       const next = await reader.read()
@@ -132,13 +141,21 @@ async function receiveVoiceFrames(request: Request, coordinator: GlobalVoiceCoor
     const open = items[0]?.message
     if (open?.type !== 'open' || items.slice(1).some((item) => item.message.type !== 'pcm')) throw new Error('语音上传批次必须由一个首部和 PCM 帧组成')
     try { coordinator.assertOwner(open.ownerId) } catch { return Response.json({ error: '当前页面没有全局语音租约' }, { status: 403 }) }
+    const bodyReadMs = performance.now() - started
+    let stale = 0
+    fields = { ownerId: open.ownerId, clientId: open.clientId, diagnosticId }
+    let yieldedAt = performance.now()
     for (const item of items.slice(1)) {
       if (item.message.type !== 'pcm' || item.pcm === undefined) throw new Error('语音 PCM 缺少正文')
-      if (item.message.epoch !== coordinator.snapshot().epoch) continue
+      if (item.message.epoch !== coordinator.snapshot().epoch) { stale++; continue }
       await coordinator.sendPcm(open.ownerId, pcmFrameFromStream(item.message, item.pcm))
+      // await 同步识别器只会切换微任务；积压批次要主动让 HTTP、RPC 和租约计时器运行。
+      if (performance.now() - yieldedAt >= 10) { await setImmediate(); yieldedAt = performance.now() }
     }
+    traceVoice('host.upload.batch', { ...fields, bytes: byteLength, frames: items.length - 1, stale, transportMs: bodyReadMs, processMs: performance.now() - started - bodyReadMs, durationMs: performance.now() - started })
     return new Response(null, { status: 204 })
   } catch (error) {
+    traceVoice('host.upload.error', { ...fields, bytes: byteLength, durationMs: performance.now() - started, errorName: voiceDiagnosticError(error) })
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 })
   } finally {
     await reader.cancel().catch(() => undefined)
@@ -147,24 +164,31 @@ async function receiveVoiceFrames(request: Request, coordinator: GlobalVoiceCoor
 }
 
 /** GET 只承载即时事件，下行不再被尚未结束的音频上传阻塞。 */
-function createVoiceEventResponse(request: Request, coordinator: GlobalVoiceCoordinator, ownerId: string): Response {
+function createVoiceEventResponse(request: Request, coordinator: GlobalVoiceCoordinator, ownerId: string, chat?: AssistantVoiceChat): Response {
   try { coordinator.assertOwner(ownerId) } catch { return Response.json({ error: '当前页面没有全局语音租约' }, { status: 403 }) }
   const encoder = new TextEncoder()
   let controller: ReadableStreamDefaultController<Uint8Array> | undefined
   let closed = false
   let disposeEvents: (() => void) | undefined
   let disposeState: (() => void) | undefined
+  let disposeChat: (() => void) | undefined
+  let pendingChat: VoiceStreamChatEvent | undefined
   let lastState = ''
   let keepAlive: ReturnType<typeof setInterval> | undefined
-  const send = (event: VoiceRuntimeEvent): void => {
+  const send = (event: VoiceRuntimeEvent | VoiceStreamChatEvent): void => {
     if (closed) return
+    // 网络下行背压时只保留最新累计文字，完整前缀仍在快照中，不逐 token 堆积。
+    if (event.type === 'chat' && (controller?.desiredSize ?? 0) <= 0) { pendingChat = event; return }
+    if (event.type !== 'partial') traceVoice('host.voice.event', { ownerId, epoch: event.epoch, state: event.type, textLength: 'text' in event ? event.text.length : undefined })
     try { controller?.enqueue(encoder.encode(encodeVoiceStreamEvent(event))) } catch { finish() }
   }
   const finish = (): void => {
     if (closed) return
     closed = true
+    pendingChat = undefined
     disposeEvents?.()
     disposeState?.()
+    disposeChat?.()
     if (keepAlive !== undefined) clearInterval(keepAlive)
     request.signal.removeEventListener('abort', finish)
     try { controller?.close() } catch { /* 浏览器已取消读取 */ }
@@ -173,6 +197,14 @@ function createVoiceEventResponse(request: Request, coordinator: GlobalVoiceCoor
     start(nextController) {
       controller = nextController
       disposeEvents = coordinator.subscribeRuntimeEvent((event) => { if (event.type !== 'state') send(event) })
+      disposeChat = chat?.subscribe(ownerId, (run, epoch) => {
+        const lease = coordinator.snapshot()
+        if (lease.active && lease.ownerId === ownerId && lease.epoch === epoch) {
+          // 工具明细已经保存在通话记录中，不随每个文字增量重复传输。
+          const { toolCalls: _toolCalls, ...snapshot } = run
+          send({ type: 'chat', epoch, run: snapshot })
+        }
+      })
       // subscribe 会立即发出当前状态，让代理及时返回响应，并同步 Host epoch。
       disposeState = coordinator.subscribe((snapshot) => {
         const stateKey = `${snapshot.state}:${snapshot.epoch}:${snapshot.active}:${snapshot.ownerId}`
@@ -189,9 +221,15 @@ function createVoiceEventResponse(request: Request, coordinator: GlobalVoiceCoor
       ;(keepAlive as ReturnType<typeof setInterval> & { unref?: () => void }).unref?.()
       if (request.signal.aborted) finish()
     },
+    pull() {
+      const latest = pendingChat
+      pendingChat = undefined
+      if (latest !== undefined) send(latest)
+    },
     cancel: finish,
   })
   return new Response(stream, { headers: {
+    ...(chat === undefined ? {} : { 'x-codingns-voice-chat-stream': '1' }),
     'content-type': 'application/x-ndjson; charset=utf-8',
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',

@@ -8,10 +8,17 @@ import { voiceModelRoot } from './voice-model-setup.js'
 import { MossTtsWorker } from './moss-tts-worker.js'
 import { resolveAssistantVoiceSource, sourceVoice } from './assistant-voice-sources.js'
 import { prepareVoicePython, runVoiceEnvironmentProcess, verifyVoicePythonDependencies, type VoiceEnvironmentCommand } from './voice-python-runtime.js'
+import { traceVoice, voiceDiagnosticId, voiceDiagnosticError } from '../../shared/voice-diagnostics.js'
 
 const TTS_FILES = ['browser_poc_manifest.json', 'tts_browser_onnx_meta.json', 'tokenizer.model', 'moss_tts_prefill.onnx', 'moss_tts_decode_step.onnx', 'moss_tts_local_fixed_sampled_frame.onnx', 'moss_tts_global_shared.data', 'moss_tts_local_shared.data']
 const CODEC_FILES = ['codec_browser_onnx_meta.json', 'moss_audio_tokenizer_encode.onnx', 'moss_audio_tokenizer_encode.data', 'moss_audio_tokenizer_decode_step.onnx', 'moss_audio_tokenizer_decode_shared.data']
 const MAX_REFERENCE_BYTES = 8 * 1024 * 1024
+
+interface VoiceTtsSession {
+  readonly ownerId: string
+  readonly abort: AbortController
+  installed: Promise<boolean> | undefined
+}
 
 /** 音色配置、下载与推理统一归 Host；浏览器只提交稳定 ID 和来源链接。 */
 export class AssistantTtsService {
@@ -19,6 +26,7 @@ export class AssistantTtsService {
   private abort = new AbortController()
   private pendingChange: Promise<void> | undefined
   private worker: MossTtsWorker | undefined
+  private workerCreation: Promise<MossTtsWorker> | undefined
   private readonly samples = new Map<string, Promise<Uint8Array>>()
   private changing = false
   private repairModels = false
@@ -26,6 +34,7 @@ export class AssistantTtsService {
   private readonly isVoiceActive: () => boolean
   private readonly preparePython: typeof prepareVoicePython
   private readonly runEnvironmentProcess: VoiceEnvironmentCommand
+  private voiceSession: VoiceTtsSession | undefined
 
   constructor(private readonly services: CodingNsHostServices, options: {
     directory?: string; isVoiceActive?: () => boolean
@@ -44,6 +53,40 @@ export class AssistantTtsService {
   }
 
   get outputReady(): boolean { return this.status.ready && !this.status.busy && this.settings().backend === 'moss-onnx' }
+
+  /** 有效通话开始后异步预热，收音与模型回复不等待 Python 冷启动。 */
+  beginVoiceSession(ownerId: string): void {
+    if (this.voiceSession?.ownerId === ownerId) return
+    this.endVoiceSession()
+    if (this.settings().backend !== 'moss-onnx') return
+    const installed = this.isInstalled()
+    const session: VoiceTtsSession = { ownerId, abort: new AbortController(), installed }
+    this.voiceSession = session
+    const started = performance.now()
+    traceVoice('host.tts.warmup.start', { ownerId })
+    void installed.then(async (ready) => {
+      session.abort.signal.throwIfAborted()
+      if (!ready) throw new Error('MOSS 尚未初始化，不能预热')
+      await (await this.getWorker()).prepare(session.abort.signal)
+      traceVoice('host.tts.warmup.done', { ownerId, durationMs: performance.now() - started })
+    }).catch((error: unknown) => {
+      traceVoice('host.tts.warmup.error', { ownerId, aborted: session.abort.signal.aborted, durationMs: performance.now() - started, errorName: voiceDiagnosticError(error) })
+      if (this.voiceSession === session) session.installed = undefined
+    })
+  }
+
+  endVoiceSession(): void {
+    this.voiceSession?.abort.abort()
+    this.voiceSession = undefined
+  }
+
+  /** 只在同一有效租约内复用安装验证，试听和下一次通话仍重新检查磁盘。 */
+  private installedForRequest(ownerId: unknown): Promise<boolean> {
+    const session = this.voiceSession
+    if (session === undefined || ownerId !== session.ownerId || !this.isVoiceActive()) return this.isInstalled()
+    session.installed ??= this.isInstalled()
+    return session.installed
+  }
 
   async handle(action: string, payload: unknown): Promise<unknown> {
     if (action === 'tts/catalog') return this.snapshot()
@@ -97,13 +140,19 @@ export class AssistantTtsService {
       }
       if (url.pathname !== ASSISTANT_TTS_PATH || request.method !== 'POST') return new Response(null, { status: 405 })
       const value = record(JSON.parse(new TextDecoder().decode(await readBounded(request.body, 12_000))))
+      const started = performance.now()
+      const diagnosticId = typeof value.diagnosticId === 'string' ? value.diagnosticId.slice(0, 160) : voiceDiagnosticId()
+      const fields = { diagnosticId, requestId: typeof value.requestId === 'string' ? value.requestId.slice(0, 160) : undefined, textLength: typeof value.text === 'string' ? value.text.length : 0 }
+      traceVoice('host.tts.request', fields)
       if (typeof value.text !== 'string' || value.text.trim() === '' || value.text.length > 2000) throw new Error('播报文本需要 1～2000 个字符')
-      if (this.status.busy || !await this.isInstalled()) throw new Error('MOSS 尚未就绪，请先初始化')
+      const cached = this.voiceSession?.ownerId === value.ownerId && this.voiceSession?.installed !== undefined && this.isVoiceActive()
+      if (this.status.busy || !await this.installedForRequest(value.ownerId)) throw new Error('MOSS 尚未就绪，请先初始化')
       const settings = this.settings()
       const parameters = value.parameters === undefined ? readAssistantTtsParameters(settings.parameters) : validateAssistantTtsParameters(value.parameters, settings.parameters)
       const voice = [...MOSS_BUILTIN_VOICES, ...settings.voices].find((voice) => voice.id === (value.voiceId ?? settings.selectedId))
       if (voice === undefined) throw new Error('音色不存在')
       const worker = await this.getWorker()
+      traceVoice('host.tts.prepared', { ...fields, cached, durationMs: performance.now() - started })
       const encoder = new TextEncoder()
       const controller = new AbortController()
       const abort = (): void => controller.abort()
@@ -114,14 +163,28 @@ export class AssistantTtsService {
       if (request.signal.aborted || serviceSignal.aborted) controller.abort()
       const finish = (): void => { request.signal.removeEventListener('abort', abort); serviceSignal.removeEventListener('abort', serviceAbort) }
       const thisDirectory = this.directory
+      const voiceSession = this.voiceSession
+      const invalidateInstallation = (): void => { if (voiceSession !== undefined && this.voiceSession === voiceSession) voiceSession.installed = undefined }
       const stream = new ReadableStream<Uint8Array>({
         start(output) {
+          let chunks = 0; let audioMs = 0
           const send = (value: unknown): void => output.enqueue(encoder.encode(JSON.stringify(value) + '\n'))
-          void worker.request('synthesize', { text: value.text, parameters: { chunkTokens: parameters.chunkTokens, segmentPauseMs: parameters.segmentPauseMs, seed: parameters.seed }, ...(voice.kind === 'builtin' ? { voice: voice.reference } : { codesPath: join(thisDirectory, `${voice.reference}.json`) }) },
-            (chunk) => send({ type: 'audio', data: Buffer.from(chunk.bytes).toString('base64'), sampleRate: chunk.sampleRate }), controller.signal)
+          void worker.request('synthesize', { text: value.text, diagnosticId, parameters: { chunkTokens: parameters.chunkTokens, segmentPauseMs: parameters.segmentPauseMs, seed: parameters.seed }, ...(voice.kind === 'builtin' ? { voice: voice.reference } : { codesPath: join(thisDirectory, `${voice.reference}.json`) }) },
+            (chunk) => {
+              chunks++; audioMs += chunk.bytes.length / 2 / chunk.sampleRate * 1000
+              if (chunks === 1) traceVoice('host.tts.first_audio', { ...fields, firstAudioMs: performance.now() - started })
+              send({ type: 'audio', data: Buffer.from(chunk.bytes).toString('base64'), sampleRate: chunk.sampleRate })
+            }, controller.signal)
             .then(() => { if (!controller.signal.aborted) send({ type: 'done' }) })
-            .catch((error: unknown) => { if (!controller.signal.aborted) send({ type: 'error', message: errorMessage(error) }) })
-            .finally(() => { finish(); try { output.close() } catch { /* 浏览器已经取消读取 */ } })
+            .catch((error: unknown) => {
+              if (!controller.signal.aborted) invalidateInstallation()
+              traceVoice('host.tts.error', { ...fields, errorName: voiceDiagnosticError(error), aborted: controller.signal.aborted, durationMs: performance.now() - started })
+              if (!controller.signal.aborted) send({ type: 'error', message: errorMessage(error) })
+            })
+            .finally(() => {
+              traceVoice('host.tts.finished', { ...fields, chunks, audioMs, durationMs: performance.now() - started, aborted: controller.signal.aborted, realTimeFactor: audioMs > 0 ? (performance.now() - started) / audioMs : 0 })
+              finish(); try { output.close() } catch { /* 浏览器已经取消读取 */ }
+            })
         },
         cancel() { controller.abort(); finish() },
       })
@@ -130,7 +193,9 @@ export class AssistantTtsService {
   }
 
   async dispose(): Promise<void> {
+    this.endVoiceSession()
     this.abort.abort()
+    await this.workerCreation?.catch(() => undefined)
     const closing = this.worker?.dispose()
     this.worker = undefined; this.samples.clear()
     await closing
@@ -139,7 +204,9 @@ export class AssistantTtsService {
 
   /** 完整重置等待旧写入结算，再重新开放服务；下载素材保留复用。 */
   async cancelPending(): Promise<void> {
+    this.endVoiceSession()
     this.abort.abort(new Error('助理已重置'))
+    await this.workerCreation?.catch(() => undefined)
     const closing = this.worker?.dispose()
     this.worker = undefined; this.samples.clear()
     await closing
@@ -176,18 +243,27 @@ export class AssistantTtsService {
   private python(): string { return join(this.directory, 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python') }
   private async getWorker(signal = this.abort.signal): Promise<MossTtsWorker> {
     signal.throwIfAborted()
-    if (this.worker === undefined) {
-      const script = await workerPath()
-      signal.throwIfAborted()
-      this.worker = new MossTtsWorker({ python: this.python(), script, modelDirectory: join(this.directory, 'MOSS-TTS-Nano-100M-ONNX') })
+    if (this.worker !== undefined) return this.worker
+    if (this.workerCreation === undefined) {
+      // 预热与首句可以同时等待脚本定位，必须共享创建任务而非各自生成一个进程。
+      const creation = workerPath().then((script) => {
+        signal.throwIfAborted()
+        this.worker = new MossTtsWorker({ python: this.python(), script, modelDirectory: join(this.directory, 'MOSS-TTS-Nano-100M-ONNX') })
+        return this.worker
+      }).finally(() => { if (this.workerCreation === creation) this.workerCreation = undefined })
+      this.workerCreation = creation
     }
-    return this.worker
+    const worker = await this.workerCreation
+    signal.throwIfAborted()
+    return worker
   }
 
   private async setup(signal: AbortSignal, prepareOnly = false): Promise<AssistantTtsSnapshot> {
+    this.endVoiceSession()
     if (this.services.settings === undefined) throw new Error('当前 Host 不支持保存语音设置')
     this.status = { ready: false, busy: true, phase: '准备 Python 3.10+ 环境', downloadedBytes: 0, totalBytes: null, error: null }
     try {
+      await this.workerCreation?.catch(() => undefined)
       const closing = this.worker?.dispose()
       this.worker = undefined
       await closing

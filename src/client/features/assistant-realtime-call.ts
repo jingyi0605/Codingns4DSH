@@ -72,10 +72,14 @@ export function AssistantRealtimeCallView({ name, t, state, pending, duration, m
   readonly onMicrophone: () => void; readonly onSpeaker: () => void; readonly onHangup: () => void | Promise<void>
   readonly speakersOpen?: boolean; readonly menuId?: string | undefined; readonly menu?: ReactNode
 }): ReactElement {
-  const userCaption = useRef<HTMLParagraphElement>(null)
-  const assistantCaption = useRef<HTMLParagraphElement>(null)
-  // 保留完整流式文本，滚动到最新一行；长回复不会一直停在开头。
-  useEffect(() => { for (const ref of [userCaption, assistantCaption]) if (ref.current) ref.current.scrollTop = ref.current.scrollHeight }, [userText, assistantText])
+  const captions = useRef<HTMLDivElement>(null)
+  const followCaptions = useRef(true)
+  // 默认跟随流式追加；用户向上回看时保留位置，不再把前文强制滚走。
+  useEffect(() => {
+    const element = captions.current
+    if (assistantText === '') followCaptions.current = true
+    if (element !== null && followCaptions.current) element.scrollTop = element.scrollHeight
+  }, [userText, assistantText])
   const status = pending ? state === 'disabled' ? 'ending' : 'connecting' : microphoneMuted ? 'muted' : state === 'speaking' ? 'speaking' : state === 'thinking' ? 'thinking' : 'listening'
   const control = (kind: 'speaker' | 'microphone' | 'hangup', label: string, action: () => void, pressed?: boolean): ReactElement => createElement('div', { style: { display: 'grid', justifyItems: 'center', gap: 8 } },
     createElement('button', { type: 'button', 'aria-label': label, title: label, 'aria-pressed': pressed,
@@ -85,15 +89,17 @@ export function AssistantRealtimeCallView({ name, t, state, pending, duration, m
       createElement(CallIcon, { kind, muted: pressed === true })),
     createElement('span', { style: { fontSize: 12, color: dshThemeColor.labelSecondary } }, kind === 'microphone' ? t(microphoneMuted ? 'awb.call.unmute' : 'awb.call.microphone') : t(`awb.call.${kind}`)))
   return createElement('div', { 'data-codingns-realtime-call': true, style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, textAlign: 'center', padding: '16px clamp(16px, 4vw, 32px)', gap: 10 } },
-    createElement('style', null, '.codingns-call-halo{position:absolute;inset:10%;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--dsw-alias-button-info-fill,#1677ff) 14%,transparent),transparent 70%);animation:codingns-call-breathe 3s ease-in-out infinite}.codingns-call-caption{overflow-y:auto;overflow-wrap:anywhere;scrollbar-width:none;white-space:pre-wrap}[data-codingns-call-avatar] img{height:auto!important;max-height:32dvh;object-fit:contain}[data-codingns-call-avatar] canvas,[data-codingns-call-avatar] video{max-width:100%;max-height:32dvh;object-fit:contain}@keyframes codingns-call-breathe{50%{transform:scale(1.12);opacity:.6}}@media(prefers-reduced-motion:reduce){.codingns-call-halo{animation:none}}'),
+    createElement('style', null, '.codingns-call-halo{position:absolute;inset:10%;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--dsw-alias-button-info-fill,#1677ff) 14%,transparent),transparent 70%);animation:codingns-call-breathe 3s ease-in-out infinite}.codingns-call-caption{overflow-wrap:anywhere;white-space:pre-wrap}[data-codingns-call-avatar] img{height:auto!important;max-height:32dvh;object-fit:contain}[data-codingns-call-avatar] canvas,[data-codingns-call-avatar] video{max-width:100%;max-height:32dvh;object-fit:contain}@keyframes codingns-call-breathe{50%{transform:scale(1.12);opacity:.6}}@media(prefers-reduced-motion:reduce){.codingns-call-halo{animation:none}}'),
     createElement('div', { style: { display: 'grid', gap: 4 } }, createElement('strong', { style: { fontSize: 18 } }, name),
       createElement('span', { style: { fontSize: 12, color: dshThemeColor.labelTertiary, fontVariantNumeric: 'tabular-nums' } }, t('awb.call.title'), ' · ', duration)),
     createElement('div', { style: { display: 'grid', placeItems: 'center', flex: '1 1 auto', minHeight: 'min(160px, 24dvh)', position: 'relative' } },
       createElement('div', { className: 'codingns-call-halo', 'aria-hidden': true }), createElement('div', { 'data-codingns-call-avatar': true, style: { position: 'relative', width: 'min(256px, 32dvh, 100%)', maxWidth: '100%', maxHeight: '32dvh', overflow: 'hidden', display: 'grid', placeItems: 'center' } }, avatar)),
     createElement('div', { role: 'status', style: { fontSize: 13, color: dshThemeColor.labelSecondary } }, t(`awb.call.${status}`)),
-    createElement('div', { 'data-codingns-call-captions': true, 'aria-label': t('awb.call.caption'), style: { minHeight: 90, display: 'grid', alignContent: 'end', gap: 8 } },
-      userText && !microphoneMuted ? createElement('p', { ref: userCaption, className: 'codingns-call-caption', style: { margin: 0, maxHeight: '1.6em', fontSize: 13, lineHeight: 1.6, color: dshThemeColor.labelTertiary } }, userText) : null,
-      createElement('p', { ref: assistantCaption, className: 'codingns-call-caption', 'aria-live': 'polite', style: { margin: 0, maxHeight: '3.3em', fontSize: 16, lineHeight: 1.65, color: assistantText ? dshThemeColor.labelPrimary : dshThemeColor.labelTertiary } }, assistantText || (!userText ? t('awb.call.waiting') : ''))),
+    createElement('div', { ref: captions, 'data-codingns-call-captions': true, 'aria-label': t('awb.call.caption'), tabIndex: 0,
+      onScroll: (event: { currentTarget: HTMLDivElement }) => { const element = event.currentTarget; followCaptions.current = element.scrollHeight - element.scrollTop - element.clientHeight <= 24 },
+      style: { minHeight: 90, maxHeight: 'min(280px, 35dvh)', overflowY: 'auto', overscrollBehavior: 'contain', scrollbarWidth: 'thin', display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 } },
+      userText && !microphoneMuted ? createElement('p', { className: 'codingns-call-caption', style: { margin: 0, flexShrink: 0, fontSize: 13, lineHeight: 1.6, color: dshThemeColor.labelTertiary } }, userText) : null,
+      createElement('p', { className: 'codingns-call-caption', 'aria-live': 'polite', style: { margin: 0, flexShrink: 0, fontSize: 16, lineHeight: 1.65, color: assistantText ? dshThemeColor.labelPrimary : dshThemeColor.labelTertiary } }, assistantText || (!userText ? t('awb.call.waiting') : ''))),
     createElement('div', { style: { display: 'flex', justifyContent: 'center', gap: 'clamp(20px, 6vw, 44px)', padding: '12px 0 4px', position: 'relative' } }, menu,
       control('speaker', t('awb.call.speakerSettings'), onSpeaker, speakerMuted),
       control('microphone', t(microphoneMuted ? 'awb.call.unmute' : 'awb.call.microphone'), onMicrophone, microphoneMuted),

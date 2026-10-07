@@ -8,6 +8,10 @@ import { createVoiceHttpError, VoiceStreamUploader } from './voice-stream-upload
 import { MossVoiceOutput } from './moss-voice-output.js'
 import { StreamingSentenceQueue } from './streaming-sentence-queue.js'
 import { readAssistantTtsParameters, readAssistantTtsSettings } from '../shared/assistant-tts.js'
+import { ClientVoiceDiagnostics } from './voice-diagnostics.js'
+import { voiceDiagnosticError, type VoiceDiagnosticTrace } from '../shared/voice-diagnostics.js'
+import { VoiceChatUpdates } from './voice-chat-updates.js'
+import type { AssistantChatRun } from '../shared/contracts/assistant.js'
 
 export interface SherpaClientVoiceAdapterOptions {
   readonly ownerId: string
@@ -31,8 +35,11 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
   private configuredOwner: string
   private selectedInputDeviceId: string | undefined
   private selectedOutputDeviceId: string | undefined
-  private readonly output = new MossVoiceOutput()
-  private reply: { readonly requestId: string; readonly epoch: number; readonly abort: AbortController } | undefined
+  private diagnostics: ClientVoiceDiagnostics | undefined
+  private readonly trace: VoiceDiagnosticTrace = (event, fields) => this.diagnostics?.record(event, fields)
+  private readonly output = new MossVoiceOutput({ trace: this.trace, traceContext: () => ({ ownerId: this.configuredOwner, epoch: this.epoch, requestId: this.reply?.requestId }) })
+  private reply: { readonly requestId: string; readonly epoch: number; readonly abort: AbortController; readonly startedAt: number; readonly updates: VoiceChatUpdates; playbackStarted: boolean } | undefined
+  private chatStreaming = false
   private clearOperation: Promise<void> | undefined
   private settleSpeech: (() => void) | undefined
   private replySequence = 0
@@ -102,6 +109,8 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
     this.configuredOwner = ownerId?.trim() || this.configuredOwner
     if (this.configuredOwner === '') throw new Error('全局语音租约缺少 ownerId')
     const abort = new AbortController()
+    const started = performance.now()
+    const callId = createClientId()
     this.responseAbort = abort
     this.active = true
     this.setMicrophoneMuted(false); this.setSpeakerMuted(false)
@@ -110,7 +119,8 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
         await this.output.prepare()
         if (this.output.outputDeviceSupported && this.selectedOutputDeviceId !== undefined) await this.output.setOutputDevice(this.selectedOutputDeviceId)
       }
-      const leaseRequest = this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/start', { ownerId: this.configuredOwner, voiceSessionId: createClientId() }, abort.signal)
+      const leaseStarted = performance.now()
+      const leaseRequest = this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/start', { ownerId: this.configuredOwner, voiceSessionId: callId }, abort.signal)
       this.leaseRequest = leaseRequest
       const lease = await leaseRequest.finally(() => { if (this.leaseRequest === leaseRequest) this.leaseRequest = undefined })
       if (!lease.ok) throw new Error(lease.error.message)
@@ -119,12 +129,17 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
       this.hostLeaseActive = true
       // epoch 以 Host 租约为准，不能让刷新后的页面从 1 重新计数。
       this.epoch = readEpoch(isRecord(lease.value) ? lease.value : {}, this.epoch + 1)
+      if (isRecord(lease.value) && lease.value.diagnosticsEnabled === true) {
+        this.diagnostics = new ClientVoiceDiagnostics(this.services, { ownerId: this.configuredOwner, callId })
+        this.trace('client.call.lease', { epoch: this.epoch, durationMs: performance.now() - leaseStarted })
+      }
       this.emit({ type: 'state', state: 'loading', epoch: this.epoch })
       const snapshot = await this.devices.refresh()
       if (!snapshot.secureContext) throw new Error('当前页面不是安全上下文，请改用 HTTPS 或 localhost 后访问麦克风')
       if (abort.signal.aborted) throw new Error('语音启动已取消')
       const clientId = createClientId()
-      this.uploader = new VoiceStreamUploader({ url: resolveVoiceStreamUrl(ASSISTANT_VOICE_STREAM_PATH, { mode: 'frames' }), ownerId: this.configuredOwner, clientId, onError: (error) => this.failTransport(error, abort) })
+      this.uploader = new VoiceStreamUploader({ url: resolveVoiceStreamUrl(ASSISTANT_VOICE_STREAM_PATH, { mode: 'frames' }), ownerId: this.configuredOwner, clientId, trace: this.trace, onError: (error) => this.failTransport(error, abort) })
+      const eventsStarted = performance.now()
       const response = await globalThis.fetch(resolveVoiceStreamUrl(ASSISTANT_VOICE_EVENTS_PATH, { ownerId: this.configuredOwner, clientId }), {
         method: 'GET',
         signal: abort.signal,
@@ -133,13 +148,17 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
       })
       if (!response.ok) throw await createVoiceHttpError(response, '语音流连接失败')
       if (response.body === null) throw new Error('语音事件连接缺少响应正文')
+      this.chatStreaming = response.headers.get('x-codingns-voice-chat-stream') === '1'
+      this.trace('client.events.connected', { durationMs: performance.now() - eventsStarted, status: response.status, streaming: this.chatStreaming })
       void this.readEvents(response.body, abort)
-      const capture = new ClientVoiceCapture({ devices: this.devices, targetSampleRate: 16_000, onFrame: (frame) => { if (this.responseAbort === abort) this.sendPcmFrame(frame, this.epoch) }, onEnded: (error) => this.failTransport(error, abort) })
+      const capture = new ClientVoiceCapture({ devices: this.devices, targetSampleRate: 16_000, trace: this.trace, onFrame: (frame) => { if (this.responseAbort === abort) this.sendPcmFrame(frame, this.epoch) }, onEnded: (error) => this.failTransport(error, abort) })
       this.capture = capture
       await capture.start()
       if (abort.signal.aborted) { await capture.stop(); throw new Error('语音启动已取消') }
       this.emit({ type: 'state', state: 'listening', epoch: this.epoch })
+      this.trace('client.call.started', { epoch: this.epoch, durationMs: performance.now() - started })
     } catch (error) {
+      this.trace('client.call.error', { durationMs: performance.now() - started, errorName: voiceDiagnosticError(error) })
       if (this.responseAbort === abort) await this.stop().catch(() => undefined)
       throw error
     }
@@ -155,7 +174,10 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
   private async stopSession(): Promise<void> {
     if (!this.active && this.capture === undefined && !this.hostLeaseActive) return
     const leaseRequest = this.leaseRequest
+    const diagnostics = this.diagnostics
+    const stopped = performance.now()
     this.active = false
+    this.chatStreaming = false
     this.cancelReply()
     this.uploader?.close()
     this.uploader = undefined
@@ -181,6 +203,9 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
     }
     this.epoch += 1
     this.emit({ type: 'state', state: 'disabled', epoch: this.epoch })
+    diagnostics?.record('client.call.stopped', { epoch: this.epoch, durationMs: performance.now() - stopped })
+    diagnostics?.dispose()
+    if (this.diagnostics === diagnostics) this.diagnostics = undefined
     if (captureError !== undefined) throw captureError
   }
 
@@ -202,12 +227,19 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
     if (epoch !== this.epoch || text.trim() === '' || !isCurrent()) return
     const tts = readAssistantTtsSettings(this.services.settings?.getSnapshot().value?.assistant.tts)
     const parameters = readAssistantTtsParameters(tts.parameters)
+    const reply = this.reply
+    const onStart = (): void => {
+      if (epoch !== this.epoch || !isCurrent()) return
+      if (reply !== undefined && !reply.playbackStarted) {
+        reply.playbackStarted = true
+        this.trace('client.turn.first_playback_scheduled', { requestId: reply.requestId, epoch, firstPlaybackMs: performance.now() - reply.startedAt })
+      }
+      this.emit({ type: 'state', state: 'speaking', epoch })
+    }
     if (tts.backend === 'moss-onnx') {
       globalThis.speechSynthesis?.cancel()
       // 完整试听等待播放结束；对话分段只等待合成结束，下一段可在播放期间准备。
-      const completed = await this.output[settleState ? 'speak' : 'append'](text.trim(), tts.selectedId, () => {
-        if (epoch === this.epoch && isCurrent()) this.emit({ type: 'state', state: 'speaking', epoch })
-      }, parameters)
+      const completed = await this.output[settleState ? 'speak' : 'append'](text.trim(), tts.selectedId, onStart, parameters)
       if (settleState && completed && this.active && epoch === this.epoch && isCurrent()) this.emit({ type: 'state', state: 'listening', epoch })
       return
     }
@@ -222,7 +254,7 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
       utterance.lang = 'zh-CN'
       utterance.rate = parameters.rate
       utterance.volume = parameters.volume
-      utterance.onstart = () => { if (epoch === this.epoch && isCurrent()) this.emit({ type: 'state', state: 'speaking', epoch }) }
+      utterance.onstart = onStart
       utterance.onend = () => resolve()
       utterance.onerror = (event) => { if (isCurrent()) reject(new Error(`浏览器语音播报失败：${event.error}`)); else resolve() }
       synthesis.speak(utterance)
@@ -280,8 +312,17 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
   private handleEvent(value: Record<string, unknown>): void {
     const eventEpoch = readEpoch(value, this.epoch)
     if (eventEpoch < this.epoch || typeof value.type !== 'string') return
+    if (value.type === 'chat') {
+      const reply = this.reply
+      if (reply !== undefined && eventEpoch === reply.epoch && isVoiceChatRun(value.run) && value.run.requestId === reply.requestId) {
+        reply.updates.push(value.run)
+        this.trace('client.turn.stream_update', { requestId: reply.requestId, epoch: eventEpoch, state: value.run.state, textLength: value.run.text.length })
+      }
+      return
+    }
     if (eventEpoch > this.epoch || value.type === 'barge-in') this.cancelReply()
     this.epoch = eventEpoch
+    this.trace('client.voice.event', { epoch: eventEpoch, state: value.type as string, textLength: typeof value.text === 'string' ? value.text.length : undefined })
     if (value.type === 'state' && typeof value.state === 'string') {
       // 识别器继续收音，等待回复时保留思考／播报状态。
       if (this.reply === undefined || value.state !== 'listening') this.emit({ type: 'state', state: value.state as VoiceRuntimeState, epoch: eventEpoch })
@@ -300,10 +341,20 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
 
   private async handleFinalText(text: string, epoch: number, requestId: string): Promise<void> {
     this.cancelReply()
-    const reply = { requestId, epoch, abort: new AbortController() }
+    const reply = { requestId, epoch, abort: new AbortController(), startedAt: performance.now(), updates: new VoiceChatUpdates(), playbackStarted: false }
     this.reply = reply
+    const started = performance.now()
+    const fields = { requestId, epoch, textLength: text.length }
+    const diagnostics = this.diagnostics
+    const trace: VoiceDiagnosticTrace = (event, metrics) => diagnostics?.record(event, { ...fields, ...metrics })
+    let polls = 0; let firstText = false; let firstSentence = false
+    let outcome = 'cancelled'
+    trace('client.turn.start')
     const isCurrent = (): boolean => this.active && this.epoch === epoch && this.reply === reply && !reply.abort.signal.aborted
-    const sentences = new StreamingSentenceQueue((sentence) => this.speak(sentence, epoch, isCurrent, false), isCurrent)
+    const sentences = new StreamingSentenceQueue(async (sentence) => {
+      if (!firstSentence) { firstSentence = true; trace('client.turn.first_sentence', { firstSentenceMs: performance.now() - started }) }
+      await this.speak(sentence, epoch, isCurrent, false)
+    }, isCurrent, Date.now, (event, metrics) => trace(`client.${event}`, metrics))
     const payload = { ownerId: this.configuredOwner, epoch, requestId, sequence: ++this.replySequence }
     try {
       await this.clearOperation
@@ -313,35 +364,52 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
       let previousText = ''
       while (isCurrent()) {
         if (!result.ok) throw new Error(result.error.message)
+        // 首次推送可能早于 start RPC 返回；累计快照优先，不能被旧响应覆盖。
+        const pushed = reply.updates.take()
+        if (pushed !== undefined && (!isRecord(result.value) || result.value.state === 'running' || pushed.state !== 'running')) result = { ok: true, value: pushed }
         const run = result.value
         if (!isRecord(run) || typeof run.text !== 'string' || !['running', 'completed', 'failed', 'cancelled'].includes(String(run.state))) throw new Error('语音 LLM 返回了无效的对话状态')
         if (run.text !== previousText || run.state === 'completed') {
+          if (!firstText && run.text.trim() !== '') { firstText = true; trace('client.turn.first_text', { firstTextMs: performance.now() - started }) }
           previousText = run.text
           this.emit({ type: 'reply', requestId, text: run.text, final: run.state === 'completed', epoch })
         }
         if (run.state === 'running' || run.state === 'completed') sentences.push(run.text, run.state === 'completed')
         if (run.state === 'completed') {
+          trace('client.turn.llm_completed', { durationMs: performance.now() - started, count: polls, textLength: run.text.length })
           await sentences.drain()
           if (isCurrent()) await this.output.finish()
           if (isCurrent()) this.emit({ type: 'state', state: 'listening', epoch })
+          outcome = isCurrent() ? 'completed' : 'cancelled'
           return
         }
         if (run.state !== 'running') throw new Error(typeof run.error === 'string' ? run.error : '语音 LLM 对话已停止')
-        await waitForReplyPoll(reply.abort.signal)
+        if (this.chatStreaming) {
+          const pushed = await reply.updates.next(reply.abort.signal)
+          if (pushed !== undefined) { result = { ok: true, value: pushed }; continue }
+          if (isCurrent()) trace('client.turn.poll_fallback')
+        } else await waitForReplyPoll(reply.abort.signal)
         if (!isCurrent()) return
+        const pollStarted = performance.now(); polls++
         result = await this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/chat/read', payload, reply.abort.signal)
+        if (performance.now() - pollStarted >= 250) trace('client.turn.slow_poll', { durationMs: performance.now() - pollStarted })
       }
     } catch (error) {
       if (isCurrent()) {
+        outcome = 'failed'; trace('client.turn.error', { errorName: voiceDiagnosticError(error), durationMs: performance.now() - started })
         this.emit({ type: 'error', code: 'voice_chat_failed', message: error instanceof Error ? error.message : String(error), recoverable: true, epoch })
         this.cancelReply()
       }
-    } finally { if (this.reply === reply) this.reply = undefined }
+    } finally {
+      trace('client.turn.finished', { state: outcome, count: polls, durationMs: performance.now() - started })
+      if (this.reply === reply) this.reply = undefined
+    }
   }
 
   private cancelReply(): void {
     const reply = this.reply
     this.reply = undefined
+    if (reply !== undefined) this.trace('client.turn.cancel', { requestId: reply.requestId, epoch: reply.epoch })
     reply?.abort.abort()
     this.cancelOutput()
     if (reply !== undefined) void this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/chat/cancel', { ownerId: this.configuredOwner, epoch: reply.epoch, requestId: reply.requestId }).catch(() => undefined)
@@ -356,6 +424,7 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
 
   private failTransport(error: Error, abort: AbortController): void {
     if (this.responseAbort !== abort || abort.signal.aborted) return
+    this.trace('client.transport.error', { epoch: this.epoch, errorName: voiceDiagnosticError(error) })
     void this.stop().catch(() => undefined).then(() => {
       if (!this.active) this.emit({ type: 'error', code: 'voice_stream_failed', message: error.message, recoverable: false, epoch: this.epoch })
     })
@@ -372,6 +441,9 @@ function resolveVoiceStreamUrl(path: string, parameters: Record<string, string>)
 function createClientId(): string { try { return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` } catch { return `${Date.now()}-${Math.random()}` } }
 function readEpoch(value: Record<string, unknown>, fallback: number): number { return typeof value.epoch === 'number' && Number.isInteger(value.epoch) ? value.epoch : fallback }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
+function isVoiceChatRun(value: unknown): value is AssistantChatRun {
+  return isRecord(value) && typeof value.requestId === 'string' && typeof value.text === 'string' && value.text.length <= 16000 && ['running', 'completed', 'failed', 'cancelled'].includes(String(value.state))
+}
 
 function waitForReplyPoll(signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {

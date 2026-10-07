@@ -36,6 +36,14 @@ export class AssistantVoiceChat {
 
   constructor(private readonly chat: AssistantTextChat, private readonly conversation?: AssistantConversation) {}
 
+  /** 只向持有本轮租约的页面发送自己的累计文字，不能泄露其他对话。 */
+  subscribe(ownerId: string, listener: (run: AssistantChatRun, epoch: number) => void): () => void {
+    return this.chat.subscribe((run) => {
+      const entry = this.entries.get(run.requestId)
+      if (entry?.ownerId === ownerId && entry.context.isCurrent()) listener(run, entry.epoch)
+    })
+  }
+
   async start(ownerId: string, epoch: number, requestId: string, text: string, context: AssistantVoiceChatContext, sequence?: number): Promise<AssistantChatRun> {
     if (this.cancelledRequests.has(JSON.stringify([ownerId, epoch, requestId]))) throw new Error('语音对话已取消')
     const orderKey = JSON.stringify([ownerId, epoch])

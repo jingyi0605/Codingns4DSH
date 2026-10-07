@@ -10,6 +10,31 @@ import { MossTtsWorker } from '../src/host/features/moss-tts-worker.js'
 const options = { python: process.env.CODINGNS4DSH_TTS_PYTHON?.trim() || (process.platform === 'win32' ? 'python' : 'python3'),
   script: fileURLToPath(new URL('./fixtures/moss-worker.py', import.meta.url)), modelDirectory: 'fixture', idleMs: 50, timeoutMs: 2000 }
 
+test('预热与首句共用尚未完成的模型启动，不占用推理名额或重复启动进程', async (t) => {
+  const worker = new MossTtsWorker({ ...options, modelDirectory: 'slow-start', idleMs: 2000 })
+  t.after(() => worker.dispose())
+  const warming = worker.prepare()
+  const otherWarmup = worker.prepare()
+  const first = worker.request('synthesize', { text: '第一句' })
+  const [, , result] = await Promise.all([warming, otherWarmup, first])
+  assert.equal((await worker.request('probe', {})).pid, result.pid)
+  await worker.prepare()
+  assert.equal((await worker.request('probe', {})).pid, result.pid)
+})
+
+test('预热取消和超时释放加载中的进程，后续启动仍可重试', async (t) => {
+  const worker = new MossTtsWorker({ ...options, modelDirectory: 'slow-start', idleMs: 2000 })
+  t.after(() => worker.dispose())
+  const abort = new AbortController()
+  const warming = worker.prepare(abort.signal)
+  setTimeout(() => abort.abort(), 30)
+  await assert.rejects(warming, /取消/u)
+  assert.ok((await worker.request('probe', {})).pid)
+  const timeout = new MossTtsWorker({ ...options, modelDirectory: 'slow-start', timeoutMs: 40 })
+  t.after(() => timeout.dispose())
+  await assert.rejects(timeout.prepare(), /超时/u)
+})
+
 test('工作进程复用、传递所选音色、流式 PCM，空闲后释放', async (t) => {
   const worker = new MossTtsWorker(options); t.after(() => worker.dispose())
   const first = await worker.request('probe', {})

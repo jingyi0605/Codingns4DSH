@@ -1,4 +1,5 @@
 import { ASSISTANT_TTS_PATH, readAssistantTtsParameters, type AssistantTtsParameters } from '../shared/assistant-tts.js'
+import { voiceDiagnosticId, voiceDiagnosticError, type VoiceDiagnosticTrace, type VoiceDiagnosticFields } from '../shared/voice-diagnostics.js'
 
 type SinkAudioContext = AudioContext & { setSinkId?: (id: string) => Promise<void> }
 
@@ -14,7 +15,7 @@ export class MossVoiceOutput {
   private muted = false
   private volume = 1
 
-  constructor(private readonly options: { fetch?: typeof fetch; context?: () => AudioContext } = {}) {}
+  constructor(private readonly options: { fetch?: typeof fetch; context?: () => AudioContext; trace?: VoiceDiagnosticTrace; traceContext?: () => VoiceDiagnosticFields } = {}) {}
 
   get outputDeviceSupported(): boolean { return typeof (globalThis.AudioContext?.prototype as SinkAudioContext | undefined)?.setSinkId === 'function' }
 
@@ -44,24 +45,33 @@ export class MossVoiceOutput {
 
   /** 由文本队列串行调用；收到生成结束即可提交下一段，不取消仍在播放的前一段。 */
   async append(text: string, voiceId?: string, onStart?: () => void, parameters?: Partial<AssistantTtsParameters>): Promise<boolean> {
+    const started = performance.now()
+    const diagnosticId = voiceDiagnosticId()
+    const fields: VoiceDiagnosticFields = { ...this.options.traceContext?.(), diagnosticId, textLength: text.length }
+    const trace: VoiceDiagnosticTrace = (event, metrics) => this.options.trace?.(`client.tts.${event}`, { ...fields, ...metrics })
+    let chunks = 0; let audioMs = 0; let lastChunkAt = started
     const playback = readAssistantTtsParameters(parameters)
     const sequence = this.sequence
     const continuation = this.abort !== undefined
     const abort = this.abort ?? new AbortController(); this.abort = abort
     const readerSignal = abort.signal
+    trace('start', { continuation })
     try {
       await this.prepare()
       if (readerSignal.aborted) return false
+      const queueStarted = performance.now()
       // 只提前准备有限音频；继续播放时逐步放行，仍只使用一个 Host 推理进程。
       await this.waitUntil(() => this.sources.size === 0 || this.nextStart - this.context!.currentTime <= 5, readerSignal)
       if (readerSignal.aborted) return false
+      trace('queue_ready', { waitMs: performance.now() - queueStarted, queueMs: Math.max(0, this.nextStart - this.context!.currentTime) * 1000 })
       this.volume = playback.volume
       this.gain!.gain.value = this.muted ? 0 : this.volume
       const response = await (this.options.fetch ?? globalThis.fetch)(new URL(ASSISTANT_TTS_PATH, globalThis.location?.origin ?? 'http://localhost'), {
         method: 'POST', credentials: 'same-origin', signal: readerSignal,
         headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
-        body: JSON.stringify({ text, parameters: playback, ...(voiceId === undefined ? {} : { voiceId }) }),
+        body: JSON.stringify({ text, parameters: playback, diagnosticId, ...(voiceId === undefined ? {} : { voiceId }), ...(fields.requestId === undefined ? {} : { requestId: fields.requestId }), ...(fields.ownerId === undefined ? {} : { ownerId: fields.ownerId }) }),
       })
+      trace('headers', { status: response.status, durationMs: performance.now() - started })
       if (!response.ok) {
         const value = await response.json().catch(() => ({})) as { error?: unknown }
         throw new Error(typeof value.error === 'string' ? value.error : `Host TTS 请求失败（${response.status}）`)
@@ -85,10 +95,17 @@ export class MossVoiceOutput {
               if (event.type === 'error') throw new Error(String(event.message))
               if (event.type === 'done') completed = true
               else if (event.type === 'audio') {
+                const arrived = performance.now()
+                if (chunks === 0) trace('first_audio', { firstAudioMs: arrived - started })
+                const samples = decodeMossPcm(event)
+                const decodeMs = performance.now() - arrived
+                chunks++; audioMs += samples.length / Number(event.sampleRate) * 1000
+                trace('chunk', { chunks, decodeMs, samples: samples.length, audioMs: samples.length / Number(event.sampleRate) * 1000, intervalMs: arrived - lastChunkAt, queueMs: Math.max(0, this.nextStart - this.context!.currentTime) * 1000 })
+                lastChunkAt = arrived
                 if (!played && continuation) this.nextStart += playback.segmentPauseMs / 1000
                 await this.waitUntil(() => this.sources.size === 0 || this.nextStart - this.context!.currentTime <= 5, readerSignal)
                 if (readerSignal.aborted) return false
-                this.enqueue(decodeMossPcm(event), Number(event.sampleRate), playback.rate)
+                this.enqueue(samples, Number(event.sampleRate), playback.rate, trace, chunks === 1 && !continuation)
                 if (!played) { played = true; onStart?.() }
               } else throw new Error('Host TTS 返回未知事件')
             }
@@ -97,8 +114,10 @@ export class MossVoiceOutput {
         }
       } finally { await reader.cancel().catch(() => undefined); reader.releaseLock() }
       if (!completed || !played || buffer.trim() !== '') throw new Error('Host TTS 音频流未完整结束')
+      trace('generated', { durationMs: performance.now() - started, chunks, audioMs, realTimeFactor: audioMs > 0 ? (performance.now() - started) / audioMs : 0 })
       return !readerSignal.aborted && sequence === this.sequence
     } catch (error) {
+      trace('error', { aborted: readerSignal.aborted, durationMs: performance.now() - started, errorName: voiceDiagnosticError(error) })
       if (readerSignal.aborted || sequence !== this.sequence) return false
       this.cancel()
       throw error
@@ -123,7 +142,7 @@ export class MossVoiceOutput {
 
   dispose(): void { this.cancel(); this.gain?.disconnect(); this.gain = undefined; const context = this.context; this.context = undefined; void context?.close().catch(() => undefined) }
 
-  private enqueue(samples: Float32Array, sampleRate: number, rate: number): void {
+  private enqueue(samples: Float32Array, sampleRate: number, rate: number, trace: VoiceDiagnosticTrace, first: boolean): void {
     const context = this.context!
     // 最多保留 30 秒待播音频，让异常快速生成也不能无限积压浏览器内存。
     if (this.nextStart - context.currentTime > 30) throw new Error('MOSS 播放队列过长，请缩短文本')
@@ -133,6 +152,9 @@ export class MossVoiceOutput {
     source.onended = () => { this.sources.delete(source); source.disconnect() }
     this.sources.add(source)
     const start = Math.max(context.currentTime + 0.02, this.nextStart)
+    const gapMs = this.nextStart > 0 ? Math.max(0, context.currentTime - this.nextStart) * 1000 : 0
+    trace('playback_scheduled', { gapMs, queueMs: (start - context.currentTime) * 1000, sourceCount: this.sources.size, contextState: context.state, muted: this.muted })
+    if (first) trace('first_playback_scheduled', { queueMs: (start - context.currentTime) * 1000 })
     // 后一块按实际变速后的时长接续，避免调快时留空隙、调慢时相互重叠。
     source.start(start); this.nextStart = start + buffer.duration / rate
   }
