@@ -67,7 +67,7 @@ function AssistantToolCallView({ call, t }: { readonly call: AssistantToolCall; 
           color, background: `color-mix(in srgb, ${color} 9%, transparent)` } }, createElement(AssistantToolIcon, { kind: call.kind })),
         createElement('span', { style: { flex: '1 1 auto', minWidth: 0, display: 'grid', gap: 1 } },
           createElement('strong', { style: { fontSize: 12, fontWeight: 600 } }, label),
-          createElement('span', { title: call.name, style: { color: dshThemeColor.labelSecondary, fontFamily: dshThemeColor.codeFont,
+          createElement('span', { className: 'codingns-assistant-tool-name', title: call.name, style: { color: dshThemeColor.labelSecondary, fontFamily: dshThemeColor.codeFont,
             fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, call.name)),
         createElement('span', { style: { display: 'grid', justifyItems: 'end', gap: 3, flexShrink: 0 } },
           createElement('span', { role: 'status', style: { display: 'inline-flex', alignItems: 'center', gap: 4, color,

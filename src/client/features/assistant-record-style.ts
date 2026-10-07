@@ -20,6 +20,7 @@ const recordCss = `
 .codingns-assistant-tool-summary:active,.codingns-assistant-record-button:active{background:${dshThemeColor.activeBackground}!important}
 .codingns-assistant-tool-summary:focus-visible,.codingns-assistant-record-button:focus-visible{outline:2px solid ${dshThemeColor.accent};outline-offset:2px}
 .codingns-assistant-tool-details[open]>.codingns-assistant-tool-summary{border-radius:9px 9px 0 0}
+.codingns-assistant-tool-details[open] .codingns-assistant-tool-name{white-space:normal!important;overflow-wrap:anywhere}
 .codingns-assistant-tool-details[open]>.codingns-assistant-tool-summary .codingns-assistant-record-chevron{transform:rotate(90deg)}
 .codingns-assistant-voice-dialog::backdrop{background:${dshThemeColor.overlay}}
 `
