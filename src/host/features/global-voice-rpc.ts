@@ -142,10 +142,21 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       context.resources.add(() => textChat.dispose())
       context.resources.add(() => indexAnalysis.dispose())
       context.resources.add(() => updates.dispose())
-      const withIndexAnalysis = (snapshot: AssistantSessionIndexSnapshot): AssistantSessionIndexSnapshot => {
+      const withIndexAnalysis = (snapshot: AssistantSessionIndexSnapshot, metadata: readonly SessionIndexEntry[] = snapshot.entries): AssistantSessionIndexSnapshot => {
         const run = indexAnalysis.read()
-        const entries = snapshot.entries.map((entry) => ({ ...entry, indexedVersion: updates.stamp(entry).indexedVersion ?? 0 }))
-        return { ...snapshot, entries, ...(run === undefined || run.generation !== snapshot.generation ? {} : { analysis: run }) }
+        const tasks = new Map((run?.tasks ?? []).map((task) => [assistantSessionKey(task), task]))
+        const liveEntries = new Map(metadata.map((entry) => [assistantSessionKey(entry), entry]))
+        const entries = snapshot.entries.map((entry) => {
+          // 同步运行状态与索引进度，但保留正文实际来自的版本，不能把旧材料伪装成新版本。
+          const live = liveEntries.get(assistantSessionKey(entry)) ?? entry
+          const { sourceVersion: _currentVersion, ...current } = updates.stamp({ ...entry, waiting: live.waiting, error: live.error ?? false }, tasks.get(assistantSessionKey(entry)))
+          return { ...current, ...(entry.sourceVersion === undefined ? {} : { sourceVersion: entry.sourceVersion }) }
+        })
+        if (run === undefined || run.generation !== snapshot.generation) return { ...snapshot, entries }
+        // 模型提取的进展证据保持原样，Host 填充的执行状态跟随当前会话同步。
+        const statuses = new Map(entries.map((entry) => [assistantSessionKey(entry), entry.status]))
+        const analysis = run.result === undefined ? run : { ...run, result: { ...run.result, sessions: run.result.sessions.map((session) => ({ ...session, sourceStatus: statuses.get(assistantSessionKey(session)) ?? session.sourceStatus })) } }
+        return { ...snapshot, entries, analysis }
       }
       const cancelIndexAnalysis = (): void => indexAnalysis.cancelActive()
       // 正文索引立即返回，LLM 在后台生成；轮询现有调试接口即可读取进度与结果。
@@ -693,7 +704,8 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
             // 归档、空白状态或工作区成员关系变化后，旧正文不能继续冒充当前结果。
             const matching = history.index !== undefined && sameManagedScope(history.index, managed) && sameIndexMembership(history.index, metadata)
             if (history.index !== undefined && !matching) { textChat.cancelActive(); updates.schedule(false) }
-            const index = matching ? withIndexAnalysis(history.index!) : metadata
+            const index = matching ? withIndexAnalysis(history.index!, metadata.entries) : metadata
+            const tasks = new Map((indexAnalysis.read()?.tasks ?? []).map((task) => [assistantSessionKey(task), task]))
             const summary = summarizeAssistantEntries(index.entries, index.scope, index.generation, index.unreadableCount, 0)
             const query = readOptionalService(context.services.dshContext, 'sessionQuery')
             const snapshot: AssistantDebugSnapshot = {
@@ -704,7 +716,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
               workspaces: [...readWorkspaceRecords(context.services.dshContext).map((workspace) => ({ workspaceId: workspace.id, name: workspace.name, path: workspace.path })), ...await readRemoteWorkspaces()],
               modelId: readAssistantVoiceSettings(context.services).modelId ?? '',
               warnings: source.warnings,
-              scopeSessions: metadata.entries.map((entry) => updates.stamp(entry)),
+              scopeSessions: metadata.entries.map((entry) => updates.stamp(entry, tasks.get(assistantSessionKey(entry)))),
               indexState: readDebugIndexState(index, { building: buildingIndex !== undefined && buildingIndexRevision === indexRevision, exists: history.index !== undefined, current: lastSnapshot === history.index && matching && updates.matches(index) }),
               indexedAt: matching ? history.indexedAt : null,
               records: journal.snapshot().records,
@@ -927,6 +939,7 @@ function readDebugIndexState(index: AssistantSessionIndexSnapshot, state: { read
   if (state.building || index.analysis?.state === 'running') return 'building'
   if (!state.exists) return 'not-built'
   if (!state.current) return 'stale'
+  if (index.entries.some((entry) => entry.indexState !== undefined && entry.indexState !== 'completed')) return 'incomplete'
   if (index.entries.length > 0 && (index.analysis?.state !== 'completed' || index.analysis.result?.sessions.length !== index.entries.length || index.analysis.tasks?.some((task) => task.state === 'deferred'))) return 'incomplete'
   return 'ready'
 }
@@ -1068,21 +1081,21 @@ async function readAssistantSource(services: CodingNsHostServices, managedWorksp
     const agent = sourceHostId === hostId ? readOptionalService(ctx, 'agents')?.get?.(sessionId) : undefined
     const state = readText(value, ['state', 'status']) ?? ''
     // live 只说明存在内存实例；真实运行状态从原生列表或 Agent 状态读取。
-    const running = agent?.status === 'running' || value?.running === true || /running|active|working/iu.test(state)
-    // listSessions 的 persisted/live 只是可用性包装，不足以证明会话已完成；
-    // 没有显式状态时保留 completed=false，由索引 status=unknown 表示未知。
-    const completed = value?.completed === true || /completed|complete|done/iu.test(state)
+    const running = value?.running === true || /^(running|active|working|queued)$/iu.test(state)
+    // persisted/live 只表示可用性；本轮完成由明确的空闲状态证明。
+    const completed = value?.completed === true || /^(completed|complete|done|success)$/iu.test(state)
+    // 实时 Agent 和 Gateway 的明确 activity 优先于可能滞后的列表布尔值。
     const activity = agent?.status === 'running' || agent?.status === 'idle' ? agent.status
-      : running ? 'running' : ['running', 'idle', 'unknown'].includes(value?.activity) ? value!.activity : value?.running === false || completed || /idle|error|failed/iu.test(state) ? 'idle' : 'unknown'
+      : ['running', 'idle', 'unknown'].includes(value?.activity) ? value!.activity : running ? 'running' : value?.running === false || completed || /^(idle|error|failed|cancelled|canceled|stopped)$/iu.test(state) ? 'idle' : 'unknown'
     return [{
       sessionId,
       workspaceId,
       workspaceName: sourceWorkspaceName ?? workspace?.name ?? workspaceId,
       hostId: sourceHostId,
-      running: running && !completed,
+      running: activity === 'running',
       activity,
-      completed,
-      error: value?.error === true || /error|failed/iu.test(state),
+      completed: activity === 'idle',
+      error: value?.error === true || /^(error|failed)$/iu.test(state),
       updatedAt: readTimestamp(value, ['updatedAt', 'updated', 'lastUpdatedAt']) ?? readTimestamp(header, ['updatedAt', 'updated', 'lastUpdatedAt']),
       waiting: readWaiting(value) ?? waitingBySession.get(sessionId) ?? null,
       title: readText(value, ['title', 'name', 'displayName']),
@@ -1307,8 +1320,9 @@ function readIndexRunning(event: string, args: readonly unknown[]): boolean | nu
     if (typeof item === 'boolean') return item
     const value = asRecord(item)
     if (typeof value?.running === 'boolean') return value.running
-    if (value?.status === 'running') return true
-    if (value?.status === 'idle') return false
+    const status = readText(value, ['status', 'state']) ?? (typeof item === 'string' && item !== args[0] ? item : '')
+    if (/^(running|active|working|queued)$/iu.test(status)) return true
+    if (/^(idle|completed|complete|done|success|error|failed|cancelled|canceled|stopped)$/iu.test(status)) return false
   }
   return null
 }

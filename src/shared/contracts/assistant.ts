@@ -4,6 +4,8 @@ export type AssistantWaitingKind = 'approval' | 'question'
 
 export type AssistantSessionStatus = 'waiting' | 'error' | 'running' | 'completed'
 export type AssistantSummaryCategory = AssistantSessionStatus
+/** 逐会话索引进度，与会话自身的执行状态独立。 */
+export type AssistantSessionIndexState = 'pending' | 'waiting' | 'queued' | 'running' | 'completed' | 'stale' | 'failed' | 'cancelled'
 
 export interface AssistantSummaryOptions {
   readonly scope?: AssistantScopeStateSnapshot
@@ -22,6 +24,7 @@ export interface SessionIndexEntry {
   readonly workspaceName: string
   readonly hostId: string
   readonly running: boolean
+  /** 当前执行轮次已结束，不代表历史项目任务全部完成。 */
   readonly completed: boolean
   /** 原始会话没有可确认状态时保留 unknown，不用布尔默认值猜测。 */
   readonly status?: AssistantSessionStatus | 'unknown'
@@ -34,6 +37,7 @@ export interface SessionIndexEntry {
   readonly activity?: 'running' | 'idle' | 'unknown'
   readonly sourceVersion?: number
   readonly indexedVersion?: number
+  readonly indexState?: AssistantSessionIndexState
 }
 
 /** 一次索引构建的不可变快照。 */

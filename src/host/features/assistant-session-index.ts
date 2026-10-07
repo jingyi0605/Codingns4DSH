@@ -112,34 +112,31 @@ export async function buildAssistantSessionIndex(
         // 单个会话的等待状态读取失败不应阻断其他会话索引。
       }
     }
-    const status = waiting !== null
-      ? 'waiting' as const
-      : session.error === true
-        ? 'error' as const
-        : session.running
-          ? 'running' as const
-          : session.completed
-            ? 'completed' as const
-            : 'unknown' as const
     entries.push({
       sessionId: session.sessionId,
       title: lastSessionTitle(session.titleEvents) ?? session.title ?? null,
       workspaceId: session.workspaceId,
       workspaceName: session.workspaceName,
       hostId: session.hostId,
-      running: session.running,
-      completed: session.completed,
-      status,
+      ...resolveAssistantSessionState({ ...session, waiting }),
       ...(session.error === undefined ? {} : { error: session.error }),
       updatedAt: session.updatedAt,
       waiting,
       summary,
-      ...(session.activity === undefined ? {} : { activity: session.activity }),
       ...(session.sourceVersion === undefined ? {} : { sourceVersion: session.sourceVersion }),
       ...(session.indexedVersion === undefined ? {} : { indexedVersion: session.indexedVersion }),
     })
   }
   return { generation: options.generation ?? 0, entries, excludedTargets, scope: filtered.state, unreadableCount }
+}
+
+/** 统一事实映射：明确 idle 表示本轮结束，明确 unknown 不能被默认布尔值覆盖。 */
+export function resolveAssistantSessionState(session: Pick<SessionIndexEntry, 'activity' | 'running' | 'completed' | 'error' | 'waiting'>): Pick<SessionIndexEntry, 'activity' | 'running' | 'completed' | 'status'> {
+  const activity = session.activity ?? (session.running ? 'running' : session.completed || session.error === true ? 'idle' : 'unknown')
+  const running = activity === 'running'
+  const completed = activity === 'idle' && session.error !== true && session.waiting === null
+  const status = session.waiting !== null ? 'waiting' : session.error === true ? 'error' : running ? 'running' : completed ? 'completed' : 'unknown'
+  return { activity, running, completed, status }
 }
 
 /** 最后一条有效 session/title 事件胜出；暂态空值不覆盖已有标题。 */
