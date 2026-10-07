@@ -1,5 +1,10 @@
 export const en = {
+  'voice.models.prepared': 'Model resources are ready. Save the configuration to use this recognition model.',
+  'voice.settings.input': 'Speech input', 'voice.settings.output': 'Speech output',
+  'voice.settings.inputDescription': 'Recognition model and microphone',
+  'voice.settings.outputDescription': 'Voice, previews and speech controls',
   'voice.models.description': 'Check downloads, verify a model, and choose which model to use.',
+  'voice.models.recognitionHint': 'Converts microphone speech to text. Managed independently of the voice used for playback.',
   'voice.models.current': 'Current model',
   'voice.models.none': 'No model configured',
   'voice.models.custom': 'Custom model configured',
@@ -37,7 +42,12 @@ export const en = {
 }
 
 export const zh: Record<keyof typeof en, string> = {
+  'voice.models.prepared': '模型资源已准备好，保存配置后使用此识别模型。',
+  'voice.settings.input': '语音输入', 'voice.settings.output': '语音输出',
+  'voice.settings.inputDescription': '识别模型与麦克风设置',
+  'voice.settings.outputDescription': '音色、试听与播报参数',
   'voice.models.description': '查看下载状态，验证模型可用性，选择当前使用的模型。',
+  'voice.models.recognitionHint': '将麦克风语音转换为文字，与播报音色独立设置。',
   'voice.models.current': '当前模型',
   'voice.models.none': '尚未配置模型',
   'voice.models.custom': '已配置自定义模型',

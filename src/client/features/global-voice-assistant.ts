@@ -1,18 +1,20 @@
-import { createElement, useEffect, useRef, useState } from 'react'
+import { createElement, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { CodingNsClientFeatureModule } from './types.js'
 import type { CodingNsClientServices } from './types.js'
-import { DEFAULT_ASSISTANT_VOICE_SETTINGS } from '../../shared/contracts/config.js'
+import { DEFAULT_ASSISTANT_SETTINGS, DEFAULT_ASSISTANT_VOICE_SETTINGS } from '../../shared/contracts/config.js'
+import { readAssistantProfile } from '../../shared/assistant-lifecycle.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { AssistantPanel } from './assistant-panel.js'
 import { ClientSherpaVoiceAdapter } from '../sherpa-voice-adapter.js'
 import { inspectBrowserVoiceSecurity } from '../voice-security.js'
 import { getGlobalVoiceAdapter, registerGlobalVoiceAdapter } from '../global-voice-runtime-registry.js'
-import { VoiceInitializationDialog } from './voice-initialization-dialog.js'
-import { VoiceConversationDialog } from './voice-conversation-dialog.js'
-import { AssistantDebugDialog } from './assistant-debug-dialog.js'
-import type { VoiceConversationMessage } from '../../shared/contracts/voice-runtime.js'
+import { AssistantWorkbench } from './assistant-workbench.js'
+import { ASSISTANT_WORKBENCH_OPEN_EVENT } from './assistant-workbench-entry.js'
+import { normalizeAssistantAppearance, resolveAssistantAvatarState, selectedAssistantAvatar } from '../../shared/assistant-avatar.js'
+import { FloatingAssistantAvatar } from '../avatar/floating.js'
+import { fillAssistantAvatarButton, useAssistantAvatarPortrait } from '../avatar/portrait.js'
 
 interface VoiceSnapshot {
   readonly active?: boolean
@@ -69,12 +71,10 @@ export const globalVoiceAssistantFeature: CodingNsClientFeatureModule = {
 
 function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientServices }): ReactElement {
   const [snapshot, setSnapshot] = useState<VoiceSnapshot>({ state: 'disabled' })
-  const [setupOpen, setSetupOpen] = useState(false)
   const [conversationOpen, setConversationOpen] = useState(false)
-  const [debugOpen, setDebugOpen] = useState(false)
+  const [initialConfiguration, setInitialConfiguration] = useState(false)
   const [conversationPending, setConversationPending] = useState(false)
   const [partialText, setPartialText] = useState('')
-  const [transcript, setTranscript] = useState<readonly VoiceConversationMessage[]>([])
   const [settingsValue, setSettingsValue] = useState(() => services.settings.getSnapshot().value)
   const ownerIdRef = useRef<string | undefined>(undefined)
   const eventSequenceRef = useRef(0)
@@ -84,6 +84,15 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   const ownerId = nativeAdapter?.configuredOwnerId ?? ownerIdRef.current
   const browserVoiceSecurity = inspectBrowserVoiceSecurity()
   const voiceSettings = settingsValue?.assistant?.voice ?? DEFAULT_ASSISTANT_VOICE_SETTINGS
+  const appearance = normalizeAssistantAppearance(settingsValue?.assistant?.appearance)
+  // 悬浮入口属于已创建助理；初始化表单里的形象预览仍可使用。
+  const floatingVisible = readAssistantProfile(settingsValue?.assistant ?? DEFAULT_ASSISTANT_SETTINGS).initialized
+    && appearance.floatingEnabled && !conversationOpen
+  const avatarModel = selectedAssistantAvatar(appearance)
+  const portrait = useAssistantAvatarPortrait(services, avatarModel)
+  const portraitRef = useRef(portrait)
+  portraitRef.current = portrait
+  const avatarState = resolveAssistantAvatarState(snapshot.state, conversationPending)
   const needsSetup = !isVoiceSettingsReady(voiceSettings)
   // 全局助理只使用 Sherpa-ONNX 流式模式；运行时不可用时明确显示错误。
   const adapter = nativeAdapter?.capabilities.realtime === true
@@ -115,14 +124,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
         }
         if (event.type === 'partial') setPartialText(event.text)
         else if (event.type === 'final' && event.text.trim() !== '') {
-          setTranscript((previous) => [...previous, { id: event.requestId ?? createVoiceLeaseOwnerId(), role: 'user', text: event.text.trim() }])
           setPartialText('')
-        } else if (event.type === 'reply') {
-          setTranscript((previous) => {
-            const id = `reply:${event.requestId}`
-            const message: VoiceConversationMessage = { id, role: 'assistant', text: event.text }
-            return previous.some((item) => item.id === id) ? previous.map((item) => item.id === id ? message : item) : [...previous, message]
-          })
         }
         if (event.type === 'state') setSnapshot({ state: event.state, active: event.state !== 'disabled', ownerId })
         else if (event.type === 'barge-in') setSnapshot({ state: 'interrupted', active: true, ownerId })
@@ -149,10 +151,9 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       }
     }
     setSnapshot({
-      state: 'error',
+      state: 'disabled',
       active: false,
       ownerId,
-      ...(realtimeUnavailableMessage === undefined ? {} : { message: realtimeUnavailableMessage }),
     })
     return undefined
   }, [adapter, ownerId, realtimeUnavailableMessage, services, t])
@@ -202,9 +203,19 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     setConversationOpen(false)
   }
 
-  const openConversation = (): void => {
+  const openConversation = useCallback((): void => {
+    setInitialConfiguration(false)
     setConversationOpen(true)
-  }
+  }, [])
+
+  useEffect(() => {
+    const open = (event: Event): void => {
+      setInitialConfiguration((event as CustomEvent<{ configuration?: boolean }>).detail?.configuration === true)
+      setConversationOpen(true)
+    }
+    window.addEventListener(ASSISTANT_WORKBENCH_OPEN_EVENT, open)
+    return () => window.removeEventListener(ASSISTANT_WORKBENCH_OPEN_EVENT, open)
+  }, [])
 
   useEffect(() => {
     const doc = typeof document === 'undefined' ? undefined : document
@@ -236,15 +247,15 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       const button = doc.createElement('button')
       button.type = 'button'
       button.setAttribute('data-codingns-global-voice-button', 'true')
-      const label = needsSetup ? t('voice.setup.open') : t('voice.globalAssistant')
+      const label = t('awb.open')
       button.setAttribute('aria-label', label)
       button.setAttribute('aria-description', [t('voice.microphoneNotice'), t('voice.audioNotice'), snapshot.message].filter(Boolean).join(' '))
       button.setAttribute('aria-haspopup', 'dialog')
-      button.setAttribute('aria-expanded', String(conversationOpen || setupOpen))
+      button.setAttribute('aria-expanded', String(conversationOpen))
       button.setAttribute('data-codingns-voice-state', snapshot.state ?? 'disabled')
       button.title = label
-      button.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 1.45 5.55L19 9l-5.55 1.45L12 16l-1.45-5.55L5 9l5.55-1.45L12 2Z"/><path d="m5 15 .7 2.3L8 18l-2.3.7L5 21l-.7-2.3L2 18l2.3-.7L5 15Z"/><path d="m19 14 .45 1.55L21 16l-1.55.45L19 18l-.45-1.55L17 16l1.55-.45L19 14Z"/></svg>'
       button.style.cssText = `display:inline-flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:8px;cursor:pointer;background:var(--ds-color-fill-tertiary,rgba(127,127,127,.12));flex:0 1 ${assistantButtonSize};min-width:${assistantButtonSize};width:${assistantButtonSize};max-width:${assistantButtonSize};height:${assistantButtonSize};aspect-ratio:1 / 1;box-sizing:border-box;white-space:nowrap;margin:0`
+      fillAssistantAvatarButton(button, portraitRef.current)
       button.addEventListener('click', openConversation)
       const parent = native.parentElement
       const row = doc.createElement('div')
@@ -299,34 +310,30 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       mountedRow?.remove()
       doc.querySelectorAll('[data-codingns-global-voice-button]').forEach((node) => node.remove())
     }
-  }, [adapter, conversationOpen, needsSetup, openConversation, setSetupOpen, setupOpen, snapshot.state, t])
+  }, [adapter, conversationOpen, needsSetup, openConversation, snapshot.state, t])
 
-  return createElement('span', { 'data-codingns-global-voice': 'true', ...(setupOpen || conversationOpen ? {} : { 'aria-hidden': 'true' }) },
-    setupOpen ? createElement(VoiceInitializationDialog, {
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    document.querySelectorAll<HTMLButtonElement>('[data-codingns-global-voice-button]').forEach((button) => fillAssistantAvatarButton(button, portrait))
+  }, [portrait.url, portrait.generated])
+
+  return createElement('div', { 'data-codingns-global-voice': 'true', ...(conversationOpen || floatingVisible ? {} : { 'aria-hidden': 'true' }) },
+    floatingVisible
+      ? createElement(FloatingAssistantAvatar, { services, model: avatarModel, state: avatarState, size: appearance.floatingSize, onOpen: openConversation }) : null,
+    conversationOpen ? createElement(AssistantWorkbench, {
       services,
-      value: voiceSettings,
-      onClose: () => setSetupOpen(false),
-    }) : conversationOpen ? createElement(VoiceConversationDialog, {
-      t,
+      initialConfiguration,
       active: snapshot.active === true,
       pending: conversationPending,
       state: snapshot.state,
       message: snapshot.message,
       partialText,
-      transcript,
       realtimeAvailable: adapter !== undefined,
       unavailableMessage: realtimeUnavailableMessage,
-      onStart: () => { void startConversation() },
-      onStop: () => { void stopConversation() },
+      onStart: startConversation,
+      onStop: stopConversation,
       onClose: closeConversation,
-      onClear: () => {
-        setTranscript([]); setPartialText('')
-        void Promise.resolve(adapter?.clearConversation?.()).catch((error: unknown) => setSnapshot((previous) => ({ ...previous, state: 'error', message: error instanceof Error ? error.message : String(error) })))
-      },
-      onDebug: () => setDebugOpen(true),
-      onConfigure: () => setSetupOpen(true),
     }) : null,
-    debugOpen ? createElement(AssistantDebugDialog, { services, onClose: () => setDebugOpen(false) }) : null,
   )
 }
 

@@ -228,6 +228,7 @@ function writeRpcResponse(response: ServerResponse, rpcId: string, result: Codin
 const CODINGNS_RPC_ENDPOINTS = [
   'auth/snapshot', 'auth/login', 'auth/logout', 'auth/devices', 'auth/bind', 'auth/unbind', 'auth/signalingTicket', 'auth/dsh/device/list', 'auth/dsh/device/start', 'auth/dsh/device/stop', 'auth/dsh/device/status', 'auth/dsh/relayTicket',
   'host/status',
+  'avatar/discover', 'avatar/install', 'avatar/list', 'avatar/remove',
   'assistant/index', 'assistant/index/rebuild', 'assistant/index/configure', 'assistant/index/cancel', 'assistant/debug', 'assistant/preview', 'assistant/summary', 'assistant/turn',
   'assistant/chat/models', 'assistant/chat/start', 'assistant/chat/read', 'assistant/chat/cancel',
   'assistant/lifecycle/read', 'assistant/lifecycle/configure', 'assistant/lifecycle/reset', 'assistant/configuration/capabilities',

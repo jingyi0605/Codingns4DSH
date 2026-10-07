@@ -13,6 +13,8 @@ import * as peerHostWorkspaceDictionary from './locales/peerHostWorkspace.js'
 import * as terminalAuthDictionary from './locales/terminalAuth.js'
 import * as usageDictionary from './locales/usage.js'
 import * as voiceModelsDictionary from './locales/voiceModels.js'
+import * as assistantTtsDictionary from './locales/assistantTts.js'
+import * as assistantWorkbenchDictionary from './locales/assistantWorkbench.js'
 
 /** Codingns4DSH 自有词典命名空间。词典缺少的语言由 DSH 自动回退到英文。 */
 export const CODINGNS_LOCALE_NS = 'codingns' as const
@@ -911,6 +913,8 @@ const en: Record<string, string> = {
   ...peerHostWorkspaceDictionary.en,
   ...usageDictionary.en,
   ...voiceModelsDictionary.en,
+  ...assistantTtsDictionary.en,
+  ...assistantWorkbenchDictionary.en,
   ...fileWorkspaceDictionary.en,
   ...terminalAuthDictionary.en,
   ...panelsDictionary.en,
@@ -926,6 +930,8 @@ const zh: Record<string, string> = {
   ...peerHostWorkspaceDictionary.zh,
   ...usageDictionary.zh,
   ...voiceModelsDictionary.zh,
+  ...assistantTtsDictionary.zh,
+  ...assistantWorkbenchDictionary.zh,
   ...fileWorkspaceDictionary.zh,
   ...terminalAuthDictionary.zh,
   ...panelsDictionary.zh,

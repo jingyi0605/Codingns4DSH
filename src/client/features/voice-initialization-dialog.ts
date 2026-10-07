@@ -7,13 +7,31 @@ import { watchVoiceModelSetupProgress } from '../voice-model-setup-progress.js'
 import type { CodingNsClientServices } from './types.js'
 import { dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from '../theme.js'
 import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
+import { assistantSettingCheckboxStyle, assistantSettingTextStyle } from '../assistant-settings-styles.js'
+import { DEFAULT_VOICE_MODEL_ID } from '../../shared/voice-initialization.js'
 
-/** 选中的卡片与 Host 当前配置分开保存，操作完成后重新读取文件事实。 */
+/** 旧入口继续使用弹窗，与声音页共用同一套模型操作。 */
 export function VoiceInitializationDialog({ services, value, onClose }: {
   readonly services: CodingNsClientServices; readonly value: AssistantVoiceSettings; readonly onClose: () => void
 }): ReactElement {
+  return createElement(VoiceModelManager, { services, value, onClose })
+}
+
+/** 识别模型独立展示，不依赖 MOSS 初始化或高级声音设置的展开状态。 */
+export function VoiceModelManagerPanel({ services, value, enabled, active }: {
+  readonly services: CodingNsClientServices; readonly value: AssistantVoiceSettings
+  readonly enabled: boolean; readonly active: boolean
+}): ReactElement {
+  return createElement(VoiceModelManager, { services, value, enabled, active })
+}
+
+/** 选中的卡片与 Host 当前配置分开保存，操作完成后重新读取文件事实。 */
+function VoiceModelManager({ services, value, enabled = true, active = true, onClose }: {
+  readonly services: CodingNsClientServices; readonly value: AssistantVoiceSettings
+  readonly enabled?: boolean; readonly active?: boolean; readonly onClose?: () => void
+}): ReactElement {
   const t = useCodingNsTranslator(services.locale)
-  const [modelId, setModelId] = useState(() => findAssistantVoiceModel(value.modelId ?? '')?.id ?? ASSISTANT_VOICE_MODEL_CATALOG[0]?.id ?? '')
+  const [modelId, setModelId] = useState(() => findAssistantVoiceModel(value.modelId ?? '')?.id ?? DEFAULT_VOICE_MODEL_ID)
   const [snapshot, setSnapshot] = useState<AssistantVoiceModelsSnapshot | undefined>()
   const [refreshing, setRefreshing] = useState(true)
   const [busy, setBusy] = useState<'setup' | 'verify' | 'repair' | undefined>()
@@ -25,7 +43,7 @@ export function VoiceInitializationDialog({ services, value, onClose }: {
   const readAbort = useRef<AbortController | undefined>()
   const stopProgress = useRef<(() => void) | undefined>()
   const pending = useRef(false)
-  const settings = services.settings.getSnapshot()
+  const [settings, setSettings] = useState(() => services.settings.getSnapshot())
 
   const refresh = useCallback(async (): Promise<void> => {
     readAbort.current?.abort()
@@ -47,27 +65,41 @@ export function VoiceInitializationDialog({ services, value, onClose }: {
 
   useEffect(() => {
     mounted.current = true
-    void refresh()
-    const onFocus = (): void => { void refresh() }
-    window.addEventListener('focus', onFocus)
-    const unsubscribe = services.settings.subscribe(onFocus)
-    return () => { mounted.current = false; readAbort.current?.abort(); stopProgress.current?.(); window.removeEventListener('focus', onFocus); unsubscribe() }
-  }, [refresh, services.settings])
+    return () => { mounted.current = false; readAbort.current?.abort(); stopProgress.current?.() }
+  }, [services.rpc])
 
   useEffect(() => {
-    if (snapshot?.operation == null || busy !== undefined) return undefined
+    if (active) void refresh()
+    const onFocus = (): void => { if (active) void refresh() }
+    window.addEventListener('focus', onFocus)
+    const unsubscribe = services.settings.subscribe(() => {
+      setSettings(services.settings.getSnapshot())
+      if (active || pending.current) void refresh()
+    })
+    return () => { window.removeEventListener('focus', onFocus); unsubscribe() }
+  }, [active, refresh, services.settings])
+
+  // 向导或其他窗口改变当前模型后同步选中项；普通状态刷新保留用户尚未应用的选择。
+  useEffect(() => {
+    const current = findAssistantVoiceModel((services.configurationDraft ? value.modelId : snapshot?.currentModelId) ?? '')
+    if (current !== undefined) setModelId(current.id)
+  }, [snapshot?.currentModelId, services.configurationDraft, value.modelId])
+
+  useEffect(() => {
+    if (!active || snapshot?.operation == null || busy !== undefined) return undefined
     const timer = setTimeout(() => void refresh(), 1000)
     return () => clearTimeout(timer)
-  }, [snapshot, busy, refresh])
+  }, [active, snapshot, busy, refresh])
 
   useEffect(() => {
+    if (onClose === undefined) return undefined
     const onEscape = (event: KeyboardEvent): void => { if (event.key === 'Escape' && !pending.current) onClose() }
     document.addEventListener('keydown', onEscape)
     return () => document.removeEventListener('keydown', onEscape)
   }, [onClose])
 
   const run = async (kind: 'setup' | 'verify' | 'repair'): Promise<void> => {
-    if (pending.current || snapshot === undefined || snapshot.operation !== null) return
+    if (!active || !enabled || pending.current || snapshot === undefined || snapshot.operation !== null) return
     if (kind !== 'verify' && (snapshot.runtimeRunning || !settings.writable || settings.status === 'loading')) return
     pending.current = true
     setBusy(kind); setError(undefined); setSuccess(undefined); setProgress(undefined)
@@ -77,7 +109,13 @@ export function VoiceInitializationDialog({ services, value, onClose }: {
       const result = await services.rpc.call(CODINGNS_RPC_CHANNEL, kind === 'verify' ? 'assistant/voice/model/verify' : 'assistant/voice/setup', request)
       if (!mounted.current) return
       if (!result.ok) throw new Error(result.error.message)
-      setSuccess(t(kind === 'verify' ? 'voice.models.verified' : 'voice.models.applied'))
+      if (kind !== 'verify') {
+        // 工作台仅更新资源草稿；独立模型管理仍重读 Host 保存结果。
+        if (services.settings.reload !== undefined) await services.settings.reload()
+        else await services.settings.load?.()
+      }
+      if (!mounted.current) return
+      setSuccess(t(kind === 'verify' ? 'voice.models.verified' : services.configurationDraft ? 'voice.models.prepared' : 'voice.models.applied'))
     } catch (cause) { if (mounted.current) setError(errorMessage(cause)) }
     finally {
       stopProgress.current?.(); stopProgress.current = undefined; pending.current = false
@@ -85,6 +123,12 @@ export function VoiceInitializationDialog({ services, value, onClose }: {
     }
   }
   const choose = (id: string): void => { setModelId(id); setError(undefined); setSuccess(undefined); setProgress(undefined) }
+  const manager = createElement(VoiceModelManagerView, { snapshot, modelId, refreshing, busy, progress, error: error ?? loadError, success,
+    enabled, writable: settings.writable && settings.status !== 'loading', onSelect: choose, onRefresh: () => void refresh(), onRun: (kind) => void run(kind), ...(onClose === undefined ? {} : { onClose }), t })
+  if (onClose === undefined) return createElement('section', {
+    'data-codingns-voice-model-manager': true, 'aria-label': t('awb.asr'), 'aria-busy': refreshing || busy !== undefined,
+    style: { display: 'grid', minWidth: 0 },
+  }, manager)
   return createElement('div', {
     role: 'presentation', onPointerDown: () => { if (!pending.current) onClose() },
     style: { position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, background: dshThemeColor.overlay, boxSizing: 'border-box' },
@@ -92,32 +136,34 @@ export function VoiceInitializationDialog({ services, value, onClose }: {
     role: 'dialog', 'aria-modal': true, 'aria-label': t('voice.setup.title'), 'aria-busy': busy !== undefined,
     onPointerDown: (event: { stopPropagation: () => void }) => event.stopPropagation(),
     style: { display: 'flex', flexDirection: 'column', width: 'min(680px, 100%)', maxHeight: 'min(780px, 100%)', color: dshThemeColor.labelPrimary, background: dshThemeColor.menuBackground, border: `1px solid ${dshThemeColor.border}`, borderRadius: 14, boxShadow: dshThemeColor.prominentShadow, overflow: 'hidden', boxSizing: 'border-box' },
-  }, createElement(VoiceModelManagerView, { snapshot, modelId, refreshing, busy, progress, error: error ?? loadError, success,
-    writable: settings.writable && settings.status !== 'loading', onSelect: choose, onRefresh: () => void refresh(), onRun: (kind) => void run(kind), onClose, t })))
+  }, manager))
 }
 
 /** 展示层保留下载、配置和验证三个维度，避免把选择动作显示成启用成功。 */
-export function VoiceModelManagerView({ snapshot, modelId, refreshing, busy, progress, error, success, writable, onSelect, onRefresh, onRun, onClose, t }: {
+export function VoiceModelManagerView({ snapshot, modelId, refreshing, busy, progress, error, success, writable, enabled = true, onSelect, onRefresh, onRun, onClose, t }: {
   readonly snapshot: AssistantVoiceModelsSnapshot | undefined; readonly modelId: string; readonly refreshing: boolean
   readonly busy: 'setup' | 'verify' | 'repair' | undefined; readonly progress: AssistantVoiceModelProgress | undefined
   readonly error: string | undefined; readonly success: string | undefined; readonly writable: boolean
-  readonly onSelect: (id: string) => void; readonly onRefresh: () => void; readonly onRun: (kind: 'setup' | 'verify' | 'repair') => void; readonly onClose: () => void
+  readonly enabled?: boolean
+  readonly onSelect: (id: string) => void; readonly onRefresh: () => void; readonly onRun: (kind: 'setup' | 'verify' | 'repair') => void; readonly onClose?: () => void
   readonly t: CodingNsTranslator
 }): ReactElement {
   const current = findAssistantVoiceModel(snapshot?.currentModelId ?? '')
   const selected = snapshot?.models.find((model) => model.modelId === modelId)
-  const locked = busy !== undefined || snapshot?.operation != null
+  const locked = !enabled || busy !== undefined || snapshot?.operation != null
   const canApply = snapshot !== undefined && !locked && writable && !snapshot.runtimeRunning
   const alreadyUsed = selected?.current === true && selected.validation.state === 'passed' && selected.state === 'downloaded'
   const action = selected?.state === 'partial' ? t('voice.models.completeDownload') : selected?.state === 'downloaded'
     ? alreadyUsed ? t('voice.models.inUse') : t('voice.models.use') : t('voice.models.downloadUse')
   return createElement('div', { style: { display: 'contents' } },
-    createElement('div', { style: { padding: '20px 22px 16px', display: 'grid', gap: 6 } },
-      createElement('div', { style: rowStyle }, createElement('strong', { style: { fontSize: 19, lineHeight: 1.4 } }, t('voice.setup.title')),
+    createElement('div', { style: { padding: onClose === undefined ? '0 0 12px' : '20px 22px 16px', display: 'grid', gap: 6 } },
+      createElement('div', { style: { ...rowStyle, flexWrap: 'wrap' } }, createElement('strong', { style: { fontSize: onClose === undefined ? 14 : 19, lineHeight: 1.4 } }, t(onClose === undefined ? 'awb.asr' : 'voice.setup.title')),
         button(t(refreshing ? 'voice.models.refreshing' : 'voice.models.refresh'), refreshing || busy !== undefined, onRefresh)),
       createElement('span', { style: helpStyle }, t('voice.models.description')),
+      onClose === undefined ? createElement('span', { style: helpStyle }, t('voice.models.recognitionHint')) : null,
     ),
-    createElement('div', { style: { overflowY: 'auto', minHeight: 0, padding: '0 22px 18px', display: 'grid', gap: 12 } },
+    createElement('div', { style: { ...(onClose === undefined ? {} : { overflowY: 'auto' }), minHeight: 0,
+      padding: onClose === undefined ? '0 0 16px' : '0 22px 18px', display: 'grid', gap: 12 } },
       createElement('div', { style: { ...noticeStyle, display: 'grid', gap: 5 } },
         createElement('span', { style: helpStyle }, t('voice.models.current')),
         createElement('strong', { style: { fontSize: 14, overflowWrap: 'anywhere' } }, snapshot === undefined ? t('voice.models.unknown') : current?.label ?? (snapshot.currentModelId ? t('voice.models.custom') : t('voice.models.none'))),
@@ -134,8 +180,9 @@ export function VoiceModelManagerView({ snapshot, modelId, refreshing, busy, pro
       error === undefined ? null : createElement('div', { role: 'alert', style: { ...noticeStyle, color: dshThemeColor.error, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' } }, error),
       createElement('span', { style: helpStyle }, t('voice.models.localHint')),
     ),
-    createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, padding: '14px 22px', borderTop: `1px solid ${dshThemeColor.border}` } },
-      button(t('voice.models.close'), busy !== undefined, onClose),
+    createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8,
+      padding: onClose === undefined ? '14px 0 0' : '14px 22px', borderTop: `1px solid ${dshThemeColor.border}` } },
+      onClose === undefined ? null : button(t('voice.models.close'), busy !== undefined, onClose),
       selected?.state === 'missing' || selected === undefined ? null : button(t('voice.models.redownload'), !canApply, () => onRun('repair')),
       button(t('voice.models.verify'), locked || selected?.state !== 'downloaded', () => onRun('verify')),
       button(action, !canApply || alreadyUsed || selected === undefined, () => onRun('setup'), true)),
@@ -150,10 +197,10 @@ export function VoiceModelCard({ model, status, selected, disabled, onSelect, t 
   const state = status === undefined ? t('voice.models.unknown') : t(status.state === 'downloaded' ? 'voice.models.downloaded' : status.state === 'partial' ? 'voice.models.partial' : 'voice.models.missing')
   const validation = status?.validation.state === 'passed' ? t('voice.models.passed') : status?.validation.state === 'failed' ? t('voice.models.failed') : t('voice.models.unchecked')
   return createElement('div', { style: { border: `1px solid ${selected ? dshThemeColor.accent : dshThemeColor.border}`, borderRadius: 9, padding: '12px 14px', background: selected ? dshThemeColor.surfaceSubtle : dshThemeColor.menuBackground, display: 'grid', gap: 8 } },
-    createElement('label', { style: { display: 'flex', alignItems: 'flex-start', gap: 10, cursor: disabled ? 'default' : 'pointer' } },
+    createElement('label', { style: { ...assistantSettingCheckboxStyle, cursor: disabled ? 'default' : 'pointer' } },
       createElement('input', { type: 'radio', name: 'voice-model', value: model.id, checked: selected, disabled, onChange: () => onSelect(model.id), style: { margin: '3px 0 0', accentColor: dshThemeColor.accent, flexShrink: 0 } }),
       createElement('span', { style: { display: 'grid', gap: 5, minWidth: 0, flex: 1 } },
-        createElement('strong', { style: { fontSize: 14, lineHeight: 1.45, overflowWrap: 'anywhere' } }, model.label),
+        createElement('span', { style: { ...assistantSettingTextStyle, overflowWrap: 'anywhere' } }, model.label),
         createElement('span', { style: helpStyle }, model.description),
         createElement('span', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
           badge(state, status?.state === 'downloaded' ? dshThemeColor.success : dshThemeColor.labelSecondary),
