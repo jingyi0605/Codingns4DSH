@@ -1,137 +1,203 @@
-import { createElement, useEffect, useState } from 'react'
-import type { ReactElement } from 'react'
+import { createElement, useCallback, useEffect, useRef, useState } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import type { AssistantVoiceSettings } from '../../shared/contracts/config.js'
-import { ASSISTANT_VOICE_MODEL_CATALOG, findAssistantVoiceModel } from '../../shared/voice-models.js'
+import { ASSISTANT_VOICE_MODEL_CATALOG, findAssistantVoiceModel, type AssistantVoiceModel, type AssistantVoiceModelProgress, type AssistantVoiceModelStatus, type AssistantVoiceModelsSnapshot } from '../../shared/voice-models.js'
+import { watchVoiceModelSetupProgress } from '../voice-model-setup-progress.js'
 import type { CodingNsClientServices } from './types.js'
-import {
-  dshFieldStyle,
-  dshSettingsButtonStyle,
-  dshSettingsHelpStyle,
-  dshSettingsPrimaryButtonStyle,
-  dshThemeColor,
-} from '../theme.js'
-import { useCodingNsTranslator } from '../locale.js'
+import { dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from '../theme.js'
+import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 
-/** 全局语音助理初始化页；用户只选择模型，路径和下载由 Host 自动处理。 */
-export function VoiceInitializationDialog({
-  services,
-  value,
-  onClose,
-}: {
-  readonly services: CodingNsClientServices
-  readonly value: AssistantVoiceSettings
-  readonly onClose: () => void
+/** 选中的卡片与 Host 当前配置分开保存，操作完成后重新读取文件事实。 */
+export function VoiceInitializationDialog({ services, value, onClose }: {
+  readonly services: CodingNsClientServices; readonly value: AssistantVoiceSettings; readonly onClose: () => void
 }): ReactElement {
   const t = useCodingNsTranslator(services.locale)
-  const defaultModelId = ASSISTANT_VOICE_MODEL_CATALOG[0]?.id ?? ''
-  const configuredModelId = value.modelId?.trim() ?? ''
-  const [modelId, setModelId] = useState(() => (
-    configuredModelId !== '' && findAssistantVoiceModel(configuredModelId) !== undefined ? configuredModelId : defaultModelId
-  ))
-  const [saving, setSaving] = useState(false)
+  const [modelId, setModelId] = useState(() => findAssistantVoiceModel(value.modelId ?? '')?.id ?? ASSISTANT_VOICE_MODEL_CATALOG[0]?.id ?? '')
+  const [snapshot, setSnapshot] = useState<AssistantVoiceModelsSnapshot | undefined>()
+  const [refreshing, setRefreshing] = useState(true)
+  const [busy, setBusy] = useState<'setup' | 'verify' | 'repair' | undefined>()
+  const [progress, setProgress] = useState<AssistantVoiceModelProgress | undefined>()
   const [error, setError] = useState<string | undefined>()
-  const settingsSnapshot = services.settings.getSnapshot()
-  const disabled = saving || settingsSnapshot.status === 'loading' || !settingsSnapshot.writable
-  const selectedModel = findAssistantVoiceModel(modelId)
+  const [loadError, setLoadError] = useState<string | undefined>()
+  const [success, setSuccess] = useState<string | undefined>()
+  const mounted = useRef(true)
+  const readAbort = useRef<AbortController | undefined>()
+  const stopProgress = useRef<(() => void) | undefined>()
+  const pending = useRef(false)
+  const settings = services.settings.getSnapshot()
+
+  const refresh = useCallback(async (): Promise<void> => {
+    readAbort.current?.abort()
+    const controller = new AbortController()
+    readAbort.current = controller
+    setRefreshing(true)
+    try {
+      const result = await services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/models', {}, controller.signal)
+      if (!mounted.current || controller.signal.aborted) return
+      if (!result.ok) throw new Error(result.error.message)
+      setSnapshot(result.value as AssistantVoiceModelsSnapshot)
+      setLoadError(undefined)
+    } catch (cause) {
+      if (mounted.current && !controller.signal.aborted) setLoadError(errorMessage(cause))
+    } finally {
+      if (mounted.current && !controller.signal.aborted) setRefreshing(false)
+    }
+  }, [services.rpc])
 
   useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape' && !saving) onClose()
-    }
-    document.addEventListener('keydown', closeOnEscape)
-    return () => document.removeEventListener('keydown', closeOnEscape)
-  }, [onClose, saving])
+    mounted.current = true
+    void refresh()
+    const onFocus = (): void => { void refresh() }
+    window.addEventListener('focus', onFocus)
+    const unsubscribe = services.settings.subscribe(onFocus)
+    return () => { mounted.current = false; readAbort.current?.abort(); stopProgress.current?.(); window.removeEventListener('focus', onFocus); unsubscribe() }
+  }, [refresh, services.settings])
 
-  const save = async (): Promise<void> => {
-    if (selectedModel === undefined) {
-      setError(t('voice.setup.modelRequired'))
-      return
-    }
-    setSaving(true)
-    setError(undefined)
+  useEffect(() => {
+    if (snapshot?.operation == null || busy !== undefined) return undefined
+    const timer = setTimeout(() => void refresh(), 1000)
+    return () => clearTimeout(timer)
+  }, [snapshot, busy, refresh])
+
+  useEffect(() => {
+    const onEscape = (event: KeyboardEvent): void => { if (event.key === 'Escape' && !pending.current) onClose() }
+    document.addEventListener('keydown', onEscape)
+    return () => document.removeEventListener('keydown', onEscape)
+  }, [onClose])
+
+  const run = async (kind: 'setup' | 'verify' | 'repair'): Promise<void> => {
+    if (pending.current || snapshot === undefined || snapshot.operation !== null) return
+    if (kind !== 'verify' && (snapshot.runtimeRunning || !settings.writable || settings.status === 'loading')) return
+    pending.current = true
+    setBusy(kind); setError(undefined); setSuccess(undefined); setProgress(undefined)
     try {
-      const result = await services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/setup', { modelId })
-      if (!result.ok) {
-        setError(result.error.message)
-        return
-      }
-      onClose()
-    } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setSaving(false)
+      const request = { modelId, requestId: `voice-model-${Date.now()}-${Math.random().toString(36).slice(2)}`, repair: kind === 'repair' }
+      if (kind !== 'verify') stopProgress.current = watchVoiceModelSetupProgress(services.rpc, request, (next) => { if (mounted.current) setProgress(next) })
+      const result = await services.rpc.call(CODINGNS_RPC_CHANNEL, kind === 'verify' ? 'assistant/voice/model/verify' : 'assistant/voice/setup', request)
+      if (!mounted.current) return
+      if (!result.ok) throw new Error(result.error.message)
+      setSuccess(t(kind === 'verify' ? 'voice.models.verified' : 'voice.models.applied'))
+    } catch (cause) { if (mounted.current) setError(errorMessage(cause)) }
+    finally {
+      stopProgress.current?.(); stopProgress.current = undefined; pending.current = false
+      if (mounted.current) { setBusy(undefined); await refresh() }
     }
   }
-
+  const choose = (id: string): void => { setModelId(id); setError(undefined); setSuccess(undefined); setProgress(undefined) }
   return createElement('div', {
-    role: 'presentation',
-    onPointerDown: () => { if (!saving) onClose() },
-    style: {
-      position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      padding: 16, background: dshThemeColor.overlay, boxSizing: 'border-box',
-    },
-  },
-    createElement('div', {
-      role: 'dialog',
-      'aria-modal': true,
-      'aria-label': t('voice.setup.title'),
-      onPointerDown: (event: { stopPropagation: () => void }) => event.stopPropagation(),
-      style: {
-        display: 'flex', flexDirection: 'column', gap: 16, width: 'min(560px, 100%)', maxHeight: 'min(620px, 100%)',
-        overflowY: 'auto', padding: 24, color: dshThemeColor.labelPrimary, background: dshThemeColor.menuBackground,
-        border: `1px solid ${dshThemeColor.border}`, borderRadius: 12, boxShadow: dshThemeColor.prominentShadow,
-        boxSizing: 'border-box',
-      },
-    },
-      createElement('div', { style: { display: 'grid', gap: 7 } },
-        createElement('strong', { style: { fontSize: 18, lineHeight: 1.4 } }, t('voice.setup.title')),
-        createElement('span', { style: dshSettingsHelpStyle }, t('voice.setup.description')),
-      ),
-      createElement('div', { style: { padding: '11px 13px', borderRadius: 8, background: dshThemeColor.inputBackground, color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.55 } },
-        t('voice.setup.onlyRealtime'),
-      ),
-      createElement('label', { style: fieldLabelStyle },
-        createElement('span', null, t('voice.setup.model')),
-        createElement('select', {
-          value: modelId,
-          disabled,
-          onChange: (event: { currentTarget: { value: string } }) => setModelId(event.currentTarget.value),
-          style: fieldStyle,
-        },
-          ...ASSISTANT_VOICE_MODEL_CATALOG.map((model) => createElement('option', { key: model.id, value: model.id }, model.label)),
-        ),
-      ),
-      selectedModel === undefined ? null : createElement('div', { style: { display: 'grid', gap: 5, color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 } },
-        createElement('strong', { style: { color: dshThemeColor.labelPrimary, fontSize: 14 } }, selectedModel.label),
-        createElement('span', null, selectedModel.description),
-        createElement('span', null, t('voice.setup.downloadHint')),
-      ),
-      saving ? createElement('div', { role: 'status', style: { color: dshThemeColor.labelSecondary, fontSize: 13 } }, t('voice.setup.downloading')) : null,
-      error === undefined ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13, lineHeight: 1.5 } }, error),
-      createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 3 } },
-        createElement('button', { type: 'button', disabled: saving, onClick: onClose, style: dshSettingsButtonStyle }, t('voice.setup.cancel')),
-        createElement('button', { type: 'button', disabled, onClick: () => void save(), style: dshSettingsPrimaryButtonStyle }, t('voice.setup.save')),
-      ),
+    role: 'presentation', onPointerDown: () => { if (!pending.current) onClose() },
+    style: { position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, background: dshThemeColor.overlay, boxSizing: 'border-box' },
+  }, createElement('div', {
+    role: 'dialog', 'aria-modal': true, 'aria-label': t('voice.setup.title'), 'aria-busy': busy !== undefined,
+    onPointerDown: (event: { stopPropagation: () => void }) => event.stopPropagation(),
+    style: { display: 'flex', flexDirection: 'column', width: 'min(680px, 100%)', maxHeight: 'min(780px, 100%)', color: dshThemeColor.labelPrimary, background: dshThemeColor.menuBackground, border: `1px solid ${dshThemeColor.border}`, borderRadius: 14, boxShadow: dshThemeColor.prominentShadow, overflow: 'hidden', boxSizing: 'border-box' },
+  }, createElement(VoiceModelManagerView, { snapshot, modelId, refreshing, busy, progress, error: error ?? loadError, success,
+    writable: settings.writable && settings.status !== 'loading', onSelect: choose, onRefresh: () => void refresh(), onRun: (kind) => void run(kind), onClose, t })))
+}
+
+/** 展示层保留下载、配置和验证三个维度，避免把选择动作显示成启用成功。 */
+export function VoiceModelManagerView({ snapshot, modelId, refreshing, busy, progress, error, success, writable, onSelect, onRefresh, onRun, onClose, t }: {
+  readonly snapshot: AssistantVoiceModelsSnapshot | undefined; readonly modelId: string; readonly refreshing: boolean
+  readonly busy: 'setup' | 'verify' | 'repair' | undefined; readonly progress: AssistantVoiceModelProgress | undefined
+  readonly error: string | undefined; readonly success: string | undefined; readonly writable: boolean
+  readonly onSelect: (id: string) => void; readonly onRefresh: () => void; readonly onRun: (kind: 'setup' | 'verify' | 'repair') => void; readonly onClose: () => void
+  readonly t: CodingNsTranslator
+}): ReactElement {
+  const current = findAssistantVoiceModel(snapshot?.currentModelId ?? '')
+  const selected = snapshot?.models.find((model) => model.modelId === modelId)
+  const locked = busy !== undefined || snapshot?.operation != null
+  const canApply = snapshot !== undefined && !locked && writable && !snapshot.runtimeRunning
+  const alreadyUsed = selected?.current === true && selected.validation.state === 'passed' && selected.state === 'downloaded'
+  const action = selected?.state === 'partial' ? t('voice.models.completeDownload') : selected?.state === 'downloaded'
+    ? alreadyUsed ? t('voice.models.inUse') : t('voice.models.use') : t('voice.models.downloadUse')
+  return createElement('div', { style: { display: 'contents' } },
+    createElement('div', { style: { padding: '20px 22px 16px', display: 'grid', gap: 6 } },
+      createElement('div', { style: rowStyle }, createElement('strong', { style: { fontSize: 19, lineHeight: 1.4 } }, t('voice.setup.title')),
+        button(t(refreshing ? 'voice.models.refreshing' : 'voice.models.refresh'), refreshing || busy !== undefined, onRefresh)),
+      createElement('span', { style: helpStyle }, t('voice.models.description')),
     ),
+    createElement('div', { style: { overflowY: 'auto', minHeight: 0, padding: '0 22px 18px', display: 'grid', gap: 12 } },
+      createElement('div', { style: { ...noticeStyle, display: 'grid', gap: 5 } },
+        createElement('span', { style: helpStyle }, t('voice.models.current')),
+        createElement('strong', { style: { fontSize: 14, overflowWrap: 'anywhere' } }, snapshot === undefined ? t('voice.models.unknown') : current?.label ?? (snapshot.currentModelId ? t('voice.models.custom') : t('voice.models.none'))),
+        snapshot === undefined ? null : createElement('span', { style: helpStyle }, t(snapshot.runtimeRunning ? 'voice.models.running' : snapshot.runtimeReady ? 'voice.models.ready' : 'voice.models.stopped')),
+      ),
+      snapshot === undefined && error === undefined ? createElement('div', { role: 'status', style: helpStyle }, t('voice.models.loading')) : null,
+      createElement('div', { role: 'radiogroup', 'aria-label': t('voice.setup.model'), style: { display: 'grid', gap: 10 } },
+        ...ASSISTANT_VOICE_MODEL_CATALOG.map((model) => createElement(VoiceModelCard, { key: model.id, model, status: snapshot?.models.find((status) => status.modelId === model.id), selected: model.id === modelId, disabled: locked || snapshot === undefined, onSelect, t }))),
+      busy === undefined ? null : createElement('div', { style: noticeStyle }, createElement(VoiceModelSetupProgress, { progress: busy === 'verify'
+        ? { modelId, phase: 'verifying', fileName: null, fileIndex: 0, fileCount: 0, downloadedBytes: 0, totalBytes: null } : progress, t })),
+      snapshot?.operation == null || busy !== undefined ? null : createElement('div', { role: 'status', style: noticeStyle }, t('voice.models.otherOperation')),
+      snapshot?.runtimeRunning ? createElement('div', { style: helpStyle }, t('voice.models.stopBeforeSwitch')) : null,
+      success === undefined ? null : createElement('div', { role: 'status', style: { ...noticeStyle, color: dshThemeColor.success } }, success),
+      error === undefined ? null : createElement('div', { role: 'alert', style: { ...noticeStyle, color: dshThemeColor.error, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' } }, error),
+      createElement('span', { style: helpStyle }, t('voice.models.localHint')),
+    ),
+    createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, padding: '14px 22px', borderTop: `1px solid ${dshThemeColor.border}` } },
+      button(t('voice.models.close'), busy !== undefined, onClose),
+      selected?.state === 'missing' || selected === undefined ? null : button(t('voice.models.redownload'), !canApply, () => onRun('repair')),
+      button(t('voice.models.verify'), locked || selected?.state !== 'downloaded', () => onRun('verify')),
+      button(action, !canApply || alreadyUsed || selected === undefined, () => onRun('setup'), true)),
   )
 }
 
-const fieldLabelStyle = {
-  display: 'grid',
-  gap: 7,
-  color: dshThemeColor.labelSecondary,
-  fontSize: 12,
-  lineHeight: 1.4,
-  fontWeight: 600,
+/** 文件详情按需展开，模型下载状态与最近验证结果始终可见。 */
+export function VoiceModelCard({ model, status, selected, disabled, onSelect, t }: {
+  readonly model: AssistantVoiceModel; readonly status: AssistantVoiceModelStatus | undefined; readonly selected: boolean
+  readonly disabled: boolean; readonly onSelect: (id: string) => void; readonly t: CodingNsTranslator
+}): ReactElement {
+  const state = status === undefined ? t('voice.models.unknown') : t(status.state === 'downloaded' ? 'voice.models.downloaded' : status.state === 'partial' ? 'voice.models.partial' : 'voice.models.missing')
+  const validation = status?.validation.state === 'passed' ? t('voice.models.passed') : status?.validation.state === 'failed' ? t('voice.models.failed') : t('voice.models.unchecked')
+  return createElement('div', { style: { border: `1px solid ${selected ? dshThemeColor.accent : dshThemeColor.border}`, borderRadius: 9, padding: '12px 14px', background: selected ? dshThemeColor.surfaceSubtle : dshThemeColor.menuBackground, display: 'grid', gap: 8 } },
+    createElement('label', { style: { display: 'flex', alignItems: 'flex-start', gap: 10, cursor: disabled ? 'default' : 'pointer' } },
+      createElement('input', { type: 'radio', name: 'voice-model', value: model.id, checked: selected, disabled, onChange: () => onSelect(model.id), style: { margin: '3px 0 0', accentColor: dshThemeColor.accent, flexShrink: 0 } }),
+      createElement('span', { style: { display: 'grid', gap: 5, minWidth: 0, flex: 1 } },
+        createElement('strong', { style: { fontSize: 14, lineHeight: 1.45, overflowWrap: 'anywhere' } }, model.label),
+        createElement('span', { style: helpStyle }, model.description),
+        createElement('span', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
+          badge(state, status?.state === 'downloaded' ? dshThemeColor.success : dshThemeColor.labelSecondary),
+          status?.current ? badge(t('voice.models.inUse'), dshThemeColor.accent) : null,
+          status?.state === 'downloaded' ? badge(validation, status.validation.state === 'passed' ? dshThemeColor.success : status.validation.state === 'failed' ? dshThemeColor.error : dshThemeColor.labelSecondary) : null))),
+    status === undefined ? null : createElement('div', { style: { paddingLeft: 23, display: 'grid', gap: 6 } },
+      createElement('span', { style: helpStyle }, t('voice.models.fileCount', { count: status.files.filter((file) => file.present).length, total: status.files.length, size: formatDownloadSize(status.totalBytes) })),
+      status.validation.checkedAt === null ? null : createElement('span', { style: helpStyle }, t('voice.models.checkedAt', { time: new Date(status.validation.checkedAt).toLocaleString() })),
+      status.validation.error === null ? null : createElement('span', { style: { ...helpStyle, color: dshThemeColor.error, overflowWrap: 'anywhere' } }, status.validation.error),
+      createElement('details', null, createElement('summary', { style: { ...helpStyle, cursor: 'pointer' } }, t('voice.models.fileDetails')),
+        createElement('div', { style: { display: 'grid', gap: 9, marginTop: 9 } }, ...status.files.map((file) => createElement('div', { key: file.name, style: { display: 'grid', gap: 2 } },
+          createElement('span', { style: { ...rowStyle, fontSize: 12 } }, createElement('span', { style: { overflowWrap: 'anywhere' } }, file.name),
+            createElement('span', { style: { flexShrink: 0, color: file.present ? dshThemeColor.labelSecondary : dshThemeColor.error } }, file.present ? formatDownloadSize(file.bytes) : file.partialBytes > 0 ? t('voice.models.partialSize', { size: formatDownloadSize(file.partialBytes) }) : t('voice.models.fileMissing'))),
+          createElement('span', { style: { ...helpStyle, fontSize: 11, overflowWrap: 'anywhere', fontFamily: dshThemeColor.codeFont } }, file.path)))))))
 }
 
-const fieldStyle = {
-  ...dshFieldStyle,
-  width: '100%',
-  minHeight: 40,
-  padding: '9px 11px',
-  borderRadius: 7,
-  boxSizing: 'border-box' as const,
-  fontSize: 14,
+/** 已下载的字节进度与模型验证、配置阶段分别显示。 */
+export function VoiceModelSetupProgress({ progress, t }: { readonly progress: AssistantVoiceModelProgress | undefined; readonly t: CodingNsTranslator }): ReactElement {
+  const downloading = progress?.phase === 'downloading'
+  const downloaded = progress?.phase === 'initializing' || progress?.phase === 'completed'
+  const percent = downloaded ? 100 : downloading && progress.totalBytes !== null && progress.totalBytes > 0 ? Math.min(100, Math.floor(progress.downloadedBytes / progress.totalBytes * 100)) : undefined
+  const label = downloading ? t('voice.setup.downloadFile', { index: progress.fileIndex, count: progress.fileCount }) : progress?.phase === 'verifying' ? t('voice.models.verifying')
+    : progress?.phase === 'initializing' ? t('voice.setup.initializing') : progress?.phase === 'completed' ? t('voice.setup.completed') : t('voice.setup.checking')
+  const bytes = downloading ? progress.totalBytes === null ? t('voice.setup.downloadedSize', { size: formatDownloadSize(progress.downloadedBytes) }) : `${formatDownloadSize(progress.downloadedBytes)} / ${formatDownloadSize(progress.totalBytes)}` : undefined
+  return createElement('div', { role: 'status', 'aria-live': 'polite', style: { display: 'grid', gap: 7, color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 } },
+    createElement('div', { style: rowStyle }, createElement('span', null, label), percent === undefined ? null : createElement('span', { style: { flexShrink: 0, fontVariantNumeric: 'tabular-nums' } }, downloading ? t('voice.setup.filePercent', { percent }) : '100%')),
+    createElement('progress', { max: 100, ...(percent === undefined ? {} : { value: percent }), 'aria-label': downloading ? t('voice.setup.fileProgress') : label, style: { display: 'block', width: '100%', height: 10, accentColor: dshThemeColor.accent } }),
+    downloading ? createElement('span', { style: { overflowWrap: 'anywhere' } }, progress.fileName) : null,
+    bytes === undefined ? null : createElement('span', { style: { fontVariantNumeric: 'tabular-nums' } }, bytes))
 }
+
+function formatDownloadSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+function errorMessage(cause: unknown): string { return cause instanceof Error ? cause.message : String(cause) }
+function button(label: string, disabled: boolean, onClick: () => void, primary = false): ReactElement {
+  return createElement('button', { type: 'button', disabled, onClick, style: {
+    ...(primary ? dshSettingsPrimaryButtonStyle : dshSettingsButtonStyle), whiteSpace: 'nowrap', flexShrink: 0,
+    ...(disabled ? { opacity: 0.5, cursor: 'default' } : {}),
+  } }, label)
+}
+function badge(label: string, color: string): ReactElement { return createElement('span', { style: { padding: '2px 7px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 5, fontSize: 11, lineHeight: 1.4, color } }, label) }
+const rowStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }
+const helpStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: 12, lineHeight: 1.55 }
+const noticeStyle: CSSProperties = { padding: '11px 13px', borderRadius: 8, background: dshThemeColor.surfaceSubtle, fontSize: 13, lineHeight: 1.55 }
