@@ -286,6 +286,31 @@ test('读取失败计入每次索引记录，范围变化后不返回旧范围�
   assert.ok(!scope.includes('登录检查'))
 })
 
+test('范围会话标题直接显示执行状态与索引状态，索引标签无需展开', async (t) => {
+  const f = await nativeScopeFixture(t)
+  const snapshot = await f.call('assistant/debug') as AssistantDebugSnapshot
+  assert.ok(snapshot.scopeSessions.every((entry) => entry.status === 'completed'))
+  const tzh = resolveCodingNsTranslator()
+  for (const [state, label] of [
+    ['pending', '尚未索引'], ['waiting', '等待本轮完成后索引'], ['queued', '索引排队中'],
+    ['running', '索引中'], ['completed', '索引已完成'], ['stale', '索引待更新'],
+    ['failed', '索引失败'], ['cancelled', '索引已停止'],
+  ] as const) {
+    const scopeSessions = [{ ...snapshot.scopeSessions[0]!, indexState: state }]
+    const markup = renderToStaticMarkup(createElement(AssistantScopeSessionsView, { snapshot: { ...snapshot, scopeSessions }, managedIds: ['test'], t: tzh }))
+    assert.match(markup, new RegExp(`<summary[^>]*>.*已完成.*${label}.*</summary>`, 'u'))
+    assert.ok(markup.includes('本轮执行结束'))
+  }
+  for (const [change, label] of [
+    [{ activity: 'unknown' as const, status: 'unknown' as const }, '等待会话状态同步'],
+    [{ waiting: 'approval' as const, status: 'waiting' as const }, '等待用户处理后索引'],
+  ] as const) {
+    const scopeSessions = [{ ...snapshot.scopeSessions[0]!, ...change, indexState: 'waiting' as const }]
+    const markup = renderToStaticMarkup(createElement(AssistantScopeSessionsView, { snapshot: { ...snapshot, scopeSessions }, managedIds: ['test'], t: tzh }))
+    assert.ok(markup.includes(label))
+  }
+})
+
 test('面板有五个明确步骤，文字对话显示用户和 LLM 回复', () => {
   const services = { locale: { getSnapshot: () => ({ revision: 0 }), bind: () => resolveCodingNsTranslator(), subscribe: () => () => {} }, settings: { getSnapshot: () => ({ status: 'ready', writable: true, value: DEFAULT_CODINGNS_SETTINGS }) } }
   const markup = renderToStaticMarkup(createElement(AssistantDebugDialog, { services: services as any, onClose() {} }))

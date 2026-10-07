@@ -52,3 +52,22 @@ test('归档立即移出索引，取消归档后重新纳入', async () => {
   assert.deepEqual((await controller.setArchivedSessionIds(['a'])).entries.map((entry) => entry.sessionId), ['c'])
   assert.deepEqual((await controller.setArchivedSessionIds([])).entries.map((entry) => entry.sessionId), ['a', 'c'])
 })
+
+test('明确活动状态统一映射运行与本轮完成，覆盖滞后的布尔值并保留真正未知', async () => {
+  const base = { ...sessions[0]!, running: false, completed: false }
+  const result = await buildAssistantSessionIndex({
+    sessions: [
+      { ...base, sessionId: 'idle', activity: 'idle' },
+      { ...base, sessionId: 'running', completed: true, activity: 'running' },
+      { ...base, sessionId: 'unknown', completed: true, activity: 'unknown' },
+      { ...base, sessionId: 'missing' },
+      { ...base, sessionId: 'waiting', activity: 'idle', waiting: 'question' },
+      { ...base, sessionId: 'error', activity: 'idle', error: true },
+    ],
+    scope: createAssistantScope(['w-a']), archivedSessionIds: [],
+  })
+  assert.deepEqual(result.entries.map(({ status, running, completed }) => [status, running, completed]), [
+    ['completed', false, true], ['running', true, false], ['unknown', false, false],
+    ['unknown', false, false], ['waiting', false, false], ['error', false, false],
+  ])
+})
