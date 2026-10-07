@@ -6,6 +6,7 @@ import { AssistantTextChat, createAssistantChatSystem } from '../src/host/featur
 import type { AssistantLlmAdapter } from '../src/dsh-capabilities/host/assistant-llm-adapter.js'
 import type { AssistantChatMessage, AssistantIndexSnapshot } from '../src/shared/contracts/assistant.js'
 import { DEFAULT_ASSISTANT_PROMPTS } from '../src/shared/assistant-prompts.js'
+import { createAssistantVoiceSystem } from '../src/host/features/assistant-prompts.js'
 
 const model = { provider: 'api', model: 'selected', label: '所选模型' }
 const index: AssistantIndexSnapshot = { generation: 1, scope: { status: 'ready', managedWorkspaceIds: ['w1'] }, unreadableCount: 0, entries: [] }
@@ -29,12 +30,26 @@ test('语音连续追问复用文字 LLM 提示词，已完成问答对按顺序
     assert.equal((await chat.wait('page', 1, `r${round}`)).state, 'completed')
   }
   assert.deepEqual(calls[2]!.messages, [{ role: 'user', text: '问题1' }, { role: 'assistant', text: '回复1。' }, { role: 'user', text: '问题2' }, { role: 'assistant', text: '回复2。' }, { role: 'user', text: '问题3' }])
-  assert.equal(calls[0]!.system, createAssistantChatSystem(index))
+  assert.equal(calls[0]!.system, createAssistantVoiceSystem(createAssistantChatSystem(index)))
   assert.match(calls[0]!.system, /一到两个短句.*100字/u)
   assert.match(calls[0]!.system, /本轮只读，不执行工具或派发任务/u)
   assert.equal((calls[0]!.model as typeof model).model, 'selected')
   await chat.start('page', 1, 'r3', '问题3', context(), 3)
   assert.equal(calls.length, 3, '重复请求不重复调用模型或追加历史')
+})
+
+test('语音同音词原文及真实绘画话题都不被硬替换，澄清及权限约束进入每轮上下文', async (t) => {
+  const { chat, calls } = fixture(t)
+  for (const [position, text] of ['查看 CodingNS 工作区有哪些绘画', '我想学绘画', '那个绘画怎么样了'].entries()) {
+    await chat.start('page', 1, `homophone-${position}`, text, context())
+    await chat.wait('page', 1, `homophone-${position}`)
+    assert.equal(calls.at(-1)!.messages.at(-1)!.text, text)
+    assert.match(calls.at(-1)!.system, /本轮用户输入来自语音识别/u)
+    assert.match(calls.at(-1)!.system, /多个工作区／会话匹配时.*澄清/u)
+    assert.match(calls.at(-1)!.system, /查询不等于跟进授权/u)
+    assert.match(calls.at(-1)!.system, /本轮只读，不执行工具或派发任务/u)
+  }
+  assert.equal(calls.at(-1)!.messages[0]!.text, '查看 CodingNS 工作区有哪些绘画', '历史保留原始转写')
 })
 
 test('未完成旧轮被新话语取消，忽略 Abort 的迟到结果不污染历史', async (t) => {

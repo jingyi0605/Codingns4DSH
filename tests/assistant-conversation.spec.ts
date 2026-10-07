@@ -217,6 +217,22 @@ test('清理和取消撤销迟到结果，请求标识不能重复提交', async
   await assert.rejects(f.conversation.start('late', '问题', context, 'text'), /已被使用/u)
 })
 
+test('正式连续对话仅为语音轮次注入 ASR 规则，文本轮次保留原文及共同历史', async (t) => {
+  const f = fixture(t)
+  await f.send('voice-homophone', '查看 CodingNS 工作区有哪些绘画', 'voice')
+  assert.match(f.calls.at(-1)!.system, /本轮用户输入来自语音识别/u)
+  assert.equal(f.calls.at(-1)!.system.split('本轮语音理解规则').length, 2, '来源规则只追加一次')
+  await f.send('keyboard-painting', '我想学绘画', 'text')
+  assert.doesNotMatch(f.calls.at(-1)!.system, /本轮语音理解规则/u)
+  const messages = f.calls.at(-1)!.messages as { role: string; text: string }[]
+  assert.equal(messages[0]!.text, '查看 CodingNS 工作区有哪些绘画')
+  assert.equal(messages.at(-1)!.text, '我想学绘画')
+  await f.send('voice-followup', '那个绘画还在运行吗', 'voice')
+  assert.match(f.calls.at(-1)!.system, /多个工作区／会话匹配时.*澄清/u)
+  const saved = await f.conversation.snapshot()
+  assert.equal(saved.messages[0]!.text, '查看 CodingNS 工作区有哪些绘画')
+})
+
 test('压缩保留近期三轮，摘要进入后续上下文，失败保留原记录', async (t) => {
   let fail = false
   const f = fixture(t, async (_model, system) => {

@@ -328,6 +328,35 @@ test('文字和语音共用连续历史：停止语音保留记录，范围变�
   await assert.rejects(f.call('conversation/start', { requestId: 'after-reset', text: '你好' }), /先创建/u)
 })
 
+test('通话开始通过真实 Host RPC 传递受管名称热词，持续通话不重复刷新', async (t) => {
+  const captured: (readonly { phrase: string; score: number }[])[] = []
+  const configureHotwords = SherpaVoiceRuntime.prototype.configureHotwords
+  t.mock.method(SherpaVoiceRuntime.prototype, 'configureHotwords', function (words) {
+    captured.push(words)
+    configureHotwords.call(this, words)
+  })
+  t.mock.method(SherpaVoiceRuntime.prototype, 'start', async function () { (this as any).started = true })
+  t.mock.method(SherpaVoiceRuntime.prototype, 'stop', async function () { (this as any).started = false })
+  const f = await fixture(t)
+  await f.configure({ managedWorkspaceIds: ['w1'] })
+  await f.update({ assistant: { ...f.settings().assistant, voice: { ...f.settings().assistant.voice, initialized: true, provider: 'sherpa-onnx', asrEncoder: '/fixture/e', asrDecoder: '/fixture/d', asrJoiner: '/fixture/j', asrTokens: '/fixture/t' } } })
+  const lease = await f.call<{ epoch: number }>('voice/start', { ownerId: 'page' })
+  assert.ok(captured[0]!.some((word) => word.phrase === '项目一'))
+  assert.ok(!captured[0]!.some((word) => word.phrase === '项目二'))
+  await f.call('voice/start', { ownerId: 'page' })
+  assert.equal(captured.length, 1)
+  await f.call('voice/chat/start', { ownerId: 'page', epoch: lease.epoch, requestId: 'homophone', text: '查看项目一工作区有哪些绘画' })
+  await setImmediate()
+  assert.match(f.wire.at(-1).system, /本轮用户输入来自语音识别/u)
+  assert.equal(f.wire.at(-1).messages.at(-1).content[0].text, '查看项目一工作区有哪些绘画')
+  await f.call('voice/stop', { ownerId: 'page' })
+  await f.configure({ managedWorkspaceIds: ['w2'] })
+  await f.call('voice/start', { ownerId: 'page' })
+  assert.ok(captured[1]!.some((word) => word.phrase === '项目二'))
+  assert.ok(!captured[1]!.some((word) => word.phrase === '项目一'))
+  await f.call('voice/stop', { ownerId: 'page' })
+})
+
 test('真实 Host RPC 关联语音租约和聚合记录，挂断归档且下一次通话独立', async (t) => {
   t.mock.method(SherpaVoiceRuntime.prototype, 'start', async function () { (this as any).started = true })
   t.mock.method(SherpaVoiceRuntime.prototype, 'stop', async function () { (this as any).started = false })
