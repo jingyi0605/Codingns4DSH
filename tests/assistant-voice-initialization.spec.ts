@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { AssistantVoiceInitialization } from '../src/host/features/assistant-voice-initialization.js'
+import { AssistantVoiceInitializationView } from '../src/client/features/assistant-voice-initialization.js'
+import { AssistantVoiceSettingsGroupView } from '../src/client/features/assistant-voice-settings-group.js'
 import { DEFAULT_LIGHT_VOICE_MODEL_ID } from '../src/shared/voice-initialization.js'
 import { DEFAULT_ASSISTANT_TTS_SETTINGS, MOSS_BUILTIN_VOICES, type AssistantTtsSnapshot } from '../src/shared/assistant-tts.js'
 import { ASSISTANT_VOICE_MODEL_CATALOG, type AssistantVoiceModelsSnapshot } from '../src/shared/voice-models.js'
+import { resolveCodingNsTranslator } from '../src/client/locale.js'
 
 function fixture(existing = false) {
   let modelId: string | null = existing ? ASSISTANT_VOICE_MODEL_CATALOG[0]!.id : null
@@ -52,4 +57,42 @@ test('初始化取消不切播报后端，重复请求被拒绝，重置清除�
   await assert.rejects(pending, /重置/u)
   assert.equal(f.settings().backend, 'browser'); assert.equal(f.service.busy, false)
   f.service.reset(); assert.equal((await f.service.snapshot()).error, null)
+})
+
+test('首次向导无必填输入，真实未知总量使用不定进度，失败可重试，完成可试听', async () => {
+  const f = fixture()
+  const props = { pending: false, error: '', disabled: false, speaking: false, t: resolveCodingNsTranslator(), onInitialize() {}, onListen() {}, onRefresh() {} }
+  const first = renderToStaticMarkup(createElement(AssistantVoiceInitializationView, { ...props, snapshot: await f.service.snapshot() }))
+  assert.ok(first.includes('启用语音')); assert.ok(first.includes('Lingyu')); assert.ok(!first.includes('<input')); assert.ok(!first.includes('<select'))
+  const preparing = renderToStaticMarkup(createElement(AssistantVoiceInitializationView, { ...props, snapshot: { ...await f.service.snapshot(), busy: true,
+    progress: { label: 'downloading', downloadedBytes: 500, totalBytes: null } } }))
+  assert.match(preparing, /<progress[^>]*>/u); assert.ok(!preparing.match(/<progress[^>]*value=/u)); assert.ok(preparing.includes('disabled=""'))
+  f.fail(true); await assert.rejects(f.service.initialize(new AbortController().signal))
+  const failed = renderToStaticMarkup(createElement(AssistantVoiceInitializationView, { ...props, snapshot: await f.service.snapshot() }))
+  assert.ok(failed.includes('重试配置')); assert.ok(failed.includes('网络中断'))
+  f.fail(false); await f.service.initialize(new AbortController().signal)
+  const completed = renderToStaticMarkup(createElement(AssistantVoiceInitializationView, { ...props, snapshot: await f.service.snapshot() }))
+  assert.ok(completed.includes('语音已就绪')); assert.ok(completed.includes('试听声音')); assert.ok(!completed.includes('启用语音'))
+})
+
+test('输入输出独立折叠，收起保留草稿但停用试听，初始化时锁定内部设置', () => {
+  const t = resolveCodingNsTranslator()
+  const activations: boolean[] = []; const changes: boolean[] = []
+  const props = { kind: 'output' as const, hint: 'Junhao', active: true, disabled: false, t,
+    renderContent: (active: boolean) => { activations.push(active); return createElement('input', { defaultValue: '保留的试听草稿' }) },
+    onToggle: (expanded: boolean) => changes.push(expanded) }
+  for (const expanded of [false, true, false]) {
+    const markup = renderToStaticMarkup(createElement(AssistantVoiceSettingsGroupView, { ...props, expanded }))
+    assert.ok(markup.includes('保留的试听草稿'), '折叠只隐藏，不卸载草稿控件')
+    assert.equal(/<details[^>]*open=""/u.test(markup), expanded)
+    assert.ok(markup.includes('语音输出')); assert.ok(markup.includes('Junhao'))
+  }
+  assert.deepEqual(activations, [false, true, false])
+  renderToStaticMarkup(createElement(AssistantVoiceSettingsGroupView, { ...props, active: false, expanded: true }))
+  assert.equal(activations.at(-1), false, '切到其他标签后停止试听')
+  const locked = renderToStaticMarkup(createElement(AssistantVoiceSettingsGroupView, { ...props, disabled: true, expanded: true }))
+  assert.match(locked, /<fieldset[^>]*disabled=""/u)
+  const group = AssistantVoiceSettingsGroupView({ ...props, expanded: false })
+  group.props.onToggle({ currentTarget: { open: true } }); group.props.onToggle({ currentTarget: { open: false } })
+  assert.deepEqual(changes, [true, false], '原生鼠标及键盘折叠事件同步活动状态')
 })

@@ -13,6 +13,8 @@ import { DEFAULT_CODINGNS_SETTINGS, type CodingNsSettings } from '../data/build/
 import { ASSISTANT_VOICE_MODEL_CATALOG, type AssistantVoiceModelProgress, type AssistantVoiceModelsSnapshot } from '../data/build/dist/shared/voice-models.js'
 import type { CodingNsHostServices } from '../data/build/dist/host/features/types.js'
 import type { AssistantVoiceModelProbe } from '../data/build/dist/host/features/voice-model-management.js'
+import { AssistantTtsService } from '../src/host/features/assistant-tts-service.js'
+import { DEFAULT_ASSISTANT_TTS_SETTINGS, MOSS_BUILTIN_VOICES } from '../src/shared/assistant-tts.js'
 import { DEFAULT_LIGHT_VOICE_MODEL_ID } from '../src/shared/voice-initialization.js'
 
 function deferred() {
@@ -22,14 +24,14 @@ function deferred() {
 }
 
 /** 所有下载都写入独立临时目录；不读取真实 Host 或 Desktop 的模型配置。 */
-async function fixture(t: TestContext, onSave: () => Promise<void> = async () => {}, probeVoiceModel: AssistantVoiceModelProbe = async () => {}) {
+async function fixture(t: TestContext, onSave: () => Promise<void> = async () => {}, probeVoiceModel: AssistantVoiceModelProbe = async () => {}, writable = true) {
   const directory = await mkdtemp(join(tmpdir(), 'codingns-voice-setup-rpc-'))
   const previous = process.env.DSH_HOME
   process.env.DSH_HOME = directory
   let settings = structuredClone(DEFAULT_CODINGNS_SETTINGS)
   let saves = 0
   const rpc = new CodingNsRpcTable()
-  const services = { rpc, settings: {
+  const services = { rpc, settingsProvider: { writable }, settings: {
     get: () => settings,
     update: async (patch: Partial<CodingNsSettings>) => { saves += 1; await onSave(); settings = { ...settings, ...patch } },
   } } as unknown as CodingNsHostServices
@@ -188,6 +190,9 @@ test('旧版 HTTP 入口登记进度查询路由，并返回同一份 RPC 状态
   registerCodingNsRpc(context, table)
   try {
     assert.ok(routes.has('/api/codingns/assistant/voice/models'))
+    assert.ok(routes.has('/api/codingns/assistant/voice/initialization'))
+    assert.ok(routes.has('/api/codingns/assistant/voice/initialize'))
+    assert.ok(routes.has('/api/codingns/assistant/tts/catalog'))
     assert.ok(routes.has('/api/codingns/assistant/voice/model/verify'))
     const path = '/api/codingns/assistant/voice/setup-progress'
     const route = routes.get(path)
@@ -202,4 +207,59 @@ test('旧版 HTTP 入口登记进度查询路由，并返回同一份 RPC 状态
     await dispose()
   }
   assert.equal(routes.size, 0)
+})
+
+test('首次向导 RPC 不下载，启用统一准备轻量识别与播报，重复调用复用缓存', async (t) => {
+  let ready = false; let prepares = 0; let downloads = 0
+  let ttsSettings = { ...DEFAULT_ASSISTANT_TTS_SETTINGS }
+  t.mock.method(AssistantTtsService.prototype, 'snapshot', async () => ({ settings: ttsSettings, voices: MOSS_BUILTIN_VOICES,
+    status: { ready, busy: false, phase: '', downloadedBytes: 0, totalBytes: null, error: null } }))
+  t.mock.method(AssistantTtsService.prototype, 'handle', async (action) => {
+    assert.equal(action, 'tts/setup'); prepares++; ready = true; ttsSettings = { ...ttsSettings, backend: 'moss-onnx' }
+  })
+  t.mock.method(globalThis, 'fetch', async () => { downloads++; return new Response('fixture-onnx') })
+  const f = await fixture(t)
+  assert.equal((await f.call('voice/initialization')).ready, false); assert.equal(downloads, 0); assert.equal(prepares, 0)
+  const initialized = await f.call('voice/initialize')
+  assert.equal(initialized.ready, true); assert.equal(f.settings().assistant.voice.modelId, DEFAULT_LIGHT_VOICE_MODEL_ID)
+  assert.equal(downloads, 4); assert.equal(prepares, 1)
+  assert.equal((await f.call('voice/initialize')).ready, true)
+  assert.equal(downloads, 4); assert.equal(prepares, 1)
+})
+
+test('向导准备播报期间阻止其他模型操作，完整重置撤销向导并保留下载缓存', async (t) => {
+  const preparing = deferred(); const release = deferred()
+  t.mock.method(AssistantTtsService.prototype, 'snapshot', async () => ({ settings: DEFAULT_ASSISTANT_TTS_SETTINGS, voices: MOSS_BUILTIN_VOICES,
+    status: { ready: false, busy: false, phase: '', downloadedBytes: 0, totalBytes: null, error: null } }))
+  t.mock.method(AssistantTtsService.prototype, 'handle', async () => { preparing.resolve(); await release.promise })
+  t.mock.method(globalThis, 'fetch', async () => new Response('fixture-onnx'))
+  const f = await fixture(t)
+  const setup = f.call('voice/initialize')
+  const canceled = assert.rejects(setup, /重置/u)
+  await preparing.promise
+  assert.equal((await f.call('voice/initialization')).busy, true)
+  await assert.rejects(f.call('voice/setup', { modelId: DEFAULT_LIGHT_VOICE_MODEL_ID }), /初次配置/u)
+  await assert.rejects(f.call('voice/start', { ownerId: 'other-client' }), /等待/u)
+  await assert.rejects(f.call('tts/select', { id: 'moss:Lingyu' }), /初次配置/u)
+  const resetting = f.call('lifecycle/reset')
+  release.resolve(); await canceled; await resetting
+  assert.equal(f.settings().assistant.voice.initialized, false)
+  assert.equal((await f.call('voice/initialization')).error, null)
+  const models = await f.call('voice/models') as AssistantVoiceModelsSnapshot
+  assert.equal(models.models.find((model) => model.modelId === DEFAULT_LIGHT_VOICE_MODEL_ID)?.state, 'downloaded')
+})
+
+test('只读 Host 不能触发向导下载，旧手工路径不能被默认模型静默覆盖', async (t) => {
+  let downloads = 0
+  t.mock.method(globalThis, 'fetch', async () => { downloads++; return new Response('fixture') })
+  const readonly = await fixture(t, async () => {}, async () => {}, false)
+  await assert.rejects(readonly.call('voice/initialize'), /不可写/u)
+  assert.equal(downloads, 0)
+  const f = await fixture(t)
+  const voice = f.settings().assistant.voice
+  Object.assign(voice, { initialized: true, provider: 'sherpa-onnx', modelId: '', asrEncoder: '/custom/encoder', asrDecoder: '/custom/decoder', asrJoiner: '/custom/joiner', asrTokens: '/custom/tokens' })
+  const previous = structuredClone(voice)
+  assert.equal((await f.call('voice/initialization')).modelId, 'custom')
+  await assert.rejects(f.call('voice/initialize'), /自定义识别模型/u)
+  assert.deepEqual(f.settings().assistant.voice, previous); assert.equal(downloads, 0)
 })
