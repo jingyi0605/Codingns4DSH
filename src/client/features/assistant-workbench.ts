@@ -46,6 +46,8 @@ export interface AssistantDraft {
 export interface AssistantWorkbenchProps {
   readonly services: CodingNsClientServices
   readonly initialConfiguration?: boolean
+  readonly minimized?: boolean
+  readonly callStartedAt?: number | undefined
   readonly active: boolean
   readonly pending: boolean
   readonly state?: string | undefined
@@ -58,6 +60,7 @@ export interface AssistantWorkbenchProps {
   readonly onStart: () => void | Promise<void>
   readonly onStop: () => void | Promise<void>
   readonly onClose: () => void
+  readonly onMinimize?: (() => void) | undefined
 }
 const emptyConversation = (): AssistantConversationSnapshot => ({ revision: 0, summary: '', messages: [], pendingMessage: null, active: null, compressing: false, error: null })
 export function readAssistantDraft(settings: AssistantSettings, mossReady?: boolean): AssistantDraft {
@@ -193,11 +196,11 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
   }, [initializing, services.settings, services.uiContext, call])
   useEffect(() => { if (props.initialConfiguration) { setView('configuration'); void Promise.resolve(voiceProps.current.onStop()) } }, [props.initialConfiguration])
   useEffect(() => {
-    if (debugDialog || confirmation !== undefined) return undefined
+    if (props.minimized || debugDialog || confirmation !== undefined) return undefined
     const escape = (event: KeyboardEvent): void => handleAssistantWorkbenchEscape(event, close)
     document.addEventListener('keydown', escape)
     return () => document.removeEventListener('keydown', escape)
-  }, [debugDialog, confirmation, close])
+  }, [props.minimized, debugDialog, confirmation, close])
   const toolState = lifecycle.conversation.active?.toolCalls?.map((call) => `${call.id}:${call.state}`).join('|')
   useEffect(() => { messagesEnd.current?.scrollIntoView?.({ block: 'nearest' }) }, [lifecycle.conversation.revision, lifecycle.conversation.active?.text, toolState, props.partialText])
 
@@ -308,9 +311,11 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
     onReset: () => { setError(''); setConfirmation('reset-first') },
     previewTarget, onPreviewChange: setCatalogPreview,
   })
-  return createElement('div', { style: backdrop },
+  // 收起只隐藏呈现；保留工作台、设备状态与通话记录订阅，不触发挂断或卸载。
+  return createElement('div', { 'data-codingns-workbench-minimized': props.minimized === true, hidden: props.minimized,
+    style: { ...backdrop, ...(props.minimized ? { display: 'none' } : {}) } },
     configuring ? createElement(AssistantControlsStyle) : null,
-    createElement('section', { role: 'dialog', 'aria-modal': true, 'aria-label': t('awb.title'), 'data-codingns-assistant-workbench': configuring ? 'configuration' : 'chat',
+    createElement('section', { role: 'dialog', 'aria-modal': !props.minimized, 'aria-label': t('awb.title'), 'data-codingns-assistant-workbench': configuring ? 'configuration' : 'chat',
       style: { ...dialog, ...(!configuring ? { height: 'min(740px, calc(100dvh - 24px))', minHeight: 0 } : {}) } },
       calling ? null : createElement('header', { style: { ...row, flexShrink: 0, padding: configuring ? 22 : '20px 26px', borderBottom: `1px solid ${dshThemeColor.border}` } },
         createElement('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'grid', gap: 5 } },
@@ -327,6 +332,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
         noticeText ? createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13, overflowWrap: 'anywhere' } }, noticeText) : null,
         notice ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, notice) : null,
         calling ? createElement(AssistantRealtimeCall, { services, name: lifecycle.profile.name, model: selectedAssistantAvatar(appearance), t,
+          minimized: props.minimized, startedAt: props.callStartedAt, onMinimize: props.onMinimize,
           session: lifecycle.conversation.voiceSessions?.find((session) => session.endedAt === null), pending: props.pending, state: props.state,
           userText: props.partialText || props.liveUserText || '', assistantText: props.liveAssistantText || '',
           toolCalls: lifecycle.conversation.pendingMessage?.source === 'voice' ? lifecycle.conversation.active?.toolCalls

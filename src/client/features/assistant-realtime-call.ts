@@ -16,6 +16,7 @@ interface RealtimeCallProps {
   readonly services: CodingNsClientServices; readonly name: string; readonly model: AssistantAvatarModel
   readonly t: CodingNsTranslator; readonly session?: AssistantVoiceSession | undefined
   readonly pending: boolean; readonly state?: string | undefined
+  readonly minimized?: boolean | undefined; readonly startedAt?: number | undefined; readonly onMinimize?: (() => void) | undefined
   readonly userText: string; readonly assistantText: string; readonly onHangup: () => void | Promise<void>
   readonly toolCalls?: readonly AssistantToolCall[] | undefined
 }
@@ -33,14 +34,20 @@ export function AssistantRealtimeCall(props: RealtimeCallProps): ReactElement {
   const [now, setNow] = useState(Date.now)
   const startedAt = useRef(Date.now())
   const menuId = useId()
-  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer) }, [])
+  useEffect(() => {
+    if (props.minimized) return undefined
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [props.minimized])
   useEffect(() => {
     if (!speakersOpen || !adapter?.outputDeviceSupported) return undefined
     let active = true
     void adapter.enumerateOutputDevices().then((items) => { if (active) setDevices(items) }).catch((cause) => { if (active) setError(String(cause)) })
     return () => { active = false }
   }, [adapter, speakersOpen])
-  const duration = voiceSessionDuration(props.session ?? { startedAt: startedAt.current, endedAt: null }, now)
+  const duration = voiceSessionDuration(props.startedAt === undefined ? props.session ?? { startedAt: startedAt.current, endedAt: null }
+    : { startedAt: props.startedAt, endedAt: null }, now)
   const menu = !speakersOpen ? null : createElement('div', { id: menuId, role: 'group', 'aria-label': props.t('awb.call.speakerSettings'),
     style: { display: 'grid', gap: 12, position: 'absolute', bottom: 86, left: '50%', transform: 'translateX(-50%)', zIndex: 2,
       width: 'min(300px, calc(100vw - 80px))', padding: 16, boxSizing: 'border-box', borderRadius: 14,
@@ -60,19 +67,22 @@ export function AssistantRealtimeCall(props: RealtimeCallProps): ReactElement {
     error ? createElement('div', { role: 'alert', style: { fontSize: 12, color: dshThemeColor.error, overflowWrap: 'anywhere' } }, error) : null)
   return createElement(AssistantRealtimeCallView, { ...props, duration, microphoneMuted, speakerMuted,
     microphoneAvailable: adapter?.setMicrophoneMuted !== undefined,
-    avatar: createElement(AssistantAvatarSlot, { services: props.services, model: props.model, state: resolveAssistantAvatarState(props.state, props.pending), surface: 'dialog', size: 256, showDiagnostics: false }),
+    // 隐藏窗口时卸载动画形象，避免与悬浮形象同时消耗渲染资源；音频运行时不受影响。
+    avatar: props.minimized ? null : createElement(AssistantAvatarSlot, { services: props.services, model: props.model, state: resolveAssistantAvatarState(props.state, props.pending), surface: 'dialog', size: 256, showDiagnostics: false }),
     onMicrophone: () => { const muted = !microphoneMuted; adapter?.setMicrophoneMuted?.(muted); setMicrophoneMuted(muted) },
     onSpeaker: () => setSpeakersOpen((open) => !open), speakersOpen, menuId, menu })
 }
 
 /** 纯展示层可独立渲染明暗主题与移动端，不需要真实音频设备。 */
-export function AssistantRealtimeCallView({ name, t, state, pending, duration, microphoneMuted, speakerMuted, microphoneAvailable = true,
-  userText, assistantText, toolCalls, avatar, onMicrophone, onSpeaker, onHangup, speakersOpen = false, menuId, menu }: {
+export function AssistantRealtimeCallView({ name, t, state, pending, duration, minimized = false, microphoneMuted, speakerMuted, microphoneAvailable = true,
+  userText, assistantText, toolCalls, avatar, onMicrophone, onSpeaker, onHangup, onMinimize, speakersOpen = false, menuId, menu }: {
   readonly name: string; readonly t: CodingNsTranslator; readonly state?: string | undefined; readonly pending: boolean; readonly duration: string
+  readonly minimized?: boolean | undefined
   readonly microphoneMuted: boolean; readonly speakerMuted: boolean; readonly microphoneAvailable?: boolean
   readonly userText: string; readonly assistantText: string; readonly avatar: ReactNode
   readonly toolCalls?: readonly AssistantToolCall[] | undefined
   readonly onMicrophone: () => void; readonly onSpeaker: () => void; readonly onHangup: () => void | Promise<void>
+  readonly onMinimize?: (() => void) | undefined
   readonly speakersOpen?: boolean; readonly menuId?: string | undefined; readonly menu?: ReactNode
 }): ReactElement {
   const captions = useRef<HTMLDivElement>(null)
@@ -80,10 +90,11 @@ export function AssistantRealtimeCallView({ name, t, state, pending, duration, m
   const toolState = toolCalls?.map((call) => `${call.id}:${call.state}`).join('|')
   // 默认跟随流式追加；用户向上回看时保留位置，不再把前文强制滚走。
   useEffect(() => {
+    if (minimized) return
     const element = captions.current
     if (assistantText === '') followCaptions.current = true
     if (element !== null && followCaptions.current) element.scrollTop = element.scrollHeight
-  }, [userText, assistantText, toolState])
+  }, [userText, assistantText, toolState, minimized])
   const status = pending ? state === 'disabled' ? 'ending' : 'connecting' : microphoneMuted ? 'muted' : state === 'speaking' ? 'speaking' : state === 'thinking' ? 'thinking' : 'listening'
   const control = (kind: 'speaker' | 'microphone' | 'hangup', label: string, action: () => void, pressed?: boolean): ReactElement => createElement('div', { style: { display: 'grid', justifyItems: 'center', gap: 8 } },
     createElement('button', { type: 'button', 'aria-label': label, title: label, 'aria-pressed': pressed,
@@ -94,8 +105,12 @@ export function AssistantRealtimeCallView({ name, t, state, pending, duration, m
     createElement('span', { style: { fontSize: 12, color: dshThemeColor.labelSecondary } }, kind === 'microphone' ? t(microphoneMuted ? 'awb.call.unmute' : 'awb.call.microphone') : t(`awb.call.${kind}`)))
   return createElement('div', { 'data-codingns-realtime-call': true, style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, textAlign: 'center', padding: '16px clamp(16px, 4vw, 32px)', gap: 10 } },
     createElement('style', null, '.codingns-call-halo{position:absolute;inset:10%;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--dsw-alias-button-info-fill,#1677ff) 14%,transparent),transparent 70%);animation:codingns-call-breathe 3s ease-in-out infinite}.codingns-call-caption{overflow-wrap:anywhere;white-space:pre-wrap}[data-codingns-call-avatar] img{height:auto!important;max-height:32dvh;object-fit:contain}[data-codingns-call-avatar] canvas,[data-codingns-call-avatar] video{max-width:100%;max-height:32dvh;object-fit:contain}@keyframes codingns-call-breathe{50%{transform:scale(1.12);opacity:.6}}@media(prefers-reduced-motion:reduce){.codingns-call-halo{animation:none}}'),
-    createElement('div', { style: { display: 'grid', gap: 4 } }, createElement('strong', { style: { fontSize: 18 } }, name),
-      createElement('span', { style: { fontSize: 12, color: dshThemeColor.labelTertiary, fontVariantNumeric: 'tabular-nums' } }, t('awb.call.title'), ' · ', duration)),
+    createElement('div', { style: { position: 'relative', paddingInline: onMinimize ? 44 : 0, minHeight: 40, display: 'grid', gap: 4 } },
+      createElement('strong', { style: { fontSize: 18, overflowWrap: 'anywhere' } }, name),
+      createElement('span', { style: { fontSize: 12, color: dshThemeColor.labelTertiary, fontVariantNumeric: 'tabular-nums' } }, t('awb.call.title'), ' · ', duration),
+      onMinimize ? createElement('button', { type: 'button', 'aria-label': t('awb.call.minimize'), title: t('awb.call.minimize'), onClick: onMinimize,
+        style: { ...dshSettingsButtonStyle, position: 'absolute', right: 0, top: 0, width: 40, height: 40, display: 'grid', placeItems: 'center', padding: 0, borderRadius: 12 } },
+        createElement('svg', { width: 22, height: 22, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', 'aria-hidden': true }, createElement('path', { d: 'M5 15h14M9 6l3 3 3-3' }))) : null),
     createElement('div', { style: { display: 'grid', placeItems: 'center', flex: '1 1 auto', minHeight: 'min(160px, 24dvh)', position: 'relative' } },
       createElement('div', { className: 'codingns-call-halo', 'aria-hidden': true }), createElement('div', { 'data-codingns-call-avatar': true, style: { position: 'relative', width: 'min(256px, 32dvh, 100%)', maxWidth: '100%', maxHeight: '32dvh', overflow: 'hidden', display: 'grid', placeItems: 'center' } }, avatar)),
     createElement('div', { role: 'status', style: { fontSize: 13, color: dshThemeColor.labelSecondary } }, t(`awb.call.${status}`)),

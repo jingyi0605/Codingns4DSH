@@ -1,6 +1,7 @@
 /** 生命周期工作台文案；高级资源管理复用原有词典。 */
 export const zh = {
   'awb.call.title': '实时语音', 'awb.call.connecting': '正在连接…', 'awb.call.ending': '正在结束通话…',
+  'awb.call.minimize': '收起通话', 'awb.call.restore': '恢复实时对话', 'awb.call.silent': '声音已关闭', 'awb.call.error': '通话异常，请点击查看',
   'awb.call.listening': '正在听你说', 'awb.call.thinking': '正在准备回复', 'awb.call.speaking': '正在回复', 'awb.call.muted': '麦克风已静音',
   'awb.call.caption': '实时字幕', 'awb.call.waiting': '说点什么吧', 'awb.call.microphone': '静音麦克风', 'awb.call.unmute': '开启麦克风',
   'awb.call.speaker': '扬声器', 'awb.call.speakerSettings': '切换扬声器', 'awb.call.playSound': '播放声音',
@@ -47,6 +48,7 @@ export const zh = {
 }
 export const en: Record<keyof typeof zh, string> = {
   'awb.call.title': 'Live voice', 'awb.call.connecting': 'Connecting…', 'awb.call.ending': 'Ending call…',
+  'awb.call.minimize': 'Minimize call', 'awb.call.restore': 'Restore live conversation', 'awb.call.silent': 'Speaker muted', 'awb.call.error': 'Call error; click to view',
   'awb.call.listening': 'Listening', 'awb.call.thinking': 'Preparing a reply', 'awb.call.speaking': 'Speaking', 'awb.call.muted': 'Microphone muted',
   'awb.call.caption': 'Live captions', 'awb.call.waiting': 'Say something', 'awb.call.microphone': 'Mute microphone', 'awb.call.unmute': 'Unmute microphone',
   'awb.call.speaker': 'Speaker', 'awb.call.speakerSettings': 'Choose speaker', 'awb.call.playSound': 'Play audio',

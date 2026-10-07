@@ -13,7 +13,7 @@ import { getGlobalVoiceAdapter, registerGlobalVoiceAdapter } from '../global-voi
 import { AssistantWorkbench } from './assistant-workbench.js'
 import { ASSISTANT_WORKBENCH_OPEN_EVENT } from './assistant-workbench-entry.js'
 import { normalizeAssistantAppearance, resolveAssistantAvatarState, selectedAssistantAvatar } from '../../shared/assistant-avatar.js'
-import { FloatingAssistantAvatar } from '../avatar/floating.js'
+import { FloatingAssistantAvatar, FloatingVoiceCall } from '../avatar/floating.js'
 import { fillAssistantAvatarButton, useAssistantAvatarPortrait } from '../avatar/portrait.js'
 
 interface VoiceSnapshot {
@@ -72,6 +72,8 @@ export const globalVoiceAssistantFeature: CodingNsClientFeatureModule = {
 function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientServices }): ReactElement {
   const [snapshot, setSnapshot] = useState<VoiceSnapshot>({ state: 'disabled' })
   const [conversationOpen, setConversationOpen] = useState(false)
+  const [callMinimized, setCallMinimized] = useState(false)
+  const [callStartedAt, setCallStartedAt] = useState<number>()
   const [initialConfiguration, setInitialConfiguration] = useState(false)
   const [conversationPending, setConversationPending] = useState(false)
   const [partialText, setPartialText] = useState('')
@@ -88,8 +90,9 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   const voiceSettings = settingsValue?.assistant?.voice ?? DEFAULT_ASSISTANT_VOICE_SETTINGS
   const appearance = normalizeAssistantAppearance(settingsValue?.assistant?.appearance)
   // 悬浮入口属于已创建助理；初始化表单里的形象预览仍可使用。
+  const minimized = callMinimized && (snapshot.active === true || conversationPending)
   const floatingVisible = readAssistantProfile(settingsValue?.assistant ?? DEFAULT_ASSISTANT_SETTINGS).initialized
-    && appearance.floatingEnabled && !conversationOpen
+    && appearance.floatingEnabled && (!conversationOpen || minimized)
   const avatarModel = selectedAssistantAvatar(appearance)
   const portrait = useAssistantAvatarPortrait(services, avatarModel)
   const portraitRef = useRef(portrait)
@@ -129,7 +132,12 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
           setPartialText(''); setLiveUserText(event.text); setLiveAssistantText('')
         }
         else if (event.type === 'reply') setLiveAssistantText(event.text)
-        if (event.type === 'state') setSnapshot({ state: event.state, active: event.state !== 'disabled', ownerId })
+        if (event.type === 'state') {
+          // 致命错误后的 stop 会再发 disabled，恢复窗口仍需保留错误原因。
+          setSnapshot((previous) => ({ state: event.state, active: event.state !== 'disabled', ownerId,
+            ...(event.state === 'disabled' && previous.message !== undefined ? { message: previous.message } : {}) }))
+          if (event.state === 'disabled') setCallMinimized(false)
+        }
         else if (event.type === 'barge-in') setSnapshot({ state: 'interrupted', active: true, ownerId })
         else if (event.type === 'error') {
           const message = event.code === 'voice_empty_transcript'
@@ -139,6 +147,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
               : event.message
           setSnapshot({ state: 'error', active: adapter.ownerId !== undefined, ownerId, message })
           if (!event.recoverable) {
+            setCallMinimized(false)
             void adapter.stop().catch(() => undefined)
           }
         }
@@ -172,6 +181,8 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
 
   const startConversation = async (): Promise<void> => {
     if (conversationPending || snapshot.active === true) return
+    setCallMinimized(false)
+    setCallStartedAt(Date.now())
     setConversationPending(true)
     setPartialText('')
     setLiveUserText(''); setLiveAssistantText('')
@@ -180,6 +191,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       if (adapter === undefined) throw new Error(realtimeUnavailableMessage ?? t('voice.dialog.unavailable'))
       await adapter.start(ownerId)
     } catch (error) {
+      setCallMinimized(false)
       setSnapshot({ state: 'error', active: false, ownerId, message: error instanceof Error ? error.message : String(error) })
     } finally {
       setConversationPending(false)
@@ -187,6 +199,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   }
 
   const stopConversation = async (): Promise<void> => {
+    setCallMinimized(false)
     if (!conversationPending && snapshot.active !== true) return
     setConversationPending(true)
     try {
@@ -208,12 +221,14 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   }
 
   const openConversation = useCallback((): void => {
+    setCallMinimized(false)
     setInitialConfiguration(false)
     setConversationOpen(true)
   }, [])
 
   useEffect(() => {
     const open = (event: Event): void => {
+      setCallMinimized(false)
       setInitialConfiguration((event as CustomEvent<{ configuration?: boolean }>).detail?.configuration === true)
       setConversationOpen(true)
     }
@@ -255,7 +270,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       button.setAttribute('aria-label', label)
       button.setAttribute('aria-description', [t('voice.microphoneNotice'), t('voice.audioNotice'), snapshot.message].filter(Boolean).join(' '))
       button.setAttribute('aria-haspopup', 'dialog')
-      button.setAttribute('aria-expanded', String(conversationOpen))
+      button.setAttribute('aria-expanded', String(conversationOpen && !minimized))
       button.setAttribute('data-codingns-voice-state', snapshot.state ?? 'disabled')
       button.title = label
       button.style.cssText = `display:inline-flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:8px;cursor:pointer;background:var(--ds-color-fill-tertiary,rgba(127,127,127,.12));flex:0 1 ${assistantButtonSize};min-width:${assistantButtonSize};width:${assistantButtonSize};max-width:${assistantButtonSize};height:${assistantButtonSize};aspect-ratio:1 / 1;box-sizing:border-box;white-space:nowrap;margin:0`
@@ -314,19 +329,27 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       mountedRow?.remove()
       doc.querySelectorAll('[data-codingns-global-voice-button]').forEach((node) => node.remove())
     }
-  }, [adapter, conversationOpen, needsSetup, openConversation, snapshot.state, t])
+  }, [adapter, conversationOpen, minimized, needsSetup, openConversation, snapshot.state, t])
 
   useEffect(() => {
     if (typeof document === 'undefined') return
     document.querySelectorAll<HTMLButtonElement>('[data-codingns-global-voice-button]').forEach((button) => fillAssistantAvatarButton(button, portrait))
   }, [portrait.url, portrait.generated])
 
+  const floatingCall = minimized ? {
+    startedAt: callStartedAt ?? Date.now(), state: snapshot.state, pending: conversationPending,
+    microphoneMuted: adapter?.isMicrophoneMuted ?? false, speakerMuted: adapter?.isSpeakerMuted ?? false,
+    userText: partialText || liveUserText, assistantText: liveAssistantText,
+  } : undefined
   return createElement('div', { 'data-codingns-global-voice': 'true', ...(conversationOpen || floatingVisible ? {} : { 'aria-hidden': 'true' }) },
     floatingVisible
-      ? createElement(FloatingAssistantAvatar, { services, model: avatarModel, state: avatarState, size: appearance.floatingSize, onOpen: openConversation }) : null,
+      ? createElement(FloatingAssistantAvatar, { services, model: avatarModel, state: avatarState, size: appearance.floatingSize, call: floatingCall, onOpen: openConversation })
+      : floatingCall ? createElement(FloatingVoiceCall, { services, call: floatingCall, onOpen: openConversation }) : null,
     conversationOpen ? createElement(AssistantWorkbench, {
       services,
       initialConfiguration,
+      minimized,
+      callStartedAt,
       active: snapshot.active === true,
       pending: conversationPending,
       state: snapshot.state,
@@ -338,6 +361,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       unavailableMessage: realtimeUnavailableMessage,
       onStart: startConversation,
       onStop: stopConversation,
+      onMinimize: () => setCallMinimized(true),
       onClose: closeConversation,
     }) : null,
   )
