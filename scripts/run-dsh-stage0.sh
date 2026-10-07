@@ -22,6 +22,8 @@ runtime_env=(
   "CODINGNS4DSH_STATE_DIR=$state_dir"
   "CODINGNS4DSH_PROFILE_NAME=stage0"
   "CODINGNS4DSH_LOGIN_COOKIE_NAME=dsh_codingns_stage0020"
+  "CODINGNS4DSH_STAGE0_REPO_ROOT=$repo_root"
+  "CODINGNS4DSH_STAGE0_LAUNCHER=$dsh_bin"
 )
 
 # 有一次性迁移出的文件凭据时，stage0 使用它避免依赖 SSH 会话的 macOS 钥匙串；
@@ -95,11 +97,30 @@ if (( ${#dsh_args[@]} == 0 )); then
   fi
 fi
 
-env "${runtime_env[@]}" node "$dsh_bin" "${dsh_args[@]}" &
+# 普通启动托管编译监听；只读查询和插件管理不能触发编译。
+stage0_watch=${DSH_STAGE0_WATCH:-1}
+for argument in "$@"; do
+  case "$argument" in
+    plugin|--dump-config|--dump-config-schema|--dump-default-config|--help|-h|--version|-v|-V)
+      stage0_watch=0 ;;
+  esac
+done
+if [[ "$stage0_watch" != 0 && "$stage0_watch" != 1 ]]; then
+  printf 'DSH_STAGE0_WATCH 只接受 0 或 1。\n' >&2
+  exit 1
+fi
+
+env "${runtime_env[@]}" "CODINGNS4DSH_STAGE0_WATCH=$stage0_watch" \
+  node "$repo_root/scripts/stage0-runtime.mjs" "$dsh_bin" "${dsh_args[@]}" &
 stage0_child_pid=$!
 set +e
 wait "$stage0_child_pid"
 stage0_exit_code=$?
+# wait 被 trap 打断时，仍须等待托管器完成子进程清理。
+if [[ -n "$stage0_received_signal" ]]; then
+  wait "$stage0_child_pid"
+  stage0_exit_code=$?
+fi
 set -e
 trap - TERM INT
 report_stage0_exit "$stage0_exit_code"

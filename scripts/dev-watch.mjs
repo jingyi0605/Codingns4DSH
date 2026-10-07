@@ -1,17 +1,60 @@
 import { spawn } from 'node:child_process'
+import { createInterface } from 'node:readline'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const packageManager = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+// Stage0 通过 IPC 等待首次成功编译，避免载入旧产物或尚未生成的入口。
+const managed = typeof process.send === 'function'
+const options = {
+  cwd: repositoryRoot,
+  stdio: managed ? ['inherit', 'pipe', 'inherit'] : 'inherit',
+  detached: process.platform !== 'win32',
+}
 const children = [
-  spawn(packageManager, ['exec', 'tsc', '--watch', '--preserveWatchOutput'], { stdio: 'inherit' }),
-  spawn(packageManager, ['exec', 'tsdown', '--watch'], { stdio: 'inherit' }),
+  spawn(packageManager, ['exec', 'tsc', '--watch', '--preserveWatchOutput', '--pretty', 'false', '--locale', 'en'], options),
+  spawn(packageManager, ['exec', 'tsdown', '--watch'], options),
 ]
 
 let stopping = false
+const ready = new Set()
+
+if (managed) {
+  for (const [index, child] of children.entries()) {
+    const lines = createInterface({ input: child.stdout })
+    lines.on('line', (line) => {
+      process.stdout.write(`${line}\n`)
+      const plain = line.replace(/\u001b\[[0-9;]*m/gu, '')
+      const success = index === 0
+        ? /Found 0 errors\. Watching for file changes\./u.test(plain)
+        : /Build complete|Rebuilt in/u.test(plain)
+      if (!success || ready.has(index)) return
+      ready.add(index)
+      if (ready.size === children.length && !stopping) process.send?.({ type: 'watch-ready' })
+    })
+  }
+}
+
+function signalChild(child, signal) {
+  if (child.pid === undefined) return
+  try {
+    // pnpm 会再派生编译器；只杀 pnpm 本身会留下仍在写产物的孤儿进程。
+    if (process.platform === 'win32') child.kill(signal)
+    else process.kill(-child.pid, signal)
+  } catch (error) {
+    if (error.code !== 'ESRCH') throw error
+  }
+}
 
 function stop(code) {
   if (stopping) return
   stopping = true
-  for (const child of children) child.kill('SIGINT')
+  for (const child of children) signalChild(child, 'SIGTERM')
+  setTimeout(() => {
+    for (const child of children) signalChild(child, 'SIGKILL')
+  }, 5000).unref()
+  if (process.connected) process.disconnect()
   process.exitCode = code
 }
 
@@ -30,3 +73,4 @@ for (const child of children) {
 
 process.once('SIGINT', () => stop(0))
 process.once('SIGTERM', () => stop(0))
+if (managed) process.once('disconnect', () => stop(0))
