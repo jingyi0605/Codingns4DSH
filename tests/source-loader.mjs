@@ -27,7 +27,8 @@ export async function load(url, context, nextLoad) {
   const source = await readFile(new URL(url), 'utf8')
   const output = ts.transpileModule(source, {
     fileName: fileURLToPath(url),
-    compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
+    // 与项目 target 一致，在内存转换标准装饰器，Node 22 无法直接解析它们。
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
   })
   return { format: 'module', shortCircuit: true, source: output.outputText }
 }
