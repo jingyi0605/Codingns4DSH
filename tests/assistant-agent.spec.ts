@@ -3,6 +3,7 @@ import test from 'node:test'
 import { setImmediate } from 'node:timers/promises'
 import { AssistantAgentAdapter, createAssistantAgentAdapter, ASSISTANT_AGENT_PREFIX } from '../src/dsh-capabilities/host/assistant-agent-adapter.js'
 import { createAssistantLlmAdapter } from '../src/dsh-capabilities/host/assistant-llm-adapter.js'
+import { createAssistantWebSearchTool } from '../src/dsh-capabilities/host/assistant-web-search-adapter.js'
 import { createDshCapabilityRegistry } from '../src/dsh-capabilities/routes.js'
 import { createAssistantChatSystem } from '../src/host/features/assistant-prompts.js'
 import type { AssistantLlmAdapter } from '../src/dsh-capabilities/host/assistant-llm-adapter.js'
@@ -11,13 +12,13 @@ import type { AssistantManagementTool } from '../src/host/features/assistant-man
 const model = { provider: 'api', model: 'fast', label: 'Fast' }
 const llm: AssistantLlmAdapter = { catalog: async () => ({ models: [model], default: model, errors: [] }), assistantOptions: async () => ({ maxTokens: 1024, reasoningEffort: 'off' }), reply: async () => assert.fail('正式对话不得直接调用 LLM') }
 
-function fixture(drive: (scope: any, message: any) => Promise<void>, inherited: readonly string[] = []) {
+function fixture(drive: (scope: any, message: any) => Promise<void>, inherited: readonly string[] = [], web?: unknown) {
   const created: any[] = []
   let disposed = 0; let cancelled = 0
   const registry = { async create(options: any) {
     const listeners = new Map<string, (...args: any[]) => any>()
     const sections: any[] = []; const registered: AssistantManagementTool[] = []; const events: any[] = []
-    const scope: any = { options, listeners, sections, registered, events, mode: '', filter: undefined, guard: undefined,
+    const scope: any = { options, listeners, sections, registered, events, web, mode: '', filter: undefined, guard: undefined,
       tools: { schemas: () => inherited.map((name) => ({ name })), presentAs(mode: string) { scope.mode = mode }, restrict(filter: unknown) { scope.filter = filter }, register(tool: AssistantManagementTool) { registered.push(tool) }, guard(guard: unknown) { scope.guard = guard } },
       systemPrompt: { suppressRuntimeContext() { scope.suppressed = true }, section(section: unknown) { sections.push(section) } },
       on(name: string, listener: (...args: any[]) => any) { listeners.set(name, listener) },
@@ -97,6 +98,49 @@ test('Host 没有注册搜索时保持管理问答可用，不把搜索权限或
   }, ['web_fetch', 'bash'])
   await f.adapter.reply(model, '提示词', [{ role: 'user', text: '今天的新闻？' }], new AbortController().signal, () => {})
   await f.adapter.dispose()
+})
+
+test('Host 全局搜索工具缺失时，在独立助理作用域连接原生 WebRuntime，失败原样可见', async () => {
+  let calls = 0
+  const web = { async search(request: any, signal: AbortSignal) {
+    signal.throwIfAborted(); calls++
+    assert.deepEqual(request, { query: '济南天气', maxResults: 8 })
+    if (calls === 2) throw new Error('WEB_PROVIDER_UNAVAILABLE')
+    return { sources: [{ url: 'https://example.com/weather', title: '天气来源' }], truncated: false }
+  } }
+  const f = fixture(async (scope) => {
+    await scope.step()
+    assert.deepEqual(scope.filter, { allow: [] }, '不开放全局工具或普通会话能力')
+    assert.deepEqual(scope.registered.map((tool: AssistantManagementTool) => tool.name), ['web_search'])
+    assert.equal(scope.guard({ name: 'web_search' }), undefined)
+    assert.match(scope.sections[0].text(), /已开放原生搜索工具/)
+    const tool = scope.registered[0]
+    const execution = { callId: 'search', signal: new AbortController().signal }
+    const result = await tool.execute({ queries: [' 济南天气 ', '济南天气'] }, execution)
+    assert.equal(calls, 1, '同一调用内重复查询只发送一次')
+    assert.match(JSON.stringify(result), /https:\/\/example.com\/weather/)
+    assert.match(tool.output.render({}, result)[0].text, /不可信/)
+    await assert.rejects(tool.execute({ queries: ['济南天气'] }, execution), /WEB_PROVIDER_UNAVAILABLE/)
+    for (const queries of [[], [' '], Array(5).fill('天气'), ['x'.repeat(1001)]]) await assert.rejects(tool.execute({ queries }, execution), /非空查询/)
+    const aborted = new AbortController(); aborted.abort()
+    await assert.rejects(tool.execute({ queries: ['济南天气'] }, { ...execution, signal: aborted.signal }), /abort/i)
+    assert.equal(calls, 2, '无效参数与取消不能发起搜索')
+    scope.output('据天气来源答复。')
+  }, ['bash', 'web_fetch'], web)
+  try { await f.adapter.reply(model, '提示词', [{ role: 'user', text: '查询济南天气' }], new AbortController().signal, () => {}) }
+  finally { await f.adapter.dispose() }
+})
+
+test('一条搜索失败时取消同一调用的挂起查询，释放后不再留下后台搜索', async () => {
+  let cancelled = false
+  const tool = createAssistantWebSearchTool({ web: { async search(request: any, signal: AbortSignal) {
+    if (request.query === '失败查询') throw new Error('提供商错误')
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+      cancelled = true; reject(signal.reason)
+    }, { once: true }))
+  } } })!
+  await assert.rejects(tool.execute({ queries: ['失败查询', '挂起查询'] }, { callId: 'multi-search', signal: new AbortController().signal }), /提供商错误/)
+  assert.equal(cancelled, true)
 })
 
 test('工具审计遮蔽凭据并限制长度，保持实际参数和结果原样执行', async () => {

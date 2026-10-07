@@ -102,7 +102,8 @@ test('真实原生 Agent Loop 执行管理工具并续跑短答，其他根 Agen
   } finally { release(); await adapter.dispose(); await other?.dispose(); await ctx.fiber.dispose() }
 })
 
-test('真实原生搜索工具驱动助理续跑，搜索失败可见，抓取及本地工具对助理禁用且不影响其他会话', { skip: !available, timeout: 10000 }, async () => {
+test('真实搜索服务在全局注册及 Web 预设隔离下都能驱动助理续跑，失败可见且不影响其他会话', { skip: !available, timeout: 20000 }, async (t) => {
+  for (const inheritedSearch of [true, false]) await t.test(inheritedSearch ? '继承全局搜索工具' : '全局工具关闭，只在助理中注册搜索', async () => {
   const [cordis, sessions, projections, agents, llms, prompts, tools, loop, web, webTools] = await Promise.all([
     'cordis', 'dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-agent-loop', 'dsh-web', 'dsh-tool-web',
   ].map(load))
@@ -124,7 +125,7 @@ test('真实原生搜索工具驱动助理续跑，搜索失败可见，抓取�
     if (unavailable) throw new Error('搜索提供商暂时不可用')
     return { sources: [{ url: 'https://example.com/weather', title: '天气来源', snippet: '北京今天晴，25度。' }], truncated: false }
   } })
-  webTools.apply(ctx, webTools.Config({}))
+  if (inheritedSearch) webTools.apply(ctx, webTools.Config({}))
   for (const name of ['bash', 'write', 'agent_subagent', 'mcp_private_tool']) ctx.tools.register({ name, description: '普通会话工具',
     parameters: { type: 'object', properties: {}, additionalProperties: false }, output: { schema: {}, render: () => [] }, execute: async () => assert.fail(`助理不得执行 ${name}`) })
   const requests: any[] = []
@@ -181,7 +182,10 @@ test('真实原生搜索工具驱动助理续跑，搜索失败可见，抓取�
     other.agent.followup({ id: 'other-question', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '普通会话' }] })
     await other.agent.whenIdle()
     assert.equal(requests[4].reasoningEffort, 'high')
-    assert.ok(requests[4].tools.some((tool: any) => tool.name === 'web_fetch'))
+    assert.equal(requests[4].tools.some((tool: any) => tool.name === 'web_fetch'), inheritedSearch)
+    assert.equal(requests[4].tools.some((tool: any) => tool.name === 'web_search'), inheritedSearch, '助理局部搜索不能泄露到普通根 Agent')
+    assert.equal(ctx.tools.schemas().some((tool: any) => tool.name === 'web_search'), inheritedSearch)
     assert.ok(requests[4].tools.some((tool: any) => tool.name === 'bash'))
   } finally { await adapter.dispose(); await other?.dispose(); await ctx.fiber.dispose() }
+  })
 })
