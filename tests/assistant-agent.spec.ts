@@ -281,7 +281,10 @@ test('无限工具循环达到八步时退出，不制造子 Agent 或切回直�
 test('能力版本与结构缺失可解释，旧 Host 不开放新的 Agent 能力', async () => {
   const context = { agents: { create() {} }, tools: { register() {}, restrict() {}, guard() {}, presentAs() {} }, systemPrompt: { section() {}, suppressRuntimeContext() {} }, on() {} }
   for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2']) assert.equal(createDshCapabilityRegistry(version, 'host', context).getProfile(context).capabilities.get('assistant.agent')?.status, 'unavailable')
-  assert.equal(createDshCapabilityRegistry('0.2.1-alpha.1', 'host', context).getProfile(context).capabilities.get('assistant.agent')?.status, 'ready')
+  for (const version of ['0.2.0-rc.2', '0.2.1-alpha.1']) {
+    assert.equal(createDshCapabilityRegistry(version, 'host', context).getProfile(context).capabilities.get('assistant.agent')?.status, 'ready')
+    assert.equal(createDshCapabilityRegistry(version, 'host', { ...context, tools: {} }).getProfile({ ...context, tools: {} }).capabilities.get('assistant.agent')?.status, 'unavailable')
+  }
   const adapter = createAssistantAgentAdapter({}, '0.2.1-alpha.1', llm, [])
   await assert.rejects(adapter.reply(model, '', [{ role: 'user', text: '你好' }], new AbortController().signal, () => {}), /不支持受限助理 Agent/)
   await adapter.dispose()

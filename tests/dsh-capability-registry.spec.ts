@@ -77,6 +77,13 @@ test('能力矩阵覆盖插件当前测试的四个 DSH 版本', () => {
   assert.ok(settingsRoutes.every((route) => route.consumers.length > 0))
 })
 
+test('助理模型和根 Agent 矩阵与插件支持范围一致', () => {
+  for (const capability of ['llm.text', 'assistant.agent']) {
+    const entry = DSH_CAPABILITY_MATRIX.find((route) => route.capability === capability)
+    assert.equal(entry?.supportedDsh, SUPPORTED_DSH_COMPATIBILITY)
+  }
+})
+
 test('PeerHost 八项能力已进入矩阵并覆盖支持版本', () => {
   const capabilities = [
     'peer-host.store', 'peer-host.handshake', 'peer-host.http-proxy', 'peer-host.ws-proxy',

@@ -34,7 +34,7 @@ test('索引和对话使用独立的口语化前置提示词，同时保留未�
   assert.throws(() => createAssistantChatSystem(index, 'a'.repeat(8001)), /8000/u)
 })
 
-function nativeAdapter(chunks: readonly Record<string, any>[], captured: Record<string, any>[] = [], resolveModelInfo?: (provider: string, model: string, signal?: AbortSignal) => Promise<Record<string, any>>) {
+function nativeAdapter(chunks: readonly Record<string, any>[], captured: Record<string, any>[] = [], resolveModelInfo?: (provider: string, model: string, signal?: AbortSignal) => Promise<Record<string, any>>, version = '0.2.1-alpha.1') {
   return createAssistantLlmAdapter({ get(name: string) {
     if (name === 'llm') return {
       listProviders: () => [{ id: 'native', name: '原生 API' }, { id: 'cli', name: '虚拟 CLI' }, { id: 'bad', name: '失败目录' }],
@@ -44,7 +44,7 @@ function nativeAdapter(chunks: readonly Record<string, any>[], captured: Record<
     }
     if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'native', model: 'chat' }) }
     return undefined
-  } }, '0.2.1-alpha.1')!
+  } }, version)!
 }
 
 test('原生模型目录复用 DSH 默认选择，排除无模型的 CLI 并保留目录失败提示', async () => {
@@ -55,7 +55,19 @@ test('原生模型目录复用 DSH 默认选择，排除无模型的 CLI 并保�
   assert.match(selected.errors[0]!, /失败目录/u)
   assert.ok(!JSON.stringify(selected).includes('hidden-key'))
   assert.equal(createAssistantLlmAdapter({}, '0.2.1-alpha.1'), undefined)
-  assert.equal(createAssistantLlmAdapter({ llm: { stream() {}, listProviders() {}, listModels() {} } }, '0.2.0-rc.2'), undefined)
+  assert.equal(createAssistantLlmAdapter({ llm: { stream() {}, listProviders() {}, listModels() {} } }, '0.1.7-rc.2'), undefined)
+})
+
+for (const version of ['0.2.0-rc.2', '0.2.1-alpha.1']) test(`${version} 读取原生模型目录、默认选择并完成流式回复`, async () => {
+  const captured: Record<string, any>[] = []
+  const adapter = nativeAdapter([{ type: 'text-delta', index: 0, text: '兼容回复' }, { type: 'finish', reason: { kind: 'stop' } }], captured, undefined, version)
+  assert.ok(adapter, '已支持的 DSH 版本不能被助理 LLM 路由排除')
+  const selected = await adapter.catalog()
+  assert.equal(selected.default?.model, 'chat')
+  assert.equal(selected.models[0]?.provider, 'native')
+  assert.equal(await adapter.reply(selected.default!, '', [{ role: 'user', text: '测试' }], new AbortController().signal, () => {}), '兼容回复')
+  assert.equal(captured[0]!.model, 'chat')
+  assert.equal(createAssistantLlmAdapter({}, version), undefined, '放宽版本仍必须检查实际服务结构')
 })
 
 test('原生流式失败保留状态码、稳定错误码与 Retry-After，供索引重试分类', async () => {

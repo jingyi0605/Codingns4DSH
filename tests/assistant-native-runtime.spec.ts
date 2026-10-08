@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -12,10 +12,13 @@ import { createAssistantScope } from '../src/host/features/assistant-scope.js'
 import { configureAssistantSettings } from '../src/host/features/assistant-lifecycle-settings.js'
 import { DEFAULT_ASSISTANT_SETTINGS } from '../src/shared/contracts/config.js'
 import type { AssistantToolCall } from '../src/shared/contracts/assistant.js'
+import { createDshCapabilityRegistry } from '../src/dsh-capabilities/routes.js'
 
 // 只加载 Stage0 核心库到独立内存 Context，不加载启动器、Profile、持久化或服务器。
 const runtime = process.env.CODINGNS_STAGE0_RUNTIME_DIR || join(homedir(), '.local/share/codingns/deepseek-harness/0.2.1-alpha.1/node_modules/@deepseek-ai')
 const available = existsSync(join(runtime, 'dsh-agent-loop/lib/index.js'))
+// 读取实际加载的版本，避免用 alpha.1 标签测试 rc.2，从而绕过待验证的版本路由。
+const runtimeVersion = available ? JSON.parse(readFileSync(join(runtime, 'dsh-agent-loop/package.json'), 'utf8')).version as string : ''
 const load = (name: string) => import(pathToFileURL(join(runtime, name, 'lib/index.js')).href)
 
 test('已安装 DSH 原生工具校验器接受所有管理工具契约', { skip: !available }, async () => {
@@ -56,16 +59,20 @@ test('真实原生 Agent Loop 执行管理工具并续跑短答，其他根 Agen
       }
     }
   }
-  ctx.llm.registerAdapter(['api'], new Model())
+  // 同一原生目录覆盖第三方 API 与官方提供商，避免把“能看到一个假模型”当完整验证。
+  ctx.llm.registerAdapter(['api', 'deepseek'], new Model())
   ctx.tools.register({ name: 'forbidden_execution', description: '普通会话工具', parameters: { type: 'object', properties: {}, additionalProperties: false }, output: { schema: {}, render: () => [] }, execute: async () => assert.fail('助理不得执行普通会话工具') })
   let queried = 0
   const management = createAssistantManagementTools({ dispatcher: new AssistantDispatcher(() => assert.fail('纯查询不得派发')), snapshot: async () => { queried++; return { scope: createAssistantScope(['w1']), entries: [], archivedSessionIds: [], indexGeneration: 0, workspaces: [{ workspaceId: 'w1', name: '项目一', path: null }] } }, read: async () => null })
-  const llm = createAssistantLlmAdapter(ctx, '0.2.1-alpha.1')!
+  assert.equal(createDshCapabilityRegistry(runtimeVersion, 'host', ctx).getProfile(ctx).capabilities.get('assistant.agent')?.status, 'ready')
+  const llm = createAssistantLlmAdapter(ctx, runtimeVersion)!
+  assert.ok(llm, `${runtimeVersion} 应可读取原生 LLM`)
   const adapter = new AssistantAgentAdapter(ctx.agents, llm, management, '/virtual/assistant', async () => {})
   let other: any
   try {
     other = await ctx.agents.create({ sessionId: 'ordinary-root', agentOptions: { provider: 'api', model: 'fast', reasoningEffort: 'high' } })
     const catalog = await llm.catalog()
+    assert.deepEqual(new Set(catalog.models.map((model) => model.provider)), new Set(['api', 'deepseek']))
     const saved = configureAssistantSettings(DEFAULT_ASSISTANT_SETTINGS, { name: '哆哆', model: { provider: 'api', model: 'fixed' }, avatarId: 'codingns-default' }, catalog, [])
     const partial: string[] = []
     const audit: AssistantToolCall[] = []
@@ -147,7 +154,7 @@ test('真实搜索服务在全局注册及 Web 预设隔离下都能驱动助理
   ctx.llm.registerAdapter(['api'], new Model())
   const management = createAssistantManagementTools({ dispatcher: new AssistantDispatcher(() => assert.fail('天气查询不得派发会话任务')),
     snapshot: async () => ({ scope: createAssistantScope([]), entries: [], archivedSessionIds: [], indexGeneration: 0, workspaces: [] }), read: async () => null })
-  const adapter = new AssistantAgentAdapter(ctx.agents, createAssistantLlmAdapter(ctx, '0.2.1-alpha.1'), management, '/virtual/assistant', async () => {})
+  const adapter = new AssistantAgentAdapter(ctx.agents, createAssistantLlmAdapter(ctx, runtimeVersion), management, '/virtual/assistant', async () => {})
   let other: any
   try {
     const question = { role: 'user' as const, text: '北京天气怎么样？' }
