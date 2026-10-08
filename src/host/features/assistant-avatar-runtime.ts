@@ -14,6 +14,9 @@ import { ASSISTANT_AVATAR_ASSET_PATH, ASSISTANT_AVATAR_STATUS_PATH } from '../..
 import { CodingNsRpcError } from '../rpc-table.js'
 import { getAssistantAvatarPackages } from '../avatar/registry.js'
 import { AssistantAvatarCatalog } from '../avatar/catalog.js'
+import { assistantAvatarEngineInstalled, installAssistantAvatarEngine, readAssistantAvatarEngine } from '../avatar/engine.js'
+import { ASSISTANT_AVATAR_ENGINE_VERSION, hasAssistantAvatarEngineConsent } from '../../shared/assistant-avatar-engine.js'
+import type { AssistantAvatarEngineStatus } from '../../shared/assistant-avatar-engine.js'
 import { ASSISTANT_AVATAR_CATALOG_PREVIEW_PATH, ASSISTANT_AVATAR_TEMPORARY_ASSET_PATH, hasAssistantAvatarConsent } from '../../shared/assistant-avatar-catalog.js'
 import { AssistantAvatarTemporaryPreviews } from '../avatar/temporary-previews.js'
 
@@ -68,11 +71,28 @@ export function createAssistantAvatarRuntimeHandler(readRuntime: () => Promise<s
 }
 
 async function readInstalledRuntime(): Promise<string> {
+  // 用户确认引擎许可后由 Host 安装到自有目录，优先使用该完整副本。
+  const managed = await readAssistantAvatarEngine()
+  if (managed !== undefined) return managed
   const require = createRequire(import.meta.url)
   // 源码开发依赖或目标 Host 的独立安装提供引擎；此处只解析已有依赖，不安装或下载代码。
   const root = dirname(require.resolve('l2d/package.json'))
   // index.min.js 是全局 IIFE，不能通过 import 获得 init；使用真正的 ESM 文件。
   return readFile(join(root, 'dist', 'index.js'), 'utf8')
+}
+
+/** 自有目录优先，其次源码开发或用户手工安装的依赖；两者都没有才算缺失。 */
+export async function readAssistantAvatarEngineStatus(): Promise<AssistantAvatarEngineStatus> {
+  if (await assistantAvatarEngineInstalled()) return { installed: true, version: ASSISTANT_AVATAR_ENGINE_VERSION, source: 'managed' }
+  try {
+    const require = createRequire(import.meta.url)
+    const root = dirname(require.resolve('l2d/package.json'))
+    const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as { version?: unknown }
+    const source = await readFile(join(root, 'dist', 'index.js'), 'utf8')
+    if (source.length > 0) return { installed: true,
+      version: typeof manifest.version === 'string' ? manifest.version : ASSISTANT_AVATAR_ENGINE_VERSION, source: 'dependency' }
+  } catch { /* 缺失、接口异常或损坏的依赖都按未安装处理。 */ }
+  return { installed: false, version: ASSISTANT_AVATAR_ENGINE_VERSION, source: 'missing' }
 }
 
 export function createAssistantAvatarRuntimeFeature(options: { readonly packages?: AssistantAvatarPackages; readonly catalog?: AssistantAvatarCatalog; readonly temporary?: AssistantAvatarTemporaryPreviews } = {}): FeatureModule<CodingNsHostServices> {
@@ -87,6 +107,11 @@ export function createAssistantAvatarRuntimeFeature(options: { readonly packages
           throw new CodingNsRpcError('CODINGNS_AVATAR_CONSENT_REQUIRED', '请先同意第三方形象使用说明')
         }
       }
+      const requireEngineConsent = (): void => {
+        if (!hasAssistantAvatarEngineConsent(context.services.settings?.get().assistant.appearance?.engineConsent)) {
+          throw new CodingNsRpcError('CODINGNS_AVATAR_ENGINE_CONSENT_REQUIRED', '请先确认 Live2D 引擎许可')
+        }
+      }
       const lifetime = new AbortController()
       context.resources.add(() => lifetime.abort())
       context.resources.add(() => temporary.dispose())
@@ -95,12 +120,20 @@ export function createAssistantAvatarRuntimeFeature(options: { readonly packages
         const requestedSignal = (rpcContext as { signal?: AbortSignal } | undefined)?.signal
         const signal = requestedSignal === undefined ? lifetime.signal : AbortSignal.any([lifetime.signal, requestedSignal])
         if (action === 'list') return packages.list()
+        // 只读探测：未安装时客户端据此决定是否弹出引擎许可确认。
+        if (action === 'engineStatus') return readAssistantAvatarEngineStatus()
         if (action === 'catalog') { requireConsent(); return catalog.list() }
         // 撤销协议或连接变为只读后，清理接口仍必须可用。
         if (action === 'releasePreview' && typeof input?.lease === 'string') return temporary.release(input.lease)
         if (action === 'keepPreview' && typeof input?.lease === 'string') { requireConsent(); return temporary.touch(input.lease) }
         // 与原设置写入边界一致，远端只读连接不能借安装接口写入磁盘。
         if (context.services.settingsProvider?.writable === false) throw new CodingNsRpcError('CODINGNS_SETTINGS_READONLY', '当前形象设置为只读')
+        // 引擎下载写入 CodingNS 自有目录，不修改 DSH Profile 或插件依赖树。
+        if (action === 'installEngine') {
+          requireEngineConsent()
+          await installAssistantAvatarEngine({ signal })
+          return readAssistantAvatarEngineStatus()
+        }
         if (action === 'previewCatalog') {
           requireConsent()
           if (typeof input?.id !== 'string' || typeof input.revision !== 'string' || typeof input.lease !== 'string') throw new TypeError('临时形象预览参数无效')

@@ -1,6 +1,8 @@
 import { getAssistantAvatarPreset } from './assistant-avatar-legacy.js'
 import { validAssistantAvatarConsent } from './assistant-avatar-catalog.js'
 import type { AssistantAvatarConsent } from './assistant-avatar-catalog.js'
+import { validAssistantAvatarEngineConsent } from './assistant-avatar-engine.js'
+import type { AssistantAvatarEngineConsent } from './assistant-avatar-engine.js'
 
 /** 形象只消费助理状态，不持有会话、语音设备或工作区权限。 */
 export type AssistantAvatarState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'waiting' | 'error'
@@ -57,6 +59,8 @@ export interface AssistantAppearanceSettings {
   readonly models: readonly AssistantAvatarModel[]
   /** 仅控制第三方目录访问，撤销同意不会删除已安装形象。 */
   readonly thirdPartyConsent?: AssistantAvatarConsent
+  /** 仅控制 Live2D 引擎下载；撤销同意不会删除已安装引擎。 */
+  readonly engineConsent?: AssistantAvatarEngineConsent
 }
 
 export const ASSISTANT_AVATAR_RUNTIME_PATH = '/api/codingns/assistant-avatar-runtime'
@@ -123,6 +127,8 @@ export function normalizeAssistantAppearance(value: unknown): AssistantAppearanc
     models,
     ...(validAssistantAvatarConsent(record.thirdPartyConsent) ? { thirdPartyConsent: {
       version: record.thirdPartyConsent.version, acceptedAt: record.thirdPartyConsent.acceptedAt } } : {}),
+    ...(validAssistantAvatarEngineConsent(record.engineConsent) ? { engineConsent: {
+      version: record.engineConsent.version, acceptedAt: record.engineConsent.acceptedAt } } : {}),
   }
 }
 
@@ -130,6 +136,7 @@ export function normalizeAssistantAppearance(value: unknown): AssistantAppearanc
 export function validateAssistantAppearance(value: unknown): void {
   const record = asRecord(value)
   if (record.thirdPartyConsent !== undefined && !validAssistantAvatarConsent(record.thirdPartyConsent)) throw new TypeError('第三方形象协议记录无效')
+  if (record.engineConsent !== undefined && !validAssistantAvatarEngineConsent(record.engineConsent)) throw new TypeError('Live2D 引擎许可记录无效')
   if (typeof record.floatingEnabled !== 'boolean' || typeof record.dialogEnabled !== 'boolean') throw new TypeError('形象显示开关无效')
   for (const [key, min, max] of [['floatingSize', ASSISTANT_AVATAR_FLOATING_MINI_SIZE, 320], ['dialogSize', 120, 480]] as const) {
     if (typeof record[key] !== 'number' || !Number.isInteger(record[key]) || record[key] < min || record[key] > max) throw new TypeError('形象尺寸超出范围')

@@ -64,6 +64,7 @@ export const CodingNsSettingsSchema = z.object({
       dialogSize: z.number().min(120).max(480).default(240),
       selectedId: z.string().max(80).default('codingns-default'),
       thirdPartyConsent: z.union([z.object({ version: z.string().min(1).max(80), acceptedAt: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER) }), z.const(undefined)]),
+      engineConsent: z.union([z.object({ version: z.string().min(1).max(80), acceptedAt: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER) }), z.const(undefined)]),
       models: z.array(z.object({
         id: z.string().min(1).max(80), name: z.string().min(1).max(80),
         renderer: z.string().min(1).max(80), source: z.string().max(2048),

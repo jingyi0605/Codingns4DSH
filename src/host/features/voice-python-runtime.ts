@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { join, win32 } from 'node:path'
+import { join } from 'node:path'
+import { systemTarCommand } from '../tar-archive.js'
 import { voiceProcessEnvironment } from './voice-process-environment.js'
 
 const PYTHON_VERSION = '3.12.12'
@@ -12,13 +13,9 @@ export type VoiceEnvironmentCommand = (command: string, args: readonly string[],
 export type VoiceEnvironmentProgress = (phase: string, bytes?: number, total?: number | null) => void
 export interface VoicePythonArtifact { readonly target: string; readonly url: string; readonly sha256: string; readonly executable: string }
 
-/** Windows 明确选择系统 bsdtar，避免 Git GNU tar 将盘符识别为远程主机。 */
+/** 保留原导出名；系统解压器解析规则统一由 tar-archive 提供。 */
 export function voicePythonArchiveCommand(platform: string = process.platform, environment: NodeJS.ProcessEnv = process.env): string {
-  if (platform !== 'win32') return 'tar'
-  const value = (name: string): string | undefined => Object.entries(environment).find(([key]) => key.toUpperCase() === name)?.[1]
-  const root = value('SYSTEMROOT') || value('WINDIR')
-  if (!root || !win32.isAbsolute(root)) throw new Error('无法定位 Windows 系统解压器，请检查 SystemRoot 环境变量')
-  return win32.join(root, 'System32', 'tar.exe')
+  return systemTarCommand(platform, environment)
 }
 
 /** 下载源和摘要均固定；无需预装系统 Python，不执行远程安装脚本。 */

@@ -400,6 +400,9 @@ export type { AssistantAvatarCacheStatus } from './assistant-avatar-resources.js
 export { ASSISTANT_AVATAR_ASSET_PATH, ASSISTANT_AVATAR_STATUS_PATH, type AssistantAvatarCandidate, type AssistantAvatarInstallation } from './assistant-avatar-installation.js'
 export { ASSISTANT_AVATAR_CATALOG_URL, ASSISTANT_AVATAR_CONSENT_VERSION, ASSISTANT_AVATAR_CATALOG_PREVIEW_PATH,
   hasAssistantAvatarConsent, assistantAvatarCatalogPreviewUrl, type AssistantAvatarConsent, type AssistantAvatarCatalogEntry } from './assistant-avatar-catalog.js'
+export { ASSISTANT_AVATAR_ENGINE_VERSION, ASSISTANT_AVATAR_ENGINE_CONSENT_VERSION, hasAssistantAvatarEngineConsent,
+  validAssistantAvatarEngineConsent, type AssistantAvatarEngineConsent, type AssistantAvatarEngineSource,
+  type AssistantAvatarEngineStatus } from './assistant-avatar-engine.js'
 export { MOSS_BUILTIN_VOICES, ASSISTANT_VOICE_SITES, DEFAULT_ASSISTANT_TTS_SETTINGS, DEFAULT_ASSISTANT_TTS_PARAMETERS, ASSISTANT_TTS_PARAMETER_LIMITS, readAssistantTtsSettings, readAssistantTtsParameters, validateAssistantTtsParameters } from './assistant-tts.js'
 export type { AssistantTtsVoice, AssistantTtsSettings, AssistantTtsParameters, AssistantTtsSnapshot, AssistantTtsStatus } from './assistant-tts.js'
 export { ASSISTANT_PROMPT_MAX_CHARS, DEFAULT_ASSISTANT_PROMPTS, readAssistantPrompts, type AssistantPromptSettings } from './assistant-prompts.js'
