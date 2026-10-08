@@ -10,7 +10,8 @@ import { AssistantPanel } from './assistant-panel.js'
 import { ClientSherpaVoiceAdapter } from '../sherpa-voice-adapter.js'
 import { inspectBrowserVoiceSecurity } from '../voice-security.js'
 import { getGlobalVoiceAdapter, registerGlobalVoiceAdapter } from '../global-voice-runtime-registry.js'
-import { AssistantWorkbench } from './assistant-workbench.js'
+import type { AssistantWorkbenchProps } from './assistant-workbench.js'
+import { AssistantLoadedView, createAssistantViewLoader } from './assistant-view-loader.js'
 import { ASSISTANT_WORKBENCH_OPEN_EVENT } from './assistant-workbench-entry.js'
 import { normalizeAssistantAppearance, resolveAssistantAvatarState, selectedAssistantAvatar } from '../../shared/assistant-avatar.js'
 import { FloatingAssistantAvatar, FloatingVoiceCall } from '../avatar/floating.js'
@@ -25,6 +26,7 @@ interface VoiceSnapshot {
 }
 
 const GLOBAL_ASSISTANT_BUTTON_SIZE = 38
+const workbenchLoader = createAssistantViewLoader(async () => (await import('./assistant-workbench.js')).AssistantWorkbench)
 
 /** Client 根级语音入口；使用 shell.overlay，绝不绑定当前 session。 */
 export const globalVoiceAssistantFeature: CodingNsClientFeatureModule = {
@@ -359,7 +361,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       style: { position: 'fixed', right: 12, bottom: 8, zIndex: 9000, maxWidth: 'min(480px, calc(100vw - 24px))', fontSize: 11, color: 'var(--dsw-alias-label-secondary, #777)', pointerEvents: 'auto' } },
       createElement('details', null, createElement('summary', { style: { cursor: 'pointer' } }, t('avatar.desktopFallback')),
         createElement('div', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 120, overflowY: 'auto' } }, desktopAvatar.error))) : null,
-    conversationOpen ? createElement(AssistantWorkbench, {
+    conversationOpen ? createElement(AssistantLoadedView<AssistantWorkbenchProps>, { loader: workbenchLoader, t, overlay: true, onClose: closeConversation, viewProps: {
       services,
       initialConfiguration,
       minimized,
@@ -377,7 +379,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       onStop: stopConversation,
       onMinimize: () => setCallMinimized(true),
       onClose: closeConversation,
-    }) : null,
+    } }) : null,
   )
 }
 

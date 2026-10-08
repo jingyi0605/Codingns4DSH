@@ -1,20 +1,22 @@
-import { createElement, useCallback, useEffect, useRef, useState } from 'react'
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type { AssistantChatCatalog, AssistantChatMessage, AssistantChatModel, AssistantChatRun, AssistantDebugSnapshot, AssistantIndexEvidence, AssistantIndexFact, AssistantSessionAnalysis, AssistantSessionIndexTask, SessionIndexEntry } from '../../shared/contracts/assistant.js'
-import { ASSISTANT_PROMPT_MAX_CHARS, DEFAULT_ASSISTANT_PROMPTS, readAssistantPrompts } from '../../shared/assistant-prompts.js'
+import { readAssistantPrompts } from '../../shared/assistant-prompts.js'
 import { CODINGNS_ASSISTANT_FIELD } from '../../shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import { readNativeWorkspaceListStore, readNativeWorkspaceSnapshot, type NativeWorkspaceRecord } from '../native-workspace-store.js'
 import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 import { dshFieldStyle, dshSettingsButtonStyle, dshSettingsHelpStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from '../theme.js'
-import type { CodingNsClientServices } from './types.js'
-import { assistantSettingTextStyle } from '../assistant-settings-styles.js'
+import type { CodingNsClientServices, CodingNsRpcClient } from './types.js'
+import { assistantDisplayScope, getAssistantDisplayStore } from './assistant-display-store.js'
+import { AssistantPromptEditor } from './assistant-prompt-editor.js'
+export { AssistantPromptEditor } from './assistant-prompt-editor.js'
 
 const TABS = ['scope', 'sessions', 'result', 'records', 'chat'] as const
 type DebugTab = typeof TABS[number]
 
 /** 五个步骤各自处理范围、成员、结果、运行记录和 LLM 问答，不依赖语音。 */
-export function AssistantDebugDialog({ services, onClose }: { readonly services: CodingNsClientServices; readonly onClose: () => void }): ReactElement {
+export function AssistantDebugDialog({ services, displayRpc = services.rpc, onClose }: { readonly services: CodingNsClientServices; readonly displayRpc?: CodingNsRpcClient; readonly onClose: () => void }): ReactElement {
   const t = useCodingNsTranslator(services.locale)
   const [tab, setTab] = useState<DebugTab>('scope')
   const [snapshot, setSnapshot] = useState<AssistantDebugSnapshot>()
@@ -39,7 +41,8 @@ export function AssistantDebugDialog({ services, onClose }: { readonly services:
   const summarizing = snapshot?.index.analysis?.state === 'running'
   const busy = loading || saving || indexing || chatting || summarizing
   const managedIds = settings.value?.assistant.managedWorkspaceIds ?? []
-  const scopeKey = JSON.stringify([...managedIds].sort())
+  const scopeKey = assistantDisplayScope(managedIds)
+  const display = useMemo(() => getAssistantDisplayStore(displayRpc, scopeKey), [displayRpc, scopeKey])
   const workspaces = mergeDebugWorkspaces(snapshot, nativeWorkspaces, managedIds)
   const prompts = readAssistantPrompts(settings.value?.assistant.prompts)
 
@@ -55,11 +58,12 @@ export function AssistantDebugDialog({ services, onClose }: { readonly services:
     setLoading(true); setIndexing(rebuild); setError(undefined)
     try {
       if (rebuild) await call('assistant/index/rebuild', model ?? {}, abort.signal)
-      const next = await call<AssistantDebugSnapshot>('assistant/debug', {}, abort.signal)
-      if (!abort.signal.aborted && mounted.current) setSnapshot(next)
+      abort.signal.throwIfAborted()
+      const next = await display.debug.refresh({ force: true, afterPending: true })
+      if (!abort.signal.aborted && mounted.current && next) setSnapshot(next)
     } catch (cause) { if (!abort.signal.aborted && mounted.current) setError(errorMessage(cause)) }
     finally { if (!abort.signal.aborted && mounted.current) { setLoading(false); setIndexing(false) } }
-  }, [call])
+  }, [call, display])
   const loadModels = useCallback(async (): Promise<void> => {
     setModelsLoading(true)
     try {
@@ -72,12 +76,12 @@ export function AssistantDebugDialog({ services, onClose }: { readonly services:
   }, [call])
   useEffect(() => {
     mounted.current = true
-    void refresh(); void loadModels()
+    void loadModels()
     return () => {
       mounted.current = false; request.current?.abort()
       if (activeChatId.current !== undefined) void call('assistant/chat/cancel', { requestId: activeChatId.current }).catch(() => undefined)
     }
-  }, [refresh, loadModels, call])
+  }, [loadModels, call])
   useEffect(() => {
     const model = catalog?.models.find((item) => selectionKey(item) === modelKey)
     if (model === undefined) return
@@ -98,21 +102,14 @@ export function AssistantDebugDialog({ services, onClose }: { readonly services:
     setHistory([]); setRun(undefined); setSubmitted('')
   }, [scopeKey, snapshot?.index.generation, modelKey, prompts.chat, call])
   useEffect(() => {
-    let stopped = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const poll = async (): Promise<void> => {
-      try {
-        const next = await call<AssistantDebugSnapshot>('assistant/debug')
-        if (stopped || !mounted.current) return
-        setSnapshot(next)
-        timer = setTimeout(() => { void poll() }, next.index.analysis?.state === 'running' ? 600 : 1500)
-      } catch (cause) {
-        if (!stopped && mounted.current) { setError(errorMessage(cause)); timer = setTimeout(() => { void poll() }, 1500) }
-      }
+    const changed = (): void => {
+      const next = display.debug.getSnapshot()
+      if (next.value) setSnapshot(next.value)
+      if (next.error) setError(errorMessage(next.error))
     }
-    void poll()
-    return () => { stopped = true; if (timer !== undefined) clearTimeout(timer) }
-  }, [summarizing, snapshot?.index.analysis?.requestId, call])
+    changed()
+    return display.debug.subscribe(changed)
+  }, [display])
   useEffect(() => {
     const onEscape = (event: KeyboardEvent): void => { if (event.key === 'Escape') { event.stopImmediatePropagation(); onClose() } }
     document.addEventListener('keydown', onEscape)
@@ -121,31 +118,22 @@ export function AssistantDebugDialog({ services, onClose }: { readonly services:
   useEffect(() => {
     if (run?.state !== 'running') return
     const id = run.requestId
-    let stopped = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const poll = async (): Promise<void> => {
-      try {
-        const next = await call<AssistantChatRun>('assistant/chat/read', { requestId: id })
-        if (stopped || !mounted.current) return
-        setRun(next)
-        if (next.state === 'completed') {
-          activeChatId.current = undefined
-          setHistory((previous) => [...previous, { role: 'user', text: submitted }, { role: 'assistant', text: next.text }])
-          setSubmitted(''); return
-        }
-        if (next.state !== 'running') { activeChatId.current = undefined; return }
-        timer = setTimeout(() => { void poll() }, 600)
-      } catch (cause) {
-        if (stopped || !mounted.current) return
-        setError(errorMessage(cause))
-        setRun((previous) => previous === undefined ? undefined : { ...previous, state: 'failed', error: errorMessage(cause) })
-        void call('assistant/chat/cancel', { requestId: id }).catch(() => undefined)
-        activeChatId.current = undefined
+    const resource = display.chat(id)
+    const changed = (): void => {
+      const snapshot = resource.getSnapshot()
+      if (snapshot.error) { setError(errorMessage(snapshot.error)); return }
+      const next = snapshot.value
+      if (!next || activeChatId.current !== id) return
+      setRun(next)
+      if (next.state === 'completed') {
+        setHistory((previous) => [...previous, { role: 'user', text: submitted }, { role: 'assistant', text: next.text }])
+        setSubmitted('')
       }
+      if (next.state !== 'running') activeChatId.current = undefined
     }
-    void poll()
-    return () => { stopped = true; if (timer !== undefined) clearTimeout(timer) }
-  }, [run?.requestId, run?.state, submitted, call])
+    changed()
+    return resource.subscribe(changed)
+  }, [run?.requestId, run?.state, submitted, display])
   const updateScope = async (workspaceId: string, checked: boolean): Promise<void> => {
     const next = new Set(services.settings.getSnapshot().value?.assistant.managedWorkspaceIds ?? [])
     if (checked) next.add(workspaceId); else next.delete(workspaceId)
@@ -215,7 +203,7 @@ export function AssistantDebugDialog({ services, onClose }: { readonly services:
       ...(catalog?.errors.map((message, index) => createElement('span', { key: index, role: 'alert' }, message)) ?? []),
       catalog?.models.length === 0 ? createElement('span', { role: 'status' }, t('assistant.debug.modelsEmpty')) : null,
       createElement('div', { role: 'tablist', 'aria-label': t('assistant.debug.steps'), style: actionsStyle }, ...TABS.map((item) => createElement('button', { key: item, id: `assistant-debug-tab-${item}`, type: 'button', role: 'tab', 'aria-selected': tab === item, 'aria-controls': `assistant-debug-panel-${item}`, onClick: () => setTab(item), style: tab === item ? dshSettingsPrimaryButtonStyle : dshSettingsButtonStyle }, t(`assistant.debug.tab.${item}`)))),
-      loading || saving ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, t(indexing ? 'assistant.debug.indexing' : 'assistant.debug.loading')) : null,
+      loading || saving || snapshot === undefined && error === undefined ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, t(indexing ? 'assistant.debug.indexing' : 'assistant.debug.loading')) : null,
       error === undefined ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, overflowWrap: 'anywhere' } }, error),
       createElement('div', { role: 'tabpanel', id: `assistant-debug-panel-${tab}`, 'aria-labelledby': `assistant-debug-tab-${tab}`, style: { display: 'grid', gap: 14, minWidth: 0 } },
         tab !== 'scope' ? null : createElement('section', { style: sectionStyle },
@@ -239,22 +227,6 @@ export function AssistantDebugDialog({ services, onClose }: { readonly services:
           createElement('div', { style: actionsStyle }, button(chatting ? 'assistant.debug.chatGenerating' : 'assistant.debug.chatSend', () => { void send() }, busy || modelsLoading || text.trim() === '' || modelKey === '' || snapshot?.indexState !== 'ready', true), !chatting ? null : button('assistant.debug.chatStop', () => { void stop() }, starting)),
         ),
       ),
-    ),
-  )
-}
-
-/** 草稿只在明确保存时写入；保存单个字段，不覆盖另一阶段的提示词。 */
-export function AssistantPromptEditor({ kind, value, disabled, onSave, onChange, t }: { readonly kind: 'index' | 'chat'; readonly value: string; readonly disabled: boolean; readonly onSave: (kind: 'index' | 'chat', value: string) => Promise<void>; readonly onChange?: (kind: 'index' | 'chat', value: string) => Promise<void>; readonly t: CodingNsTranslator }): ReactElement {
-  const [draft, setDraft] = useState(value)
-  useEffect(() => setDraft(value), [value])
-  const change = (text: string): void => { setDraft(text); void onChange?.(kind, text).catch(() => undefined) }
-  return createElement('details', { style: sectionStyle },
-    createElement('summary', { style: { ...assistantSettingTextStyle, cursor: 'pointer' } }, t(`assistant.debug.prompt.${kind}`)),
-    createElement('span', { style: dshSettingsHelpStyle }, t('assistant.debug.promptHelp')),
-    createElement('textarea', { 'aria-label': t(`assistant.debug.prompt.${kind}`), value: draft, disabled, maxLength: ASSISTANT_PROMPT_MAX_CHARS, rows: 5, onChange: (event: { currentTarget: { value: string } }) => change(event.currentTarget.value), style: { ...dshFieldStyle, ...assistantSettingTextStyle, width: '100%', padding: 10, boxSizing: 'border-box', resize: 'vertical' } }),
-    createElement('div', { style: actionsStyle },
-      onChange === undefined ? createElement('button', { type: 'button', disabled: disabled || draft === value, style: dshSettingsPrimaryButtonStyle, onClick: () => { void onSave(kind, draft.trim() || DEFAULT_ASSISTANT_PROMPTS[kind]).catch(() => undefined) } }, t('assistant.debug.promptSave')) : null,
-      createElement('button', { type: 'button', disabled, style: dshSettingsButtonStyle, onClick: () => change(DEFAULT_ASSISTANT_PROMPTS[kind]) }, t('assistant.debug.promptDefault')),
     ),
   )
 }

@@ -1,31 +1,19 @@
-import { createElement, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type { AssistantChatCatalog, AssistantChatRun, AssistantConversationSnapshot, AssistantDebugSnapshot, AssistantLifecycleSnapshot } from '../../shared/contracts/assistant.js'
 import { DEFAULT_ASSISTANT_SETTINGS, type AssistantSettings } from '../../shared/contracts/config.js'
-import { ASSISTANT_PERSONALITY_MAX_CHARS, readAssistantProfile, readAssistantPersonality } from '../../shared/assistant-lifecycle.js'
+import { readAssistantProfile, readAssistantPersonality } from '../../shared/assistant-lifecycle.js'
 import { BUILTIN_ASSISTANT_AVATAR, listAssistantAvatars, normalizeAssistantAppearance, resolveAssistantAvatarState, selectedAssistantAvatar } from '../../shared/assistant-avatar.js'
 import { readAssistantTtsSettings, type AssistantTtsSnapshot } from '../../shared/assistant-tts.js'
-import { readAssistantPrompts } from '../../shared/assistant-prompts.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 import { readNativeWorkspaceListStore, readNativeWorkspaceSnapshot, type NativeWorkspaceRecord } from '../native-workspace-store.js'
-import { dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshSettingsFieldStyle, dshSettingsHelpStyle, dshThemeColor } from '../theme.js'
+import { dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshSettingsHelpStyle, dshThemeColor } from '../theme.js'
 import { AssistantAvatarSlot } from '../avatar/slot.js'
-import { AssistantAvatarPortraitEditor } from '../avatar/portrait-editor.js'
 import type { AssistantAvatarModel } from '../../shared/assistant-avatar.js'
-import { AssistantAppearanceEditor } from '../avatar/settings-panel.js'
-import { AssistantAvatarPicker, assistantAvatarChoices } from '../avatar/catalog-picker.js'
-import { getAssistantAvatarManager } from '../avatar/manager.js'
-import { AssistantAvatarEngineDialog, AssistantAvatarEngineProgress, useAssistantAvatarEngine } from '../avatar/engine.js'
-import type { AssistantAvatarPreviewTargetProps } from '../avatar/catalog-panel.js'
 import type { AssistantAvatarCatalogEntry } from '../../shared/assistant-avatar-catalog.js'
-import { AssistantVoiceSettings } from './assistant-voice-settings.js'
-import { AssistantVoiceInitializationPanel } from './assistant-voice-initialization.js'
-import { VoiceModelManagerPanel } from './voice-initialization-dialog.js'
-import { AssistantDebugDialog, AssistantPromptEditor } from './assistant-debug-dialog.js'
-import { getGlobalVoiceAdapter } from '../global-voice-runtime-registry.js'
 import { AssistantConfigurationTabs, type AssistantConfigurationTab } from './assistant-configuration-tabs.js'
-import { assistantSettingCheckboxStyle, assistantSettingFieldStyle, assistantSettingTextStyle } from '../assistant-settings-styles.js'
+import { assistantSettingTextStyle } from '../assistant-settings-styles.js'
 import type { CodingNsClientServices } from './types.js'
 import { AssistantComposer, AssistantControlsStyle, AssistantIconButton, AssistantMaintenanceDialog, AssistantStatusBadge, confirmAssistantMaintenance, resolveAssistantWorkbenchStatus } from './assistant-workbench-controls.js'
 import type { AssistantMaintenanceConfirmation } from './assistant-workbench-controls.js'
@@ -34,7 +22,12 @@ import { AssistantConfigurationSession } from './assistant-configuration-session
 import { AssistantRealtimeCall, AssistantVoiceSessionCard } from './assistant-realtime-call.js'
 import { AssistantConversationMessageView } from './assistant-conversation-message.js'
 import { assistantConversationTimeline } from '../../shared/assistant-voice-sessions.js'
+import { AssistantConfigurationFields, AssistantConfigurationPage } from './assistant-configuration-loader.js'
+import { AssistantLoadedView, createAssistantViewLoader } from './assistant-view-loader.js'
+import { assistantDisplayScope, getAssistantDisplayStore, type AssistantStatusSnapshot } from './assistant-display-store.js'
 export { AssistantComposer } from './assistant-workbench-controls.js'
+
+const debugLoader = createAssistantViewLoader(async () => (await import('./assistant-debug-workbench.js')).AssistantDebugDialog)
 
 export interface AssistantDraft {
   readonly name: string
@@ -89,6 +82,8 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
   const t = useCodingNsTranslator(services.locale)
   const [settings, setSettings] = useState(() => services.settings.getSnapshot())
   const value = settings.value?.assistant ?? DEFAULT_ASSISTANT_SETTINGS
+  const scope = assistantDisplayScope(value.managedWorkspaceIds)
+  const display = useMemo(() => getAssistantDisplayStore(services.rpc, scope), [services.rpc, scope])
   const [lifecycle, setLifecycle] = useState<AssistantLifecycleSnapshot>(() => ({ profile: readAssistantProfile(value), conversation: emptyConversation() }))
   const [loaded, setLoaded] = useState(false)
   const [view, setView] = useState<'chat' | 'configuration'>(() => props.initialConfiguration || !lifecycle.profile.initialized ? 'configuration' : 'chat')
@@ -132,12 +127,12 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
     if (!result.ok) throw new Error(result.error.message)
     return result.value as T
   }, [services.rpc])
-  const refresh = useCallback(async (): Promise<AssistantLifecycleSnapshot> => {
+  const refresh = useCallback(async (): Promise<AssistantLifecycleSnapshot | undefined> => {
     const current = revision.current
-    const next = await call<AssistantLifecycleSnapshot>('assistant/lifecycle/read')
-    if (mounted.current && current === revision.current && !pendingOperation.current) { setLifecycle(next); setLoaded(true) }
+    const next = await display.lifecycle.refresh({ afterPending: true })
+    if (next && mounted.current && current === revision.current && !pendingOperation.current) { setLifecycle(next); setLoaded(true) }
     return next
-  }, [call])
+  }, [display])
   const cancelRequests = useCallback((): void => {
     for (const requestId of ownedRequests.current) void services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/conversation/cancel', { requestId }).catch(() => undefined)
     ownedRequests.current.clear()
@@ -149,16 +144,15 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
     return () => { mounted.current = false; abort.current?.abort(); cancelRequests() }
   }, [cancelRequests])
   useEffect(() => {
-    let stopped = false; let timer: ReturnType<typeof setTimeout> | undefined
-    const poll = async (): Promise<void> => {
-      let delay = 1500
-      try { const next = await refresh(); if (next.conversation.active?.state === 'running' || voiceProps.current.active) delay = 600 }
-      catch (cause) { if (!stopped && mounted.current) setError(message(cause)) }
-      if (!stopped) timer = setTimeout(() => { void poll() }, delay)
+    if (props.minimized) return
+    const changed = (): void => {
+      const snapshot = display.lifecycle.getSnapshot()
+      if (snapshot.error) setError(message(snapshot.error))
+      else if (snapshot.value && !pendingOperation.current) { setLifecycle(snapshot.value); setLoaded(true) }
     }
-    void poll()
-    return () => { stopped = true; clearTimeout(timer) }
-  }, [refresh])
+    changed()
+    return display.lifecycle.subscribe(changed)
+  }, [display, props.minimized])
   useEffect(() => {
     const changed = (): void => {
       const next = services.settings.getSnapshot(); setSettings(next)
@@ -173,7 +167,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
   useEffect(() => {
     // 创建前不读取项目目录或 MOSS 可用性；四项身份设置即可开始交流。
     if (initializing) return undefined
-    let stopped = false; let timer: ReturnType<typeof setTimeout> | undefined
+    let stopped = false
     const refreshResources = (): void => {
       void call<AssistantTtsSnapshot>('assistant/tts/catalog').then((next) => {
         if (stopped || !mounted.current) return
@@ -184,24 +178,21 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
     refreshResources(); nativeChanged()
     const dispose = services.settings.subscribe(refreshResources)
     const disposeNative = readNativeWorkspaceListStore(services.uiContext)?.subscribe(nativeChanged)
-    const pollIndex = async (): Promise<void> => {
-      try {
-        // 调试元数据查询设独立期限，断线时继续轮询，不让旧的构建状态一直占据标签。
-        const deadline = AbortSignal.timeout(10_000)
-        const signal = abort.current === undefined ? deadline : AbortSignal.any([abort.current.signal, deadline])
-        const next = await call<AssistantDebugSnapshot>('assistant/debug', {}, signal)
-        if (stopped || !mounted.current) return
+    const changed = (): void => {
+      const snapshot = display.status.getSnapshot()
+      const next = snapshot.value
+      if (next && !snapshot.error) {
         setIndexState(next.indexState)
         setWorkspaces(mergeWorkspaces(readNativeWorkspaceSnapshot(services.uiContext)?.items ?? [], next))
-      } catch {
+      } else {
         // 查询失败只失效状态证明，保留普通交流及索引后台任务。
-        if (!stopped && mounted.current) setIndexState(undefined)
+        setIndexState(undefined)
       }
-      if (!stopped) timer = setTimeout(() => { void pollIndex() }, 3000)
     }
-    void pollIndex()
-    return () => { stopped = true; clearTimeout(timer); dispose(); disposeNative?.() }
-  }, [initializing, services.settings, services.uiContext, call])
+    changed()
+    const disposeStatus = props.minimized ? undefined : display.status.subscribe(changed)
+    return () => { stopped = true; disposeStatus?.(); dispose(); disposeNative?.() }
+  }, [initializing, services.settings, services.uiContext, call, display, props.minimized])
   useEffect(() => { if (props.initialConfiguration) { setView('configuration'); void Promise.resolve(voiceProps.current.onStop()) } }, [props.initialConfiguration])
   useEffect(() => {
     if (props.minimized || debugDialog || confirmation !== undefined) return undefined
@@ -266,7 +257,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
     const active = lifecycle.conversation.active
     if (active !== null && active.state !== 'running') ownedRequests.current.delete(active.requestId)
   }, [lifecycle.conversation.active?.requestId, lifecycle.conversation.active?.state])
-  useEffect(() => { if (!props.active && !props.pending) void refresh().catch(() => undefined) }, [props.active, props.pending, refresh])
+  useEffect(() => { if (!props.minimized && !props.active && !props.pending) void display.lifecycle.refresh() }, [props.active, props.pending, props.minimized, display])
 
   const save = (): void => { void run(async () => {
     cancelRequests(); await voiceProps.current.onStop()
@@ -378,7 +369,9 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
       disabled: locked || !loaded || confirmation !== 'clear' && !writable, error,
       onCancel: () => setConfirmation(undefined),
       onConfirm: () => { if (!locked && loaded && (confirmation === 'clear' || writable)) confirmAssistantMaintenance(confirmation, setConfirmation, maintain) } }),
-    debugDialog ? createElement(AssistantDebugDialog, { services: configuring ? configuration.services : services, onClose: () => setDebugDialog(false) }) : null)
+    debugDialog ? createElement(AssistantLoadedView<Parameters<typeof import('./assistant-debug-workbench.js')['AssistantDebugDialog']>[0]>, {
+      loader: debugLoader, t, overlay: true, onClose: () => setDebugDialog(false),
+      viewProps: { services: configuring ? configuration.services : services, displayRpc: services.rpc, onClose: () => setDebugDialog(false) } }) : null)
 }
 
 /** 正式消息以 Host 快照为准，语音识别与流式回复在同一消息流里显示。 */
@@ -403,196 +396,19 @@ export function AssistantConversationView({ conversation, name, t, services, mod
       message: { role: 'assistant', text: active.text, ...(active.toolCalls === undefined ? {} : { toolCalls: active.toolCalls }) }, name, t, services, model }))
 }
 
-/** 创建与配置共用形象选择：选中 Live2D 时先确认引擎许可并自动安装，成功后才改草稿。 */
-function AssistantAvatarSelectionField({ services, appearance, avatarId, avatars, includeLegacy, disabled, t, onChange }: {
-  readonly services: CodingNsClientServices
-  readonly appearance: ReturnType<typeof normalizeAssistantAppearance>
-  readonly avatarId: string
-  readonly avatars: readonly AssistantAvatarModel[]
-  readonly includeLegacy: boolean
-  readonly disabled: boolean
-  readonly t: CodingNsTranslator
-  readonly onChange: (patch: Partial<AssistantDraft>) => void
-}): ReactElement {
-  const manager = getAssistantAvatarManager(services)
-  const engine = useAssistantAvatarEngine({ services, manager, appearance, disabled })
-  const choices = assistantAvatarChoices(appearance, [], t, includeLegacy)
-  const avatar = avatars.find((model) => model.id === avatarId)
-  const list = choices.some((choice) => choice.id === avatarId) ? choices
-    : [{ id: avatarId, label: t('awb.unavailableSelection', { id: avatarId }), thirdParty: false, disabled: true }, ...choices]
-  const choose = (choice: { readonly id: string }): void => {
-    if (disabled || !avatars.some((model) => model.id === choice.id)) return
-    const model = avatars.find((item) => item.id === choice.id)
-    if (model?.renderer === 'live2d') { void engine.ensure(() => onChange({ avatarId: choice.id })); return }
-    onChange({ avatarId: choice.id })
-  }
-  return createElement('div', { style: { display: 'grid', gap: 8 } },
-    createElement(AssistantAvatarPicker, { label: t('awb.avatar'), value: avatarId, disabled: disabled || engine.installing, t, choices: list, onChoose: choose }),
-    createElement(AssistantAvatarEngineProgress, { controller: engine, t }),
-    createElement('p', { style: help }, t('avatar.externalHint')),
-    avatar?.renderer !== 'live2d' ? null : createElement('p', { style: help }, t('avatar.live2dDependencyHint')),
-    createElement(AssistantAvatarEngineDialog, { controller: engine, t }))
-}
-
-export function AssistantConfigurationFields({ draft, catalog, appearance, initializing = false, includeAvatar = true, services, t, disabled, onChange }: {
-  readonly draft: AssistantDraft; readonly catalog: AssistantChatCatalog | undefined
-  readonly appearance: ReturnType<typeof normalizeAssistantAppearance>; readonly t: CodingNsTranslator
-  readonly initializing?: boolean
-  readonly includeAvatar?: boolean
-  readonly services?: CodingNsClientServices
-  readonly disabled: boolean; readonly onChange: (patch: Partial<AssistantDraft>) => void
-}): ReactElement {
-  const models = catalog?.models ?? []; const avatars = listAssistantAvatars(appearance, !initializing)
-  const avatar = avatars.find((model) => model.id === draft.avatarId)
-  const avatarChoices = assistantAvatarChoices(appearance, [], t, !initializing)
-  const input = (label: string, node: ReactElement): ReactElement => createElement('label', { style: field }, createElement('span', null, label), node)
-  const select = (label: string, value: string, change: (value: string) => void, options: ReactElement[]): ReactElement => input(label, createElement('select', { value, disabled, style: identityFieldStyle, onChange: (event: { currentTarget: { value: string } }) => change(event.currentTarget.value) }, ...options))
-  const missing = (id: string): ReactElement => createElement('option', { key: id, value: id }, t('awb.unavailableSelection', { id }))
-  return createElement('div', { 'data-codingns-assistant-identity': true, style: { display: 'grid', gap: 11 } },
-    // 名称与头像始终左右排列，裁剪面板和本地保存说明跨两列展开。
-    createElement('div', { 'data-codingns-assistant-identity-row': true, style: { display: 'grid', alignItems: 'start',
-      gridTemplateColumns: services === undefined || avatar === undefined ? 'minmax(0, 1fr)' : 'minmax(0, 1fr) minmax(0, 176px)', columnGap: 16, rowGap: 8, minWidth: 0 } },
-      input(t('awb.name'), createElement('input', { value: draft.name, maxLength: 80, disabled, placeholder: t('awb.namePlaceholder'), style: identityFieldStyle, onChange: (event: { currentTarget: { value: string } }) => onChange({ name: event.currentTarget.value }) })),
-      services === undefined || avatar === undefined ? null : createElement(AssistantAvatarPortraitEditor, { services, model: avatar, disabled, t })),
-    select(t('awb.model'), draft.modelKey, (modelKey) => onChange({ modelKey }), [createElement('option', { key: '', value: '' }, t('awb.defaultModel')),
-      ...(draft.modelKey && !models.some((model) => JSON.stringify([model.provider, model.model]) === draft.modelKey) ? [missing(draft.modelKey)] : []),
-      ...models.map((model) => createElement('option', { key: JSON.stringify([model.provider, model.model]), value: JSON.stringify([model.provider, model.model]) }, `${model.label} · ${model.provider}`))]),
-    catalog?.models.length === 0 ? createElement('p', { style: help }, t('awb.noModel'), ...catalog.errors.map((error) => createElement('span', { key: error, style: { display: 'block' } }, error))) : null,
-    input(t('awb.personality'), createElement('textarea', { value: draft.personality, maxLength: ASSISTANT_PERSONALITY_MAX_CHARS, rows: 4, disabled, placeholder: t('awb.personalityPlaceholder'),
-      style: { ...identityFieldStyle, minHeight: 96, maxHeight: 200, resize: 'vertical', lineHeight: 1.65 }, onChange: (event: { currentTarget: { value: string } }) => onChange({ personality: event.currentTarget.value }) })),
-    !includeAvatar ? null : services === undefined ? createElement('div', { style: { display: 'grid', gap: 8 } },
-      createElement(AssistantAvatarPicker, { label: t('awb.avatar'), value: draft.avatarId, disabled, t,
-        choices: avatarChoices.some((choice) => choice.id === draft.avatarId) ? avatarChoices
-          : [{ id: draft.avatarId, label: t('awb.unavailableSelection', { id: draft.avatarId }), thirdParty: false, disabled: true }, ...avatarChoices],
-        onChoose: (choice) => { if (avatars.some((avatar) => avatar.id === choice.id)) onChange({ avatarId: choice.id }) } }),
-      createElement('p', { style: help }, t('avatar.externalHint')),
-      avatar?.renderer !== 'live2d' ? null : createElement('p', { style: help }, t('avatar.live2dDependencyHint')))
-      : createElement(AssistantAvatarSelectionField, { services, appearance, avatarId: draft.avatarId, avatars, includeLegacy: !initializing, disabled, t, onChange }))
-}
-
 /** 内层菜单先消费 Escape，外层窗口只处理尚未消费的关闭按键。 */
 export function handleAssistantWorkbenchEscape(event: KeyboardEvent, onClose: () => void): void {
   if (event.key !== 'Escape' || event.defaultPrevented) return
   event.stopImmediatePropagation(); onClose()
 }
 
-/** 创建后的各页只装配自己的字段；页面切换不持有或重置父级草稿。 */
-export function AssistantConfigurationPage({ tab, active = true, services, value, draft, catalog, appearance, tts, workspaces, t, disabled, onChange, onDebug, onError, onReset, ...previewProps }: {
-  readonly tab: AssistantConfigurationTab; readonly services: CodingNsClientServices; readonly value: AssistantSettings
-  readonly active?: boolean
-  readonly draft: AssistantDraft; readonly catalog: AssistantChatCatalog | undefined
-  readonly appearance: ReturnType<typeof normalizeAssistantAppearance>; readonly tts: AssistantTtsSnapshot | undefined
-  readonly workspaces: readonly NativeWorkspaceRecord[]; readonly t: CodingNsTranslator; readonly disabled: boolean
-  readonly onChange: (patch: Partial<AssistantDraft>) => void
-  readonly onDebug: () => void; readonly onError: (error: string) => void
-  readonly onReset?: () => void
-} & Omit<AssistantAvatarPreviewTargetProps, 'active'>): ReactElement {
-  switch (tab) {
-    case 'basic': return createElement(AssistantConfigurationFields, { draft, catalog, appearance, includeAvatar: false, services, t, disabled, onChange })
-    case 'appearance': return createElement('div', { style: { display: 'grid', gap: 11 } },
-      createElement(AssistantAppearanceEditor, { services, enabled: !disabled, active, ...previewProps }))
-    case 'voice': return createElement('div', { style: { display: 'grid', gap: 11 } },
-      createElement(AssistantVoiceInitializationPanel, { services, enabled: !disabled, active,
-        inputSettings: (groupActive) => createElement('div', { style: { display: 'grid', gap: 11 } },
-          createElement(AssistantAudioDevice, { services, direction: 'input', active: groupActive, disabled, t, onError }),
-          createElement(VoiceModelManagerPanel, { services, value: value.voice, enabled: !disabled, active: groupActive })),
-        outputSettings: (groupActive) => createElement('div', { style: { display: 'grid', gap: 11 } },
-          createElement(AssistantAudioDevice, { services, direction: 'output', active: groupActive, disabled, t, onError }),
-          createElement(AssistantVoiceSettings, { services, enabled: !disabled, active: groupActive, embedded: true })) }))
-    case 'more': return createElement('div', { style: { display: 'grid', gap: 11 } },
-      createElement(AssistantWorkspaceFields, { draft, workspaces, t, disabled, onChange }),
-      createElement(AssistantAdvancedSettings, { services, value, disabled, t, onDebug, onError }),
-      createElement('div', { style: { paddingTop: 16, borderTop: `1px solid ${dshThemeColor.border}` } },
-        createElement('button', { type: 'button', 'data-codingns-assistant-reset': true, disabled: disabled || onReset === undefined,
-          style: { ...dshSettingsButtonStyle, color: dshThemeColor.error }, onClick: onReset }, t('awb.reset'))))
-  }
-}
-
-/** 兼容原能力表单入口；实际配置页分别装配项目字段与声音字段。 */
-export function AssistantCapabilityFields({ draft, tts, workspaces, t, disabled, onChange }: {
-  readonly draft: AssistantDraft; readonly tts: AssistantTtsSnapshot | undefined; readonly workspaces: readonly NativeWorkspaceRecord[]; readonly t: CodingNsTranslator
-  readonly disabled: boolean; readonly onChange: (patch: Partial<AssistantDraft>) => void
-}): ReactElement {
-  return createElement('div', { style: { display: 'grid', gap: 18 } },
-    AssistantWorkspaceFields({ draft, workspaces, t, disabled, onChange }), AssistantVoiceFields({ draft, tts, t, disabled, onChange }))
-}
-
-/** 项目范围放到更多设置，保留暂不可用项目以避免编辑时丢失原有选择。 */
-export function AssistantWorkspaceFields({ draft, workspaces, t, disabled, onChange }: {
-  readonly draft: AssistantDraft; readonly workspaces: readonly NativeWorkspaceRecord[]; readonly t: CodingNsTranslator
-  readonly disabled: boolean; readonly onChange: (patch: Partial<AssistantDraft>) => void
-}): ReactElement {
-  const knownWorkspaces = new Set(workspaces.map((workspace) => workspace.workspaceId))
-  return createElement('fieldset', { 'data-codingns-assistant-projects': true, style: { border: 0, padding: 0, margin: 0, minWidth: 0 }, disabled },
-    createElement('legend', { style: { fontSize: 14, fontWeight: 600, padding: 0, marginBottom: 8 } }, t('awb.workspaces')),
-    createElement('p', { style: help }, t('awb.scopeHint')),
-    createElement('div', { style: { display: 'grid', gap: 8, maxHeight: 180, overflowY: 'auto', marginTop: 8 } },
-      ...[...workspaces, ...draft.managedWorkspaceIds.filter((id) => !knownWorkspaces.has(id)).map((workspaceId) => ({ workspaceId, title: t('awb.offlineWorkspace', { id: workspaceId }) }))].map((workspace) => createElement('label', { key: workspace.workspaceId, style: assistantSettingCheckboxStyle },
-        createElement('input', { type: 'checkbox', checked: draft.managedWorkspaceIds.includes(workspace.workspaceId), onChange: (event: { currentTarget: { checked: boolean } }) => onChange({ managedWorkspaceIds: event.currentTarget.checked ? [...draft.managedWorkspaceIds, workspace.workspaceId] : draft.managedWorkspaceIds.filter((id) => id !== workspace.workspaceId) }) }), workspace.title))))
-}
-
-/** 没有安装 MOSS 时只有浏览器声音可选，不因标签拆分而放宽可用性校验。 */
-export function AssistantVoiceFields({ draft, tts, t, disabled, onChange }: {
-  readonly draft: AssistantDraft; readonly tts: AssistantTtsSnapshot | undefined; readonly t: CodingNsTranslator
-  readonly disabled: boolean; readonly onChange: (patch: Partial<AssistantDraft>) => void
-}): ReactElement {
-  const mossReady = tts?.status.ready === true
-  const voices = mossReady ? tts.voices : []
-  return createElement('div', { 'data-codingns-assistant-voice-selection': true, style: { display: 'grid', gap: 10 } },
-    createElement('label', { style: field }, createElement('span', null, t('awb.voice')),
-      createElement('select', { value: draft.ttsBackend === 'browser' || !mossReady ? 'browser' : draft.voiceId, disabled, style: identityFieldStyle,
-        onChange: (event: { currentTarget: { value: string } }) => { const voice = event.currentTarget.value; if (voice === 'browser') onChange({ ttsBackend: 'browser' }); else if (mossReady && voices.some((item) => item.id === voice)) onChange({ ttsBackend: 'moss-onnx', voiceId: voice }) } },
-        createElement('option', { value: 'browser' }, t('awb.browserVoice')), ...voices.map((voice) => createElement('option', { key: voice.id, value: voice.id }, voice.name)))),
-    mossReady ? null : createElement('p', { style: help }, t('awb.mossSetupHint')))
-}
-function AssistantAdvancedSettings({ services, value, disabled, t, onDebug, onError }: { readonly services: CodingNsClientServices; readonly value: AssistantSettings; readonly disabled: boolean; readonly t: CodingNsTranslator; readonly onDebug: () => void; readonly onError: (error: string) => void }): ReactElement {
-  const defaults = readAssistantPrompts(value.prompts)
-  const prompts = services.configurationDraft ? { ...defaults, ...value.prompts } : defaults
-  const savePrompt = async (kind: 'index' | 'chat', text: string): Promise<void> => {
-    // 提示词是单字段绝对值，不依赖旧快照计算；后台索引变化不应阻止保存。
-    try { if (!await services.settings.mutate([{ op: 'set', path: ['assistant', 'prompts', kind], value: text }])) throw new Error(t('settings.moduleWriteRejected')) }
-    catch (cause) { onError(message(cause)); throw cause }
-  }
-  return createElement('div', { style: { display: 'grid', gap: 14, marginTop: 14 } },
-    createElement('p', { style: help }, t('awb.moreHint')),
-    ...(['index', 'chat'] as const).map((kind) => createElement(AssistantPromptEditor, { key: kind, kind, value: prompts[kind], disabled, onSave: savePrompt,
-      ...(services.configurationDraft ? { onChange: savePrompt } : {}), t })),
-    createElement('button', { type: 'button', disabled, style: dshSettingsButtonStyle, onClick: onDebug }, t('assistant.debug.open')))
-}
-
-/** 设备按输入、输出分组枚举，折叠时保留选择但停止设备查询。 */
-function AssistantAudioDevice({ services, direction, active, disabled, t, onError }: {
-  readonly services: CodingNsClientServices; readonly direction: 'input' | 'output'; readonly active: boolean
-  readonly disabled: boolean; readonly t: CodingNsTranslator; readonly onError: (error: string) => void
-}): ReactElement | null {
-  const adapter = getGlobalVoiceAdapter(services)
-  const output = direction === 'output'
-  const [devices, setDevices] = useState<readonly { deviceId: string; label: string }[]>([])
-  const [selectedId, setSelectedId] = useState((output ? adapter?.outputDeviceId : adapter?.inputDeviceId) ?? '')
-  useEffect(() => {
-    if (!active || (output && !adapter?.outputDeviceSupported)) return undefined
-    let stopped = false
-    const refresh = (): void => { void (output ? adapter?.enumerateOutputDevices() : adapter?.enumerateInputDevices())?.then((devices) => { if (!stopped) setDevices(devices) }).catch(() => undefined) }
-    refresh(); globalThis.navigator?.mediaDevices?.addEventListener?.('devicechange', refresh)
-    return () => { stopped = true; globalThis.navigator?.mediaDevices?.removeEventListener?.('devicechange', refresh) }
-  }, [active, adapter, output])
-  if (output && !adapter?.outputDeviceSupported) return null
-  return createElement('label', { style: field }, t(output ? 'voice.outputDevice' : 'voice.inputDevice'),
-    createElement('select', { disabled, value: selectedId, style: dshSettingsFieldStyle, onChange: (event: { currentTarget: { value: string } }) => {
-      const id = event.currentTarget.value
-      void (output ? adapter?.selectOutputDevice(id) : adapter?.selectInputDevice(id))?.then(() => setSelectedId(id)).catch((cause) => onError(message(cause)))
-    } }, createElement('option', { value: '' }, t(output ? 'voice.defaultOutput' : 'voice.defaultMicrophone')), ...devices.map((device) => createElement('option', { key: device.deviceId, value: device.deviceId }, device.label || t(output ? 'voice.unnamedOutput' : 'voice.unnamedMicrophone')))))
-}
-
-function mergeWorkspaces(native: readonly NativeWorkspaceRecord[], debug: AssistantDebugSnapshot): readonly NativeWorkspaceRecord[] {
+function mergeWorkspaces(native: readonly NativeWorkspaceRecord[], debug: Pick<AssistantStatusSnapshot, 'workspaces'>): readonly NativeWorkspaceRecord[] {
   return [...native, ...debug.workspaces.filter((workspace) => !native.some((item) => item.workspaceId === workspace.workspaceId)).map((workspace) => ({ workspaceId: workspace.workspaceId, title: workspace.name, sessionIds: [] }))]
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error) }
 function requestKey(): string { return `assistant-${globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}` }
 const row: CSSProperties = { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }
 const help: CSSProperties = { ...dshSettingsHelpStyle, margin: 0 }
-const field: CSSProperties = assistantSettingFieldStyle
-const identityFieldStyle: CSSProperties = { ...dshSettingsFieldStyle, borderRadius: 8 }
 const avatarStyle: CSSProperties = { display: 'grid', gap: 8, justifyItems: 'center' }
 const backdrop: CSSProperties = { position: 'fixed', inset: 0, zIndex: 10000, background: dshThemeColor.overlay, backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12, boxSizing: 'border-box' }
 const dialog: CSSProperties = { display: 'flex', flexDirection: 'column', width: 'min(940px, 100%)', maxHeight: 'calc(100dvh - 24px)', minHeight: 300, background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, border: `1px solid ${dshThemeColor.border}`, borderRadius: 20, boxShadow: '0 24px 80px rgba(0,0,0,.24)', overflow: 'hidden' }
