@@ -118,8 +118,10 @@ export function createAssistantAvatarRuntimeFeature(options: { readonly packages
           throw new CodingNsRpcError('CODINGNS_AVATAR_CONSENT_REQUIRED', '请先同意第三方形象使用说明')
         }
       }
-      const requireEngineConsent = (): void => {
-        if (!hasAssistantAvatarEngineConsent(context.services.settings?.get().assistant.appearance?.engineConsent)) {
+      const requireEngineConsent = (requested?: unknown): void => {
+        // 请求中的明确同意只授权本次安装；未携带时兼容旧客户端已保存的许可。
+        const consent = requested === undefined ? context.services.settings?.get().assistant.appearance?.engineConsent : requested
+        if (!hasAssistantAvatarEngineConsent(consent)) {
           throw new CodingNsRpcError('CODINGNS_AVATAR_ENGINE_CONSENT_REQUIRED', '请先确认 Live2D 引擎许可')
         }
       }
@@ -127,7 +129,7 @@ export function createAssistantAvatarRuntimeFeature(options: { readonly packages
       context.resources.add(() => lifetime.abort())
       context.resources.add(() => temporary.dispose())
       if (context.services.rpc !== undefined) context.resources.add(context.services.rpc.register('avatar', async (action, payload, rpcContext) => {
-        const input = payload as { source?: unknown; adapterId?: unknown; id?: unknown; revision?: unknown; licenseAccepted?: unknown; lease?: unknown }
+        const input = payload as { source?: unknown; adapterId?: unknown; id?: unknown; revision?: unknown; licenseAccepted?: unknown; lease?: unknown; engineConsent?: unknown }
         const requestedSignal = (rpcContext as { signal?: AbortSignal } | undefined)?.signal
         const signal = requestedSignal === undefined ? lifetime.signal : AbortSignal.any([lifetime.signal, requestedSignal])
         if (action === 'list') return packages.list()
@@ -141,7 +143,7 @@ export function createAssistantAvatarRuntimeFeature(options: { readonly packages
         if (context.services.settingsProvider?.writable === false) throw new CodingNsRpcError('CODINGNS_SETTINGS_READONLY', '当前形象设置为只读')
         // 引擎下载写入 CodingNS 自有目录，不修改 DSH Profile 或插件依赖树。
         if (action === 'installEngine') {
-          requireEngineConsent()
+          requireEngineConsent(input?.engineConsent)
           await installAssistantAvatarEngine({ signal })
           invalidateAssistantAvatarRuntime()
           return readAssistantAvatarEngineStatus()

@@ -122,7 +122,10 @@ export class AssistantAvatarManager {
   }
   async installEngine(signal?: AbortSignal): Promise<AssistantAvatarEngineStatus> {
     this.requireWritable(); this.requireEngineConsent(); signal?.throwIfAborted()
-    const result = readEngineStatus(await this.call('installEngine', {}, signal))
+    // 配置窗口的许可尚在草稿中，随本次安装传给 Host；不能为安装提前提交整个配置。
+    const result = readEngineStatus(await this.call('installEngine', { engineConsent: this.getAppearance().engineConsent }, signal))
+    signal?.throwIfAborted()
+    if (!result.installed) throw new Error('Live2D 引擎安装后仍未就绪，请重试')
     invalidateAssistantAvatarRuntime()
     return result
   }

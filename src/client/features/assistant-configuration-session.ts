@@ -17,7 +17,7 @@ import { findAssistantVoiceModel } from '../../shared/voice-models.js'
 import { codingNsTranslator } from '../locale.js'
 
 type ConfigurationSnapshot = CodingNsSettingsSnapshot<CodingNsSettings> & { readonly preparing: boolean }
-const resourceActions = new Set(['assistant/tts/setup', 'assistant/tts/import', 'assistant/voice/setup', 'assistant/voice/initialize', 'avatar/install', 'avatar/installCatalog'])
+const resourceActions = new Set(['assistant/tts/setup', 'assistant/tts/import', 'assistant/voice/setup', 'assistant/voice/initialize', 'avatar/install', 'avatar/installCatalog', 'avatar/installEngine'])
 
 /** 配置窗口的唯一草稿存储；普通写入只修改内存，正式运行仍读原服务。 */
 export class AssistantConfigurationSession implements CodingNsSettingsStore<CodingNsSettings> {
@@ -134,6 +134,8 @@ export class AssistantConfigurationSession implements CodingNsSettingsStore<Codi
   private async dispatch(channel: string, endpoint: string, payload: unknown, signal: AbortSignal): Promise<CodingNsRpcResult> {
     signal?.throwIfAborted()
     const value = payload as Record<string, any> | undefined
+    // 引擎安装同样属于资源准备：安装期间禁止保存，关闭窗口会取消请求。
+    if (endpoint === 'avatar/installEngine') this.requireWritable()
     // 调试窗口的模型选择只用于显式测试，不提前改变正式索引的模型。
     if (endpoint === 'assistant/index/configure') return { ok: true, value: { configured: true } }
     // 第三方目录的权限记录也属于配置，首次开启先统一保存再读取目录。

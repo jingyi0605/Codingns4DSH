@@ -58,19 +58,22 @@ export function AssistantAvatarCatalogPanel(props: CatalogPanelProps): ReactElem
   const choose = async (choice: AssistantAvatarChoice): Promise<void> => {
     if (busy) return
     setError('')
-    if (choice.catalog !== undefined) {
-      const id = choice.catalog.id
-      // 重新选择同一条目也创建新预览，允许失败后直接重试。
-      setPreview((current) => ({ id, consent, selection: (current?.selection ?? 0) + 1 })); return
-    }
-    setPreview(undefined); setPending(true)
+    setPending(true)
     try {
       const select = async (): Promise<void> => {
+        if (choice.catalog !== undefined) {
+          const id = choice.catalog.id
+          // 引擎就绪后才挂载临时预览；重新选择同一条目也能重试。
+          setPreview((current) => ({ id, consent, selection: (current?.selection ?? 0) + 1 })); return
+        }
+        setPreview(undefined)
         await manager.select(choice.id)
         if (!services.configurationDraft) notify({ kind: 'success', message: t('avatar.saved') })
       }
-      // 选中 Live2D 形象时先确保引擎就绪；安装失败不改变当前形象。
-      if (appearance.models.find((model) => model.id === choice.id)?.renderer === 'live2d') await engine.ensure(select)
+      // 目录预览、已登记角色和旧预设共享同一引擎检查，避免首次预览直接请求缺失运行时。
+      const needsEngine = choice.catalog === undefined ? manager.list().find((model) => model.id === choice.id)?.renderer === 'live2d'
+        : ['dsh-live2d-pet', 'cubism-model'].includes(choice.catalog.format)
+      if (needsEngine) await engine.ensure(select)
       else await select()
     }
     catch (failure) { setError(errorMessage(failure)); notify({ kind: 'error', message: errorMessage(failure) }) }
