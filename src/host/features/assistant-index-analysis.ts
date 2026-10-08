@@ -6,6 +6,7 @@ import { ASSISTANT_INDEX_FORMAT, parseAssistantStructuredIndex } from './assista
 import { assistantSessionKey } from './assistant-index-updates.js'
 import type { SessionIndexEntry } from '../../shared/contracts/assistant.js'
 import { sanitizeSpeechText } from './assistant-summary.js'
+import { ASSISTANT_INDEX_MAX_ATTEMPTS, AssistantIndexTimeoutError, assistantIndexRetry, waitForAssistantIndexRetry } from './assistant-index-retry.js'
 
 interface TaskEntry {
   task: AssistantSessionIndexTask
@@ -24,7 +25,7 @@ interface IndexBatch {
   readonly retryFailures: boolean
 }
 
-type CachedTask = { fingerprint: string; thinking: AssistantSessionIndexTask['thinking'] } & (
+type CachedTask = { fingerprint: string; thinking: AssistantSessionIndexTask['thinking']; attempt: number } & (
   { result: AssistantSessionAnalysis } | { sourceVersion: number | undefined; error: string }
 )
 
@@ -75,7 +76,7 @@ export class AssistantIndexAnalysis {
     if (batch?.run.state !== 'running') return
     const entry = batch.tasks.find((item) => assistantSessionKey(item.task) === key)
     if (entry === undefined || !['queued', 'running'].includes(entry.task.state)) return
-    entry.task = { ...entry.task, state: 'deferred', text: '', error: null, finishedAt: Date.now() }
+    entry.task = { ...entry.task, state: 'deferred', text: '', error: null, nextRetryAt: null, finishedAt: Date.now() }
     entry.abort.abort(new Error('会话正在更新，等待本轮执行结束'))
     this.publish(batch)
   }
@@ -113,45 +114,84 @@ export class AssistantIndexAnalysis {
     const cached = this.cache.get(assistantSessionKey(source))
     if (cached?.fingerprint === fingerprint && 'result' in cached) {
       entry.result = { ...cached.result, workspaceId: source.workspaceId, workspaceName: source.workspaceName, title: source.title, sourceStatus: source.status ?? 'unknown', updatedAt: source.updatedAt }
-      entry.task = { ...entry.task, state: 'completed', reused: true, thinking: cached.thinking, finishedAt: Date.now() }
+      entry.task = { ...entry.task, state: 'completed', reused: true, thinking: cached.thinking, attempt: cached.attempt, maxAttempts: ASSISTANT_INDEX_MAX_ATTEMPTS, finishedAt: Date.now() }
       this.publish(batch); return
     }
     // 其他会话完成只合并结果，不能顺带重试本版本已失败的会话。
     if (!batch.retryFailures && cached?.fingerprint === fingerprint && 'error' in cached && cached.sourceVersion === source.sourceVersion) {
-      entry.task = { ...entry.task, state: 'failed', reused: true, thinking: cached.thinking, error: cached.error, finishedAt: Date.now() }
+      entry.task = { ...entry.task, state: 'failed', reused: true, thinking: cached.thinking, error: cached.error, attempt: cached.attempt, maxAttempts: ASSISTANT_INDEX_MAX_ATTEMPTS, finishedAt: Date.now() }
       this.publish(batch); return
     }
     entry.task = { ...entry.task, state: 'running', startedAt: Date.now() }
     this.publish(batch)
-    // 只传入一个会话的事实与材料，既不读取其他会话，也不把已有结果反复送入模型。
-    const index: AssistantIndexSnapshot = { generation: batch.index.generation, scope: batch.index.scope, unreadableCount: 0, entries: [batch.index.entries[number]!] }
     try {
-      const result = await bounded(entry.abort, async () => {
-        const limits = await this.adapter!.indexOptions?.(model, entry.abort.signal) ?? { maxTokens: 8192, thinking: 'provider-default' as const }
-        entry.abort.signal.throwIfAborted()
-        if (!this.current(batch)) throw new Error('索引范围或来源已变化，请重新执行索引')
-        if (!await batch.confirmIdle(source, entry.abort.signal) || !batch.canIndex(source)) { this.deferSession(assistantSessionKey(source)); entry.abort.signal.throwIfAborted() }
-        entry.task = { ...entry.task, thinking: limits.thinking }
-        this.publish(batch)
-        const text = await this.adapter!.reply(model, createAssistantIndexSystem(index, prefix), [{ role: 'user', text: '只为本次唯一会话按固定 JSON 格式建立索引。所有结论附该会话的证据，区分已有任务与建议。' }], entry.abort.signal, (text) => {
-          if (entry.task.state !== 'running' || entry.abort.signal.aborted) return
-          entry.task = { ...entry.task, text }
-          this.publish(batch)
-        }, limits)
-        entry.abort.signal.throwIfAborted()
-        return parseAssistantStructuredIndex(text, index).sessions[0]!
-      }, '会话索引')
+      const result = await this.analyzeTask(batch, entry, source, model, prefix)
       if (entry.task.state !== 'running' || !this.current(batch)) return
       if (!batch.canIndex(source)) { this.deferSession(assistantSessionKey(source)); return }
       entry.result = result
-      this.cache.set(assistantSessionKey(source), { fingerprint, result, thinking: entry.task.thinking })
-      entry.task = { ...entry.task, state: 'completed', text: '', finishedAt: Date.now() }
+      this.cache.set(assistantSessionKey(source), { fingerprint, result, thinking: entry.task.thinking, attempt: entry.task.attempt! })
+      entry.task = { ...entry.task, state: 'completed', text: '', error: null, nextRetryAt: null, finishedAt: Date.now() }
     } catch (error) {
       if (entry.task.state !== 'running') return
-      entry.task = { ...entry.task, state: entry.abort.signal.aborted ? 'cancelled' : 'failed', error: safeError(error), finishedAt: Date.now() }
-      if (this.current(batch) && batch.canIndex(source)) this.cache.set(assistantSessionKey(source), { fingerprint, sourceVersion: source.sourceVersion, error: entry.task.error!, thinking: entry.task.thinking })
+      entry.task = { ...entry.task, state: entry.abort.signal.aborted ? 'cancelled' : 'failed', error: safeError(error), nextRetryAt: null, finishedAt: Date.now() }
+      if (this.current(batch) && batch.canIndex(source)) this.cache.set(assistantSessionKey(source), { fingerprint, sourceVersion: source.sourceVersion, error: entry.task.error!, thinking: entry.task.thinking, attempt: entry.task.attempt! })
     }
     this.publish(batch)
+  }
+
+  /** 重试在当前任务内结算；后台刷新只能复用最终缓存，不能重置同版本失败的预算。 */
+  private async analyzeTask(batch: IndexBatch, entry: TaskEntry, source: SessionIndexEntry, model: AssistantChatModel, prefix: string): Promise<AssistantSessionAnalysis> {
+    let feedback: string | undefined
+    for (let attempt = 1; ; attempt++) {
+      entry.abort.signal.throwIfAborted()
+      if (!this.current(batch)) throw new Error('索引范围或来源已变化，请重新执行索引')
+      if (!batch.canIndex(source)) { this.deferSession(assistantSessionKey(source)); entry.abort.signal.throwIfAborted() }
+      entry.task = { ...entry.task, attempt, maxAttempts: ASSISTANT_INDEX_MAX_ATTEMPTS, nextRetryAt: null, error: null, text: '' }
+      this.publish(batch)
+      try { return await this.requestTask(batch, entry, source, model, prefix, feedback) }
+      catch (error) {
+        entry.abort.signal.throwIfAborted()
+        if (!this.current(batch)) throw error
+        if (!batch.canIndex(source)) { this.deferSession(assistantSessionKey(source)); entry.abort.signal.throwIfAborted() }
+        const retry = assistantIndexRetry(error, attempt)
+        if (retry === undefined) throw error
+        feedback = retry.feedback ?? feedback
+        entry.task = { ...entry.task, error: safeError(error), nextRetryAt: Date.now() + retry.delayMs }
+        this.publish(batch)
+        await waitForAssistantIndexRetry(retry.delayMs, entry.abort.signal)
+      }
+    }
+  }
+
+  /** 一次请求一个新信号；九十秒超时不会污染后续尝试，迟到的片段也不能写入新尝试。 */
+  private async requestTask(batch: IndexBatch, entry: TaskEntry, source: SessionIndexEntry, model: AssistantChatModel, prefix: string, feedback?: string): Promise<AssistantSessionAnalysis> {
+    const abort = new AbortController()
+    const cancel = (): void => abort.abort(entry.abort.signal.reason)
+    entry.abort.signal.throwIfAborted()
+    entry.abort.signal.addEventListener('abort', cancel, { once: true })
+    const index: AssistantIndexSnapshot = { generation: batch.index.generation, scope: batch.index.scope, unreadableCount: 0, entries: [source] }
+    try {
+      return await bounded(abort, async () => {
+        const limits = await this.adapter!.indexOptions?.(model, abort.signal) ?? { maxTokens: 8192, thinking: 'provider-default' as const }
+        abort.signal.throwIfAborted()
+        if (!this.current(batch)) throw new Error('索引范围或来源已变化，请重新执行索引')
+        if (!await batch.confirmIdle(source, abort.signal) || !batch.canIndex(source)) { this.deferSession(assistantSessionKey(source)); abort.signal.throwIfAborted() }
+        entry.task = { ...entry.task, thinking: limits.thinking }
+        this.publish(batch)
+        const messages = [{ role: 'user' as const, text: '只为本次唯一会话按固定 JSON 格式建立索引。所有结论附该会话的证据，区分已有任务与建议。' }, ...(feedback === undefined ? [] : [{ role: 'user' as const, text: feedback }])]
+        const text = await this.adapter!.reply(model, createAssistantIndexSystem(index, prefix), messages, abort.signal, (text) => {
+          if (entry.task.state !== 'running' || abort.signal.aborted) return
+          entry.task = { ...entry.task, text }
+          this.publish(batch)
+        }, limits)
+        abort.signal.throwIfAborted()
+        return parseAssistantStructuredIndex(text, index).sessions[0]!
+      }, '会话索引')
+    } finally {
+      // 正常结束或校验失败也关闭本次信号，隔离适配器迟到的流式片段。
+      abort.abort(new Error('本次索引尝试已结束'))
+      entry.abort.signal.removeEventListener('abort', cancel)
+    }
   }
 
   private current(batch: IndexBatch): boolean {
@@ -167,7 +207,7 @@ export class AssistantIndexAnalysis {
     batch.abort.abort(new Error(reason))
     for (const entry of batch.tasks) {
       if (entry.task.state !== 'queued' && entry.task.state !== 'running') continue
-      entry.task = { ...entry.task, state: 'cancelled', error: reason, finishedAt: Date.now() }
+      entry.task = { ...entry.task, state: 'cancelled', error: reason, nextRetryAt: null, finishedAt: Date.now() }
       entry.abort.abort(new Error(reason))
     }
     this.publish(batch)
@@ -188,7 +228,7 @@ async function bounded<T>(abort: AbortController, work: () => Promise<T>, label:
   const stopped = new Promise<never>((_resolve, reject) => { rejectAbort = reject })
   const onAbort = (): void => rejectAbort(abort.signal.reason)
   abort.signal.addEventListener('abort', onAbort, { once: true })
-  const timer = setTimeout(() => abort.abort(new Error(`${label}超过 90 秒，请检查模型服务`)), 90_000)
+  const timer = setTimeout(() => abort.abort(new AssistantIndexTimeoutError(`${label}超过 90 秒，请检查模型服务`)), 90_000)
   try { return await Promise.race([Promise.resolve().then(() => { abort.signal.throwIfAborted(); return work() }), stopped]) }
   finally { clearTimeout(timer); abort.signal.removeEventListener('abort', onAbort) }
 }

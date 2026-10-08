@@ -119,6 +119,11 @@ export interface AssistantSessionIndexTask {
   readonly startedAt: number | null
   readonly finishedAt: number | null
   readonly thinking: 'disabled' | 'provider-default' | null
+  /** 本轮实际尝试次数；复用缓存时保留原任务计数，刷新不会重置失败预算。 */
+  readonly attempt?: number
+  readonly maxAttempts?: number
+  /** 等待自动重试的截止时间；未等待时为 null。 */
+  readonly nextRetryAt?: number | null
 }
 
 export type AssistantIndexAnalysisRecord = Omit<AssistantIndexAnalysisRun, 'text' | 'requestId' | 'result' | 'tasks'> & {

@@ -23,6 +23,14 @@ export interface AssistantIndexLlmOptions {
   readonly thinking: 'disabled' | 'provider-default'
 }
 
+/** 保留宿主的结构化失败信息，使索引能够区分临时故障与账户、参数错误。 */
+export class AssistantLlmRequestError extends Error {
+  constructor(readonly failure: { readonly message: string; readonly code: string; readonly status?: number; readonly providerRetryAfterMs?: number }) {
+    super(failure.message)
+    this.name = 'AssistantLlmRequestError'
+  }
+}
+
 export function createAssistantLlmAdapter(ctx: unknown, dshVersion: string): AssistantLlmAdapter | undefined {
   const resolution = createDshCapabilityRegistry(dshVersion, 'host', ctx).getProfile(ctx).capabilities.get('llm.text')
   if (resolution?.status !== 'ready') return undefined
@@ -85,14 +93,18 @@ export function createAssistantLlmAdapter(ctx: unknown, dshVersion: string): Ass
         }
         if (chunk.type === 'finish') {
           const reason = chunk.reason
-          if (reason?.kind === 'error' || reason?.kind === 'aborted') throw new Error(reason.failure?.message ?? 'LLM 请求失败')
+          if (reason?.kind === 'error' || reason?.kind === 'aborted') throw new AssistantLlmRequestError({
+            message: reason.failure?.message ?? 'LLM 请求失败', code: reason.kind === 'aborted' ? 'ABORTED' : reason.failure?.code ?? 'UNKNOWN',
+            ...(typeof reason.failure?.status === 'number' ? { status: reason.failure.status } : {}),
+            ...(typeof reason.failure?.providerRetryAfterMs === 'number' ? { providerRetryAfterMs: reason.failure.providerRetryAfterMs } : {}),
+          })
           if (reason?.kind === 'tool-calls') throw new Error('本轮对话只允许索引问答')
           if (reason?.kind === 'max-tokens') throw new Error('LLM 回复达到长度上限，请缩小问题或分多次询问')
           finished = true
         }
       }
       signal.throwIfAborted()
-      if (!finished || joined().trim() === '') throw new Error('LLM 未返回完整文字回复，请检查模型服务')
+      if (!finished || joined().trim() === '') throw new AssistantLlmRequestError({ message: 'LLM 未返回完整文字回复，请检查模型服务', code: 'EMPTY_RESPONSE' })
       return joined().trim()
     },
   }
