@@ -525,6 +525,9 @@ export class CodingNsCliAdapterRegistry {
     // 除了 Client 的 session/set，Host 内部和未来的调用方也可能直接执行一轮。
     // 最近使用应由真实执行参数更新，不能依赖某个 UI 一定先发 RPC。
     this.rememberPreference(input.adapterId, input)
+    // 手动 next() 不会自动转发外层的 return()；本轮持有的迭代器必须在 finally 关闭。
+    // 只有显式交给 segmentedTurns 的流才能跨 DSH step 保留。
+    let iterator: AsyncIterator<CodingNsAgentEvent> | undefined
     try {
       const stored = this.sessionStore?.get(input.sessionId)
       if (stored?.status === 'archived') {
@@ -575,7 +578,6 @@ export class CodingNsCliAdapterRegistry {
         try { this.drivers.get(suspended.adapterId)?.discardSegmentedTurn?.(input.sessionId) } catch { /* 切换适配器不能被旧驱动清理失败阻断 */ }
       }
       // 通用切分要在复用时立刻撤销登记，否则耗尽后的旧迭代器会被下一条用户消息再次消费。
-      let iterator: AsyncIterator<CodingNsAgentEvent>
       if (resumingSegmentedTurn && suspended !== undefined && suspended.iterator !== null) {
         this.segmentedTurns.delete(input.sessionId)
         iterator = suspended.iterator
@@ -584,7 +586,7 @@ export class CodingNsCliAdapterRegistry {
       }
       while (true) {
         const next = await iterator.next()
-        if (next.done) break
+        if (next.done) { iterator = undefined; break }
         const event = next.value
         if (event.type === 'usage') this.lastUsages.set(input.sessionId, usageSnapshot(event))
         if (event.type === 'session-binding') {
@@ -618,6 +620,7 @@ export class CodingNsCliAdapterRegistry {
         // 直接交给 Feature，不能再次按工具完成事件切一遍。
         if (event.type === 'step-boundary') {
           await closeAgentIterator(iterator)
+          iterator = undefined
           // 驱动自己持有 Provider 进程与段状态：这里只登记续段意图，下一次
           // llm/stream 再显式要求驱动恢复；注入失败时 discardSegmentedTurn
           // 会同时丢弃 Registry 意图和驱动内的进程。
@@ -632,6 +635,8 @@ export class CodingNsCliAdapterRegistry {
           // 先保存迭代器再 yield。即使调用方在工具事件后提前关闭流，
           // 下一次 DSH step 仍能从同一个 Provider 进程继续读取正文。
           this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator })
+          // 所有权交给续段表，当前调用结束不得关闭需要继续消费的 Provider 流。
+          iterator = undefined
           yield event
           yield { type: 'step-boundary' }
           return
@@ -647,6 +652,7 @@ export class CodingNsCliAdapterRegistry {
       })
       throw error
     } finally {
+      if (iterator !== undefined) await closeAgentIterator(iterator)
       this.executingSessions.delete(input.sessionId)
       try { await this.nativeSessions?.flush(input.sessionId) } catch { /* DSH 自身检查点策略负责重试 */ }
     }
