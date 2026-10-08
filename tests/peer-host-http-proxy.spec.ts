@@ -60,6 +60,27 @@ test('未知路径、方法、查询参数和错误作用域均被拒绝', async
   assert.equal(called, 0)
 })
 
+test('调试与 Shell 状态只放行指定 POST 路由，其他终端管理接口仍拒绝', async () => {
+  const paths: string[] = []
+  const service = await setup(async input => {
+    paths.push(new URL(String(input)).pathname)
+    return Response.json({ result: { ok: true, value: {} } })
+  })
+  for (const path of ['/api/codingns/debug/config/get', '/api/codingns/debug/profile/launch', '/api/codingns/terminal/status']) {
+    const response = await service.handle('peer-1', new Request(`http://current.test${path}`, { method: 'POST', headers: scopeHeaders, body: '{}' }))
+    assert.equal(response.status, 200)
+  }
+  for (const [path, method] of [
+    ['/api/codingns/debug/config/save', 'GET'],
+    ['/api/codingns/terminal/enable', 'POST'],
+    ['/api/codingns/terminalProcess/launch', 'POST'],
+  ]) {
+    const response = await service.handle('peer-1', new Request(`http://current.test${path}`, { method, headers: scopeHeaders }))
+    assert.equal(response.status, 400)
+  }
+  assert.equal(paths.length, 3)
+})
+
 test('代理不接受任意目标 URL，也不会把上游失败伪装成空列表', async () => {
   const service = await setup(async () => { throw new Error('network down') })
   const response = await service.handle('peer-1', new Request('http://evil.test/api/workspaces', { headers: scopeHeaders }))

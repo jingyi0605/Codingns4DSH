@@ -29,6 +29,7 @@ import {
 import { PwaPushService, createLanAccessDshPwaProvider } from '../data/build/dist/host/modules/pwa/index.js'
 import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
 import { DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS, type CodingNsSettings } from '../data/build/dist/shared/contracts/config.js'
+import { PEER_HOST_HTTP_PROXY_RULES } from '../data/build/dist/host/modules/peer-host/host-api-proxy-service.js'
 
 class FakeStream implements LanAccessDshStream {
   readonly pipes: LanAccessDshStream[] = []
@@ -424,4 +425,42 @@ test('PeerHost 出站白名单只覆盖固定资源路由', () => {
   assert.equal(isPeerHostRouteRequest({ method: 'GET', path: '/api/workspaces' }), true)
   assert.equal(isPeerHostRouteRequest({ method: 'POST', path: '/api/workspaces' }), false)
   assert.equal(isPeerHostRouteRequest({ method: 'GET', path: '/api/admin/users' }), false)
+})
+
+test('PeerHost 发送端 HTTP 路由均可进入目标 Bearer 校验，WebSocket 保持原范围', () => {
+  for (const rule of PEER_HOST_HTTP_PROXY_RULES) {
+    for (const method of rule.methods) assert.equal(isPeerHostRouteRequest({ method, path: rule.prefix }), true, `${method} ${rule.prefix}`)
+  }
+  assert.equal(isPeerHostRouteRequest({ method: 'GET', path: '/ws' }), true)
+  assert.equal(isPeerHostRouteRequest({ method: 'POST', path: '/ws' }), false)
+  assert.equal(isPeerHostRouteRequest({ method: 'POST', path: '/api/codingns/debug-admin/config/get' }), false)
+})
+
+test('远端调试经过真实 LAN 登录保护：有效票据放行，缺失、伪造、撤销与越界请求拒绝', () => {
+  const config = createLoginProtectionConfig({ username: 'jackson', password: 'password123', timeoutSeconds: 1800, scopes: { lan: true, relay: true } })
+  const proxy = new LanAccessDshProxy({} as never)
+  proxy.setLoginConfig(config)
+  const issued = readAuthResponse(resolvePeerHostAuthResponse(
+    peerHostAuthRequest(PEER_HOST_AUTH_PATHS.login, { username: 'jackson', password: 'password123' }), config, new Set(),
+  )).body
+  const token = String(issued.accessToken)
+  // 只执行鉴权函数，不启动监听、不访问本机的真实凭据或服务。
+  const authorize = (path: string, method: string, ticket?: string) => (proxy as unknown as {
+    authorize(request: unknown, local: boolean, socket: unknown): Uint8Array | 'pass'
+  }).authorize({ method, path, headers: ticket === undefined ? {} : { authorization: `Bearer ${ticket}` }, body: new Uint8Array() }, false, { remoteAddress: '192.0.2.1' })
+  const rejected = (response: Uint8Array | 'pass') => {
+    assert.notEqual(response, 'pass')
+    assert.match(new TextDecoder().decode(response as Uint8Array), /^HTTP\/1\.1 401 /u)
+  }
+  for (const path of ['/api/codingns/debug/config/get', '/api/codingns/debug/config/save', '/api/codingns/terminal/status']) {
+    assert.equal(authorize(path, 'POST', token), 'pass')
+    rejected(authorize(path, 'POST'))
+    rejected(authorize(path, 'POST', 'forged-token'))
+    rejected(authorize(path, 'GET', token))
+  }
+  rejected(authorize('/api/codingns/debug-admin/config/get', 'POST', token))
+  rejected(authorize('/api/codingns/terminal/enable', 'POST', token))
+  rejected(authorize('/api/admin/users', 'POST', token))
+  assert.notEqual(authorize(PEER_HOST_AUTH_PATHS.logout, 'POST', token), 'pass')
+  rejected(authorize('/api/codingns/debug/config/get', 'POST', token))
 })
