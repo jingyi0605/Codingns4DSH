@@ -6,6 +6,7 @@ import type { DoubaoBridge, DoubaoConversation } from './doubao-cdp.js'
 import { DoubaoEventProjector } from './doubao-events.js'
 import { HttpSseClient } from './http-sse-client.js'
 import { DOUBAO_CATALOG } from './model-catalog.js'
+import { doubaoArtifactDirectory, doubaoArtifactName, saveDoubaoArtifact } from './doubao-artifact-store.js'
 
 interface Run {
   bridge?: DoubaoBridge
@@ -19,6 +20,8 @@ interface Run {
   stopping?: Promise<void>
   timer?: ReturnType<typeof setTimeout>
   mode: number
+  cloudFinished?: boolean
+  saving: AbortController
 }
 
 /** 产品档位并非可任意选择的基础模型；旧默认值仅映射到快速模式。 */
@@ -93,7 +96,7 @@ export class DoubaoAppDriver implements CodingNsCliDriver {
     if (this.runs.has(input.sessionId)) throw new Error('该豆包会话已有运行中的回合')
     if (input.providerSessionId && !/^\d+$/u.test(input.providerSessionId)) throw new Error('豆包会话标识格式无效')
     if (!input.prompt.trim()) throw new Error('豆包消息不能为空')
-    const run: Run = { mode, sent: false, cancelRequested: false, cancelled: false }
+    const run: Run = { mode, sent: false, cancelRequested: false, cancelled: false, saving: new AbortController() }
     this.runs.set(input.sessionId, run)
     const abort = (): void => { void this.requestCancel(run).catch((error: unknown) => { run.cancelError = error instanceof Error ? error : new Error('豆包取消失败') }) }
     input.signal?.addEventListener('abort', abort, { once: true })
@@ -129,19 +132,23 @@ export class DoubaoAppDriver implements CodingNsCliDriver {
       run.projector = new DoubaoEventProjector(conversation.id)
       const client = new HttpSseClient({ fetch: run.bridge.fetch })
       run.sent = true
-      for await (const frame of client.sse('https://www.doubao.com/chat/completion', { method: 'POST', body: JSON.stringify(doubaoRequest(conversation, input.prompt, mode)) })) {
+      const prompt = mode === 4 ? `${input.prompt}\n\n交付约定：任务需要文件时，请在云端生成并交付可下载的文件产物。适配器会在任务结束后将产物保存到当前项目根目录下的 Doubao 目录；不要仅回复代码或云端路径，也不要声称已经操作本机文件。` : input.prompt
+      for await (const frame of client.sse('https://www.doubao.com/chat/completion', { method: 'POST', body: JSON.stringify(doubaoRequest(conversation, prompt, mode)) })) {
         for (const event of run.projector.accept(frame)) yield event
         if (run.cancelRequested) await this.stopIfReady(run)
         if (run.cancelled || run.cancelError) break
       }
       if (run.cancelError) throw run.cancelError
       if (!run.cancelled && (!run.projector.acknowledged || !run.projector.ended)) throw new Error('豆包流提前关闭，云端状态尚未确认；本轮不会自动重发')
+      run.cloudFinished = true
+      if (!run.cancelled) yield* this.saveArtifacts(run, input)
       run.finished = true
       yield { type: 'finish', reason: run.cancelled ? 'cancel' : 'stop' }
     } catch (error) {
       run.finished = true
       yield run.cancelled ? { type: 'finish', reason: 'cancel' } : { type: 'finish', reason: 'error', failure: {
-        message: run.cancelError?.message ?? (error instanceof Error ? error.message : '豆包调用失败'), code: 'DOUBAO_TURN_FAILED' } }
+        message: run.cancelError?.message ?? (error instanceof Error ? error.message : '豆包调用失败'),
+        code: run.cloudFinished ? 'DOUBAO_ARTIFACT_SAVE_FAILED' : 'DOUBAO_TURN_FAILED' } }
     } finally {
       input.signal?.removeEventListener('abort', abort)
       clearTimeout(run.timer)
@@ -156,8 +163,44 @@ export class DoubaoAppDriver implements CodingNsCliDriver {
     }
   }
 
+  private async *saveArtifacts(run: Run, input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
+    const artifacts = run.projector!.artifacts.list()
+    if (!artifacts.length) return
+    const root = await doubaoArtifactDirectory(input)
+    let failures = 0
+    for (const artifact of artifacts) {
+      if (run.cancelled) break
+      const callId = `doubao-save-${artifact.id}`
+      const toolName = '保存豆包产物'
+      const name = doubaoArtifactName(artifact.name)
+      // 只公开目标目录和安全文件名；签名地址不得进入事件和原生工具历史。
+      yield { type: 'tool-event', callId, toolName, status: 'started', input: JSON.stringify({ directory: root, file: name }), detail: '下载并保存到当前项目的 Doubao 目录' }
+      try {
+        const saved = await saveDoubaoArtifact(run.bridge!, artifact, root, run.saving.signal)
+        yield { type: 'tool-event', callId, toolName, status: 'completed', output: JSON.stringify(saved), outputMode: 'snapshot' }
+        const label = pathLabel(saved.path)
+        yield { type: 'text-delta', text: `\n\n已保存到项目的 Doubao 目录：[${label}](<${saved.path.replaceAll('%', '%25').replaceAll('<', '%3C').replaceAll('>', '%3E')}>)（${saved.size} 字节）。` }
+      } catch (error) {
+        const message = run.cancelled ? '已取消本地下载；云端任务已完成，未发布不完整文件'
+          : error instanceof Error ? error.message : '豆包产物保存失败，请在豆包 App 下载'
+        yield { type: 'tool-event', callId, toolName, status: 'failed', error: message, output: message, outputMode: 'snapshot' }
+        if (run.cancelled) break
+        failures++
+        yield { type: 'text-delta', text: `\n\n产物「${name}」未保存：${message}。` }
+      }
+    }
+    if (failures) throw new Error(`豆包云端任务已完成，但 ${failures} 个产物未保存；已成功保存的文件保留，失败详情见保存工具记录，请在豆包 App 下载`)
+  }
+
   private async requestCancel(run: Run): Promise<void> {
     if (run.cancelled || run.finished) return
+    if (run.cloudFinished) {
+      run.cancelRequested = true
+      run.cancelled = true
+      run.saving.abort()
+      await run.bridge?.cancel()
+      return
+    }
     if (run.mode === 4 && run.sent) {
       const error = new Error('已停止接收豆包工作任务；云端工具可能继续，请到豆包 App 确认并停止任务')
       run.cancelError = error
@@ -195,4 +238,8 @@ export class DoubaoAppDriver implements CodingNsCliDriver {
   async dispose(): Promise<void> {
     await Promise.allSettled([...this.runs.values()].map(async (run) => { try { await this.requestCancel(run) } finally { await run.bridge?.close() } }))
   }
+}
+
+function pathLabel(value: string): string {
+  return value.replaceAll('\\', '/').split('/').at(-1)!.replace(/[\[\]\\]/gu, '\\$&')
 }

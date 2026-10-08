@@ -94,7 +94,7 @@ function toolInput(data: ToolData): string {
 }
 
 function toolOutput(type: number, data: ToolData, fallback: string): string {
-  if (type === 10020) return `产物：${data.file || '未命名文件'}${data.size ? `（${data.size} 字节）` : ''}。请在豆包会话中打开或下载。`
+  if (type === 10020) return `云端产物：${data.file || '未命名文件'}${data.size ? `（${data.size} 字节）` : ''}。任务结束后尝试保存到项目的 Doubao 目录，实际结果见“保存豆包产物”记录；也可在豆包会话中下载。`
   const entries = data.sources?.map((source, index) => [
     `${index + 1}. ${source.title}`, source.url, source.summary,
   ].filter(Boolean).join('\n')) ?? []
