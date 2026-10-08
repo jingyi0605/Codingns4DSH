@@ -2,8 +2,9 @@ import { execFile, spawn, spawnSync, type ChildProcessByStdio, type SpawnSyncOpt
 import { access } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { dirname, join } from 'node:path'
+import { dirname, join, win32 } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
+import { environmentValue, parseWindowsEnvironmentSnapshot, windowsCommandEnvironment, type WindowsEnvironmentSnapshot } from './windows-command-environment.js'
 
 /**
  * CodingNS 启动的 CLI 都把 stdout/stderr 接到管道；stdin 是否接管取决于
@@ -21,6 +22,8 @@ interface KillableChild {
 export const WINDOWS = process.platform === 'win32'
 let loginShellPath: string | undefined
 let loginShellLookup: Promise<void> | undefined
+let windowsEnvironment: WindowsEnvironmentSnapshot | undefined
+let windowsEnvironmentLookup: Promise<void> | undefined
 let commandEnvironmentRevision = 0
 let runningCommands = 0
 const commandQueue: Array<() => void> = []
@@ -39,6 +42,11 @@ export async function runAsyncCommand(
   options: SpawnSyncOptions = {},
   limitConcurrency = true,
 ): Promise<SpawnSyncReturns<string>> {
+  const explicitWindowsShell = WINDOWS && options.shell === true
+  if (explicitWindowsShell) {
+    await prepareWindowsCommandEnvironment(run)
+    options = { ...options, env: commandEnvironment(command, options.env) }
+  }
   if (run !== spawnSync) return run(command, args, { ...options, encoding: 'utf8' })
   const signal = commandSignals.getStore()
   signal?.throwIfAborted()
@@ -57,6 +65,8 @@ export async function runAsyncCommand(
       maxBuffer: options.maxBuffer ?? 4 * 1024 * 1024,
       killSignal: 'SIGKILL',
       windowsHide: true,
+      // /c 字符串已经按 cmd.exe 规则组装，不能再让 libuv 按普通 argv 转义。
+      ...(explicitWindowsShell ? { windowsVerbatimArguments: true } : {}),
       ...(signal === undefined ? {} : { signal }),
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
       ...(options.env === undefined ? {} : { env: options.env }),
@@ -78,6 +88,31 @@ export function invalidateCommandEnvironment(): void {
   commandEnvironmentRevision += 1
   loginShellLookup = undefined
   loginShellPath = undefined
+  windowsEnvironmentLookup = undefined
+  windowsEnvironment = undefined
+}
+
+/** 所有 Windows CLI 共用一次只读快照；手动检测使缓存失效，不写注册表或 process.env。 */
+export async function prepareWindowsCommandEnvironment(run: typeof spawnSync = spawnSync): Promise<void> {
+  if (!WINDOWS) return
+  const revision = commandEnvironmentRevision
+  windowsEnvironmentLookup ??= (async () => {
+    const root = environmentValue(process.env, 'SystemRoot') ?? 'C:\\Windows'
+    const powershell = win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    // 读取原始 REG_EXPAND_SZ，不能让 PowerShell 先用继承来的旧环境展开 %变量%。
+    const script = [
+      '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding',
+      "function Read-Environment($root, $path) { $values=@{}; $key=$root.OpenSubKey($path); if ($null -ne $key) { try { foreach ($name in $key.GetValueNames()) { $value=$key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); if ($value -is [string]) { $values[$name]=$value } } } finally { $key.Dispose() } }; return $values }",
+      "@{machine=(Read-Environment ([Microsoft.Win32.Registry]::LocalMachine) 'SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment');user=(Read-Environment ([Microsoft.Win32.Registry]::CurrentUser) 'Environment')} | ConvertTo-Json -Compress",
+    ].join('; ')
+    try {
+      // 使用绝对系统路径和固定脚本，即使当前 PATH 不完整也能读取；不加载用户 Profile。
+      const result = await runAsyncCommand(run, powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { timeout: 3_000 })
+      if (revision === commandEnvironmentRevision && result.status === 0) windowsEnvironment = parseWindowsEnvironmentSnapshot(result.stdout)
+    } catch { /* 系统禁止 PowerShell 时继续使用启动方环境。 */ }
+  })()
+  await windowsEnvironmentLookup
+  if (revision !== commandEnvironmentRevision) await prepareWindowsCommandEnvironment(run)
 }
 
 /**
@@ -109,8 +144,12 @@ function quoteCmdArgument(value: string): string {
  * 先尝试当前进程的 PATH，失败后再从用户登录 Shell 解析命令位置。
  */
 export async function resolveCommandPath(command: string, run: typeof spawnSync = spawnSync): Promise<string | null> {
-  if (isAbsoluteCommand(command)) return command
+  if (isAbsoluteCommand(command)) {
+    if (run !== spawnSync) return command
+    try { await access(command, WINDOWS ? constants.F_OK : constants.X_OK); return command } catch { return null }
+  }
   try {
+    await prepareWindowsCommandEnvironment(run)
     if (!WINDOWS && run === spawnSync) {
       const revision = commandEnvironmentRevision
       loginShellLookup ??= (async () => {
@@ -127,7 +166,7 @@ export async function resolveCommandPath(command: string, run: typeof spawnSync 
       return null
     }
     const result = WINDOWS
-      ? await runAsyncCommand(run, 'where.exe', [command], { timeout: 3_000 })
+      ? await runAsyncCommand(run, win32.join(environmentValue(process.env, 'SystemRoot') ?? 'C:\\Windows', 'System32', 'where.exe'), [command], { timeout: 3_000, env: commandEnvironment(command) })
       : await runAsyncCommand(run, process.env.SHELL || '/bin/sh', ['-ilc', 'command -v "$1"; printf "\\n__CODINGNS_PATH__%s\\n" "$PATH"', 'codingns4dsh-command-lookup', command], { timeout: 3_000 })
     if (result.status !== 0) return null
     const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
@@ -137,6 +176,8 @@ export async function resolveCommandPath(command: string, run: typeof spawnSync 
       .split(/\r?\n/u)
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
+    // where 按 PATH 优先级输出；优先可启动的 exe/cmd/bat，跳过 npm 的无后缀 POSIX shim。
+    if (WINDOWS) return lines.find((line) => isAbsoluteCommand(line) && /\.(?:exe|com|cmd|bat)$/iu.test(line)) ?? null
     for (const line of lines.reverse()) {
       if (isAbsoluteCommand(line)) return line
     }
@@ -146,15 +187,16 @@ export async function resolveCommandPath(command: string, run: typeof spawnSync 
   return null
 }
 
-/** 把解析出的 CLI 所在目录补到子进程 PATH，确保 npm shim 的 node shebang 可用。 */
-export function commandEnvironment(command: string): Record<string, string | undefined> {
-  const currentPath = loginShellPath ?? process.env.PATH ?? ''
-  if (!isAbsoluteCommand(command)) return { ...process.env, PATH: currentPath }
+/** 补充子进程 PATH；显式 base 是完整环境，不回填调用方已删除的登录变量。 */
+export function commandEnvironment(command: string, base?: Readonly<Record<string, string | undefined>>): Record<string, string | undefined> {
+  const environment = base ?? process.env
+  if (WINDOWS) return windowsCommandEnvironment(environment, windowsEnvironment, isAbsoluteCommand(command) ? win32.dirname(command) : undefined)
+  const currentPath = base?.PATH ?? loginShellPath ?? process.env.PATH ?? ''
+  if (!isAbsoluteCommand(command)) return { ...environment, PATH: currentPath }
   const directory = dirname(command)
-  const separator = WINDOWS ? ';' : ':'
-  const pathEntries = currentPath.split(separator).filter((entry) => entry.length > 0)
+  const pathEntries = currentPath.split(':').filter((entry) => entry.length > 0)
   if (!pathEntries.includes(directory)) pathEntries.unshift(directory)
-  return { ...process.env, PATH: pathEntries.join(separator) }
+  return { ...environment, PATH: pathEntries.join(':') }
 }
 
 function isAbsoluteCommand(value: string): boolean {

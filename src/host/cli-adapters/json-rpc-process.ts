@@ -202,7 +202,9 @@ export class JsonRpcProcess {
       : { command: this.options.command, args: this.options.args ?? [] }
     const child = this.runSpawn(invocation.command, [...invocation.args], {
       cwd: this.options.cwd,
-      env: { ...commandEnvironment(this.options.command), ...(this.options.env ?? {}) },
+      env: WINDOWS
+        ? commandEnvironment(this.options.command, { ...process.env, ...(this.options.env ?? {}) })
+        : { ...commandEnvironment(this.options.command), ...(this.options.env ?? {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       shell: WINDOWS && !useExplicitWindowsShell,
