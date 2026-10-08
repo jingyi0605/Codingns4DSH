@@ -15,9 +15,13 @@ codex-to-dsh-pet
 https://github.com/Signalight/codex-to-dsh-pet
 Copyright (c) 2026 Signalight
 
-外部可选 Live2D 加载器：l2d@2.1.1（用户单独安装，不随插件预置）
+外部可选 Live2D 加载器：l2d@2.1.1（用户确认引擎许可后由 Host 下载安装到 CodingNS 自有目录，不随插件预置）
 https://github.com/hacxy/l2d
 Copyright (c) 2025 Hacxy
+该包在运行时集成 Live2D Cubism SDK，Cubism SDK 的使用须遵守 Live2D Proprietary Software License
+（https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html）；
+商业用途请自行确认是否需要向 Live2D Inc. 申请许可。下载源固定为
+https://registry.npmjs.org/l2d/-/l2d-2.1.1.tgz，安装前校验 SHA-512 摘要。
 
 头像裁剪组件：react-easy-crop@5.5.6
 https://github.com/ValentinH/react-easy-crop
