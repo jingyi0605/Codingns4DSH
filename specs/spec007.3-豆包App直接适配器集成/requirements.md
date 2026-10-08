@@ -1,0 +1,73 @@
+# 需求
+
+## 1. 背景与术语
+
+用户希望复用豆包 App 的登录态和产品模式，通过现有外部 Agent 适配器在 CodingNS 中对话。CDP 是 Chromium 浏览器调试协议；后台页是豆包自行创建的 `doubao-background` 页面，不是用户可见聊天窗口；工作任务指豆包云端 Agent，不表示获得本机 Shell 或文件访问权。
+
+## 2. 范围
+
+本期实现直接连接、独立会话、流式投影、续聊、只读探测、产品档位和普通停止；实现保守的按需启动边界。仅复用 App 内认证，不导出 Cookie，不依赖 doubao-cli。Windows 和冷启动的真实验收独立记录。
+
+不包含附件上传、原生提问审批、任意模型选择、用量估算、完整历史 CRUD、Team、Skill、本机工具执行和云端任务可靠强制终止。
+
+## 3. 需求与验收
+
+### R1：直接连接与诊断
+
+作为用户，我希望无需安装额外 CLI 即可使用已登录的豆包。
+
+- WHEN 发现已安装 App，THEN 适配器 SHALL 登记为 `doubao`，只读检测不得启动 App。
+- WHEN 连接调试端口，THEN SHALL 仅连接回环地址上的原生后台页；缺失或歧义时返回明确错误，不回退到前台。
+- WHEN 运行时协议特征不匹配，THEN SHALL 拒绝发送，不按固定 Webpack 模块编号猜测。
+- WHEN 未登录、端口不可达或网络错误，THEN SHALL 返回脱敏原因，不自动重复发送。
+
+### R2：会话隔离和恢复
+
+作为用户，我希望后台调用不干扰我手动使用豆包。
+
+- WHEN 新建 CodingNS 会话，THEN SHALL 先显式创建豆包独立会话，再绑定真实 ID。
+- WHEN 已有绑定，THEN SHALL 只读加载该会话的最近消息及 section/index 后续聊，不复制整份历史。
+- WHEN SSE 确认的会话不匹配，THEN SHALL 立即报错，禁止覆盖绑定或继续消费正文。
+- WHEN 同一会话已有运行，THEN SHALL 拒绝第二个并发回合；不同会话的流和停止互相隔离。
+- WHEN 探测历史为空且无明确不存在证据，THEN SHALL 返回 unknown，不伪报 missing。
+
+### R3：档位与标准事件
+
+作为用户，我希望在现有模型菜单选择快速、专家和工作任务。
+
+- WHEN 选择档位，THEN SHALL 映射到已验证的 0、3、4 产品参数，并标记目录为静态回退。
+- WHEN 选择器传入 effortId/serviceTierId 的 default 或空值，THEN SHALL 按无独立覆盖处理；非默认自定义值仍须分别报错。
+- WHEN 接收流，THEN SHALL 分别投影正文、思考、工具观察事件，正确处理首块、增量、替换和终态。
+- WHEN 展示云端工具，THEN SHALL 仅展示已执行事实，不生成 DSH 待执行工具调用。
+- WHEN 收到已验证的搜索、网页读取、加载进度、云端操作、文件产物或通用工具块，THEN SHALL 输出稳定 callId 的工具事件，通过现有原生工具声明、调用及结果链路展示查询、摘要、来源和结果。
+- WHEN 工具内容追加、替换、撤回或回合异常结束，THEN SHALL 正确合并与去重，未确认完成的记录不得伪报成功；代码片段不作为执行证据。
+- WHEN 展示工具结果，THEN SHALL 仅采集明确字段并限制长度，保留普通网页来源，排除签名下载地址、凭据及原始响应对象。
+- WHEN 遇到不支持的附件、计划、fork 或其他特殊输入，THEN SHALL 明确拒绝，不静默丢失。
+- WHEN 没有真实用量，THEN SHALL 不产生 usage，不声明未实现的能力。
+
+### R4：取消与连接生命周期
+
+作为用户，我希望只停止指定会话的普通回答。
+
+- WHEN 请求普通停止，THEN SHALL 使用该运行的 conversation/reply ID 调用原生停止接口；ACK 前停止需等待目标回复 ID。
+- WHEN 工作任务被中断，THEN SHALL 明确说明云端工具可能继续，不能报告已可靠终止。
+- WHEN 断线、消费方结束或驱动释放，THEN SHALL 释放自身连接和读取器，不能关闭 App、其他页面或其他调用。
+- WHEN Host 收到 finish 后提前结束读取，THEN Registry SHALL 关闭当前拥有的驱动迭代器，确保 finally 执行；显式移交给续段表的流不得提前关闭。
+- WHEN 回合已发送但状态未知，THEN SHALL 不自动重放。
+
+### R5：按需启动
+
+作为用户，我希望只有实际调用时才启动所需 App，并避免抢占界面。
+
+- WHEN App 未运行且平台支持，THEN SHALL 在实际调用时携回环调试参数尝试启动，启动动作合并去重。
+- WHEN App 已运行但没有端口，THEN SHALL 返回需要用户重新启动的诊断，不能自动重启或隐藏现有窗口。
+- WHEN macOS 冷启动，THEN SHALL 使用系统隐藏、不激活提示；不承诺未经验证的不闪窗效果。
+- WHEN Windows 未验证隐藏与实例归属，THEN SHALL 使用已开启端口的连接路径并返回明确的冷启动限制，不把 `windowsHide` 视作 GUI 隐藏保证。
+
+### R6：兼容与验收
+
+作为维护者，我希望接入不影响其他适配器和 Desktop。
+
+- WHEN 合入源码，THEN SHALL 复用 HttpSseClient 和现有 registry/config/event 契约，不增加 CLI 依赖或第四套通用传输框架。
+- WHEN 执行验证，THEN SHALL 使用免构建源码测试、类型检查和静态规范检查，不启动项目服务器、不触碰 Desktop。
+- WHEN 记录结果，THEN SHALL 分别注明单测、真实 App、平台待验证状态。
