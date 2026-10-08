@@ -1,6 +1,7 @@
 import type { CodingNsAgentEvent } from '../../shared/contracts/cli-adapter.js'
 import type { SseEvent } from './http-sse-client.js'
 import { DoubaoToolProjector } from './doubao-tools.js'
+import { DoubaoArtifactCollector } from './doubao-artifacts.js'
 
 interface Block {
   id: string
@@ -14,6 +15,7 @@ const record = (value: unknown): Record<string, any> => typeof value === 'object
 export class DoubaoEventProjector {
   private readonly blocks = new Map<string, Block>()
   private readonly tools = new DoubaoToolProjector()
+  readonly artifacts = new DoubaoArtifactCollector()
   private currentBlock: Block | undefined
   private emitted = { text: '', reasoning: '' }
   replyId: string | undefined
@@ -59,13 +61,14 @@ export class DoubaoEventProjector {
 
   private applyBlock(raw: Record<string, any>): CodingNsAgentEvent[] {
     if (typeof raw.block_id !== 'string') throw new Error('豆包内容块缺少标识')
-    if (raw.patch_type === 3) { this.blocks.delete(raw.block_id); this.currentBlock = undefined; return this.tools.remove(raw.block_id) }
+    if (raw.patch_type === 3) { this.blocks.delete(raw.block_id); this.artifacts.remove(raw.block_id); this.currentBlock = undefined; return this.tools.remove(raw.block_id) }
     const previous = this.blocks.get(raw.block_id)
     const block: Block = previous ?? { id: raw.block_id, type: Number(raw.block_type), parent: '', text: '' }
     if (typeof raw.parent_id === 'string') block.parent = raw.parent_id
     if (typeof raw.block_type === 'number') block.type = raw.block_type
     if ([10023, 10041, 10043, 10066].includes(block.type)) throw new Error('豆包任务需要原生交互，请在豆包 App 中完成确认；本适配器尚不支持代答')
     this.blocks.set(block.id, block)
+    this.artifacts.accept(block.id, block.type, raw.content, raw.patch_type === 2)
     if (block.type === 10000) {
       const text = raw.content?.text_block?.text
       if (typeof text === 'string') block.text = raw.patch_type === 2 ? text : block.text + text

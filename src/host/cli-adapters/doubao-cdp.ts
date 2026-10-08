@@ -11,6 +11,7 @@ export interface DoubaoConversation {
 
 export interface DoubaoBridge {
   readonly fetch: typeof fetch
+  download(url: string, maxBytes: number): Promise<Response>
   create(name: string): Promise<DoubaoConversation>
   history(id: string): Promise<DoubaoConversation>
   stop(id: string, reply: string): Promise<void>
@@ -117,6 +118,13 @@ export class DoubaoCdpBridge implements DoubaoBridge {
   stop(id: string, reply: string): Promise<void> { return this.call('stop', id, reply) }
   async cancel(): Promise<void> { if (!this.closed) await this.call('cancel') }
 
+  /** 下载地址仅来自本轮文件块；App 侧再次限制来源且不携带登录凭据。 */
+  async download(url: string, maxBytes: number): Promise<Response> {
+    const response = await this.call<{ status: number; mime: string }>('download', url, maxBytes)
+    if (response.status !== 200) { await this.cancel(); throw new Error(`豆包产物下载失败（HTTP ${response.status}）`) }
+    return this.response(response.mime)
+  }
+
   readonly fetch: typeof fetch = async (input, init = {}) => {
     if (String(input) !== 'https://www.doubao.com/chat/completion' || init.method !== 'POST' || typeof init.body !== 'string') {
       throw new Error('豆包后台桥只接受对话请求')
@@ -126,6 +134,10 @@ export class DoubaoCdpBridge implements DoubaoBridge {
       await this.cancel()
       throw new Error(`豆包未返回对话流（HTTP ${response.status}）；请检查登录状态和模式权限`)
     }
+    return this.response(response.mime)
+  }
+
+  private response(mime: string): Response {
     const body = new ReadableStream<Uint8Array>({
       pull: async (controller) => {
         try {
@@ -136,7 +148,7 @@ export class DoubaoCdpBridge implements DoubaoBridge {
       },
       cancel: () => this.cancel(),
     }, { highWaterMark: 0 })
-    return new Response(body, { status: response.status, headers: { 'content-type': response.mime } })
+    return new Response(body, { status: 200, headers: { 'content-type': mime } })
   }
 
   async close(): Promise<void> {

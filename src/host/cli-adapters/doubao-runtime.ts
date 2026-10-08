@@ -47,6 +47,8 @@ export async function installDoubaoRuntime(key: string): Promise<void> {
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   let pending: Uint8Array = new Uint8Array(0)
   let controller: AbortController | undefined
+  let downloadLimit: number | undefined
+  let downloaded = 0
   let disposed = false
   let lease: ReturnType<typeof setTimeout>
   // Host 意外退出时没有机会执行 finally；闲置桥最多存活 90 秒。
@@ -102,12 +104,34 @@ export async function installDoubaoRuntime(key: string): Promise<void> {
       reader = response.body?.getReader()
       return { status: response.status, mime: response.headers.get('content-type') ?? '' }
     },
+    async download(address: string, maxBytes: number) {
+      touch()
+      if (disposed || typeof address !== 'string' || address.length > 16_384) throw new Error('DOUBAO_DOWNLOAD_INVALID')
+      let url: URL
+      try { url = new URL(address) } catch { throw new Error('DOUBAO_DOWNLOAD_INVALID') }
+      // 此来源已由真实文件块及字节下载验证；不接受普通回答里的链接或任意外网地址。
+      if (url.protocol !== 'https:' || !/^p\d+-flow-sign\.byteimg\.com$/u.test(url.hostname)
+        || url.port || url.username || url.password || url.hash) throw new Error('DOUBAO_DOWNLOAD_ORIGIN_UNSUPPORTED')
+      if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > 64 * 1024 * 1024) throw new Error('DOUBAO_DOWNLOAD_LIMIT_INVALID')
+      await cancel()
+      controller = new AbortController()
+      downloaded = 0
+      downloadLimit = maxBytes
+      // 签名 URL 已含下载授权。禁止携带 Cookie、公共鉴权头，也不跟随重定向。
+      const response = await fetch(url, { credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer',
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)]) })
+      if (Number(response.headers.get('content-length')) > maxBytes) { await response.body?.cancel(); throw new Error('DOUBAO_DOWNLOAD_TOO_LARGE') }
+      reader = response.body?.getReader()
+      return { status: response.status, mime: response.headers.get('content-type') ?? 'application/octet-stream' }
+    },
     async read() {
       touch()
       if (pending.length === 0) {
         const result = await reader?.read()
         if (!result || result.done) return null
         pending = result.value
+        downloaded += pending.byteLength
+        if (downloadLimit !== undefined && downloaded > downloadLimit) { await cancel(); throw new Error('DOUBAO_DOWNLOAD_TOO_LARGE') }
       }
       // 每次最多跨 CDP 传送 64 KiB；读取由 Host 拉取驱动，不积压整份回答。
       const value = Array.from(pending.subarray(0, 65_536))
