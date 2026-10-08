@@ -169,9 +169,9 @@ function VoiceSessionModal({ onClose, ...props }: VoiceSessionDisplayProps & { r
   return createElement('dialog', { ref: dialog, className: 'codingns-assistant-voice-dialog', 'aria-labelledby': titleId, onCancel: (event: { preventDefault(): void; stopPropagation(): void }) => { event.preventDefault(); event.stopPropagation(); onClose() },
     onKeyDown: (event: { key: string; preventDefault(): void; stopPropagation(): void }) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onClose() } },
     style: { width: 'min(680px, calc(100vw - 24px))', maxHeight: 'calc(100dvh - 24px)', boxSizing: 'border-box', padding: 16, borderRadius: 12, border: `1px solid ${dshThemeColor.border}`,
-      background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, boxShadow: dshThemeColor.prominentShadow, overflowY: 'auto', scrollbarWidth: 'thin' } },
+      background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, boxShadow: dshThemeColor.prominentShadow, overflow: 'hidden' } },
     createElement(AssistantRecordStyle),
-    createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 } },
+    createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexShrink: 0 } },
       createElement('strong', { id: titleId, style: { flex: 1, fontSize: 14 } }, props.t('awb.call.details')),
       createElement('button', { type: 'button', className: 'codingns-assistant-record-button', autoFocus: true, onClick: onClose,
         title: props.t('awb.close'), 'aria-label': props.t('awb.close'),
@@ -179,7 +179,9 @@ function VoiceSessionModal({ onClose, ...props }: VoiceSessionDisplayProps & { r
           display: 'grid', placeItems: 'center', flexShrink: 0, color: dshThemeColor.labelSecondary } },
         createElement('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8,
           strokeLinecap: 'round', 'aria-hidden': true }, createElement('path', { d: 'm6 6 12 12M6 18 18 6' })))),
-    createElement(AssistantVoiceSessionDetailsView, props))
+    // 标题与关闭按钮留在滚动区外；记录容器可收缩，长对话只在内部滚动。
+    createElement('div', { style: { flex: '1 1 auto', minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', scrollbarWidth: 'thin' } },
+      createElement(AssistantVoiceSessionDetailsView, props)))
 }
 
 export function AssistantVoiceSessionDetailsView({ session, t, name, services, model }: VoiceSessionDisplayProps): ReactElement {

@@ -13,6 +13,7 @@ export function AssistantRecordChevron(): ReactElement {
     style: { flexShrink: 0, color: dshThemeColor.labelTertiary } }, createElement('path', { d: 'm9 5 7 7-7 7' }))
 }
 
+// 仅在原生弹窗打开时启用纵向布局，保留关闭状态下浏览器默认的隐藏行为。
 const recordCss = `
 .codingns-assistant-tool-summary{list-style:none;cursor:pointer;border-radius:9px}
 .codingns-assistant-tool-summary::-webkit-details-marker{display:none}
@@ -22,5 +23,6 @@ const recordCss = `
 .codingns-assistant-tool-details[open]>.codingns-assistant-tool-summary{border-radius:9px 9px 0 0}
 .codingns-assistant-tool-details[open] .codingns-assistant-tool-name{white-space:normal!important;overflow-wrap:anywhere}
 .codingns-assistant-tool-details[open]>.codingns-assistant-tool-summary .codingns-assistant-record-chevron{transform:rotate(90deg)}
+.codingns-assistant-voice-dialog[open]{display:flex;flex-direction:column}
 .codingns-assistant-voice-dialog::backdrop{background:${dshThemeColor.overlay}}
 `
