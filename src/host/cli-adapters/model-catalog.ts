@@ -221,6 +221,17 @@ export const ZCODE_CATALOG = staticCatalog('zcode', 'ZCode', [
   { id: 'provider-default', name: '跟随 ZCode 默认模型', efforts: [] },
 ])
 
+/** 豆包 App 的产品档位；不是实时模型列表，不推断底层模型、额度或上下文容量。 */
+export const DOUBAO_CATALOG: CodingNsCliModelCatalog = {
+  ...staticCatalog('doubao', '豆包 App 产品档位', [
+    { id: 'doubao-fast', name: '快速', efforts: [] },
+    { id: 'doubao-expert', name: '专家', efforts: [] },
+    { id: 'doubao-work', name: '工作任务（云端）', efforts: [] },
+  ]),
+  currentModel: 'doubao-fast',
+  fallback: true,
+}
+
 /** Antigravity 在模型命令不可用时使用的保守回退目录。 */
 export const ANTIGRAVITY_CATALOG: CodingNsCliModelCatalog = {
   ...staticCatalog('antigravity', 'Antigravity', [

@@ -19,6 +19,7 @@ export const KNOWN_CLI_ADAPTER_IDS = new Set<CodingNsCliAdapterId>([
   'qoder',
   'qoder-cn',
   'antigravity',
+  'doubao',
 ])
 
 export interface LegacySessionAdapterEvidence {

@@ -15,6 +15,7 @@ import { CursorCliDriver } from './cursor-driver.js'
 import { KiroCliDriver } from './kiro-driver.js'
 import { QoderCliDriver } from './qoder-driver.js'
 import { AntigravityDriver } from './antigravity-driver.js'
+import { DoubaoAppDriver } from './doubao-driver.js'
 import { CodingNsCliAdapterRegistry } from './registry.js'
 import { CodingNsCliSessionStore } from './session-store.js'
 import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
@@ -75,6 +76,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         new QoderCliDriver(),
         new QoderCliDriver({ variant: 'qoder-cn' }),
         new AntigravityDriver(),
+        new DoubaoAppDriver(),
       ], context.services.settings?.get().agentAdapters, {
         sessionStore,
         ...(context.services.settings === undefined ? {} : { settings: context.services.settings }),
