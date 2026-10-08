@@ -450,7 +450,54 @@ test('索引模型返回普通段落时失败并保留来源，禁止作为成�
   assert.ok(!failed.summary.speechText.includes('建议检查权限'))
   assert.equal(failed.records[0]?.analysis?.state, 'failed')
   await assert.rejects(f.call('assistant/chat/start', { requestId: 'invalid-index', provider: 'api', model: 'chat', generation: failed.index.generation, messages: [{ role: 'user', text: '下一步？' }] }), /结构化索引未生成/u)
-  assert.equal(calls, 2)
+  assert.equal(calls, 6, '两个会话各自达到三次调用上限')
+  assert.equal(failed.index.analysis?.tasks?.every((task) => task.attempt === 3), true)
+  await f.call('assistant/debug')
+  assert.equal(calls, 6, '面板刷新不重置已失败版本的调用预算')
+  // 其他会话触发新批次时，缓存失败的前次用量仍应可见，但不能冒充本次调用。
+  const reused = { ...failed, index: { ...failed.index, analysis: { ...failed.index.analysis!, tasks: failed.index.analysis!.tasks!.map((task) => ({ ...task, reused: true })) } } }
+  const html = renderToStaticMarkup(createElement(AssistantDebugSnapshotView, { snapshot: reused, t: resolveCodingNsTranslator() }))
+  assert.ok(html.includes('前次模型调用：3/3 次（含首次调用）'))
+  assert.ok(html.includes('沿用上次结果，本次未调用模型'))
+})
+
+test('单会话限流等待在调试页与记录中可见，自动恢复并复用其他成功会话', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] })
+  t.mock.method(Math, 'random', () => 0.5)
+  const counts = new Map<string, number>()
+  const llm = { listProviders: () => [{ id: 'api', name: 'API' }], listModels: async () => [{ id: 'chat', name: 'Chat' }], async *stream(options: Record<string, any>) {
+    const facts = JSON.parse(options.system.split('<索引事实>\n')[1].split('\n</索引事实>')[0])
+    const id = facts.sessions[0].sessionId
+    const count = (counts.get(id) ?? 0) + 1; counts.set(id, count)
+    if (id === 's1' && count === 1) {
+      yield { type: 'finish', reason: { kind: 'error', failure: { message: '请求过于频繁', code: 'RATE_LIMIT', status: 429, providerRetryAfterMs: 12_000 } } }
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: structuredReply(options) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  } }
+  const f = await fixture(t, { llm, idle: true })
+  await f.call('assistant/index/rebuild'); await setImmediate()
+  const pending = await f.call('assistant/debug') as AssistantDebugSnapshot
+  assert.equal(pending.indexState, 'building')
+  assert.equal(pending.index.analysis?.tasks?.[0]?.attempt, 1)
+  assert.equal(pending.index.analysis?.tasks?.[0]?.nextRetryAt, Date.now() + 12_000)
+  assert.equal(pending.index.analysis?.tasks?.[1]?.state, 'completed')
+  assert.equal(pending.records[0]?.analysis?.tasks?.[0]?.nextRetryAt, Date.now() + 12_000)
+  for (const View of [AssistantDebugSnapshotView, AssistantIndexRecordsView]) {
+    const html = renderToStaticMarkup(createElement(View, { snapshot: pending, t: resolveCodingNsTranslator() }))
+    assert.ok(html.includes('模型调用：1/3 次（含首次调用）'))
+    assert.ok(html.includes('等待自动重试：第 2 次调用，约 12 秒后开始'))
+  }
+  t.mock.timers.tick(11_999); await setImmediate()
+  assert.equal(counts.get('s1'), 1)
+  t.mock.timers.tick(1); await setImmediate()
+  const done = await f.call('assistant/debug') as AssistantDebugSnapshot
+  assert.equal(done.indexState, 'ready')
+  assert.equal(counts.get('s1'), 2); assert.equal(counts.get('s4'), 1)
+  assert.equal(done.scopeSessions.every((session) => session.indexState === 'completed'), true)
+  assert.equal(done.records[0]?.analysis?.tasks?.[0]?.attempt, 2)
+  assert.equal(done.records[0]?.analysis?.tasks?.[0]?.nextRetryAt, null)
 })
 
 test('索引模型失败或中止都有明确状态，模型晚到结果不能覆盖取消与范围变更', async (t) => {

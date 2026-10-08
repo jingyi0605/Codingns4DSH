@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { setImmediate } from 'node:timers/promises'
-import { createAssistantLlmAdapter, type AssistantLlmAdapter } from '../data/build/dist/dsh-capabilities/host/assistant-llm-adapter.js'
+import { AssistantLlmRequestError, createAssistantLlmAdapter, type AssistantLlmAdapter } from '../data/build/dist/dsh-capabilities/host/assistant-llm-adapter.js'
 import { AssistantTextChat, createAssistantChatSystem } from '../data/build/dist/host/features/assistant-text-chat.js'
 import { AssistantIndexJournal } from '../data/build/dist/host/features/assistant-index-journal.js'
 import type { AssistantChatRun, AssistantIndexSnapshot, AssistantToolCall } from '../data/build/dist/shared/contracts/assistant.js'
@@ -56,6 +56,16 @@ test('原生模型目录复用 DSH 默认选择，排除无模型的 CLI 并保�
   assert.ok(!JSON.stringify(selected).includes('hidden-key'))
   assert.equal(createAssistantLlmAdapter({}, '0.2.1-alpha.1'), undefined)
   assert.equal(createAssistantLlmAdapter({ llm: { stream() {}, listProviders() {}, listModels() {} } }, '0.2.0-rc.2'), undefined)
+})
+
+test('原生流式失败保留状态码、稳定错误码与 Retry-After，供索引重试分类', async () => {
+  const failure = { message: '速率限制', code: 'RATE_LIMIT', status: 429, providerRetryAfterMs: 12_000 }
+  const adapter = nativeAdapter([{ type: 'finish', reason: { kind: 'error', failure } }])
+  await assert.rejects(adapter.reply(model, '', [], new AbortController().signal, () => {}), (error: unknown) => {
+    assert.ok(error instanceof AssistantLlmRequestError)
+    assert.deepEqual(error.failure, failure)
+    return true
+  })
 })
 
 test('真正调用原生流式 LLM，按 v4 构造多轮消息，文字块结束不重复追加正文', async () => {

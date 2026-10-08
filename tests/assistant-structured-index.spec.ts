@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { parseAssistantStructuredIndex, speakAssistantStructuredIndex } from '../data/build/dist/host/features/assistant-structured-index.js'
+import { AssistantIndexValidationError, parseAssistantStructuredIndex, speakAssistantStructuredIndex } from '../data/build/dist/host/features/assistant-structured-index.js'
 import { createAssistantChatSystem, createAssistantIndexSystem } from '../data/build/dist/host/features/assistant-prompts.js'
 import type { AssistantIndexSnapshot } from '../data/build/dist/shared/contracts/assistant.js'
 
@@ -83,4 +83,15 @@ test('没有正文时保留信息缺口，标题只允许支持目标；旧播�
   assert.ok(prompt.includes('固定格式优先于前置提示词'))
   assert.ok(prompt.includes('"schemaVersion":1'))
   assert.ok(prompt.includes('只输出一个合法 JSON 对象'))
+})
+
+test('证据改写仍被拒绝，错误包含准确字段和已脱敏的原文片段以供重试纠正', () => {
+  const raw = response(); raw.sessions[0]!.progress[0]!.evidence[0]!.quote = '已修复权限错误'
+  assert.throws(() => parseAssistantStructuredIndex(JSON.stringify(raw), index), (error: unknown) => {
+    assert.ok(error instanceof AssistantIndexValidationError)
+    assert.equal(error.path, '$.sessions[0].progress[0].evidence[0].quote')
+    assert.ok(error.evidence?.sourceExcerpt.includes('两次调用都返回权限错误'))
+    assert.ok(!error.evidence?.sourceExcerpt.includes('secret-value'))
+    return true
+  })
 })
