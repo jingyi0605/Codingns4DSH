@@ -4,31 +4,15 @@ import { PEER_HOST_ERROR_CODES } from '../../../shared/contracts/peer-host.js'
 import { PeerHostSessionError, PeerHostSessionService } from './peer-host-session.js'
 import { PeerHostStore } from './peer-host-store.js'
 import { peerHostSafeError } from './peer-host-diagnostics.js'
+import { isPeerHostHttpRoute } from '../../../shared/peer-host-http-routes.js'
+// 保持已有导入入口兼容；路由表由发送端与目标端共同维护。
+export { PEER_HOST_HTTP_PROXY_RULES } from '../../../shared/peer-host-http-routes.js'
 
 const MAX_PROXY_BODY_BYTES = 4 * 1024 * 1024
 const ALLOWED_QUERY = new Set(['workspaceId', 'sessionId', 'scopeGeneration', 'cursor', 'path', 'toolId'])
 const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'authorization'])
 const ALLOWED_CLIENT_HEADERS = new Set(['accept', 'content-type', 'if-match', 'if-none-match', 'range'])
 const AUTH_CHECK_PATH = '/api/codingns/host/status'
-
-export const PEER_HOST_HTTP_PROXY_RULES = [
-  { prefix: '/api/codingns/host/status', methods: ['POST'] },
-  { prefix: '/api/codingns/peerHost/nativeLocal', methods: ['POST'] },
-  { prefix: '/api/codingns/peerHost/native', methods: ['POST'] },
-  { prefix: '/api/codingns/peerHost/nativeStream', methods: ['POST'] },
-  { prefix: '/api/codingns/peerHost/nativeStreamOpen', methods: ['POST'] },
-  { prefix: '/api/codingns/peerHost/nativeStreamNext', methods: ['POST'] },
-  { prefix: '/api/codingns/peerHost/nativeStreamClose', methods: ['POST'] },
-  // 远端对话框的适配器、模型与会话绑定必须读取目标 Host 的 CodingNS RPC。
-  { prefix: '/api/codingns/cli', methods: ['POST'] },
-  { prefix: '/api/workspaces', methods: ['GET'] },
-  { prefix: '/api/sessions', methods: ['GET', 'POST'] },
-  { prefix: '/api/file-tree', methods: ['GET'] },
-  { prefix: '/api/files', methods: ['GET', 'PUT', 'POST'] },
-  { prefix: '/api/git', methods: ['GET', 'POST'] },
-  { prefix: '/api/terminal', methods: ['GET', 'POST'] },
-  { prefix: '/api/right-tools', methods: ['GET', 'POST'] },
-] as const
 
 export class PeerHostProxyError extends Error {
   constructor(readonly code: PeerHostErrorCode, message: string) {
@@ -168,8 +152,7 @@ function validateQuery(url: URL): void {
 }
 
 function validateRule(method: string, pathname: string): void {
-  const rule = PEER_HOST_HTTP_PROXY_RULES.find((candidate) => pathname === candidate.prefix || pathname.startsWith(`${candidate.prefix}/`))
-  if (rule === undefined || !(rule.methods as readonly string[]).includes(method.toUpperCase())) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED, 'PeerHost 代理路径或方法未加入白名单')
+  if (!isPeerHostHttpRoute(method, pathname)) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED, 'PeerHost 代理路径或方法未加入白名单')
 }
 
 async function readBody(request: Request): Promise<string | undefined> {

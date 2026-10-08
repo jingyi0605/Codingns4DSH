@@ -13,6 +13,7 @@ import { CodingNsRpcError } from './rpc-table.js'
 import type { DshHostSettingsScope } from '../dsh-capabilities/host/config-forms-adapter.js'
 import { createLoginAttemptContext, LoginAttemptGuard, type LoginAttemptContext } from './login-attempt-guard.js'
 import { hostBrowserText, resolveAcceptLanguageLocale, resolveHostPushLocale, type HostLocale } from './browser-text.js'
+import { isPeerHostHttpRoute } from '../shared/peer-host-http-routes.js'
 
 export interface LanAccessDshStream {
   pipe(destination: LanAccessDshStream): LanAccessDshStream
@@ -497,28 +498,9 @@ export class LanAccessDshProxy {
  * 避免把路径判定和签名校验混在一起，也避免把整个 LAN API 变成公开入口。
  */
 export function isPeerHostRouteRequest(request: LanAccessDshPwaRequest): boolean {
-  const routes: readonly { readonly prefix: string; readonly methods: readonly string[] }[] = [
-    { prefix: '/ws', methods: ['GET'] },
-    { prefix: '/api/codingns/host/status', methods: ['POST'] },
-    { prefix: '/api/codingns/peerHost/nativeLocal', methods: ['POST'] },
-    { prefix: '/api/codingns/peerHost/native', methods: ['POST'] },
-    { prefix: '/api/codingns/peerHost/nativeStream', methods: ['POST'] },
-    { prefix: '/api/codingns/peerHost/nativeStreamOpen', methods: ['POST'] },
-    { prefix: '/api/codingns/peerHost/nativeStreamNext', methods: ['POST'] },
-    { prefix: '/api/codingns/peerHost/nativeStreamClose', methods: ['POST'] },
-    // 远端对话框的适配器、模型、会话绑定和命令目录都通过 CodingNS CLI RPC
-    // 读取；这是 Host-to-Host 数据面，必须与 Host API 代理的白名单保持一致。
-    { prefix: '/api/codingns/cli', methods: ['POST'] },
-    { prefix: '/api/workspaces', methods: ['GET'] },
-    { prefix: '/api/sessions', methods: ['GET', 'POST'] },
-    { prefix: '/api/file-tree', methods: ['GET'] },
-    { prefix: '/api/files', methods: ['GET', 'PUT', 'POST'] },
-    { prefix: '/api/git', methods: ['GET', 'POST'] },
-    { prefix: '/api/terminal', methods: ['GET', 'POST'] },
-    { prefix: '/api/right-tools', methods: ['GET', 'POST'] },
-  ]
-  const route = routes.find((candidate) => request.path === candidate.prefix || request.path.startsWith(`${candidate.prefix}/`))
-  return route !== undefined && route.methods.includes(request.method.toUpperCase())
+  // WebSocket 只在目标入口鉴权，HTTP 则必须与发送端代理使用同一份规则。
+  if (request.path === '/ws' || request.path.startsWith('/ws/')) return request.method.toUpperCase() === 'GET'
+  return isPeerHostHttpRoute(request.method, request.path)
 }
 
 /** 已解析到登录保护边界的请求；PeerHost 认证与转发共用同一份最小字段。 */

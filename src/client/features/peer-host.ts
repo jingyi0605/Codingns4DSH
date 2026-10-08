@@ -334,7 +334,15 @@ export function createPeerHostPageTransport(
     }, signal))
     const status = typeof response?.status === 'number' ? response.status : 500
     const body = typeof response?.body === 'string' ? response.body : ''
-    if (status < 200 || status >= 300) throw new Error(`远端 Host 插件 RPC 失败: HTTP ${status}`)
+    if (status < 200 || status >= 300) {
+      // Host 代理已经生成脱敏的稳定错误，不能再用裸 HTTP 状态掩盖认证原因。
+      let error: Record<string, unknown> | null = null
+      try { error = asRecord(asRecord(JSON.parse(body))?.error) } catch { /* 非 JSON 响应继续使用状态码兜底。 */ }
+      if (typeof error?.code === 'string' && typeof error.message === 'string') {
+        return { ok: false, error: { code: error.code, message: error.message } }
+      }
+      throw new Error(`远端 Host 插件 RPC 失败: HTTP ${status}`)
+    }
     try {
       const envelope = asRecord(JSON.parse(body))
       return envelope?.result
