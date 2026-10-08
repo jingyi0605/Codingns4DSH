@@ -1,3 +1,4 @@
+import { watchAdapterCatalog, subscribeAdapterCatalogChanged } from './adapter-catalog-watch.js'
 import { createElement, useEffect, useRef, useState } from 'react'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import type { ReactElement } from 'react'
@@ -22,7 +23,6 @@ import {
   getModelCatalogCache,
   invalidateModelCatalogCache,
   loadModelCatalog,
-  MODEL_CATALOG_REVALIDATE_INTERVAL_MS,
   shouldRevalidateModelCatalog,
 } from './model-catalog-cache.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
@@ -260,11 +260,7 @@ function AgentSlot(props: CliSlotProps): ReactElement {
   }, [selection.adapterId])
 
   useEffect(() => {
-    let active = true
-    void callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(props.rpc, 'catalog', sessionId === undefined ? {} : { sessionId })
-      .then((value) => { if (active) setAgents(adapterCatalogWithDsh(value)) })
-      .catch(() => undefined)
-    return () => { active = false }
+    return watchAdapterCatalog(props.rpc, sessionId, (value) => setAgents(adapterCatalogWithDsh(value)))
   }, [props.rpc, sessionId])
 
   useEffect(() => { if (locked) setOpen(false) }, [locked])
@@ -416,10 +412,6 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     // 有 stale 目录时直接可用，后台刷新不应阻塞模型/思考强度选择。
     && catalog === null
     && refreshingAdapterId === selection.adapterId
-  // 目录声明了服务档位、却未确认官方订阅时，可能只是判定过期（用户在外部工具里
-  // 刚切回官方订阅）。这种状态值得再探测一次，但不代表应该展示开关。
-  const serviceTierRevalidation = needsServiceTierRevalidation(catalog)
-
   useEffect(() => {
     if (selection.adapterId === 'dsh') {
       setCatalogState(null)
@@ -427,7 +419,6 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       return
     }
     let active = true
-    let retryTimer: ReturnType<typeof setTimeout> | undefined
     const adapterId = selection.adapterId
     const cached = getModelCatalogCache(props.rpc, sessionId).get(adapterId)
     if (cached !== undefined) setCatalogState({ sessionId, adapterId, value: cached })
@@ -441,13 +432,6 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       .then((value) => {
         if (!active) return
         setCatalogState({ sessionId, adapterId, value })
-        if (value.fallback === true) {
-          // 回退目录通常来自启动竞态或产品快照尚未落盘；等待 Host 的短周期
-          // 重试后重新执行一次 RPC，避免当前页面永久停留在默认模型。
-          retryTimer = setTimeout(() => {
-            if (active) setCatalogRetry((value) => value + 1)
-          }, 15_000)
-        }
         const normalize = (): void => {
           if (!active) return
           // session/set 可能正在回填适配器级记忆值；必须等它完成后再补默认值，
@@ -493,31 +477,11 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       .finally(() => { if (active) setRefreshingAdapterId(null) })
     return () => {
       active = false
-      if (retryTimer !== undefined) clearTimeout(retryTimer)
     }
   }, [props.rpc, selection.adapterId, sessionId, catalogRetry])
 
-  /**
-   * 档位判定处于「未确认官方订阅」时周期复检。
-   *
-   * 用户在 cc-switch 之类的工具里切回官方订阅不会触发页面事件，唯一能发现变化的
-   * 方式就是再探测一次。这里只负责到点触发一次目录重读，是否真正作废缓存交给主
-   * effect 的节流判定——若在本 effect 里调用节流函数，会先消耗掉窗口，紧接着主
-   * effect 的判定就被挡下，反而不会重新请求。
-   *
-   * 探测本身很廉价：Host 比对配置指纹后，配置没变就直接返回缓存，不会重启 CLI。
-   * 真实第三方接入会长期停在该状态，因此轮询持续存在，代价是每分钟一次缓存命中的
-   * RPC；这换取的是用户切换供应商后无需刷新页面。
-   */
-  useEffect(() => {
-    if (!serviceTierRevalidation) return
-    // 比节流窗口多留 5 秒：setInterval 的实际触发可能略早于标称间隔，
-    // 若两者相等，到点时节的流窗口可能还差几毫秒没到期，这一轮就白跑了。
-    const timer = setInterval(() => {
-      setCatalogRetry((value) => value + 1)
-    }, MODEL_CATALOG_REVALIDATE_INTERVAL_MS + 5_000)
-    return () => clearInterval(timer)
-  }, [selection.adapterId, serviceTierRevalidation])
+  // 手动重新检测后刷新目录；日常读取沿用缓存，不定时重启探测。
+  useEffect(() => subscribeAdapterCatalogChanged(props.rpc, () => setCatalogRetry((value) => value + 1)), [props.rpc])
 
   useEffect(() => { if (selection.adapterId === 'dsh') setOpen(false) }, [selection.adapterId])
 

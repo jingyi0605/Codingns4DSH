@@ -15,6 +15,9 @@ import { registerExternalToolStreamUi } from '../external-tool-stream.js'
 import { startContextBreakdownDom } from '../context-breakdown-dom.js'
 import { fetchSessionAdapters, replaceSessionAdapters, sessionAdapterId } from '../session-adapter-cache.js'
 import { providerIconUrl } from '../provider-icons.js'
+import { notifyAdapterCatalogChanged, watchAdapterCatalog } from '../adapter-catalog-watch.js'
+import { invalidateModelCatalogCache } from '../model-catalog-cache.js'
+import { resolveRefreshIcon } from '../../dsh-capabilities/client/primitives-adapter.js'
 
 const CLI_ADAPTER_STYLE_ID = 'codingns4dsh-cli-adapter-settings-style'
 const cliAdapterClass = {
@@ -30,6 +33,7 @@ const cliAdapterClass = {
   status: 'codingns4dsh-cli-adapter-status',
   version: 'codingns4dsh-cli-adapter-version',
   toggle: 'codingns4dsh-cli-adapter-toggle',
+  detectButton: 'codingns4dsh-cli-adapter-detect-button',
 } as const
 
 /** 设置页 Agent 行的响应式布局；内联样式无法表达移动端换行规则，因此集中注入。 */
@@ -53,6 +57,13 @@ function installCliAdapterStyles(): void {
 .${cliAdapterClass.status}{padding:3px 7px;border-radius:5px;background:var(--dsw-alias-state-success-bg,rgba(22,163,74,.12))}
 .${cliAdapterClass.toggle}{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;color:var(--dsw-alias-label-secondary,GrayText);font-size:13px;font-weight:500}
 .${cliAdapterClass.toggle} input{width:18px;height:18px;margin:0;accent-color:var(--dsw-alias-state-success-primary,#16a34a)}
+.${cliAdapterClass.detectButton}{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:32px;height:32px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,GrayText);cursor:pointer}
+.${cliAdapterClass.detectButton}:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08));color:var(--dsw-alias-label-primary,CanvasText)}
+.${cliAdapterClass.detectButton}:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#1677ff);outline-offset:2px}
+.${cliAdapterClass.detectButton}:disabled{opacity:.45;cursor:not-allowed}
+.${cliAdapterClass.detectButton}[aria-busy="true"] svg{animation:codingns-cli-detect-spin 1s linear infinite}
+@keyframes codingns-cli-detect-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.${cliAdapterClass.detectButton}[aria-busy="true"] svg{animation:none}}
 @media (max-width:768px){
   .${cliAdapterClass.row}{display:grid!important;grid-template-columns:minmax(0,1fr) auto;align-items:center!important;gap:7px 10px!important;min-height:0!important;padding:12px 14px!important}
   .${cliAdapterClass.main}{grid-column:1 / -1;display:flex!important;align-items:center!important;width:100%;gap:10px!important}
@@ -62,6 +73,7 @@ function installCliAdapterStyles(): void {
   .${cliAdapterClass.status},.${cliAdapterClass.version}{max-width:100%;min-width:0!important}
   .${cliAdapterClass.toggle}{grid-column:2;grid-row:2;justify-self:end;align-self:center;min-width:0;max-width:100%;white-space:nowrap}
   .${cliAdapterClass.toggle} span{max-width:7em;overflow:hidden;text-overflow:ellipsis}
+  .${cliAdapterClass.row}>.${cliAdapterClass.detectButton}{grid-column:1;grid-row:2;justify-self:start}
 }
 `
   document.head.appendChild(style)
@@ -131,19 +143,18 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
   const [busyAdapterId, setBusyAdapterId] = useState<string | null>(null)
   const [bridgeBusy, setBridgeBusy] = useState(false)
   const [modelsError, setModelsError] = useState('')
+  const [detecting, setDetecting] = useState<string | null>(null)
   const disabled = !enabled
 
   useEffect(() => { installCliAdapterStyles() }, [])
 
   useEffect(() => {
     if (disabled) return
-    let active = true
     setLoading(true)
-    void callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(services.rpc, 'catalog', {})
-      .then((value) => { if (active) setCatalog(value) })
-      .catch((error: unknown) => { if (active) notify({ kind: 'error', message: errorMessage(error) }) })
-      .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
+    return watchAdapterCatalog(services.rpc, undefined,
+      (value) => { setCatalog(value); setLoading(false) },
+      (error) => { setLoading(false); notify({ kind: 'error', message: errorMessage(error) }) },
+    )
   }, [disabled, services.rpc])
 
   useEffect(() => {
@@ -161,6 +172,18 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
   }, [disabled, selected, services.rpc])
 
   const buttonStyle = { ...dshSettingsButtonStyle, cursor: disabled ? 'not-allowed' : 'pointer' }
+  const redetect = async (adapterId?: string): Promise<void> => {
+    if (detecting !== null) return
+    setDetecting(adapterId ?? '*')
+    try {
+      const value = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(services.rpc, 'catalog/refresh', adapterId === undefined ? {} : { adapterId })
+      invalidateModelCatalogCache(services.rpc, adapterId)
+      setCatalog(value)
+      setSelected((current) => current === null ? null : value.find((entry) => entry.id === current.id) ?? null)
+      notifyAdapterCatalogChanged(services.rpc)
+    } catch (error) { notify({ kind: 'error', message: errorMessage(error) }) }
+    finally { setDetecting(null) }
+  }
   const bridgeEnabled = snapshot.value?.subagentBridge?.enabled === true
   const bridgeWritable = snapshot.status !== 'loading' && snapshot.writable
   const bridgeConcurrency = normalizeSubagentBridgeSettings(snapshot.value?.subagentBridge).maxConcurrentSubagents
@@ -207,6 +230,7 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
       await callCliRpc(services.rpc, 'adapter/set', { adapterId: adapter.id, enabled: next })
       const refreshed = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(services.rpc, 'catalog', {})
       setCatalog(refreshed)
+      notifyAdapterCatalogChanged(services.rpc)
       notify({ kind: 'success', message: t(next ? 'cli.adapterEnabled' : 'cli.adapterDisabled', { name: adapter.name }) })
     } catch (error) {
       notify({ kind: 'error', message: errorMessage(error) })
@@ -254,7 +278,10 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
     !loading && catalog.length === 0 && createElement('div', { role: 'status', style: { opacity: 0.7 } }, t('cli.noAgents')),
     createElement('div', { className: cliAdapterClass.listHeader },
       createElement('span', undefined, t('cli.agentList')),
-      catalog.length > 0 && createElement('span', undefined, t('cli.agentCount', { count: catalog.length })),
+      createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto', flex: '0 0 auto' } },
+        catalog.length > 0 && createElement('span', undefined, t('cli.agentCount', { count: catalog.length })),
+        createElement(AdapterDetectButton, { label: t(detecting === '*' ? 'cli.detecting' : 'cli.redetectAll'), busy: detecting === '*', disabled: disabled || detecting !== null, onClick: () => { void redetect() } }),
+      ),
     ),
     createElement('div', { className: cliAdapterClass.listCard },
       ...catalog.map((adapter) => createElement('div', { key: adapter.id, className: cliAdapterClass.row },
@@ -269,11 +296,12 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
           createElement('div', { className: cliAdapterClass.identity },
             createElement('span', { className: cliAdapterClass.name, style: { fontWeight: 600 } }, adapter.name),
             createElement('div', { className: cliAdapterClass.metadata },
-              createElement('span', { className: cliAdapterClass.status, style: { color: adapter.installed ? dshThemeColor.success : dshThemeColor.labelTertiary, background: adapter.installed ? 'rgba(22,163,74,.12)' : dshThemeColor.surfaceSubtle } }, adapter.installed ? t('cli.installed') : t('cli.notInstalled')),
+              createElement('span', { className: cliAdapterClass.status, style: { color: adapter.installed ? dshThemeColor.success : dshThemeColor.labelTertiary, background: adapter.installed ? 'rgba(22,163,74,.12)' : dshThemeColor.surfaceSubtle } }, adapterStatus(adapter, t)),
               createElement('span', { className: cliAdapterClass.version }, adapter.version ?? t('cli.notDetectedVersion')),
             ),
           ),
         ),
+        createElement(AdapterDetectButton, { label: `${adapter.name} · ${t(detecting === adapter.id || detecting === '*' ? 'cli.detecting' : 'cli.redetect')}`, busy: detecting === adapter.id || detecting === '*', disabled: disabled || detecting !== null, onClick: () => { void redetect(adapter.id) } }),
         createElement('label', { className: cliAdapterClass.toggle, style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' } },
           createElement('input', { type: 'checkbox', role: 'switch', 'aria-label': t('cli.adapterToggle', { name: adapter.name }), checked: adapter.enabled, disabled: !adapter.installed || busyAdapterId === adapter.id, onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleAdapter(adapter, event.currentTarget.checked) }, style: { accentColor: dshThemeColor.accent } }),
           createElement('span', undefined, adapter.enabled ? t('cli.enabled') : t('cli.disabled')),
@@ -292,6 +320,24 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
 }
 
 const CIRCULAR_ADAPTER_ICON_IDS = new Set(['gemini', 'grok'])
+
+/** 顶部和单个 Agent 共用刷新图标；文字保留在悬停提示和无障碍名称中。 */
+function AdapterDetectButton({ label, busy, disabled, onClick }: {
+  readonly label: string
+  readonly busy: boolean
+  readonly disabled: boolean
+  readonly onClick: () => void
+}): ReactElement {
+  return createElement('button', { type: 'button', className: cliAdapterClass.detectButton, title: label, 'aria-label': label, 'aria-busy': busy, disabled, onClick },
+    createElement('span', { 'aria-hidden': true, style: { display: 'inline-flex' } }, createElement(resolveRefreshIcon(), { size: 18 })),
+  )
+}
+
+function adapterStatus(adapter: CodingNsCliAdapterDescriptor, t: ReturnType<typeof useCodingNsTranslator>): string {
+  if (adapter.detectionState === 'pending' || adapter.detectionState === 'running') return t('cli.detecting')
+  if (adapter.detectionState === 'error') return t('cli.detectionFailed')
+  return t(adapter.installed ? 'cli.installed' : 'cli.notInstalled')
+}
 
 /** 设置页列表中的 Agent logo；资产缺失时用首字母占位，避免出现破图或空白。 */
 function AdapterIcon({ adapter }: { readonly adapter: CodingNsCliAdapterDescriptor }): ReactElement {
@@ -338,7 +384,7 @@ function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle, 
       createElement('button', { type: 'button', onClick: onClose, style: buttonStyle, 'aria-label': t('cli.closeDetails') }, t('cli.closeDetails')),
       ),
       createElement('dl', { style: { display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '8px 16px', margin: '20px 0' } },
-        createElement('dt', undefined, t('cli.installStatus')), createElement('dd', { style: { margin: 0 } }, adapter.installed ? t('cli.installed') : t('cli.notInstalled')),
+        createElement('dt', undefined, t('cli.installStatus')), createElement('dd', { style: { margin: 0 } }, adapterStatus(adapter, t)),
         createElement('dt', undefined, t('cli.enabledStatus')), createElement('dd', { style: { margin: 0 } }, adapter.enabled ? t('cli.enabled') : t('cli.disabled')),
         createElement('dt', undefined, t('cli.version')), createElement('dd', { style: { margin: 0 } }, adapter.version ?? t('cli.notDetectedVersion')),
         createElement('dt', undefined, t('cli.commandPath')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.command ?? t('cli.notDetectedCommand')),

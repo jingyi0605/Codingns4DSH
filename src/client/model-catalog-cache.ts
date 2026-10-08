@@ -74,6 +74,9 @@ export function invalidateModelCatalogCache(rpc: CodingNsRpcClient, adapterId?: 
   for (const key of keys) {
     const cache = modelCatalogCaches.get(key)
     const times = modelCatalogCacheTimes.get(key)
+    const loads = modelCatalogLoads.get(key)
+    if (adapterId === undefined) loads?.clear()
+    else loads?.delete(adapterId)
     if (adapterId === undefined) { cache?.clear(); times?.clear() }
     else { cache?.delete(adapterId); times?.delete(adapterId) }
   }
@@ -122,8 +125,7 @@ export function getModelCatalogCache(rpc: CodingNsRpcClient, sessionId?: string)
 
 export function loadModelCatalog(rpc: CodingNsRpcClient, adapterId: string, sessionId?: string): Promise<CodingNsCliModelCatalog> {
   const cached = getModelCatalogCache(rpc, sessionId).get(adapterId)
-  // 回退目录只用于当前渲染，不能在 Client 侧永久占住真实目录。Host 会在
-  // 短周期内重试产品快照读取；下一次请求必须有机会拿到恢复后的目录。
+  // 回退目录由 Host 保存；用户重新检测后清理此缓存并读取最新结果。
   if (cached !== undefined && cached.fallback !== true && isFreshCacheEntry(rpc, adapterId, cached, sessionId)) {
     return Promise.resolve(cached)
   }
@@ -135,6 +137,8 @@ export function loadModelCatalog(rpc: CodingNsRpcClient, adapterId: string, sess
     adapterId,
     ...(sessionId === undefined ? {} : { sessionId }),
   }).then((value) => {
+    // 手动重新检测已替换请求时，迟到结果不能复活被作废的目录。
+    if (loads.get(adapterId) !== request) return loadModelCatalog(rpc, adapterId, sessionId)
     if (value.fallback === true) invalidateModelCatalogCache(rpc, adapterId, sessionId)
     else storeCatalog(rpc, adapterId, value, sessionId)
     return value

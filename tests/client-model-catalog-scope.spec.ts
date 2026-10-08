@@ -81,6 +81,19 @@ test('供应商与服务档位复检节流按 Host 隔离，不被其他 Host �
   assert.equal(shouldRevalidateModelCatalog(rpc, 'codex', true, session('another')), true)
 })
 
+test('手动刷新后的新目录不会被之前的迟到请求覆盖', async () => {
+  const releases: Array<(value: { ok: true; value: ReturnType<typeof catalog> }) => void> = []
+  const rpc = { call: () => new Promise<{ ok: true; value: ReturnType<typeof catalog> }>((resolve) => { releases.push(resolve) }) }
+  const oldRequest = loadModelCatalog(rpc, 'codex')
+  invalidateModelCatalogCache(rpc, 'codex')
+  const freshRequest = loadModelCatalog(rpc, 'codex')
+  releases[1]!({ ok: true, value: catalog('new') })
+  await freshRequest
+  releases[0]!({ ok: true, value: catalog('old') })
+  assert.equal((await oldRequest).currentModel, 'new-model')
+  assert.equal(getModelCatalogCache(rpc).get('codex')?.currentModel, 'new-model')
+})
+
 test('远端回退目录与失败不移除或替代其他 Host 的成功缓存', async () => {
   let remoteCalls = 0
   const rpc = { call: async (_channel: string, _method: string, payload: unknown) => {
