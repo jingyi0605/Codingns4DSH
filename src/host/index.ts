@@ -32,6 +32,7 @@ import { registerAssistantVoiceStreamRoutes } from './features/assistant-voice-s
 import { registerAssistantAvatarRoutes } from './features/assistant-avatar-runtime.js'
 import { isStage0Runtime, registerStage0DevHmr } from './stage0-dev-hmr.js'
 import { CODINGNS_STAGE0_GLOBAL } from '../shared/runtime-environment.js'
+import { registerProviderIconRoutes } from './provider-icon-assets.js'
 
 export async function apply(ctx?: Context): Promise<void> {
   if (ctx === undefined) return
@@ -123,6 +124,7 @@ export async function apply(ctx?: Context): Promise<void> {
     const settings = registerCodingNsSettings(settingsContext, () => ctx.fiber.config)
     indexInjectionSettings = settings
     debugInfo('codingns4dsh: host settings registered')
+    hostCtx.effect(() => registerProviderIconRoutes(hostCtx.connection.fetch), 'codingns4dsh: 提供商图标资源')
     const workspaceRoots = new Map<string, string>()
     // controller 必须在功能模块和浏览器 Client 开始消费状态前完成装配。
     // 工厂在本次启动只读取一次开关，设置 watcher 不会热切同名 service。

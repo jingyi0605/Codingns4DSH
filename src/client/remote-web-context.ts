@@ -1,5 +1,7 @@
 import type { DshCodingNsTransport } from '../transport/dsh-transport.js'
 import { createDshTransportDebugLogger, type DshTransportDebugLogger } from '../transport/debug.js'
+import { PROVIDER_ICON_FILES, PROVIDER_ICON_PATH } from '../shared/provider-icon-resources.js'
+import { installProviderIconImageBridge } from './provider-icon-bridge.js'
 
 export interface RemoteDshWebBoot {
   readonly dshVersion: string
@@ -163,7 +165,7 @@ export class RemoteDshWebContext {
       // 标记，必须保留给 loader 依据 manifest 生成带 ownerId/rev 的 URL；
       // 如果按聚合 URL 直接归一化，会错误变成 `/plugins/client.foo.js`。
       const references = collectRelativeReferences(source, /\.(?:js)(?:\?[^\s"'`)]*)?$/u)
-        .filter((reference) => !(path.startsWith('/plugins/??') && /^\.\/client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js(?:\?.*)?$/u.test(reference)))
+        .filter((reference) => !(path.startsWith('/plugins/') && /^\.\/client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js(?:\?.*)?$/u.test(reference)))
       const replacements = await Promise.all(references.map(async (reference) => {
         const dependencyPath = resolveRelativeAssetPath(path, reference)
         return [reference, await this.loadScript(dependencyPath, signal)] as const
@@ -174,7 +176,8 @@ export class RemoteDshWebContext {
       return url
     })()
     this.moduleLoads.set(path, load)
-    return load
+    // 断线失败不能永久占住在途缓存，否则原生 require.async 的重试也会立即失败。
+    try { return await load } finally { if (this.moduleLoads.get(path) === load) this.moduleLoads.delete(path) }
   }
 
   private async loadStyle(path: string, signal?: AbortSignal): Promise<string> {
@@ -195,12 +198,31 @@ export class RemoteDshWebContext {
   }
 
   private createObjectUrl(value: Uint8Array, contentType: string): string {
+    this.ensureOpen()
     if (!(value instanceof Uint8Array)) throw new Error('Remote DSH Web 资源必须是二进制')
     const copy = new Uint8Array(value.byteLength)
     copy.set(value)
     const url = URL.createObjectURL(new Blob([copy.buffer], { type: contentType }))
     this.objectUrls.add(url)
     return url
+  }
+
+  /** 图片独立于脚本加载链，共享在途请求，关闭 iframe 后不再创建 Blob URL。 */
+  private async loadImage(path: string): Promise<string> {
+    const pathname = new URL(path, 'https://dsh.remote.invalid/').pathname
+    if (!Object.values(PROVIDER_ICON_FILES).some((filename) => pathname === PROVIDER_ICON_PATH + filename)) throw new Error('不支持的提供商图标')
+    const cached = this.moduleUrls.get(path)
+    if (cached !== undefined) return cached
+    const pending = this.moduleLoads.get(path)
+    if (pending !== undefined) return pending
+    const task = (async () => {
+      const body = await this.options.transport.webRequest<Uint8Array>('web.asset.get', { sessionId: this.sessionIdValue, path })
+      const url = this.createObjectUrl(body, contentTypeForPath(pathname))
+      this.moduleUrls.set(path, url)
+      return url
+    })()
+    this.moduleLoads.set(path, task)
+    try { return await task } finally { if (this.moduleLoads.get(path) === task) this.moduleLoads.delete(path) }
   }
 
   private async onMessage(event: MessageEvent<unknown>): Promise<void> {
@@ -241,6 +263,13 @@ export class RemoteDshWebContext {
         const input = isRecord(message.input) ? message.input : {}
         const path = resolveRemotePath(typeof input.path === 'string' ? input.path : '/')
         const url = await this.loadScript(path, undefined)
+        this.postResponse(message.id, { ok: true, url })
+        return
+      }
+      if (message.kind === 'image') {
+        const input = isRecord(message.input) ? message.input : {}
+        const path = resolveRemotePath(typeof input.path === 'string' ? input.path : '/')
+        const url = await this.loadImage(path)
         this.postResponse(message.id, { ok: true, url })
         return
       }
@@ -411,6 +440,11 @@ function createBridgeScript(): string {
     // srcdoc 的 location.href 是 about:srcdoc，不能作为相对 URL 的基址。
     // prepareBootHtml 已写入固定 base，所有资源解析必须以 document.baseURI 为准。
     const resourceBase = () => document.baseURI && document.baseURI !== 'about:srcdoc' ? document.baseURI : 'https://dsh.remote.invalid/';
+    (${installProviderIconImageBridge.toString()})(globalThis, ${JSON.stringify(PROVIDER_ICON_PATH)}, async (path) => {
+      const response = await call('image', { path });
+      if (typeof response.url !== 'string') throw new Error('提供商图标响应缺少地址');
+      return response.url;
+    });
     const isRemoteResource = (value) => {
       try {
         const parsed = new URL(value, resourceBase());
