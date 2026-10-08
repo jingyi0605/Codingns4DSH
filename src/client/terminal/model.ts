@@ -607,6 +607,8 @@ export class CodingNsWebTerminals extends Service {
   private readonly inventoryRequestIds = new Map<string, number>()
   /** 任意工作区刷新都会递增；尚未解析工作区的旧请求也必须随之失效。 */
   private inventoryEpoch = 0
+  /** 同一工作区的关闭请求复用一次调用，避免连续点击重复释放同一个模型。 */
+  private readonly closingTerminals = new Map<string, Promise<void>>()
   private readonly closeRequests = new Map<string, CloseRequest>()
   /** Remote 注入前不能执行关闭请求；就绪后统一冲刷，避免把启动竞态显示成永久错误。 */
   private cleanupQueued = false
@@ -724,21 +726,44 @@ export class CodingNsWebTerminals extends Service {
   }
 
   /** 只关闭当前工作区的指定 terminalId，并释放它的常驻屏幕与 follow。 */
-  async closeTerminal(sessionId: string, terminalId: WebTerminalId): Promise<void> {
-    const records = [...this.views.entries()].filter(([, record]) => record.view.id === terminalId
+  closeTerminal(sessionId: string, terminalId: WebTerminalId): Promise<void> {
+    const key = JSON.stringify([this.scopeForSession(sessionId), terminalId])
+    const pending = this.closingTerminals.get(key)
+    if (pending !== undefined) return pending
+    const task = this.closeTerminalInScope(sessionId, terminalId).finally(() => { this.closingTerminals.delete(key) })
+    this.closingTerminals.set(key, task)
+    return task
+  }
+
+  private async closeTerminalInScope(sessionId: string, terminalId: WebTerminalId): Promise<void> {
+    const primary = [...this.views.values()].find((record) => record.view.id === terminalId
       && this.scopeForSession(record.view.sessionId) === this.scopeForSession(sessionId))
-    const primary = records[0]?.[1]
     if (primary !== undefined) {
       primary.view.sessionId = sessionId
       await primary.view.close()
-    }
-    else unwrap(await resolveRemote(this.remote).close(sessionId, terminalId))
+    } else unwrap(await resolveRemote(this.remote).close(sessionId, terminalId))
+    this.finishClose(sessionId, terminalId)
+  }
+
+  /** Host 确认关闭即提交本地移除；资源收尾和后续列表查询不能阻塞子标签消失。 */
+  private finishClose(sessionId: string, terminalId: WebTerminalId, detachedView?: CodingNsTerminalView): void {
+    const records = [...this.views.entries()].filter(([, record]) => record.view.id === terminalId
+      && this.scopeForSession(record.view.sessionId) === this.scopeForSession(sessionId))
+    this.invalidateWorkspaceInventory(sessionId)
+    // 先移除库存再释放屏幕：AbortSignal 会同步触发渲染者清理，不能让它读到旧列表。
+    this.rememberInventory(sessionId, this.inventoryForSession(sessionId).filter((item) => item.id !== terminalId))
+    const views = new Set(detachedView === undefined ? [] : [detachedView])
     for (const [mapKey, record] of records) {
       this.views.delete(mapKey)
-      // close() 只结束 Host 终端，dispose() 负责释放聚合视图保留的 follow。
-      await record.view.dispose()
+      views.add(record.view)
     }
-    await this.refreshInventory(sessionId)
+    // dispose 会同步取消屏幕与 follow，但其旧输入队列可能仍在等待网络响应。
+    for (const view of views) void view.dispose().catch((error: unknown) => {
+      debugWarn('codingns4dsh: client terminal dispose after close failed', { sessionId, terminalId, error: errorMessage(error) })
+    })
+    void this.recover(sessionId).catch((error: unknown) => {
+      debugWarn('codingns4dsh: client terminal inventory refresh after close failed', { sessionId, terminalId, error: errorMessage(error) })
+    })
   }
 
   close(sessionId: string, key: string, contentId: string, terminalId?: WebTerminalId): void {
@@ -829,6 +854,11 @@ export class CodingNsWebTerminals extends Service {
 
   /** 强制刷新当前会话对应工作区的库存。 */
   async refreshInventory(sessionId: string): Promise<readonly WebTerminalInfo[]> {
+    this.invalidateWorkspaceInventory(sessionId)
+    return this.recover(sessionId)
+  }
+
+  private invalidateWorkspaceInventory(sessionId: string): void {
     this.inventoryEpoch += 1
     // 聚合页创建/关闭后必须绕过同一工作区所有会话的旧 list 请求；否则
     // 另一个会话的迟到响应仍可能把关闭后的终端写回共享库存。
@@ -841,7 +871,6 @@ export class CodingNsWebTerminals extends Service {
     }
     invalidated.add(sessionId)
     for (const knownSessionId of invalidated) this.invalidateRecovery(knownSessionId)
-    return this.recover(sessionId)
   }
 
   /** 令指定会话尚未完成的库存请求失效，并清掉可复用的旧 Promise。 */
@@ -961,14 +990,15 @@ export class CodingNsWebTerminals extends Service {
   private rememberInventory(sessionId: string, terminals: readonly WebTerminalInfo[]): void {
     const workspaceId = this.workspaceIds.get(sessionId) ?? `session:${sessionId}`
     const normalized = dedupeInventory(terminals)
+    const previous = this.inventories.get(workspaceId)
+    const changed = previous === undefined || !sameInventory(previous.terminals, normalized)
+    const revision = this.inventoryRevisionStore.getSnapshot() + 1
+    // 库存先落位再通知选择变化，所有同步订阅者都应看到同一份新列表。
+    if (changed) this.inventories.set(workspaceId, { workspaceId, terminals: normalized, revision })
     // 选择与库存使用同一工作区边界；关闭当前终端只需修正一次共享选择。
     const selectedId = this.selectedTerminalId(sessionId)
     if (!normalized.some((item) => item.id === selectedId)) this.selectTerminal(sessionId, normalized[0]?.id)
-    const previous = this.inventories.get(workspaceId)
-    if (previous !== undefined && sameInventory(previous.terminals, normalized)) return
-    const revision = this.inventoryRevisionStore.getSnapshot() + 1
-    this.inventories.set(workspaceId, { workspaceId, terminals: normalized, revision })
-    this.inventoryRevisionStore.set(revision)
+    if (changed) this.inventoryRevisionStore.set(revision)
   }
 
   private async cleanup(request: CloseRequest, view?: CodingNsTerminalView): Promise<void> {
@@ -980,15 +1010,8 @@ export class CodingNsWebTerminals extends Service {
       this.closeRequests.delete(String(request.id))
       persistCloseRequests(this.closeRequests.values())
       this.closeFailureStore.set(this.closeFailureStore.getSnapshot().filter((item) => item.id !== request.id))
-      // 兼容旧 Sidebar 的显式关闭路径：关闭成功后也必须刷新工作区库存，
-      // 否则其他会话会继续看到已经关闭的终端记录。
-      void this.refreshInventory(request.sessionId).catch((error: unknown) => {
-        debugWarn('codingns4dsh: client terminal inventory refresh after close failed', {
-          sessionId: request.sessionId,
-          terminalId: request.id,
-          error: errorMessage(error),
-        })
-      })
+      // 旧 Sidebar 路径也走同一收尾，确保共享库存与已移出缓存的模型一并清理。
+      this.finishClose(request.sessionId, request.id, view)
     } catch (error) {
       if (isTerminalRemoteUnavailable(error)) {
         debugInfo('codingns4dsh: client terminal cleanup deferred', { sessionId: request.sessionId, terminalId: request.id })

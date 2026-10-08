@@ -188,6 +188,7 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | undefined>()
+  const [closeError, setCloseError] = useState<string | undefined>()
   const [refreshing, setRefreshing] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
   const [shareSnapshot, setShareSnapshot] = useState<TerminalTextSnapshot>()
@@ -283,7 +284,10 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
           item,
           selected: item.id === activeId,
           onSelect: () => webTerminals.selectTerminal(String(sessionId), item.id),
-          onClose: () => { void webTerminals.closeTerminal(String(sessionId), item.id).then(() => reload()) },
+          onClose: () => {
+            setCloseError(undefined)
+            void webTerminals.closeTerminal(String(sessionId), item.id).catch((cause: unknown) => setCloseError(messageOf(cause)))
+          },
           onRename: async (title) => {
             const target = webTerminals.viewForTerminal(String(sessionId), item.id, item.shell.path)
             await target.rename(title)
@@ -367,6 +371,7 @@ function CodingNsTerminalAggregateBody({ sessionId, useTabInfo, webTerminals, se
       }))
   )
   const aggregateElement = createElement('div', { className: `${terminalClass.aggregateRoot} ${terminalClass.content}` }, navigation,
+    closeError === undefined ? null : createElement('div', { role: 'alert', className: terminalClass.error }, closeError),
     shareError === '' ? null : createElement('div', { role: 'alert', className: terminalClass.error }, shareError), content)
   return aggregateElement
 }
