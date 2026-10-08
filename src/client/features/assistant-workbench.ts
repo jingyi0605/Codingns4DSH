@@ -306,7 +306,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
   const noticeText = error || lifecycle.conversation.error || (lifecycle.conversation.active?.state === 'failed' ? lifecycle.conversation.active.error : null) || props.message
   const status = resolveAssistantWorkbenchStatus({ running, working: locked, voiceActive: props.active, voiceState: props.state,
     hasProjects: value.managedWorkspaceIds.length > 0, indexState })
-  const configurationPreview = createElement('div', { 'data-codingns-assistant-preview': true, style: { flex: '1 1 290px', minWidth: 0, border: `1px solid ${dshThemeColor.border}`, borderRadius: 18, background: dshThemeColor.surfaceSubtle, padding: '11px 22px', boxSizing: 'border-box', display: 'grid', alignContent: 'start', gap: 11 } },
+  const configurationPreview = createElement('div', { 'data-codingns-assistant-preview': true, style: { flex: '1 1 290px', minWidth: 0, border: `1px solid ${dshThemeColor.border}`, borderRadius: 18, background: dshThemeColor.surfaceSubtle, padding: 11, boxSizing: 'border-box', display: 'grid', alignContent: 'start', gap: 11 } },
     createElement('div', { ref: setPreviewTarget, 'data-codingns-avatar-preview-region': true },
     catalogPreview === undefined ? createElement('div', { style: avatarStyle }, createElement(AssistantAvatarSlot, { services: configuration.services, model: selectedAssistantAvatar(previewAppearance), state: avatarState, surface: 'dialog', size: 144, showDiagnostics: false }),
       createElement('strong', { style: { fontSize: 18, overflowWrap: 'anywhere', textAlign: 'center' } }, draft.name.trim() || t('awb.unnamed')),
@@ -323,7 +323,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
     configuring ? createElement(AssistantControlsStyle) : null,
     createElement('section', { role: 'dialog', 'aria-modal': !props.minimized, 'aria-label': t('awb.title'), 'data-codingns-assistant-workbench': configuring ? 'configuration' : 'chat',
       style: { ...dialog, ...(!configuring ? { height: 'min(740px, calc(100dvh - 24px))', minHeight: 0 } : {}) } },
-      calling ? null : createElement('header', { style: { ...row, flexShrink: 0, padding: configuring ? 22 : '20px 26px', borderBottom: `1px solid ${dshThemeColor.border}` } },
+      calling ? null : createElement('header', { style: { ...row, flexShrink: 0, padding: 11, borderBottom: `1px solid ${dshThemeColor.border}` } },
         createElement('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'grid', gap: 5 } },
           createElement('div', { 'data-codingns-assistant-heading': true, style: { ...row, gap: 8 } },
             createElement('strong', { style: { fontSize: 17, overflowWrap: 'anywhere' } }, initializing ? t('awb.setupTitle') : lifecycle.profile.name),
@@ -333,7 +333,8 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
         lifecycle.profile.initialized ? createElement(AssistantIconButton, { icon: configuring ? 'chat' : 'settings', label: t(configuring ? 'awb.chat' : 'awb.configure'), onClick: switchView, disabled: locked }) : null,
         createElement(AssistantIconButton, { icon: 'close', label: t('awb.close'), onClick: close, disabled: busy })),
       createElement('div', { 'data-codingns-assistant-scroll': true,
-        style: { flex: '1 1 auto', padding: calling ? 0 : configuring ? '11px 22px' : 'clamp(16px, 3vw, 28px)', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, display: 'flex', flexDirection: 'column', gap: configuring ? 11 : 16 } },
+        // 通话页自带统一内边距，外层不重复叠加；其余页面共用 11px 留白。
+        style: { flex: '1 1 auto', padding: calling ? 0 : 11, overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, display: 'flex', flexDirection: 'column', gap: configuring ? 11 : 16 } },
         !loaded ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, t('awb.loading'), ' ', button(t('awb.retry'), () => { void refresh().catch((cause) => setError(message(cause))) })) : null,
         noticeText ? createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13, overflowWrap: 'anywhere' } }, noticeText) : null,
         notice ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, notice) : null,
@@ -358,14 +359,14 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
             createElement('div', { ref: messagesEnd }))),
       // 配置操作位于滚动区之外，统一外边距并让长表单的保存按钮始终可见。
       calling ? null : configuring ? createElement('footer', { 'data-codingns-assistant-configuration-footer': true,
-        style: { ...row, flexShrink: 0, justifyContent: initializing ? 'space-between' : 'flex-end', padding: 22,
+        style: { ...row, flexShrink: 0, justifyContent: initializing ? 'space-between' : 'flex-end', padding: 11,
           borderTop: `1px solid ${dshThemeColor.border}`, background: dshThemeColor.pageBackground } },
         initializing ? createElement('p', { style: { ...help, flex: '1 1 220px' } }, t('awb.setupLater')) : null,
         createElement('div', { style: row },
           initializing ? null : button(t('awb.cancel'), switchView),
           button(t(initializing ? 'awb.createStart' : 'awb.save'), save, locked || configurationSnapshot.preparing || !loaded || !writable || !draft.name.trim() || catalog === undefined || catalog.models.length === 0 || draft.modelKey === '' && catalog.default === null, true)))
         : createElement('footer', { 'data-codingns-assistant-composer-dock': true,
-        style: { flexShrink: 0, padding: '12px clamp(16px, 3vw, 28px) 10px', borderTop: `1px solid ${dshThemeColor.border}`, background: dshThemeColor.pageBackground } },
+        style: { flexShrink: 0, padding: 11, borderTop: `1px solid ${dshThemeColor.border}`, background: dshThemeColor.pageBackground } },
         createElement(AssistantComposer, { t, value: text, disabled: locked || running || !loaded, onChange: setText, onSend: () => { void send() },
           files, onFiles: addFiles, onRemoveFile: (index) => setFiles((current) => current.filter((_, position) => position !== index)),
           running, stopping: busy, onStop: stopReply, voiceActive: props.active,
