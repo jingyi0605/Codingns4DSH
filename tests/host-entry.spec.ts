@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -44,7 +44,18 @@ test('Host 重载撤销自己的会话读取包装，不覆盖后来安装的包
   const previousVersion = process.env.DSH_RUNTIME_VERSION
   process.env.DSH_RUNTIME_VERSION = '0.2.1-alpha.1'
   try {
-    const original = async () => 'opened'
+    const directory = join(root, '_no-cwd', 'legacy')
+    mkdirSync(directory, { recursive: true })
+    const log = join(directory, 'session.v3.jsonl')
+    const source = [
+      { type: 'session', version: 3 },
+      { type: 'tool/call', seq: 0, data: { callId: 'one', name: 'read', arguments: '{}', turn: 1, step: 1 } },
+    ].map((row) => JSON.stringify(row)).join('\n') + '\n'
+    writeFileSync(log, source)
+    const original = async (id?: string) => {
+      if (id === 'legacy') assert.match(readFileSync(log, 'utf8'), /assistant\/message/u, '先修复，再进入官方 open')
+      return 'opened'
+    }
     const persistence = { root, open: original }
     const disposers: Array<() => void> = []
     const tasks: Promise<unknown>[] = []
@@ -60,16 +71,21 @@ test('Host 重载撤销自己的会话读取包装，不覆盖后来安装的包
     await apply(ctx as unknown as Context)
     await Promise.all(tasks)
     assert.notEqual(persistence.open, original)
+    assert.equal(readFileSync(log, 'utf8'), source, '插件启动不能全量修复历史日志')
     assert.equal(await persistence.open(), 'opened')
+    assert.equal(readFileSync(log, 'utf8'), source, '未知 open 参数不能退回全量扫描')
+    assert.equal(await persistence.open('legacy'), 'opened')
     disposers[0]!()
     assert.equal(persistence.open, original)
 
     await apply(ctx as unknown as Context)
     await Promise.all(tasks)
-    const newer = async () => 'newer'
+    const previousOpen = persistence.open
+    const newer = async () => `newer:${await previousOpen()}`
     persistence.open = newer
     disposers[1]!()
     assert.equal(persistence.open, newer)
+    assert.equal(await persistence.open(), 'newer:opened', '新包装仍可调用已卸载的旧层')
   } finally {
     if (previousVersion === undefined) delete process.env.DSH_RUNTIME_VERSION
     else process.env.DSH_RUNTIME_VERSION = previousVersion

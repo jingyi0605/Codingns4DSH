@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
@@ -275,13 +275,22 @@ test('不同适配器的委派可以真正并行创建，不被单飞守卫拒�
   }
 })
 
-test('/委派 命令已注册进 Client bundle，并由选择动作写入 carrier', async () => {
-  const bundle = await readFile(join(root, 'data/build/dist/client/bundle.js'), 'utf8')
+test('/委派 命令已打入 Client 入口或分块，并由选择动作写入 carrier', async () => {
+  const directory = join(root, 'data/build/dist/client')
+  // 委派模块按需加载，检查入口及浏览器分块；排除 tsc 产物和源码映射，避免误判漏打包。
+  // 入口必须显式读取，缺失时直接失败，不能仅凭遗留分块通过检查。
+  const files = ['bundle.js', ...(await readdir(directory)).filter((name) => /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/u.test(name)).sort()]
+  const bundle = (await Promise.all(files.map((file) => readFile(join(directory, file), 'utf8')))).join('\n')
   // 菜单行与 popupSelect 选项：命令名必须与 Host 侧常量一致。
-  assert.match(bundle, /DELEGATE_COMMAND_NAME = "delegate"/u)
-  assert.match(bundle, /kind: "popupSelect"/u)
-  assert.match(bundle, /callCliRpc\(options\.rpc, "delegate\/capability"/u)
-  assert.match(bundle, /codingns:delegate:v1/u)
+  // 只输出缺失的标记，避免断言失败时把数 MB 的完整产物打印到终端。
+  for (const pattern of [
+    /DELEGATE_COMMAND_NAME = "delegate"/u,
+    /kind: "popupSelect"/u,
+    /callCliRpc\(options\.rpc, "delegate\/capability"/u,
+    /codingns:delegate:v1/u,
+  ]) {
+    assert.ok(pattern.test(bundle), `Client 入口及分块缺少委派标记：${pattern}`)
+  }
 
   const commandSource = await readFile(join(root, 'src/client/delegate-command.ts'), 'utf8')
   // 服务缺失必须降级为“不注册”，不能让整个 Client 因为可选能力而失败。

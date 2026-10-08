@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
@@ -12,6 +12,13 @@ const remoteWebContextSource = join(dirname(fileURLToPath(import.meta.url)), '..
 const hostSource = join(dirname(fileURLToPath(import.meta.url)), '../src/host/index.ts')
 const runtimeVersionSource = join(dirname(fileURLToPath(import.meta.url)), '../src/client/dsh-runtime-version.ts')
 
+/** 文案和禁止依赖检查覆盖全部分块，入口执行测试仍只执行 bundle.js。 */
+async function readClientCode(): Promise<string> {
+  const directory = dirname(clientBundle)
+  const files = (await readdir(directory)).filter((name) => name === 'bundle.js' || /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/u.test(name))
+  return (await Promise.all(files.map((file) => readFile(join(directory, file), 'utf8')))).join('\n')
+}
+
 test('Client 入口以 DSH Loader factory 格式构建', async () => {
   const source = await readFile(clientBundle, 'utf8')
   assert.match(source, /window\.__ModuleLoader__\.load/u)
@@ -23,11 +30,27 @@ test('Client 入口以 DSH Loader factory 格式构建', async () => {
 test('Client Loader factory 在没有 Node process 的浏览器环境中成功导入', async () => {
   const source = await readFile(clientBundle, 'utf8')
   type ClientExports = { readonly apply?: unknown; readonly inject?: unknown }
-  let loaded: { readonly id: string; readonly exports: ClientExports } | undefined
+  type Factory = (require: (specifier: string) => unknown) => ClientExports
+  const factories = new Map<string, Factory>()
+  const modules = new Map<string, ClientExports>()
+  const materializing = new Set<string>()
   // 只提供宿主公开模块与导入阶段需要的浏览器接口，不注入任何 Node 全局。
   const hostModules: Record<string, unknown> = {
     react: React,
     '@deepseek-ai/dsh-client-ui-primitives': {},
+  }
+  const materialize = (id: string): ClientExports => {
+    const cached = modules.get(id)
+    if (cached !== undefined) return cached
+    const factory = factories.get(id)
+    assert.ok(factory, `未注册模块：${id}`)
+    assert.equal(materializing.has(id), false, `同步工厂循环：${id}`)
+    materializing.add(id)
+    const require = Object.assign((specifier: string) => Object.hasOwn(hostModules, specifier) ? hostModules[specifier] : materialize(specifier), {
+      async: async () => { assert.fail('导入入口时不得下载动态功能块') },
+    })
+    try { const value = factory(require); modules.set(id, value); return value }
+    finally { materializing.delete(id) }
   }
   const sandbox = createContext({
     console, TextEncoder, TextDecoder, URL, AbortController, queueMicrotask,
@@ -36,11 +59,10 @@ test('Client Loader factory 在没有 Node process 的浏览器环境中成功�
     document: { documentElement: { style: {} } },
     window: {
       __ModuleLoader__: {
-        load({ id, factory }: { id: string; factory: (require: (specifier: string) => unknown) => ClientExports }) {
-          loaded = { id, exports: factory((specifier) => {
-            assert.ok(Object.hasOwn(hostModules, specifier), `未提供宿主模块：${specifier}`)
-            return hostModules[specifier]
-          }) }
+        load({ id, chunk, factory }: { id: string; chunk?: string; factory: Factory }) {
+          const key = chunk === undefined ? id : `${id}/${chunk}`
+          assert.equal(factories.has(key), false, `重复注册：${key}`)
+          factories.set(key, factory)
         },
       },
     },
@@ -49,9 +71,9 @@ test('Client Loader factory 在没有 Node process 的浏览器环境中成功�
   assert.equal(runInContext('typeof process', sandbox), 'undefined')
   assert.equal(runInContext('typeof Buffer', sandbox), 'undefined')
   runInContext(source, sandbox, { filename: clientBundle, timeout: 10_000 })
-  assert.equal(loaded?.id, '@jingyi0605/codingns4dsh')
-  assert.equal(typeof loaded?.exports.apply, 'function')
-  assert.ok(Array.isArray(loaded?.exports.inject))
+  const loaded = materialize('@jingyi0605/codingns4dsh')
+  assert.equal(typeof loaded.apply, 'function')
+  assert.ok(Array.isArray(loaded.inject))
 })
 
 test('远程 DSH Web 自动确认内测声明，不触碰其他引导弹窗', async () => {
@@ -87,14 +109,14 @@ test('Host 启动页只合并既有 Transport 且不覆盖 Desktop Transport', a
 })
 
 test('Client 构建产物不包含 Node 专属模块', async () => {
-  const source = await readFile(clientBundle, 'utf8')
+  const source = await readClientCode()
   for (const specifier of ['node:crypto', 'node:fs', 'node:net', 'node:child_process']) {
     assert.equal(source.includes(specifier), false, `Client 产物包含 ${specifier}`)
   }
 })
 
 test('Client 构建产物包含模块卡片、设置面板和 Host RPC 调用', async () => {
-  const source = await readFile(clientBundle, 'utf8')
+  const source = await readClientCode()
   assert.equal(source.includes('每个功能模块独立配置，避免多个表单同时横向挤压。'), false)
   for (const marker of [
     'type: "password"', 'auth/login', 'auth/logout',
@@ -122,7 +144,7 @@ test('Client 构建产物包含模块卡片、设置面板和 Host RPC 调用', 
 })
 
 test('外部 Agent 集成设置面板只保留 Agent 列表，不再渲染外部会话列表', async () => {
-  const source = await readFile(clientBundle, 'utf8')
+  const source = await readClientCode()
   // 会话由 DSH 原生侧栏与工作区归档入口承载；设置面板不得再维护第二份会话列表。
   for (const marker of ['外部 Agent 会话', '正在读取外部会话…', '尚未创建外部 Agent 会话。', 'codingns-cli-session-title']) {
     assert.equal(source.includes(marker), false, `Client 产物仍包含会话列表标记 ${marker}`)
@@ -131,7 +153,7 @@ test('外部 Agent 集成设置面板只保留 Agent 列表，不再渲染外部
 })
 
 test('外部 Agent 设置列表包含提供商图标并在窄屏分成两行', async () => {
-  const source = await readFile(clientBundle, 'utf8')
+  const source = await readClientCode()
   assert.equal(source.includes('providerIconUrl'), true, 'Agent 列表必须使用提供商图标映射')
   assert.equal(source.includes('codingns4dsh-cli-adapter-icon'), true, 'Agent 行必须保留图标样式类')
   assert.equal(source.includes('@media (max-width:768px)'), true, 'Agent 列表必须包含移动端断点布局')
@@ -139,7 +161,7 @@ test('外部 Agent 设置列表包含提供商图标并在窄屏分成两行', a
 })
 
 test('设置页由注册表驱动：遍历模块清单并同步启停', async () => {
-  const source = await readFile(clientBundle, 'utf8')
+  const source = await readClientCode()
   for (const marker of [
     'settingsModules',
     'CLIENT_FEATURES',
@@ -159,7 +181,7 @@ test('Client 注入重载时先释放功能注册表，避免 Sidebar 类型残�
 })
 
 test('设置页不再按模块名硬编码渲染分支', async () => {
-  const bundle = await readFile(clientBundle, 'utf8')
+  const bundle = await readClientCode()
   assert.equal(/\.id\s*===\s*["']reverseProxy["']/u.test(bundle), false, '产物仍按模块 id 分支')
 
   const source = await readFile(clientSource, 'utf8')
@@ -168,7 +190,7 @@ test('设置页不再按模块名硬编码渲染分支', async () => {
 })
 
 test('Client 构建产物声明 Cordis 服务依赖', async () => {
-  const source = await readFile(clientBundle, 'utf8')
+  const source = await readClientCode()
   assert.match(source, /exports\.inject\s*=\s*inject/u)
   const clientSourceText = await readFile(clientSource, 'utf8')
   for (const dependency of ['remote', 'remote.workspace', 'remote.session']) {
@@ -212,7 +234,7 @@ test('Client 版本门禁用兼容范围下界回退，不写死历史版本', a
 })
 
 test('Client 构建产物提供自有 webTerminals 与 Sidebar 终端', async () => {
-  const source = await readFile(clientBundle, 'utf8')
+  const source = await readClientCode()
   for (const marker of [
     'super(ctx, "webTerminals")',
     'codingns4dsh/terminal',

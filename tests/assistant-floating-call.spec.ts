@@ -7,6 +7,7 @@ import type { ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { GlobalVoiceOverlay } from '../src/client/features/global-voice-assistant.js'
 import { AssistantWorkbench } from '../src/client/features/assistant-workbench.js'
+import { AssistantLoadedView } from '../src/client/features/assistant-view-loader.js'
 import { ASSISTANT_WORKBENCH_OPEN_EVENT } from '../src/client/features/assistant-workbench-entry.js'
 import { AssistantRealtimeCall, AssistantRealtimeCallView } from '../src/client/features/assistant-realtime-call.js'
 import { FloatingAssistantAvatar, FloatingVoiceCall } from '../src/client/avatar/floating.js'
@@ -30,6 +31,11 @@ function elements(node: unknown): ReactElement<any>[] {
   return [node, ...elements((node.props as any).children)]
 }
 function find(tree: unknown, type: unknown): ReactElement<any> {
+  // 外层控制保持不变，动态边界只负责把同一份 props 交给已加载工作台。
+  if (type === AssistantWorkbench) {
+    const lazy = elements(tree).find((element) => element.type === AssistantLoadedView)
+    if (lazy) return createElement(AssistantWorkbench, lazy.props.viewProps)
+  }
   const item = elements(tree).find((element) => element.type === type)
   assert.ok(item, `没有找到组件 ${String(type)}`)
   return item
@@ -149,6 +155,29 @@ test('收起和恢复保留同一通话、计时、静音及完整累计字幕�
   tree = f.renderer.render()
   assert.equal(elements(tree).some((element) => element.type === FloatingVoiceCall), false)
   assert.equal(find(tree, AssistantWorkbench).props.minimized, false)
+})
+
+test('页面隐藏仍每十秒续签通话租约，慢心跳不并发，恢复展示不重复启动通话', async (context) => {
+  context.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  const document = Object.assign(new EventTarget(), { visibilityState: 'visible', querySelectorAll: () => [] })
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: document })
+  let complete: (() => void) | undefined; let beats = 0
+  const f = fixture(context, false, { call: async (_channel, endpoint) => {
+    if (endpoint === 'assistant/voice/heartbeat') { beats++; await new Promise<void>((resolve) => { complete = resolve }) }
+    return { ok: true, value: undefined }
+  } })
+  context.after(() => { if (previous) Object.defineProperty(globalThis, 'document', previous); else Reflect.deleteProperty(globalThis, 'document') })
+  await find(f.renderer.render(), AssistantWorkbench).props.onStart(); f.renderer.render()
+  const before = f.counts()
+  document.visibilityState = 'hidden'; document.dispatchEvent(new Event('visibilitychange'))
+  context.mock.timers.tick(10_000); await delay(0); assert.equal(beats, 1)
+  context.mock.timers.tick(20_000); await delay(0); assert.equal(beats, 1)
+  complete?.(); await delay(0)
+  context.mock.timers.tick(10_000); await delay(0); assert.equal(beats, 2)
+  complete?.(); await delay(0)
+  document.visibilityState = 'visible'; document.dispatchEvent(new Event('visibilitychange')); f.renderer.render()
+  assert.deepEqual(f.counts(), before)
 })
 
 test('启用悬浮助手时融合通话，切换开关仍只有一个入口且不影响音频租约', async (context) => {

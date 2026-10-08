@@ -10,6 +10,10 @@ import {
   dshThemeColor,
 } from '../data/build/dist/client/theme.js'
 import { invalidateSubscriptionUsageCache } from '../data/build/dist/client/subscription-slot.js'
+import '../data/build/dist/client/provider-icon-assets.js'
+import { providerIconUrl } from '../data/build/dist/client/provider-icons.js'
+import { PROVIDER_ICON_FILES, PROVIDER_ICON_PATH } from '../data/build/dist/shared/provider-icon-resources.js'
+import { CODINGNS_VERSION } from '../data/build/dist/shared/contracts/version.js'
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -133,10 +137,13 @@ test('Agent 选择器位于模型左侧并显示完整 Provider Logo', async () 
   assert.match(slotSource, /transform: !locked && open \?/u)
   assert.doesNotMatch(slotSource, /⌄/u)
 
-  for (const adapterId of ['dsh', 'command-code', 'claude-code', 'kimi', 'gemini', 'pi', 'codex', 'opencode', 'grok', 'zcode', 'codebuddy', 'workbuddy', 'cursor-cli', 'kiro-cli', 'qoder', 'qoder-cn', 'antigravity']) {
+  for (const [adapterId, filename] of Object.entries(PROVIDER_ICON_FILES)) {
     assert.match(iconSource, new RegExp(`(?:['"]${adapterId}['"]|\\b${adapterId}):`, 'u'), `${adapterId} 缺少 Logo 映射`)
+    // Logo 已改为按需请求；验证每个 Provider 的真实 URL，而不是要求恢复首包内联图片。
+    assert.equal(providerIconUrl(adapterId), `${PROVIDER_ICON_PATH}${filename}?v=${encodeURIComponent(CODINGNS_VERSION)}`)
+    assert.ok(bundleSource.includes(filename), `Client 入口缺少 Logo 资源：${filename}`)
   }
-  assert.match(bundleSource, /data:image\/(?:png|svg\+xml);base64,/u, 'Client 单文件包应内联 Provider Logo')
+  assert.ok(bundleSource.includes(PROVIDER_ICON_PATH), 'Client 入口应注册按需加载 Logo 的资源路径')
 })
 
 test('输入工具栏放不下时按 DSH 判定收起模型字段，超长名称保持滚动展示', async () => {

@@ -445,7 +445,7 @@ test('重置期间正在读取的旧索引不会重新登记结果或恢复派�
   const building = f.call('index/rebuild')
   await started
   await f.call('lifecycle/reset')
-  release(); await building; await setImmediate()
+  release(); await assert.rejects(building, /撤销/u); await setImmediate()
   const debug = await f.call<any>('debug')
   assert.deepEqual(debug.records, [])
   assert.equal(debug.indexState, 'not-built')

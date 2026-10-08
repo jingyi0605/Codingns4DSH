@@ -60,7 +60,7 @@ async function fixture(t: TestContext, initialRunning = false, unknown = false, 
     ...(remote ? { assistantGateway: {
       async list() { return { sessions: [{ sessionId: 's1', hostId: 'peer', workspaceId: 'remote', workspaceName: '远端项目', title: '工作-s1', updatedAt: rows.get('s1')!.updatedAt, running: remoteActivity === 'running', completed: false, activity: remoteActivity, waiting: null, summary: null }], archivedSessionIds: [], readSummary: async () => { reads.push('s1'); return rows.get('s1')!.body } } },
     } } : {}),
-    settings: { get: () => ({ ...DEFAULT_CODINGNS_SETTINGS, assistant: { ...DEFAULT_CODINGNS_SETTINGS.assistant, ...(created ? { profile: { name: '测试助理', initialized: true, createdAt: 1 } } : {}), managedWorkspaceIds: managed, prompts } }), watch: (listener: () => void) => { watch = listener; return () => {} } },
+    settings: { get: () => ({ ...DEFAULT_CODINGNS_SETTINGS, modules: { globalVoiceAssistant: true }, assistant: { ...DEFAULT_CODINGNS_SETTINGS.assistant, ...(created ? { profile: { name: '测试助理', initialized: true, createdAt: 1 } } : {}), managedWorkspaceIds: managed, prompts } }), watch: (listener: () => void) => { watch = listener; return () => {} } },
     events: { on: (name: string, listener: (...args: unknown[]) => void) => { listeners.set(name, listener); return () => listeners.delete(name) } },
     dshContext: { get(name: string) {
       if (name === 'llm') return llm
@@ -88,7 +88,8 @@ async function fixture(t: TestContext, initialRunning = false, unknown = false, 
     remoteActivity: (activity: typeof remoteActivity) => { remoteActivity = activity },
     listedState: (state: typeof listedState) => { listedState = state },
     holdCapabilities: () => { let release!: () => void; resolving = new Promise((resolve) => { release = resolve }); return () => { resolving = undefined; release() } },
-    snapshot: () => call('assistant/debug') as Promise<AssistantDebugSnapshot>,
+    // 这些用例主动修改模拟来源后查询最新状态；普通界面轮询另有缓存回归测试。
+    snapshot: () => call('assistant/debug', { refresh: true }) as Promise<AssistantDebugSnapshot>,
     hold: (id: string) => { let release!: () => void; holds.set(id, new Promise((resolve) => { release = resolve })); return () => { holds.delete(id); release() } },
     setPrompt: () => { prompts = { ...prompts, index: '用短句提取有证据的结构化事实。' }; watch() },
     scope: (ids: string[]) => { managed = ids; watch() },
@@ -368,7 +369,7 @@ test('调整受管工作区只索引新增成员，保留共同成员的材料�
 
 test('未显式选择索引模型时，DSH 默认模型变化自动全量更新', async (t) => {
   const f = await fixture(t); await f.advance(); f.wire.length = 0
-  f.defaultModel('alt'); await f.advance(5000); await f.advance()
+  f.defaultModel('alt'); await f.advance(60_000); await f.advance()
   assert.deepEqual(f.wire.map((entry) => entry.model), ['alt', 'alt'])
 })
 
@@ -377,12 +378,12 @@ test('远端元数据轮询发现变化，请求前复核可拦截能力读取�
   assert.equal(f.wire.length, 1); f.wire.length = 0
   f.rows.get('s1')!.body = '材料-s1-远端第二轮'; f.rows.get('s1')!.updatedAt++
   const release = f.holdCapabilities()
-  await f.advance(5000); await f.advance()
+  await f.advance(30_000); await f.advance()
   f.remoteActivity('running'); f.rows.get('s1')!.running = true
   release(); await setImmediate()
   assert.deepEqual(f.wire, [], '完成确认过期时不能发送真实模型请求')
   f.remoteActivity('idle'); f.rows.get('s1')!.running = false
-  await f.advance(5000); await f.advance()
+  await f.advance(30_000); await f.advance()
   assert.equal(f.wire.length, 1)
   assert.equal((await f.snapshot()).indexState, 'ready')
 })
@@ -390,7 +391,7 @@ test('远端元数据轮询发现变化，请求前复核可拦截能力读取�
 test('远端失去执行状态证明时不把历史 idle 当作当前完成，恢复证明后才更新', async (t) => {
   const f = await fixture(t, false, false, true); await f.advance(); f.wire.length = 0
   f.remoteActivity('unknown'); f.rows.get('s1')!.updatedAt++; f.rows.get('s1')!.body = '材料-s1-状态未知期间'
-  await f.advance(5000); await f.advance()
+  await f.advance(30_000); await f.advance()
   assert.deepEqual(f.wire, [])
   f.remoteActivity('idle'); await f.advance(5000); await f.advance()
   assert.equal(f.wire.length, 1)

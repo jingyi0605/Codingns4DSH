@@ -155,7 +155,7 @@ test('原生列表为空或失败时不回退到全量日志，归档元数据�
   const f = await nativeScopeFixture(t)
   for (const mode of ['empty', 'failed'] as const) {
     f.setListMode(mode)
-    const snapshot = await f.call('assistant/debug') as AssistantDebugSnapshot
+    const snapshot = await f.call('assistant/debug', { refresh: true }) as AssistantDebugSnapshot
     assert.equal(snapshot.scopeSessions.length, 0)
     assert.equal(snapshot.index.excludedTargets?.length, 103)
     assert.equal(snapshot.warnings.length, mode === 'failed' ? 1 : 0)
@@ -170,7 +170,7 @@ test('归档改变当前成员后，调试页不继续展示旧索引正文，�
   f.reads.length = 0
   // 即使归档事件未送达，刷新元数据也应识别旧结果已经不适用。
   f.archive('active-1')
-  const archived = await f.call('assistant/debug') as AssistantDebugSnapshot
+  const archived = await f.call('assistant/debug', { refresh: true }) as AssistantDebugSnapshot
   assert.equal(archived.indexState, 'stale')
   assert.equal(archived.indexedAt, null)
   assert.deepEqual(archived.scopeSessions.map((entry) => entry.sessionId), ['active-2'])
@@ -312,7 +312,7 @@ test('范围会话标题直接显示执行状态与索引状态，索引标签�
 })
 
 test('面板有五个明确步骤，文字对话显示用户和 LLM 回复', () => {
-  const services = { locale: { getSnapshot: () => ({ revision: 0 }), bind: () => resolveCodingNsTranslator(), subscribe: () => () => {} }, settings: { getSnapshot: () => ({ status: 'ready', writable: true, value: DEFAULT_CODINGNS_SETTINGS }) } }
+  const services = { rpc: { call: async () => { assert.fail('静态渲染不得发起 RPC') } }, locale: { getSnapshot: () => ({ revision: 0 }), bind: () => resolveCodingNsTranslator(), subscribe: () => () => {} }, settings: { getSnapshot: () => ({ status: 'ready', writable: true, value: DEFAULT_CODINGNS_SETTINGS }) } }
   const markup = renderToStaticMarkup(createElement(AssistantDebugDialog, { services: services as any, onClose() {} }))
   for (const text of ['1. 设置索引范围', '2. 范围内工作区和会话', '3. 当前索引结果', '4. 索引记录', '5. LLM 文本对话', '执行索引']) assert.ok(markup.includes(text), text)
   assert.equal((markup.match(/role="tab"/gu) ?? []).length, 5)

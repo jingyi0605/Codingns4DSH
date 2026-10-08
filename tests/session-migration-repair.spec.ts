@@ -1,10 +1,73 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib'
 import test from 'node:test'
-import { repairLegacySessionLog, repairLegacySessionLogs } from '../data/build/dist/host/session-migration-repair.js'
+import { createLegacySessionRepair, repairLegacySessionLog, repairLegacySessionLogs } from '../data/build/dist/host/session-migration-repair.js'
+
+test('按会话修复合并并发读取，不读取其他历史日志；不存在的会话允许稍后重试', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codingns-repair-scoped-'))
+  try {
+    const target = join(root, '--project--', 'target', 'session.v3.jsonl')
+    const unrelated = join(root, '--project--', 'other', 'session.v3.jsonl')
+    await mkdir(join(root, '--project--', 'target'), { recursive: true })
+    await mkdir(join(root, '--project--', 'other'), { recursive: true })
+    await writeFile(target, encodeNone(sampleEvents(false)))
+    await writeFile(unrelated, '无关的损坏日志，不能阻塞目标会话')
+    const repair = createLegacySessionRepair({ root })
+    const first = repair('target')
+    assert.equal(repair('target'), first, '并发打开必须共用同一个修复任务')
+    assert.deepEqual(await first, { scanned: 1, repaired: 1, skipped: 0, failed: 0 })
+    // 移除目标目录后仍返回成功缓存，证明重复打开不重新读取磁盘。
+    await rm(join(root, '--project--', 'target'), { recursive: true })
+    assert.equal((await repair('target')).scanned, 1)
+    assert.equal(await readFile(unrelated, 'utf8'), '无关的损坏日志，不能阻塞目标会话')
+    assert.equal((await repair('later')).scanned, 0)
+    await mkdir(join(root, '--project--', 'later'))
+    await writeFile(join(root, '--project--', 'later', 'session.v3.jsonl'), encodeNone(sampleEvents(false)))
+    assert.equal((await repair('later')).repaired, 1)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('按会话查找遵守 DSH 编码，不沿符号链接或递归进入嵌套目录', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codingns-repair-path-'))
+  try {
+    const directory = join(root, '_no-cwd', '~002E~002E~002F~4E2D~D83D~DE00~007E')
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'session.v3.jsonl'), encodeNone(sampleEvents(false)))
+    const report = await repairLegacySessionLogs({ root, sessionId: '../中😀~' })
+    // 「..」只有单独作为 ID 时转义；作为前缀允许原样保留，且斜杠始终被编码。
+    assert.equal(report.scanned, 0)
+    const encoded = join(root, '_no-cwd', '..~002F~4E2D~D83D~DE00~007E')
+    await mkdir(encoded)
+    await writeFile(join(encoded, 'session.v3.jsonl'), encodeNone(sampleEvents(false)))
+    await mkdir(join(encoded, 'nested'))
+    await writeFile(join(encoded, 'nested', 'session.v3.jsonl'), '不应读取')
+    assert.deepEqual(await repairLegacySessionLogs({ root, sessionId: '../中😀~' }), { scanned: 1, repaired: 1, skipped: 0, failed: 0 })
+    await mkdir(join(root, '_no-cwd', '~002E~002E'))
+    await writeFile(join(root, '_no-cwd', '~002E~002E', 'session.v3.jsonl'), encodeNone(sampleEvents(false)))
+    assert.equal((await repairLegacySessionLogs({ root, sessionId: '..' })).repaired, 1)
+    if (process.platform !== 'win32') {
+      await symlink(encoded, join(root, '_no-cwd', 'link'))
+      assert.equal((await repairLegacySessionLogs({ root, sessionId: 'link' })).scanned, 0)
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('按会话检查失败不缓存，文件恢复后可以重试', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codingns-repair-retry-'))
+  try {
+    const directory = join(root, '_no-cwd', 'broken')
+    await mkdir(directory, { recursive: true })
+    const path = join(directory, 'session.v3.jsonl')
+    await writeFile(path, '损坏日志')
+    const repair = createLegacySessionRepair({ root })
+    assert.equal((await repair('broken')).failed, 1)
+    await writeFile(path, encodeNone(sampleEvents(false)))
+    assert.equal((await repair('broken')).repaired, 1)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
 
 test('自动修复裸 tool/call 并重映射后续引用', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codingns-repair-test-'))

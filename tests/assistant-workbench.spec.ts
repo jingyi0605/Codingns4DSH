@@ -3,7 +3,9 @@ import test from 'node:test'
 import { setImmediate } from 'node:timers/promises'
 import { createElement, isValidElement, type ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { AssistantWorkbench, AssistantConfigurationPage, AssistantConfigurationFields, AssistantCapabilityFields, AssistantVoiceFields, AssistantWorkspaceFields, AssistantConversationView, readAssistantDraft, assistantDraftPayload, handleAssistantWorkbenchEscape } from '../src/client/features/assistant-workbench.js'
+import { AssistantWorkbench, AssistantConversationView, readAssistantDraft, assistantDraftPayload, handleAssistantWorkbenchEscape } from '../src/client/features/assistant-workbench.js'
+import { AssistantConfigurationPage, AssistantConfigurationFields, AssistantCapabilityFields, AssistantVoiceFields, AssistantWorkspaceFields } from '../src/client/features/assistant-configuration-view.js'
+import { assistantConfigurationFieldsLoader, assistantConfigurationPageLoader } from '../src/client/features/assistant-configuration-loader.js'
 import { AssistantComposerView as AssistantComposer, AssistantStatusBadge } from '../src/client/features/assistant-workbench-controls.js'
 import { AssistantConfigurationTabBar, AssistantConfigurationTabs, type AssistantConfigurationTab } from '../src/client/features/assistant-configuration-tabs.js'
 import { AssistantPanel } from '../src/client/features/assistant-panel.js'
@@ -21,6 +23,8 @@ import type { AssistantConversationSnapshot } from '../src/shared/contracts/assi
 import type { CodingNsClientServices } from '../src/client/features/types.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 const t = resolveCodingNsTranslator()
+// SSR 表单回归验证已加载界面；异步首开与取消由独立 loader 测试覆盖。
+await Promise.all([assistantConfigurationFieldsLoader.load(), assistantConfigurationPageLoader.load()])
 const props = { active: false, pending: false, partialText: '', realtimeAvailable: false, onStart() {}, onStop() {}, onClose() {} }
 function fixture(initialized: boolean) {
   let calls = 0
@@ -104,7 +108,7 @@ test('索引等待、查询失败和超时恢复空闲，后续轮询仍能显�
     endpoints.push(endpoint)
     if (endpoint === 'assistant/lifecycle/read') return { ok: true, value: { profile: f.snapshot.value.assistant.profile,
       conversation: { revision: 0, summary: '', messages: [], pendingMessage: null, active: null, compressing: false, error: null } } }
-    if (endpoint !== 'assistant/debug') return { ok: true, value: undefined }
+    if (endpoint !== 'assistant/status') return { ok: true, value: undefined }
     queries++
     if (reply === 'error') throw new Error('状态查询失败')
     if (reply === 'hang') return new Promise((_resolve, reject) => {
@@ -120,23 +124,23 @@ test('索引等待、查询失败和超时恢复空闲，后续轮询仍能显�
     else Reflect.deleteProperty(globalThis, 'document')
   })
   const status = () => elements(renderer.render()).find((element) => element.type === AssistantStatusBadge)!.props.status
-  const next = async (state: typeof reply) => { reply = state; context.mock.timers.tick(3000); await setImmediate() }
+  const next = async (state: typeof reply, delay = 3000) => { reply = state; context.mock.timers.tick(delay); await setImmediate() }
   assert.equal(status(), 'idle', '尚未收到索引快照时不猜测执行状态')
   await setImmediate(); assert.equal(status(), 'idle')
   await next('building'); assert.equal(status(), 'updating')
   await next('incomplete'); assert.equal(status(), 'idle', '等待会话结束不代表正在索引')
   await next('building'); assert.equal(status(), 'updating')
   await next('error'); assert.equal(status(), 'idle', '失败后清除旧的构建证明')
-  await next('building'); assert.equal(status(), 'updating')
+  await next('building', 6000); assert.equal(status(), 'updating')
   await next('hang'); assert.equal(status(), 'updating')
   const beforeTimeout = queries
   context.mock.timers.tick(10_000); await setImmediate()
   assert.equal(status(), 'idle', '查询超时不能永久保持认知更新')
   assert.equal(queries, beforeTimeout)
-  await next('ready'); assert.equal(status(), 'idle')
+  await next('ready', 6000); assert.equal(status(), 'idle')
   assert.equal(queries, beforeTimeout + 1, '超时后继续查询')
   await next('building'); assert.equal(status(), 'updating')
-  assert.ok(endpoints.every((endpoint) => ['assistant/lifecycle/read', 'assistant/chat/models', 'assistant/tts/catalog', 'assistant/debug'].includes(endpoint)), '状态查询不重建或取消后台索引')
+  assert.ok(endpoints.every((endpoint) => ['assistant/lifecycle/read', 'assistant/chat/models', 'assistant/tts/catalog', 'assistant/status'].includes(endpoint)), '状态查询不重建或取消后台索引')
 })
 
 test('未创建助理选择男生后，初始化预览使用对应生图 URL', () => {
