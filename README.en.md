@@ -66,33 +66,31 @@ Agents, terminals and project files run on the computer hosting DSH (the Host). 
 
 ## Supported Agents
 
-Detected on the Host by command name; version and models come from the CLI itself. Detected Agents are enabled by default and can be toggled individually. The built-in **DeepSeek Harness** Agent is always available.
+Install and sign in to an Agent with its own tools, and Codingns4DSH will detect it. The built-in **DeepSeek Harness** Agent remains available. Choose models and view streaming replies in one interface, with session resume, tool calls and thinking controls where supported.
 
-| Agent | id | Command | Protocol | Capabilities | Notes |
-| --- | --- | --- | --- | --- | --- |
-| Command Code | `command-code` | `command-code`, `commandcode`, `cmdc` | CLI + ACP | models, streaming, resume, interrupt, tools, thinking, usage, approvals, questions | The formal Host runtime uses `cmd acp`; DSH permissions map to `--plan`, `--permission-mode accept-edits`, or `--yolo`, and questions return through Command Code's `session/request_permission` extension |
-| Claude Code | `claude-code` | `claude` | stream-json | models, streaming, resume, interrupt, tools, thinking, usage, approvals, questions | `can_use_tool` approvals and `AskUserQuestion` |
-| Kimi CLI | `kimi` | `kimi`, `kimi-cli` | stream-json | all of the above + approvals, questions, steering | — |
-| Gemini CLI | `gemini` | `gemini` | ACP | models, streaming, resume, interrupt, tools, thinking, usage, approvals, questions | ACP permissions and form elicitation |
-| Pi Agent | `pi` | `pi`, `pi-agent` | JSON-RPC | models, streaming, resume, interrupt, tools, thinking, usage, steering | No verifiable DSH approval/question response wire in the current protocol |
-| Codex | `codex` | `codex` | JSON-RPC (app-server) | all + approvals, questions, steering | app-server enables `request_user_input`; DSH renders the native question panel |
-| OpenCode | `opencode` | `opencode`, or `OPENCODE_SERVER_URL` (default `http://127.0.0.1:4096`) | HTTP + SSE | all + approvals, questions | — |
-| Grok Build | `grok` | `grok`, `grok-build` | ACP | models, streaming, tools, thinking, usage, approvals, questions | ACP permissions plus Grok's private `x.ai/ask_user_question` structured question method |
-| MiniMax Code | `mcode` | `mcode` | ACP / stream-json | models, streaming, resume, interrupt, tools, thinking, usage, approvals, questions | Interactive requests use ACP; the explicit-effort `exec` path has no interactive response wire |
-| ZCode | `zcode` | `zcode`, bundled desktop runtime | JSON-RPC bare envelope | models, streaming, resume, interrupt, usage | No verifiable DSH approval/question response wire |
-| CodeBuddy (auto-detects CN/international) | `codebuddy` | `codebuddy`, `codebuddy-code`, `cbc`, and Windows `.cmd` entry points; region selected from environment and auth domain | ACP (`--acp`) | models, streaming, resume, interrupt, tools, thinking, usage, approvals, questions | Supports stdio ACP and HTTP sidecar ACP |
-| WorkBuddy | `workbuddy` | `codebuddy` bundled in the WorkBuddy desktop app | ACP (`--acp`) | models, streaming, resume, interrupt, tools, thinking, approvals, questions | Permissions and form elicitation use the HTTP ACP sidecar |
-| Cursor CLI | `cursor-cli` | `cursor-agent`, `agent` | ACP (`acp`) | models, streaming, resume, interrupt, tools, thinking, approvals, questions | Standard ACP permissions and form elicitation |
-| Kiro CLI | `kiro-cli` | `kiro-cli` | ACP (`acp --agent-engine v3 --auth-method cli`) | models, streaming, resume, interrupt, tools, thinking, approvals, questions | Standard ACP permissions and form elicitation |
-| Qoder | `qoder` | `qoder`, `qodercli` | ACP (`--acp`) | models, streaming, resume, interrupt, tools, thinking, approvals, questions | Standard ACP permissions and form elicitation |
-| Qoder CN | `qoder-cn` | `qodercn`, `qoderclicn` | ACP (`--acp`) | models, streaming, resume, interrupt, tools, thinking, approvals, questions | Standard ACP permissions and form elicitation |
-| Antigravity | `antigravity` | `agy` | stream-json (stdin NDJSON) | models, streaming, resume, interrupt, tools, thinking | Permission state maps to CLI safety modes; no interactive approval/question wire |
+The table highlights selected capabilities; availability depends on the Agent and its version. Skills are reusable workflows, and steering lets you add a message while an Agent is working.
 
-**models** model list · **streaming** live output · **resume** continue after restart · **interrupt** cancel a turn · **tools** tool calls in the conversation · **thinking** reasoning/effort · **usage** token or subscription limits · **approvals / questions** native DSH interactions · **steering** inject a message mid-turn.
+| Agent | Key capabilities | Notes |
+| --- | --- | --- |
+| **Command Code** | Skills, approvals, questions, usage | Uses DSH permission settings and the native question panel |
+| **Claude Code** | Skills, approvals, questions, usage | Supports native skill discovery and invocation |
+| **Kimi CLI** | Approvals, questions, steering, usage | — |
+| **Gemini CLI** | Approvals, questions, usage | Supports native approvals and form questions |
+| **Pi Agent** | Steering, thinking controls, usage | DSH approval and question responses remain unverified in the current protocol |
+| **Codex** | Approvals, questions, steering, usage | Questions appear in DSH's native question panel |
+| **OpenCode** | Skills, approvals, questions, usage | Supports a local CLI or existing server, plus native skills |
+| **Grok Build** | Skills, approvals, questions, usage | Supports native skill discovery and structured questions |
+| **MiniMax Code** | Approvals, questions, usage | Default integration supports interaction; explicit-effort execution does not return interactive responses.<br>Upstream contributor: [chenjunyi000](https://github.com/chenjunyi000)<br>PRs [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6), [#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
+| **ZCode** | Model selection, session resume, usage | Uses the CLI or the desktop app's bundled runtime.<br>Upstream contributor: [chenjunyi000](https://github.com/chenjunyi000)<br>PRs [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6), [#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
+| **CodeBuddy** | Approvals, questions, usage | Automatically detects CN/international editions.<br>CodexHost contributor: [mouzhi](https://github.com/mouzhi)<br>Initial integration: [f30b000](https://github.com/BytePioneer-AI/codex-host/commit/f30b000f88950c40844b071eec2f6f385c6bcb49) |
+| **WorkBuddy** | Approvals, questions, thinking controls | Uses the WorkBuddy desktop app's bundled runtime.<br>CodexHost contributor: [BytePioneer-AI (ChongWen)](https://github.com/BytePioneer-AI)<br>Initial integration: [6e9f365](https://github.com/BytePioneer-AI/codex-host/commit/6e9f365e2bf8ac61716f8250475530ae790f2d2f) |
+| **Cursor CLI** | Approvals, questions, thinking controls | CodexHost contributor: [mouzhi](https://github.com/mouzhi)<br>Initial integration: [ad6ba8e](https://github.com/BytePioneer-AI/codex-host/commit/ad6ba8e04d294c473d2dcad99880496ff39c1f7e) |
+| **Kiro CLI** | Approvals, questions, thinking controls | CodexHost contributor: [gy212](https://github.com/gy212)<br>Initial integration: [79675cd](https://github.com/BytePioneer-AI/codex-host/commit/79675cdbfdc042eb37a849c3eb1539e9efc40a0d) |
+| **Qoder** | Approvals, questions, thinking controls | CodexHost contributors: [gy212](https://github.com/gy212), [BytePioneer-AI (ChongWen)](https://github.com/BytePioneer-AI)<br>PR #289 merge: [8926130](https://github.com/BytePioneer-AI/codex-host/commit/8926130af1426a467747b66d8d2dbf68f7764a7b) |
+| **Qoder CN** | Approvals, questions, thinking controls | CodexHost contributors: [gy212](https://github.com/gy212), [BytePioneer-AI (ChongWen)](https://github.com/BytePioneer-AI)<br>PR #289 merge: [8926130](https://github.com/BytePioneer-AI/codex-host/commit/8926130af1426a467747b66d8d2dbf68f7764a7b) |
+| **Antigravity** | Session resume, tool calls, thinking controls | Permission settings select safety modes; no interactive approvals or questions.<br>CodexHost contributor: [gy212](https://github.com/gy212)<br>Initial integration: [ed4e785](https://github.com/BytePioneer-AI/codex-host/commit/ed4e785116642eafc08e4186e92e83f3816c7765) |
 
-Unlisted capabilities are unsupported by that CLI or version. Install and log in to each Agent outside DSH; Codingns4DSH never stores Agent credentials.
-
-Approvals and questions are rendered by DSH's native components. The Web Client Bundle must inject `@deepseek-ai/dsh-client-ui-user-questions`; otherwise the Host may receive a question event without having a question panel to mount. Adapters with an interactive response wire normalize Provider requests into `permission-request` or `question-request` events, pass them to the native approval/question components, then send the typed answer back with the Provider's original request ID. ACP adapters use the standard `session/request_permission` and `elicitation/create` form requests; Grok Build's `grok_build/ask_user_question` tool call returns through the private `x.ai/ask_user_question` method with an `outcome`; Command Code's `ask_user_question` also uses `session/request_permission`, distinguished by `toolCall.kind=other` and `toolCall.rawInput.question/options`. Fixed choices are returned using the original `optionId`; free text is carried in ACP `_meta["codingns/questionAnswer"]` and returned to the Command Code tool through a Node loader that only affects the child process memory and does not modify the user's installed package. The Codex app-server explicitly enables `default_mode_request_user_input` so it emits `item/tool/requestUserInput` requests. URL elicitation requires a browser security-consent flow and is not advertised. Antigravity only maps DSH permission state to CLI safety modes.
+Each Agent handles its own installation and login. See the [Agent adapter documentation](specs/spec007.1-外部Agent适配器扩展/README.md) (Chinese) for integration details.
 
 ---
 
@@ -307,9 +305,14 @@ Design and implementation details live in the [specifications](specs/), [develop
 
 ## Acknowledgements
 
-The inspiration for Codingns4DSH — and part of its implementation approach — comes from **[CodexHost](https://github.com/BytePioneer-AI/codex-host)**, which runs Pi, Claude Code, Grok Build and other Harnesses natively inside Codex Desktop. It showed the direction Codingns4DSH follows from the other side: host *other* Harnesses as first-class Agents instead of replacing them. The multi-Harness adapter model, projecting a CLI event stream into native sessions, and keeping each Agent's sessions in the host sidebar and composer trace back to that design. Thanks to its authors and community.
+Thanks to **[CodexHost](https://github.com/BytePioneer-AI/codex-host)** and its community for the inspiration and implementation references for multi-Agent integration. Codingns4DSH is an independent project and is not affiliated with CodexHost.
 
-Codingns4DSH is an independent project and is not affiliated with CodexHost.
+Thanks to the adapter contributors and upstream contributors:
+
+- [chenjunyi000](https://github.com/chenjunyi000): MiniMax Code, ZCode ([#6](https://github.com/jingyi0605/Codingns4DSH/pull/6), [#7](https://github.com/jingyi0605/Codingns4DSH/pull/7)).
+- [mouzhi](https://github.com/mouzhi): CodeBuddy, Cursor CLI.
+- [BytePioneer-AI (ChongWen)](https://github.com/BytePioneer-AI): WorkBuddy, Qoder.
+- [gy212](https://github.com/gy212): Kiro CLI, Qoder, Antigravity.
 
 ---
 
