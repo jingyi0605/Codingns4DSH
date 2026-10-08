@@ -142,11 +142,20 @@ test('avatar/engineStatus 与 avatar/installEngine 遵守许可与只读边界',
       assert.deepEqual(await call('engineStatus', {}, {}),
         { installed: true, version: ASSISTANT_AVATAR_ENGINE_VERSION, source: 'managed' })
       await assert.rejects(call('installEngine', {}, {}), /引擎许可/u)
+      const engineConsent = { version: ASSISTANT_AVATAR_ENGINE_CONSENT_VERSION, acceptedAt: 1 }
+      for (const invalid of [null, true, { ...engineConsent, version: 'old' }, { ...engineConsent, acceptedAt: 0 }]) {
+        await assert.rejects(call('installEngine', { engineConsent: invalid }, {}), /引擎许可/u)
+      }
+      // 首次在草稿中确认许可时，Host 尚无已保存记录；只授权安装，不修改正式配置。
+      assert.deepEqual(await call('installEngine', { engineConsent }, {}),
+        { installed: true, version: ASSISTANT_AVATAR_ENGINE_VERSION, source: 'managed' })
+      assert.equal(appearance.engineConsent, undefined)
       appearance.engineConsent = { version: ASSISTANT_AVATAR_ENGINE_CONSENT_VERSION, acceptedAt: 1 }
       assert.deepEqual(await call('installEngine', {}, {}),
         { installed: true, version: ASSISTANT_AVATAR_ENGINE_VERSION, source: 'managed' })
       writable = false
       await assert.rejects(call('installEngine', {}, {}), /只读/u)
+      await assert.rejects(call('installEngine', { engineConsent }, {}), /只读/u)
     } finally { await registry.reconcile([]) }
   } finally {
     if (previous === undefined) delete process.env.CODINGNS4DSH_AVATAR_ENGINE_DIR
