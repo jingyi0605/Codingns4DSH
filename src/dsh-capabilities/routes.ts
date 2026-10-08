@@ -23,7 +23,8 @@ export function createDshCapabilityRegistry(
   const add = <T>(route: DshCapabilityRoute<T>): void => registry.register(route)
 
   if (runtime === 'host') {
-    add({ id: 'assistant-agent-021', capability: 'assistant.agent', supportedDsh: '>=0.2.1-alpha.1 <=0.2.1-alpha.1', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.1',
+    // rc.2 已具备同一套根 Agent 与工具隔离接口；路由 ID 保持兼容，范围跟随插件支持声明。
+    add({ id: 'assistant-agent-021', capability: 'assistant.agent', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: (ctx) => hasMethods(read(ctx, 'agents'), ['create']) && hasMethods(read(ctx, 'tools'), ['register', 'restrict', 'guard', 'presentAs']) && hasMethods(read(ctx, 'systemPrompt'), ['section', 'suppressRuntimeContext']) && typeof read(ctx, 'on') === 'function',
       create: (ctx) => read(ctx, 'agents') })
     add({ id: 'settings-scope', capability: 'settings.store', supportedDsh: rangeLegacy, runtime, priority: 10, status: 'supported', introducedIn: '0.1.5-rc.3', detect: (ctx) => typeof (ctx as { settings?: { register?: unknown } }).settings?.register === 'function', create: (ctx) => (ctx as { settings: unknown }).settings })
@@ -62,8 +63,8 @@ export interface DshCapabilityRuntimeFacts {
 /** DSH 0.2 Host 结构化能力。检测基于服务形状，不把版本判断散落到业务模块。 */
 function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): void {
   add({
-    id: 'llm-text-021', capability: 'llm.text', supportedDsh: '>=0.2.1-alpha.1 <=0.2.1-alpha.1', runtime: 'host', priority: 10,
-    status: 'supported', introducedIn: '0.2.1-alpha.1',
+    id: 'llm-text-021', capability: 'llm.text', supportedDsh, runtime: 'host', priority: 10,
+    status: 'supported', introducedIn: '0.2.0-rc.2',
     detect: (ctx) => hasMethods(read(ctx, 'llm'), ['stream', 'listProviders', 'listModels']),
     create: (ctx) => read(ctx, 'llm'),
   })
