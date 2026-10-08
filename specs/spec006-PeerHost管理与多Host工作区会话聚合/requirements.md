@@ -89,10 +89,11 @@
 
 1. WHEN 添加或检查 PeerHost THEN System SHALL 读取目标 Host 的产品标识、插件版本、DSH 版本、API 兼容标识和 Host fingerprint。
 2. WHEN 目标 Host 未安装本插件 THEN System SHALL 标记为 `plugin_missing` 并禁止代理。
-3. WHEN 目标 Host 的 DSH 版本或 API 兼容标识不满足矩阵 THEN System SHALL 标记为 `version_mismatch` 并禁止代理。
+3. WHEN 目标 Host 插件版本高于客户端插件版本、插件版本缺失或非法，或 DSH 版本/API 兼容标识不满足矩阵 THEN System SHALL 标记为 `version_mismatch` 并禁止代理。
 4. WHEN 目标 Host fingerprint 与已保存身份不一致 THEN System SHALL 清理该 PeerHost 的目标登录态并标记为 `identity_changed`。
 5. WHEN 握手成功 THEN System SHALL 记录检查时间、兼容信息和 fingerprint，状态转为 `ready`。
 6. WHEN 握手失败 THEN System SHALL 保留用户配置但不得把失败目标伪装成空工作区或可用 Host。
+7. WHEN 客户端插件版本高于或等于目标 Host 插件版本且其他握手检查通过 THEN System SHALL 允许连接；版本比较按语义版本规则处理预发布标识，忽略构建元数据，不要求版本字符串完全一致。客户端插件版本取自提供当前页面插件的本地 Host。
 
 ### 需求 4：局域网和中转路由必须使用统一 PeerHost 身份
 

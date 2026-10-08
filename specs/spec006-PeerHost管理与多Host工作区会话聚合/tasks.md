@@ -163,6 +163,7 @@
 ### 2.2 实现目标 Host 握手和状态机
 
 - 状态：`DONE`
+- 已完成增量（2026-10-08）：插件版本从严格相等改为客户端版本不低于 PeerHost，复用语义版本比较并修正版本提示。7 个相关测试文件通过源码加载器免构建回归，类型、版本同步、能力退休及国际化检查通过。详见 `docs/开发记录/20261008-PeerHost插件版本向下兼容实现记录.md`。
 - 改动文件：`src/host/modules/peer-host/peer-host-store.ts`、`src/host/modules/peer-host/peer-host-handshake.ts`、`tests/peer-host-handshake.spec.ts`
 - 验证命令：`pnpm run typecheck && pnpm run build && node --test tests/peer-host-handshake.spec.ts`（4 项通过）
 - 已知限制：当前只实现固定 LAN 握手路径；Relay 明确返回 `PEER_HOST_RELAY_UNAVAILABLE`。握手服务尚未接入 Feature/RPC，目标 Host 真实握手端点装配留在后续任务。

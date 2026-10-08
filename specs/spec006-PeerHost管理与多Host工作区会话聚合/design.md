@@ -251,6 +251,8 @@ interface PeerHostHandshakeResult {
 
 握手顺序：规范化路由 -> 建立连接 -> 验证产品和插件标识 -> 校验能力矩阵 -> 比较 fingerprint -> 写入状态。任何一步失败都保留配置，但禁止代理和聚合为可用 Host。
 
+插件版本规则（2026-10-08）：当前 Host 提供客户端插件，以其 `CODINGNS_VERSION` 为上界，接受同版或更旧的 PeerHost 插件。复用 `src/shared/contracts/version.ts` 的 `isVersionAtLeast(clientVersion, peerVersion)` 做语义版本比较；预发布数字按数值顺序排列，正式版高于同核心版本的预发布版，构建元数据不参与比较。版本缺失或非法仍拒绝；目标 DSH 兼容范围、API 兼容标识和 fingerprint 检查保持独立。
+
 ### 5.2 目标登录态
 
 目标 access token、refresh token、过期时间和登录方式由 `PeerHostStore` 的敏感存储保存。Client 的登录响应只返回 `sessionRequired`、过期时间的粗粒度状态和错误码，不返回 token。
