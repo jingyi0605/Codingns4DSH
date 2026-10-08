@@ -13,7 +13,7 @@
 
 本节覆盖下文历史版本中“正式对话只读、不调用工具、整段完成才播报”的约束，生命周期及共享持久交流记录沿用 spec013.1。
 
-- `assistant.agent` 由能力路由集中探测，当前支持 DSH 0.2.1-alpha.1。`AssistantAgentAdapter` 位于兼容边界，用同一 Host 的原生创建接口维护根 Agent，省略 parentAgent；首次说话才准备独立空工作目录。采用会话级只读沙箱，不变更部署配置。
+- `assistant.agent` 由能力路由集中探测，支持范围复用插件的 `DSH_COMPATIBILITY`，当前为 DSH 0.2.0-rc.2 至 0.2.1-alpha.1，两版均经过原生内存运行时验证。`AssistantAgentAdapter` 位于兼容边界，用同一 Host 的原生创建接口维护根 Agent，省略 parentAgent；首次说话才准备独立空工作目录。采用会话级只读沙箱，不变更部署配置。
 - 创建 setup 注册 complete 系统提示词、抑制继承的动态编程上下文、声明 native 工具模式、屏蔽所有继承工具、注册四个管理工具并安装执行白名单。原生工具参数只使用当前 DSH 支持的 JSON Schema 子集。其他 Agent 不受这些作用域声明影响。
 - 模型每步固定为助理选择，单请求最多 1024 输出 token（模型文本单位），仅助理使用 off／none。一轮最多八步和十二次管理工具调用，90 秒轮次超时沿用现有文本轮次服务。自然交流默认一到两个短句、100 字以内。
 - `AssistantConversation` 继续持有交流记录。连续完成问答复用运行实例；最多九轮后从近期记录重建，模型变化、压缩、清理、范围隔离或失败造成历史不匹配时也重建。Host 重启从现有持久记录恢复交流，重新建立受限运行实例，不把旧运行实例作为项目会话恢复。助理原生会话 ID 使用专有前缀，不参与项目索引。
@@ -605,7 +605,7 @@ Sherpa 会话绑定 Host 租约和一个 epoch；断线、取消、generation �
 
 正文使用 `sessionQuery.readSurface` 的 v4 语义事件，真实用户来自 `source.kind=user`，助理正文来自 `data.message.content`；跳过上下文注入与 reasoning（内部思考）块。运行状态使用本地 `sessionController.list`/Agent 的真实状态，`live` 仅表示内存实例存在。没有可靠状态时保留 unknown，汇总显式包含这些会话。
 
-原生模型入口集中在 `llm.text` 能力适配器，本次只启用已验证的 DSH 0.2.1-alpha.1 契约：`listProviders`、`listModels`、`stream`。使用 `agentDefaultModel.currentSelection` 作为默认选择；没有原生模型的外部 CLI 提供商不进入列表。消息按 v4 构造，用户消息使用无身份输入，助理历史带模型来源；增量按块索引合并，`block-end` 不重复正文，必须检查终止 `finish` 的错误或中止原因。
+原生模型入口集中在 `llm.text` 能力适配器，DSH 0.2.0-rc.2 与 0.2.1-alpha.1 共用已验证的 `listProviders`、`listModels`、`stream` 契约，能力路由与矩阵复用 `DSH_COMPATIBILITY`，并继续检查实际服务结构。使用 `agentDefaultModel.currentSelection` 作为默认选择；没有原生模型的外部 CLI 提供商不进入列表。消息按 v4 构造，用户消息使用无身份输入，助理历史带模型来源；增量按块索引合并，`block-end` 不重复正文，必须检查终止 `finish` 的错误或中止原因。
 
 `AssistantTextChat` 只把受管索引事实交给 LLM，不传排除会话、不创建 Agent/项目会话、不提供工具。当前索引优先于历史，未知状态和空正文不能被编造成结论。单次最多 20 条历史、每条 8000 字符，事实材料最多 120000 字符；模型输出最多 2048 token，90 秒中止，轮次保留最多 30 条。Client 每 600 毫秒读取文字；关闭或停止取消模型请求。范围、模型或索引版本变化后清空文字上下文。所有新增动作同时登记主 RPC 通道和旧 HTTP 精确入口。
 
