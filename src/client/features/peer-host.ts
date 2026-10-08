@@ -330,7 +330,9 @@ export function createPeerHostPageTransport(
       scope,
       path: `/api/codingns/${endpoint}`,
       method: 'POST',
-      body: JSON.stringify({ rpcId: createRequestId(), method: endpoint, payload: endpoint.startsWith('cli/') ? rewriteCliPayload(payload, scope) : rewriteDebugPayload(payload, scope) }),
+      body: JSON.stringify({ rpcId: createRequestId(), method: endpoint, payload: endpoint.startsWith('git/')
+        ? { ...asRecord(payload), workspaceId: scope.workspaceId }
+        : endpoint.startsWith('cli/') ? rewriteCliPayload(payload, scope) : rewriteDebugPayload(payload, scope) }),
     }, signal))
     const status = typeof response?.status === 'number' ? response.status : 500
     const body = typeof response?.body === 'string' ? response.body : ''
@@ -345,7 +347,10 @@ export function createPeerHostPageTransport(
     }
     try {
       const envelope = asRecord(JSON.parse(body))
-      return envelope?.result
+      // Git 面板及缓存继续持有虚拟 ID，真实 ID 只出现在目标 Host 的请求中。
+      return endpoint.startsWith('git/')
+        ? projectGitWorkspaceIds(envelope?.result, scope.workspaceId, createVirtualWorkspaceId(scope.targetHostId, scope.workspaceId))
+        : envelope?.result
     } catch {
       throw new Error('远端 Host 插件 RPC 响应不是 JSON')
     }
@@ -443,7 +448,12 @@ export function createPeerHostPageTransport(
         if (isDebugPluginEndpoint(endpoint) && hasVirtualDebugScope(body) && scopeForPluginRequest(endpoint, body) === undefined) {
           return { ok: false, error: { code: 'PEER_HOST_SCOPE_MISMATCH', message: t('peerHost.debugWorkspaceUnavailable') } } as TResponse
         }
-        const scope = scopeForPluginRequest(endpoint, body)
+        // Git 只由顶层 workspaceId 决定归属，文件名和提交正文不能参与 Host 选择。
+        const workspaceId = asRecord(body)?.workspaceId
+        const scope = endpoint.startsWith('git/') ? findScope(workspaceId) : scopeForPluginRequest(endpoint, body)
+        if (endpoint.startsWith('git/') && typeof workspaceId === 'string' && parseVirtualWorkspaceId(workspaceId) !== null && scope === undefined) {
+          return { ok: false, error: { code: 'PEER_HOST_SCOPE_MISMATCH', message: t('peerHost.gitWorkspaceUnavailable') } } as TResponse
+        }
         if (scope !== undefined && scope.targetHostId !== null) {
           try {
             return await remotePluginRpc(scope, endpoint, body, signal) as TResponse
@@ -527,6 +537,11 @@ export function createPeerHostPageTransport(
         // 聚合暂时缺失时仍接管虚拟资源，返回明确错误，禁止回落本机调试服务。
         return scope === undefined ? hasVirtualDebugScope(value) : scope.targetHostId !== null
       }
+      if (method?.startsWith('git/') || method?.startsWith('codingns/git/')) {
+        const workspaceId = asRecord(value)?.workspaceId
+        // 聚合断线后也要接管虚拟 ID，交给上面的明确错误，不能落回本机 Git。
+        return typeof workspaceId === 'string' && parseVirtualWorkspaceId(workspaceId) !== null
+      }
       const cli = method === undefined
         ? undefined
         : method === 'cli/catalog' || method === 'cli/models'
@@ -587,7 +602,7 @@ export function createPeerHostPageTransport(
 function peerHostPluginEndpoint(channel: string, method: string): string | undefined {
   const endpoint = channel === '/codingns' ? method
     : channel === '/api' && method.startsWith('codingns/') ? method.slice('codingns/'.length) : ''
-  return endpoint.startsWith('cli/') || endpoint.startsWith('debug/') || endpoint === 'terminal/status' ? endpoint : undefined
+  return endpoint.startsWith('cli/') || endpoint.startsWith('git/') || endpoint.startsWith('debug/') || endpoint === 'terminal/status' ? endpoint : undefined
 }
 
 function isDebugPluginEndpoint(endpoint: string): boolean {
@@ -598,6 +613,17 @@ function hasVirtualDebugScope(value: unknown): boolean {
   const input = asRecord(value)
   return (typeof input?.workspaceId === 'string' && parseVirtualWorkspaceId(input.workspaceId) !== null)
     || (typeof input?.sessionId === 'string' && parseVirtualSessionId(input.sessionId) !== null)
+}
+
+/** 只投影响应中的工作区标识；Diff、提交正文和文件路径均保持原文。 */
+function projectGitWorkspaceIds(value: unknown, workspaceId: string, virtualWorkspaceId: string): unknown {
+  if (Array.isArray(value)) return value.map((item) => projectGitWorkspaceIds(item, workspaceId, virtualWorkspaceId))
+  const record = asRecord(value)
+  if (record === null) return value
+  return Object.fromEntries(Object.entries(record).map(([key, child]) => [
+    key,
+    key === 'workspaceId' && child === workspaceId ? virtualWorkspaceId : projectGitWorkspaceIds(child, workspaceId, virtualWorkspaceId),
+  ]))
 }
 
 /** 只还原调试请求顶层资源标识，配置里的命令、参数和环境变量必须原样保存。 */

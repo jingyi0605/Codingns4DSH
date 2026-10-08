@@ -16,6 +16,8 @@ import { gitPanelClass, installGitPanelStyles } from './git-panel-styles.js'
 import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import type { SettingsNotice } from './features/types.js'
 import { notifyGitWorkspaceChanged } from './git-workspace-events.js'
+import { readNativeWorkspaceListStore, readNativeWorkspaceSnapshot } from './native-workspace-store.js'
+import { parseVirtualSessionId, parseVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
 
 // 单列 Git 视图需要一个稳定的分段控件；这里保持 React 结构简单，避免引入额外依赖。
 function SegmentedControl<Value extends string>({ id, value, options, onChange, label, disabled }: { readonly id: string; readonly value: Value; readonly options: readonly { readonly value: Value; readonly label: string; readonly title?: string; readonly disabled?: boolean }[]; readonly onChange: (next: Value) => void; readonly label: string; readonly disabled?: boolean }): ReactElement {
@@ -42,6 +44,7 @@ type GitTabProps = {
   readonly useTabInfo: UseSidebarRightTabInfo
   readonly rpc: CodingNsRpcClient
   readonly remote?: unknown
+  readonly uiContext?: Context
   readonly t: CodingNsTranslator
 }
 type GitTabTitleProps = { readonly useTabInfo: UseSidebarRightTabInfo; readonly t: CodingNsTranslator }
@@ -81,6 +84,7 @@ interface GitPanelCache {
 interface GitWorkspaceRecoveryProps {
   readonly useSessions: UseSessions
   readonly remote?: unknown
+  readonly uiContext?: Context
   readonly sidebarRight: GitSidebarRuntime
 }
 
@@ -124,7 +128,7 @@ export function registerGitManagementUi(ctx: Context, services: GitServices): ()
     }))
     disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
       name: 'sidebar.right.pane.tab', key: GIT_PROVIDER_ID,
-      inject: () => ({ rpc: services.rpc, remote: services.remote, t }),
+      inject: () => ({ rpc: services.rpc, remote: services.remote, uiContext: ctx, t }),
     }, GitPanel)))
     disposers.push(ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
       name: 'sidebar.right.pane.tab.title', key: GIT_PROVIDER_ID,
@@ -132,10 +136,10 @@ export function registerGitManagementUi(ctx: Context, services: GitServices): ()
     }, GitTabTitle)))
     disposers.push(ctx.slots.inject('shell.overlay', () => ctx.slots.register({
       name: 'shell.overlay', id: 'codingns4dsh-git-workspace-recovery', order: 990,
-      inject: () => ({ remote: services.remote, sidebarRight }),
+      inject: () => ({ remote: services.remote, uiContext: ctx, sidebarRight }),
     }, GitWorkspaceRecovery)))
     if (typeof sidebarRight.registerCloseHandler === 'function') {
-      disposers.push(sidebarRight.registerCloseHandler(GIT_KIND, (sessionId, tab) => closeGitWorkspaceTabs(sidebarRight, services.remote, sessionId, tab)))
+      disposers.push(sidebarRight.registerCloseHandler(GIT_KIND, (sessionId, tab) => closeGitWorkspaceTabs(sidebarRight, services.remote, sessionId, tab, ctx)))
     }
   } catch (error) {
     for (const dispose of disposers.reverse()) dispose()
@@ -169,6 +173,9 @@ function GitPanel(props: GitTabProps): ReactElement {
   const sessionId = String(props.sessionId)
   const t = props.t
   const tabInfo = props.useTabInfo()
+  // 聚合摘要晚到时重新解析归属；普通状态更新不应清空已经展开的 Git 视图。
+  useGitWorkspaceSnapshot(props.uiContext)
+  const projectedWorkspaceId = readNativeWorkspaceSnapshot(props.uiContext)?.items.find((item) => item.sessionIds.includes(sessionId))?.workspaceId
   const [workspaceId, setWorkspaceId] = useState<string | undefined>()
   const [status, setStatus] = useState<GitStatus | null>(null)
   const [history, setHistory] = useState<readonly GitHistoryItem[]>([])
@@ -249,7 +256,7 @@ function GitPanel(props: GitTabProps): ReactElement {
         return false
       }
     }
-    void resolveGitWorkspaceId(props.remote, sessionId).then((resolvedWorkspaceId) => {
+    void resolveGitWorkspaceId(props.remote, sessionId, props.uiContext).then((resolvedWorkspaceId) => {
       if (disposed) return
       if (resolvedWorkspaceId === undefined) { notify('error', t('git.noWorkspace')); return }
       rememberGitWorkspaceSession(sessionId, resolvedWorkspaceId)
@@ -259,7 +266,7 @@ function GitPanel(props: GitTabProps): ReactElement {
       cleanupTimer = () => poll.dispose()
     }).catch((error: unknown) => { if (!disposed) notify('error', error instanceof Error ? error.message : String(error)) })
     return () => { disposed = true; cleanupTimer?.() }
-  }, [props.remote, props.rpc, sessionId, historyScope])
+  }, [props.remote, props.rpc, props.uiContext, sessionId, historyScope, projectedWorkspaceId])
 
   useEffect(() => {
     const close = (): void => {
@@ -812,8 +819,9 @@ const GIT_WORKSPACE_STATE_EVENT = 'codingns4dsh-git-workspace-state'
 const workspaceBySession = new Map<string, string>()
 const closingWorkspaces = new Set<string>()
 
-function GitWorkspaceRecovery({ useSessions, remote, sidebarRight }: GitWorkspaceRecoveryProps): ReactElement | null {
+function GitWorkspaceRecovery({ useSessions, remote, uiContext, sidebarRight }: GitWorkspaceRecoveryProps): ReactElement | null {
   const sessionsSnapshot = useSessions((value: unknown) => value)
+  const workspaceSnapshot = useGitWorkspaceSnapshot(uiContext)
   const [workspaceRevision, setWorkspaceRevision] = useState(0)
   const openTabs = readGitOpenTabs(sidebarRight)
   const openTabSnapshot = useSyncExternalStore(
@@ -833,10 +841,10 @@ function GitWorkspaceRecovery({ useSessions, remote, sidebarRight }: GitWorkspac
     if (typeof sidebarRight.openTabIn !== 'function') return
     let disposed = false
     const recover = async (): Promise<void> => {
-      const workspaceItems = await readWorkspaceItems((remote as GitRemote | undefined)?.workspace)
+      const workspaceItems = await readWorkspaceItems((remote as GitRemote | undefined)?.workspace, uiContext)
       const allSessionIds = [...new Set([...sessionIds, ...workspaceItems.flatMap((item) => item.sessionIds)])]
       for (const sessionId of allSessionIds) {
-        const workspaceId = await resolveGitWorkspaceId(remote, sessionId).catch(() => undefined)
+        const workspaceId = await resolveGitWorkspaceId(remote, sessionId, uiContext).catch(() => undefined)
         if (disposed || workspaceId === undefined) continue
         rememberGitWorkspaceSession(sessionId, workspaceId)
         const existing = readGitTabs(sidebarRight, sessionId, openTabSnapshot)
@@ -852,17 +860,17 @@ function GitWorkspaceRecovery({ useSessions, remote, sidebarRight }: GitWorkspac
     }
     void recover()
     return () => { disposed = true }
-  }, [openTabSnapshot, remote, sessionIds.join('|'), sidebarRight, workspaceRevision])
+  }, [openTabSnapshot, remote, uiContext, sessionIds.join('|'), sidebarRight, workspaceRevision, workspaceSnapshot])
   return null
 }
 
-function closeGitWorkspaceTabs(sidebar: GitSidebarRuntime, remote: unknown, sessionId: string, tab: GitSidebarTab): void {
+function closeGitWorkspaceTabs(sidebar: GitSidebarRuntime, remote: unknown, sessionId: string, tab: GitSidebarTab, uiContext?: Context): void {
   const knownWorkspaceId = workspaceBySession.get(sessionId)
   if (knownWorkspaceId !== undefined) {
     closeKnownGitWorkspaceTabs(sidebar, knownWorkspaceId, sessionId, tab.id)
     return
   }
-  void resolveGitWorkspaceId(remote, sessionId).then((workspaceId) => {
+  void resolveGitWorkspaceId(remote, sessionId, uiContext).then((workspaceId) => {
     if (workspaceId === undefined) return
     rememberGitWorkspaceSession(sessionId, workspaceId)
     closeKnownGitWorkspaceTabs(sidebar, workspaceId, sessionId, tab.id)
@@ -938,26 +946,42 @@ function noSubscribe(): () => void { return () => undefined }
 const EMPTY_GIT_OPEN_TABS: readonly { readonly sessionId: string; readonly tabId: string; readonly kind: string }[] = []
 function noOpenTabs(): readonly { readonly sessionId: string; readonly tabId: string; readonly kind: string }[] { return EMPTY_GIT_OPEN_TABS }
 
-export async function resolveGitWorkspaceId(remote: unknown, sessionId: string): Promise<string | undefined> {
+function useGitWorkspaceSnapshot(uiContext: Context | undefined): unknown {
+  const store = readNativeWorkspaceListStore(uiContext)
+  return useSyncExternalStore(
+    (listener) => store?.subscribe(listener) ?? noSubscribe(),
+    () => store?.getSnapshot(),
+    () => undefined,
+  )
+}
+
+export async function resolveGitWorkspaceId(remote: unknown, sessionId: string, uiContext?: Context): Promise<string | undefined> {
   const api = remote as GitRemote | undefined
-  const workspaces = await readWorkspaceItems(api?.workspace)
+  const workspaces = await readWorkspaceItems(api?.workspace, uiContext)
   const direct = workspaces.find((item) => item.sessionIds.includes(sessionId))
   if (direct !== undefined) return direct.workspaceId
+
+  // 虚拟会话必须由聚合列表确定工作区，不能按同名目录或唯一的本机工作区猜测。
+  if (parseVirtualSessionId(sessionId) !== null) return undefined
+  const localWorkspaces = workspaces.filter((item) => parseVirtualWorkspaceId(item.workspaceId) === null)
 
   const session = await readCurrentSession(api?.session, sessionId)
   if (session?.workspaceId !== undefined) return session.workspaceId
   const sessionCwd = session?.cwd
   if (sessionCwd !== undefined) {
-    const byPath = workspaces
+    const byPath = localWorkspaces
       .filter((item) => item.path !== undefined && isPathWithin(sessionCwd, item.path))
       .sort((left, right) => (right.path?.length ?? 0) - (left.path?.length ?? 0))[0]
     if (byPath !== undefined) return byPath.workspaceId
   }
-  if (workspaces.length === 1) return workspaces[0]?.workspaceId
+  if (localWorkspaces.length === 1) return localWorkspaces[0]?.workspaceId
   return undefined
 }
 
-async function readWorkspaceItems(api: GitWorkspaceApi | undefined): Promise<readonly WorkspaceItem[]> {
+async function readWorkspaceItems(api: GitWorkspaceApi | undefined, uiContext?: Context): Promise<readonly WorkspaceItem[]> {
+  // 与侧栏共用已经合并 PeerHost 的 Store；旧宿主没有 Store 时保留 Remote 回退。
+  const snapshot = readNativeWorkspaceSnapshot(uiContext)
+  if (snapshot !== undefined) return snapshot.items
   if (api?.follow === undefined) return []
   const source = await api.follow()
   const iterator = source[Symbol.asyncIterator]()

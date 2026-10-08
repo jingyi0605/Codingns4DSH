@@ -12,6 +12,7 @@ export const PEER_HOST_HTTP_PROXY_RULES = [
   { prefix: '/api/codingns/peerHost/nativeStreamClose', methods: ['POST'] },
   // 工作区内的插件 RPC 和 Shell 状态都必须使用目标 Host 的登录态。
   { prefix: '/api/codingns/cli', methods: ['POST'] },
+  { prefix: '/api/codingns/git', methods: ['POST'] },
   { prefix: '/api/codingns/debug', methods: ['POST'] },
   { prefix: '/api/codingns/terminal/status', methods: ['POST'] },
   { prefix: '/api/workspaces', methods: ['GET'] },
