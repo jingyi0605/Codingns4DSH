@@ -7,7 +7,7 @@ import type {
 } from '../../shared/contracts/cli-adapter.js'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
 import { normalizeSubagentBridgeSettings, SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS } from '../../shared/contracts/config.js'
-import { callCliRpc, errorMessage } from '../cli-catalog.js'
+import { callCliRpc, catalogRefreshErrorMessage, errorMessage } from '../cli-catalog.js'
 import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsFieldStyle, dshSettingsHelpStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { backdropPointerDownHandler } from '../popup-dismiss.js'
@@ -181,7 +181,7 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
       setCatalog(value)
       setSelected((current) => current === null ? null : value.find((entry) => entry.id === current.id) ?? null)
       notifyAdapterCatalogChanged(services.rpc)
-    } catch (error) { notify({ kind: 'error', message: errorMessage(error) }) }
+    } catch (error) { notify({ kind: 'error', message: catalogRefreshErrorMessage(error, t) }) }
     finally { setDetecting(null) }
   }
   const bridgeEnabled = snapshot.value?.subagentBridge?.enabled === true

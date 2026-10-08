@@ -7,6 +7,7 @@ import type {
 import { CODINGNS_RPC_CHANNEL } from '../shared/contracts/transport.js'
 import { debugInfo, debugWarn } from '../shared/debug.js'
 import type { CodingNsRpcClient } from './features/types.js'
+import type { CodingNsTranslator } from './locale.js'
 
 /** Client 侧访问 Host CLI 命名空间的统一入口。 */
 export async function callCliRpc<T>(rpc: CodingNsRpcClient, action: string, payload: unknown, signal?: AbortSignal): Promise<T> {
@@ -64,6 +65,14 @@ export function findModel(catalog: CodingNsCliModelCatalog, modelId: string | un
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** 旧 Host 缺少重新检测动作时给出版本提示；网络和检测错误仍保留原始原因。 */
+export function catalogRefreshErrorMessage(error: unknown, t: CodingNsTranslator): string {
+  const message = errorMessage(error)
+  return /^未知 CLI RPC: cli\/catalog\/refresh$/u.test(message)
+    ? t('cli.redetectHostUnsupported')
+    : message
 }
 
 /** 读取 Host 持久化的外部会话索引；兼容数组和带 items/sessions 的响应包装。 */
