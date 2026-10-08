@@ -13,17 +13,17 @@ function elements(node: unknown): ReactElement<any>[] {
   return [node, ...elements((node.props as any).children)]
 }
 
-test('状态优先反映文字和语音思考，再显示工作、关联项目认知更新或空闲', () => {
+test('状态优先反映文字和语音活动，只有真实索引构建才显示认知更新', () => {
   const idle = { running: false, working: false, voiceActive: false, hasProjects: false, indexState: 'not-built' as const }
   assert.equal(resolveAssistantWorkbenchStatus(idle), 'idle')
-  assert.equal(resolveAssistantWorkbenchStatus({ ...idle, hasProjects: true }), 'updating')
-  for (const indexState of ['not-built', 'stale', 'building', 'incomplete'] as const) {
-    assert.equal(resolveAssistantWorkbenchStatus({ ...idle, hasProjects: true, indexState }), 'updating')
+  for (const indexState of ['not-built', 'stale', 'incomplete', 'ready', undefined] as const) {
+    assert.equal(resolveAssistantWorkbenchStatus({ ...idle, hasProjects: true, indexState }), 'idle', '缺少结果、等待会话或查询失败不能冒充索引执行')
   }
-  assert.equal(resolveAssistantWorkbenchStatus({ ...idle, hasProjects: true, indexState: 'ready' }), 'idle')
-  assert.equal(resolveAssistantWorkbenchStatus({ ...idle, running: true, working: true, hasProjects: true }), 'thinking')
-  assert.equal(resolveAssistantWorkbenchStatus({ ...idle, voiceActive: true, voiceState: 'thinking', hasProjects: true }), 'thinking')
-  assert.equal(resolveAssistantWorkbenchStatus({ ...idle, working: true, hasProjects: true }), 'working')
+  assert.equal(resolveAssistantWorkbenchStatus({ ...idle, hasProjects: true, indexState: 'building' }), 'updating')
+  assert.equal(resolveAssistantWorkbenchStatus({ ...idle, indexState: 'building' }), 'idle', '未关联项目时不显示索引活动')
+  assert.equal(resolveAssistantWorkbenchStatus({ ...idle, running: true, working: true, hasProjects: true, indexState: 'building' }), 'thinking')
+  assert.equal(resolveAssistantWorkbenchStatus({ ...idle, voiceActive: true, voiceState: 'thinking', hasProjects: true, indexState: 'building' }), 'thinking')
+  assert.equal(resolveAssistantWorkbenchStatus({ ...idle, working: true, hasProjects: true, indexState: 'building' }), 'working')
   for (const voiceState of ['listening', 'speaking', 'interrupted']) {
     assert.equal(resolveAssistantWorkbenchStatus({ ...idle, voiceActive: true, voiceState }), 'working')
   }

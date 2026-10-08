@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { setImmediate } from 'node:timers/promises'
 import { createElement, isValidElement, type ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { AssistantWorkbench, AssistantConfigurationPage, AssistantConfigurationFields, AssistantCapabilityFields, AssistantVoiceFields, AssistantWorkspaceFields, AssistantConversationView, readAssistantDraft, assistantDraftPayload, handleAssistantWorkbenchEscape } from '../src/client/features/assistant-workbench.js'
-import { AssistantComposerView as AssistantComposer } from '../src/client/features/assistant-workbench-controls.js'
+import { AssistantComposerView as AssistantComposer, AssistantStatusBadge } from '../src/client/features/assistant-workbench-controls.js'
 import { AssistantConfigurationTabBar, AssistantConfigurationTabs, type AssistantConfigurationTab } from '../src/client/features/assistant-configuration-tabs.js'
 import { AssistantPanel } from '../src/client/features/assistant-panel.js'
 import { AssistantAvatarPicker } from '../src/client/avatar/catalog-picker.js'
@@ -18,6 +19,7 @@ import { DEFAULT_LIGHT_VOICE_MODEL_ID } from '../src/shared/voice-initialization
 import { registerGlobalVoiceAdapter, type GlobalVoiceAdapter } from '../src/client/global-voice-runtime-registry.js'
 import type { AssistantConversationSnapshot } from '../src/shared/contracts/assistant.js'
 import type { CodingNsClientServices } from '../src/client/features/types.js'
+import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 const t = resolveCodingNsTranslator()
 const props = { active: false, pending: false, partialText: '', realtimeAvailable: false, onStart() {}, onStop() {}, onClose() {} }
 function fixture(initialized: boolean) {
@@ -80,6 +82,61 @@ test('首次创建只有名称、模型、性格背景和形象，不初始化�
   assert.ok(!markup.includes('data-codingns-avatar-settings-editor'))
   assert.ok(!markup.includes('data-codingns-assistant-chat'))
   assert.equal(f.calls(), 0)
+})
+
+test('索引等待、查询失败和超时恢复空闲，后续轮询仍能显示真实构建活动', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  // AbortSignal.timeout 使用原生计时器，测试中接入可推进的时钟，避免真实等待十秒。
+  context.mock.method(AbortSignal, 'timeout', (delay: number) => {
+    assert.equal(delay, 10_000)
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(new DOMException('timeout', 'TimeoutError')), delay)
+    return controller.signal
+  })
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: new EventTarget() })
+  const f = fixture(true)
+  f.snapshot.value.assistant.managedWorkspaceIds = ['workspace']
+  let reply: 'not-built' | 'building' | 'incomplete' | 'ready' | 'error' | 'hang' = 'not-built'
+  let queries = 0
+  const endpoints: string[] = []
+  const services = { ...f.services, rpc: { call: async (_channel: string, endpoint: string, _payload: unknown, signal?: AbortSignal) => {
+    endpoints.push(endpoint)
+    if (endpoint === 'assistant/lifecycle/read') return { ok: true, value: { profile: f.snapshot.value.assistant.profile,
+      conversation: { revision: 0, summary: '', messages: [], pendingMessage: null, active: null, compressing: false, error: null } } }
+    if (endpoint !== 'assistant/debug') return { ok: true, value: undefined }
+    queries++
+    if (reply === 'error') throw new Error('状态查询失败')
+    if (reply === 'hang') return new Promise((_resolve, reject) => {
+      assert.ok(signal)
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    })
+    return { ok: true, value: { indexState: reply, workspaces: [] } }
+  } } } as unknown as CodingNsClientServices
+  const renderer = createHookRenderer(AssistantWorkbench, { ...props, services })
+  context.after(() => {
+    renderer.dispose()
+    if (previousDocument) Object.defineProperty(globalThis, 'document', previousDocument)
+    else Reflect.deleteProperty(globalThis, 'document')
+  })
+  const status = () => elements(renderer.render()).find((element) => element.type === AssistantStatusBadge)!.props.status
+  const next = async (state: typeof reply) => { reply = state; context.mock.timers.tick(3000); await setImmediate() }
+  assert.equal(status(), 'idle', '尚未收到索引快照时不猜测执行状态')
+  await setImmediate(); assert.equal(status(), 'idle')
+  await next('building'); assert.equal(status(), 'updating')
+  await next('incomplete'); assert.equal(status(), 'idle', '等待会话结束不代表正在索引')
+  await next('building'); assert.equal(status(), 'updating')
+  await next('error'); assert.equal(status(), 'idle', '失败后清除旧的构建证明')
+  await next('building'); assert.equal(status(), 'updating')
+  await next('hang'); assert.equal(status(), 'updating')
+  const beforeTimeout = queries
+  context.mock.timers.tick(10_000); await setImmediate()
+  assert.equal(status(), 'idle', '查询超时不能永久保持认知更新')
+  assert.equal(queries, beforeTimeout)
+  await next('ready'); assert.equal(status(), 'idle')
+  assert.equal(queries, beforeTimeout + 1, '超时后继续查询')
+  await next('building'); assert.equal(status(), 'updating')
+  assert.ok(endpoints.every((endpoint) => ['assistant/lifecycle/read', 'assistant/chat/models', 'assistant/tts/catalog', 'assistant/debug'].includes(endpoint)), '状态查询不重建或取消后台索引')
 })
 
 test('未创建助理选择男生后，初始化预览使用对应生图 URL', () => {
