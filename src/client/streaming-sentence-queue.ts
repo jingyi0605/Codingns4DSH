@@ -85,7 +85,7 @@ export class StreamingSentenceQueue {
 
 function isPhraseBoundary(text: string, index: number): boolean {
   const punctuation = text[index]!
-  if (punctuation === '，' || punctuation === '；' || punctuation === '：') return true
+  if (/[，；：]/u.test(punctuation)) return true
   const before = text.slice(0, index)
   if (/[0-9]$/u.test(before) && (text[index + 1] === undefined || /[0-9]/u.test(text[index + 1]!))) return false
   if (punctuation === ':' && /(?:https?|ftp|file|mailto|wss?)$/iu.test(before)) return false
