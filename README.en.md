@@ -13,7 +13,7 @@
 
 **Current release `@jingyi0605/codingns4dsh@0.2.1-beta.5`** · DSH **`>=0.2.0-rc.2 <=0.2.1-alpha.1`** (tested with `0.2.1-alpha.1`) · Node **`>= 22.19`** · macOS / Linux / Windows
 
-**[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ group 1092985965**
+**[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ group 1092985965** · **[WeChat / QQ QR codes](#community)**
 
 <p>
   <a href="#interface-preview">Preview</a> ·
@@ -23,6 +23,7 @@
   <a href="#installation">Install</a> ·
   <a href="#first-run">First run</a> ·
   <a href="#troubleshooting">Troubleshooting</a> ·
+  <a href="#community">Community</a> ·
   <a href="#development">Development</a> ·
   <a href="#acknowledgements">Acknowledgements</a> ·
   <a href="#license">License</a>
@@ -303,7 +304,30 @@ A directory install links the checkout — rebuild (`pnpm build` / `pnpm dev:wat
 - **LAN** — check the card's status indicator and access URL, allow the port through the firewall, keep both devices on one network; with several DSH instances pick the detected port manually; sign in first when login protection is on.
 - **Relay** — verify Control API reachability, log in again if the session expired, refresh devices, then bind the Host.
 - **Logs** — `CODINGNS4DSH_TUNNEL_DEBUG=1 dsh codingns --no-open` (metadata only); pnpm install logs live in `$DSH_HOME/profiles/<profile>/.plugin-manager/logs/`.
-- **Reporting** — include DSH and Codingns4DSH versions, OS, module and exact error: [GitHub Issues](https://github.com/jingyi0605/Codingns4DSH/issues) or QQ **1092985965**.
+- **Reporting** — include DSH and Codingns4DSH versions, OS, module and exact error: [GitHub Issues](https://github.com/jingyi0605/Codingns4DSH/issues) or QQ **1092985965** ([WeChat / QQ QR codes](#community)).
+
+---
+
+## Community
+
+The WeChat and QQ groups are for questions, feedback and release announcements — scan either code to join.
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="50%">
+        <img width="300" src="assets/screenshots/wechat-group.png" alt="WeChat group QR code: DSH-插件交流群"><br>
+        <b>WeChat group</b>: DSH-插件交流群
+      </td>
+      <td align="center" width="50%">
+        <img width="300" src="assets/screenshots/qq-group.png" alt="QQ group QR code: 1092985965"><br>
+        <b>QQ group</b>: 1092985965
+      </td>
+    </tr>
+  </table>
+</div>
+
+The WeChat QR code is generated dynamically by WeChat and is **valid for 7 days** (this image was captured on 2026-10-08 and states it expires on October 15); re-open the group's share page for a fresh code once it lapses, or ask in [GitHub Issues](https://github.com/jingyi0605/Codingns4DSH/issues). The QQ group QR code and group number do not expire.
 
 ---
 

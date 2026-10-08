@@ -13,7 +13,7 @@
 
 **当前版本 `@jingyi0605/codingns4dsh@0.2.1-beta.5`** · DSH **`>=0.2.0-rc.2 <=0.2.1-alpha.1`**（已验证 `0.2.1-alpha.1`）· Node **`>= 22.19`** · macOS / Linux / Windows
 
-**[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965**
+**[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965** · **[微信群 / QQ 群二维码](#交流群)**
 
 <p>
   <a href="#界面预览">界面预览</a> ·
@@ -23,6 +23,7 @@
   <a href="#安装">安装</a> ·
   <a href="#首次使用">首次使用</a> ·
   <a href="#故障排查">故障排查</a> ·
+  <a href="#交流群">交流群</a> ·
   <a href="#开发">开发</a> ·
   <a href="#鸣谢">鸣谢</a> ·
   <a href="#许可证">许可证</a>
@@ -403,7 +404,30 @@ Desktop 只通过 GUI 插件页安装已发布的 registry 版本，并固定版
 - **局域网** —— 确认卡片启动状态与访问地址、防火墙放行、两台设备同网络；多个 DSH 实例时手动选择探测到的端口；开启登录保护后需先登录。
 - **中转** —— 检查 Control API 可达性，会话过期则重新登录，刷新设备后绑定 Host。
 - **日志** —— 默认不输出调试日志；需要完整排查启动或 RPC 时使用 `CODINGNS4DSH_DEBUG=1 dsh --profile stage0 --no-open`。只查看警告和错误时使用 `CODINGNS4DSH_DEBUG_LEVEL=warn dsh --profile stage0 --no-open`，也可简写为 `CODINGNS4DSH_DEBUG=warn`。旧变量 `CODINGNS4DSH_TUNNEL_DEBUG=1` 仍兼容；pnpm 安装日志在 `$DSH_HOME/profiles/<profile>/.plugin-manager/logs/`。
-- **反馈** —— 附上 DSH 与 Codingns4DSH 版本、操作系统、涉及模块和完整错误：[GitHub Issues](https://github.com/jingyi0605/Codingns4DSH/issues) 或 QQ **1092985965**。
+- **反馈** —— 附上 DSH 与 Codingns4DSH 版本、操作系统、涉及模块和完整错误：[GitHub Issues](https://github.com/jingyi0605/Codingns4DSH/issues) 或 QQ **1092985965**（[微信群 / QQ 群二维码](#交流群)）。
+
+---
+
+## 交流群
+
+微信群与 QQ 群用于提问、反馈和版本更新通知，扫码即可加入。
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="50%">
+        <img width="300" src="assets/screenshots/wechat-group.png" alt="微信群二维码：DSH-插件交流群"><br>
+        <b>微信群</b>：DSH-插件交流群
+      </td>
+      <td align="center" width="50%">
+        <img width="300" src="assets/screenshots/qq-group.png" alt="QQ 群二维码：1092985965"><br>
+        <b>QQ 群</b>：1092985965
+      </td>
+    </tr>
+  </table>
+</div>
+
+微信群二维码由微信动态生成，**7 天内有效**（本图截取自 2026-10-08，标注「10 月 15 日前」有效），过期后重新进入群分享页会得到新码，也可在 [GitHub Issues](https://github.com/jingyi0605/Codingns4DSH/issues) 留言索取；QQ 群二维码与群号长期有效。
 
 ---
 
