@@ -62,6 +62,8 @@ for (const moduleName of manifest.dsh?.client?.inject ?? []) {
 // DSH Desktop 的 runtime resolution 会把 peer 包映射到宿主 runtime；CLI 临时 Profile
 // 的 Node 进程没有加载该拦截器，因此在回放目录建立同一份只读映射，再导入安装后的 Host。
 await linkRuntimePackage('@deepseek-ai/cordis')
+// 原生悬浮助理使用宿主路径服务；独立 Node 回放同样需要这份运行时映射。
+await linkRuntimePackage('@deepseek-ai/dsh-home-paths')
 
 const hostPath = requireFromProfile.resolve(`${packageName}/host`)
 const host = await import(pathToFileURL(hostPath).href)
