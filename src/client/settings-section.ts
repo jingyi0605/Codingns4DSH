@@ -133,6 +133,8 @@ interface FeatureCardProps {
 function FeatureCard({ entry, snapshot, services, restartStates, notify }: FeatureCardProps): ReactElement {
   const { module, ui } = entry
   const [open, setOpen] = useState(ui.defaultOpen === true)
+  // 折叠卡片首次展开才挂载业务面板；之后保留实例，避免收起时丢失未保存的草稿。
+  const [hasOpened, setHasOpened] = useState(ui.defaultOpen === true)
   const t = useCodingNsTranslator(services.locale)
   const versionCompatible = isFeatureDshVersionCompatible(module.descriptor, services.dshVersion)
   const requestedEnabled = isFeatureEnabled(module.descriptor, snapshot.value)
@@ -168,7 +170,10 @@ function FeatureCard({ entry, snapshot, services, restartStates, notify }: Featu
     'details',
     {
       open,
-      onToggle: (event: { currentTarget: { open: boolean } }) => setOpen(event.currentTarget.open),
+      onToggle: (event: { currentTarget: { open: boolean } }) => {
+        setOpen(event.currentTarget.open)
+        if (event.currentTarget.open) setHasOpened(true)
+      },
       style: dshSettingsCardStyle,
     },
     createElement('summary', {
@@ -213,7 +218,7 @@ function FeatureCard({ entry, snapshot, services, restartStates, notify }: Featu
       temporarilyDisabled
         ? createElement('div', { role: 'status', style: { marginBottom: 10, color: dshThemeColor.labelSecondary } }, t('settings.maintenanceDisabled'))
         : null,
-      panel === undefined ? null : createElement(panel, { services, enabled, snapshot, notify }),
+      !hasOpened || panel === undefined ? null : createElement(panel, { services, enabled, snapshot, notify }),
     ),
   )
 }

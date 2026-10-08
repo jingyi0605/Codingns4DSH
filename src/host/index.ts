@@ -19,7 +19,7 @@ import { DebugWorkspaceService } from './debug.js'
 import { detectRuntimeDshVersion, DSH_VERSION_INJECTION_NAME } from './dsh-runtime-version.js'
 import { createDshCapabilityRegistry } from '../dsh-capabilities/index.js'
 import { debugInfo, debugWarn } from '../shared/debug.js'
-import { repairLegacySessionLogs } from './session-migration-repair.js'
+import { createLegacySessionRepair } from './session-migration-repair.js'
 import { injectDshWebPwaMetadata, injectDshWebTransportOwnership } from './index-injection.js'
 import { applyViewportFitTap } from './modules/pwa/pwa-viewport.js'
 import type { DshHostSettingsProvider, DshHostSettingsScope } from '../dsh-capabilities/host/config-forms-adapter.js'
@@ -45,40 +45,45 @@ export async function apply(ctx?: Context): Promise<void> {
 
   // DSH 0.1.7 的官方 v3->v4 迁移器要求每个 tool/call 先有 assistant/message
   // 声明。旧版外部 Agent 曾直接写入 tool/call，必须在任何会话 open 前修复。
-  ctx.inject(['sessionPersistence'], async (sessionCtx) => {
+  ctx.inject(['sessionPersistence'], (sessionCtx) => {
     const persistence = sessionCtx.get('sessionPersistence') as unknown
     if (!isRecord(persistence) || typeof persistence.root !== 'string') return
     const open = persistence.open
     if (typeof open !== 'function') return
-    let repair: Promise<unknown> | undefined
-    const repairBeforeOpen = (): Promise<unknown> => {
-      repair ??= repairLegacySessionLogs({
-        root: persistence.root as string,
-        logger: (message, error) => console.warn('codingns4dsh:', message, error),
-      }).catch((error) => {
-        console.warn('codingns4dsh: 历史会话扫描失败', error)
-        return undefined
-      })
-      return repair
-    }
-    // DSH 的 v3->v4 转换发生在 persistence.open 内部。只在启动时异步扫描
-    // 会晚于第一次点击历史会话，因此必须把修复挂到真正的读取边界之前。
+    const lifetime = new AbortController()
+    const repairBeforeOpen = createLegacySessionRepair({
+      root: persistence.root,
+      signal: lifetime.signal,
+      logger: (message, error) => console.warn('codingns4dsh:', message, error),
+    })
+    // 官方转换发生在 open(id, access, options) 内；只检查即将打开的会话，
+    // 启动时不扫描磁盘，也不让无关历史日志挡住首次会话打开。
     const wrappedOpen = async function (this: unknown, ...args: unknown[]): Promise<unknown> {
-      await repairBeforeOpen()
+      // 后安装的包装可能仍持有本层引用；卸载后必须透明转发，不能让旧层永久拒绝 open。
+      if (lifetime.signal.aborted) return open.apply(this, args)
+      const signal = isRecord(args[2]) ? args[2].signal as AbortSignal | undefined : undefined
+      signal?.throwIfAborted()
+      if (typeof args[0] === 'string' && args[0] !== '') {
+        try {
+          await repairBeforeOpen(args[0])
+        } catch (error) {
+          if (!lifetime.signal.aborted) console.warn('codingns4dsh: 历史会话检查失败', error)
+        }
+      }
+      signal?.throwIfAborted()
       return open.apply(this, args)
     }
     try {
       persistence.open = wrappedOpen
       // persistence 是其他插件拥有的服务；重载时只撤销自己安装的这一层。
       sessionCtx.effect(() => () => {
+        lifetime.abort()
         if (persistence.open === wrappedOpen) persistence.open = open
       }, 'codingns4dsh: 会话读取修复包装')
     } catch (error) {
-      // 某些 Host 会冻结 Service 实例；启动扫描仍然可修复磁盘上的旧日志。
+      // 冻结的服务保持原生读取行为；不能退回全盘扫描拖慢启动。
       console.warn('codingns4dsh: 无法包装 sessionPersistence.open', error)
     }
-    const report = await repairBeforeOpen()
-    debugInfo('codingns4dsh: legacy session repair finished', report)
   })
 
   ctx.inject(['settings', 'connection', 'webServer'], async (hostCtx) => {

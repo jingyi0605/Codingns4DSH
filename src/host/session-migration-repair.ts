@@ -1,4 +1,4 @@
-import { copyFile, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { copyFile, lstat, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib'
@@ -20,6 +20,8 @@ const REFERENCE_KEYS = new Set([
 
 export interface LegacySessionRepairOptions {
   readonly root: string
+  /** 指定时仅定位该会话，不递归遍历其他会话目录。省略供显式离线全量修复使用。 */
+  readonly sessionId?: string
   readonly signal?: AbortSignal
   readonly logger?: (message: string, error?: unknown) => void
 }
@@ -52,7 +54,9 @@ interface ParsedLog {
  * 每个文件独立处理，单文件失败不会影响其他历史会话。
  */
 export async function repairLegacySessionLogs(options: LegacySessionRepairOptions): Promise<LegacySessionRepairReport> {
-  const files = await findLegacyLogs(options.root, options.signal)
+  const files = options.sessionId === undefined
+    ? await findLegacyLogs(options.root, options.signal)
+    : await findSessionLogs(options.root, options.sessionId, options.signal)
   let repaired = 0
   let skipped = 0
   let failed = 0
@@ -68,6 +72,66 @@ export async function repairLegacySessionLogs(options: LegacySessionRepairOption
     }
   }
   return { scanned: files.length, repaired, skipped, failed }
+}
+
+/** 同一会话只检查一次，并发打开共用修复；失败和不存在的会话允许下次重试。 */
+export function createLegacySessionRepair(options: Omit<LegacySessionRepairOptions, 'sessionId'>): (sessionId: string) => Promise<LegacySessionRepairReport> {
+  const pending = new Map<string, Promise<LegacySessionRepairReport>>()
+  // 只缓存成功结果，且限定数量，避免长期运行的 Host 随会话数量无限增长。
+  const completed = new Map<string, LegacySessionRepairReport>()
+  return (sessionId) => {
+    const cached = completed.get(sessionId)
+    if (cached !== undefined) return Promise.resolve(cached)
+    const running = pending.get(sessionId)
+    if (running !== undefined) return running
+    const repair = repairLegacySessionLogs({ ...options, sessionId }).then((report) => {
+      if (report.failed === 0 && report.scanned > 0) {
+        completed.set(sessionId, report)
+        if (completed.size > 2000) completed.delete(completed.keys().next().value!)
+      }
+      return report
+    }).finally(() => { pending.delete(sessionId) })
+    pending.set(sessionId, repair)
+    return repair
+  }
+}
+
+/**
+ * DSH JSONL 布局为 root/项目目录/编码后的会话 ID/session.vN.jsonl[.zstd]。
+ * 只列项目目录并探测目标会话，开一个会话不再解压全部历史日志。
+ */
+async function findSessionLogs(root: string, sessionId: string, signal?: AbortSignal): Promise<string[]> {
+  if (sessionId.length === 0) return []
+  throwIfAborted(signal)
+  let projects
+  try { projects = await readdir(root, { withFileTypes: true }) } catch (error) {
+    if (errorCode(error) === 'ENOENT') return []
+    throw error
+  }
+  const result: string[] = []
+  const segment = encodeSessionSegment(sessionId)
+  for (const project of projects) {
+    throwIfAborted(signal)
+    if (!project.isDirectory()) continue
+    const directory = join(root, project.name, segment)
+    try {
+      // 与全量扫描一致，不跟随会话目录的符号链接。
+      if (!(await lstat(directory)).isDirectory()) continue
+      const entries = await readdir(directory, { withFileTypes: true })
+      for (const entry of entries) {
+        if (entry.isFile() && LEGACY_FILE.test(entry.name)) result.push(join(directory, entry.name))
+      }
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT') throw error
+    }
+  }
+  return result
+}
+
+/** 对齐 DSH session-persistence-jsonl 的 encodeSegment（按 UTF-16 编码，不能使用 URI 编码）。 */
+function encodeSessionSegment(id: string): string {
+  if (id === '.' || id === '..') return '~002E'.repeat(id.length)
+  return id.replace(/[^A-Za-z0-9._-]/g, (unit) => `~${unit.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`)
 }
 
 /** 修复一个 v3/v4 日志；返回 true 表示已发布修复文件。 */
