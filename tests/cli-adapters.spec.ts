@@ -2944,6 +2944,40 @@ test('DSH 权限服务不可用时不下发权限字段，驱动沿用保守默�
   await features.disable('cliAdapters')
 })
 
+test('适配器映射只读索引，普通消息不重扫历史，打开多层 fork 按祖先顺序恢复', async () => {
+  const table = new CodingNsRpcTable()
+  const sessionStore = new CodingNsCliSessionStore()
+  const registry = new CodingNsCliAdapterRegistry([], {}, { sessionStore })
+  let scans = 0
+  const snapshots = new Map(Array.from({ length: 4 }, (_, index) => {
+    const id = `legacy-${index}`
+    return [id, { id, header: { isSeeded: index > 0, parentSession: index > 0 ? `legacy-${index - 1}` : undefined }, snapshotEvents() {
+      scans++
+      return index === 0 ? [{ type: 'message/append', data: { message: { source: { plugin: 'codingns4dsh', adapterId: 'codex' } } } }] : []
+    } }] as const
+  }))
+  const native = { id: 'native', snapshotEvents() { scans++; return [] } }
+  let onEvent!: (session: unknown, event: unknown) => void
+  const features = new FeatureRegistry({ rpc: table, nativeSessions: {
+    get: (id: string) => snapshots.get(id),
+    list() { assert.fail('启动和侧栏查询不得枚举原生历史') },
+    subscribe(handlers: { onEvent: typeof onEvent }) { onEvent = handlers.onEvent; return () => {} },
+  } as never })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  try {
+    for (let index = 0; index < 20; index++) assert.deepEqual(await table.resolve('cli/session/adapter-map')!.handler('session/adapter-map', {}), [])
+    assert.equal(scans, 0)
+    for (let index = 0; index < 20; index++) onEvent(native, { type: 'message/append', data: { message: { source: { kind: 'model', provider: 'deepseek' } } } })
+    assert.equal(scans, 1)
+    await table.resolve('cli/session/get')!.handler('session/get', { sessionId: 'legacy-3' })
+    assert.equal(sessionStore.get('legacy-3')?.adapterId, 'codex')
+    assert.equal(scans, 5)
+    await table.resolve('cli/session/adapter-map')!.handler('session/adapter-map', {})
+    assert.equal(scans, 5)
+  } finally { await features.disable('cliAdapters') }
+})
+
 test('stage0 形态：fork 子会话被识别为父会话的外部 Agent，而不是默认 DSH 会话', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined

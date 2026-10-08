@@ -14,6 +14,7 @@ import { guardNativeSubagentParentTurn, markNativeSubagentParentTurnStarted, wai
 import { setNativeSubagents } from '../data/build/dist/host/cli-adapters/native-subagent-holder.js'
 import { registerNativeTeamSubagentProviders, withTeamSubagentSelection } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
 import { setAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry-holder.js'
+import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 
 function fakeRpcSpawn(onRequest: (request: Record<string, unknown>, stdout: PassThrough) => void) {
   return (() => {
@@ -609,35 +610,45 @@ test('agent_subagent 支持等待/读取后台子会话，并阻止依赖步骤�
   }
 })
 
+/** 只替换外部驱动，保留真实注册表的首次检测、缓存与会话绑定契约。 */
+function nativeProviderTestRegistry(): CodingNsCliAdapterRegistry {
+  return new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'mcode', name: 'MiniMax Code' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'fake-mcode' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { assert.fail('Provider 准备阶段不应启动模型执行') },
+  }])
+}
+
 test('原生 Provider 注册可去重并在释放后重新装配', async () => {
   const providers: Array<{ name: string; prepareContinuable: (request: any) => Promise<unknown> }> = []
-  const registry = {
-    catalog: async () => [{ id: 'mcode', installed: true, enabled: true }],
-    setSession: (sessionId: string, config: unknown) => { assert.equal(sessionId, 'child-2'); assert.deepEqual(config, { adapterId: 'mcode', parentSessionId: 'parent-2', origin: 'subagent' }) },
-    flushSessionBindings: async () => undefined,
-  }
-  setAdapterRegistry(registry as never)
+  const registry = nativeProviderTestRegistry()
+  setAdapterRegistry(registry)
   const service = {
     registerProvider: (provider: any) => { providers.push(provider); return () => undefined },
   }
-  const dispose = registerNativeTeamSubagentProviders(service as never)
-  registerNativeTeamSubagentProviders(service as never)
-  assert.equal(providers.length, 10)
-  await providers.find((provider) => provider.name === 'codingns-external-mcode')!.prepareContinuable({ sessionId: 'child-2', parent: { id: 'parent-2' }, signal: new AbortController().signal })
-  dispose()
-  registerNativeTeamSubagentProviders(service as never)
-  assert.equal(providers.length, 20)
-  setAdapterRegistry(undefined)
+  let dispose = registerNativeTeamSubagentProviders(service as never)
+  try {
+    registerNativeTeamSubagentProviders(service as never)
+    assert.equal(providers.length, 10)
+    assert.equal((await registry.catalog())[0]?.detectionState, 'pending')
+    await providers.find((provider) => provider.name === 'codingns-external-mcode')!.prepareContinuable({ sessionId: 'child-2', parent: { id: 'parent-2' }, signal: new AbortController().signal })
+    assert.equal((await registry.catalog())[0]?.detectionState, 'ready')
+    assert.deepEqual(registry.getSession('child-2'), { adapterId: 'mcode', parentSessionId: 'parent-2', origin: 'subagent' })
+    dispose()
+    dispose = registerNativeTeamSubagentProviders(service as never)
+    assert.equal(providers.length, 20)
+  } finally {
+    dispose()
+    setAdapterRegistry(undefined)
+    await registry.dispose()
+  }
 })
 
 test('子代理 Provider 在 Agent id 与会话 id 不同的宿主中仍传递授权模型', async () => {
   const providers: Array<{ name: string; prepareContinuable: (request: any) => Promise<unknown> }> = []
-  let captured: unknown
-  setAdapterRegistry({
-    catalog: async () => [{ id: 'mcode', installed: true, enabled: true }],
-    setSession: (_sessionId: string, config: unknown) => { captured = config },
-    flushSessionBindings: async () => undefined,
-  } as never)
+  const registry = nativeProviderTestRegistry()
+  setAdapterRegistry(registry)
   const dispose = registerNativeTeamSubagentProviders({ registerProvider: (provider: any) => { providers.push(provider); return () => undefined } } as never)
   try {
     await withTeamSubagentSelection('session-parent', 'mcode', 'model-explicit', async () => {
@@ -647,9 +658,10 @@ test('子代理 Provider 在 Agent id 与会话 id 不同的宿主中仍传递�
         signal: new AbortController().signal,
       })
     })
-    assert.deepEqual(captured, { adapterId: 'mcode', parentSessionId: 'session-parent', origin: 'subagent', modelId: 'model-explicit' })
+    assert.deepEqual(registry.getSession('child-model'), { adapterId: 'mcode', parentSessionId: 'session-parent', origin: 'subagent', modelId: 'model-explicit' })
   } finally {
     dispose()
     setAdapterRegistry(undefined)
+    await registry.dispose()
   }
 })

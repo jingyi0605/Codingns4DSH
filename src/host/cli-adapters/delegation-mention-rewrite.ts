@@ -34,6 +34,12 @@ export function containsDelegationCarrier(messages: readonly CodingNsCliMessage[
     : Array.isArray(message.content) && message.content.some((part) => isRecord(part) && typeof part.text === 'string' && part.text.includes('<!--codingns:delegate:')))
 }
 
+/** 首轮检测尚未完成时，只等待本次委派明确选择的适配器。 */
+export function delegationAdapterIds(messages: readonly CodingNsCliMessage[]): string[] {
+  const message = messages[findLatestHumanMessage(messages)]
+  return message === undefined ? [] : parseDelegationCarriers(extractText(message.content)).carriers.map((carrier) => carrier.adapterId)
+}
+
 /** 在普通对话进入当前 Agent 前消费 carrier；不使用历史消息填充空任务。 */
 export function rewriteDelegationMessages(
   messages: readonly CodingNsCliMessage[],

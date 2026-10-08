@@ -5,7 +5,7 @@ import {
   fetchSessionAdapters,
   replaceSessionAdapters,
 } from '../session-adapter-cache.js'
-import { readNativeWorkspaceSnapshot } from '../native-workspace-store.js'
+import { readNativeWorkspaceListStore, readNativeWorkspaceSnapshot } from '../native-workspace-store.js'
 import { requestPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
 import { startWorkspaceSessionLogoDom, type WorkspaceSessionLogoDomController } from '../workspace-session-logo-dom.js'
 import { startWorkspaceSessionArchiveDom, type WorkspaceSessionArchiveDomController } from '../workspace-session-archive-dom.js'
@@ -47,7 +47,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
     let archiveDom: WorkspaceSessionArchiveDomController | undefined
     let visibilityDom: WorkspaceSessionVisibilityDomController | undefined
     let rightbarDom: WorkspaceSessionRightbarDomController | undefined
-    let adapterRefreshTimer: ReturnType<typeof globalThis.setInterval> | undefined
+    let disposeAdapterRefresh: (() => void) | undefined
     let disposeSubscription: (() => void) | undefined
     let disposeQuickPhrases: (() => void) | undefined
     let disposeSkillCommand: (() => void) | undefined
@@ -58,10 +58,8 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
       generation += 1
       logoDom?.dispose()
       logoDom = undefined
-      if (adapterRefreshTimer !== undefined) {
-        globalThis.clearInterval(adapterRefreshTimer)
-        adapterRefreshTimer = undefined
-      }
+      disposeAdapterRefresh?.()
+      disposeAdapterRefresh = undefined
       clearSessionAdapters()
     }
     const enableArchive = (): void => {
@@ -154,7 +152,11 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
       if (logoDom !== undefined) return
       const currentGeneration = ++generation
       logoDom = startWorkspaceSessionLogoDom({ locale: context.services.locale })
+      let refreshing = false
+      let dirty = false
       const refreshAdapters = (): void => {
+        if (refreshing) { dirty = true; return }
+        refreshing = true
         void fetchSessionAdapters(context.services.rpc)
         .then((bindings) => {
           if (generation !== currentGeneration || logoDom === undefined) return
@@ -163,11 +165,29 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
           archiveDom?.refresh()
         })
         .catch(() => undefined)
+        .finally(() => {
+          refreshing = false
+          if (dirty && generation === currentGeneration) { dirty = false; refreshAdapters() }
+        })
       }
       refreshAdapters()
-      // 旧会话在 DSH 中按需加载；加载后 Host 才能识别其适配器。定期拉取
-      // 脱敏映射，确保侧栏不会一直停留在首次扫描时的默认 DSH 图标。
-      adapterRefreshTimer = globalThis.setInterval(refreshAdapters, 2_000)
+      // 工作区成员变化、切换会话和页面恢复时重读轻量索引，移除两秒定时扫描。
+      const store = readNativeWorkspaceListStore(context.services.uiContext)
+      let membership = ''
+      const removeStore = store?.subscribe(() => {
+        const snapshot = readNativeWorkspaceSnapshot(context.services.uiContext)
+        const next = JSON.stringify(snapshot?.items.map((item) => [item.workspaceId, item.sessionIds]))
+        if (next === membership) return
+        membership = next ?? ''
+        refreshAdapters()
+      })
+      globalThis.addEventListener?.('popstate', refreshAdapters)
+      globalThis.addEventListener?.('focus', refreshAdapters)
+      disposeAdapterRefresh = () => {
+        removeStore?.()
+        globalThis.removeEventListener?.('popstate', refreshAdapters)
+        globalThis.removeEventListener?.('focus', refreshAdapters)
+      }
     }
     const sync = (): void => {
       const workspaceSettings = context.services.settings.getSnapshot().value?.workspaceSessionEnhancement

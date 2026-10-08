@@ -13,6 +13,9 @@ export interface CodingNsCliAdapterDescriptor {
   readonly enabled: boolean
   readonly version: string | null
   readonly command: string | null
+  /** 未完成首次检测与确实未安装必须区分，避免首屏显示错误状态。 */
+  readonly detectionState?: 'pending' | 'running' | 'ready' | 'error'
+  readonly checkedAt?: string
   /** 最近一次安装探测的脱敏诊断；例如 CLI 已找到但启动依赖缺失。 */
   readonly diagnostic?: string
 }

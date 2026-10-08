@@ -73,7 +73,7 @@ export async function dispatchBridgeSubagent(
     // 会话由原生 spawn Provider 负责，不能因为 catalog 没有外部条目而拒绝。
     const adapter = adapterId === 'dsh'
       ? { installed: true, enabled: true }
-      : (await registry.catalog()).find((item) => item.id === adapterId)
+      : (await registry.catalogForUse([adapterId])).find((item) => item.id === adapterId)
     if (adapter === undefined || !adapter.installed || !adapter.enabled) {
       return bridgeFailure(`${adapterId} 未安装或未启用`)
     }

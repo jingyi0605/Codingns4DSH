@@ -60,9 +60,9 @@ test('Host 会话索引串行持久化并支持归档筛选', async () => {
   store.archive('dsh-2')
   await store.flush()
 
-  assert.equal(writes.length, 3)
+  assert.equal(writes.length, 1, '同一轮的变更只保存最新快照')
   assert.deepEqual(store.list().map((record) => record.dshSessionId), ['dsh-1'])
-  assert.deepEqual(store.list({ includeArchived: true }).map((record) => record.dshSessionId), ['dsh-2', 'dsh-1'])
+  assert.deepEqual(store.list({ includeArchived: true }).map((record) => record.dshSessionId).sort(), ['dsh-1', 'dsh-2'])
   assert.equal(store.get('dsh-1')?.providerSessionId, 'thread-1')
   store.upsert('dsh-1', {
     adapterId: 'codex',

@@ -13,6 +13,7 @@ import type {
   CodingNsCliSkillDescriptor,
   CodingNsCliSkillListInput,
 } from '../../shared/contracts/cli-adapter.js'
+import { invalidateCommandEnvironment, withCommandSignal } from './process-utils.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import { debugInfo } from '../../shared/debug.js'
 import type {
@@ -61,20 +62,14 @@ type CodingNsCliDetection = Pick<CodingNsCliAdapterDescriptor, 'installed' | 've
   readonly diagnostic?: string
 }
 
-interface TimedCacheEntry<Value> {
+interface CacheEntry<Value> {
   readonly value: Value
-  readonly expiresAt: number
 }
 
-interface TimedFailure {
+interface CachedFailure {
   readonly error: unknown
-  readonly expiresAt: number
 }
 
-const DEFAULT_INSTALLED_CACHE_TTL_MS = 5 * 60_000
-const DEFAULT_UNINSTALLED_CACHE_TTL_MS = 30_000
-const DEFAULT_MODEL_CACHE_TTL_MS = 10 * 60_000
-const DEFAULT_MODEL_RETRY_TTL_MS = 15_000
 
 export class CodingNsCliAdapterRegistry {
   private readonly drivers = new Map<CodingNsCliAdapterId, CodingNsCliDriver>()
@@ -88,19 +83,12 @@ export class CodingNsCliAdapterRegistry {
   private readonly probes = new Map<string, Promise<void>>()
   private readonly executingSessions = new Set<string>()
   private readonly archivingSessions = new Set<string>()
-  private readonly installedCacheTtlMs: number
-  private readonly uninstalledCacheTtlMs: number
-  private readonly modelCacheTtlMs: number
-  private readonly modelRetryTtlMs: number
-  private readonly detectionCache = new Map<CodingNsCliAdapterId, TimedCacheEntry<CodingNsCliDetection>>()
+  private readonly detectionCache = new Map<CodingNsCliAdapterId, CacheEntry<CodingNsCliDetection>>()
   private readonly detectionRefreshes = new Map<CodingNsCliAdapterId, Promise<CodingNsCliDetection>>()
-  private readonly detectionTimers = new Map<CodingNsCliAdapterId, ReturnType<typeof setTimeout>>()
-  private readonly modelCache = new Map<CodingNsCliAdapterId, TimedCacheEntry<CodingNsCliModelCatalog>>()
-  private readonly modelFailures = new Map<CodingNsCliAdapterId, TimedFailure>()
+  private readonly modelCache = new Map<CodingNsCliAdapterId, CacheEntry<CodingNsCliModelCatalog>>()
+  private readonly modelFailures = new Map<CodingNsCliAdapterId, CachedFailure>()
   private readonly modelRefreshes = new Map<CodingNsCliAdapterId, Promise<CodingNsCliModelCatalog>>()
-  private readonly modelTimers = new Map<CodingNsCliAdapterId, ReturnType<typeof setTimeout>>()
   private readonly modelGenerations = new Map<CodingNsCliAdapterId, number>()
-  private readonly requestedModelCatalogs = new Set<CodingNsCliAdapterId>()
   /**
    * 上次构建目录时驱动声明的 Provider 配置指纹。
    *
@@ -121,6 +109,11 @@ export class CodingNsCliAdapterRegistry {
     readonly iterator: AsyncIterator<CodingNsAgentEvent> | null
   }>()
   private cacheGeneration = 0
+  private startupTimer: ReturnType<typeof setTimeout> | undefined
+  private readonly lifetime = new AbortController()
+  private readonly originalDetections = new Map<CodingNsCliAdapterId, CodingNsCliDriver['detect']>()
+  private readonly detectionStates = new Map<CodingNsCliAdapterId, 'running' | 'ready' | 'error'>()
+  private readonly detectionTimes = new Map<CodingNsCliAdapterId, string>()
   private disposed = false
 
   constructor(
@@ -133,6 +126,7 @@ export class CodingNsCliAdapterRegistry {
       readonly missingConfirmationDelayMs?: number
       readonly providerProbeTimeoutMs?: number
       readonly providerProbeConcurrency?: number
+      /** @deprecated 检测已改为启动一次和手动刷新，旧 TTL 参数仅兼容调用方。 */
       readonly installedCacheTtlMs?: number
       readonly uninstalledCacheTtlMs?: number
       readonly modelCacheTtlMs?: number
@@ -148,10 +142,6 @@ export class CodingNsCliAdapterRegistry {
     this.missingConfirmationDelayMs = options.missingConfirmationDelayMs ?? 2_000
     this.providerProbeTimeoutMs = Math.max(1, options.providerProbeTimeoutMs ?? 10_000)
     this.providerProbeConcurrency = Math.max(1, Math.floor(options.providerProbeConcurrency ?? 4))
-    this.installedCacheTtlMs = positiveTtl(options.installedCacheTtlMs, DEFAULT_INSTALLED_CACHE_TTL_MS)
-    this.uninstalledCacheTtlMs = positiveTtl(options.uninstalledCacheTtlMs, DEFAULT_UNINSTALLED_CACHE_TTL_MS)
-    this.modelCacheTtlMs = positiveTtl(options.modelCacheTtlMs, DEFAULT_MODEL_CACHE_TTL_MS)
-    this.modelRetryTtlMs = positiveTtl(options.modelRetryTtlMs, DEFAULT_MODEL_RETRY_TTL_MS)
     const configuredPreferences = options.settings?.get().agentAdapterPreferences
     const legacyPreferences = options.settings === undefined ? {} : readLegacyImportedAdapterPreferences()
     const mergedPreferences = mergePreferenceRecords(legacyPreferences, configuredPreferences)
@@ -164,6 +154,9 @@ export class CodingNsCliAdapterRegistry {
     for (const driver of drivers) {
       if (this.drivers.has(driver.descriptor.id)) throw new Error(`重复 Agent: ${driver.descriptor.id}`)
       this.drivers.set(driver.descriptor.id, driver)
+      // 驱动在模型查询和执行前的自检也必须复用同一缓存，不能绕过注册表反复启动 CLI。
+      this.originalDetections.set(driver.descriptor.id, driver.detect)
+      driver.detect = () => this.readDetection(driver)
       this.enabled.set(driver.descriptor.id, enabled[driver.descriptor.id] !== false)
     }
     for (const record of this.sessionStore?.list({ includeArchived: true }) ?? []) {
@@ -191,46 +184,52 @@ export class CodingNsCliAdapterRegistry {
   /** 设置服务更新必须按选择顺序落盘；并发 update 会让旧快照覆盖新模型/档位。 */
   private preferenceWriteTail: Promise<void> = Promise.resolve()
 
-  /**
-   * Host 启动后预热安装状态，并按驱动声明后台预热模型目录。
-   *
-   * 模型探测可能启动完整外部服务，必须留在后台；只有调用方显式请求
-   * `models()` 时才等待结果。未声明预热的驱动保持原有按需加载，避免启动时
-   * 同时拉起所有外部 CLI。
-   */
+  /** 启动让出首屏，只检测一次；模型目录留到首次使用时异步加载。 */
   warmCatalog(): void {
-    for (const driver of this.drivers.values()) {
-      const adapterId = driver.descriptor.id
-      this.scheduleDetectionRefresh(adapterId, 0)
-      if (driver.warmModelCatalog !== true || !this.isEnabled(adapterId)) continue
-      this.requestedModelCatalogs.add(adapterId)
-      // 定时器把第一次 detect 也移出当前调用栈；某些 CLI 的版本探测仍是同步
-      // 子进程调用，不能让 warmCatalog() 本身承担这段启动时间。
-      const timer = setTimeout(() => {
-        if (!this.disposed) void this.warmModelCatalog(driver).catch(() => undefined)
-      }, 0)
-      unrefTimer(timer)
-    }
+    if (this.disposed || this.startupTimer !== undefined) return
+    this.startupTimer = setTimeout(() => {
+      for (const driver of this.drivers.values()) void this.readDetection(driver)
+    }, 1_000)
+    unrefTimer(this.startupTimer)
   }
 
-  /** 等安装探测完成后再刷新模型，避免为同一个 CLI 启动两次检测进程。 */
-  private async warmModelCatalog(driver: CodingNsCliDriver): Promise<void> {
-    if (this.disposed) return
-    const detection = await this.readDetection(driver)
-    if (this.disposed || !this.isEnabled(driver.descriptor.id) || !detection.installed) return
-    await this.refreshModels(driver)
-  }
-
+  /** 普通目录查询只读内存，不等待 CLI，也不触发过期刷新。 */
   async catalog(): Promise<CodingNsCliAdapterDescriptor[]> {
-    return Promise.all([...this.drivers.values()].map(async (driver) => {
-      const detection = await this.readDetection(driver)
-      return { ...driver.descriptor, enabled: this.isEnabled(driver.descriptor.id), ...detection }
+    return [...this.drivers.values()].map((driver) => {
+      const id = driver.descriptor.id
+      const checkedAt = this.detectionTimes.get(id)
+      return {
+        ...driver.descriptor, enabled: this.isEnabled(id),
+        ...(this.detectionCache.get(id)?.value ?? { installed: false, version: null, command: null }),
+        detectionState: this.detectionStates.get(id) ?? 'pending',
+        ...(checkedAt === undefined ? {} : { checkedAt }),
+      }
+    })
+  }
+
+  /** 真正执行用户选择时，只等待这些目标的首轮检测，避免把 pending 误判成未安装。 */
+  async catalogForUse(adapterIds: readonly CodingNsCliAdapterId[]): Promise<CodingNsCliAdapterDescriptor[]> {
+    await Promise.all([...new Set(adapterIds)].map((id) => {
+      const driver = this.drivers.get(id)
+      return driver === undefined || !this.isEnabled(id) ? undefined : this.readDetection(driver)
     }))
+    return this.catalog()
+  }
+
+  /** 仅设置页显式重新检测；并发请求合并，已有模型在重新检测后按需刷新。 */
+  async refreshCatalog(adapterId?: CodingNsCliAdapterId): Promise<CodingNsCliAdapterDescriptor[]> {
+    if (this.disposed) throw new Error('Agent 注册表已关闭')
+    const drivers = adapterId === undefined ? [...this.drivers.values()] : [this.requireDriver(adapterId)]
+    invalidateCommandEnvironment()
+    await Promise.all(drivers.map(async (driver) => {
+      await this.refreshDetection(driver)
+      this.invalidateModelCache(driver.descriptor.id)
+    }))
+    return this.catalog()
   }
 
   async models(adapterId: CodingNsCliAdapterId): Promise<CodingNsCliModelCatalog> {
     const driver = this.requireEnabledDriver(adapterId)
-    this.requestedModelCatalogs.add(adapterId)
     // Provider 配置（供应商、登录方式、默认档位）变化时必须先作废目录，否则
     // 账号级判定会跟着 10 分钟 TTL 一起被沿用，界面上的档位开关等控件长期缺失。
     if (this.invalidateOnCatalogFingerprintChange(adapterId, driver)) {
@@ -238,12 +237,10 @@ export class CodingNsCliAdapterRegistry {
     }
     const cached = this.modelCache.get(adapterId)
     if (cached !== undefined) {
-      if (cached.expiresAt <= Date.now()) void this.refreshModels(driver).catch(() => undefined)
       return cached.value
     }
     const failure = this.modelFailures.get(adapterId)
     if (failure !== undefined) {
-      if (failure.expiresAt <= Date.now()) void this.refreshModels(driver).catch(() => undefined)
       throw failure.error
     }
     return this.refreshModels(driver)
@@ -272,8 +269,6 @@ export class CodingNsCliAdapterRegistry {
     const previous = this.isEnabled(adapterId)
     this.enabled.set(adapterId, enabled)
     if (previous === enabled) return enabled
-    if (!enabled) this.clearTimer(this.modelTimers, adapterId)
-    else if (this.requestedModelCatalogs.has(adapterId)) this.scheduleModelRefresh(adapterId, 0)
     return enabled
   }
 
@@ -612,6 +607,8 @@ export class CodingNsCliAdapterRegistry {
             providerState: 'available',
             providerCheckedAt: new Date().toISOString(),
           })
+          // 首次或重绑的 Provider ID 必须先落盘，避免崩溃后丢失续接身份。
+          if (providerIdentityChanged) await this.sessionStore?.flush()
         }
         if (event.type === 'finish') {
           this.segmentedTurns.delete(input.sessionId)
@@ -804,15 +801,15 @@ export class CodingNsCliAdapterRegistry {
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true
+    this.lifetime.abort()
     this.cacheGeneration += 1
-    this.clearAllTimers(this.detectionTimers)
-    this.clearAllTimers(this.modelTimers)
+    clearTimeout(this.startupTimer)
+    for (const [id, detect] of this.originalDetections) this.drivers.get(id)!.detect = detect
     this.detectionCache.clear()
     this.modelCache.clear()
     this.modelFailures.clear()
     this.modelGenerations.clear()
     this.catalogFingerprints.clear()
-    this.requestedModelCatalogs.clear()
     await Promise.all([...this.segmentedTurns.values()].map(({ iterator }) => iterator === null ? Promise.resolve() : closeAgentIterator(iterator)))
     this.segmentedTurns.clear()
     this.lastUsages.clear()
@@ -824,7 +821,6 @@ export class CodingNsCliAdapterRegistry {
     const adapterId = driver.descriptor.id
     const cached = this.detectionCache.get(adapterId)
     if (cached !== undefined) {
-      if (cached.expiresAt <= Date.now()) void this.refreshDetection(driver)
       return cached.value
     }
     return this.refreshDetection(driver)
@@ -835,14 +831,15 @@ export class CodingNsCliAdapterRegistry {
     const adapterId = driver.descriptor.id
     const running = this.detectionRefreshes.get(adapterId)
     if (running !== undefined) return running
-    this.clearTimer(this.detectionTimers, adapterId)
+    if (this.disposed) return Promise.resolve(this.detectionCache.get(adapterId)?.value ?? { installed: false, version: null, command: null })
+    this.detectionStates.set(adapterId, 'running')
     const generation = this.cacheGeneration
     const previous = this.detectionCache.get(adapterId)
     const refresh = (async () => {
       let detection: CodingNsCliDetection
       let failed = false
       try {
-        const detected = await driver.detect()
+        const detected = await withCommandSignal(this.lifetime.signal, () => this.originalDetections.get(adapterId)!.call(driver))
         const getDiagnostic = driver.getDiscoveryDiagnostic
         const diagnostic = getDiagnostic === undefined ? undefined : getDiagnostic.call(driver)
         detection = diagnostic === undefined ? detected : { ...detected, diagnostic }
@@ -852,19 +849,12 @@ export class CodingNsCliAdapterRegistry {
       }
       if (this.disposed || generation !== this.cacheGeneration) return detection
 
-      const ttl = failed
-        ? this.uninstalledCacheTtlMs
-        : detection.installed
-          ? this.installedCacheTtlMs
-          : this.uninstalledCacheTtlMs
-      this.detectionCache.set(adapterId, { value: detection, expiresAt: Date.now() + ttl })
-      this.scheduleDetectionRefresh(adapterId, ttl)
+      this.detectionCache.set(adapterId, { value: detection })
+      this.detectionStates.set(adapterId, failed ? 'error' : 'ready')
+      this.detectionTimes.set(adapterId, new Date().toISOString())
 
       if (previous !== undefined && detectionFingerprint(previous.value) !== detectionFingerprint(detection)) {
         this.invalidateModelCache(adapterId)
-        if (detection.installed && this.requestedModelCatalogs.has(adapterId) && this.isEnabled(adapterId)) {
-          this.scheduleModelRefresh(adapterId, 0)
-        }
       }
       return detection
     })().finally(() => {
@@ -874,24 +864,23 @@ export class CodingNsCliAdapterRegistry {
     return refresh
   }
 
-  /** 模型目录使用 stale-while-revalidate；空结果和失败只缩短重试间隔。 */
+  /** 模型目录合并并发请求；缓存由手动检测或配置变化失效，不后台定时重跑。 */
   private refreshModels(driver: CodingNsCliDriver): Promise<CodingNsCliModelCatalog> {
     const adapterId = driver.descriptor.id
     const running = this.modelRefreshes.get(adapterId)
     if (running !== undefined) return running
-    this.clearTimer(this.modelTimers, adapterId)
     const generation = this.cacheGeneration
     const modelGeneration = this.modelGenerations.get(adapterId) ?? 0
     const previous = this.modelCache.get(adapterId)
     const refresh = (async () => {
+      const probeFingerprint = readCatalogFingerprint(driver)
       try {
         // 指纹必须在探测开始前捕获：若在 listModels() 返回后再读，探测期间发生的
         // 第二次供应商切换会被记成“已应用”，而目录其实来自切换前的配置，之后
         // 指纹比对会一直命中，旧判定又被锁进缓存。
-        const probeFingerprint = readCatalogFingerprint(driver)
-        const catalog = await driver.listModels()
+        const catalog = await withCommandSignal(this.lifetime.signal, () => driver.listModels())
         if (this.disposed || generation !== this.cacheGeneration) return previous?.value ?? catalog
-        if (modelGeneration !== (this.modelGenerations.get(adapterId) ?? 0)) return this.refreshModels(driver)
+        if (modelGeneration !== (this.modelGenerations.get(adapterId) ?? 0)) return this.models(adapterId)
 
         this.modelFailures.delete(adapterId)
         const hasModels = catalogHasModels(catalog)
@@ -899,23 +888,20 @@ export class CodingNsCliAdapterRegistry {
         const value = keepPrevious ? previous.value : catalog
         // 指纹与目录一起落库：只有真正代表这份目录的配置才会在下次比对时命中。
         if (probeFingerprint !== undefined) this.catalogFingerprints.set(adapterId, probeFingerprint)
-        const ttl = hasModels ? this.modelCacheTtlMs : this.modelRetryTtlMs
-        this.modelCache.set(adapterId, { value, expiresAt: Date.now() + ttl })
-        this.scheduleModelRefresh(adapterId, ttl)
+        this.modelCache.set(adapterId, { value })
         return value
       } catch (error) {
         if (this.disposed || generation !== this.cacheGeneration) {
           if (previous !== undefined) return previous.value
           throw error
         }
-        if (modelGeneration !== (this.modelGenerations.get(adapterId) ?? 0)) return this.refreshModels(driver)
+        if (modelGeneration !== (this.modelGenerations.get(adapterId) ?? 0)) return this.models(adapterId)
+        if (probeFingerprint !== undefined) this.catalogFingerprints.set(adapterId, probeFingerprint)
         if (previous !== undefined) {
-          this.modelCache.set(adapterId, { value: previous.value, expiresAt: Date.now() + this.modelRetryTtlMs })
-          this.scheduleModelRefresh(adapterId, this.modelRetryTtlMs)
+          this.modelCache.set(adapterId, { value: previous.value })
           return previous.value
         }
-        this.modelFailures.set(adapterId, { error, expiresAt: Date.now() + this.modelRetryTtlMs })
-        this.scheduleModelRefresh(adapterId, this.modelRetryTtlMs)
+        this.modelFailures.set(adapterId, { error })
         throw error
       }
     })().finally(() => {
@@ -925,36 +911,12 @@ export class CodingNsCliAdapterRegistry {
     return refresh
   }
 
-  private scheduleDetectionRefresh(adapterId: CodingNsCliAdapterId, delayMs: number): void {
-    if (this.disposed) return
-    this.clearTimer(this.detectionTimers, adapterId)
-    const timer = setTimeout(() => {
-      this.detectionTimers.delete(adapterId)
-      const driver = this.drivers.get(adapterId)
-      if (driver !== undefined && !this.disposed) void this.refreshDetection(driver)
-    }, delayMs)
-    unrefTimer(timer)
-    this.detectionTimers.set(adapterId, timer)
-  }
-
-  private scheduleModelRefresh(adapterId: CodingNsCliAdapterId, delayMs: number): void {
-    if (this.disposed || !this.isEnabled(adapterId) || !this.requestedModelCatalogs.has(adapterId)) return
-    this.clearTimer(this.modelTimers, adapterId)
-    const timer = setTimeout(() => {
-      this.modelTimers.delete(adapterId)
-      const driver = this.drivers.get(adapterId)
-      if (driver !== undefined && this.isEnabled(adapterId) && !this.disposed) void this.refreshModels(driver).catch(() => undefined)
-    }, delayMs)
-    unrefTimer(timer)
-    this.modelTimers.set(adapterId, timer)
-  }
-
   private invalidateModelCache(adapterId: CodingNsCliAdapterId): void {
-    this.clearTimer(this.modelTimers, adapterId)
     this.modelGenerations.set(adapterId, (this.modelGenerations.get(adapterId) ?? 0) + 1)
     this.modelRefreshes.delete(adapterId)
     this.modelCache.delete(adapterId)
     this.modelFailures.delete(adapterId)
+    this.catalogFingerprints.delete(adapterId)
   }
 
   /**
@@ -976,20 +938,6 @@ export class CodingNsCliAdapterRegistry {
     debugInfo('codingns4dsh: cli catalog fingerprint changed', { adapterId })
     this.invalidateModelCache(adapterId)
     return true
-  }
-
-  private clearTimer(
-    timers: Map<CodingNsCliAdapterId, ReturnType<typeof setTimeout>>,
-    adapterId: CodingNsCliAdapterId,
-  ): void {
-    const timer = timers.get(adapterId)
-    if (timer !== undefined) clearTimeout(timer)
-    timers.delete(adapterId)
-  }
-
-  private clearAllTimers(timers: Map<CodingNsCliAdapterId, ReturnType<typeof setTimeout>>): void {
-    for (const timer of timers.values()) clearTimeout(timer)
-    timers.clear()
   }
 
   private async refreshProviderState(record: CodingNsCliSessionRecord, force: boolean): Promise<void> {
@@ -1142,10 +1090,6 @@ async function forEachConcurrent<T>(
     }
   })
   await Promise.all(workers)
-}
-
-function positiveTtl(value: number | undefined, fallback: number): number {
-  return Math.max(1, Math.floor(value ?? fallback))
 }
 
 function detectionFingerprint(detection: CodingNsCliDetection): string {

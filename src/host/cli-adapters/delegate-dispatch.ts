@@ -104,7 +104,7 @@ export async function dispatchDelegateSubagent(
   // 子会话由原生 `spawn` Provider 创建，因此不能按外部目录缺失处理。
   const adapter = adapterId === 'dsh'
     ? { installed: true, enabled: true }
-    : (await getAdapterRegistry()?.catalog())?.find((item) => item.id === adapterId)
+    : (await getAdapterRegistry()?.catalogForUse([adapterId]))?.find((item) => item.id === adapterId)
   if (adapter === undefined || !adapter.installed || !adapter.enabled) {
     return { ok: false, adapterId, status: 'failed', error: `${adapterId} 未安装或未启用` }
   }

@@ -29,9 +29,10 @@ import { startSubagentBridgeServer, type SubagentBridgeServer } from '../cli-bri
 import { setSubagentBridge } from '../cli-bridge/bridge-holder.js'
 import { delegateCapability, dispatchDelegateSubagent, type DelegateAgentRegistry } from './delegate-dispatch.js'
 import { guardNativeSubagentParentTurn, markNativeSubagentParentTurnStarted, setMaxNativeSubagentsPerParent } from './native-subagent-dispatch.js'
-import { containsDelegationCarrier, rewriteDelegationMessages } from './delegation-mention-rewrite.js'
+import { containsDelegationCarrier, delegationAdapterIds, rewriteDelegationMessages } from './delegation-mention-rewrite.js'
 import { clearDelegationAuthorization, setDelegationAuthorization } from './delegation-authorization.js'
 import { debugInfo } from '../../shared/debug.js'
+import { hasLegacySessionAdapterHint } from './legacy-session-adapter.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -50,19 +51,12 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         return new ProviderSubscriptionService({ commandCode: new CommandCodeSubscriptionService({ timeoutMs }), timeoutMs })
       }
       let subscriptions = buildSubscriptions(context.services.settings?.get())
+      let subscriptionSettings = JSON.stringify(context.services.settings?.get().subscriptionUsage ?? null)
       // 注入的 registry 自带 SessionStore；只有自建时才有本地 store 变量。
       const sessionStore = options.registry?.sessionRecords
         ?? new CodingNsCliSessionStore(context.services.settings === undefined ? {} : { settings: context.services.settings })
       const nativeSessions = context.services.nativeSessions
-      // fork 子会话的绑定来自父会话，启动迁移也必须补齐祖先链。
-      if (nativeSessions !== undefined) {
-        const migration = sessionStore.migrateLegacySessions(
-          expandMigrationChain(nativeSessions, nativeSessions.list()),
-        )
-        if (migration.migrated > 0 || migration.unresolved > 0) {
-          debugInfo('codingns4dsh: 旧外部会话适配器迁移完成', migration)
-        }
-      }
+      // 启动只恢复持久化索引；旧会话在打开时迁移，禁止在首屏扫描全部历史。
       const registry = options.registry ?? new CodingNsCliAdapterRegistry([
         new CommandCodeDriver({ enableAcp: true }),
         new ClaudeCodeDriver(),
@@ -106,6 +100,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             // 侧栏才加载。加载事件本身携带完整快照，此时补做一次迁移；
             // fork 子会话的绑定来自父会话，必须把祖先链一起交给迁移。
             if (sessionStore.get(sessionId) === undefined) {
+              if (hasLegacySessionAdapterHint(event)) sessionStore.invalidateLegacySession(session)
               sessionStore.migrateLegacySessions(collectMigrationChain(nativeSessions, session))
             }
             const current = sessionStore.get(sessionId)
@@ -125,6 +120,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       context.resources.add(context.services.rpc.register('cli', (action, payload) => {
         switch (action) {
           case 'catalog': return registry.catalog()
+          case 'catalog/refresh': return registry.refreshCatalog(asRecord(payload)?.adapterId === undefined ? undefined : readAdapterId(payload)).then((catalog) => {
+            subscriptions = buildSubscriptions(context.services.settings?.get())
+            return catalog
+          })
           case 'models': {
             const adapterId = readAdapterId(payload)
             return adapterId === 'dsh' ? readDshModelCatalog(context.services.dshContext) : registry.models(adapterId)
@@ -138,16 +137,18 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             })
           }
           case 'adapter/set': return setAdapterEnabled(context.services.settings, registry, payload)
-          case 'session/get': return registry.getSession(readSessionId(payload))
+          case 'session/get': {
+            const sessionId = readSessionId(payload)
+            const session = nativeSessions?.get(sessionId)
+            if (session !== undefined && nativeSessions !== undefined && sessionStore.get(sessionId) === undefined) {
+              sessionStore.migrateLegacySessions(collectMigrationChain(nativeSessions, session))
+            }
+            return registry.getSession(sessionId)
+          }
           case 'session/set': return registry.setSession(readSessionId(payload), readSessionConfig(payload))
           case 'session/list': return registry.listSessions(readSessionListOptions(payload))
           case 'session/adapter-map':
-            // DSH 历史会话的 seed 事件不会发布 session/event；每次读取映射时
-            // 重新检查当前已加载对象，覆盖“用户刚点击打开旧会话”的路径。
-            // 子会话的父会话可能尚未出现在 list() 里，按需补齐祖先链。
-            if (nativeSessions !== undefined) {
-              sessionStore.migrateLegacySessions(expandMigrationChain(nativeSessions, nativeSessions.list()))
-            }
+            // 列表查询只返回持久化索引，不能触发会话加载或历史解析。
             return sessionStore.adapterBindings()
           case 'session/archive': return registry.archiveSession(readSessionId(payload))
           case 'session/steer': return registry.steer(readSessionId(payload), readPrompt(payload), false)
@@ -243,7 +244,11 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           virtualProviders?.setProviders(registry.enabledAdapterIds())
           registry.syncPreferences(next.agentAdapterPreferences)
           sessionStore.sync(next.cliSessions)
-          subscriptions = buildSubscriptions(next)
+          const nextSubscriptionSettings = JSON.stringify(next.subscriptionUsage ?? null)
+          if (nextSubscriptionSettings !== subscriptionSettings) {
+            subscriptionSettings = nextSubscriptionSettings
+            subscriptions = buildSubscriptions(next)
+          }
           syncSubagentBridgeSettings(next.subagentBridge)
         }))
       }
@@ -277,7 +282,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           // 子会话；Agent Loop 请求会在 agent/pre-step 边界完成改写。这里仅保留
           // 非 Agent Loop 手工 llm/stream 调用的错误消费和外部 Agent 局部解析。
           if (containsDelegationCarrier(messages)) {
-            const delegation = rewriteDelegationMessages(messages, await registry.catalog())
+            const delegation = rewriteDelegationMessages(messages, await registry.catalogForUse(delegationAdapterIds(messages)))
             if (delegation.kind === 'error') {
               yield* delegationErrorStream(`${delegation.error.code}: ${delegation.error.message}`)
               return
@@ -457,7 +462,7 @@ function registerDelegationAgentHooks(
     const messages = Array.isArray(record?.messages) ? record.messages.filter(isMessage) : []
     let delegation: ReturnType<typeof rewriteDelegationMessages> | undefined
     if (containsDelegationCarrier(messages)) {
-      delegation = rewriteDelegationMessages(messages, await registry.catalog())
+      delegation = rewriteDelegationMessages(messages, await registry.catalogForUse(delegationAdapterIds(messages)))
       if (delegation.kind === 'error') clearDelegationAuthorization(sessionId)
       else if (delegation.kind === 'rewritten') {
         setDelegationAuthorization(sessionId, delegation.value.targets)
@@ -791,26 +796,8 @@ function collectMigrationChain(
     chain.push(parent)
     current = parent
   }
-  return chain
-}
-
-/** 对一批会话逐个补齐祖先链，保持原有顺序并去重。 */
-function expandMigrationChain(
-  nativeSessions: CodingNsHostServices['nativeSessions'],
-  sessions: readonly unknown[],
-): readonly unknown[] {
-  const result: unknown[] = []
-  const seen = new Set<string>()
-  for (const session of sessions) {
-    for (const entry of collectMigrationChain(nativeSessions, session)) {
-      const record = asRecord(entry)
-      const id = typeof record?.id === 'string' ? record.id : ''
-      if (id !== '' && seen.has(id)) continue
-      if (id !== '') seen.add(id)
-      result.push(entry)
-    }
-  }
-  return result
+  // 先迁移祖先再迁移子会话，深层 fork 不依赖下一轮轮询补齐中间父节点。
+  return chain.reverse()
 }
 
 function selectExternalAdapter(

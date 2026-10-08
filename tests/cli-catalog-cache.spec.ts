@@ -3,255 +3,114 @@ import test from 'node:test'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 import type { CodingNsCliModelCatalog } from '../data/build/dist/shared/contracts/cli-adapter.js'
 
-test('Agent 安装状态在 Host 启动后预热并按未安装短周期自动刷新', async () => {
-  let detections = 0
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+const catalog = (id: string): CodingNsCliModelCatalog => ({ groups: [{ id: 'default', name: '默认', models: [{ id, name: id, efforts: [] }] }], currentModel: null, currentEffort: null })
+const firstModel = (value: CodingNsCliModelCatalog) => value.groups[0]?.models[0]?.id
+const finish = async function* () { yield { type: 'finish' as const, reason: 'stop' as const } }
+
+test('启动异步检测一次，普通目录读取和驱动内部自检只读缓存', async (t) => {
+  let detections = 0, models = 0
+  const driver = {
+    descriptor: { id: 'fake', name: 'Fake' }, warmModelCatalog: true,
+    async detect() { detections++; return { installed: false, version: null, command: null } },
+    async listModels() { models++; await this.detect(); return catalog('one') }, executeTurn: finish,
+  }
+  const registry = new CodingNsCliAdapterRegistry([driver], {}, { uninstalledCacheTtlMs: 5 })
+  t.after(() => registry.dispose())
+  registry.warmCatalog(); registry.warmCatalog()
+  assert.equal((await registry.catalog())[0]?.detectionState, 'pending')
+  assert.equal(detections, 0)
+  await delay(1_100)
+  assert.equal((await registry.catalog())[0]?.detectionState, 'ready')
+  assert.equal(detections, 1)
+  assert.equal(models, 0, '启动不能预热模型')
+  await Promise.all([driver.detect(), driver.detect(), registry.catalog(), registry.catalog()])
+  await delay(30)
+  assert.equal(detections, 1, '未安装也不能定时重跑')
+  await registry.models('fake')
+  assert.equal(detections, 1, 'listModels 中的自检不能绕过缓存')
+})
+
+test('手动检测合并并发探测并刷新指定 Agent', async (t) => {
+  const calls = [0, 0]
+  const registry = new CodingNsCliAdapterRegistry(calls.map((_, index) => ({
+    descriptor: { id: String(index), name: String(index) },
+    async detect() { calls[index]++; await delay(10); return { installed: true, version: String(calls[index]), command: 'fake' } },
+    async listModels() { return catalog('one') }, executeTurn: finish,
+  })))
+  t.after(() => registry.dispose())
+  await registry.refreshCatalog()
+  assert.deepEqual(calls, [1, 1])
+  await Promise.all([registry.refreshCatalog('0'), registry.refreshCatalog('0')])
+  assert.deepEqual(calls, [2, 1])
+  assert.equal((await registry.catalog())[0]?.version, '2')
+})
+
+test('模型首次按需加载且合并并发，只有手动检测或配置变化才重读', async (t) => {
+  let calls = 0, fingerprint = 'provider-a'
   const registry = new CodingNsCliAdapterRegistry([{
     descriptor: { id: 'fake', name: 'Fake' },
-    async detect() {
-      detections += 1
-      return detections === 1
-        ? { installed: false, version: null, command: null }
-        : { installed: true, version: '2.0.0', command: 'fake' }
-    },
-    async listModels() { return catalog('model-1') },
-    async *executeTurn() { yield { type: 'finish' as const, reason: 'stop' as const } },
-  }], {}, {
-    installedCacheTtlMs: 1_000,
-    uninstalledCacheTtlMs: 20,
-  })
-
-  try {
-    registry.warmCatalog()
-    await waitFor(async () => (await registry.catalog())[0]?.installed === false)
-    assert.equal(detections, 1)
-    await waitFor(async () => (await registry.catalog())[0]?.installed === true)
-    assert.equal((await registry.catalog())[0]?.version, '2.0.0')
-  } finally {
-    await registry.dispose()
-  }
+    async detect() { return { installed: true, version: '1', command: 'fake' } },
+    catalogFingerprint() { return fingerprint },
+    async listModels() { calls++; await delay(10); return catalog(`model-${calls}`) }, executeTurn: finish,
+  }], {}, { modelCacheTtlMs: 5 })
+  t.after(() => registry.dispose())
+  const values = await Promise.all([registry.models('fake'), registry.models('fake')])
+  assert.equal(values[0], values[1]); assert.equal(calls, 1)
+  await delay(30)
+  assert.equal(firstModel(await registry.models('fake')), 'model-1')
+  await registry.refreshCatalog('fake')
+  assert.equal(calls, 1, '手动检测不应一次启动所有模型服务')
+  assert.equal(firstModel(await registry.models('fake')), 'model-2')
+  fingerprint = 'provider-b'
+  const changed = await Promise.all([registry.models('fake'), registry.models('fake'), registry.models('fake')])
+  assert.ok(changed.every((value) => firstModel(value) === 'model-3'))
+  assert.equal(calls, 3, '配置变化只能触发一次共享模型查询')
 })
 
-test('声明预热的 Agent 在后台加载模型目录且 warmCatalog 不等待外部 CLI', async () => {
-  let modelRequests = 0
-  let releaseModels: ((value: CodingNsCliModelCatalog) => void) | undefined
-  const pendingModels = new Promise<CodingNsCliModelCatalog>((resolve) => { releaseModels = resolve })
-  const registry = new CodingNsCliAdapterRegistry([{
-    descriptor: { id: 'warm-agent', name: 'Warm Agent' },
-    warmModelCatalog: true,
-    async detect() { return { installed: true, version: '1.0.0', command: 'warm-agent' } },
-    async listModels() {
-      modelRequests += 1
-      return pendingModels
-    },
-    async *executeTurn() { yield { type: 'finish' as const, reason: 'stop' as const } },
-  }], {}, { modelCacheTtlMs: 1_000 })
-
-  try {
-    assert.equal(registry.warmCatalog(), undefined)
-    assert.equal(modelRequests, 0)
-    await waitFor(() => modelRequests === 1)
-    releaseModels?.(catalog('warm-model'))
-    assert.equal(firstModelId(await registry.models('warm-agent')), 'warm-model')
-    assert.equal(modelRequests, 1)
-  } finally {
-    releaseModels?.(catalog('warm-model'))
-    await registry.dispose()
-  }
-})
-
-test('模型目录合并并发请求并在后台刷新失败时保留最后成功结果', async () => {
-  let modelRequests = 0
+test('失败不产生周期重试，手动检测后可以恢复', async (t) => {
+  let calls = 0
   const registry = new CodingNsCliAdapterRegistry([{
     descriptor: { id: 'fake', name: 'Fake' },
-    async detect() { return { installed: true, version: '1.0.0', command: 'fake' } },
-    async listModels() {
-      modelRequests += 1
-      if (modelRequests === 1) {
-        await delay(10)
-        return catalog('model-1')
-      }
-      if (modelRequests === 2) throw new Error('临时目录故障')
-      return catalog('model-2')
-    },
-    async *executeTurn() { yield { type: 'finish' as const, reason: 'stop' as const } },
-  }], {}, {
-    modelCacheTtlMs: 20,
-    modelRetryTtlMs: 100,
-  })
-
-  try {
-    const [first, second] = await Promise.all([registry.models('fake'), registry.models('fake')])
-    assert.equal(firstModelId(first), 'model-1')
-    assert.equal(firstModelId(second), 'model-1')
-    assert.equal(modelRequests, 1)
-
-    await waitFor(() => modelRequests >= 2)
-    assert.equal(firstModelId(await registry.models('fake')), 'model-1')
-    await waitFor(async () => firstModelId(await registry.models('fake')) === 'model-2')
-  } finally {
-    await registry.dispose()
-  }
+    async detect() { return { installed: true, version: '1', command: 'fake' } },
+    async listModels() { if (++calls === 1) throw new Error('offline'); return catalog('recovered') }, executeTurn: finish,
+  }], {}, { modelRetryTtlMs: 5 })
+  t.after(() => registry.dispose())
+  await assert.rejects(registry.models('fake'), /offline/u)
+  await delay(30)
+  await assert.rejects(registry.models('fake'), /offline/u)
+  assert.equal(calls, 1)
+  await registry.refreshCatalog('fake')
+  assert.equal(firstModel(await registry.models('fake')), 'recovered')
 })
 
-test('空模型目录和首次失败都按短周期在后台重试', async () => {
-  let emptyRequests = 0
-  const emptyRegistry = new CodingNsCliAdapterRegistry([{
-    descriptor: { id: 'empty', name: 'Empty' },
-    async detect() { return { installed: true, version: '1.0.0', command: 'empty' } },
-    async listModels() {
-      emptyRequests += 1
-      return emptyRequests === 1 ? emptyCatalog() : catalog('available-model')
-    },
-    async *executeTurn() { yield { type: 'finish' as const, reason: 'stop' as const } },
-  }], {}, { modelRetryTtlMs: 20 })
-
-  let failedRequests = 0
-  const failedRegistry = new CodingNsCliAdapterRegistry([{
-    descriptor: { id: 'failed', name: 'Failed' },
-    async detect() { return { installed: true, version: '1.0.0', command: 'failed' } },
-    async listModels() {
-      failedRequests += 1
-      if (failedRequests === 1) throw new Error('首次读取失败')
-      return catalog('recovered-model')
-    },
-    async *executeTurn() { yield { type: 'finish' as const, reason: 'stop' as const } },
-  }], {}, { modelRetryTtlMs: 20 })
-
-  try {
-    assert.deepEqual(await emptyRegistry.models('empty'), emptyCatalog())
-    await waitFor(async () => firstModelId(await emptyRegistry.models('empty')) === 'available-model')
-
-    await assert.rejects(failedRegistry.models('failed'), /首次读取失败/u)
-    await waitFor(async () => {
-      try { return firstModelId(await failedRegistry.models('failed')) === 'recovered-model' }
-      catch { return false }
-    })
-  } finally {
-    await Promise.all([emptyRegistry.dispose(), failedRegistry.dispose()])
-  }
-})
-
-test('静态回退目录按短重试周期刷新，不会阻塞真实模型目录恢复', async () => {
-  let modelRequests = 0
+test('手动刷新后迟到的旧模型不能覆盖新目录', async (t) => {
+  let release!: (value: CodingNsCliModelCatalog) => void
+  let calls = 0
+  const old = new Promise<CodingNsCliModelCatalog>((resolve) => { release = resolve })
   const registry = new CodingNsCliAdapterRegistry([{
-    descriptor: { id: 'fallback-agent', name: 'Fallback Agent' },
-    async detect() { return { installed: true, version: '1.0.0', command: 'fallback-agent' } },
-    async listModels() {
-      modelRequests += 1
-      return modelRequests === 1
-        ? {
-            groups: [{ id: 'fallback', name: 'Fallback', models: [{ id: 'provider-default', name: '默认', efforts: [] }] }],
-            currentModel: null,
-            currentEffort: null,
-            fallback: true,
-          }
-        : catalog('recovered-model')
-    },
-    async *executeTurn() { yield { type: 'finish' as const, reason: 'stop' as const } },
-  }], {}, { modelRetryTtlMs: 20, modelCacheTtlMs: 1_000 })
-
-  try {
-    assert.equal(firstModelId(await registry.models('fallback-agent')), 'provider-default')
-    await waitFor(async () => firstModelId(await registry.models('fallback-agent')) === 'recovered-model')
-    assert.ok(modelRequests >= 2)
-  } finally {
-    await registry.dispose()
-  }
+    descriptor: { id: 'fake', name: 'Fake' },
+    async detect() { return { installed: true, version: '1', command: 'fake' } },
+    async listModels() { return ++calls === 1 ? old : catalog('new') }, executeTurn: finish,
+  }])
+  t.after(() => registry.dispose())
+  const pending = registry.models('fake')
+  await registry.refreshCatalog('fake')
+  assert.equal(firstModel(await registry.models('fake')), 'new')
+  release(catalog('old'))
+  assert.equal(firstModel(await pending), 'new')
+  assert.equal(firstModel(await registry.models('fake')), 'new')
+  assert.equal(calls, 2)
 })
 
-test('CLI 路径或版本变化会废弃旧模型索引并自动重建', async () => {
-  let detections = 0
-  let modelRequests = 0
+test('停用注册表后取消尚未开始的启动检测', async () => {
+  let calls = 0
   const registry = new CodingNsCliAdapterRegistry([{
-    descriptor: { id: 'versioned', name: 'Versioned' },
-    async detect() {
-      detections += 1
-      return {
-        installed: true,
-        version: detections === 1 ? '1.0.0' : '2.0.0',
-        command: detections === 1 ? 'versioned-v1' : 'versioned-v2',
-      }
-    },
-    async listModels() {
-      modelRequests += 1
-      return catalog(modelRequests === 1 ? 'old-model' : 'new-model')
-    },
-    async *executeTurn() { yield { type: 'finish' as const, reason: 'stop' as const } },
-  }], {}, {
-    installedCacheTtlMs: 20,
-    modelCacheTtlMs: 1_000,
-  })
-
-  try {
-    assert.equal((await registry.catalog())[0]?.version, '1.0.0')
-    assert.equal(firstModelId(await registry.models('versioned')), 'old-model')
-    await waitFor(async () => firstModelId(await registry.models('versioned')) === 'new-model')
-    assert.ok(detections >= 2)
-    assert.ok(modelRequests >= 2)
-  } finally {
-    await registry.dispose()
-  }
+    descriptor: { id: 'fake', name: 'Fake' },
+    async detect() { calls++; return { installed: false, version: null, command: null } },
+    async listModels() { return catalog('one') }, executeTurn: finish,
+  }])
+  registry.warmCatalog(); await registry.dispose()
+  await delay(1_050)
+  assert.equal(calls, 0)
 })
-
-test('CLI 版本变化后旧 generation 的迟到模型结果不能覆盖新索引', async () => {
-  let detections = 0
-  let modelRequests = 0
-  let resolveOld: ((value: CodingNsCliModelCatalog) => void) | undefined
-  const oldCatalog = new Promise<CodingNsCliModelCatalog>((resolve) => { resolveOld = resolve })
-  const registry = new CodingNsCliAdapterRegistry([{
-    descriptor: { id: 'racing', name: 'Racing' },
-    async detect() {
-      detections += 1
-      return { installed: true, version: detections === 1 ? '1.0.0' : '2.0.0', command: 'racing' }
-    },
-    async listModels() {
-      modelRequests += 1
-      return modelRequests === 1 ? oldCatalog : catalog('new-model')
-    },
-    async *executeTurn() { yield { type: 'finish' as const, reason: 'stop' as const } },
-  }], {}, {
-    installedCacheTtlMs: 20,
-    modelCacheTtlMs: 1_000,
-  })
-
-  try {
-    await registry.catalog()
-    const pending = registry.models('racing')
-    await waitFor(() => detections >= 2 && modelRequests >= 2)
-    resolveOld?.(catalog('old-model'))
-    assert.equal(firstModelId(await pending), 'new-model')
-    assert.equal(firstModelId(await registry.models('racing')), 'new-model')
-  } finally {
-    resolveOld?.(catalog('old-model'))
-    await registry.dispose()
-  }
-})
-
-function catalog(modelId: string): CodingNsCliModelCatalog {
-  return {
-    groups: [{ id: 'default', name: '默认', models: [{ id: modelId, name: modelId, efforts: [] }] }],
-    currentModel: null,
-    currentEffort: null,
-  }
-}
-
-function emptyCatalog(): CodingNsCliModelCatalog {
-  return { groups: [], currentModel: null, currentEffort: null }
-}
-
-function firstModelId(value: CodingNsCliModelCatalog): string | undefined {
-  return value.groups[0]?.models[0]?.id
-}
-
-async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (await predicate()) return
-    await delay(5)
-  }
-  assert.fail(`等待后台刷新超过 ${timeoutMs}ms`)
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds))
-}

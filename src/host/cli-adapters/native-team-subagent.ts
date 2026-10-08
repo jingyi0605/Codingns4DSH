@@ -108,7 +108,7 @@ export function registerNativeTeamSubagentProviders(service: NativeSubagentServi
         request.signal?.throwIfAborted()
         const registry = getAdapterRegistry()
         if (registry === undefined) throw new Error('外部 Agent 适配器尚未就绪')
-        const adapter = (await registry.catalog()).find((item) => item.id === adapterId)
+        const adapter = (await registry.catalogForUse([adapterId])).find((item) => item.id === adapterId)
         if (adapter === undefined || !adapter.installed || !adapter.enabled) throw new Error(`${adapterId} 未安装或未启用`)
         // DSH Agent 的 `id` 与会话头 id 在某些宿主实现中不是同一个值；派发
         // 选择键使用会话 id，Provider 准备阶段优先读 Agent id。两者都查，避免

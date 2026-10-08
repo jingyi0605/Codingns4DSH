@@ -32,6 +32,16 @@ export interface LegacySessionAdapterEvidence {
   readonly external: boolean
 }
 
+/** 普通 DSH 消息不影响外部来源判断；只在新增外部证据时重新检查旧会话。 */
+export function hasLegacySessionAdapterHint(event: unknown): boolean {
+  const record = asRecord(event)
+  const data = asRecord(record?.data)
+  const source = asRecord(asRecord(data?.message)?.source)
+  if (source?.plugin === 'codingns4dsh' || source?.provider === 'codingns-external') return true
+  const adapterId = firstString(source?.adapterId, record?.type === 'request/context' ? data?.adapterId ?? data?.provider : undefined)
+  return adapterId !== undefined && (adapterId === 'codebuddy-cn' || KNOWN_CLI_ADAPTER_IDS.has(adapterId))
+}
+
 /**
  * 从 DSH 原生会话快照读取旧版外部 Agent 的适配器证据。
  *

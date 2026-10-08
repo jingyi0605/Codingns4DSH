@@ -6,6 +6,7 @@ type CacheListener = () => void
 
 const adaptersBySession = new Map<string, string>()
 const listeners = new Set<CacheListener>()
+const requests = new WeakMap<CodingNsRpcClient, Promise<readonly CodingNsSessionAdapterBinding[]>>()
 
 /** 返回一个会话当前绑定的适配器；查询成本为 O(1)。 */
 export function sessionAdapterId(sessionId: string): string | undefined {
@@ -38,7 +39,15 @@ export function replaceSessionAdapters(bindings: readonly CodingNsSessionAdapter
 
 /** 一次 RPC 读取全部脱敏绑定；不会按 DOM 行逐条请求。 */
 export async function fetchSessionAdapters(rpc: CodingNsRpcClient): Promise<readonly CodingNsSessionAdapterBinding[]> {
-  const value = await callCliRpc<unknown>(rpc, 'session/adapter-map', {})
+  const existing = requests.get(rpc)
+  if (existing !== undefined) return existing
+  const request = readSessionAdapters(rpc).finally(() => { if (requests.get(rpc) === request) requests.delete(rpc) })
+  requests.set(rpc, request)
+  return request
+}
+
+async function readSessionAdapters(rpc: CodingNsRpcClient): Promise<readonly CodingNsSessionAdapterBinding[]> {
+  const value = await callCliRpc<unknown>(rpc, 'session/adapter-map', {}, AbortSignal.timeout(10_000))
   if (!Array.isArray(value)) return []
   return value
     .filter(isSessionAdapterBinding)

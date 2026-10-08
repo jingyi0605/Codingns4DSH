@@ -8,7 +8,7 @@ import type {
   CodingNsSessionAdapterBinding,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
-import { inspectLegacySessionAdapter } from './legacy-session-adapter.js'
+import { inspectLegacySessionAdapter, type LegacySessionAdapterEvidence } from './legacy-session-adapter.js'
 import { readLegacyImportedSessionRecords } from './legacy-session-settings.js'
 
 /**
@@ -69,6 +69,9 @@ export class CodingNsCliSessionStore {
   private readonly persistence: CodingNsCliSessionPersistence | undefined
   private readonly legacyImportedRecords: readonly CodingNsCliSessionRecord[]
   private writeTail: Promise<void> = Promise.resolve()
+  private persistPending = false
+  private persistRunning = false
+  private readonly legacyEvidence = new WeakMap<object, LegacySessionAdapterEvidence | undefined>()
   private disposed = false
 
   constructor(options: CodingNsCliSessionStoreOptions = {}) {
@@ -84,6 +87,12 @@ export class CodingNsCliSessionStore {
   /** 将设置变更重新载入内存；非法或不完整记录会被忽略。 */
   sync(records: readonly CodingNsCliSessionRecord[] | undefined): void {
     if (records === undefined) return
+    // 设置 watch 会回送正在落盘的旧快照；不能覆盖这期间刚产生的 Provider 绑定。
+    if (this.persistRunning || this.persistPending) return
+    if (records.length === this.records.size && records.every((record) => {
+      const current = this.records.get(record.dshSessionId)
+      return current !== undefined && sameRecord(current, record)
+    })) return
     this.records.clear()
     for (const record of this.legacyImportedRecords) this.hydrateRecord(record, false)
     for (const record of records) this.hydrateRecord(record, false)
@@ -103,14 +112,14 @@ export class CodingNsCliSessionStore {
 
   /** 浏览器会话行只需要这两个字段，Host-only 恢复信息不得跨过 RPC 边界。 */
   adapterBindings(): CodingNsSessionAdapterBinding[] {
-    return this.list({ includeArchived: true }).map((record) => ({
+    return [...this.records.values()].map((record) => ({
       sessionId: record.dshSessionId,
       adapterId: record.adapterId,
     }))
   }
 
   /**
-   * 启动时把旧 DSH 原生会话中有明确证据的适配器回填到 Host 索引。
+   * 打开旧 DSH 会话时按需回填；已有索引无需再读取历史。
    *
    * 两遍处理：先按会话自身日志回填，再让 `isSeeded` 分叉子会话继承父会话
    * 已经确认的绑定。父会话可能排在子会话之后，所以继承必须单独走第二遍。
@@ -120,7 +129,15 @@ export class CodingNsCliSessionStore {
     let unresolved = 0
     const pendingInheritance: { readonly sessionId: string; readonly parentSessionId: string; readonly cwd?: string }[] = []
     for (const session of sessions) {
-      const evidence = inspectLegacySessionAdapter(session)
+      if (!isRecord(session)) continue
+      const header = isRecord(session.header) ? session.header : undefined
+      const sessionId = stringValue(session.id) ?? stringValue(session.sessionId) ?? stringValue(header?.id)
+      if (sessionId !== undefined && this.records.get(sessionId)?.adapterId !== undefined && this.records.get(sessionId)?.adapterId !== 'dsh') continue
+      // 同一个已加载旧会话只解析一次；新增来源事件由调用方显式使缓存失效。
+      const evidence = this.legacyEvidence.has(session)
+        ? this.legacyEvidence.get(session)
+        : inspectLegacySessionAdapter(session)
+      this.legacyEvidence.set(session, evidence)
       if (evidence === undefined) continue
       // 自身日志没有外部证据、但确实是 fork 子会话：绑定只能来自父会话，
       // 放进第二遍。自身已有外部证据的会话一律按自己的日志处理。
@@ -164,6 +181,10 @@ export class CodingNsCliSessionStore {
       migrated += 1
     }
     return { migrated, unresolved }
+  }
+
+  invalidateLegacySession(session: unknown): void {
+    if (isRecord(session)) this.legacyEvidence.delete(session)
   }
 
   /** 创建或更新记录；返回值是内存中的规范化记录，持久化在后台串行完成。 */
@@ -218,6 +239,7 @@ export class CodingNsCliSessionStore {
       createdAt: base?.createdAt ?? now,
       updatedAt: now,
     }
+    if (base !== undefined && sameRecord(base, record, true)) return { ...base }
     this.records.set(sessionId, record)
     this.schedulePersist()
     return { ...record }
@@ -226,6 +248,7 @@ export class CodingNsCliSessionStore {
   archive(sessionId: string): CodingNsCliSessionRecord | undefined {
     const previous = this.records.get(sessionId)
     if (previous === undefined) return undefined
+    if (previous.status === 'archived') return { ...previous }
     const record = { ...previous, status: 'archived' as const, updatedAt: new Date().toISOString() }
     this.records.set(sessionId, record)
     this.schedulePersist()
@@ -244,13 +267,15 @@ export class CodingNsCliSessionStore {
       ...(patch.reason?.trim() ? { providerStateReason: patch.reason.trim() } : {}),
       ...(patch.rawStoreRef?.trim() ? { rawStoreRef: patch.rawStoreRef.trim() } : {}),
     }
+    if (sameRecord(previous, record)) return { ...previous }
     this.records.set(sessionId, record)
     this.schedulePersist()
     return { ...record }
   }
 
   async flush(): Promise<void> {
-    await this.writeTail
+    let tail: Promise<void>
+    do { tail = this.writeTail; await tail } while (tail !== this.writeTail)
   }
 
   /** 停止上下文销毁后的异步设置写入；内存索引仍保留给当前清理流程读取。 */
@@ -295,19 +320,39 @@ export class CodingNsCliSessionStore {
 
   private schedulePersist(): void {
     if (this.disposed) return
-    const snapshot = this.list({ includeArchived: true })
+    this.persistPending = true
+    if (this.persistRunning) return
+    this.persistRunning = true
     this.writeTail = this.writeTail
       .catch(() => undefined)
       .then(async () => {
-        if (this.disposed) return
-        if (this.persistence !== undefined) await this.persistence.write(snapshot)
-        if (this.settings !== undefined) await this.settings.update({ cliSessions: snapshot })
+        while (this.persistPending && !this.disposed) {
+          this.persistPending = false
+          // 到真正写入时才生成最新快照，流式事件只占一个待保存位置。
+          const snapshot = this.list({ includeArchived: true })
+          if (this.persistence !== undefined) await this.persistence.write(snapshot)
+          if (this.settings !== undefined) await this.settings.update({ cliSessions: snapshot })
+        }
       })
       .catch((error: unknown) => {
         // 会话索引是辅助缓存；设置服务短暂不可用不能杀死 Host 或模型探测任务。
         console.warn('codingns4dsh: 外部会话索引持久化失败', error)
       })
+      .finally(() => {
+        this.persistRunning = false
+        if (this.persistPending && !this.disposed) this.schedulePersist()
+      })
   }
+}
+
+/** 会话记录仅含标量字段；活动时间不应因为相同数据被重复提交而改变。 */
+function sameRecord(left: CodingNsCliSessionRecord, right: CodingNsCliSessionRecord, ignoreUpdatedAt = false): boolean {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)])
+  for (const key of keys) {
+    if (ignoreUpdatedAt && key === 'updatedAt') continue
+    if (left[key as keyof CodingNsCliSessionRecord] !== right[key as keyof CodingNsCliSessionRecord]) return false
+  }
+  return true
 }
 
 /** 旧版本曾把同一 CLI 的国内 profile 持久化为独立 ID，统一迁移回 codebuddy。 */
