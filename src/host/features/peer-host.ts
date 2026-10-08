@@ -87,6 +87,16 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
       })
       const sessions = new PeerHostSessionService(store, credentials, options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl })
       const httpProxy = new PeerHostHttpProxyService(store, sessions, options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl })
+      // 旧版 HTTP 代理尚未下传 request.signal；每次读取独立绑定 fetch，避免共享
+      // 代理上的可变信号污染其他界面请求，同时让取消真正中断网络读取。
+      const scopedProxy = (signal?: AbortSignal): PeerHostHttpProxyService => signal === undefined ? httpProxy : new PeerHostHttpProxyService(store, sessions, {
+        fetchImpl: async (input, init) => {
+          const closing = new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith('/peerHost/nativeStreamClose')
+          const requestSignal = closing ? AbortSignal.timeout(5_000) : init?.signal == null ? signal : AbortSignal.any([signal, init.signal])
+          requestSignal.throwIfAborted()
+          return (options.fetchImpl ?? fetch)(input, { ...init, signal: requestSignal })
+        },
+      })
       const aggregate = new PeerHostAggregateService()
       const workspaceRegistry = new VirtualWorkspaceRegistry({
         orderStore: new FileAggregateWorkspaceOrderStore(join(stateDirectory, 'peer-host-workspace-order.json')),
@@ -139,17 +149,33 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
         }
         return (await store.get(record.id)) ?? record
       }
-      const buildSources = async (assistantWorkspaceIds?: readonly string[]): Promise<readonly AggregateHostSource[]> => {
-        if (options.aggregateSources !== undefined) return options.aggregateSources()
-        const sources: AggregateHostSource[] = [createAggregateHostSource({
+      const buildSources = async (assistantWorkspaceIds?: readonly string[], signal?: AbortSignal): Promise<readonly AggregateHostSource[]> => {
+        signal?.throwIfAborted()
+        if (options.aggregateSources !== undefined) {
+          const sources = await options.aggregateSources()
+          signal?.throwIfAborted()
+          return assistantWorkspaceIds === undefined ? sources : sources.filter((source) => source.targetHostId !== null)
+        }
+        const sources: AggregateHostSource[] = assistantWorkspaceIds === undefined ? [createAggregateHostSource({
           hostId: localHostId,
           targetHostId: null,
           hostLabel: '当前 Host',
           source: localSummarySource,
-        })]
-        const preparedRecords = await Promise.all((await store.list()).map((record) => preparePeerHost(record).catch(() => null)))
-        for (const record of preparedRecords) {
-          if (record === null || record.status !== 'ready') continue
+        })] : []
+        const records = await store.list()
+        signal?.throwIfAborted()
+        // 助理只访问受管远端，不能为了本地索引唤醒全部 PeerHost 或重复扫描本地列表。
+        const selectedRecords = assistantWorkspaceIds === undefined ? records : records.filter((record) => record.status !== 'disabled' && record.status !== 'identity_changed'
+          && (record.visibleWorkspaceIds ?? []).some((workspaceId) => assistantWorkspaceIds.some((selected) => assistantWorkspaceMatches(selected, record.id, workspaceId))))
+        const preparedRecords = await Promise.all(selectedRecords.map((record) => preparePeerHost(record).catch(() => null)))
+        signal?.throwIfAborted()
+        for (const [index, record] of preparedRecords.entries()) {
+          if (record === null || record.status !== 'ready') {
+            // 受管远端的握手/认证失败也必须交给助理退避，不能冒充没有远端工作区。
+            const original = selectedRecords[index]!
+            if (assistantWorkspaceIds !== undefined) sources.push({ hostId: localHostId, targetHostId: original.id, hostLabel: original.displayName, load: async () => { throw new Error('受管远端 Host 暂不可达') } })
+            continue
+          }
           const selectedWorkspaceIds = assistantWorkspaceIds === undefined
             ? (record.visibleWorkspaceIds ?? [])
             : (record.visibleWorkspaceIds ?? []).filter((workspaceId) => assistantWorkspaceIds.some((selected) => assistantWorkspaceMatches(selected, record.id, workspaceId)))
@@ -162,9 +188,9 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             source: createPeerHostRemoteSummarySource({
               scope: { hostId: localHostId, targetHostId: record.id, workspaceId: '__aggregate__', sessionId: null, scopeGeneration: 0 },
               transport: {
-                rpc: (request) => callPeerNativeRpc(httpProxy, record.id, request),
-                stream: (request) => openPeerNativeStream(httpProxy, record.id, request),
-                cli: (request) => callPeerCliRpc(httpProxy, record.id, request),
+                rpc: (request) => callPeerNativeRpc(scopedProxy(signal ?? request.signal), record.id, { ...request, ...(signal === undefined ? {} : { signal }) }),
+                stream: (request) => openPeerNativeStream(scopedProxy(signal ?? request.signal), record.id, { ...request, ...(signal === undefined ? {} : { signal }) }),
+                cli: (request) => callPeerCliRpc(scopedProxy(signal ?? request.signal), record.id, { ...request, ...(signal === undefined ? {} : { signal }) }),
               },
               // 默认只投影用户显式添加的远端工作区；未添加时不展示该 Host 的任何工作区。
               visibleWorkspaceIds: selectedWorkspaceIds,
@@ -224,18 +250,27 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
         httpProxy,
         wsProxy,
         peer: {
-          nativeRpc: <TResponse>(peerHostId: string, request: Parameters<typeof callPeerNativeRpc>[2]) => callPeerNativeRpc(httpProxy, peerHostId, request) as Promise<TResponse>,
-          nativeStream: <TChunk>(peerHostId: string, request: Parameters<typeof openPeerNativeStream>[2]) => openPeerNativeStream(httpProxy, peerHostId, request) as AsyncIterable<TChunk>,
+          nativeRpc: <TResponse>(peerHostId: string, request: Parameters<typeof callPeerNativeRpc>[2]) => callPeerNativeRpc(scopedProxy(request.signal), peerHostId, request) as Promise<TResponse>,
+          nativeStream: <TChunk>(peerHostId: string, request: Parameters<typeof openPeerNativeStream>[2]) => openPeerNativeStream(scopedProxy(request.signal), peerHostId, request) as AsyncIterable<TChunk>,
         },
       })
       context.resources.add(() => aggregatedTransport.close())
       const assistantGateway = {
-        async workspaces() {
-          return (await store.list()).filter((record) => record.status !== 'disabled' && record.status !== 'identity_changed')
+        async workspaces(signal?: AbortSignal) {
+          signal?.throwIfAborted()
+          const records = await store.list()
+          signal?.throwIfAborted()
+          return records.filter((record) => record.status !== 'disabled' && record.status !== 'identity_changed')
             .flatMap((record) => (record.visibleWorkspaceIds ?? []).map((id) => ({ workspaceId: createVirtualWorkspaceId(record.id, id), name: `${record.displayName} / ${id}`, path: null })))
         },
-        async list(managedWorkspaceIds: readonly string[]) {
-          const results = ensureLocalWorkspaceSummaries(await aggregate.load(await buildSources(managedWorkspaceIds)), context.services.dshContext)
+        async list(managedWorkspaceIds: readonly string[], signal?: AbortSignal) {
+          signal?.throwIfAborted()
+          // 超时必须到达底层 RPC 和订阅，不能仅让 Promise.race 的调用方提前返回。
+          const deadline = AbortSignal.timeout(5_000)
+          const loadSignal = signal === undefined ? deadline : AbortSignal.any([signal, deadline])
+          const results = await aggregate.load(await buildSources(managedWorkspaceIds, loadSignal))
+          signal?.throwIfAborted()
+          const failed = results.some((result) => result.availability !== 'ready')
           const sessions = [] as import('./assistant-session-index.js').AssistantSessionSourceRecord[]
           const archivedSessionIds: string[] = []
           for (const result of results) {
@@ -257,7 +292,8 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             }
           }
           const remoteDetails = new Map<string, Promise<{ readonly summary: string | null; readonly waiting: AssistantWaitingKind | null }>>()
-          const readRemoteDetails = (session: import('./assistant-session-index.js').AssistantSessionSourceRecord) => {
+          const readRemoteDetails = (session: import('./assistant-session-index.js').AssistantSessionSourceRecord, readSignal?: AbortSignal) => {
+            readSignal?.throwIfAborted()
             if (session.hostId === localHostId) {
               return Promise.resolve({ summary: session.summary ?? null, waiting: session.waiting ?? null })
             }
@@ -278,6 +314,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
                 // session 存储，也不把流式 chunk 当成摘要正文。
                 const stream = aggregatedTransport.openStream({
                   scope,
+                  ...(readSignal === undefined ? {} : { signal: readSignal }),
                   method: 'session/follow',
                   payload: {
                     args: {
@@ -290,6 +327,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
                   },
                 })
                 for await (const frame of stream) {
+                  readSignal?.throwIfAborted()
                   if (!isRecordValue(frame)) continue
                   const value = frame
                   if (value.type !== 'snapshot') continue
@@ -300,6 +338,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
                   }
                 }
               } catch {
+                readSignal?.throwIfAborted()
                 // 单个远端会话不可读时保留其元数据，不能让整个索引失败。
               }
               return { summary: session.summary ?? null, waiting: session.waiting ?? null }
@@ -310,9 +349,11 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
           return {
             sessions,
             archivedSessionIds,
-            volatile: true,
-            readSummary: async (session: import('./assistant-session-index.js').AssistantSessionSourceRecord) => (await readRemoteDetails(session)).summary,
-            readWaiting: async (session: import('./assistant-session-index.js').AssistantSessionSourceRecord) => (await readRemoteDetails(session)).waiting,
+            volatile: results.length > 0,
+            failed,
+            warnings: failed ? ['部分远端 Host 暂不可达，已延后重试。'] : [],
+            readSummary: async (session: import('./assistant-session-index.js').AssistantSessionSourceRecord, signal?: AbortSignal) => (await readRemoteDetails(session, signal)).summary,
+            readWaiting: async (session: import('./assistant-session-index.js').AssistantSessionSourceRecord, signal?: AbortSignal) => (await readRemoteDetails(session, signal)).waiting,
           }
         },
         async dispatch(request: { readonly hostId: string; readonly requestId: string; readonly sessionId: string; readonly mode: 'queue' | 'steer'; readonly content: readonly [{ readonly type: 'text'; readonly text: string }] }, signal?: AbortSignal) {

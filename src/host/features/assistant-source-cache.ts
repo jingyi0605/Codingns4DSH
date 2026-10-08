@@ -1,4 +1,4 @@
-/** 同一 Host 的并发元数据读取共享任务；完成后释放，不缓存活动状态。 */
+/** 标题缓存与兼容读取合并；完整元数据快照由 AssistantBackground 持有。 */
 export class AssistantSourceCache {
   private readonly loads = new Map<string, Promise<unknown>>()
   private readonly titles = new Map<string, { signature: string; expiresAt: number; value: Promise<string | null> }>()
@@ -15,7 +15,8 @@ export class AssistantSourceCache {
 
   invalidateTitle(sessionId: string): void { this.titles.delete(sessionId) }
 
-  title(sessionId: string, signature: string, versioned: boolean, read: () => Promise<string | null>): Promise<string | null> {
+  title(sessionId: string, signature: string, versioned: boolean, read: () => Promise<string | null>, signal?: AbortSignal): Promise<string | null> {
+    signal?.throwIfAborted()
     const previous = this.titles.get(sessionId)
     if (previous?.signature === signature && previous.expiresAt > Date.now()) return previous.value
     // 标题可能来自磁盘；只允许四个并发读取，避免大量历史会话同时排满 IO 队列。
@@ -24,7 +25,7 @@ export class AssistantSourceCache {
         const enter = (): void => { this.titleReads += 1; resolve() }
         if (this.titleReads < 4) enter(); else this.titleQueue.push(enter)
       })
-      try { return await read() }
+      try { signal?.throwIfAborted(); return await read() }
       finally { this.titleReads -= 1; this.titleQueue.shift()?.() }
     })()
     this.titles.set(sessionId, { signature, expiresAt: versioned ? Infinity : Date.now() + 60_000, value })

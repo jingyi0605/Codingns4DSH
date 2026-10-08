@@ -14,6 +14,16 @@ interface SessionVersion {
 
 export const assistantSessionKey = (entry: { hostId: string; sessionId: string }): string => JSON.stringify([entry.hostId, entry.sessionId])
 const INDEX_UPDATE_DELAY_MS = 5_000
+const INDEX_EVENTS = new Set(['turn/start', 'turn/end', 'user/message', 'assistant/message', 'tool/call', 'tool/result', 'session/title', 'todo/write', 'compaction/summary'])
+
+/** 高频原生事件先过滤，再访问会话成员表和索引版本。 */
+export function isAssistantIndexEvent(event: unknown): boolean {
+  if (typeof event !== 'object' || event === null) return false
+  const value = event as { type?: string; data?: { source?: { kind?: string }; message?: { source?: { kind?: string } } } }
+  if (!INDEX_EVENTS.has(value.type ?? '')) return false
+  const source = value.data?.message?.source ?? value.data?.source
+  return value.type !== 'user/message' || source?.kind === undefined || source.kind === 'user'
+}
 
 /** 版本只在有效材料变化时推进，流式片段和工具步骤结束都不会触发索引。 */
 export class AssistantIndexUpdates {
@@ -22,6 +32,7 @@ export class AssistantIndexUpdates {
   private disposed = false
   private running = false
   private again = false
+  private enabled = true
 
   constructor(private readonly run: () => Promise<void>, private readonly liveActivity: (entry: SessionIndexEntry) => 'running' | 'idle' | 'unknown') {}
 
@@ -50,9 +61,7 @@ export class AssistantIndexUpdates {
     const current = this.sessions.get(key)
     if (current === undefined || typeof event !== 'object' || event === null) return
     const value = event as { type?: string; seq?: number; data?: { source?: { kind?: string }; message?: { source?: { kind?: string } } } }
-    if (!['turn/start', 'turn/end', 'user/message', 'assistant/message', 'tool/call', 'tool/result', 'session/title', 'todo/write', 'compaction/summary'].includes(value.type ?? '')) return
-    const source = value.data?.message?.source ?? value.data?.source
-    if (value.type === 'user/message' && source?.kind !== undefined && source.kind !== 'user') return
+    if (!isAssistantIndexEvent(event)) return
     if (typeof value.seq === 'number') { if (value.seq <= current.seq) return; current.seq = value.seq }
     if (value.type === 'turn/start' || value.type === 'user/message') { current.open = true; current.activity = 'running'; current.idleSignal = false }
     if (value.type === 'turn/end') { current.open = false; current.activity = 'idle'; current.idleSignal = true; this.schedule(); return }
@@ -116,18 +125,27 @@ export class AssistantIndexUpdates {
   reset(): void { for (const current of this.sessions.values()) { current.version++; current.attempted = 0 }; this.schedule() }
   /** 有效变化重新等待5秒；轮询、刷新和重复空闲通知只确保已有任务被安排。 */
   schedule(restart = true): void {
-    if (this.disposed) return
+    if (this.disposed || !this.enabled) return
     if (!restart && this.timer !== undefined) return
     if (this.timer !== undefined) clearTimeout(this.timer)
     this.timer = setTimeout(() => {
       this.timer = undefined
-      if (this.disposed) return
+      if (this.disposed || !this.enabled) return
       if (this.running) { this.again = true; return }
       this.running = true
       void this.run().catch(() => {}).finally(() => { this.running = false; if (this.again) { this.again = false; this.schedule() } })
     }, INDEX_UPDATE_DELAY_MS)
   }
   pause(): void { if (this.timer !== undefined) clearTimeout(this.timer); this.timer = undefined; for (const current of this.sessions.values()) current.attempted = current.version }
+  /** 模块停用不能把待索引版本标记成已尝试，重新启用仍须继续。 */
+  setEnabled(enabled: boolean): void {
+    if (this.enabled === enabled) return
+    this.enabled = enabled
+    if (enabled) { this.schedule(false); return }
+    if (this.timer !== undefined) clearTimeout(this.timer)
+    this.timer = undefined
+    this.again = false
+  }
   clear(): void { this.pause(); this.sessions.clear(); this.again = false }
   dispose(): void { this.disposed = true; this.pause() }
 }

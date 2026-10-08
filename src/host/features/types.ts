@@ -17,14 +17,16 @@ export interface CodingNsHostEvents {
 
 export interface AssistantHostGateway {
   /** 已显式加入聚合的工作区元数据；不读取远端会话正文。 */
-  workspaces?(): Promise<readonly { readonly workspaceId: string; readonly name: string; readonly path: string | null }[]>
-  list(managedWorkspaceIds: readonly string[]): Promise<{
+  workspaces?(signal?: AbortSignal): Promise<readonly { readonly workspaceId: string; readonly name: string; readonly path: string | null }[]>
+  list(managedWorkspaceIds: readonly string[], signal?: AbortSignal): Promise<{
     readonly sessions: readonly AssistantSessionSourceRecord[]
     readonly archivedSessionIds: readonly string[]
     /** 远端来源没有本地事件总线；调用方必须在下次请求时重新取快照。 */
     readonly volatile?: boolean
-    readonly readSummary?: (session: AssistantSessionSourceRecord) => Promise<string | null>
-    readonly readWaiting?: (session: AssistantSessionSourceRecord) => Promise<AssistantWaitingKind | null>
+    readonly warnings?: readonly string[]
+    readonly failed?: boolean
+    readonly readSummary?: (session: AssistantSessionSourceRecord, signal?: AbortSignal) => Promise<string | null>
+    readonly readWaiting?: (session: AssistantSessionSourceRecord, signal?: AbortSignal) => Promise<AssistantWaitingKind | null>
   }>
   dispatch(request: { readonly hostId: string; readonly requestId: string; readonly sessionId: string; readonly mode: 'queue' | 'steer'; readonly content: readonly [{ readonly type: 'text'; readonly text: string }]}, signal?: AbortSignal): Promise<void>
 }

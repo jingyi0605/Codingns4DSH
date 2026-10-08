@@ -3,14 +3,15 @@ import type { FeatureModule } from '../../shared/contracts/feature.js'
 import type { VoiceRuntimeCapabilities, VoiceRuntimeEvent, VoiceRuntimeState } from '../../shared/contracts/voice-runtime.js'
 import type { CodingNsHostServices } from './types.js'
 import type { AssistantSessionSourceRecord } from './assistant-session-index.js'
-import { createAssistantScope } from './assistant-scope.js'
+import { createAssistantScope, getAssistantScopeState } from './assistant-scope.js'
 import { AssistantDispatcher } from './assistant-dispatch.js'
 import { AssistantVoiceTurnRouter } from './assistant-voice-turn.js'
 import { buildAssistantSessionIndex, type AssistantSessionIndexSnapshot } from './assistant-session-index.js'
 import { sanitizeSpeechText, summarizeAssistantEntries } from './assistant-summary.js'
 import { parseAssistantIntent } from './assistant-intent.js'
 import type { AssistantDebugSnapshot, AssistantLifecycleSnapshot, SessionIndexEntry } from '../../shared/contracts/assistant.js'
-import { AssistantIndexUpdates, assistantSessionKey } from './assistant-index-updates.js'
+import { AssistantIndexUpdates, assistantSessionKey, isAssistantIndexEvent } from './assistant-index-updates.js'
+import { AssistantBackground } from './assistant-background.js'
 import { readAssistantPrompts } from '../../shared/assistant-prompts.js'
 import { createAssistantChatSystem } from './assistant-prompts.js'
 import { speakAssistantStructuredIndex } from './assistant-structured-index.js'
@@ -67,8 +68,13 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       const diagnostics = installVoiceDiagnostics(() => coordinator.snapshot().active)
       if (diagnostics !== undefined) context.resources.add(diagnostics.dispose)
       let resetting = false
+      let disposed = false
+      let statusRevision = 0
+      let indexAbort = new AbortController()
       // 每次读取当前档案，资源准备与旧配置都不能隐式创建助理。
       const assistantProfile = () => readAssistantProfile(context.services.settings?.get().assistant ?? DEFAULT_ASSISTANT_SETTINGS)
+      const automaticEnabled = (): boolean => !disposed && !resetting && context.services.settings?.get().modules.globalVoiceAssistant === true
+        && assistantProfile().initialized && (context.services.settings?.get().assistant.managedWorkspaceIds.length ?? 0) > 0
       let lifecycleRevision = 0
       const tts = new AssistantTtsService(context.services, { isVoiceActive: () => coordinator.snapshot().active })
       context.resources.add(() => tts.dispose())
@@ -98,6 +104,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       const router = new AssistantVoiceTurnRouter(dispatcher)
       const waitingState = new AssistantWaitingState()
       let lastSnapshot: AssistantSessionIndexSnapshot | null = null
+      const indexedEntries = new Map<string, SessionIndexEntry>()
       let lastArchivedSessionIds: readonly string[] = []
       let buildingIndex: Promise<AssistantSessionIndexSnapshot> | undefined
       let buildingIndexRevision = 0
@@ -108,12 +115,17 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         dispatcher,
         snapshot: (signal) => readManagementSnapshot(signal),
         read: async (entry, signal) => {
+          const revision = lifecycleRevision
           const managed = assistantSettings().managedWorkspaceIds
-          const source = await readAssistantSource(context.services, managed, waitingState)
+          const source = await readAssistantSource(context.services, managed, waitingState, signal)
           signal.throwIfAborted()
+          if (resetting || revision !== lifecycleRevision) throw new Error('助理管理范围已变化，请重新查询')
           const current = source.sessions.find((item) => item.hostId === entry.hostId && item.sessionId === entry.sessionId && item.workspaceId === entry.workspaceId)
           if (current === undefined || source.archivedSessionIds.includes(entry.sessionId)) throw new Error('目标会话已退出助理管理范围')
-          return await source.readSummary?.(current) ?? null
+          const summary = await source.readSummary?.(current, signal) ?? null
+          signal.throwIfAborted()
+          if (resetting || revision !== lifecycleRevision) throw new Error('助理管理范围已变化，请重新查询')
+          return summary
         },
       })
       const managementAgent = createAssistantAgentAdapter(context.services.dshContext, context.services.dshVersion ?? minimumSupportedDshVersion(), llm, managementTools)
@@ -135,11 +147,12 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         return entry.activity ?? (entry.running ? 'running' : entry.completed || entry.error === true ? 'idle' : 'unknown')
       }
       const updates = new AssistantIndexUpdates(async () => {
-        if (resetting || !assistantProfile().initialized) return
+        if (!automaticEnabled()) return
         if (indexAnalysis.read()?.state === 'running' || buildingIndex !== undefined && buildingIndexRevision === indexRevision) return
-        const snapshot = await buildIndex()
-        if (updates.hasReady(snapshot.entries) || indexAnalysis.read()?.generation !== snapshot.generation) startIndexAnalysis(snapshot)
+        const snapshot = await buildIndex('automatic')
+        if (automaticEnabled() && (updates.hasReady(snapshot.entries) || indexAnalysis.read()?.generation !== snapshot.generation)) startIndexAnalysis(snapshot, false, true)
       }, liveActivity)
+      updates.setEnabled(automaticEnabled())
       context.resources.add(() => textChat.dispose())
       context.resources.add(() => indexAnalysis.dispose())
       context.resources.add(() => updates.dispose())
@@ -161,15 +174,16 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       }
       const cancelIndexAnalysis = (): void => indexAnalysis.cancelActive()
       // 正文索引立即返回，LLM 在后台生成；轮询现有调试接口即可读取进度与结果。
-      const startIndexAnalysis = (snapshot: AssistantSessionIndexSnapshot, retryFailures = false): AssistantSessionIndexSnapshot => {
-        if (resetting || lastSnapshot !== snapshot) return withIndexAnalysis(snapshot)
+      const startIndexAnalysis = (snapshot: AssistantSessionIndexSnapshot, retryFailures = false, automatic = false): AssistantSessionIndexSnapshot => {
+        if (disposed || resetting || lastSnapshot !== snapshot || automatic && !automaticEnabled()) return withIndexAnalysis(snapshot)
         if (snapshot.entries.length === 0) { cancelIndexAnalysis(); return snapshot }
         const revision = indexRevision
         const prompts = readAssistantPrompts(context.services.settings?.get().assistant.prompts)
         indexAnalysis.start(snapshot, indexSelection, prompts.index,
-          () => lastSnapshot === snapshot && sameManagedScope(snapshot, context.services.settings?.get().assistant.managedWorkspaceIds ?? []),
+          () => !disposed && (!automatic || automaticEnabled()) && lastSnapshot === snapshot && sameManagedScope(snapshot, context.services.settings?.get().assistant.managedWorkspaceIds ?? []),
           (run) => {
             if (resetting || revision !== indexRevision || lastSnapshot !== snapshot) return
+            statusRevision++
             journal.updateAnalysis(run)
             for (const task of run.tasks ?? []) {
               if (task.state === 'completed') updates.complete(task)
@@ -183,9 +197,12 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
             if (entry.hostId === localHostId) return updates.canIndex(entry)
             // 远端没有本地完成事件：每个真实模型请求前重新确认空闲和版本。
             const managed = context.services.settings?.get().assistant.managedWorkspaceIds ?? []
-            const source = await readAssistantSource(context.services, managed, waitingState)
+            const source = await readAssistantSource(context.services, managed, waitingState, signal)
             signal.throwIfAborted()
+            if (disposed || resetting || revision !== indexRevision || automatic && !automaticEnabled()) return false
             const metadata = await buildAssistantSessionIndex({ sessions: source.sessions, scope: createAssistantScope(managed), archivedSessionIds: source.archivedSessionIds })
+            signal.throwIfAborted()
+            if (revision !== indexRevision) return false
             observeVersions(metadata.entries)
             const current = metadata.entries.find((item) => assistantSessionKey(item) === assistantSessionKey(entry))
             return current !== undefined && current.activity === 'idle' && current.updatedAt === entry.updatedAt && updates.canIndex(entry)
@@ -201,26 +218,30 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         const current = indexSelection.provider === undefined ? indexAnalysis.read() : indexSelection
         if (current?.provider === provider && current.model === model) { indexSelection = { provider, model }; return }
         indexSelection = { provider, model }; cancelIndexAnalysis(); textChat.cancelActive(); voiceChat.clear(); updates.reset()
+        statusRevision++
       }
       // 刷新可以清空缓存，但索引代次必须持续递增，不能每次回到 1。
       let indexGeneration = 0
       let indexRevision = 0
       const observeVersions = (entries: readonly SessionIndexEntry[]): boolean => {
         const changed = updates.observe(entries)
+        if (changed) statusRevision++
         if (indexAnalysis.read()?.state !== 'running') return changed
         for (const entry of lastSnapshot?.entries ?? []) if (!updates.canIndex(entry)) indexAnalysis.deferSession(assistantSessionKey(entry))
         return changed
       }
-      const buildIndex = async (trigger: 'automatic' | 'manual' = 'automatic'): Promise<AssistantSessionIndexSnapshot> => {
-        if (resetting) throw new Error('助理正在重置，请稍后操作')
+      const buildIndex = async (trigger: 'automatic' | 'manual' = 'manual'): Promise<AssistantSessionIndexSnapshot> => {
+        if (disposed || resetting || trigger === 'automatic' && !automaticEnabled()) throw new Error('助理后台索引已停止')
         const managed = context.services.settings?.get().assistant?.managedWorkspaceIds ?? []
         const revision = indexRevision
+        const signal = indexAbort.signal
         if (buildingIndex !== undefined && buildingIndexRevision === revision) return buildingIndex
-        const source = await readAssistantSource(context.services, managed, waitingState)
+        if (buildingIndex !== undefined) { await buildingIndex.catch(() => undefined); signal.throwIfAborted() }
+        const { source, metadata } = (await background.read(trigger === 'manual' || metadataDirty)).value
+        signal.throwIfAborted()
         if (resetting || revision !== indexRevision) throw new Error('索引任务已撤销')
-        if (JSON.stringify(managed) !== JSON.stringify(context.services.settings?.get().assistant.managedWorkspaceIds ?? [])) return buildIndex(trigger)
+        if (JSON.stringify(managed) !== JSON.stringify(context.services.settings?.get().assistant.managedWorkspaceIds ?? [])) throw new Error('索引范围已变化')
         if (buildingIndex !== undefined && buildingIndexRevision === revision) return buildingIndex
-        const metadata = await buildAssistantSessionIndex({ sessions: source.sessions, scope: createAssistantScope(managed), archivedSessionIds: source.archivedSessionIds })
         if (resetting || revision !== indexRevision) throw new Error('索引任务已撤销')
         observeVersions(metadata.entries)
         const members = new Set(metadata.entries.map(assistantSessionKey))
@@ -228,6 +249,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         const materialKeys = new Set(metadata.entries.filter((value) => { const entry = updates.stamp(value); return updates.canIndex(entry) && materials.get(assistantSessionKey(entry))?.version !== entry.sourceVersion }).map(assistantSessionKey))
         if (trigger !== 'manual' && lastSnapshot !== null && sameIndexMembership(lastSnapshot, metadata) && updates.matches(lastSnapshot) && materialKeys.size === 0) return lastSnapshot
         const recordId = journal.begin(trigger, managed)
+        statusRevision++
         const failures = new Map<string, string>()
         const task = (async () => {
           lastArchivedSessionIds = source.archivedSessionIds
@@ -243,7 +265,9 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
               if (!updates.canIndex(entry)) return cached?.summary ?? null
               if (cached !== undefined && cached.version === session.sourceVersion) return cached.summary
               try {
-                const summary = await source.readSummary!(session)
+                signal.throwIfAborted()
+                const summary = await source.readSummary!(session, signal)
+                signal.throwIfAborted()
                 if (revision === indexRevision && session.sourceVersion !== undefined && updates.canIndex(entry)) materials.set(key, { version: session.sourceVersion, summary })
                 return summary
               }
@@ -252,33 +276,114 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
                 throw error
               }
             } }),
-            ...(source.readWaiting === undefined ? {} : { readWaiting: (session: AssistantSessionSourceRecord) => materialKeys.has(assistantSessionKey(session)) ? source.readWaiting!(session) : session.waiting }),
+            ...(source.readWaiting === undefined ? {} : { readWaiting: (session: AssistantSessionSourceRecord) => materialKeys.has(assistantSessionKey(session)) ? source.readWaiting!(session, signal) : session.waiting }),
           })
           // 构建期间若源数据已经变化，保留记录，但不能把结果误标为最新。
-          if (revision !== indexRevision) return snapshot
+          signal.throwIfAborted()
+          if (revision !== indexRevision || disposed) throw new Error('索引任务已撤销')
           lastSnapshot = snapshot
+          indexedEntries.clear()
+          for (const entry of snapshot.entries) indexedEntries.set(assistantSessionKey(entry), entry)
+          statusRevision++
           journal.complete(recordId, snapshot, source.warnings, failures)
           return snapshot
-        })().catch((error) => { if (revision === indexRevision) journal.fail(recordId, error); throw error }).finally(() => { if (buildingIndex === task) buildingIndex = undefined })
+        })().catch((error) => { journal.fail(recordId, error); throw error }).finally(() => { if (buildingIndex === task) { buildingIndex = undefined; statusRevision++ } })
         buildingIndexRevision = revision; buildingIndex = task
         return task
       }
-      const invalidateIndex = (): void => { cancelIndexAnalysis(); textChat.cancelActive(); voiceChat.clear(); indexRevision += 1; lastSnapshot = null; updates.reset() }
+      const cancelIndexWork = (): void => {
+        indexRevision++; indexAbort.abort(new Error('索引任务已撤销')); indexAbort = new AbortController()
+        cancelIndexAnalysis()
+        // 保留取消证据，但不把因模块停用而撤销的版本标成已尝试。
+        const run = indexAnalysis.read()
+        if (run !== undefined) journal.updateAnalysis(run)
+        statusRevision++
+      }
+      const invalidateIndex = (): void => { cancelIndexWork(); textChat.cancelActive(); voiceChat.clear(); lastSnapshot = null; updates.reset() }
+      let metadataDirty = true
+      let membershipDirty = true
+      const localSessionKeys = new Map<string, string>()
+      const waitingOverrides = new Map<string, 'approval' | 'question' | null>()
+      const refreshMembership = (): void => {
+        if (!membershipDirty) return
+        membershipDirty = false
+        localSessionKeys.clear()
+        const managed = context.services.settings?.get().assistant.managedWorkspaceIds ?? []
+        const archived = new Set(readStringArray(readOptionalService(context.services.dshContext, 'workspaceRegistry')?.archivedSessionIds))
+        for (const workspace of readWorkspaceRecords(context.services.dshContext)) {
+          if (!managed.some((selected) => assistantWorkspaceMatches(selected, localHostId, workspace.id, true))) continue
+          for (const id of workspace.sessionIds) if (!archived.has(id)) localSessionKeys.set(id, assistantSessionKey({ hostId: localHostId, sessionId: id }))
+        }
+      }
+      let metadataEventRevision = 0
+      type AssistantMetadata = { source: Awaited<ReturnType<typeof readAssistantSource>>; metadata: AssistantSessionIndexSnapshot; eventRevision: number }
+      const background: AssistantBackground<AssistantMetadata> = new AssistantBackground<AssistantMetadata>({
+        read: async (signal) => {
+          const eventRevision = metadataEventRevision
+          const managed = [...context.services.settings?.get().assistant.managedWorkspaceIds ?? []]
+          let source = await readAssistantSource(context.services, managed, waitingState, signal)
+          signal.throwIfAborted()
+          if (source.failed) {
+            // 短暂断线不是删除成员。保留同一范围已知远端元数据，但撤销空闲证明，
+            // 从而保留材料与成功结果，同时禁止把离线来源当作最新事实送进模型。
+            const current = new Set(source.sessions.map(assistantSessionKey))
+            const missing = (background.snapshot()?.value.source.sessions ?? []).filter((entry) => entry.hostId !== localHostId && !current.has(assistantSessionKey(entry)))
+            source = { ...source, sessions: [...source.sessions, ...missing.map((entry) => ({ ...entry, running: false, completed: false, activity: 'unknown' as const }))] }
+          }
+          const metadata = await buildAssistantSessionIndex({ sessions: source.sessions, scope: createAssistantScope(managed), archivedSessionIds: source.archivedSessionIds })
+          signal.throwIfAborted()
+          return { source, metadata, eventRevision }
+        },
+        publish: ({ metadata, eventRevision }) => {
+          metadataDirty = metadataEventRevision !== eventRevision
+          // 成员表随成功元数据快照更新；常规会话事件不再遍历工作区和会话列表。
+          localSessionKeys.clear()
+          for (const entry of metadata.entries) if (entry.hostId === localHostId) localSessionKeys.set(entry.sessionId, assistantSessionKey(entry))
+          membershipDirty = metadataDirty
+          const key = readDefaultModelKey()
+          if (key !== defaultModelKey) { defaultModelKey = key; if (indexSelection.provider === undefined) invalidateIndex() }
+          observeVersions(metadata.entries)
+          if (updates.hasReady(metadata.entries) || lastSnapshot !== null && !sameIndexMembership(lastSnapshot, metadata)) updates.schedule(false)
+        },
+        cadence: ({ source, metadata }) => ({
+          remote: source.volatile === true || source.failed === true || metadata.entries.some((entry) => entry.hostId !== localHostId),
+          active: metadata.entries.some((entry) => entry.hostId !== localHostId && (entry.activity !== 'idle' || entry.waiting !== null)),
+          failed: source.failed === true,
+        }),
+      })
+      let backgroundEnabled = automaticEnabled()
+      const syncBackground = (): void => {
+        const enabled = automaticEnabled()
+        if (backgroundEnabled && !enabled) cancelIndexWork()
+        backgroundEnabled = enabled
+        updates.setEnabled(enabled)
+        background.setEnabled(enabled)
+      }
+      const markMetadataChanged = (members = false): void => {
+        metadataDirty = true; metadataEventRevision++; statusRevision++
+        membershipDirty ||= members
+        background.request(5_000)
+      }
+      background.setEnabled(backgroundEnabled)
+      context.resources.add(() => { disposed = true; cancelIndexWork(); background.dispose(); updates.dispose() })
       const eventDisposers: Array<() => void> = []
       for (const eventName of ['workspace/archive', 'workspace/unarchive', 'workspace/changed']) {
-        const disposer = context.services.events?.on(eventName, () => updates.schedule())
+        const disposer = context.services.events?.on(eventName, () => { markMetadataChanged(true); updates.schedule() })
         if (typeof disposer === 'function') eventDisposers.push(disposer as () => void)
       }
       const sessionKey = (args: readonly unknown[]): string | null => {
+        if (!automaticEnabled() && lastSnapshot === null && background.snapshot() === undefined) return null
         const id = readIndexSessionId(args)
-        const managed = context.services.settings?.get().assistant.managedWorkspaceIds ?? []
-        const workspace = readWorkspaceRecords(context.services.dshContext).find((item) => item.sessionIds.includes(id ?? '') && managed.some((selected) => assistantWorkspaceMatches(selected, localHostId, item.id, true)))
-        const archived = readStringArray(readOptionalService(context.services.dshContext, 'workspaceRegistry')?.archivedSessionIds)
-        return id === null || workspace === undefined || archived.includes(id) ? null : assistantSessionKey({ hostId: localHostId, sessionId: id })
+        if (id === null) return null
+        refreshMembership()
+        return localSessionKeys.get(id) ?? null
       }
-      const changedSession = (args: readonly unknown[]): void => { const key = sessionKey(args); if (key !== null) { updates.changed(key); indexAnalysis.deferSession(key) } }
+      const changedSession = (args: readonly unknown[]): void => { const key = sessionKey(args); if (key !== null) { markMetadataChanged(); updates.changed(key); indexAnalysis.deferSession(key) } }
       for (const eventName of ['session/update', 'session/title']) {
-        const disposer = context.services.events?.on(eventName, (...args: unknown[]) => changedSession(args))
+        const disposer = context.services.events?.on(eventName, (...args: unknown[]) => {
+          if (eventName === 'session/title') { const id = readIndexSessionId(args); if (id !== null) assistantSourceCache(context.services).invalidateTitle(id) }
+          changedSession(args)
+        })
         if (typeof disposer === 'function') eventDisposers.push(disposer as () => void)
       }
       for (const eventName of ['agent/status', 'api-session/status', 'session/status', 'session/complete']) {
@@ -286,9 +391,10 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
           const key = sessionKey(args)
           const status = readIndexRunning(eventName, args)
           if (key === null || status === null) return
+          markMetadataChanged()
           if (eventName === 'session/complete') {
             const id = readIndexSessionId(args)
-            if (id !== null) waitingState.resolve(id)
+            if (id !== null) { waitingState.resolve(id); waitingOverrides.set(id, null) }
             updates.changed(key)
           }
           updates.status(key, status)
@@ -306,7 +412,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       for (const [eventName, kind] of waitingRequests) {
         const disposer = context.services.events?.on(eventName, (...args: any[]) => {
           const sessionId = readWaitingSessionId(args)
-          if (sessionId !== null) waitingState.request({ sessionId, kind })
+          if (sessionId !== null) { waitingState.request({ sessionId, kind }); waitingOverrides.set(sessionId, kind) }
           changedSession(args)
         })
         if (typeof disposer === 'function') eventDisposers.push(disposer as () => void)
@@ -314,18 +420,20 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       for (const eventName of ['approval/resolve', 'approval/resolved', 'user-questions/resolve', 'user-questions/resolved', 'user-question/resolve', 'user-question/answered']) {
         const disposer = context.services.events?.on(eventName, (...args: any[]) => {
           const sessionId = readWaitingSessionId(args)
-          if (sessionId !== null) waitingState.resolve(sessionId)
+          if (sessionId !== null) { waitingState.resolve(sessionId); waitingOverrides.set(sessionId, null) }
           changedSession(args)
         })
         if (typeof disposer === 'function') eventDisposers.push(disposer as () => void)
       }
       const onSessionEvent = (session: unknown, event: unknown): void => {
+        if (!isAssistantIndexEvent(event)) return
         const record = asRecord(session)
         const sessionId = readText(record, ['id', 'sessionId']) ?? readText(asRecord(record?.header), ['id', 'sessionId'])
-        if (sessionId !== null) assistantSourceCache(context.services).invalidateTitle(sessionId)
+        if (sessionId !== null && asRecord(event)?.type === 'session/title') assistantSourceCache(context.services).invalidateTitle(sessionId)
         const key = sessionKey([session])
         if (key === null) return
-        const entry = lastSnapshot?.entries.find((item) => assistantSessionKey(item) === key)
+        markMetadataChanged()
+        const entry = indexedEntries.get(key)
         const before = entry === undefined ? undefined : updates.stamp(entry).sourceVersion
         updates.event(key, event)
         if (entry !== undefined && before !== updates.stamp(entry).sourceVersion) indexAnalysis.deferSession(key)
@@ -347,7 +455,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         const nextPrompts = readAssistantPrompts(context.services.settings?.get().assistant.prompts)
         const model = context.services.settings?.get().assistant.model
         const nextModelKey = JSON.stringify(model ?? {})
-        if (resetting) { managedScopeKey = nextKey; currentPrompts = nextPrompts; configuredModelKey = nextModelKey; return }
+        if (resetting) { managedScopeKey = nextKey; currentPrompts = nextPrompts; configuredModelKey = nextModelKey; syncBackground(); return }
         const scopeChanged = nextKey !== managedScopeKey
         if (scopeChanged) { lifecycleRevision++; void conversation.invalidateContext().catch(() => undefined) }
         if (nextPrompts.chat !== currentPrompts.chat) { lifecycleRevision++; conversation.cancelActive(); previewChat.cancelActive() }
@@ -355,29 +463,13 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
           indexSelection = { ...model }; lifecycleRevision++; conversation.cancelActive(); invalidateIndex()
         }
         if (scopeChanged || nextPrompts.chat !== currentPrompts.chat) { textChat.cancelActive(); voiceChat.clear() }
-        if (scopeChanged) { cancelIndexAnalysis(); indexRevision++; lastSnapshot = null; updates.schedule() }
+        if (scopeChanged) { cancelIndexWork(); background.invalidate(); markMetadataChanged(true); lastSnapshot = null; updates.schedule() }
         if (nextPrompts.index !== currentPrompts.index) invalidateIndex()
         managedScopeKey = nextKey; currentPrompts = nextPrompts; configuredModelKey = nextModelKey
+        syncBackground()
+        if (scopeChanged) background.request()
       })
       if (typeof disposeSettingsWatch === 'function') eventDisposers.push(disposeSettingsWatch)
-      // 没有本地事件总线的远端也通过元数据版本发现变化；这里只读取列表，不读正文。
-      let refreshingVersions = false
-      const refreshVersions = async (): Promise<void> => {
-        if (resetting || !assistantProfile().initialized) return
-        if (refreshingVersions) return
-        refreshingVersions = true
-        try {
-          const key = readDefaultModelKey()
-          if (key !== defaultModelKey) { defaultModelKey = key; if (indexSelection.provider === undefined) invalidateIndex() }
-          const managed = context.services.settings?.get().assistant.managedWorkspaceIds ?? []
-          const source = await readAssistantSource(context.services, managed, waitingState)
-          const metadata = await buildAssistantSessionIndex({ sessions: source.sessions, scope: createAssistantScope(managed), archivedSessionIds: source.archivedSessionIds })
-          const changed = observeVersions(metadata.entries)
-          if (updates.hasReady(metadata.entries) || lastSnapshot !== null && !sameIndexMembership(lastSnapshot, metadata)) updates.schedule(changed)
-        } finally { refreshingVersions = false }
-      }
-      const versionTimer = setInterval(() => { void refreshVersions().catch(() => {}) }, 5000)
-      context.resources.add(() => clearInterval(versionTimer))
       updates.schedule()
       context.resources.add(() => { for (const dispose of eventDisposers.splice(0)) dispose() })
       const actionBridge = createAssistantVoiceActionBridge({
@@ -402,6 +494,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       }))
       // 两种入口共用完整结构化索引门禁，语音不能绕过待更新或失败的会话。
       const readChatContext = () => {
+        if (background.snapshot()?.value.source.failed) throw new Error('远端索引状态暂不可确认，请等待连接恢复')
         const index = journal.snapshot().index
         const managed = context.services.settings?.get().assistant.managedWorkspaceIds ?? []
         if (index === undefined || lastSnapshot !== index || !sameManagedScope(index, managed) || !updates.matches(index)) throw new Error('索引尚未生成或已经过期，请等待会话完成后自动更新索引')
@@ -433,10 +526,10 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         requireInitialized()
         const revision = lifecycleRevision
         const managed = assistantSettings().managedWorkspaceIds
-        const source = await readAssistantSource(context.services, managed, waitingState)
+        const source = await readAssistantSource(context.services, managed, waitingState, signal)
         signal.throwIfAborted()
         const index = await buildAssistantSessionIndex({ sessions: source.sessions.filter((entry) => !managementAgent.sessionIds.has(entry.sessionId)), scope: createAssistantScope(managed), archivedSessionIds: source.archivedSessionIds, generation: indexGeneration })
-        const workspaces = [...readWorkspaceRecords(context.services.dshContext).map((item) => ({ workspaceId: item.id, name: item.name, path: item.path })), ...await readRemoteWorkspaces()]
+        const workspaces = source.workspaces
         signal.throwIfAborted()
         if (resetting || revision !== lifecycleRevision || JSON.stringify(managed) !== JSON.stringify(assistantSettings().managedWorkspaceIds)) throw new Error('助理管理范围已变化，请重新查询')
         return { scope: createAssistantScope(managed), archivedSessionIds: source.archivedSessionIds, entries: index.entries, indexGeneration: index.generation,
@@ -624,16 +717,38 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         if (settings === undefined || context.services.settingsProvider?.writable === false) throw new Error('当前助理设置不可写')
         if (configuring) throw new Error('请等待助理配置保存完成，再重置')
         resetting = true; lifecycleRevision++; indexRevision++
-        updates.pause(); cancelIndexAnalysis(); modelAbort.abort(new Error('助理已重置'))
+        syncBackground(); background.invalidate(); cancelIndexWork(); modelAbort.abort(new Error('助理已重置'))
         try {
           await stopAssistant()
           await Promise.all([tts.cancelPending(), ...[...modelTasks].map((task) => task.catch(() => undefined))])
           await conversation.clear(true)
           await settings.update({ assistant: { ...structuredClone(DEFAULT_ASSISTANT_SETTINGS), profile: { name: DEFAULT_ASSISTANT_NAME, initialized: false, createdAt: null } } })
-          journal.clear(); indexAnalysis.clear(); updates.clear(); materials.clear(); lastSnapshot = null; lastArchivedSessionIds = []; indexSelection = {}; setupProgress = null
+          journal.clear(); indexAnalysis.clear(); updates.clear(); materials.clear(); waitingOverrides.clear(); lastSnapshot = null; lastArchivedSessionIds = []; indexSelection = {}; setupProgress = null
           initialization.reset()
           return await lifecycleSnapshot()
-        } finally { modelAbort = new AbortController(); resetting = false }
+        } finally { modelAbort = new AbortController(); resetting = false; syncBackground() }
+      }
+      const readIndexView = () => {
+        const cached = background.snapshot()
+        const managed = context.services.settings?.get().assistant.managedWorkspaceIds ?? []
+        const base: AssistantSessionIndexSnapshot = cached?.value.metadata ?? { generation: indexGeneration, scope: getAssistantScopeState(createAssistantScope(managed)), entries: [], unreadableCount: 0 }
+        const metadata = { ...base, entries: base.entries.map((entry) => ({ ...entry, ...(entry.hostId === localHostId && waitingOverrides.has(entry.sessionId) ? { waiting: waitingOverrides.get(entry.sessionId)! } : {}) })) }
+        const history = journal.snapshot()
+        const matching = history.index !== undefined && sameManagedScope(history.index, managed) && sameIndexMembership(history.index, metadata)
+        const index = matching ? withIndexAnalysis(history.index!, metadata.entries) : metadata
+        return { cached, metadata, history, matching, index,
+          indexState: cached?.value.source.failed ? 'incomplete' as const : readDebugIndexState(index, { building: buildingIndex !== undefined && buildingIndexRevision === indexRevision, exists: history.index !== undefined, current: lastSnapshot === history.index && matching && updates.matches(index) }),
+          indexedAt: matching ? history.indexedAt : null,
+        }
+      }
+      let cachedStatus: { revision: number; capturedAt: number | null; indexState: AssistantDebugSnapshot['indexState']; indexedAt: number | null; workspaces: AssistantDebugSnapshot['workspaces'] } | undefined
+      const readStatus = () => {
+        const revision = statusRevision + background.version()
+        if (cachedStatus?.revision === revision) return cachedStatus
+        const view = readIndexView()
+        cachedStatus = { revision, capturedAt: view.cached?.capturedAt ?? null, indexState: view.indexState,
+          indexedAt: view.indexedAt, workspaces: view.cached?.value.source.workspaces ?? [] }
+        return cachedStatus
       }
       context.resources.add(context.services.rpc.register('assistant', async (action, payload) => {
         if (resetting && action !== 'lifecycle/read' && action !== 'voice/capabilities' && action !== 'tts/catalog') throw new Error('助理正在重置，请稍后操作')
@@ -644,6 +759,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
           return result
         }
         switch (action) {
+          case 'status': return readStatus()
           case 'lifecycle/read': return await lifecycleSnapshot()
           case 'lifecycle/configure': return await configureAssistant(payload)
           case 'lifecycle/reset': return await resetAssistant()
@@ -701,29 +817,22 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
           }
           case 'debug': {
             // 查看面板只列元数据，不把“刷新视图”混同为“执行索引”。
-            const managed = context.services.settings?.get().assistant.managedWorkspaceIds ?? []
-            const source = await readAssistantSource(context.services, managed, waitingState)
-            const metadata = await buildAssistantSessionIndex({ sessions: source.sessions, scope: createAssistantScope(managed), archivedSessionIds: source.archivedSessionIds })
-            observeVersions(metadata.entries)
-            const history = journal.snapshot()
-            // 归档、空白状态或工作区成员关系变化后，旧正文不能继续冒充当前结果。
-            const matching = history.index !== undefined && sameManagedScope(history.index, managed) && sameIndexMembership(history.index, metadata)
-            if (history.index !== undefined && !matching) { textChat.cancelActive(); updates.schedule(false) }
-            const index = matching ? withIndexAnalysis(history.index!, metadata.entries) : metadata
+            await background.read(asRecord(payload)?.refresh === true)
+            const { cached, metadata, index, indexState, indexedAt } = readIndexView()
             const tasks = new Map((indexAnalysis.read()?.tasks ?? []).map((task) => [assistantSessionKey(task), task]))
             const summary = summarizeAssistantEntries(index.entries, index.scope, index.generation, index.unreadableCount, 0)
             const query = readOptionalService(context.services.dshContext, 'sessionQuery')
             const snapshot: AssistantDebugSnapshot = {
-              capturedAt: Date.now(),
+              capturedAt: cached!.capturedAt,
               index,
               // 调试页不限制播报长度，复用摘要接口的范围状态和分组语义。
               summary: index.analysis?.state === 'completed' && index.analysis.result !== undefined ? { ...summary, speechText: sanitizeSpeechText(speakAssistantStructuredIndex(index.analysis.result)) } : summary,
-              workspaces: [...readWorkspaceRecords(context.services.dshContext).map((workspace) => ({ workspaceId: workspace.id, name: workspace.name, path: workspace.path })), ...await readRemoteWorkspaces()],
+              workspaces: cached!.value.source.workspaces,
               modelId: readAssistantVoiceSettings(context.services).modelId ?? '',
-              warnings: source.warnings,
+              warnings: cached!.value.source.warnings,
               scopeSessions: metadata.entries.map((entry) => updates.stamp(entry, tasks.get(assistantSessionKey(entry)))),
-              indexState: readDebugIndexState(index, { building: buildingIndex !== undefined && buildingIndexRevision === indexRevision, exists: history.index !== undefined, current: lastSnapshot === history.index && matching && updates.matches(index) }),
-              indexedAt: matching ? history.indexedAt : null,
+              indexState,
+              indexedAt,
               records: journal.snapshot().records,
               services: {
                 workspaceList: typeof readOptionalService(context.services.dshContext, 'workspaceRegistry')?.list === 'function',
@@ -1032,30 +1141,34 @@ async function dispatchPrompt(services: CodingNsHostServices, request: {
   throw new Error('DSH sessionController.prompt 不可用，无法派发任务')
 }
 
-async function readAssistantSource(services: CodingNsHostServices, managedWorkspaceIds: readonly string[] = [], waitingState?: AssistantWaitingState): Promise<{
+async function readAssistantSource(services: CodingNsHostServices, managedWorkspaceIds: readonly string[] = [], waitingState?: AssistantWaitingState, signal?: AbortSignal): Promise<{
   readonly sessions: readonly AssistantSessionSourceRecord[]
   readonly archivedSessionIds: readonly string[]
   readonly warnings: readonly string[]
   readonly volatile?: boolean
-  readonly readSummary?: (session: AssistantSessionSourceRecord) => Promise<string | null>
-  readonly readWaiting?: (session: AssistantSessionSourceRecord) => Promise<'approval' | 'question' | null>
+  readonly failed?: boolean
+  readonly workspaces: AssistantDebugSnapshot['workspaces']
+  readonly readSummary?: (session: AssistantSessionSourceRecord, signal?: AbortSignal) => Promise<string | null>
+  readonly readWaiting?: (session: AssistantSessionSourceRecord, signal?: AbortSignal) => Promise<'approval' | 'question' | null>
 }> {
+  signal?.throwIfAborted()
   const ctx = services.dshContext
   const warnings: string[] = []
   const query = readOptionalService(ctx, 'sessionQuery')
   const cache = assistantSourceCache(services)
-  const local = await cache.share('local-sessions', async () => {
-    const warnings: string[] = []
-    return { sessions: await readLocalAssistantSessions(services, warnings), warnings }
-  })
-  warnings.push(...local.warnings)
-  const localSessions = local.sessions
+  const localSessions = await readLocalAssistantSessions(services, warnings, signal)
+  signal?.throwIfAborted()
+  let failed = false
   const gatewayResult = services.assistantGateway === undefined || managedWorkspaceIds.length === 0
     ? undefined
-    : await cache.share(`gateway:${JSON.stringify([...managedWorkspaceIds].sort())}`, () => services.assistantGateway!.list(managedWorkspaceIds)).catch((error) => {
+    : await services.assistantGateway.list(managedWorkspaceIds, signal).catch((error) => {
+      signal?.throwIfAborted()
+      failed = true
       warnings.push(`远端 Host 状态读取失败：${sanitizeSpeechText(error instanceof Error ? error.message : String(error)).slice(0, 500)}`)
       return undefined
     })
+  signal?.throwIfAborted()
+  warnings.push(...gatewayResult?.warnings ?? [])
   const sessions = dedupeSessionRecords([
     ...localSessions,
     ...(gatewayResult?.sessions ?? []),
@@ -1134,8 +1247,8 @@ async function readAssistantSource(services: CodingNsHostServices, managedWorksp
       // Gateway 已经携带远端标题；本地 query 不能读取远端 Host 的 sessionId，
       // 也不能把远端会话误当成本地会话产生一次额外 I/O。
       if (record.hostId !== hostId || !managed.has(record.workspaceId) || archivedSet.has(record.sessionId)) return record
-      const title = await cache.title(record.sessionId, JSON.stringify([record.updatedAt, record.title, record.titleEvents]), record.updatedAt !== null,
-        () => readSessionTitle(readTitle, record.sessionId))
+      const title = await cache.title(record.sessionId, JSON.stringify([record.title, record.titleEvents]), false,
+        () => readSessionTitle(readTitle, record.sessionId, signal), signal)
       return title === null ? record : { ...record, title }
     }))
   // workspaceRegistry 可能只暴露归档 ID，而 sessionQuery 不再返回归档记录。
@@ -1160,21 +1273,28 @@ async function readAssistantSource(services: CodingNsHostServices, managedWorksp
       summary: null,
     }]
   }))
+  signal?.throwIfAborted()
+  const remoteWorkspaces = await services.assistantGateway?.workspaces?.(signal).catch((error) => { signal?.throwIfAborted(); return [] }) ?? []
+  signal?.throwIfAborted()
   return {
     sessions: [...hydratedRecords, ...archivedStubs],
     archivedSessionIds: archived,
     warnings,
+    failed: failed || gatewayResult?.failed === true,
+    workspaces: [...workspaces.map((workspace) => ({ workspaceId: workspace.id, name: workspace.name, path: workspace.path })), ...remoteWorkspaces],
     ...(gatewayResult?.volatile === true ? { volatile: true } : {}),
     ...((readSurface === undefined && gatewayResult?.readSummary === undefined) ? {} : {
-      readSummary: async (session) => {
-        if (session.hostId === hostId && readSurface !== undefined) return readSurfaceSummary(readSurface, session.sessionId)
-        if (session.hostId !== hostId && gatewayResult?.readSummary !== undefined) return gatewayResult.readSummary(session)
+      readSummary: async (session, readSignal) => {
+        readSignal?.throwIfAborted()
+        if (session.hostId === hostId && readSurface !== undefined) return readSurfaceSummary(readSurface, session.sessionId, readSignal)
+        if (session.hostId !== hostId && gatewayResult?.readSummary !== undefined) return gatewayResult.readSummary(session, readSignal)
         return session.summary ?? null
       },
     }),
     ...((gatewayResult?.readWaiting === undefined) ? {} : {
-      readWaiting: async (session: AssistantSessionSourceRecord) => {
-        if (session.hostId !== hostId) return gatewayResult.readWaiting!(session)
+      readWaiting: async (session: AssistantSessionSourceRecord, readSignal?: AbortSignal) => {
+        readSignal?.throwIfAborted()
+        if (session.hostId !== hostId) return gatewayResult.readWaiting!(session, readSignal)
         return session.waiting ?? null
       },
     }),
@@ -1182,24 +1302,28 @@ async function readAssistantSource(services: CodingNsHostServices, managedWorksp
 }
 
 /** 原生列表提供 blank/origin 投影；原始日志目录只能作为旧版本的能力回退。 */
-async function readLocalAssistantSessions(services: CodingNsHostServices, warnings: string[]): Promise<readonly unknown[]> {
+async function readLocalAssistantSessions(services: CodingNsHostServices, warnings: string[], signal?: AbortSignal): Promise<readonly unknown[]> {
+  signal?.throwIfAborted()
   const controller = readOptionalService(services.dshContext, 'sessionController') ?? services.nativeSessions?.controller
   if (typeof controller?.list === 'function') {
-    try { return flattenSessionList(await controller.list({})) }
+    try { return flattenSessionList(await controller.list({}, signal)) }
     catch {
+      signal?.throwIfAborted()
       // 列表失败或列表为空都不能改用全量历史，否则会重新纳入被侧栏隐藏的会话。
       warnings.push('原生会话列表读取失败，暂不纳入本地会话；请刷新后重试。')
       return []
     }
   }
   const query = readOptionalService(services.dshContext, 'sessionQuery')
-  if (typeof query?.listSessions === 'function') return flattenSessionList(await query.listSessions())
-  return services.nativeSessions === undefined ? [] : flattenSessionList(await services.nativeSessions.listRemote())
+  if (typeof query?.listSessions === 'function') return flattenSessionList(await query.listSessions(signal))
+  return services.nativeSessions === undefined ? [] : flattenSessionList(await services.nativeSessions.listRemote(signal))
 }
 
-async function readSessionTitle(readTitle: (sessionId: string) => Promise<unknown>, sessionId: string): Promise<string | null> {
+async function readSessionTitle(readTitle: (sessionId: string, signal?: AbortSignal) => Promise<unknown>, sessionId: string, signal?: AbortSignal): Promise<string | null> {
   try {
-    const value = await readTitle(sessionId)
+    signal?.throwIfAborted()
+    const value = await readTitle(sessionId, signal)
+    signal?.throwIfAborted()
     if (typeof value === 'string' && value.trim() !== '') return value.trim()
     if (isRecord(value)) {
       for (const key of ['title', 'value', 'text']) if (typeof value[key] === 'string' && value[key].trim() !== '') return value[key].trim()
@@ -1213,13 +1337,16 @@ async function readSessionTitle(readTitle: (sessionId: string) => Promise<unknow
       }
     }
   } catch {
+    signal?.throwIfAborted()
     // 单个标题查询失败不阻断其余会话索引。
   }
   return null
 }
 
-async function readSurfaceSummary(readSurface: (sessionId: string) => Promise<unknown>, sessionId: string): Promise<string | null> {
-  const value = await readSurface(sessionId)
+async function readSurfaceSummary(readSurface: (sessionId: string, signal?: AbortSignal) => Promise<unknown>, sessionId: string, signal?: AbortSignal): Promise<string | null> {
+  signal?.throwIfAborted()
+  const value = await readSurface(sessionId, signal)
+  signal?.throwIfAborted()
   if (typeof value === 'string') return value.slice(0, 2000)
   if (!isRecord(value)) return null
   for (const key of ['summary', 'text', 'content', 'surface']) if (typeof value[key] === 'string') return value[key].slice(0, 2000)
