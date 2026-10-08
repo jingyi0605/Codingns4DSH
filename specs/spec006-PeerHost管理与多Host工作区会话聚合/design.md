@@ -262,8 +262,10 @@ interface PeerHostHandshakeResult {
 1. 验证当前用户和 PeerHost 所有权。
 2. 验证握手状态为 `ready` 且 fingerprint 未改变。
 3. 读取当前 Host 保存的目标 access token。
-4. token 过期时在 Host 侧刷新一次；刷新失败则清除该 PeerHost 会话并返回 `session_required`。
+4. token 过期时在 Host 侧刷新一次；刷新票据被拒后尝试保存的账号，账号也被拒才清理凭据并返回 `session_required`。网络、限流或响应异常保留凭据并返回对应错误。
 5. 将 Bearer token 只注入到 Host 到目标 Host 的出站请求。
+
+HTTP 业务接口返回 401 时，先用同一票据请求固定只读 `/api/codingns/host/status`。状态接口通过且返回有效 RPC（远程过程调用）信封，说明是业务接口访问受限，返回 `PEER_HOST_PROXY_ACCESS_DENIED`，不改登录态。状态接口同样拒绝票据时，才执行续期或静默重登，并重试原请求一次；状态检查自身失败不得清理凭据。检查使用 5 秒超时且不跟随重定向。同一目标的续期合并执行，迟到的旧票据失败复用已恢复的新票据。
 
 ### 5.3 指纹变化
 
@@ -418,6 +420,7 @@ type AggregatedWorkspaceOrder = readonly string[] // virtualWorkspaceId
 | 握手 | `PEER_HOST_PLUGIN_MISSING`、`PEER_HOST_VERSION_MISMATCH` | 安装/升级插件 |
 | 身份 | `PEER_HOST_IDENTITY_CHANGED` | 重新确认目标 Host |
 | 登录 | `PEER_HOST_SESSION_REQUIRED` | 在管理面板登录 |
+| 接口权限 | `PEER_HOST_PROXY_ACCESS_DENIED` | 检查目标插件版本和接口权限；当前登录态保留 |
 | 网络 | `PEER_HOST_UNREACHABLE`、`PEER_HOST_RELAY_UNAVAILABLE` | 检查网络或重连 |
 | 作用域 | `PEER_HOST_SCOPE_MISMATCH`、`PEER_HOST_STALE_GENERATION` | 刷新当前资源 |
 | 工具 | `PEER_HOST_TOOL_UNSUPPORTED` | 使用已支持工具 |

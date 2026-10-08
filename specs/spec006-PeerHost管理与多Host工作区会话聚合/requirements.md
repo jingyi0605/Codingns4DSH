@@ -121,6 +121,8 @@
 6. WHEN 用户保存账号密码 THEN System SHALL 只写入加密凭据存储，明文记录文件与 Client DTO SHALL 均不包含密码。
 7. WHEN 目标登录态失效 THEN System SHALL 只清理该 PeerHost 的会话并返回 `session_required`，不得清理当前 Host 登录态。
 8. WHEN PeerHost 被删除、地址改变或 fingerprint 改变 THEN System SHALL 清理对应目标登录态。
+9. WHEN 业务接口返回 HTTP 401、但同一票据可访问固定 Host 状态接口 THEN System SHALL 报告接口访问被拒绝，保留该 PeerHost 的凭据与连接状态，不得误报整体登录失效。
+10. WHEN HTTP 401 经确认属于票据失效且续期或静默重登成功 THEN System SHALL 使用新票据重试原请求一次；同一 Host 的并发续期共享结果，网络失败和限流不得触发凭据清理或被伪装为登录失效。
 
 ### 需求 6：代理必须有明确的 HTTP/WS 白名单
 

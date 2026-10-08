@@ -179,6 +179,7 @@
 ### 2.3 接入目标 Host 登录、刷新和退出
 
 - 状态：`DONE`
+- 已完成增量（2026-10-08）：同目标并发续期共享结果，迟到的旧票据失败复用新票据；网络和限流保留凭据并报告真实错误，缓存为 `session_required` 时可从有效凭据恢复。开发工作区 84 项回归通过，提交隔离快照的 134 项回归及类型检查通过。
 - 改动文件：`src/host/modules/peer-host/peer-host-store.ts`、`src/host/modules/peer-host/peer-host-session.ts`、`tests/peer-host-session.spec.ts`
 - 验证命令：`pnpm run typecheck && pnpm run build && node --test tests/peer-host-session.spec.ts`（3 项通过）
 - 已知限制：登录服务已完成 Host 侧 token 隔离和自动刷新，但尚未接入生产 Host Feature/RPC；RPC 装配与代理生命周期在阶段 3 统一完成。Relay 登录仍不可用。
@@ -206,6 +207,7 @@
 ### 3.1 实现 HTTP 代理入口和白名单
 
 - 状态：`DONE`
+- 已完成增量（2026-10-08）：HTTP 401 通过固定 Host 状态接口区分票据失效与接口拒绝；恢复成功重试原请求一次，接口拒绝不清理登录态。开发工作区回放旧版 LAN 调试白名单遗漏与真实目标鉴权；仅包含本会话改动的提交隔离快照通过 134 项回归、类型及差异检查。详见 `docs/开发记录/20261008-PeerHost登录态误报与请求恢复修复记录.md`。
 - 改动文件：`src/host/modules/peer-host/host-api-proxy-service.ts`、`tests/peer-host-http-proxy.spec.ts`
 - 验证命令：`pnpm run typecheck && pnpm run build && node --test tests/peer-host-http-proxy.spec.ts`（3 项通过）
 - 已知限制：代理服务尚未注册到生产 WebServer/RPC；当前白名单覆盖工作区、会话、文件树、文件、Git、终端和右侧工具的固定 API 前缀，具体 DSH 版本路径适配仍需能力矩阵扩展。
