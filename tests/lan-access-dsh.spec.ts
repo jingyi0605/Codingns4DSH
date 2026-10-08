@@ -452,7 +452,7 @@ test('远端调试经过真实 LAN 登录保护：有效票据放行，缺失、
     assert.notEqual(response, 'pass')
     assert.match(new TextDecoder().decode(response as Uint8Array), /^HTTP\/1\.1 401 /u)
   }
-  for (const path of ['/api/codingns/debug/config/get', '/api/codingns/debug/config/save', '/api/codingns/terminal/status']) {
+  for (const path of ['/api/codingns/debug/config/get', '/api/codingns/debug/config/save', '/api/codingns/terminal/status', '/api/codingns/git/status']) {
     assert.equal(authorize(path, 'POST', token), 'pass')
     rejected(authorize(path, 'POST'))
     rejected(authorize(path, 'POST', 'forged-token'))

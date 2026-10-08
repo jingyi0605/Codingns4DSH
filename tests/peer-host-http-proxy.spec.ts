@@ -60,6 +60,23 @@ test('未知路径、方法、查询参数和错误作用域均被拒绝', async
   assert.equal(called, 0)
 })
 
+test('Git 插件 RPC 允许 POST，保持工作区参数并拒绝相邻路径和错误方法', async () => {
+  const calls: string[] = []
+  const body = JSON.stringify({ method: 'git/status', payload: { workspaceId: 'workspace-1' } })
+  const service = await setup(async (input, init) => {
+    calls.push(String(input))
+    assert.equal(init?.body, body)
+    return Response.json({ result: { ok: true, value: { changes: [] } } })
+  })
+  const request = (path: string, method: string) => service.handle('peer-1', new Request(`http://current.test${path}`, {
+    method, headers: scopeHeaders, ...(method === 'POST' ? { body } : {}),
+  }))
+  assert.equal((await request('/api/codingns/git/status', 'POST')).status, 200)
+  assert.equal((await request('/api/codingns/git/status', 'GET')).status, 400)
+  assert.equal((await request('/api/codingns/git-admin/status', 'POST')).status, 400)
+  assert.deepEqual(calls, ['http://127.0.0.1:13080/api/codingns/git/status'])
+})
+
 test('调试与 Shell 状态只放行指定 POST 路由，其他终端管理接口仍拒绝', async () => {
   const paths: string[] = []
   const service = await setup(async input => {
