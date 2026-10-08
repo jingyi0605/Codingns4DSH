@@ -168,7 +168,7 @@ function VoiceSessionModal({ onClose, ...props }: VoiceSessionDisplayProps & { r
   useEffect(() => { dialog.current?.showModal(); return () => dialog.current?.close() }, [])
   return createElement('dialog', { ref: dialog, className: 'codingns-assistant-voice-dialog', 'aria-labelledby': titleId, onCancel: (event: { preventDefault(): void; stopPropagation(): void }) => { event.preventDefault(); event.stopPropagation(); onClose() },
     onKeyDown: (event: { key: string; preventDefault(): void; stopPropagation(): void }) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onClose() } },
-    style: { width: 'min(680px, calc(100vw - 24px))', maxHeight: 'calc(100dvh - 24px)', boxSizing: 'border-box', padding: 16, borderRadius: 12, border: `1px solid ${dshThemeColor.border}`,
+    style: { width: 'min(680px, calc(100vw - 24px))', maxHeight: 'calc(100dvh - 24px)', boxSizing: 'border-box', padding: 11, borderRadius: 12, border: `1px solid ${dshThemeColor.border}`,
       background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, boxShadow: dshThemeColor.prominentShadow, overflow: 'hidden' } },
     createElement(AssistantRecordStyle),
     createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexShrink: 0 } },

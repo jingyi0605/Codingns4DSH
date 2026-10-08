@@ -137,7 +137,7 @@ export function AssistantMaintenanceDialog(props: {
     onCancel: (event: { preventDefault(): void }) => { event.preventDefault(); if (!props.disabled) props.onCancel() },
     onKeyDown: (event: { key: string; preventDefault(): void; stopPropagation(): void }) => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!props.disabled) props.onCancel() }
-    }, style: { padding: 24, borderRadius: 16, maxWidth: 'min(440px, calc(100vw - 32px))', maxHeight: 'calc(100dvh - 32px)',
+    }, style: { padding: 11, borderRadius: 16, maxWidth: 'min(440px, calc(100vw - 32px))', maxHeight: 'calc(100dvh - 32px)',
       margin: 'auto', boxSizing: 'border-box', overflowY: 'auto', background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary,
       border: `1px solid ${dshThemeColor.border}`, boxShadow: dshThemeColor.prominentShadow } },
     createElement('strong', { id, style: { fontSize: 17 } }, props.t(props.stage === 'clear' ? 'awb.clear' : props.stage === 'reset-first' ? 'awb.reset' : 'awb.resetFinalTitle')),
