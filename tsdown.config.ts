@@ -23,8 +23,10 @@ export default defineConfig({
   dts: false,
   sourcemap: true,
   clean: false,
-  external: ['react', '@deepseek-ai/dsh-client-ui-primitives'],
-  noExternal: (specifier) => specifier !== 'react' && specifier !== '@deepseek-ai/dsh-client-ui-primitives',
+  deps: {
+    neverBundle: ['react', '@deepseek-ai/dsh-client-ui-primitives'],
+    alwaysBundle: (specifier) => specifier !== 'react' && specifier !== '@deepseek-ai/dsh-client-ui-primitives',
+  },
   plugins: [{
     name: 'codingns4dsh:xterm-css-text',
     enforce: 'pre',
