@@ -14,7 +14,7 @@ import { installPeerHostNativeStoreProjection, refreshPeerHostNativeSessions } f
 import { startPeerHostWorkspaceTag } from '../peer-host-workspace-tag.js'
 import { startPeerHostWorkspaceTab } from '../peer-host-workspace-tab.js'
 import { isPeerHostAggregateRefreshRegistered, registerPeerHostAggregateRefresh, requestPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
-import { useCodingNsTranslator } from '../locale.js'
+import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale } from '../locale.js'
 import { publishSessionAdapter } from '../session-adapter-cache.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
@@ -51,7 +51,7 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
   start: async (context) => {
     const shim = (globalThis as typeof globalThis & { [DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]?: { activate: (transport?: CodingNsTransportHooks) => string; deactivate: () => string; getMode?: () => string } })[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]
     const projection = createPeerHostNativeProjection()
-    const transport = shim === undefined ? undefined : createPeerHostPageTransport(projection, context.services.uiContext)
+    const transport = shim === undefined ? undefined : createPeerHostPageTransport(projection, context.services.uiContext, context.services.locale)
     const management = createPeerHostManagementApi(context.services.rpc)
     if (shim !== undefined) {
       shim.activate(transport!.hooks)
@@ -159,6 +159,7 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
 export function createPeerHostPageTransport(
   projection: PeerHostNativeProjection = createPeerHostNativeProjection(),
   uiContext?: { get(name: string): unknown },
+  locale?: CodingNsLocale,
 ): {
   readonly hooks: CodingNsTransportHooks
   readonly matchesScope: (value: unknown, method?: string) => boolean
@@ -166,6 +167,7 @@ export function createPeerHostPageTransport(
   /** 跟随原生前台选择刷新 Host 模型目录；返回导航订阅的清理函数。 */
   readonly watchNavigation: () => () => void
 } {
+  const t = resolveCodingNsTranslator(locale)
   const fetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined
   const scopes = new Map<string, HostScope>()
   const remoteHostScopes = new Map<string, HostScope>()
@@ -258,7 +260,12 @@ export function createPeerHostPageTransport(
     if (direct !== undefined) return direct
     return method === 'session/modelCatalog' && !containsResourceId(value) ? navigationScope() : undefined
   }
-  const scopeForCliRequest = (endpoint: string, value: unknown): HostScope | undefined => {
+  const scopeForPluginRequest = (endpoint: string, value: unknown): HostScope | undefined => {
+    // 调试只按顶层资源选择 Host，配置正文里的字符串不能影响路由。
+    if (isDebugPluginEndpoint(endpoint)) {
+      const input = asRecord(value)
+      return findScope(input?.workspaceId) ?? findScope(input?.sessionId)
+    }
     const direct = findScope(value)
     if (direct !== undefined) return direct
     // 显式指定本机 Session 的目录请求保持本机；只有无资源 ID 的工具栏目录
@@ -305,11 +312,6 @@ export function createPeerHostPageTransport(
     }
     return false
   }
-  const cliEndpoint = (channel: string, endpoint: string): string | undefined => {
-    if (channel === '/codingns' && endpoint.startsWith('cli/')) return endpoint
-    if (channel === '/api' && endpoint.startsWith('codingns/cli/')) return endpoint.slice('codingns/'.length)
-    return undefined
-  }
   const rewriteCliPayload = (value: unknown, scope: HostScope, key = ''): unknown => {
     if (typeof value === 'string') {
       const parsed = parseVirtualSessionId(value)
@@ -321,23 +323,23 @@ export function createPeerHostPageTransport(
     if (record === null) return value
     return Object.fromEntries(Object.entries(record).map(([childKey, child]) => [childKey, rewriteCliPayload(child, scope, childKey)]))
   }
-  const remoteCliRpc = async (scope: HostScope, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> => {
-    if (scope.targetHostId === null) throw new Error('PeerHost CLI 请求缺少目标 Host')
+  const remotePluginRpc = async (scope: HostScope, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> => {
+    if (scope.targetHostId === null) throw new Error('PeerHost 插件请求缺少目标 Host')
     const response = asRecord(await codingNsCall('peerHost/request', {
       peerHostId: scope.targetHostId,
       scope,
       path: `/api/codingns/${endpoint}`,
       method: 'POST',
-      body: JSON.stringify({ rpcId: createRequestId(), method: endpoint, payload: rewriteCliPayload(payload, scope) }),
+      body: JSON.stringify({ rpcId: createRequestId(), method: endpoint, payload: endpoint.startsWith('cli/') ? rewriteCliPayload(payload, scope) : rewriteDebugPayload(payload, scope) }),
     }, signal))
     const status = typeof response?.status === 'number' ? response.status : 500
     const body = typeof response?.body === 'string' ? response.body : ''
-    if (status < 200 || status >= 300) throw new Error(`远端 Host CLI RPC 失败: HTTP ${status}`)
+    if (status < 200 || status >= 300) throw new Error(`远端 Host 插件 RPC 失败: HTTP ${status}`)
     try {
       const envelope = asRecord(JSON.parse(body))
       return envelope?.result
     } catch {
-      throw new Error('远端 Host CLI RPC 响应不是 JSON')
+      throw new Error('远端 Host 插件 RPC 响应不是 JSON')
     }
   }
   const mergeRemoteAdapterMap = async (localResult: unknown, signal?: AbortSignal): Promise<unknown> => {
@@ -346,7 +348,7 @@ export function createPeerHostPageTransport(
     const rows = [...localEnvelope.value]
     for (const [targetHostId, scope] of remoteHostScopes) {
       try {
-        const remoteEnvelope = asRecord(await remoteCliRpc(scope, 'cli/session/adapter-map', {}, signal))
+        const remoteEnvelope = asRecord(await remotePluginRpc(scope, 'cli/session/adapter-map', {}, signal))
         if (remoteEnvelope?.ok !== true || !Array.isArray(remoteEnvelope.value)) continue
         for (const raw of remoteEnvelope.value) {
           const row = asRecord(raw)
@@ -425,15 +427,18 @@ export function createPeerHostPageTransport(
       const value = asRecord(payload)
       const channel = typeof value?.channel === 'string' ? value.channel : '/codingns'
       const body = value?.payload
-      const cli = cliEndpoint(channel, method)
-      if (cli === 'cli/session/adapter-map') {
+      const endpoint = peerHostPluginEndpoint(channel, method)
+      if (endpoint === 'cli/session/adapter-map') {
         return await mergeRemoteAdapterMap(await request(channel, method, body, signal), signal) as TResponse
       }
-      if (cli !== undefined) {
-        const scope = scopeForCliRequest(cli, body)
+      if (endpoint !== undefined) {
+        if (isDebugPluginEndpoint(endpoint) && hasVirtualDebugScope(body) && scopeForPluginRequest(endpoint, body) === undefined) {
+          return { ok: false, error: { code: 'PEER_HOST_SCOPE_MISMATCH', message: t('peerHost.debugWorkspaceUnavailable') } } as TResponse
+        }
+        const scope = scopeForPluginRequest(endpoint, body)
         if (scope !== undefined && scope.targetHostId !== null) {
           try {
-            return await remoteCliRpc(scope, cli, body, signal) as TResponse
+            return await remotePluginRpc(scope, endpoint, body, signal) as TResponse
           } catch (error) {
             return { ok: false, error: { code: 'gateway/internal', message: error instanceof Error ? error.message : String(error) } } as TResponse
           }
@@ -508,6 +513,12 @@ export function createPeerHostPageTransport(
     hooks,
     /** 该请求是否落在某个远端 Host 的作用域内；Desktop 连接路由用它决定是否分流。 */
     matchesScope(value: unknown, method?: string): boolean {
+      const endpoint = method?.replace(/^codingns\//u, '') ?? ''
+      if (isDebugPluginEndpoint(endpoint)) {
+        const scope = scopeForPluginRequest(endpoint, value)
+        // 聚合暂时缺失时仍接管虚拟资源，返回明确错误，禁止回落本机调试服务。
+        return scope === undefined ? hasVirtualDebugScope(value) : scope.targetHostId !== null
+      }
       const cli = method === undefined
         ? undefined
         : method === 'cli/catalog' || method === 'cli/models'
@@ -515,7 +526,7 @@ export function createPeerHostPageTransport(
           : method.startsWith('codingns/cli/') ? method.slice('codingns/'.length) : undefined
       const scope = cli === undefined
         ? scopeForNativeRequest(method ?? '', value)
-        : scopeForCliRequest(cli, value)
+        : scopeForPluginRequest(cli, value)
       return scope !== undefined && scope.targetHostId !== null
     },
     watchNavigation() {
@@ -564,6 +575,42 @@ export function createPeerHostPageTransport(
   }
 }
 
+/** 两种 Connection 通道共用插件白名单，避免页面 Transport 与原生连接分流不一致。 */
+function peerHostPluginEndpoint(channel: string, method: string): string | undefined {
+  const endpoint = channel === '/codingns' ? method
+    : channel === '/api' && method.startsWith('codingns/') ? method.slice('codingns/'.length) : ''
+  return endpoint.startsWith('cli/') || endpoint.startsWith('debug/') || endpoint === 'terminal/status' ? endpoint : undefined
+}
+
+function isDebugPluginEndpoint(endpoint: string): boolean {
+  return endpoint.startsWith('debug/') || endpoint === 'terminal/status'
+}
+
+function hasVirtualDebugScope(value: unknown): boolean {
+  const input = asRecord(value)
+  return (typeof input?.workspaceId === 'string' && parseVirtualWorkspaceId(input.workspaceId) !== null)
+    || (typeof input?.sessionId === 'string' && parseVirtualSessionId(input.sessionId) !== null)
+}
+
+/** 只还原调试请求顶层资源标识，配置里的命令、参数和环境变量必须原样保存。 */
+function rewriteDebugPayload(value: unknown, scope: HostScope): unknown {
+  const input = asRecord(value)
+  if (input === null) return value
+  const result = { ...input }
+  const workspace = typeof input.workspaceId === 'string' ? parseVirtualWorkspaceId(input.workspaceId) : null
+  if (workspace !== null) {
+    if (workspace.hostId !== scope.targetHostId || workspace.workspaceId !== scope.workspaceId) throw new Error('调试请求的 Workspace 与目标 Host 作用域不一致')
+    result.workspaceId = workspace.workspaceId
+  }
+  for (const key of ['sessionId', 'dshSessionId']) {
+    const session = typeof input[key] === 'string' ? parseVirtualSessionId(input[key]) : null
+    if (session === null) continue
+    if (session.hostId !== scope.targetHostId) throw new Error('调试请求的 Session 与目标 Host 作用域不一致')
+    result[key] = session.sessionId
+  }
+  return result
+}
+
 /** DSH Connection 的 rpc 句柄形状；只依赖内部契约，不引用 DSH 版本专属类型。 */
 interface ConnectionRpcHandle {
   call?: (channel: string, endpoint: string, payload: unknown, signal?: AbortSignal) => Promise<unknown>
@@ -603,17 +650,13 @@ export function installPeerHostConnectionRouting(options: {
   const isPeerScoped = (channel: string, endpoint: string, payload: unknown): boolean => channel === '/api'
     && isDshNativeRemoteMethod(endpoint)
     && options.matchesScope(payload, endpoint)
-  const isPeerCli = (channel: string, endpoint: string, payload: unknown): boolean => {
-    const cliEndpoint = channel === '/codingns' && endpoint.startsWith('cli/')
-      ? endpoint
-      : channel === '/api' && endpoint.startsWith('codingns/cli/')
-        ? endpoint.slice('codingns/'.length)
-        : undefined
-    return cliEndpoint !== undefined && (cliEndpoint === 'cli/session/adapter-map' || options.matchesScope(payload, endpoint))
+  const isPeerPlugin = (channel: string, endpoint: string, payload: unknown): boolean => {
+    const pluginEndpoint = peerHostPluginEndpoint(channel, endpoint)
+    return pluginEndpoint !== undefined && (pluginEndpoint === 'cli/session/adapter-map' || options.matchesScope(payload, endpoint))
   }
 
   rpc.call = async (channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<unknown> => {
-    if (isPeerScoped(channel, endpoint, payload) || isPeerCli(channel, endpoint, payload)) {
+    if (isPeerScoped(channel, endpoint, payload) || isPeerPlugin(channel, endpoint, payload)) {
       return await options.hooks.rpc!({ method: endpoint, payload: { channel, payload }, ...(signal === undefined ? {} : { signal }) })
     }
     const result = await originalCall.call(rpc, channel, endpoint, payload, signal)

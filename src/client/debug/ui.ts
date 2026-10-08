@@ -115,11 +115,16 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight, local
 
   useEffect(() => {
     let disposed = false
+    // 切换会话后先清空旧作用域，避免旧配置和端口操作落到另一个 Host。
+    setWorkspaceId(null)
+    setConfig(null)
+    setInstances([])
+    setBindings([])
     setPortChecks({})
+    setDraft(null)
+    setTerminalStatus(null)
+    setMessage({ text: t('debug.readingWorkspace'), tone: 'info' })
     const terminal = (terminalRemote?.() as { readonly environment?: (id: string) => Promise<unknown> } | undefined)
-    void call<HostTerminalStatus>(rpc, 'terminal/status', {}).then((status) => {
-      if (!disposed) setTerminalStatus(status)
-    }).catch(() => { /* 调试页仍可使用系统默认 Shell；Host 状态只是可用项过滤依据。 */ })
     void (async () => {
       try {
         const environment = await terminal?.environment?.(String(sessionId))
@@ -127,6 +132,10 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight, local
         if (id === null) throw new Error('当前 Session 没有关联 Workspace')
         if (disposed) return
         setWorkspaceId(id)
+        // 显式携带资源作用域，让 PeerHost 把 Shell 与平台信息路由到目标机器。
+        void call<HostTerminalStatus>(rpc, 'terminal/status', { sessionId: String(sessionId), workspaceId: id }).then((status) => {
+          if (!disposed) setTerminalStatus(status)
+        }).catch(() => { /* 调试页仍可使用系统默认 Shell；Host 状态只是可用项过滤依据。 */ })
         await load(id, () => !disposed)
       } catch (error) {
         if (!disposed) setMessage({ text: error instanceof Error ? error.message : String(error), tone: 'error' })
@@ -242,7 +251,7 @@ function DebugBody({ sessionId, rpc, remote, terminalRemote, sidebarRight, local
 
   async function launch(profile: DebugProfile): Promise<void> {
     await withBusy(async () => {
-      const result = await call<{ instance: DebugInstance; terminal: { readonly id: string } }>(rpc, 'debug/profile/launch', { sessionId: String(sessionId), workspaceId, generation: 0, profileId: profile.id, cols: 120, rows: 32 })
+      const result = await call<{ instance: DebugInstance; terminal: { readonly id: string } }>(rpc, 'debug/profile/launch', { sessionId: String(sessionId), dshSessionId: String(sessionId), workspaceId, generation: 0, profileId: profile.id, cols: 120, rows: 32 })
       setInstances((current) => [...current.filter((item) => item.id !== result.instance.id), result.instance])
       // 终端页签是工作区聚合入口，具体 terminalId 由页内库存列表管理。
       sidebarRight.openTabIn(String(sessionId) as Parameters<typeof sidebarRight.openTabIn>[0], 'terminal')
