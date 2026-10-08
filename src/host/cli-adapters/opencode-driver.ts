@@ -1,6 +1,6 @@
 import { runAsyncCommand } from './process-utils.js'
 import { spawn, spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -21,9 +21,10 @@ import { isQuestionEvent, questionAnswersList, readAgentQuestions } from './inte
 import { usageChunk } from './rpc-driver-utils.js'
 import { commandEnvironment, resolveCommandPath, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { buildOpenCodeAttachmentParts } from './attachment-utils.js'
+import { OpenCodeV2Protocol } from './opencode-v2-protocol.js'
 
 const WINDOWS = process.platform === 'win32'
-const DEFAULT_BINARIES = WINDOWS ? ['opencode.exe', 'opencode'] : ['opencode']
+const DEFAULT_BINARIES = WINDOWS ? ['opencode.exe', 'opencode', 'opencode2.exe', 'opencode2'] : ['opencode', 'opencode2']
 const DEFAULT_URLS = ['http://127.0.0.1:4096']
 /** OpenCode 首次加载 Provider 目录可能需要数秒，不能用半秒的固定窗口判定启动失败。 */
 const SERVER_START_TIMEOUT_MS = 10_000
@@ -43,6 +44,8 @@ export interface OpenCodeDriverOptions {
   readonly spawn?: typeof spawn
   readonly fetch?: typeof fetch
   readonly serverArgs?: readonly string[]
+  /** V2 原生后台服务登记文件；显式 serverUrls 默认不读取本机登记。 */
+  readonly serviceFile?: string
 }
 
 /** OpenCode 的 server/SSE 适配器，向上只暴露 Codingns4DSH 标准流。 */
@@ -53,7 +56,12 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
   private readonly serverArgs: readonly string[]
+  private readonly serviceFile: string | undefined
   private readonly http: HttpSseClient
+  private readonly v2: OpenCodeV2Protocol
+  /** 以实际端点识别协议，不能用本机 CLI 版本猜测远端服务。 */
+  private readonly serverProtocols = new Map<string, 1 | 2>()
+  private readonly serverPasswords = new Map<string, string>()
   private cachedBinary: { command: string; version: string | null } | null = null
   private cachedServer: string | null = null
   private readonly managedServers = new Map<string, { url: string; child: CodingNsChildProcess }>()
@@ -70,13 +78,24 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
     this.serverArgs = options.serverArgs ?? ['serve']
-    this.http = new HttpSseClient(options.fetch === undefined ? {} : { fetch: options.fetch })
+    this.serviceFile = options.serviceFile ?? (options.serverUrls === undefined && !process.env.OPENCODE_SERVER_URL
+      ? join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'opencode', 'service.json') : undefined)
+    const fetchImpl = options.fetch ?? fetch
+    this.http = new HttpSseClient({ fetch: async (url, init = {}) => {
+      const password = this.serverPasswords.get(new URL(String(url)).origin)
+        ?? process.env.OPENCODE_PASSWORD ?? process.env.OPENCODE_SERVER_PASSWORD
+      const headers = new Headers(init.headers)
+      if (password) headers.set('authorization', `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`)
+      return fetchImpl(url, { ...init, headers })
+    } })
+    this.v2 = new OpenCodeV2Protocol(this.http)
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
     // 周期访问由注册表缓存，真正进入 detect 表示首次检测或用户主动刷新。
     this.cachedBinary = null
     const server = await this.findServer()
+    this.cachedServer = server?.url ?? null
     const binary = await this.findBinary()
     if (server !== null) return { installed: true, version: server.version ?? binary?.version ?? null, command: server.url }
     if (binary !== null) return { installed: true, version: binary.version, command: binary.command }
@@ -86,6 +105,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   async listModels(): Promise<CodingNsCliModelCatalog> {
     const server = await this.ensureServer(false, undefined)
     if (server === null) return emptyCatalog()
+    if (this.serverProtocols.get(server) === 2) return this.v2.listModels(server)
     const paths = ['/config/providers', '/provider', '/models']
     for (const path of paths) {
       try {
@@ -104,6 +124,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     if (input.signal?.aborted) throw new Error('Skill 目录读取已取消')
     const cwd = input.cwd?.trim() || process.cwd()
     const server = await this.ensureServer(true, cwd)
+    if (server !== null && this.serverProtocols.get(server) === 2) return this.v2.listSkills(server, input)
     if (server !== null) {
       try {
         const options = input.signal === undefined ? {} : { signal: input.signal }
@@ -123,9 +144,13 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       } catch { /* 原生接口不可用时使用 CLI，不猜测其他版本的路由参数。 */ }
     }
     if (input.signal?.aborted) throw new Error('Skill 目录读取已取消')
-    // 浏览目录不启动 Server；CLI 的 debug skill 使用与 Server 相同的 Skill 服务。
+    // V1 可用 debug skill 读取目录；V2 移除了该命令，改用同一托管 API 服务。
     const binary = await this.findBinary()
     if (binary === null) return []
+    if (binary.version?.startsWith('2.')) {
+      const server = await this.ensureServer(false, cwd)
+      return server !== null && this.serverProtocols.get(server) === 2 ? this.v2.listSkills(server, input) : []
+    }
     try {
       const result = await runAsyncCommand(this.runSpawnSync, binary.command, ['debug', 'skill'], {
         cwd, encoding: 'utf8', timeout: 5_000, maxBuffer: 8 * 1024 * 1024,
@@ -141,7 +166,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
    * 只对配置文件内容做摘要，不把 API key 等原文带入指纹。
    */
   catalogFingerprint(): string | undefined {
-    const paths = openCodeConfigPaths()
+    const paths = [...openCodeConfigPaths(), ...(this.serviceFile === undefined ? [] : [this.serviceFile])]
     const parts: string[] = []
     for (const path of paths) {
       try {
@@ -158,6 +183,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     if (!providerSessionId) return { state: 'unknown', reason: '缺少 Provider 会话标识' }
     const server = await this.ensureServer(true, input.cwd)
     if (server === null) return { state: 'unreachable', reason: 'OpenCode server 当前不可达' }
+    if (this.serverProtocols.get(server) === 2) return this.v2.probeSession(server, input)
     const rawStoreRef = `${server}/session/${encodeURIComponent(providerSessionId)}`
     try {
       const response = await this.http.json<unknown>(rawStoreRef, input.signal === undefined ? {} : { signal: input.signal })
@@ -185,6 +211,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const server = await this.ensureServer(false, input.cwd)
     if (server === null) throw new Error('OpenCode server 未运行，请先启动 `opencode serve`')
+    if (this.serverProtocols.get(server) === 2) { yield* this.v2.executeTurn(server, input); return }
     const modelId = await this.resolveModelId(server, input.modelId)
     const effectiveInput = modelId === input.modelId ? input : { ...input, ...(modelId === undefined ? {} : { modelId }) }
     let sessionId = input.providerSessionId ?? this.sessions.get(input.sessionId)
@@ -325,6 +352,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   }
 
   async respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): Promise<void> {
+    if (this.v2.hasTurn(sessionId)) return this.v2.respondPermission(sessionId, response)
     const target = this.interactionTargets.get(sessionId)
     if (target === undefined) throw new Error('OpenCode 权限请求已结束')
     const result = await this.http.json(withOpenCodeDirectory(target.server, `/permission/${encodeURIComponent(response.requestId)}/reply`, target.cwd), {
@@ -336,6 +364,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   }
 
   async respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): Promise<void> {
+    if (this.v2.hasTurn(sessionId)) return this.v2.respondQuestion(sessionId, response)
     const target = this.interactionTargets.get(sessionId)
     if (target === undefined) throw new Error('OpenCode 问题请求已结束')
     const result = await this.http.json(withOpenCodeDirectory(target.server, `/question/${encodeURIComponent(response.requestId)}/reply`, target.cwd), {
@@ -347,6 +376,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   }
 
   dispose(): void {
+    this.v2.dispose()
     this.sessions.clear()
     this.sessionCwds.clear()
     this.interactionTargets.clear()
@@ -355,6 +385,8 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     this.managedServers.clear()
     this.cachedBinary = null
     this.cachedServer = null
+    this.serverProtocols.clear()
+    this.serverPasswords.clear()
   }
 
   private async sendPrompt(server: string, sessionId: string, input: CodingNsCliTurnInput): Promise<unknown> {
@@ -483,24 +515,27 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     if (command === null || command === undefined) return null
     const port = 4096 + this.managedServers.size
     const url = `http://127.0.0.1:${port}`
+    // V2 默认生成随机服务密码；托管时明确传入只属于该进程的密码，供 HTTP/SSE 共用。
+    const password = randomBytes(32).toString('base64url')
+    this.serverPasswords.set(url, password)
     let child: CodingNsChildProcess
     try {
       child = this.runSpawn(command, [...this.serverArgs, '--port', String(port)], {
         cwd,
-        env: commandEnvironment(command),
+        env: { ...commandEnvironment(command), OPENCODE_PASSWORD: password, OPENCODE_SERVER_PASSWORD: password },
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         shell: WINDOWS,
       }) as CodingNsChildProcess
-    } catch { return null }
+    } catch { this.serverPasswords.delete(url); return null }
     child.stdout.on('data', () => undefined)
     child.stderr.on('data', () => undefined)
     this.managedServers.set(cwd, { url, child })
     const deadline = Date.now() + SERVER_START_TIMEOUT_MS
     while (Date.now() < deadline) {
       try {
-        const health = await this.http.json<unknown>(`${url}/global/health`)
-        if (health.status >= 200 && health.status < 300) return url
+        const server = await this.probeServer(url)
+        if (server !== null) return url
       } catch { /* 服务尚未监听 */ }
       // 子进程已经退出时无需把整个启动超时耗尽；正常运行的 OpenCode
       // 进程在首次加载配置和 Provider 时允许有完整的启动窗口。
@@ -516,21 +551,54 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     const managed = this.managedServers.get(cwd)
     if (managed === undefined) return
     this.managedServers.delete(cwd)
+    this.serverPasswords.delete(managed.url)
+    this.serverProtocols.delete(managed.url)
     terminateChildProcess(managed.child)
   }
 
   private async findServer(): Promise<{ url: string; version: string | null } | null> {
+    const registered = await this.findRegisteredServer()
+    if (registered !== null) return registered
     for (const raw of this.serverUrls) {
       const url = raw.replace(/\/$/u, '')
-      for (const path of ['/global/health', '/health']) {
-        try {
-          const response = await this.http.json<unknown>(`${url}${path}`)
-          if (response.status < 200 || response.status >= 300) continue
-          const record = asRecord(response.data)
-          const version = typeof record?.version === 'string' ? record.version : null
-          return { url, version }
-        } catch { /* 服务未监听或端口不可达 */ }
-      }
+      const server = await this.probeServer(url)
+      if (server !== null) return server
+    }
+    return null
+  }
+
+  /** 复用 V2 CLI 的本地后台服务和认证；只读取登记，不重启或改写用户服务。 */
+  private async findRegisteredServer(): Promise<{ url: string; version: string | null } | null> {
+    if (this.serviceFile === undefined) return null
+    let registration: Record<string, any> | null
+    try { registration = asRecord(JSON.parse(readFileSync(this.serviceFile, 'utf8'))) } catch { return null }
+    if (typeof registration?.url !== 'string' || typeof registration.pid !== 'number') return null
+    let url: URL
+    try { url = new URL(registration.url) } catch { return null }
+    if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) return null
+    const server = url.origin
+    const previousPassword = this.serverPasswords.get(server)
+    if (typeof registration.password === 'string') this.serverPasswords.set(server, registration.password)
+    const found = await this.probeServer(server, registration.pid)
+    if (found !== null) return found
+    if (previousPassword === undefined) this.serverPasswords.delete(server)
+    else this.serverPasswords.set(server, previousPassword)
+    return null
+  }
+
+  private async probeServer(url: string, expectedPid?: number): Promise<{ url: string; version: string | null } | null> {
+    for (const path of ['/api/info', '/global/health', '/health']) {
+      if (expectedPid !== undefined && path !== '/api/info') continue
+      try {
+        const response = await this.http.json<unknown>(`${url}${path}`, { signal: AbortSignal.timeout(2_000) })
+        if (response.status < 200 || response.status >= 300) continue
+        const record = asRecord(response.data)
+        // V2 的 Web 路由可能给未知路径返回 200 HTML，不能把它误识别为 V1。
+        if (record === null || (path === '/api/info' && typeof record.version !== 'string')) continue
+        if (expectedPid !== undefined && record.pid !== expectedPid) continue
+        this.serverProtocols.set(url, path === '/api/info' ? 2 : 1)
+        return { url, version: typeof record.version === 'string' ? record.version : null }
+      } catch { /* 服务未监听或端口不可达。 */ }
     }
     return null
   }
@@ -597,8 +665,11 @@ function openCodeConfigPaths(): readonly string[] {
   const configHome = process.env.XDG_CONFIG_HOME?.trim() || join(homedir(), '.config')
   const dataHome = process.env.XDG_DATA_HOME?.trim() || join(homedir(), '.local', 'share')
   const configured = process.env.OPENCODE_CONFIG?.trim()
+  const directory = process.env.OPENCODE_CONFIG_DIR?.trim() || join(configHome, 'opencode')
   return [...new Set([
     ...(configured ? [configured] : []),
+    join(directory, 'opencode.json'),
+    join(directory, 'opencode.jsonc'),
     join(configHome, 'opencode', 'opencode.json'),
     join(configHome, 'opencode', 'opencode.jsonc'),
     ...(process.platform === 'darwin' ? [join(homedir(), 'Library', 'Application Support', 'opencode', 'opencode.json')] : []),
