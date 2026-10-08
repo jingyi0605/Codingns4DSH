@@ -800,6 +800,192 @@ test('同一聚合页连续新建终端会保留独立身份并可单独关闭',
   await service.dispose()
 })
 
+test('关闭成功后即使库存刷新失败，也立即移除共享子标签并回退选择', async () => {
+  const second = { ...terminalInfo, id: 'terminal-2' }
+  let closed = false
+  const { remote } = createRemote(true)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-shared' })
+  remote.list = async () => {
+    if (closed) throw new Error('库存刷新暂时失败')
+    return success([terminalInfo, second])
+  }
+  remote.close = async () => { closed = true; return success(undefined) }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  try {
+    await service.recover('session-a')
+    await service.recover('session-b')
+    service.selectTerminal('session-a', terminalInfo.id)
+    const view = service.viewForTerminal('session-a', terminalInfo.id)
+    await service.closeTerminal('session-b', terminalInfo.id)
+
+    assert.equal(view.signal.aborted, true)
+    for (const sessionId of ['session-a', 'session-b']) {
+      assert.deepEqual(service.inventoryForSession(sessionId).map((item) => item.id), [second.id])
+      assert.equal(service.selectedTerminalId(sessionId), second.id)
+    }
+  } finally {
+    await service.dispose()
+  }
+})
+
+test('关闭子标签不等待挂起的输入请求，释放屏幕前库存已移除目标', async () => {
+  let finishWrite: () => void = () => {}
+  const pendingWrite = new Promise<void>((resolve) => { finishWrite = resolve })
+  let writeStarted = false
+  let closed = false
+  const { remote } = createRemote(true)
+  remote.list = async () => success(closed ? [] : [terminalInfo])
+  remote.close = async () => { closed = true; return success(undefined) }
+  remote.write = async () => { writeStarted = true; await pendingWrite; return success(undefined) }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  let closing: Promise<void> | undefined
+  try {
+    await service.recover('session-a')
+    const view = service.viewForTerminal('session-a', terminalInfo.id)
+    const unmount = view.mount()
+    await waitFor(() => view.state.getSnapshot().render !== undefined, '终端没有连接')
+    view.acknowledge(view.state.getSnapshot().render.revision)
+    view.write('pwd\r')
+    await waitFor(() => writeStarted, '输入请求没有挂起')
+    let inventoryAtDispose
+    view.signal.addEventListener('abort', () => {
+      inventoryAtDispose = service.inventoryForSession('session-a').map((item) => item.id)
+    }, { once: true })
+    let finished = false
+    closing = service.closeTerminal('session-a', terminalInfo.id).then(() => { finished = true })
+    await waitFor(() => finished, '关闭子标签仍在等待旧输入请求')
+    assert.deepEqual(inventoryAtDispose, [], '不能在旧库存仍包含终端时释放模型，避免渲染重新创建残留视图')
+    assert.deepEqual(service.inventoryForSession('session-a'), [])
+    assert.equal(service.selectedTerminalId('session-a'), undefined)
+    unmount()
+  } finally {
+    finishWrite()
+    await closing
+    await service.dispose()
+  }
+})
+
+test('Host 已不存在的残留子标签仍可移除，且不等待后续列表返回', async () => {
+  let finishList: () => void = () => {}
+  const pendingList = new Promise<void>((resolve) => { finishList = resolve })
+  let missing = false
+  let closed = false
+  const { calls, remote } = createRemote(true)
+  remote.list = async () => {
+    if (closed) await pendingList
+    return success(missing ? [] : [terminalInfo])
+  }
+  remote.close = async () => { calls.close += 1; closed = true; return success(undefined) }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  try {
+    await service.recover('session-a')
+    const view = service.viewForTerminal('session-a', terminalInfo.id)
+    missing = true
+    await view.refresh()
+    assert.match(view.state.getSnapshot().error ?? '', /Host 中不存在该终端/u)
+
+    let finished = false
+    const closing = service.closeTerminal('session-a', terminalInfo.id).then(() => { finished = true })
+    await waitFor(() => finished, '移除残留子标签不能等待列表查询完成')
+    await closing
+    assert.deepEqual(service.inventoryForSession('session-a'), [])
+    assert.equal(view.signal.aborted, true)
+    assert.equal(calls.close, 1)
+    assert.equal(calls.create, 0, '移除残留标签不能重建进程')
+  } finally {
+    finishList()
+    await service.recover('session-a')
+    await service.dispose()
+  }
+})
+
+test('关闭子标签时另一会话的迟到列表不会恢复目标，选择通知也只读取新库存', async () => {
+  const second = { ...terminalInfo, id: 'terminal-2' }
+  let inventory = [terminalInfo, second]
+  let finishStale: () => void = () => {}
+  const pendingList = new Promise<void>((resolve) => { finishStale = resolve })
+  let delayNext = false
+  let listStarted = false
+  const { remote } = createRemote(true)
+  remote.environment = async () => success({ ...environment, workspaceId: 'workspace-shared' })
+  remote.list = async () => {
+    const snapshot = inventory
+    if (delayNext) {
+      delayNext = false
+      listStarted = true
+      await pendingList
+    }
+    return success(snapshot)
+  }
+  remote.close = async () => { inventory = [second]; return success(undefined) }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  let staleRecovery
+  try {
+    await service.recover('session-a')
+    await service.recover('session-b')
+    service.selectTerminal('session-a', terminalInfo.id)
+    const observed: string[][] = []
+    const unsubscribe = service.selectionRevision.subscribe(() => {
+      observed.push(service.inventoryForSession('session-b').map((item) => item.id))
+    })
+    delayNext = true
+    staleRecovery = service.recover('session-b')
+    await waitFor(() => listStarted, '旧列表请求没有开始')
+    // 不创建视图，覆盖从未激活过的子标签关闭路径。
+    await service.closeTerminal('session-a', terminalInfo.id)
+    finishStale()
+    assert.deepEqual((await staleRecovery).map((item) => item.id), [second.id])
+    assert.deepEqual(observed, [[second.id]])
+    for (const sessionId of ['session-a', 'session-b']) {
+      assert.deepEqual(service.inventoryForSession(sessionId).map((item) => item.id), [second.id])
+      assert.equal(service.selectedTerminalId(sessionId), second.id)
+    }
+    unsubscribe()
+  } finally {
+    finishStale()
+    await staleRecovery
+    await service.dispose()
+  }
+})
+
+test('关闭失败保留子标签并允许重试，重复点击只发出一个关闭请求', async () => {
+  let finishClose: () => void = () => {}
+  const pendingClose = new Promise<void>((resolve) => { finishClose = resolve })
+  let closeCalls = 0
+  let closed = false
+  const { remote } = createRemote(true)
+  remote.list = async () => success(closed ? [] : [terminalInfo])
+  remote.close = async () => {
+    closeCalls += 1
+    await pendingClose
+    if (!closed) throw new Error('关闭失败')
+    return success(undefined)
+  }
+  const service = new CodingNsWebTerminals(new Context(), remote)
+  try {
+    await service.recover('session-a')
+    const view = service.viewForTerminal('session-a', terminalInfo.id)
+    const first = service.closeTerminal('session-a', terminalInfo.id)
+    const second = service.closeTerminal('session-a', terminalInfo.id)
+    // 先登记失败断言，避免 Promise 提前拒绝产生未处理异常。
+    const failures = Promise.all([assert.rejects(first, /关闭失败/u), assert.rejects(second, /关闭失败/u)])
+    finishClose()
+    await failures
+    assert.equal(closeCalls, 1)
+    assert.deepEqual(service.inventoryForSession('session-a').map((item) => item.id), [terminalInfo.id])
+    assert.equal(view.signal.aborted, false)
+
+    closed = true
+    await service.closeTerminal('session-a', terminalInfo.id)
+    assert.equal(closeCalls, 2)
+    assert.deepEqual(service.inventoryForSession('session-a'), [])
+    assert.equal(view.signal.aborted, true)
+  } finally {
+    finishClose()
+    await service.dispose()
+  }
+})
+
 test('共享库存按 terminalId 去重，避免同一记录显示多份', async () => {
   const { remote } = createRemote(false)
   remote.environment = async () => success({ ...environment, workspaceId: 'workspace-stable' })
