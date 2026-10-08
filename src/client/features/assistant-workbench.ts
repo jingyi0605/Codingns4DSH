@@ -99,7 +99,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
   const [catalog, setCatalog] = useState<AssistantChatCatalog>()
   const [tts, setTts] = useState<AssistantTtsSnapshot>()
   const [workspaces, setWorkspaces] = useState<readonly NativeWorkspaceRecord[]>([])
-  const [indexState, setIndexState] = useState<AssistantDebugSnapshot['indexState']>('not-built')
+  const [indexState, setIndexState] = useState<AssistantDebugSnapshot['indexState']>()
   const [text, setText] = useState('')
   const [files, setFiles] = useState<readonly File[]>([])
   const [busy, setBusy] = useState(false)
@@ -184,11 +184,17 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
     const disposeNative = readNativeWorkspaceListStore(services.uiContext)?.subscribe(nativeChanged)
     const pollIndex = async (): Promise<void> => {
       try {
-        const next = await call<AssistantDebugSnapshot>('assistant/debug')
+        // 调试元数据查询设独立期限，断线时继续轮询，不让旧的构建状态一直占据标签。
+        const deadline = AbortSignal.timeout(10_000)
+        const signal = abort.current === undefined ? deadline : AbortSignal.any([abort.current.signal, deadline])
+        const next = await call<AssistantDebugSnapshot>('assistant/debug', {}, signal)
         if (stopped || !mounted.current) return
         setIndexState(next.indexState)
         setWorkspaces(mergeWorkspaces(readNativeWorkspaceSnapshot(services.uiContext)?.items ?? [], next))
-      } catch { /* 状态提示不可用时不阻止普通交流。 */ }
+      } catch {
+        // 查询失败只失效状态证明，保留普通交流及索引后台任务。
+        if (!stopped && mounted.current) setIndexState(undefined)
+      }
       if (!stopped) timer = setTimeout(() => { void pollIndex() }, 3000)
     }
     void pollIndex()

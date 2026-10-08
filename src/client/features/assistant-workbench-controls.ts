@@ -9,14 +9,14 @@ import { resizeAssistantComposerTextarea, isAssistantClearCommandSuggestion } fr
 export type AssistantWorkbenchStatus = 'thinking' | 'updating' | 'idle' | 'working'
 export type AssistantMaintenanceConfirmation = 'clear' | 'reset-first' | 'reset-final'
 
-/** 活动状态优先于项目索引，避免一边回复一边显示为空闲或认知更新。 */
+/** 活动状态优先；只有正在构建索引才显示认知更新，等待或缺少结果不代表正在执行。 */
 export function resolveAssistantWorkbenchStatus({ running, working, voiceActive, voiceState, hasProjects, indexState }: {
   readonly running: boolean; readonly working: boolean; readonly voiceActive: boolean; readonly voiceState?: string | undefined
-  readonly hasProjects: boolean; readonly indexState: AssistantDebugSnapshot['indexState']
+  readonly hasProjects: boolean; readonly indexState: AssistantDebugSnapshot['indexState'] | undefined
 }): AssistantWorkbenchStatus {
   if (running || voiceActive && voiceState === 'thinking') return 'thinking'
   if (working || voiceActive) return 'working'
-  if (hasProjects && indexState !== 'ready') return 'updating'
+  if (hasProjects && indexState === 'building') return 'updating'
   return 'idle'
 }
 
