@@ -1,10 +1,10 @@
+import { callCodingNsRpcResult } from '../rpc-call.js'
 import { createElement, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { CodingNsClientFeatureModule } from './types.js'
 import type { CodingNsClientServices } from './types.js'
 import { DEFAULT_ASSISTANT_SETTINGS, DEFAULT_ASSISTANT_VOICE_SETTINGS } from '../../shared/contracts/config.js'
 import { readAssistantProfile } from '../../shared/assistant-lifecycle.js'
-import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { AssistantPanel } from './assistant-panel.js'
 import { ClientSherpaVoiceAdapter } from '../sherpa-voice-adapter.js'
@@ -48,7 +48,7 @@ export const globalVoiceAssistantFeature: CodingNsClientFeatureModule = {
     if (ui === undefined) return
     const actionOwnerId = createVoiceLeaseOwnerId()
     const adapter = new ClientSherpaVoiceAdapter({ ownerId: actionOwnerId, services: context.services })
-    void context.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/register-client', {
+    void callCodingNsRpcResult(context.services.rpc, 'assistant/voice/register-client', {
       ownerId: actionOwnerId,
       capabilities: adapter.capabilities,
       secureContext: inspectBrowserVoiceSecurity().secure,
@@ -57,7 +57,7 @@ export const globalVoiceAssistantFeature: CodingNsClientFeatureModule = {
     context.resources.add(() => {
       disposeAdapter()
       adapter.dispose()
-      void context.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/unregister-client', { ownerId: actionOwnerId }).catch(() => undefined)
+      void callCodingNsRpcResult(context.services.rpc, 'assistant/voice/unregister-client', { ownerId: actionOwnerId }).catch(() => undefined)
     })
     const disposer = ui.slots.inject('shell.overlay', () => ui.slots.register({
       name: 'shell.overlay',
@@ -127,7 +127,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       setSnapshot({ state: 'disabled', active: false })
       const unsubscribe = adapter.subscribe((event) => {
         if (event.type === 'state' || event.type === 'wake' || event.type === 'barge-in' || event.type === 'error') {
-          void services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/event', { ownerId, event, sequence: ++eventSequenceRef.current }).catch(() => undefined)
+          void callCodingNsRpcResult(services.rpc, 'assistant/voice/event', { ownerId, event, sequence: ++eventSequenceRef.current }).catch(() => undefined)
         }
         if (event.type === 'partial') setPartialText(event.text)
         else if (event.type === 'final' && event.text.trim() !== '') {
@@ -174,11 +174,16 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
 
   useEffect(() => {
     if (adapter === undefined) return undefined
+    let pending = false
+    const lifetime = new AbortController()
     const timer = setInterval(() => {
-      if (adapter.ownerId === undefined) return
-      void services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/heartbeat', { ownerId }).catch(() => undefined)
+      if (adapter.ownerId === undefined || pending) return
+      pending = true
+      // 通话租约在页面隐藏时仍需续签，但慢请求只能保留一条。
+      void callCodingNsRpcResult(services.rpc, 'assistant/voice/heartbeat', { ownerId }, AbortSignal.any([lifetime.signal, AbortSignal.timeout(8_000)]))
+        .catch(() => undefined).finally(() => { pending = false })
     }, 10_000)
-    return () => clearInterval(timer)
+    return () => { clearInterval(timer); lifetime.abort() }
   }, [adapter, ownerId, services])
 
   const startConversation = async (): Promise<void> => {

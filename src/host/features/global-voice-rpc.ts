@@ -30,7 +30,7 @@ import { createAssistantVoiceActionBridge } from './voice-agent-actions.js'
 import { AssistantWaitingState } from './assistant-waiting-state.js'
 import { debugInfo } from '../../shared/debug.js'
 import { createAssistantVoiceStreamHandler } from './assistant-voice-stream.js'
-import { SherpaVoiceRuntime } from './sherpa-voice-runtime.js'
+import { SherpaWorkerRuntime } from './sherpa-worker-runtime.js'
 import { buildAssistantVoiceHotwords, readAssistantVoiceHotwords } from './assistant-voice-hotwords.js'
 import { DEFAULT_ASSISTANT_SETTINGS, DEFAULT_ASSISTANT_VOICE_SETTINGS, type AssistantSettings, type AssistantVoiceSettings } from '../../shared/contracts/config.js'
 import { AssistantVoiceModelManager, type AssistantVoiceModelProbe } from './voice-model-management.js'
@@ -45,6 +45,7 @@ import { configureAssistantSettings } from './assistant-lifecycle-settings.js'
 import { AssistantVoiceInitialization } from './assistant-voice-initialization.js'
 import { installVoiceDiagnostics } from '../voice-diagnostics.js'
 import { measureVoice, traceVoice, sanitizeVoiceDiagnosticFields } from '../../shared/voice-diagnostics.js'
+import { assistantSourceCache } from './assistant-source-cache.js'
 
 /**
  * 全局智能助理 Host 边界。
@@ -71,7 +72,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       let lifecycleRevision = 0
       const tts = new AssistantTtsService(context.services, { isVoiceActive: () => coordinator.snapshot().active })
       context.resources.add(() => tts.dispose())
-      const runtime = new SherpaVoiceRuntime({
+      const runtime = new SherpaWorkerRuntime({
         env: buildSherpaRuntimeEnvironment(readAssistantVoiceSettings(context.services)),
       })
       const agent = new VoiceAgentService({
@@ -319,6 +320,9 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         if (typeof disposer === 'function') eventDisposers.push(disposer as () => void)
       }
       const onSessionEvent = (session: unknown, event: unknown): void => {
+        const record = asRecord(session)
+        const sessionId = readText(record, ['id', 'sessionId']) ?? readText(asRecord(record?.header), ['id', 'sessionId'])
+        if (sessionId !== null) assistantSourceCache(context.services).invalidateTitle(sessionId)
         const key = sessionKey([session])
         if (key === null) return
         const entry = lastSnapshot?.entries.find((item) => assistantSessionKey(item) === key)
@@ -576,6 +580,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       context.resources.add(async () => {
         await actionBridge.dispose()
         coordinator.dispose()
+        runtime.dispose()
       })
       let configuring = false
       const stopAssistant = async (): Promise<void> => {
@@ -1038,10 +1043,16 @@ async function readAssistantSource(services: CodingNsHostServices, managedWorksp
   const ctx = services.dshContext
   const warnings: string[] = []
   const query = readOptionalService(ctx, 'sessionQuery')
-  const localSessions = await readLocalAssistantSessions(services, warnings)
+  const cache = assistantSourceCache(services)
+  const local = await cache.share('local-sessions', async () => {
+    const warnings: string[] = []
+    return { sessions: await readLocalAssistantSessions(services, warnings), warnings }
+  })
+  warnings.push(...local.warnings)
+  const localSessions = local.sessions
   const gatewayResult = services.assistantGateway === undefined || managedWorkspaceIds.length === 0
     ? undefined
-    : await services.assistantGateway.list(managedWorkspaceIds).catch((error) => {
+    : await cache.share(`gateway:${JSON.stringify([...managedWorkspaceIds].sort())}`, () => services.assistantGateway!.list(managedWorkspaceIds)).catch((error) => {
       warnings.push(`远端 Host 状态读取失败：${sanitizeSpeechText(error instanceof Error ? error.message : String(error)).slice(0, 500)}`)
       return undefined
     })
@@ -1051,6 +1062,10 @@ async function readAssistantSource(services: CodingNsHostServices, managedWorksp
   ])
   const workspaces = readWorkspaceRecords(ctx)
   const workspaceById = new Map(workspaces.map((workspace) => [workspace.id, workspace]))
+  const workspaceBySession = new Map<string, string>()
+  for (const workspace of workspaces) {
+    for (const sessionId of workspace.sessionIds) if (!workspaceBySession.has(sessionId)) workspaceBySession.set(sessionId, workspace.id)
+  }
   const archived = [...new Set([
     ...readStringArray(readOptionalService(ctx, 'workspaceRegistry')?.archivedSessionIds),
     ...(gatewayResult?.archivedSessionIds ?? []),
@@ -1060,6 +1075,9 @@ async function readAssistantSource(services: CodingNsHostServices, managedWorksp
   const waitingBySession = readPendingWaiting(ctx)
   for (const [sessionId, kind] of waitingState?.snapshot() ?? []) waitingBySession.set(sessionId, kind)
   const hostId = process.env.CODINGNS4DSH_HOST_ID?.trim() || 'local-host'
+  const managedByWorkspace = new Map(workspaces.map((workspace) => [workspace.id,
+    managedWorkspaceIds.find((selected) => assistantWorkspaceMatches(selected, hostId, workspace.id, true)) ?? workspace.id,
+  ]))
   let unmappedSessionCount = 0
   const records: AssistantSessionSourceRecord[] = sessions.flatMap((raw) => {
     const value = asRecord(raw)
@@ -1071,11 +1089,11 @@ async function readAssistantSource(services: CodingNsHostServices, managedWorksp
     const sourceHostId = readText(value, ['hostId', 'sourceHostId']) ?? hostId
     // 本地工作区成员关系由 Registry 决定，cwd 相同不意味着它是工作区成员。
     // Gateway 已在远端按同一成员关系投影，保留其 workspaceId/hostId。
-    const originalWorkspaceId = sourceHostId === hostId ? findWorkspaceId(sessionId, workspaces) : readText(value, ['workspaceId'])
+    const originalWorkspaceId = sourceHostId === hostId ? workspaceBySession.get(sessionId) ?? null : readText(value, ['workspaceId'])
     // 保留范围外和归档会话的元数据，索引构建器统一决定纳入/排除。
     // 不能提前丢掉这些记录，否则调试页和目标澄清都无法解释排除原因。
     if (originalWorkspaceId === null) { unmappedSessionCount += 1; return [] }
-    const workspaceId = sourceHostId === hostId ? managedWorkspaceIds.find((selected) => assistantWorkspaceMatches(selected, hostId, originalWorkspaceId, true)) ?? originalWorkspaceId : originalWorkspaceId
+    const workspaceId = sourceHostId === hostId ? managedByWorkspace.get(originalWorkspaceId) ?? originalWorkspaceId : originalWorkspaceId
     const workspace = workspaceById.get(originalWorkspaceId)
     const sourceWorkspaceName = readText(value, ['workspaceName', 'workspaceDisplayName'])
     const agent = sourceHostId === hostId ? readOptionalService(ctx, 'agents')?.get?.(sessionId) : undefined
@@ -1116,7 +1134,8 @@ async function readAssistantSource(services: CodingNsHostServices, managedWorksp
       // Gateway 已经携带远端标题；本地 query 不能读取远端 Host 的 sessionId，
       // 也不能把远端会话误当成本地会话产生一次额外 I/O。
       if (record.hostId !== hostId || !managed.has(record.workspaceId) || archivedSet.has(record.sessionId)) return record
-      const title = await readSessionTitle(readTitle, record.sessionId)
+      const title = await cache.title(record.sessionId, JSON.stringify([record.updatedAt, record.title, record.titleEvents]), record.updatedAt !== null,
+        () => readSessionTitle(readTitle, record.sessionId))
       return title === null ? record : { ...record, title }
     }))
   // workspaceRegistry 可能只暴露归档 ID，而 sessionQuery 不再返回归档记录。
@@ -1382,11 +1401,6 @@ function dedupeSessionRecords(values: readonly unknown[]): readonly unknown[] {
     result.push(value)
   }
   return result
-}
-
-function findWorkspaceId(sessionId: string, workspaces: readonly WorkspaceRecord[]): string | null {
-  for (const workspace of workspaces) if (workspace.sessionIds.includes(sessionId)) return workspace.id
-  return null
 }
 
 function sameManagedScope(index: AssistantSessionIndexSnapshot, managed: readonly string[]): boolean {

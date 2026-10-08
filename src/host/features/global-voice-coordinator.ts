@@ -114,15 +114,18 @@ export class GlobalVoiceCoordinator {
   async stop(ownerId: string): Promise<GlobalVoiceCoordinatorSnapshot> {
     this.ensureOwner(ownerId)
     this.clearLeaseTimer()
-    await this.adapter.stop()
-    this.epoch += 1
-    this.started = false
-    this.ownerId = null
-    this.state = 'disabled'
-    this.clientEpoch = -1
-    this.clientSequence = -1
-    this.blockedFinalEpoch = -1
-    this.emit()
+    try { await this.adapter.stop() }
+    finally {
+      // 工作线程异常退出也必须释放租约，允许其他页面重新开始通话。
+      this.epoch += 1
+      this.started = false
+      this.ownerId = null
+      this.state = 'disabled'
+      this.clientEpoch = -1
+      this.clientSequence = -1
+      this.blockedFinalEpoch = -1
+      this.emit()
+    }
     return this.snapshot()
   }
 
@@ -172,7 +175,7 @@ export class GlobalVoiceCoordinator {
 
   dispose(): void {
     this.clearLeaseTimer()
-    if (this.started) void this.adapter.stop()
+    if (this.started) void Promise.resolve().then(() => this.adapter.stop()).catch(() => undefined)
     this.runtimeDispose()
     this.listeners.clear()
     this.eventListeners.clear()

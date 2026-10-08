@@ -16,7 +16,7 @@ import { DEFAULT_ASSISTANT_PROMPTS, type AssistantPromptSettings } from '../data
 import { VoiceConversationDialog } from '../data/build/dist/client/features/voice-conversation-dialog.js'
 import { resolveCodingNsTranslator } from '../data/build/dist/client/locale.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../data/build/dist/shared/contracts/config.js'
-import { SherpaVoiceRuntime } from '../src/host/features/sherpa-voice-runtime.js'
+import { SherpaWorkerRuntime as SherpaVoiceRuntime } from '../src/host/features/sherpa-worker-runtime.js'
 import type { AssistantDebugSnapshot } from '../data/build/dist/shared/contracts/assistant.js'
 import type { CodingNsHostServices } from '../data/build/dist/host/features/types.js'
 

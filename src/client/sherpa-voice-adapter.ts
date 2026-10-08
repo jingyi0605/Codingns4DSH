@@ -1,5 +1,5 @@
+import { callCodingNsRpcResult } from './rpc-call.js'
 import type { CodingNsClientServices, CodingNsRpcResult } from './features/types.js'
-import { CODINGNS_RPC_CHANNEL } from '../shared/contracts/transport.js'
 import { ASSISTANT_VOICE_EVENTS_PATH, ASSISTANT_VOICE_STREAM_PATH } from '../shared/voice-stream.js'
 import type { VoiceClientDevice, VoicePcmFrame, VoiceRuntimeAdapter, VoiceRuntimeCapabilities, VoiceRuntimeEvent, VoiceRuntimeListener, VoiceRuntimeState } from '../shared/contracts/voice-runtime.js'
 import { BrowserVoiceDeviceManager } from './voice-device-manager.js'
@@ -120,7 +120,7 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
         if (this.output.outputDeviceSupported && this.selectedOutputDeviceId !== undefined) await this.output.setOutputDevice(this.selectedOutputDeviceId)
       }
       const leaseStarted = performance.now()
-      const leaseRequest = this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/start', { ownerId: this.configuredOwner, voiceSessionId: callId }, abort.signal)
+      const leaseRequest = callCodingNsRpcResult(this.services.rpc, 'assistant/voice/start', { ownerId: this.configuredOwner, voiceSessionId: callId }, abort.signal)
       this.leaseRequest = leaseRequest
       const lease = await leaseRequest.finally(() => { if (this.leaseRequest === leaseRequest) this.leaseRequest = undefined })
       if (!lease.ok) throw new Error(lease.error.message)
@@ -199,7 +199,7 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
     if (pendingLease?.ok && !(isRecord(pendingLease.value) && pendingLease.value.unavailable === true)) this.hostLeaseActive = true
     if (this.hostLeaseActive) {
       this.hostLeaseActive = false
-      await this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/stop', { ownerId: this.configuredOwner }).catch(() => undefined)
+      await callCodingNsRpcResult(this.services.rpc, 'assistant/voice/stop', { ownerId: this.configuredOwner }).catch(() => undefined)
     }
     this.epoch += 1
     this.emit({ type: 'state', state: 'disabled', epoch: this.epoch })
@@ -214,7 +214,7 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
     this.cancelReply()
     this.uploader?.clearPending()
     // 只走一次控制 RPC，避免数据面与 RPC 各打断一次，导致双方 epoch 错位。
-    const result = await this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/interrupt', { ownerId: this.configuredOwner })
+    const result = await callCodingNsRpcResult(this.services.rpc, 'assistant/voice/interrupt', { ownerId: this.configuredOwner })
     if (!result.ok) throw new Error(result.error.message)
     if (!this.active) return
     this.epoch = readEpoch(isRecord(result.value) ? result.value : {}, this.epoch + 1)
@@ -267,7 +267,7 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
     this.cancelReply()
     if (!this.active) return
     const epoch = this.epoch
-    const operation = this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/chat/clear', { ownerId: this.configuredOwner, epoch }).then((result) => {
+    const operation = callCodingNsRpcResult(this.services.rpc, 'assistant/voice/chat/clear', { ownerId: this.configuredOwner, epoch }).then((result) => {
       if (!result.ok) throw new Error(result.error.message)
       if (this.active && this.epoch === epoch && this.reply === undefined) this.emit({ type: 'state', state: 'listening', epoch })
     })
@@ -360,7 +360,7 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
       await this.clearOperation
       if (!isCurrent()) return
       this.emit({ type: 'state', state: 'thinking', epoch })
-      let result = await this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/chat/start', { ...payload, text }, reply.abort.signal)
+      let result = await callCodingNsRpcResult(this.services.rpc, 'assistant/voice/chat/start', { ...payload, text }, reply.abort.signal)
       let previousText = ''
       while (isCurrent()) {
         if (!result.ok) throw new Error(result.error.message)
@@ -391,7 +391,7 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
         } else await waitForReplyPoll(reply.abort.signal)
         if (!isCurrent()) return
         const pollStarted = performance.now(); polls++
-        result = await this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/chat/read', payload, reply.abort.signal)
+        result = await callCodingNsRpcResult(this.services.rpc, 'assistant/voice/chat/read', payload, reply.abort.signal)
         if (performance.now() - pollStarted >= 250) trace('client.turn.slow_poll', { durationMs: performance.now() - pollStarted })
       }
     } catch (error) {
@@ -412,7 +412,7 @@ export class ClientSherpaVoiceAdapter implements VoiceRuntimeAdapter {
     if (reply !== undefined) this.trace('client.turn.cancel', { requestId: reply.requestId, epoch: reply.epoch })
     reply?.abort.abort()
     this.cancelOutput()
-    if (reply !== undefined) void this.services.rpc.call(CODINGNS_RPC_CHANNEL, 'assistant/voice/chat/cancel', { ownerId: this.configuredOwner, epoch: reply.epoch, requestId: reply.requestId }).catch(() => undefined)
+    if (reply !== undefined) void callCodingNsRpcResult(this.services.rpc, 'assistant/voice/chat/cancel', { ownerId: this.configuredOwner, epoch: reply.epoch, requestId: reply.requestId }).catch(() => undefined)
   }
 
   private cancelOutput(): void {

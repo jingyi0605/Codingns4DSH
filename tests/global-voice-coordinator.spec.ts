@@ -52,3 +52,16 @@ test('barge-in 递增 epoch，迟到事件被丢弃并释放租约', async () =>
   assert.equal(runtime.interruptCount, 0)
   assert.equal(runtime.stopCount, 1)
 })
+
+test('运行时停止失败仍释放租约，销毁过程吸收异步停止异常', async () => {
+  const runtime = new FakeRuntime()
+  runtime.stop = () => Promise.reject(new Error('worker exited'))
+  const coordinator = new GlobalVoiceCoordinator({ adapter: runtime })
+  await coordinator.start('tab-a')
+  await assert.rejects(coordinator.stop('tab-a'), /worker exited/u)
+  assert.equal(coordinator.snapshot().state, 'disabled')
+  await coordinator.start('tab-b')
+  coordinator.dispose()
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(coordinator.snapshot().state, 'disabled')
+})

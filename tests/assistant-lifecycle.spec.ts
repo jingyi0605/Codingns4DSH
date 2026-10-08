@@ -9,7 +9,7 @@ import { createAssistantLlmAdapter } from '../src/dsh-capabilities/host/assistan
 import { DEFAULT_CODINGNS_SETTINGS, type AssistantSettings, type CodingNsSettings } from '../src/shared/contracts/config.js'
 import type { AssistantLifecycleSnapshot } from '../src/shared/contracts/assistant.js'
 import type { CodingNsHostServices } from '../src/host/features/types.js'
-import { SherpaVoiceRuntime } from '../src/host/features/sherpa-voice-runtime.js'
+import { SherpaWorkerRuntime as SherpaVoiceRuntime } from '../src/host/features/sherpa-worker-runtime.js'
 import { AssistantVoiceModelManager } from '../src/host/features/voice-model-management.js'
 import { memoryAssistantConversationStorage } from './assistant-fixtures.js'
 import { ASSISTANT_VOICE_MODEL_CATALOG } from '../src/shared/voice-models.js'
