@@ -1,6 +1,7 @@
 import { createElement, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactElement } from 'react'
 import { ASSISTANT_AVATAR_FLOATING_MINI_SIZE, ASSISTANT_AVATAR_FLOATING_STANDARD_SIZE, ASSISTANT_AVATAR_MAX_MODELS, getBuiltinAssistantAvatar, isAssistantAvatarSource, selectedAssistantAvatar } from '../../shared/assistant-avatar.js'
+import type { AssistantAvatarModel } from '../../shared/assistant-avatar.js'
 import type { CodingNsClientServices, FeaturePanelProps, SettingsNotice } from '../features/types.js'
 import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 import { dshSettingsButtonStyle, dshSettingsHelpStyle, dshSettingsFieldStyle, dshThemeColor } from '../theme.js'
@@ -9,6 +10,7 @@ import { getAssistantAvatarRegistry } from './registry.js'
 import type { AssistantAvatarCandidate } from '../../shared/assistant-avatar-installation.js'
 import { AssistantAvatarCatalogPanel } from './catalog-panel.js'
 import type { AssistantAvatarPreviewTargetProps } from './catalog-panel.js'
+import { AssistantAvatarEngineDialog, AssistantAvatarEngineProgress, useAssistantAvatarEngine } from './engine.js'
 import { assistantSettingFieldStyle, assistantSettingSwitchStyle, assistantSettingTextStyle } from '../assistant-settings-styles.js'
 
 /** 对话内复用设置页表单；订阅同一存储并把保存反馈留在当前窗口。 */
@@ -55,6 +57,7 @@ export function AssistantAppearancePanel({ services, enabled, snapshot, notify, 
   const selectedAdapterId = adapters.some((adapter) => adapter.id === adapterId) ? adapterId : 'auto'
   const selectedRenderer = renderers.some((item) => item.id === renderer && item.id !== 'builtin') ? renderer : 'image'
   const disabled = !enabled || pending || snapshot.status !== 'ready' || !snapshot.writable
+  const engine = useAssistantAvatarEngine({ services, manager, appearance, disabled, notify })
   const save = async (action: () => Promise<unknown>, message = t('avatar.saved')): Promise<boolean> => {
     if (disabled) return false
     setPending(true); setError('')
@@ -72,8 +75,15 @@ export function AssistantAppearancePanel({ services, enabled, snapshot, notify, 
   const add = async (): Promise<void> => {
     if (!isAssistantAvatarSource(source.trim())) { setError(t('avatar.invalidSource')); return }
     const id = `avatar-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
-    const accepted = await save(() => manager.add({ id, name: name.trim() || t('avatar.customName'), renderer: selectedRenderer,
-      source: source.trim(), spriteVersion: version }))
+    const model: AssistantAvatarModel = { id, name: name.trim() || t('avatar.customName'), renderer: selectedRenderer,
+      source: source.trim(), spriteVersion: version }
+    // 自定义 Live2D 素材同样需要引擎：确认许可后自动安装，失败不写入形象。
+    const accepted = selectedRenderer === 'live2d'
+      ? await engine.ensure(async () => {
+        await manager.add(model)
+        if (!services.configurationDraft) notify({ kind: 'success', message: t('avatar.saved') })
+      })
+      : await save(() => manager.add(model))
     if (accepted) { setName(''); setSource('') }
   }
   const importPackage = async (): Promise<void> => {
@@ -162,7 +172,9 @@ export function AssistantAppearancePanel({ services, enabled, snapshot, notify, 
           createElement('option', { value: 1 }, 'v1 · 1536×1872'), createElement('option', { value: 2 }, 'v2 · 1536×2288'))),
         createElement('button', { type: 'button', disabled: disabled || appearance.models.length >= ASSISTANT_AVATAR_MAX_MODELS, onClick: () => { void add() }, style: { ...dshSettingsButtonStyle, justifySelf: 'start' } }, t('avatar.addUse')),
       )),
+    createElement(AssistantAvatarEngineProgress, { controller: engine, t }),
     error === '' ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13 } }, error),
+    createElement(AssistantAvatarEngineDialog, { controller: engine, t }),
   )
 }
 

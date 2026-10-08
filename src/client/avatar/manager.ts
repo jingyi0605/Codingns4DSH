@@ -15,6 +15,8 @@ import type { CodingNsRpcClient } from '../features/types.js'
 import type { AssistantAvatarCandidate, AssistantAvatarInstallation } from '../../shared/assistant-avatar-installation.js'
 import { ASSISTANT_AVATAR_CONSENT_VERSION, hasAssistantAvatarConsent } from '../../shared/assistant-avatar-catalog.js'
 import type { AssistantAvatarCatalogEntry, AssistantAvatarTemporaryPreview } from '../../shared/assistant-avatar-catalog.js'
+import { ASSISTANT_AVATAR_ENGINE_CONSENT_VERSION, hasAssistantAvatarEngineConsent } from '../../shared/assistant-avatar-engine.js'
+import type { AssistantAvatarEngineStatus } from '../../shared/assistant-avatar-engine.js'
 
 export class AssistantAvatarAdapterRegistry extends AssistantAvatarRegistration<AssistantAvatarAdapter> {
   constructor() { super(BUILTIN_ASSISTANT_AVATAR_ADAPTERS) }
@@ -106,6 +108,21 @@ export class AssistantAvatarManager {
       const { thirdPartyConsent: _previous, ...appearance } = current
       return enabled ? { ...appearance, thirdPartyConsent: { version: ASSISTANT_AVATAR_CONSENT_VERSION, acceptedAt: Date.now() } } : appearance
     })
+  }
+  /** 引擎许可与第三方素材协议分开记录；撤销同意不卸载已安装引擎。 */
+  setEngineEnabled(enabled: boolean): Promise<void> {
+    return this.write((current) => {
+      const { engineConsent: _previous, ...appearance } = current
+      return enabled ? { ...appearance, engineConsent: { version: ASSISTANT_AVATAR_ENGINE_CONSENT_VERSION, acceptedAt: Date.now() } } : appearance
+    })
+  }
+  /** 只读探测；已确认许可后由安装接口写入 CodingNS 自有引擎目录。 */
+  async engineStatus(signal?: AbortSignal): Promise<AssistantAvatarEngineStatus> {
+    return readEngineStatus(await this.call('engineStatus', {}, signal))
+  }
+  async installEngine(signal?: AbortSignal): Promise<AssistantAvatarEngineStatus> {
+    this.requireWritable(); this.requireEngineConsent(); signal?.throwIfAborted()
+    return readEngineStatus(await this.call('installEngine', {}, signal))
   }
   async getCatalog(signal?: AbortSignal): Promise<readonly AssistantAvatarCatalogEntry[]> {
     this.requireConsent(); signal?.throwIfAborted()
@@ -231,12 +248,25 @@ export class AssistantAvatarManager {
   private requireConsent(): void {
     if (!hasAssistantAvatarConsent(this.getAppearance().thirdPartyConsent)) throw new TypeError('请先同意第三方形象使用说明')
   }
+  private requireEngineConsent(): void {
+    if (!hasAssistantAvatarEngineConsent(this.getAppearance().engineConsent)) throw new TypeError('请先确认 Live2D 引擎许可')
+  }
   private requireModel(current: AssistantAppearanceSettings, id: string): void {
     if (!listAssistantAvatars(current).some((item) => item.id === id)) throw new TypeError('形象不在清单中')
   }
   private requireCustom(id: string): void {
     if (getBuiltinAssistantAvatar(id) !== undefined) throw new TypeError('内置形象不可替换或删除')
   }
+}
+
+/** 引擎状态来自 Host；形状异常按不可用处理，避免把坏数据当成就绪。 */
+function readEngineStatus(value: unknown): AssistantAvatarEngineStatus {
+  const status = value as AssistantAvatarEngineStatus | null
+  if (status === null || typeof status !== 'object' || typeof status.installed !== 'boolean'
+    || typeof status.version !== 'string' || !['managed', 'dependency', 'missing'].includes(status.source)) {
+    throw new TypeError('Live2D 引擎状态无效')
+  }
+  return { installed: status.installed, version: status.version, source: status.source }
 }
 
 /** 兼容原生异常、RPC 稳定错误码，以及旧 Host 只透传正文的响应。 */

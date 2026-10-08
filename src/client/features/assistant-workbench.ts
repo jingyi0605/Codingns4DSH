@@ -15,6 +15,8 @@ import { AssistantAvatarPortraitEditor } from '../avatar/portrait-editor.js'
 import type { AssistantAvatarModel } from '../../shared/assistant-avatar.js'
 import { AssistantAppearanceEditor } from '../avatar/settings-panel.js'
 import { AssistantAvatarPicker, assistantAvatarChoices } from '../avatar/catalog-picker.js'
+import { getAssistantAvatarManager } from '../avatar/manager.js'
+import { AssistantAvatarEngineDialog, AssistantAvatarEngineProgress, useAssistantAvatarEngine } from '../avatar/engine.js'
 import type { AssistantAvatarPreviewTargetProps } from '../avatar/catalog-panel.js'
 import type { AssistantAvatarCatalogEntry } from '../../shared/assistant-avatar-catalog.js'
 import { AssistantVoiceSettings } from './assistant-voice-settings.js'
@@ -401,6 +403,37 @@ export function AssistantConversationView({ conversation, name, t, services, mod
       message: { role: 'assistant', text: active.text, ...(active.toolCalls === undefined ? {} : { toolCalls: active.toolCalls }) }, name, t, services, model }))
 }
 
+/** 创建与配置共用形象选择：选中 Live2D 时先确认引擎许可并自动安装，成功后才改草稿。 */
+function AssistantAvatarSelectionField({ services, appearance, avatarId, avatars, includeLegacy, disabled, t, onChange }: {
+  readonly services: CodingNsClientServices
+  readonly appearance: ReturnType<typeof normalizeAssistantAppearance>
+  readonly avatarId: string
+  readonly avatars: readonly AssistantAvatarModel[]
+  readonly includeLegacy: boolean
+  readonly disabled: boolean
+  readonly t: CodingNsTranslator
+  readonly onChange: (patch: Partial<AssistantDraft>) => void
+}): ReactElement {
+  const manager = getAssistantAvatarManager(services)
+  const engine = useAssistantAvatarEngine({ services, manager, appearance, disabled })
+  const choices = assistantAvatarChoices(appearance, [], t, includeLegacy)
+  const avatar = avatars.find((model) => model.id === avatarId)
+  const list = choices.some((choice) => choice.id === avatarId) ? choices
+    : [{ id: avatarId, label: t('awb.unavailableSelection', { id: avatarId }), thirdParty: false, disabled: true }, ...choices]
+  const choose = (choice: { readonly id: string }): void => {
+    if (disabled || !avatars.some((model) => model.id === choice.id)) return
+    const model = avatars.find((item) => item.id === choice.id)
+    if (model?.renderer === 'live2d') { void engine.ensure(() => onChange({ avatarId: choice.id })); return }
+    onChange({ avatarId: choice.id })
+  }
+  return createElement('div', { style: { display: 'grid', gap: 8 } },
+    createElement(AssistantAvatarPicker, { label: t('awb.avatar'), value: avatarId, disabled: disabled || engine.installing, t, choices: list, onChoose: choose }),
+    createElement(AssistantAvatarEngineProgress, { controller: engine, t }),
+    createElement('p', { style: help }, t('avatar.externalHint')),
+    avatar?.renderer !== 'live2d' ? null : createElement('p', { style: help }, t('avatar.live2dDependencyHint')),
+    createElement(AssistantAvatarEngineDialog, { controller: engine, t }))
+}
+
 export function AssistantConfigurationFields({ draft, catalog, appearance, initializing = false, includeAvatar = true, services, t, disabled, onChange }: {
   readonly draft: AssistantDraft; readonly catalog: AssistantChatCatalog | undefined
   readonly appearance: ReturnType<typeof normalizeAssistantAppearance>; readonly t: CodingNsTranslator
@@ -427,13 +460,14 @@ export function AssistantConfigurationFields({ draft, catalog, appearance, initi
     catalog?.models.length === 0 ? createElement('p', { style: help }, t('awb.noModel'), ...catalog.errors.map((error) => createElement('span', { key: error, style: { display: 'block' } }, error))) : null,
     input(t('awb.personality'), createElement('textarea', { value: draft.personality, maxLength: ASSISTANT_PERSONALITY_MAX_CHARS, rows: 4, disabled, placeholder: t('awb.personalityPlaceholder'),
       style: { ...identityFieldStyle, minHeight: 96, maxHeight: 200, resize: 'vertical', lineHeight: 1.65 }, onChange: (event: { currentTarget: { value: string } }) => onChange({ personality: event.currentTarget.value }) })),
-    !includeAvatar ? null : createElement('div', { style: { display: 'grid', gap: 8 } },
+    !includeAvatar ? null : services === undefined ? createElement('div', { style: { display: 'grid', gap: 8 } },
       createElement(AssistantAvatarPicker, { label: t('awb.avatar'), value: draft.avatarId, disabled, t,
         choices: avatarChoices.some((choice) => choice.id === draft.avatarId) ? avatarChoices
           : [{ id: draft.avatarId, label: t('awb.unavailableSelection', { id: draft.avatarId }), thirdParty: false, disabled: true }, ...avatarChoices],
         onChoose: (choice) => { if (avatars.some((avatar) => avatar.id === choice.id)) onChange({ avatarId: choice.id }) } }),
       createElement('p', { style: help }, t('avatar.externalHint')),
-      avatar?.renderer !== 'live2d' ? null : createElement('p', { style: help }, t('avatar.live2dDependencyHint'))))
+      avatar?.renderer !== 'live2d' ? null : createElement('p', { style: help }, t('avatar.live2dDependencyHint')))
+      : createElement(AssistantAvatarSelectionField, { services, appearance, avatarId: draft.avatarId, avatars, includeLegacy: !initializing, disabled, t, onChange }))
 }
 
 /** 内层菜单先消费 Escape，外层窗口只处理尚未消费的关闭按键。 */

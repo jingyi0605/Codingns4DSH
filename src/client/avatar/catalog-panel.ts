@@ -3,7 +3,7 @@ import type { ReactElement } from 'react'
 import { createPortal } from 'react-dom'
 import { ASSISTANT_AVATAR_CONSENT_VERSION, hasAssistantAvatarConsent } from '../../shared/assistant-avatar-catalog.js'
 import type { AssistantAvatarCatalogEntry, AssistantAvatarTemporaryPreview } from '../../shared/assistant-avatar-catalog.js'
-import { ASSISTANT_AVATAR_MAX_MODELS } from '../../shared/assistant-avatar.js'
+import { ASSISTANT_AVATAR_MAX_MODELS, selectedAssistantAvatar } from '../../shared/assistant-avatar.js'
 import type { AssistantAppearanceSettings } from '../../shared/assistant-avatar.js'
 import type { CodingNsClientServices, SettingsNotice } from '../features/types.js'
 import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
@@ -11,6 +11,7 @@ import { dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshSettingsHelpS
 import type { AssistantAvatarManager } from './manager.js'
 import { assistantSettingCheckboxStyle, assistantSettingSwitchStyle, assistantSettingTextStyle } from '../assistant-settings-styles.js'
 import { AssistantAvatarPicker, assistantAvatarChoices, type AssistantAvatarChoice } from './catalog-picker.js'
+import { AssistantAvatarEngineDialog, AssistantAvatarEngineProgress, useAssistantAvatarEngine } from './engine.js'
 import { AssistantAvatarSlot } from './slot.js'
 import { AssistantAvatarLoading } from './loading.js'
 import { startAssistantAvatarTemporaryPreview } from './temporary-preview.js'
@@ -45,13 +46,15 @@ export function AssistantAvatarCatalogPanel(props: CatalogPanelProps): ReactElem
   const accepted = hasAssistantAvatarConsent(appearance.thirdPartyConsent)
   const consent = accepted ? `${appearance.thirdPartyConsent!.version}:${appearance.thirdPartyConsent!.acceptedAt}` : ''
   const catalog = useAssistantAvatarCatalog(manager, consent)
+  const engine = useAssistantAvatarEngine({ services, manager, appearance, disabled, notify })
+  const current = selectedAssistantAvatar(appearance)
   const choices = assistantAvatarChoices(appearance, catalog.entries, t)
   const selected = preview?.consent === consent ? catalog.entries.find((entry) => entry.id === preview.id) : undefined
   useEffect(() => {
     onPreviewChange?.(active ? selected : undefined)
     return () => onPreviewChange?.(undefined)
   }, [active, selected, onPreviewChange])
-  const busy = disabled || pending || installing
+  const busy = disabled || pending || installing || engine.installing
   const choose = async (choice: AssistantAvatarChoice): Promise<void> => {
     if (busy) return
     setError('')
@@ -61,7 +64,15 @@ export function AssistantAvatarCatalogPanel(props: CatalogPanelProps): ReactElem
       setPreview((current) => ({ id, consent, selection: (current?.selection ?? 0) + 1 })); return
     }
     setPreview(undefined); setPending(true)
-    try { await manager.select(choice.id); if (!services.configurationDraft) notify({ kind: 'success', message: t('avatar.saved') }) }
+    try {
+      const select = async (): Promise<void> => {
+        await manager.select(choice.id)
+        if (!services.configurationDraft) notify({ kind: 'success', message: t('avatar.saved') })
+      }
+      // 选中 Live2D 形象时先确保引擎就绪；安装失败不改变当前形象。
+      if (appearance.models.find((model) => model.id === choice.id)?.renderer === 'live2d') await engine.ensure(select)
+      else await select()
+    }
     catch (failure) { setError(errorMessage(failure)); notify({ kind: 'error', message: errorMessage(failure) }) }
     finally { setPending(false) }
   }
@@ -80,6 +91,11 @@ export function AssistantAvatarCatalogPanel(props: CatalogPanelProps): ReactElem
     createElement('div', { style: { display: 'grid', gap: 12, alignContent: 'start' } },
     createElement(AssistantAvatarPicker, { choices, value: selected === undefined ? appearance.selectedId : `catalog-${selected.id}`,
       disabled: busy, t, onChoose: (choice) => { void choose(choice) } }),
+    // 当前形象是 Live2D 而引擎缺失时保留恢复入口，不要求用户重新切换形象。
+    current.renderer !== 'live2d' || engine.status?.installed !== false ? null : createElement('div', { 'data-codingns-avatar-engine-missing': true, style: { display: 'grid', gap: 8 } },
+      createElement('p', { style: helpStyle }, t('avatar.engineMissing')),
+      createElement('button', { type: 'button', disabled: busy, style: buttonStyle, onClick: () => { void engine.ensure(() => undefined) } }, t('avatar.engineInstall'))),
+    createElement(AssistantAvatarEngineProgress, { controller: engine, t }),
     createElement(AssistantAvatarThirdPartyToggle, { accepted, disabled: busy, t,
       onRequest: () => { setAgreed(false); setAgreementOpen(true) }, onDisable: () => { void changeConsent(false) } }),
     !agreementOpen ? null : createElement(AssistantAvatarConsentDialog, { agreed, disabled: busy, t,
@@ -89,7 +105,8 @@ export function AssistantAvatarCatalogPanel(props: CatalogPanelProps): ReactElem
     !accepted || catalog.loading || catalog.entries.length > 0 || catalog.error ? null : createElement('p', { style: helpStyle }, t(services.configurationDraft ? 'avatar.catalogSaveFirst' : 'avatar.catalogEmpty')),
     !catalog.error ? null : createElement('div', { role: 'alert', style: { display: 'grid', gap: 8, color: dshThemeColor.error, fontSize: 13 } }, catalog.error,
       createElement('button', { type: 'button', disabled: busy || catalog.loading, style: buttonStyle, onClick: catalog.reload }, t('avatar.catalogRetry'))),
-    !error ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13 } }, error)),
+    !error ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13 } }, error),
+    createElement(AssistantAvatarEngineDialog, { controller: engine, t })),
     // 工作台使用右侧唯一形象区域；独立设置入口也采用左右分栏，窄屏自然换行。
     previewNode === null ? null : createElement(AssistantAvatarCatalogPreviewRegion, { target: previewTarget, children: previewNode }))
 }
