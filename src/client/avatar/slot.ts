@@ -14,6 +14,7 @@ import { useAssistantAvatarPreview } from './preview.js'
 import { getAssistantAvatarPortraitService } from './portrait-service.js'
 import type { AssistantAvatarPreview } from './preview-store.js'
 import { assistantAvatarPreviewKey } from './preview-store.js'
+import { assistantAvatarRuntimeRevision, subscribeAssistantAvatarRuntime } from '../../shared/assistant-avatar-engine.js'
 
 export interface AssistantAvatarSlotProps {
   readonly services: CodingNsClientServices
@@ -33,10 +34,12 @@ export function AssistantAvatarSlot(props: AssistantAvatarSlotProps): ReactEleme
   const registry = getAssistantAvatarRegistry(props.services)
   const readRenderer = useCallback(() => registry.get(model.renderer), [registry, model.renderer])
   const renderer = useSyncExternalStore(registry.subscribe, readRenderer, readRenderer)
+  const runtimeRevision = useSyncExternalStore(subscribeAssistantAvatarRuntime, assistantAvatarRuntimeRevision, assistantAvatarRuntimeRevision)
   const generation = useRef({ renderer, value: 0 })
   // 扩展修复后重新注册同一个 ID，也应恢复渲染，不能永久停在旧错误边界里。
   if (generation.current.renderer !== renderer) generation.current = { renderer, value: generation.current.value + 1 }
-  return createElement(AvatarErrorBoundary, { key: `${JSON.stringify(props.model)}:${generation.current.value}`, fallback: createElement(AvatarFallback, props) },
+  // 安装完成重建 Live2D 的错误边界和内容状态，其他渲染器保持现有实例。
+  return createElement(AvatarErrorBoundary, { key: `${JSON.stringify(props.model)}:${generation.current.value}:${model.renderer === 'live2d' ? runtimeRevision : 0}`, fallback: createElement(AvatarFallback, props) },
     createElement(AvatarContent, { ...props, model, renderer }))
 }
 

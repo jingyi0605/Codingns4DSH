@@ -7,9 +7,18 @@
  */
 export const ASSISTANT_AVATAR_ENGINE_VERSION = '2.1.1'
 let runtimeRevision = 0
+const runtimeListeners = new Set<() => void>()
 /** Host 与 Client 各自维护代次，安装成功立即解除缺失引擎的短期缓存。 */
-export function invalidateAssistantAvatarRuntime(): void { runtimeRevision += 1 }
+export function invalidateAssistantAvatarRuntime(): void {
+  runtimeRevision += 1
+  for (const listener of runtimeListeners) listener()
+}
 export function assistantAvatarRuntimeRevision(): number { return runtimeRevision }
+/** 已经显示加载失败的形象也需要重新挂载，不能只清除模块缓存。 */
+export function subscribeAssistantAvatarRuntime(listener: () => void): () => void {
+  runtimeListeners.add(listener)
+  return () => { runtimeListeners.delete(listener) }
+}
 export const ASSISTANT_AVATAR_ENGINE_TARBALL = 'https://registry.npmjs.org/l2d/-/l2d-2.1.1.tgz'
 export const ASSISTANT_AVATAR_ENGINE_SHA512 = 'Q9Rp3uDPiZyS4SJZ/RJ+tuR1YQ75gKhGeS2gZNCO6KvydDB6okPQJk+zsKt8KyJ6Y5g0okVMtj3Sisjxr35ptA=='
 /** npm tarball 顶层固定为 package/，入口是真正的 ESM 文件而非全局 IIFE。 */
