@@ -197,7 +197,7 @@ test('手工登记的大肥鱼可用于创建，形象选项标记第三方并�
   const markup = renderToStaticMarkup(createElement(AssistantWorkbench, { ...props, services: f.services }))
   assert.ok(markup.includes('大肥鱼 · Live2D 桌前'))
   assert.ok(markup.includes('data-codingns-avatar-third-party-badge="true"'))
-  assert.ok(markup.includes('Live2D 引擎需在 Host 单独安装'))
+  assert.ok(markup.includes('首次选择 Live2D 形象并确认引擎许可后'))
   assert.ok(markup.includes('<canvas'))
   assert.equal(f.calls(), 0)
 })

@@ -331,7 +331,7 @@ test('已有选中的旧预设保留双展示与元信息，不自动添加其�
     assert.ok(html.includes('将此形象安装到本地'))
     assert.ok(html.includes('形象包详情与许可'))
     assert.ok(html.includes('外部依赖'))
-    if (model.renderer === 'live2d') assert.ok(html.includes('Live2D 引擎需在 Host 单独安装'))
+    if (model.renderer === 'live2d') assert.ok(html.includes('首次选择 Live2D 形象并确认引擎许可后'))
   }
 })
 
