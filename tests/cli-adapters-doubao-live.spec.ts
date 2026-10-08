@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { createHash } from 'node:crypto'
+import { inflateRawSync } from 'node:zlib'
 import { DoubaoAppDriver } from '../data/build/dist/host/cli-adapters/doubao-driver.js'
 import { DoubaoApp } from '../data/build/dist/host/cli-adapters/doubao-app.js'
 import { createCliAdaptersFeature } from '../data/build/dist/host/cli-adapters/feature.js'
@@ -15,10 +20,12 @@ test('豆包正式驱动：快速、立即续聊、专家、云端产物及指�
   const app = new DoubaoApp()
   const driver = new DoubaoAppDriver({ detect: () => app.detect(), connect: (_launch, signal) => app.connect(false, signal) })
   const token = `Q73_${Date.now()}`
+  const cwd = await mkdtemp(path.join(tmpdir(), 'doubao-live-'))
   const run = async (id: string, prompt: string, modelId = 'doubao-fast', providerSessionId?: string) => {
     const events: any[] = []
     for await (const event of driver.executeTurn({ sessionId: id, messages: [], prompt, modelId,
       effortId: 'default', serviceTierId: 'default',
+      cwd, permission: { sandboxMode: 'workspace-write' },
       ...(providerSessionId ? { providerSessionId } : {}), signal: AbortSignal.timeout(60_000) })) events.push(event)
     assert.deepEqual(events.at(-1), { type: 'finish', reason: 'stop' })
     let text = ''
@@ -56,7 +63,7 @@ test('豆包正式驱动：快速、立即续聊、专家、云端产物及指�
     // 验收日志只包含计数与真假结论，不写原始回答、私有 URL 或鉴权信息。
     console.log(JSON.stringify({ fast: true, resume: true, expert: true, workArtifact: true, cancel: true,
       workToolEvents: work.events.filter((event) => event.type === 'tool-event').length }))
-  } finally { await driver.dispose() }
+  } finally { await driver.dispose(); await rm(cwd, { recursive: true, force: true }) }
 })
 
 test('豆包真实 Host 入口同一会话连续三轮，收到 finish 即退出仍释放后台桥', {
@@ -70,6 +77,7 @@ test('豆包真实 Host 入口同一会话连续三轮，收到 finish 即退出
     const bridge = await app.connect(false, signal)
     const index = closed.push(0) - 1
     return { fetch: bridge.fetch,
+      download: (url, limit) => bridge.download(url, limit),
       async create(name) { created++; return bridge.create(name) },
       async history(id) { historyReads++; return bridge.history(id) },
       stop: (id, reply) => bridge.stop(id, reply), cancel: () => bridge.cancel(),
@@ -127,11 +135,17 @@ test('豆包真实工具展示：搜索、进度、网页读取和云端操作�
   const registry = new CodingNsCliAdapterRegistry([driver])
   const table = new CodingNsRpcTable()
   const sessions = new Map<string, any>()
+  const cwd = await mkdtemp(path.join(tmpdir(), 'doubao-tools-live-'))
   const nativeSessions = createCodingNsNativeSessionBridge({ get(name: string) {
     return name === 'sessions' ? { get: (id: string) => sessions.get(id), list: () => [...sessions.values()] } : undefined
   } } as never)
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<any>) | undefined
-  const features = new FeatureRegistry({ rpc: table, nativeSessions, events: {
+  const dshContext = { get(name: string) {
+    if (name === 'agents') return { get: (id: string) => ({ session: sessions.get(id) }) }
+    if (name === 'sandboxPolicy') return { resolve: () => ({ mode: 'workspace-write' }) }
+    return undefined
+  } }
+  const features = new FeatureRegistry({ rpc: table, nativeSessions, dshContext: dshContext as never, events: {
     on(name: string, next: typeof listener) { if (name === 'llm/stream') listener = next; return () => {} },
   } })
   features.register(createCliAdaptersFeature({ registry }))
@@ -144,7 +158,7 @@ test('豆包真实工具展示：搜索、进度、网页读取和云端操作�
     for (const [index, item] of cases.entries()) {
       const sessionId = `spec0073-tools-${Date.now()}-${index}`
       const events: any[] = [{ type: 'turn/start', seq: 0, data: { turn: 1 } }, { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } }]
-      sessions.set(sessionId, { header: { version: 4 }, snapshotEvents: () => [...events], append(type: string, data: unknown) {
+      sessions.set(sessionId, { header: { version: 4, cwd }, snapshotEvents: () => [...events], append(type: string, data: unknown) {
         const event = { type, seq: events.length, data }; events.push(event); return event
       } })
       await table.resolve('cli/session/set')!.handler('session/set', { sessionId, adapterId: 'doubao', modelId: item.model, effortId: 'default' })
@@ -167,5 +181,71 @@ test('豆包真实工具展示：搜索、进度、网页读取和云端操作�
       // 只记录工具类型和计数，测试正文、来源及云端产物地址不写控制台。
       console.log(JSON.stringify({ mode: item.model, tools: [...new Set(names)], calls: calls.length, results: results.length }))
     }
-  } finally { await features.disable('cliAdapters') }
+  } finally { await features.disable('cliAdapters'); await rm(cwd, { recursive: true, force: true }) }
+})
+
+test('豆包真实产物落盘：Host 项目 Doubao 目录、文本与 ZIP 字节校验、同名不覆盖及原生保存记录', {
+  skip: process.env.CODINGNS_DOUBAO_ARTIFACT_LIVE !== '1', timeout: 180_000,
+}, async () => {
+  const cwd = await realpath(await mkdtemp(path.join(tmpdir(), 'doubao-artifact-live-')))
+  const outputDirectory = path.join(cwd, 'Doubao')
+  const app = new DoubaoApp()
+  const driver = new DoubaoAppDriver({ detect: () => app.detect(), connect: (_launch, signal) => app.connect(false, signal) })
+  const table = new CodingNsRpcTable()
+  const sessionId = `spec0073-artifact-${Date.now()}`
+  const events: any[] = [{ type: 'turn/start', seq: 0, data: { turn: 1 } }, { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } }]
+  const session = { header: { version: 4, cwd }, snapshotEvents: () => [...events], append(type: string, data: unknown) {
+    const event = { type, seq: events.length, data }; events.push(event); return event
+  } }
+  const dshContext = { get(name: string) {
+    if (name === 'sessions') return { get: () => session, list: () => [session] }
+    if (name === 'agents') return { get: () => ({ session }) }
+    if (name === 'sandboxPolicy') return { resolve: () => ({ mode: 'workspace-write' }) }
+    return undefined
+  } }
+  let listener: any
+  const features = new FeatureRegistry({ rpc: table, dshContext: dshContext as never,
+    nativeSessions: createCodingNsNativeSessionBridge(dshContext as never),
+    events: { on(name: string, next: unknown) { if (name === 'llm/stream') listener = next; return () => {} } } })
+  features.register(createCliAdaptersFeature({ registry: new CodingNsCliAdapterRegistry([driver]) }))
+  const token = `ARTIFACT_${Date.now()}`
+  try {
+    await mkdir(outputDirectory)
+    await writeFile(path.join(outputDirectory, 'codingns-delivery.txt'), '不能覆盖的已有文件')
+    await features.start('cliAdapters')
+    await table.resolve('cli/session/set')!.handler('session/set', { sessionId, adapterId: 'doubao', modelId: 'doubao-work' })
+    const chunks: any[] = []
+    const prompt = `产物落盘验收：请用 Python 生成并交付恰好两个可下载文件。1. codingns-delivery.txt，UTF-8 文本内容为 ${token}。2. codingns-bytes.zip，使用 zipfile.ZIP_STORED，内部恰好一个 payload.bin，其内容为 bytes(range(256))*512。不要额外生成说明文件，直接交付。`
+    for await (const chunk of listener({ sessionId, messages: [{ role: 'user', content: prompt }], signal: AbortSignal.timeout(150_000) }, async function* () {})) {
+      chunks.push(chunk)
+      if (chunk.type === 'finish') break
+    }
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: { kind: 'stop' } })
+    assert.equal(await readFile(path.join(outputDirectory, 'codingns-delivery.txt'), 'utf8'), '不能覆盖的已有文件')
+    assert.equal((await readFile(path.join(outputDirectory, 'codingns-delivery (1).txt'), 'utf8')).replace(/^\uFEFF/u, '').trim(), token)
+    const zip = await readFile(path.join(outputDirectory, 'codingns-bytes.zip'))
+    // 用中央目录给出的尺寸定位数据，兼容 ZIP 的尾部 data descriptor。
+    const central = zip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]))
+    assert.ok(central > 0)
+    const offset = zip.readUInt32LE(central + 42)
+    const start = offset + 30 + zip.readUInt16LE(offset + 26) + zip.readUInt16LE(offset + 28)
+    const compressed = zip.subarray(start, start + zip.readUInt32LE(central + 20))
+    const bytes = zip.readUInt16LE(central + 10) === 8 ? inflateRawSync(compressed) : compressed
+    assert.deepEqual(bytes, Buffer.from(Array.from({ length: 256 * 512 }, (_, i) => i % 256)))
+    const saves = events.filter(event => event.type === 'tool/call' && event.data.name === '保存豆包产物')
+    assert.equal(saves.length, 2)
+    const saved = events.filter(event => event.type === 'tool/result' && saves.some(call => call.data.callId === event.data.message.toolCallId))
+      .map(event => JSON.parse(event.data.message.content[0].text))
+    assert.equal(saved.length, 2, '每个保存调用都必须具有原生结果，不能只验证调用声明')
+    for (const item of saved) {
+      const file = await readFile(item.path)
+      assert.equal(path.dirname(item.path), outputDirectory)
+      assert.equal(file.length, item.size)
+      assert.equal(createHash('sha256').update(file).digest('hex'), item.sha256)
+    }
+    assert.deepEqual(await readdir(cwd), ['Doubao'])
+    assert.equal((await readdir(outputDirectory)).length, 3)
+    assert.doesNotMatch(JSON.stringify(saved), /x-signature|byteimg\.com/u)
+    console.log(JSON.stringify({ artifactFiles: saved.length, binaryBytes: bytes.length, sameNamePreserved: true, hostProjectDirectory: true, nativeSaveResults: saved.length }))
+  } finally { await features.disable('cliAdapters'); await driver.dispose(); await rm(cwd, { recursive: true, force: true }) }
 })

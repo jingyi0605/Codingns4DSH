@@ -42,6 +42,7 @@ class FakeBridge {
   async stop(id: string, reply: string) { this.stops.push({ id, reply }) }
   async cancel() { try { this.controller?.close() } catch { /* 流已结束。 */ } }
   async close() { this.closed = true; await this.cancel() }
+  async download(): Promise<Response> { throw new Error('此用例不应下载文件') }
   fetch: typeof fetch = async (_url, init) => {
     this.requests.push(JSON.parse(String(init?.body)))
     return new Response(new ReadableStream<Uint8Array>({ start: (controller) => {
