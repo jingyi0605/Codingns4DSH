@@ -47,10 +47,13 @@ export function useAssistantAvatarEngine(options: AssistantAvatarEngineOptions):
   const [consentOpen, setConsentOpen] = useState(false)
   const [agreed, setAgreed] = useState(false)
   const installer = useRef<AbortController | undefined>()
+  const probe = useRef<AbortController | undefined>()
   const pending = useRef<(() => Promise<void> | void) | undefined>()
   const mounted = useRef(true)
   // 开发模式会重复挂载同一组件；每次挂载都恢复标记，避免卸载后不再更新界面。
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; installer.current?.abort() } }, [])
+  useEffect(() => { mounted.current = true; return () => {
+    mounted.current = false; probe.current?.abort(); installer.current?.abort()
+  } }, [])
   useEffect(() => {
     const controller = new AbortController()
     void manager.engineStatus(controller.signal).then((value) => {
@@ -59,7 +62,8 @@ export function useAssistantAvatarEngine(options: AssistantAvatarEngineOptions):
     return () => controller.abort()
   }, [manager])
   const runInstall = async (onReady: () => Promise<void> | void): Promise<boolean> => {
-    if (disabled) return false
+    // React 状态刷新之前也要防止重复点击排入多份安装，取消始终对应唯一请求。
+    if (disabled || !mounted.current || installer.current !== undefined) return false
     const controller = new AbortController()
     installer.current = controller
     pending.current = onReady
@@ -67,9 +71,9 @@ export function useAssistantAvatarEngine(options: AssistantAvatarEngineOptions):
     try {
       const next = await manager.installEngine(controller.signal)
       if (controller.signal.aborted) return false
-      pending.current = undefined
       setStatus(next)
       await onReady()
+      pending.current = undefined
       notify?.({ kind: 'success', message: t('avatar.engineInstalled') })
       return true
     } catch (failure) {
@@ -82,13 +86,19 @@ export function useAssistantAvatarEngine(options: AssistantAvatarEngineOptions):
     }
   }
   const ensure = async (onReady: () => Promise<void> | void): Promise<boolean> => {
-    if (disabled || installing) return false
+    if (disabled || installing || !mounted.current || installer.current !== undefined) return false
+    // 状态读取也归窗口生命周期所有；新选择覆盖旧查询，迟到结果不能恢复旧选择。
+    probe.current?.abort()
+    const controller = new AbortController()
+    probe.current = controller
     setError('')
     let current = status
     try {
-      current = await manager.engineStatus()
-      if (mounted.current) setStatus(current)
+      current = await manager.engineStatus(controller.signal)
     } catch { /* 探测失败仍继续尝试安装，真实错误由安装接口返回。 */ }
+    finally { if (probe.current === controller) probe.current = undefined }
+    if (controller.signal.aborted || !mounted.current) return false
+    if (current !== undefined) setStatus(current)
     if (current?.installed === true) { await onReady(); return true }
     if (!hasAssistantAvatarEngineConsent(appearance.engineConsent)) {
       pending.current = onReady; setAgreed(false); setConsentOpen(true); return false
