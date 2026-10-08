@@ -11,6 +11,7 @@ import { createFileManagementFeature } from './file-management.js'
 import { createPeerHostFeature } from './peer-host.js'
 import { createGlobalVoiceRpcFeature } from './global-voice-rpc.js'
 import { createAssistantAvatarRuntimeFeature } from './assistant-avatar-runtime.js'
+import { createDesktopAssistantFeature } from '../desktop-assistant/feature.js'
 import type { CodingNsHostServices } from './types.js'
 
 export interface HostFeatureOptions {
@@ -32,6 +33,7 @@ export function createHostFeatures(options: HostFeatureOptions = {}): readonly F
     createPeerHostFeature(),
     createGlobalVoiceRpcFeature(),
     createAssistantAvatarRuntimeFeature(),
+    createDesktopAssistantFeature(),
   ]
 }
 

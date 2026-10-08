@@ -15,6 +15,7 @@ import { ASSISTANT_WORKBENCH_OPEN_EVENT } from './assistant-workbench-entry.js'
 import { normalizeAssistantAppearance, resolveAssistantAvatarState, selectedAssistantAvatar } from '../../shared/assistant-avatar.js'
 import { FloatingAssistantAvatar, FloatingVoiceCall } from '../avatar/floating.js'
 import { fillAssistantAvatarButton, useAssistantAvatarPortrait } from '../avatar/portrait.js'
+import { useDesktopAssistant } from '../avatar/desktop-bridge.js'
 
 interface VoiceSnapshot {
   readonly active?: boolean
@@ -91,8 +92,9 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   const appearance = normalizeAssistantAppearance(settingsValue?.assistant?.appearance)
   // 悬浮入口属于已创建助理；初始化表单里的形象预览仍可使用。
   const minimized = callMinimized && (snapshot.active === true || conversationPending)
-  const floatingVisible = readAssistantProfile(settingsValue?.assistant ?? DEFAULT_ASSISTANT_SETTINGS).initialized
-    && appearance.floatingEnabled && (!conversationOpen || minimized)
+  const floatingEnabled = readAssistantProfile(settingsValue?.assistant ?? DEFAULT_ASSISTANT_SETTINGS).initialized && appearance.floatingEnabled
+  // 页面形象避让工作台，原生形象只受用户开关控制，前台和打开对话时均常驻。
+  const floatingVisible = floatingEnabled && (!conversationOpen || minimized)
   const avatarModel = selectedAssistantAvatar(appearance)
   const portrait = useAssistantAvatarPortrait(services, avatarModel)
   const portraitRef = useRef(portrait)
@@ -341,10 +343,17 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     microphoneMuted: adapter?.isMicrophoneMuted ?? false, speakerMuted: adapter?.isSpeakerMuted ?? false,
     userText: partialText || liveUserText, assistantText: liveAssistantText,
   } : undefined
+  const desktopAvatar = useDesktopAssistant(services.rpc, { visible: floatingEnabled, state: avatarState,
+    label: t('avatar.openAssistant'), caption: floatingCall ? [floatingCall.userText, floatingCall.assistantText].filter(Boolean).join('\n').slice(-8000) : '' }, openConversation)
+  const nativeFloating = floatingEnabled && desktopAvatar.native
   return createElement('div', { 'data-codingns-global-voice': 'true', ...(conversationOpen || floatingVisible ? {} : { 'aria-hidden': 'true' }) },
-    floatingVisible
+    floatingVisible && !nativeFloating
       ? createElement(FloatingAssistantAvatar, { services, model: avatarModel, state: avatarState, size: appearance.floatingSize, call: floatingCall, onOpen: openConversation })
-      : floatingCall ? createElement(FloatingVoiceCall, { services, call: floatingCall, onOpen: openConversation }) : null,
+      : floatingCall && !nativeFloating ? createElement(FloatingVoiceCall, { services, call: floatingCall, onOpen: openConversation }) : null,
+    floatingEnabled && desktopAvatar.error ? createElement('div', { role: 'status', title: desktopAvatar.error, 'data-codingns-desktop-avatar-fallback': true,
+      style: { position: 'fixed', right: 12, bottom: 8, zIndex: 9000, maxWidth: 'min(480px, calc(100vw - 24px))', fontSize: 11, color: 'var(--dsw-alias-label-secondary, #777)', pointerEvents: 'auto' } },
+      createElement('details', null, createElement('summary', { style: { cursor: 'pointer' } }, t('avatar.desktopFallback')),
+        createElement('div', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 120, overflowY: 'auto' } }, desktopAvatar.error))) : null,
     conversationOpen ? createElement(AssistantWorkbench, {
       services,
       initialConfiguration,

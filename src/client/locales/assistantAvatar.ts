@@ -131,6 +131,7 @@ export const en = {
   'avatar.cacheDownloadsCompact': '{count} new downloads',
   'avatar.cacheDownloadsTiny': '+{count} downloads',
   'avatar.openAssistant': 'Open the global assistant',
+  'avatar.desktopFallback': 'Desktop companion unavailable; showing inside this window.',
   'avatar.dragHint': 'Drag to move; click to open the assistant.',
 }
 
@@ -267,5 +268,6 @@ export const zh: Record<keyof typeof en, string> = {
   'avatar.cacheDownloadsCompact': '新增下载 {count} 项',
   'avatar.cacheDownloadsTiny': '下载 +{count}',
   'avatar.openAssistant': '打开全局智能助理',
+  'avatar.desktopFallback': '系统悬浮暂不可用，当前在窗口内显示',
   'avatar.dragHint': '拖动调整位置，点击打开助理。',
 }

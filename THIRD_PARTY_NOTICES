@@ -11,6 +11,12 @@ dsh-live2d-avatar
 https://github.com/clown139880/dsh-live2d-avatar
 Copyright (c) 2026 dsh-live2d-heroine contributors
 
+2026-10-08：原生伴随窗口的 Cocoa/JXA 与 WPF/WebView2 实现参考并改造该上游；
+src/host/desktop-assistant/win-agent.ts 的基础窗口与 JSON Lines 代码沿用其 MIT 许可。
+Windows 随包分发 Microsoft.Web.WebView2 1.0.3595.46 SDK 的原始程序文件，
+许可与 NOTICE 见 assets/desktop-assistant/webview2/LICENSE.txt 和 NOTICE.txt，
+固定版本、来源和摘要见 assets/desktop-assistant/20261008-WebView2分发说明.md。
+
 codex-to-dsh-pet
 https://github.com/Signalight/codex-to-dsh-pet
 Copyright (c) 2026 Signalight
