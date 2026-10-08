@@ -93,7 +93,7 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
       // uiWorkspace 可能晚于 CodingNS 就绪；跟随服务生命周期订阅真实选择状态。
       // 模块请求、右栏保留资源和后台流都不能代替前台导航。
       const navigation = context.services.uiContext?.inject(['uiWorkspace'], (scope) => {
-        scope.effect(() => transport!.watchNavigation(), 'codingns4dsh: PeerHost 模型目录导航')
+        scope.effect(() => transport!.watchNavigation(), 'codingns4dsh: PeerHost model catalog navigation')
       })
       if (navigation !== undefined) context.resources.add(() => navigation.dispose())
     }
