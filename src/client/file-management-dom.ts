@@ -1,13 +1,7 @@
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCodingNsRpc } from './settings-bridge.js'
-import { basicSetup, EditorView } from 'codemirror'
-import { css } from '@codemirror/lang-css'
-import { html } from '@codemirror/lang-html'
-import { javascript } from '@codemirror/lang-javascript'
-import { json } from '@codemirror/lang-json'
-import { markdown } from '@codemirror/lang-markdown'
-import { python } from '@codemirror/lang-python'
-import { sql } from '@codemirror/lang-sql'
+import type { EditorView } from 'codemirror'
+import { createEngineLoader } from './engine-loader.js'
 import { isOutsideDismissRoots } from './popup-dismiss.js'
 import { resolveCodingNsTranslator, type CodingNsLocale } from './locale.js'
 
@@ -15,6 +9,8 @@ type FileEntryElement = HTMLElement & { dataset: DOMStringMap }
 type ClipboardState = { mode: 'copy' | 'cut'; paths: string[] }
 type FileEditorState = { root: HTMLElement; body: HTMLElement; host: HTMLElement; view: EditorView; path: FileTarget; buttons: HTMLElement }
 type FileTarget = { path: string; sessionId?: string }
+const DOCUMENT_PREVIEW_SELECTOR = '[data-document-preview]'
+const loadEditorEngine = createEngineLoader(() => import('./editor-engine.js'))
 
 /** 可直接交给文本编辑器的扩展名；未知扩展名仍按只读预览处理，避免误打开二进制文件。 */
 const TEXT_EXTENSIONS = new Set([
@@ -49,19 +45,42 @@ export interface FileManagementDomController {
 }
 
 /** 给 DSH 原生文件树和文本查看器补充文件操作，不接管 DSH 自己的渲染状态。 */
-export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: FileManagementDomOptions): FileManagementDomController {
+export function startFileManagementDom(
+  rpc: CodingNsRpcClient,
+  initialOptions: FileManagementDomOptions,
+  loadEngine: typeof loadEditorEngine = loadEditorEngine,
+): FileManagementDomController {
   // Client 功能也会在 H5/非浏览器测试环境被装配；没有 DOM 时保持惰性空实现。
   if (typeof document === 'undefined') return { setOptions: () => undefined, dispose: () => undefined }
 
   let menu: HTMLElement | undefined
   let clipboard: ClipboardState | undefined
   let editor: FileEditorState | undefined
+  let editRequest = 0
   let options = { ...initialOptions }
   let t = resolveCodingNsTranslator(initialOptions.locale)
   let disposed = false
   const observer = typeof MutationObserver === 'undefined'
     ? undefined
-    : new MutationObserver(() => { if (!disposed && options.fileEditor) enhanceEditors() })
+    : new MutationObserver((records) => {
+      if (disposed || !options.fileEditor) return
+      // 聊天增量只检查新增子树；文件预览内部更新只检查所属预览，不扫描整页。
+      const roots = new Set<HTMLElement>()
+      for (const record of records) {
+        const target = record.target.nodeType === 1 ? record.target as Element : record.target.parentElement
+        const preview = target?.closest<HTMLElement>(DOCUMENT_PREVIEW_SELECTOR)
+        if (preview) roots.add(preview)
+        for (const node of record.addedNodes) {
+          if (node.nodeType !== 1) continue
+          const element = node as HTMLElement
+          if (element.matches(DOCUMENT_PREVIEW_SELECTOR)) roots.add(element)
+          for (const nested of element.querySelectorAll<HTMLElement>(DOCUMENT_PREVIEW_SELECTOR)) roots.add(nested)
+        }
+      }
+      // 原生预览关闭后立即释放编辑器，避免把已脱离页面的完整文档继续留在内存。
+      if (editor !== undefined && !editor.root.isConnected) cancelEdit(false)
+      enhanceEditors(roots)
+    })
 
   const closeMenu = (): void => { menu?.remove(); menu = undefined }
   const onContextMenu = (event: MouseEvent): void => {
@@ -82,8 +101,10 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
   document.addEventListener('contextmenu', onContextMenu, true)
   document.addEventListener('pointerdown', onDocumentPointerDown, true)
   document.addEventListener('keydown', onKeyDown, true)
-  observer?.observe(document.body, { childList: true, subtree: true })
-  if (options.fileEditor) enhanceEditors()
+  if (options.fileEditor) {
+    observer?.observe(document.body, { childList: true, subtree: true })
+    enhanceEditors()
+  }
 
   const dispose = (): void => {
     disposed = true
@@ -98,12 +119,18 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
 
   return {
     setOptions(nextOptions) {
+      if (disposed) return
       const previous = options
       options = { ...nextOptions }
       if (nextOptions.locale !== previous.locale) t = resolveCodingNsTranslator(nextOptions.locale)
       if (!options.menuEnhancement) closeMenu()
-      if (!options.fileEditor) clearEditorEnhancements()
-      else if (!previous.fileEditor) enhanceEditors()
+      if (!options.fileEditor && previous.fileEditor) {
+        observer?.disconnect()
+        clearEditorEnhancements()
+      } else if (options.fileEditor && !previous.fileEditor) {
+        observer?.observe(document.body, { childList: true, subtree: true })
+        enhanceEditors()
+      }
     },
     dispose,
   }
@@ -219,9 +246,10 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
     if (reload !== null && reload !== undefined) reload.click()
   }
 
-  function enhanceEditors(): void {
+  function enhanceEditors(roots: Iterable<HTMLElement> = document.querySelectorAll<HTMLElement>(DOCUMENT_PREVIEW_SELECTOR)): void {
     if (!options.fileEditor) return
-    for (const root of document.querySelectorAll<HTMLElement>('[data-document-preview]')) {
+    for (const root of roots) {
+      if (!root.isConnected) continue
       if (root.dataset.fileManagementEditor === 'true') continue
       const url = root.getAttribute('data-textpreview-url') ?? ''
       if (root.getAttribute('data-textpreview-state') !== 'text' || !isEditableFile(url)) continue
@@ -236,25 +264,31 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
   }
 
   async function beginEdit(root: HTMLElement, url: string, editButton: HTMLButtonElement): Promise<void> {
-    if (!options.fileEditor) return
-    if (editor !== undefined) cancelEdit()
+    if (disposed || !options.fileEditor || editButton.disabled) return
+    cancelEdit()
+    const request = ++editRequest
     const target = parseFileTarget(url, root)
     if (target === undefined) { showNotice(t('fileMenu.unresolvedPath')); return }
+    editButton.disabled = true
+    editButton.setAttribute('aria-busy', 'true')
+    root.querySelector('[data-file-management-load-error]')?.remove()
+    let host: HTMLElement | undefined
+    let pendingView: EditorView | undefined
     try {
-      const result = await call('read', target) as { content: string }
+      const [engine, result] = await Promise.all([
+        loadEngine(),
+        call('read', target) as Promise<{ content: string }>,
+      ])
+      // 关闭预览、停用功能或点击另一份文件后，旧请求不能把编辑器挂回页面。
+      if (request !== editRequest || disposed || !options.fileEditor || !root.isConnected || root.getAttribute('data-textpreview-url') !== url) return
       const body = root.querySelector<HTMLElement>('[data-textpreview-body]')
       if (body === null) return
-      const host = document.createElement('div')
+      host = document.createElement('div')
       host.setAttribute('data-file-management-editor', 'true')
       host.setAttribute('aria-label', t('fileEditor.editorLabel'))
       host.style.cssText = 'box-sizing:border-box;width:100%;height:100%;min-height:360px;border:1px solid var(--dsw-alias-border-l2,#666);border-radius:6px;overflow:hidden;background:var(--dsw-alias-bg-layer-1,transparent)'
-      body.style.display = 'none'
       body.parentElement?.append(host)
-      const language = editorLanguageForPath(target.path)
-      const extensions = [basicSetup, editorTheme]
-      if (language !== undefined) extensions.push(language)
-      extensions.push(EditorView.lineWrapping)
-      const view = new EditorView({ doc: result.content, extensions, parent: host })
+      const view = pendingView = engine.createFileEditor(host, result.content, target.path)
       view.focus()
       const buttons = document.createElement('span')
       buttons.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin-left:auto'
@@ -262,10 +296,29 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
       const cancel = createEditorButton(root, 'cancel', t('fileEditor.cancel'))
       buttons.append(save, cancel)
       editButton.replaceWith(buttons)
+      body.style.display = 'none'
       editor = { root, body, host, view, path: target, buttons }
       save.addEventListener('click', () => void saveEdit())
       cancel.addEventListener('click', () => cancelEdit())
-    } catch (error) { showNotice(errorMessage(error)) }
+    } catch (error) {
+      pendingView?.destroy()
+      host?.remove()
+      if (request !== editRequest || disposed || !root.isConnected) return
+      // 保留编辑按钮作为重试入口，并持续显示错误，不让分块失败静默失效。
+      const notice = document.createElement('div')
+      notice.setAttribute('data-file-management-load-error', 'true')
+      notice.setAttribute('role', 'alert')
+      notice.textContent = errorMessage(error)
+      const retry = document.createElement('button')
+      retry.type = 'button'
+      retry.textContent = t('fileEditor.edit')
+      retry.addEventListener('click', () => void beginEdit(root, url, editButton))
+      notice.append(retry)
+      root.append(notice)
+    } finally {
+      editButton.disabled = false
+      editButton.removeAttribute('aria-busy')
+    }
   }
 
   async function saveEdit(): Promise<void> {
@@ -282,6 +335,7 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
   }
 
   function cancelEdit(reenhance = true): void {
+    editRequest++
     if (editor === undefined) return
     editor.view.destroy()
     editor.host.remove()
@@ -294,8 +348,9 @@ export function startFileManagementDom(rpc: CodingNsRpcClient, initialOptions: F
 
   function clearEditorEnhancements(): void {
     cancelEdit(false)
-    for (const root of document.querySelectorAll<HTMLElement>('[data-document-preview]')) {
+    for (const root of document.querySelectorAll<HTMLElement>(DOCUMENT_PREVIEW_SELECTOR)) {
       root.querySelector('[data-file-management-edit]')?.remove()
+      root.querySelector('[data-file-management-load-error]')?.remove()
       root.dataset.fileManagementEditor = ''
     }
   }
@@ -320,48 +375,6 @@ function placeEditorButton(root: HTMLElement, header: HTMLElement, button: HTMLB
     return
   }
   header.append(button)
-}
-
-// 编辑器只覆盖文件预览区域，颜色使用 DSH 主题变量，避免切换深浅色时残留固定配色。
-const editorTheme = EditorView.theme({
-  '&': {
-    height: '100%',
-    minHeight: '360px',
-    color: 'var(--dsw-alias-label-primary, inherit)',
-    backgroundColor: 'var(--dsw-alias-bg-layer-1, transparent)',
-    fontSize: '13px',
-  },
-  '.cm-scroller': {
-    overflow: 'auto',
-    fontFamily: 'var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
-    lineHeight: '1.55',
-  },
-  '.cm-content': { padding: '16px 0' },
-  '.cm-line': { padding: '0 16px' },
-  '.cm-gutters': {
-    padding: '16px 0',
-    backgroundColor: 'var(--dsw-alias-bg-layer-2, transparent)',
-    color: 'var(--dsw-alias-label-tertiary, #8a8f98)',
-    borderRight: '1px solid var(--dsw-alias-border-l2, #666)',
-  },
-  '.cm-gutterElement': { minWidth: '2.5em', padding: '0 10px 0 8px' },
-  '.cm-activeLine': { backgroundColor: 'var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12))' },
-  '.cm-activeLineGutter': { backgroundColor: 'var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12))' },
-  '.cm-selectionBackground, ::selection': { backgroundColor: 'var(--dsw-alias-interactive-bg-selected, rgba(80,120,200,.28)) !important' },
-  '.cm-cursor': { borderLeftColor: 'var(--dsw-alias-label-primary, currentColor)' },
-})
-
-function editorLanguageForPath(path: string) {
-  const extension = path.toLowerCase().split(/[\\/.]/u).pop() ?? ''
-  if (extension === 'md' || extension === 'markdown') return markdown()
-  if (extension === 'json') return json()
-  if (extension === 'js' || extension === 'jsx' || extension === 'mjs' || extension === 'cjs') return javascript({ jsx: extension === 'jsx' })
-  if (extension === 'ts' || extension === 'tsx' || extension === 'mts' || extension === 'cts') return javascript({ jsx: extension === 'tsx', typescript: true })
-  if (extension === 'html' || extension === 'htm' || extension === 'xml') return html()
-  if (extension === 'css') return css()
-  if (extension === 'py') return python()
-  if (extension === 'sql') return sql()
-  return undefined
 }
 
 type EditorButtonIcon = 'edit' | 'save' | 'cancel'

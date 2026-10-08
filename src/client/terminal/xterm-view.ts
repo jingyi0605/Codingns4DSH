@@ -1,10 +1,9 @@
 import { createElement, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactElement } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
-import { FitAddon } from '@xterm/addon-fit'
-import { Terminal } from '@xterm/xterm'
-import type { ITheme } from '@xterm/xterm'
-import xtermCss from '@xterm/xterm/css/xterm.css'
+import type { FitAddon } from '@xterm/addon-fit'
+import type { Terminal, ITheme } from '@xterm/xterm'
+import { attachLoadedEngine, createEngineLoader } from '../engine-loader.js'
 import { resolvePlusIcon } from '../../dsh-capabilities/client/primitives-adapter.js'
 import type { CodingNsSettingsStore } from '../../dsh-capabilities/settings-store.js'
 import {
@@ -34,6 +33,8 @@ interface TerminalSurface {
 
 /** 每个工作区终端只有一块屏幕，切换会话时移动 DOM，保留缓冲区、光标与滚动位置。 */
 const surfaces = new TerminalSurfaceCache<TerminalSurface>()
+const loadXtermEngine = createEngineLoader(() => import('./xterm-engine.js'))
+type XtermEngine = Awaited<ReturnType<typeof loadXtermEngine>>
 
 const TERMINAL_TOUCH_MOMENTUM_GAIN = 2
 const TERMINAL_TOUCH_MOMENTUM_MIN_LINES_PER_MS = 0.06
@@ -82,6 +83,9 @@ export function CodingNsXtermView({
   const sizeClaimAtRef = useRef(0)
   const previousActiveRef = useRef(false)
   const [selectionActions, setSelectionActions] = useState<TerminalSelectionActionsState>()
+  const [engineError, setEngineError] = useState<string>()
+  const [engineAttempt, setEngineAttempt] = useState(0)
+  const [surfaceRevision, setSurfaceRevision] = useState(0)
   const dismissSelection = useCallback(() => setSelectionActions(undefined), [])
   const state = useSyncExternalStore(view.state.subscribe.bind(view.state), view.state.getSnapshot.bind(view.state))
   const settingsSnapshot = useSyncExternalStore(settings.subscribe.bind(settings), settings.getSnapshot.bind(settings))
@@ -95,23 +99,27 @@ export function CodingNsXtermView({
   useEffect(() => {
     const target = hostRef.current
     if (target === null || !hasTerminal || !visible || view.signal.aborted) return
-    // 仅可见卡片更新调用上下文；后台卡片不能把共享模型切回旧会话。
-    view.sessionId = sessionId
-    const surface = surfaces.get(view, () => createTerminalSurface(target, view, appearance, sharing, t))
-    surfaceRef.current = surface
-    surface.owner = target
-    surface.onSelection = setSelectionActions
-    target.replaceChildren(surface.host)
-    surface.scheduleReflow()
-    return () => {
-      surfaceRef.current = null
-      // 会话切换可能先挂载新卡片再清理旧卡片，旧卡片不得拆走新卡片的屏幕。
-      if (surface.owner !== target) return
-      surface.host.remove()
-      delete surface.owner
-      delete surface.onSelection
-    }
-  }, [hasTerminal, sessionId, sharing, view, visible])
+    setEngineError(undefined)
+    return attachLoadedEngine(loadXtermEngine, view.signal, (engine) => {
+      // 仅存活的可见卡片更新上下文；模块加载期间可能已切换会话。
+      view.sessionId = sessionId
+      const surface = surfaces.get(view, () => createTerminalSurface(target, view, appearance, sharing, t, engine))
+      surfaceRef.current = surface
+      surface.owner = target
+      surface.onSelection = setSelectionActions
+      target.replaceChildren(surface.host)
+      surface.scheduleReflow()
+      setSurfaceRevision((revision) => revision + 1)
+      return () => {
+        surfaceRef.current = null
+        // 会话切换可能先挂载新卡片再清理旧卡片，旧卡片不得拆走新卡片的屏幕。
+        if (surface.owner !== target) return
+        surface.host.remove()
+        delete surface.owner
+        delete surface.onSelection
+      }
+    }, (error) => setEngineError(error instanceof Error ? error.message : String(error)))
+  }, [engineAttempt, hasTerminal, sessionId, sharing, view, visible])
 
   useEffect(() => { if (!active || !visible) dismissSelection() }, [active, visible, dismissSelection])
 
@@ -144,6 +152,7 @@ export function CodingNsXtermView({
     state.info?.cols,
     state.info?.rows,
     state.writable,
+    surfaceRevision,
     themeRevision,
     view,
     visible,
@@ -176,6 +185,10 @@ export function CodingNsXtermView({
     style: active ? undefined : { display: 'none' },
   },
   createElement(TerminalStatus, { state, view, onNewTerminal, t }),
+  engineError === undefined ? null : createElement('div', { className: terminalClass.error, role: 'alert' },
+    t('terminalView.errorDetail', { message: engineError }),
+    createElement(Button, { variant: 'outline', size: 'sm', onClick: () => setEngineAttempt((attempt) => attempt + 1) }, t('terminal.retry')),
+  ),
   active && visible && sharing !== undefined ? createElement(TerminalSelectionActions, { selection: selectionActions, view, sessionId, sharing, t, onDismiss: dismissSelection }) : null,
   hasTerminal ? createElement('div', { className: terminalClass.screen },
     createElement('div', { ref: hostRef, style: { width: '100%', height: '100%' } }),
@@ -193,7 +206,9 @@ function createTerminalSurface(
   appearance: TerminalAppearanceSettings,
   sharing: TerminalSharing | undefined,
   t: CodingNsTranslator,
+  engine: XtermEngine,
 ): TerminalSurface {
+  const { Terminal, FitAddon } = engine
   const state = view.state.getSnapshot()
   const host = document.createElement('div')
   // DOM 样式赋值不会像 React 一样自动给数字补 px。
@@ -204,7 +219,7 @@ function createTerminalSurface(
   target.replaceChildren(host)
   const root = host.shadowRoot ?? host.attachShadow({ mode: 'open' })
   const style = document.createElement('style')
-  style.textContent = shadowCss
+  style.textContent = `${engine.xtermCss}\n${shadowCss}`
   const container = document.createElement('div')
   container.className = 'codingns-xterm'
   root.replaceChildren(style, container)
@@ -868,7 +883,7 @@ const terminalHostStyle = {
   background: 'var(--dsw-alias-bg-base)',
 } as const
 
-const shadowCss = `${xtermCss}
+const shadowCss = `
 :host{display:block;width:100%;height:100%;min-width:0;min-height:0;color:inherit;background:inherit}
 .codingns-xterm{box-sizing:border-box;width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;touch-action:pan-y;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
 .xterm{box-sizing:border-box;width:100%;height:100%;min-width:0;min-height:0}

@@ -1,6 +1,7 @@
 import { defineConfig } from 'tsdown'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { clientChunkBanner, nativeClientChunksPlugin } from './scripts/client-chunks.mjs'
 
 const require = createRequire(import.meta.url)
 const XTERM_CSS_ID = '@xterm/xterm/css/xterm.css'
@@ -27,7 +28,7 @@ export default defineConfig({
     neverBundle: ['react', '@deepseek-ai/dsh-client-ui-primitives'],
     alwaysBundle: (specifier) => specifier !== 'react' && specifier !== '@deepseek-ai/dsh-client-ui-primitives',
   },
-  plugins: [{
+  plugins: [nativeClientChunksPlugin(), {
     name: 'codingns4dsh:xterm-css-text',
     enforce: 'pre',
     resolveId(source) {
@@ -36,16 +37,20 @@ export default defineConfig({
     load(id) {
       if (id !== XTERM_CSS_VIRTUAL_ID) return null
       // xterm 样式只进入终端 Shadow DOM，不能作为全局 CSS 资产输出。
-      const css = readFileSync(require.resolve(XTERM_CSS_ID), 'utf8')
+      const path = require.resolve(XTERM_CSS_ID)
+      this.addWatchFile(path)
+      const css = readFileSync(path, 'utf8')
       return `export default ${JSON.stringify(css)}`
     },
   }],
   outputOptions: {
-    codeSplitting: false,
+    codeSplitting: true,
     // 与 tsc 的 data/build/dist/client/index.js 分离，避免两个监听进程互相覆盖产物。
     entryFileNames: 'bundle.js',
+    // 文件名稳定，修订号由整个分块图写入入口，并由 DSH 原生 rev 查询参数隔离缓存。
+    chunkFileNames: 'client.[name].js',
     // DSH Client 以 npm 包名作为模块表 ID；必须与 scoped 包名完全一致。
-    banner: 'window.__ModuleLoader__.load({ id: "@jingyi0605/codingns4dsh", factory: (require) => {',
+    banner: clientChunkBanner,
     footer: 'return module.exports; } });',
     intro: 'var module = { exports: {} }; var exports = module.exports;',
   },
