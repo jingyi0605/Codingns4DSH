@@ -164,8 +164,13 @@ const iconButtonStyle: CSSProperties = { display: 'inline-flex', alignItems: 'ce
 /** 创建与配置页也复用标题按钮的悬停样式，不依赖对话输入栏挂载。 */
 export function AssistantControlsStyle(): ReactElement { return createElement('style', null, assistantComposerCss) }
 
+// 移动端顶部和底部统一使用 11px 内边距，正文与设置区域左右对齐，保留按钮尺寸。
 // 仅覆盖助理输入框的焦点样式；按钮仍保留宿主键盘焦点提示。
 const assistantComposerCss = `
+@media (max-width:768px){
+[data-codingns-assistant-workbench]>header,[data-codingns-assistant-workbench]>footer{padding:11px!important}
+[data-codingns-assistant-workbench]>[data-codingns-assistant-scroll]{padding-left:11px!important;padding-right:11px!important}
+}
 [data-codingns-assistant-composer] textarea,[data-codingns-assistant-composer] textarea:focus,[data-codingns-assistant-composer] textarea:focus-visible{outline:none!important;box-shadow:none!important;border:0!important;resize:none!important}
 .codingns-assistant-icon-button:not(:disabled):hover{background:var(--dsw-alias-interactive-bg-hover)!important}
 .codingns-assistant-icon-button:not(:disabled):active{background:var(--dsw-alias-interactive-bg-active)!important}
