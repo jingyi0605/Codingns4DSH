@@ -833,9 +833,16 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   async steer(sessionId: string, prompt: string): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (session === undefined || session.threadId === '' || session.turnId === null) throw new Error('Codex 会话未运行')
-    const result = await session.rpc.request('turn/steer', { threadId: session.threadId, turnId: session.turnId, input: [{ type: 'text', text: prompt }] }, { killOnAbort: false })
-    const turnId = readId(result)
-    if (turnId) session.turnId = turnId
+    // 插话协议用 expectedTurnId 校验目标回合；turnId 仅用于 turn/interrupt。
+    const expectedTurnId = session.turnId
+    const result = await session.rpc.request('turn/steer', {
+      threadId: session.threadId,
+      expectedTurnId,
+      input: [{ type: 'text', text: prompt }],
+    }, { killOnAbort: false })
+    const turnId = readTurnId(result)
+    // 等待响应期间回合可能已经结束或切换，迟到的响应不能恢复旧回合。
+    if (turnId && session.turnId === expectedTurnId) session.turnId = turnId
   }
 
   /** 中断当前 Codex turn，但保留 app-server 线程。 */
