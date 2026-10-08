@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { CodingNsCliModel, CodingNsCliModelCatalog } from '../../shared/contracts/cli-adapter.js'
 import { CLAUDE_CATALOG, CLAUDE_EFFORT_LEVELS, enrichEfforts, fillProviderEfforts } from './model-catalog.js'
 import { terminateChildProcess } from './process-utils.js'
+import { spawnClaudeProcess } from './claude-process.js'
 
 const DEFAULT_TIMEOUT_MS = 8_000
 const INITIALIZE_REQUEST_ID = 'codingns-model-discovery'
@@ -90,7 +91,7 @@ function mergeModels(models: readonly CodingNsCliModel[]): CodingNsCliModel[] {
 }
 
 async function readInitializeModels(command: string, env: Record<string, string | undefined>, runSpawn: typeof spawn, timeoutMs: number): Promise<ClaudeInitializeDiscovery> {
-  const child = runSpawn(command, ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'], { env: env as NodeJS.ProcessEnv, cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: process.platform === 'win32' }) as unknown as ClaudeDiscoveryChild
+  const child = spawnClaudeProcess(command, ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'], { env: env as NodeJS.ProcessEnv, cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }, runSpawn) as unknown as ClaudeDiscoveryChild
   return new Promise((resolve, reject) => {
     let stdout = ''
     let stderr = ''

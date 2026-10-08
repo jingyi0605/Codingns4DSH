@@ -1,5 +1,5 @@
 import { runAsyncCommand } from './process-utils.js'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type SpawnOptions } from 'node:child_process'
 import readline from 'node:readline'
 import type {
   CodingNsCliAdapterDescriptor,
@@ -88,9 +88,9 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     if (command === null) throw new Error(`${this.descriptor.name} 未安装`)
     let child: CodingNsChildProcess
     try {
-      child = this.runSpawn(command, this.buildArgs(input), {
+      child = this.spawnProcess(command, this.buildArgs(input), {
         cwd: input.cwd ?? process.cwd(), env: this.cachedEnvironment ?? commandEnvironment(command), stdio: [this.usesStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true, shell: WINDOWS,
-      }) as CodingNsChildProcess
+      })
     } catch (error) {
       // spawn 在命令路径或参数非法时可能同步抛错；必须收敛成当前回合错误，
       // 不能让异常越过适配器边界把整个 Host 进程带崩。
@@ -181,6 +181,11 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
 
   /** 是否需要把当前轮输入写入子进程 stdin。默认保持原有 ignore 语义。 */
   protected get usesStdin(): boolean { return false }
+
+  /** Provider 可在启动边界处理专属参数，通用驱动继续统一管理进程生命周期。 */
+  protected spawnProcess(command: string, args: readonly string[], options: SpawnOptions): CodingNsChildProcess {
+    return this.runSpawn(command, args, options) as CodingNsChildProcess
+  }
 
   /** 向使用 stdin 的 CLI 写入一轮输入；子类负责遵循其线协议。 */
   protected writeStdin(_child: CodingNsChildProcess, _input: CodingNsCliTurnInput): void {}

@@ -1,3 +1,4 @@
+import type { SpawnOptions } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -6,6 +7,7 @@ import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
 import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel } from './model-catalog.js'
 import { discoverClaudeModelCatalog } from './claude-model-options.js'
+import { spawnClaudeProcess } from './claude-process.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
 import { buildClaudeUserContent } from './attachment-utils.js'
@@ -107,6 +109,10 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
 
   /** Claude 的 SDK wire 通过 stdin 接收首条 user 消息并回传 control_response。 */
   protected get usesStdin(): boolean { return true }
+
+  protected override spawnProcess(command: string, args: readonly string[], options: SpawnOptions): CodingNsChildProcess {
+    return spawnClaudeProcess(command, args, options, this.runSpawn) as CodingNsChildProcess
+  }
 
   protected writeStdin(child: CodingNsChildProcess, input: CodingNsCliTurnInput): void {
     const state = this.interactions.get(input.sessionId)
