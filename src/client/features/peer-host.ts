@@ -16,6 +16,7 @@ import { startPeerHostWorkspaceTab } from '../peer-host-workspace-tab.js'
 import { isPeerHostAggregateRefreshRegistered, registerPeerHostAggregateRefresh, requestPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
 import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale } from '../locale.js'
 import { publishSessionAdapter } from '../session-adapter-cache.js'
+import { startSerialPolling } from '../serial-polling.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
 const PEER_HOST_AGGREGATE_REFRESH_MS = 30_000
@@ -48,7 +49,7 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
       defaultOpen: false,
     },
   },
-  start: async (context) => {
+  start: (context) => {
     const shim = (globalThis as typeof globalThis & { [DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]?: { activate: (transport?: CodingNsTransportHooks) => string; deactivate: () => string; getMode?: () => string } })[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]
     const projection = createPeerHostNativeProjection()
     const transport = shim === undefined ? undefined : createPeerHostPageTransport(projection, context.services.uiContext, context.services.locale)
@@ -105,29 +106,26 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
     // 原生"添加工作区"对话框保持主体不变，只额外挂一个"远程 HOST"标签页。
     const workspaceTab = startPeerHostWorkspaceTab({
       api: management,
-      onWorkspaceAdded: () => refresh(),
+      onWorkspaceAdded: () => polling.refresh({ afterPending: true }),
       locale: context.services.locale,
     })
     context.resources.add(() => workspaceTab.dispose())
     // 虚拟会话必须进入原生 SessionManager 目录（否则 sessions.retain 解析失败），
     // 因此聚合变化后触发一次原生列表刷新，由页面 Transport 在 session/list 响应里补齐。
-    let refreshGeneration = 0
-    const refresh = async (): Promise<void> => {
-      const generation = ++refreshGeneration
+    const refresh = async (signal: AbortSignal): Promise<boolean> => {
       const orderReference = projection.workspaceOrder()
       try {
-        const aggregate = await management.aggregate()
+        const aggregate = await management.aggregate(signal)
         // Host 端先完成 aggregate 再 hydrate 顺序；按同一顺序读取可避免拿到空的初始 order，
         // 同时保持 aggregate 的旧返回形状，旧 Host 不支持该 RPC 时仍回退为追加远端项。
         let orderedWorkspaceIds: readonly string[] | undefined
         try {
-          orderedWorkspaceIds = (await management.workspaceOrder()).orderedWorkspaceIds
+          orderedWorkspaceIds = (await management.workspaceOrder(signal)).orderedWorkspaceIds
         } catch {
           orderedWorkspaceIds = undefined
         }
-        // 定时器、可见性事件和原生归档事件可能并发触发刷新；旧请求不能覆盖
-        // 更新的聚合或拖拽顺序，否则列表会短暂跳回旧位置。
-        if (generation !== refreshGeneration) return
+        // 串行刷新合并并发请求；停用或超时后，不允许迟到响应重新写入原生列表。
+        signal.throwIfAborted()
         // 聚合读取期间如果用户完成了一次拖拽，保留本地刚确认的顺序；本轮只更新
         // 工作区内容，下一轮再从 Host 读取顺序，避免旧的 order 响应覆盖拖拽结果。
         const refreshedOrder = projection.workspaceOrder() === orderReference ? orderedWorkspaceIds : undefined
@@ -135,22 +133,17 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
         if (transport?.setAggregate(aggregate, refreshedOrder) === true) {
           await refreshPeerHostNativeSessions(context.services.uiContext)
         }
+        return true
       } catch {
         // 单个 Host 的摘要失败由聚合层降级，不阻断本机原生工作区与会话。
+        return false
       }
     }
+    // 首次聚合后台执行，慢远端不能挡住后续模块启动；隐藏页面暂停自动刷新。
+    const polling = startSerialPolling(refresh, PEER_HOST_AGGREGATE_REFRESH_MS)
+    context.resources.add(() => polling.dispose())
     // 归档入口等原生操作完成后可以立刻请求刷新，而不必等待下一个周期。
-    context.resources.add(registerPeerHostAggregateRefresh(refresh))
-    await refresh()
-    const timer = setInterval(() => { void refresh() }, PEER_HOST_AGGREGATE_REFRESH_MS)
-    const onVisibilityChange = (): void => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'visible') void refresh()
-    }
-    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibilityChange)
-    context.resources.add(() => {
-      clearInterval(timer)
-      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibilityChange)
-    })
+    context.resources.add(registerPeerHostAggregateRefresh(() => polling.refresh({ afterPending: true })))
   },
   settingsPanel: PeerHostPanel,
 }

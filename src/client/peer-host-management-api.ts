@@ -64,23 +64,26 @@ export interface PeerHostManagementApi {
   workspaceCandidates(peerHostId: string): Promise<readonly PeerHostRemoteWorkspaceCandidate[]>
   setWorkspaceVisibility(peerHostId: string, workspaceId: string, visible: boolean): Promise<PeerHostClientRecord>
   webSocketEndpoint(): Promise<PeerHostWebSocketEndpoint | null>
-  aggregate(): Promise<readonly AggregateHostResult[]>
-  workspaceOrder(): Promise<PeerHostWorkspaceOrder>
+  aggregate(signal?: AbortSignal): Promise<readonly AggregateHostResult[]>
+  workspaceOrder(signal?: AbortSignal): Promise<PeerHostWorkspaceOrder>
   moveWorkspace(virtualWorkspaceId: string, beforeVirtualWorkspaceId: string | null): Promise<readonly string[]>
   diagnostics(): Promise<readonly PeerHostDiagnosticSnapshot[]>
 }
 
 /** PeerHost 管理 RPC 封装；客户端不接受目标凭据字段。 */
 export function createPeerHostManagementApi(rpc: CodingNsRpcClient): PeerHostManagementApi {
-  const call = async <T>(endpoint: string, payload: unknown): Promise<T> => {
+  const call = async <T>(endpoint: string, payload: unknown, signal?: AbortSignal): Promise<T> => {
+    signal?.throwIfAborted()
     let result
     try {
-      result = await rpc.call(CODINGNS_RPC_CHANNEL, endpoint, payload)
+      result = await rpc.call(CODINGNS_RPC_CHANNEL, endpoint, payload, signal)
     } catch (error) {
+      signal?.throwIfAborted()
       const message = error instanceof Error ? error.message : String(error)
       if (!/HTTP (?:404|405)\b/u.test(message)) throw error
-      result = await rpc.call('/api', `codingns/${endpoint}`, payload)
+      result = await rpc.call('/api', `codingns/${endpoint}`, payload, signal)
     }
+    signal?.throwIfAborted()
     if (!result.ok) throw new Error(result.error.message)
     return result.value as T
   }
@@ -100,8 +103,8 @@ export function createPeerHostManagementApi(rpc: CodingNsRpcClient): PeerHostMan
     workspaceCandidates: (peerHostId) => call('peerHost/workspaceCandidates', { peerHostId }),
     setWorkspaceVisibility: (peerHostId, workspaceId, visible) => call('peerHost/setWorkspaceVisibility', { peerHostId, workspaceId, visible }),
     webSocketEndpoint: () => call('peerHost/wsEndpoint', {}),
-    aggregate: () => call('peerHost/aggregate', {}),
-    workspaceOrder: () => call('peerHost/workspaceOrder', { action: 'get' }),
+    aggregate: (signal) => call('peerHost/aggregate', {}, signal),
+    workspaceOrder: (signal) => call('peerHost/workspaceOrder', { action: 'get' }, signal),
     moveWorkspace: (virtualWorkspaceId, beforeVirtualWorkspaceId) => call<{ orderedWorkspaceIds: readonly string[] }>('peerHost/workspaceOrder', {
       action: 'move',
       virtualWorkspaceId,

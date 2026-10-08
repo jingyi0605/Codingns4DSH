@@ -6,18 +6,26 @@ export function startSerialPolling(
   task: (signal: AbortSignal) => Promise<boolean | void>,
   intervalMs: number,
   options: { readonly document?: Document; readonly timeoutMs?: number; readonly maxDelayMs?: number } = {},
-): { refresh(): Promise<void>; dispose(): void } {
+): { refresh(options?: { readonly afterPending?: boolean }): Promise<void>; dispose(): void } {
   const dom = options.document ?? (typeof document === 'undefined' ? undefined : document)
   const lifetime = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
   let pending: Promise<void> | undefined
+  let queued: Promise<void> | undefined
   let failures = 0
-  const refresh = (): Promise<void> => {
+  const refresh = (refreshOptions?: { readonly afterPending?: boolean }): Promise<void> => {
     if (lifetime.signal.aborted) return Promise.resolve()
-    if (pending !== undefined) return pending
+    if (pending !== undefined) {
+      // 写操作完成后的刷新不能复用写入前的快照；至多排一个后续读取，仍保持串行。
+      if (refreshOptions?.afterPending) {
+        queued ??= pending.then(() => { queued = undefined; return refresh() })
+        return queued
+      }
+      return pending
+    }
     clearTimeout(timer)
     const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(options.timeoutMs ?? 15_000)])
-    pending = Promise.resolve().then(() => task(signal))
+    pending = Promise.resolve().then(() => { signal.throwIfAborted(); return task(signal) })
       .then((success) => { failures = success === false ? failures + 1 : 0 }, () => { failures += 1 })
       .finally(() => {
         pending = undefined
