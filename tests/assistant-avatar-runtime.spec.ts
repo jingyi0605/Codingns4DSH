@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 import { parse } from 'yaml'
 import { createAssistantAvatarRuntimeHandler } from '../data/build/dist/host/features/assistant-avatar-runtime.js'
 import { ASSISTANT_AVATAR_RUNTIME_PATH } from '../data/build/dist/shared/assistant-avatar.js'
+import { invalidateAssistantAvatarRuntime } from '../data/build/dist/shared/assistant-avatar-engine.js'
 import { createAssistantAvatarRuntimeFeature } from '../data/build/dist/host/features/assistant-avatar-runtime.js'
 import { FeatureRegistry } from '../data/build/dist/features/index.js'
 import type { CodingNsHostServices } from '../src/host/features/types.js'
@@ -24,11 +25,14 @@ test('运行时只读固定 GET 路径，缓存引擎但不加载用户路径', 
   assert.equal(reads, 1)
 })
 
-test('缺失依赖返回 503，恢复后重试，不永久缓存失败', async () => {
+test('缺失依赖短期合并失败，安装完成立即失效', async () => {
   let reads = 0
   const handler = createAssistantAvatarRuntimeHandler(async () => { if (++reads === 1) throw new Error('missing'); return 'export const init = () => null' })
   const request = () => new Request(`http://localhost${ASSISTANT_AVATAR_RUNTIME_PATH}`)
   assert.equal((await handler(request())).status, 503)
+  assert.equal((await handler(request())).status, 503)
+  assert.equal(reads, 1)
+  invalidateAssistantAvatarRuntime()
   assert.equal((await handler(request())).status, 200)
 })
 

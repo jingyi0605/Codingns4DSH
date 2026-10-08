@@ -6,6 +6,10 @@
  * 仓库中的开发依赖。升级版本必须同时更新 tarball 地址、摘要与许可说明。
  */
 export const ASSISTANT_AVATAR_ENGINE_VERSION = '2.1.1'
+let runtimeRevision = 0
+/** Host 与 Client 各自维护代次，安装成功立即解除缺失引擎的短期缓存。 */
+export function invalidateAssistantAvatarRuntime(): void { runtimeRevision += 1 }
+export function assistantAvatarRuntimeRevision(): number { return runtimeRevision }
 export const ASSISTANT_AVATAR_ENGINE_TARBALL = 'https://registry.npmjs.org/l2d/-/l2d-2.1.1.tgz'
 export const ASSISTANT_AVATAR_ENGINE_SHA512 = 'Q9Rp3uDPiZyS4SJZ/RJ+tuR1YQ75gKhGeS2gZNCO6KvydDB6okPQJk+zsKt8KyJ6Y5g0okVMtj3Sisjxr35ptA=='
 /** npm tarball 顶层固定为 package/，入口是真正的 ESM 文件而非全局 IIFE。 */

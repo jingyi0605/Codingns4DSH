@@ -9,6 +9,7 @@ import { captureAssistantAvatarPreview } from './preview-capture.js'
 import type { AssistantAvatarModel } from '../../shared/assistant-avatar.js'
 import { createAssistantAvatarPortraitFromPreview } from './portrait-capture.js'
 import type { AssistantAvatarPreview } from './preview-store.js'
+import { assistantAvatarRuntimeRevision } from '../../shared/assistant-avatar-engine.js'
 
 /** 仅声明适配器消费的事件契约，编译和默认安装均不依赖外部引擎代码。 */
 export interface AssistantLive2dEventMap {
@@ -31,18 +32,24 @@ interface AssistantLive2dModule { init(canvas: HTMLCanvasElement): AssistantLive
 export class AssistantLive2dModuleLoader {
   private module: Promise<AssistantLive2dModule> | undefined
   private attempt = 0
+  private retryAt = 0
+  private revision = assistantAvatarRuntimeRevision()
   constructor(private readonly importModule: (url: string) => Promise<AssistantLive2dModule> = (url) => import(/* @vite-ignore */ url),
     private readonly fetchStatus: typeof fetch = (...args) => fetch(...args)) {}
   load(location: string): Promise<AssistantLive2dModule> {
+    if (this.revision !== assistantAvatarRuntimeRevision() || (this.retryAt > 0 && Date.now() >= this.retryAt)) {
+      this.revision = assistantAvatarRuntimeRevision(); this.module = undefined; this.retryAt = 0
+    }
     if (this.module !== undefined) return this.module
     const url = new URL(ASSISTANT_AVATAR_RUNTIME_PATH, location)
     url.searchParams.set('v', '2.1.1')
-    if (this.attempt > 0) url.searchParams.set('retry', String(this.attempt))
-    this.module = withLoadDeadline(this.importModule(url.href), 45000).then((module) => {
+    const attempt = this.attempt++
+    if (attempt > 0) url.searchParams.set('retry', String(attempt))
+    const request = withLoadDeadline(this.importModule(url.href), 45000).then((module) => {
       if (typeof module.init !== 'function') throw new Error('avatar_runtime_invalid')
       return module
     }).catch(async (error: unknown) => {
-      this.module = undefined; this.attempt++
+      if (this.module === request) this.retryAt = Date.now() + 30_000
       // 动态 import 的错误不包含 HTTP 状态；只在失败时读取状态，不增加成功加载请求。
       let status: number | undefined
       try { status = (await this.fetchStatus(url, { credentials: 'same-origin', signal: AbortSignal.timeout(5000) })).status }
@@ -51,7 +58,8 @@ export class AssistantLive2dModuleLoader {
       if (status !== undefined && status !== 200) throw new Error(`avatar_runtime_http_${status}`)
       throw error
     })
-    return this.module
+    this.module = request
+    return request
   }
 }
 const runtimeModuleLoader = new AssistantLive2dModuleLoader()

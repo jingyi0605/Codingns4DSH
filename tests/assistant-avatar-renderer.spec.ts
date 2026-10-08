@@ -7,6 +7,7 @@ import { AssistantSpriteClock } from '../data/build/dist/client/avatar/spriteshe
 import { AssistantAvatarSlot } from '../data/build/dist/client/avatar/slot.js'
 import { BuiltinAssistantAvatar } from '../data/build/dist/client/avatar/builtin.js'
 import { AssistantLive2dController, AssistantLive2dModuleLoader } from '../data/build/dist/client/avatar/live2d.js'
+import { invalidateAssistantAvatarRuntime } from '../data/build/dist/shared/assistant-avatar-engine.js'
 import { BUILTIN_ASSISTANT_AVATAR, BUILTIN_ASSISTANT_AVATARS, BUILTIN_ASSISTANT_AVATAR_SOURCES } from '../data/build/dist/shared/assistant-avatar.js'
 import { resolveCodingNsTranslator } from '../data/build/dist/client/locale.js'
 import type { CodingNsClientServices } from '../src/client/features/types.js'
@@ -41,6 +42,9 @@ test('Live2D 缺少引擎报告真实原因，恢复时更换失败模块 URL �
     return module
   }, async () => { probes++; return new Response(null, { status: 503 }) })
   await assert.rejects(loader.load('https://preview.test/settings'), /avatar_runtime_unavailable/u)
+  await assert.rejects(loader.load('https://preview.test/settings'), /avatar_runtime_unavailable/u)
+  assert.equal(urls.length, 1, '缺失引擎时不重复请求')
+  invalidateAssistantAvatarRuntime()
   const recovered = loader.load('https://preview.test/settings')
   assert.equal(await recovered, module)
   assert.equal(loader.load('https://preview.test/settings'), recovered)

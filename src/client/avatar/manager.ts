@@ -15,7 +15,7 @@ import type { CodingNsRpcClient } from '../features/types.js'
 import type { AssistantAvatarCandidate, AssistantAvatarInstallation } from '../../shared/assistant-avatar-installation.js'
 import { ASSISTANT_AVATAR_CONSENT_VERSION, hasAssistantAvatarConsent } from '../../shared/assistant-avatar-catalog.js'
 import type { AssistantAvatarCatalogEntry, AssistantAvatarTemporaryPreview } from '../../shared/assistant-avatar-catalog.js'
-import { ASSISTANT_AVATAR_ENGINE_CONSENT_VERSION, hasAssistantAvatarEngineConsent } from '../../shared/assistant-avatar-engine.js'
+import { ASSISTANT_AVATAR_ENGINE_CONSENT_VERSION, hasAssistantAvatarEngineConsent, invalidateAssistantAvatarRuntime } from '../../shared/assistant-avatar-engine.js'
 import type { AssistantAvatarEngineStatus } from '../../shared/assistant-avatar-engine.js'
 
 export class AssistantAvatarAdapterRegistry extends AssistantAvatarRegistration<AssistantAvatarAdapter> {
@@ -122,7 +122,9 @@ export class AssistantAvatarManager {
   }
   async installEngine(signal?: AbortSignal): Promise<AssistantAvatarEngineStatus> {
     this.requireWritable(); this.requireEngineConsent(); signal?.throwIfAborted()
-    return readEngineStatus(await this.call('installEngine', {}, signal))
+    const result = readEngineStatus(await this.call('installEngine', {}, signal))
+    invalidateAssistantAvatarRuntime()
+    return result
   }
   async getCatalog(signal?: AbortSignal): Promise<readonly AssistantAvatarCatalogEntry[]> {
     this.requireConsent(); signal?.throwIfAborted()

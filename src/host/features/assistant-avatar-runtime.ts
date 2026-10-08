@@ -15,7 +15,7 @@ import { CodingNsRpcError } from '../rpc-table.js'
 import { getAssistantAvatarPackages } from '../avatar/registry.js'
 import { AssistantAvatarCatalog } from '../avatar/catalog.js'
 import { assistantAvatarEngineInstalled, installAssistantAvatarEngine, readAssistantAvatarEngine } from '../avatar/engine.js'
-import { ASSISTANT_AVATAR_ENGINE_VERSION, hasAssistantAvatarEngineConsent } from '../../shared/assistant-avatar-engine.js'
+import { ASSISTANT_AVATAR_ENGINE_VERSION, hasAssistantAvatarEngineConsent, invalidateAssistantAvatarRuntime, assistantAvatarRuntimeRevision } from '../../shared/assistant-avatar-engine.js'
 import type { AssistantAvatarEngineStatus } from '../../shared/assistant-avatar-engine.js'
 import { ASSISTANT_AVATAR_CATALOG_PREVIEW_PATH, ASSISTANT_AVATAR_TEMPORARY_ASSET_PATH, hasAssistantAvatarConsent } from '../../shared/assistant-avatar-catalog.js'
 import { AssistantAvatarTemporaryPreviews } from '../avatar/temporary-previews.js'
@@ -57,15 +57,26 @@ export function createAssistantAvatarRouteHandler(packages = new AssistantAvatar
 /** 只返回固定依赖文件，不提供任意路径读取或外部脚本代理。 */
 export function createAssistantAvatarRuntimeHandler(readRuntime: () => Promise<string> = readInstalledRuntime): (request: Request) => Promise<Response> {
   let source: Promise<string> | undefined
+  let retryAt = 0
+  let revision = assistantAvatarRuntimeRevision()
   return async (request) => {
     if (new URL(request.url).pathname !== ASSISTANT_AVATAR_RUNTIME_PATH) return new Response(null, { status: 404 })
     if (request.method !== 'GET') return new Response(null, { status: 405, headers: { Allow: 'GET' } })
+    if (revision !== assistantAvatarRuntimeRevision()) {
+      revision = assistantAvatarRuntimeRevision(); source = undefined; retryAt = 0
+    }
+    if (Date.now() < retryAt) return Response.json({ error: 'avatar_runtime_unavailable' }, { status: 503, headers: { 'Retry-After': '30', 'Cache-Control': 'no-store' } })
+    const requestRevision = revision
+    let pending: Promise<string> | undefined
     try {
-      source ??= readRuntime()
-      return new Response(await source, { headers: { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff' } })
+      pending = source ??= readRuntime()
+      return new Response(await pending, { headers: { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff' } })
     } catch {
-      source = undefined
-      return Response.json({ error: 'avatar_runtime_unavailable' }, { status: 503 })
+      if (source === pending && revision === requestRevision) {
+        source = undefined
+        retryAt = Date.now() + 30_000
+      }
+      return Response.json({ error: 'avatar_runtime_unavailable' }, { status: 503, headers: { 'Retry-After': '30', 'Cache-Control': 'no-store' } })
     }
   }
 }
@@ -132,6 +143,7 @@ export function createAssistantAvatarRuntimeFeature(options: { readonly packages
         if (action === 'installEngine') {
           requireEngineConsent()
           await installAssistantAvatarEngine({ signal })
+          invalidateAssistantAvatarRuntime()
           return readAssistantAvatarEngineStatus()
         }
         if (action === 'previewCatalog') {
