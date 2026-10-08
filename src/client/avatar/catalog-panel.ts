@@ -105,7 +105,7 @@ export function AssistantAvatarCatalogPanel(props: CatalogPanelProps): ReactElem
       onChange: setAgreed, onAccept: () => { void changeConsent(true) },
       onCancel: () => { if (!pending) { setAgreementOpen(false); setAgreed(false) } } }),
     !catalog.loading ? null : createElement('div', { role: 'status', style: helpStyle }, t('avatar.catalogLoading')),
-    !accepted || catalog.loading || catalog.entries.length > 0 || catalog.error ? null : createElement('p', { style: helpStyle }, t(services.configurationDraft ? 'avatar.catalogSaveFirst' : 'avatar.catalogEmpty')),
+    !accepted || catalog.loading || catalog.entries.length > 0 || catalog.error ? null : createElement('p', { style: helpStyle }, t('avatar.catalogEmpty')),
     !catalog.error ? null : createElement('div', { role: 'alert', style: { display: 'grid', gap: 8, color: dshThemeColor.error, fontSize: 13 } }, catalog.error,
       createElement('button', { type: 'button', disabled: busy || catalog.loading, style: buttonStyle, onClick: catalog.reload }, t('avatar.catalogRetry'))),
     !error ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13 } }, error),
@@ -141,7 +141,7 @@ function useAssistantAvatarCatalog(manager: AssistantAvatarManager, consent: str
     error: current ? catalog.error : '', reload: () => setRetry((value) => value + 1) }
 }
 
-/** 勾选只请求展示协议，保存同意后才启用；取消不会产生任何设置写入。 */
+/** 勾选只请求展示协议，明确同意后立即加载目录；取消不会产生任何设置写入。 */
 export function AssistantAvatarThirdPartyToggle({ accepted, disabled, t, onRequest, onDisable }: {
   readonly accepted: boolean; readonly disabled: boolean; readonly t: CodingNsTranslator
   readonly onRequest: () => void; readonly onDisable: () => void

@@ -138,8 +138,14 @@ export class AssistantConfigurationSession implements CodingNsSettingsStore<Codi
     if (endpoint === 'avatar/installEngine') this.requireWritable()
     // 调试窗口的模型选择只用于显式测试，不提前改变正式索引的模型。
     if (endpoint === 'assistant/index/configure') return { ok: true, value: { configured: true } }
-    // 第三方目录的权限记录也属于配置，首次开启先统一保存再读取目录。
-    if (endpoint === 'avatar/catalog' && !hasAssistantAvatarConsent(this.original.settings.getSnapshot().value?.assistant.appearance?.thirdPartyConsent)) return { ok: true, value: [] }
+    // 当前窗口的同意立即用于浏览与准备素材，协议和形象选择仍随整份配置保存。
+    if (['avatar/catalog', 'avatar/previewCatalog', 'avatar/keepPreview', 'avatar/installCatalog'].includes(endpoint)) {
+      const thirdPartyConsent = this.snapshot.value?.assistant.appearance?.thirdPartyConsent
+      if (!hasAssistantAvatarConsent(thirdPartyConsent)) return { ok: false, error: {
+        code: 'CODINGNS_AVATAR_CONSENT_REQUIRED', message: codingNsTranslator(this.original.locale)('avatar.thirdPartyConsentRequired'),
+      } }
+      payload = { ...value, thirdPartyConsent }
+    }
     if (endpoint === 'avatar/remove') { this.requireWritable(); this.removals.set(endpoint + ':' + String(value?.id), { endpoint, payload }); return { ok: true, value: undefined } }
     if (['assistant/tts/select', 'assistant/tts/configure', 'assistant/tts/remove'].includes(endpoint)) {
       const tts = readAssistantTtsSettings(this.snapshot.value!.assistant.tts)
