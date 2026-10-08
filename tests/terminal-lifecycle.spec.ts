@@ -305,8 +305,10 @@ test('shell 自然退出先发送 exited 状态再结束 follow 流', async () =
   assert.equal((await iterator.next()).done, true)
 })
 
-test('Host resident 连接断开但运行时仍在时保留 follow 并重绑控制', async () => {
+test('Host resident 连接断开但运行时仍在时保留 follow 并重绑控制', async (t) => {
   const { adapter, service, identity } = await setup()
+  // 同步推进首屏窗口与定时器，避免真实定时器先于 Date.now() 的边界触发。
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] })
   const controller = new AbortController()
   const iterator = service.follow({ identity, attachmentId: 'browser-a', generation: 'generation-a', signal: controller.signal })[Symbol.asyncIterator]()
   await iterator.next()
@@ -327,13 +329,14 @@ test('Host resident 连接断开但运行时仍在时保留 follow 并重绑控�
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(adapter.attachments.size, 1)
   replacement.onData('restored-screen')
+  t.mock.timers.tick(100)
   const restored = await iterator.next()
   assert.equal(restored.value.type, 'snapshot')
   assert.equal(restored.value.screen, 'restored-screen')
   replacement.onData('still-alive')
-  await new Promise((resolve) => setTimeout(resolve, 120))
   const output = await iterator.next()
   assert.equal(output.value.type, 'output')
+  assert.equal(output.value.data, 'still-alive')
   await service.write(identity, 'browser-a', 'echo')
   assert.equal(replacement.lastInput, 'echo')
 
