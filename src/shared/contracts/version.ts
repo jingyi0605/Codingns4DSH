@@ -44,7 +44,7 @@ interface ParsedVersion {
   readonly major: number
   readonly minor: number
   readonly patch: number
-  readonly prerelease: readonly (number | string)[]
+  readonly prerelease: readonly string[]
 }
 
 /** 判断宿主版本是否落在当前插件声明的 DSH 兼容范围内；范围省略上界时不校验上限。 */
@@ -61,6 +61,11 @@ export function isDshVersionCompatible(version: string): boolean {
 
 /** 判断 DSH 版本是否达到某个功能模块要求的最低版本。 */
 export function isDshVersionAtLeast(version: string, minimum: string): boolean {
+  return isVersionAtLeast(version, minimum)
+}
+
+/** 按语义版本比较大小；预发布标识参与排序，构建元数据不影响优先级，非法版本不放行。 */
+export function isVersionAtLeast(version: string, minimum: string): boolean {
   const actual = parseVersion(version)
   const required = parseVersion(minimum)
   if (!actual || !required) return false
@@ -68,13 +73,18 @@ export function isDshVersionAtLeast(version: string, minimum: string): boolean {
 }
 
 function parseVersion(value: string): ParsedVersion | undefined {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/u.exec(value)
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u.exec(value)
   if (!match) return undefined
+  const core = match.slice(1, 4).map(Number)
+  if (!core.every(Number.isSafeInteger)) return undefined
+  const prerelease = match[4]?.split('.') ?? []
+  // 数字预发布标识不能有前导零；超大数字保留字符串，用长度比较避免精度丢失。
+  if (prerelease.some((part) => /^0\d+$/u.test(part))) return undefined
   return {
     major: Number(match[1]),
     minor: Number(match[2]),
     patch: Number(match[3]),
-    prerelease: match[4] === undefined ? [] : match[4].split('.').map((part) => /^\d+$/u.test(part) ? Number(part) : part),
+    prerelease,
   }
 }
 
@@ -90,8 +100,10 @@ function compareVersions(left: ParsedVersion, right: ParsedVersion): number {
     if (leftPart === undefined) return -1
     if (rightPart === undefined) return 1
     if (leftPart === rightPart) continue
-    if (typeof leftPart === 'number' && typeof rightPart === 'string') return -1
-    if (typeof leftPart === 'string' && typeof rightPart === 'number') return 1
+    const leftNumeric = /^\d+$/u.test(leftPart)
+    const rightNumeric = /^\d+$/u.test(rightPart)
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1
+    if (leftNumeric && leftPart.length !== rightPart.length) return leftPart.length - rightPart.length
     return leftPart < rightPart ? -1 : 1
   }
   return 0

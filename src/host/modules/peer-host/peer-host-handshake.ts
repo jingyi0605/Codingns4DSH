@@ -1,5 +1,6 @@
 import type { PeerHostErrorCode, PeerHostRecord, PeerHostRoute } from '../../../shared/contracts/peer-host.js'
 import { PEER_HOST_ERROR_CODES } from '../../../shared/contracts/peer-host.js'
+import { isVersionAtLeast } from '../../../shared/contracts/version.js'
 import {
   PeerHostStore,
   type PeerHostHandshakeUpdate,
@@ -93,7 +94,9 @@ export class PeerHostHandshakeService {
     if (payload.productId !== this.options.productId || payload.pluginId !== this.options.pluginId) {
       return { ...common, status: 'plugin_missing', lastErrorCode: PEER_HOST_ERROR_CODES.PLUGIN_MISSING }
     }
-    if (payload.pluginVersion !== this.options.pluginVersion || !this.options.isDshVersionSupported(payload.dshVersion) || payload.apiCompatibility !== this.options.apiCompatibility) {
+    // 当前 Host 提供客户端插件，允许连接同版或更旧的 PeerHost；协议与 DSH 仍单独校验。
+    const pluginCompatible = payload.pluginVersion !== null && isVersionAtLeast(this.options.pluginVersion, payload.pluginVersion)
+    if (!pluginCompatible || !this.options.isDshVersionSupported(payload.dshVersion) || payload.apiCompatibility !== this.options.apiCompatibility) {
       return { ...common, status: 'version_mismatch', lastErrorCode: PEER_HOST_ERROR_CODES.VERSION_MISMATCH }
     }
     if (current.fingerprint !== null && payload.fingerprint !== current.fingerprint) {
