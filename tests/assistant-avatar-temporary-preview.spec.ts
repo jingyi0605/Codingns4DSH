@@ -10,7 +10,8 @@ import { AssistantAvatarPackages } from '../src/host/avatar/packages.js'
 import { AssistantAvatarTemporaryPreviews } from '../src/host/avatar/temporary-previews.js'
 import { AssistantAvatarRemote } from '../src/host/avatar/remote.js'
 import { createAssistantAvatarRuntimeFeature } from '../src/host/features/assistant-avatar-runtime.js'
-import { AssistantAvatarManager } from '../src/client/avatar/manager.js'
+import { AssistantAvatarManager, getAssistantAvatarManager } from '../src/client/avatar/manager.js'
+import { AssistantConfigurationSession } from '../src/client/features/assistant-configuration-session.js'
 import { AssistantAvatarTemporaryPreviewSession, startAssistantAvatarTemporaryPreview } from '../src/client/avatar/temporary-preview.js'
 import { readAssistantDraft } from '../src/client/features/assistant-workbench.js'
 import { AssistantConfigurationPage } from '../src/client/features/assistant-configuration-view.js'
@@ -108,12 +109,72 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, live2d = fal
   const manager = new AssistantAvatarManager(settings, undefined, undefined, undefined, rpc)
   const request = (source: string) => handle(new Request(new URL(source, 'https://codingns.test')))
   const folders = async () => (await readdir(directory)).filter((name) => name.startsWith('codingns-avatar-preview-'))
-  return { value, manager, temporary, packages, table, downloads, directory, request, folders, features, started,
+  return { value, settings, rpc, manager, temporary, packages, table, downloads, directory, request, folders, features, started,
     downloadSignal: () => downloadSignal,
     readonly: () => { writable = false }, reject: () => { reject = true }, writes: () => writes,
     advance: (ms: number) => { now += ms },
   }
 }
+
+for (const live2d of [false, true]) {
+  test(`${live2d ? 'Live2D' : '图片'}首次草稿同意即可浏览、预览和采用，正式配置保持未保存`, async (t) => {
+    const f = await fixture(t, live2d)
+    delete f.value.assistant.appearance!.thirdPartyConsent
+    const session = new AssistantConfigurationSession({ settings: f.settings, rpc: f.rpc,
+      locale: { bind: () => resolveCodingNsTranslator(), getSnapshot: () => 'zh', subscribe: () => () => {} },
+    } as unknown as CodingNsClientServices)
+    t.after(() => session.dispose())
+    const manager = getAssistantAvatarManager(session.services)
+    await assert.rejects(manager.getCatalog(), /同意/u)
+    await manager.setThirdPartyEnabled(true)
+    assert.equal((await manager.getCatalog())[0]!.id, 'test')
+    assert.equal(f.downloads.length, 0, '浏览目录只读取元数据')
+    const preview = await manager.previewCatalog('test', revision, randomUUID())
+    assert.equal(f.temporary.hasRequestConsent(preview.lease), true)
+    const response = await f.request(preview.model.source)
+    assert.equal(response.status, 200)
+    if (live2d) {
+      const model = await response.json()
+      for (const source of [model.FileReferences.Moc, ...model.FileReferences.Textures]) {
+        assert.equal((await f.request(new URL(source, new URL(preview.model.source, 'https://codingns.test')).href)).status, 200)
+      }
+    }
+    await manager.keepPreview(preview.lease)
+    await assert.rejects(manager.installCatalog('test', revision, false, undefined, preview.lease), /许可/u)
+    await manager.installCatalog('test', revision, true, undefined, preview.lease)
+    assert.equal(manager.getSelected().id, 'catalog-test')
+    assert.equal(f.value.assistant.appearance!.selectedId, 'codingns-default')
+    assert.equal(f.value.assistant.appearance!.thirdPartyConsent, undefined)
+    assert.equal(f.writes(), 0)
+    assert.equal(f.downloads.length, live2d ? 3 : 1, '采用复用预览素材')
+    f.advance(180_001)
+    assert.equal(f.temporary.hasRequestConsent(preview.lease), false, '租约超时同时收回草稿预览访问')
+    assert.equal((await f.request(preview.model.source)).status, 403)
+    await manager.setThirdPartyEnabled(false)
+    await assert.rejects(manager.keepPreview(preview.lease), /同意/u)
+    await manager.releasePreview(preview.lease)
+    assert.equal(f.temporary.hasRequestConsent(preview.lease), false)
+    assert.equal((await f.request(preview.model.source)).status, 403)
+    session.reset()
+    assert.equal(manager.getSelected().id, 'codingns-default')
+  })
+}
+
+test('Host 拒绝无效请求协议，显式拒绝不能回退到已保存同意', async (t) => {
+  const f = await fixture(t)
+  const handler = f.table.resolve('avatar/catalog')!.handler
+  for (const thirdPartyConsent of [null, true, { version: 'old', acceptedAt: 1 }, { version: ASSISTANT_AVATAR_CONSENT_VERSION, acceptedAt: 0 }]) {
+    for (const action of ['catalog', 'previewCatalog', 'keepPreview', 'installCatalog']) {
+      await assert.rejects(Promise.resolve().then(() => handler(action, {
+        id: 'test', revision, lease: randomUUID(), licenseAccepted: true, thirdPartyConsent,
+      })), /同意/u)
+    }
+  }
+  assert.equal(f.downloads.length, 0)
+  const preview = await f.manager.previewCatalog('test', revision, randomUUID())
+  delete f.value.assistant.appearance!.thirdPartyConsent
+  assert.equal((await f.request(preview.model.source)).status, 403, '旧客户端预览仍遵守正式协议撤销')
+})
 
 test('完整 HTTP 请求体结束不能取消仍在下载的临时预览，响应完成后租约仍可用', async (t) => {
   const f = await fixture(t, false, undefined, true)

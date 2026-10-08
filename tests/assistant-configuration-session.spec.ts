@@ -5,6 +5,7 @@ import { readAssistantDraft, assistantDraftPayload } from '../src/client/feature
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
 import { DEFAULT_ASSISTANT_TTS_SETTINGS, MOSS_BUILTIN_VOICES } from '../src/shared/assistant-tts.js'
 import { normalizeAssistantAppearance } from '../src/shared/assistant-avatar.js'
+import { hasAssistantAvatarConsent } from '../src/shared/assistant-avatar-catalog.js'
 import { getAssistantAvatarManager } from '../src/client/avatar/manager.js'
 import { registerGlobalVoiceAdapter } from '../src/client/global-voice-runtime-registry.js'
 import type { GlobalVoiceAdapter } from '../src/client/global-voice-runtime-registry.js'
@@ -124,11 +125,26 @@ test('音色、参数和设备不立即应用，资源准备显式传 prepareOnl
   assert.deepEqual(f.devices, ['new-mic']); assert.equal(f.writes(), 0)
 })
 
-test('只读禁止草稿修改，非法路径不能污染原型；首次第三方协议等待统一保存', async (t) => {
+test('首次同意后目录与素材请求携带草稿协议，关闭后不沿用旧同意', async (t) => {
   const f = fixture(); t.after(f.dispose)
   await getAssistantAvatarManager(f.session.services).setThirdPartyEnabled(true)
-  const catalog = await f.session.services.rpc.call(CODINGNS_RPC_CHANNEL, 'avatar/catalog', {})
-  assert.deepEqual(catalog, { ok: true, value: [] }); assert.equal(f.requests.length, 0)
+  for (const action of ['catalog', 'previewCatalog', 'keepPreview', 'installCatalog']) {
+    const result = await f.session.services.rpc.call(CODINGNS_RPC_CHANNEL, `avatar/${action}`, { id: 'test' })
+    assert.equal(result.ok, true)
+    assert.equal(f.requests.at(-1)!.endpoint, `avatar/${action}`)
+    assert.equal(f.requests.at(-1)!.payload.id, 'test')
+    assert.ok(hasAssistantAvatarConsent(f.requests.at(-1)!.payload.thirdPartyConsent))
+  }
+  assert.equal(f.value.assistant.appearance!.thirdPartyConsent, undefined)
+  assert.equal(f.writes(), 0)
+  f.session.reset()
+  const result = await f.session.services.rpc.call(CODINGNS_RPC_CHANNEL, 'avatar/catalog', {})
+  assert.equal(result.ok, false)
+  assert.equal(f.requests.length, 4)
+})
+
+test('只读禁止草稿修改，非法路径不能污染原型', async (t) => {
+  const f = fixture(); t.after(f.dispose)
   await assert.rejects(f.session.set('assistant.constructor.prototype.polluted', true), /草稿/u)
   assert.equal(({} as any).polluted, undefined)
   f.readonly(); await assert.rejects(f.session.set('assistant.model', { provider: 'api', model: 'fixed' }), /不可写/u)

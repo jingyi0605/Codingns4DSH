@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { setImmediate } from 'node:timers/promises'
 import { isValidElement, type ReactElement } from 'react'
-import { AssistantAvatarCatalogPanel, AssistantAvatarCatalogPreview } from '../src/client/avatar/catalog-panel.js'
+import { AssistantAvatarCatalogPanel, AssistantAvatarCatalogPreview, AssistantAvatarThirdPartyToggle } from '../src/client/avatar/catalog-panel.js'
 import { AssistantAvatarPicker } from '../src/client/avatar/catalog-picker.js'
 import { AssistantAvatarEngineDialog, AssistantAvatarEngineProgress, useAssistantAvatarEngine } from '../src/client/avatar/engine.js'
 import { AssistantAvatarSlot } from '../src/client/avatar/slot.js'
@@ -23,10 +23,10 @@ function elements(node: unknown): ReactElement<any>[] {
 }
 
 /** 真实草稿、管理器与组件流程；只替换 RPC，不下载素材或操作任何 Host Profile。 */
-function fixture(format = 'cubism-model', installed = false) {
+function fixture(format = 'cubism-model', installed = false, thirdPartyEnabled = true) {
   const value = structuredClone(DEFAULT_CODINGNS_SETTINGS)
   value.assistant.appearance = { ...normalizeAssistantAppearance(),
-    thirdPartyConsent: { version: ASSISTANT_AVATAR_CONSENT_VERSION, acceptedAt: 1 } }
+    ...(thirdPartyEnabled ? { thirdPartyConsent: { version: ASSISTANT_AVATAR_CONSENT_VERSION, acceptedAt: 1 } } : {}) }
   const entry: AssistantAvatarCatalogEntry = { id: 'test', number: 1, name: '测试形象', format,
     author: 'test', description: '', remarks: '', repositoryUrl: '', licenseUrl: '', license: '', homepage: '',
     revision: 'a'.repeat(40), bytes: 100, files: 1, previewAvailable: true }
@@ -59,6 +59,27 @@ function fixture(format = 'cubism-model', installed = false) {
     dispose: () => { renderer.dispose(); session.dispose() },
   }
 }
+
+test('首次同意并启用后原窗口直接显示第三方列表，关闭开关立即隐藏', async (t) => {
+  const f = fixture('codex-pet', false, false); t.after(f.dispose)
+  f.render(); await setImmediate()
+  assert.equal(f.calls.some((call) => call.endpoint === 'avatar/catalog'), false)
+  const agreement = () => elements(f.render()).find((element) => typeof element.props.onAccept === 'function')!
+  f.find(AssistantAvatarThirdPartyToggle)!.props.onRequest()
+  agreement().props.onChange(true)
+  agreement().props.onAccept()
+  await setImmediate(); f.render(); await setImmediate()
+  const choices = f.find(AssistantAvatarPicker)!.props.choices
+  assert.ok(choices.some((choice: any) => choice.catalog?.id === f.entry.id))
+  assert.equal(f.find(AssistantAvatarThirdPartyToggle)!.props.accepted, true)
+  assert.equal(f.value.assistant.appearance!.thirdPartyConsent, undefined)
+  assert.equal(f.writes(), 0, '浏览列表不能提前提交整份配置')
+  f.find(AssistantAvatarThirdPartyToggle)!.props.onDisable()
+  await setImmediate()
+  assert.ok(f.find(AssistantAvatarPicker)!.props.choices.every((choice: any) => choice.catalog === undefined))
+  f.session.reset()
+  assert.equal(f.find(AssistantAvatarThirdPartyToggle)!.props.accepted, false)
+})
 
 for (const format of ['cubism-model', 'dsh-live2d-pet']) {
   test(`${format} 首次预览先确认引擎许可，草稿安装就绪后才挂载预览`, async (t) => {
