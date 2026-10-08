@@ -11,7 +11,8 @@ import type { CodingNsCliDriver } from './driver.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { reasoningText, textContent } from './reasoning-content.js'
-import { commandEnvironment, resolveCommandPath, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
+import { commandEnvironment, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
+import { detectBinary } from './binary-detection.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 import { withAttachmentPaths } from './attachment-utils.js'
 
@@ -60,37 +61,10 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
-    for (const command of this.binaries) {
-      const direct = await this.detectCommand(command)
-      if (direct !== null) return direct
-      if (!this.lookupAfterDetectionFailure) continue
-      const resolved = await resolveCommandPath(command, this.runSpawnSync)
-      if (resolved === null) continue
-      const fallback = await this.detectCommand(resolved, commandEnvironment(resolved))
-      if (fallback !== null) return fallback
-    }
-    return { installed: false, version: null, command: null }
-  }
-
-  private lookupAfterDetectionFailure = false
-
-  private async detectCommand(command: string, env?: Record<string, string | undefined>): Promise<{ installed: true; version: string; command: string } | null> {
-    this.lookupAfterDetectionFailure = false
-    try {
-      const result = await runAsyncCommand(this.runSpawnSync, command, this.versionArgs, { encoding: 'utf8', timeout: 5_000, windowsHide: true, shell: WINDOWS, ...(env === undefined ? {} : { env }) })
-      const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
-      const version = this.parseVersion(output)
-      if (result.status === 0 && version !== null) {
-        this.cachedBinary = command
-        this.cachedEnvironment = env ?? commandEnvironment(command)
-        return { installed: true, version, command }
-      }
-      this.lookupAfterDetectionFailure = result.status === null
-    } catch {
-      // 候选命令不存在时继续尝试下一个名称。
-      this.lookupAfterDetectionFailure = true
-    }
-    return null
+    const result = await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync, versionArgs: this.versionArgs, timeout: 5_000, parseVersion: (output) => this.parseVersion(output) })
+    this.cachedBinary = result.command
+    this.cachedEnvironment = result.command === null ? undefined : commandEnvironment(result.command)
+    return result
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {
@@ -115,7 +89,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     let child: CodingNsChildProcess
     try {
       child = this.runSpawn(command, this.buildArgs(input), {
-        cwd: input.cwd ?? process.cwd(), env: this.cachedEnvironment ?? { ...process.env }, stdio: [this.usesStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true, shell: WINDOWS,
+        cwd: input.cwd ?? process.cwd(), env: this.cachedEnvironment ?? commandEnvironment(command), stdio: [this.usesStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true, shell: WINDOWS,
       }) as CodingNsChildProcess
     } catch (error) {
       // spawn 在命令路径或参数非法时可能同步抛错；必须收敛成当前回合错误，

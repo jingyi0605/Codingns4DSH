@@ -1,4 +1,6 @@
 import { runAsyncCommand } from './process-utils.js'
+import { failedDetection, probeFailure } from './binary-detection.js'
+import type { CodingNsCliDetection } from '../../shared/contracts/cli-adapter.js'
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { spawn, spawnSync, type SpawnSyncOptions, type SpawnSyncReturns } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -209,6 +211,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
   private cachedCommand: string | null = null
   private lastVersion: string | null = null
   private detectionDiagnostic: string | undefined
+  private detectionFailure: CodingNsCliDetection['detectionFailure']
   private readonly processes = new Map<string, { readonly rpc: JsonRpcProcess; providerSessionId: string }>()
   private readonly sidecarProcesses = new Map<string, { readonly client: WorkBuddyHttpAcpClient; readonly sidecar: WorkBuddySidecarClient; readonly sidecarSessionId: string; readonly providerSessionId: string; readonly dispose: () => Promise<void> }>()
   private readonly permissions = new Map<string, Map<string, CodeBuddyPermissionRequest>>()
@@ -246,6 +249,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
   get discoveryError(): string | undefined { return this.detectionDiagnostic }
 
   getDiscoveryDiagnostic(): string | undefined { return this.detectionDiagnostic }
+  getDiscoveryFailure(): CodingNsCliDetection['detectionFailure'] { return this.detectionFailure }
 
   /** 回复 ACP 标准权限请求。 */
   async respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): Promise<void> {
@@ -279,6 +283,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
     this.detectionDiagnostic = undefined
+    this.detectionFailure = undefined
     if (!this.profile.platforms.includes(this.platform)) {
       this.detectionDiagnostic = `${this.profile.displayName} 官方未提供 ${this.platform} 平台版本`
       return { installed: false, version: null, command: null }
@@ -288,17 +293,21 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
     if (explicit !== undefined) {
       const result = await this.detectCommand(explicit)
       if (result !== null) return result
-      if (this.detectionDiagnostic === undefined) this.detectionDiagnostic = `${this.profile.displayName} 显式指定的 CLI 路径无效`
+      if (this.detectionDiagnostic === undefined) this.detectionDiagnostic = this.detectionFailure === undefined
+        ? `${this.profile.displayName} 显式指定的 CLI 路径无效` : failedDetection(this.detectionFailure).diagnostic
       return { installed: false, version: null, command: null }
     }
 
     let firstDiagnostic: string | undefined
+    let firstFailure: CodingNsCliDetection['detectionFailure']
     for (const command of this.candidateCommands()) {
       const result = await this.detectCommand(command)
       if (result !== null) return result
       if (firstDiagnostic === undefined && this.detectionDiagnostic !== undefined) firstDiagnostic = this.detectionDiagnostic
+      firstFailure ??= this.detectionFailure
     }
-    this.detectionDiagnostic = firstDiagnostic ?? `${this.profile.displayName} CLI 未安装`
+    this.detectionDiagnostic = firstDiagnostic ?? (firstFailure === undefined ? `${this.profile.displayName} CLI 未安装` : failedDetection(firstFailure).diagnostic)
+    this.detectionFailure = firstFailure
     return { installed: false, version: null, command: null }
   }
 
@@ -684,6 +693,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
         const help = await runAsyncCommand(this.runSpawnSync, command, ['--help'], options) as SpawnSyncReturns<string>
         const helpOutput = `${help.stdout ?? ''}\n${help.stderr ?? ''}`
         if (!/--acp(?:[\s=]|$)/u.test(helpOutput)) {
+          this.detectionFailure = help.status === 0 ? 'protocol' : probeFailure(help, true) ?? 'launch'
           this.detectionDiagnostic = help.status === 0
             ? `${this.profile.displayName} CLI 不支持 ACP 协议`
             : summarizeCliFailure(this.profile.displayName, helpOutput)
@@ -692,17 +702,20 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
         this.cachedCommand = command
         this.lastVersion = version
         this.detectionDiagnostic = undefined
+        this.detectionFailure = undefined
         return { installed: true, version, command }
       }
       const failure = summarizeCliFailure(this.profile.displayName, output)
       if (failure !== undefined) this.detectionDiagnostic = failure
+      this.detectionFailure = probeFailure(result, isAbsolute(command))
       // CodeBuddy 的 PATH shim 可能在 GUI 环境中不在当前 PATH，失败后只对非内置产品做一次登录 Shell 查找。
-      if (!this.profile.bundledInApp && !isAbsolute(command) && result.status === null) {
+      if (!this.profile.bundledInApp && !isAbsolute(command)) {
         const resolved = await resolveCommandPath(command, this.runSpawnSync)
         if (resolved !== null && resolved !== command) return this.detectCommand(resolved)
       }
-    } catch {
+    } catch (error) {
       // 继续尝试下一个官方候选；错误只保留脱敏诊断。
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.detectionFailure = 'launch'
     }
     return null
   }
@@ -725,7 +738,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
       if (this.platform === 'win32') env.USERPROFILE = authenticationHome
     }
     for (const variable of this.profile.configRootEnvVars) env[variable] = this.configRoot
-    return env
+    return WINDOWS ? commandEnvironment(command, env) : env
   }
 }
 

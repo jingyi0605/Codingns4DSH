@@ -1,4 +1,5 @@
-import { runAsyncCommand } from './process-utils.js'
+import { commandEnvironment, runAsyncCommand, WINDOWS } from './process-utils.js'
+import { detectBinary } from './binary-detection.js'
 import { spawn, spawnSync, type SpawnSyncOptions } from 'node:child_process'
 import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
@@ -132,7 +133,8 @@ export class QoderCliDriver implements CodingNsCliDriver {
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
     this.homeDirectory = options.homeDirectory ?? homedir()
-    this.baseEnvironment = qoderEnvironment(this.profile, options.environment ?? process.env)
+    // 只保存产品覆盖项，PATH 随公共环境缓存刷新；不冻结构造时的 Host 环境。
+    this.baseEnvironment = qoderEnvironment(this.profile, options.environment ?? {})
     this.descriptor = {
       id: this.profile.id,
       name: this.profile.name,
@@ -142,18 +144,10 @@ export class QoderCliDriver implements CodingNsCliDriver {
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
-    if (this.cachedBinary !== null) {
-      const version = await readVersion(this.runSpawnSync, this.cachedBinary, this.baseEnvironment)
-      if (version !== null) return { installed: true, version, command: this.cachedBinary }
-      this.cachedBinary = null
-    }
-    for (const binary of this.binaries) {
-      const version = await readVersion(this.runSpawnSync, binary, this.baseEnvironment)
-      if (version === null) continue
-      this.cachedBinary = binary
-      return { installed: true, version, command: binary }
-    }
-    return { installed: false, version: null, command: null }
+    const result = await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync, environment: this.baseEnvironment, timeout: 5_000,
+      parseVersion: (output) => output.match(/\b\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?\b/u)?.[0] ?? null })
+    this.cachedBinary = result.command
+    return result
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {
@@ -163,7 +157,7 @@ export class QoderCliDriver implements CodingNsCliDriver {
     // 该命令在缓存命中和联网刷新两种情况下都返回同一张用户可用目录表。
     try {
       const result = await runAsyncCommand(this.runSpawnSync, detected.command, ['--list-models'], {
-        encoding: 'utf8', timeout: 15_000, windowsHide: true, env: this.baseEnvironment,
+        encoding: 'utf8', timeout: 15_000, windowsHide: true, shell: WINDOWS, env: { ...commandEnvironment(detected.command), ...this.baseEnvironment },
       } as SpawnSyncOptions & { encoding: 'utf8' })
       if (result.status === 0) {
         const catalog = parseQoderModelList(`${result.stdout ?? ''}\n${result.stderr ?? ''}`, this.profile)
@@ -301,7 +295,7 @@ export class QoderCliDriver implements CodingNsCliDriver {
     if (previous !== undefined && previous.cwd === input.cwd && previous.effortId === normalizedEffort(input.effortId) && previous.permissionMode === permissionMode && !previous.rpc.isClosed) return previous
     previous?.rpc.dispose()
     const session: QoderSession = {
-      rpc: new JsonRpcProcess({ command, args: qoderAcpArgs(input.effortId, input.permission), cwd: input.cwd, env: this.baseEnvironment, spawn: this.runSpawn }),
+      rpc: new JsonRpcProcess({ command, args: qoderAcpArgs(input.effortId, input.permission), cwd: input.cwd, env: { ...commandEnvironment(command), ...this.baseEnvironment }, spawn: this.runSpawn }),
       cwd: input.cwd,
       effortId: normalizedEffort(input.effortId),
       permissionMode,
@@ -388,8 +382,9 @@ export class QoderCliDriver implements CodingNsCliDriver {
 function qoderEnvironment(profile: QoderCliProfile, source: Readonly<Record<string, string | undefined>>): Readonly<Record<string, string | undefined>> {
   const env: Record<string, string | undefined> = { ...source }
   // 两套 CLI 不能继承对方的登录票据或用户配置根；否则 Qoder CN 可能静默复用国际版登录态。
-  delete env[profile.variant === 'qoder' ? 'QODERCN_PERSONAL_ACCESS_TOKEN' : 'QODER_PERSONAL_ACCESS_TOKEN']
-  delete env[profile.variant === 'qoder' ? 'QODERCN_USER_CONFIG_DIR' : 'QODER_USER_CONFIG_DIR']
+  // 显式 undefined 才能屏蔽公共进程环境中的同名变量；delete 会在合并时把票据重新带回来。
+  env[profile.variant === 'qoder' ? 'QODERCN_PERSONAL_ACCESS_TOKEN' : 'QODER_PERSONAL_ACCESS_TOKEN'] = undefined
+  env[profile.variant === 'qoder' ? 'QODERCN_USER_CONFIG_DIR' : 'QODER_USER_CONFIG_DIR'] = undefined
   env[profile.userConfigEnv] = profile.userConfigDirectory
   return env
 }
@@ -412,18 +407,6 @@ function qoderAcpArgs(effortId: string | undefined, permission: CodingNsCliPermi
 function qoderPermissionMode(permission: CodingNsCliPermissionState | undefined): 'auto' | 'dont_ask' | 'bypass_permissions' {
   if (permission?.approvalPolicy !== 'never') return 'auto'
   return permission.sandboxMode === 'danger-full-access' ? 'bypass_permissions' : 'dont_ask'
-}
-
-async function readVersion(run: typeof spawnSync, command: string, env: Readonly<Record<string, string | undefined>>): Promise<string | null> {
-  try {
-    const result = await runAsyncCommand(run, command, ['--version'], {
-      encoding: 'utf8', timeout: 5_000, windowsHide: true, env,
-    } as SpawnSyncOptions & { encoding: 'utf8' })
-    if (result.status !== 0) return null
-    return `${result.stdout ?? ''}\n${result.stderr ?? ''}`.match(/\b\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?\b/u)?.[0] ?? null
-  } catch {
-    return null
-  }
 }
 
 function qoderCatalogForProfile(profile: QoderCliProfile): CodingNsCliModelCatalog {

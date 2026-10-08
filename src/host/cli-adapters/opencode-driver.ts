@@ -1,4 +1,6 @@
 import { runAsyncCommand } from './process-utils.js'
+import { detectBinary } from './binary-detection.js'
+import type { CodingNsCliDetection } from '../../shared/contracts/cli-adapter.js'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -19,7 +21,7 @@ import { isProviderDefaultModel } from './model-catalog.js'
 import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { isQuestionEvent, questionAnswersList, readAgentQuestions } from './interaction-events.js'
 import { usageChunk } from './rpc-driver-utils.js'
-import { commandEnvironment, resolveCommandPath, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
+import { commandEnvironment, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { buildOpenCodeAttachmentParts } from './attachment-utils.js'
 import { OpenCodeV2Protocol } from './opencode-v2-protocol.js'
 
@@ -52,6 +54,7 @@ export interface OpenCodeDriverOptions {
 export class OpenCodeDriver implements CodingNsCliDriver {
   readonly descriptor = { id: 'opencode', name: 'OpenCode', protocol: 'http-sse', capabilities: ['models', 'skills', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] as const } as const
   private readonly binaries: readonly string[]
+  private binaryDetection: CodingNsCliDetection | undefined
   private readonly serverUrls: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
@@ -99,7 +102,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     const binary = await this.findBinary()
     if (server !== null) return { installed: true, version: server.version ?? binary?.version ?? null, command: server.url }
     if (binary !== null) return { installed: true, version: binary.version, command: binary.command }
-    return { installed: false, version: null, command: null }
+    return this.binaryDetection ?? { installed: false, version: null, command: null }
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {
@@ -605,29 +608,11 @@ export class OpenCodeDriver implements CodingNsCliDriver {
 
   private async findBinary(): Promise<{ command: string; version: string | null } | null> {
     if (this.cachedBinary !== null) return this.cachedBinary
-    for (const command of this.binaries) {
-      try {
-        const result = await runAsyncCommand(this.runSpawnSync, command, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS })
-        const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
-        if (result.status === 0) {
-          const version = output.match(/\d+\.\d+\.\d+/u)?.[0] ?? null
-          this.cachedBinary = { command, version }
-          return this.cachedBinary
-        }
-      } catch { /* PATH 中没有命令 */ }
-      const resolved = await resolveCommandPath(command, this.runSpawnSync)
-      if (resolved === null) continue
-      try {
-        const result = await runAsyncCommand(this.runSpawnSync, resolved, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS, env: commandEnvironment(resolved) })
-        const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
-        if (result.status === 0) {
-          const version = output.match(/\d+\.\d+\.\d+/u)?.[0] ?? null
-          this.cachedBinary = { command: resolved, version }
-          return this.cachedBinary
-        }
-      } catch { /* 登录 Shell 找到的命令也可能已失效 */ }
-    }
-    return null
+    this.binaryDetection = await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync, allowUnknownVersion: true,
+      parseVersion: (output) => output.match(/\d+\.\d+\.\d+/u)?.[0] ?? null })
+    this.cachedBinary = this.binaryDetection.installed && this.binaryDetection.command !== null
+      ? { command: this.binaryDetection.command, version: this.binaryDetection.version } : null
+    return this.cachedBinary
   }
 }
 

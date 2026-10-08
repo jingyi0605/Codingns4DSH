@@ -7,6 +7,7 @@ import type {
   CodingNsAgentPermissionResponse,
   CodingNsCliSkillDescriptor,
   CodingNsCliSkillListInput,
+  CodingNsCliDetection,
 } from '../../shared/contracts/cli-adapter.js'
 
 /** 外部 Provider 原始会话的只读存在性状态。 */
@@ -54,9 +55,10 @@ export interface CodingNsCliDriver {
   readonly supportsToolStepSplitting?: boolean
   /** 丢弃等待下一个 DSH step 的 Provider 运行；只有自行分段的驱动需要实现。 */
   discardSegmentedTurn?(sessionId: string): void
-  detect(): Promise<Pick<CodingNsCliAdapterDescriptor, 'installed' | 'version' | 'command'>>
+  detect(): Promise<CodingNsCliDetection>
   /** 安装探测失败时的脱敏原因，供设置页解释“为什么未识别”。 */
   getDiscoveryDiagnostic?(): string | undefined
+  getDiscoveryFailure?(): CodingNsCliDetection['detectionFailure']
   /**
    * 影响模型目录语义的 Provider 配置指纹（同步、廉价、脱敏）。
    *

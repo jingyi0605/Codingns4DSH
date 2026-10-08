@@ -1,36 +1,7 @@
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import type { SpawnSyncReturns } from 'node:child_process'
 import type { CodingNsCliModelCatalog, CodingNsAgentEvent } from '../../shared/contracts/cli-adapter.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
-import { commandEnvironment, resolveCommandPath, runAsyncCommand, WINDOWS } from './process-utils.js'
-
-export interface RpcBinaryOptions {
-  readonly binaries: readonly string[]
-  readonly spawnSync?: typeof spawnSync
-  readonly environment?: Readonly<Record<string, string | undefined>>
-}
-
-export async function detectBinary(options: RpcBinaryOptions): Promise<{ installed: boolean; version: string | null; command: string | null }> {
-  const run = options.spawnSync ?? spawnSync
-  for (const command of options.binaries) {
-    const direct = await detectCommand(command)
-    if (direct !== null) return direct
-    const resolved = await resolveCommandPath(command, run)
-    if (resolved === null || resolved === command) continue
-    const fallback = await detectCommand(resolved)
-    if (fallback !== null) return fallback
-  }
-  return { installed: false, version: null, command: null }
-
-  async function detectCommand(command: string): Promise<{ installed: true; version: string; command: string } | null> {
-    try {
-      const result = await runAsyncCommand(run, command, ['--version'], { timeout: 3_000, shell: WINDOWS, env: { ...commandEnvironment(command), ...options.environment } })
-      const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
-      const version = output.match(/\d+\.\d+(?:\.\d+)?/u)?.[0] ?? null
-      if (result.status === 0 && version !== null) return { installed: true, version, command }
-    } catch { /* PATH 中没有该命令 */ }
-    return null
-  }
-}
+export { detectBinary, type RpcBinaryOptions } from './binary-detection.js'
 
 /** 把一个 JSON-RPC 请求期间收到的通知排成异步流，同时等待最终响应。 */
 export async function* streamRpcRequest(

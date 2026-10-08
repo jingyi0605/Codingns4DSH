@@ -18,7 +18,11 @@ export interface CodingNsCliAdapterDescriptor {
   readonly checkedAt?: string
   /** 最近一次安装探测的脱敏诊断；例如 CLI 已找到但启动依赖缺失。 */
   readonly diagnostic?: string
+  /** 探测失败原因与“未找到安装入口”分离；旧 Client 可以忽略此可选字段。 */
+  readonly detectionFailure?: 'launch' | 'timeout' | 'version' | 'protocol'
 }
+
+export type CodingNsCliDetection = Pick<CodingNsCliAdapterDescriptor, 'installed' | 'version' | 'command' | 'diagnostic' | 'detectionFailure'>
 
 export type CodingNsCliCapability =
   | 'models'

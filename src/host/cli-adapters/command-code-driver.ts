@@ -1,4 +1,5 @@
 import { runAsyncCommand } from './process-utils.js'
+import { detectBinary } from './binary-detection.js'
 import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -18,7 +19,7 @@ import type {
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { firstToolText, serializeToolValue } from './tool-observation.js'
 import { usageChunk } from './rpc-driver-utils.js'
-import { commandEnvironment, resolveCommandPath, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
+import { commandEnvironment, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { prepareAttachmentPaths, promptWithAttachmentPaths } from './attachment-utils.js'
 import { parseSkillFrontmatter } from './skill-filesystem.js'
 import { commandCodeBridgeArgs, commandCodeBridgeEnvironment } from '../cli-bridge/injections.js'
@@ -475,31 +476,10 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
-    for (const command of this.binaries) {
-      const direct = await this.detectCommand(command)
-      if (direct !== null) return direct
-      const resolved = await resolveCommandPath(command, this.runSpawnSync)
-      if (resolved === null || resolved === command) continue
-      const fallback = await this.detectCommand(resolved)
-      if (fallback !== null) return fallback
-    }
-    return { installed: false, version: null, command: null }
-  }
-
-  private async detectCommand(command: string): Promise<{ installed: true; version: string; command: string } | null> {
-    try {
-      const result = await runAsyncCommand(this.runSpawnSync, command, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS, env: commandEnvironment(command) })
-      const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
-      const version = output.match(/\d+\.\d+\.\d+/u)?.[0] ?? null
-      if (result.status === 0 && version !== null) {
-        this.cachedBinary = command
-        this.cachedEnvironment = commandEnvironment(command)
-        return { installed: true, version, command }
-      }
-    } catch {
-      // PATH 中不存在候选命令属于正常的未安装状态。
-    }
-    return null
+    const result = await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync, parseVersion: (output) => output.match(/\d+\.\d+\.\d+/u)?.[0] ?? null })
+    this.cachedBinary = result.command
+    this.cachedEnvironment = result.command === null ? undefined : commandEnvironment(result.command)
+    return result
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {

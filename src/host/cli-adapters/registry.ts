@@ -12,8 +12,10 @@ import type {
   CodingNsCliSessionUsage,
   CodingNsCliSkillDescriptor,
   CodingNsCliSkillListInput,
+  CodingNsCliDetection,
 } from '../../shared/contracts/cli-adapter.js'
 import { invalidateCommandEnvironment, withCommandSignal } from './process-utils.js'
+import { failedDetection } from './binary-detection.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import { debugInfo } from '../../shared/debug.js'
 import type {
@@ -56,10 +58,6 @@ interface CommandCodeHistoryDriver {
   startSession(workspacePath: string, options?: { readonly initialPrompt?: string }): Promise<CommandCodeStartSessionResult>
   resumeSession(providerSessionId: string, rawStoreRef: string): Promise<CommandCodeResumeSessionResult>
   sendMessage(providerSessionId: string, rawStoreRef: string, content: string): Promise<CommandCodeSendMessageResult>
-}
-
-type CodingNsCliDetection = Pick<CodingNsCliAdapterDescriptor, 'installed' | 'version' | 'command'> & {
-  readonly diagnostic?: string
 }
 
 interface CacheEntry<Value> {
@@ -827,7 +825,10 @@ export class CodingNsCliAdapterRegistry {
     const adapterId = driver.descriptor.id
     const cached = this.detectionCache.get(adapterId)
     if (cached !== undefined) {
-      return cached.value
+      // 仅实际使用时重试失败状态，列表仍然只读；确实未安装的 Agent 不后台轮询。
+      const checkedAt = this.detectionTimes.get(adapterId)
+      const retry = this.detectionStates.get(adapterId) === 'error' && checkedAt !== undefined && Date.now() - Date.parse(checkedAt) >= 30_000
+      if (!retry) return cached.value
     }
     return this.refreshDetection(driver)
   }
@@ -849,9 +850,14 @@ export class CodingNsCliAdapterRegistry {
         const getDiagnostic = driver.getDiscoveryDiagnostic
         const diagnostic = getDiagnostic === undefined ? undefined : getDiagnostic.call(driver)
         detection = diagnostic === undefined ? detected : { ...detected, diagnostic }
+        const failure = detected.detectionFailure ?? driver.getDiscoveryFailure?.()
+        if (!detected.installed && failure !== undefined) {
+          failed = true
+          detection = detectionError(failure, previous?.value, diagnostic)
+        }
       } catch {
         failed = true
-        detection = previous?.value ?? { installed: false, version: null, command: null }
+        detection = detectionError('launch', previous?.value)
       }
       if (this.disposed || generation !== this.cacheGeneration) return detection
 
@@ -1246,4 +1252,13 @@ function stringValue(value: unknown): string | undefined {
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
   const nodeTimer = timer as ReturnType<typeof setTimeout> & { unref?: () => void }
   nodeTimer.unref?.()
+}
+
+/** 短暂探测失败保留最后一次成功入口，失败原因始终来自本次探测。 */
+function detectionError(reason: NonNullable<CodingNsCliDetection['detectionFailure']>, previous?: CodingNsCliDetection, diagnostic?: string): CodingNsCliDetection {
+  return {
+    ...failedDetection(reason),
+    ...(previous?.installed ? { installed: true, version: previous.version, command: previous.command } : {}),
+    ...(diagnostic === undefined ? {} : { diagnostic }),
+  }
 }

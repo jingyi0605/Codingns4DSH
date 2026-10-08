@@ -5,7 +5,7 @@ import type { CodingNsCliDriver } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, genericEventChunks } from './standard-stream-driver.js'
 import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, antigravityUsageExcludesCacheFromInput, isProviderDefaultModel, knownAntigravityContextWindow, parseAntigravityModels, resolveAntigravityModelId } from './model-catalog.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
-import { terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
+import { commandEnvironment, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 
@@ -146,7 +146,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       const result = await runBufferedModels(
         this.runSpawn,
         detected.command,
-        this.resolvedEnvironment ?? { ...process.env },
+        this.resolvedEnvironment ?? commandEnvironment(detected.command),
         ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS,
         this.modelProbeAbort.signal,
       )
