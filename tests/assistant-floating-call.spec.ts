@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { createElement, isValidElement } from 'react'
 import type { ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -16,7 +17,8 @@ import type { GlobalVoiceAdapter } from '../src/client/global-voice-runtime-regi
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
 import { BUILTIN_ASSISTANT_AVATAR, normalizeAssistantAppearance } from '../src/shared/assistant-avatar.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
-import type { CodingNsClientServices } from '../src/client/features/types.js'
+import type { CodingNsClientServices, CodingNsRpcClient } from '../src/client/features/types.js'
+import { DESKTOP_ASSISTANT_CHANNEL, type DesktopAssistantStatus } from '../src/shared/desktop-assistant.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 
 const t = resolveCodingNsTranslator()
@@ -33,7 +35,7 @@ function find(tree: unknown, type: unknown): ReactElement<any> {
   return item
 }
 
-function fixture(context: TestContext, floatingEnabled = false) {
+function fixture(context: TestContext, floatingEnabled = false, rpc: CodingNsRpcClient = { call: async () => ({ ok: true, value: undefined }) }) {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   const window = Object.assign(new EventTarget(), { innerWidth: 390, innerHeight: 844, isSecureContext: true })
   Object.defineProperty(globalThis, 'window', { configurable: true, value: window })
@@ -55,18 +57,68 @@ function fixture(context: TestContext, floatingEnabled = false) {
   }
   const services = { locale: { bind: () => t, getSnapshot: () => ({ revision: 1 }), subscribe: () => () => {} },
     settings: { getSnapshot: () => ({ value, writable: true, revision: 1, status: 'ready' }), subscribe: (listener: () => void) => { changes.add(listener); return () => changes.delete(listener) } },
-    rpc: { call: async () => ({ ok: true, value: undefined }) },
+    rpc,
   } as unknown as CodingNsClientServices
   const unregister = registerGlobalVoiceAdapter(services, adapter as unknown as GlobalVoiceAdapter)
   const renderer = createHookRenderer(GlobalVoiceOverlay, { services })
   const extraCleanup: (() => void)[] = []
-  renderer.render()
+  const initial = renderer.render()
   window.dispatchEvent(new Event(ASSISTANT_WORKBENCH_OPEN_EVENT))
   context.after(() => { for (const dispose of extraCleanup) dispose(); renderer.dispose(); unregister(); if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow); else Reflect.deleteProperty(globalThis, 'window') })
-  return { services, adapter, window, renderer, emit, value, counts: () => ({ starts, stops }),
+  return { services, adapter, window, renderer, initial, emit, value, counts: () => ({ starts, stops }),
     onDispose(dispose: () => void) { extraCleanup.push(dispose) },
     startWith(operation: () => Promise<void>) { startOperation = operation }, changed() { for (const listener of changes) listener() } }
 }
+
+test('Desktop 首帧、等待显示和反复轮询均不渲染内部形象，工作台开关不隐藏原生窗口', async (context) => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'dshDesktopBoot')
+  Object.defineProperty(globalThis, 'dshDesktopBoot', { configurable: true, value: {} })
+  context.after(() => { if (previous) Object.defineProperty(globalThis, 'dshDesktopBoot', previous); else Reflect.deleteProperty(globalThis, 'dshDesktopBoot') })
+  let status: DesktopAssistantStatus = { available: true, owned: true, visible: false, openSequence: 0 }
+  const updates: { visible: boolean; state: string }[] = []
+  const f = fixture(context, true, { call: async (channel, action, payload) => {
+    if (channel !== DESKTOP_ASSISTANT_CHANNEL) return { ok: true, value: undefined }
+    if (action === 'update') updates.push((payload as any).presentation)
+    return { ok: true, value: { ...status } }
+  } })
+  const noInternal = (tree: unknown): void => {
+    assert.ok(!elements(tree).some((element) => element.type === FloatingAssistantAvatar || element.type === FloatingVoiceCall))
+  }
+  const sync = async (state: string): Promise<void> => {
+    const count = updates.length
+    f.emit({ type: 'state', state }); f.renderer.render()
+    for (let attempt = 0; updates.length <= count && attempt < 100; attempt++) await delay(2)
+    assert.ok(updates.length > count, '状态变化应立即刷新，而不是等待一秒轮询')
+    await delay(0)
+  }
+  noInternal(f.initial)
+  find(f.renderer.render(), AssistantWorkbench).props.onClose()
+  noInternal(f.renderer.render())
+  await sync('listening'); noInternal(f.renderer.render())
+  status = { ...status, visible: true }
+  await sync('speaking'); noInternal(f.renderer.render())
+  status = { ...status, visible: false }
+  await sync('thinking'); noInternal(f.renderer.render())
+  f.window.dispatchEvent(new Event(ASSISTANT_WORKBENCH_OPEN_EVENT))
+  assert.ok(find(f.renderer.render(), AssistantWorkbench))
+  await sync('listening'); noInternal(f.renderer.render())
+  find(f.renderer.render(), AssistantWorkbench).props.onClose(); noInternal(f.renderer.render())
+  assert.ok(updates.every((update) => update.visible), '工作台打开和关闭时必须保持原生悬浮请求')
+
+  status = { ...status, error: '原生渲染进程退出' }
+  await sync('speaking')
+  assert.ok(find(f.renderer.render(), FloatingAssistantAvatar), '原生明确失败才显示页面回退')
+  assert.ok(elements(f.renderer.render()).some((element) => element.props['data-codingns-desktop-avatar-fallback']))
+  status = { ...status, available: false, error: undefined }
+  await sync('thinking')
+  assert.ok(find(f.renderer.render(), FloatingAssistantAvatar), '不支持原生的形象必须保留页面入口')
+  f.value.assistant.appearance.floatingEnabled = false; f.changed(); noInternal(f.renderer.render())
+  await sync('listening')
+  f.value.assistant.appearance.floatingEnabled = true; f.changed()
+  status = { ...status, available: true }
+  noInternal(f.renderer.render())
+  await sync('speaking'); noInternal(f.renderer.render())
+})
 
 test('收起和恢复保留同一通话、计时、静音及完整累计字幕，不重复启动或挂断', async (context) => {
   const f = fixture(context)
