@@ -107,6 +107,7 @@ test('探测失败不会被缓存成「不支持」，下一轮重试即可恢�
   // 首次探测失败：本轮不下发，但不能把失败固化成永久结论。
   assert.equal(args({ sessionId: 's1', messages: [], prompt: '你好', effortId: 'high' }).includes('--effort'), false)
   failHelp = false
+  await driver.detect()
   assert.equal(args({ sessionId: 's1', messages: [], prompt: '你好', effortId: 'high' }).includes('--effort'), true, '探测失败必须重试而不是永久关闭')
   assert.equal(helpCalls, 2)
 })

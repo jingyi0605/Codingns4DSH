@@ -33,9 +33,9 @@ import { registerAssistantAvatarRoutes } from './features/assistant-avatar-runti
 import { isStage0Runtime, registerStage0DevHmr } from './stage0-dev-hmr.js'
 import { CODINGNS_STAGE0_GLOBAL } from '../shared/runtime-environment.js'
 
-export function apply(ctx?: Context): void {
+export async function apply(ctx?: Context): Promise<void> {
   if (ctx === undefined) return
-  const dshVersion = detectRuntimeDshVersion()
+  const dshVersion = await detectRuntimeDshVersion()
   const stage0 = isStage0Runtime()
   debugInfo('codingns4dsh: host apply entered', { dshVersion })
   registerStage0DevHmr(ctx)

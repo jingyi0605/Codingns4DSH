@@ -1,3 +1,4 @@
+import { runAsyncCommand } from './process-utils.js'
 import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -86,7 +87,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command !== null) {
       try {
-        const result = this.runSpawnSync(command, ['inspect', '--json'], {
+        const result = await runAsyncCommand(this.runSpawnSync, command, ['inspect', '--json'], {
           cwd,
           encoding: 'utf8',
           timeout: 5_000,

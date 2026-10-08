@@ -6,7 +6,7 @@ import test from 'node:test'
 import { detectRuntimeDshVersion } from '../data/build/dist/host/dsh-runtime-version.js'
 import { SUPPORTED_DSH_VERSION } from '../data/build/dist/shared/index.js'
 
-async function withRuntimeArg(runtimeRoot: string, callback: () => void, hostEntry = '/tmp/dsh-desktop-host/lib/index.js'): Promise<void> {
+async function withRuntimeArg(runtimeRoot: string, callback: () => Promise<void>, hostEntry = '/tmp/dsh-desktop-host/lib/index.js'): Promise<void> {
   const originalArgv = process.argv.slice()
   const originalRuntimeVersion = process.env.DSH_RUNTIME_VERSION
   const originalDshVersion = process.env.DSH_VERSION
@@ -16,7 +16,7 @@ async function withRuntimeArg(runtimeRoot: string, callback: () => void, hostEnt
     // Desktop 当前参数顺序为：--expose-internals、Host 入口、Runtime 根目录。
     process.argv[2] = hostEntry
     process.argv[3] = runtimeRoot
-    callback()
+    await callback()
   } finally {
     process.argv.length = 0
     process.argv.push(...originalArgv)
@@ -36,8 +36,8 @@ test('Host 从 Desktop Runtime 根目录读取实际 DSH 包版本', async () =>
     const hostEntry = join(runtimeRoot, 'host', 'lib', 'index.js')
     await mkdir(join(runtimeRoot, 'host', 'lib'), { recursive: true })
     await writeFile(hostEntry, '', 'utf8')
-    await withRuntimeArg(runtimeRoot, () => {
-      assert.equal(detectRuntimeDshVersion(), SUPPORTED_DSH_VERSION)
+    await withRuntimeArg(runtimeRoot, async () => {
+      assert.equal(await detectRuntimeDshVersion(), SUPPORTED_DSH_VERSION)
     }, hostEntry)
   } finally {
     await rm(runtimeRoot, { recursive: true, force: true })
@@ -48,9 +48,9 @@ test('Host 版本环境变量优先于 Desktop Runtime 参数', async () => {
   const runtimeRoot = await mkdtemp(join(tmpdir(), 'codingns-dsh-runtime-priority-'))
   try {
     await writeFile(join(runtimeRoot, 'package.json'), JSON.stringify({ dependencies: { '@deepseek-ai/dsh': '0.1.6-alpha.2' } }), 'utf8')
-    await withRuntimeArg(runtimeRoot, () => {
+    await withRuntimeArg(runtimeRoot, async () => {
       process.env.DSH_RUNTIME_VERSION = SUPPORTED_DSH_VERSION
-      assert.equal(detectRuntimeDshVersion(), SUPPORTED_DSH_VERSION)
+      assert.equal(await detectRuntimeDshVersion(), SUPPORTED_DSH_VERSION)
     })
   } finally {
     await rm(runtimeRoot, { recursive: true, force: true })

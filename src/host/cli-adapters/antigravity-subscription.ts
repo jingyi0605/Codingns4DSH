@@ -9,7 +9,7 @@ import type {
   CliSubscriptionUsage,
   CliSubscriptionWindow,
 } from '../../shared/contracts/subscription.js'
-import { commandEnvironment, resolveCommandPath } from './process-utils.js'
+import { commandEnvironment, resolveCommandPath, runAsyncCommand } from './process-utils.js'
 
 type FetchLike = typeof fetch
 type SpawnLike = typeof spawn
@@ -127,7 +127,7 @@ export class AntigravitySubscriptionService {
   }
 
   async read(options: AntigravitySubscriptionReadOptions = {}): Promise<CliSubscriptionUsage | null> {
-    const credentials = this.readCredentials()
+    const credentials = await this.readCredentials()
     if (credentials !== null) {
       const [tier, summary] = await Promise.all([
         this.call('loadCodeAssist', credentials.accessToken),
@@ -146,7 +146,7 @@ export class AntigravitySubscriptionService {
 
   /** 运行 CLI 内置的 `/usage`，它的输出就是 TUI 里那份分组额度。 */
   private async readQuotaFromCli(): Promise<readonly AntigravityQuotaGroupDraft[] | null> {
-    const command = this.resolveAgyCommand()
+    const command = await this.resolveAgyCommand()
     if (command === null) return null
     const stdout = await this.runUsageCommand(command)
     if (stdout === null) return null
@@ -154,14 +154,14 @@ export class AntigravitySubscriptionService {
     return groups.length === 0 ? null : groups
   }
 
-  private resolveAgyCommand(): string | null {
+  private async resolveAgyCommand(): Promise<string | null> {
     if (this.cachedCommand !== undefined) return this.cachedCommand
     if (this.resolveCommand !== undefined) {
       this.cachedCommand = this.resolveCommand()
       return this.cachedCommand
     }
     for (const candidate of ['agy']) {
-      const resolved = resolveCommandPath(candidate, this.runSpawnSync)
+      const resolved = await resolveCommandPath(candidate, this.runSpawnSync)
       if (resolved !== null) {
         this.cachedCommand = resolved
         return resolved
@@ -254,8 +254,8 @@ export class AntigravitySubscriptionService {
    * `~/.gemini/antigravity-cli/antigravity-oauth-token`。两者结构一致，都带
    * `token.access_token` 与 `id_token`。
    */
-  private readCredentials(): AntigravityCredentials | null {
-    const keychain = this.readKeychainCredentials()
+  private async readCredentials(): Promise<AntigravityCredentials | null> {
+    const keychain = await this.readKeychainCredentials()
     if (keychain !== null) return keychain
     for (const name of CREDENTIAL_FILE_NAMES) {
       const parsed = this.readCredentialFile(join(this.homeDirectory, '.gemini', 'antigravity-cli', name))
@@ -280,11 +280,11 @@ export class AntigravitySubscriptionService {
     return toCredentials(parsed, this.now())
   }
 
-  private readKeychainCredentials(): AntigravityCredentials | null {
+  private async readKeychainCredentials(): Promise<AntigravityCredentials | null> {
     if (this.platform !== 'darwin') return null
     try {
-      // 钥匙串读取是本地毫秒级操作；未授权或条目不存在时直接放弃，改走 CLI 兜底。
-      const result: SpawnSyncReturns<string> = this.runSpawnSync('security', [
+      // 钥匙串可能等待系统授权，必须异步并设置超时，不能阻塞 Host。
+      const result: SpawnSyncReturns<string> = await runAsyncCommand(this.runSpawnSync, 'security', [
         'find-generic-password',
         '-s', ANTIGRAVITY_KEYCHAIN_SERVICE,
         '-a', ANTIGRAVITY_KEYCHAIN_ACCOUNT,

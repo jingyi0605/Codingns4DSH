@@ -9,7 +9,7 @@ import { discoverClaudeModelCatalog } from './claude-model-options.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
 import { buildClaudeUserContent } from './attachment-utils.js'
-import { WINDOWS, commandEnvironment, type CodingNsChildProcess } from './process-utils.js'
+import { WINDOWS, commandEnvironment, runAsyncCommand, type CodingNsChildProcess } from './process-utils.js'
 import { claudeBridgeArgs } from '../cli-bridge/injections.js'
 import { readAgentQuestions } from './interaction-events.js'
 import { scanCompatibleSkills } from './skill-filesystem.js'
@@ -175,6 +175,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   override async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
     const detected = await super.detect()
     this.detectedVersion = detected.version
+    if (detected.installed) await this.probeEffortSupport()
     return detected
   }
 
@@ -194,7 +195,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     }
     // CLI 明确不支持 `--effort` 时，驱动不会下发该参数；此时目录也不能展示档位，
     // 否则用户看到的是一个切换后不生效的选项。探测不确定时保持目录原样。
-    return this.probeEffortSupport() === 'unsupported' ? clearEfforts(catalog) : catalog
+    return (await this.probeEffortSupport()) === 'unsupported' ? clearEfforts(catalog) : catalog
   }
 
   /** Claude Code 原生按 SKILL.md 目录发现 Skill；正文仍由 Claude 自己加载。 */
@@ -268,7 +269,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
    * （原地升级）会重新探测。探测失败时返回 unknown 且不缓存，让下一轮重试——
    * 既不会把偶发失败固化成「不支持」，也不会冒险给旧 CLI 传未知选项。
    */
-  private probeEffortSupport(): 'supported' | 'unsupported' | 'unknown' {
+  private async probeEffortSupport(): Promise<'supported' | 'unsupported' | 'unknown'> {
     const command = this.resolvedBinary
     if (command === null) return 'unknown'
     const cached = this.effortProbe
@@ -276,7 +277,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
       return cached.supported ? 'supported' : 'unsupported'
     }
     try {
-      const result = this.runSpawnSync(command, ['--help'], {
+      const result = await runAsyncCommand(this.runSpawnSync, command, ['--help'], {
         encoding: 'utf8', timeout: 5_000, windowsHide: true, shell: WINDOWS, env: commandEnvironment(command),
       })
       const help = `${typeof result.stdout === 'string' ? result.stdout : ''}\n${typeof result.stderr === 'string' ? result.stderr : ''}`
@@ -294,7 +295,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
 
   /** 只有确认支持时才下发 `--effort`；旧版本遇到未知选项会整轮失败。 */
   private supportsEffortOption(): boolean {
-    return this.probeEffortSupport() === 'supported'
+    return this.effortProbe?.command === this.resolvedBinary && this.effortProbe?.version === this.detectedVersion && this.effortProbe?.supported === true
   }
 
   override dispose(): void {

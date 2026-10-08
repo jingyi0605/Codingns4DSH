@@ -7,8 +7,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { apply } from '../data/build/dist/host/index.js'
 import { CodingNsConfigSchema } from '../data/build/dist/host/settings.js'
 
-test('Host entry 可以加载并卸载且不创建资源', () => {
-  assert.doesNotThrow(() => apply())
+test('Host entry 可以加载并卸载且不创建资源', async () => {
+  await assert.doesNotReject(() => apply())
 })
 
 test('Host 装配从入口 Fiber 读取配置，不读取注入子 Fiber 的空配置', async () => {
@@ -30,7 +30,7 @@ test('Host 装配从入口 Fiber 读取配置，不读取注入子 Fiber 的空�
         }))
       },
     }
-    apply(ctx as unknown as Context)
+    await apply(ctx as unknown as Context)
     // 未提供持久目录，启用的终端必须在创建 controller 前明确报错；不会写文件或启动进程。
     await assert.rejects(tasks[0]!, /终端增强需要文件型 DSH 设置 Provider/u)
   } finally {
@@ -57,14 +57,14 @@ test('Host 重载撤销自己的会话读取包装，不覆盖后来安装的包
         }))
       },
     }
-    apply(ctx as unknown as Context)
+    await apply(ctx as unknown as Context)
     await Promise.all(tasks)
     assert.notEqual(persistence.open, original)
     assert.equal(await persistence.open(), 'opened')
     disposers[0]!()
     assert.equal(persistence.open, original)
 
-    apply(ctx as unknown as Context)
+    await apply(ctx as unknown as Context)
     await Promise.all(tasks)
     const newer = async () => 'newer'
     persistence.open = newer

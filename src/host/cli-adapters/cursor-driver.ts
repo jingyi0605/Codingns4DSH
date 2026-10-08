@@ -1,4 +1,5 @@
 import type { spawn, spawnSync, SpawnSyncOptions } from 'node:child_process'
+import { runAsyncCommand, commandEnvironment, WINDOWS } from './process-utils.js'
 import type { CodingNsCliModelCatalog } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import { AcpCliDriver, type AcpCliDriverOptions } from './acp-cli-driver.js'
@@ -41,9 +42,9 @@ function cursorAcpArgs(input: CodingNsCliTurnInput): readonly string[] {
     : ['acp']
 }
 
-function readCursorModelCatalog(command: string, runSpawnSync: typeof spawnSync): CodingNsCliModelCatalog | null {
-  const result = runSpawnSync(command, ['--list-models'], {
-    encoding: 'utf8', timeout: 15_000, windowsHide: true,
+async function readCursorModelCatalog(command: string, runSpawnSync: typeof spawnSync, environment: Readonly<Record<string, string | undefined>>): Promise<CodingNsCliModelCatalog | null> {
+  const result = await runAsyncCommand(runSpawnSync, command, ['--list-models'], {
+    encoding: 'utf8', timeout: 15_000, windowsHide: true, shell: WINDOWS, env: { ...commandEnvironment(command), ...environment },
   } as SpawnSyncOptions & { encoding: 'utf8' })
   if (result.status !== 0) return null
   // 正常目录在 stdout；仅当旧版本把目录写到 stderr 时才回退读取 stderr，

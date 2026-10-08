@@ -1,3 +1,4 @@
+import { runAsyncCommand } from './process-utils.js'
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { spawn, spawnSync, type SpawnSyncOptions, type SpawnSyncReturns } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -285,7 +286,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
 
     const explicit = this.explicitCommand()
     if (explicit !== undefined) {
-      const result = this.detectCommand(explicit)
+      const result = await this.detectCommand(explicit)
       if (result !== null) return result
       if (this.detectionDiagnostic === undefined) this.detectionDiagnostic = `${this.profile.displayName} 显式指定的 CLI 路径无效`
       return { installed: false, version: null, command: null }
@@ -293,7 +294,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
 
     let firstDiagnostic: string | undefined
     for (const command of this.candidateCommands()) {
-      const result = this.detectCommand(command)
+      const result = await this.detectCommand(command)
       if (result !== null) return result
       if (firstDiagnostic === undefined && this.detectionDiagnostic !== undefined) firstDiagnostic = this.detectionDiagnostic
     }
@@ -308,7 +309,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
     // PATH 中的 npm shim 可能只是相对命令名；模型目录位于真实 CLI 包根目录，
     // 因此这里补一次只读路径解析，避免把工作目录误当成产品目录。
     const command = detection.command !== null && !isAbsolute(detection.command)
-      ? resolveCommandPath(detection.command, this.runSpawnSync) ?? detection.command
+      ? (await resolveCommandPath(detection.command, this.runSpawnSync)) ?? detection.command
       : detection.command
     const modelCatalogPaths = this.modelCatalogPaths ?? defaultModelCatalogPaths(this.profile, this.configRoot, this.environment)
     return readProductCatalog(modelCatalogPaths, this.readModelCatalogFile, command, this.profile, detectCodeBuddyRegion(this.environment)) ?? this.fallbackCatalog
@@ -670,17 +671,17 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
     return this.binaries
   }
 
-  private detectCommand(command: string): { installed: true; version: string; command: string } | null {
+  private async detectCommand(command: string): Promise<{ installed: true; version: string; command: string } | null> {
     try {
       const options: SpawnSyncOptions = {
         encoding: 'utf8', timeout: 5_000, windowsHide: true, shell: WINDOWS,
         env: this.runtimeEnvironment(command),
       }
-      const result = this.runSpawnSync(command, ['--version'], options) as SpawnSyncReturns<string>
+      const result = await runAsyncCommand(this.runSpawnSync, command, ['--version'], options) as SpawnSyncReturns<string>
       const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
       const version = output.match(/\b\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?\b/u)?.[0]
       if (result.status === 0 && version !== undefined) {
-        const help = this.runSpawnSync(command, ['--help'], options) as SpawnSyncReturns<string>
+        const help = await runAsyncCommand(this.runSpawnSync, command, ['--help'], options) as SpawnSyncReturns<string>
         const helpOutput = `${help.stdout ?? ''}\n${help.stderr ?? ''}`
         if (!/--acp(?:[\s=]|$)/u.test(helpOutput)) {
           this.detectionDiagnostic = help.status === 0
@@ -697,7 +698,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
       if (failure !== undefined) this.detectionDiagnostic = failure
       // CodeBuddy 的 PATH shim 可能在 GUI 环境中不在当前 PATH，失败后只对非内置产品做一次登录 Shell 查找。
       if (!this.profile.bundledInApp && !isAbsolute(command) && result.status === null) {
-        const resolved = resolveCommandPath(command, this.runSpawnSync)
+        const resolved = await resolveCommandPath(command, this.runSpawnSync)
         if (resolved !== null && resolved !== command) return this.detectCommand(resolved)
       }
     } catch {

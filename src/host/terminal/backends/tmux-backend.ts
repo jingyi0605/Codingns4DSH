@@ -1,3 +1,4 @@
+import { runAsyncCommand } from '../../cli-adapters/process-utils.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { accessSync, constants, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -25,7 +26,7 @@ export interface TmuxCommandResult {
 }
 
 export interface TmuxCommandRunner {
-  run(command: string, args: readonly string[]): TmuxCommandResult
+  run(command: string, args: readonly string[]): TmuxCommandResult | Promise<TmuxCommandResult>
 }
 
 export interface TmuxBackendOptions {
@@ -143,7 +144,7 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     if (current.alive) return current
     const name = tmuxSessionName(input.session.runtimeSessionKey)
     const size = normalizeTerminalSize(input.cols ?? 120, input.rows ?? 30)
-    const result = this.runner.run(tmuxPath, [
+    const result = await this.runner.run(tmuxPath, [
       '-S', this.server.socket,
       '-f', this.server.config,
       'new-session', '-d', '-s', name,
@@ -167,7 +168,7 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     }
     // 会话级尺寸策略必须在任何客户端 attach 之前锁定，否则第一次 attach 就会
     // 按客户端尺寸改写窗口。
-    const sized = this.runner.run(tmuxPath, ['-S', this.server.socket, ...sessionSizeArguments(name)])
+    const sized = await this.runner.run(tmuxPath, ['-S', this.server.socket, ...sessionSizeArguments(name)])
     debugInfo('codingns4dsh: tmux create command result', {
       runtimeSessionKey: input.session.runtimeSessionKey,
       status: result.status,
@@ -191,7 +192,7 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
       detail: '未找到可执行的 tmux',
     }
     const name = tmuxSessionName(session.runtimeSessionKey)
-    const result = this.runner.run(this.tmuxPath, ['-S', this.server.socket, 'has-session', '-t', name])
+    const result = await this.runner.run(this.tmuxPath, ['-S', this.server.socket, 'has-session', '-t', name])
     debugInfo('codingns4dsh: tmux inspect result', {
       runtimeSessionKey: session.runtimeSessionKey,
       status: result.status,
@@ -207,7 +208,7 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
       return {
         alive: true,
         runtimeSessionKey: session.runtimeSessionKey,
-        runtimePid: this.readPanePid(name),
+        runtimePid: await this.readPanePid(name),
         shellPid: null,
       }
     }
@@ -283,7 +284,7 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     const size = normalizeTerminalSize(input.cols, input.rows)
     // 客户端是 ignore-size 的，改它自己的 pty 尺寸不会影响窗口；必须显式调整
     // tmux 窗口，shell 才会收到与浏览器视口一致的 SIGWINCH。
-    const result = this.runner.run(this.tmuxPath!, [
+    const result = await this.runner.run(this.tmuxPath!, [
       '-S', this.server.socket, 'resize-window', '-t', state.sessionName,
       '-x', String(size.cols), '-y', String(size.rows),
     ])
@@ -302,7 +303,7 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     const tmuxPath = this.requireTmuxPath()
     const name = tmuxSessionName(session.runtimeSessionKey)
     const count = Math.min(50000, Math.max(1, Math.trunc(lines)))
-    const result = this.runner.run(tmuxPath, [
+    const result = await this.runner.run(tmuxPath, [
       '-S', this.server.socket,
       'capture-pane', '-p', '-J', '-S', `-${count}`, '-t', name,
     ])
@@ -336,7 +337,7 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     for (const [attachmentId, state] of this.attachments) {
       if (state.sessionName === name) await this.detach(attachmentId)
     }
-    const result = this.runner.run(tmuxPath, ['-S', this.server.socket, 'kill-session', '-t', name])
+    const result = await this.runner.run(tmuxPath, ['-S', this.server.socket, 'kill-session', '-t', name])
     debugInfo('codingns4dsh: tmux terminate result', {
       runtimeSessionKey: session.runtimeSessionKey,
       status: result.status,
@@ -359,7 +360,7 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     this.assertSupported(session)
     const tmuxPath = this.requireTmuxPath()
     const name = tmuxSessionName(session.runtimeSessionKey)
-    const result = this.runner.run(tmuxPath, ['-S', this.server.socket, 'send-keys', '-t', name, '-l', data])
+    const result = await this.runner.run(tmuxPath, ['-S', this.server.socket, 'send-keys', '-t', name, '-l', data])
     if (result.status !== 0 && !isMissingSession(result.stderr)) {
       throw new TerminalRuntimeError('TERMINAL_RUNTIME_LOST', sanitizeCommandError('tmux 终端输入失败', result.stderr))
     }
@@ -402,11 +403,11 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
       } catch (error) {
         throw new TerminalRuntimeError('TERMINAL_RUNTIME_UNAVAILABLE', `tmux 配置目录不可写：${errorMessage(error)}`)
       }
-      const started = this.runner.run(tmuxPath, ['-S', this.server.socket, '-f', this.server.config, 'start-server'])
+      const started = await this.runner.run(tmuxPath, ['-S', this.server.socket, '-f', this.server.config, 'start-server'])
       if (started.status !== 0) {
         throw new TerminalRuntimeError('TERMINAL_RUNTIME_UNAVAILABLE', sanitizeCommandError('tmux 服务器启动失败', started.stderr))
       }
-      const options = this.runner.run(tmuxPath, ['-S', this.server.socket, ...SERVER_OPTION_ARGUMENTS])
+      const options = await this.runner.run(tmuxPath, ['-S', this.server.socket, ...SERVER_OPTION_ARGUMENTS])
       if (options.status !== 0) {
         throw new TerminalRuntimeError('TERMINAL_RUNTIME_UNAVAILABLE', sanitizeCommandError('tmux 服务器选项写入失败', options.stderr))
       }
@@ -419,8 +420,8 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     return this.serverReady
   }
 
-  private readPanePid(name: string): number | null {
-    const result = this.runner.run(this.tmuxPath!, ['-S', this.server.socket, 'display-message', '-p', '-t', name, '#{pane_pid}'])
+  private async readPanePid(name: string): Promise<number | null> {
+    const result = await this.runner.run(this.tmuxPath!, ['-S', this.server.socket, 'display-message', '-p', '-t', name, '#{pane_pid}'])
     if (result.status !== 0) return null
     const pid = Number.parseInt(result.stdout.trim(), 10)
     return Number.isSafeInteger(pid) && pid > 0 ? pid : null
@@ -477,8 +478,8 @@ export function tmuxSessionName(runtimeSessionKey: string): string {
   return `codingns4dsh-${digest}`
 }
 
-function runCommand(command: string, args: readonly string[]): TmuxCommandResult {
-  return spawnSync(command, args, { encoding: 'utf8', windowsHide: true, shell: false })
+async function runCommand(command: string, args: readonly string[]): Promise<TmuxCommandResult> {
+  return runAsyncCommand(spawnSync, command, args, { timeout: 3_000 }, false)
 }
 
 export function detectTmuxPath(platform: string, pathValue = process.env.PATH): string | null {

@@ -1,3 +1,4 @@
+import { runAsyncCommand } from './process-utils.js'
 import readline from 'node:readline'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -125,7 +126,7 @@ export class KimiCliDriver extends StandardStreamDriver {
     const detection = await this.detect()
     const command = detection.command
     if (command === null) throw new Error('Kimi CLI 未安装')
-    this.detectSyntax(command)
+    await this.detectSyntax(command)
     const args = this.legacySyntax ? ['wire', '--output-format', 'stream-json'] : ['--wire']
     if (input.providerSessionId) args.push(this.legacySyntax ? '--resume' : '--session', input.providerSessionId)
     else if (this.legacySyntax) args.push('--new-session')
@@ -230,9 +231,9 @@ export class KimiCliDriver extends StandardStreamDriver {
     }
   }
 
-  private detectSyntax(command: string): void {
+  private async detectSyntax(command: string): Promise<void> {
     try {
-      const result = this.runSpawnSync(command, ['--help'], { encoding: 'utf8', timeout: 5_000, windowsHide: true, shell: process.platform === 'win32', env: commandEnvironment(command) })
+      const result = await runAsyncCommand(this.runSpawnSync, command, ['--help'], { encoding: 'utf8', timeout: 5_000, windowsHide: true, shell: process.platform === 'win32', env: commandEnvironment(command) })
       const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.toLowerCase()
       this.legacySyntax = /(?:^|\s)wire(?:\s|$)/u.test(output) && !output.includes('--wire')
     } catch {

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { resolveCommandPath, WINDOWS } from './process-utils.js'
+import { WINDOWS } from './process-utils.js'
 
 /**
  * 桌面端 Agent 应用自带的 CLI 运行时。
@@ -129,7 +129,6 @@ export function resolveZCodeDesktopRuntime(): CodingNsDesktopAppRuntime | null {
 
 /** 启动桌面端 CLI 使用的 Node 运行时；桌面 Host 自身是 Electron，需要显式以 Node 方式复用。 */
 export function desktopCliRuntimeCommand(): { command: string; env: Readonly<Record<string, string>> } {
-  const node = resolveCommandPath('node')
-  if (node !== null) return { command: node, env: {} }
+  // 直接复用已运行的 Node，避免发现应用时再次启动登录 Shell。
   return { command: process.execPath, env: process.versions.electron !== undefined ? { ELECTRON_RUN_AS_NODE: '1' } : {} }
 }

@@ -2,6 +2,8 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync, type SpawnSyncOptions } from 'node:child_process'
+import { runAsyncCommand } from './process-utils.js'
+import { readRecentLogTails } from './log-files.js'
 import type { CliSubscriptionUsage } from '../../shared/contracts/subscription.js'
 
 type SpawnSyncLike = typeof spawnSync
@@ -29,7 +31,8 @@ export class QoderSubscriptionService {
   private readonly runSpawnSync: SpawnSyncLike
   private readonly homeDirectory: string
   private readonly logsDirectory: string
-  private command: string | null = null
+  private pending: Promise<CliSubscriptionUsage | null> | undefined
+  private cliRefreshAttempted = false
 
   constructor(options: QoderSubscriptionOptions = {}) {
     this.variant = options.variant ?? 'qoder-cn'
@@ -39,23 +42,46 @@ export class QoderSubscriptionService {
     this.logsDirectory = options.logsDirectory ?? join(this.homeDirectory, this.variant === 'qoder-cn' ? '.qoder-cn' : '.qoder', 'logs', 'runs')
   }
 
-  async read(): Promise<CliSubscriptionUsage | null> {
+  read(): Promise<CliSubscriptionUsage | null> {
+    this.pending ??= this.readUsage().finally(() => { this.pending = undefined })
+    return this.pending
+  }
+
+  private async readUsage(): Promise<CliSubscriptionUsage | null> {
     // 先读已经存在的最新快照，避免每次打开订阅浮层都拉起 CLI。
-    const cached = readLatestQoderQuota(this.logsDirectory, this.variant)
+    const cached = await readLatestQoderQuotaAsync(this.logsDirectory, this.variant)
     if (cached !== null) return cached
-    // 首次安装或日志轮换后用 CLI 的只读目录命令触发一次官方刷新。
-    this.command ??= detectQoderCommand(this.runSpawnSync, this.binaries, this.variant, this.homeDirectory)
-    if (this.command === null) return null
+    if (this.cliRefreshAttempted) return null
+    this.cliRefreshAttempted = true
+    // 缺少日志时最多触发一次 CLI 刷新；周期额度查询不能不断重跑安装探测。
+    // 用户手动重新检测或修改订阅设置时会重建读取器，允许重新尝试。
+    const command = await detectQoderCommand(this.runSpawnSync, this.binaries, this.variant, this.homeDirectory)
+    if (command === null) return null
     try {
-      this.runSpawnSync(this.command, ['--list-models'], {
+      await runAsyncCommand(this.runSpawnSync, command, ['--list-models'], {
         encoding: 'utf8', timeout: 20_000, windowsHide: true,
         env: qoderEnvironment(this.variant, process.env),
       } as SpawnSyncOptions & { encoding: 'utf8' })
     } catch { return null }
-    return readLatestQoderQuota(this.logsDirectory, this.variant)
+    return readLatestQoderQuotaAsync(this.logsDirectory, this.variant)
   }
 }
 
+/** 生产路径只异步读取近期日志尾部，避免对所有历史 run 做同步全文件扫描。 */
+export async function readLatestQoderQuotaAsync(logsDirectory: string, variant: QoderVariant = 'qoder-cn'): Promise<CliSubscriptionUsage | null> {
+  for await (const text of readRecentLogTails(logsDirectory, 'qodercli.log')) {
+    const matches = [...text.matchAll(/\[qoderApi\]\s+GET\s+[^\n]*\/api\/v2\/quota\/usage\s+response:\s+(\{.*\})\s*$/gmu)]
+    for (const match of matches.reverse()) {
+      try {
+        const usage = normalizeQoderQuota(JSON.parse(match[1]!), variant)
+        if (usage !== null) return usage
+      } catch { /* 跳过不完整日志行。 */ }
+    }
+  }
+  return null
+}
+
+/** 兼容已有离线解析调用；运行时查询使用上方的有界异步入口。 */
 export function readLatestQoderQuota(logsDirectory: string, variant: QoderVariant = 'qoder-cn'): CliSubscriptionUsage | null {
   let candidates: string[]
   try {
@@ -127,10 +153,10 @@ function normalizeQoderQuota(value: unknown, variant: QoderVariant): CliSubscrip
   }
 }
 
-function detectQoderCommand(run: SpawnSyncLike, binaries: readonly string[], variant: 'qoder' | 'qoder-cn', homeDirectory: string): string | null {
+async function detectQoderCommand(run: SpawnSyncLike, binaries: readonly string[], variant: 'qoder' | 'qoder-cn', homeDirectory: string): Promise<string | null> {
   for (const command of binaries) {
     try {
-      const result = run(command, ['--version'], {
+      const result = await runAsyncCommand(run, command, ['--version'], {
         encoding: 'utf8', timeout: 5_000, windowsHide: true,
         env: qoderEnvironment(variant, process.env, homeDirectory),
       } as SpawnSyncOptions & { encoding: 'utf8' })

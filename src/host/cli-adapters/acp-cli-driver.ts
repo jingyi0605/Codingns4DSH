@@ -38,7 +38,7 @@ export interface AcpCliDriverOptions {
   /** 产品通过原生 ACP 请求设置会话模型、权限和思考强度；失败时禁止继续发送 prompt。 */
   readonly configureSession?: (rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput) => Promise<void>
   /** 读取 Provider 自己公开的只读模型目录；返回 null 表示本次读取失败。 */
-  readonly readModelCatalog?: (command: string, runSpawnSync: typeof spawnSync) => CodingNsCliModelCatalog | null
+  readonly readModelCatalog?: (command: string, runSpawnSync: typeof spawnSync, environment: Readonly<Record<string, string | undefined>>) => CodingNsCliModelCatalog | null | Promise<CodingNsCliModelCatalog | null>
   readonly id: string
   readonly name: string
   /** 只保留已经验证的能力，默认不声明 usage/fork/压缩/权限交互。 */
@@ -116,23 +116,16 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.configureSession = options.configureSession
     this.readModelCatalog = options.readModelCatalog
     this.fallbackCatalog = options.fallbackCatalog ?? emptyCatalog()
-    const baseSpawnSync = options.spawnSync ?? spawnSync
+    this.runSpawnSync = options.spawnSync ?? spawnSync
     this.environment = options.environment ?? {}
     this.sessionEnvironment = { ...this.environment, ...(options.sessionEnvironment ?? {}) }
-    this.runSpawnSync = Object.keys(this.environment).length === 0
-      ? baseSpawnSync
-      : ((command, args, spawnOptions) => baseSpawnSync(command, args, {
-        ...spawnOptions,
-        // detectBinary 先注入 commandEnvironment；Provider 的显式环境必须最后覆盖它。
-        env: { ...process.env, ...(spawnOptions?.env ?? {}), ...this.environment },
-      })) as typeof spawnSync
     this.runSpawn = options.spawn ?? spawn
     this.probeReason = options.probeReason ?? 'Provider 未公开可安全读取的会话索引，未执行有副作用的探测'
     this.readQuestionRequest = options.readQuestionRequest ?? readStandardQuestionRequest
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
-    const result = await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync })
+    const result = await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync, environment: this.environment })
     if (result.installed) this.cachedBinary = result.command
     return result
   }
@@ -142,7 +135,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
       const command = (await this.detect()).command
       if (command === null) return this.fallbackCatalog
       try {
-        const catalog = this.readModelCatalog(command, this.runSpawnSync)
+        const catalog = await this.readModelCatalog(command, this.runSpawnSync, this.environment)
         if (catalog !== null && catalog.groups.some((group) => group.models.length > 0)) return catalog
       } catch { /* 目录读取失败时继续使用明确的静态回退。 */ }
     }

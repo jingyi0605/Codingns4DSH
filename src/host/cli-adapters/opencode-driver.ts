@@ -1,3 +1,4 @@
+import { runAsyncCommand } from './process-utils.js'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -73,8 +74,10 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
+    // 周期访问由注册表缓存，真正进入 detect 表示首次检测或用户主动刷新。
+    this.cachedBinary = null
     const server = await this.findServer()
-    const binary = this.findBinary()
+    const binary = await this.findBinary()
     if (server !== null) return { installed: true, version: server.version ?? binary?.version ?? null, command: server.url }
     if (binary !== null) return { installed: true, version: binary.version, command: binary.command }
     return { installed: false, version: null, command: null }
@@ -121,10 +124,10 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     }
     if (input.signal?.aborted) throw new Error('Skill 目录读取已取消')
     // 浏览目录不启动 Server；CLI 的 debug skill 使用与 Server 相同的 Skill 服务。
-    const binary = this.findBinary()
+    const binary = await this.findBinary()
     if (binary === null) return []
     try {
-      const result = this.runSpawnSync(binary.command, ['debug', 'skill'], {
+      const result = await runAsyncCommand(this.runSpawnSync, binary.command, ['debug', 'skill'], {
         cwd, encoding: 'utf8', timeout: 5_000, maxBuffer: 8 * 1024 * 1024,
         windowsHide: true, shell: WINDOWS, env: commandEnvironment(binary.command),
       })
@@ -476,7 +479,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   }
 
   private async startServer(cwd: string): Promise<string | null> {
-    const command = this.cachedBinary?.command ?? this.findBinary()?.command
+    const command = this.cachedBinary?.command ?? (await this.findBinary())?.command
     if (command === null || command === undefined) return null
     const port = 4096 + this.managedServers.size
     const url = `http://127.0.0.1:${port}`
@@ -532,11 +535,11 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     return null
   }
 
-  private findBinary(): { command: string; version: string | null } | null {
+  private async findBinary(): Promise<{ command: string; version: string | null } | null> {
     if (this.cachedBinary !== null) return this.cachedBinary
     for (const command of this.binaries) {
       try {
-        const result = this.runSpawnSync(command, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS })
+        const result = await runAsyncCommand(this.runSpawnSync, command, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS })
         const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
         if (result.status === 0) {
           const version = output.match(/\d+\.\d+\.\d+/u)?.[0] ?? null
@@ -544,10 +547,10 @@ export class OpenCodeDriver implements CodingNsCliDriver {
           return this.cachedBinary
         }
       } catch { /* PATH 中没有命令 */ }
-      const resolved = resolveCommandPath(command, this.runSpawnSync)
+      const resolved = await resolveCommandPath(command, this.runSpawnSync)
       if (resolved === null) continue
       try {
-        const result = this.runSpawnSync(resolved, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS, env: commandEnvironment(resolved) })
+        const result = await runAsyncCommand(this.runSpawnSync, resolved, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS, env: commandEnvironment(resolved) })
         const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
         if (result.status === 0) {
           const version = output.match(/\d+\.\d+\.\d+/u)?.[0] ?? null

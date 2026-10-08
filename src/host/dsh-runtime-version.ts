@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { runAsyncCommand } from './cli-adapters/process-utils.js'
 import { fileURLToPath } from 'node:url'
 import {
   assertSupportedDshVersion,
@@ -21,26 +22,28 @@ const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u
  * 根目录，需要直接从该目录的 node_modules 读取实际加载的包版本；只有
  * 这些路径都无法提供版本时才回退到 PATH 中的 `dsh --version`。
  */
-export function detectRuntimeDshVersion(): string {
-  const candidates = [
-    process.env.DSH_RUNTIME_VERSION,
-    process.env.DSH_VERSION,
-    ...process.argv.slice(1).map(readDshVersionFromRuntimeRoot),
-    ...process.argv.slice(1).map(readDshVersionFromModule),
-    ...readDshVersionsFromDesktopResources(),
-    readDshPackageVersion(process.argv[1]),
-    readDshPackageVersion(fileURLToPath(import.meta.url)),
-    readDshVersionFromCommand(),
+export async function detectRuntimeDshVersion(): Promise<string> {
+  // 按优先级惰性读取；原先数组会先执行全部探测，即使环境变量已给出版本也会启动 CLI。
+  const probes = [
+    () => process.env.DSH_RUNTIME_VERSION,
+    () => process.env.DSH_VERSION,
+    ...process.argv.slice(1).map((path) => () => readDshVersionFromRuntimeRoot(path)),
+    ...process.argv.slice(1).map((path) => () => readDshVersionFromModule(path)),
+    () => readDshVersionsFromDesktopResources().find((value) => value !== undefined && VERSION_PATTERN.test(value)),
+    () => readDshPackageVersion(process.argv[1]),
+    () => readDshPackageVersion(fileURLToPath(import.meta.url)),
+    () => readDshVersionFromCommand(),
   ]
-  const version = candidates.find((candidate) => candidate !== undefined && VERSION_PATTERN.test(candidate))
-  if (version === undefined) {
-    throw new CodingNsDshError(
+  for (const probe of probes) {
+    const version = await probe()
+    if (version === undefined || !VERSION_PATTERN.test(version)) continue
+    assertSupportedDshVersion(version)
+    return version
+  }
+  throw new CodingNsDshError(
       CODINGNS_DSH_ERROR_CODES.DSH_VERSION_UNSUPPORTED,
       '无法读取当前 DSH 版本；为避免 API 不兼容，已拒绝启用 codingns4dsh',
     )
-  }
-  assertSupportedDshVersion(version)
-  return version
 }
 
 /** Host 启动后供 Web Client 复用的版本注入名称。 */
@@ -130,12 +133,13 @@ function readDshPackageManifestVersion(manifestPath: string): string | undefined
   return undefined
 }
 
-function readDshVersionFromCommand(): string | undefined {
+async function readDshVersionFromCommand(): Promise<string | undefined> {
   try {
-    const result = spawnSync(process.platform === 'win32' ? 'dsh.cmd' : 'dsh', ['--version'], {
+    const result = await runAsyncCommand(spawnSync, process.platform === 'win32' ? 'dsh.cmd' : 'dsh', ['--version'], {
       encoding: 'utf8',
       timeout: 2_000,
       windowsHide: true,
+      shell: process.platform === 'win32',
     })
     if (result.status !== 0) return undefined
     const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim()

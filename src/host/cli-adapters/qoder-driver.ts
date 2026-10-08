@@ -1,5 +1,9 @@
+import { runAsyncCommand } from './process-utils.js'
 import { spawn, spawnSync, type SpawnSyncOptions } from 'node:child_process'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { createReadStream } from 'node:fs'
+import { createInterface } from 'node:readline'
+import { setImmediate } from 'node:timers/promises'
+import { readRecentLogTails } from './log-files.js'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type {
@@ -139,12 +143,12 @@ export class QoderCliDriver implements CodingNsCliDriver {
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
     if (this.cachedBinary !== null) {
-      const version = readVersion(this.runSpawnSync, this.cachedBinary, this.baseEnvironment)
+      const version = await readVersion(this.runSpawnSync, this.cachedBinary, this.baseEnvironment)
       if (version !== null) return { installed: true, version, command: this.cachedBinary }
       this.cachedBinary = null
     }
     for (const binary of this.binaries) {
-      const version = readVersion(this.runSpawnSync, binary, this.baseEnvironment)
+      const version = await readVersion(this.runSpawnSync, binary, this.baseEnvironment)
       if (version === null) continue
       this.cachedBinary = binary
       return { installed: true, version, command: binary }
@@ -158,7 +162,7 @@ export class QoderCliDriver implements CodingNsCliDriver {
     // Qoder CLI 自己公开了只读 --list-models，不能再用 ACP session/new 冒充目录探测。
     // 该命令在缓存命中和联网刷新两种情况下都返回同一张用户可用目录表。
     try {
-      const result = this.runSpawnSync(detected.command, ['--list-models'], {
+      const result = await runAsyncCommand(this.runSpawnSync, detected.command, ['--list-models'], {
         encoding: 'utf8', timeout: 15_000, windowsHide: true, env: this.baseEnvironment,
       } as SpawnSyncOptions & { encoding: 'utf8' })
       if (result.status === 0) {
@@ -246,7 +250,7 @@ export class QoderCliDriver implements CodingNsCliDriver {
       // 报告 usage；统一合并后只投影一条，避免不完整通知覆盖真实上下文。
       const usage = mergeQoderUsage(
         mergeQoderUsage(streamedUsage, qoderUsageChunk(promptResult)),
-        readQoderTranscriptUsage(this.homeDirectory, this.profile, input.cwd, session.acpSessionId),
+        await readQoderTranscriptUsage(this.homeDirectory, this.profile, input.cwd, session.acpSessionId),
       )
       if (usage !== null) yield usage
       yield { type: 'finish', reason: qoderPromptReason(promptResult, input.signal) }
@@ -410,9 +414,9 @@ function qoderPermissionMode(permission: CodingNsCliPermissionState | undefined)
   return permission.sandboxMode === 'danger-full-access' ? 'bypass_permissions' : 'dont_ask'
 }
 
-function readVersion(run: typeof spawnSync, command: string, env: Readonly<Record<string, string | undefined>>): string | null {
+async function readVersion(run: typeof spawnSync, command: string, env: Readonly<Record<string, string | undefined>>): Promise<string | null> {
   try {
-    const result = run(command, ['--version'], {
+    const result = await runAsyncCommand(run, command, ['--version'], {
       encoding: 'utf8', timeout: 5_000, windowsHide: true, env,
     } as SpawnSyncOptions & { encoding: 'utf8' })
     if (result.status !== 0) return null
@@ -580,57 +584,53 @@ function mergeQoderUsage(primary: QoderUsageEvent | null, fallback: QoderUsageEv
  * Qoder 不保证 ACP 终态携带完整 usage。CLI 会把 assistant message 的原始 usage
  * 写入 ~/.qoder(-cn)/projects/<cwd>/<session>.jsonl，作为同一回合的只读后备来源。
  */
-function readQoderTranscriptUsage(
+async function readQoderTranscriptUsage(
   homeDirectory: string,
   profile: QoderCliProfile,
   cwd: string | undefined,
   sessionId: string,
-): QoderUsageEvent | null {
+): Promise<QoderUsageEvent | null> {
   if (!/^[A-Za-z0-9._-]+$/u.test(sessionId)) return null
   const projectKey = resolve(cwd ?? process.cwd()).replace(/[\\/]/gu, '-')
   const path = join(homeDirectory, profile.userConfigDirectory, 'projects', projectKey, `${sessionId}.jsonl`)
-  let lines: string[]
-  try {
-    lines = readFileSync(path, 'utf8').split(/\r?\n/u).filter((line) => line.trim() !== '')
-  } catch {
-    return null
-  }
+  const input = createReadStream(path, { encoding: 'utf8' })
+  const lines = createInterface({ input, crlfDelay: Infinity })
+  // readline 不转发输入流的 error；交给迭代器结束后的检查处理。
+  let readFailed = false
+  input.on('error', () => { readFailed = true; lines.close() })
   // Qoder 的 runtime-config 优先；当前 CLI 版本常把容量只写进 qodercli.log 的
   // auto-compact 记录，因此没有 runtime-config 时再按同一 Provider 会话回读日志。
   let contextWindow: number | undefined
-  for (const line of lines) {
-    try {
-      const entry: unknown = JSON.parse(line)
-      if (!isRecord(entry) || entry.type !== 'runtime-config') continue
+  let latest: QoderUsageEvent | null = null
+  let count = 0
+  try {
+    for await (const line of lines) {
+      if (++count % 128 === 0) await setImmediate()
+      const entry = parseTranscriptLine(line)
+      if (entry === null) continue
       const value = entry.contextWindow
-      if (typeof value === 'number' && Number.isFinite(value) && value > 0) contextWindow = value
-    } catch {
-      // 下面的 usage 扫描会再次跳过同一条损坏记录。
-    }
-  }
-  contextWindow ??= readQoderLogContextWindow(homeDirectory, profile, sessionId)
-  for (const line of lines.reverse()) {
-    try {
-      const entry: unknown = JSON.parse(line)
-      if (!isRecord(entry)) continue
+      if (entry.type === 'runtime-config' && typeof value === 'number' && Number.isFinite(value) && value > 0) contextWindow = value
       const message = isRecord(entry.message) ? entry.message : entry
       if (!isRecord(message.usage)) continue
       const usage = qoderUsageChunk(message.usage)
-      if (usage !== null && usage.type === 'usage' && contextWindow !== undefined && usage.contextWindow === undefined) {
-        const contextTokens = usage.contextTokens
-          ?? (usage.contextUsageRatio === undefined ? undefined : Math.round(usage.contextUsageRatio * contextWindow))
-        return {
-          ...usage,
-          contextWindow,
-          ...(contextTokens === undefined ? {} : { contextTokens }),
-        }
-      }
-      if (usage !== null) return usage
-    } catch {
-      // transcript 允许尾部存在未完成 JSON；跳过损坏行继续查找最近完整消息。
+      if (usage !== null) latest = usage
     }
+  } catch { readFailed = true }
+  finally { lines.close(); input.destroy() }
+  if (readFailed || latest === null) return null
+  contextWindow ??= await readQoderLogContextWindow(homeDirectory, profile, sessionId)
+  if (contextWindow !== undefined && latest.contextWindow === undefined) {
+    const contextTokens = latest.contextTokens
+      ?? (latest.contextUsageRatio === undefined ? undefined : Math.round(latest.contextUsageRatio * contextWindow))
+    return { ...latest, contextWindow, ...(contextTokens === undefined ? {} : { contextTokens }) }
   }
-  return null
+  return latest
+}
+
+function parseTranscriptLine(line: string): Record<string, unknown> | null {
+  // transcript 尾部允许半条 JSON，只保留最后一条完整用量，不保留全部会话正文。
+  try { const value: unknown = JSON.parse(line); return isRecord(value) ? value : null }
+  catch { return null }
 }
 
 /**
@@ -641,26 +641,12 @@ function readQoderTranscriptUsage(
  * `[auto-compact][session:<id>] ... window=200000`。该值是 Provider 的
  * 实际运行窗口，不能用插件自己的默认值替代。
  */
-function readQoderLogContextWindow(homeDirectory: string, profile: QoderCliProfile, sessionId: string): number | undefined {
+async function readQoderLogContextWindow(homeDirectory: string, profile: QoderCliProfile, sessionId: string): Promise<number | undefined> {
   const logsDirectory = join(homeDirectory, profile.userConfigDirectory, 'logs', 'runs')
-  let directories: string[]
-  try {
-    directories = readdirSync(logsDirectory)
-      .map((name) => join(logsDirectory, name))
-      .filter((path) => {
-        try { return statSync(path).isDirectory() } catch { return false }
-      })
-      .sort()
-      .reverse()
-  } catch {
-    return undefined
-  }
   const escapedSessionId = sessionId.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
   const autoCompact = new RegExp(`\\[auto-compact\\]\\[session:${escapedSessionId}\\][^\\n]*?\\bwindow=(\\d+)`, 'gu')
   const runtimeConfig = new RegExp(`session.runtime_config[^\\n]*?session=${escapedSessionId}[^\\n]*?context_window=(\\d+)`, 'gu')
-  for (const directory of directories) {
-    let log: string
-    try { log = readFileSync(join(directory, 'qodercli.log'), 'utf8') } catch { continue }
+  for await (const log of readRecentLogTails(logsDirectory, 'qodercli.log')) {
     const values = [...log.matchAll(autoCompact), ...log.matchAll(runtimeConfig)]
       .map((match) => Number(match[1]))
       .filter((value) => Number.isSafeInteger(value) && value > 0)

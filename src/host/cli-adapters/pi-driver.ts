@@ -1,3 +1,4 @@
+import { runAsyncCommand } from './process-utils.js'
 import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -65,7 +66,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
     } catch { /* 旧版 Pi 没有模型 RPC 时继续读取表格。 */ }
     finally { clearTimeout(timer); rpc.dispose() }
     try {
-      const result = this.runSpawnSync(detection.command!, ['--list-models'], { encoding: 'utf8', timeout: 12_000, windowsHide: true, shell: WINDOWS, env: commandEnvironment(detection.command!) })
+      const result = await runAsyncCommand(this.runSpawnSync, detection.command!, ['--list-models'], { encoding: 'utf8', timeout: 12_000, windowsHide: true, shell: WINDOWS, env: commandEnvironment(detection.command!) })
       const catalog = parsePiCliCatalog(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
       if (catalog.groups.length > 0) return catalog
     } catch { /* 旧版 Pi 没有 --list-models。 */ }

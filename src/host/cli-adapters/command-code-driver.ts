@@ -1,3 +1,4 @@
+import { runAsyncCommand } from './process-utils.js'
 import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -475,19 +476,19 @@ export class CommandCodeDriver implements CodingNsCliDriver {
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
     for (const command of this.binaries) {
-      const direct = this.detectCommand(command)
+      const direct = await this.detectCommand(command)
       if (direct !== null) return direct
-      const resolved = resolveCommandPath(command, this.runSpawnSync)
+      const resolved = await resolveCommandPath(command, this.runSpawnSync)
       if (resolved === null || resolved === command) continue
-      const fallback = this.detectCommand(resolved)
+      const fallback = await this.detectCommand(resolved)
       if (fallback !== null) return fallback
     }
     return { installed: false, version: null, command: null }
   }
 
-  private detectCommand(command: string): { installed: true; version: string; command: string } | null {
+  private async detectCommand(command: string): Promise<{ installed: true; version: string; command: string } | null> {
     try {
-      const result = this.runSpawnSync(command, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS, env: commandEnvironment(command) })
+      const result = await runAsyncCommand(this.runSpawnSync, command, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS, env: commandEnvironment(command) })
       const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
       const version = output.match(/\d+\.\d+\.\d+/u)?.[0] ?? null
       if (result.status === 0 && version !== null) {
@@ -506,7 +507,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     if (!detection.installed || detection.command === null) return emptyCatalog()
     let stdout = ''
     try {
-      const result = this.runSpawnSync(detection.command, ['--list-models'], { encoding: 'utf8', timeout: 12_000, windowsHide: true, shell: WINDOWS, ...(this.cachedEnvironment === undefined ? {} : { env: this.cachedEnvironment }) })
+      const result = await runAsyncCommand(this.runSpawnSync, detection.command, ['--list-models'], { encoding: 'utf8', timeout: 12_000, windowsHide: true, shell: WINDOWS, ...(this.cachedEnvironment === undefined ? {} : { env: this.cachedEnvironment }) })
       stdout = result.stdout ?? ''
     } catch {
       return emptyCatalog()
@@ -537,7 +538,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     // status --json 反映 CLI 当前真实模型；配置文件可能仍是旧值，优先使用运行时状态。
     let statusModel: string | null = null
     try {
-      const status = this.runSpawnSync(detection.command, ['status', '--json'], { encoding: 'utf8', timeout: 5_000, windowsHide: true, shell: WINDOWS, ...(this.cachedEnvironment === undefined ? {} : { env: this.cachedEnvironment }) })
+      const status = await runAsyncCommand(this.runSpawnSync, detection.command, ['status', '--json'], { encoding: 'utf8', timeout: 5_000, windowsHide: true, shell: WINDOWS, ...(this.cachedEnvironment === undefined ? {} : { env: this.cachedEnvironment }) })
       const parsed = parseJson(status.stdout ?? '')
       statusModel = typeof parsed?.model === 'string' && parsed.model.trim() !== '' ? parsed.model.trim() : null
     } catch { /* 状态读取失败时回退配置文件 */ }
@@ -553,7 +554,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     const command = this.cachedBinary ?? this.binaries[0]
     if (command === undefined) return null
     try {
-      const result = this.runSpawnSync(command, ['status', '--json'], {
+      const result = await runAsyncCommand(this.runSpawnSync, command, ['status', '--json'], {
         cwd: workspacePath,
         encoding: 'utf8',
         timeout: 5_000,

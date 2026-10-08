@@ -46,7 +46,7 @@ export interface CodingNsCliSessionProbeResult {
  */
 export interface CodingNsCliDriver {
   readonly descriptor: Omit<CodingNsCliAdapterDescriptor, 'installed' | 'enabled' | 'version' | 'command'>
-  /** Host 启动后是否应在后台预热模型目录。默认关闭，避免拉起所有外部 CLI。 */
+  /** @deprecated 兼容旧驱动声明；模型统一按首次使用加载，启动不再预热。 */
   readonly warmModelCatalog?: boolean
   /** 驱动是否已经自行维护 Provider turn 的 step 边界。 */
   readonly supportsSegmentedTurns?: boolean

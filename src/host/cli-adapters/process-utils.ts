@@ -1,5 +1,8 @@
-import { spawnSync, type ChildProcessByStdio } from 'node:child_process'
-import { dirname } from 'node:path'
+import { execFile, spawn, spawnSync, type ChildProcessByStdio, type SpawnSyncOptions, type SpawnSyncReturns } from 'node:child_process'
+import { access } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { dirname, join } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 
 /**
@@ -17,6 +20,65 @@ interface KillableChild {
 /** Windows 的 npm CLI 通常是 .cmd 包装器，必须经由 shell 才能启动。 */
 export const WINDOWS = process.platform === 'win32'
 let loginShellPath: string | undefined
+let loginShellLookup: Promise<void> | undefined
+let commandEnvironmentRevision = 0
+let runningCommands = 0
+const commandQueue: Array<() => void> = []
+const commandSignals = new AsyncLocalStorage<AbortSignal>()
+
+/** 探测生命周期向下透传，插件停用时取消运行中及排队中的短命令。 */
+export function withCommandSignal<T>(signal: AbortSignal, task: () => T): T {
+  return commandSignals.run(signal, task)
+}
+
+/** 短命令统一异步执行；旧的同步注入点仅用于不启动进程的测试替身。 */
+export async function runAsyncCommand(
+  run: typeof spawnSync,
+  command: string,
+  args: readonly string[],
+  options: SpawnSyncOptions = {},
+  limitConcurrency = true,
+): Promise<SpawnSyncReturns<string>> {
+  if (run !== spawnSync) return run(command, args, { ...options, encoding: 'utf8' })
+  const signal = commandSignals.getStore()
+  signal?.throwIfAborted()
+  // 安装探测、模型与额度命令共用两条执行通道，避免首轮并发拉起十几个 CLI。
+  if (limitConcurrency) await new Promise<void>((resolve) => {
+    const enter = (): void => { runningCommands += 1; resolve() }
+    if (runningCommands < 2) enter()
+    else commandQueue.push(enter)
+  })
+  const invocation = options.shell === true ? windowsShellInvocation(command, args) : { command, args }
+  return new Promise<SpawnSyncReturns<string>>((resolve) => {
+    signal?.throwIfAborted()
+    const child = execFile(invocation.command, [...invocation.args], {
+      encoding: 'utf8',
+      timeout: options.timeout ?? 10_000,
+      maxBuffer: options.maxBuffer ?? 4 * 1024 * 1024,
+      killSignal: 'SIGKILL',
+      windowsHide: true,
+      ...(signal === undefined ? {} : { signal }),
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      ...(options.env === undefined ? {} : { env: options.env }),
+    }, (error, stdout, stderr) => {
+      resolve({
+        pid: child.pid ?? 0,
+        status: error === null ? 0 : typeof error.code === 'number' ? error.code : null,
+        signal: error?.signal ?? null,
+        stdout, stderr, output: [null, stdout, stderr],
+        ...(error === null ? {} : { error }),
+      })
+    })
+    child.stdin?.end(options.input)
+  }).finally(() => { if (limitConcurrency) { runningCommands -= 1; commandQueue.shift()?.() } })
+}
+
+/** 手动重新检测时允许重新读取一次登录环境；平时所有 CLI 共享同一次解析。 */
+export function invalidateCommandEnvironment(): void {
+  commandEnvironmentRevision += 1
+  loginShellLookup = undefined
+  loginShellPath = undefined
+}
 
 /**
  * Windows 的 `.cmd` 入口必须由 cmd.exe 执行，但不能把 argv 直接交给
@@ -46,12 +108,27 @@ function quoteCmdArgument(value: string): string {
  * 桌面应用通常不是从登录终端启动，继承到的 PATH 只有系统目录。
  * 先尝试当前进程的 PATH，失败后再从用户登录 Shell 解析命令位置。
  */
-export function resolveCommandPath(command: string, run: typeof spawnSync = spawnSync): string | null {
+export async function resolveCommandPath(command: string, run: typeof spawnSync = spawnSync): Promise<string | null> {
   if (isAbsoluteCommand(command)) return command
   try {
+    if (!WINDOWS && run === spawnSync) {
+      const revision = commandEnvironmentRevision
+      loginShellLookup ??= (async () => {
+        const result = await runAsyncCommand(run, process.env.SHELL || '/bin/sh', ['-ilc', 'printf "\\n__CODINGNS_PATH__%s\\n" "$PATH"'], { timeout: 3_000 })
+        if (revision !== commandEnvironmentRevision) return
+        loginShellPath = result.stdout.match(/(?:^|\n)__CODINGNS_PATH__(.*?)(?:\n|$)/u)?.[1]?.trim() || process.env.PATH || ''
+      })()
+      await loginShellLookup
+      if (revision !== commandEnvironmentRevision) return resolveCommandPath(command, run)
+      for (const directory of (loginShellPath ?? '').split(':').filter(Boolean)) {
+        const candidate = join(directory, command)
+        try { await access(candidate, constants.X_OK); return candidate } catch { /* 继续检查 PATH。 */ }
+      }
+      return null
+    }
     const result = WINDOWS
-      ? run('where.exe', [command], { encoding: 'utf8', timeout: 3_000, windowsHide: true })
-      : run(process.env.SHELL || '/bin/sh', ['-ilc', 'command -v "$1"; printf "\\n__CODINGNS_PATH__%s\\n" "$PATH"', 'codingns4dsh-command-lookup', command], { encoding: 'utf8', timeout: 3_000, windowsHide: true })
+      ? await runAsyncCommand(run, 'where.exe', [command], { timeout: 3_000 })
+      : await runAsyncCommand(run, process.env.SHELL || '/bin/sh', ['-ilc', 'command -v "$1"; printf "\\n__CODINGNS_PATH__%s\\n" "$PATH"', 'codingns4dsh-command-lookup', command], { timeout: 3_000 })
     if (result.status !== 0) return null
     const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
     const pathMarker = output.match(/(?:^|\n)__CODINGNS_PATH__(.*?)(?:\n|$)/u)?.[1]?.trim()
@@ -72,7 +149,7 @@ export function resolveCommandPath(command: string, run: typeof spawnSync = spaw
 /** 把解析出的 CLI 所在目录补到子进程 PATH，确保 npm shim 的 node shebang 可用。 */
 export function commandEnvironment(command: string): Record<string, string | undefined> {
   const currentPath = loginShellPath ?? process.env.PATH ?? ''
-  if (!isAbsoluteCommand(command)) return { ...process.env }
+  if (!isAbsoluteCommand(command)) return { ...process.env, PATH: currentPath }
   const directory = dirname(command)
   const separator = WINDOWS ? ';' : ':'
   const pathEntries = currentPath.split(separator).filter((entry) => entry.length > 0)
@@ -94,9 +171,9 @@ function isAbsoluteCommand(value: string): boolean {
 export function terminateChildProcess(child: KillableChild, signal: NodeJS.Signals = 'SIGTERM'): void {
   if (WINDOWS && typeof child.pid === 'number' && child.pid > 0) {
     try {
-      spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
-        windowsHide: true,
-      })
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 3_000, stdio: 'ignore' })
+      killer.on('error', () => undefined)
+      killer.unref()
     } catch {
       // taskkill 不可用时继续尝试 Node 的兼容终止路径。
     }

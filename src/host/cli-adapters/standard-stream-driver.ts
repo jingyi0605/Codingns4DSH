@@ -1,3 +1,4 @@
+import { runAsyncCommand } from './process-utils.js'
 import { spawn, spawnSync } from 'node:child_process'
 import readline from 'node:readline'
 import type {
@@ -63,7 +64,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
       const direct = await this.detectCommand(command)
       if (direct !== null) return direct
       if (!this.lookupAfterDetectionFailure) continue
-      const resolved = resolveCommandPath(command, this.runSpawnSync)
+      const resolved = await resolveCommandPath(command, this.runSpawnSync)
       if (resolved === null) continue
       const fallback = await this.detectCommand(resolved, commandEnvironment(resolved))
       if (fallback !== null) return fallback
@@ -76,7 +77,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
   private async detectCommand(command: string, env?: Record<string, string | undefined>): Promise<{ installed: true; version: string; command: string } | null> {
     this.lookupAfterDetectionFailure = false
     try {
-      const result = this.runSpawnSync(command, this.versionArgs, { encoding: 'utf8', timeout: 5_000, windowsHide: true, shell: WINDOWS, ...(env === undefined ? {} : { env }) })
+      const result = await runAsyncCommand(this.runSpawnSync, command, this.versionArgs, { encoding: 'utf8', timeout: 5_000, windowsHide: true, shell: WINDOWS, ...(env === undefined ? {} : { env }) })
       const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
       const version = this.parseVersion(output)
       if (result.status === 0 && version !== null) {
@@ -96,7 +97,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) return emptyCatalog()
     try {
-      const result = this.runSpawnSync(command, this.modelArgs, { encoding: 'utf8', timeout: 12_000, windowsHide: true, shell: WINDOWS, ...(this.cachedEnvironment === undefined ? {} : { env: this.cachedEnvironment }) })
+      const result = await runAsyncCommand(this.runSpawnSync, command, this.modelArgs, { encoding: 'utf8', timeout: 12_000, windowsHide: true, shell: WINDOWS, ...(this.cachedEnvironment === undefined ? {} : { env: this.cachedEnvironment }) })
       if (result.status !== 0) return emptyCatalog()
       return this.parseModels(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
     } catch {

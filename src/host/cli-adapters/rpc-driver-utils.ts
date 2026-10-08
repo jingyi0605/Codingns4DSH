@@ -1,28 +1,29 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import type { CodingNsCliModelCatalog, CodingNsAgentEvent } from '../../shared/contracts/cli-adapter.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
-import { commandEnvironment, resolveCommandPath, WINDOWS } from './process-utils.js'
+import { commandEnvironment, resolveCommandPath, runAsyncCommand, WINDOWS } from './process-utils.js'
 
 export interface RpcBinaryOptions {
   readonly binaries: readonly string[]
   readonly spawnSync?: typeof spawnSync
+  readonly environment?: Readonly<Record<string, string | undefined>>
 }
 
 export async function detectBinary(options: RpcBinaryOptions): Promise<{ installed: boolean; version: string | null; command: string | null }> {
   const run = options.spawnSync ?? spawnSync
   for (const command of options.binaries) {
-    const direct = detectCommand(command)
+    const direct = await detectCommand(command)
     if (direct !== null) return direct
-    const resolved = resolveCommandPath(command, run)
+    const resolved = await resolveCommandPath(command, run)
     if (resolved === null || resolved === command) continue
-    const fallback = detectCommand(resolved)
+    const fallback = await detectCommand(resolved)
     if (fallback !== null) return fallback
   }
   return { installed: false, version: null, command: null }
 
-  function detectCommand(command: string): { installed: true; version: string; command: string } | null {
+  async function detectCommand(command: string): Promise<{ installed: true; version: string; command: string } | null> {
     try {
-      const result = run(command, ['--version'], { encoding: 'utf8', timeout: 3_000, windowsHide: true, shell: WINDOWS, env: commandEnvironment(command) })
+      const result = await runAsyncCommand(run, command, ['--version'], { timeout: 3_000, shell: WINDOWS, env: { ...commandEnvironment(command), ...options.environment } })
       const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
       const version = output.match(/\d+\.\d+(?:\.\d+)?/u)?.[0] ?? null
       if (result.status === 0 && version !== null) return { installed: true, version, command }

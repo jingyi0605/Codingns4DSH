@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { QoderCliDriver, parseQoderModelList } from '../data/build/dist/host/cli-adapters/qoder-driver.js'
-import { readLatestQoderQuota } from '../data/build/dist/host/cli-adapters/qoder-subscription.js'
+import { QoderSubscriptionService, readLatestQoderQuota, readLatestQoderQuotaAsync } from '../data/build/dist/host/cli-adapters/qoder-subscription.js'
 
 function fakeRpcSpawn(onRequest: (request: Record<string, any>, stdout: PassThrough) => void, onOptions?: (options: Record<string, any>) => void) {
   return ((command: string, args: string[], options: Record<string, any>) => {
@@ -425,4 +425,24 @@ test('Qoder CN 订阅读取器解析 CLI 日志中的 quota 余量并脱敏', ()
   assert.equal(internationalUsage?.provider?.id, 'qoder')
   assert.equal(internationalUsage?.provider?.displayName, 'Qoder')
   assert.equal(internationalUsage?.provider?.baseUrl, 'https://openapi.qoder.com')
+})
+
+test('额度日志异步读取尾部，缺少快照时只允许一次 CLI 后备刷新', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'codingns-qoder-async-quota-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const calls: string[] = []
+  const service = new QoderSubscriptionService({ logsDirectory: root, homeDirectory: root, binaries: ['fake-qoder'],
+    spawnSync: ((_command: string, args: string[]) => { calls.push(args[0]!); return { status: 0, stdout: 'qoder 1.1.65', stderr: '' } }) as never,
+  })
+  assert.equal(await service.read(), null)
+  assert.deepEqual(calls, ['--version', '--list-models'])
+  const later = Date.now() + 10 * 60_000
+  t.mock.method(Date, 'now', () => later)
+  await Promise.all([service.read(), service.read()])
+  assert.deepEqual(calls, ['--version', '--list-models'], '定时额度查询不能再次拉起 CLI')
+  const run = join(root, '2026-10-08-run')
+  mkdirSync(run)
+  writeFileSync(join(run, 'qodercli.log'), 'irrelevant\n'.repeat(30_000) + '[qoderApi] GET https://openapi.qoder.com.cn/api/v2/quota/usage response: {"userQuota":{"total":300,"used":2,"remaining":298}}\n')
+  assert.equal((await readLatestQoderQuotaAsync(root))?.primary?.remainingCredits, 298)
+  assert.equal((await service.read())?.primary?.remainingCredits, 298, '新出现的本地快照可以直接恢复')
 })

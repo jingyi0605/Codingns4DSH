@@ -1,3 +1,4 @@
+import { runAsyncCommand } from './cli-adapters/process-utils.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join, isAbsolute, normalize } from 'node:path'
@@ -275,14 +276,14 @@ function rewriteLocation(location: string, proxyUrl: string): string {
 export class NodeDebugPortInspector implements DebugPortInspector {
   async inspect(port: number): Promise<DebugPortProcess | null> {
     const result = process.platform === 'win32'
-      ? spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8', windowsHide: true })
-      : spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpct'], { encoding: 'utf8' })
+      ? await runAsyncCommand(spawnSync, 'netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8', windowsHide: true, timeout: 3_000 }, false)
+      : await runAsyncCommand(spawnSync, 'lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpct'], { encoding: 'utf8', timeout: 3_000 }, false)
     if (result.status !== 0 && result.stdout.trim() === '') return null
     const pid = process.platform === 'win32' ? parseWindowsPid(result.stdout, port) : parsePosixPid(result.stdout)
     if (pid === null) return null
-    const details = spawnSync(process.platform === 'win32' ? 'powershell' : 'ps', process.platform === 'win32'
+    const details = await runAsyncCommand(spawnSync, process.platform === 'win32' ? 'powershell' : 'ps', process.platform === 'win32'
       ? ['-NoProfile', '-Command', `(Get-Process -Id ${pid}).Path`]
-      : ['-o', 'lstart=,command=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true })
+      : ['-o', 'lstart=,command=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true, timeout: 3_000 }, false)
     const lines = details.stdout.trim().split(/\s{2,}|\n/u).map((line) => line.trim()).filter(Boolean)
     const startToken = lines[0] ?? ''
     if (startToken === '') return null
