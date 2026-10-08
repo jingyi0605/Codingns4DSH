@@ -11,6 +11,7 @@ import { AssistantAvatarPackages } from './packages.js'
 interface PreviewLease {
   readonly id: string
   readonly revision: string
+  readonly requestConsent: boolean
   readonly controller: AbortController
   readonly directory: Promise<string>
   readonly ready: Promise<AssistantAvatarInstallation>
@@ -32,14 +33,14 @@ export class AssistantAvatarTemporaryPreviews {
     this.timer.unref()
   }
 
-  async create(lease: string, id: string, revision: string, signal?: AbortSignal): Promise<AssistantAvatarTemporaryPreview> {
+  async create(lease: string, id: string, revision: string, signal?: AbortSignal, requestConsent = false): Promise<AssistantAvatarTemporaryPreview> {
     validateLease(lease); signal?.throwIfAborted(); await this.reap()
     if (this.stopped || this.released.has(lease)) throw new TypeError('临时形象预览已取消')
     if (this.leases.has(lease) || this.leases.size >= 4) throw new TypeError('临时形象预览正在使用，请关闭其他预览后重试')
     const controller = new AbortController()
     const cancellation = signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal])
     const directory = mkdtemp(join(this.root, 'codingns-avatar-preview-'))
-    const entry: PreviewLease = { id, revision, controller, directory, expiresAt: this.now() + this.ttl,
+    const entry: PreviewLease = { id, revision, requestConsent, controller, directory, expiresAt: this.now() + this.ttl,
       ready: directory.then((path) => {
         cancellation.throwIfAborted()
         entry.packages = this.createPackages(path)
@@ -53,6 +54,12 @@ export class AssistantAvatarTemporaryPreviews {
       const model = JSON.parse(JSON.stringify(installed.model).replaceAll(`${ASSISTANT_AVATAR_ASSET_PATH}?`, `${ASSISTANT_AVATAR_TEMPORARY_ASSET_PATH}?lease=${lease}&`))
       return { lease, model: { ...model, id: `preview-${lease}` } }
     } catch (error) { await this.release(lease); throw error }
+  }
+
+  /** 请求内的协议只覆盖该预览，释放或超时后不能继续读取素材。 */
+  hasRequestConsent(lease: string): boolean {
+    const entry = this.leases.get(lease)
+    return entry?.requestConsent === true && entry.expiresAt > this.now()
   }
 
   touch(lease: string): void {

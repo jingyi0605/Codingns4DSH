@@ -113,8 +113,10 @@ export function createAssistantAvatarRuntimeFeature(options: { readonly packages
       const packages = options.packages ?? getAssistantAvatarPackages(context.services)
       const catalog = options.catalog ?? new AssistantAvatarCatalog()
       const temporary = options.temporary ?? new AssistantAvatarTemporaryPreviews(catalog)
-      const requireConsent = (): void => {
-        if (!hasAssistantAvatarConsent(context.services.settings?.get().assistant.appearance?.thirdPartyConsent)) {
+      const requireConsent = (requested?: unknown): void => {
+        // 草稿中的明确同意只授权本次请求；旧客户端继续使用已保存的协议记录。
+        const consent = requested === undefined ? context.services.settings?.get().assistant.appearance?.thirdPartyConsent : requested
+        if (!hasAssistantAvatarConsent(consent)) {
           throw new CodingNsRpcError('CODINGNS_AVATAR_CONSENT_REQUIRED', '请先同意第三方形象使用说明')
         }
       }
@@ -129,16 +131,16 @@ export function createAssistantAvatarRuntimeFeature(options: { readonly packages
       context.resources.add(() => lifetime.abort())
       context.resources.add(() => temporary.dispose())
       if (context.services.rpc !== undefined) context.resources.add(context.services.rpc.register('avatar', async (action, payload, rpcContext) => {
-        const input = payload as { source?: unknown; adapterId?: unknown; id?: unknown; revision?: unknown; licenseAccepted?: unknown; lease?: unknown; engineConsent?: unknown }
+        const input = payload as { source?: unknown; adapterId?: unknown; id?: unknown; revision?: unknown; licenseAccepted?: unknown; lease?: unknown; engineConsent?: unknown; thirdPartyConsent?: unknown }
         const requestedSignal = (rpcContext as { signal?: AbortSignal } | undefined)?.signal
         const signal = requestedSignal === undefined ? lifetime.signal : AbortSignal.any([lifetime.signal, requestedSignal])
         if (action === 'list') return packages.list()
         // 只读探测：未安装时客户端据此决定是否弹出引擎许可确认。
         if (action === 'engineStatus') return readAssistantAvatarEngineStatus()
-        if (action === 'catalog') { requireConsent(); return catalog.list() }
+        if (action === 'catalog') { requireConsent(input?.thirdPartyConsent); return catalog.list() }
         // 撤销协议或连接变为只读后，清理接口仍必须可用。
         if (action === 'releasePreview' && typeof input?.lease === 'string') return temporary.release(input.lease)
-        if (action === 'keepPreview' && typeof input?.lease === 'string') { requireConsent(); return temporary.touch(input.lease) }
+        if (action === 'keepPreview' && typeof input?.lease === 'string') { requireConsent(input.thirdPartyConsent); return temporary.touch(input.lease) }
         // 与原设置写入边界一致，远端只读连接不能借安装接口写入磁盘。
         if (context.services.settingsProvider?.writable === false) throw new CodingNsRpcError('CODINGNS_SETTINGS_READONLY', '当前形象设置为只读')
         // 引擎下载写入 CodingNS 自有目录，不修改 DSH Profile 或插件依赖树。
@@ -149,19 +151,19 @@ export function createAssistantAvatarRuntimeFeature(options: { readonly packages
           return readAssistantAvatarEngineStatus()
         }
         if (action === 'previewCatalog') {
-          requireConsent()
+          requireConsent(input?.thirdPartyConsent)
           if (typeof input?.id !== 'string' || typeof input.revision !== 'string' || typeof input.lease !== 'string') throw new TypeError('临时形象预览参数无效')
-          const preview = await temporary.create(input.lease, input.id, input.revision, signal)
-          try { requireConsent(); signal.throwIfAborted(); return preview }
+          const preview = await temporary.create(input.lease, input.id, input.revision, signal, hasAssistantAvatarConsent(input.thirdPartyConsent))
+          try { requireConsent(input.thirdPartyConsent); signal.throwIfAborted(); return preview }
           catch (error) { await temporary.release(input.lease); throw error }
         }
         if (action === 'installCatalog') {
-          requireConsent()
+          requireConsent(input?.thirdPartyConsent)
           if (input?.licenseAccepted !== true || typeof input.id !== 'string' || typeof input.revision !== 'string') throw new TypeError('请确认所选形象的许可及应用')
           if (input.lease !== undefined && typeof input.lease !== 'string') throw new TypeError('临时形象预览标识无效')
           const installed = input.lease === undefined ? await catalog.install(input.id, input.revision, packages, signal)
             : await temporary.install(input.lease, input.id, input.revision, packages, signal)
-          try { requireConsent(); signal.throwIfAborted(); return installed }
+          try { requireConsent(input.thirdPartyConsent); signal.throwIfAborted(); return installed }
           catch (error) {
             if (installed.created && !context.services.settings?.get().assistant.appearance?.models.some((model) => model.package?.installationId === installed.id)) await packages.remove(installed.id)
             throw error
@@ -192,7 +194,11 @@ export function createAssistantAvatarRuntimeFeature(options: { readonly packages
         }
       }
       const temporaryAssets = async (request: Request): Promise<Response> => {
-        try { requireConsent(); const response = await temporary.handle(request); requireConsent(); return response }
+        // 草稿预览的同意绑定在租约上，不要求为浏览素材提前写入正式配置。
+        const requirePreviewConsent = (): void => {
+          if (!temporary.hasRequestConsent(new URL(request.url).searchParams.get('lease') ?? '')) requireConsent()
+        }
+        try { requirePreviewConsent(); const response = await temporary.handle(request); requirePreviewConsent(); return response }
         catch (error) { return Response.json({ error: 'avatar_temporary_preview_unavailable' }, {
           status: error instanceof CodingNsRpcError ? 403 : 503, headers: { 'Cache-Control': 'no-store' },
         }) }
