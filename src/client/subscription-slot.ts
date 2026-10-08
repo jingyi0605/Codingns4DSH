@@ -1,3 +1,4 @@
+import { startSerialPolling } from './serial-polling.js'
 import { createElement, useEffect, useRef, useState } from 'react'
 import type { ReactElement, RefObject } from 'react'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
@@ -49,7 +50,31 @@ const FALLBACK_LOCALE = {
  * 进程内用量结果缓存：同一适配器/提供商在刷新间隔内直接复用上次结果，
  * 避免每次进入会话或切回同一 Agent 都请求上游；null 结果不缓存，便于刚登录后立刻重试。
  */
-const subscriptionUsageCache = new Map<string, { readonly usage: CliSubscriptionUsage; readonly capturedAt: number }>()
+type UsageCache = Map<string, { readonly usage: CliSubscriptionUsage; readonly capturedAt: number }>
+const usageCaches = new WeakMap<CodingNsRpcClient, UsageCache>()
+const usageLoads = new WeakMap<CodingNsRpcClient, Map<string, Promise<CliSubscriptionUsage | null>>>()
+function usageCache(rpc: CodingNsRpcClient): UsageCache {
+  let cache = usageCaches.get(rpc)
+  if (cache === undefined) { cache = new Map(); usageCaches.set(rpc, cache) }
+  return cache
+}
+
+/** 重置影响同一账号的所有模型额度，不能只删除不含模型的旧缓存键。 */
+export function invalidateSubscriptionUsageCache(cache: Pick<UsageCache, 'keys' | 'delete'>, adapterId: string, providerId: string | null): void {
+  const prefix = `${adapterId}|${providerId ?? ''}|`
+  for (const key of cache.keys()) if (key.startsWith(prefix)) cache.delete(key)
+}
+
+function loadUsage(rpc: CodingNsRpcClient, key: string, payload: unknown): Promise<CliSubscriptionUsage | null> {
+  let loads = usageLoads.get(rpc)
+  if (loads === undefined) { loads = new Map(); usageLoads.set(rpc, loads) }
+  const existing = loads.get(key)
+  if (existing !== undefined) return existing
+  const request = callCliRpc<CliSubscriptionUsage | null>(rpc, 'subscription', payload, AbortSignal.timeout(30_000))
+    .finally(() => { if (loads.get(key) === request) loads.delete(key) })
+  loads.set(key, request)
+  return request
+}
 
 /** 图标重置按钮的悬停/按下/聚焦/禁用只能由注入样式表表达，内联样式无法命中伪类。 */
 const RESET_BUTTON_CSS = '.codingns4dsh-subscription-reset{display:inline-flex;align-items:center;justify-content:center;flex:none;width:26px;height:26px;padding:0;border:1px solid var(--dsw-alias-border-l2,#d9d9d9);border-radius:50%;background:transparent;color:var(--dsw-alias-label-secondary,GrayText);cursor:pointer;transition:background .15s ease,color .15s ease}.codingns4dsh-subscription-reset:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08));color:var(--dsw-alias-label-primary,CanvasText)}.codingns4dsh-subscription-reset:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active,rgba(127,127,127,.14))}.codingns4dsh-subscription-reset:focus-visible{outline:none;box-shadow:0 0 0 var(--dsw-focus-ring-width,2px) var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#1677ff))}.codingns4dsh-subscription-reset:disabled{opacity:.4;cursor:not-allowed}@media (prefers-reduced-motion: reduce){.codingns4dsh-subscription-reset{transition:none}}'
@@ -84,6 +109,7 @@ export function registerSubscriptionSlot(slots: SlotRegistry, rpc: CodingNsRpcCl
 
 function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement | null {
   const t = useCodingNsTranslator(props.locale ?? FALLBACK_LOCALE)
+  const subscriptionUsageCache = usageCache(props.rpc)
   const [usage, setUsage] = useState<CliSubscriptionUsage | null>(null)
   const [adapterId, setAdapterId] = useState<string | null>(null)
   const [providerId, setProviderId] = useState<string | null>(null)
@@ -129,10 +155,10 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     setResetPending(false)
     setResetResult(null)
     setResetError(null)
-    const refresh = async (): Promise<void> => {
+    const refresh = async (signal: AbortSignal): Promise<boolean | void> => {
       setLoading(true)
       try {
-        const selection = await callCliRpc<{ readonly adapterId?: string; readonly providerId?: string; readonly modelId?: string }>(props.rpc, 'session/get', { sessionId })
+        const selection = await callCliRpc<{ readonly adapterId?: string; readonly providerId?: string; readonly modelId?: string }>(props.rpc, 'session/get', { sessionId }, signal)
         const adapterId = selection.adapterId
         if (!active || !isSubscriptionAdapter(adapterId)) {
           if (active) {
@@ -159,7 +185,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
           if (active) setUsage(cached.usage)
           return
         }
-        const next = await callCliRpc<CliSubscriptionUsage | null>(props.rpc, 'subscription', {
+        const next = await loadUsage(props.rpc, cacheKey, {
           adapterId,
           ...(selection.providerId ? { providerId: selection.providerId } : {}),
           ...(selection.modelId ? { modelId: selection.modelId } : {}),
@@ -171,18 +197,18 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
           setEligible(false)
           setUsage(null)
         }
+        return false
       } finally {
         if (active) setLoading(false)
       }
     }
-    refreshRef.current = refresh
-    void refresh()
     const intervalMins = props.getRefreshIntervalMins?.() ?? DEFAULT_SUBSCRIPTION_USAGE_SETTINGS.refreshIntervalMins
-    const timer = intervalMins > 0 ? globalThis.setInterval(() => { void refresh() }, intervalMins * 60_000) : undefined
+    const poll = startSerialPolling(refresh, Math.max(0, intervalMins) * 60_000, { timeoutMs: 30_000 })
+    refreshRef.current = poll.refresh
     return () => {
       active = false
       refreshRef.current = null
-      if (timer !== undefined) globalThis.clearInterval(timer)
+      poll.dispose()
     }
   }, [props.rpc, props.sessionId, props.getRefreshIntervalMins, modelSelectionRevision, adapterRevision])
 
@@ -201,7 +227,6 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
 
   const confirmReset = (): void => {
     if (resetPending || adapterId === null) return
-    const cacheKey = `${adapterId}|${providerId ?? ''}`
     setResetPending(true)
     setResetError(null)
     void (async () => {
@@ -212,7 +237,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         })
         setResetResult(result.outcome)
         // 重置改变了窗口与次数，必须绕过进程内缓存重新读取。
-        subscriptionUsageCache.delete(cacheKey)
+        invalidateSubscriptionUsageCache(subscriptionUsageCache, adapterId, providerId)
         await refreshRef.current?.()
       } catch (error) {
         setResetError(error instanceof Error ? error.message : '')

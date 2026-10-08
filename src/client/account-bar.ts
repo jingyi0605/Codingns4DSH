@@ -11,6 +11,7 @@ import { attachOutsideDismissal } from './popup-dismiss.js'
 import { PEER_HOST_OPEN_EVENT } from './peer-host-connection-button.js'
 import { resolveSettingsAnchor, settingsAnchorContainer, type SettingsAnchorKind } from './settings-anchor.js'
 import { readDshPeerHostPrebootShimState } from '../bootstrap/dsh-peer-host-preboot-shim.js'
+import { startSerialPolling } from './serial-polling.js'
 
 const ACCOUNT_ATTRIBUTE = 'data-codingns-account-button'
 const MENU_ATTRIBUTE = 'data-codingns-account-menu'
@@ -32,7 +33,8 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   // 没有 locale 服务（单测或非 Cordis 宿主）时退回内置中文词典。
   const t = resolveCodingNsTranslator(locale)
   let disposed = false
-  let timer: ReturnType<typeof setInterval> | undefined
+  let poll: ReturnType<typeof startSerialPolling> | undefined
+  const lifetime = new AbortController()
   let loginRefreshTimer: ReturnType<typeof setInterval> | undefined
   let loginRefreshInFlight = false
   let observer: MutationObserver | undefined
@@ -50,33 +52,35 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   let busy = false
 
   const call = async <T>(endpoint: string, payload: unknown): Promise<T> => {
+    const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(10_000)])
     let response
     try {
-      response = await rpc.call(CODINGNS_RPC_CHANNEL, endpoint, payload)
+      response = await rpc.call(CODINGNS_RPC_CHANNEL, endpoint, payload, signal)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (!/HTTP (?:404|405)\b/u.test(message)) throw error
-      response = await rpc.call('/api', `codingns/${endpoint}`, payload)
+      response = await rpc.call('/api', `codingns/${endpoint}`, payload, signal)
     }
     if (!response.ok) throw new Error(response.error.message)
     return response.value as T
   }
 
-  const refresh = async (): Promise<void> => {
+  const refresh = async (): Promise<boolean | void> => {
     if (disposed) return
     const started = performance.now()
     const [nextAuth, nextLocal, nextStatus] = await Promise.allSettled([
       call<CodingNsAuthSessionSnapshot>('auth/snapshot', {}),
-      fetchLocalIdentity(root),
-      call<DshHostStatus>('host/status', {}),
+      fetchLocalIdentity(root, AbortSignal.any([lifetime.signal, AbortSignal.timeout(10_000)])),
+      call<DshHostStatus>('host/status', {}).then((value) => ({ value, latency: Math.max(0, Math.round(performance.now() - started)) })),
     ])
+    if (disposed) return
     if (nextAuth.status === 'fulfilled') auth = nextAuth.value
     local = nextLocal.status === 'fulfilled' ? nextLocal.value : null
     localSessionExpiresAt = local?.expiresAt ?? null
     localRelay = readRelayLoginIdentity()
     if (nextStatus.status === 'fulfilled') {
-      status = nextStatus.value
-      latency = Math.max(0, Math.round(performance.now() - started))
+      status = nextStatus.value.value
+      latency = nextStatus.value.latency
     }
     renderAll()
     const menu = root.querySelector<HTMLElement>(`[${MENU_ATTRIBUTE}]`)
@@ -85,6 +89,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
       renderMenu(menu)
       if (button !== null) positionMenuUpperRight(menu, button)
     }
+    return nextStatus.status === 'fulfilled' && nextAuth.status === 'fulfilled'
   }
 
   const scan = (): void => {
@@ -208,15 +213,16 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
     renderAll()
   }
   root.defaultView?.addEventListener(LOGIN_PROTECTION_SESSION_EVENT, onLoginProtectionSessionChanged)
-  timer = setInterval(() => { void refresh() }, POLL_MS)
+  poll = startSerialPolling(refresh, POLL_MS, { document: root })
   loginRefreshTimer = setInterval(() => { void refreshLoginProtection() }, LOGIN_REFRESH_POLL_MS)
-  void refresh().then(() => refreshLoginProtection())
+  void refreshLoginProtection()
 
   return {
     dispose() {
       if (disposed) return
       disposed = true
-      if (timer !== undefined) clearInterval(timer)
+      lifetime.abort()
+      poll?.dispose()
       if (loginRefreshTimer !== undefined) clearInterval(loginRefreshTimer)
       observer?.disconnect()
       resizeObserver?.disconnect()
@@ -242,6 +248,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
           method: 'POST',
           credentials: 'same-origin',
           cache: 'no-store',
+          signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(10_000)]),
           headers: { Accept: 'application/json' },
         })
         if (!response.ok) local = null
@@ -374,8 +381,8 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
       ? t('accountBar.access', { access })
       : t('accountBar.accessWithLatency', { access, latency }), 'span'))
     if (status !== undefined) {
-      menu.append(resourceRow(root, 'CPU', status.cpuPercent))
-      menu.append(resourceRow(root, t('accountBar.memory'), status.memoryPercent))
+      menu.append(resourceRow(root, t('accountBar.hostCpu'), status.cpuPercent))
+      menu.append(resourceRow(root, t('accountBar.hostMemory'), status.memoryPercent))
       menu.append(textNode(root, `${formatBytes(status.memoryUsedBytes)} / ${formatBytes(status.memoryTotalBytes)}`, 'span'))
     }
     const peerHost = root.createElement('button')
@@ -423,13 +430,14 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   }
 }
 
-export async function fetchLocalIdentity(dom: Document): Promise<LocalIdentity | null> {
+export async function fetchLocalIdentity(dom: Document, signal?: AbortSignal): Promise<LocalIdentity | null> {
   // Desktop 使用 dsh-app://app，不提供网页侧的本地身份路由。
   // 只有局域网/中转 HTTP 页面才需要查询这个端点；其它协议直接视为未登录，
   // 避免在 Desktop 控制台制造无意义的 404。
   const protocol = dom.defaultView?.location.protocol
   if (protocol !== 'http:' && protocol !== 'https:') return null
   const response = await (dom.defaultView?.fetch.bind(dom.defaultView) ?? fetch)('/__codingns/session', {
+    ...(signal === undefined ? {} : { signal }),
     credentials: 'same-origin',
     cache: 'no-store',
     headers: { Accept: 'application/json' },

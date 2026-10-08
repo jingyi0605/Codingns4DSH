@@ -1,3 +1,4 @@
+import { startSerialPolling } from './serial-polling.js'
 import { createElement, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
@@ -224,20 +225,20 @@ function GitPanel(props: GitTabProps): ReactElement {
     setBranches(null)
     setDiffView(null)
     setFileDiff(null)
-    const load = async (resolvedWorkspaceId: string): Promise<void> => {
+    const load = async (resolvedWorkspaceId: string, signal: AbortSignal): Promise<boolean | void> => {
       const cached = readCache(resolvedWorkspaceId)
       // 已经手动展开历史后，定时刷新只能更新状态和分支，不能用首屏缓存覆盖已加载的分页。
       if (cached !== null && !historyExpanded.current) { setStatus(cached.status); setHistory(cached.history); setHistoryTotalCount(cached.historyTotalCount); setBranches(cached.branches) }
       try {
-        const nextStatus = await call<GitStatus>(props.rpc, 'git/status', { workspaceId: resolvedWorkspaceId })
+        const nextStatus = await call<GitStatus>(props.rpc, 'git/status', { workspaceId: resolvedWorkspaceId }, signal)
         if (disposed) return
         if (nextStatus.snapshot.enabled === false) {
           setStatus(nextStatus); setHistory([]); setHistoryTotalCount(0); setBranches(null); writeCache(resolvedWorkspaceId, { status: nextStatus, history: [], historyTotalCount: 0, branches: null }); setToast(null)
           return
         }
         const [nextHistory, nextBranches] = await Promise.all([
-          historyExpanded.current ? Promise.resolve(null) : call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { workspaceId: resolvedWorkspaceId, limit: INITIAL_HISTORY_LIMIT, offset: 0, scope: historyScope }),
-          call<GitBranchSnapshot>(props.rpc, 'git/branches', { workspaceId: resolvedWorkspaceId }),
+          historyExpanded.current ? Promise.resolve(null) : call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { workspaceId: resolvedWorkspaceId, limit: INITIAL_HISTORY_LIMIT, offset: 0, scope: historyScope }, signal),
+          call<GitBranchSnapshot>(props.rpc, 'git/branches', { workspaceId: resolvedWorkspaceId }, signal),
         ])
         if (disposed) return
         const normalizedBranches = normalizeBranchSnapshot(nextBranches)
@@ -245,6 +246,7 @@ function GitPanel(props: GitTabProps): ReactElement {
         setStatus(nextStatus); setBranches(normalizedBranches)
       } catch (error) {
         if (!disposed) notify('error', error instanceof Error ? error.message : String(error))
+        return false
       }
     }
     void resolveGitWorkspaceId(props.remote, sessionId).then((resolvedWorkspaceId) => {
@@ -253,9 +255,8 @@ function GitPanel(props: GitTabProps): ReactElement {
       rememberGitWorkspaceSession(sessionId, resolvedWorkspaceId)
       writeGitWorkspaceOpen(resolvedWorkspaceId, true)
       setWorkspaceId(resolvedWorkspaceId)
-      void load(resolvedWorkspaceId)
-      const timer = globalThis.setInterval(() => { void load(resolvedWorkspaceId) }, 5_000)
-      cleanupTimer = () => globalThis.clearInterval(timer)
+      const poll = startSerialPolling((signal) => load(resolvedWorkspaceId, signal), 5_000)
+      cleanupTimer = () => poll.dispose()
     }).catch((error: unknown) => { if (!disposed) notify('error', error instanceof Error ? error.message : String(error)) })
     return () => { disposed = true; cleanupTimer?.() }
   }, [props.remote, props.rpc, sessionId, historyScope])
@@ -1033,7 +1034,7 @@ function normalizeBranchSnapshot(value: GitBranchSnapshot | null): GitBranchSnap
   const currentBranch = (currentFields[0] ?? value.currentBranch).trim() || 'HEAD'
   return { currentBranch, local, remote }
 }
-async function call<T = unknown>(rpc: CodingNsRpcClient, endpoint: string, payload: unknown): Promise<T> { let result: CodingNsRpcResult; try { result = await rpc.call(CODINGNS_RPC_CHANNEL, endpoint, payload) } catch (error) { if (!/HTTP (?:404|405)\b/u.test(error instanceof Error ? error.message : String(error))) throw error; result = await rpc.call('/api', `codingns/${endpoint}`, payload) } if (!result.ok) throw new Error(result.error.message); return result.value as T }
+async function call<T = unknown>(rpc: CodingNsRpcClient, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<T> { let result: CodingNsRpcResult; try { result = await rpc.call(CODINGNS_RPC_CHANNEL, endpoint, payload, signal) } catch (error) { if (!/HTTP (?:404|405)\b/u.test(error instanceof Error ? error.message : String(error))) throw error; result = await rpc.call('/api', `codingns/${endpoint}`, payload, signal) } if (!result.ok) throw new Error(result.error.message); return result.value as T }
 async function copyText(value: string): Promise<boolean> { try { if (typeof navigator === 'undefined' || typeof navigator.clipboard?.writeText !== 'function') return false; await navigator.clipboard.writeText(value); return true } catch { return false } }
 interface GitHistoryGroup {
   readonly key: string

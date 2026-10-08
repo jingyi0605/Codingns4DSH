@@ -9,6 +9,7 @@ import {
   dshPopupSurfaceStyle,
   dshThemeColor,
 } from '../data/build/dist/client/theme.js'
+import { invalidateSubscriptionUsageCache } from '../data/build/dist/client/subscription-slot.js'
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -199,7 +200,9 @@ test('Antigravity 与 CodeBuddy 会话启用订阅用量查询并显示底部入
   for (const adapterId of ['antigravity', 'claude-code', 'codebuddy', 'codebuddy-cn', 'dsh']) {
     assert.match(source, new RegExp(`adapterId === '${adapterId}'`, 'u'), `订阅入口缺少 ${adapterId} 适配器`)
   }
-  assert.match(source, /callCliRpc<CliSubscriptionUsage \| null>\(props\.rpc, 'subscription'/u)
+  // 查询经共享加载器合并并发请求，组件与加载器两端都必须接通。
+  assert.match(source, /loadUsage\(props\.rpc, cacheKey,/u)
+  assert.match(source, /callCliRpc<CliSubscriptionUsage \| null>\(rpc, 'subscription'/u)
 })
 
 test('订阅弹层展示账号名并按会话模型区分配额组', async () => {
@@ -261,8 +264,8 @@ test('Codex 订阅展示重置次数与点数，并经确认模态框触发重�
   assert.match(source, /createElement\(ResetConfirmDialog/u)
   assert.match(source, /useDismissOnOutsidePointer\(resetDialogRef, resetOpen && !resetPending, closeResetDialog\)/u)
   assert.match(source, /'aria-modal': true/u)
-  assert.match(source, /subscriptionUsageCache\.delete\(cacheKey\)/u)
-  assert.match(source, /refreshRef\.current = refresh/u)
+  assert.match(source, /invalidateSubscriptionUsageCache\(subscriptionUsageCache, adapterId, providerId\)/u)
+  assert.match(source, /refreshRef\.current = poll\.refresh/u)
   // 点数保留两位小数，重置次数与图标按钮同一行。
   assert.match(source, /formatCreditBalance\(credits\.balance\)/u)
   assert.match(source, /numeric\.toFixed\(2\)/u)
@@ -272,6 +275,23 @@ test('Codex 订阅展示重置次数与点数，并经确认模态框触发重�
   // 图标按钮的伪类只能落在注入样式表里，内联样式无法表达。
   assert.match(source, /\.codingns4dsh-subscription-reset:hover:not\(:disabled\)/u)
   assert.match(source, /\.codingns4dsh-subscription-reset:disabled\{opacity:\.4;cursor:not-allowed\}/u)
+})
+
+test('订阅重置清理当前账号的所有模型缓存，并保留其他账号与 Agent', () => {
+  const cache = new Map([
+    ['codex|official|gpt-a', '旧模型 A 额度'],
+    ['codex|official|gpt-b', '旧模型 B 额度'],
+    ['codex|official|', '旧默认模型额度'],
+    ['codex|official-other|gpt-a', '另一账号额度'],
+    ['codex||gpt-a', '未指定提供商的额度'],
+    ['claude-code|official|claude', '其他 Agent 额度'],
+  ])
+  invalidateSubscriptionUsageCache(cache, 'codex', 'official')
+  assert.deepEqual([...cache.keys()], ['codex|official-other|gpt-a', 'codex||gpt-a', 'claude-code|official|claude'])
+  invalidateSubscriptionUsageCache(cache, 'codex', null)
+  assert.deepEqual([...cache.keys()], ['codex|official-other|gpt-a', 'claude-code|official|claude'])
+  invalidateSubscriptionUsageCache(cache, 'missing', null)
+  assert.equal(cache.size, 2)
 })
 
 test('设置页 Agent 列表复用 Provider Logo，并在移动端拆成名称与元数据两行', async () => {
