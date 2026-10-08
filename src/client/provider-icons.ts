@@ -10,6 +10,7 @@ export interface ProviderVisual {
 interface ProviderDefinition {
   readonly adapterId: string
   readonly displayName: string
+  readonly displayNameKey?: string
   readonly color: string
 }
 
@@ -41,6 +42,7 @@ const PROVIDER_DEFINITIONS: Readonly<Record<string, ProviderDefinition>> = {
   qoder: { adapterId: 'qoder', displayName: 'Qoder', color: '#ea580c' },
   'qoder-cn': { adapterId: 'qoder-cn', displayName: 'Qoder CN', color: '#c2410c' },
   antigravity: { adapterId: 'antigravity', displayName: 'Antigravity', color: '#1d4ed8' },
+  doubao: { adapterId: 'doubao', displayName: 'Doubao App', displayNameKey: 'provider.doubao', color: '#477fe8' },
 }
 
 const PROVIDER_ICONS: Record<string, string> = {}
@@ -74,7 +76,7 @@ export function providerVisual(adapterId: string | undefined, t?: CodingNsTransl
   if (definition === undefined) {
     return { adapterId, displayName: translate('provider.unknown', { adapterId }), iconUrl: undefined, color: PROVIDER_NEUTRAL_COLOR }
   }
-  return { ...definition, iconUrl: PROVIDER_ICONS[normalizedAdapterId] }
+  return { ...definition, displayName: definition.displayNameKey ? translate(definition.displayNameKey) : definition.displayName, iconUrl: PROVIDER_ICONS[normalizedAdapterId] }
 }
 
 /** 兼容旧版 CN profile 的会话快照，但不重新暴露第二个 Provider。 */

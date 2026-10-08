@@ -20,4 +20,5 @@ export const PROVIDER_ICON_FILES: Readonly<Record<string, string>> = {
   qoder: 'qoder.svg',
   'qoder-cn': 'qoder-cn.svg',
   antigravity: 'antigravity.svg',
+  doubao: 'doubao.png',
 }
