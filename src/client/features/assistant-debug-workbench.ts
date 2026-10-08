@@ -310,6 +310,8 @@ function indexTasksView(tasks: readonly Omit<AssistantSessionIndexTask, 'text'>[
     ...tasks.map((task) => createElement('div', { key: task.requestId, style: { display: 'grid', gap: 3 } },
       createElement('span', null, t('assistant.debug.taskRow', { workspace: task.workspaceName, name: task.title ?? shortSessionTitle(task.sessionId, t), state: t(`assistant.debug.taskState.${task.state}`) })),
       createElement('span', { style: dshSettingsHelpStyle }, t(task.reused ? 'assistant.debug.taskReused' : `assistant.debug.thinking.${task.thinking ?? 'pending'}`)),
+      task.attempt === undefined ? null : createElement('span', { style: dshSettingsHelpStyle }, t(task.reused ? 'assistant.debug.taskPreviousAttempt' : 'assistant.debug.taskAttempt', { attempt: task.attempt, max: task.maxAttempts ?? 1 })),
+      task.nextRetryAt == null ? null : createElement('span', { role: 'status' }, t('assistant.debug.taskRetryWait', { attempt: (task.attempt ?? 0) + 1, seconds: Math.max(0, Math.ceil((task.nextRetryAt - Date.now()) / 1000)) })),
       task.error === null ? null : createElement('span', { role: 'alert' }, task.error),
     )),
   )
