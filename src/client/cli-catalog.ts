@@ -9,6 +9,13 @@ import { debugInfo, debugWarn } from '../shared/debug.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import type { CodingNsTranslator } from './locale.js'
 
+/** 设置页和选择器使用同一状态文案，检测中或失败都不能显示成未安装。 */
+export function adapterDetectionLabel(adapter: CodingNsCliAdapterDescriptor): 'cli.detecting' | 'cli.detectionFailed' | 'cli.installed' | 'cli.notInstalled' {
+  if (adapter.detectionState === 'pending' || adapter.detectionState === 'running') return 'cli.detecting'
+  if (adapter.detectionState === 'error') return 'cli.detectionFailed'
+  return adapter.installed ? 'cli.installed' : 'cli.notInstalled'
+}
+
 /** Client 侧访问 Host CLI 命名空间的统一入口。 */
 export async function callCliRpc<T>(rpc: CodingNsRpcClient, action: string, payload: unknown, signal?: AbortSignal): Promise<T> {
   let response

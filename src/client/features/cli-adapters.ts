@@ -7,7 +7,7 @@ import type {
 } from '../../shared/contracts/cli-adapter.js'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
 import { normalizeSubagentBridgeSettings, SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS } from '../../shared/contracts/config.js'
-import { callCliRpc, catalogRefreshErrorMessage, errorMessage } from '../cli-catalog.js'
+import { adapterDetectionLabel, callCliRpc, catalogRefreshErrorMessage, errorMessage } from '../cli-catalog.js'
 import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsFieldStyle, dshSettingsHelpStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { backdropPointerDownHandler } from '../popup-dismiss.js'
@@ -334,9 +334,7 @@ function AdapterDetectButton({ label, busy, disabled, onClick }: {
 }
 
 function adapterStatus(adapter: CodingNsCliAdapterDescriptor, t: ReturnType<typeof useCodingNsTranslator>): string {
-  if (adapter.detectionState === 'pending' || adapter.detectionState === 'running') return t('cli.detecting')
-  if (adapter.detectionState === 'error') return t('cli.detectionFailed')
-  return t(adapter.installed ? 'cli.installed' : 'cli.notInstalled')
+  return t(adapterDetectionLabel(adapter))
 }
 
 /** 设置页列表中的 Agent logo；资产缺失时用首字母占位，避免出现破图或空白。 */
@@ -394,7 +392,7 @@ function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle, 
         createElement('dt', undefined, t('cli.capabilities')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.capabilities?.join(t('common.listSeparator')) ?? t('cli.undeclared')),
       ),
       createElement('h4', { style: { margin: '16px 0 8px' } }, t('cli.modelCatalog')),
-      !adapter.installed && createElement('div', { style: { opacity: 0.7 } }, adapter.diagnostic ?? t('cli.agentNotInstalled')),
+      !adapter.installed && createElement('div', { style: { opacity: 0.7 } }, adapter.diagnostic ?? adapterStatus(adapter, t)),
       adapter.installed && !adapter.enabled && createElement('div', { style: { opacity: 0.7 } }, t('cli.agentDisabled')),
       adapter.installed && loading && createElement('div', { role: 'status' }, t('cli.readingModels')),
       adapter.installed && !loading && models !== null && createElement(ModelCatalog, { catalog: models, t }),

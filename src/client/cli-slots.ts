@@ -6,7 +6,7 @@ import type { CSSProperties } from 'react'
 import { Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CodingNsCliAdapterDescriptor, CodingNsCliModel, CodingNsCliModelCatalog, CodingNsCliSessionConfig } from '../shared/contracts/cli-adapter.js'
 import type { CodingNsRpcClient } from './features/types.js'
-import { adapterCatalogWithDsh, callCliRpc, findModel, firstModel } from './cli-catalog.js'
+import { adapterCatalogWithDsh, adapterDetectionLabel, callCliRpc, findModel, firstModel } from './cli-catalog.js'
 import {
   activeServiceTier,
   canSelectServiceTier,
@@ -291,7 +291,7 @@ function AgentSlot(props: CliSlotProps): ReactElement {
             ? createElement(ProviderIconFallback, { name: agent.name, size: 22 })
             : createElement('img', { src: icon, alt: '', 'aria-hidden': true, style: applyProviderIconShape(agent.id, agentOptionIconStyle) }),
           createElement('span', { style: agentOptionLabelStyle }, agent.name),
-          !agent.installed && createElement('span', { style: agentStatusStyle }, t('cli.notInstalled')),
+          (!agent.installed || agent.detectionState === 'error') && createElement('span', { style: agentStatusStyle }, t(adapterDetectionLabel(agent))),
           agent.installed && !agent.enabled && createElement('span', { style: agentStatusStyle }, t('cli.disabled')),
         )
       }),
