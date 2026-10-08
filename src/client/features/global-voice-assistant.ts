@@ -35,7 +35,7 @@ export const globalVoiceAssistantFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     ui: {
       label: 'Global smart assistant (Testing)',
-      description: 'Choose the workspaces that the global assistant may read and control.',
+      description: 'Choose the workspaces that the global assistant may read and control. After enabling this module, fully quit and restart DSH Desktop.',
       labelKey: 'feature.assistant.label',
       descriptionKey: 'feature.assistant.description',
       order: 30,
