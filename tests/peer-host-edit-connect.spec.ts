@@ -8,14 +8,14 @@ import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
 import type { AssistantHostGateway } from '../src/host/features/types.js'
 import { createVirtualWorkspaceId } from '../src/shared/contracts/peer-host.js'
 
-/** 目标 Host 的握手响应；pluginVersion 必须与当前插件版本一致才会 ready。 */
+/** 当前客户端的插件版本；目标 Host 可以使用同版或更旧的插件。 */
 const PLUGIN_VERSION = (await import('../data/build/dist/shared/contracts/version.js')).CODINGNS_VERSION as string
 
-function handshakeResponse(): Response {
+function handshakeResponse(pluginVersion = PLUGIN_VERSION): Response {
   return Response.json({
     productId: 'CodingNS',
     pluginId: '@jingyi0605/codingns4dsh',
-    pluginVersion: PLUGIN_VERSION,
+    pluginVersion,
     dshVersion: '0.2.0-rc.2',
     apiCompatibility: 'peer-host-v1',
     fingerprint: 'sha256:target',
@@ -157,13 +157,35 @@ test('编辑只改名称或配色时保持既有登录态，不重新握手', as
   }
 })
 
+test('较旧的 PeerHost 插件可以完成编辑握手和登录', async () => {
+  const host = await harness({ handshake: () => handshakeResponse('0.1.2') })
+  try {
+    const created = await host.call('peerHost/create', {
+      displayName: '旧版开发机',
+      route: { kind: 'lan', baseUrl: 'http://127.0.0.1:13080', normalizedOrigin: '' },
+    }) as { id: string }
+    const updated = await host.call('peerHost/update', {
+      peerHostId: created.id,
+      username: 'alice',
+      password: 'password-secret',
+    }) as { status: string; pluginVersion: string }
+    assert.equal(updated.status, 'ready')
+    assert.equal(updated.pluginVersion, '0.1.2')
+    assert.equal(host.calls.includes('/api/auth/login'), true)
+    const status = await host.call('peerHost/credentialStatus', { peerHostId: created.id }) as { hasSavedCredential: boolean }
+    assert.equal(status.hasSavedCredential, true)
+  } finally {
+    await host.dispose()
+  }
+})
+
 test('握手未通过时不保存凭据，并给出可操作的错误', async () => {
-  // 目标返回不兼容的插件版本：握手会停在 version_mismatch，而不是 ready。
+  // 目标插件比客户端更新，握手必须停在 version_mismatch。
   const host = await harness({
     handshake: () => Response.json({
       productId: 'CodingNS',
       pluginId: '@jingyi0605/codingns4dsh',
-      pluginVersion: '0.0.1-incompatible',
+      pluginVersion: '999.0.0',
       dshVersion: '0.2.0-rc.2',
       apiCompatibility: 'peer-host-v1',
       fingerprint: 'sha256:target',
@@ -192,6 +214,7 @@ test('握手未通过时不保存凭据，并给出可操作的错误', async ()
     )
     const status = await host.call('peerHost/credentialStatus', { peerHostId: created.id }) as { hasSavedCredential: boolean }
     assert.equal(status.hasSavedCredential, false)
+    assert.equal(host.calls.includes('/api/auth/login'), false)
   } finally {
     await host.dispose()
   }
