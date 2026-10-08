@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
+import { failedDetection } from '../src/host/cli-adapters/binary-detection.ts'
 import type { CodingNsCliModelCatalog } from '../data/build/dist/shared/contracts/cli-adapter.js'
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -113,4 +114,81 @@ test('停用注册表后取消尚未开始的启动检测', async () => {
   registry.warmCatalog(); await registry.dispose()
   await delay(1_050)
   assert.equal(calls, 0)
+})
+
+test('版本探测失败显示 error，冷却后仅实际使用触发重试，普通列表不触发命令', async (t) => {
+  let calls = 0
+  let now = Date.now()
+  t.mock.method(Date, 'now', () => now)
+  const driver = {
+    descriptor: { id: 'probe', name: 'Probe' },
+    async detect() { return ++calls === 1 ? failedDetection('timeout') : { installed: true, command: 'probe', version: '1.2.3' } },
+    async listModels() { return catalog('one') }, executeTurn: finish,
+  }
+  const registry = new CodingNsCliAdapterRegistry([driver])
+  t.after(() => registry.dispose())
+  const failed = (await registry.refreshCatalog())[0]!
+  assert.equal(failed.installed, false)
+  assert.equal(failed.detectionState, 'error')
+  assert.equal(failed.detectionFailure, 'timeout')
+  assert.match(failed.diagnostic!, /超时/u)
+  await driver.detect()
+  assert.equal(calls, 1)
+  now += 31_000
+  await registry.catalog(); await registry.catalog()
+  assert.equal(calls, 1, '列表不能恢复周期性 CLI 探测')
+  await Promise.all([driver.detect(), driver.detect()])
+  assert.equal(calls, 2)
+  const recovered = (await registry.catalog())[0]!
+  assert.equal(recovered.installed, true)
+  assert.equal(recovered.detectionState, 'ready')
+  assert.equal(recovered.detectionFailure, undefined)
+  assert.equal(recovered.diagnostic, undefined)
+})
+
+test('短暂失败保留最后成功入口，明确卸载仍切换为未安装', async (t) => {
+  let phase = 0
+  const driver = {
+    descriptor: { id: 'probe', name: 'Probe' },
+    async detect() {
+      if (phase === 0) return { installed: true, command: 'probe', version: '1.2.3' }
+      if (phase === 1) return failedDetection('launch')
+      if (phase === 2) throw new Error('secret-provider-error')
+      return { installed: false, command: null, version: null }
+    },
+    async listModels() { return catalog('one') }, executeTurn: finish,
+  }
+  const registry = new CodingNsCliAdapterRegistry([driver])
+  t.after(() => registry.dispose())
+  await registry.refreshCatalog()
+  for (phase of [1, 2]) {
+    const failed = (await registry.refreshCatalog())[0]!
+    assert.equal(failed.installed, true)
+    assert.equal(failed.command, 'probe')
+    assert.equal(failed.detectionState, 'error')
+    assert.equal(failed.detectionFailure, 'launch')
+    assert.equal(JSON.stringify(failed).includes('secret-provider-error'), false)
+  }
+  phase = 3
+  const missing = (await registry.refreshCatalog())[0]!
+  assert.equal(missing.installed, false)
+  assert.equal(missing.detectionState, 'ready')
+  assert.equal(missing.detectionFailure, undefined)
+})
+
+test('驱动声明协议不支持时展示失败诊断，手动刷新后清除错误', async (t) => {
+  let supported = false
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'probe', name: 'Probe' },
+    async detect() { return { installed: supported, command: supported ? 'probe' : null, version: supported ? '1.2.3' : null } },
+    getDiscoveryFailure() { return supported ? undefined : 'protocol' as const },
+    getDiscoveryDiagnostic() { return supported ? undefined : 'CLI 不支持 ACP 协议' },
+    async listModels() { return catalog('one') }, executeTurn: finish,
+  }])
+  t.after(() => registry.dispose())
+  const failed = (await registry.refreshCatalog())[0]!
+  assert.equal(failed.detectionState, 'error'); assert.equal(failed.detectionFailure, 'protocol')
+  supported = true
+  const recovered = (await registry.refreshCatalog())[0]!
+  assert.equal(recovered.detectionState, 'ready'); assert.equal(recovered.diagnostic, undefined)
 })

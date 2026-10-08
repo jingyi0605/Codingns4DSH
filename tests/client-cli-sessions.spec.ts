@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { adapterCatalogWithDsh, archiveCliSession, listCliSessions, restoreCliSession } from '../data/build/dist/client/cli-catalog.js'
+import { adapterCatalogWithDsh, adapterDetectionLabel, archiveCliSession, listCliSessions, restoreCliSession } from '../data/build/dist/client/cli-catalog.js'
 import { getModelCatalogCache, loadModelCatalog } from '../data/build/dist/client/model-catalog-cache.js'
 import type { CodingNsCliAdapterDescriptor, CodingNsCliSessionRecord } from '../data/build/dist/shared/contracts/cli-adapter.js'
 
@@ -15,6 +15,16 @@ const record: CodingNsCliSessionRecord = {
   createdAt: '2026-09-22T08:00:00.000Z',
   updatedAt: '2026-09-22T08:01:00.000Z',
 }
+
+test('检测中和检测失败不使用未安装文案，旧 Host 状态仍兼容', () => {
+  const base = { id: 'probe', name: 'Probe', installed: false, enabled: true, version: null, command: null }
+  assert.equal(adapterDetectionLabel({ ...base, detectionState: 'pending' }), 'cli.detecting')
+  assert.equal(adapterDetectionLabel({ ...base, detectionState: 'running' }), 'cli.detecting')
+  assert.equal(adapterDetectionLabel({ ...base, detectionState: 'error' }), 'cli.detectionFailed')
+  assert.equal(adapterDetectionLabel({ ...base, detectionState: 'ready' }), 'cli.notInstalled')
+  assert.equal(adapterDetectionLabel(base), 'cli.notInstalled')
+  assert.equal(adapterDetectionLabel({ ...base, installed: true }), 'cli.installed')
+})
 
 test('对话框适配器目录只保留已安装且已启用的适配器', () => {
   const catalog: CodingNsCliAdapterDescriptor[] = [
