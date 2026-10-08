@@ -24,6 +24,8 @@ export class PeerHostSessionService {
   private readonly fetchImpl: typeof fetch
   private readonly now: () => number
   private readonly refreshSkewMs: number
+  /** 同一目标的并发请求共用一次续期，避免重复登录和票据覆盖。 */
+  private readonly pendingRefresh = new Map<string, Promise<PeerHostSessionView>>()
 
   constructor(
     private readonly store: PeerHostStore,
@@ -50,6 +52,15 @@ export class PeerHostSessionService {
   }
 
   async refresh(peerHostId: string): Promise<PeerHostSessionView> {
+    const pending = this.pendingRefresh.get(peerHostId)
+    if (pending !== undefined) return pending
+    const task = this.refreshSession(peerHostId)
+    this.pendingRefresh.set(peerHostId, task)
+    try { return await task }
+    finally { this.pendingRefresh.delete(peerHostId) }
+  }
+
+  private async refreshSession(peerHostId: string): Promise<PeerHostSessionView> {
     const record = await this.ensureReady(peerHostId, true)
     const previous = await this.credentials.read(peerHostId)
     if (previous === null) return this.sessionRequired(peerHostId)
@@ -62,19 +73,31 @@ export class PeerHostSessionService {
   }
 
   async getAccessToken(peerHostId: string): Promise<string> {
-    const record = await this.ensureReady(peerHostId)
+    const record = await this.ensureReady(peerHostId, true)
     const credential = await this.credentials.read(peerHostId)
     if (credential === null) return this.sessionRequired(peerHostId)
-    if (credential.expiresAt - this.now() > this.refreshSkewMs) return credential.accessToken
-    const refreshed = await this.tryRefresh(peerHostId, record, credential)
-    if (refreshed !== null) return refreshed.accessToken
-    const relogged = await this.trySavedLogin(peerHostId, record, credential)
-    if (relogged !== null) return relogged.accessToken
-    return this.sessionRequired(peerHostId)
+    if (record.status === 'ready' && credential.expiresAt - this.now() > this.refreshSkewMs) return credential.accessToken
+    await this.refresh(peerHostId)
+    return this.readAccessToken(peerHostId)
+  }
+
+  /** 401 已确认为票据拒绝后恢复；迟到的旧请求直接复用其它请求已经更新的票据。 */
+  async recoverAccessToken(peerHostId: string, rejectedToken: string): Promise<string> {
+    const record = await this.ensureReady(peerHostId, true)
+    const current = await this.credentials.read(peerHostId)
+    if (record.status === 'ready' && current !== null && current.accessToken !== rejectedToken) return this.getAccessToken(peerHostId)
+    await this.refresh(peerHostId)
+    return this.readAccessToken(peerHostId)
+  }
+
+  private async readAccessToken(peerHostId: string): Promise<string> {
+    await this.ensureReady(peerHostId)
+    const current = await this.credentials.read(peerHostId)
+    return current === null ? this.sessionRequired(peerHostId) : current.accessToken
   }
 
   /**
-   * 用 refreshToken 续期；失败返回 null，交给调用方决定是否静默重登。
+   * 用 refreshToken 续期；只有票据被拒才返回 null，交给调用方静默重登。
    *
    * 这里刻意不清除凭据：网络抖动导致的失败不应该抹掉用户在编辑里保存的账号，
    * 否则"只保存一次"的语义会被一次断网破坏。
@@ -87,8 +110,9 @@ export class PeerHostSessionService {
       await this.credentials.write(peerHostId, credential)
       if (record.status !== 'ready') await this.store.updateStatus(peerHostId, 'ready', null)
       return credential
-    } catch {
-      return null
+    } catch (error) {
+      if (error instanceof PeerHostSessionError && error.code === PEER_HOST_ERROR_CODES.SESSION_REQUIRED) return null
+      throw error
     }
   }
 
@@ -111,8 +135,9 @@ export class PeerHostSessionService {
     } catch (error) {
       if (error instanceof PeerHostSessionError && error.code === PEER_HOST_ERROR_CODES.SESSION_REQUIRED) {
         await this.credentials.clear(peerHostId)
+        return null
       }
-      return null
+      throw error
     }
   }
 

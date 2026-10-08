@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { HostScope, PeerHostErrorCode, PeerHostRecord } from '../../../shared/contracts/peer-host.js'
 import { PEER_HOST_ERROR_CODES } from '../../../shared/contracts/peer-host.js'
 import { PeerHostSessionError, PeerHostSessionService } from './peer-host-session.js'
@@ -8,6 +9,7 @@ const MAX_PROXY_BODY_BYTES = 4 * 1024 * 1024
 const ALLOWED_QUERY = new Set(['workspaceId', 'sessionId', 'scopeGeneration', 'cursor', 'path', 'toolId'])
 const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'authorization'])
 const ALLOWED_CLIENT_HEADERS = new Set(['accept', 'content-type', 'if-match', 'if-none-match', 'range'])
+const AUTH_CHECK_PATH = '/api/codingns/host/status'
 
 export const PEER_HOST_HTTP_PROXY_RULES = [
   { prefix: '/api/codingns/host/status', methods: ['POST'] },
@@ -55,21 +57,53 @@ export class PeerHostHttpProxyService {
       validateQuery(targetPath)
       validateRule(request.method, targetPath.pathname)
       const body = await readBody(request)
-      const accessToken = await this.sessions.getAccessToken(peerHostId)
+      let accessToken = await this.sessions.getAccessToken(peerHostId)
       const targetUrl = buildTargetUrl(record, targetPath)
-      const response = await this.fetchImpl(targetUrl, {
+      const send = (token: string) => this.fetchImpl(targetUrl, {
         method: request.method,
-        headers: buildForwardHeaders(request.headers, accessToken),
+        headers: buildForwardHeaders(request.headers, token),
         ...(body === undefined ? {} : { body }),
       })
+      let response = await send(accessToken)
       if (response.status === 401) {
-        await this.sessions.invalidate(peerHostId)
-        throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.SESSION_REQUIRED, '目标 Host 登录态已失效')
+        await response.body?.cancel()
+        await this.assertTokenRejected(record, targetPath.pathname, accessToken)
+        accessToken = await this.sessions.recoverAccessToken(peerHostId, accessToken)
+        // 仅在明确收到 401 且票据恢复后重放一次；网络错误不重放，避免重复执行业务。
+        response = await send(accessToken)
+        if (response.status === 401) {
+          await response.body?.cancel()
+          await this.assertTokenRejected(record, targetPath.pathname, accessToken)
+          throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.SESSION_REQUIRED, '目标 Host 登录态已失效')
+        }
       }
       return await forwardResponse(response, scope)
     } catch (error) {
       return errorResponse(error)
     }
+  }
+
+  /**
+   * 旧版目标未放行插件 RPC 时也返回 401，不能据此清理整台 Host 的登录态。
+   * 用固定只读状态接口验证同一票据；检查本身失败时保留凭据并报告检查错误。
+   */
+  private async assertTokenRejected(record: PeerHostRecord, path: string, accessToken: string): Promise<void> {
+    if (path === AUTH_CHECK_PATH) return
+    const response = await this.fetchImpl(buildTargetUrl(record, new URL(AUTH_CHECK_PATH, 'http://peer-host.invalid')), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ rpcId: `peer-host-auth-check-${randomUUID()}`, method: 'host/status', payload: {} }),
+      signal: AbortSignal.timeout(5_000),
+      redirect: 'error',
+    })
+    if (!response.ok) {
+      await response.body?.cancel()
+      if (response.status === 401) return
+      throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.PROXY_UNREACHABLE, '目标 Host 登录检查失败')
+    }
+    const value = await response.json().catch(() => null) as { result?: { ok?: unknown } } | null
+    if (typeof value?.result?.ok !== 'boolean') throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.RESPONSE_INVALID, '目标 Host 登录检查响应无效')
+    throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.PROXY_ACCESS_DENIED, '目标 Host 登录有效，但接口访问被拒绝')
   }
 
   /** 将 RPC 的结构化请求转换为同一条 HTTP 白名单代理；不接受绝对 URL。 */
@@ -105,7 +139,7 @@ export class PeerHostHttpProxyService {
   private async requireReady(peerHostId: string): Promise<PeerHostRecord> {
     const record = await this.store.get(peerHostId)
     if (record === null) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.NOT_FOUND, 'PeerHost 不存在')
-    if (record.status !== 'ready') throw new PeerHostProxyError(record.status === 'session_required' ? PEER_HOST_ERROR_CODES.SESSION_REQUIRED : PEER_HOST_ERROR_CODES.NOT_READY, 'PeerHost 尚未准备好代理')
+    if (record.status !== 'ready' && record.status !== 'session_required') throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.NOT_READY, 'PeerHost 尚未准备好代理')
     if (record.route.kind !== 'lan') throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.RELAY_UNAVAILABLE, '中转 PeerHost 暂不可用')
     return record
   }
@@ -176,7 +210,7 @@ async function forwardResponse(response: Response, scope: HostScope): Promise<Re
 function errorResponse(error: unknown): Response {
   const code = resolveErrorCode(error)
   const message = peerHostSafeError(code).message
-  const status = code === PEER_HOST_ERROR_CODES.SCOPE_MISMATCH || code === PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED ? 400 : code === PEER_HOST_ERROR_CODES.NOT_FOUND ? 404 : code === PEER_HOST_ERROR_CODES.SESSION_REQUIRED ? 401 : 502
+  const status = code === PEER_HOST_ERROR_CODES.SCOPE_MISMATCH || code === PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED ? 400 : code === PEER_HOST_ERROR_CODES.NOT_FOUND ? 404 : code === PEER_HOST_ERROR_CODES.SESSION_REQUIRED ? 401 : code === PEER_HOST_ERROR_CODES.PROXY_ACCESS_DENIED ? 403 : 502
   return Response.json({ error: { code, message } }, { status })
 }
 

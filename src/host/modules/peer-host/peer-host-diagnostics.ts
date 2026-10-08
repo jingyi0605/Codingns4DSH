@@ -12,6 +12,7 @@ const DEFAULT_MESSAGES: Readonly<Record<PeerHostErrorCode, string>> = {
   [PEER_HOST_ERROR_CODES.NOT_READY]: 'PeerHost 尚未准备好',
   [PEER_HOST_ERROR_CODES.SESSION_REQUIRED]: '目标 Host 登录态已失效',
   [PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED]: 'PeerHost 代理路径或方法不受支持',
+  [PEER_HOST_ERROR_CODES.PROXY_ACCESS_DENIED]: '目标 Host 登录有效，但拒绝访问此接口；请检查目标插件版本及接口权限',
   [PEER_HOST_ERROR_CODES.SCOPE_MISMATCH]: 'PeerHost 作用域不匹配',
   [PEER_HOST_ERROR_CODES.PROXY_UNREACHABLE]: '目标 Host 代理不可达',
   [PEER_HOST_ERROR_CODES.RESPONSE_INVALID]: '目标 Host 响应无效',
