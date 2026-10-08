@@ -99,7 +99,7 @@ test('账号被目标拒绝时清除凭据并转为需要登录，不做无限�
   assert.equal(await target.credentials.read('peer-1'), null)
 })
 
-test('续期与重登都因网络失败时保留凭据，避免一次断网破坏“只保存一次”', async () => {
+test('续期网络失败时保留凭据，不误报登录失效或额外尝试账号登录', async () => {
   let loginCalls = 0
   const target = await setup(async (input) => {
     const path = new URL(String(input)).pathname
@@ -111,9 +111,38 @@ test('续期与重登都因网络失败时保留凭据，避免一次断网破�
     throw new Error('network down')
   })
   await target.service.login('peer-1', { username: 'alice', password: 'password-secret' })
-  await assert.rejects(target.service.getAccessToken('peer-1'), /需要登录/u)
+  await assert.rejects(target.service.getAccessToken('peer-1'), { code: 'PEER_HOST_PROXY_UNREACHABLE' })
   // 网络类失败保留凭据，等待下一次请求再试。
   assert.equal((await target.credentials.read('peer-1'))?.password, 'password-secret')
+  assert.equal((await target.store.get('peer-1'))?.status, 'ready')
+  assert.equal(loginCalls, 1)
+})
+
+test('并发恢复同一旧票据只续期一次，迟到的旧 401 复用新票据', async () => {
+  let refreshes = 0
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const target = await setup(async input => {
+    assert.equal(new URL(String(input)).pathname, '/api/auth/refresh')
+    refreshes += 1
+    await gate
+    return response({ accessToken: 'new-access', refreshToken: 'new-refresh', expiresIn: 120 })
+  })
+  await target.credentials.write('peer-1', { accessToken: 'old-access', refreshToken: 'old-refresh', expiresAt: 2_000 })
+  const requests = [target.service.getAccessToken('peer-1'), target.service.recoverAccessToken('peer-1', 'old-access'), target.service.refresh('peer-1')]
+  release()
+  await Promise.all(requests)
+  assert.equal(refreshes, 1)
+  assert.equal(await target.service.recoverAccessToken('peer-1', 'old-access'), 'new-access')
+  assert.equal(refreshes, 1)
+})
+
+test('缓存为需要登录但凭据仍可刷新时自动恢复 ready', async () => {
+  const target = await setup(async () => response({ accessToken: 'new-access', refreshToken: 'new-refresh', expiresIn: 120 }))
+  await target.credentials.write('peer-1', { accessToken: 'old-access', refreshToken: 'old-refresh', expiresAt: 121_000 })
+  await target.store.updateStatus('peer-1', 'session_required', 'PEER_HOST_SESSION_REQUIRED')
+  assert.equal(await target.service.getAccessToken('peer-1'), 'new-access')
+  assert.equal((await target.store.get('peer-1'))?.status, 'ready')
 })
 
 test('退出会话会清理目标凭据，即使远端退出请求失败', async () => {
