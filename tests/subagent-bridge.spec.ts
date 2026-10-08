@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { Readable, PassThrough } from 'node:stream'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -30,6 +31,14 @@ import { windowsShellInvocation } from '../data/build/dist/host/cli-adapters/pro
 
 const ACTIVE_RUNTIME = { baseUrl: 'http://127.0.0.1:45999', token: 'secret-token' }
 
+/** 源码回归不构建产物；子进程也使用同一个内存源码加载器。 */
+function sourceEntry(path: string): string {
+  return existsSync(path) ? path : path.replace(/\.js$/u, '.ts')
+}
+function bridgeEntryArgs(): string[] {
+  return ['--import', fileURLToPath(new URL('./register-source-loader.mjs', import.meta.url)), sourceEntry(bridgeMcpEntryPath())]
+}
+
 function enableBridge(): ReturnType<typeof createSubagentBridgeRuntime> {
   const runtime = createSubagentBridgeRuntime(ACTIVE_RUNTIME)
   setSubagentBridge(runtime)
@@ -49,7 +58,7 @@ test('子代理桥接注入：开启时产出各适配器扩展面，关闭时�
     const modArgs = commandCodeBridgeArgs('s1')
     assert.equal(modArgs[0], '--mod')
     assert.ok(modArgs[1]!.endsWith('command-code-mod.js'))
-    assert.ok(existsSync(modArgs[1]!))
+    assert.ok(existsSync(sourceEntry(modArgs[1]!)))
 
     const env = commandCodeBridgeEnvironment('s1', 'command-code')
     assert.equal(env.CODINGNS_BRIDGE_URL, ACTIVE_RUNTIME.baseUrl)
@@ -65,7 +74,7 @@ test('子代理桥接注入：开启时产出各适配器扩展面，关闭时�
     assert.ok(String(config.mcpServers.codingns.args[0]).endsWith('mcp-stdio-entry.js'))
     assert.deepEqual(claude.slice(configIndex + 2, configIndex + 5), ['--append-system-prompt', claude[configIndex + 3], '--disallowedTools'])
     assert.equal(claude.at(-1), 'Task')
-    assert.ok(existsSync(bridgeMcpEntryPath()))
+    assert.ok(existsSync(sourceEntry(bridgeMcpEntryPath())))
 
     const acp = acpBridgeMcpServers('s1', 'gemini')
     assert.equal(acp.length, 1)
@@ -173,7 +182,7 @@ test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', 
         : { ok: true, status: 'running', completed: false, text: '子代理已启动，等待首轮 turn/end。', childSessionId: 'child-9' }
     },
   })
-  const child = spawn(process.execPath, [bridgeMcpEntryPath()], {
+  const child = spawn(process.execPath, bridgeEntryArgs(), {
     env: {
       ...process.env,
       CODINGNS_BRIDGE_URL: server.runtime.baseUrl,
@@ -257,7 +266,7 @@ test('MCP 入口：独立 start 请求并行处理，不串行等待前一个子
       }
     },
   })
-  const child = spawn(process.execPath, [bridgeMcpEntryPath()], {
+  const child = spawn(process.execPath, bridgeEntryArgs(), {
     env: {
       ...process.env,
       CODINGNS_BRIDGE_URL: server.runtime.baseUrl,
