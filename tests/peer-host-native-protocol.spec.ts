@@ -53,6 +53,8 @@ test('DSH 原生 Workspace/Session Remote 方法使用正式命名空间', () =>
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('session/follow'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('session/page'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('session/prompt'))
+  assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('subagents/prompt'))
+  assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('subagents/interruptByParent'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('officeToPdf/generation'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('officeToPdf/render'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('workspaceFiles/changes'))
@@ -60,6 +62,22 @@ test('DSH 原生 Workspace/Session Remote 方法使用正式命名空间', () =>
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('terminal/follow'))
   assert.equal(isDshNativeRemoteMethod('workspace/list'), false)
   assert.equal(isDshNativeRemoteMethod('session/send'), false)
+})
+
+test('子智能体目录的 id 和位置参数状态通知使用同一虚拟身份，普通 id 与正文不改写', () => {
+  const encode = (id: string) => createVirtualSessionId('peer-a', id)
+  const snapshot = rewriteNativeResponseIds({
+    projections: { values: { subagentCatalog: [{ id: 'child', mode: 'continuable', label: '子任务' }], todos: [{ id: 'child' }] } },
+    records: [{ event: { data: { id: 'child', text: 'child' } } }],
+  }, id => id, encode) as any
+  assert.equal(snapshot.projections.values.subagentCatalog[0].id, encode('child'))
+  assert.equal(snapshot.projections.values.todos[0].id, 'child')
+  assert.equal(snapshot.records[0].event.data.id, 'child')
+  assert.deepEqual(rewriteNativeResponseIds({ type: 'emit', event: 'api-session/status', args: ['child', true] }, id => id, encode), {
+    type: 'emit', event: 'api-session/status', args: [encode('child'), true],
+  })
+  const settings = { type: 'emit', event: 'settings/document-updated', args: ['child'] }
+  assert.deepEqual(rewriteNativeResponseIds(settings, id => id, encode), settings)
 })
 
 test('原生请求只改写 Workspace/Session 资源 ID，不污染 requestId 和正文', () => {

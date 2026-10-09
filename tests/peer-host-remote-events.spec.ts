@@ -147,6 +147,26 @@ test('隐藏会话与未知交互交回目标原生链，全局设置通知不�
   } finally { await f.close() }
 })
 
+test('远端运行与结束通知进入原生状态总线，隐藏资源、跨 Host 身份和全局通知被过滤', { timeout: 3000 }, async () => {
+  const f = fixture()
+  try {
+    f.events.setPeers([scope('a')])
+    await f.iterator.next()
+    await setImmediate()
+    const source = f.peers.get('a')!
+    const status = (host: string, session: string, running: unknown) => ({ type: 'emit', event: 'api-session/status', args: [createVirtualSessionId(host, session), running] })
+    source.push(status('a', 'hidden', true))
+    source.push(status('b', 'session', true))
+    source.push(status('a', 'session', 'true'))
+    source.push({ type: 'emit', event: 'settings/document-updated', args: ['私有设置'] })
+    source.push(status('a', 'session', true))
+    assert.deepEqual((await f.iterator.next()).value, status('a', 'session', true))
+    source.push(status('a', 'session', false))
+    assert.deepEqual((await f.iterator.next()).value, status('a', 'session', false))
+    assert.deepEqual(f.replies, [], '普通状态通知不产生交互审批回传')
+  } finally { await f.close() }
+})
+
 test('本机代次结束时清理全部远端，下一代同名事件不能使用旧身份回答', { timeout: 3000 }, async () => {
   const f = fixture()
   try {

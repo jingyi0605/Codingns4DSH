@@ -70,6 +70,9 @@ test('远端摘要用 workspace/follow 首帧和 session/list 组装工作区会
     archivedSessions: [
       { sessionId: 'session-archived', title: 'project-a', status: 'idle', activity: 'unknown', updatedAt: 7, blank: false },
     ],
+    subagentSessions: [
+      { sessionId: 'session-subagent', title: '', status: 'idle', activity: 'unknown', updatedAt: 8, blank: true, origin: 'subagent' },
+    ],
   }])
   assert.deepEqual(calls.sort(), [
     'session/list:peer-1:{"args":{"_request":{}}}',
