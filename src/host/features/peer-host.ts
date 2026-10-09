@@ -910,7 +910,10 @@ function requiredString(value: unknown, field: string): string {
  * 当成可路由资源。
  */
 export function createScopedNativeIdResolver(registry: VirtualWorkspaceRegistry, scope: HostScope): VirtualIdResolver {
+  const workspacePath = scope.targetHostId === null ? undefined
+    : registry.get(createVirtualWorkspaceId(scope.targetHostId, scope.workspaceId))?.path
   return {
+    ...(workspacePath === undefined ? {} : { workspacePath }),
     resolveWorkspace(id) {
       const known = registry.resolveWorkspace(id)
       if (known !== null) return known

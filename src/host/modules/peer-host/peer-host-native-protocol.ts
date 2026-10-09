@@ -2,6 +2,7 @@ import type {
   VirtualSessionId,
   VirtualWorkspaceId,
 } from '../../../shared/contracts/peer-host.js'
+import { normalizePeerHostFileLocation } from '../../../shared/peer-host-file-location.js'
 
 /** DSH 0.2.x Workspace/Session Remote 方法；这里只登记原生协议，不登记插件私有 RPC。 */
 export const DSH_NATIVE_REMOTE_METHODS = Object.freeze([
@@ -84,6 +85,8 @@ export function isDshNativeRemoteMethod(value: string): value is DshNativeRemote
 }
 
 export type VirtualIdResolver = {
+  /** 目标工作区的真实路径，用于识别远端平台；不能使用代理 Host 的平台。 */
+  readonly workspacePath?: string
   resolveWorkspace(id: VirtualWorkspaceId): { readonly workspaceId: string; readonly targetHostId: string | null } | null
   resolveSession(id: VirtualSessionId): { readonly sessionId: string; readonly targetHostId: string | null } | null
   /** 将列表层使用的虚拟 Workspace 路径还原成目标 Host 的真实路径。 */
@@ -102,7 +105,11 @@ export function rewriteNativeRequestIds(
   if (payload === undefined) return payload
   return rewriteValue(payload, (key, value) => {
     if (typeof value !== 'string') return value
-    if (isPathField(key)) return resolver.resolveWorkspacePath?.(value) ?? value
+    if (isPathField(key) || (method.startsWith('workspaceFiles/') && key === 'baseFile')) {
+      const path = resolver.resolveWorkspacePath?.(value) ?? value
+      // 已打开或恢复的旧标签可能绕过资源打开入口，文件读取和变化流也需纠正路径。
+      return method.startsWith('workspaceFiles/') ? normalizePeerHostFileLocation(path, resolver.workspacePath).path : path
+    }
     if (isWorkspaceField(key)) {
       return resolver.resolveWorkspace(value)?.workspaceId ?? value
     }
