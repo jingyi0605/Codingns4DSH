@@ -10,7 +10,15 @@ export interface NativeWorkspaceListStore {
 export interface NativeWorkspaceRecord {
   readonly workspaceId: string
   readonly path?: string
+  /** 用于界面展示的真实工作区路径；远程工作区的 `path` 保留为虚拟路由路径。 */
+  readonly workspacePath?: string
   readonly title: string
+  /** 远程工作区所属的目标 Host；本机工作区没有该字段。 */
+  readonly hostId?: string
+  /** 远程工作区所属 Host 的友好名称；缺失时由界面回退到 hostId。 */
+  readonly hostLabel?: string
+  /** 远程工作区所属 Host 的配置颜色；非法值由显示层回退到稳定推导色。 */
+  readonly hostColor?: string
   readonly sessionIds: readonly string[]
 }
 
@@ -43,11 +51,19 @@ export function readNativeWorkspaceSnapshot(uiContext: Context | undefined): Nat
       const workspaceId = readText(value?.workspaceId)
       if (workspaceId === undefined) return []
       const path = readText(value?.path)
-      const title = readText(value?.title) ?? path ?? workspaceId
+      const workspacePath = readText(value?.workspacePath)
+      const title = readText(value?.title) ?? workspacePath ?? path ?? workspaceId
+      const hostId = readText(value?.hostId)
+      const hostLabel = readText(value?.hostLabel)
+      const hostColor = readText(value?.hostColor)
       return [{
         workspaceId,
         ...(path === undefined ? {} : { path }),
+        ...(workspacePath === undefined ? {} : { workspacePath }),
         title,
+        ...(hostId === undefined ? {} : { hostId }),
+        ...(hostLabel === undefined ? {} : { hostLabel }),
+        ...(hostColor === undefined ? {} : { hostColor }),
         sessionIds: readTextList(value?.sessionIds),
       }]
     }),

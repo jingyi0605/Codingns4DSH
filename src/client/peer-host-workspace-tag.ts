@@ -1,6 +1,6 @@
 import type { AggregateHostResult } from '../shared/contracts/peer-host.js'
 import { createVirtualWorkspaceId, parseVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
-import { resolvePeerHostColor } from './peer-host-color.js'
+import { peerHostTagStyle, resolvePeerHostColor } from './peer-host-color.js'
 import { resolveCodingNsTranslator, type CodingNsLocale } from './locale.js'
 
 /**
@@ -245,18 +245,8 @@ function upsertTag(row: HTMLElement, virtualWorkspaceId: string, tag: HostTagSty
     marginLeft: 'auto',
     alignSelf: 'center',
     // Host 名与工作区名冲突时截断 Host 名；上限 50px（含内边距），超出显示省略号。
-    boxSizing: 'border-box',
     maxWidth: `${PEER_HOST_TAG_MAX_WIDTH_PX}px`,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-    padding: '1px 6px',
-    borderRadius: '999px',
-    fontSize: '10px',
-    lineHeight: '1.5',
-    pointerEvents: 'none',
-    color: tag.color,
-    background: `color-mix(in srgb, ${tag.color} 16%, transparent)`,
+    ...peerHostTagStyle(tag.color),
   })
   // 插为行的最后一个子节点：`rowActions` 只在 hover 时显示（`display:none` 不占位），
   // 放在它之前会让标签在 hover 时被操作按钮向左顶开；放最后才能稳定贴住最右侧。

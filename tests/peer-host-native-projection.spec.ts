@@ -20,6 +20,7 @@ function remoteHost(
     hostId: 'host-local',
     targetHostId: 'peer-1',
     hostLabel: '开发机',
+    hostColor: '#1677ff',
     availability: 'ready',
     errorCode: null,
     workspaces: [{
@@ -73,7 +74,7 @@ function localHost(): Record<string, unknown> {
   }
 }
 
-test('投影只输出虚拟 ID、标题与运行态，本机资源不参与投影', () => {
+test('投影输出虚拟标识与展示元数据，本机资源不参与投影', () => {
   const projection = createPeerHostNativeProjection()
   projection.setAggregate([remoteHost(), localHost()] as never)
 
@@ -81,8 +82,12 @@ test('投影只输出虚拟 ID、标题与运行态，本机资源不参与投�
     workspaceId: createVirtualWorkspaceId('peer-1', 'workspace-1'),
     availability: 'ready',
     path: createPeerHostWorkspaceDisplayPath(createVirtualWorkspaceId('peer-1', 'workspace-1')),
+    workspacePath: '/Users/dev/project-a',
     // Host 归属改由侧栏彩色标签表达，标题保持纯工作区名。
     title: '远端工作区',
+    hostId: 'peer-1',
+    hostLabel: '开发机',
+    hostColor: '#1677ff',
     sessionIds: [createVirtualSessionId('peer-1', 'session-1')],
     archivedSessionIds: [],
     createdAt: new Date(0).toISOString(),

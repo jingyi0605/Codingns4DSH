@@ -1,4 +1,5 @@
 import { normalizePeerHostColor } from '../shared/contracts/peer-host.js'
+import type { CSSProperties } from 'react'
 
 /**
  * 工作区标签配色的推导与缓存。
@@ -58,4 +59,21 @@ export function peerHostTagBackground(color: string): string {
 /** 标签文字色；直接使用配置色，保证明暗主题下都有足够对比。 */
 export function peerHostTagForeground(color: string): string {
   return color
+}
+
+/** 工作区列表与关联项目表共用的 Host 胶囊标签基础样式。 */
+export function peerHostTagStyle(color: string): CSSProperties {
+  return {
+    boxSizing: 'border-box',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    padding: '1px 6px',
+    borderRadius: '999px',
+    fontSize: '10px',
+    lineHeight: '1.5',
+    pointerEvents: 'none',
+    color: peerHostTagForeground(color),
+    background: peerHostTagBackground(color),
+  }
 }

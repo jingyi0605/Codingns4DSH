@@ -7,6 +7,7 @@ import type { AssistantTtsSnapshot } from '../../shared/assistant-tts.js'
 import { readAssistantPrompts } from '../../shared/assistant-prompts.js'
 import type { CodingNsTranslator } from '../locale.js'
 import { dshSettingsButtonStyle, dshSettingsFieldStyle, dshSettingsHelpStyle, dshThemeColor } from '../theme.js'
+import { peerHostTagStyle, resolvePeerHostColor } from '../peer-host-color.js'
 import { AssistantAvatarPortraitEditor } from '../avatar/portrait-editor.js'
 import type { AssistantAvatarModel } from '../../shared/assistant-avatar.js'
 import { AssistantAppearanceEditor } from '../avatar/settings-panel.js'
@@ -129,6 +130,35 @@ export function AssistantConfigurationPage({ tab, active = true, services, value
   }
 }
 
+/** 五个开关写入配置窗口的统一草稿，底部保存前不改变运行中的助理。 */
+export function AssistantNotificationSettings({ services, value, disabled, t, onError }: {
+  readonly services: CodingNsClientServices; readonly value: AssistantSettings; readonly disabled: boolean
+  readonly t: CodingNsTranslator; readonly onError: (error: string) => void
+}): ReactElement {
+  const settings = normalizeAssistantNotificationSettings(value.notifications)
+  const compactRowStyle: CSSProperties = { minHeight: 40, padding: '5px 0' }
+  const set = (key: keyof typeof settings, checked: boolean): void => {
+    void services.settings.set(`assistant.notifications.${key}`, checked)
+      .catch((cause: unknown) => onError(message(cause)))
+  }
+  const row = (key: keyof typeof settings, style: CSSProperties): ReactElement => createElement(SettingsToggleRow, {
+    key, label: t(`awb.notifications.${key}`), checked: settings[key],
+    disabled: disabled || (key !== 'enabled' && !settings.enabled), style,
+    onChange: (checked) => set(key, checked),
+  })
+  return createElement('fieldset', { disabled, 'data-codingns-assistant-notification-settings': true,
+    style: { border: 0, padding: 0, margin: 0, minWidth: 0 } },
+    createElement('legend', { style: { fontWeight: 600, marginBottom: 6 } }, t('awb.notifications.title')),
+    createElement('p', { style: help }, t('awb.notifications.hint')),
+    row('enabled', { minHeight: 44, padding: '5px 0' }),
+    createElement('div', { style: {
+      display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+      columnGap: 20, rowGap: 0, marginTop: 2,
+    } },
+      row('completed', compactRowStyle), row('error', compactRowStyle),
+      row('question', compactRowStyle), row('approval', compactRowStyle)))
+}
+
 /** 兼容原能力表单入口；实际配置页分别装配项目字段与声音字段。 */
 export function AssistantCapabilityFields({ draft, tts, workspaces, t, disabled, onChange }: {
   readonly draft: AssistantDraft; readonly tts: AssistantTtsSnapshot | undefined; readonly workspaces: readonly NativeWorkspaceRecord[]; readonly t: CodingNsTranslator
@@ -144,12 +174,39 @@ export function AssistantWorkspaceFields({ draft, workspaces, t, disabled, onCha
   readonly disabled: boolean; readonly onChange: (patch: Partial<AssistantDraft>) => void
 }): ReactElement {
   const knownWorkspaces = new Set(workspaces.map((workspace) => workspace.workspaceId))
+  const options = [...workspaces, ...draft.managedWorkspaceIds
+    .filter((id) => !knownWorkspaces.has(id))
+    .map((workspaceId) => ({ workspaceId, title: t('awb.offlineWorkspace', { id: workspaceId }) }))]
+  const row = (workspace: (typeof options)[number], index: number): ReactElement => {
+    const remote = 'hostLabel' in workspace || 'hostId' in workspace
+    const host = remote ? workspace.hostLabel ?? workspace.hostId : undefined
+    const hostColor = remote ? workspace.hostColor : undefined
+    const sessionCount = 'sessionIds' in workspace ? workspace.sessionIds.length : 0
+    const path = 'workspacePath' in workspace ? workspace.workspacePath ?? workspace.path ?? workspace.workspaceId
+      : 'path' in workspace ? workspace.path ?? workspace.workspaceId : workspace.workspaceId
+    const tag = host === undefined ? createElement('span', { style: workspaceTableEmptyStyle }, '—')
+      : createElement('span', { title: host, style: { ...peerHostTagStyle(resolvePeerHostColor(hostColor, host)), maxWidth: '100%' } }, host)
+    return createElement('label', { key: workspace.workspaceId, role: 'row', style: { ...workspaceTableRowStyle, ...(index === options.length - 1 ? {} : { borderBottom: `1px solid ${dshThemeColor.border}` }) } },
+      createElement('span', { role: 'cell', style: workspaceTableCheckboxCellStyle },
+        createElement('input', { type: 'checkbox', 'aria-label': workspace.title, checked: draft.managedWorkspaceIds.includes(workspace.workspaceId), onChange: (event: { currentTarget: { checked: boolean } }) => onChange({ managedWorkspaceIds: event.currentTarget.checked ? [...draft.managedWorkspaceIds, workspace.workspaceId] : draft.managedWorkspaceIds.filter((id) => id !== workspace.workspaceId) }) })),
+      createElement('span', { role: 'cell', style: workspaceTableNameCellStyle }, workspace.title),
+      createElement('span', { role: 'cell', style: workspaceTableCountCellStyle }, String(sessionCount)),
+      createElement('span', { role: 'cell', title: path, style: workspaceTablePathCellStyle }, path),
+      createElement('span', { role: 'cell', style: workspaceTableHostCellStyle }, tag))
+  }
   return createElement('fieldset', { 'data-codingns-assistant-projects': true, style: { border: 0, padding: 0, margin: 0, minWidth: 0 }, disabled },
     createElement('legend', { style: { fontSize: 14, fontWeight: 600, padding: 0, marginBottom: 8 } }, t('awb.workspaces')),
     createElement('p', { style: help }, t('awb.scopeHint')),
-    createElement('div', { style: { display: 'grid', gap: 8, maxHeight: 180, overflowY: 'auto', marginTop: 8 } },
-      ...[...workspaces, ...draft.managedWorkspaceIds.filter((id) => !knownWorkspaces.has(id)).map((workspaceId) => ({ workspaceId, title: t('awb.offlineWorkspace', { id: workspaceId }) }))].map((workspace) => createElement('label', { key: workspace.workspaceId, style: assistantSettingCheckboxStyle },
-        createElement('input', { type: 'checkbox', checked: draft.managedWorkspaceIds.includes(workspace.workspaceId), onChange: (event: { currentTarget: { checked: boolean } }) => onChange({ managedWorkspaceIds: event.currentTarget.checked ? [...draft.managedWorkspaceIds, workspace.workspaceId] : draft.managedWorkspaceIds.filter((id) => id !== workspace.workspaceId) }) }), workspace.title))))
+    createElement('div', { role: 'table', 'aria-label': t('awb.workspaces'), style: workspaceTableStyle },
+      createElement('div', { role: 'row', style: workspaceTableHeaderStyle },
+        createElement('span', { role: 'columnheader', style: workspaceTableCheckboxCellStyle }),
+        createElement('span', { role: 'columnheader' }, t('awb.workspaceColumn')),
+        createElement('span', { role: 'columnheader' }, t('awb.workspaceCountColumn')),
+        createElement('span', { role: 'columnheader' }, t('awb.workspacePathColumn')),
+        createElement('span', { role: 'columnheader' }, t('awb.workspaceHostColumn'))),
+      ...options.map(row),
+      options.length === 0 ? createElement('div', { role: 'row', style: workspaceTableEmptyRowStyle }, t('assistant.noWorkspaces')) : null),
+  )
 }
 
 /** 没有安装 MOSS 时只有浏览器声音可选，不因标签拆分而放宽可用性校验。 */
@@ -209,3 +266,45 @@ function message(error: unknown): string { return error instanceof Error ? error
 const help: CSSProperties = { ...dshSettingsHelpStyle, margin: 0 }
 const field: CSSProperties = assistantSettingFieldStyle
 const identityFieldStyle: CSSProperties = { ...dshSettingsFieldStyle, borderRadius: 8 }
+const workspaceTableStyle: CSSProperties = {
+  display: 'grid',
+  overflow: 'hidden',
+  maxHeight: 240,
+  overflowY: 'auto',
+  marginTop: 8,
+  border: `1px solid ${dshThemeColor.border}`,
+  borderRadius: 10,
+  background: dshThemeColor.cardBackground,
+  boxShadow: dshThemeColor.subtleShadow,
+}
+const workspaceTableGridStyle: CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: '38px minmax(140px, 1fr) 72px minmax(180px, 1fr) minmax(120px, 0.42fr)',
+  alignItems: 'center',
+  columnGap: 10,
+  padding: '0 12px',
+  minWidth: 0,
+}
+const workspaceTableHeaderStyle: CSSProperties = {
+  ...workspaceTableGridStyle,
+  minHeight: 34,
+  color: dshThemeColor.labelSecondary,
+  background: dshThemeColor.surfaceSubtle,
+  borderBottom: `1px solid ${dshThemeColor.border}`,
+  fontSize: 11,
+  fontWeight: 600,
+}
+const workspaceTableRowStyle: CSSProperties = {
+  ...workspaceTableGridStyle,
+  minHeight: 48,
+  color: dshThemeColor.labelPrimary,
+  fontSize: 13,
+  cursor: 'pointer',
+}
+const workspaceTableCheckboxCellStyle: CSSProperties = { display: 'flex', alignItems: 'center', minWidth: 0 }
+const workspaceTableNameCellStyle: CSSProperties = { minWidth: 0, overflow: 'hidden', overflowWrap: 'anywhere' }
+const workspaceTableCountCellStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontVariantNumeric: 'tabular-nums' }
+const workspaceTablePathCellStyle: CSSProperties = { minWidth: 0, overflow: 'hidden', overflowWrap: 'anywhere', color: dshThemeColor.labelSecondary, fontSize: 12 }
+const workspaceTableHostCellStyle: CSSProperties = { display: 'flex', alignItems: 'center', minWidth: 0, overflow: 'hidden' }
+const workspaceTableEmptyStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: 12 }
+const workspaceTableEmptyRowStyle: CSSProperties = { padding: '16px 12px', color: dshThemeColor.labelSecondary, textAlign: 'center', fontSize: 12 }

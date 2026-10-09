@@ -120,6 +120,7 @@ function remoteWorkspace(): Record<string, unknown> {
     hostId: 'host-local',
     targetHostId: 'peer-1',
     hostLabel: '开发机',
+    hostColor: '#1677ff',
     availability: 'ready',
     errorCode: null,
     workspaces: [{
@@ -130,6 +131,7 @@ function remoteWorkspace(): Record<string, unknown> {
       displayName: '远端工作区',
       path: '/Users/dev/project-a',
       hostLabel: '开发机',
+      hostColor: '#1677ff',
       availability: 'ready',
       sessions: [{
         scope: { hostId: 'host-local', targetHostId: 'peer-1', workspaceId: 'workspace-1', sessionId: 'session-1', scopeGeneration: 0 },
@@ -165,6 +167,9 @@ test('虚拟工作区就地并入原生 Workspace Store，卸载后还原', () =
   assert.deepEqual(merged.archivedSessionIds, ['archived-session', virtualArchived])
   assert.deepEqual((merged.items as Array<Record<string, unknown>>)[1]?.archivedSessionIds, [virtualArchived])
   assert.equal((merged.items as Array<Record<string, unknown>>)[1]?.path, createPeerHostWorkspaceDisplayPath(createVirtualWorkspaceId('peer-1', 'workspace-1')))
+  assert.equal((merged.items as Array<Record<string, unknown>>)[1]?.workspacePath, '/Users/dev/project-a')
+  assert.equal((merged.items as Array<Record<string, unknown>>)[1]?.hostLabel, '开发机')
+  assert.equal((merged.items as Array<Record<string, unknown>>)[1]?.hostColor, '#1677ff')
   assert.equal(merged.phase, 'ready')
 
   dispose()

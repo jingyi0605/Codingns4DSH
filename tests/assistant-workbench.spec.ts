@@ -382,6 +382,27 @@ test('跨页编辑共用一份草稿，切换标签不丢基本信息、项目�
   assert.equal(saved.ttsBackend, 'moss-onnx'); assert.equal(f.calls(), 0)
 })
 
+test('关联项目显示远程工作区所属 HOST，本机工作区不添加 HOST 行', () => {
+  const draft = readAssistantDraft(fixture(true).snapshot.value.assistant)
+  const markup = renderToStaticMarkup(createElement(AssistantWorkspaceFields, { draft, t, disabled: false, onChange() {}, workspaces: [
+    { workspaceId: 'local', title: '本机项目', path: '/Users/dev/local', sessionIds: ['local-1'] },
+    { workspaceId: 'remote', title: '远程项目', workspacePath: '/Users/dev/remote', path: 'codingns-peer-host://remote', hostId: 'peer-1', hostLabel: '开发机', hostColor: '#1677ff', sessionIds: ['remote-1', 'remote-2'] },
+    { workspaceId: 'remote-without-label', title: '无名称远程项目', hostId: 'peer-2', sessionIds: [] },
+  ] }))
+  assert.ok(markup.includes('role="table"'))
+  assert.ok(markup.includes('所属 HOST'))
+  assert.ok(markup.includes('会话数'))
+  assert.ok(markup.includes('路径'))
+  assert.ok(markup.includes('远程项目'))
+  assert.match(markup, />1<\/span>/u)
+  assert.match(markup, />2<\/span>/u)
+  assert.ok(markup.includes('/Users/dev/local'))
+  assert.ok(markup.includes('/Users/dev/remote'))
+  assert.match(markup, /title="开发机"[^>]*>开发机<\/span>/u)
+  assert.ok(markup.includes('color-mix(in srgb, #1677ff 16%, transparent)'))
+  assert.match(markup, /title="peer-2"[^>]*>peer-2<\/span>/u)
+})
+
 test('重置标记优先于旧素材及范围，设置卡片只保留统一入口', () => {
   const f = fixture(false)
   f.snapshot.value.assistant.managedWorkspaceIds = ['old-project']

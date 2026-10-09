@@ -410,5 +410,6 @@ function requestKey(): string { return `assistant-${globalThis.crypto?.randomUUI
 const row: CSSProperties = { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }
 const help: CSSProperties = { ...dshSettingsHelpStyle, margin: 0 }
 const avatarStyle: CSSProperties = { display: 'grid', gap: 8, justifyItems: 'center' }
-const backdrop: CSSProperties = { position: 'fixed', inset: 0, zIndex: 10000, background: dshThemeColor.overlay, backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12, boxSizing: 'border-box' }
-const dialog: CSSProperties = { display: 'flex', flexDirection: 'column', width: 'min(940px, 100%)', maxHeight: 'calc(100dvh - 24px)', minHeight: 300, background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, border: `1px solid ${dshThemeColor.border}`, borderRadius: 20, boxShadow: '0 24px 80px rgba(0,0,0,.24)', overflow: 'hidden' }
+// 工作台外层统一保留 24px 安全边距；内部滚动区、页脚和组件间距保持原值。
+const backdrop: CSSProperties = { position: 'fixed', inset: 0, zIndex: 10000, background: dshThemeColor.overlay, backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, boxSizing: 'border-box' }
+const dialog: CSSProperties = { display: 'flex', flexDirection: 'column', width: 'min(940px, 100%)', maxHeight: 'calc(100dvh - 48px)', minHeight: 300, background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, border: `1px solid ${dshThemeColor.border}`, borderRadius: 20, boxShadow: '0 24px 80px rgba(0,0,0,.24)', overflow: 'hidden' }

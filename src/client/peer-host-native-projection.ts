@@ -6,7 +6,15 @@ import { publishSessionAdapter } from './session-adapter-cache.js'
 export interface PeerHostVirtualWorkspaceView {
   readonly workspaceId: string
   readonly path: string
+  /** 工作区在远端 Host 上的真实路径；`path` 仍是本机侧栏使用的虚拟路径。 */
+  readonly workspacePath: string
   readonly title: string
+  /** 远程工作区所属的目标 Host；仅虚拟远端工作区设置。 */
+  readonly hostId: string
+  /** 远程工作区所属 Host 的友好名称。 */
+  readonly hostLabel: string
+  /** 远程工作区所属 Host 的配置颜色。 */
+  readonly hostColor?: string
   readonly availability: AggregateWorkspaceSummary['availability']
   readonly sessionIds: readonly string[]
   /** 归档会话仍是成员（保留槽位），但会被原生归档集合默认隐藏。 */
@@ -132,7 +140,7 @@ function projectAggregate(results: readonly AggregateHostResult[]): {
     if (host.targetHostId === null) continue
     const virtualHostId = host.targetHostId
     for (const workspace of host.workspaces) {
-      const projected = projectWorkspace(virtualHostId, workspace)
+      const projected = projectWorkspace(virtualHostId, workspace, host.hostColor)
       workspaces.push(projected.workspace)
       sessions.push(...projected.sessions)
     }
@@ -147,6 +155,7 @@ function normalizeWorkspaceOrder(ids: readonly string[]): readonly string[] {
 function projectWorkspace(
   virtualHostId: string,
   workspace: AggregateWorkspaceSummary,
+  hostColor: string | null | undefined,
 ): { readonly workspace: PeerHostVirtualWorkspaceView; readonly sessions: readonly PeerHostVirtualSessionSummary[] } {
   const virtualWorkspaceId = createVirtualWorkspaceId(virtualHostId, workspace.workspaceId)
   const realPath = workspace.path
@@ -177,9 +186,13 @@ function projectWorkspace(
     workspace: {
       workspaceId: virtualWorkspaceId,
       path: displayPath,
+      workspacePath: realPath,
       // Host 归属不再写进标题文本：侧栏由彩色标签表达，标题保持干净，可搜索、
       // 可重命名，也不会污染 hover 卡片与重命名初值。
       title: workspace.displayName,
+      hostId: virtualHostId,
+      hostLabel: workspace.hostLabel,
+      ...(hostColor === undefined || hostColor === null ? {} : { hostColor }),
       availability: workspace.availability,
       sessionIds,
       archivedSessionIds,
@@ -230,6 +243,10 @@ function sameWorkspace(left: PeerHostVirtualWorkspaceView, right: PeerHostVirtua
   return left.workspaceId === right.workspaceId
     && left.title === right.title
     && left.path === right.path
+    && left.workspacePath === right.workspacePath
+    && left.hostId === right.hostId
+    && left.hostLabel === right.hostLabel
+    && left.hostColor === right.hostColor
     && left.availability === right.availability
     && left.updatedAt === right.updatedAt
     && sameIds(left.sessionIds, right.sessionIds)
