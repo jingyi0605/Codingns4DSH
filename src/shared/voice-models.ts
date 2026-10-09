@@ -66,20 +66,13 @@ const STREAMING_FILES: readonly AssistantVoiceModelFile[] = [
   { setting: 'asrTokens', name: 'tokens.txt' },
 ]
 
-/** 编程交流默认识别中英混合语句；显式保存的模型选择继续保留。 */
-export const DEFAULT_VOICE_MODEL_ID = 'sherpa-onnx-streaming-zh-en'
+/** 全局智能助理默认使用中文 Zipformer Large；显式保存的模型选择继续保留。 */
+export const DEFAULT_VOICE_MODEL_ID = 'sherpa-onnx-streaming-zh-large-2025-06-30'
 
 /** 只暴露支持实时输入的推荐模型；模型地址由 Host 根据此白名单解析。 */
 export const ASSISTANT_VOICE_MODEL_CATALOG: readonly AssistantVoiceModel[] = [
   {
     id: DEFAULT_VOICE_MODEL_ID,
-    label: '中英双语实时模型（默认）',
-    description: '本地运行，约 200 MB，同时识别中文和英文，适合编程交流。',
-    repository: 'csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20',
-    files: STREAMING_FILES,
-  },
-  {
-    id: 'sherpa-onnx-streaming-zh-large-2025-06-30',
     label: '中文 Zipformer Large（2025-06-30）',
     description: '本地中文实时识别，模型文件约 168 MB。',
     repository: 'csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30',
@@ -90,6 +83,13 @@ export const ASSISTANT_VOICE_MODEL_CATALOG: readonly AssistantVoiceModel[] = [
       { setting: 'asrJoiner', name: 'joiner.int8.onnx' },
       { setting: 'asrTokens', name: 'tokens.txt' },
     ],
+  },
+  {
+    id: 'sherpa-onnx-streaming-zh-en',
+    label: '中英双语实时模型',
+    description: '本地运行，约 200 MB，同时识别中文和英文，适合编程交流。',
+    repository: 'csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20',
+    files: STREAMING_FILES,
   },
   {
     id: 'sherpa-onnx-streaming-zh-14m',

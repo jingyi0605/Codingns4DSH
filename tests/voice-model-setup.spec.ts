@@ -6,8 +6,8 @@ import { join } from 'node:path'
 import { ASSISTANT_VOICE_MODEL_CATALOG, DEFAULT_VOICE_MODEL_ID, findAssistantVoiceModel, type AssistantVoiceModelProgress } from '../data/build/dist/shared/voice-models.js'
 import { installAssistantVoiceModel } from '../data/build/dist/host/features/voice-model-setup.js'
 
-test('中英双语是默认模型，Large 和轻量模型仍可显式选择', () => {
-  assert.equal(DEFAULT_VOICE_MODEL_ID, 'sherpa-onnx-streaming-zh-en')
+test('中文 Zipformer Large 是默认模型，中英双语和轻量模型仍可显式选择', () => {
+  assert.equal(DEFAULT_VOICE_MODEL_ID, 'sherpa-onnx-streaming-zh-large-2025-06-30')
   assert.equal(ASSISTANT_VOICE_MODEL_CATALOG[0]!.id, DEFAULT_VOICE_MODEL_ID)
   assert.ok(findAssistantVoiceModel('sherpa-onnx-streaming-zh-14m'))
   assert.ok(findAssistantVoiceModel('sherpa-onnx-streaming-zh-large-2025-06-30'))

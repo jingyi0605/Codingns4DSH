@@ -1,7 +1,7 @@
 import type { AssistantTtsSnapshot } from './assistant-tts.js'
 
 export { DEFAULT_VOICE_MODEL_ID } from './voice-models.js'
-/** 保留旧导出名，避免破坏已有调用；默认策略已经改为中英双语。 */
+/** 保留旧导出名，避免破坏已有调用；默认策略已经改为中文 Zipformer Large。 */
 export { DEFAULT_VOICE_MODEL_ID as DEFAULT_LIGHT_VOICE_MODEL_ID } from './voice-models.js'
 export type VoiceInitializationPhase = 'idle' | 'recognition' | 'speech' | 'completed' | 'failed'
 /** 向导就绪由识别验证与播报就绪共同决定，不能只看文件存在或一个 initialized 标志。 */

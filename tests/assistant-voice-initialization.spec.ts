@@ -28,7 +28,7 @@ function fixture(existing = false) {
   return { service, calls, settings: () => settings, fail: (value: boolean) => { fail = value } }
 }
 
-test('查看向导不下载；点击初始化默认中英双语，保留音色和语速，重复初始化复用资源', async () => {
+test('查看向导不下载；点击初始化默认中文 Zipformer Large，保留音色和语速，重复初始化复用资源', async () => {
   const f = fixture()
   assert.equal((await f.service.snapshot()).ready, false); assert.deepEqual(f.calls, [])
   assert.equal((await f.service.initialize(new AbortController().signal)).ready, true)
