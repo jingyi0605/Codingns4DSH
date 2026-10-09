@@ -273,6 +273,9 @@ export function createPeerHostPageTransport(
     return method === 'session/modelCatalog' && !containsResourceId(value) ? navigationScope() : undefined
   }
   const scopeForPluginRequest = (endpoint: string, value: unknown): HostScope | undefined => {
+    // 设置页明确选择本机时，不能让无会话的目录查询跟随前台远端工作区。
+    if ((endpoint === 'cli/catalog' || endpoint === 'cli/models' || endpoint === 'cli/catalog/refresh')
+      && asRecord(value)?.catalogHostId === 'local') return undefined
     if (endpoint.startsWith('fileManagement/')) {
       // 文件内容与路径均不参与路由；显式资源必须属于同一台 Host 的同一工作区。
       const input = asRecord(value)

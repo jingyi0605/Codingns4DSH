@@ -86,7 +86,7 @@ export interface PeerHostProxyResponse {
 }
 
 export interface PeerHostScopedClient {
-  request(scope: HostScope, path: string, options?: { readonly method?: string; readonly body?: string }): Promise<PeerHostProxyResponse>
+  request(scope: HostScope, path: string, options?: { readonly method?: string; readonly body?: string; readonly signal?: AbortSignal }): Promise<PeerHostProxyResponse>
   loadSessionHistory(scope: HostScope, cursor?: string): Promise<PeerHostProxyResponse>
   sendMessage(scope: HostScope, body: string): Promise<PeerHostProxyResponse>
   stopSession(scope: HostScope): Promise<PeerHostProxyResponse>
@@ -108,7 +108,8 @@ export interface PeerHostScopedClient {
 
 /** Client 侧远端资源适配器；每一次请求都从 HostScope 生成，不保存目标凭据。 */
 export function createPeerHostScopedClient(rpc: CodingNsRpcClient): PeerHostScopedClient {
-  const request = async (scope: HostScope, path: string, options: { readonly method?: string; readonly body?: string } = {}): Promise<PeerHostProxyResponse> => {
+  const request = async (scope: HostScope, path: string, options: { readonly method?: string; readonly body?: string; readonly signal?: AbortSignal } = {}): Promise<PeerHostProxyResponse> => {
+    options.signal?.throwIfAborted()
     assertPeerScope(scope)
     if (!path.startsWith('/api/') || path.includes('://')) throw new TypeError('PeerHost 代理路径必须是固定 API 路径')
     const payload = {
@@ -120,12 +121,14 @@ export function createPeerHostScopedClient(rpc: CodingNsRpcClient): PeerHostScop
     }
     let result
     try {
-      result = await rpc.call(CODINGNS_RPC_CHANNEL, 'peerHost/request', payload)
+      result = await rpc.call(CODINGNS_RPC_CHANNEL, 'peerHost/request', payload, options.signal)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (!/HTTP (?:404|405)\b/u.test(message)) throw error
-      result = await rpc.call('/api', 'codingns/peerHost/request', payload)
+      options.signal?.throwIfAborted()
+      result = await rpc.call('/api', 'codingns/peerHost/request', payload, options.signal)
     }
+    options.signal?.throwIfAborted()
     if (!result.ok) throw new Error(result.error.message)
     return result.value as PeerHostProxyResponse
   }

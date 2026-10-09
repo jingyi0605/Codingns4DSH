@@ -1,4 +1,4 @@
-import { createElement, useEffect, useState } from 'react'
+import { createElement, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type {
   CodingNsCliAdapterDescriptor,
@@ -6,6 +6,8 @@ import type {
   CodingNsCliModelCatalog,
 } from '../../shared/contracts/cli-adapter.js'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
+import type { PeerHostClientRecord } from '../../shared/contracts/peer-host.js'
+import { createVirtualSessionId } from '../../shared/contracts/peer-host.js'
 import { normalizeSubagentBridgeSettings, SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS } from '../../shared/contracts/config.js'
 import { adapterDetectionLabel, callCliRpc, catalogRefreshErrorMessage, errorMessage } from '../cli-catalog.js'
 import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsFieldStyle, dshSettingsHelpStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
@@ -18,6 +20,8 @@ import { providerIconUrl } from '../provider-icons.js'
 import { notifyAdapterCatalogChanged, watchAdapterCatalog } from '../adapter-catalog-watch.js'
 import { invalidateModelCatalogCache } from '../model-catalog-cache.js'
 import { resolveRefreshIcon } from '../../dsh-capabilities/client/primitives-adapter.js'
+import { createCliSettingsRpc } from '../cli-settings-rpc.js'
+import { createPeerHostManagementApi } from '../peer-host-management-api.js'
 
 const CLI_ADAPTER_STYLE_ID = 'codingns4dsh-cli-adapter-settings-style'
 const cliAdapterClass = {
@@ -45,7 +49,7 @@ function installCliAdapterStyles(): void {
   style.textContent = `
 .${cliAdapterClass.panel}{display:flex;flex-direction:column;gap:12px;width:100%;min-width:0}
 .${cliAdapterClass.listCard}{overflow:hidden;border:1px solid var(--dsw-alias-border-l2,#e5e7eb);border-radius:14px;background:var(--dsw-alias-bg-layer-1,Canvas);box-shadow:0 1px 3px rgba(15,23,42,.04)}
-.${cliAdapterClass.listHeader}{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 6px 10px;color:var(--dsw-alias-label-tertiary,GrayText);border-bottom:1px solid var(--dsw-alias-border-l4,#eef0f2);font-size:13px;font-weight:600;letter-spacing:.02em}
+.${cliAdapterClass.listHeader}{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:0 6px 10px;color:var(--dsw-alias-label-tertiary,GrayText);border-bottom:1px solid var(--dsw-alias-border-l4,#eef0f2);font-size:13px;font-weight:600;letter-spacing:.02em}
 .${cliAdapterClass.row}{display:flex;align-items:center;width:100%;min-width:0;min-height:76px;gap:16px;padding:13px 18px;box-sizing:border-box;background:transparent}
 .${cliAdapterClass.row}+.${cliAdapterClass.row}{border-top:1px solid var(--dsw-alias-border-l4,#eef0f2)}
 .${cliAdapterClass.main}{display:flex;align-items:center;gap:13px;flex:1 1 auto;min-width:0}
@@ -136,6 +140,20 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
  */
 export function CliAdaptersPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
   const t = useCodingNsTranslator(services.locale)
+  const disabled = !enabled
+  const [peerHosts, setPeerHosts] = useState<readonly PeerHostClientRecord[]>([])
+  const [peerHostId, setPeerHostId] = useState<string | null>(null)
+  const [hostsError, setHostsError] = useState('')
+  const peerHostEnabled = snapshot.value?.modules.peerHost === true
+  const peerHost = peerHosts.find((host) => host.id === peerHostId)
+  const hostLabel = peerHostId === null ? t('cli.localHost') : peerHost?.displayName ?? peerHostId
+  const catalogAvailable = peerHostId === null || (peerHostEnabled && (peerHost?.status === 'ready' || peerHost?.status === 'session_required') && peerHost.route.kind === 'lan')
+  const catalogRpc = useMemo(() => createCliSettingsRpc(services.rpc, peerHostId, services.locale), [services.rpc, peerHostId, services.locale])
+  const refreshHosts = useRef<() => void>(() => undefined)
+  // 切换 Host 的当次渲染立即使旧请求失效，不能等下一次 effect 才隔离迟到结果。
+  const requestContext = useMemo(() => ({ rpc: catalogRpc }), [catalogRpc, disabled, catalogAvailable])
+  const currentRequest = useRef<typeof requestContext | null>(requestContext)
+  currentRequest.current = requestContext
   const [catalog, setCatalog] = useState<readonly CodingNsCliAdapterDescriptor[]>([])
   const [selected, setSelected] = useState<CodingNsCliAdapterDescriptor | null>(null)
   const [models, setModels] = useState<CodingNsCliModelCatalog | null>(null)
@@ -143,46 +161,90 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
   const [busyAdapterId, setBusyAdapterId] = useState<string | null>(null)
   const [bridgeBusy, setBridgeBusy] = useState(false)
   const [modelsError, setModelsError] = useState('')
+  const [catalogError, setCatalogError] = useState('')
   const [detecting, setDetecting] = useState<string | null>(null)
-  const disabled = !enabled
 
   useEffect(() => { installCliAdapterStyles() }, [])
+  useEffect(() => {
+    currentRequest.current = requestContext
+    return () => { if (currentRequest.current === requestContext) currentRequest.current = null }
+  }, [requestContext])
 
   useEffect(() => {
-    if (disabled) return
+    if (disabled || !peerHostEnabled) { setPeerHosts([]); setPeerHostId(null); setHostsError(''); return }
+    let active = true
+    let busy = false
+    const api = createPeerHostManagementApi(services.rpc)
+    const refresh = async (): Promise<void> => {
+      if (!active || busy) return
+      busy = true
+      try {
+        const hosts = await api.list(AbortSignal.timeout(10_000))
+        if (!active) return
+        setPeerHosts(hosts)
+        setHostsError('')
+        setPeerHostId((current) => current !== null && !hosts.some((host) => host.id === current) ? null : current)
+      } catch (error) { if (active) setHostsError(errorMessage(error)) }
+      finally { busy = false }
+    }
+    refreshHosts.current = () => { void refresh() }
+    void refresh()
+    // 返回设置页时重新读取已登记主机，不增加长期后台轮询。
+    globalThis.addEventListener?.('focus', refresh)
+    return () => { active = false; refreshHosts.current = () => undefined; globalThis.removeEventListener?.('focus', refresh) }
+  }, [disabled, peerHostEnabled, services.rpc])
+
+  useEffect(() => {
+    setCatalog([])
+    setSelected(null)
+    setModels(null)
+    setModelsError('')
+    setCatalogError('')
+    setDetecting(null)
+    setBusyAdapterId(null)
+    if (disabled || !catalogAvailable) { setLoading(false); return }
     setLoading(true)
-    return watchAdapterCatalog(services.rpc, undefined,
-      (value) => { setCatalog(value); setLoading(false) },
-      (error) => { setLoading(false); notify({ kind: 'error', message: errorMessage(error) }) },
+    return watchAdapterCatalog(catalogRpc, undefined,
+      (value) => { if (currentRequest.current === requestContext) { setCatalog(value); setLoading(false); setCatalogError('') } },
+      (error) => { if (currentRequest.current === requestContext) { setLoading(false); setCatalogError(errorMessage(error)) } },
     )
-  }, [disabled, services.rpc])
+  }, [disabled, requestContext, catalogAvailable])
 
   useEffect(() => {
-    if (selected === null || disabled || !selected.installed || !selected.enabled) {
+    if (selected === null || disabled || !catalogAvailable || !selected.installed || !selected.enabled) {
       setModels(null)
       return
     }
     let active = true
     setModels(null)
     setModelsError('')
-    void callCliRpc<CodingNsCliModelCatalog>(services.rpc, 'models', { adapterId: selected.id })
-      .then((value) => { if (active) setModels(value) })
-      .catch((error: unknown) => { if (active) { const message = errorMessage(error); setModelsError(message); notify({ kind: 'error', message }) } })
+    void callCliRpc<CodingNsCliModelCatalog>(catalogRpc, 'models', { adapterId: selected.id }, AbortSignal.timeout(10_000))
+      .then((value) => { if (active && currentRequest.current === requestContext) setModels(value) })
+      .catch((error: unknown) => { if (active && currentRequest.current === requestContext) { const message = errorMessage(error); setModelsError(message); notify({ kind: 'error', message }) } })
     return () => { active = false }
-  }, [disabled, selected, services.rpc])
+  }, [disabled, selected, requestContext, catalogAvailable])
 
   const buttonStyle = { ...dshSettingsButtonStyle, cursor: disabled ? 'not-allowed' : 'pointer' }
   const redetect = async (adapterId?: string): Promise<void> => {
-    if (detecting !== null) return
+    if (disabled || !catalogAvailable || detecting !== null) return
     setDetecting(adapterId ?? '*')
     try {
-      const value = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(services.rpc, 'catalog/refresh', adapterId === undefined ? {} : { adapterId })
-      invalidateModelCatalogCache(services.rpc, adapterId)
-      setCatalog(value)
-      setSelected((current) => current === null ? null : value.find((entry) => entry.id === current.id) ?? null)
+      const value = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(catalogRpc, 'catalog/refresh', adapterId === undefined ? {} : { adapterId }, AbortSignal.timeout(120_000))
+      invalidateModelCatalogCache(services.rpc, adapterId, peerHostId === null ? undefined : createVirtualSessionId(peerHostId, '__catalog__'))
       notifyAdapterCatalogChanged(services.rpc)
-    } catch (error) { notify({ kind: 'error', message: catalogRefreshErrorMessage(error, t) }) }
-    finally { setDetecting(null) }
+      if (currentRequest.current !== requestContext) return
+      setCatalog(value)
+      setCatalogError('')
+      setSelected((current) => current === null ? null : value.find((entry) => entry.id === current.id) ?? null)
+      notifyAdapterCatalogChanged(catalogRpc)
+    } catch (error) {
+      if (currentRequest.current === requestContext) {
+        const message = catalogRefreshErrorMessage(error, t)
+        setCatalogError(message)
+        notify({ kind: 'error', message })
+      }
+    }
+    finally { if (currentRequest.current === requestContext) setDetecting(null) }
   }
   const bridgeEnabled = snapshot.value?.subagentBridge?.enabled === true
   const bridgeWritable = snapshot.status !== 'loading' && snapshot.writable
@@ -225,24 +287,27 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
     }
   }
   const toggleAdapter = async (adapter: CodingNsCliAdapterDescriptor, next: boolean): Promise<void> => {
+    if (disabled || peerHostId !== null) return
     setBusyAdapterId(adapter.id)
     try {
       await callCliRpc(services.rpc, 'adapter/set', { adapterId: adapter.id, enabled: next })
-      const refreshed = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(services.rpc, 'catalog', {})
-      setCatalog(refreshed)
+      const refreshed = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(catalogRpc, 'catalog', {})
       notifyAdapterCatalogChanged(services.rpc)
+      if (currentRequest.current !== requestContext) return
+      setCatalog(refreshed)
+      notifyAdapterCatalogChanged(catalogRpc)
       notify({ kind: 'success', message: t(next ? 'cli.adapterEnabled' : 'cli.adapterDisabled', { name: adapter.name }) })
     } catch (error) {
-      notify({ kind: 'error', message: errorMessage(error) })
+      if (currentRequest.current === requestContext) notify({ kind: 'error', message: errorMessage(error) })
     } finally {
-      setBusyAdapterId(null)
+      if (currentRequest.current === requestContext) setBusyAdapterId(null)
     }
   }
 
   return createElement(
     'div',
     { className: cliAdapterClass.panel, 'aria-disabled': disabled, style: { ...dshFormRootStyle, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
-    createElement('label', { style: dshSettingsListRowStyle },
+    peerHostId === null && createElement('label', { style: dshSettingsListRowStyle },
       createElement('span', { style: { flex: '1 1 auto', minWidth: 0 } },
         createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('cli.subagentBridge')),
         createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeDescription')),
@@ -257,7 +322,7 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
         style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
       }),
     ),
-    createElement('label', { style: { ...dshSettingsListRowStyle, opacity: bridgeEnabled ? 1 : 0.5 } },
+    peerHostId === null && createElement('label', { style: { ...dshSettingsListRowStyle, opacity: bridgeEnabled ? 1 : 0.5 } },
       createElement('span', { style: { flex: '1 1 auto', minWidth: 0 } },
         createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('cli.subagentBridgeConcurrency')),
         createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeConcurrencyHelp')),
@@ -274,15 +339,31 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
         style: { ...dshSettingsFieldStyle, flex: '0 0 auto', width: 96, minHeight: 32, padding: '5px 8px', fontSize: 13 },
       }),
     ),
-    loading && createElement('div', { role: 'status' }, t('cli.readingAgents')),
-    !loading && catalog.length === 0 && createElement('div', { role: 'status', style: { opacity: 0.7 } }, t('cli.noAgents')),
     createElement('div', { className: cliAdapterClass.listHeader },
       createElement('span', undefined, t('cli.agentList')),
+      createElement('select', {
+        'aria-label': t('cli.agentHost'), value: peerHostId ?? '', disabled,
+        onFocus: () => refreshHosts.current(),
+        onChange: (event: { currentTarget: { value: string } }) => {
+          setPeerHostId(event.currentTarget.value || null)
+          setCatalog([]); setSelected(null); setModels(null); setModelsError(''); setCatalogError('')
+        },
+        style: { ...dshSettingsFieldStyle, flex: '1 1 160px', width: 'auto', maxWidth: 280, minWidth: 0, minHeight: 32, padding: '5px 8px', fontSize: 13 },
+      },
+        createElement('option', { value: '' }, t('cli.localHost')),
+        ...peerHosts.map((host) => createElement('option', { key: host.id, value: host.id }, host.displayName)),
+      ),
       createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto', flex: '0 0 auto' } },
         catalog.length > 0 && createElement('span', undefined, t('cli.agentCount', { count: catalog.length })),
-        createElement(AdapterDetectButton, { label: t(detecting === '*' ? 'cli.detecting' : 'cli.redetectAll'), busy: detecting === '*', disabled: disabled || detecting !== null, onClick: () => { void redetect() } }),
+        createElement(AdapterDetectButton, { label: t(detecting === '*' ? 'cli.detecting' : 'cli.redetectAll'), busy: detecting === '*', disabled: disabled || !catalogAvailable || detecting !== null, onClick: () => { void redetect() } }),
       ),
     ),
+    hostsError && createElement('div', { role: 'alert', style: dshSettingsHelpStyle }, t('cli.peerHostListError', { message: hostsError })),
+    peerHostId !== null && createElement('div', { style: dshSettingsHelpStyle }, t('cli.peerHostReadOnly', { name: hostLabel })),
+    !catalogAvailable && createElement('div', { role: 'status', style: dshSettingsHelpStyle }, t('cli.peerHostUnavailable', { name: hostLabel })),
+    catalogError && createElement('div', { role: 'alert', style: { ...dshSettingsHelpStyle, color: dshThemeColor.error } }, catalogError),
+    loading && createElement('div', { role: 'status' }, t('cli.readingAgents')),
+    !loading && catalogAvailable && !catalogError && catalog.length === 0 && createElement('div', { role: 'status', style: { opacity: 0.7 } }, t('cli.noAgents')),
     createElement('div', { className: cliAdapterClass.listCard },
       ...catalog.map((adapter) => createElement('div', { key: adapter.id, className: cliAdapterClass.row },
         createElement('button', {
@@ -303,7 +384,7 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
         ),
         createElement(AdapterDetectButton, { label: `${adapter.name} · ${t(detecting === adapter.id || detecting === '*' ? 'cli.detecting' : 'cli.redetect')}`, busy: detecting === adapter.id || detecting === '*', disabled: disabled || detecting !== null, onClick: () => { void redetect(adapter.id) } }),
         createElement('label', { className: cliAdapterClass.toggle, style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' } },
-          createElement('input', { type: 'checkbox', role: 'switch', 'aria-label': t('cli.adapterToggle', { name: adapter.name }), checked: adapter.enabled, disabled: !adapter.installed || busyAdapterId === adapter.id, onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleAdapter(adapter, event.currentTarget.checked) }, style: { accentColor: dshThemeColor.accent } }),
+          createElement('input', { type: 'checkbox', role: 'switch', 'aria-label': t('cli.adapterToggle', { name: adapter.name }), checked: adapter.enabled, disabled: peerHostId !== null || !adapter.installed || busyAdapterId === adapter.id, onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleAdapter(adapter, event.currentTarget.checked) }, style: { accentColor: dshThemeColor.accent } }),
           createElement('span', undefined, adapter.enabled ? t('cli.enabled') : t('cli.disabled')),
         ),
       )),
@@ -311,6 +392,8 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
     selected !== null && createElement(AdapterDetailsDialog, {
       adapter: selected,
       models,
+      hostLabel,
+      modelsError,
       loading: selected.installed && selected.enabled && models === null && modelsError === '',
       onClose: () => setSelected(null),
       buttonStyle,
@@ -358,14 +441,16 @@ function AdapterIcon({ adapter }: { readonly adapter: CodingNsCliAdapterDescript
 
 interface AdapterDetailsDialogProps {
   readonly adapter: CodingNsCliAdapterDescriptor
+  readonly hostLabel: string
   readonly models: CodingNsCliModelCatalog | null
+  readonly modelsError: string
   readonly loading: boolean
   readonly onClose: () => void
   readonly buttonStyle: CSSProperties
   readonly t: ReturnType<typeof useCodingNsTranslator>
 }
 
-function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle, t }: AdapterDetailsDialogProps): ReactElement {
+function AdapterDetailsDialog({ adapter, hostLabel, models, modelsError, loading, onClose, buttonStyle, t }: AdapterDetailsDialogProps): ReactElement {
   return createElement('div', {
     role: 'presentation',
     onPointerDown: backdropPointerDownHandler(onClose),
@@ -382,6 +467,7 @@ function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle, 
       createElement('button', { type: 'button', onClick: onClose, style: buttonStyle, 'aria-label': t('cli.closeDetails') }, t('cli.closeDetails')),
       ),
       createElement('dl', { style: { display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '8px 16px', margin: '20px 0' } },
+        createElement('dt', undefined, t('cli.agentHost')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, hostLabel),
         createElement('dt', undefined, t('cli.installStatus')), createElement('dd', { style: { margin: 0 } }, adapterStatus(adapter, t)),
         createElement('dt', undefined, t('cli.enabledStatus')), createElement('dd', { style: { margin: 0 } }, adapter.enabled ? t('cli.enabled') : t('cli.disabled')),
         createElement('dt', undefined, t('cli.version')), createElement('dd', { style: { margin: 0 } }, adapter.version ?? t('cli.notDetectedVersion')),
@@ -392,6 +478,7 @@ function AdapterDetailsDialog({ adapter, models, loading, onClose, buttonStyle, 
         createElement('dt', undefined, t('cli.capabilities')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.capabilities?.join(t('common.listSeparator')) ?? t('cli.undeclared')),
       ),
       createElement('h4', { style: { margin: '16px 0 8px' } }, t('cli.modelCatalog')),
+      modelsError && createElement('div', { role: 'alert', style: { color: dshThemeColor.error } }, modelsError),
       !adapter.installed && createElement('div', { style: { opacity: 0.7 } }, adapter.diagnostic ?? adapterStatus(adapter, t)),
       adapter.installed && !adapter.enabled && createElement('div', { style: { opacity: 0.7 } }, t('cli.agentDisabled')),
       adapter.installed && loading && createElement('div', { role: 'status' }, t('cli.readingModels')),

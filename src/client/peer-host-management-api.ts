@@ -49,7 +49,7 @@ export interface PeerHostWorkspaceOrder {
 }
 
 export interface PeerHostManagementApi {
-  list(): Promise<readonly PeerHostClientRecord[]>
+  list(signal?: AbortSignal): Promise<readonly PeerHostClientRecord[]>
   create(input: PeerHostCreateRequest): Promise<PeerHostClientRecord>
   update(input: PeerHostUpdateRequest): Promise<PeerHostClientRecord>
   remove(peerHostId: string): Promise<void>
@@ -88,7 +88,7 @@ export function createPeerHostManagementApi(rpc: CodingNsRpcClient): PeerHostMan
     return result.value as T
   }
   return {
-    list: () => call('peerHost/list', {}),
+    list: (signal) => call('peerHost/list', {}, signal),
     create: (input) => call('peerHost/create', input),
     update: (input) => call('peerHost/update', input),
     remove: (peerHostId) => call('peerHost/remove', { peerHostId }).then(() => undefined),
