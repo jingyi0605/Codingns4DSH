@@ -1108,9 +1108,11 @@ async function resolveWorkBuddyAcpEndpoint(
     port: 0,
     env: workBuddySidecarEnvironment(baseEnvironment, configRoot, launch.command, cliCommand, platform, environment),
   }, { timeoutMs: 195_000 })
+  // session.create 已经启动了独立 runtime；即使响应缺少 ACP 地址也必须登记，
+  // 这样调用方的 finally 才能发送 session.kill，避免失败路径遗留进程。
+  onCreated(sessionId)
   const endpoint = isRecord(created) && typeof created.acpEndpoint === 'string' ? created.acpEndpoint.trim() : ''
   if (endpoint === '') throw new Error('WorkBuddy sidecar 未返回 ACP 地址')
-  onCreated(sessionId)
   return endpoint
 }
 

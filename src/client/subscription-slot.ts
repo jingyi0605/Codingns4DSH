@@ -697,7 +697,7 @@ export function ProviderBalancePopover({ usage, providerName, t, nowMs }: { read
   const models = summarizeProviderBalance(usage)
   const overallPercent = balancePercent(usage.remaining, usage.total)
   const details = usage.details.filter((item) => !isProviderModelDetail(item.label))
-  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.officialRemainingPopover', { provider: providerName }), style: usage.r4 === undefined ? subscriptionPopoverStyle : { ...subscriptionPopoverStyle, width: 380, minWidth: 0, padding: 12 } },
+  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.officialRemainingPopover', { provider: providerName }), style: subscriptionPopoverStyle },
     createElement('div', { style: popoverHeadingStyle },
       createElement('span', { style: providerBalanceHeadingStyle },
         createElement('strong', undefined, usage.r4 === undefined ? providerName : t('usage.upstreamUsageTitle', { provider: providerName })),
@@ -756,7 +756,7 @@ function R4BalanceDetails({ usage, t }: { readonly usage: ProviderBalanceUsage; 
   return createElement('div', undefined,
     createElement('div', { style: upstreamMetaStyle },
       createElement('span', { style: upstreamTypeStyle }, 'R4 Coder'),
-      createElement('a', { href: usage.upstreamUrl, target: '_blank', rel: 'noreferrer', style: upstreamLinkStyle }, usage.upstreamUrl),
+      createElement('a', { href: usage.upstreamUrl, target: '_blank', rel: 'noreferrer', title: usage.upstreamUrl, style: upstreamLinkStyle }, usage.upstreamUrl),
     ),
     createElement('div', { style: { ...sub2apiStatLabelStyle, paddingTop: 8 } }, t('usage.r4StatsPeriod')),
     createElement('div', { style: sub2apiStatsGridStyle },

@@ -132,6 +132,8 @@ test('shared balance popover renders R4 scopes and both locales without lifetime
     assert.match(html, /<table/u)
     assert.match(html, /claude-test/u)
     assert.doesNotMatch(html, /Cache hit rate|缓存命中率/u)
+    assert.match(html, /min-width:280px/u)
+    assert.doesNotMatch(html, /width:380px/u)
     for (const key of ['usage.r4PackageBalance', 'usage.r4WalletBalance', 'usage.r4PackageExpiry', 'usage.r4KeySpent', 'usage.r4KeyHeld', 'usage.r4AccountUsage']) {
       assert.ok(!html.includes(dictionary[key]!), `${key} should be omitted`)
     }
