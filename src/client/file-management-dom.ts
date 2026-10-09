@@ -4,9 +4,10 @@ import type { EditorView } from 'codemirror'
 import { createEngineLoader } from './engine-loader.js'
 import { isOutsideDismissRoots } from './popup-dismiss.js'
 import { resolveCodingNsTranslator, type CodingNsLocale } from './locale.js'
+import { parseVirtualSessionId } from '../shared/contracts/peer-host.js'
 
 type FileEntryElement = HTMLElement & { dataset: DOMStringMap }
-type ClipboardState = { mode: 'copy' | 'cut'; paths: string[] }
+type ClipboardState = { mode: 'copy' | 'cut'; target: FileTarget }
 type FileEditorState = { root: HTMLElement; body: HTMLElement; host: HTMLElement; view: EditorView; path: FileTarget; buttons: HTMLElement }
 type FileTarget = { path: string; sessionId?: string }
 const DOCUMENT_PREVIEW_SELECTOR = '[data-document-preview]'
@@ -137,24 +138,29 @@ export function startFileManagementDom(
 
   function openMenu(item: FileEntryElement, x: number, y: number): void {
     closeMenu()
-    const path = item.dataset.filesPath ?? ''
+    const rawPath = item.dataset.filesPath ?? ''
     const kind = item.dataset.filesEntry === 'directory' ? 'directory' : 'file'
-    if (path === '') return
+    if (rawPath === '') return
+    const path = absolutePath(rawPath, filesRootForEntry(item))
+    // 面板可以保留后台会话，不能用当前导航猜归属；菜单打开时固定其所属会话。
+    const sessionId = item.closest('[data-sidebar-right-session]')?.getAttribute('data-sidebar-right-session') ?? undefined
+    const target: FileTarget = { path, ...(sessionId === undefined ? {} : { sessionId }) }
     const base = kind === 'directory' ? path : parentPath(path)
+    const destination = { ...target, path: base }
     const panel = item.closest<HTMLElement>('[data-files-state="tree"]')
     const items: Array<{ label: string; disabled?: boolean; action: () => void | Promise<void> }> = [
       { label: t(kind === 'directory' ? 'fileMenu.expandFolder' : 'fileMenu.openFile'), action: () => clickEntry(item) },
-      { label: t('fileMenu.download'), disabled: kind !== 'file', action: () => void downloadFile({ path }) },
-      { label: t('fileMenu.newFile'), action: () => void createEntry(base, false) },
-      { label: t('fileMenu.newDirectory'), action: () => void createEntry(base, true) },
-      { label: t('fileMenu.rename'), action: () => void renameEntry(path) },
-      { label: t('fileMenu.copy'), action: () => { clipboard = { mode: 'copy', paths: [path] } } },
-      { label: t('fileMenu.cut'), action: () => { clipboard = { mode: 'cut', paths: [path] } } },
-      { label: t('fileMenu.paste'), disabled: clipboard === undefined, action: () => void pasteEntry(base, panel) },
+      { label: t('fileMenu.download'), disabled: kind !== 'file', action: () => void downloadFile(target) },
+      { label: t('fileMenu.newFile'), action: () => void createEntry(destination, false, panel) },
+      { label: t('fileMenu.newDirectory'), action: () => void createEntry(destination, true, panel) },
+      { label: t('fileMenu.rename'), action: () => void renameEntry(target, panel) },
+      { label: t('fileMenu.copy'), action: () => { clipboard = { mode: 'copy', target } } },
+      { label: t('fileMenu.cut'), action: () => { clipboard = { mode: 'cut', target } } },
+      { label: t('fileMenu.paste'), disabled: clipboard === undefined || !sameFileHost(clipboard.target.sessionId, sessionId), action: () => void pasteEntry(destination, panel) },
       { label: t('fileMenu.copyRelativePath'), action: () => void copyPath(item, false) },
       { label: t('fileMenu.copyAbsolutePath'), action: () => void copyPath(item, true) },
-      { label: t('fileMenu.gitIgnore'), action: () => void runMutation('git-ignore', { paths: [path] }, panel) },
-      { label: t('fileMenu.delete'), action: () => void deleteEntry(path, panel) },
+      { label: t('fileMenu.gitIgnore'), action: () => void runMutation('git-ignore', { ...target, paths: [path] }, panel) },
+      { label: t('fileMenu.delete'), action: () => void deleteEntry(target, panel) },
     ]
     menu = document.createElement('div')
     menu.setAttribute('role', 'menu')
@@ -182,28 +188,32 @@ export function startFileManagementDom(
     ;(item.querySelector('button') ?? item).dispatchEvent(new MouseEvent('click', { bubbles: true }))
   }
 
-  async function createEntry(base: string, directory: boolean): Promise<void> {
+  async function createEntry(target: FileTarget, directory: boolean, panel: HTMLElement | null): Promise<void> {
     const name = window.prompt(t(directory ? 'fileMenu.promptNewDirectory' : 'fileMenu.promptNewFile'), '')?.trim()
     if (!name) return
-    await runMutation(directory ? 'create-directory' : 'create-file', { path: joinPath(base, name) }, null)
+    await runMutation(directory ? 'create-directory' : 'create-file', { ...target, path: joinPath(target.path, name) }, panel)
   }
 
-  async function renameEntry(path: string): Promise<void> {
+  async function renameEntry(target: FileTarget, panel: HTMLElement | null): Promise<void> {
+    const { path } = target
     const next = window.prompt(t('fileMenu.promptRename'), leaf(path))?.trim()
     if (!next || next === leaf(path)) return
     const destination = isAbsoluteLike(next) ? next : joinPath(parentPath(path), next)
-    await runMutation('rename', { path, destination }, null)
+    await runMutation('rename', { ...target, destination }, panel)
   }
 
-  async function pasteEntry(base: string, panel: HTMLElement | null): Promise<void> {
-    if (clipboard === undefined) return
-    await runMutation(clipboard.mode === 'copy' ? 'copy' : 'move', { paths: clipboard.paths, destination: base }, panel)
-    if (clipboard.mode === 'cut') clipboard = undefined
+  async function pasteEntry(target: FileTarget, panel: HTMLElement | null): Promise<void> {
+    const source = clipboard
+    if (source === undefined) return
+    // 跨 Host 复制需要独立的数据传输协议；不能把来源路径交给另一台机器解释。
+    if (!sameFileHost(source.target.sessionId, target.sessionId)) return
+    await runMutation(source.mode === 'copy' ? 'copy' : 'move', { ...target, paths: [source.target.path], destination: target.path }, panel)
+    if (source.mode === 'cut' && clipboard === source) clipboard = undefined
   }
 
-  async function deleteEntry(path: string, panel: HTMLElement | null): Promise<void> {
-    if (!window.confirm(t('fileMenu.confirmDelete', { name: leaf(path) }))) return
-    await runMutation('delete', { paths: [path] }, panel)
+  async function deleteEntry(target: FileTarget, panel: HTMLElement | null): Promise<void> {
+    if (!window.confirm(t('fileMenu.confirmDelete', { name: leaf(target.path) }))) return
+    await runMutation('delete', { ...target, paths: [target.path] }, panel)
   }
 
   async function downloadFile(target: FileTarget): Promise<void> {
@@ -267,7 +277,7 @@ export function startFileManagementDom(
     if (disposed || !options.fileEditor || editButton.disabled) return
     cancelEdit()
     const request = ++editRequest
-    const target = parseFileTarget(url, root)
+    const target = parseFileTarget(url)
     if (target === undefined) { showNotice(t('fileMenu.unresolvedPath')); return }
     editButton.disabled = true
     editButton.setAttribute('aria-busy', 'true')
@@ -472,15 +482,19 @@ function findButton(root: ParentNode | null | undefined, pattern: RegExp): HTMLB
   return undefined
 }
 
-function parseFileTarget(url: string, root: HTMLElement): FileTarget | undefined {
+function parseFileTarget(url: string): FileTarget | undefined {
   const match = /^dsh-resource:\/\/file\/session\/([^/]+)\/(.*)$/u.exec(url)
   if (match === null) return undefined
   const sessionId = decodeURIComponent(match[1] ?? '')
   const path = decodeURIComponent(match[2] ?? '')
-  const workspaceRoot = root.closest('[data-sidebar-right-panel]')?.querySelector<HTMLElement>('[data-files-root]')?.getAttribute('data-files-root')
-  return workspaceRoot === null || workspaceRoot === undefined || workspaceRoot === ''
-    ? { sessionId, path }
-    : { path: joinPath(workspaceRoot, path) }
+  // 资源 URL 本身已携带会话身份和相对路径；拼接侧栏目录会丢掉远端 Host 归属，
+  // 也可能误用同一侧栏中另一个会话的文件树根目录。
+  return { sessionId, path }
+}
+
+function sameFileHost(left: string | undefined, right: string | undefined): boolean {
+  return (left === undefined ? undefined : parseVirtualSessionId(left)?.hostId)
+    === (right === undefined ? undefined : parseVirtualSessionId(right)?.hostId)
 }
 
 function filesRootForEntry(item: Element): string | undefined {
