@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { startFileManagementDom } from '../src/client/file-management-dom.js'
+import { createVirtualSessionId } from '../src/shared/contracts/peer-host.js'
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
 
@@ -38,10 +39,12 @@ class ElementStub extends EventTarget {
   click() { if (!this.disabled) this.dispatchEvent(new Event('click')) }
 }
 
-function previewFixture(load: () => Promise<any>) {
+function previewFixture(load: () => Promise<any>, sessionId = 'session-a', workspaceRoot?: string) {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'document')
   const root = new ElementStub()
-  root.setAttribute('data-textpreview-url', 'dsh-resource://file/session/session-a/test.ts')
+  root.setAttribute('data-textpreview-url', `dsh-resource://file/session/${encodeURIComponent(sessionId)}/test.ts`)
+  // 文件树和预览共存时也不能丢弃资源 URL 的会话身份。
+  if (workspaceRoot !== undefined) root.closest = (() => ({ querySelector: () => ({ getAttribute: () => workspaceRoot }) })) as never
   root.setAttribute('data-textpreview-state', 'text')
   const header = new ElementStub()
   const path = new ElementStub()
@@ -57,16 +60,35 @@ function previewFixture(load: () => Promise<any>) {
   })
   Object.defineProperty(globalThis, 'document', { value: document, configurable: true })
   const calls: string[] = []
-  const controller = startFileManagementDom({ async call(_channel, endpoint) {
+  const payloads: unknown[] = []
+  const controller = startFileManagementDom({ async call(_channel, endpoint, payload) {
     calls.push(endpoint)
+    payloads.push(payload)
     return { ok: true, value: { content: 'const value = 1' } }
   } }, { fileEditor: true, menuEnhancement: false }, load)
-  return { root, body, calls, controller, button: root.querySelector('[data-file-management-edit]')!, dispose() {
+  return { root, body, calls, payloads, controller, button: root.querySelector('[data-file-management-edit]')!, dispose() {
     controller.dispose()
     if (previous) Object.defineProperty(globalThis, 'document', previous)
     else Reflect.deleteProperty(globalThis, 'document')
   } }
 }
+
+test('远端编辑器与文件树共存时，读取和保存始终保留资源所属会话', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const sessionId = createVirtualSessionId('peer-a', 'session-a')
+  const fixture = previewFixture(async () => ({ createFileEditor() {
+    return { focus() {}, destroy() {}, state: { doc: { toString: () => '远端新内容' } } }
+  } }), sessionId, '/与远端同名的本机目录')
+  try {
+    fixture.button.click()
+    await tick()
+    assert.deepEqual(fixture.payloads[0], { sessionId, path: 'test.ts' })
+    const buttons = fixture.root.children[0]!.children.flatMap((element) => element.children)
+    buttons.find((button) => button.title === '保存文件')!.click()
+    await tick()
+    assert.deepEqual(fixture.payloads[1], { sessionId, path: 'test.ts', content: '远端新内容' })
+  } finally { fixture.dispose() }
+})
 
 test('文件编辑点击才加载，失败保留预览和错误，重试能创建编辑器', async () => {
   let loads = 0

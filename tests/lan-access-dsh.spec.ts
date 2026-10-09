@@ -436,7 +436,7 @@ test('PeerHost 发送端 HTTP 路由均可进入目标 Bearer 校验，WebSocket
   assert.equal(isPeerHostRouteRequest({ method: 'POST', path: '/api/codingns/debug-admin/config/get' }), false)
 })
 
-test('远端调试经过真实 LAN 登录保护：有效票据放行，缺失、伪造、撤销与越界请求拒绝', () => {
+test('远端调试与文件管理经过真实 LAN 登录保护：有效票据放行，缺失、伪造、撤销与越界请求拒绝', () => {
   const config = createLoginProtectionConfig({ username: 'jackson', password: 'password123', timeoutSeconds: 1800, scopes: { lan: true, relay: true } })
   const proxy = new LanAccessDshProxy({} as never)
   proxy.setLoginConfig(config)
@@ -452,15 +452,17 @@ test('远端调试经过真实 LAN 登录保护：有效票据放行，缺失、
     assert.notEqual(response, 'pass')
     assert.match(new TextDecoder().decode(response as Uint8Array), /^HTTP\/1\.1 401 /u)
   }
-  for (const path of ['/api/codingns/debug/config/get', '/api/codingns/debug/config/save', '/api/codingns/terminal/status', '/api/codingns/git/status']) {
+  for (const path of ['/api/codingns/debug/config/get', '/api/codingns/debug/config/save', '/api/codingns/terminal/status', '/api/codingns/git/status', '/api/codingns/fileManagement/session-changes', '/api/codingns/fileManagement/read', '/api/codingns/fileManagement/write']) {
     assert.equal(authorize(path, 'POST', token), 'pass')
     rejected(authorize(path, 'POST'))
     rejected(authorize(path, 'POST', 'forged-token'))
     rejected(authorize(path, 'GET', token))
   }
   rejected(authorize('/api/codingns/debug-admin/config/get', 'POST', token))
+  rejected(authorize('/api/codingns/fileManagement-admin/read', 'POST', token))
   rejected(authorize('/api/codingns/terminal/enable', 'POST', token))
   rejected(authorize('/api/admin/users', 'POST', token))
   assert.notEqual(authorize(PEER_HOST_AUTH_PATHS.logout, 'POST', token), 'pass')
   rejected(authorize('/api/codingns/debug/config/get', 'POST', token))
+  rejected(authorize('/api/codingns/fileManagement/read', 'POST', token))
 })
