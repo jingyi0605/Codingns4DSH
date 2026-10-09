@@ -6,7 +6,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { CODINGNS_VERSION, DSH_VERSION, isDshVersionCompatible } from '../../shared/contracts/version.js'
 import { PeerHostHandshakeService } from '../modules/peer-host/peer-host-handshake.js'
-import { PeerHostSessionService } from '../modules/peer-host/peer-host-session.js'
+import { isPeerHostTransientStatus, PeerHostSessionService } from '../modules/peer-host/peer-host-session.js'
 import { PeerHostHttpProxyService } from '../modules/peer-host/host-api-proxy-service.js'
 import {
   EncryptedFilePeerHostCredentialStore,
@@ -116,28 +116,30 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
       const localHostId = process.env.CODINGNS4DSH_HOST_ID?.trim() || ownerUserId
       const localSummarySource = createDshNativeSummarySource(context.services.dshContext, context.services.nativeSessions)
       /**
-       * 聚合前确保目标 Host 已完成握手和认证。
+       * 聚合前确保目标 Host 已完成握手和认证；握手状态若只是临时断线结果，
+       * 则交给真实数据面重新验证，避免已有消息/终端连接被旧状态染灰。
        *
        * PeerHost 的记录状态是运行时缓存，不是登录凭据本身：远端返回 401 后
        * 状态会暂时变成 session_required，下一次聚合必须主动用持久化的 refresh
        * token/账号密码恢复，否则只要没有手工点“测试”，该目标就会永远被跳过。
        */
-      const preparePeerHost = async (input: PeerHostRecord): Promise<PeerHostRecord | null> => {
+      const preparePeerHost = async (input: PeerHostRecord, options: { readonly allowTransientStatus?: boolean } = {}): Promise<PeerHostRecord | null> => {
+        const allowTransientStatus = options.allowTransientStatus === true
         if (input.status === 'disabled' || input.status === 'identity_changed') return null
         let record = input
         if (record.status === 'session_required') {
           await sessions.refresh(record.id).catch(() => undefined)
           record = (await store.get(record.id)) ?? record
-        } else if (record.status !== 'ready') {
-          // configured/unreachable/version_mismatch 等状态都可能只是上一次启动
-          // 或网络抖动留下的缓存；自动重试等价于管理面板的“测试”。
+        } else if (record.status !== 'ready' && !(allowTransientStatus && isPeerHostTransientStatus(record.status))) {
+          // configured/version_mismatch 等状态仍需先完成握手；checking/unreachable/
+          // reconnecting 只是旧连接尝试的结果，摘要数据面应直接重新验证目标。
           record = await handshake.check(record.id)
         }
-        if (record.status !== 'ready') return null
+        if (record.status !== 'ready' && !(allowTransientStatus && isPeerHostTransientStatus(record.status))) return null
         // 即使 access token 尚未到期，也检查一次当前认证状态；临近过期时这里
         // 会 refresh，refresh token 失效时会用保存的账号密码静默重登。
         try {
-          await sessions.getAccessToken(record.id)
+          await sessions.getAccessToken(record.id, allowTransientStatus)
         } catch {
           return null
         }
@@ -161,10 +163,12 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
         // 助理只访问受管远端，不能为了本地索引唤醒全部 PeerHost 或重复扫描本地列表。
         const selectedRecords = assistantWorkspaceIds === undefined ? records : records.filter((record) => record.status !== 'disabled' && record.status !== 'identity_changed'
           && (record.visibleWorkspaceIds ?? []).some((workspaceId) => assistantWorkspaceIds.some((selected) => assistantWorkspaceMatches(selected, record.id, workspaceId))))
-        const preparedRecords = await Promise.all(selectedRecords.map((record) => preparePeerHost(record).catch(() => null)))
+        // 摘要是实际数据面探针：握手状态可能滞后，但消息和终端仍可正常访问时，
+        // 不能先用旧的 unreachable 状态把 Host 排除在 source 之外。
+        const preparedRecords = await Promise.all(selectedRecords.map((record) => preparePeerHost(record, { allowTransientStatus: true }).catch(() => null)))
         signal?.throwIfAborted()
         for (const [index, record] of preparedRecords.entries()) {
-          if (record === null || record.status !== 'ready') {
+          if (record === null) {
             // 受管远端的握手/认证失败也必须交给助理退避，不能冒充没有远端工作区。
             const original = selectedRecords[index]!
             if (original.status !== 'disabled' && original.status !== 'identity_changed') sources.push({
@@ -195,6 +199,17 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
           }))
         }
         return sources
+      }
+      /** 数据面摘要成功后清除过期的临时断线状态，让下一轮也从正常路径开始。 */
+      const markRecoveredPeerHosts = async (results: readonly AggregateHostResult[]): Promise<void> => {
+        if (options.aggregateSources !== undefined) return
+        await Promise.all(results.flatMap((result) => {
+          if (result.targetHostId === null || result.availability !== 'ready') return []
+          return [store.get(result.targetHostId).then((record) => {
+            if (record !== null && isPeerHostTransientStatus(record.status)) return store.updateStatus(record.id, 'ready', null).then(() => undefined)
+            return undefined
+          })]
+        }))
       }
       /** 远端工作区候选的唯一读取入口；不过滤可见性，供"添加工作区"选择器使用。 */
       const readRemoteWorkspaceCandidates = async (peerHostId: string): Promise<readonly PeerHostRemoteWorkspaceCandidate[]> => {
@@ -552,6 +567,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
               await aggregate.load(await buildSources()),
               context.services.dshContext,
             )
+            await markRecoveredPeerHosts(loaded)
             // 测试注入的独立来源不受配置列表约束；生产摘要按当前添加状态恢复缓存。
             const results = options.aggregateSources === undefined ? await workspaceCache.apply(loaded, await store.list()) : loaded
             workspaceRegistry.replace(results)

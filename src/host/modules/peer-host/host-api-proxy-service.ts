@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { HostScope, PeerHostErrorCode, PeerHostRecord } from '../../../shared/contracts/peer-host.js'
 import { PEER_HOST_ERROR_CODES } from '../../../shared/contracts/peer-host.js'
-import { PeerHostSessionError, PeerHostSessionService } from './peer-host-session.js'
+import { isPeerHostTransientStatus, PeerHostSessionError, PeerHostSessionService } from './peer-host-session.js'
 import { PeerHostStore } from './peer-host-store.js'
 import { peerHostSafeError } from './peer-host-diagnostics.js'
 import { isPeerHostHttpRoute } from '../../../shared/peer-host-http-routes.js'
@@ -37,13 +37,15 @@ export class PeerHostHttpProxyService {
   async handle(peerHostId: string, request: Request, onFailure?: (error: unknown) => void): Promise<Response> {
     try {
       throwIfPeerHostRequestAborted(request.signal)
-      const record = await this.requireReady(peerHostId)
+      // 握手状态可能滞后于已经建立的数据面连接；让真实代理请求重新验证目标，
+      // 失败时仍由响应错误和上层缓存恢复逻辑判定为断线。
+      const record = await this.requireReady(peerHostId, true)
       const scope = readScope(request.headers, peerHostId)
       const targetPath = parseProxyPath(request.url)
       validateQuery(targetPath)
       validateRule(request.method, targetPath.pathname)
       const body = await readBody(request)
-      let accessToken = await this.sessions.getAccessToken(peerHostId)
+      let accessToken = await this.sessions.getAccessToken(peerHostId, true)
       const targetUrl = buildTargetUrl(record, targetPath)
       const send = (token: string) => {
         throwIfPeerHostRequestAborted(request.signal)
@@ -58,7 +60,7 @@ export class PeerHostHttpProxyService {
       if (response.status === 401) {
         await response.body?.cancel()
         await this.assertTokenRejected(record, targetPath.pathname, accessToken, request.signal)
-        accessToken = await this.sessions.recoverAccessToken(peerHostId, accessToken)
+        accessToken = await this.sessions.recoverAccessToken(peerHostId, accessToken, true)
         // 仅在明确收到 401 且票据恢复后重放一次；网络错误不重放，避免重复执行业务。
         response = await send(accessToken)
         if (response.status === 401) {
@@ -138,10 +140,11 @@ export class PeerHostHttpProxyService {
     return { status: response.status, headers: [...response.headers.entries()], body: await response.text() }
   }
 
-  private async requireReady(peerHostId: string): Promise<PeerHostRecord> {
+  private async requireReady(peerHostId: string, allowTransientStatus = false): Promise<PeerHostRecord> {
     const record = await this.store.get(peerHostId)
     if (record === null) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.NOT_FOUND, 'PeerHost 不存在')
-    if (record.status !== 'ready' && record.status !== 'session_required') throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.NOT_READY, 'PeerHost 尚未准备好代理')
+    const allowed = record.status === 'ready' || record.status === 'session_required' || allowTransientStatus && isPeerHostTransientStatus(record.status)
+    if (!allowed) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.NOT_READY, 'PeerHost 尚未准备好代理')
     if (record.route.kind !== 'lan') throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.RELAY_UNAVAILABLE, '中转 PeerHost 暂不可用')
     return record
   }

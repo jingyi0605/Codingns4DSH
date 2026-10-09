@@ -1,4 +1,4 @@
-import type { PeerHostErrorCode, PeerHostRecord } from '../../../shared/contracts/peer-host.js'
+import type { PeerHostErrorCode, PeerHostRecord, PeerHostStatus } from '../../../shared/contracts/peer-host.js'
 import { PEER_HOST_ERROR_CODES } from '../../../shared/contracts/peer-host.js'
 import { PeerHostStore, type PeerHostCredentialStore, type PeerHostTokenRecord } from './peer-host-store.js'
 
@@ -17,6 +17,17 @@ export interface PeerHostSessionOptions {
   readonly fetchImpl?: typeof fetch
   readonly now?: () => number
   readonly refreshSkewMs?: number
+}
+
+/**
+ * 这些状态只表示上一次连接尝试的瞬时结果。
+ *
+ * 真实数据面（HTTP、原生 Remote 或 WebSocket）仍可能可用，不能因为握手
+ * 的旧结果就阻止后续请求再次验证连接。配置错误、版本不兼容和身份变化
+ * 则不在这里放行，避免绕过管理面的安全边界。
+ */
+export function isPeerHostTransientStatus(status: PeerHostStatus): boolean {
+  return status === 'checking' || status === 'unreachable' || status === 'reconnecting'
 }
 
 /** PeerHost 目标登录态协调器；token 只在 Host 进程和敏感存储中流转。 */
@@ -51,17 +62,17 @@ export class PeerHostSessionService {
     return toView(peerHostId, credential)
   }
 
-  async refresh(peerHostId: string): Promise<PeerHostSessionView> {
+  async refresh(peerHostId: string, allowStaleStatus = false): Promise<PeerHostSessionView> {
     const pending = this.pendingRefresh.get(peerHostId)
     if (pending !== undefined) return pending
-    const task = this.refreshSession(peerHostId)
+    const task = this.refreshSession(peerHostId, allowStaleStatus)
     this.pendingRefresh.set(peerHostId, task)
     try { return await task }
     finally { this.pendingRefresh.delete(peerHostId) }
   }
 
-  private async refreshSession(peerHostId: string): Promise<PeerHostSessionView> {
-    const record = await this.ensureReady(peerHostId, true)
+  private async refreshSession(peerHostId: string, allowStaleStatus: boolean): Promise<PeerHostSessionView> {
+    const record = await this.ensureReady(peerHostId, true, allowStaleStatus)
     const previous = await this.credentials.read(peerHostId)
     if (previous === null) return this.sessionRequired(peerHostId)
     const refreshed = await this.tryRefresh(peerHostId, record, previous)
@@ -72,26 +83,26 @@ export class PeerHostSessionService {
     return this.sessionRequired(peerHostId)
   }
 
-  async getAccessToken(peerHostId: string): Promise<string> {
-    const record = await this.ensureReady(peerHostId, true)
+  async getAccessToken(peerHostId: string, allowStaleStatus = false): Promise<string> {
+    const record = await this.ensureReady(peerHostId, true, allowStaleStatus)
     const credential = await this.credentials.read(peerHostId)
     if (credential === null) return this.sessionRequired(peerHostId)
-    if (record.status === 'ready' && credential.expiresAt - this.now() > this.refreshSkewMs) return credential.accessToken
-    await this.refresh(peerHostId)
-    return this.readAccessToken(peerHostId)
+    if ((record.status === 'ready' || allowStaleStatus) && credential.expiresAt - this.now() > this.refreshSkewMs) return credential.accessToken
+    await this.refresh(peerHostId, allowStaleStatus)
+    return this.readAccessToken(peerHostId, allowStaleStatus)
   }
 
   /** 401 已确认为票据拒绝后恢复；迟到的旧请求直接复用其它请求已经更新的票据。 */
-  async recoverAccessToken(peerHostId: string, rejectedToken: string): Promise<string> {
-    const record = await this.ensureReady(peerHostId, true)
+  async recoverAccessToken(peerHostId: string, rejectedToken: string, allowStaleStatus = false): Promise<string> {
+    const record = await this.ensureReady(peerHostId, true, allowStaleStatus)
     const current = await this.credentials.read(peerHostId)
-    if (record.status === 'ready' && current !== null && current.accessToken !== rejectedToken) return this.getAccessToken(peerHostId)
-    await this.refresh(peerHostId)
-    return this.readAccessToken(peerHostId)
+    if (record.status === 'ready' && current !== null && current.accessToken !== rejectedToken) return this.getAccessToken(peerHostId, allowStaleStatus)
+    await this.refresh(peerHostId, allowStaleStatus)
+    return this.readAccessToken(peerHostId, allowStaleStatus)
   }
 
-  private async readAccessToken(peerHostId: string): Promise<string> {
-    await this.ensureReady(peerHostId)
+  private async readAccessToken(peerHostId: string, allowStaleStatus = false): Promise<string> {
+    await this.ensureReady(peerHostId, false, allowStaleStatus)
     const current = await this.credentials.read(peerHostId)
     return current === null ? this.sessionRequired(peerHostId) : current.accessToken
   }
@@ -176,11 +187,11 @@ export class PeerHostSessionService {
     return { peerHostId, status: 'logged_out', expiresAt: null }
   }
 
-  private async ensureReady(peerHostId: string, allowSessionRequired = false): Promise<PeerHostRecord> {
+  private async ensureReady(peerHostId: string, allowSessionRequired = false, allowStaleStatus = false): Promise<PeerHostRecord> {
     const record = await this.store.get(peerHostId)
     if (record === null) throw new PeerHostSessionError(PEER_HOST_ERROR_CODES.NOT_FOUND, 'PeerHost 不存在')
     const requiresLogin = record.status === 'session_required'
-    if (record.status === 'ready' || (allowSessionRequired && requiresLogin)) return record
+    if (record.status === 'ready' || (allowSessionRequired && requiresLogin) || (allowStaleStatus && isPeerHostTransientStatus(record.status))) return record
     throw new PeerHostSessionError(
       requiresLogin ? PEER_HOST_ERROR_CODES.SESSION_REQUIRED : PEER_HOST_ERROR_CODES.NOT_READY,
       requiresLogin ? '目标 Host 需要登录' : 'PeerHost 尚未通过握手检查',

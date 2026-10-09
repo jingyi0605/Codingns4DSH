@@ -1,6 +1,6 @@
 import type { HostScope, PeerHostErrorCode, PeerHostRecord } from '../../../shared/contracts/peer-host.js'
 import { PEER_HOST_ERROR_CODES } from '../../../shared/contracts/peer-host.js'
-import { PeerHostSessionService } from './peer-host-session.js'
+import { isPeerHostTransientStatus, PeerHostSessionService } from './peer-host-session.js'
 import { PeerHostStore } from './peer-host-store.js'
 import { PeerHostConnectorError } from './host-ws-connector.js'
 import { peerHostSafeError } from './peer-host-diagnostics.js'
@@ -49,9 +49,10 @@ export class PeerHostWsProxyService {
   ) {}
 
   async open(peerHostId: string, client: PeerHostSocket, scope: HostScope): Promise<() => void> {
-    const record = await this.requireReady(peerHostId)
+    // 连接状态是缓存值；已有握手失效时仍允许实时数据面自行验证目标。
+    const record = await this.requireReady(peerHostId, true)
     assertScopeTarget(scope, peerHostId)
-    const accessToken = await this.sessions.getAccessToken(peerHostId)
+    const accessToken = await this.sessions.getAccessToken(peerHostId, true)
     let remote: PeerHostSocket
     try {
       remote = await this.connectRemote(record, accessToken, scope)
@@ -123,10 +124,11 @@ export class PeerHostWsProxyService {
     return () => closeBoth()
   }
 
-  private async requireReady(peerHostId: string): Promise<PeerHostRecord> {
+  private async requireReady(peerHostId: string, allowTransientStatus = false): Promise<PeerHostRecord> {
     const record = await this.store.get(peerHostId)
     if (record === null) throw new PeerHostWsProxyError(PEER_HOST_ERROR_CODES.NOT_FOUND, 'PeerHost 不存在')
-    if (record.status !== 'ready') throw new PeerHostWsProxyError(record.status === 'session_required' ? PEER_HOST_ERROR_CODES.SESSION_REQUIRED : PEER_HOST_ERROR_CODES.NOT_READY, 'PeerHost 尚未准备好实时代理')
+    const allowed = record.status === 'ready' || allowTransientStatus && isPeerHostTransientStatus(record.status)
+    if (!allowed) throw new PeerHostWsProxyError(record.status === 'session_required' ? PEER_HOST_ERROR_CODES.SESSION_REQUIRED : PEER_HOST_ERROR_CODES.NOT_READY, 'PeerHost 尚未准备好实时代理')
     if (record.route.kind !== 'lan') throw new PeerHostWsProxyError(PEER_HOST_ERROR_CODES.RELAY_UNAVAILABLE, '中转 PeerHost 暂不可用')
     return record
   }
