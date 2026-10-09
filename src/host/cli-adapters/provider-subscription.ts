@@ -16,6 +16,7 @@ import { AntigravitySubscriptionService, type AntigravitySubscriptionOptions } f
 import { CustomUpstreamClassifier, mergeCustomUpstreamCandidates, type CustomUpstreamClassifierOptions, type CustomUpstreamReadResult } from './custom-upstream-classifier.js'
 import { readDshDefaultProvider, readDshProviderSource } from './dsh-config.js'
 import { readZcodeProviderConfigs, type ZcodeProviderConfigOptions } from './zcode-provider-config.js'
+import { R4SubscriptionService, isR4Source, type R4SubscriptionOptions } from './r4-subscription.js'
 
 type FetchLike = typeof fetch
 
@@ -30,6 +31,7 @@ export class ProviderSubscriptionService {
   readonly customUpstreamClassifier: CustomUpstreamClassifier
   readonly deepseek: DeepseekSubscriptionService
   readonly official: OfficialProviderSubscriptionService
+  readonly r4: R4SubscriptionService
   readonly kimi: KimiSubscriptionService
   readonly grok: GrokSubscriptionService
   readonly zcode: ZcodeSubscriptionService
@@ -51,6 +53,7 @@ export class ProviderSubscriptionService {
     this.customUpstreamClassifier = new CustomUpstreamClassifier(options.customUpstream)
     this.deepseek = new DeepseekSubscriptionService({ ...shared, ...options.deepseek })
     this.official = new OfficialProviderSubscriptionService({ ...shared, ...options.official })
+    this.r4 = new R4SubscriptionService({ ...shared, ...options.r4 })
     this.kimi = new KimiSubscriptionService({ ...shared, ...options.kimi })
     this.grok = new GrokSubscriptionService({ ...shared, ...options.grok })
     this.zcode = new ZcodeSubscriptionService({ ...shared, ...options.zcode })
@@ -91,6 +94,7 @@ export class ProviderSubscriptionService {
   private async readDsh(providerId?: string): Promise<CliSubscriptionUsage | null> {
     const currentProviderId = providerId ?? resolveDshDefaultProvider()
     const configuredSource = resolveDshProviderSource(currentProviderId)
+    if (configuredSource !== null && isR4Source(configuredSource)) return this.r4.read(configuredSource)
     const matchedProvider = identifyModelProvider({ name: currentProviderId, baseUrl: configuredSource?.baseUrl })
     if (matchedProvider?.reader === 'openrouter-balance' || matchedProvider?.reader === 'minimax-usage' || matchedProvider?.reader === 'zai-usage' || matchedProvider?.reader === 'github-copilot-usage') {
       return this.official.read(currentProviderId, configuredSource)
@@ -135,6 +139,7 @@ export class ProviderSubscriptionService {
     if (provider.accessMode === 'start-plan' || provider.accessMode === 'off-peak') return this.zcode.read()
     const source = provider.source
     if (source === null) return null
+    if (isR4Source(source)) return this.r4.read(source)
     const origin = normalizeProviderBaseUrl(source.baseUrl)
     const matched = identifyModelProvider({ name: selectedId, baseUrl: source.baseUrl })
       ?? MODEL_PROVIDER_DEFINITIONS.find((definition) => definition.officialHosts.some((host) => origin === `https://${host}`))
@@ -146,7 +151,7 @@ export class ProviderSubscriptionService {
     return (await this.readCustomUpstream('zcode', selectedId, [source]))?.usage ?? null
   }
 
-  private async readCustomUpstream(adapterId: string, providerId?: string, discoveredSources?: readonly Sub2ApiSource[]): Promise<CustomUpstreamReadResult | null> {
+  private async readCustomUpstream(adapterId: string, providerId?: string, discoveredSources?: readonly Sub2ApiSource[]): Promise<Pick<CustomUpstreamReadResult, 'usage'> | null> {
     const newApiConfigured = this.newApi.hasConfiguredSource(adapterId, providerId)
     const sub2apiConfigured = this.sub2api.hasConfiguredSource(adapterId, providerId)
     // 只要一侧有显式来源，就不把另一侧从本机环境自动发现的无关来源混进来。
@@ -164,6 +169,8 @@ export class ProviderSubscriptionService {
       sub2api: true,
     }))
     if (candidates.length === 0) return null
+    const r4Source = candidates.find((candidate) => isR4Source(candidate.source))?.source
+    if (r4Source !== undefined) return { usage: await this.r4.read(r4Source) }
     return this.customUpstreamClassifier.read(adapterId, providerId, candidates, {
       newApi: (source) => this.newApi.readWithKind(adapterId, providerId, source),
       sub2api: (source) => this.sub2api.readWithKind(adapterId, providerId, source),
@@ -172,6 +179,7 @@ export class ProviderSubscriptionService {
 }
 
 export interface ProviderSubscriptionOptions {
+  readonly r4?: R4SubscriptionOptions
   readonly commandCode?: SubscriptionReader
   readonly codex?: CodexSubscriptionOptions
   readonly claudeCode?: ClaudeCodeSubscriptionOptions

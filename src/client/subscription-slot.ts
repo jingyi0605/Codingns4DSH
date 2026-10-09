@@ -268,7 +268,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   // 官方余额读取器可能没有可直连的 Provider Logo；此时统一回退到当前
   // 适配器注册的内置图标，ZCode 等 Agent 不再显示空 src 的破图。
   const adapterIconSource = providerIconUrl(adapterId ?? 'dsh') ?? ''
-  const providerLogoSource = usage.provider?.logoDataUrl?.trim() || (!isRemoteWebContext() ? usage.provider?.logoUrl?.trim() : '') || adapterIconSource
+  const providerLogoSource = usage.provider?.logoDataUrl?.trim() || (!isRemoteWebContext() ? usage.provider?.logoUrl?.trim() : '') || providerIconUrl(usage.provider?.id ?? '') || adapterIconSource
   const deepseekIconSource = providerLogoSource
   const label = sub2api === undefined && deepseek === undefined && providerBalance === undefined
     ? t('usage.remainingLabel', { provider: providerName, percent: formatPercent(remaining ?? 0) })
@@ -339,7 +339,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       createElement('span', { className: 'codingns4dsh-subscription-label', style: subscriptionLabelStyle },
         sub2api === undefined && deepseek === undefined && providerBalance === undefined
           ? (resetLabel ?? t('usage.subscriptionRemaining'))
-          : sub2api !== undefined ? t('usage.todayCostShort', { amount: formatSub2ApiMoney(sub2api.today.cost, sub2api.unit) }) : deepseek !== undefined ? t('usage.accountBalance') : isNewApiProvider ? providerName : providerBalancePlan ?? t('usage.officialRemaining'),
+          : sub2api !== undefined ? t('usage.todayCostShort', { amount: formatSub2ApiMoney(sub2api.today.cost, sub2api.unit) }) : deepseek !== undefined || providerBalance?.r4 !== undefined ? t('usage.accountBalance') : isNewApiProvider ? providerName : providerBalancePlan ?? t('usage.officialRemaining'),
       ),
     ),
     open && createElement(SubscriptionPopover, { usage, providerName, t, nowMs: clock, reset: resetRequest }),
@@ -693,15 +693,15 @@ function createNewApiStatsTable(title: string, rows: readonly NewApiStatsRow[], 
   )
 }
 
-function ProviderBalancePopover({ usage, providerName, t, nowMs }: { readonly usage: ProviderBalanceUsage; readonly providerName: string; readonly t: CodingNsTranslator; readonly nowMs: number }): ReactElement {
+export function ProviderBalancePopover({ usage, providerName, t, nowMs }: { readonly usage: ProviderBalanceUsage; readonly providerName: string; readonly t: CodingNsTranslator; readonly nowMs: number }): ReactElement {
   const models = summarizeProviderBalance(usage)
   const overallPercent = balancePercent(usage.remaining, usage.total)
   const details = usage.details.filter((item) => !isProviderModelDetail(item.label))
-  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.officialRemainingPopover', { provider: providerName }), style: subscriptionPopoverStyle },
+  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.officialRemainingPopover', { provider: providerName }), style: usage.r4 === undefined ? subscriptionPopoverStyle : { ...subscriptionPopoverStyle, width: 380, minWidth: 0, padding: 12 } },
     createElement('div', { style: popoverHeadingStyle },
       createElement('span', { style: providerBalanceHeadingStyle },
-        createElement('strong', undefined, providerName),
-        usage.planName?.trim() && createElement('span', { style: providerBalancePlanStyle }, usage.planName.trim()),
+        createElement('strong', undefined, usage.r4 === undefined ? providerName : t('usage.upstreamUsageTitle', { provider: providerName })),
+        usage.r4 === undefined && usage.planName?.trim() && createElement('span', { style: providerBalancePlanStyle }, usage.planName.trim()),
       ),
       createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatProviderBalance(usage, t('usage.upstreamNotProvided'))),
     ),
@@ -712,7 +712,8 @@ function ProviderBalancePopover({ usage, providerName, t, nowMs }: { readonly us
       style: overallBalanceStyle,
     }),
     usage.used !== null && createElement('div', { style: balanceMetaStyle }, t('usage.usedShort', { amount: formatProviderBalanceAmount(usage.used, usage.unit) })),
-    createElement('section', { style: providerDetailsSectionStyle },
+    usage.r4 !== undefined && createElement(R4BalanceDetails, { usage, t }),
+    usage.r4 === undefined && createElement('section', { style: providerDetailsSectionStyle },
       createElement('strong', { style: providerBalanceSectionTitleStyle }, t('usage.providerDetails')),
       details.length === 0
         ? createElement('div', { style: resetStyle }, t('usage.upstreamNotProvided'))
@@ -721,7 +722,7 @@ function ProviderBalancePopover({ usage, providerName, t, nowMs }: { readonly us
           createElement('span', { style: providerDetailValueStyle }, formatProviderDetailValue(item.value, t)),
         )),
     ),
-    models.length === 0
+    usage.r4 !== undefined ? null : models.length === 0
       ? createElement('div', { style: resetStyle }, t('usage.noMoreStats'))
       : models.map((model) => createElement('section', { key: model.name, style: providerBalanceModelStyle },
         createElement('div', { style: windowHeadingStyle },
@@ -738,6 +739,53 @@ function ProviderBalancePopover({ usage, providerName, t, nowMs }: { readonly us
           model.periodEnd === null ? null : createElement('span', undefined, t('usage.expiresIn', { time: formatExpiryCountdown(model.periodEnd, t, nowMs) })),
         ),
       )),
+  )
+}
+
+function R4BalanceDetails({ usage, t }: { readonly usage: ProviderBalanceUsage; readonly t: CodingNsTranslator }): ReactElement {
+  const data = usage.r4!
+  const money = (value: number | null): string => value === null ? t('usage.upstreamNotProvided') : formatNewApiBalanceAmount(value, 'USD')
+  const row = (label: string, value: string): ReactElement => createElement('div', { key: label, style: providerDetailRowStyle },
+    createElement('span', undefined, label), createElement('span', { style: providerDetailValueStyle }, value))
+  const unknown = t('usage.upstreamNotProvided')
+  const count = (value: number | null | undefined): string => value == null ? unknown : formatInteger(value)
+  const total = (values: readonly (number | null | undefined)[]): number | null => values.length === 0 || values.some((value) => value == null) ? null : values.reduce<number>((sum, value) => sum + value!, 0)
+  const tokens = (value: number | null): string => value === null ? unknown : formatCompactTokenCount(value)
+  const keySummary = data.key?.unlimited ? t('usage.r4NoLimit')
+    : `${money(data.key?.remaining ?? null)} / ${money(data.key?.limit ?? null)}`
+  return createElement('div', undefined,
+    createElement('div', { style: upstreamMetaStyle },
+      createElement('span', { style: upstreamTypeStyle }, 'R4 Coder'),
+      createElement('a', { href: usage.upstreamUrl, target: '_blank', rel: 'noreferrer', style: upstreamLinkStyle }, usage.upstreamUrl),
+    ),
+    createElement('div', { style: { ...sub2apiStatLabelStyle, paddingTop: 8 } }, t('usage.r4StatsPeriod')),
+    createElement('div', { style: sub2apiStatsGridStyle },
+      createSub2ApiStat(t('usage.statTodayRequests'), count(data.today?.requests)),
+      createSub2ApiStat(t('usage.r4TodayIoTokens'), tokens(total([data.today?.inputTokens, data.today?.outputTokens]))),
+      createSub2ApiStat(t('usage.statTodayCost'), money(data.today?.cost ?? null)),
+      createSub2ApiStat(t('usage.r4WeekRequests'), count(total(data.daily.map((point) => point.requests)))),
+      createSub2ApiStat(t('usage.r4WeekIoTokens'), tokens(total(data.daily.map((point) => total([point.inputTokens, point.outputTokens]))))),
+      createSub2ApiStat(t('usage.r4WeekCost'), money(total(data.daily.map((point) => point.cost)))),
+    ),
+    createElement('section', { style: sub2apiSectionStyle },
+      createElement('strong', { style: sub2apiSectionTitleStyle }, t('usage.r4ModelsWeek')),
+      data.models.length === 0 ? createElement('div', { style: resetStyle }, t('usage.noModelStats'))
+        : createElement('div', { style: sub2apiTableScrollStyle },
+          createElement('table', { style: sub2apiTableStyle },
+            createElement('thead', undefined, createElement('tr', undefined,
+              ...[t('usage.colModel'), t('usage.colRequests'), t('usage.colCost')].map((label) => createElement('th', { key: label, style: sub2apiThStyle }, label)),
+            )),
+            createElement('tbody', undefined, ...data.models.map((model, index) => createElement('tr', { key: index },
+              createElement('td', { style: { ...sub2apiTdStyle, overflowWrap: 'anywhere' } }, model.name),
+              createElement('td', { style: sub2apiTdStyle }, count(model.requests)),
+              createElement('td', { style: sub2apiTdStyle }, money(model.cost)),
+            ))),
+          ),
+        ),
+    ),
+    createElement('div', { style: { borderTop: `1px solid ${dshThemeColor.border}`, paddingTop: 10, marginTop: 10 } },
+      row(t('usage.r4KeyRemainingLimit'), keySummary),
+    ),
   )
 }
 

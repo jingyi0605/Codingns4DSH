@@ -50,7 +50,8 @@ const PROVIDER_ICONS: Record<string, string> = {}
 /** 只由浏览器入口调用，使普通 Node 测试不需要加载 png/svg。 */
 export function installProviderIcons(icons: Readonly<Record<string, string>>): void {
   for (const adapterId of Object.keys(PROVIDER_ICONS)) delete PROVIDER_ICONS[adapterId]
-  for (const adapterId of Object.keys(PROVIDER_DEFINITIONS)) {
+  // 资源也包含 R4 等上游品牌，不要求它同时是可执行的 Agent。
+  for (const adapterId of Object.keys(icons)) {
     const iconUrl = icons[adapterId]
     if (iconUrl !== undefined) PROVIDER_ICONS[adapterId] = iconUrl
   }

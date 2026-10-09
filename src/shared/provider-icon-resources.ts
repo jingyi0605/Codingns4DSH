@@ -13,6 +13,7 @@ export const PROVIDER_ICON_FILES: Readonly<Record<string, string>> = {
   grok: 'grok.png',
   mcode: 'minimax-code.svg',
   zcode: 'zcode.svg',
+  r4: 'r4.svg',
   codebuddy: 'codebuddy.svg',
   workbuddy: 'workbuddy.svg',
   'cursor-cli': 'cursor-cli.svg',
