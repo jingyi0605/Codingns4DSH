@@ -62,8 +62,8 @@ function installComposerStyles(): void {
   style.dataset.plugin = 'codingns4dsh'
   style.dataset.pluginCss = CLI_STYLE_ID
   style.textContent = [
-    'html[data-codingns-agent]:not([data-codingns-agent="dsh"]) [data-slot="conversation.input.model"],',
-    'body[data-codingns-agent]:not([data-codingns-agent="dsh"]) [data-slot="conversation.input.model"]{display:none!important}',
+    // 每个输入框只读取自己的适配器；主会话与右侧子会话可以同时使用不同 Agent。
+    '[data-composer-card]:has([data-codingns-agent]:not([data-codingns-agent="dsh"])) [data-slot="conversation.input.model"]{display:none!important}',
     // DSH 在控制行放不下时给行加 data-model-compact，原生模型席位据此把文本收成图标。
     // 这里不再强制工具行 nowrap：保留原生 flex-wrap 语义，DSH 的测量口径才能反映真实占用，
     // 放不下时先收起模型，而不是把左侧工具组（权限/规划组）压到内容溢出与相邻按钮重叠。
@@ -250,16 +250,6 @@ function AgentSlot(props: CliSlotProps): ReactElement {
   useDismissOnOutsidePointer(rootRef, open, () => setOpen(false))
 
   useEffect(() => {
-    if (typeof document === 'undefined') return
-    document.documentElement.dataset.codingnsAgent = selection.adapterId
-    document.body?.setAttribute('data-codingns-agent', selection.adapterId)
-    return () => {
-      if (document.documentElement.dataset.codingnsAgent === selection.adapterId) delete document.documentElement.dataset.codingnsAgent
-      if (document.body?.dataset.codingnsAgent === selection.adapterId) document.body.removeAttribute('data-codingns-agent')
-    }
-  }, [selection.adapterId])
-
-  useEffect(() => {
     return watchAdapterCatalog(props.rpc, sessionId, (value) => setAgents(adapterCatalogWithDsh(value)))
   }, [props.rpc, sessionId])
 
@@ -272,7 +262,7 @@ function AgentSlot(props: CliSlotProps): ReactElement {
     setOpen(false)
   }
   const currentIcon = providerIconUrl(current.id)
-  return createElement('div', { ref: rootRef, style: agentRootStyle },
+  return createElement('div', { ref: rootRef, style: agentRootStyle, 'data-codingns-agent': selection.adapterId },
     createElement('button', { type: 'button', className: 'codingns4dsh-agent-trigger', disabled: locked, onClick: () => setOpen((value) => !value), 'aria-label': t('cli.currentAgent', { name: current.name, locked: locked ? t('cli.locked') : '' }), 'aria-haspopup': 'menu', 'aria-expanded': open, style: { ...agentTriggerStyle, cursor: locked ? 'default' : 'pointer', opacity: locked ? 0.7 : 1 } },
       currentIcon === undefined
         ? createElement(ProviderIconFallback, { name: current.name, size: 20 })
