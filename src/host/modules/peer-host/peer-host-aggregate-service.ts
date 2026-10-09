@@ -1,8 +1,9 @@
-import type { AggregateHostResult, AggregateWorkspaceSummary, PeerHostSessionRecord } from '../../../shared/contracts/peer-host.js'
+import type { AggregateHostResult, AggregateWorkspaceSummary, PeerHostSessionRecord, PeerHostSessionTitleProjection } from '../../../shared/contracts/peer-host.js'
 
 export interface AggregateSessionSource {
   readonly sessionId: string
   readonly title: string
+  readonly titleProjection?: PeerHostSessionTitleProjection
   readonly status: string
   readonly activity?: 'running' | 'idle' | 'unknown'
   readonly updatedAt: number
@@ -148,6 +149,7 @@ function toSessionRecord(
       scopeGeneration: 0,
     },
     title: session.title,
+    ...(session.titleProjection === undefined ? {} : { titleProjection: session.titleProjection }),
     status: session.status,
     ...(session.activity === undefined ? {} : { activity: session.activity }),
     updatedAt: session.updatedAt,

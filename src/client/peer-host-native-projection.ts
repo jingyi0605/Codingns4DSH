@@ -1,4 +1,4 @@
-import type { AggregateHostResult, AggregateWorkspaceSummary, PeerHostSessionRecord } from '../shared/contracts/peer-host.js'
+import type { AggregateHostResult, AggregateWorkspaceSummary, PeerHostSessionRecord, PeerHostSessionTitleProjection } from '../shared/contracts/peer-host.js'
 import { createVirtualSessionId, createVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
 import { publishSessionAdapter } from './session-adapter-cache.js'
 
@@ -14,7 +14,7 @@ export interface PeerHostVirtualWorkspaceView {
   readonly updatedAt: string
 }
 
-/** DSH `session/list` 的 SessionSummary 最小结构；标题走 `cached` 投影块。 */
+/** DSH `session/list` 的 SessionSummary 最小结构；标题保留原生投影的来源与序号。 */
 export interface PeerHostVirtualSessionSummary {
   readonly agentAvailable: boolean
   readonly sessionId: string
@@ -23,7 +23,7 @@ export interface PeerHostVirtualSessionSummary {
   readonly blank: boolean
   readonly cwd?: string
   readonly adapterId?: string
-  readonly projections: { readonly kind: 'cached'; readonly values: { readonly title: string } }
+  readonly projections: PeerHostSessionTitleProjection
 }
 
 export interface PeerHostNativeProjection {
@@ -191,8 +191,10 @@ function projectSession(
     // 旧缓存摘要没有 blank 时按正式会话兼容；原生远端摘要会提供真实值。
     blank: session.blank === true,
     cwd,
-    // DSH 列表行的标题只读投影值：cached 块只填没有原生水位的键，适合跨 Host 摘要。
-    projections: { kind: 'cached', values: { title: session.title } },
+    // 新建会话的原生 baseline 可能已登记带序号的空标题；把后续标题降级为 cached
+    // 会被 DSH 永久忽略。保留远端原生序号，让列表与实时流按同一规则合并。
+    // 旧版摘要没有原生投影时仍只提供缓存提示，不能伪造时间戳序号抢占实时值。
+    projections: session.titleProjection ?? { kind: 'cached', asOfSeq: 0, values: { title: session.title } },
     ...(session.adapterId === undefined ? {} : { adapterId: session.adapterId }),
   }
 }
@@ -229,6 +231,8 @@ function sameSessions(previous: readonly PeerHostVirtualSessionSummary[], next: 
       && session.blank === candidate.blank
       && session.cwd === candidate.cwd
       && session.adapterId === candidate.adapterId
+      && session.projections.kind === candidate.projections.kind
+      && session.projections.asOfSeq === candidate.projections.asOfSeq
       && session.projections.values.title === candidate.projections.values.title
   })
 }

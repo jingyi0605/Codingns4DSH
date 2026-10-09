@@ -215,6 +215,7 @@ export type {
   PeerHostClientRoute,
   PeerHostClientRecord,
   PeerHostSessionRecord,
+  PeerHostSessionTitleProjection,
   PeerHostWebSocketEndpoint,
   PeerHostStatus,
   ResourceScopeDisposer,

@@ -94,10 +94,19 @@ export interface HostScope {
   readonly scopeGeneration: number
 }
 
+/** 只保留标题投影及远端原生序号，避免把实时标题降级为无法覆盖旧值的缓存。 */
+export interface PeerHostSessionTitleProjection {
+  readonly kind: 'cached' | 'sequenced'
+  readonly asOfSeq: number
+  readonly values: { readonly title: string | null }
+}
+
 /** 会话摘要只用于聚合导航，不包含历史消息或工具内容。 */
 export interface PeerHostSessionRecord {
   readonly scope: HostScope
   readonly title: string
+  /** 旧版摘要缺省；不得使用 updatedAt 伪造原生事件序号。 */
+  readonly titleProjection?: PeerHostSessionTitleProjection
   readonly status: string
   /** 来自真实执行状态的证明；不能把导航层默认 idle 当作完成证明。 */
   readonly activity?: 'running' | 'idle' | 'unknown'

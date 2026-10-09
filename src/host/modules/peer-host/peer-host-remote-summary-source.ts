@@ -1,4 +1,4 @@
-import type { HostScope } from '../../../shared/contracts/peer-host.js'
+import type { HostScope, PeerHostSessionTitleProjection } from '../../../shared/contracts/peer-host.js'
 import type { AggregateSessionSource, AggregateWorkspaceSource, PeerHostWorkspaceSessionSummarySource } from './peer-host-aggregate-service.js'
 
 /**
@@ -133,10 +133,12 @@ function buildRemoteSummary(
       const session = sessionsById.get(sessionId) ?? null
       // 子代理会话在可见与归档两侧都不出现在宿主侧栏。
       if (readString(session, ['origin']) === 'subagent') continue
+      const titleProjection = readSessionTitleProjection(session)
       const entry: AggregateSessionSource = {
         sessionId,
         blank: session?.blank === true,
         title: readSessionTitle(session, sessionId),
+        ...(titleProjection === undefined ? {} : { titleProjection }),
         status: readRemoteSessionStatus(session),
         activity: readRemoteSessionActivity(session),
         updatedAt: readTime(session),
@@ -200,6 +202,19 @@ async function readAdapterMap(
   } catch {
     return new Map()
   }
+}
+
+/**
+ * session/list 的实时投影与 session/follow 使用同一序号空间，必须保留其来源。
+ * 只摘取 title，不能把摘要接口扩展成会话内容通道；null 也是真实投影值。
+ */
+function readSessionTitleProjection(session: Record<string, unknown> | null): PeerHostSessionTitleProjection | undefined {
+  const block = asRecord(session?.projections)
+  const title = asRecord(block?.values)?.title
+  if (block?.kind !== 'cached' && block?.kind !== 'sequenced') return undefined
+  if (typeof block.asOfSeq !== 'number' || !Number.isSafeInteger(block.asOfSeq)) return undefined
+  if (typeof title !== 'string' && title !== null) return undefined
+  return { kind: block.kind, asOfSeq: block.asOfSeq, values: { title } }
 }
 
 function readSessionTitle(session: Record<string, unknown> | null, sessionId: string): string {
