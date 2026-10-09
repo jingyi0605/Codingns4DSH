@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import ts from 'typescript'
 
 /** 使用独立无界面 Chromium 测布局，不连接或修改任何 DSH 实例。 */
 const chromium = process.env.CODINGNS_TEST_CHROMIUM
@@ -12,10 +13,10 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 test('真实浏览器中长候选列表不会压扁已添加表格，旧样式也会被更新', { skip: chromium === undefined }, (context) => {
   const directory = mkdtempSync(join(root, 'data', 'peer-host-layout-'))
   try {
-    // 执行实际产物的 DOM 注入逻辑；仅替换颜色与翻译依赖，避免 fixture 加载整套 React。
-    const moduleCode = readFileSync(join(root, 'data/build/dist/client/peer-host-workspace-tab.js'), 'utf8')
+    // 源码只在内存转换，避免读取旧产物或为布局验证执行构建；仅替换颜色与翻译依赖。
+    const moduleCode = browserModule('src/client/peer-host-workspace-tab.ts')
       .replace(/^import .*;\r?\n/gmu, '')
-    const dictionaryCode = readFileSync(join(root, 'data/build/dist/client/locales/peerHostWorkspace.js'), 'utf8')
+    const dictionaryCode = browserModule('src/client/locales/peerHostWorkspace.ts')
     const html = `<!doctype html><html><head><meta charset="utf-8"><style>
       :root{--dsw-alias-label-primary:#eee;--dsw-alias-label-secondary:#aaa;--dsw-alias-label-tertiary:#888;--dsw-alias-border-l4:#555}
       body{margin:0;background:#222;font-family:sans-serif}
@@ -46,6 +47,10 @@ test('真实浏览器中长候选列表不会压扁已添加表格，旧样式�
         wrapperHeight:document.querySelector('.codingns4dsh-peer-host-tableWrap').getBoundingClientRect().height,
         headerHeight:document.querySelector('.codingns4dsh-peer-host-table th').getBoundingClientRect().height,
         rowHeights:Array.from(document.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]')).map(row=>row.getBoundingClientRect().height),
+        actionsFit:Array.from(document.querySelectorAll('[data-codingns-peer-host-tab-remove-workspace]')).every(button=>{
+          const action=button.getBoundingClientRect(),cell=button.parentElement.getBoundingClientRect();
+          return action.width>0&&action.left>=cell.left&&action.right<=cell.right;
+        }),
         scrollHeight:document.querySelector('.codingns4dsh-peer-host-panel').scrollHeight,
         clientHeight:document.querySelector('.codingns4dsh-peer-host-panel').clientHeight,
       });
@@ -56,7 +61,10 @@ test('真实浏览器中长候选列表不会压扁已添加表格，旧样式�
       const fixed=measure();
       document.querySelector('[data-codingns-peer-host-tab-candidate]').click();await settle();
       const added=measure();
-      const output=document.createElement('pre');output.id='layout-result';output.textContent=JSON.stringify({legacy,fixed,added});document.body.append(output);
+      document.querySelector('[data-codingns-peer-host-tab-remove-workspace]').click();await settle();
+      const removed=measure();
+      const restoredCandidate=Array.from(document.querySelectorAll('[data-codingns-peer-host-tab-candidate]')).some(button=>button.getAttribute('data-codingns-peer-host-tab-candidate')==='workspace-0');
+      const output=document.createElement('pre');output.id='layout-result';output.textContent=JSON.stringify({legacy,fixed,added,removed,restoredCandidate});document.body.append(output);
       controller.dispose();
     </script></body></html>`
     const fixture = join(directory, 'layout.html')
@@ -75,10 +83,23 @@ test('真实浏览器中长候选列表不会压扁已添加表格，旧样式�
     assert.ok(result.fixed.headerHeight > 0)
     assert.equal(result.fixed.rowHeights.length, 3)
     assert.ok(result.fixed.rowHeights.every((height: number) => height > 0))
+    assert.equal(result.fixed.actionsFit, true, '最右侧操作列必须完整容纳移除按钮')
     assert.ok(result.fixed.scrollHeight > result.fixed.clientHeight, '长候选列表必须由整个面板滚动')
     assert.equal(result.added.rowHeights.length, 4, '新增工作区应立即成为可见表格行')
     assert.ok(result.added.rowHeights.every((height: number) => height > 0))
+    assert.equal(result.added.actionsFit, true)
+    assert.equal(result.removed.rowHeights.length, 3, '移除后表格立即减少一行')
+    assert.equal(result.removed.actionsFit, true)
+    assert.equal(result.restoredCandidate, true, '移除的工作区必须回到候选列表')
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+/** 浏览器夹具仅需要标准 JavaScript，转换结果不写入任何运行中实例的产物目录。 */
+function browserModule(relativePath: string): string {
+  return ts.transpileModule(readFileSync(join(root, relativePath), 'utf8'), {
+    fileName: relativePath,
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+  }).outputText
+}

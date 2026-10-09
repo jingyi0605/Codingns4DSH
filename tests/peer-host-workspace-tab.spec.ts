@@ -53,6 +53,7 @@ function fakeApi(overrides: Partial<Record<string, unknown>> = {}) {
       async aggregate() { calls.push('aggregate'); return overrides.aggregate ?? [] },
       async setWorkspaceVisibility(hostId: string, workspaceId: string, visible: boolean) {
         calls.push(`visibility:${hostId}:${workspaceId}:${visible}`)
+        if (typeof overrides.setWorkspaceVisibility === 'function') return overrides.setWorkspaceVisibility(hostId, workspaceId, visible)
       },
     } as never,
   }
@@ -325,10 +326,146 @@ test('远程 HOST 将已添加工作区按名称、会话数、Host 和路径显
   const tableRows = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]')
   assert.equal(tableRows.length, 1)
   assert.match(tableRows[0]?.textContent ?? '', /项目 A2 个会话开发机\/Users\/dev\/project-a/u)
+  assert.equal(tableRows[0]?.children.length, 5, '最右侧应增加操作列')
+  const remove = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-remove-workspace]')[0]
+  assert.equal(remove?.textContent, '移除')
+  assert.equal(remove?.getAttribute('aria-label'), '移除工作区“项目 A”')
   // 未添加的候选仍保留在下方，用户可以继续登记。
   const candidates = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-candidate]')
   assert.equal(candidates.length, 1)
   assert.equal(candidates[0]?.getAttribute('data-codingns-peer-host-tab-candidate'), 'workspace-2')
+  controller.dispose()
+})
+
+for (const returnsRecord of [true, false]) {
+  test(`移除后保留其他工作区、恢复候选并允许重新添加（接口${returnsRecord ? '返回记录' : '未返回记录'}）`, async () => {
+    const dom = fakeDialogDocument()
+    const { api, calls } = fakeApi({
+      list: [{ ...readyRecord(), visibleWorkspaceIds: ['workspace-1', 'workspace-2'] }],
+      candidates: [
+        { workspaceId: 'workspace-1', displayName: '项目 A', path: '/Users/dev/project-a', sessionCount: 2 },
+        { workspaceId: 'workspace-2', displayName: '项目 B', path: '/Users/dev/project-b', sessionCount: 0 },
+      ],
+      setWorkspaceVisibility: (_hostId: string, _workspaceId: string, visible: boolean) => returnsRecord
+        ? { ...readyRecord(), visibleWorkspaceIds: visible ? ['workspace-1', 'workspace-2'] : ['workspace-2'] }
+        : undefined,
+    })
+    const changes: string[] = []
+    const controller = startPeerHostWorkspaceTab({
+      api, document: dom.document as never, MutationObserver: undefined,
+      onWorkspaceAdded: (hostId, workspaceId) => { changes.push(`added:${hostId}:${workspaceId}`) },
+      onWorkspaceRemoved: (hostId, workspaceId) => { changes.push(`removed:${hostId}:${workspaceId}`) },
+    })
+    await click(dom.dialog.querySelectorAll(`[${PEER_HOST_WORKSPACE_TAB_ATTRIBUTE}]`)[0]?.children[1] as FakeElement)
+    await click(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-host]')[0] as FakeElement)
+    await click(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-remove-workspace]')[0] as FakeElement)
+
+    assert.equal(calls.at(-1), 'visibility:peer-1:workspace-1:false')
+    const rows = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]')
+    assert.deepEqual(rows.map((row) => row.getAttribute('data-codingns-peer-host-tab-added-workspace')), ['workspace-2'])
+    const candidates = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-candidate]')
+    assert.equal(candidates.length, 1)
+    assert.equal(candidates[0]?.getAttribute('data-codingns-peer-host-tab-candidate'), 'workspace-1')
+    assert.match(candidates[0]?.textContent ?? '', /项目 A.*2 个会话/u)
+    assert.deepEqual(changes, ['removed:peer-1:workspace-1'])
+    assert.ok(dom.dialog.querySelectorAll('[role="status"]').some((node) => node.textContent.includes('已移除')))
+
+    await click(candidates[0] as FakeElement)
+    assert.equal(calls.at(-1), 'visibility:peer-1:workspace-1:true')
+    assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]').length, 2)
+    assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-candidate]').length, 0)
+    assert.deepEqual(changes, ['removed:peer-1:workspace-1', 'added:peer-1:workspace-1'])
+    controller.dispose()
+  })
+}
+
+test('候选暂时为空时可移除聚合工作区，最后一行移除后显示空状态并可重新添加', async () => {
+  const dom = fakeDialogDocument()
+  const { api, calls } = fakeApi({
+    list: [{ ...readyRecord(), visibleWorkspaceIds: ['workspace-1'] }],
+    aggregate: [{
+      targetHostId: 'peer-1', availability: 'ready',
+      workspaces: [{ workspaceId: 'workspace-1', displayName: '项目 A', path: '/Users/dev/project-a', sessions: [{ sessionId: 'session-1' }], archivedSessions: [] }],
+    }],
+  })
+  const controller = startPeerHostWorkspaceTab({ api, document: dom.document as never, MutationObserver: undefined })
+  await click(dom.dialog.querySelectorAll(`[${PEER_HOST_WORKSPACE_TAB_ATTRIBUTE}]`)[0]?.children[1] as FakeElement)
+  await click(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-host]')[0] as FakeElement)
+  await click(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-remove-workspace]')[0] as FakeElement)
+
+  assert.equal(calls.at(-1), 'visibility:peer-1:workspace-1:false')
+  assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]').length, 0)
+  const panel = dom.dialog.querySelectorAll(`[${PEER_HOST_WORKSPACE_PANEL_ATTRIBUTE}]`)[0]
+  assert.match(panel?.textContent ?? '', /该 Host 尚未添加远程工作区/u)
+  const candidate = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-candidate]')[0]
+  assert.match(candidate?.textContent ?? '', /项目 A.*1 个会话/u)
+  await click(candidate as FakeElement)
+  assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]').length, 1)
+  controller.dispose()
+})
+
+test('移除失败时保留原记录、展示真实错误且不触发聚合刷新', async () => {
+  const dom = fakeDialogDocument()
+  const { api } = fakeApi({
+    list: [{ ...readyRecord(), visibleWorkspaceIds: ['workspace-1'] }],
+    candidates: [{ workspaceId: 'workspace-1', displayName: '项目 A', path: '/Users/dev/project-a', sessionCount: 2 }],
+    setWorkspaceVisibility: () => { throw new Error('保存可见性失败') },
+  })
+  let removed = false
+  const controller = startPeerHostWorkspaceTab({
+    api, document: dom.document as never, MutationObserver: undefined,
+    onWorkspaceRemoved: () => { removed = true },
+  })
+  await click(dom.dialog.querySelectorAll(`[${PEER_HOST_WORKSPACE_TAB_ATTRIBUTE}]`)[0]?.children[1] as FakeElement)
+  await click(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-host]')[0] as FakeElement)
+  await click(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-remove-workspace]')[0] as FakeElement)
+
+  assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]').length, 1)
+  assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-candidate]').length, 0)
+  assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-remove-workspace]')[0]?.disabled, false)
+  assert.ok(dom.dialog.querySelectorAll('[role="alert"]').some((node) => node.textContent.includes('保存可见性失败')))
+  assert.equal(removed, false)
+  controller.dispose()
+})
+
+test('移除期间阻止重复操作与 Host 切换，刷新失败不覆盖保存成功状态', async () => {
+  const dom = fakeDialogDocument()
+  let complete: (() => void) | undefined
+  const { api, calls } = fakeApi({
+    list: [{ ...readyRecord(), visibleWorkspaceIds: ['workspace-1'] }, readyRecord('peer-2', '构建机')],
+    candidates: [
+      { workspaceId: 'workspace-1', displayName: '项目 A', path: '/Users/dev/project-a', sessionCount: 2 },
+      { workspaceId: 'workspace-2', displayName: '项目 B', path: '/Users/dev/project-b', sessionCount: 0 },
+    ],
+    setWorkspaceVisibility: () => new Promise<void>((resolve) => { complete = resolve }),
+  })
+  const controller = startPeerHostWorkspaceTab({
+    api, document: dom.document as never, MutationObserver: undefined,
+    onWorkspaceRemoved: () => { throw new Error('聚合刷新失败') },
+  })
+  await click(dom.dialog.querySelectorAll(`[${PEER_HOST_WORKSPACE_TAB_ATTRIBUTE}]`)[0]?.children[1] as FakeElement)
+  await click(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-host]')[0] as FakeElement)
+  const remove = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-remove-workspace]')[0]
+  await click(remove as FakeElement)
+  assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-remove-workspace]')[0]?.disabled, true)
+  assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-candidate]')[0]?.disabled, true)
+  const hosts = dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-host]')
+  assert.ok(hosts.every((host) => host.disabled))
+  // 主动调用旧节点的监听，验证函数守卫也能阻止迟到的重复事件。
+  await click(remove as FakeElement)
+  await click(hosts[1] as FakeElement)
+  await click(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-candidate]')[0] as FakeElement)
+  assert.equal(calls.filter((call) => call.startsWith('visibility:')).length, 1)
+  assert.equal(calls.includes('candidates:peer-2'), false)
+  assert.notEqual(complete, undefined)
+  complete!()
+  await settle()
+
+  assert.equal(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-added-workspace]').length, 0)
+  assert.ok(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-host]').every((host) => !host.disabled))
+  assert.ok(dom.dialog.querySelectorAll('[data-codingns-peer-host-tab-candidate]').every((candidate) => !candidate.disabled))
+  assert.ok(dom.dialog.querySelectorAll('[role="status"]').some((node) => node.textContent.includes('已移除')))
+  assert.equal(dom.dialog.querySelectorAll('[role="alert"]').length, 0)
   controller.dispose()
 })
 
@@ -564,6 +701,7 @@ function matches(element: FakeElement, selector: string): boolean {
   if (selector === '[data-codingns-peer-host-tab-host]') return element.getAttribute('data-codingns-peer-host-tab-host') !== null
   if (selector === '[data-codingns-peer-host-tab-candidate]') return element.getAttribute('data-codingns-peer-host-tab-candidate') !== null
   if (selector === '[data-codingns-peer-host-tab-added-workspace]') return element.getAttribute('data-codingns-peer-host-tab-added-workspace') !== null
+  if (selector === '[data-codingns-peer-host-tab-remove-workspace]') return element.getAttribute('data-codingns-peer-host-tab-remove-workspace') !== null
   const classMatch = /^\[class\*="([^"]+)"\]$/u.exec(selector)
   if (classMatch !== null) return (element.getAttribute('class') ?? '').includes(classMatch[1]!)
   return false
