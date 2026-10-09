@@ -41,6 +41,11 @@ export const DSH_NATIVE_REMOTE_METHODS = Object.freeze([
   'session/selectModel',
   'session/updateQueue',
   'session/workspacePathApplications',
+  // 会话尾部反馈及 /feedback 命令都归目标 Host；messageId 和版本号保持原值。
+  'messageFeedback/list',
+  'messageFeedback/put',
+  'messageFeedback/delete',
+  'sessionFeedback/record',
   // 可继续子会话的输入与停止由 subagents Remote 承载，身份字段仍是 SessionId。
   'subagents/prompt',
   'subagents/interruptByParent',

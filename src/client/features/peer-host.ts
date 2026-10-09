@@ -268,6 +268,12 @@ export function createPeerHostPageTransport(
   const scopeForNativeRequest = (method: string, value: unknown): HostScope | undefined => {
     // 问题答案是任意用户内容，只能由正式 agentId 决定目标，不能扫描答案里的字符串。
     if (method === 'userQuestions/answer' || method === 'userQuestions/attachWait') return findScope(questionAgentId(value))
+    // 反馈只能由 request.sessionId 决定归属，消息 ID、反馈文字和版本号都不是路由身份。
+    if (method.startsWith('messageFeedback/') || method === 'sessionFeedback/record') {
+      const input = asRecord(value)
+      const request = asRecord(asRecord(input?.args)?.request ?? input?.request)
+      return findScope(request?.sessionId)
+    }
     const direct = findScope(value)
     if (direct !== undefined) return direct
     return method === 'session/modelCatalog' && !containsResourceId(value) ? navigationScope() : undefined
