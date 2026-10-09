@@ -109,6 +109,31 @@ test('页面 connector 将虚拟 Session 的原生 Remote 路由到 peerHost/nat
   }
 })
 
+test('页面 connector 在聚合暂时漏掉会话时仍沿用最后确认的远端路由', async () => {
+  const paths: string[] = []
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = (async (input) => {
+    const path = new URL(String(input), 'http://dsh.test').pathname
+    paths.push(path)
+    return response({ page: 'remote' })
+  }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    transport.setAggregate(aggregate)
+    // 工作区仍存在，但本轮 session/list 暂时没有返回当前会话。
+    transport.setAggregate([{ ...aggregate[0]!, workspaces: [{ ...aggregate[0]!.workspaces[0]!, sessions: [] }] }])
+    const sessionId = createVirtualSessionId('peer-1', 'session-1')
+    const result = await transport.hooks.rpc?.({
+      method: 'session/page',
+      payload: { channel: '/api', payload: { sessionId } },
+    })
+    assert.deepEqual(result, { ok: true, value: { page: 'remote' } })
+    assert.deepEqual(paths, ['/codingns/peerHost/native'])
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
 test('页面 connector 将无参数的 session/modelCatalog 路由到当前远程 Host', async () => {
   const calls: Array<{ path: string; body: Record<string, unknown> }> = []
   const previousFetch = globalThis.fetch
@@ -497,15 +522,14 @@ test('页面 connector 在远端新建会话后立刻按虚拟 ID 路由后续 u
   }
 })
 
-test('页面 connector 在聚合确认后清理 pending，远端会话消失后回落本地路由', async () => {
+test('页面 connector 在远端会话确认消失后仍沿用目标 Host 路由', async () => {
   const paths: string[] = []
   const previousFetch = globalThis.fetch
   const createdSessionId = createVirtualSessionId('peer-1', 'session-new')
   globalThis.fetch = (async (input) => {
     const path = new URL(String(input), 'http://dsh.test').pathname
     paths.push(path)
-    if (path.endsWith('/peerHost/native')) return response({ sessionId: createdSessionId })
-    if (path.endsWith('/api/session/page')) return response({ page: 'local' })
+    if (path.endsWith('/peerHost/native')) return response(paths.length === 1 ? { sessionId: createdSessionId } : { page: 'remote' })
     throw new Error(`unexpected path: ${path}`)
   }) as typeof fetch
   try {
@@ -528,14 +552,14 @@ test('页面 connector 在聚合确认后清理 pending，远端会话消失后�
       }],
     }]
     transport.setAggregate(confirmedAggregate)
-    // 下一次聚合移除该会话后，不能继续凭旧 pending 作用域访问 PeerHost。
+    // 下一次聚合暂时移除该会话时，仍沿用最后确认的远端作用域，避免回落本机 Gateway。
     transport.setAggregate(emptyAggregate)
     const page = await transport.hooks.rpc?.({
       method: 'session/page',
       payload: { channel: '/api', payload: { sessionId: createdSessionId } },
     })
-    assert.deepEqual(page, { ok: true, value: { page: 'local' } })
-    assert.deepEqual(paths, ['/codingns/peerHost/native', '/api/session/page'])
+    assert.deepEqual(page, { ok: true, value: { page: 'remote' } })
+    assert.deepEqual(paths, ['/codingns/peerHost/native', '/codingns/peerHost/native'])
   } finally {
     globalThis.fetch = previousFetch
   }
@@ -552,7 +576,6 @@ test('页面 connector 在 pending 超时后清理远端作用域', async () => 
     const path = new URL(String(input), 'http://dsh.test').pathname
     paths.push(path)
     if (path.endsWith('/peerHost/native')) return response({ sessionId: createdSessionId })
-    if (path.endsWith('/api/session/page')) return response({ page: 'local' })
     throw new Error(`unexpected path: ${path}`)
   }) as typeof fetch
   try {
@@ -570,8 +593,14 @@ test('页面 connector 在 pending 超时后清理远端作用域', async () => 
       method: 'session/page',
       payload: { channel: '/api', payload: { sessionId: createdSessionId } },
     })
-    assert.deepEqual(page, { ok: true, value: { page: 'local' } })
-    assert.deepEqual(paths, ['/codingns/peerHost/native', '/api/session/page'])
+    assert.deepEqual(page, {
+      ok: false,
+      error: {
+        code: 'PEER_HOST_SCOPE_MISMATCH',
+        message: '远端会话作用域暂不可用，请等待 PeerHost 工作区刷新',
+      },
+    })
+    assert.deepEqual(paths, ['/codingns/peerHost/native'])
   } finally {
     Date.now = previousNow
     globalThis.fetch = previousFetch

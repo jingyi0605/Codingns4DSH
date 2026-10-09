@@ -71,8 +71,9 @@ export class VirtualWorkspaceRegistry {
     this.orderStore = options.orderStore
   }
 
-  /** 替换一次聚合快照；旧 Host/Workspace 不会残留在表中。 */
+  /** 替换一次聚合快照；旧 Host/Workspace 不会残留，远端工作区内的会话映射可短暂保留。 */
   replace(results: readonly AggregateHostResult[]): void {
+    const previousSessions = new Map(this.sessions)
     this.workspaces.clear()
     this.sessions.clear()
     for (const host of results) {
@@ -95,6 +96,13 @@ export class VirtualWorkspaceRegistry {
           })
         }
       }
+    }
+    // 远端摘要可能暂时漏掉当前会话，但工作区仍存在。保留最后确认的真实 ID
+    // 映射，确保客户端仍能把虚拟 session/page 请求改写后转发到目标 Host。
+    for (const [virtualSessionId, session] of previousSessions) {
+      if (this.sessions.has(virtualSessionId) || session.source !== 'peer' || session.scope.targetHostId === null) continue
+      const virtualWorkspaceId = createVirtualWorkspaceId(session.scope.targetHostId, session.scope.workspaceId)
+      if (this.workspaces.has(virtualWorkspaceId)) this.sessions.set(virtualSessionId, session)
     }
     this.order = this.reconcileOrder(this.order)
   }

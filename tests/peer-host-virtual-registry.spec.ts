@@ -56,6 +56,27 @@ test('Registry 为不同 Host 的同名 Workspace/Session 建立独立路由', (
   assert.equal(registry.resolveSession(sessions[0]!.virtualSessionId)?.targetHostId, 'peer-a')
 })
 
+test('Registry 在远端工作区仍存在但摘要暂时漏会话时保留真实 ID 映射', () => {
+  const registry = new VirtualWorkspaceRegistry()
+  const initial = result('peer-a', 'peer-a', 'w-remote', 's-remote')
+  registry.replace([initial])
+  const virtualSessionId = createVirtualSessionId('peer-a', 's-remote')
+  assert.equal(registry.resolveSession(virtualSessionId)?.sessionId, 's-remote')
+
+  const incomplete = {
+    ...initial,
+    workspaces: [{ ...initial.workspaces[0]!, sessions: [] }],
+  }
+  registry.replace([incomplete])
+  assert.deepEqual(registry.resolveSession(virtualSessionId), {
+    virtualSessionId,
+    hostId: 'peer-a',
+    targetHostId: 'peer-a',
+    workspaceId: 'w-remote',
+    sessionId: 's-remote',
+  })
+})
+
 test('Registry 保留混合 Workspace 顺序并持久化 move 结果', async () => {
   let saved: unknown = null
   const registry = new VirtualWorkspaceRegistry({

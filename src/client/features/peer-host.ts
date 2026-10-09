@@ -204,7 +204,8 @@ export function createPeerHostPageTransport(
   readonly dispose: () => void
 } {
   const t = resolveCodingNsTranslator(locale)
-  const fetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined
+  const originalGlobalFetch = globalThis.fetch
+  const fetchImpl = typeof originalGlobalFetch === 'function' ? originalGlobalFetch.bind(globalThis) : undefined
   const scopes = new Map<string, HostScope>()
   const remoteHostScopes = new Map<string, HostScope>()
   // DSH 的模型目录是 Host generation 级缓存；PeerHost 工作区切换不会触发 DSH
@@ -274,6 +275,54 @@ export function createPeerHostPageTransport(
     if (typeof error?.code === 'string') (failure as Error & { code?: string }).code = error.code
     throw failure
   }
+  const scopeForSessionExport = (url: URL): HostScope | undefined => {
+    const virtualSessionId = url.searchParams.get('sessionId')
+    if (virtualSessionId === null) return undefined
+    const parsed = parseVirtualSessionId(virtualSessionId)
+    if (parsed === null) return undefined
+    const scope = scopes.get(virtualSessionId)
+    return scope?.targetHostId === parsed.hostId ? scope : undefined
+  }
+  const sessionExportPath = (url: URL, scope: HostScope): string => {
+    const parsed = parseVirtualSessionId(url.searchParams.get('sessionId') ?? '')
+    if (parsed === null || scope.targetHostId !== parsed.hostId) throw new Error('远程 Session 导出作用域不匹配')
+    const rewritten = new URL(url.href)
+    rewritten.searchParams.set('sessionId', parsed.sessionId)
+    return rewritten.pathname + rewritten.search
+  }
+  const readFetchUrl = (input: RequestInfo | URL): URL => {
+    const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    return new URL(raw, typeof document === 'undefined' ? 'http://codingns.invalid' : document.baseURI)
+  }
+  const remoteSessionExportFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    if (fetchImpl === undefined) throw new Error('当前页面没有 fetch')
+    const request = typeof Request !== 'undefined' && input instanceof Request ? input : undefined
+    const method = (init?.method ?? request?.method ?? 'GET').toUpperCase()
+    const url = readFetchUrl(input)
+    if (url.pathname !== '/api/session.export' || (method !== 'GET' && method !== 'HEAD')) return fetchImpl(input, init)
+    const scope = scopeForSessionExport(url)
+    if (scope === undefined || scope.targetHostId === null) return fetchImpl(input, init)
+    const headers = init?.headers === undefined && request === undefined
+      ? undefined
+      : Object.fromEntries(new Headers(init?.headers ?? request?.headers).entries())
+    const response = asRecord(await codingNsCall('peerHost/request', {
+      peerHostId: scope.targetHostId,
+      scope,
+      path: sessionExportPath(url, scope),
+      method,
+      ...(headers === undefined ? {} : { headers }),
+    }, init?.signal ?? request?.signal))
+    const status = typeof response?.status === 'number' ? response.status : 502
+    const responseHeaders = new Headers(Array.isArray(response?.headers) ? response.headers as [string, string][] : undefined)
+    const body = method === 'HEAD'
+      ? undefined
+      : typeof response?.bodyBase64 === 'string'
+        ? decodeBase64(response.bodyBase64)
+        : typeof response?.body === 'string' ? response.body : ''
+    return new Response(body, { status, headers: responseHeaders })
+  }
+  const restoreGlobalFetch = installSessionExportFetchPatch(originalGlobalFetch, remoteSessionExportFetch)
+  const restoreAnchorClick = installSessionExportAnchorPatch(remoteSessionExportFetch, scopeForSessionExport)
   const findScope = (value: unknown): HostScope | undefined => {
     if (typeof value === 'string') {
       const session = scopes.get(value)
@@ -371,6 +420,18 @@ export function createPeerHostPageTransport(
       if (containsResourceId(child)) return true
     }
     return false
+  }
+  /** 判断请求中是否仍携带虚拟资源 ID；作用域丢失时不能把它交给本机 Gateway。 */
+  const containsVirtualResourceId = (value: unknown): boolean => {
+    if (typeof value === 'string') return parseVirtualSessionId(value) !== null || parseVirtualWorkspaceId(value) !== null
+    if (Array.isArray(value)) return value.some(containsVirtualResourceId)
+    const record = asRecord(value)
+    return record !== null && Object.values(record).some(containsVirtualResourceId)
+  }
+  const hasUnresolvedVirtualNativeScope = (method: string, value: unknown): boolean => {
+    // 问题答案正文允许引用任意会话 ID；唯一的路由身份是 agentId，不能扫描正文。
+    if (method === 'userQuestions/answer' || method === 'userQuestions/attachWait') return false
+    return containsVirtualResourceId(value)
   }
   const rewriteCliPayload = (value: unknown, scope: HostScope, key = ''): unknown => {
     if (typeof value === 'string') {
@@ -553,6 +614,9 @@ export function createPeerHostPageTransport(
         if (scope === undefined && hasVirtualQuestionAgent(method, body)) {
           return { ok: false, error: { code: 'PEER_HOST_SCOPE_MISMATCH', message: t('peerHost.questionSessionUnavailable') } } as TResponse
         }
+        if (scope === undefined && hasUnresolvedVirtualNativeScope(method, body)) {
+          return { ok: false, error: { code: 'PEER_HOST_SCOPE_MISMATCH', message: t('peerHost.sessionUnavailable') } } as TResponse
+        }
         if (scope !== undefined && scope.targetHostId !== null) {
           // DSH 的 client 契约要求 unary 结果是 `{ok, value}` / `{ok:false, error}` 信封：
           // 返回裸值会让网关在 `rebuiltFailure(result.error)` 读 undefined.code 而崩成 carrierFailure。
@@ -590,6 +654,11 @@ export function createPeerHostPageTransport(
       if (channel === '/api' && isDshNativeRemoteMethod(method)) {
         const scope = scopeForNativeRequest(method, body)
         if (scope === undefined && hasVirtualQuestionAgent(method, body)) throw new Error('远端问题所属会话不可用，请重新连接')
+        if (scope === undefined && hasUnresolvedVirtualNativeScope(method, body)) {
+          const error = new Error(t('peerHost.sessionUnavailable')) as Error & { code?: string }
+          error.code = 'PEER_HOST_SCOPE_MISMATCH'
+          throw error
+        }
         if (scope !== undefined && scope.targetHostId !== null) {
           const stream = openRemoteStream(method, body, scope, signal) as AsyncIterable<TChunk>
           if (method !== 'session/follow') return stream
@@ -619,8 +688,7 @@ export function createPeerHostPageTransport(
       return openDshGatewayStream<TChunk>(method, body, signal)
     },
     fetch: (input: RequestInfo | URL, init?: RequestInit) => {
-      if (fetchImpl === undefined) return Promise.reject(new Error('当前页面没有 fetch'))
-      return fetchImpl(input, init)
+      return remoteSessionExportFetch(input, init)
     },
   }
   return {
@@ -628,6 +696,8 @@ export function createPeerHostPageTransport(
     mergeEvents: (local, signal) => events.open(local, signal),
     dispose() {
       events.dispose()
+      restoreAnchorClick()
+      restoreGlobalFetch()
       if (aggregateRefreshTimer !== undefined) clearTimeout(aggregateRefreshTimer)
       for (const sessionId of pendingSessionScopes.keys()) forgetPendingSession(sessionId)
     },
@@ -658,7 +728,7 @@ export function createPeerHostPageTransport(
       const scope = cli === undefined
         ? scopeForNativeRequest(method ?? '', value)
         : scopeForPluginRequest(cli, value)
-      return scope !== undefined && scope.targetHostId !== null
+      return scope !== undefined ? scope.targetHostId !== null : hasUnresolvedVirtualNativeScope(method ?? '', value)
     },
     watchNavigation() {
       const store = readNativeNavigationStore(uiContext)
@@ -668,8 +738,11 @@ export function createPeerHostPageTransport(
       return stop ?? (() => undefined)
     },
     setAggregate(aggregate, orderedWorkspaceIds) {
+      const previousScopes = new Map(scopes)
+      const now = Date.now()
       scopes.clear()
       remoteHostScopes.clear()
+      const visibleWorkspaceIds = new Set<string>()
       for (const host of aggregate) {
         if (host.targetHostId !== null) {
           remoteHostScopes.set(host.targetHostId, { hostId: host.hostId, targetHostId: host.targetHostId, workspaceId: '__aggregate__', sessionId: null, scopeGeneration: 0 })
@@ -677,6 +750,7 @@ export function createPeerHostPageTransport(
         for (const workspace of host.workspaces) {
           const virtualHostId = host.targetHostId ?? host.hostId
           const virtualWorkspaceId = createVirtualWorkspaceId(virtualHostId, workspace.workspaceId)
+          visibleWorkspaceIds.add(virtualWorkspaceId)
           const workspaceScope: HostScope = { hostId: host.hostId, targetHostId: host.targetHostId, workspaceId: workspace.workspaceId, sessionId: null, scopeGeneration: 0 }
           scopes.set(virtualWorkspaceId, workspaceScope)
           // 归档会话也要能解析作用域：取消归档请求按虚拟会话 ID 路由到目标 Host。
@@ -686,9 +760,17 @@ export function createPeerHostPageTransport(
           }
         }
       }
+      // 聚合刷新可能暂时漏掉会话元数据，但只要工作区仍存在，当前页面的远端会话
+      // 就不能立即改走本机 Gateway。真实删除会在目标 Host 返回明确的 not-found。
+      for (const [sessionId, scope] of previousScopes) {
+        if (scope.targetHostId === null || scope.sessionId === null || scopes.has(sessionId)) continue
+        const pending = pendingSessionScopes.get(sessionId)
+        if (pending !== undefined && pending.expiresAt <= now) continue
+        if (visibleWorkspaceIds.has(createVirtualWorkspaceId(scope.targetHostId, scope.workspaceId))) scopes.set(sessionId, scope)
+      }
       // 刚创建、尚未进入聚合的会话要保住作用域；聚合里已存在的以聚合为准。
-      // 一旦聚合确认，pending 记录立即清掉；之后远端删除会随下一次聚合重建自然移除。
-      const now = Date.now()
+      // 聚合确认后清掉 pending 记录；会话摘要暂缺时由上面的最后确认作用域接管，
+      // 直到工作区消失。目标 Host 的会话错误仍保持在 PeerHost 边界内，不回落本机。
       for (const [sessionId, pending] of [...pendingSessionScopes]) {
         if (scopes.has(sessionId)) {
           forgetPendingSession(sessionId)
@@ -1095,6 +1177,68 @@ function isDesktopTopologyPage(): boolean {
   } catch {
     return false
   }
+}
+
+/** 导出插件直接使用全局 fetch；把远程虚拟 Session 的预检请求接入页面 Transport。 */
+function installSessionExportFetchPatch(
+  original: typeof fetch | undefined,
+  routed: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+): () => void {
+  if (original === undefined || typeof window === 'undefined') return () => undefined
+  const wrapped = ((input: RequestInfo | URL, init?: RequestInit) => routed(input, init)) as typeof fetch
+  try {
+    globalThis.fetch = wrapped
+  } catch {
+    return () => undefined
+  }
+  return () => {
+    if (globalThis.fetch === wrapped) globalThis.fetch = original
+  }
+}
+
+/** 导出插件的 GET 使用原生锚点导航；远程 ZIP 必须先经代理取回 Blob 再触发下载。 */
+function installSessionExportAnchorPatch(
+  fetcher: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+  findScope: (url: URL) => HostScope | undefined,
+): () => void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return () => undefined
+  const prototype = globalThis.HTMLAnchorElement?.prototype
+  const originalClick = prototype?.click
+  if (prototype === undefined || originalClick === undefined) return () => undefined
+  const patchedClick = function(this: HTMLAnchorElement): void {
+    let url: URL
+    try { url = new URL(this.href, document.baseURI) } catch { originalClick.call(this); return }
+    if (url.pathname !== '/api/session.export' || findScope(url) === undefined) {
+      originalClick.call(this)
+      return
+    }
+    const filename = this.download
+    void fetcher(url, { method: 'GET' }).then(async (response) => {
+      if (!response.ok) return
+      const blobUrl = URL.createObjectURL(await response.blob())
+      const download = document.createElement('a')
+      download.href = blobUrl
+      download.download = filename
+      originalClick.call(download)
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 0)
+    }).catch(() => undefined)
+  }
+  try {
+    prototype.click = patchedClick
+  } catch {
+    return () => undefined
+  }
+  return () => {
+    if (prototype.click === patchedClick) prototype.click = originalClick
+  }
+}
+
+function decodeBase64(value: string): ArrayBuffer {
+  if (typeof atob !== 'function') throw new Error('当前页面不支持 Base64 解码')
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return bytes.buffer as ArrayBuffer
 }
 
 /** PeerHost 启用状态说明；安装动作发生在启动页 preboot 阶段。 */

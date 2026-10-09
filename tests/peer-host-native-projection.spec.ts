@@ -124,6 +124,18 @@ test('归档会话保留成员槽位与标题，但进入独立的归档集合',
   ])
 })
 
+test('工作区仍存在但会话摘要暂时缺项时保留原生会话摘要', () => {
+  const projection = createPeerHostNativeProjection()
+  projection.setAggregate([remoteHost()] as never)
+  projection.setAggregate([remoteHost([])] as never)
+  assert.deepEqual(projection.sessions().map((session) => session.sessionId), [
+    createVirtualSessionId('peer-1', 'session-1'),
+  ])
+  assert.deepEqual(projection.workspaces()[0]?.sessionIds, [
+    createVirtualSessionId('peer-1', 'session-1'),
+  ])
+})
+
 test('快照变化才通知订阅者，重复快照返回未变化', () => {
   const projection = createPeerHostNativeProjection()
   let notified = 0

@@ -40,6 +40,8 @@ export const DSH_NATIVE_REMOTE_METHODS = Object.freeze([
   'session/search',
   'session/selectModel',
   'session/updateQueue',
+  // 原生 `@` 对话候选通过这个 Remote 方法查询；缺少白名单时，远端会话只剩文件候选。
+  'sessionReferenceResolver/candidates',
   'session/workspacePathApplications',
   // 会话尾部反馈及 /feedback 命令都归目标 Host；messageId 和版本号保持原值。
   'messageFeedback/list',
@@ -103,7 +105,8 @@ export type VirtualIdResolver = {
 
 /**
  * 将 DSH 原生请求中的虚拟资源 ID 改回目标 Host 的真实 ID。
- * 只改写 DSH 已知的资源字段，requestId、attachmentId 和任意正文不会被误改。
+ * 只改写 DSH 已知的资源字段；提交消息时仅把 canonical `dsh-session:` 引用还原，
+ * requestId、attachmentId 和其余正文保持原样。
  */
 export function rewriteNativeRequestIds(
   method: DshNativeRemoteMethod,
@@ -113,6 +116,10 @@ export function rewriteNativeRequestIds(
   if (payload === undefined) return payload
   return rewriteValue(payload, (key, value) => {
     if (typeof value !== 'string') return value
+    if ((method === 'session/prompt' || method === 'session/follow') && key !== 'requestId') {
+      const rewritten = rewriteSessionReferenceText(value, resolver)
+      if (rewritten !== value) return rewritten
+    }
     if (isPathField(key) || (method.startsWith('workspaceFiles/') && key === 'baseFile')) {
       const path = resolver.resolveWorkspacePath?.(value) ?? value
       // 已打开或恢复的旧标签可能绕过资源打开入口，文件读取和变化流也需纠正路径。
@@ -128,11 +135,25 @@ export function rewriteNativeRequestIds(
   })
 }
 
+/** 将提交消息中的虚拟会话引用还原为目标 Host 能解析的真实 URI。 */
+function rewriteSessionReferenceText(text: string, resolver: VirtualIdResolver): string {
+  return text.replace(/dsh-session:([A-Za-z0-9_-]+)/gu, (full, encoded: string) => {
+    try {
+      const virtualId = decodeBase64UrlJsonString(encoded)
+      const resolved = resolver.resolveSession(virtualId as VirtualSessionId)?.sessionId
+      return resolved === undefined ? full : encodeSessionReferenceUri(resolved)
+    } catch {
+      return full
+    }
+  })
+}
+
 /** 将目标 Host 返回的原生结果/事件重新编码为当前 DSH 可见的虚拟 ID。 */
 export function rewriteNativeResponseIds(
   value: unknown,
   encodeWorkspace: (id: string) => VirtualWorkspaceId,
   encodeSession: (id: string) => VirtualSessionId,
+  method?: DshNativeRemoteMethod,
 ): unknown {
   // 状态通知的 SessionId 位于位置参数，而不是命名字段；不能按普通数组漏掉改写。
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -143,10 +164,48 @@ export function rewriteNativeResponseIds(
   }
   return rewriteValue(value, (key, current, parentKey) => {
     if (typeof current !== 'string') return current
+    if (method === 'sessionReferenceResolver/candidates' && key === 'mention') {
+      return rewriteSessionReferenceMention(current, encodeSession)
+    }
     if (isWorkspaceField(key)) return encodeWorkspace(current)
     if (isSessionField(key) || key === 'parentSession' || (key === 'id' && (parentKey === 'header' || parentKey === 'subagentCatalog'))) return encodeSession(current)
     return current
   })
+}
+
+/** 将候选中的 canonical `dsh-session:` URI 改写为当前页面可路由的虚拟会话 ID。 */
+function rewriteSessionReferenceMention(
+  mention: string,
+  encodeSession: (id: string) => VirtualSessionId,
+): string {
+  const match = /\((dsh-session:[A-Za-z0-9_-]+)\)/u.exec(mention)
+  if (match?.[1] === undefined) return mention
+  const encoded = match[1].slice('dsh-session:'.length)
+  try {
+    const sessionId = decodeBase64UrlJsonString(encoded)
+    return mention.replace(match[1], encodeSessionReferenceUri(encodeSession(sessionId)))
+  } catch {
+    // 非 canonical 候选交给 DSH 原生校验，不能因为改写失败丢掉整组结果。
+    return mention
+  }
+}
+
+function encodeSessionReferenceUri(sessionId: string): string {
+  const json = JSON.stringify(sessionId)
+  const bytes = new TextEncoder().encode(json)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  const base64 = btoa(binary).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '')
+  return `dsh-session:${base64}`
+}
+
+function decodeBase64UrlJsonString(value: string): string {
+  const padded = value.replace(/-/gu, '+').replace(/_/gu, '/') + '='.repeat((4 - value.length % 4) % 4)
+  const binary = atob(padded)
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+  const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes))
+  if (typeof parsed !== 'string') throw new TypeError('session reference URI payload is not a string')
+  return parsed
 }
 
 function rewriteValue(value: unknown, map: (key: string, value: unknown, parentKey?: string) => unknown, key = '', parentKey?: string): unknown {

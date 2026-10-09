@@ -82,26 +82,60 @@ export function createPeerHostNativeProjection(): PeerHostNativeProjection {
   let orderedWorkspaceIds: readonly string[] = []
   let localHostId: string | undefined
   let hasAggregate = false
+  let sessionWorkspaceIds = new Map<string, string>()
   const listeners = new Set<() => void>()
   return {
     hasAggregate: () => hasAggregate,
     setAggregate(results, nextOrderedWorkspaceIds) {
       const next = projectAggregate(results)
+      const nextWorkspaceIds = new Set(next.workspaces.map((workspace) => workspace.workspaceId))
+      const nextSessionIds = new Set(next.sessions.map((session) => session.sessionId))
+      const retainedSessions = [...next.sessions]
+      const retainedSessionWorkspaceIds = new Map(next.sessionWorkspaceIds)
+      const retainedWorkspaces = next.workspaces.map((workspace) => ({
+        ...workspace,
+        sessionIds: [...workspace.sessionIds],
+        archivedSessionIds: [...workspace.archivedSessionIds],
+      }))
+      // 原生 session/list 可能在聚合刷新期间先于完整摘要更新；当前工作区仍存在时，
+      // 保留上一次会话摘要，避免侧栏先移除会话、随后 page/follow 失去路由上下文。
+      for (const session of sessions) {
+        if (nextSessionIds.has(session.sessionId)) continue
+        const workspaceId = sessionWorkspaceIds.get(session.sessionId)
+        if (workspaceId === undefined || !nextWorkspaceIds.has(workspaceId)) continue
+        const workspace = next.workspaces.find((item) => item.workspaceId === workspaceId)
+        const retained = workspace?.availability === 'ready'
+          ? session
+          : { ...session, agentAvailable: false, running: false }
+        retainedSessions.push(retained)
+        retainedSessionWorkspaceIds.set(session.sessionId, workspaceId)
+        // 子会话只在 session/list 中投影，不属于工作区的导航成员槽位。
+        const previousWorkspace = workspaces.find((item) => item.workspaceId === workspaceId)
+        const wasWorkspaceMember = previousWorkspace?.sessionIds.includes(session.sessionId) === true
+          || previousWorkspace?.archivedSessionIds.includes(session.sessionId) === true
+        if (!wasWorkspaceMember) continue
+        const nextWorkspace = retainedWorkspaces.find((item) => item.workspaceId === workspaceId)
+        if (nextWorkspace === undefined || nextWorkspace.sessionIds.includes(session.sessionId)) continue
+        nextWorkspace.sessionIds.push(session.sessionId)
+        if (previousWorkspace?.archivedSessionIds.includes(session.sessionId) === true) nextWorkspace.archivedSessionIds.push(session.sessionId)
+      }
+      const projectedNext = { ...next, workspaces: retainedWorkspaces, sessions: retainedSessions, sessionWorkspaceIds: retainedSessionWorkspaceIds }
       // 某次摘要失败可能暂时不带本地 Host；保留上一次稳定 ID，避免原生裸 ID
       // 在这一轮被误当成未知项而跳到远端工作区之后。
-      const nextLocalHostId = next.localHostId ?? localHostId
+      const nextLocalHostId = projectedNext.localHostId ?? localHostId
       const nextOrder = nextOrderedWorkspaceIds === undefined
         ? orderedWorkspaceIds
         : normalizeWorkspaceOrder(nextOrderedWorkspaceIds)
-      const changed = !hasAggregate || !sameWorkspaces(workspaces, next.workspaces)
-        || !sameSessions(sessions, next.sessions)
+      const changed = !hasAggregate || !sameWorkspaces(workspaces, projectedNext.workspaces)
+        || !sameSessions(sessions, projectedNext.sessions)
         || !sameIds(orderedWorkspaceIds, nextOrder)
         || localHostId !== nextLocalHostId
       if (!changed) return false
       hasAggregate = true
       // 无变化时保留原引用：下游 Store 快照与 useSyncExternalStore 依赖引用稳定。
-      workspaces = next.workspaces
-      sessions = next.sessions
+      workspaces = projectedNext.workspaces
+      sessions = projectedNext.sessions
+      sessionWorkspaceIds = projectedNext.sessionWorkspaceIds
       orderedWorkspaceIds = sameIds(orderedWorkspaceIds, nextOrder) ? orderedWorkspaceIds : nextOrder
       localHostId = nextLocalHostId
       for (const listener of [...listeners]) listener()
@@ -130,10 +164,12 @@ export function createPeerHostNativeProjection(): PeerHostNativeProjection {
 function projectAggregate(results: readonly AggregateHostResult[]): {
   readonly workspaces: readonly PeerHostVirtualWorkspaceView[]
   readonly sessions: readonly PeerHostVirtualSessionSummary[]
+  readonly sessionWorkspaceIds: ReadonlyMap<string, string>
   readonly localHostId: string | undefined
 } {
   const workspaces: PeerHostVirtualWorkspaceView[] = []
   const sessions: PeerHostVirtualSessionSummary[] = []
+  const sessionWorkspaceIds = new Map<string, string>()
   const localHostId = results.find((host) => host.targetHostId === null)?.hostId
   for (const host of results) {
     // 本地 Host 的资源由 DSH 自己提供；只投影远端，避免与原生条目重复。
@@ -142,10 +178,13 @@ function projectAggregate(results: readonly AggregateHostResult[]): {
     for (const workspace of host.workspaces) {
       const projected = projectWorkspace(virtualHostId, workspace, host.hostColor)
       workspaces.push(projected.workspace)
-      sessions.push(...projected.sessions)
+      for (const session of projected.sessions) {
+        sessions.push(session)
+        sessionWorkspaceIds.set(session.sessionId, projected.workspace.workspaceId)
+      }
     }
   }
-  return { workspaces, sessions, localHostId }
+  return { workspaces, sessions, sessionWorkspaceIds, localHostId }
 }
 
 function normalizeWorkspaceOrder(ids: readonly string[]): readonly string[] {
