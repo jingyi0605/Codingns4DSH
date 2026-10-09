@@ -33,6 +33,9 @@ function asset(value: unknown, url: string): AssistantAvatarAsset {
     spriteVersion: (input.spriteVersion ?? 2) as 1 | 2,
     ...(input.stateSources === undefined ? {} : { stateSources: Object.fromEntries(Object.entries(record(input.stateSources)).map(([state, source]) => [state, resolveAssistantAvatarSource(source, url)])) }),
     ...(input.motionGroups === undefined ? {} : { motionGroups: record(input.motionGroups) as NonNullable<AssistantAvatarAsset['motionGroups']> }),
+    ...(input.reactionSources === undefined ? {} : { reactionSources: Object.fromEntries(Object.entries(record(input.reactionSources)).map(([reaction, source]) => [reaction, resolveAssistantAvatarSource(source, url)])) }),
+    ...(input.reactionMotionGroups === undefined ? {} : { reactionMotionGroups: record(input.reactionMotionGroups) as NonNullable<AssistantAvatarAsset['reactionMotionGroups']> }),
+    ...(input.reactionExpressions === undefined ? {} : { reactionExpressions: record(input.reactionExpressions) as NonNullable<AssistantAvatarAsset['reactionExpressions']> }),
     ...(input.live2d === undefined ? {} : { live2d: record(input.live2d) as NonNullable<AssistantAvatarAsset['live2d']> }),
   }
 }

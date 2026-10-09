@@ -17,6 +17,13 @@ import { normalizeAssistantAppearance, resolveAssistantAvatarState, selectedAssi
 import { FloatingAssistantAvatar, FloatingVoiceCall } from '../avatar/floating.js'
 import { fillAssistantAvatarButton, useAssistantAvatarPortrait } from '../avatar/portrait.js'
 import { useDesktopAssistant } from '../avatar/desktop-bridge.js'
+import { AssistantNotificationBubble } from '../avatar/notification-bubble.js'
+import { AssistantNotificationStore } from './assistant-notification-store.js'
+import { assistantNotificationText, normalizeAssistantNotificationSettings } from '../../shared/assistant-notifications.js'
+import type { AssistantNotification, AssistantNotificationSnapshot } from '../../shared/assistant-notifications.js'
+import type { AssistantAvatarReaction } from '../../shared/assistant-avatar.js'
+import { readDesktopAssistantNotificationSnapshot, type DesktopAssistantNotification } from '../../shared/desktop-assistant.js'
+import { openAssistantNotificationSession } from '../../dsh-capabilities/client/assistant-session-navigation-adapter.js'
 
 interface VoiceSnapshot {
   readonly active?: boolean
@@ -27,6 +34,17 @@ interface VoiceSnapshot {
 
 const GLOBAL_ASSISTANT_BUTTON_SIZE = 38
 const workbenchLoader = createAssistantViewLoader(async () => (await import('./assistant-workbench.js')).AssistantWorkbench)
+const notificationStores = new WeakMap<CodingNsClientServices, AssistantNotificationStore>()
+
+/** 根级服务供网页和原生动作共用，通知变化不另建语音或形象实例。 */
+function getNotificationStore(services: CodingNsClientServices): AssistantNotificationStore {
+  let store = notificationStores.get(services)
+  if (store === undefined) {
+    store = new AssistantNotificationStore(services.rpc, (target, signal) => openAssistantNotificationSession(services, target, signal))
+    notificationStores.set(services, store)
+  }
+  return store
+}
 
 /** Client 根级语音入口；使用 shell.overlay，绝不绑定当前 session。 */
 export const globalVoiceAssistantFeature: CodingNsClientFeatureModule = {
@@ -49,6 +67,8 @@ export const globalVoiceAssistantFeature: CodingNsClientFeatureModule = {
     const ui = context.services.uiContext
     if (ui === undefined) return
     const actionOwnerId = createVoiceLeaseOwnerId()
+    const notifications = getNotificationStore(context.services)
+    context.resources.add(() => { notifications.dispose(); notificationStores.delete(context.services) })
     const adapter = new ClientSherpaVoiceAdapter({ ownerId: actionOwnerId, services: context.services })
     void callCodingNsRpcResult(context.services.rpc, 'assistant/voice/register-client', {
       ownerId: actionOwnerId,
@@ -73,6 +93,8 @@ export const globalVoiceAssistantFeature: CodingNsClientFeatureModule = {
 }
 
 function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientServices }): ReactElement {
+  const notifications = getNotificationStore(services)
+  const [notificationSnapshot, setNotificationSnapshot] = useState(notifications.getSnapshot)
   const [snapshot, setSnapshot] = useState<VoiceSnapshot>({ state: 'disabled' })
   const [conversationOpen, setConversationOpen] = useState(false)
   const [callMinimized, setCallMinimized] = useState(false)
@@ -97,6 +119,10 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   const floatingEnabled = readAssistantProfile(settingsValue?.assistant ?? DEFAULT_ASSISTANT_SETTINGS).initialized && appearance.floatingEnabled
   // 页面形象避让工作台，原生形象只受用户开关控制，前台和打开对话时均常驻。
   const floatingVisible = floatingEnabled && (!conversationOpen || minimized)
+  const notificationSettings = normalizeAssistantNotificationSettings(settingsValue?.assistant?.notifications)
+  const notificationsEnabled = floatingEnabled && notificationSettings.enabled
+  const notificationKey = JSON.stringify([notificationsEnabled, notificationSettings,
+    settingsValue?.assistant?.profile, settingsValue?.assistant?.managedWorkspaceIds])
   const avatarModel = selectedAssistantAvatar(appearance)
   const portrait = useAssistantAvatarPortrait(services, avatarModel)
   const portraitRef = useRef(portrait)
@@ -123,6 +149,28 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     refresh()
     return services.settings.subscribe(refresh)
   }, [services.settings])
+
+  useEffect(() => {
+    const update = (): void => setNotificationSnapshot(notifications.getSnapshot())
+    const release = notifications.subscribe(update)
+    update()
+    return () => {
+      release()
+      // Slot 卸载也撤销读取与在途动作；不能只依赖整个插件销毁时释放。
+      notifications.configure(false, 'overlay-detached')
+    }
+  }, [notifications])
+  useEffect(() => { notifications.configure(notificationsEnabled, notificationKey) }, [notifications, notificationsEnabled, notificationKey])
+  const presentNotice = useCallback((noticeId: string, generation: number, kind?: AssistantNotification['kind']): void => {
+    void notifications.acknowledge(noticeId, generation, 'presented', kind).catch(() => undefined)
+  }, [notifications])
+  const dismissNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number): void => {
+    void notifications.acknowledge(noticeId, generation, 'dismiss', undefined, connectionGeneration).catch(() => undefined)
+  }, [notifications])
+  const openNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number): void => {
+    void notifications.open(noticeId, generation, connectionGeneration).catch(() => undefined)
+  }, [notifications])
+  const pageNotices = useCallback((cursor?: string): void => { void notifications.page(cursor) }, [notifications])
 
   useEffect(() => {
     if (adapter !== undefined) {
@@ -350,12 +398,35 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     microphoneMuted: adapter?.isMicrophoneMuted ?? false, speakerMuted: adapter?.isSpeakerMuted ?? false,
     userText: partialText || liveUserText, assistantText: liveAssistantText,
   } : undefined
+  // 语音六种动作保留原事实所有者，情绪只由当前通知提供，可随时撤销。
+  const noticeFrame = notificationsEnabled ? notificationSnapshot.frame : undefined
+  const reaction = assistantNotificationReaction(noticeFrame)
+  const desktopNotification = desktopAssistantNotification(noticeFrame,
+    notificationSnapshot.errorNoticeId === noticeFrame?.primary?.noticeId ? notificationSnapshot.error : undefined)
+  const desktopNotificationSnapshot = readDesktopAssistantNotificationSnapshot(noticeFrame)
   const desktopAvatar = useDesktopAssistant(services.rpc, { visible: floatingEnabled, state: avatarState,
-    label: t('avatar.openAssistant'), caption: floatingCall ? [floatingCall.userText, floatingCall.assistantText].filter(Boolean).join('\n').slice(-8000) : '' }, openConversation)
+    label: t('avatar.openAssistant'), caption: floatingCall ? [floatingCall.userText, floatingCall.assistantText].filter(Boolean).join('\n').slice(-8000) : '',
+    ...(reaction === undefined ? {} : { reaction }), ...(desktopNotification === undefined ? {} : { notification: desktopNotification }),
+    ...(desktopNotificationSnapshot === undefined ? {} : { notificationSnapshot: desktopNotificationSnapshot }) }, openConversation, {
+      onNoticePresented: (event) => notifications.acknowledge(event.noticeId, event.noticeGeneration, 'presented', event.noticeKind, event.connectionGeneration),
+      onNoticeAction: async (event) => {
+        // 原生由 Host 直接同步，可能先于网页收到新帧；刷新后仍按点击帧的连接身份导航。
+        await notifications.refresh(true)
+        return event.action === 'open' ? notifications.open(event.noticeId, event.noticeGeneration,
+          event.connectionGeneration)
+          : notifications.acknowledge(event.noticeId, event.noticeGeneration, 'dismiss', undefined, event.connectionGeneration)
+      },
+    })
   const nativeFloating = floatingEnabled && desktopAvatar.native
+  const notification = noticeFrame === undefined ? (notificationsEnabled && notificationSnapshot.error ? createElement('div', {
+    role: 'alert', style: { padding: 12, background: 'var(--dsw-alias-background-secondary)', borderRadius: 12, overflowWrap: 'anywhere' },
+  }, notificationSnapshot.error) : undefined) : createElement(AssistantNotificationBubble, {
+    frame: noticeFrame, t, error: notificationSnapshot.error, onPresented: presentNotice, onDismiss: dismissNotice, onOpen: openNotice, onPage: pageNotices,
+  })
   return createElement('div', { 'data-codingns-global-voice': 'true', ...(conversationOpen || floatingVisible ? {} : { 'aria-hidden': 'true' }) },
     floatingVisible && !nativeFloating
-      ? createElement(FloatingAssistantAvatar, { services, model: avatarModel, state: avatarState, size: appearance.floatingSize, call: floatingCall, onOpen: openConversation })
+      ? createElement(FloatingAssistantAvatar, { services, model: avatarModel, state: avatarState, size: appearance.floatingSize, call: floatingCall, onOpen: openConversation,
+        ...(reaction === undefined ? {} : { reaction }), notification })
       : floatingCall && !nativeFloating ? createElement(FloatingVoiceCall, { services, call: floatingCall, onOpen: openConversation }) : null,
     floatingEnabled && desktopAvatar.error ? createElement('div', { role: 'status', title: desktopAvatar.error, 'data-codingns-desktop-avatar-fallback': true,
       style: { position: 'fixed', right: 12, bottom: 8, zIndex: 9000, maxWidth: 'min(480px, calc(100vw - 24px))', fontSize: 11, color: 'var(--dsw-alias-label-secondary, #777)', pointerEvents: 'auto' } },
@@ -384,6 +455,20 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
 }
 
 export { GlobalVoiceOverlay }
+
+/** 原生只接收安全展示字段与不透明 ID，完整 Host/会话目标始终留在认证接口内。 */
+export function desktopAssistantNotification(frame: AssistantNotificationSnapshot | undefined, error?: string): DesktopAssistantNotification | undefined {
+  const notice = frame?.primary
+  if (notice === undefined || notice === null || frame === undefined) return undefined
+  return { noticeId: notice.noticeId, generation: frame.generation, kind: notice.kind, hostLabel: notice.hostLabel,
+    workspaceLabel: notice.workspaceLabel, sessionTitle: notice.sessionTitle,
+    text: error === undefined ? notice.text : assistantNotificationText([notice.text, error].join(' ')), availability: notice.availability }
+}
+
+export function assistantNotificationReaction(frame: AssistantNotificationSnapshot | undefined): AssistantAvatarReaction | undefined {
+  const kind = frame?.primary?.kind
+  return kind === undefined ? undefined : ({ completed: 'success', error: 'concerned', question: 'question', approval: 'approval' } as const)[kind]
+}
 
 function createVoiceLeaseOwnerId(): string {
   try {

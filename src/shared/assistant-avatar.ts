@@ -7,6 +7,9 @@ import type { AssistantAvatarEngineConsent } from './assistant-avatar-engine.js'
 /** 形象只消费助理状态，不持有会话、语音设备或工作区权限。 */
 export type AssistantAvatarState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'waiting' | 'error'
 export type AssistantAvatarSurface = 'floating' | 'dialog'
+/** 会话反馈独立于六种语音动作，旧渲染器可忽略这个可选输入。 */
+export type AssistantAvatarReaction = 'success' | 'concerned' | 'question' | 'approval'
+export const ASSISTANT_AVATAR_REACTIONS: readonly AssistantAvatarReaction[] = ['success', 'concerned', 'question', 'approval']
 
 export const ASSISTANT_AVATAR_STATES: readonly AssistantAvatarState[] = ['idle', 'listening', 'thinking', 'speaking', 'waiting', 'error']
 
@@ -20,6 +23,10 @@ export interface AssistantAvatarAsset {
   readonly stateSources?: Readonly<Partial<Record<AssistantAvatarState, string>>>
   /** Live2D 动作组显式映射，未声明的状态保留自动识别与待机回落。 */
   readonly motionGroups?: Readonly<Partial<Record<AssistantAvatarState, string>>>
+  readonly reactionSources?: Readonly<Partial<Record<AssistantAvatarReaction, string>>>
+  /** Live2D 使用已有组名，精灵使用包明确声明且落在已有图集内的帧。 */
+  readonly reactionMotionGroups?: Readonly<Partial<Record<AssistantAvatarReaction, string | AssistantSpriteMotion>>>
+  readonly reactionExpressions?: Readonly<Partial<Record<AssistantAvatarReaction, string>>>
   /** 模型自适应后再应用包内缩放和位置，适配不同模型的构图。 */
   readonly live2d?: { readonly scale?: number; readonly position?: readonly [number, number] }
 }
@@ -194,8 +201,13 @@ export function resolveAssistantAvatarAsset(model: AssistantAvatarModel, surface
     ...(model.package === undefined ? {} : { package: model.package }), ...(model.surfaces === undefined ? {} : { surfaces: model.surfaces }) }
 }
 
-export function assistantAvatarImageSource(model: AssistantAvatarAsset, state: AssistantAvatarState): string {
+export function assistantAvatarImageSource(model: AssistantAvatarAsset, state: AssistantAvatarState, reaction?: AssistantAvatarReaction): string {
+  if (reaction !== undefined && !assistantAvatarVoicePriority(state) && model.reactionSources?.[reaction] !== undefined) return model.reactionSources[reaction]!
   return model.stateSources?.[state] ?? model.source
+}
+/** 单动作通道不能抢占监听、思考或说话；角标仍可同时展示。 */
+export function assistantAvatarVoicePriority(state: AssistantAvatarState): boolean {
+  return state === 'listening' || state === 'thinking' || state === 'speaking'
 }
 
 export function resolveAssistantAvatarState(state: string | undefined, pending = false): AssistantAvatarState {
@@ -208,6 +220,10 @@ export function resolveAssistantAvatarState(state: string | undefined, pending =
 }
 
 export interface AssistantSpriteMotion { readonly row: number; readonly frames: number; readonly interval: number }
+export function assistantSpriteReactionMotion(model: AssistantAvatarAsset, state: AssistantAvatarState, reaction?: AssistantAvatarReaction): AssistantSpriteMotion {
+  const motion = reaction === undefined || assistantAvatarVoicePriority(state) ? undefined : model.reactionMotionGroups?.[reaction]
+  return typeof motion === 'object' ? motion : assistantSpriteMotion(state)
+}
 
 /** 帧布局来自 Signalight/codex-to-dsh-pet；单帧 192×208，8 列。 */
 export function assistantSpriteMotion(state: AssistantAvatarState): AssistantSpriteMotion {
@@ -235,11 +251,28 @@ function validAsset(asset: Record<string, unknown>): boolean {
     && (asset.spriteVersion === 1 || asset.spriteVersion === 2)
     && validStateMap(asset.stateSources, (source) => asset.renderer === 'image' && isAssistantAvatarSource(source))
     && validStateMap(asset.motionGroups, (group) => asset.renderer === 'live2d' && group.trim().length > 0 && group.length <= 120)
+    && validReactionMap(asset.reactionSources, (source) => asset.renderer === 'image' && typeof source === 'string' && isAssistantAvatarSource(source))
+    && validReactionMap(asset.reactionMotionGroups, (motion) => asset.renderer === 'live2d' ? validMotionName(motion)
+      : asset.renderer === 'spritesheet' && validSpriteReaction(motion, asset.spriteVersion))
+    && validReactionMap(asset.reactionExpressions, (expression) => asset.renderer === 'live2d' && validMotionName(expression))
     && validLive2dOptions(asset.live2d, asset.renderer)
 }
 function validStateMap(value: unknown, valid: (value: string) => boolean): boolean {
   return value === undefined || (isRecord(value) && Object.entries(value).every(([state, item]) =>
     ASSISTANT_AVATAR_STATES.includes(state as AssistantAvatarState) && typeof item === 'string' && valid(item)))
+}
+function validReactionMap(value: unknown, valid: (value: unknown) => boolean): boolean {
+  return value === undefined || (isRecord(value) && Object.entries(value).every(([reaction, item]) =>
+    ASSISTANT_AVATAR_REACTIONS.includes(reaction as AssistantAvatarReaction) && valid(item)))
+}
+function validMotionName(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= 120 && !/[\u0000-\u001f]/u.test(value)
+}
+function validSpriteReaction(value: unknown, version: unknown): boolean {
+  return isRecord(value) && Object.keys(value).every((key) => ['row', 'frames', 'interval'].includes(key))
+    && Number.isInteger(value.row) && Number(value.row) >= 0 && Number(value.row) < (version === 2 ? 11 : 9)
+    && Number.isInteger(value.frames) && Number(value.frames) >= 1 && Number(value.frames) <= 8
+    && Number.isInteger(value.interval) && Number(value.interval) >= 16 && Number(value.interval) <= 10000
 }
 function validPackage(value: unknown): boolean {
   if (value === undefined) return true
@@ -264,6 +297,9 @@ function copyAsset(asset: AssistantAvatarAsset): AssistantAvatarAsset {
   return { renderer: asset.renderer, source: asset.source, spriteVersion: asset.spriteVersion,
     ...(asset.stateSources === undefined ? {} : { stateSources: { ...asset.stateSources } }),
     ...(asset.motionGroups === undefined ? {} : { motionGroups: { ...asset.motionGroups } }),
+    ...(asset.reactionSources === undefined ? {} : { reactionSources: { ...asset.reactionSources } }),
+    ...(asset.reactionMotionGroups === undefined ? {} : { reactionMotionGroups: Object.fromEntries(Object.entries(asset.reactionMotionGroups).map(([key, value]) => [key, typeof value === 'string' ? value : { ...value }])) }),
+    ...(asset.reactionExpressions === undefined ? {} : { reactionExpressions: { ...asset.reactionExpressions } }),
     ...(asset.live2d === undefined ? {} : { live2d: { ...asset.live2d, ...(asset.live2d.position === undefined ? {} : { position: [...asset.live2d.position] as [number, number] }) } }),
   }
 }

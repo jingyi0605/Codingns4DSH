@@ -1,11 +1,12 @@
 import { Component, createElement, useCallback, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactElement, ReactNode } from 'react'
-import type { AssistantAvatarModel, AssistantAvatarState, AssistantAvatarSurface } from '../../shared/assistant-avatar.js'
+import type { AssistantAvatarModel, AssistantAvatarReaction, AssistantAvatarState, AssistantAvatarSurface } from '../../shared/assistant-avatar.js'
 import { BUILTIN_ASSISTANT_AVATAR, resolveAssistantAvatarAsset } from '../../shared/assistant-avatar.js'
 import type { CodingNsClientServices } from '../features/types.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { dshSettingsHelpStyle, dshThemeColor } from '../theme.js'
 import { BuiltinAssistantAvatar } from './builtin.js'
+import { AssistantAvatarReactionBadge } from './reaction-badge.js'
 import { getAssistantAvatarRegistry } from './registry.js'
 import type { AssistantAvatarRenderer } from './registry.js'
 import { AssistantAvatarLoading } from './loading.js'
@@ -20,6 +21,7 @@ export interface AssistantAvatarSlotProps {
   readonly services: CodingNsClientServices
   readonly model: AssistantAvatarModel
   readonly state: AssistantAvatarState
+  readonly reaction?: AssistantAvatarReaction
   readonly surface: AssistantAvatarSurface
   readonly size: number
   /** 创建预览可隐藏开发诊断，不影响其他插槽的 Stage0 诊断行为。 */
@@ -43,7 +45,7 @@ export function AssistantAvatarSlot(props: AssistantAvatarSlotProps): ReactEleme
     createElement(AvatarContent, { ...props, model, renderer }))
 }
 
-function AvatarContent({ services, model, state, surface, size, renderer, showDiagnostics, transient }: AssistantAvatarSlotProps & { readonly renderer: AssistantAvatarRenderer | undefined }): ReactElement {
+function AvatarContent({ services, model, state, reaction, surface, size, renderer, showDiagnostics, transient }: AssistantAvatarSlotProps & { readonly renderer: AssistantAvatarRenderer | undefined }): ReactElement {
   const [error, setError] = useState('')
   const [progress, setProgress] = useState<AssistantAvatarLoadProgress | undefined>(() => renderer?.reportsLoading === true
     ? { phase: renderer.initialLoadPhase ?? 'resources' } : undefined)
@@ -57,7 +59,7 @@ function AvatarContent({ services, model, state, surface, size, renderer, showDi
   const onLoadProgress = useCallback((next: AssistantAvatarLoadProgress) => setProgress(next), [])
   const t = useCodingNsTranslator(services.locale)
   const diagnostics = services.stage0 === true && showDiagnostics !== false
-  const props = { model, state, surface, size, onError, onLoadProgress, diagnostics, ...(onPreview === undefined ? {} : { onPreview: publishPreview }) }
+  const props = { model, state, surface, size, onError, onLoadProgress, diagnostics, ...(reaction === undefined ? {} : { reaction }), ...(onPreview === undefined ? {} : { onPreview: publishPreview }) }
   const component = renderer?.component
   const showCache = diagnostics && (renderer?.reportsCache === true || progress?.cacheBefore !== undefined || progress?.cacheAfter !== undefined)
   const content = component === undefined ? null : createElement(component, props)
@@ -73,6 +75,7 @@ function AvatarContent({ services, model, state, surface, size, renderer, showDi
       'data-codingns-avatar-preview': true, onError: () => discard(),
       style: { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none',
         opacity: progress !== undefined && progress.phase !== 'ready' ? 1 : 0, transition: 'opacity .25s ease' } }),
+    reaction === undefined ? null : createElement(AssistantAvatarReactionBadge, { reaction }),
     progress === undefined || (progress.phase === 'ready' && (!diagnostics || (progress.elapsedMs === undefined && !showCache))) ? null
       : createElement(AssistantAvatarLoading, { progress, size, t, showCache, diagnostics, preview: preview !== undefined, animationOnly: transient === true }))
 }
@@ -87,8 +90,9 @@ function AvatarFallback(props: AssistantAvatarSlotProps & { readonly error?: str
     t('avatar.loadErrorReason', { reason: key === undefined ? props.error : t(key) }))
   if (props.transient) return createElement('div', { role: 'alert', 'data-codingns-avatar-preview-failed': true, style: dshSettingsHelpStyle },
     t(props.model.renderer === 'live2d' ? 'avatar.temporaryLive2dLoadFailed' : 'avatar.temporaryLoadFailed'), detail)
-  return createElement('div', { 'data-codingns-avatar-fallback': true, style: { display: 'grid', justifyItems: 'center', maxWidth: '100%' } },
+  return createElement('div', { 'data-codingns-avatar-fallback': true, style: { position: 'relative', display: 'grid', justifyItems: 'center', maxWidth: '100%' } },
     createElement(BuiltinAssistantAvatar, { ...props, model: BUILTIN_ASSISTANT_AVATAR, onError: () => undefined }),
+    props.reaction === undefined ? null : createElement(AssistantAvatarReactionBadge, { reaction: props.reaction }),
     createElement('span', { role: 'status', style: { ...dshSettingsHelpStyle, color: dshThemeColor.labelSecondary, textAlign: 'center', maxWidth: props.size } }, t('avatar.loadFailed')), detail)
 }
 class AvatarErrorBoundary extends Component<{ readonly children?: ReactNode; readonly fallback: ReactElement }, { readonly failed: boolean }> {

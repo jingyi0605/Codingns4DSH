@@ -39,7 +39,9 @@ export async function launchDesktopAssistant(onEvent: (event: Record<string, unk
       try {
         const event = JSON.parse(line) as Record<string, unknown>
         if (event.ev === 'moved' && ['x', 'y', 'width', 'height'].every((key) => typeof event[key] === 'number' && Number.isFinite(event[key]))) {
-          const value = JSON.stringify({ x: event.x, y: event.y, width: event.width, height: event.height })
+          const value = JSON.stringify({ x: event.x, y: event.y, width: event.width, height: event.height,
+            ...(typeof event.avatarX === 'number' && Number.isFinite(event.avatarX) ? { avatarX: event.avatarX } : {}),
+            ...(typeof event.avatarY === 'number' && Number.isFinite(event.avatarY) ? { avatarY: event.avatarY } : {}) })
           // 只保存完成拖动的位置；串行原子替换，退出等待最后一笔。
           saving = saving.then(async () => { await writeFile(join(temporary, 'position.json'), value); await rename(join(temporary, 'position.json'), join(directory, 'position.json')) }).catch(() => undefined)
         }

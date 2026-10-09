@@ -40,6 +40,10 @@ import { callPeerCliRpc, callPeerNativeRpc, openPeerNativeStream, readNativeRpcE
 import { createAggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { encodeNativeResponseBytes, isDshNativeRemoteMethod, rewriteNativeRequestIds, rewriteNativeResponseIds, type VirtualIdResolver } from '../modules/peer-host/peer-host-native-protocol.js'
 import { resolveCodingNsDebugLevel } from '../../shared/debug.js'
+import { AssistantPeerNotifications, assistantPeerNotificationWorkspaceIds, assistantPeerNotificationCapabilityKey } from './assistant-peer-notifications.js'
+import { readAssistantNotificationFeed } from '../../shared/assistant-notification-feed.js'
+import type { AssistantNotificationFeedRequest } from '../../shared/assistant-notification-feed.js'
+import type { AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
 
 export interface PeerHostFeatureOptions {
   readonly stateDirectory?: string
@@ -248,7 +252,61 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
         },
       })
       context.resources.add(() => aggregatedTransport.close())
+      const readNotificationSource = async (peerHostId: string, payload: AssistantNotificationFeedRequest, signal: AbortSignal): Promise<unknown> => {
+        const response = await httpProxy.request(peerHostId, {
+          scope: { hostId: localHostId, targetHostId: peerHostId, workspaceId: '__assistant_notifications__', sessionId: null, scopeGeneration: 0 },
+          path: '/api/codingns/assistant/notifications/source', method: 'POST',
+          body: JSON.stringify({ rpcId: `assistant-source-${randomUUID()}`, method: 'assistant/notifications/source', payload }), signal,
+        })
+        if ([404, 405, 501].includes(response.status)) throw new CodingNsRpcError('UNSUPPORTED_CAPABILITY', '远端不支持会话通知来源协议')
+        return readNativeRpcEnvelope(response.body)
+      }
       const assistantGateway = {
+        async validateNotificationTarget(target: AssistantNotificationTarget): Promise<boolean> {
+          if (target.hostId === localHostId) return false
+          const record = await store.get(target.hostId)
+          if (record === null || record.status === 'disabled' || record.status === 'identity_changed') return false
+          const workspaceId = assistantPeerNotificationWorkspaceIds(target.hostId, record.visibleWorkspaceIds ?? [], [target.workspaceId])[0]
+          if (workspaceId === undefined) return false
+          const signal = AbortSignal.timeout(5_000)
+          try {
+            const results = await aggregate.load(await buildSources([createVirtualWorkspaceId(target.hostId, workspaceId)], signal))
+            signal.throwIfAborted()
+            const present = results.some(result => result.targetHostId === target.hostId && result.availability === 'ready'
+              && result.workspaces.some(item => item.workspaceId === workspaceId
+                && item.sessions.some(session => session.scope.sessionId === target.sessionId && !session.blank)))
+            if (!present) return false
+            if (target.requestId === undefined) return true
+            const feed = readAssistantNotificationFeed(await readNotificationSource(target.hostId, { workspaceIds: [workspaceId] }, signal))
+            const actualSession = target.actualRequestTarget?.sessionId ?? target.sessionId
+            return feed.pending.some(fact => (fact.actualRequestSessionId ?? fact.sessionId) === actualSession && fact.requestId === target.requestId && fact.kind === target.requestKind)
+          } catch { return false }
+        },
+        subscribeNotifications(managedWorkspaceIds: readonly string[], observer: import('./assistant-peer-notifications.js').AssistantPeerNotificationObserver, signal?: AbortSignal) {
+          const subscription = new AssistantPeerNotifications({
+            observer,
+            nodes: async (signal) => {
+              signal.throwIfAborted()
+              const records = await store.list()
+              signal.throwIfAborted()
+              return records.filter(record => record.status !== 'disabled' && record.status !== 'identity_changed')
+                .map(record => ({
+                  hostId: record.id, hostLabel: record.displayName,
+                  capabilityKey: assistantPeerNotificationCapabilityKey(record),
+                  workspaceIds: assistantPeerNotificationWorkspaceIds(record.id, record.visibleWorkspaceIds ?? [], managedWorkspaceIds),
+                })).filter(node => node.workspaceIds.length > 0)
+            },
+            read: async (node, payload, signal) => {
+              // 通知不依赖索引触发握手；只在缓存尚未 ready 时准备当前这台受管 Host。
+              const configured = await store.get(node.hostId)
+              if (configured === null) throw new CodingNsRpcError('PEER_HOST_NOT_FOUND', 'PeerHost 不存在')
+              if (configured.status !== 'ready' && await preparePeerHost(configured) === null) throw new CodingNsRpcError('PEER_HOST_NOT_READY', '远端 Host 暂不可达')
+              signal.throwIfAborted()
+              return readNotificationSource(node.hostId, payload, signal)
+            },
+          }, signal)
+          return subscription.start()
+        },
         async workspaces(signal?: AbortSignal) {
           signal?.throwIfAborted()
           const records = await store.list()

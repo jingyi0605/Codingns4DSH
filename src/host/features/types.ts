@@ -8,6 +8,8 @@ import type { CodingNsNativeTeamProxy } from '../cli-adapters/native-team-proxy.
 import type { Context } from '@deepseek-ai/cordis'
 import type { AssistantSessionSourceRecord } from './assistant-session-index.js'
 import type { AssistantWaitingKind } from '../../shared/contracts/assistant.js'
+import type { AssistantPeerNotificationObserver } from './assistant-peer-notifications.js'
+import type { AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
 
 export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
@@ -16,6 +18,10 @@ export interface CodingNsHostEvents {
 }
 
 export interface AssistantHostGateway {
+  /** 按受管 Host 接收有界实时事实；旧远端能力不足时明确降级。 */
+  subscribeNotifications?(managedWorkspaceIds: readonly string[], observer: AssistantPeerNotificationObserver, signal?: AbortSignal): () => void
+  /** 导航前复核目标仍在显式可见工作区、未归档且当前请求仍有效。 */
+  validateNotificationTarget?(target: AssistantNotificationTarget): Promise<boolean>
   /** 已显式加入聚合的工作区元数据；不读取远端会话正文。 */
   workspaces?(signal?: AbortSignal): Promise<readonly { readonly workspaceId: string; readonly name: string; readonly path: string | null }[]>
   list(managedWorkspaceIds: readonly string[], signal?: AbortSignal): Promise<{

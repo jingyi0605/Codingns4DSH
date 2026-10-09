@@ -25,6 +25,9 @@ public static class PetAgent {
   static string origin = "", userData = "";
   static int parentPid;
   static bool positioned;
+  static double avatarX, avatarY, avatarWidth = 144, avatarHeight = 156;
+  static double noticeY, noticeHeight, captionY, captionHeight;
+  static Dictionary<string, object> lastBounds;
   static bool loaded = false;
   static bool active = false;
   static bool dragging = false;
@@ -80,9 +83,9 @@ public static class PetAgent {
     if (!active || !win.IsVisible) return;
     if (dragging && (DateTime.UtcNow-lastBoundsEvent).TotalMilliseconds < 250) return;
     lastBoundsEvent=DateTime.UtcNow;
-    Emit(new { ev = "moved", x = (int)win.Left, y = (int)win.Top, width = (int)win.Width, height = (int)win.Height });
+    Emit(new { ev = "moved", x = (int)win.Left, y = (int)win.Top, width = (int)win.Width, height = (int)win.Height, avatarX=avatarX,avatarY=avatarY });
   }
-  static void EndDrag() { if (!dragging) return; dragging = false; dragTimer.Stop(); Clamp(); Moved(); }
+  static void EndDrag() { if (!dragging) return; dragging = false; dragTimer.Stop(); if(lastBounds!=null) Bounds(lastBounds); else Clamp(); Moved(); }
   static void DragTick(object sender, EventArgs e) {
     if ((GetAsyncKeyState(1) & 0x8000) == 0 || !active) { EndDrag(); return; }
     POINT cursor; if (!GetCursorPos(out cursor)) return;
@@ -94,15 +97,69 @@ public static class PetAgent {
     lastCursor = cursor;
   }
   static void Bounds(Dictionary<string, object> m) {
-    double w = Math.Max(72, Math.Min(320, N(m,"width",144)));
-    win.Width = w; win.Height = Math.Max(78, Math.Min(480, N(m,"height",156)));
+    lastBounds = m;
+    double size = N(m,"avatarSize",N(m,"width",144));
+    double x = positioned ? win.Left + avatarX : SystemParameters.WorkArea.Right - size - 24;
+    double y = positioned ? win.Top + avatarY : SystemParameters.WorkArea.Bottom - size * 208 / 192 - 24;
     var saved = D(m,"bounds");
     if (!positioned) {
-      win.Left = saved.ContainsKey("x") ? N(saved,"x",0) : SystemParameters.WorkArea.Right - w - 24;
-      win.Top = saved.ContainsKey("y") ? N(saved,"y",0) : SystemParameters.WorkArea.Bottom - win.Height - 24;
-      positioned = true;
+      if(saved.ContainsKey("x")) x = N(saved,"x",x) + N(saved,"avatarX",0);
+      if(saved.ContainsKey("y")) y = N(saved,"y",y) + N(saved,"avatarY",0);
     }
+    var area = SystemParameters.WorkArea;
+    var source = PresentationSource.FromVisual(win);
+    var matrix = source == null || source.CompositionTarget == null ? Matrix.Identity : source.CompositionTarget.TransformFromDevice;
+    MONITORINFO info = new MONITORINFO(); info.Size = Marshal.SizeOf(info);
+    if(GetMonitorInfo(MonitorFromWindow(new WindowInteropHelper(win).Handle,2),ref info)) {
+      area = new Rect(info.Work.Left * matrix.M11,info.Work.Top * matrix.M22,(info.Work.Right-info.Work.Left)*matrix.M11,(info.Work.Bottom-info.Work.Top)*matrix.M22);
+    }
+    avatarWidth = Math.Min(Math.Max(72,Math.Min(320,size)),area.Width);
+    avatarHeight = Math.Min(Math.Ceiling(avatarWidth*208/192),area.Height);
+    x = Math.Max(area.Left,Math.Min(x,area.Right-avatarWidth)); y = Math.Max(area.Top,Math.Min(y,area.Bottom-avatarHeight));
+    double top = Math.Max(0,y-area.Top), bottom = Math.Max(0,area.Bottom-y-avatarHeight);
+    bool above = top >= bottom, notice = S(m,"notification").ToLowerInvariant()=="true", caption = S(m,"caption").ToLowerInvariant()=="true";
+    bool captionAbove = notice ? !above : above;
+    double noticeLimit = Math.Max(0,Math.Min(276,N(m,"notificationHeight",notice?276:0)));
+    noticeHeight = notice ? Math.Min(noticeLimit,Math.Max(0,(above?top:bottom)-4)) : 0;
+    captionHeight = caption ? Math.Min(128,Math.Max(0,(captionAbove?top:bottom)-4)) : 0;
+    bool stacked = notice && caption && captionHeight < 40 && Math.Max(top,bottom) >= 88;
+    if(stacked) {
+      double space = above ? top : bottom;
+      captionHeight = Math.Min(128,Math.Max(40,Math.Floor((space-8)/3)));
+      noticeHeight = Math.Min(noticeLimit,space-captionHeight-8);
+    }
+    double combinedHeight = noticeHeight + captionHeight + 4;
+    double topHeight = stacked ? (above?combinedHeight:0) : (above?noticeHeight:0) + (captionAbove?captionHeight:0);
+    double bottomHeight = stacked ? (above?0:combinedHeight) : (above?0:noticeHeight) + (captionAbove?0:captionHeight);
+    double w = notice || caption ? Math.Min(!caption && noticeLimit<=48 ? Math.Max(avatarWidth,220) : 320,area.Width) : avatarWidth;
+    win.Left = Math.Max(area.Left,Math.Min(x,area.Right-w)); win.Top = y - (topHeight>0?topHeight+4:0);
+    win.Width = w; win.Height = avatarHeight + (topHeight>0?topHeight+4:0) + (bottomHeight>0?bottomHeight+4:0);
+    avatarX = x-win.Left; avatarY = y-win.Top;
+    noticeY = above ? 0 : avatarY + avatarHeight + 4; captionY = captionAbove ? 0 : avatarY + avatarHeight + 4;
+    if(stacked) {
+      captionY = above ? noticeHeight + 4 : avatarY + avatarHeight + 4;
+      if(!above) noticeY = captionY + captionHeight + 4;
+    }
+    var layout = new Dictionary<string,object>();
+    layout["bounds"] = new { x=win.Left,y=win.Top,width=win.Width,height=win.Height };
+    layout["avatar"] = new { x=avatarX,y=avatarY,width=avatarWidth,height=avatarHeight };
+    if(noticeHeight>0) layout["notification"] = new { x=0,y=noticeY,width=w,height=noticeHeight };
+    if(captionHeight>0) layout["caption"] = new { x=0,y=captionY,width=w,height=captionHeight };
+    positioned = true;
     Clamp();
+    Emit(new { ev="layout",layout=layout });
+  }
+  static IntPtr HitTest(IntPtr hwnd,int message,IntPtr wParam,IntPtr lParam,ref bool handled) {
+    if(message==0x0084 && !dragging) {
+      int packed=lParam.ToInt32(); int x=(short)(packed&0xffff),y=(short)((packed>>16)&0xffff);
+      var point=win.PointFromScreen(new Point(x,y));
+      bool inside=(point.X>=avatarX&&point.X<avatarX+avatarWidth&&point.Y>=avatarY&&point.Y<avatarY+avatarHeight)
+        || (noticeHeight>0&&point.X>=0&&point.X<win.Width&&point.Y>=noticeY&&point.Y<noticeY+noticeHeight)
+        || (captionHeight>0&&point.X>=0&&point.X<win.Width&&point.Y>=captionY&&point.Y<captionY+captionHeight);
+      if(!inside){handled=true;return new IntPtr(-1);}
+    }
+    if(message==0x02E0 && lastBounds!=null) win.Dispatcher.BeginInvoke(new Action(delegate { Bounds(lastBounds); }));
+    return IntPtr.Zero;
   }
   static async void Show(Dictionary<string, object> m) {
     try {
@@ -138,6 +195,18 @@ public static class PetAgent {
     if (type == "ready") { Emit(new { ev = "loaded" }); }
     else if (type == "error") { Error(S(m,"message")); }
     else if (type == "open") { if (FocusDesktop()) Emit(new { ev = "open" }); }
+    else if (type == "notice-presented" || type == "notice-action") {
+      var noticeEvent = new Dictionary<string,object> { {"ev",type},{"ownerId",S(m,"ownerId")},{"generation",N(m,"generation",-1)},{"sequence",N(m,"sequence",-1)},{"noticeId",S(m,"noticeId")},{"noticeGeneration",N(m,"noticeGeneration",-1)},{"action",S(m,"action")} };
+      if(m.ContainsKey("noticeKind")) noticeEvent["noticeKind"] = m["noticeKind"];
+      if(m.ContainsKey("connectionGeneration")) noticeEvent["connectionGeneration"] = m["connectionGeneration"];
+      Emit(noticeEvent);
+    }
+    else if (type == "notice-page") {
+      Emit(new { ev=type,ownerId=S(m,"ownerId"),generation=N(m,"generation",-1),sequence=N(m,"sequence",-1),cursor=m.ContainsKey("cursor") ? m["cursor"] : null });
+    }
+    else if (type == "notice-expansion") {
+      Emit(new { ev=type,ownerId=S(m,"ownerId"),generation=N(m,"generation",-1),sequence=N(m,"sequence",-1),expanded=m.ContainsKey("expanded")?m["expanded"]:null });
+    }
     else if (type == "drag-start") { if (GetCursorPos(out lastCursor)) { dragging = true; dragTimer.Start(); } }
     else if (type == "drag-end") { EndDrag(); }
   }
@@ -146,6 +215,11 @@ public static class PetAgent {
     string cmd=S(m,"cmd");
     if (cmd == "quit") { Application.Current.Shutdown(); return; }
     if (cmd == "hide") { EndDrag(); active = false; win.Hide(); return; }
+    if (cmd == "notice-open") { FocusDesktop(); return; }
+    if (cmd == "notice-result") {
+      if(web.CoreWebView2!=null) web.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new CustomEvent('codingns-notice-result',{detail:"+json.Serialize(new { accepted=S(m,"accepted").ToLowerInvariant()=="true",message=S(m,"message") })+"}))");
+      return;
+    }
     if (cmd == "load") { Show(m); return; }
     if (cmd == "show") { if (!dragging) Bounds(m); active = true; if (!win.IsVisible) win.Show(); Emit(new { ev = "shown" }); return; }
     Error("unknown command " + cmd);
@@ -166,8 +240,9 @@ public static class PetAgent {
     win.SourceInitialized += delegate {
       IntPtr hwnd=new WindowInteropHelper(win).Handle;
       SetWindowLong(hwnd,-20,GetWindowLong(hwnd,-20) | 0x80);
+      HwndSource.FromHwnd(hwnd).AddHook(HitTest);
     };
-    Microsoft.Win32.SystemEvents.DisplaySettingsChanged += delegate { win.Dispatcher.BeginInvoke(new Action(Clamp)); };
+    Microsoft.Win32.SystemEvents.DisplaySettingsChanged += delegate { win.Dispatcher.BeginInvoke(new Action(delegate { if(lastBounds!=null) Bounds(lastBounds); else Clamp(); })); };
     win.Show(); win.Hide();
     Thread t=new Thread(ReadStdin); t.IsBackground=true; t.Start();
 

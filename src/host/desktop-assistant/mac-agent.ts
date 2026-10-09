@@ -1,10 +1,10 @@
-import { clampDesktopAssistantBounds } from '../../shared/desktop-assistant.js'
+import { clampDesktopAssistantBounds, desktopAssistantLayout } from '../../shared/desktop-assistant.js'
 
 /** 交给 Desktop 的 open-url 入口恢复主窗口；单纯激活进程不会取消窗口最小化。 */
 export function buildMacDesktopFocusScript(): string {
   return String.raw`
 var focusingDesktop=false
-function focusDesktop(){
+function focusDesktop(notice){
  if(focusingDesktop)return
  var desktop=$.NSRunningApplication.runningApplicationWithProcessIdentifier(parentPid)
  if(parentPid<=0||desktop.isNil()||desktop.terminated||desktop.bundleURL.isNil())throw new Error('Desktop application is unavailable')
@@ -19,7 +19,7 @@ function focusDesktop(){
    $([$.NSURL.URLWithString('dsh://open')]),desktop.bundleURL,configuration,safe(function(application,error){
     focusingDesktop=false
     if(!error.isNil()){emit({ev:'error',message:'Desktop restore: '+ObjC.unwrap(error.localizedDescription)});return}
-    emit({ev:'open'})
+    if(!notice)emit({ev:'open'})
    }))
  }catch(error){focusingDesktop=false;throw error}
 }
@@ -42,7 +42,8 @@ win.setLevel(3);win.setCollectionBehavior(1|16|256);win.setHidesOnDeactivate(fal
 var visible=false,drag=false,lastMouse=null,parentPid=0,origin='',positioned=false
 ${buildMacDesktopFocusScript()}
 var clampBounds=${clampDesktopAssistantBounds.toString()}
-function moved(){var f=win.frame;emit({ev:'moved',x:f.origin.x,y:f.origin.y,width:f.size.width,height:f.size.height})}
+var layoutBounds=${desktopAssistantLayout.toString()},layout=null,lastBounds=null
+function moved(){var f=win.frame;emit({ev:'moved',x:f.origin.x,y:f.origin.y,width:f.size.width,height:f.size.height,avatarX:layout?layout.avatar.x:0,avatarY:layout?layout.avatar.y:0})}
 function clamp(){
  var f=win.frame,screens=$.NSScreen.screens,areas=[]
  for(var i=0;i<screens.count;i++){var a=screens.objectAtIndex(i).visibleFrame;areas.push({x:a.origin.x,y:a.origin.y,width:a.size.width,height:a.size.height})}
@@ -50,13 +51,20 @@ function clamp(){
  win.setFrameDisplay($.NSMakeRect(next.x,next.y,next.width,next.height),true)
 }
 function bounds(m){
- var f=win.frame,w=Math.max(72,Math.min(320,Number(m.width)||144)),h=Math.max(78,Math.min(480,Number(m.height)||156))
+ lastBounds=m
+ var f=win.frame,size=Number(m.avatarSize)||Number(m.width)||144,screens=$.NSScreen.screens,areas=[]
+ for(var i=0;i<screens.count;i++){var a=screens.objectAtIndex(i).visibleFrame;areas.push({x:a.origin.x,y:-a.origin.y-a.size.height,width:a.size.width,height:a.size.height})}
  var area=$.NSScreen.mainScreen.visibleFrame
- var x=positioned?f.origin.x:area.origin.x+area.size.width-w-24,y=positioned?f.origin.y:area.origin.y+24
- if(m.bounds&&Number.isFinite(m.bounds.x)&&Number.isFinite(m.bounds.y)){x=m.bounds.x;y=m.bounds.y}
- win.setFrameDisplay($.NSMakeRect(x,y,w,h),true);positioned=true;clamp()
+ var x=positioned?f.origin.x+(layout?layout.avatar.x:0):area.origin.x+area.size.width-size-24
+ var y=positioned?-f.origin.y-f.size.height+(layout?layout.avatar.y:0):-area.origin.y-size*208/192-24
+ if(!positioned&&m.bounds&&Number.isFinite(m.bounds.x)&&Number.isFinite(m.bounds.y)){
+  x=m.bounds.x+(Number(m.bounds.avatarX)||0);y=-m.bounds.y-(Number(m.bounds.height)||size*208/192)+(Number(m.bounds.avatarY)||0)
+ }
+ layout=layoutBounds({x:x,y:y},size,Number.isFinite(m.notificationHeight)?m.notificationHeight:m.notification===true,m.caption===true,areas)
+ var b=layout.bounds;win.setFrameDisplay($.NSMakeRect(b.x,-b.y-b.height,b.width,b.height),true);positioned=true
+ emit({ev:'layout',layout:layout})
 }
-function endDrag(){if(!drag)return;drag=false;clamp();moved()}
+function endDrag(){if(!drag)return;drag=false;if(lastBounds)bounds(lastBounds);else clamp();moved()}
 var config=$.WKWebViewConfiguration.alloc.init,controller=$.WKUserContentController.alloc.init
 // JXA 注册类不返回类对象；WebKit 协议元数据也并非所有系统都可见。
 // 显式声明代理方法签名，注册后通过 $ 查找类，由 WebKit 按选择器调用。
@@ -68,6 +76,9 @@ ObjC.registerSubclass({name:'CodingNsAssistantBridge',methods:{'userContentContr
  else if(msg.type==='drag-start'){drag=true;lastMouse=$.NSEvent.mouseLocation}
  else if(msg.type==='drag-end')endDrag()
  else if(msg.type==='open')focusDesktop()
+ else if(msg.type==='notice-presented'||msg.type==='notice-action')emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,noticeId:msg.noticeId,noticeGeneration:msg.noticeGeneration,noticeKind:msg.noticeKind,connectionGeneration:msg.connectionGeneration,action:msg.action})
+ else if(msg.type==='notice-page')emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,cursor:msg.cursor})
+ else if(msg.type==='notice-expansion')emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,expanded:msg.expanded})
 })}}})
 var bridgeHandler=$.CodingNsAssistantBridge.alloc.init
 controller.addScriptMessageHandlerName(bridgeHandler,$('assistant'));config.setUserContentController(controller)
@@ -91,13 +102,23 @@ ObjC.registerSubclass({name:'CodingNsAssistantNavigation',methods:{
 }})
 var navigation=$.CodingNsAssistantNavigation.alloc.init;web.setNavigationDelegate(navigation)
 $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(1/60,true,safe(function(){
+ // 透明留白透传到其他应用，通知收起后仅保留形象与独立字幕的点击区。
+ if(visible&&layout&&!drag){var p=$.NSEvent.mouseLocation,f=win.frame,x=p.x-f.origin.x,y=f.origin.y+f.size.height-p.y
+  var regions=[layout.avatar,layout.notification,layout.caption],inside=regions.some(function(r){return r&&x>=r.x&&x<r.x+r.width&&y>=r.y&&y<r.y+r.height})
+  win.setIgnoresMouseEvents(!inside)
+ }
  if(!drag)return;if(($.NSEvent.pressedMouseButtons&1)===0||!visible){endDrag();return}
  var p=$.NSEvent.mouseLocation,f=win.frame;win.setFrameOrigin($.NSMakePoint(f.origin.x+p.x-lastMouse.x,f.origin.y+p.y-lastMouse.y));lastMouse=p
 }))
-$.NSNotificationCenter.defaultCenter.addObserverForNameObjectQueueUsingBlock($.NSApplicationDidChangeScreenParametersNotification,$(),$.NSOperationQueue.mainQueue,safe(function(){clamp();moved()}))
+$.NSNotificationCenter.defaultCenter.addObserverForNameObjectQueueUsingBlock($.NSApplicationDidChangeScreenParametersNotification,$(),$.NSOperationQueue.mainQueue,safe(function(){if(lastBounds)bounds(lastBounds);else clamp();moved()}))
 function handle(m){
  if(m.cmd==='quit'){app.terminate($());return}
  if(m.cmd==='hide'){endDrag();win.orderOut($());visible=false;return}
+ if(m.cmd==='notice-open'){focusDesktop(true);return}
+ if(m.cmd==='notice-result'){
+  var detail=JSON.stringify({accepted:m.accepted===true,message:m.message||''})
+  web.evaluateJavaScriptCompletionHandler($("window.dispatchEvent(new CustomEvent('codingns-notice-result',{detail:"+detail+"}))"),$());return
+ }
  if(m.cmd==='load'){
   parentPid=Number(m.parentPid)||0;bounds(m)
   var url=$.NSURL.URLWithString($(String(m.url)));origin=String(m.url).split('/').slice(0,3).join('/')

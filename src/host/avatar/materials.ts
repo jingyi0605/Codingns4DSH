@@ -22,7 +22,9 @@ const image: AssistantAvatarMaterialAdapter = {
   async install(asset, context) {
     const source = await context.file(asset.source, 'image')
     const entries = await Promise.all(Object.entries(asset.stateSources ?? {}).map(async ([state, url]) => [state, await context.file(url, 'image')]))
-    return { ...asset, source, ...(asset.stateSources === undefined ? {} : { stateSources: Object.fromEntries(entries) }) }
+    const reactions = await Promise.all(Object.entries(asset.reactionSources ?? {}).map(async ([reaction, url]) => [reaction, await context.file(url, 'image')]))
+    return { ...asset, source, ...(asset.stateSources === undefined ? {} : { stateSources: Object.fromEntries(entries) }),
+      ...(asset.reactionSources === undefined ? {} : { reactionSources: Object.fromEntries(reactions) }) }
   },
 }
 const live2d: AssistantAvatarMaterialAdapter = {

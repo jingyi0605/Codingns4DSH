@@ -1,6 +1,6 @@
 import { createElement, useEffect, useRef, useState } from 'react'
 import type { ReactElement, ReactNode, PointerEvent } from 'react'
-import type { AssistantAvatarModel, AssistantAvatarState } from '../../shared/assistant-avatar.js'
+import type { AssistantAvatarModel, AssistantAvatarReaction, AssistantAvatarState } from '../../shared/assistant-avatar.js'
 import { clampAssistantAvatarPosition } from '../../shared/assistant-avatar.js'
 import type { CodingNsClientServices } from '../features/types.js'
 import { useCodingNsTranslator } from '../locale.js'
@@ -8,18 +8,21 @@ import { AssistantAvatarSlot } from './slot.js'
 import { FloatingCallBadge, FloatingCallCaption, floatingCallCaptionLayout } from '../features/assistant-floating-call.js'
 import type { FloatingCallInfo } from '../features/assistant-floating-call.js'
 import { dshThemeColor } from '../theme.js'
+import { assistantNotificationTailStyle, floatingAssistantNotificationLayout } from './notification-bubble.js'
 
 const POSITION_KEY = 'codingns-assistant-avatar-position'
 interface Position { readonly x: number; readonly y: number }
 
 /** 容器负责交互，渲染器只画形象；拖动与打开对话互斥。 */
-export function FloatingAssistantAvatar({ services, model, state, size, call, onOpen }: {
+export function FloatingAssistantAvatar({ services, model, state, reaction, size, call, notification, onOpen }: {
   readonly services: CodingNsClientServices; readonly model: AssistantAvatarModel; readonly state: AssistantAvatarState
   readonly size: number; readonly onOpen: () => void
   readonly call?: FloatingCallInfo | undefined
+  readonly reaction?: AssistantAvatarReaction
+  readonly notification?: ReactNode
 }): ReactElement {
-  return createElement(FloatingAssistantFrame, { services, width: size, height: size * 208 / 192, positionKey: POSITION_KEY, kind: 'avatar', call, onOpen },
-    createElement(AssistantAvatarSlot, { services, model, state, surface: 'floating', size }))
+  return createElement(FloatingAssistantFrame, { services, width: size, height: size * 208 / 192, positionKey: POSITION_KEY, kind: 'avatar', call, notification, onOpen },
+    createElement(AssistantAvatarSlot, { services, model, state, surface: 'floating', size, ...(reaction === undefined ? {} : { reaction }) }))
 }
 
 /** 没有开启悬浮形象时，以同一套拖动和字幕容器提供轻量通话球。 */
@@ -33,9 +36,10 @@ export function FloatingVoiceCall({ services, call, onOpen }: {
         createElement('path', { d: 'M9 5a3 3 0 0 1 6 0v6a3 3 0 0 1-6 0V5Zm-3 5v1a6 6 0 0 0 12 0v-1M12 17v4m-4 0h8' }))))
 }
 
-function FloatingAssistantFrame({ services, width: size, height, positionKey, kind, call, onOpen, children }: {
+function FloatingAssistantFrame({ services, width: size, height, positionKey, kind, call, notification, onOpen, children }: {
   readonly services: CodingNsClientServices; readonly width: number; readonly height: number; readonly positionKey: string
   readonly kind: 'avatar' | 'call'; readonly call?: FloatingCallInfo | undefined; readonly onOpen: () => void; readonly children?: ReactNode
+  readonly notification?: ReactNode
 }): ReactElement {
   const t = useCodingNsTranslator(services.locale)
   const [position, setPosition] = useState<Position>(() => readPosition(size, height, positionKey))
@@ -82,6 +86,11 @@ function FloatingAssistantFrame({ services, width: size, height, positionKey, ki
     try { localStorage.setItem(positionKey, JSON.stringify(next)) } catch { /* 存储受限只影响位置记忆。 */ }
   }
   const captionLayout = floatingCallCaptionLayout(position.x, position.y, size, height, viewport.width, viewport.height)
+  const notificationLayout = notification === undefined ? undefined : floatingAssistantNotificationLayout(position.x, position.y, size, height, viewport.width, viewport.height, call ? captionLayout.above : undefined)
+  const notificationStyle = notificationLayout === undefined ? undefined : {
+    position: 'absolute' as const, ...notificationLayout,
+    ...assistantNotificationTailStyle(size / 2, Number(notificationLayout.left ?? 0), Number(notificationLayout.width ?? size)),
+  }
   return createElement('div', { ...(kind === 'avatar' ? { 'data-codingns-floating-avatar': true } : { 'data-codingns-floating-call': true }),
     style: { position: 'fixed', left: position.x, top: position.y, width: size, height, maxWidth: '100vw', zIndex: 9000, pointerEvents: 'none' } },
     createElement('div', { role: 'button', tabIndex: 0, 'aria-haspopup': 'dialog', 'aria-expanded': false,
@@ -93,7 +102,9 @@ function FloatingAssistantFrame({ services, width: size, height, positionKey, ki
       style: { position: 'relative', width: size, height,
         cursor: 'grab', touchAction: 'none', userSelect: 'none', pointerEvents: 'auto', background: 'transparent' } },
       children, call ? createElement(FloatingCallBadge, { call, t }) : null),
-    call ? createElement(FloatingCallCaption, { call, t, ...captionLayout, onOpen }) : null)
+    call ? createElement(FloatingCallCaption, { call, t, ...captionLayout, onOpen }) : null,
+    notification && notificationStyle ? createElement('div', { 'data-codingns-floating-notification-region': true,
+      style: { ...notificationStyle, pointerEvents: 'auto', overflow: 'visible', overscrollBehavior: 'contain', touchAction: 'pan-y', userSelect: 'text' } }, notification) : null)
 }
 
 function readPosition(width: number, height: number, positionKey: string): Position {

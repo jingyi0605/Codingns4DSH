@@ -20,12 +20,14 @@ import { VoiceModelManagerPanel } from './voice-initialization-dialog.js'
 import { AssistantPromptEditor } from './assistant-prompt-editor.js'
 import { getGlobalVoiceAdapter } from '../global-voice-runtime-registry.js'
 import type { AssistantConfigurationTab } from './assistant-configuration-tabs.js'
-import { assistantSettingCheckboxStyle, assistantSettingFieldStyle } from '../assistant-settings-styles.js'
+import { assistantSettingFieldStyle } from '../assistant-settings-styles.js'
 import type { CodingNsClientServices } from './types.js'
 import type { AssistantDraft } from './assistant-workbench.js'
 
 import type { AssistantSettings } from '../../shared/contracts/config.js'
 import type { NativeWorkspaceRecord } from '../native-workspace-store.js'
+import { SettingsToggleRow } from '../settings-controls.js'
+import { normalizeAssistantNotificationSettings } from '../../shared/assistant-notifications.js'
 
 /** 创建与配置共用形象选择：选中 Live2D 时先确认引擎许可并自动安装，成功后才改草稿。 */
 function AssistantAvatarSelectionField({ services, appearance, avatarId, avatars, includeLegacy, disabled, t, onChange }: {
@@ -119,6 +121,7 @@ export function AssistantConfigurationPage({ tab, active = true, services, value
           createElement(AssistantVoiceSettings, { services, enabled: !disabled, active: groupActive, embedded: true })) }))
     case 'more': return createElement('div', { style: { display: 'grid', gap: 11 } },
       createElement(AssistantWorkspaceFields, { draft, workspaces, t, disabled, onChange }),
+      createElement(AssistantNotificationSettings, { services, value, disabled, t, onError }),
       createElement(AssistantAdvancedSettings, { services, value, disabled, t, onDebug, onError }),
       createElement('div', { style: { paddingTop: 16, borderTop: `1px solid ${dshThemeColor.border}` } },
         createElement('button', { type: 'button', 'data-codingns-assistant-reset': true, disabled: disabled || onReset === undefined,

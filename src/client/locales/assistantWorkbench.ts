@@ -1,5 +1,13 @@
 /** 生命周期工作台文案；高级资源管理复用原有词典。 */
 export const zh = {
+  'awb.notifications.title': '会话提醒', 'awb.notifications.hint': '在悬浮助理旁显示提醒，查看会话后标记已读。',
+  'awb.notifications.enabled': '启用会话提醒', 'awb.notifications.completed': '本轮完成', 'awb.notifications.error': '运行出错',
+  'awb.notifications.question': '需要回答', 'awb.notifications.approval': '等待审批', 'awb.notifications.questionTag': '问题', 'awb.notifications.approvalTag': '权限请求',
+  'awb.notifications.open': '查看会话', 'awb.notifications.dismiss': '收起提醒', 'awb.notifications.list': '提醒列表',
+  'awb.notifications.unread': '{count} 条未读', 'awb.notifications.pending': '{count} 项待处理',
+  'awb.notifications.empty': '暂无提醒', 'awb.notifications.next': '下一页', 'awb.notifications.previous': '上一页',
+  'awb.notifications.closeList': '关闭提醒列表', 'awb.notifications.disconnected': '远端暂不可达', 'awb.notifications.expired': '提醒已失效',
+  'awb.notifications.actionUnavailable': '通知操作暂不可用，请重试',
   'awb.call.title': '实时语音', 'awb.call.connecting': '正在连接…', 'awb.call.ending': '正在结束通话…',
   'awb.call.minimize': '收起通话', 'awb.call.restore': '恢复实时对话', 'awb.call.silent': '声音已关闭', 'awb.call.error': '通话异常，请点击查看',
   'awb.call.listening': '正在听你说', 'awb.call.thinking': '正在准备回复', 'awb.call.speaking': '正在回复', 'awb.call.muted': '麦克风已静音',
@@ -47,6 +55,14 @@ export const zh = {
   'awb.asr': '语音识别模型', 'awb.devices': '音频设备', 'awb.prompts': '提示词', 'awb.unavailableSelection': '原选择暂不可用：{id}',
 }
 export const en: Record<keyof typeof zh, string> = {
+  'awb.notifications.title': 'Session notices', 'awb.notifications.hint': 'Show notices beside the floating assistant. Viewing a session marks its notice as read.',
+  'awb.notifications.enabled': 'Enable session notices', 'awb.notifications.completed': 'Turn completed', 'awb.notifications.error': 'Run failed',
+  'awb.notifications.question': 'Answer needed', 'awb.notifications.approval': 'Approval needed', 'awb.notifications.questionTag': 'Question', 'awb.notifications.approvalTag': 'Permission request',
+  'awb.notifications.open': 'View session', 'awb.notifications.dismiss': 'Collapse notice', 'awb.notifications.list': 'Notice list',
+  'awb.notifications.unread': '{count} unread', 'awb.notifications.pending': '{count} pending',
+  'awb.notifications.empty': 'No notices', 'awb.notifications.next': 'Next page', 'awb.notifications.previous': 'Previous page',
+  'awb.notifications.closeList': 'Close notice list', 'awb.notifications.disconnected': 'Remote host unavailable', 'awb.notifications.expired': 'Notice expired',
+  'awb.notifications.actionUnavailable': 'Notice action is unavailable. Please try again.',
   'awb.call.title': 'Live voice', 'awb.call.connecting': 'Connecting…', 'awb.call.ending': 'Ending call…',
   'awb.call.minimize': 'Minimize call', 'awb.call.restore': 'Restore live conversation', 'awb.call.silent': 'Speaker muted', 'awb.call.error': 'Call error; click to view',
   'awb.call.listening': 'Listening', 'awb.call.thinking': 'Preparing a reply', 'awb.call.speaking': 'Speaking', 'awb.call.muted': 'Microphone muted',

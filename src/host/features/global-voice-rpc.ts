@@ -47,6 +47,12 @@ import { AssistantVoiceInitialization } from './assistant-voice-initialization.j
 import { installVoiceDiagnostics } from '../voice-diagnostics.js'
 import { measureVoice, traceVoice, sanitizeVoiceDiagnosticFields } from '../../shared/voice-diagnostics.js'
 import { assistantSourceCache } from './assistant-source-cache.js'
+import { AssistantNotificationEvents } from './assistant-notification-events.js'
+import { CodingNsRpcError } from '../rpc-table.js'
+import type { AssistantNotificationAckRequest, AssistantNotificationReadRequest, AssistantNotificationTargetRequest } from '../../shared/assistant-notifications.js'
+import { AssistantNotificationSource } from './assistant-notification-source.js'
+import { readAssistantNotificationFeedRequest, type AssistantNotificationFact as AssistantSourceFact } from '../../shared/assistant-notification-feed.js'
+import { bindDesktopAssistantNotifications } from '../desktop-assistant/notifications.js'
 
 /**
  * 全局智能助理 Host 边界。
@@ -129,6 +135,15 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         },
       })
       const managementAgent = createAssistantAgentAdapter(context.services.dshContext, context.services.dshVersion ?? minimumSupportedDshVersion(), llm, managementTools)
+      const notificationSource = new AssistantNotificationSource({ recover: (workspaceIds) => notifications.recoverSource(workspaceIds).map(toSourceNotificationFact), capabilities: () => ({ completed: true, error: true, requests: true, resolve: true, recovery: false }) })
+      context.resources.add(() => notificationSource.dispose())
+      const notifications = new AssistantNotificationEvents(context.services, { enabled: () => !resetting && !disposed, excludedSessionIds: () => managementAgent.sessionIds, onFact: (fact) => notificationSource.append(toSourceNotificationFact(fact)) })
+      context.resources.add(() => notifications.dispose())
+      // 同一 Host 中心供原生时钟和独立列表读取，主页面隐藏时仍准确同步。
+      context.resources.add(bindDesktopAssistantNotifications(context.services, {
+        read: (input) => notifications.center.read(input),
+        presented: (input) => { notifications.center.ack(input) },
+      }))
       // 正式文字和语音共用连续对话；租约只约束收音和当前语音轮次。
       const voiceTextChat = new AssistantTextChat(options.conversationAdapter ?? managementAgent, '助理 Agent 对话')
       const conversation = new AssistantConversation(voiceTextChat, llm, options.conversationStorage ?? createAssistantConversationStorage(), readAssistantAttachmentStore(context.services.dshContext))
@@ -367,8 +382,15 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       background.setEnabled(backgroundEnabled)
       context.resources.add(() => { disposed = true; cancelIndexWork(); background.dispose(); updates.dispose() })
       const eventDisposers: Array<() => void> = []
+      // 当前 Workspace Registry 发布真实 domain/changed；旧版本别名继续兼容。
+      const disposeNotificationMembership = context.services.events?.on('domain/changed', (change: unknown) => {
+        if (asRecord(change)?.domain === 'workspace') notifications.refreshMembership()
+      })
+      if (typeof disposeNotificationMembership === 'function') eventDisposers.push(disposeNotificationMembership as () => void)
+      const disposeNotificationSession = context.services.events?.on('session/disposed', (session: unknown) => notifications.sessionDisposed(session))
+      if (typeof disposeNotificationSession === 'function') eventDisposers.push(disposeNotificationSession as () => void)
       for (const eventName of ['workspace/archive', 'workspace/unarchive', 'workspace/changed']) {
-        const disposer = context.services.events?.on(eventName, () => { markMetadataChanged(true); updates.schedule() })
+        const disposer = context.services.events?.on(eventName, () => { notifications.refreshMembership(); markMetadataChanged(true); updates.schedule() })
         if (typeof disposer === 'function') eventDisposers.push(disposer as () => void)
       }
       const sessionKey = (args: readonly unknown[]): string | null => {
@@ -414,6 +436,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
           const sessionId = readWaitingSessionId(args)
           if (sessionId !== null) { waitingState.request({ sessionId, kind }); waitingOverrides.set(sessionId, kind) }
           changedSession(args)
+          return notifications.observeRequest(eventName, args)
         })
         if (typeof disposer === 'function') eventDisposers.push(disposer as () => void)
       }
@@ -422,10 +445,12 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
           const sessionId = readWaitingSessionId(args)
           if (sessionId !== null) { waitingState.resolve(sessionId); waitingOverrides.set(sessionId, null) }
           changedSession(args)
+          notifications.resolveRequest(eventName, args)
         })
         if (typeof disposer === 'function') eventDisposers.push(disposer as () => void)
       }
       const onSessionEvent = (session: unknown, event: unknown): void => {
+        notifications.sessionEvent(session, event)
         if (!isAssistantIndexEvent(event)) return
         const record = asRecord(session)
         const sessionId = readText(record, ['id', 'sessionId']) ?? readText(asRecord(record?.header), ['id', 'sessionId'])
@@ -451,6 +476,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       let currentPrompts = readAssistantPrompts(context.services.settings?.get().assistant.prompts)
       let configuredModelKey = JSON.stringify(context.services.settings?.get().assistant.model ?? {})
       const disposeSettingsWatch = context.services.settings?.watch?.(() => {
+        notifications.sync()
         const nextKey = JSON.stringify([...(context.services.settings?.get().assistant.managedWorkspaceIds ?? [])].sort())
         const nextPrompts = readAssistantPrompts(context.services.settings?.get().assistant.prompts)
         const model = context.services.settings?.get().assistant.model
@@ -700,6 +726,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
           const scopeChanged = JSON.stringify([...settings.get().assistant.managedWorkspaceIds].sort()) !== JSON.stringify([...next.managedWorkspaceIds].sort())
           lifecycleRevision++
           await settings.update({ assistant: next })
+          notifications.sync()
           if (isRecord(payload) && payload.configurationPatch !== undefined) {
             runtime.configureEnvironment(buildSherpaRuntimeEnvironment(next.voice))
             updateVoiceAgentCapabilities()
@@ -717,6 +744,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         if (settings === undefined || context.services.settingsProvider?.writable === false) throw new Error('当前助理设置不可写')
         if (configuring) throw new Error('请等待助理配置保存完成，再重置')
         resetting = true; lifecycleRevision++; indexRevision++
+        notifications.sync()
         syncBackground(); background.invalidate(); cancelIndexWork(); modelAbort.abort(new Error('助理已重置'))
         try {
           await stopAssistant()
@@ -726,7 +754,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
           journal.clear(); indexAnalysis.clear(); updates.clear(); materials.clear(); waitingOverrides.clear(); lastSnapshot = null; lastArchivedSessionIds = []; indexSelection = {}; setupProgress = null
           initialization.reset()
           return await lifecycleSnapshot()
-        } finally { modelAbort = new AbortController(); resetting = false; syncBackground() }
+        } finally { modelAbort = new AbortController(); resetting = false; notifications.sync(); syncBackground() }
       }
       const readIndexView = () => {
         const cached = background.snapshot()
@@ -750,7 +778,25 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
           indexedAt: view.indexedAt, workspaces: view.cached?.value.source.workspaces ?? [] }
         return cachedStatus
       }
-      context.resources.add(context.services.rpc.register('assistant', async (action, payload) => {
+      context.resources.add(context.services.rpc.register('assistant', async (action, payload, rpcContext) => {
+        if (action.startsWith('notifications/')) {
+          // 外层连接已完成认证；仍拒绝明确的访客/受限会话，伴随页没有这条 RPC 通道。
+          const peer = asRecord(asRecord(rpcContext)?.peer)
+          const operator = readOptionalService(context.services.dshContext, 'connection')?.operator
+          if (operator !== undefined && asRecord(rpcContext)?.peer !== operator || peer?.authenticated === false || peer?.authorized === false || peer?.scope?.kind === 'session' || peer?.kind === 'session') throw new CodingNsRpcError('CODINGNS_RPC_UNAUTHENTICATED', '当前调用者无权读取全局助理通知')
+          if (!isRecord(payload) || Array.isArray(payload)) throw new TypeError('通知 RPC 参数无效')
+          if (action === 'notifications/source') {
+            const request = readAssistantNotificationFeedRequest(payload)
+            const allowed = new Set(readWorkspaceRecords(context.services.dshContext).map(workspace => workspace.id))
+            if (request.workspaceIds.some(id => !allowed.has(id))) throw new CodingNsRpcError('ASSISTANT_NOTIFICATION_FORBIDDEN', '通知来源工作区不可访问')
+            notifications.sourceScope(request.workspaceIds)
+            return notificationSource.read(request)
+          }
+          if (action === 'notifications/read') return notifications.center.read(payload as AssistantNotificationReadRequest)
+          if (action === 'notifications/ack') return notifications.center.ack(payload as unknown as AssistantNotificationAckRequest)
+          if (action === 'notifications/target') return { ...await notifications.center.target(payload as unknown as AssistantNotificationTargetRequest), localHostId }
+          throw new TypeError('通知 RPC 方法无效')
+        }
         if (resetting && action !== 'lifecycle/read' && action !== 'voice/capabilities' && action !== 'tts/catalog') throw new Error('助理正在重置，请稍后操作')
         if (action.startsWith('tts/')) {
           if (initialization.busy && action !== 'tts/catalog') throw new Error('请等待语音初次配置完成')
@@ -1100,6 +1146,21 @@ function createDispatchContext(snapshot: AssistantSessionIndexSnapshot, archived
     archivedSessionIds,
     indexGeneration: snapshot.generation,
     entries: snapshot.entries,
+  }
+}
+
+/** 来源日志只传固定通知文字和稳定身份，不带导航权限、原始请求参数或堆栈。 */
+function toSourceNotificationFact(fact: import('./assistant-notifications.js').AssistantNotificationFact): AssistantSourceFact {
+  const request = 'requestId' in fact
+  return {
+    kind: request ? fact.type === 'request-resolved' ? 'resolved' : fact.requestKind : fact.type === 'turn-failed' ? 'error' : 'completed',
+    workspaceId: fact.target.workspaceId, sessionId: fact.target.sessionId,
+    logicalId: request ? JSON.stringify([fact.requestKind, fact.requestId]) : fact.turnId,
+    ...(request ? { requestId: fact.requestId, requestKind: fact.requestKind } : {}),
+    ...(request && fact.target.actualRequestTarget !== undefined ? { actualRequestSessionId: fact.target.actualRequestTarget.sessionId } : {}),
+    hostLabel: fact.hostLabel ?? '本机', workspaceLabel: fact.workspaceLabel ?? '工作区', sessionTitle: fact.sessionTitle ?? '未命名会话',
+    ...(fact.seq === undefined ? {} : { seq: fact.seq }),
+    ...(!request && fact.errorExcerpt !== undefined ? { errorExcerpt: fact.errorExcerpt } : {}),
   }
 }
 

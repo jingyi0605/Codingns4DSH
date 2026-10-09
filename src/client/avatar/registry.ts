@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react'
-import type { AssistantAvatarModel, AssistantAvatarState, AssistantAvatarSurface } from '../../shared/assistant-avatar.js'
+import type { AssistantAvatarModel, AssistantAvatarReaction, AssistantAvatarState, AssistantAvatarSurface } from '../../shared/assistant-avatar.js'
 import type { CodingNsClientServices } from '../features/types.js'
 import { BuiltinAssistantAvatar } from './builtin.js'
 import { ImageAssistantAvatar } from './image.js'
@@ -14,6 +14,7 @@ import type { AssistantAvatarPreview } from './preview-store.js'
 export interface AssistantAvatarRendererProps {
   readonly model: AssistantAvatarModel
   readonly state: AssistantAvatarState
+  readonly reaction?: AssistantAvatarReaction
   readonly surface: AssistantAvatarSurface
   readonly size: number
   readonly onError: (message: string) => void

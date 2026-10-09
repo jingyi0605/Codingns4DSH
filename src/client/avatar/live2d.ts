@@ -1,7 +1,7 @@
 import { createElement, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
-import { ASSISTANT_AVATAR_RUNTIME_PATH } from '../../shared/assistant-avatar.js'
-import type { AssistantAvatarAsset, AssistantAvatarState } from '../../shared/assistant-avatar.js'
+import { ASSISTANT_AVATAR_RUNTIME_PATH, assistantAvatarVoicePriority } from '../../shared/assistant-avatar.js'
+import type { AssistantAvatarAsset, AssistantAvatarReaction, AssistantAvatarState } from '../../shared/assistant-avatar.js'
 import type { AssistantAvatarRendererProps } from './registry.js'
 import type { AssistantAvatarLoadProgress } from './loading.js'
 import { readAssistantAvatarCacheStatus } from './cache-status.js'
@@ -21,6 +21,10 @@ export interface AssistantLive2dRuntime {
   load(options: { path: string; scale: number; position?: [number, number]; volume: number; logLevel: 'warn' }): Promise<void>
   getMotions(): Record<string, string[]>
   playMotion(group: string, index?: number, priority?: number): void
+  getExpressions?(): string[]
+  setExpression?(id: string): void
+  /** l2d 2.1.1 没有清除接口；缺少此能力时不设置持续表情，避免随机表情假装复位。 */
+  clearExpression?(): void
   resize(): void
   destroy(): void
   getCanvas?(): HTMLCanvasElement
@@ -89,6 +93,9 @@ async function withLoadDeadline<T>(task: Promise<T>, timeoutMs: number,
 export class AssistantLive2dController {
   private disposed = false
   private state: AssistantAvatarState = 'idle'
+  private reaction: AssistantAvatarReaction | undefined
+  private appliedExpression: string | undefined
+  private appliedMotion: string | undefined
   private loaded = false
   private loadConfirmed = false
   private cancelLoad: (() => void) | undefined
@@ -96,7 +103,8 @@ export class AssistantLive2dController {
   private report: ((progress: AssistantAvatarLoadProgress) => void) | undefined
   constructor(private readonly runtime: AssistantLive2dRuntime, private readonly motionGroups?: AssistantAvatarAsset['motionGroups'],
     private readonly options?: AssistantAvatarAsset['live2d'], report?: (progress: AssistantAvatarLoadProgress) => void,
-    private readonly timeoutMs = 45000) {
+    private readonly timeoutMs = 45000,
+    private readonly reactions?: Pick<AssistantAvatarAsset, 'reactionMotionGroups' | 'reactionExpressions'>) {
     this.report = report
     runtime.on?.('loadstart', (total) => {
       if (this.disposed) return
@@ -135,13 +143,39 @@ export class AssistantLive2dController {
     if (this.disposed) return
     this.state = state
     if (!this.loaded) return
+    this.apply()
+  }
+  setReaction(reaction: AssistantAvatarReaction | undefined): void {
+    if (this.disposed || this.reaction === reaction) return
+    this.reaction = reaction
+    if (this.loaded) this.apply()
+  }
+  private apply(): void {
+    const state = this.state
     const groups = Object.keys(this.runtime.getMotions())
     const desired = state === 'speaking' ? /talk|speak/iu : state === 'thinking' ? /think|work/iu
       : state === 'error' ? /fail|error|sad/iu : state === 'listening' || state === 'waiting' ? /listen|wait/iu : /idle/iu
     const configured = this.motionGroups?.[state]
-    const group = configured !== undefined && groups.includes(configured) ? configured
+    const reactionMotion = this.reaction === undefined || assistantAvatarVoicePriority(state) ? undefined : this.reactions?.reactionMotionGroups?.[this.reaction]
+    const group = typeof reactionMotion === 'string' && groups.includes(reactionMotion) ? reactionMotion
+      : configured !== undefined && groups.includes(configured) ? configured
       : groups.find((name) => desired.test(name)) ?? groups.find((name) => /idle/iu.test(name))
-    if (group !== undefined) this.runtime.playMotion(group, undefined, 2)
+    if (group !== undefined && group !== this.appliedMotion) { this.runtime.playMotion(group, undefined, 2); this.appliedMotion = group }
+    this.applyExpression()
+  }
+  private applyExpression(): void {
+    const runtime = this.runtime
+    // 完整能力与模型声明同时成立才应用；当前引擎不能清除时使用角标/动作。
+    if (typeof runtime.getExpressions !== 'function' || typeof runtime.setExpression !== 'function' || typeof runtime.clearExpression !== 'function') return
+    try {
+      const requested = this.reaction === undefined || assistantAvatarVoicePriority(this.state)
+        ? undefined : this.reactions?.reactionExpressions?.[this.reaction]
+      const next = requested !== undefined && runtime.getExpressions().includes(requested) ? requested : undefined
+      if (next === this.appliedExpression) return
+      if (next === undefined) runtime.clearExpression()
+      else runtime.setExpression(next)
+      this.appliedExpression = next
+    } catch { /* 可选表情能力失败时保留语音动作和角标，不关闭形象。 */ }
   }
   resize(): void { if (!this.disposed && this.loaded) this.runtime.resize() }
   dispose(): void {
@@ -149,6 +183,7 @@ export class AssistantLive2dController {
     this.disposed = true
     // 上游只有 on，没有 off；清空回调引用并隔离迟到事件，避免持有旧 React 插槽。
     this.report = undefined
+    if (this.appliedExpression !== undefined) { try { this.runtime.clearExpression?.() } catch { /* 销毁仍继续。 */ } }
     this.cancelLoad?.()
     this.runtime.destroy()
   }
@@ -181,14 +216,16 @@ export async function createLive2dAssistantAvatarPortraitSource(model: Assistant
   } finally { signal.removeEventListener('abort', abort); controller?.dispose(); canvas.remove() }
 }
 
-export function Live2dAssistantAvatar({ model, state, size, onError, onLoadProgress, diagnostics = false, onPreview }: AssistantAvatarRendererProps): ReactElement {
-  const configKey = JSON.stringify([model.motionGroups, model.live2d])
+export function Live2dAssistantAvatar({ model, state, reaction, size, onError, onLoadProgress, diagnostics = false, onPreview }: AssistantAvatarRendererProps): ReactElement {
+  const configKey = JSON.stringify([model.motionGroups, model.live2d, model.reactionMotionGroups, model.reactionExpressions])
   // 设置归一化会复制 JSON；等值映射不能因为父组件刷新而重载整个 WebGL 模型。
-  const config = useMemo(() => ({ motionGroups: model.motionGroups, options: model.live2d }), [configKey])
+  const config = useMemo(() => ({ motionGroups: model.motionGroups, options: model.live2d, reactionMotionGroups: model.reactionMotionGroups, reactionExpressions: model.reactionExpressions }), [configKey])
   const canvas = useRef<HTMLCanvasElement | null>(null)
   const controller = useRef<AssistantLive2dController | undefined>(undefined)
   const currentState = useRef(state)
   currentState.current = state
+  const currentReaction = useRef(reaction)
+  currentReaction.current = reaction
   const [visible, setVisible] = useState(() => typeof document === 'undefined' || !document.hidden)
   useEffect(() => {
     const refresh = (): void => setVisible(!document.hidden)
@@ -220,9 +257,12 @@ export function Live2dAssistantAvatar({ model, state, size, onError, onLoadProgr
       report({ phase: 'resources', ...(before === undefined ? {} : { cacheBefore: before }) })
       const runtime = module.init(target)
       if (runtime === null) throw new Error('avatar_webgl_unavailable')
-      instance = new AssistantLive2dController(runtime, config.motionGroups, config.options, report)
+      instance = new AssistantLive2dController(runtime, config.motionGroups, config.options, report, 45000, {
+        ...(config.reactionMotionGroups === undefined ? {} : { reactionMotionGroups: config.reactionMotionGroups }),
+        ...(config.reactionExpressions === undefined ? {} : { reactionExpressions: config.reactionExpressions }) })
       controller.current = instance
       instance.setState(currentState.current)
+      instance.setReaction(currentReaction.current)
       if (!await instance.load(model.source) || disposed) return
       if (onPreview !== undefined) {
         // 引擎 loaded 时首帧可能还未绘制；等待有效绘制后才替换本地静态预览。
@@ -243,6 +283,7 @@ export function Live2dAssistantAvatar({ model, state, size, onError, onLoadProgr
     return () => { disposed = true; previewController.abort(); observer?.disconnect(); instance?.dispose(); controller.current = undefined }
   }, [model.source, config, visible, onError, onLoadProgress, diagnostics, onPreview])
   useEffect(() => { controller.current?.setState(state) }, [state])
+  useEffect(() => { controller.current?.setReaction(reaction) }, [reaction])
   return createElement('canvas', { ref: canvas, width: Math.round(size * 2), height: Math.round(size * 208 / 192 * 2), 'aria-hidden': true,
     style: { width: size, height: 'auto', aspectRatio: '192 / 208', maxWidth: '100%', display: 'block' } })
 }

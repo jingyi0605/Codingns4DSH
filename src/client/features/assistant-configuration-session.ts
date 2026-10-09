@@ -100,7 +100,7 @@ export class AssistantConfigurationSession implements CodingNsSettingsStore<Codi
   async reload(): Promise<void> { await this.original.settings.reload?.(); this.sync() }
   /** 身份字段由生命周期接口校验，其余字段同一请求合并保存。 */
   configurationPatch(): readonly CodingNsSettingsOperation[] {
-    return [...this.changes.values()].filter((operation) => ['appearance', 'voice', 'tts', 'prompts'].includes(operation.path[1]!))
+    return [...this.changes.values()].filter((operation) => ['appearance', 'voice', 'tts', 'prompts', 'notifications'].includes(operation.path[1]!))
       .map((operation) => ({ ...operation, path: operation.path.slice(1) }))
   }
   async commitLocal(signal: AbortSignal): Promise<void> {

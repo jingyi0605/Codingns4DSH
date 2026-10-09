@@ -47,7 +47,7 @@ function mergeConfiguration(current: AssistantSettings, patch: unknown): Assista
   for (const operation of patch) {
     const path = operation?.path
     if (!Array.isArray(path) || path.length < 1 || path.length > 3
-      || !['appearance', 'voice', 'tts', 'prompts'].includes(path[0])
+      || !['appearance', 'voice', 'tts', 'prompts', 'notifications'].includes(path[0])
       || path.some((key) => typeof key !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]*$/u.test(key) || ['constructor', 'prototype'].includes(key))
       || !['set', 'unset'].includes(operation.op)) throw new Error('助理配置草稿字段无效')
     let target = next

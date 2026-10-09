@@ -240,6 +240,7 @@ const CODINGNS_RPC_ENDPOINTS = [
   'assistant/index', 'assistant/index/rebuild', 'assistant/index/configure', 'assistant/index/cancel', 'assistant/status', 'assistant/debug', 'assistant/preview', 'assistant/summary', 'assistant/turn',
   'assistant/chat/models', 'assistant/chat/start', 'assistant/chat/read', 'assistant/chat/cancel',
   'assistant/lifecycle/read', 'assistant/lifecycle/configure', 'assistant/lifecycle/reset', 'assistant/configuration/capabilities',
+  'assistant/notifications/read', 'assistant/notifications/ack', 'assistant/notifications/target', 'assistant/notifications/source',
   'assistant/conversation/start', 'assistant/conversation/read', 'assistant/conversation/cancel', 'assistant/conversation/preview', 'assistant/conversation/clear', 'assistant/conversation/compress',
   'assistant/voice/capabilities', 'assistant/voice/models', 'assistant/voice/model/verify', 'assistant/voice/setup', 'assistant/voice/setup-progress', 'assistant/voice/start', 'assistant/voice/stop', 'assistant/voice/heartbeat', 'assistant/voice/interrupt', 'assistant/voice/register-client', 'assistant/voice/unregister-client', 'assistant/voice/event', 'assistant/voice/text',
   'assistant/voice/chat/start', 'assistant/voice/chat/read', 'assistant/voice/chat/cancel', 'assistant/voice/chat/clear',

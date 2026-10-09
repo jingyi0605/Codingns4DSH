@@ -4,8 +4,8 @@ import { assistantAvatarImageSource } from '../../shared/assistant-avatar.js'
 import type { AssistantAvatarRendererProps } from './registry.js'
 
 /** 图片差分也消费相同的状态接口；某张差分缺失时先回落该角色默认图片。 */
-export function ImageAssistantAvatar({ model, state, size, onError, onLoadProgress }: AssistantAvatarRendererProps): ReactElement {
-  const requested = assistantAvatarImageSource(model, state)
+export function ImageAssistantAvatar({ model, state, reaction, size, onError, onLoadProgress }: AssistantAvatarRendererProps): ReactElement {
+  const requested = assistantAvatarImageSource(model, state, reaction)
   const [failed, setFailed] = useState('')
   const image = useRef<HTMLImageElement | null>(null)
   useEffect(() => setFailed(''), [requested])

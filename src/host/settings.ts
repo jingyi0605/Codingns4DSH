@@ -21,6 +21,7 @@ import { ASSISTANT_AVATAR_FLOATING_MINI_SIZE, ASSISTANT_AVATAR_FLOATING_STANDARD
 import { ASSISTANT_PROMPT_MAX_CHARS, DEFAULT_ASSISTANT_PROMPTS } from '../shared/assistant-prompts.js'
 import { ASSISTANT_TTS_PARAMETER_LIMITS as ttsLimits, DEFAULT_ASSISTANT_TTS_PARAMETERS } from '../shared/assistant-tts.js'
 import { ASSISTANT_PERSONALITY_MAX_CHARS } from '../shared/assistant-lifecycle.js'
+import { DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS } from '../shared/assistant-notifications.js'
 
 /**
  * DSH 设置服务使用的 Codingns4DSH namespace schema。
@@ -46,6 +47,10 @@ export const CodingNsSettingsSchema = z.object({
       .default(DEFAULT_CODINGNS_SETTINGS.subagentBridge?.maxConcurrentSubagents ?? 8),
   }).default(DEFAULT_CODINGNS_SETTINGS.subagentBridge ?? { enabled: false, maxConcurrentSubagents: 8 }),
   assistant: z.object({
+    notifications: z.object({
+      enabled: z.boolean().default(true), completed: z.boolean().default(true),
+      error: z.boolean().default(true), question: z.boolean().default(true), approval: z.boolean().default(true),
+    }).default({ ...DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS }),
     profile: z.union([z.object({
       name: z.string().min(1).max(80), initialized: z.boolean(),
       personality: z.union([z.string().max(ASSISTANT_PERSONALITY_MAX_CHARS), z.const(undefined)]),
@@ -74,6 +79,10 @@ export const CodingNsSettingsSchema = z.object({
         surfaces: z.union([z.any(), z.const(undefined)]),
         stateSources: z.union([z.any(), z.const(undefined)]),
         motionGroups: z.union([z.any(), z.const(undefined)]),
+        // 情绪映射同样由共享形象契约校验；闭合 schema 必须保留可选资源字段。
+        reactionSources: z.union([z.any(), z.const(undefined)]),
+        reactionMotionGroups: z.union([z.any(), z.const(undefined)]),
+        reactionExpressions: z.union([z.any(), z.const(undefined)]),
         live2d: z.union([z.any(), z.const(undefined)]),
       })).default([...DEFAULT_ASSISTANT_APPEARANCE.models]),
     }).default({ ...DEFAULT_ASSISTANT_APPEARANCE, models: [...DEFAULT_ASSISTANT_APPEARANCE.models] }),

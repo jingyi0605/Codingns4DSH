@@ -4,6 +4,7 @@ import { isDshVersionAtLeast } from './version.js'
 import type { AssistantAppearanceSettings } from '../assistant-avatar.js'
 import { DEFAULT_ASSISTANT_PROMPTS, type AssistantPromptSettings } from '../assistant-prompts.js'
 import type { AssistantTtsSettings } from '../assistant-tts.js'
+import { DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS, type AssistantNotificationSettings } from '../assistant-notifications.js'
 
 /** 适配器最近一次使用的模型、思考强度与服务档位。 */
 export interface CodingNsCliAdapterPreference {
@@ -47,6 +48,8 @@ export const DEFAULT_ASSISTANT_VOICE_SETTINGS: AssistantVoiceSettings = {
 }
 
 export interface AssistantSettings {
+  /** 旧配置缺省全开；展示仍受模块、助理创建和形象开关约束。 */
+  notifications?: AssistantNotificationSettings
   /** 只有显式 initialized=true 表示已创建；缺省或 false 时旧配置仅预填创建表单。 */
   profile?: AssistantProfileSettings
   /** 缺省跟随 DSH 默认模型；固定选择同时用于项目索引与正式对话。 */
@@ -72,6 +75,7 @@ export interface AssistantProfileSettings {
 }
 
 export const DEFAULT_ASSISTANT_SETTINGS: AssistantSettings = {
+  notifications: DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS,
   managedWorkspaceIds: [],
   voice: DEFAULT_ASSISTANT_VOICE_SETTINGS,
   prompts: DEFAULT_ASSISTANT_PROMPTS,
