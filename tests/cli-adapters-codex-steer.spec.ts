@@ -3,6 +3,7 @@ import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
 import { JsonRpcRequestError } from '../data/build/dist/host/cli-adapters/json-rpc-process.js'
+import type { CodingNsAgentEvent } from '../src/shared/contracts/cli-adapter.js'
 
 interface RpcRequest {
   readonly id?: number
@@ -16,9 +17,10 @@ async function createSteerHarness(segmented: boolean) {
   const threadId = 'steer-thread'
   const turnId = 'steer-turn'
   const calls: RpcRequest[] = []
-  const state = { serverTurnId: turnId as string | null, deferSteer: false }
+  const state = { serverTurnId: turnId as string | null, steerTurnId: null as string | null, deferSteer: false }
   const controller = new AbortController()
-  let finish!: () => void
+  let completeTurn!: (completedTurnId?: string) => void
+  let emit!: (message: unknown) => void
   let resolveSteer!: () => void
   const driver = new CodexAppServerDriver({
     binaries: ['fake-codex'],
@@ -27,10 +29,11 @@ async function createSteerHarness(segmented: boolean) {
       const stdout = new PassThrough()
       const stderr = new PassThrough()
       const send = (message: unknown): void => { stdout.write(`${JSON.stringify(message)}\n`) }
-      finish = () => {
-        state.serverTurnId = null
+      emit = send
+      completeTurn = (completedTurnId = state.serverTurnId ?? turnId) => {
+        if (state.serverTurnId === completedTurnId) state.serverTurnId = null
         send({ jsonrpc: '2.0', method: 'turn/completed', params: {
-          threadId, turn: { id: turnId, status: 'completed' },
+          threadId, turn: { id: completedTurnId, status: 'completed' },
         } })
       }
       const write = (data: string): void => {
@@ -47,7 +50,11 @@ async function createSteerHarness(segmented: boolean) {
             send({ jsonrpc: '2.0', id: request.id, error: { code: -32000, message: 'active turn mismatch' } })
             return
           }
-          resolveSteer = () => send({ jsonrpc: '2.0', id: request.id, result: { turnId } })
+          resolveSteer = () => {
+            const nextTurnId = state.steerTurnId ?? state.serverTurnId ?? turnId
+            state.serverTurnId = nextTurnId
+            send({ jsonrpc: '2.0', id: request.id, result: { turnId: nextTurnId } })
+          }
           if (!state.deferSteer) resolveSteer()
           return
         }
@@ -72,13 +79,32 @@ async function createSteerHarness(segmented: boolean) {
     assert.equal(next.done, false)
     if (next.value?.type === 'text-delta') break
   }
+  const drain = async () => {
+    const events = []
+    for (let next = await iterator.next(); !next.done; next = await iterator.next()) events.push(next.value)
+    return events
+  }
   return {
     driver, sessionId, threadId, turnId, calls, state,
     resolveSteer: () => resolveSteer(),
+    sendTurnText(turnId: string, text: string, itemId = 'steer-message') {
+      emit({ jsonrpc: '2.0', method: 'item/agentMessage/delta', params: {
+        threadId, turnId, itemId, delta: text,
+      } })
+    },
+    sendNotification(method: string, params: Record<string, unknown>) {
+      emit({ jsonrpc: '2.0', method, params })
+    },
+    next() {
+      return iterator.next()
+    },
+    completeTurn(turnId?: string) {
+      completeTurn(turnId)
+    },
+    drain,
     async finish() {
-      finish()
-      const events = []
-      for (let next = await iterator.next(); !next.done; next = await iterator.next()) events.push(next.value)
+      completeTurn(turnId)
+      const events = await drain()
       assert.deepEqual(events.at(-1), { type: 'finish', reason: 'stop' })
     },
     async dispose() {
@@ -105,6 +131,21 @@ for (const segmented of [false, true]) {
       await driver.interrupt(sessionId)
       assert.deepEqual(calls.at(-1)?.params, { threadId, turnId })
       await harness.finish()
+    } finally { await harness.dispose() }
+  })
+
+  test(`Codex ${mode}回合插话切换 turnId 后忽略旧终态并继续投影新回合正文`, { timeout: 5_000 }, async () => {
+    const harness = await createSteerHarness(segmented)
+    try {
+      harness.state.steerTurnId = 'steered-turn'
+      await harness.driver.steer(harness.sessionId, '改为新的实现方向')
+      // Codex 可能先把旧回合的完成通知推过来；它不能关闭已经切换到新 turnId 的队列。
+      harness.completeTurn(harness.turnId)
+      harness.sendTurnText('steered-turn', '插话后的新回合正文')
+      harness.completeTurn('steered-turn')
+      const events = await harness.drain()
+      assert.equal(events.some((event) => event.type === 'text-delta' && event.text.includes('插话后的新回合正文')), true)
+      assert.deepEqual(events.at(-1), { type: 'finish', reason: 'stop' })
     } finally { await harness.dispose() }
   })
 
@@ -150,6 +191,51 @@ for (const segmented of [false, true]) {
     } finally { await harness.dispose() }
   })
 }
+
+test('Codex 分段续流收到真实用户插话时调用 turn/steer 并保留插话后的正文', { timeout: 5_000 }, async () => {
+  const harness = await createSteerHarness(true)
+  let resumedIterator: AsyncIterator<CodingNsAgentEvent> | undefined
+  try {
+    harness.sendNotification('item/completed', {
+      threadId: harness.threadId,
+      turnId: harness.turnId,
+      item: { id: 'command-1', type: 'commandExecution', status: 'completed', command: 'pwd', aggregated_output: '/workspace' },
+    })
+    harness.sendTurnText(harness.turnId, '工具后的下一条助手消息', 'next-message')
+    assert.equal((await harness.next()).value?.type, 'tool-event')
+    assert.equal((await harness.next()).value?.type, 'step-boundary')
+
+    harness.state.steerTurnId = 'steered-turn'
+    const second = harness.driver.executeTurn({
+      sessionId: harness.sessionId,
+      messages: [{ role: 'user', source: { kind: 'user' }, content: '改成新的实现方向' }],
+      prompt: '改成新的实现方向',
+      splitToolSteps: true,
+      resumeSegmentedTurn: true,
+    })
+    resumedIterator = second[Symbol.asyncIterator]()
+
+    const resumedText = await resumedIterator.next()
+    assert.equal(resumedText.done, false)
+    assert.equal(resumedText.value?.type, 'text-delta')
+    assert.equal(harness.calls.filter((call) => call.method === 'turn/steer').length, 1)
+    assert.deepEqual(harness.calls.at(-1)?.params, {
+      threadId: harness.threadId,
+      expectedTurnId: harness.turnId,
+      input: [{ type: 'text', text: '改成新的实现方向' }],
+    })
+
+    harness.sendTurnText('steered-turn', '插话后的新方向正文')
+    harness.completeTurn('steered-turn')
+    const events = []
+    for (let next = await resumedIterator.next(); !next.done; next = await resumedIterator.next()) events.push(next.value)
+    assert.equal(events.some((event) => event.type === 'text-delta' && event.text.includes('插话后的新方向正文')), true)
+    assert.deepEqual(events.at(-1), { type: 'finish', reason: 'stop' })
+  } finally {
+    await resumedIterator?.return?.()
+    await harness.dispose()
+  }
+})
 
 test('Codex 未启动的会话拒绝插话', async () => {
   const driver = new CodexAppServerDriver()

@@ -974,6 +974,24 @@ test('原生会话桥接使用 Agent.inject 把外部工具推进下一个合法
   assert.equal(bridge.canInjectNextStep?.('missing'), false)
 })
 
+test('已有原生 steer 收件箱时不重复注入外部工具提示', () => {
+  const messages: unknown[] = []
+  const agent = {
+    id: 'steer-pending-session',
+    inbox: { nextStep: [{ id: 'user-steer-1', role: 'user' }] },
+    inject(message: unknown) { messages.push(message) },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'agents' ? { get(id: string) { return id === agent.id ? agent : undefined } } : undefined
+    },
+  } as never)
+
+  // 用户 steer 已经负责唤醒并推进下一个 DSH step，插件提示不能把它遮蔽。
+  assert.equal(bridge.injectNextStep?.(agent.id, '工具一已完成'), true)
+  assert.deepEqual(messages, [])
+})
+
 test('Agent.inject 尚未创建新 step 时不把后续工具追加到旧 step', () => {
   const listeners = new Map<string, (...args: unknown[]) => unknown>()
   const events: Array<Record<string, any>> = [
