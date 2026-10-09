@@ -655,3 +655,23 @@ test('页面 connector 将 $events 等本地流回退到 DSH Gateway 而不是�
     socket.restore()
   }
 })
+
+test('问题回答只按 agentId 选 Host，正文中的虚拟 ID 不改变本机归属', async () => {
+  const previous = globalThis.fetch
+  const paths: string[] = []
+  globalThis.fetch = (async input => { paths.push(String(input)); return response(true) }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    transport.setAggregate(aggregate)
+    const remoteId = createVirtualSessionId('peer-1', 'session-1')
+    await transport.hooks.rpc!({ method: 'userQuestions/answer', payload: { channel: '/api', payload: { args: { agentId: 'local-session', callId: 'c', answer: { answers: [{ id: 'q', selected: [remoteId] }] } } } } })
+    assert.deepEqual(paths, ['/api/userQuestions/answer'])
+    const missing = createVirtualSessionId('peer-1', 'removed-session')
+    const payload = { args: { agentId: missing, callId: 'c', answer: { answers: [] } } }
+    assert.equal(transport.matchesScope(payload, 'userQuestions/answer'), true)
+    const result = await transport.hooks.rpc!({ method: 'userQuestions/answer', payload: { channel: '/api', payload } }) as any
+    assert.equal(result.error.code, 'PEER_HOST_SCOPE_MISMATCH')
+    assert.throws(() => transport.hooks.openStream!({ method: 'userQuestions/attachWait', payload: { channel: '/api', payload: { args: { agentId: missing, callId: 'c' } } } }), /会话不可用/)
+    assert.equal(paths.length, 1, '过期的远端问题不能回落本机接口')
+  } finally { globalThis.fetch = previous }
+})

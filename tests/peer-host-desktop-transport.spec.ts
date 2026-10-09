@@ -9,6 +9,33 @@ import { createPeerHostPageTransport, installPeerHostConnectionRouting } from '.
 import { createVirtualSessionId } from '../data/build/dist/shared/index.js'
 import { createNavigationFixture } from './peer-host-navigation-fixture.ts'
 
+test('原生连接合并远端事件时仍复用本机 mux，远端审批结果按事件身份分流', async () => {
+  const localCalls: string[] = []
+  const peerCalls: string[] = []
+  const controller = new AbortController()
+  const rpc = { call: async (_channel: string, endpoint: string) => { localCalls.push(endpoint); return { ok: true, value: true } } }
+  let localSignal: AbortSignal | undefined
+  const remote = { openRemoteStream: (_endpoint: string, _payload: unknown, signal?: AbortSignal) => {
+    localSignal = signal
+    return (async function* () { yield { type: 'ready', clientId: 'local' } })()
+  } }
+  const route = installPeerHostConnectionRouting({
+    uiContext: { get: () => ({ rpc }) }, remote,
+    hooks: { rpc: async ({ method }) => { peerCalls.push(method); return { ok: true, value: true } as never } },
+    matchesScope: (value, method) => method === '$events/result' && (value as any)?.args?.eventId === 'peer-event',
+    mergeEvents: (local, signal) => local(signal!),
+  })!
+  try {
+    assert.deepEqual(await Array.fromAsync(remote.openRemoteStream('$events', { args: {} }, controller.signal)), [{ type: 'ready', clientId: 'local' }])
+    assert.equal(localSignal, controller.signal)
+    assert.equal(Object.hasOwn(rpc, 'open'), false)
+    await rpc.call('/api', '$events/result', { args: { eventId: 'peer-event' } })
+    await rpc.call('/api', '$events/result', { args: { eventId: 'local-event' } })
+    assert.deepEqual(peerCalls, ['$events/result'])
+    assert.deepEqual(localCalls, ['$events/result'])
+  } finally { route() }
+})
+
 type ShimGlobal = typeof globalThis & {
   __DSH_TRANSPORT__?: unknown
   dshDesktopBoot?: unknown

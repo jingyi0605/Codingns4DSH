@@ -2,6 +2,50 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { resolveDshNativeDispatch, readWireArgs } from '../data/build/dist/host/modules/peer-host/peer-host-native-dispatch.js'
 
+test('交互事件走 Gateway wireStream，回答走 Connection 原生拦截器', async () => {
+  const calls: unknown[][] = []
+  const gateway = {
+    invoke: async () => { throw new Error('不能把 Gateway 自有事件当成业务 Remote') },
+    stream: async () => { throw new Error('不能把 Gateway 自有事件当成业务 Remote') },
+    wireStream: { open: async (...args: unknown[]) => {
+      calls.push(args)
+      return (async function* () {
+        yield { type: 'ready', clientId: 'peer-client' }
+        yield { type: 'emit', event: 'settings/document-updated', args: [{ privateSetting: true }] }
+      })()
+    } },
+  }
+  const connection = {
+    createSharedFetchHandler(channel: string) {
+      assert.equal(channel, '/api')
+      return { async fetch(request: Request) {
+        assert.equal(new URL(request.url).pathname, '/api/$events/result')
+        const envelope = await request.json() as any
+        assert.equal(envelope.type, 'client-request')
+        assert.equal(envelope.method, '$events/result')
+        assert.deepEqual(envelope.payload, { args: { clientId: 'peer-client', eventId: 'e', outcome: { kind: 'result', value: 'rejected' } } })
+        return Response.json({ result: { ok: true } })
+      } }
+    },
+  }
+  const ctx = { get: (name: string) => name === 'typertGateway' ? gateway : connection }
+  const dispatch = resolveDshNativeDispatch(ctx as never)!
+  const controller = new AbortController()
+  const stream = await dispatch.stream('$events', { args: {} }, controller.signal)
+  assert.deepEqual(await Array.fromAsync(stream), [{ type: 'ready', clientId: 'peer-client' }])
+  assert.equal(calls[0]?.[0], '$events')
+  assert.equal(calls[0]?.[4], controller.signal)
+  await dispatch.rpc('$events/result', { args: { clientId: 'peer-client', eventId: 'e', outcome: { kind: 'result', value: 'rejected' } } })
+})
+
+test('旧 Gateway 明确报告不支持事件协议，事件回答保留原生失败原因', async () => {
+  const gateway = { invoke: async () => undefined, stream: async () => (async function* () {})() }
+  const connection = { createSharedFetchHandler: () => ({ fetch: async () => Response.json({ result: { ok: false, error: { code: 'gateway/expired', message: '审批已过期' } } }) }) }
+  const dispatch = resolveDshNativeDispatch({ get: (name: string) => name === 'typertGateway' ? gateway : connection } as never)!
+  await assert.rejects(dispatch.stream('$events', { args: {} }), { code: 'CODINGNS_RPC_UNSUPPORTED' })
+  await assert.rejects(dispatch.rpc('$events/result', { args: {} }), { code: 'gateway/expired', message: '审批已过期' })
+})
+
 interface Recorded {
   readonly namespace: string
   readonly method: string
