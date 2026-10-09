@@ -4,6 +4,7 @@ import { createPeerHostPageTransport, installPeerHostConnectionRouting } from '.
 import { createVirtualSessionId, createVirtualWorkspaceId } from '../data/build/dist/shared/index.js'
 import { callCliRpc } from '../data/build/dist/client/cli-catalog.js'
 import { loadModelCatalog } from '../data/build/dist/client/model-catalog-cache.js'
+import { createCliSettingsRpc } from '../data/build/dist/client/cli-settings-rpc.js'
 import { createNavigationFixture } from './peer-host-navigation-fixture.ts'
 
 const peerSession = (host = 'stage0', session = 'session-1') => createVirtualSessionId(host, session)
@@ -167,6 +168,24 @@ test('CLI 目录的显式本机 ID 不被前台远端劫持，无参数目录跟
     const explicit = await page.transport.hooks.rpc?.({ method: 'cli/models', payload: { channel: '/codingns', payload: { sessionId: peerSession('mac'), adapterId: 'codex' } } })
     assert.deepEqual(providers(explicit), ['mac'])
     assert.deepEqual(providers(await page.call('session/modelCatalog')), ['stage0'])
+  }, { sessionId: peerSession() })
+})
+
+test('设置页明确选择本机时，目录、模型和刷新不跟随前台远端会话', async () => {
+  await withDesktopNavigation(async page => {
+    const rpc = { call: async (channel: string, endpoint: string, payload: unknown) => (
+      await page.call(channel === '/codingns' ? `codingns/${endpoint}` : endpoint, payload)
+    ) as { ok: true; value: unknown } }
+    const local = createCliSettingsRpc(rpc, null)
+    for (const host of ['stage0', 'mac']) {
+      page.selection.set({ sessionId: peerSession(host) })
+      for (const action of ['catalog', 'models', 'catalog/refresh']) {
+        await callCliRpc(local, action, { adapterId: 'codex' })
+        assert.equal(page.calls.at(-1)?.host, null)
+        assert.deepEqual(page.calls.at(-1)?.payload, { adapterId: 'codex', catalogHostId: 'local' })
+      }
+      assert.deepEqual(providers(await page.call('session/modelCatalog')), [host], '设置选择不能改变会话导航')
+    }
   }, { sessionId: peerSession() })
 })
 
