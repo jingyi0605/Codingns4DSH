@@ -152,7 +152,8 @@ export const dshSettingsBodyStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 16,
-  padding: '18px 20px 20px',
+  // 与标题栏使用相同的左右留白，模块开关和子选项开关落在同一条垂线上。
+  padding: '14px 14px 16px',
   borderTop: `1px solid ${dshThemeColor.border}`,
   boxSizing: 'border-box',
 }
@@ -201,10 +202,13 @@ export const dshSettingsRowStyle: CSSProperties = {
 export const dshSettingsListRowStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
+  justifyContent: 'space-between',
   gap: 12,
+  width: '100%',
+  minWidth: 0,
   minHeight: 52,
   padding: '10px 0',
-  borderBottom: `1px solid ${dshThemeColor.border}`,
+  borderBottom: `0.5px solid var(--dsw-alias-border-l3, ${dshThemeColor.border})`,
   boxSizing: 'border-box',
 }
 

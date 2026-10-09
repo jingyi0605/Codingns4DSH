@@ -33,6 +33,7 @@ import { CODINGNS_VERSION, DSH_COMPATIBILITY, isLegacyDshVersion } from '../shar
 import type { CodingNsSettingsSnapshot, CodingNsSettingsStore } from '../dsh-capabilities/settings-store.js'
 import type { SettingsNotice } from './features/types.js'
 import { CodingNsSettingsPromo, CODINGNS_GITHUB_URL } from './settings-promo.js'
+import { SettingsSwitch } from './settings-controls.js'
 
 // pnpm 会为不同 peer 上下文保留独立的 ui-slots 类型实例；插件在自己实际使用的
 // 根实例上重申公开契约，避免依赖声明合并偶然穿过依赖副本。
@@ -233,24 +234,15 @@ interface FeatureSwitchProps {
 /** 标题栏开关：真实 checkbox 语义，点击不会连带折叠卡片。 */
 function FeatureSwitch({ label, checked, disabled, onChange }: FeatureSwitchProps): ReactElement {
   return createElement('label', {
-    style: { position: 'relative', display: 'inline-flex', flex: '0 0 auto', width: 44, height: 24, opacity: disabled ? 0.55 : 1, cursor: disabled ? 'not-allowed' : 'pointer' },
+    style: { display: 'inline-flex', flex: '0 0 auto', marginLeft: 'auto' },
     onClick: (event: { stopPropagation: () => void }) => event.stopPropagation(),
   },
-    createElement('input', {
-      type: 'checkbox',
-      role: 'switch',
+    createElement(SettingsSwitch, {
+      variant: 'module',
       'aria-label': label,
       checked,
       disabled,
       onChange: (event: { currentTarget: { checked: boolean } }) => onChange(event.currentTarget.checked),
-      style: { position: 'absolute', inset: 0, width: '100%', height: '100%', margin: 0, opacity: 0, cursor: 'inherit', zIndex: 1 },
     }),
-    createElement('span', {
-      style: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', padding: 2, borderRadius: 999, background: checked ? dshThemeColor.accent : dshThemeColor.surfaceSubtle, border: `1px solid ${dshThemeColor.border}`, boxSizing: 'border-box', transition: 'background 160ms ease' },
-    },
-      createElement('span', {
-        style: { width: 18, height: 18, flex: '0 0 18px', borderRadius: '50%', background: dshThemeColor.switchThumb, boxShadow: dshThemeColor.subtleShadow, transform: `translateX(${checked ? 20 : 0}px)`, transition: 'transform 160ms ease' },
-      }),
-    ),
   )
 }
