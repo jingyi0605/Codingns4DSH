@@ -16,6 +16,7 @@ import {
   dshThemeColor,
 } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
+import { SettingsToggleRow } from '../settings-controls.js'
 
 /** “局域网访问DSH”设置卡片：只配置一条监听并转发到当前 DSH Web。 */
 export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, notify }: FeaturePanelProps): ReactElement {
@@ -183,10 +184,7 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
       ),
     ),
     detectedDshPorts.length > 1 && createElement('div', { style: dshSettingsNoteStyle }, t('lan.detectMultiple', { ports: detectedDshPorts.join(t('common.listSeparator')) })),
-    createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 8, cursor: controlsDisabled || busy ? 'not-allowed' : 'pointer', color: dshThemeColor.labelSecondary, fontSize: 13 } },
-      createElement('input', { type: 'checkbox', checked: autoStart, disabled: controlsDisabled || busy, onChange: () => void toggleAutoStart(), style: { accentColor: dshThemeColor.accent } }),
-      createElement('span', undefined, t('lan.autoStart')),
-    ),
+    createElement(SettingsToggleRow, { label: t('lan.autoStart'), checked: autoStart, disabled: controlsDisabled || busy, onChange: () => void toggleAutoStart() }),
     createElement('div', { style: dshSettingsRowStyle },
       createElement('button', { type: 'button', disabled: controlsDisabled || busy || !listenPort, onClick: () => void start(), style: { ...dshSettingsPrimaryButtonStyle, flex: 1 } }, busy ? t('lan.processing') : snapshot ? t('lan.update') : t('lan.start')),
       snapshot && createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void stop(), style: buttonStyle }, t('lan.stop')),

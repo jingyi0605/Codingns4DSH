@@ -25,6 +25,7 @@ import {
   dshThemeColor,
 } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
+import { SettingsSwitch, SettingsToggleRow } from '../settings-controls.js'
 import type { PwaNotificationClient, PwaNotificationStatus } from '../pwa-notifications.js'
 
 /**
@@ -207,9 +208,7 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
         createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('mobile.hideSidebarOnMobile')),
         createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('mobile.hideSidebarOnMobileDescription')),
       ),
-      createElement('input', {
-        type: 'checkbox',
-        role: 'switch',
+      createElement(SettingsSwitch, {
         'aria-label': t('mobile.hideSidebarOnMobile'),
         checked: value.hideSidebarOnMobile,
         disabled: controlsDisabled,
@@ -218,7 +217,6 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
           event.currentTarget.checked,
           t('mobile.saved'),
         ),
-        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
       }),
     ),
     createElement('label', { style: dshSettingsListRowStyle },
@@ -226,9 +224,7 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
         createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('mobile.optimizeSettingsOnMobile')),
         createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('mobile.optimizeSettingsOnMobileDescription')),
       ),
-      createElement('input', {
-        type: 'checkbox',
-        role: 'switch',
+      createElement(SettingsSwitch, {
         'aria-label': t('mobile.optimizeSettingsOnMobile'),
         checked: value.optimizeSettingsOnMobile,
         disabled: controlsDisabled,
@@ -237,7 +233,6 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
           event.currentTarget.checked,
           t('mobile.saved'),
         ),
-        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
       }),
     ),
     createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6, paddingInlineStart: 12 } },
@@ -272,14 +267,11 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
           createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('mobile.sidebarGestures')),
           createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('mobile.sidebarGesturesDescription')),
         ),
-        createElement('input', {
-          type: 'checkbox',
-          role: 'switch',
+        createElement(SettingsSwitch, {
           'aria-label': t('mobile.sidebarGestures'),
           checked: gestures.sidebarGestures,
           disabled: controlsDisabled,
           onChange: (event: { currentTarget: { checked: boolean } }) => updateGestureField('sidebarGestures', event.currentTarget.checked),
-          style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
         }),
       ),
       gestures.sidebarGestures && createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, paddingInlineStart: 12 } },
@@ -334,24 +326,22 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
       createElement('strong', { style: { fontSize: 13 } }, t('lan.pwa.title')),
       createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: 12, lineHeight: 1.6 } }, t('lan.pwa.description')),
       createElement('p', { style: { margin: 0, ...dshSettingsHelpStyle } }, t('mobile.pwaRequiresListener')),
-      createElement('label', { style: { display: 'flex', alignItems: 'flex-start', gap: 8, cursor: controlsDisabled ? 'not-allowed' : 'pointer', color: dshThemeColor.labelSecondary, fontSize: 13 } },
-        createElement('input', { type: 'checkbox', checked: pwa.enabled, disabled: controlsDisabled, onChange: (event: { currentTarget: { checked: boolean } }) => updatePwa({ enabled: event.currentTarget.checked }), style: { marginTop: 2, accentColor: dshThemeColor.accent } }),
-        createElement('span', undefined,
-          createElement('span', { style: { display: 'block' } }, t('lan.pwa.enabled')),
-          createElement('span', { style: { display: 'block', marginTop: 3, fontSize: 11, lineHeight: 1.5 } }, t('lan.pwa.enabledHelp')),
-        ),
-      ),
-      createElement('label', { style: { display: 'flex', alignItems: 'flex-start', gap: 8, cursor: controlsDisabled || !pwa.enabled ? 'not-allowed' : 'pointer', color: dshThemeColor.labelSecondary, fontSize: 13, opacity: pwa.enabled ? 1 : 0.55 } },
-        createElement('input', { type: 'checkbox', checked: pwa.serviceWorker, disabled: controlsDisabled || !pwa.enabled, onChange: (event: { currentTarget: { checked: boolean } }) => updatePwa({ serviceWorker: event.currentTarget.checked }), style: { marginTop: 2, accentColor: dshThemeColor.accent } }),
-        createElement('span', undefined,
-          createElement('span', { style: { display: 'block' } }, t('lan.pwa.serviceWorker')),
-          createElement('span', { style: { display: 'block', marginTop: 3, fontSize: 11, lineHeight: 1.5 } }, t('lan.pwa.serviceWorkerHelp')),
-        ),
-      ),
-      createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 8, cursor: controlsDisabled || !pwa.enabled ? 'not-allowed' : 'pointer', color: dshThemeColor.labelSecondary, fontSize: 13, opacity: pwa.enabled ? 1 : 0.55 } },
-        createElement('input', { type: 'checkbox', checked: pwa.installPrompt, disabled: controlsDisabled || !pwa.enabled, onChange: (event: { currentTarget: { checked: boolean } }) => updatePwa({ installPrompt: event.currentTarget.checked }), style: { accentColor: dshThemeColor.accent } }),
-        createElement('span', undefined, t('lan.pwa.installPrompt')),
-      ),
+      createElement(SettingsToggleRow, {
+        label: t('lan.pwa.enabled'), description: t('lan.pwa.enabledHelp'),
+        checked: pwa.enabled, disabled: controlsDisabled,
+        onChange: (checked) => updatePwa({ enabled: checked }),
+      }),
+      createElement(SettingsToggleRow, {
+        label: t('lan.pwa.serviceWorker'), description: t('lan.pwa.serviceWorkerHelp'),
+        checked: pwa.serviceWorker, disabled: controlsDisabled || !pwa.enabled,
+        style: { opacity: pwa.enabled ? 1 : 0.55 },
+        onChange: (checked) => updatePwa({ serviceWorker: checked }),
+      }),
+      createElement(SettingsToggleRow, {
+        label: t('lan.pwa.installPrompt'), checked: pwa.installPrompt,
+        disabled: controlsDisabled || !pwa.enabled, style: { opacity: pwa.enabled ? 1 : 0.55 },
+        onChange: (checked) => updatePwa({ installPrompt: checked }),
+      }),
       createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6, opacity: pwa.enabled ? 1 : 0.55 } },
         createElement('span', { style: dshSettingsFieldLabelStyle }, t('lan.pwa.notifications')),
         createElement('select', {

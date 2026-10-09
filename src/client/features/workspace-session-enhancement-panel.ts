@@ -1,5 +1,5 @@
 import { createElement, useState } from 'react'
-import type { CSSProperties, ReactElement } from 'react'
+import type { ReactElement } from 'react'
 import {
   CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD,
   DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
@@ -8,28 +8,12 @@ import type { FeaturePanelProps } from './types.js'
 import { SubscriptionUsageSettingsDialog } from './subscription-usage-panel.js'
 import {
   dshFormRootStyle,
-  dshSettingsButtonStyle,
-  dshSettingsHelpStyle,
-  dshSettingsListRowStyle,
   dshThemeColor,
 } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
+import { SettingsToggleRow, settingsControlClass, settingsIconButtonStyle } from '../settings-controls.js'
 
 type WorkspaceToggleField = 'showAdapterLogo' | 'showArchivedSessions' | 'showWorkspaceHiding' | 'showSubscriptionUsage' | 'showQuickPhrases' | 'showSkillQuickReference' | 'rememberConversationRightbarRatio'
-
-/** 用量查询设置入口的图标按钮：沿用共享按钮表面，只收成方形并居中图标。 */
-const usageSettingsIconButtonStyle: CSSProperties = {
-  ...dshSettingsButtonStyle,
-  flex: '0 0 auto',
-  width: 36,
-  height: 36,
-  minHeight: 36,
-  padding: 0,
-  boxSizing: 'border-box',
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-}
 
 /** 工作区会话增强的单列设置面板。 */
 export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
@@ -68,139 +52,49 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, 
       pointerEvents: disabled ? 'none' : 'auto',
     },
   },
-    createElement('label', {
-      style: dshSettingsListRowStyle,
-    },
-      createElement('span', { style: { minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.showLogo')),
-        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.logoDescription')),
-      ),
-      createElement('input', {
-        type: 'checkbox',
-        role: 'switch',
-        'aria-label': t('workspace.showLogo'),
-        checked: value.showAdapterLogo,
-        disabled,
-        onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('showAdapterLogo', event.currentTarget.checked),
-        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
-      }),
-    ),
-    createElement('label', {
-      style: dshSettingsListRowStyle,
-    },
-      createElement('span', { style: { minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.showSkillQuickReference')),
-        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.skillQuickReferenceDescription')),
-      ),
-      createElement('input', {
-        type: 'checkbox',
-        role: 'switch',
-        'aria-label': t('workspace.showSkillQuickReference'),
-        checked: value.showSkillQuickReference,
-        disabled,
-        onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('showSkillQuickReference', event.currentTarget.checked),
-        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
-      }),
-    ),
-    createElement('label', {
-      style: dshSettingsListRowStyle,
-    },
-      createElement('span', { style: { minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.showWorkspaceHiding')),
-        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.workspaceHidingDescription')),
-      ),
-      createElement('input', {
-        type: 'checkbox',
-        role: 'switch',
-        'aria-label': t('workspace.showWorkspaceHiding'),
-        checked: value.showWorkspaceHiding,
-        disabled,
-        onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('showWorkspaceHiding', event.currentTarget.checked),
-        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
-      }),
-    ),
-    createElement('div', {
-      style: dshSettingsListRowStyle,
-    },
-      createElement('label', {
-        style: { display: 'flex', alignItems: 'center', gap: 12, flex: '1 1 auto', minWidth: 0, cursor: 'pointer' },
-      },
-        createElement('span', { style: { minWidth: 0 } },
-          createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.showSubscriptionUsage')),
-          createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.subscriptionUsageDescription')),
-        ),
-        createElement('input', {
-          type: 'checkbox',
-          role: 'switch',
-          'aria-label': t('workspace.showSubscriptionUsage'),
-          checked: value.showSubscriptionUsage,
-          disabled,
-          onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('showSubscriptionUsage', event.currentTarget.checked),
-          style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
-        }),
-      ),
-      createElement('button', {
-        type: 'button',
-        'aria-haspopup': 'dialog',
-        'aria-expanded': usageSettingsOpen,
+    // 所有选项共用同一行结构，文案长度不会影响右侧操作的位置。
+    createElement(SettingsToggleRow, {
+      label: t('workspace.showLogo'), description: t('workspace.logoDescription'),
+      checked: value.showAdapterLogo, disabled,
+      onChange: (checked) => updateSetting('showAdapterLogo', checked),
+    }),
+    createElement(SettingsToggleRow, {
+      label: t('workspace.showSkillQuickReference'), description: t('workspace.skillQuickReferenceDescription'),
+      checked: value.showSkillQuickReference, disabled,
+      onChange: (checked) => updateSetting('showSkillQuickReference', checked),
+    }),
+    createElement(SettingsToggleRow, {
+      label: t('workspace.showWorkspaceHiding'), description: t('workspace.workspaceHidingDescription'),
+      checked: value.showWorkspaceHiding, disabled,
+      onChange: (checked) => updateSetting('showWorkspaceHiding', checked),
+    }),
+    createElement(SettingsToggleRow, {
+      label: t('workspace.showSubscriptionUsage'), description: t('workspace.subscriptionUsageDescription'),
+      checked: value.showSubscriptionUsage, disabled,
+      onChange: (checked) => updateSetting('showSubscriptionUsage', checked),
+      actions: createElement('button', {
+        type: 'button', className: settingsControlClass.iconButton,
+        'aria-haspopup': 'dialog', 'aria-expanded': usageSettingsOpen,
         'aria-label': t('workspace.subscriptionUsageSettings'),
-        title: t('workspace.subscriptionUsageSettings'),
-        disabled,
-        onClick: () => setUsageSettingsOpen(true),
-        style: usageSettingsIconButtonStyle,
+        title: t('workspace.subscriptionUsageSettings'), disabled,
+        onClick: () => setUsageSettingsOpen(true), style: settingsIconButtonStyle,
       }, createUsageSettingsGearIcon()),
-    ),
-    createElement('label', {
-      style: dshSettingsListRowStyle,
-    },
-      createElement('span', { style: { minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.showArchivedSessions')),
-        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.archivedSessionsDescription')),
-      ),
-      createElement('input', {
-        type: 'checkbox',
-        role: 'switch',
-        'aria-label': t('workspace.showArchivedSessions'),
-        checked: value.showArchivedSessions,
-        disabled,
-        onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('showArchivedSessions', event.currentTarget.checked),
-        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
-      }),
-    ),
-    createElement('label', {
-      style: dshSettingsListRowStyle,
-    },
-      createElement('span', { style: { minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.showQuickPhrases')),
-        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.quickPhrasesDescription')),
-      ),
-      createElement('input', {
-        type: 'checkbox',
-        role: 'switch',
-        'aria-label': t('workspace.showQuickPhrases'),
-        checked: value.showQuickPhrases,
-        disabled,
-        onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('showQuickPhrases', event.currentTarget.checked),
-        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
-      }),
-    ),
-    createElement('label', {
-      style: dshSettingsListRowStyle,
-    },
-      createElement('span', { style: { minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('workspace.rememberConversationRightbarRatio')),
-        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('workspace.rememberConversationRightbarRatioDescription')),
-      ),
-      createElement('input', {
-        type: 'checkbox',
-        role: 'switch',
-        'aria-label': t('workspace.rememberConversationRightbarRatio'),
-        checked: value.rememberConversationRightbarRatio,
-        disabled,
-        onChange: (event: { currentTarget: { checked: boolean } }) => updateSetting('rememberConversationRightbarRatio', event.currentTarget.checked),
-        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
-      }),
-    ),
+    }),
+    createElement(SettingsToggleRow, {
+      label: t('workspace.showArchivedSessions'), description: t('workspace.archivedSessionsDescription'),
+      checked: value.showArchivedSessions, disabled,
+      onChange: (checked) => updateSetting('showArchivedSessions', checked),
+    }),
+    createElement(SettingsToggleRow, {
+      label: t('workspace.showQuickPhrases'), description: t('workspace.quickPhrasesDescription'),
+      checked: value.showQuickPhrases, disabled,
+      onChange: (checked) => updateSetting('showQuickPhrases', checked),
+    }),
+    createElement(SettingsToggleRow, {
+      label: t('workspace.rememberConversationRightbarRatio'), description: t('workspace.rememberConversationRightbarRatioDescription'),
+      checked: value.rememberConversationRightbarRatio, disabled,
+      onChange: (checked) => updateSetting('rememberConversationRightbarRatio', checked),
+    }),
     usageSettingsOpen && createElement(SubscriptionUsageSettingsDialog, {
       services,
       snapshot,

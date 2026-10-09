@@ -13,6 +13,7 @@ import {
 } from '../theme.js'
 import { writeLoginProtectionSession } from './login-protection-session.js'
 import { useCodingNsTranslator } from '../locale.js'
+import { SettingsToggleRow } from '../settings-controls.js'
 
 const DEFAULT_SCOPES: LoginProtectionScopes = { lan: true, relay: true }
 
@@ -80,10 +81,7 @@ export function LoginProtectionPanel({ services, enabled, snapshot, notify }: Fe
     'aria-disabled': controlsDisabled,
   },
     createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 } }, t('loginProtection.panelHint')),
-    createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 8, color: dshThemeColor.labelSecondary, fontSize: 13 } },
-      createElement('input', { type: 'checkbox', checked: active, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { checked: boolean } }) => setActive(event.currentTarget.checked), style: { accentColor: dshThemeColor.accent } }),
-      createElement('span', undefined, t('loginProtection.enable')),
-    ),
+    createElement(SettingsToggleRow, { label: t('loginProtection.enable'), checked: active, disabled: controlsDisabled || busy, onChange: setActive }),
     createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
       createElement('span', { style: dshSettingsFieldLabelStyle }, t('loginProtection.username')),
       createElement('input', { value: username, disabled: controlsDisabled || busy || !active, autoComplete: 'username', onChange: (event: { currentTarget: { value: string } }) => setUsername(event.currentTarget.value), style: field }),
@@ -101,10 +99,10 @@ export function LoginProtectionPanel({ services, enabled, snapshot, notify }: Fe
       ...([
         ['lan', t('loginProtection.scopeLan'), t('loginProtection.scopeLanHint')],
         ['relay', t('loginProtection.scopeRelay'), t('loginProtection.scopeRelayHint')],
-      ] as const).map(([key, label, hint]) => createElement('label', { key, style: { display: 'flex', alignItems: 'center', gap: 8, color: dshThemeColor.labelSecondary, fontSize: 13 } },
-        createElement('input', { type: 'checkbox', checked: scopes[key], onChange: () => toggleScope(key), style: { accentColor: dshThemeColor.accent } }),
-        createElement('span', undefined, t('loginProtection.scopeOption', { label, hint })),
-      )),
+      ] as const).map(([key, label, hint]) => createElement(SettingsToggleRow, {
+        key, label: t('loginProtection.scopeOption', { label, hint }), checked: scopes[key],
+        disabled: controlsDisabled || busy || !active, onChange: () => toggleScope(key),
+      })),
     ),
     createElement('button', { type: 'button', disabled: controlsDisabled || busy, onClick: () => void save(), style: dshSettingsPrimaryButtonStyle }, busy ? t('loginProtection.saving') : t('loginProtection.save')),
   )

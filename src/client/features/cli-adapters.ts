@@ -22,6 +22,7 @@ import { invalidateModelCatalogCache } from '../model-catalog-cache.js'
 import { resolveRefreshIcon } from '../../dsh-capabilities/client/primitives-adapter.js'
 import { createCliSettingsRpc } from '../cli-settings-rpc.js'
 import { createPeerHostManagementApi } from '../peer-host-management-api.js'
+import { SettingsSwitch } from '../settings-controls.js'
 
 const CLI_ADAPTER_STYLE_ID = 'codingns4dsh-cli-adapter-settings-style'
 const cliAdapterClass = {
@@ -60,7 +61,6 @@ function installCliAdapterStyles(): void {
 .${cliAdapterClass.status},.${cliAdapterClass.version}{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .${cliAdapterClass.status}{padding:3px 7px;border-radius:5px;background:var(--dsw-alias-state-success-bg,rgba(22,163,74,.12))}
 .${cliAdapterClass.toggle}{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;color:var(--dsw-alias-label-secondary,GrayText);font-size:13px;font-weight:500}
-.${cliAdapterClass.toggle} input{width:18px;height:18px;margin:0;accent-color:var(--dsw-alias-state-success-primary,#16a34a)}
 .${cliAdapterClass.detectButton}{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:32px;height:32px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,GrayText);cursor:pointer}
 .${cliAdapterClass.detectButton}:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08));color:var(--dsw-alias-label-primary,CanvasText)}
 .${cliAdapterClass.detectButton}:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#1677ff);outline-offset:2px}
@@ -76,7 +76,7 @@ function installCliAdapterStyles(): void {
   .${cliAdapterClass.metadata}{grid-column:1;grid-row:2;display:flex;flex-wrap:wrap;gap:7px!important;min-width:0;max-width:100%}
   .${cliAdapterClass.status},.${cliAdapterClass.version}{max-width:100%;min-width:0!important}
   .${cliAdapterClass.toggle}{grid-column:2;grid-row:2;justify-self:end;align-self:center;min-width:0;max-width:100%;white-space:nowrap}
-  .${cliAdapterClass.toggle} span{max-width:7em;overflow:hidden;text-overflow:ellipsis}
+  .${cliAdapterClass.toggle}>span:first-child{max-width:7em;overflow:hidden;text-overflow:ellipsis}
   .${cliAdapterClass.row}>.${cliAdapterClass.detectButton}{grid-column:1;grid-row:2;justify-self:start}
 }
 `
@@ -312,14 +312,11 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
         createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('cli.subagentBridge')),
         createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeDescription')),
       ),
-      createElement('input', {
-        type: 'checkbox',
-        role: 'switch',
+      createElement(SettingsSwitch, {
         'aria-label': t('cli.subagentBridgeToggle'),
         checked: bridgeEnabled,
         disabled: !bridgeWritable || bridgeBusy,
         onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleSubagentBridge(event.currentTarget.checked) },
-        style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
       }),
     ),
     peerHostId === null && createElement('label', { style: { ...dshSettingsListRowStyle, opacity: bridgeEnabled ? 1 : 0.5 } },
@@ -384,8 +381,8 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
         ),
         createElement(AdapterDetectButton, { label: `${adapter.name} · ${t(detecting === adapter.id || detecting === '*' ? 'cli.detecting' : 'cli.redetect')}`, busy: detecting === adapter.id || detecting === '*', disabled: disabled || detecting !== null, onClick: () => { void redetect(adapter.id) } }),
         createElement('label', { className: cliAdapterClass.toggle, style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' } },
-          createElement('input', { type: 'checkbox', role: 'switch', 'aria-label': t('cli.adapterToggle', { name: adapter.name }), checked: adapter.enabled, disabled: peerHostId !== null || !adapter.installed || busyAdapterId === adapter.id, onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleAdapter(adapter, event.currentTarget.checked) }, style: { accentColor: dshThemeColor.accent } }),
-          createElement('span', undefined, adapter.enabled ? t('cli.enabled') : t('cli.disabled')),
+          createElement('span', { 'aria-hidden': true }, adapter.enabled ? t('cli.enabled') : t('cli.disabled')),
+          createElement(SettingsSwitch, { 'aria-label': t('cli.adapterToggle', { name: adapter.name }), checked: adapter.enabled, disabled: peerHostId !== null || !adapter.installed || busyAdapterId === adapter.id, onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleAdapter(adapter, event.currentTarget.checked) } }),
         ),
       )),
     ),

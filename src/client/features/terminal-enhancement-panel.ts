@@ -24,6 +24,7 @@ import {
 import type { CodingNsRpcClient, FeaturePanelProps } from './types.js'
 import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 import { debugInfo, debugWarn } from '../../shared/debug.js'
+import { SettingsSwitch } from '../settings-controls.js'
 
 const profileLabels: Readonly<Record<TerminalProfileId, string>> = {
   system: 'terminal.systemRecommended',
@@ -126,13 +127,13 @@ export function TerminalEnhancementPanel({ services, enabled, snapshot, notify }
       createElement(ColorField, { label: t('terminal.foreground'), value: appearance.foreground, disabled, onChange: (foreground) => updateAppearance({ foreground }) }),
       createElement(ColorField, { label: t('terminal.cursorColor'), value: appearance.cursorColor, disabled, onChange: (cursorColor) => updateAppearance({ cursorColor }) }),
       createElement(Field, { label: t('terminal.cursorBlink') },
-        createElement('label', { style: { display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 36, opacity: disabled ? 0.6 : 1 } },
-          createElement('input', {
-            type: 'checkbox', role: 'switch', 'aria-label': t('terminal.cursorBlink'),
+        createElement('label', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 36, width: '100%' } },
+          createElement('span', { style: dshSettingsHelpStyle }, appearance.cursorBlink ? t('terminal.cursorOn') : t('terminal.cursorOff')),
+          createElement(SettingsSwitch, {
+            'aria-label': t('terminal.cursorBlink'),
             checked: appearance.cursorBlink, disabled,
             onChange: (event: { currentTarget: { checked: boolean } }) => updateAppearance({ cursorBlink: event.currentTarget.checked }),
           }),
-          appearance.cursorBlink ? t('terminal.cursorOn') : t('terminal.cursorOff'),
         ),
       ),
       createElement(NumberField, { label: t('terminal.fontSize'), value: appearance.fontSize, min: 10, max: 32, step: 1, disabled, onChange: (fontSize) => updateAppearance({ fontSize }) }),

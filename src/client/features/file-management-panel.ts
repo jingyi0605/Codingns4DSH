@@ -7,11 +7,9 @@ import {
 import type { FeaturePanelProps } from './types.js'
 import {
   dshFormRootStyle,
-  dshSettingsHelpStyle,
-  dshSettingsListRowStyle,
-  dshThemeColor,
 } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
+import { SettingsToggleRow } from '../settings-controls.js'
 
 /** 文件管理增强的独立能力开关面板。 */
 export function FileManagementPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
@@ -77,19 +75,5 @@ function createSwitchRow(
   disabled: boolean,
   onChange: (next: boolean) => void,
 ): ReactElement {
-  return createElement('label', { style: dshSettingsListRowStyle },
-    createElement('span', { style: { minWidth: 0 } },
-      createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, label),
-      createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, description),
-    ),
-    createElement('input', {
-      type: 'checkbox',
-      role: 'switch',
-      'aria-label': label,
-      checked,
-      disabled,
-      onChange: (event: { currentTarget: { checked: boolean } }) => onChange(event.currentTarget.checked),
-      style: { flex: '0 0 auto', accentColor: dshThemeColor.accent },
-    }),
-  )
+  return createElement(SettingsToggleRow, { label, description, checked, disabled, onChange })
 }
