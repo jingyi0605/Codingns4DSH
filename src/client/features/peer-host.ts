@@ -113,6 +113,7 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
     const workspaceTab = startPeerHostWorkspaceTab({
       api: management,
       onWorkspaceAdded: () => polling.refresh({ afterPending: true }),
+      onWorkspaceRemoved: () => polling.refresh({ afterPending: true }),
       locale: context.services.locale,
     })
     context.resources.add(() => workspaceTab.dispose())

@@ -64,6 +64,7 @@ const TAB_STYLE_TEXT = `
 .${TAB_CLASS}-chips{display:flex;flex-wrap:wrap;gap:6px}
 .${TAB_CLASS}-chip{--codingns-host-color:var(--dsw-alias-label-secondary);box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:0 10px;border:.5px solid var(--dsw-alias-border-l4);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12px;font-weight:500;line-height:18px;white-space:nowrap;cursor:pointer}
 .${TAB_CLASS}-chip:hover:not([aria-pressed='true']){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.${TAB_CLASS}-chip:disabled{opacity:.4;cursor:not-allowed}
 .${TAB_CLASS}-chip[aria-pressed='true']{border-color:var(--codingns-host-color);color:var(--codingns-host-color);background:color-mix(in srgb,var(--codingns-host-color) 12%,transparent)}
 .${TAB_CLASS}-chip:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
 .${TAB_CLASS}-dot{flex:none;width:8px;height:8px;border-radius:999px;background:var(--codingns-host-color)}
@@ -82,11 +83,16 @@ const TAB_STYLE_TEXT = `
 .${TAB_CLASS}-tableWrap{flex:none;overflow-x:auto;margin:0 -8px;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-sm)}
 .${TAB_CLASS}-table{width:100%;min-width:520px;border-collapse:collapse;table-layout:fixed;font-size:12px;line-height:18px}
 .${TAB_CLASS}-table th{padding:8px;text-align:left;font-size:11px;font-weight:500;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-interactive-bg-hover);white-space:nowrap}
-.${TAB_CLASS}-table td{padding:9px 8px;border-top:.5px solid var(--dsw-alias-border-l4);color:var(--dsw-alias-label-primary);vertical-align:top}
-.${TAB_CLASS}-table th:nth-child(1),.${TAB_CLASS}-table td:nth-child(1){width:25%}
+.${TAB_CLASS}-table td{padding:9px 8px;border-top:.5px solid var(--dsw-alias-border-l4);color:var(--dsw-alias-label-primary);vertical-align:middle}
+.${TAB_CLASS}-table th:nth-child(1),.${TAB_CLASS}-table td:nth-child(1){width:24%}
 .${TAB_CLASS}-table th:nth-child(2),.${TAB_CLASS}-table td:nth-child(2){width:13%;white-space:nowrap}
-.${TAB_CLASS}-table th:nth-child(3),.${TAB_CLASS}-table td:nth-child(3){width:20%;white-space:nowrap}
-.${TAB_CLASS}-table th:nth-child(4),.${TAB_CLASS}-table td:nth-child(4){width:42%}
+.${TAB_CLASS}-table th:nth-child(3),.${TAB_CLASS}-table td:nth-child(3){width:18%;white-space:nowrap}
+.${TAB_CLASS}-table th:nth-child(5),.${TAB_CLASS}-table td:nth-child(5){width:64px;text-align:right;white-space:nowrap}
+.${TAB_CLASS}-remove{box-sizing:border-box;min-height:24px;padding:0 8px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-state-error-primary);font-family:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}
+.${TAB_CLASS}-remove:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.${TAB_CLASS}-remove:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}
+.${TAB_CLASS}-remove:disabled{opacity:.4;cursor:not-allowed}
+.${TAB_CLASS}-remove:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}
 .${TAB_CLASS}-tableName{display:block;overflow:hidden;font-weight:500;text-overflow:ellipsis;white-space:nowrap}
 .${TAB_CLASS}-tablePath{display:block;overflow:hidden;color:var(--dsw-alias-label-tertiary);text-overflow:ellipsis;white-space:nowrap}
 .${TAB_CLASS}-tableEmpty{padding:10px 0;margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
@@ -118,6 +124,8 @@ export interface PeerHostWorkspaceTabOptions {
   readonly locale?: CodingNsLocale
   /** 远端工作区登记成功后触发聚合刷新；失败不影响标签页状态。 */
   readonly onWorkspaceAdded?: (peerHostId: string, workspaceId: string) => void | Promise<void>
+  /** 远端工作区取消登记成功后触发聚合刷新；不删除远端目录或会话。 */
+  readonly onWorkspaceRemoved?: (peerHostId: string, workspaceId: string) => void | Promise<void>
 }
 
 /** 一个已打开对话框的注入状态；对话框关闭后随 DOM 一起丢弃。 */
@@ -341,6 +349,7 @@ function render(state: Injection, options: PeerHostWorkspaceTabOptions | null): 
     const button = dom.createElement('button')
     button.type = 'button'
     button.className = `${TAB_CLASS}-chip`
+    button.disabled = state.loading
     button.setAttribute('data-codingns-peer-host-tab-host', record.id)
     button.setAttribute('data-codingns-peer-host-tab-status', record.status)
     button.setAttribute('aria-pressed', String(active))
@@ -362,7 +371,7 @@ function render(state: Injection, options: PeerHostWorkspaceTabOptions | null): 
       button.append(badge)
     }
     button.addEventListener('click', () => {
-      if (options === null || state.selectedHostId === record.id) return
+      if (options === null || state.loading || state.selectedHostId === record.id) return
       state.selectedHostId = record.id
       state.candidates = null
       state.addedWorkspaces = null
@@ -415,7 +424,9 @@ function render(state: Injection, options: PeerHostWorkspaceTabOptions | null): 
     empty.textContent = t('peerHostWorkspace.noAddedWorkspaces')
     state.panel.append(empty)
   } else {
-    state.panel.append(createWorkspaceTable(dom, t, selected?.displayName ?? '', addedCandidates))
+    state.panel.append(createWorkspaceTable(dom, t, selected?.displayName ?? '', addedCandidates, state.loading, (workspaceId) => {
+      if (options !== null) void setWorkspaceVisibility(state, options, workspaceId, false)
+    }))
   }
 
   if (availableCandidates.length > 0) {
@@ -458,7 +469,7 @@ function render(state: Injection, options: PeerHostWorkspaceTabOptions | null): 
     row.append(text, count)
     row.addEventListener('click', () => {
       if (options === null) return
-      void addWorkspace(state, options, candidate.workspaceId)
+      void setWorkspaceVisibility(state, options, candidate.workspaceId, true)
     })
     list.append(row)
   }
@@ -467,12 +478,14 @@ function render(state: Injection, options: PeerHostWorkspaceTabOptions | null): 
   if (state.message !== null) state.panel.append(note(dom, state.message, state.messageKind))
 }
 
-/** 渲染已添加工作区的只读信息表；添加动作仍由下方候选列表负责。 */
+/** 渲染已添加工作区的信息与移除按钮；添加动作仍由下方候选列表负责。 */
 function createWorkspaceTable(
   dom: Document,
   t: CodingNsTranslator,
   hostName: string,
   candidates: readonly WorkspaceTableRow[],
+  loading: boolean,
+  onRemove: (workspaceId: string) => void,
 ): HTMLElement {
   const wrapper = dom.createElement('div')
   wrapper.className = `${TAB_CLASS}-tableWrap`
@@ -486,6 +499,7 @@ function createWorkspaceTable(
     t('peerHostWorkspace.columnSessions'),
     t('peerHostWorkspace.columnHost'),
     t('peerHostWorkspace.columnPath'),
+    t('peerHostWorkspace.columnActions'),
   ]) {
     const cell = dom.createElement('th')
     cell.setAttribute('scope', 'col')
@@ -514,7 +528,18 @@ function createWorkspaceTable(
     pathText.className = `${TAB_CLASS}-tablePath`
     pathText.textContent = candidate.path
     path.append(pathText)
-    row.append(name, sessions, host, path)
+    const actions = dom.createElement('td')
+    const remove = dom.createElement('button')
+    remove.type = 'button'
+    remove.className = `${TAB_CLASS}-remove`
+    remove.textContent = t('peerHostWorkspace.remove')
+    remove.setAttribute('data-codingns-peer-host-tab-remove-workspace', candidate.workspaceId)
+    remove.setAttribute('aria-label', t('peerHostWorkspace.removeLabel', { name: candidate.displayName }))
+    remove.title = t('peerHostWorkspace.removeHint')
+    remove.disabled = loading
+    remove.addEventListener('click', () => { onRemove(candidate.workspaceId) })
+    actions.append(remove)
+    row.append(name, sessions, host, path, actions)
     body.append(row)
   }
   table.append(head, body)
@@ -554,7 +579,7 @@ async function loadCandidates(state: Injection, options: PeerHostWorkspaceTabOpt
       : undefined
     // 聚合请求可能因远端认证/网络抖动暂时没有该 Host，不能把“没有结果”写成
     // 权威空列表，否则 visibleWorkspaceIds 与候选工作区都在时仍会显示空表。
-    // 只有明确 ready 的摘要才覆盖兼容回退；新添加的行随后由 addWorkspace 即时补入。
+    // 只有明确 ready 的摘要才覆盖兼容回退；可见性变更随后即时更新表格。
     state.addedWorkspaces = aggregateHost?.availability === 'ready'
       ? aggregateHost.workspaces.map((workspace) => ({
         workspaceId: workspace.workspaceId,
@@ -573,31 +598,41 @@ async function loadCandidates(state: Injection, options: PeerHostWorkspaceTabOpt
   render(state, options)
 }
 
-async function addWorkspace(state: Injection, options: PeerHostWorkspaceTabOptions, workspaceId: string): Promise<void> {
+/** 添加与移除共用可见性接口；持久化成功后才更新表格与候选列表。 */
+async function setWorkspaceVisibility(state: Injection, options: PeerHostWorkspaceTabOptions, workspaceId: string, visible: boolean): Promise<void> {
   const hostId = state.selectedHostId
-  if (hostId === null) return
+  if (hostId === null || state.loading) return
+  // 先保留当前行，避免移除成功后的新可见 ID 覆盖聚合降级时的已有工作区。
+  const visibleIds = new Set(state.records?.find((record) => record.id === hostId)?.visibleWorkspaceIds ?? [])
+  const current = state.addedWorkspaces
+    ?? state.candidates?.filter((candidate) => visibleIds.has(candidate.workspaceId))
+    ?? []
   state.loading = true
   state.message = null
   render(state, options)
   try {
-    const updated = await options.api.setWorkspaceVisibility(hostId, workspaceId, true)
-    if (updated !== undefined) {
-      state.records = state.records?.map((record) => record.id === hostId ? updated : record) ?? state.records
+    const updated = await options.api.setWorkspaceVisibility(hostId, workspaceId, visible)
+    // 兼容未返回记录的旧接口；仍同步本地可见 ID，防止被移除项继续从候选列表隐藏。
+    state.records = state.records?.map((record) => record.id !== hostId ? record : updated ?? {
+      ...record,
+      visibleWorkspaceIds: visible
+        ? [...new Set([...visibleIds, workspaceId])]
+        : [...visibleIds].filter((id) => id !== workspaceId),
+    }) ?? state.records
+    const workspace = visible
+      ? state.candidates?.find((candidate) => candidate.workspaceId === workspaceId)
+      : current.find((candidate) => candidate.workspaceId === workspaceId)
+    state.addedWorkspaces = current.filter((candidate) => candidate.workspaceId !== workspaceId)
+    if (visible && workspace !== undefined) state.addedWorkspaces = [...state.addedWorkspaces, workspace]
+    if (!visible && workspace !== undefined && !state.candidates?.some((candidate) => candidate.workspaceId === workspaceId)) {
+      // 候选读取暂时为空时，聚合摘要仍提供完整行信息，取消添加后即可再次添加。
+      state.candidates = [...(state.candidates ?? []), workspace]
     }
-    const added = state.candidates?.find((candidate) => candidate.workspaceId === workspaceId)
-    if (added !== undefined) {
-      // 聚合降级时表格由可见 ID 与候选列表构成；添加新行也必须保留这些已有行。
-      const visibleIds = new Set(state.records?.find((record) => record.id === hostId)?.visibleWorkspaceIds ?? [])
-      const current = state.addedWorkspaces
-        ?? state.candidates?.filter((candidate) => visibleIds.has(candidate.workspaceId))
-        ?? []
-      if (!current.some((workspace) => workspace.workspaceId === added.workspaceId)) {
-        state.addedWorkspaces = [...current, added]
-      }
-    }
-    state.message = state.t('peerHostWorkspace.added')
+    state.message = state.t(visible ? 'peerHostWorkspace.added' : 'peerHostWorkspace.removed')
     state.messageKind = 'success'
-    await options.onWorkspaceAdded?.(hostId, workspaceId)
+    // 聚合刷新失败不能把已经保存成功的操作显示成失败；后续轮询仍会同步侧栏。
+    const onChanged = visible ? options.onWorkspaceAdded : options.onWorkspaceRemoved
+    await Promise.resolve().then(() => onChanged?.(hostId, workspaceId)).catch(() => {})
   } catch (error) {
     state.message = message(error)
     state.messageKind = 'error'
