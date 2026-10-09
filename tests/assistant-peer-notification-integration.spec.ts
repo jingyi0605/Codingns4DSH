@@ -22,13 +22,23 @@ async function fixture(t: TestContext, localEnabled: boolean) {
   settings.assistant.appearance = { ...normalizeAssistantAppearance(settings.assistant.appearance), floatingEnabled: localEnabled }
   const listeners = new Map<string, Set<(...args: any[]) => any>>()
   const watchers = new Set<() => void>()
-  const session = { id: 's', title: '实际事件会话', header: { id: 's' }, snapshotEvents: () => [] }
+  const session = { id: 's', title: '实际事件会话', header: { id: 's' }, events: [] as any[], snapshotEvents() { return this.events } }
   const rpc = new CodingNsRpcTable()
   const on = (name: string, listener: (...args: any[]) => any) => {
     const set = listeners.get(name) ?? new Set(); set.add(listener); listeners.set(name, set)
     return () => { set.delete(listener) }
   }
   const emit = (name: string, ...args: any[]) => {
+    // 提问在会话事件流中的表达是问询工具的调用与结果；读取时扫描它们得到当前提问。
+    if (name === 'user-questions/request') {
+      const request = args[0] ?? {}
+      const requestId = typeof request.requestId === 'string' && request.requestId.trim() !== '' ? request.requestId.trim() : undefined
+      if (requestId !== undefined) {
+        session.events.push({ type: 'tool/call', data: { callId: requestId, name: 'ask_user_question' }, seq: session.events.length + 1 })
+        const next = args.at(-1)
+        if (typeof next === 'function') args[args.length - 1] = (...nextArgs: any[]) => Promise.resolve(next(...nextArgs)).finally(() => { session.events.push({ type: 'tool/result', data: { callId: requestId, message: { toolCallId: requestId } }, seq: session.events.length + 1 }) })
+      }
+    }
     let result: any
     for (const listener of listeners.get(name) ?? []) result = listener(...args)
     return result
@@ -56,7 +66,7 @@ async function fixture(t: TestContext, localEnabled: boolean) {
   }
   return { call, emit, session, rpc, services, registry, settings: () => settings,
     update: services.settings!.update.bind(services.settings),
-    event: (type: string, data: unknown, seq: number) => emit('native-event', session, { type, data, seq }),
+    event: (type: string, data: any, seq: number) => { session.events.push({ type, data, seq }); return emit('native-event', session, { type, data, seq }) },
   }
 }
 
@@ -137,13 +147,13 @@ test('真实Feature登记原生安全来源，独立分页保留全部待办，�
   assert.equal(getDesktopAssistantNotifications(f.services), undefined)
 })
 
-test('真实生命周期保存接受五个通知草稿，非法值原子拒绝，不修改悬浮和语音开关', async (t) => {
+test('真实生命周期保存接受通知草稿和自动关闭时长，非法值原子拒绝，不修改悬浮和语音开关', async (t) => {
   const f = await fixture(t, true)
   const route = f.rpc.resolve('assistant/lifecycle/configure')!
   const save = (configurationPatch: unknown) => route.handler(route.action, { name: '助理', avatarId: 'codingns-default', configurationPatch })
   const before = structuredClone(f.settings().assistant)
-  await save(['enabled', 'completed', 'error', 'question', 'approval'].map(key => ({ op: 'set', path: ['notifications', key], value: false })))
-  assert.deepEqual(f.settings().assistant.notifications, { enabled: false, completed: false, error: false, question: false, approval: false })
+  await save([...['enabled', 'completed', 'error', 'question', 'approval', 'autoClose'].map(key => ({ op: 'set' as const, path: ['notifications', key], value: false })), { op: 'set' as const, path: ['notifications', 'autoCloseSeconds'], value: 45 }])
+  assert.deepEqual(f.settings().assistant.notifications, { enabled: false, completed: false, error: false, question: false, approval: false, autoClose: false, autoCloseSeconds: 45 })
   assert.equal(f.settings().assistant.appearance!.floatingEnabled, before.appearance!.floatingEnabled)
   assert.equal(f.settings().assistant.voice.initialized, before.voice.initialized)
   const saved = structuredClone(f.settings().assistant)

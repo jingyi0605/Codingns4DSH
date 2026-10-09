@@ -16,14 +16,17 @@ function fixture() {
   return { center, consume, turn, request, time: (value: number) => { now = value } }
 }
 
-test('旧配置缺省五个开关全开，显式关闭保留，设置 schema 不丢通知字段', () => {
+test('旧配置缺省通知开关全开并使用30秒，显式关闭和时长保留，设置 schema 不丢通知字段', () => {
   assert.deepEqual(normalizeAssistantNotificationSettings(undefined), DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS)
   assert.deepEqual(normalizeAssistantNotificationSettings({ completed: false, error: 'false' }), { ...DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS, completed: false })
+  assert.equal(normalizeAssistantNotificationSettings({ autoCloseSeconds: 45 }).autoCloseSeconds, 45)
+  assert.equal(normalizeAssistantNotificationSettings({ autoCloseSeconds: 20 }).autoCloseSeconds, 30)
   const value = structuredClone(DEFAULT_CODINGNS_SETTINGS)
   delete value.assistant.notifications
   assert.deepEqual(CodingNsSettingsSchema(value).assistant.notifications, DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS)
   value.assistant.notifications = { ...DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS, question: false }
   assert.equal(CodingNsSettingsSchema(value).assistant.notifications!.question, false)
+  assert.equal(CodingNsSettingsSchema({ ...value, assistant: { ...value.assistant, notifications: { ...value.assistant.notifications, autoCloseSeconds: 60 } } }).assistant.notifications!.autoCloseSeconds, 60)
 })
 
 test('同轮唯一终态，失败优先且可升级完成，历史淘汰不重置序列水位', () => {
@@ -55,23 +58,24 @@ test('请求独立结束，已读和收起都保留待处理，待办不受100�
   assert.equal(f.center.read().primary!.kind, 'question')
 })
 
-test('计时从首次真实展示开始，刷新确认幂等；抢占不重启终态截止时间', () => {
+test('完成计时从首次真实展示开始，刷新确认幂等；抢占不重启截止时间，错误不设内置截止', () => {
   const f = fixture(); f.turn('turn-completed', 1)
   const frame = f.center.read(), id = frame.primary!.noticeId
   f.time(10_000)
   assert.equal(f.center.read().primary!.deadline, undefined)
   const input = { generation: frame.generation, noticeId: id }
   const first = f.center.ack({ ...input, action: 'presented' })
-  assert.equal(first.notification.deadline, 15_000)
+  assert.equal(first.notification.deadline, 20_000)
   f.time(11_000); f.center.ack({ ...input, action: 'presented' })
-  assert.equal(f.center.read().primary!.deadline, 15_000)
+  assert.equal(f.center.read().primary!.deadline, 20_000)
   f.request('q'); assert.equal(f.center.read().primary!.kind, 'question')
-  f.time(15_000); f.request('q', 'question', 'request-resolved')
+  f.time(20_000); f.request('q', 'question', 'request-resolved')
   assert.equal(f.center.read().primary, null)
   assert.equal(f.center.read().items.find(item => item.noticeId === id)!.read, false)
   f.turn('turn-failed', 2)
   const error = f.center.read().primary!
-  assert.equal(f.center.ack({ noticeId: error.noticeId, generation: f.center.generation, action: 'presented' }).notification.deadline, 23_000)
+  // 错误的自动关闭跟随助理通知设置，不设内置截止时间。
+  assert.equal(f.center.ack({ noticeId: error.noticeId, generation: f.center.generation, action: 'presented' }).notification.deadline, undefined)
 })
 
 test('未显示终态继续排队，关闭待办不阻止新待办，优先级按有效待办/错误/完成', () => {
@@ -141,7 +145,7 @@ test('同毫秒待办保持FIFO，重复事实不推进修订，精确结算后�
   assert.throws(() => f.center.read({ cursor: `${'9'.repeat(170)}:0:0` }), /游标/u)
 })
 
-test('错误升级后迟到的完成展示确认不能启动计时，当前类型确认才启动8秒', () => {
+test('错误升级后迟到的完成展示确认不能改变呈现，当前类型确认才启动呈现且无内置计时', () => {
   const f = fixture(); f.turn('turn-completed', 1, 1)
   const frame = f.center.read(), noticeId = frame.primary!.noticeId
   f.turn('turn-failed', 1, 2); const revision = f.center.revision
@@ -152,7 +156,10 @@ test('错误升级后迟到的完成展示确认不能启动计时，当前类�
   assert.equal(stale.notification.deadline, undefined)
   assert.equal(stale.notification.presentation, 'queued')
   f.time(3000)
-  assert.equal(f.center.ack({ ...input, kind: 'error' }).notification.deadline, 11_000)
+  const confirmed = f.center.ack({ ...input, kind: 'error' })
+  // 错误的自动关闭跟随助理通知设置，不设内置截止时间。
+  assert.equal(confirmed.notification.deadline, undefined)
+  assert.equal(confirmed.notification.presentation, 'shown')
   assert.throws(() => f.center.ack({ ...input, kind: 'invalid' as any }), /确认类型/u)
 })
 

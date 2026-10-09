@@ -22,22 +22,25 @@ function fixture() {
   return { value, services, writes: () => writes }
 }
 
-test('五开关统一写草稿并进入保存补丁，后台刷新保留编辑，取消恢复旧配置', async (t) => {
+test('通知开关和自动关闭时长统一写草稿并进入保存补丁，取消恢复旧配置', async (t) => {
   const f = fixture(); const draft = new AssistantConfigurationSession(f.services); t.after(() => draft.dispose())
-  for (const key of ['enabled', 'completed', 'error', 'question', 'approval']) await draft.set(`assistant.notifications.${key}`, false)
+  for (const key of ['enabled', 'completed', 'error', 'question', 'approval', 'autoClose']) await draft.set(`assistant.notifications.${key}`, false)
+  await draft.set('assistant.notifications.autoCloseSeconds', 45)
   assert.equal(f.writes(), 0); assert.equal(f.value.assistant.notifications, undefined); draft.sync()
-  assert.deepEqual(normalizeAssistantNotificationSettings(draft.getSnapshot().value!.assistant.notifications), { enabled: false, completed: false, error: false, question: false, approval: false })
-  assert.deepEqual(draft.configurationPatch().map((item) => item.path), ['enabled', 'completed', 'error', 'question', 'approval'].map((key) => ['notifications', key]))
+  assert.deepEqual(normalizeAssistantNotificationSettings(draft.getSnapshot().value!.assistant.notifications), { enabled: false, completed: false, error: false, question: false, approval: false, autoClose: false, autoCloseSeconds: 45 })
+  assert.deepEqual(draft.configurationPatch().map((item) => item.path), ['enabled', 'completed', 'error', 'question', 'approval', 'autoClose', 'autoCloseSeconds'].map((key) => ['notifications', key]))
   assert.equal(normalizeAssistantAppearance(f.value.assistant.appearance).floatingEnabled, false); assert.equal(f.value.assistant.voice.initialized, false)
   draft.reset(); assert.equal(draft.configurationPatch().length, 0)
-  assert.ok(Object.values(normalizeAssistantNotificationSettings(draft.getSnapshot().value!.assistant.notifications)).every(Boolean))
+  const reset = normalizeAssistantNotificationSettings(draft.getSnapshot().value!.assistant.notifications)
+  assert.ok([reset.enabled, reset.completed, reset.error, reset.question, reset.approval].every(Boolean)); assert.equal(reset.autoClose, false); assert.equal(reset.autoCloseSeconds, 30)
 })
 
-test('旧配置五个通知开关全开但不打开悬浮或麦克风；只读表单保留五个禁用开关', () => {
+test('旧配置通知开关全开但不打开悬浮或麦克风；只读表单保留开关和时长选择', () => {
   const f = fixture(); const t = resolveCodingNsTranslator()
   const html = renderToStaticMarkup(createElement(AssistantNotificationSettings, { services: f.services, value: f.value.assistant, disabled: true, t, onError: () => {} }))
-  assert.equal((html.match(/role="switch"/gu) ?? []).length, 5); assert.equal((html.match(/checked=""/gu) ?? []).length, 5)
-  assert.equal((html.match(/<input[^>]*disabled=""/gu) ?? []).length, 5)
+  assert.equal((html.match(/role="switch"/gu) ?? []).length, 6); assert.equal((html.match(/checked=""/gu) ?? []).length, 5)
+  assert.equal((html.match(/<input[^>]*disabled=""/gu) ?? []).length, 6)
+  assert.equal((html.match(/<select[^>]*disabled=""/gu) ?? []).length, 1); assert.ok(html.includes('15秒')); assert.ok(html.includes('60秒'))
   const overlay = renderToStaticMarkup(createElement(GlobalVoiceOverlay, { services: f.services }))
   assert.ok(!overlay.includes('data-codingns-floating-avatar')); assert.ok(!overlay.includes('data-codingns-assistant-notifications')); assert.equal(f.writes(), 0)
 })

@@ -70,26 +70,30 @@ test('实际展示才确认，关闭不处理请求，成功导航才已读；�
   assert.deepEqual(new Set(f.calls.map((call) => call.endpoint)), new Set(['assistant/notifications/read', 'assistant/notifications/ack', 'assistant/notifications/target']))
 })
 
-test('刷新与重复确认保留 Host 首展截止时间，完成5秒、错误8秒到期后仍未读', async (t) => {
+test('刷新与重复确认保留 Host 首展截止时间，完成10秒到期后仍未读；错误不设内置截止', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   let now = 10_000
-  for (const kind of ['turn-completed', 'turn-failed'] as const) {
-    const f = fixture(() => now); f.turn(kind); f.store.configure(true, kind); await f.store.refresh()
-    const initial = f.store.getSnapshot().frame!
-    assert.equal(initial.primary!.deadline, undefined)
-    await f.store.acknowledge(initial.primary!.noticeId, initial.generation, 'presented')
-    const deadline = now + (kind === 'turn-failed' ? 8000 : 5000)
-    assert.equal(f.store.getSnapshot().frame!.primary!.deadline, deadline)
-    f.store.dispose()
-    const refreshed = new AssistantNotificationStore({ async call(_channel, endpoint, payload: any) { return { ok: true, value: endpoint.endsWith('/read') ? f.host.read(payload) : f.host.ack(payload) } } }, async () => {}, 750, () => now)
-    now += 1000; refreshed.configure(true, 'reload'); await refreshed.refresh()
-    await refreshed.acknowledge(initial.primary!.noticeId, initial.generation, 'presented')
-    assert.equal(refreshed.getSnapshot().frame!.primary!.deadline, deadline)
-    now = deadline; t.mock.timers.tick(kind === 'turn-failed' ? 7000 : 4000); await setImmediate(); await refreshed.refresh()
-    assert.equal(refreshed.getSnapshot().frame!.primary, null)
-    assert.equal(refreshed.getSnapshot().frame!.unreadCount, 1)
-    refreshed.dispose(); f.host.dispose()
-  }
+  const f = fixture(() => now); f.turn('turn-completed'); f.store.configure(true, 'completed'); await f.store.refresh()
+  const initial = f.store.getSnapshot().frame!
+  assert.equal(initial.primary!.deadline, undefined)
+  await f.store.acknowledge(initial.primary!.noticeId, initial.generation, 'presented')
+  const deadline = now + 10_000
+  assert.equal(f.store.getSnapshot().frame!.primary!.deadline, deadline)
+  f.store.dispose()
+  const refreshed = new AssistantNotificationStore({ async call(_channel, endpoint, payload: any) { return { ok: true, value: endpoint.endsWith('/read') ? f.host.read(payload) : f.host.ack(payload) } } }, async () => {}, 750, () => now)
+  now += 1000; refreshed.configure(true, 'reload'); await refreshed.refresh()
+  await refreshed.acknowledge(initial.primary!.noticeId, initial.generation, 'presented')
+  assert.equal(refreshed.getSnapshot().frame!.primary!.deadline, deadline)
+  now = deadline; t.mock.timers.tick(9000); await setImmediate(); await refreshed.refresh()
+  assert.equal(refreshed.getSnapshot().frame!.primary, null)
+  assert.equal(refreshed.getSnapshot().frame!.unreadCount, 1)
+  refreshed.dispose()
+  // 错误提示没有内置截止时间；自动关闭跟随助理通知设置（autoClose）。
+  const failed = fixture(() => now); failed.turn('turn-failed'); failed.store.configure(true, 'error'); await failed.store.refresh()
+  const errorFrame = failed.store.getSnapshot().frame!
+  await failed.store.acknowledge(errorFrame.primary!.noticeId, errorFrame.generation, 'presented')
+  assert.equal(failed.store.getSnapshot().frame!.primary!.deadline, undefined)
+  failed.store.dispose(); f.host.dispose()
 })
 
 test('一个读取链在隐藏页面仍同步；配置撤销拒绝迟到结果与旧点击', async (t) => {
@@ -151,6 +155,7 @@ test('单条未读直接展示会话卡片，多条提醒在漫画气泡内堆�
   }))
   assert.equal((singleHtml.match(/data-codingns-notice-id=/gu) ?? []).length, 1)
   assert.ok(singleHtml.includes('border-radius:24px 24px 24px 8px'))
+  assert.ok(singleHtml.includes('<svg')); assert.ok(!singleHtml.includes('clip-path'))
   assert.ok(singleHtml.includes('问题'))
   assert.ok(!singleHtml.includes('1 条未读'))
   const second = { ...notice('approval', 2), sessionTitle: '另一个会话' }
@@ -230,7 +235,7 @@ test('抢占与翻页后，已显示通知的积压点击仍经 Host 校验导�
   assert.equal(f.host.read().pendingCount, 25)
 })
 
-test('同轮完成升级错误重新首展，迟到的完成帧确认不能启动错误计时', async (t) => {
+test('同轮完成升级错误重新首展，迟到的完成帧确认不能替新错误启动呈现', async (t) => {
   let clock = 1000
   const f = fixture(() => clock); t.after(() => { f.store.dispose(); f.host.dispose() })
   f.turn('turn-completed', 'same-turn'); f.store.configure(true, 'same'); await f.store.refresh()
@@ -241,11 +246,14 @@ test('同轮完成升级错误重新首展，迟到的完成帧确认不能启�
   assert.equal(f.store.getSnapshot().frame!.primary!.deadline, undefined)
   await f.store.acknowledge(first.noticeId, f.host.generation, 'presented', 'completed')
   assert.equal(f.store.getSnapshot().frame!.primary!.deadline, undefined)
+  assert.equal(f.store.getSnapshot().frame!.primary!.presentation, 'queued')
+  // 错误的自动关闭跟随助理通知设置，确认后也不再有内置截止时间。
   await f.store.acknowledge(first.noticeId, f.host.generation, 'presented', 'error')
-  assert.equal(f.store.getSnapshot().frame!.primary!.deadline, clock + 8000)
+  assert.equal(f.store.getSnapshot().frame!.primary!.deadline, undefined)
+  assert.equal(f.store.getSnapshot().frame!.primary!.presentation, 'shown')
 })
 
-test('Host 已升级而网页还未读取时，首展类型通过共享契约原子校验，不给新错误计时', async (t) => {
+test('Host 已升级而网页还未读取时，首展类型通过共享契约原子校验，不给新错误启动内置截止', async (t) => {
   let clock = 1000
   const f = fixture(() => clock); t.after(() => { f.store.dispose(); f.host.dispose() })
   f.turn('turn-completed', 'same-turn'); f.store.configure(true, 'same'); await f.store.refresh()
@@ -256,7 +264,8 @@ test('Host 已升级而网页还未读取时，首展类型通过共享契约原
   assert.equal(f.store.getSnapshot().frame!.primary!.kind, 'error')
   assert.equal(f.store.getSnapshot().frame!.primary!.deadline, undefined)
   await f.store.acknowledge(first.noticeId, f.host.generation, 'presented', 'error')
-  assert.equal(f.store.getSnapshot().frame!.primary!.deadline, clock + 8000)
+  assert.equal(f.store.getSnapshot().frame!.primary!.deadline, undefined)
+  assert.equal(f.store.getSnapshot().frame!.primary!.presentation, 'shown')
 })
 
 test('旧气泡点击保留它自己的连接代次，网页已同步新连接也不能改写旧点击', async (t) => {
@@ -291,4 +300,23 @@ test('原生独立列表中尚未进入网页当前页的通知仍由认证targe
   assert.equal(f.navigated.length, 1)
   assert.equal(f.host.read().pendingCount, 55)
   await assert.rejects(f.store.open('nonexistent-notice', f.host.generation), /失效/u)
+})
+
+test('页面可见时完成提示静默已读，非浏览器环境保持完成呈现', async (t) => {
+  const scope = globalThis as { document?: unknown }
+  const original = scope.document
+  t.after(() => { if (original === undefined) delete scope.document; else scope.document = original })
+  const f = fixture(); t.after(() => { f.store.dispose(); f.host.dispose() })
+  f.turn('turn-completed')
+  f.store.configure(true, 'hidden'); await f.store.refresh()
+  assert.equal(f.store.getSnapshot().frame!.primary!.kind, 'completed')
+  scope.document = { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} }
+  const visible = new AssistantNotificationStore({ async call(_channel, endpoint, payload: any) {
+    return { ok: true, value: endpoint.endsWith('/read') ? f.host.read(payload) : f.host.ack(payload) }
+  } }, async () => {})
+  t.after(() => visible.dispose())
+  visible.configure(true, 'visible'); await visible.refresh()
+  await setImmediate()
+  assert.equal(visible.getSnapshot().frame!.primary, null)
+  assert.equal(f.host.read().items.find((item) => item.kind === 'completed')!.read, true)
 })

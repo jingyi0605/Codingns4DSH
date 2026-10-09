@@ -78,6 +78,29 @@ test('主气泡滚动进入裁切区后才首展；隐藏窗口、通知升级�
   assert.equal(presented.length, 2); assert.ok(disconnected >= 2)
 })
 
+test('通知自动关闭只从真实首展开始计时，并通过收起动作保留记录', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = fixture(), presented: string[] = [], dismissed: string[] = []
+  const props: AssistantNotificationBubbleProps = {
+    frame: { generation: 3, noticeId: 'auto-close', kind: 'completed', hostLabel: '本机', workspaceLabel: '项目', sessionTitle: '会话', text: '已完成', availability: 'ready' },
+    t: resolveCodingNsTranslator(), autoClose: true, autoCloseSeconds: 15,
+    onOpen() {}, onDismiss(id) { dismissed.push(id) }, onPresented(id) { presented.push(id) },
+  }
+  const renderer = createHookRenderer((value: AssistantNotificationBubbleProps) => {
+    const output = AssistantNotificationBubble(value)
+    const main = (output.props.children as ReactElement[]).find((child) => child?.props?.role === 'status') as any
+    if (main?.ref) main.ref.current = f.node
+    return output
+  }, props)
+  t.after(() => renderer.dispose())
+  renderer.render(); t.mock.timers.tick(0)
+  assert.deepEqual(presented, []); assert.deepEqual(dismissed, [])
+  f.parent.rect.bottom = 200; f.dom.dispatchEvent(new Event('scroll'))
+  assert.deepEqual(presented, ['auto-close'])
+  t.mock.timers.tick(14_999); assert.deepEqual(dismissed, [])
+  t.mock.timers.tick(1); assert.deepEqual(dismissed, ['auto-close'])
+})
+
 test('安全列表保留已读待办、隐藏已读终态，并显示当前页空提示与明确会话操作标签', () => {
   const base = { hostLabel: '远端设备', workspaceLabel: '项目', sessionTitle: '同名会话', text: '需要查看', createdAt: 1,
     read: true, presentation: 'collapsed' as const, lifecycle: 'active' as const, availability: 'ready' as const }

@@ -16,11 +16,23 @@ async function fixture(t: TestContext, native = true, created = true, operator?:
   let settings = { ...structuredClone(DEFAULT_CODINGNS_SETTINGS), modules: { globalVoiceAssistant: true }, assistant: { ...structuredClone(DEFAULT_CODINGNS_SETTINGS.assistant), appearance: { ...structuredClone(DEFAULT_CODINGNS_SETTINGS.assistant.appearance!), floatingEnabled: true }, profile: { name: '小鱼', initialized: created, createdAt: 1 }, managedWorkspaceIds: ['w'] } }
   const watchers = new Set<() => void>(), events = new Map<string, Set<(...args: any[]) => any>>()
   let nativeSubscriptions = 0, readSurface = 0
-  const session = { id: 's', title: '受管会话', header: { id: 's' }, snapshotEvents: () => [] }
+  const session = { id: 's', title: '受管会话', header: { id: 's' }, events: [] as any[], snapshotEvents() { return this.events } }
   const archived: string[] = []
   const rpc = new CodingNsRpcTable()
   const on = (name: string, listener: (...args: any[]) => any) => { const listeners = events.get(name) ?? new Set(); listeners.add(listener); events.set(name, listeners); return () => { listeners.delete(listener) } }
-  const emit = (name: string, ...args: any[]) => { let result: any; for (const listener of events.get(name) ?? []) result = listener(...args); return result }
+  const emit = (name: string, ...args: any[]) => {
+    // 提问在会话事件流中的表达是问询工具的调用与结果；读取时扫描它们得到当前提问。
+    if (name === 'user-questions/request') {
+      const request = args[0] ?? {}
+      const requestId = typeof request.requestId === 'string' && request.requestId.trim() !== '' ? request.requestId.trim() : undefined
+      if (requestId !== undefined) {
+        session.events.push({ type: 'tool/call', data: { callId: requestId, name: 'ask_user_question' }, seq: session.events.length + 1 })
+        const next = args.at(-1)
+        if (typeof next === 'function') args[args.length - 1] = (...nextArgs: any[]) => Promise.resolve(next(...nextArgs)).finally(() => { session.events.push({ type: 'tool/result', data: { callId: requestId, message: { toolCallId: requestId } }, seq: session.events.length + 1 }) })
+      }
+    }
+    let result: any; for (const listener of events.get(name) ?? []) result = listener(...args); return result
+  }
   const services = { rpc, dshVersion: '0.2.1-alpha.1', settings: {
     get: () => settings, watch: (watcher: () => void) => { watchers.add(watcher); return () => watchers.delete(watcher) },
     update: async (patch: any) => { settings = { ...settings, ...patch }; watchers.forEach(watcher => watcher()) },
@@ -39,7 +51,7 @@ async function fixture(t: TestContext, native = true, created = true, operator?:
   await registry.reconcile(['globalVoiceRpc'])
   t.after(() => registry.reconcile([]))
   const call = async <T = any>(action: string, payload: unknown = {}, context?: unknown): Promise<T> => { const target = rpc.resolve(`assistant/${action}`)!; return await target.handler(target.action, payload, context) as T }
-  const sessionEvent = (type: string, data: any, seq: number) => emit(native ? 'native' : 'session/event', session, { type, data, seq })
+  const sessionEvent = (type: string, data: any, seq: number) => { session.events.push({ type, data, seq }); return emit(native ? 'native' : 'session/event', session, { type, data, seq }) }
   return { call, rpc, emit, session, sessionEvent, settings: () => settings,
     update: services.settings!.update.bind(services.settings), archived, registry, nativeSubscriptions: () => nativeSubscriptions, reads: () => readSurface,
     listenerCount: (name: string) => events.get(name)?.size ?? 0 }
@@ -58,7 +70,7 @@ test('真实Host单namespace注册read/ack/target，原生订阅与回退互斥�
     const target = await f.call('notifications/target', { noticeId: snapshot.primary!.noticeId, generation: snapshot.generation })
     assert.deepEqual(target, { hostId: 'local-host', workspaceId: 'w', sessionId: 's', localHostId: 'local-host' })
     const acknowledged = await f.call('notifications/ack', { noticeId: snapshot.primary!.noticeId, generation: snapshot.generation, action: 'presented' })
-    assert.equal(acknowledged.notification.deadline - acknowledged.notification.presentedAt, 5000)
+    assert.equal(acknowledged.notification.deadline - acknowledged.notification.presentedAt, 10000)
     assert.ok(!('target' in snapshot.primary!)); assert.equal(f.reads(), 0)
     await f.registry.reconcile([]); assert.equal(f.nativeSubscriptions(), 0)
     })
@@ -70,7 +82,7 @@ test('问题next原样委托、取消不批准审批、真实audit仅结束精�
   f.sessionEvent('approval/asked', { id: 'a1' }, 1); f.sessionEvent('approval/asked', { id: 'a2' }, 2)
   let finish!: (value: unknown) => void
   const response = { answers: [{ id: 'q', selected: ['同意'] }] }
-  const pending = f.emit('user-questions/request', { agent: { session: f.session }, questions: [{ id: 'q' }] }, () => new Promise(resolve => { finish = resolve }))
+  const pending = f.emit('user-questions/request', { agent: { session: f.session }, requestId: 'q', questions: [{ id: 'q' }] }, () => new Promise(resolve => { finish = resolve }))
   const snapshot = await f.call<AssistantNotificationSnapshot>('notifications/read')
   assert.equal(snapshot.pendingCount, 3)
   await f.call('notifications/ack', { noticeId: snapshot.primary!.noticeId, generation: snapshot.generation, action: 'dismiss' })
@@ -142,9 +154,11 @@ test('认证target提供入口Host，从当前远端路由打开本机及local�
     if (name === 'uiWorkspace') return { openSession(id: string) { opened.push(id) } }
   } } }
   await hostRouter.switchTo({ hostId: 'other-entry', targetHostId: 'other-peer', workspaceId: 'other', sessionId: 's' })
+  let seq = 0
   for (const workspaceId of ['w', createVirtualWorkspaceId('local', 'w')]) {
+    seq += 10
     await f.update({ assistant: { ...f.settings().assistant, managedWorkspaceIds: [workspaceId] } })
-    f.sessionEvent('turn/start', { turn: 1 }, 1); f.sessionEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }, 2)
+    f.sessionEvent('turn/start', { turn: 1 }, seq + 1); f.sessionEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }, seq + 2)
     const frame = await f.call<AssistantNotificationSnapshot>('notifications/read')
     const target = await f.call<AssistantNotificationTarget>('notifications/target', { noticeId: frame.primary!.noticeId, generation: frame.generation })
     assert.equal(target.localHostId, 'local-host')

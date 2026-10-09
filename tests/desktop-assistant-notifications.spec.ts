@@ -62,6 +62,10 @@ async function started(f: ReturnType<typeof fixture>): Promise<void> {
 test('2.3 通知 DTO 只复制安全文本；非法可选字段保持旧形象和字幕', () => {
   const actual = readDesktopAssistantPresentation({ ...presentation, notification: { ...notification, target: { sessionId: 'secret' }, token: 'secret' } })
   assert.deepEqual(actual.notification, notification)
+  assert.equal(readDesktopAssistantPresentation({ ...presentation, autoClose: true }).autoClose, true)
+  assert.equal(readDesktopAssistantPresentation({ ...presentation, autoClose: 'true' }).autoClose, undefined)
+  assert.equal(readDesktopAssistantPresentation({ ...presentation, autoCloseSeconds: 45 }).autoCloseSeconds, 45)
+  assert.equal(readDesktopAssistantPresentation({ ...presentation, autoCloseSeconds: 20 }).autoCloseSeconds, undefined)
   assert.ok(!JSON.stringify(actual).includes('secret'))
   for (const value of [null, { ...notification, generation: -1 }, { ...notification, noticeId: '' }, { ...notification, text: 'x'.repeat(241) }, { ...notification, kind: 'run' }]) {
     const parsed = readDesktopAssistantPresentation({ ...presentation, notification: value, reaction: 'unknown' })
@@ -96,7 +100,7 @@ test('2.3 原生共享安全快照白名单往返；主气泡收起后未读和�
     assert.equal(parsed.notificationSnapshot, undefined); assert.equal(parsed.caption, presentation.caption)
   }
   const html = renderToStaticMarkup(createElement(DesktopAssistantAvatar, { frame: { ...frame, notification: undefined, notificationSnapshot: snapshot } }))
-  assert.ok(html.includes('data-codingns-native-notice')); assert.ok(html.includes('查看会话')); assert.ok(html.includes('远端版本缺少事件能力'))
+  assert.ok(html.includes('data-codingns-native-notice')); assert.ok(!html.includes('查看会话')); assert.ok(html.includes('远端版本缺少事件能力'))
 })
 
 test('2.3 原生分页通过 Host 读取有界缓存；列表点击按实际ID回传，旧页和错误身份无效', async () => {
@@ -163,7 +167,7 @@ test('2.3 原生共用气泡的分页和列表动作只回传安全身份，不�
 test('单条未读直接保留完整卡片区域，列表展开不改变形象屏幕锚点', async () => {
   const { generation, ...notice } = notification
   const snapshot: AssistantNotificationSnapshot = { generation, revision: 8, serverNow: 100, primary: null,
-    items: [{ ...notice, createdAt: 100, read: false, presentation: 'collapsed', lifecycle: 'active' }], unreadCount: 1, pendingCount: 1, cursor: null, capabilities: [] }
+    items: [{ ...notice, createdAt: 100, read: false, presentation: 'shown', lifecycle: 'active' }], unreadCount: 1, pendingCount: 1, cursor: null, capabilities: [] }
   const current = { ...frame, notification: undefined, notificationSnapshot: snapshot, caption: '' }
   const f = fixture(value => ({ ...current, visible: value.visible }))
   await started(f); f.native({ ev: 'shown' })
@@ -552,19 +556,19 @@ test('2.3/2.4 真实中心在隐藏主页面期间首展计时、收起未读和
     assert.equal(center.read().primary!.presentation, 'queued'); assert.equal(center.read().primary!.deadline, undefined)
     f.event('notice-presented'); assert.equal(center.read().primary!.deadline, undefined)
     f.native({ ev: 'shown' }); f.event('notice-presented')
-    assert.equal(center.read().primary!.presentedAt, now); assert.equal(center.read().primary!.deadline, 13000)
-    await f.controller.refresh(); now = 12999; f.event('notice-presented')
-    assert.equal(center.read().primary!.deadline, 13000, '重复原生帧不能重置实际首展时间')
-    now = 13000; await f.controller.refresh()
+    assert.equal(center.read().primary!.presentedAt, now); assert.equal(center.read().primary!.deadline, 18000)
+    await f.controller.refresh(); now = 17999; f.event('notice-presented')
+    assert.equal(center.read().primary!.deadline, 18000, '重复原生帧不能重置实际首展时间')
+    now = 18000; await f.controller.refresh()
     assert.equal(f.readFrame()!.notification, undefined); assert.equal(f.readFrame()!.reaction, undefined)
     assert.equal(f.readFrame()!.notificationSnapshot!.unreadCount, 1)
-    assert.equal(f.commands.at(-1)!.notificationHeight, 276, '计时收起后仍直接显示单条未读卡片')
+    assert.equal(f.commands.at(-1)!.notificationHeight, 48, '计时收起后回到紧凑入口高度')
     f.native({ ev: 'notice-expansion', ...f.readFrame()!.identity, expanded: true, ownerId: 'old' })
-    assert.equal(f.commands.at(-1)!.notificationHeight, 276)
+    assert.equal(f.commands.at(-1)!.notificationHeight, 48)
     f.native({ ev: 'notice-expansion', ...f.readFrame()!.identity, expanded: true })
     await until(() => f.commands.at(-1)!.notificationHeight === 276)
     f.native({ ev: 'notice-expansion', ...f.readFrame()!.identity, expanded: false })
-    await until(() => f.commands.at(-1)!.notificationHeight === 276)
+    await until(() => f.commands.at(-1)!.notificationHeight === 48)
     for (let index = 0; index < 24; index++) {
       now++
       center.consume({ type: 'request-opened', requestId: `request:${index}`, requestKind: 'question', generation: center.generation, target })
@@ -624,7 +628,27 @@ test('2.3 真实全局助理登记同一 Host 中心，原生首展确认进入�
   const route = rpc.resolve('assistant/notifications/read')!
   const authenticated = await route.handler(route.action, {}, undefined) as AssistantNotificationSnapshot
   assert.equal(authenticated.primary!.presentation, 'shown')
-  assert.equal(authenticated.primary!.deadline! - authenticated.primary!.presentedAt!, 5000)
+  assert.equal(authenticated.primary!.deadline! - authenticated.primary!.presentedAt!, 10000)
   await registry.reconcile([])
   assert.equal(getDesktopAssistantNotifications(services), undefined)
+})
+
+test('主窗口前台时完成提示静默已读，失败与待办照常呈现', () => {
+  const services = {} as CodingNsHostServices
+  const acks: any[] = []
+  const center = new AssistantNotificationCenter()
+  center.configure(true, ['workspace'])
+  const target = { hostId: 'local', workspaceId: 'workspace', sessionId: 'session' }
+  const cleanup = bindDesktopAssistantNotifications(services, { read: (input) => center.read(input), presented: (input) => { acks.push(input); center.ack(input) } })
+  const base = { visible: true, state: 'idle' as const, caption: '', label: '' }
+  center.consume({ type: 'turn-completed', turnId: 'turn:1', generation: center.generation, target })
+  const silent = desktopAssistantNotificationPresentation(services, { ...base, appActive: true })
+  assert.equal(silent.notification, undefined)
+  assert.ok(acks.some((ack) => ack.action === 'read'))
+  const completed = center.read().items.find((item) => item.kind === 'completed')!
+  assert.equal(completed.read, true); assert.equal(completed.presentation, 'collapsed')
+  center.consume({ type: 'turn-failed', turnId: 'turn:2', generation: center.generation, target })
+  const failed = desktopAssistantNotificationPresentation(services, { ...base, appActive: true })
+  assert.equal(failed.notification!.kind, 'error')
+  cleanup()
 })
