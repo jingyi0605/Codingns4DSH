@@ -313,6 +313,8 @@ pnpm typecheck
 
 功能设计与实现细节见 [Spec 文档](specs/)、[开发记录](docs/开发记录/)和[开发规范](docs/开发规范/)。[形象包目录](assets/assistant-avatar-catalog.md)与[截图清单](assets/screenshots/README.md)也可单独查阅。
 
+[spec014.1：全局助理会话提醒与情绪反馈](specs/spec014.1-全局助理会话提醒与情绪反馈/README.md)已完成会话完成、错误、提问与审批气泡、可选表情、原生未读列表及对应会话导航的源码开发；343 项免构建回归通过，网页与双平台实机验收另行记录。
+
 ---
 
 ## 鸣谢
