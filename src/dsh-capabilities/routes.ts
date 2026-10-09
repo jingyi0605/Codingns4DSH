@@ -63,6 +63,12 @@ export interface DshCapabilityRuntimeFacts {
 /** DSH 0.2 Host 结构化能力。检测基于服务形状，不把版本判断散落到业务模块。 */
 function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): void {
   add({
+    id: 'session-title-020', capability: 'session.title', supportedDsh, runtime: 'host', priority: 10,
+    status: 'supported', introducedIn: '0.2.0-rc.2',
+    detect: (ctx) => hasMethods(read(ctx, 'sessionTitle'), ['get']) && hasMethods(read(ctx, 'sessions'), ['get']) && typeof read(ctx, 'on') === 'function',
+    create: (ctx) => ({ titles: read(ctx, 'sessionTitle'), sessions: read(ctx, 'sessions') }),
+  })
+  add({
     id: 'llm-text-021', capability: 'llm.text', supportedDsh, runtime: 'host', priority: 10,
     status: 'supported', introducedIn: '0.2.0-rc.2',
     detect: (ctx) => hasMethods(read(ctx, 'llm'), ['stream', 'listProviders', 'listModels']),

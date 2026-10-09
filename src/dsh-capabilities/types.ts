@@ -2,6 +2,7 @@
 export type DshCapabilityId =
   | 'settings.store'
   | 'llm.text'
+  | 'session.title'
   | 'assistant.agent'
   | 'connection.rpc'
   | 'connection.peer'

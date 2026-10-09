@@ -13,7 +13,7 @@ import {
 import { useCodingNsTranslator } from '../locale.js'
 import { SettingsToggleRow, settingsControlClass, settingsIconButtonStyle } from '../settings-controls.js'
 
-type WorkspaceToggleField = 'showAdapterLogo' | 'showArchivedSessions' | 'showWorkspaceHiding' | 'showSubscriptionUsage' | 'showQuickPhrases' | 'showSkillQuickReference' | 'rememberConversationRightbarRatio'
+type WorkspaceToggleField = 'showAdapterLogo' | 'showArchivedSessions' | 'showWorkspaceHiding' | 'showSubscriptionUsage' | 'showQuickPhrases' | 'showSkillQuickReference' | 'optimizeSessionTitles' | 'rememberConversationRightbarRatio'
 
 /** 工作区会话增强的单列设置面板。 */
 export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
@@ -53,6 +53,11 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, 
     },
   },
     // 所有选项共用同一行结构，文案长度不会影响右侧操作的位置。
+    createElement(SettingsToggleRow, {
+      label: t('workspace.optimizeSessionTitles'), description: t('workspace.optimizeSessionTitlesDescription'),
+      checked: value.optimizeSessionTitles ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS.optimizeSessionTitles, disabled,
+      onChange: (checked) => updateSetting('optimizeSessionTitles', checked),
+    }),
     createElement(SettingsToggleRow, {
       label: t('workspace.showLogo'), description: t('workspace.logoDescription'),
       checked: value.showAdapterLogo, disabled,

@@ -226,6 +226,8 @@ export interface WorkspaceSessionEnhancementSettings {
   showQuickPhrases: boolean
   /** 是否索引当前会话所选 Agent 的 Skill，并通过指令快速引用。 */
   showSkillQuickReference: boolean
+  /** 是否优化 DSH 自动标题的语义、长度和失败时的兜底文字。 */
+  optimizeSessionTitles: boolean
   /** 是否记忆对话窗口与右侧栏的宽度比例；具体比例保存在当前浏览器。 */
   rememberConversationRightbarRatio: boolean
   /** 插件本地保存的快捷会话条目。 */
@@ -546,6 +548,7 @@ export const DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS: WorkspaceSessionEnh
   showSubscriptionUsage: true,
   showQuickPhrases: true,
   showSkillQuickReference: true,
+  optimizeSessionTitles: false,
   rememberConversationRightbarRatio: false,
   quickPhrases: DEFAULT_QUICK_PHRASES.map((phrase) => ({ ...phrase })),
   quickPhrasesSeeded: true,
