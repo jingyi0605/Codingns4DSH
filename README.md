@@ -11,7 +11,7 @@
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.1-beta.6`** · DSH **`>=0.2.0-rc.2 <=0.2.1-alpha.1`**（已验证 `0.2.1-alpha.1`）· Node **`>= 22.19`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.1-beta.7`** · DSH **`>=0.2.0-rc.2 <=0.2.1-alpha.1`**（已验证 `0.2.1-alpha.1`）· Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965** · **[微信群 / QQ 群二维码](#交流群)**
 
@@ -225,7 +225,7 @@ Agent 的安装与登录由各自工具完成。适配细节见[外部 Agent 文
 ### 使用内置 Web 配置
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.1-beta.6
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.1-beta.7
 dsh web
 ```
 
@@ -235,7 +235,7 @@ dsh web
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.1-beta.6
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.1-beta.7
 dsh codingns
 ```
 
