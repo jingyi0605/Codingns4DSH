@@ -114,7 +114,7 @@ test('音色、参数和设备不立即应用，资源准备显式传 prepareOnl
   const { getGlobalVoiceAdapter } = await import('../src/client/global-voice-runtime-registry.js')
   await getGlobalVoiceAdapter(f.session.services)!.selectInputDevice('new-mic')
   assert.deepEqual(f.devices, [])
-  assert.equal(f.value.assistant.tts!.selectedId, 'moss:Junhao')
+  assert.equal(f.value.assistant.tts!.selectedId, DEFAULT_ASSISTANT_TTS_SETTINGS.selectedId)
   assert.equal(f.session.getSnapshot().value!.assistant.tts!.selectedId, 'moss:Lingyu')
   assert.equal(f.session.getSnapshot().value!.assistant.tts!.parameters!.rate, 1.5)
   assert.ok(!f.requests.some((call) => /select|configure/u.test(call.endpoint)))

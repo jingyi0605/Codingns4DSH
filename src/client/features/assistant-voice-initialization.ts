@@ -1,6 +1,7 @@
 import { createElement, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import type { AssistantVoiceInitializationSnapshot } from '../../shared/voice-initialization.js'
+import { DEFAULT_ASSISTANT_TTS_SETTINGS, MOSS_BUILTIN_VOICES } from '../../shared/assistant-tts.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import { MossVoiceOutput } from '../moss-voice-output.js'
 import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
@@ -101,7 +102,7 @@ export function AssistantVoiceInitializationView({ snapshot, pending, error, dis
     createElement('p', { role: 'status', 'aria-live': 'polite', style: { ...dshSettingsHelpStyle, margin: 0 } }, label),
     ready ? null : createElement('div', { style: { display: 'grid', gap: 5, fontSize: 13, overflowWrap: 'anywhere' } },
       createElement('span', null, t('tts.wizardModel', { model: snapshot?.modelId === 'custom' ? t('voice.models.custom') : snapshot?.modelLabel ?? t('tts.wizardDefault') })),
-      createElement('span', null, t('tts.wizardVoice', { voice: voice?.name ?? 'Junhao' }))),
+      createElement('span', null, t('tts.wizardVoice', { voice: voice?.name ?? MOSS_BUILTIN_VOICES.find((item) => item.id === DEFAULT_ASSISTANT_TTS_SETTINGS.selectedId)?.name ?? 'Yuewen' }))),
     busy ? createElement('div', { style: { display: 'grid', gap: 6 } },
       createElement('progress', { max: progress?.totalBytes ?? 1, ...(value === undefined ? {} : { value }), 'aria-label': label, style: { width: '100%' } }),
       snapshot?.phase !== 'speech' || progress === null || progress === undefined ? null : createElement('small', { style: dshSettingsHelpStyle }, progress.label)) : null,

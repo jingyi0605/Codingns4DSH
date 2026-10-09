@@ -1,7 +1,7 @@
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsSettingsOperation, CodingNsSettingsSnapshot, CodingNsSettingsStore } from '../../dsh-capabilities/settings-store.js'
 import { sameSettingsValue } from '../../dsh-capabilities/settings-store.js'
-import { readAssistantTtsSettings, MOSS_BUILTIN_VOICES, validateAssistantTtsParameters } from '../../shared/assistant-tts.js'
+import { readAssistantTtsSettings, MOSS_BUILTIN_VOICES, validateAssistantTtsParameters, DEFAULT_ASSISTANT_TTS_SETTINGS } from '../../shared/assistant-tts.js'
 import type { AssistantTtsSnapshot } from '../../shared/assistant-tts.js'
 import type { CodingNsClientServices, CodingNsRpcResult } from './types.js'
 import { getGlobalVoiceAdapter, registerGlobalVoiceAdapter } from '../global-voice-runtime-registry.js'
@@ -150,7 +150,7 @@ export class AssistantConfigurationSession implements CodingNsSettingsStore<Codi
     if (['assistant/tts/select', 'assistant/tts/configure', 'assistant/tts/remove'].includes(endpoint)) {
       const tts = readAssistantTtsSettings(this.snapshot.value!.assistant.tts)
       const next = endpoint.endsWith('/configure') ? { ...tts, parameters: validateAssistantTtsParameters(value?.parameters, tts.parameters) }
-        : endpoint.endsWith('/remove') ? { ...tts, voices: tts.voices.filter((voice) => voice.id !== value?.id), selectedId: tts.selectedId === value?.id ? 'moss:Junhao' : tts.selectedId }
+        : endpoint.endsWith('/remove') ? { ...tts, voices: tts.voices.filter((voice) => voice.id !== value?.id), selectedId: tts.selectedId === value?.id ? DEFAULT_ASSISTANT_TTS_SETTINGS.selectedId : tts.selectedId }
           : { ...tts, selectedId: value?.id ?? tts.selectedId, backend: value?.backend === 'browser' ? 'browser' as const : 'moss-onnx' as const }
       await this.set('assistant.tts', next)
       return this.call(channel, 'assistant/tts/catalog', {}, signal)

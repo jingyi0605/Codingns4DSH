@@ -19,7 +19,7 @@ import {
 import { debugInfo } from '../shared/debug.js'
 import { ASSISTANT_AVATAR_FLOATING_MINI_SIZE, ASSISTANT_AVATAR_FLOATING_STANDARD_SIZE, DEFAULT_ASSISTANT_APPEARANCE } from '../shared/assistant-avatar.js'
 import { ASSISTANT_PROMPT_MAX_CHARS, DEFAULT_ASSISTANT_PROMPTS } from '../shared/assistant-prompts.js'
-import { ASSISTANT_TTS_PARAMETER_LIMITS as ttsLimits, DEFAULT_ASSISTANT_TTS_PARAMETERS } from '../shared/assistant-tts.js'
+import { ASSISTANT_TTS_PARAMETER_LIMITS as ttsLimits, DEFAULT_ASSISTANT_TTS_PARAMETERS, DEFAULT_ASSISTANT_TTS_SETTINGS } from '../shared/assistant-tts.js'
 import { ASSISTANT_PERSONALITY_MAX_CHARS } from '../shared/assistant-lifecycle.js'
 import { DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS } from '../shared/assistant-notifications.js'
 
@@ -88,7 +88,7 @@ export const CodingNsSettingsSchema = z.object({
     }).default({ ...DEFAULT_ASSISTANT_APPEARANCE, models: [...DEFAULT_ASSISTANT_APPEARANCE.models] }),
     tts: z.object({
       backend: z.union([z.const('browser'), z.const('moss-onnx')]).default('browser'),
-      selectedId: z.string().max(80).default('moss:Junhao'),
+      selectedId: z.string().max(80).default(DEFAULT_ASSISTANT_TTS_SETTINGS.selectedId),
       parameters: z.object({
         rate: z.number().min(ttsLimits.rate.min).max(ttsLimits.rate.max).default(1),
         volume: z.number().min(ttsLimits.volume.min).max(ttsLimits.volume.max).default(1),
@@ -101,7 +101,7 @@ export const CodingNsSettingsSchema = z.object({
         gender: z.union([z.const('male'), z.const('female'), z.const('unknown')]),
         kind: z.const('reference'), reference: z.string().max(80), source: z.string().max(2048), license: z.string().max(160),
       })).max(50).default([]),
-    }).default({ backend: 'browser', selectedId: 'moss:Junhao', voices: [], parameters: { ...DEFAULT_ASSISTANT_TTS_PARAMETERS } }),
+    }).default({ backend: 'browser', selectedId: DEFAULT_ASSISTANT_TTS_SETTINGS.selectedId, voices: [], parameters: { ...DEFAULT_ASSISTANT_TTS_PARAMETERS } }),
     voice: z.object({
       initialized: z.boolean().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.initialized),
       provider: z.union([z.const('dsh-speech-to-text'), z.const('sherpa-onnx')])

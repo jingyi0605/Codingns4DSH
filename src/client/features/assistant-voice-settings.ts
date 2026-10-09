@@ -1,6 +1,6 @@
 import { createElement, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
-import { ASSISTANT_TTS_PARAMETER_LIMITS, ASSISTANT_VOICE_SITES, DEFAULT_ASSISTANT_TTS_PARAMETERS, MOSS_BUILTIN_VOICES, readAssistantTtsParameters, validateAssistantTtsParameters, type AssistantTtsParameters, type AssistantTtsSnapshot, type AssistantTtsVoice } from '../../shared/assistant-tts.js'
+import { ASSISTANT_TTS_PARAMETER_LIMITS, ASSISTANT_VOICE_SITES, DEFAULT_ASSISTANT_TTS_PARAMETERS, DEFAULT_ASSISTANT_TTS_SETTINGS, MOSS_BUILTIN_VOICES, readAssistantTtsParameters, validateAssistantTtsParameters, type AssistantTtsParameters, type AssistantTtsSnapshot, type AssistantTtsVoice } from '../../shared/assistant-tts.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
 import { MossVoiceOutput } from '../moss-voice-output.js'
 import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
@@ -14,7 +14,7 @@ export function AssistantVoiceSettings({ services, enabled = true, active = true
 }): ReactElement {
   const t = useCodingNsTranslator(services.locale)
   const [snapshot, setSnapshot] = useState<AssistantTtsSnapshot | undefined>()
-  const [selectedId, setSelectedId] = useState('moss:Junhao')
+  const [selectedId, setSelectedId] = useState(DEFAULT_ASSISTANT_TTS_SETTINGS.selectedId)
   const [parameters, setParameters] = useState<AssistantTtsParameters>({ ...DEFAULT_ASSISTANT_TTS_PARAMETERS })
   const [siteId, setSiteId] = useState<string>('kyutai')
   const [source, setSource] = useState('')

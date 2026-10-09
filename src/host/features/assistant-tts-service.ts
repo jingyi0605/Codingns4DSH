@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { access, mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ASSISTANT_TTS_PATH, ASSISTANT_VOICE_SAMPLE_PATH, MOSS_BUILTIN_VOICES, MOSS_CODEC_REVISION, MOSS_TTS_REVISION, readAssistantTtsParameters, readAssistantTtsSettings, validateAssistantTtsParameters, type AssistantTtsSettings, type AssistantTtsSnapshot, type AssistantTtsStatus } from '../../shared/assistant-tts.js'
+import { ASSISTANT_TTS_PATH, ASSISTANT_VOICE_SAMPLE_PATH, DEFAULT_ASSISTANT_TTS_SETTINGS, MOSS_BUILTIN_VOICES, MOSS_CODEC_REVISION, MOSS_TTS_REVISION, readAssistantTtsParameters, readAssistantTtsSettings, validateAssistantTtsParameters, type AssistantTtsSettings, type AssistantTtsSnapshot, type AssistantTtsStatus } from '../../shared/assistant-tts.js'
 import type { CodingNsHostServices } from './types.js'
 import { voiceModelRoot } from './voice-model-setup.js'
 import { MossTtsWorker } from './moss-tts-worker.js'
@@ -122,7 +122,7 @@ export class AssistantTtsService {
           if (!settings.voices.some((voice) => voice.id === value.id)) throw new Error('只能删除已导入的音色')
           const voices = settings.voices.filter((voice) => voice.id !== value.id)
           // 先修改权威设置；缓存保留，不删除可能仍被本轮推理读取的文件。
-          await this.save({ ...settings, voices, selectedId: settings.selectedId === value.id ? 'moss:Junhao' : settings.selectedId }, signal)
+          await this.save({ ...settings, voices, selectedId: settings.selectedId === value.id ? DEFAULT_ASSISTANT_TTS_SETTINGS.selectedId : settings.selectedId }, signal)
           return await this.snapshot()
         }
         default: throw new Error(`未知音色操作：${action}`)

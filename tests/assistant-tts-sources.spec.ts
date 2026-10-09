@@ -15,7 +15,8 @@ test('内置 18 个官方音色具有稳定 ID、名称、语言与性别；旧�
   assert.deepEqual(['zh', 'en', 'ja'].map((language) => MOSS_BUILTIN_VOICES.filter((voice) => voice.language === language).length), [6, 5, 7])
   assert.equal(MOSS_BUILTIN_VOICES.filter((voice) => voice.language === 'zh' && voice.gender === 'female').length, 3)
   assert.equal(readAssistantTtsSettings().backend, 'browser')
-  assert.equal(readAssistantTtsSettings({ backend: 'moss-onnx', selectedId: 'missing', voices: [] }).selectedId, 'moss:Junhao')
+  assert.equal(readAssistantTtsSettings().selectedId, 'moss:Yuewen')
+  assert.equal(readAssistantTtsSettings({ backend: 'moss-onnx', selectedId: 'missing', voices: [] }).selectedId, 'moss:Yuewen')
 })
 
 test('Kyutai 的 ID、hf URL、网页文件链接和下载链接定位相同的参考录音', () => {

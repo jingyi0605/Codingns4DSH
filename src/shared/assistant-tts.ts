@@ -67,7 +67,7 @@ function validParameter(key: keyof AssistantTtsParameters, value: unknown): bool
     && (key === 'rate' || key === 'volume' || Number.isInteger(value))
 }
 
-export const DEFAULT_ASSISTANT_TTS_SETTINGS: AssistantTtsSettings = { backend: 'browser', selectedId: 'moss:Junhao', voices: [], parameters: DEFAULT_ASSISTANT_TTS_PARAMETERS }
+export const DEFAULT_ASSISTANT_TTS_SETTINGS: AssistantTtsSettings = { backend: 'browser', selectedId: 'moss:Yuewen', voices: [], parameters: DEFAULT_ASSISTANT_TTS_PARAMETERS }
 export const MOSS_TTS_REVISION = 'f52645cb467506d8e18e746ddd59482685b74e58'
 export const MOSS_CODEC_REVISION = 'ceff0d0749bfb3fa2d61149794ec6feef0d1e1ae'
 export const MOSS_SOURCE_REVISION = '8b7bcc9341b3b4ef3a3a58ba1338a7d85ff133eb'
