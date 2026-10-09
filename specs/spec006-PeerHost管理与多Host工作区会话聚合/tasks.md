@@ -390,6 +390,7 @@
 ### 6A.4 接入本地原生 Workspace/Session/Conversation
 
 - 状态：`IN_PROGRESS`
+- 本次增量（2026-10-09）：已补齐原生提问、审批与计划确认的远端事件订阅、身份隔离和结果回传，登记问题回答及等待接口；取消、断线重连、迟到回答、流作用域与长期等待均有回归覆盖。免构建定向测试 112 项及类型检查通过；两端 Host 回放使用模拟网络，真实浏览器验收仍未执行。详见 `docs/开发记录/20261009-PeerHost远端交互事件与审批回传修复记录.md`。
 - 已完成（2026-09-29）：页面端根据聚合摘要建立虚拟 ID 到 HostScope 的映射；`/api` 原生 Remote 普通调用路由到 `peerHost/native`，流调用路由到 `peerHost/nativeStream`；Host 侧使用目标 DSH Context 的 `workspaceController`/`sessionController`，`session/follow` 保留请求参数，流句柄支持轮询、结束、关闭、过期和作用域校验。
 - 当前缺口：真实 DSH Web 的 `sessions.retain()` 全链路、`session/control` 投影、历史分页与发送/停止/权限回复尚未在浏览器 fixture 中闭环验证。
 - 做什么：让本地 DSH 原生 Workspace、Session、Conversation 组件消费虚拟 Store，并将打开、历史、实时消息、发送、停止、权限回复和问题回答路由到目标 Host。
