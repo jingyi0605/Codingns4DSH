@@ -18,6 +18,7 @@ import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale }
 import { publishSessionAdapter } from '../session-adapter-cache.js'
 import { startSerialPolling } from '../serial-polling.js'
 import { PeerHostRemoteEvents } from '../peer-host-remote-events.js'
+import { installPeerHostFileLinkRouting } from '../peer-host-file-links.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
 const PEER_HOST_AGGREGATE_REFRESH_MS = 30_000
@@ -101,6 +102,13 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
         scope.effect(() => transport!.watchNavigation(), 'codingns4dsh: PeerHost model catalog navigation')
       })
       if (navigation !== undefined) context.resources.add(() => navigation.dispose())
+      // 文件路径的平台取自资源所属会话，不能由本机平台或前台选择决定。
+      const fileLinks = context.services.uiContext?.inject(['sidebarRight'], (scope) => {
+        scope.effect(() => installPeerHostFileLinkRouting(scope, (sessionId) => (
+          projection.sessions().find((session) => session.sessionId === sessionId)?.cwd
+        )) ?? (() => undefined), 'codingns4dsh: PeerHost file links')
+      })
+      if (fileLinks !== undefined) context.resources.add(() => fileLinks.dispose())
       // 原生 $events 通常早于插件启动；切换一次客户端连接代次，让已打开的流使用聚合入口。
       reconnectNativeEvents(context.services.uiContext)
     }
