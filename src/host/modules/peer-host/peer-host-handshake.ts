@@ -45,7 +45,7 @@ export class PeerHostHandshakeService {
 
   async check(peerHostId: string): Promise<PeerHostRecord> {
     const current = await this.requireRecord(peerHostId)
-    await this.store.updateHandshake(peerHostId, this.emptyUpdate('checking'))
+    await this.store.updateHandshake(peerHostId, this.pendingUpdate(current, 'checking'))
     try {
       const payload = await this.fetchHandshake(current.route)
       const update = this.resolve(current, payload)
@@ -54,7 +54,7 @@ export class PeerHostHandshakeService {
     } catch (error) {
       const code = errorCode(error, PEER_HOST_ERROR_CODES.UNREACHABLE)
       return this.store.updateHandshake(peerHostId, {
-        ...this.emptyUpdate('unreachable'),
+        ...this.pendingUpdate(current, 'unreachable'),
         lastErrorCode: code,
       })
     }
@@ -105,16 +105,17 @@ export class PeerHostHandshakeService {
     return { ...common, status: 'ready' }
   }
 
-  private emptyUpdate(status: PeerHostRecord['status']): PeerHostHandshakeUpdate {
+  /** 网络失败只改变连接状态，不能抹掉最后确认的目标身份与元数据。 */
+  private pendingUpdate(current: PeerHostRecord, status: PeerHostRecord['status']): PeerHostHandshakeUpdate {
     return {
       status,
-      pluginId: null,
-      pluginVersion: null,
-      dshVersion: null,
-      hostname: null,
-      configProfile: null,
-      apiCompatibility: null,
-      fingerprint: null,
+      pluginId: current.pluginId,
+      pluginVersion: current.pluginVersion,
+      dshVersion: current.dshVersion,
+      hostname: current.hostname ?? null,
+      configProfile: current.configProfile ?? null,
+      apiCompatibility: current.apiCompatibility,
+      fingerprint: current.fingerprint,
       lastCheckedAt: this.now(),
       lastErrorCode: null,
     }

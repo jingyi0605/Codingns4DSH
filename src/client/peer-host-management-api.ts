@@ -63,6 +63,7 @@ export interface PeerHostManagementApi {
   credentialStatus(peerHostId: string): Promise<PeerHostCredentialStatus>
   workspaceCandidates(peerHostId: string): Promise<readonly PeerHostRemoteWorkspaceCandidate[]>
   setWorkspaceVisibility(peerHostId: string, workspaceId: string, visible: boolean): Promise<PeerHostClientRecord>
+  dismissDisconnectedWorkspace(peerHostId: string, workspaceId: string): Promise<void>
   webSocketEndpoint(): Promise<PeerHostWebSocketEndpoint | null>
   aggregate(signal?: AbortSignal): Promise<readonly AggregateHostResult[]>
   workspaceOrder(signal?: AbortSignal): Promise<PeerHostWorkspaceOrder>
@@ -102,6 +103,7 @@ export function createPeerHostManagementApi(rpc: CodingNsRpcClient): PeerHostMan
     credentialStatus: (peerHostId) => call('peerHost/credentialStatus', { peerHostId }),
     workspaceCandidates: (peerHostId) => call('peerHost/workspaceCandidates', { peerHostId }),
     setWorkspaceVisibility: (peerHostId, workspaceId, visible) => call('peerHost/setWorkspaceVisibility', { peerHostId, workspaceId, visible }),
+    dismissDisconnectedWorkspace: (peerHostId, workspaceId) => call('peerHost/dismissDisconnectedWorkspace', { peerHostId, workspaceId }).then(() => undefined),
     webSocketEndpoint: () => call('peerHost/wsEndpoint', {}),
     aggregate: (signal) => call('peerHost/aggregate', {}, signal),
     workspaceOrder: (signal) => call('peerHost/workspaceOrder', { action: 'get' }, signal),

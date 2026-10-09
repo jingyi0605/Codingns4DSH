@@ -43,7 +43,14 @@ export function createPeerHostRemoteSummarySource(input: {
         readWorkspaceBaseline(input.transport, input.scope, signal),
         // 工作区可见性不依赖会话元数据。目标 DSH 的 session/list 协议或启动时序
         // 异常时仍要保留工作区行，否则一次会话读取失败会把整个远端 Host 变成空列表。
-        readSessionList(input.transport, input.scope, signal).catch(() => []),
+        readSessionList(input.transport, input.scope, signal).catch((error: unknown) => {
+          // 协议不支持仍使用成员占位；明确的网络或认证故障要让缓存接管，不能
+          // 用占位 ID 覆盖上一次成功获取的会话标题与元数据。
+          const code = asRecord(error)?.code
+          if (typeof code === 'string' && ['PEER_HOST_PROXY_UNREACHABLE', 'PEER_HOST_UNREACHABLE', 'PEER_HOST_NOT_READY', 'PEER_HOST_SESSION_REQUIRED'].includes(code)) throw error
+          if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) throw error
+          return []
+        }),
         readAdapterMap(input.transport, input.scope, signal),
       ])
       return buildRemoteSummary(baseline, sessions, visible, adapterMap)
@@ -91,12 +98,14 @@ async function readWorkspaceBaseline(transport: PeerHostRemoteSummaryTransport, 
     if (frameRecord?.type !== undefined && frameRecord.type !== 'baseline') continue
     const value = asRecord(frameRecord?.value)
     if (value === null) continue
+    if (!Array.isArray(value.items)) throw new Error('远端工作区 baseline 缺少 items')
     return {
-      items: Array.isArray(value.items) ? value.items : [],
+      items: value.items,
       archivedSessionIds: readStringList(value.archivedSessionIds),
     }
   }
-  return { items: [], archivedSessionIds: [] }
+  // 流在 baseline 前断开不代表远端没有工作区，否则会用假空列表覆盖断线缓存。
+  throw new Error('远端工作区流在 baseline 前结束')
 }
 
 async function readSessionList(transport: PeerHostRemoteSummaryTransport, scope: HostScope, signal: AbortSignal | undefined): Promise<readonly Record<string, unknown>[]> {

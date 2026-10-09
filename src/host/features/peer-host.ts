@@ -21,6 +21,7 @@ import type { DshHostStatus } from '../../shared/contracts/host-status.js'
 import { createVirtualSessionId, createVirtualWorkspaceId, normalizePeerHostColor, parseVirtualSessionId, parseVirtualWorkspaceId, type HostScope } from '../../shared/contracts/peer-host.js'
 import type { AggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { PeerHostAggregateService } from '../modules/peer-host/peer-host-aggregate-service.js'
+import { PeerHostWorkspaceCache } from '../modules/peer-host/peer-host-workspace-cache.js'
 import { resolveDshNativeDispatch } from '../modules/peer-host/peer-host-native-dispatch.js'
 import { PeerHostNativeStreams } from '../modules/peer-host/peer-host-native-streams.js'
 import { FileAggregateWorkspaceOrderStore, VirtualWorkspaceRegistry } from '../modules/peer-host/peer-host-virtual-registry.js'
@@ -86,6 +87,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
       const sessions = new PeerHostSessionService(store, credentials, options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl })
       const httpProxy = new PeerHostHttpProxyService(store, sessions, options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl })
       const aggregate = new PeerHostAggregateService()
+      const workspaceCache = new PeerHostWorkspaceCache(join(stateDirectory, 'peer-host-workspace-cache.json'), ownerUserId)
       const workspaceRegistry = new VirtualWorkspaceRegistry({
         orderStore: new FileAggregateWorkspaceOrderStore(join(stateDirectory, 'peer-host-workspace-order.json')),
       })
@@ -161,7 +163,10 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
           if (record === null || record.status !== 'ready') {
             // 受管远端的握手/认证失败也必须交给助理退避，不能冒充没有远端工作区。
             const original = selectedRecords[index]!
-            if (assistantWorkspaceIds !== undefined) sources.push({ hostId: localHostId, targetHostId: original.id, hostLabel: original.displayName, load: async () => { throw new Error('受管远端 Host 暂不可达') } })
+            if (original.status !== 'disabled' && original.status !== 'identity_changed') sources.push({
+              hostId: localHostId, targetHostId: original.id, hostLabel: original.displayName, hostColor: original.color ?? null,
+              load: async () => { throw new Error('远端 Host 暂不可达') },
+            })
             continue
           }
           const selectedWorkspaceIds = assistantWorkspaceIds === undefined
@@ -476,15 +481,21 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
               : []
             return toPeerHostClientRecord(await store.replaceVisibleWorkspaces(peerHostId, ids))
           }
+          case 'dismissDisconnectedWorkspace': {
+            await workspaceCache.dismiss(requiredString(input.peerHostId, 'peerHostId'), requiredString(input.workspaceId, 'workspaceId'))
+            return { removed: true }
+          }
           case 'wsEndpoint': return wsEndpoint
           case 'aggregate': {
             // 顺序 Registry 必须认识本地工作区，即使本地 session 摘要在启动瞬间
             // 还没有准备好。否则 order 只会留下远端 ID，客户端拖拽到本地项时
             // 只能拒绝请求，表现为远端永远被固定在列表顶部。
-            const results = ensureLocalWorkspaceSummaries(
+            const loaded = ensureLocalWorkspaceSummaries(
               await aggregate.load(await buildSources()),
               context.services.dshContext,
             )
+            // 测试注入的独立来源不受配置列表约束；生产摘要按当前添加状态恢复缓存。
+            const results = options.aggregateSources === undefined ? await workspaceCache.apply(loaded, await store.list()) : loaded
             workspaceRegistry.replace(results)
             if (!workspaceOrderHydrated) {
               await workspaceRegistry.hydrateOrder()
