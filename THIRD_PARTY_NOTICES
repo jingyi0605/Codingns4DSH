@@ -139,3 +139,8 @@ CPython 3.12.12，固定发布包及 SHA-256 摘要；不随 npm 包分发。
 CPython 与其依赖遵循各自许可，项目与分发说明：
 https://github.com/astral-sh/python-build-standalone
 https://docs.python.org/3.12/license.html
+
+R4 Coder 品牌图标（2026-10-09）
+
+assets/provider-icons/r4.svg 来源：https://r4.codes/favicon.svg
+用于标识用量所属服务，品牌与图标权利归 R4 Coder 所有。
