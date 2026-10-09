@@ -10,6 +10,8 @@ export interface AggregateSessionSource {
   /** DSH 原生会话是否仍处于待首条消息的临时状态。 */
   readonly blank: boolean
   readonly adapterId?: string
+  readonly origin?: 'subagent'
+  readonly parentSessionId?: string
 }
 
 export interface AggregateWorkspaceSource {
@@ -20,6 +22,8 @@ export interface AggregateWorkspaceSource {
   readonly sessions: readonly AggregateSessionSource[]
   /** 已归档会话；远端侧栏默认隐藏，但归档入口与取消归档路由需要它们。 */
   readonly archivedSessions?: readonly AggregateSessionSource[]
+  /** 子会话单独保留，不能混入工作区侧栏。 */
+  readonly subagentSessions?: readonly AggregateSessionSource[]
 }
 
 export interface AggregateHostSource {
@@ -119,6 +123,7 @@ export class PeerHostAggregateService {
 
 function toWorkspace(source: AggregateHostSource, workspace: AggregateWorkspaceSource): AggregateWorkspaceSummary {
   const archivedSessions = workspace.archivedSessions ?? []
+  const subagentSessions = workspace.subagentSessions ?? []
   return {
     key: `${source.hostId}:${workspace.workspaceId}`,
     hostId: source.hostId,
@@ -132,6 +137,9 @@ function toWorkspace(source: AggregateHostSource, workspace: AggregateWorkspaceS
     ...(archivedSessions.length === 0
       ? {}
       : { archivedSessions: archivedSessions.map((session) => toSessionRecord(source, workspace, session)) }),
+    ...(subagentSessions.length === 0
+      ? {}
+      : { subagentSessions: subagentSessions.map((session) => toSessionRecord(source, workspace, session)) }),
   }
 }
 
@@ -156,6 +164,8 @@ function toSessionRecord(
     // 旧摘要 source 可能没有该字段；缺省按正式会话兼容，远端原生 source 会提供真实值。
     blank: session.blank === true,
     ...(session.adapterId === undefined ? {} : { adapterId: session.adapterId }),
+    ...(session.origin === undefined ? {} : { origin: session.origin }),
+    ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
   }
 }
 

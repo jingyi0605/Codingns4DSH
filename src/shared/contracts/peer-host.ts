@@ -115,6 +115,9 @@ export interface PeerHostSessionRecord {
   readonly blank: boolean
   /** 远端 CodingNS CLI 会话绑定的适配器；旧 Host 未提供时保持缺省。 */
   readonly adapterId?: string
+  /** 子会话身份仅用于原生目录与路由，不改变工作区侧栏的可见会话。 */
+  readonly origin?: 'subagent'
+  readonly parentSessionId?: string
 }
 
 /** 当前 Host 和 PeerHost 统一使用的工作区摘要。 */
@@ -134,6 +137,8 @@ export interface AggregateWorkspaceSummary {
    * 仍需要它们；子代理会话在可见与归档两侧都不出现。
    */
   readonly archivedSessions?: readonly PeerHostSessionRecord[]
+  /** 可见工作区下的子会话，进入状态和路由目录，但不占侧栏成员槽位。 */
+  readonly subagentSessions?: readonly PeerHostSessionRecord[]
 }
 
 export interface AggregateHostResult {

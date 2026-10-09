@@ -23,6 +23,8 @@ export interface PeerHostVirtualSessionSummary {
   readonly blank: boolean
   readonly cwd?: string
   readonly adapterId?: string
+  readonly origin?: 'subagent'
+  readonly parentSessionId?: string
   readonly projections: PeerHostSessionTitleProjection
 }
 
@@ -160,6 +162,11 @@ function projectWorkspace(
   }
   for (const session of workspace.sessions) append(session, false)
   for (const session of workspace.archivedSessions ?? []) append(session, true)
+  // 原生状态目录需要子会话基线；工作区成员列表仍只包含普通与归档会话。
+  for (const session of workspace.subagentSessions ?? []) {
+    if (session.scope.sessionId === null) continue
+    sessions.push(projectSession(createVirtualSessionId(virtualHostId, session.scope.sessionId), session, realPath))
+  }
   return {
     workspace: {
       workspaceId: virtualWorkspaceId,
@@ -196,6 +203,10 @@ function projectSession(
     // 旧版摘要没有原生投影时仍只提供缓存提示，不能伪造时间戳序号抢占实时值。
     projections: session.titleProjection ?? { kind: 'cached', asOfSeq: 0, values: { title: session.title } },
     ...(session.adapterId === undefined ? {} : { adapterId: session.adapterId }),
+    ...(session.origin === undefined ? {} : { origin: session.origin }),
+    ...(session.parentSessionId === undefined ? {} : {
+      parentSessionId: createVirtualSessionId(session.scope.targetHostId ?? session.scope.hostId, session.parentSessionId),
+    }),
   }
 }
 
@@ -231,6 +242,8 @@ function sameSessions(previous: readonly PeerHostVirtualSessionSummary[], next: 
       && session.blank === candidate.blank
       && session.cwd === candidate.cwd
       && session.adapterId === candidate.adapterId
+      && session.origin === candidate.origin
+      && session.parentSessionId === candidate.parentSessionId
       && session.projections.kind === candidate.projections.kind
       && session.projections.asOfSeq === candidate.projections.asOfSeq
       && session.projections.values.title === candidate.projections.values.title

@@ -121,6 +121,16 @@ function buildRemoteSummary(
     if (sessionId !== null && !sessionsById.has(sessionId)) sessionsById.set(sessionId, session)
   }
   const archived = new Set(baseline.archivedSessionIds)
+  // 子会话通常不在 workspace.sessionIds 中，用原生父会话关系补全后代。
+  const childrenByParent = new Map<string, string[]>()
+  for (const [sessionId, session] of sessionsById) {
+    if (session.origin !== 'subagent') continue
+    const parentId = readString(session, ['parentSessionId'])
+    if (parentId === null) continue
+    const children = childrenByParent.get(parentId) ?? []
+    children.push(sessionId)
+    childrenByParent.set(parentId, children)
+  }
   return baseline.items.flatMap((raw) => {
     const value = asRecord(raw)
     const workspaceId = readString(value, ['workspaceId', 'id', 'key'])
@@ -129,25 +139,12 @@ function buildRemoteSummary(
     if (visibleWorkspaceIds !== null && !visibleWorkspaceIds.has(workspaceId)) return []
     const visible: AggregateSessionSource[] = []
     const archivedSessions: AggregateSessionSource[] = []
-    for (const sessionId of readStringList(value?.sessionIds)) {
+    const subagentSessions: AggregateSessionSource[] = []
+    for (const sessionId of collectWorkspaceSessionIds(readStringList(value?.sessionIds), childrenByParent)) {
       const session = sessionsById.get(sessionId) ?? null
-      // 子代理会话在可见与归档两侧都不出现在宿主侧栏。
-      if (readString(session, ['origin']) === 'subagent') continue
-      const titleProjection = readSessionTitleProjection(session)
-      const entry: AggregateSessionSource = {
-        sessionId,
-        blank: session?.blank === true,
-        title: readSessionTitle(session, sessionId),
-        ...(titleProjection === undefined ? {} : { titleProjection }),
-        status: readRemoteSessionStatus(session),
-        activity: readRemoteSessionActivity(session),
-        updatedAt: readTime(session),
-        ...(() => {
-          const adapterId = readString(session, ['adapterId']) ?? adapterMap.get(sessionId)
-          return adapterId === undefined ? {} : { adapterId }
-        })(),
-      }
-      if (archived.has(sessionId)) archivedSessions.push(entry)
+      const entry = toRemoteSessionSource(sessionId, session, adapterMap)
+      if (session?.origin === 'subagent') subagentSessions.push(entry)
+      else if (archived.has(sessionId)) archivedSessions.push(entry)
       else visible.push(entry)
     }
     return [{
@@ -157,8 +154,35 @@ function buildRemoteSummary(
       path: readString(value, ['path']) ?? workspaceId,
       sessions: visible,
       ...(archivedSessions.length === 0 ? {} : { archivedSessions }),
+      ...(subagentSessions.length === 0 ? {} : { subagentSessions }),
     }]
   })
+}
+
+/** 原生行只摘取摘要元数据，普通会话与子会话共用同一个投影入口。 */
+function toRemoteSessionSource(sessionId: string, session: Record<string, unknown> | null, adapterMap: ReadonlyMap<string, string>): AggregateSessionSource {
+  const titleProjection = readSessionTitleProjection(session)
+  const adapterId = readString(session, ['adapterId']) ?? adapterMap.get(sessionId)
+  const parentSessionId = readString(session, ['parentSessionId'])
+  return {
+    sessionId,
+    blank: session?.blank === true,
+    title: readSessionTitle(session, sessionId),
+    ...(titleProjection === undefined ? {} : { titleProjection }),
+    status: readRemoteSessionStatus(session),
+    activity: readRemoteSessionActivity(session),
+    updatedAt: readTime(session),
+    ...(adapterId === undefined ? {} : { adapterId }),
+    ...(session?.origin === 'subagent' ? { origin: 'subagent' } : {}),
+    ...(parentSessionId === null ? {} : { parentSessionId }),
+  }
+}
+
+/** 按父子索引遍历可见工作区的后代；Set 同时防止异常循环与重复成员。 */
+function collectWorkspaceSessionIds(roots: readonly string[], childrenByParent: ReadonlyMap<string, readonly string[]>): readonly string[] {
+  const ids = new Set(roots)
+  for (const id of ids) for (const child of childrenByParent.get(id) ?? []) ids.add(child)
+  return [...ids]
 }
 
 function readRemoteSessionStatus(session: Record<string, unknown> | null): string {

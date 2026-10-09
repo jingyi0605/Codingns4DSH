@@ -469,6 +469,15 @@ export function createPeerHostPageTransport(
     scopes.set(sessionId, created)
     refreshModelCatalogForScope(navigationScope())
   }
+  /** 父会话目录早于聚合到达时，复用新建会话的临时作用域与清理机制。 */
+  const rememberSubagentCatalog = (scope: HostScope, value: unknown): void => {
+    const catalog = asRecord(asRecord(asRecord(value)?.projections)?.values)?.subagentCatalog
+    if (!Array.isArray(catalog)) return
+    for (const child of catalog) {
+      const id = asRecord(child)?.id
+      if (typeof id === 'string' && !scopes.has(id)) rememberCreatedSession(scope, { sessionId: id })
+    }
+  }
   const hooks: CodingNsTransportHooks = {
     rpc: async <TResponse = unknown>({ method, payload, signal }: { method: string; payload: unknown; signal?: AbortSignal }): Promise<TResponse> => {
       const value = asRecord(payload)
@@ -559,6 +568,9 @@ export function createPeerHostPageTransport(
             try {
               for await (const chunk of stream) {
                 emitted = true
+                // 父会话先公布子会话目录，聚合稍后才补基线。立即登记已验证的虚拟 ID，
+                // 避免用户在这段窗口打开子会话时把 CLI 配置读到本机并缓存成 dsh。
+                rememberSubagentCatalog(scope, chunk)
                 scheduleAggregateRefresh()
                 yield chunk
               }
@@ -636,7 +648,7 @@ export function createPeerHostPageTransport(
           const workspaceScope: HostScope = { hostId: host.hostId, targetHostId: host.targetHostId, workspaceId: workspace.workspaceId, sessionId: null, scopeGeneration: 0 }
           scopes.set(virtualWorkspaceId, workspaceScope)
           // 归档会话也要能解析作用域：取消归档请求按虚拟会话 ID 路由到目标 Host。
-          for (const session of [...workspace.sessions, ...(workspace.archivedSessions ?? [])]) {
+          for (const session of [...workspace.sessions, ...(workspace.archivedSessions ?? []), ...(workspace.subagentSessions ?? [])]) {
             if (session.scope.sessionId === null) continue
             scopes.set(createVirtualSessionId(virtualHostId, session.scope.sessionId), { ...workspaceScope, sessionId: session.scope.sessionId })
           }

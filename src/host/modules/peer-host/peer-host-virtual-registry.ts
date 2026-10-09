@@ -135,7 +135,8 @@ export class VirtualWorkspaceRegistry {
   listSessions(virtualWorkspaceId: VirtualWorkspaceId): readonly VirtualSessionEntry[] {
     const workspace = this.workspaces.get(virtualWorkspaceId)
     if (workspace === undefined) return []
-    return allWorkspaceSessions(workspace).flatMap((session) => {
+    // 导航枚举继续隐藏子会话；它们只通过 resolveSession 参与原生路由。
+    return [...workspace.sessions, ...(workspace.archivedSessions ?? [])].flatMap((session) => {
       const sessionId = session.scope.sessionId
       if (sessionId === null) return []
       const virtualSessionId = createVirtualSessionId(workspace.targetHostId ?? workspace.hostId, sessionId)
@@ -210,9 +211,9 @@ function uniqueIds(ids: readonly string[]): string[] {
   return [...new Set(ids.filter((id) => typeof id === 'string' && id.trim() !== ''))]
 }
 
-/** 可见与归档会话都要进入虚拟资源表：归档会话仍需解析取消归档等原生请求。 */
+/** 侧栏隐藏不等于禁止访问：归档与子会话都要进入原生请求的路由表。 */
 function allWorkspaceSessions(workspace: AggregateWorkspaceSummary): readonly PeerHostSessionRecord[] {
-  return [...workspace.sessions, ...(workspace.archivedSessions ?? [])]
+  return [...workspace.sessions, ...(workspace.archivedSessions ?? []), ...(workspace.subagentSessions ?? [])]
 }
 
 function isOrder(value: unknown): value is AggregateWorkspaceOrder {
