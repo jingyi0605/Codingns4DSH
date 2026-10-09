@@ -358,7 +358,7 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
   if (path[0] === 'workspaceSessionEnhancement') {
     return path.length === 2 && [
       'showAdapterLogo', 'showArchivedSessions', 'showWorkspaceHiding', 'hiddenWorkspaceIds',
-      'showSubscriptionUsage', 'showQuickPhrases', 'showSkillQuickReference', 'rememberConversationRightbarRatio',
+      'showSubscriptionUsage', 'showQuickPhrases', 'showSkillQuickReference', 'optimizeSessionTitles', 'rememberConversationRightbarRatio',
       'quickPhrases', 'quickPhrasesSeeded',
     ].includes(path[1] ?? '')
   }
