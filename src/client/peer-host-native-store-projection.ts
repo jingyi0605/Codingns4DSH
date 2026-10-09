@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { createPeerHostWorkspaceDisplayPath, type PeerHostNativeProjection, type PeerHostVirtualWorkspaceView } from './peer-host-native-projection.js'
-import { createVirtualWorkspaceId, parseVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
+import { createVirtualWorkspaceId, parseVirtualSessionId, parseVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
 import { readNativeService, readNativeWorkspaceListStore } from './native-workspace-store.js'
 
 interface NativeWorkspaceServiceHandle {
@@ -46,18 +46,21 @@ export function installPeerHostNativeStoreProjection(input: {
   let cachedVirtual: readonly PeerHostVirtualWorkspaceView[] | undefined
   let cachedOrder: readonly string[] | undefined
   let cachedLocalHostId: string | undefined
+  let cachedHasAggregate: boolean | undefined
   let cachedMerged: unknown
   store.getSnapshot = function patchedGetSnapshot(this: unknown): unknown {
     const base = originalGetSnapshot.call(this)
     const virtual = input.projection.workspaces()
     const order = input.projection.workspaceOrder()
     const localHostId = input.projection.localHostId()
-    if (base === cachedBase && virtual === cachedVirtual && order === cachedOrder && localHostId === cachedLocalHostId) return cachedMerged
+    const hasAggregate = input.projection.hasAggregate()
+    if (base === cachedBase && virtual === cachedVirtual && order === cachedOrder && localHostId === cachedLocalHostId && hasAggregate === cachedHasAggregate) return cachedMerged
     cachedBase = base
     cachedVirtual = virtual
     cachedOrder = order
     cachedLocalHostId = localHostId
-    cachedMerged = mergeWorkspaceSnapshot(base, virtual, order, localHostId)
+    cachedHasAggregate = hasAggregate
+    cachedMerged = mergeWorkspaceSnapshot(base, virtual, order, localHostId, hasAggregate)
     return cachedMerged
   }
   store.subscribe = function patchedSubscribe(this: unknown, listener: () => void): () => void {
@@ -108,10 +111,22 @@ function mergeWorkspaceSnapshot(
   virtual: readonly PeerHostVirtualWorkspaceView[],
   orderedWorkspaceIds: readonly string[],
   localHostId: string | undefined,
+  hasAggregate: boolean,
 ): unknown {
   const record = asRecord(snapshot)
   if (record === null || !Array.isArray(record.items)) return snapshot
-  const items = record.items as readonly unknown[]
+  const baseItems = record.items as readonly unknown[]
+  const byId = new Map(virtual.map((workspace) => [workspace.workspaceId, workspace]))
+  // 底层 Store 可能持有旧聚合流的远端条目。首轮后以当前投影为准，否则临时移除
+  // 会被旧 baseline 复活，断线展开时也可能读到过期成员；本机资源仍由宿主管理。
+  const items = hasAggregate ? baseItems.flatMap((item) => {
+    const workspace = asRecord(item)
+    const id = workspace?.workspaceId
+    const ref = typeof id === 'string' ? parseVirtualWorkspaceId(id) : null
+    if (ref === null || ref.hostId === localHostId || ref.targetHostId === null) return [item]
+    const projected = byId.get(id as string)
+    return projected === undefined ? [] : [{ ...workspace, ...projected }]
+  }) : baseItems
   const known = new Set(items.flatMap((item) => {
     const workspaceId = asRecord(item)?.workspaceId
     if (typeof workspaceId !== 'string') return []
@@ -119,12 +134,12 @@ function mergeWorkspaceSnapshot(
     return normalized === workspaceId ? [workspaceId] : [workspaceId, normalized]
   }))
   const injected = virtual.filter((workspace) => !known.has(workspace.workspaceId))
-  const archivedSessionIds = mergeArchivedSessionIds(record.archivedSessionIds, virtual)
+  const archivedSessionIds = mergeArchivedSessionIds(record.archivedSessionIds, virtual, localHostId, hasAggregate)
   const orderedItems = orderWorkspaceItems([...items, ...injected], orderedWorkspaceIds, localHostId)
   // 只规范化远端虚拟条目的显示路径；本地条目必须保留真实路径，文件面板才能继续
   // 使用本机目录。远端文件请求会在 Host 转发边界把这个虚拟路径还原。
   const mergedItems = normalizeRemoteWorkspaceDisplayPaths(orderedItems)
-  const itemsChanged = mergedItems.length !== items.length || mergedItems.some((item, index) => item !== items[index])
+  const itemsChanged = mergedItems.length !== baseItems.length || mergedItems.some((item, index) => item !== baseItems[index])
   if (!itemsChanged && archivedSessionIds === undefined) return snapshot
   return {
     ...record,
@@ -393,8 +408,14 @@ function normalizeWorkspaceId(workspaceId: string, localHostId: string | undefin
 function mergeArchivedSessionIds(
   current: unknown,
   virtual: readonly PeerHostVirtualWorkspaceView[],
+  localHostId: string | undefined,
+  hasAggregate: boolean,
 ): readonly string[] | undefined {
-  const local = Array.isArray(current) ? current.flatMap((id) => typeof id === 'string' ? [id] : []) : []
+  const original = Array.isArray(current) ? current.flatMap((id) => typeof id === 'string' ? [id] : []) : []
+  const local = hasAggregate ? original.filter((id) => {
+    const ref = parseVirtualSessionId(id)
+    return ref === null || ref.hostId === localHostId || ref.hostId === 'local'
+  }) : original
   const seen = new Set(local)
   const merged = [...local]
   for (const workspace of virtual) {
@@ -404,7 +425,7 @@ function mergeArchivedSessionIds(
       merged.push(id)
     }
   }
-  return merged.length === local.length ? undefined : merged
+  return merged.length === original.length && merged.every((id, index) => id === original[index]) ? undefined : merged
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

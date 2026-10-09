@@ -5,7 +5,7 @@
 export function startSerialPolling(
   task: (signal: AbortSignal) => Promise<boolean | void>,
   intervalMs: number,
-  options: { readonly document?: Document; readonly timeoutMs?: number; readonly maxDelayMs?: number } = {},
+  options: { readonly document?: Document; readonly timeoutMs?: number; readonly maxDelayMs?: number; readonly getIntervalMs?: () => number } = {},
 ): { refresh(options?: { readonly afterPending?: boolean }): Promise<void>; dispose(): void } {
   const dom = options.document ?? (typeof document === 'undefined' ? undefined : document)
   const lifetime = new AbortController()
@@ -29,8 +29,10 @@ export function startSerialPolling(
       .then((success) => { failures = success === false ? failures + 1 : 0 }, () => { failures += 1 })
       .finally(() => {
         pending = undefined
-        if (lifetime.signal.aborted || intervalMs <= 0 || dom?.visibilityState === 'hidden') return
-        const delay = Math.min(intervalMs * 2 ** Math.min(failures, 4), options.maxDelayMs ?? Math.max(intervalMs, 60_000))
+        // 根据最新状态选择下次周期，仍共用一个串行计时器并遵守隐藏页暂停规则。
+        const interval = options.getIntervalMs?.() ?? intervalMs
+        if (lifetime.signal.aborted || interval <= 0 || dom?.visibilityState === 'hidden') return
+        const delay = Math.min(interval * 2 ** Math.min(failures, 4), options.maxDelayMs ?? Math.max(interval, 60_000))
         timer = setTimeout(() => { void refresh() }, delay)
       })
     return pending

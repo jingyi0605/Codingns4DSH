@@ -7,6 +7,7 @@ export interface PeerHostVirtualWorkspaceView {
   readonly workspaceId: string
   readonly path: string
   readonly title: string
+  readonly availability: AggregateWorkspaceSummary['availability']
   readonly sessionIds: readonly string[]
   /** 归档会话仍是成员（保留槽位），但会被原生归档集合默认隐藏。 */
   readonly archivedSessionIds: readonly string[]
@@ -29,6 +30,8 @@ export interface PeerHostVirtualSessionSummary {
 }
 
 export interface PeerHostNativeProjection {
+  /** 首轮聚合前不能把原生流提前写入的虚拟条目误当成已移除项。 */
+  hasAggregate(): boolean
   /** 记录新的聚合快照；返回 true 表示与上一次不同，调用方据此刷新原生数据。 */
   setAggregate(results: readonly AggregateHostResult[], orderedWorkspaceIds?: readonly string[]): boolean
   /** 更新 Host 侧持久化的全局 Workspace 顺序；顺序变化必须触发原生 Store 刷新。 */
@@ -70,8 +73,10 @@ export function createPeerHostNativeProjection(): PeerHostNativeProjection {
   let sessions: readonly PeerHostVirtualSessionSummary[] = []
   let orderedWorkspaceIds: readonly string[] = []
   let localHostId: string | undefined
+  let hasAggregate = false
   const listeners = new Set<() => void>()
   return {
+    hasAggregate: () => hasAggregate,
     setAggregate(results, nextOrderedWorkspaceIds) {
       const next = projectAggregate(results)
       // 某次摘要失败可能暂时不带本地 Host；保留上一次稳定 ID，避免原生裸 ID
@@ -80,11 +85,12 @@ export function createPeerHostNativeProjection(): PeerHostNativeProjection {
       const nextOrder = nextOrderedWorkspaceIds === undefined
         ? orderedWorkspaceIds
         : normalizeWorkspaceOrder(nextOrderedWorkspaceIds)
-      const changed = !sameWorkspaces(workspaces, next.workspaces)
+      const changed = !hasAggregate || !sameWorkspaces(workspaces, next.workspaces)
         || !sameSessions(sessions, next.sessions)
         || !sameIds(orderedWorkspaceIds, nextOrder)
         || localHostId !== nextLocalHostId
       if (!changed) return false
+      hasAggregate = true
       // 无变化时保留原引用：下游 Store 快照与 useSyncExternalStore 依赖引用稳定。
       workspaces = next.workspaces
       sessions = next.sessions
@@ -157,7 +163,7 @@ function projectWorkspace(
     const virtualSessionId = createVirtualSessionId(virtualHostId, realSessionId)
     sessionIds.push(virtualSessionId)
     if (archived) archivedSessionIds.push(virtualSessionId)
-    sessions.push(projectSession(virtualSessionId, session, realPath))
+    sessions.push(projectSession(virtualSessionId, session, realPath, workspace.availability === 'ready'))
     updatedAt = Math.max(updatedAt, session.updatedAt)
   }
   for (const session of workspace.sessions) append(session, false)
@@ -165,7 +171,7 @@ function projectWorkspace(
   // 原生状态目录需要子会话基线；工作区成员列表仍只包含普通与归档会话。
   for (const session of workspace.subagentSessions ?? []) {
     if (session.scope.sessionId === null) continue
-    sessions.push(projectSession(createVirtualSessionId(virtualHostId, session.scope.sessionId), session, realPath))
+    sessions.push(projectSession(createVirtualSessionId(virtualHostId, session.scope.sessionId), session, realPath, workspace.availability === 'ready'))
   }
   return {
     workspace: {
@@ -174,6 +180,7 @@ function projectWorkspace(
       // Host 归属不再写进标题文本：侧栏由彩色标签表达，标题保持干净，可搜索、
       // 可重命名，也不会污染 hover 卡片与重命名初值。
       title: workspace.displayName,
+      availability: workspace.availability,
       sessionIds,
       archivedSessionIds,
       // 远端未提供 Workspace 创建时间；用纪元时间保证原生 hover 卡片拿到合法日期。
@@ -188,13 +195,14 @@ function projectSession(
   virtualSessionId: string,
   session: PeerHostSessionRecord,
   cwd: string,
+  available: boolean,
 ): PeerHostVirtualSessionSummary {
   if (session.adapterId !== undefined) publishSessionAdapter(virtualSessionId, session.adapterId)
   return {
-    agentAvailable: true,
+    agentAvailable: available,
     sessionId: virtualSessionId,
     updatedAt: session.updatedAt,
-    running: session.status === 'running' || session.status === 'active',
+    running: available && (session.status === 'running' || session.status === 'active'),
     // 旧缓存摘要没有 blank 时按正式会话兼容；原生远端摘要会提供真实值。
     blank: session.blank === true,
     cwd,
@@ -222,6 +230,7 @@ function sameWorkspace(left: PeerHostVirtualWorkspaceView, right: PeerHostVirtua
   return left.workspaceId === right.workspaceId
     && left.title === right.title
     && left.path === right.path
+    && left.availability === right.availability
     && left.updatedAt === right.updatedAt
     && sameIds(left.sessionIds, right.sessionIds)
     && sameIds(left.archivedSessionIds, right.archivedSessionIds)
@@ -237,6 +246,7 @@ function sameSessions(previous: readonly PeerHostVirtualSessionSummary[], next: 
     const candidate = next[index]
     return candidate !== undefined
       && session.sessionId === candidate.sessionId
+      && session.agentAvailable === candidate.agentAvailable
       && session.updatedAt === candidate.updatedAt
       && session.running === candidate.running
       && session.blank === candidate.blank

@@ -1,6 +1,7 @@
 import type { AggregateHostResult } from '../shared/contracts/peer-host.js'
 import { createVirtualWorkspaceId, parseVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
 import { resolvePeerHostColor } from './peer-host-color.js'
+import { resolveCodingNsTranslator, type CodingNsLocale } from './locale.js'
 
 /**
  * 在工作区名称后注入彩色 Host 标签。
@@ -14,6 +15,8 @@ import { resolvePeerHostColor } from './peer-host-color.js'
  * 被移动端横滑手势的 `preventDefault` 吞掉。
  */
 export const PEER_HOST_WORKSPACE_TAG_ATTRIBUTE = 'data-codingns-peer-host-tag'
+export const PEER_HOST_DISCONNECTED_ATTRIBUTE = 'data-codingns-peer-host-disconnected'
+export const PEER_HOST_DISMISS_ATTRIBUTE = 'data-codingns-peer-host-dismiss'
 
 /** 工作区行：DSH 只给工作区行加 `aria-expanded`，会话行只有 `aria-selected`。 */
 const WORKSPACE_ROW_SELECTOR = '[role="treeitem"][aria-expanded]'
@@ -39,11 +42,14 @@ export interface PeerHostWorkspaceTagController {
 export interface PeerHostWorkspaceTagOptions {
   readonly document?: Document
   readonly MutationObserver?: typeof MutationObserver
+  readonly locale?: CodingNsLocale
+  readonly onDismissDisconnectedWorkspace?: (virtualWorkspaceId: string) => Promise<void>
 }
 
 interface HostTagStyle {
   readonly label: string
   readonly color: string
+  readonly disconnected: boolean
 }
 
 /**
@@ -62,9 +68,23 @@ export function startPeerHostWorkspaceTag(options: PeerHostWorkspaceTagOptions =
   let scanQueued = false
   /** 虚拟工作区 ID -> 标签样式；聚合变化时整体替换。 */
   let tags = new Map<string, HostTagStyle>()
+  const t = resolveCodingNsTranslator(options.locale)
+  // 记录原样式供重连、DOM 行复用和模块停用时恢复，不覆盖宿主已有的视觉状态。
+  const disconnectedRows = new Map<HTMLElement, { opacity: string; filter: string; workspaceId: string }>()
+  const restoreRow = (row: HTMLElement): void => {
+    const previous = disconnectedRows.get(row)
+    if (previous !== undefined) Object.assign(row.style, { opacity: previous.opacity, filter: previous.filter })
+    disconnectedRows.delete(row)
+    row.removeAttribute(PEER_HOST_DISCONNECTED_ATTRIBUTE)
+    row.querySelector(`[${PEER_HOST_DISMISS_ATTRIBUTE}]`)?.remove()
+  }
 
   const scan = (): void => {
     if (disposed) return
+    for (const [row, previous] of disconnectedRows) {
+      const workspaceId = resolveWorkspaceIdFromRow(row)
+      if (workspaceId !== previous.workspaceId || tags.get(workspaceId)?.disconnected !== true || row.isConnected === false) restoreRow(row)
+    }
     for (const row of dom.querySelectorAll<HTMLElement>(WORKSPACE_ROW_SELECTOR)) {
       const virtualWorkspaceId = resolveWorkspaceIdFromRow(row)
       const tag = virtualWorkspaceId === undefined ? undefined : tags.get(virtualWorkspaceId)
@@ -73,6 +93,32 @@ export function startPeerHostWorkspaceTag(options: PeerHostWorkspaceTagOptions =
         continue
       }
       upsertTag(row, virtualWorkspaceId, tag, dom)
+      const label = row.querySelector<HTMLElement>(`[${PEER_HOST_WORKSPACE_TAG_ATTRIBUTE}]`)
+      if (label !== null) label.title = tag.disconnected ? t('peerHostWorkspace.disconnectedHint') : ''
+      if (!tag.disconnected) continue
+      if (!disconnectedRows.has(row)) disconnectedRows.set(row, { opacity: row.style.opacity, filter: row.style.filter, workspaceId: virtualWorkspaceId })
+      row.style.opacity = '0.55'
+      row.style.filter = 'grayscale(1)'
+      row.setAttribute(PEER_HOST_DISCONNECTED_ATTRIBUTE, '')
+      if (options.onDismissDisconnectedWorkspace === undefined || row.querySelector(`[${PEER_HOST_DISMISS_ATTRIBUTE}]`) !== null) continue
+      const button = dom.createElement('button')
+      button.type = 'button'
+      button.textContent = '×'
+      button.setAttribute(PEER_HOST_DISMISS_ATTRIBUTE, virtualWorkspaceId)
+      button.setAttribute('aria-label', t('peerHostWorkspace.dismissDisconnected'))
+      button.title = t('peerHostWorkspace.dismissDisconnectedHint')
+      Object.assign(button.style, { flex: 'none', border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', padding: '2px 6px', fontSize: '16px' })
+      button.addEventListener('click', (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (button.disabled) return
+        button.disabled = true
+        void options.onDismissDisconnectedWorkspace!(virtualWorkspaceId).catch((error: unknown) => {
+          button.disabled = false
+          button.title = error instanceof Error ? error.message : String(error)
+        })
+      })
+      row.append(button)
     }
     // 聚合里已经没有的工作区标签可能在折叠/重建过程中残留，统一清理一次。
     for (const node of dom.querySelectorAll<HTMLElement>(`[${PEER_HOST_WORKSPACE_TAG_ATTRIBUTE}]`)) {
@@ -92,7 +138,7 @@ export function startPeerHostWorkspaceTag(options: PeerHostWorkspaceTagOptions =
 
   const observer = Observer === undefined ? undefined : new Observer(scheduleScan)
   if (observer !== undefined && dom.documentElement !== null) {
-    observer.observe(dom.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-expanded'] })
+    observer.observe(dom.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-expanded', 'data-row-key'] })
   }
   scan()
 
@@ -105,7 +151,8 @@ export function startPeerHostWorkspaceTag(options: PeerHostWorkspaceTagOptions =
         const color = resolvePeerHostColor(host.hostColor, host.hostLabel)
         for (const workspace of host.workspaces) {
           // 键必须是原生列表真正持有的虚拟 ID，否则 data-row-key 反查永远落空。
-          next.set(createVirtualWorkspaceId(host.targetHostId, workspace.workspaceId), { label: host.hostLabel, color })
+          const disconnected = host.availability !== 'ready' || workspace.availability !== 'ready'
+          next.set(createVirtualWorkspaceId(host.targetHostId, workspace.workspaceId), { label: host.hostLabel, color: disconnected ? '#8c8c8c' : color, disconnected })
         }
       }
       tags = next
@@ -115,6 +162,7 @@ export function startPeerHostWorkspaceTag(options: PeerHostWorkspaceTagOptions =
       if (disposed) return
       disposed = true
       observer?.disconnect()
+      for (const row of disconnectedRows.keys()) restoreRow(row)
       dom.querySelectorAll<HTMLElement>(`[${PEER_HOST_WORKSPACE_TAG_ATTRIBUTE}]`).forEach((node) => node.remove())
     },
   }

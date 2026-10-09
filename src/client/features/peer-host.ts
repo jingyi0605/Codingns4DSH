@@ -22,6 +22,8 @@ import { installPeerHostFileLinkRouting } from '../peer-host-file-links.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
 const PEER_HOST_AGGREGATE_REFRESH_MS = 30_000
+/** 有断线节点时缩短复检周期，成功重连后恢复正常频率。 */
+const PEER_HOST_RECOVERY_REFRESH_MS = 5_000
 /** 新建会话尚未出现在聚合摘要时，临时保留其远端作用域的最长时间。 */
 const PEER_HOST_PENDING_SESSION_SCOPE_TTL_MS = 30_000
 /** 远端会话流刷新聚合的合并窗口，避免每个文本增量都触发完整摘要读取。 */
@@ -115,7 +117,21 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
     const panel = startPeerHostManagementPanel({ rpc: context.services.rpc, locale: context.services.locale })
     context.resources.add(() => panel.dispose())
     // 工作区标签：远端工作区不再把 Host 名写进标题文本，改由彩色标签表达归属。
-    const tag = startPeerHostWorkspaceTag()
+    let latestAggregate: readonly AggregateHostResult[] = []
+    const tag = startPeerHostWorkspaceTag({
+      locale: context.services.locale,
+      onDismissDisconnectedWorkspace: async (virtualWorkspaceId) => {
+        const workspace = parseVirtualWorkspaceId(virtualWorkspaceId)
+        if (workspace === null || workspace.targetHostId === null) return
+        await management.dismissDisconnectedWorkspace(workspace.targetHostId, workspace.workspaceId)
+        // 本地立即隐藏已确认移除的缓存，不等待下一次网络复检完成。
+        latestAggregate = latestAggregate.map((host) => host.targetHostId === workspace.targetHostId && host.availability !== 'ready'
+          ? { ...host, workspaces: host.workspaces.filter((item) => item.workspaceId !== workspace.workspaceId) } : host)
+        tag.setAggregate(latestAggregate)
+        if (transport?.setAggregate(latestAggregate) === true) await refreshPeerHostNativeSessions(context.services.uiContext)
+        await polling.refresh({ afterPending: true })
+      },
+    })
     context.resources.add(() => tag.dispose())
     // 原生"添加工作区"对话框保持主体不变，只额外挂一个"远程 HOST"标签页。
     const workspaceTab = startPeerHostWorkspaceTab({
@@ -144,6 +160,7 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
         // 聚合读取期间如果用户完成了一次拖拽，保留本地刚确认的顺序；本轮只更新
         // 工作区内容，下一轮再从 Host 读取顺序，避免旧的 order 响应覆盖拖拽结果。
         const refreshedOrder = projection.workspaceOrder() === orderReference ? orderedWorkspaceIds : undefined
+        latestAggregate = aggregate
         tag.setAggregate(aggregate)
         if (transport?.setAggregate(aggregate, refreshedOrder) === true) {
           await refreshPeerHostNativeSessions(context.services.uiContext)
@@ -155,8 +172,17 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
       }
     }
     // 首次聚合后台执行，慢远端不能挡住后续模块启动；隐藏页面暂停自动刷新。
-    const polling = startSerialPolling(refresh, PEER_HOST_AGGREGATE_REFRESH_MS)
+    const polling = startSerialPolling(refresh, PEER_HOST_AGGREGATE_REFRESH_MS, {
+      // 即使断线缓存被手动隐藏，也继续检查 Host；隐藏页仍暂停轮询。
+      getIntervalMs: () => latestAggregate.some((host) => host.targetHostId !== null && host.availability !== 'ready')
+        ? PEER_HOST_RECOVERY_REFRESH_MS : PEER_HOST_AGGREGATE_REFRESH_MS,
+    })
     context.resources.add(() => polling.dispose())
+    const online = (): void => { void polling.refresh({ afterPending: true }) }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', online)
+      context.resources.add(() => window.removeEventListener('online', online))
+    }
     // 归档入口等原生操作完成后可以立刻请求刷新，而不必等待下一个周期。
     context.resources.add(registerPeerHostAggregateRefresh(() => polling.refresh({ afterPending: true })))
   },
