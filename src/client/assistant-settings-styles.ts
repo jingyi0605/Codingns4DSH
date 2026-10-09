@@ -4,4 +4,4 @@ import type { CSSProperties } from 'react'
 export const assistantSettingTextStyle: CSSProperties = { fontSize: 13, fontWeight: 400, lineHeight: 1.5 }
 export const assistantSettingFieldStyle: CSSProperties = { ...assistantSettingTextStyle, display: 'grid', gap: 6, minWidth: 0 }
 export const assistantSettingCheckboxStyle: CSSProperties = { ...assistantSettingTextStyle, display: 'flex', alignItems: 'start', gap: 8 }
-export const assistantSettingSwitchStyle: CSSProperties = { ...assistantSettingTextStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }
+export const assistantSettingSwitchStyle: CSSProperties = { ...assistantSettingTextStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, width: '100%', minWidth: 0 }

@@ -15,6 +15,7 @@ import { AssistantAvatarEngineDialog, AssistantAvatarEngineProgress, useAssistan
 import { AssistantAvatarSlot } from './slot.js'
 import { AssistantAvatarLoading } from './loading.js'
 import { startAssistantAvatarTemporaryPreview } from './temporary-preview.js'
+import { SettingsSwitch } from '../settings-controls.js'
 
 export interface AssistantAvatarPreviewTargetProps {
   readonly active?: boolean
@@ -148,7 +149,7 @@ export function AssistantAvatarThirdPartyToggle({ accepted, disabled, t, onReque
 }): ReactElement {
   return createElement('label', { style: assistantSettingSwitchStyle },
     createElement('span', null, t('avatar.thirdPartyEnable')),
-    createElement('input', { type: 'checkbox', role: 'switch', 'aria-label': t('avatar.thirdPartyEnable'), checked: accepted, disabled, 'data-codingns-third-party-enabled': true,
+    createElement(SettingsSwitch, { 'aria-label': t('avatar.thirdPartyEnable'), checked: accepted, disabled, 'data-codingns-third-party-enabled': true,
       onChange: (event: { currentTarget: { checked: boolean } }) => { if (!disabled) { if (event.currentTarget.checked) onRequest(); else onDisable() } } }))
 }
 

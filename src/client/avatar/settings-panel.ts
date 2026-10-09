@@ -12,6 +12,7 @@ import { AssistantAvatarCatalogPanel } from './catalog-panel.js'
 import type { AssistantAvatarPreviewTargetProps } from './catalog-panel.js'
 import { AssistantAvatarEngineDialog, AssistantAvatarEngineProgress, useAssistantAvatarEngine } from './engine.js'
 import { assistantSettingFieldStyle, assistantSettingSwitchStyle, assistantSettingTextStyle } from '../assistant-settings-styles.js'
+import { SettingsSwitch } from '../settings-controls.js'
 
 /** 对话内复用设置页表单；订阅同一存储并把保存反馈留在当前窗口。 */
 export function AssistantAppearanceEditor({ services, enabled, ...previewProps }: {
@@ -108,7 +109,7 @@ export function AssistantAppearancePanel({ services, enabled, snapshot, notify, 
     createElement('span', null, label), input)
   const toggle = (key: 'floatingEnabled' | 'dialogEnabled', label: string): ReactElement => createElement('label', {
     style: assistantSettingSwitchStyle },
-    createElement('span', null, label), createElement('input', { type: 'checkbox', role: 'switch', 'aria-label': label,
+    createElement('span', { style: { minWidth: 0, overflowWrap: 'anywhere' } }, label), createElement(SettingsSwitch, { 'aria-label': label,
       checked: appearance[key], disabled, onChange: (event: { currentTarget: { checked: boolean } }) => { const checked = event.currentTarget.checked; void save(() => manager.configure({ [key]: checked })) } }))
   const sizeField = (key: 'floatingSize' | 'dialogSize', min: number, max: number, label: string): ReactElement => field(label,
     createElement('input', { key: appearance[key], type: 'number', min, max, step: 1, defaultValue: appearance[key], disabled, 'aria-label': label, style: dshSettingsFieldStyle,
