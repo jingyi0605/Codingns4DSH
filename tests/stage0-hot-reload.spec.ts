@@ -200,7 +200,24 @@ test('Stage0 patch 经原生 patch 算法后保留终端隔离并监听 Host 产
   assert.ok(config.ignored.includes('data/build/dist/client/**'))
   assert.equal(config.ignored.includes('data'), false)
   assert.ok(config.debounce >= 500)
-  assert.match(config.base.__jsExpr, /CODINGNS4DSH_STAGE0_REPO_ROOT/u)
+  assert.match(config.base.__jsExpr, /CODINGNS4DSH_STAGE0_REPO_URL/u)
+})
+
+test('Stage0 runtime passes a file URL to the Host HMR configuration', () => {
+  const root = mkdtempSync(join(tmpdir(), 'codingns-stage0-url-'))
+  const launcher = join(root, 'launcher.mjs')
+  writeFileSync(launcher, 'console.log(process.env.CODINGNS4DSH_STAGE0_REPO_URL)')
+  try {
+    const result = spawnSync(process.execPath, [join(repositoryRoot, 'scripts/stage0-runtime.mjs'), launcher], {
+      env: { ...process.env, CODINGNS4DSH_STAGE0_WATCH: '0' },
+      encoding: 'utf8',
+      timeout: 5000,
+    })
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(fileURLToPath(result.stdout.trim()), repositoryRoot)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 /** 用浏览器假对象执行真实注入脚本，验证不会进入局部模块重载。 */

@@ -12,9 +12,17 @@ const options = {
   stdio: managed ? ['inherit', 'pipe', 'inherit'] : 'inherit',
   detached: process.platform !== 'win32',
 }
+
+// Windows .cmd launchers must run through the command shell.
+function spawnCompiler(args) {
+  return process.platform === 'win32'
+    ? spawn(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `${packageManager} ${args.join(' ')}`], options)
+    : spawn(packageManager, args, options)
+}
+
 const children = [
-  spawn(packageManager, ['exec', 'tsc', '--watch', '--preserveWatchOutput', '--pretty', 'false', '--locale', 'en'], options),
-  spawn(packageManager, ['exec', 'tsdown', '--watch'], options),
+  spawnCompiler(['exec', 'tsc', '--watch', '--preserveWatchOutput', '--pretty', 'false', '--locale', 'en']),
+  spawnCompiler(['exec', 'tsdown', '--watch']),
 ]
 
 let stopping = false

@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+process.env.CODINGNS4DSH_STAGE0_REPO_URL = new URL('../', import.meta.url).href
 const [launcher, ...args] = process.argv.slice(2)
 const children = new Set()
 let stopping = false

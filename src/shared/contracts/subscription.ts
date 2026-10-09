@@ -114,6 +114,7 @@ export interface DeepseekUsage {
 
 /** 官方提供商账户余额或 Coding Plan 余量的统一安全摘要。 */
 export interface ProviderBalanceUsage {
+  readonly r4?: R4Usage
   readonly upstreamUrl: string
   readonly currency: string | null
   readonly unit: string | null
@@ -133,6 +134,32 @@ export interface ProviderBalanceUsage {
     readonly label: string
     readonly value: string | number
   }[]
+}
+
+/** R4 账户账本与 Key 终身计数器分开保存；null 表示未提供。 */
+export interface R4UsagePoint {
+  readonly requests: number | null
+  readonly cost: number | null
+  readonly inputTokens: number | null
+  readonly outputTokens: number | null
+  readonly cacheReadTokens: number | null
+  readonly cacheCreationTokens: number | null
+}
+
+export interface R4Usage {
+  readonly packageBalance: number | null
+  readonly walletBalance: number | null
+  readonly packageExpiresAt: string | null
+  readonly key: null | {
+    readonly unlimited: boolean
+    readonly limit: number | null
+    readonly spent: number | null
+    readonly held: number | null
+    readonly remaining: number | null
+  }
+  readonly today: R4UsagePoint | null
+  readonly daily: readonly (R4UsagePoint & { readonly date: string })[]
+  readonly models: readonly { readonly name: string; readonly requests: number | null; readonly cost: number | null }[]
 }
 
 export interface Sub2ApiUsagePoint {
