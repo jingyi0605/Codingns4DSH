@@ -34,7 +34,7 @@ export class PeerHostHttpProxyService {
     this.fetchImpl = options.fetchImpl ?? fetch
   }
 
-  async handle(peerHostId: string, request: Request): Promise<Response> {
+  async handle(peerHostId: string, request: Request, onFailure?: (error: unknown) => void): Promise<Response> {
     try {
       throwIfPeerHostRequestAborted(request.signal)
       const record = await this.requireReady(peerHostId)
@@ -74,6 +74,7 @@ export class PeerHostHttpProxyService {
         throwIfPeerHostRequestAborted(request.signal)
         throw error
       }
+      onFailure?.(error)
       return errorResponse(error)
     }
   }
@@ -109,6 +110,8 @@ export class PeerHostHttpProxyService {
     readonly headers?: Readonly<Record<string, string>>
     readonly body?: string
     readonly signal?: AbortSignal
+    /** Host 内部的诊断回调；底层异常不得进入返回给客户端的代理响应。 */
+    readonly onFailure?: (error: unknown) => void
   }): Promise<{ readonly status: number; readonly headers: readonly [string, string][]; readonly body: string }> {
     const path = typeof input.path === 'string' ? input.path : ''
     if (!path.startsWith('/api/') || path.includes('://')) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED, 'PeerHost 代理路径必须是固定 API 路径')
@@ -129,7 +132,7 @@ export class PeerHostHttpProxyService {
     const response = await this.handle(peerHostId, new Request(new URL(path, 'http://peer-host.invalid'), {
       method, headers, ...(body === undefined ? {} : { body }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
-    }))
+    }), input.onFailure)
     const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
     if (response.body !== null && !contentType.includes('json') && !contentType.startsWith('text/')) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.RESPONSE_INVALID, '目标 Host 返回了不支持的响应类型')
     return { status: response.status, headers: [...response.headers.entries()], body: await response.text() }

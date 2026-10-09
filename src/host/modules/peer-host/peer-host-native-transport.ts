@@ -4,7 +4,7 @@ import type { HostScope } from '../../../shared/contracts/peer-host.js'
 import { PEER_HOST_ERROR_CODES } from '../../../shared/contracts/peer-host.js'
 import { CodingNsRpcError } from '../../rpc-table.js'
 import { PeerHostHttpProxyService } from './host-api-proxy-service.js'
-import { throwIfPeerHostRequestAborted } from './peer-host-request-errors.js'
+import { isPeerHostRequestCancellation, PeerHostNativeStreamError, throwIfPeerHostRequestAborted } from './peer-host-request-errors.js'
 
 const STREAM_RETRY_ATTEMPTS = 3
 const STREAM_RETRY_DELAY_MS = 400
@@ -70,9 +70,8 @@ export function openPeerNativeStream(httpProxy: PeerHostHttpProxyService, peerHo
       path: '/api/codingns/peerHost/nativeStreamOpen',
       method: 'POST',
       body: peerHostNativeEnvelope('peerHost/nativeStreamOpen', { method: request.method, payload: request.payload, scope: request.scope }),
-    }, request.signal)
-    const openedValue = readNativeRpcEnvelope(opened.body)
-    const streamId = requiredString(record(openedValue).streamId, 'streamId')
+    }, request, 'open')
+    const streamId = requiredString(record(opened).streamId, 'streamId')
     try {
       while (!(request.signal?.aborted ?? false)) {
         const next = await requestPeerHostStream(httpProxy, peerHostId, {
@@ -80,8 +79,8 @@ export function openPeerNativeStream(httpProxy: PeerHostHttpProxyService, peerHo
           path: '/api/codingns/peerHost/nativeStreamNext',
           method: 'POST',
           body: peerHostNativeEnvelope('peerHost/nativeStreamNext', { streamId, scope: request.scope }),
-        }, request.signal)
-        const value = record(readNativeRpcEnvelope(next.body))
+        }, request, 'next')
+        const value = record(next)
         if (value.done === true) return
         yield value.value
       }
@@ -103,13 +102,38 @@ export function openPeerNativeStream(httpProxy: PeerHostHttpProxyService, peerHo
  * 目标 Host 自身重启时其 LAN 入口会短暂不可达，代理以 502 与连接级错误码返回。
  * 流通道只有读语义，这类明确的连接级失败可以有限重试；业务错误（例如会话不存在）直接返回。
  */
-async function requestPeerHostStream(httpProxy: PeerHostHttpProxyService, peerHostId: string, request: PeerHostProxyRequest, signal: AbortSignal | undefined): Promise<PeerHostProxyResponse> {
-  for (let attempt = 1; ; attempt += 1) {
-    throwIfPeerHostRequestAborted(signal)
-    const response = await httpProxy.request(peerHostId, { ...request, ...(signal === undefined ? {} : { signal }) })
-    throwIfPeerHostRequestAborted(signal)
-    if (attempt >= STREAM_RETRY_ATTEMPTS || !isProxyUnreachable(response)) return response
-    await delay(STREAM_RETRY_DELAY_MS * attempt, undefined, { signal })
+async function requestPeerHostStream(httpProxy: PeerHostHttpProxyService, peerHostId: string, request: PeerHostProxyRequest, subscription: PeerHostNativeTransportRequest, phase: 'open' | 'next'): Promise<unknown> {
+  const startedAt = performance.now()
+  let attempts = 0
+  let status: number | null = null
+  let cause: unknown
+  try {
+    for (;;) {
+      throwIfPeerHostRequestAborted(subscription.signal)
+      cause = undefined
+      status = null
+      attempts += 1
+      const response = await httpProxy.request(peerHostId, {
+        ...request,
+        ...(subscription.signal === undefined ? {} : { signal: subscription.signal }),
+        onFailure: error => { cause = error },
+      })
+      status = response.status
+      throwIfPeerHostRequestAborted(subscription.signal)
+      if (attempts >= STREAM_RETRY_ATTEMPTS || !isProxyUnreachable(response)) return readNativeRpcEnvelope(response.body)
+      await delay(STREAM_RETRY_DELAY_MS * attempts, undefined, { signal: subscription.signal })
+    }
+  } catch (error) {
+    if (isPeerHostRequestCancellation(error, subscription.signal)) {
+      throwIfPeerHostRequestAborted(subscription.signal)
+      throw error
+    }
+    const failureCause = subscription.signal?.aborted ? subscription.signal.reason : cause ?? error
+    throw new PeerHostNativeStreamError(error, failureCause, {
+      targetHostId: peerHostId, method: subscription.method, phase,
+      workspaceId: request.scope.workspaceId, sessionId: request.scope.sessionId,
+      elapsedMs: Math.round(performance.now() - startedAt), attempts, status,
+    })
   }
 }
 
