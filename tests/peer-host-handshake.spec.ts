@@ -138,3 +138,23 @@ test('Relay 路由在 Host-to-Host 能力未验证前保持不可用', async () 
   assert.equal(record.status, 'unreachable')
   assert.equal(record.lastErrorCode, 'PEER_HOST_RELAY_UNAVAILABLE')
 })
+
+test('网络波动保留确认过的身份，恢复后仍能识别目标身份变化', async () => {
+  let offline = false
+  let changed = false
+  const { service, store } = await setup(async () => {
+    if (offline) throw new Error('network down')
+    return response(payload({ hostname: 'dev-host', fingerprint: changed ? 'sha256:changed' : 'sha256:first' }))
+  })
+  await service.check('peer-1')
+  offline = true
+  const disconnected = await service.check('peer-1')
+  assert.equal(disconnected.status, 'unreachable')
+  assert.equal(disconnected.fingerprint, 'sha256:first')
+  assert.equal(disconnected.hostname, 'dev-host')
+  assert.equal((await store.get('peer-1'))?.pluginVersion, '0.1.2')
+  offline = false
+  assert.equal((await service.check('peer-1')).status, 'ready')
+  changed = true
+  assert.equal((await service.check('peer-1')).status, 'identity_changed')
+})

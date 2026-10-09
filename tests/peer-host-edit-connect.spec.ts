@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { createPeerHostFeature } from '../data/build/dist/host/features/peer-host.js'
 import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
+import { PeerHostWebSocketGateway } from '../src/host/modules/peer-host/peer-host-ws-gateway.js'
+import type { AggregateHostResult, PeerHostClientRecord } from '../src/shared/contracts/peer-host.js'
 import type { AssistantHostGateway } from '../src/host/features/types.js'
 import { createVirtualWorkspaceId } from '../src/shared/contracts/peer-host.js'
 
@@ -41,13 +43,17 @@ async function harness(options: {
   readonly authBody?: unknown
   readonly onLogin?: (body: unknown) => void
   readonly handshake?: () => Response
+  readonly stateDirectory?: string
+  readonly offline?: () => boolean
+  readonly native?: (endpoint: string, payload: unknown) => unknown
 } = {}): Promise<Harness> {
-  const stateDirectory = await mkdtemp(join(tmpdir(), 'codingns-peer-host-feature-'))
+  const stateDirectory = options.stateDirectory ?? await mkdtemp(join(tmpdir(), 'codingns-peer-host-feature-'))
   const calls: string[] = []
   const rpc = new CodingNsRpcTable()
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     calls.push(url.pathname)
+    if (options.offline?.()) throw new Error('network down')
     if (url.pathname === '/api/public/host-handshake') return options.handshake?.() ?? handshakeResponse()
     if (url.pathname === '/api/auth/login') {
       const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null
@@ -59,6 +65,10 @@ async function harness(options: {
     }
     if (url.pathname === '/api/auth/refresh') return Response.json({ accessToken: 'access-refreshed', refreshToken: 'refresh-refreshed', expiresIn: 3600 })
     if (url.pathname === '/api/auth/logout') return Response.json({ ok: true })
+    if (url.pathname.startsWith('/api/codingns/') && options.native !== undefined) {
+      const envelope = JSON.parse(String(init?.body))
+      return Response.json({ result: { ok: true, value: options.native(envelope.method, envelope.payload) } })
+    }
     return Response.json({})
   }) as typeof fetch
 
@@ -379,4 +389,45 @@ test('非法配色被拒绝，避免把任意 CSS 写进侧栏', async () => {
   } finally {
     await host.dispose()
   }
+})
+
+test('真实管理与聚合 RPC 在断线、重启、临时移除和重连期间保留添加状态', async (t) => {
+  t.mock.method(PeerHostWebSocketGateway.prototype, 'start', async () => ({ host: '127.0.0.1', port: 0, path: '/test' }))
+  const directory = await mkdtemp(join(tmpdir(), 'codingns-peer-offline-rpc-'))
+  let offline = false
+  let title = '断线前的会话'
+  const options = { stateDirectory: directory, offline: () => offline, native: (endpoint: string) => {
+    if (endpoint === 'peerHost/nativeStreamOpen') return { streamId: 'test-stream' }
+    if (endpoint === 'peerHost/nativeStreamNext') return { done: false, value: { type: 'baseline', value: {
+      items: [{ workspaceId: 'w-1', title: '项目', path: '/repo', sessionIds: ['s-1'] }], archivedSessionIds: [],
+    } } }
+    if (endpoint === 'peerHost/nativeLocal') return { items: [{ sessionId: 's-1', cwd: '/repo', updatedAt: 2, running: false, blank: false, projections: { kind: 'sequenced', asOfSeq: 1, values: { title } } }] }
+    return []
+  } }
+  let host = await harness(options)
+  try {
+    const peer = await host.call('peerHost/create', { displayName: 'Mac', route: { kind: 'lan', baseUrl: 'http://peer.test', normalizedOrigin: '' } }) as PeerHostClientRecord
+    await host.call('peerHost/update', { peerHostId: peer.id, username: 'test', password: 'secret' })
+    await host.call('peerHost/setWorkspaceVisibility', { peerHostId: peer.id, workspaceId: 'w-1', visible: true })
+    const aggregate = async () => (await host.call('peerHost/aggregate', {}) as AggregateHostResult[]).find((item) => item.targetHostId === peer.id)!
+    assert.equal((await aggregate()).workspaces[0]?.sessions[0]?.title, title)
+    offline = true
+    assert.equal((await aggregate()).workspaces[0]?.availability, 'unreachable')
+    await host.call('peerHost/reconnect', { peerHostId: peer.id })
+    // 握手失败后 buildSources 仍生成断线节点，让缓存接管，而不是跳过整个 Host。
+    assert.equal((await aggregate()).workspaces[0]?.sessions[0]?.title, title)
+    await host.call('peerHost/dismissDisconnectedWorkspace', { peerHostId: peer.id, workspaceId: 'w-1' })
+    assert.deepEqual((await aggregate()).workspaces, [])
+    assert.deepEqual((await host.call('peerHost/list', {}) as PeerHostClientRecord[])[0]?.visibleWorkspaceIds, ['w-1'])
+    await host.dispose()
+    host = await harness(options)
+    assert.deepEqual((await aggregate()).workspaces, [])
+    offline = false
+    title = '重连后的会话'
+    const restored = await aggregate()
+    assert.equal(restored.availability, 'ready')
+    assert.equal(restored.workspaces[0]?.sessions[0]?.title, title)
+    await host.call('peerHost/setWorkspaceVisibility', { peerHostId: peer.id, workspaceId: 'w-1', visible: false })
+    assert.deepEqual((await aggregate()).workspaces, [])
+  } finally { await host.dispose(); await rm(directory, { recursive: true, force: true }) }
 })

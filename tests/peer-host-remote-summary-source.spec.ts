@@ -163,10 +163,27 @@ test('远端摘要对缺失字段和空 baseline 保持容错', async () => {
     scope,
     transport: {
       async rpc() { return { items: [] } },
-      stream() { return asyncIterableOf([]) },
+      stream() { return asyncIterableOf([{ type: 'baseline', value: { items: [] } }]) },
     },
   })
   assert.deepEqual(await empty.load(), [])
+})
+
+test('工作区流未收到完整 baseline 就结束时报告断线，不能伪装为空工作区', async () => {
+  for (const frames of [[], [{ type: 'baseline', value: {} }]]) {
+    const source = createPeerHostRemoteSummarySource({ scope, transport: {
+      async rpc() { return { items: [] } }, stream() { return asyncIterableOf(frames) },
+    } })
+    await assert.rejects(source.load(), /baseline/u)
+  }
+})
+
+test('会话摘要网络读取失败时交给断线缓存，不用成员 ID 覆盖标题', async () => {
+  const source = createPeerHostRemoteSummarySource({ scope, transport: {
+    async rpc() { throw Object.assign(new Error('network down'), { code: 'PEER_HOST_PROXY_UNREACHABLE' }) },
+    stream() { return asyncIterableOf([{ type: 'baseline', value: { items: [{ workspaceId: 'w-1', sessionIds: ['s-1'] }] } }]) },
+  } })
+  await assert.rejects(source.load(), /network down/u)
 })
 
 test('session/list 协议失败时仍保留已显式添加的远端工作区', async () => {

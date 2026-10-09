@@ -4,6 +4,8 @@ import { normalizePeerHostColor, createVirtualWorkspaceId } from '../data/build/
 import { resolvePeerHostColor } from '../data/build/dist/client/peer-host-color.js'
 import {
   PEER_HOST_WORKSPACE_TAG_ATTRIBUTE,
+  PEER_HOST_DISCONNECTED_ATTRIBUTE,
+  PEER_HOST_DISMISS_ATTRIBUTE,
   resolveWorkspaceIdFromRow,
   startPeerHostWorkspaceTag,
 } from '../data/build/dist/client/peer-host-workspace-tag.js'
@@ -148,6 +150,84 @@ test('没有标题容器时跳过该行，不做兜底猜测', async () => {
   controller.dispose()
 })
 
+test('断线工作区置灰且可展开，移除点击不冒泡，恢复后还原原样式', async () => {
+  const id = createVirtualWorkspaceId('peer-1', 'workspace-1')
+  const row = workspaceRow(id)
+  row.style.opacity = '0.9'
+  row.style.filter = 'contrast(1.1)'
+  const calls: string[] = []
+  const controller = startPeerHostWorkspaceTag({ document: new FakeDocument([row]),
+    onDismissDisconnectedWorkspace: async (workspaceId) => { calls.push(workspaceId) } })
+  const host = { hostId: 'local-host', targetHostId: 'peer-1', hostLabel: 'Mac', hostColor: '#52c41a', availability: 'unreachable', errorCode: null,
+    workspaces: [{ ...workspace('workspace-1', '项目'), availability: 'unreachable' }] }
+  controller.setAggregate([host])
+  await settle()
+  assert.equal(row.style.opacity, '0.55')
+  assert.equal(row.style.filter, 'grayscale(1)')
+  assert.equal(row.getAttribute('aria-expanded'), 'true')
+  assert.equal(row.getAttribute('aria-disabled'), null)
+  assert.equal(row.getAttribute(PEER_HOST_DISCONNECTED_ATTRIBUTE), '')
+  assert.equal(row.querySelector(`[${PEER_HOST_WORKSPACE_TAG_ATTRIBUTE}]`)?.dataset.codingnsPeerHostColor, '#8c8c8c')
+  const button = row.querySelector(`[${PEER_HOST_DISMISS_ATTRIBUTE}]`)!
+  assert.equal(button.getAttribute('aria-label'), '移除断开的工作区记录')
+  const click = new Event('click', { cancelable: true, bubbles: true })
+  button.dispatchEvent(click)
+  assert.equal(click.defaultPrevented, true)
+  assert.equal(click.cancelBubble, true)
+  await settle()
+  assert.deepEqual(calls, [id])
+  controller.setAggregate([host])
+  await settle()
+  assert.equal(row.querySelectorAll(`[${PEER_HOST_DISMISS_ATTRIBUTE}]`).length, 1)
+  controller.setAggregate([{ ...host, availability: 'ready', workspaces: [workspace('workspace-1', '项目')] }])
+  await settle()
+  assert.equal(row.style.opacity, '0.9')
+  assert.equal(row.style.filter, 'contrast(1.1)')
+  assert.equal(row.getAttribute(PEER_HOST_DISCONNECTED_ATTRIBUTE), null)
+  assert.equal(row.querySelector(`[${PEER_HOST_DISMISS_ATTRIBUTE}]`), null)
+  assert.equal(row.querySelector(`[${PEER_HOST_WORKSPACE_TAG_ATTRIBUTE}]`)?.dataset.codingnsPeerHostColor, '#52c41a')
+  controller.dispose()
+})
+
+test('断线移除失败可重试，停用时清理按钮和灰色效果', async () => {
+  const row = workspaceRow(createVirtualWorkspaceId('peer-1', 'workspace-1'))
+  row.style.opacity = ''
+  row.style.filter = ''
+  const controller = startPeerHostWorkspaceTag({ document: new FakeDocument([row]),
+    onDismissDisconnectedWorkspace: async () => { throw new Error('保存失败') } })
+  controller.setAggregate([{ hostId: 'local', targetHostId: 'peer-1', hostLabel: 'Mac', availability: 'unreachable', errorCode: null,
+    workspaces: [{ ...workspace('workspace-1', '项目'), availability: 'unreachable' }] }])
+  await settle()
+  const button = row.querySelector(`[${PEER_HOST_DISMISS_ATTRIBUTE}]`)!
+  button.dispatchEvent(new Event('click'))
+  await settle()
+  assert.equal(button.disabled, false)
+  assert.equal(button.title, '保存失败')
+  controller.dispose()
+  assert.equal(row.style.opacity, '')
+  assert.equal(row.style.filter, '')
+  assert.equal(row.querySelector(`[${PEER_HOST_DISMISS_ATTRIBUTE}]`), null)
+})
+
+test('断线 DOM 行被复用后移除按钮指向新的工作区', async () => {
+  const firstId = createVirtualWorkspaceId('peer-1', 'workspace-1')
+  const secondId = createVirtualWorkspaceId('peer-1', 'workspace-2')
+  const row = workspaceRow(firstId)
+  const calls: string[] = []
+  const controller = startPeerHostWorkspaceTag({ document: new FakeDocument([row]),
+    onDismissDisconnectedWorkspace: async (id) => { calls.push(id) } })
+  const host = { hostId: 'local', targetHostId: 'peer-1', hostLabel: 'Mac', availability: 'unreachable', errorCode: null,
+    workspaces: [workspace('workspace-1', '项目一'), workspace('workspace-2', '项目二')] }
+  controller.setAggregate([host]); await settle()
+  row.setAttribute('data-row-key', `workspace:${secondId}`)
+  controller.setAggregate([host]); await settle()
+  const button = row.querySelector(`[${PEER_HOST_DISMISS_ATTRIBUTE}]`)!
+  assert.equal(button.getAttribute(PEER_HOST_DISMISS_ATTRIBUTE), secondId)
+  button.dispatchEvent(new Event('click')); await settle()
+  assert.deepEqual(calls, [secondId])
+  controller.dispose()
+})
+
 /** 注入器按微任务批量扫描；测试必须等它跑完再断言。 */
 function settle(): Promise<void> {
   return new Promise((resolve) => { setTimeout(resolve, 0) })
@@ -184,7 +264,7 @@ function workspaceRow(workspaceId: string): FakeElement {
   return row
 }
 
-class FakeElement {
+class FakeElement extends EventTarget {
   tagName: string
   children: FakeElement[] = []
   parentElement: FakeElement | null = null
@@ -192,13 +272,17 @@ class FakeElement {
   style: Record<string, string> = {}
   dataset: Record<string, string> = {}
   textContent = ''
+  disabled = false
+  title = ''
 
   constructor(tagName: string) {
+    super()
     this.tagName = tagName.toUpperCase()
   }
 
   setAttribute(name: string, value: string): void { this.attributes.set(name, value) }
   getAttribute(name: string): string | null { return this.attributes.get(name) ?? null }
+  removeAttribute(name: string): void { this.attributes.delete(name) }
   appendChild(child: FakeElement): FakeElement { child.parentElement = this; this.children.push(child); return child }
   append(...children: FakeElement[]): void { for (const child of children) this.appendChild(child) }
   insertBefore(child: FakeElement, before: FakeElement | null): FakeElement {
@@ -220,6 +304,7 @@ class FakeElement {
     if (selector === '[role="treeitem"][aria-expanded]') {
       return nodes.filter((node) => node.getAttribute('role') === 'treeitem' && node.getAttribute('aria-expanded') !== null)
     }
+    if (selector === `[${PEER_HOST_DISMISS_ATTRIBUTE}]`) return nodes.filter((node) => node.getAttribute(PEER_HOST_DISMISS_ATTRIBUTE) !== null)
     return []
   }
 

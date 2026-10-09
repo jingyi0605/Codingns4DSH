@@ -171,6 +171,27 @@ test('虚拟工作区就地并入原生 Workspace Store，卸载后还原', () =
   assert.deepEqual((listRef.getSnapshot().items as Array<Record<string, unknown>>).map((item) => item.workspaceId), ['local-workspace'])
 })
 
+test('断线缓存移除不被底层旧快照复活，重连恢复最新成员', () => {
+  const remoteId = createVirtualWorkspaceId('peer-1', 'workspace-1')
+  const archivedId = createVirtualSessionId('peer-1', 'old-archived')
+  const stores = fakeNativeStores([{ workspaceId: 'local-workspace', path: '/local', sessionIds: [] },
+    { workspaceId: remoteId, path: '/old', title: '旧标题', sessionIds: ['old-session'] }])
+  stores.list.set({ ...stores.list.getSnapshot(), archivedSessionIds: ['local-archived', archivedId] })
+  const projection = createPeerHostNativeProjection()
+  const dispose = installPeerHostNativeStoreProjection({ uiContext: stores.uiContext as never, projection })
+  // 首轮聚合尚未返回时保留流提前登记的条目。
+  assert.equal((stores.list.getSnapshot().items as unknown[]).length, 2)
+  projection.setAggregate([{ ...remoteWorkspace(), availability: 'unreachable' }] as never)
+  assert.deepEqual((stores.list.getSnapshot().items as any[])[1].sessionIds, projection.workspaces()[0]?.sessionIds)
+  projection.setAggregate([])
+  assert.deepEqual((stores.list.getSnapshot().items as any[]).map((item) => item.workspaceId), ['local-workspace'])
+  assert.deepEqual(stores.list.getSnapshot().archivedSessionIds, ['local-archived'])
+  projection.setAggregate([remoteWorkspace()] as never)
+  assert.equal((stores.list.getSnapshot().items as any[])[1].title, '远端工作区')
+  assert.deepEqual((stores.list.getSnapshot().items as any[])[1].sessionIds, projection.workspaces()[0]?.sessionIds)
+  dispose()
+})
+
 test('底层 Remote 已经写入虚拟工作区时仍使用稳定显示路径', () => {
   const remote = createVirtualWorkspaceId('peer-1', 'workspace-1')
   const stores = fakeNativeStores([{

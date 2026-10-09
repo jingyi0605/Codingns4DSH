@@ -45,6 +45,15 @@ test('PeerHost 管理 API 将 Host 错误转换为可读异常', async () => {
   await assert.rejects(api.check('peer-1'), /PeerHost 尚未准备好/u)
 })
 
+test('断线移除调用独立缓存接口，不改变工作区添加配置', async () => {
+  const calls: unknown[] = []
+  const api = createPeerHostManagementApi({ async call(_channel, endpoint, payload) {
+    calls.push({ endpoint, payload }); return { ok: true as const, value: { removed: true } }
+  } })
+  await api.dismissDisconnectedWorkspace('peer-1', 'w-1')
+  assert.deepEqual(calls, [{ endpoint: 'peerHost/dismissDisconnectedWorkspace', payload: { peerHostId: 'peer-1', workspaceId: 'w-1' } }])
+})
+
 test('PeerHost 管理 API 通过固定 RPC 获取聚合摘要，不接收目标地址', async () => {
   const calls: Array<{ endpoint: string; payload: unknown }> = []
   const api = createPeerHostManagementApi({
