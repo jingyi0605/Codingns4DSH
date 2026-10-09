@@ -68,6 +68,8 @@ Agent、终端和项目文件在运行 DSH 的电脑（Host）上处理；浏览
 
 安装并登录对应 Agent 后，Codingns4DSH 会自动检测并接入；内置 **DeepSeek Harness** Agent 仍可使用。你可以在同一界面选择模型、查看流式回复，并使用各 Agent 提供的会话续接、工具调用和思考强度设置。
 
+在 **设置 → Codingns4DSH → 外部 Agent 集成 → 代理列表** 中，可以切换本机 Host 和已登记的 PeerHost，查看安装状态、版本、命令路径与模型详情，并重新检测单个或全部 Agent。远端查询需要开启 PeerHost 模块并连接局域网 Host；远端启用状态只读，启用设置在所属 Host 管理。
+
 下表列出部分主要能力，具体支持取决于 Agent 及其版本。Skill 指可复用的技能，插话指在执行过程中追加消息。
 
 | Agent | 主要能力 | 备注 |
