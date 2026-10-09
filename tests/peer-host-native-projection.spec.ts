@@ -94,7 +94,7 @@ test('投影只输出虚拟 ID、标题与运行态，本机资源不参与投�
     running: false,
     blank: false,
     cwd: '/Users/dev/project-a',
-    projections: { kind: 'cached', values: { title: '远端会话' } },
+    projections: { kind: 'cached', asOfSeq: 0, values: { title: '远端会话' } },
   }])
 })
 

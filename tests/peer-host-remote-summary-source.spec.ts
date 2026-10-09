@@ -78,6 +78,51 @@ test('远端摘要用 workspace/follow 首帧和 session/list 组装工作区会
   assert.equal(closed, 1)
 })
 
+test('标题投影只携带原生标题和序号，空标题与归档会话都保留原义', async () => {
+  const source = createPeerHostRemoteSummarySource({
+    scope,
+    transport: {
+      async rpc() {
+        return { items: [
+          { sessionId: 'blank', blank: true, projections: { kind: 'sequenced', asOfSeq: 0, values: { title: null, inbox: { private: '不进入摘要' } } } },
+          { sessionId: 'archived', projections: { kind: 'cached', asOfSeq: 12, values: { title: '  原始标题  ', todos: ['不进入摘要'] } } },
+        ] }
+      },
+      stream() {
+        return asyncIterableOf([{ type: 'baseline', value: { items: [{ workspaceId: 'workspace-a', sessionIds: ['blank', 'archived'] }], archivedSessionIds: ['archived'] } }])
+      },
+    },
+  })
+  const [workspace] = await source.load()
+  assert.equal(workspace?.sessions[0]?.title, '')
+  assert.deepEqual(workspace?.sessions[0]?.titleProjection, { kind: 'sequenced', asOfSeq: 0, values: { title: null } })
+  assert.deepEqual(workspace?.archivedSessions?.[0]?.titleProjection, { kind: 'cached', asOfSeq: 12, values: { title: '  原始标题  ' } })
+})
+
+test('旧版或无效投影不伪造实时序号，仍保留标题回退', async () => {
+  const invalidBlocks = [
+    { values: { title: '旧版标题' } },
+    { kind: 'sequenced', values: { title: '缺少序号' } },
+    { kind: 'sequenced', asOfSeq: NaN, values: { title: '无效序号' } },
+    { kind: 'sequenced', asOfSeq: 1.5, values: { title: '小数序号' } },
+    { kind: 'unknown', asOfSeq: 1, values: { title: '未知来源' } },
+    { kind: 'sequenced', asOfSeq: 1, values: {} },
+    { kind: 'sequenced', asOfSeq: 1, values: { title: 42 } },
+  ]
+  for (const projections of invalidBlocks) {
+    const source = createPeerHostRemoteSummarySource({
+      scope,
+      transport: {
+        async rpc() { return { items: [{ sessionId: 'session-a', cwd: '/repo', projections }] } },
+        stream() { return asyncIterableOf([{ type: 'baseline', value: { items: [{ workspaceId: 'workspace-a', sessionIds: ['session-a'] }] } }]) },
+      },
+    })
+    const session = (await source.load())[0]?.sessions[0]
+    assert.equal(session?.titleProjection, undefined)
+    assert.equal(session?.title, typeof projections.values.title === 'string' ? projections.values.title : 'repo')
+  }
+})
+
 test('远端摘要合并目标 Host 的 CLI 会话适配器映射', async () => {
   const source = createPeerHostRemoteSummarySource({
     scope,

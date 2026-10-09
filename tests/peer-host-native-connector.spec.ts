@@ -628,7 +628,7 @@ test('页面 connector 把虚拟会话并入原生 session/list 结果', async (
     assert.deepEqual(paths, ['/api/session/list'])
     assert.deepEqual(result.value.items.map((item) => item.sessionId), ['local-session', createVirtualSessionId('peer-1', 'session-1')])
     const projected = result.value.items[1] ?? {}
-    assert.deepEqual(projected.projections, { kind: 'cached', values: { title: '远端会话' } })
+    assert.deepEqual(projected.projections, { kind: 'cached', asOfSeq: 0, values: { title: '远端会话' } })
     assert.equal(projected.running, true)
   } finally {
     globalThis.fetch = previousFetch
