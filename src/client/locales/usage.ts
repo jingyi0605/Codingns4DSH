@@ -5,6 +5,14 @@
  * 规范见 docs/开发规范/20260930-前端文案国际化规范.md。
  */
 export const en: Record<string, string> = {
+  'usage.r4StatsPeriod': 'Account usage · UTC',
+  'usage.r4TodayIoTokens': 'Input + output tokens today',
+  'usage.r4WeekRequests': 'Requests · last 7 days',
+  'usage.r4WeekIoTokens': 'Input + output tokens · last 7 days',
+  'usage.r4WeekCost': 'Cost · last 7 days',
+  'usage.r4ModelsWeek': 'By model · last 7 days',
+  'usage.r4TodayUsage': 'Account usage today (UTC)',
+  'usage.r4KeyRemainingLimit': 'Key remaining / limit',
   'usage.r4TodayCost': 'Cost today (UTC)',
   'usage.r4AccountSnapshot': 'Account balance (snapshot)',
   'usage.r4PackageBalance': 'Package balance',
@@ -130,6 +138,14 @@ export const en: Record<string, string> = {
 }
 
 export const zh: Record<string, string> = {
+  'usage.r4StatsPeriod': '账户用量 · UTC',
+  'usage.r4TodayIoTokens': '今日输入与输出 Token',
+  'usage.r4WeekRequests': '近 7 天请求数',
+  'usage.r4WeekIoTokens': '近 7 天输入与输出 Token',
+  'usage.r4WeekCost': '近 7 天费用',
+  'usage.r4ModelsWeek': '按模型统计 · 近 7 天',
+  'usage.r4TodayUsage': '今日账户用量（UTC）',
+  'usage.r4KeyRemainingLimit': 'Key 剩余 / 限额',
   'usage.r4TodayCost': '今日费用（UTC）',
   'usage.r4AccountSnapshot': '账户余额（快照）',
   'usage.r4PackageBalance': '套餐余额',

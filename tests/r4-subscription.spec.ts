@@ -118,16 +118,21 @@ test('shared balance popover renders R4 scopes and both locales without lifetime
       usage: result!.providerBalance!, providerName: 'R4 Coder', nowMs: Date.now(),
       t: (value: string) => dictionary[value] ?? value,
     }))
-    assert.ok(html.includes(dictionary['usage.r4KeyLimit']!))
-    assert.ok(html.includes(dictionary['usage.r4TodayCost']!))
+    assert.ok(html.includes(dictionary['usage.r4KeyRemainingLimit']!))
+    assert.ok(html.includes(dictionary['usage.r4StatsPeriod']!))
+    assert.ok(html.includes(dictionary['usage.statTodayCost']!))
+    assert.ok(html.includes(dictionary['usage.r4TodayIoTokens']!))
+    assert.ok(html.includes(dictionary['usage.r4WeekCost']!))
+    assert.ok(html.includes(dictionary['usage.r4ModelsWeek']!))
     assert.ok(html.includes(dictionary['usage.statTodayRequests']!))
-    assert.ok(html.includes(dictionary['usage.accountBalance']!))
     assert.match(html, /15\.75|15.750/u)
     assert.match(html, /-1\.00/u)
     assert.match(html, /0\.001234/u)
     assert.doesNotMatch(html, /coder-test|Total cost|累计费用/u)
-    assert.doesNotMatch(html, /<table/u)
-    for (const key of ['usage.r4PackageBalance', 'usage.r4WalletBalance', 'usage.r4PackageExpiry', 'usage.r4KeySpent', 'usage.r4KeyHeld', 'usage.r4inputTokens', 'usage.r4AccountUsage']) {
+    assert.match(html, /<table/u)
+    assert.match(html, /claude-test/u)
+    assert.doesNotMatch(html, /Cache hit rate|缓存命中率/u)
+    for (const key of ['usage.r4PackageBalance', 'usage.r4WalletBalance', 'usage.r4PackageExpiry', 'usage.r4KeySpent', 'usage.r4KeyHeld', 'usage.r4AccountUsage']) {
       assert.ok(!html.includes(dictionary[key]!), `${key} should be omitted`)
     }
   }

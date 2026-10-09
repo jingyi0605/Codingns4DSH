@@ -696,13 +696,13 @@ export function ProviderBalancePopover({ usage, providerName, t, nowMs }: { read
   const models = summarizeProviderBalance(usage)
   const overallPercent = balancePercent(usage.remaining, usage.total)
   const details = usage.details.filter((item) => !isProviderModelDetail(item.label))
-  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.officialRemainingPopover', { provider: providerName }), style: usage.r4 === undefined ? subscriptionPopoverStyle : { ...subscriptionPopoverStyle, width: 280, minWidth: 0, padding: 12 } },
+  return createElement('div', { className: 'codingns4dsh-subscription-popover', role: 'dialog', 'aria-label': t('usage.officialRemainingPopover', { provider: providerName }), style: usage.r4 === undefined ? subscriptionPopoverStyle : { ...subscriptionPopoverStyle, width: 380, minWidth: 0, padding: 12 } },
     createElement('div', { style: popoverHeadingStyle },
       createElement('span', { style: providerBalanceHeadingStyle },
-        createElement('strong', undefined, providerName),
+        createElement('strong', undefined, usage.r4 === undefined ? providerName : t('usage.upstreamUsageTitle', { provider: providerName })),
         usage.r4 === undefined && usage.planName?.trim() && createElement('span', { style: providerBalancePlanStyle }, usage.planName.trim()),
       ),
-      usage.r4 === undefined && createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatProviderBalance(usage, t('usage.upstreamNotProvided'))),
+      createElement('span', { style: { color: dshThemeColor.labelTertiary } }, formatProviderBalance(usage, t('usage.upstreamNotProvided'))),
     ),
     overallPercent !== null && usage.remaining !== null && usage.total !== null && createElement(BalanceProgress, {
       label: t('usage.officialRemainingPopover', { provider: providerName }),
@@ -746,13 +746,44 @@ function R4BalanceDetails({ usage, t }: { readonly usage: ProviderBalanceUsage; 
   const money = (value: number | null): string => value === null ? t('usage.upstreamNotProvided') : formatNewApiBalanceAmount(value, 'USD')
   const row = (label: string, value: string): ReactElement => createElement('div', { key: label, style: providerDetailRowStyle },
     createElement('span', undefined, label), createElement('span', { style: providerDetailValueStyle }, value))
-  return createElement('div', { style: { display: 'grid', gap: 8, paddingTop: 10 } },
-    row(t('usage.accountBalance'), money(usage.balance)),
-    row(t('usage.r4KeyLimit'), data.key?.unlimited ? t('usage.r4NoLimit') : money(data.key?.limit ?? null)),
-    data.key?.unlimited !== true && row(t('usage.r4KeyRemaining'), money(data.key?.remaining ?? null)),
-    createElement('div', { style: { display: 'grid', gap: 8, borderTop: `1px solid ${dshThemeColor.border}`, paddingTop: 8 } },
-      row(t('usage.r4TodayCost'), money(data.today?.cost ?? null)),
-      row(t('usage.statTodayRequests'), data.today?.requests == null ? t('usage.upstreamNotProvided') : formatCompactTokenCount(data.today.requests)),
+  const unknown = t('usage.upstreamNotProvided')
+  const count = (value: number | null | undefined): string => value == null ? unknown : formatInteger(value)
+  const total = (values: readonly (number | null | undefined)[]): number | null => values.length === 0 || values.some((value) => value == null) ? null : values.reduce<number>((sum, value) => sum + value!, 0)
+  const tokens = (value: number | null): string => value === null ? unknown : formatCompactTokenCount(value)
+  const keySummary = data.key?.unlimited ? t('usage.r4NoLimit')
+    : `${money(data.key?.remaining ?? null)} / ${money(data.key?.limit ?? null)}`
+  return createElement('div', undefined,
+    createElement('div', { style: upstreamMetaStyle },
+      createElement('span', { style: upstreamTypeStyle }, 'R4 Coder'),
+      createElement('a', { href: usage.upstreamUrl, target: '_blank', rel: 'noreferrer', style: upstreamLinkStyle }, usage.upstreamUrl),
+    ),
+    createElement('div', { style: { ...sub2apiStatLabelStyle, paddingTop: 8 } }, t('usage.r4StatsPeriod')),
+    createElement('div', { style: sub2apiStatsGridStyle },
+      createSub2ApiStat(t('usage.statTodayRequests'), count(data.today?.requests)),
+      createSub2ApiStat(t('usage.r4TodayIoTokens'), tokens(total([data.today?.inputTokens, data.today?.outputTokens]))),
+      createSub2ApiStat(t('usage.statTodayCost'), money(data.today?.cost ?? null)),
+      createSub2ApiStat(t('usage.r4WeekRequests'), count(total(data.daily.map((point) => point.requests)))),
+      createSub2ApiStat(t('usage.r4WeekIoTokens'), tokens(total(data.daily.map((point) => total([point.inputTokens, point.outputTokens]))))),
+      createSub2ApiStat(t('usage.r4WeekCost'), money(total(data.daily.map((point) => point.cost)))),
+    ),
+    createElement('section', { style: sub2apiSectionStyle },
+      createElement('strong', { style: sub2apiSectionTitleStyle }, t('usage.r4ModelsWeek')),
+      data.models.length === 0 ? createElement('div', { style: resetStyle }, t('usage.noModelStats'))
+        : createElement('div', { style: sub2apiTableScrollStyle },
+          createElement('table', { style: sub2apiTableStyle },
+            createElement('thead', undefined, createElement('tr', undefined,
+              ...[t('usage.colModel'), t('usage.colRequests'), t('usage.colCost')].map((label) => createElement('th', { key: label, style: sub2apiThStyle }, label)),
+            )),
+            createElement('tbody', undefined, ...data.models.map((model, index) => createElement('tr', { key: index },
+              createElement('td', { style: { ...sub2apiTdStyle, overflowWrap: 'anywhere' } }, model.name),
+              createElement('td', { style: sub2apiTdStyle }, count(model.requests)),
+              createElement('td', { style: sub2apiTdStyle }, money(model.cost)),
+            ))),
+          ),
+        ),
+    ),
+    createElement('div', { style: { borderTop: `1px solid ${dshThemeColor.border}`, paddingTop: 10, marginTop: 10 } },
+      row(t('usage.r4KeyRemainingLimit'), keySummary),
     ),
   )
 }
