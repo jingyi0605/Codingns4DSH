@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
 import { PassThrough } from 'node:stream'
@@ -84,7 +84,8 @@ async function createFakeWorkBuddyHarness(holdPrompt: boolean, pidlessSocket = f
         response.end()
       } else if (rpcMethod === 'initialize') {
         writeSse(response, [{ jsonrpc: '2.0', id, result: {} }])
-      } else if (rpcMethod === 'session/new') {
+      } else if (rpcMethod === 'session/new' || rpcMethod === 'session/load') {
+        if (rpcMethod === 'session/load') assert.equal((body.params as { sessionId: string }).sessionId, 'fake-provider-session')
         writeSse(response, [{ jsonrpc: '2.0', id, result: { sessionId: 'fake-provider-session' } }])
       } else if (rpcMethod === 'session/set_model' || rpcMethod === 'session/cancel') {
         writeSse(response, [{ jsonrpc: '2.0', id, result: {} }])
@@ -121,7 +122,9 @@ async function createFakeWorkBuddyHarness(holdPrompt: boolean, pidlessSocket = f
   const configToken = createHash('sha1').update(configRoot).digest('hex').slice(0, 12)
   const runtimeRoot = join(socketRoot, `wb-${uidToken}`, configToken)
   if (pidlessSocket) mkdirSync(runtimeRoot, { recursive: true })
-  const socketPath = pidlessSocket ? join(runtimeRoot, 'sidecar-deadbeef.sock') : join(socketRoot, 'sidecar.sock')
+  const socketPath = process.platform === 'win32' && !pidlessSocket
+    ? String.raw`\\.\pipe\codingns-workbuddy-${randomUUID()}`
+    : pidlessSocket ? join(runtimeRoot, 'sidecar-deadbeef.sock') : join(socketRoot, 'sidecar.sock')
   const sidecarServer = createNetServer((socket) => {
     let buffer = ''
     socket.on('data', (chunk) => {
@@ -137,7 +140,7 @@ async function createFakeWorkBuddyHarness(holdPrompt: boolean, pidlessSocket = f
         sidecarCalls.push(method)
         const result = method === 'session.list'
           ? [{ sessionId: '__workbuddy_cli_host__-fake', acpEndpoint: endpoint }]
-          : {}
+          : method === 'session.create' ? { acpEndpoint: endpoint } : {}
         socket.end(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`)
       }
     })
@@ -230,7 +233,7 @@ test('CodeBuddy 支持 Linux，不受 WorkBuddy 平台限制影响', async () =>
   driver.dispose()
 })
 
-test('WorkBuddy sidecar 优先复用已认证 host 并消费 HTTP ACP SSE', async () => {
+test('WorkBuddy sidecar 创建独立运行时并消费 HTTP ACP SSE 后回收', async () => {
   const harness = await createFakeWorkBuddyHarness(false)
   const driver = new WorkBuddyCliDriver({
     platform: 'darwin',
@@ -241,11 +244,13 @@ test('WorkBuddy sidecar 优先复用已认证 host 并消费 HTTP ACP SSE', asyn
   const events = []
   try {
     for await (const event of driver.executeTurn({ sessionId: 'sidecar-session', messages: [], prompt: '检查' })) events.push(event)
+    for await (const event of driver.executeTurn({ sessionId: 'sidecar-session', providerSessionId: 'fake-provider-session', messages: [], prompt: '继续' })) events.push(event)
   } finally {
     driver.dispose()
     await harness.close()
   }
-  assert.deepEqual(harness.sidecarCalls, ['session.list'])
+  assert.deepEqual(harness.sidecarCalls, ['session.create', 'session.kill', 'session.create', 'session.kill'])
+  assert.equal(harness.httpCalls.some((value) => value.endsWith(' session/load')), true)
   assert.equal(harness.httpCalls.some((value) => value.endsWith(' initialize')), true)
   assert.equal(harness.httpCalls.some((value) => value.endsWith(' initialized')), true)
   assert.equal(harness.httpCalls.some((value) => value.endsWith(' session/new')), true)
@@ -255,7 +260,7 @@ test('WorkBuddy sidecar 优先复用已认证 host 并消费 HTTP ACP SSE', asyn
   assert.deepEqual(events.at(-1), { type: 'finish', reason: 'stop' })
 })
 
-test('WorkBuddy sidecar 缺少 sidecar.pid 时扫描 UUID 控制 socket', async () => {
+test('WorkBuddy sidecar 缺少 sidecar.pid 时扫描 UUID 控制 socket', { skip: process.platform === 'win32' }, async () => {
   const harness = await createFakeWorkBuddyHarness(false, true)
   const driver = new WorkBuddyCliDriver({
     platform: 'darwin',
@@ -271,7 +276,7 @@ test('WorkBuddy sidecar 缺少 sidecar.pid 时扫描 UUID 控制 socket', async 
     driver.dispose()
     await harness.close()
   }
-  assert.deepEqual(harness.sidecarCalls, ['session.list'])
+  assert.deepEqual(harness.sidecarCalls, ['session.create', 'session.kill'])
   assert.equal(events.some((event) => event.type === 'text-delta' && event.text === 'OK'), true)
 })
 
@@ -289,7 +294,7 @@ test('WorkBuddy 没有 sidecar 控制 socket 时返回可操作诊断', async ()
       for await (const _event of driver.executeTurn({ sessionId: 'missing-sidecar-session', messages: [], prompt: '检查' })) {
         // 该分支预期在生成首个事件前失败。
       }
-    }, /WorkBuddy Hosted CLI sidecar 不可用.*sidecar\.pid.*sidecar-<uuid>\.sock.*按需创建 Hosted CLI runtime.*无法代替桌面 daemon 注入认证凭据.*WORKBUDDY_SIDECAR_SOCKET/u)
+    }, /WorkBuddy 桌面运行通道尚未就绪.*打开并登录 WorkBuddy.*发送一条消息后重试.*已认证运行时/u)
   } finally {
     driver.dispose()
     rmSync(root, { recursive: true, force: true })
@@ -396,6 +401,43 @@ test('WorkBuddy 将 Auto 三档识别为默认模型的思考强度，不混入�
     { id: 'glm-5.3', name: 'GLM-5.3', description: '复杂任务', efforts: ['low', 'high', 'max'] },
   ])
   driver.dispose()
+})
+
+test('WorkBuddy 展示官方基础倍率，保留模型和档位 ID', async (t) => {
+  const product = {
+    agents: [{ name: 'cli', models: ['priced', 'free', 'missing', 'invalid'] }],
+    models: [
+      { id: 'priced', name: 'Priced', credits: 'x0.79', descriptionZh: '模型介绍' },
+      { id: 'free', name: 'Free', credits: 'x0.00' },
+      { id: 'missing', name: 'Missing' },
+      { id: 'invalid', name: 'Invalid', credits: 'x-1' },
+      { id: 'fast-model', name: '快速', credits: 'x0.21' },
+      { id: 'balanced-model', name: '均衡', credits: 'x0.65' },
+      { id: 'deep-model', name: '极致', credits: 'x1.20' },
+    ],
+  }
+  const options = {
+    platform: 'darwin' as const,
+    commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
+    spawnSync: detected, modelCatalogPaths: ['/tmp/workbuddy-pricing.info'],
+    readFileSync: (() => JSON.stringify([{ data: product }])) as never,
+  }
+  const driver = new WorkBuddyCliDriver(options)
+  const codebuddy = new CodeBuddyCliDriver(options)
+  t.after(() => { driver.dispose(); codebuddy.dispose() })
+  const models = (await driver.listModels()).groups[0]!.models
+  assert.deepEqual(models[0]?.effortLabels, {
+    'fast-model': '快速 · 0.21×', 'balanced-model': '均衡 · 0.65×', 'deep-model': '极致 · 1.20×',
+  })
+  assert.deepEqual(models.slice(1), [
+    { id: 'priced', name: 'Priced · 0.79×', description: '模型介绍', efforts: [] },
+    { id: 'free', name: 'Free · 0.00×', efforts: [] },
+    { id: 'missing', name: 'Missing', efforts: [] },
+    { id: 'invalid', name: 'Invalid', efforts: [] },
+  ])
+  const other = (await codebuddy.listModels()).groups[0]!.models.find((model) => model.id === 'priced')
+  assert.equal(other?.name, 'Priced')
+  assert.equal(other?.description, '模型介绍')
 })
 
 test('WorkBuddy 解包 local_storage 的 data envelope 后读取当前模型目录', async () => {
