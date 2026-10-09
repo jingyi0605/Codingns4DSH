@@ -58,7 +58,7 @@ function writeSse(response: ServerResponse, messages: readonly Record<string, un
   if (end) response.end()
 }
 
-async function createFakeWorkBuddyHarness(holdPrompt: boolean, pidlessSocket = false): Promise<FakeWorkBuddyHarness> {
+async function createFakeWorkBuddyHarness(holdPrompt: boolean, pidlessSocket = false, emptyEndpoint = false): Promise<FakeWorkBuddyHarness> {
   const sidecarCalls: string[] = []
   const httpCalls: string[] = []
   let promptClosed = false
@@ -140,7 +140,7 @@ async function createFakeWorkBuddyHarness(holdPrompt: boolean, pidlessSocket = f
         sidecarCalls.push(method)
         const result = method === 'session.list'
           ? [{ sessionId: '__workbuddy_cli_host__-fake', acpEndpoint: endpoint }]
-          : method === 'session.create' ? { acpEndpoint: endpoint } : {}
+          : method === 'session.create' ? { acpEndpoint: emptyEndpoint ? '' : endpoint } : {}
         socket.end(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`)
       }
     })
@@ -258,6 +258,27 @@ test('WorkBuddy sidecar 创建独立运行时并消费 HTTP ACP SSE 后回收', 
   assert.equal(events[0]?.type, 'session-binding')
   assert.equal(events.some((event) => event.type === 'text-delta' && event.text === 'OK'), true)
   assert.deepEqual(events.at(-1), { type: 'finish', reason: 'stop' })
+})
+
+test('WorkBuddy sidecar 创建 runtime 但未返回 ACP 地址时仍回收 runtime', async () => {
+  const harness = await createFakeWorkBuddyHarness(false, false, true)
+  const driver = new WorkBuddyCliDriver({
+    platform: 'darwin',
+    commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
+    spawnSync: detected,
+    sidecarSocketPath: harness.socketPath,
+  })
+  try {
+    await assert.rejects(async () => {
+      for await (const _event of driver.executeTurn({ sessionId: 'missing-endpoint-session', messages: [], prompt: '检查' })) {
+        // 该分支预期在生成首个事件前失败。
+      }
+    }, /WorkBuddy sidecar 未返回 ACP 地址/u)
+  } finally {
+    driver.dispose()
+    await harness.close()
+  }
+  assert.deepEqual(harness.sidecarCalls, ['session.create', 'session.kill'])
 })
 
 test('WorkBuddy sidecar 缺少 sidecar.pid 时扫描 UUID 控制 socket', { skip: process.platform === 'win32' }, async () => {
