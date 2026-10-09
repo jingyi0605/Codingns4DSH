@@ -6,7 +6,7 @@ import { spawn, spawnSync, type SpawnSyncOptions, type SpawnSyncReturns } from '
 import { createHash, randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
 import { createConnection } from 'node:net'
-import { basename, dirname, isAbsolute, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, win32 } from 'node:path'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentPermissionResponse,
@@ -467,7 +467,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
   private async *executeWorkBuddySidecarTurn(input: CodingNsCliTurnInput, command: string): AsyncIterable<CodingNsAgentEvent> {
     const socketPath = this.sidecarSocketPath ?? discoverWorkBuddySidecarSocket(this.configRoot, this.platform, this.environment)
     if (socketPath === null) {
-      throw new Error('WorkBuddy Hosted CLI sidecar 不可用（未找到 sidecar.pid 或 sidecar-<uuid>.sock）。当前版本按需创建 Hosted CLI runtime，普通应用启动或登录不会生成该通道；DSH 无法代替桌面 daemon 注入认证凭据。请先在 WorkBuddy 中启动一次 Hosted CLI 会话，或设置 WORKBUDDY_SIDECAR_SOCKET')
+      throw new Error('WorkBuddy 桌面运行通道尚未就绪。请打开并登录 WorkBuddy，在桌面应用中发送一条消息后重试；插件需要复用桌面应用创建的已认证运行时。若仍失败，请检查 WorkBuddy 版本及运行日志。')
     }
 
     const sidecar = new WorkBuddySidecarClient(socketPath)
@@ -493,6 +493,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
         sidecar,
         input,
         launch,
+        command,
         this.configRoot,
         this.runtimeEnvironment(command),
         this.platform,
@@ -682,15 +683,23 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
 
   private async detectCommand(command: string): Promise<{ installed: true; version: string; command: string } | null> {
     try {
+      const windowsWorkBuddy = this.platform === 'win32' && this.profile.bundledInApp
+      // Windows 安装包中的无后缀入口是 Node 脚本；缺失入口不能交给
+      // cmd（或 Electron）后误报为启动失败。
+      if (windowsWorkBuddy && !statSync(command).isFile()) return null
+      const runtime = windowsWorkBuddy
+        ? workBuddyWindowsRuntime(command, this.workbuddyElectronPath, this.environment)
+        : undefined
+      const args = runtime === undefined ? [] : [command]
       const options: SpawnSyncOptions = {
-        encoding: 'utf8', timeout: 5_000, windowsHide: true, shell: WINDOWS,
-        env: this.runtimeEnvironment(command),
+        encoding: 'utf8', timeout: 5_000, windowsHide: true, shell: runtime === undefined && WINDOWS,
+        env: { ...this.runtimeEnvironment(command), ...(runtime === undefined ? {} : { ELECTRON_RUN_AS_NODE: '1' }) },
       }
-      const result = await runAsyncCommand(this.runSpawnSync, command, ['--version'], options) as SpawnSyncReturns<string>
+      const result = await runAsyncCommand(this.runSpawnSync, runtime ?? command, [...args, '--version'], options) as SpawnSyncReturns<string>
       const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
       const version = output.match(/\b\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?\b/u)?.[0]
       if (result.status === 0 && version !== undefined) {
-        const help = await runAsyncCommand(this.runSpawnSync, command, ['--help'], options) as SpawnSyncReturns<string>
+        const help = await runAsyncCommand(this.runSpawnSync, runtime ?? command, [...args, '--help'], options) as SpawnSyncReturns<string>
         const helpOutput = `${help.stdout ?? ''}\n${help.stderr ?? ''}`
         if (!/--acp(?:[\s=]|$)/u.test(helpOutput)) {
           this.detectionFailure = help.status === 0 ? 'protocol' : probeFailure(help, true) ?? 'launch'
@@ -707,7 +716,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
       }
       const failure = summarizeCliFailure(this.profile.displayName, output)
       if (failure !== undefined) this.detectionDiagnostic = failure
-      this.detectionFailure = probeFailure(result, isAbsolute(command))
+      this.detectionFailure = probeFailure(result, isAbsolute(command)) ?? (runtime === undefined ? undefined : 'launch')
       // CodeBuddy 的 PATH shim 可能在 GUI 环境中不在当前 PATH，失败后只对非内置产品做一次登录 Shell 查找。
       if (!this.profile.bundledInApp && !isAbsolute(command)) {
         const resolved = await resolveCommandPath(command, this.runSpawnSync)
@@ -1045,14 +1054,22 @@ function discoverWorkBuddySidecarSocket(
   try {
     const record = JSON.parse(readFileSync(pidPath, 'utf8')) as { controlPipeUuid?: unknown }
     if (typeof record.controlPipeUuid !== 'string' || !/^[a-f0-9]+$/u.test(record.controlPipeUuid)) throw new Error('invalid sidecar pid record')
-    if (platform === 'win32') return `\\\\.\\pipe\\workbuddy-${sha1Token(configRoot, 12)}-sidecar-${record.controlPipeUuid}`
+    if (platform === 'win32') return `\\\\.\\pipe\\workbuddy-${sha1Token(configRoot, 12)}-sidecar-control-${record.controlPipeUuid}`
     const socket = join(runtimeRoot, `sidecar-${record.controlPipeUuid}.sock`)
     try { statSync(socket); return socket } catch { throw new Error('sidecar socket missing') }
   } catch {
     // 5.7.3 的 sidecar 先监听带随机 UUID 的 socket，再写 sidecar.pid。
     // PID 文件可能因异常退出或文件清理丢失，但存活 sidecar 仍可被复用；
     // 只扫描严格匹配的 control socket，避免把会话 data socket 当成控制端点。
-    if (platform === 'win32') return null
+    if (platform === 'win32') {
+      // Windows 没有 Unix socket 文件；PID 文件迟到或缺失时，按配置根
+      // 严格匹配桌面应用的控制管道，不能选中 session 的 data 管道。
+      const prefix = `workbuddy-${sha1Token(configRoot, 12)}-sidecar-control-`
+      try {
+        const pipe = readdirSync('\\\\.\\pipe\\').find((name) => name.startsWith(prefix) && /^[a-f0-9]+$/u.test(name.slice(prefix.length)))
+        return pipe === undefined ? null : `\\\\.\\pipe\\${pipe}`
+      } catch { return null }
+    }
     try {
       const candidates = readdirSync(runtimeRoot, { withFileTypes: true })
       .filter((entry) => (entry.isFile() || entry.isSocket()) && /^sidecar-[a-f0-9]+\.sock$/u.test(entry.name))
@@ -1073,20 +1090,15 @@ async function resolveWorkBuddyAcpEndpoint(
   sidecar: WorkBuddySidecarClient,
   input: CodingNsCliTurnInput,
   launch: { readonly command: string; readonly args: readonly string[] },
+  cliCommand: string,
   configRoot: string,
   baseEnvironment: Readonly<Record<string, string | undefined>>,
   platform: NodeJS.Platform,
   environment: Readonly<Record<string, string | undefined>>,
   onCreated: (sessionId: string) => void,
 ): Promise<string> {
-  const sessions = await sidecar.request('session.list', {}, { timeoutMs: 5_000 }).catch(() => [])
-  if (Array.isArray(sessions)) {
-    const candidates = sessions.filter((entry): entry is Record<string, unknown> => isRecord(entry) && typeof entry.acpEndpoint === 'string')
-    const host = candidates.find((entry) => typeof entry.sessionId === 'string' && entry.sessionId.includes('__workbuddy_cli_host__'))
-    const endpoint = host?.acpEndpoint ?? candidates[0]?.acpEndpoint
-    if (typeof endpoint === 'string' && endpoint.trim() !== '') return endpoint
-  }
-
+  // 桌面 host 可能禁用历史保存；复用它会使下一轮 probe/load 失败。
+  // 通过已认证 sidecar 创建独立且可持久化的运行时，每轮结束后回收。
   const sessionId = `codingns-${input.sessionId}-${randomUUID()}`
   const created = await sidecar.request('session.create', {
     sessionId,
@@ -1094,7 +1106,7 @@ async function resolveWorkBuddyAcpEndpoint(
     args: launch.args,
     cwd: input.cwd ?? process.cwd(),
     port: 0,
-    env: workBuddySidecarEnvironment(baseEnvironment, configRoot, launch.command, platform, environment),
+    env: workBuddySidecarEnvironment(baseEnvironment, configRoot, launch.command, cliCommand, platform, environment),
   }, { timeoutMs: 195_000 })
   const endpoint = isRecord(created) && typeof created.acpEndpoint === 'string' ? created.acpEndpoint.trim() : ''
   if (endpoint === '') throw new Error('WorkBuddy sidecar 未返回 ACP 地址')
@@ -1112,6 +1124,7 @@ function workBuddyLaunchSpec(
   platform: NodeJS.Platform,
   environment: Readonly<Record<string, string | undefined>>,
 ): { readonly command: string; readonly args: readonly string[] } {
+  // 不传 --no-session-persistence：下一轮由新的进程 session/load 原始历史。
   const cliPath = cliCommand
   if (platform === 'darwin') {
     const appRoot = cliPath.match(/^(.*\.app)\/Contents\/Resources\//u)?.[1]
@@ -1120,28 +1133,44 @@ function workBuddyLaunchSpec(
       || '/Applications/WorkBuddy.app/Contents/MacOS/Electron'
     return {
       command: electron,
-      args: [cliPath, '--serve', '--no-session-persistence', '--setting-sources', 'user', '--strict-mcp-config'],
+      args: [cliPath, '--serve', '--setting-sources', 'user', '--strict-mcp-config'],
     }
   }
-  const electron = electronOverride || environment.WORKBUDDY_ELECTRON_PATH || cliPath
+  const electron = workBuddyWindowsRuntime(cliPath, electronOverride, environment)
   return {
-    command: electron,
-    args: [cliPath, '--serve', '--no-session-persistence', '--setting-sources', 'user', '--strict-mcp-config'],
+    command: electron ?? cliPath,
+    args: [...(electron === undefined ? [] : [cliPath]), '--serve', '--setting-sources', 'user', '--strict-mcp-config'],
   }
+}
+
+/** 只将应用内置脚本交给同一安装的 Electron；exe/cmd 入口仍直接执行。 */
+function workBuddyWindowsRuntime(
+  cliPath: string,
+  electronOverride: string | undefined,
+  environment: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  if (/\.(?:exe|com|cmd|bat)$/iu.test(cliPath)) return undefined
+  const explicit = electronOverride || environment.WORKBUDDY_ELECTRON_PATH?.trim()
+  if (explicit) return explicit
+  const root = cliPath.match(/^(.*)[\\/]resources[\\/]app\.asar\.unpacked[\\/]cli[\\/]bin[\\/]codebuddy$/iu)?.[1]
+  return root === undefined ? undefined : win32.join(root, 'WorkBuddy.exe')
 }
 
 function workBuddySidecarEnvironment(
   base: Readonly<Record<string, string | undefined>>,
   configRoot: string,
   launchCommand: string,
+  cliCommand: string,
   platform: NodeJS.Platform,
   environment: Readonly<Record<string, string | undefined>>,
 ): Record<string, string | undefined> {
   const appRoot = platform === 'darwin'
     ? launchCommand.match(/^(.*\.app)\/Contents\/MacOS\/Electron$/u)?.[1]
     : undefined
-  const appPath = base.WORKBUDDY_APP_PATH || (appRoot === undefined ? '/Applications/WorkBuddy.app/Contents/Resources/app.asar' : join(appRoot, 'Contents/Resources/app.asar'))
-  const resourcesPath = base.WORKBUDDY_RESOURCES_PATH || dirname(appPath)
+  const appPath = base.WORKBUDDY_APP_PATH || (platform === 'win32'
+    ? win32.join(cliCommand.match(/^(.*)[\\/]resources[\\/]app\.asar\.unpacked[\\/]cli[\\/]bin[\\/]/iu)?.[1] ?? win32.dirname(launchCommand), 'resources/app.asar')
+    : appRoot === undefined ? '/Applications/WorkBuddy.app/Contents/Resources/app.asar' : join(appRoot, 'Contents/Resources/app.asar'))
+  const resourcesPath = base.WORKBUDDY_RESOURCES_PATH || (platform === 'win32' ? win32.dirname(appPath) : dirname(appPath))
   const env = {
     ...base,
     ELECTRON_RUN_AS_NODE: '1',
@@ -1491,7 +1520,7 @@ function parseProductCatalogRecord(value: Record<string, unknown>, profile: Code
         : undefined
     return {
       id,
-      name,
+      name: profile.adapterId === WORKBUDDY_PROFILE.adapterId ? workBuddyModelLabel(name, entry.credits) : name,
       ...(description === undefined ? {} : { description }),
       efforts: [...new Set(supportedEfforts)],
     }
@@ -1500,7 +1529,8 @@ function parseProductCatalogRecord(value: Record<string, unknown>, profile: Code
     autoTierIds.map((id) => {
       const configuredName = metadata.get(id)?.name
       const fallbackName = WORKBUDDY_AUTO_TIER_MODELS.find((model) => model.id === id)?.name ?? id
-      return [id, typeof configuredName === 'string' && configuredName.trim() !== '' ? configuredName.trim() : fallbackName]
+      const name = typeof configuredName === 'string' && configuredName.trim() !== '' ? configuredName.trim() : fallbackName
+      return [id, workBuddyModelLabel(name, metadata.get(id)?.credits)]
     }),
   )
   const providerDefault = {
@@ -1514,6 +1544,12 @@ function parseProductCatalogRecord(value: Record<string, unknown>, profile: Code
     currentModel: null,
     currentEffort: null,
   }
+}
+
+/** credits 是产品快照中的展示倍率，不是 token 单价或活动折后价格。 */
+function workBuddyModelLabel(name: string, credits: unknown): string {
+  const multiplier = typeof credits === 'string' ? /^x(\d+(?:\.\d+)?)$/u.exec(credits.trim())?.[1] : undefined
+  return multiplier === undefined ? name : `${name} · ${multiplier}×`
 }
 
 function resolveCodeBuddyModelId(profile: CodeBuddyRuntimeProfile, modelId: string | undefined, effortId: string | undefined): string | undefined {
