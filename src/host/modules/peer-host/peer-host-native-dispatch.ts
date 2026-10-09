@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
+import { randomUUID } from 'node:crypto'
 import { CodingNsRpcError } from '../../rpc-table.js'
 
 /**
@@ -26,6 +27,7 @@ export interface DshNativeDispatch {
 }
 
 interface TypertGatewayService {
+  readonly wireStream?: { open(endpoint: string, payload: unknown, uplink: AsyncIterable<unknown>, peer: undefined, signal: AbortSignal): Promise<AsyncIterable<unknown>> }
   readonly invoke?: (request: { readonly namespace: string; readonly method: string; readonly args: Record<string, unknown>; readonly signal?: AbortSignal }) => Promise<unknown>
   readonly stream?: (request: { readonly namespace: string; readonly method: string; readonly args: Record<string, unknown>; readonly signal?: AbortSignal }) => AsyncIterable<unknown>
 }
@@ -45,6 +47,7 @@ export function resolveDshNativeDispatch(ctx: Context | undefined): DshNativeDis
   }
   return {
     async rpc(method, payload, signal) {
+      if (method === '$events/result') return dispatchEventResult(ctx, payload, signal)
       const target = endpoint(method)
       const args = readWireArgs(payload)
       return await invokeWithServiceReadinessRetry(
@@ -53,6 +56,11 @@ export function resolveDshNativeDispatch(ctx: Context | undefined): DshNativeDis
       )
     },
     async stream(method, payload, signal) {
+      if (method === '$events') {
+        if (service.wireStream === undefined) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', '当前 Host 未提供 DSH 原生事件通道')
+        const stream = await service.wireStream.open(method, payload, (async function* () {})(), undefined, signal ?? new AbortController().signal)
+        return interactionEvents(stream)
+      }
       const target = endpoint(method)
       const args = readWireArgs(payload)
       return await invokeWithServiceReadinessRetry(
@@ -61,6 +69,31 @@ export function resolveDshNativeDispatch(ctx: Context | undefined): DshNativeDis
       )
     },
   }
+}
+
+/** 目标 Host 的账号、设置和插件通知不属于会话交互，不能随 PeerHost 转发到其他客户端。 */
+async function* interactionEvents(stream: AsyncIterable<unknown>): AsyncIterable<unknown> {
+  for await (const frame of stream) {
+    if (asRecord(frame)?.type !== 'emit') yield frame
+  }
+}
+
+/** 事件结果由 Connection 的 Gateway 拦截器接收；不访问私有方法，也不发起本机网络请求。 */
+async function dispatchEventResult(ctx: Context, payload: unknown, signal?: AbortSignal): Promise<unknown> {
+  const connection = ctx.get('connection') as unknown as {
+    createSharedFetchHandler?: (channel: '/api') => { fetch(request: Request): Promise<Response> }
+  } | undefined
+  if (typeof connection?.createSharedFetchHandler !== 'function') throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', '当前 Host 未提供 DSH 事件结果入口')
+  const response = await connection.createSharedFetchHandler('/api').fetch(new Request('http://peer-host.internal/api/$events/result', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'client-request', rpcId: randomUUID(), method: '$events/result', payload }),
+    ...(signal === undefined ? {} : { signal }),
+  }))
+  const envelope = asRecord(await response.json())
+  const result = asRecord(envelope?.result)
+  if (response.ok && result?.ok === true) return result.value
+  const error = asRecord(result?.error)
+  throw new CodingNsRpcError(typeof error?.code === 'string' ? error.code : 'CODINGNS_RPC_REMOTE_FAILED', typeof error?.message === 'string' ? error.message : 'DSH 事件结果提交失败')
 }
 
 async function invokeWithServiceReadinessRetry<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {

@@ -5,6 +5,11 @@ import type {
 
 /** DSH 0.2.x Workspace/Session Remote 方法；这里只登记原生协议，不登记插件私有 RPC。 */
 export const DSH_NATIVE_REMOTE_METHODS = Object.freeze([
+  // 交互事件是 Gateway 自有协议；派发层必须走 wireStream / Connection，不能当作业务 Remote。
+  '$events',
+  '$events/result',
+  'userQuestions/answer',
+  'userQuestions/attachWait',
   'workspace/archiveSession',
   'workspace/create',
   'workspace/delete',

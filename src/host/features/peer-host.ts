@@ -22,6 +22,7 @@ import { createVirtualSessionId, createVirtualWorkspaceId, normalizePeerHostColo
 import type { AggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { PeerHostAggregateService } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { resolveDshNativeDispatch } from '../modules/peer-host/peer-host-native-dispatch.js'
+import { PeerHostNativeStreams } from '../modules/peer-host/peer-host-native-streams.js'
 import { FileAggregateWorkspaceOrderStore, VirtualWorkspaceRegistry } from '../modules/peer-host/peer-host-virtual-registry.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import { PeerHostWebSocketGateway, PEER_HOST_WS_PATH, type PeerHostWsGatewayEndpoint } from '../modules/peer-host/peer-host-ws-gateway.js'
@@ -38,9 +39,6 @@ import { callPeerCliRpc, callPeerNativeRpc, openPeerNativeStream, readNativeRpcE
 import { createAggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { encodeNativeResponseBytes, isDshNativeRemoteMethod, rewriteNativeRequestIds, rewriteNativeResponseIds, type VirtualIdResolver } from '../modules/peer-host/peer-host-native-protocol.js'
 import { resolveCodingNsDebugLevel } from '../../shared/debug.js'
-
-/** 原生 Remote 流句柄的存活窗口；每次轮询续期，超时仍未再被轮询即回收。 */
-const NATIVE_STREAM_TTL_MS = 600_000
 
 export interface PeerHostFeatureOptions {
   readonly stateDirectory?: string
@@ -102,7 +100,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
         orderStore: new FileAggregateWorkspaceOrderStore(join(stateDirectory, 'peer-host-workspace-order.json')),
       })
       let workspaceOrderHydrated = false
-      const nativeStreams = new Map<string, { readonly iterator: AsyncIterator<unknown>; readonly scope: HostScope; readonly expiresAt: number }>()
+      const nativeStreams = new PeerHostNativeStreams()
       const dshNativeDispatch = resolveDshNativeDispatch(context.services.dshContext)
       const debugLevel = resolveCodingNsDebugLevel()
       const diagnostics = createPeerHostDiagnosticSink({
@@ -553,17 +551,15 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             const payload = rewriteNativeRequestIds(method, input.payload, createScopedNativeIdResolver(workspaceRegistry, scope))
             // 句柄由 nativeStreamNext/Close 轮询管理，不绑定本次 HTTP 请求的 signal：
             // 该 signal 会在 nativeStream 响应返回后立即中止，导致第一次 next 直接结束。
-            const stream = aggregatedTransport.openStream({ scope, method, payload })
-            const targetHostId = scope.targetHostId
-            const iterator = targetHostId === null
-              ? stream[Symbol.asyncIterator]()
-              : mapAsyncIterator(stream[Symbol.asyncIterator](), (value) => rewriteNativeResponseIds(
-                value,
-                (id) => createVirtualWorkspaceId(targetHostId, id),
-                (id) => createVirtualSessionId(targetHostId, id),
+            const streamId = await nativeStreams.open(scope, (signal) => {
+              const stream = aggregatedTransport.openStream({ scope, method, payload, signal })
+              const targetHostId = scope.targetHostId
+              if (targetHostId === null) return stream
+              const iterator = mapAsyncIterator(stream[Symbol.asyncIterator](), (value) => rewriteNativeResponseIds(
+                value, (id) => createVirtualWorkspaceId(targetHostId, id), (id) => createVirtualSessionId(targetHostId, id),
               ))
-            const streamId = randomUUID()
-            nativeStreams.set(streamId, { iterator, scope, expiresAt: Date.now() + NATIVE_STREAM_TTL_MS })
+              return { [Symbol.asyncIterator]: () => iterator }
+            })
             return { streamId }
           }
           case 'nativeStreamOpen': {
@@ -572,26 +568,17 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             const scope = parseScope(input.scope)
             // 句柄会在后续 nativeStreamNext/Close 中被轮询管理，不能绑定到本次 HTTP 请求的短生命周期 signal。
             if (dshNativeDispatch === undefined) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', '当前 Host 未提供 DSH Typert Gateway')
-            const stream = await dshNativeDispatch.stream(method, input.payload)
-            if (!isAsyncIterable(stream)) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', `DSH 原生 Remote 方法不是流: ${method}`)
-            const streamId = randomUUID()
-            nativeStreams.set(streamId, { iterator: stream[Symbol.asyncIterator](), scope, expiresAt: Date.now() + NATIVE_STREAM_TTL_MS })
+            const streamId = await nativeStreams.open(scope, async (signal) => {
+              const stream = await dshNativeDispatch.stream(method, input.payload, signal)
+              if (!isAsyncIterable(stream)) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', `DSH 原生 Remote 方法不是流: ${method}`)
+              return stream
+            })
             return { streamId }
           }
           case 'nativeStreamNext': {
             const streamId = requiredString(input.streamId, 'streamId')
-            const stream = nativeStreams.get(streamId)
-            if (stream === undefined || stream.expiresAt < Date.now()) {
-              if (stream?.iterator.return !== undefined) await stream.iterator.return()
-              nativeStreams.delete(streamId)
-              throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', 'DSH 原生 Remote 流已失效')
-            }
             const scope = parseScope(input.scope)
-            assertSameScope(stream.scope, scope)
-            // 每次轮询都算一次心跳：空闲会话的 next 会长时间挂起，不能只在出帧时续期。
-            nativeStreams.set(streamId, { ...stream, expiresAt: Date.now() + NATIVE_STREAM_TTL_MS })
-            const next = await stream.iterator.next()
-            if (next.done === true) nativeStreams.delete(streamId)
+            const next = await nativeStreams.next(streamId, scope, (rpcContext as { signal?: AbortSignal } | undefined)?.signal)
             return {
               done: next.done === true,
               ...(next.done === true ? {} : { value: encodeNativeResponseBytes(next.value) }),
@@ -599,9 +586,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
           }
           case 'nativeStreamClose': {
             const streamId = requiredString(input.streamId, 'streamId')
-            const stream = nativeStreams.get(streamId)
-            nativeStreams.delete(streamId)
-            if (stream?.iterator.return !== undefined) await stream.iterator.return()
+            await nativeStreams.close(streamId, parseScope(input.scope))
             return { closed: true }
           }
           case 'native': {
@@ -609,7 +594,8 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             if (!isDshNativeRemoteMethod(method)) throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `未知 DSH 原生 Remote 方法: ${method}`)
             const scope = parseScope(input.scope)
             const rewritten = rewriteNativeRequestIds(method, input.payload, createScopedNativeIdResolver(workspaceRegistry, scope))
-            const value = await aggregatedTransport.rpc({ scope, method, payload: rewritten })
+            const signal = (rpcContext as { signal?: AbortSignal } | undefined)?.signal
+            const value = await aggregatedTransport.rpc({ scope, method, payload: rewritten, ...(signal === undefined ? {} : { signal }) })
             const virtualHostId = scope.targetHostId ?? scope.hostId
             return encodeNativeResponseBytes(rewriteNativeResponseIds(value, (id) => createVirtualWorkspaceId(virtualHostId, id), (id) => createVirtualSessionId(virtualHostId, id)))
           }
@@ -618,8 +604,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
       })
       context.resources.add(unregister)
       context.resources.add(() => {
-        for (const stream of nativeStreams.values()) void stream.iterator.return?.()
-        nativeStreams.clear()
+        nativeStreams.dispose()
       })
     },
   }
@@ -801,12 +786,6 @@ function finiteNumber(value: unknown): number | null {
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
   return typeof value === 'object' && value !== null && typeof (value as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function'
-}
-
-function assertSameScope(expected: HostScope, actual: HostScope): void {
-  if (expected.hostId !== actual.hostId || expected.targetHostId !== actual.targetHostId || expected.workspaceId !== actual.workspaceId || expected.sessionId !== actual.sessionId || expected.scopeGeneration !== actual.scopeGeneration) {
-    throw new CodingNsRpcError('CODINGNS_RPC_SCOPE_MISMATCH', 'DSH 原生 Remote 流作用域不匹配')
-  }
 }
 
 async function authorizePeerHostUpgrade(loginStore: FileLanAccessDshLoginStore, request: import('node:http').IncomingMessage): Promise<boolean> {
