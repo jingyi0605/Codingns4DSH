@@ -235,8 +235,14 @@ interface CommandCodeStreamState {
   emittedText: string
   emittedReasoning: string
   sawText: boolean
+  /** 上一个 Provider assistant 消息是否已经结算过工具。 */
+  sawCompletedTool: boolean
+  /** 只有 Host 开启 DSH 分段桥接时才产生 step-boundary。 */
+  splitToolSteps: boolean
   perRequestUsageSeen: boolean
   turnUsageSeen: boolean
+  /** 当前 assistant 消息携带的最后一份 usage 快照，等待消息边界结算。 */
+  pendingMessageUsage: Extract<CodingNsAgentEvent, { type: 'usage' }> | null
   /** Provider 原生会话 ID，用于 session-binding 与恢复。 */
   sessionId: string | null
   /** DSH 父会话 ID，用于外部 CLI 子代理桥接重定向。 */
@@ -745,7 +751,13 @@ export class CommandCodeDriver implements CodingNsCliDriver {
         // 自动续跑是同一个 DSH 运行里的下一段；消息序号必须跨尝试连续，
         // 否则新进程会从 command-code-message-1 重新编号，公共投影层会把它
         // 当成同一条消息继续追加，而不是开启新段。
-        const state = createStreamState(() => turn.aborted, turn.messageSequence, turn.providerSessionId ?? null, turn.sessionId)
+        const state = createStreamState(
+          () => turn.aborted,
+          turn.messageSequence,
+          turn.providerSessionId ?? null,
+          turn.sessionId,
+          input.splitToolSteps === true,
+        )
         const child = this.spawnAttempt(turn, input, binary)
         const code = await this.readAttempt(turn, child, state)
         turn.messageSequence = state.messageSequence
@@ -979,6 +991,15 @@ export class CommandCodeDriver implements CodingNsCliDriver {
 
       // 一个 `-p` 运行会在同一进程里连续跑多个 agent turn。把新 assistant 消息的
       // 首个正文留给下一次 llm/stream，当前流只返回边界，确保 DSH 先创建新 step。
+      if (segmented && chunk.type === 'step-boundary') {
+        // 解析层已经把下一条 Provider 消息留在队列中；清掉旧消息身份，避免
+        // 续段后的首个正文再次被误判成一个额外边界。
+        turn.currentMessageId = undefined
+        turn.sawCompletedTool = false
+        suspend()
+        yield chunk
+        return
+      }
       if (segmented
         && (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta')
         && chunk.messageId !== undefined) {
@@ -1023,6 +1044,7 @@ function createStreamState(
   messageSequence = 0,
   sessionId: string | null = null,
   bridgeSessionId = '',
+  splitToolSteps = false,
 ): CommandCodeStreamState {
   return {
     messageSequence,
@@ -1030,8 +1052,11 @@ function createStreamState(
     emittedText: '',
     emittedReasoning: '',
     sawText: false,
+    sawCompletedTool: false,
+    splitToolSteps,
     perRequestUsageSeen: false,
     turnUsageSeen: false,
+    pendingMessageUsage: null,
     sessionId,
     bridgeSessionId,
     aborted,
@@ -1099,12 +1124,20 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
       break
     case 'turn_start':
     case 'turn-start':
+      if (state.splitToolSteps) emitPendingMessageUsage(chunks, state)
+      if (state.splitToolSteps && state.sawCompletedTool) chunks.push({ type: 'step-boundary' })
       beginMessage(state)
+      state.sawCompletedTool = false
       break
     case 'message_start':
     case 'message-start':
       // 正常一轮只有一个模型请求；没有 turn_start 的旧版本由这里补消息身份。
-      if (state.messageId === null) beginMessage(state)
+      if (state.messageId === null) {
+        if (state.splitToolSteps) emitPendingMessageUsage(chunks, state)
+        if (state.splitToolSteps && state.sawCompletedTool) chunks.push({ type: 'step-boundary' })
+        beginMessage(state)
+        state.sawCompletedTool = false
+      }
       break
     case 'text_delta':
     case 'text-delta': {
@@ -1134,11 +1167,13 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
     case 'message-end':
       // 只补齐增量流没有覆盖到的正文，避免累计快照被重复追加。
       appendContentFallback(chunks, event.content ?? recordValue(event.message)?.content, state)
+      captureMessageUsage(event, state)
       break
     case 'model_request_end':
     case 'model-request-end': {
-      const usage = usageChunk(recordValue(event.usage))
+      const usage = usageChunkFromEvent(event)
       if (usage !== null) {
+        state.pendingMessageUsage = null
         state.perRequestUsageSeen = true
         state.turnUsageSeen = true
         chunks.push(usage)
@@ -1149,8 +1184,9 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
     case 'turn-end': {
       // 旧版本可能只在 turn_end 带 usage；与 model_request_end 去重，不重复结算。
       if (!state.turnUsageSeen) {
-        const usage = usageChunk(recordValue(event.usage))
+        const usage = usageChunkFromEvent(event) ?? (state.splitToolSteps ? state.pendingMessageUsage : null)
         if (usage !== null) {
+          state.pendingMessageUsage = null
           state.perRequestUsageSeen = true
           state.turnUsageSeen = true
           chunks.push(usage)
@@ -1160,6 +1196,7 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
     }
     case 'run_end':
     case 'run-end':
+      if (state.splitToolSteps && !state.turnUsageSeen) emitPendingMessageUsage(chunks, state, event)
       if (!state.sawText) {
         const finalText = readFinalText(event)
         if (finalText) {
@@ -1182,9 +1219,15 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
       break
     case 'result': {
       if (state.terminalEmitted) break
-      if (!state.perRequestUsageSeen) {
-        const usage = usageChunk(recordValue(event.usage))
-        if (usage !== null) chunks.push(usage)
+      const resultUsage = usageChunkFromEvent(event)
+      if (state.splitToolSteps && state.pendingMessageUsage !== null) emitPendingMessageUsage(chunks, state)
+      else if (!state.turnUsageSeen) {
+        const usage = resultUsage ?? state.pendingMessageUsage
+        if (usage !== null) {
+          state.perRequestUsageSeen = true
+          state.turnUsageSeen = true
+          chunks.push(usage)
+        }
       }
       if (!state.sawText) {
         const finalText = readFinalText(event)
@@ -1227,6 +1270,17 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
   }
 
   if (isToolStart(type)) {
+    // 某些版本只在 message/message_update 上携带 usage，工具开始即表示该
+    // assistant 消息已经结束；先结算最后一份快照，避免工具 step 没有 usage。
+    if (state.splitToolSteps) emitPendingMessageUsage(chunks, state, event)
+    // 某些 Command Code 版本对“只有工具调用的 assistant 消息”不发送
+    // turn_start/message_start。上一个工具已经完成时，下一次工具开始就是
+    // 明确的消息边界；同一消息里的并行工具不会命中此分支，因为它们之间
+    // 还没有 completed 结果。
+    if (state.splitToolSteps && state.sawCompletedTool) {
+      chunks.push({ type: 'step-boundary' })
+      state.sawCompletedTool = false
+    }
     const tool = readToolChunk(event, type === 'tool_queued' || type === 'tool_started' ? 'started' : 'running')
     if (tool !== null) chunks.push(tool)
   } else if (isToolResult(type)) {
@@ -1250,9 +1304,41 @@ function commandCodeEventChunks(event: Record<string, unknown>, state: CommandCo
       // 工具完成后的正文属于下一条 assistant 消息。即使 CLI 没有发送
       // turn_start/message_start，也要让公共投影层看到消息身份切换。
       if (tool.status === 'completed' || tool.status === 'failed') resetMessageIdentity(state)
+      if (tool.status === 'completed' || tool.status === 'failed') state.sawCompletedTool = true
     }
   }
+  if (type === 'message' || type === 'message_update' || type === 'message-update') captureMessageUsage(event, state)
   return chunks
+}
+
+/** 从所有 Command Code 事件形状读取 usage；message 快照可能嵌套在 message 内。 */
+function usageChunkFromEvent(event: Record<string, unknown>): Extract<CodingNsAgentEvent, { type: 'usage' }> | null {
+  const result = recordValue(event.result)
+  const message = recordValue(event.message)
+  const usage = usageChunk(recordValue(event.usage) ?? recordValue(message?.usage) ?? recordValue(result?.usage))
+  return usage?.type === 'usage' ? usage : null
+}
+
+/** 暂存消息累计快照，只保留同一请求最后一次值，避免重复结算。 */
+function captureMessageUsage(event: Record<string, unknown>, state: CommandCodeStreamState): void {
+  if (state.turnUsageSeen) return
+  const usage = usageChunkFromEvent(event)
+  if (usage !== null) state.pendingMessageUsage = usage
+}
+
+/** 在消息、工具或回合边界结算消息快照。 */
+function emitPendingMessageUsage(
+  chunks: CodingNsAgentEvent[],
+  state: CommandCodeStreamState,
+  event?: Record<string, unknown>,
+): void {
+  if (state.turnUsageSeen) return
+  const usage = state.pendingMessageUsage ?? (event === undefined ? null : usageChunkFromEvent(event))
+  if (usage === null) return
+  state.pendingMessageUsage = null
+  state.perRequestUsageSeen = true
+  state.turnUsageSeen = true
+  chunks.push(usage)
 }
 
 function readFinalText(event: Record<string, unknown>): string {

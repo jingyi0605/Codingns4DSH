@@ -876,6 +876,74 @@ test('Command Code usage 保留缓存桶，并按完整输入计算未缓存输�
   ])
 })
 
+test('Command Code 从 message 快照恢复 usage、上下文窗口并按消息边界结算', async () => {
+  const event = (value: unknown): string => `${JSON.stringify({ type: 'event', event: value })}\n`
+  const firstUsage = { inputTokens: 120, outputTokens: 5, cacheReadTokens: 100, cacheWriteTokens: 0, contextWindow: 1_000, contextTokens: 120 }
+  const secondUsage = { inputTokens: 180, outputTokens: 8, cacheReadTokens: 150, cacheWriteTokens: 0, contextWindow: 1_000, contextTokens: 180 }
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.66.0', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: (() => ({
+      stdout: Readable.from([
+        event({ type: 'run_start', sessionId: 'message-usage-session' }),
+        event({ type: 'turn_start', turnNumber: 1 }),
+        event({ type: 'message_start' }),
+        event({ type: 'message', message: { content: [{ type: 'text', text: '先检查' }] }, usage: firstUsage }),
+        event({ type: 'tool_queued', toolCallId: 'message-usage-call', toolName: 'shell_command', input: { command: 'pwd' } }),
+        event({ type: 'tool_completed', toolCallId: 'message-usage-call', toolName: 'shell_command', result: '/workspace' }),
+        event({ type: 'turn_start', turnNumber: 2 }),
+        event({ type: 'message_start' }),
+        event({ type: 'message_update', message: { content: [{ type: 'text', text: '完成' }] }, usage: secondUsage }),
+        event({ type: 'result', subtype: 'success', sessionId: 'message-usage-session', stopReason: 'end_turn', finalText: '完成' }),
+      ]),
+      stderr: { on() { return this } },
+      kill() { return true },
+    })) as never,
+  })
+
+  const first = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'message-usage-session', messages: [], prompt: '执行', splitToolSteps: true })) first.push(chunk)
+  assert.deepEqual(first.filter(({ type }) => type !== 'session-binding').map(({ type }) => type), [
+    'text-delta', 'usage', 'tool-event', 'tool-event', 'step-boundary',
+  ])
+  assert.deepEqual(first.find(({ type }) => type === 'usage'), {
+    type: 'usage',
+    inputTokens: 120,
+    outputTokens: 5,
+    cacheReadTokens: 100,
+    cacheWriteTokens: 0,
+    uncachedInputTokens: 20,
+    totalTokens: 125,
+    cacheHitRate: 83.3333,
+    contextWindow: 1_000,
+    contextTokens: 120,
+    contextUsageRatio: 0.12,
+  })
+
+  const second = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'message-usage-session', messages: [], prompt: '继续', splitToolSteps: true, resumeSegmentedTurn: true })) second.push(chunk)
+  assert.deepEqual(second.filter(({ type }) => type !== 'session-binding'), [
+    { type: 'text-delta', text: '完成', messageId: 'command-code-message-2' },
+    {
+      type: 'usage',
+      inputTokens: 180,
+      outputTokens: 8,
+      cacheReadTokens: 150,
+      cacheWriteTokens: 0,
+      uncachedInputTokens: 30,
+      totalTokens: 188,
+      cacheHitRate: 83.3333,
+      contextWindow: 1_000,
+      contextTokens: 180,
+      contextUsageRatio: 0.18,
+    },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
 test('Command Code 按 assistant 消息切换 DSH step 并只结算每次请求的 usage', async () => {
   const driver = new CommandCodeDriver({
     binaries: ['command-code'],
@@ -912,6 +980,35 @@ test('Command Code 按 assistant 消息切换 DSH step 并只结算每次请求�
     { type: 'usage', inputTokens: 180, outputTokens: 5, cacheReadTokens: 150, cacheWriteTokens: 0, uncachedInputTokens: 30, totalTokens: 185, cacheHitRate: 83.3333 },
     { type: 'finish', reason: 'stop' },
   ])
+  driver.dispose()
+})
+
+test('Command Code 只有工具调用的 assistant 消息也会切换 DSH step', async () => {
+  const driver = new CommandCodeDriver({
+    binaries: ['command-code'],
+    spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+      ? { status: 0, stdout: 'command-code 1.66.0', stderr: '' }
+      : { status: 0, stdout: '', stderr: '' }) as never,
+    spawn: (() => ({
+      stdout: Readable.from(commandCodeToolOnlyTurnStreamLines()),
+      stderr: { on() { return this } },
+      kill() { return true },
+    })) as never,
+  })
+
+  const first = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'tool-only-cc', messages: [], prompt: '执行', splitToolSteps: true })) first.push(chunk)
+  assert.deepEqual(first.filter(({ type }) => type !== 'session-binding').map(({ type }) => type), [
+    'text-delta', 'usage', 'tool-event', 'tool-event', 'step-boundary',
+  ])
+
+  const second = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'tool-only-cc', messages: [], prompt: '继续', splitToolSteps: true, resumeSegmentedTurn: true })) second.push(chunk)
+  assert.deepEqual(second.map(({ type }) => type), ['tool-event', 'tool-event', 'step-boundary'])
+
+  const third = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'tool-only-cc', messages: [], prompt: '继续', splitToolSteps: true, resumeSegmentedTurn: true })) third.push(chunk)
+  assert.deepEqual(third.filter(({ type }) => type !== 'session-binding').map(({ type }) => type), ['text-delta', 'finish'])
   driver.dispose()
 })
 
@@ -2865,6 +2962,29 @@ function commandCodeStreamLines(): string[] {
     event({ type: 'turn_end', turnNumber: 2, hadToolCalls: false, usage: finalUsage }),
     event({ type: 'run_end', result: { finalText: '完成', stopReason: 'end_turn', turnCount: 2, usage: { inputTokens: 280, outputTokens: 15, cacheReadTokens: 190, cacheWriteTokens: 0 } } }),
     `${JSON.stringify({ type: 'result', subtype: 'success', sessionId: 'cc-session-1', stopReason: 'end_turn', usage: { inputTokens: 280, outputTokens: 15, cacheReadTokens: 190, cacheWriteTokens: 0 }, durationMs: 123, finalText: '完成' })}\n`,
+  ]
+}
+
+/** 第二个 assistant 消息故意只有 tool_use，覆盖真实会话中的分段边界。 */
+function commandCodeToolOnlyTurnStreamLines(): string[] {
+  const event = (value: unknown): string => `${JSON.stringify({ type: 'event', event: value })}\n`
+  return [
+    event({ type: 'run_start', sessionId: 'tool-only-session' }),
+    event({ type: 'turn_start', turnNumber: 1 }),
+    event({ type: 'message_start' }),
+    event({ type: 'text_delta', delta: '前置' }),
+    event({ type: 'model_request_end', usage: { inputTokens: 10, outputTokens: 2 }, stopReason: 'tool_use' }),
+    event({ type: 'tool_queued', toolCallId: 'call-one', toolName: 'shell_command', input: { command: 'pwd' } }),
+    event({ type: 'tool_completed', toolCallId: 'call-one', toolName: 'shell_command', result: '/one' }),
+    event({ type: 'turn_start', turnNumber: 2 }),
+    event({ type: 'message_start' }),
+    event({ type: 'tool_queued', toolCallId: 'call-two', toolName: 'shell_command', input: { command: 'ls' } }),
+    event({ type: 'tool_completed', toolCallId: 'call-two', toolName: 'shell_command', result: '/two' }),
+    event({ type: 'turn_start', turnNumber: 3 }),
+    event({ type: 'message_start' }),
+    event({ type: 'text_delta', delta: '完成' }),
+    event({ type: 'run_end', result: { finalText: '完成', stopReason: 'end_turn' } }),
+    event({ type: 'result', subtype: 'success', sessionId: 'tool-only-session', stopReason: 'end_turn', finalText: '完成' }),
   ]
 }
 
