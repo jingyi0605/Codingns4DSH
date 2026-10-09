@@ -167,6 +167,14 @@ export class PeerHostRemoteEvents {
   }
 
   private async deliver(generation: EventGeneration, worker: EventWorker, scope: HostScope, clientId: string, frame: Record<string, unknown> | null, signal: AbortSignal): Promise<void> {
+    // 原生子智能体列表从统一状态事件读取运行态，不能仅依赖已打开会话的 follow 流。
+    if (frame?.type === 'emit' && frame.event === 'api-session/status') {
+      const args = frame.args
+      if (Array.isArray(args) && typeof args[0] === 'string' && typeof args[1] === 'boolean' && this.options.accepts(args[0], scope)) {
+        generation.queue.push(frame)
+      }
+      return
+    }
     if (frame?.type === 'cancel' && typeof frame.eventId === 'string') {
       const id = worker.pending.get(frame.eventId)
       if (id !== undefined) this.cancel(generation, worker, frame.eventId, id)

@@ -41,6 +41,9 @@ export const DSH_NATIVE_REMOTE_METHODS = Object.freeze([
   'session/selectModel',
   'session/updateQueue',
   'session/workspacePathApplications',
+  // 可继续子会话的输入与停止由 subagents Remote 承载，身份字段仍是 SessionId。
+  'subagents/prompt',
+  'subagents/interruptByParent',
   // 对话框的 / 命令目录由目标 Host 提供；否则虚拟会话会误读本机命令集合。
   'commands/list',
   'commands/execute',
@@ -126,10 +129,17 @@ export function rewriteNativeResponseIds(
   encodeWorkspace: (id: string) => VirtualWorkspaceId,
   encodeSession: (id: string) => VirtualSessionId,
 ): unknown {
+  // 状态通知的 SessionId 位于位置参数，而不是命名字段；不能按普通数组漏掉改写。
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    const frame = value as Record<string, unknown>
+    if (frame.type === 'emit' && frame.event === 'api-session/status' && Array.isArray(frame.args) && typeof frame.args[0] === 'string') {
+      return { ...frame, args: [encodeSession(frame.args[0]), ...frame.args.slice(1)] }
+    }
+  }
   return rewriteValue(value, (key, current, parentKey) => {
     if (typeof current !== 'string') return current
     if (isWorkspaceField(key)) return encodeWorkspace(current)
-    if (isSessionField(key) || key === 'parentSession' || (key === 'id' && parentKey === 'header')) return encodeSession(current)
+    if (isSessionField(key) || key === 'parentSession' || (key === 'id' && (parentKey === 'header' || parentKey === 'subagentCatalog'))) return encodeSession(current)
     return current
   })
 }
