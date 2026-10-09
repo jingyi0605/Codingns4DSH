@@ -4,6 +4,7 @@ import type { HostScope } from '../../../shared/contracts/peer-host.js'
 import { PEER_HOST_ERROR_CODES } from '../../../shared/contracts/peer-host.js'
 import { CodingNsRpcError } from '../../rpc-table.js'
 import { PeerHostHttpProxyService } from './host-api-proxy-service.js'
+import { throwIfPeerHostRequestAborted } from './peer-host-request-errors.js'
 
 const STREAM_RETRY_ATTEMPTS = 3
 const STREAM_RETRY_DELAY_MS = 400
@@ -46,6 +47,7 @@ export async function callPeerNativeRpc(httpProxy: PeerHostHttpProxyService, pee
     path: '/api/codingns/peerHost/nativeLocal',
     method: 'POST',
     body: peerHostNativeEnvelope('peerHost/nativeLocal', { method: request.method, payload: request.payload, scope: request.scope }),
+    ...(request.signal === undefined ? {} : { signal: request.signal }),
   })
   return readNativeRpcEnvelope(response.body)
 }
@@ -56,6 +58,7 @@ export async function callPeerCliRpc(httpProxy: PeerHostHttpProxyService, peerHo
     path: `/api/codingns/${request.endpoint}`,
     method: 'POST',
     body: JSON.stringify({ rpcId: `peer-host-cli-${randomUUID()}`, method: request.endpoint, payload: request.payload ?? {} }),
+    ...(request.signal === undefined ? {} : { signal: request.signal }),
   })
   return readNativeRpcEnvelope(response.body)
 }
@@ -82,12 +85,15 @@ export function openPeerNativeStream(httpProxy: PeerHostHttpProxyService, peerHo
         if (value.done === true) return
         yield value.value
       }
+      throwIfPeerHostRequestAborted(request.signal)
     } finally {
       await httpProxy.request(peerHostId, {
         scope: request.scope,
         path: '/api/codingns/peerHost/nativeStreamClose',
         method: 'POST',
         body: peerHostNativeEnvelope('peerHost/nativeStreamClose', { streamId, scope: request.scope }),
+        // 关闭请求有独立时限，不能沿用已取消的订阅信号。
+        signal: AbortSignal.timeout(5_000),
       }).catch(() => undefined)
     }
   })()
@@ -99,9 +105,11 @@ export function openPeerNativeStream(httpProxy: PeerHostHttpProxyService, peerHo
  */
 async function requestPeerHostStream(httpProxy: PeerHostHttpProxyService, peerHostId: string, request: PeerHostProxyRequest, signal: AbortSignal | undefined): Promise<PeerHostProxyResponse> {
   for (let attempt = 1; ; attempt += 1) {
-    const response = await httpProxy.request(peerHostId, request)
-    if (attempt >= STREAM_RETRY_ATTEMPTS || !isProxyUnreachable(response) || (signal?.aborted ?? false)) return response
-    await delay(STREAM_RETRY_DELAY_MS * attempt)
+    throwIfPeerHostRequestAborted(signal)
+    const response = await httpProxy.request(peerHostId, { ...request, ...(signal === undefined ? {} : { signal }) })
+    throwIfPeerHostRequestAborted(signal)
+    if (attempt >= STREAM_RETRY_ATTEMPTS || !isProxyUnreachable(response)) return response
+    await delay(STREAM_RETRY_DELAY_MS * attempt, undefined, { signal })
   }
 }
 

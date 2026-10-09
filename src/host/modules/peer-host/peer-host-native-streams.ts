@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { HostScope } from '../../../shared/contracts/peer-host.js'
 import { CodingNsRpcError } from '../../rpc-table.js'
+import { throwIfPeerHostRequestAborted } from './peer-host-request-errors.js'
 
 interface NativeStream {
   readonly scope: HostScope
@@ -43,10 +44,10 @@ export class PeerHostNativeStreams {
     clearTimeout(stream.timer)
     stream.timer = this.expiry(id)
     stream.pulling = true
-    const abort = (): void => { void this.close(id, scope).catch(() => undefined) }
+    const abort = (): void => { void this.close(id, scope, signal?.reason).catch(() => undefined) }
     signal?.addEventListener('abort', abort, { once: true })
     try {
-      signal?.throwIfAborted()
+      throwIfPeerHostRequestAborted(signal)
       const next = await stream.iterator.next()
       if (next.done) await this.close(id, scope)
       else if (this.streams.has(id)) {
@@ -64,12 +65,12 @@ export class PeerHostNativeStreams {
     }
   }
 
-  async close(id: string, scope: HostScope): Promise<void> {
+  async close(id: string, scope: HostScope, reason?: unknown): Promise<void> {
     if (!this.streams.has(id)) return
     const stream = this.require(id, scope)
     this.streams.delete(id)
     clearTimeout(stream.timer)
-    stream.controller.abort(new Error('PeerHost 原生流已关闭'))
+    stream.controller.abort(reason ?? new DOMException('PeerHost 原生流已关闭', 'AbortError'))
     await stream.iterator.return?.()
   }
 

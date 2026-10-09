@@ -10,6 +10,7 @@ import type { CodingNsSettingsOperation } from '../dsh-capabilities/settings-sto
 import { validateAssistantAppearance } from '../shared/assistant-avatar.js'
 import { validateAssistantPrompt, validateAssistantPrompts } from '../shared/assistant-prompts.js'
 import { validateAssistantModel, validateAssistantProfile } from '../shared/assistant-lifecycle.js'
+import { isPeerHostRequestCancellation } from './modules/peer-host/peer-host-request-errors.js'
 
 /** 0.2 Connection handler 的 Peer 参数；旧版 handler 仍可通过可选参数调用。 */
 /** CodingNS 自有的 Connection RPC 结果契约，避免绑定 DSH 具体导出名称。 */
@@ -62,6 +63,11 @@ export function createCodingNsRpcHandler(table: CodingNsRpcTable): CodingNsConne
       debugInfo('codingns4dsh: host rpc success', { endpoint })
       return success(value)
     } catch (error) {
+      if (isPeerHostRequestCancellation(error, signal)) {
+        // 客户端退出、关闭或切换订阅是正常生命周期，不打印故障日志。
+        debugInfo('codingns4dsh: host rpc request cancelled', { endpoint })
+        return failure('AbortError', '请求已取消')
+      }
       const code = errorCode(error)
       const details = { endpoint, code, error }
       if (code === 'CODINGNS_RPC_UNAUTHENTICATED') {

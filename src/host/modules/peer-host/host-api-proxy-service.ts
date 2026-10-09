@@ -5,6 +5,7 @@ import { PeerHostSessionError, PeerHostSessionService } from './peer-host-sessio
 import { PeerHostStore } from './peer-host-store.js'
 import { peerHostSafeError } from './peer-host-diagnostics.js'
 import { isPeerHostHttpRoute } from '../../../shared/peer-host-http-routes.js'
+import { isPeerHostRequestCancellation, throwIfPeerHostRequestAborted } from './peer-host-request-errors.js'
 // 保持已有导入入口兼容；路由表由发送端与目标端共同维护。
 export { PEER_HOST_HTTP_PROXY_RULES } from '../../../shared/peer-host-http-routes.js'
 
@@ -35,6 +36,7 @@ export class PeerHostHttpProxyService {
 
   async handle(peerHostId: string, request: Request): Promise<Response> {
     try {
+      throwIfPeerHostRequestAborted(request.signal)
       const record = await this.requireReady(peerHostId)
       const scope = readScope(request.headers, peerHostId)
       const targetPath = parseProxyPath(request.url)
@@ -43,26 +45,35 @@ export class PeerHostHttpProxyService {
       const body = await readBody(request)
       let accessToken = await this.sessions.getAccessToken(peerHostId)
       const targetUrl = buildTargetUrl(record, targetPath)
-      const send = (token: string) => this.fetchImpl(targetUrl, {
-        method: request.method,
-        headers: buildForwardHeaders(request.headers, token),
-        ...(body === undefined ? {} : { body }),
-      })
+      const send = (token: string) => {
+        throwIfPeerHostRequestAborted(request.signal)
+        return this.fetchImpl(targetUrl, {
+          method: request.method,
+          headers: buildForwardHeaders(request.headers, token),
+          signal: request.signal,
+          ...(body === undefined ? {} : { body }),
+        })
+      }
       let response = await send(accessToken)
       if (response.status === 401) {
         await response.body?.cancel()
-        await this.assertTokenRejected(record, targetPath.pathname, accessToken)
+        await this.assertTokenRejected(record, targetPath.pathname, accessToken, request.signal)
         accessToken = await this.sessions.recoverAccessToken(peerHostId, accessToken)
         // 仅在明确收到 401 且票据恢复后重放一次；网络错误不重放，避免重复执行业务。
         response = await send(accessToken)
         if (response.status === 401) {
           await response.body?.cancel()
-          await this.assertTokenRejected(record, targetPath.pathname, accessToken)
+          await this.assertTokenRejected(record, targetPath.pathname, accessToken, request.signal)
           throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.SESSION_REQUIRED, '目标 Host 登录态已失效')
         }
       }
       return await forwardResponse(response, scope)
     } catch (error) {
+      // 取消必须继续向上传播，不能被包装成 502 后触发重试或故障日志。
+      if (isPeerHostRequestCancellation(error, request.signal)) {
+        throwIfPeerHostRequestAborted(request.signal)
+        throw error
+      }
       return errorResponse(error)
     }
   }
@@ -71,13 +82,13 @@ export class PeerHostHttpProxyService {
    * 旧版目标未放行插件 RPC 时也返回 401，不能据此清理整台 Host 的登录态。
    * 用固定只读状态接口验证同一票据；检查本身失败时保留凭据并报告检查错误。
    */
-  private async assertTokenRejected(record: PeerHostRecord, path: string, accessToken: string): Promise<void> {
+  private async assertTokenRejected(record: PeerHostRecord, path: string, accessToken: string, signal: AbortSignal): Promise<void> {
     if (path === AUTH_CHECK_PATH) return
     const response = await this.fetchImpl(buildTargetUrl(record, new URL(AUTH_CHECK_PATH, 'http://peer-host.invalid')), {
       method: 'POST',
       headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify({ rpcId: `peer-host-auth-check-${randomUUID()}`, method: 'host/status', payload: {} }),
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
       redirect: 'error',
     })
     if (!response.ok) {
@@ -97,6 +108,7 @@ export class PeerHostHttpProxyService {
     readonly method?: string
     readonly headers?: Readonly<Record<string, string>>
     readonly body?: string
+    readonly signal?: AbortSignal
   }): Promise<{ readonly status: number; readonly headers: readonly [string, string][]; readonly body: string }> {
     const path = typeof input.path === 'string' ? input.path : ''
     if (!path.startsWith('/api/') || path.includes('://')) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED, 'PeerHost 代理路径必须是固定 API 路径')
@@ -114,7 +126,10 @@ export class PeerHostHttpProxyService {
     for (const [name, value] of Object.entries(input.headers ?? {})) {
       if (ALLOWED_CLIENT_HEADERS.has(name.toLowerCase())) headers.set(name, value)
     }
-    const response = await this.handle(peerHostId, new Request(new URL(path, 'http://peer-host.invalid'), { method, headers, ...(body === undefined ? {} : { body }) }))
+    const response = await this.handle(peerHostId, new Request(new URL(path, 'http://peer-host.invalid'), {
+      method, headers, ...(body === undefined ? {} : { body }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    }))
     const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
     if (response.body !== null && !contentType.includes('json') && !contentType.startsWith('text/')) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.RESPONSE_INVALID, '目标 Host 返回了不支持的响应类型')
     return { status: response.status, headers: [...response.headers.entries()], body: await response.text() }

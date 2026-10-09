@@ -85,16 +85,6 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
       })
       const sessions = new PeerHostSessionService(store, credentials, options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl })
       const httpProxy = new PeerHostHttpProxyService(store, sessions, options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl })
-      // 旧版 HTTP 代理尚未下传 request.signal；每次读取独立绑定 fetch，避免共享
-      // 代理上的可变信号污染其他界面请求，同时让取消真正中断网络读取。
-      const scopedProxy = (signal?: AbortSignal): PeerHostHttpProxyService => signal === undefined ? httpProxy : new PeerHostHttpProxyService(store, sessions, {
-        fetchImpl: async (input, init) => {
-          const closing = new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith('/peerHost/nativeStreamClose')
-          const requestSignal = closing ? AbortSignal.timeout(5_000) : init?.signal == null ? signal : AbortSignal.any([signal, init.signal])
-          requestSignal.throwIfAborted()
-          return (options.fetchImpl ?? fetch)(input, { ...init, signal: requestSignal })
-        },
-      })
       const aggregate = new PeerHostAggregateService()
       const workspaceRegistry = new VirtualWorkspaceRegistry({
         orderStore: new FileAggregateWorkspaceOrderStore(join(stateDirectory, 'peer-host-workspace-order.json')),
@@ -186,9 +176,9 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             source: createPeerHostRemoteSummarySource({
               scope: { hostId: localHostId, targetHostId: record.id, workspaceId: '__aggregate__', sessionId: null, scopeGeneration: 0 },
               transport: {
-                rpc: (request) => callPeerNativeRpc(scopedProxy(signal ?? request.signal), record.id, { ...request, ...(signal === undefined ? {} : { signal }) }),
-                stream: (request) => openPeerNativeStream(scopedProxy(signal ?? request.signal), record.id, { ...request, ...(signal === undefined ? {} : { signal }) }),
-                cli: (request) => callPeerCliRpc(scopedProxy(signal ?? request.signal), record.id, { ...request, ...(signal === undefined ? {} : { signal }) }),
+                rpc: (request) => callPeerNativeRpc(httpProxy, record.id, { ...request, ...(signal === undefined ? {} : { signal }) }),
+                stream: (request) => openPeerNativeStream(httpProxy, record.id, { ...request, ...(signal === undefined ? {} : { signal }) }),
+                cli: (request) => callPeerCliRpc(httpProxy, record.id, { ...request, ...(signal === undefined ? {} : { signal }) }),
               },
               // 默认只投影用户显式添加的远端工作区；未添加时不展示该 Host 的任何工作区。
               visibleWorkspaceIds: selectedWorkspaceIds,
@@ -248,8 +238,8 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
         httpProxy,
         wsProxy,
         peer: {
-          nativeRpc: <TResponse>(peerHostId: string, request: Parameters<typeof callPeerNativeRpc>[2]) => callPeerNativeRpc(scopedProxy(request.signal), peerHostId, request) as Promise<TResponse>,
-          nativeStream: <TChunk>(peerHostId: string, request: Parameters<typeof openPeerNativeStream>[2]) => openPeerNativeStream(scopedProxy(request.signal), peerHostId, request) as AsyncIterable<TChunk>,
+          nativeRpc: <TResponse>(peerHostId: string, request: Parameters<typeof callPeerNativeRpc>[2]) => callPeerNativeRpc(httpProxy, peerHostId, request) as Promise<TResponse>,
+          nativeStream: <TChunk>(peerHostId: string, request: Parameters<typeof openPeerNativeStream>[2]) => openPeerNativeStream(httpProxy, peerHostId, request) as AsyncIterable<TChunk>,
         },
       })
       context.resources.add(() => aggregatedTransport.close())
