@@ -254,6 +254,19 @@ export function createPeerHostPageTransport(
     return method === 'session/modelCatalog' && !containsResourceId(value) ? navigationScope() : undefined
   }
   const scopeForPluginRequest = (endpoint: string, value: unknown): HostScope | undefined => {
+    if (endpoint.startsWith('fileManagement/')) {
+      // 文件内容与路径均不参与路由；显式资源必须属于同一台 Host 的同一工作区。
+      const input = asRecord(value)
+      const workspace = findScope(input?.workspaceId)
+      const session = findScope(input?.sessionId)
+      if (hasVirtualResourceScope(value)) {
+        if (typeof input?.workspaceId === 'string' && workspace === undefined) return undefined
+        if (typeof input?.sessionId === 'string' && session === undefined) return undefined
+        if (workspace !== undefined && session !== undefined
+          && (workspace.targetHostId !== session.targetHostId || workspace.workspaceId !== session.workspaceId)) return undefined
+      }
+      return workspace ?? session
+    }
     // 调试只按顶层资源选择 Host，配置正文里的字符串不能影响路由。
     if (isDebugPluginEndpoint(endpoint)) {
       const input = asRecord(value)
@@ -325,7 +338,7 @@ export function createPeerHostPageTransport(
       method: 'POST',
       body: JSON.stringify({ rpcId: createRequestId(), method: endpoint, payload: endpoint.startsWith('git/')
         ? { ...asRecord(payload), workspaceId: scope.workspaceId }
-        : endpoint.startsWith('cli/') ? rewriteCliPayload(payload, scope) : rewriteDebugPayload(payload, scope) }),
+        : endpoint.startsWith('cli/') ? rewriteCliPayload(payload, scope) : rewritePluginResourcePayload(payload, scope) }),
     }, signal))
     const status = typeof response?.status === 'number' ? response.status : 500
     const body = typeof response?.body === 'string' ? response.body : ''
@@ -438,7 +451,10 @@ export function createPeerHostPageTransport(
         return await mergeRemoteAdapterMap(await request(channel, method, body, signal), signal) as TResponse
       }
       if (endpoint !== undefined) {
-        if (isDebugPluginEndpoint(endpoint) && hasVirtualDebugScope(body) && scopeForPluginRequest(endpoint, body) === undefined) {
+        if (endpoint.startsWith('fileManagement/') && hasVirtualResourceScope(body) && scopeForPluginRequest(endpoint, body) === undefined) {
+          return { ok: false, error: { code: 'PEER_HOST_SCOPE_MISMATCH', message: t('peerHost.fileWorkspaceUnavailable') } } as TResponse
+        }
+        if (isDebugPluginEndpoint(endpoint) && hasVirtualResourceScope(body) && scopeForPluginRequest(endpoint, body) === undefined) {
           return { ok: false, error: { code: 'PEER_HOST_SCOPE_MISMATCH', message: t('peerHost.debugWorkspaceUnavailable') } } as TResponse
         }
         // Git 只由顶层 workspaceId 决定归属，文件名和提交正文不能参与 Host 选择。
@@ -525,10 +541,14 @@ export function createPeerHostPageTransport(
     /** 该请求是否落在某个远端 Host 的作用域内；Desktop 连接路由用它决定是否分流。 */
     matchesScope(value: unknown, method?: string): boolean {
       const endpoint = method?.replace(/^codingns\//u, '') ?? ''
+      if (endpoint.startsWith('fileManagement/')) {
+        const scope = scopeForPluginRequest(endpoint, value)
+        return scope === undefined ? hasVirtualResourceScope(value) : scope.targetHostId !== null
+      }
       if (isDebugPluginEndpoint(endpoint)) {
         const scope = scopeForPluginRequest(endpoint, value)
         // 聚合暂时缺失时仍接管虚拟资源，返回明确错误，禁止回落本机调试服务。
-        return scope === undefined ? hasVirtualDebugScope(value) : scope.targetHostId !== null
+        return scope === undefined ? hasVirtualResourceScope(value) : scope.targetHostId !== null
       }
       if (method?.startsWith('git/') || method?.startsWith('codingns/git/')) {
         const workspaceId = asRecord(value)?.workspaceId
@@ -595,14 +615,14 @@ export function createPeerHostPageTransport(
 function peerHostPluginEndpoint(channel: string, method: string): string | undefined {
   const endpoint = channel === '/codingns' ? method
     : channel === '/api' && method.startsWith('codingns/') ? method.slice('codingns/'.length) : ''
-  return endpoint.startsWith('cli/') || endpoint.startsWith('git/') || endpoint.startsWith('debug/') || endpoint === 'terminal/status' ? endpoint : undefined
+  return endpoint.startsWith('cli/') || endpoint.startsWith('git/') || endpoint.startsWith('debug/') || endpoint.startsWith('fileManagement/') || endpoint === 'terminal/status' ? endpoint : undefined
 }
 
 function isDebugPluginEndpoint(endpoint: string): boolean {
   return endpoint.startsWith('debug/') || endpoint === 'terminal/status'
 }
 
-function hasVirtualDebugScope(value: unknown): boolean {
+function hasVirtualResourceScope(value: unknown): boolean {
   const input = asRecord(value)
   return (typeof input?.workspaceId === 'string' && parseVirtualWorkspaceId(input.workspaceId) !== null)
     || (typeof input?.sessionId === 'string' && parseVirtualSessionId(input.sessionId) !== null)
@@ -619,20 +639,20 @@ function projectGitWorkspaceIds(value: unknown, workspaceId: string, virtualWork
   ]))
 }
 
-/** 只还原调试请求顶层资源标识，配置里的命令、参数和环境变量必须原样保存。 */
-function rewriteDebugPayload(value: unknown, scope: HostScope): unknown {
+/** 只还原调试与文件请求的顶层资源标识，配置、文件正文和路径必须原样保存。 */
+function rewritePluginResourcePayload(value: unknown, scope: HostScope): unknown {
   const input = asRecord(value)
   if (input === null) return value
   const result = { ...input }
   const workspace = typeof input.workspaceId === 'string' ? parseVirtualWorkspaceId(input.workspaceId) : null
   if (workspace !== null) {
-    if (workspace.hostId !== scope.targetHostId || workspace.workspaceId !== scope.workspaceId) throw new Error('调试请求的 Workspace 与目标 Host 作用域不一致')
+    if (workspace.hostId !== scope.targetHostId || workspace.workspaceId !== scope.workspaceId) throw new Error('请求的 Workspace 与目标 Host 作用域不一致')
     result.workspaceId = workspace.workspaceId
   }
   for (const key of ['sessionId', 'dshSessionId']) {
     const session = typeof input[key] === 'string' ? parseVirtualSessionId(input[key]) : null
     if (session === null) continue
-    if (session.hostId !== scope.targetHostId) throw new Error('调试请求的 Session 与目标 Host 作用域不一致')
+    if (session.hostId !== scope.targetHostId) throw new Error('请求的 Session 与目标 Host 作用域不一致')
     result[key] = session.sessionId
   }
   return result

@@ -55,6 +55,23 @@ export function readNativeWorkspaceSnapshot(uiContext: Context | undefined): Nat
   }
 }
 
+/** 只在会话所属工作区变化时通知，避免标题/运行态增量触发昂贵的文件与 Git 查询。 */
+export function subscribeNativeSessionWorkspace(
+  uiContext: Context | undefined,
+  sessionId: string,
+  listener: () => void,
+): () => void {
+  const readWorkspaceId = (): string | undefined => readNativeWorkspaceSnapshot(uiContext)?.items
+    .find((item) => item.sessionIds.includes(sessionId))?.workspaceId
+  let workspaceId = readWorkspaceId()
+  return readNativeWorkspaceListStore(uiContext)?.subscribe(() => {
+    const next = readWorkspaceId()
+    if (next === workspaceId) return
+    workspaceId = next
+    listener()
+  }) ?? (() => undefined)
+}
+
 /** 读取 DSH 原生服务集合中的字段；非 Web 宿主或版本差异时保持缺失。 */
 export function readNativeService(uiContext: Context | undefined, name: string, field?: string): unknown {
   if (uiContext === undefined) return undefined

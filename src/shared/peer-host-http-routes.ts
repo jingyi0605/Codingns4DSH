@@ -14,6 +14,7 @@ export const PEER_HOST_HTTP_PROXY_RULES = [
   { prefix: '/api/codingns/cli', methods: ['POST'] },
   { prefix: '/api/codingns/git', methods: ['POST'] },
   { prefix: '/api/codingns/debug', methods: ['POST'] },
+  { prefix: '/api/codingns/fileManagement', methods: ['POST'] },
   { prefix: '/api/codingns/terminal/status', methods: ['POST'] },
   { prefix: '/api/workspaces', methods: ['GET'] },
   { prefix: '/api/sessions', methods: ['GET', 'POST'] },

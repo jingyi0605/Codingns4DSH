@@ -1,10 +1,12 @@
 import { createElement, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
+import type { Context } from '@deepseek-ai/cordis'
 import type { GitChangeItem, GitDiff, GitStatus } from '../shared/contracts/git.js'
 import type { SessionChangedFiles } from '../shared/contracts/file-management.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCodingNsRpc } from './settings-bridge.js'
 import { resolveGitWorkspaceId } from './git-management.js'
+import { subscribeNativeSessionWorkspace } from './native-workspace-store.js'
 import { notifyGitWorkspaceChanged, subscribeGitWorkspaceChanged } from './git-workspace-events.js'
 import { backdropPointerDownHandler } from './popup-dismiss.js'
 import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
@@ -19,6 +21,7 @@ interface SessionChangedFilesViewProps {
   readonly sessionId: string
   readonly rpc: CodingNsRpcClient
   readonly remote?: unknown
+  readonly uiContext?: Context | undefined
   readonly reportCount?: (sessionId: string, count: number) => void
   /** 由 Slot inject 注入的 Codingns4DSH 词典翻译函数。 */
   readonly t: CodingNsTranslator
@@ -28,6 +31,7 @@ interface SessionChangedFilesCounterProps {
   readonly sessionId: string
   readonly rpc: CodingNsRpcClient
   readonly remote?: unknown
+  readonly uiContext?: Context | undefined
   readonly reportCount: (sessionId: string, count: number) => void
 }
 
@@ -84,7 +88,7 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
     }
     const task = (async (): Promise<void> => {
       try {
-        const resolved = await resolveGitWorkspaceId(props.remote, props.sessionId)
+        const resolved = await resolveGitWorkspaceId(props.remote, props.sessionId, props.uiContext)
         if (resolved === undefined) throw new Error('当前会话没有可用的工作区')
         const [sessionFiles, status] = await Promise.all([
           call<SessionChangedFiles>(props.rpc, 'fileManagement/session-changes', { sessionId: props.sessionId, workspaceId: resolved }),
@@ -126,13 +130,16 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
     setCollapsed(new Set())
     setWorkspaceId(undefined)
     void load(true)
+    // 新会话可能先挂载窗口，聚合摘要随后才到；跟随侧栏 Store 补齐工作区归属。
+    const unsubscribe = subscribeNativeSessionWorkspace(props.uiContext, props.sessionId, () => { void load() })
     const timer = globalThis.setInterval(() => { void load() }, SESSION_CHANGED_FILES_BACKGROUND_REFRESH_MS)
     return () => {
       requestGeneration.current += 1
       inFlightLoad.current = undefined
       globalThis.clearInterval(timer)
+      unsubscribe()
     }
-  }, [props.rpc, props.sessionId, props.remote])
+  }, [props.rpc, props.sessionId, props.remote, props.uiContext])
 
   useEffect(() => {
     if (workspaceId === undefined) return
@@ -301,7 +308,7 @@ export function registerSessionChangedFilesView(
         id: SESSION_CHANGED_FILES_VIEW_ID,
         order: 100,
         label: () => t('sessionFiles.tabLabel', { count: labelCount }),
-        inject: () => ({ rpc, remote, reportCount, t }),
+        inject: () => ({ rpc, remote, uiContext: ctx, reportCount, t }),
       }, SessionChangedFilesView)
     })
   }
@@ -310,7 +317,7 @@ export function registerSessionChangedFilesView(
       name: 'conversation.session.header.actions',
       id: `${SESSION_CHANGED_FILES_VIEW_ID}/counter`,
       order: 1000,
-      inject: () => ({ rpc, remote, reportCount }),
+      inject: () => ({ rpc, remote, uiContext: ctx, reportCount }),
     }, SessionChangedFilesCounter))
   }
   try {
@@ -375,7 +382,7 @@ function SessionChangedFilesCounter(props: SessionChangedFilesCounterProps): nul
       const currentGeneration = ++generation
       const task = (async (): Promise<void> => {
         try {
-          const workspaceId = await resolveGitWorkspaceId(props.remote, props.sessionId)
+          const workspaceId = await resolveGitWorkspaceId(props.remote, props.sessionId, props.uiContext)
           if (workspaceId === undefined) throw new Error('当前会话没有可用的工作区')
           const [sessionFiles, status] = await Promise.all([
             call<SessionChangedFiles>(props.rpc, 'fileManagement/session-changes', { sessionId: props.sessionId, workspaceId }),
@@ -396,6 +403,7 @@ function SessionChangedFilesCounter(props: SessionChangedFilesCounterProps): nul
       return tracked
     }
     void load()
+    const unsubscribe = subscribeNativeSessionWorkspace(props.uiContext, props.sessionId, () => { void load() })
     const timer = globalThis.setInterval(() => { void load() }, SESSION_CHANGED_FILES_BACKGROUND_REFRESH_MS)
     return () => {
       disposed = true
@@ -403,8 +411,9 @@ function SessionChangedFilesCounter(props: SessionChangedFilesCounterProps): nul
       inFlight = undefined
       globalThis.clearInterval(timer)
       disposeWorkspaceSubscription?.()
+      unsubscribe()
     }
-  }, [props.remote, props.rpc, props.reportCount, props.sessionId])
+  }, [props.remote, props.rpc, props.reportCount, props.sessionId, props.uiContext])
   return null
 }
 
