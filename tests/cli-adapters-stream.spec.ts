@@ -7,6 +7,17 @@ import { KimiCliDriver } from '../data/build/dist/host/cli-adapters/kimi-driver.
 import { CodingNsAgentEventNormalizer } from '../data/build/dist/host/cli-adapters/stream-normalizer.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 
+test('分段边界先结算当前段 usage，避免上下文和 Token 用量被下一段覆盖', () => {
+  const normalizer = new CodingNsAgentEventNormalizer()
+  const firstUsage = { type: 'usage', inputTokens: 120, outputTokens: 8, contextWindow: 1_000, contextTokens: 120 } as const
+  const secondUsage = { type: 'usage', inputTokens: 180, outputTokens: 12, contextWindow: 1_000, contextTokens: 180 } as const
+
+  assert.deepEqual(normalizer.push(firstUsage), [])
+  assert.deepEqual(normalizer.push({ type: 'step-boundary' }), [firstUsage, { type: 'step-boundary' }])
+  assert.deepEqual(normalizer.push(secondUsage), [])
+  assert.deepEqual(normalizer.push({ type: 'finish', reason: 'stop' }), [secondUsage, { type: 'finish', reason: 'stop' }])
+})
+
 test('Claude、Gemini、Kimi 的标准流驱动统一转换文本和完成事件', async () => {
   for (const [Driver, event] of [
     [ClaudeCodeDriver, { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: '完成' } } }],

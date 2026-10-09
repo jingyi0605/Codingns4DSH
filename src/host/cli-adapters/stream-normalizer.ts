@@ -73,6 +73,13 @@ export class CodingNsAgentEventNormalizer {
       this.usage = chunk
       return []
     }
+    if (chunk.type === 'step-boundary') {
+      // 分段流会在 step-boundary 处提前返回，后面不一定还有 finish。
+      // 先结算当前段的 usage，否则它会被下一段 usage 覆盖，Token 用量和
+      // ContextMeter 都只能看到最后一段，甚至整轮结束前完全没有数据。
+      const usage = this.takeUsage()
+      return usage === null ? [chunk] : [usage, chunk]
+    }
     if (chunk.type === 'tool-event') {
       this.reasoningBoundary = true
       this.textBoundary = true
