@@ -63,6 +63,14 @@ test('PeerHost 不可用时不会建立目标 WebSocket', async () => {
   await assert.rejects(service.open('peer-1', new FakeSocket() as never, scope), /尚未准备好/u)
 })
 
+test('临时断线状态下仍允许重新建立实时数据面连接', async () => {
+  const { store, service } = await setup()
+  await store.updateStatus('peer-1', 'unreachable', 'PEER_HOST_UNREACHABLE')
+  const client = new FakeSocket()
+  await service.open('peer-1', client as never, scope)
+  assert.equal(client.closed.length, 0)
+})
+
 test('session 消息缺少 sessionId 时拒绝，即使 workspace 作用域字段匹配', async () => {
   const { client, remote } = await setup()
   const workspaceScope = { ...scope, sessionId: null }

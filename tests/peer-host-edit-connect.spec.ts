@@ -375,6 +375,40 @@ test('聚合刷新会自动重试握手并复用已保存凭据，不依赖手�
   }
 })
 
+test('握手状态暂时失败但数据面可读时仍保持在线，不错误染灰', async () => {
+  let handshakeOnline = true
+  const host = await harness({
+    handshake: () => {
+      if (!handshakeOnline) throw new Error('handshake temporarily unavailable')
+      return handshakeResponse()
+    },
+    native: (endpoint: string) => {
+      if (endpoint === 'peerHost/nativeStreamOpen') return { streamId: 'stale-status-stream' }
+      if (endpoint === 'peerHost/nativeStreamNext') return { done: false, value: { type: 'baseline', value: {
+        items: [{ workspaceId: 'workspace-1', title: '项目', path: '/repo', sessionIds: ['session-1'] }], archivedSessionIds: [],
+      } } }
+      if (endpoint === 'peerHost/nativeLocal') return { items: [{ sessionId: 'session-1', cwd: '/repo', updatedAt: 2, running: false, blank: false, projections: { kind: 'sequenced', asOfSeq: 1, values: { title: '最新会话' } } }] }
+      return []
+    },
+  })
+  try {
+    const peer = await host.call('peerHost/create', { displayName: 'Mac', route: { kind: 'lan', baseUrl: 'http://peer.test', normalizedOrigin: '' } }) as PeerHostClientRecord
+    await host.call('peerHost/update', { peerHostId: peer.id, username: 'test', password: 'secret' })
+    await host.call('peerHost/setWorkspaceVisibility', { peerHostId: peer.id, workspaceId: 'workspace-1', visible: true })
+    handshakeOnline = false
+
+    const disconnected = await host.call('peerHost/reconnect', { peerHostId: peer.id }) as PeerHostClientRecord
+    assert.equal(disconnected.status, 'unreachable')
+
+    const aggregate = (await host.call('peerHost/aggregate', {}) as AggregateHostResult[]).find((item) => item.targetHostId === peer.id)
+    assert.equal(aggregate?.availability, 'ready')
+    assert.equal(aggregate?.workspaces[0]?.sessions[0]?.title, '最新会话')
+    assert.equal((await host.call('peerHost/list', {}) as PeerHostClientRecord[])[0]?.status, 'ready')
+  } finally {
+    await host.dispose()
+  }
+})
+
 test('非法配色被拒绝，避免把任意 CSS 写进侧栏', async () => {
   const host = await harness()
   try {
