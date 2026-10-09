@@ -516,9 +516,8 @@ test('用量查询设置入口使用齿轮图标按钮并保留可访问名称',
   assert.match(source, /\}, createUsageSettingsGearIcon\(\)\),/u)
   assert.match(source, /function createUsageSettingsGearIcon\(\): ReactElement/u)
   assert.match(source, /'aria-hidden': true/u)
-  // 图标按钮沿用共享按钮表面，样式只在本文件内收窄；面板不得注入 document 级样式
-  // 去改写 DSH 自己的设置按钮（左下角全局入口保持原生外观）。
-  assert.match(source, /\.\.\.dshSettingsButtonStyle,/u)
-  assert.match(source, /style: usageSettingsIconButtonStyle,/u)
+  // 图标按钮使用插件自己的共享控件样式，不改写 DSH 的全局设置入口。
+  assert.match(source, /className: settingsControlClass\.iconButton/u)
+  assert.match(source, /style: settingsIconButtonStyle,/u)
   assert.doesNotMatch(source, /document\.head|createElement\('style'\)/u)
 })
