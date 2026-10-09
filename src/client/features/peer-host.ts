@@ -17,6 +17,7 @@ import { isPeerHostAggregateRefreshRegistered, registerPeerHostAggregateRefresh,
 import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale } from '../locale.js'
 import { publishSessionAdapter } from '../session-adapter-cache.js'
 import { startSerialPolling } from '../serial-polling.js'
+import { PeerHostRemoteEvents } from '../peer-host-remote-events.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
 const PEER_HOST_AGGREGATE_REFRESH_MS = 30_000
@@ -57,10 +58,12 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
     if (shim !== undefined) {
       shim.activate(transport!.hooks)
       context.resources.add(() => {
+        transport!.dispose()
         shim.deactivate()
         // 资源按逆序释放：此时 Desktop 路由和导航订阅已还原，重新加载本机目录，
         // 避免停用 PeerHost 后仍展示最后一个远端 Host 的全局缓存。
         refreshDshModelCatalog(context.services.uiContext)
+        reconnectNativeEvents(context.services.uiContext)
       })
       // 原生侧栏在插件 apply 时按引用捕获 `workspaces.list`，只能就地投影这个对象；
       // 没有 shim 就没有原生 Remote 路由，此时不注入，避免出现点不开的远端条目。
@@ -87,6 +90,7 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
           ...(context.services.remote === undefined ? {} : { remote: context.services.remote }),
           hooks: transport!.hooks,
           matchesScope: transport!.matchesScope,
+          mergeEvents: transport!.mergeEvents,
           decorateLocalResult: (method, result) => method === 'session/list' ? mergeSessionListResult(result, projection) : result,
         })
         if (route !== undefined) context.resources.add(route)
@@ -97,6 +101,8 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
         scope.effect(() => transport!.watchNavigation(), 'codingns4dsh: PeerHost model catalog navigation')
       })
       if (navigation !== undefined) context.resources.add(() => navigation.dispose())
+      // 原生 $events 通常早于插件启动；切换一次客户端连接代次，让已打开的流使用聚合入口。
+      reconnectNativeEvents(context.services.uiContext)
     }
     const panel = startPeerHostManagementPanel({ rpc: context.services.rpc, locale: context.services.locale })
     context.resources.add(() => panel.dispose())
@@ -159,6 +165,8 @@ export function createPeerHostPageTransport(
   readonly setAggregate: (aggregate: readonly AggregateHostResult[], orderedWorkspaceIds?: readonly string[]) => boolean
   /** 跟随原生前台选择刷新 Host 模型目录；返回导航订阅的清理函数。 */
   readonly watchNavigation: () => () => void
+  readonly mergeEvents: (local: (signal: AbortSignal) => AsyncIterable<unknown>, signal?: AbortSignal) => AsyncIterable<unknown>
+  readonly dispose: () => void
 } {
   const t = resolveCodingNsTranslator(locale)
   const fetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined
@@ -249,6 +257,8 @@ export function createPeerHostPageTransport(
     return undefined
   }
   const scopeForNativeRequest = (method: string, value: unknown): HostScope | undefined => {
+    // 问题答案是任意用户内容，只能由正式 agentId 决定目标，不能扫描答案里的字符串。
+    if (method === 'userQuestions/answer' || method === 'userQuestions/attachWait') return findScope(questionAgentId(value))
     const direct = findScope(value)
     if (direct !== undefined) return direct
     return method === 'session/modelCatalog' && !containsResourceId(value) ? navigationScope() : undefined
@@ -393,9 +403,15 @@ export function createPeerHostPageTransport(
       }
       signal?.throwIfAborted()
     } finally {
-      await codingNsCall('peerHost/nativeStreamClose', { streamId, scope }).catch(() => undefined)
+      await codingNsCall('peerHost/nativeStreamClose', { streamId, scope }, AbortSignal.timeout(5_000)).catch(() => undefined)
     }
   })()
+  const events = new PeerHostRemoteEvents({
+    open: (scope, signal) => openRemoteStream('$events', { args: {} }, scope, signal),
+    reply: (scope, payload, signal) => codingNsCall('peerHost/native', { method: '$events/result', payload, scope }, signal),
+    accepts: (agentId, scope) => scopes.get(agentId)?.targetHostId === scope.targetHostId,
+    prepare: () => refreshPeerHostNativeSessions(uiContext as Parameters<typeof refreshPeerHostNativeSessions>[0]),
+  })
   /**
    * 记录刚在远端新建的会话作用域。
    *
@@ -446,6 +462,14 @@ export function createPeerHostPageTransport(
       const value = asRecord(payload)
       const channel = typeof value?.channel === 'string' ? value.channel : '/codingns'
       const body = value?.payload
+      if (channel === '/api' && method === '$events/result' && events.ownsResult(body)) {
+        try {
+          return { ok: true, value: await events.reply(body, signal) } as TResponse
+        } catch (error) {
+          const code = (error as { code?: unknown }).code
+          return { ok: false, error: { code: typeof code === 'string' ? code : 'gateway/internal', message: error instanceof Error ? error.message : String(error) } } as TResponse
+        }
+      }
       const endpoint = peerHostPluginEndpoint(channel, method)
       if (endpoint === 'cli/session/adapter-map') {
         return await mergeRemoteAdapterMap(await request(channel, method, body, signal), signal) as TResponse
@@ -473,6 +497,9 @@ export function createPeerHostPageTransport(
       }
       if (channel === '/api' && isDshNativeRemoteMethod(method)) {
         const scope = scopeForNativeRequest(method, body)
+        if (scope === undefined && hasVirtualQuestionAgent(method, body)) {
+          return { ok: false, error: { code: 'PEER_HOST_SCOPE_MISMATCH', message: t('peerHost.questionSessionUnavailable') } } as TResponse
+        }
         if (scope !== undefined && scope.targetHostId !== null) {
           // DSH 的 client 契约要求 unary 结果是 `{ok, value}` / `{ok:false, error}` 信封：
           // 返回裸值会让网关在 `rebuiltFailure(result.error)` 读 undefined.code 而崩成 carrierFailure。
@@ -504,8 +531,12 @@ export function createPeerHostPageTransport(
       const value = asRecord(payload)
       const channel = typeof value?.channel === 'string' ? value.channel : '/api'
       const body = value?.payload
+      if (channel === '/api' && method === '$events') {
+        return events.open(localSignal => openDshGatewayStream(method, body, localSignal), signal) as AsyncIterable<TChunk>
+      }
       if (channel === '/api' && isDshNativeRemoteMethod(method)) {
         const scope = scopeForNativeRequest(method, body)
+        if (scope === undefined && hasVirtualQuestionAgent(method, body)) throw new Error('远端问题所属会话不可用，请重新连接')
         if (scope !== undefined && scope.targetHostId !== null) {
           const stream = openRemoteStream(method, body, scope, signal) as AsyncIterable<TChunk>
           if (method !== 'session/follow') return stream
@@ -526,7 +557,7 @@ export function createPeerHostPageTransport(
           })()
         }
       }
-      // 本机流（含 $events 等非白名单流）必须回到 DSH Gateway：本地 baseline 不能
+      // 其余本机流必须回到 DSH Gateway：本地 baseline 不能
       // 走 PeerHost，否则原生 workspace/session Store 会整体停在 loading。
       if (channel !== '/api') throw new Error('CODINGNS_BASELINE_STREAM')
       return openDshGatewayStream<TChunk>(method, body, signal)
@@ -538,8 +569,16 @@ export function createPeerHostPageTransport(
   }
   return {
     hooks,
+    mergeEvents: (local, signal) => events.open(local, signal),
+    dispose() {
+      events.dispose()
+      if (aggregateRefreshTimer !== undefined) clearTimeout(aggregateRefreshTimer)
+      for (const sessionId of pendingSessionScopes.keys()) forgetPendingSession(sessionId)
+    },
     /** 该请求是否落在某个远端 Host 的作用域内；Desktop 连接路由用它决定是否分流。 */
     matchesScope(value: unknown, method?: string): boolean {
+      if (method === '$events/result') return events.ownsResult(value)
+      if (hasVirtualQuestionAgent(method ?? '', value)) return true
       const endpoint = method?.replace(/^codingns\//u, '') ?? ''
       if (endpoint.startsWith('fileManagement/')) {
         const scope = scopeForPluginRequest(endpoint, value)
@@ -606,7 +645,10 @@ export function createPeerHostPageTransport(
         scopes.set(sessionId, pending.scope)
       }
       refreshModelCatalogForScope(navigationScope())
-      return projection.setAggregate(aggregate, orderedWorkspaceIds)
+      const changed = projection.setAggregate(aggregate, orderedWorkspaceIds)
+      const readyHosts = new Set(aggregate.filter(host => host.availability === 'ready' && host.workspaces.length > 0).map(host => host.targetHostId))
+      events.setPeers([...remoteHostScopes.values()].filter(scope => readyHosts.has(scope.targetHostId)))
+      return changed
     },
   }
 }
@@ -616,6 +658,17 @@ function peerHostPluginEndpoint(channel: string, method: string): string | undef
   const endpoint = channel === '/codingns' ? method
     : channel === '/api' && method.startsWith('codingns/') ? method.slice('codingns/'.length) : ''
   return endpoint.startsWith('cli/') || endpoint.startsWith('git/') || endpoint.startsWith('debug/') || endpoint.startsWith('fileManagement/') || endpoint === 'terminal/status' ? endpoint : undefined
+}
+
+function questionAgentId(value: unknown): unknown {
+  const input = asRecord(value)
+  return asRecord(input?.args)?.agentId ?? input?.agentId
+}
+
+function hasVirtualQuestionAgent(method: string, value: unknown): boolean {
+  if (method !== 'userQuestions/answer' && method !== 'userQuestions/attachWait') return false
+  const id = questionAgentId(value)
+  return typeof id === 'string' && parseVirtualSessionId(id) !== null
 }
 
 function isDebugPluginEndpoint(endpoint: string): boolean {
@@ -686,6 +739,7 @@ export function installPeerHostConnectionRouting(options: {
   /** 作用域判定；与页面 Transport 的 `matchesScope` 是同一个函数，避免白名单漂移。 */
   readonly matchesScope: (value: unknown, method?: string) => boolean
   readonly decorateLocalResult?: (method: string, result: unknown) => unknown
+  readonly mergeEvents?: (local: (signal: AbortSignal) => AsyncIterable<unknown>, signal?: AbortSignal) => AsyncIterable<unknown>
 }): (() => void) | undefined {
   const connection = readConnectionHandle(options.uiContext)
   const rpc = connection?.rpc
@@ -713,6 +767,9 @@ export function installPeerHostConnectionRouting(options: {
   // RemoteStreamMuxClient），因此 uplink 与重连行为都不受影响；也不要动
   // `connection.rpc.open`，否则网关会认为本页自带流通道而不再启动/重连 mux。
   const patchedOpenRemoteStream = (endpoint: string, payload: unknown, signal?: AbortSignal, uplink?: AsyncIterable<unknown>, noConnection?: string): unknown => {
+    if (endpoint === '$events' && options.mergeEvents !== undefined) {
+      return options.mergeEvents(localSignal => originalCallRemote.call(remote, endpoint, payload, localSignal, uplink, noConnection) as AsyncIterable<unknown>, signal)
+    }
     if (typeof options.hooks.openStream === 'function' && isPeerScoped('/api', endpoint, payload)) {
       return options.hooks.openStream({ method: endpoint, payload: { channel: '/api', payload, uplink }, ...(signal === undefined ? {} : { signal }) })
     }
@@ -752,6 +809,14 @@ function readConnectionHandle(uiContext: { get(name: string): unknown } | undefi
   } catch {
     return undefined
   }
+}
+
+/** 只更新浏览器内的事件订阅代次，不重启 Host 或任何运行实例。 */
+function reconnectNativeEvents(uiContext: { get(name: string): unknown } | undefined): void {
+  try {
+    const connection = uiContext?.get('connection') as { reconnect?: () => void } | undefined
+    connection?.reconnect?.()
+  } catch { /* 原生连接尚未挂载时，首次连接会直接使用新的入口。 */ }
 }
 
 /** DSH 前台选择 Store；rc.2 和 alpha.1 都通过它持久化当前会话。 */
@@ -895,6 +960,7 @@ function refreshDshModelCatalog(uiContext: { get(name: string): unknown } | unde
 function openDshGatewayStream<TChunk>(endpoint: string, payload: unknown, signal?: AbortSignal): AsyncIterable<TChunk> {
   const streamId = `codingns_${Date.now()}_${Math.random().toString(36).slice(2)}`
   return (async function* () {
+    signal?.throwIfAborted()
     const WebSocketCtor = (globalThis as typeof globalThis & { WebSocket?: new (url: string) => WebSocket }).WebSocket
     if (typeof WebSocketCtor !== 'function') throw new Error('当前页面没有可用 WebSocket')
     const transport = (globalThis as typeof globalThis & { __DSH_TRANSPORT__?: { streamBaseUrl?: string } }).__DSH_TRANSPORT__
@@ -922,16 +988,27 @@ function openDshGatewayStream<TChunk>(endpoint: string, payload: unknown, signal
       }
     }
     const onError = (): void => { failure = new Error('DSH Remote stream WebSocket 失败'); notify() }
-    const onAbort = (): void => { failure = signal?.reason instanceof Error ? signal.reason : new Error('DSH Remote stream 已取消'); notify() }
+    const onAbort = (): void => { failure = signal?.reason instanceof Error ? signal.reason : new Error('DSH Remote stream 已取消'); notify(); socket.close(1000, 'stream aborted') }
+    const onClose = (): void => { if (!ended) failure ??= new Error('DSH Remote stream WebSocket 已关闭'); notify() }
     socket.addEventListener('message', onMessage)
     socket.addEventListener('error', onError)
+    socket.addEventListener('close', onClose)
     signal?.addEventListener('abort', onAbort, { once: true })
     try {
       await new Promise<void>((resolve, reject) => {
-        const opened = (): void => resolve()
-        const failed = (): void => reject(new Error('DSH Remote stream WebSocket 打开失败'))
+        const cleanup = (): void => {
+          socket.removeEventListener('open', opened)
+          socket.removeEventListener('error', failed)
+          socket.removeEventListener('close', failed)
+          signal?.removeEventListener('abort', failed)
+        }
+        const opened = (): void => { cleanup(); resolve() }
+        const failed = (): void => { cleanup(); reject(failure ?? new Error('DSH Remote stream WebSocket 打开失败')) }
         socket.addEventListener('open', opened, { once: true })
         socket.addEventListener('error', failed, { once: true })
+        socket.addEventListener('close', failed, { once: true })
+        signal?.addEventListener('abort', failed, { once: true })
+        if (signal?.aborted) failed()
       })
       signal?.throwIfAborted()
       socket.send(JSON.stringify({ type: 'open', streamId, endpoint, payload }))
@@ -946,6 +1023,9 @@ function openDshGatewayStream<TChunk>(endpoint: string, payload: unknown, signal
       if (failure !== undefined) throw failure
     } finally {
       signal?.removeEventListener('abort', onAbort)
+      socket.removeEventListener('message', onMessage)
+      socket.removeEventListener('error', onError)
+      socket.removeEventListener('close', onClose)
       socket.close(1000, 'stream closed')
     }
   })()
