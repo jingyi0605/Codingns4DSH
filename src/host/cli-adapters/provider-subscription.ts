@@ -14,6 +14,7 @@ import { NewApiSubscriptionService, type NewApiSubscriptionOptions, isOfficialAg
 import { CodeBuddySubscriptionService, type CodeBuddySubscriptionOptions } from './codebuddy-subscription.js'
 import { AntigravitySubscriptionService, type AntigravitySubscriptionOptions } from './antigravity-subscription.js'
 import { CustomUpstreamClassifier, mergeCustomUpstreamCandidates, type CustomUpstreamClassifierOptions, type CustomUpstreamReadResult } from './custom-upstream-classifier.js'
+import { readDshDefaultProvider, readDshProviderSource } from './dsh-config.js'
 import { readZcodeProviderConfigs, type ZcodeProviderConfigOptions } from './zcode-provider-config.js'
 
 type FetchLike = typeof fetch
@@ -1179,49 +1180,11 @@ function resolveDshProviderSource(providerId: string | undefined): Sub2ApiSource
   const envBaseUrl = textValue(process.env[`${envPrefix}_BASE_URL`])
   const envApiKey = textValue(process.env[`${envPrefix}_API_KEY`])
   if (envBaseUrl !== null && envApiKey !== null) return { baseUrl: envBaseUrl, apiKey: envApiKey }
-  const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  for (const path of [join(dshHome, 'settings.yaml'), join(dshHome, 'settings.yaml.imported')]) {
-    const source = readDshProviderYaml(path, normalized)
-    if (source !== null) return source
-  }
-  return null
+  return readDshProviderSource(normalized)
 }
 
 function resolveDshDefaultProvider(): string | undefined {
-  const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  for (const path of [join(dshHome, 'settings.yaml'), join(dshHome, 'settings.yaml.imported')]) {
-    const text = readText(path)
-    if (text === null) continue
-    const start = text.search(/^agent-default-model:\s*$/mu)
-    if (start < 0) continue
-    const rest = text.slice(start)
-    const endMatch = /^\S[^\n]*$/mu.exec(rest.slice(1))
-    const block = endMatch === null ? rest : rest.slice(0, endMatch.index + 1)
-    const provider = yamlScalar(block.match(/^\s+provider:\s*(.+)$/mu)?.[1])
-    if (provider !== null) return provider
-  }
-  return undefined
-}
-
-function readDshProviderYaml(path: string, providerId: string): Sub2ApiSource | null {
-  const text = readText(path)
-  if (text === null) return null
-  const escaped = providerId.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
-  const start = text.search(new RegExp(`^ {4}${escaped}:\\s*$`, 'mu'))
-  if (start < 0) return null
-  const rest = text.slice(start)
-  const endMatch = /^ {4}\S[^\n]*$/mu.exec(rest.slice(1))
-  const block = endMatch === null ? rest : rest.slice(0, endMatch.index + 1)
-  const baseUrl = yamlScalar(block.match(/^\s+baseURL:\s*(.+)$/mu)?.[1])
-  const keyRef = yamlScalar(block.match(/^\s+apiKeyEnv:\s*(.+)$/mu)?.[1])
-  const apiKey = keyRef === null ? null : textValue(process.env[keyRef]) ?? readDshCredential(keyRef)
-  return baseUrl === null || apiKey === null ? null : { baseUrl, apiKey }
-}
-
-function yamlScalar(value: string | undefined): string | null {
-  if (value === undefined) return null
-  const normalized = value.trim().replace(/^(['"])(.*)\1$/u, '$2')
-  return normalized === '' ? null : normalized
+  return readDshDefaultProvider()
 }
 
 function isOfficialDeepseekProvider(providerId: string | undefined): boolean {

@@ -7,6 +7,7 @@ import type {
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { readDshProviderSource } from './dsh-config.js'
 import { readZcodeProviderConfigs } from './zcode-provider-config.js'
 
 type FetchLike = typeof fetch
@@ -128,27 +129,7 @@ function readNamedDshSource(providerId: string): NewApiSource | null {
   const prefix = providerId.replace(/[^a-z0-9]+/giu, '_').toUpperCase()
   const env = envSource(`${prefix}_BASE_URL`, `${prefix}_API_KEY`)
   if (env !== null) return env
-  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  for (const path of [join(home, 'settings.yaml'), join(home, 'settings.yaml.imported')]) {
-    const source = readDshYamlSource(path, providerId)
-    if (source !== null) return source
-  }
-  return null
-}
-
-function readDshYamlSource(path: string, providerId: string): NewApiSource | null {
-  const text = readText(path)
-  if (text === null) return null
-  const escaped = providerId.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
-  const start = text.search(new RegExp(`^ {4}${escaped}:\\s*$`, 'mu'))
-  if (start < 0) return null
-  const rest = text.slice(start)
-  const next = /^ {4}\S[^\n]*$/mu.exec(rest.slice(1))
-  const block = next === null ? rest : rest.slice(0, next.index + 1)
-  const baseUrl = yamlScalar(block.match(/^\s+baseURL:\s*(.+)$/mu)?.[1])
-  const keyRef = yamlScalar(block.match(/^\s+apiKeyEnv:\s*(.+)$/mu)?.[1])
-  const apiKey = keyRef === null ? null : textValue(process.env[keyRef]) ?? readDshCredential(keyRef)
-  return baseUrl === null || apiKey === null ? null : { baseUrl, apiKey }
+  return readDshProviderSource(providerId)
 }
 
 function readZcodeSources(providerId?: string): NewApiSource[] {
@@ -241,21 +222,6 @@ function readText(path: string): string | null {
   try { return readFileSync(path, 'utf8') } catch { return null }
 }
 
-function readDshCredential(name: string): string | null {
-  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  const paths = [join(home, '.credentials.yaml'), join(home, '.env'), join(process.cwd(), '.env')]
-  const yamlPattern = new RegExp(`^\\s*${name}\\s*:\\s*(?:"([^"]*)"|'([^']*)'|([^#\\s]+))`, 'mu')
-  const envPattern = new RegExp(`^\\s*${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^#\\s]+))`, 'mu')
-  for (const path of paths) {
-    const text = readText(path)
-    if (text === null) continue
-    const match = path.endsWith('.env') ? envPattern.exec(text) : yamlPattern.exec(text)
-    const value = match?.[1] ?? match?.[2] ?? match?.[3]
-    if (typeof value === 'string' && value.trim() !== '') return value.trim()
-  }
-  return null
-}
-
 function readJson(path: string): Record<string, unknown> | null {
   const text = readText(path)
   if (text === null) return null
@@ -275,12 +241,6 @@ function tomlScalar(source: string, key: string): string | null {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
   const match = new RegExp(`^\\s*${escaped}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^#\\s]+))`, 'mu').exec(source)
   return textValue(match?.[1] ?? match?.[2] ?? match?.[3])
-}
-
-function yamlScalar(value: string | undefined): string | null {
-  if (value === undefined) return null
-  const normalized = value.trim().replace(/^(['"])(.*)\1$/u, '$2')
-  return normalized === '' ? null : normalized
 }
 
 /** 读取 New-API 令牌余额、到期时间与累计用量。 */
