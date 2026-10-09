@@ -39,7 +39,6 @@ const sessionKey = (target: Pick<AssistantNotificationTarget, 'hostId' | 'sessio
 /** 单一事实所有者；历史容量不影响当前请求和会话去重水位。 */
 export class AssistantNotificationCenter {
   private records = new Map<string, NoticeRecord>()
-  private requests = new Map<string, string>()
   private watermarks = new Map<string, SessionWatermark>()
   private capabilities = new Map<string, AssistantNotificationCapabilities>()
   private connections = new Map<string, { generation: number; ready: boolean }>()
@@ -69,7 +68,7 @@ export class AssistantNotificationCenter {
       return true
     }
     this.scopeKey = key; this.currentGeneration++; this.currentRevision++
-    this.records.clear(); this.requests.clear(); this.watermarks.clear(); this.connections.clear(); this.capabilities.clear()
+    this.records.clear(); this.watermarks.clear(); this.connections.clear(); this.capabilities.clear()
     this.settings = normalized; this.managed = new Set(managedWorkspaceIds)
     this.enabled = enabled && normalized.enabled && !this.disposed
     return true
@@ -98,6 +97,24 @@ export class AssistantNotificationCenter {
     }
     this.currentRevision++
   }
+
+  /** 用当前会话快照校正待处理请求；快照是事实来源，记录只保存展示身份和已读状态。 */
+  reconcilePending(facts: readonly AssistantNotificationFact[], hostId: string, authoritative: readonly string[]): void {
+    if (!this.enabled) return
+    const active = new Set<string>()
+    for (const fact of facts) {
+      if (fact.type !== 'request-opened' || fact.target.hostId !== hostId) continue
+      active.add(this.logicalKey(fact))
+      this.consume(fact)
+    }
+    const available = new Set(authoritative)
+    for (const item of [...this.records.values()]) {
+      if (!pending(item.notice) || item.target.hostId !== hostId) continue
+      const actualSessionId = item.target.actualRequestTarget?.sessionId ?? item.target.sessionId
+      if (!available.has(`${item.notice.kind}:${actualSessionId}`) || active.has(item.logicalKey)) continue
+      this.remove(item); this.currentRevision++
+    }
+  }
   removeHost(hostId: string): void {
     for (const item of [...this.records.values()]) if (item.target.hostId === hostId) this.remove(item)
     for (const key of this.watermarks.keys()) if (JSON.parse(key)[0] === hostId) this.watermarks.delete(key)
@@ -120,7 +137,7 @@ export class AssistantNotificationCenter {
     if (fact.target.connectionGeneration !== undefined && connection !== undefined && (!connection.ready || connection.generation !== fact.target.connectionGeneration)) return
     const request = 'requestId' in fact
     const kind: AssistantNotificationKind = request ? fact.requestKind : fact.type === 'turn-failed' ? 'error' : 'completed'
-    const key = request ? JSON.stringify([fact.target.hostId, fact.target.actualRequestTarget?.sessionId ?? fact.target.sessionId, fact.requestKind, fact.requestId]) : JSON.stringify([fact.target.hostId, fact.target.sessionId, 'turn', fact.turnId])
+    const key = this.logicalKey(fact)
     if (request && fact.seq !== undefined) {
       const sk = fact.target.actualRequestTarget === undefined ? sessionKey(fact.target) : sessionKey(fact.target.actualRequestTarget)
       const previous = this.watermarks.get(sk)
@@ -128,8 +145,7 @@ export class AssistantNotificationCenter {
       this.watermarks.set(sk, { ...previous, seq: fact.seq, failed: previous?.failed ?? false })
     }
     if (request && fact.type === 'request-resolved') {
-      const id = this.requests.get(key)
-      const item = id === undefined ? undefined : this.records.get(id)
+      const item = [...this.records.values()].find((candidate) => candidate.logicalKey === key)
       if (item !== undefined && item.notice.lifecycle === 'active') {
         item.notice = { ...item.notice, lifecycle: 'resolved', presentation: 'collapsed' }; this.currentRevision++; this.trim()
       }
@@ -138,7 +154,7 @@ export class AssistantNotificationCenter {
     let item: NoticeRecord | undefined
     if (request) {
       if (!this.settings[kind]) return
-      const id = this.requests.get(key); item = id === undefined ? undefined : this.records.get(id)
+      item = [...this.records.values()].find((candidate) => candidate.logicalKey === key)
     } else {
       const sk = sessionKey(fact.target)
       const previous = this.watermarks.get(sk)
@@ -171,8 +187,7 @@ export class AssistantNotificationCenter {
       ...(fact.type === 'turn-failed' && fact.errorExcerpt !== undefined ? { errorExcerpt: assistantNotificationText(fact.errorExcerpt) } : {}),
     }
     this.records.set(notice.noticeId, { notice, target, logicalKey: key })
-    if (request) this.requests.set(key, notice.noticeId)
-    else this.watermarks.get(sessionKey(fact.target))!.noticeId = notice.noticeId
+    if (!request) this.watermarks.get(sessionKey(fact.target))!.noticeId = notice.noticeId
     this.currentRevision++; this.trim()
   }
   read(input: AssistantNotificationReadRequest = {}): AssistantNotificationSnapshot {
@@ -228,7 +243,7 @@ export class AssistantNotificationCenter {
     if (!valid || current !== item || current.notice.availability !== 'ready' || current.target.connectionGeneration !== expectedConnection || input.connectionGeneration !== current.target.connectionGeneration) throw new CodingNsRpcError('ASSISTANT_NOTIFICATION_EXPIRED', '通知目标已失效')
     return { ...item.target, ...(item.target.actualRequestTarget === undefined ? {} : { actualRequestTarget: { ...item.target.actualRequestTarget } }) }
   }
-  dispose(): void { this.disposed = true; this.enabled = false; this.currentGeneration++; this.currentRevision++; this.records.clear(); this.requests.clear(); this.watermarks.clear(); this.connections.clear(); this.capabilities.clear() }
+  dispose(): void { this.disposed = true; this.enabled = false; this.currentGeneration++; this.currentRevision++; this.records.clear(); this.watermarks.clear(); this.connections.clear(); this.capabilities.clear() }
   private lookup(input: { noticeId: string; generation: number }): NoticeRecord {
     if (!Number.isSafeInteger(input.generation) || input.generation !== this.currentGeneration) throw new CodingNsRpcError('ASSISTANT_NOTIFICATION_STALE_GENERATION', '通知代次已变化')
     if (typeof input.noticeId !== 'string' || input.noticeId.length === 0 || input.noticeId.length > 160) throw new TypeError('通知 ID 无效')
@@ -239,7 +254,12 @@ export class AssistantNotificationCenter {
   private expire(): void {
     for (const item of this.records.values()) if (item.notice.deadline !== undefined && item.notice.deadline <= this.now() && item.notice.presentation !== 'collapsed') { item.notice = { ...item.notice, presentation: 'collapsed' }; this.currentRevision++ }
   }
-  private remove(item: NoticeRecord): void { this.records.delete(item.notice.noticeId); this.requests.delete(item.logicalKey) }
+  private remove(item: NoticeRecord): void { this.records.delete(item.notice.noticeId) }
+  private logicalKey(fact: AssistantNotificationFact): string {
+    return 'requestId' in fact
+      ? JSON.stringify([fact.target.hostId, fact.target.actualRequestTarget?.sessionId ?? fact.target.sessionId, fact.requestKind, fact.requestId])
+      : JSON.stringify([fact.target.hostId, fact.target.sessionId, 'turn', fact.turnId])
+  }
   private trim(): void {
     const history = [...this.records.values()].filter((item) => !pending(item.notice)).sort((a, b) => a.notice.createdAt - b.notice.createdAt)
     for (const item of history.slice(0, Math.max(0, history.length - 100))) this.remove(item)
