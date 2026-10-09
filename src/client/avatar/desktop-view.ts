@@ -135,6 +135,8 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
         createElement('span', { 'data-companion-spinner': true, style: { width: 28, height: 28, borderRadius: '50%', border: '3px solid #dbe7fa', borderTopColor: '#6d9cdd', animation: 'companion-spin 1s linear infinite' } }))),
     notification && notificationStyle ? createElement('div', { style: notificationStyle, 'data-codingns-native-notice': true },
       createElement(AssistantNotificationBubble, { frame: notification, t: resolveCodingNsTranslator(), error: noticeError ?? frame.noticeError,
+        ...(frame.autoClose === undefined || !frame.nativeVisible ? {} : { autoClose: frame.autoClose }),
+        ...(frame.autoCloseSeconds === undefined || !frame.nativeVisible ? {} : { autoCloseSeconds: frame.autoCloseSeconds }),
         onOpen: openNotice, onDismiss: dismissNotice, onPresented: frame.nativeVisible ? presented : () => undefined,
         ...(frame.notificationSnapshot === undefined ? {} : { onPage: pageNotices, onExpandedChange: expandedNotices }) })) : null,
     frame.caption && layout.caption ? createElement('div', { 'aria-live': 'polite', 'data-codingns-native-caption': true,

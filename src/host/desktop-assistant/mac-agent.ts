@@ -101,6 +101,15 @@ ObjC.registerSubclass({name:'CodingNsAssistantNavigation',methods:{
  'webViewWebContentProcessDidTerminate:':{types:['void',['id']],implementation:safe(function(w){emit({ev:'error',message:'webview process terminated'})})}
 }})
 var navigation=$.CodingNsAssistantNavigation.alloc.init;web.setNavigationDelegate(navigation)
+var lastAppActive=null
+function checkAppActive(){
+ if(parentPid<=0)return
+ try{
+  var front=$.NSWorkspace.sharedWorkspace.frontmostApplication,active=!front.isNil()&&front.processIdentifier===parentPid
+  if(active!==lastAppActive){lastAppActive=active;emit({ev:'app-state',active:active})}
+ }catch(e){}
+}
+$.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(1.5,true,safe(checkAppActive))
 $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(1/60,true,safe(function(){
  // 透明留白透传到其他应用，通知收起后仅保留形象与独立字幕的点击区。
  if(visible&&layout&&!drag){var p=$.NSEvent.mouseLocation,f=win.frame,x=p.x-f.origin.x,y=f.origin.y+f.size.height-p.y

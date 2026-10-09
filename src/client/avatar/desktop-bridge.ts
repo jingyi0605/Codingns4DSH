@@ -131,7 +131,7 @@ export function useDesktopAssistant(rpc: CodingNsRpcClient, presentation: Deskto
   }, [rpc, desktop])
   const notificationKey = JSON.stringify(presentation.notification)
   const snapshotKey = JSON.stringify(presentation.notificationSnapshot)
-  useEffect(() => { bridge.current?.update(presentation) }, [presentation.visible, presentation.state, presentation.caption, presentation.label, presentation.reaction, notificationKey, snapshotKey])
+  useEffect(() => { bridge.current?.update(presentation) }, [presentation.visible, presentation.state, presentation.caption, presentation.label, presentation.autoClose, presentation.autoCloseSeconds, presentation.reaction, notificationKey, snapshotKey])
   const status = snapshot?.rpc === rpc && snapshot.enabled === presentation.visible ? snapshot.status : undefined
   // Desktop 首帧即保留原生展示位置；visible=false 只是尚未收到 shown，不能渲染第二份形象。
   // 只有明确不可用、原生错误或持续断连才切换页面回退，组件重挂载也不会先闪一下页面形象。

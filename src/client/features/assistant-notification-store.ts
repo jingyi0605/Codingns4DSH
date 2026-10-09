@@ -33,12 +33,18 @@ export class AssistantNotificationStore {
   constructor(private readonly rpc: CodingNsRpcClient,
     private readonly navigate: (target: AssistantNotificationTarget, signal: AbortSignal) => Promise<void>,
     private readonly intervalMs = 750,
-    private readonly now: () => number = Date.now) {}
+    private readonly now: () => number = Date.now) {
+    // 页面重新可见时立即校正：完成提示在前台静默，不等待下一次轮询。
+    try { if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') document.addEventListener('visibilitychange', this.onVisibilityChange) } catch { /* 非浏览器环境不注册 */ }
+  }
+
+  /** 前台可见性只用于完成提示的静默消化，不参与配置 key 或读取循环。 */
+  private readonly onVisibilityChange = (): void => { if (!this.disposed && this.enabled && this.pageVisible()) void this.refresh(true) }
 
   getSnapshot = (): AssistantNotificationClientSnapshot => this.snapshot
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener) }
 
-  /** key 包含已创建状态、范围和类型配置；不依赖语音、前台选择或 document.hidden。 */
+  /** key 包含已创建状态、范围和类型配置；不依赖语音、前台选择或可见性。 */
   configure(enabled: boolean, key: string): void {
     if (this.disposed || (this.enabled === enabled && this.key === key)) return
     this.enabled = enabled; this.key = key; this.epoch++
@@ -79,12 +85,12 @@ export class AssistantNotificationStore {
       }
       this.clockOffset = result.serverNow - this.now()
       if (result.unchanged) {
-        if (previous !== undefined) this.publishFrame({ ...result, items: previous.items })
+        if (previous !== undefined) this.publishFrame(this.silenceVisibleCompletion({ ...result, items: previous.items }))
         this.scheduleDeadline()
         return
       }
       if (result.reset) this.cursor = undefined
-      this.publishFrame(result)
+      this.publishFrame(this.silenceVisibleCompletion(result))
       this.scheduleDeadline()
     }, epoch).catch((error: unknown) => {
       if (epoch === this.epoch && !this.disposed && this.enabled) this.publish({ ...this.snapshot, loading: false, error: message(error) })
@@ -155,7 +161,24 @@ export class AssistantNotificationStore {
   dispose(): void {
     this.disposed = true; this.enabled = false; this.epoch++
     this.lifetime.abort(); clearTimeout(this.timer); clearTimeout(this.deadlineTimer)
+    try { if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') document.removeEventListener('visibilitychange', this.onVisibilityChange) } catch { /* 非浏览器环境未注册 */ }
     this.presented.clear(); this.opens.clear(); this.knownNotices.clear(); this.listeners.clear(); this.snapshot = { loading: false }
+  }
+
+  /** 页面在前台时完成提示静默记为已读：不弹气泡，也不保留未读；失败、审批与提问照常呈现。 */
+  private silenceVisibleCompletion(frame: AssistantNotificationSnapshot): AssistantNotificationSnapshot {
+    const primary = frame.primary
+    if (primary === null || primary.kind !== 'completed' || !this.pageVisible()) return frame
+    if (!primary.read) void this.ackRead(primary.noticeId, frame.generation).catch(() => undefined)
+    return { ...frame, primary: null }
+  }
+  private pageVisible(): boolean { try { return typeof document !== 'undefined' && document.visibilityState === 'visible' } catch { return false } }
+  private ackRead(noticeId: string, generation: number): Promise<void> {
+    const epoch = this.epoch
+    return this.enqueue(async (signal) => {
+      await this.call('ack', { noticeId, generation, action: 'read' }, signal)
+      this.assertCurrent(epoch, signal)
+    }, epoch)
   }
 
   private requireFrame(generation: number): void {

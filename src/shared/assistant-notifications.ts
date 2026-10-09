@@ -1,20 +1,36 @@
 /** 通知与语音动作分离；伴随页只能获得下列安全展示字段。 */
 export type AssistantNotificationKind = 'completed' | 'error' | 'question' | 'approval'
 export type AssistantNotificationAction = 'presented' | 'read' | 'dismiss'
+export const ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS = [15, 30, 45, 60] as const
+export type AssistantNotificationAutoCloseSeconds = typeof ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS[number]
+export const DEFAULT_ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS: AssistantNotificationAutoCloseSeconds = 30
 export interface AssistantNotificationSettings {
   enabled: boolean
   completed: boolean
   error: boolean
   question: boolean
   approval: boolean
+  /** 开启后，通知实际呈现达到设定时长后自动收起，未读记录仍保留。 */
+  autoClose: boolean
+  autoCloseSeconds: AssistantNotificationAutoCloseSeconds
 }
 export const DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS: AssistantNotificationSettings = {
-  enabled: true, completed: true, error: true, question: true, approval: true,
+  enabled: true, completed: true, error: true, question: true, approval: true, autoClose: false,
+  autoCloseSeconds: DEFAULT_ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS,
 }
-/** 旧配置回填五个开关，非法值不关闭用户原有通知。 */
+/** 旧配置回填通知开关和自动关闭时长，非法值不关闭用户原有通知。 */
 export function normalizeAssistantNotificationSettings(value: unknown): AssistantNotificationSettings {
   const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
-  return Object.fromEntries(Object.entries(DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS).map(([key, fallback]) => [key, typeof record[key] === 'boolean' ? record[key] : fallback])) as unknown as AssistantNotificationSettings
+  const readBoolean = (key: keyof Omit<AssistantNotificationSettings, 'autoCloseSeconds'>): boolean =>
+    typeof record[key] === 'boolean' ? record[key] as boolean : DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS[key] as boolean
+  const rawSeconds = record.autoCloseSeconds
+  const autoCloseSeconds = ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS.includes(rawSeconds as AssistantNotificationAutoCloseSeconds)
+    ? rawSeconds as AssistantNotificationAutoCloseSeconds
+    : DEFAULT_ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS
+  return {
+    enabled: readBoolean('enabled'), completed: readBoolean('completed'), error: readBoolean('error'),
+    question: readBoolean('question'), approval: readBoolean('approval'), autoClose: readBoolean('autoClose'), autoCloseSeconds,
+  }
 }
 /** 完整目标只通过主页面的认证查询返回，不放进通知快照。 */
 export interface AssistantNotificationTarget {

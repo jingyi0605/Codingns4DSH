@@ -223,7 +223,9 @@ export class AssistantNotificationCenter {
     if (input.action === 'presented' && input.kind !== undefined && input.kind !== item.notice.kind) return { generation: this.currentGeneration, revision: this.currentRevision, notification: { ...item.notice } }
     let next = item.notice
     if (input.action === 'presented' && next.presentation === 'queued') {
-      const now = this.now(); next = { ...next, presentation: 'shown', presentedAt: next.presentedAt ?? now, ...(!pending(next) ? { deadline: next.deadline ?? now + (next.kind === 'error' ? 8_000 : 5_000) } : {}) }
+      const now = this.now()
+      // 完成提示固定 10 秒自动收起；错误、提问与审批的自动关闭跟随助理通知设置（autoClose）。
+      next = { ...next, presentation: 'shown', presentedAt: next.presentedAt ?? now, ...(next.kind === 'completed' ? { deadline: next.deadline ?? now + 10_000 } : {}) }
     }
     if (input.action === 'read' && !next.read) next = { ...next, read: true, ...(!pending(next) ? { presentation: 'collapsed' as const } : {}) }
     if (input.action === 'dismiss' && next.presentation !== 'collapsed') next = { ...next, presentation: 'collapsed' }

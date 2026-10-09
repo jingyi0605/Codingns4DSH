@@ -12,15 +12,23 @@ export interface AssistantNotificationGateway {
   validateNotificationTarget?(target: AssistantNotificationTarget): boolean | Promise<boolean>
 }
 interface LocalMember { readonly target: AssistantNotificationTarget; readonly workspaceId: string; readonly workspaceLabel: string }
-interface LiveRequest { readonly target: AssistantNotificationTarget; readonly kind: 'question' | 'approval'; readonly id: string }
 interface TurnBoundary { seq: number; turnId: string; turn?: number }
-const questionEvents = new Set(['user-questions/request', 'user_questions/request', 'user-question/request'])
-const resolveEvents = new Set(['approval/resolve', 'approval/resolved', 'approval/decided', 'user-questions/resolve', 'user-questions/resolved', 'user-question/resolve', 'user-question/answered'])
+/** 问询工具的规范名；等待用户回答的调用在开放回合内未完成时就是当前提问。 */
+const questionTools = new Set(['ask_user_question', 'question'])
+/** 会改变开放请求集合的事件类型；到达时触发一次实时重扫，而不是累积状态。 */
+const openRequestSignals = new Set(['approval/asked', 'approval/decided', 'tool/call', 'tool/result', 'turn/start', 'turn/end'])
 const record = (value: unknown): Record<string, any> | undefined => typeof value === 'object' && value !== null ? value as Record<string, any> : undefined
 const text = (value: unknown): string | undefined => typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
 const integer = (value: unknown): number | undefined => Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : undefined
 const readSessionId = (value: unknown): string | undefined => text(record(value)?.id) ?? text(record(value)?.sessionId) ?? text(record(record(value)?.header)?.id)
 function optionalService(services: CodingNsHostServices, name: string): any { try { return services.dshContext?.get(name as never) } catch { return undefined } }
+
+/** DSH 的工作区隐藏功能由设置层保存；启用该功能时才把隐藏工作区排除在当前范围外。 */
+function readHiddenWorkspaceIds(services: CodingNsHostServices): ReadonlySet<string> {
+  const value = record(services.settings?.get()?.workspaceSessionEnhancement)
+  if (value?.showWorkspaceHiding !== true || !Array.isArray(value.hiddenWorkspaceIds)) return new Set()
+  return new Set(value.hiddenWorkspaceIds.filter((id): id is string => typeof id === 'string' && id.trim() !== '').map((id) => id.trim()))
+}
 
 /** 原生 turn/end 的 completed 是轮次成功；外部模型 stop 经 Agent Loop 转成 completed。
  * 只有已经确认的外部来源可以直接将 stop 解释为成功，未知来源保留能力缺口。 */
@@ -39,9 +47,6 @@ export class AssistantNotificationEvents {
   private members = new Map<string, LocalMember>()
   private turns = new Map<string, TurnBoundary>()
   private sequences = new Map<string, number>()
-  private requests = new Map<string, LiveRequest>()
-  private identities = new WeakMap<object, string>()
-  private requestSequence = 0
   private disposeRemote: (() => void) | undefined
   private disposeProjection: (() => void) | undefined
   private active = false
@@ -54,8 +59,6 @@ export class AssistantNotificationEvents {
   constructor(private readonly services: CodingNsHostServices, private readonly options: {
     readonly enabled?: () => boolean
     readonly excludedSessionIds?: () => ReadonlySet<string>
-    /** 子请求必须有当前原生父子交互投影的证据，缺省不制造无法回答的提醒。 */
-    readonly canNavigateChildRequest?: (parent: string, child: string) => boolean
     readonly onFact?: (fact: AssistantNotificationFact) => void
   } = {}) {
     this.center = new AssistantNotificationCenter({ validateTarget: (target) => this.validateTarget(target) })
@@ -71,8 +74,8 @@ export class AssistantNotificationEvents {
     this.active = this.localScopeActive || this.sourceScopes.size > 0
     if (!changed) return
     if (previousGeneration === this.center.generation) {
-      // 类型开关不会改变范围。保留订阅和连接代次，仅恢复重新允许展示的真实待办。
-      this.restoreCurrentRequests()
+      // 类型开关不会改变范围。保留订阅和连接代次，重新读取当前会话状态。
+      this.reconcileCurrentState()
       return
     }
     this.disposeRemote?.(); this.disposeRemote = undefined
@@ -88,7 +91,11 @@ export class AssistantNotificationEvents {
       if (generation === this.center.generation && key === 'userQuestions') this.projection(session, value)
     })
     if (typeof disposer === 'function') this.disposeProjection = disposer
-    this.center.setCapabilities({ hostId: this.localHostId, completed: true, error: true, requests: true, resolve: true, navigation: true, recovery: false, reason: '阻塞式问题与审批没有公共当前请求注册表；仅恢复当前 userQuestions.active 定时问题投影；未提供可验证的父子交互投影时不展示子请求' })
+    const recovery = this.recoverySupported
+    this.center.setCapabilities({
+      hostId: this.localHostId, completed: true, error: true, requests: true, resolve: true, navigation: true, recovery,
+      ...(recovery ? {} : { reason: '当前 Host 未提供可读取的会话提问投影；只处理运行期间收到的审批/提问事件' }),
+    })
     this.disposeRemote = this.localScopeActive ? this.services.assistantGateway?.subscribeNotifications?.(assistant?.managedWorkspaceIds ?? [], {
       onUpdate: (update) => { if (generation === this.center.generation) this.remoteUpdate(update) },
       onUnavailable: (hostId, connectionGeneration, reason, unsupported) => { if (generation !== this.center.generation) return; this.center.connection(hostId, connectionGeneration, false); if (unsupported) this.center.setCapabilities({ hostId, completed: false, error: false, requests: false, resolve: false, navigation: false, recovery: false, reason }) },
@@ -109,28 +116,30 @@ export class AssistantNotificationEvents {
     if (typeof disposer === 'function') this.disposeProjection = disposer
   }
   recoverSource(workspaceIds: readonly string[]): readonly AssistantNotificationFact[] {
-    const scope = new Set(workspaceIds)
-    return [...this.requests.values()].flatMap((request): AssistantNotificationFact[] => {
-      const member = this.members.get(request.target.sessionId)
-      if (member === undefined || !scope.has(member.workspaceId)) return []
-      return [{ generation: this.center.generation, type: 'request-opened', target: { ...request.target, workspaceId: member.workspaceId }, requestId: request.id, requestKind: request.kind, workspaceLabel: member.workspaceLabel, sessionTitle: this.title(this.session(request.target.sessionId)) }]
-    })
+    return this.currentRequestFacts(workspaceIds)
   }
-  /** 仅在工作区注册变化时更新成员；read RPC 只读取中心内存。 */
+  /** 每次读取都从当前会话状态重新投影，Host 重启不依赖旧内存请求。 */
+  readCurrent(): void { this.refreshMembership() }
+  /** Host 侧官方恢复通道是会话投影（当前 userQuestions）；投影服务不可用时明确声明仅事件。 */
+  get recoverySupported(): boolean { return typeof optionalService(this.services, 'sessionProjections')?.snapshot === 'function' }
+  /** 按工作区注册表和当前可见性更新成员；通知读取前也会调用，避免范围使用旧快照。 */
   refreshMembership(): void {
     if (!this.active) return
     const registry = optionalService(this.services, 'workspaceRegistry')
     const list = registry?.list?.()
     const next = new Map<string, LocalMember>()
+    const hiddenWorkspaceIds = readHiddenWorkspaceIds(this.services)
     for (const [id, deadline] of this.sourceScopes) if (deadline <= Date.now()) this.sourceScopes.delete(id)
     const managed = [...(this.localScopeActive ? this.services.settings?.get().assistant.managedWorkspaceIds ?? [] : []), ...this.sourceScopes.keys()]
     const archived = new Set<string>(Array.isArray(registry?.archivedSessionIds) ? registry.archivedSessionIds : [])
     for (const workspace of Array.isArray(list) ? list : []) {
       const id = text(workspace?.id) ?? text(workspace?.workspaceId)
       if (id === undefined || !managed.some(value => assistantWorkspaceMatches(value, this.localHostId, id, true))) continue
+      if (hiddenWorkspaceIds.has(id) || workspace?.hidden === true || workspace?.visible === false) continue
       for (const sessionId of Array.isArray(workspace.archivedSessionIds) ? workspace.archivedSessionIds : []) archived.add(sessionId)
       for (const sessionId of Array.isArray(workspace.sessionIds) ? workspace.sessionIds : []) {
-        if (typeof sessionId !== 'string' || archived.has(sessionId) || this.excluded(sessionId)) continue
+        const session = typeof sessionId === 'string' ? this.session(sessionId) : undefined
+        if (typeof sessionId !== 'string' || archived.has(sessionId) || this.excluded(sessionId) || this.isNonInteractiveSession(session)) continue
         const configured = managed.find((value) => assistantWorkspaceMatches(value, this.localHostId, id, true))!
         next.set(sessionId, { target: { hostId: this.localHostId, workspaceId: configured, sessionId }, workspaceId: id, workspaceLabel: text(workspace.displayName) ?? text(workspace.title) ?? text(workspace.name) ?? id })
       }
@@ -144,15 +153,8 @@ export class AssistantNotificationEvents {
       try { events = record(session)?.snapshotEvents?.() ?? [] } catch { /* 只有可证明的当前事件才参与通知。 */ }
       const seq = integer(record(events.at(-1))?.seq) ?? -1
       this.sequences.set(id, seq); this.center.baseline(member.target, seq)
-      this.projection(session, this.readProjection(session))
     }
-    // 重新开启只恢复仍在原生调用中等待的请求；终态从新基线开始，不回放关闭期间历史。
-    for (const live of [...this.requests.values()]) {
-      const actualId = live.target.actualRequestTarget?.sessionId ?? live.target.sessionId
-      const session = this.session(actualId) ?? { id: actualId }
-      const member = this.requestMember(session)
-      if (member !== undefined && !previous.has(member.target.sessionId)) this.request('request-opened', member, session, actualId, live.id, live.kind)
-    }
+    this.reconcileCurrentState()
   }
   sessionEvent(session: unknown, event: unknown): void {
     if (this.disposed) return
@@ -160,17 +162,12 @@ export class AssistantNotificationEvents {
     if (id === undefined || value === undefined || data === undefined || this.excluded(id)) return
     const sourceHost = text(record(session)?.hostId) ?? text(record(session)?.header?.hostId)
     if (sourceHost !== undefined && sourceHost !== this.localHostId && sourceHost !== 'local') return
-    const requestEvent = value.type === 'approval/asked' || value.type === 'approval/decided'
-    if (!this.active && !requestEvent) return
-    const replyEvent = value.type === 'user/message' && record(data.message?.source)?.kind === 'user-question-reply'
-    const member = requestEvent || replyEvent ? this.requestMember(session) : this.members.get(id)
+    if (!this.active) return
+    // 待办不是事件累积出的状态：这些事件只作为「重新扫描会话事件流」的信号。
+    if (openRequestSignals.has(value.type)) this.reconcileCurrentState()
+    const member = this.members.get(id)
+    if (member === undefined) return
     if (record(session)?.blank === true || record(record(session)?.header)?.placeholder === true) return
-    if (member === undefined) {
-      // 无展示范围时只记真实根会话审批身份；首次认证来源读取才校验工作区归属。
-      const requestId = text(data.id)
-      if (requestEvent && requestId !== undefined && this.parentId(session) === undefined) this.request(value.type === 'approval/asked' ? 'request-opened' : 'request-resolved', undefined, session, id, requestId, 'approval')
-      return
-    }
     const seq = integer(value.seq)
     if (seq !== undefined) { if (seq <= (this.sequences.get(id) ?? -1)) return; this.sequences.set(id, seq) }
     if (value.type === 'session/title') { this.center.updateTitle(this.localHostId, id, text(data.title) ?? '未命名会话'); return }
@@ -179,16 +176,6 @@ export class AssistantNotificationEvents {
       const turnId = text(data.turnId) ?? (turn === undefined ? seq === undefined ? undefined : `start:${seq}` : `turn:${turn}`)
       if (turnId !== undefined) this.turns.set(id, { seq: seq ?? -1, turnId, ...(turn === undefined ? {} : { turn }) })
       return
-    }
-    if (requestEvent) {
-      const requestId = text(data.id)
-      if (requestId === undefined) return
-      this.request(value.type === 'approval/asked' ? 'request-opened' : 'request-resolved', member, session, id, requestId, 'approval', seq)
-      return
-    }
-    if (value.type === 'user/message' && record(data.message?.source)?.kind === 'user-question-reply') {
-      const requestId = text(data.message.source.callId)
-      if (requestId !== undefined) this.request('request-resolved', member, session, id, requestId, 'question', seq)
     }
     const terminal = assistantNotificationTerminal(event, this.isExternal(session))
     if (terminal === null || this.parentId(session) !== undefined) return
@@ -200,56 +187,22 @@ export class AssistantNotificationEvents {
       ...(terminal === 'error' ? { errorExcerpt: '执行失败，请查看会话详情' } : {}),
     }, member)
   }
-  /** 观察实际 waterfall 调用并原样委托 next，finally 只结束该调用自己的提醒。 */
-  observeRequest(eventName: string, args: readonly unknown[]): unknown {
-    const request = record(args[0]); const next = args.at(-1)
-    const agentSession = request?.agent?.session
-    const id = readSessionId(agentSession) ?? text(request?.sessionId) ?? text(request?.agentId)
-    const kind = questionEvents.has(eventName) ? 'question' : eventName === 'approval/request' || eventName === 'approval/asked' ? 'approval' : undefined
-    if (this.disposed || request === undefined || id === undefined || kind === undefined || this.excluded(id)) return typeof next === 'function' ? next() : undefined
-    if (request.signal instanceof AbortSignal && request.signal.aborted || kind === 'question' && (!Array.isArray(request.questions) || request.questions.length === 0)) return typeof next === 'function' ? next() : undefined
-    const session = agentSession ?? this.session(id) ?? { id }
-    const member = this.requestMember(session)
-    // approval/request 本身没有请求 ID；真实服务用 approval/asked.data.id 和 decided 配对。
-    const explicit = text(request.requestId) ?? text(request.id) ?? text(request.wait?.callId)
-    if (member === undefined && this.parentId(session) !== undefined || kind === 'approval' && explicit === undefined) return typeof next === 'function' ? next() : undefined
-    let requestId = explicit ?? this.identities.get(request)
-    if (requestId === undefined && typeof next === 'function') { requestId = `question-source-${++this.requestSequence}`; this.identities.set(request, requestId) }
-    if (requestId === undefined) return typeof next === 'function' ? next() : undefined
-    this.request('request-opened', member, session, id, requestId, kind)
-    const finish = (): void => {
-      if (this.disposed) return
-      // 定时提问的前台等待超时会继续接受续答；它不是请求取消。
-      if (kind === 'question' && request.wait?.timed === true && record(request.signal?.reason)?.code === 'ASK_TIMED_OUT') return
-      const projection = this.readProjection(session)
-      if (kind === 'question' && Array.isArray(projection?.active) && projection.active.some((item: any) => item.callId === requestId)) return
-      this.request('request-resolved', this.requestMember(session), session, id, requestId!, kind)
-    }
-    const signal = request.signal instanceof AbortSignal ? request.signal : undefined
-    signal?.addEventListener('abort', finish, { once: true })
-    if (signal?.aborted) finish()
-    if (typeof next !== 'function') return undefined
-    try { return Promise.resolve(next()).finally(() => { signal?.removeEventListener('abort', finish); finish() }) }
-    catch (error) { signal?.removeEventListener('abort', finish); finish(); throw error }
+  /** waterfall 调用只是重扫信号；开放请求由读取时的会话事件流扫描决定，这里必须原样委托 next。 */
+  observeRequest(_eventName: string, args: readonly unknown[]): unknown {
+    const next = args.at(-1)
+    if (!this.disposed && this.active) this.reconcileCurrentState()
+    return typeof next === 'function' ? next() : undefined
   }
-  resolveRequest(eventName: string, args: readonly unknown[]): void {
-    if (this.disposed || !resolveEvents.has(eventName)) return
-    const value = record(args[0]); const id = readSessionId(value?.agent?.session) ?? text(value?.sessionId) ?? text(value?.agentId)
-    const requestId = text(value?.requestId) ?? text(value?.id) ?? text(value?.callId)
-    if (id === undefined || requestId === undefined) return
-    const session = value?.agent?.session ?? this.session(id) ?? { id }; const member = this.requestMember(session)
-    if (member !== undefined || this.parentId(session) === undefined) this.request('request-resolved', member, session, id, requestId, eventName.startsWith('approval/') ? 'approval' : 'question')
+  resolveRequest(_eventName: string, _args: readonly unknown[]): void {
+    if (!this.disposed && this.active) this.reconcileCurrentState()
   }
   sessionDisposed(session: unknown): void {
     const id = readSessionId(session)
     if (id === undefined) return
-    for (const live of [...this.requests.values()]) {
-      if ((live.target.actualRequestTarget?.sessionId ?? live.target.sessionId) !== id) continue
-      const member = this.members.get(live.target.sessionId)
-      this.request('request-resolved', member, session, id, live.id, live.kind)
-    }
+    // 会话销毁后不再有开放请求；下一次读取会按当前成员与事件流重新校正。
+    this.reconcileCurrentState()
   }
-  dispose(): void { this.disposed = true; this.active = false; clearTimeout(this.sourceTimer); this.disposeRemote?.(); this.disposeProjection?.(); this.requests.clear(); this.members.clear(); this.turns.clear(); this.sequences.clear(); this.sourceScopes.clear(); this.remoteRequests.clear(); this.remoteEpochs.clear(); this.center.dispose() }
+  dispose(): void { this.disposed = true; this.active = false; clearTimeout(this.sourceTimer); this.disposeRemote?.(); this.disposeProjection?.(); this.members.clear(); this.turns.clear(); this.sequences.clear(); this.sourceScopes.clear(); this.remoteRequests.clear(); this.remoteEpochs.clear(); this.center.dispose() }
   /** 最后一个远端读取者离开后撤销来源范围和投影观察，保留共享的原生事件订阅。 */
   private scheduleSourceExpiry(): void {
     clearTimeout(this.sourceTimer)
@@ -263,31 +216,79 @@ export class AssistantNotificationEvents {
     }, Math.max(1, next - Date.now()))
     this.sourceTimer.unref?.()
   }
-  private request(type: 'request-opened' | 'request-resolved', member: LocalMember | undefined, session: unknown, actualId: string, requestId: string, requestKind: 'question' | 'approval', seq?: number): void {
-    const key = JSON.stringify([actualId, requestKind, requestId])
-    const target = member === undefined ? this.requests.get(key)?.target ?? { hostId: this.localHostId, workspaceId: '', sessionId: actualId } : member.target.sessionId === actualId ? member.target : { ...member.target, actualRequestTarget: { hostId: this.localHostId, sessionId: actualId, requestId } }
-    if (type === 'request-opened') this.requests.set(key, { target, id: requestId, kind: requestKind })
-    else this.requests.delete(key)
-    if (member === undefined) return
-    this.consume({ generation: this.center.generation, type, target, requestId, requestKind, workspaceLabel: member.workspaceLabel, sessionTitle: this.title(this.session(member.target.sessionId) ?? session), ...(seq === undefined ? {} : { seq }) }, member)
-  }
-  /** 配置不制造新的来源事实；当前请求可以重新展示，历史终态不能补弹。 */
-  private restoreCurrentRequests(): void {
-    for (const live of this.requests.values()) {
-      const actualId = live.target.actualRequestTarget?.sessionId ?? live.target.sessionId
-      const member = this.requestMember(this.session(actualId) ?? { id: actualId })
-      if (!member) continue
-      this.center.consume({ generation: this.center.generation, type: 'request-opened', target: { ...live.target, workspaceId: member.target.workspaceId },
-        requestId: live.id, requestKind: live.kind, workspaceLabel: member.workspaceLabel, sessionTitle: this.title(this.session(member.target.sessionId)) })
-    }
-    for (const requests of this.remoteRequests.values()) for (const fact of requests.values()) {
-      const { seq: _oldSequence, ...current } = fact
-      this.center.consume({ ...current, generation: this.center.generation })
-    }
-  }
   private consume(fact: AssistantNotificationFact, member: LocalMember): void {
     this.center.consume(fact)
     this.options.onFact?.({ ...fact, target: { ...fact.target, workspaceId: member.workspaceId } })
+  }
+  private reconcileCurrentState(): void {
+    const current = this.currentRequestSnapshot()
+    this.center.reconcilePending(current.facts, this.localHostId, current.authoritative)
+    // 远端仍由其带 epoch 的 current pending 快照负责；本机配置切换时只重新投影最近一份远端快照。
+    for (const requests of this.remoteRequests.values()) for (const fact of requests.values()) {
+      const { seq: _oldSequence, ...currentFact } = fact
+      this.center.consume({ ...currentFact, generation: this.center.generation })
+    }
+  }
+  private currentRequestFacts(workspaceIds?: readonly string[]): readonly AssistantNotificationFact[] {
+    const selected = workspaceIds === undefined ? undefined : new Set(workspaceIds)
+    return this.currentRequestSnapshot().facts.filter((fact) => selected === undefined || selected.has(fact.target.workspaceId))
+  }
+  private currentRequestSnapshot(): { readonly facts: readonly AssistantNotificationFact[]; readonly authoritative: readonly string[] } {
+    const facts: AssistantNotificationFact[] = []; const seen = new Set<string>(); const authoritative = new Set<string>()
+    const add = (member: LocalMember, session: unknown, requestId: string, kind: 'question' | 'approval'): void => {
+      const actualId = member.target.sessionId
+      const key = JSON.stringify([actualId, kind, requestId])
+      if (seen.has(key)) return
+      seen.add(key); authoritative.add(`${kind}:${actualId}`)
+      facts.push({ generation: this.center.generation, type: 'request-opened', target: member.target, requestId, requestKind: kind,
+        workspaceLabel: member.workspaceLabel, sessionTitle: this.title(session ?? this.session(actualId)) })
+    }
+    for (const member of this.members.values()) {
+      const session = this.session(member.target.sessionId)
+      // 实时扫描会话自身的开放回合；不保存扫描结果，每次读取重新计算。
+      const open = this.scanOpenRequests(session, member.target.sessionId)
+      if (open.available) {
+        authoritative.add(`approval:${member.target.sessionId}`); authoritative.add(`question:${member.target.sessionId}`)
+        for (const requestId of open.approvals) add(member, session, requestId, 'approval')
+        for (const requestId of open.questions) add(member, session, requestId, 'question')
+      }
+      // 定时提问可以跨重启续答，以 DSH 提问投影为准。
+      const projection = this.readProjection(session)
+      if (!Array.isArray(projection?.active)) continue
+      authoritative.add(`question:${member.target.sessionId}`)
+      for (const item of projection.active) {
+        const requestId = text(item?.callId)
+        if (requestId !== undefined) add(member, session, requestId, 'question')
+      }
+    }
+    return { facts, authoritative: [...authoritative] }
+  }
+  /** 读取时实时扫描会话事件流：只把未闭合回合内的未决审批与未完成问询调用当作当前待办。 */
+  private scanOpenRequests(session: unknown, sessionId: string): { readonly available: boolean; readonly approvals: readonly string[]; readonly questions: readonly string[] } {
+    const value = record(session)
+    if (value === undefined || typeof value.snapshotEvents !== 'function') return { available: false, approvals: [], questions: [] }
+    // 没有活跃 Agent 而回合仍未闭合，只可能来自进程崩溃残留；DSH 语义下那不是当前待办。
+    // 日志仍是权威：不展示残留，但已处理完的历史记录依然会在读取时被清理。
+    const agents = optionalService(this.services, 'agents')
+    if (agents !== undefined && typeof agents.get === 'function') {
+      try { if (agents.get(sessionId) == null) return { available: true, approvals: [], questions: [] } } catch { /* 不可判定时按事件流处理 */ }
+    }
+    let events: readonly unknown[] = []
+    try { events = value.snapshotEvents() ?? [] } catch { return { available: false, approvals: [], questions: [] } }
+    const approvals = new Set<string>(); const questions = new Set<string>()
+    const decided = new Set<string>(); const finished = new Set<string>()
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const item = record(events[index]); const type = item?.type; const data = record(item?.data)
+      if (type === 'turn/start' || type === 'turn/end') break
+      if (type === 'approval/decided') { const id = text(data?.id); if (id !== undefined) decided.add(id); continue }
+      if (type === 'approval/asked') { const id = text(data?.id); if (id !== undefined && !decided.has(id)) approvals.add(id); continue }
+      if (type === 'tool/result') { const id = text(data?.callId) ?? text(record(data?.message)?.toolCallId); if (id !== undefined) finished.add(id); continue }
+      if (type === 'tool/call') {
+        const id = text(data?.callId); const name = text(data?.name)
+        if (id !== undefined && name !== undefined && questionTools.has(name) && !finished.has(id)) questions.add(id)
+      }
+    }
+    return { available: true, approvals: [...approvals], questions: [...questions] }
   }
   private remoteUpdate(update: AssistantPeerNotificationUpdate): void {
     const { hostId, feed, connectionGeneration } = update
@@ -322,19 +323,9 @@ export class AssistantNotificationEvents {
     }
     this.remoteRequests.set(hostId, next)
   }
-  private projection(session: unknown, value: unknown): void {
-    const id = readSessionId(session); const projection = record(value)
-    if (!this.active || id === undefined || !Array.isArray(projection?.active)) return
-    const member = this.requestMember(session)
-    if (member === undefined) return
-    const active = new Set<string>()
-    for (const pending of projection.active) {
-      const callId = text(pending?.callId)
-      if (callId === undefined) continue
-      active.add(callId)
-      this.request('request-opened', member, session, id, callId, 'question')
-    }
-    for (const live of [...this.requests.values()]) if (live.kind === 'question' && (live.target.actualRequestTarget?.sessionId ?? live.target.sessionId) === id && !live.id.startsWith('question-source-') && !active.has(live.id)) this.request('request-resolved', member, session, id, live.id, 'question')
+  private projection(_session: unknown, value: unknown): void {
+    if (!this.active || !Array.isArray(record(value)?.active)) return
+    this.reconcileCurrentState()
   }
   private readProjection(session: unknown): any { try { return optionalService(this.services, 'sessionProjections')?.snapshot?.(session, ['userQuestions'])?.values?.userQuestions } catch { return undefined } }
   private session(id: string): unknown { try { return this.services.nativeSessions?.get?.(id) ?? optionalService(this.services, 'sessions')?.get?.(id) } catch { return undefined } }
@@ -344,21 +335,11 @@ export class AssistantNotificationEvents {
     return text(current?.title) ?? text(value?.title) ?? text(value?.header?.title) ?? '未命名会话'
   }
   private excluded(id: string): boolean { return id.startsWith(ASSISTANT_AGENT_PREFIX) || this.options.excludedSessionIds?.().has(id) === true }
+  private isNonInteractiveSession(session: unknown): boolean {
+    const value = record(session)
+    return value?.blank === true || value?.origin === 'subagent' || record(value?.header)?.origin === 'subagent'
+  }
   private parentId(session: unknown): string | undefined { return text(record(session)?.header?.parentSession) ?? text(record(session)?.parentSessionId) }
-  private requestMember(session: unknown): LocalMember | undefined {
-    const id = readSessionId(session)
-    return this.parentId(session) === undefined ? id === undefined ? undefined : this.members.get(id) : this.parentMember(session)
-  }
-  private parentMember(session: unknown): LocalMember | undefined {
-    const child = readSessionId(session); let parent = this.parentId(session); const visited = new Set<string>()
-    while (parent !== undefined && !visited.has(parent)) {
-      visited.add(parent); const member = this.members.get(parent)
-      const ancestor = this.session(parent)
-      if (member !== undefined && this.parentId(ancestor) === undefined) return child !== undefined && this.options.canNavigateChildRequest?.(parent, child) === true ? member : undefined
-      parent = this.parentId(ancestor)
-    }
-    return undefined
-  }
   private isExternal(session: unknown): boolean {
     const id = readSessionId(session)
     if (id === undefined) return false
@@ -377,7 +358,6 @@ export class AssistantNotificationEvents {
     this.refreshMembership()
     const member = this.members.get(target.sessionId)
     if (member?.target.workspaceId !== target.workspaceId || this.excluded(target.sessionId)) return false
-    if (target.requestId !== undefined && target.requestKind !== undefined && !this.requests.has(JSON.stringify([target.actualRequestTarget?.sessionId ?? target.sessionId, target.requestKind, target.requestId]))) return false
     const session = this.session(target.sessionId)
     // 持久化的受管会话可以重新打开；卸载内存实例并不表示目标被删除。
     if (target.requestId !== undefined && this.session(target.actualRequestTarget?.sessionId ?? target.sessionId) === undefined) return false

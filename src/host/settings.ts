@@ -21,7 +21,7 @@ import { ASSISTANT_AVATAR_FLOATING_MINI_SIZE, ASSISTANT_AVATAR_FLOATING_STANDARD
 import { ASSISTANT_PROMPT_MAX_CHARS, DEFAULT_ASSISTANT_PROMPTS } from '../shared/assistant-prompts.js'
 import { ASSISTANT_TTS_PARAMETER_LIMITS as ttsLimits, DEFAULT_ASSISTANT_TTS_PARAMETERS, DEFAULT_ASSISTANT_TTS_SETTINGS } from '../shared/assistant-tts.js'
 import { ASSISTANT_PERSONALITY_MAX_CHARS } from '../shared/assistant-lifecycle.js'
-import { DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS } from '../shared/assistant-notifications.js'
+import { DEFAULT_ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS, DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS } from '../shared/assistant-notifications.js'
 
 /**
  * DSH 设置服务使用的 Codingns4DSH namespace schema。
@@ -49,7 +49,8 @@ export const CodingNsSettingsSchema = z.object({
   assistant: z.object({
     notifications: z.object({
       enabled: z.boolean().default(true), completed: z.boolean().default(true),
-      error: z.boolean().default(true), question: z.boolean().default(true), approval: z.boolean().default(true),
+      error: z.boolean().default(true), question: z.boolean().default(true), approval: z.boolean().default(true), autoClose: z.boolean().default(false),
+      autoCloseSeconds: z.union([z.const(15), z.const(30), z.const(45), z.const(60)]).default(DEFAULT_ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS),
     }).default({ ...DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS }),
     profile: z.union([z.object({
       name: z.string().min(1).max(80), initialized: z.boolean(),

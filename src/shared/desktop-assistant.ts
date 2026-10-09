@@ -1,5 +1,6 @@
 import { ASSISTANT_AVATAR_STATES, ASSISTANT_AVATAR_REACTIONS, type AssistantAvatarModel, type AssistantAvatarReaction, type AssistantAvatarState } from './assistant-avatar.js'
-import type { AssistantNotification, AssistantNotificationSnapshot } from './assistant-notifications.js'
+import { ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS } from './assistant-notifications.js'
+import type { AssistantNotification, AssistantNotificationAutoCloseSeconds, AssistantNotificationSnapshot } from './assistant-notifications.js'
 
 /** 只复用共享通知的安全展示字段；目标、工具参数和凭证不能进入伴随页。 */
 export type DesktopAssistantNotification = Pick<AssistantNotification, 'noticeId' | 'kind' | 'hostLabel' | 'workspaceLabel' | 'sessionTitle' | 'text' | 'availability' | 'connectionGeneration'> & { readonly generation: number }
@@ -46,10 +47,16 @@ export interface DesktopAssistantPresentation {
   readonly state: AssistantAvatarState
   readonly caption: string
   readonly label: string
+  /** 通知呈现后是否由伴随页按设置时长自动收起。 */
+  readonly autoClose?: boolean
+  /** 伴随页自动收起时长；非法或缺失时由气泡使用默认值。 */
+  readonly autoCloseSeconds?: AssistantNotificationAutoCloseSeconds
   readonly notification?: DesktopAssistantNotification
   /** 共享契约本身只含安全展示字段；白名单复制后供原生未读入口和分页复用。 */
   readonly notificationSnapshot?: AssistantNotificationSnapshot
   readonly reaction?: AssistantAvatarReaction
+  /** Host 注入的 DSH 主窗口前台状态；完成提示在前台静默，缺失按后台处理。 */
+  readonly appActive?: boolean
 }
 export interface DesktopAssistantFrame extends DesktopAssistantPresentation {
   readonly model: AssistantAvatarModel
@@ -83,8 +90,12 @@ export function readDesktopAssistantPresentation(value: unknown): DesktopAssista
   const notification = readDesktopAssistantNotification(record.notification)
   const notificationSnapshot = readDesktopAssistantNotificationSnapshot(record.notificationSnapshot)
   return { visible: record.visible, state: record.state as AssistantAvatarState, caption: record.caption, label: record.label,
+    ...(typeof record.autoClose === 'boolean' ? { autoClose: record.autoClose } : {}),
+    ...(ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS.includes(record.autoCloseSeconds as AssistantNotificationAutoCloseSeconds)
+      ? { autoCloseSeconds: record.autoCloseSeconds as AssistantNotificationAutoCloseSeconds } : {}),
     ...(notification === undefined ? {} : { notification }),
     ...(notificationSnapshot === undefined ? {} : { notificationSnapshot }),
+    ...(typeof record.appActive === 'boolean' ? { appActive: record.appActive } : {}),
     ...(ASSISTANT_AVATAR_REACTIONS.includes(record.reaction as AssistantAvatarReaction) ? { reaction: record.reaction as AssistantAvatarReaction } : {}) }
 }
 
@@ -151,12 +162,12 @@ export function desktopAssistantHasNotifications(frame: DesktopAssistantPresenta
     || snapshot.unreadCount > 0 || snapshot.pendingCount > 0 || snapshot.capabilities.some((entry) => Boolean(entry.reason)
       && (!entry.completed || !entry.error || !entry.requests || !entry.resolve || !entry.navigation))
 }
-/** 没有可直接展示记录时才缩成入口；未读记录始终保留完整会话卡片区域。 */
+/** 没有可直接展示记录时缩成入口；收起后的未读记录仍保留在列表与计数中。 */
 export function desktopAssistantNotificationHeight(frame: DesktopAssistantPresentation, expanded = false, error = false): number {
   if (!desktopAssistantHasNotifications(frame)) return 0
   const snapshot = frame.notificationSnapshot
-  const directNotice = (snapshot?.primary !== null && snapshot?.primary !== undefined) || snapshot?.items.some((item) => !item.read
-    || (item.kind === 'question' || item.kind === 'approval') && item.lifecycle === 'active') === true
+  const directNotice = (snapshot?.primary !== null && snapshot?.primary !== undefined && snapshot.primary.presentation !== 'collapsed') || snapshot?.items.some((item) => item.presentation !== 'collapsed' && (!item.read
+    || (item.kind === 'question' || item.kind === 'approval') && item.lifecycle === 'active')) === true
   if (!snapshot || directNotice || expanded || error || snapshot.capabilities.some((entry) => Boolean(entry.reason)
     && (!entry.completed || !entry.error || !entry.requests || !entry.resolve || !entry.navigation))) return 276
   return 48

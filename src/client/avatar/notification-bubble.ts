@@ -1,6 +1,6 @@
 import { createElement, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
-import type { AssistantNotification, AssistantNotificationSnapshot } from '../../shared/assistant-notifications.js'
+import type { AssistantNotification, AssistantNotificationAutoCloseSeconds, AssistantNotificationSnapshot } from '../../shared/assistant-notifications.js'
 import type { DesktopAssistantNotification } from '../../shared/desktop-assistant.js'
 import type { CodingNsTranslator } from '../locale.js'
 import { dshSettingsButtonStyle, dshThemeColor } from '../theme.js'
@@ -16,24 +16,29 @@ export interface AssistantNotificationBubbleProps {
   readonly onOpen: (noticeId: string, generation: number, connectionGeneration?: number) => void
   readonly onDismiss: (noticeId: string, generation: number, connectionGeneration?: number) => void
   readonly onPresented: (noticeId: string, generation: number, kind?: AssistantNotification['kind']) => void
+  readonly autoClose?: boolean
+  readonly autoCloseSeconds?: AssistantNotificationAutoCloseSeconds
   readonly onPage?: ((cursor?: string) => void) | undefined
   readonly onExpandedChange?: ((expanded: boolean) => void) | undefined
 }
 
-export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss, onPresented, onPage, onExpandedChange }: AssistantNotificationBubbleProps): ReactElement {
+export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss, onPresented, autoClose = false, autoCloseSeconds = 30, onPage, onExpandedChange }: AssistantNotificationBubbleProps): ReactElement {
   const [expanded, setExpanded] = useState(false)
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const bubble = useRef<HTMLDivElement>(null)
+  const autoCloseTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const snapshot = 'items' in frame ? frame : undefined
   const primary = snapshot === undefined ? frame as DesktopAssistantNotification : snapshot.primary
   const items = snapshot?.items.filter((notice) => !notice.read || ((notice.kind === 'question' || notice.kind === 'approval') && notice.lifecycle === 'active')) ?? []
   // 主气泡直接呈现当前需要用户关注的通知；分页列表仍保留完整快照，避免首屏只剩统计数字。
   const attentionItems = snapshot === undefined
     ? primary === undefined || primary === null ? [] : [primary]
-    : [...(snapshot.primary === null ? [] : [snapshot.primary]), ...items.filter((notice) => notice.noticeId !== snapshot.primary?.noticeId)]
+    : [...(snapshot.primary === null || snapshot.primary.presentation === 'collapsed' ? [] : [snapshot.primary]), ...items.filter((notice) =>
+      notice.presentation !== 'collapsed' && (!notice.read || ((notice.kind === 'question' || notice.kind === 'approval') && notice.lifecycle === 'active'))
+      && notice.noticeId !== snapshot.primary?.noticeId)]
   const multiple = attentionItems.length > 1 || (snapshot !== undefined && Math.max(snapshot.unreadCount, snapshot.pendingCount) > 1)
-  const mainNotice = attentionItems[0] ?? primary ?? undefined
-  const presented = primary ?? attentionItems[0]
+  const mainNotice = attentionItems[0] ?? (snapshot === undefined ? primary ?? undefined : undefined)
+  const presented = attentionItems[0] ?? (snapshot === undefined ? primary ?? undefined : undefined)
   const createdAt = presented && 'createdAt' in presented ? presented.createdAt : undefined
   useEffect(() => { onExpandedChange?.(expanded) }, [expanded, onExpandedChange])
   useEffect(() => { setCursors([undefined]) }, [frame.generation, snapshot?.reset])
@@ -43,10 +48,18 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
     const dom = node?.ownerDocument
     if (node === null || dom === undefined) return
     let finished = false
+    const scheduleAutoClose = (): void => {
+      if (!autoClose) return
+      const connectionGeneration = 'connectionGeneration' in presented ? presented.connectionGeneration : undefined
+      autoCloseTimer.current = setTimeout(() => {
+        autoCloseTimer.current = undefined
+        onDismiss(presented.noticeId, frame.generation, connectionGeneration)
+      }, autoCloseSeconds * 1000)
+    }
     const confirm = (): void => {
       // 主页面后台挂载不算实际展示；伴随页独立确认自己的可见渲染。
       if (finished || !assistantNotificationIsVisible(node)) return
-      finished = true; onPresented(presented.noticeId, frame.generation, presented.kind)
+      finished = true; onPresented(presented.noticeId, frame.generation, presented.kind); scheduleAutoClose()
     }
     const timer = setTimeout(confirm, 0)
     const observer = typeof IntersectionObserver === 'undefined' ? undefined : new IntersectionObserver(confirm)
@@ -59,13 +72,13 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
     dom.defaultView?.addEventListener('pointerup', confirm)
     return () => {
       observer?.disconnect()
-      clearTimeout(timer); dom.removeEventListener('visibilitychange', confirm)
+      clearTimeout(timer); clearTimeout(autoCloseTimer.current); autoCloseTimer.current = undefined; dom.removeEventListener('visibilitychange', confirm)
       dom.removeEventListener('scroll', confirm, true)
       dom.removeEventListener('transitionend', confirm, true)
       dom.removeEventListener('animationend', confirm, true)
       dom.defaultView?.removeEventListener('resize', confirm); dom.defaultView?.removeEventListener('pointerup', confirm)
     }
-  }, [presented?.noticeId, presented?.kind, createdAt, frame.generation, onPresented])
+  }, [presented?.noticeId, presented?.kind, presented?.connectionGeneration, createdAt, frame.generation, autoClose, autoCloseSeconds, onPresented, onDismiss])
   const page = (next: boolean): void => {
     const updated = next ? [...cursors, snapshot!.cursor!] : cursors.slice(0, -1)
     setCursors(updated); onPage?.(updated.at(-1))
@@ -93,7 +106,10 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
         onClick: () => onOpen(notice.noticeId, frame.generation, 'connectionGeneration' in notice ? notice.connectionGeneration : undefined) }, t('awb.notifications.open')),
       createElement('button', { type: 'button', style: variant === 'compact' ? compactButton : button,
         'aria-label': [t('awb.notifications.dismiss'), notice.hostLabel, notice.workspaceLabel, notice.sessionTitle].join(' · '),
-        onClick: () => onDismiss(notice.noticeId, frame.generation, 'connectionGeneration' in notice ? notice.connectionGeneration : undefined) }, t('awb.notifications.dismiss'))))
+        onClick: () => {
+          clearTimeout(autoCloseTimer.current); autoCloseTimer.current = undefined
+          onDismiss(notice.noticeId, frame.generation, 'connectionGeneration' in notice ? notice.connectionGeneration : undefined)
+        } }, t('awb.notifications.dismiss'))))
   return createElement('div', { 'data-codingns-assistant-notifications': true, style: shell,
     // 操作和文本选择不进入形象拖动区，不抢焦点；组件本身无弹跳动画。
     onPointerDown: (event: { stopPropagation(): void }) => event.stopPropagation(),
@@ -104,7 +120,8 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
         if (!expanded) { setCursors([undefined]); onPage?.() }
       } }, `${t('awb.notifications.unread', { count: snapshot.unreadCount })} · ${t('awb.notifications.pending', { count: snapshot.pendingCount })}`) : null,
     (!expanded || snapshot === undefined) && mainNotice !== undefined ? createElement('div', { ref: bubble, role: 'status', 'aria-live': 'polite', style: bubblePanel },
-      createElement('span', { 'aria-hidden': true, style: bubbleTail }, createElement('span', { style: bubbleTailFill })),
+      createElement('span', { 'aria-hidden': true, style: bubbleTail }, createElement('svg', { width: 36, height: 22, viewBox: '0 0 36 22', fill: dshThemeColor.menuBackground, stroke: dshThemeColor.accent, strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', style: { display: 'block' } },
+        createElement('path', { d: 'M2 1 C7 2 12 8 18 19 C19 21 21 21 22 19 C27 9 31 3 34 1' }))),
       createElement('div', { style: bubbleContent },
         multiple ? attentionItems.map((notice) => row(notice, 'compact')) : row(mainNotice, 'primary'))) : null,
     expanded && snapshot ? createElement('div', { role: 'region', 'aria-label': t('awb.notifications.list'), style: panel },
@@ -193,10 +210,8 @@ const panel: CSSProperties = { padding: 12, background: dshThemeColor.menuBackgr
 const bubblePanel: CSSProperties = { ...panel, position: 'relative', padding: 10, overflow: 'visible', borderRadius: '24px 24px 24px 8px', borderColor: dshThemeColor.accent,
   background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.prominentShadow }
 const bubbleContent: CSSProperties = { position: 'relative', zIndex: 1, display: 'grid', gap: 8, maxHeight: 'min(252px, calc(100vh - 48px))', overflowY: 'auto', overscrollBehavior: 'contain', padding: '2px 2px 4px' }
-const bubbleTail: CSSProperties = { position: 'absolute', left: 'var(--codingns-assistant-tail-left, 50%)', bottom: -17, width: 28, height: 18, marginLeft: -14,
-  background: dshThemeColor.accent, clipPath: 'polygon(0 0, 100% 0, 50% 100%)', zIndex: 0 }
-const bubbleTailFill: CSSProperties = { position: 'absolute', left: 2, bottom: 3, width: 24, height: 14, background: dshThemeColor.menuBackground,
-  clipPath: 'polygon(0 0, 100% 0, 50% 100%)' }
+const bubbleTail: CSSProperties = { position: 'absolute', left: 'var(--codingns-assistant-tail-left, 50%)', bottom: -21, width: 36, height: 22, marginLeft: -18,
+  zIndex: 0, pointerEvents: 'none' }
 const primaryCard: CSSProperties = { display: 'grid', gap: 9, padding: 5, minWidth: 0 }
 const compactCard: CSSProperties = { display: 'grid', gap: 7, padding: '10px 11px', minWidth: 0, background: dshThemeColor.cardBackground,
   border: `1px solid ${dshThemeColor.border}`, borderRadius: 15, boxShadow: dshThemeColor.subtleShadow }

@@ -39,6 +39,8 @@ export class DesktopAssistantController {
   private presentedNotice = ''
   private notificationExpanded = false
   private layout: DesktopAssistantLayout | undefined
+  /** 原生上报的 DSH 主窗口前台状态；未知时按后台处理。 */
+  private appActive = false
   private disposed = false
   private settle: ((error?: string) => void) | undefined
 
@@ -90,7 +92,7 @@ export class DesktopAssistantController {
   status(owner: string): DesktopAssistantStatus {
     // 能否使用原生形象与窗口是否已经显示是两回事，启动握手期间不能误判为不可用。
     // 当前形象不支持原生渲染时明确放行页面回退，避免一直停留在原生等待状态。
-    return { available: this.options.supported && !this.disposed && this.options.readFrame(this.presentation) !== undefined,
+    return { available: this.options.supported && !this.disposed && this.options.readFrame(this.frameInput()) !== undefined,
       owned: this.owner === owner, attached: this.owner !== undefined,
       visible: this.visible && this.owner === owner, openSequence: this.openSequence, error: this.error,
       generation: this.generation, ...(this.owner !== owner ? {} : { noticeEvents: [...this.noticeEvents], ...(this.noticeError === undefined ? {} : { noticeError: this.noticeError }) }) }
@@ -138,6 +140,10 @@ export class DesktopAssistantController {
     if (generation !== this.generation || this.disposed) return
     if (event.ev === 'loaded') this.settle?.()
     if (event.ev === 'shown') { this.visible = this.frame?.visible === true; this.refreshFrame() }
+    if (event.ev === 'app-state') {
+      const active = event.active === true
+      if (active !== this.appActive) { this.appActive = active; this.refreshFrame() }
+    }
     if (event.ev === 'layout') {
       const next = readDesktopAssistantLayout(event.layout)
       if (next) { this.layout = next; this.refreshFrame() }
@@ -157,8 +163,10 @@ export class DesktopAssistantController {
     if (event.ev === 'error') this.failed(generation, typeof event.message === 'string' ? event.message.slice(0, 500) : '原生悬浮窗口不可用')
   }
 
+  /** 读帧输入是页面推送的 presentation 加上原生上报的前台状态。 */
+  private frameInput(): DesktopAssistantPresentation { return this.appActive ? { ...this.presentation, appActive: true } : this.presentation }
   private refreshFrame(): void {
-    const frame = this.options.readFrame(this.presentation)
+    const frame = this.options.readFrame(this.frameInput())
     // 同一 noticeId 的完成提醒可以升级为错误；呈现版本必须取最终 Host 快照，不能只取主页面请求序号。
     const snapshot = frame?.notificationSnapshot
     const primary = desktopAssistantNotice(frame)

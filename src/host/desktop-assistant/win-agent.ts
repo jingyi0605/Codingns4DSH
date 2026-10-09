@@ -32,12 +32,17 @@ public static class PetAgent {
   static bool active = false;
   static bool dragging = false;
   static DispatcherTimer dragTimer;
+  static DispatcherTimer appStateTimer;
+  static bool appStateKnown = false;
+  static bool appStateActive = false;
   static POINT lastCursor;
   static DateTime lastBoundsEvent = DateTime.MinValue;
   static DateTime lastFocusRequest = DateTime.MinValue;
   static object sync = new object();
   [StructLayout(LayoutKind.Sequential)] struct POINT { public int X; public int Y; }
   [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT point);
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
   [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
   [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hwnd, int index);
   [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr hwnd, int index, int value);
@@ -95,6 +100,12 @@ public static class PetAgent {
     win.Left += (cursor.X - lastCursor.X) * matrix.M11;
     win.Top += (cursor.Y - lastCursor.Y) * matrix.M22;
     lastCursor = cursor;
+  }
+  // 主应用是否前台：前台窗口的进程等于 Desktop 父进程时，完成提示在前台静默。
+  static void AppStateTick(object sender, EventArgs e) {
+    uint pid = 0; GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+    bool next = parentPid > 0 && (int)pid == parentPid;
+    if (!appStateKnown || next != appStateActive) { appStateKnown = true; appStateActive = next; Emit(new { ev = "app-state", active = next }); }
   }
   static void Bounds(Dictionary<string, object> m) {
     lastBounds = m;
@@ -236,6 +247,7 @@ public static class PetAgent {
     win.Topmost=true; win.ShowActivated=false; win.Width=144; win.Height=156; win.Opacity=1;
     web=new WebView2CompositionControl(); web.DefaultBackgroundColor=System.Drawing.Color.Transparent;
     dragTimer=new DispatcherTimer(); dragTimer.Interval=TimeSpan.FromMilliseconds(16); dragTimer.Tick += DragTick;
+    appStateTimer=new DispatcherTimer(); appStateTimer.Interval=TimeSpan.FromSeconds(1.5); appStateTimer.Tick += AppStateTick; appStateTimer.Start();
     win.Content=web;
     win.SourceInitialized += delegate {
       IntPtr hwnd=new WindowInteropHelper(win).Handle;

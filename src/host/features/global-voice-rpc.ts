@@ -135,13 +135,13 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
         },
       })
       const managementAgent = createAssistantAgentAdapter(context.services.dshContext, context.services.dshVersion ?? minimumSupportedDshVersion(), llm, managementTools)
-      const notificationSource = new AssistantNotificationSource({ recover: (workspaceIds) => notifications.recoverSource(workspaceIds).map(toSourceNotificationFact), capabilities: () => ({ completed: true, error: true, requests: true, resolve: true, recovery: false }) })
+      const notificationSource = new AssistantNotificationSource({ recover: (workspaceIds) => notifications.recoverSource(workspaceIds).map(toSourceNotificationFact), capabilities: () => ({ completed: true, error: true, requests: true, resolve: true, recovery: notifications.recoverySupported }) })
       context.resources.add(() => notificationSource.dispose())
       const notifications = new AssistantNotificationEvents(context.services, { enabled: () => !resetting && !disposed, excludedSessionIds: () => managementAgent.sessionIds, onFact: (fact) => notificationSource.append(toSourceNotificationFact(fact)) })
       context.resources.add(() => notifications.dispose())
       // 同一 Host 中心供原生时钟和独立列表读取，主页面隐藏时仍准确同步。
       context.resources.add(bindDesktopAssistantNotifications(context.services, {
-        read: (input) => notifications.center.read(input),
+        read: (input) => { notifications.readCurrent(); return notifications.center.read(input) },
         presented: (input) => { notifications.center.ack(input) },
       }))
       // 正式文字和语音共用连续对话；租约只约束收音和当前语音轮次。
@@ -792,7 +792,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
             notifications.sourceScope(request.workspaceIds)
             return notificationSource.read(request)
           }
-          if (action === 'notifications/read') return notifications.center.read(payload as AssistantNotificationReadRequest)
+          if (action === 'notifications/read') { notifications.readCurrent(); return notifications.center.read(payload as AssistantNotificationReadRequest) }
           if (action === 'notifications/ack') return notifications.center.ack(payload as unknown as AssistantNotificationAckRequest)
           if (action === 'notifications/target') return { ...await notifications.center.target(payload as unknown as AssistantNotificationTargetRequest), localHostId }
           throw new TypeError('通知 RPC 方法无效')

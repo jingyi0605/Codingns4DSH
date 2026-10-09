@@ -28,7 +28,7 @@ import type { AssistantDraft } from './assistant-workbench.js'
 import type { AssistantSettings } from '../../shared/contracts/config.js'
 import type { NativeWorkspaceRecord } from '../native-workspace-store.js'
 import { SettingsToggleRow } from '../settings-controls.js'
-import { normalizeAssistantNotificationSettings } from '../../shared/assistant-notifications.js'
+import { ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS, normalizeAssistantNotificationSettings, type AssistantNotificationAutoCloseSeconds } from '../../shared/assistant-notifications.js'
 
 /** 创建与配置共用形象选择：选中 Live2D 时先确认引擎许可并自动安装，成功后才改草稿。 */
 function AssistantAvatarSelectionField({ services, appearance, avatarId, avatars, includeLegacy, disabled, t, onChange }: {
@@ -130,27 +130,50 @@ export function AssistantConfigurationPage({ tab, active = true, services, value
   }
 }
 
-/** 五个开关写入配置窗口的统一草稿，底部保存前不改变运行中的助理。 */
+/** 通知开关和自动关闭选项写入配置窗口的统一草稿，底部保存前不改变运行中的助理。 */
 export function AssistantNotificationSettings({ services, value, disabled, t, onError }: {
   readonly services: CodingNsClientServices; readonly value: AssistantSettings; readonly disabled: boolean
   readonly t: CodingNsTranslator; readonly onError: (error: string) => void
 }): ReactElement {
   const settings = normalizeAssistantNotificationSettings(value.notifications)
   const compactRowStyle: CSSProperties = { minHeight: 40, padding: '5px 0' }
-  const set = (key: keyof typeof settings, checked: boolean): void => {
+  type BooleanSettingKey = keyof Omit<typeof settings, 'autoCloseSeconds'>
+  const set = (key: BooleanSettingKey, checked: boolean): void => {
     void services.settings.set(`assistant.notifications.${key}`, checked)
       .catch((cause: unknown) => onError(message(cause)))
   }
-  const row = (key: keyof typeof settings, style: CSSProperties): ReactElement => createElement(SettingsToggleRow, {
+  const row = (key: BooleanSettingKey, style: CSSProperties, description?: string): ReactElement => createElement(SettingsToggleRow, {
     key, label: t(`awb.notifications.${key}`), checked: settings[key],
+    ...(description === undefined ? {} : { description }),
     disabled: disabled || (key !== 'enabled' && !settings.enabled), style,
     onChange: (checked) => set(key, checked),
   })
+  const setSeconds = (value: number): void => {
+    if (!ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS.includes(value as AssistantNotificationAutoCloseSeconds)) return
+    void services.settings.set('assistant.notifications.autoCloseSeconds', value)
+      .catch((cause: unknown) => onError(message(cause)))
+  }
+  const durationRow = createElement('div', { style: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, width: '100%', minWidth: 0,
+    minHeight: 40, padding: '5px 0', borderBottom: `0.5px solid ${dshThemeColor.menuBorder}`, boxSizing: 'border-box',
+  } },
+  createElement('label', { htmlFor: 'codingns-assistant-notification-auto-close-seconds', style: { flex: '1 1 auto', minWidth: 0, cursor: disabled || !settings.enabled || !settings.autoClose ? 'default' : 'pointer', overflowWrap: 'anywhere' } },
+    createElement('span', { style: { display: 'block', fontSize: 13, fontWeight: 500, lineHeight: 1.4 } }, t('awb.notifications.autoCloseDuration')),
+    createElement('span', { style: dshSettingsHelpStyle }, t('awb.notifications.autoCloseDurationHint'))),
+  createElement('select', {
+    id: 'codingns-assistant-notification-auto-close-seconds',
+    value: String(settings.autoCloseSeconds), disabled: disabled || !settings.enabled || !settings.autoClose,
+    'aria-label': t('awb.notifications.autoCloseDuration'),
+    style: { ...dshSettingsFieldStyle, flex: '0 0 auto', width: 112, minHeight: 32, padding: '5px 8px' },
+    onChange: (event: { currentTarget: { value: string } }) => setSeconds(Number(event.currentTarget.value)),
+  }, ...ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS.map((seconds) => createElement('option', { key: seconds, value: String(seconds) }, `${seconds}${t('awb.notifications.seconds')}`))))
   return createElement('fieldset', { disabled, 'data-codingns-assistant-notification-settings': true,
     style: { border: 0, padding: 0, margin: 0, minWidth: 0 } },
     createElement('legend', { style: { fontWeight: 600, marginBottom: 6 } }, t('awb.notifications.title')),
     createElement('p', { style: help }, t('awb.notifications.hint')),
     row('enabled', { minHeight: 44, padding: '5px 0' }),
+    row('autoClose', compactRowStyle, t('awb.notifications.autoCloseHint')),
+    durationRow,
     createElement('div', { style: {
       display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
       columnGap: 20, rowGap: 0, marginTop: 2,

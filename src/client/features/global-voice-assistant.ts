@@ -406,6 +406,8 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   const desktopNotificationSnapshot = readDesktopAssistantNotificationSnapshot(noticeFrame)
   const desktopAvatar = useDesktopAssistant(services.rpc, { visible: floatingEnabled, state: avatarState,
     label: t('avatar.openAssistant'), caption: floatingCall ? [floatingCall.userText, floatingCall.assistantText].filter(Boolean).join('\n').slice(-8000) : '',
+    autoClose: notificationSettings.autoClose,
+    autoCloseSeconds: notificationSettings.autoCloseSeconds,
     ...(reaction === undefined ? {} : { reaction }), ...(desktopNotification === undefined ? {} : { notification: desktopNotification }),
     ...(desktopNotificationSnapshot === undefined ? {} : { notificationSnapshot: desktopNotificationSnapshot }) }, openConversation, {
       onNoticePresented: (event) => notifications.acknowledge(event.noticeId, event.noticeGeneration, 'presented', event.noticeKind, event.connectionGeneration),
@@ -421,7 +423,8 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   const notification = noticeFrame === undefined ? (notificationsEnabled && notificationSnapshot.error ? createElement('div', {
     role: 'alert', style: { padding: 12, background: 'var(--dsw-alias-background-secondary)', borderRadius: 12, overflowWrap: 'anywhere' },
   }, notificationSnapshot.error) : undefined) : createElement(AssistantNotificationBubble, {
-    frame: noticeFrame, t, error: notificationSnapshot.error, onPresented: presentNotice, onDismiss: dismissNotice, onOpen: openNotice, onPage: pageNotices,
+    frame: noticeFrame, t, error: notificationSnapshot.error, autoClose: notificationSettings.autoClose, autoCloseSeconds: notificationSettings.autoCloseSeconds,
+    onPresented: presentNotice, onDismiss: dismissNotice, onOpen: openNotice, onPage: pageNotices,
   })
   return createElement('div', { 'data-codingns-global-voice': 'true', ...(conversationOpen || floatingVisible ? {} : { 'aria-hidden': 'true' }) },
     floatingVisible && !nativeFloating

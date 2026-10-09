@@ -34,6 +34,11 @@ export function desktopAssistantNotificationPresentation(services: CodingNsHostS
   const { notification: previous, notificationSnapshot: previousSnapshot, reaction: previousReaction, ...base } = presentation
   const safe = snapshot === undefined ? base : { ...base, notificationSnapshot: snapshot }
   if (!primary || !snapshot) return safe
+  // DSH 主窗口在前台时，完成提示静默记为已读：不弹气泡，也不保留未读；失败、审批与提问照常呈现。
+  if (presentation.appActive === true && primary.kind === 'completed') {
+    if (!primary.read) source.presented({ noticeId: primary.noticeId, generation: snapshot.generation, action: 'read' })
+    return safe
+  }
   const notification = readDesktopAssistantNotification({ ...primary, generation: snapshot.generation })
   if (!notification) return safe
   const reactions: Record<typeof primary.kind, AssistantAvatarReaction> = { completed: 'success', error: 'concerned', question: 'question', approval: 'approval' }
