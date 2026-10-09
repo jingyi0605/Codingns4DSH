@@ -491,6 +491,12 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
       })
       return false
     }
+    // DSH 原生 steer 会把真实用户消息放进同一个 next-step 收件箱。此时再
+    // 注入一条插件提示会把两条消息一起交给外部适配器；若提示排在最后，
+    // 适配器会误把内部提示当成当前 prompt，用户 steer 就永远到不了 Provider。
+    // 这里在同一个同步临界区内检查并复用已有输入，避免“先检查、后注入”之间
+    // 被另一个同步调用插入的竞态，也保持 DSH Agent 对收件箱的唯一所有权。
+    if (hasPendingNativeNextStep(agent)) return true
     injectedStepSequence += 1
     const boundedSummary = summary.trim().slice(0, 120) || '外部工具已完成，继续处理当前任务。'
     const producerOwned = usesProducerOwnedSource(appendableSession(store?.get(sessionId)))
@@ -915,6 +921,17 @@ function nativeAgent(ctx: Context, sessionId: string): unknown | null {
   const value: unknown = ctx.get('agents')
   if (!isRecord(value) || typeof value.get !== 'function') return null
   try { return (value as unknown as NativeAgentRegistry).get(sessionId) ?? null } catch { return null }
+}
+
+/** 读取 Agent 当前的 next-step 收件箱；失败时按没有待处理输入降级。 */
+function hasPendingNativeNextStep(agent: unknown): boolean {
+  if (!isRecord(agent)) return false
+  try {
+    const inbox = agent.inbox
+    return isRecord(inbox) && Array.isArray(inbox.nextStep) && inbox.nextStep.length > 0
+  } catch {
+    return false
+  }
 }
 
 function nativeApproval(ctx: Context): NativeApprovalService | null {

@@ -300,7 +300,6 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       yield* drainCompactionEvents(session)
       yield { type: 'session-binding', providerSessionId: session.providerSessionId }
       const eventQueue = createCodexTurnEventQueue()
-      let activeTurnId: string | null = null
       let turnStartResolved = false
       const notificationsBeforeTurnStart: JsonRpcMessage[] = []
       let terminalReason: 'stop' | 'cancel' | 'error' | null = null
@@ -318,10 +317,12 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
             && (notificationTurnId === null || !session.suppressedCompactionTurnIds.has(notificationTurnId))) eventQueue.push(message)
           return
         }
-        if (!isCodexNotificationForTurn(message, session.threadId, activeTurnId, allowUnidentifiedTool)) return
+        // `turn/steer` 可能把 Codex 的活动回合切换成新的 turnId。这里必须读取
+        // 会话共享状态；闭包里的旧 turnId 会把新回合正文误判成别的回合，随后
+        // 迟到的旧 turn/completed 关闭队列，表现为插话消息发送后立即消失。
+        if (!isCodexNotificationForTurn(message, session.threadId, session.turnId, allowUnidentifiedTool)) return
         const turnId = readTurnId(message)
         if (turnId !== null) {
-          activeTurnId = turnId
           session.turnId = turnId
         }
         eventQueue.push(message)
@@ -358,7 +359,6 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         yield* drainCompactionEvents(session)
         const responseTurnId = readTurnId(response)
         if (responseTurnId !== null) {
-          activeTurnId = responseTurnId
           session.turnId = responseTurnId
         }
         turnStartResolved = true
@@ -448,6 +448,12 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       if (isNew) session.segmentedTurn = active
       if (isNew) yield { type: 'session-binding', providerSessionId: session.providerSessionId }
 
+      // DSH 原生 steer 会把消息放进下一个 step。Codex 分段流仍复用同一个
+      // Provider turn，单纯续读旧队列会让这条消息只在 DSH 临时快照里出现，
+      // 随即被消费掉；只有把真实用户输入转成 `turn/steer`，Codex 才会继续
+      // 生成新方向的正文。内部 step 提示和问题回答不属于用户插话，不能重复注入。
+      if (!isNew && isCodexSteeringInput(input)) await this.steer(input.sessionId, input.prompt)
+
       for await (const chunk of this.consumeSegment(session, active, input)) yield chunk
       if (active.done && session.segmentedTurn === active) session.segmentedTurn = undefined
     } catch (error) {
@@ -462,7 +468,6 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     input: CodingNsCliTurnInput,
   ): Promise<CodexSegmentedTurn> {
     const eventQueue = createCodexTurnEventQueue()
-    let activeTurnId: string | null = null
     let turnStartResolved = false
     const notificationsBeforeTurnStart: JsonRpcMessage[] = []
     const active: CodexSegmentedTurn = {
@@ -485,10 +490,11 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
           && (notificationTurnId === null || !session.suppressedCompactionTurnIds.has(notificationTurnId))) eventQueue.push(message)
         return
       }
-      if (!isCodexNotificationForTurn(message, session.threadId, activeTurnId, allowUnidentifiedTool)) return
+      // 分段流与普通流一样，插话后必须跟随会话当前 turnId，不能继续使用
+      // startTurn 时捕获的旧值，否则新回合的通知会全部被丢弃。
+      if (!isCodexNotificationForTurn(message, session.threadId, session.turnId, allowUnidentifiedTool)) return
       const turnId = readTurnId(message)
       if (turnId !== null) {
-        activeTurnId = turnId
         session.turnId = turnId
       }
       eventQueue.push(message)
@@ -518,7 +524,6 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       const response = await this.startTurn(session, input)
       const responseTurnId = readTurnId(response)
       if (responseTurnId !== null) {
-        activeTurnId = responseTurnId
         session.turnId = responseTurnId
       }
       turnStartResolved = true
@@ -1304,6 +1309,20 @@ function codexMessageToChunk(message: Record<string, any>): CodingNsAgentEvent |
   return codexUsageChunk(params)
 }
 
+/** 判断分段续流是否带来了新的真实用户插话。 */
+function isCodexSteeringInput(input: CodingNsCliTurnInput): boolean {
+  if (input.resumeSegmentedTurn !== true || input.prompt.trim() === '') return false
+  for (let index = input.messages.length - 1; index >= 0; index -= 1) {
+    const message = input.messages[index]
+    if (message?.role !== 'user') continue
+    const source = isRecord(message.source) ? message.source : null
+    // 旧版调用方没有 source 时按真实用户输入兼容；DSH 内部 notice、问题回答
+    // 等带 source 的控制消息必须排除，避免把同一份上下文再次 steer 给 Codex。
+    return source === null || source.kind === undefined || source.kind === 'user'
+  }
+  return false
+}
+
 function* drainCompactionEvents(session: CodexSession): Generator<CodingNsAgentEvent> {
   while (session.pendingCompactionEvents.length > 0) {
     const event = session.pendingCompactionEvents.shift()
@@ -1584,7 +1603,7 @@ function isCodexNotificationForTurn(
   // 权限/问题审批是 Codex 发起的 JSON-RPC 请求，必须先交给交互层，不能因
   // 它的 turnId 尚未出现在 turn/start 响应中而丢弃。
   if (message.id !== undefined && message.id !== null) return true
-  // 响应返回前 activeTurnId 为空；带 turnId 的旧通知不能提前关闭新回合队列。
+  // 响应返回前当前 turnId 为空；带 turnId 的旧通知不能提前关闭新回合队列。
   if (turnId === null && notificationTurnId !== null) return false
   // turn/start 响应前的无 turnId 通知无法证明属于本次回合，尤其不能让迟到的
   // 无标识 turn/completed 直接关闭新回合；响应后再交给当前开放的 DSH step。
