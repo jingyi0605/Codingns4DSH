@@ -35,6 +35,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
     rawStoreRef: string | undefined
     providerSessionId: string
     stateLoaded: boolean
+    modelContextWindow: number | undefined
   }>()
 
   constructor(options: PiAgentDriverOptions = {}) {
@@ -96,6 +97,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
           const state = await rpc.request('get_state', {}, { signal: input.signal, killOnAbort: false, wireFormat: 'pi' })
           const discoveredId = readPiStateSessionId(state)
           if (discoveredId) session.providerSessionId = discoveredId
+          session.modelContextWindow = readPiModelContextWindow(state)
         } catch { /* 旧版 Pi 不提供 get_state 时保留 Host 侧回退标识。 */ }
         session.stateLoaded = true
       }
@@ -103,7 +105,8 @@ export class PiAgentDriver implements CodingNsCliDriver {
         const model = parsePiModelId(input.modelId)
         if (model !== null) {
           try {
-            await rpc.request('set_model', model, { signal: input.signal, killOnAbort: false, wireFormat: 'pi' })
+            const selected = await rpc.request('set_model', model, { signal: input.signal, killOnAbort: false, wireFormat: 'pi' })
+            session.modelContextWindow = readPiModelContextWindow(selected) ?? session.modelContextWindow
           } catch { /* 模型目录或旧版 Pi 不支持切换时继续使用当前模型。 */ }
         }
       }
@@ -120,6 +123,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
         ...(images.length > 0 ? { images } : {}),
       }, input.signal)
       let finishResult: { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }
+      let latestUsage: Extract<CodingNsAgentEvent, { type: 'usage' }> | null = null
       while (true) {
         const item = await stream.next()
         if (item.done) {
@@ -131,9 +135,17 @@ export class PiAgentDriver implements CodingNsCliDriver {
           session.providerSessionId = discoveredId
           yield { type: 'session-binding', providerSessionId: discoveredId }
         }
-        const chunk = piMessageToChunk(item.value)
-        if (chunk !== null) yield chunk
+        for (const chunk of piMessageToChunks(item.value)) {
+          if (chunk.type === 'usage') {
+            // Pi 的 message_update 用量是同一轮的滚动快照，先保留最后一份，
+            // 等 get_session_stats 补齐上下文后只投影一次，避免重复采样。
+            latestUsage = chunk
+          } else yield chunk
+        }
       }
+      const statsUsage = await readPiSessionStats(rpc, input.signal, session.modelContextWindow)
+      const enrichedUsage = enrichPiUsage(latestUsage, statsUsage, session.modelContextWindow)
+      if (enrichedUsage !== null) yield enrichedUsage
       if (finishResult.reason === 'cancel') {
         await this.interrupt(input.sessionId)
       }
@@ -194,6 +206,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
       rawStoreRef,
       providerSessionId: providerSessionId ?? sessionId,
       stateLoaded: false,
+      modelContextWindow: undefined as number | undefined,
     }
     this.sessions.set(sessionId, session)
     return session
@@ -319,25 +332,32 @@ function parsePiCatalog(value: unknown): CodingNsCliModelCatalog {
   return { groups: [{ id: 'pi', name: 'Pi', models: [...new Map(items.map((item) => [item.id, item])).values()] }], currentModel: null, currentEffort: null }
 }
 
-function piMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | null {
+function piMessageToChunks(message: Record<string, any>): readonly CodingNsAgentEvent[] {
   const params = isRecord(message.params) ? message.params : message
   const event = isRecord(params.item) ? params.item : params
   const assistantEvent = isRecord(params.assistantMessageEvent) ? params.assistantMessageEvent : null
   const completedMessage = isRecord(params.message) ? params.message : null
   const rootType = typeof event.type === 'string' ? event.type : typeof params.event === 'string' ? params.event : ''
+  const usage = piUsageChunk(params) ?? (completedMessage === null ? null : piUsageChunk(completedMessage))
   if (rootType === 'agent_start'
     || rootType === 'agent_settled'
     || rootType === 'agent_end'
     || rootType === 'turn_start'
     || rootType === 'turn_end'
     || rootType === 'message_start'
-    || rootType === 'message_end') return null
+    || rootType === 'message_end') return usage === null ? [] : [usage]
   const type = assistantEvent !== null && typeof assistantEvent.type === 'string' ? assistantEvent.type : rootType
   const reasoning = reasoningText(assistantEvent ?? params)
-  if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning }
+  if (reasoning !== null) return usage === null ? [{ type: 'reasoning-delta', text: reasoning }] : [{ type: 'reasoning-delta', text: reasoning }, usage]
   const text = textValue(assistantEvent?.delta ?? params.delta ?? params.text ?? params.content ?? params.message)
-  if (type.includes('text_delta') || type === 'text-delta' || type === 'assistant_message_event' && text) return text ? { type: 'text-delta', text } : null
-  if (type.includes('thinking') || type.includes('reasoning')) return text ? { type: 'reasoning-delta', text } : null
+  if (type.includes('text_delta') || type === 'text-delta' || type === 'assistant_message_event' && text) {
+    if (!text) return usage === null ? [] : [usage]
+    return usage === null ? [{ type: 'text-delta', text }] : [{ type: 'text-delta', text }, usage]
+  }
+  if (type.includes('thinking') || type.includes('reasoning')) {
+    if (!text) return usage === null ? [] : [usage]
+    return usage === null ? [{ type: 'reasoning-delta', text }] : [{ type: 'reasoning-delta', text }, usage]
+  }
   const toolResultMessage = completedMessage?.role === 'toolResult' ? completedMessage : null
   const toolCall = isToolRecord(assistantEvent?.toolCall) ? assistantEvent.toolCall : null
   if (type.includes('tool') || type.includes('agent') || toolResultMessage !== null) {
@@ -354,7 +374,7 @@ function piMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | nu
       source.status ?? source.state ?? params.status ?? params.state,
       failed ? 'failed' : type.includes('end') || type.includes('completed') || toolResultMessage !== null ? 'completed' : 'running',
     )
-    return {
+    const tool: CodingNsAgentEvent = {
       type: 'tool-event',
       toolName,
       status,
@@ -365,9 +385,115 @@ function piMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | nu
       ...(agentId ? { agentId } : {}),
       ...(detail !== undefined ? { detail } : {}),
     }
+    return usage === null ? [tool] : [tool, usage]
   }
-  const usage = usageChunk(params)
-  return usage ?? null
+  return usage === null ? [] : [usage]
+}
+
+/** Pi 的 Usage 使用 input/output/cacheRead/cacheWrite 短字段，且 input 不含缓存桶。 */
+function piUsageChunk(value: unknown): Extract<CodingNsAgentEvent, { type: 'usage' }> | null {
+  if (!isRecord(value)) return null
+  const usage = isRecord(value.usage) ? value.usage : value
+  const inputTokens = piNumber(usage.input ?? usage.inputTokens)
+  const outputTokens = piNumber(usage.output ?? usage.outputTokens)
+  const cacheReadTokens = piNumber(usage.cacheRead ?? usage.cacheReadTokens)
+  const cacheWriteTokens = piNumber(usage.cacheWrite ?? usage.cacheWriteTokens)
+  const totalTokens = piNumber(usage.totalTokens ?? usage.total_tokens)
+  const contextWindow = piNumber(usage.contextWindow ?? usage.context_window)
+  const contextTokens = piNumber(usage.contextTokens ?? usage.context_tokens)
+  const contextUsageRatio = piNumber(usage.contextUsageRatio ?? usage.context_usage_ratio)
+  const normalized = usageChunk({
+    inputTokens: inputTokens ?? 0,
+    ...(inputTokens === undefined ? {} : { uncachedInputTokens: inputTokens }),
+    outputTokens: outputTokens ?? 0,
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(contextTokens === undefined ? {} : { contextTokens }),
+    ...(contextUsageRatio === undefined ? {} : { contextUsageRatio }),
+  })
+  return normalized?.type === 'usage' ? normalized : null
+}
+
+function piNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : undefined
+}
+
+function readPiModelContextWindow(value: unknown): number | undefined {
+  if (!isRecord(value)) return undefined
+  const data = isRecord(value.data) ? value.data : value
+  const model = isRecord(data.model) ? data.model : undefined
+  const contextWindow = piNumber(model?.contextWindow ?? model?.context_window)
+  return contextWindow !== undefined && contextWindow > 0 ? contextWindow : undefined
+}
+
+interface PiStatsUsage {
+  readonly contextWindow?: number
+  readonly contextTokens?: number
+  readonly contextUsageRatio?: number
+}
+
+async function readPiSessionStats(rpc: JsonRpcProcess, signal: AbortSignal | undefined, fallbackContextWindow: number | undefined): Promise<PiStatsUsage | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 1_500)
+  const abort = (): void => controller.abort()
+  signal?.addEventListener('abort', abort, { once: true })
+  try {
+    const value = await rpc.request('get_session_stats', {}, { signal: controller.signal, killOnAbort: false, wireFormat: 'pi' })
+    if (!isRecord(value)) return null
+    const data = isRecord(value.data) ? value.data : value
+    const context = isRecord(data.contextUsage) ? data.contextUsage : isRecord(data.context_usage) ? data.context_usage : undefined
+    const contextWindow = piNumber(context?.contextWindow ?? context?.context_window) ?? fallbackContextWindow
+    const contextTokens = piNumber(context?.tokens ?? context?.contextTokens ?? context?.context_tokens)
+    const percent = piNumber(context?.percent)
+    const contextUsageRatio = piNumber(context?.contextUsageRatio ?? context?.context_usage_ratio)
+      ?? (percent === undefined ? undefined : Math.min(1, percent / 100))
+    if (contextWindow === undefined && contextTokens === undefined && contextUsageRatio === undefined) return null
+    return {
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+      ...(contextTokens === undefined ? {} : { contextTokens }),
+      ...(contextUsageRatio === undefined ? {} : { contextUsageRatio }),
+    }
+  } catch {
+    // 旧版 Pi 没有 get_session_stats 时保留 message_update 的用量路径。
+    return null
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', abort)
+  }
+}
+
+function enrichPiUsage(
+  usage: Extract<CodingNsAgentEvent, { type: 'usage' }> | null,
+  stats: PiStatsUsage | null,
+  fallbackContextWindow: number | undefined,
+): Extract<CodingNsAgentEvent, { type: 'usage' }> | null {
+  const contextWindow = stats?.contextWindow ?? fallbackContextWindow
+  const contextTokens = stats?.contextTokens
+    ?? (usage === null ? undefined : usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0))
+  const contextUsageRatio = stats?.contextUsageRatio
+    ?? (contextWindow !== undefined && contextTokens !== undefined && contextWindow > 0
+      ? Number(Math.min(1, contextTokens / contextWindow).toFixed(6))
+      : undefined)
+  if (usage === null) {
+    if (contextWindow === undefined && contextTokens === undefined && contextUsageRatio === undefined) return null
+    return {
+      type: 'usage',
+      inputTokens: 0,
+      outputTokens: 0,
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+      ...(contextTokens === undefined ? {} : { contextTokens }),
+      ...(contextUsageRatio === undefined ? {} : { contextUsageRatio }),
+    }
+  }
+  if (contextWindow === undefined && contextTokens === undefined && contextUsageRatio === undefined) return usage
+  return {
+    ...usage,
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(contextTokens === undefined ? {} : { contextTokens }),
+    ...(contextUsageRatio === undefined ? {} : { contextUsageRatio }),
+  }
 }
 
 function readSessionId(message: Record<string, any>): string | null {

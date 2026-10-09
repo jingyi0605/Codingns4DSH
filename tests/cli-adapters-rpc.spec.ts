@@ -205,6 +205,52 @@ test('Pi RPC 保留工具执行的参数、增量结果和完成状态', async (
   driver.dispose()
 })
 
+test('Pi RPC 解析短字段 usage，并从 get_session_stats 补齐上下文组件', async () => {
+  const driver = new PiAgentDriver({
+    binaries: ['fake-pi'],
+    spawnSync: (() => ({ status: 0, stdout: 'pi 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method?: string; type?: string }
+        const command = request.method ?? request.type
+        if (command === 'get_state') {
+          stdout.write(`${JSON.stringify({ id: request.id, type: 'response', success: true, data: { sessionId: 'pi-usage', model: { contextWindow: 200000 } } })}\n`)
+          return
+        }
+        if (command === 'get_session_stats') {
+          stdout.write(`${JSON.stringify({ id: request.id, type: 'response', success: true, data: { contextUsage: { tokens: 1234, contextWindow: 200000, percent: 0.617 } } })}\n`)
+          return
+        }
+        if (command !== 'prompt') {
+          stdout.write(`${JSON.stringify({ id: request.id, type: 'response', success: true, data: {} })}\n`)
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { accepted: true } })}\n`)
+        setImmediate(() => {
+          stdout.write(`${JSON.stringify({ type: 'message_update', usage: { input: 120, output: 8, cacheRead: 40, cacheWrite: 5, totalTokens: 173 }, assistantMessageEvent: { type: 'text_delta', delta: '完成' } })}\n`)
+          stdout.write(`${JSON.stringify({ type: 'agent_settled' })}\n`)
+        })
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'pi-usage', messages: [], prompt: '统计' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'pi-usage' },
+    { type: 'text-delta', text: '完成' },
+    {
+      type: 'usage', inputTokens: 120, outputTokens: 8, cacheReadTokens: 40, cacheWriteTokens: 5,
+      uncachedInputTokens: 120, totalTokens: 173, cacheHitRate: 24.2424,
+      contextWindow: 200000, contextTokens: 1234, contextUsageRatio: 0.00617,
+    },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
 test('Codex 恢复线程后按 DSH 选择纠正线程模型，避免沿用被污染的旧模型', async () => {
   const calls: { method: string; params: Record<string, unknown> }[] = []
   const driver = new CodexAppServerDriver({
