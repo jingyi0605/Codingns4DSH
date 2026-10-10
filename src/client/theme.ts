@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react'
+import { uiFontSize } from './font-scale.js'
 
 /**
  * DSH 0.1.6 暴露的主题令牌。
@@ -92,7 +93,7 @@ export const dshSettingsHeaderStyle: CSSProperties = {
 export const dshSettingsTitleStyle: CSSProperties = {
   margin: 0,
   color: dshThemeColor.labelPrimary,
-  fontSize: 21,
+  fontSize: uiFontSize(21),
   lineHeight: 1.3,
   fontWeight: 700,
 }
@@ -100,7 +101,7 @@ export const dshSettingsTitleStyle: CSSProperties = {
 export const dshSettingsSubtitleStyle: CSSProperties = {
   margin: 0,
   color: dshThemeColor.labelSecondary,
-  fontSize: 13,
+  fontSize: uiFontSize(13),
   lineHeight: 1.5,
 }
 
@@ -135,14 +136,14 @@ export const dshSettingsSummaryTextStyle: CSSProperties = {
 
 export const dshSettingsSummaryLabelStyle: CSSProperties = {
   color: dshThemeColor.labelPrimary,
-  fontSize: 14,
+  fontSize: uiFontSize(14),
   lineHeight: 1.35,
   fontWeight: 650,
 }
 
 export const dshSettingsSummaryDescriptionStyle: CSSProperties = {
   color: dshThemeColor.labelSecondary,
-  fontSize: 12,
+  fontSize: uiFontSize(12),
   lineHeight: 1.45,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
@@ -160,7 +161,7 @@ export const dshSettingsBodyStyle: CSSProperties = {
 
 export const dshSettingsFieldLabelStyle: CSSProperties = {
   color: dshThemeColor.labelSecondary,
-  fontSize: 12,
+  fontSize: uiFontSize(12),
   lineHeight: 1.4,
   fontWeight: 600,
 }
@@ -172,7 +173,7 @@ export const dshSettingsFieldStyle: CSSProperties = {
   boxSizing: 'border-box',
   padding: '8px 10px',
   borderRadius: 6,
-  fontSize: 13,
+  fontSize: uiFontSize(13),
 }
 
 export const dshSettingsButtonStyle: CSSProperties = {
@@ -180,7 +181,7 @@ export const dshSettingsButtonStyle: CSSProperties = {
   minHeight: 36,
   padding: '8px 14px',
   borderRadius: 6,
-  fontSize: 13,
+  fontSize: uiFontSize(13),
   lineHeight: 1.3,
   cursor: 'pointer',
 }
@@ -214,7 +215,7 @@ export const dshSettingsListRowStyle: CSSProperties = {
 
 export const dshSettingsHelpStyle: CSSProperties = {
   color: dshThemeColor.labelTertiary,
-  fontSize: 12,
+  fontSize: uiFontSize(12),
   lineHeight: 1.5,
 }
 
@@ -224,7 +225,7 @@ export const dshSettingsNoteStyle: CSSProperties = {
   borderRadius: 6,
   color: dshThemeColor.labelSecondary,
   background: dshThemeColor.surfaceSubtle,
-  fontSize: 12,
+  fontSize: uiFontSize(12),
   lineHeight: 1.5,
 }
 
@@ -256,7 +257,7 @@ export const dshSettingsToastStyle: CSSProperties = {
   background: dshThemeColor.menuBackground,
   boxShadow: dshThemeColor.prominentShadow,
   color: dshThemeColor.labelPrimary,
-  fontSize: 13,
+  fontSize: uiFontSize(13),
   lineHeight: 1.4,
   textAlign: 'center',
 }

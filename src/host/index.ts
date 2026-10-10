@@ -15,6 +15,7 @@ import { CodingNsRpcTable } from './rpc-table.js'
 import { registerCodingNsSettings } from './settings.js'
 import { createCodingNsNativeSessionBridge } from './native-session-bridge.js'
 import { installTerminalController } from './terminal/startup.js'
+import type { DshTerminalAgent } from './terminal/terminal-controller.js'
 import { DebugWorkspaceService } from './debug.js'
 import { detectRuntimeDshVersion, DSH_VERSION_INJECTION_NAME } from './dsh-runtime-version.js'
 import { createDshCapabilityRegistry } from '../dsh-capabilities/index.js'
@@ -125,12 +126,33 @@ export async function apply(ctx?: Context): Promise<void> {
     indexInjectionSettings = settings
     debugInfo('codingns4dsh: host settings registered')
     hostCtx.effect(() => registerProviderIconRoutes(hostCtx.connection.fetch), 'codingns4dsh: 提供商图标资源')
+    // 能力 Profile 只依赖 Context 与版本，提前到终端装配之前解析，供需要按能力
+    // 降级的装配点使用；业务代码只判 ready，不写版本判断。
+    const capabilityProfile = createDshCapabilityRegistry(dshVersion, 'host', hostCtx).getProfile(hostCtx)
+    const workingDirectoryCapability = capabilityProfile.capabilities.get('session.working-directory')
+    const workingDirectoryService = workingDirectoryCapability?.status === 'ready'
+      ? workingDirectoryCapability.value as { get(session: unknown): string } | undefined
+      : undefined
     const workspaceRoots = new Map<string, string>()
     // controller 必须在功能模块和浏览器 Client 开始消费状态前完成装配。
     // 工厂在本次启动只读取一次开关，设置 watcher 不会热切同名 service。
     const terminal = await installTerminalController(hostCtx, settings, settingsContext.settings, {
       resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveWorkspaceRoot(hostCtx, workspaceId),
       registerWorkspaceRoot: (workspaceId, cwd) => workspaceRoots.set(workspaceId, cwd),
+      // alpha.2 起会话「当前目录」可被模型切换；旧版本没有该服务，回调整体缺省，
+      // 终端自动回退到不可变的会话头目录。
+      ...(workingDirectoryService === undefined ? {} : {
+        workingDirectory: (agent: DshTerminalAgent): string | undefined => {
+          const session = (agent as { session?: unknown }).session
+          if (session === undefined) return undefined
+          try {
+            return workingDirectoryService.get(session)
+          } catch {
+            // 会话尚未建立投影时按缺失处理，让终端回退到会话头目录。
+            return undefined
+          }
+        },
+      }),
     })
     debugInfo('codingns4dsh: host terminal controller ready', { mode: terminal.mode })
     const services: CodingNsHostServices = {
@@ -170,7 +192,6 @@ export async function apply(ctx?: Context): Promise<void> {
       terminalProcesses: terminal.processService,
     })
     const servicesWithDebug: CodingNsHostServices = { ...services, debug }
-    const capabilityProfile = createDshCapabilityRegistry(dshVersion, 'host', hostCtx).getProfile(hostCtx)
     debugInfo('codingns4dsh: host capabilities resolved', {
       dshVersion,
       capabilities: [...capabilityProfile.capabilities.entries()].map(([capability, resolution]) => ({ capability, status: resolution.status, route: resolution.routeId, reason: resolution.reason ?? null })),

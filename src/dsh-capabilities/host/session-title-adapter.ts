@@ -22,6 +22,11 @@ interface TitleRequest {
   readonly sessionId: string
   readonly messages: readonly Record<string, any>[]
   readonly signal?: AbortSignal
+  /**
+   * alpha.2 起原生生成器会带上「调用时捕获的最新已接受标题」；旧版本没有该字段。
+   * 只用于让改写后的标题与上一版保持措辞连续，缺失时按首次生成处理。
+   */
+  readonly currentTitle?: unknown
   readonly [key: string]: unknown
 }
 interface LlmRuntime { stream(options: Readonly<Record<string, unknown>>): AsyncIterable<Record<string, any>> }
@@ -97,12 +102,31 @@ export function createSessionTitleOptimizationAdapter(ctx: unknown, dshVersion: 
   }
 }
 
+/**
+ * 把「当前标题」并入标题系统提示。
+ *
+ * 字段缺失、类型不符或标题为空时原样返回，因此旧版本 DSH 的生成提示与今天逐字一致，
+ * 不需要版本判断。有了它，多轮对话里标题会沿用语措辞而不是每次重写。
+ */
+function sessionTitleSystemPrompt(currentTitle: unknown): string {
+  if (typeof currentTitle !== 'object' || currentTitle === null) return SESSION_TITLE_SYSTEM_PROMPT
+  const raw = (currentTitle as { title?: unknown }).title
+  const title = typeof raw === 'string' ? raw.trim() : ''
+  if (title === '') return SESSION_TITLE_SYSTEM_PROMPT
+  return [
+    SESSION_TITLE_SYSTEM_PROMPT,
+    `会话当前标题是「${title}」。如果最新用户消息与它主题一致，请沿用这一措辞；只有主题确实变化时才改写。`,
+  ].join('\n')
+}
+
 /** 一次生成，必要时再概括一次；不靠裁剪模型输出来满足长度。 */
 async function generateTitle(llm: LlmRuntime, session: NativeSession, request: TitleRequest, inputs: readonly TitleInput[], signal: AbortSignal): Promise<string> {
+  // alpha.2 会带上当前标题；旧版本该字段缺失，系统提示与今天逐字一致。
+  const system = sessionTitleSystemPrompt(request.currentTitle)
   let messages = request.messages
   for (let attempt = 0; attempt < 2; attempt += 1) {
     signal.throwIfAborted()
-    const options = { ...request, system: SESSION_TITLE_SYSTEM_PROMPT, messages, maxTokens: 128, signal }
+    const options = { ...request, system, messages, maxTokens: 128, signal }
     // 原生生成器在进入中间件前已记录原始请求；另记实际调用，避免日志继续显示旧提示词。
     session.append('session/title-llm-request', {
       titleProvider: 'codingns-title-optimization', messageSeqs: inputs.map((input) => input.seq),

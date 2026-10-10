@@ -17,6 +17,7 @@ import {
 } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { SettingsToggleRow } from '../settings-controls.js'
+import { uiFontSize } from '../font-scale.js'
 
 /** “局域网访问DSH”设置卡片：只配置一条监听并转发到当前 DSH Web。 */
 export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, notify }: FeaturePanelProps): ReactElement {
@@ -165,7 +166,7 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
   return createElement(
     'div',
     { 'aria-disabled': controlsDisabled, style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 14, opacity: controlsDisabled ? 0.5 : 1, pointerEvents: controlsDisabled ? 'none' : 'auto' } },
-    createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 } }, t('lan.description')),
+    createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13), lineHeight: 1.5 } }, t('lan.description')),
     createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
       createElement('span', { style: dshSettingsFieldLabelStyle }, t('lan.listenHost')),
       createElement('select', { value: listenHost, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { value: string } }) => setListenHost(event.currentTarget.value), onBlur: saveMappingOnBlur, style: fieldStyle },
@@ -204,12 +205,12 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
     },
       createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
         createElement('span', { 'aria-hidden': true, style: { width: 9, height: 9, flex: '0 0 auto', borderRadius: '50%', background: status.color } }),
-        createElement('span', { style: { color: status.color, fontSize: 13, fontWeight: 600 } }, statusLabel),
-        snapshot !== null && createElement('span', { style: { color: dshThemeColor.labelTertiary, fontSize: 12 } }, t('lan.forwardTarget', { dshPort: String(snapshot.dshPort) })),
+        createElement('span', { style: { color: status.color, fontSize: uiFontSize(13), fontWeight: 600 } }, statusLabel),
+        snapshot !== null && createElement('span', { style: { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12) } }, t('lan.forwardTarget', { dshPort: String(snapshot.dshPort) })),
       ),
-      status.state === 'error' && snapshot !== null && snapshot.error !== null && createElement('div', { style: { color: dshThemeColor.error, fontSize: 12, lineHeight: 1.5, overflowWrap: 'anywhere' } }, snapshot.error),
+      status.state === 'error' && snapshot !== null && snapshot.error !== null && createElement('div', { style: { color: dshThemeColor.error, fontSize: uiFontSize(12), lineHeight: 1.5, overflowWrap: 'anywhere' } }, snapshot.error),
       accessUrls.length === 0
-        ? createElement('div', { style: { color: dshThemeColor.labelTertiary, fontSize: 12, lineHeight: 1.5 } }, t('lan.accessUrlEmpty'))
+        ? createElement('div', { style: { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: 1.5 } }, t('lan.accessUrlEmpty'))
         : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
           ...accessUrls.map((url) => createElement('div', {
             key: url,
@@ -234,8 +235,8 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
               transition: 'border-color 160ms ease, background 160ms ease',
             },
           },
-            createElement('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: dshThemeColor.accent, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 13, fontWeight: 600 } }, url),
-            createElement('span', { style: { flex: '0 0 auto', color: copiedUrl === url ? dshThemeColor.success : dshThemeColor.labelSecondary, fontSize: 12, fontWeight: 600 } }, copiedUrl === url ? t('lan.copied') : t('lan.copy')),
+            createElement('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: dshThemeColor.accent, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: uiFontSize(13), fontWeight: 600 } }, url),
+            createElement('span', { style: { flex: '0 0 auto', color: copiedUrl === url ? dshThemeColor.success : dshThemeColor.labelSecondary, fontSize: uiFontSize(12), fontWeight: 600 } }, copiedUrl === url ? t('lan.copied') : t('lan.copy')),
           )),
         ),
     ),

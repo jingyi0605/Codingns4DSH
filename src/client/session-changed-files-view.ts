@@ -10,6 +10,7 @@ import { subscribeNativeSessionWorkspace } from './native-workspace-store.js'
 import { notifyGitWorkspaceChanged, subscribeGitWorkspaceChanged } from './git-workspace-events.js'
 import { backdropPointerDownHandler } from './popup-dismiss.js'
 import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
+import { uiFontSize } from './font-scale.js'
 
 export const SESSION_CHANGED_FILES_VIEW_ID = 'codingns4dsh/session-changed-files'
 
@@ -275,7 +276,7 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
 
   return createElement('div', { style: viewRootStyle },
     createElement('div', { style: viewToolbarStyle },
-      createElement('strong', { style: { fontSize: 15 } }, t('sessionFiles.title')),
+      createElement('strong', { style: { fontSize: uiFontSize(15) } }, t('sessionFiles.title')),
       createElement('span', { style: countStyle }, t('sessionFiles.count', { count: changes.length })),
       createElement('span', { style: { flex: 1 } }),
       createElement('button', { type: 'button', disabled: loading || busy, onClick: () => void load(true, true), style: toolbarRefreshButtonStyle, title: t('sessionFiles.refresh'), 'aria-label': t('sessionFiles.refresh') },
@@ -627,26 +628,26 @@ function useCompactLayout(): boolean {
   return compact
 }
 
-const rootStyle: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', height: 'auto', minHeight: '100%', overflow: 'visible', padding: '0 64px', boxSizing: 'border-box', color: 'var(--dsw-alias-label-primary,inherit)', background: 'var(--dsw-alias-bg-base,transparent)', fontSize: 13 }
+const rootStyle: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', height: 'auto', minHeight: '100%', overflow: 'visible', padding: '0 64px', boxSizing: 'border-box', color: 'var(--dsw-alias-label-primary,inherit)', background: 'var(--dsw-alias-bg-base,transparent)', fontSize: uiFontSize(13) }
 const toolbarStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, width: '100%', maxWidth: 1280, boxSizing: 'border-box', padding: '12px 16px', borderBottom: '1px solid var(--dsw-alias-border-l3,#ddd)', flex: '0 0 auto' }
 const countStyle: CSSProperties = { color: 'var(--dsw-alias-label-tertiary,#777)' }
 const contentStyle: CSSProperties = { display: 'grid', gridTemplateColumns: '3.5fr 6.5fr', width: '100%', maxWidth: 1280, flex: '0 0 auto', minHeight: 0 }
 const treePaneStyle: CSSProperties = { padding: '8px 0', borderRight: '1px solid var(--dsw-alias-border-l3,#ddd)' }
 const diffPaneStyle: CSSProperties = { minWidth: 0, background: 'var(--dsw-alias-bg-layer-1,transparent)' }
-const rowStyle = (depth: number): CSSProperties => ({ display: 'flex', alignItems: 'center', gap: 7, minHeight: 28, padding: `0 8px 0 ${8 + depth * 14}px`, fontSize: 12 })
+const rowStyle = (depth: number): CSSProperties => ({ display: 'flex', alignItems: 'center', gap: 7, minHeight: 28, padding: `0 8px 0 ${8 + depth * 14}px`, fontSize: uiFontSize(12) })
 const treeButtonStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 7, width: '100%', minWidth: 0, minHeight: 28, border: 0, background: 'transparent', color: 'inherit', font: 'inherit', cursor: 'pointer', textAlign: 'left', padding: 0, fontWeight: 600 }
 const fileButtonStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 7, border: 0, background: 'transparent', color: 'inherit', font: 'inherit', cursor: 'pointer', textAlign: 'left', flex: 1, minWidth: 0, padding: 0 }
 const selectedRowStyle: CSSProperties = { background: 'var(--dsw-alias-interactive-bg-selected,rgba(80,120,200,.16))' }
-const fileIconStyle: CSSProperties = { width: 12, color: 'var(--dsw-alias-label-tertiary,#777)', fontSize: 12, textAlign: 'center', flex: '0 0 12px' }
-const treeChevronStyle: CSSProperties = { width: 12, color: 'var(--dsw-alias-label-tertiary,#777)', fontSize: 12, flex: '0 0 12px' }
-const folderIconStyle: CSSProperties = { color: 'var(--dsw-alias-state-business-primary,#356ae6)', fontSize: 11, flex: '0 0 auto' }
+const fileIconStyle: CSSProperties = { width: 12, color: 'var(--dsw-alias-label-tertiary,#777)', fontSize: uiFontSize(12), textAlign: 'center', flex: '0 0 12px' }
+const treeChevronStyle: CSSProperties = { width: 12, color: 'var(--dsw-alias-label-tertiary,#777)', fontSize: uiFontSize(12), flex: '0 0 12px' }
+const folderIconStyle: CSSProperties = { color: 'var(--dsw-alias-state-business-primary,#356ae6)', fontSize: uiFontSize(11), flex: '0 0 auto' }
 const fileNameStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }
 const statusStyle: CSSProperties = { color: 'var(--dsw-alias-label-tertiary,#777)', flex: '0 0 auto', fontWeight: 700 }
 const mutedCountStyle: CSSProperties = { color: 'var(--dsw-alias-label-tertiary,#777)', fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }
 const actionsStyle: CSSProperties = { display: 'inline-flex', gap: 2, flex: '0 0 auto' }
-const iconButtonStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, border: 0, borderRadius: 4, padding: 0, background: 'transparent', color: 'var(--dsw-alias-label-secondary,#777)', cursor: 'pointer', fontSize: 16 }
+const iconButtonStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, border: 0, borderRadius: 4, padding: 0, background: 'transparent', color: 'var(--dsw-alias-label-secondary,#777)', cursor: 'pointer', fontSize: uiFontSize(16) }
 const dangerButtonStyle: CSSProperties = { ...iconButtonStyle, color: 'var(--dsw-alias-state-danger,#c43d3d)' }
-const toolbarIconButtonStyle: CSSProperties = { ...iconButtonStyle, width: 36, height: 36, border: '1px solid var(--dsw-alias-border-l2,#ccc)', borderRadius: 8, background: 'var(--dsw-alias-bg-layer-2,rgba(127,127,127,.08))', boxShadow: '0 1px 2px rgba(0,0,0,.12)', fontSize: 18 }
+const toolbarIconButtonStyle: CSSProperties = { ...iconButtonStyle, width: 36, height: 36, border: '1px solid var(--dsw-alias-border-l2,#ccc)', borderRadius: 8, background: 'var(--dsw-alias-bg-layer-2,rgba(127,127,127,.08))', boxShadow: '0 1px 2px rgba(0,0,0,.12)', fontSize: uiFontSize(18) }
 const toolbarRefreshButtonStyle: CSSProperties = { ...toolbarIconButtonStyle, color: 'var(--dsw-alias-state-business-primary,#356ae6)' }
 const toolbarStageButtonStyle: CSSProperties = { ...toolbarIconButtonStyle, color: 'var(--dsw-alias-state-success,#18864b)' }
 const emptyStyle: CSSProperties = { padding: 24, color: 'var(--dsw-alias-label-tertiary,#777)', textAlign: 'center' }
@@ -655,8 +656,8 @@ const diffStyle: CSSProperties = { margin: 0, padding: 16, minHeight: '100%', ov
 const mobileDiffOverlayStyle: CSSProperties = { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'stretch', justifyContent: 'center', padding: 10, boxSizing: 'border-box', background: 'rgba(0,0,0,.48)' }
 const mobileDiffModalStyle: CSSProperties = { display: 'flex', flexDirection: 'column', width: '100%', maxWidth: 720, maxHeight: '100%', minHeight: 0, overflow: 'hidden', borderRadius: 10, background: 'var(--dsw-alias-bg-layer-1,#fff)', boxShadow: '0 12px 40px rgba(0,0,0,.3)' }
 const mobileDiffHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minHeight: 46, padding: '0 12px', borderBottom: '1px solid var(--dsw-alias-border-l3,#ddd)', flex: '0 0 auto' }
-const mobileDiffTitleStyle: CSSProperties = { minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }
-const mobileDiffCloseStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, border: 0, borderRadius: 6, padding: 0, background: 'transparent', color: 'var(--dsw-alias-label-secondary,#777)', cursor: 'pointer', fontSize: 22, lineHeight: 1 }
+const mobileDiffTitleStyle: CSSProperties = { minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: uiFontSize(13) }
+const mobileDiffCloseStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, border: 0, borderRadius: 6, padding: 0, background: 'transparent', color: 'var(--dsw-alias-label-secondary,#777)', cursor: 'pointer', fontSize: uiFontSize(22), lineHeight: 1 }
 const mobileDiffBodyStyle: CSSProperties = { minHeight: 0, overflow: 'auto', background: 'var(--dsw-alias-bg-layer-1,transparent)' }
 const diffHeaderLineStyle: CSSProperties = { display: 'block', color: 'var(--dsw-alias-label-tertiary,#777)' }
 const diffHunkLineStyle: CSSProperties = { display: 'block', color: 'var(--dsw-alias-state-business-primary,#356ae6)', background: 'rgba(53,106,230,.08)' }

@@ -29,6 +29,7 @@ import type { AssistantSettings } from '../../shared/contracts/config.js'
 import type { NativeWorkspaceRecord } from '../native-workspace-store.js'
 import { SettingsToggleRow } from '../settings-controls.js'
 import { ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS, normalizeAssistantNotificationSettings, type AssistantNotificationAutoCloseSeconds } from '../../shared/assistant-notifications.js'
+import { uiFontSize } from '../font-scale.js'
 
 /** 创建与配置共用形象选择：选中 Live2D 时先确认引擎许可并自动安装，成功后才改草稿。 */
 function AssistantAvatarSelectionField({ services, appearance, avatarId, avatars, includeLegacy, disabled, t, onChange }: {
@@ -158,7 +159,7 @@ export function AssistantNotificationSettings({ services, value, disabled, t, on
     minHeight: 40, padding: '5px 0', borderBottom: `0.5px solid ${dshThemeColor.menuBorder}`, boxSizing: 'border-box',
   } },
   createElement('label', { htmlFor: 'codingns-assistant-notification-auto-close-seconds', style: { flex: '1 1 auto', minWidth: 0, cursor: disabled || !settings.enabled || !settings.autoClose ? 'default' : 'pointer', overflowWrap: 'anywhere' } },
-    createElement('span', { style: { display: 'block', fontSize: 13, fontWeight: 500, lineHeight: 1.4 } }, t('awb.notifications.autoCloseDuration')),
+    createElement('span', { style: { display: 'block', fontSize: uiFontSize(13), fontWeight: 500, lineHeight: 1.4 } }, t('awb.notifications.autoCloseDuration')),
     createElement('span', { style: dshSettingsHelpStyle }, t('awb.notifications.autoCloseDurationHint'))),
   createElement('select', {
     id: 'codingns-assistant-notification-auto-close-seconds',
@@ -218,7 +219,7 @@ export function AssistantWorkspaceFields({ draft, workspaces, t, disabled, onCha
       createElement('span', { role: 'cell', style: workspaceTableHostCellStyle }, tag))
   }
   return createElement('fieldset', { 'data-codingns-assistant-projects': true, style: { border: 0, padding: 0, margin: 0, minWidth: 0 }, disabled },
-    createElement('legend', { style: { fontSize: 14, fontWeight: 600, padding: 0, marginBottom: 8 } }, t('awb.workspaces')),
+    createElement('legend', { style: { fontSize: uiFontSize(14), fontWeight: 600, padding: 0, marginBottom: 8 } }, t('awb.workspaces')),
     createElement('p', { style: help }, t('awb.scopeHint')),
     createElement('div', { role: 'table', 'aria-label': t('awb.workspaces'), style: workspaceTableStyle },
       createElement('div', { role: 'row', style: workspaceTableHeaderStyle },
@@ -314,20 +315,20 @@ const workspaceTableHeaderStyle: CSSProperties = {
   color: dshThemeColor.labelSecondary,
   background: dshThemeColor.surfaceSubtle,
   borderBottom: `1px solid ${dshThemeColor.border}`,
-  fontSize: 11,
+  fontSize: uiFontSize(11),
   fontWeight: 600,
 }
 const workspaceTableRowStyle: CSSProperties = {
   ...workspaceTableGridStyle,
   minHeight: 48,
   color: dshThemeColor.labelPrimary,
-  fontSize: 13,
+  fontSize: uiFontSize(13),
   cursor: 'pointer',
 }
 const workspaceTableCheckboxCellStyle: CSSProperties = { display: 'flex', alignItems: 'center', minWidth: 0 }
 const workspaceTableNameCellStyle: CSSProperties = { minWidth: 0, overflow: 'hidden', overflowWrap: 'anywhere' }
 const workspaceTableCountCellStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontVariantNumeric: 'tabular-nums' }
-const workspaceTablePathCellStyle: CSSProperties = { minWidth: 0, overflow: 'hidden', overflowWrap: 'anywhere', color: dshThemeColor.labelSecondary, fontSize: 12 }
+const workspaceTablePathCellStyle: CSSProperties = { minWidth: 0, overflow: 'hidden', overflowWrap: 'anywhere', color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) }
 const workspaceTableHostCellStyle: CSSProperties = { display: 'flex', alignItems: 'center', minWidth: 0, overflow: 'hidden' }
-const workspaceTableEmptyStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: 12 }
-const workspaceTableEmptyRowStyle: CSSProperties = { padding: '16px 12px', color: dshThemeColor.labelSecondary, textAlign: 'center', fontSize: 12 }
+const workspaceTableEmptyStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12) }
+const workspaceTableEmptyRowStyle: CSSProperties = { padding: '16px 12px', color: dshThemeColor.labelSecondary, textAlign: 'center', fontSize: uiFontSize(12) }

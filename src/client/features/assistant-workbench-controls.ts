@@ -5,6 +5,7 @@ import type { AssistantDebugSnapshot } from '../../shared/contracts/assistant.js
 import type { CodingNsTranslator } from '../locale.js'
 import { dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from '../theme.js'
 import { resizeAssistantComposerTextarea, isAssistantClearCommandSuggestion } from './assistant-composer-input.js'
+import { uiFontSize } from '../font-scale.js'
 
 export type AssistantWorkbenchStatus = 'thinking' | 'updating' | 'idle' | 'working'
 export type AssistantMaintenanceConfirmation = 'clear' | 'reset-first' | 'reset-final'
@@ -23,7 +24,7 @@ export function resolveAssistantWorkbenchStatus({ running, working, voiceActive,
 export function AssistantStatusBadge({ status, t }: { readonly status: AssistantWorkbenchStatus; readonly t: CodingNsTranslator }): ReactElement {
   return createElement('span', { role: 'status', 'aria-live': 'polite', 'data-codingns-assistant-status': status,
     style: { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 8px', borderRadius: 999,
-      fontSize: 11, lineHeight: 1.4, whiteSpace: 'nowrap', color: status === 'idle' ? dshThemeColor.labelSecondary : dshThemeColor.accent,
+      fontSize: uiFontSize(11), lineHeight: 1.4, whiteSpace: 'nowrap', color: status === 'idle' ? dshThemeColor.labelSecondary : dshThemeColor.accent,
       background: dshThemeColor.surfaceSubtle, border: `1px solid ${dshThemeColor.border}`, flexShrink: 0 } },
     createElement('span', { 'aria-hidden': true, style: { width: 5, height: 5, borderRadius: '50%', background: 'currentColor' } }), t(`awb.state.${status}`))
 }
@@ -73,7 +74,7 @@ export function AssistantComposerView({ t, value, disabled, onChange, onSend, la
       border: `1px solid ${dshThemeColor.border}`, background: dshThemeColor.surfaceSubtle, minWidth: 0, outline: 'none', boxShadow: 'none' },
     onSubmit: (event: { preventDefault(): void }) => { event.preventDefault(); send() } },
     files.length === 0 ? null : createElement('div', { 'data-codingns-assistant-attachments': true, style: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: '4px 8px', maxHeight: 100, overflowY: 'auto' } },
-      ...files.map((file, index) => createElement('span', { key: `${index}:${file.name}`, style: { display: 'inline-flex', alignItems: 'center', gap: 4, maxWidth: '100%', padding: '3px 8px', borderRadius: 10, background: dshThemeColor.buttonBackground, border: `1px solid ${dshThemeColor.border}`, fontSize: 12 } },
+      ...files.map((file, index) => createElement('span', { key: `${index}:${file.name}`, style: { display: 'inline-flex', alignItems: 'center', gap: 4, maxWidth: '100%', padding: '3px 8px', borderRadius: 10, background: dshThemeColor.buttonBackground, border: `1px solid ${dshThemeColor.border}`, fontSize: uiFontSize(12) } },
         createElement('span', { title: file.name, style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, file.name),
         createElement(AssistantIconButton, { icon: 'close', label: t('awb.attachments.remove', { name: file.name }), disabled,
           size: 24, onClick: () => onRemoveFile?.(index) })))),
@@ -81,7 +82,7 @@ export function AssistantComposerView({ t, value, disabled, onChange, onSend, la
     onAttach === undefined ? null : createElement(AssistantIconButton, { icon: 'add', label: t('awb.attachments.add'), disabled, size: 38, onClick: onAttach }),
     createElement('textarea', { ref: textareaRef, value, disabled, maxLength: 8000, rows: 1, 'aria-label': t('awb.placeholder'), placeholder: t('awb.placeholder'),
       style: { flex: '1 1 auto', width: '100%', minWidth: 0, minHeight: 38, maxHeight: 'min(120px, 20dvh)', padding: '9px 0', boxSizing: 'border-box',
-        resize: 'none', overflowY: 'hidden', border: 0, outline: 'none', boxShadow: 'none', borderRadius: 0, background: 'transparent', color: dshThemeColor.labelPrimary, font: 'inherit', fontSize: 14, lineHeight: '20px' },
+        resize: 'none', overflowY: 'hidden', border: 0, outline: 'none', boxShadow: 'none', borderRadius: 0, background: 'transparent', color: dshThemeColor.labelPrimary, font: 'inherit', fontSize: uiFontSize(14), lineHeight: '20px' },
       onChange: (event: { currentTarget: { value: string } }) => onChange(event.currentTarget.value),
       onInput: (event: { currentTarget: HTMLTextAreaElement }) => resizeAssistantComposerTextarea(event.currentTarget),
       onPaste: (event: { clipboardData: DataTransfer; preventDefault(): void }) => {
@@ -140,7 +141,7 @@ export function AssistantMaintenanceDialog(props: {
     }, style: { padding: 11, borderRadius: 16, maxWidth: 'min(440px, calc(100vw - 32px))', maxHeight: 'calc(100dvh - 32px)',
       margin: 'auto', boxSizing: 'border-box', overflowY: 'auto', background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary,
       border: `1px solid ${dshThemeColor.border}`, boxShadow: dshThemeColor.prominentShadow } },
-    createElement('strong', { id, style: { fontSize: 17 } }, props.t(props.stage === 'clear' ? 'awb.clear' : props.stage === 'reset-first' ? 'awb.reset' : 'awb.resetFinalTitle')),
+    createElement('strong', { id, style: { fontSize: uiFontSize(17) } }, props.t(props.stage === 'clear' ? 'awb.clear' : props.stage === 'reset-first' ? 'awb.reset' : 'awb.resetFinalTitle')),
     createElement(AssistantMaintenanceConfirmationView, props))
 }
 
@@ -148,7 +149,7 @@ export function AssistantMaintenanceConfirmationView({ stage, t, disabled, error
   readonly stage: AssistantMaintenanceConfirmation; readonly t: CodingNsTranslator; readonly disabled: boolean; readonly error?: string
   readonly onConfirm: () => void; readonly onCancel: () => void
 }): ReactElement {
-  return createElement('div', { style: { display: 'grid', gap: 16, marginTop: 14, fontSize: 13, lineHeight: 1.6 } },
+  return createElement('div', { style: { display: 'grid', gap: 16, marginTop: 14, fontSize: uiFontSize(13), lineHeight: 1.6 } },
     createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary } }, t(stage === 'clear' ? 'awb.clearConfirm' : stage === 'reset-first' ? 'awb.resetConfirm' : 'awb.resetFinalConfirm')),
     !error ? null : createElement('p', { role: 'alert', style: { margin: 0, color: dshThemeColor.error, overflowWrap: 'anywhere' } }, error),
     createElement('div', { style: { display: 'flex', gap: 8, justifyContent: 'flex-end' } },

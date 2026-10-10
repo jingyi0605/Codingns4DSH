@@ -9,6 +9,7 @@ import { dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } 
 import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 import { assistantSettingCheckboxStyle, assistantSettingTextStyle } from '../assistant-settings-styles.js'
 import { DEFAULT_VOICE_MODEL_ID } from '../../shared/voice-initialization.js'
+import { uiFontSize } from '../font-scale.js'
 
 /** 旧入口继续使用弹窗，与声音页共用同一套模型操作。 */
 export function VoiceInitializationDialog({ services, value, onClose }: {
@@ -166,7 +167,7 @@ export function VoiceModelManagerView({ snapshot, modelId, refreshing, busy, pro
       padding: onClose === undefined ? '0 0 16px' : '0 22px 18px', display: 'grid', gap: 12 } },
       createElement('div', { style: { ...noticeStyle, display: 'grid', gap: 5 } },
         createElement('span', { style: helpStyle }, t('voice.models.current')),
-        createElement('strong', { style: { fontSize: 14, overflowWrap: 'anywhere' } }, snapshot === undefined ? t('voice.models.unknown') : current?.label ?? (snapshot.currentModelId ? t('voice.models.custom') : t('voice.models.none'))),
+        createElement('strong', { style: { fontSize: uiFontSize(14), overflowWrap: 'anywhere' } }, snapshot === undefined ? t('voice.models.unknown') : current?.label ?? (snapshot.currentModelId ? t('voice.models.custom') : t('voice.models.none'))),
         snapshot === undefined ? null : createElement('span', { style: helpStyle }, t(snapshot.runtimeRunning ? 'voice.models.running' : snapshot.runtimeReady ? 'voice.models.ready' : 'voice.models.stopped')),
       ),
       snapshot === undefined && error === undefined ? createElement('div', { role: 'status', style: helpStyle }, t('voice.models.loading')) : null,
@@ -212,9 +213,9 @@ export function VoiceModelCard({ model, status, selected, disabled, onSelect, t 
       status.validation.error === null ? null : createElement('span', { style: { ...helpStyle, color: dshThemeColor.error, overflowWrap: 'anywhere' } }, status.validation.error),
       createElement('details', null, createElement('summary', { style: { ...helpStyle, cursor: 'pointer' } }, t('voice.models.fileDetails')),
         createElement('div', { style: { display: 'grid', gap: 9, marginTop: 9 } }, ...status.files.map((file) => createElement('div', { key: file.name, style: { display: 'grid', gap: 2 } },
-          createElement('span', { style: { ...rowStyle, fontSize: 12 } }, createElement('span', { style: { overflowWrap: 'anywhere' } }, file.name),
+          createElement('span', { style: { ...rowStyle, fontSize: uiFontSize(12) } }, createElement('span', { style: { overflowWrap: 'anywhere' } }, file.name),
             createElement('span', { style: { flexShrink: 0, color: file.present ? dshThemeColor.labelSecondary : dshThemeColor.error } }, file.present ? formatDownloadSize(file.bytes) : file.partialBytes > 0 ? t('voice.models.partialSize', { size: formatDownloadSize(file.partialBytes) }) : t('voice.models.fileMissing'))),
-          createElement('span', { style: { ...helpStyle, fontSize: 11, overflowWrap: 'anywhere', fontFamily: dshThemeColor.codeFont } }, file.path)))))))
+          createElement('span', { style: { ...helpStyle, fontSize: uiFontSize(11), overflowWrap: 'anywhere', fontFamily: dshThemeColor.codeFont } }, file.path)))))))
 }
 
 /** 已下载的字节进度与模型验证、配置阶段分别显示。 */
@@ -225,7 +226,7 @@ export function VoiceModelSetupProgress({ progress, t }: { readonly progress: As
   const label = downloading ? t('voice.setup.downloadFile', { index: progress.fileIndex, count: progress.fileCount }) : progress?.phase === 'verifying' ? t('voice.models.verifying')
     : progress?.phase === 'initializing' ? t('voice.setup.initializing') : progress?.phase === 'completed' ? t('voice.setup.completed') : t('voice.setup.checking')
   const bytes = downloading ? progress.totalBytes === null ? t('voice.setup.downloadedSize', { size: formatDownloadSize(progress.downloadedBytes) }) : `${formatDownloadSize(progress.downloadedBytes)} / ${formatDownloadSize(progress.totalBytes)}` : undefined
-  return createElement('div', { role: 'status', 'aria-live': 'polite', style: { display: 'grid', gap: 7, color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 } },
+  return createElement('div', { role: 'status', 'aria-live': 'polite', style: { display: 'grid', gap: 7, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13), lineHeight: 1.5 } },
     createElement('div', { style: rowStyle }, createElement('span', null, label), percent === undefined ? null : createElement('span', { style: { flexShrink: 0, fontVariantNumeric: 'tabular-nums' } }, downloading ? t('voice.setup.filePercent', { percent }) : '100%')),
     createElement('progress', { max: 100, ...(percent === undefined ? {} : { value: percent }), 'aria-label': downloading ? t('voice.setup.fileProgress') : label, style: { display: 'block', width: '100%', height: 10, accentColor: dshThemeColor.accent } }),
     downloading ? createElement('span', { style: { overflowWrap: 'anywhere' } }, progress.fileName) : null,
@@ -244,7 +245,7 @@ function button(label: string, disabled: boolean, onClick: () => void, primary =
     ...(disabled ? { opacity: 0.5, cursor: 'default' } : {}),
   } }, label)
 }
-function badge(label: string, color: string): ReactElement { return createElement('span', { style: { padding: '2px 7px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 5, fontSize: 11, lineHeight: 1.4, color } }, label) }
+function badge(label: string, color: string): ReactElement { return createElement('span', { style: { padding: '2px 7px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 5, fontSize: uiFontSize(11), lineHeight: 1.4, color } }, label) }
 const rowStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }
-const helpStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: 12, lineHeight: 1.55 }
-const noticeStyle: CSSProperties = { padding: '11px 13px', borderRadius: 8, background: dshThemeColor.surfaceSubtle, fontSize: 13, lineHeight: 1.55 }
+const helpStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: 1.55 }
+const noticeStyle: CSSProperties = { padding: '11px 13px', borderRadius: 8, background: dshThemeColor.surfaceSubtle, fontSize: uiFontSize(13), lineHeight: 1.55 }

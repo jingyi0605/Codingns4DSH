@@ -14,6 +14,7 @@ import {
 import { writeLoginProtectionSession } from './login-protection-session.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { SettingsToggleRow } from '../settings-controls.js'
+import { uiFontSize } from '../font-scale.js'
 
 const DEFAULT_SCOPES: LoginProtectionScopes = { lan: true, relay: true }
 
@@ -80,7 +81,7 @@ export function LoginProtectionPanel({ services, enabled, snapshot, notify }: Fe
     style: { ...dshFormRootStyle, display: 'flex', flexDirection: 'column', gap: 14, opacity: controlsDisabled ? 0.5 : 1 },
     'aria-disabled': controlsDisabled,
   },
-    createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 } }, t('loginProtection.panelHint')),
+    createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13), lineHeight: 1.5 } }, t('loginProtection.panelHint')),
     createElement(SettingsToggleRow, { label: t('loginProtection.enable'), checked: active, disabled: controlsDisabled || busy, onChange: setActive }),
     createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
       createElement('span', { style: dshSettingsFieldLabelStyle }, t('loginProtection.username')),

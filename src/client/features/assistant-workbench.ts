@@ -25,6 +25,7 @@ import { assistantConversationTimeline } from '../../shared/assistant-voice-sess
 import { AssistantConfigurationFields, AssistantConfigurationPage } from './assistant-configuration-loader.js'
 import { AssistantLoadedView, createAssistantViewLoader } from './assistant-view-loader.js'
 import { assistantDisplayScope, getAssistantDisplayStore, type AssistantStatusSnapshot } from './assistant-display-store.js'
+import { uiFontSize } from '../font-scale.js'
 export { AssistantComposer } from './assistant-workbench-controls.js'
 
 const debugLoader = createAssistantViewLoader(async () => (await import('./assistant-debug-workbench.js')).AssistantDebugDialog)
@@ -302,7 +303,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
   const configurationPreview = createElement('div', { 'data-codingns-assistant-preview': true, style: { flex: '1 1 290px', minWidth: 0, border: `1px solid ${dshThemeColor.border}`, borderRadius: 18, background: dshThemeColor.surfaceSubtle, padding: 11, boxSizing: 'border-box', display: 'grid', alignContent: 'start', gap: 11 } },
     createElement('div', { ref: setPreviewTarget, 'data-codingns-avatar-preview-region': true },
     catalogPreview === undefined ? createElement('div', { style: avatarStyle }, createElement(AssistantAvatarSlot, { services: configuration.services, model: selectedAssistantAvatar(previewAppearance), state: avatarState, surface: 'dialog', size: 144, showDiagnostics: false }),
-      createElement('strong', { style: { fontSize: 18, overflowWrap: 'anywhere', textAlign: 'center' } }, draft.name.trim() || t('awb.unnamed')),
+      createElement('strong', { style: { fontSize: uiFontSize(18), overflowWrap: 'anywhere', textAlign: 'center' } }, draft.name.trim() || t('awb.unnamed')),
       createElement('p', { style: { ...help, textAlign: 'center', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', overflowWrap: 'anywhere' } }, draft.personality.trim() || t('awb.personalityPreview'))) : null))
   const page = (tab: AssistantConfigurationTab): ReactElement => createElement(AssistantConfigurationPage, {
     tab, active: tab === configurationTab, services: configuration.services, value: configurationValue, draft, catalog, appearance: previewAppearance, tts, workspaces, t, disabled: locked || !writable || !loaded,
@@ -319,7 +320,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
       calling ? null : createElement('header', { style: { ...row, flexShrink: 0, padding: '22px 22px 11px' } },
         createElement('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'grid', gap: 5 } },
           createElement('div', { 'data-codingns-assistant-heading': true, style: { ...row, gap: 8 } },
-            createElement('strong', { style: { fontSize: 17, overflowWrap: 'anywhere' } }, initializing ? t('awb.setupTitle') : lifecycle.profile.name),
+            createElement('strong', { style: { fontSize: uiFontSize(17), overflowWrap: 'anywhere' } }, initializing ? t('awb.setupTitle') : lifecycle.profile.name),
             initializing ? null : createElement(AssistantStatusBadge, { status, t })),
           initializing ? createElement('span', { style: help }, t('awb.setupSubtitle')) : null),
         !configuring && lifecycle.profile.initialized ? createElement(AssistantIconButton, { icon: 'clear', label: t('awb.clear'), onClick: requestClear, disabled: locked || !loaded }) : null,
@@ -329,7 +330,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
         // 通话页自带统一内边距，外层不重复叠加；普通对话与设置页横向 22px、纵向 11px。
         style: { flex: '1 1 auto', padding: calling ? 0 : '11px 22px', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, display: 'flex', flexDirection: 'column', gap: configuring ? 11 : 16 } },
         !loaded ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, t('awb.loading'), ' ', button(t('awb.retry'), () => { void refresh().catch((cause) => setError(message(cause))) })) : null,
-        noticeText ? createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13, overflowWrap: 'anywhere' } }, noticeText) : null,
+        noticeText ? createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: uiFontSize(13), overflowWrap: 'anywhere' } }, noticeText) : null,
         notice ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, notice) : null,
         calling ? createElement(AssistantRealtimeCall, { services, name: lifecycle.profile.name, model: selectedAssistantAvatar(appearance), t,
           minimized: props.minimized, startedAt: props.callStartedAt, onMinimize: props.onMinimize,

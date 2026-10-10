@@ -7,6 +7,7 @@ import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 import { dshSettingsButtonStyle, dshSettingsFieldStyle, dshSettingsHelpStyle, dshThemeColor } from '../theme.js'
 import type { CodingNsClientServices } from './types.js'
 import { assistantSettingFieldStyle, assistantSettingTextStyle } from '../assistant-settings-styles.js'
+import { uiFontSize } from '../font-scale.js'
 
 /** 设置页和对话窗口共用独立音色编辑器，不与形象包或识别模型混合。 */
 export function AssistantVoiceSettings({ services, enabled = true, active = true, embedded = false }: {
@@ -172,7 +173,7 @@ export function AssistantVoiceSettings({ services, enabled = true, active = true
         field(t('tts.gender'), options(gender, setGender, ['unknown', 'male', 'female'])),
         createElement('p', { style: { ...dshSettingsHelpStyle, margin: 0 } }, t('tts.sourceHint')),
         button(t(services.configurationDraft ? 'tts.importDraft' : 'tts.import'), () => { const reference = siteId === 'aishell' && !source.includes(':') ? `aishell:${source}` : source; void run('import', { source: reference, name, language, gender }) }, !ready || source.trim() === ''))) : null,
-    error || snapshot?.status.error ? createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13, overflowWrap: 'anywhere' } }, error || snapshot?.status.error) : null)
+    error || snapshot?.status.error ? createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: uiFontSize(13), overflowWrap: 'anywhere' } }, error || snapshot?.status.error) : null)
 }
 
 export function voiceLabel(voice: AssistantTtsVoice, t: CodingNsTranslator): string {

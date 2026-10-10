@@ -13,6 +13,7 @@ import type { AssistantAvatarPreviewTargetProps } from './catalog-panel.js'
 import { AssistantAvatarEngineDialog, AssistantAvatarEngineProgress, useAssistantAvatarEngine } from './engine.js'
 import { assistantSettingFieldStyle, assistantSettingSwitchStyle, assistantSettingTextStyle } from '../assistant-settings-styles.js'
 import { SettingsSwitch } from '../settings-controls.js'
+import { uiFontSize } from '../font-scale.js'
 
 /** 对话内复用设置页表单；订阅同一存储并把保存反馈留在当前窗口。 */
 export function AssistantAppearanceEditor({ services, enabled, ...previewProps }: {
@@ -28,7 +29,7 @@ export function AssistantAppearanceEditor({ services, enabled, ...previewProps }
     createElement(AssistantAppearancePanel, { services, enabled, snapshot, notify: setNotice, ...previewProps }),
     // 表单本身已显示失败信息，外层只补充保存成功反馈，避免重复错误提示。
     notice?.kind !== 'success' ? null : createElement('div', { role: 'status',
-      style: { fontSize: 13, color: dshThemeColor.success } }, notice.message),
+      style: { fontSize: uiFontSize(13), color: dshThemeColor.success } }, notice.message),
   )
 }
 
@@ -115,7 +116,7 @@ export function AssistantAppearancePanel({ services, enabled, snapshot, notify, 
     createElement('input', { key: appearance[key], type: 'number', min, max, step: 1, defaultValue: appearance[key], disabled, 'aria-label': label, style: dshSettingsFieldStyle,
       onBlur: (event: { currentTarget: { value: string } }) => { const value = Number(event.currentTarget.value); if (Number.isInteger(value) && value >= min && value <= max && value !== appearance[key]) void save(() => manager.configure({ [key]: value })); else event.currentTarget.value = String(appearance[key]) } }))
   return createElement('section', { 'aria-label': t('avatar.settingsTitle'), style: { ...assistantSettingTextStyle, display: 'grid', gap: 12, borderTop: `1px solid ${dshThemeColor.border}`, paddingTop: 14 } },
-    createElement('strong', { style: { fontSize: 14 } }, t('avatar.settingsTitle')),
+    createElement('strong', { style: { fontSize: uiFontSize(14) } }, t('avatar.settingsTitle')),
     createElement('p', { style: { ...dshSettingsHelpStyle, margin: 0 } }, t('avatar.settingsDescription')),
     createElement(AssistantAvatarCatalogPanel, { services, manager, appearance, disabled, notify, ...previewProps }),
     createElement('p', { style: { ...dshSettingsHelpStyle, margin: 0 } }, t('avatar.externalHint')),
@@ -137,7 +138,7 @@ export function AssistantAppearancePanel({ services, enabled, snapshot, notify, 
       type: 'button', disabled, style: { ...dshSettingsButtonStyle, justifySelf: 'start' },
       onClick: () => { void installPackage(selected.package!.manifestUrl!) },
     }, t('avatar.installCurrent')),
-    createElement('details', { 'data-codingns-avatar-add': true }, createElement('summary', { style: { cursor: 'pointer', fontSize: 13 } }, t('avatar.add')),
+    createElement('details', { 'data-codingns-avatar-add': true }, createElement('summary', { style: { cursor: 'pointer', fontSize: uiFontSize(13) } }, t('avatar.add')),
       field(t('avatar.addMode'), createElement('select', { value: addMode, disabled, style: { ...dshSettingsFieldStyle, marginTop: 12 },
         'data-codingns-avatar-add-mode': true,
         onChange: (event: { currentTarget: { value: string } }) => setAddMode(event.currentTarget.value === 'custom' ? 'custom' : 'package') },
@@ -174,7 +175,7 @@ export function AssistantAppearancePanel({ services, enabled, snapshot, notify, 
         createElement('button', { type: 'button', disabled: disabled || appearance.models.length >= ASSISTANT_AVATAR_MAX_MODELS, onClick: () => { void add() }, style: { ...dshSettingsButtonStyle, justifySelf: 'start' } }, t('avatar.addUse')),
       )),
     createElement(AssistantAvatarEngineProgress, { controller: engine, t }),
-    error === '' ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13 } }, error),
+    error === '' ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: uiFontSize(13) } }, error),
     createElement(AssistantAvatarEngineDialog, { controller: engine, t }),
   )
 }

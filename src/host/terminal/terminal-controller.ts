@@ -53,6 +53,14 @@ export interface CodingNsTerminalControllerOptions {
   readonly platform?: string
   readonly generation?: (agent: DshTerminalAgent, attachmentId: string) => string
   readonly workspaceId?: (agent: DshTerminalAgent, cwd: string) => string
+  /**
+   * 会话的「当前目录」。
+   *
+   * alpha.2 起由 `ctx.workingDirectory` 提供（可被模型用 `working_directory` 工具切换）；
+   * 旧版本没有该服务，缺省时回退到不可变的 `session.header.cwd`。回调只读不写，
+   * 因此不会触发上游的目录恢复或 `working-directory/change` 事件。
+   */
+  readonly workingDirectory?: (agent: DshTerminalAgent) => string | undefined
   /** 终端解析出 Workspace 后登记 Host 侧可信根目录，供调试服务复用。 */
   readonly registerWorkspaceRoot?: (workspaceId: string, cwd: string) => void
   /** 基线模式固定使用进程内 PTY；强化模式再按平台选择持久 backend。 */
@@ -330,7 +338,8 @@ export class CodingNsTerminalController extends TypertRemoteService {
   }
 
   private cwd(agent: DshTerminalAgent): string {
-    return agent.session.header?.cwd ?? process.cwd()
+    // 会话「当前目录」优先；旧版本没有该服务时回退到不可变的会话头目录。
+    return this.options.workingDirectory?.(agent) ?? agent.session.header?.cwd ?? process.cwd()
   }
 
   private scope(agent: DshTerminalAgent): TerminalOwnerScope {

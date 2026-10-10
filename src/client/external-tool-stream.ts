@@ -4,6 +4,7 @@ import type { ConversationNodeDefinition, ConversationLocation, ConversationMatc
 import type { CodingNsClientServices } from './features/types.js'
 import { dshThemeColor } from './theme.js'
 import { resolveCodingNsTranslator, type CodingNsTranslator } from './locale.js'
+import { uiFontSize } from './font-scale.js'
 
 /** 浏览器收到的 Host 外部工具临时标记。 */
 interface ExternalToolMarker {
@@ -93,7 +94,7 @@ function ExternalToolNodeView(props: ExternalToolNodeProps): ReactElement {
       borderRadius: 6,
       color: dshThemeColor.labelPrimary,
       background: dshThemeColor.inputBackground,
-      fontSize: 13,
+      fontSize: uiFontSize(13),
       lineHeight: 1.45,
     },
     'data-codingns-external-tool': data.callId,

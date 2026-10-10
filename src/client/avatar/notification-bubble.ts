@@ -4,6 +4,7 @@ import type { AssistantNotification, AssistantNotificationAutoCloseSeconds, Assi
 import type { DesktopAssistantNotification } from '../../shared/desktop-assistant.js'
 import type { CodingNsTranslator } from '../locale.js'
 import { dshSettingsButtonStyle, dshThemeColor } from '../theme.js'
+import { uiFontSize } from '../font-scale.js'
 
 /** 只接受 Host 安全展示快照，网页和伴随页都不能从组件取得 RPC 或会话控制入口。 */
 export type AssistantNotificationDisplaySnapshot = Pick<AssistantNotificationSnapshot,
@@ -204,7 +205,7 @@ function notificationStatus(notice: AssistantNotification | DesktopAssistantNoti
   return t('awb.notifications.approval')
 }
 const button: CSSProperties = { ...dshSettingsButtonStyle, minHeight: 36, touchAction: 'manipulation', whiteSpace: 'normal', borderRadius: 999, fontWeight: 650 }
-const shell: CSSProperties = { width: 'min(320px, calc(100vw - 24px))', maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 6, pointerEvents: 'auto', color: dshThemeColor.labelPrimary, fontSize: 13 }
+const shell: CSSProperties = { width: 'min(320px, calc(100vw - 24px))', maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 6, pointerEvents: 'auto', color: dshThemeColor.labelPrimary, fontSize: uiFontSize(13) }
 const panel: CSSProperties = { padding: 12, background: dshThemeColor.menuBackground, border: `1px solid ${dshThemeColor.border}`, borderRadius: 18, boxShadow: dshThemeColor.prominentShadow,
   minWidth: 0, boxSizing: 'border-box', maxHeight: 'min(276px, calc(100vh - 24px))', overflowY: 'auto' }
 const bubblePanel: CSSProperties = { ...panel, position: 'relative', padding: 10, overflow: 'visible', borderRadius: '24px 24px 24px 8px', borderColor: dshThemeColor.accent,
@@ -217,16 +218,16 @@ const compactCard: CSSProperties = { display: 'grid', gap: 7, padding: '10px 11p
   border: `1px solid ${dshThemeColor.border}`, borderRadius: 15, boxShadow: dshThemeColor.subtleShadow }
 const listRow: CSSProperties = { display: 'grid', gap: 7, padding: '10px 0', minWidth: 0, borderBottom: `1px solid ${dshThemeColor.border}` }
 const cardHeading: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }
-const cardMeta: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: 11, lineHeight: 1.3, overflowWrap: 'anywhere' }
-const cardTitle: CSSProperties = { fontWeight: 750, fontSize: 15, lineHeight: 1.35, overflowWrap: 'anywhere' }
+const cardMeta: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), lineHeight: 1.3, overflowWrap: 'anywhere' }
+const cardTitle: CSSProperties = { fontWeight: 750, fontSize: uiFontSize(15), lineHeight: 1.35, overflowWrap: 'anywhere' }
 const kindMark: CSSProperties = { display: 'inline-grid', placeItems: 'center', flex: '0 0 auto', width: 24, height: 24, borderRadius: '50%', color: dshThemeColor.primaryForeground,
-  fontSize: 13, fontWeight: 800, boxShadow: dshThemeColor.subtleShadow }
+  fontSize: uiFontSize(13), fontWeight: 800, boxShadow: dshThemeColor.subtleShadow }
 const messageText: CSSProperties = { color: dshThemeColor.labelPrimary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.5, maxHeight: 120, overflowY: 'auto' }
 const summaryButton: CSSProperties = { ...button, alignSelf: 'end', padding: '8px 14px', background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.subtleShadow }
 const requestTag: CSSProperties = { justifySelf: 'start', padding: '4px 9px', borderRadius: 999, color: dshThemeColor.primaryForeground,
-  background: dshThemeColor.accent, fontSize: 11, lineHeight: 1.2, fontWeight: 750, letterSpacing: '0.02em', boxShadow: dshThemeColor.subtleShadow }
+  background: dshThemeColor.accent, fontSize: uiFontSize(11), lineHeight: 1.2, fontWeight: 750, letterSpacing: '0.02em', boxShadow: dshThemeColor.subtleShadow }
 const requestInlineTag: CSSProperties = { display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', margin: '0 6px 2px 2px', padding: '3px 8px', borderRadius: 999,
-  color: dshThemeColor.primaryForeground, background: dshThemeColor.accent, fontSize: 11, lineHeight: 1.2, fontWeight: 750, letterSpacing: '0.02em', boxShadow: dshThemeColor.subtleShadow }
-const compactStatus: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: 11, lineHeight: 1.3, paddingLeft: 32 }
+  color: dshThemeColor.primaryForeground, background: dshThemeColor.accent, fontSize: uiFontSize(11), lineHeight: 1.2, fontWeight: 750, letterSpacing: '0.02em', boxShadow: dshThemeColor.subtleShadow }
+const compactStatus: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), lineHeight: 1.3, paddingLeft: 32 }
 const actionRow: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 7 }
-const compactButton: CSSProperties = { ...button, minHeight: 30, padding: '6px 10px', fontSize: 12 }
+const compactButton: CSSProperties = { ...button, minHeight: 30, padding: '6px 10px', fontSize: uiFontSize(12) }

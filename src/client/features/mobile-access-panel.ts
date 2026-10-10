@@ -27,6 +27,7 @@ import {
 import { useCodingNsTranslator } from '../locale.js'
 import { SettingsSwitch, SettingsToggleRow } from '../settings-controls.js'
 import type { PwaNotificationClient, PwaNotificationStatus } from '../pwa-notifications.js'
+import { uiFontSize } from '../font-scale.js'
 
 /**
  * 移动端访问增强的单列设置面板。
@@ -205,7 +206,7 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
   },
     createElement('label', { style: dshSettingsListRowStyle },
       createElement('span', { style: { minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('mobile.hideSidebarOnMobile')),
+        createElement('strong', { style: { display: 'block', fontSize: uiFontSize(13), lineHeight: 1.4 } }, t('mobile.hideSidebarOnMobile')),
         createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('mobile.hideSidebarOnMobileDescription')),
       ),
       createElement(SettingsSwitch, {
@@ -221,7 +222,7 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
     ),
     createElement('label', { style: dshSettingsListRowStyle },
       createElement('span', { style: { minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('mobile.optimizeSettingsOnMobile')),
+        createElement('strong', { style: { display: 'block', fontSize: uiFontSize(13), lineHeight: 1.4 } }, t('mobile.optimizeSettingsOnMobile')),
         createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('mobile.optimizeSettingsOnMobileDescription')),
       ),
       createElement(SettingsSwitch, {
@@ -264,7 +265,7 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
     createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 12, borderTop: `1px solid ${dshThemeColor.border}` } },
       createElement('label', { style: dshSettingsListRowStyle },
         createElement('span', { style: { minWidth: 0 } },
-          createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('mobile.sidebarGestures')),
+          createElement('strong', { style: { display: 'block', fontSize: uiFontSize(13), lineHeight: 1.4 } }, t('mobile.sidebarGestures')),
           createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, t('mobile.sidebarGesturesDescription')),
         ),
         createElement(SettingsSwitch, {
@@ -323,8 +324,8 @@ export function MobileAccessPanel({ services, enabled, snapshot, notify }: Featu
       ),
     ),
     createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4, paddingTop: 12, borderTop: `1px solid ${dshThemeColor.border}` } },
-      createElement('strong', { style: { fontSize: 13 } }, t('lan.pwa.title')),
-      createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: 12, lineHeight: 1.6 } }, t('lan.pwa.description')),
+      createElement('strong', { style: { fontSize: uiFontSize(13) } }, t('lan.pwa.title')),
+      createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: 1.6 } }, t('lan.pwa.description')),
       createElement('p', { style: { margin: 0, ...dshSettingsHelpStyle } }, t('mobile.pwaRequiresListener')),
       createElement(SettingsToggleRow, {
         label: t('lan.pwa.enabled'), description: t('lan.pwa.enabledHelp'),

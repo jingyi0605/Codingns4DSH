@@ -107,7 +107,9 @@ test('对话内形象表单使用当前共享清单，并遵守只读状态', ()
     assert.ok(html.indexOf('data-codingns-avatar-list') < html.indexOf('data-codingns-third-party-enabled'))
     assert.ok(html.indexOf('data-codingns-third-party-enabled') < html.indexOf('data-codingns-avatar-floating-size'))
     const labels = html.match(/<label\b[^>]*>/gu) ?? []
-    assert.ok(labels.every((label) => label.includes('font-size:13px') && label.includes('font-weight:400')), '形象选项统一使用常规 13px 标签')
+    // 字号改为跟随 DSH 界面字号的 CSS 表达式；默认基准下仍等于 13px。
+    const normalLabelSize = /font-size:calc\(var\(--codingns-font-base,\s*14px\)\s*\/\s*14\s*\*\s*13\)/u
+    assert.ok(labels.every((label) => normalLabelSize.test(label) && label.includes('font-weight:400')), '形象选项统一使用常规 13px 标签')
     const controls = html.match(/<(?:input|select|button)\b[^>]*>/gu) ?? []
     assert.ok(controls.length > 5)
     assert.equal(controls.every((control) => control.includes('disabled=""')), !writable)

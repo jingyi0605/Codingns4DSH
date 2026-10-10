@@ -2,6 +2,7 @@ import { createElement, useId } from 'react'
 import type { KeyboardEvent, ReactElement, ReactNode } from 'react'
 import type { CodingNsTranslator } from '../locale.js'
 import { dshThemeColor } from '../theme.js'
+import { uiFontSize } from '../font-scale.js'
 
 const tabs = [
   { id: 'basic', label: 'awb.tab.basic' }, { id: 'appearance', label: 'awb.tab.appearance' },
@@ -56,7 +57,7 @@ export function AssistantConfigurationTabBar({ id, active, t, onChange }: {
       'aria-controls': `${id}-panel-${tab.id}`, 'aria-selected': active === tab.id, tabIndex: active === tab.id ? 0 : -1,
       onClick: () => onChange(tab.id), onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => navigate(event, index),
       style: { flex: '1 0 auto', minHeight: 36, border: 0, borderRadius: 8, padding: '7px 12px', whiteSpace: 'nowrap', cursor: 'pointer',
-        font: 'inherit', fontSize: 13, fontWeight: active === tab.id ? 600 : 400,
+        font: 'inherit', fontSize: uiFontSize(13), fontWeight: active === tab.id ? 600 : 400,
         color: active === tab.id ? dshThemeColor.labelPrimary : dshThemeColor.labelSecondary,
         background: active === tab.id ? dshThemeColor.pageBackground : 'transparent',
         boxShadow: active === tab.id ? dshThemeColor.subtleShadow : 'none' },

@@ -11,6 +11,7 @@ import { AssistantAvatarSlot } from '../avatar/slot.js'
 import type { CodingNsClientServices } from './types.js'
 import { AssistantConversationMessageView, AssistantMessageContentView } from './assistant-conversation-message.js'
 import { AssistantRecordChevron, AssistantRecordStyle } from './assistant-record-style.js'
+import { uiFontSize } from '../font-scale.js'
 
 interface RealtimeCallProps {
   readonly services: CodingNsClientServices; readonly name: string; readonly model: AssistantAvatarModel
@@ -53,10 +54,10 @@ export function AssistantRealtimeCall(props: RealtimeCallProps): ReactElement {
       width: 'min(300px, calc(100vw - 80px))', padding: 16, boxSizing: 'border-box', borderRadius: 14,
       border: `1px solid ${dshThemeColor.border}`, background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.prominentShadow },
     onKeyDown: (event: { key: string; preventDefault(): void; stopPropagation(): void }) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setSpeakersOpen(false) } } },
-    createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 9, fontSize: 13 } },
+    createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 9, fontSize: uiFontSize(13) } },
       createElement('input', { type: 'checkbox', checked: !speakerMuted, disabled: adapter?.setSpeakerMuted === undefined,
         onChange: () => { const muted = !speakerMuted; adapter?.setSpeakerMuted?.(muted); setSpeakerMuted(muted) } }), props.t('awb.call.playSound')),
-    createElement('label', { style: { display: 'grid', gap: 6, fontSize: 12 } }, props.t('awb.call.outputDevice'),
+    createElement('label', { style: { display: 'grid', gap: 6, fontSize: uiFontSize(12) } }, props.t('awb.call.outputDevice'),
       createElement('select', { value: adapter?.outputDeviceSupported ? outputId : '', disabled: !adapter?.outputDeviceSupported || devicePending,
         style: { ...dshSettingsFieldStyle, width: '100%', minWidth: 0 }, onChange: (event: { currentTarget: { value: string } }) => {
           const id = event.currentTarget.value; setDevicePending(true); setError('')
@@ -64,7 +65,7 @@ export function AssistantRealtimeCall(props: RealtimeCallProps): ReactElement {
         } }, createElement('option', { value: '' }, props.t('awb.call.defaultSpeaker')),
         adapter?.outputDeviceSupported && outputId && !devices.some((device) => device.deviceId === outputId) ? createElement('option', { value: outputId }, props.t('awb.call.speaker')) : null,
         ...devices.filter((device) => device.deviceId !== '').map((device) => createElement('option', { key: device.deviceId, value: device.deviceId }, device.label || props.t('awb.call.speaker'))))),
-    error ? createElement('div', { role: 'alert', style: { fontSize: 12, color: dshThemeColor.error, overflowWrap: 'anywhere' } }, error) : null)
+    error ? createElement('div', { role: 'alert', style: { fontSize: uiFontSize(12), color: dshThemeColor.error, overflowWrap: 'anywhere' } }, error) : null)
   return createElement(AssistantRealtimeCallView, { ...props, duration, microphoneMuted, speakerMuted,
     microphoneAvailable: adapter?.setMicrophoneMuted !== undefined,
     // 隐藏窗口时卸载动画形象，避免与悬浮形象同时消耗渲染资源；音频运行时不受影响。
@@ -102,23 +103,23 @@ export function AssistantRealtimeCallView({ name, t, state, pending, duration, m
       onClick: action, style: { ...dshSettingsButtonStyle, display: 'grid', placeItems: 'center', width: 58, height: 58, padding: 0, borderRadius: '50%',
         ...(kind === 'hangup' ? { background: '#e64949', color: '#fff', borderColor: '#e64949' } : pressed ? { background: dshThemeColor.labelPrimary, color: dshThemeColor.pageBackground } : {}) } },
       createElement(CallIcon, { kind, muted: pressed === true })),
-    createElement('span', { style: { fontSize: 12, color: dshThemeColor.labelSecondary } }, kind === 'microphone' ? t(microphoneMuted ? 'awb.call.unmute' : 'awb.call.microphone') : t(`awb.call.${kind}`)))
+    createElement('span', { style: { fontSize: uiFontSize(12), color: dshThemeColor.labelSecondary } }, kind === 'microphone' ? t(microphoneMuted ? 'awb.call.unmute' : 'awb.call.microphone') : t(`awb.call.${kind}`)))
   return createElement('div', { 'data-codingns-realtime-call': true, style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, textAlign: 'center', padding: 11, gap: 10 } },
     createElement('style', null, '.codingns-call-halo{position:absolute;inset:10%;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--dsw-alias-button-info-fill,#1677ff) 14%,transparent),transparent 70%);animation:codingns-call-breathe 3s ease-in-out infinite}.codingns-call-caption{overflow-wrap:anywhere;white-space:pre-wrap}[data-codingns-call-avatar] img{height:auto!important;max-height:32dvh;object-fit:contain}[data-codingns-call-avatar] canvas,[data-codingns-call-avatar] video{max-width:100%;max-height:32dvh;object-fit:contain}@keyframes codingns-call-breathe{50%{transform:scale(1.12);opacity:.6}}@media(prefers-reduced-motion:reduce){.codingns-call-halo{animation:none}}'),
     createElement('div', { style: { position: 'relative', paddingInline: onMinimize ? 44 : 0, minHeight: 40, display: 'grid', gap: 4 } },
-      createElement('strong', { style: { fontSize: 18, overflowWrap: 'anywhere' } }, name),
-      createElement('span', { style: { fontSize: 12, color: dshThemeColor.labelTertiary, fontVariantNumeric: 'tabular-nums' } }, t('awb.call.title'), ' · ', duration),
+      createElement('strong', { style: { fontSize: uiFontSize(18), overflowWrap: 'anywhere' } }, name),
+      createElement('span', { style: { fontSize: uiFontSize(12), color: dshThemeColor.labelTertiary, fontVariantNumeric: 'tabular-nums' } }, t('awb.call.title'), ' · ', duration),
       onMinimize ? createElement('button', { type: 'button', 'aria-label': t('awb.call.minimize'), title: t('awb.call.minimize'), onClick: onMinimize,
         style: { ...dshSettingsButtonStyle, position: 'absolute', right: 0, top: 0, width: 40, height: 40, display: 'grid', placeItems: 'center', padding: 0, borderRadius: 12 } },
         createElement('svg', { width: 22, height: 22, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', 'aria-hidden': true }, createElement('path', { d: 'M5 15h14M9 6l3 3 3-3' }))) : null),
     createElement('div', { style: { display: 'grid', placeItems: 'center', flex: '1 1 auto', minHeight: 'min(160px, 24dvh)', position: 'relative' } },
       createElement('div', { className: 'codingns-call-halo', 'aria-hidden': true }), createElement('div', { 'data-codingns-call-avatar': true, style: { position: 'relative', width: 'min(256px, 32dvh, 100%)', maxWidth: '100%', maxHeight: '32dvh', overflow: 'hidden', display: 'grid', placeItems: 'center' } }, avatar)),
-    createElement('div', { role: 'status', style: { fontSize: 13, color: dshThemeColor.labelSecondary } }, t(`awb.call.${status}`)),
+    createElement('div', { role: 'status', style: { fontSize: uiFontSize(13), color: dshThemeColor.labelSecondary } }, t(`awb.call.${status}`)),
     createElement('div', { ref: captions, 'data-codingns-call-captions': true, 'aria-label': t('awb.call.caption'), tabIndex: 0,
       onScroll: (event: { currentTarget: HTMLDivElement }) => { const element = event.currentTarget; followCaptions.current = element.scrollHeight - element.scrollTop - element.clientHeight <= 24 },
       style: { minHeight: 90, maxHeight: 'min(280px, 35dvh)', overflowY: 'auto', overscrollBehavior: 'contain', scrollbarWidth: 'thin', display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 } },
-      userText && !microphoneMuted ? createElement('p', { className: 'codingns-call-caption', style: { margin: 0, flexShrink: 0, fontSize: 13, lineHeight: 1.6, color: dshThemeColor.labelTertiary } }, userText) : null,
-      createElement('div', { 'aria-live': 'polite', style: { flexShrink: 0, display: 'grid', gap: 8, fontSize: 16, lineHeight: 1.65, color: assistantText ? dshThemeColor.labelPrimary : dshThemeColor.labelTertiary } },
+      userText && !microphoneMuted ? createElement('p', { className: 'codingns-call-caption', style: { margin: 0, flexShrink: 0, fontSize: uiFontSize(13), lineHeight: 1.6, color: dshThemeColor.labelTertiary } }, userText) : null,
+      createElement('div', { 'aria-live': 'polite', style: { flexShrink: 0, display: 'grid', gap: 8, fontSize: uiFontSize(16), lineHeight: 1.65, color: assistantText ? dshThemeColor.labelPrimary : dshThemeColor.labelTertiary } },
         assistantText || toolCalls?.length ? createElement(AssistantMessageContentView, { text: assistantText, calls: toolCalls, t }) : !userText ? t('awb.call.waiting') : '')),
     createElement('div', { style: { display: 'flex', justifyContent: 'center', gap: 'clamp(20px, 6vw, 44px)', padding: '12px 0 4px', position: 'relative' } }, menu,
       control('speaker', t('awb.call.speakerSettings'), onSpeaker, speakerMuted),
@@ -150,14 +151,14 @@ export function AssistantVoiceSessionCard({ session, t, name, services, model }:
       createElement('span', { style: { display: 'grid', placeItems: 'center', width: 32, height: 32, borderRadius: 9, flexShrink: 0,
         background: `color-mix(in srgb, ${dshThemeColor.accent} 9%, transparent)`, color: dshThemeColor.accent } }, createElement(CallIcon, { kind: 'speaker', size: 18 })),
       createElement('span', { style: { flex: '1 1 auto', display: 'grid', gap: 3, minWidth: 0 } },
-        createElement('strong', { style: { fontSize: 13, fontWeight: 600 } }, t('awb.call.record')),
-        createElement('span', { style: { fontSize: 11, color: dshThemeColor.labelSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+        createElement('strong', { style: { fontSize: uiFontSize(13), fontWeight: 600 } }, t('awb.call.record')),
+        createElement('span', { style: { fontSize: uiFontSize(11), color: dshThemeColor.labelSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
           t('awb.call.count', { count: voiceSessionMessageCount(session) }), ' · ',
           createElement('time', { dateTime: Number.isNaN(startedAt.valueOf()) ? undefined : startedAt.toISOString(), title: startedAt.toLocaleString() },
             startedAt.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })))),
       createElement('span', { title: t('awb.call.duration'), 'aria-label': `${t('awb.call.duration')} ${voiceSessionDuration(session)}`,
         style: { padding: '3px 7px', borderRadius: 6, background: dshThemeColor.cardBackground, color: dshThemeColor.labelSecondary,
-          fontSize: 11, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', flexShrink: 0 } }, voiceSessionDuration(session)),
+          fontSize: uiFontSize(11), fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', flexShrink: 0 } }, voiceSessionDuration(session)),
       createElement(AssistantRecordChevron)),
     open ? createElement(VoiceSessionModal, { session, t, name, services, model, onClose: () => setOpen(false) }) : null)
 }
@@ -172,7 +173,7 @@ function VoiceSessionModal({ onClose, ...props }: VoiceSessionDisplayProps & { r
       background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, boxShadow: dshThemeColor.prominentShadow, overflow: 'hidden' } },
     createElement(AssistantRecordStyle),
     createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexShrink: 0 } },
-      createElement('strong', { id: titleId, style: { flex: 1, fontSize: 14 } }, props.t('awb.call.details')),
+      createElement('strong', { id: titleId, style: { flex: 1, fontSize: uiFontSize(14) } }, props.t('awb.call.details')),
       createElement('button', { type: 'button', className: 'codingns-assistant-record-button', autoFocus: true, onClick: onClose,
         title: props.t('awb.close'), 'aria-label': props.t('awb.close'),
         style: { ...dshSettingsButtonStyle, width: 32, height: 32, minHeight: 32, padding: 0, border: 0, borderRadius: 8,
@@ -187,10 +188,10 @@ function VoiceSessionModal({ onClose, ...props }: VoiceSessionDisplayProps & { r
 export function AssistantVoiceSessionDetailsView({ session, t, name, services, model }: VoiceSessionDisplayProps): ReactElement {
   const date = (value: number | null): string => value === null ? '—' : new Date(value).toLocaleString()
   const statistic: CSSProperties = { display: 'inline-flex', alignItems: 'center', padding: '2px 7px', borderRadius: 5,
-    background: dshThemeColor.cardBackground, color: dshThemeColor.labelPrimary, fontSize: 11, fontVariantNumeric: 'tabular-nums' }
+    background: dshThemeColor.cardBackground, color: dshThemeColor.labelPrimary, fontSize: uiFontSize(11), fontVariantNumeric: 'tabular-nums' }
   return createElement('div', { style: { display: 'grid', gap: 8, minWidth: 0 } },
     createElement('div', { style: { padding: '10px 12px', borderRadius: 9, background: dshThemeColor.surfaceSubtle,
-      display: 'grid', gap: 8, color: dshThemeColor.labelSecondary, fontSize: 11, lineHeight: 1.5, minWidth: 0 } },
+      display: 'grid', gap: 8, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), lineHeight: 1.5, minWidth: 0 } },
       createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
         createElement('span', { style: statistic }, t('awb.call.count', { count: voiceSessionMessageCount(session) })),
         createElement('span', { style: statistic }, t('awb.call.duration'), ' ', voiceSessionDuration(session))),
@@ -198,7 +199,7 @@ export function AssistantVoiceSessionDetailsView({ session, t, name, services, m
         ...([[t('awb.call.startedAt'), session.startedAt], [t('awb.call.endedAt'), session.endedAt]] as const).map(([label, value]) =>
           createElement('span', { key: label, style: { overflowWrap: 'anywhere' } }, label, ' ',
             createElement('span', { style: { color: dshThemeColor.labelPrimary, fontVariantNumeric: 'tabular-nums' } }, date(value)))))),
-    session.messages.length === 0 ? createElement('p', { style: { margin: '8px 0', fontSize: 13, color: dshThemeColor.labelSecondary } }, t('awb.call.noMessages')) : null,
+    session.messages.length === 0 ? createElement('p', { style: { margin: '8px 0', fontSize: uiFontSize(13), color: dshThemeColor.labelSecondary } }, t('awb.call.noMessages')) : null,
     ...session.messages.map((message) => createElement(AssistantConversationMessageView, { key: message.id, message, name, t, services, model,
       side: message.role === 'user' ? 'right' : 'left' })))
 }

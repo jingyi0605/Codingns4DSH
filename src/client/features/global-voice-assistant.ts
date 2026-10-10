@@ -24,6 +24,7 @@ import type { AssistantNotification, AssistantNotificationSnapshot } from '../..
 import type { AssistantAvatarReaction } from '../../shared/assistant-avatar.js'
 import { readDesktopAssistantNotificationSnapshot, type DesktopAssistantNotification } from '../../shared/desktop-assistant.js'
 import { openAssistantNotificationSession } from '../../dsh-capabilities/client/assistant-session-navigation-adapter.js'
+import { uiFontSize } from '../font-scale.js'
 
 interface VoiceSnapshot {
   readonly active?: boolean
@@ -432,7 +433,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
         ...(reaction === undefined ? {} : { reaction }), notification })
       : floatingCall && !nativeFloating ? createElement(FloatingVoiceCall, { services, call: floatingCall, onOpen: openConversation }) : null,
     floatingEnabled && desktopAvatar.error ? createElement('div', { role: 'status', title: desktopAvatar.error, 'data-codingns-desktop-avatar-fallback': true,
-      style: { position: 'fixed', right: 12, bottom: 8, zIndex: 9000, maxWidth: 'min(480px, calc(100vw - 24px))', fontSize: 11, color: 'var(--dsw-alias-label-secondary, #777)', pointerEvents: 'auto' } },
+      style: { position: 'fixed', right: 12, bottom: 8, zIndex: 9000, maxWidth: 'min(480px, calc(100vw - 24px))', fontSize: uiFontSize(11), color: 'var(--dsw-alias-label-secondary, #777)', pointerEvents: 'auto' } },
       createElement('details', null, createElement('summary', { style: { cursor: 'pointer' } }, t('avatar.desktopFallback')),
         createElement('div', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 120, overflowY: 'auto' } }, desktopAvatar.error))) : null,
     conversationOpen ? createElement(AssistantLoadedView<AssistantWorkbenchProps>, { loader: workbenchLoader, t, overlay: true, onClose: closeConversation, viewProps: {

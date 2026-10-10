@@ -7,6 +7,7 @@ import {
   createTerminalController,
   type TerminalControllerFactoryResult,
 } from './controller-factory.js'
+import type { DshTerminalAgent } from './terminal-controller.js'
 import { terminalStorePath } from './terminal-store.js'
 import type { DshHostSettingsProvider, DshHostSettingsScope } from '../../dsh-capabilities/host/config-forms-adapter.js'
 
@@ -27,6 +28,8 @@ export interface InstallTerminalControllerOptions {
   readonly resolveWorkspaceRoot?: (workspaceId: string) => string | null
   /** 由终端 controller 在 Host 侧登记可信 Workspace 根目录。 */
   readonly registerWorkspaceRoot?: (workspaceId: string, cwd: string) => void
+  /** 会话「当前目录」；alpha.2 起由 `ctx.workingDirectory` 提供，旧版本缺省即回退会话头目录。 */
+  readonly workingDirectory?: (agent: DshTerminalAgent) => string | undefined
 }
 
 /**
@@ -94,6 +97,7 @@ export async function installTerminalController(
     ...(options.platform === undefined ? {} : { platform: options.platform }),
     ...(options.resolveWorkspaceRoot === undefined ? {} : { resolveWorkspaceRoot: options.resolveWorkspaceRoot }),
     ...(options.registerWorkspaceRoot === undefined ? {} : { registerWorkspaceRoot: options.registerWorkspaceRoot }),
+    ...(options.workingDirectory === undefined ? {} : { workingDirectory: options.workingDirectory }),
   }
 
   if (!enhancedEnabled) {

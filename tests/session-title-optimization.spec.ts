@@ -8,7 +8,7 @@ import { createSessionTitleOptimizationFeature } from '../src/host/features/sess
 import { WorkspaceSessionEnhancementPanel } from '../src/client/features/workspace-session-enhancement-panel.js'
 import { CodingNsSettingsSchema } from '../src/host/settings.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
-import { fallbackOptimizedSessionTitle, isCompleteSessionTitle } from '../src/shared/session-title.js'
+import { fallbackOptimizedSessionTitle, isCompleteSessionTitle, SESSION_TITLE_SYSTEM_PROMPT } from '../src/shared/session-title.js'
 import { FeatureResourceScopeImpl } from '../src/features/index.js'
 import { createDshCapabilityRegistry } from '../src/dsh-capabilities/routes.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
@@ -20,7 +20,7 @@ import type { CodingNsSettingsOperation } from '../src/dsh-capabilities/settings
 type Reply = string | Error | ((options: any) => AsyncIterable<any>)
 
 /** 模拟原生流中间件的递归调用、持久标题投影和模型终态，不访问运行中的宿主。 */
-function fixture(replies: Reply[] = ['排查 PeerHost 远程会话访问问题']) {
+function fixture(replies: Reply[] = ['排查 PeerHost 远程会话访问问题'], extra: Record<string, unknown> = {}) {
   let listener: any
   let removals = 0
   const calls: any[] = [], logs: any[] = []
@@ -54,6 +54,7 @@ function fixture(replies: Reply[] = ['排查 PeerHost 远程会话访问问题']
     provider: 'configured-provider', model: 'configured-model', purpose: 'session-title', sessionId: 'session-1',
     system: '原生标题提示词', maxTokens: 64, signal: controller.signal,
     messages: Object.freeze([{ role: 'user', source: { kind: 'dsh-session-title-llm' }, content: [{ type: 'text', text: `Generate the session title from this JSON array of human messages:\n${JSON.stringify([{ seq: 1, text: prompt }])}` }] }]),
+    ...extra,
   })
   return { adapter, ctx, request, controller, calls, logs, prompt, removals: () => removals,
     read: () => title,
@@ -175,8 +176,37 @@ test('开关关闭时原请求及结果原样透传，开启后使用原模型�
   assert.deepEqual(recorded.messageSeqs, [1])
 })
 
-test('超长结果重新概括一次，完整版本名称不靠截取获得', async (t) => {
-  const f = fixture(['请帮我分析'.repeat(20), '发布 0.2.1-beta.7 并同步版本'])
+test('alpha.2 的当前标题并入系统提示，字段缺失时提示与今天逐字一致', async (t) => {
+  // 旧版本 DSH 不带 currentTitle：系统提示必须保持原样，生成行为零变化。
+  const legacy = fixture(['发布 0.2.1-beta.7 并同步版本'])
+  t.after(() => legacy.adapter.dispose())
+  legacy.adapter.setEnabled(true)
+  assert.equal(await output(legacy.ctx.llm.stream(legacy.request)), '发布 0.2.1-beta.7 并同步版本')
+  assert.equal(legacy.calls.length, 1)
+  assert.equal(legacy.calls[0].system, SESSION_TITLE_SYSTEM_PROMPT)
+
+  // alpha.2 带上当前标题：提示里追加沿用措辞的指引，不改动用户消息快照。
+  const current = fixture(['发布 0.2.1-beta.7 并同步版本'], {
+    currentTitle: { title: '同步插件版本号', messageSeqs: [1], source: { kind: 'provider' }, eventSeq: 3, updatedAt: 0 },
+  })
+  t.after(() => current.adapter.dispose())
+  current.adapter.setEnabled(true)
+  assert.equal(await output(current.ctx.llm.stream(current.request)), '发布 0.2.1-beta.7 并同步版本')
+  assert.match(current.calls[0].system, /会话当前标题是「同步插件版本号」/u)
+  assert.match(current.calls[0].system, /只有主题确实变化时才改写/u)
+  assert.equal(current.calls[0].messages, current.request.messages, '只增强系统提示，不改动消息快照')
+
+  // 空标题与非法形状都按缺失处理，不能把 undefined 写进提示。
+  for (const currentTitle of [{ title: '   ' }, { title: 42 }, 'unexpected', null]) {
+    const malformed = fixture(['发布 0.2.1-beta.7 并同步版本'], { currentTitle })
+    t.after(() => malformed.adapter.dispose())
+    malformed.adapter.setEnabled(true)
+    await output(malformed.ctx.llm.stream(malformed.request))
+    assert.equal(malformed.calls[0].system, SESSION_TITLE_SYSTEM_PROMPT, JSON.stringify(currentTitle))
+  }
+})
+
+test('超长结果重新概括一次，完整版本名称不靠截取获得', async (t) => {  const f = fixture(['请帮我分析'.repeat(20), '发布 0.2.1-beta.7 并同步版本'])
   t.after(() => f.adapter.dispose())
   f.adapter.setEnabled(true)
   assert.equal(await output(f.ctx.llm.stream(f.request)), '发布 0.2.1-beta.7 并同步版本')

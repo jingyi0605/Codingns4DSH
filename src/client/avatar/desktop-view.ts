@@ -12,6 +12,7 @@ import { ImageAssistantAvatar } from './image.js'
 import { SpriteSheetAssistantAvatar } from './spritesheet.js'
 import { Live2dAssistantAvatar } from './live2d.js'
 import type { AssistantAvatarLoadProgress } from './loading.js'
+import { uiFontSize } from '../font-scale.js'
 
 interface NativeBridge {
   readonly webkit?: { readonly messageHandlers?: { readonly assistant?: { postMessage(value: string): void } } }
@@ -141,7 +142,7 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
         ...(frame.notificationSnapshot === undefined ? {} : { onPage: pageNotices, onExpandedChange: expandedNotices }) })) : null,
     frame.caption && layout.caption ? createElement('div', { 'aria-live': 'polite', 'data-codingns-native-caption': true,
       style: { ...regionStyle(layout.caption), whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
-        boxSizing: 'border-box', padding: 8, borderRadius: 10, color: '#242424', background: 'rgba(255,255,255,.94)', fontSize: 12, lineHeight: 1.5 } }, frame.caption) : null)
+        boxSizing: 'border-box', padding: 8, borderRadius: 10, color: '#242424', background: 'rgba(255,255,255,.94)', fontSize: uiFontSize(12), lineHeight: 1.5 } }, frame.caption) : null)
 }
 
 export class DesktopAssistantBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {

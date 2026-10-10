@@ -18,6 +18,7 @@ import type { SettingsNotice } from './features/types.js'
 import { notifyGitWorkspaceChanged } from './git-workspace-events.js'
 import { readNativeService, readNativeWorkspaceListStore, readNativeWorkspaceSnapshot } from './native-workspace-store.js'
 import { parseVirtualSessionId, parseVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
+import { uiFontSize } from './font-scale.js'
 
 // 单列 Git 视图需要一个稳定的分段控件；这里保持 React 结构简单，避免引入额外依赖。
 function SegmentedControl<Value extends string>({ id, value, options, onChange, label, disabled }: { readonly id: string; readonly value: Value; readonly options: readonly { readonly value: Value; readonly label: string; readonly title?: string; readonly disabled?: boolean }[]; readonly onChange: (next: Value) => void; readonly label: string; readonly disabled?: boolean }): ReactElement {
@@ -1158,26 +1159,26 @@ function graphRailStyle(lane: number, stroke: string, dashed = false): CSSProper
 // 面板根节点不再铺底色：DSH 右侧栏的其它面板都是透明的，继承 Sidebar 表面色才不会出现色块接缝。
 const panelStyle: CSSProperties = { position: 'relative', userSelect: 'none', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 12, minHeight: '100%', padding: '12px 14px 20px', overflow: 'auto', color: dshThemeColor.labelPrimary }
 const headerStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 28 }
-const tabTitleStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', minWidth: 0, color: dshThemeColor.labelPrimary, fontSize: 12 }
+const tabTitleStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', minWidth: 0, color: dshThemeColor.labelPrimary, fontSize: uiFontSize(12) }
 const headerActionsStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4 }
 // SegmentedControl 自带 indicator 与键盘走查；外层占满面板宽度后再将控件居中。
 const columnSwitchStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', minWidth: 0 }
-const summaryStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: 12 }
+const summaryStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) }
 const contentGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', alignItems: 'start', gap: 12 }
 const columnStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }
 // 卡片用 layer-1：与 DSH 内置卡片同层，暗色下只比侧栏表面亮一档。
 const sectionStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8, padding: 10, border: `.5px solid ${dshThemeColor.menuBorder}`, borderRadius: 8, background: dshThemeColor.cardBackground }
-const sectionHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 24, fontSize: 12 }
+const sectionHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 24, fontSize: uiFontSize(12) }
 const treeStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 1 }
 const treeDirectoryStyle: CSSProperties = { minWidth: 0 }
-const treeRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 7, minHeight: 28, paddingLeft: 4, paddingRight: 2, borderRadius: 4, fontSize: 12 }
-const treeChevronStyle: CSSProperties = { width: 12, color: dshThemeColor.labelTertiary, fontSize: 12 }
-const folderIconStyle: CSSProperties = { color: dshThemeColor.accent, fontSize: 11 }
-const fileIconStyle: CSSProperties = { width: 12, color: dshThemeColor.labelTertiary, fontSize: 12, textAlign: 'center' }
+const treeRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 7, minHeight: 28, paddingLeft: 4, paddingRight: 2, borderRadius: 4, fontSize: uiFontSize(12) }
+const treeChevronStyle: CSSProperties = { width: 12, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12) }
+const folderIconStyle: CSSProperties = { color: dshThemeColor.accent, fontSize: uiFontSize(11) }
+const fileIconStyle: CSSProperties = { width: 12, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), textAlign: 'center' }
 const fileNameStyle: CSSProperties = { minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
-const fileStatusStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontFamily: dshThemeColor.codeFont, fontSize: 11 }
+const fileStatusStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontFamily: dshThemeColor.codeFont, fontSize: uiFontSize(11) }
 const historyListStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 0, minWidth: 0 }
-const historyRowStyle: CSSProperties = { display: 'flex', alignItems: 'stretch', minWidth: 0, fontSize: 12 }
+const historyRowStyle: CSSProperties = { display: 'flex', alignItems: 'stretch', minWidth: 0, fontSize: uiFontSize(12) }
 const historyRowBodyStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, flex: '1 1 auto' }
 const historyRowMainStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, minHeight: 28, paddingLeft: 4, paddingRight: 2, borderRadius: 4 }
 const graphGutterStyle: CSSProperties = { display: 'flex', flexDirection: 'column', flex: '0 0 auto', alignSelf: 'stretch', marginRight: 6 }
@@ -1186,49 +1187,49 @@ const graphRailsStyle: CSSProperties = { position: 'relative', flex: '0 0 auto',
 const historyHeaderActionsStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }
 const historyRefListStyle: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: '4px 6px', paddingLeft: 2 }
 // 尺寸对齐 DSH Pill：20px 高、11px 字号；颜色仍按来源区分，颜色是唯一的语义载体。
-const historyRefPillBaseStyle: CSSProperties = { justifyContent: 'center', height: 20, padding: '0 8px', fontSize: 11, lineHeight: '17px' }
-const historyDateHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'stretch', color: dshThemeColor.labelSecondary, fontSize: 11, fontWeight: 600 }
+const historyRefPillBaseStyle: CSSProperties = { justifyContent: 'center', height: 20, padding: '0 8px', fontSize: uiFontSize(11), lineHeight: '17px' }
+const historyDateHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'stretch', color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), fontWeight: 600 }
 const historyDateHeaderTextStyle: CSSProperties = { display: 'block', minWidth: 0, paddingTop: 8 }
-const hashStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontFamily: dshThemeColor.codeFont, fontSize: 11 }
+const hashStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontFamily: dshThemeColor.codeFont, fontSize: uiFontSize(11) }
 const rowActionsStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 2, flex: '0 0 auto' }
-const mutedStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: 11 }
+const mutedStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11) }
 const historyTimeStyle: CSSProperties = { ...mutedStyle, flex: '0 0 auto', fontVariantNumeric: 'tabular-nums' }
-const emptyStyle: CSSProperties = { padding: 16, color: dshThemeColor.labelSecondary, fontSize: 12 }
+const emptyStyle: CSSProperties = { padding: 16, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) }
 const diffOverlayStyle: CSSProperties = { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, boxSizing: 'border-box', background: dshThemeColor.overlay }
 const diffStyle: CSSProperties = { ...sectionStyle, width: 'min(1000px, 100%)', maxHeight: 'min(88vh, 760px)', overflow: 'hidden', background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.prominentShadow }
 const diffBodyStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0, overflow: 'auto', paddingRight: 2 }
 const diffFilesSectionStyle: CSSProperties = { ...sectionStyle, gap: 6, padding: 10, background: dshThemeColor.pageBackground }
 const diffDiffSectionStyle: CSSProperties = { ...sectionStyle, gap: 6, padding: 10, background: dshThemeColor.pageBackground }
-const diffSectionHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 24, fontSize: 12 }
-const diffCountStyle: CSSProperties = { minWidth: 20, padding: '2px 6px', borderRadius: 999, color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, fontSize: 11, textAlign: 'center' }
+const diffSectionHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 24, fontSize: uiFontSize(12) }
+const diffCountStyle: CSSProperties = { minWidth: 20, padding: '2px 6px', borderRadius: 999, color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, fontSize: uiFontSize(11), textAlign: 'center' }
 const diffFileListStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 2 }
-const diffFileRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minHeight: 30, padding: '4px 6px', borderRadius: 4, background: dshThemeColor.surfaceSubtle, fontSize: 12 }
-const diffFileStatusStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 42, flex: '0 0 auto', color: dshThemeColor.accent, fontSize: 11, fontWeight: 700 }
+const diffFileRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minHeight: 30, padding: '4px 6px', borderRadius: 4, background: dshThemeColor.surfaceSubtle, fontSize: uiFontSize(12) }
+const diffFileStatusStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 42, flex: '0 0 auto', color: dshThemeColor.accent, fontSize: uiFontSize(11), fontWeight: 700 }
 const diffFileNameStyle: CSSProperties = { display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1, overflow: 'hidden' }
-const diffFileOldPathStyle: CSSProperties = { overflow: 'hidden', color: dshThemeColor.labelTertiary, textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11 }
-const diffBinaryStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: 11 }
-const fileDiffTitleStyle: CSSProperties = { ...fileNameStyle, fontSize: 12 }
-const diffTruncatedStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: 11 }
-const diffEmptyStyle: CSSProperties = { padding: 10, color: dshThemeColor.labelTertiary, fontSize: 12 }
-const diffLinesStyle: CSSProperties = { overflow: 'auto', border: `.5px solid ${dshThemeColor.menuBorder}`, borderRadius: 8, background: dshThemeColor.pageBackground, fontFamily: dshThemeColor.codeFont, fontSize: 12 }
+const diffFileOldPathStyle: CSSProperties = { overflow: 'hidden', color: dshThemeColor.labelTertiary, textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: uiFontSize(11) }
+const diffBinaryStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11) }
+const fileDiffTitleStyle: CSSProperties = { ...fileNameStyle, fontSize: uiFontSize(12) }
+const diffTruncatedStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11) }
+const diffEmptyStyle: CSSProperties = { padding: 10, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12) }
+const diffLinesStyle: CSSProperties = { overflow: 'auto', border: `.5px solid ${dshThemeColor.menuBorder}`, borderRadius: 8, background: dshThemeColor.pageBackground, fontFamily: dshThemeColor.codeFont, fontSize: uiFontSize(12) }
 const diffLineBaseStyle: CSSProperties = { display: 'grid', gridTemplateColumns: '42px 42px minmax(0, 1fr)', minHeight: 21, alignItems: 'stretch', padding: '0 8px', whiteSpace: 'pre', overflowWrap: 'normal', lineHeight: 1.5 }
 const diffLineNumberStyle: CSSProperties = { paddingRight: 8, color: dshThemeColor.labelTertiary, borderRight: `.5px solid ${dshThemeColor.menuBorder}`, textAlign: 'right', userSelect: 'none' }
 const diffCodeStyle: CSSProperties = { minWidth: 0, paddingLeft: 10, color: 'inherit', font: 'inherit', overflow: 'visible' }
 const commitSectionStyle: CSSProperties = { ...sectionStyle, gap: 10 }
 /** 提交框与「生成提交信息」按钮同高，输入面沿用面板的表单风格（边框 + 输入底色 + 8px 圆角）。 */
 const commitEditorRowStyle: CSSProperties = { display: 'flex', alignItems: 'stretch', gap: 8, minWidth: 0 }
-const commitSubjectStyle: CSSProperties = { width: '100%', minHeight: 34, boxSizing: 'border-box', resize: 'none', padding: '7px 10px', borderRadius: 8, font: 'inherit', fontSize: 12, lineHeight: '16px' }
-const draftButtonStyle: CSSProperties = { width: 34, flex: '0 0 auto', padding: 0, borderRadius: 8, fontSize: 16, lineHeight: 1 }
+const commitSubjectStyle: CSSProperties = { width: '100%', minHeight: 34, boxSizing: 'border-box', resize: 'none', padding: '7px 10px', borderRadius: 8, font: 'inherit', fontSize: uiFontSize(12), lineHeight: '16px' }
+const draftButtonStyle: CSSProperties = { width: 34, flex: '0 0 auto', padding: 0, borderRadius: 8, fontSize: uiFontSize(16), lineHeight: 1 }
 const commitActionsStyle: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }
-const refreshActionStyle: CSSProperties = { minHeight: 32, padding: '6px 12px', borderRadius: 8, fontSize: 12, lineHeight: '16px' }
+const refreshActionStyle: CSSProperties = { minHeight: 32, padding: '6px 12px', borderRadius: 8, fontSize: uiFontSize(12), lineHeight: '16px' }
 // 主按钮沿用 DSH 品牌填充与前景色，暗色下自动变成浅底深字，与内置主按钮一致。
 const submitActionStyle: CSSProperties = { ...refreshActionStyle }
-const primaryButtonStyle: CSSProperties = { minHeight: 30, padding: '5px 12px', borderRadius: 8, fontSize: 12 }
-const branchSelectStyle: CSSProperties = { maxWidth: 150, borderRadius: 8, padding: '3px 5px', fontSize: 11 }
+const primaryButtonStyle: CSSProperties = { minHeight: 30, padding: '5px 12px', borderRadius: 8, fontSize: uiFontSize(12) }
+const branchSelectStyle: CSSProperties = { maxWidth: 150, borderRadius: 8, padding: '3px 5px', fontSize: uiFontSize(11) }
 const scopeSelectStyle: CSSProperties = { ...branchSelectStyle, maxWidth: 92 }
-const loadMoreButtonStyle: CSSProperties = { minHeight: 30, borderRadius: 8, padding: '4px 9px', fontSize: 12 }
+const loadMoreButtonStyle: CSSProperties = { minHeight: 30, borderRadius: 8, padding: '4px 9px', fontSize: uiFontSize(12) }
 const menuStyle: CSSProperties = { position: 'relative', flex: '0 0 auto' }
-const operationStatusStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5, color: dshThemeColor.labelSecondary, fontSize: 11, whiteSpace: 'nowrap' }
+const operationStatusStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), whiteSpace: 'nowrap' }
 const menuPopupStyle: CSSProperties = { position: 'absolute', right: 0, zIndex: 2, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 120, padding: 4 }
 const iconActionStyle: CSSProperties = { width: 28, height: 28 }
 const menuItemStyle: CSSProperties = { padding: '6px 8px' }

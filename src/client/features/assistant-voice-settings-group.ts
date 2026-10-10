@@ -2,6 +2,7 @@ import { createElement, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import type { CodingNsTranslator } from '../locale.js'
 import { dshThemeColor } from '../theme.js'
+import { uiFontSize } from '../font-scale.js'
 
 interface VoiceSettingsGroupProps {
   readonly kind: 'input' | 'output'; readonly hint: string; readonly active: boolean; readonly disabled: boolean
@@ -27,8 +28,8 @@ export function AssistantVoiceSettingsGroupView({ kind, hint, active, disabled, 
       createElement('span', { 'aria-hidden': true, style: { width: 36, height: 36, flexShrink: 0, display: 'flex', alignItems: 'center',
         justifyContent: 'center', borderRadius: 10, color: dshThemeColor.accent, background: dshThemeColor.surfaceSubtle } }, groupIcon(kind)),
       createElement('span', { style: { display: 'grid', gap: 4, flex: '1 1 auto', minWidth: 0 } },
-        createElement('strong', { style: { fontSize: 14, fontWeight: 600, lineHeight: 1.4 } }, t(`voice.settings.${kind}`)),
-        createElement('span', { title: hint, style: { fontSize: 12, lineHeight: 1.5, color: dshThemeColor.labelSecondary,
+        createElement('strong', { style: { fontSize: uiFontSize(14), fontWeight: 600, lineHeight: 1.4 } }, t(`voice.settings.${kind}`)),
+        createElement('span', { title: hint, style: { fontSize: uiFontSize(12), lineHeight: 1.5, color: dshThemeColor.labelSecondary,
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, hint)),
       createElement('svg', { 'aria-hidden': true, width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8,
         style: { flexShrink: 0, color: dshThemeColor.labelSecondary, transform: expanded ? 'rotate(180deg)' : 'none' } },

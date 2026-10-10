@@ -42,6 +42,7 @@ import { startCodingNsAccountBar } from './account-bar.js'
 import { assertInjectedDshVersion } from './dsh-runtime-version.js'
 import { isInjectedStage0Runtime } from '../shared/runtime-environment.js'
 import { createDshCapabilityRegistry } from '../dsh-capabilities/index.js'
+import { installFontScale } from './font-scale.js'
 import { TYPERT_REMOTE } from '../typert.remote-client.js'
 import { ASSISTANT_NOTIFICATION_TYPERT_REMOTE } from '../typert.notifications-client.js'
 import { createPeerHostScopedClient } from './peer-host-scoped-client.js'
@@ -207,6 +208,13 @@ export function apply(ctx?: Context): void {
       diagnostics: capabilityProfile.diagnostics,
     })
     const registry = new FeatureRegistry<CodingNsClientServices, CodingNsClientFeatureModule>(services, capabilityProfile)
+    // 界面字号联动：能力就绪时把插件字号基准指向 DSH 正文字号变量。旧版本能力缺失，
+    // `fontSize()` 回落到基准像素，插件界面字号与今天逐字一致。
+    const fontScaleCapability = capabilityProfile.capabilities.get('theme.font-scale')
+    if (fontScaleCapability?.status === 'ready') {
+      settingsCtx.effect(() => installFontScale(), 'codingns4dsh: ui font scale')
+      debugInfo('codingns4dsh: font scale linked', { route: fontScaleCapability.routeId })
+    }
     registry.registerMany(CLIENT_FEATURES)
     registry.validate()
     debugInfo('codingns4dsh: client feature registry ready', { features: registry.descriptors().map((item) => item.name) })

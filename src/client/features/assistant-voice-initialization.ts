@@ -8,6 +8,7 @@ import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 import { dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshSettingsHelpStyle, dshThemeColor } from '../theme.js'
 import type { CodingNsClientServices } from './types.js'
 import { AssistantVoiceSettingsGroup } from './assistant-voice-settings-group.js'
+import { uiFontSize } from '../font-scale.js'
 
 /** 打开面板只检查缓存，用户点击启用后才安装；首次不展示技术参数或要求填写字段。 */
 export function AssistantVoiceInitializationPanel({ services, enabled, active, inputSettings, outputSettings }: {
@@ -100,7 +101,7 @@ export function AssistantVoiceInitializationView({ snapshot, pending, error, dis
       border: `1px solid ${dshThemeColor.border}`, background: dshThemeColor.surfaceSubtle } },
     createElement('strong', null, t(ready ? 'tts.wizardReady' : 'tts.wizardTitle')),
     createElement('p', { role: 'status', 'aria-live': 'polite', style: { ...dshSettingsHelpStyle, margin: 0 } }, label),
-    ready ? null : createElement('div', { style: { display: 'grid', gap: 5, fontSize: 13, overflowWrap: 'anywhere' } },
+    ready ? null : createElement('div', { style: { display: 'grid', gap: 5, fontSize: uiFontSize(13), overflowWrap: 'anywhere' } },
       createElement('span', null, t('tts.wizardModel', { model: snapshot?.modelId === 'custom' ? t('voice.models.custom') : snapshot?.modelLabel ?? t('tts.wizardDefault') })),
       createElement('span', null, t('tts.wizardVoice', { voice: voice?.name ?? MOSS_BUILTIN_VOICES.find((item) => item.id === DEFAULT_ASSISTANT_TTS_SETTINGS.selectedId)?.name ?? 'Yuewen' }))),
     busy ? createElement('div', { style: { display: 'grid', gap: 6 } },
@@ -112,6 +113,6 @@ export function AssistantVoiceInitializationView({ snapshot, pending, error, dis
         onClick: ready ? onListen : onInitialize, style: dshSettingsPrimaryButtonStyle },
       t(ready ? speaking ? 'tts.stop' : 'tts.wizardListen' : busy ? 'tts.wizardPreparing' : failure ? 'tts.wizardRetry' : draft ? 'tts.wizardPrepareResources' : 'tts.wizardEnable')),
       snapshot !== undefined && !failure ? null : createElement('button', { type: 'button', disabled: busy, onClick: onRefresh, style: dshSettingsButtonStyle }, t('tts.refresh'))),
-    failure ? createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13, overflowWrap: 'anywhere' } }, failure) : null)
+    failure ? createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: uiFontSize(13), overflowWrap: 'anywhere' } }, failure) : null)
 }
 function message(cause: unknown): string { return cause instanceof Error ? cause.message : String(cause) }

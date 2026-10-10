@@ -8,6 +8,7 @@ import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 import { dshSettingsButtonStyle, dshSettingsHelpStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from '../theme.js'
 import { assistantSettingCheckboxStyle } from '../assistant-settings-styles.js'
 import type { AssistantAvatarManager } from './manager.js'
+import { uiFontSize } from '../font-scale.js'
 
 export interface AssistantAvatarEngineController {
   readonly status: AssistantAvatarEngineStatus | undefined
@@ -146,7 +147,7 @@ export function AssistantAvatarEngineDialog({ controller, t }: {
     style: { maxWidth: 'min(480px, calc(100vw - 32px))', maxHeight: 'calc(100dvh - 32px)', overflowY: 'auto',
       boxSizing: 'border-box', padding: 24, borderRadius: 16, margin: 'auto', border: `1px solid ${dshThemeColor.border}`,
       background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, boxShadow: dshThemeColor.subtleShadow } },
-    createElement('strong', { id, style: { fontSize: 16 } }, t('avatar.engineTerms', { version: ASSISTANT_AVATAR_ENGINE_CONSENT_VERSION })),
+    createElement('strong', { id, style: { fontSize: uiFontSize(16) } }, t('avatar.engineTerms', { version: ASSISTANT_AVATAR_ENGINE_CONSENT_VERSION })),
     createElement('div', { style: { display: 'grid', gap: 16, marginTop: 14 } },
       createElement('p', { style: { ...dshSettingsHelpStyle, margin: 0, lineHeight: 1.7 } }, t('avatar.engineTermsContent')),
       createElement('label', { style: assistantSettingCheckboxStyle },
@@ -177,7 +178,7 @@ export function AssistantAvatarEngineProgress({ controller, t }: {
       createElement('button', { type: 'button', style: { ...dshSettingsButtonStyle, justifySelf: 'start' },
         onClick: controller.retry }, t('avatar.engineRetry')))
   }
-  return createElement('div', { role: 'alert', 'data-codingns-avatar-engine-error': true, style: { display: 'grid', gap: 8, color: dshThemeColor.error, fontSize: 13 } },
+  return createElement('div', { role: 'alert', 'data-codingns-avatar-engine-error': true, style: { display: 'grid', gap: 8, color: dshThemeColor.error, fontSize: uiFontSize(13) } },
     createElement('span', { style: { overflowWrap: 'anywhere' } }, t('avatar.engineInstallFailed', { reason: controller.error })),
     createElement('button', { type: 'button', style: { ...dshSettingsButtonStyle, justifySelf: 'start', color: dshThemeColor.error },
       onClick: controller.retry }, t('avatar.engineRetry')))

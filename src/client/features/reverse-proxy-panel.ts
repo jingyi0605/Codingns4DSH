@@ -25,6 +25,7 @@ import {
 } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { backdropPointerDownHandler } from '../popup-dismiss.js'
+import { uiFontSize } from '../font-scale.js'
 
 /**
  * 「中转访问服务」卡片的设置面板：Control API 地址、登录和 DSH 独立设备。
@@ -204,7 +205,7 @@ export function ReverseProxyPanel({ services, enabled, snapshot, notify }: Featu
     ),
     addAddressOpen && createElement('div', { role: 'presentation', onPointerDown: backdropPointerDownHandler(() => { setAddAddressOpen(false); setAddressError('') }), style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: dshThemeColor.overlay } },
         createElement('div', { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'codingns-add-address-title', style: { ...dshPopupSurfaceStyle, width: 'min(100%, 480px)', boxSizing: 'border-box', padding: 24, borderRadius: 8 } },
-        createElement('h3', { id: 'codingns-add-address-title', style: { margin: 0, fontSize: 18 } }, t('relay.addServer')),
+        createElement('h3', { id: 'codingns-add-address-title', style: { margin: 0, fontSize: uiFontSize(18) } }, t('relay.addServer')),
         createElement('p', { style: { margin: '8px 0 16px', opacity: 0.7 } }, t('relay.addServerHint')),
         createElement('input', { type: 'url', autoFocus: true, value: newControlBaseUrl, placeholder: 'https://example.com:1443', disabled: disabled || busy, onChange: (event: { currentTarget: { value: string } }) => setNewControlBaseUrl(event.currentTarget.value), style: fieldStyle }),
         addressError && createElement('div', { role: 'alert', style: { marginTop: 8, color: dshThemeColor.error } }, addressError),
@@ -224,7 +225,7 @@ export function ReverseProxyPanel({ services, enabled, snapshot, notify }: Featu
         createElement('input', { type: 'password', autoComplete: 'current-password', value: password, disabled: controlsDisabled || busy, onChange: (event: { currentTarget: { value: string } }) => setPassword(event.currentTarget.value), style: fieldStyle }),
       ),
       createElement('button', { type: 'submit', disabled: controlsDisabled || busy || !controlBaseUrl || !email || !password, style: dshSettingsPrimaryButtonStyle }, busy ? t('relay.loggingIn') : t('relay.login')),
-      createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 } },
+      createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13), lineHeight: 1.5 } },
         t('relay.noAccountPrefix'),
         createElement('a', { href: CODINGNS_CONTROL_STATION_URL, target: '_blank', rel: 'noreferrer', style: { color: dshThemeColor.accent } }, t('relay.register')),
         t('relay.noAccountSuffix'),
@@ -263,7 +264,7 @@ export function ReverseProxyPanel({ services, enabled, snapshot, notify }: Featu
             transition: 'border-color 160ms ease, background 160ms ease',
           },
         },
-          createElement('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 13, fontWeight: 600 } }, CODINGNS_H5_LOGIN_URL),
+          createElement('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: uiFontSize(13), fontWeight: 600 } }, CODINGNS_H5_LOGIN_URL),
         ),
       ),
       createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
@@ -286,7 +287,7 @@ export function ReverseProxyPanel({ services, enabled, snapshot, notify }: Featu
               borderRadius: 999,
               color: deviceStatus.color,
               background: dshThemeColor.surfaceSubtle,
-              fontSize: 12,
+              fontSize: uiFontSize(12),
               lineHeight: 1.2,
               fontWeight: 600,
             },
@@ -299,7 +300,7 @@ export function ReverseProxyPanel({ services, enabled, snapshot, notify }: Featu
           createElement('option', { value: '' }, t('relay.selectDevice')),
           ...devices.devices.map((device) => createElement('option', { key: device.dshDeviceId, value: device.dshDeviceId, disabled: !device.online || device.status !== 'active' }, `${device.displayName} · ${device.computerName ?? t('relay.unknown')} · ${device.dshVersion ?? t('relay.unknown')} · ${device.online ? t('relay.online') : t('relay.offline')}`)),
         ),
-        createElement('div', { style: { fontSize: 13, opacity: 0.75 } }, t('relay.devicesSummary', { current: selectedDeviceId || t('relay.unknown'), count: devices.devices.length })),
+        createElement('div', { style: { fontSize: uiFontSize(13), opacity: 0.75 } }, t('relay.devicesSummary', { current: selectedDeviceId || t('relay.unknown'), count: devices.devices.length })),
       ),
     ),
   )

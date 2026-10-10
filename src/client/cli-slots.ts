@@ -30,6 +30,7 @@ import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
 import { loadCliSessionConfig, rememberCliSessionConfig } from './cli-session-config-cache.js'
+import { uiFontSize } from './font-scale.js'
 
 interface SessionSnapshot {
   readonly sessionId?: string
@@ -315,17 +316,17 @@ function NativeDropdownChevron({ open, locked = false }: { readonly open: boolea
 }
 
 const agentRootStyle = { position: 'relative' as const, minWidth: 0, flex: '0 0 auto', display: 'inline-flex' }
-const agentTriggerStyle = { height: 30, minWidth: 0, color: dshThemeColor.labelPrimary, border: 0, borderRadius: 8, padding: '0 6px', background: 'transparent', display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 14, lineHeight: '20px', whiteSpace: 'nowrap' as const }
+const agentTriggerStyle = { height: 30, minWidth: 0, color: dshThemeColor.labelPrimary, border: 0, borderRadius: 8, padding: '0 6px', background: 'transparent', display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: uiFontSize(14), lineHeight: '20px', whiteSpace: 'nowrap' as const }
 const agentTriggerIconStyle = { width: 20, height: 20, flex: '0 0 20px', objectFit: 'contain' as const }
 const agentTriggerLabelStyle = { flex: '0 0 auto', whiteSpace: 'nowrap' as const }
 const nativeDropdownChevronStyle = { display: 'block', flex: '0 0 14px', color: dshThemeColor.labelCaption, transformOrigin: 'center' }
 const agentMenuStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1100, bottom: 'calc(100% + 8px)', left: 0, minWidth: 238, maxWidth: 'min(320px, calc(100vw - 32px))', maxHeight: 'min(400px, calc(100vh - 96px))', overflowY: 'auto' as const, padding: 5, border: 0, borderRadius: 8 }
-const agentOptionStyle = { width: '100%', minHeight: 40, color: 'inherit', border: 0, borderRadius: 6, padding: '5px 8px 5px 4px', background: 'transparent', display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left' as const, fontSize: 14, lineHeight: '20px' }
-const agentCheckStyle = { width: 18, flex: '0 0 18px', textAlign: 'center' as const, fontSize: 16, lineHeight: 1 }
+const agentOptionStyle = { width: '100%', minHeight: 40, color: 'inherit', border: 0, borderRadius: 6, padding: '5px 8px 5px 4px', background: 'transparent', display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left' as const, fontSize: uiFontSize(14), lineHeight: '20px' }
+const agentCheckStyle = { width: 18, flex: '0 0 18px', textAlign: 'center' as const, fontSize: uiFontSize(16), lineHeight: 1 }
 const agentOptionIconStyle = { width: 22, height: 22, flex: '0 0 22px', objectFit: 'contain' as const }
 const agentOptionLabelStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
-const agentStatusStyle = { flex: '0 0 auto', color: dshThemeColor.labelTertiary, fontSize: 12, whiteSpace: 'nowrap' as const }
-const agentFallbackIconStyle = { flexGrow: 0, flexShrink: 0, borderRadius: 5, color: '#fff', background: dshThemeColor.labelTertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, lineHeight: 1 }
+const agentStatusStyle = { flex: '0 0 auto', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), whiteSpace: 'nowrap' as const }
+const agentFallbackIconStyle = { flexGrow: 0, flexShrink: 0, borderRadius: 5, color: '#fff', background: dshThemeColor.labelTertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: uiFontSize(11), fontWeight: 600, lineHeight: 1 }
 
 type ModelPane = 'root' | 'model' | 'effort'
 
@@ -586,25 +587,25 @@ function effortDisplayName(model: CodingNsCliModel | undefined, effort: string, 
   return model?.effortLabels?.[effort] ?? effort
 }
 
-const nativeTriggerStyle = { width: '100%', minWidth: 0, maxWidth: 'min(360px, 45cqw)', height: 28, color: dshThemeColor.labelSecondary, cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 24, padding: '0 4px 0 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 13, lineHeight: '20px' }
+const nativeTriggerStyle = { width: '100%', minWidth: 0, maxWidth: 'min(360px, 45cqw)', height: 28, color: dshThemeColor.labelSecondary, cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 24, padding: '0 4px 0 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: uiFontSize(13), lineHeight: '20px' }
 const modelNameStyle = { minWidth: 0, maxWidth: 150, flex: '0 1 150px', display: 'block', overflow: 'hidden', whiteSpace: 'nowrap' as const }
 const nativeMenuStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1100, right: 0, bottom: 'calc(100% + 8px)', minWidth: 240, maxWidth: 'min(420px, calc(100vw - 32px))', maxHeight: 'min(360px, calc(100vh - 96px))', overflowX: 'hidden' as const, overflowY: 'auto' as const, padding: 4, border: 0, borderRadius: 20 }
 // 菜单行同时用于 <button> 和 <div>：button 由 DSH 全局样式给了 border-box，
 // div 没有，若只写 width:100%+padding，div 会按 content-box 多出左右各 10px，
 // 把整行撑出面板并触发横向滚动条（档位开关因此被推到贴住右边缘）。
 // 显式声明 border-box，让两种元素的内边距都算进宽度。
-const nativeMenuCellStyle = { width: '100%', minHeight: 40, boxSizing: 'border-box' as const, color: 'inherit', cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left' as const, fontSize: 14, lineHeight: '22px' }
+const nativeMenuCellStyle = { width: '100%', minHeight: 40, boxSizing: 'border-box' as const, color: 'inherit', cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left' as const, fontSize: uiFontSize(14), lineHeight: '22px' }
 // 档位行与相邻菜单行保持同一高度、内边距与盒模型，Switch 右对齐到与菜单箭头同一列。
-const serviceTierRowStyle = { width: '100%', minHeight: 40, boxSizing: 'border-box' as const, color: 'inherit', borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, lineHeight: '22px' }
+const serviceTierRowStyle = { width: '100%', minHeight: 40, boxSizing: 'border-box' as const, color: 'inherit', borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, fontSize: uiFontSize(14), lineHeight: '22px' }
 const serviceTierLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
 const nativeMenuLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
 const nativeMenuValueStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, textAlign: 'right' as const, color: dshThemeColor.labelTertiary }
-const nativeChevronStyle = { flex: 'none', color: dshThemeColor.labelTertiary, fontSize: 20, lineHeight: 1 }
-const nativeBackStyle = { width: '100%', height: 30, color: dshThemeColor.labelSecondary, cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 8, padding: '0 8px', fontSize: 13 }
-const nativeGroupTitleStyle = { position: 'sticky' as const, top: 0, zIndex: 1, padding: '5px 8px 3px', color: dshThemeColor.labelTertiary, background: dshThemeColor.menuBackground, fontSize: 12, fontWeight: 500, lineHeight: '18px' }
-const nativeOptionStyle = { width: '100%', minHeight: 38, color: 'inherit', cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 10, padding: '6px 8px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, lineHeight: '20px' }
+const nativeChevronStyle = { flex: 'none', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(20), lineHeight: 1 }
+const nativeBackStyle = { width: '100%', height: 30, color: dshThemeColor.labelSecondary, cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 8, padding: '0 8px', fontSize: uiFontSize(13) }
+const nativeGroupTitleStyle = { position: 'sticky' as const, top: 0, zIndex: 1, padding: '5px 8px 3px', color: dshThemeColor.labelTertiary, background: dshThemeColor.menuBackground, fontSize: uiFontSize(12), fontWeight: 500, lineHeight: '18px' }
+const nativeOptionStyle = { width: '100%', minHeight: 38, color: 'inherit', cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 10, padding: '6px 8px', display: 'flex', alignItems: 'center', gap: 8, fontSize: uiFontSize(14), lineHeight: '20px' }
 const modelSpinnerStyle = { width: 12, height: 12, flex: '0 0 12px', boxSizing: 'border-box' as const, border: '2px solid currentColor', borderRightColor: 'transparent', borderRadius: '50%' }
-const modelLoadingMenuStyle = { minHeight: 56, padding: '0 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: dshThemeColor.labelTertiary, fontSize: 13 }
+const modelLoadingMenuStyle = { minHeight: 56, padding: '0 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(13) }
 
 function defaultEffort(efforts: readonly string[]): string | undefined {
   if (efforts.length === 0) return undefined

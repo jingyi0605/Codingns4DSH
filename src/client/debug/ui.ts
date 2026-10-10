@@ -8,6 +8,7 @@ import { debugWarn } from '../../shared/debug.js'
 import { dshButtonStyle, dshFieldStyle, dshFormRootStyle, dshThemeColor } from '../theme.js'
 import { backdropPointerDownHandler } from '../popup-dismiss.js'
 import { codingNsTranslator, useCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from '../locale.js'
+import { uiFontSize } from '../font-scale.js'
 
 export const DEBUG_KIND = 'debug'
 export const DEBUG_PROVIDER_ID = 'codingns4dsh/debug'
@@ -435,70 +436,70 @@ function DebugIcon({ size = 22, className }: { readonly size?: number | undefine
 const panelStyle: CSSProperties = { ...dshFormRootStyle, boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 16, padding: '18px 20px 28px', minHeight: '100%', overflow: 'auto', background: dshThemeColor.pageBackground }
 const headerStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', paddingBottom: 16, borderBottom: `1px solid ${dshThemeColor.border}` }
 const titleBlockStyle: CSSProperties = { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }
-const eyebrowStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: 10, fontWeight: 600 }
-const titleStyle: CSSProperties = { margin: 0, color: dshThemeColor.labelPrimary, fontSize: 22, lineHeight: 1.25, fontWeight: 650 }
-const workspaceStyle: CSSProperties = { display: 'flex', alignItems: 'center', minWidth: 0, maxWidth: 260, overflow: 'hidden', color: dshThemeColor.labelTertiary, fontSize: 11, textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+const eyebrowStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), fontWeight: 600 }
+const titleStyle: CSSProperties = { margin: 0, color: dshThemeColor.labelPrimary, fontSize: uiFontSize(22), lineHeight: 1.25, fontWeight: 650 }
+const workspaceStyle: CSSProperties = { display: 'flex', alignItems: 'center', minWidth: 0, maxWidth: 260, overflow: 'hidden', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 const workspaceDotStyle: CSSProperties = { width: 6, height: 6, flex: '0 0 auto', marginRight: 6, borderRadius: '50%', background: dshThemeColor.accent }
 const headerActionsStyle: CSSProperties = { display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }
-const countStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: 11, whiteSpace: 'nowrap' }
+const countStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), whiteSpace: 'nowrap' }
 const itemStyle: CSSProperties = { border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, padding: 16, display: 'flex', flexDirection: 'column', gap: 12, background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.subtleShadow }
 const itemHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }
 const itemTitleBlockStyle: CSSProperties = { minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }
-const itemTitleStyle: CSSProperties = { color: dshThemeColor.labelPrimary, fontSize: 15, fontWeight: 600 }
-const itemCommandStyle: CSSProperties = { overflow: 'hidden', color: dshThemeColor.labelSecondary, fontFamily: 'var(--dsw-font-family-mono, ui-monospace, monospace)', fontSize: 12, textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
-const runningBadgeStyle: CSSProperties = { flex: '0 0 auto', padding: '3px 7px', borderRadius: 10, color: dshThemeColor.success, background: 'color-mix(in srgb, currentColor 10%, transparent)', fontSize: 11, whiteSpace: 'nowrap' }
-const stoppedBadgeStyle: CSSProperties = { flex: '0 0 auto', padding: '3px 7px', borderRadius: 10, color: dshThemeColor.labelTertiary, background: `${dshThemeColor.border}`, fontSize: 11, whiteSpace: 'nowrap' }
-const metaStyle: CSSProperties = { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '5px 10px', color: dshThemeColor.labelSecondary, fontSize: 11 }
+const itemTitleStyle: CSSProperties = { color: dshThemeColor.labelPrimary, fontSize: uiFontSize(15), fontWeight: 600 }
+const itemCommandStyle: CSSProperties = { overflow: 'hidden', color: dshThemeColor.labelSecondary, fontFamily: 'var(--dsw-font-family-mono, ui-monospace, monospace)', fontSize: uiFontSize(12), textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+const runningBadgeStyle: CSSProperties = { flex: '0 0 auto', padding: '3px 7px', borderRadius: 10, color: dshThemeColor.success, background: 'color-mix(in srgb, currentColor 10%, transparent)', fontSize: uiFontSize(11), whiteSpace: 'nowrap' }
+const stoppedBadgeStyle: CSSProperties = { flex: '0 0 auto', padding: '3px 7px', borderRadius: 10, color: dshThemeColor.labelTertiary, background: `${dshThemeColor.border}`, fontSize: uiFontSize(11), whiteSpace: 'nowrap' }
+const metaStyle: CSSProperties = { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '5px 10px', color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11) }
 const metaItemStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, minWidth: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
-const metaKeyStyle: CSSProperties = { color: dshThemeColor.labelCaption, fontSize: 10 }
-const proxyBadgeStyle: CSSProperties = { padding: '2px 6px', borderRadius: 4, color: dshThemeColor.accent, background: 'color-mix(in srgb, currentColor 10%, transparent)', fontSize: 10 }
-const portStatusStyle: CSSProperties = { display: 'flex', alignItems: 'center', minHeight: 24, padding: '4px 8px', borderRadius: 5, background: dshThemeColor.menuBackground, fontSize: 11 }
+const metaKeyStyle: CSSProperties = { color: dshThemeColor.labelCaption, fontSize: uiFontSize(10) }
+const proxyBadgeStyle: CSSProperties = { padding: '2px 6px', borderRadius: 4, color: dshThemeColor.accent, background: 'color-mix(in srgb, currentColor 10%, transparent)', fontSize: uiFontSize(10) }
+const portStatusStyle: CSSProperties = { display: 'flex', alignItems: 'center', minHeight: 24, padding: '4px 8px', borderRadius: 5, background: dshThemeColor.menuBackground, fontSize: uiFontSize(11) }
 const portUnknownStyle: CSSProperties = { color: dshThemeColor.labelTertiary }
 const portListeningStyle: CSSProperties = { color: dshThemeColor.success }
 const portStoppedStyle: CSSProperties = { color: dshThemeColor.labelTertiary }
 const actionsStyle: CSSProperties = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 7, paddingTop: 4 }
 const actionDividerStyle: CSSProperties = { width: 1, height: 18, margin: '0 2px', background: dshThemeColor.border }
 const proxyActionsStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }
-const linkStyle: CSSProperties = { color: dshThemeColor.accent, fontSize: 12, textDecoration: 'none' }
-const buttonBaseStyle: CSSProperties = { ...dshButtonStyle, minHeight: 30, padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 12, lineHeight: '18px' }
+const linkStyle: CSSProperties = { color: dshThemeColor.accent, fontSize: uiFontSize(12), textDecoration: 'none' }
+const buttonBaseStyle: CSSProperties = { ...dshButtonStyle, minHeight: 30, padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontSize: uiFontSize(12), lineHeight: '18px' }
 const primaryButtonStyle: CSSProperties = { ...buttonBaseStyle, color: '#fff', borderColor: dshThemeColor.accent, background: dshThemeColor.accent, fontWeight: 600 }
 const secondaryButtonStyle: CSSProperties = { ...buttonBaseStyle, color: dshThemeColor.labelSecondary }
 const quietButtonStyle: CSSProperties = { ...buttonBaseStyle, minHeight: 26, padding: '3px 7px', color: dshThemeColor.labelTertiary, border: 0, background: 'transparent' }
 const dangerButtonStyle: CSSProperties = { ...buttonBaseStyle, color: dshThemeColor.error, borderColor: dshThemeColor.error, background: 'transparent' }
 const dangerQuietButtonStyle: CSSProperties = { ...quietButtonStyle, color: dshThemeColor.error }
-const statusIconStyle: CSSProperties = { display: 'inline-flex', width: 16, height: 16, alignItems: 'center', justifyContent: 'center', flex: '0 0 auto', borderRadius: '50%', fontSize: 10, fontWeight: 700 }
+const statusIconStyle: CSSProperties = { display: 'inline-flex', width: 16, height: 16, alignItems: 'center', justifyContent: 'center', flex: '0 0 auto', borderRadius: '50%', fontSize: uiFontSize(10), fontWeight: 700 }
 const emptyStyle: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '28px 20px', border: `1px dashed ${dshThemeColor.border}`, borderRadius: 8, textAlign: 'center' }
 const emptyIconStyle: CSSProperties = { display: 'flex', width: 42, height: 42, alignItems: 'center', justifyContent: 'center', marginBottom: 2, borderRadius: 12, color: dshThemeColor.accent, background: 'color-mix(in srgb, currentColor 10%, transparent)' }
-const emptyTitleStyle: CSSProperties = { color: dshThemeColor.labelPrimary, fontSize: 14 }
-const emptyTextStyle: CSSProperties = { maxWidth: 300, margin: 0, color: dshThemeColor.labelTertiary, fontSize: 12, lineHeight: 1.55 }
-const loadingStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: 12, color: dshThemeColor.labelTertiary, fontSize: 13 }
+const emptyTitleStyle: CSSProperties = { color: dshThemeColor.labelPrimary, fontSize: uiFontSize(14) }
+const emptyTextStyle: CSSProperties = { maxWidth: 300, margin: 0, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: 1.55 }
+const loadingStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: 12, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(13) }
 const loadingDotStyle: CSSProperties = { width: 7, height: 7, borderRadius: '50%', background: dshThemeColor.accent }
 const formOverlayStyle: CSSProperties = { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18, overflow: 'auto', background: dshThemeColor.overlay }
 const formStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 16, width: 'min(100%, 720px)', maxHeight: 'calc(100vh - 36px)', boxSizing: 'border-box', overflow: 'auto', padding: 20, border: `1px solid ${dshThemeColor.border}`, borderRadius: 10, background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.prominentShadow }
 const formHeaderStyle: CSSProperties = { gridColumn: '1 / -1', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, paddingBottom: 10, borderBottom: `1px solid ${dshThemeColor.border}` }
 const formSectionStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 9, paddingTop: 2 }
 const formSectionHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }
-const formSectionTitleStyle: CSSProperties = { color: dshThemeColor.labelPrimary, fontSize: 13, fontWeight: 650 }
-const formSectionHintStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: 11, textAlign: 'right' }
-const formTitleStyle: CSSProperties = { margin: 0, color: dshThemeColor.labelPrimary, fontSize: 20, lineHeight: 1.3, fontWeight: 650 }
-const formHintStyle: CSSProperties = { margin: '4px 0 0', color: dshThemeColor.labelTertiary, fontSize: 11 }
-const closeButtonStyle: CSSProperties = { ...quietButtonStyle, minHeight: 24, padding: '0 5px', fontSize: 20, lineHeight: 1 }
+const formSectionTitleStyle: CSSProperties = { color: dshThemeColor.labelPrimary, fontSize: uiFontSize(13), fontWeight: 650 }
+const formSectionHintStyle: CSSProperties = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), textAlign: 'right' }
+const formTitleStyle: CSSProperties = { margin: 0, color: dshThemeColor.labelPrimary, fontSize: uiFontSize(20), lineHeight: 1.3, fontWeight: 650 }
+const formHintStyle: CSSProperties = { margin: '4px 0 0', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11) }
+const closeButtonStyle: CSSProperties = { ...quietButtonStyle, minHeight: 24, padding: '0 5px', fontSize: uiFontSize(20), lineHeight: 1 }
 const fieldStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }
 const selectFieldStyle: CSSProperties = { ...fieldStyle }
-const fieldLabelStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: 12, fontWeight: 500 }
-const inputStyle: CSSProperties = { ...dshFieldStyle, width: '100%', boxSizing: 'border-box', minHeight: 32, padding: '6px 8px', borderRadius: 6, fontSize: 12 }
-const runtimeHintStyle: CSSProperties = { margin: '-5px 0 0', color: dshThemeColor.labelTertiary, fontSize: 11 }
-const warningHintStyle: CSSProperties = { margin: '-5px 0 0', color: dshThemeColor.error, fontSize: 11 }
+const fieldLabelStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), fontWeight: 500 }
+const inputStyle: CSSProperties = { ...dshFieldStyle, width: '100%', boxSizing: 'border-box', minHeight: 32, padding: '6px 8px', borderRadius: 6, fontSize: uiFontSize(12) }
+const runtimeHintStyle: CSSProperties = { margin: '-5px 0 0', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11) }
+const warningHintStyle: CSSProperties = { margin: '-5px 0 0', color: dshThemeColor.error, fontSize: uiFontSize(11) }
 const warningStatusStyle: CSSProperties = { ...statusStyle('error'), marginBottom: 0 }
 const formGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }
 const proxyFieldStyle: CSSProperties = { ...fieldStyle }
-const proxyToggleStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 32, boxSizing: 'border-box', padding: '0 2px', border: 0, borderRadius: 0, color: dshThemeColor.labelSecondary, background: 'transparent', fontSize: 12, lineHeight: '18px' }
+const proxyToggleStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 32, boxSizing: 'border-box', padding: '0 2px', border: 0, borderRadius: 0, color: dshThemeColor.labelSecondary, background: 'transparent', fontSize: uiFontSize(12), lineHeight: '18px' }
 const formActionsStyle: CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: 6, paddingTop: 4 }
 
 type StatusTone = 'success' | 'error' | 'info'
 /** 状态条文案自带色调，避免依赖中文文案内容推断成功/失败。 */
 interface StatusMessage { readonly text: string; readonly tone: StatusTone }
-function statusStyle(tone: StatusTone): CSSProperties { const color = tone === 'success' ? dshThemeColor.success : tone === 'error' ? dshThemeColor.error : dshThemeColor.labelSecondary; return { display: 'flex', alignItems: 'center', gap: 7, padding: '8px 10px', border: `1px solid ${color}`, borderRadius: 6, color, background: 'color-mix(in srgb, currentColor 7%, transparent)', fontSize: 12 } }
+function statusStyle(tone: StatusTone): CSSProperties { const color = tone === 'success' ? dshThemeColor.success : tone === 'error' ? dshThemeColor.error : dshThemeColor.labelSecondary; return { display: 'flex', alignItems: 'center', gap: 7, padding: '8px 10px', border: `1px solid ${color}`, borderRadius: 6, color, background: 'color-mix(in srgb, currentColor 7%, transparent)', fontSize: uiFontSize(12) } }
 function runningInstances(profile: DebugProfile, instances: readonly DebugInstance[]): number { return instances.filter((instance) => instance.profileId === profile.id && instance.state === 'running').length }
 function formatCommand(profile: DebugProfile): string { return [profile.command, ...profile.args].join(' ') }
 

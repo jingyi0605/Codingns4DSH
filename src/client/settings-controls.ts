@@ -1,6 +1,7 @@
 import { createElement, useEffect, useId } from 'react'
 import type { CSSProperties, InputHTMLAttributes, ReactElement, ReactNode } from 'react'
 import { dshSettingsHelpStyle, dshSettingsListRowStyle, dshThemeColor } from './theme.js'
+import { uiFontSize } from './font-scale.js'
 
 export const settingsControlClass = {
   switch: 'codingns4dsh-settings-switch',
@@ -48,7 +49,7 @@ export function SettingsToggleRow({ label, description, checked, disabled, onCha
   const id = useId()
   return createElement('div', { style: { ...dshSettingsListRowStyle, ...style } },
     createElement('label', { htmlFor: id, style: { flex: '1 1 auto', minWidth: 0, cursor: disabled ? 'not-allowed' : 'pointer', overflowWrap: 'anywhere' } },
-      createElement('span', { style: { display: 'block', fontSize: 13, fontWeight: 500, lineHeight: 1.4 } }, label),
+      createElement('span', { style: { display: 'block', fontSize: uiFontSize(13), fontWeight: 500, lineHeight: 1.4 } }, label),
       description === undefined ? null : createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, description)),
     createElement('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 10, flex: '0 0 auto', marginLeft: 'auto' } },
       actions,

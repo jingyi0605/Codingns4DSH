@@ -10,6 +10,7 @@ import { AssistantAvatarPortrait } from '../avatar/portrait.js'
 import { AssistantAppearanceEditor } from '../avatar/settings-panel.js'
 import { AssistantVoiceSettings } from './assistant-voice-settings.js'
 import type { VoiceConversationMessage } from '../../shared/contracts/voice-runtime.js'
+import { uiFontSize } from '../font-scale.js'
 
 export interface VoiceConversationDialogProps {
   readonly services?: CodingNsClientServices
@@ -86,12 +87,12 @@ export function VoiceConversationDialog({
     },
       createElement('div', { style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 } },
         createElement('div', { style: { display: 'grid', gap: 6, minWidth: 0 } },
-          createElement('strong', { style: { fontSize: 18, lineHeight: 1.4 } }, t('voice.dialog.title')),
+          createElement('strong', { style: { fontSize: uiFontSize(18), lineHeight: 1.4 } }, t('voice.dialog.title')),
           createElement('span', { style: dshSettingsHelpStyle }, t('voice.dialog.description')),
         ),
-        createElement('span', { role: 'status', style: { flex: '0 0 auto', color: active ? dshThemeColor.success : dshThemeColor.labelSecondary, fontSize: 12 } }, status),
+        createElement('span', { role: 'status', style: { flex: '0 0 auto', color: active ? dshThemeColor.success : dshThemeColor.labelSecondary, fontSize: uiFontSize(12) } }, status),
       ),
-      createElement('div', { style: { padding: '10px 12px', borderRadius: 8, background: dshThemeColor.surfaceSubtle, color: dshThemeColor.labelSecondary, fontSize: 12, lineHeight: 1.5 } },
+      createElement('div', { style: { padding: '10px 12px', borderRadius: 8, background: dshThemeColor.surfaceSubtle, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: 1.5 } },
         realtimeAvailable ? t('voice.dialog.realtimeHint') : unavailableMessage ?? t('voice.dialog.unavailable'),
       ),
       createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8 } },
@@ -122,23 +123,23 @@ export function VoiceConversationDialog({
           boxSizing: 'border-box',
         },
       },
-        createElement('div', { style: { color: dshThemeColor.labelTertiary, fontSize: 12, fontWeight: 600 } }, t('voice.dialog.liveText')),
+        createElement('div', { style: { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), fontWeight: 600 } }, t('voice.dialog.liveText')),
         transcript.length === 0 && partialText === ''
-          ? createElement('div', { style: { color: dshThemeColor.labelTertiary, fontSize: 14, lineHeight: 1.6 } }, t('voice.dialog.empty'))
+          ? createElement('div', { style: { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(14), lineHeight: 1.6 } }, t('voice.dialog.empty'))
           : null,
-        ...transcript.map((item, index) => createElement('div', { key: typeof item === 'string' ? index : item.id, style: { color: dshThemeColor.labelPrimary, fontSize: 15, lineHeight: 1.65 } },
-          createElement('div', { style: { color: dshThemeColor.labelTertiary, fontSize: 12, display: 'flex', alignItems: 'center', gap: 7 } },
+        ...transcript.map((item, index) => createElement('div', { key: typeof item === 'string' ? index : item.id, style: { color: dshThemeColor.labelPrimary, fontSize: uiFontSize(15), lineHeight: 1.65 } },
+          createElement('div', { style: { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), display: 'flex', alignItems: 'center', gap: 7 } },
             typeof item === 'string' || item.role !== 'assistant' || services === undefined || avatarModel === undefined ? null
               : createElement(AssistantAvatarPortrait, { services, model: avatarModel }),
             t(typeof item !== 'string' && item.role === 'assistant' ? 'voice.dialog.assistant' : 'voice.dialog.user')),
           typeof item === 'string' ? item : item.text,
         )),
-        partialText === '' ? null : createElement('div', { style: { color: dshThemeColor.accent, fontSize: 15, lineHeight: 1.65 } }, partialText),
+        partialText === '' ? null : createElement('div', { style: { color: dshThemeColor.accent, fontSize: uiFontSize(15), lineHeight: 1.65 } }, partialText),
       ),
       ),
       message === undefined || message === '' || state !== 'error'
         ? null
-        : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13, lineHeight: 1.5 } }, message),
+        : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: uiFontSize(13), lineHeight: 1.5 } }, message),
       createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, paddingTop: 3 } },
         createElement('button', { type: 'button', disabled: transcript.length === 0 && partialText === '', onClick: onClear, style: dshSettingsButtonStyle }, t('voice.dialog.clear')),
         createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } },

@@ -3,6 +3,7 @@ import type { CSSProperties, ReactElement } from 'react'
 import { voiceSessionDuration } from '../../shared/assistant-voice-sessions.js'
 import type { CodingNsTranslator } from '../locale.js'
 import { dshThemeColor } from '../theme.js'
+import { uiFontSize } from '../font-scale.js'
 
 export interface FloatingCallInfo {
   readonly startedAt: number
@@ -33,7 +34,7 @@ export function FloatingCallBadge({ call, t }: { readonly call: FloatingCallInfo
     title: t(`awb.call.${status}`), style: { position: 'absolute', bottom: 0, left: 0, right: 0, margin: '0 auto', width: 'fit-content', maxWidth: '100%',
       boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '4px 7px', borderRadius: 12,
       background: dshThemeColor.menuBackground, color: dshThemeColor.labelPrimary, border: `1px solid ${dshThemeColor.border}`, boxShadow: dshThemeColor.prominentShadow,
-      fontSize: 11, lineHeight: 1.3, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } },
+      fontSize: uiFontSize(11), lineHeight: 1.3, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } },
     createElement('style', null, '.codingns-floating-call-dot{width:6px;height:6px;flex-shrink:0;border-radius:50%;background:#32a66a}.codingns-floating-call-dot[data-speaking=true]{animation:codingns-call-dot-pulse .8s ease-in-out infinite}@keyframes codingns-call-dot-pulse{50%{opacity:.4;transform:scale(.7)}}@media(prefers-reduced-motion:reduce){.codingns-floating-call-dot{animation:none!important}}'),
     createElement('span', { className: 'codingns-floating-call-dot', 'data-speaking': speaking, 'aria-hidden': true }),
     createElement('span', null, voiceSessionDuration({ startedAt: call.startedAt, endedAt: null }, now)),
@@ -61,13 +62,13 @@ export function FloatingCallCaption({ call, t, style, above, arrowLeft, onOpen }
       borderTop: above ? undefined : `1px solid ${dshThemeColor.border}` } }),
     createElement('button', { type: 'button', onClick: onOpen, title: t('awb.call.restore'), 'aria-label': t('awb.call.restore'),
       style: { display: 'flex', justifyContent: 'space-between', gap: 8, flexShrink: 0, minHeight: 32, width: '100%', border: 0, borderRadius: '14px 14px 0 0', padding: '8px 12px',
-        background: 'transparent', color: dshThemeColor.labelSecondary, font: 'inherit', fontSize: 11, cursor: 'pointer', textAlign: 'left' } },
+        background: 'transparent', color: dshThemeColor.labelSecondary, font: 'inherit', fontSize: uiFontSize(11), cursor: 'pointer', textAlign: 'left' } },
       createElement('span', null, t(`awb.call.${status}`)), createElement('span', { 'aria-hidden': true }, '↗')),
     createElement('div', { ref: captions, tabIndex: 0, 'aria-label': t('awb.call.caption'),
       onScroll: (event: { currentTarget: HTMLDivElement }) => { const element = event.currentTarget; follow.current = element.scrollHeight - element.scrollTop - element.clientHeight <= 24 },
       style: { minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', scrollbarWidth: 'thin', padding: '0 12px 10px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
-        fontSize: 13, lineHeight: 1.6, touchAction: 'pan-y', userSelect: 'text' } },
-      call.userText && !call.microphoneMuted ? createElement('p', { style: { margin: '0 0 6px', color: dshThemeColor.labelTertiary, fontSize: 12 } }, call.userText) : null,
+        fontSize: uiFontSize(13), lineHeight: 1.6, touchAction: 'pan-y', userSelect: 'text' } },
+      call.userText && !call.microphoneMuted ? createElement('p', { style: { margin: '0 0 6px', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12) } }, call.userText) : null,
       createElement('p', { 'aria-live': 'polite', style: { margin: 0 } }, call.assistantText || (!call.userText ? t('awb.call.waiting') : ''))))
 }
 

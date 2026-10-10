@@ -16,6 +16,7 @@ import { AssistantAvatarSlot } from './slot.js'
 import { AssistantAvatarLoading } from './loading.js'
 import { startAssistantAvatarTemporaryPreview } from './temporary-preview.js'
 import { SettingsSwitch } from '../settings-controls.js'
+import { uiFontSize } from '../font-scale.js'
 
 export interface AssistantAvatarPreviewTargetProps {
   readonly active?: boolean
@@ -107,9 +108,9 @@ export function AssistantAvatarCatalogPanel(props: CatalogPanelProps): ReactElem
       onCancel: () => { if (!pending) { setAgreementOpen(false); setAgreed(false) } } }),
     !catalog.loading ? null : createElement('div', { role: 'status', style: helpStyle }, t('avatar.catalogLoading')),
     !accepted || catalog.loading || catalog.entries.length > 0 || catalog.error ? null : createElement('p', { style: helpStyle }, t('avatar.catalogEmpty')),
-    !catalog.error ? null : createElement('div', { role: 'alert', style: { display: 'grid', gap: 8, color: dshThemeColor.error, fontSize: 13 } }, catalog.error,
+    !catalog.error ? null : createElement('div', { role: 'alert', style: { display: 'grid', gap: 8, color: dshThemeColor.error, fontSize: uiFontSize(13) } }, catalog.error,
       createElement('button', { type: 'button', disabled: busy || catalog.loading, style: buttonStyle, onClick: catalog.reload }, t('avatar.catalogRetry'))),
-    !error ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13 } }, error),
+    !error ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: uiFontSize(13) } }, error),
     createElement(AssistantAvatarEngineDialog, { controller: engine, t })),
     // 工作台使用右侧唯一形象区域；独立设置入口也采用左右分栏，窄屏自然换行。
     previewNode === null ? null : createElement(AssistantAvatarCatalogPreviewRegion, { target: previewTarget, children: previewNode }))
@@ -175,7 +176,7 @@ function AssistantAvatarConsentDialog(props: ConsentPromptProps): ReactElement {
     style: { maxWidth: 'min(480px, calc(100vw - 32px))', maxHeight: 'calc(100dvh - 32px)', overflowY: 'auto',
       boxSizing: 'border-box', padding: 24, borderRadius: 16, margin: 'auto', border: `1px solid ${dshThemeColor.border}`,
       background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, boxShadow: dshThemeColor.subtleShadow } },
-    createElement('strong', { id, style: { fontSize: 16 } }, props.t('avatar.thirdPartyTerms', { version: ASSISTANT_AVATAR_CONSENT_VERSION })),
+    createElement('strong', { id, style: { fontSize: uiFontSize(16) } }, props.t('avatar.thirdPartyTerms', { version: ASSISTANT_AVATAR_CONSENT_VERSION })),
     createElement(AssistantAvatarConsentPrompt, props))
 }
 
@@ -252,17 +253,17 @@ export function AssistantAvatarCatalogPreview({ services, manager, appearance, d
       createElement('div', { style: helpStyle }, t('avatar.packageLicense', { license: selected.license })),
       createElement('p', { style: helpStyle }, selected.remarks),
       createElement('div', { style: helpStyle }, t('avatar.catalogSize', { size: `${(selected.bytes / 1024 / 1024).toFixed(2)} MB`, files: selected.files })),
-      createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 14, fontSize: 13 } },
+      createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 14, fontSize: uiFontSize(13) } },
         createElement('a', { href: selected.repositoryUrl, target: '_blank', rel: 'noopener noreferrer' }, t('avatar.packageSource')),
         createElement('a', { href: selected.licenseUrl, target: '_blank', rel: 'noopener noreferrer' }, t('avatar.catalogLicenseLink')),
         createElement('a', { href: selected.homepage, target: '_blank', rel: 'noopener noreferrer' }, t('avatar.packageHomepage'))),
       selected.format === 'codex-pet' ? null : createElement('p', { style: helpStyle }, t('avatar.live2dDependencyHint')),
-      installed ? createElement('span', { style: { color: dshThemeColor.success, fontSize: 13 } }, t('avatar.catalogInstalled')) : null,
+      installed ? createElement('span', { style: { color: dshThemeColor.success, fontSize: uiFontSize(13) } }, t('avatar.catalogInstalled')) : null,
       createElement('label', { style: checkStyle },
         createElement('input', { type: 'checkbox', checked: licenseAccepted, disabled: disabled || pending,
           onChange: (event: { currentTarget: { checked: boolean } }) => setLicenseAccepted(event.currentTarget.checked) }), t('avatar.catalogLicenseAgree')),
       createElement('button', { type: 'button', disabled: disabled || pending || previewLoading || !licenseAccepted || full, style: buttonStyle,
         onClick: () => { void install() } }, t('avatar.temporaryUse'))),
-    !error ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13 } }, error))
+    !error ? null : createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: uiFontSize(13) } }, error))
 }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }

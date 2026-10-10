@@ -3,6 +3,7 @@ import type { ReactElement } from 'react'
 import type { AssistantAvatarCacheStatus } from '../../shared/assistant-avatar-resources.js'
 import type { CodingNsTranslator } from '../locale.js'
 import { dshThemeColor } from '../theme.js'
+import { uiFontSize } from '../font-scale.js'
 
 /** 统一加载反馈；可选字段只在渲染器有真实证据时提供。 */
 export interface AssistantAvatarLoadProgress {
@@ -70,7 +71,7 @@ export function AssistantAvatarLoading({ progress, size, t, showCache = false, d
     progress.resourcesMs === undefined ? '' : t('avatar.loadResourcesElapsed', { seconds: (progress.resourcesMs / 1000).toFixed(2) })].filter(Boolean).join(' · ')
   const newDownloads = newHostDownloads(progress)
   if (ready) return createElement('span', { 'data-codingns-avatar-load-summary': true, title: details,
-    style: { position: 'absolute', bottom: 0, maxWidth: '100%', fontSize: 10, lineHeight: 1.4, color: dshThemeColor.labelSecondary,
+    style: { position: 'absolute', bottom: 0, maxWidth: '100%', fontSize: uiFontSize(10), lineHeight: 1.4, color: dshThemeColor.labelSecondary,
       textAlign: 'center', background: dshThemeColor.cardBackground, borderRadius: 8, padding: '2px 6px' } },
     showCache ? createElement('span', { style: { display: 'block' } }, progress.cacheBefore === undefined ? t('avatar.cacheUnknown')
       : t(compact ? 'avatar.cacheTiny' : 'avatar.cacheShort', { cached: progress.cacheBefore.cached, total: progress.cacheBefore.total })) : null,
@@ -103,7 +104,7 @@ export function AssistantAvatarLoading({ progress, size, t, showCache = false, d
       createElement('div', { className: percent === undefined ? 'codingns-avatar-indeterminate' : undefined,
         style: { width: percent === undefined ? '30%' : `${percent}%`, height: '100%', borderRadius: 3,
           background: 'linear-gradient(90deg, #81c9ed, #7791f7)', transition: 'width .2s ease' } })),
-    animationOnly ? null : createElement('span', { style: { fontSize: 10, lineHeight: 1.5, padding: '0 6px', maxWidth: '100%' } },
+    animationOnly ? null : createElement('span', { style: { fontSize: uiFontSize(10), lineHeight: 1.5, padding: '0 6px', maxWidth: '100%' } },
       percent === undefined ? null : `${progress.loaded}/${progress.total} · ${percent}%`,
       showCache ? createElement('span', { style: { display: 'block' } }, cacheLabel) : null))
 }

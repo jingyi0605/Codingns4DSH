@@ -26,6 +26,7 @@ interface TerminalControllerFactoryCommonOptions {
   readonly platform?: string
   readonly generation?: (agent: DshTerminalAgent, attachmentId: string) => string
   readonly workspaceId?: (agent: DshTerminalAgent, cwd: string) => string
+  readonly workingDirectory?: (agent: DshTerminalAgent) => string | undefined
   readonly registerWorkspaceRoot?: (workspaceId: string, cwd: string) => void
   readonly resolveWorkspaceRoot?: (workspaceId: string) => string | null
 }
@@ -85,6 +86,7 @@ export async function createTerminalController(
       runtimeType: () => 'local-pty',
       ...(options.generation === undefined ? {} : { generation: options.generation }),
       ...(options.workspaceId === undefined ? {} : { workspaceId: options.workspaceId }),
+      ...(options.workingDirectory === undefined ? {} : { workingDirectory: options.workingDirectory }),
       ...(options.resolveWorkspaceRoot === undefined ? {} : { resolveWorkspaceRoot: options.resolveWorkspaceRoot }),
     })
   }
@@ -109,6 +111,7 @@ export async function createTerminalController(
     ...(options.generation === undefined ? {} : { generation: options.generation }),
     ...(options.workspaceId === undefined ? {} : { workspaceId: options.workspaceId }),
     ...(options.registerWorkspaceRoot === undefined ? {} : { registerWorkspaceRoot: options.registerWorkspaceRoot }),
+    ...(options.workingDirectory === undefined ? {} : { workingDirectory: options.workingDirectory }),
     ...(options.resolveWorkspaceRoot === undefined ? {} : { resolveWorkspaceRoot: options.resolveWorkspaceRoot }),
   })
 }
@@ -140,6 +143,7 @@ async function assembleController(
     ...(options.generation === undefined ? {} : { generation: options.generation }),
     ...(options.workspaceId === undefined ? {} : { workspaceId: options.workspaceId }),
     ...(options.registerWorkspaceRoot === undefined ? {} : { registerWorkspaceRoot: options.registerWorkspaceRoot }),
+    ...(options.workingDirectory === undefined ? {} : { workingDirectory: options.workingDirectory }),
     ...(options.runtimeType === undefined ? {} : { runtimeType: options.runtimeType }),
   })
   const processService = new TerminalProcessService(options.processStore, {

@@ -10,6 +10,7 @@ import { dshFieldStyle, dshSettingsButtonStyle, dshSettingsHelpStyle, dshSetting
 import type { CodingNsClientServices, CodingNsRpcClient } from './types.js'
 import { assistantDisplayScope, getAssistantDisplayStore } from './assistant-display-store.js'
 import { AssistantPromptEditor } from './assistant-prompt-editor.js'
+import { uiFontSize } from '../font-scale.js'
 export { AssistantPromptEditor } from './assistant-prompt-editor.js'
 
 const TABS = ['scope', 'sessions', 'result', 'records', 'chat'] as const
@@ -189,7 +190,7 @@ export function AssistantDebugDialog({ services, displayRpc = services.rpc, onCl
   const button = (label: string, action: () => void, disabled = busy, primary = false): ReactElement => createElement('button', { type: 'button', disabled, onClick: action, style: primary ? dshSettingsPrimaryButtonStyle : dshSettingsButtonStyle }, t(label))
   return createElement('div', { role: 'presentation', onPointerDown: onClose, style: { position: 'fixed', inset: 0, zIndex: 10010, padding: 12, display: 'flex', justifyContent: 'center', alignItems: 'center', background: dshThemeColor.overlay, boxSizing: 'border-box' } },
     createElement('div', { role: 'dialog', 'aria-modal': true, 'aria-label': t('assistant.debug.title'), onPointerDown: (event: { stopPropagation(): void }) => event.stopPropagation(), style: { display: 'flex', flexDirection: 'column', gap: 16, width: 'min(960px, 100%)', maxHeight: 'calc(100dvh - 24px)', overflowY: 'auto', padding: 11, borderRadius: 12, border: `1px solid ${dshThemeColor.border}`, color: dshThemeColor.labelPrimary, background: dshThemeColor.menuBackground, boxSizing: 'border-box' } },
-      createElement('strong', { style: { fontSize: 18 } }, t('assistant.debug.title')),
+      createElement('strong', { style: { fontSize: uiFontSize(18) } }, t('assistant.debug.title')),
       createElement('p', { style: { ...dshSettingsHelpStyle, margin: 0 } }, t('assistant.debug.stepsDescription')),
       createElement('div', { style: actionsStyle },
         button('assistant.debug.viewRefresh', () => { void refresh() }),
@@ -365,7 +366,7 @@ export function mergeDebugWorkspaces(snapshot: AssistantDebugSnapshot | undefine
 }
 function selectionKey(model: { readonly provider: string; readonly model: string }): string { return JSON.stringify([model.provider, model.model]) }
 function shortSessionTitle(id: string, t: CodingNsTranslator): string { return t('assistant.debug.shortTitle', { id: id.slice(-8) }) }
-function jsonView(value: unknown): ReactElement { return createElement('pre', { style: { margin: '8px 0 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12, lineHeight: 1.5 } }, JSON.stringify(value, null, 2)) }
+function jsonView(value: unknown): ReactElement { return createElement('pre', { style: { margin: '8px 0 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: uiFontSize(12), lineHeight: 1.5 } }, JSON.stringify(value, null, 2)) }
 function errorMessage(value: unknown): string { return value instanceof Error ? value.message : String(value) }
 function downloadSnapshot(snapshot: AssistantDebugSnapshot): void {
   const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' }))

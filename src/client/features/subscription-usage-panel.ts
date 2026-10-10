@@ -16,6 +16,7 @@ import {
   dshSettingsPrimaryButtonStyle,
 } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
+import { uiFontSize } from '../font-scale.js'
 
 /**
  * 用量查询设置对话框：单次查询超时与自动查询间隔。
@@ -77,7 +78,7 @@ export function SubscriptionUsageSettingsDialog({ services, snapshot, notify, on
       style: usageSettingsDialogStyle,
     },
       createElement('div', { style: { display: 'grid', gap: 4 } },
-        createElement('strong', { style: { fontSize: 14, lineHeight: 1.4 } }, t('subscriptionUsage.dialogTitle')),
+        createElement('strong', { style: { fontSize: uiFontSize(14), lineHeight: 1.4 } }, t('subscriptionUsage.dialogTitle')),
         createElement('span', { style: dshSettingsHelpStyle }, t('subscriptionUsage.dialogHint')),
       ),
       createElement(UsageQueryNumberField, {
@@ -126,7 +127,7 @@ function UsageQueryNumberField({ label, help, value, min, max, disabled, onChang
 }): ReactElement {
   return createElement('div', { style: usageQueryNumberRowStyle },
     createElement('span', { style: { minWidth: 0 } },
-      createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, label),
+      createElement('strong', { style: { display: 'block', fontSize: uiFontSize(13), lineHeight: 1.4 } }, label),
       help === undefined ? null : createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle } }, help),
     ),
     createElement('input', {
@@ -164,4 +165,4 @@ const usageSettingsDialogStyle = {
   gap: 12,
 }
 const usageQueryNumberRowStyle = { ...dshSettingsListRowStyle, justifyContent: 'space-between' as const }
-const usageQueryNumberInputStyle = { ...dshFieldStyle, flex: '0 0 auto', width: 110, minHeight: 32, boxSizing: 'border-box' as const, padding: '5px 8px', borderRadius: 6, fontSize: 13 }
+const usageQueryNumberInputStyle = { ...dshFieldStyle, flex: '0 0 auto', width: 110, minHeight: 32, boxSizing: 'border-box' as const, padding: '5px 8px', borderRadius: 6, fontSize: uiFontSize(13) }

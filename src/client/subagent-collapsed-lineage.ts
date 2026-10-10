@@ -11,6 +11,7 @@ import type { CodingNsLocale } from './locale.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 import { resolveChevronDownIcon, resolveRefreshIcon, resolveTerminalArrowIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 import { en, zh } from './locales/subagentCollapsed.js'
+import { uiFontSize } from './font-scale.js'
 
 /** 停止子 Agent 分组的专用词典，避免改写 DSH 原生 subagent 词典。 */
 export const SUBAGENT_COLLAPSED_LOCALE_NS = 'codingnsSubagentCollapsed' as const
@@ -217,21 +218,21 @@ const catalogMenuBodyStyle: CSSProperties = {
 const rowStyle: CSSProperties = {
   position: 'relative', display: 'flex', alignItems: 'flex-start', gap: 6, boxSizing: 'border-box',
   width: '100%', minHeight: 44, padding: '6px 7px 6px 9px', border: 0, borderRadius: 'var(--dsw-radius-lg)',
-  background: 'transparent', color: dshThemeColor.labelPrimary, fontSize: 12, lineHeight: '17px',
+  background: 'transparent', color: dshThemeColor.labelPrimary, fontSize: uiFontSize(12), lineHeight: '17px',
   textAlign: 'left', cursor: 'pointer', outline: 'none',
 }
 
 const buttonStyle: CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 8, width: '100%', minHeight: 40, boxSizing: 'border-box', padding: '0 10px',
   border: 0, borderRadius: 10, background: dshThemeColor.surfaceSubtle,
-  color: dshThemeColor.labelSecondary, fontSize: 14, lineHeight: '22px', cursor: 'pointer', textAlign: 'left',
+  color: dshThemeColor.labelSecondary, fontSize: uiFontSize(14), lineHeight: '22px', cursor: 'pointer', textAlign: 'left',
 }
 
 /** 停止分组是列表内的辅助折叠条，尺寸与 DSH 原生触发器保持一致。 */
 const inactiveGroupButtonStyle: CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 6, width: '100%', minHeight: 32, boxSizing: 'border-box',
   padding: '3px 7px', border: 0, borderRadius: 'var(--dsw-radius-sm)', background: dshThemeColor.surfaceSubtle,
-  color: dshThemeColor.labelSecondary, fontSize: 12, lineHeight: '18px', cursor: 'pointer', textAlign: 'left',
+  color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: '18px', cursor: 'pointer', textAlign: 'left',
 }
 
 const clickareaStyle: CSSProperties = {
@@ -247,7 +248,7 @@ const contentStyle: CSSProperties = { display: 'flex', flex: 1, flexDirection: '
 const ellipsisStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 const metricsStyle: CSSProperties = {
   display: 'grid', flex: 'none', gridTemplateRows: '17px 15px', color: dshThemeColor.labelTertiary,
-  fontSize: 10, lineHeight: '15px', fontVariantNumeric: 'tabular-nums', textAlign: 'right', whiteSpace: 'nowrap',
+  fontSize: uiFontSize(10), lineHeight: '15px', fontVariantNumeric: 'tabular-nums', textAlign: 'right', whiteSpace: 'nowrap',
 }
 const sidebarButtonStyle: CSSProperties = {
   display: 'inline-flex', flex: 'none', alignItems: 'center', justifyContent: 'center', width: 28, height: 28,
@@ -533,7 +534,7 @@ function CatalogRows(props: CatalogRowsProps): ReactElement {
       createElement('span', { style: rowActivitySlotStyle }, createElement(StateDot, { state: activity === 'running' ? 'ongoing' : 'idle' })),
       createElement('span', { style: contentStyle },
         createElement('span', { style: { ...ellipsisStyle, color: 'inherit', fontWeight: entry.id === props.currentSessionId ? 600 : 400 } }, label),
-        createElement('span', { style: { ...ellipsisStyle, color: dshThemeColor.labelTertiary, fontSize: 10, lineHeight: '15px' } }, secondary),
+        createElement('span', { style: { ...ellipsisStyle, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), lineHeight: '15px' } }, secondary),
       ),
       metrics === '' ? null : createElement('span', { style: metricsStyle },
         tokenMetric === undefined ? null : createElement('span', { style: { gridRow: 1, lineHeight: '17px' } }, tokenMetric),
@@ -552,16 +553,16 @@ function CatalogRows(props: CatalogRowsProps): ReactElement {
     if (knownLeaf || !expanded) return createElement('div', { key: `${entry.id}-node`, style: { position: 'relative', minWidth: 0 } }, row)
     const childLoading = childCatalog === undefined || (childCatalog.state === 'loading' && childCatalog.entries.length === 0)
     const children = childCatalog === undefined
-      ? createElement('div', { style: { color: dshThemeColor.labelTertiary, padding: '8px 10px', fontSize: 11, lineHeight: '16px' } }, props.t('subagentCollapsed.loading.label'))
+      ? createElement('div', { style: { color: dshThemeColor.labelTertiary, padding: '8px 10px', fontSize: uiFontSize(11), lineHeight: '16px' } }, props.t('subagentCollapsed.loading.label'))
       : createElement(CatalogRows, { ...props, parentSessionId: entry.id, catalog: childCatalog, level: props.level + 1 })
     return createElement('div', { key: `${entry.id}-node`, style: { position: 'relative', minWidth: 0 } }, row, createElement('div', { role: 'group', 'aria-busy': childLoading || undefined, style: { marginLeft: 16, paddingLeft: 3, borderLeft: '0.5px solid var(--dsw-alias-border-l2)' } }, children))
   }
 
-  const diagnostics = partitioned.diagnostics.map((entry) => createElement('div', { key: `diagnostic-${entry.id}`, role: 'treeitem', 'aria-disabled': true, 'aria-level': props.level, style: { ...rowStyle, color: dshThemeColor.labelTertiary, cursor: 'not-allowed' } }, createElement('span', { style: rowActivitySlotStyle }, createElement(StateDot, { state: 'error' })), createElement('span', { style: contentStyle }, createElement('span', { style: ellipsisStyle }, entry.id), createElement('span', { style: { ...ellipsisStyle, fontSize: 10, lineHeight: '15px' } }, diagnosticText(entry, props.t)))))
+  const diagnostics = partitioned.diagnostics.map((entry) => createElement('div', { key: `diagnostic-${entry.id}`, role: 'treeitem', 'aria-disabled': true, 'aria-level': props.level, style: { ...rowStyle, color: dshThemeColor.labelTertiary, cursor: 'not-allowed' } }, createElement('span', { style: rowActivitySlotStyle }, createElement(StateDot, { state: 'error' })), createElement('span', { style: contentStyle }, createElement('span', { style: ellipsisStyle }, entry.id), createElement('span', { style: { ...ellipsisStyle, fontSize: uiFontSize(10), lineHeight: '15px' } }, diagnosticText(entry, props.t)))))
   const inactiveLabel = props.t(partitioned.inactive.length === 1 ? 'subagentCollapsed.inactive.one' : 'subagentCollapsed.inactive.other', { count: partitioned.inactive.length })
   return createElement(Fragment, null,
-    props.catalog.state === 'loading' && props.catalog.entries.length === 0 ? createElement('div', { style: { color: dshThemeColor.labelTertiary, padding: '8px 10px', fontSize: 11, lineHeight: '16px' } }, props.t('subagentCollapsed.loading.label')) : null,
-    props.catalog.state === 'error' ? createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, color: 'var(--dsw-alias-state-error-primary)', padding: '8px 10px', fontSize: 11, lineHeight: '16px' } }, createElement('span', null, props.catalog.error?.message ?? props.t('subagentCollapsed.load.error')), createElement('button', { type: 'button', onClick: () => props.refresh(props.parentSessionId), style: { ...buttonStyle, width: 'auto', minHeight: 28, padding: '3px 5px', background: 'transparent', fontSize: 11 } }, createElement(resolveRefreshIcon()), props.t('subagentCollapsed.retry'))) : null,
+    props.catalog.state === 'loading' && props.catalog.entries.length === 0 ? createElement('div', { style: { color: dshThemeColor.labelTertiary, padding: '8px 10px', fontSize: uiFontSize(11), lineHeight: '16px' } }, props.t('subagentCollapsed.loading.label')) : null,
+    props.catalog.state === 'error' ? createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, color: 'var(--dsw-alias-state-error-primary)', padding: '8px 10px', fontSize: uiFontSize(11), lineHeight: '16px' } }, createElement('span', null, props.catalog.error?.message ?? props.t('subagentCollapsed.load.error')), createElement('button', { type: 'button', onClick: () => props.refresh(props.parentSessionId), style: { ...buttonStyle, width: 'auto', minHeight: 28, padding: '3px 5px', background: 'transparent', fontSize: uiFontSize(11) } }, createElement(resolveRefreshIcon()), props.t('subagentCollapsed.retry'))) : null,
     ...diagnostics,
     ...partitioned.running.map(renderEntry),
     partitioned.inactive.length > 0 ? createElement('div', { key: `${props.parentSessionId}-inactive`, style: { marginTop: props.catalog.entries.length > partitioned.inactive.length ? 2 : 0 } }, createElement('button', { type: 'button', 'aria-expanded': showInactive, 'aria-label': props.t(showInactive ? 'subagentCollapsed.inactive.collapse' : 'subagentCollapsed.inactive.expand'), onClick: () => props.toggleInactive(props.parentSessionId), style: inactiveGroupButtonStyle }, createElement(showInactive ? resolveChevronDownIcon() : resolveTerminalArrowIcon('right'), { size: 14 }), inactiveLabel), showInactive ? createElement('div', { role: 'group', style: { marginTop: 1 } }, ...partitioned.inactive.map(renderEntry)) : null) : null,
@@ -740,7 +741,7 @@ function CatalogDropdown(props: CatalogDropdownProps): ReactElement | null {
     'aria-label': triggerAriaLabel,
     onMouseEnter: () => { setTriggerInteractive(true); scheduleHoverOpen() }, onMouseLeave: () => { setTriggerInteractive(false); scheduleHoverClose() }, onFocus: () => setTriggerInteractive(true), onBlur: () => setTriggerInteractive(false),
     onClick: handleTriggerClick, onKeyDown: handleTriggerKeyDown,
-    style: { display: 'inline-flex', alignItems: 'center', gap: 4, minHeight: 28, maxWidth: props.variant === 'switcher' ? 244 : undefined, padding: '3px 2px', border: 0, borderRadius: 'var(--dsw-radius-sm)', background: 'transparent', color: triggerColor, fontSize: 12, lineHeight: '18px', fontWeight: props.variant === 'switcher' && !ancestorSwitcher ? 500 : undefined, cursor: 'pointer', outline: 'none' },
+    style: { display: 'inline-flex', alignItems: 'center', gap: 4, minHeight: 28, maxWidth: props.variant === 'switcher' ? 244 : undefined, padding: '3px 2px', border: 0, borderRadius: 'var(--dsw-radius-sm)', background: 'transparent', color: triggerColor, fontSize: uiFontSize(12), lineHeight: '18px', fontWeight: props.variant === 'switcher' && !ancestorSwitcher ? 500 : undefined, cursor: 'pointer', outline: 'none' },
   }, props.variant === 'count' && runningCount > 0 ? createElement(StateDot, { state: 'ongoing' }) : null, createElement('span', { style: { flex: 1, minWidth: 0, maxWidth: 244, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, triggerText), props.variant === 'switcher' ? subagentSwitcherIcon() : createElement('span', { style: { display: 'inline-flex', transition: 'transform .12s', transform: open ? 'rotate(180deg)' : undefined } }, createElement(resolveChevronDownIcon())))
   const menu = open ? createElement('div', { ref: menuRef, role: 'presentation', onMouseEnter: cancelHoverClose, onMouseLeave: scheduleHoverClose, onKeyDown: navigate, style: { ...catalogStyle(), ...position } }, createElement('div', { role: 'tree', 'aria-label': props.t('subagentCollapsed.tree.aria'), style: catalogMenuBodyStyle }, createElement(CatalogRows, { parentSessionId: props.rootSessionId, ...(props.currentSessionId === undefined ? {} : { currentSessionId: props.currentSessionId }), catalog: catalog ?? { entries: [], state: 'loading' }, catalogs, summaries, expanded, inactiveOpen, level: 1, openChild: props.openChild, openChildAside: props.openChildAside, refresh: props.refresh, toggleBranch, toggleInactive, closeCatalog: close, t: props.t }))) : null
   const renderedMenu = menu === null ? null : typeof document === 'undefined' ? menu : createPortal(menu, document.body)

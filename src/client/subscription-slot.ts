@@ -15,6 +15,7 @@ import { loadCliSessionConfig } from './cli-session-config-cache.js'
 import { dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from './theme.js'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import type { SessionSnapshot } from './cli-slots.js'
+import { uiFontSize } from './font-scale.js'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SessionStandardProps {
@@ -503,8 +504,8 @@ function ResetConfirmDialog({ count, pending, result, error, t, onCancel, onConf
       style: resetDialogStyle,
     },
       createElement('div', { style: { display: 'grid', gap: 4 } },
-        createElement('strong', { style: { fontSize: 14, lineHeight: 1.4 } }, t('usage.resetDialogTitle')),
-        createElement('span', { style: { color: messageColor, fontSize: 12, lineHeight: '18px' } }, message),
+        createElement('strong', { style: { fontSize: uiFontSize(14), lineHeight: 1.4 } }, t('usage.resetDialogTitle')),
+        createElement('span', { style: { color: messageColor, fontSize: uiFontSize(12), lineHeight: '18px' } }, message),
       ),
       createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 } },
         finished
@@ -1052,63 +1053,63 @@ function formatCreditBalance(value: string): string {
 }
 
 const subscriptionRootStyle = { position: 'relative' as const, minWidth: 0, display: 'inline-flex', alignItems: 'center' }
-const subscriptionTriggerStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, height: 28, border: 0, borderRadius: 14, padding: '0 8px 0 4px', color: dshThemeColor.labelSecondary, background: 'transparent', cursor: 'pointer', fontSize: 13, lineHeight: '20px' }
+const subscriptionTriggerStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, height: 28, border: 0, borderRadius: 14, padding: '0 8px 0 4px', color: dshThemeColor.labelSecondary, background: 'transparent', cursor: 'pointer', fontSize: uiFontSize(13), lineHeight: '20px' }
 const subscriptionLabelStyle = { whiteSpace: 'nowrap' as const }
 const sub2apiIdentityStyle = { display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' as const, fontVariantNumeric: 'tabular-nums' }
 const sub2apiLogoStyle = { display: 'block', borderRadius: 4, objectFit: 'contain' as const }
 const deepseekBalanceIdentityStyle = { display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' as const, fontVariantNumeric: 'tabular-nums' as const }
 const deepseekLogoStyle = { display: 'block', borderRadius: 5, objectFit: 'contain' as const }
-const deepseekBalanceStyle = { display: 'inline-flex', alignItems: 'center', color: dshThemeColor.labelSecondary, fontSize: 13, fontWeight: 600, fontVariantNumeric: 'tabular-nums' as const }
+const deepseekBalanceStyle = { display: 'inline-flex', alignItems: 'center', color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13), fontWeight: 600, fontVariantNumeric: 'tabular-nums' as const }
 const providerBalanceHeadingStyle = { display: 'grid', gap: 2, minWidth: 0 }
-const providerBalancePlanStyle = { color: dshThemeColor.labelTertiary, fontSize: 11, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
+const providerBalancePlanStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
 const deepseekBalanceSectionStyle = { display: 'grid', gap: 6, marginTop: 10, padding: '10px 0 2px', borderTop: `1px solid ${dshThemeColor.border}` }
-const deepseekBalanceDetailsStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelTertiary, fontSize: 12 }
+const deepseekBalanceDetailsStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12) }
 const overallBalanceStyle = { display: 'grid', gap: 5, marginTop: 10 }
 const providerDetailsSectionStyle = { display: 'grid', gap: 6, marginTop: 12, paddingTop: 10, borderTop: `1px solid ${dshThemeColor.border}` }
-const providerBalanceSectionTitleStyle = { fontSize: 12, color: dshThemeColor.labelSecondary }
-const providerDetailRowStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelTertiary, fontSize: 12, lineHeight: '17px' }
+const providerBalanceSectionTitleStyle = { fontSize: uiFontSize(12), color: dshThemeColor.labelSecondary }
+const providerDetailRowStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: '17px' }
 const providerDetailValueStyle = { color: dshThemeColor.labelSecondary, textAlign: 'right' as const, overflowWrap: 'anywhere' as const }
 const providerBalanceModelStyle = { display: 'grid', gap: 6, marginTop: 12, paddingTop: 10, borderTop: `1px solid ${dshThemeColor.border}` }
 const providerBalanceProgressStyle = { display: 'grid', gap: 5, marginTop: 10 }
-const balanceProgressHeaderStyle = { display: 'flex', justifyContent: 'space-between', gap: 8, minWidth: 0, color: dshThemeColor.labelTertiary, fontSize: 11, fontVariantNumeric: 'tabular-nums' as const }
+const balanceProgressHeaderStyle = { display: 'flex', justifyContent: 'space-between', gap: 8, minWidth: 0, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), fontVariantNumeric: 'tabular-nums' as const }
 const balanceProgressValueStyle = { color: dshThemeColor.labelSecondary, fontWeight: 600 }
 const balanceProgressPercentStyle = { color: dshThemeColor.labelTertiary, fontVariantNumeric: 'tabular-nums' as const }
-const balanceMetaStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelTertiary, fontSize: 11, lineHeight: '16px', fontVariantNumeric: 'tabular-nums' as const }
+const balanceMetaStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), lineHeight: '16px', fontVariantNumeric: 'tabular-nums' as const }
 const visuallyHiddenStyle = { position: 'absolute' as const, width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden' as const, clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap' as const, border: 0 }
 const providerBalanceBarStyle = { height: 7, overflow: 'hidden' as const, borderRadius: 4, background: dshThemeColor.border }
 const providerBalanceBarFillStyle = { display: 'block', height: '100%', borderRadius: 4, background: dshThemeColor.accent, transition: 'width .2s ease' }
-const deepseekUnavailableStatsStyle = { marginTop: 12, paddingTop: 10, borderTop: `1px solid ${dshThemeColor.border}`, color: dshThemeColor.labelTertiary, fontSize: 12, lineHeight: '17px' }
+const deepseekUnavailableStatsStyle = { marginTop: 12, paddingTop: 10, borderTop: `1px solid ${dshThemeColor.border}`, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: '17px' }
 const progressRingVisualStyle = { boxSizing: 'border-box' as const, width: '100%', height: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 2, borderRadius: 'inherit' }
-const progressRingValueStyle = { boxSizing: 'border-box' as const, width: '100%', height: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, borderRadius: 'inherit', background: dshThemeColor.menuBackground, fontSize: 7, lineHeight: 1, fontWeight: 700, color: dshThemeColor.labelPrimary, whiteSpace: 'nowrap' as const }
-const progressRingSuffixStyle = { fontSize: 5.5, lineHeight: 1, color: dshThemeColor.labelTertiary, transform: 'translateY(1px)' }
-const popoverHeadingStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 18, paddingBottom: 10, borderBottom: `1px solid ${dshThemeColor.border}`, fontSize: 14 }
+const progressRingValueStyle = { boxSizing: 'border-box' as const, width: '100%', height: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, borderRadius: 'inherit', background: dshThemeColor.menuBackground, fontSize: uiFontSize(7), lineHeight: 1, fontWeight: 700, color: dshThemeColor.labelPrimary, whiteSpace: 'nowrap' as const }
+const progressRingSuffixStyle = { fontSize: uiFontSize(5.5), lineHeight: 1, color: dshThemeColor.labelTertiary, transform: 'translateY(1px)' }
+const popoverHeadingStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 18, paddingBottom: 10, borderBottom: `1px solid ${dshThemeColor.border}`, fontSize: uiFontSize(14) }
 const popoverHeadingTextStyle = { display: 'grid', gap: 2, minWidth: 0 }
-const accountMetaStyle = { overflow: 'hidden', color: dshThemeColor.labelTertiary, fontSize: 11, lineHeight: '16px', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
-const upstreamMetaStyle = { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, paddingTop: 8, color: dshThemeColor.labelTertiary, fontSize: 11, lineHeight: '16px' }
+const accountMetaStyle = { overflow: 'hidden', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), lineHeight: '16px', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
+const upstreamMetaStyle = { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, paddingTop: 8, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), lineHeight: '16px' }
 const upstreamTypeStyle = { flex: '0 0 auto', color: dshThemeColor.labelSecondary, fontWeight: 600 }
 const upstreamLinkStyle = { minWidth: 0, overflow: 'hidden', color: dshThemeColor.accent, textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, textDecoration: 'none' }
 const upstreamMutedStyle = { flex: '0 0 auto', whiteSpace: 'nowrap' as const }
 const windowStyle = { display: 'grid', gap: 6, paddingTop: 10 }
-const windowHeadingStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelSecondary, fontSize: 13 }
+const windowHeadingStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13) }
 const barStyle = { height: 7, overflow: 'hidden' as const, borderRadius: 4, background: dshThemeColor.border }
 const barFillStyle = { display: 'block', height: '100%', borderRadius: 4, background: dshThemeColor.accent, transition: 'width .2s ease' }
-const resetStyle = { color: dshThemeColor.labelTertiary, fontSize: 12 }
-const quotaGroupTitleStyle = { paddingTop: 12, color: dshThemeColor.labelSecondary, fontSize: 12, fontWeight: 600, letterSpacing: '.02em' }
+const resetStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12) }
+const quotaGroupTitleStyle = { paddingTop: 12, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), fontWeight: 600, letterSpacing: '.02em' }
 const subscriptionPopoverStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1200, bottom: 'calc(100% + 8px)', left: 0, width: 'max-content', minWidth: 280, maxWidth: 'min(400px, calc(100vw - 24px))', boxSizing: 'border-box' as const, padding: 14, borderRadius: 12 }
 const resetCreditsSectionStyle = { display: 'grid', gap: 6, marginTop: 10, padding: '10px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 10, background: dshThemeColor.surfaceSubtle }
-const resetCreditsRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelSecondary, fontSize: 13 }
+const resetCreditsRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13) }
 const resetCreditsValueGroupStyle = { display: 'inline-flex', alignItems: 'center', gap: 8 }
 const resetCreditsValueStyle = { color: dshThemeColor.labelPrimary, fontWeight: 600, fontVariantNumeric: 'tabular-nums' as const }
-const resetCreditsExpiryStyle = { color: dshThemeColor.labelTertiary, fontSize: 11, lineHeight: '16px', fontVariantNumeric: 'tabular-nums' as const }
+const resetCreditsExpiryStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), lineHeight: '16px', fontVariantNumeric: 'tabular-nums' as const }
 const resetDialogOverlayStyle = { position: 'fixed' as const, inset: 0, zIndex: 1400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, boxSizing: 'border-box' as const, background: dshThemeColor.overlay }
 const resetDialogStyle = { ...dshPopupSurfaceStyle, width: 'min(100%, 420px)', boxSizing: 'border-box' as const, padding: 16, borderRadius: 12, display: 'grid', gap: 12 }
 const sub2apiStatsGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, paddingTop: 12 }
 const sub2apiStatStyle = { display: 'grid', gap: 2, minWidth: 0 }
-const sub2apiStatLabelStyle = { color: dshThemeColor.labelTertiary, fontSize: 11 }
+const sub2apiStatLabelStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11) }
 const sub2apiSectionStyle = { display: 'grid', gap: 8, paddingTop: 14 }
-const sub2apiSectionTitleStyle = { fontSize: 12, color: dshThemeColor.labelSecondary }
+const sub2apiSectionTitleStyle = { fontSize: uiFontSize(12), color: dshThemeColor.labelSecondary }
 const sub2apiTableScrollStyle = { maxWidth: '100%', overflow: 'visible' as const }
-const sub2apiTableStyle = { width: '100%', tableLayout: 'fixed' as const, borderCollapse: 'collapse' as const, fontSize: 11 }
+const sub2apiTableStyle = { width: '100%', tableLayout: 'fixed' as const, borderCollapse: 'collapse' as const, fontSize: uiFontSize(11) }
 const sub2apiThStyle = { padding: '4px 5px', textAlign: 'left' as const, color: dshThemeColor.labelTertiary, fontWeight: 500 }
 const sub2apiTdStyle = { padding: '5px', borderTop: `1px solid ${dshThemeColor.border}`, color: dshThemeColor.labelSecondary, overflowWrap: 'anywhere' as const }
 function progressRingStyle(): Record<string, string | number> { return { position: 'relative', display: 'inline-flex', flex: '0 0 28px', width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: '50%', padding: 0, border: 0, boxShadow: `inset 0 0 0 1px ${dshThemeColor.border}`, background: 'transparent' } }

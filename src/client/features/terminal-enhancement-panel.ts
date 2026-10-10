@@ -25,6 +25,7 @@ import type { CodingNsRpcClient, FeaturePanelProps } from './types.js'
 import { useCodingNsTranslator, type CodingNsTranslator } from '../locale.js'
 import { debugInfo, debugWarn } from '../../shared/debug.js'
 import { SettingsSwitch } from '../settings-controls.js'
+import { uiFontSize } from '../font-scale.js'
 
 const profileLabels: Readonly<Record<TerminalProfileId, string>> = {
   system: 'terminal.systemRecommended',
@@ -119,7 +120,7 @@ export function TerminalEnhancementPanel({ services, enabled, snapshot, notify }
       createElement('option', { value: 'session' }, t('terminal.sessionBinding'))),
     ),
     createElement('div', { style: dshSettingsSectionHeaderStyle },
-      createElement('h3', { style: { margin: 0, color: dshThemeColor.labelPrimary, fontSize: 14, lineHeight: 1.35 } }, t('terminal.appearanceTitle')),
+      createElement('h3', { style: { margin: 0, color: dshThemeColor.labelPrimary, fontSize: uiFontSize(14), lineHeight: 1.35 } }, t('terminal.appearanceTitle')),
       createElement('button', { type: 'button', disabled, onClick: resetAppearance, style: { ...buttonStyle, minWidth: 132 } }, t('terminal.resetAppearance')),
     ),
     createElement('div', { style: dshSettingsGridStyle },
@@ -261,4 +262,4 @@ const rowStyle: CSSProperties = dshSettingsRowStyle
 const helpStyle: CSSProperties = dshSettingsHelpStyle
 const noteStyle: CSSProperties = dshSettingsNoteStyle
 const fieldHeadingStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }
-const infoButtonStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, flex: '0 0 20px', padding: 0, border: `1px solid ${dshThemeColor.border}`, borderRadius: '50%', color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, cursor: 'help', fontSize: 12, lineHeight: 1 }
+const infoButtonStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, flex: '0 0 20px', padding: 0, border: `1px solid ${dshThemeColor.border}`, borderRadius: '50%', color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, cursor: 'help', fontSize: uiFontSize(12), lineHeight: 1 }

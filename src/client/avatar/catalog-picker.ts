@@ -8,6 +8,7 @@ import { getAssistantAvatarPreset } from '../../shared/assistant-avatar-presets.
 import type { CodingNsTranslator } from '../locale.js'
 import { dshSettingsFieldStyle } from '../theme.js'
 import { assistantSettingFieldStyle } from '../assistant-settings-styles.js'
+import { uiFontSize } from '../font-scale.js'
 
 export interface AssistantAvatarChoice {
   readonly id: string
@@ -47,7 +48,7 @@ export function AssistantAvatarChoiceLabel({ choice, t }: { readonly choice: Ass
     createElement('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, choice.label),
     !choice.thirdParty ? null : createElement('span', { 'data-codingns-avatar-third-party-badge': true,
       // 固定高对比蓝底白字，明暗主题中均可读；标签不随长名称收缩。
-      style: { flexShrink: 0, padding: '1px 6px', borderRadius: 4, background: '#2563eb', color: '#fff', fontSize: 11, fontWeight: 500, lineHeight: '18px', whiteSpace: 'nowrap' } }, t('avatar.thirdPartyBadge')))
+      style: { flexShrink: 0, padding: '1px 6px', borderRadius: 4, background: '#2563eb', color: '#fff', fontSize: uiFontSize(11), fontWeight: 500, lineHeight: '18px', whiteSpace: 'nowrap' } }, t('avatar.thirdPartyBadge')))
 }
 
 /** 一个选择入口同时服务内置、已安装和待安装形象。 */

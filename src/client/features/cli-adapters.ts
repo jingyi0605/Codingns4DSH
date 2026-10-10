@@ -23,6 +23,7 @@ import { resolveRefreshIcon } from '../../dsh-capabilities/client/primitives-ada
 import { createCliSettingsRpc } from '../cli-settings-rpc.js'
 import { createPeerHostManagementApi } from '../peer-host-management-api.js'
 import { SettingsSwitch } from '../settings-controls.js'
+import { uiFontSize } from '../font-scale.js'
 
 const CLI_ADAPTER_STYLE_ID = 'codingns4dsh-cli-adapter-settings-style'
 const cliAdapterClass = {
@@ -309,7 +310,7 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
     { className: cliAdapterClass.panel, 'aria-disabled': disabled, style: { ...dshFormRootStyle, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
     peerHostId === null && createElement('label', { style: dshSettingsListRowStyle },
       createElement('span', { style: { flex: '1 1 auto', minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('cli.subagentBridge')),
+        createElement('strong', { style: { display: 'block', fontSize: uiFontSize(13), lineHeight: 1.4 } }, t('cli.subagentBridge')),
         createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeDescription')),
       ),
       createElement(SettingsSwitch, {
@@ -321,7 +322,7 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
     ),
     peerHostId === null && createElement('label', { style: { ...dshSettingsListRowStyle, opacity: bridgeEnabled ? 1 : 0.5 } },
       createElement('span', { style: { flex: '1 1 auto', minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: 13, lineHeight: 1.4 } }, t('cli.subagentBridgeConcurrency')),
+        createElement('strong', { style: { display: 'block', fontSize: uiFontSize(13), lineHeight: 1.4 } }, t('cli.subagentBridgeConcurrency')),
         createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeConcurrencyHelp')),
       ),
       createElement('input', {
@@ -333,7 +334,7 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
         disabled: !bridgeWritable || bridgeBusy,
         onChange: (event: { currentTarget: { value: string } }) => { setConcurrencyText(event.currentTarget.value) },
         onBlur: () => { void saveBridgeConcurrency() },
-        style: { ...dshSettingsFieldStyle, flex: '0 0 auto', width: 96, minHeight: 32, padding: '5px 8px', fontSize: 13 },
+        style: { ...dshSettingsFieldStyle, flex: '0 0 auto', width: 96, minHeight: 32, padding: '5px 8px', fontSize: uiFontSize(13) },
       }),
     ),
     createElement('div', { className: cliAdapterClass.listHeader },
@@ -345,7 +346,7 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
           setPeerHostId(event.currentTarget.value || null)
           setCatalog([]); setSelected(null); setModels(null); setModelsError(''); setCatalogError('')
         },
-        style: { ...dshSettingsFieldStyle, flex: '1 1 160px', width: 'auto', maxWidth: 280, minWidth: 0, minHeight: 32, padding: '5px 8px', fontSize: 13 },
+        style: { ...dshSettingsFieldStyle, flex: '1 1 160px', width: 'auto', maxWidth: 280, minWidth: 0, minHeight: 32, padding: '5px 8px', fontSize: uiFontSize(13) },
       },
         createElement('option', { value: '' }, t('cli.localHost')),
         ...peerHosts.map((host) => createElement('option', { key: host.id, value: host.id }, host.displayName)),
@@ -427,7 +428,7 @@ function AdapterIcon({ adapter }: { readonly adapter: CodingNsCliAdapterDescript
     return createElement('span', {
       className: cliAdapterClass.icon,
       'aria-hidden': true,
-      style: { borderRadius: 6, background: dshThemeColor.surfaceSubtle, color: dshThemeColor.labelSecondary, fontSize: 12, fontWeight: 700 },
+      style: { borderRadius: 6, background: dshThemeColor.surfaceSubtle, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), fontWeight: 700 },
     }, adapter.name.trim().charAt(0).toUpperCase() || '?')
   }
   return createElement('img', {
@@ -463,7 +464,7 @@ function AdapterDetailsDialog({ adapter, hostLabel, models, modelsError, loading
       style: { ...dshPopupSurfaceStyle, width: 'min(100%, 620px)', maxHeight: 'min(720px, 90vh)', overflow: 'auto', boxSizing: 'border-box', padding: 24, borderRadius: 8 },
     },
       createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
-        createElement('h3', { id: 'codingns-cli-adapter-title', style: { margin: 0, fontSize: 18 } }, adapter.name),
+        createElement('h3', { id: 'codingns-cli-adapter-title', style: { margin: 0, fontSize: uiFontSize(18) } }, adapter.name),
       createElement('button', { type: 'button', onClick: onClose, style: buttonStyle, 'aria-label': t('cli.closeDetails') }, t('cli.closeDetails')),
       ),
       createElement('dl', { style: { display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '8px 16px', margin: '20px 0' } },
@@ -505,7 +506,7 @@ function ModelCatalog({ catalog, t }: { readonly catalog: CodingNsCliModelCatalo
 function ModelRow({ model, t }: { readonly model: CodingNsCliModel; readonly t: ReturnType<typeof useCodingNsTranslator> }): ReactElement {
   return createElement('div', { style: { padding: '8px 10px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 6 } },
     createElement('div', { style: { fontWeight: 600 } }, model.name),
-    model.description && createElement('div', { style: { marginTop: 3, opacity: 0.7, fontSize: 13 } }, model.description),
-    createElement('div', { style: { marginTop: 5, opacity: 0.7, fontSize: 13 } }, t('cli.thinkingLevel', { value: model.efforts.length > 0 ? model.efforts.map((effort) => model.effortLabels?.[effort] ?? effort).join(t('common.listSeparator')) : t('cli.defaultEffort') })),
+    model.description && createElement('div', { style: { marginTop: 3, opacity: 0.7, fontSize: uiFontSize(13) } }, model.description),
+    createElement('div', { style: { marginTop: 5, opacity: 0.7, fontSize: uiFontSize(13) } }, t('cli.thinkingLevel', { value: model.efforts.length > 0 ? model.efforts.map((effort) => model.effortLabels?.[effort] ?? effort).join(t('common.listSeparator')) : t('cli.defaultEffort') })),
   )
 }

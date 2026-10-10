@@ -34,6 +34,7 @@ import type { CodingNsSettingsSnapshot, CodingNsSettingsStore } from '../dsh-cap
 import type { SettingsNotice } from './features/types.js'
 import { CodingNsSettingsPromo, CODINGNS_GITHUB_URL } from './settings-promo.js'
 import { SettingsSwitch } from './settings-controls.js'
+import { uiFontSize } from './font-scale.js'
 
 // pnpm 会为不同 peer 上下文保留独立的 ui-slots 类型实例；插件在自己实际使用的
 // 根实例上重申公开契约，避免依赖声明合并偶然穿过依赖副本。
@@ -101,7 +102,7 @@ export function CodingNsSettingsSection({ settings, registry, services, restartS
         notify,
       })),
     ),
-    createElement('details', { style: { alignSelf: 'center', display: 'flex', flexDirection: 'column-reverse', alignItems: 'center', marginTop: 4, color: dshThemeColor.labelTertiary, textAlign: 'center', fontSize: 12, lineHeight: 1.5 } },
+    createElement('details', { style: { alignSelf: 'center', display: 'flex', flexDirection: 'column-reverse', alignItems: 'center', marginTop: 4, color: dshThemeColor.labelTertiary, textAlign: 'center', fontSize: uiFontSize(12), lineHeight: 1.5 } },
       createElement('summary', { style: { cursor: 'pointer', color: dshThemeColor.labelSecondary, listStylePosition: 'inside' } }, t('settings.version', { version: CODINGNS_VERSION })),
       createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', maxWidth: 'min(100%, 560px)', marginBottom: 8, padding: '8px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 6, background: dshThemeColor.surfaceSubtle } },
         createElement('div', undefined, t('settings.compatibility', { range: DSH_COMPATIBILITY })),

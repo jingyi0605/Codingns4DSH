@@ -8,6 +8,7 @@ import type { CodingNsSettingsStore } from '../dsh-capabilities/settings-store.j
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
 import { applyQuickPhraseOrder, matchesDshCssModuleClass, QUICK_PHRASE_FALLBACK_MARGIN, QUICK_PHRASE_PERMISSION_ORDER, QUICK_PHRASE_TRIGGER_ORDER, readQuickPhraseMargin } from './quick-phrase-layout.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
+import { uiFontSize } from './font-scale.js'
 
 const QUICK_PHRASE_FALLBACK_SIZE = 28
 const QUICK_PHRASE_FALLBACK_ICON_SIZE = 14
@@ -434,22 +435,22 @@ const quickPhraseDialogStyle = {
 }
 const quickPhraseHeaderStyle = { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, paddingBottom: 16, borderBottom: `1px solid ${dshThemeColor.border}` }
 const quickPhraseHeaderActionsStyle = { display: 'flex', alignItems: 'center', gap: 8, flex: '0 0 auto' }
-const quickPhraseTitleStyle = { display: 'block', color: dshThemeColor.labelPrimary, fontSize: 20, lineHeight: 1.3 }
-const quickPhraseHintStyle = { margin: '6px 0 0', color: dshThemeColor.labelSecondary, fontSize: 13, lineHeight: 1.5 }
-const quickPhraseCloseStyle = { width: 32, height: 32, flex: '0 0 auto', border: 0, borderRadius: 16, color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, fontSize: 24, lineHeight: 1, cursor: 'pointer' }
+const quickPhraseTitleStyle = { display: 'block', color: dshThemeColor.labelPrimary, fontSize: uiFontSize(20), lineHeight: 1.3 }
+const quickPhraseHintStyle = { margin: '6px 0 0', color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13), lineHeight: 1.5 }
+const quickPhraseCloseStyle = { width: 32, height: 32, flex: '0 0 auto', border: 0, borderRadius: 16, color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, fontSize: uiFontSize(24), lineHeight: 1, cursor: 'pointer' }
 const quickPhraseIconButtonStyle = { width: 32, height: 32, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, border: 0, borderRadius: 8, color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle, cursor: 'pointer' }
 const quickPhraseEditorOverlayStyle = { ...quickPhraseOverlayStyle, zIndex: QUICK_PHRASE_MODAL_Z_INDEX + 1, background: 'transparent' }
 const quickPhraseEditorStyle = { ...dshPopupSurfaceStyle, width: 'min(100%, 520px)', boxSizing: 'border-box' as const, padding: 24, borderRadius: 12 }
 const quickPhraseEditorHeaderStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, paddingBottom: 16, borderBottom: `1px solid ${dshThemeColor.border}` }
-const quickPhraseEditorInputStyle = { width: '100%', minHeight: 92, marginTop: 16, boxSizing: 'border-box' as const, padding: '10px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, color: dshThemeColor.labelPrimary, background: dshThemeColor.inputBackground, fontSize: 14, lineHeight: 1.5, resize: 'vertical' as const }
+const quickPhraseEditorInputStyle = { width: '100%', minHeight: 92, marginTop: 16, boxSizing: 'border-box' as const, padding: '10px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, color: dshThemeColor.labelPrimary, background: dshThemeColor.inputBackground, fontSize: uiFontSize(14), lineHeight: 1.5, resize: 'vertical' as const }
 const quickPhraseEditorActionsStyle = { display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 16 }
-const quickPhraseCancelButtonStyle = { minHeight: 36, padding: '8px 14px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, color: dshThemeColor.labelPrimary, background: 'transparent', fontSize: 13, cursor: 'pointer' }
-const quickPhraseAddButtonStyle = { flex: '0 0 auto', minHeight: 36, padding: '8px 14px', border: 0, borderRadius: 8, color: dshThemeColor.switchThumb, background: dshThemeColor.accent, fontSize: 13, cursor: 'pointer' }
+const quickPhraseCancelButtonStyle = { minHeight: 36, padding: '8px 14px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, color: dshThemeColor.labelPrimary, background: 'transparent', fontSize: uiFontSize(13), cursor: 'pointer' }
+const quickPhraseAddButtonStyle = { flex: '0 0 auto', minHeight: 36, padding: '8px 14px', border: 0, borderRadius: 8, color: dshThemeColor.switchThumb, background: dshThemeColor.accent, fontSize: uiFontSize(13), cursor: 'pointer' }
 const quickPhraseListStyle = { display: 'flex', flexDirection: 'column' as const, gap: 8, paddingTop: 16 }
 const quickPhraseItemStyle = { display: 'flex', alignItems: 'center', gap: 8, width: '100%', minHeight: 48, padding: '7px 8px 7px 14px', boxSizing: 'border-box' as const, border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, color: dshThemeColor.labelPrimary, background: dshThemeColor.surfaceSubtle }
 const quickPhraseDraggingStyle = { opacity: 0.55, borderColor: dshThemeColor.accent }
-const quickPhraseTextButtonStyle = { flex: '1 1 auto', minWidth: 0, padding: 0, border: 0, color: dshThemeColor.labelPrimary, background: 'transparent', textAlign: 'left' as const, fontSize: 13, lineHeight: 1.5, cursor: 'pointer', overflowWrap: 'anywhere' as const }
-const quickPhraseDragHandleStyle = { flex: '0 0 24px', color: dshThemeColor.labelTertiary, textAlign: 'center' as const, fontSize: 18, lineHeight: 1, cursor: 'grab', userSelect: 'none' as const }
-const quickPhraseDeleteStyle = { width: 30, height: 30, flex: '0 0 30px', padding: 0, border: 0, borderRadius: 8, color: dshThemeColor.error, background: 'transparent', fontSize: 20, lineHeight: 1, cursor: 'pointer' }
-const quickPhraseSaveErrorStyle = { color: dshThemeColor.error, fontSize: 12, lineHeight: 1.4 }
-const quickPhraseEmptyStyle = { padding: '28px 0 10px', color: dshThemeColor.labelSecondary, textAlign: 'center' as const, fontSize: 13 }
+const quickPhraseTextButtonStyle = { flex: '1 1 auto', minWidth: 0, padding: 0, border: 0, color: dshThemeColor.labelPrimary, background: 'transparent', textAlign: 'left' as const, fontSize: uiFontSize(13), lineHeight: 1.5, cursor: 'pointer', overflowWrap: 'anywhere' as const }
+const quickPhraseDragHandleStyle = { flex: '0 0 24px', color: dshThemeColor.labelTertiary, textAlign: 'center' as const, fontSize: uiFontSize(18), lineHeight: 1, cursor: 'grab', userSelect: 'none' as const }
+const quickPhraseDeleteStyle = { width: 30, height: 30, flex: '0 0 30px', padding: 0, border: 0, borderRadius: 8, color: dshThemeColor.error, background: 'transparent', fontSize: uiFontSize(20), lineHeight: 1, cursor: 'pointer' }
+const quickPhraseSaveErrorStyle = { color: dshThemeColor.error, fontSize: uiFontSize(12), lineHeight: 1.4 }
+const quickPhraseEmptyStyle = { padding: '28px 0 10px', color: dshThemeColor.labelSecondary, textAlign: 'center' as const, fontSize: uiFontSize(13) }
