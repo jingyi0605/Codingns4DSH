@@ -131,7 +131,9 @@ export class AssistantNotificationStore {
     let received = false
     while (this.isCurrent(epoch)) {
       try {
-        const stream = open.call(this.rpc, '/api', ASSISTANT_NOTIFICATION_STREAM_ENDPOINT, {}, this.lifetime.signal)
+        // DSH Remote 的流参数必须使用唯一的 args 对象；传空对象会被网关判为
+        // 非法 payload，随后退回 read 重试，通知就会被退避延迟。
+        const stream = open.call(this.rpc, '/api', ASSISTANT_NOTIFICATION_STREAM_ENDPOINT, { args: {} }, this.lifetime.signal)
         received = false
         for await (const raw of stream) {
           this.assertCurrent(epoch, this.lifetime.signal)

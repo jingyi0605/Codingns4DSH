@@ -73,6 +73,25 @@ test('处理完成后待办记录自动清理，不需要手动收起（Agent �
   assert.equal(f.events.center.read().pendingCount, 0)
 })
 
+test('本机请求出现与解决都写入通知来源 revision，远端流无需等待租约校准', (t) => {
+  const f = fixture(); t.after(() => f.events.dispose())
+  f.emit('s', 'approval/asked', { id: 'instant' }, 1)
+  assert.equal(f.facts.at(-1)?.type, 'request-opened')
+  f.emit('s', 'approval/decided', { id: 'instant', outcome: 'allowed-once' }, 2)
+  assert.equal(f.facts.at(-1)?.type, 'request-resolved')
+})
+
+test('waterfall next 同步写入审批事件后立即进入全局通知', (t) => {
+  const f = fixture(); t.after(() => f.events.dispose())
+  const next = () => {
+    f.sessions.get('s').events.push({ type: 'approval/asked', data: { id: 'waterfall-approval' }, seq: 1 })
+    return new Promise(() => undefined)
+  }
+  f.events.observeRequest('approval/request', [{ agent: { session: f.sessions.get('s') }, toolName: 'Shell', callId: 'waterfall-approval' }, next])
+  assert.equal(f.events.center.read().pendingCount, 1)
+  assert.equal(f.facts.at(-1)?.requestId, 'waterfall-approval')
+})
+
 test('通知服务重建后从会话事件流与提问投影恢复当前待办，投影结算立即清理', (t) => {
   const first = fixture(); t.after(() => first.events.dispose())
   first.emit('s', 'approval/asked', { id: 'a1' }, 1)

@@ -18,6 +18,7 @@ export class AssistantNotificationController extends TypertRemoteService {
     readonly source?: AssistantNotificationSource
     readonly authorizeSource?: (workspaceIds: readonly string[]) => void
     readonly sourceScope?: (workspaceIds: readonly string[]) => void
+    readonly renewSourceScope?: (workspaceIds: readonly string[]) => void
   } = {}) {
     super(ctx, 'assistantNotificationController', { namespace: 'codingnsAssistantNotifications' })
   }
@@ -72,7 +73,7 @@ export class AssistantNotificationController extends TypertRemoteService {
     // 新事实不会再进入事件日志，客户端只能等到下一次重连才看到它。
     const leaseTimer = setInterval(() => {
       try {
-        this.options.sourceScope?.(request.workspaceIds)
+        (this.options.renewSourceScope ?? this.options.sourceScope)?.(request.workspaceIds)
         source.renew(request.workspaceIds)
       } catch {
         queue.end()

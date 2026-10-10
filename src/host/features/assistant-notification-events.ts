@@ -13,6 +13,7 @@ export interface AssistantNotificationGateway {
 }
 interface LocalMember { readonly target: AssistantNotificationTarget; readonly workspaceId: string; readonly workspaceLabel: string }
 interface TurnBoundary { seq: number; turnId: string; turn?: number }
+type RequestFact = Extract<AssistantNotificationFact, { readonly requestId: string; readonly requestKind: 'question' | 'approval' }>
 /** 问询工具的规范名；等待用户回答的调用在开放回合内未完成时就是当前提问。 */
 const questionTools = new Set(['ask_user_question', 'question'])
 /** 会改变开放请求集合的事件类型；到达时触发一次实时重扫，而不是累积状态。 */
@@ -22,6 +23,10 @@ const text = (value: unknown): string | undefined => typeof value === 'string' &
 const integer = (value: unknown): number | undefined => Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : undefined
 const readSessionId = (value: unknown): string | undefined => text(record(value)?.id) ?? text(record(value)?.sessionId) ?? text(record(record(value)?.header)?.id)
 function optionalService(services: CodingNsHostServices, name: string): any { try { return services.dshContext?.get(name as never) } catch { return undefined } }
+function isRequestFact(value: AssistantNotificationFact): value is RequestFact {
+  return 'requestId' in value && typeof value.requestId === 'string'
+    && (value.requestKind === 'question' || value.requestKind === 'approval')
+}
 
 /** DSH 的工作区隐藏功能由设置层保存；启用该功能时才把隐藏工作区排除在当前范围外。 */
 function readHiddenWorkspaceIds(services: CodingNsHostServices): ReadonlySet<string> {
@@ -56,6 +61,9 @@ export class AssistantNotificationEvents {
   private readonly sourceScopes = new Map<string, number>()
   private readonly remoteRequests = new Map<string, Map<string, AssistantNotificationFact>>()
   private readonly remoteEpochs = new Map<string, string>()
+  /** 本机当前请求的上一份快照；仅用于把出现/解决转换成来源增量。 */
+  private readonly observedRequests = new Map<string, AssistantNotificationFact>()
+  private requestSnapshotReady = false
   constructor(private readonly services: CodingNsHostServices, private readonly options: {
     readonly enabled?: () => boolean
     readonly excludedSessionIds?: () => ReadonlySet<string>
@@ -82,7 +90,10 @@ export class AssistantNotificationEvents {
     this.disposeProjection?.(); this.disposeProjection = undefined
     // 在途原生请求独立于本机展示配置，精确结束后再释放，远端读者不能被本机开关截断。
     this.members.clear(); this.turns.clear(); this.sequences.clear()
-    if (previousGeneration !== this.center.generation) { this.remoteRequests.clear(); this.remoteEpochs.clear() }
+    if (previousGeneration !== this.center.generation) {
+      this.remoteRequests.clear(); this.remoteEpochs.clear()
+      this.observedRequests.clear(); this.requestSnapshotReady = false
+    }
     if (!this.active) return
     this.refreshMembership()
     const generation = this.center.generation
@@ -105,15 +116,21 @@ export class AssistantNotificationEvents {
   /** 来源租约只覆盖认证请求指定的真实工作区，不创建或索引助理。 */
   sourceScope(workspaceIds: readonly string[]): void {
     if (this.disposed || workspaceIds.length === 0) return
-    for (const id of workspaceIds) this.sourceScopes.set(id, Date.now() + 10_000)
-    this.scheduleSourceExpiry()
-    this.active = true; this.refreshMembership()
+    this.renewSourceScope(workspaceIds)
+    this.refreshMembership()
     if (this.disposeProjection !== undefined) return
     const generation = this.center.generation
     const disposer = optionalService(this.services, 'sessionProjections')?.onChanged?.((session: unknown, key: string, value: unknown) => {
       if (generation === this.center.generation && key === 'userQuestions') this.projection(session, value)
     })
     if (typeof disposer === 'function') this.disposeProjection = disposer
+  }
+  /** 长连接续租只延长来源范围，不重复扫描工作区和会话。 */
+  renewSourceScope(workspaceIds: readonly string[]): void {
+    if (this.disposed || workspaceIds.length === 0) return
+    for (const id of workspaceIds) this.sourceScopes.set(id, Date.now() + 10_000)
+    this.scheduleSourceExpiry()
+    this.active = true
   }
   recoverSource(workspaceIds: readonly string[]): readonly AssistantNotificationFact[] {
     return this.currentRequestFacts(workspaceIds)
@@ -164,8 +181,15 @@ export class AssistantNotificationEvents {
     if (sourceHost !== undefined && sourceHost !== this.localHostId && sourceHost !== 'local') return
     if (!this.active) return
     // 待办不是事件累积出的状态：这些事件只作为「重新扫描会话事件流」的信号。
-    if (openRequestSignals.has(value.type)) this.reconcileCurrentState()
-    const member = this.members.get(id)
+    const shouldReconcile = openRequestSignals.has(value.type)
+    let member = this.members.get(id)
+    // 长连接续租不再周期扫描成员；新会话第一次出现开放请求或回合边界时，
+    // 只为这个未知会话补一次注册，避免把整个会话目录变成轮询源。
+    if (member === undefined && shouldReconcile) {
+      this.refreshMembership()
+      member = this.members.get(id)
+    }
+    if (shouldReconcile) this.reconcileCurrentState()
     if (member === undefined) return
     if (record(session)?.blank === true || record(record(session)?.header)?.placeholder === true) return
     const seq = integer(value.seq)
@@ -190,8 +214,17 @@ export class AssistantNotificationEvents {
   /** waterfall 调用只是重扫信号；开放请求由读取时的会话事件流扫描决定，这里必须原样委托 next。 */
   observeRequest(_eventName: string, args: readonly unknown[]): unknown {
     const next = args.at(-1)
-    if (!this.disposed && this.active) this.reconcileCurrentState()
-    return typeof next === 'function' ? next() : undefined
+    // 原生 waterfall 的 next 可能在返回 Promise 前同步写入 approval/asked 或 tool/call。
+    // 先调用 next 再重扫，否则只能等下一次读取或租约刷新，通知会平白延迟数秒。
+    let result: unknown
+    try {
+      result = typeof next === 'function' ? next() : undefined
+    } finally {
+      if (!this.disposed && this.active) this.reconcileCurrentState()
+      // 兼容 next 通过一个微任务才落盘的 Host 实现，仍不等待用户答复本身。
+      queueMicrotask(() => { if (!this.disposed && this.active) this.reconcileCurrentState() })
+    }
+    return result
   }
   resolveRequest(_eventName: string, _args: readonly unknown[]): void {
     if (!this.disposed && this.active) this.reconcileCurrentState()
@@ -202,7 +235,7 @@ export class AssistantNotificationEvents {
     // 会话销毁后不再有开放请求；下一次读取会按当前成员与事件流重新校正。
     this.reconcileCurrentState()
   }
-  dispose(): void { this.disposed = true; this.active = false; clearTimeout(this.sourceTimer); this.disposeRemote?.(); this.disposeProjection?.(); this.members.clear(); this.turns.clear(); this.sequences.clear(); this.sourceScopes.clear(); this.remoteRequests.clear(); this.remoteEpochs.clear(); this.center.dispose() }
+  dispose(): void { this.disposed = true; this.active = false; clearTimeout(this.sourceTimer); this.disposeRemote?.(); this.disposeProjection?.(); this.members.clear(); this.turns.clear(); this.sequences.clear(); this.sourceScopes.clear(); this.remoteRequests.clear(); this.remoteEpochs.clear(); this.observedRequests.clear(); this.requestSnapshotReady = false; this.center.dispose() }
   /** 最后一个远端读取者离开后撤销来源范围和投影观察，保留共享的原生事件订阅。 */
   private scheduleSourceExpiry(): void {
     clearTimeout(this.sourceTimer)
@@ -223,11 +256,38 @@ export class AssistantNotificationEvents {
   private reconcileCurrentState(): void {
     const current = this.currentRequestSnapshot()
     this.center.reconcilePending(current.facts, this.localHostId, current.authoritative)
+    this.publishRequestDeltas(current.facts)
     // 远端仍由其带 epoch 的 current pending 快照负责；本机配置切换时只重新投影最近一份远端快照。
     for (const requests of this.remoteRequests.values()) for (const fact of requests.values()) {
       const { seq: _oldSequence, ...currentFact } = fact
       this.center.consume({ ...currentFact, generation: this.center.generation })
     }
+  }
+
+  /** 把当前请求快照转成一次性的 opened/resolved 增量，供 WebSocket 来源流即时转发。 */
+  private publishRequestDeltas(facts: readonly AssistantNotificationFact[]): void {
+    const next = new Map<string, AssistantNotificationFact>()
+    for (const fact of facts) {
+      if (!isRequestFact(fact)) continue
+      next.set(this.requestKey(fact), fact)
+    }
+    if (this.requestSnapshotReady) {
+      for (const [key, fact] of next) {
+        const previous = this.observedRequests.get(key)
+        if (previous === undefined || JSON.stringify(previous) !== JSON.stringify(fact)) this.options.onFact?.(fact)
+      }
+      for (const [key, previous] of this.observedRequests) {
+        if (next.has(key) || !isRequestFact(previous)) continue
+        this.options.onFact?.({ ...previous, type: 'request-resolved' })
+      }
+    }
+    this.observedRequests.clear()
+    for (const [key, fact] of next) this.observedRequests.set(key, fact)
+    this.requestSnapshotReady = true
+  }
+
+  private requestKey(fact: RequestFact): string {
+    return JSON.stringify([fact.target.hostId, fact.target.actualRequestTarget?.sessionId ?? fact.target.sessionId, fact.requestKind, fact.requestId])
   }
   private currentRequestFacts(workspaceIds?: readonly string[]): readonly AssistantNotificationFact[] {
     const selected = workspaceIds === undefined ? undefined : new Set(workspaceIds)

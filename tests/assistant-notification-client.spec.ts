@@ -211,10 +211,12 @@ test('通知 Remote 流推送初始快照与 revision 增量，不再启动 750m
   const initial = frame()
   const delta = { ...frame({ ...notice('approval', 2) }), generation: initial.generation, revision: initial.revision + 1 }
   let reads = 0
+  let streamPayload: unknown
   let release!: (value: AssistantNotificationSnapshot | null) => void
   const rpc: CodingNsRpcClient = {
     async call() { reads++; return { ok: true, value: initial } },
-    open(_channel, _endpoint, _payload, signal) {
+    open(_channel, _endpoint, payload, signal) {
+      streamPayload = payload
       return (async function* () {
         yield { type: 'snapshot', snapshot: initial }
         const next = await new Promise<typeof delta | null>((resolve) => {
@@ -222,6 +224,9 @@ test('通知 Remote 流推送初始快照与 revision 增量，不再启动 750m
           signal.addEventListener('abort', () => resolve(null), { once: true })
         })
         if (next !== null) yield { type: 'delta', snapshot: next }
+        // 保持长连接存活，避免 Remote 正常结束后立即触发一次校准读取，
+        // 干扰本测试对增量帧的断言。
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
       })()
     },
   }
@@ -230,9 +235,10 @@ test('通知 Remote 流推送初始快照与 revision 增量，不再启动 750m
   store.configure(true, 'stream')
   await setImmediate()
   assert.equal(reads, 0)
+  assert.deepEqual(streamPayload, { args: {} })
   assert.equal(store.getSnapshot().frame?.revision, initial.revision)
   release(delta)
-  await setImmediate()
+  await new Promise((resolve) => setTimeout(resolve, 10))
   assert.equal(store.getSnapshot().frame?.revision, delta.revision)
 })
 
