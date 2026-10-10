@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createSubagentSessionsActions, partitionSubagentEntries, registerCollapsedSubagentLineage } from '../src/client/subagent-collapsed-lineage.js'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { CollapsedSubagentLineage, createSubagentSessionsActions, partitionSubagentEntries, registerCollapsedSubagentLineage } from '../src/client/subagent-collapsed-lineage.js'
 import { subagentCollapsedLineageFeature } from '../src/client/features/subagent-collapsed-lineage.js'
 
 test('停止子 Agent 只进入默认收起分组，运行中和诊断项保持可见', () => {
@@ -22,6 +24,18 @@ test('明确的 idle 摘要覆盖滞后的 running 目录态，避免停止项�
   })
   assert.deepEqual(result.running, [])
   assert.deepEqual(result.inactive.map(entry => entry.id), ['stopped'])
+})
+
+test('根会话不在 lineage 重复渲染目录入口，计数只由 header.actions 提供', () => {
+  const markup = renderToStaticMarkup(createElement(CollapsedSubagentLineage, {
+    lineageSessionId: 'root',
+    useSessions: (selector: (state: unknown) => unknown) => selector({ byId: { root: { id: 'root', origin: 'root' } } }),
+    openChild: () => undefined,
+    refresh: () => undefined,
+    setCatalogOpen: () => undefined,
+    t: ((key: string) => key) as never,
+  } as never))
+  assert.equal(markup, '')
 })
 
 test('停止子 Agent 投影默认启用且不提供设置开关，避免被外部 Agent 模块状态误关', () => {
@@ -97,4 +111,19 @@ test('旧版 DSH 动作适配仍保留 openSubagent 和 refreshSubagents', () =>
   actions.refresh('parent')
   assert.deepEqual(opened, ['child-address'])
   assert.deepEqual(refreshed, ['parent'])
+})
+
+test('原生侧栏动作使用 DSH subagentchat 资源地址并保留父子路由参数', () => {
+  const opened: Array<{ address: string; options?: Readonly<Record<string, unknown>> }> = []
+  const actions = createSubagentSessionsActions({
+    refreshProjections: () => undefined,
+  }, {
+    openSession: () => undefined,
+  }, {
+    openResource: (address: string, options?: Readonly<Record<string, unknown>>) => { opened.push({ address, options }) },
+  })
+  assert.ok(actions?.openChildAside)
+  actions.openChildAside!({ parentSessionId: 'parent/1', childSessionId: 'child 2', mode: 'one-shot' })
+  assert.equal(opened[0]?.address, 'dsh-resource://subagentchat/session/child%202?parent=parent%2F1&mode=one-shot')
+  assert.deepEqual(opened[0]?.options, { kind: 'subagentchat', preferNewPane: true })
 })

@@ -58,6 +58,8 @@ export interface CodingNsClientServices {
   readonly sidebarRight?: {
     isExpanded(): boolean
     toggleExpanded(): void
+    /** 原生资源右栏入口；子智能体列表用它打开独立会话面板。 */
+    openResource?(address: string, options?: Readonly<Record<string, unknown>>): unknown
     mounted?: { subscribe(listener: () => void): () => void }
   }
   /** 通知与推送客户端；局域网 PWA 面板用它请求权限、订阅与注销 Service Worker。 */

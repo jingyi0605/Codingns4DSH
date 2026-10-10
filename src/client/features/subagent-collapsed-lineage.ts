@@ -23,6 +23,7 @@ export const subagentCollapsedLineageFeature: CodingNsClientFeatureModule = {
     const sessions = createSubagentSessionsActions(
       context.services.sessions ?? context.services.uiContext?.get('sessions'),
       context.services.uiWorkspace ?? context.services.uiContext?.get('uiWorkspace'),
+      context.services.sidebarRight,
     )
     if (sessions === undefined) return
     const dispose = registerCollapsedSubagentLineage(context.services.slots, context.services.locale, sessions)

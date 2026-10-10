@@ -1,12 +1,14 @@
 import { createElement, Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, KeyboardEvent, MouseEvent, ReactElement, ReactNode } from 'react'
+import type { CSSProperties, KeyboardEvent, MouseEvent, ReactElement } from 'react'
+import { createPortal } from 'react-dom'
 import type { PropsLocale, PropsRuntime, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import { StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
+import { StateDot, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CodingNsLocale } from './locale.js'
+import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 import { resolveChevronDownIcon, resolveRefreshIcon, resolveTerminalArrowIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 
 /** 停止子 Agent 分组的专用词典，避免改写 DSH 原生 subagent 词典。 */
@@ -19,28 +21,47 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 const zh = {
-  'inactive.one': '已停止 {count} 个子 Agent',
-  'inactive.other': '已停止 {count} 个子 Agent',
-  'inactive.expand': '展开已停止的子 Agent',
-  'inactive.collapse': '收起已停止的子 Agent',
-  'count.total.one': '{count} 个子 Agent',
-  'count.total.other': '{count} 个子 Agent',
-  'count.running.one': '{count} 个子 Agent，正在运行',
-  'count.running.other': '{count} 个子 Agent，正在运行',
+  'inactive.one': '已停止 {count} 个子智能体',
+  'inactive.other': '已停止 {count} 个子智能体',
+  'inactive.expand': '展开已停止的子智能体',
+  'inactive.collapse': '收起已停止的子智能体',
+  'count.total.one': '{count} 个子智能体',
+  'count.total.other': '{count} 个子智能体',
+  'count.running.one': '{count} 个子智能体，正在运行',
+  'count.running.other': '{count} 个子智能体，正在运行',
   'activity.running': '正在运行',
+  'activity.completed': '已完成',
   'activity.inactive': '当前未运行',
+  'tokens.thousand': '{value}K',
+  'tokens.million': '{value}M',
+  'tokens.total': '{value} tok',
+  'duration.seconds': '{seconds}秒',
+  'duration.minutes': '{minutes}分{seconds}秒',
+  'duration.hours': '{hours}小时{minutes}分{seconds}秒',
+  'duration.days': '{days}天',
+  'duration.daysHours': '{days}天{hours}小时',
+  'duration.months': '{months}个月',
+  'duration.monthsDays': '{months}个月{days}天',
+  'duration.years': '{years}年',
+  'duration.yearsMonths': '{years}年{months}个月',
+  'duration.exactDays': '{days}天 {hours}:{minutes}:{seconds}',
+  'duration.exactTitle': '用时 {duration}',
   'mode.oneShot': '一次性',
   'mode.continuable': '可继续',
   'mode.unknown': '模式未知',
-  'branch.collapse': '收起 {label} 的下级子 Agent',
-  'branch.expand': '展开 {label} 的下级子 Agent',
-  'loading.label': '正在加载子 Agent…',
-  'loading.aria': '正在加载子 Agent',
-  'load.error': '无法加载子 Agent',
+  'branch.collapse': '收起 {label} 的下级子智能体',
+  'branch.expand': '展开 {label} 的下级子智能体',
+  'loading.label': '正在加载子智能体…',
+  'loading.aria': '正在加载子智能体',
+  'load.error': '无法加载子智能体',
   retry: '重试',
   'diagnostic.corrupt': '会话记录损坏',
-  'diagnostic.unsupported': '子 Agent 记录版本不受支持',
+  'diagnostic.unsupported': '子智能体记录版本不受支持',
   'diagnostic.unavailable': '会话记录暂不可用',
+  'tree.aria': '子智能体会话',
+  'switcher.aria': '切换到 {title}',
+  'open.sidebar': '在侧边栏打开',
+  'open.sidebar.aria': '在侧边栏打开 {label}',
 } as const
 
 const en: Record<keyof typeof zh, string> = {
@@ -53,7 +74,22 @@ const en: Record<keyof typeof zh, string> = {
   'count.running.one': '{count} subagent running',
   'count.running.other': '{count} subagents running',
   'activity.running': 'running',
+  'activity.completed': 'completed',
   'activity.inactive': 'not running',
+  'tokens.thousand': '{value}K',
+  'tokens.million': '{value}M',
+  'tokens.total': '{value} tok',
+  'duration.seconds': '{seconds}s',
+  'duration.minutes': '{minutes}m {seconds}s',
+  'duration.hours': '{hours}h {minutes}m {seconds}s',
+  'duration.days': '{days}d',
+  'duration.daysHours': '{days}d {hours}h',
+  'duration.months': '{months}mo',
+  'duration.monthsDays': '{months}mo {days}d',
+  'duration.years': '{years}y',
+  'duration.yearsMonths': '{years}y {months}mo',
+  'duration.exactDays': '{days}d {hours}:{minutes}:{seconds}',
+  'duration.exactTitle': 'Duration {duration}',
   'mode.oneShot': 'one-shot',
   'mode.continuable': 'continuable',
   'mode.unknown': 'unknown mode',
@@ -66,6 +102,10 @@ const en: Record<keyof typeof zh, string> = {
   'diagnostic.corrupt': 'corrupted session record',
   'diagnostic.unsupported': 'unsupported subagent record version',
   'diagnostic.unavailable': 'session record temporarily unavailable',
+  'tree.aria': 'Subagent sessions',
+  'switcher.aria': 'Switch to {title}',
+  'open.sidebar': 'Open in sidebar',
+  'open.sidebar.aria': 'Open {label} in sidebar',
 }
 
 type SubagentCollapsedKey = keyof typeof zh
@@ -101,6 +141,19 @@ interface SessionSummaryLike {
   readonly parentId?: SessionIdLike
   readonly running?: boolean
   readonly title?: string
+  readonly projectionValues?: {
+    readonly tokenUsage?: {
+      readonly uncachedInputTokens: number
+      readonly outputTokens: number
+      readonly cacheReadTokens: number
+      readonly cacheWriteTokens: number
+    }
+    readonly subagentTiming?: {
+      readonly settledMs: number
+      readonly active?: { readonly since: number; readonly through: number }
+      readonly lastTurnCompleted?: boolean
+    }
+  }
 }
 
 interface ProjectionSnapshotLike {
@@ -121,6 +174,7 @@ interface CatalogInjected {
   readonly openChild: (address: unknown) => void
   readonly refresh: (parentSessionId: SessionIdLike) => void
   readonly setCatalogOpen: (parentSessionId: SessionIdLike, open: boolean) => void
+  readonly openChildAside?: ((address: unknown) => void) | undefined
 }
 
 /**
@@ -144,6 +198,7 @@ export interface SubagentSessionsActions {
   readonly openChild: (address: unknown) => void
   readonly refresh: (parentSessionId: SessionIdLike) => void | Promise<void>
   readonly setSubagentCatalogOpen: (parentSessionId: SessionIdLike, open: boolean) => void
+  readonly openChildAside?: ((address: unknown) => void) | undefined
 }
 
 interface DshSessionsService {
@@ -157,6 +212,10 @@ interface DshWorkspaceService {
   readonly openSession?: (address: unknown) => void
 }
 
+interface DshSidebarRightService {
+  readonly openResource?: (address: string, options?: Readonly<Record<string, unknown>>) => unknown
+}
+
 /**
  * 统一 DSH 0.2.0 与 0.2.1 的子 Agent 导航动作。
  *
@@ -167,9 +226,11 @@ interface DshWorkspaceService {
 export function createSubagentSessionsActions(
   rawSessions: unknown,
   rawWorkspace: unknown,
+  rawSidebarRight?: unknown,
 ): SubagentSessionsActions | undefined {
   const sessions = rawSessions as DshSessionsService | undefined
   const workspace = rawWorkspace as DshWorkspaceService | undefined
+  const sidebarRight = rawSidebarRight as DshSidebarRightService | undefined
   const openChild = typeof workspace?.openSession === 'function'
     ? (address: unknown): void => { workspace.openSession!(address) }
     : typeof sessions?.openSubagent === 'function'
@@ -184,7 +245,19 @@ export function createSubagentSessionsActions(
   const setCatalogOpen = typeof sessions?.setSubagentCatalogOpen === 'function'
     ? (parentSessionId: SessionIdLike, open: boolean): void => { sessions.setSubagentCatalogOpen!(parentSessionId, open) }
     : (): void => undefined
-  return { openChild, refresh, setSubagentCatalogOpen: setCatalogOpen }
+  const openChildAside = typeof sidebarRight?.openResource === 'function'
+    ? (address: unknown): void => {
+      if (address === null || typeof address !== 'object') return
+      const value = address as { parentSessionId?: unknown; childSessionId?: unknown; mode?: unknown }
+      if (typeof value.parentSessionId !== 'string' || typeof value.childSessionId !== 'string') return
+      const mode = typeof value.mode === 'string' ? value.mode : 'unknown'
+      const query = new URLSearchParams({ parent: value.parentSessionId, mode })
+      sidebarRight.openResource!(`dsh-resource://subagentchat/session/${encodeURIComponent(value.childSessionId)}?${query.toString()}`, {
+        kind: 'subagentchat', preferNewPane: true,
+      })
+    }
+    : undefined
+  return { openChild, refresh, setSubagentCatalogOpen: setCatalogOpen, ...(openChildAside === undefined ? {} : { openChildAside }) }
 }
 
 type CollapsedLineageProps = PropsRuntime<'conversation.session.header.lineage'>
@@ -217,30 +290,130 @@ export function partitionSubagentEntries(
 
 function catalogStyle(): CSSProperties {
   return {
-    position: 'fixed', zIndex: 100, boxSizing: 'border-box', display: 'flex', flexDirection: 'column',
+    ...dshPopupSurfaceStyle,
+    position: 'fixed', zIndex: 1100, boxSizing: 'border-box', display: 'flex', flexDirection: 'column',
     width: 336, maxWidth: 'min(400px, calc(100vw - 32px))', maxHeight: 'min(560px, calc(100vh - 140px))',
-    padding: 4, overflow: 'auto', borderRadius: 20, background: 'var(--dsw-specific-menu)',
-    boxShadow: 'var(--dsw-elevation-prominent)',
+    overflow: 'hidden', padding: 3, border: 0, borderRadius: 'var(--dsw-radius-lg)',
   }
 }
 
+const catalogMenuBodyStyle: CSSProperties = {
+  display: 'flex', flex: 'auto', flexDirection: 'column', minHeight: 0, overflow: 'auto',
+}
+
 const rowStyle: CSSProperties = {
-  position: 'relative', display: 'flex', alignItems: 'flex-start', gap: 8, boxSizing: 'border-box',
-  width: '100%', minHeight: 50, padding: '7px 8px 7px 11px', border: 0, borderRadius: 8,
-  background: 'transparent', color: 'var(--dsw-alias-label-primary)', fontSize: 13, lineHeight: '18px',
+  position: 'relative', display: 'flex', alignItems: 'flex-start', gap: 6, boxSizing: 'border-box',
+  width: '100%', minHeight: 44, padding: '6px 7px 6px 9px', border: 0, borderRadius: 'var(--dsw-radius-lg)',
+  background: 'transparent', color: dshThemeColor.labelPrimary, fontSize: 12, lineHeight: '17px',
   textAlign: 'left', cursor: 'pointer', outline: 'none',
 }
 
 const buttonStyle: CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', gap: 6, width: '100%', minHeight: 36, padding: '6px 10px',
-  border: 0, borderRadius: 8, background: 'var(--dsw-alias-interactive-bg-hover)',
-  color: 'var(--dsw-alias-label-secondary)', fontSize: 12, cursor: 'pointer', textAlign: 'left',
+  display: 'inline-flex', alignItems: 'center', gap: 8, width: '100%', minHeight: 40, boxSizing: 'border-box', padding: '0 10px',
+  border: 0, borderRadius: 10, background: dshThemeColor.surfaceSubtle,
+  color: dshThemeColor.labelSecondary, fontSize: 14, lineHeight: '22px', cursor: 'pointer', textAlign: 'left',
+}
+
+/** 停止分组是列表内的辅助折叠条，尺寸与 DSH 原生触发器保持一致。 */
+const inactiveGroupButtonStyle: CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: 6, width: '100%', minHeight: 32, boxSizing: 'border-box',
+  padding: '3px 7px', border: 0, borderRadius: 'var(--dsw-radius-sm)', background: dshThemeColor.surfaceSubtle,
+  color: dshThemeColor.labelSecondary, fontSize: 12, lineHeight: '18px', cursor: 'pointer', textAlign: 'left',
+}
+
+const clickareaStyle: CSSProperties = {
+  display: 'flex', flex: 1, alignSelf: 'stretch', alignItems: 'flex-start', gap: 6, minWidth: 0,
+  boxSizing: 'border-box', margin: '-6px -7px', padding: '6px 7px', borderRadius: 'var(--dsw-radius-lg)',
+}
+
+const rowActivitySlotStyle: CSSProperties = {
+  display: 'inline-flex', flex: 'none', alignItems: 'center', justifyContent: 'center', width: 14, height: 17,
+}
+
+const contentStyle: CSSProperties = { display: 'flex', flex: 1, flexDirection: 'column', minWidth: 0 }
+const ellipsisStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+const metricsStyle: CSSProperties = {
+  display: 'grid', flex: 'none', gridTemplateRows: '17px 15px', color: dshThemeColor.labelTertiary,
+  fontSize: 10, lineHeight: '15px', fontVariantNumeric: 'tabular-nums', textAlign: 'right', whiteSpace: 'nowrap',
+}
+const sidebarButtonStyle: CSSProperties = {
+  display: 'inline-flex', flex: 'none', alignItems: 'center', justifyContent: 'center', width: 28, height: 28,
+  margin: '4px 0', padding: 6, border: 0, borderRadius: 'var(--dsw-radius-sm)', background: 'transparent',
+  color: dshThemeColor.labelTertiary, cursor: 'pointer',
+}
+
+function formatTokens(value: number, t: TranslateNS<typeof SUBAGENT_COLLAPSED_LOCALE_NS>): string {
+  const scaled = (next: number): string => next >= 100 ? String(Math.round(next)) : String(Math.round(next * 10) / 10)
+  if (value < 1e3) return String(value)
+  if (value < 1e6) return t('tokens.thousand', { value: scaled(value / 1e3) })
+  return t('tokens.million', { value: scaled(value / 1e6) })
+}
+
+function tokenTotal(usage: {
+  readonly uncachedInputTokens?: unknown
+  readonly outputTokens?: unknown
+  readonly cacheReadTokens?: unknown
+  readonly cacheWriteTokens?: unknown
+} | undefined): number | undefined {
+  if (usage === undefined) return undefined
+  const values = usage as { uncachedInputTokens?: unknown; outputTokens?: unknown; cacheReadTokens?: unknown; cacheWriteTokens?: unknown }
+  const buckets = [values.uncachedInputTokens, values.outputTokens, values.cacheReadTokens, values.cacheWriteTokens]
+  if (buckets.some((value) => typeof value !== 'number' || !Number.isFinite(value))) return undefined
+  return buckets.reduce<number>((sum, value) => sum + (value as number), 0)
+}
+
+function activityDuration(summary: SessionSummaryLike | undefined, activity: ChildEntry['activity'], now: number): number | undefined {
+  const timing = summary?.projectionValues?.subagentTiming
+  if (timing === undefined || typeof timing.settledMs !== 'number') return undefined
+  if (timing.active === undefined) return timing.settledMs
+  const end = activity === 'running' ? now : timing.active.through
+  return timing.settledMs + Math.max(0, end - timing.active.since)
+}
+
+function splitDuration(ms: number): { seconds: number; minutes: number; hours: number; days: number; totalMinutes: number; totalHours: number } {
+  const totalSeconds = Math.floor(Math.max(0, ms) / 1e3)
+  const totalMinutes = Math.floor(totalSeconds / 60)
+  const totalHours = Math.floor(totalMinutes / 60)
+  return { seconds: totalSeconds % 60, minutes: totalMinutes % 60, hours: totalHours % 24, days: Math.floor(totalHours / 24), totalMinutes, totalHours }
+}
+
+function formatDuration(ms: number, t: TranslateNS<typeof SUBAGENT_COLLAPSED_LOCALE_NS>): string {
+  const { seconds, minutes, hours, days, totalMinutes, totalHours } = splitDuration(ms)
+  if (days >= 365) {
+    const years = Math.floor(days / 365)
+    const months = Math.floor((days % 365) / 30)
+    return months === 0 ? t('duration.years', { years }) : t('duration.yearsMonths', { years, months })
+  }
+  if (days >= 30) {
+    const months = Math.floor(days / 30)
+    const remainingDays = days % 30
+    return remainingDays === 0 ? t('duration.months', { months }) : t('duration.monthsDays', { months, days: remainingDays })
+  }
+  if (days > 0) return hours === 0 ? t('duration.days', { days }) : t('duration.daysHours', { days, hours })
+  if (totalHours > 0) return t('duration.hours', { hours: totalHours, minutes: String(minutes).padStart(2, '0'), seconds: String(seconds).padStart(2, '0') })
+  if (totalMinutes > 0) return t('duration.minutes', { minutes: totalMinutes, seconds: String(seconds).padStart(2, '0') })
+  return t('duration.seconds', { seconds })
+}
+
+function formatExactDuration(ms: number, t: TranslateNS<typeof SUBAGENT_COLLAPSED_LOCALE_NS>): string {
+  const { seconds, minutes, hours, days } = splitDuration(ms)
+  return days === 0 ? formatDuration(ms, t) : t('duration.exactDays', {
+    days, hours: String(hours).padStart(2, '0'), minutes: String(minutes).padStart(2, '0'), seconds: String(seconds).padStart(2, '0'),
+  })
 }
 
 function menuPosition(trigger: HTMLButtonElement): CSSProperties {
   const rect = trigger.getBoundingClientRect()
   const width = Math.min(336, window.innerWidth - 32)
   return { top: rect.bottom + 5, left: Math.min(Math.max(16, rect.left), window.innerWidth - width - 16) }
+}
+
+/** DSH 原生 switcher 的上下双箭头图标。 */
+function subagentSwitcherIcon(): ReactElement {
+  return createElement('svg', { width: 16, height: 16, viewBox: '0 0 20 20', fill: 'none', 'aria-hidden': true },
+    createElement('path', { d: 'M5.99951 12.7L8.95546 14.9478C9.40011 15.2859 9.62244 15.455 9.87526 15.488C9.95774 15.4988 10.0413 15.4988 10.1238 15.488C10.3766 15.455 10.599 15.2859 11.0436 14.9478L13.9995 12.7', stroke: 'currentColor', strokeWidth: 1.5 }),
+    createElement('path', { d: 'M13.9995 7.7417L11.0436 5.49387C10.5989 5.15574 10.3766 4.98668 10.1238 4.95362C10.0413 4.94283 9.95775 4.94283 9.87527 4.95362C9.62245 4.98668 9.40012 5.15574 8.95547 5.49387L5.99952 7.7417', stroke: 'currentColor', strokeWidth: 1.5 }),
+  )
 }
 
 function normalizeMode(value: unknown): ChildEntry['mode'] {
@@ -355,15 +528,28 @@ interface CatalogRowsProps {
   readonly toggleBranch: (childSessionId: SessionIdLike) => void
   readonly toggleInactive: (parentSessionId: SessionIdLike) => void
   readonly closeCatalog: () => void
+  readonly openChildAside?: ((address: unknown) => void) | undefined
   readonly t: TranslateNS<typeof SUBAGENT_COLLAPSED_LOCALE_NS>
 }
 
 function CatalogRows(props: CatalogRowsProps): ReactElement {
+  const [now, setNow] = useState(() => Date.now())
   const partitioned = partitionSubagentEntries(props.catalog.entries, props.summaries)
+  const hasRunning = partitioned.running.length > 0
+  useEffect(() => {
+    if (!hasRunning) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [hasRunning])
   const showInactive = props.inactiveOpen.has(props.parentSessionId)
+  const reserveDisclosure = props.catalog.entries.some((entry) => {
+    if (entry.kind !== 'child') return false
+    const childCatalog = props.catalogs[entry.id]
+    return entry.hasChildren && !(childCatalog?.state === 'ready' && childCatalog.entries.length === 0)
+  })
   const renderEntry = (entry: ChildEntry): ReactElement => {
     const childCatalog = props.catalogs[entry.id]
-    const knownLeaf = !entry.hasChildren
+    const knownLeaf = !entry.hasChildren || childCatalog?.state === 'ready' && childCatalog.entries.length === 0
     const expanded = props.expanded.has(entry.id)
     const summary = props.summaries[entry.id]
     const activity = childActivity(entry, props.summaries)
@@ -374,52 +560,84 @@ function CatalogRows(props: CatalogRowsProps): ReactElement {
     const secondary = [summary?.title, modeLabel, activity === 'running' ? props.t('activity.running') : props.t('activity.inactive')]
       .filter((value): value is string => value !== undefined && value !== '')
       .join(' · ')
+    const totalTokens = tokenTotal(summary?.projectionValues?.tokenUsage)
+    const durationMs = activityDuration(summary, activity, now)
+    const tokenMetric = totalTokens === undefined ? undefined : props.t('tokens.total', { value: formatTokens(totalTokens, props.t) })
+    const durationMetric = durationMs === undefined ? undefined : {
+      compact: formatDuration(durationMs, props.t),
+      exact: formatExactDuration(durationMs, props.t),
+    }
+    const metrics = [tokenMetric, durationMetric?.exact].filter((value): value is string => value !== undefined && value !== '').join(' · ')
     const openChild = (): void => {
       props.openChild({ parentSessionId: props.parentSessionId, childSessionId: entry.id, mode: entry.mode })
       props.closeCatalog()
     }
     const handleKey = (event: KeyboardEvent<HTMLDivElement>): void => {
       if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault(); openChild()
+        event.preventDefault(); event.stopPropagation(); openChild()
       } else if (event.key === 'ArrowRight' && !knownLeaf && !expanded) {
-        event.preventDefault(); props.toggleBranch(entry.id)
+        event.preventDefault(); event.stopPropagation(); props.toggleBranch(entry.id)
       } else if (event.key === 'ArrowLeft' && expanded) {
-        event.preventDefault(); props.toggleBranch(entry.id)
+        event.preventDefault(); event.stopPropagation(); props.toggleBranch(entry.id)
       }
     }
-    const rowChildren: ReactNode[] = []
-    if (knownLeaf) rowChildren.push(createElement('span', { key: 'space', style: { flex: 'none', width: 14, height: 18 } }))
-    else rowChildren.push(createElement('button', {
-      key: 'disclosure', type: 'button', tabIndex: -1, 'aria-label': props.t(expanded ? 'branch.collapse' : 'branch.expand', { label }),
-      onClick: (event: MouseEvent<HTMLButtonElement>) => { event.preventDefault(); event.stopPropagation(); props.toggleBranch(entry.id) },
-      style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: 'none', width: 14, height: 18, padding: 0, border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', transform: expanded ? 'rotate(90deg)' : undefined },
-    }, createElement(resolveTerminalArrowIcon('right'))))
-    rowChildren.push(createElement('div', { key: 'content', style: { display: 'flex', flex: 1, flexDirection: 'column', minWidth: 0 } },
-      createElement('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'inherit' } }, label),
-      createElement('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--dsw-alias-label-tertiary)', fontSize: 12 } }, secondary),
-    ))
+    const openAside = (event: MouseEvent<HTMLButtonElement>): void => {
+      event.preventDefault(); event.stopPropagation()
+      props.openChildAside?.({ parentSessionId: props.parentSessionId, childSessionId: entry.id, mode: entry.mode })
+      props.closeCatalog()
+    }
+    const disclosure = knownLeaf
+      ? reserveDisclosure ? createElement('span', { key: 'disclosure-space', style: { flex: 'none', width: 14, height: 17 } }) : null
+      : createElement('button', {
+        key: 'disclosure', type: 'button', tabIndex: -1,
+        'aria-label': props.t(expanded ? 'branch.collapse' : 'branch.expand', { label }),
+        onClick: (event: MouseEvent<HTMLButtonElement>) => { event.preventDefault(); event.stopPropagation(); props.toggleBranch(entry.id) },
+        style: { display: 'inline-flex', flex: 'none', alignItems: 'center', justifyContent: 'center', width: 14, height: 17, padding: 0, border: 0, borderRadius: 0, background: 'transparent', color: dshThemeColor.labelTertiary, cursor: 'pointer', transition: 'transform .12s', transform: expanded ? 'rotate(90deg)' : undefined },
+      }, createElement(resolveTerminalArrowIcon('right'), { size: 12 }))
+    const asideAnchor = props.currentSessionId === entry.id || props.openChildAside === undefined ? null : createElement('button', {
+      type: 'button', 'aria-label': props.t('open.sidebar.aria', { label }),
+      onClick: openAside, onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => { event.stopPropagation() },
+      onMouseEnter: (event: MouseEvent<HTMLButtonElement>) => { event.currentTarget.style.background = dshThemeColor.surfaceSubtle; event.currentTarget.style.color = dshThemeColor.labelPrimary },
+      onMouseLeave: (event: MouseEvent<HTMLButtonElement>) => { event.currentTarget.style.background = 'transparent'; event.currentTarget.style.color = dshThemeColor.labelTertiary },
+      style: sidebarButtonStyle,
+    }, createElement(resolveTerminalArrowIcon('right'), { size: 12 }))
+    const asideButton = asideAnchor === null ? null : createElement(Tooltip, { label: props.t('open.sidebar'), side: 'bottom', align: 'end', children: asideAnchor })
+    const clickarea = createElement('div', { key: 'clickarea', 'data-subagent-clickarea': 'true', style: clickareaStyle },
+      createElement('span', { style: rowActivitySlotStyle }, createElement(StateDot, { state: activity === 'running' ? 'ongoing' : 'idle' })),
+      createElement('span', { style: contentStyle },
+        createElement('span', { style: { ...ellipsisStyle, color: 'inherit', fontWeight: entry.id === props.currentSessionId ? 600 : 400 } }, label),
+        createElement('span', { style: { ...ellipsisStyle, color: dshThemeColor.labelTertiary, fontSize: 10, lineHeight: '15px' } }, secondary),
+      ),
+      metrics === '' ? null : createElement('span', { style: metricsStyle },
+        tokenMetric === undefined ? null : createElement('span', { style: { gridRow: 1, lineHeight: '17px' } }, tokenMetric),
+        durationMetric === undefined ? null : createElement('span', { style: { gridRow: 2 }, title: props.t('duration.exactTitle', { duration: durationMetric.exact }) }, durationMetric.compact),
+      ),
+      asideButton,
+    )
     const row = createElement('div', {
       key: entry.id, role: 'treeitem', tabIndex: 0, 'aria-level': props.level, 'aria-current': entry.id === props.currentSessionId || undefined,
-      ...knownLeaf ? {} : { 'aria-expanded': expanded }, style: rowStyle, onClick: openChild, onKeyDown: handleKey,
-    // stopped/inactive follows the requested grey idle indicator; DSH 原生的
-    // `done` 点是绿色完成态，不能拿它继续表达“当前正在运行”。
-    }, createElement(StateDot, { state: activity === 'running' ? 'ongoing' : 'idle' }), ...rowChildren)
+      'aria-label': [label, secondary, metrics].filter((value) => value !== '').join(' '),
+      ...knownLeaf ? {} : { 'aria-expanded': expanded }, style: rowStyle,
+      onMouseEnter: (event: MouseEvent<HTMLDivElement>) => { const area = event.currentTarget.querySelector<HTMLElement>('[data-subagent-clickarea]'); if (area !== null) area.style.background = dshThemeColor.surfaceSubtle },
+      onMouseLeave: (event: MouseEvent<HTMLDivElement>) => { const area = event.currentTarget.querySelector<HTMLElement>('[data-subagent-clickarea]'); if (area !== null) area.style.background = 'transparent' },
+      onClick: openChild, onKeyDown: handleKey,
+    }, disclosure, clickarea)
     if (knownLeaf || !expanded) return createElement('div', { key: `${entry.id}-node`, style: { position: 'relative', minWidth: 0 } }, row)
     const childLoading = childCatalog === undefined || (childCatalog.state === 'loading' && childCatalog.entries.length === 0)
     const children = childCatalog === undefined
-      ? createElement('div', { role: 'treeitem', 'aria-disabled': true, 'aria-level': props.level + 1, style: { ...rowStyle, color: 'var(--dsw-alias-label-dimmed)', cursor: 'default' } }, createElement('span', { style: { flex: 'none', width: 14 } }), createElement(StateDot, { state: 'idle' }), createElement('span', null, props.t('loading.label')))
+      ? createElement('div', { style: { color: dshThemeColor.labelTertiary, padding: '8px 10px', fontSize: 11, lineHeight: '16px' } }, props.t('loading.label'))
       : createElement(CatalogRows, { ...props, parentSessionId: entry.id, catalog: childCatalog, level: props.level + 1 })
-    return createElement('div', { key: `${entry.id}-node`, style: { position: 'relative', minWidth: 0 } }, row, createElement('div', { role: 'group', 'aria-busy': childLoading || undefined, style: { paddingLeft: 18 } }, children))
+    return createElement('div', { key: `${entry.id}-node`, style: { position: 'relative', minWidth: 0 } }, row, createElement('div', { role: 'group', 'aria-busy': childLoading || undefined, style: { marginLeft: 16, paddingLeft: 3, borderLeft: '0.5px solid var(--dsw-alias-border-l2)' } }, children))
   }
 
-  const diagnostics = partitioned.diagnostics.map((entry) => createElement('div', { key: `diagnostic-${entry.id}`, role: 'treeitem', 'aria-disabled': true, 'aria-level': props.level, style: { ...rowStyle, color: 'var(--dsw-alias-label-dimmed)', cursor: 'not-allowed' } }, createElement(StateDot, { state: 'error' }), createElement('span', { style: { display: 'flex', flexDirection: 'column' } }, createElement('span', null, entry.id), createElement('span', { style: { fontSize: 12 } }, diagnosticText(entry, props.t)))))
+  const diagnostics = partitioned.diagnostics.map((entry) => createElement('div', { key: `diagnostic-${entry.id}`, role: 'treeitem', 'aria-disabled': true, 'aria-level': props.level, style: { ...rowStyle, color: dshThemeColor.labelTertiary, cursor: 'not-allowed' } }, createElement('span', { style: rowActivitySlotStyle }, createElement(StateDot, { state: 'error' })), createElement('span', { style: contentStyle }, createElement('span', { style: ellipsisStyle }, entry.id), createElement('span', { style: { ...ellipsisStyle, fontSize: 10, lineHeight: '15px' } }, diagnosticText(entry, props.t)))))
   const inactiveLabel = props.t(partitioned.inactive.length === 1 ? 'inactive.one' : 'inactive.other', { count: partitioned.inactive.length })
   return createElement(Fragment, null,
-    props.catalog.state === 'loading' && props.catalog.entries.length === 0 ? createElement('div', { role: 'treeitem', 'aria-disabled': true, 'aria-level': props.level, style: { ...rowStyle, color: 'var(--dsw-alias-label-dimmed)', cursor: 'default' } }, createElement(StateDot, { state: 'idle' }), createElement('span', null, props.t('loading.label'))) : null,
-    props.catalog.state === 'error' ? createElement('div', { style: { padding: 10, color: 'var(--dsw-alias-label-secondary)', fontSize: 12 } }, createElement('span', null, props.catalog.error?.message ?? props.t('load.error')), createElement('button', { type: 'button', onClick: () => props.refresh(props.parentSessionId), style: { ...buttonStyle, width: 'auto', marginTop: 6 } }, createElement(resolveRefreshIcon()), props.t('retry'))) : null,
+    props.catalog.state === 'loading' && props.catalog.entries.length === 0 ? createElement('div', { style: { color: dshThemeColor.labelTertiary, padding: '8px 10px', fontSize: 11, lineHeight: '16px' } }, props.t('loading.label')) : null,
+    props.catalog.state === 'error' ? createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, color: 'var(--dsw-alias-state-error-primary)', padding: '8px 10px', fontSize: 11, lineHeight: '16px' } }, createElement('span', null, props.catalog.error?.message ?? props.t('load.error')), createElement('button', { type: 'button', onClick: () => props.refresh(props.parentSessionId), style: { ...buttonStyle, width: 'auto', minHeight: 28, padding: '3px 5px', background: 'transparent', fontSize: 11 } }, createElement(resolveRefreshIcon()), props.t('retry'))) : null,
     ...diagnostics,
     ...partitioned.running.map(renderEntry),
-    partitioned.inactive.length > 0 ? createElement('div', { key: `${props.parentSessionId}-inactive`, style: { marginTop: partitioned.running.length > 0 ? 4 : 0 } }, createElement('button', { type: 'button', 'aria-expanded': showInactive, 'aria-label': props.t(showInactive ? 'inactive.collapse' : 'inactive.expand'), onClick: () => props.toggleInactive(props.parentSessionId), style: buttonStyle }, createElement(showInactive ? resolveChevronDownIcon() : resolveTerminalArrowIcon('right')), inactiveLabel), showInactive ? createElement('div', { role: 'group', style: { marginTop: 2 } }, ...partitioned.inactive.map(renderEntry)) : null) : null,
+    partitioned.inactive.length > 0 ? createElement('div', { key: `${props.parentSessionId}-inactive`, style: { marginTop: props.catalog.entries.length > partitioned.inactive.length ? 2 : 0 } }, createElement('button', { type: 'button', 'aria-expanded': showInactive, 'aria-label': props.t(showInactive ? 'inactive.collapse' : 'inactive.expand'), onClick: () => props.toggleInactive(props.parentSessionId), style: inactiveGroupButtonStyle }, createElement(showInactive ? resolveChevronDownIcon() : resolveTerminalArrowIcon('right'), { size: 14 }), inactiveLabel), showInactive ? createElement('div', { role: 'group', style: { marginTop: 1 } }, ...partitioned.inactive.map(renderEntry)) : null) : null,
   )
 }
 
@@ -429,7 +647,6 @@ interface CatalogDropdownProps extends CatalogInjected {
   readonly displayTitle?: string
   readonly openTitle?: () => void
   readonly variant: 'count' | 'switcher'
-  readonly separator?: boolean
   readonly useSessions: CollapsedLineageProps['useSessions']
   readonly useSessionStatus?: CollapsedLineageProps['useSessionStatus']
   readonly t: TranslateNS<typeof SUBAGENT_COLLAPSED_LOCALE_NS>
@@ -450,21 +667,85 @@ function CatalogDropdown(props: CatalogDropdownProps): ReactElement | null {
   const [expanded, setExpanded] = useState<ReadonlySet<SessionIdLike>>(new Set())
   const [inactiveOpen, setInactiveOpen] = useState<ReadonlySet<SessionIdLike>>(new Set())
   const [position, setPosition] = useState<CSSProperties>()
+  const [triggerInteractive, setTriggerInteractive] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const hoverOpenTimer = useRef<ReturnType<typeof setTimeout>>()
+  const hoverCloseTimer = useRef<ReturnType<typeof setTimeout>>()
+  const pinnedRef = useRef(false)
   const setCatalogOpenRef = useRef(props.setCatalogOpen)
   setCatalogOpenRef.current = props.setCatalogOpen
   const visible = props.variant === 'switcher' || catalog?.state === 'error' || (catalog?.entries.length ?? 0) > 0 || totalCount > 0
 
-  const close = (): void => {
-    setOpen(false); setPosition(undefined); setExpanded(new Set()); setInactiveOpen(new Set()); props.setCatalogOpen(props.rootSessionId, false)
+  const cancelHoverOpen = (): void => {
+    if (hoverOpenTimer.current === undefined) return
+    clearTimeout(hoverOpenTimer.current)
+    hoverOpenTimer.current = undefined
   }
-  const toggle = (): void => {
-    if (open) { close(); return }
-    const trigger = triggerRef.current
-    if (trigger === null) return
-    setPosition(menuPosition(trigger)); setOpen(true); props.setCatalogOpen(props.rootSessionId, true)
+  const cancelHoverClose = (): void => {
+    if (hoverCloseTimer.current === undefined) return
+    clearTimeout(hoverCloseTimer.current)
+    hoverCloseTimer.current = undefined
+  }
+  const changeOpen = (next: boolean, restoreFocus = false): void => {
+    cancelHoverOpen(); cancelHoverClose()
+    if (next) {
+      const trigger = triggerRef.current
+      if (trigger === null) return
+      setOpen(true); setPosition(menuPosition(trigger)); props.setCatalogOpen(props.rootSessionId, true)
+    } else {
+      pinnedRef.current = false
+      const closing = new Set(expanded)
+      setOpen(false); setPosition(undefined); setExpanded(new Set()); setInactiveOpen(new Set())
+      for (const sessionId of closing) props.setCatalogOpen(sessionId, false)
+      props.setCatalogOpen(props.rootSessionId, false)
+    }
+    if (restoreFocus) queueMicrotask(() => { triggerRef.current?.focus() })
+  }
+  const scheduleHoverOpen = (): void => {
+    cancelHoverOpen(); cancelHoverClose()
+    if (open) return
+    hoverOpenTimer.current = setTimeout(() => { hoverOpenTimer.current = undefined; changeOpen(true) }, 150)
+  }
+  const scheduleHoverClose = (): void => {
+    cancelHoverOpen(); cancelHoverClose()
+    if (pinnedRef.current) return
+    hoverCloseTimer.current = setTimeout(() => { hoverCloseTimer.current = undefined; changeOpen(false) }, 120)
+  }
+  const close = (): void => { changeOpen(false) }
+  const handleTriggerClick = (): void => {
+    cancelHoverOpen(); cancelHoverClose()
+    if (props.variant === 'switcher' && props.openTitle !== undefined) {
+      if (open) changeOpen(false)
+      props.openTitle()
+      return
+    }
+    pinnedRef.current = true
+    if (!open) changeOpen(true)
+  }
+  const handleTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>): void => {
+    if (event.key !== 'ArrowDown') return
+    event.preventDefault()
+    if (!open) changeOpen(true)
+    queueMicrotask(() => { menuRef.current?.querySelector<HTMLElement>('[role="treeitem"]:not([aria-disabled="true"])')?.focus() })
+  }
+  const navigate = (event: KeyboardEvent<HTMLDivElement>): void => {
+    const items = menuRef.current === null
+      ? []
+      : Array.from(menuRef.current.querySelectorAll<HTMLElement>('[role="treeitem"]:not([aria-disabled="true"])'))
+    const index = items.indexOf(document.activeElement as HTMLElement)
+    if (event.key === 'Escape') {
+      event.preventDefault(); close(); triggerRef.current?.focus()
+    } else if (event.key === 'Home') {
+      event.preventDefault(); items[0]?.focus()
+    } else if (event.key === 'End') {
+      event.preventDefault(); items[items.length - 1]?.focus()
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault(); items[(index + 1 + items.length) % items.length]?.focus()
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault(); items[(index < 0 ? items.length : index - 1 + items.length) % items.length]?.focus()
+    }
   }
   const toggleBranch = (childSessionId: SessionIdLike): void => {
     if (expanded.has(childSessionId)) {
@@ -494,6 +775,17 @@ function CatalogDropdown(props: CatalogDropdownProps): ReactElement | null {
     document.addEventListener('pointerdown', listener)
     return () => { document.removeEventListener('pointerdown', listener) }
   }, [open])
+  useEffect(() => {
+    if (!open) return
+    const placeMenu = (): void => {
+      const trigger = triggerRef.current
+      if (trigger !== null) setPosition(menuPosition(trigger))
+    }
+    window.addEventListener('resize', placeMenu)
+    document.addEventListener('scroll', placeMenu, true)
+    return () => { window.removeEventListener('resize', placeMenu); document.removeEventListener('scroll', placeMenu, true) }
+  }, [open])
+  useEffect(() => () => { cancelHoverOpen(); cancelHoverClose() }, [])
   useEffect(() => () => { setCatalogOpenRef.current(props.rootSessionId, false) }, [props.rootSessionId])
   useEffect(() => { if (!visible && open) close() }, [visible, open])
   if (!visible) return null
@@ -502,27 +794,39 @@ function CatalogDropdown(props: CatalogDropdownProps): ReactElement | null {
   const title = currentEntry?.kind === 'child' ? currentEntry.label ?? currentEntry.id : props.displayTitle
   const totalKey = totalCount === 1 ? 'count.total.one' : 'count.total.other'
   const runningKey = runningCount === 1 ? 'count.running.one' : 'count.running.other'
-  const triggerLabel = props.variant === 'switcher'
+  const triggerText = props.variant === 'switcher'
     ? title ?? ''
+    : props.t(totalKey, { count: totalCount })
+  const triggerAriaLabel = props.variant === 'switcher'
+    ? props.t('switcher.aria', { title: triggerText })
     : props.t(runningCount > 0 ? runningKey : totalKey, { count: runningCount > 0 ? runningCount : totalCount })
+  const ancestorSwitcher = props.variant === 'switcher' && props.openTitle !== undefined
+  const triggerColor = props.variant === 'switcher'
+    ? ancestorSwitcher ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-primary)'
+    : triggerInteractive ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-tertiary)'
   const button = createElement('button', {
-    ref: triggerRef, type: 'button', 'aria-haspopup': 'tree', 'aria-expanded': open, 'aria-label': triggerLabel,
-    onClick: props.variant === 'switcher' && props.openTitle !== undefined ? props.openTitle : toggle,
-    style: { display: 'inline-flex', alignItems: 'center', gap: 4, minHeight: 28, padding: '3px 2px', border: 0, borderRadius: 6, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', fontSize: 12, cursor: 'pointer' },
-  }, props.variant === 'count' && runningCount > 0 ? createElement(StateDot, { state: 'ongoing' }) : null, createElement('span', { style: { minWidth: 0, maxWidth: 244, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, triggerLabel), createElement('span', { style: { display: 'inline-flex', transform: open ? 'rotate(180deg)' : undefined } }, createElement(resolveChevronDownIcon())))
-  return createElement('div', { ref: rootRef, style: { position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0 } },
-    props.separator ? createElement('span', { style: { color: 'var(--dsw-alias-label-caption)', fontSize: 14 } }, '/') : null,
+    ref: triggerRef, type: 'button', 'aria-haspopup': 'tree', 'aria-expanded': open,
+    'aria-label': triggerAriaLabel,
+    onMouseEnter: () => { setTriggerInteractive(true); scheduleHoverOpen() }, onMouseLeave: () => { setTriggerInteractive(false); scheduleHoverClose() }, onFocus: () => setTriggerInteractive(true), onBlur: () => setTriggerInteractive(false),
+    onClick: handleTriggerClick, onKeyDown: handleTriggerKeyDown,
+    style: { display: 'inline-flex', alignItems: 'center', gap: 4, minHeight: 28, maxWidth: props.variant === 'switcher' ? 244 : undefined, padding: '3px 2px', border: 0, borderRadius: 'var(--dsw-radius-sm)', background: 'transparent', color: triggerColor, fontSize: 12, lineHeight: '18px', fontWeight: props.variant === 'switcher' && !ancestorSwitcher ? 500 : undefined, cursor: 'pointer', outline: 'none' },
+  }, props.variant === 'count' && runningCount > 0 ? createElement(StateDot, { state: 'ongoing' }) : null, createElement('span', { style: { flex: 1, minWidth: 0, maxWidth: 244, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, triggerText), props.variant === 'switcher' ? subagentSwitcherIcon() : createElement('span', { style: { display: 'inline-flex', transition: 'transform .12s', transform: open ? 'rotate(180deg)' : undefined } }, createElement(resolveChevronDownIcon())))
+  const menu = open ? createElement('div', { ref: menuRef, role: 'presentation', onMouseEnter: cancelHoverClose, onMouseLeave: scheduleHoverClose, onKeyDown: navigate, style: { ...catalogStyle(), ...position } }, createElement('div', { role: 'tree', 'aria-label': props.t('tree.aria'), style: catalogMenuBodyStyle }, createElement(CatalogRows, { parentSessionId: props.rootSessionId, ...(props.currentSessionId === undefined ? {} : { currentSessionId: props.currentSessionId }), catalog: catalog ?? { entries: [], state: 'loading' }, catalogs, summaries, expanded, inactiveOpen, level: 1, openChild: props.openChild, openChildAside: props.openChildAside, refresh: props.refresh, toggleBranch, toggleInactive, closeCatalog: close, t: props.t }))) : null
+  const renderedMenu = menu === null ? null : typeof document === 'undefined' ? menu : createPortal(menu, document.body)
+  return createElement('div', { ref: rootRef, onMouseLeave: scheduleHoverClose, style: { position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0, marginLeft: props.variant === 'switcher' ? 6 : undefined } },
     button,
-    open ? createElement('div', { ref: menuRef, role: 'tree', 'aria-label': props.t('count.total.other', { count: totalCount }), style: { ...catalogStyle(), ...position } }, createElement(CatalogRows, { parentSessionId: props.rootSessionId, ...(props.currentSessionId === undefined ? {} : { currentSessionId: props.currentSessionId }), catalog: catalog ?? { entries: [], state: 'loading' }, catalogs, summaries, expanded, inactiveOpen, level: 1, openChild: props.openChild, refresh: props.refresh, toggleBranch, toggleInactive, closeCatalog: close, t: props.t })) : null,
+    renderedMenu,
   )
 }
 
-/** DSH 原生 lineage 的兼容投影：仅替换停止项的默认展示策略。 */
+/** DSH 原生 lineage 的兼容投影：保持原生树结构，仅增加停止项折叠投影。 */
 export function CollapsedSubagentLineage(props: CollapsedLineageProps): ReactElement {
   const state = props.useSessions((value) => value) as unknown as SessionListStateLike
   const parentId = parentSessionIdOf(state, props.lineageSessionId)
-  const shared = { useSessions: props.useSessions, useSessionStatus: props.useSessionStatus, openChild: props.openChild, refresh: props.refresh, setCatalogOpen: props.setCatalogOpen, t: props.t }
-  if (parentId === undefined) return createElement(CatalogDropdown, { ...shared, rootSessionId: props.lineageSessionId, variant: 'count', separator: true })
+  const shared = { useSessions: props.useSessions, useSessionStatus: props.useSessionStatus, openChild: props.openChild, openChildAside: props.openChildAside, refresh: props.refresh, setCatalogOpen: props.setCatalogOpen, t: props.t }
+  // DSH 0.2.0+ 已把根会话的目录计数迁移到 header.actions。lineage 只负责
+  // 子会话的面包屑；根会话在这里返回空，避免同一个目录出现两个入口。
+  if (parentId === undefined) return createElement(Fragment, null)
   return createElement(Fragment, null,
     createElement(CatalogDropdown, { ...shared, rootSessionId: parentId, currentSessionId: props.lineageSessionId, variant: 'switcher', displayTitle: props.displayTitle, ...(props.openTitle === undefined ? {} : { openTitle: props.openTitle }) }),
     props.openTitle === undefined ? createElement(CatalogDropdown, { ...shared, rootSessionId: parentId, variant: 'count' }) : null,
@@ -537,6 +841,7 @@ export function CollapsedSubagentCatalogAction(props: CollapsedCatalogActionProp
     useSessions: props.useSessions,
     useSessionStatus: props.useSessionStatus,
     openChild: props.openChild,
+    openChildAside: props.openChildAside,
     refresh: props.refresh,
     setCatalogOpen: props.setCatalogOpen,
     t: props.t,
@@ -559,6 +864,7 @@ export function registerCollapsedSubagentLineage(
     locale: SUBAGENT_COLLAPSED_LOCALE_NS,
     inject: () => ({
       openChild: (address: unknown) => { sessions.openChild(address) },
+      openChildAside: sessions.openChildAside === undefined ? undefined : (address: unknown) => { sessions.openChildAside!(address) },
       refresh: (sessionId: SessionIdLike) => { void sessions.refresh(sessionId) },
       setCatalogOpen: (sessionId: SessionIdLike, open: boolean) => { sessions.setSubagentCatalogOpen(sessionId, open) },
     }),
@@ -573,6 +879,7 @@ export function registerCollapsedSubagentLineage(
     locale: SUBAGENT_COLLAPSED_LOCALE_NS,
     inject: () => ({
       openChild: (address: unknown) => { sessions.openChild(address) },
+      openChildAside: sessions.openChildAside === undefined ? undefined : (address: unknown) => { sessions.openChildAside!(address) },
       refresh: (sessionId: SessionIdLike) => { void sessions.refresh(sessionId) },
       setCatalogOpen: (sessionId: SessionIdLike, open: boolean) => { sessions.setSubagentCatalogOpen(sessionId, open) },
     }),
