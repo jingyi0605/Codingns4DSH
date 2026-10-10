@@ -18,6 +18,8 @@ export type CodingNsRpcResult =
 /** Client 侧 RPC 调用句柄，由 DSH Connection 提供。 */
 export interface CodingNsRpcClient {
   call(channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<CodingNsRpcResult>
+  /** DSH Remote WebSocket 流；旧版或测试载体没有该方法时回退到兼容读取。 */
+  open?(channel: string, endpoint: string, payload: unknown, signal: AbortSignal, uplink?: AsyncIterable<unknown>): AsyncIterable<unknown>
 }
 
 /** Client 侧功能模块在 start 中取用的服务集合。 */
@@ -44,6 +46,10 @@ export interface CodingNsClientServices {
   readonly locale: CodingNsLocale
   /** DSH 对话装配服务；用于注册不写入 Session 的流式临时节点。 */
   readonly uiConversation?: unknown
+  /** DSH Session Controller；子 Agent 列表覆盖层只消费其公开读写动作。 */
+  readonly sessions?: unknown
+  /** DSH Workspace 导航服务；0.2.1 起由它负责打开子 Agent 会话。 */
+  readonly uiWorkspace?: unknown
   /** 对话工具栏 Slot 服务；测试和非 Web 宿主可以不提供。 */
   readonly slots?: SlotRegistry
   /** DSH 布局服务；手势只用它开合左侧会话列表。 */

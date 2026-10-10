@@ -92,6 +92,14 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       virtualProviders?.setProviders(registry.enabledAdapterIds())
       if (virtualProviders !== undefined) context.resources.add(() => virtualProviders.dispose())
       registry.warmCatalog()
+      // 外部适配器没有经过 DSH 原生 Agent Loop，必须把同一套运行状态投影给
+      // subagentCatalog。这里集中去重，避免 llm/stream、原生 session/event 和
+      // agent/status 同时到达时反复刷新同一个子 Agent。
+      const publishExternalStatus = createExternalSessionStatusPublisher(
+        context.services.events,
+        registry,
+        sessionStore,
+      )
       if (nativeSessions !== undefined) {
         const disposeNativeEvents = nativeSessions.subscribe({
           onEvent: (session, event) => {
@@ -105,6 +113,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
               if (hasLegacySessionAdapterHint(event)) sessionStore.invalidateLegacySession(session)
               sessionStore.migrateLegacySessions(collectMigrationChain(nativeSessions, session))
             }
+            if (eventType === 'turn/start') publishExternalStatus(sessionId, true)
+            else if (eventType === 'turn/end') publishExternalStatus(sessionId, false)
             const current = sessionStore.get(sessionId)
             if (current === undefined || current.status === 'archived') return
             if (eventType === 'turn/start') {
@@ -118,7 +128,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         })
         context.resources.add(disposeNativeEvents)
       }
-      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources)
+      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus)
       context.resources.add(context.services.rpc.register('cli', (action, payload) => {
         switch (action) {
           case 'catalog': return registry.catalog()
@@ -379,10 +389,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           const discardSuspendedTurn = (): void => registry.discardSegmentedTurn(sessionId)
           input.signal?.addEventListener('abort', discardSuspendedTurn, { once: true })
           if (input.signal?.aborted) discardSuspendedTurn()
-          // DSH UI 的会话未读绿点由 api-session/status 的 true -> false 转换驱动。
+          // DSH UI 的会话和子智能体运行点由 api-session/status 驱动。
           // 外部适配器绕过 DSH 原生 Agent Loop，必须在真正执行外部流前补发同一状态，
-          // 否则外部子会话完成后虽已写入历史，侧栏却永远不会生成 completionUnread。
-          publishExternalSessionStatus(context.services.events, sessionId, true)
+          // 否则外部子会话完成后虽已写入历史，客户端目录仍不会得到 running -> idle。
+          publishExternalStatus(sessionId, true)
           try {
             for await (const chunk of registry.execute({ ...input, adapterId: config.adapterId })) {
               if (chunk.type === 'step-boundary') {
@@ -407,7 +417,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             for (const dshChunk of await projector.fail(message, input.signal?.aborted ?? false)) yield dshChunk
           } finally {
             input.signal?.removeEventListener('abort', discardSuspendedTurn)
-            publishExternalSessionStatus(context.services.events, sessionId, false)
+            publishExternalStatus(sessionId, false)
           }
         })
         if (typeof dispose === 'function') context.resources.add(() => { (dispose as () => void)() })
@@ -429,13 +439,38 @@ function requireTeam(context: { services: CodingNsHostServices }) {
   return context.services.nativeTeam
 }
 
-/** 发布外部回合运行状态，让 DSH 原生 UI 能正确维护完成未读标记。 */
-function publishExternalSessionStatus(events: CodingNsHostServices['events'], sessionId: string, running: boolean): void {
-  if (sessionId.trim() === '' || events?.emit === undefined) return
-  try {
-    events.emit('api-session/status', sessionId, running)
-  } catch {
-    // 状态提示是 UI 增强能力，不能因为精简 Host 没有完整事件转发器而阻断回合。
+/**
+ * 为外部 Agent 建立单一状态投影出口。
+ *
+ * DSH 自己的 Agent 状态由原生 SessionController 负责，插件只给已绑定外部
+ * 适配器的会话补发状态；未知会话按 DSH 处理，避免误把原生 Agent 标成外部。
+ */
+function createExternalSessionStatusPublisher(
+  events: CodingNsHostServices['events'],
+  registry: CodingNsCliAdapterRegistry,
+  sessionStore: CodingNsCliSessionStore,
+): (sessionId: string, running: boolean) => void {
+  const lastPublished = new Map<string, boolean>()
+  return (sessionId, running) => {
+    const id = sessionId.trim()
+    if (id === '' || events?.emit === undefined) return
+    const stored = sessionStore.get(id)
+    let adapterId = stored?.adapterId
+    if (adapterId === undefined) {
+      try {
+        adapterId = registry.getSession(id).adapterId
+      } catch {
+        return
+      }
+    }
+    if (adapterId === 'dsh' || adapterId === undefined) return
+    if (lastPublished.get(id) === running) return
+    try {
+      events.emit('api-session/status', id, running)
+      lastPublished.set(id, running)
+    } catch {
+      // 状态提示是 UI 增强能力，不能因为精简 Host 没有完整事件转发器而阻断回合。
+    }
   }
 }
 
@@ -450,6 +485,7 @@ function registerDelegationAgentHooks(
   dshContext: CodingNsHostServices['dshContext'],
   registry: CodingNsCliAdapterRegistry,
   resources: FeatureResourceScope,
+  publishExternalStatus: (sessionId: string, running: boolean) => void,
 ): void {
   if (dshContext === undefined || typeof dshContext.on !== 'function') return
   const disposers: Array<() => void> = []
@@ -486,10 +522,19 @@ function registerDelegationAgentHooks(
   // 没有 carrier 时继承上一轮的目标白名单。
   register('agent/status', (payload: unknown) => {
     const record = asRecord(payload)
-    if (record?.status === 'idle') clearDelegationAuthorization(readAgentSessionId(record?.agent))
+    const sessionId = readAgentSessionId(record?.agent)
+    if (record?.status === 'running') publishExternalStatus(sessionId, true)
+    else if (record?.status === 'idle') {
+      publishExternalStatus(sessionId, false)
+      clearDelegationAuthorization(sessionId)
+    }
   })
   register('agent/disposed', (payload: unknown) => {
-    clearDelegationAuthorization(readAgentSessionId(asRecord(payload)?.agent))
+    const sessionId = readAgentSessionId(asRecord(payload)?.agent)
+    // disposed 只代表运行时释放；subagentCatalog 没有删除语义，保留目录项并
+    // 把它标成 idle，后续若 DSH 重新激活会再次收到 running。
+    publishExternalStatus(sessionId, false)
+    clearDelegationAuthorization(sessionId)
   })
 
   resources.add(() => {
@@ -506,6 +551,7 @@ function readAgentSessionId(value: unknown): string {
   const record = asRecord(value)
   if (typeof record?.id === 'string' && record.id.trim() !== '') return record.id.trim()
   const session = asRecord(record?.session)
+  if (typeof session?.id === 'string' && session.id.trim() !== '') return session.id.trim()
   const header = asRecord(session?.header)
   return typeof header?.id === 'string' ? header.id.trim() : ''
 }

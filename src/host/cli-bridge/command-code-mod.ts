@@ -2,7 +2,8 @@
  * Command Code 托管 mod：把内建 `agent` 工具调用转投给 DSH 原生子代理。
  *
  * 由驱动以 `--mod <path>` 每次运行加载；桥接配置（地址/令牌/会话）从进程环境
- * 读取。未注入桥接配置时（托管关闭）不注册任何 hook，内建子代理照常工作。
+ * 读取。托管关闭时不注入本 Mod；桥接子会话只注入禁用标记，不允许继续创建
+ * 嵌套外部 Agent。
  *
  * 桥接已配置但派发失败时**不再静默回退**：过去返回 undefined 会让 CLI 悄悄改用
  * 内建子代理，父会话与界面都看不出「托管失败」，实测中表现为「界面只有 5 个
@@ -23,7 +24,10 @@ interface ToolCallHookResult {
 }
 
 interface ModApiLike {
+  readonly getActiveTools?: () => readonly string[]
+  readonly setActiveTools?: (names: readonly string[]) => void
   readonly hooks: (hooks: {
+    readonly onSessionStart?: () => void
     readonly beforeToolCall?: (context: ToolCallHookContext) => Promise<ToolCallHookResult | undefined> | ToolCallHookResult | undefined
   }) => unknown
 }
@@ -34,18 +38,43 @@ export default function codingNsSubagentMod(cmd: ModApiLike): void {
   const baseUrl = (process.env.CODINGNS_BRIDGE_URL ?? '').replace(/\/+$/u, '')
   const token = process.env.CODINGNS_BRIDGE_TOKEN ?? ''
   const sessionId = process.env.CODINGNS_DSH_SESSION_ID ?? ''
-  // 托管未开启时驱动不会注入桥接配置：此时完全不接管内建子代理。
-  if (baseUrl === '' || token === '' || sessionId === '') return
+  const nativeAgentDisabled = process.env.CODINGNS_DISABLE_NATIVE_AGENT === '1'
+  const bridgeConfigured = baseUrl !== '' && token !== '' && sessionId !== ''
+  // 普通会话既没有桥接配置，也没有防递归标记：保持 Command Code 原生行为。
+  if (!nativeAgentDisabled && !bridgeConfigured) return
+  const disableNativeSubagentTools = (): void => {
+    const getActiveTools = cmd.getActiveTools
+    const setActiveTools = cmd.setActiveTools
+    if (getActiveTools === undefined || setActiveTools === undefined) return
+    // 官方 Mod API 的工具过滤是启动期最可靠的屏蔽面：被移除的工具不会进入
+    // 模型 schema，后续即使模型伪造调用也会被核心拒绝。保留 MCP 的
+    // mcp__codingns__agent_subagent，让所有外部委派统一回到 DSH 子会话。
+    setActiveTools(getActiveTools().filter((name) => name !== 'agent' && name !== 'agent_output'))
+  }
   cmd.hooks({
+    // ACP 在 harness 绑定后才拥有完整工具目录，因此必须在 session start
+    // 再执行一次；仅在 mod factory 阶段调用会看到空目录，无法真正禁用工具。
+    onSessionStart: disableNativeSubagentTools,
     beforeToolCall: async (context) => {
-      // 只接管内建子代理入口；agent_output / agent_stop 等控制工具保持原样。
-      if (context.toolName !== 'agent') return undefined
+      // 工具过滤是第一道防线；这里仍保留执行期兜底，防止旧版 CLI 或恢复会话
+      // 在 schema 缓存中残留 agent。无论如何都不允许回退到本地后台子代理。
+      if (context.toolName !== 'agent' && context.toolName !== 'agent_output') return undefined
+      if (context.toolName === 'agent_output') return {
+        block: true,
+        additionalContext: failureText('Command Code 原生子代理工具已禁用', '请使用 DSH 的 agent_subagent 工具查看子会话。'),
+      }
       const input = context.input ?? {}
       const prompt = typeof input.prompt === 'string' ? input.prompt : ''
-      // 没有提示词时无从转投，交给内建子代理，避免把空任务派发出去。
-      if (prompt.trim() === '') return undefined
+      if (prompt.trim() === '') return {
+        block: true,
+        additionalContext: failureText('请求缺少子任务提示词', 'DSH 桥接不会回退到 Command Code 内建子代理。'),
+      }
+      if (!bridgeConfigured) return {
+        block: true,
+        additionalContext: failureText('当前会话禁止嵌套子代理', '该会话是 DSH 子代理会话，不能再次创建外部 Agent。'),
+      }
       const dispatched = await dispatchToBridge(baseUrl, token, sessionId, context.toolCallId, prompt, input)
-      return dispatched.ok
+      return dispatched.ok === true
         ? { block: true, additionalContext: dispatched.text }
         : { block: true, additionalContext: dispatched.failure }
     },

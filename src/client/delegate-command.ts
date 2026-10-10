@@ -42,6 +42,7 @@ interface ReferenceInsert {
 interface InputTriggerSource {
   readonly trigger: '@'
   readonly name: string
+  readonly showGroupTitle?: boolean
   candidates(session: { readonly sessionId: string }, request: { readonly query: string; readonly signal: AbortSignal }): Promise<readonly { readonly name: string; readonly label: string; readonly value?: string; readonly icon?: 'session' }[]>
   onPick(pick: { readonly candidate: { readonly name: string; readonly label?: string; readonly value?: string }; readonly span: TokenSpan }): { readonly insert: ReferenceInsert }
   readonly codec: {
@@ -166,7 +167,7 @@ function registerDelegateCommandIn(ctx: Context, options: RegisterDelegateComman
   }
   const t = options.locale.bind('codingns')
   try {
-    registerDelegateReferenceSource(ctx, options)
+    registerDelegateReferenceCodec(ctx, options)
     // 注册必须由本作用域的 effect 持有：commandUi.register 的 disposer 只在显式
     // 调用时才移除命令，effect 保证停用时一定会调用它。
     ctx.effect(() => commandUi.register({
@@ -258,29 +259,21 @@ function delegateCommandSpan(
   return undefined
 }
 
-/** 注册结构化 Agent 引用源：显示层使用 chip，提交层再序列化为 Host carrier。 */
-function registerDelegateReferenceSource(ctx: Context, options: RegisterDelegateCommandOptions): void {
+/**
+ * 注册结构化 Agent 引用的内部编解码器。
+ *
+ * 委派入口由 `#` 弹层提供，不能再把适配器目录挂到原生 `@` 菜单。这里仍向
+ * inputTriggers 登记 codec，是因为 DSH 在提交 ReferenceChip 时按 source 查找
+ * 序列化器；候选列表固定为空，并隐藏分组标题，因此不会产生可见的 `@` 菜单项。
+ */
+function registerDelegateReferenceCodec(ctx: Context, options: RegisterDelegateCommandOptions): void {
   const inputTriggers = readService<InputTriggersService>(ctx, 'inputTriggers')
   const source: InputTriggerSource = {
     trigger: '@',
     name: DELEGATE_REFERENCE_SOURCE,
-    async candidates(session, request) {
-      try {
-        const catalog = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(options.rpc, 'catalog', { sessionId: session.sessionId })
-        const query = request.query.trim().toLowerCase()
-        const available = delegateAdapterOptions(adapterCatalogWithDsh(catalog, options.dshVersion))
-        // 让输入框中的 chip 也能按同一份目录补 Provider Logo。
-        setDelegatePopupOptions(available)
-        return available
-          .filter((option) => query === '' || option.id.toLowerCase().includes(query) || option.label.toLowerCase().includes(query))
-          .map((option) => {
-            delegateReferenceLabels.set(option.id, option.label)
-            delegateReferenceSelections.set(option.id, { adapterId: option.id, label: option.label })
-            return { name: option.id, label: option.label, value: option.id, icon: 'session' as const }
-          })
-      } catch {
-        return []
-      }
+    showGroupTitle: false,
+    async candidates() {
+      return []
     },
     onPick(pick) {
       const ref = pick.candidate.value ?? pick.candidate.name

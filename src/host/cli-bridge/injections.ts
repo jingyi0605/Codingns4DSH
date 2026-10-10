@@ -5,8 +5,8 @@ import { getSubagentBridge } from './bridge-holder.js'
 /**
  * 注入构造器：把桥接端点、令牌与会话身份翻译成各外部 CLI 的原生扩展面。
  *
- * 所有注入都只在桥接开启、且目标会话不是子代理会话时生效。子代理会话运行
- * 同一个外部 Agent 时不再注入，避免嵌套托管无限递归。
+ * 桥接父会话注入完整派发能力；桥接创建出的子会话只注入“禁用原生 agent”的
+ * 防递归 Mod，不再注入 DSH 派发端点，避免嵌套托管无限递归。
  */
 
 const MCP_ENTRY_PATH = fileURLToPath(new URL('./mcp-stdio-entry.js', import.meta.url))
@@ -14,6 +14,7 @@ const COMMAND_CODE_MOD_PATH = fileURLToPath(new URL('./command-code-mod.js', imp
 
 /** 外部 CLI 侧认为这是一次由 Codingns4DSH 托管的会话。 */
 const BRIDGE_MARKER = 'CODINGNS_SUBAGENT_BRIDGE'
+const NATIVE_AGENT_BLOCK_MARKER = 'CODINGNS_DISABLE_NATIVE_AGENT'
 
 export function bridgeMcpEntryPath(): string {
   return MCP_ENTRY_PATH
@@ -35,9 +36,24 @@ export function commandCodeBridgeArgs(sessionId: string): readonly string[] {
   return ['--mod', COMMAND_CODE_MOD_PATH]
 }
 
+/** command-code：桥接运行期间所有会话都加载屏蔽原生 agent 的 Mod。 */
+export function commandCodeNativeAgentArgs(sessionId: string): readonly string[] {
+  if (getSubagentBridge() === undefined) return []
+  return ['--mod', COMMAND_CODE_MOD_PATH]
+}
+
 /** command-code：mod 从进程环境读取桥接配置。 */
 export function commandCodeBridgeEnvironment(sessionId: string, adapterId: string): Record<string, string> {
   return bridgeEnvironment(sessionId, adapterId) ?? {}
+}
+
+/** command-code：父会话拿到派发端点，子会话只拿到禁用标记。 */
+export function commandCodeNativeAgentEnvironment(sessionId: string, adapterId: string): Record<string, string> {
+  if (getSubagentBridge() === undefined) return {}
+  return {
+    [NATIVE_AGENT_BLOCK_MARKER]: '1',
+    ...(bridgeEnvironment(sessionId, adapterId) ?? {}),
+  }
 }
 
 /** claude-code：`--mcp-config` 注入替身工具，并指示模型优先使用。 */
@@ -62,8 +78,8 @@ export function codexBridgeDeveloperInstructions(sessionId: string): string | un
 }
 
 /**
- * ACP 适配器（gemini/grok/mcode）：session/new 与 session/load 都带上 MCP server。
- * 这些 CLI 没有可靠的“禁用内建子代理”开关，靠工具描述与模型选择。
+ * ACP 适配器（含 command-code/gemini/grok/mcode）：session/new 与 session/load
+ * 都带上 MCP server。Command Code 自己另有 Mod 注入，用于屏蔽原生 agent。
  */
 export function acpBridgeMcpServers(sessionId: string, adapterId: string): readonly Record<string, unknown>[] {
   const env = bridgeEnvironment(sessionId, adapterId)

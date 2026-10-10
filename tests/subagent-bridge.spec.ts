@@ -16,6 +16,8 @@ import {
   codexBridgeDeveloperInstructions,
   commandCodeBridgeArgs,
   commandCodeBridgeEnvironment,
+  commandCodeNativeAgentArgs,
+  commandCodeNativeAgentEnvironment,
 } from '../data/build/dist/host/cli-bridge/injections.js'
 import { dispatchBridgeSubagent } from '../data/build/dist/host/cli-bridge/dispatch.js'
 import { setNativeSubagents } from '../data/build/dist/host/cli-adapters/native-subagent-holder.js'
@@ -49,6 +51,8 @@ test('子代理桥接注入：开启时产出各适配器扩展面，关闭时�
   try {
     assert.deepEqual(commandCodeBridgeArgs('s1'), [])
     assert.deepEqual(commandCodeBridgeEnvironment('s1', 'command-code'), {})
+    assert.deepEqual(commandCodeNativeAgentArgs('s1'), [])
+    assert.deepEqual(commandCodeNativeAgentEnvironment('s1', 'command-code'), {})
     assert.deepEqual(claudeBridgeArgs('s1', 'claude-code'), [])
     assert.deepEqual(acpBridgeMcpServers('s1', 'gemini'), [])
     assert.deepEqual(codexBridgeArgs('s1', 'codex'), [])
@@ -59,12 +63,14 @@ test('子代理桥接注入：开启时产出各适配器扩展面，关闭时�
     assert.equal(modArgs[0], '--mod')
     assert.ok(modArgs[1]!.endsWith('command-code-mod.js'))
     assert.ok(existsSync(sourceEntry(modArgs[1]!)))
+    assert.deepEqual(commandCodeNativeAgentArgs('s1'), modArgs)
 
     const env = commandCodeBridgeEnvironment('s1', 'command-code')
     assert.equal(env.CODINGNS_BRIDGE_URL, ACTIVE_RUNTIME.baseUrl)
     assert.equal(env.CODINGNS_BRIDGE_TOKEN, ACTIVE_RUNTIME.token)
     assert.equal(env.CODINGNS_DSH_SESSION_ID, 's1')
     assert.equal(env.CODINGNS_ADAPTER_ID, 'command-code')
+    assert.equal(commandCodeNativeAgentEnvironment('s1', 'command-code').CODINGNS_DISABLE_NATIVE_AGENT, '1')
 
     const claude = claudeBridgeArgs('s1', 'claude-code')
     const configIndex = claude.indexOf('--mcp-config')
@@ -109,7 +115,7 @@ test('子代理桥接注入：开启时产出各适配器扩展面，关闭时�
   }
 })
 
-test('子代理会话不再注入桥接，避免嵌套托管递归', () => {
+test('子代理会话不注入桥接端点但屏蔽原生 agent，避免嵌套托管递归', () => {
   const store = new CodingNsCliSessionStore()
   store.upsert('child-1', { adapterId: 'command-code', origin: 'subagent', parentSessionId: 'parent-1' })
   const registry = new CodingNsCliAdapterRegistry([], undefined, { sessionStore: store })
@@ -118,6 +124,8 @@ test('子代理会话不再注入桥接，避免嵌套托管递归', () => {
   try {
     assert.deepEqual(commandCodeBridgeArgs('child-1'), [])
     assert.deepEqual(commandCodeBridgeEnvironment('child-1', 'command-code'), {})
+    assert.equal(commandCodeNativeAgentArgs('child-1').length, 2)
+    assert.deepEqual(commandCodeNativeAgentEnvironment('child-1', 'command-code'), { CODINGNS_DISABLE_NATIVE_AGENT: '1' })
     assert.deepEqual(claudeBridgeArgs('child-1', 'claude-code'), [])
     assert.equal(codexBridgeDeveloperInstructions('child-1'), undefined)
     // 普通会话仍然注入。
@@ -125,6 +133,35 @@ test('子代理会话不再注入桥接，避免嵌套托管递归', () => {
   } finally {
     setSubagentBridge(undefined)
     setAdapterRegistry(undefined)
+  }
+})
+
+test('Command Code 子代理 Mod：只有禁用标记时也不允许创建嵌套 Agent', async () => {
+  const mod = await import('../data/build/dist/host/cli-bridge/command-code-mod.js')
+  const hooks: Array<Record<string, unknown>> = []
+  let activeTools = ['agent', 'agent_output', 'bash']
+  const previous = { ...process.env }
+  delete process.env.CODINGNS_BRIDGE_URL
+  delete process.env.CODINGNS_BRIDGE_TOKEN
+  delete process.env.CODINGNS_DSH_SESSION_ID
+  process.env.CODINGNS_DISABLE_NATIVE_AGENT = '1'
+  try {
+    ;(mod.default as (api: unknown) => void)({
+      getActiveTools: () => activeTools,
+      setActiveTools: (names: readonly string[]) => { activeTools = [...names] },
+      hooks: (value: Record<string, unknown>) => { hooks.push(value) },
+    })
+    assert.equal(hooks.length, 1)
+    ;(hooks[0]!.onSessionStart as () => void)()
+    assert.deepEqual(activeTools, ['bash'])
+    const outcome = await (hooks[0]!.beforeToolCall as (context: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>)({
+      toolName: 'agent',
+      input: { prompt: '再次拆分任务' },
+    })
+    assert.equal(outcome?.block, true)
+    assert.match(String(outcome?.additionalContext), /禁止嵌套子代理/u)
+  } finally {
+    process.env = previous
   }
 })
 
@@ -721,6 +758,7 @@ test('桥接派发：派发失败时不登记重定向，失败必须保持可�
 test('Command Code 托管 mod：桥接失败时 block 并给出可读原因，不回退内建子代理', async () => {
   const mod = await import('../data/build/dist/host/cli-bridge/command-code-mod.js')
   const hooks: Array<Record<string, unknown>> = []
+  let activeTools = ['agent', 'agent_output', 'bash', 'mcp__codingns__agent_subagent']
   const previous = { ...process.env }
   // 指向必然不可达的端口：fetch 立刻失败。
   process.env.CODINGNS_BRIDGE_URL = 'http://127.0.0.1:1'
@@ -728,9 +766,16 @@ test('Command Code 托管 mod：桥接失败时 block 并给出可读原因，�
   process.env.CODINGNS_DSH_SESSION_ID = 's-mod'
   try {
     ;(mod.default as (api: unknown) => void)({
+      getActiveTools: () => activeTools,
+      setActiveTools: (names: readonly string[]) => { activeTools = [...names] },
       hooks: (value: Record<string, unknown>) => { hooks.push(value) },
     })
     assert.equal(hooks.length, 1)
+    const onSessionStart = hooks[0]!.onSessionStart as () => void
+    onSessionStart()
+    // 启动绑定后原生 agent/agent_output 必须从 schema 和执行面同时消失，
+    // 只保留 DSH MCP 桥接工具与普通工具。
+    assert.deepEqual(activeTools, ['bash', 'mcp__codingns__agent_subagent'])
     const beforeToolCall = hooks[0]!.beforeToolCall as (context: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>
     const outcome = await beforeToolCall({ toolName: 'agent', toolCallId: 'call_mod_1', input: { prompt: '分析当前项目' } })
     // 过去这里返回 undefined，CLI 会悄悄改用内建子代理；必须改为 block 让失败可见。
@@ -738,9 +783,13 @@ test('Command Code 托管 mod：桥接失败时 block 并给出可读原因，�
     const context = String(outcome?.additionalContext ?? '')
     assert.match(context, /子代理托管派发失败/u)
     assert.match(context, /没有回退到 Command Code 内建子代理/u)
-    // 非 agent 工具与空提示词仍然不接管，保持 CLI 原生行为。
+    // 非 agent 工具仍然不接管；空提示词也必须阻断，不能回退到本地子代理。
     assert.equal(await beforeToolCall({ toolName: 'bash', toolCallId: 'call_mod_2', input: { command: 'ls' } }), undefined)
-    assert.equal(await beforeToolCall({ toolName: 'agent', toolCallId: 'call_mod_3', input: { prompt: '   ' } }), undefined)
+    const output = await beforeToolCall({ toolName: 'agent_output', toolCallId: 'call_mod_output', input: {} })
+    assert.equal(output?.block, true)
+    const empty = await beforeToolCall({ toolName: 'agent', toolCallId: 'call_mod_3', input: { prompt: '   ' } })
+    assert.equal(empty?.block, true)
+    assert.match(String(empty?.additionalContext), /不会回退到 Command Code 内建子代理/u)
   } finally {
     process.env = previous
   }

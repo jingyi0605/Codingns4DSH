@@ -22,7 +22,7 @@ import { usageChunk } from './rpc-driver-utils.js'
 import { commandEnvironment, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { prepareAttachmentPaths, promptWithAttachmentPaths } from './attachment-utils.js'
 import { parseSkillFrontmatter } from './skill-filesystem.js'
-import { commandCodeBridgeArgs, commandCodeBridgeEnvironment } from '../cli-bridge/injections.js'
+import { commandCodeNativeAgentArgs, commandCodeNativeAgentEnvironment } from '../cli-bridge/injections.js'
 import { getSubagentBridge } from '../cli-bridge/bridge-holder.js'
 import { AcpCliDriver, type AcpPendingQuestionRequest } from './acp-cli-driver.js'
 import type { JsonRpcMessage, JsonRpcProcess } from './json-rpc-process.js'
@@ -368,6 +368,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
         runtimeModelSelection: false,
         configureSession: configureCommandCodeAcpSession,
         sessionEnvironment: commandCodeAcpEnvironment(),
+        sessionEnvironmentForInput: (input) => commandCodeNativeAgentEnvironment(input.sessionId, 'command-code'),
         id: 'command-code',
         name: 'Command Code',
         capabilities: acpCapabilities,
@@ -799,7 +800,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     binary: string,
   ): CodingNsChildProcess {
     const args = this.buildTurnArgs(input, turn)
-    const bridgeEnvironment = commandCodeBridgeEnvironment(input.sessionId, this.descriptor.id)
+    const bridgeEnvironment = commandCodeNativeAgentEnvironment(input.sessionId, this.descriptor.id)
     const child = this.runSpawn(binary, args, {
       cwd: input.cwd ?? process.cwd(),
       env: { ...(this.cachedEnvironment ?? commandEnvironment(binary)), ...(input.runtimeEnv ?? {}), ...bridgeEnvironment },
@@ -837,8 +838,8 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       args.push('--tools-enable', 'ask_user_question')
     }
     for (const path of turn.skillPaths) args.push('--skill', path)
-    // 子代理托管开启时加载桥接 mod：内建 agent 调用会被转投成 DSH 原生子会话。
-    args.push(...commandCodeBridgeArgs(input.sessionId))
+    // 子代理托管开启时加载桥接 mod：父会话转投 DSH，子会话仅禁用嵌套 agent。
+    args.push(...commandCodeNativeAgentArgs(input.sessionId))
     for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--add-dir', directory)
     if (input.modelId && input.modelId !== 'provider-default') args.push('--model', input.modelId)
     const effort = input.effortId?.trim().toLowerCase()
@@ -1986,7 +1987,9 @@ function readJson(path: string): Record<string, unknown> | null { if (!existsSyn
 
 /** 保留启动选择作为进程复用条件；ACP 的实际会话状态由原生协议显式设置。 */
 function commandCodeAcpArgs(input: CodingNsCliTurnInput): readonly string[] {
-  const args = ['acp', ...commandCodePermissionArgs(input.permission)]
+  // Command Code 的全局 --mod 必须放在 acp 子命令之前；放到 acp 之后会被
+  // Commander 当成 ACP 子命令参数而拒绝。桥接关闭时返回空数组，保持原启动形态。
+  const args = [...commandCodeNativeAgentArgs(input.sessionId), 'acp', ...commandCodePermissionArgs(input.permission)]
   if (input.plan === true && !args.includes('--plan')) args.push('--plan')
   if (input.enableAskUserQuestion === true || input.runtimeEnv?.CMD_TOOLS_ASK_USER_QUESTION_ENABLE === 'true') {
     args.push('--tools-enable', 'ask_user_question')

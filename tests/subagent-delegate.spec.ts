@@ -300,6 +300,10 @@ test('/委派 命令已打入 Client 入口或分块，并由选择动作写入 
   // `#` 快捷入口必须独立于可选的 inputTriggers 服务；移动端服务晚加载时仍要能弹出适配器列表。
   assert.match(commandSource, /const disposeHashShortcut = registerDelegateHashShortcut\(ctx, options\)/u)
   assert.match(commandSource, /inputTriggers !== undefined && typeof inputTriggers\.registerSource === 'function'/u)
+  // codingns-delegate 只保留 ReferenceChip 的内部 codec，不再向 `@` 菜单提供候选项。
+  assert.match(commandSource, /registerDelegateReferenceCodec\(ctx, options\)/u)
+  assert.match(commandSource, /showGroupTitle: false/u)
+  assert.match(commandSource, /async candidates\(\)\s*\{\s*return \[\]/u)
   assert.match(commandSource, /input\.caretSpan\?\.\(\)/u)
   assert.doesNotMatch(commandSource, /callCliRpc<[^>]+>\(options\.rpc, 'delegate'/u)
   // 选择 Agent 只是编辑当前草稿；单轮提交后才会真正委派，不能留下“继续输入后提交”的持久提示。

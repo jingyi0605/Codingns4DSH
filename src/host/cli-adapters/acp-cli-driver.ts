@@ -26,6 +26,8 @@ export interface AcpCliDriverOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>
   /** 仅在 ACP 会话进程启动时加载的扩展环境；不参与版本、路径或模型探测。 */
   readonly sessionEnvironment?: Readonly<Record<string, string | undefined>>
+  /** 按当前 DSH 会话生成 ACP 子进程的扩展环境；不参与版本、路径或模型探测。 */
+  readonly sessionEnvironmentForInput?: (input: CodingNsCliTurnInput) => Readonly<Record<string, string | undefined>>
   /** ACP 的启动参数；每个产品的参数必须在驱动文件中显式写出。 */
   readonly args: readonly string[]
   /**
@@ -96,6 +98,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
   private readonly runSpawn: typeof spawn
   private readonly environment: Readonly<Record<string, string | undefined>>
   private readonly sessionEnvironment: Readonly<Record<string, string | undefined>>
+  private readonly sessionEnvironmentForInput: (input: CodingNsCliTurnInput) => Readonly<Record<string, string | undefined>>
   private readonly probeReason: string
   private readonly readQuestionRequest: (message: JsonRpcMessage) => AcpPendingQuestionRequest | null
   private cachedBinary: string | null = null
@@ -119,6 +122,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.environment = options.environment ?? {}
     this.sessionEnvironment = { ...this.environment, ...(options.sessionEnvironment ?? {}) }
+    this.sessionEnvironmentForInput = options.sessionEnvironmentForInput ?? (() => ({}))
     this.runSpawn = options.spawn ?? spawn
     this.probeReason = options.probeReason ?? 'Provider 未公开可安全读取的会话索引，未执行有副作用的探测'
     this.readQuestionRequest = options.readQuestionRequest ?? readStandardQuestionRequest
@@ -247,7 +251,15 @@ export class AcpCliDriver implements CodingNsCliDriver {
     const previous = this.sessions.get(input.sessionId)
     if (previous !== undefined && previous.cwd === input.cwd && previous.argsKey === argsKey && !previous.rpc.isClosed) return previous
     previous?.rpc.dispose()
-    const rpc = new JsonRpcProcess({ command, args, cwd: input.cwd, env: this.sessionEnvironment, spawn: this.runSpawn })
+    // 会话级注入必须在每次创建 ACP 进程时重新计算：桥接端点、令牌和父会话身份
+    // 都是运行时状态，不能在驱动构造时静态捕获。runtimeEnv 先于专用注入合并，
+    // 让桥接身份始终由 Host 掌握，避免调用方覆盖 CODINGNS_* 变量。
+    const sessionEnvironment = {
+      ...this.sessionEnvironment,
+      ...(input.runtimeEnv ?? {}),
+      ...this.sessionEnvironmentForInput(input),
+    }
+    const rpc = new JsonRpcProcess({ command, args, cwd: input.cwd, env: sessionEnvironment, spawn: this.runSpawn })
     const state: AcpSession = { rpc, cwd: input.cwd, argsKey, acpSessionId: '', permissions: new Map(), questions: new Map() }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, state)

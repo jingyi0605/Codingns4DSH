@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { CommandCodeDriver } from '../data/build/dist/host/cli-adapters/command-code-driver.js'
 import { load as loadCommandCodeAcpLoader } from '../data/build/dist/host/cli-adapters/command-code-acp-loader.js'
 import { readCommandCodeApiKey } from '../data/build/dist/host/cli-adapters/command-code-subscription.js'
+import { createSubagentBridgeRuntime, setSubagentBridge } from '../data/build/dist/host/cli-bridge/bridge-holder.js'
 
 test('Command Code ACP 将问题和 DSH 权限映射回传给 Provider', async () => {
   let promptId = 0
@@ -99,6 +100,54 @@ test('Command Code ACP 将问题和 DSH 权限映射回传给 Provider', async (
     },
   })
   driver.dispose()
+})
+
+test('Command Code ACP 启动时注入桥接 mod、桥接环境和 DSH MCP', async () => {
+  const runtime = createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:45999', token: 'acp-bridge-token' })
+  setSubagentBridge(runtime)
+  let spawnArgs: string[] | undefined
+  let spawnEnvironment: Record<string, string | undefined> | undefined
+  let sessionNewParams: Record<string, unknown> | undefined
+  const driver = new CommandCodeDriver({
+    enableAcp: true,
+    binaries: ['fake-command-code'],
+    spawnSync: (() => ({ status: 0, stdout: 'command-code 1.79.2', stderr: '' })) as never,
+    spawn: ((command: string, args: string[], options?: { env?: Record<string, string | undefined> }) => {
+      spawnArgs = [command, ...args]
+      spawnEnvironment = options?.env
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const stdin = { write(data: string): boolean {
+        const request = JSON.parse(data) as { id?: number | string; method?: string; params?: Record<string, unknown> }
+        if (request.method === 'initialize') stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        else if (request.method === 'session/new') {
+          sessionNewParams = request.params
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'command-code-bridge-session' } })}\n`)
+        } else if (request.method === 'session/set_mode') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        } else if (request.method === 'session/prompt') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { stopReason: 'end_turn' } })}\n`)
+        }
+        return true
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  try {
+    for await (const _ of driver.executeTurn({ sessionId: 'command-code-bridge-parent', messages: [], prompt: '执行' })) { /* 读完启动闭环。 */ }
+    assert.equal(spawnArgs?.[1], '--mod')
+    assert.ok(spawnArgs?.[2]?.endsWith('command-code-mod.js'))
+    assert.equal(spawnArgs?.[3], 'acp')
+    assert.equal(spawnEnvironment?.CODINGNS_SUBAGENT_BRIDGE, '1')
+    assert.equal(spawnEnvironment?.CODINGNS_DSH_SESSION_ID, 'command-code-bridge-parent')
+    const servers = sessionNewParams?.mcpServers as Array<Record<string, unknown>>
+    assert.equal(servers.length, 1)
+    assert.equal(servers[0]?.name, 'codingns')
+    const serverEnv = servers[0]?.env as Array<{ name: string; value: string }>
+    assert.deepEqual(serverEnv.find(({ name }) => name === 'CODINGNS_BRIDGE_TOKEN'), { name: 'CODINGNS_BRIDGE_TOKEN', value: 'acp-bridge-token' })
+  } finally {
+    driver.dispose()
+    setSubagentBridge(undefined)
+  }
 })
 
 /** 只模拟 stdio 对端；故意返回旧模型，验证驱动必须在恢复后主动设置模型。 */
