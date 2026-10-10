@@ -15,6 +15,7 @@ import * as usageDictionary from './locales/usage.js'
 import * as voiceModelsDictionary from './locales/voiceModels.js'
 import * as assistantTtsDictionary from './locales/assistantTts.js'
 import * as assistantWorkbenchDictionary from './locales/assistantWorkbench.js'
+import * as subagentCollapsedDictionary from './locales/subagentCollapsed.js'
 
 /** Codingns4DSH 自有词典命名空间。词典缺少的语言由 DSH 自动回退到英文。 */
 export const CODINGNS_LOCALE_NS = 'codingns' as const
@@ -948,6 +949,7 @@ const en: Record<string, string> = {
   ...fileWorkspaceDictionary.en,
   ...terminalAuthDictionary.en,
   ...panelsDictionary.en,
+  ...subagentCollapsedDictionary.en,
 }
 
 const zh: Record<string, string> = {
@@ -965,6 +967,7 @@ const zh: Record<string, string> = {
   ...fileWorkspaceDictionary.zh,
   ...terminalAuthDictionary.zh,
   ...panelsDictionary.zh,
+  ...subagentCollapsedDictionary.zh,
 }
 
 /** 在当前 Client Cordis 作用域注册中英文词典。 */

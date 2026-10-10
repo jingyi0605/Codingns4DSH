@@ -10,6 +10,7 @@ import { StateDot, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CodingNsLocale } from './locale.js'
 import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 import { resolveChevronDownIcon, resolveRefreshIcon, resolveTerminalArrowIcon } from '../dsh-capabilities/client/primitives-adapter.js'
+import { en, zh } from './locales/subagentCollapsed.js'
 
 /** 停止子 Agent 分组的专用词典，避免改写 DSH 原生 subagent 词典。 */
 export const SUBAGENT_COLLAPSED_LOCALE_NS = 'codingnsSubagentCollapsed' as const
@@ -18,94 +19,6 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     codingnsSubagentCollapsed: SubagentCollapsedKey
   }
-}
-
-const zh = {
-  'inactive.one': '已停止 {count} 个子智能体',
-  'inactive.other': '已停止 {count} 个子智能体',
-  'inactive.expand': '展开已停止的子智能体',
-  'inactive.collapse': '收起已停止的子智能体',
-  'count.total.one': '{count} 个子智能体',
-  'count.total.other': '{count} 个子智能体',
-  'count.running.one': '{count} 个子智能体，正在运行',
-  'count.running.other': '{count} 个子智能体，正在运行',
-  'activity.running': '正在运行',
-  'activity.completed': '已完成',
-  'activity.inactive': '当前未运行',
-  'tokens.thousand': '{value}K',
-  'tokens.million': '{value}M',
-  'tokens.total': '{value} tok',
-  'duration.seconds': '{seconds}秒',
-  'duration.minutes': '{minutes}分{seconds}秒',
-  'duration.hours': '{hours}小时{minutes}分{seconds}秒',
-  'duration.days': '{days}天',
-  'duration.daysHours': '{days}天{hours}小时',
-  'duration.months': '{months}个月',
-  'duration.monthsDays': '{months}个月{days}天',
-  'duration.years': '{years}年',
-  'duration.yearsMonths': '{years}年{months}个月',
-  'duration.exactDays': '{days}天 {hours}:{minutes}:{seconds}',
-  'duration.exactTitle': '用时 {duration}',
-  'mode.oneShot': '一次性',
-  'mode.continuable': '可继续',
-  'mode.unknown': '模式未知',
-  'branch.collapse': '收起 {label} 的下级子智能体',
-  'branch.expand': '展开 {label} 的下级子智能体',
-  'loading.label': '正在加载子智能体…',
-  'loading.aria': '正在加载子智能体',
-  'load.error': '无法加载子智能体',
-  retry: '重试',
-  'diagnostic.corrupt': '会话记录损坏',
-  'diagnostic.unsupported': '子智能体记录版本不受支持',
-  'diagnostic.unavailable': '会话记录暂不可用',
-  'tree.aria': '子智能体会话',
-  'switcher.aria': '切换到 {title}',
-  'open.sidebar': '在侧边栏打开',
-  'open.sidebar.aria': '在侧边栏打开 {label}',
-} as const
-
-const en: Record<keyof typeof zh, string> = {
-  'inactive.one': '{count} stopped subagent',
-  'inactive.other': '{count} stopped subagents',
-  'inactive.expand': 'Show stopped subagents',
-  'inactive.collapse': 'Hide stopped subagents',
-  'count.total.one': '{count} subagent',
-  'count.total.other': '{count} subagents',
-  'count.running.one': '{count} subagent running',
-  'count.running.other': '{count} subagents running',
-  'activity.running': 'running',
-  'activity.completed': 'completed',
-  'activity.inactive': 'not running',
-  'tokens.thousand': '{value}K',
-  'tokens.million': '{value}M',
-  'tokens.total': '{value} tok',
-  'duration.seconds': '{seconds}s',
-  'duration.minutes': '{minutes}m {seconds}s',
-  'duration.hours': '{hours}h {minutes}m {seconds}s',
-  'duration.days': '{days}d',
-  'duration.daysHours': '{days}d {hours}h',
-  'duration.months': '{months}mo',
-  'duration.monthsDays': '{months}mo {days}d',
-  'duration.years': '{years}y',
-  'duration.yearsMonths': '{years}y {months}mo',
-  'duration.exactDays': '{days}d {hours}:{minutes}:{seconds}',
-  'duration.exactTitle': 'Duration {duration}',
-  'mode.oneShot': 'one-shot',
-  'mode.continuable': 'continuable',
-  'mode.unknown': 'unknown mode',
-  'branch.collapse': 'Collapse {label} descendants',
-  'branch.expand': 'Expand {label} descendants',
-  'loading.label': 'Loading subagents…',
-  'loading.aria': 'Loading subagents',
-  'load.error': 'Unable to load subagents',
-  retry: 'Retry',
-  'diagnostic.corrupt': 'corrupted session record',
-  'diagnostic.unsupported': 'unsupported subagent record version',
-  'diagnostic.unavailable': 'session record temporarily unavailable',
-  'tree.aria': 'Subagent sessions',
-  'switcher.aria': 'Switch to {title}',
-  'open.sidebar': 'Open in sidebar',
-  'open.sidebar.aria': 'Open {label} in sidebar',
 }
 
 type SubagentCollapsedKey = keyof typeof zh
@@ -345,8 +258,8 @@ const sidebarButtonStyle: CSSProperties = {
 function formatTokens(value: number, t: TranslateNS<typeof SUBAGENT_COLLAPSED_LOCALE_NS>): string {
   const scaled = (next: number): string => next >= 100 ? String(Math.round(next)) : String(Math.round(next * 10) / 10)
   if (value < 1e3) return String(value)
-  if (value < 1e6) return t('tokens.thousand', { value: scaled(value / 1e3) })
-  return t('tokens.million', { value: scaled(value / 1e6) })
+  if (value < 1e6) return t('subagentCollapsed.tokens.thousand', { value: scaled(value / 1e3) })
+  return t('subagentCollapsed.tokens.million', { value: scaled(value / 1e6) })
 }
 
 function tokenTotal(usage: {
@@ -382,22 +295,22 @@ function formatDuration(ms: number, t: TranslateNS<typeof SUBAGENT_COLLAPSED_LOC
   if (days >= 365) {
     const years = Math.floor(days / 365)
     const months = Math.floor((days % 365) / 30)
-    return months === 0 ? t('duration.years', { years }) : t('duration.yearsMonths', { years, months })
+    return months === 0 ? t('subagentCollapsed.duration.years', { years }) : t('subagentCollapsed.duration.yearsMonths', { years, months })
   }
   if (days >= 30) {
     const months = Math.floor(days / 30)
     const remainingDays = days % 30
-    return remainingDays === 0 ? t('duration.months', { months }) : t('duration.monthsDays', { months, days: remainingDays })
+    return remainingDays === 0 ? t('subagentCollapsed.duration.months', { months }) : t('subagentCollapsed.duration.monthsDays', { months, days: remainingDays })
   }
-  if (days > 0) return hours === 0 ? t('duration.days', { days }) : t('duration.daysHours', { days, hours })
-  if (totalHours > 0) return t('duration.hours', { hours: totalHours, minutes: String(minutes).padStart(2, '0'), seconds: String(seconds).padStart(2, '0') })
-  if (totalMinutes > 0) return t('duration.minutes', { minutes: totalMinutes, seconds: String(seconds).padStart(2, '0') })
-  return t('duration.seconds', { seconds })
+  if (days > 0) return hours === 0 ? t('subagentCollapsed.duration.days', { days }) : t('subagentCollapsed.duration.daysHours', { days, hours })
+  if (totalHours > 0) return t('subagentCollapsed.duration.hours', { hours: totalHours, minutes: String(minutes).padStart(2, '0'), seconds: String(seconds).padStart(2, '0') })
+  if (totalMinutes > 0) return t('subagentCollapsed.duration.minutes', { minutes: totalMinutes, seconds: String(seconds).padStart(2, '0') })
+  return t('subagentCollapsed.duration.seconds', { seconds })
 }
 
 function formatExactDuration(ms: number, t: TranslateNS<typeof SUBAGENT_COLLAPSED_LOCALE_NS>): string {
   const { seconds, minutes, hours, days } = splitDuration(ms)
-  return days === 0 ? formatDuration(ms, t) : t('duration.exactDays', {
+  return days === 0 ? formatDuration(ms, t) : t('subagentCollapsed.duration.exactDays', {
     days, hours: String(hours).padStart(2, '0'), minutes: String(minutes).padStart(2, '0'), seconds: String(seconds).padStart(2, '0'),
   })
 }
@@ -511,7 +424,7 @@ function sessionStats(
 }
 
 function diagnosticText(entry: DiagnosticEntry, t: TranslateNS<typeof SUBAGENT_COLLAPSED_LOCALE_NS>): string {
-  return t(`diagnostic.${entry.reason}`)
+  return t(`subagentCollapsed.diagnostic.${entry.reason}`)
 }
 
 interface CatalogRowsProps {
@@ -555,14 +468,14 @@ function CatalogRows(props: CatalogRowsProps): ReactElement {
     const activity = childActivity(entry, props.summaries)
     const label = entry.label ?? entry.id
     const modeLabel = entry.mode === 'one-shot'
-      ? props.t('mode.oneShot')
-      : entry.mode === 'continuable' ? props.t('mode.continuable') : props.t('mode.unknown')
-    const secondary = [summary?.title, modeLabel, activity === 'running' ? props.t('activity.running') : props.t('activity.inactive')]
+      ? props.t('subagentCollapsed.mode.oneShot')
+      : entry.mode === 'continuable' ? props.t('subagentCollapsed.mode.continuable') : props.t('subagentCollapsed.mode.unknown')
+    const secondary = [summary?.title, modeLabel, activity === 'running' ? props.t('subagentCollapsed.activity.running') : props.t('subagentCollapsed.activity.inactive')]
       .filter((value): value is string => value !== undefined && value !== '')
       .join(' · ')
     const totalTokens = tokenTotal(summary?.projectionValues?.tokenUsage)
     const durationMs = activityDuration(summary, activity, now)
-    const tokenMetric = totalTokens === undefined ? undefined : props.t('tokens.total', { value: formatTokens(totalTokens, props.t) })
+    const tokenMetric = totalTokens === undefined ? undefined : props.t('subagentCollapsed.tokens.total', { value: formatTokens(totalTokens, props.t) })
     const durationMetric = durationMs === undefined ? undefined : {
       compact: formatDuration(durationMs, props.t),
       exact: formatExactDuration(durationMs, props.t),
@@ -590,18 +503,18 @@ function CatalogRows(props: CatalogRowsProps): ReactElement {
       ? reserveDisclosure ? createElement('span', { key: 'disclosure-space', style: { flex: 'none', width: 14, height: 17 } }) : null
       : createElement('button', {
         key: 'disclosure', type: 'button', tabIndex: -1,
-        'aria-label': props.t(expanded ? 'branch.collapse' : 'branch.expand', { label }),
+        'aria-label': props.t(expanded ? 'subagentCollapsed.branch.collapse' : 'subagentCollapsed.branch.expand', { label }),
         onClick: (event: MouseEvent<HTMLButtonElement>) => { event.preventDefault(); event.stopPropagation(); props.toggleBranch(entry.id) },
         style: { display: 'inline-flex', flex: 'none', alignItems: 'center', justifyContent: 'center', width: 14, height: 17, padding: 0, border: 0, borderRadius: 0, background: 'transparent', color: dshThemeColor.labelTertiary, cursor: 'pointer', transition: 'transform .12s', transform: expanded ? 'rotate(90deg)' : undefined },
       }, createElement(resolveTerminalArrowIcon('right'), { size: 12 }))
     const asideAnchor = props.currentSessionId === entry.id || props.openChildAside === undefined ? null : createElement('button', {
-      type: 'button', 'aria-label': props.t('open.sidebar.aria', { label }),
+      type: 'button', 'aria-label': props.t('subagentCollapsed.open.sidebar.aria', { label }),
       onClick: openAside, onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => { event.stopPropagation() },
       onMouseEnter: (event: MouseEvent<HTMLButtonElement>) => { event.currentTarget.style.background = dshThemeColor.surfaceSubtle; event.currentTarget.style.color = dshThemeColor.labelPrimary },
       onMouseLeave: (event: MouseEvent<HTMLButtonElement>) => { event.currentTarget.style.background = 'transparent'; event.currentTarget.style.color = dshThemeColor.labelTertiary },
       style: sidebarButtonStyle,
     }, createElement(resolveTerminalArrowIcon('right'), { size: 12 }))
-    const asideButton = asideAnchor === null ? null : createElement(Tooltip, { label: props.t('open.sidebar'), side: 'bottom', align: 'end', children: asideAnchor })
+    const asideButton = asideAnchor === null ? null : createElement(Tooltip, { label: props.t('subagentCollapsed.open.sidebar'), side: 'bottom', align: 'end', children: asideAnchor })
     const clickarea = createElement('div', { key: 'clickarea', 'data-subagent-clickarea': 'true', style: clickareaStyle },
       createElement('span', { style: rowActivitySlotStyle }, createElement(StateDot, { state: activity === 'running' ? 'ongoing' : 'idle' })),
       createElement('span', { style: contentStyle },
@@ -610,7 +523,7 @@ function CatalogRows(props: CatalogRowsProps): ReactElement {
       ),
       metrics === '' ? null : createElement('span', { style: metricsStyle },
         tokenMetric === undefined ? null : createElement('span', { style: { gridRow: 1, lineHeight: '17px' } }, tokenMetric),
-        durationMetric === undefined ? null : createElement('span', { style: { gridRow: 2 }, title: props.t('duration.exactTitle', { duration: durationMetric.exact }) }, durationMetric.compact),
+        durationMetric === undefined ? null : createElement('span', { style: { gridRow: 2 }, title: props.t('subagentCollapsed.duration.exactTitle', { duration: durationMetric.exact }) }, durationMetric.compact),
       ),
       asideButton,
     )
@@ -625,19 +538,19 @@ function CatalogRows(props: CatalogRowsProps): ReactElement {
     if (knownLeaf || !expanded) return createElement('div', { key: `${entry.id}-node`, style: { position: 'relative', minWidth: 0 } }, row)
     const childLoading = childCatalog === undefined || (childCatalog.state === 'loading' && childCatalog.entries.length === 0)
     const children = childCatalog === undefined
-      ? createElement('div', { style: { color: dshThemeColor.labelTertiary, padding: '8px 10px', fontSize: 11, lineHeight: '16px' } }, props.t('loading.label'))
+      ? createElement('div', { style: { color: dshThemeColor.labelTertiary, padding: '8px 10px', fontSize: 11, lineHeight: '16px' } }, props.t('subagentCollapsed.loading.label'))
       : createElement(CatalogRows, { ...props, parentSessionId: entry.id, catalog: childCatalog, level: props.level + 1 })
     return createElement('div', { key: `${entry.id}-node`, style: { position: 'relative', minWidth: 0 } }, row, createElement('div', { role: 'group', 'aria-busy': childLoading || undefined, style: { marginLeft: 16, paddingLeft: 3, borderLeft: '0.5px solid var(--dsw-alias-border-l2)' } }, children))
   }
 
   const diagnostics = partitioned.diagnostics.map((entry) => createElement('div', { key: `diagnostic-${entry.id}`, role: 'treeitem', 'aria-disabled': true, 'aria-level': props.level, style: { ...rowStyle, color: dshThemeColor.labelTertiary, cursor: 'not-allowed' } }, createElement('span', { style: rowActivitySlotStyle }, createElement(StateDot, { state: 'error' })), createElement('span', { style: contentStyle }, createElement('span', { style: ellipsisStyle }, entry.id), createElement('span', { style: { ...ellipsisStyle, fontSize: 10, lineHeight: '15px' } }, diagnosticText(entry, props.t)))))
-  const inactiveLabel = props.t(partitioned.inactive.length === 1 ? 'inactive.one' : 'inactive.other', { count: partitioned.inactive.length })
+  const inactiveLabel = props.t(partitioned.inactive.length === 1 ? 'subagentCollapsed.inactive.one' : 'subagentCollapsed.inactive.other', { count: partitioned.inactive.length })
   return createElement(Fragment, null,
-    props.catalog.state === 'loading' && props.catalog.entries.length === 0 ? createElement('div', { style: { color: dshThemeColor.labelTertiary, padding: '8px 10px', fontSize: 11, lineHeight: '16px' } }, props.t('loading.label')) : null,
-    props.catalog.state === 'error' ? createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, color: 'var(--dsw-alias-state-error-primary)', padding: '8px 10px', fontSize: 11, lineHeight: '16px' } }, createElement('span', null, props.catalog.error?.message ?? props.t('load.error')), createElement('button', { type: 'button', onClick: () => props.refresh(props.parentSessionId), style: { ...buttonStyle, width: 'auto', minHeight: 28, padding: '3px 5px', background: 'transparent', fontSize: 11 } }, createElement(resolveRefreshIcon()), props.t('retry'))) : null,
+    props.catalog.state === 'loading' && props.catalog.entries.length === 0 ? createElement('div', { style: { color: dshThemeColor.labelTertiary, padding: '8px 10px', fontSize: 11, lineHeight: '16px' } }, props.t('subagentCollapsed.loading.label')) : null,
+    props.catalog.state === 'error' ? createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, color: 'var(--dsw-alias-state-error-primary)', padding: '8px 10px', fontSize: 11, lineHeight: '16px' } }, createElement('span', null, props.catalog.error?.message ?? props.t('subagentCollapsed.load.error')), createElement('button', { type: 'button', onClick: () => props.refresh(props.parentSessionId), style: { ...buttonStyle, width: 'auto', minHeight: 28, padding: '3px 5px', background: 'transparent', fontSize: 11 } }, createElement(resolveRefreshIcon()), props.t('subagentCollapsed.retry'))) : null,
     ...diagnostics,
     ...partitioned.running.map(renderEntry),
-    partitioned.inactive.length > 0 ? createElement('div', { key: `${props.parentSessionId}-inactive`, style: { marginTop: props.catalog.entries.length > partitioned.inactive.length ? 2 : 0 } }, createElement('button', { type: 'button', 'aria-expanded': showInactive, 'aria-label': props.t(showInactive ? 'inactive.collapse' : 'inactive.expand'), onClick: () => props.toggleInactive(props.parentSessionId), style: inactiveGroupButtonStyle }, createElement(showInactive ? resolveChevronDownIcon() : resolveTerminalArrowIcon('right'), { size: 14 }), inactiveLabel), showInactive ? createElement('div', { role: 'group', style: { marginTop: 1 } }, ...partitioned.inactive.map(renderEntry)) : null) : null,
+    partitioned.inactive.length > 0 ? createElement('div', { key: `${props.parentSessionId}-inactive`, style: { marginTop: props.catalog.entries.length > partitioned.inactive.length ? 2 : 0 } }, createElement('button', { type: 'button', 'aria-expanded': showInactive, 'aria-label': props.t(showInactive ? 'subagentCollapsed.inactive.collapse' : 'subagentCollapsed.inactive.expand'), onClick: () => props.toggleInactive(props.parentSessionId), style: inactiveGroupButtonStyle }, createElement(showInactive ? resolveChevronDownIcon() : resolveTerminalArrowIcon('right'), { size: 14 }), inactiveLabel), showInactive ? createElement('div', { role: 'group', style: { marginTop: 1 } }, ...partitioned.inactive.map(renderEntry)) : null) : null,
   )
 }
 
@@ -792,13 +705,13 @@ function CatalogDropdown(props: CatalogDropdownProps): ReactElement | null {
 
   const currentEntry = props.currentSessionId === undefined ? undefined : catalog?.entries.find(entry => entry.kind === 'child' && entry.id === props.currentSessionId)
   const title = currentEntry?.kind === 'child' ? currentEntry.label ?? currentEntry.id : props.displayTitle
-  const totalKey = totalCount === 1 ? 'count.total.one' : 'count.total.other'
-  const runningKey = runningCount === 1 ? 'count.running.one' : 'count.running.other'
+  const totalKey = totalCount === 1 ? 'subagentCollapsed.count.total.one' : 'subagentCollapsed.count.total.other'
+  const runningKey = runningCount === 1 ? 'subagentCollapsed.count.running.one' : 'subagentCollapsed.count.running.other'
   const triggerText = props.variant === 'switcher'
     ? title ?? ''
     : props.t(totalKey, { count: totalCount })
   const triggerAriaLabel = props.variant === 'switcher'
-    ? props.t('switcher.aria', { title: triggerText })
+    ? props.t('subagentCollapsed.switcher.aria', { title: triggerText })
     : props.t(runningCount > 0 ? runningKey : totalKey, { count: runningCount > 0 ? runningCount : totalCount })
   const ancestorSwitcher = props.variant === 'switcher' && props.openTitle !== undefined
   const triggerColor = props.variant === 'switcher'
@@ -811,7 +724,7 @@ function CatalogDropdown(props: CatalogDropdownProps): ReactElement | null {
     onClick: handleTriggerClick, onKeyDown: handleTriggerKeyDown,
     style: { display: 'inline-flex', alignItems: 'center', gap: 4, minHeight: 28, maxWidth: props.variant === 'switcher' ? 244 : undefined, padding: '3px 2px', border: 0, borderRadius: 'var(--dsw-radius-sm)', background: 'transparent', color: triggerColor, fontSize: 12, lineHeight: '18px', fontWeight: props.variant === 'switcher' && !ancestorSwitcher ? 500 : undefined, cursor: 'pointer', outline: 'none' },
   }, props.variant === 'count' && runningCount > 0 ? createElement(StateDot, { state: 'ongoing' }) : null, createElement('span', { style: { flex: 1, minWidth: 0, maxWidth: 244, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, triggerText), props.variant === 'switcher' ? subagentSwitcherIcon() : createElement('span', { style: { display: 'inline-flex', transition: 'transform .12s', transform: open ? 'rotate(180deg)' : undefined } }, createElement(resolveChevronDownIcon())))
-  const menu = open ? createElement('div', { ref: menuRef, role: 'presentation', onMouseEnter: cancelHoverClose, onMouseLeave: scheduleHoverClose, onKeyDown: navigate, style: { ...catalogStyle(), ...position } }, createElement('div', { role: 'tree', 'aria-label': props.t('tree.aria'), style: catalogMenuBodyStyle }, createElement(CatalogRows, { parentSessionId: props.rootSessionId, ...(props.currentSessionId === undefined ? {} : { currentSessionId: props.currentSessionId }), catalog: catalog ?? { entries: [], state: 'loading' }, catalogs, summaries, expanded, inactiveOpen, level: 1, openChild: props.openChild, openChildAside: props.openChildAside, refresh: props.refresh, toggleBranch, toggleInactive, closeCatalog: close, t: props.t }))) : null
+  const menu = open ? createElement('div', { ref: menuRef, role: 'presentation', onMouseEnter: cancelHoverClose, onMouseLeave: scheduleHoverClose, onKeyDown: navigate, style: { ...catalogStyle(), ...position } }, createElement('div', { role: 'tree', 'aria-label': props.t('subagentCollapsed.tree.aria'), style: catalogMenuBodyStyle }, createElement(CatalogRows, { parentSessionId: props.rootSessionId, ...(props.currentSessionId === undefined ? {} : { currentSessionId: props.currentSessionId }), catalog: catalog ?? { entries: [], state: 'loading' }, catalogs, summaries, expanded, inactiveOpen, level: 1, openChild: props.openChild, openChildAside: props.openChildAside, refresh: props.refresh, toggleBranch, toggleInactive, closeCatalog: close, t: props.t }))) : null
   const renderedMenu = menu === null ? null : typeof document === 'undefined' ? menu : createPortal(menu, document.body)
   return createElement('div', { ref: rootRef, onMouseLeave: scheduleHoverClose, style: { position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0, marginLeft: props.variant === 'switcher' ? 6 : undefined } },
     button,
