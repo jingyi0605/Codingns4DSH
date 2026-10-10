@@ -1,4 +1,4 @@
-import type { AssistantNotification, AssistantNotificationSnapshot, AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
+import type { AssistantNotification, AssistantNotificationSnapshot, AssistantNotificationStreamFrame, AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
 import { callCodingNsRpcResult } from '../rpc-call.js'
 import type { CodingNsRpcClient } from './types.js'
 
@@ -9,6 +9,9 @@ export interface AssistantNotificationClientSnapshot {
   readonly errorGeneration?: number | undefined
   readonly loading: boolean
 }
+
+const ASSISTANT_NOTIFICATION_STREAM_ENDPOINT = 'codingnsAssistantNotifications/stream'
+const STREAM_RETRY_MAX_MS = 30_000
 
 /** 一个读取循环供网页与原生桥共享；所有通知 RPC 串行，配置变化使旧结果立即失效。 */
 export class AssistantNotificationStore {
@@ -25,6 +28,8 @@ export class AssistantNotificationStore {
   private chain: Promise<unknown> = Promise.resolve()
   private refreshPromise: Promise<void> | undefined
   private queuedRefresh: Promise<void> | undefined
+  private streamMode = false
+  private streamPromise: Promise<void> | undefined
   private clockOffset = 0
   private readonly presented = new Set<string>()
   private readonly opens = new Map<string, Promise<void>>()
@@ -49,10 +54,17 @@ export class AssistantNotificationStore {
     if (this.disposed || (this.enabled === enabled && this.key === key)) return
     this.enabled = enabled; this.key = key; this.epoch++
     this.lifetime.abort(); this.lifetime = new AbortController()
+    // 旧流可能要等底层迭代器响应 abort；先释放引用，避免新配置被旧 Promise 阻塞启动。
+    this.streamPromise = undefined
     clearTimeout(this.timer); clearTimeout(this.deadlineTimer)
     this.cursor = undefined; this.presented.clear(); this.opens.clear(); this.knownNotices.clear()
     this.publish({ loading: enabled })
-    if (enabled) void this.refresh(true)
+    if (enabled) {
+      if (typeof this.rpc.open === 'function') {
+        this.streamMode = true
+        void this.startStream(this.epoch)
+      } else void this.refresh(true)
+    } else this.streamMode = false
   }
 
   /** 翻页与轮询共用读取链，游标失效时回到首页，禁止拼接不同修订的列表。 */
@@ -96,10 +108,66 @@ export class AssistantNotificationStore {
       if (epoch === this.epoch && !this.disposed && this.enabled) this.publish({ ...this.snapshot, loading: false, error: message(error) })
     }).finally(() => {
       if (this.refreshPromise === operation) this.refreshPromise = undefined
-      if (epoch === this.epoch && this.enabled && !this.disposed) this.timer = setTimeout(() => { void this.refresh() }, this.intervalMs)
+      if (epoch === this.epoch && this.enabled && !this.disposed && !this.streamMode) this.timer = setTimeout(() => { void this.refresh() }, this.intervalMs)
     })
     this.refreshPromise = operation
     return operation
+  }
+
+  /** 连接代次内保持一条通知 Remote 流；断线只做一次完整 read 校准再退避重连。 */
+  private async startStream(epoch: number): Promise<void> {
+    if (this.streamPromise !== undefined) return this.streamPromise
+    const operation = this.consumeStream(epoch).finally(() => {
+      if (this.streamPromise === operation) this.streamPromise = undefined
+    })
+    this.streamPromise = operation
+    await operation
+  }
+
+  private async consumeStream(epoch: number): Promise<void> {
+    const open = this.rpc.open
+    if (typeof open !== 'function') { this.streamMode = false; await this.refresh(true); return }
+    let attempt = 0
+    let received = false
+    while (this.isCurrent(epoch)) {
+      try {
+        const stream = open.call(this.rpc, '/api', ASSISTANT_NOTIFICATION_STREAM_ENDPOINT, {}, this.lifetime.signal)
+        received = false
+        for await (const raw of stream) {
+          this.assertCurrent(epoch, this.lifetime.signal)
+          const frame = readStreamFrame(raw)
+          if (frame === undefined) continue
+          received = true
+          this.applyStreamFrame(frame)
+        }
+        this.assertCurrent(epoch, this.lifetime.signal)
+        throw new Error('通知事件流已结束')
+      } catch (error) {
+        if (!this.isCurrent(epoch) || this.lifetime.signal.aborted) return
+        if (!received && isUnsupportedStreamError(error)) {
+          // 旧版 Host 没有通知流时保留旧 RPC 行为，避免升级 Client 后通知静默失效。
+          this.streamMode = false
+          await this.refresh(true)
+          return
+        }
+        // 一次重连只做一次校准；校准期间不启动旧的定时器。
+        await this.refresh(true)
+        const delay = Math.min(STREAM_RETRY_MAX_MS, 1_000 * 2 ** Math.min(attempt++, 5))
+        await wait(delay, this.lifetime.signal)
+      }
+    }
+  }
+
+  private applyStreamFrame(frame: AssistantNotificationStreamFrame): void {
+    const previous = this.snapshot.frame
+    if (previous !== undefined && frame.snapshot.generation === previous.generation && frame.snapshot.revision <= previous.revision) return
+    this.cursor = undefined
+    this.publishFrame(this.silenceVisibleCompletion(frame.snapshot))
+    this.scheduleDeadline()
+  }
+
+  private isCurrent(epoch: number): boolean {
+    return epoch === this.epoch && this.enabled && !this.disposed
   }
 
   async acknowledge(noticeId: string, generation: number, action: 'presented' | 'dismiss', expectedKind?: AssistantNotification['kind'], expectedConnectionGeneration?: number): Promise<void> {
@@ -230,3 +298,33 @@ export class AssistantNotificationStore {
 }
 
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error) }
+
+function readStreamFrame(value: unknown): AssistantNotificationStreamFrame | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const frame = value as { readonly type?: unknown; readonly snapshot?: unknown }
+  if (frame.type !== 'snapshot' && frame.type !== 'delta') return undefined
+  if (typeof frame.snapshot !== 'object' || frame.snapshot === null || Array.isArray(frame.snapshot)) return undefined
+  const snapshot = frame.snapshot as { readonly generation?: unknown; readonly revision?: unknown }
+  if (!Number.isSafeInteger(snapshot.generation) || !Number.isSafeInteger(snapshot.revision)) return undefined
+  return { type: frame.type, snapshot: frame.snapshot as AssistantNotificationSnapshot }
+}
+
+function isUnsupportedStreamError(error: unknown): boolean {
+  if (typeof error === 'object' && error !== null) {
+    const code = String((error as { readonly code?: unknown }).code ?? '')
+    if (['CODINGNS_RPC_NOT_FOUND', 'CODINGNS_RPC_UNSUPPORTED', 'UNSUPPORTED_CAPABILITY', 'PEER_HOST_UNSUPPORTED'].includes(code)) return true
+  }
+  return /(?:HTTP (?:404|405)|not found|unsupported|未知|不存在|未挂载|尚未装配|暂不支持)/iu.test(message(error))
+}
+
+function wait(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms)
+    // 取消只结束当前退避，不应把 startStream 变成未处理拒绝。
+    const abort = (): void => { clearTimeout(timer); cleanup(); resolve() }
+    const cleanup = (): void => signal.removeEventListener('abort', abort)
+    function done(): void { cleanup(); resolve() }
+    signal.addEventListener('abort', abort, { once: true })
+    if (signal.aborted) abort()
+  })
+}

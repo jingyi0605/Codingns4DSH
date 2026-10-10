@@ -84,6 +84,13 @@ export interface AssistantNotificationSnapshot {
   readonly unchanged?: boolean
   readonly reset?: boolean
 }
+
+/** 通知长连接帧：首次连接给完整快照，后续只按 revision 推送最新快照。 */
+export interface AssistantNotificationStreamFrame {
+  readonly type: 'snapshot' | 'delta'
+  readonly snapshot: AssistantNotificationSnapshot
+}
+
 export interface AssistantNotificationReadRequest { readonly revision?: number; readonly cursor?: string; readonly limit?: number }
 export interface AssistantNotificationAckRequest {
   readonly noticeId: string

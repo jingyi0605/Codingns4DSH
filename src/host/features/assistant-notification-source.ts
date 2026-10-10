@@ -23,6 +23,7 @@ export class AssistantNotificationSource {
   private readonly events: JournalEntry[] = []
   // 没有 recover 的通用来源仍保留协议级兜底；全局助理来源始终提供 recover，读取时不使用这张缓存。
   private readonly fallbackPending = new Map<string, AssistantNotificationFact>()
+  private readonly revisionListeners = new Set<(revision: number) => void>()
   private revision = 0
   private disposed = false
 
@@ -30,6 +31,20 @@ export class AssistantNotificationSource {
     this.epoch = options.epoch ?? randomUUID()
     this.now = options.now ?? Date.now
     this.capacity = Math.max(1, Math.min(512, options.capacity ?? 512))
+  }
+
+  /** 供远端事件流订阅 revision；监听器失败不能阻断事实日志。 */
+  subscribeRevision(listener: (revision: number) => void): () => void {
+    this.revisionListeners.add(listener)
+    return () => this.revisionListeners.delete(listener)
+  }
+
+  /** 长连接只续租工作区，不重复构造来源快照，也不触发恢复扫描。 */
+  renew(workspaceIds: readonly string[]): void {
+    if (this.disposed) throw new Error('通知来源已关闭')
+    const request = readAssistantNotificationFeedRequest({ workspaceIds })
+    this.expire()
+    for (const workspaceId of request.workspaceIds) this.leases.set(workspaceId, this.now() + 10_000)
   }
 
   append(value: AssistantNotificationFact): void {
@@ -44,8 +59,12 @@ export class AssistantNotificationSource {
     }
     // 全局助理的当前待办由 recover 在每次读取时提供；事件日志只负责增量终态和导航事实。
     if (!this.leases.has(fact.workspaceId)) return
-    this.events.push({ revision: ++this.revision, fact })
+    this.revision++
+    this.events.push({ revision: this.revision, fact })
     if (this.events.length > this.capacity) this.events.splice(0, this.events.length - this.capacity)
+    for (const listener of this.revisionListeners) {
+      try { listener(this.revision) } catch { /* 远端观察者异常不能影响来源日志。 */ }
+    }
   }
 
   read(value: unknown): AssistantNotificationFeed {
@@ -71,7 +90,7 @@ export class AssistantNotificationSource {
 
   dispose(): void {
     this.disposed = true
-    this.leases.clear(); this.events.length = 0; this.fallbackPending.clear()
+    this.leases.clear(); this.events.length = 0; this.fallbackPending.clear(); this.revisionListeners.clear()
   }
 
   private expire(): void {

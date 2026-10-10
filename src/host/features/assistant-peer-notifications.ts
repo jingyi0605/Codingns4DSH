@@ -31,6 +31,8 @@ export interface AssistantPeerNotificationObserver {
 export interface AssistantPeerNotificationsOptions {
   nodes(signal: AbortSignal): Promise<readonly AssistantPeerNotificationNode[]>
   read(node: AssistantPeerNotificationNode, request: AssistantNotificationFeedRequest, signal: AbortSignal): Promise<unknown>
+  /** 新版 Host 使用 Typert Remote 流；缺失或不支持时回退到 read。 */
+  stream?(node: AssistantPeerNotificationNode, signal: AbortSignal): AsyncIterable<unknown>
   readonly observer: AssistantPeerNotificationObserver
   readonly intervalMs?: number
 }
@@ -104,6 +106,39 @@ export class AssistantPeerNotifications {
   }
 
   private async pump(worker: Worker): Promise<void> {
+    if (this.options.stream !== undefined) {
+      const supported = await this.pumpStream(worker)
+      if (supported || worker.controller.signal.aborted || this.controller.signal.aborted) return
+    }
+    await this.pumpPolling(worker)
+  }
+
+  private async pumpStream(worker: Worker): Promise<boolean> {
+    const signal = AbortSignal.any([this.controller.signal, worker.controller.signal])
+    let attempts = 0
+    while (!signal.aborted && !worker.unsupported) {
+      try {
+        const stream = this.options.stream!(worker.node, signal)
+        for await (const raw of stream) {
+          if (signal.aborted) return true
+          this.applyFeed(worker, readAssistantNotificationFeed(raw), attempts)
+          attempts = 0
+        }
+        if (signal.aborted) return true
+        throw new Error('远端通知事件流已结束')
+      } catch (error) {
+        if (signal.aborted) return true
+        if (isUnsupported(error)) return false
+        this.options.observer.onUnavailable(worker.node.hostId, worker.generation, '远端暂不可达，提醒将在连接恢复后同步', false)
+        worker.generation = this.nextGeneration(worker.node.hostId)
+        attempts += 1
+      }
+      await wait(Math.min(30_000, this.interval() * 2 ** Math.min(attempts, 5)), signal)
+    }
+    return true
+  }
+
+  private async pumpPolling(worker: Worker): Promise<void> {
     const signal = AbortSignal.any([this.controller.signal, worker.controller.signal])
     let attempts = 0
     while (!signal.aborted && !worker.unsupported) {
@@ -114,19 +149,7 @@ export class AssistantPeerNotifications {
           ...(worker.revision === undefined ? {} : { revision: worker.revision }),
         }, AbortSignal.any([signal, AbortSignal.timeout(5_000)]))
         if (signal.aborted) return
-        const feed = readAssistantNotificationFeed(raw)
-        if (worker.epoch !== undefined && worker.epoch !== feed.epoch) worker.generation = this.nextGeneration(worker.node.hostId)
-        const selected = new Set(worker.node.workspaceIds)
-        const scoped: AssistantNotificationFeed = { ...feed,
-          // 首次/缺口响应只能恢复当前待办；即使旧远端错误夹带历史终态也不重放。
-          events: feed.baseline || feed.gap ? [] : feed.events.filter(fact => selected.has(fact.workspaceId) && supportsFact(feed, fact.kind)),
-          pending: feed.capabilities.requests ? feed.pending.filter(fact => selected.has(fact.workspaceId)) : [],
-        }
-        const digest = JSON.stringify([feed.epoch, feed.revision, worker.node.hostLabel, scoped.pending, feed.capabilities])
-        if (digest !== worker.digest || feed.events.length > 0 || feed.baseline || attempts > 0) {
-          this.options.observer.onUpdate({ hostId: worker.node.hostId, hostLabel: worker.node.hostLabel, connectionGeneration: worker.generation, feed: scoped })
-        }
-        worker.epoch = feed.epoch; worker.revision = feed.revision; worker.digest = digest
+        this.applyFeed(worker, readAssistantNotificationFeed(raw), attempts)
         attempts = 0
       } catch (error) {
         if (signal.aborted) return
@@ -134,12 +157,26 @@ export class AssistantPeerNotifications {
         this.options.observer.onUnavailable(worker.node.hostId, worker.generation,
           worker.unsupported ? '该远端暂不支持会话提醒来源协议' : '远端暂不可达，提醒将在连接恢复后同步', worker.unsupported)
         if (worker.unsupported) return
-        // 断线先撤销旧路由；重连即使逻辑请求相同，也需要新的可操作代次。
         worker.generation = this.nextGeneration(worker.node.hostId)
         attempts += 1
       }
       await wait(Math.min(30_000, this.interval() * 2 ** Math.min(attempts, 5)), signal)
     }
+  }
+
+  private applyFeed(worker: Worker, feed: AssistantNotificationFeed, attempts: number): void {
+    if (worker.epoch !== undefined && worker.epoch !== feed.epoch) worker.generation = this.nextGeneration(worker.node.hostId)
+    const selected = new Set(worker.node.workspaceIds)
+    const scoped: AssistantNotificationFeed = { ...feed,
+      // 首次/缺口响应只能恢复当前待办；即使旧远端错误夹带历史终态也不重放。
+      events: feed.baseline || feed.gap ? [] : feed.events.filter(fact => selected.has(fact.workspaceId) && supportsFact(feed, fact.kind)),
+      pending: feed.capabilities.requests ? feed.pending.filter(fact => selected.has(fact.workspaceId)) : [],
+    }
+    const digest = JSON.stringify([feed.epoch, feed.revision, worker.node.hostLabel, scoped.pending, feed.capabilities])
+    if (digest !== worker.digest || feed.events.length > 0 || feed.baseline || attempts > 0) {
+      this.options.observer.onUpdate({ hostId: worker.node.hostId, hostLabel: worker.node.hostLabel, connectionGeneration: worker.generation, feed: scoped })
+    }
+    worker.epoch = feed.epoch; worker.revision = feed.revision; worker.digest = digest
   }
 
   private nextGeneration(hostId: string): number {
@@ -158,9 +195,11 @@ function supportsFact(feed: AssistantNotificationFeed, kind: AssistantNotificati
   return kind === 'resolved' ? feed.capabilities.resolve : feed.capabilities.requests
 }
 function isUnsupported(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null) return false
-  const code = (value as { code?: unknown }).code
-  return ['UNSUPPORTED_CAPABILITY', 'CODINGNS_RPC_NOT_FOUND', 'CODINGNS_RPC_UNSUPPORTED', 'PEER_HOST_UNSUPPORTED'].includes(String(code))
+  if (typeof value === 'object' && value !== null) {
+    const code = (value as { code?: unknown }).code
+    if (['UNSUPPORTED_CAPABILITY', 'CODINGNS_RPC_NOT_FOUND', 'CODINGNS_RPC_UNSUPPORTED', 'PEER_HOST_UNSUPPORTED'].includes(String(code))) return true
+  }
+  return /(?:HTTP (?:404|405)|not found|unsupported|未知|不存在|未挂载|尚未装配|暂不支持)/iu.test(value instanceof Error ? value.message : String(value))
 }
 function wait(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve()

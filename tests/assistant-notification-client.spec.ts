@@ -207,6 +207,35 @@ test('主页面隐藏仍保持单循环更新，实际显示确认拒绝后台/�
   assert.equal(assistantNotificationIsVisible(node), false)
 })
 
+test('通知 Remote 流推送初始快照与 revision 增量，不再启动 750ms 读取轮询', async (t) => {
+  const initial = frame()
+  const delta = { ...frame({ ...notice('approval', 2) }), generation: initial.generation, revision: initial.revision + 1 }
+  let reads = 0
+  let release!: (value: AssistantNotificationSnapshot | null) => void
+  const rpc: CodingNsRpcClient = {
+    async call() { reads++; return { ok: true, value: initial } },
+    open(_channel, _endpoint, _payload, signal) {
+      return (async function* () {
+        yield { type: 'snapshot', snapshot: initial }
+        const next = await new Promise<typeof delta | null>((resolve) => {
+          release = resolve
+          signal.addEventListener('abort', () => resolve(null), { once: true })
+        })
+        if (next !== null) yield { type: 'delta', snapshot: next }
+      })()
+    },
+  }
+  const store = new AssistantNotificationStore(rpc, async () => {})
+  t.after(() => store.dispose())
+  store.configure(true, 'stream')
+  await setImmediate()
+  assert.equal(reads, 0)
+  assert.equal(store.getSnapshot().frame?.revision, initial.revision)
+  release(delta)
+  await setImmediate()
+  assert.equal(store.getSnapshot().frame?.revision, delta.revision)
+})
+
 test('网页通知在字幕另一侧或形象旁显示，窄屏约束不移动形象锚点', () => {
   const below = floatingAssistantNotificationLayout(500, 400, 192, 208, 1024, 900, true)
   assert.equal(below.top, 218); assert.ok(Number(below.maxHeight) > 0)

@@ -53,6 +53,7 @@ import type { AssistantNotificationAckRequest, AssistantNotificationReadRequest,
 import { AssistantNotificationSource } from './assistant-notification-source.js'
 import { readAssistantNotificationFeedRequest, type AssistantNotificationFact as AssistantSourceFact } from '../../shared/assistant-notification-feed.js'
 import { bindDesktopAssistantNotifications } from '../desktop-assistant/notifications.js'
+import { AssistantNotificationController } from './assistant-notification-stream.js'
 
 /**
  * 全局智能助理 Host 边界。
@@ -139,6 +140,15 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       context.resources.add(() => notificationSource.dispose())
       const notifications = new AssistantNotificationEvents(context.services, { enabled: () => !resetting && !disposed, excludedSessionIds: () => managementAgent.sessionIds, onFact: (fact) => notificationSource.append(toSourceNotificationFact(fact)) })
       context.resources.add(() => notifications.dispose())
+      // 通知页面只在首次连接和连接代次变化时读取快照，正常变化走 Typert Remote WebSocket。
+      if (context.services.dshContext !== undefined) new AssistantNotificationController(context.services.dshContext, notifications.center, {
+        source: notificationSource,
+        authorizeSource: (workspaceIds) => {
+          const allowed = new Set(readWorkspaceRecords(context.services.dshContext).map(workspace => workspace.id))
+          if (workspaceIds.some(id => !allowed.has(id))) throw new CodingNsRpcError('ASSISTANT_NOTIFICATION_FORBIDDEN', '通知来源工作区不可访问')
+        },
+        sourceScope: (workspaceIds) => notifications.sourceScope(workspaceIds),
+      })
       // 同一 Host 中心供原生时钟和独立列表读取，主页面隐藏时仍准确同步。
       context.resources.add(bindDesktopAssistantNotifications(context.services, {
         read: (input) => { notifications.readCurrent(); return notifications.center.read(input) },

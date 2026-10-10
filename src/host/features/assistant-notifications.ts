@@ -50,10 +50,17 @@ export class AssistantNotificationCenter {
   // Host 重建不能重用上一生命周期的代次，否则相同修订号会让客户端保留旧分页。
   private currentGeneration = randomInt(1, 2 ** 40)
   private currentRevision = 0
+  private readonly revisionListeners = new Set<(revision: number) => void>()
   private readonly now: () => number
   constructor(private readonly options: AssistantNotificationCenterOptions = {}) { this.now = options.now ?? Date.now }
   get generation(): number { return this.currentGeneration }
   get revision(): number { return this.currentRevision }
+
+  /** 供通知长连接监听修订变化；监听器异常不能影响通知事实所有者。 */
+  subscribeRevision(listener: (revision: number) => void): () => void {
+    this.revisionListeners.add(listener)
+    return () => this.revisionListeners.delete(listener)
+  }
 
   /** 先切换代次，旧订阅或异步导航便不能重新写入已移除的范围。 */
   configure(enabled: boolean, managedWorkspaceIds: readonly string[], settings?: unknown): boolean {
@@ -64,13 +71,15 @@ export class AssistantNotificationCenter {
       this.settings = normalized
       // 单类型设置只清理对应记录，保留其他待办的身份、已读、收起及首展计时。
       for (const item of [...this.records.values()]) if (!normalized[item.notice.kind]) this.remove(item)
-      this.currentRevision++
+      this.bumpRevision()
       return true
     }
-    this.scopeKey = key; this.currentGeneration++; this.currentRevision++
+    this.scopeKey = key; this.currentGeneration++
     this.records.clear(); this.watermarks.clear(); this.connections.clear(); this.capabilities.clear()
     this.settings = normalized; this.managed = new Set(managedWorkspaceIds)
     this.enabled = enabled && normalized.enabled && !this.disposed
+    // 先清理旧代次，再广播新 revision；流订阅者拿到的首个新快照必须是空的当前范围。
+    this.bumpRevision()
     return true
   }
   baseline(target: AssistantNotificationTarget, seq: number, turn?: number): void {
@@ -82,7 +91,7 @@ export class AssistantNotificationCenter {
   setCapabilities(value: AssistantNotificationCapabilities): void {
     const next = { ...value, ...(value.reason === undefined ? {} : { reason: assistantNotificationText(value.reason) }) }
     if (JSON.stringify(this.capabilities.get(value.hostId)) === JSON.stringify(next)) return
-    this.capabilities.set(value.hostId, next); this.currentRevision++
+    this.capabilities.set(value.hostId, next); this.bumpRevision()
   }
   /** 断线只撤销操作能力；重连不改变逻辑请求身份或展示计时。 */
   connection(hostId: string, connectionGeneration: number, ready: boolean): void {
@@ -95,7 +104,7 @@ export class AssistantNotificationCenter {
       item.target = { ...item.target, connectionGeneration }
       item.notice = { ...item.notice, connectionGeneration, availability: ready ? 'ready' : 'disconnected' }
     }
-    this.currentRevision++
+    this.bumpRevision()
   }
 
   /** 用当前会话快照校正待处理请求；快照是事实来源，记录只保存展示身份和已读状态。 */
@@ -112,23 +121,23 @@ export class AssistantNotificationCenter {
       if (!pending(item.notice) || item.target.hostId !== hostId) continue
       const actualSessionId = item.target.actualRequestTarget?.sessionId ?? item.target.sessionId
       if (!available.has(`${item.notice.kind}:${actualSessionId}`) || active.has(item.logicalKey)) continue
-      this.remove(item); this.currentRevision++
+      this.remove(item); this.bumpRevision()
     }
   }
   removeHost(hostId: string): void {
     for (const item of [...this.records.values()]) if (item.target.hostId === hostId) this.remove(item)
     for (const key of this.watermarks.keys()) if (JSON.parse(key)[0] === hostId) this.watermarks.delete(key)
-    this.connections.delete(hostId); this.capabilities.delete(hostId); this.currentRevision++
+    this.connections.delete(hostId); this.capabilities.delete(hostId); this.bumpRevision()
   }
   invalidateSession(hostId: string, sessionId: string): void {
     for (const item of [...this.records.values()]) if (item.target.hostId === hostId && item.target.sessionId === sessionId || item.target.actualRequestTarget?.hostId === hostId && item.target.actualRequestTarget.sessionId === sessionId) this.remove(item)
-    this.watermarks.delete(JSON.stringify([hostId, sessionId])); this.currentRevision++
+    this.watermarks.delete(JSON.stringify([hostId, sessionId])); this.bumpRevision()
   }
   updateTitle(hostId: string, sessionId: string, title: string): void {
     const safe = assistantNotificationText(title, 240, '未命名会话')
     for (const item of this.records.values()) {
       if (item.target.hostId !== hostId || item.target.sessionId !== sessionId || item.notice.sessionTitle === safe) continue
-      item.notice = { ...item.notice, sessionTitle: safe }; this.currentRevision++
+      item.notice = { ...item.notice, sessionTitle: safe }; this.bumpRevision()
     }
   }
   consume(fact: AssistantNotificationFact): void {
@@ -147,7 +156,7 @@ export class AssistantNotificationCenter {
     if (request && fact.type === 'request-resolved') {
       const item = [...this.records.values()].find((candidate) => candidate.logicalKey === key)
       if (item !== undefined && item.notice.lifecycle === 'active') {
-        item.notice = { ...item.notice, lifecycle: 'resolved', presentation: 'collapsed' }; this.currentRevision++; this.trim()
+        item.notice = { ...item.notice, lifecycle: 'resolved', presentation: 'collapsed' }; this.trim(); this.bumpRevision()
       }
       return
     }
@@ -166,7 +175,7 @@ export class AssistantNotificationCenter {
       this.watermarks.set(sk, { seq: fact.seq ?? previous?.seq ?? -1, ...(fact.turn === undefined ? {} : { turn: fact.turn }), turnId: fact.turnId, failed: fact.type === 'turn-failed' })
       if (!this.settings[kind]) {
         // 关闭错误提示也不能保留同轮已被失败事实推翻的完成提示。
-        if (item !== undefined) { this.remove(item); this.currentRevision++ }
+        if (item !== undefined) { this.remove(item); this.bumpRevision() }
         return
       }
     }
@@ -176,7 +185,7 @@ export class AssistantNotificationCenter {
     if (item !== undefined && request) {
       if (item.notice.lifecycle !== 'active') return
       const notice = { ...item.notice, sessionTitle: title, text: template, availability: 'ready' as const, ...(target.connectionGeneration === undefined ? {} : { connectionGeneration: target.connectionGeneration }) }
-      if (JSON.stringify(item.target) !== JSON.stringify(target) || JSON.stringify(item.notice) !== JSON.stringify(notice)) { item.target = target; item.notice = notice; this.currentRevision++ }
+      if (JSON.stringify(item.target) !== JSON.stringify(target) || JSON.stringify(item.notice) !== JSON.stringify(notice)) { item.target = target; item.notice = notice; this.bumpRevision() }
       return
     }
     const notice: AssistantNotification = {
@@ -188,7 +197,7 @@ export class AssistantNotificationCenter {
     }
     this.records.set(notice.noticeId, { notice, target, logicalKey: key })
     if (!request) this.watermarks.get(sessionKey(fact.target))!.noticeId = notice.noticeId
-    this.currentRevision++; this.trim()
+    this.trim(); this.bumpRevision()
   }
   read(input: AssistantNotificationReadRequest = {}): AssistantNotificationSnapshot {
     this.expire()
@@ -229,7 +238,7 @@ export class AssistantNotificationCenter {
     }
     if (input.action === 'read' && !next.read) next = { ...next, read: true, ...(!pending(next) ? { presentation: 'collapsed' as const } : {}) }
     if (input.action === 'dismiss' && next.presentation !== 'collapsed') next = { ...next, presentation: 'collapsed' }
-    if (next !== item.notice) { item.notice = next; this.currentRevision++ }
+    if (next !== item.notice) { item.notice = next; this.bumpRevision() }
     return { generation: this.currentGeneration, revision: this.currentRevision, notification: { ...item.notice } }
   }
   async target(input: AssistantNotificationTargetRequest): Promise<AssistantNotificationTarget> {
@@ -245,7 +254,7 @@ export class AssistantNotificationCenter {
     if (!valid || current !== item || current.notice.availability !== 'ready' || current.target.connectionGeneration !== expectedConnection || input.connectionGeneration !== current.target.connectionGeneration) throw new CodingNsRpcError('ASSISTANT_NOTIFICATION_EXPIRED', '通知目标已失效')
     return { ...item.target, ...(item.target.actualRequestTarget === undefined ? {} : { actualRequestTarget: { ...item.target.actualRequestTarget } }) }
   }
-  dispose(): void { this.disposed = true; this.enabled = false; this.currentGeneration++; this.currentRevision++; this.records.clear(); this.watermarks.clear(); this.connections.clear(); this.capabilities.clear() }
+  dispose(): void { this.disposed = true; this.enabled = false; this.currentGeneration++; this.records.clear(); this.watermarks.clear(); this.connections.clear(); this.capabilities.clear(); this.bumpRevision(); this.revisionListeners.clear() }
   private lookup(input: { noticeId: string; generation: number }): NoticeRecord {
     if (!Number.isSafeInteger(input.generation) || input.generation !== this.currentGeneration) throw new CodingNsRpcError('ASSISTANT_NOTIFICATION_STALE_GENERATION', '通知代次已变化')
     if (typeof input.noticeId !== 'string' || input.noticeId.length === 0 || input.noticeId.length > 160) throw new TypeError('通知 ID 无效')
@@ -254,7 +263,13 @@ export class AssistantNotificationCenter {
     return item
   }
   private expire(): void {
-    for (const item of this.records.values()) if (item.notice.deadline !== undefined && item.notice.deadline <= this.now() && item.notice.presentation !== 'collapsed') { item.notice = { ...item.notice, presentation: 'collapsed' }; this.currentRevision++ }
+    for (const item of this.records.values()) if (item.notice.deadline !== undefined && item.notice.deadline <= this.now() && item.notice.presentation !== 'collapsed') { item.notice = { ...item.notice, presentation: 'collapsed' }; this.bumpRevision() }
+  }
+  private bumpRevision(): void {
+    this.currentRevision++
+    for (const listener of this.revisionListeners) {
+      try { listener(this.currentRevision) } catch { /* 长连接观察者失败不能阻断通知写入。 */ }
+    }
   }
   private remove(item: NoticeRecord): void { this.records.delete(item.notice.noticeId) }
   private logicalKey(fact: AssistantNotificationFact): string {
