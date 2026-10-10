@@ -256,7 +256,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     // 权限处理器；CLI 因而不向模型提供 AskUserQuestion。
     const args = ['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--permission-prompt-tool', 'stdio', '--include-partial-messages', '--verbose']
     args.push(...claudePermissionArgs(input.permission))
-    // 子代理托管开启时注入 MCP 替身工具并停用内建 Task 子代理。
+    // 子代理托管开启时注入 MCP 替身工具并停用内建 Task/Agent 子代理。
     args.push(...claudeBridgeArgs(input.sessionId, this.descriptor.id))
     for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--add-dir', directory)
     if (input.providerSessionId) args.push('--resume', input.providerSessionId)

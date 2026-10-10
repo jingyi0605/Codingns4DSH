@@ -16,6 +16,12 @@ const COMMAND_CODE_MOD_PATH = fileURLToPath(new URL('./command-code-mod.js', imp
 const BRIDGE_MARKER = 'CODINGNS_SUBAGENT_BRIDGE'
 const NATIVE_AGENT_BLOCK_MARKER = 'CODINGNS_DISABLE_NATIVE_AGENT'
 const SUBAGENT_CHILD_MARKER = 'CODINGNS_SUBAGENT_CHILD'
+/**
+ * Claude Code 的内建子代理工具曾叫 `Task`，当前版本公开名称是 `Agent`。
+ * CLI 会把 `Task` 作为兼容别名改写，但同时传入两个名称可以覆盖旧版、当前版
+ * 以及用户自定义工具映射，避免原生入口绕过 CodingNS 桥接。
+ */
+const CLAUDE_NATIVE_SUBAGENT_BLOCK_ARGS = ['--disallowedTools', 'Task', 'Agent'] as const
 
 export function bridgeMcpEntryPath(): string {
   return MCP_ENTRY_PATH
@@ -66,15 +72,18 @@ export function commandCodeNativeAgentEnvironment(sessionId: string, adapterId: 
   }
 }
 
-/** claude-code：`--mcp-config` 注入替身工具，并指示模型优先使用。 */
+/** claude-code：`--mcp-config` 注入替身工具，并停用内建 Task/Agent。 */
 export function claudeBridgeArgs(sessionId: string, adapterId: string): readonly string[] {
   const env = bridgeEnvironment(sessionId, adapterId)
-  if (env === undefined) return []
+  // CodingNS 创建的 Claude 子会话不能再次托管子代理，否则会形成没有父级
+  // 生命周期记录的递归树。子会话仍然启动普通 Claude 工具，但明确屏蔽内建
+  // Agent/Task；父会话只有在桥接运行时存在时才拿到 MCP 派发工具。
+  if (env === undefined) return isSubagentChildSession(sessionId) ? CLAUDE_NATIVE_SUBAGENT_BLOCK_ARGS : []
   const config = JSON.stringify({ mcpServers: { codingns: mcpServerConfig(env) } })
   return [
     '--mcp-config', config,
     '--append-system-prompt', bridgeSubagentGuidance('mcp__codingns__agent_subagent'),
-    '--disallowedTools', 'Task',
+    ...CLAUDE_NATIVE_SUBAGENT_BLOCK_ARGS,
   ]
 }
 
