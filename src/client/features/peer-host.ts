@@ -462,6 +462,12 @@ export function createPeerHostPageTransport(
   const hasUnresolvedVirtualNativeScope = (method: string, value: unknown): boolean => {
     // 问题答案正文允许引用任意会话 ID；唯一的路由身份是 agentId，不能扫描正文。
     if (method === 'userQuestions/answer' || method === 'userQuestions/attachWait') return false
+    // 反馈只能由 request.sessionId 决定归属，消息 ID、反馈文字和版本号都不是路由身份。
+    if (method.startsWith('messageFeedback/') || method === 'sessionFeedback/record') {
+      const input = asRecord(value)
+      const request = asRecord(asRecord(input?.args)?.request ?? input?.request)
+      return typeof request?.sessionId === 'string' && parseVirtualSessionId(request.sessionId) !== null
+    }
     return containsVirtualResourceId(value)
   }
   const rewriteCliPayload = (value: unknown, scope: HostScope, key = ''): unknown => {
@@ -766,7 +772,10 @@ export function createPeerHostPageTransport(
       const scope = cli === undefined
         ? scopeForNativeRequest(method ?? '', value)
         : scopeForPluginRequest(cli, value)
-      return scope !== undefined ? scope.targetHostId !== null : hasUnresolvedVirtualNativeScope(method ?? '', value)
+      if (scope !== undefined) return scope.targetHostId !== null
+      // 只有原生 Remote 方法会在 hooks 里明确报错、拒绝回落本机；CLI 等插件端点
+      // 没有这层守卫，作用域丢失时必须交还本机，不能假装接管后静默落到本机。
+      return isDshNativeRemoteMethod(method ?? '') && hasUnresolvedVirtualNativeScope(method ?? '', value)
     },
     watchNavigation() {
       const store = readNativeNavigationStore(uiContext)
