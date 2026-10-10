@@ -1,18 +1,22 @@
 /** 当前经过完整验证的 DSH 版本；源文件由根目录 version.json 同步。 */
-export const DSH_VERSION = '0.2.1-alpha.1' as const
+export const DSH_VERSION = '0.2.1-alpha.2' as const
 
 /** DSH 测试版本别名，供新代码表达语义，保留 DSH_VERSION 兼容旧调用方。 */
 export const DSH_TESTED_VERSION = DSH_VERSION
 
 /**
- * 插件正式验证的 DSH 版本范围，覆盖 rc.2 到当前验证的 alpha.1。
+ * 插件正式验证的 DSH 版本范围，覆盖 rc.2 到当前验证的 alpha.2。
  *
- * 0.2.0-rc.2 与 0.2.1-alpha.1 属于同一 API 世代：插件消费的 7 个宿主包接口面
- * 未变（仅 dsh-client-ui-primitives 新增 InlineEditor），会话格式仍为 v4。因此
- * 这里保留明确上界，是为了让 npm/DSH 安装期也能识别 0.2.1-alpha.1 这个跨 patch
+ * 0.2.0-rc.2、0.2.1-alpha.1 与 0.2.1-alpha.2 属于同一 API 世代：插件直接消费的
+ * 20 个宿主包中 18 个接口面未变，会话格式仍为 v4。唯一的服务级破坏性变化是
+ * alpha.2 用 `subagents.startActivation()` 取代 `startContinuable()`，由
+ * `subagent.activation` / `subagent.continuable` 两条能力路由分别探测，业务侧
+ * 经 `startNativeSubagent()` 归一化调用，因此同一个版本范围仍然成立。
+ *
+ * 这里保留明确上界，是为了让 npm/DSH 安装期也能识别 0.2.1-alpha.2 这个跨 patch
  * 预发布版本；出现新的 API 世代或结构变化时，应重新验证并更新范围与能力路由。
  */
-export const DSH_COMPATIBILITY = '>=0.2.0-rc.2 <=0.2.1-alpha.1' as const
+export const DSH_COMPATIBILITY = '>=0.2.0-rc.2 <=0.2.1-alpha.2' as const
 
 /**
  * 兼容范围下界，即插件仍然接受的最低 DSH 版本。

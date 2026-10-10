@@ -12,7 +12,7 @@ import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters
 import { DELEGATE_COMMAND_NAME, delegateAdapterOptions, extractDelegateTask } from '../data/build/dist/client/delegate-plan.js'
 import { appendDelegateCarrier, parseDelegationCarriers } from '../data/build/dist/client/delegate-plan.js'
 import { rewriteDelegationMessages } from '../data/build/dist/host/cli-adapters/delegation-mention-rewrite.js'
-import { externalTeamProvider } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
+import { externalTeamProvider, hasNativeSubagentStart, startNativeSubagent } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -472,4 +472,93 @@ test('子代理托管设置归一化：并发上限按上下限收敛并带缺�
   assert.equal(normalizeSubagentBridgeSettings({ maxConcurrentSubagents: 'many' }).maxConcurrentSubagents, 8)
   // 关闭状态不受并发数影响。
   assert.equal(normalizeSubagentBridgeSettings({ enabled: false, maxConcurrentSubagents: 3 }).enabled, false)
+})
+
+test('原生子代理启动入口按世代归一化：alpha.2 走 startActivation 并补必填 delivery', async () => {
+  const calls: Array<Record<string, any>> = []
+  const service = {
+    startActivation: async (spec: Record<string, any>) => {
+      calls.push(spec)
+      return { childId: 'child-activation', result: Promise.resolve({ ok: true }) }
+    },
+  }
+  assert.equal(hasNativeSubagentStart(service as never), true)
+  const started = await startNativeSubagent(service as never, {
+    provider: 'codingns-external-codex',
+    label: '分析当前项目',
+    request: { prompt: [{ type: 'text', text: '分析当前项目' }], parent: { id: 'agent-1' } },
+  })
+  // 托管 Activation 不再保证 messageId，归一化结果只保留 childId。
+  assert.deepEqual(started, { childId: 'child-activation' })
+  assert.equal(calls.length, 1)
+  // delivery 是 alpha.2 的必填参数：必须显式声明，否则 startActivation 直接拒绝。
+  assert.equal(calls[0]!.delivery, 'parent')
+  assert.equal(calls[0]!.provider, 'codingns-external-codex')
+})
+
+test('原生子代理启动入口在旧宿主回退到 startContinuable 并保留 messageId', async () => {
+  const service = { startContinuable: async () => ({ childId: 'child-legacy', messageId: 'message-1' }) }
+  assert.equal(hasNativeSubagentStart(service as never), true)
+  const started = await startNativeSubagent(service as never, {
+    provider: 'codingns-external-codex',
+    request: { prompt: [{ type: 'text', text: '任务' }], parent: { id: 'agent-1' } },
+  })
+  assert.deepEqual(started, { childId: 'child-legacy', messageId: 'message-1' })
+})
+
+test('原生子代理两代入口都缺失时判定为不可用并抛出可读错误', async () => {  const service = { registerProvider: () => () => undefined }
+  assert.equal(hasNativeSubagentStart(service as never), false)
+  assert.equal(hasNativeSubagentStart(undefined), false)
+  await assert.rejects(
+    () => startNativeSubagent(service as never, {
+      provider: 'codingns-external-codex',
+      request: { prompt: [{ type: 'text', text: '任务' }], parent: { id: 'agent-1' } },
+    }),
+    /原生 Subagent 能力不可用/u,
+  )
+})
+
+test('托管 Activation 的结果拒绝不会冒泡为未处理拒绝', async () => {
+  const rejections: unknown[] = []
+  const onRejection = (reason: unknown): void => { rejections.push(reason) }
+  process.on('unhandledRejection', onRejection)
+  try {
+    // DSH 在结果捕获失败时会让 activation.result 拒绝；插件不消费它，
+    // 归一化入口必须挂上 catch，否则拒绝会打到 Host 进程。
+    const service = {
+      startActivation: async () => ({ childId: 'child-1', result: Promise.reject(new Error('capture failed')) }),
+    }
+    await startNativeSubagent(service as never, {
+      provider: 'codingns-external-codex',
+      request: { prompt: [{ type: 'text', text: '任务' }], parent: { id: 'agent-1' } },
+    })
+    // 让微任务队列跑完，未处理的拒绝才会被上报。
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.deepEqual(rejections, [])
+  } finally {
+    process.off('unhandledRejection', onRejection)
+  }
+})
+
+test('子代理目标目录只在显式给出时下发，未指定时请求体不含该字段', async () => {
+  const calls: Array<Record<string, any>> = []
+  const service = {
+    startActivation: async (spec: Record<string, any>) => {
+      calls.push(spec)
+      return { childId: `child-${String(calls.length)}` }
+    },
+  }
+  // 未指定目录：请求体里不出现 cwd，rc.2 / alpha.1 与今天的行为逐字一致。
+  await startNativeSubagent(service as never, {
+    provider: 'codingns-external-codex',
+    request: { prompt: [{ type: 'text', text: '任务' }], parent: { id: 'agent-1' } },
+  })
+  assert.equal('cwd' in calls[0]!.request, false)
+
+  // 显式指定：原样下发，相对路径由 DSH 相对父级当前目录解析，本地不拼接。
+  await startNativeSubagent(service as never, {
+    provider: 'codingns-external-codex',
+    request: { prompt: [{ type: 'text', text: '任务' }], parent: { id: 'agent-1' }, cwd: 'packages/app' },
+  })
+  assert.equal(calls[1]!.request.cwd, 'packages/app')
 })

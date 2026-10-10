@@ -1,6 +1,6 @@
 import { DEFAULT_SUBAGENT_BRIDGE_SETTINGS } from '../../shared/contracts/config.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
-import { externalTeamProvider, withTeamSubagentSelection, type NativeSubagentService } from './native-team-subagent.js'
+import { externalTeamProvider, startNativeSubagent, withTeamSubagentSelection, type NativeSubagentService } from './native-team-subagent.js'
 
 /** 同步子代理首轮的最长等待时间；后台任务不会把这个预算绑定到调用方。 */
 export const NATIVE_SUBAGENT_TIMEOUT_MS = 15 * 60_000
@@ -36,13 +36,13 @@ export function getMaxNativeSubagentsPerParent(): number {
 }
 
 /**
- * DSH 会把 startContinuable 收到的 signal 原样转发给 Provider 的 prepareContinuable，
+ * DSH 会把启动请求收到的 signal 原样转发给 Provider 的 prepareContinuable，
  * 缺省时不会补一个可用的 signal。桥接路径没有调用方 signal，必须兜底，
  * 否则 Provider 侧的 `request.signal.throwIfAborted()` 会直接抛 TypeError。
  */
 const fallbackSignal = new AbortController().signal
 
-/** DSH Agent 的最小结构：startContinuable 会读 options 与 session.header。 */
+/** DSH Agent 的最小结构：原生子代理启动会读 options 与 session.header。 */
 export interface NativeParentAgent {
   readonly id?: string
   readonly options?: { readonly subagentDepth?: number }
@@ -55,6 +55,11 @@ export interface NativeSubagentDispatchRequest {
   readonly parentAgent: NativeParentAgent
   readonly parentId: string
   readonly modelId?: string | undefined
+  /**
+   * 子会话起始目录。缺省时子会话继承父级当前目录；旧版本 DSH 会忽略该字段。
+   * 相对路径由 DSH 相对父级当前目录解析，这里不做本地拼接。
+   */
+  readonly cwd?: string | undefined
   readonly background: boolean
   readonly signal?: AbortSignal | undefined
   /**
@@ -333,7 +338,7 @@ export async function waitNativeSubagentLifecycle(
 }
 
 /**
- * 派发一个目标适配器子代理：startContinuable 创建原生可续子会话，
+ * 派发一个目标适配器子代理：`startNativeSubagent` 创建原生子会话，
  * 非后台模式等待子会话首轮结束并回收文本与工具计数。
  */
 export async function dispatchNativeSubagent(
@@ -356,12 +361,14 @@ export async function dispatchNativeSubagent(
     const agentOptions = request.adapterId === 'dsh' && request.modelId !== undefined && request.modelId !== 'provider-default'
       ? { model: request.modelId }
       : undefined
-    const started = await select(() => service.startContinuable!({
+    const started = await select(() => startNativeSubagent(service, {
       provider: externalTeamProvider(request.adapterId),
       label: request.prompt.replace(/\s+/gu, ' ').slice(0, 120),
       request: {
         prompt: [{ type: 'text', text: request.prompt }],
         parent: request.parentAgent,
+        // 目标目录只在调用方显式给出时下发；旧版本 DSH 会忽略该字段。
+        ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
         // DSH 内置 spawn Provider 支持 agentOptions；外部 CLI Provider 不支持，
         // 所以只有 dsh 目标才把二级选择器的模型下发到原生子 Agent。
         ...(agentOptions === undefined ? {} : { agentOptions }),

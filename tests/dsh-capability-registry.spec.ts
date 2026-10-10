@@ -203,7 +203,13 @@ test('0.2 世代 Host fixture 按服务形状解析到 020 路由', () => {
       contexts: { getHost: () => undefined, getClient: () => undefined },
     },
     sessions: { get: () => undefined, list: () => [] },
-    subagents: { startContinuable: async () => undefined, sendMessage: async () => undefined },
+    subagents: {
+      // 同时提供两代原生子代理启动入口：真实宿主只会给出一代，Registry 必须按版本
+      // 范围与优先级各选其一。routeId 因此按版本不同，单独在下面断言。
+      startContinuable: async () => undefined,
+      startActivation: async () => undefined,
+      sendMessage: async () => undefined,
+    },
     agentTeams: { listMembers: () => [], spawnTeammate: async () => undefined },
     agents: { get: () => undefined, list: () => [] },
     // 启动页注入需要事件总线与 WebServer；tapIndex 是 viewport 改写的唯一入口。
@@ -220,7 +226,6 @@ test('0.2 世代 Host fixture 按服务形状解析到 020 路由', () => {
     ['typert.context', 'typert-context-registry-020'],
     ['typert.stream', 'typert-remote-stream-020'],
     ['session.format-v4', 'session-format-v4'],
-    ['subagent.continuable', 'subagent-continuable-020'],
     ['agent-team.native', 'agent-team-native-020'],
     ['web.index-inject', 'index-inject-rows-020'],
     ['web.index-tap', 'index-tap-020'],
@@ -234,6 +239,58 @@ test('0.2 世代 Host fixture 按服务形状解析到 020 路由', () => {
       assert.equal(resolution?.routeId, routeId, `${dshVersion} ${capability}`)
       assert.equal(resolution?.status, 'ready', `${dshVersion} ${capability}`)
     }
+    // 原生子代理启动入口按世代换代，但对外仍是同一个 `subagent.continuable` 能力。
+    const subagent = profile.capabilities.get('subagent.continuable')
+    assert.equal(subagent?.status, 'ready', `${dshVersion} subagent.continuable`)
+    assert.equal(
+      subagent?.routeId,
+      dshVersion === '0.2.0-rc.2' ? 'subagent-continuable-020' : 'subagent-activation-021',
+      `${dshVersion} subagent.continuable`,
+    )
+  }
+})
+
+test('原生子代理启动入口按 DSH 世代切换路由', () => {
+  const legacyContext = { subagents: { startContinuable: async () => undefined, sendMessage: async () => undefined } }
+  const activationContext = { subagents: { startActivation: async () => undefined, sendMessage: async () => undefined } }
+  const resolve = (dshVersion: string, context: unknown): { routeId?: string; status?: string } | undefined =>
+    createDshCapabilityRegistry(dshVersion, 'host', context).getProfile(context).capabilities.get('subagent.continuable')
+
+  // rc.2 到 alpha.1 只有 startContinuable；alpha.2 的托管 Activation 路由在这些版本范围外。
+  for (const dshVersion of ['0.2.0-rc.2', '0.2.1-alpha.1']) {
+    assert.equal(resolve(dshVersion, legacyContext)?.routeId, 'subagent-continuable-020', dshVersion)
+    assert.equal(resolve(dshVersion, legacyContext)?.status, 'ready', dshVersion)
+    assert.equal(resolve(dshVersion, activationContext)?.status, 'unavailable', dshVersion)
+  }
+  // alpha.2 起只有 startActivation：旧入口已被上游移除，必须判为不可用，
+  // 而不是让业务侧拿到一个永远抛错的启动入口。
+  assert.equal(resolve('0.2.1-alpha.2', activationContext)?.routeId, 'subagent-activation-021')
+  assert.equal(resolve('0.2.1-alpha.2', activationContext)?.status, 'ready')
+  assert.equal(resolve('0.2.1-alpha.2', legacyContext)?.status, 'unavailable')
+})
+
+test('工作目录与字体字号能力只在 alpha.2 及以上就绪', () => {
+  const hostContext = { workingDirectory: { get: () => '/tmp/project' } }
+  const clientContext = { theme: { fontSizes: { text: 14, code: 12, terminal: 12 } } }
+  // 旧版本的形状：Host 没有 workingDirectory 服务，Client 的 theme 只有单值 fontSize。
+  const legacyHostContext = { workingDirectory: undefined }
+  const legacyClientContext = { theme: { fontSize: 14 } }
+  const resolveHost = (dshVersion: string, context: unknown): { routeId?: string; status?: string } | undefined =>
+    createDshCapabilityRegistry(dshVersion, 'host', context).getProfile(context).capabilities.get('session.working-directory')
+  const resolveClient = (dshVersion: string, context: unknown): { routeId?: string; status?: string } | undefined =>
+    createDshCapabilityRegistry(dshVersion, 'client', context).getProfile(context).capabilities.get('theme.font-scale')
+
+  assert.equal(resolveHost('0.2.1-alpha.2', hostContext)?.routeId, 'session-working-directory-021')
+  assert.equal(resolveHost('0.2.1-alpha.2', hostContext)?.status, 'ready')
+  assert.equal(resolveClient('0.2.1-alpha.2', clientContext)?.routeId, 'theme-font-scale-021')
+  assert.equal(resolveClient('0.2.1-alpha.2', clientContext)?.status, 'ready')
+
+  // rc.2 与 alpha.1 都没有这两个能力；业务侧据此回退到会话头目录与固定像素字号，
+  // 而不是在运行期写版本判断。
+  for (const dshVersion of ['0.2.0-rc.2', '0.2.1-alpha.1']) {
+    assert.equal(resolveHost(dshVersion, legacyHostContext)?.status, 'unavailable', dshVersion)
+    assert.equal(resolveClient(dshVersion, legacyClientContext)?.status, 'unavailable', dshVersion)
+    assert.equal(resolveHost(dshVersion, hostContext)?.status, 'unavailable', dshVersion)
   }
 })
 

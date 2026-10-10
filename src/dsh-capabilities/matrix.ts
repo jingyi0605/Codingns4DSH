@@ -16,6 +16,9 @@ export interface DshCapabilityMatrixRoute {
 /** 能力版本矩阵是运行时路由和版本检查的共同事实源。 */
 export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('session.title', 'session-title-020', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/session-title-adapter.ts', 'host/features/session-title-optimization.ts']),
+  // alpha.2 起会话有可变的「当前目录」；旧版本没有该服务，终端回退到不可变的
+  // `session.header.cwd`，因此能力缺失只影响「跟随当前目录」这一项增强。
+  route('session.working-directory', 'session-working-directory-021', 'host', '>=0.2.1-alpha.2', 'supported', ['host/terminal/terminal-controller.ts', 'host/index.ts']),
   route('llm.text', 'llm-text-021', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/assistant-llm-adapter.ts', 'host/features/assistant-text-chat.ts', 'dsh-capabilities/host/session-title-adapter.ts', 'host/features/session-title-optimization.ts']),
   route('assistant.agent', 'assistant-agent-021', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/assistant-agent-adapter.ts', 'host/features/global-voice-rpc.ts']),
   route('settings.store', 'legacy-settings-scope', 'host', '>=0.1.5-rc.3 <=0.1.6', 'supported', ['host/settings.ts', 'host/features/*']),
@@ -51,14 +54,20 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('typert.context', 'typert-context-registry-020', 'host', DSH_COMPATIBILITY, 'supported', ['typert.host.ts', 'host/terminal/terminal-controller.ts']),
   route('typert.stream', 'typert-remote-stream-020', 'host', DSH_COMPATIBILITY, 'supported', ['typert.host.ts', 'typert.remote-client.ts']),
   route('session.format-v4', 'session-format-v4', 'host', DSH_COMPATIBILITY, 'supported', ['host/native-session-bridge.ts', 'host/session-migration-repair.ts']),
-  route('subagent.continuable', 'subagent-continuable-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/cli-adapters/session-store.ts', 'host/cli-adapters/feature.ts']),
+  route('subagent.continuable', 'subagent-continuable-020', 'host', '>=0.2.0-rc.1 <=0.2.1-alpha.1', 'supported', ['host/cli-adapters/session-store.ts', 'host/cli-adapters/feature.ts']),
+  // alpha.2 用托管 Activation 取代可续启动：同一能力下按版本范围切换路由，
+  // 业务侧经 `startNativeSubagent()` 归一化调用，不写运行期版本判断。
+  route('subagent.continuable', 'subagent-activation-021', 'host', '>=0.2.1-alpha.2', 'supported', ['host/cli-adapters/native-team-subagent.ts', 'host/cli-adapters/native-subagent-dispatch.ts']),
   route('agent-team.native', 'agent-team-native-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/cli-adapters/feature.ts', 'host/cli-adapters/native-team-proxy.ts']),
   route('ui.icon.plus', 'regular-plus-icon-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/terminal/xterm-view.ts']),
   route('ui.icon.chevron', 'regular-chevron-icon-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/terminal/ui.ts']),
   route('locale.runtime', 'locale-runtime-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/locale.ts']),
   route('theme.runtime', 'theme-runtime-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/theme.ts']),
+  // alpha.2 起界面字号按角色可配（`--dsh-content-font-size`）；旧版本没有该变量，
+  // 插件界面的 `fontSize()` 会回落到基准值，行为与今天一致。
+  route('theme.font-scale', 'theme-font-scale-021', 'client', '>=0.2.1-alpha.2', 'supported', ['client/font-scale.ts', 'client/index.ts']),
   route('conversation.tool-call', 'conversation-events-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/external-tool-stream.ts']),
-  route('conversation.draft-share', 'conversation-draft-share-021', 'client', '>=0.2.1-alpha.1 <=0.2.1-alpha.1', 'supported', ['client/terminal/ui.ts', 'client/terminal/sharing.ts']),
+  route('conversation.draft-share', 'conversation-draft-share-021', 'client', '>=0.2.1-alpha.1 <=0.2.1-alpha.2', 'supported', ['client/terminal/ui.ts', 'client/terminal/sharing.ts']),
   route('sidebar.right', 'sidebar-right-dock-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/terminal/ui.ts']),
   route('typert.remote', 'remote-context-stream-020-client', 'client', DSH_COMPATIBILITY, 'supported', ['client/terminal/model.ts']),
   route('typert.context', 'typert-context-registry-020-client', 'client', DSH_COMPATIBILITY, 'supported', ['typert.remote-client.ts', 'client/terminal/model.ts']),

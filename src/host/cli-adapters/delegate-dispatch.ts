@@ -1,7 +1,7 @@
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { dispatchNativeSubagent, type NativeParentAgent } from './native-subagent-dispatch.js'
 import { getNativeSubagents } from './native-subagent-holder.js'
-import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS } from './native-team-subagent.js'
+import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS, hasNativeSubagentStart } from './native-team-subagent.js'
 import { getAdapterRegistry } from './registry-holder.js'
 
 /** DSH Agent 注册表的最小结构；Host 侧由 `agents` 服务满足，测试可注入替身。 */
@@ -43,12 +43,13 @@ export interface DelegateCapability {
 /**
  * `/委派` 的 Host 侧能力探测。
  *
- * 委派依赖 DSH 原生可续子代理（`subagents.startContinuable`）与原生会话桥接；
- * 两者任一缺失都必须给出可读诊断，而不是让 Client 弹出空列表。
+ * 委派依赖 DSH 原生子代理启动入口（rc.1–alpha.1 的 `subagents.startContinuable`，
+ * alpha.2 起的 `subagents.startActivation`）与原生会话桥接；两者任一缺失都必须给出
+ * 可读诊断，而不是让 Client 弹出空列表。
  */
 export function delegateCapability(deps: DelegateDispatchDeps): DelegateCapability {
   const native = getNativeSubagents()
-  if (native?.startContinuable === undefined) {
+  if (!hasNativeSubagentStart(native)) {
     return {
       supported: false,
       code: 'CODINGNS_DELEGATE_UNAVAILABLE',
@@ -74,7 +75,7 @@ export function delegateCapability(deps: DelegateDispatchDeps): DelegateCapabili
  *
  * 语义与 `agent_subagent` 的后台模式一致：立刻返回 childSessionId，不阻塞父会话。
  * 同一个父会话可以对多个不同适配器并行委派（并发键按适配器区分），
- * 同一适配器的重复委派按队列串行创建，避免 startContinuable 的单飞守卫直接拒绝。
+ * 同一适配器的重复委派按队列串行创建，避免原生子代理创建的单飞守卫直接拒绝。
  */
 export async function dispatchDelegateSubagent(
   request: DelegateDispatchRequest,
@@ -88,7 +89,7 @@ export async function dispatchDelegateSubagent(
   if (!capability.supported) return { ok: false, adapterId, status: 'failed', error: capability.message }
   const native = getNativeSubagents()
   const sessions = deps.nativeSessions
-  if (native?.startContinuable === undefined || sessions === undefined) {
+  if (!hasNativeSubagentStart(native) || sessions === undefined) {
     return { ok: false, adapterId, status: 'failed', error: capability.message }
   }
   const prompt = request.prompt.trim()

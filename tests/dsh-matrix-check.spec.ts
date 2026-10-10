@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -7,14 +7,15 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { SUPPORTED_DSH_COMPATIBILITY, SUPPORTED_DSH_VERSION } from '../data/build/dist/shared/index.js'
 
+const root = fileURLToPath(new URL('..', import.meta.url))
 const matrixScript = fileURLToPath(new URL('../scripts/check-dsh-matrix.mjs', import.meta.url))
 
 /**
  * `check:dsh-matrix` 的 Desktop runtime 分支必须按「兼容范围」判定，而不是
  * 「精确等于测试版本」。
  *
- * 背景：插件的 `engines.dsh` 声明覆盖 rc.2 到当前验证的 alpha.1，桌面端只要
- * 落在这个范围内就应通过；越过 alpha.1 的预发布版本必须重新验证后再放行。
+ * 背景：插件的 `engines.dsh` 声明覆盖 rc.2 到当前验证的 alpha.2，桌面端只要
+ * 落在这个范围内就应通过；越过 alpha.2 的预发布版本必须重新验证后再放行。
  */
 const cleanups = []
 test.after(() => {
@@ -79,5 +80,8 @@ test('Desktop runtime 支持 node_modules 平铺布局', () => {
 })
 
 test('兼容范围与 Desktop 判定共用同一事实源', () => {
-  assert.equal(SUPPORTED_DSH_COMPATIBILITY, '>=0.2.0-rc.2 <=0.2.1-alpha.1')
+  // 事实源是根目录 version.json：Desktop 判定与插件声明都从它派生。
+  // 这里不再写死字面量，否则每次升级 DSH 都要手工改测试，反而制造第二个事实源。
+  const versionFile = JSON.parse(readFileSync(join(root, 'version.json'), 'utf8')) as { dshCompatibility?: string }
+  assert.equal(SUPPORTED_DSH_COMPATIBILITY, versionFile.dshCompatibility)
 })

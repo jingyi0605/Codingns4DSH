@@ -19,7 +19,14 @@ interface WebServer {
 }
 
 /**
- * DSH 0.2.1-alpha.1 的侧栏会把自身 dispose 引起的 ready 拒绝当作打开失败。
+ * 需要该补丁的 DSH 版本：alpha.1 与 alpha.2 的侧栏都会把自身 dispose 引起的
+ * ready 拒绝当作打开失败（已逐字节核对两版 `client.js` 的目标回调完全一致，
+ * 且都缺少 `disposed` 守卫）。上游修复后从该集合移除并删除本文件。
+ */
+const SIDEBAR_SESSION_COMPAT_VERSIONS = new Set(['0.2.1-alpha.1', '0.2.1-alpha.2'])
+
+/**
+ * DSH 0.2.1-alpha.1 / alpha.2 的侧栏会把自身 dispose 引起的 ready 拒绝当作打开失败。
  * 只在原生视图的回调里检查所有权；不改 Promise 的拒绝语义、引用计数或 console。
  * 匹配限定到已核对的类和回调，未知上游产物原样返回。保持行数，避免后续源码映射偏移。
  */
@@ -100,7 +107,7 @@ export async function fetchSidebarSessionBundle(
  * 上游修复 SidebarSessionView 后可删除本文件及 Host 入口的一处注册。
  */
 export function installSidebarSessionCompat(ctx: Context, dshVersion: string): void {
-  if (dshVersion !== '0.2.1-alpha.1') return
+  if (!SIDEBAR_SESSION_COMPAT_VERSIONS.has(dshVersion)) return
   const services = ctx as unknown as { clientModules: ClientModules; webServer: WebServer }
   if (typeof services.clientModules?.fetchBundle !== 'function' || typeof services.webServer?.register !== 'function') return
   const { clientModules, webServer } = services

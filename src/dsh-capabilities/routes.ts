@@ -69,6 +69,14 @@ function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): v
     create: (ctx) => ({ titles: read(ctx, 'sessionTitle'), sessions: read(ctx, 'sessions') }),
   })
   add({
+    id: 'session-working-directory-021', capability: 'session.working-directory', supportedDsh: '>=0.2.1-alpha.2', runtime: 'host', priority: 10,
+    status: 'supported', introducedIn: '0.2.1-alpha.2',
+    // 只探测 `get`：`ensure()` 会按需恢复目录并在必要时写 `working-directory/change`
+    // 事件，终端读当前目录不能有这种副作用。
+    detect: (ctx) => hasMethods(read(ctx, 'workingDirectory'), ['get']),
+    create: (ctx) => read(ctx, 'workingDirectory'),
+  })
+  add({
     id: 'llm-text-021', capability: 'llm.text', supportedDsh, runtime: 'host', priority: 10,
     status: 'supported', introducedIn: '0.2.0-rc.2',
     detect: (ctx) => hasMethods(read(ctx, 'llm'), ['stream', 'listProviders', 'listModels']),
@@ -134,9 +142,19 @@ function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): v
     create: (ctx) => read(ctx, 'sessions'),
   })
   add({
-    id: 'subagent-continuable-020', capability: 'subagent.continuable', supportedDsh, runtime: 'host', priority: 10,
+    id: 'subagent-activation-021', capability: 'subagent.continuable', supportedDsh: '>=0.2.1-alpha.2', runtime: 'host', priority: 30,
+    status: 'supported', introducedIn: '0.2.1-alpha.2',
+    // alpha.2 起 DSH 用托管 Activation 取代可续启动：`startContinuable` 已从
+    // SubagentRuntime 移除，改为 `startActivation` 且 `delivery` 为必填参数。
+    // 两条路由共用 `subagent.continuable` 能力，Registry 按版本范围与优先级择优，
+    // 业务侧只认能力是否 ready，不需要在运行期写版本判断。
+    detect: (ctx) => hasMethods(read(ctx, 'subagents'), ['startActivation', 'sendMessage']),
+    create: (ctx) => read(ctx, 'subagents'),
+  })
+  add({
+    id: 'subagent-continuable-020', capability: 'subagent.continuable', supportedDsh: '>=0.2.0-rc.1 <=0.2.1-alpha.1', runtime: 'host', priority: 10,
     status: 'supported', introducedIn: '0.2.0-rc.1',
-    // 0.2 的可续子代理是 SubagentRuntime 的公开操作 startContinuable/sendMessage。
+    // rc.1 到 alpha.1 的可续子代理是 SubagentRuntime 的公开操作 startContinuable/sendMessage。
     detect: (ctx) => hasMethods(read(ctx, 'subagents'), ['startContinuable', 'sendMessage']),
     create: (ctx) => read(ctx, 'subagents'),
   })
@@ -167,7 +185,9 @@ function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): v
 function addDsh020ClientRoutes(add: CapabilityRouteAdder, supportedDsh: string, facts: DshCapabilityRuntimeFacts): void {
   add({
     // rc.2 只有纯文本镜像且在组件挂载后才导入草稿，不能保证跨会话插入安全。
-    id: 'conversation-draft-share-021', capability: 'conversation.draft-share', supportedDsh: '>=0.2.1-alpha.1 <=0.2.1-alpha.1', runtime: 'client', priority: 30,
+    // alpha.1 与 alpha.2 的 `scope`/`input.for`/`openSession` 探测点与草稿 API
+    // （captureInsertion、insertReference、persistDraft）逐项一致，因此共用同一路由。
+    id: 'conversation-draft-share-021', capability: 'conversation.draft-share', supportedDsh: '>=0.2.1-alpha.1 <=0.2.1-alpha.2', runtime: 'client', priority: 30,
     status: 'supported', introducedIn: '0.2.1-alpha.1',
     detect: supportsTerminalSharing,
     create: createTerminalSharingBridge,
@@ -192,6 +212,14 @@ function addDsh020ClientRoutes(add: CapabilityRouteAdder, supportedDsh: string, 
   })
   add({ id: 'locale-runtime-020', capability: 'locale.runtime', supportedDsh, runtime: 'client', priority: 30, status: 'supported', introducedIn: '0.2.0-rc.1', detect: (ctx) => read(ctx, 'locale') !== undefined, create: (ctx) => read(ctx, 'locale') })
   add({ id: 'theme-runtime-020', capability: 'theme.runtime', supportedDsh, runtime: 'client', priority: 30, status: 'supported', introducedIn: '0.2.0-rc.1', detect: (ctx) => read(ctx, 'theme') !== undefined, create: (ctx) => read(ctx, 'theme') })
+  add({
+    id: 'theme-font-scale-021', capability: 'theme.font-scale', supportedDsh: '>=0.2.1-alpha.2', runtime: 'client', priority: 10,
+    status: 'supported', introducedIn: '0.2.1-alpha.2',
+    // alpha.2 起 `ITheme` 暴露按角色的 `fontSizes`；旧版本只有单值 `fontSize`，
+    // 探测失败即整块跳过，插件界面的 `fontSize()` 回落到基准像素。
+    detect: (ctx) => typeof read(ctx, 'theme.fontSizes') === 'object',
+    create: (ctx) => read(ctx, 'theme'),
+  })
   add({ id: 'conversation-events-020', capability: 'conversation.tool-call', supportedDsh, runtime: 'client', priority: 30, status: 'supported', introducedIn: '0.2.0-rc.1', detect: (ctx) => read(ctx, 'uiConversation') !== undefined, create: (ctx) => read(ctx, 'uiConversation') })
   add({ id: 'sidebar-right-dock-020', capability: 'sidebar.right', supportedDsh, runtime: 'client', priority: 30, status: 'supported', introducedIn: '0.2.0-rc.1', detect: (ctx) => read(ctx, 'sidebarRight') !== undefined || read(ctx, 'sidebarRightTabs') !== undefined, create: (ctx) => read(ctx, 'sidebarRight') ?? read(ctx, 'sidebarRightTabs') })
   add({ id: 'remote-context-stream-020-client', capability: 'typert.remote', supportedDsh, runtime: 'client', priority: 30, status: 'supported', introducedIn: '0.2.0-rc.1', detect: (ctx) => hasMethods(read(ctx, 'remote'), ['$mount']), create: (ctx) => read(ctx, 'remote') })

@@ -1,6 +1,6 @@
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { getNativeSubagents } from './native-subagent-holder.js'
-import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS } from './native-team-subagent.js'
+import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS, hasNativeSubagentStart } from './native-team-subagent.js'
 import { dispatchNativeSubagent, nativeSubagentEventCursor, NATIVE_SUBAGENT_TIMEOUT_MS, nativeSubagentFailureNeedsReview, nativeSubagentFailureReviewFields, readNativeSubagentLifecycle, reviewNativeSubagentFailure, sendNativeSubagentMessage, trackNativeSubagentFollowup, waitNativeSubagentLifecycle, type NativeParentAgent } from './native-subagent-dispatch.js'
 import { getDelegationModel, isDelegationTargetAllowed } from './delegation-authorization.js'
 
@@ -14,6 +14,7 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
       agent: { type: 'string', enum: [...EXTERNAL_SUBAGENT_IDS] },
       prompt: { type: 'string', description: '完整、自包含的子任务说明。' },
       model: { type: 'string' },
+      cwd: { type: 'string', description: '子代理的起始目录；相对路径相对父会话当前目录解析，缺省继承父会话目录。仅在 DSH 0.2.1-alpha.2 及以上生效。' },
       run_in_background: { type: 'boolean' },
       action: { type: 'string', enum: ['start', 'read', 'wait', 'send'] },
       child_session_id: { type: 'string' },
@@ -43,6 +44,8 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
       const parentId = parentAgent?.session?.header?.id ?? parentAgent?.id
       const action = args.action === 'wait' || args.action === 'read' || args.action === 'send' ? args.action : 'start'
       const childSessionId = typeof args.child_session_id === 'string' ? args.child_session_id.trim() : ''
+      // 目标目录只做去空白；相对路径由 DSH 相对父级当前目录解析，本地不拼接。
+      const cwd = typeof args.cwd === 'string' && args.cwd.trim() !== '' ? args.cwd.trim() : undefined
       if (parentId === undefined) throw new Error('DSH 原生 Subagent 缺少父会话身份')
       if (action === 'read') {
         const lifecycle = readNativeSubagentLifecycle(childSessionId)
@@ -102,16 +105,17 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
           dependencies: dependencyStates,
         }
       }
-      // startContinuable 会把 parent 当真实 Agent 使用（读 agent.options.subagentDepth、
+      // 原生子代理启动会把 parent 当真实 Agent 使用（读 agent.options.subagentDepth、
       // agent.session.header），因此必须传 exec.agent 本身；传 `{ id }` 占位对象会在
       // resolveChildDepth 抛 TypeError。这里同时要求能解析出父会话 id，供选择键去重。
-      if (native?.startContinuable === undefined || parentAgent === undefined || parentId === undefined || options.nativeSessions === undefined) throw new Error('DSH 原生 Subagent 能力不可用，当前 Host 未提供可续子会话')
+      if (!hasNativeSubagentStart(native) || parentAgent === undefined || parentId === undefined || options.nativeSessions === undefined) throw new Error('DSH 原生 Subagent 能力不可用，当前 Host 未提供可续子会话')
       const result = await dispatchNativeSubagent(native, options.nativeSessions, {
         adapterId,
         prompt,
         parentAgent,
         parentId,
         ...(modelId === undefined ? {} : { modelId }),
+        ...(cwd === undefined ? {} : { cwd }),
         background: args.run_in_background !== false,
         // dsh-tools 可能在同一轮并发执行多个 agent_subagent；不能再用旧的
         // 直接拒绝式单飞守卫，否则并行调用会随机收到“创建正在进行中”。

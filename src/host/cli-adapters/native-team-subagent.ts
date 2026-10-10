@@ -21,6 +21,36 @@ interface NativeParent {
   readonly session?: { readonly header?: { readonly id?: string } }
 }
 
+/** 一次原生子代理启动请求，屏蔽两代 DSH API 的参数差异。 */
+export interface NativeSubagentStartSpec {
+  readonly provider: string
+  readonly label?: string
+  readonly request: {
+    readonly prompt: readonly { readonly type: 'text'; readonly text: string }[]
+    readonly parent: unknown
+    /**
+     * 子会话起始目录。alpha.2 起由 `startActivation` 解析：绝对路径直接使用，
+     * 相对路径相对父级当前目录解析。旧版本只读自己认识的字段、不做 schema 校验，
+     * 因此多传该字段会被静默忽略，不会让委派失败。
+     */
+    readonly cwd?: string
+    /** DSH 原生 spawn 目标可显式覆盖子 Agent 的模型路由。 */
+    readonly agentOptions?: {
+      readonly provider?: string
+      readonly model?: string
+      readonly reasoningEffort?: string
+      readonly maxTokens?: number
+    }
+  }
+  readonly signal?: AbortSignal
+}
+
+/** 归一化后的启动结果；托管 Activation 不保证返回 messageId。 */
+export interface NativeSubagentStart {
+  readonly childId: string
+  readonly messageId?: string
+}
+
 export interface NativeSubagentService {
   registerProvider(provider: {
     readonly name: string
@@ -29,24 +59,59 @@ export interface NativeSubagentService {
     start(request: unknown): never
     prepareContinuable(request: { readonly sessionId: string; readonly parent: NativeParent; readonly signal: AbortSignal }): Promise<Record<string, never>>
   }): unknown
-  startContinuable?(spec: {
-    readonly provider: string
-    readonly label?: string
-    readonly request: {
-      readonly prompt: readonly { readonly type: 'text'; readonly text: string }[]
-      readonly parent: unknown
-      /** DSH 原生 spawn 目标可显式覆盖子 Agent 的模型路由。 */
-      readonly agentOptions?: {
-        readonly provider?: string
-        readonly model?: string
-        readonly reasoningEffort?: string
-        readonly maxTokens?: number
-      }
-    }
-    readonly signal?: AbortSignal
-  }): Promise<{ readonly childId: string; readonly messageId: string }>
+  /**
+   * DSH 0.2.1-alpha.2 起的托管 Activation 入口。
+   *
+   * `delivery` 为必填：`parent` 表示结果由 DSH 通知父模型，`caller` 表示只经
+   * `result` 返回调用方。返回值不再保证 `messageId`（外部后端可能没有本地收件箱）。
+   */
+  startActivation?(spec: NativeSubagentStartSpec & { readonly delivery: 'parent' | 'caller' }): Promise<{
+    readonly childId: string
+    readonly messageId?: string
+    readonly result?: Promise<unknown>
+    dispose?(): Promise<void>
+  }>
+  /** rc.1 到 alpha.1 的可续启动入口；alpha.2 起由 `startActivation` 取代。 */
+  startContinuable?(spec: NativeSubagentStartSpec): Promise<{ readonly childId: string; readonly messageId: string }>
   /** DSH 0.2 可续子会话的后续消息入口；sender 必须是精确的父 Agent。 */
   sendMessage?(sender: unknown, targetId: string, content: readonly { readonly type: 'text'; readonly text: string }[], options?: { readonly signal?: AbortSignal }): Promise<string> | string
+}
+
+/**
+ * 判断 Host 是否提供任一代原生子代理启动入口。
+ *
+ * 过去各处直接写 `service.startContinuable === undefined`；在 alpha.2 上这会把
+ * 「入口已换成 `startActivation`」误判成「Host 不支持子代理」，让委派、托管桥接
+ * 与 `agent_subagent` 工具整块静默降级。统一走这里，业务侧不再关心具体世代。
+ */
+export function hasNativeSubagentStart(service: NativeSubagentService | undefined): service is NativeSubagentService {
+  return typeof service?.startActivation === 'function' || typeof service?.startContinuable === 'function'
+}
+
+/**
+ * 启动一个原生子代理，屏蔽 `startActivation`（alpha.2+）与 `startContinuable`（更早）差异。
+ *
+ * `delivery: 'parent'` 与官方 `tool-subagent` 一致：结果由 DSH 投递给父模型，插件自己
+ * 只观察子会话生命周期（`waitForChildFirstTurn`），因此不消费 Activation 的 `result`。
+ * 托管 Activation 的 `result` 在捕获失败时会 reject，这里挂一个空 catch，避免无人消费
+ * 的拒绝冒泡成 Host 进程的未处理异常。
+ */
+export async function startNativeSubagent(
+  service: NativeSubagentService,
+  spec: NativeSubagentStartSpec,
+): Promise<NativeSubagentStart> {
+  if (typeof service.startActivation === 'function') {
+    const activation = await service.startActivation({ ...spec, delivery: 'parent' })
+    void activation.result?.catch(() => undefined)
+    return activation.messageId === undefined
+      ? { childId: activation.childId }
+      : { childId: activation.childId, messageId: activation.messageId }
+  }
+  if (typeof service.startContinuable === 'function') {
+    const started = await service.startContinuable(spec)
+    return { childId: started.childId, messageId: started.messageId }
+  }
+  throw new Error('DSH 原生 Subagent 能力不可用，当前 Host 未提供可续子会话')
 }
 
 interface PendingSelection { readonly modelId?: string }

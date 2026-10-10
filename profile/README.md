@@ -1,6 +1,6 @@
 # Codingns4DSH Profile
 
-这是独立的 Codingns4DSH Profile，插件版本为 `0.2.1-beta.7`，兼容 DSH `>=0.2.0-rc.2 <=0.2.1-alpha.1`，已验证 `0.2.1-alpha.1`。
+这是独立的 Codingns4DSH Profile，插件版本为 `0.2.1-beta.7`，兼容 DSH `>=0.2.0-rc.2 <=0.2.1-alpha.2`，已验证 `0.2.1-alpha.2`。
 
 Profile 选择 `dsh-multi-model-provider` 和 `codingns4dsh` Bundle。
 全局语音助理由 CodingNS 自己负责 Host 租约、浏览器设备、PCM 数据面、摘要和动作闭环，

@@ -2,7 +2,7 @@ import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { dispatchNativeSubagent, nativeSubagentEventCursor, nativeSubagentFailureNeedsReview, nativeSubagentFailureReviewFields, readNativeSubagentLifecycle, reviewNativeSubagentFailure, sendNativeSubagentMessage, trackNativeSubagentFollowup, waitNativeSubagentLifecycle, type NativeParentAgent } from '../cli-adapters/native-subagent-dispatch.js'
 import { getSingleDelegationTarget, isDelegationTargetAllowed } from '../cli-adapters/delegation-authorization.js'
 import { getNativeSubagents } from '../cli-adapters/native-subagent-holder.js'
-import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS } from '../cli-adapters/native-team-subagent.js'
+import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS, hasNativeSubagentStart } from '../cli-adapters/native-team-subagent.js'
 import { getAdapterRegistry } from '../cli-adapters/registry-holder.js'
 import { getSubagentBridge } from './bridge-holder.js'
 import type { SubagentBridgeDispatchRequest, SubagentBridgeDispatchResult } from './bridge-server.js'
@@ -29,7 +29,7 @@ export async function dispatchBridgeSubagent(
   deps: SubagentBridgeDispatchDeps,
 ): Promise<SubagentBridgeDispatchResult> {
   const native = getNativeSubagents()
-  if (native?.startContinuable === undefined) {
+  if (!hasNativeSubagentStart(native)) {
     return bridgeFailure('DSH 原生 Subagent 能力不可用，当前 Host 未提供可续子会话')
   }
   if (deps.nativeSessions === undefined) {

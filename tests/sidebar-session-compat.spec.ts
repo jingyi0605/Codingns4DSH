@@ -222,4 +222,8 @@ test('兼容层只为已核对版本注册 Web 资源路由和页面注入，路
   assert.equal(table[0]!.src, compatUrl)
   disposers[0]!()
   assert.equal(routes.length, 0)
+  // alpha.2 的 SidebarSessionView 打开回调与 alpha.1 逐字节一致，同样需要补丁；
+  // 上游一旦修复，这条断言会随 SIDEBAR_SESSION_COMPAT_VERSIONS 一起失效。
+  installSidebarSessionCompat(ctx as never, '0.2.1-alpha.2')
+  assert.equal(routes[0]!.path, '/__codingns/sidebar-session-v1')
 })
