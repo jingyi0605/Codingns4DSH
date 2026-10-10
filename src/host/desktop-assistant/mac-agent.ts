@@ -126,7 +126,8 @@ function handle(m){
  if(m.cmd==='notice-open'){focusDesktop(true);return}
  if(m.cmd==='notice-result'){
   var detail=JSON.stringify({accepted:m.accepted===true,message:m.message||''})
-  web.evaluateJavaScriptCompletionHandler($("window.dispatchEvent(new CustomEvent('codingns-notice-result',{detail:"+detail+"}))"),$());return
+  // WKWebView 会异步调用完成回调；传 nil 会在回调阶段把异常抛回 JXA，直接终止原生进程。
+  web.evaluateJavaScriptCompletionHandler($("window.dispatchEvent(new CustomEvent('codingns-notice-result',{detail:"+detail+"}))"),safe(function(result,error){}));return
  }
  if(m.cmd==='load'){
   parentPid=Number(m.parentPid)||0;bounds(m)

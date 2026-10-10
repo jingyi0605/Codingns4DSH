@@ -60,7 +60,23 @@ test('macOS 原生导航拒绝不同来源，拒绝后页面与回调仍能工�
   }
 })
 
-async function runMacPage(bundle: string): Promise<void> {
+test('macOS 原生通知回执执行 WebKit 回调后进程仍保持运行', nativeOptions, async () => {
+  const events: string[] = []
+  await runMacPage(`window.addEventListener('load', () => {
+    window.webkit.messageHandlers.assistant.postMessage(JSON.stringify({type:'ready'}))
+    setTimeout(() => window.webkit.messageHandlers.assistant.postMessage(JSON.stringify({type:'notice-presented',ownerId:'owner',generation:1,sequence:1,noticeId:'notice',noticeGeneration:1,noticeKind:'completed'})), 100)
+  })`, (event, native) => {
+    events.push(String(event.ev))
+    if (event.ev === 'notice-presented') {
+      native.stdin.write(JSON.stringify({ cmd: 'notice-result', accepted: true, message: '' }) + '\n')
+      setTimeout(() => native.stdin.end('{"cmd":"quit"}\n'), 100)
+    }
+  })
+  assert.ok(events.includes('notice-presented'))
+  assert.ok(!events.includes('error'))
+})
+
+async function runMacPage(bundle: string, onEvent?: (event: Record<string, unknown>, native: ReturnType<typeof spawn>) => void): Promise<void> {
   // 只运行仓库生成的隐藏窗口与空白测试页，不连接或操作已安装 Desktop。
   const root = fileURLToPath(new URL('../data/test-runs/', import.meta.url))
   await mkdir(root, { recursive: true })
@@ -85,6 +101,7 @@ async function runMacPage(bundle: string): Promise<void> {
       while ((newline = stdout.indexOf('\n')) >= 0) {
         const event = JSON.parse(stdout.slice(0, newline)); stdout = stdout.slice(newline + 1)
         events.push(event.ev)
+        onEvent?.(event, native)
         if (event.ev === 'error') stderr += event.message
         if (event.ev === 'ready') {
           const command = Buffer.from(JSON.stringify({ cmd: 'load', url: page.url, width: 144, height: 156, userData: '中文目录' }) + '\n')
@@ -93,7 +110,7 @@ async function runMacPage(bundle: string): Promise<void> {
           native.stdin.write(command.subarray(0, split))
           setTimeout(() => native.stdin.write(command.subarray(split)), 50)
         }
-        if (event.ev === 'loaded' || event.ev === 'error') native.stdin.end('{"cmd":"quit"}\n')
+        if (onEvent === undefined && (event.ev === 'loaded' || event.ev === 'error')) native.stdin.end('{"cmd":"quit"}\n')
       }
     })
     const timeout = setTimeout(() => native.kill(), 15000)
@@ -102,7 +119,8 @@ async function runMacPage(bundle: string): Promise<void> {
     assert.equal(code, 0, `原生初始化失败：${stderr.slice(0, 1500)}`)
     assert.ok(!events.includes('error'), stderr)
     // layout 是原生窗口在加载页面后回传的定位事件，先于页面 ready 的 loaded。
-    assert.deepEqual(events, ['ready', 'layout', 'loaded'], `原生就绪握手失败：${stderr}`)
+    if (onEvent === undefined) assert.deepEqual(events, ['ready', 'layout', 'loaded'], `原生就绪握手失败：${stderr}`)
+    else assert.ok(events.includes('loaded'), `原生就绪握手失败：${stderr}`)
   } finally {
     child?.kill()
     await page.close()
