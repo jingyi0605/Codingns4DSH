@@ -22,10 +22,11 @@ import { usageChunk } from './rpc-driver-utils.js'
 import { commandEnvironment, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { prepareAttachmentPaths, promptWithAttachmentPaths } from './attachment-utils.js'
 import { parseSkillFrontmatter } from './skill-filesystem.js'
-import { commandCodeNativeAgentArgs, commandCodeNativeAgentEnvironment } from '../cli-bridge/injections.js'
+import { commandCodeNativeAgentArgs, commandCodeNativeAgentEnvironment, subagentBridgeActive } from '../cli-bridge/injections.js'
 import { getSubagentBridge } from '../cli-bridge/bridge-holder.js'
 import { AcpCliDriver, type AcpPendingQuestionRequest } from './acp-cli-driver.js'
 import type { JsonRpcMessage, JsonRpcProcess } from './json-rpc-process.js'
+import { knownCommandCodeContextWindow } from './model-catalog.js'
 import {
   CommandCodeHistory,
   type CommandCodeHistoryDelta,
@@ -54,6 +55,7 @@ const CATALOG_EFFORTS: ReadonlyMap<string, readonly string[]> = new Map([
   ['deepseek/deepseek-v4-pro', ['high', 'max']],
   ['deepseek/deepseek-v4-flash', ['high', 'max']],
   ['deepseek/deepseek-v4.1-flash', ['low', 'high', 'max']],
+  ['deepseek/deepseek-v4.1', ['low', 'high', 'max']],
   ['deepseek/deepseek-v4-flash-fast', ['low', 'high', 'max']],
   ['moonshotai/kimi-k3', ['low', 'high', 'max']],
   ['moonshotai/kimi-k2.7-code', []],
@@ -297,7 +299,7 @@ const COMMAND_CODE_INTERRUPT_GRACE_MS = 1_500
 /** 将 DSH 权限状态映射为 Command Code 参数；未知状态保持 CLI 默认审批。 */
 function commandCodePermissionArgs(permission: CodingNsCliTurnInput['permission']): string[] {
   if (permission?.sandboxMode === 'danger-full-access' && permission.approvalPolicy === 'never') return ['--yolo']
-  if (permission?.sandboxMode === 'workspace-write' && permission.approvalPolicy === 'never') return ['--permission-mode', 'accept-edits']
+  if (permission?.sandboxMode === 'workspace-write') return ['--permission-mode', 'accept-edits']
   if (permission?.sandboxMode === 'read-only') return ['--plan']
   return []
 }
@@ -373,6 +375,8 @@ export class CommandCodeDriver implements CodingNsCliDriver {
         name: 'Command Code',
         capabilities: acpCapabilities,
         readQuestionRequest: readCommandCodeQuestionRequest,
+        decidePermission: commandCodeAcpPermissionDecision,
+        enrichUsage: enrichCommandCodeUsage,
         probeReason: 'Command Code ACP 不公开可安全读取的会话索引',
       })
       this.respondPermission = (sessionId, response) => this.acpDriver!.respondPermission(sessionId, response)
@@ -1038,6 +1042,23 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     }
     turn.attachmentCleanup?.()
     // 首轮 transcript 已经是 canonical 文件，必须保留给下一轮 --resume 及冷恢复。
+  }
+}
+
+function enrichCommandCodeUsage(
+  event: Extract<CodingNsAgentEvent, { type: 'usage' }>,
+  input: CodingNsCliTurnInput,
+): Extract<CodingNsAgentEvent, { type: 'usage' }> {
+  const contextWindow = event.contextWindow ?? knownCommandCodeContextWindow(input.modelId)
+  if (contextWindow === undefined || contextWindow <= 0) return event
+  const contextTokens = event.contextTokens ?? (event.inputTokens > 0 ? event.inputTokens : undefined)
+  return {
+    ...event,
+    contextWindow,
+    ...(contextTokens === undefined ? {} : { contextTokens }),
+    ...(event.contextUsageRatio !== undefined || contextTokens === undefined
+      ? {}
+      : { contextUsageRatio: Number(Math.min(1, contextTokens / contextWindow).toFixed(6)) }),
   }
 }
 
@@ -2024,10 +2045,29 @@ async function configureCommandCodeAcpSession(rpc: JsonRpcProcess, sessionId: st
 function commandCodeAcpMode(input: CodingNsCliTurnInput): string {
   const permission = input.permission
   if (input.plan === true || permission?.sandboxMode === 'read-only') return 'plan'
+  // 工作区内写入已经由沙箱模式授权；ask 只表示需要审批时可以询问，不能把
+  // 每次普通编辑都降级到 default。auto-accept 仍由 CLI 检查越界与风险操作。
+  if (permission?.sandboxMode === 'workspace-write') return 'auto-accept'
   if (permission?.approvalPolicy !== 'never') return 'default'
   if (permission.sandboxMode === 'danger-full-access') return 'bypass'
-  if (permission.sandboxMode === 'workspace-write') return 'auto-accept'
   return 'default'
+}
+
+/** 托管委派由 DSH 桥接校验目标授权，不能再交给 CLI 对每次调用重复审批。 */
+function commandCodeAcpPermissionDecision(message: JsonRpcMessage, input: CodingNsCliTurnInput): 'allow' | 'reject' | undefined {
+  if (message.method !== 'session/request_permission') return undefined
+  const params = isRecord(message.params) ? message.params : {}
+  const tool = isRecord(params.toolCall) ? params.toolCall : {}
+  const toolName = firstToolText(tool.name, tool.toolName, tool.tool_name, tool.title)
+  const metadata = isRecord(params._meta) ? params._meta : {}
+  const permission = input.permission
+  const canWrite = input.plan !== true
+    && (permission?.sandboxMode === 'workspace-write' || permission?.sandboxMode === 'danger-full-access')
+  // 只识别插件自己的两个入口，不能把全部 MCP/自定义工具或显式风险请求放行。
+  if (canWrite && metadata.risk === undefined && subagentBridgeActive(input.sessionId)
+    && (toolName === 'agent_subagent' || toolName === 'mcp__codingns__agent_subagent')) return 'allow'
+  // never 允许已有授权范围内的工作，但不允许把剩余审批升级成交互弹窗。
+  return permission?.approvalPolicy === 'never' ? 'reject' : undefined
 }
 
 /** Command Code 将 ask_user_question 编译成 `session/request_permission`。 */

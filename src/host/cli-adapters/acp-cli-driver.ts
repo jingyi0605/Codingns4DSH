@@ -51,6 +51,13 @@ export interface AcpCliDriverOptions {
   readonly probeReason?: string
   /** Provider 自定义的问题请求解析器；标准 ACP form 由默认解析器处理。 */
   readonly readQuestionRequest?: (message: JsonRpcMessage) => AcpPendingQuestionRequest | null
+  /** 在 DSH 已明确授权的范围内自动回应 ACP 权限请求；返回 undefined 继续交给原生审批面板。 */
+  readonly decidePermission?: (message: JsonRpcMessage, input: CodingNsCliTurnInput) => 'allow' | 'reject' | undefined
+  /** Provider 可在 Host 侧补齐 ACP 未携带的上下文窗口等用量字段。 */
+  readonly enrichUsage?: (
+    usage: Extract<CodingNsAgentEvent, { type: 'usage' }>,
+    input: CodingNsCliTurnInput,
+  ) => Extract<CodingNsAgentEvent, { type: 'usage' }>
 }
 
 /** ACP 交互问题在 Host 中等待 DSH 回答时保留的请求状态。 */
@@ -68,6 +75,8 @@ interface AcpSession {
   acpSessionId: string
   readonly permissions: Map<string, AcpPermissionRequest>
   readonly questions: Map<string, AcpPendingQuestionRequest>
+  /** 已由 Host 自动回应的请求不会再投影成 UI 权限组件。 */
+  readonly autoResolvedPermissions: Set<string>
 }
 
 interface AcpPermissionRequest {
@@ -101,6 +110,8 @@ export class AcpCliDriver implements CodingNsCliDriver {
   private readonly sessionEnvironmentForInput: (input: CodingNsCliTurnInput) => Readonly<Record<string, string | undefined>>
   private readonly probeReason: string
   private readonly readQuestionRequest: (message: JsonRpcMessage) => AcpPendingQuestionRequest | null
+  private readonly decidePermission: AcpCliDriverOptions['decidePermission']
+  private readonly enrichUsage: AcpCliDriverOptions['enrichUsage']
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, AcpSession>()
@@ -126,6 +137,8 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.runSpawn = options.spawn ?? spawn
     this.probeReason = options.probeReason ?? 'Provider 未公开可安全读取的会话索引，未执行有副作用的探测'
     this.readQuestionRequest = options.readQuestionRequest ?? readStandardQuestionRequest
+    this.decidePermission = options.decidePermission
+    this.enrichUsage = options.enrichUsage
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
@@ -199,6 +212,8 @@ export class AcpCliDriver implements CodingNsCliDriver {
     }
 
     let emittedFinish = false
+    let pendingFinish: Extract<CodingNsAgentEvent, { type: 'finish' }> | null = null
+    let latestUsage: Extract<CodingNsAgentEvent, { type: 'usage' }> | null = null
     const segmentState = createCodingNsSegmentState()
     try {
       const stream = streamRpcRequest(session.rpc, 'session/prompt', {
@@ -212,21 +227,59 @@ export class AcpCliDriver implements CodingNsCliDriver {
           response = next.value
           break
         }
-        const rawChunk = acpMessageToChunk(next.value, input.signal?.aborted ?? false, this.readQuestionRequest)
-        const chunk = rawChunk === null ? null : decorateCodingNsSegmentEvent(rawChunk, input, segmentState, this.descriptor.id)
+        const rawChunk = acpMessageToChunk(next.value, input.signal?.aborted ?? false, this.readQuestionRequest, session.autoResolvedPermissions)
+        const enrichedChunk = rawChunk?.type === 'usage' ? this.enrichUsage?.(rawChunk, input) ?? rawChunk : rawChunk
+        const chunk = enrichedChunk === null ? null : decorateCodingNsSegmentEvent(enrichedChunk, input, segmentState, this.descriptor.id)
         if (chunk === null) continue
-        if (chunk.type === 'finish') emittedFinish = true
+        if (chunk.type === 'usage') {
+          latestUsage = mergeAcpUsageContext(chunk, latestUsage)
+          // Command Code 的 usage_update 只报告上下文占用，等最终响应的 token
+          // 统计到达后合并成一个完整用量事件，避免同一轮写入两个重复样本。
+          if (isContextOnlyUsage(chunk)) continue
+        }
+        if (chunk.type === 'finish') {
+          emittedFinish = true
+          // ACP 的结束通知可能先于 session/prompt 响应到达；先缓存，确保响应中的
+          // 最终 token 用量在 finish 之前投影给 DSH。
+          pendingFinish = chunk
+          continue
+        }
         yield chunk
         advanceCodingNsSegment(chunk, segmentState)
       }
       if (input.signal?.aborted) {
-        if (!emittedFinish) yield { type: 'finish', reason: 'cancel' }
-      } else if (!emittedFinish) {
-        yield { type: 'finish', reason: promptReason(response) }
+        if (pendingFinish !== null) {
+          yield pendingFinish
+          advanceCodingNsSegment(pendingFinish, segmentState)
+        } else if (!emittedFinish) {
+          yield { type: 'finish', reason: 'cancel' }
+        }
+      } else {
+        const responseUsage = acpResponseUsage(response)
+        if (responseUsage !== null) {
+          const mergedUsage = mergeAcpUsageContext(responseUsage, latestUsage)
+          yield this.enrichUsage?.(mergedUsage, input) ?? mergedUsage
+        } else if (latestUsage !== null && isContextOnlyUsage(latestUsage)) {
+          yield latestUsage
+        }
+        if (pendingFinish !== null) {
+          yield pendingFinish
+          advanceCodingNsSegment(pendingFinish, segmentState)
+        } else if (!emittedFinish) {
+          yield { type: 'finish', reason: promptReason(response) }
+        }
       }
     } catch (error) {
       if (input.signal?.aborted) {
-        if (!emittedFinish) yield { type: 'finish', reason: 'cancel' }
+        if (pendingFinish !== null) {
+          yield pendingFinish
+          advanceCodingNsSegment(pendingFinish, segmentState)
+        } else if (!emittedFinish) {
+          yield { type: 'finish', reason: 'cancel' }
+        }
+      } else if (pendingFinish !== null) {
+        yield pendingFinish
+        advanceCodingNsSegment(pendingFinish, segmentState)
       } else if (!emittedFinish) {
         yield { type: 'finish', reason: 'error', failure: failureFromUnknown(error) }
       }
@@ -260,7 +313,15 @@ export class AcpCliDriver implements CodingNsCliDriver {
       ...this.sessionEnvironmentForInput(input),
     }
     const rpc = new JsonRpcProcess({ command, args, cwd: input.cwd, env: sessionEnvironment, spawn: this.runSpawn })
-    const state: AcpSession = { rpc, cwd: input.cwd, argsKey, acpSessionId: '', permissions: new Map(), questions: new Map() }
+    const state: AcpSession = {
+      rpc,
+      cwd: input.cwd,
+      argsKey,
+      acpSessionId: '',
+      permissions: new Map(),
+      questions: new Map(),
+      autoResolvedPermissions: new Set(),
+    }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, state)
     rpc.addExitListener(() => {
@@ -279,6 +340,16 @@ export class AcpCliDriver implements CodingNsCliDriver {
       const permission = readAcpPermissionRequest(message)
       if (permission === null || message.id === undefined || message.id === null) {
         return { outcome: { outcome: 'cancelled' } }
+      }
+      const decision = this.decidePermission?.(message, input)
+      if (decision !== undefined) {
+        state.autoResolvedPermissions.add(permission.requestId)
+        return {
+          outcome: {
+            outcome: 'selected',
+            optionId: decision === 'allow' ? permission.allowOptionId : permission.rejectOptionId,
+          },
+        }
       }
       state.permissions.set(permission.requestId, {
         rpcId: message.id,
@@ -327,6 +398,7 @@ function acpMessageToChunk(
   message: JsonRpcMessage,
   cancelled: boolean,
   readQuestionRequest: (message: JsonRpcMessage) => AcpPendingQuestionRequest | null,
+  autoResolvedPermissions?: Set<string>,
 ): CodingNsAgentEvent | null {
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
@@ -340,6 +412,7 @@ function acpMessageToChunk(
   if (elicitation !== null) return { type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }
   const permission = readAcpPermissionRequest(message)
   if (permission !== null) {
+    if (autoResolvedPermissions?.delete(permission.requestId) === true) return null
     return {
       type: 'permission-request',
       requestId: permission.requestId,
@@ -354,14 +427,59 @@ function acpMessageToChunk(
   if (type.includes('thought') || type.includes('reason')) return text === null ? null : { type: 'reasoning-delta', text, ...withMessageId }
   if (type.includes('agent_message') || type.includes('message_chunk') || type === 'text' || type.includes('text_delta')) return text === null ? null : { type: 'text-delta', text, ...withMessageId }
   if (type.includes('tool') || type.includes('command')) return toolChunk(update, type)
+  if (type === 'usage_update' || type === 'usage-update') {
+    const used = nonNegativeNumber(update.used ?? update.contextTokens ?? update.context_tokens)
+    const size = positiveNumber(update.size ?? update.contextWindow ?? update.context_window)
+    if (used === undefined && size === undefined) return null
+    return usageEvent({
+      inputTokens: 0,
+      outputTokens: 0,
+      ...(used === undefined ? {} : { contextTokens: used }),
+      ...(size === undefined ? {} : { contextWindow: size }),
+      ...(used === undefined || size === undefined ? {} : { contextUsageRatio: Math.min(1, used / size) }),
+    })
+  }
   const usage = usageChunk(isRecord(update.usage) ? update.usage : update)
-  if (usage !== null) return usage
+  if (usage?.type === 'usage') return usage
   if (type.includes('error') || type.includes('failed')) {
     const failure = failureFromRecord(update)
     return { type: 'finish', reason: cancelled ? 'cancel' : 'error', ...(cancelled || failure === undefined ? {} : { failure }) }
   }
   if (type.includes('turn_completed') || type.includes('turn_complete') || type === 'completed' || type === 'done' || type === 'prompt_end') return { type: 'finish', reason: cancelled ? 'cancel' : 'stop' }
   return null
+}
+
+type AcpUsageEvent = Extract<CodingNsAgentEvent, { type: 'usage' }>
+
+function usageEvent(value: unknown): AcpUsageEvent | null {
+  const usage = usageChunk(value)
+  return usage?.type === 'usage' ? usage : null
+}
+
+function acpResponseUsage(value: unknown): AcpUsageEvent | null {
+  if (!isRecord(value)) return null
+  const metadata = isRecord(value._meta) ? value._meta : undefined
+  return usageEvent(metadata?.usage ?? value.usage)
+}
+
+function mergeAcpUsageContext(usage: AcpUsageEvent, previous: AcpUsageEvent | null): AcpUsageEvent {
+  if (previous === null) return usage
+  const contextWindow = usage.contextWindow ?? previous.contextWindow
+  const contextTokens = usage.contextTokens ?? previous.contextTokens
+  return {
+    ...usage,
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(contextTokens === undefined ? {} : { contextTokens }),
+    ...(usage.contextUsageRatio !== undefined || contextWindow === undefined || contextTokens === undefined
+      ? {}
+      : { contextUsageRatio: Number(Math.min(1, contextTokens / contextWindow).toFixed(6)) }),
+  }
+}
+
+function isContextOnlyUsage(usage: AcpUsageEvent): boolean {
+  return usage.inputTokens === 0
+    && usage.outputTokens === 0
+    && (usage.contextWindow !== undefined || usage.contextTokens !== undefined || usage.contextUsageRatio !== undefined)
 }
 
 /** 读取 ACP v1/v2 标准权限请求；未知扩展字段不会被当成权限。 */
@@ -461,6 +579,14 @@ function acpText(value: unknown): string | null {
     }
   }
   return null
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
 }
 
 function readStandardQuestionRequest(message: JsonRpcMessage): AcpPendingQuestionRequest | null {

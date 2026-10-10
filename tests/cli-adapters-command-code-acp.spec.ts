@@ -105,6 +105,105 @@ test('Command Code ACP 将问题和 DSH 权限映射回传给 Provider', async (
   driver.dispose()
 })
 
+test('Command Code ACP 自动批准 DSH 委派工具，不弹出重复权限请求', async () => {
+  setSubagentBridge(createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:45999', token: 'agent-tool-token' }))
+  const replies = new Map<number | string, Record<string, unknown>>()
+  let promptId: number | string = 0
+  const driver = new CommandCodeDriver({
+    enableAcp: true,
+    binaries: ['fake-command-code'],
+    spawnSync: (() => ({ status: 0, stdout: 'command-code 1.2.3', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const stdin = { write(data: string): boolean {
+        const request = JSON.parse(data) as { id?: number | string; method?: string }
+        if (request.method === 'initialize' || request.method === 'session/new' || request.method === 'session/set_mode') {
+          const result = request.method === 'session/new' ? { sessionId: 'command-code-agent-session' } : {}
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`)
+        } else if (request.method === 'session/prompt') {
+          promptId = request.id ?? 0
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 101, method: 'session/request_permission', params: {
+            options: [{ optionId: 'allow-agent', kind: 'allow_once' }, { optionId: 'reject-agent', kind: 'reject_once' }],
+            toolCall: { kind: 'other', title: 'agent_subagent', toolCallId: 'agent-1', rawInput: { action: 'start' } },
+          } })}\n`)
+        } else if (request.id === 101) {
+          replies.set(101, request as unknown as Record<string, unknown>)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 102, method: 'session/update', params: {
+            update: { sessionUpdate: 'agent_message_chunk', delta: '已完成委派' },
+          } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } })}\n`)
+        }
+        return true
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  try {
+    const chunks = []
+    for await (const chunk of driver.executeTurn({
+      sessionId: 'command-code-agent-parent', messages: [], prompt: '创建子智能体',
+      permission: { sandboxMode: 'workspace-write', approvalPolicy: 'ask' },
+    })) chunks.push(chunk)
+    assert.deepEqual(replies.get(101), { jsonrpc: '2.0', id: 101, result: { outcome: { outcome: 'selected', optionId: 'allow-agent' } } })
+    assert.equal(chunks.some((chunk) => chunk.type === 'permission-request'), false)
+  } finally {
+    driver.dispose()
+    setSubagentBridge(undefined)
+  }
+})
+
+test('Command Code ACP 将 usage_update 与 prompt 响应中的 token 用量投影出来', async () => {
+  const driver = new CommandCodeDriver({
+    enableAcp: true,
+    binaries: ['fake-command-code'],
+    spawnSync: (() => ({ status: 0, stdout: 'command-code 1.2.3', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const stdin = { write(data: string): boolean {
+        const request = JSON.parse(data) as { id?: number | string; method?: string }
+        if (request.method === 'initialize') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        } else if (request.method === 'session/new') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'command-code-usage-session' } })}\n`)
+        } else if (request.method === 'session/prompt') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {
+            sessionId: 'command-code-usage-session',
+            update: { sessionUpdate: 'usage_update', used: 980000, size: 1000000 },
+          } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+            stopReason: 'end_turn',
+            _meta: { usage: { inputTokens: 982000, outputTokens: 2048, cacheReadTokens: 980000, cacheWriteTokens: 0 } },
+          } })}\n`)
+        } else {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        }
+        return true
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  try {
+    const chunks = []
+    for await (const chunk of driver.executeTurn({
+      sessionId: 'command-code-usage-dsh',
+      messages: [],
+      prompt: '执行',
+      modelId: 'deepseek/deepseek-v4.1',
+      effortId: 'high',
+    })) chunks.push(chunk)
+    const usage = chunks.findLast((chunk) => chunk.type === 'usage')
+    assert.equal(usage?.contextWindow, 1_000_000)
+    assert.equal(usage?.contextTokens, 980_000)
+    assert.equal(usage?.contextUsageRatio, 0.98)
+    assert.equal(usage?.inputTokens, 982_000)
+    assert.equal(usage?.uncachedInputTokens, 2_000)
+    assert.equal(usage?.outputTokens, 2_048)
+    assert.equal(chunks.at(-1)?.type, 'finish')
+  } finally {
+    driver.dispose()
+  }
+})
+
 test('Command Code ACP 启动时注入桥接 mod、桥接环境和 DSH MCP', async () => {
   const runtime = createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:45999', token: 'acp-bridge-token' })
   setSubagentBridge(runtime)
@@ -183,6 +282,7 @@ function createSessionFixture(failedMethod?: string) {
 test('Command Code ACP 恢复后先应用模型及各权限模式，再发送 prompt', async () => {
   const cases = [
     { permission: { sandboxMode: 'read-only', approvalPolicy: 'never' }, expectedMode: 'plan' },
+    { permission: { sandboxMode: 'workspace-write', approvalPolicy: 'ask' }, expectedMode: 'auto-accept' },
     { permission: { sandboxMode: 'workspace-write', approvalPolicy: 'never' }, expectedMode: 'auto-accept' },
     { permission: { sandboxMode: 'danger-full-access', approvalPolicy: 'never' }, expectedMode: 'bypass' },
     { permission: { sandboxMode: 'danger-full-access', approvalPolicy: 'on-request' }, expectedMode: 'default' },

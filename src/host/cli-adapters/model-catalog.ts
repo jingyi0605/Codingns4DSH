@@ -135,6 +135,7 @@ const COMMAND_CODE_CONTEXT_WINDOWS = new Map<string, number>([
   ['deepseek/deepseek-v4-flash-vision-exp', 1_000_000],
   ['deepseek/deepseek-v4-pro', 1_000_000],
   ['deepseek/deepseek-v4.1-flash', 1_000_000],
+  ['deepseek/deepseek-v4.1', 1_000_000],
   ['google/gemini-3.1-flash-lite', 1_000_000],
   ['google/gemini-3.5-flash', 1_000_000],
   ['google/gemini-3.5-flash-lite', 1_000_000],

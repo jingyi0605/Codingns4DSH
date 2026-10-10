@@ -746,7 +746,7 @@ test('Command Code 按 DSH 权限状态映射安全参数，不把未知权限�
   const cases = [
     { name: 'unknown', permission: undefined, forbidden: ['--yolo', '--plan', '--permission-mode'] },
     { name: 'read-only', permission: { sandboxMode: 'read-only', approvalPolicy: 'ask' }, required: ['--plan'], forbidden: ['--yolo'] },
-    { name: 'workspace-ask', permission: { sandboxMode: 'workspace-write', approvalPolicy: 'ask' }, forbidden: ['--yolo', '--permission-mode'] },
+    { name: 'workspace-ask', permission: { sandboxMode: 'workspace-write', approvalPolicy: 'ask' }, required: ['--permission-mode', 'accept-edits'], forbidden: ['--yolo'] },
     { name: 'workspace-never', permission: { sandboxMode: 'workspace-write', approvalPolicy: 'never' }, required: ['--permission-mode', 'accept-edits'], forbidden: ['--yolo'] },
     { name: 'danger-never', permission: { sandboxMode: 'danger-full-access', approvalPolicy: 'never' }, required: ['--yolo'], forbidden: ['--permission-mode', '--plan'] },
   ] as const
@@ -2604,6 +2604,7 @@ test('Codex 已知模型表覆盖当前主力模型并容忍大小写与空白',
 
 test('Command Code 已知模型表提供父仓库一致的上下文窗口', () => {
   assert.equal(knownCommandCodeContextWindow('deepseek/deepseek-v4.1-flash'), 1_000_000)
+  assert.equal(knownCommandCodeContextWindow('deepseek/deepseek-v4.1'), 1_000_000)
   assert.equal(knownCommandCodeContextWindow(' GPT-5.6-SOL '), 1_050_000)
   assert.equal(knownCommandCodeContextWindow('unknown-model'), undefined)
   assert.equal(knownCommandCodeContextWindow(undefined), undefined)
