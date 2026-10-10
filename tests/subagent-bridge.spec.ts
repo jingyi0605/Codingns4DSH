@@ -47,12 +47,13 @@ function enableBridge(): ReturnType<typeof createSubagentBridgeRuntime> {
   return runtime
 }
 
-test('子代理桥接注入：开启时产出各适配器扩展面，关闭时全部为空', () => {
+test('子代理桥接注入：Command Code 始终屏蔽原生 agent，桥接开启时再注入派发端点', () => {
   try {
     assert.deepEqual(commandCodeBridgeArgs('s1'), [])
     assert.deepEqual(commandCodeBridgeEnvironment('s1', 'command-code'), {})
-    assert.deepEqual(commandCodeNativeAgentArgs('s1'), [])
-    assert.deepEqual(commandCodeNativeAgentEnvironment('s1', 'command-code'), {})
+    assert.equal(commandCodeNativeAgentArgs('s1')[0], '--mod')
+    assert.ok(commandCodeNativeAgentArgs('s1')[1]?.endsWith('command-code-mod.js'))
+    assert.deepEqual(commandCodeNativeAgentEnvironment('s1', 'command-code'), { CODINGNS_DISABLE_NATIVE_AGENT: '1' })
     assert.deepEqual(claudeBridgeArgs('s1', 'claude-code'), [])
     assert.deepEqual(acpBridgeMcpServers('s1', 'gemini'), [])
     assert.deepEqual(codexBridgeArgs('s1', 'codex'), [])
@@ -125,7 +126,10 @@ test('子代理会话不注入桥接端点但屏蔽原生 agent，避免嵌套�
     assert.deepEqual(commandCodeBridgeArgs('child-1'), [])
     assert.deepEqual(commandCodeBridgeEnvironment('child-1', 'command-code'), {})
     assert.equal(commandCodeNativeAgentArgs('child-1').length, 2)
-    assert.deepEqual(commandCodeNativeAgentEnvironment('child-1', 'command-code'), { CODINGNS_DISABLE_NATIVE_AGENT: '1' })
+    assert.deepEqual(commandCodeNativeAgentEnvironment('child-1', 'command-code'), {
+      CODINGNS_DISABLE_NATIVE_AGENT: '1',
+      CODINGNS_SUBAGENT_CHILD: '1',
+    })
     assert.deepEqual(claudeBridgeArgs('child-1', 'claude-code'), [])
     assert.equal(codexBridgeDeveloperInstructions('child-1'), undefined)
     // 普通会话仍然注入。
@@ -145,6 +149,7 @@ test('Command Code 子代理 Mod：只有禁用标记时也不允许创建嵌套
   delete process.env.CODINGNS_BRIDGE_TOKEN
   delete process.env.CODINGNS_DSH_SESSION_ID
   process.env.CODINGNS_DISABLE_NATIVE_AGENT = '1'
+  process.env.CODINGNS_SUBAGENT_CHILD = '1'
   try {
     ;(mod.default as (api: unknown) => void)({
       getActiveTools: () => activeTools,
@@ -160,6 +165,56 @@ test('Command Code 子代理 Mod：只有禁用标记时也不允许创建嵌套
     })
     assert.equal(outcome?.block, true)
     assert.match(String(outcome?.additionalContext), /禁止嵌套子代理/u)
+  } finally {
+    process.env = previous
+  }
+})
+
+test('Command Code 子代理 Mod：桥接不可用时阻断父会话原生 agent，不允许静默回退', async () => {
+  const mod = await import('../data/build/dist/host/cli-bridge/command-code-mod.js')
+  const hooks: Array<Record<string, unknown>> = []
+  const previous = { ...process.env }
+  delete process.env.CODINGNS_BRIDGE_URL
+  delete process.env.CODINGNS_BRIDGE_TOKEN
+  delete process.env.CODINGNS_DSH_SESSION_ID
+  process.env.CODINGNS_DISABLE_NATIVE_AGENT = '1'
+  delete process.env.CODINGNS_SUBAGENT_CHILD
+  try {
+    ;(mod.default as (api: unknown) => void)({
+      getActiveTools: () => ['agent', 'agent_output', 'bash'],
+      setActiveTools: () => undefined,
+      hooks: (value: Record<string, unknown>) => { hooks.push(value) },
+    })
+    const outcome = await (hooks[0]!.beforeToolCall as (context: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>)({
+      toolName: 'agent',
+      input: { prompt: '创建外部子代理' },
+    })
+    assert.equal(outcome?.block, true)
+    assert.match(String(outcome?.additionalContext), /桥接不可用/u)
+    assert.match(String(outcome?.additionalContext), /没有回退/u)
+  } finally {
+    process.env = previous
+  }
+})
+
+test('Command Code 子代理 Mod：启动时注册 DSH agent_subagent 工具', async () => {
+  const mod = await import('../data/build/dist/host/cli-bridge/command-code-mod.js')
+  const tools: Array<{ readonly schema?: { readonly name?: string }; readonly run?: (context: { input: unknown }) => Promise<Record<string, unknown>> }> = []
+  const previous = { ...process.env }
+  delete process.env.CODINGNS_BRIDGE_URL
+  delete process.env.CODINGNS_BRIDGE_TOKEN
+  delete process.env.CODINGNS_DSH_SESSION_ID
+  process.env.CODINGNS_DISABLE_NATIVE_AGENT = '1'
+  delete process.env.CODINGNS_SUBAGENT_CHILD
+  try {
+    ;(mod.default as (api: unknown) => void)({
+      addTool: (tool: { readonly schema?: { readonly name?: string }; readonly run?: (context: { input: unknown }) => Promise<Record<string, unknown>> }) => { tools.push(tool) },
+      hooks: () => undefined,
+    })
+    assert.equal(tools[0]?.schema?.name, 'agent_subagent')
+    const result = await tools[0]!.run!({ input: { action: 'start', prompt: '创建一个子会话' } })
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /桥接不可用/u)
   } finally {
     process.env = previous
   }

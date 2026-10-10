@@ -72,7 +72,9 @@ test('Command Code ACP 将问题和 DSH 权限映射回传给 Provider', async (
   }
   assert.equal(driver.descriptor.capabilities.includes('permission'), true)
   assert.equal(driver.descriptor.capabilities.includes('questions'), true)
-  assert.deepEqual(calls[0], ['fake-command-code', 'acp', '--permission-mode', 'accept-edits', '--model', 'z-ai/glm-5.3-flash', '--effort', 'high'])
+  assert.equal(calls[0]?.[1], '--mod')
+  assert.ok(calls[0]?.[2]?.endsWith('command-code-mod.js'))
+  assert.deepEqual(calls[0]?.slice(3), ['acp', '--permission-mode', 'accept-edits', '--model', 'z-ai/glm-5.3-flash', '--effort', 'high'])
   assert.deepEqual(sessionRequests.filter((request) => request.method.startsWith('session/')).map(({ method, params }) => ({ method, params })), [
     { method: 'session/new', params: { cwd: process.cwd(), mcpServers: [] } },
     { method: 'session/set_model', params: { sessionId: 'command-code-acp-session', modelId: 'z-ai/glm-5.3-flash' } },
@@ -83,6 +85,7 @@ test('Command Code ACP 将问题和 DSH 权限映射回传给 Provider', async (
   assert.equal(probeEnvironments.length > 0, true)
   for (const environment of probeEnvironments) assert.equal(environment?.NODE_OPTIONS, process.env.NODE_OPTIONS)
   assert.match(spawnEnvironment?.NODE_OPTIONS ?? '', /command-code-acp-loader\.js/u)
+  assert.equal(spawnEnvironment?.CODINGNS_DISABLE_NATIVE_AGENT, '1')
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'command-code-acp-session' },
     { type: 'question-request', requestId: '91', questions: [{ id: 'command-code-question-91', question: '选择策略', options: [{ label: '安全' }, { label: '快速' }] }] },
