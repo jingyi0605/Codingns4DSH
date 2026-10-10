@@ -74,8 +74,19 @@ export function resolveDshNativeDispatch(ctx: Context | undefined): DshNativeDis
 /** 目标 Host 的账号、设置和插件通知不属于会话交互，不能随 PeerHost 转发到其他客户端。 */
 async function* interactionEvents(stream: AsyncIterable<unknown>): AsyncIterable<unknown> {
   for await (const frame of stream) {
-    if (asRecord(frame)?.type !== 'emit') yield frame
+    // 会话运行态由 DSH 通过 `api-session/status` 的 emit 帧广播；客户端在
+    // session/list 只做基线读取，丢掉这类增量后，已结束会话会一直显示运行中，
+    // 新启动会话也不会进入运行态。其它 emit 仍属于目标 Host 的全局通知，必须过滤。
+    if (asRecord(frame)?.type !== 'emit' || isSessionStatusFrame(frame)) yield frame
   }
+}
+
+function isSessionStatusFrame(value: unknown): boolean {
+  const frame = asRecord(value)
+  return frame?.event === 'api-session/status'
+    && Array.isArray(frame.args)
+    && typeof frame.args[0] === 'string'
+    && typeof frame.args[1] === 'boolean'
 }
 
 /** 事件结果由 Connection 的 Gateway 拦截器接收；不访问私有方法，也不发起本机网络请求。 */

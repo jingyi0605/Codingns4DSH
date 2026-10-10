@@ -12,6 +12,7 @@ test('交互事件走 Gateway wireStream，回答走 Connection 原生拦截器'
       return (async function* () {
         yield { type: 'ready', clientId: 'peer-client' }
         yield { type: 'emit', event: 'settings/document-updated', args: [{ privateSetting: true }] }
+        yield { type: 'emit', event: 'api-session/status', args: ['remote-session', true] }
       })()
     } },
   }
@@ -32,7 +33,10 @@ test('交互事件走 Gateway wireStream，回答走 Connection 原生拦截器'
   const dispatch = resolveDshNativeDispatch(ctx as never)!
   const controller = new AbortController()
   const stream = await dispatch.stream('$events', { args: {} }, controller.signal)
-  assert.deepEqual(await Array.fromAsync(stream), [{ type: 'ready', clientId: 'peer-client' }])
+  assert.deepEqual(await Array.fromAsync(stream), [
+    { type: 'ready', clientId: 'peer-client' },
+    { type: 'emit', event: 'api-session/status', args: ['remote-session', true] },
+  ])
   assert.equal(calls[0]?.[0], '$events')
   assert.equal(calls[0]?.[4], controller.signal)
   await dispatch.rpc('$events/result', { args: { clientId: 'peer-client', eventId: 'e', outcome: { kind: 'result', value: 'rejected' } } })
