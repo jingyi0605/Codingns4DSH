@@ -10,7 +10,7 @@
 
 ### 2.1 App 连接管理
 
-发现默认 macOS 安装路径或显式 `CODINGNS_DOUBAO_APP_PATH`；调试端口由 `CODINGNS_DOUBAO_CDP_PORT` 指定，默认 9225。检测不启动。只接受 `127.0.0.1` 和固定端口，校验 discovery 返回的 WebSocket 归属和后台页 URL。已运行而无端口直接报错。macOS 启动采用 `open -g -j`，不持有关闭 App 的权限。Windows 首期仅连接已开启端口的 App；冷启动隐藏必须另经真实环境验收。
+发现默认 macOS 安装路径或显式 `CODINGNS_DOUBAO_APP_PATH`；Windows 依次检查显式路径、常见安装目录、注册表 App Paths 和 PATH。调试端口由 `CODINGNS_DOUBAO_CDP_PORT` 指定，默认 9225。检测不启动，并通过可选运行态区分 `ready`（CDP 已就绪）、`installed`（已安装但未连接）和 `missing`（未找到安装入口）。只接受 `127.0.0.1` 和固定端口，校验 discovery 返回的 WebSocket 归属和后台页 URL。已运行而无端口直接报错。macOS 启动采用 `open -g -j`，Windows 在实际回合连接且豆包未运行时以相同调试参数 detached 启动；两端都不持有关闭用户现有进程的权限。Windows 冷启动隐藏与实例归属必须另经真实环境验收。
 
 ### 2.2 CDP 窄桥
 
