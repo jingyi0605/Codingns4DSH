@@ -80,7 +80,7 @@ test('子代理桥接注入：Command Code 始终屏蔽原生 agent，桥接开�
     assert.equal(config.mcpServers.codingns.env.CODINGNS_BRIDGE_TOKEN, ACTIVE_RUNTIME.token)
     assert.ok(String(config.mcpServers.codingns.args[0]).endsWith('mcp-stdio-entry.js'))
     assert.deepEqual(claude.slice(configIndex + 2, configIndex + 5), ['--append-system-prompt', claude[configIndex + 3], '--disallowedTools'])
-    assert.equal(claude.at(-1), 'Task')
+    assert.deepEqual(claude.slice(-3), ['--disallowedTools', 'Task', 'Agent'])
     assert.ok(existsSync(sourceEntry(bridgeMcpEntryPath())))
 
     const acp = acpBridgeMcpServers('s1', 'gemini')
@@ -130,7 +130,8 @@ test('子代理会话不注入桥接端点但屏蔽原生 agent，避免嵌套�
       CODINGNS_DISABLE_NATIVE_AGENT: '1',
       CODINGNS_SUBAGENT_CHILD: '1',
     })
-    assert.deepEqual(claudeBridgeArgs('child-1', 'claude-code'), [])
+    // Claude 子会话不再递归注入 CodingNS MCP，但必须屏蔽当前版 Agent 和旧版 Task。
+    assert.deepEqual(claudeBridgeArgs('child-1', 'claude-code'), ['--disallowedTools', 'Task', 'Agent'])
     assert.equal(codexBridgeDeveloperInstructions('child-1'), undefined)
     // 普通会话仍然注入。
     assert.equal(commandCodeBridgeArgs('user-1').length, 2)
@@ -274,13 +275,22 @@ test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', 
         : { ok: true, status: 'running', completed: false, text: '子代理已启动，等待首轮 turn/end。', childSessionId: 'child-9' }
     },
   })
-  const child = spawn(process.execPath, bridgeEntryArgs(), {
+  // 直接使用 Claude 适配器生成的 MCP 配置启动 stdio 子进程，验证“适配器参数
+  // 注入 → tools/list → tools/call → Host 桥接”整条链路，而不是只测裸入口。
+  setSubagentBridge(server.runtime)
+  const claudeArgs = claudeBridgeArgs('s1', 'claude-code')
+  const configIndex = claudeArgs.indexOf('--mcp-config')
+  assert.ok(configIndex >= 0)
+  const claudeConfig = JSON.parse(claudeArgs[configIndex + 1]!) as { mcpServers: { codingns: { command: string; args: string[]; env: Record<string, string> } } }
+  const mcp = claudeConfig.mcpServers.codingns
+  assert.equal(mcp.env.CODINGNS_ADAPTER_ID, 'claude-code')
+  const child = spawn(mcp.command, [
+    '--import', fileURLToPath(new URL('./register-source-loader.mjs', import.meta.url)),
+    sourceEntry(mcp.args[0]!),
+  ], {
     env: {
       ...process.env,
-      CODINGNS_BRIDGE_URL: server.runtime.baseUrl,
-      CODINGNS_BRIDGE_TOKEN: server.runtime.token,
-      CODINGNS_DSH_SESSION_ID: 's1',
-      CODINGNS_ADAPTER_ID: 'command-code',
+      ...mcp.env,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -334,9 +344,11 @@ test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', 
     assert.equal(sent.result.isError, undefined)
     assert.match(String(sent.result.content?.[0]?.text), /"messageId":"message-9"/u)
     assert.equal(dispatched.find((request) => request.action === 'send')?.message, '请补充报告')
+    assert.equal(dispatched[0]?.agent, 'claude-code')
   } finally {
     child.kill()
     await server.close()
+    setSubagentBridge(undefined)
   }
 })
 
@@ -672,7 +684,7 @@ test('Command Code 未命中的 hook_blocked 仍按失败投影', async () => {
   }
 })
 
-test('Claude Code 参数注入：托管开启时携带 MCP 替身与禁用的 Task', () => {
+test('Claude Code 参数注入：托管开启时携带 MCP 替身并禁用 Task/Agent', () => {
   const build = (sessionId: string): readonly string[] => (new ClaudeCodeDriver({ binaries: ['fake-claude'] }) as unknown as {
     buildArgs(input: Record<string, unknown>): readonly string[]
   }).buildArgs({ sessionId, messages: [], prompt: 'hi' })
@@ -685,7 +697,7 @@ test('Claude Code 参数注入：托管开启时携带 MCP 替身与禁用的 Ta
     assert.deepEqual(args.slice(0, baseArgs.length), baseArgs)
     assert.ok(args.includes('--mcp-config'))
     assert.ok(args.includes('--disallowedTools'))
-    assert.equal(args.at(-1), 'Task')
+    assert.deepEqual(args.slice(-3), ['--disallowedTools', 'Task', 'Agent'])
   } finally {
     setSubagentBridge(undefined)
   }
