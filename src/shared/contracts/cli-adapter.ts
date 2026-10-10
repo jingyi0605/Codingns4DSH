@@ -1,6 +1,9 @@
 /** Codingns4DSH 当前可接入的外部 Agent 标识。内部字段沿用 cli 命名以保持协议兼容。 */
 export type CodingNsCliAdapterId = string
 
+/** 外部 Agent 的运行态；缺省表示旧版适配器未声明运行态。 */
+export type CodingNsCliRuntimeState = 'ready' | 'installed' | 'missing'
+
 /** Host 侧可供 Client 展示的外部 Agent 摘要。 */
 export interface CodingNsCliAdapterDescriptor {
   readonly id: CodingNsCliAdapterId
@@ -10,6 +13,8 @@ export interface CodingNsCliAdapterDescriptor {
   /** 适配器已经验证的能力；未声明的能力必须按不支持处理。 */
   readonly capabilities?: readonly CodingNsCliCapability[]
   readonly installed: boolean
+  /** 安装存在与当前协议端点可连接必须分开表达，避免把“已安装未连接”误报为可用。 */
+  readonly runtimeState?: CodingNsCliRuntimeState
   readonly enabled: boolean
   readonly version: string | null
   readonly command: string | null
@@ -22,7 +27,7 @@ export interface CodingNsCliAdapterDescriptor {
   readonly detectionFailure?: 'launch' | 'timeout' | 'version' | 'protocol'
 }
 
-export type CodingNsCliDetection = Pick<CodingNsCliAdapterDescriptor, 'installed' | 'version' | 'command' | 'diagnostic' | 'detectionFailure'>
+export type CodingNsCliDetection = Pick<CodingNsCliAdapterDescriptor, 'installed' | 'runtimeState' | 'version' | 'command' | 'diagnostic' | 'detectionFailure'>
 
 export type CodingNsCliCapability =
   | 'models'

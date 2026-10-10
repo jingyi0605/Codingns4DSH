@@ -1105,7 +1105,7 @@ async function forEachConcurrent<T>(
 }
 
 function detectionFingerprint(detection: CodingNsCliDetection): string {
-  return JSON.stringify([detection.installed, detection.command, detection.version, detection.diagnostic])
+  return JSON.stringify([detection.installed, detection.runtimeState, detection.command, detection.version, detection.diagnostic])
 }
 
 /**

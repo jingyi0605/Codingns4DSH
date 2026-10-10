@@ -10,9 +10,10 @@ import type { CodingNsRpcClient } from './features/types.js'
 import type { CodingNsTranslator } from './locale.js'
 
 /** 设置页和选择器使用同一状态文案，检测中或失败都不能显示成未安装。 */
-export function adapterDetectionLabel(adapter: CodingNsCliAdapterDescriptor): 'cli.detecting' | 'cli.detectionFailed' | 'cli.installed' | 'cli.notInstalled' {
+export function adapterDetectionLabel(adapter: CodingNsCliAdapterDescriptor): 'cli.detecting' | 'cli.detectionFailed' | 'cli.installed' | 'cli.installedOffline' | 'cli.notInstalled' {
   if (adapter.detectionState === 'pending' || adapter.detectionState === 'running') return 'cli.detecting'
   if (adapter.detectionState === 'error') return 'cli.detectionFailed'
+  if (adapter.installed && adapter.runtimeState === 'installed') return 'cli.installedOffline'
   return adapter.installed ? 'cli.installed' : 'cli.notInstalled'
 }
 

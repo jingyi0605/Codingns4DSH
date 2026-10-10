@@ -374,7 +374,10 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
           createElement('div', { className: cliAdapterClass.identity },
             createElement('span', { className: cliAdapterClass.name, style: { fontWeight: 600 } }, adapter.name),
             createElement('div', { className: cliAdapterClass.metadata },
-              createElement('span', { className: cliAdapterClass.status, style: { color: adapter.installed ? dshThemeColor.success : dshThemeColor.labelTertiary, background: adapter.installed ? 'rgba(22,163,74,.12)' : dshThemeColor.surfaceSubtle } }, adapterStatus(adapter, t)),
+              createElement('span', { className: cliAdapterClass.status, style: {
+                color: adapter.installed ? (adapter.runtimeState === 'installed' ? dshThemeColor.labelSecondary : dshThemeColor.success) : dshThemeColor.labelTertiary,
+                background: adapter.installed && adapter.runtimeState !== 'installed' ? 'rgba(22,163,74,.12)' : dshThemeColor.surfaceSubtle,
+              } }, adapterStatus(adapter, t)),
               createElement('span', { className: cliAdapterClass.version }, adapter.version ?? t('cli.notDetectedVersion')),
             ),
           ),

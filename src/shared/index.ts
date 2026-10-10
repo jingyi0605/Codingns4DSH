@@ -136,6 +136,7 @@ export { CODINGNS_RPC_CHANNEL } from './contracts/transport.js'
 export type {
   CodingNsCliAdapterDescriptor,
   CodingNsCliAdapterId,
+  CodingNsCliRuntimeState,
   CodingNsCliCapability,
   CodingNsAgentEvent,
   CodingNsAgentQuestion,

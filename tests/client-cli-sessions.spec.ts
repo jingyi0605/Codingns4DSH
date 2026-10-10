@@ -24,6 +24,7 @@ test('检测中和检测失败不使用未安装文案，旧 Host 状态仍兼�
   assert.equal(adapterDetectionLabel({ ...base, detectionState: 'ready' }), 'cli.notInstalled')
   assert.equal(adapterDetectionLabel(base), 'cli.notInstalled')
   assert.equal(adapterDetectionLabel({ ...base, installed: true }), 'cli.installed')
+  assert.equal(adapterDetectionLabel({ ...base, installed: true, runtimeState: 'installed' }), 'cli.installedOffline')
 })
 
 test('对话框适配器目录只保留已安装且已启用的适配器', () => {
