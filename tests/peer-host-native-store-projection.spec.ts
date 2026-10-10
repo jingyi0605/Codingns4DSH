@@ -493,6 +493,9 @@ test('聚合变化触发一次原生会话列表刷新', async () => {
   const stores = fakeNativeStores()
   await refreshPeerHostNativeSessions(stores.uiContext as never)
   assert.equal(stores.refreshCount(), 1)
+  // 同一 uiContext 的短时间重复触发不能再次发出完整 session/list。
+  await refreshPeerHostNativeSessions(stores.uiContext as never)
+  assert.equal(stores.refreshCount(), 1)
   await refreshPeerHostNativeSessions(undefined)
   assert.equal(stores.refreshCount(), 1)
 })

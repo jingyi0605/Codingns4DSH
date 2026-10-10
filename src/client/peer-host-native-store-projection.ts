@@ -95,10 +95,13 @@ export function installPeerHostNativeStoreProjection(input: {
  * 因此聚合变化后主动刷新一次；虚拟会话由页面 Transport 在 `session/list` 响应里补齐。
  */
 export async function refreshPeerHostNativeSessions(uiContext: Context | undefined): Promise<void> {
+  if (uiContext === undefined) return
   const sessions = readNativeService(uiContext, 'sessions')
   const refresh = isRecord(sessions) ? sessions.refresh : undefined
   if (typeof refresh !== 'function') return
-  const owner = sessions as object
+  // 某些 DSH 版本每次 get('sessions') 都返回新的代理对象；以稳定的 uiContext
+  // 作为键，否则并发合并和最小间隔会形同虚设，重连时会把 session/list 打爆。
+  const owner = uiContext as object
   const state = refreshStates.get(owner)
   const now = Date.now()
   if (state?.promise !== undefined) {
@@ -106,7 +109,9 @@ export async function refreshPeerHostNativeSessions(uiContext: Context | undefin
     return
   }
   if (state !== undefined && now - state.completedAt < PEER_HOST_NATIVE_SESSION_REFRESH_MIN_INTERVAL_MS) return
-  const operation: Promise<void> = Promise.resolve().then(() => (refresh as () => unknown).call(owner)).then(() => undefined).catch(() => undefined)
+  // WeakMap 的键只负责识别稳定的 uiContext；方法调用仍必须保留 sessions 作为 this，
+  // DSH 原生实现会从 this.manager 读取当前会话控制器。
+  const operation: Promise<void> = Promise.resolve().then(() => (refresh as () => unknown).call(sessions)).then(() => undefined).catch(() => undefined)
   refreshStates.set(owner, { promise: operation, completedAt: state?.completedAt ?? 0 })
   try {
     await operation
@@ -115,8 +120,8 @@ export async function refreshPeerHostNativeSessions(uiContext: Context | undefin
   }
 }
 
-/** 原生列表刷新是完整 session/list，合并并发调用并限制重连后的最低频率。 */
-export const PEER_HOST_NATIVE_SESSION_REFRESH_MIN_INTERVAL_MS = 1_500
+/** 原生列表刷新是完整 session/list，合并并限制重连后的最低频率。 */
+export const PEER_HOST_NATIVE_SESSION_REFRESH_MIN_INTERVAL_MS = 5_000
 
 interface NativeSessionRefreshState {
   readonly completedAt: number

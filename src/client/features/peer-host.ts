@@ -86,7 +86,9 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
         // 资源按逆序释放：此时 Desktop 路由和导航订阅已还原，重新加载本机目录，
         // 避免停用 PeerHost 后仍展示最后一个远端 Host 的全局缓存。
         refreshDshModelCatalog(context.services.uiContext)
-        reconnectNativeEvents(context.services.uiContext)
+        // Web 路径没有额外的原生 Remote 路由，不需要为了停用插件强制结束当前
+        // Connection 代次；否则 DSH 会在每次手动重连后自动再发一次 session/list。
+        if (shim.getMode?.() === 'desktop') reconnectNativeEvents(context.services.uiContext)
       })
       // 原生侧栏在插件 apply 时按引用捕获 `workspaces.list`，只能就地投影这个对象；
       // 没有 shim 就没有原生 Remote 路由，此时不注入，避免出现点不开的远端条目。
@@ -131,8 +133,10 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
         )) ?? (() => undefined), 'codingns4dsh: PeerHost file links')
       })
       if (fileLinks !== undefined) context.resources.add(() => fileLinks.dispose())
-      // 原生 $events 通常早于插件启动；切换一次客户端连接代次，让已打开的流使用聚合入口。
-      reconnectNativeEvents(context.services.uiContext)
+      // Desktop 的原生 `$events` 可能早于插件启动；切换一次客户端连接代次，让
+      // 已打开的流使用聚合入口。Web 路径从 preboot shim 开始就使用当前入口，
+      // 这里重连只会白白触发 DSH 的 session/list 基线刷新。
+      if (shim.getMode?.() === 'desktop') reconnectNativeEvents(context.services.uiContext)
     }
     const panel = startPeerHostManagementPanel({ rpc: context.services.rpc, locale: context.services.locale })
     context.resources.add(() => panel.dispose())
@@ -165,6 +169,7 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
     // 因此聚合变化后触发一次原生列表刷新，由页面 Transport 在 session/list 响应里补齐。
     const refresh = async (signal: AbortSignal): Promise<boolean> => {
       const orderReference = projection.workspaceOrder()
+      const sessionMembershipBefore = sessionMembershipKey(projection.sessions())
       try {
         const aggregate = await management.aggregate(signal)
         // Host 端先完成 aggregate 再 hydrate 顺序；按同一顺序读取可避免拿到空的初始 order，
@@ -182,7 +187,12 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
         const refreshedOrder = projection.workspaceOrder() === orderReference ? orderedWorkspaceIds : undefined
         latestAggregate = aggregate
         tag.setAggregate(aggregate)
-        if (transport?.setAggregate(aggregate, refreshedOrder) === true) {
+        const projectionChanged = transport === undefined
+          ? projection.setAggregate(aggregate, refreshedOrder)
+          : transport.setAggregate(aggregate, refreshedOrder)
+        // 运行态、标题和更新时间都由事件流增量承载；只有会话成员集合增删时
+        // 才需要让原生 SessionManager 重新取一次完整 session/list。
+        if (projectionChanged && sessionMembershipBefore !== sessionMembershipKey(projection.sessions())) {
           await refreshPeerHostNativeSessions(context.services.uiContext)
         }
         return true
@@ -532,11 +542,18 @@ export function createPeerHostPageTransport(
       await codingNsCall('peerHost/nativeStreamClose', { streamId, scope }, AbortSignal.timeout(5_000)).catch(() => undefined)
     }
   })()
+  // DSH 自己会在每个 Connection 代次完成时刷新一次真实 session/list；PeerHost
+  // 只需在首次事件流握手成功后补一次虚拟会话基线，后续增量由事件流和聚合变化驱动。
+  let nativeSessionPrepared = false
   const events = new PeerHostRemoteEvents({
     open: (scope, signal) => openRemoteStream('$events', { args: {} }, scope, signal),
     reply: (scope, payload, signal) => codingNsCall('peerHost/native', { method: '$events/result', payload, scope }, signal),
     accepts: (agentId, scope) => scopes.get(agentId)?.targetHostId === scope.targetHostId,
-    prepare: () => refreshPeerHostNativeSessions(uiContext as Parameters<typeof refreshPeerHostNativeSessions>[0]),
+    prepare: async () => {
+      if (nativeSessionPrepared) return
+      nativeSessionPrepared = true
+      await refreshPeerHostNativeSessions(uiContext as Parameters<typeof refreshPeerHostNativeSessions>[0])
+    },
   })
   /**
    * 记录刚在远端新建的会话作用域。
@@ -1113,6 +1130,11 @@ function refreshDshModelCatalog(uiContext: { get(name: string): unknown } | unde
   } catch {
     // 模型选择插件未挂载或 DSH 版本没有该内部服务时，不影响远程请求本身。
   }
+}
+
+/** 只比较会话成员集合，避免把每个状态增量放大成完整列表请求。 */
+function sessionMembershipKey(sessions: readonly { readonly sessionId: string }[]): string {
+  return sessions.map((session) => session.sessionId).join('\u0000')
 }
 
 /** 打开当前页面 DSH Gateway 的单个 Remote 流；协议与 dsh-api-gateway 保持一致。 */

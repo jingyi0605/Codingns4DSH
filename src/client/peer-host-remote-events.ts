@@ -23,6 +23,7 @@ interface EventGeneration {
   readonly queue: EventQueue
   readonly workers: Map<string, EventWorker>
   clientId?: string
+  prepared: boolean
 }
 
 export interface PeerHostRemoteEventsOptions {
@@ -77,7 +78,7 @@ export class PeerHostRemoteEvents {
   open(local: (signal: AbortSignal) => AsyncIterable<unknown>, signal?: AbortSignal): AsyncIterable<unknown> {
     const self = this
     return (async function* () {
-      const generation: EventGeneration = { controller: new AbortController(), queue: new EventQueue(), workers: new Map() }
+      const generation: EventGeneration = { controller: new AbortController(), queue: new EventQueue(), workers: new Map(), prepared: false }
       const abort = (): void => { generation.controller.abort(); generation.queue.end() }
       signal?.addEventListener('abort', abort, { once: true })
       if (signal?.aborted) abort()
@@ -150,10 +151,14 @@ export class PeerHostRemoteEvents {
             if (frame?.type !== 'ready' || typeof frame.clientId !== 'string') throw new Error('远端事件流缺少 ready 帧')
             clientId = frame.clientId
             attempt = 0
-            // 只有事件流已经完成 ready 握手后才做一次基线校准。
-            // 连接失败、握手失败或旧版 Host 不支持事件流时，不能先触发完整 session/list。
-            try { await this.options.prepare?.() } catch {
-              // 基线刷新失败不能撕掉已经 ready 的事件流；下一次有效事件或重连再校准。
+            // 只有事件流完成首个 ready 握手后才做一次基线校准。
+            // 同一条合并事件流内部的重连不能反复触发完整 session/list；增量状态由
+            // WebSocket 事件承担。调用方若需要跨 open() 复用基线，应在 prepare() 内自行合并。
+            if (!generation.prepared) {
+              generation.prepared = true
+              try { await this.options.prepare?.() } catch {
+                // 基线刷新失败不能撕掉已经 ready 的事件流；后续聚合刷新负责补偿。
+              }
             }
             continue
           }
