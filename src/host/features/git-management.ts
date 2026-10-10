@@ -68,7 +68,8 @@ export function createGitManagementFeature(): FeatureModule<CodingNsHostServices
 async function readStatus(workspaceId: string, root: string): Promise<GitStatus> {
   let result: { stdout: string; stderr: string }
   try {
-    result = await runGit(root, ['status', '--porcelain=v1', '-z', '--branch'])
+    // 必须按文件返回未跟踪项；Git 默认会把整个未跟踪目录折叠成一个目录项。
+    result = await runGit(root, ['status', '--porcelain=v1', '-z', '--branch', '--untracked-files=all'])
   } catch (error) {
     if (!isNotGitRepositoryError(error)) throw error
     return {

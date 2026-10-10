@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile as execFileCallback } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 import test from 'node:test'
@@ -75,6 +75,23 @@ test('Git Host 模块能处理未初始化目录、状态、暂存、提交和�
     await assert.rejects(() => rpc(table, 'git/stage', { workspaceId: 'workspace-1', targets: ['../outside'] }), /Git 路径无效/u)
     for (const dispose of resources.disposers.reverse()) await dispose()
     assert.equal(table.resolve('git/status'), null)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Git Host 状态按文件返回未跟踪目录内容', async () => {
+  const root = await mkdtemp(`${tmpdir()}/codingns-git-untracked-tree-`)
+  try {
+    const { table } = startGitFeature(new Map([['workspace-untracked-tree', root]]))
+    await rpc(table, 'git/init', { workspaceId: 'workspace-untracked-tree' })
+    await mkdir(`${root}/outputs`, { recursive: true })
+    const names = ['one.md', 'two.md', 'three.md', 'four.md', 'five.md']
+    for (const name of names) await writeFile(`${root}/outputs/${name}`, `${name}\n`, 'utf8')
+
+    const status = await rpc(table, 'git/status', { workspaceId: 'workspace-untracked-tree' }) as { changes: readonly { path: string; status: string; staged: boolean }[] }
+    const expected = names.map((name) => [`outputs/${name}`, '??', false] as const).sort(([left], [right]) => left.localeCompare(right))
+    assert.deepEqual(status.changes.map((item) => [item.path, item.status, item.staged]), expected)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
