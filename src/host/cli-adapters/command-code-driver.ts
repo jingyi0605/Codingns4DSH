@@ -838,7 +838,8 @@ export class CommandCodeDriver implements CodingNsCliDriver {
       args.push('--tools-enable', 'ask_user_question')
     }
     for (const path of turn.skillPaths) args.push('--skill', path)
-    // 子代理托管开启时加载桥接 mod：父会话转投 DSH，子会话仅禁用嵌套 agent。
+    // 每次启动都加载屏蔽 Mod：父会话转投 DSH，子会话仅禁用嵌套 agent；桥接
+    // 不可用时由 Mod 明确阻断，不能回退到 Command Code 原生子代理。
     args.push(...commandCodeNativeAgentArgs(input.sessionId))
     for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--add-dir', directory)
     if (input.modelId && input.modelId !== 'provider-default') args.push('--model', input.modelId)
@@ -1988,7 +1989,8 @@ function readJson(path: string): Record<string, unknown> | null { if (!existsSyn
 /** 保留启动选择作为进程复用条件；ACP 的实际会话状态由原生协议显式设置。 */
 function commandCodeAcpArgs(input: CodingNsCliTurnInput): readonly string[] {
   // Command Code 的全局 --mod 必须放在 acp 子命令之前；放到 acp 之后会被
-  // Commander 当成 ACP 子命令参数而拒绝。桥接关闭时返回空数组，保持原启动形态。
+  // Commander 当成 ACP 子命令参数而拒绝。该参数无论桥接状态都必须存在，确保
+  // 启动阶段就屏蔽原生 agent。
   const args = [...commandCodeNativeAgentArgs(input.sessionId), 'acp', ...commandCodePermissionArgs(input.permission)]
   if (input.plan === true && !args.includes('--plan')) args.push('--plan')
   if (input.enableAskUserQuestion === true || input.runtimeEnv?.CMD_TOOLS_ASK_USER_QUESTION_ENABLE === 'true') {

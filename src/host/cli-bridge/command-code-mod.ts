@@ -2,8 +2,9 @@
  * Command Code 托管 mod：把内建 `agent` 工具调用转投给 DSH 原生子代理。
  *
  * 由驱动以 `--mod <path>` 每次运行加载；桥接配置（地址/令牌/会话）从进程环境
- * 读取。托管关闭时不注入本 Mod；桥接子会话只注入禁用标记，不允许继续创建
- * 嵌套外部 Agent。
+ * 读取。Command Code 会话始终注入本 Mod；桥接父会话拿到派发端点，桥接子会话
+ * 只注入禁用标记，不允许继续创建嵌套外部 Agent。桥接不可用时也必须阻断原生
+ * agent，避免静默回退。
  *
  * 桥接已配置但派发失败时**不再静默回退**：过去返回 undefined 会让 CLI 悄悄改用
  * 内建子代理，父会话与界面都看不出「托管失败」，实测中表现为「界面只有 5 个
@@ -23,9 +24,23 @@ interface ToolCallHookResult {
   readonly additionalContext?: string
 }
 
+interface ToolModuleLike {
+  readonly schema: {
+    readonly name: string
+    readonly description: string
+    readonly input_schema: Record<string, unknown>
+  }
+  readonly run: (context: { readonly input: unknown }) => Promise<{
+    readonly ok: boolean
+    readonly content?: readonly { readonly type: 'text'; readonly text: string }[]
+    readonly error?: string
+  }>
+}
+
 interface ModApiLike {
   readonly getActiveTools?: () => readonly string[]
   readonly setActiveTools?: (names: readonly string[]) => void
+  readonly addTool?: (tool: ToolModuleLike) => unknown
   readonly hooks: (hooks: {
     readonly onSessionStart?: () => void
     readonly beforeToolCall?: (context: ToolCallHookContext) => Promise<ToolCallHookResult | undefined> | ToolCallHookResult | undefined
@@ -39,16 +54,48 @@ export default function codingNsSubagentMod(cmd: ModApiLike): void {
   const token = process.env.CODINGNS_BRIDGE_TOKEN ?? ''
   const sessionId = process.env.CODINGNS_DSH_SESSION_ID ?? ''
   const nativeAgentDisabled = process.env.CODINGNS_DISABLE_NATIVE_AGENT === '1'
+  const subagentChild = process.env.CODINGNS_SUBAGENT_CHILD === '1'
   const bridgeConfigured = baseUrl !== '' && token !== '' && sessionId !== ''
-  // 普通会话既没有桥接配置，也没有防递归标记：保持 Command Code 原生行为。
+  // 未注入屏蔽标记且没有桥接配置时才是独立运行的 Command Code；DSH 启动的
+  // 会话始终带标记，不能因为桥接暂时不可用而回退到原生 agent。
   if (!nativeAgentDisabled && !bridgeConfigured) return
+
+  // legacy `-p` 模式不会像 ACP 那样从 session/new 接收 mcpServers。直接注册
+  // DSH 工具，才能让 Command Code 在启动时就拥有正确的委派入口；仅靠
+  // beforeToolCall 拦截原生 agent 会把模型逼回错误工具或让它继续内联。
+  cmd.addTool?.({
+    schema: {
+      name: 'agent_subagent',
+      description: '通过 CodingNS DSH 桥接异步创建外部 Agent 子会话，并用 read/wait/send 跟踪。',
+      input_schema: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: '完整、自包含的子任务说明。' },
+          agent: { type: 'string', description: '外部 Agent id；缺省沿用当前会话。' },
+          model: { type: 'string', description: '可选模型覆盖。' },
+          description: { type: 'string', description: '子任务标题。' },
+          subagent_type: { type: 'string', description: '子代理类型提示。' },
+          action: { type: 'string', enum: ['start', 'read', 'wait', 'send'] },
+          run_in_background: { type: 'boolean' },
+          child_session_id: { type: 'string' },
+          message: { type: 'string' },
+          timeout_ms: { type: 'number' },
+          depends_on: { type: 'array', items: { type: 'string' } },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    },
+    run: async ({ input }) => runDshAgentTool(baseUrl, token, sessionId, subagentChild, input),
+  })
+
   const disableNativeSubagentTools = (): void => {
     const getActiveTools = cmd.getActiveTools
     const setActiveTools = cmd.setActiveTools
     if (getActiveTools === undefined || setActiveTools === undefined) return
     // 官方 Mod API 的工具过滤是启动期最可靠的屏蔽面：被移除的工具不会进入
-    // 模型 schema，后续即使模型伪造调用也会被核心拒绝。保留 MCP 的
-    // mcp__codingns__agent_subagent，让所有外部委派统一回到 DSH 子会话。
+    // 模型 schema，后续即使模型伪造调用也会被核心拒绝。上面注册的
+    // agent_subagent 是唯一允许的外部委派入口。
     setActiveTools(getActiveTools().filter((name) => name !== 'agent' && name !== 'agent_output'))
   }
   cmd.hooks({
@@ -71,7 +118,10 @@ export default function codingNsSubagentMod(cmd: ModApiLike): void {
       }
       if (!bridgeConfigured) return {
         block: true,
-        additionalContext: failureText('当前会话禁止嵌套子代理', '该会话是 DSH 子代理会话，不能再次创建外部 Agent。'),
+        additionalContext: failureText(
+          subagentChild ? '当前会话禁止嵌套子代理' : 'DSH 子代理桥接不可用',
+          subagentChild ? '该会话是 DSH 子代理会话，不能再次创建外部 Agent。' : '桥接服务尚未启动或已失效，不能创建外部 Agent。',
+        ),
       }
       const dispatched = await dispatchToBridge(baseUrl, token, sessionId, context.toolCallId, prompt, input)
       return dispatched.ok === true
@@ -81,9 +131,59 @@ export default function codingNsSubagentMod(cmd: ModApiLike): void {
   })
 }
 
+async function runDshAgentTool(
+  baseUrl: string,
+  token: string,
+  sessionId: string,
+  subagentChild: boolean,
+  rawInput: unknown,
+): Promise<{ readonly ok: boolean; readonly content?: readonly { readonly type: 'text'; readonly text: string }[]; readonly error?: string }> {
+  const input = asRecord(rawInput)
+  const action = input?.action === 'read' || input?.action === 'wait' || input?.action === 'send' ? input.action : 'start'
+  const prompt = typeof input?.prompt === 'string' ? input.prompt : ''
+  const message = typeof input?.message === 'string' ? input.message : ''
+  if (subagentChild && action === 'start') return { ok: false, error: failureText('当前会话禁止嵌套子代理', '该会话是 DSH 子代理会话，不能再次创建外部 Agent。') }
+  if (baseUrl === '' || token === '' || sessionId === '') return { ok: false, error: failureText('DSH 子代理桥接不可用', '桥接服务尚未启动或已失效，不能创建外部 Agent。') }
+  if (action === 'start' && prompt.trim() === '') return { ok: false, error: 'agent_subagent 的 start 操作需要非空 prompt。' }
+  if (action === 'send' && prompt.trim() === '' && message.trim() === '') return { ok: false, error: 'agent_subagent 的 send 操作需要 message 或 prompt。' }
+  const dispatched = await dispatchRequest(baseUrl, token, {
+    sessionId,
+    prompt,
+    action,
+    ...(message.trim() === '' ? {} : { message }),
+    ...(action === 'start' ? { runInBackground: input?.run_in_background !== false } : {}),
+    ...(typeof input?.child_session_id === 'string' && input.child_session_id.trim() !== '' ? { childSessionId: input.child_session_id.trim() } : {}),
+    ...(Array.isArray(input?.depends_on) ? { dependsOn: input.depends_on.filter((item): item is string => typeof item === 'string' && item.trim() !== '').map((item) => item.trim()) } : {}),
+    ...(typeof input?.timeout_ms === 'number' && Number.isFinite(input.timeout_ms) ? { timeoutMs: input.timeout_ms } : {}),
+    ...(typeof input?.agent === 'string' && input.agent.trim() !== '' ? { agent: input.agent.trim() } : {}),
+    ...(typeof input?.model === 'string' && input.model.trim() !== '' ? { model: input.model.trim() } : {}),
+    ...(typeof input?.description === 'string' && input.description.trim() !== '' ? { description: input.description.trim() } : {}),
+    ...(typeof input?.subagent_type === 'string' && input.subagent_type.trim() !== '' ? { subagentType: input.subagent_type.trim() } : {}),
+  })
+  return dispatched.ok === true
+    ? { ok: true, content: [{ type: 'text', text: dispatched.text }] }
+    : { ok: false, error: dispatched.failure }
+}
+
 type DispatchOutcome =
   | { readonly ok: true; readonly text: string }
   | { readonly ok: false; readonly failure: string }
+
+interface BridgeRequest {
+  readonly sessionId: string
+  readonly prompt: string
+  readonly action?: 'start' | 'read' | 'wait' | 'send'
+  readonly message?: string
+  readonly runInBackground?: boolean
+  readonly childSessionId?: string
+  readonly dependsOn?: readonly string[]
+  readonly timeoutMs?: number
+  readonly toolCallId?: string
+  readonly agent?: string
+  readonly model?: string
+  readonly description?: string
+  readonly subagentType?: string
+}
 
 async function dispatchToBridge(
   baseUrl: string,
@@ -93,22 +193,25 @@ async function dispatchToBridge(
   prompt: string,
   input: Record<string, unknown>,
 ): Promise<DispatchOutcome> {
+  return dispatchRequest(baseUrl, token, {
+    sessionId,
+    prompt,
+    action: 'start',
+    runInBackground: true,
+    ...(toolCallId === undefined || toolCallId === '' ? {} : { toolCallId }),
+    ...(typeof input.description === 'string' && input.description.trim() !== '' ? { description: input.description.trim() } : {}),
+    ...(typeof input.subagent_type === 'string' && input.subagent_type.trim() !== '' ? { subagentType: input.subagent_type.trim() } : {}),
+    ...(typeof input.agent === 'string' && input.agent.trim() !== '' ? { agent: input.agent.trim() } : {}),
+    ...(typeof input.model === 'string' && input.model.trim() !== '' ? { model: input.model.trim() } : {}),
+  })
+}
+
+async function dispatchRequest(baseUrl: string, token: string, request: BridgeRequest): Promise<DispatchOutcome> {
   try {
     const response = await fetch(`${baseUrl}/v1/dispatch`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sessionId,
-        prompt,
-        // Command Code 的 agent 工具是同步 hook；这里明确改为后台派发，
-        // 否则 hook 会一直等到子会话 turn/end，外部工具调用容易撞上 300 秒上限。
-        runInBackground: true,
-        ...(toolCallId === undefined || toolCallId === '' ? {} : { toolCallId }),
-        ...(typeof input.description === 'string' && input.description.trim() !== '' ? { description: input.description.trim() } : {}),
-        ...(typeof input.subagent_type === 'string' && input.subagent_type.trim() !== '' ? { subagentType: input.subagent_type.trim() } : {}),
-        ...(typeof input.agent === 'string' && input.agent.trim() !== '' ? { agent: input.agent.trim() } : {}),
-        ...(typeof input.model === 'string' && input.model.trim() !== '' ? { model: input.model.trim() } : {}),
-      }),
+      body: JSON.stringify(request),
       signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
     })
     if (!response.ok) {
@@ -123,7 +226,8 @@ async function dispatchToBridge(
       readonly toolCalls?: unknown
       readonly error?: unknown
     }
-    if (payload.ok !== true) {
+    const knownStatus = payload.status === 'creating' || payload.status === 'running' || payload.status === 'completed' || payload.status === 'failed' || payload.status === 'interrupted'
+    if (payload.ok !== true && !knownStatus) {
       const detail = typeof payload.error === 'string' && payload.error.trim() !== '' ? payload.error.trim() : ''
       return { ok: false, failure: failureText('桥接拒绝了这次子代理派发', detail) }
     }
@@ -133,7 +237,7 @@ async function dispatchToBridge(
     return {
       ok: true,
       text: JSON.stringify({
-        ok: true,
+        ok: payload.ok === true,
         ...(typeof payload.status === 'string' ? { status: payload.status } : {}),
         ...(typeof payload.completed === 'boolean' ? { completed: payload.completed } : {}),
         ...(typeof payload.childSessionId === 'string' ? { childSessionId: payload.childSessionId } : {}),
@@ -146,6 +250,10 @@ async function dispatchToBridge(
     const reason = error instanceof Error ? error.message : String(error)
     return { ok: false, failure: failureText('无法连接 DSH 子代理桥接', reason) }
   }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 }
 
 async function readBridgeError(response: Response): Promise<string> {
@@ -165,7 +273,7 @@ function failureText(summary: string, detail: string): string {
   const lines = [
     `[codingns4dsh] 子代理托管派发失败：${summary}。`,
     detail === '' ? '' : `原因：${detail}`,
-    '本次调用没有回退到 Command Code 内建子代理，任务尚未执行。请修复托管配置后重试，或在 DSH 设置中关闭「子代理托管」。',
+    '本次调用没有回退到 Command Code 内建子代理，任务尚未执行。请修复 DSH 子代理托管配置后重试。',
   ]
   return lines.filter((line) => line !== '').join('\n')
 }

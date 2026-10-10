@@ -15,6 +15,7 @@ const COMMAND_CODE_MOD_PATH = fileURLToPath(new URL('./command-code-mod.js', imp
 /** 外部 CLI 侧认为这是一次由 Codingns4DSH 托管的会话。 */
 const BRIDGE_MARKER = 'CODINGNS_SUBAGENT_BRIDGE'
 const NATIVE_AGENT_BLOCK_MARKER = 'CODINGNS_DISABLE_NATIVE_AGENT'
+const SUBAGENT_CHILD_MARKER = 'CODINGNS_SUBAGENT_CHILD'
 
 export function bridgeMcpEntryPath(): string {
   return MCP_ENTRY_PATH
@@ -36,9 +37,14 @@ export function commandCodeBridgeArgs(sessionId: string): readonly string[] {
   return ['--mod', COMMAND_CODE_MOD_PATH]
 }
 
-/** command-code：桥接运行期间所有会话都加载屏蔽原生 agent 的 Mod。 */
-export function commandCodeNativeAgentArgs(sessionId: string): readonly string[] {
-  if (getSubagentBridge() === undefined) return []
+/**
+ * command-code：每次启动都加载屏蔽原生 agent 的 Mod。
+ *
+ * 这里不能再以桥接服务是否已启动作为条件。桥接启动失败时如果不加载 Mod，
+ * Command Code 会静默回退到自己的 agent 工具，正是本次问题的根因。Mod 会在
+ * 桥接可用时派发到 DSH；桥接不可用时明确阻断调用并返回诊断。
+ */
+export function commandCodeNativeAgentArgs(_sessionId: string): readonly string[] {
   return ['--mod', COMMAND_CODE_MOD_PATH]
 }
 
@@ -47,11 +53,15 @@ export function commandCodeBridgeEnvironment(sessionId: string, adapterId: strin
   return bridgeEnvironment(sessionId, adapterId) ?? {}
 }
 
-/** command-code：父会话拿到派发端点，子会话只拿到禁用标记。 */
+/**
+ * command-code：所有会话都注入屏蔽标记；父会话另外拿到派发端点，子会话只保留
+ * 防递归标记。这样即使设置关闭或桥接启动失败，也绝不会暴露原生 agent。
+ */
 export function commandCodeNativeAgentEnvironment(sessionId: string, adapterId: string): Record<string, string> {
-  if (getSubagentBridge() === undefined) return {}
+  const child = isSubagentChildSession(sessionId)
   return {
     [NATIVE_AGENT_BLOCK_MARKER]: '1',
+    ...(child ? { [SUBAGENT_CHILD_MARKER]: '1' } : {}),
     ...(bridgeEnvironment(sessionId, adapterId) ?? {}),
   }
 }
