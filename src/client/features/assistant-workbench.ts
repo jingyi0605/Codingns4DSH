@@ -315,8 +315,8 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
     style: { ...backdrop, ...(props.minimized ? { display: 'none' } : {}) } },
     configuring ? createElement(AssistantControlsStyle) : null,
     createElement('section', { role: 'dialog', 'aria-modal': !props.minimized, 'aria-label': t('awb.title'), 'data-codingns-assistant-workbench': configuring ? 'configuration' : 'chat',
-      style: { ...dialog, ...(!configuring ? { height: 'min(740px, calc(100dvh - 24px))', minHeight: 0 } : {}) } },
-      calling ? null : createElement('header', { style: { ...row, flexShrink: 0, padding: 11, borderBottom: `1px solid ${dshThemeColor.border}` } },
+      style: { ...dialog, ...(!configuring ? { height: 'min(740px, calc(100dvh - 44px))', minHeight: 0 } : {}) } },
+      calling ? null : createElement('header', { style: { ...row, flexShrink: 0, padding: '22px 22px 11px' } },
         createElement('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'grid', gap: 5 } },
           createElement('div', { 'data-codingns-assistant-heading': true, style: { ...row, gap: 8 } },
             createElement('strong', { style: { fontSize: 17, overflowWrap: 'anywhere' } }, initializing ? t('awb.setupTitle') : lifecycle.profile.name),
@@ -326,8 +326,8 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
         lifecycle.profile.initialized ? createElement(AssistantIconButton, { icon: configuring ? 'chat' : 'settings', label: t(configuring ? 'awb.chat' : 'awb.configure'), onClick: switchView, disabled: locked }) : null,
         createElement(AssistantIconButton, { icon: 'close', label: t('awb.close'), onClick: close, disabled: busy })),
       createElement('div', { 'data-codingns-assistant-scroll': true,
-        // 通话页自带统一内边距，外层不重复叠加；其余页面共用 11px 留白。
-        style: { flex: '1 1 auto', padding: calling ? 0 : 11, overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, display: 'flex', flexDirection: 'column', gap: configuring ? 11 : 16 } },
+        // 通话页自带统一内边距，外层不重复叠加；普通对话与设置页横向 22px、纵向 11px。
+        style: { flex: '1 1 auto', padding: calling ? 0 : '11px 22px', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, display: 'flex', flexDirection: 'column', gap: configuring ? 11 : 16 } },
         !loaded ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, t('awb.loading'), ' ', button(t('awb.retry'), () => { void refresh().catch((cause) => setError(message(cause))) })) : null,
         noticeText ? createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: 13, overflowWrap: 'anywhere' } }, noticeText) : null,
         notice ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, notice) : null,
@@ -352,14 +352,14 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
             createElement('div', { ref: messagesEnd }))),
       // 配置操作位于滚动区之外，统一外边距并让长表单的保存按钮始终可见。
       calling ? null : configuring ? createElement('footer', { 'data-codingns-assistant-configuration-footer': true,
-        style: { ...row, flexShrink: 0, justifyContent: initializing ? 'space-between' : 'flex-end', padding: 11,
-          borderTop: `1px solid ${dshThemeColor.border}`, background: dshThemeColor.pageBackground } },
+        style: { ...row, flexShrink: 0, justifyContent: initializing ? 'space-between' : 'flex-end', padding: '11px 22px 22px',
+          background: dshThemeColor.pageBackground } },
         initializing ? createElement('p', { style: { ...help, flex: '1 1 220px' } }, t('awb.setupLater')) : null,
         createElement('div', { style: row },
           initializing ? null : button(t('awb.cancel'), switchView),
           button(t(initializing ? 'awb.createStart' : 'awb.save'), save, locked || configurationSnapshot.preparing || !loaded || !writable || !draft.name.trim() || catalog === undefined || catalog.models.length === 0 || draft.modelKey === '' && catalog.default === null, true)))
         : createElement('footer', { 'data-codingns-assistant-composer-dock': true,
-        style: { flexShrink: 0, padding: 11, borderTop: `1px solid ${dshThemeColor.border}`, background: dshThemeColor.pageBackground } },
+        style: { flexShrink: 0, padding: '11px 22px 22px', background: dshThemeColor.pageBackground } },
         createElement(AssistantComposer, { t, value: text, disabled: locked || running || !loaded, onChange: setText, onSend: () => { void send() },
           files, onFiles: addFiles, onRemoveFile: (index) => setFiles((current) => current.filter((_, position) => position !== index)),
           running, stopping: busy, onStop: stopReply, voiceActive: props.active,
@@ -410,6 +410,6 @@ function requestKey(): string { return `assistant-${globalThis.crypto?.randomUUI
 const row: CSSProperties = { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }
 const help: CSSProperties = { ...dshSettingsHelpStyle, margin: 0 }
 const avatarStyle: CSSProperties = { display: 'grid', gap: 8, justifyItems: 'center' }
-// 工作台外层统一保留 24px 安全边距；内部滚动区、页脚和组件间距保持原值。
-const backdrop: CSSProperties = { position: 'fixed', inset: 0, zIndex: 10000, background: dshThemeColor.overlay, backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, boxSizing: 'border-box' }
-const dialog: CSSProperties = { display: 'flex', flexDirection: 'column', width: 'min(940px, 100%)', maxHeight: 'calc(100dvh - 48px)', minHeight: 300, background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, border: `1px solid ${dshThemeColor.border}`, borderRadius: 20, boxShadow: '0 24px 80px rgba(0,0,0,.24)', overflow: 'hidden' }
+// 工作台外层统一保留 22px 四向边距；内部滚动区、页脚和组件间距保持原值。
+const backdrop: CSSProperties = { position: 'fixed', inset: 0, zIndex: 10000, background: dshThemeColor.overlay, backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 22, boxSizing: 'border-box' }
+const dialog: CSSProperties = { display: 'flex', flexDirection: 'column', width: 'min(940px, 100%)', maxHeight: 'calc(100dvh - 44px)', minHeight: 300, background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, border: `1px solid ${dshThemeColor.border}`, borderRadius: 20, boxShadow: '0 24px 80px rgba(0,0,0,.24)', overflow: 'hidden' }
