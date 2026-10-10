@@ -10,7 +10,7 @@ import { TYPERT } from './typert.host.js'
 
 export const TYPERT_REMOTE: TypertRemoteContribution = {
   package: TYPERT.package,
-  descriptors: TYPERT.invocations as unknown as TypertRemoteContribution['descriptors'],
+  descriptors: TYPERT.invocations.filter((item) => (item as { namespace?: unknown }).namespace === 'codingnsTerminal') as unknown as TypertRemoteContribution['descriptors'],
 }
 
 export default TYPERT_REMOTE

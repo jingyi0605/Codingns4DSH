@@ -6,21 +6,22 @@ const expectedMethods = [
   'close', 'create', 'environment', 'follow', 'list',
   'rename', 'resize', 'retain', 'shells', 'write',
 ]
+const terminalInvocations = TYPERT.invocations.filter((item) => item.namespace === 'codingnsTerminal')
 
 test('终端 Typert manifest 使用 codingns4dsh 自有 package 和 invocation identity', () => {
   assert.equal(TYPERT.package, '@jingyi0605/codingns4dsh')
   assert.equal(TYPERT.face, 'host')
-  assert.deepEqual(TYPERT.invocations.map((item) => item.method), expectedMethods)
+  assert.deepEqual(terminalInvocations.map((item) => item.method), expectedMethods)
   assert.deepEqual(
-    TYPERT.invocations.map((item) => item.id),
+    terminalInvocations.map((item) => item.id),
     expectedMethods.map((method) => `codingns4dsh#terminal/${method}`),
   )
-  assert.ok(TYPERT.invocations.every((item) => item.service === 'terminalController'))
-  assert.ok(TYPERT.invocations.every((item) => item.namespace === 'codingnsTerminal'))
+  assert.ok(terminalInvocations.every((item) => item.service === 'terminalController'))
+  assert.ok(terminalInvocations.every((item) => item.namespace === 'codingnsTerminal'))
 })
 
 test('终端 Typert manifest 保持官方 lookup、scope、stream 和 cancellation 形状', () => {
-  const byMethod = new Map(TYPERT.invocations.map((item) => [item.method, item]))
+  const byMethod = new Map(terminalInvocations.map((item) => [item.method, item]))
   for (const method of ['close', 'create', 'environment', 'follow', 'rename', 'resize', 'shells', 'write']) {
     const item = byMethod.get(method)
     assert.deepEqual(item?.scope, { context: 'agent', wire: 'agentId' })
@@ -39,7 +40,7 @@ test('终端 Typert manifest 保持官方 lookup、scope、stream 和 cancellati
 })
 
 test('终端 Typert result codec 会裁掉插件内部 shell profileId', () => {
-  const create = TYPERT.invocations.find((item) => item.method === 'create')
+  const create = terminalInvocations.find((item) => item.method === 'create')
   assert.ok(create)
   const value = {
     id: 'tab-1',
@@ -57,7 +58,7 @@ test('终端 Typert result codec 会裁掉插件内部 shell profileId', () => {
 })
 
 test('终端环境 codec 保留跨会话的 DSH Workspace ID', () => {
-  const environment = TYPERT.invocations.find((item) => item.method === 'environment')
+  const environment = terminalInvocations.find((item) => item.method === 'environment')
   assert.ok(environment)
   const value = {
     cwd: '/workspace',
