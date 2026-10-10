@@ -423,6 +423,20 @@ function sessionStats(
   return { count: childIds.size, runningCount }
 }
 
+/**
+ * 判断打开目录时是否需要补拉父会话投影。
+ *
+ * 顶部计数可以先由会话摘要提供，目录投影却可能仍为空；用摘要计数作为
+ * 下限可以覆盖这种短暂不一致，也能覆盖关闭目录后投影被清理的情况。
+ */
+export function shouldRefreshSubagentCatalog(
+  catalog: Pick<CatalogSnapshot, 'entries' | 'state'> | undefined,
+  totalCount: number,
+): boolean {
+  const childCount = catalog?.entries.reduce((count, entry) => count + (entry.kind === 'child' ? 1 : 0), 0) ?? 0
+  return catalog === undefined || catalog.state !== 'ready' || childCount < totalCount
+}
+
 function diagnosticText(entry: DiagnosticEntry, t: TranslateNS<typeof SUBAGENT_COLLAPSED_LOCALE_NS>): string {
   return t(`subagentCollapsed.diagnostic.${entry.reason}`)
 }
@@ -607,6 +621,10 @@ function CatalogDropdown(props: CatalogDropdownProps): ReactElement | null {
       const trigger = triggerRef.current
       if (trigger === null) return
       setOpen(true); setPosition(menuPosition(trigger)); props.setCatalogOpen(props.rootSessionId, true)
+      // 计数可能来自 Session 摘要，而目录投影仍未加载（尤其是关闭后再次打开时）。
+      // 0.2.1 的 setSubagentCatalogOpen 没有拉取副作用，必须在打开入口主动刷新父会话，
+      // 否则弹层会显示为空目录，已停止的子智能体也无法重新出现。
+      if (shouldRefreshSubagentCatalog(catalog, totalCount)) props.refresh(props.rootSessionId)
     } else {
       pinnedRef.current = false
       const closing = new Set(expanded)

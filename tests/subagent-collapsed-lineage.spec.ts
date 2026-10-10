@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { CollapsedSubagentLineage, createSubagentSessionsActions, partitionSubagentEntries, registerCollapsedSubagentLineage } from '../src/client/subagent-collapsed-lineage.js'
+import { CollapsedSubagentLineage, createSubagentSessionsActions, partitionSubagentEntries, registerCollapsedSubagentLineage, shouldRefreshSubagentCatalog } from '../src/client/subagent-collapsed-lineage.js'
 import { subagentCollapsedLineageFeature } from '../src/client/features/subagent-collapsed-lineage.js'
 
 test('停止子 Agent 只进入默认收起分组，运行中和诊断项保持可见', () => {
@@ -24,6 +24,15 @@ test('明确的 idle 摘要覆盖滞后的 running 目录态，避免停止项�
   })
   assert.deepEqual(result.running, [])
   assert.deepEqual(result.inactive.map(entry => entry.id), ['stopped'])
+})
+
+test('子智能体目录打开时会补拉摘要已经计数但目录尚未加载的父会话', () => {
+  assert.equal(shouldRefreshSubagentCatalog(undefined, 1), true)
+  assert.equal(shouldRefreshSubagentCatalog({ state: 'loading', entries: [] }, 1), true)
+  assert.equal(shouldRefreshSubagentCatalog({ state: 'ready', entries: [] }, 1), true)
+  assert.equal(shouldRefreshSubagentCatalog({ state: 'ready', entries: [{ kind: 'child' }] }, 1), false)
+  assert.equal(shouldRefreshSubagentCatalog({ state: 'ready', entries: [{ kind: 'diagnostic' }] }, 1), true)
+  assert.equal(shouldRefreshSubagentCatalog({ state: 'ready', entries: [] }, 0), false)
 })
 
 test('根会话不在 lineage 重复渲染目录入口，计数只由 header.actions 提供', () => {
