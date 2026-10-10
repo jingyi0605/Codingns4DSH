@@ -659,16 +659,31 @@ function TerminalCleanup({ webTerminals, locale, sidebarRight, recoverSession, i
     mounted?.getSnapshot ?? noMountedSession,
     mounted?.getSnapshot ?? noMountedSession,
   )
-  const previousInventoryRevision = useRef(inventoryRevision)
+  // 恢复只应覆盖“首次装配、刚打开的会话和当前会话切换”三类边沿。
+  // 旧逻辑把 inventoryRevision 当成全量刷新信号，且每次 mountedSessionId 改变
+  // 都遍历全部 openTabs，导致点一次会话就为所有会话重复请求 terminal/list。
+  const previousOpenSessions = useRef<Set<string> | undefined>()
+  const previousMountedSession = useRef<string | undefined>()
   useEffect(() => {
     // 0.1.7 才提供 mounted 会话 observable；旧版本保留原有 Guide 挂载路径。
     if (!remoteReady || mounted === undefined) return
-    const inventoryChanged = previousInventoryRevision.current !== inventoryRevision
-    previousInventoryRevision.current = inventoryRevision
     const sessionIds = new Set(openTabSnapshot.map((tab) => String(tab.sessionId).trim()).filter(Boolean))
-    if (mountedSessionId !== undefined) sessionIds.add(String(mountedSessionId).trim())
-    for (const sessionId of sessionIds) {
-      if (inventoryChanged) invalidateRecovery(sessionId)
+    const previous = previousOpenSessions.current
+    const targets = new Set<string>()
+    if (previous === undefined) {
+      // 首次装配只恢复当前可见会话；后台会话在用户切换过去时再恢复。
+      if (mountedSessionId !== undefined) targets.add(String(mountedSessionId).trim())
+    } else {
+      for (const sessionId of sessionIds) if (!previous.has(sessionId)) targets.add(sessionId)
+      if (mountedSessionId !== undefined
+        && String(mountedSessionId).trim() !== previousMountedSession.current) {
+        targets.add(String(mountedSessionId).trim())
+      }
+    }
+    previousOpenSessions.current = sessionIds
+    previousMountedSession.current = mountedSessionId === undefined ? undefined : String(mountedSessionId).trim()
+    for (const sessionId of targets) {
+      if (sessionId === '') continue
       void recoverSession(sessionId).catch(() => undefined)
     }
   }, [openTabSnapshot, recoverSession, remoteReady, mountedSessionId, inventoryRevision, cardRevision, invalidateRecovery])
