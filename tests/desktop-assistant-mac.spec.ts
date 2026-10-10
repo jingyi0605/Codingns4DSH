@@ -101,7 +101,8 @@ async function runMacPage(bundle: string): Promise<void> {
     try { code = await exited } finally { clearTimeout(timeout) }
     assert.equal(code, 0, `原生初始化失败：${stderr.slice(0, 1500)}`)
     assert.ok(!events.includes('error'), stderr)
-    assert.deepEqual(events, ['ready', 'loaded'], `原生就绪握手失败：${stderr}`)
+    // layout 是原生窗口在加载页面后回传的定位事件，先于页面 ready 的 loaded。
+    assert.deepEqual(events, ['ready', 'layout', 'loaded'], `原生就绪握手失败：${stderr}`)
   } finally {
     child?.kill()
     await page.close()

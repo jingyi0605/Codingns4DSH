@@ -203,7 +203,7 @@ test('成功导入缓存录音和编码，并立即应用；失败重导入保�
   const sample = await service.http(new Request(`https://example.test${ASSISTANT_VOICE_SAMPLE_PATH}?id=${voice.id}`))
   assert.equal(sample.status, 200); assert.equal(sample.headers.get('content-type'), 'audio/wav')
   await service.handle('tts/remove', { id: voice.id })
-  assert.equal(value().assistant.tts.selectedId, 'moss:Junhao'); assert.equal(value().assistant.tts.voices.length, 0)
+  assert.equal(value().assistant.tts.selectedId, 'moss:Yuewen'); assert.equal(value().assistant.tts.voices.length, 0)
 })
 
 test('超大录音、下载不完整和未知音色不修改配置', async (t) => {

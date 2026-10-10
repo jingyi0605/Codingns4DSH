@@ -6,6 +6,7 @@ import { AssistantFloatingSizeControl } from '../src/client/avatar/settings-pane
 import { AssistantAvatarConsentPrompt, AssistantAvatarThirdPartyToggle } from '../src/client/avatar/catalog-panel.js'
 import { AssistantAvatarPickerView, type AssistantAvatarChoice } from '../src/client/avatar/catalog-picker.js'
 import { DshMenu } from '../src/dsh-capabilities/client/primitives-adapter.js'
+import { SettingsSwitch } from '../src/client/settings-controls.js'
 import { AssistantAvatarManager } from '../src/client/avatar/manager.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import { createCodingNsSettingsRpcHandler } from '../src/host/rpc.js'
@@ -123,7 +124,7 @@ test('勾选第三方只打开协议，取消及未同意不写设置，确认�
     onRequest: () => { opened = true; agreed = false }, onDisable: () => { operation = manager.setThirdPartyEnabled(false) } })
   const prompt = () => AssistantAvatarConsentPrompt({ agreed, disabled: false, t, onChange: (next) => { agreed = next },
     onAccept: () => { operation = manager.setThirdPartyEnabled(true); opened = false }, onCancel: () => { opened = false; agreed = false } })
-  const request = () => elements(toggle()).find((element) => element.type === 'input')!.props.onChange({ currentTarget: { checked: true } })
+  const request = () => elements(toggle()).find((element) => element.type === SettingsSwitch)!.props.onChange({ currentTarget: { checked: true } })
   request(); assert.equal(opened, true); assert.equal(writes, 0)
   await assert.rejects(manager.getCatalog(), /同意/u)
   const first = prompt()
@@ -136,7 +137,7 @@ test('勾选第三方只打开协议，取消及未同意不写设置，确认�
   assert.equal(writes, 0)
   elements(prompt()).filter((element) => element.type === 'button')[1]!.props.onClick(); await operation
   assert.equal(writes, 1); assert.equal(hasAssistantAvatarConsent(manager.getAppearance().thirdPartyConsent), true)
-  elements(toggle()).find((element) => element.type === 'input')!.props.onChange({ currentTarget: { checked: false } }); await operation
+  elements(toggle()).find((element) => element.type === SettingsSwitch)!.props.onChange({ currentTarget: { checked: false } }); await operation
   assert.equal(writes, 2); assert.equal(manager.getAppearance().thirdPartyConsent, undefined)
   assert.deepEqual(manager.list().map((model) => model.name), ['鱼妞', '鱼仔'])
 })

@@ -14,7 +14,7 @@ async function gatewayFixture(t: TestContext) {
   const resources: Array<() => void | Promise<void>> = []
   const calls: { path: string; signal: AbortSignal | null | undefined }[] = []
   let holding = false
-  let handshakesFail = false
+  let remoteDown = false
   let observed!: () => void
   const started = new Promise<void>((resolve) => { observed = resolve })
   const rpc = new CodingNsRpcTable()
@@ -26,10 +26,12 @@ async function gatewayFixture(t: TestContext) {
       const path = new URL(input instanceof Request ? input.url : String(input)).pathname
       calls.push({ path, signal: init?.signal })
       if (path === '/api/public/host-handshake') {
-        if (handshakesFail) throw new Error('测试远端不可达')
+        if (remoteDown) throw new Error('测试远端不可达')
         return Response.json({ productId: 'CodingNS', pluginId: '@jingyi0605/codingns4dsh', pluginVersion: CODINGNS_VERSION, dshVersion: '0.2.0-rc.2', apiCompatibility: 'peer-host-v1', fingerprint: 'sha256:test', capabilities: [] })
       }
       if (path === '/api/auth/login') return Response.json({ accessToken: 'fixture-token', refreshToken: 'fixture-refresh', expiresIn: 3600 })
+      // 断线信号由数据面探针决定：只失败握手、编码接口仍可达时按在线处理。
+      if (remoteDown && path.startsWith('/api/codingns/')) throw new Error('测试远端不可达')
       if (holding && path.startsWith('/api/codingns/') && !path.endsWith('nativeStreamClose')) {
         assert.ok(init?.signal, '真实 fetch 必须收到后台取消信号')
         init.signal.throwIfAborted()
@@ -53,7 +55,7 @@ async function gatewayFixture(t: TestContext) {
   return { gateway: services.assistantGateway as AssistantHostGateway, calls, started, peer,
     scope: [createVirtualWorkspaceId(peer.id, 'remote-workspace')],
     hold: () => { holding = true },
-    failHandshake: async () => { handshakesFail = true; await call('enable', { peerHostId: peer.id }) },
+    failHandshake: async () => { remoteDown = true; await call('enable', { peerHostId: peer.id }) },
   }
 }
 
