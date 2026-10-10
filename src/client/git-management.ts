@@ -16,7 +16,7 @@ import { gitPanelClass, installGitPanelStyles } from './git-panel-styles.js'
 import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import type { SettingsNotice } from './features/types.js'
 import { notifyGitWorkspaceChanged } from './git-workspace-events.js'
-import { readNativeWorkspaceListStore, readNativeWorkspaceSnapshot } from './native-workspace-store.js'
+import { readNativeService, readNativeWorkspaceListStore, readNativeWorkspaceSnapshot } from './native-workspace-store.js'
 import { parseVirtualSessionId, parseVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
 
 // 单列 Git 视图需要一个稳定的分段控件；这里保持 React 结构简单，避免引入额外依赖。
@@ -842,10 +842,14 @@ function GitWorkspaceRecovery({ useSessions, remote, uiContext, sidebarRight }: 
     let disposed = false
     const recover = async (): Promise<void> => {
       const workspaceItems = await readWorkspaceItems((remote as GitRemote | undefined)?.workspace, uiContext)
+      if (disposed) return
       const allSessionIds = [...new Set([...sessionIds, ...workspaceItems.flatMap((item) => item.sessionIds)])]
       for (const sessionId of allSessionIds) {
+        // Store 增量会启动下一轮恢复；旧任务必须停止，不能继续为剩余会话发请求。
+        if (disposed) return
         const workspaceId = await resolveGitWorkspaceId(remote, sessionId, uiContext).catch(() => undefined)
-        if (disposed || workspaceId === undefined) continue
+        if (disposed) return
+        if (workspaceId === undefined) continue
         rememberGitWorkspaceSession(sessionId, workspaceId)
         const existing = readGitTabs(sidebarRight, sessionId, openTabSnapshot)
         const openState = readGitWorkspaceOpen(workspaceId)
@@ -965,7 +969,7 @@ export async function resolveGitWorkspaceId(remote: unknown, sessionId: string, 
   if (parseVirtualSessionId(sessionId) !== null) return undefined
   const localWorkspaces = workspaces.filter((item) => parseVirtualWorkspaceId(item.workspaceId) === null)
 
-  const session = await readCurrentSession(api?.session, sessionId)
+  const session = await readCurrentSession(api?.session, sessionId, uiContext)
   if (session?.workspaceId !== undefined) return session.workspaceId
   const sessionCwd = session?.cwd
   if (sessionCwd !== undefined) {
@@ -1005,15 +1009,48 @@ async function readWorkspaceItems(api: GitWorkspaceApi | undefined, uiContext?: 
 
 interface WorkspaceItem { readonly workspaceId: string; readonly path?: string; readonly sessionIds: readonly string[] }
 interface SessionItem { readonly workspaceId?: string; readonly cwd?: string }
-async function readCurrentSession(api: GitSessionApi | undefined, sessionId: string): Promise<SessionItem | undefined> {
+async function readCurrentSession(api: GitSessionApi | undefined, sessionId: string, uiContext?: Context): Promise<SessionItem | undefined> {
+  const store = asRecord(readNativeService(uiContext, 'sessions', 'list'))
+  if (typeof store?.getSnapshot === 'function') {
+    // 原生列表已经执行首次 session/list，并持续消费 Remote 增量。未知 ID 也由
+    // 这份快照决定；不能为了一个未挂工作区的子会话再次读取整个 Host 的列表。
+    const snapshot = asRecord(store.getSnapshot())
+    const byId = asRecord(snapshot?.byId)
+    if (byId !== undefined) return sessionItem(asRecord(byId[sessionId]))
+    const items = Array.isArray(snapshot?.items) ? snapshot.items : []
+    return sessionItem(asRecord(items.find((item) => asRecord(item)?.sessionId === sessionId)))
+  }
   if (api?.list === undefined) return undefined
-  const result = asRecord(unwrapRemoteValue(await api.list({})))
+  // 旧宿主没有原生 Store 时才拉取基线；同一恢复批次的所有会话共享一次请求，
+  // 短时间重复恢复也复用快照，避免按会话数量放大完整列表读取。
+  const result = await readLegacySessionList(api)
   const items = Array.isArray(result?.items) ? result.items : []
-  const session = asRecord(items.find((item) => asRecord(item)?.sessionId === sessionId))
+  return sessionItem(asRecord(items.find((item) => asRecord(item)?.sessionId === sessionId)))
+}
+
+function sessionItem(session: Record<string, unknown> | undefined): SessionItem | undefined {
   if (session === undefined) return undefined
   const workspaceId = typeof session.workspaceId === 'string' && session.workspaceId.trim() !== '' ? session.workspaceId : undefined
   const cwd = typeof session.cwd === 'string' && session.cwd.trim() !== '' ? session.cwd : undefined
   return workspaceId === undefined && cwd === undefined ? {} : { ...(workspaceId === undefined ? {} : { workspaceId }), ...(cwd === undefined ? {} : { cwd }) }
+}
+
+const legacySessionLists = new WeakMap<GitSessionApi, { readonly promise: Promise<Record<string, unknown> | undefined>; expiresAt: number }>()
+async function readLegacySessionList(api: GitSessionApi): Promise<Record<string, unknown> | undefined> {
+  const previous = legacySessionLists.get(api)
+  if (previous !== undefined && Date.now() < previous.expiresAt) return previous.promise
+  const promise = Promise.resolve().then(() => api.list!({})).then((value) => asRecord(unwrapRemoteValue(value)))
+  // 在途请求不受缓存时间限制，慢响应也不会被下一批恢复任务重复发起。
+  const entry = { promise, expiresAt: Infinity }
+  legacySessionLists.set(api, entry)
+  try {
+    const result = await promise
+    entry.expiresAt = Date.now() + 5_000
+    return result
+  } catch (error) {
+    if (legacySessionLists.get(api)?.promise === promise) legacySessionLists.delete(api)
+    throw error
+  }
 }
 function isPathWithin(candidate: string, parent: string): boolean {
   const normalizedCandidate = normalizePath(candidate)

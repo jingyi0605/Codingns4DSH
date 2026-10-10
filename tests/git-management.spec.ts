@@ -331,3 +331,47 @@ test('Git Client 按当前会话归属解析 Workspace', async () => {
   }, 'session-missing')
   assert.equal(bySingleWorkspaceFallback, 'workspace-only')
 })
+
+test('Git 工作区恢复复用原生会话快照，已知与未知会话都不再读取完整列表', async () => {
+  let listCalls = 0
+  const remote = { session: { list: async () => { listCalls += 1; return { items: [] } } } }
+  const services = {
+    workspaces: { list: { subscribe: () => () => undefined, getSnapshot: () => ({ items: [
+      { workspaceId: 'workspace-a', path: '/repo/a', sessionIds: [] },
+      { workspaceId: 'workspace-b', path: '/repo/b', sessionIds: [] },
+    ] }) } },
+    sessions: { list: { getSnapshot: () => ({ byId: {
+      'session-a': { id: 'session-a', cwd: '/repo/a/src' },
+      'session-b': { id: 'session-b', workspaceId: 'workspace-b' },
+    } }) } },
+  }
+  const context = { get: (name: string) => services[name as keyof typeof services] } as never
+  assert.equal(await resolveGitWorkspaceId(remote, 'session-a', context), 'workspace-a')
+  assert.equal(await resolveGitWorkspaceId(remote, 'session-b', context), 'workspace-b')
+  assert.equal(await resolveGitWorkspaceId(remote, 'missing', context), undefined)
+  assert.equal(await resolveGitWorkspaceId(remote, 'missing', context), undefined)
+  assert.equal(listCalls, 0)
+})
+
+test('旧宿主的多个会话解析并发共享一次 session/list 基线', async () => {
+  let listCalls = 0
+  let release!: () => void
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  const remote = {
+    workspace: { follow: () => (async function* () { yield { items: [
+      { workspaceId: 'workspace-a', path: '/repo/a', sessionIds: [] },
+      { workspaceId: 'workspace-b', path: '/repo/b', sessionIds: [] },
+    ] } })() },
+    session: { list: async () => {
+      listCalls += 1
+      await pending
+      return { items: [{ sessionId: 'session-a', cwd: '/repo/a' }, { sessionId: 'session-b', cwd: '/repo/b' }] }
+    } },
+  }
+  const first = resolveGitWorkspaceId(remote, 'session-a')
+  const second = resolveGitWorkspaceId(remote, 'session-b')
+  release()
+  assert.deepEqual(await Promise.all([first, second]), ['workspace-a', 'workspace-b'])
+  assert.equal(await resolveGitWorkspaceId(remote, 'missing'), undefined)
+  assert.equal(listCalls, 1)
+})
