@@ -1,8 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type { CodingNsCliAdapterDescriptor, CodingNsCliSessionConfig, CodingNsCliSkillDescriptor } from '../shared/contracts/cli-adapter.js'
+import type { CodingNsCliAdapterDescriptor, CodingNsCliSkillDescriptor } from '../shared/contracts/cli-adapter.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import type { CodingNsLocale } from './locale.js'
 import { callCliRpc } from './cli-catalog.js'
+import { loadCliSessionConfig } from './cli-session-config-cache.js'
 import { cliSessionSelectionRevision, waitForCliSessionSelection } from './cli-slots.js'
 import { debugInfo, debugWarn } from '../shared/debug.js'
 import { publishSkillCatalog } from './skill-reference-dom.js'
@@ -350,7 +351,7 @@ async function supportsSelectedAgentSkills(
 ): Promise<boolean> {
   const cached = skillCapabilityCache.get(sessionId)
   if (cached?.selectionRevision === selectionRevision) return cached.supported
-  const session = await callCliRpc<CodingNsCliSessionConfig>(rpc, 'session/get', { sessionId })
+  const session = await loadCliSessionConfig(rpc, sessionId)
   if (session.adapterId === 'dsh') {
     skillCapabilityCache.set(sessionId, { selectionRevision, supported: false })
     return false

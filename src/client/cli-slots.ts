@@ -29,6 +29,7 @@ import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
+import { loadCliSessionConfig, rememberCliSessionConfig } from './cli-session-config-cache.js'
 
 interface SessionSnapshot {
   readonly sessionId?: string
@@ -115,8 +116,6 @@ const selectionListeners = new Map<string, Set<() => void>>()
 /** Slot 会随 DSH 会话状态重挂载；保留最近选择，避免重挂载时再次闪回默认值。 */
 const selectionLastUsed = new Map<string, number>()
 const MAX_SELECTION_CACHE = 256
-/** 两个 Slot 共用同一条初始化读取，避免响应顺序造成状态回退。 */
-const selectionLoads = new Map<string, Promise<CodingNsCliSessionConfig>>()
 /** 记录每个会话最新的写入，旧响应不能覆盖用户较新的选择。 */
 const selectionUpdates = new Map<string, { readonly revision: number; readonly promise: Promise<CodingNsCliSessionConfig> }>()
 const selectionRevisions = new Map<string, number>()
@@ -145,8 +144,7 @@ function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [S
   useEffect(() => {
     if (sessionId === undefined || sessionId.trim() === '') return
     let active = true
-    const loaded = selectionLoads.get(sessionId) ?? callCliRpc<CodingNsCliSessionConfig>(rpc, 'session/get', { sessionId })
-    selectionLoads.set(sessionId, loaded)
+    const loaded = loadCliSessionConfig(rpc, sessionId)
     void loaded
       .then((value) => {
         if (!active) return
@@ -155,9 +153,6 @@ function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [S
         publishSelection(sessionId, value)
       })
       .catch(() => undefined)
-      .finally(() => {
-        if (selectionLoads.get(sessionId) === loaded) selectionLoads.delete(sessionId)
-      })
     const listeners = selectionListeners.get(sessionId) ?? new Set<() => void>()
     selectionListeners.set(sessionId, listeners)
     const listener = (): void => setSelection(selections.get(sessionId) ?? DEFAULT_SELECTION)
@@ -190,6 +185,7 @@ function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [S
     selectionUpdates.set(sessionId, { revision, promise })
     void promise
       .then((normalized) => {
+        rememberCliSessionConfig(rpc, sessionId, normalized)
         if (selectionUpdates.get(sessionId)?.revision === revision) publishSelection(sessionId, normalized)
       })
       .catch(() => undefined)

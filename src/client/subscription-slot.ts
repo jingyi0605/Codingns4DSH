@@ -11,6 +11,7 @@ import { callCliRpc } from './cli-catalog.js'
 import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { providerIconUrl } from './provider-icons.js'
 import { subscribeSessionAdapters } from './session-adapter-cache.js'
+import { loadCliSessionConfig } from './cli-session-config-cache.js'
 import { dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from './theme.js'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import type { SessionSnapshot } from './cli-slots.js'
@@ -158,7 +159,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     const refresh = async (signal: AbortSignal): Promise<boolean | void> => {
       setLoading(true)
       try {
-        const selection = await callCliRpc<{ readonly adapterId?: string; readonly providerId?: string; readonly modelId?: string }>(props.rpc, 'session/get', { sessionId }, signal)
+        const selection = await loadCliSessionConfig(props.rpc, sessionId)
         const adapterId = selection.adapterId
         if (!active || !isSubscriptionAdapter(adapterId)) {
           if (active) {
