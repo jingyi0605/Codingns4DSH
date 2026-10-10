@@ -58,6 +58,67 @@ interface MutableDirectory {
 
 /** 后台轮询只负责兜底发现外部文件变化，不能和页面交互争夺刷新节奏。 */
 const SESSION_CHANGED_FILES_BACKGROUND_REFRESH_MS = 30_000
+/** 计数器和正文面板共用同一份短期快照，避免切换会话时重复打两组 RPC。 */
+export const SESSION_CHANGED_FILES_SNAPSHOT_TTL_MS = 2_000
+
+export interface SessionChangedFilesSnapshot {
+  readonly sessionFiles: SessionChangedFiles
+  readonly status: GitStatus
+}
+
+type SessionChangedFilesCacheEntry = {
+  readonly value: SessionChangedFilesSnapshot
+  readonly loadedAt: number
+}
+
+type SessionChangedFilesCacheValue = SessionChangedFilesCacheEntry | Promise<SessionChangedFilesSnapshot>
+
+const sessionChangedFilesCaches = new WeakMap<CodingNsRpcClient, Map<string, SessionChangedFilesCacheValue>>()
+
+/**
+ * 读取会话变更文件和 Git 状态的联合快照。
+ *
+ * 正文面板与标题计数器会同时挂载；同一 RPC、会话和工作区只保留一条在途请求，
+ * 完成后短暂复用结果。显式刷新或 Git 变更事件可以绕过短缓存，但仍会与在途请求合并。
+ */
+export function loadSessionChangedFilesSnapshot(
+  rpc: CodingNsRpcClient,
+  sessionId: string,
+  workspaceId: string,
+  force = false,
+): Promise<SessionChangedFilesSnapshot> {
+  const key = `${sessionId}\u0000${workspaceId}`
+  const cache = sessionChangedFilesCacheFor(rpc)
+  const existing = cache.get(key)
+  if (existing instanceof Promise) return existing
+  if (!force && existing !== undefined && Date.now() - existing.loadedAt < SESSION_CHANGED_FILES_SNAPSHOT_TTL_MS) {
+    return Promise.resolve(existing.value)
+  }
+  const request = Promise.all([
+    call<SessionChangedFiles>(rpc, 'fileManagement/session-changes', { sessionId, workspaceId }),
+    call<GitStatus>(rpc, 'git/status', { workspaceId }),
+  ]).then(([sessionFiles, status]) => {
+    const value = { sessionFiles, status }
+    cache.set(key, { value, loadedAt: Date.now() })
+    return value
+  }).finally(() => {
+    if (cache.get(key) === request) {
+      const current = cache.get(key)
+      if (current instanceof Promise) cache.delete(key)
+    }
+  })
+  cache.set(key, request)
+  return request
+}
+
+function sessionChangedFilesCacheFor(rpc: CodingNsRpcClient): Map<string, SessionChangedFilesCacheValue> {
+  let cache = sessionChangedFilesCaches.get(rpc)
+  if (cache === undefined) {
+    cache = new Map()
+    sessionChangedFilesCaches.set(rpc, cache)
+  }
+  return cache
+}
 
 /** 会话“修改文件”视图；数据只通过插件 RPC 和现有 Git RPC 读取。 */
 export function SessionChangedFilesView(props: SessionChangedFilesViewProps): ReactElement {
@@ -77,7 +138,7 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
   const requestGeneration = useRef(0)
   const inFlightLoad = useRef<Promise<void>>()
 
-  const load = (foreground = false): Promise<void> => {
+  const load = (foreground = false, forceSnapshot = false): Promise<void> => {
     // 同一轮请求尚未结束时，后续的定时器和本地通知只复用它，避免旧响应交错覆盖新状态。
     if (inFlightLoad.current !== undefined) return inFlightLoad.current
     const generation = requestGeneration.current + 1
@@ -90,10 +151,7 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
       try {
         const resolved = await resolveGitWorkspaceId(props.remote, props.sessionId, props.uiContext)
         if (resolved === undefined) throw new Error('当前会话没有可用的工作区')
-        const [sessionFiles, status] = await Promise.all([
-          call<SessionChangedFiles>(props.rpc, 'fileManagement/session-changes', { sessionId: props.sessionId, workspaceId: resolved }),
-          call<GitStatus>(props.rpc, 'git/status', { workspaceId: resolved }),
-        ])
+        const { sessionFiles, status } = await loadSessionChangedFilesSnapshot(props.rpc, props.sessionId, resolved, forceSnapshot)
         if (generation !== requestGeneration.current) return
         const next = selectSessionChangedFiles(sessionFiles, status)
         setWorkspaceId((current) => current === resolved ? current : resolved)
@@ -131,7 +189,7 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
     setWorkspaceId(undefined)
     void load(true)
     // 新会话可能先挂载窗口，聚合摘要随后才到；跟随侧栏 Store 补齐工作区归属。
-    const unsubscribe = subscribeNativeSessionWorkspace(props.uiContext, props.sessionId, () => { void load() })
+    const unsubscribe = subscribeNativeSessionWorkspace(props.uiContext, props.sessionId, () => { void load(false, true) })
     const timer = globalThis.setInterval(() => { void load() }, SESSION_CHANGED_FILES_BACKGROUND_REFRESH_MS)
     return () => {
       requestGeneration.current += 1
@@ -143,7 +201,7 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
 
   useEffect(() => {
     if (workspaceId === undefined) return
-    return subscribeGitWorkspaceChanged(workspaceId, () => { void load() })
+    return subscribeGitWorkspaceChanged(workspaceId, () => { void load(false, true) })
   }, [props.remote, props.rpc, props.sessionId, workspaceId])
 
   useEffect(() => {
@@ -181,7 +239,7 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
     try {
       await call<GitStatus>(props.rpc, `git/${action}`, { workspaceId, targets })
       notifyGitWorkspaceChanged(workspaceId)
-      await load(true)
+      await load(true, true)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -220,7 +278,7 @@ export function SessionChangedFilesView(props: SessionChangedFilesViewProps): Re
       createElement('strong', { style: { fontSize: 15 } }, t('sessionFiles.title')),
       createElement('span', { style: countStyle }, t('sessionFiles.count', { count: changes.length })),
       createElement('span', { style: { flex: 1 } }),
-      createElement('button', { type: 'button', disabled: loading || busy, onClick: () => void load(true), style: toolbarRefreshButtonStyle, title: t('sessionFiles.refresh'), 'aria-label': t('sessionFiles.refresh') },
+      createElement('button', { type: 'button', disabled: loading || busy, onClick: () => void load(true, true), style: toolbarRefreshButtonStyle, title: t('sessionFiles.refresh'), 'aria-label': t('sessionFiles.refresh') },
         createElement(RefreshIcon)),
       createElement('button', { type: 'button', disabled: busy || unstaged.length === 0, onClick: () => void stageTargets(unstaged.map((item) => item.path), 'stage'), style: toolbarStageButtonStyle, title: t('sessionFiles.stageAll'), 'aria-label': t('sessionFiles.stageAll') },
         createElement(StageIcon)),
@@ -375,19 +433,16 @@ function SessionChangedFilesCounter(props: SessionChangedFilesCounterProps): nul
       subscribedWorkspaceId = workspaceId
       disposeWorkspaceSubscription = workspaceId === undefined
         ? undefined
-        : subscribeGitWorkspaceChanged(workspaceId, () => { void load() })
+        : subscribeGitWorkspaceChanged(workspaceId, () => { void load(true) })
     }
-    const load = (): Promise<void> => {
+    const load = (forceSnapshot = false): Promise<void> => {
       if (inFlight !== undefined) return inFlight
       const currentGeneration = ++generation
       const task = (async (): Promise<void> => {
         try {
           const workspaceId = await resolveGitWorkspaceId(props.remote, props.sessionId, props.uiContext)
           if (workspaceId === undefined) throw new Error('当前会话没有可用的工作区')
-          const [sessionFiles, status] = await Promise.all([
-            call<SessionChangedFiles>(props.rpc, 'fileManagement/session-changes', { sessionId: props.sessionId, workspaceId }),
-            call<GitStatus>(props.rpc, 'git/status', { workspaceId }),
-          ])
+          const { sessionFiles, status } = await loadSessionChangedFilesSnapshot(props.rpc, props.sessionId, workspaceId, forceSnapshot)
           if (disposed || currentGeneration !== generation) return
           updateWorkspaceSubscription(workspaceId)
           const count = selectSessionChangedFiles(sessionFiles, status).length
@@ -403,7 +458,7 @@ function SessionChangedFilesCounter(props: SessionChangedFilesCounterProps): nul
       return tracked
     }
     void load()
-    const unsubscribe = subscribeNativeSessionWorkspace(props.uiContext, props.sessionId, () => { void load() })
+    const unsubscribe = subscribeNativeSessionWorkspace(props.uiContext, props.sessionId, () => { void load(true) })
     const timer = globalThis.setInterval(() => { void load() }, SESSION_CHANGED_FILES_BACKGROUND_REFRESH_MS)
     return () => {
       disposed = true
