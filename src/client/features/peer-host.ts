@@ -19,6 +19,7 @@ import { publishSessionAdapter } from '../session-adapter-cache.js'
 import { startSerialPolling } from '../serial-polling.js'
 import { PeerHostRemoteEvents } from '../peer-host-remote-events.js'
 import { installPeerHostFileLinkRouting } from '../peer-host-file-links.js'
+import { registerPeerHostReferenceSource } from '../peer-host-reference-source.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
 const PEER_HOST_AGGREGATE_REFRESH_MS = 30_000
@@ -57,6 +58,25 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
     const shim = (globalThis as typeof globalThis & { [DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]?: { activate: (transport?: CodingNsTransportHooks) => string; deactivate: () => string; getMode?: () => string } })[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]
     const projection = createPeerHostNativeProjection()
     const transport = shim === undefined ? undefined : createPeerHostPageTransport(projection, context.services.uiContext, context.services.locale)
+    // 官方 ui-reference 在远程 Session 尚未完成本地保留、或目标 Host 版本没有
+    // sessionReferenceResolver 时会静默丢弃整组对话候选。PeerHost 已经持有摘要，
+    // 让兜底源只在可确认的远程会话/工作区上生效，保证 @ 菜单仍能列出可引用会话。
+    const referenceSource = context.services.uiContext?.inject(['inputTriggers', 'sessions'], (scope) => {
+      scope.effect(() => {
+        // 先挂载不依赖新 Remote 的摘要兜底；若嵌套 Remote 随后就绪，切换到
+        // Resolver 感知版本，官方候选成功时不会在菜单中产生重复项。
+        let dispose = registerPeerHostReferenceSource(scope, projection)
+        const resolverFiber = scope.inject(['remote.sessionReferenceResolver'], (resolverScope) => {
+          dispose()
+          dispose = registerPeerHostReferenceSource(resolverScope, projection)
+        })
+        return () => {
+          dispose()
+          void resolverFiber.dispose()
+        }
+      }, 'codingns4dsh: PeerHost session reference source')
+    })
+    if (referenceSource !== undefined) context.resources.add(() => referenceSource.dispose())
     const management = createPeerHostManagementApi(context.services.rpc)
     if (shim !== undefined) {
       shim.activate(transport!.hooks)
