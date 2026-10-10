@@ -159,6 +159,19 @@ test('局域网代理改写上游 Host/Origin 并保留 WebSocket 升级', () =>
   assert.match(rewrittenUpgrade, /Upgrade: websocket/u)
 })
 
+test('局域网代理为无 Origin 的服务端请求补齐 loopback Origin', () => {
+  const request = new TextEncoder().encode([
+    'HEAD /api/session.export?sessionId=session-1 HTTP/1.1',
+    'Host: 10.255.0.83:13080',
+    'Connection: keep-alive',
+    '',
+    '',
+  ].join('\r\n'))
+  const rewritten = new TextDecoder().decode(rewriteLanAccessDshRequestHeaders(request, '127.0.0.1:3080'))
+  assert.match(rewritten, /Host: 127\.0\.0\.1:3080/u)
+  assert.match(rewritten, /Origin: http:\/\/127\.0\.0\.1:3080/u)
+})
+
 test('局域网代理兼容未包装 args 的 Connection RPC 请求', () => {
   const encode = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value))
   const decode = (value: Uint8Array): unknown => JSON.parse(new TextDecoder().decode(value)) as unknown

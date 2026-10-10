@@ -33,16 +33,52 @@ async function setup(fetchImpl: typeof fetch, onRecover: () => void = () => unde
 }
 
 test('合法 PeerHost HTTP 请求只能转发到登记目标并注入 Host 侧 Bearer token', async () => {
-  let received: { url: string; authorization: string | null } | undefined
+  let received: { url: string; authorization: string | null; origin: string | null } | undefined
   const service = await setup(async (input, init) => {
-    received = { url: String(input), authorization: new Headers(init?.headers).get('authorization') }
+    received = {
+      url: String(input),
+      authorization: new Headers(init?.headers).get('authorization'),
+      origin: new Headers(init?.headers).get('origin'),
+    }
     return new Response(JSON.stringify({ workspaces: [] }), { status: 200, headers: { 'content-type': 'application/json', authorization: 'remote-secret' } })
   })
   const response = await service.handle('peer-1', new Request('http://current.test/api/workspaces?workspaceId=workspace-1', { headers: scopeHeaders }))
   assert.equal(response.status, 200)
-  assert.deepEqual(received, { url: 'http://127.0.0.1:13080/api/workspaces?workspaceId=workspace-1', authorization: 'Bearer access-secret' })
+  assert.deepEqual(received, {
+    url: 'http://127.0.0.1:13080/api/workspaces?workspaceId=workspace-1',
+    authorization: 'Bearer access-secret',
+    origin: 'http://127.0.0.1:13080',
+  })
   assert.equal(response.headers.get('authorization'), null)
   assert.equal(response.headers.get('x-codingns-scope-generation'), '3')
+})
+
+test('Session 导出允许 HEAD/GET，并通过 Base64 保留 ZIP 二进制正文', async () => {
+  const archive = Uint8Array.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0x7f])
+  let targetUrl = ''
+  let targetMethod = ''
+  const service = await setup(async (input, init) => {
+    targetUrl = String(input)
+    targetMethod = init?.method ?? ''
+    return new Response(targetMethod === 'HEAD' ? null : archive.buffer, { status: 200, headers: { 'content-type': 'application/zip', 'content-disposition': 'attachment; filename="session.zip"' } })
+  })
+  const head = await service.request('peer-1', {
+    scope: { hostId: 'host-local', targetHostId: 'peer-1', workspaceId: 'workspace-1', sessionId: 'real-session', scopeGeneration: 3 },
+    path: '/api/session.export?sessionId=real-session&includeDescendants=true',
+    method: 'HEAD',
+  })
+  assert.equal(head.status, 200)
+  assert.equal(targetMethod, 'HEAD')
+  const response = await service.request('peer-1', {
+    scope: { hostId: 'host-local', targetHostId: 'peer-1', workspaceId: 'workspace-1', sessionId: 'real-session', scopeGeneration: 3 },
+    path: '/api/session.export?sessionId=real-session&includeDescendants=true',
+    method: 'GET',
+  })
+  assert.equal(response.status, 200)
+  assert.equal(targetMethod, 'GET')
+  assert.equal(new URL(targetUrl).pathname, '/api/session.export')
+  assert.equal(new URL(targetUrl).searchParams.get('includeDescendants'), 'true')
+  assert.deepEqual(Buffer.from(response.bodyBase64 ?? '', 'base64'), Buffer.from(archive))
 })
 
 test('未知路径、方法、查询参数和错误作用域均被拒绝', async () => {

@@ -82,6 +82,8 @@ export const DSH_NATIVE_REMOTE_METHODS = Object.freeze([
   'codingnsTerminal/retain',
   'codingnsTerminal/shells',
   'codingnsTerminal/write',
+  // 全局助理通知来源使用同一条 Typert Remote 长连接，旧 Host 不认识时由上层回退 HTTP。
+  'codingnsAssistantNotifications/sourceStream',
   'fileReferences/list',
   'skills/list',
 ] as const)
@@ -114,6 +116,7 @@ export function rewriteNativeRequestIds(
   resolver: VirtualIdResolver,
 ): unknown {
   if (payload === undefined) return payload
+  if (method === 'codingnsAssistantNotifications/sourceStream') return payload
   return rewriteValue(payload, (key, value) => {
     if (typeof value !== 'string') return value
     if ((method === 'session/prompt' || method === 'session/follow') && key !== 'requestId') {
@@ -155,6 +158,7 @@ export function rewriteNativeResponseIds(
   encodeSession: (id: string) => VirtualSessionId,
   method?: DshNativeRemoteMethod,
 ): unknown {
+  if (method === 'codingnsAssistantNotifications/sourceStream') return value
   // 状态通知的 SessionId 位于位置参数，而不是命名字段；不能按普通数组漏掉改写。
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
     const frame = value as Record<string, unknown>

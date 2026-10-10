@@ -22,6 +22,7 @@ export const PEER_HOST_HTTP_PROXY_RULES = [
   { prefix: '/api/sessions', methods: ['GET', 'POST'] },
   { prefix: '/api/file-tree', methods: ['GET'] },
   { prefix: '/api/files', methods: ['GET', 'PUT', 'POST'] },
+  { prefix: '/api/session.export', methods: ['GET', 'HEAD'], exact: true },
   { prefix: '/api/git', methods: ['GET', 'POST'] },
   { prefix: '/api/terminal', methods: ['GET', 'POST'] },
   { prefix: '/api/right-tools', methods: ['GET', 'POST'] },
@@ -29,6 +30,8 @@ export const PEER_HOST_HTTP_PROXY_RULES = [
 
 /** 按完整路径段匹配，不能让 debug-admin 等相似前缀借用调试授权。 */
 export function isPeerHostHttpRoute(method: string, path: string): boolean {
-  const route = PEER_HOST_HTTP_PROXY_RULES.find(candidate => path === candidate.prefix || path.startsWith(`${candidate.prefix}/`))
+  const route = PEER_HOST_HTTP_PROXY_RULES.find(candidate => ('exact' in candidate && candidate.exact === true)
+    ? path === candidate.prefix
+    : path === candidate.prefix || path.startsWith(`${candidate.prefix}/`))
   return route !== undefined && (route.methods as readonly string[]).includes(method.toUpperCase())
 }

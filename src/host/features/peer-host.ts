@@ -319,6 +319,12 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
               signal.throwIfAborted()
               return readNotificationSource(node.hostId, payload, signal)
             },
+            stream: (node, signal) => aggregatedTransport.openStream({
+              scope: { hostId: localHostId, targetHostId: node.hostId, workspaceId: '__assistant_notifications__', sessionId: null, scopeGeneration: 0 },
+              method: 'codingnsAssistantNotifications/sourceStream',
+              payload: { args: { request: { workspaceIds: node.workspaceIds } } },
+              signal,
+            }),
           }, signal)
           return subscription.start()
         },
@@ -606,6 +612,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
               scope,
               path: requiredString(input.path, 'path'),
               ...(input.method === undefined ? {} : { method: requiredString(input.method, 'method') }),
+              ...(input.headers === undefined ? {} : { headers: parseProxyHeaders(input.headers) }),
               ...(input.body === undefined ? {} : { body: requiredString(input.body, 'body') }),
             })
           }
@@ -631,7 +638,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
               const targetHostId = scope.targetHostId
               if (targetHostId === null) return stream
               const iterator = mapAsyncIterator(stream[Symbol.asyncIterator](), (value) => rewriteNativeResponseIds(
-                value, (id) => createVirtualWorkspaceId(targetHostId, id), (id) => createVirtualSessionId(targetHostId, id),
+                value, (id) => createVirtualWorkspaceId(targetHostId, id), (id) => createVirtualSessionId(targetHostId, id), method,
               ))
               return { [Symbol.asyncIterator]: () => iterator }
             })
@@ -672,7 +679,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             const signal = (rpcContext as { signal?: AbortSignal } | undefined)?.signal
             const value = await aggregatedTransport.rpc({ scope, method, payload: rewritten, ...(signal === undefined ? {} : { signal }) })
             const virtualHostId = scope.targetHostId ?? scope.hostId
-            return encodeNativeResponseBytes(rewriteNativeResponseIds(value, (id) => createVirtualWorkspaceId(virtualHostId, id), (id) => createVirtualSessionId(virtualHostId, id)))
+            return encodeNativeResponseBytes(rewriteNativeResponseIds(value, (id) => createVirtualWorkspaceId(virtualHostId, id), (id) => createVirtualSessionId(virtualHostId, id), method))
           }
           default: throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `未知 PeerHost RPC: peerHost/${action}`)
         }
@@ -956,6 +963,19 @@ function parseRoute(value: unknown): PeerHostRoute {
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('PeerHost RPC 参数必须是对象')
   return value as Record<string, unknown>
+}
+
+/** 解析页面侧转发的有限请求头，拒绝非字符串值与原型对象。 */
+function parseProxyHeaders(value: unknown): Readonly<Record<string, string>> {
+  const input = record(value)
+  const headers: Record<string, string> = {}
+  for (const [name, raw] of Object.entries(input)) {
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u.test(name) || typeof raw !== 'string') {
+      throw new TypeError('headers 必须是合法的字符串键值')
+    }
+    headers[name] = raw
+  }
+  return headers
 }
 
 /**

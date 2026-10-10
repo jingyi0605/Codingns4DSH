@@ -107,6 +107,37 @@ test('本机 ready 和事件保持原样，两台 Host 的同名审批分别回�
   } finally { await f.close() }
 })
 
+test('远端事件流握手失败时不提前触发 session/list 基线刷新', { timeout: 3000 }, async () => {
+  const local = new Source()
+  const controller = new AbortController()
+  let attempts = 0
+  let prepares = 0
+  const events = new PeerHostRemoteEvents({
+    open: (_scope, signal) => {
+      attempts += 1
+      if (attempts === 1) return (async function* () { throw new Error('模拟握手失败') })()
+      return (async function* () {
+        yield { type: 'ready', clientId: 'remote-client' }
+        await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+      })()
+    },
+    reply: async () => true,
+    accepts: () => false,
+    prepare: async () => { prepares += 1 },
+    retryMs: 1,
+  })
+  const iterator = events.open(signal => local.open(signal), controller.signal)[Symbol.asyncIterator]()
+  local.push({ type: 'ready', clientId: 'local-client' })
+  await iterator.next()
+  events.setPeers([scope('peer')])
+  for (let index = 0; index < 100 && prepares === 0; index++) await delay(1)
+  assert.equal(attempts >= 2, true)
+  assert.equal(prepares, 1)
+  controller.abort()
+  await iterator.return?.()
+  events.dispose()
+})
+
 test('取消和移除 Host 立即撤销弹窗，迟到审批不能回落本机或发往其他 Host', { timeout: 3000 }, async () => {
   const f = fixture()
   try {

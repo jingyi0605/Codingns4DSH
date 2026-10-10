@@ -98,12 +98,32 @@ export async function refreshPeerHostNativeSessions(uiContext: Context | undefin
   const sessions = readNativeService(uiContext, 'sessions')
   const refresh = isRecord(sessions) ? sessions.refresh : undefined
   if (typeof refresh !== 'function') return
+  const owner = sessions as object
+  const state = refreshStates.get(owner)
+  const now = Date.now()
+  if (state?.promise !== undefined) {
+    await state.promise
+    return
+  }
+  if (state !== undefined && now - state.completedAt < PEER_HOST_NATIVE_SESSION_REFRESH_MIN_INTERVAL_MS) return
+  const operation: Promise<void> = Promise.resolve().then(() => (refresh as () => unknown).call(owner)).then(() => undefined).catch(() => undefined)
+  refreshStates.set(owner, { promise: operation, completedAt: state?.completedAt ?? 0 })
   try {
-    await (refresh as () => unknown).call(sessions)
-  } catch {
-    // 原生刷新失败只影响远端会话可见性，本机列表保持可用。
+    await operation
+  } finally {
+    refreshStates.set(owner, { completedAt: Date.now() })
   }
 }
+
+/** 原生列表刷新是完整 session/list，合并并发调用并限制重连后的最低频率。 */
+export const PEER_HOST_NATIVE_SESSION_REFRESH_MIN_INTERVAL_MS = 1_500
+
+interface NativeSessionRefreshState {
+  readonly completedAt: number
+  readonly promise?: Promise<void>
+}
+
+const refreshStates = new WeakMap<object, NativeSessionRefreshState>()
 
 /** 合并并按 Host 侧顺序排列工作区；快照形状不符时原样返回，注入失败不影响本机数据。 */
 function mergeWorkspaceSnapshot(

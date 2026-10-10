@@ -109,6 +109,33 @@ test('页面 connector 将虚拟 Session 的原生 Remote 路由到 peerHost/nat
   }
 })
 
+test('页面 connector 将远程会话引用候选路由到目标 Host', async () => {
+  const calls: Array<{ path: string; body: Record<string, unknown> }> = []
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const path = new URL(String(input), 'http://dsh.test').pathname
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+    calls.push({ path, body })
+    return response([])
+  }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    transport.setAggregate(aggregate)
+    const sessionId = createVirtualSessionId('peer-1', 'session-1')
+    const result = await transport.hooks.rpc?.({
+      method: 'sessionReferenceResolver/candidates',
+      payload: { channel: '/api', payload: { args: { agentId: sessionId, query: '' } } },
+    })
+    assert.deepEqual(result, { ok: true, value: [] })
+    assert.equal(calls[0]?.path, '/codingns/peerHost/native')
+    const routed = calls[0]?.body.payload as Record<string, unknown>
+    assert.equal(routed.method, 'sessionReferenceResolver/candidates')
+    assert.deepEqual(routed.scope, { hostId: 'host-local', targetHostId: 'peer-1', workspaceId: 'workspace-1', sessionId: 'session-1', scopeGeneration: 0 })
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
 test('页面 connector 在聚合暂时漏掉会话时仍沿用最后确认的远端路由', async () => {
   const paths: string[] = []
   const previousFetch = globalThis.fetch

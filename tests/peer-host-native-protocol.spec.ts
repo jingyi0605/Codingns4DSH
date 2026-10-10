@@ -53,6 +53,7 @@ test('DSH 原生 Workspace/Session Remote 方法使用正式命名空间', () =>
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('session/follow'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('session/page'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('session/prompt'))
+  assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('sessionReferenceResolver/candidates'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('subagents/prompt'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('subagents/interruptByParent'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('officeToPdf/generation'))
@@ -131,6 +132,43 @@ test('session/follow 流沿用同一套请求与帧 ID 改写', () => {
     records: [],
     header: { id: 'codingns:peer-host:v1:session:peer-a:remote-session', cwd: '/repo' },
   })
+})
+
+test('对话引用候选同时改写 SessionId 和 dsh-session mention', () => {
+  const encode = (id: string) => createVirtualSessionId('peer-a', id)
+  assert.deepEqual(rewriteNativeRequestIds('sessionReferenceResolver/candidates', {
+    args: { agentId: createVirtualSessionId('peer-a', 'remote-session'), query: '' },
+  }, resolver), {
+    args: { agentId: 'remote-session', query: '' },
+  })
+  const rewritten = rewriteNativeResponseIds(
+    {
+      candidates: [{
+        sessionId: 'remote-session',
+        label: '远端会话',
+        mention: '@[远端会话](dsh-session:InJlbW90ZS1zZXNzaW9uIg)',
+      }],
+    },
+    id => id,
+    encode,
+    'sessionReferenceResolver/candidates',
+  ) as any
+  const virtualId = encode('remote-session')
+  const virtualUri = `dsh-session:${Buffer.from(JSON.stringify(virtualId), 'utf8').toString('base64url')}`
+  assert.equal(rewritten.candidates[0].sessionId, virtualId)
+  assert.equal(rewritten.candidates[0].mention, `@[远端会话](${virtualUri})`)
+  const prompt = rewriteNativeRequestIds('session/prompt', {
+    args: {
+      request: {
+        sessionId: virtualId,
+        content: `@[远端会话](${virtualUri})`,
+        requestId: virtualId,
+      },
+    },
+  }, resolver) as any
+  const realUri = 'dsh-session:InJlbW90ZS1zZXNzaW9uIg'
+  assert.equal(prompt.args.request.content, `@[远端会话](${realUri})`)
+  assert.equal(prompt.args.request.requestId, virtualId)
 })
 
 test('远端 session/follow 摘要只消费有界语义记录，不把流式 chunk 当正文', () => {

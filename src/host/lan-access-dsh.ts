@@ -1009,6 +1009,7 @@ export function rewriteLanAccessDshRequestHeaders(input: Uint8Array, targetAutho
   const upgrade = isUpgradeRequest(input)
   let hasConnection = false
   let hasCookie = false
+  let hasOrigin = false
   for (let index = 1; index < lines.length; index += 1) {
     const line = lines[index]
     if (line === undefined || line === '') continue
@@ -1016,7 +1017,7 @@ export function rewriteLanAccessDshRequestHeaders(input: Uint8Array, targetAutho
     if (separator <= 0) continue
     const name = line.slice(0, separator).toLowerCase()
     if (name === 'host') lines[index] = `Host: ${targetAuthority}`
-    else if (name === 'origin') lines[index] = `Origin: http://${targetAuthority}`
+    else if (name === 'origin') { hasOrigin = true; lines[index] = `Origin: http://${targetAuthority}` }
     else if (name === 'connection') {
       hasConnection = true
       if (!upgrade) lines[index] = 'Connection: close'
@@ -1029,6 +1030,10 @@ export function rewriteLanAccessDshRequestHeaders(input: Uint8Array, targetAutho
       }
     } else lines.splice(-2, 0, `Cookie: ${upstreamCookie}`)
   }
+  // Node fetch 不会为服务端转发自动附加 Origin，而 DSH 的 API 信任栅栏
+  // 需要 Host/Origin 成对指向同一 loopback authority。浏览器已有 Origin
+  // 时上面的分支会改写它；缺失时在上游请求头中补齐。
+  if (!hasOrigin) lines.splice(-2, 0, `Origin: http://${targetAuthority}`)
   if (!upgrade && !hasConnection) lines.splice(-2, 0, 'Connection: close')
   return encodeLatin1(lines.join('\r\n'))
 }

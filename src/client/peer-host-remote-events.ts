@@ -142,8 +142,6 @@ export class PeerHostRemoteEvents {
       const connection = new AbortController()
       const connectionSignal = AbortSignal.any([signal, connection.signal])
       try {
-        await this.options.prepare?.()
-        signal.throwIfAborted()
         let clientId: string | undefined
         for await (const raw of this.options.open(scope, connectionSignal)) {
           if (signal.aborted) break
@@ -152,6 +150,11 @@ export class PeerHostRemoteEvents {
             if (frame?.type !== 'ready' || typeof frame.clientId !== 'string') throw new Error('远端事件流缺少 ready 帧')
             clientId = frame.clientId
             attempt = 0
+            // 只有事件流已经完成 ready 握手后才做一次基线校准。
+            // 连接失败、握手失败或旧版 Host 不支持事件流时，不能先触发完整 session/list。
+            try { await this.options.prepare?.() } catch {
+              // 基线刷新失败不能撕掉已经 ready 的事件流；下一次有效事件或重连再校准。
+            }
             continue
           }
           await this.deliver(generation, worker, scope, clientId, frame, connectionSignal)

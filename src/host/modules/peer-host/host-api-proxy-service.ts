@@ -10,7 +10,7 @@ import { isPeerHostRequestCancellation, throwIfPeerHostRequestAborted } from './
 export { PEER_HOST_HTTP_PROXY_RULES } from '../../../shared/peer-host-http-routes.js'
 
 const MAX_PROXY_BODY_BYTES = 4 * 1024 * 1024
-const ALLOWED_QUERY = new Set(['workspaceId', 'sessionId', 'scopeGeneration', 'cursor', 'path', 'toolId'])
+const ALLOWED_QUERY = new Set(['workspaceId', 'sessionId', 'includeDescendants', 'scopeGeneration', 'cursor', 'path', 'toolId'])
 const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'authorization'])
 const ALLOWED_CLIENT_HEADERS = new Set(['accept', 'content-type', 'if-match', 'if-none-match', 'range'])
 const AUTH_CHECK_PATH = '/api/codingns/host/status'
@@ -47,11 +47,15 @@ export class PeerHostHttpProxyService {
       const body = await readBody(request)
       let accessToken = await this.sessions.getAccessToken(peerHostId, true)
       const targetUrl = buildTargetUrl(record, targetPath)
+      const targetOrigin = record.route.kind === 'lan' ? record.route.normalizedOrigin : ''
       const send = (token: string) => {
         throwIfPeerHostRequestAborted(request.signal)
         return this.fetchImpl(targetUrl, {
           method: request.method,
-          headers: buildForwardHeaders(request.headers, token),
+          // DSH 的 API 信任校验同时检查 Host/Origin。当前请求来自 Node
+          // fetch，通常没有 Origin；显式使用已登记目标 Origin，交给目标
+          // LAN 代理改写为它自己的 loopback DSH Origin。
+          headers: buildForwardHeaders(request.headers, token, targetOrigin),
           signal: request.signal,
           ...(body === undefined ? {} : { body }),
         })
@@ -69,7 +73,7 @@ export class PeerHostHttpProxyService {
           throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.SESSION_REQUIRED, '目标 Host 登录态已失效')
         }
       }
-      return await forwardResponse(response, scope)
+      return await forwardResponse(response, scope, targetPath.pathname)
     } catch (error) {
       // 取消必须继续向上传播，不能被包装成 502 后触发重试或故障日志。
       if (isPeerHostRequestCancellation(error, request.signal)) {
@@ -114,7 +118,7 @@ export class PeerHostHttpProxyService {
     readonly signal?: AbortSignal
     /** Host 内部的诊断回调；底层异常不得进入返回给客户端的代理响应。 */
     readonly onFailure?: (error: unknown) => void
-  }): Promise<{ readonly status: number; readonly headers: readonly [string, string][]; readonly body: string }> {
+  }): Promise<{ readonly status: number; readonly headers: readonly [string, string][]; readonly body: string; readonly bodyBase64?: string }> {
     const path = typeof input.path === 'string' ? input.path : ''
     if (!path.startsWith('/api/') || path.includes('://')) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED, 'PeerHost 代理路径必须是固定 API 路径')
     const method = (input.method ?? 'GET').toUpperCase()
@@ -136,7 +140,17 @@ export class PeerHostHttpProxyService {
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     }), input.onFailure)
     const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-    if (response.body !== null && !contentType.includes('json') && !contentType.startsWith('text/')) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.RESPONSE_INVALID, '目标 Host 返回了不支持的响应类型')
+    if (response.body !== null && !contentType.includes('json') && !contentType.startsWith('text/') && !isSessionExportPath(path)) {
+      throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.RESPONSE_INVALID, '目标 Host 返回了不支持的响应类型')
+    }
+    if (isSessionExportPath(path) && response.body !== null && !isTextResponse(contentType)) {
+      return {
+        status: response.status,
+        headers: [...response.headers.entries()],
+        body: '',
+        bodyBase64: encodeBase64(new Uint8Array(await response.arrayBuffer())),
+      }
+    }
     return { status: response.status, headers: [...response.headers.entries()], body: await response.text() }
   }
 
@@ -173,7 +187,20 @@ function validateQuery(url: URL): void {
 }
 
 function validateRule(method: string, pathname: string): void {
+  if (pathname !== '/api/session.export' && pathname.startsWith('/api/session.export/')) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED, 'PeerHost 代理路径或方法未加入白名单')
   if (!isPeerHostHttpRoute(method, pathname)) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED, 'PeerHost 代理路径或方法未加入白名单')
+}
+
+function isSessionExportPath(path: string): boolean {
+  try { return new URL(path, 'http://peer-host.invalid').pathname === '/api/session.export' } catch { return false }
+}
+
+function isTextResponse(contentType: string): boolean {
+  return contentType.includes('json') || contentType.startsWith('text/')
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64')
 }
 
 async function readBody(request: Request): Promise<string | undefined> {
@@ -190,7 +217,7 @@ function buildTargetUrl(record: PeerHostRecord, source: URL): string {
   return new URL(`${source.pathname}${source.search}`, record.route.normalizedOrigin).toString()
 }
 
-function buildForwardHeaders(source: Headers, accessToken: string): Headers {
+function buildForwardHeaders(source: Headers, accessToken: string, targetOrigin: string): Headers {
   const headers = new Headers()
   source.forEach((value, name) => {
     const normalized = name.toLowerCase()
@@ -198,13 +225,14 @@ function buildForwardHeaders(source: Headers, accessToken: string): Headers {
     if (normalized === 'content-length') return
     headers.set(name, value)
   })
+  if (targetOrigin !== '') headers.set('origin', targetOrigin)
   headers.set('authorization', `Bearer ${accessToken}`)
   return headers
 }
 
-async function forwardResponse(response: Response, scope: HostScope): Promise<Response> {
+async function forwardResponse(response: Response, scope: HostScope, pathname: string): Promise<Response> {
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-  if (response.body !== null && !contentType.includes('json') && !contentType.startsWith('text/')) throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.RESPONSE_INVALID, '目标 Host 返回了不支持的响应类型')
+  if (response.body !== null && !contentType.includes('json') && !contentType.startsWith('text/') && pathname !== '/api/session.export') throw new PeerHostProxyError(PEER_HOST_ERROR_CODES.RESPONSE_INVALID, '目标 Host 返回了不支持的响应类型')
   const headers = new Headers()
   response.headers.forEach((value, name) => { if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase())) headers.set(name, value) })
   headers.set('x-codingns-scope-generation', String(scope.scopeGeneration))

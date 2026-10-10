@@ -160,7 +160,8 @@ export class AggregatedHostTransportService implements AggregatedHostTransport {
       ...(request.headers === undefined ? {} : { headers: request.headers }),
       ...(request.body === undefined ? {} : { body: request.body }),
     })
-    return new Response(response.body, { status: response.status, headers: new Headers(Object.fromEntries(response.headers)) })
+    const body = response.bodyBase64 === undefined ? response.body : decodeBase64(response.bodyBase64)
+    return new Response(body, { status: response.status, headers: new Headers(Object.fromEntries(response.headers)) })
   }
 
   openStream<TChunk = unknown>(request: AggregatedHostStreamRequest): AsyncIterable<TChunk> {
@@ -312,10 +313,15 @@ function requiredPath(path: string): string {
 
 function validateFetchRule(path: string, method: string): void {
   const url = new URL(path, 'http://aggregated-host.invalid')
-  const allowedQuery = new Set(['workspaceId', 'sessionId', 'scopeGeneration', 'cursor', 'path', 'toolId'])
+  if (url.pathname !== '/api/session.export' && url.pathname.startsWith('/api/session.export/')) throw new AggregatedHostTransportError(PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED, 'Aggregated fetch 路径或方法未加入白名单')
+  const allowedQuery = new Set(['workspaceId', 'sessionId', 'includeDescendants', 'scopeGeneration', 'cursor', 'path', 'toolId'])
   for (const key of url.searchParams.keys()) if (!allowedQuery.has(key)) throw new AggregatedHostTransportError(PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED, 'Aggregated fetch 查询参数未加入白名单')
   const rule = PEER_HOST_HTTP_PROXY_RULES.find((candidate) => url.pathname === candidate.prefix || url.pathname.startsWith(`${candidate.prefix}/`))
   if (rule === undefined || !(rule.methods as readonly string[]).includes(method.toUpperCase())) throw new AggregatedHostTransportError(PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED, 'Aggregated fetch 路径或方法未加入白名单')
+}
+
+function decodeBase64(value: string): ArrayBuffer {
+  return Uint8Array.from(Buffer.from(value, 'base64')).buffer as ArrayBuffer
 }
 
 function appendRpcQuery(path: string, payload: unknown): string {

@@ -314,11 +314,12 @@ export function createPeerHostPageTransport(
     }, init?.signal ?? request?.signal))
     const status = typeof response?.status === 'number' ? response.status : 502
     const responseHeaders = new Headers(Array.isArray(response?.headers) ? response.headers as [string, string][] : undefined)
-    const body = method === 'HEAD'
-      ? undefined
-      : typeof response?.bodyBase64 === 'string'
-        ? decodeBase64(response.bodyBase64)
-        : typeof response?.body === 'string' ? response.body : ''
+    // DSH 导出控制器会读取 HEAD 的正文来补充失败原因。浏览器原生 HEAD
+    // 响应不会暴露正文，但这里是页面内合成的 Response，保留代理返回的
+    // 文本错误可以把目标 Host 的真实鉴权原因传回 UI；成功 HEAD 仍为空正文。
+    const body = typeof response?.bodyBase64 === 'string'
+      ? decodeBase64(response.bodyBase64)
+      : typeof response?.body === 'string' ? response.body : ''
     return new Response(body, { status, headers: responseHeaders })
   }
   const restoreGlobalFetch = installSessionExportFetchPatch(originalGlobalFetch, remoteSessionExportFetch)

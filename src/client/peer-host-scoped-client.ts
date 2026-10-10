@@ -83,6 +83,8 @@ export interface PeerHostProxyResponse {
   readonly status: number
   readonly headers: readonly [string, string][]
   readonly body: string
+  /** 二进制响应通过 Host RPC 的 Base64 字段传递；文本响应仍使用 body。 */
+  readonly bodyBase64?: string
 }
 
 export interface PeerHostScopedClient {
