@@ -12,6 +12,7 @@ import {
   clearSessionAdapters,
   fetchSessionAdapters,
   publishSessionAdapter,
+  publishSessionSelection,
   replaceSessionAdapters,
   sessionAdapterId,
   sessionAdapterSnapshot,
@@ -106,16 +107,21 @@ test('会话映射缓存支持整批替换、增量更新、通知和清空', ()
   assert.equal(sessionAdapterId('session-1'), 'grok')
   assert.equal(notifications, 2)
 
+  // 同一适配器切换模型或 Provider 时，订阅用量等会话级组件仍必须重新读取配置。
+  publishSessionSelection('session-1', 'grok')
+  publishSessionSelection('', 'grok')
+  assert.equal(notifications, 3)
+
   replaceSessionAdapters([{ sessionId: 'session-3', adapterId: 'pi' }])
   assert.deepEqual(sessionAdapterSnapshot(), { 'session-3': 'pi' })
-  assert.equal(notifications, 3)
+  assert.equal(notifications, 4)
 
   clearSessionAdapters()
   assert.deepEqual(sessionAdapterSnapshot(), {})
-  assert.equal(notifications, 4)
+  assert.equal(notifications, 5)
   unsubscribe()
   publishSessionAdapter('session-4', 'dsh')
-  assert.equal(notifications, 4)
+  assert.equal(notifications, 5)
   clearSessionAdapters()
 })
 
