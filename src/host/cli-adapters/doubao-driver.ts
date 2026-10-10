@@ -69,7 +69,13 @@ export class DoubaoAppDriver implements CodingNsCliDriver {
   constructor(private readonly app: DoubaoAppConnection = new DoubaoApp()) {}
 
   async detect(): ReturnType<DoubaoAppConnection['detect']> {
-    try { const result = await this.app.detect(); this.diagnostic = result.installed ? undefined : '未找到豆包 App；Windows 可指定安装路径或先开启调试端口'; return result }
+    try {
+      const result = await this.app.detect()
+      this.diagnostic = result.runtimeState === 'installed'
+        ? '豆包 App 已安装，但当前本机调试端口未开启；开始实际会话时会按需启动。'
+        : result.installed ? undefined : '未找到豆包 App；Windows 可指定安装路径，或确认豆包已加入 PATH/注册表 App Paths'
+      return result
+    }
     catch (error) { this.diagnostic = error instanceof Error ? error.message : '豆包 App 检测失败'; return { installed: false, version: null, command: null } }
   }
   getDiscoveryDiagnostic(): string | undefined { return this.diagnostic }
