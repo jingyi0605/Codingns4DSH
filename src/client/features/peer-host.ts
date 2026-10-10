@@ -65,10 +65,10 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
       scope.effect(() => {
         // 先挂载不依赖新 Remote 的摘要兜底；若嵌套 Remote 随后就绪，切换到
         // Resolver 感知版本，官方候选成功时不会在菜单中产生重复项。
-        let dispose = registerPeerHostReferenceSource(scope, projection)
+        let dispose = registerPeerHostReferenceSource(scope, projection, context.services.locale)
         const resolverFiber = scope.inject(['remote.sessionReferenceResolver'], (resolverScope) => {
           dispose()
-          dispose = registerPeerHostReferenceSource(resolverScope, projection)
+          dispose = registerPeerHostReferenceSource(resolverScope, projection, context.services.locale)
         })
         return () => {
           dispose()

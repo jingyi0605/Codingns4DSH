@@ -2,9 +2,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import { parseVirtualSessionId, parseVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
 import type { PeerHostVirtualSessionSummary } from './peer-host-native-projection.js'
 import { formatSessionReferenceMention } from '../shared/session-reference.js'
+import { resolveCodingNsTranslator, type CodingNsLocale } from './locale.js'
 
 const PEER_HOST_REFERENCE_SOURCE = 'codingns-peer-host-reference'
-const PEER_HOST_SESSION_SECTION = '对话'
 
 interface InputTriggerCandidate {
   readonly name: string
@@ -66,7 +66,12 @@ interface PeerHostReferenceProjection {
 export function registerPeerHostReferenceSource(
   ctx: Context,
   projection: PeerHostReferenceProjection,
+  locale?: CodingNsLocale,
 ): () => void {
+  // 栏目名和空白会话占位标题走编码词典；无 locale 时退回内置中文词典（单测宿主）。
+  const t = resolveCodingNsTranslator(locale)
+  const sessionSection = t('peerHost.reference.section')
+  const blankSessionTitle = t('peerHost.reference.newSession')
   let inputTriggers: InputTriggersService | undefined
   let sessions: SessionsService | undefined
   let resolver: SessionReferenceResolver | undefined
@@ -121,12 +126,12 @@ export function registerPeerHostReferenceSource(
       if (!resolverFailed && remoteResult !== undefined && remoteResult.length > 0) {
         return remoteResult
           .filter((candidate) => candidate.sessionId !== session.sessionId)
-          .map(remoteCandidate)
+          .map((candidate) => remoteCandidate(candidate, sessionSection))
       }
       return projection.sessions()
         .filter((item) => parseVirtualSessionId(item.sessionId)?.hostId === currentHostId)
         .filter((item) => !isCurrentSession(item.sessionId, session.sessionId))
-        .map((item) => projectionCandidate(item, request.query))
+        .map((item) => projectionCandidate(item, request.query, sessionSection, blankSessionTitle))
         .filter((item): item is InputTriggerCandidate => item !== undefined)
     },
     onPick(pick) {
@@ -182,19 +187,19 @@ function asRemoteCandidate(value: unknown): RemoteReferenceCandidate[] {
   }]
 }
 
-function remoteCandidate(candidate: RemoteReferenceCandidate): InputTriggerCandidate {
+function remoteCandidate(candidate: RemoteReferenceCandidate, section: string): InputTriggerCandidate {
   const label = candidate.displayTitle?.trim() || candidate.label.trim() || candidate.sessionId
   return {
     name: label,
     ...(candidate.cwd === undefined ? {} : { description: candidate.cwd }),
     icon: 'session',
-    section: PEER_HOST_SESSION_SECTION,
+    section,
     value: candidate.mention,
   }
 }
 
-function projectionCandidate(session: PeerHostVirtualSessionSummary, query: string): InputTriggerCandidate | undefined {
-  const title = session.projections.values.title?.trim() || (session.blank ? '新会话' : session.sessionId)
+function projectionCandidate(session: PeerHostVirtualSessionSummary, query: string, section: string, blankTitle: string): InputTriggerCandidate | undefined {
+  const title = session.projections.values.title?.trim() || (session.blank ? blankTitle : session.sessionId)
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const searchable = `${title}\n${session.cwd ?? ''}\n${session.sessionId}`.toLocaleLowerCase()
   if (normalizedQuery !== '' && !searchable.includes(normalizedQuery)) return undefined
@@ -202,7 +207,7 @@ function projectionCandidate(session: PeerHostVirtualSessionSummary, query: stri
     name: title,
     ...(session.cwd === undefined ? {} : { description: session.cwd }),
     icon: 'session',
-    section: PEER_HOST_SESSION_SECTION,
+    section,
     value: formatSessionReferenceMention(title, session.sessionId),
   }
 }
