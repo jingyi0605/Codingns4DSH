@@ -621,7 +621,7 @@ function nativeProviderTestRegistry(): CodingNsCliAdapterRegistry {
 }
 
 test('原生 Provider 注册可去重并在释放后重新装配', async () => {
-  const providers: Array<{ name: string; prepareContinuable: (request: any) => Promise<unknown> }> = []
+  const providers: Array<{ name: string; inheritsParentContext?: boolean; prepareContinuable: (request: any) => Promise<unknown> }> = []
   const registry = nativeProviderTestRegistry()
   setAdapterRegistry(registry)
   const service = {
@@ -631,6 +631,7 @@ test('原生 Provider 注册可去重并在释放后重新装配', async () => {
   try {
     registerNativeTeamSubagentProviders(service as never)
     assert.equal(providers.length, 10)
+    assert.equal(providers.find((provider) => provider.name === 'codingns-external-mcode')?.inheritsParentContext, true)
     assert.equal((await registry.catalog())[0]?.detectionState, 'pending')
     await providers.find((provider) => provider.name === 'codingns-external-mcode')!.prepareContinuable({ sessionId: 'child-2', parent: { id: 'parent-2' }, signal: new AbortController().signal })
     assert.equal((await registry.catalog())[0]?.detectionState, 'ready')

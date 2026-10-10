@@ -101,7 +101,9 @@ export function registerNativeTeamSubagentProviders(service: NativeSubagentServi
     const result = service.registerProvider({
       name: externalTeamProvider(adapterId),
       capabilities: { agentOptions: false, outputSchema: false, depthLimit: true, toolFilter: false, persona: false },
-      inheritsParentContext: false,
+      // 子会话必须继承父会话的 DSH 沙箱与审批上下文；外部 CLI 只负责执行协议，
+      // 不能因为换了 Provider 就把工作区写入退回到默认的逐次询问模式。
+      inheritsParentContext: true,
       start() { throw new Error('外部 Agent Team 提供方只支持可续聊子代理') },
       async prepareContinuable(request) {
         // DSH 可能把缺省的 signal 原样转发（undefined），这里保持容错。
