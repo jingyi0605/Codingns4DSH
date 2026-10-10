@@ -127,8 +127,8 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const [resetResult, setResetResult] = useState<CliSubscriptionResetOutcome | null>(null)
   const [resetError, setResetError] = useState<string | null>(null)
   const modelSelectionRevision = props.useSession?.((value) => JSON.stringify(value.modelSelection))
-  // 切换 Agent 可能只改变 Host 侧会话配置，DSH 会话快照不一定会更新；订阅适配器
-  // 缓存的变更才能真正触发重新查询，否则底部会一直显示上一个 Agent 的订阅数据。
+  // Agent、模型或 Provider 切换可能只改变 Host 侧会话配置，DSH 会话快照不一定会更新；
+  // 订阅适配器缓存的通知才能真正触发重新查询，否则底部会一直显示旧上游的数据。
   const [adapterRevision, bumpAdapterRevision] = useState(0)
   useEffect(() => subscribeSessionAdapters(() => { bumpAdapterRevision((value) => value + 1) }), [])
 
@@ -156,10 +156,12 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     setResetPending(false)
     setResetResult(null)
     setResetError(null)
-    const refresh = async (signal: AbortSignal): Promise<boolean | void> => {
+    const refresh = async (): Promise<boolean | void> => {
       setLoading(true)
       try {
-        const selection = await loadCliSessionConfig(props.rpc, sessionId)
+        // 订阅入口必须读取当前会话的真实 Provider；模型选择器切换后不能复用
+        // 其它组件为减少 RPC 而保留的短期快照。
+        const selection = await loadCliSessionConfig(props.rpc, sessionId, { force: true })
         const adapterId = selection.adapterId
         if (!active || !isSubscriptionAdapter(adapterId)) {
           if (active) {

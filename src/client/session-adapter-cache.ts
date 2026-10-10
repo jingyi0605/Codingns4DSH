@@ -23,6 +23,17 @@ export function publishSessionAdapter(sessionId: string, adapterId: string): voi
   notify()
 }
 
+/** 同一适配器切换模型或 Provider 时也要通知订阅等会话级组件。 */
+export function publishSessionSelection(sessionId: string, adapterId: string): void {
+  const normalizedSessionId = sessionId.trim()
+  const normalizedAdapterId = adapterId.trim()
+  if (normalizedSessionId === '' || normalizedAdapterId === '') return
+  if (adaptersBySession.get(normalizedSessionId) !== normalizedAdapterId) {
+    adaptersBySession.set(normalizedSessionId, normalizedAdapterId)
+  }
+  notify()
+}
+
 /** 用 Host 的一次脱敏快照替换缓存，不保留已经消失的旧绑定。 */
 export function replaceSessionAdapters(bindings: readonly CodingNsSessionAdapterBinding[]): void {
   const next = new Map<string, string>()

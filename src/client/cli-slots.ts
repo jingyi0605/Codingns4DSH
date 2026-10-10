@@ -18,7 +18,7 @@ import {
 } from './service-tier.js'
 import { resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 import { providerIconUrl } from './provider-icons.js'
-import { publishSessionAdapter } from './session-adapter-cache.js'
+import { publishSessionSelection } from './session-adapter-cache.js'
 import {
   getModelCatalogCache,
   invalidateModelCatalogCache,
@@ -205,7 +205,7 @@ function publishSelection(sessionId: string, next: SelectionState): void {
   }
   selections.set(sessionId, normalized)
   selectionLastUsed.set(sessionId, Date.now())
-  publishSessionAdapter(sessionId, normalized.adapterId)
+  publishSessionSelection(sessionId, normalized.adapterId)
   for (const listener of selectionListeners.get(sessionId) ?? []) listener()
 }
 
@@ -277,7 +277,7 @@ function AgentSlot(props: CliSlotProps): ReactElement {
             ? createElement(ProviderIconFallback, { name: agent.name, size: 22 })
             : createElement('img', { src: icon, alt: '', 'aria-hidden': true, style: applyProviderIconShape(agent.id, agentOptionIconStyle) }),
           createElement('span', { style: agentOptionLabelStyle }, agent.name),
-          (!agent.installed || agent.detectionState === 'error') && createElement('span', { style: agentStatusStyle }, t(adapterDetectionLabel(agent))),
+          (!agent.installed || agent.detectionState === 'error' || agent.runtimeState === 'installed') && createElement('span', { style: agentStatusStyle }, t(adapterDetectionLabel(agent))),
           agent.installed && !agent.enabled && createElement('span', { style: agentStatusStyle }, t('cli.disabled')),
         )
       }),

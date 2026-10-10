@@ -12,6 +12,11 @@ interface CacheEntry {
 
 type Pending = Promise<CodingNsCliSessionConfig>
 
+export interface LoadCliSessionConfigOptions {
+  /** 选择器发生变化时跳过短期快照，确保读到当前 Provider/模型。 */
+  readonly force?: boolean
+}
+
 const caches = new WeakMap<CodingNsRpcClient, Map<string, CacheEntry | Pending>>()
 
 /**
@@ -21,18 +26,24 @@ const caches = new WeakMap<CodingNsRpcClient, Map<string, CacheEntry | Pending>>
  * 覆盖会话切换时同时挂载的 Agent、订阅和技能组件。写入方可调用 remember
  * 立即替换快照，避免短期缓存覆盖用户刚选择的模型。
  */
-export function loadCliSessionConfig(rpc: CodingNsRpcClient, sessionId: string): Promise<CodingNsCliSessionConfig> {
+export function loadCliSessionConfig(
+  rpc: CodingNsRpcClient,
+  sessionId: string,
+  options: LoadCliSessionConfigOptions = {},
+): Promise<CodingNsCliSessionConfig> {
   const normalized = sessionId.trim()
   if (normalized === '') return Promise.resolve({ adapterId: 'dsh' })
   const cache = cacheFor(rpc)
   const existing = cache.get(normalized)
   if (existing instanceof Promise) return existing
-  if (existing !== undefined && Date.now() - existing.loadedAt < SESSION_CONFIG_CACHE_TTL_MS) {
+  if (!options.force && existing !== undefined && Date.now() - existing.loadedAt < SESSION_CONFIG_CACHE_TTL_MS) {
     return Promise.resolve(existing.value)
   }
   const request = callCliRpc<CodingNsCliSessionConfig>(rpc, 'session/get', { sessionId: normalized })
     .then((value) => {
-      cache.set(normalized, { value, loadedAt: Date.now() })
+      // session/set 可能已经把更新后的配置写入缓存；较早的 session/get
+      // 返回后不能把新选择回滚成旧 Provider。
+      if (cache.get(normalized) === request) cache.set(normalized, { value, loadedAt: Date.now() })
       return value
     })
     .finally(() => {
