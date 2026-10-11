@@ -121,5 +121,7 @@ test('2.2 插槽的模型 key 不包含情绪；旧包有可访问角标而无�
   } finally { renderer.dispose() }
   const html = renderToStaticMarkup(createElement(AssistantAvatarSlot, { ...props, reaction: 'question' }))
   assert.ok(html.includes('data-codingns-avatar-reaction="question"'))
+  assert.ok(html.includes('data-codingns-avatar-reaction-glyph="speech"'))
+  assert.match(html, /left:50%;top:0;transform:translateX\(-50%\)/u)
   assert.ok(html.includes(resolveCodingNsTranslator()('awb.notifications.question')))
 })
