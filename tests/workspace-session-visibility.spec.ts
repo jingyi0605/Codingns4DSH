@@ -92,7 +92,8 @@ test('工作区菜单隐藏动作与筛选恢复列表不破坏原生菜单', as
   // 不应提前触发插件扫描并丢失筛选菜单上下文。
   filterTrigger.dispatch('pointerdown')
   const filterMenu = new FakeElement('div')
-  filterMenu.textContent = '分组方式 排序方式 筛选会话'
+  filterMenu.setAttribute('aria-label', '视图选项')
+  filterMenu.textContent = '按工作区 最近更新 全部对话'
   filterMenu.append(
     menuItem('按工作区'),
     menuItem('最近更新'),
@@ -127,9 +128,21 @@ test('工作区菜单隐藏动作与筛选恢复列表不破坏原生菜单', as
   const staleFilterMenu = new FakeElement('div')
   staleFilterMenu.setAttribute('role', 'menu')
   staleFilterMenu.setAttribute('aria-hidden', 'true')
-  staleFilterMenu.textContent = '分组方式 排序方式 筛选会话'
+  staleFilterMenu.setAttribute('aria-label', '视图选项')
+  staleFilterMenu.textContent = '按工作区 最近更新 全部对话'
   staleFilterMenu.append(menuItem('按工作区'), menuItem('最近更新'), menuItem('全部对话'))
   root.appendChild(staleFilterMenu)
+  // 即使宿主重渲染丢失了工作区触发器的点击上下文，也必须按当前可见菜单
+  // 判断类型；不能因为上一次打开的是筛选菜单，就把筛选动作注入这里。
+  const contextlessWorkspaceMenu = new FakeElement('div')
+  contextlessWorkspaceMenu.setAttribute('role', 'menu')
+  contextlessWorkspaceMenu.setAttribute('data-workspace-id', 'workspace-a')
+  root.appendChild(contextlessWorkspaceMenu)
+  observer.trigger(contextlessWorkspaceMenu)
+  await nextTurn()
+  assert.ok(contextlessWorkspaceMenu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_MENU_ATTRIBUTE}]`))
+  assert.equal(contextlessWorkspaceMenu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`), null)
+  contextlessWorkspaceMenu.remove()
   workspaceA.menuTrigger.dispatch('click')
   const menu = new FakeElement('div')
   menu.setAttribute('role', 'menu')
@@ -161,7 +174,8 @@ test('工作区菜单隐藏动作与筛选恢复列表不破坏原生菜单', as
   assert.equal(workspaceA.container.hasAttribute(WORKSPACE_SESSION_HIDDEN_ATTRIBUTE), false)
 
   const reopenedFilterMenu = new FakeElement('div')
-  reopenedFilterMenu.textContent = '分组方式 排序方式 筛选会话'
+  reopenedFilterMenu.setAttribute('aria-label', '视图选项')
+  reopenedFilterMenu.textContent = '按工作区 最近更新 全部对话'
   reopenedFilterMenu.append(
     menuItem('按工作区'),
     menuItem('最近更新'),
