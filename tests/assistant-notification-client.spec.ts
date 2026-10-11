@@ -172,6 +172,9 @@ test('气泡共用安全单条帧和分页快照，文本转义、键盘按钮�
     assert.ok(html.includes('查看会话')); assert.ok(html.includes('收起提醒')); assert.ok(!html.includes('1 项待处理'))
     assert.ok(html.includes('&lt;script&gt;')); assert.ok(!html.includes('<script>'))
     assert.ok(html.includes('type="button"')); assert.ok(html.includes('touch-action:manipulation')); assert.ok(html.includes('overflow-y:auto'))
+    assert.ok(html.includes('data-codingns-notification-scroll="true"'))
+    assert.ok(html.includes('padding-bottom:12px!important')); assert.ok(html.includes('scrollbar-width:none'))
+    assert.ok(html.includes('[data-codingns-notification-scroll]::-webkit-scrollbar'))
     assert.ok(!html.includes('animation:'))
   }
 })
@@ -183,7 +186,7 @@ test('单条未读直接展示会话卡片，多条提醒在漫画气泡内堆�
     frame: single, t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {},
   }))
   assert.equal((singleHtml.match(/data-codingns-notice-id=/gu) ?? []).length, 1)
-  assert.ok(singleHtml.includes('data-codingns-notification-surface="true"'))
+  assert.ok(singleHtml.includes('data-codingns-notification-tail="bottom"'))
   assert.ok(singleHtml.includes('<svg')); assert.ok(!singleHtml.includes('clip-path'))
   assert.ok(singleHtml.includes(`stroke="${dshThemeColor.border}"`), '气泡外框应使用中性边框色')
   assert.ok(!singleHtml.includes(`stroke="${dshThemeColor.accent}"`), '气泡外框不能使用蓝色强调色')
@@ -211,8 +214,11 @@ test('单条未读直接展示会话卡片，多条提醒在漫画气泡内堆�
   assert.equal((multipleHtml.match(/>有<span/gu) ?? []).length, 2)
   assert.equal((multipleHtml.match(/需要你来处理/gu) ?? []).length, 2)
   const tail = assistantNotificationTailStyle(96, -100, 320) as Record<string, string>
-  assert.equal(tail['--codingns-assistant-tail-offset'], '196px')
-  assert.equal(Number.parseFloat(tail['--codingns-assistant-tail-angle']!), 0)
+  assert.equal(tail['--codingns-assistant-tail-offset'], '186px')
+  assert.ok(Number.parseFloat(tail['--codingns-assistant-tail-angle']!) < 0)
+  const centeredTail = assistantNotificationTailStyle(60, -100, 320) as Record<string, string>
+  assert.equal(centeredTail['--codingns-assistant-tail-offset'], '160px')
+  assert.equal(Number.parseFloat(centeredTail['--codingns-assistant-tail-angle']!), 0)
   const rightEdge = assistantNotificationTailStyle(500, -100, 320) as Record<string, string>
   assert.ok(Number.parseFloat(rightEdge['--codingns-assistant-tail-angle']!) < 0, '助理在尾巴根部右侧时尖端应向右')
   const leftEdge = assistantNotificationTailStyle(-300, -100, 320) as Record<string, string>
@@ -399,7 +405,7 @@ test('气泡边缘与形象保持尾巴避让距离，四个方向都渲染平�
     assert.ok(html.includes(`data-codingns-notification-tail="${side}"`))
     // 单路径弧形尾巴不绘制根部横线，面板上层覆盖后不会出现斜向拼接缝。
     assert.ok(html.includes('data-codingns-notification-tail'))
-    assert.ok(html.includes('data-codingns-notification-outline'))
+    assert.ok((html.match(/<path/gu) ?? []).length >= 2)
     assert.ok(html.includes('stroke-linecap="round"'))
   }
 })
