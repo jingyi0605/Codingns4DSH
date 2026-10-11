@@ -221,6 +221,8 @@ test('单条未读直接展示会话卡片，多条提醒在漫画气泡内堆�
   assert.equal(Number.parseFloat(centeredTail['--codingns-assistant-tail-angle']!), 0)
   const rightEdge = assistantNotificationTailStyle(500, -100, 320) as Record<string, string>
   assert.ok(Number.parseFloat(rightEdge['--codingns-assistant-tail-angle']!) < 0, '助理在尾巴根部右侧时尖端应向右')
+  const topRightEdge = assistantNotificationTailStyle(500, -100, 320, 'top') as Record<string, string>
+  assert.ok(Number.parseFloat(topRightEdge['--codingns-assistant-tail-angle']!) > 0, '顶部尾巴翻转后仍应向右指向助理')
   const leftEdge = assistantNotificationTailStyle(-300, -100, 320) as Record<string, string>
   assert.ok(Number.parseFloat(leftEdge['--codingns-assistant-tail-angle']!) > 0, '助理在尾巴根部左侧时尖端应向左')
   // 侧置气泡在侧边中点伸出，不需要水平偏移。
