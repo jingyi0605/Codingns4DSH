@@ -180,7 +180,9 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         }
         const intervalMins = props.getRefreshIntervalMins?.() ?? DEFAULT_SUBSCRIPTION_USAGE_SETTINGS.refreshIntervalMins
         // 模型也是读取键的一部分：Antigravity 的 Gemini 与 Claude/GPT 是两个独立配额组。
-        const cacheKey = `${adapterId}|${selection.providerId ?? ''}|${selection.modelId ?? ''}`
+        // 会话 ID 同时承担 PeerHost 的路由身份；缓存也必须按会话隔离，
+        // 否则本机与远端使用相同 Agent/Provider/模型时会互相复用上游结果。
+        const cacheKey = `${adapterId}|${selection.providerId ?? ''}|${selection.modelId ?? ''}|${sessionId}`
         const cached = subscriptionUsageCache.get(cacheKey)
         // New-API 的余额和 Token 日志可能随 Key/钱包状态快速变化，且旧结果
         // 容易把历史日志投影到当前站点；每次刷新都重新读取，Sub2API 仍复用原缓存。
@@ -190,6 +192,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
           return
         }
         const next = await loadUsage(props.rpc, cacheKey, {
+          sessionId,
           adapterId,
           ...(selection.providerId ? { providerId: selection.providerId } : {}),
           ...(selection.modelId ? { modelId: selection.modelId } : {}),
@@ -236,6 +239,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     void (async () => {
       try {
         const result = await callCliRpc<CliSubscriptionResetResult>(props.rpc, 'subscription/reset', {
+          sessionId: props.sessionId?.trim() ?? '',
           adapterId,
           ...(providerId === null ? {} : { providerId }),
         })
