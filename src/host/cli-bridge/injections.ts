@@ -5,8 +5,8 @@ import { getSubagentBridge } from './bridge-holder.js'
 /**
  * 注入构造器：把桥接端点、令牌与会话身份翻译成各外部 CLI 的原生扩展面。
  *
- * 桥接父会话注入完整派发能力；桥接创建出的子会话只注入“禁用原生 agent”的
- * 防递归 Mod，不再注入 DSH 派发端点，避免嵌套托管无限递归。
+ * 桥接父会话和桥接创建出的子会话都注入 DSH 派发端点。子会话通过环境标记
+ * 禁止再次 start，仍保留 send 回传父会话的能力，避免把结果困在子会话里。
  */
 
 const MCP_ENTRY_PATH = fileURLToPath(new URL('./mcp-stdio-entry.js', import.meta.url))
@@ -31,10 +31,9 @@ export function bridgeCommandCodeModPath(): string {
   return COMMAND_CODE_MOD_PATH
 }
 
-/** 桥接是否应当介入该会话；子代理会话一律排除。 */
+/** 桥接是否应当介入该会话；子会话也需要桥接来回传父会话报告。 */
 export function subagentBridgeActive(sessionId: string): boolean {
-  if (getSubagentBridge() === undefined) return false
-  return !isSubagentChildSession(sessionId)
+  return getSubagentBridge() !== undefined && sessionId.trim() !== ''
 }
 
 /** command-code：`--mod` 每次运行加载托管 mod。 */
@@ -60,8 +59,8 @@ export function commandCodeBridgeEnvironment(sessionId: string, adapterId: strin
 }
 
 /**
- * command-code：所有会话都注入屏蔽标记；父会话另外拿到派发端点，子会话只保留
- * 防递归标记。这样即使设置关闭或桥接启动失败，也绝不会暴露原生 agent。
+ * command-code：所有会话都注入屏蔽标记；父、子会话都拿到派发端点，子会话
+ * 额外携带防递归标记。这样即使设置关闭或桥接启动失败，也绝不会暴露原生 agent。
  */
 export function commandCodeNativeAgentEnvironment(sessionId: string, adapterId: string): Record<string, string> {
   const child = isSubagentChildSession(sessionId)
@@ -77,7 +76,7 @@ export function claudeBridgeArgs(sessionId: string, adapterId: string): readonly
   const env = bridgeEnvironment(sessionId, adapterId)
   // CodingNS 创建的 Claude 子会话不能再次托管子代理，否则会形成没有父级
   // 生命周期记录的递归树。子会话仍然启动普通 Claude 工具，但明确屏蔽内建
-  // Agent/Task；父会话只有在桥接运行时存在时才拿到 MCP 派发工具。
+  // Agent/Task；同时保留 DSH MCP 派发工具，让它能把报告送回父会话。
   if (env === undefined) return isSubagentChildSession(sessionId) ? CLAUDE_NATIVE_SUBAGENT_BLOCK_ARGS : []
   const config = JSON.stringify({ mcpServers: { codingns: mcpServerConfig(env) } })
   return [
@@ -111,6 +110,42 @@ export function acpBridgeMcpServers(sessionId: string, adapterId: string): reado
   }]
 }
 
+/**
+ * OpenCode V2：运行时 MCP 注册所需的本地 server 配置。
+ *
+ * OpenCode V2 不读取 ACP 的 session/new 扩展字段，必须通过
+ * `/api/experimental/mcp/:server` 注册本地 MCP。配置只在内存中生成，凭据仍由
+ * 当前 Host 进程环境注入，不写入 OpenCode 配置文件。
+ */
+export function openCodeBridgeMcpConfig(sessionId: string, adapterId: string): {
+  /** OpenCode V2 的 MCP 配置按 server name 全局覆盖；名称必须按 DSH 会话隔离。 */
+  readonly serverName: string
+  readonly toolName: string
+  readonly config: {
+    readonly type: 'local'
+    readonly command: readonly string[]
+    readonly environment: Readonly<Record<string, string>>
+    readonly timeout: {
+      readonly execution: number
+    }
+  }
+} | undefined {
+  const env = bridgeEnvironment(sessionId, adapterId)
+  if (env === undefined) return undefined
+  const serverName = openCodeBridgeServerName(sessionId)
+  return {
+    serverName,
+    toolName: `${serverName}_${isSubagentChildSession(sessionId) ? 'send_message' : 'agent_subagent'}`,
+    config: {
+      type: 'local',
+      command: [process.execPath, MCP_ENTRY_PATH],
+      environment: env,
+      // read/wait 可能等待 DSH 子会话完成；不能沿用 OpenCode 的短 MCP 默认超时。
+      timeout: { execution: 260_000 },
+    },
+  }
+}
+
 /** codex：`-c` 每次启动覆盖配置，注入 MCP server。 */
 export function codexBridgeArgs(sessionId: string, adapterId: string, platform: NodeJS.Platform = process.platform): readonly string[] {
   const env = bridgeEnvironment(sessionId, adapterId)
@@ -129,13 +164,15 @@ export function codexBridgeArgs(sessionId: string, adapterId: string, platform: 
 
 function bridgeEnvironment(sessionId: string, adapterId: string): Record<string, string> | undefined {
   const runtime = getSubagentBridge()
-  if (runtime === undefined || isSubagentChildSession(sessionId)) return undefined
+  if (runtime === undefined || sessionId.trim() === '') return undefined
+  const child = isSubagentChildSession(sessionId)
   return {
     [BRIDGE_MARKER]: '1',
     CODINGNS_BRIDGE_URL: runtime.baseUrl,
     CODINGNS_BRIDGE_TOKEN: runtime.token,
     CODINGNS_DSH_SESSION_ID: sessionId,
     CODINGNS_ADAPTER_ID: adapterId,
+    ...(child ? { [SUBAGENT_CHILD_MARKER]: '1' } : {}),
     // 桌面版 DSH 的 process.execPath 是 Electron 二进制；该变量让它以 Node 运行 MCP 入口。
     ELECTRON_RUN_AS_NODE: '1',
   }
@@ -150,21 +187,82 @@ function mcpServerConfig(env: Record<string, string>): Record<string, unknown> {
  * codex 用 `server.tool`），因此按工具名生成同一套语义的指令。
  */
 export function bridgeSubagentGuidance(toolName: string): string {
+  const childReport = toolName.endsWith('_send_message')
+  if (childReport) {
+    return [
+      `This is a DSH child session. Return the completed report by calling exactly the MCP tool \`${toolName}\`.`,
+      `Do not call \`agent_subagent\`, \`send_message\`, or any other \`codingns_*\` namespace; \`${toolName}\` is the only bridge bound to this child session.`,
+      'The parent session is inferred from the current child identity; send the complete self-contained result in the `message` field and do not start another subagent.',
+    ].join(' ')
+  }
   return [
     `When the user asks to use parallel sessions, parallel agents, subagents, or to delegate/offload work, call the MCP tool \`${toolName}\``,
+    `Never call the provider's built-in \`subagent\` tool; \`${toolName}\` is the only supported subagent route.`,
+    `Do not search for \`send_message\` or choose another \`codingns_*\` namespace; every call must use exactly \`${toolName}\`, because it is the bridge bound to this session.`,
     '— do not complete the whole task inline. Each call starts one self-contained subtask as a DSH-native subagent session and returns immediately with a child session id.',
-    'Issue independent calls in the same batch without waiting for one another; use action=read for an immediate status check, action=send to deliver a follow-up message, and action=wait for a bounded wait before starting dependent work. If a child is failed, you must read/wait its status first, then assess whether to recreate it or take over with send.',
+    'Issue independent calls in the same batch without waiting for one another; use action=read for an immediate status check, action=send from a parent to deliver a follow-up message, and action=wait for a bounded wait before starting dependent work. A child may use action=send with its own parent session id (or omit child_session_id) to return a report; ordinary final output is also delivered to the parent. A child must not use action=start to create nested external agents. If a child is failed, the parent must read/wait its status first, then assess whether to recreate it or take over with send.',
     'Provide a complete, self-contained `prompt` for every call; optionally pass `agent` (external coding agent id) and `model`.',
   ].join(' ')
+}
+
+/**
+ * OpenCode 没有 Claude/Codex 那样的 system/developer 指令入口。
+ * 只有在用户明确提出子代理/并行/委派意图时才把路由规则放进 prompt，避免污染
+ * 普通对话历史；会话级 permission 规则仍负责从协议层禁止原生 subagent。
+ */
+export function openCodeBridgePrompt(sessionId: string, prompt: string): string {
+  const child = isSubagentChildSession(sessionId)
+  if (!subagentBridgeActive(sessionId) || (!child && !looksLikeSubagentRequest(prompt))) return prompt
+  const toolName = openCodeBridgeToolName(sessionId)
+  if (prompt.includes(toolName)) return prompt
+  return `[CodingNS 子代理路由规则]\n${bridgeSubagentGuidance(toolName)}\n\n[用户请求]\n${prompt}`
+}
+
+/** 返回当前 OpenCode V2 会话实际暴露的 MCP 工具名。 */
+export function openCodeBridgeToolName(sessionId: string): string {
+  return `${openCodeBridgeServerName(sessionId)}_${isSubagentChildSession(sessionId) ? 'send_message' : 'agent_subagent'}`
+}
+
+/**
+ * OpenCode V2 的 `/api/experimental/mcp/:server` 是按服务和目录共享的全局配置。
+ * 父子 DSH 会话若共用固定的 `codingns`，子会话注册时会覆盖父会话的环境变量，
+ * 父会话后续调用就会携带 child ID，最终被错误判为嵌套代理。用稳定短哈希隔离
+ * server name，同时避免把完整本地会话 ID写进 OpenCode 配置。
+ */
+function openCodeBridgeServerName(sessionId: string): string {
+  let hash = 2166136261
+  for (const char of sessionId.trim()) {
+    hash ^= char.codePointAt(0) ?? 0
+    hash = Math.imul(hash, 16777619)
+  }
+  return `codingns_${(hash >>> 0).toString(16).padStart(8, '0')}`
+}
+
+function looksLikeSubagentRequest(prompt: string): boolean {
+  return /(?:并行|子代理|子\s*Agent|subagent|delegate|delegat(?:e|ion)|委派|agent\s*team|parallel\s+(?:agent|session))/iu.test(prompt)
 }
 
 function isSubagentChildSession(sessionId: string): boolean {
   if (sessionId === '') return false
   try {
-    return getAdapterRegistry()?.sessionRecords?.get(sessionId)?.origin === 'subagent'
+    const registry = getAdapterRegistry()
+    const nativeHeader = asRecord(asRecord(registry?.nativeSession(sessionId))?.header)
+    if (nativeHeader !== undefined) {
+      const parentSessionId = typeof nativeHeader.parentSession === 'string' ? nativeHeader.parentSession.trim() : ''
+      return nativeHeader.origin === 'subagent' && parentSessionId !== '' && parentSessionId !== sessionId
+    }
+    const record = registry?.sessionRecords?.get(sessionId)
+    const parentSessionId = record?.parentSessionId?.trim() ?? ''
+    // origin 单独存在不足以证明这是 child：旧索引在父会话绑定被复用时可能
+    // 残留 origin。必须同时有一个非空且不同于自身的直属父会话。
+    return record?.origin === 'subagent' && parentSessionId !== '' && parentSessionId !== sessionId
   } catch {
     return false
   }
+}
+
+function asRecord(value: unknown): Record<string, any> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, any> : undefined
 }
 
 /** 构造 Codex 的 `key=value` argv；Windows 的 shell 转义由进程层统一处理。 */

@@ -1,5 +1,5 @@
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
-import { dispatchNativeSubagent, nativeSubagentEventCursor, nativeSubagentFailureNeedsReview, nativeSubagentFailureReviewFields, readNativeSubagentLifecycle, reviewNativeSubagentFailure, sendNativeSubagentMessage, trackNativeSubagentFollowup, waitNativeSubagentLifecycle, type NativeParentAgent } from '../cli-adapters/native-subagent-dispatch.js'
+import { dispatchNativeSubagent, isNativeSubagentSession, nativeSubagentEventCursor, nativeSubagentFailureNeedsReview, nativeSubagentFailureReviewFields, nativeSubagentParentSessionId, readNativeSubagentLifecycle, reviewNativeSubagentFailure, sendNativeSubagentMessage, sendNativeSubagentParentMessage, trackNativeSubagentFollowup, waitNativeSubagentLifecycle, type NativeParentAgent } from '../cli-adapters/native-subagent-dispatch.js'
 import { getSingleDelegationTarget, isDelegationTargetAllowed } from '../cli-adapters/delegation-authorization.js'
 import { getNativeSubagents } from '../cli-adapters/native-subagent-holder.js'
 import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS, hasNativeSubagentStart } from '../cli-adapters/native-team-subagent.js'
@@ -39,8 +39,17 @@ export async function dispatchBridgeSubagent(
   if (parentAgent === undefined) {
     return bridgeFailure(`找不到会话对应的 DSH Agent: ${request.sessionId}`)
   }
-  const parentId = parentAgent.session?.header?.id ?? parentAgent.id ?? request.sessionId
+  // 桥接环境已经用 request.sessionId 绑定了调用方身份；不能改用 Agent 对象的
+  // 可变 header/id，否则子 Agent 创建期间的对象复用会把主会话误认成子会话。
+  const parentId = request.sessionId.trim()
+  if (parentId === '') return bridgeFailure('子代理桥接缺少当前会话 ID')
   const action = request.action ?? 'start'
+  const ownParentTarget = isNativeSubagentSession(deps.nativeSessions, parentId)
+    ? nativeSubagentParentSessionId(deps.nativeSessions, parentId)
+    : undefined
+  if (action === 'start' && ownParentTarget !== undefined) {
+    return bridgeFailure('当前会话禁止嵌套子代理：子会话只能通过 send 回传父会话报告')
+  }
   if (action === 'read' || action === 'wait') {
     const childSessionId = request.childSessionId?.trim() ?? ''
     const lifecycle = action === 'read'
@@ -51,11 +60,21 @@ export async function dispatchBridgeSubagent(
     return { ok: reviewed.status === 'completed', completed: reviewed.completed, status: reviewed.status, text: reviewed.text ?? '子代理尚未产生文本结果。', childSessionId: reviewed.childSessionId, ...(reviewed.error === undefined ? {} : { error: reviewed.error }), ...nativeSubagentFailureReviewFields(reviewed) }
   }
   if (action === 'send') {
-    const childSessionId = request.childSessionId?.trim() ?? ''
+    const requestedTargetId = request.childSessionId?.trim() ?? ''
+    const parentTarget = ownParentTarget
+    const message = (request.message ?? request.prompt).trim()
+    // 外部 CLI 子会话也可以把完整报告回传给自己的父会话。目标缺省时，或
+    // 显式传入登记的 parentSessionId 时，走受控的父消息注入，不把父会话当成 child 查找。
+    if (parentTarget !== undefined && (requestedTargetId === '' || requestedTargetId === parentTarget)) {
+      const sent = sendNativeSubagentParentMessage(deps.nativeSessions, parentId, message)
+      return sent.ok
+        ? { ok: true, completed: false, status: 'running', text: '子代理报告已回传父会话。', parentSessionId: sent.parentSessionId ?? parentTarget }
+        : bridgeFailure(sent.error ?? '父会话报告回传失败。')
+    }
+    const childSessionId = requestedTargetId
     const lifecycle = readNativeSubagentLifecycle(childSessionId)
     if (lifecycle === undefined || lifecycle.parentSessionId !== parentId) return bridgeFailure(`DELEGATE_CHILD_NOT_FOUND: 找不到父会话下的子会话：${childSessionId}`)
     const reviewed = reviewNativeSubagentFailure(childSessionId) ?? lifecycle
-    const message = (request.message ?? request.prompt).trim()
     const cursor = nativeSubagentEventCursor(deps.nativeSessions, childSessionId)
     const sent = await sendNativeSubagentMessage(native, { parentAgent, parentId, childSessionId, message })
     if (!sent.ok) return { ok: false, completed: false, status: 'failed', text: sent.error ?? '子代理消息发送失败。', childSessionId, error: sent.error ?? '子代理消息发送失败。', ...nativeSubagentFailureReviewFields(reviewed) }

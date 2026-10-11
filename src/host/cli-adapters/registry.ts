@@ -443,6 +443,12 @@ export class CodingNsCliAdapterRegistry {
     return this.sessionStore
   }
 
+  /** 读取宿主原生 Session；身份判断必须优先使用其 header。 */
+  nativeSession(sessionId: string): unknown | undefined {
+    try { return this.nativeSessions?.get(sessionId) }
+    catch { return undefined }
+  }
+
   getSession(sessionId: string): CodingNsCliSessionConfig {
     const session = this.sessions.get(sessionId)
     if (session !== undefined && (session.adapterId === 'dsh' || this.isEnabled(session.adapterId))) {

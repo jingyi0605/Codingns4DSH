@@ -9,6 +9,11 @@ const BRIDGE_URL = (process.env.CODINGNS_BRIDGE_URL ?? '').replace(/\/+$/u, '')
 const BRIDGE_TOKEN = process.env.CODINGNS_BRIDGE_TOKEN ?? ''
 const SESSION_ID = process.env.CODINGNS_DSH_SESSION_ID ?? ''
 const ADAPTER_ID = process.env.CODINGNS_ADAPTER_ID ?? ''
+// OpenCode V2 会把同目录下的 MCP server 全部放进工具目录，子会话需要独立
+// 的回传工具名；其他 ACP/Claude/Codex 适配器仍兼容原有 agent_subagent schema。
+const IS_SUBAGENT_CHILD = process.env.CODINGNS_SUBAGENT_CHILD === '1' && ADAPTER_ID === 'opencode'
+/** 子会话只暴露回传工具，避免在多个历史 codingns_* 桥接间猜路由。 */
+const TOOL_NAME = IS_SUBAGENT_CHILD ? 'send_message' : 'agent_subagent'
 // MCP 客户端通常把单次 tools/call 限制在 300 秒左右。start 永远后台返回；
 // wait 也只做一次有界观察，超时后由模型再次调用 read/wait 继续轮询。
 const DISPATCH_TIMEOUT_MS = 260_000
@@ -22,8 +27,10 @@ interface JsonRpcRequest {
 }
 
 const TOOL_DEFINITION = {
-  name: 'agent_subagent',
-  description: 'Start external Agent subtasks asynchronously in independent DSH sessions. action=start returns immediately with child_session_id; action=send delivers a follow-up message; use action=read for an immediate status check or action=wait for a bounded wait (at most 240 seconds per call). A failed child must be inspected with read/wait before deciding whether to recreate or take over. Respect depends_on before starting dependent work.',
+  name: TOOL_NAME,
+  description: IS_SUBAGENT_CHILD
+    ? 'Report the completed result to the parent DSH session. This is the only supported child-to-parent report tool; do not search another codingns_* namespace. The parent session is inferred from the current child session, so child_session_id and agent_id are optional.'
+    : 'Start external Agent subtasks asynchronously in independent DSH sessions. action=start returns immediately with child_session_id; action=send normally delivers a follow-up message from parent to child, while a child session may use its own parent session id (or omit child_session_id) to report back to that parent. Child sessions cannot use action=start to create nested external agents; use action=send for the report. Use action=read for an immediate status check or action=wait for a bounded wait (at most 240 seconds per call). A failed child must be inspected with read/wait before deciding whether to recreate or take over. Respect depends_on before starting dependent work.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -34,7 +41,8 @@ const TOOL_DEFINITION = {
       subagent_type: { type: 'string', description: '子代理类型提示（explore/plan/general）。' },
       action: { type: 'string', enum: ['start', 'read', 'wait', 'send'] },
       run_in_background: { type: 'boolean', description: 'start 是否立即返回；缺省为 true。' },
-      child_session_id: { type: 'string' },
+      child_session_id: { type: 'string', description: '父代理发送时填子会话 ID；子代理回传时可填父会话 ID，也可省略。' },
+      agent_id: { type: 'string', description: '兼容父会话回传指令；子会话通常不需要填写，父会话由当前会话身份推导。' },
       message: { type: 'string', description: '发送给已创建子代理的后续消息；action=send 时必填。' },
       timeout_ms: { type: 'number' },
       depends_on: { type: 'array', items: { type: 'string' } },
@@ -103,7 +111,9 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
   const name = typeof record?.name === 'string' ? record.name : ''
   if (name !== TOOL_DEFINITION.name) return textResult(`未知工具: ${name}`, true)
   const args = asRecord(record?.arguments) ?? {}
-  const action = args.action === 'wait' || args.action === 'read' || args.action === 'send' ? args.action : 'start'
+  const action = IS_SUBAGENT_CHILD
+    ? 'send'
+    : args.action === 'wait' || args.action === 'read' || args.action === 'send' ? args.action : 'start'
   const prompt = typeof args.prompt === 'string' ? args.prompt : ''
   const message = typeof args.message === 'string' ? args.message : ''
   if (action === 'start' && prompt.trim() === '') return textResult('start 操作的 prompt 不能为空', true)
@@ -119,7 +129,11 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
         action,
         ...(message.trim() === '' ? {} : { message }),
         ...(action === 'start' ? { runInBackground: args.run_in_background !== false } : {}),
-        ...(typeof args.child_session_id === 'string' && args.child_session_id.trim() !== '' ? { childSessionId: args.child_session_id.trim() } : {}),
+        ...(typeof args.child_session_id === 'string' && args.child_session_id.trim() !== ''
+          ? { childSessionId: args.child_session_id.trim() }
+          : typeof args.agent_id === 'string' && args.agent_id.trim() !== ''
+            ? { childSessionId: args.agent_id.trim() }
+            : {}),
         ...(Array.isArray(args.depends_on) ? { dependsOn: args.depends_on.filter((item): item is string => typeof item === 'string' && item.trim() !== '').map((item) => item.trim()) } : {}),
         ...(action === 'wait' ? { timeoutMs: boundedWaitTimeout(args.timeout_ms) } : {}),
         ...(typeof args.agent === 'string' && args.agent.trim() !== '' ? { agent: args.agent.trim() } : { agent: ADAPTER_ID }),
@@ -169,6 +183,7 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
       ...(typeof payload.status === 'string' ? { status: payload.status } : {}),
       ...(typeof payload.completed === 'boolean' ? { completed: payload.completed } : {}),
       ...(typeof payload.childSessionId === 'string' ? { childSessionId: payload.childSessionId } : {}),
+      ...(typeof payload.parentSessionId === 'string' ? { parentSessionId: payload.parentSessionId } : {}),
       ...(typeof payload.messageId === 'string' ? { messageId: payload.messageId } : {}),
       ...(typeof payload.toolCalls === 'number' ? { toolCalls: payload.toolCalls } : {}),
       ...(typeof payload.failureReviewed === 'boolean' ? { failureReviewed: payload.failureReviewed } : {}),

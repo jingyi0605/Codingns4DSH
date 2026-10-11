@@ -2,9 +2,9 @@
  * Command Code 托管 mod：把内建 `agent` 工具调用转投给 DSH 原生子代理。
  *
  * 由驱动以 `--mod <path>` 每次运行加载；桥接配置（地址/令牌/会话）从进程环境
- * 读取。Command Code 会话始终注入本 Mod；桥接父会话拿到派发端点，桥接子会话
- * 只注入禁用标记，不允许继续创建嵌套外部 Agent。桥接不可用时也必须阻断原生
- * agent，避免静默回退。
+ * 读取。Command Code 会话始终注入本 Mod；桥接父、子会话都拿到派发端点，子
+ * 会话通过标记禁止继续创建嵌套外部 Agent，但可以使用 send 回传父会话。桥接
+ * 不可用时也必须阻断原生 agent，避免静默回退。
  *
  * 桥接已配置但派发失败时**不再静默回退**：过去返回 undefined 会让 CLI 悄悄改用
  * 内建子代理，父会话与界面都看不出「托管失败」，实测中表现为「界面只有 5 个
@@ -66,7 +66,7 @@ export default function codingNsSubagentMod(cmd: ModApiLike): void {
   cmd.addTool?.({
     schema: {
       name: 'agent_subagent',
-      description: '通过 CodingNS DSH 桥接异步创建外部 Agent 子会话，并用 read/wait/send 跟踪。',
+      description: '通过 CodingNS DSH 桥接异步创建外部 Agent 子会话，并用 read/wait/send 跟踪；子会话可用自己的 parent session id 回传报告，且不能再次 start 创建嵌套子代理。',
       input_schema: {
         type: 'object',
         properties: {
@@ -77,7 +77,7 @@ export default function codingNsSubagentMod(cmd: ModApiLike): void {
           subagent_type: { type: 'string', description: '子代理类型提示。' },
           action: { type: 'string', enum: ['start', 'read', 'wait', 'send'] },
           run_in_background: { type: 'boolean' },
-          child_session_id: { type: 'string' },
+          child_session_id: { type: 'string', description: '父代理发送时填子会话 ID；子代理回传时可填父会话 ID，也可省略。' },
           message: { type: 'string' },
           timeout_ms: { type: 'number' },
           depends_on: { type: 'array', items: { type: 'string' } },
@@ -222,6 +222,7 @@ async function dispatchRequest(baseUrl: string, token: string, request: BridgeRe
       readonly status?: unknown
       readonly completed?: unknown
       readonly childSessionId?: unknown
+      readonly parentSessionId?: unknown
       readonly text?: unknown
       readonly toolCalls?: unknown
       readonly error?: unknown
@@ -241,6 +242,7 @@ async function dispatchRequest(baseUrl: string, token: string, request: BridgeRe
         ...(typeof payload.status === 'string' ? { status: payload.status } : {}),
         ...(typeof payload.completed === 'boolean' ? { completed: payload.completed } : {}),
         ...(typeof payload.childSessionId === 'string' ? { childSessionId: payload.childSessionId } : {}),
+        ...(typeof payload.parentSessionId === 'string' ? { parentSessionId: payload.parentSessionId } : {}),
         ...(typeof payload.toolCalls === 'number' ? { toolCalls: payload.toolCalls } : {}),
         text,
         ...(typeof payload.error === 'string' && payload.error.trim() !== '' ? { error: payload.error } : {}),

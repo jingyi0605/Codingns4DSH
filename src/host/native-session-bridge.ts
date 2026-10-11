@@ -164,6 +164,8 @@ export interface CodingNsNativeSessionBridge {
   canInjectNextStep?(sessionId: string): boolean
   /** 在当前 Agent turn 的下一个合法 step 注入插件上下文，不唤醒空闲 Agent。 */
   injectNextStep?(sessionId: string, summary?: string): boolean
+  /** 向指定原生会话投递完整用户消息；用于子代理把报告回传父会话。 */
+  injectMessage?(sessionId: string, message: string): boolean
   /** 使用 DSH 原生 approval 组件请求一次权限决定；服务不可用时拒绝。 */
   requestApproval?(sessionId: string, request: CodingNsNativeApprovalRequest): Promise<CodingNsNativeApprovalOutcome>
   /** 使用 DSH 原生 userQuestions 组件提问；服务不可用或取消时返回 null。 */
@@ -529,6 +531,52 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     const agent = nativeAgent(ctx, sessionId)
     return agent !== null && typeof (agent as { inject?: unknown }).inject === 'function'
   }
+  const injectNativeMessage = (sessionId: string, message: string): boolean => {
+    const agent = nativeAgent(ctx, sessionId)
+    const text = message.trim()
+    if (agent === null || text === '') return false
+    injectedStepSequence += 1
+    const boundedMessage = text.slice(0, 256 * 1024)
+    const producerOwned = usesProducerOwnedSource(appendableSession(store?.get(sessionId)))
+    const report = {
+      id: `codingns-subagent-report-${injectedStepSequence}-${randomUUID()}`,
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: boundedMessage }],
+      source: producerOwned
+        ? { kind: 'model-selection' as const, form: 'subagent-report', summary: boundedMessage.slice(0, 120) }
+        : { kind: 'plugin' as const, plugin: 'codingns4dsh', form: 'subagent-report', summary: boundedMessage.slice(0, 120) },
+    }
+    const native = agent as {
+      readonly status?: unknown
+      steer?: (message: unknown) => void
+      followup?: (message: unknown) => void
+      inject?: (message: unknown) => void
+    }
+    // 报告是父会话真正要处理的输入，必须进入可唤醒的原生 inbox。旧实现
+    // 一律调用 inject()，并在 next-step 已有消息时直接返回 false；并行子代理
+    // 几乎必然会触发这个条件，于是只有第一个报告能送达。对齐 DSH 原生
+    // subagent settlement 语义：运行中的父会话 steer，空闲父会话 followup，
+    // 仅在旧宿主没有这两个 API 时退回不可唤醒的 inject。
+    const hasPendingStep = hasPendingNativeNextStep(agent)
+    const deliver = native.status === 'idle' && !hasPendingStep
+      ? native.followup ?? native.steer ?? native.inject
+      : native.steer ?? native.followup ?? native.inject
+    if (typeof deliver !== 'function') return false
+    try {
+      if (on !== undefined) pendingStepTransitions.add(sessionId)
+      deliver.call(agent, report)
+      return true
+    } catch (error) {
+      pendingStepTransitions.delete(sessionId)
+      debugWarn('codingns4dsh: 子代理报告回传被拒绝', {
+        sessionId,
+        producerOwned,
+        sessionFormat: sessionFormat(appendableSession(store?.get(sessionId))),
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return false
+    }
+  }
 
   return {
     get available() {
@@ -589,6 +637,9 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     },
     injectNextStep(sessionId, summary) {
       return injectNativeNextStep(sessionId, summary)
+    },
+    injectMessage(sessionId, message) {
+      return injectNativeMessage(sessionId, message)
     },
     appendExternalToolEvent(sessionId, externalTool) {
       try {

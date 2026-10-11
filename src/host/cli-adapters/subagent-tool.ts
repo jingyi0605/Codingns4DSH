@@ -1,13 +1,13 @@
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { getNativeSubagents } from './native-subagent-holder.js'
 import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS, hasNativeSubagentStart } from './native-team-subagent.js'
-import { dispatchNativeSubagent, nativeSubagentEventCursor, NATIVE_SUBAGENT_TIMEOUT_MS, nativeSubagentFailureNeedsReview, nativeSubagentFailureReviewFields, readNativeSubagentLifecycle, reviewNativeSubagentFailure, sendNativeSubagentMessage, trackNativeSubagentFollowup, waitNativeSubagentLifecycle, type NativeParentAgent } from './native-subagent-dispatch.js'
+import { dispatchNativeSubagent, isNativeSubagentSession, nativeSubagentEventCursor, NATIVE_SUBAGENT_TIMEOUT_MS, nativeSubagentFailureNeedsReview, nativeSubagentFailureReviewFields, nativeSubagentParentSessionId, readNativeSubagentLifecycle, reviewNativeSubagentFailure, sendNativeSubagentMessage, sendNativeSubagentParentMessage, trackNativeSubagentFollowup, waitNativeSubagentLifecycle, type NativeParentAgent } from './native-subagent-dispatch.js'
 import { getDelegationModel, isDelegationTargetAllowed } from './delegation-authorization.js'
 
 export function createAgentSubagentTool(options: { readonly nativeSessions?: CodingNsNativeSessionBridge | undefined } = {}): Record<string, unknown> {
   return {
     name: 'agent_subagent',
-    description: '异步并行执行外部 Agent 子任务。action=start 默认立即返回 child session；action=wait 等待指定 child session 终态；action=read 读取当前状态和结果。failed 子代理必须先 read/wait 查看并评估是否重新创建或接管；需要同步等待时显式传 run_in_background=false；依赖步骤必须先 wait/read 前置会话。',
+    description: '异步并行执行外部 Agent 子任务。action=start 默认立即返回 child session；action=wait 等待指定 child session 终态；action=read 读取当前状态和结果；父代理用 action=send 向子代理补充指令，子代理可用自己的 parent session id（或省略 child_session_id）把报告回传父代理，子代理不能再次 start 创建嵌套代理。failed 子代理必须先 read/wait 查看并评估是否重新创建或接管；需要同步等待时显式传 run_in_background=false；依赖步骤必须先 wait/read 前置会话。',
     parameters: {
       type: 'object',
       properties: {
@@ -17,7 +17,7 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
       cwd: { type: 'string', description: '子代理的起始目录；相对路径相对父会话当前目录解析，缺省继承父会话目录。仅在 DSH 0.2.1-alpha.2 及以上生效。' },
       run_in_background: { type: 'boolean' },
       action: { type: 'string', enum: ['start', 'read', 'wait', 'send'] },
-      child_session_id: { type: 'string' },
+      child_session_id: { type: 'string', description: '父代理发送时填子会话 ID；子代理回传时可填父会话 ID，也可省略。' },
       message: { type: 'string', description: '发送给已创建子代理的后续消息。' },
       timeout_ms: { type: 'number' },
       depends_on: { type: 'array', items: { type: 'string' } },
@@ -47,6 +47,12 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
       // 目标目录只做去空白；相对路径由 DSH 相对父级当前目录解析，本地不拼接。
       const cwd = typeof args.cwd === 'string' && args.cwd.trim() !== '' ? args.cwd.trim() : undefined
       if (parentId === undefined) throw new Error('DSH 原生 Subagent 缺少父会话身份')
+      const ownParentTarget = isNativeSubagentSession(options.nativeSessions, parentId)
+        ? nativeSubagentParentSessionId(options.nativeSessions, parentId)
+        : undefined
+      if (action === 'start' && ownParentTarget !== undefined) {
+        return { ok: false, status: 'failed', error: '当前会话禁止嵌套子代理：子会话只能通过 send 回传父会话报告' }
+      }
       if (action === 'read') {
         const lifecycle = readNativeSubagentLifecycle(childSessionId)
         if (lifecycle === undefined || lifecycle.parentSessionId !== parentId) {
@@ -65,7 +71,17 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
       }
       if (action === 'send') {
         const message = typeof args.message === 'string' ? args.message.trim() : prompt
-        if (native === undefined || parentAgent === undefined || options.nativeSessions === undefined) throw new Error('DSH 原生 Subagent 能力不可用，当前 Host 未提供可续子会话')
+        if (parentAgent === undefined || options.nativeSessions === undefined) throw new Error('DSH 原生 Subagent 能力不可用，当前 Host 未提供可续子会话')
+        // 子代理回传父会话时，调用方身份就是当前 child session；目标只能是
+        // 该 child 的生命周期 parentSessionId，不能接受任意会话 ID，避免越权注入。
+        const parentTarget = ownParentTarget
+        if (parentTarget !== undefined && (childSessionId === '' || childSessionId === parentTarget)) {
+          const sent = sendNativeSubagentParentMessage(options.nativeSessions, parentId, message)
+          return sent.ok
+            ? { ok: true, status: 'running', completed: false, parentSessionId: sent.parentSessionId ?? parentTarget, result: '子代理报告已回传父会话。' }
+            : { ok: false, status: 'failed', parentSessionId: parentTarget, error: sent.error ?? '父会话报告回传失败。' }
+        }
+        if (native === undefined) throw new Error('DSH 原生 Subagent 能力不可用，当前 Host 未提供可续子会话')
         const lifecycle = readNativeSubagentLifecycle(childSessionId)
         if (lifecycle === undefined || lifecycle.parentSessionId !== parentId) {
           return { ok: false, status: 'failed', error: `DELEGATE_CHILD_NOT_FOUND: 找不到父会话下的子会话：${childSessionId}` }

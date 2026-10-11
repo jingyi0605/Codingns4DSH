@@ -1,5 +1,6 @@
 import { DEFAULT_SUBAGENT_BRIDGE_SETTINGS } from '../../shared/contracts/config.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
+import { getAdapterRegistry } from './registry-holder.js'
 import { externalTeamProvider, startNativeSubagent, withTeamSubagentSelection, type NativeSubagentService } from './native-team-subagent.js'
 
 /** 同步子代理首轮的最长等待时间；后台任务不会把这个预算绑定到调用方。 */
@@ -98,6 +99,10 @@ export interface NativeSubagentMessageResult {
   readonly error?: string | undefined
 }
 
+/** 同一父会话在短时间内收到相同报告时只保留第一次注入。 */
+const parentReportDeduplication = new Map<string, number>()
+const PARENT_REPORT_DEDUPLICATION_MS = 10 * 60_000
+
 /** 向已创建的直接子代理发送后续消息，使用 DSH 原生 sendMessage 的父身份校验。 */
 export async function sendNativeSubagentMessage(
   service: NativeSubagentService,
@@ -130,6 +135,99 @@ export async function sendNativeSubagentMessage(
       error: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+/** 子代理向自己的父会话回传完整报告；目标只能由受控会话身份推导。 */
+export function sendNativeSubagentParentMessage(
+  sessions: CodingNsNativeSessionBridge,
+  childSessionId: string,
+  message: string,
+): { readonly ok: boolean; readonly parentSessionId?: string; readonly duplicate?: boolean; readonly error?: string } {
+  const child = childSessionId.trim()
+  const text = message.trim()
+  const target = nativeSubagentParentSessionId(sessions, child) ?? ''
+  if (child === '' || target === '' || text === '') return { ok: false, error: '子会话必须已登记父会话，且回传内容不能为空。' }
+  if (typeof sessions.injectMessage !== 'function') {
+    return { ok: false, error: '当前 DSH 未提供父会话消息注入能力。' }
+  }
+  const now = Date.now()
+  for (const [key, timestamp] of parentReportDeduplication) {
+    if (now - timestamp >= PARENT_REPORT_DEDUPLICATION_MS) parentReportDeduplication.delete(key)
+  }
+  // OpenCode V2 会把同一目录下的多个 MCP server 都暴露给子会话。模型
+  // 误选多个命名空间时，所有请求最终会落到这里；以父会话和报告正文做短期
+  // 幂等键，避免同一份报告被追加多次，同时保留不同子代理的不同报告。
+  const deduplicationKey = `${target}\u0000${text}`
+  const previous = parentReportDeduplication.get(deduplicationKey)
+  if (previous !== undefined && now - previous < PARENT_REPORT_DEDUPLICATION_MS) {
+    return { ok: true, parentSessionId: target, duplicate: true }
+  }
+  try {
+    if (!sessions.injectMessage(target, text)) return { ok: false, error: '父会话当前不可接收子代理报告，请稍后重试。' }
+    parentReportDeduplication.set(deduplicationKey, now)
+    return { ok: true, parentSessionId: target }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * 当前会话是否由 DSH 原生子代理创建。
+ *
+ * 生命周期表只记录“被创建的子任务”，不能用来判断调用方身份：主会话可能
+ * 同时拥有很多子任务，且进程重启/ID 复用时还可能出现同名状态。身份必须以
+ * 会话索引或原生 Session header 的 origin 为准。
+ */
+export function isNativeSubagentSession(
+  sessions: CodingNsNativeSessionBridge | undefined,
+  sessionId: string,
+): boolean {
+  const id = sessionId.trim()
+  if (id === '') return false
+  // 原生 Session header 是宿主真正创建子会话时写入的身份来源，优先级高于
+  // Registry：第一次并行 start 期间 Registry 可能短暂复用父 Agent 的记录，
+  // 不能因为这个可恢复索引把仍然带有主会话 header 的调用方判成 child。
+  let session: unknown
+  try { session = sessions?.get(id) }
+  catch { session = undefined }
+  const header = asRecord(asRecord(session)?.header)
+  if (header !== undefined) {
+    return header.origin === 'subagent'
+      && typeof header.parentSession === 'string'
+      && header.parentSession.trim() !== ''
+      && header.parentSession.trim() !== id
+  }
+  let stored: { readonly origin?: string; readonly parentSessionId?: string } | undefined
+  try { stored = getAdapterRegistry()?.sessionRecords?.get(id) }
+  catch { stored = undefined }
+  const storedParent = stored?.parentSessionId?.trim() ?? ''
+  return stored?.origin === 'subagent' && storedParent !== '' && storedParent !== id
+}
+
+/** 从受控会话索引、原生 header 或运行时生命周期表读取直属父会话。 */
+export function nativeSubagentParentSessionId(
+  sessions: CodingNsNativeSessionBridge | undefined,
+  sessionId: string,
+): string | undefined {
+  const id = sessionId.trim()
+  if (id === '') return undefined
+  let session: unknown
+  try { session = sessions?.get(id) }
+  catch { session = undefined }
+  const header = asRecord(asRecord(session)?.header)
+  const headerParent = typeof header?.parentSession === 'string' ? header.parentSession.trim() : ''
+  if (header !== undefined) {
+    return header.origin === 'subagent' && headerParent !== '' && headerParent !== id
+      ? headerParent
+      : undefined
+  }
+  let stored: { readonly origin?: string; readonly parentSessionId?: string } | undefined
+  try { stored = getAdapterRegistry()?.sessionRecords?.get(id) }
+  catch { stored = undefined }
+  const storedParent = stored?.parentSessionId?.trim() ?? ''
+  if (stored?.origin === 'subagent' && storedParent !== '' && storedParent !== id) return storedParent
+  const lifecycleParent = lifecycleStates.get(id)?.parentSessionId.trim()
+  return lifecycleParent === '' || lifecycleParent === id ? undefined : lifecycleParent
 }
 
 /** 读取子会话当前事件游标；后续 follow-up 只消费游标之后的新一轮。 */

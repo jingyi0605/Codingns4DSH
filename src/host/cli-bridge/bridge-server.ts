@@ -29,6 +29,7 @@ export interface SubagentBridgeDispatchResult {
   readonly status?: 'creating' | 'running' | 'completed' | 'failed' | 'interrupted' | undefined
   readonly text: string
   readonly childSessionId?: string | undefined
+  readonly parentSessionId?: string | undefined
   readonly messageId?: string | undefined
   readonly toolCalls?: number | undefined
   readonly failureReviewed?: boolean | undefined
