@@ -15,9 +15,13 @@ import { buildOpenCodeAttachmentParts } from './attachment-utils.js'
 import { isProviderDefaultModel } from './model-catalog.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { serializeToolValue } from './tool-observation.js'
+import { openCodeBridgeMcpConfig, openCodeBridgePrompt } from '../cli-bridge/injections.js'
 import { setTimeout as delay } from 'node:timers/promises'
 
 type RecordValue = Record<string, any>
+const OPENCODE_NATIVE_SUBAGENT_DENY = [
+  { action: 'subagent', resource: '*', effect: 'deny' },
+] as const
 interface TurnTarget {
   readonly server: string
   readonly providerSessionId: string
@@ -132,6 +136,20 @@ export class OpenCodeV2Protocol {
 
   async *executeTurn(server: string, input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     input.signal?.throwIfAborted()
+    // OpenCode V2 不支持 ACP/Codex 的启动参数注入。每轮在目标目录注册当前
+    // DSH 会话专属的 CodingNS MCP server，随后用 session permission 拒绝原生
+    // subagent，避免模型在工具列表同时看到两个语义相同但生命周期不同的入口。
+    const bridge = openCodeBridgeMcpConfig(input.sessionId, 'opencode')
+    // 原生 subagent 永远禁止；桥接关闭时也不能静默回退到 OpenCode 自己的
+    // Agent。这样用户要么使用 CodingNS 托管工具，要么得到明确的权限拒绝。
+    const permissions = bridge === undefined
+      ? OPENCODE_NATIVE_SUBAGENT_DENY
+      : [...OPENCODE_NATIVE_SUBAGENT_DENY, { action: bridge.toolName, resource: '*', effect: 'allow' }]
+    if (bridge !== undefined) {
+      await this.request(server, locationPath(`/api/experimental/mcp/${encodeURIComponent(bridge.serverName)}`, input.cwd), {
+        config: bridge.config,
+      }, input.signal, 'PUT')
+    }
     const { catalog, models } = await this.modelCatalog(server, input.cwd, input.signal, isProviderDefaultModel(input.modelId) ? undefined : input.modelId)
     const selected = selectModel(models, isProviderDefaultModel(input.modelId) ? catalog.currentModel : input.modelId)
     const model = selected === undefined ? undefined : {
@@ -149,6 +167,7 @@ export class OpenCodeV2Protocol {
     if (id === undefined) {
       const session = record(await this.request(server, '/api/session', {
         title: input.sessionId, ...(model === undefined ? {} : { model }),
+        permissions,
         // V2 的目录在 location 里，不能继续传 V1 的 directory 或 query 参数。
         location: { directory: input.cwd?.trim() || process.cwd() },
       }, input.signal))
@@ -157,6 +176,11 @@ export class OpenCodeV2Protocol {
     } else if (model !== undefined) {
       // V2 prompt 不接受 model/variant，续聊必须先更新会话选择。
       await this.request(server, sessionPath(id, '/model'), { model }, input.signal)
+    }
+    if (permissions !== undefined && !created) {
+      // 旧会话是在桥接开启前创建的，必须显式补写权限；否则 OpenCode 仍会
+      // 继续执行它自己的 subagent，即使 MCP server 已经成功注册。
+      await this.request(server, sessionPath(id!), { permissions }, input.signal, 'PATCH')
     }
     this.sessions.set(input.sessionId, { server, id: id! })
     const target: TurnTarget = { server, providerSessionId: id!, controller: new AbortController(), forms: new Map() }
@@ -193,20 +217,22 @@ export class OpenCodeV2Protocol {
         const event = decodeEvent(next.value)
         if (event === null) continue
         if (event.type === 'effect/httpapi/stream/failure') throw new Error('OpenCode V2 事件流发生传输错误')
-        const data = record(event.data)
-        const form = record(data?.form)
+        const data = record(event.data) ?? {}
+        const form = record(data.form)
         // V2 所有业务事件都有所属会话；严格排除其他会话与无主事件。
         if ((data?.sessionID ?? form?.sessionID) !== id) continue
-        const chunk = event.type === 'form.created' && form !== null
-          ? this.formQuestion(target, form)
-          : projector.project(event.type, data!)
-        if (chunk === null) continue
-        if (chunk.type === 'finish') {
-          await send
-          if (sendError !== undefined) throw sendError
-          finished = true
+        const chunks = event.type === 'form.created' && form !== null
+          ? singleEvent(this.formQuestion(target, form))
+          : projector.projectMany(event.type, data)
+        for (const chunk of chunks) {
+          if (chunk.type === 'finish') {
+            await send
+            if (sendError !== undefined) throw sendError
+            finished = true
+          }
+          yield chunk
+          if (finished) break
         }
-        yield chunk
         if (finished) break
       }
       await send
@@ -227,8 +253,9 @@ export class OpenCodeV2Protocol {
 
   private async sendPrompt(target: TurnTarget, input: CodingNsCliTurnInput): Promise<void> {
     const attachments = await buildOpenCodeAttachmentParts(input.attachments ?? [])
+    const promptText = openCodeBridgePrompt(input.sessionId, input.prompt)
     const body: RecordValue = {
-      text: input.prompt,
+      text: promptText,
       ...(attachments.length === 0 ? {} : { files: attachments.map((part) => ({ uri: part.url, name: part.filename })) }),
     }
     const mention = input.prompt.match(/^\s*[/$]([A-Za-z0-9][A-Za-z0-9._:-]*)(?:\s+([\s\S]*))?$/u)
@@ -238,7 +265,9 @@ export class OpenCodeV2Protocol {
       if (skill !== undefined) {
         // V2 已有独立的 Skill 引用，不再借用同名 command 展开模板。
         body.skills = [{ id: skill.id }]
-        body.text = mention[2] ?? ''
+        // Skill 引用会重写正文，必须再次应用子代理路由规则，否则
+        // `/skill 请并行处理` 会绕过上面的 prompt 注入。
+        body.text = openCodeBridgePrompt(input.sessionId, mention[2] ?? '')
       }
     }
     await this.request(target.server, sessionPath(target.providerSessionId, '/prompt'), body, target.controller.signal)
@@ -311,9 +340,15 @@ export class OpenCodeV2Protocol {
     return target
   }
 
-  private async request(server: string, path: string, body?: RecordValue, signal?: AbortSignal): Promise<unknown> {
+  private async request(
+    server: string,
+    path: string,
+    body?: RecordValue,
+    signal?: AbortSignal,
+    method = 'POST',
+  ): Promise<unknown> {
     const response = await this.http.json(`${server}${path}`, {
-      ...(body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+      ...(body === undefined ? {} : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
       ...(signal === undefined ? {} : { signal }),
     })
     if (response.status < 200 || response.status >= 300) throw new Error(`OpenCode V2 请求失败（HTTP ${response.status}）：${errorDetail(response.data)}`)
@@ -329,57 +364,177 @@ export class OpenCodeV2Protocol {
 class OpenCodeV2Events {
   private readonly lengths = new Map<string, number>()
   private readonly tools = new Map<string, { name: string; input: string }>()
+  private pendingToolResults: CodingNsAgentEvent[] = []
+  private activeTextMessageId: string | undefined
+  private activeReasoningMessageId: string | undefined
   constructor(private readonly contextWindow: number | undefined) {}
 
   project(type: string, data: RecordValue): CodingNsAgentEvent | null {
-    if (/^session\.(text|reasoning)\.(delta|ended)$/u.test(type)) return this.text(type, data)
-    if (type.startsWith('session.tool.')) return this.tool(type, data)
-    if (type === 'session.step.ended' || type === 'session.step.failed') return this.usage(data)
-    if (type === 'permission.asked') return {
-      type: 'permission-request', requestId: data.id, kind: data.action, toolName: data.action,
-      ...(data.source?.type === 'tool' && typeof data.source.id === 'string' ? { callId: data.source.id } : {}),
-      detail: [data.message, serializeToolValue(data.resources), serializeToolValue(data.metadata)].filter(Boolean).join('\n'),
+    return this.projectMany(type, data)[0] ?? null
+  }
+
+  projectMany(type: string, data: RecordValue): readonly CodingNsAgentEvent[] {
+    type = canonicalEventType(type)
+    if (/^session\.(text|reasoning)\.(delta|ended)$/u.test(type)) {
+      return [...this.flushPendingToolResults(), ...this.text(type, data)]
     }
-    if (type === 'session.execution.succeeded') return { type: 'finish', reason: 'stop' }
-    if (type === 'session.execution.interrupted') return { type: 'finish', reason: 'cancel' }
-    if (type === 'session.execution.failed') return { type: 'finish', reason: 'error', failure: { message: errorDetail(data.error) } }
-    if (type === 'session.compaction.started') return { type: 'context-compaction', phase: 'start', provider: 'opencode' }
-    if (type === 'session.compaction.ended' || type === 'session.compaction.failed') return {
+    if (type.startsWith('session.tool.')) {
+      // 某些 V2 事件流没有发送 text/reasoning.ended，直接进入工具事件。先关闭
+      // 正文块，避免工具结果和前一段 AI 输出被 DSH 合成同一条消息。
+      const boundaries = this.closeActiveMessages()
+      const tool = this.tool(type, data)
+      if (tool?.type === 'tool-event' && (tool.status === 'completed' || tool.status === 'failed')) {
+        // step.ended 紧随工具终态之后才携带 usage。暂存 completed，避免
+        // Registry 过早切 step，把本步结算写进下一步。
+        this.pendingToolResults.push(tool)
+        return [...boundaries]
+      }
+      return [...boundaries, ...singleEvent(tool)]
+    }
+    // V2 的 shell 事件是工具执行过程的附加快照。真正的工具终态仍由
+    // session.tool.success/failed 给出，这里只补齐命令和实时输出，避免同一
+    // 调用被提前结算两次。
+    if (type === 'session.shell.started') return singleEvent(this.shell(type, data))
+    if (type === 'session.shell.ended') return singleEvent(this.shell(type, data))
+    if (type === 'session.step.ended' || type === 'session.step.failed') {
+      return [...singleEvent(this.usage(data)), ...this.flushPendingToolResults()]
+    }
+    if (type === 'permission.asked') {
+      const callId = sourceCallId(data.source) ?? stringValue(data.callID) ?? stringValue(data.callId)
+      return [{
+        type: 'permission-request', requestId: stringValue(data.id) ?? '', kind: stringValue(data.action) ?? 'permission', toolName: stringValue(data.action) ?? 'permission',
+        ...(callId === undefined ? {} : { callId }),
+        detail: [data.message, serializeToolValue(data.resources), serializeToolValue(data.metadata)].filter(Boolean).join('\n'),
+      }]
+    }
+    if (type === 'session.execution.succeeded') return [...this.flushPendingToolResults(), { type: 'finish', reason: 'stop' }]
+    if (type === 'session.execution.interrupted') return [...this.flushPendingToolResults(), { type: 'finish', reason: 'cancel' }]
+    if (type === 'session.execution.failed') return [...this.flushPendingToolResults(), { type: 'finish', reason: 'error', failure: { message: errorDetail(data.error) } }]
+    if (type === 'session.compaction.started') return [{ type: 'context-compaction', phase: 'start', provider: 'opencode' }]
+    if (type === 'session.compaction.ended' || type === 'session.compaction.failed') return [{
       type: 'context-compaction', phase: 'end', provider: 'opencode',
       ...(typeof data.text === 'string' ? { summary: data.text } : {}),
       ...(data.error === undefined ? {} : { error: errorDetail(data.error) }),
-    }
-    return null
+    }]
+    return []
   }
 
-  private text(type: string, data: RecordValue): CodingNsAgentEvent | null {
+  private text(type: string, data: RecordValue): readonly CodingNsAgentEvent[] {
     const channel = type.split('.')[1]
-    const key = `${data.assistantMessageID}:${channel}:${data.ordinal}`
+    const messageId = stringValue(data.assistantMessageID) ?? stringValue(data.messageID) ?? ''
+    const partId = scalarString(data.ordinal) ?? stringValue(data.textID) ?? stringValue(data.reasoningID) ?? ''
+    const key = `${messageId}:${channel}:${partId}`
     const previous = this.lengths.get(key) ?? 0
     const value = type.endsWith('.delta') ? data.delta : data.text
-    if (typeof value !== 'string') return null
+    if (typeof value !== 'string') return []
+    const normalizedMessageId = messageId || `${channel}:${partId || 'default'}`
+    if (channel === 'reasoning') this.activeReasoningMessageId = normalizedMessageId
+    else this.activeTextMessageId = normalizedMessageId
     const text = type.endsWith('.delta') ? value : value.slice(previous)
     this.lengths.set(key, type.endsWith('.delta') ? previous + value.length : Math.max(previous, value.length))
-    if (!text) return null
-    return { type: channel === 'reasoning' ? 'reasoning-delta' : 'text-delta', text, messageId: data.assistantMessageID }
+    const chunks: CodingNsAgentEvent[] = text === '' ? [] : [{ type: channel === 'reasoning' ? 'reasoning-delta' : 'text-delta', text, ...(messageId === '' ? {} : { messageId }) }]
+    if (type.endsWith('.ended')) {
+      // V2 的 ended 事件可能只表示“快照已完整”，也可能携带最后一段文本。
+      // 两种情况下都必须显式关闭当前 assistant block，否则后续工具、usage
+      // 和最终结算会被 DSH 合并进同一条 assistant/message。
+      chunks.push({
+        type: 'message-boundary',
+        channel: channel === 'reasoning' ? 'reasoning' : 'text',
+        messageId: normalizedMessageId,
+      })
+      if (channel === 'reasoning') this.activeReasoningMessageId = undefined
+      else this.activeTextMessageId = undefined
+    }
+    return chunks
+  }
+
+  private closeActiveMessages(): readonly CodingNsAgentEvent[] {
+    const chunks: CodingNsAgentEvent[] = []
+    if (this.activeReasoningMessageId !== undefined) {
+      chunks.push({ type: 'message-boundary', channel: 'reasoning', messageId: this.activeReasoningMessageId })
+      this.activeReasoningMessageId = undefined
+    }
+    if (this.activeTextMessageId !== undefined) {
+      chunks.push({ type: 'message-boundary', channel: 'text', messageId: this.activeTextMessageId })
+      this.activeTextMessageId = undefined
+    }
+    return chunks
+  }
+
+  private flushPendingToolResults(): readonly CodingNsAgentEvent[] {
+    const pending = this.pendingToolResults
+    this.pendingToolResults = []
+    return pending
   }
 
   private tool(type: string, data: RecordValue): CodingNsAgentEvent | null {
-    const key = `${data.assistantMessageID}:${data.id}`
-    if (type === 'session.tool.input.started') this.tools.set(key, { name: data.name, input: '' })
-    const tool = this.tools.get(key)
-    if (tool === undefined) return null
-    if (type === 'session.tool.input.delta') { tool.input += data.delta; return null }
-    if (type === 'session.tool.input.ended') { tool.input = data.text; return null }
-    if (type === 'session.tool.called') tool.input = serializeToolValue(data.input) ?? tool.input
-    const output = records(data.content).map((part) => typeof part.text === 'string' ? part.text : serializeToolValue(part)).filter(Boolean).join('\n')
+    const callId = stringValue(data.callID) ?? stringValue(data.id)
+    const messageId = stringValue(data.assistantMessageID) ?? stringValue(data.messageID) ?? ''
+    if (callId === undefined) return null
+    const key = `${messageId}:${callId}`
+    const existing = this.tools.get(key)
+    if (type === 'session.tool.input.started') {
+      const name = stringValue(data.name) ?? stringValue(data.tool) ?? existing?.name ?? 'tool'
+      this.tools.set(key, { name, input: existing?.input ?? '' })
+    }
+    const tool = this.tools.get(key) ?? {
+      name: stringValue(data.tool) ?? stringValue(data.name) ?? 'tool', input: '',
+    }
+    this.tools.set(key, tool)
+    if (type === 'session.tool.input.delta' && typeof data.delta === 'string') {
+      // delta 只是半截 JSON，不能让下游原生组件提前创建不可更新的 tool-call。
+      tool.input += data.delta
+      return null
+    }
+    if (type === 'session.tool.input.ended' && typeof data.text === 'string') tool.input = data.text
+    if (type === 'session.tool.called') {
+      tool.name = stringValue(data.tool) ?? tool.name
+      // V2 的 input.ended 可能已经收到了完整参数，但随后 called 事件只带
+      // `{}`（Code Mode/部分 Provider 的异步汇聚路径会这样发）。空快照不能
+      // 覆盖已收集的流式 JSON，否则 DSH 原生 tool/call 最终只能显示 `{}`。
+      const calledInput = serializeToolValue(data.input)
+      if (calledInput !== undefined && (isEmptyToolInput(tool.input) || !isEmptyToolInput(calledInput))) {
+        tool.input = calledInput
+      }
+    }
+    if ((type === 'session.tool.progress' || type === 'session.tool.success' || type === 'session.tool.failed') && isEmptyToolInput(tool.input)) {
+      // OpenCode 的 write/edit 工具会把真实文件内容放在 success.metadata.diffs，
+      // Code Mode 的 execute 则把实际子工具调用放在 progress.metadata.toolCalls；
+      // 两者都可能让 input.ended/called 只留下 `{}`。先还原参数，再交给 DSH
+      // 原生投影器，否则调用卡片会在空参数阶段被永久落盘。
+      const recovered = recoverToolInput(tool.name, data.metadata ?? record(data.provider)?.metadata)
+      if (recovered !== undefined) tool.input = recovered
+    }
+    // `{}` 只是 OpenCode 的占位快照，不是可展示的调用参数；在真实参数抵达
+    // 前不要把它继续下游，否则原生 DSH 卡片会先固定为空对象。
+    const input = isEmptyToolInput(tool.input) ? undefined : tool.input
+    const output = toolOutput(data)
+    const status = type === 'session.tool.success' ? 'completed' : type === 'session.tool.failed' ? 'failed' : type === 'session.tool.input.started' ? 'started' : 'running'
     return {
-      type: 'tool-event', toolName: tool.name, callId: data.id,
-      status: type === 'session.tool.success' ? 'completed' : type === 'session.tool.failed' ? 'failed' : 'running',
-      ...(tool.input ? { input: tool.input } : {}),
+      type: 'tool-event', toolName: tool.name, callId,
+      status,
+      ...(input === undefined ? {} : { input }),
       ...(output ? { output, outputMode: 'snapshot' } : {}),
       ...(data.error === undefined ? {} : { error: errorDetail(data.error) }),
-      ...(data.metadata === undefined ? {} : { detail: serializeToolValue(data.metadata) ?? '' }),
+      ...(data.metadata === undefined && data.provider?.metadata === undefined ? {} : { detail: serializeToolValue(data.metadata ?? data.provider?.metadata) ?? '' }),
+    }
+  }
+
+  private shell(type: string, data: RecordValue): CodingNsAgentEvent | null {
+    const shell = record(data.shell)
+    const callId = stringValue(data.callID) ?? stringValue(data.id) ?? stringValue(shell?.id)
+    if (callId === undefined) return null
+    const messageId = stringValue(data.assistantMessageID) ?? stringValue(data.messageID) ?? ''
+    const key = `${messageId}:${callId}`
+    const tool = this.tools.get(key) ?? { name: 'shell', input: '' }
+    this.tools.set(key, tool)
+    const command = stringValue(data.command) ?? stringValue(shell?.command)
+    if (type === 'session.shell.started' && command !== undefined) tool.input = serializeToolValue({ command }) ?? command
+    const output = typeof data.output === 'string' ? data.output : undefined
+    return {
+      type: 'tool-event', toolName: tool.name, callId, status: 'running',
+      ...(tool.input ? { input: tool.input } : {}),
+      ...(output === undefined ? {} : { output, outputMode: 'snapshot' }),
     }
   }
 
@@ -395,6 +550,99 @@ class OpenCodeV2Events {
       context_tokens: (tokens.input ?? 0) + (cache?.read ?? 0) + (cache?.write ?? 0),
     })
   }
+}
+
+/** 把 V2 的版本后缀和 next 命名空间收敛到内部事件名。 */
+function canonicalEventType(type: string): string {
+  let normalized = type.replace(/\.\d+$/u, '')
+  if (normalized.startsWith('session.next.')) normalized = `session.${normalized.slice('session.next.'.length)}`
+  if (normalized === 'permission.v2.asked') normalized = 'permission.asked'
+  return normalized
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined
+}
+
+function scalarString(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return stringValue(value)
+}
+
+function sourceCallId(value: unknown): string | undefined {
+  const source = record(value)
+  return stringValue(source?.id) ?? stringValue(source?.callID) ?? stringValue(source?.callId)
+}
+
+function toolOutput(data: RecordValue): string | undefined {
+  const parts = records(data.content).map((part) => {
+    if (typeof part.text === 'string') return part.text
+    if (typeof part.output === 'string') return part.output
+    if (typeof part.value === 'string') return part.value
+    return serializeToolValue(part)
+  }).filter((value): value is string => Boolean(value))
+  if (parts.length > 0) return parts.join('\n')
+  if (typeof data.output === 'string') return data.output
+  if (data.structured !== undefined) return serializeToolValue(data.structured) ?? undefined
+  if (data.result !== undefined) return typeof data.result === 'string' ? data.result : serializeToolValue(data.result) ?? undefined
+  return undefined
+}
+
+function recoverToolInput(toolName: string, metadata: unknown): string | undefined {
+  const meta = record(metadata)
+  const toolCalls = records(meta?.toolCalls)
+  if (toolName.trim().toLowerCase() === 'execute' && toolCalls.length > 0) {
+    const calls = toolCalls.map((call) => ({
+      ...(stringValue(call.tool) === undefined ? {} : { tool: stringValue(call.tool) }),
+      ...(stringValue(call.status) === undefined ? {} : { status: stringValue(call.status) }),
+      ...(call.input === undefined ? {} : { input: call.input }),
+    }))
+    return serializeToolValue({ toolCalls: calls })
+  }
+  const diffs = records(meta?.diffs)
+  if (diffs.length === 0) return undefined
+  const name = canonicalFileToolName(toolName)
+  if (name !== 'write' && name !== 'edit') return undefined
+  const values = diffs.flatMap((diff) => {
+    const path = stringValue(diff.path)
+    const newText = typeof diff.newText === 'string' ? diff.newText : undefined
+    if (path === undefined || newText === undefined) return []
+    return [{
+      path,
+      oldText: typeof diff.oldText === 'string' ? diff.oldText : null,
+      newText,
+    }]
+  })
+  if (values.length === 0) return undefined
+  if (name === 'write') {
+    const first = values[0]!
+    return serializeToolValue({ path: first.path, content: first.newText })
+  }
+  if (values.length === 1) {
+    const first = values[0]!
+    return serializeToolValue({ path: first.path, old_string: first.oldText ?? '', new_string: first.newText })
+  }
+  return serializeToolValue({ changes: values.map((value) => ({
+    path: value.path,
+    oldText: value.oldText,
+    newText: value.newText,
+  })) })
+}
+
+function canonicalFileToolName(value: string): 'write' | 'edit' | 'other' {
+  const key = value.trim().toLowerCase().replace(/[\s-]+/gu, '_')
+  if (key === 'write' || key === 'write_file') return 'write'
+  if (key === 'edit' || key === 'edit_file' || key === 'apply_patch') return 'edit'
+  return 'other'
+}
+
+function isEmptyToolInput(value: string): boolean {
+  const trimmed = value.trim()
+  return trimmed === '' || trimmed === '{}' || trimmed === 'null'
+}
+
+function singleEvent(event: CodingNsAgentEvent | null): readonly CodingNsAgentEvent[] {
+  return event === null ? [] : [event]
 }
 
 function selectModel(models: readonly RecordValue[], key: string | null | undefined): RecordValue | undefined {
@@ -420,7 +668,14 @@ function decodeEvent(event: SseEvent): RecordValue | null {
   try {
     const value: unknown = JSON.parse(event.data)
     const parsed = record(value)
-    return parsed === null ? null : { ...parsed, type: parsed.type ?? event.event }
+    if (parsed === null) return null
+    // 事件 API 在不同 V2 修订中分别使用普通 data、properties 和 syncEvent
+    // 信封。统一成 { type, data } 后，后续投影无需为每个版本复制分支。
+    const sync = parsed.type === 'sync' ? record(parsed.syncEvent) : null
+    const source = sync ?? parsed
+    const type = typeof source.type === 'string' ? source.type : event.event
+    const data = record(source.data) ?? record(source.properties) ?? {}
+    return { ...source, ...(type === null ? {} : { type: canonicalEventType(type) }), data }
   } catch { return null }
 }
 function errorDetail(value: unknown): string {

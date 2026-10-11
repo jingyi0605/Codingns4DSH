@@ -53,6 +53,12 @@ export interface OpenCodeDriverOptions {
 /** OpenCode 的 server/SSE 适配器，向上只暴露 Codingns4DSH 标准流。 */
 export class OpenCodeDriver implements CodingNsCliDriver {
   readonly descriptor = { id: 'opencode', name: 'OpenCode', protocol: 'http-sse', capabilities: ['models', 'skills', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] as const } as const
+  /**
+   * V2 的事件流会在同一轮中连续产生多个工具调用和 assistant 消息。
+   * Registry 可以在工具完成后挂起并续读同一个 SSE 迭代器，避免所有内容
+   * 被压到一个 DSH step 的结算阶段。
+   */
+  readonly supportsToolStepSplitting = true
   private readonly binaries: readonly string[]
   private binaryDetection: CodingNsCliDetection | undefined
   private readonly serverUrls: readonly string[]

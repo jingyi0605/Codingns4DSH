@@ -348,10 +348,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           // 权限状态必须与 DSH 会话当前生效值同源。驱动不能自行假设“完全权限”，
           // 也不能把缺省当成“已确认无限制”：解析失败时留空，由驱动沿用保守默认。
           const permission = resolveSessionPermission(context.services.dshContext, sessionId)
-          // 只有 Provider 驱动明确维护了稳定的 turn 分段，才把工具边界映射为 DSH step。
-          // Command Code、Codex 会在下一个 assistant 消息处结束当前 step；未声明分段
-          // 支持的驱动（如 OpenCode）仍把整轮保持在一个 step，避免 token-meter 在下一
-          // 条 usage 到达前失去投影。
+          // 只有 Provider 驱动明确声明可以维护连续事件流，才把工具边界映射为 DSH step。
+          // Command Code、Codex 自己维护 assistant 消息边界；OpenCode 由 Registry
+          // 挂起并续读同一条 SSE。其他驱动仍把整轮保持在一个 step，避免 token-meter
+          // 在下一条 usage 到达前失去投影。
           const input = {
             sessionId,
             messages: turnInput.messages,
@@ -370,8 +370,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             ...(cwd === undefined ? {} : { cwd }),
             ...(isAbortSignal(value?.signal) ? { signal: value.signal } : {}),
             ...((registry.supportsSegmentedTurns(config.adapterId) || registry.supportsToolStepSplitting(config.adapterId))
-              && nativeSessions?.available === true
-              && nativeSessions.injectNextStep !== undefined
+              // SessionStore/controller 可能是远端代理而未标记 available，但原生
+              // Agent 仍然提供 inject；用真实的 next-step 能力决定分段，不能让
+              // available 这个聚合状态把 OpenCode/Command Code 退回单 step。
+              && nativeSessions?.injectNextStep !== undefined
               && (nativeSessions.canInjectNextStep === undefined
                 || nativeSessions.canInjectNextStep(sessionId))
               ? { splitToolSteps: true }
@@ -399,9 +401,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
                 // Agent Loop 会在本次 llm/stream 返回后关闭当前 step，并在返回前
                 // 检查 next-step inbox。必须先注入，再发送 finish，不能等 complete()
                 // 之后再写入，否则 DSH 已经把整个 turn 结算完了。
-                const injected = nativeSessions?.available === true
-                  ? nativeSessions.injectNextStep?.(sessionId) ?? false
-                  : false
+                const injected = nativeSessions?.injectNextStep?.(sessionId) ?? false
                 if (!injected) discardSuspendedTurn()
                 for (const dshChunk of await projector.push(chunk)) yield dshChunk
                 continue

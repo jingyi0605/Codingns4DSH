@@ -85,7 +85,8 @@ export class CodingNsDshToolHistoryProjector {
     const current = this.records.get(key)
     if (current === undefined && this.observedCalls >= CALL_COUNT_LIMIT) return null
     const toolName = meaningfulToolName(event.toolName, current?.toolName)
-    const input = shouldIgnoreEmptyQuestionInput(event.input, current?.input, toolName)
+    const input = shouldIgnoreEmptyToolInput(event.input, current?.input)
+      || shouldIgnoreEmptyQuestionInput(event.input, current?.input, toolName)
       ? undefined
       : event.input ?? current?.input
     const record = current ?? {
@@ -206,7 +207,10 @@ export class CodingNsDshToolHistoryProjector {
     if (append === undefined || this.sessionId.trim() === '') return false
     // OpenCode 的 question 工具可能先发空 `{}` 输入，问题详情随后通过
     // question.asked 事件抵达；先暂缓原生 tool/call，避免空参数永久落盘。
-    if (record.handle === null && isPendingQuestionRecord(record)) return false
+    // write/edit/read 也遵循同一协议：input.started 先到，真实路径和正文在
+    // input.ended 或 success.metadata.diffs 才出现。未结算前不能把 `{}` 固化到
+    // assistant/message，否则后续更新只能补 result，原生编辑卡片永远没有参数。
+    if (record.handle === null && (isPendingQuestionRecord(record) || isPendingToolInputRecord(record))) return false
     if (record.handle === null) record.handle = this.appendCall(record, append)
     if (!record.settled || record.resultAppended || record.handle === null) return record.handle !== null
     const appendResult = this.nativeSessions?.appendToolResult
@@ -251,7 +255,7 @@ export class CodingNsDshToolHistoryProjector {
     const append = this.nativeSessions?.appendExternalToolEvent
     const marker = record.externalMarker
     if (append === undefined || marker === undefined || this.sessionId.trim() === '') return false
-    if (!record.externalPersisted && isPendingQuestionRecord(record)) return false
+    if (!record.externalPersisted && (isPendingQuestionRecord(record) || isPendingToolInputRecord(record))) return false
     if (!record.externalPersisted) {
       const start: CodingNsDshExternalToolMarker = marker.phase === 'start'
         ? marker
@@ -460,10 +464,28 @@ function isPendingQuestionRecord(record: Pick<ToolRecord, 'toolName' | 'input' |
   return isPendingQuestionInput(record.input)
 }
 
+function isPendingToolInputRecord(record: Pick<ToolRecord, 'input' | 'settled'>): boolean {
+  if (record.settled) return false
+  return isEmptyToolInput(record.input)
+}
+
 function shouldIgnoreEmptyQuestionInput(incoming: string | undefined, current: string | undefined, toolName: string): boolean {
   return canonicalToolName(toolName) === 'question'
     && isPendingQuestionInput(incoming)
     && !isPendingQuestionInput(current)
+}
+
+/** Provider 的空 called 快照不能覆盖已经由 input.delta/ended 收集的参数。 */
+function shouldIgnoreEmptyToolInput(incoming: string | undefined, current: string | undefined): boolean {
+  return current !== undefined
+    && !isEmptyToolInput(current)
+    && incoming !== undefined
+    && isEmptyToolInput(incoming)
+}
+
+function isEmptyToolInput(input: string | undefined): boolean {
+  const trimmed = input?.trim()
+  return trimmed === undefined || trimmed === '' || trimmed === '{}' || trimmed === 'null'
 }
 
 function isPendingQuestionInput(input: string | undefined): boolean {
