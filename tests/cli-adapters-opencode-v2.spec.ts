@@ -217,6 +217,19 @@ test('OpenCode V2 文本快照去重，工具步骤不提前结束回合，严�
   driver.dispose()
 })
 
+test('OpenCode V2 将 DSH 完全权限映射为 external_directory 放行', async () => {
+  const { driver, requests } = harness({ events: [done] })
+  for await (const _ of driver.executeTurn({
+    ...input,
+    permission: { sandboxMode: 'danger-full-access', approvalPolicy: 'never' },
+  })) { /* 消费完整回合以触发会话创建。 */ }
+  assert.deepEqual(requests.find((request) => request.path === '/api/session')?.body?.permissions, [
+    { action: 'subagent', resource: '*', effect: 'deny' },
+    { action: 'external_directory', resource: '*', effect: 'allow' },
+  ])
+  driver.dispose()
+})
+
 test('OpenCode V2 校准 DeepSeek V4.1 Flash 的 1M 上下文上限', async () => {
   const deepseekModel = {
     ...model, id: 'deepseek-v4.1-flash', modelID: 'deepseek-v4.1-flash', providerID: 'deepseek',
