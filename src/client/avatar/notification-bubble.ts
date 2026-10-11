@@ -317,13 +317,13 @@ function notificationStatus(notice: AssistantNotification | DesktopAssistantNoti
 const button: CSSProperties = { ...dshSettingsButtonStyle, minHeight: 36, touchAction: 'manipulation', whiteSpace: 'normal', borderRadius: 999, fontWeight: 650 }
 const shell: CSSProperties = { position: 'relative', width: '100%', maxWidth: 320, height: '100%', maxHeight: 'var(--codingns-notification-max-height, min(276px, calc(100vh - 24px)))', minHeight: 0,
   display: 'flex', flexDirection: 'column', gap: 6, pointerEvents: 'auto', color: dshThemeColor.labelPrimary, fontSize: uiFontSize(13) }
-const panel: CSSProperties = { position: 'relative', zIndex: 1, padding: 12, background: dshThemeColor.menuBackground, border: `1px solid ${dshThemeColor.border}`, borderRadius: 18, boxShadow: dshThemeColor.prominentShadow,
+const panel: CSSProperties = { position: 'relative', zIndex: 1, padding: 10, background: dshThemeColor.menuBackground, border: `1px solid ${dshThemeColor.border}`, borderRadius: 18, boxShadow: dshThemeColor.prominentShadow,
   minWidth: 0, boxSizing: 'border-box', maxHeight: 'min(276px, calc(100vh - 24px))', overflowY: 'auto' }
 const bubblePanel: CSSProperties = { ...panel, position: 'relative', display: 'flex', flexDirection: 'column', flex: '1 1 auto', minWidth: 0, minHeight: 0,
   padding: 10, overflow: 'visible', borderRadius: '24px 24px 24px 8px', borderColor: dshThemeColor.border,
   maxHeight: '100%', background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.prominentShadow }
 const bubbleContent: CSSProperties = { position: 'relative', zIndex: 1, display: 'grid', gap: 8, minHeight: 0, flex: '1 1 auto',
-  overflowY: 'auto', overscrollBehavior: 'contain', boxSizing: 'border-box', padding: 12, paddingBottom: 12 }
+  overflowY: 'auto', overscrollBehavior: 'contain', boxSizing: 'border-box', padding: 0 }
 const notificationTailCurve = 'M1 0 C8 0.4 13 7 16 18 C17 23 19 28 20 31 C21 28 23 23 24 18 C27 7 32 0.4 39 0'
 function tailBox(side: AssistantNotificationTailSide): CSSProperties {
   const base: CSSProperties = { position: 'absolute', zIndex: 0, pointerEvents: 'none' }
@@ -343,8 +343,8 @@ function tailSvg(side: AssistantNotificationTailSide): CSSProperties {
   return { display: 'block', position: 'absolute', left: '50%', top: '50%',
     transform: `translate(-50%, -50%) rotate(${side === 'left' ? 90 : -90}deg)` }
 }
-// 保留滚动操作，但不显示通知气泡右侧滚动条；底部内边距必须属于滚动内容，滚到末尾仍保留 12px 空白。
-const notificationBubbleCss = '[data-codingns-notification-scroll]{scrollbar-width:none;-ms-overflow-style:none;padding-bottom:12px!important}[data-codingns-notification-scroll]::-webkit-scrollbar{display:none;width:0;height:0}'
+// 保留滚动操作，但不显示通知气泡右侧滚动条；内外层只由外层统一提供 10px 留白。
+const notificationBubbleCss = '[data-codingns-notification-scroll]{scrollbar-width:none;-ms-overflow-style:none}[data-codingns-notification-scroll]::-webkit-scrollbar{display:none;width:0;height:0}'
 const primaryCard: CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: 9, padding: 5, minWidth: 0 }
 const compactCard: CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: 7, padding: '10px 11px', minWidth: 0, background: dshThemeColor.cardBackground,
   border: `1px solid ${dshThemeColor.border}`, borderRadius: 15, boxShadow: dshThemeColor.subtleShadow }
