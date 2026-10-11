@@ -112,7 +112,7 @@ test('访客/会话受限RPC拒绝，非法参数与旧代次失败，归档或�
   for (const peer of [{ authenticated: false }, { authorized: false }, { kind: 'session' }, { scope: { kind: 'session' } }]) {
     await assert.rejects(f.call('notifications/read', {}, { peer }), /无权/u)
     await assert.rejects(f.call('notifications/read-session', {}, { peer }), /无权/u)
-    await assert.rejects(f.call('notifications/read-all', {}, { peer }), /无权/u)
+    await assert.rejects(f.call('notifications/clear-all', {}, { peer }), /无权/u)
   }
   await assert.rejects(f.call('notifications/read', []), /参数/u)
   await assert.rejects(f.call('notifications/read', { limit: 51 }), /1 到 50/u)
@@ -125,18 +125,22 @@ test('访客/会话受限RPC拒绝，非法参数与旧代次失败，归档或�
   await assert.rejects(f.call('notifications/ack', { noticeId: frame.primary!.noticeId, generation: frame.generation, action: 'read' }), /代次/u)
 })
 
-test('一键处理 RPC 结算当前代次未读，待处理请求保持且旧代次失败', async (t) => {
+test('一键清理 RPC 只清会话通知，待处理审批保留展示且旧代次失败', async (t) => {
   const f = await fixture(t)
   f.sessionEvent('turn/start', { turn: 1 }, 1); f.sessionEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }, 2)
   f.sessionEvent('approval/asked', { id: 'a' }, 3)
   const before = await f.call<AssistantNotificationSnapshot>('notifications/read')
-  assert.equal(before.unreadCount, 2); assert.equal(before.pendingCount, 1)
-  const result = await f.call<{ generation: number; revision: number; processed: number }>('notifications/read-all', { generation: before.generation })
-  assert.equal(result.processed, 2); assert.equal(result.generation, before.generation)
+  assert.equal(before.unreadCount, 1); assert.equal(before.pendingCount, 1)
+  const result = await f.call<{ generation: number; revision: number; cleared: number }>('notifications/clear-all', { generation: before.generation })
+  assert.equal(result.cleared, 1); assert.equal(result.generation, before.generation)
   const after = await f.call<AssistantNotificationSnapshot>('notifications/read')
+  // 完成提醒离开气泡，审批提醒继续等待用户响应。
   assert.equal(after.unreadCount, 0); assert.equal(after.pendingCount, 1)
-  assert.equal(after.primary!.kind, 'approval')
-  await assert.rejects(f.call('notifications/read-all', { generation: before.generation - 1 }), /代次/u)
+  assert.equal(after.primary!.kind, 'approval'); assert.deepEqual(after.items.map((item) => item.kind), ['approval'])
+  // DSH 侧事实未受影响：来源快照仍把该审批列为待处理，等待用户在原会话里响应。
+  const feed = await f.call<{ pending: readonly { requestId?: string }[] }>('notifications/source', { workspaceIds: ['w'] })
+  assert.deepEqual(feed.pending.map((item) => item.requestId), ['a'])
+  await assert.rejects(f.call('notifications/clear-all', { generation: before.generation - 1 }), /代次/u)
 })
 
 test('助理未创建时本机快照为空，来源租约不初始化助理且只输出新终态', async (t) => {

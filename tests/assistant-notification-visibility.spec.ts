@@ -126,3 +126,51 @@ test('安全列表保留已读待办、隐藏已读终态，并显示当前页�
     renderer.render(); assert.deepEqual(expanded, [false, true, false])
   } finally { renderer.dispose() }
 })
+
+test('未读与待处理标签分别筛选对应通知', () => {
+  const base = { hostLabel: '本机', workspaceLabel: '项目', sessionTitle: '会话', text: '提醒', createdAt: 1,
+    presentation: 'collapsed' as const, availability: 'ready' as const }
+  const unread = { ...base, noticeId: 'unread', kind: 'error' as const, read: false, lifecycle: 'resolved' as const }
+  const unreadPending = { ...base, noticeId: 'unread-pending', kind: 'question' as const, read: false, lifecycle: 'active' as const }
+  const readPending = { ...base, noticeId: 'read-pending', kind: 'approval' as const, read: true, lifecycle: 'active' as const }
+  const props: AssistantNotificationBubbleProps = { frame: { generation: 2, revision: 1, serverNow: 1, primary: null,
+    items: [unread, unreadPending, readPending], unreadCount: 2, pendingCount: 2, cursor: null }, t: resolveCodingNsTranslator(),
+    onOpen() {}, onDismiss() {}, onPresented() {} }
+  const renderer = createHookRenderer(AssistantNotificationBubble, props)
+  try {
+    let tree = renderer.render()
+    const unreadFilter = elements(tree).find((element) => element.props['aria-label'] === '筛选未读通知：2 条未读')!
+    unreadFilter.props.onClick(); tree = renderer.render()
+    assert.equal(elements(tree).find((element) => element.props['aria-label'] === '筛选未读通知：2 条未读')!.props['aria-pressed'], true)
+    assert.deepEqual(elements(tree).filter((element) => element.type === 'section').map((element) => element.props['data-codingns-notice-id']), ['unread'])
+
+    const pendingFilter = elements(tree).find((element) => element.props['aria-label'] === '筛选待处理通知：2 项待处理')!
+    pendingFilter.props.onClick(); tree = renderer.render()
+    assert.deepEqual(elements(tree).filter((element) => element.type === 'section').map((element) => element.props['data-codingns-notice-id']), ['unread-pending', 'read-pending'])
+    assert.equal(elements(tree).find((element) => element.props['aria-label'] === '筛选待处理通知：2 项待处理')!.props['aria-pressed'], true)
+  } finally { renderer.dispose() }
+})
+
+test('收起通知只保留展开按钮和数量徽标，不移除通知记录', () => {
+  const props: AssistantNotificationBubbleProps = { frame: {
+    generation: 4, revision: 1, serverNow: 1, primary: {
+      noticeId: 'pending', kind: 'question', hostLabel: '本机', workspaceLabel: '项目', sessionTitle: '需要处理的会话', text: '请处理',
+      createdAt: 1, read: false, presentation: 'queued', lifecycle: 'active', availability: 'ready',
+    }, items: [], unreadCount: 16, pendingCount: 2, cursor: null,
+  }, t: resolveCodingNsTranslator(), onOpen() {}, onDismiss() {}, onPresented() {} }
+  const renderer = createHookRenderer(AssistantNotificationBubble, props)
+  try {
+    let tree = renderer.render()
+    elements(tree).find((element) => element.props['aria-label'] === '收起通知')!.props.onClick()
+    tree = renderer.render()
+    assert.ok(elements(tree).some((element) => element.props['aria-label'] === '展开通知'))
+    assert.ok(elements(tree).some((element) => element.props['aria-label'] === '筛选未读通知：16 条未读'))
+    assert.ok(elements(tree).some((element) => element.props['aria-label'] === '筛选待处理通知：2 项待处理'))
+    assert.equal(elements(tree).find((element) => element.props['data-codingns-notification-toolbar'] === true)!.props.style.justifyContent, 'center')
+    assert.equal(elements(tree).filter((element) => element.type === 'section').length, 0)
+    assert.ok(!JSON.stringify(tree).includes('需要处理的会话'))
+    elements(tree).find((element) => element.props['aria-label'] === '展开通知')!.props.onClick()
+    tree = renderer.render()
+    assert.equal(elements(tree).filter((element) => element.type === 'section').length, 1)
+  } finally { renderer.dispose() }
+})

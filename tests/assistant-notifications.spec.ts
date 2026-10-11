@@ -49,7 +49,8 @@ test('请求独立结束，已读和收起都保留待处理，待办不受100�
   for (let index = 0; index < 110; index++) f.request(`question-${index}`)
   for (let index = 0; index < 120; index++) f.turn('turn-completed', index)
   assert.equal(f.center.read().pendingCount, 110)
-  assert.equal(f.center.read().unreadCount, 210)
+  // 活跃提问属于待处理，不重复计入未读数量。
+  assert.equal(f.center.read().unreadCount, 100)
   const frame = f.center.read(), item = frame.primary!
   const input = { generation: frame.generation, noticeId: item.noticeId }
   f.center.ack({ ...input, action: 'read' }); f.center.ack({ ...input, action: 'dismiss' })
@@ -213,36 +214,45 @@ test('类型开关只移除对应通知，无关待办保持身份和收起状�
   assert.equal(after.items.find(item => item.kind === 'approval')!.noticeId, approval.noticeId)
   assert.equal(after.items.find(item => item.kind === 'approval')!.presentation, 'collapsed')
   f.center.configure(true, ['workspace'], { error: false })
-  assert.equal(f.center.read().unreadCount, 1)
+  assert.equal(f.center.read().unreadCount, 0)
   f.center.baseline(local, 2); f.turn('turn-completed', 1, 3)
-  assert.equal(f.center.read().unreadCount, 1)
+  assert.equal(f.center.read().unreadCount, 0)
 })
 
-test('一键处理结算全部未读，待处理请求保持展示且重复调用不推进修订', () => {
+test('一键清理只清会话通知，待处理请求保留展示且状态不动', () => {
   const f = fixture()
   f.turn('turn-completed', 1, 1); f.turn('turn-failed', 2, 2); f.request('question-1')
   const before = f.center.read()
-  assert.equal(before.unreadCount, 3); assert.equal(before.pendingCount, 1)
-  const result = f.center.readAll({ generation: before.generation })
-  assert.equal(result.processed, 3); assert.equal(result.revision, f.center.revision)
+  assert.equal(before.unreadCount, 2); assert.equal(before.pendingCount, 1)
+  const noticeId = before.primary!.noticeId
+  const result = f.center.clearAll({ generation: before.generation })
+  // 完成与错误两条会话通知被清掉；仍有效的提问不在清理范围内，继续等待响应。
+  assert.equal(result.cleared, 2); assert.equal(result.revision, f.center.revision)
   const after = f.center.read()
-  assert.equal(after.unreadCount, 0); assert.equal(after.pendingCount, 1)
-  // 待处理请求仍占据主气泡，完成与错误提醒已经收起。
   assert.equal(after.primary!.kind, 'question')
-  assert.deepEqual(after.items.filter((item) => item.presentation !== 'collapsed').map((item) => item.kind), ['question'])
-  const repeated = f.center.readAll({ generation: after.generation })
-  assert.equal(repeated.processed, 0); assert.equal(repeated.revision, result.revision)
+  assert.deepEqual(after.items.map((item) => item.kind), ['question'])
+  assert.equal(after.unreadCount, 0); assert.equal(after.pendingCount, 1)
+  // 同一请求再次被校正不会重复展示；新的终态仍照常提醒，并且可以再次被清理。
+  f.request('question-1')
+  assert.equal(f.center.read().pendingCount, 1)
+  f.turn('turn-completed', 3, 3)
+  assert.equal(f.center.read().unreadCount, 1)
+  assert.equal(f.center.clearAll({ generation: f.center.generation }).cleared, 1)
+  assert.equal(f.center.read().unreadCount, 0); assert.equal(f.center.read().pendingCount, 1)
+  // 待处理请求的已读标记与生命周期没有被清理改写。
+  const kept = f.center.ack({ generation: f.center.read().generation, noticeId, action: 'dismiss' }).notification
+  assert.equal(kept.read, false); assert.equal(kept.lifecycle, 'active'); assert.equal(kept.kind, 'question')
 })
 
-test('一键处理拒绝旧代次与非法代次，换代后只结算当前范围的未读', () => {
+test('一键清理拒绝旧代次与非法代次，换代后只清理当前范围', () => {
   const f = fixture()
   f.turn('turn-completed', 1, 1)
   const stale = f.center.generation
   f.center.configure(true, ['workspace', 'second'])
-  assert.throws(() => f.center.readAll({ generation: stale }), /代次/u)
-  assert.throws(() => f.center.readAll({ generation: 1.5 }), /代次/u)
+  assert.throws(() => f.center.clearAll({ generation: stale }), /代次/u)
+  assert.throws(() => f.center.clearAll({ generation: 1.5 }), /代次/u)
   f.turn('turn-completed', 2, 2)
   assert.equal(f.center.read().unreadCount, 1)
-  assert.equal(f.center.readAll({ generation: f.center.generation }).processed, 1)
+  assert.equal(f.center.clearAll({ generation: f.center.generation }).cleared, 1)
   assert.equal(f.center.read().unreadCount, 0)
 })

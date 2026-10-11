@@ -7,6 +7,8 @@ import { AssistantNotificationStore } from '../src/client/features/assistant-not
 import { AssistantNotificationBubble, assistantNotificationIsVisible, assistantNotificationTailStyle, floatingAssistantNotificationLayout } from '../src/client/avatar/notification-bubble.js'
 import { AssistantNotificationCenter } from '../src/host/features/assistant-notifications.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
+import { dshThemeColor } from '../src/client/theme.js'
+import { ASSISTANT_NOTIFICATION_TAIL_CLEARANCE } from '../src/shared/assistant-notifications.js'
 import type { AssistantNotification, AssistantNotificationSnapshot, AssistantNotificationTarget } from '../src/shared/assistant-notifications.js'
 import type { CodingNsRpcClient } from '../src/client/features/types.js'
 
@@ -27,7 +29,7 @@ function fixture(now: () => number = Date.now) {
   const rpc: CodingNsRpcClient = { async call(_channel, endpoint, payload: any) {
     calls.push({ endpoint, payload })
     try {
-      const value = endpoint.endsWith('/read-all') ? host.readAll(payload)
+      const value = endpoint.endsWith('/clear-all') ? host.clearAll(payload)
         : endpoint.endsWith('/read-session') ? host.readSession(payload)
           : endpoint.endsWith('/read') ? host.read(payload) : endpoint.endsWith('/ack') ? host.ack(payload) : await host.target(payload)
       return { ok: true, value }
@@ -181,8 +183,11 @@ test('单条未读直接展示会话卡片，多条提醒在漫画气泡内堆�
     frame: single, t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {},
   }))
   assert.equal((singleHtml.match(/data-codingns-notice-id=/gu) ?? []).length, 1)
-  assert.ok(singleHtml.includes('border-radius:24px 24px 24px 8px'))
+  assert.ok(singleHtml.includes('data-codingns-notification-surface="true"'))
   assert.ok(singleHtml.includes('<svg')); assert.ok(!singleHtml.includes('clip-path'))
+  assert.ok(singleHtml.includes(`stroke="${dshThemeColor.border}"`), '气泡外框应使用中性边框色')
+  assert.ok(!singleHtml.includes(`stroke="${dshThemeColor.accent}"`), '气泡外框不能使用蓝色强调色')
+  assert.ok(!singleHtml.includes(`stroke=\"${dshThemeColor.accent}\"`), '尾巴描边不能使用蓝色强调色')
   assert.ok(singleHtml.includes('问题'))
   assert.ok(!singleHtml.includes('1 条未读'))
   const second = { ...notice('approval', 2), sessionTitle: '另一个会话' }
@@ -192,46 +197,104 @@ test('单条未读直接展示会话卡片，多条提醒在漫画气泡内堆�
   }))
   assert.equal((multipleHtml.match(/data-codingns-notice-id=/gu) ?? []).length, 2)
   assert.ok(multipleHtml.includes('另一个会话'))
-  assert.equal((multipleHtml.match(/>查看会话</gu) ?? []).length, 2)
-  assert.equal((multipleHtml.match(/>收起提醒</gu) ?? []).length, 2)
-  assert.ok(multipleHtml.indexOf('2 条未读') < multipleHtml.indexOf('data-codingns-notice-id='))
-  assert.ok(multipleHtml.includes('权限请求'))
+  assert.equal((multipleHtml.match(/data-codingns-notification-action="open"/gu) ?? []).length, 2)
+  assert.equal((multipleHtml.match(/data-codingns-notification-action="dismiss"/gu) ?? []).length, 2)
+  assert.ok(multipleHtml.includes('grid-template-columns:minmax(0, 1fr) auto'))
+  assert.ok(multipleHtml.includes('flex-direction:column'))
+  assert.ok(multipleHtml.includes('d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"'))
+  assert.ok(multipleHtml.includes('viewBox="0 0 16 16"'))
+  assert.equal((multipleHtml.match(/>查看会话</gu) ?? []).length, 0)
+  assert.equal((multipleHtml.match(/>收起提醒</gu) ?? []).length, 0)
+  assert.ok(multipleHtml.indexOf('aria-label="筛选未读通知：2 条未读"') < multipleHtml.indexOf('data-codingns-notice-id='))
+  assert.ok(multipleHtml.includes('权限申请'))
+  // 多条堆叠的紧凑卡片同样给出「有 [标签] 需要你来处理」，不能只剩一个标签。
+  assert.equal((multipleHtml.match(/>有<span/gu) ?? []).length, 2)
+  assert.equal((multipleHtml.match(/需要你来处理/gu) ?? []).length, 2)
   const tail = assistantNotificationTailStyle(96, -100, 320) as Record<string, string>
-  assert.equal(tail['--codingns-assistant-tail-left'], '196px')
+  assert.equal(tail['--codingns-assistant-tail-offset'], '196px')
+  assert.equal(Number.parseFloat(tail['--codingns-assistant-tail-angle']!), 0)
+  const rightEdge = assistantNotificationTailStyle(500, -100, 320) as Record<string, string>
+  assert.ok(Number.parseFloat(rightEdge['--codingns-assistant-tail-angle']!) < 0, '助理在尾巴根部右侧时尖端应向右')
+  const leftEdge = assistantNotificationTailStyle(-300, -100, 320) as Record<string, string>
+  assert.ok(Number.parseFloat(leftEdge['--codingns-assistant-tail-angle']!) > 0, '助理在尾巴根部左侧时尖端应向左')
+  // 侧置气泡在侧边中点伸出，不需要水平偏移。
+  assert.deepEqual(assistantNotificationTailStyle(96, -100, 320, 'left'), {})
 })
 
-test('顶部一键处理按钮位于未读统计左侧，未接入回调或没有未读时不渲染', () => {
+test('顶部一键清理按钮位于未读筛选左侧，只在还有可清理的会话通知时渲染', () => {
   const t = resolveCodingNsTranslator()
-  const single = frame()
-  const second = { ...notice('approval', 2), sessionTitle: '另一个会话' }
-  const multiple: AssistantNotificationSnapshot = { ...single, items: [single.primary!, second], unreadCount: 2, pendingCount: 2 }
+  const completed = notice('completed', 3)
+  const pending = frame().primary!
+  const multiple: AssistantNotificationSnapshot = { ...frame(), primary: completed, items: [completed, pending], unreadCount: 2, pendingCount: 1 }
   const html = renderToStaticMarkup(createElement(AssistantNotificationBubble, {
-    frame: multiple, t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {}, onReadAll: () => {},
+    frame: multiple, t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {}, onClearAll: () => {},
   }))
-  assert.ok(html.includes('aria-label="一键处理全部未读提醒"'))
-  assert.ok(html.indexOf('>一键处理<') < html.indexOf('2 条未读'))
+  assert.ok(html.includes('aria-label="一键清理全部通知"'))
+  assert.ok(html.indexOf('aria-label="一键清理全部通知"') < html.indexOf('aria-label="筛选未读通知：2 条未读"'))
   const withoutHandler = renderToStaticMarkup(createElement(AssistantNotificationBubble, {
     frame: multiple, t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {},
   }))
-  assert.ok(!withoutHandler.includes('一键处理'))
-  const read: AssistantNotificationSnapshot = { ...multiple, unreadCount: 0, pendingCount: 0 }
-  const readHtml = renderToStaticMarkup(createElement(AssistantNotificationBubble, {
-    frame: read, t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {}, onReadAll: () => {},
+  assert.ok(!withoutHandler.includes('一键清理'))
+  // 待处理提问与审批不在清理范围内：只剩它们时按钮不渲染，提醒继续等待响应。
+  const pendingOnly: AssistantNotificationSnapshot = { ...multiple, primary: pending, items: [pending], unreadCount: 1, pendingCount: 1 }
+  const pendingHtml = renderToStaticMarkup(createElement(AssistantNotificationBubble, {
+    frame: pendingOnly, t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {}, onClearAll: () => {},
   }))
-  assert.ok(!readHtml.includes('一键处理'))
+  assert.ok(!pendingHtml.includes('一键清理'))
+  // 会话通知被清理干净、气泡为空时，按钮随气泡一起消失。
+  const empty: AssistantNotificationSnapshot = { ...multiple, primary: null, items: [], unreadCount: 0, pendingCount: 0 }
+  const emptyHtml = renderToStaticMarkup(createElement(AssistantNotificationBubble, {
+    frame: empty, t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {}, onClearAll: () => {},
+  }))
+  assert.ok(!emptyHtml.includes('一键清理'))
 })
 
-test('一键处理按当前代次结算未读并立即刷新，旧代次直接拒绝', async (t) => {
+test('提问与权限申请提示改为「有 标签 需要你来处理」，不再有图标前缀和旧整句', () => {
+  const t = resolveCodingNsTranslator()
+  for (const [kind, tag] of [['question', '问题'], ['approval', '权限申请']] as const) {
+    const html = renderToStaticMarkup(createElement(AssistantNotificationBubble, {
+      frame: frame(notice(kind)), t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {},
+    }))
+    // 提示行不再有问号或菱形前缀，标签前后是「有」与「需要你来处理」。
+    assert.ok(!html.includes('? </span>'))
+    assert.ok(!html.includes('◇ </span>'))
+    assert.ok(/>有<span/u.test(html))
+    assert.ok(html.includes(`>${tag}</span>需要你来处理`))
+    // Host 的旧整句模板不再出现在提示行。
+    assert.ok(!html.includes('需要你处理'))
+    if (kind === 'approval') {
+      // 权限申请的圆形标记改为黄色底叹号，提示标签同色，前景固定深色保证对比度。
+      assert.ok(html.includes('>!</span>'))
+      assert.equal((html.match(/background:var\(--dsw-alias-state-warning-primary, #d99a00\)/gu) ?? []).length, 2)
+      assert.ok(html.includes('color:#3d2c00'))
+    }
+  }
+})
+
+test('一键清理只清会话通知并立即刷新，待处理提问保留且旧代次直接拒绝', async (t) => {
   const f = fixture(); t.after(() => { f.store.dispose(); f.host.dispose() })
   f.turn('turn-completed', 'completed'); f.turn('turn-failed', 'error'); f.emit('question', 'q')
-  f.store.configure(true, 'read-all'); await f.store.refresh()
+  f.store.configure(true, 'clear-all'); await f.store.refresh()
   assert.equal(f.store.getSnapshot().frame!.unreadCount, 3)
-  await f.store.readAll(f.host.generation)
+  await f.store.clearAll(f.host.generation)
   const after = f.store.getSnapshot().frame!
-  assert.equal(after.unreadCount, 0); assert.equal(after.pendingCount, 1)
+  // 完成与错误提醒离开气泡，待处理提问继续等待响应；DSH 侧请求不受影响。
+  assert.deepEqual(after.items.map((item) => item.kind), ['question'])
   assert.equal(after.primary!.kind, 'question')
-  assert.ok(f.calls.some((call) => call.endpoint === 'assistant/notifications/read-all'))
-  await assert.rejects(f.store.readAll(f.host.generation + 1), /失效/u)
+  assert.equal(after.unreadCount, 1); assert.equal(after.pendingCount, 1)
+  assert.ok(f.calls.some((call) => call.endpoint === 'assistant/notifications/clear-all'))
+  await assert.rejects(f.store.clearAll(f.host.generation + 1), /失效/u)
+})
+
+test('气泡内容超出可用高度时只收缩内部面板，气泡底边和尾巴位置不变', () => {
+  const t = resolveCodingNsTranslator()
+  const base = frame()
+  const many: AssistantNotificationSnapshot = { ...base, unreadCount: 9,
+    items: Array.from({ length: 6 }, (_, index) => ({ ...notice(index % 2 === 0 ? 'error' : 'completed', index + 1), noticeId: `many:${index}` })) }
+  const html = renderToStaticMarkup(createElement(AssistantNotificationBubble, { frame: many, t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {} }))
+  // 面板与内容由 flex 布局按外层高度收缩：超出部分在气泡内部滚动，气泡不会向下生长压住形象。
+  assert.ok(html.includes('overflow-y:auto'))
+  assert.ok(html.includes('min-height:0'))
 })
 
 test('分页读取不丢未处理请求，修订变化后游标回到首页，关闭仅收起对应提醒', async (t) => {
@@ -303,18 +366,42 @@ test('通知 Remote 流推送初始快照与 revision 增量，不再启动 750m
   assert.equal(store.getSnapshot().frame?.revision, delta.revision)
 })
 
-test('网页通知在字幕另一侧或形象旁显示，窄屏约束不移动形象锚点', () => {
+test('网页通知在字幕另一侧或形象旁显示，尾巴朝向形象且窄屏不移动锚点', () => {
   const below = floatingAssistantNotificationLayout(500, 400, 192, 208, 1024, 900, true)
-  assert.equal(below.top, 218); assert.ok(Number(below.maxHeight) > 0)
+  assert.equal(below.style.top, 208 + ASSISTANT_NOTIFICATION_TAIL_CLEARANCE); assert.ok(Number(below.style.maxHeight) > 0)
+  // 气泡在形象下方时尾巴贴顶边朝上。
+  assert.equal(below.tail, 'top')
   const beside = floatingAssistantNotificationLayout(600, 660, 192, 208, 1024, 900, true)
-  assert.equal(beside.top, 0); assert.ok(Number(beside.left) < 0)
-  assert.ok(Number(beside.maxHeight) <= 208)
+  assert.equal(beside.style.top, 0); assert.ok(Number(beside.style.left) < 0)
+  assert.ok(Number(beside.style.maxHeight) <= 208)
+  // 气泡在形象左侧时尾巴贴右边，尖端朝右指向形象。
+  assert.equal(beside.tail, 'right')
   const narrow = floatingAssistantNotificationLayout(174, 450, 192, 208, 390, 844)
-  assert.ok(Number(narrow.width) <= 320)
-  assert.ok(174 + Number(narrow.left) >= 12)
-  assert.ok(174 + Number(narrow.left) + Number(narrow.width) <= 378)
+  assert.ok(Number(narrow.style.width) <= 320)
+  assert.ok(174 + Number(narrow.style.left) >= 12)
+  assert.ok(174 + Number(narrow.style.left) + Number(narrow.style.width) <= 378)
   const phone = floatingAssistantNotificationLayout(104, 536, 192, 208, 320, 768, true)
-  assert.equal(phone.bottom, 408); assert.ok(Number(phone.maxHeight) >= 180)
+  assert.equal(phone.style.bottom, 408); assert.ok(Number(phone.style.maxHeight) >= 180)
+})
+
+test('气泡边缘与形象保持尾巴避让距离，四个方向都渲染平滑尾巴且无横线', () => {
+  const above = floatingAssistantNotificationLayout(500, 400, 192, 208, 1024, 900)
+  assert.equal(above.tail, 'bottom')
+  assert.ok(Number(above.style.bottom) >= ASSISTANT_NOTIFICATION_TAIL_CLEARANCE)
+  const below = floatingAssistantNotificationLayout(500, 60, 192, 208, 1024, 900)
+  assert.equal(below.tail, 'top')
+  assert.ok(Number(below.style.top) >= ASSISTANT_NOTIFICATION_TAIL_CLEARANCE)
+  const t = resolveCodingNsTranslator()
+  for (const side of ['top', 'bottom', 'left', 'right'] as const) {
+    const html = renderToStaticMarkup(createElement(AssistantNotificationBubble, {
+      frame: frame(), t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {}, tailSide: side,
+    }))
+    assert.ok(html.includes(`data-codingns-notification-tail="${side}"`))
+    // 单路径弧形尾巴不绘制根部横线，面板上层覆盖后不会出现斜向拼接缝。
+    assert.ok(html.includes('data-codingns-notification-tail'))
+    assert.ok(html.includes('data-codingns-notification-outline'))
+    assert.ok(html.includes('stroke-linecap="round"'))
+  }
 })
 
 test('抢占与翻页后，已显示通知的积压点击仍经 Host 校验导航，不依赖当前页', async (t) => {

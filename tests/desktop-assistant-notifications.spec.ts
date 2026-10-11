@@ -24,6 +24,7 @@ import { buildMacAssistantScript, buildMacDesktopFocusScript } from '../src/host
 import { buildWinAssistantScript } from '../src/host/desktop-assistant/win-agent.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 import type { CodingNsHostServices } from '../src/host/features/types.js'
+import { ASSISTANT_NOTIFICATION_TAIL_CLEARANCE } from '../src/shared/assistant-notifications.js'
 import type { AssistantNotificationSnapshot } from '../src/shared/assistant-notifications.js'
 
 const owner = 'companion:notification-owner'
@@ -164,7 +165,7 @@ test('2.3 原生共用气泡的分页和列表动作只回传安全身份，不�
   assert.equal(events.filter((item) => item.type === 'notice-page').length, 1, '旧组件不能为新版本翻页')
 })
 
-test('2.4 原生气泡一键处理只回传点击帧代次，旧组件不能为新版本结算未读', (context) => {
+test('2.4 原生气泡一键清理只回传点击帧代次，旧组件不能为新版本清空气泡', (context) => {
   const { generation, ...notice } = notification, events: Record<string, unknown>[] = []
   const snapshot: AssistantNotificationSnapshot = { generation, revision: 8, serverNow: 100, primary: null,
     items: [{ ...notice, createdAt: 100, read: false, presentation: 'collapsed', lifecycle: 'active' }],
@@ -175,14 +176,14 @@ test('2.4 原生气泡一键处理只回传点击帧代次，旧组件不能为�
   const renderer = createHookRenderer(DesktopAssistantAvatar, { frame: current })
   context.after(() => { renderer.dispose(); if (previous) Object.defineProperty(globalThis, 'webkit', previous); else Reflect.deleteProperty(globalThis, 'webkit') })
   const bubble = elements(renderer.render()).find((item) => item.type === AssistantNotificationBubble)!
-  assert.equal(typeof bubble.props.onReadAll, 'function')
-  bubble.props.onReadAll(generation)
+  assert.equal(typeof bubble.props.onClearAll, 'function')
+  bubble.props.onClearAll(generation)
   assert.deepEqual(events.at(-1), { type: 'notice-action', ...current.identity, action: 'dismiss-all', noticeId: '', noticeGeneration: generation })
   assert.ok(events.every((item) => !('target' in item) && !('token' in item)))
-  const oldReadAll = bubble.props.onReadAll
+  const oldClearAll = bubble.props.onClearAll
   renderer.render({ frame: { ...current, identity: { ...current.identity, sequence: 6 } } })
-  oldReadAll(generation)
-  assert.equal(events.filter((item) => item.action === 'dismiss-all').length, 1, '旧组件不能为新版本结算未读')
+  oldClearAll(generation)
+  assert.equal(events.filter((item) => item.action === 'dismiss-all').length, 1, '旧组件不能为新版本清空气泡')
 })
 
 test('单条未读直接保留完整卡片区域，列表展开不改变形象屏幕锚点', async () => {
@@ -386,9 +387,13 @@ test('2.3 原生安全组件与字幕独立、文本转义；动作仅携带身�
   assert.equal(events.filter((value) => value.type === 'notice-action').length, 2, '同ID升级后的旧DOM不能操作新版本')
   sendDesktopAssistantNotice({ ...visible, nativeVisible: false }, 'notice-presented')
   assert.equal(events.filter((value) => value.type === 'notice-presented').length, 1)
-  const html = renderToStaticMarkup(createElement(DesktopAssistantAvatar, { frame: { ...visible, caption: '<script>字幕</script>', notification: { ...notification, text: '<img src=x onerror=run>' } } }))
-  assert.ok(html.includes('data-codingns-native-notice')); assert.ok(html.includes('data-codingns-native-caption'))
-  assert.ok(html.includes('&lt;img')); assert.ok(html.includes('&lt;script&gt;'))
+  // 完成与错误提示仍显示 Host 文本并保持转义；提问改用结构化提示，不再渲染 Host 整句。
+  const escaped = renderToStaticMarkup(createElement(DesktopAssistantAvatar, { frame: { ...visible, caption: '<script>字幕</script>', notification: { ...notification, kind: 'error', text: '<img src=x onerror=run>' } } }))
+  assert.ok(escaped.includes('data-codingns-native-notice')); assert.ok(escaped.includes('data-codingns-native-caption'))
+  assert.ok(escaped.includes('&lt;img')); assert.ok(escaped.includes('&lt;script&gt;'))
+  const prompt = renderToStaticMarkup(createElement(DesktopAssistantAvatar, { frame: { ...visible, notification } }))
+  assert.ok(prompt.includes('>问题</span>需要你来处理'))
+  assert.ok(!prompt.includes('? </span>'))
 })
 
 test('2.3 导航失败不触发原生错误回退，也不阻塞后续收起动作', async () => {
@@ -415,7 +420,7 @@ test('2.3 导航失败不触发原生错误回退，也不阻塞后续收起动�
   } finally { bridge.dispose() }
 })
 
-test('2.4 伴随页消费一键处理事件并确认序列，空身份不进入单条目标分支', async () => {
+test('2.4 伴随页消费一键清理事件并确认序列，空身份不进入单条目标分支', async () => {
   const handled: Array<string | undefined> = []
   const acks: unknown[] = []
   const event: DesktopAssistantNoticeEvent = { sequence: 1, ownerId: owner, generation: 8, noticeId: '',
@@ -427,6 +432,8 @@ test('2.4 伴随页消费一键处理事件并确认序列，空身份不进入�
   try {
     bridge.update(presentation); await until(() => handled.length === 1)
     assert.deepEqual(handled, ['dismiss-all'])
+    // 确认在下一次轮询才发出，必须等它真正送达，不能只看动作已经执行。
+    await until(() => acks.length === 1)
     assert.deepEqual(acks, [{ generation: 8, sequence: 1 }])
   } finally { bridge.dispose() }
 })
@@ -464,7 +471,7 @@ test('2.3 主页面导航失败反馈经原队列核对，Host中心快照更新
   } finally { await f.controller.dispose(); cleanup() }
 })
 
-test('2.4 原生一键处理只按点击帧代次入队，缺少快照、旧代次或不可见窗口均拒绝', async () => {
+test('2.4 原生一键清理只按点击帧代次入队，缺少快照、旧代次或不可见窗口均拒绝', async () => {
   const { generation, ...notice } = notification
   const snapshot: AssistantNotificationSnapshot = { generation, revision: 3, serverNow: 100,
     primary: { ...notice, createdAt: 100, read: false, presentation: 'shown', lifecycle: 'active' },
@@ -531,6 +538,25 @@ test('2.4 四边缘、多屏负坐标、小屏和不同逻辑 DPI 保持锚点�
       assert.ok(notice.y + notice.height <= caption.y || caption.y + caption.height <= notice.y, '同侧堆叠仍保留通知与字幕独立区域')
     }
   }
+})
+
+test('2.4 原生气泡与形象之间保留尾巴避让距离，并按气泡所在侧选择尾巴方向', () => {
+  for (const area of [{ x: 0, y: 0, width: 1920, height: 1080 }, { x: 0, y: 0, width: 360, height: 260 }]) {
+    for (const anchor of [{ x: area.x + 8, y: area.y + 8 }, { x: area.x + area.width - 150, y: area.y + area.height - 160 }]) {
+      const layout = desktopAssistantLayout(anchor, 144, 276, false, [area])
+      const notice = layout.notification!, avatar = layout.avatar
+      const gap = notice.y < avatar.y ? avatar.y - (notice.y + notice.height) : notice.y - (avatar.y + avatar.height)
+      assert.ok(gap >= ASSISTANT_NOTIFICATION_TAIL_CLEARANCE - 0.01, `尾巴空间不足：${gap}`)
+      assert.ok(notice.y + notice.height <= layout.bounds.height + 0.01)
+      assert.ok(avatar.y + avatar.height <= layout.bounds.height + 0.01)
+    }
+  }
+  // 气泡在形象下方时尾巴贴顶边朝上，渲染属性与几何方向一致。
+  const below = desktopAssistantLayout({ x: 0, y: 280 }, 144, 276, false, [{ x: 0, y: 0, width: 1024, height: 768 }])
+  const html = renderToStaticMarkup(createElement(DesktopAssistantAvatar, { frame: { ...frame, notification, layout: below } }))
+  assert.ok(html.includes('data-codingns-notification-tail="top"'))
+  // 尾巴挂在外壳层级：顶部行不会把朝上的尾巴推到气泡中部，尖端始终指向形象。
+  assert.ok(html.indexOf('data-codingns-notification-tail') < html.indexOf('查看会话'))
 })
 
 test('2.4 原生布局必需区域、有限坐标和窗口内边界严格校验，无效消息保留上一份布局', async () => {
