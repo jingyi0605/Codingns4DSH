@@ -2,6 +2,7 @@ import type {
   CodingNsAgentEvent,
   CodingNsAgentQuestionResponse,
   CodingNsAgentPermissionResponse,
+  CodingNsCliPermissionState,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsNativeSessionBridge, CodingNsNativeUsageSample } from '../native-session-bridge.js'
 import { CodingNsDshToolHistoryProjector } from './dsh-tool-history.js'
@@ -15,6 +16,7 @@ export interface CodingNsDshMessageProjectorOptions {
   readonly adapterId: string
   readonly sessionId: string
   readonly modelId?: string
+  readonly permission?: CodingNsCliPermissionState
   readonly nativeSessions?: CodingNsNativeSessionBridge
   readonly signal?: AbortSignal
   readonly respondPermission?: (response: CodingNsAgentPermissionResponse) => Promise<void> | void
@@ -166,7 +168,12 @@ export class CodingNsDshMessageProjector {
         if (event.text === '') return []
         return this.appendDelta('reasoning', event.text)
       case 'text-delta':
-        if (event.text === '') return []
+        // OpenCode 在思考或工具边界前后可能发送一个只含空白的正文增量。
+        // 这类增量没有可见内容，却会被 DSH 当成独立 text block 持久化，
+        // 最终在会话里渲染成异常空白行。只有当前正文块还没有可见文本时
+        // 才丢弃它；正文已经开始后仍保留空格和换行，避免破坏正常排版。
+        // 过滤限定在 OpenCode，其他 Provider 的首字符空格仍按原协议传递。
+        if (event.text === '' || this.options.adapterId === 'opencode' && isStandaloneWhitespace(event.text) && this.textText === '') return []
         return this.appendDelta('text', event.text)
       case 'message-boundary':
         return this.closeMessageBlock(event.channel)
@@ -274,7 +281,7 @@ export class CodingNsDshMessageProjector {
       ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
     }) ?? 'unavailable'
     const approved = outcome === 'allowed-once'
-    const reason = approvalReason(outcome)
+    const reason = approvalReason(outcome, this.options.permission)
     await responder({ requestId: event.requestId, approved, ...(reason === undefined ? {} : { reason }) })
   }
 
@@ -333,8 +340,15 @@ function toDshFinishReason(reason: 'stop' | 'cancel' | 'error', failureMessage?:
   return { kind: 'stop' }
 }
 
-function approvalReason(outcome: 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'): string | undefined {
-  if (outcome === 'rejected') return '用户拒绝了权限请求'
+function approvalReason(
+  outcome: 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable',
+  permission?: CodingNsCliPermissionState,
+): string | undefined {
+  if (outcome === 'rejected') {
+    return permission?.approvalPolicy === 'never'
+      ? '当前审批策略为 never，权限请求被策略自动拒绝，未弹出权限面板'
+      : '用户拒绝了权限请求'
+  }
   if (outcome === 'cancelled') return '权限请求已取消'
   if (outcome === 'unavailable') return 'DSH 原生权限组件不可用'
   return undefined
@@ -354,4 +368,8 @@ function longestCharacterRun(value: string, character: string): number {
     longest = Math.max(longest, current)
   }
   return longest
+}
+
+function isStandaloneWhitespace(value: string): boolean {
+  return value.length > 0 && value.trim() === ''
 }

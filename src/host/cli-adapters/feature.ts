@@ -383,6 +383,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             adapterId: config.adapterId,
             sessionId,
             ...(config.modelId === undefined ? {} : { modelId: config.modelId }),
+            ...(permission === undefined ? {} : { permission }),
             ...(nativeSessions === undefined ? {} : { nativeSessions }),
             ...(input.signal === undefined ? {} : { signal: input.signal }),
             respondPermission: (response) => registry.respondPermission(sessionId, response),
