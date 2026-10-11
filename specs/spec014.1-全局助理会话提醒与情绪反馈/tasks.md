@@ -174,6 +174,62 @@
   - 对应设计：§6—7、§9—11。
   - 结果与证据：2026-10-09 统一 343 项回归覆盖旧包/图片/精灵/Live2D、素材/预览/裁剪、原生旧协议/焦点/回退、字幕、通话租约和通知。Host 独立 250 毫秒修订时钟及真实中心首展/分页替身通过；通知不重载模型、不增加双形象、不更改语音事实。未运行 macOS 原生进程或实机测试，实际时延/透明点击区域继续保留任务 4.2/4.3。
 
+- [x] 2.6 增加气泡顶部一键处理未读提醒
+  - 状态：DONE
+  - 这一步到底做什么：在未读统计左侧增加批量入口，把堆积的完成/错误提醒一次性结算为已读。
+  - 做完你能看到什么：点击「一键处理」后未读计数清零、无需处理的提醒收起，仍有效的提问/审批保持展示等待响应。
+  - 先依赖什么：1.4、2.3、2.4。
+  - 开始前先看：需求 3、4、9；设计 §5、§6.1、§7.1—7.2。
+  - 主要改哪里：`src/shared/assistant-notifications.ts`、`src/host/features/assistant-notifications.ts`、`src/host/features/global-voice-rpc.ts`、`src/host/rpc.ts`、`src/client/features/assistant-notification-store.ts`、`src/client/avatar/notification-bubble.ts`、`src/client/features/global-voice-assistant.ts`、`src/shared/desktop-assistant.ts`、`src/client/avatar/desktop-view.ts`、`src/client/avatar/desktop-bridge.ts`、`src/host/desktop-assistant/controller.ts` 与本地化文件。
+  - 这一步先不做什么：不代替用户回答提问或审批，不删除提醒历史，不新增第二套通知存储或轮询。
+  - 怎么算完成：批量只结算未读且只接受当前代次；待处理请求保持展示；重复调用不推进修订；原生回传只携带窗口身份与点击帧代次，不携带单条目标或会话句柄。
+  - 怎么验证：Host 中心、RPC、客户端 store、气泡渲染与原生控制器/桥替身回放；`tsc --noEmit`、`version:check`、`capability:check` 与空白检查。
+  - 对应需求：需求 3、4；需求 9 验收 3、5。
+  - 对应设计：§5、§6.1、§7.1—7.2。
+  - 结果与证据：2026-10-11 已完成源码开发。Host 中心 2 项、客户端 3 项、RPC 1 项、桌面通知 3 项新增回放通过；通知与桌面相关 160 项连续两轮回归通过，类型检查、版本同步、能力退休与空白检查通过。未构建、未启动服务、未操作 Desktop，实机按钮位置与点击留给阶段 4。
+
+- [x] 2.7 优化气泡尾巴避让与平滑度
+  - 状态：DONE
+  - 这一步到底做什么：让尾巴不再遮挡悬浮形象，并换成与气泡边缘相切的平滑曲线。
+  - 做完你能看到什么：气泡与形象之间留出尾巴长度加尖端间隙；气泡在形象哪一侧，尾巴就贴靠形象的那条边；尾巴没有方块感和横线接缝。
+  - 先依赖什么：2.4、2.6。
+  - 开始前先看：需求 3、6、9；设计 §6.1、§6.3、§7.3。
+  - 主要改哪里：`src/shared/assistant-notifications.ts`、`src/shared/desktop-assistant.ts`、`src/client/avatar/notification-bubble.ts`、`src/client/avatar/floating.ts`、`src/client/avatar/desktop-view.ts`、`src/client/features/global-voice-assistant.ts` 与相关测试。
+  - 这一步先不做什么：不改变气泡尺寸与滚动区域，不新增动画，不操作 Desktop 实机。
+  - 怎么算完成：气泡边缘到形象的间距不小于尾巴长度加尖端间隙；上下左右四个方向都能渲染；尾巴只描两条侧边、不出现横线；侧置时不在气泡圆角处伸出。
+  - 怎么验证：网页布局与组件回放、原生气泡区域间距断言、浮动容器方向工厂断言；`tsc --noEmit` 与通知/桌面/悬浮相关回归。
+  - 对应需求：需求 3 验收 1、6；需求 6；需求 9 验收 4。
+  - 对应设计：§6.1—6.3、§7.3。
+  - 结果与证据：2026-10-11 已完成源码开发。网页布局改为返回 `{ style, tail }` 并预留 26 像素避让，原生布局在通知侧预留同一距离；尾巴改为填充与描边两条路径、根部重叠 1 像素、尖端圆润。用户复测仍被遮挡后，用无头浏览器实测定位到真正根因：通知区域 `maxHeight` 限高而气泡内容更高，绝对定位下内容向下溢出 32 像素，把气泡底边与尾巴推进形象区域；原生伴随页同时存在尾巴挂在卡片面板（顶部行之上）导致指向偏移的问题。修复为区域高度交给内容决定、可用高度经 CSS 变量交给面板与内容收缩滚动、尾巴上移到气泡外壳层级，并把尖端间隙由 6 提到 12 像素。实测复核：网页端尾巴尖端距形象 13 像素、内容 214/713 内部滚动；原生伴随页同样 13 像素、内容 214/367 内部滚动。通知/桌面/悬浮相关 175 项回归通过，类型检查与空白检查通过；未构建、未启动服务、未操作 Desktop，实际观感留给页面刷新或实机验收。
+
+- [x] 2.8 优化提问与权限申请提示文案
+  - 状态：DONE
+  - 这一步到底做什么：把主卡片提示行从「图标 + 标签 + Host 整句」改成一句读得通的结构化提示。
+  - 做完你能看到什么：提问显示「有 [问题] 需要你来处理」，权限类显示「有 [权限申请] 需要你来处理」，不再出现问号前缀。
+  - 先依赖什么：2.4、2.7。
+  - 开始前先看：需求 3、4；设计 §6.1。
+  - 主要改哪里：`src/client/avatar/notification-bubble.ts`、`src/client/locales/assistantWorkbench.ts`、`src/host/features/assistant-notifications.ts` 与相关测试。
+  - 这一步先不做什么：不改动完成与错误提示的文本来源，不新增交互。
+  - 怎么算完成：两类提示都渲染「有 + 标签 + 需要你来处理」；标签文案统一为「问题」「权限申请」；提示行不再有问号或菱形前缀；完成与错误提示仍显示并转义 Host 文本；权限申请使用黄色底叹号与黄色标签。
+  - 怎么验证：气泡渲染断言、原生伴随页文本转义断言、本地化键一致性；`tsc --noEmit` 与通知相关回归。
+  - 对应需求：需求 3 验收 1、4；需求 4。
+  - 对应设计：§6.1。
+  - 结果与证据：2026-10-11 已完成源码开发。提示行改为「有 + 强调标签 + 需要你来处理」，标签文案「权限请求」统一为「权限申请」，新增 `awb.notifications.requestPrefix/requestSuffix` 中英键；Host 模板同步为「有问题需要你来处理」「有权限申请需要你来处理」，气泡对这两类不再渲染 Host 整句，完成与错误提示仍显示 Host 文本并保持转义。用户复测发现多条堆叠的紧凑卡片原本只渲染标签，遂把提示行抽成共用的 `requestLine`，紧凑卡片与主卡片共用同一句结构（字号 12、标签 10），多条场景同样显示「有 [标签] 需要你来处理」。随后按用户要求把权限申请的圆形标记由蓝色菱形改为黄色底叹号，标签同步改黄：新增 `warning` / `warningForeground` 令牌（`--dsw-alias-state-warning-primary` 回退 `#d99a00`、前景 `#3d2c00`），提问标签继续使用蓝色强调底。通知/桌面/悬浮相关 184 项回归通过，类型检查与空白检查通过；未构建、未启动服务、未操作 Desktop。
+
+- [x] 2.9 把一键处理改为一键清理
+  - 状态：DONE
+  - 这一步到底做什么：把气泡顶部批量入口的语义从「批量标记已读」改成「只清掉气泡里堆积的会话通知」，仍有效的提问与审批保留展示等待响应。
+  - 做完你能看到什么：点击「一键清理」后完成与出错提醒消失、按钮随之隐藏；待处理的提问/审批继续显示在气泡里，DSH 会话自身的未读状态与请求状态完全不受影响。
+  - 先依赖什么：2.6。
+  - 开始前先看：需求 3、4；设计 §3.3、§5、§6.1。
+  - 主要改哪里：`src/shared/assistant-notifications.ts`、`src/host/features/assistant-notifications.ts`、`src/host/features/global-voice-rpc.ts`、`src/host/rpc.ts`、`src/host/desktop-assistant/controller.ts`、`src/client/features/assistant-notification-store.ts`、`src/client/avatar/notification-bubble.ts`、`src/client/features/global-voice-assistant.ts`、`src/client/avatar/desktop-view.ts`、`src/client/locales/assistantWorkbench.ts` 与相关测试。
+  - 这一步先不做什么：不清理待处理的提问与审批；不改动已读、收起与请求生命周期；不删除提醒记录；不代替用户回答提问或审批；不操作 Desktop 实机。
+  - 怎么算完成：清理只置记录级展示开关并跳过仍有效的提问与审批，`read`、`presentation`、`lifecycle` 与请求身份一律不变；快照的主气泡、条目与两个计数都不再包含已清理记录，待处理提醒继续展示；气泡只在还有未读会话通知时渲染按钮；重复调用不推进修订；旧代次被拒绝；原生仍只回传窗口身份与点击帧代次。
+  - 怎么验证：Host 中心、RPC、客户端 store、气泡渲染与原生控制器回放；`tsc --noEmit` 与通知/桌面相关回归。
+  - 对应需求：需求 3、4；需求 9 验收 3、5。
+  - 对应设计：§3.3、§5、§6.1。
+  - 结果与证据：2026-10-11 已完成源码开发。共享契约把批量请求/结果改为 `AssistantNotificationClearAllRequest/Result`（`cleared` 计数），RPC 路由改为 `assistant/notifications/clear-all`；Host 通知中心的清理只在 `NoticeRecord` 上置 `cleared` 展示开关并跳过仍有效的提问/审批，`read`、`presentation`、`lifecycle`、请求身份与水位全部保留，快照的 `primary`、`items`、`unreadCount`、`pendingCount` 统一过滤已清理记录，因此完成与错误提醒离开气泡、待处理提醒继续展示，DSH 侧请求仍由来源快照列为待处理；客户端 store、气泡按钮（`onClearAll`，只在还有未读会话通知时渲染，文案「一键清理」/「Clear all」）与原生 `dismiss-all` 路径同步改名，原生动作串保持不变以兼容旧伴随页。Host 中心新增「只清会话通知、待处理保留」「同一请求再次校正不重复展示、新终态仍照常提醒」与「清理不改写已读与生命周期」断言，RPC 新增「清理后来源快照仍列出待处理审批」断言；类型检查、i18n 与版本同步检查通过，通知/桌面聚焦 78 项与全量 2861 项回归中仅剩 2 项失败，均来自同一工作区并行进行的「气泡操作按钮改图标」重构留下的旧断言，与本轮改动无关。未构建、未启动服务、未操作 Desktop。
+
 - [x] 2.10 打通会话选择与通知已读
   - 状态：DONE
   - 这一步到底做什么：监听 `uiWorkspace.selection`，用户从任意入口打开会话后，按 Host、工作区和会话三元组标记对应通知已读。
