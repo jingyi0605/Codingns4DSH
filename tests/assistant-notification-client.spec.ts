@@ -173,7 +173,10 @@ test('气泡共用安全单条帧和分页快照，文本转义、键盘按钮�
     assert.ok(html.includes('&lt;script&gt;')); assert.ok(!html.includes('<script>'))
     assert.ok(html.includes('type="button"')); assert.ok(html.includes('touch-action:manipulation')); assert.ok(html.includes('overflow-y:auto'))
     assert.ok(html.includes('data-codingns-notification-scroll="true"'))
-    assert.ok(html.includes('padding-bottom:12px!important')); assert.ok(html.includes('scrollbar-width:none'))
+    const notificationScrollStyle = html.match(/data-codingns-notification-scroll="true" style="([^"]*)"/u)?.[1] ?? ''
+    assert.ok(html.includes('padding:10px')); assert.ok(html.includes('overflow:visible')); assert.ok(notificationScrollStyle.includes('padding:0'))
+    assert.ok(!html.includes('padding-bottom:12px!important'))
+    assert.ok(html.includes('scrollbar-width:none'))
     assert.ok(html.includes('[data-codingns-notification-scroll]::-webkit-scrollbar'))
     assert.ok(!html.includes('animation:'))
   }
