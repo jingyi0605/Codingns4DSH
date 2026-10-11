@@ -3,6 +3,7 @@ import { fromMarkdown } from 'mdast-util-from-markdown'
 import type { Nodes } from 'mdast'
 
 const CITATION_PREFIX = ':codex-file-citation{'
+const FILE_LINK_URI_SCHEMES = new Set(['about', 'blob', 'data', 'file', 'ftp', 'http', 'https', 'mailto', 'ssh', 'tel', 'urn', 'vscode', 'ws', 'wss'])
 type TextDelta = Extract<CodingNsAgentEvent, { readonly type: 'text-delta' }>
 
 /** Codex 引用按正文 item 暂存，不能将半条指令提前追加到 DSH 的增量日志。 */
@@ -171,14 +172,20 @@ class MarkdownFileLinkNormalizer {
 }
 
 function fileLineTarget(target: string): string {
-  const match = /:([1-9]\d*)$/u.exec(target)
+  const match = /:([1-9]\d*)(?:-([1-9]\d*))?$/u.exec(target)
   if (match === null || !Number.isSafeInteger(Number(match[1]))) return target
   const path = target.slice(0, match.index)
-  // Windows 盘符不属于 URI scheme；裸盘符、真正的 URI 和已有片段保持原样。
-  if (/^[a-z][\w+.-]*:/iu.test(path) && !/^[a-z]:[/\\]/iu.test(path)) return target
+  const start = Number(match[1])
+  const end = match[2] === undefined ? undefined : Number(match[2])
+  if (end !== undefined && (!Number.isSafeInteger(end) || end < start)) return target
+  // 裸盘符加数字仍是 Windows 路径片段，不把它误当成无扩展名文件。
+  if (/^[a-z]:[1-9]\d*(?:-[1-9]\d*)?$/iu.test(target)) return target
+  // Windows 盘符不属于 URI scheme；常见 URI 即使没有 // 也必须原样保留。
+  const scheme = /^([a-z][\w+.-]*):/iu.exec(target)?.[1]?.toLowerCase()
+  if (scheme !== undefined && !/^[a-z]:[/\\]/iu.test(target) && FILE_LINK_URI_SCHEMES.has(scheme)) return target
   if (/^[/\\]{2}/u.test(path) || /:\d+$/u.test(path)) return target
-  if (/[?#\u0000-\u001f\u007f]/u.test(path) || !/[/\\.]/u.test(path)) return target
-  return `${path}#L${match[1]}`
+  if (/[?#\u0000-\u001f\u007f]/u.test(path)) return target
+  return `${path}#L${match[1]}${end === undefined ? '' : `-L${match[2]}`}`
 }
 
 /** 引号里的花括号属于路径或属性，不能提前截断指令。 */

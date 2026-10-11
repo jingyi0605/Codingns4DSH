@@ -90,12 +90,16 @@ for (const segmented of [false, true]) {
       '[Unix](/repo/file.ts:3)',
       '[相对](src/file.ts:42 "标题:123")',
       '[文件](file.ts:5)',
+      '[无扩展名](README:12)',
+      '[范围](src/main.ts:12-18)',
+      '[反向范围](src/main.ts:18-12)',
       '[空格](<D:/目录/文件 (最终).ts:6> "说明")',
       '[**标签** `:99`](../src/file(1).ts:7)',
       '[目标前空白](  src/file.ts:8  "标题")',
     ].join('\n')
     const expected = text.replace(/:1264\)/u, '#L1264)').replace(/:27\)/u, '#L27)')
       .replace(/:3\)/u, '#L3)').replace(/:42 /u, '#L42 ').replace(/:5\)/u, '#L5)')
+      .replace(/README:12\)/u, 'README#L12)').replace(/main.ts:12-18\)/u, 'main.ts#L12-L18)')
       .replace(/:6>/u, '#L6>').replace(/:7\)/u, '#L7)')
       .replace(/:8 /u, '#L8 ')
     const events = await collect([delta(text)], segmented)
