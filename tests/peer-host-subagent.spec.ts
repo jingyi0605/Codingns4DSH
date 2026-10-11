@@ -104,8 +104,12 @@ test('子会话与后代进入状态基线和适配器路由，但不进入侧�
       assert.deepEqual(await transport.hooks.rpc!({ method: 'cli/session/get', payload: { channel: '/codingns', payload: { sessionId: id } } }), {
         ok: true, value: { adapterId, modelId: 'remote-model' },
       })
+      assert.equal(transport.matchesScope({ sessionId: id, adapterId, providerId: 'official' }, 'cli/subscription'), true)
+      assert.deepEqual(await transport.hooks.rpc!({ method: 'cli/subscription', payload: { channel: '/codingns', payload: { sessionId: id, adapterId, providerId: 'official' } } }), {
+        ok: true, value: { adapterId, modelId: 'remote-model' },
+      })
     }
-    assert.deepEqual(calls.map(call => call.payload.scope.targetHostId), ['peer-a', 'peer-b'])
+    assert.deepEqual(calls.map(call => call.payload.scope.targetHostId), ['peer-a', 'peer-a', 'peer-b', 'peer-b'])
     transport.setAggregate([])
     assert.equal(transport.matchesScope({ sessionId: a }, 'cli/session/get'), false)
   } finally { transport.dispose(); globalThis.fetch = previousFetch }
