@@ -92,10 +92,26 @@ test('问题next原样委托、取消不批准审批、真实audit仅结束精�
   assert.equal((await f.call<AssistantNotificationSnapshot>('notifications/read')).pendingCount, 1)
 })
 
+test('会话级已读 RPC 将 local 别名解析为真实 Host，并保持请求待办事实不变', async (t) => {
+  const f = await fixture(t)
+  f.sessionEvent('turn/start', { turn: 1 }, 1); f.sessionEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }, 2)
+  f.sessionEvent('approval/asked', { id: 'a' }, 3)
+  const before = await f.call<AssistantNotificationSnapshot>('notifications/read')
+  const result = await f.call<{ generation: number; read: number }>('notifications/read-session', {
+    generation: before.generation, hostId: 'local', workspaceId: 'w', sessionId: 's',
+  })
+  assert.equal(result.read, 2)
+  const after = await f.call<AssistantNotificationSnapshot>('notifications/read')
+  assert.equal(after.unreadCount, 0)
+  assert.equal(after.pendingCount, 1)
+  assert.equal(after.items.find(item => item.kind === 'approval')!.read, true)
+})
+
 test('访客/会话受限RPC拒绝，非法参数与旧代次失败，归档或停用清理目标', async (t) => {
   const f = await fixture(t)
   for (const peer of [{ authenticated: false }, { authorized: false }, { kind: 'session' }, { scope: { kind: 'session' } }]) {
     await assert.rejects(f.call('notifications/read', {}, { peer }), /无权/u)
+    await assert.rejects(f.call('notifications/read-session', {}, { peer }), /无权/u)
     await assert.rejects(f.call('notifications/read-all', {}, { peer }), /无权/u)
   }
   await assert.rejects(f.call('notifications/read', []), /参数/u)

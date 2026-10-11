@@ -4,6 +4,7 @@ import { AssistantNotificationCenter, type AssistantNotificationFact } from '../
 import { DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS, normalizeAssistantNotificationSettings } from '../src/shared/assistant-notifications.js'
 import { CodingNsSettingsSchema } from '../src/host/settings.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
+import { createVirtualWorkspaceId } from '../src/shared/contracts/peer-host.js'
 
 const local = { hostId: 'local', workspaceId: 'workspace', sessionId: 'session' }
 function fixture() {
@@ -56,6 +57,36 @@ test('请求独立结束，已读和收起都保留待处理，待办不受100�
   f.request('question-0', 'question', 'request-resolved')
   assert.equal(f.center.read().pendingCount, 109)
   assert.equal(f.center.read().primary!.kind, 'question')
+})
+
+test('按 Host、工作区和会话三元组批量标记已读，重复调用幂等且不误读同名会话', () => {
+  const center = new AssistantNotificationCenter({ now: () => 1000 })
+  center.configure(true, ['workspace', 'other'])
+  const generation = center.generation
+  const emit = (target: { hostId: string; workspaceId: string; sessionId: string }, type: 'turn-completed' | 'turn-failed', turnId: string, sessionTitle: string): void => {
+    center.consume({ generation, target, type, turnId, sessionTitle })
+  }
+  emit({ hostId: 'host-a', workspaceId: 'workspace', sessionId: 'same' }, 'turn-completed', 'a-1', 'A-工作区会话')
+  emit({ hostId: 'host-b', workspaceId: 'workspace', sessionId: 'same' }, 'turn-failed', 'b-1', 'B-工作区会话')
+  emit({ hostId: 'host-a', workspaceId: 'other', sessionId: 'same' }, 'turn-completed', 'a-2', 'A-其他工作区')
+  const result = center.readSession({ generation, hostId: 'host-a', workspaceId: 'workspace', sessionId: 'same' })
+  assert.equal(result.read, 1)
+  assert.equal(center.read().items.find(item => item.sessionTitle === 'A-工作区会话')!.read, true)
+  const remaining = center.read({ limit: 10 }).items.filter(item => !item.read)
+  assert.equal(remaining.length, 2)
+  assert.equal(center.readSession({ generation, hostId: 'host-a', workspaceId: 'workspace', sessionId: 'same' }).read, 0)
+})
+
+test('PeerHost 虚拟或旧式工作区 ID 归一化后仍按远端 Host 和会话精确匹配', () => {
+  const center = new AssistantNotificationCenter({ now: () => 1000 })
+  center.configure(true, ['peer:w', createVirtualWorkspaceId('peer', 'virtual-w')])
+  const generation = center.generation
+  center.consume({ generation, target: { hostId: 'peer', workspaceId: 'peer:w', sessionId: 'same' }, type: 'turn-completed', turnId: 'legacy' })
+  center.consume({ generation, target: { hostId: 'peer', workspaceId: createVirtualWorkspaceId('peer', 'virtual-w'), sessionId: 'same' }, type: 'turn-completed', turnId: 'virtual' })
+  assert.equal(center.readSession({ generation, hostId: 'peer', workspaceId: createVirtualWorkspaceId('local', 'w'), sessionId: 'same' }).read, 0)
+  assert.equal(center.readSession({ generation, hostId: 'peer', workspaceId: 'w', sessionId: 'same' }).read, 1)
+  assert.equal(center.readSession({ generation, hostId: 'peer', workspaceId: 'virtual-w', sessionId: 'same' }).read, 1)
+  assert.equal(center.read().items.every(item => item.read), true)
 })
 
 test('完成计时从首次真实展示开始，刷新确认幂等；抢占不重启截止时间，错误不设内置截止', () => {

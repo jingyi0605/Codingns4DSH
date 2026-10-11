@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { HostRouter } from '../src/features/host-router.js'
 import { createVirtualSessionId, createVirtualWorkspaceId } from '../src/shared/contracts/peer-host.js'
-import { openAssistantNotificationSession, supportsAssistantSessionNavigation } from '../src/dsh-capabilities/client/assistant-session-navigation-adapter.js'
+import { normalizeAssistantSessionSelection, openAssistantNotificationSession, supportsAssistantSessionNavigation } from '../src/dsh-capabilities/client/assistant-session-navigation-adapter.js'
 import type { CodingNsClientServices } from '../src/client/features/types.js'
 import type { AssistantNotificationTarget } from '../src/shared/assistant-notifications.js'
 
@@ -51,6 +51,14 @@ test('local-host及自定义本机身份不会编码成远端，local虚拟别�
   assert.equal(f.services.hostRouter.getCurrent()!.workspaceId, 'project')
   assert.equal(f.services.hostRouter.getCurrent()!.targetHostId, 'peer')
   assert.equal(f.opened.at(-1), createVirtualSessionId('peer', 'same'))
+})
+
+test('前台会话选择归一化为本地或远端通知匹配三元组，Host 不同或缺失字段不猜测', () => {
+  assert.deepEqual(normalizeAssistantSessionSelection({ workspaceId: 'project', sessionId: 'same' }), { hostId: 'local', workspaceId: 'project', sessionId: 'same' })
+  assert.deepEqual(normalizeAssistantSessionSelection({ workspaceId: createVirtualWorkspaceId('peer', 'project'), sessionId: createVirtualSessionId('peer', 'same') }), { hostId: 'peer', workspaceId: 'project', sessionId: 'same' })
+  assert.deepEqual(normalizeAssistantSessionSelection({ workspaceId: createVirtualWorkspaceId('local', 'project'), sessionId: createVirtualSessionId('local', 'same') }), { hostId: 'local', workspaceId: 'project', sessionId: 'same' })
+  assert.equal(normalizeAssistantSessionSelection({ workspaceId: createVirtualWorkspaceId('peer', 'project'), sessionId: createVirtualSessionId('other', 'same') }), undefined)
+  assert.equal(normalizeAssistantSessionSelection({ workspaceId: 'project' }), undefined)
 })
 
 test('导航失败、范围切换或取消期间不宣称成功，也不发送任何消息', async () => {

@@ -28,7 +28,8 @@ function fixture(now: () => number = Date.now) {
     calls.push({ endpoint, payload })
     try {
       const value = endpoint.endsWith('/read-all') ? host.readAll(payload)
-        : endpoint.endsWith('/read') ? host.read(payload) : endpoint.endsWith('/ack') ? host.ack(payload) : await host.target(payload)
+        : endpoint.endsWith('/read-session') ? host.readSession(payload)
+          : endpoint.endsWith('/read') ? host.read(payload) : endpoint.endsWith('/ack') ? host.ack(payload) : await host.target(payload)
       return { ok: true, value }
     } catch (error) { return { ok: false, error: { code: 'FAIL', message: String(error) } } }
   } }
@@ -69,6 +70,31 @@ test('实际展示才确认，关闭不处理请求，成功导航才已读；�
   assert.equal(f.host.read().pendingCount, 2)
   assert.ok(f.host.read().items.find((item) => item.noticeId === notice.noticeId)!.read)
   assert.deepEqual(new Set(f.calls.map((call) => call.endpoint)), new Set(['assistant/notifications/read', 'assistant/notifications/ack', 'assistant/notifications/target']))
+})
+
+test('前台会话选择触发会话级已读，重复选择保持幂等', async (t) => {
+  const f = fixture(); t.after(() => { f.store.dispose(); f.host.dispose() })
+  f.turn('turn-completed', 'same')
+  f.store.configure(true, 'selection'); await f.store.refresh()
+  await f.store.markSessionRead({ hostId: 'local', workspaceId: 'project', sessionId: 'same' })
+  assert.equal(f.host.read().items[0]!.read, true)
+  assert.equal(f.calls.filter((call) => call.endpoint === 'assistant/notifications/read-session').length, 1)
+  const before = f.calls.length
+  await f.store.markSessionRead({ hostId: 'local', workspaceId: 'project', sessionId: 'other' })
+  assert.ok(f.calls.length > before)
+  assert.equal(f.host.read().items[0]!.read, true)
+})
+
+test('会话快速切换时丢弃队列中的旧选择，只提交最后一次会话身份', async (t) => {
+  const f = fixture(); t.after(() => { f.store.dispose(); f.host.dispose() })
+  f.turn('turn-completed', 'same')
+  f.store.configure(true, 'selection-race'); await f.store.refresh()
+  const oldSelection = f.store.markSessionRead({ hostId: 'local', workspaceId: 'project', sessionId: 'old' })
+  const currentSelection = f.store.markSessionRead({ hostId: 'local', workspaceId: 'project', sessionId: 'same' })
+  await Promise.all([oldSelection, currentSelection])
+  const reads = f.calls.filter((call) => call.endpoint === 'assistant/notifications/read-session')
+  assert.deepEqual(reads.map((call) => call.payload.sessionId), ['same'])
+  assert.equal(f.host.read().items[0]!.read, true)
 })
 
 test('刷新与重复确认保留 Host 首展截止时间，完成10秒到期后仍未读；错误不设内置截止', async (t) => {
