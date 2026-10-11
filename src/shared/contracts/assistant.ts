@@ -40,6 +40,20 @@ export interface SessionIndexEntry {
   readonly indexState?: AssistantSessionIndexState
 }
 
+/** 全局助理读取进行中会话时使用的有界消息；不包含凭据和原始协议对象。 */
+export interface AssistantSessionMessage {
+  readonly role: 'assistant' | 'tool'
+  readonly text: string
+  readonly toolName?: string
+  readonly callId?: string
+  readonly state?: 'running' | 'completed' | 'failed'
+  /** 只有调用方明确指定对应 callId 时才返回工具结果。 */
+  readonly result?: string
+  readonly seq?: number
+  readonly turn?: number
+  readonly step?: number
+}
+
 /** 一次索引构建的不可变快照。 */
 export interface AssistantIndexSnapshot {
   readonly generation: number

@@ -7,7 +7,7 @@ import type { DebugWorkspaceService } from '../debug.js'
 import type { CodingNsNativeTeamProxy } from '../cli-adapters/native-team-proxy.js'
 import type { Context } from '@deepseek-ai/cordis'
 import type { AssistantSessionSourceRecord } from './assistant-session-index.js'
-import type { AssistantWaitingKind } from '../../shared/contracts/assistant.js'
+import type { AssistantSessionMessage, AssistantWaitingKind } from '../../shared/contracts/assistant.js'
 import type { AssistantPeerNotificationObserver } from './assistant-peer-notifications.js'
 import type { AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
 
@@ -32,6 +32,8 @@ export interface AssistantHostGateway {
     readonly warnings?: readonly string[]
     readonly failed?: boolean
     readonly readSummary?: (session: AssistantSessionSourceRecord, signal?: AbortSignal) => Promise<string | null>
+    /** 读取受管会话最近的有界消息，不读取完整历史。 */
+    readonly readMessages?: (session: AssistantSessionSourceRecord, signal?: AbortSignal, toolCallId?: string) => Promise<readonly AssistantSessionMessage[]>
     readonly readWaiting?: (session: AssistantSessionSourceRecord, signal?: AbortSignal) => Promise<AssistantWaitingKind | null>
   }>
   dispatch(request: { readonly hostId: string; readonly requestId: string; readonly sessionId: string; readonly mode: 'queue' | 'steer'; readonly content: readonly [{ readonly type: 'text'; readonly text: string }]}, signal?: AbortSignal): Promise<void>

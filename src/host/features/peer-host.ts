@@ -15,7 +15,8 @@ import {
 } from '../modules/peer-host/peer-host-store.js'
 import type { PeerHostRoute } from '../../shared/contracts/peer-host.js'
 import type { AggregateHostResult, PeerHostRecord, PeerHostClientRecord } from '../../shared/contracts/peer-host.js'
-import type { AssistantWaitingKind } from '../../shared/contracts/assistant.js'
+import type { AssistantSessionMessage, AssistantWaitingKind } from '../../shared/contracts/assistant.js'
+import { appendAssistantSessionStream, readAssistantSessionMessages } from '../../shared/assistant-session-messages.js'
 import { assistantWorkspaceMatches } from '../../shared/assistant-lifecycle.js'
 import type { DshHostStatus } from '../../shared/contracts/host-status.js'
 import { createVirtualSessionId, createVirtualWorkspaceId, normalizePeerHostColor, parseVirtualSessionId, parseVirtualWorkspaceId, type HostScope } from '../../shared/contracts/peer-host.js'
@@ -363,13 +364,13 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
               }
             }
           }
-          const remoteDetails = new Map<string, Promise<{ readonly summary: string | null; readonly waiting: AssistantWaitingKind | null }>>()
-          const readRemoteDetails = (session: import('./assistant-session-index.js').AssistantSessionSourceRecord, readSignal?: AbortSignal) => {
+          const remoteDetails = new Map<string, Promise<{ readonly summary: string | null; readonly waiting: AssistantWaitingKind | null; readonly messages: readonly AssistantSessionMessage[] }>>()
+          const readRemoteDetails = (session: import('./assistant-session-index.js').AssistantSessionSourceRecord, readSignal?: AbortSignal, toolCallId?: string) => {
             readSignal?.throwIfAborted()
             if (session.hostId === localHostId) {
-              return Promise.resolve({ summary: session.summary ?? null, waiting: session.waiting ?? null })
+              return Promise.resolve({ summary: session.summary ?? null, waiting: session.waiting ?? null, messages: [] as readonly AssistantSessionMessage[] })
             }
-            const key = `${session.hostId}:${session.sessionId}`
+            const key = `${session.hostId}:${session.sessionId}:${toolCallId ?? ''}`
             const cached = remoteDetails.get(key)
             if (cached !== undefined) return cached
             const promise = (async () => {
@@ -407,13 +408,14 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
                   return {
                     summary: summarizeAssistantRemoteRecords(records),
                     waiting: summarizeAssistantRemoteWaiting(records),
+                    messages: appendAssistantSessionStream(readAssistantSessionMessages(records, { ...(toolCallId === undefined ? {} : { toolCallId }) }), value.assistantStream),
                   }
                 }
               } catch {
                 readSignal?.throwIfAborted()
                 // 单个远端会话不可读时保留其元数据，不能让整个索引失败。
               }
-              return { summary: session.summary ?? null, waiting: session.waiting ?? null }
+              return { summary: session.summary ?? null, waiting: session.waiting ?? null, messages: [] }
             })()
             remoteDetails.set(key, promise)
             return promise
@@ -426,6 +428,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             warnings: failed ? ['部分远端 Host 暂不可达，已延后重试。'] : [],
             readSummary: async (session: import('./assistant-session-index.js').AssistantSessionSourceRecord, signal?: AbortSignal) => (await readRemoteDetails(session, signal)).summary,
             readWaiting: async (session: import('./assistant-session-index.js').AssistantSessionSourceRecord, signal?: AbortSignal) => (await readRemoteDetails(session, signal)).waiting,
+            readMessages: async (session: import('./assistant-session-index.js').AssistantSessionSourceRecord, signal?: AbortSignal, toolCallId?: string) => (await readRemoteDetails(session, signal, toolCallId)).messages,
           }
         },
         async dispatch(request: { readonly hostId: string; readonly requestId: string; readonly sessionId: string; readonly mode: 'queue' | 'steer'; readonly content: readonly [{ readonly type: 'text'; readonly text: string }] }, signal?: AbortSignal) {

@@ -9,7 +9,7 @@ import { AssistantVoiceTurnRouter } from './assistant-voice-turn.js'
 import { buildAssistantSessionIndex, type AssistantSessionIndexSnapshot } from './assistant-session-index.js'
 import { sanitizeSpeechText, summarizeAssistantEntries } from './assistant-summary.js'
 import { parseAssistantIntent } from './assistant-intent.js'
-import type { AssistantDebugSnapshot, AssistantLifecycleSnapshot, SessionIndexEntry } from '../../shared/contracts/assistant.js'
+import type { AssistantDebugSnapshot, AssistantLifecycleSnapshot, AssistantSessionMessage, SessionIndexEntry } from '../../shared/contracts/assistant.js'
 import { AssistantIndexUpdates, assistantSessionKey, isAssistantIndexEvent } from './assistant-index-updates.js'
 import { AssistantBackground } from './assistant-background.js'
 import { readAssistantPrompts } from '../../shared/assistant-prompts.js'
@@ -54,6 +54,8 @@ import { AssistantNotificationSource } from './assistant-notification-source.js'
 import { readAssistantNotificationFeedRequest, type AssistantNotificationFact as AssistantSourceFact } from '../../shared/assistant-notification-feed.js'
 import { bindDesktopAssistantNotifications } from '../desktop-assistant/notifications.js'
 import { AssistantNotificationController } from './assistant-notification-stream.js'
+import { appendAssistantSessionStream, readAssistantSessionMessages } from '../../shared/assistant-session-messages.js'
+import { resolveDshNativeDispatch } from '../modules/peer-host/peer-host-native-dispatch.js'
 
 /**
  * 全局智能助理 Host 边界。
@@ -133,6 +135,19 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
           signal.throwIfAborted()
           if (resetting || revision !== lifecycleRevision) throw new Error('助理管理范围已变化，请重新查询')
           return summary
+        },
+         readMessages: async (entry, signal, toolCallId) => {
+          const revision = lifecycleRevision
+          const managed = assistantSettings().managedWorkspaceIds
+          const source = await readAssistantSource(context.services, managed, waitingState, signal)
+          signal.throwIfAborted()
+          if (resetting || revision !== lifecycleRevision) throw new Error('助理管理范围已变化，请重新查询')
+          const current = source.sessions.find((item) => item.hostId === entry.hostId && item.sessionId === entry.sessionId && item.workspaceId === entry.workspaceId)
+          if (current === undefined || source.archivedSessionIds.includes(entry.sessionId)) throw new Error('目标会话已退出助理管理范围')
+           const messages = await source.readMessages?.(current, signal, toolCallId) ?? []
+          signal.throwIfAborted()
+          if (resetting || revision !== lifecycleRevision) throw new Error('助理管理范围已变化，请重新查询')
+          return messages
         },
       })
       const managementAgent = createAssistantAgentAdapter(context.services.dshContext, context.services.dshVersion ?? minimumSupportedDshVersion(), llm, managementTools)
@@ -1226,6 +1241,7 @@ async function readAssistantSource(services: CodingNsHostServices, managedWorksp
   readonly failed?: boolean
   readonly workspaces: AssistantDebugSnapshot['workspaces']
   readonly readSummary?: (session: AssistantSessionSourceRecord, signal?: AbortSignal) => Promise<string | null>
+    readonly readMessages?: (session: AssistantSessionSourceRecord, signal?: AbortSignal, toolCallId?: string) => Promise<readonly AssistantSessionMessage[]>
   readonly readWaiting?: (session: AssistantSessionSourceRecord, signal?: AbortSignal) => Promise<'approval' | 'question' | null>
 }> {
   signal?.throwIfAborted()
@@ -1365,9 +1381,19 @@ async function readAssistantSource(services: CodingNsHostServices, managedWorksp
         readSignal?.throwIfAborted()
         if (session.hostId === hostId && readSurface !== undefined) return readSurfaceSummary(readSurface, session.sessionId, readSignal)
         if (session.hostId !== hostId && gatewayResult?.readSummary !== undefined) return gatewayResult.readSummary(session, readSignal)
-        return session.summary ?? null
-      },
+         return session.summary ?? null
+       },
     }),
+    readMessages: async (session, readSignal, toolCallId) => {
+      readSignal?.throwIfAborted()
+      if (session.hostId === hostId) {
+        const surfaceMessages = readSurface === undefined ? [] : await readSurfaceMessages(readSurface, session.sessionId, readSignal, toolCallId)
+        if (surfaceMessages.length > 0) return surfaceMessages
+        return await readNativeSessionMessages(services, session.sessionId, readSignal, toolCallId)
+      }
+      if (gatewayResult?.readMessages !== undefined) return gatewayResult.readMessages(session, readSignal, toolCallId)
+      return []
+    },
     ...((gatewayResult?.readWaiting === undefined) ? {} : {
       readWaiting: async (session: AssistantSessionSourceRecord, readSignal?: AbortSignal) => {
         readSignal?.throwIfAborted()
@@ -1429,6 +1455,47 @@ async function readSurfaceSummary(readSurface: (sessionId: string, signal?: Abor
   for (const key of ['summary', 'text', 'content', 'surface']) if (typeof value[key] === 'string') return value[key].slice(0, 2000)
   if (Array.isArray(value.events)) return summarizeSurfaceEvents(value.events)
   return null
+}
+
+async function readSurfaceMessages(readSurface: (sessionId: string, signal?: AbortSignal) => Promise<unknown>, sessionId: string, signal?: AbortSignal, toolCallId?: string): Promise<readonly AssistantSessionMessage[]> {
+  signal?.throwIfAborted()
+  const value = await readSurface(sessionId, signal)
+  signal?.throwIfAborted()
+  if (!isRecord(value)) return []
+  const records = Array.isArray(value.events) ? value.events : Array.isArray(value.records) ? value.records : []
+  return appendAssistantSessionStream(readAssistantSessionMessages(records, { ...(toolCallId === undefined ? {} : { toolCallId }) }), value.assistantStream)
+}
+
+/** DSH 原生会话快照是本地运行中会话的实时回退；提取器只输出白名单语义消息。 */
+async function readNativeSessionMessages(services: CodingNsHostServices, sessionId: string, signal?: AbortSignal, toolCallId?: string): Promise<readonly AssistantSessionMessage[]> {
+  signal?.throwIfAborted()
+  const dispatch = resolveDshNativeDispatch(services.dshContext)
+  if (dispatch !== undefined) {
+    try {
+      const stream = await dispatch.stream('session/follow', {
+        args: { request: { address: { kind: 'session', sessionId }, assistantStream: true, maxMessages: 32 } },
+      }, signal)
+      for await (const frame of stream) {
+        signal?.throwIfAborted()
+        if (!isRecord(frame) || frame.type !== 'snapshot') continue
+        const records = Array.isArray(frame.records) ? frame.records : []
+        return appendAssistantSessionStream(readAssistantSessionMessages(records, { ...(toolCallId === undefined ? {} : { toolCallId }) }), frame.assistantStream)
+      }
+    } catch {
+      signal?.throwIfAborted()
+      // 较旧 DSH Host 没有 session/follow 时回退到当前内存 Session 快照。
+    }
+  }
+  const ctx = services.dshContext
+  let session: unknown
+  try { session = services.nativeSessions?.get(sessionId) ?? readOptionalService(ctx, 'sessions')?.get?.(sessionId) } catch { return [] }
+  if (!isRecord(session) || typeof session.snapshotEvents !== 'function') return []
+  try {
+    const events: unknown = session.snapshotEvents()
+    return Array.isArray(events) ? readAssistantSessionMessages(events, { ...(toolCallId === undefined ? {} : { toolCallId }) }) : []
+  } catch {
+    return []
+  }
 }
 
 /**
