@@ -98,7 +98,17 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
       })
       let workspaceOrderHydrated = false
       const nativeStreams = new PeerHostNativeStreams()
-      const dshNativeDispatch = resolveDshNativeDispatch(context.services.dshContext)
+      const completionStatuses = new Set<string>()
+      const disposeCompletionStatusListener = registerPeerHostCompletionStatusListener(context.services.dshContext, completionStatuses)
+      if (disposeCompletionStatusListener !== undefined) context.resources.add(disposeCompletionStatusListener)
+      const dshNativeDispatch = resolveDshNativeDispatch(context.services.dshContext, {
+        replayCompletedSessions: () => {
+          const pending = [...completionStatuses]
+          completionStatuses.clear()
+          return pending
+        },
+        onSessionStatusForwarded: (sessionId) => { completionStatuses.delete(sessionId) },
+      })
       const debugLevel = resolveCodingNsDebugLevel()
       const diagnostics = createPeerHostDiagnosticSink({
         enabled: debugLevel !== 'off',
@@ -1115,6 +1125,21 @@ function isRecordValue(value: unknown): value is Record<string, unknown> {
 
 function textValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+}
+
+/** 记录 Host 进程已观察到的完成会话，供稍后建立的 PeerHost 事件流补发。 */
+function registerPeerHostCompletionStatusListener(
+  ctx: CodingNsHostServices['dshContext'],
+  completed: Set<string>,
+): (() => void) | undefined {
+  if (ctx === undefined || typeof ctx.on !== 'function') return undefined
+  const listener = (sessionId: unknown, running: unknown): void => {
+    if (typeof sessionId !== 'string' || typeof running !== 'boolean') return
+    if (running) completed.delete(sessionId)
+    else completed.add(sessionId)
+  }
+  const disposer = ctx.on('api-session/status' as never, listener as never, { global: true } as never)
+  return typeof disposer === 'function' ? disposer as () => void : undefined
 }
 
 /** 将初始化竞态期间原生列表传来的本地裸 ID解析为顺序 Registry 的虚拟 ID。 */

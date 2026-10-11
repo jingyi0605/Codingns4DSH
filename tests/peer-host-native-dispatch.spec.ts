@@ -42,6 +42,24 @@ test('交互事件走 Gateway wireStream，回答走 Connection 原生拦截器'
   await dispatch.rpc('$events/result', { args: { clientId: 'peer-client', eventId: 'e', outcome: { kind: 'result', value: 'rejected' } } })
 })
 
+test('完成状态回放必须排在 ready 帧之后，避免事件流被握手校验丢弃', async () => {
+  const gateway = {
+    invoke: async () => undefined,
+    stream: async () => (async function* () {})(),
+    wireStream: { open: async () => (async function* () {
+      yield { type: 'ready', clientId: 'peer-client' }
+    })() },
+  }
+  const dispatch = resolveDshNativeDispatch({ get: (name: string) => name === 'typertGateway' ? gateway : undefined } as never, {
+    replayCompletedSessions: () => ['remote-session'],
+  })!
+  const stream = await dispatch.stream('$events', { args: {} })
+  assert.deepEqual(await Array.fromAsync(stream), [
+    { type: 'ready', clientId: 'peer-client' },
+    { type: 'emit', event: 'api-session/status', args: ['remote-session', false] },
+  ])
+})
+
 test('旧 Gateway 明确报告不支持事件协议，事件回答保留原生失败原因', async () => {
   const gateway = { invoke: async () => undefined, stream: async () => (async function* () {})() }
   const connection = { createSharedFetchHandler: () => ({ fetch: async () => Response.json({ result: { ok: false, error: { code: 'gateway/expired', message: '审批已过期' } } }) }) }

@@ -26,13 +26,20 @@ export interface DshNativeDispatch {
   stream(method: string, payload: unknown, signal?: AbortSignal): Promise<AsyncIterable<unknown>>
 }
 
+export interface DshNativeDispatchOptions {
+  /** 只用于 PeerHost 事件流的完成状态回放，不影响 DSH 自己的本地事件流。 */
+  readonly replayCompletedSessions?: () => readonly string[]
+  /** 实时状态已经进入 PeerHost 事件流后清掉暂存，避免重连重复标记未读。 */
+  readonly onSessionStatusForwarded?: (sessionId: string, running: boolean) => void
+}
+
 interface TypertGatewayService {
   readonly wireStream?: { open(endpoint: string, payload: unknown, uplink: AsyncIterable<unknown>, peer: undefined, signal: AbortSignal): Promise<AsyncIterable<unknown>> }
   readonly invoke?: (request: { readonly namespace: string; readonly method: string; readonly args: Record<string, unknown>; readonly signal?: AbortSignal }) => Promise<unknown>
   readonly stream?: (request: { readonly namespace: string; readonly method: string; readonly args: Record<string, unknown>; readonly signal?: AbortSignal }) => AsyncIterable<unknown>
 }
 
-export function resolveDshNativeDispatch(ctx: Context | undefined): DshNativeDispatch | undefined {
+export function resolveDshNativeDispatch(ctx: Context | undefined, options: DshNativeDispatchOptions = {}): DshNativeDispatch | undefined {
   if (ctx === undefined) return undefined
   let gateway: unknown
   try { gateway = ctx.get('typertGateway') } catch { return undefined }
@@ -59,7 +66,7 @@ export function resolveDshNativeDispatch(ctx: Context | undefined): DshNativeDis
       if (method === '$events') {
         if (service.wireStream === undefined) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', '当前 Host 未提供 DSH 原生事件通道')
         const stream = await service.wireStream.open(method, payload, (async function* () {})(), undefined, signal ?? new AbortController().signal)
-        return interactionEvents(stream)
+        return interactionEvents(stream, options)
       }
       const target = endpoint(method)
       const args = readWireArgs(payload)
@@ -72,12 +79,31 @@ export function resolveDshNativeDispatch(ctx: Context | undefined): DshNativeDis
 }
 
 /** 目标 Host 的账号、设置和插件通知不属于会话交互，不能随 PeerHost 转发到其他客户端。 */
-async function* interactionEvents(stream: AsyncIterable<unknown>): AsyncIterable<unknown> {
+async function* interactionEvents(stream: AsyncIterable<unknown>, options: DshNativeDispatchOptions): AsyncIterable<unknown> {
+  let readySeen = false
   for await (const frame of stream) {
+    if (!readySeen && asRecord(frame)?.type === 'ready') {
+      readySeen = true
+      yield frame
+      // 事件协议要求 ready 是第一帧；回放必须紧跟在 ready 后面，否则接收端会
+      // 把完成状态误判为握手失败，整条 PeerHost 事件流会被丢弃并重连。
+      for (const sessionId of options.replayCompletedSessions?.() ?? []) {
+        yield { type: 'emit', event: 'api-session/status', args: [sessionId, false] }
+      }
+      continue
+    }
     // 会话运行态由 DSH 通过 `api-session/status` 的 emit 帧广播；客户端在
     // session/list 只做基线读取，丢掉这类增量后，已结束会话会一直显示运行中，
     // 新启动会话也不会进入运行态。其它 emit 仍属于目标 Host 的全局通知，必须过滤。
-    if (asRecord(frame)?.type !== 'emit' || isSessionStatusFrame(frame)) yield frame
+    if (isSessionStatusFrame(frame)) {
+      const args = asRecord(frame)?.args
+      if (Array.isArray(args) && typeof args[0] === 'string' && typeof args[1] === 'boolean') {
+        options.onSessionStatusForwarded?.(args[0], args[1])
+      }
+      yield frame
+    } else if (asRecord(frame)?.type !== 'emit') {
+      yield frame
+    }
   }
 }
 
