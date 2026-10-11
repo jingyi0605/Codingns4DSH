@@ -1,4 +1,4 @@
-import type { AssistantNotification, AssistantNotificationReadAllResult, AssistantNotificationSessionTarget, AssistantNotificationSnapshot, AssistantNotificationStreamFrame, AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
+import type { AssistantNotification, AssistantNotificationClearAllResult, AssistantNotificationSessionTarget, AssistantNotificationSnapshot, AssistantNotificationStreamFrame, AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
 import { callCodingNsRpcResult } from '../rpc-call.js'
 import type { CodingNsRpcClient } from './types.js'
 
@@ -203,12 +203,12 @@ export class AssistantNotificationStore {
     await this.refresh(true)
   }
 
-  /** 一键处理只结算当前代次的未读记录；待处理请求仍由 Host 保持展示。 */
-  async readAll(generation: number): Promise<void> {
+  /** 一键清理只清空当前代次的气泡展示；DSH 侧未读、待处理与请求身份都由 Host 原样保留。 */
+  async clearAll(generation: number): Promise<void> {
     const epoch = this.epoch
     this.requireFrame(generation)
     await this.enqueue(async (signal) => {
-      await this.call<AssistantNotificationReadAllResult>('read-all', { generation }, signal)
+      await this.call<AssistantNotificationClearAllResult>('clear-all', { generation }, signal)
       this.assertCurrent(epoch, signal)
     }, epoch).catch((error: unknown) => {
       if (epoch === this.epoch && this.enabled && !this.disposed) this.publish({ ...this.snapshot, error: message(error), errorNoticeId: undefined, errorGeneration: undefined })
@@ -303,7 +303,7 @@ export class AssistantNotificationStore {
     this.chain = operation.catch(() => undefined)
     return operation
   }
-  private async call<T>(action: 'read' | 'read-session' | 'ack' | 'read-all' | 'target', payload: unknown, signal: AbortSignal): Promise<T> {
+  private async call<T>(action: 'read' | 'read-session' | 'ack' | 'clear-all' | 'target', payload: unknown, signal: AbortSignal): Promise<T> {
     const result = await callCodingNsRpcResult(this.rpc, `assistant/notifications/${action}`, payload, signal)
     signal.throwIfAborted()
     if (!result.ok) throw new Error(result.error.message)

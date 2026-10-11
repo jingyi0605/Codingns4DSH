@@ -2,16 +2,19 @@ import { createElement, useEffect, useRef, useState } from 'react'
 import type { ReactElement, ReactNode, PointerEvent } from 'react'
 import type { AssistantAvatarModel, AssistantAvatarReaction, AssistantAvatarState } from '../../shared/assistant-avatar.js'
 import { clampAssistantAvatarPosition } from '../../shared/assistant-avatar.js'
+import type { AssistantNotificationTailSide } from '../../shared/assistant-notifications.js'
 import type { CodingNsClientServices } from '../features/types.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { AssistantAvatarSlot } from './slot.js'
 import { FloatingCallBadge, FloatingCallCaption, floatingCallCaptionLayout } from '../features/assistant-floating-call.js'
 import type { FloatingCallInfo } from '../features/assistant-floating-call.js'
 import { dshThemeColor } from '../theme.js'
-import { assistantNotificationTailStyle, floatingAssistantNotificationLayout } from './notification-bubble.js'
+import { assistantNotificationTailTarget, floatingAssistantNotificationLayout } from './notification-bubble.js'
 
 const POSITION_KEY = 'codingns-assistant-avatar-position'
 interface Position { readonly x: number; readonly y: number }
+/** 气泡节点可以按布局方向渲染尾巴；不需要方向的调用方仍可直接传节点。 */
+export type AssistantNotificationNode = ReactNode | ((tail: AssistantNotificationTailSide, tailTarget?: number) => ReactNode)
 
 /** 容器负责交互，渲染器只画形象；拖动与打开对话互斥。 */
 export function FloatingAssistantAvatar({ services, model, state, reaction, size, call, notification, onOpen }: {
@@ -19,7 +22,7 @@ export function FloatingAssistantAvatar({ services, model, state, reaction, size
   readonly size: number; readonly onOpen: () => void
   readonly call?: FloatingCallInfo | undefined
   readonly reaction?: AssistantAvatarReaction
-  readonly notification?: ReactNode
+  readonly notification?: AssistantNotificationNode
 }): ReactElement {
   return createElement(FloatingAssistantFrame, { services, width: size, height: size * 208 / 192, positionKey: POSITION_KEY, kind: 'avatar', call, notification, onOpen },
     createElement(AssistantAvatarSlot, { services, model, state, surface: 'floating', size, ...(reaction === undefined ? {} : { reaction }) }))
@@ -39,7 +42,7 @@ export function FloatingVoiceCall({ services, call, onOpen }: {
 function FloatingAssistantFrame({ services, width: size, height, positionKey, kind, call, notification, onOpen, children }: {
   readonly services: CodingNsClientServices; readonly width: number; readonly height: number; readonly positionKey: string
   readonly kind: 'avatar' | 'call'; readonly call?: FloatingCallInfo | undefined; readonly onOpen: () => void; readonly children?: ReactNode
-  readonly notification?: ReactNode
+  readonly notification?: AssistantNotificationNode
 }): ReactElement {
   const t = useCodingNsTranslator(services.locale)
   const [position, setPosition] = useState<Position>(() => readPosition(size, height, positionKey))
@@ -88,9 +91,18 @@ function FloatingAssistantFrame({ services, width: size, height, positionKey, ki
   const captionLayout = floatingCallCaptionLayout(position.x, position.y, size, height, viewport.width, viewport.height)
   const notificationLayout = notification === undefined ? undefined : floatingAssistantNotificationLayout(position.x, position.y, size, height, viewport.width, viewport.height, call ? captionLayout.above : undefined)
   const notificationStyle = notificationLayout === undefined ? undefined : {
-    position: 'absolute' as const, ...notificationLayout,
-    ...assistantNotificationTailStyle(size / 2, Number(notificationLayout.left ?? 0), Number(notificationLayout.width ?? size)),
+    position: 'absolute' as const, ...notificationLayout.style,
+    // 区域高度交给内容决定，气泡底边因此始终贴在形象上方；限高交给气泡面板，内容只会在内部滚动。
+    maxHeight: undefined,
+    '--codingns-notification-max-height': `${Number(notificationLayout.style.maxHeight ?? 276)}px`,
   }
+  // 气泡节点由调用方创建；方向通过函数形式回传，调用方不需要重复计算布局几何。
+  const notificationNode = typeof notification === 'function'
+    ? notification(notificationLayout?.tail ?? 'bottom', notificationLayout === undefined ? undefined
+      : notificationLayout.tail === 'left' || notificationLayout.tail === 'right'
+        ? assistantNotificationTailTarget(height / 2, Number(notificationLayout.style.top ?? 0))
+        : assistantNotificationTailTarget(size / 2, Number(notificationLayout.style.left ?? 0)))
+    : notification
   return createElement('div', { ...(kind === 'avatar' ? { 'data-codingns-floating-avatar': true } : { 'data-codingns-floating-call': true }),
     style: { position: 'fixed', left: position.x, top: position.y, width: size, height, maxWidth: '100vw', zIndex: 9000, pointerEvents: 'none' } },
     createElement('div', { role: 'button', tabIndex: 0, 'aria-haspopup': 'dialog', 'aria-expanded': false,
@@ -103,8 +115,8 @@ function FloatingAssistantFrame({ services, width: size, height, positionKey, ki
         cursor: 'grab', touchAction: 'none', userSelect: 'none', pointerEvents: 'auto', background: 'transparent' } },
       children, call ? createElement(FloatingCallBadge, { call, t }) : null),
     call ? createElement(FloatingCallCaption, { call, t, ...captionLayout, onOpen }) : null,
-    notification && notificationStyle ? createElement('div', { 'data-codingns-floating-notification-region': true,
-      style: { ...notificationStyle, pointerEvents: 'auto', overflow: 'visible', overscrollBehavior: 'contain', touchAction: 'pan-y', userSelect: 'text' } }, notification) : null)
+    notificationNode && notificationStyle ? createElement('div', { 'data-codingns-floating-notification-region': true,
+      style: { ...notificationStyle, pointerEvents: 'auto', overflow: 'visible', overscrollBehavior: 'contain', touchAction: 'pan-y', userSelect: 'text' } }, notificationNode) : null)
 }
 
 function readPosition(width: number, height: number, positionKey: string): Position {

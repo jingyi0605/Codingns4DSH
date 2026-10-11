@@ -198,8 +198,8 @@ export class DesktopAssistantController {
   }
   private noticeEvent(event: Record<string, unknown>): void {
     const identity = this.frame?.identity
-    // 一键处理没有单条目标：只按点击帧的代次结算未读，不要求匹配快照中的具体通知。
-    if (event.ev === 'notice-action' && event.action === 'dismiss-all') { this.readAllNoticeEvent(event, identity); return }
+    // 一键清理没有单条目标：只按点击帧的代次清空气泡，不要求匹配快照中的具体通知。
+    if (event.ev === 'notice-action' && event.action === 'dismiss-all') { this.clearAllNoticeEvent(event, identity); return }
     const notice = desktopAssistantNotice(this.frame, event.ev === 'notice-presented' ? undefined : String(event.noticeId))
     if (!notice || !identity || !this.frame?.visible || !this.owner || event.ownerId !== this.owner
       || event.generation !== identity.generation || event.sequence !== identity.sequence || event.noticeId !== notice.noticeId
@@ -232,8 +232,8 @@ export class DesktopAssistantController {
     this.agent?.send({ cmd: 'notice-result', accepted: true })
     if (event.ev === 'notice-action' && event.action === 'open') this.agent?.send({ cmd: 'notice-open' })
   }
-  /** 批量动作只校验窗口身份与点击帧代次；未读范围由主页面按 Host 快照重新结算。 */
-  private readAllNoticeEvent(event: Record<string, unknown>, identity: { readonly ownerId: string; readonly generation: number; readonly sequence: number } | undefined): void {
+  /** 批量动作只校验窗口身份与点击帧代次；清理范围由主页面按 Host 快照重新确定。 */
+  private clearAllNoticeEvent(event: Record<string, unknown>, identity: { readonly ownerId: string; readonly generation: number; readonly sequence: number } | undefined): void {
     const snapshot = this.frame?.notificationSnapshot
     if (!identity || !snapshot || !this.frame?.visible || !this.owner || event.ownerId !== this.owner
       || event.generation !== identity.generation || event.sequence !== identity.sequence

@@ -4,6 +4,14 @@ export type AssistantNotificationAction = 'presented' | 'read' | 'dismiss'
 export const ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS = [15, 30, 45, 60] as const
 export type AssistantNotificationAutoCloseSeconds = typeof ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS[number]
 export const DEFAULT_ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS: AssistantNotificationAutoCloseSeconds = 30
+/** 尾巴贴在哪条气泡边上；网页与原生布局共用同一组几何，避免气泡压住形象。 */
+export type AssistantNotificationTailSide = 'top' | 'bottom' | 'left' | 'right'
+/** 尾巴沿气泡边缘的跨度、伸出长度，以及尖端与形象之间的最小间隙。 */
+export const ASSISTANT_NOTIFICATION_TAIL_WIDTH = 40
+export const ASSISTANT_NOTIFICATION_TAIL_HEIGHT = 32
+export const ASSISTANT_NOTIFICATION_TAIL_GAP = 6
+/** 气泡边缘到形象的完整避让距离：尾巴伸出后仍留出尖端间隙。 */
+export const ASSISTANT_NOTIFICATION_TAIL_CLEARANCE = ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_GAP
 export interface AssistantNotificationSettings {
   enabled: boolean
   completed: boolean
@@ -85,6 +93,7 @@ export interface AssistantNotificationCapabilities {
   readonly recovery: boolean
   readonly reason?: string
 }
+/** 只描述气泡里尚未清理的提醒：一键清理过的记录不进入主气泡、条目与两个计数。 */
 export interface AssistantNotificationSnapshot {
   readonly generation: number
   readonly revision: number
@@ -117,9 +126,9 @@ export interface AssistantNotificationAckRequest {
 }
 export interface AssistantNotificationTargetRequest { readonly noticeId: string; readonly generation: number; readonly connectionGeneration?: number }
 export interface AssistantNotificationAckResult { readonly generation: number; readonly revision: number; readonly notification: AssistantNotification }
-/** 一键处理只接受当前代次，不携带单条身份；Host 负责把全部未读记录结算为已读。 */
-export interface AssistantNotificationReadAllRequest { readonly generation: number }
-export interface AssistantNotificationReadAllResult { readonly generation: number; readonly revision: number; readonly processed: number }
+/** 一键清理只接受当前代次，不携带单条身份；Host 负责把全部气泡提醒移出展示。 */
+export interface AssistantNotificationClearAllRequest { readonly generation: number }
+export interface AssistantNotificationClearAllResult { readonly generation: number; readonly revision: number; readonly cleared: number }
 /** 所有外部文本统一删除控制符并限制长度，不能携带 HTML 或工具参数。 */
 export function assistantNotificationText(value: unknown, max = 240, fallback = ''): string {
   return typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, max) || fallback : fallback

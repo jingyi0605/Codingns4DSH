@@ -29,6 +29,9 @@ export const dshThemeColor = {
   primaryForeground: 'var(--dsw-alias-label-primary-foreground, #fff)',
   success: 'var(--dsw-alias-state-success-primary, #16803c)',
   error: 'var(--dsw-alias-state-error-primary, #b42318)',
+  // 权限申请用黄色警示：填充上的前景固定为深色，明暗主题下都保持足够对比度。
+  warning: 'var(--dsw-alias-state-warning-primary, #d99a00)',
+  warningForeground: '#3d2c00',
   // 状态描边用 l3/l4：DSH 的输入控件是 0.5px，比 l2 更轻。
   fieldBorder: 'var(--dsw-alias-border-l4, #d9d9d9)',
   menuBorder: 'var(--dsw-alias-border-l3, #d9d9d9)',

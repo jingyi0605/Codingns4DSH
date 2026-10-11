@@ -2,10 +2,10 @@ import { Component, createElement, useCallback, useEffect, useRef, useState } fr
 import type { ReactNode, PointerEvent } from 'react'
 import type { DesktopAssistantFrame } from '../../shared/desktop-assistant.js'
 import { desktopAssistantNotificationHeight, desktopAssistantLayout, desktopAssistantNotice } from '../../shared/desktop-assistant.js'
-import type { AssistantNotification } from '../../shared/assistant-notifications.js'
+import type { AssistantNotification, AssistantNotificationTailSide } from '../../shared/assistant-notifications.js'
 import { resolveAssistantAvatarAsset } from '../../shared/assistant-avatar.js'
 import { AssistantAvatarReactionBadge } from './reaction-badge.js'
-import { AssistantNotificationBubble, assistantNotificationTailStyle } from './notification-bubble.js'
+import { AssistantNotificationBubble, assistantNotificationTailTarget } from './notification-bubble.js'
 import { resolveCodingNsTranslator } from '../locale.js'
 import { BuiltinAssistantAvatar } from './builtin.js'
 import { ImageAssistantAvatar } from './image.js'
@@ -36,8 +36,8 @@ export function sendDesktopAssistantNotice(frame: DesktopAssistantFrame, type: '
     noticeKind: notice.kind, ...(notice.connectionGeneration === undefined ? {} : { connectionGeneration: notice.connectionGeneration }),
     ...(type === 'notice-action' && action !== undefined ? { action } : {}) })
 }
-/** 一键处理没有单条目标：只回传点击帧的代次，身份与范围仍由主页面复核。 */
-export function sendDesktopAssistantNoticeReadAll(frame: DesktopAssistantFrame): void {
+/** 一键清理没有单条目标：只回传点击帧的代次，身份与范围仍由主页面复核。 */
+export function sendDesktopAssistantNoticeClearAll(frame: DesktopAssistantFrame): void {
   const identity = frame.identity, generation = frame.notificationSnapshot?.generation
   if (!identity || generation === undefined || !frame.nativeVisible) return
   postDesktopAssistantEvent({ type: 'notice-action', ...identity, action: 'dismiss-all', noticeId: '', noticeGeneration: generation })
@@ -77,11 +77,11 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
     const current = latestFrame.current
     if (JSON.stringify(current.identity) === identityKey) sendDesktopAssistantNoticePage(current, cursor)
   }, [identityKey])
-  const readAllNotices = useCallback((generation: number): void => {
+  const clearAllNotices = useCallback((generation: number): void => {
     const current = latestFrame.current
     // 只有点击帧与当前快照同一代次才回传；主页面仍会按 Host 代次复核一次。
     if (current.notificationSnapshot?.generation !== generation || JSON.stringify(current.identity) !== identityKey) return
-    sendDesktopAssistantNoticeReadAll(current)
+    sendDesktopAssistantNoticeClearAll(current)
   }, [identityKey])
   const expandedNotices = useCallback((expanded: boolean): void => {
     const current = latestFrame.current
@@ -127,10 +127,14 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
   useEffect(() => { if (!renderer) sendDesktopAssistantEvent('error', 'avatar_renderer_unavailable') }, [renderer])
   const layout = frame.layout ?? desktopAssistantLayout({ x: 0, y: 280 }, frame.size, desktopAssistantNotificationHeight(frame), Boolean(frame.caption), [{ x: 0, y: 0, width: 1024, height: 768 }])
   const regionStyle = (region: { x: number; y: number; width: number; height: number }) => ({ position: 'absolute' as const, left: region.x, top: region.y, width: region.width, height: region.height, overflowY: 'auto' as const })
+  // 气泡在形象上方时尾巴贴底边，在下方时贴顶边；尖端始终朝向形象且不压住它。
+  const notificationTail: AssistantNotificationTailSide = layout.notification !== undefined && layout.notification.y < layout.avatar.y ? 'bottom' : 'top'
   const notificationStyle = layout.notification === undefined ? undefined : {
-    ...regionStyle(layout.notification),
+    position: 'absolute' as const, left: layout.notification.x, top: layout.notification.y, width: layout.notification.width,
     overflow: 'visible' as const,
-    ...assistantNotificationTailStyle(layout.avatar.x + layout.avatar.width / 2, layout.notification.x, layout.notification.width),
+    // 区域高度由内容决定，气泡底边始终贴在形象上方；限高交给气泡面板，避免内容向下溢出。
+    '--codingns-notification-max-height': `${layout.notification.height}px`,
+    height: layout.notification.height, boxSizing: 'border-box' as const,
   }
   const notification = frame.notificationSnapshot ?? frame.notification
   return createElement('div', { style: { width: layout.bounds.width, height: layout.bounds.height, position: 'relative', background: 'transparent' } },
@@ -147,11 +151,12 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
         createElement('style', null, '@keyframes companion-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){[data-companion-spinner]{animation:none!important}}'),
         createElement('span', { 'data-companion-spinner': true, style: { width: 28, height: 28, borderRadius: '50%', border: '3px solid #dbe7fa', borderTopColor: '#6d9cdd', animation: 'companion-spin 1s linear infinite' } }))),
     notification && notificationStyle ? createElement('div', { style: notificationStyle, 'data-codingns-native-notice': true },
-      createElement(AssistantNotificationBubble, { frame: notification, t: resolveCodingNsTranslator(), error: noticeError ?? frame.noticeError,
+      createElement(AssistantNotificationBubble, { frame: notification, t: resolveCodingNsTranslator(), error: noticeError ?? frame.noticeError, tailSide: notificationTail,
+        tailTarget: assistantNotificationTailTarget(layout.avatar.x + layout.avatar.width / 2, layout.notification!.x),
         ...(frame.autoClose === undefined || !frame.nativeVisible ? {} : { autoClose: frame.autoClose }),
         ...(frame.autoCloseSeconds === undefined || !frame.nativeVisible ? {} : { autoCloseSeconds: frame.autoCloseSeconds }),
         onOpen: openNotice, onDismiss: dismissNotice, onPresented: frame.nativeVisible ? presented : () => undefined,
-        ...(frame.notificationSnapshot === undefined ? {} : { onPage: pageNotices, onExpandedChange: expandedNotices, onReadAll: readAllNotices }) })) : null,
+        ...(frame.notificationSnapshot === undefined ? {} : { onPage: pageNotices, onExpandedChange: expandedNotices, onClearAll: clearAllNotices }) })) : null,
     frame.caption && layout.caption ? createElement('div', { 'aria-live': 'polite', 'data-codingns-native-caption': true,
       style: { ...regionStyle(layout.caption), whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
         boxSizing: 'border-box', padding: 8, borderRadius: 10, color: '#242424', background: 'rgba(255,255,255,.94)', fontSize: uiFontSize(12), lineHeight: 1.5 } }, frame.caption) : null)

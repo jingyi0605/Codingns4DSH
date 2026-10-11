@@ -2,8 +2,8 @@ import { randomInt, randomUUID } from 'node:crypto'
 import {
   assistantNotificationText, normalizeAssistantNotificationSettings,
   type AssistantNotification, type AssistantNotificationAckRequest, type AssistantNotificationAckResult,
-  type AssistantNotificationCapabilities, type AssistantNotificationKind, type AssistantNotificationReadAllRequest,
-  type AssistantNotificationReadAllResult, type AssistantNotificationReadRequest,
+  type AssistantNotificationCapabilities, type AssistantNotificationClearAllRequest,
+  type AssistantNotificationClearAllResult, type AssistantNotificationKind, type AssistantNotificationReadRequest,
   type AssistantNotificationReadSessionRequest, type AssistantNotificationReadSessionResult,
   type AssistantNotificationSettings, type AssistantNotificationSnapshot, type AssistantNotificationTarget,
   type AssistantNotificationTargetRequest,
@@ -28,6 +28,8 @@ interface NoticeRecord {
   notice: AssistantNotification
   target: AssistantNotificationTarget
   logicalKey: string
+  /** 一键清理只置这一个展示开关：记录仍参与去重、请求校正与生命周期，但不再进入任何快照。 */
+  cleared: boolean
 }
 interface SessionWatermark { seq: number; turn?: number; turnId?: string; failed: boolean; noticeId?: string }
 export interface AssistantNotificationCenterOptions {
@@ -185,7 +187,7 @@ export class AssistantNotificationCenter {
       }
     }
     const title = assistantNotificationText(fact.sessionTitle, 240, '未命名会话')
-    const template = { completed: '本轮已完成', error: '本轮执行出错', question: '有问题需要你回答', approval: '有权限请求需要你确认' }[kind]
+    const template = { completed: '本轮已完成', error: '本轮执行出错', question: '有问题需要你来处理', approval: '有权限申请需要你来处理' }[kind]
     const target = request ? { ...fact.target, requestId: fact.requestId, requestKind: fact.requestKind } : { ...fact.target }
     if (item !== undefined && request) {
       if (item.notice.lifecycle !== 'active') return
@@ -200,10 +202,11 @@ export class AssistantNotificationCenter {
       ...(target.connectionGeneration === undefined ? {} : { connectionGeneration: target.connectionGeneration }),
       ...(fact.type === 'turn-failed' && fact.errorExcerpt !== undefined ? { errorExcerpt: assistantNotificationText(fact.errorExcerpt) } : {}),
     }
-    this.records.set(notice.noticeId, { notice, target, logicalKey: key })
+    this.records.set(notice.noticeId, { notice, target, logicalKey: key, cleared: false })
     if (!request) this.watermarks.get(sessionKey(fact.target))!.noticeId = notice.noticeId
     this.trim(); this.bumpRevision()
   }
+  /** 快照只描述尚未清理的提醒：已清理记录不进入条目、计数与主气泡，但事实层仍然保留。 */
   read(input: AssistantNotificationReadRequest = {}): AssistantNotificationSnapshot {
     this.expire()
     if (input.revision !== undefined && (!Number.isSafeInteger(input.revision) || input.revision < 0)) throw new TypeError('通知修订号无效')
@@ -217,13 +220,16 @@ export class AssistantNotificationCenter {
       if (generation !== this.currentGeneration || revision !== this.currentRevision) reset = true
       else offset = index!
     }
-    const values = [...this.records.values()].map((item) => item.notice)
+    // 一键清理只影响展示面：已清理记录继续留在事实层，但不出现在条目、计数与主气泡中。
+    const values = [...this.records.values()].filter((item) => !item.cleared).map((item) => item.notice)
     const all = [...values].sort((a, b) => b.createdAt - a.createdAt || b.noticeId.localeCompare(a.noticeId))
     // 同毫秒内的多个请求仍按输入顺序展示，随机通知 ID 不能决定队列顺序。
     const candidates = values.filter((notice) => notice.lifecycle === 'active' && notice.presentation !== 'collapsed' && notice.availability === 'ready')
       .sort((a, b) => priority(b) - priority(a) || a.createdAt - b.createdAt)
     const next = offset + limit
-    const snapshot: AssistantNotificationSnapshot = { generation: this.currentGeneration, revision: this.currentRevision, serverNow: this.now(), primary: candidates[0] === undefined ? null : { ...candidates[0] }, items: all.slice(offset, next).map((item) => ({ ...item })), unreadCount: all.filter((item) => !item.read).length, pendingCount: all.filter(pending).length, cursor: next < all.length ? `${this.currentGeneration}:${this.currentRevision}:${next}` : null, capabilities: [...this.capabilities.values()].map((item) => ({ ...item })), ...(reset ? { reset: true } : {}) }
+    // 未读计数只统计可直接查看的完成/错误通知；活跃提问和权限申请统一归入待处理，避免两个标签重复计数。
+    const unreadCount = all.filter((item) => !item.read && !pending(item)).length
+    const snapshot: AssistantNotificationSnapshot = { generation: this.currentGeneration, revision: this.currentRevision, serverNow: this.now(), primary: candidates[0] === undefined ? null : { ...candidates[0] }, items: all.slice(offset, next).map((item) => ({ ...item })), unreadCount, pendingCount: all.filter(pending).length, cursor: next < all.length ? `${this.currentGeneration}:${this.currentRevision}:${next}` : null, capabilities: [...this.capabilities.values()].map((item) => ({ ...item })), ...(reset ? { reset: true } : {}) }
     return input.cursor === undefined && input.revision === this.currentRevision ? { ...snapshot, items: [], unchanged: true } : snapshot
   }
   ack(input: AssistantNotificationAckRequest): AssistantNotificationAckResult {
@@ -262,18 +268,18 @@ export class AssistantNotificationCenter {
     if (read > 0) this.bumpRevision()
     return { generation: this.currentGeneration, revision: this.currentRevision, read }
   }
-  /** 一键处理只推进未读记录；待处理请求保持展示，等待用户逐条响应。 */
-  readAll(input: AssistantNotificationReadAllRequest): AssistantNotificationReadAllResult {
+  /** 一键清理只清掉会话通知（完成、错误与已结束的请求）；仍有效的提问与审批保留展示等待响应。 */
+  clearAll(input: AssistantNotificationClearAllRequest): AssistantNotificationClearAllResult {
     this.expire()
     if (!Number.isSafeInteger(input.generation) || input.generation !== this.currentGeneration) throw new CodingNsRpcError('ASSISTANT_NOTIFICATION_STALE_GENERATION', '通知代次已变化')
-    let processed = 0
+    let cleared = 0
     for (const item of this.records.values()) {
-      const next = readNotice(item.notice)
-      if (next === item.notice) continue
-      item.notice = next; processed++
+      // 待处理请求是用户待办，不在清理范围内；其余记录只置展示开关，不标记已读、不改 presentation。
+      if (item.cleared || pending(item.notice)) continue
+      item.cleared = true; cleared++
     }
-    if (processed > 0) this.bumpRevision()
-    return { generation: this.currentGeneration, revision: this.currentRevision, processed }
+    if (cleared > 0) this.bumpRevision()
+    return { generation: this.currentGeneration, revision: this.currentRevision, cleared }
   }
   async target(input: AssistantNotificationTargetRequest): Promise<AssistantNotificationTarget> {
     if (input.connectionGeneration !== undefined && (!Number.isSafeInteger(input.connectionGeneration) || input.connectionGeneration < 0)) throw new TypeError('远端连接代次无效')
@@ -335,7 +341,7 @@ function stripWorkspaceHost(value: string, hostId: string): string {
   return value.startsWith(prefix) ? value.slice(prefix.length) : value
 }
 
-/** 已读语义只在这里定义：单条确认与一键处理必须一致，待处理请求不能因已读被收起。 */
+/** 已读语义只在这里定义：单条确认与静默已读必须一致，待处理请求不能因已读被收起。 */
 function readNotice(notice: AssistantNotification): AssistantNotification {
   return notice.read ? notice : { ...notice, read: true, ...(!pending(notice) ? { presentation: 'collapsed' as const } : {}) }
 }

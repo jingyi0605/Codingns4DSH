@@ -1,5 +1,5 @@
 import { ASSISTANT_AVATAR_STATES, ASSISTANT_AVATAR_REACTIONS, type AssistantAvatarModel, type AssistantAvatarReaction, type AssistantAvatarState } from './assistant-avatar.js'
-import { ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS } from './assistant-notifications.js'
+import { ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS, ASSISTANT_NOTIFICATION_TAIL_CLEARANCE } from './assistant-notifications.js'
 import type { AssistantNotification, AssistantNotificationAutoCloseSeconds, AssistantNotificationSnapshot } from './assistant-notifications.js'
 
 /** 只复用共享通知的安全展示字段；目标、工具参数和凭证不能进入伴随页。 */
@@ -15,7 +15,7 @@ export interface DesktopAssistantNoticeEvent {
   /** 主页面必须使用点击当时的远端连接代次，不能改用重连后的同名通知。 */
   readonly connectionGeneration?: AssistantNotification['connectionGeneration']
   readonly type: 'notice-presented' | 'notice-action'
-  /** 一键处理只按点击帧的代次结算未读，不需要单条目标；旧 Host 可继续只识别 open/dismiss。 */
+  /** 一键清理只按点击帧的代次清空气泡，不需要单条目标；旧 Host 可继续只识别 open/dismiss。 */
   readonly action?: 'open' | 'dismiss' | 'dismiss-all'
 }
 export interface DesktopAssistantNoticeIdentity {
@@ -234,19 +234,23 @@ export function desktopAssistantLayout(anchor: { readonly x: number; readonly y:
   const availableTop = Math.max(0, y - area.y), availableBottom = Math.max(0, area.y + area.height - y - avatarHeight)
   const noticeAbove = availableTop >= availableBottom
   const captionAbove = notification ? !noticeAbove : noticeAbove
+  // 通知与形象之间保留尾巴伸出长度和尖端间隙；4 像素是原有的分区间距。
+  const noticeClearance = notification ? Math.max(0, ASSISTANT_NOTIFICATION_TAIL_CLEARANCE - 4) : 0
   // 小屏优先保留形象，再按上下空间缩小通知和字幕；正文由共用组件独立滚动。
-  let noticeHeight = notification ? Math.min(noticeLimit, Math.max(0, (noticeAbove ? availableTop : availableBottom) - 4)) : 0
+  let noticeHeight = notification ? Math.min(noticeLimit, Math.max(0, (noticeAbove ? availableTop : availableBottom) - 4 - noticeClearance)) : 0
   let captionHeight = caption ? Math.min(128, Math.max(0, (captionAbove ? availableTop : availableBottom) - 4)) : 0
   // 贴近边缘时把字幕和通知分区堆在宽裕的一侧，不能留一个只有几像素高的字幕区。
   const stacked = notification && caption && captionHeight < 40 && Math.max(availableTop, availableBottom) >= 88
   if (stacked) {
     const space = noticeAbove ? availableTop : availableBottom
     captionHeight = Math.min(128, Math.max(40, Math.floor((space - 8) / 3)))
-    noticeHeight = Math.min(noticeLimit, space - captionHeight - 8)
+    noticeHeight = Math.min(noticeLimit, space - captionHeight - 8 - noticeClearance)
   }
-  const combinedHeight = noticeHeight + captionHeight + 4
-  const topHeight = stacked ? noticeAbove ? combinedHeight : 0 : (noticeAbove ? noticeHeight : 0) + (captionAbove ? captionHeight : 0)
-  const bottomHeight = stacked ? noticeAbove ? 0 : combinedHeight : (noticeAbove ? 0 : noticeHeight) + (captionAbove ? 0 : captionHeight)
+  // 通知块包含尾巴避让空间，字幕与形象之间仍用原有间距。
+  const noticeBlock = noticeHeight + noticeClearance
+  const combinedHeight = noticeBlock + captionHeight + 4
+  const topHeight = stacked ? noticeAbove ? combinedHeight : 0 : (noticeAbove ? noticeBlock : 0) + (captionAbove ? captionHeight : 0)
+  const bottomHeight = stacked ? noticeAbove ? 0 : combinedHeight : (noticeAbove ? 0 : noticeBlock) + (captionAbove ? 0 : captionHeight)
   const bubbleWidth = notification || caption ? Math.min(!caption && noticeLimit <= 48 ? Math.max(width, 220) : 320, area.width) : width
   const left = Math.max(area.x, Math.min(x, area.x + area.width - bubbleWidth))
   const top = y - (topHeight > 0 ? topHeight + 4 : 0)
@@ -255,9 +259,10 @@ export function desktopAssistantLayout(anchor: { readonly x: number; readonly y:
   const region = (height: number, above: boolean) => ({ x: 0, y: above ? 0 : avatar.y + avatar.height + 4, width: bubbleWidth, height })
   const noticeRegion = region(noticeHeight, noticeAbove), captionRegion = region(captionHeight, captionAbove)
   if (stacked) {
-    captionRegion.y = noticeAbove ? noticeHeight + 4 : avatar.y + avatar.height + 4
-    if (!noticeAbove) noticeRegion.y = captionRegion.y + captionHeight + 4
-  }
+    // 通知与字幕堆在同一侧：通知靠外，尾巴空间夹在两者之间。
+    if (noticeAbove) { noticeRegion.y = 0; captionRegion.y = noticeHeight + 4 + noticeClearance }
+    else { captionRegion.y = avatar.y + avatar.height + 4; noticeRegion.y = captionRegion.y + captionHeight + 4 + noticeClearance }
+  } else if (!noticeAbove) noticeRegion.y = avatar.y + avatar.height + 4 + noticeClearance
   return { bounds, avatar, ...(notification && noticeHeight > 0 ? { notification: noticeRegion } : {}),
     ...(caption && captionHeight > 0 ? { caption: captionRegion } : {}) }
 }
