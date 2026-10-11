@@ -18,7 +18,7 @@ import { CodingNsRpcTable } from '../src/host/rpc-table.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
 import { memoryAssistantConversationStorage } from './assistant-fixtures.js'
 import { connectDesktopAssistant } from '../src/client/avatar/desktop-bridge.js'
-import { DesktopAssistantAvatar, sendDesktopAssistantNotice, sendDesktopAssistantNoticePage } from '../src/client/avatar/desktop-view.js'
+import { DesktopAssistantAvatar, sendDesktopAssistantNotice } from '../src/client/avatar/desktop-view.js'
 import { AssistantNotificationBubble } from '../src/client/avatar/notification-bubble.js'
 import { buildMacAssistantScript, buildMacDesktopFocusScript } from '../src/host/desktop-assistant/mac-agent.js'
 import { buildWinAssistantScript } from '../src/host/desktop-assistant/win-agent.js'
@@ -144,7 +144,7 @@ test('2.3 原生分页通过 Host 读取有界缓存；列表点击按实际ID�
   } finally { await f.controller.dispose(); cleanup() }
 })
 
-test('2.3 原生共用气泡的分页和列表动作只回传安全身份，不持有DSH认证或任意目标', (context) => {
+test('2.3 原生共用气泡的列表动作只回传安全身份，不暴露分页回调', (context) => {
   const { generation, ...notice } = notification, events: Record<string, unknown>[] = []
   const snapshot: AssistantNotificationSnapshot = { generation, revision: 8, serverNow: 100, primary: null, items: [{ ...notice,
     createdAt: 100, read: false, presentation: 'collapsed', lifecycle: 'active' }], unreadCount: 1, pendingCount: 1, cursor: 'page-two', capabilities: [] }
@@ -155,14 +155,13 @@ test('2.3 原生共用气泡的分页和列表动作只回传安全身份，不�
   context.after(() => { renderer.dispose(); if (previous) Object.defineProperty(globalThis, 'webkit', previous); else Reflect.deleteProperty(globalThis, 'webkit') })
   const bubble = elements(renderer.render()).find((item) => item.type === AssistantNotificationBubble)!
   assert.deepEqual(bubble.props.frame, snapshot)
-  bubble.props.onOpen(notice.noticeId, generation); bubble.props.onDismiss(notice.noticeId, generation); bubble.props.onPage('page-two')
+  bubble.props.onOpen(notice.noticeId, generation); bubble.props.onDismiss(notice.noticeId, generation)
   assert.deepEqual(events.filter((item) => item.type === 'notice-action').map((item) => item.action), ['open', 'dismiss'])
-  assert.deepEqual(events.find((item) => item.type === 'notice-page'), { type: 'notice-page', ...current.identity, cursor: 'page-two' })
   assert.ok(events.every((item) => !('target' in item) && !('token' in item)))
-  const oldPage = bubble.props.onPage
   renderer.render({ frame: { ...current, identity: { ...current.identity, sequence: 6 } } })
-  oldPage('page-two'); sendDesktopAssistantNoticePage(current, 'x'.repeat(2049))
-  assert.equal(events.filter((item) => item.type === 'notice-page').length, 1, '旧组件不能为新版本翻页')
+  sendDesktopAssistantNotice(current, 'notice-action', 'open', notice.noticeId)
+  assert.equal('onPage' in bubble.props, false, '通知气泡不再暴露分页回调')
+  assert.equal(events.filter((item) => item.type === 'notice-page').length, 0, '通知气泡不再触发分页事件')
 })
 
 test('2.4 原生气泡一键清理只回传点击帧代次，旧组件不能为新版本清空气泡', (context) => {
@@ -554,9 +553,7 @@ test('2.4 原生气泡与形象之间保留尾巴避让距离，并按气泡所�
   // 气泡在形象下方时尾巴贴顶边朝上，渲染属性与几何方向一致。
   const below = desktopAssistantLayout({ x: 0, y: 280 }, 144, 276, false, [{ x: 0, y: 0, width: 1024, height: 768 }])
   const html = renderToStaticMarkup(createElement(DesktopAssistantAvatar, { frame: { ...frame, notification, layout: below } }))
-  assert.ok(html.includes('data-codingns-notification-tail="top"'))
-  // 尾巴挂在外壳层级：顶部行不会把朝上的尾巴推到气泡中部，尖端始终指向形象。
-  assert.ok(html.indexOf('data-codingns-notification-tail') < html.indexOf('查看会话'))
+  assert.ok(!html.includes('data-codingns-notification-tail="top"'), '气泡在助理下方时直接隐藏尾巴')
 })
 
 test('2.4 原生布局必需区域、有限坐标和窗口内边界严格校验，无效消息保留上一份布局', async () => {

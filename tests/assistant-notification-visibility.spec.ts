@@ -101,7 +101,7 @@ test('通知自动关闭只从真实首展开始计时，并通过收起动作�
   t.mock.timers.tick(1); assert.deepEqual(dismissed, ['auto-close'])
 })
 
-test('安全列表保留已读待办、隐藏已读终态，并显示当前页空提示与明确会话操作标签', () => {
+test('安全列表保留已读待办、隐藏已读终态，并显示空提示与明确会话操作标签', () => {
   const base = { hostLabel: '远端设备', workspaceLabel: '项目', sessionTitle: '同名会话', text: '需要查看', createdAt: 1,
     read: true, presentation: 'collapsed' as const, lifecycle: 'active' as const, availability: 'ready' as const }
   const done = { ...base, noticeId: 'done', kind: 'completed' as const }
@@ -114,20 +114,19 @@ test('安全列表保留已读待办、隐藏已读终态，并显示当前页�
   const renderer = createHookRenderer(AssistantNotificationBubble, props)
   try {
     let tree = renderer.render()
-    elements(tree).find((element) => element.props['aria-expanded'] === false)!.props.onClick()
+    elements(tree).find((element) => element.props['aria-label'] === '筛选待处理通知：2 项待处理')!.props.onClick()
     tree = renderer.render()
     assert.deepEqual(elements(tree).filter((element) => element.type === 'section').map((element) => element.props['data-codingns-notice-id']), ['pending', 'pending-two'])
-    const open = elements(tree).find((element) => element.type === 'button' && element.props.children === props.t('awb.notifications.open'))!
+    const open = elements(tree).find((element) => element.props['data-codingns-notification-action'] === 'open')!
     assert.ok(open.props['aria-label'].includes('远端设备')); assert.ok(open.props['aria-label'].includes('同名会话'))
     open.props.onClick(); assert.deepEqual(opened, [['pending', 7, 6]])
     tree = renderer.render({ ...props, frame: { ...(props.frame as any), items: [done], pendingCount: 0 } })
     assert.ok(elements(tree).some((element) => element.type === 'p' && element.props.children === props.t('awb.notifications.empty')))
-    elements(tree).find((element) => element.type === 'button' && element.props.children === props.t('awb.notifications.closeList'))!.props.onClick()
-    renderer.render(); assert.deepEqual(expanded, [false, true, false])
+    assert.deepEqual(expanded, [false, true])
   } finally { renderer.dispose() }
 })
 
-test('未读与待处理标签分别筛选对应通知', () => {
+test('未读与待处理标签分别筛选对应通知，并可再次点击取消筛选', () => {
   const base = { hostLabel: '本机', workspaceLabel: '项目', sessionTitle: '会话', text: '提醒', createdAt: 1,
     presentation: 'collapsed' as const, availability: 'ready' as const }
   const unread = { ...base, noticeId: 'unread', kind: 'error' as const, read: false, lifecycle: 'resolved' as const }
@@ -143,11 +142,22 @@ test('未读与待处理标签分别筛选对应通知', () => {
     unreadFilter.props.onClick(); tree = renderer.render()
     assert.equal(elements(tree).find((element) => element.props['aria-label'] === '筛选未读通知：2 条未读')!.props['aria-pressed'], true)
     assert.deepEqual(elements(tree).filter((element) => element.type === 'section').map((element) => element.props['data-codingns-notice-id']), ['unread'])
+    assert.ok(!JSON.stringify(tree).includes('关闭提醒列表'))
+    assert.ok(!JSON.stringify(tree).includes('上一页'))
+    assert.ok(!JSON.stringify(tree).includes('下一页'))
 
-    const pendingFilter = elements(tree).find((element) => element.props['aria-label'] === '筛选待处理通知：2 项待处理')!
+    let pendingFilter = elements(tree).find((element) => element.props['aria-label'] === '筛选待处理通知：2 项待处理')!
     pendingFilter.props.onClick(); tree = renderer.render()
     assert.deepEqual(elements(tree).filter((element) => element.type === 'section').map((element) => element.props['data-codingns-notice-id']), ['unread-pending', 'read-pending'])
     assert.equal(elements(tree).find((element) => element.props['aria-label'] === '筛选待处理通知：2 项待处理')!.props['aria-pressed'], true)
+
+    pendingFilter = elements(tree).find((element) => element.props['aria-label'] === '筛选待处理通知：2 项待处理')!
+    pendingFilter.props.onClick(); tree = renderer.render()
+    assert.equal(elements(tree).find((element) => element.props['aria-label'] === '筛选待处理通知：2 项待处理')!.props['aria-pressed'], false)
+    assert.deepEqual(elements(tree).filter((element) => element.type === 'section').map((element) => element.props['data-codingns-notice-id']), ['unread', 'unread-pending', 'read-pending'])
+    assert.ok(!JSON.stringify(tree).includes('关闭提醒列表'))
+    assert.ok(!JSON.stringify(tree).includes('上一页'))
+    assert.ok(!JSON.stringify(tree).includes('下一页'))
   } finally { renderer.dispose() }
 })
 

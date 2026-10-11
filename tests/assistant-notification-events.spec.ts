@@ -149,7 +149,7 @@ test('真实原生completed和已确认外部stop可成功；取消、截断、�
   assert.equal(f.events.center.read().primary!.kind, 'completed')
   const previous = getAdapterRegistry(); setAdapterRegistry({ getSession: () => ({ adapterId: 'codex' }) } as any); t.after(() => setAdapterRegistry(previous))
   f.emit('s', 'turn/start', { turn: 3 }, 5); f.emit('s', 'turn/end', { turn: 3, reason: { kind: 'stop' } }, 6)
-  assert.equal(f.events.center.read().unreadCount, 2)
+  assert.equal(f.events.center.read().unreadCount, 1, '同一会话只保留最近一次完成通知')
 })
 
 test('approval/asked.data.id与approval/decided.data.id精确配对，waterfall工具ID不生成重复审批', (t) => {

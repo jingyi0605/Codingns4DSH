@@ -8,7 +8,7 @@ import { AssistantNotificationBubble, assistantNotificationIsVisible, assistantN
 import { AssistantNotificationCenter } from '../src/host/features/assistant-notifications.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import { dshThemeColor } from '../src/client/theme.js'
-import { ASSISTANT_NOTIFICATION_TAIL_CLEARANCE } from '../src/shared/assistant-notifications.js'
+import { ASSISTANT_NOTIFICATION_TAIL_CLEARANCE, ASSISTANT_NOTIFICATION_TAIL_HEIGHT, ASSISTANT_NOTIFICATION_TAIL_OVERLAP, ASSISTANT_NOTIFICATION_TAIL_WIDTH } from '../src/shared/assistant-notifications.js'
 import type { AssistantNotification, AssistantNotificationSnapshot, AssistantNotificationTarget } from '../src/shared/assistant-notifications.js'
 import type { CodingNsRpcClient } from '../src/client/features/types.js'
 
@@ -38,13 +38,13 @@ function fixture(now: () => number = Date.now) {
   const store = new AssistantNotificationStore(rpc, async (target) => { if (failNavigation) throw new Error('目标不可达'); navigated.push(target) }, 750, now)
   return { host, store, calls, navigated, fail: (value: boolean) => { failNavigation = value },
     emit(kind: 'question' | 'approval', requestId: string, target = local) { host.consume({ type: 'request-opened', requestId, requestKind: kind, target, generation: host.generation }) },
-    turn(kind: 'turn-completed' | 'turn-failed', turnId = 'turn') { host.consume({ type: kind, turnId, target: local, generation: host.generation }) } }
+    turn(kind: 'turn-completed' | 'turn-failed', turnId = 'turn', target = local) { host.consume({ type: kind, turnId, target, generation: host.generation }) } }
 }
 
 test('真实 Host 快照先展示待回答与待审批，同级按时间顺序，再选择错误和完成', (t) => {
   let clock = 1000
   const f = fixture(() => ++clock); t.after(() => { f.store.dispose(); f.host.dispose() })
-  f.turn('turn-completed', 'completed'); f.turn('turn-failed', 'error'); f.emit('question', 'q'); f.emit('approval', 'a')
+  f.turn('turn-completed', 'completed'); f.turn('turn-failed', 'error', { ...local, sessionId: 'error' }); f.emit('question', 'q'); f.emit('approval', 'a')
   for (const expected of ['question', 'approval', 'error', 'completed']) {
     const snapshot = f.host.read(); assert.equal(snapshot.primary!.kind, expected)
     f.host.ack({ noticeId: snapshot.primary!.noticeId, generation: snapshot.generation, action: 'dismiss' })
@@ -178,6 +178,8 @@ test('气泡共用安全单条帧和分页快照，文本转义、键盘按钮�
     assert.ok(!html.includes('padding-bottom:12px!important'))
     assert.ok(html.includes('scrollbar-width:none'))
     assert.ok(html.includes('[data-codingns-notification-scroll]::-webkit-scrollbar'))
+    assert.ok(html.includes('[data-codingns-notification-filter]:focus-visible'))
+    assert.ok(!html.includes('关闭提醒列表')); assert.ok(!html.includes('上一页')); assert.ok(!html.includes('下一页'))
     assert.ok(!html.includes('animation:'))
   }
 })
@@ -191,9 +193,14 @@ test('单条未读直接展示会话卡片，多条提醒在漫画气泡内堆�
   assert.equal((singleHtml.match(/data-codingns-notice-id=/gu) ?? []).length, 1)
   assert.ok(singleHtml.includes('data-codingns-notification-tail="bottom"'))
   assert.ok(singleHtml.includes('<svg')); assert.ok(!singleHtml.includes('clip-path'))
-  assert.ok(singleHtml.includes(`stroke="${dshThemeColor.border}"`), '气泡外框应使用中性边框色')
-  assert.ok(!singleHtml.includes(`stroke="${dshThemeColor.accent}"`), '气泡外框不能使用蓝色强调色')
-  assert.ok(!singleHtml.includes(`stroke=\"${dshThemeColor.accent}\"`), '尾巴描边不能使用蓝色强调色')
+  // 尾巴根部必须压入气泡底板，面板层覆盖这段路径，避免旋转时露出拼接线。
+  assert.ok(singleHtml.includes(`height="${ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_OVERLAP}"`))
+  assert.ok(singleHtml.includes(`viewBox="0 0 ${ASSISTANT_NOTIFICATION_TAIL_WIDTH} ${ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_OVERLAP}"`))
+  assert.ok(singleHtml.includes(`bottom:-${ASSISTANT_NOTIFICATION_TAIL_HEIGHT}px`))
+  assert.ok(singleHtml.includes('M1 0'))
+  assert.ok(singleHtml.includes('border:none'), '主通知气泡不显示外框')
+  assert.ok(singleHtml.includes('box-shadow:none'), '主通知气泡不显示阴影接缝')
+  assert.ok(!singleHtml.includes('stroke-width="1.25"'), '尾巴不显示边框线')
   assert.ok(singleHtml.includes('问题'))
   assert.ok(!singleHtml.includes('1 条未读'))
   const second = { ...notice('approval', 2), sessionTitle: '另一个会话' }
@@ -284,15 +291,15 @@ test('提问与权限申请提示改为「有 标签 需要你来处理」，不
 
 test('一键清理只清会话通知并立即刷新，待处理提问保留且旧代次直接拒绝', async (t) => {
   const f = fixture(); t.after(() => { f.store.dispose(); f.host.dispose() })
-  f.turn('turn-completed', 'completed'); f.turn('turn-failed', 'error'); f.emit('question', 'q')
+  f.turn('turn-completed', 'completed'); f.turn('turn-failed', 'error', { ...local, sessionId: 'error' }); f.emit('question', 'q')
   f.store.configure(true, 'clear-all'); await f.store.refresh()
-  assert.equal(f.store.getSnapshot().frame!.unreadCount, 3)
+  assert.equal(f.store.getSnapshot().frame!.unreadCount, 2)
   await f.store.clearAll(f.host.generation)
   const after = f.store.getSnapshot().frame!
   // 完成与错误提醒离开气泡，待处理提问继续等待响应；DSH 侧请求不受影响。
   assert.deepEqual(after.items.map((item) => item.kind), ['question'])
   assert.equal(after.primary!.kind, 'question')
-  assert.equal(after.unreadCount, 1); assert.equal(after.pendingCount, 1)
+  assert.equal(after.unreadCount, 0); assert.equal(after.pendingCount, 1)
   assert.ok(f.calls.some((call) => call.endpoint === 'assistant/notifications/clear-all'))
   await assert.rejects(f.store.clearAll(f.host.generation + 1), /失效/u)
 })
@@ -407,6 +414,10 @@ test('气泡边缘与形象保持尾巴避让距离，四个方向都渲染平�
     const html = renderToStaticMarkup(createElement(AssistantNotificationBubble, {
       frame: frame(), t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {}, tailSide: side,
     }))
+    if (side === 'top') {
+      assert.ok(!html.includes('data-codingns-notification-tail'), '气泡在助理下方时不显示倒置尾巴')
+      continue
+    }
     assert.ok(html.includes(`data-codingns-notification-tail="${side}"`))
     // 单路径弧形尾巴不绘制根部横线，面板上层覆盖后不会出现斜向拼接缝。
     assert.ok(html.includes('data-codingns-notification-tail'))

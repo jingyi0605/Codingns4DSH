@@ -17,6 +17,7 @@ import { registerGlobalVoiceAdapter } from '../src/client/global-voice-runtime-r
 import type { GlobalVoiceAdapter } from '../src/client/global-voice-runtime-registry.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
 import { BUILTIN_ASSISTANT_AVATAR, normalizeAssistantAppearance } from '../src/shared/assistant-avatar.js'
+import { ASSISTANT_NOTIFICATION_TAIL_CLEARANCE } from '../src/shared/assistant-notifications.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import type { CodingNsClientServices, CodingNsRpcClient } from '../src/client/features/types.js'
 import { DESKTOP_ASSISTANT_CHANNEL, type DesktopAssistantStatus } from '../src/shared/desktop-assistant.js'
@@ -311,4 +312,23 @@ test('四角与窄屏字幕气泡保持屏幕边距，缩小视口和横屏不�
       assert.ok(top >= 12 && top + maxHeight <= vh - 12, JSON.stringify({ vw, vh, width, height, x, y, style }))
     }
   }
+})
+
+test('悬浮容器把气泡尾巴方向交给调用方工厂，气泡底边与形象保持避让距离', (context) => {
+  const f = fixture(context)
+  const tails: string[] = []
+  const html = renderToStaticMarkup(createElement(FloatingAssistantAvatar, {
+    services: f.services, model: BUILTIN_ASSISTANT_AVATAR, state: 'idle', size: 144, onOpen: () => {},
+    notification: (tail) => { tails.push(tail); return createElement('div', { 'data-test-tail': tail }) },
+  }))
+  assert.deepEqual(tails, ['bottom'])
+  assert.ok(html.includes('data-test-tail="bottom"'))
+  // 形象容器高 156，气泡底边再让出尾巴长度与尖端间隙，尾巴不会压住形象。
+  assert.ok(html.includes(`bottom:${156 + ASSISTANT_NOTIFICATION_TAIL_CLEARANCE}px`))
+  assert.ok(html.includes('--codingns-assistant-tail-offset'))
+  // 可用高度交给气泡内部面板；区域本身不再限高，否则内容会向下溢出压住形象。
+  assert.ok(html.includes('--codingns-notification-max-height:276px'))
+  const region = html.match(/data-codingns-floating-notification-region="true" style="([^"]*)"/u)
+  assert.ok(region, '通知区域必须渲染')
+  assert.ok(!/(?:^|;)max-height:/u.test(region[1]!), '通知区域不能自己限高，气泡底边必须由内容决定')
 })

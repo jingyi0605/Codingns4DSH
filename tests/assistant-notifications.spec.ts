@@ -30,7 +30,7 @@ test('旧配置缺省通知开关全开并使用30秒，显式关闭和时长保
   assert.equal(CodingNsSettingsSchema({ ...value, assistant: { ...value.assistant, notifications: { ...value.assistant.notifications, autoCloseSeconds: 60 } } }).assistant.notifications!.autoCloseSeconds, 60)
 })
 
-test('同轮唯一终态，失败优先且可升级完成，历史淘汰不重置序列水位', () => {
+test('同轮唯一终态，失败优先且同会话只保留最近终态', () => {
   const f = fixture()
   f.turn('turn-completed', 1, 1)
   const id = f.center.read().primary!.noticeId
@@ -39,9 +39,13 @@ test('同轮唯一终态，失败优先且可升级完成，历史淘汰不重�
   assert.equal(f.center.read().primary!.noticeId, id)
   assert.equal(f.center.read().primary!.kind, 'error')
   for (let index = 2; index <= 120; index++) { f.time(index * 1000); f.turn('turn-completed', index, index + 10) }
-  assert.equal(f.center.read({ limit: 50 }).unreadCount, 100)
+  // 同一会话只保留最近一次终态，继续对话不会在气泡里累积旧的完成通知。
+  const latest = f.center.read({ limit: 50 })
+  assert.equal(latest.unreadCount, 1)
+  assert.equal(latest.items.length, 1)
+  assert.equal(latest.items[0]!.noticeId, id)
   f.turn('turn-completed', 1, 1)
-  assert.equal(f.center.read().unreadCount, 100)
+  assert.equal(f.center.read().unreadCount, 1)
 })
 
 test('请求独立结束，已读和收起都保留待处理，待办不受100条历史容量影响', () => {
@@ -50,7 +54,7 @@ test('请求独立结束，已读和收起都保留待处理，待办不受100�
   for (let index = 0; index < 120; index++) f.turn('turn-completed', index)
   assert.equal(f.center.read().pendingCount, 110)
   // 活跃提问属于待处理，不重复计入未读数量。
-  assert.equal(f.center.read().unreadCount, 100)
+  assert.equal(f.center.read().unreadCount, 1)
   const frame = f.center.read(), item = frame.primary!
   const input = { generation: frame.generation, noticeId: item.noticeId }
   f.center.ack({ ...input, action: 'read' }); f.center.ack({ ...input, action: 'dismiss' })
@@ -138,7 +142,8 @@ test('跨Host同ID独立，连接代次变更拒绝旧点击且重连不会重�
 
 test('游标绑定代次修订，分页上限50，范围撤销、停用和迟到输入不能恢复旧通知', async () => {
   const f = fixture()
-  for (let index = 0; index < 31; index++) f.turn('turn-completed', index)
+  // 分页验证使用不同会话；同一会话的多轮终态现在只保留最近一条。
+  for (let index = 0; index < 31; index++) f.consume({ target: { ...local, sessionId: `session-${index}` }, type: 'turn-completed', turnId: `turn:${index}`, turn: index, seq: index } as any)
   const page = f.center.read(); assert.equal(page.items.length, 20); assert.ok(page.cursor)
   const second = f.center.read({ cursor: page.cursor! }); assert.equal(second.items.length, 11)
   assert.throws(() => f.center.read({ limit: 51 }), /1 到 50/u)
@@ -221,7 +226,9 @@ test('类型开关只移除对应通知，无关待办保持身份和收起状�
 
 test('一键清理只清会话通知，待处理请求保留展示且状态不动', () => {
   const f = fixture()
-  f.turn('turn-completed', 1, 1); f.turn('turn-failed', 2, 2); f.request('question-1')
+  f.turn('turn-completed', 1, 1)
+  f.consume({ target: { ...local, sessionId: 'session-2' }, type: 'turn-failed', turnId: 'turn:2', turn: 2, seq: 2 } as any)
+  f.request('question-1')
   const before = f.center.read()
   assert.equal(before.unreadCount, 2); assert.equal(before.pendingCount, 1)
   const noticeId = before.primary!.noticeId
@@ -235,7 +242,7 @@ test('一键清理只清会话通知，待处理请求保留展示且状态不�
   // 同一请求再次被校正不会重复展示；新的终态仍照常提醒，并且可以再次被清理。
   f.request('question-1')
   assert.equal(f.center.read().pendingCount, 1)
-  f.turn('turn-completed', 3, 3)
+  f.consume({ target: { ...local, sessionId: 'session-3' }, type: 'turn-completed', turnId: 'turn:3', turn: 3, seq: 3 } as any)
   assert.equal(f.center.read().unreadCount, 1)
   assert.equal(f.center.clearAll({ generation: f.center.generation }).cleared, 1)
   assert.equal(f.center.read().unreadCount, 0); assert.equal(f.center.read().pendingCount, 1)
