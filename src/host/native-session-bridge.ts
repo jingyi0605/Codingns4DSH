@@ -369,23 +369,36 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     if (session === null || sessionFormat(session) === 'unsupported' || position === null) return false
     try {
       const previousContext = latestRequestContext(session)
-      // 只有该路由已确认的容量才能纠正 usage 样本；未确认的 request/context
-      // 可能是新 step 的占位值，不能反过来把 Provider 的真实容量改坏。
-      const anchoredWindow = previousContext === null
+      // 进程内已确认的容量优先纠正迟到样本。会话历史里的首个 usage 只适合
+      // 在新回合开始前恢复 request/context，不能再反过来改写当前 Provider
+      // 刚报告的容量；否则旧会话的 1M 会永久覆盖 OpenCode 当前的 256K。
+      const contextKey = previousContext === null
         ? undefined
-        : confirmedContextWindows.get(`${sessionId}\u0000${previousContext.provider}\u0000${previousContext.model}`)
-          ?? routeFirstUsageContextWindow(session, previousContext.provider, previousContext.model)
-      const normalizedUsage = anchoredWindow !== undefined
+        : `${sessionId}\u0000${previousContext.provider}\u0000${previousContext.model}`
+      const confirmedWindow = contextKey === undefined ? undefined : confirmedContextWindows.get(contextKey)
+      const normalizedUsage = confirmedWindow !== undefined
         && usage.contextWindow !== undefined
-        && usage.contextWindow !== anchoredWindow
+        && usage.contextWindow !== confirmedWindow
         ? {
             ...usage,
-            contextWindow: anchoredWindow,
+            contextWindow: confirmedWindow,
             ...(usage.contextTokens === undefined ? {} : {
-              contextUsageRatio: Number(Math.min(1, usage.contextTokens / anchoredWindow).toFixed(6)),
+              contextUsageRatio: Number(Math.min(1, usage.contextTokens / confirmedWindow).toFixed(6)),
             }),
           }
         : usage
+      if (contextKey !== undefined && usage.contextWindow !== undefined && confirmedWindow === undefined) {
+        // Provider usage 是该回合第一手事实。先把旧 request/context 改成当前窗口，
+        // 再落 usage，避免旧历史分母继续显示或参与后续压缩判断。
+        confirmedContextWindows.set(contextKey, usage.contextWindow)
+        if (previousContext?.contextWindow !== usage.contextWindow) {
+          session.append('request/context', {
+            provider: previousContext!.provider,
+            model: previousContext!.model,
+            contextWindow: usage.contextWindow,
+          })
+        }
+      }
       session.append('assistant/attempt', {
         turn: position.turn,
         step: position.step,

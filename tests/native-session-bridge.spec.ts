@@ -553,6 +553,44 @@ test('usage 样本以已确认容量为准，不被未确认的占位值改写',
   assert.equal(events.at(-1)?.data?.stream?.[0]?.chunk?.usage?.contextWindow, 258400)
 })
 
+test('当前 Provider usage 可以纠正历史会话遗留的 1M 容量', () => {
+  const events: Array<Record<string, any>> = [
+    { type: 'turn/start', seq: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+    { type: 'request/context', seq: 2, data: { provider: 'opencode', model: 'openai/gpt-6.1-sol', contextWindow: 1000000 } },
+    { type: 'assistant/attempt', seq: 3, data: { stream: [{ chunk: { type: 'usage', usage: { contextWindow: 1000000 } } }] } },
+  ]
+  const session = {
+    snapshotEvents() { return [...events] },
+    append(type: string, data: unknown) {
+      const event = { type, seq: events.length, data }
+      events.push(event)
+      return event
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'sessions'
+        ? { get(id: string) { return id === 'native-usage-corrects-history' ? session : undefined }, list() { return [session] } }
+        : undefined
+    },
+  } as never)
+
+  // OpenCode 当前目录已经报告 256K，不能被历史首个 usage 的 1M 锁死。
+  assert.equal(bridge.appendRequestContext?.('native-usage-corrects-history', {
+    provider: 'opencode',
+    model: 'openai/gpt-6.1-sol',
+  }), true)
+  assert.equal(bridge.appendUsageSample?.('native-usage-corrects-history', {
+    inputTokens: 120,
+    outputTokens: 8,
+    contextWindow: 262144,
+    contextTokens: 9120,
+  }), true)
+  assert.equal(events.filter((event) => event.type === 'request/context').at(-1)?.data?.contextWindow, 262144)
+  assert.equal(events.at(-1)?.data?.stream?.[0]?.chunk?.usage?.contextWindow, 262144)
+})
+
 test('迟到错误值的 usage 样本仍以已确认容量落盘', () => {
   const events: Array<Record<string, any>> = [
     { type: 'turn/start', seq: 0, data: { turn: 1 } },
