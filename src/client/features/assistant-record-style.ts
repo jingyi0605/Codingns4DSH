@@ -23,6 +23,15 @@ const recordCss = `
 .codingns-assistant-tool-details[open]>.codingns-assistant-tool-summary{border-radius:9px 9px 0 0}
 .codingns-assistant-tool-details[open] .codingns-assistant-tool-name{white-space:normal!important;overflow-wrap:anywhere}
 .codingns-assistant-tool-details[open]>.codingns-assistant-tool-summary .codingns-assistant-record-chevron{transform:rotate(90deg)}
+.codingns-assistant-tool-step-summary{list-style:none;cursor:pointer}
+.codingns-assistant-tool-step-summary::-webkit-details-marker{display:none}
+.codingns-assistant-tool-step-summary:hover{background:${dshThemeColor.hoverBackground}!important}
+.codingns-assistant-tool-step-summary:active{background:${dshThemeColor.activeBackground}!important}
+.codingns-assistant-tool-step-summary:focus-visible{outline:2px solid ${dshThemeColor.accent};outline-offset:2px}
+.codingns-assistant-tool-step-details[open]>.codingns-assistant-tool-step-summary .codingns-assistant-step-chevron{transform:rotate(180deg)}
+.codingns-assistant-tool-step-summary:hover{color:${dshThemeColor.labelPrimary}!important}
+.codingns-assistant-tool-step-details[open] .codingns-assistant-tool-step-body{padding-inline:4px}
+.codingns-assistant-tool-step-details[open] .codingns-assistant-tool-step-preview{white-space:normal;overflow-wrap:anywhere}
 .codingns-assistant-voice-dialog[open]{display:flex;flex-direction:column}
 .codingns-assistant-voice-dialog::backdrop{background:${dshThemeColor.overlay}}
 `
