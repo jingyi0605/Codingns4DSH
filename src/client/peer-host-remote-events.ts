@@ -22,8 +22,16 @@ interface EventGeneration {
   readonly controller: AbortController
   readonly queue: EventQueue
   readonly workers: Map<string, EventWorker>
+  /** 当前 DSH 连接代次已经向原生状态总线投递过的运行态。 */
+  readonly sessionStatuses: Map<string, boolean>
   clientId?: string
   prepared: boolean
+}
+
+interface PendingSessionStatus {
+  readonly scope: HostScope
+  readonly sessionId: string
+  readonly frames: unknown[]
 }
 
 export interface PeerHostRemoteEventsOptions {
@@ -31,6 +39,8 @@ export interface PeerHostRemoteEventsOptions {
   reply(scope: HostScope, payload: unknown, signal: AbortSignal): Promise<unknown>
   /** 只接入聚合中可见的会话，不能把其他工作区的弹窗带进当前客户端。 */
   accepts(agentId: string, scope: HostScope): boolean
+  /** 将远端会话运行态增量同步到 PeerHost 自己的导航投影。 */
+  onSessionStatus?: (sessionId: string, running: boolean, scope: HostScope) => void
   prepare?(): Promise<void>
   readonly retryMs?: number
 }
@@ -43,6 +53,8 @@ export class PeerHostRemoteEvents {
   private readonly peers = new Map<string, HostScope>()
   private readonly routes = new Map<string, EventRoute>()
   private readonly generations = new Set<EventGeneration>()
+  /** 事件早于聚合摘要到达时暂存，待会话进入可见作用域后重放。 */
+  private readonly pendingSessionStatuses = new Map<string, PendingSessionStatus>()
   private sequence = 0
   // 局域网 HTTP 页面不一定开放 randomUUID；这里只需连接内的唯一标识，不用它作认证凭据。
   private readonly instanceId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
@@ -52,7 +64,38 @@ export class PeerHostRemoteEvents {
   setPeers(scopes: readonly HostScope[]): void {
     this.peers.clear()
     for (const scope of scopes) if (scope.targetHostId !== null) this.peers.set(scope.targetHostId, scope)
+    for (const [key, pending] of this.pendingSessionStatuses) {
+      if (pending.scope.targetHostId === null || !this.peers.has(pending.scope.targetHostId)) this.pendingSessionStatuses.delete(key)
+    }
     for (const generation of this.generations) this.sync(generation)
+  }
+
+  /** 聚合摘要建立会话作用域后调用，补发此前因作用域未知而暂存的状态事件。 */
+  replayPendingSessionStatuses(): void {
+    for (const generation of this.generations) {
+      if (generation.clientId === undefined || generation.controller.signal.aborted) continue
+      this.replayPendingSessionStatusesForGeneration(generation)
+    }
+  }
+
+  /**
+   * 摘要从 running 变为 idle、但事件流没有覆盖到这次变化时，补投递完成边沿。
+   * 调用方必须只对确认发生过 true -> false 的会话调用，不能把普通 idle 摘要当未读。
+   */
+  replayCompletedSessionStatus(sessionId: string, scope: HostScope): void {
+    const frame = { type: 'emit', event: 'api-session/status', args: [sessionId, false] }
+    let delivered = false
+    for (const generation of this.generations) {
+      if (generation.clientId === undefined || generation.controller.signal.aborted || !this.options.accepts(sessionId, scope)) continue
+      // 强制按一次新的边沿处理，即使本代之前记录过 false；摘要变化已经证明
+      // 这不是重复 baseline，而是从运行中完成。
+      generation.sessionStatuses.delete(sessionId)
+      this.deliverSessionStatus(generation, scope, sessionId, false, frame)
+      delivered = true
+    }
+    // 摘要轮询可能早于原生事件流握手完成；不能因为此时没有消费者就丢掉
+    // 完成边沿，交给 ready 后的代次按普通 pending 状态重放。
+    if (!delivered) this.rememberPendingSessionStatus(scope, sessionId, frame)
   }
 
   ownsResult(payload: unknown): boolean {
@@ -78,7 +121,13 @@ export class PeerHostRemoteEvents {
   open(local: (signal: AbortSignal) => AsyncIterable<unknown>, signal?: AbortSignal): AsyncIterable<unknown> {
     const self = this
     return (async function* () {
-      const generation: EventGeneration = { controller: new AbortController(), queue: new EventQueue(), workers: new Map(), prepared: false }
+      const generation: EventGeneration = {
+        controller: new AbortController(),
+        queue: new EventQueue(),
+        workers: new Map(),
+        sessionStatuses: new Map(),
+        prepared: false,
+      }
       const abort = (): void => { generation.controller.abort(); generation.queue.end() }
       signal?.addEventListener('abort', abort, { once: true })
       if (signal?.aborted) abort()
@@ -119,6 +168,7 @@ export class PeerHostRemoteEvents {
       for (const worker of generation.workers.values()) this.stop(generation, worker)
     }
     this.routes.clear()
+    this.pendingSessionStatuses.clear()
   }
 
   private sync(generation: EventGeneration): void {
@@ -151,6 +201,7 @@ export class PeerHostRemoteEvents {
             if (frame?.type !== 'ready' || typeof frame.clientId !== 'string') throw new Error('远端事件流缺少 ready 帧')
             clientId = frame.clientId
             attempt = 0
+            this.replayPendingSessionStatusesForGeneration(generation)
             // 只有事件流完成首个 ready 握手后才做一次基线校准。
             // 同一条合并事件流内部的重连不能反复触发完整 session/list；增量状态由
             // WebSocket 事件承担。调用方若需要跨 open() 复用基线，应在 prepare() 内自行合并。
@@ -178,9 +229,12 @@ export class PeerHostRemoteEvents {
     // 原生子智能体列表从统一状态事件读取运行态，不能仅依赖已打开会话的 follow 流。
     if (frame?.type === 'emit' && frame.event === 'api-session/status') {
       const args = frame.args
-      if (Array.isArray(args) && typeof args[0] === 'string' && typeof args[1] === 'boolean' && this.options.accepts(args[0], scope)) {
-        generation.queue.push(frame)
+      if (!Array.isArray(args) || typeof args[0] !== 'string' || typeof args[1] !== 'boolean') return
+      if (!this.options.accepts(args[0], scope)) {
+        this.rememberPendingSessionStatus(scope, args[0], frame)
+        return
       }
+      this.deliverSessionStatus(generation, scope, args[0], args[1], frame)
       return
     }
     if (frame?.type === 'cancel' && typeof frame.eventId === 'string') {
@@ -199,6 +253,46 @@ export class PeerHostRemoteEvents {
     worker.pending.set(frame.eventId, id)
     this.routes.set(id, { scope, clientId, eventId: frame.eventId, localClientId: generation.clientId!, signal, agentId: frame.agentId, pending: worker.pending })
     generation.queue.push({ ...frame, eventId: id })
+  }
+
+  private deliverSessionStatus(generation: EventGeneration, scope: HostScope, sessionId: string, running: boolean, frame: unknown): void {
+    // DSH 的 completionUnread 是由 true -> false 的事件边沿计算的，不是
+    // session/list 的持久字段。PeerHost 连接可能在目标会话已开始运行后才建立，
+    // 这时首个可见事件只有 false；补一帧同 ID 的 true，才能让 DSH 正确生成未读，
+    // 随后的真实 false 仍会把最终运行态设为已完成。
+    const previous = generation.sessionStatuses.get(sessionId)
+    if (!running && previous !== true) {
+      generation.queue.push({ ...record(frame), args: [sessionId, true] })
+    }
+    this.options.onSessionStatus?.(sessionId, running, scope)
+    generation.queue.push(frame)
+    generation.sessionStatuses.set(sessionId, running)
+  }
+
+  private rememberPendingSessionStatus(scope: HostScope, sessionId: string, frame: unknown): void {
+    if (scope.targetHostId === null) return
+    const key = `${scope.targetHostId}:${sessionId}`
+    const pending = this.pendingSessionStatuses.get(key) ?? { scope, sessionId, frames: [] }
+    // 保留状态变化序列，而不是只保留最后一个 false；DSH 需要 true → false
+    // 才能把已完成的非当前会话标记为未读。
+    const previousArgs = record(pending.frames.at(-1))?.args
+    const args = record(frame)?.args
+    if (Array.isArray(previousArgs) && Array.isArray(args) && previousArgs[1] === args[1]) return
+    pending.frames.push(frame)
+    if (pending.frames.length > 8) pending.frames.shift()
+    this.pendingSessionStatuses.set(key, pending)
+  }
+
+  private replayPendingSessionStatusesForGeneration(generation: EventGeneration): void {
+    for (const pending of [...this.pendingSessionStatuses.values()]) {
+      if (!this.options.accepts(pending.sessionId, pending.scope)) continue
+      this.pendingSessionStatuses.delete(`${pending.scope.targetHostId}:${pending.sessionId}`)
+      for (const frame of pending.frames) {
+        const args = record(frame)?.args
+        if (!Array.isArray(args) || typeof args[1] !== 'boolean') continue
+        this.deliverSessionStatus(generation, pending.scope, pending.sessionId, args[1], frame)
+      }
+    }
   }
 
   private cancel(generation: EventGeneration, worker: EventWorker, eventId: string, id: string): void {

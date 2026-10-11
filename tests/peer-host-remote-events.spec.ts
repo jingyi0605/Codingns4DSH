@@ -198,6 +198,69 @@ test('远端运行与结束通知进入原生状态总线，隐藏资源、跨 H
   } finally { await f.close() }
 })
 
+test('连接建立在会话运行中时，首个完成事件补发 true 以恢复完成未读', { timeout: 3000 }, async () => {
+  const local = new Source()
+  const peer = new Source()
+  const events = new PeerHostRemoteEvents({
+    open: (_scope, signal) => {
+      peer.push({ type: 'ready', clientId: 'remote-client' })
+      return peer.open(signal)
+    },
+    reply: async () => true,
+    accepts: () => true,
+  })
+  const controller = new AbortController()
+  const iterator = events.open(signal => local.open(signal), controller.signal)[Symbol.asyncIterator]()
+  try {
+    local.push({ type: 'ready', clientId: 'local-client' })
+    await iterator.next()
+    events.setPeers([scope('a')])
+    await setImmediate()
+    const frame = { type: 'emit', event: 'api-session/status', args: [createVirtualSessionId('a', 'late-session'), false] }
+    peer.push(frame)
+    assert.deepEqual((await iterator.next()).value, { ...frame, args: [createVirtualSessionId('a', 'late-session'), true] })
+    assert.deepEqual((await iterator.next()).value, frame)
+  } finally {
+    controller.abort()
+    await iterator.return?.()
+    events.dispose()
+  }
+})
+
+test('会话作用域尚未建立时暂存 true 到 false，作用域可见后按顺序重放以恢复完成未读', { timeout: 3000 }, async () => {
+  const local = new Source()
+  const peer = new Source()
+  let visible = false
+  const target = scope('a')
+  const events = new PeerHostRemoteEvents({
+    open: (_scope, signal) => {
+      peer.push({ type: 'ready', clientId: 'remote-client' })
+      return peer.open(signal)
+    },
+    reply: async () => true,
+    accepts: () => visible,
+  })
+  const controller = new AbortController()
+  const iterator = events.open(signal => local.open(signal), controller.signal)[Symbol.asyncIterator]()
+  try {
+    local.push({ type: 'ready', clientId: 'local-client' })
+    assert.deepEqual((await iterator.next()).value, { type: 'ready', clientId: 'local-client' })
+    events.setPeers([target])
+    await setImmediate()
+    const status = (running: boolean) => ({ type: 'emit', event: 'api-session/status', args: [createVirtualSessionId('a', 'session'), running] })
+    peer.push(status(true)); peer.push(status(false))
+    await setImmediate()
+    visible = true
+    events.replayPendingSessionStatuses()
+    assert.deepEqual((await iterator.next()).value, status(true))
+    assert.deepEqual((await iterator.next()).value, status(false))
+  } finally {
+    controller.abort()
+    await iterator.return?.()
+    events.dispose()
+  }
+})
+
 test('本机代次结束时清理全部远端，下一代同名事件不能使用旧身份回答', { timeout: 3000 }, async () => {
   const f = fixture()
   try {

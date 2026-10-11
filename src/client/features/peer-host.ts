@@ -556,6 +556,9 @@ export function createPeerHostPageTransport(
     open: (scope, signal) => openRemoteStream('$events', { args: {} }, scope, signal),
     reply: (scope, payload, signal) => codingNsCall('peerHost/native', { method: '$events/result', payload, scope }, signal),
     accepts: (agentId, scope) => scopes.get(agentId)?.targetHostId === scope.targetHostId,
+    onSessionStatus: (sessionId, running) => {
+      if (projection.setSessionRunning(sessionId, running)) void refreshPeerHostNativeSessions(uiContext as Parameters<typeof refreshPeerHostNativeSessions>[0])
+    },
     prepare: async () => {
       if (nativeSessionPrepared) return
       nativeSessionPrepared = true
@@ -849,6 +852,13 @@ export function createPeerHostPageTransport(
       }
       refreshModelCatalogForScope(navigationScope())
       const changed = projection.setAggregate(aggregate, orderedWorkspaceIds)
+      for (const sessionId of projection.consumeCompletedSessionTransitions()) {
+        const scope = scopes.get(sessionId)
+        if (scope === undefined) continue
+        projection.setSessionRunning(sessionId, false)
+        events.replayCompletedSessionStatus(sessionId, scope)
+      }
+      events.replayPendingSessionStatuses()
       const readyHosts = new Set(aggregate.filter(host => host.availability === 'ready' && host.workspaces.length > 0).map(host => host.targetHostId))
       events.setPeers([...remoteHostScopes.values()].filter(scope => readyHosts.has(scope.targetHostId)))
       return changed

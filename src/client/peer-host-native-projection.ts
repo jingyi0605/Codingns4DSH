@@ -42,6 +42,10 @@ export interface PeerHostNativeProjection {
   hasAggregate(): boolean
   /** 记录新的聚合快照；返回 true 表示与上一次不同，调用方据此刷新原生数据。 */
   setAggregate(results: readonly AggregateHostResult[], orderedWorkspaceIds?: readonly string[]): boolean
+  /** 合并远端事件流推送的最新运行态，避免旧的 session/list 快照覆盖终态。 */
+  setSessionRunning(sessionId: string, running: boolean): boolean
+  /** 取出摘要明确报告的 true → false 变化；用于事件丢失时恢复完成未读。 */
+  consumeCompletedSessionTransitions(): readonly string[]
   /** 更新 Host 侧持久化的全局 Workspace 顺序；顺序变化必须触发原生 Store 刷新。 */
   setWorkspaceOrder(orderedWorkspaceIds: readonly string[]): boolean
   /** 当前 Host 侧返回的混合 Workspace 顺序。 */
@@ -83,6 +87,8 @@ export function createPeerHostNativeProjection(): PeerHostNativeProjection {
   let localHostId: string | undefined
   let hasAggregate = false
   let sessionWorkspaceIds = new Map<string, string>()
+  const sessionRunningOverrides = new Map<string, boolean>()
+  const completedSessionTransitions = new Set<string>()
   const listeners = new Set<() => void>()
   return {
     hasAggregate: () => hasAggregate,
@@ -90,6 +96,14 @@ export function createPeerHostNativeProjection(): PeerHostNativeProjection {
       const next = projectAggregate(results)
       const nextWorkspaceIds = new Set(next.workspaces.map((workspace) => workspace.workspaceId))
       const nextSessionIds = new Set(next.sessions.map((session) => session.sessionId))
+      for (const candidate of next.sessions) {
+        const previous = sessions.find((session) => session.sessionId === candidate.sessionId)
+        if (previous?.running !== true || candidate.running !== false) continue
+        // 已收到 running 事件时，较旧的 session/list 不能被当成完成；只有摘要的
+        // updatedAt 前进了，才把它视为事件丢失后的真实完成变化。
+        const override = sessionRunningOverrides.get(candidate.sessionId)
+        if (override !== true || candidate.updatedAt > previous.updatedAt) completedSessionTransitions.add(candidate.sessionId)
+      }
       const retainedSessions = [...next.sessions]
       const retainedSessionWorkspaceIds = new Map(next.sessionWorkspaceIds)
       const retainedWorkspaces = next.workspaces.map((workspace) => ({
@@ -119,7 +133,12 @@ export function createPeerHostNativeProjection(): PeerHostNativeProjection {
         nextWorkspace.sessionIds.push(session.sessionId)
         if (previousWorkspace?.archivedSessionIds.includes(session.sessionId) === true) nextWorkspace.archivedSessionIds.push(session.sessionId)
       }
-      const projectedNext = { ...next, workspaces: retainedWorkspaces, sessions: retainedSessions, sessionWorkspaceIds: retainedSessionWorkspaceIds }
+      const projectedNext = {
+        ...next,
+        workspaces: retainedWorkspaces,
+        sessions: retainedSessions.map((session) => applyRunningOverride(session, sessionRunningOverrides)),
+        sessionWorkspaceIds: retainedSessionWorkspaceIds,
+      }
       // 某次摘要失败可能暂时不带本地 Host；保留上一次稳定 ID，避免原生裸 ID
       // 在这一轮被误当成未知项而跳到远端工作区之后。
       const nextLocalHostId = projectedNext.localHostId ?? localHostId
@@ -140,6 +159,21 @@ export function createPeerHostNativeProjection(): PeerHostNativeProjection {
       localHostId = nextLocalHostId
       for (const listener of [...listeners]) listener()
       return true
+    },
+    setSessionRunning(sessionId, running) {
+      const previous = sessionRunningOverrides.get(sessionId)
+      if (previous === running) return false
+      sessionRunningOverrides.set(sessionId, running)
+      const current = sessions.find((session) => session.sessionId === sessionId)
+      if (current === undefined || current.running === running) return false
+      sessions = sessions.map((session) => session.sessionId === sessionId ? { ...session, running } : session)
+      for (const listener of [...listeners]) listener()
+      return true
+    },
+    consumeCompletedSessionTransitions() {
+      const result = [...completedSessionTransitions]
+      completedSessionTransitions.clear()
+      return result
     },
     setWorkspaceOrder(nextOrderedWorkspaceIds) {
       const next = normalizeWorkspaceOrder(nextOrderedWorkspaceIds)
@@ -268,6 +302,14 @@ function projectSession(
       parentSessionId: createVirtualSessionId(session.scope.targetHostId ?? session.scope.hostId, session.parentSessionId),
     }),
   }
+}
+
+function applyRunningOverride(
+  session: PeerHostVirtualSessionSummary,
+  overrides: ReadonlyMap<string, boolean>,
+): PeerHostVirtualSessionSummary {
+  const running = overrides.get(session.sessionId)
+  return running === undefined || running === session.running ? session : { ...session, running }
 }
 
 function sameWorkspaces(previous: readonly PeerHostVirtualWorkspaceView[], next: readonly PeerHostVirtualWorkspaceView[]): boolean {

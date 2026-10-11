@@ -159,6 +159,15 @@ test('快照变化才通知订阅者，重复快照返回未变化', () => {
   assert.equal(notified, 4)
   assert.equal(projection.sessions()[0]?.blank, false)
 
+  // 远端事件可能先于下一次 session/list 聚合到达；完成事件必须覆盖旧快照中的 running。
+  assert.equal(projection.setSessionRunning(createVirtualSessionId('peer-1', 'session-1'), false), false)
+  assert.equal(projection.setAggregate([remoteHost([{ sessionId: 'session-1', title: '远端会话', status: 'running', updatedAt: 33, blank: false }])] as never), true)
+  assert.equal(projection.setSessionRunning(createVirtualSessionId('peer-1', 'session-1'), true), true)
+  assert.equal(projection.setSessionRunning(createVirtualSessionId('peer-1', 'session-1'), false), true)
+  assert.equal(projection.sessions()[0]?.running, false)
+  assert.equal(projection.setAggregate([remoteHost([{ sessionId: 'session-1', title: '远端会话', status: 'running', updatedAt: 34, blank: false }])] as never), true)
+  assert.equal(projection.sessions()[0]?.running, false)
+
   assert.equal(projection.setAggregate([localHost()] as never), true)
   assert.deepEqual(projection.workspaces(), [])
   assert.deepEqual(projection.sessions(), [])
@@ -166,4 +175,21 @@ test('快照变化才通知订阅者，重复快照返回未变化', () => {
   unsubscribe()
   projection.setAggregate([remoteHost()] as never)
   assert.equal(notified, 5)
+})
+
+test('摘要从运行中变为完成时记录未读回放边沿，事件覆盖的旧摘要不误报', () => {
+  const projection = createPeerHostNativeProjection()
+  const id = createVirtualSessionId('peer-1', 'session-1')
+  projection.setAggregate([remoteHost([{ sessionId: 'session-1', title: '远端会话', status: 'running', updatedAt: 10, blank: false }])] as never)
+  projection.setAggregate([remoteHost([{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 20, blank: false }])] as never)
+  assert.deepEqual(projection.consumeCompletedSessionTransitions(), [id])
+  assert.deepEqual(projection.consumeCompletedSessionTransitions(), [])
+
+  projection.setAggregate([remoteHost([{ sessionId: 'session-1', title: '远端会话', status: 'running', updatedAt: 30, blank: false }])] as never)
+  projection.setSessionRunning(id, true)
+  projection.setAggregate([remoteHost([{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 30, blank: false }])] as never)
+  assert.deepEqual(projection.consumeCompletedSessionTransitions(), [])
+  assert.equal(projection.sessions()[0]?.running, true)
+  projection.setAggregate([remoteHost([{ sessionId: 'session-1', title: '远端会话', status: 'idle', updatedAt: 31, blank: false }])] as never)
+  assert.deepEqual(projection.consumeCompletedSessionTransitions(), [id])
 })
