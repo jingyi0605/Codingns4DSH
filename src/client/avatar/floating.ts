@@ -1,5 +1,5 @@
 import { createElement, useEffect, useRef, useState } from 'react'
-import type { ReactElement, ReactNode, PointerEvent } from 'react'
+import type { CSSProperties, ReactElement, ReactNode, PointerEvent } from 'react'
 import type { AssistantAvatarModel, AssistantAvatarReaction, AssistantAvatarState } from '../../shared/assistant-avatar.js'
 import { clampAssistantAvatarPosition } from '../../shared/assistant-avatar.js'
 import type { AssistantNotificationTailSide } from '../../shared/assistant-notifications.js'
@@ -9,12 +9,12 @@ import { AssistantAvatarSlot } from './slot.js'
 import { FloatingCallBadge, FloatingCallCaption, floatingCallCaptionLayout } from '../features/assistant-floating-call.js'
 import type { FloatingCallInfo } from '../features/assistant-floating-call.js'
 import { dshThemeColor } from '../theme.js'
-import { assistantNotificationTailTarget, floatingAssistantNotificationLayout } from './notification-bubble.js'
+import { assistantNotificationTailStyle, assistantNotificationTailTarget, floatingAssistantNotificationLayout } from './notification-bubble.js'
 
 const POSITION_KEY = 'codingns-assistant-avatar-position'
 interface Position { readonly x: number; readonly y: number }
 /** 气泡节点可以按布局方向渲染尾巴；不需要方向的调用方仍可直接传节点。 */
-export type AssistantNotificationNode = ReactNode | ((tail: AssistantNotificationTailSide, tailTarget?: number) => ReactNode)
+export type AssistantNotificationNode = ReactNode | ((tail: AssistantNotificationTailSide, tailTarget?: number, tailStyle?: CSSProperties) => ReactNode)
 
 /** 容器负责交互，渲染器只画形象；拖动与打开对话互斥。 */
 export function FloatingAssistantAvatar({ services, model, state, reaction, size, call, notification, onOpen }: {
@@ -90,18 +90,21 @@ function FloatingAssistantFrame({ services, width: size, height, positionKey, ki
   }
   const captionLayout = floatingCallCaptionLayout(position.x, position.y, size, height, viewport.width, viewport.height)
   const notificationLayout = notification === undefined ? undefined : floatingAssistantNotificationLayout(position.x, position.y, size, height, viewport.width, viewport.height, call ? captionLayout.above : undefined)
+  const notificationTailStyle = notificationLayout === undefined ? {} : assistantNotificationTailStyle(size / 2,
+    Number(notificationLayout.style.left ?? 0), Number(notificationLayout.style.width ?? size), notificationLayout.tail)
   const notificationStyle = notificationLayout === undefined ? undefined : {
     position: 'absolute' as const, ...notificationLayout.style,
     // 区域高度交给内容决定，气泡底边因此始终贴在形象上方；限高交给气泡面板，内容只会在内部滚动。
     maxHeight: undefined,
     '--codingns-notification-max-height': `${Number(notificationLayout.style.maxHeight ?? 276)}px`,
+    ...notificationTailStyle,
   }
   // 气泡节点由调用方创建；方向通过函数形式回传，调用方不需要重复计算布局几何。
   const notificationNode = typeof notification === 'function'
     ? notification(notificationLayout?.tail ?? 'bottom', notificationLayout === undefined ? undefined
       : notificationLayout.tail === 'left' || notificationLayout.tail === 'right'
         ? assistantNotificationTailTarget(height / 2, Number(notificationLayout.style.top ?? 0))
-        : assistantNotificationTailTarget(size / 2, Number(notificationLayout.style.left ?? 0)))
+        : assistantNotificationTailTarget(size / 2, Number(notificationLayout.style.left ?? 0)), notificationTailStyle)
     : notification
   return createElement('div', { ...(kind === 'avatar' ? { 'data-codingns-floating-avatar': true } : { 'data-codingns-floating-call': true }),
     style: { position: 'fixed', left: position.x, top: position.y, width: size, height, maxWidth: '100vw', zIndex: 9000, pointerEvents: 'none' } },

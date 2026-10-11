@@ -1,6 +1,6 @@
 import { callCodingNsRpcResult } from '../rpc-call.js'
 import { createElement, useCallback, useEffect, useRef, useState } from 'react'
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import type { CodingNsClientFeatureModule } from './types.js'
 import type { CodingNsClientServices } from './types.js'
 import { DEFAULT_ASSISTANT_SETTINGS, DEFAULT_ASSISTANT_VOICE_SETTINGS } from '../../shared/contracts/config.js'
@@ -20,7 +20,7 @@ import { useDesktopAssistant } from '../avatar/desktop-bridge.js'
 import { AssistantNotificationBubble } from '../avatar/notification-bubble.js'
 import { AssistantNotificationStore } from './assistant-notification-store.js'
 import { assistantNotificationText, normalizeAssistantNotificationSettings } from '../../shared/assistant-notifications.js'
-import type { AssistantNotification, AssistantNotificationSnapshot } from '../../shared/assistant-notifications.js'
+import type { AssistantNotification, AssistantNotificationSnapshot, AssistantNotificationTailSide } from '../../shared/assistant-notifications.js'
 import type { AssistantAvatarReaction } from '../../shared/assistant-avatar.js'
 import { readDesktopAssistantNotificationSnapshot, type DesktopAssistantNotification } from '../../shared/desktop-assistant.js'
 import { normalizeAssistantSessionSelection, openAssistantNotificationSession, readAssistantSessionSelectionStore } from '../../dsh-capabilities/client/assistant-session-navigation-adapter.js'
@@ -197,7 +197,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     void notifications.open(noticeId, generation, connectionGeneration).catch(() => undefined)
   }, [notifications])
   const pageNotices = useCallback((cursor?: string): void => { void notifications.page(cursor) }, [notifications])
-  const readAllNotices = useCallback((generation: number): Promise<void> => notifications.readAll(generation), [notifications])
+  const clearAllNotices = useCallback((generation: number): Promise<void> => notifications.clearAll(generation), [notifications])
 
   useEffect(() => {
     if (adapter !== undefined) {
@@ -441,19 +441,20 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       onNoticeAction: async (event) => {
         // 原生由 Host 直接同步，可能先于网页收到新帧；刷新后仍按点击帧的连接身份导航。
         await notifications.refresh(true)
-        // 一键处理没有单条身份，只按点击帧的代次结算当前全部未读。
-        if (event.action === 'dismiss-all') return notifications.readAll(event.noticeGeneration)
+        // 一键清理没有单条身份，只按点击帧的代次清空当前气泡展示。
+        if (event.action === 'dismiss-all') return notifications.clearAll(event.noticeGeneration)
         return event.action === 'open' ? notifications.open(event.noticeId, event.noticeGeneration,
           event.connectionGeneration)
           : notifications.acknowledge(event.noticeId, event.noticeGeneration, 'dismiss', undefined, event.connectionGeneration)
       },
     })
   const nativeFloating = floatingEnabled && desktopAvatar.native
+  // 有提醒时用函数形式接收布局方向，气泡尾巴才能贴向形象所在的一侧。
   const notification = noticeFrame === undefined ? (notificationsEnabled && notificationSnapshot.error ? createElement('div', {
     role: 'alert', style: { padding: 12, background: 'var(--dsw-alias-background-secondary)', borderRadius: 12, overflowWrap: 'anywhere' },
-  }, notificationSnapshot.error) : undefined) : createElement(AssistantNotificationBubble, {
+  }, notificationSnapshot.error) : undefined) : (tail: AssistantNotificationTailSide, tailTarget?: number, tailStyle?: CSSProperties) => createElement(AssistantNotificationBubble, {
     frame: noticeFrame, t, error: notificationSnapshot.error, autoClose: notificationSettings.autoClose, autoCloseSeconds: notificationSettings.autoCloseSeconds,
-    onPresented: presentNotice, onDismiss: dismissNotice, onOpen: openNotice, onPage: pageNotices, onReadAll: readAllNotices,
+    onPresented: presentNotice, onDismiss: dismissNotice, onOpen: openNotice, onPage: pageNotices, onClearAll: clearAllNotices, tailSide: tail, tailTarget, tailStyle,
   })
   return createElement('div', { 'data-codingns-global-voice': 'true', ...(conversationOpen || floatingVisible ? {} : { 'aria-hidden': 'true' }) },
     floatingVisible && !nativeFloating

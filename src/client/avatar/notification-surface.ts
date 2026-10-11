@@ -9,7 +9,6 @@ export function notificationSurfaceGeometry(width: number, height: number, side:
   const size = horizontal ? width : height
   const half = Math.min(ASSISTANT_NOTIFICATION_TAIL_WIDTH / 2, Math.max(0, (size - 2 * radius - 4) / 2))
   const tipAlong = Math.max(1, Math.min(size - 1, target ?? size / 2))
-  // 根部略向面板中心收，尖端保持对准形象，形成自然斜向；正中位置也保留轻微弯曲。
   const bias = tipAlong < size / 2 ? 24 : -24
   const rootAlong = Math.max(radius + half + 2, Math.min(size - radius - half - 2, tipAlong + bias))
   const reverse = side === 'bottom' || side === 'left'
@@ -43,7 +42,6 @@ export function observeNotificationSurface(node: HTMLElement, side: AssistantNot
     const geometry = notificationSurfaceGeometry(width, height, side, target, length)
     node.querySelector('[data-codingns-notification-outline]')?.setAttribute('d', geometry.path)
     node.querySelector('[data-codingns-notification-fallback]')?.setAttribute('visibility', 'hidden')
-    // 保留实际尖端坐标供渲染回归检查；不依赖 SVG 包围盒推测方向。
     node.dataset.tailTipX = String(geometry.tip.x); node.dataset.tailTipY = String(geometry.tip.y)
   }
   draw()

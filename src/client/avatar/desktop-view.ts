@@ -5,7 +5,7 @@ import { desktopAssistantNotificationHeight, desktopAssistantLayout, desktopAssi
 import type { AssistantNotification, AssistantNotificationTailSide } from '../../shared/assistant-notifications.js'
 import { resolveAssistantAvatarAsset } from '../../shared/assistant-avatar.js'
 import { AssistantAvatarReactionBadge } from './reaction-badge.js'
-import { AssistantNotificationBubble, assistantNotificationTailTarget } from './notification-bubble.js'
+import { AssistantNotificationBubble, assistantNotificationTailStyle, assistantNotificationTailTarget } from './notification-bubble.js'
 import { resolveCodingNsTranslator } from '../locale.js'
 import { BuiltinAssistantAvatar } from './builtin.js'
 import { ImageAssistantAvatar } from './image.js'
@@ -129,12 +129,15 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
   const regionStyle = (region: { x: number; y: number; width: number; height: number }) => ({ position: 'absolute' as const, left: region.x, top: region.y, width: region.width, height: region.height, overflowY: 'auto' as const })
   // 气泡在形象上方时尾巴贴底边，在下方时贴顶边；尖端始终朝向形象且不压住它。
   const notificationTail: AssistantNotificationTailSide = layout.notification !== undefined && layout.notification.y < layout.avatar.y ? 'bottom' : 'top'
+  const notificationTailStyle = layout.notification === undefined ? {} : assistantNotificationTailStyle(
+    layout.avatar.x + layout.avatar.width / 2, layout.notification.x, layout.notification.width, notificationTail)
   const notificationStyle = layout.notification === undefined ? undefined : {
     position: 'absolute' as const, left: layout.notification.x, top: layout.notification.y, width: layout.notification.width,
     overflow: 'visible' as const,
     // 区域高度由内容决定，气泡底边始终贴在形象上方；限高交给气泡面板，避免内容向下溢出。
     '--codingns-notification-max-height': `${layout.notification.height}px`,
     height: layout.notification.height, boxSizing: 'border-box' as const,
+    ...notificationTailStyle,
   }
   const notification = frame.notificationSnapshot ?? frame.notification
   return createElement('div', { style: { width: layout.bounds.width, height: layout.bounds.height, position: 'relative', background: 'transparent' } },
@@ -152,7 +155,7 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
         createElement('span', { 'data-companion-spinner': true, style: { width: 28, height: 28, borderRadius: '50%', border: '3px solid #dbe7fa', borderTopColor: '#6d9cdd', animation: 'companion-spin 1s linear infinite' } }))),
     notification && notificationStyle ? createElement('div', { style: notificationStyle, 'data-codingns-native-notice': true },
       createElement(AssistantNotificationBubble, { frame: notification, t: resolveCodingNsTranslator(), error: noticeError ?? frame.noticeError, tailSide: notificationTail,
-        tailTarget: assistantNotificationTailTarget(layout.avatar.x + layout.avatar.width / 2, layout.notification!.x),
+        tailTarget: assistantNotificationTailTarget(layout.avatar.x + layout.avatar.width / 2, layout.notification!.x), tailStyle: notificationTailStyle,
         ...(frame.autoClose === undefined || !frame.nativeVisible ? {} : { autoClose: frame.autoClose }),
         ...(frame.autoCloseSeconds === undefined || !frame.nativeVisible ? {} : { autoCloseSeconds: frame.autoCloseSeconds }),
         onOpen: openNotice, onDismiss: dismissNotice, onPresented: frame.nativeVisible ? presented : () => undefined,
