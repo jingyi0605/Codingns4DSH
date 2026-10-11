@@ -22,6 +22,9 @@ type RecordValue = Record<string, any>
 const OPENCODE_NATIVE_SUBAGENT_DENY = [
   { action: 'subagent', resource: '*', effect: 'deny' },
 ] as const
+const OPENCODE_EXTERNAL_DIRECTORY_ALLOW = {
+  action: 'external_directory', resource: '*', effect: 'allow',
+} as const
 interface TurnTarget {
   readonly server: string
   readonly providerSessionId: string
@@ -142,9 +145,7 @@ export class OpenCodeV2Protocol {
     const bridge = openCodeBridgeMcpConfig(input.sessionId, 'opencode')
     // 原生 subagent 永远禁止；桥接关闭时也不能静默回退到 OpenCode 自己的
     // Agent。这样用户要么使用 CodingNS 托管工具，要么得到明确的权限拒绝。
-    const permissions = bridge === undefined
-      ? OPENCODE_NATIVE_SUBAGENT_DENY
-      : [...OPENCODE_NATIVE_SUBAGENT_DENY, { action: bridge.toolName, resource: '*', effect: 'allow' }]
+    const permissions = openCodePermissions(input, bridge)
     if (bridge !== undefined) {
       await this.request(server, locationPath(`/api/experimental/mcp/${encodeURIComponent(bridge.serverName)}`, input.cwd), {
         config: bridge.config,
@@ -360,6 +361,25 @@ export class OpenCodeV2Protocol {
     if (envelope === null || !('data' in envelope)) throw new Error(`OpenCode V2 响应格式无效：${path.split('?')[0]}`)
     return envelope.data
   }
+}
+
+/**
+ * 把 DSH 的生效权限投影到 OpenCode V2 会话权限。
+ *
+ * OpenCode 默认会对工作目录之外的 glob/read 触发 external_directory ask。
+ * DSH 的 danger-full-access + never 已经明确表示允许无提示执行，必须在
+ * Provider 会话层放行这条边界，否则请求会绕回 DSH 审批服务并被 never 自动拒绝。
+ */
+function openCodePermissions(
+  input: CodingNsCliTurnInput,
+  bridge: ReturnType<typeof openCodeBridgeMcpConfig>,
+): readonly Record<string, string>[] {
+  const permissions: Record<string, string>[] = [...OPENCODE_NATIVE_SUBAGENT_DENY]
+  if (input.permission?.sandboxMode === 'danger-full-access' && input.permission.approvalPolicy === 'never') {
+    permissions.push(OPENCODE_EXTERNAL_DIRECTORY_ALLOW)
+  }
+  if (bridge !== undefined) permissions.push({ action: bridge.toolName, resource: '*', effect: 'allow' })
+  return permissions
 }
 
 /** 一个回合持有一份投影状态，避免多会话和多步骤之间串用文本长度、工具参数。 */
