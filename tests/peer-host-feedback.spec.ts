@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createPeerHostPageTransport, installPeerHostConnectionRouting } from '../src/client/features/peer-host.js'
 import { createPeerHostFeature } from '../src/host/features/peer-host.js'
@@ -12,7 +13,7 @@ import { createVirtualSessionId, type AggregateHostResult } from '../src/shared/
 /** 串起页面分流、代理 Host、目标 Host 和 Gateway；网络与监听全部使用内存夹具。 */
 test('远程消息反馈可读取、保存和删除，同名会话按 Host 隔离，本机反馈保持本机', async t => {
   t.mock.method(PeerHostWebSocketGateway.prototype, 'start', async () => ({ host: '127.0.0.1', port: 0, path: '/test' }))
-  const directory = await mkdtemp(join(process.cwd(), 'data/test-runs/peer-feedback-'))
+  const directory = await mkdtemp(join(tmpdir(), 'codingns-peer-feedback-'))
   const previousFetch = globalThis.fetch
   const hosts = new Map<string, CodingNsRpcTable>()
   const disposers: Array<() => void | Promise<void>> = []

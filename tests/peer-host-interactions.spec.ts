@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createPeerHostFeature } from '../data/build/dist/host/features/peer-host.js'
 import { createPeerHostPageTransport } from '../data/build/dist/client/features/peer-host.js'
@@ -12,7 +13,7 @@ import { createVirtualSessionId } from '../data/build/dist/shared/index.js'
 /** 用真正的两端 Feature/RPC/流注册表串起客户端，所有网络和监听入口都替换成内存实现。 */
 test('远端审批、提问、计划确认经两层 Host 转发到原生事件帧，答案回到正确 Host', { timeout: 8000 }, async t => {
   t.mock.method(PeerHostWebSocketGateway.prototype, 'start', async () => ({ host: '127.0.0.1', port: 0, path: '/test' }))
-  const directory = await mkdtemp(join(process.cwd(), 'data/test-runs/peer-interactions-'))
+  const directory = await mkdtemp(join(tmpdir(), 'codingns-peer-interactions-'))
   const hosts = new Map<string, CodingNsRpcTable>()
   const disposers: Array<() => void | Promise<void>> = []
   const replies: Array<{ host: string; args: any }> = []
