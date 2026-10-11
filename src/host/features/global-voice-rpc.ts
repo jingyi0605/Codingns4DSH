@@ -49,7 +49,7 @@ import { measureVoice, traceVoice, sanitizeVoiceDiagnosticFields } from '../../s
 import { assistantSourceCache } from './assistant-source-cache.js'
 import { AssistantNotificationEvents } from './assistant-notification-events.js'
 import { CodingNsRpcError } from '../rpc-table.js'
-import type { AssistantNotificationAckRequest, AssistantNotificationReadAllRequest, AssistantNotificationReadRequest, AssistantNotificationTargetRequest } from '../../shared/assistant-notifications.js'
+import type { AssistantNotificationAckRequest, AssistantNotificationReadAllRequest, AssistantNotificationReadRequest, AssistantNotificationReadSessionRequest, AssistantNotificationTargetRequest } from '../../shared/assistant-notifications.js'
 import { AssistantNotificationSource } from './assistant-notification-source.js'
 import { readAssistantNotificationFeedRequest, type AssistantNotificationFact as AssistantSourceFact } from '../../shared/assistant-notification-feed.js'
 import { bindDesktopAssistantNotifications } from '../desktop-assistant/notifications.js'
@@ -60,8 +60,8 @@ import { resolveDshNativeDispatch } from '../modules/peer-host/peer-host-native-
 /**
  * 全局智能助理 Host 边界。
  *
- * 这里故意不接收 sessionId：会话索引、意图和派发各自通过快照协作，语音租约
- * 只属于 Host。这样刷新页面或切换当前对话不会改变助理的目标范围。
+ * 会话索引、意图和派发各自通过快照协作；会话级通知已读只消费已认证客户端
+ * 的当前选择三元组，不改变助理的目标范围。语音租约仍只属于 Host。
  */
 export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?: AssistantVoiceModelProbe; readonly conversationStorage?: AssistantConversationStorage; readonly conversationAdapter?: AssistantLlmAdapter } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -824,6 +824,12 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
             return notificationSource.read(request)
           }
           if (action === 'notifications/read') { notifications.readCurrent(); return notifications.center.read(payload as AssistantNotificationReadRequest) }
+          if (action === 'notifications/read-session') {
+            notifications.readCurrent()
+            const request = payload as AssistantNotificationReadSessionRequest
+            // Client 的本地选择使用稳定的 `local` 别名；真实 Host ID 只由 Host 自己决定。
+            return notifications.center.readSession({ ...request, hostId: request.hostId === 'local' ? localHostId : request.hostId })
+          }
           if (action === 'notifications/ack') return notifications.center.ack(payload as unknown as AssistantNotificationAckRequest)
           if (action === 'notifications/read-all') return notifications.center.readAll(payload as unknown as AssistantNotificationReadAllRequest)
           if (action === 'notifications/target') return { ...await notifications.center.target(payload as unknown as AssistantNotificationTargetRequest), localHostId }

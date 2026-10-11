@@ -44,6 +44,20 @@ export interface AssistantNotificationTarget {
   readonly requestKind?: 'question' | 'approval'
   readonly actualRequestTarget?: { readonly hostId: string; readonly sessionId: string; readonly requestId: string }
 }
+/** 当前前台会话的安全身份；Host 用三元组匹配通知，不依赖标题或客户端通知 ID。 */
+export interface AssistantNotificationSessionTarget {
+  readonly hostId: string
+  readonly workspaceId: string
+  readonly sessionId: string
+}
+export interface AssistantNotificationReadSessionRequest extends AssistantNotificationSessionTarget {
+  readonly generation: number
+}
+export interface AssistantNotificationReadSessionResult {
+  readonly generation: number
+  readonly revision: number
+  readonly read: number
+}
 export interface AssistantNotification {
   readonly noticeId: string
   readonly kind: AssistantNotificationKind

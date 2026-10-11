@@ -1,4 +1,4 @@
-import type { AssistantNotification, AssistantNotificationReadAllResult, AssistantNotificationSnapshot, AssistantNotificationStreamFrame, AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
+import type { AssistantNotification, AssistantNotificationReadAllResult, AssistantNotificationSessionTarget, AssistantNotificationSnapshot, AssistantNotificationStreamFrame, AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
 import { callCodingNsRpcResult } from '../rpc-call.js'
 import type { CodingNsRpcClient } from './types.js'
 
@@ -34,6 +34,8 @@ export class AssistantNotificationStore {
   private readonly presented = new Set<string>()
   private readonly opens = new Map<string, Promise<void>>()
   private readonly knownNotices = new Map<string, AssistantNotification>()
+  /** 最近一次前台选择；串行队列执行前再次校验，避免旧选择晚到时误读新会话。 */
+  private sessionSelectionKey: string | undefined
 
   constructor(private readonly rpc: CodingNsRpcClient,
     private readonly navigate: (target: AssistantNotificationTarget, signal: AbortSignal) => Promise<void>,
@@ -57,7 +59,7 @@ export class AssistantNotificationStore {
     // 旧流可能要等底层迭代器响应 abort；先释放引用，避免新配置被旧 Promise 阻塞启动。
     this.streamPromise = undefined
     clearTimeout(this.timer); clearTimeout(this.deadlineTimer)
-    this.cursor = undefined; this.presented.clear(); this.opens.clear(); this.knownNotices.clear()
+    this.cursor = undefined; this.presented.clear(); this.opens.clear(); this.knownNotices.clear(); this.sessionSelectionKey = undefined
     this.publish({ loading: enabled })
     if (enabled) {
       if (typeof this.rpc.open === 'function') {
@@ -215,6 +217,29 @@ export class AssistantNotificationStore {
     await this.refresh(true)
   }
 
+  /** 当前会话一旦被 DSH 选中即提交会话级已读；空选择只取消尚未发出的旧选择。 */
+  markSessionRead(target: AssistantNotificationSessionTarget | undefined): Promise<void> {
+    const key = target === undefined ? undefined : JSON.stringify([target.hostId, target.workspaceId, target.sessionId])
+    this.sessionSelectionKey = key
+    if (target === undefined || !this.enabled || this.disposed) return Promise.resolve()
+    if (this.snapshot.frame === undefined) {
+      // 首次选择可能早于通知首帧；等首帧到达后仍确认这是最近一次选择，避免旧选择越过新选择。
+      return this.refresh(true).then(() => this.sessionSelectionKey === key ? this.markSessionRead(target) : undefined)
+    }
+    const epoch = this.epoch
+    const operation = this.enqueue(async (signal) => {
+      if (this.sessionSelectionKey !== key) return
+      const frame = this.snapshot.frame
+      if (frame === undefined) return
+      await this.call('read-session', { generation: frame.generation, ...target }, signal)
+      this.assertCurrent(epoch, signal)
+    }, epoch).then(() => this.refresh(true)).catch((error: unknown) => {
+      if (epoch === this.epoch && this.enabled && !this.disposed) this.publish({ ...this.snapshot, error: message(error) })
+      throw error
+    })
+    return operation
+  }
+
   /** 查看由 Host 返回可信目标，公开导航成功后才标记已读。 */
   open(noticeId: string, generation: number, expectedConnectionGeneration?: number): Promise<void> {
     try { this.requireFrame(generation) } catch (error) { return Promise.reject(error) }
@@ -246,7 +271,7 @@ export class AssistantNotificationStore {
     this.disposed = true; this.enabled = false; this.epoch++
     this.lifetime.abort(); clearTimeout(this.timer); clearTimeout(this.deadlineTimer)
     try { if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') document.removeEventListener('visibilitychange', this.onVisibilityChange) } catch { /* 非浏览器环境未注册 */ }
-    this.presented.clear(); this.opens.clear(); this.knownNotices.clear(); this.listeners.clear(); this.snapshot = { loading: false }
+    this.presented.clear(); this.opens.clear(); this.knownNotices.clear(); this.sessionSelectionKey = undefined; this.listeners.clear(); this.snapshot = { loading: false }
   }
 
   /** 页面在前台时完成提示静默记为已读：不弹气泡，也不保留未读；失败、审批与提问照常呈现。 */
@@ -278,7 +303,7 @@ export class AssistantNotificationStore {
     this.chain = operation.catch(() => undefined)
     return operation
   }
-  private async call<T>(action: 'read' | 'ack' | 'read-all' | 'target', payload: unknown, signal: AbortSignal): Promise<T> {
+  private async call<T>(action: 'read' | 'read-session' | 'ack' | 'read-all' | 'target', payload: unknown, signal: AbortSignal): Promise<T> {
     const result = await callCodingNsRpcResult(this.rpc, `assistant/notifications/${action}`, payload, signal)
     signal.throwIfAborted()
     if (!result.ok) throw new Error(result.error.message)

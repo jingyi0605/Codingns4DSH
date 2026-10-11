@@ -4,9 +4,11 @@ import {
   type AssistantNotification, type AssistantNotificationAckRequest, type AssistantNotificationAckResult,
   type AssistantNotificationCapabilities, type AssistantNotificationKind, type AssistantNotificationReadAllRequest,
   type AssistantNotificationReadAllResult, type AssistantNotificationReadRequest,
+  type AssistantNotificationReadSessionRequest, type AssistantNotificationReadSessionResult,
   type AssistantNotificationSettings, type AssistantNotificationSnapshot, type AssistantNotificationTarget,
   type AssistantNotificationTargetRequest,
 } from '../../shared/assistant-notifications.js'
+import { parseVirtualWorkspaceId } from '../../shared/contracts/peer-host.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 
 interface NotificationFactSource {
@@ -30,6 +32,8 @@ interface NoticeRecord {
 interface SessionWatermark { seq: number; turn?: number; turnId?: string; failed: boolean; noticeId?: string }
 export interface AssistantNotificationCenterOptions {
   readonly now?: () => number
+  /** 当前 Host 的真实身份，用于识别 `local` 虚拟 Workspace 只属于本机。 */
+  readonly localHostId?: string
   /** 范围、目标存在和请求有效性在导航时再次复核。 */
   readonly validateTarget?: (target: AssistantNotificationTarget) => boolean | Promise<boolean>
 }
@@ -242,6 +246,22 @@ export class AssistantNotificationCenter {
     if (next !== item.notice) { item.notice = next; this.bumpRevision() }
     return { generation: this.currentGeneration, revision: this.currentRevision, notification: { ...item.notice } }
   }
+  /** 当前会话打开即视为查看该会话的通知；只改变通知已读/展示状态，不处理 DSH 请求。 */
+  readSession(input: AssistantNotificationReadSessionRequest): AssistantNotificationReadSessionResult {
+    this.expire()
+    if (!Number.isSafeInteger(input.generation) || input.generation !== this.currentGeneration) throw new CodingNsRpcError('ASSISTANT_NOTIFICATION_STALE_GENERATION', '通知代次已变化')
+    if (![input.hostId, input.workspaceId, input.sessionId].every(value => typeof value === 'string' && value.length > 0 && value.length <= 240)) throw new TypeError('会话通知目标无效')
+    let read = 0
+    for (const item of this.records.values()) {
+      if (item.target.hostId !== input.hostId || !sameNotificationWorkspace(item.target.workspaceId, input.workspaceId, input.hostId, this.options.localHostId ?? 'local') || item.target.sessionId !== input.sessionId) continue
+      const next = readNotice(item.notice)
+      if (next === item.notice) continue
+      item.notice = next
+      read++
+    }
+    if (read > 0) this.bumpRevision()
+    return { generation: this.currentGeneration, revision: this.currentRevision, read }
+  }
   /** 一键处理只推进未读记录；待处理请求保持展示，等待用户逐条响应。 */
   readAll(input: AssistantNotificationReadAllRequest): AssistantNotificationReadAllResult {
     this.expire()
@@ -295,6 +315,24 @@ export class AssistantNotificationCenter {
     const history = [...this.records.values()].filter((item) => !pending(item.notice)).sort((a, b) => a.notice.createdAt - b.notice.createdAt)
     for (const item of history.slice(0, Math.max(0, history.length - 100))) this.remove(item)
   }
+}
+
+/** PeerHost 会话选择可能携带虚拟或旧式 host:workspace ID；比较时只消除编码差异，Host 和会话仍严格匹配。 */
+function sameNotificationWorkspace(left: string, right: string, hostId: string, localHostId: string): boolean {
+  if (left === right) return true
+  const leftVirtual = parseVirtualWorkspaceId(left)
+  const rightVirtual = parseVirtualWorkspaceId(right)
+  const leftId = leftVirtual?.workspaceId ?? stripWorkspaceHost(left, hostId)
+  const rightId = rightVirtual?.workspaceId ?? stripWorkspaceHost(right, hostId)
+  if (leftId !== rightId) return false
+  const leftHost = leftVirtual?.hostId
+  const rightHost = rightVirtual?.hostId
+  return (leftHost === undefined || leftHost === hostId || leftHost === 'local' && hostId === localHostId)
+    && (rightHost === undefined || rightHost === hostId || rightHost === 'local' && hostId === localHostId)
+}
+function stripWorkspaceHost(value: string, hostId: string): string {
+  const prefix = `${hostId}:`
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value
 }
 
 /** 已读语义只在这里定义：单条确认与一键处理必须一致，待处理请求不能因已读被收起。 */

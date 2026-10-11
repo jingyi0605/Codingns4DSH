@@ -69,7 +69,7 @@ export class AssistantNotificationEvents {
     readonly excludedSessionIds?: () => ReadonlySet<string>
     readonly onFact?: (fact: AssistantNotificationFact) => void
   } = {}) {
-    this.center = new AssistantNotificationCenter({ validateTarget: (target) => this.validateTarget(target) })
+    this.center = new AssistantNotificationCenter({ localHostId: this.localHostId, validateTarget: (target) => this.validateTarget(target) })
     this.sync()
   }
   sync(): void {

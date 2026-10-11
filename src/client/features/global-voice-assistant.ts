@@ -23,7 +23,7 @@ import { assistantNotificationText, normalizeAssistantNotificationSettings } fro
 import type { AssistantNotification, AssistantNotificationSnapshot } from '../../shared/assistant-notifications.js'
 import type { AssistantAvatarReaction } from '../../shared/assistant-avatar.js'
 import { readDesktopAssistantNotificationSnapshot, type DesktopAssistantNotification } from '../../shared/desktop-assistant.js'
-import { openAssistantNotificationSession } from '../../dsh-capabilities/client/assistant-session-navigation-adapter.js'
+import { normalizeAssistantSessionSelection, openAssistantNotificationSession, readAssistantSessionSelectionStore } from '../../dsh-capabilities/client/assistant-session-navigation-adapter.js'
 import { uiFontSize } from '../font-scale.js'
 
 interface VoiceSnapshot {
@@ -162,6 +162,31 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     }
   }, [notifications])
   useEffect(() => { notifications.configure(notificationsEnabled, notificationKey) }, [notifications, notificationsEnabled, notificationKey])
+  useEffect(() => {
+    const context = services.uiContext
+    if (context === undefined) return undefined
+    const attach = (scope: unknown): (() => void) | undefined => {
+      const selection = readAssistantSessionSelectionStore(scope)
+      if (selection === undefined) return undefined
+      const sync = (): void => {
+        // 选择 Store 只发布成功的前台会话；通知 Store 再以串行队列确认，旧选择不会越过新选择。
+        void notifications.markSessionRead(normalizeAssistantSessionSelection(selection.getSnapshot())).catch(() => undefined)
+      }
+      sync()
+      return selection.subscribe(sync)
+    }
+    // PeerHost/DSH 可能在插件启动后才注册 uiWorkspace；注入会在服务出现时重新执行。
+    if (typeof context.inject === 'function') {
+      const fiber = context.inject(['uiWorkspace'], (scope) => {
+        const unsubscribe = attach(scope)
+        if (unsubscribe === undefined) return
+        scope.effect(() => unsubscribe, 'codingns4dsh: assistant notification session read')
+      })
+      return () => { void fiber.dispose() }
+    }
+    // 测试宿主和旧版轻量 Context 没有 inject 时，仍支持已存在的 uiWorkspace。
+    return attach(context)
+  }, [notifications, services.uiContext])
   const presentNotice = useCallback((noticeId: string, generation: number, kind?: AssistantNotification['kind']): void => {
     void notifications.acknowledge(noticeId, generation, 'presented', kind).catch(() => undefined)
   }, [notifications])

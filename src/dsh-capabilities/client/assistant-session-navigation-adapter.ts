@@ -1,8 +1,40 @@
-import type { AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
+import type { AssistantNotificationSessionTarget, AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
 import { createVirtualSessionId, parseVirtualSessionId, parseVirtualWorkspaceId } from '../../shared/contracts/peer-host.js'
 import type { CodingNsClientServices } from '../../client/features/types.js'
 
 interface SessionNavigation { openSession(sessionId: string): unknown }
+export interface AssistantSessionSelectionStore {
+  getSnapshot(): unknown
+  subscribe(listener: () => void): () => void
+}
+
+/** 读取 DSH 的唯一前台会话选择源；没有该能力的旧宿主不猜测当前会话。 */
+export function readAssistantSessionSelectionStore(context: unknown): AssistantSessionSelectionStore | undefined {
+  try {
+    const service = (context as { get?: (name: string) => unknown } | undefined)?.get?.('uiWorkspace')
+    const selection = (service as { selection?: unknown } | undefined)?.selection
+    if (typeof selection !== 'object' || selection === null) return undefined
+    const store = selection as Partial<AssistantSessionSelectionStore>
+    return typeof store.getSnapshot === 'function' && typeof store.subscribe === 'function' ? store as AssistantSessionSelectionStore : undefined
+  } catch { return undefined }
+}
+
+/** 将本地/远端虚拟选择归一化为 Host 可匹配的会话三元组。 */
+export function normalizeAssistantSessionSelection(value: unknown): AssistantNotificationSessionTarget | undefined {
+  const record = asRecord(value)
+  if (record === undefined) return undefined
+  const rawSessionId = text(record.sessionId) ?? text(asRecord(record.subagentAddress)?.parentSessionId)
+  const rawWorkspaceId = text(record.workspaceId)
+  if (rawSessionId === undefined || rawWorkspaceId === undefined) return undefined
+  const session = parseVirtualSessionId(rawSessionId)
+  const workspace = parseVirtualWorkspaceId(rawWorkspaceId)
+  if (session !== null && workspace !== null && session.hostId !== workspace.hostId) return undefined
+  const hostId = session?.hostId ?? workspace?.targetHostId ?? 'local'
+  const workspaceId = workspace?.workspaceId
+    ?? (hostId !== 'local' && rawWorkspaceId.startsWith(`${hostId}:`) ? rawWorkspaceId.slice(hostId.length + 1) : rawWorkspaceId)
+  const sessionId = session?.sessionId ?? rawSessionId
+  return { hostId: hostId === 'local' ? 'local' : hostId, workspaceId, sessionId }
+}
 
 /** 只探测 DSH 公开的 UI 导航能力；不操作草稿、消息、问题答案或审批。 */
 export function supportsAssistantSessionNavigation(context: unknown): boolean {
@@ -45,4 +77,11 @@ function navigation(context: unknown): SessionNavigation | undefined {
     const service = (context as { get?: (name: string) => unknown } | undefined)?.get?.('uiWorkspace') as SessionNavigation | undefined
     return typeof service?.openSession === 'function' ? service : undefined
   } catch { return undefined }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+function text(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined
 }
