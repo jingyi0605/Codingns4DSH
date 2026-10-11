@@ -45,7 +45,9 @@ export function assistantNotificationTailStyle(avatarCenter: number, regionStart
   // 根部保留 10px 的横向回收，尾巴才会有自然斜度；尖端仍通过角度回到助理中心。
   const rootTarget = target - direction * 10
   const center = Math.max(margin, Math.min(Math.max(margin, regionSize - margin), rootTarget))
-  const angle = Math.max(-26, Math.min(26, -Math.atan2(target - center, ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_GAP) * 180 / Math.PI))
+  const bottomAngle = Math.max(-26, Math.min(26, -Math.atan2(target - center, ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_GAP) * 180 / Math.PI))
+  // 顶部尾巴先翻转 180°，水平分量也随之翻转，所以要使用相反符号保持尖端仍指向助理。
+  const angle = side === 'top' ? -bottomAngle : bottomAngle
   return { '--codingns-assistant-tail-offset': `${Math.round(center)}px`, '--codingns-assistant-tail-target': `${Math.round(target)}px`,
     '--codingns-assistant-tail-angle': `${Math.round(angle * 10) / 10}deg` } as CSSProperties
 }
@@ -226,9 +228,9 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
       showBubble ? createElement('div', { ref: bubble, role: 'status', 'aria-live': 'polite', style: bubblePanel },
         createElement('div', { 'data-codingns-notification-scroll': true, style: bubbleContent },
          multiple ? attentionItems.map((notice) => row(notice, 'compact')) : row(mainNotice, 'primary'))) : null,
-    !collapsed && expanded && snapshot ? createElement('div', { ref: bubble, role: 'region', 'aria-label': t('awb.notifications.list'), style: panel },
+    !collapsed && expanded && snapshot ? createElement('div', { ref: bubble, role: 'region', 'aria-label': t('awb.notifications.list'), 'data-codingns-notification-scroll': true, style: panel },
       createElement('button', { type: 'button', style: button, onClick: () => setExpanded(false) }, t('awb.notifications.closeList')),
-      createElement('div', { style: { maxHeight: 180, overflowY: 'auto', overscrollBehavior: 'contain' } },
+      createElement('div', { 'data-codingns-notification-scroll': true, style: { maxHeight: 180, overflowY: 'auto', overscrollBehavior: 'contain' } },
         ...listItems.map((notice) => row(notice, 'list'))),
       listItems.length === 0 ? createElement('p', null, t('awb.notifications.empty')) : null,
       onPage ? createElement('div', { style: { display: 'flex', gap: 6 } },
@@ -321,7 +323,7 @@ const bubblePanel: CSSProperties = { ...panel, position: 'relative', display: 'f
   padding: 10, overflow: 'visible', borderRadius: '24px 24px 24px 8px', borderColor: dshThemeColor.border,
   maxHeight: '100%', background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.prominentShadow }
 const bubbleContent: CSSProperties = { position: 'relative', zIndex: 1, display: 'grid', gap: 8, minHeight: 0, flex: '1 1 auto',
-  overflowY: 'auto', overscrollBehavior: 'contain', boxSizing: 'border-box', padding: '2px 2px 4px' }
+  overflowY: 'auto', overscrollBehavior: 'contain', boxSizing: 'border-box', padding: 12, paddingBottom: 12 }
 const notificationTailCurve = 'M1 0 C8 0.4 13 7 16 18 C17 23 19 28 20 31 C21 28 23 23 24 18 C27 7 32 0.4 39 0'
 function tailBox(side: AssistantNotificationTailSide): CSSProperties {
   const base: CSSProperties = { position: 'absolute', zIndex: 0, pointerEvents: 'none' }
