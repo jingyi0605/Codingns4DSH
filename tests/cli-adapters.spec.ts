@@ -16,7 +16,7 @@ import { FeatureRegistry } from '../data/build/dist/features/registry.js'
 import { CommandCodeSubscriptionService } from '../data/build/dist/host/cli-adapters/command-code-subscription.js'
 import { ClaudeCodeSubscriptionService, DeepseekSubscriptionService, OpenCodeSubscriptionService, ProviderSubscriptionService, Sub2ApiUsageService } from '../data/build/dist/host/cli-adapters/provider-subscription.js'
 import { identifyModelProvider, normalizeProviderBaseUrl } from '../data/build/dist/host/cli-adapters/provider-registry.js'
-import { knownCodexContextWindow, knownCommandCodeContextWindow } from '../data/build/dist/host/cli-adapters/model-catalog.js'
+import { knownCodexContextWindow, knownCommandCodeContextWindow, knownOpenCodeContextWindow } from '../data/build/dist/host/cli-adapters/model-catalog.js'
 
 test('Command Code 驱动只把带版本号的候选命令视为已安装', async () => {
   const calls: string[][] = []
@@ -2608,6 +2608,44 @@ test('Command Code 已知模型表提供父仓库一致的上下文窗口', () =
   assert.equal(knownCommandCodeContextWindow(' GPT-5.6-SOL '), 1_050_000)
   assert.equal(knownCommandCodeContextWindow('unknown-model'), undefined)
   assert.equal(knownCommandCodeContextWindow(undefined), undefined)
+})
+
+test('OpenCode 已知 DeepSeek 模型表覆盖旧的 200K 目录值', () => {
+  assert.equal(knownOpenCodeContextWindow('deepseek/deepseek-v4.1-flash'), 1_000_000)
+  assert.equal(knownOpenCodeContextWindow('deepseek/deepseek-v4-pro'), 1_000_000)
+  assert.equal(knownOpenCodeContextWindow(' DEEPSEEK/DEEPSEEK-FLASH '), 1_000_000)
+  assert.equal(knownOpenCodeContextWindow('unknown-model'), undefined)
+  assert.equal(knownOpenCodeContextWindow(undefined), undefined)
+})
+
+test('OpenCode 新会话在首个 usage 到达前写入已知上下文窗口', async () => {
+  const contexts: unknown[] = []
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'opencode', name: 'OpenCode' },
+    async detect() { return { installed: true, version: '2.0.24', command: 'opencode' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } as const },
+  }], {}, {
+    nativeSessions: {
+      available: true,
+      store: undefined,
+      controller: undefined,
+      get() { return { header: { cwd: '/workspace' } } },
+      list() { return [] },
+      async ensure() { return null },
+      async flush() {},
+      appendRequestContext(_sessionId: string, context: unknown) { contexts.push(context); return true },
+      subscribe() { return () => {} },
+    },
+  })
+
+  for await (const _chunk of registry.execute({
+    adapterId: 'opencode', sessionId: 'opencode-new-context', modelId: 'deepseek/deepseek-v4.1-flash', messages: [], prompt: '第一句话',
+  })) { /* 消费完整流 */ }
+
+  assert.deepEqual(contexts, [{
+    provider: 'opencode', model: 'deepseek/deepseek-v4.1-flash', contextWindow: 1_000_000, confirmed: true, source: 'catalog',
+  }])
 })
 
 test('Command Code 新会话在首个 usage 到达前写入已知上下文窗口', async () => {

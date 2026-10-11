@@ -103,6 +103,34 @@ test('OpenCode SSE 事件转换为标准文本流并绑定远端会话', async (
   assert.deepEqual(requests, [{ parts: [{ type: 'text', text: '你好' }], model: { providerID: 'openai', modelID: 'gpt-5.5' }, variant: 'high' }])
 })
 
+test('OpenCode V1 校准 DeepSeek V4.1 Flash 的 1M 上下文上限', async () => {
+  const encoder = new TextEncoder()
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/config/providers')) return new Response(JSON.stringify({ providers: {
+      deepseek: { models: { 'deepseek-v4.1-flash': { limit: { context: 200_000 } } } },
+    } }), { status: 200 })
+    if (url.endsWith('/session') && init.method === 'POST') return new Response(JSON.stringify({ id: 'deepseek-v1-context' }), { status: 200 })
+    if (url.endsWith('/message')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/event')) {
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"message.updated","properties":{"info":{"role":"assistant","tokens":{"input":100,"output":3,"context_window":200000}}}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"session.status","status":"idle"}\n\n'))
+        controller.close()
+      } })
+      return new Response(body, { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({
+    sessionId: 'deepseek-v1-context', messages: [], prompt: '你好', modelId: 'deepseek/deepseek-v4.1-flash',
+  })) chunks.push(chunk)
+  assert.equal(chunks.find((chunk) => chunk.type === 'usage')?.contextWindow, 1_000_000)
+  driver.dispose()
+})
+
 test('OpenCode 工具事件保留 Bash 和读取工具的真实参数', async () => {
   const encoder = new TextEncoder()
   const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {

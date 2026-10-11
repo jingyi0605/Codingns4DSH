@@ -21,6 +21,7 @@ function harness(options: {
   hold?: boolean
   skills?: unknown[]
   models?: unknown[]
+  providers?: unknown[]
   sessionDirectory?: string
 } = {}) {
   const requests: Array<{ path: string; query: URLSearchParams; body: any; headers: Headers }> = []
@@ -38,7 +39,7 @@ function harness(options: {
     requests.push({ path, query: url.searchParams, body, headers: new Headers(init.headers) })
     if (path === '/api/info') return json({ version: '2.0.24', pid: 123, urls: [], paths: { tmp: '/tmp' } })
     if (path === '/api/model') return envelope(options.models ?? [model])
-    if (path === '/api/provider') return envelope([provider, { id: 'disabled', name: '已禁用', activation: 'disabled' }])
+    if (path === '/api/provider') return envelope(options.providers ?? [provider, { id: 'disabled', name: '已禁用', activation: 'disabled' }])
     if (path === '/api/model/default') return envelope(model)
     if (path === '/api/skill') return envelope(options.skills ?? [])
     if (/^\/api\/experimental\/mcp\/codingns_[0-9a-f]{8}$/u.test(path) && init.method === 'PUT') return new Response(null, { status: 204 })
@@ -213,6 +214,24 @@ test('OpenCode V2 文本快照去重，工具步骤不提前结束回合，严�
   })
   assert.deepEqual(requests.find((request) => request.path.endsWith('/prompt'))?.body, { text: input.prompt })
   assert.equal(requests.find((request) => request.path === '/api/model')?.query.get('location[directory]'), cwd)
+  driver.dispose()
+})
+
+test('OpenCode V2 校准 DeepSeek V4.1 Flash 的 1M 上下文上限', async () => {
+  const deepseekModel = {
+    ...model, id: 'deepseek-v4.1-flash', modelID: 'deepseek-v4.1-flash', providerID: 'deepseek',
+    name: 'DeepSeek V4.1 Flash', limit: { context: 200_000 },
+  }
+  const { driver } = harness({
+    models: [deepseekModel], providers: [{ id: 'deepseek', name: 'DeepSeek', activation: 'enabled' }],
+    events: [
+      { type: 'session.step.ended', data: { sessionID: 'ses_1', tokens: { input: 100, output: 5, cache: { read: 40, write: 5 } } } },
+      done,
+    ],
+  })
+  const events = []
+  for await (const event of driver.executeTurn({ ...input, modelId: 'deepseek/deepseek-v4.1-flash', effortId: undefined })) events.push(event)
+  assert.equal(events.find((event) => event.type === 'usage')?.contextWindow, 1_000_000)
   driver.dispose()
 })
 
