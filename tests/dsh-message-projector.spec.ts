@@ -363,6 +363,28 @@ test('工具 step 边界不伪造空白 assistant 文本', async () => {
   assert.deepEqual(await projector.push({ type: 'step-boundary' }), [])
 })
 
+test('OpenCode 孤立空白正文不会创建空白块，但正文中的空格仍会保留', async () => {
+  const projector = new CodingNsDshMessageProjector({ adapterId: 'opencode', sessionId: 'whitespace-boundary' })
+  const chunks = []
+  chunks.push(...await projector.push({ type: 'text-delta', text: ' ', messageId: 'message-1' }))
+  chunks.push(...await projector.push({ type: 'text-delta', text: '第一段', messageId: 'message-1' }))
+  chunks.push(...await projector.push({ type: 'text-delta', text: ' ', messageId: 'message-1' }))
+  chunks.push(...await projector.push({ type: 'text-delta', text: ' ', messageId: 'message-2' }))
+  chunks.push(...await projector.push({ type: 'text-delta', text: '第二段', messageId: 'message-2' }))
+  chunks.push(...await projector.push({ type: 'finish', reason: 'stop' }))
+
+  assert.deepEqual(chunks, [
+    { type: 'block-start', index: 1, blockType: 'text' },
+    { type: 'text-delta', index: 1, text: '第一段' },
+    { type: 'text-delta', index: 1, text: ' ' },
+    { type: 'block-end', index: 1, block: { type: 'text', text: '第一段 ' } },
+    { type: 'block-start', index: 2, blockType: 'text' },
+    { type: 'text-delta', index: 2, text: '第二段' },
+    { type: 'block-end', index: 2, block: { type: 'text', text: '第二段' } },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ])
+})
+
 test('消息 block 切换后执行失败仍写入当前正文 block', async () => {
   const projector = new CodingNsDshMessageProjector({ adapterId: 'codex', sessionId: 'session-failure-boundary' })
   await projector.push({ type: 'text-delta', text: '工具前', messageId: 'message-1' })
@@ -463,5 +485,22 @@ test('公共消息投影层在原生权限组件缺失时明确拒绝且不伪�
     requestId: 'permission-2',
     approved: false,
     reason: 'DSH 原生权限组件不可用',
+  }])
+})
+
+test('公共消息投影层区分审批策略自动拒绝与用户拒绝', async () => {
+  const responses = []
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'fake',
+    sessionId: 'session-policy-rejected',
+    permission: { sandboxMode: 'danger-full-access', approvalPolicy: 'never' },
+    nativeSessions: { requestApproval: async () => 'rejected' },
+    respondPermission(response) { responses.push(response) },
+  })
+  await projector.push({ type: 'permission-request', requestId: 'permission-policy', kind: 'read', toolName: 'read' })
+  assert.deepEqual(responses, [{
+    requestId: 'permission-policy',
+    approved: false,
+    reason: '当前审批策略为 never，权限请求被策略自动拒绝，未弹出权限面板',
   }])
 })
