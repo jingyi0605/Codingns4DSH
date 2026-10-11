@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { resolve } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { setImmediate as nextTick } from 'node:timers/promises'
 import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
@@ -60,8 +61,10 @@ async function createPermissionHarness(segmented: boolean, approvalAvailable = t
   }
   const spawn = (_command: string, args: string[]) => {
     state.args = args
-    const permissionToolEnabled = args.includes('features.request_permissions_tool=true')
-      || args.some((arg, index) => arg === '--enable' && args[index + 1] === 'request_permissions_tool')
+    // Windows 的 cmd /c 会把 CLI 参数包装成一个带引号的命令字符串。
+    const cliArgs = args.flatMap((arg) => arg.replace(/"/gu, '').split(/\s+/u))
+    const permissionToolEnabled = cliArgs.includes('features.request_permissions_tool=true')
+      || cliArgs.some((arg, index) => arg === '--enable' && cliArgs[index + 1] === 'request_permissions_tool')
     const stdout = new PassThrough()
     const stderr = new PassThrough()
     const send = (message: unknown): void => { stdout.write(`${JSON.stringify(message)}\n`) }
@@ -149,7 +152,7 @@ for (const segmented of [false, true]) {
         assert.equal(thread?.sandbox, 'workspace-write')
         assert.equal(thread?.approvalPolicy, 'on-request')
         assert.equal(turn?.approvalPolicy, 'on-request')
-        assert.deepEqual(turn?.sandboxPolicy.writableRoots, ['/workspace/repo'])
+        assert.deepEqual(turn?.sandboxPolicy.writableRoots, [resolve('/workspace/repo')])
         assert.match(thread?.developerInstructions ?? '', /request_permissions/u)
         assert.match(thread?.developerInstructions ?? '', /实际授予/u)
         harness.decide(outcome)
