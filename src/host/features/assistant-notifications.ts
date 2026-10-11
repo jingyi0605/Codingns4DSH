@@ -41,7 +41,16 @@ export interface AssistantNotificationCenterOptions {
 }
 const pending = (notice: AssistantNotification): boolean => (notice.kind === 'question' || notice.kind === 'approval') && notice.lifecycle === 'active'
 const priority = (notice: AssistantNotification): number => ({ approval: 3, question: 3, error: 2, completed: 1 })[notice.kind]
-const sessionKey = (target: Pick<AssistantNotificationTarget, 'hostId' | 'sessionId'>): string => JSON.stringify([target.hostId, target.sessionId])
+/** 同一物理会话在不同工作区仍是不同通知范围；同时兼容 PeerHost 的旧式与虚拟工作区 ID。 */
+const sessionKey = (target: Pick<AssistantNotificationTarget, 'hostId' | 'sessionId'> & Partial<Pick<AssistantNotificationTarget, 'workspaceId'>>): string =>
+  JSON.stringify([target.hostId, target.workspaceId === undefined ? '' : notificationWorkspaceKey(target as Pick<AssistantNotificationTarget, 'hostId' | 'workspaceId'>), target.sessionId])
+
+function notificationWorkspaceKey(target: Pick<AssistantNotificationTarget, 'hostId' | 'workspaceId'>): string {
+  const virtual = parseVirtualWorkspaceId(target.workspaceId)
+  if (virtual !== null) return `${virtual.hostId}:${virtual.workspaceId}`
+  const prefix = `${target.hostId}:`
+  return target.workspaceId.startsWith(prefix) ? `${target.hostId}:${target.workspaceId.slice(prefix.length)}` : target.workspaceId
+}
 
 /** 单一事实所有者；历史容量不影响当前请求和会话去重水位。 */
 export class AssistantNotificationCenter {
@@ -138,7 +147,11 @@ export class AssistantNotificationCenter {
   }
   invalidateSession(hostId: string, sessionId: string): void {
     for (const item of [...this.records.values()]) if (item.target.hostId === hostId && item.target.sessionId === sessionId || item.target.actualRequestTarget?.hostId === hostId && item.target.actualRequestTarget.sessionId === sessionId) this.remove(item)
-    this.watermarks.delete(JSON.stringify([hostId, sessionId])); this.bumpRevision()
+    for (const key of this.watermarks.keys()) {
+      const parsed = JSON.parse(key) as unknown
+      if (Array.isArray(parsed) && parsed[0] === hostId && parsed[2] === sessionId) this.watermarks.delete(key)
+    }
+    this.bumpRevision()
   }
   updateTitle(hostId: string, sessionId: string, title: string): void {
     const safe = assistantNotificationText(title, 240, '未命名会话')
@@ -178,7 +191,10 @@ export class AssistantNotificationCenter {
       const sameTurn = previous?.turnId === fact.turnId
       if (previous !== undefined && (fact.seq !== undefined && fact.seq <= previous.seq || fact.turn !== undefined && previous.turn !== undefined && fact.turn < previous.turn)) return
       if (sameTurn && (previous!.failed || fact.type === 'turn-completed')) { if (fact.seq !== undefined) previous!.seq = fact.seq; return }
-      item = sameTurn && previous?.noticeId !== undefined ? this.records.get(previous.noticeId) : undefined
+      // 一个会话的气泡只代表最近一次终态。新回合完成时复用上一条终态记录，
+      // 否则每次继续对话都会把旧的「本轮完成」留在列表里，最终同一会话出现多条完成通知。
+      // 同轮的重复事实在上面的分支直接返回；同轮完成升级错误也继续复用同一条记录。
+      item = previous?.noticeId !== undefined ? this.records.get(previous.noticeId) : undefined
       this.watermarks.set(sk, { seq: fact.seq ?? previous?.seq ?? -1, ...(fact.turn === undefined ? {} : { turn: fact.turn }), turnId: fact.turnId, failed: fact.type === 'turn-failed' })
       if (!this.settings[kind]) {
         // 关闭错误提示也不能保留同轮已被失败事实推翻的完成提示。
@@ -202,7 +218,12 @@ export class AssistantNotificationCenter {
       ...(target.connectionGeneration === undefined ? {} : { connectionGeneration: target.connectionGeneration }),
       ...(fact.type === 'turn-failed' && fact.errorExcerpt !== undefined ? { errorExcerpt: assistantNotificationText(fact.errorExcerpt) } : {}),
     }
-    this.records.set(notice.noticeId, { notice, target, logicalKey: key, cleared: false })
+    if (item !== undefined && !request) {
+      // 新回合重置展示状态；上一回合的一键清理不能吞掉当前回合的新完成通知。
+      item.notice = notice; item.target = target; item.logicalKey = key; item.cleared = false
+    } else {
+      this.records.set(notice.noticeId, { notice, target, logicalKey: key, cleared: false })
+    }
     if (!request) this.watermarks.get(sessionKey(fact.target))!.noticeId = notice.noticeId
     this.trim(); this.bumpRevision()
   }
