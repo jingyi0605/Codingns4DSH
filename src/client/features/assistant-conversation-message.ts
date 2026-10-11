@@ -49,7 +49,7 @@ export function AssistantToolCallsView({ calls, t, compact = false }: {
   if (!calls?.length) return null
   return createElement('div', { 'data-codingns-assistant-tools': true,
     'data-codingns-assistant-tools-compact': compact,
-    style: { display: 'grid', gap: compact ? 2 : 6, marginBlock: compact ? 0 : 6, textAlign: 'left', whiteSpace: 'normal', minWidth: 0 } },
+    style: { display: 'grid', gap: 2, marginBlock: compact ? 0 : 6, textAlign: 'left', whiteSpace: 'normal', minWidth: 0 } },
     createElement(AssistantRecordStyle), ...calls.map((call) => createElement(AssistantToolCallView, { key: call.id, call, t, compact })))
 }
 
@@ -63,17 +63,17 @@ function AssistantToolStepView({ calls, t }: { readonly calls: readonly Assistan
   const latestArguments = assistantToolArgumentPreview(latestCall, t)
   const summary = calls.map((call) => assistantToolStepPreview(call, t)).filter((value, index, all) => all.indexOf(value) === index).join(t('awb.call.separator'))
   return createElement('div', { 'data-codingns-assistant-tool-step': true,
-    style: { marginBlock: 6, textAlign: 'left', whiteSpace: 'normal', minWidth: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(14), lineHeight: 1.65 } },
+    style: { marginBlock: 6, textAlign: 'left', whiteSpace: 'normal', minWidth: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13), lineHeight: 1.6 } },
     createElement(AssistantRecordStyle),
     createElement('details', { className: 'codingns-assistant-tool-step-details' },
       createElement('summary', { className: 'codingns-assistant-tool-step-summary', title: t('awb.call.stepDetails'),
         'aria-label': `${t('awb.call.step')} · ${summary} · ${t(`awb.call.tool.${status}`)}`,
-        style: { display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, padding: '2px 0', color: dshThemeColor.labelSecondary } },
+        style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, padding: '2px 0', color: dshThemeColor.labelSecondary } },
         createElement(AssistantStepChevron), createElement('span', { className: 'codingns-assistant-tool-step-preview', 'data-latest-tool': latestCall.name,
           title: latestCall.name, style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
         summary, ' · ', createElement('code', { style: { color: dshThemeColor.labelPrimary, fontFamily: dshThemeColor.codeFont, fontSize: '0.92em' } }, latestCall.name),
         latestArguments ? ` · ${latestArguments}` : '')),
-      createElement('div', { className: 'codingns-assistant-tool-step-body', style: { display: 'grid', gap: 2, padding: '5px 0 5px 22px' } },
+      createElement('div', { className: 'codingns-assistant-tool-step-body', style: { display: 'grid', gap: 1, padding: '4px 0 5px 21px' } },
         createElement(AssistantToolCallsView, { calls, t, compact: true }))))
 }
 
@@ -102,61 +102,25 @@ function assistantToolArgumentPreview(call: AssistantToolCall, t: CodingNsTransl
 function AssistantToolCallView({ call, t, compact = false }: { readonly call: AssistantToolCall; readonly t: CodingNsTranslator; readonly compact?: boolean }): ReactElement {
   const label = t(call.kind === 'web-search' ? 'awb.call.webSearch' : call.kind === 'attachment' ? 'awb.call.attachment' : 'awb.call.workspace')
   const status = t(`awb.call.tool.${call.state}`)
-  const color = call.state === 'failed' ? dshThemeColor.error : call.state === 'completed' ? dshThemeColor.success
-    : call.state === 'running' ? dshThemeColor.accent : dshThemeColor.labelSecondary
-  const startedAt = new Date(call.startedAt)
   const argumentPreview = compact ? assistantToolArgumentPreview(call, t) : ''
-  if (compact) return createElement('div', { 'data-codingns-assistant-tool-row': call.name, 'data-codingns-assistant-tool': call.name, 'data-state': call.state,
-    style: { minWidth: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13), lineHeight: 1.65 } },
+  const rowColor = call.state === 'failed' ? dshThemeColor.error : dshThemeColor.labelSecondary
+  return createElement('div', { 'data-codingns-assistant-tool-row': call.name, 'data-codingns-assistant-tool': call.name, 'data-state': call.state,
+    style: { minWidth: 0, color: rowColor, fontSize: uiFontSize(13), lineHeight: 1.65 } },
     createElement('details', { className: 'codingns-assistant-tool-details' },
       createElement('summary', { className: 'codingns-assistant-tool-summary', title: t('awb.call.toolDetails'),
         'aria-label': `${label} · ${call.name} · ${status} · ${t('awb.call.toolDetails')}`,
-        style: { display: 'flex', alignItems: 'center', gap: 9, minWidth: 0, padding: '2px 0' } },
+        style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, padding: '1px 0' } },
         createElement(AssistantRecordChevron), createElement('span', { style: { flexShrink: 0 } }, label),
         createElement('span', { style: { color: dshThemeColor.labelTertiary, flexShrink: 0 } }, '·'),
         createElement('span', { title: call.name, style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: dshThemeColor.codeFont } },
           call.name, argumentPreview ? ` · ${argumentPreview}` : '')),
-      createElement('div', { style: { display: 'grid', gap: 8, padding: '6px 10px 8px 23px', borderLeft: `1px solid ${dshThemeColor.border}`, minWidth: 0 } },
-        ...[[t('awb.call.arguments'), call.arguments], [t('awb.call.result'), call.result]].map(([heading, value]) => createElement('div', { key: heading, style: { minWidth: 0 } },
-          createElement('small', { style: { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), fontWeight: 500 } }, heading),
-          createElement('pre', { tabIndex: 0, 'aria-label': heading, style: { margin: '4px 0 0', padding: '6px 8px', borderRadius: 6,
-            background: dshThemeColor.cardBackground, maxHeight: 160, overflowY: 'auto', overscrollBehavior: 'contain', scrollbarWidth: 'thin',
+      createElement('div', { className: 'codingns-assistant-tool-body', style: { display: 'grid', gap: 0, margin: '2px 0 4px 22px', border: `0.5px solid ${dshThemeColor.border}`, borderRadius: 6, overflow: 'hidden', minWidth: 0 } },
+        ...[[t('awb.call.arguments'), call.arguments], [t('awb.call.result'), call.result]].map(([heading, value], index) => createElement('div', { key: heading,
+          style: { display: 'grid', gridTemplateColumns: 'max-content minmax(0, 1fr)', gap: 12, alignItems: 'baseline', padding: '7px 10px', minWidth: 0,
+            ...(index === 0 ? {} : { borderTop: `0.5px solid ${dshThemeColor.border}` }) } },
+          createElement('small', { style: { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), whiteSpace: 'nowrap' } }, heading),
+          createElement('pre', { tabIndex: 0, 'aria-label': heading, style: { margin: 0, color: dshThemeColor.labelSecondary, maxHeight: 160, overflowY: 'auto', overscrollBehavior: 'contain', scrollbarWidth: 'thin',
             whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: dshThemeColor.codeFont, fontSize: uiFontSize(11), lineHeight: 1.5 } }, value || '—'))))))
-  return createElement('article', { 'data-codingns-assistant-tool': call.name, 'data-state': call.state,
-    style: { borderRadius: 10, border: `1px solid ${dshThemeColor.border}`, background: dshThemeColor.surfaceSubtle,
-      color: dshThemeColor.labelPrimary, fontSize: uiFontSize(12), lineHeight: 1.4, minWidth: 0 } },
-    createElement('details', { className: 'codingns-assistant-tool-details' },
-      createElement('summary', { className: 'codingns-assistant-tool-summary', title: t('awb.call.toolDetails'),
-        'aria-label': `${label} · ${call.name} · ${status} · ${t('awb.call.toolDetails')}`,
-        style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', minWidth: 0 } },
-        createElement('span', { style: { display: 'grid', placeItems: 'center', flexShrink: 0, width: 28, height: 28, borderRadius: 8,
-          color, background: `color-mix(in srgb, ${color} 9%, transparent)` } }, createElement(AssistantToolIcon, { kind: call.kind })),
-        createElement('span', { style: { flex: '1 1 auto', minWidth: 0, display: 'grid', gap: 1 } },
-          createElement('strong', { style: { fontSize: uiFontSize(12), fontWeight: 600 } }, label),
-          createElement('span', { className: 'codingns-assistant-tool-name', title: call.name, style: { color: dshThemeColor.labelSecondary, fontFamily: dshThemeColor.codeFont,
-            fontSize: uiFontSize(11), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, call.name)),
-        createElement('span', { style: { display: 'grid', justifyItems: 'end', gap: 3, flexShrink: 0 } },
-          createElement('span', { role: 'status', style: { display: 'inline-flex', alignItems: 'center', gap: 4, color,
-            padding: '1px 6px', borderRadius: 5, background: `color-mix(in srgb, ${color} 9%, transparent)`, fontSize: uiFontSize(11), whiteSpace: 'nowrap' } },
-            createElement('span', { 'aria-hidden': true, style: { width: 4, height: 4, borderRadius: '50%', background: 'currentColor' } }), status),
-          createElement('time', { dateTime: Number.isNaN(startedAt.valueOf()) ? undefined : startedAt.toISOString(), title: startedAt.toLocaleString(),
-            style: { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } },
-            startedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }))),
-        createElement(AssistantRecordChevron)),
-      createElement('div', { style: { display: 'grid', gap: 8, padding: '9px 10px 10px', borderTop: `1px solid ${dshThemeColor.border}`, minWidth: 0 } },
-        ...[[t('awb.call.arguments'), call.arguments], [t('awb.call.result'), call.result]].map(([heading, value]) => createElement('div', { key: heading, style: { minWidth: 0 } },
-          createElement('small', { style: { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), fontWeight: 500 } }, heading),
-          createElement('pre', { tabIndex: 0, 'aria-label': heading, style: { margin: '4px 0 0', padding: '6px 8px', borderRadius: 6,
-            background: dshThemeColor.cardBackground, maxHeight: 160, overflowY: 'auto', overscrollBehavior: 'contain', scrollbarWidth: 'thin',
-            whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: dshThemeColor.codeFont, fontSize: uiFontSize(11), lineHeight: 1.5 } }, value || '—'))))))
-}
-
-function AssistantToolIcon({ kind }: { readonly kind: AssistantToolCall['kind'] }): ReactElement {
-  const path = kind === 'web-search' ? 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM3 12h18M12 3a17 17 0 0 1 0 18 17 17 0 0 1 0-18Z'
-    : kind === 'attachment' ? 'M14 3H6v18h12V7l-4-4Zm0 0v5h4M9 12h6m-6 4h6'
-    : 'M3 6h7l2 2h9v12H3V6Zm0 4h18'
-  return createElement('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7,
-    strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }, createElement('path', { d: path }))
 }
 
 function AssistantStepChevron(): ReactElement {

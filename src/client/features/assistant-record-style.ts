@@ -15,21 +15,19 @@ export function AssistantRecordChevron(): ReactElement {
 
 // 仅在原生弹窗打开时启用纵向布局，保留关闭状态下浏览器默认的隐藏行为。
 const recordCss = `
-.codingns-assistant-tool-summary{list-style:none;cursor:pointer;border-radius:9px}
+.codingns-assistant-tool-summary{list-style:none;cursor:pointer}
 .codingns-assistant-tool-summary::-webkit-details-marker{display:none}
-.codingns-assistant-tool-summary:hover,.codingns-assistant-record-button:hover{background:${dshThemeColor.hoverBackground}!important}
-.codingns-assistant-tool-summary:active,.codingns-assistant-record-button:active{background:${dshThemeColor.activeBackground}!important}
+.codingns-assistant-tool-summary:hover,.codingns-assistant-record-button:hover{color:${dshThemeColor.labelPrimary}!important}
+.codingns-assistant-tool-summary:active,.codingns-assistant-record-button:active{color:${dshThemeColor.labelPrimary}!important}
 .codingns-assistant-tool-summary:focus-visible,.codingns-assistant-record-button:focus-visible{outline:2px solid ${dshThemeColor.accent};outline-offset:2px}
-.codingns-assistant-tool-details[open]>.codingns-assistant-tool-summary{border-radius:9px 9px 0 0}
 .codingns-assistant-tool-details[open] .codingns-assistant-tool-name{white-space:normal!important;overflow-wrap:anywhere}
 .codingns-assistant-tool-details[open]>.codingns-assistant-tool-summary .codingns-assistant-record-chevron{transform:rotate(90deg)}
 .codingns-assistant-tool-step-summary{list-style:none;cursor:pointer}
 .codingns-assistant-tool-step-summary::-webkit-details-marker{display:none}
-.codingns-assistant-tool-step-summary:hover{background:${dshThemeColor.hoverBackground}!important}
-.codingns-assistant-tool-step-summary:active{background:${dshThemeColor.activeBackground}!important}
+.codingns-assistant-tool-step-summary:hover{color:${dshThemeColor.labelPrimary}!important}
+.codingns-assistant-tool-step-summary:active{color:${dshThemeColor.labelPrimary}!important}
 .codingns-assistant-tool-step-summary:focus-visible{outline:2px solid ${dshThemeColor.accent};outline-offset:2px}
 .codingns-assistant-tool-step-details[open]>.codingns-assistant-tool-step-summary .codingns-assistant-step-chevron{transform:rotate(180deg)}
-.codingns-assistant-tool-step-summary:hover{color:${dshThemeColor.labelPrimary}!important}
 .codingns-assistant-tool-step-details[open] .codingns-assistant-tool-step-body{padding-inline:4px}
 .codingns-assistant-tool-step-details[open] .codingns-assistant-tool-step-preview{white-space:normal;overflow-wrap:anywhere}
 .codingns-assistant-voice-dialog[open]{display:flex;flex-direction:column}
