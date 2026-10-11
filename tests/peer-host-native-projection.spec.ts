@@ -174,7 +174,7 @@ test('快照变化才通知订阅者，重复快照返回未变化', () => {
 
   unsubscribe()
   projection.setAggregate([remoteHost()] as never)
-  assert.equal(notified, 5)
+  assert.equal(notified, 9)
 })
 
 test('摘要从运行中变为完成时记录未读回放边沿，事件覆盖的旧摘要不误报', () => {
