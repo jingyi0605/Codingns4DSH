@@ -667,6 +667,33 @@ test('页面 connector 在远端新建会话后立刻请求聚合刷新，失败
   }
 })
 
+test('页面 connector 在远端标题、归档与取消归档完成后立刻请求聚合刷新', async () => {
+  const previousFetch = globalThis.fetch
+  let refreshCount = 0
+  const dispose = registerPeerHostAggregateRefresh(() => { refreshCount += 1 })
+  globalThis.fetch = (async (input) => {
+    const path = new URL(String(input), 'http://dsh.test').pathname
+    if (!path.endsWith('/peerHost/native')) throw new Error(`unexpected path: ${path}`)
+    return response({ ok: true })
+  }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    transport.setAggregate(aggregate)
+    const sessionId = createVirtualSessionId('peer-1', 'session-1')
+    const payload = { channel: '/api', payload: { args: { sessionId } } }
+    const renamed = await transport.hooks.rpc?.({ method: 'session/rename', payload })
+    assert.deepEqual(renamed, { ok: true, value: { ok: true } })
+    const archived = await transport.hooks.rpc?.({ method: 'workspace/archiveSession', payload })
+    assert.deepEqual(archived, { ok: true, value: { ok: true } })
+    const unarchived = await transport.hooks.rpc?.({ method: 'workspace/unarchiveSession', payload })
+    assert.deepEqual(unarchived, { ok: true, value: { ok: true } })
+    assert.equal(refreshCount, 3)
+  } finally {
+    dispose()
+    globalThis.fetch = previousFetch
+  }
+})
+
 test('页面 connector 把虚拟会话并入原生 session/list 结果', async () => {
   const previousFetch = globalThis.fetch
   const paths: string[] = []
