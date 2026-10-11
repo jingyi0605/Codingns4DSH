@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { assistantMessageTimeline } from '../src/shared/assistant-message-timeline.js'
+import { assistantMessageStepTimeline, assistantMessageTimeline } from '../src/shared/assistant-message-timeline.js'
 import type { AssistantToolCall } from '../src/shared/contracts/assistant.js'
 
 const search: AssistantToolCall = { id: 'search', name: 'web_search', kind: 'web-search', state: 'running', startedAt: 1, finishedAt: null, arguments: '{}', result: '' }
@@ -33,4 +33,16 @@ test('旧记录工具放在所属回复前，空正文和残句截断仍保留�
   for (const textOffset of [-1, 1.5, Number.NaN]) {
     assert.deepEqual(assistantMessageTimeline('回答', [{ ...search, textOffset }]).map((part) => part.kind), ['tool', 'text'])
   }
+})
+
+test('连续工具调用归入同一个 step，正文分段会开启新的 step', () => {
+  const calls = [
+    { ...search, textOffset: 0 },
+    { ...search, id: 'workspace', name: 'assistant_list_workspaces', textOffset: 0 },
+    { ...search, id: 'next', textOffset: 1 },
+  ]
+  const timeline = assistantMessageStepTimeline('前文后文', calls)
+  assert.deepEqual(timeline.map((part) => part.kind === 'text' ? part.text : part.calls.map((call) => call.id)), [
+    ['search', 'workspace'], '前', ['next'], '文后文',
+  ])
 })

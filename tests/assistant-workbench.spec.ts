@@ -432,7 +432,7 @@ test('文字对话在首段正文前展示工具，状态更新可见，完成�
     pendingMessage: { id: 'search-turn-user', role: 'user', text: '查一下天气', source: 'text', createdAt: 1 }, active, compressing: false, error: null }
   const render = (snapshot: AssistantConversationSnapshot) => renderToStaticMarkup(createElement(AssistantConversationView, { conversation: snapshot, name: '小鱼', t }))
   const running = render(conversation)
-  for (const text of ['data-codingns-assistant-tool="web_search"', 'data-state="running"', '进行中', '北京天气']) assert.ok(running.includes(text), text)
+  for (const text of ['data-codingns-assistant-tool-step', 'data-latest-tool="web_search"', 'data-codingns-assistant-tool="web_search"', 'data-state="running"', '已搜索网页', '联网搜索', 'web_search', '北京天气']) assert.ok(running.includes(text), text)
   assert.ok(!running.includes('Hello')); assert.match(running, /<details\b[^>]*>/u); assert.ok(!/<details\b[^>]*\bopen\b/u.test(running))
   const completed = { ...active, state: 'completed' as const, text: '北京今天晴。', finishedAt: 3,
     toolCalls: [{ ...call, state: 'completed' as const, finishedAt: 2, result: '<script>天气来源</script>' }] }
@@ -462,6 +462,8 @@ test('聊天把工具穿插在调用前后正文之间，流式状态更新和�
     const markup = renderToStaticMarkup(createElement(AssistantConversationView, { conversation: snapshot, name: '小鱼', t }))
     const positions = ['帮我看看', first, 'data-codingns-assistant-tool="assistant_list_workspaces"', second, 'data-codingns-assistant-tool="web_search"', last].map((part) => markup.indexOf(part))
     assert.ok(positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1]!)), '调用信息必须在对应正文段之间')
+    assert.ok(markup.includes('data-latest-tool="assistant_list_workspaces"'))
+    assert.ok(markup.includes('data-latest-tool="web_search"'))
     assert.equal((markup.match(/data-codingns-assistant-tool=/gu) ?? []).length, 2)
   }
 })
