@@ -12,6 +12,7 @@ import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { isQuestionEvent, questionAnswersRecord, readAgentQuestions } from './interaction-events.js'
 import { codexBridgeArgs, codexBridgeDeveloperInstructions } from '../cli-bridge/injections.js'
+import { CodexFileCitationNormalizer } from './codex-file-citations.js'
 
 export interface CodexAppServerDriverOptions {
   readonly binaries?: readonly string[]
@@ -274,6 +275,12 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
+    const citations = new CodexFileCitationNormalizer()
+    for await (const chunk of this.executeRawTurn(input)) yield* citations.push(chunk)
+    yield* citations.flush()
+  }
+
+  private async *executeRawTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) throw new Error('Codex 未安装')
     if (input.splitToolSteps && this.supportsSegmentedTurns) {
