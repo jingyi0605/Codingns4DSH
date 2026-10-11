@@ -73,6 +73,59 @@ test('空的 question 工具输入等待问题事件补齐后再落盘', () => {
   assert.deepEqual(sink.results[0]?.result, { output, isError: false })
 })
 
+test('空的 OpenCode write 输入等待完整参数后再落盘为 DSH 写入工具', () => {
+  const sink = createSink()
+  const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'opencode-write-history')
+  projector.observe({ type: 'tool-event', toolName: 'write', callId: 'write-1', input: '{}', status: 'started' })
+  assert.deepEqual(sink.calls, [])
+  const input = JSON.stringify({ path: '/workspace/jokes.md', content: '# 笑话\n' })
+  projector.observe({ type: 'tool-event', toolName: 'write', callId: 'write-1', input, status: 'running' })
+  assert.deepEqual(sink.calls[0]?.call, {
+    callId: 'write-1',
+    name: 'write',
+    arguments: JSON.stringify({ content: '# 笑话\n', file_path: '/workspace/jokes.md' }),
+  })
+  // Provider 随后的 called 空快照不能把已收到的 input.ended 参数清空。
+  projector.observe({ type: 'tool-event', toolName: 'write', callId: 'write-1', input: '{}', status: 'running' })
+  assert.deepEqual(sink.calls[0]?.call, {
+    callId: 'write-1',
+    name: 'write',
+    arguments: JSON.stringify({ content: '# 笑话\n', file_path: '/workspace/jokes.md' }),
+  })
+  projector.observe({ type: 'tool-event', toolName: 'write', callId: 'write-1', output: 'Wrote file successfully', outputMode: 'snapshot', status: 'completed' })
+  projector.finalize('stop')
+  assert.deepEqual(sink.results[0]?.result, {
+    output: 'Wrote file successfully',
+    isError: false,
+    meta: { diffs: [{ path: '/workspace/jokes.md', oldText: null, newText: '# 笑话\n' }] },
+  })
+})
+
+test('空的 OpenCode execute 输入等待 Code Mode 子工具明细后再落盘', () => {
+  const sink = createSink()
+  const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'opencode-execute-history')
+  projector.observe({ type: 'tool-event', toolName: 'execute', callId: 'execute-1', input: '{}', status: 'started' })
+  assert.deepEqual(sink.calls, [])
+  const input = JSON.stringify({ toolCalls: [{ tool: 'websearch', status: 'running', input: { query: '今天新闻' } }] })
+  projector.observe({ type: 'tool-event', toolName: 'execute', callId: 'execute-1', input, status: 'running' })
+  assert.deepEqual(sink.calls[0]?.call, { callId: 'execute-1', name: 'execute', arguments: input })
+  projector.observe({ type: 'tool-event', toolName: 'execute', callId: 'execute-1', input: '{}', status: 'running' })
+  assert.deepEqual(sink.calls[0]?.call, { callId: 'execute-1', name: 'execute', arguments: input })
+  projector.observe({ type: 'tool-event', toolName: 'execute', callId: 'execute-1', output: '搜索完成', outputMode: 'snapshot', status: 'completed' })
+  projector.finalize('stop')
+  assert.deepEqual(sink.results[0]?.result, { output: '搜索完成', isError: false })
+})
+
+test('所有工具都等待 input.started 的空占位被完整参数替换', () => {
+  const sink = createSink()
+  const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'opencode-generic-input-history')
+  projector.observe({ type: 'tool-event', toolName: 'websearch', callId: 'search-1', status: 'started' })
+  assert.deepEqual(sink.calls, [])
+  const input = JSON.stringify({ query: '今天新闻' })
+  projector.observe({ type: 'tool-event', toolName: 'websearch', callId: 'search-1', input, status: 'running' })
+  assert.deepEqual(sink.calls[0]?.call, { callId: 'search-1', name: 'websearch', arguments: input })
+})
+
 test('公共工具投影层在没有事件总线时立即追加原生工具事件', () => {
   const calls: string[] = []
   const bridge = {

@@ -2429,15 +2429,15 @@ test('Codex 在原生会话不可注入下一步时不启用分段模式', async
   await features.disable('cliAdapters')
 })
 
-test('OpenCode 不按工具完成切分 DSH step，Command Code 与 Codex 一样允许分段', async () => {
+test('OpenCode 与 Command Code、Codex 一样在工具完成后切分 DSH step', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
   const splitToolSteps = new Map<string, boolean | undefined>()
   const injected: string[] = []
   const drivers = ['opencode', 'command-code'].map((adapterId) => ({
     descriptor: { id: adapterId, name: adapterId },
-    // 真实 CommandCodeDriver 声明 supportsSegmentedTurns；这里用假驱动复现该契约。
-    ...(adapterId === 'command-code' ? { supportsSegmentedTurns: true } : {}),
+    // OpenCode 由 Registry 挂起同一条 SSE；Command Code 自己维护分段边界。
+    ...(adapterId === 'opencode' ? { supportsToolStepSplitting: true } : { supportsSegmentedTurns: true }),
     async detect() { return { installed: true, version: '1.0.0', command: adapterId } },
     async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
     async *executeTurn(input: { readonly splitToolSteps?: boolean }) {
@@ -2484,8 +2484,8 @@ test('OpenCode 不按工具完成切分 DSH step，Command Code 与 Codex 一样
     assert.equal(chunks.at(-1)?.type, 'finish')
   }
 
-  assert.deepEqual([...splitToolSteps.entries()], [['opencode', undefined], ['command-code', true]])
-  assert.deepEqual(injected, [])
+  assert.deepEqual([...splitToolSteps.entries()], [['opencode', true], ['command-code', true]])
+  assert.deepEqual(injected, ['opencode-stable-step'])
   await features.disable('cliAdapters')
 })
 

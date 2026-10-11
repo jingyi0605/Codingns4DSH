@@ -5,6 +5,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { OpenCodeDriver } from '../data/build/dist/host/cli-adapters/opencode-driver.js'
+import { createSubagentBridgeRuntime, setSubagentBridge } from '../data/build/dist/host/cli-bridge/bridge-holder.js'
+import { openCodeBridgeMcpConfig } from '../data/build/dist/host/cli-bridge/injections.js'
 
 const cwd = '/workspace/中文 目录'
 const model = { id: 'alias/review', modelID: 'upstream-model', providerID: 'custom', name: '代码模型', enabled: true, variants: [{ id: 'none' }, { id: 'deep' }], limit: { context: 200 } }
@@ -39,6 +41,7 @@ function harness(options: {
     if (path === '/api/provider') return envelope([provider, { id: 'disabled', name: '已禁用', activation: 'disabled' }])
     if (path === '/api/model/default') return envelope(model)
     if (path === '/api/skill') return envelope(options.skills ?? [])
+    if (/^\/api\/experimental\/mcp\/codingns_[0-9a-f]{8}$/u.test(path) && init.method === 'PUT') return new Response(null, { status: 204 })
     if (path === '/api/session' && init.method === 'POST') return envelope({ id: `ses_${++sessionCount}` })
     if (/^\/api\/session\/ses_[^/]+$/u.test(path)) return envelope({ id: path.split('/').pop(), location: { directory: options.sessionDirectory ?? cwd } })
     if (path.endsWith('/model') && init.method === 'POST') return envelope({})
@@ -203,10 +206,166 @@ test('OpenCode V2 文本快照去重，工具步骤不提前结束回合，严�
   assert.equal(usage?.contextWindow, 200)
   assert.equal(usage?.uncachedInputTokens, 100)
   assert.deepEqual(requests.find((request) => request.path === '/api/session')?.body, {
-    title: input.sessionId, model: { id: 'alias/review', providerID: 'custom', variant: 'deep' }, location: { directory: cwd },
+    title: input.sessionId,
+    model: { id: 'alias/review', providerID: 'custom', variant: 'deep' },
+    permissions: [{ action: 'subagent', resource: '*', effect: 'deny' }],
+    location: { directory: cwd },
   })
   assert.deepEqual(requests.find((request) => request.path.endsWith('/prompt'))?.body, { text: input.prompt })
   assert.equal(requests.find((request) => request.path === '/api/model')?.query.get('location[directory]'), cwd)
+  driver.dispose()
+})
+
+test('OpenCode V2 兼容 next 事件版本并实时保留工具参数与输出', async () => {
+  const data = { sessionID: 'ses_1', assistantMessageID: 'msg_1', textID: 'text_1', reasoningID: 'reason_1' }
+  const tool = { sessionID: 'ses_1', assistantMessageID: 'msg_1', callID: 'call_next' }
+  const { driver } = harness({ events: [
+    { type: 'session.next.text.delta.1', data: { ...data, delta: '先说' } },
+    { type: 'session.next.tool.input.started.1', data: { ...tool, name: 'bash' } },
+    { type: 'session.next.tool.input.delta.1', data: { ...tool, delta: '{"command":"' } },
+    { type: 'session.next.tool.input.delta.1', data: { ...tool, delta: 'pwd"}' } },
+    { type: 'session.next.tool.input.ended.1', data: { ...tool, text: '{"command":"pwd"}' } },
+    { type: 'session.next.tool.called.1', data: { ...tool, tool: 'bash', input: { command: 'pwd' }, provider: { executed: true } } },
+    { type: 'session.next.tool.progress.1', data: { ...tool, content: [{ type: 'text', text: '正在运行' }] } },
+    { type: 'session.next.tool.success.1', data: { ...tool, content: [{ type: 'text', text: '/workspace' }], provider: { executed: true, metadata: { exitCode: 0 } } } },
+    { type: 'session.next.step.ended.2', data: { ...data, finish: 'tool-calls', tokens: { input: 10, output: 2, reasoning: 1, cache: { read: 3, write: 0 } } } },
+    { type: 'session.next.text.delta.1', data: { ...data, assistantMessageID: 'msg_2', textID: 'text_2', delta: '后说' } },
+    { type: 'session.execution.succeeded.1', data: { sessionID: 'ses_1' } },
+  ] })
+  const events = []
+  for await (const event of driver.executeTurn(input)) events.push(event)
+  assert.equal(driver.supportsToolStepSplitting, true)
+  assert.equal(events.filter((event) => event.type === 'text-delta').map((event) => event.text).join(''), '先说后说')
+  assert.ok(events.some((event) => event.type === 'tool-event' && event.status === 'started' && event.callId === 'call_next'))
+  assert.ok(events.some((event) => event.type === 'tool-event' && event.status === 'running' && event.input === '{"command":"pwd"}'))
+  assert.deepEqual(events.find((event) => event.type === 'tool-event' && event.status === 'completed'), {
+    type: 'tool-event', toolName: 'bash', callId: 'call_next', status: 'completed', input: '{"command":"pwd"}', output: '/workspace', outputMode: 'snapshot', detail: '{"exitCode":0}',
+  })
+  driver.dispose()
+})
+
+test('OpenCode V2 不用空的 called 快照覆盖 input.ended 参数', async () => {
+  const tool = { sessionID: 'ses_1', assistantMessageID: 'msg_1', id: 'search_1' }
+  const { driver } = harness({ events: [
+    { type: 'session.tool.input.started', data: { ...tool, name: 'websearch' } },
+    { type: 'session.tool.input.ended', data: { ...tool, text: '{"query":"今天新闻"}' } },
+    // OpenCode V2 某些路径在 called 事件只填充空对象，完整参数仍在上一个事件。
+    { type: 'session.tool.called', data: { ...tool, tool: 'websearch', input: {} } },
+    { type: 'session.tool.success', data: { ...tool, content: [{ type: 'text', text: '搜索完成' }] } },
+    { type: 'session.tool.input.started', data: { sessionID: 'ses_1', assistantMessageID: 'msg_1', id: 'execute_1', name: 'execute' } },
+    { type: 'session.tool.input.ended', data: { sessionID: 'ses_1', assistantMessageID: 'msg_1', id: 'execute_1', text: '{"code":"await Promise.all([])"}' } },
+    { type: 'session.tool.called', data: { sessionID: 'ses_1', assistantMessageID: 'msg_1', id: 'execute_1', tool: 'execute', input: {} } },
+    { type: 'session.tool.success', data: { sessionID: 'ses_1', assistantMessageID: 'msg_1', id: 'execute_1', content: [{ type: 'text', text: '执行完成' }] } },
+    done,
+  ] })
+  const events = []
+  for await (const event of driver.executeTurn(input)) events.push(event)
+  assert.deepEqual(events.find((event) => event.type === 'tool-event' && event.status === 'completed'), {
+    type: 'tool-event', toolName: 'websearch', callId: 'search_1', status: 'completed',
+    input: '{"query":"今天新闻"}', output: '搜索完成', outputMode: 'snapshot',
+  })
+  assert.deepEqual(events.find((event) => event.type === 'tool-event' && event.callId === 'execute_1' && event.status === 'completed'), {
+    type: 'tool-event', toolName: 'execute', callId: 'execute_1', status: 'completed',
+    input: '{"code":"await Promise.all([])"}', output: '执行完成', outputMode: 'snapshot',
+  })
+  driver.dispose()
+})
+
+test('OpenCode V2 从 Code Mode 进度元数据恢复 execute 子工具参数', async () => {
+  const tool = { sessionID: 'ses_1', assistantMessageID: 'msg_1', id: 'execute_progress_1' }
+  const toolCalls = [{ tool: 'websearch', status: 'running', input: { query: '今天新闻' } }]
+  const { driver } = harness({ events: [
+    { type: 'session.tool.input.started', data: { ...tool, name: 'execute' } },
+    { type: 'session.tool.input.ended', data: { ...tool, text: '{}' } },
+    { type: 'session.tool.called', data: { ...tool, tool: 'execute', input: {} } },
+    { type: 'session.tool.progress', data: { ...tool, metadata: { toolCalls } } },
+    { type: 'session.tool.success', data: { ...tool, content: [{ type: 'text', text: '搜索完成' }], metadata: { toolCalls: [{ ...toolCalls[0], status: 'completed' }] } } },
+    done,
+  ] })
+  const events = []
+  for await (const event of driver.executeTurn(input)) events.push(event)
+  const expectedInput = JSON.stringify({ toolCalls: [{ ...toolCalls[0] }] })
+  assert.equal(events.find((event) => event.type === 'tool-event' && event.status === 'running' && event.callId === tool.id)?.input, undefined)
+  assert.equal(events.filter((event) => event.type === 'tool-event' && event.status === 'running' && event.callId === tool.id).at(-1)?.input, expectedInput)
+  assert.equal(events.find((event) => event.type === 'tool-event' && event.status === 'completed' && event.callId === tool.id)?.input, expectedInput)
+  driver.dispose()
+})
+
+test('OpenCode V2 写入 Diff 恢复完整参数，结束事件显式关闭消息块', async () => {
+  const { driver } = harness({ events: [
+    { type: 'session.tool.input.started', data: { sessionID: 'ses_1', assistantMessageID: 'msg_1', id: 'write_1', name: 'write' } },
+    { type: 'session.tool.input.ended', data: { sessionID: 'ses_1', assistantMessageID: 'msg_1', id: 'write_1', text: '{}' } },
+    { type: 'session.tool.called', data: { sessionID: 'ses_1', assistantMessageID: 'msg_1', id: 'write_1', tool: 'write', input: {} } },
+    { type: 'session.tool.success', data: {
+      sessionID: 'ses_1', assistantMessageID: 'msg_1', id: 'write_1', content: [{ type: 'text', text: 'Wrote file successfully' }],
+      metadata: { diffs: [{ path: '/workspace/jokes.md', oldText: null, newText: '# 笑话\n' }] },
+    } },
+    { type: 'session.text.ended', data: { sessionID: 'ses_1', assistantMessageID: 'msg_1', ordinal: 0, text: '已完成' } },
+    done,
+  ] })
+  const events = []
+  for await (const event of driver.executeTurn(input)) events.push(event)
+  assert.deepEqual(events.find((event) => event.type === 'tool-event' && event.status === 'completed'), {
+    type: 'tool-event', toolName: 'write', callId: 'write_1', status: 'completed', input: JSON.stringify({ path: '/workspace/jokes.md', content: '# 笑话\n' }), output: 'Wrote file successfully', outputMode: 'snapshot', detail: JSON.stringify({ diffs: [{ path: '/workspace/jokes.md', oldText: null, newText: '# 笑话\n' }] }),
+  })
+  assert.ok(events.some((event) => event.type === 'message-boundary' && event.channel === 'text'))
+  driver.dispose()
+})
+
+test('OpenCode V2 桥接注册 CodingNS MCP 并拒绝原生 subagent', async () => {
+  setSubagentBridge(createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:1', token: 'test-token' }))
+  try {
+    const { driver, requests } = harness({ events: [done] })
+    const bridgeInput = { ...input, prompt: '请并行启动 2 个子 Agent 检查代码' }
+    for await (const _ of driver.executeTurn(bridgeInput)) { /* 读取完整流。 */ }
+    const mcp = requests.find((request) => /^\/api\/experimental\/mcp\/codingns_[0-9a-f]{8}$/u.test(request.path))
+    assert.equal(mcp?.body.config.type, 'local')
+    assert.deepEqual(mcp?.body.config.command, [process.execPath, mcp?.body.config.command[1]])
+    assert.deepEqual(mcp?.body.config.timeout, { execution: 260_000 })
+    const session = requests.find((request) => request.path === '/api/session' && request.body?.permissions !== undefined)
+    const serverName = mcp?.path.split('/').at(-1)
+    assert.deepEqual(session?.body.permissions, [
+      { action: 'subagent', resource: '*', effect: 'deny' },
+      { action: `${serverName}_agent_subagent`, resource: '*', effect: 'allow' },
+    ])
+    const prompt = requests.find((request) => request.path.endsWith('/prompt'))
+    assert.match(prompt?.body.text ?? '', /codingns_[0-9a-f]{8}_agent_subagent/u)
+    driver.dispose()
+  } finally {
+    setSubagentBridge(undefined)
+  }
+})
+
+test('OpenCode V2 父子会话使用隔离的 MCP server，避免子会话覆盖父会话环境', () => {
+  setSubagentBridge(createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:1', token: 'test-token' }))
+  try {
+    const parent = openCodeBridgeMcpConfig('parent-session', 'opencode')
+    const child = openCodeBridgeMcpConfig('child-session', 'opencode')
+    assert.ok(parent)
+    assert.ok(child)
+    assert.notEqual(parent.serverName, child.serverName)
+    assert.notEqual(parent.toolName, child.toolName)
+    assert.equal(parent.config.environment.CODINGNS_DSH_SESSION_ID, 'parent-session')
+    assert.equal(child.config.environment.CODINGNS_DSH_SESSION_ID, 'child-session')
+  } finally {
+    setSubagentBridge(undefined)
+  }
+})
+
+test('OpenCode V2 shell 事件读取嵌套命令和输出', async () => {
+  const { driver } = harness({ events: [
+    { type: 'session.shell.started', data: { sessionID: 'ses_1', shell: { id: 'shell_1', command: 'pwd' } } },
+    { type: 'session.shell.ended', data: { sessionID: 'ses_1', shell: { id: 'shell_1', command: 'pwd' }, output: '/workspace' } },
+    done,
+  ] })
+  const events = []
+  for await (const event of driver.executeTurn(input)) events.push(event)
+  assert.deepEqual(events.filter((event) => event.type === 'tool-event').map((event) => ({
+    input: event.input, output: event.output, status: event.status,
+  })), [
+    { input: '{"command":"pwd"}', output: undefined, status: 'running' },
+    { input: '{"command":"pwd"}', output: '/workspace', status: 'running' },
+  ])
   driver.dispose()
 })
 
