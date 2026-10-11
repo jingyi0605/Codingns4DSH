@@ -178,6 +178,8 @@ flowchart LR
 
 实际渲染成功后才确认 `presented`，不是收到快照即确认。首个确认后使用 Host 截止时间，页面刷新/原生重连不重新计时。最高优先待处理通知可抢占终态气泡；已显示终态按原截止时间收起，未显示的终态仍排队。收起的待处理请求只保留角标和列表，新请求仍可正常弹出。
 
+主页面同时订阅 DSH 公开的 `uiWorkspace.selection`。会话从侧栏、历史列表或其他成功导航入口被选中后，客户端把本地或远端虚拟 ID 归一化为 `hostId + workspaceId + sessionId`，通过受认证 RPC `assistant/notifications/read-session` 让 Host 批量标记对应通知已读。该操作与通知按钮的单条 `read` 共用 Host 幂等状态；会话快速切换时由客户端串行队列丢弃旧选择。完成和错误通知因此离开气泡，仍 active 的提问/审批只变为已读并继续保留待处理入口。
+
 ### 5.3 导航目标接口
 
 - 类型/标识：受认证 RPC `assistant/notifications/target`。

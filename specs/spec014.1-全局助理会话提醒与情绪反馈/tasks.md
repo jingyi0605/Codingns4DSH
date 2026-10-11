@@ -174,6 +174,20 @@
   - 对应设计：§6—7、§9—11。
   - 结果与证据：2026-10-09 统一 343 项回归覆盖旧包/图片/精灵/Live2D、素材/预览/裁剪、原生旧协议/焦点/回退、字幕、通话租约和通知。Host 独立 250 毫秒修订时钟及真实中心首展/分页替身通过；通知不重载模型、不增加双形象、不更改语音事实。未运行 macOS 原生进程或实机测试，实际时延/透明点击区域继续保留任务 4.2/4.3。
 
+- [x] 2.10 打通会话选择与通知已读
+  - 状态：DONE
+  - 这一步到底做什么：监听 `uiWorkspace.selection`，用户从任意入口打开会话后，按 Host、工作区和会话三元组标记对应通知已读。
+  - 做完你能看到什么：侧栏或其他会话入口打开目标会话后，匹配的完成/错误通知自动离开气泡；提问与审批只标记已读，仍保留待处理入口。
+  - 先依赖什么：2.3、2.4、3.2。
+  - 开始前先看：需求 3、4；设计 §3.2、§5.2、§5.3、§8.2。
+  - 主要改哪里：`src/shared/assistant-notifications.ts`、`src/host/features/assistant-notifications.ts`、`src/host/features/global-voice-rpc.ts`、`src/host/rpc.ts`、`src/client/features/assistant-notification-store.ts`、`src/client/features/global-voice-assistant.ts`、`src/dsh-capabilities/client/assistant-session-navigation-adapter.ts` 与相关测试。
+  - 这一步先不做什么：不按标题猜测会话，不把打开会话当成回答提问或批准权限，不修改 DSH 会话本身的请求状态。
+  - 怎么算完成：`assistant/notifications/read-session` 按三元组批量匹配并复用 `readNotice()`；本地/远端虚拟 ID 正确归一化；会话切换使用通知 Store 串行队列并丢弃旧选择；通知按钮的单条已读与会话级已读重复调用幂等。
+  - 怎么验证：Host 三元组匹配、RPC 权限、客户端选择切换、虚拟 ID 归一化和网页 Overlay 联动回放；`tsc --noEmit` 与 `git diff --check`。
+  - 对应需求：需求 3、4；需求 9 验收 3、5。
+  - 对应设计：§3.2、§5.2、§5.3、§8.2。
+  - 结果与证据：2026-10-11 已完成源码开发。新增会话级已读 RPC 和 Host 批量匹配；监听 DSH 前台选择 Store，支持本地、远端和 `local` 虚拟别名；串行队列丢弃快速切换中的旧选择。会话级已读、Host 三元组、虚拟 ID、Overlay 联动相关测试通过，类型检查和空白检查通过；未构建、未启动服务、未操作 Desktop。
+
 ## 阶段 3：补足远端事件与跨 Host 导航
 
 - [x] 3.1 核对并接入 PeerHost 实时来源与能力矩阵
