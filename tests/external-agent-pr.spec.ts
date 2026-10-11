@@ -482,9 +482,10 @@ test('agent_subagent 默认后台返回并允许同一父会话并发创建', as
 
 test('子代理完整生命周期：创建、读取、发送报告、结束，并阻止父会话提前收尾', async () => {
   let handler: { onEvent?: (session: unknown, event: unknown) => void } | undefined
-  const child = { header: { id: 'child-lifecycle' }, snapshotEvents: () => [] }
+  const child = { header: { id: 'child-lifecycle', origin: 'subagent', parentSession: 'parent-lifecycle' }, snapshotEvents: () => [] }
   const injected: string[] = []
   const sentMessages: Array<{ targetId: string; text: string }> = []
+  const parentReports: Array<{ targetId: string; text: string }> = []
   const sessions = {
     get: (id: string) => id === 'child-lifecycle' ? child : undefined,
     subscribe: (value: { onEvent?: (session: unknown, event: unknown) => void }) => {
@@ -493,6 +494,10 @@ test('子代理完整生命周期：创建、读取、发送报告、结束，�
     },
     injectNextStep: (sessionId: string, summary?: string) => {
       injected.push(`${sessionId}:${summary ?? ''}`)
+      return true
+    },
+    injectMessage: (sessionId: string, message: string) => {
+      parentReports.push({ targetId: sessionId, text: message })
       return true
     },
   } as never
@@ -512,6 +517,13 @@ test('子代理完整生命周期：创建、读取、发送报告、结束，�
     )
     assert.equal(started.status, 'running')
     const childId = String(started.childSessionId)
+    const childExec = { agent: { id: childId, options: { subagentDepth: 1 }, session: { header: { id: childId } } } }
+    const report = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { action: 'send', child_session_id: 'parent-lifecycle', message: '子代理报告：实现已完成，测试通过。' }, childExec,
+    )
+    assert.equal(report.ok, true)
+    assert.equal(report.parentSessionId, 'parent-lifecycle')
+    assert.deepEqual(parentReports, [{ targetId: 'parent-lifecycle', text: '子代理报告：实现已完成，测试通过。' }])
     const running = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
       { action: 'read', child_session_id: childId }, exec,
     )

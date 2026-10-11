@@ -20,6 +20,7 @@ import {
   commandCodeNativeAgentEnvironment,
 } from '../data/build/dist/host/cli-bridge/injections.js'
 import { dispatchBridgeSubagent } from '../data/build/dist/host/cli-bridge/dispatch.js'
+import { isNativeSubagentSession, nativeSubagentParentSessionId, sendNativeSubagentParentMessage } from '../data/build/dist/host/cli-adapters/native-subagent-dispatch.js'
 import { setNativeSubagents } from '../data/build/dist/host/cli-adapters/native-subagent-holder.js'
 import { registerNativeTeamSubagentProviders } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
 import { setAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry-holder.js'
@@ -116,27 +117,58 @@ test('子代理桥接注入：Command Code 始终屏蔽原生 agent，桥接开�
   }
 })
 
-test('子代理会话不注入桥接端点但屏蔽原生 agent，避免嵌套托管递归', () => {
+test('子代理会话保留桥接回传能力，同时屏蔽嵌套原生 agent', () => {
   const store = new CodingNsCliSessionStore()
   store.upsert('child-1', { adapterId: 'command-code', origin: 'subagent', parentSessionId: 'parent-1' })
   const registry = new CodingNsCliAdapterRegistry([], undefined, { sessionStore: store })
   setAdapterRegistry(registry)
   enableBridge()
   try {
-    assert.deepEqual(commandCodeBridgeArgs('child-1'), [])
-    assert.deepEqual(commandCodeBridgeEnvironment('child-1', 'command-code'), {})
+    assert.equal(commandCodeBridgeArgs('child-1').length, 2)
+    const childEnv = commandCodeBridgeEnvironment('child-1', 'command-code')
+    assert.equal(childEnv.CODINGNS_BRIDGE_URL, ACTIVE_RUNTIME.baseUrl)
+    assert.equal(childEnv.CODINGNS_DSH_SESSION_ID, 'child-1')
+    assert.equal(childEnv.CODINGNS_SUBAGENT_CHILD, '1')
     assert.equal(commandCodeNativeAgentArgs('child-1').length, 2)
-    assert.deepEqual(commandCodeNativeAgentEnvironment('child-1', 'command-code'), {
-      CODINGNS_DISABLE_NATIVE_AGENT: '1',
-      CODINGNS_SUBAGENT_CHILD: '1',
-    })
-    // Claude 子会话不再递归注入 CodingNS MCP，但必须屏蔽当前版 Agent 和旧版 Task。
-    assert.deepEqual(claudeBridgeArgs('child-1', 'claude-code'), ['--disallowedTools', 'Task', 'Agent'])
-    assert.equal(codexBridgeDeveloperInstructions('child-1'), undefined)
+    const childNativeEnv = commandCodeNativeAgentEnvironment('child-1', 'command-code')
+    assert.equal(childNativeEnv.CODINGNS_DISABLE_NATIVE_AGENT, '1')
+    assert.equal(childNativeEnv.CODINGNS_SUBAGENT_CHILD, '1')
+    assert.equal(childNativeEnv.CODINGNS_BRIDGE_TOKEN, ACTIVE_RUNTIME.token)
+    // Claude 子会话保留 CodingNS MCP 回传工具，同时屏蔽当前版 Agent 和旧版 Task。
+    const childClaudeArgs = claudeBridgeArgs('child-1', 'claude-code')
+    assert.ok(childClaudeArgs.includes('--mcp-config'))
+    assert.deepEqual(childClaudeArgs.slice(-3), ['--disallowedTools', 'Task', 'Agent'])
+    assert.ok(codexBridgeDeveloperInstructions('child-1')?.includes('parent session'))
+    const childAcp = acpBridgeMcpServers('child-1', 'gemini')
+    assert.equal(childAcp.length, 1)
+    assert.deepEqual(childAcp[0].env.find((item: { name: string }) => item.name === 'CODINGNS_SUBAGENT_CHILD'), { name: 'CODINGNS_SUBAGENT_CHILD', value: '1' })
     // 普通会话仍然注入。
     assert.equal(commandCodeBridgeArgs('user-1').length, 2)
   } finally {
     setSubagentBridge(undefined)
+    setAdapterRegistry(undefined)
+  }
+})
+
+test('主会话身份以原生 header 为准，不被污染的子代理索引覆盖', () => {
+  const store = new CodingNsCliSessionStore()
+  // 模拟第一次并行 start 期间错误写入父会话的残留索引：origin 存在，但
+  // 原生 Session header 仍明确是普通根会话。
+  store.upsert('parent-stale', { adapterId: 'command-code', origin: 'subagent', parentSessionId: 'old-parent' })
+  const sessions = {
+    get: (id: string) => id === 'parent-stale' ? { header: { id: 'parent-stale' } } : undefined,
+  }
+  const registry = new CodingNsCliAdapterRegistry([], undefined, { sessionStore: store, nativeSessions: sessions as never })
+  setAdapterRegistry(registry)
+  try {
+    assert.equal(isNativeSubagentSession(sessions as never, 'parent-stale'), false)
+    assert.equal(nativeSubagentParentSessionId(sessions as never, 'parent-stale'), undefined)
+    assert.equal(commandCodeNativeAgentEnvironment('parent-stale', 'command-code').CODINGNS_SUBAGENT_CHILD, undefined)
+    // 没有 header 的外部 child 仍可由带合法父 ID 的 Registry 记录识别。
+    store.upsert('child-valid', { adapterId: 'command-code', origin: 'subagent', parentSessionId: 'parent-stale' })
+    assert.equal(isNativeSubagentSession({ get: () => undefined } as never, 'child-valid'), true)
+    assert.equal(nativeSubagentParentSessionId({ get: () => undefined } as never, 'child-valid'), 'parent-stale')
+  } finally {
     setAdapterRegistry(undefined)
   }
 })
@@ -352,6 +384,67 @@ test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', 
   }
 })
 
+test('MCP 子会话只暴露 send_message，并把 agent_id 兼容映射到父会话', async () => {
+  const dispatched: Array<Record<string, unknown>> = []
+  const server = await startSubagentBridgeServer({
+    dispatch: async (request) => {
+      dispatched.push({ ...request })
+      return { ok: true, status: 'running', completed: false, text: '子代理报告已回传父会话。', parentSessionId: 'parent-1' }
+    },
+  })
+  const child = spawn(process.execPath, bridgeEntryArgs(), {
+    env: {
+      ...process.env,
+      CODINGNS_BRIDGE_URL: server.runtime.baseUrl,
+      CODINGNS_BRIDGE_TOKEN: server.runtime.token,
+      CODINGNS_DSH_SESSION_ID: 'child-1',
+      CODINGNS_ADAPTER_ID: 'opencode',
+      CODINGNS_SUBAGENT_CHILD: '1',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  const responses = new Map<unknown, any>()
+  let buffer = ''
+  child.stdout.setEncoding('utf8')
+  child.stdout.on('data', (chunk: string) => {
+    buffer += chunk
+    let index = buffer.indexOf('\n')
+    while (index >= 0) {
+      const line = buffer.slice(0, index).trim()
+      buffer = buffer.slice(index + 1)
+      if (line !== '') {
+        const message = JSON.parse(line)
+        responses.set(message.id, message)
+      }
+      index = buffer.indexOf('\n')
+    }
+  })
+  const send = (message: Record<string, unknown>): void => { child.stdin.write(`${JSON.stringify(message)}\n`) }
+  const waitFor = async (id: number): Promise<any> => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (responses.has(id)) return responses.get(id)
+      await delay(20)
+    }
+    throw new Error(`MCP 子会话响应超时: ${String(id)}`)
+  }
+  try {
+    send({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'send_message', arguments: { agent_id: 'parent-1', message: '完整报告' } } })
+    const tools = await waitFor(1)
+    assert.equal(tools.result.tools.length, 1)
+    assert.equal(tools.result.tools[0].name, 'send_message')
+    const call = await waitFor(2)
+    assert.equal(call.result.isError, undefined)
+    assert.equal(dispatched[0]?.sessionId, 'child-1')
+    assert.equal(dispatched[0]?.action, 'send')
+    assert.equal(dispatched[0]?.childSessionId, 'parent-1')
+    assert.equal(dispatched[0]?.message, '完整报告')
+  } finally {
+    child.kill()
+    await server.close()
+  }
+})
+
 test('MCP 入口：独立 start 请求并行处理，不串行等待前一个子代理', async () => {
   let active = 0
   let maxActive = 0
@@ -440,9 +533,14 @@ test('桥接派发：解析父会话并把子代理绑定为原生可续子会�
   ]
   const sessions = {
     available: true,
-    get: (id: string) => (id === 'child-77' ? { snapshotEvents: () => events } : undefined),
+    get: (id: string) => (id === 'child-77' ? { header: { id: 'child-77', origin: 'subagent', parentSession: 's1' }, snapshotEvents: () => events } : undefined),
     subscribe: () => () => undefined,
     list: () => [],
+    injectMessage: (sessionId: string, message: string) => {
+      assert.equal(sessionId, 's1')
+      assert.equal(message, '子代理报告已完成')
+      return true
+    },
   }
   const driver = {
     descriptor: { id: 'command-code', name: 'Command Code', protocol: 'command', capabilities: [] },
@@ -452,13 +550,16 @@ test('桥接派发：解析父会话并把子代理绑定为原生可续子会�
   }
   const registry = new CodingNsCliAdapterRegistry([driver as never])
   registry.setSession('s1', { adapterId: 'command-code' })
+  registry.setSession('child-77', { adapterId: 'command-code', origin: 'subagent', parentSessionId: 's1' })
   setNativeSubagents(service as never)
   setAdapterRegistry(registry)
   try {
     const result = await dispatchBridgeSubagent(
       { sessionId: 's1', prompt: '分析当前项目' },
       {
-        agents: { get: (id: string) => (id === 's1' ? { id: 'agent-s1', session: { header: { id: 's1' } } } : undefined) },
+        agents: { get: (id: string) => id === 's1'
+          ? { id: 'agent-s1', session: { header: { id: 's1' } } }
+          : id === 'child-77' ? { id: 'agent-child-77', session: { header: { id: 'child-77' } } } : undefined },
         nativeSessions: sessions as never,
       },
     )
@@ -485,9 +586,34 @@ test('桥接派发：解析父会话并把子代理绑定为原生可续子会�
     assert.equal(followup.status, 'running')
     assert.equal(followup.completed, false)
     assert.equal(followup.messageId, 'm2')
+    // 桥接请求的 sessionId 才是调用方身份；即使 Agent 对象的 header 被宿主
+    // 复用成子会话 ID，也不能把主会话误判成子会话。
+    const staleHeaderFollowup = await dispatchBridgeSubagent({ sessionId: 's1', action: 'send', childSessionId: 'child-77', message: '请补充报告' }, {
+      ...deps,
+      agents: { get: (id: string) => id === 's1'
+        ? { id: 'agent-s1', session: { header: { id: 'child-77' } } }
+        : undefined },
+    })
+    assert.equal(staleHeaderFollowup.ok, true)
     // 后续追踪从发送前的事件游标开始，旧首轮 turn/end 不能立即把 follow-up 标记为完成。
     const followupState = await dispatchBridgeSubagent({ sessionId: 's1', action: 'read', childSessionId: 'child-77' }, deps)
     assert.equal(followupState.status, 'running')
+    const nestedStart = await dispatchBridgeSubagent({ sessionId: 'child-77', prompt: '再次创建子代理' }, {
+      ...deps,
+      agents: { get: (id: string) => id === 'child-77'
+        ? { id: 'agent-child-77', session: { header: { id: 'child-77' } } }
+        : undefined },
+    })
+    assert.equal(nestedStart.ok, false)
+    assert.match(String(nestedStart.error), /禁止嵌套子代理/u)
+    const parentReport = await dispatchBridgeSubagent({ sessionId: 'child-77', action: 'send', childSessionId: 's1', message: '子代理报告已完成' }, {
+      ...deps,
+      agents: { get: (id: string) => id === 's1'
+        ? { id: 'agent-s1', session: { header: { id: 's1' } } }
+        : id === 'child-77' ? { id: 'agent-child-77', session: { header: { id: 'child-77' } } } : undefined },
+    })
+    assert.equal(parentReport.ok, true)
+    assert.equal(parentReport.parentSessionId, 's1')
     const crossParent = await dispatchBridgeSubagent({ sessionId: 's2', action: 'read', childSessionId: 'child-77' }, {
       ...deps,
       agents: { get: (id: string) => (id === 's2' ? { id: 'agent-s2', session: { header: { id: 's2' } } } : undefined) },
@@ -498,6 +624,21 @@ test('桥接派发：解析父会话并把子代理绑定为原生可续子会�
     setNativeSubagents(undefined)
     setAdapterRegistry(undefined)
   }
+})
+
+test('子代理报告回传按父会话和正文幂等，避免多个 MCP 命名空间重复注入', () => {
+  let injections = 0
+  const sessions = {
+    get: (id: string) => id === 'child-dedupe'
+      ? { header: { id: 'child-dedupe', origin: 'subagent', parentSession: 'parent-dedupe' } }
+      : undefined,
+    injectMessage: () => { injections += 1; return true },
+  }
+  const first = sendNativeSubagentParentMessage(sessions as never, 'child-dedupe', '同一份报告')
+  const second = sendNativeSubagentParentMessage(sessions as never, 'child-dedupe', '同一份报告')
+  assert.deepEqual(first, { ok: true, parentSessionId: 'parent-dedupe' })
+  assert.deepEqual(second, { ok: true, parentSessionId: 'parent-dedupe', duplicate: true })
+  assert.equal(injections, 1)
 })
 
 test('桥接失败状态：父 Agent 必须先 read/wait 复核后才能继续收尾', async () => {

@@ -1099,6 +1099,42 @@ test('真实 Session header 的 v4 generation 优先于过期运行时版本', (
   })
 })
 
+test('子代理报告使用可唤醒 inbox，父会话已有 next-step 时不会丢弃后续报告', () => {
+  const delivered: Array<{ method: string; text: string }> = []
+  const session = {
+    header: { version: 4 },
+    snapshotEvents() { return [{ type: 'permission/preset', seq: 0 }] },
+    append() { return undefined },
+  }
+  const agent = {
+    status: 'running',
+    inbox: { nextStep: [{}] },
+    steer(message: { content: Array<{ text: string }> }) {
+      delivered.push({ method: 'steer', text: message.content[0]?.text ?? '' })
+    },
+    followup(message: { content: Array<{ text: string }> }) {
+      delivered.push({ method: 'followup', text: message.content[0]?.text ?? '' })
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      if (name === 'sessions') return { get(id: string) { return id === 'parent-report' ? session : undefined }, list() { return [session] } }
+      if (name === 'agents') return { get(id: string) { return id === 'parent-report' ? agent : undefined } }
+      return undefined
+    },
+  } as never, '0.2.0-rc.2')
+
+  assert.equal(bridge.injectMessage?.('parent-report', '报告一'), true)
+  assert.equal(bridge.injectMessage?.('parent-report', '报告二'), true)
+  assert.deepEqual(delivered.map((item) => item.method), ['steer', 'steer'])
+  assert.deepEqual(delivered.map((item) => item.text), ['报告一', '报告二'])
+
+  agent.status = 'idle'
+  agent.inbox.nextStep.length = 0
+  assert.equal(bridge.injectMessage?.('parent-report', '报告三'), true)
+  assert.deepEqual(delivered.at(-1), { method: 'followup', text: '报告三' })
+})
+
 test('0.2 世代运行时版本判定为 modern，缺会话头时仍写入 producer-owned 来源', () => {
   // 0.2.x 的判据依赖 `minor > 1` 子句（0.2.0-rc.2 与 0.2.1-alpha.1 的 minor 都是 2，
   // 不是 1）。一旦该子句被写漏，0.2 世代会被误判为旧版。
