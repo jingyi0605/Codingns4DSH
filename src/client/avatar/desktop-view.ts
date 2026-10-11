@@ -73,10 +73,6 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
     sendNotice('notice-presented', noticeId, generation, undefined, kind, desktopAssistantNotice(latestFrame.current)?.connectionGeneration), [sendNotice])
   const openNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number) => sendNotice('notice-action', noticeId, generation, 'open', undefined, connectionGeneration), [sendNotice])
   const dismissNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number) => sendNotice('notice-action', noticeId, generation, 'dismiss', undefined, connectionGeneration), [sendNotice])
-  const pageNotices = useCallback((cursor?: string): void => {
-    const current = latestFrame.current
-    if (JSON.stringify(current.identity) === identityKey) sendDesktopAssistantNoticePage(current, cursor)
-  }, [identityKey])
   const clearAllNotices = useCallback((generation: number): void => {
     const current = latestFrame.current
     // 只有点击帧与当前快照同一代次才回传；主页面仍会按 Host 代次复核一次。
@@ -159,7 +155,7 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
         ...(frame.autoClose === undefined || !frame.nativeVisible ? {} : { autoClose: frame.autoClose }),
         ...(frame.autoCloseSeconds === undefined || !frame.nativeVisible ? {} : { autoCloseSeconds: frame.autoCloseSeconds }),
         onOpen: openNotice, onDismiss: dismissNotice, onPresented: frame.nativeVisible ? presented : () => undefined,
-        ...(frame.notificationSnapshot === undefined ? {} : { onPage: pageNotices, onExpandedChange: expandedNotices, onClearAll: clearAllNotices }) })) : null,
+        ...(frame.notificationSnapshot === undefined ? {} : { onExpandedChange: expandedNotices, onClearAll: clearAllNotices }) })) : null,
     frame.caption && layout.caption ? createElement('div', { 'aria-live': 'polite', 'data-codingns-native-caption': true,
       style: { ...regionStyle(layout.caption), whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
         boxSizing: 'border-box', padding: 8, borderRadius: 10, color: '#242424', background: 'rgba(255,255,255,.94)', fontSize: uiFontSize(12), lineHeight: 1.5 } }, frame.caption) : null)

@@ -3,6 +3,7 @@ import type { CSSProperties, ReactElement } from 'react'
 import type { AssistantNotification, AssistantNotificationAutoCloseSeconds, AssistantNotificationSnapshot } from '../../shared/assistant-notifications.js'
 import {
   ASSISTANT_NOTIFICATION_TAIL_CLEARANCE, ASSISTANT_NOTIFICATION_TAIL_GAP, ASSISTANT_NOTIFICATION_TAIL_HEIGHT,
+  ASSISTANT_NOTIFICATION_TAIL_OVERLAP,
   ASSISTANT_NOTIFICATION_TAIL_WIDTH, type AssistantNotificationTailSide,
 } from '../../shared/assistant-notifications.js'
 import type { DesktopAssistantNotification } from '../../shared/desktop-assistant.js'
@@ -24,7 +25,6 @@ export interface AssistantNotificationBubbleProps {
   readonly onPresented: (noticeId: string, generation: number, kind?: AssistantNotification['kind']) => void
   readonly autoClose?: boolean
   readonly autoCloseSeconds?: AssistantNotificationAutoCloseSeconds
-  readonly onPage?: ((cursor?: string) => void) | undefined
   readonly onExpandedChange?: ((expanded: boolean) => void) | undefined
   /** 一键清理只提交当前代次的气泡清理；未接入的主机不渲染该按钮。 */
   readonly onClearAll?: ((generation: number) => void | Promise<void>) | undefined
@@ -45,7 +45,8 @@ export function assistantNotificationTailStyle(avatarCenter: number, regionStart
   // 根部保留 10px 的横向回收，尾巴才会有自然斜度；尖端仍通过角度回到助理中心。
   const rootTarget = target - direction * 10
   const center = Math.max(margin, Math.min(Math.max(margin, regionSize - margin), rootTarget))
-  const bottomAngle = Math.max(-26, Math.min(26, -Math.atan2(target - center, ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_GAP) * 180 / Math.PI))
+  // 斜度上限控制在 20° 内，避免根部被甩出圆角后形成断裂的双片形状。
+  const bottomAngle = Math.max(-20, Math.min(20, -Math.atan2(target - center, ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_GAP) * 180 / Math.PI))
   // 顶部尾巴先翻转 180°，水平分量也随之翻转，所以要使用相反符号保持尖端仍指向助理。
   const angle = side === 'top' ? -bottomAngle : bottomAngle
   return { '--codingns-assistant-tail-offset': `${Math.round(center)}px`, '--codingns-assistant-tail-target': `${Math.round(target)}px`,
@@ -63,18 +64,17 @@ function isPendingNotice(notice: Pick<AssistantNotification, 'kind' | 'lifecycle
   return (notice.kind === 'question' || notice.kind === 'approval') && notice.lifecycle === 'active'
 }
 
-export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss, onPresented, autoClose = false, autoCloseSeconds = 30, onPage, onExpandedChange, onClearAll, tailSide = 'bottom', tailTarget, tailStyle }: AssistantNotificationBubbleProps): ReactElement {
+export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss, onPresented, autoClose = false, autoCloseSeconds = 30, onExpandedChange, onClearAll, tailSide = 'bottom', tailTarget, tailStyle }: AssistantNotificationBubbleProps): ReactElement {
   const [expanded, setExpanded] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [listFilter, setListFilter] = useState<NotificationListFilter>('all')
   const [processing, setProcessing] = useState(false)
-  const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const bubble = useRef<HTMLDivElement>(null)
   const autoCloseTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const snapshot = 'items' in frame ? frame : undefined
   const primary = snapshot === undefined ? frame as DesktopAssistantNotification : snapshot.primary
   const items = snapshot?.items.filter((notice) => !notice.read || isPendingNotice(notice)) ?? []
-  // 主气泡直接呈现当前需要用户关注的通知；分页列表仍保留完整快照，避免首屏只剩统计数字。
+  // 主气泡直接呈现当前需要用户关注的通知；记录列表仍保留完整快照，避免首屏只剩统计数字。
   const attentionItems = snapshot === undefined
     ? primary === undefined || primary === null ? [] : [primary]
     : [...(snapshot.primary === null || snapshot.primary.presentation === 'collapsed' ? [] : [snapshot.primary]), ...items.filter((notice) =>
@@ -86,7 +86,7 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
   const createdAt = presented && 'createdAt' in presented ? presented.createdAt : undefined
   useEffect(() => { onExpandedChange?.(expanded) }, [expanded, onExpandedChange])
   useEffect(() => { setCollapsed(false) }, [frame.generation])
-  useEffect(() => { setCursors([undefined]); setListFilter('all') }, [frame.generation, snapshot?.reset])
+  useEffect(() => { setListFilter('all') }, [frame.generation, snapshot?.reset])
   useEffect(() => {
     if (presented === undefined || presented === null) return
     const node = bubble.current
@@ -139,18 +139,14 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
     : listFilter === 'pending'
       ? items.filter((notice) => isPendingNotice(notice))
       : items
-  const showTail = showBubble || (expanded && snapshot !== undefined)
+  // 气泡落在助理下方时不画倒置尾巴，避免尾巴穿过工具栏或露出错误的根部。
+  const showTail = tailSide !== 'top' && (showBubble || (expanded && snapshot !== undefined))
   const tail = showTail ? createElement('span', { 'aria-hidden': true, 'data-codingns-notification-tail': tailSide, style: { ...tailBox(tailSide), ...tailStyle } },
-    createElement('svg', { width: ASSISTANT_NOTIFICATION_TAIL_WIDTH, height: ASSISTANT_NOTIFICATION_TAIL_HEIGHT,
-      viewBox: `0 0 ${ASSISTANT_NOTIFICATION_TAIL_WIDTH} ${ASSISTANT_NOTIFICATION_TAIL_HEIGHT}`, 'aria-hidden': true, style: tailSvg(tailSide) },
-      createElement('path', { d: `${notificationTailCurve} Z`, fill: dshThemeColor.menuBackground }),
-      createElement('path', { d: notificationTailCurve, fill: 'none', stroke: dshThemeColor.border, strokeWidth: 1.25, strokeLinecap: 'round', strokeLinejoin: 'round' }))) : null
-  const page = (next: boolean): void => {
-    const updated = next ? [...cursors, snapshot!.cursor!] : cursors.slice(0, -1)
-    setCursors(updated); onPage?.(updated.at(-1))
-  }
-  const openFilteredList = (filter: NotificationListFilter): void => {
-    setCollapsed(false); setListFilter(filter); setExpanded(true); setCursors([undefined]); onPage?.()
+      createElement('svg', { width: ASSISTANT_NOTIFICATION_TAIL_WIDTH, height: ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_OVERLAP,
+      viewBox: `0 0 ${ASSISTANT_NOTIFICATION_TAIL_WIDTH} ${ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_OVERLAP}`, 'aria-hidden': true, style: tailSvg(tailSide) },
+      createElement('path', { d: `${notificationTailCurve} Z`, fill: dshThemeColor.menuBackground }))) : null
+  const toggleFilter = (filter: Exclude<NotificationListFilter, 'all'>): void => {
+    setCollapsed(false); setListFilter(listFilter === filter ? 'all' : filter); setExpanded(true)
   }
   // 提问与权限申请统一为「有 [标签] 需要你来处理」；权限申请用黄色标签，与卡片图标保持一致。
   const requestLine = (notice: AssistantNotification | DesktopAssistantNotification, compact = false): ReactElement => {
@@ -161,9 +157,9 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
       createElement('span', { style: tagStyle }, approval ? t('awb.notifications.approvalTag') : t('awb.notifications.questionTag')),
       t('awb.notifications.requestSuffix'))
   }
-  const row = (notice: AssistantNotification | DesktopAssistantNotification, variant: 'primary' | 'compact' | 'list' = 'list'): ReactElement => createElement('section', {
+  const row = (notice: AssistantNotification | DesktopAssistantNotification, variant: 'primary' | 'compact'): ReactElement => createElement('section', {
     key: notice.noticeId, 'data-codingns-notice-id': notice.noticeId, 'data-codingns-notice-kind': notice.kind,
-    style: variant === 'primary' ? primaryCard : variant === 'compact' ? compactCard : listRow },
+    style: variant === 'primary' ? primaryCard : compactCard },
     createElement('div', { style: cardBody },
       createElement('div', { style: cardHeading },
         createElement('span', { 'aria-hidden': true, style: { ...kindMark, background: noticeKindColor[notice.kind],
@@ -219,23 +215,19 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
         } }, notificationToolbarIcon('clear')) : null,
       showFilterTags ? [
         snapshot.unreadCount > 0 ? createElement('button', { key: 'unread-filter', type: 'button', style: listFilter === 'unread' ? filterButtonActive : filterButton,
-          'aria-expanded': expanded, 'aria-pressed': listFilter === 'unread', 'aria-label': t('awb.notifications.unreadFilterLabel', { count: snapshot.unreadCount }), title: t('awb.notifications.unreadFilterLabel', { count: snapshot.unreadCount }), onClick: () => openFilteredList('unread') },
+          'data-codingns-notification-filter': true, 'aria-expanded': expanded, 'aria-pressed': listFilter === 'unread', 'aria-label': t('awb.notifications.unreadFilterLabel', { count: snapshot.unreadCount }), title: t('awb.notifications.unreadFilterLabel', { count: snapshot.unreadCount }), onClick: () => toggleFilter('unread') },
           notificationToolbarIcon('unread'), createElement('span', { style: notificationCountBadge }, formatNotificationCount(snapshot.unreadCount))) : null,
         snapshot.pendingCount > 0 ? createElement('button', { key: 'pending-filter', type: 'button', style: listFilter === 'pending' ? filterButtonActive : filterButton,
-          'aria-expanded': expanded, 'aria-pressed': listFilter === 'pending', 'aria-label': t('awb.notifications.pendingFilterLabel', { count: snapshot.pendingCount }), title: t('awb.notifications.pendingFilterLabel', { count: snapshot.pendingCount }), onClick: () => openFilteredList('pending') },
+          'data-codingns-notification-filter': true, 'aria-expanded': expanded, 'aria-pressed': listFilter === 'pending', 'aria-label': t('awb.notifications.pendingFilterLabel', { count: snapshot.pendingCount }), title: t('awb.notifications.pendingFilterLabel', { count: snapshot.pendingCount }), onClick: () => toggleFilter('pending') },
           notificationToolbarIcon('pending'), createElement('span', { style: notificationPendingBadge }, formatNotificationCount(snapshot.pendingCount))) : null,
       ] : null) : null,
       showBubble ? createElement('div', { ref: bubble, role: 'status', 'aria-live': 'polite', style: bubblePanel },
         createElement('div', { 'data-codingns-notification-scroll': true, style: bubbleContent },
          multiple ? attentionItems.map((notice) => row(notice, 'compact')) : row(mainNotice, 'primary'))) : null,
-    !collapsed && expanded && snapshot ? createElement('div', { ref: bubble, role: 'region', 'aria-label': t('awb.notifications.list'), 'data-codingns-notification-scroll': true, style: panel },
-      createElement('button', { type: 'button', style: button, onClick: () => setExpanded(false) }, t('awb.notifications.closeList')),
-      createElement('div', { 'data-codingns-notification-scroll': true, style: { maxHeight: 180, overflowY: 'auto', overscrollBehavior: 'contain' } },
-        ...listItems.map((notice) => row(notice, 'list'))),
-      listItems.length === 0 ? createElement('p', null, t('awb.notifications.empty')) : null,
-      onPage ? createElement('div', { style: { display: 'flex', gap: 6 } },
-        createElement('button', { type: 'button', style: button, disabled: cursors.length <= 1, onClick: () => page(false) }, t('awb.notifications.previous')),
-        createElement('button', { type: 'button', style: button, disabled: !snapshot.cursor, onClick: () => page(true) }, t('awb.notifications.next'))) : null) : null,
+    !collapsed && expanded && snapshot ? createElement('div', { ref: bubble, role: 'region', 'aria-label': t('awb.notifications.list'), 'data-codingns-notification-scroll': true, style: bubblePanel },
+      createElement('div', { 'data-codingns-notification-scroll': true, style: { ...bubbleContent, maxHeight: 180 } },
+        ...listItems.map((notice) => row(notice, 'compact'))),
+      listItems.length === 0 ? createElement('p', null, t('awb.notifications.empty')) : null) : null,
     !collapsed && error ? createElement('div', { role: 'alert', style: panel }, error) : null,
     // 启动恢复边界属于来源说明，不应让正常空闲的角色常驻技术诊断气泡。
     ...capabilityNotices
@@ -315,26 +307,29 @@ function notificationStatus(notice: AssistantNotification | DesktopAssistantNoti
   return t('awb.notifications.approval')
 }
 const button: CSSProperties = { ...dshSettingsButtonStyle, minHeight: 36, touchAction: 'manipulation', whiteSpace: 'normal', borderRadius: 999, fontWeight: 650 }
-const shell: CSSProperties = { position: 'relative', width: '100%', maxWidth: 320, height: '100%', maxHeight: 'var(--codingns-notification-max-height, min(276px, calc(100vh - 24px)))', minHeight: 0,
+const shell: CSSProperties = { position: 'relative', isolation: 'isolate', width: '100%', maxWidth: 320, height: '100%', maxHeight: 'var(--codingns-notification-max-height, min(276px, calc(100vh - 24px)))', minHeight: 0,
   display: 'flex', flexDirection: 'column', gap: 6, pointerEvents: 'auto', color: dshThemeColor.labelPrimary, fontSize: uiFontSize(13) }
 const panel: CSSProperties = { position: 'relative', zIndex: 1, padding: 10, background: dshThemeColor.menuBackground, border: `1px solid ${dshThemeColor.border}`, borderRadius: 18, boxShadow: dshThemeColor.prominentShadow,
   minWidth: 0, boxSizing: 'border-box', maxHeight: 'min(276px, calc(100vh - 24px))', overflowY: 'auto' }
 const bubblePanel: CSSProperties = { ...panel, position: 'relative', display: 'flex', flexDirection: 'column', flex: '1 1 auto', minWidth: 0, minHeight: 0,
-  padding: 10, overflow: 'visible', borderRadius: '24px 24px 24px 8px', borderColor: dshThemeColor.border,
-  maxHeight: '100%', background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.prominentShadow }
+  padding: 10, overflow: 'visible', border: 'none', borderRadius: '24px 24px 24px 8px',
+  maxHeight: '100%', background: dshThemeColor.menuBackground, borderColor: 'transparent', boxShadow: 'none', outline: 'none' }
 const bubbleContent: CSSProperties = { position: 'relative', zIndex: 1, display: 'grid', gap: 8, minHeight: 0, flex: '1 1 auto',
   overflowY: 'auto', overscrollBehavior: 'contain', boxSizing: 'border-box', padding: 0 }
-const notificationTailCurve = 'M1 0 C8 0.4 13 7 16 18 C17 23 19 28 20 31 C21 28 23 23 24 18 C27 7 32 0.4 39 0'
+// 根部加宽，外露段连续收拢到单一尖点；不会形成平口方块。
+const notificationTailCurve = 'M1 0 C12 0 20 8 23 18 C24 24 25 30 28 36 C31 30 32 24 33 18 C36 8 44 0 55 0'
 function tailBox(side: AssistantNotificationTailSide): CSSProperties {
   const base: CSSProperties = { position: 'absolute', zIndex: 0, pointerEvents: 'none' }
+  const renderHeight = ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_OVERLAP
   if (side === 'top') return { ...base, top: -ASSISTANT_NOTIFICATION_TAIL_HEIGHT, left: 'var(--codingns-assistant-tail-offset, 50%)',
-    width: ASSISTANT_NOTIFICATION_TAIL_WIDTH, height: ASSISTANT_NOTIFICATION_TAIL_HEIGHT, marginLeft: -ASSISTANT_NOTIFICATION_TAIL_WIDTH / 2 }
+    width: ASSISTANT_NOTIFICATION_TAIL_WIDTH, height: renderHeight, marginLeft: -ASSISTANT_NOTIFICATION_TAIL_WIDTH / 2 }
   if (side === 'left') return { ...base, left: -ASSISTANT_NOTIFICATION_TAIL_HEIGHT, top: 'var(--codingns-assistant-tail-offset, 50%)',
-    width: ASSISTANT_NOTIFICATION_TAIL_HEIGHT, height: ASSISTANT_NOTIFICATION_TAIL_WIDTH, marginTop: -ASSISTANT_NOTIFICATION_TAIL_WIDTH / 2 }
+    width: renderHeight, height: ASSISTANT_NOTIFICATION_TAIL_WIDTH, marginTop: -ASSISTANT_NOTIFICATION_TAIL_WIDTH / 2 }
   if (side === 'right') return { ...base, right: -ASSISTANT_NOTIFICATION_TAIL_HEIGHT, top: 'var(--codingns-assistant-tail-offset, 50%)',
-    width: ASSISTANT_NOTIFICATION_TAIL_HEIGHT, height: ASSISTANT_NOTIFICATION_TAIL_WIDTH, marginTop: -ASSISTANT_NOTIFICATION_TAIL_WIDTH / 2 }
+    width: renderHeight, height: ASSISTANT_NOTIFICATION_TAIL_WIDTH, marginTop: -ASSISTANT_NOTIFICATION_TAIL_WIDTH / 2 }
+  // 底边同样把根部压入面板 12px；使用尾巴可见长度作为外移量，避免根部贴在边界上露出拼接线。
   return { ...base, bottom: -ASSISTANT_NOTIFICATION_TAIL_HEIGHT, left: 'var(--codingns-assistant-tail-offset, 50%)',
-    width: ASSISTANT_NOTIFICATION_TAIL_WIDTH, height: ASSISTANT_NOTIFICATION_TAIL_HEIGHT, marginLeft: -ASSISTANT_NOTIFICATION_TAIL_WIDTH / 2 }
+    width: ASSISTANT_NOTIFICATION_TAIL_WIDTH, height: renderHeight, marginLeft: -ASSISTANT_NOTIFICATION_TAIL_WIDTH / 2 }
 }
 function tailSvg(side: AssistantNotificationTailSide): CSSProperties {
   const angle = 'var(--codingns-assistant-tail-angle, 0deg)'
@@ -344,11 +339,10 @@ function tailSvg(side: AssistantNotificationTailSide): CSSProperties {
     transform: `translate(-50%, -50%) rotate(${side === 'left' ? 90 : -90}deg)` }
 }
 // 保留滚动操作，但不显示通知气泡右侧滚动条；内外层只由外层统一提供 10px 留白。
-const notificationBubbleCss = '[data-codingns-notification-scroll]{scrollbar-width:none;-ms-overflow-style:none}[data-codingns-notification-scroll]::-webkit-scrollbar{display:none;width:0;height:0}'
+const notificationBubbleCss = '[data-codingns-notification-scroll]{scrollbar-width:none;-ms-overflow-style:none}[data-codingns-notification-scroll]::-webkit-scrollbar{display:none;width:0;height:0}[data-codingns-notification-filter], [data-codingns-notification-filter]:focus, [data-codingns-notification-filter]:focus-visible{border:1px solid var(--dsw-alias-border-l2,#d9d9d9)!important;outline:none!important;box-shadow:none!important}'
 const primaryCard: CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: 9, padding: 5, minWidth: 0 }
 const compactCard: CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: 7, padding: '10px 11px', minWidth: 0, background: dshThemeColor.cardBackground,
   border: `1px solid ${dshThemeColor.border}`, borderRadius: 15, boxShadow: dshThemeColor.subtleShadow }
-const listRow: CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: 7, padding: '10px 0', minWidth: 0, borderBottom: `1px solid ${dshThemeColor.border}` }
 const cardBody: CSSProperties = { display: 'grid', gap: 8, minWidth: 0, minInlineSize: 0 }
 const cardHeading: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }
 const cardMeta: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), lineHeight: 1.3, overflowWrap: 'anywhere' }

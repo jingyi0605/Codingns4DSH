@@ -196,7 +196,6 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   const openNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number): void => {
     void notifications.open(noticeId, generation, connectionGeneration).catch(() => undefined)
   }, [notifications])
-  const pageNotices = useCallback((cursor?: string): void => { void notifications.page(cursor) }, [notifications])
   const clearAllNotices = useCallback((generation: number): Promise<void> => notifications.clearAll(generation), [notifications])
 
   useEffect(() => {
@@ -454,7 +453,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     role: 'alert', style: { padding: 12, background: 'var(--dsw-alias-background-secondary)', borderRadius: 12, overflowWrap: 'anywhere' },
   }, notificationSnapshot.error) : undefined) : (tail: AssistantNotificationTailSide, tailTarget?: number, tailStyle?: CSSProperties) => createElement(AssistantNotificationBubble, {
     frame: noticeFrame, t, error: notificationSnapshot.error, autoClose: notificationSettings.autoClose, autoCloseSeconds: notificationSettings.autoCloseSeconds,
-    onPresented: presentNotice, onDismiss: dismissNotice, onOpen: openNotice, onPage: pageNotices, onClearAll: clearAllNotices, tailSide: tail, tailTarget, tailStyle,
+    onPresented: presentNotice, onDismiss: dismissNotice, onOpen: openNotice, onClearAll: clearAllNotices, tailSide: tail, tailTarget, tailStyle,
   })
   return createElement('div', { 'data-codingns-global-voice': 'true', ...(conversationOpen || floatingVisible ? {} : { 'aria-hidden': 'true' }) },
     floatingVisible && !nativeFloating

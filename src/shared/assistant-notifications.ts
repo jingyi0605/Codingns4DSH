@@ -7,8 +7,10 @@ export const DEFAULT_ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS: AssistantNotific
 /** 尾巴贴在哪条气泡边上；网页与原生布局共用同一组几何，避免气泡压住形象。 */
 export type AssistantNotificationTailSide = 'top' | 'bottom' | 'left' | 'right'
 /** 尾巴沿气泡边缘的跨度、伸出长度，以及尖端与形象之间的最小间隙。 */
-export const ASSISTANT_NOTIFICATION_TAIL_WIDTH = 40
-export const ASSISTANT_NOTIFICATION_TAIL_HEIGHT = 32
+export const ASSISTANT_NOTIFICATION_TAIL_WIDTH = 56
+export const ASSISTANT_NOTIFICATION_TAIL_HEIGHT = 24
+/** 尾巴根部向气泡底板内收的距离，避免旋转时露出应被底板遮住的拼接线。 */
+export const ASSISTANT_NOTIFICATION_TAIL_OVERLAP = 12
 export const ASSISTANT_NOTIFICATION_TAIL_GAP = 6
 /** 气泡边缘到形象的完整避让距离：尾巴伸出后仍留出尖端间隙。 */
 export const ASSISTANT_NOTIFICATION_TAIL_CLEARANCE = ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_GAP
