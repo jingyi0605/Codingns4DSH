@@ -201,6 +201,28 @@ export function knownCommandCodeContextWindow(modelId: string | undefined): numb
   return COMMAND_CODE_CONTEXT_WINDOWS.get(modelId.trim().toLowerCase())
 }
 
+/**
+ * OpenCode 2 的模型目录可能沿用旧的 DeepSeek 元数据。
+ *
+ * 当前 OpenCode 2.0.24 对 `deepseek-v4.1-flash` 返回过 200K，
+ * 但该模型的实际上下文上限为 1M。这里只校准已经确认的 DeepSeek
+ * 模型；未知模型继续使用 OpenCode 自己返回的 `limit.context`。
+ */
+const OPENCODE_CONTEXT_WINDOWS = new Map<string, number>([
+  ['deepseek/deepseek-flash', 1_000_000],
+  ['deepseek/deepseek-v4-flash', 1_000_000],
+  ['deepseek/deepseek-v4-flash-fast', 1_000_000],
+  ['deepseek/deepseek-v4-flash-vision-exp', 1_000_000],
+  ['deepseek/deepseek-v4-pro', 1_000_000],
+  ['deepseek/deepseek-v4.1', 1_000_000],
+  ['deepseek/deepseek-v4.1-flash', 1_000_000],
+])
+
+export function knownOpenCodeContextWindow(modelId: string | undefined): number | undefined {
+  if (modelId === undefined) return undefined
+  return OPENCODE_CONTEXT_WINDOWS.get(modelId.trim().toLowerCase())
+}
+
 export const GROK_CATALOG = staticCatalog('grok', 'Grok', [
   { id: 'provider-default', name: '跟随 Grok 默认模型', efforts: ['low', 'medium', 'high', 'xhigh'] },
   { id: 'grok-4.6', efforts: ['low', 'medium', 'high', 'xhigh'] },

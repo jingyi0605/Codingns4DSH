@@ -17,7 +17,7 @@ import type {
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { HttpSseClient, type SseEvent } from './http-sse-client.js'
-import { isProviderDefaultModel } from './model-catalog.js'
+import { isProviderDefaultModel, knownOpenCodeContextWindow } from './model-catalog.js'
 import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { isQuestionEvent, questionAnswersList, readAgentQuestions } from './interaction-events.js'
 import { usageChunk } from './rpc-driver-utils.js'
@@ -693,7 +693,8 @@ function rememberModelContextWindows(target: Map<string, number>, value: unknown
     for (const [modelId, rawModel] of Object.entries(models)) {
       const model = asRecord(rawModel)
       const limit = asRecord(model?.limit)
-      const context = limit?.context ?? model?.contextWindow ?? model?.context_window
+      const context = knownOpenCodeContextWindow(`${providerId}/${modelId}`)
+        ?? limit?.context ?? model?.contextWindow ?? model?.context_window
       if (typeof context !== 'number' || !Number.isFinite(context) || context <= 0) continue
       target.set(`${providerId}/${modelId}`, context)
       target.set(modelId, context)
@@ -834,7 +835,7 @@ function eventToChunk(
     }
   }
   const usage = asRecord(event.usage) ?? asRecord(part.usage) ?? readOpenCodeTokenUsage(properties, contextWindow)
-  if (usage !== null) return usageChunk(usage)
+  if (usage !== null) return usageChunk(contextWindow === undefined ? usage : { ...usage, context_window: contextWindow })
   return null
 }
 

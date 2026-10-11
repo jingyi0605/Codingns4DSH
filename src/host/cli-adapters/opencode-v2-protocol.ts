@@ -12,7 +12,7 @@ import type {
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { HttpSseClient, type SseEvent } from './http-sse-client.js'
 import { buildOpenCodeAttachmentParts } from './attachment-utils.js'
-import { isProviderDefaultModel } from './model-catalog.js'
+import { isProviderDefaultModel, knownOpenCodeContextWindow } from './model-catalog.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { serializeToolValue } from './tool-observation.js'
 import { openCodeBridgeMcpConfig, openCodeBridgePrompt } from '../cli-bridge/injections.js'
@@ -185,7 +185,9 @@ export class OpenCodeV2Protocol {
     this.sessions.set(input.sessionId, { server, id: id! })
     const target: TurnTarget = { server, providerSessionId: id!, controller: new AbortController(), forms: new Map() }
     this.turns.set(input.sessionId, target)
-    const projector = new OpenCodeV2Events(selected?.limit?.context)
+    const projector = new OpenCodeV2Events(selected === undefined
+      ? undefined
+      : knownOpenCodeContextWindow(modelKey(selected)) ?? positiveNumber(selected.limit?.context))
     let interruption: Promise<unknown> | undefined
     const abort = (): void => {
       target.controller.abort()
@@ -656,6 +658,9 @@ function selectModel(models: readonly RecordValue[], key: string | null | undefi
 }
 
 function modelKey(model: RecordValue): string { return `${model.providerID}/${model.id}` }
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
+}
 function sessionPath(id: string, suffix = ''): string { return `/api/session/${encodeURIComponent(id)}${suffix}` }
 function locationPath(path: string, cwd?: string): string {
   if (!cwd?.trim()) return path
