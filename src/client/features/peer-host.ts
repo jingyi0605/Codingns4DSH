@@ -192,6 +192,7 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
           : transport.setAggregate(aggregate, refreshedOrder)
         // 运行态、标题和更新时间都由事件流增量承载；只有会话成员集合增删时
         // 才需要让原生 SessionManager 重新取一次完整 session/list。
+        // 普通聚合状态只更新投影，避免流事件把完整请求放大成风暴。
         if (projectionChanged && sessionMembershipBefore !== sessionMembershipKey(projection.sessions())) {
           await refreshPeerHostNativeSessions(context.services.uiContext)
         }
@@ -666,12 +667,29 @@ export function createPeerHostPageTransport(
           // 返回裸值会让网关在 `rebuiltFailure(result.error)` 读 undefined.code 而崩成 carrierFailure。
           try {
             const created = decodeNativeResponseBytes(await codingNsCall('peerHost/native', { method, payload: body, scope }, signal))
-            if (method === 'session/create' || method === 'session/fork') {
+            const createsSession = method === 'session/create' || method === 'session/fork'
+            const refreshesNativeList = method === 'session/rename' || method === 'workspace/archiveSession' || method === 'workspace/unarchiveSession'
+            if (createsSession) {
               rememberCreatedSession(scope, created)
               // 侧栏按聚合摘要里的 workspace.sessionIds 归组，新会话只有在刷新后的摘要里
               // 才会挂到远端工作区。不立刻刷新，它会先落在"未分组/本机默认工作区"，
               // 看起来像新建到了本机。刷新失败不影响创建结果。
-              void Promise.resolve(requestPeerHostAggregateRefresh()).catch(() => undefined)
+            }
+            if (createsSession || refreshesNativeList) {
+              // 这些是用户明确完成的写操作，允许补一次聚合读取，避免等待 30 秒轮询。
+              // 改名、归档和取消归档的成员集合不变，因此在聚合完成后额外刷新一次原生
+              // session/list；refreshPeerHostNativeSessions 自身保留 5 秒最小间隔。
+              let aggregateRefresh: void | Promise<void>
+              try {
+                aggregateRefresh = requestPeerHostAggregateRefresh()
+              } catch {
+                aggregateRefresh = undefined
+              }
+              if (refreshesNativeList) {
+                void Promise.resolve(aggregateRefresh)
+                  .then(() => refreshPeerHostNativeSessions(uiContext as Parameters<typeof refreshPeerHostNativeSessions>[0]))
+                  .catch(() => undefined)
+              }
             }
             return { ok: true, value: created } as TResponse
           } catch (error) {
