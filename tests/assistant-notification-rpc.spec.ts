@@ -94,7 +94,10 @@ test('问题next原样委托、取消不批准审批、真实audit仅结束精�
 
 test('访客/会话受限RPC拒绝，非法参数与旧代次失败，归档或停用清理目标', async (t) => {
   const f = await fixture(t)
-  for (const peer of [{ authenticated: false }, { authorized: false }, { kind: 'session' }, { scope: { kind: 'session' } }]) await assert.rejects(f.call('notifications/read', {}, { peer }), /无权/u)
+  for (const peer of [{ authenticated: false }, { authorized: false }, { kind: 'session' }, { scope: { kind: 'session' } }]) {
+    await assert.rejects(f.call('notifications/read', {}, { peer }), /无权/u)
+    await assert.rejects(f.call('notifications/read-all', {}, { peer }), /无权/u)
+  }
   await assert.rejects(f.call('notifications/read', []), /参数/u)
   await assert.rejects(f.call('notifications/read', { limit: 51 }), /1 到 50/u)
   f.sessionEvent('approval/asked', { id: 'a' }, 1)
@@ -104,6 +107,20 @@ test('访客/会话受限RPC拒绝，非法参数与旧代次失败，归档或�
   await f.update({ assistant: { ...f.settings().assistant, notifications: { enabled: false, completed: true, error: true, question: true, approval: true } } })
   assert.equal((await f.call<AssistantNotificationSnapshot>('notifications/read')).unreadCount, 0)
   await assert.rejects(f.call('notifications/ack', { noticeId: frame.primary!.noticeId, generation: frame.generation, action: 'read' }), /代次/u)
+})
+
+test('一键处理 RPC 结算当前代次未读，待处理请求保持且旧代次失败', async (t) => {
+  const f = await fixture(t)
+  f.sessionEvent('turn/start', { turn: 1 }, 1); f.sessionEvent('turn/end', { turn: 1, reason: { kind: 'completed' } }, 2)
+  f.sessionEvent('approval/asked', { id: 'a' }, 3)
+  const before = await f.call<AssistantNotificationSnapshot>('notifications/read')
+  assert.equal(before.unreadCount, 2); assert.equal(before.pendingCount, 1)
+  const result = await f.call<{ generation: number; revision: number; processed: number }>('notifications/read-all', { generation: before.generation })
+  assert.equal(result.processed, 2); assert.equal(result.generation, before.generation)
+  const after = await f.call<AssistantNotificationSnapshot>('notifications/read')
+  assert.equal(after.unreadCount, 0); assert.equal(after.pendingCount, 1)
+  assert.equal(after.primary!.kind, 'approval')
+  await assert.rejects(f.call('notifications/read-all', { generation: before.generation - 1 }), /代次/u)
 })
 
 test('助理未创建时本机快照为空，来源租约不初始化助理且只输出新终态', async (t) => {

@@ -27,7 +27,8 @@ function fixture(now: () => number = Date.now) {
   const rpc: CodingNsRpcClient = { async call(_channel, endpoint, payload: any) {
     calls.push({ endpoint, payload })
     try {
-      const value = endpoint.endsWith('/read') ? host.read(payload) : endpoint.endsWith('/ack') ? host.ack(payload) : await host.target(payload)
+      const value = endpoint.endsWith('/read-all') ? host.readAll(payload)
+        : endpoint.endsWith('/read') ? host.read(payload) : endpoint.endsWith('/ack') ? host.ack(payload) : await host.target(payload)
       return { ok: true, value }
     } catch (error) { return { ok: false, error: { code: 'FAIL', message: String(error) } } }
   } }
@@ -171,6 +172,40 @@ test('单条未读直接展示会话卡片，多条提醒在漫画气泡内堆�
   assert.ok(multipleHtml.includes('权限请求'))
   const tail = assistantNotificationTailStyle(96, -100, 320) as Record<string, string>
   assert.equal(tail['--codingns-assistant-tail-left'], '196px')
+})
+
+test('顶部一键处理按钮位于未读统计左侧，未接入回调或没有未读时不渲染', () => {
+  const t = resolveCodingNsTranslator()
+  const single = frame()
+  const second = { ...notice('approval', 2), sessionTitle: '另一个会话' }
+  const multiple: AssistantNotificationSnapshot = { ...single, items: [single.primary!, second], unreadCount: 2, pendingCount: 2 }
+  const html = renderToStaticMarkup(createElement(AssistantNotificationBubble, {
+    frame: multiple, t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {}, onReadAll: () => {},
+  }))
+  assert.ok(html.includes('aria-label="一键处理全部未读提醒"'))
+  assert.ok(html.indexOf('>一键处理<') < html.indexOf('2 条未读'))
+  const withoutHandler = renderToStaticMarkup(createElement(AssistantNotificationBubble, {
+    frame: multiple, t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {},
+  }))
+  assert.ok(!withoutHandler.includes('一键处理'))
+  const read: AssistantNotificationSnapshot = { ...multiple, unreadCount: 0, pendingCount: 0 }
+  const readHtml = renderToStaticMarkup(createElement(AssistantNotificationBubble, {
+    frame: read, t, onOpen: () => {}, onDismiss: () => {}, onPresented: () => {}, onReadAll: () => {},
+  }))
+  assert.ok(!readHtml.includes('一键处理'))
+})
+
+test('一键处理按当前代次结算未读并立即刷新，旧代次直接拒绝', async (t) => {
+  const f = fixture(); t.after(() => { f.store.dispose(); f.host.dispose() })
+  f.turn('turn-completed', 'completed'); f.turn('turn-failed', 'error'); f.emit('question', 'q')
+  f.store.configure(true, 'read-all'); await f.store.refresh()
+  assert.equal(f.store.getSnapshot().frame!.unreadCount, 3)
+  await f.store.readAll(f.host.generation)
+  const after = f.store.getSnapshot().frame!
+  assert.equal(after.unreadCount, 0); assert.equal(after.pendingCount, 1)
+  assert.equal(after.primary!.kind, 'question')
+  assert.ok(f.calls.some((call) => call.endpoint === 'assistant/notifications/read-all'))
+  await assert.rejects(f.store.readAll(f.host.generation + 1), /失效/u)
 })
 
 test('分页读取不丢未处理请求，修订变化后游标回到首页，关闭仅收起对应提醒', async (t) => {

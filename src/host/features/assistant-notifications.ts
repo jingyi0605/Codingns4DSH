@@ -2,7 +2,8 @@ import { randomInt, randomUUID } from 'node:crypto'
 import {
   assistantNotificationText, normalizeAssistantNotificationSettings,
   type AssistantNotification, type AssistantNotificationAckRequest, type AssistantNotificationAckResult,
-  type AssistantNotificationCapabilities, type AssistantNotificationKind, type AssistantNotificationReadRequest,
+  type AssistantNotificationCapabilities, type AssistantNotificationKind, type AssistantNotificationReadAllRequest,
+  type AssistantNotificationReadAllResult, type AssistantNotificationReadRequest,
   type AssistantNotificationSettings, type AssistantNotificationSnapshot, type AssistantNotificationTarget,
   type AssistantNotificationTargetRequest,
 } from '../../shared/assistant-notifications.js'
@@ -236,10 +237,23 @@ export class AssistantNotificationCenter {
       // 完成提示固定 10 秒自动收起；错误、提问与审批的自动关闭跟随助理通知设置（autoClose）。
       next = { ...next, presentation: 'shown', presentedAt: next.presentedAt ?? now, ...(next.kind === 'completed' ? { deadline: next.deadline ?? now + 10_000 } : {}) }
     }
-    if (input.action === 'read' && !next.read) next = { ...next, read: true, ...(!pending(next) ? { presentation: 'collapsed' as const } : {}) }
-    if (input.action === 'dismiss' && next.presentation !== 'collapsed') next = { ...next, presentation: 'collapsed' }
+    if (input.action === 'read') next = readNotice(next)
+    if (input.action === 'dismiss') next = collapseNotice(next)
     if (next !== item.notice) { item.notice = next; this.bumpRevision() }
     return { generation: this.currentGeneration, revision: this.currentRevision, notification: { ...item.notice } }
+  }
+  /** 一键处理只推进未读记录；待处理请求保持展示，等待用户逐条响应。 */
+  readAll(input: AssistantNotificationReadAllRequest): AssistantNotificationReadAllResult {
+    this.expire()
+    if (!Number.isSafeInteger(input.generation) || input.generation !== this.currentGeneration) throw new CodingNsRpcError('ASSISTANT_NOTIFICATION_STALE_GENERATION', '通知代次已变化')
+    let processed = 0
+    for (const item of this.records.values()) {
+      const next = readNotice(item.notice)
+      if (next === item.notice) continue
+      item.notice = next; processed++
+    }
+    if (processed > 0) this.bumpRevision()
+    return { generation: this.currentGeneration, revision: this.currentRevision, processed }
   }
   async target(input: AssistantNotificationTargetRequest): Promise<AssistantNotificationTarget> {
     if (input.connectionGeneration !== undefined && (!Number.isSafeInteger(input.connectionGeneration) || input.connectionGeneration < 0)) throw new TypeError('远端连接代次无效')
@@ -281,4 +295,13 @@ export class AssistantNotificationCenter {
     const history = [...this.records.values()].filter((item) => !pending(item.notice)).sort((a, b) => a.notice.createdAt - b.notice.createdAt)
     for (const item of history.slice(0, Math.max(0, history.length - 100))) this.remove(item)
   }
+}
+
+/** 已读语义只在这里定义：单条确认与一键处理必须一致，待处理请求不能因已读被收起。 */
+function readNotice(notice: AssistantNotification): AssistantNotification {
+  return notice.read ? notice : { ...notice, read: true, ...(!pending(notice) ? { presentation: 'collapsed' as const } : {}) }
+}
+/** 收起只改变展示位置；已读、生命周期和请求身份都由原记录保留。 */
+function collapseNotice(notice: AssistantNotification): AssistantNotification {
+  return notice.presentation === 'collapsed' ? notice : { ...notice, presentation: 'collapsed' as const }
 }

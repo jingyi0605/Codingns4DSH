@@ -62,7 +62,7 @@ export function connectDesktopAssistant(rpc: CodingNsRpcClient, ownerId: string,
           if (event.ownerId !== ownerId || event.generation !== status.generation || !Number.isSafeInteger(event.sequence)
             || event.sequence <= (noticeAck?.sequence ?? 0) || typeof event.noticeId !== 'string' || !Number.isSafeInteger(event.noticeGeneration)) continue
           const handler = event.type === 'notice-presented' ? hooks.onNoticePresented
-            : event.type === 'notice-action' && (event.action === 'open' || event.action === 'dismiss') ? hooks.onNoticeAction : undefined
+            : event.type === 'notice-action' && (event.action === 'open' || event.action === 'dismiss' || event.action === 'dismiss-all') ? hooks.onNoticeAction : undefined
           if (!handler) break
           // 主页面完成认证确认/导航后才确认消费；失败不会静默吞掉下一次可重试动作。
           try { await handler(event) }

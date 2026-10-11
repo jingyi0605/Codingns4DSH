@@ -1,4 +1,4 @@
-import type { AssistantNotification, AssistantNotificationSnapshot, AssistantNotificationStreamFrame, AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
+import type { AssistantNotification, AssistantNotificationReadAllResult, AssistantNotificationSnapshot, AssistantNotificationStreamFrame, AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
 import { callCodingNsRpcResult } from '../rpc-call.js'
 import type { CodingNsRpcClient } from './types.js'
 
@@ -201,6 +201,20 @@ export class AssistantNotificationStore {
     await this.refresh(true)
   }
 
+  /** 一键处理只结算当前代次的未读记录；待处理请求仍由 Host 保持展示。 */
+  async readAll(generation: number): Promise<void> {
+    const epoch = this.epoch
+    this.requireFrame(generation)
+    await this.enqueue(async (signal) => {
+      await this.call<AssistantNotificationReadAllResult>('read-all', { generation }, signal)
+      this.assertCurrent(epoch, signal)
+    }, epoch).catch((error: unknown) => {
+      if (epoch === this.epoch && this.enabled && !this.disposed) this.publish({ ...this.snapshot, error: message(error), errorNoticeId: undefined, errorGeneration: undefined })
+      throw error
+    })
+    await this.refresh(true)
+  }
+
   /** 查看由 Host 返回可信目标，公开导航成功后才标记已读。 */
   open(noticeId: string, generation: number, expectedConnectionGeneration?: number): Promise<void> {
     try { this.requireFrame(generation) } catch (error) { return Promise.reject(error) }
@@ -264,7 +278,7 @@ export class AssistantNotificationStore {
     this.chain = operation.catch(() => undefined)
     return operation
   }
-  private async call<T>(action: 'read' | 'ack' | 'target', payload: unknown, signal: AbortSignal): Promise<T> {
+  private async call<T>(action: 'read' | 'ack' | 'read-all' | 'target', payload: unknown, signal: AbortSignal): Promise<T> {
     const result = await callCodingNsRpcResult(this.rpc, `assistant/notifications/${action}`, payload, signal)
     signal.throwIfAborted()
     if (!result.ok) throw new Error(result.error.message)

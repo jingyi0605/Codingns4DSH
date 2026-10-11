@@ -197,7 +197,10 @@ export class DesktopAssistantController {
     return { cmd, width: layout.bounds.width, height: layout.bounds.height, avatarSize: frame.size, notification: notificationHeight > 0, notificationHeight, caption: Boolean(frame.caption) }
   }
   private noticeEvent(event: Record<string, unknown>): void {
-    const notice = desktopAssistantNotice(this.frame, event.ev === 'notice-presented' ? undefined : String(event.noticeId)), identity = this.frame?.identity
+    const identity = this.frame?.identity
+    // 一键处理没有单条目标：只按点击帧的代次结算未读，不要求匹配快照中的具体通知。
+    if (event.ev === 'notice-action' && event.action === 'dismiss-all') { this.readAllNoticeEvent(event, identity); return }
+    const notice = desktopAssistantNotice(this.frame, event.ev === 'notice-presented' ? undefined : String(event.noticeId))
     if (!notice || !identity || !this.frame?.visible || !this.owner || event.ownerId !== this.owner
       || event.generation !== identity.generation || event.sequence !== identity.sequence || event.noticeId !== notice.noticeId
       || event.noticeKind !== undefined && event.noticeKind !== notice.kind
@@ -228,6 +231,24 @@ export class DesktopAssistantController {
     // 先通过身份和容量校验，再允许平台恢复主窗口；dismiss/presented 都不改变焦点。
     this.agent?.send({ cmd: 'notice-result', accepted: true })
     if (event.ev === 'notice-action' && event.action === 'open') this.agent?.send({ cmd: 'notice-open' })
+  }
+  /** 批量动作只校验窗口身份与点击帧代次；未读范围由主页面按 Host 快照重新结算。 */
+  private readAllNoticeEvent(event: Record<string, unknown>, identity: { readonly ownerId: string; readonly generation: number; readonly sequence: number } | undefined): void {
+    const snapshot = this.frame?.notificationSnapshot
+    if (!identity || !snapshot || !this.frame?.visible || !this.owner || event.ownerId !== this.owner
+      || event.generation !== identity.generation || event.sequence !== identity.sequence
+      || event.noticeGeneration !== snapshot.generation) return
+    if (this.noticeEvents.length >= 32) {
+      this.noticeError = '通知操作队列已满，请稍后重试'
+      this.agent?.send({ cmd: 'notice-result', accepted: false, message: this.noticeError }); return
+    }
+    const item: DesktopAssistantNoticeEvent = { sequence: ++this.noticeSequence, ownerId: this.owner, generation: this.generation,
+      noticeId: '', noticeGeneration: snapshot.generation, type: 'notice-action', action: 'dismiss-all' }
+    this.noticeEvents.push(item)
+    this.noticeError = undefined; this.noticeFeedbackError = undefined
+    this.refreshFrame()
+    // 与单条动作一致：先通过身份与容量校验，再允许伴随页消费这次点击。
+    this.agent?.send({ cmd: 'notice-result', accepted: true })
   }
   private noticePage(event: Record<string, unknown>): void {
     const identity = this.frame?.identity

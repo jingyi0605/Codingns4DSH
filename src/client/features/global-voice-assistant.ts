@@ -172,6 +172,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     void notifications.open(noticeId, generation, connectionGeneration).catch(() => undefined)
   }, [notifications])
   const pageNotices = useCallback((cursor?: string): void => { void notifications.page(cursor) }, [notifications])
+  const readAllNotices = useCallback((generation: number): Promise<void> => notifications.readAll(generation), [notifications])
 
   useEffect(() => {
     if (adapter !== undefined) {
@@ -415,6 +416,8 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       onNoticeAction: async (event) => {
         // 原生由 Host 直接同步，可能先于网页收到新帧；刷新后仍按点击帧的连接身份导航。
         await notifications.refresh(true)
+        // 一键处理没有单条身份，只按点击帧的代次结算当前全部未读。
+        if (event.action === 'dismiss-all') return notifications.readAll(event.noticeGeneration)
         return event.action === 'open' ? notifications.open(event.noticeId, event.noticeGeneration,
           event.connectionGeneration)
           : notifications.acknowledge(event.noticeId, event.noticeGeneration, 'dismiss', undefined, event.connectionGeneration)
@@ -425,7 +428,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     role: 'alert', style: { padding: 12, background: 'var(--dsw-alias-background-secondary)', borderRadius: 12, overflowWrap: 'anywhere' },
   }, notificationSnapshot.error) : undefined) : createElement(AssistantNotificationBubble, {
     frame: noticeFrame, t, error: notificationSnapshot.error, autoClose: notificationSettings.autoClose, autoCloseSeconds: notificationSettings.autoCloseSeconds,
-    onPresented: presentNotice, onDismiss: dismissNotice, onOpen: openNotice, onPage: pageNotices,
+    onPresented: presentNotice, onDismiss: dismissNotice, onOpen: openNotice, onPage: pageNotices, onReadAll: readAllNotices,
   })
   return createElement('div', { 'data-codingns-global-voice': 'true', ...(conversationOpen || floatingVisible ? {} : { 'aria-hidden': 'true' }) },
     floatingVisible && !nativeFloating

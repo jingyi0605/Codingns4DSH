@@ -49,7 +49,7 @@ import { measureVoice, traceVoice, sanitizeVoiceDiagnosticFields } from '../../s
 import { assistantSourceCache } from './assistant-source-cache.js'
 import { AssistantNotificationEvents } from './assistant-notification-events.js'
 import { CodingNsRpcError } from '../rpc-table.js'
-import type { AssistantNotificationAckRequest, AssistantNotificationReadRequest, AssistantNotificationTargetRequest } from '../../shared/assistant-notifications.js'
+import type { AssistantNotificationAckRequest, AssistantNotificationReadAllRequest, AssistantNotificationReadRequest, AssistantNotificationTargetRequest } from '../../shared/assistant-notifications.js'
 import { AssistantNotificationSource } from './assistant-notification-source.js'
 import { readAssistantNotificationFeedRequest, type AssistantNotificationFact as AssistantSourceFact } from '../../shared/assistant-notification-feed.js'
 import { bindDesktopAssistantNotifications } from '../desktop-assistant/notifications.js'
@@ -825,6 +825,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
           }
           if (action === 'notifications/read') { notifications.readCurrent(); return notifications.center.read(payload as AssistantNotificationReadRequest) }
           if (action === 'notifications/ack') return notifications.center.ack(payload as unknown as AssistantNotificationAckRequest)
+          if (action === 'notifications/read-all') return notifications.center.readAll(payload as unknown as AssistantNotificationReadAllRequest)
           if (action === 'notifications/target') return { ...await notifications.center.target(payload as unknown as AssistantNotificationTargetRequest), localHostId }
           throw new TypeError('通知 RPC 方法无效')
         }

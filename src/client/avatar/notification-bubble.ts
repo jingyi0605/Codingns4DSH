@@ -21,10 +21,13 @@ export interface AssistantNotificationBubbleProps {
   readonly autoCloseSeconds?: AssistantNotificationAutoCloseSeconds
   readonly onPage?: ((cursor?: string) => void) | undefined
   readonly onExpandedChange?: ((expanded: boolean) => void) | undefined
+  /** 一键处理只提交当前代次的未读结算；未接入的主机不渲染该按钮。 */
+  readonly onReadAll?: ((generation: number) => void | Promise<void>) | undefined
 }
 
-export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss, onPresented, autoClose = false, autoCloseSeconds = 30, onPage, onExpandedChange }: AssistantNotificationBubbleProps): ReactElement {
+export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss, onPresented, autoClose = false, autoCloseSeconds = 30, onPage, onExpandedChange, onReadAll }: AssistantNotificationBubbleProps): ReactElement {
   const [expanded, setExpanded] = useState(false)
+  const [processing, setProcessing] = useState(false)
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const bubble = useRef<HTMLDivElement>(null)
   const autoCloseTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -80,6 +83,8 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
       dom.defaultView?.removeEventListener('resize', confirm); dom.defaultView?.removeEventListener('pointerup', confirm)
     }
   }, [presented?.noticeId, presented?.kind, presented?.connectionGeneration, createdAt, frame.generation, autoClose, autoCloseSeconds, onPresented, onDismiss])
+  const showReadAll = snapshot !== undefined && snapshot.unreadCount > 0 && onReadAll !== undefined
+  const showTopRow = showReadAll || (snapshot !== undefined && multiple)
   const page = (next: boolean): void => {
     const updated = next ? [...cursors, snapshot!.cursor!] : cursors.slice(0, -1)
     setCursors(updated); onPage?.(updated.at(-1))
@@ -115,11 +120,19 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
     // 操作和文本选择不进入形象拖动区，不抢焦点；组件本身无弹跳动画。
     onPointerDown: (event: { stopPropagation(): void }) => event.stopPropagation(),
     onClick: (event: { stopPropagation(): void }) => event.stopPropagation() },
-    snapshot && multiple ? createElement('button', { type: 'button', style: summaryButton,
-      'aria-expanded': expanded, 'aria-label': [t('awb.notifications.list'), t('awb.notifications.unread', { count: snapshot.unreadCount }), t('awb.notifications.pending', { count: snapshot.pendingCount })].join(' · '), onClick: () => {
-        setExpanded(!expanded)
-        if (!expanded) { setCursors([undefined]); onPage?.() }
-      } }, `${t('awb.notifications.unread', { count: snapshot.unreadCount })} · ${t('awb.notifications.pending', { count: snapshot.pendingCount })}`) : null,
+    showTopRow ? createElement('div', { style: topRow },
+      showReadAll ? createElement('button', { type: 'button', style: processing ? readAllButtonBusy : readAllButton,
+        disabled: processing, 'aria-label': t('awb.notifications.readAllLabel'), onClick: () => {
+          if (processing || snapshot === undefined || onReadAll === undefined) return
+          setProcessing(true)
+          // 结算成功后 Host 修订变化会让按钮随未读归零消失；失败只复位按钮，错误交给外部气泡。
+          void Promise.resolve(onReadAll(snapshot.generation)).catch(() => undefined).finally(() => setProcessing(false))
+        } }, t('awb.notifications.readAll')) : null,
+      snapshot && multiple ? createElement('button', { type: 'button', style: summaryButton,
+        'aria-expanded': expanded, 'aria-label': [t('awb.notifications.list'), t('awb.notifications.unread', { count: snapshot.unreadCount }), t('awb.notifications.pending', { count: snapshot.pendingCount })].join(' · '), onClick: () => {
+          setExpanded(!expanded)
+          if (!expanded) { setCursors([undefined]); onPage?.() }
+        } }, `${t('awb.notifications.unread', { count: snapshot.unreadCount })} · ${t('awb.notifications.pending', { count: snapshot.pendingCount })}`) : null) : null,
     (!expanded || snapshot === undefined) && mainNotice !== undefined ? createElement('div', { ref: bubble, role: 'status', 'aria-live': 'polite', style: bubblePanel },
       createElement('span', { 'aria-hidden': true, style: bubbleTail }, createElement('svg', { width: 36, height: 22, viewBox: '0 0 36 22', fill: dshThemeColor.menuBackground, stroke: dshThemeColor.accent, strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', style: { display: 'block' } },
         createElement('path', { d: 'M2 1 C7 2 12 8 18 19 C19 21 21 21 22 19 C27 9 31 3 34 1' }))),
@@ -224,6 +237,11 @@ const kindMark: CSSProperties = { display: 'inline-grid', placeItems: 'center', 
   fontSize: uiFontSize(13), fontWeight: 800, boxShadow: dshThemeColor.subtleShadow }
 const messageText: CSSProperties = { color: dshThemeColor.labelPrimary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.5, maxHeight: 120, overflowY: 'auto' }
 const summaryButton: CSSProperties = { ...button, alignSelf: 'end', padding: '8px 14px', background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.subtleShadow }
+// 顶部行把一键处理放在未读统计左侧；两者同为胶囊，操作语义比统计更醒目。
+const topRow: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 6 }
+const readAllButton: CSSProperties = { ...button, alignSelf: 'end', padding: '8px 14px', background: dshThemeColor.accent,
+  borderColor: dshThemeColor.accent, color: dshThemeColor.primaryForeground, boxShadow: dshThemeColor.subtleShadow }
+const readAllButtonBusy: CSSProperties = { ...readAllButton, opacity: 0.6, cursor: 'default' }
 const requestTag: CSSProperties = { justifySelf: 'start', padding: '4px 9px', borderRadius: 999, color: dshThemeColor.primaryForeground,
   background: dshThemeColor.accent, fontSize: uiFontSize(11), lineHeight: 1.2, fontWeight: 750, letterSpacing: '0.02em', boxShadow: dshThemeColor.subtleShadow }
 const requestInlineTag: CSSProperties = { display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', margin: '0 6px 2px 2px', padding: '3px 8px', borderRadius: 999,

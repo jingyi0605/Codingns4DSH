@@ -164,6 +164,27 @@ test('2.3 原生共用气泡的分页和列表动作只回传安全身份，不�
   assert.equal(events.filter((item) => item.type === 'notice-page').length, 1, '旧组件不能为新版本翻页')
 })
 
+test('2.4 原生气泡一键处理只回传点击帧代次，旧组件不能为新版本结算未读', (context) => {
+  const { generation, ...notice } = notification, events: Record<string, unknown>[] = []
+  const snapshot: AssistantNotificationSnapshot = { generation, revision: 8, serverNow: 100, primary: null,
+    items: [{ ...notice, createdAt: 100, read: false, presentation: 'collapsed', lifecycle: 'active' }],
+    unreadCount: 1, pendingCount: 0, cursor: null, capabilities: [] }
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'webkit')
+  Object.defineProperty(globalThis, 'webkit', { configurable: true, value: { messageHandlers: { assistant: { postMessage: (value: string) => events.push(JSON.parse(value)) } } } })
+  const current = { ...frame, notification: undefined, notificationSnapshot: snapshot, nativeVisible: true, identity: { ownerId: owner, generation: 3, sequence: 5 } }
+  const renderer = createHookRenderer(DesktopAssistantAvatar, { frame: current })
+  context.after(() => { renderer.dispose(); if (previous) Object.defineProperty(globalThis, 'webkit', previous); else Reflect.deleteProperty(globalThis, 'webkit') })
+  const bubble = elements(renderer.render()).find((item) => item.type === AssistantNotificationBubble)!
+  assert.equal(typeof bubble.props.onReadAll, 'function')
+  bubble.props.onReadAll(generation)
+  assert.deepEqual(events.at(-1), { type: 'notice-action', ...current.identity, action: 'dismiss-all', noticeId: '', noticeGeneration: generation })
+  assert.ok(events.every((item) => !('target' in item) && !('token' in item)))
+  const oldReadAll = bubble.props.onReadAll
+  renderer.render({ frame: { ...current, identity: { ...current.identity, sequence: 6 } } })
+  oldReadAll(generation)
+  assert.equal(events.filter((item) => item.action === 'dismiss-all').length, 1, '旧组件不能为新版本结算未读')
+})
+
 test('单条未读直接保留完整卡片区域，列表展开不改变形象屏幕锚点', async () => {
   const { generation, ...notice } = notification
   const snapshot: AssistantNotificationSnapshot = { generation, revision: 8, serverNow: 100, primary: null,
@@ -394,6 +415,22 @@ test('2.3 导航失败不触发原生错误回退，也不阻塞后续收起动�
   } finally { bridge.dispose() }
 })
 
+test('2.4 伴随页消费一键处理事件并确认序列，空身份不进入单条目标分支', async () => {
+  const handled: Array<string | undefined> = []
+  const acks: unknown[] = []
+  const event: DesktopAssistantNoticeEvent = { sequence: 1, ownerId: owner, generation: 8, noticeId: '',
+    noticeGeneration: notification.generation, type: 'notice-action', action: 'dismiss-all' }
+  const bridge = connectDesktopAssistant({ call: async (_channel, method, payload) => {
+    if (method === 'update' && (payload as any).noticeAck?.sequence > 0) acks.push((payload as any).noticeAck)
+    return { ok: true, value: { available: true, owned: true, visible: true, openSequence: 0, generation: 8, noticeEvents: [event] } }
+  } }, owner, () => {}, () => assert.fail('不能误开助理'), 3, { onNoticeAction: async (value) => { handled.push(value.action) } })
+  try {
+    bridge.update(presentation); await until(() => handled.length === 1)
+    assert.deepEqual(handled, ['dismiss-all'])
+    assert.deepEqual(acks, [{ generation: 8, sequence: 1 }])
+  } finally { bridge.dispose() }
+})
+
 test('2.3 主页面导航失败反馈经原队列核对，Host中心快照更新不能覆盖错误，旧反馈不污染新通知', async () => {
   const services = {} as CodingNsHostServices
   const snapshot: AssistantNotificationSnapshot = { generation: notification.generation, revision: 1, serverNow: 100,
@@ -425,6 +462,32 @@ test('2.3 主页面导航失败反馈经原队列核对，Host中心快照更新
     await f.controller.update(owner, 5, presentation, undefined, feedback)
     assert.equal(f.readFrame()!.noticeError, undefined, '已消费事件的旧反馈不能再次注入')
   } finally { await f.controller.dispose(); cleanup() }
+})
+
+test('2.4 原生一键处理只按点击帧代次入队，缺少快照、旧代次或不可见窗口均拒绝', async () => {
+  const { generation, ...notice } = notification
+  const snapshot: AssistantNotificationSnapshot = { generation, revision: 3, serverNow: 100,
+    primary: { ...notice, createdAt: 100, read: false, presentation: 'shown', lifecycle: 'active' },
+    items: [{ ...notice, createdAt: 100, read: false, presentation: 'shown', lifecycle: 'active' }],
+    unreadCount: 1, pendingCount: 0, cursor: null, capabilities: [] }
+  const current = { ...frame, notification: undefined, notificationSnapshot: snapshot }
+  const f = fixture((value) => ({ ...current, visible: value.visible }))
+  await started(f); f.native({ ev: 'shown' })
+  try {
+    const identity = f.readFrame()!.identity!
+    // 旧代次、缺失代次与未显示的窗口都不能排队批量动作。
+    f.native({ ev: 'notice-action', ...identity, action: 'dismiss-all', noticeId: '', noticeGeneration: generation + 1 })
+    f.native({ ev: 'notice-action', ...identity, action: 'dismiss-all', noticeId: '' })
+    f.native({ ev: 'notice-action', ...identity, action: 'dismiss-all', noticeId: '', noticeGeneration: generation, ownerId: 'old' })
+    assert.equal(f.controller.status(owner).noticeEvents?.length, 0)
+    f.native({ ev: 'notice-action', ...identity, action: 'dismiss-all', noticeId: '', noticeGeneration: generation })
+    const queued = f.controller.status(owner).noticeEvents
+    assert.equal(queued?.length, 1)
+    assert.deepEqual({ type: queued![0]!.type, action: queued![0]!.action, noticeId: queued![0]!.noticeId, noticeGeneration: queued![0]!.noticeGeneration },
+      { type: 'notice-action', action: 'dismiss-all', noticeId: '', noticeGeneration: generation })
+    await f.controller.update(owner, 2, presentation, { generation: f.controller.status(owner).generation!, sequence: queued![0]!.sequence })
+    assert.equal(f.controller.status(owner).noticeEvents?.length, 0, '主页面确认后批量动作不再重放')
+  } finally { await f.controller.dispose() }
 })
 
 test('2.3 通知处理期间卸载后，迟到失败不更新页面状态，也不继续消费动作', async () => {

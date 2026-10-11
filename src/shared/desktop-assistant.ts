@@ -15,7 +15,8 @@ export interface DesktopAssistantNoticeEvent {
   /** 主页面必须使用点击当时的远端连接代次，不能改用重连后的同名通知。 */
   readonly connectionGeneration?: AssistantNotification['connectionGeneration']
   readonly type: 'notice-presented' | 'notice-action'
-  readonly action?: 'open' | 'dismiss'
+  /** 一键处理只按点击帧的代次结算未读，不需要单条目标；旧 Host 可继续只识别 open/dismiss。 */
+  readonly action?: 'open' | 'dismiss' | 'dismiss-all'
 }
 export interface DesktopAssistantNoticeIdentity {
   readonly ownerId: string

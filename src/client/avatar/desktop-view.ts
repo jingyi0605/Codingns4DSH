@@ -28,13 +28,19 @@ function postDesktopAssistantEvent(event: Readonly<Record<string, unknown>>): vo
   else globals.chrome?.webview?.postMessage(event)
 }
 
-/** 回传只有不透明身份与两个固定动作，伴随页无法指定会话或调用 DSH RPC。 */
-export function sendDesktopAssistantNotice(frame: DesktopAssistantFrame, type: 'notice-presented' | 'notice-action', action?: 'open' | 'dismiss', noticeId?: string): void {
+/** 回传只有不透明身份与固定动作，伴随页无法指定会话或调用 DSH RPC。 */
+export function sendDesktopAssistantNotice(frame: DesktopAssistantFrame, type: 'notice-presented' | 'notice-action', action?: 'open' | 'dismiss' | 'dismiss-all', noticeId?: string): void {
   const notice = desktopAssistantNotice(frame, type === 'notice-presented' ? undefined : noticeId), identity = frame.identity
   if (!notice || !identity || (type === 'notice-presented' && !frame.nativeVisible)) return
   postDesktopAssistantEvent({ type, ...identity, noticeId: notice.noticeId, noticeGeneration: notice.generation,
     noticeKind: notice.kind, ...(notice.connectionGeneration === undefined ? {} : { connectionGeneration: notice.connectionGeneration }),
     ...(type === 'notice-action' && action !== undefined ? { action } : {}) })
+}
+/** 一键处理没有单条目标：只回传点击帧的代次，身份与范围仍由主页面复核。 */
+export function sendDesktopAssistantNoticeReadAll(frame: DesktopAssistantFrame): void {
+  const identity = frame.identity, generation = frame.notificationSnapshot?.generation
+  if (!identity || generation === undefined || !frame.nativeVisible) return
+  postDesktopAssistantEvent({ type: 'notice-action', ...identity, action: 'dismiss-all', noticeId: '', noticeGeneration: generation })
 }
 /** 分页只传有界不透明游标，经同一原生管道读 Host 缓存，不持有 DSH 认证票据。 */
 export function sendDesktopAssistantNoticePage(frame: DesktopAssistantFrame, cursor?: string): void {
@@ -70,6 +76,12 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
   const pageNotices = useCallback((cursor?: string): void => {
     const current = latestFrame.current
     if (JSON.stringify(current.identity) === identityKey) sendDesktopAssistantNoticePage(current, cursor)
+  }, [identityKey])
+  const readAllNotices = useCallback((generation: number): void => {
+    const current = latestFrame.current
+    // 只有点击帧与当前快照同一代次才回传；主页面仍会按 Host 代次复核一次。
+    if (current.notificationSnapshot?.generation !== generation || JSON.stringify(current.identity) !== identityKey) return
+    sendDesktopAssistantNoticeReadAll(current)
   }, [identityKey])
   const expandedNotices = useCallback((expanded: boolean): void => {
     const current = latestFrame.current
@@ -139,7 +151,7 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
         ...(frame.autoClose === undefined || !frame.nativeVisible ? {} : { autoClose: frame.autoClose }),
         ...(frame.autoCloseSeconds === undefined || !frame.nativeVisible ? {} : { autoCloseSeconds: frame.autoCloseSeconds }),
         onOpen: openNotice, onDismiss: dismissNotice, onPresented: frame.nativeVisible ? presented : () => undefined,
-        ...(frame.notificationSnapshot === undefined ? {} : { onPage: pageNotices, onExpandedChange: expandedNotices }) })) : null,
+        ...(frame.notificationSnapshot === undefined ? {} : { onPage: pageNotices, onExpandedChange: expandedNotices, onReadAll: readAllNotices }) })) : null,
     frame.caption && layout.caption ? createElement('div', { 'aria-live': 'polite', 'data-codingns-native-caption': true,
       style: { ...regionStyle(layout.caption), whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
         boxSizing: 'border-box', padding: 8, borderRadius: 10, color: '#242424', background: 'rgba(255,255,255,.94)', fontSize: uiFontSize(12), lineHeight: 1.5 } }, frame.caption) : null)

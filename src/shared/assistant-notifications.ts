@@ -103,6 +103,9 @@ export interface AssistantNotificationAckRequest {
 }
 export interface AssistantNotificationTargetRequest { readonly noticeId: string; readonly generation: number; readonly connectionGeneration?: number }
 export interface AssistantNotificationAckResult { readonly generation: number; readonly revision: number; readonly notification: AssistantNotification }
+/** 一键处理只接受当前代次，不携带单条身份；Host 负责把全部未读记录结算为已读。 */
+export interface AssistantNotificationReadAllRequest { readonly generation: number }
+export interface AssistantNotificationReadAllResult { readonly generation: number; readonly revision: number; readonly processed: number }
 /** 所有外部文本统一删除控制符并限制长度，不能携带 HTML 或工具参数。 */
 export function assistantNotificationText(value: unknown, max = 240, fallback = ''): string {
   return typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, max) || fallback : fallback
