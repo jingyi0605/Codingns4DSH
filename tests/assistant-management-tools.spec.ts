@@ -18,6 +18,7 @@ function fixture() {
   const tools = createAssistantManagementTools({ dispatcher,
     snapshot: async (signal) => { signal.throwIfAborted(); return { scope: createAssistantScope(['w1', 'w2']), entries: current.filter((item) => !archived.includes(item.sessionId)), archivedSessionIds: archived, indexGeneration: 7, warnings, workspaces: [{ workspaceId: 'w1', name: '一', path: null }, { workspaceId: 'w2', name: '二', path: null }] } },
     read: async (entry) => { afterRead(); return `摘录-${entry.hostId}` },
+    readMessages: async (entry, _signal, toolCallId) => [{ role: 'assistant', text: '正在处理', turn: 1, step: 1 }, { role: 'tool', toolName: '检查状态', text: '', state: 'running', callId: 'tool-1', ...(toolCallId === 'tool-1' ? { result: `结果-${entry.hostId}` } : {}) }],
   })
   const execute = (name: string, args: unknown, callId = 'call-1', signal = new AbortController().signal) => tools.find((tool) => tool.name === name)!.execute(args, { callId, signal })
   const target = { hostId: 'host-b', workspaceId: 'w2', sessionId: 'same-id', generation: 7, updatedAt: 2, message: '现在进展如何？' }
@@ -32,6 +33,11 @@ test('助理只有四个管理工具，列表和读取不触发派发，完整�
   assert.equal(list.sessions.length, 1)
   const result: any = await f.execute('assistant_read_session', f.target)
   assert.equal(result.summary, '摘录-host-b')
+  assert.deepEqual(result.messages.map((message: any) => message.role), ['assistant', 'tool'])
+  assert.equal(result.messages.at(-1).state, 'running')
+  assert.equal(result.messages.at(-1).result, undefined)
+  const withResult: any = await f.execute('assistant_read_session', { ...f.target, toolCallId: 'tool-1' })
+  assert.equal(withResult.messages.at(-1).result, '结果-host-b')
   assert.equal(f.sent.length, 0)
   await assert.rejects(f.execute('assistant_list_sessions', { workspaceId: 'outside' }), /范围/)
   await assert.rejects(f.execute('assistant_read_session', { ...f.target, hostId: 'host-c' }), /范围/)
