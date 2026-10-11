@@ -19,7 +19,7 @@ const WORKSPACE_SESSION_HIDDEN_FILTER_BOUND_ATTRIBUTE = 'data-codingns-hidden-wo
 
 const MENU_ATTRIBUTE = 'aria-haspopup'
 const WORKSPACE_MENU_PATTERN = /(?:更多|菜单|选项|操作|more|menu|option|action)/iu
-const WORKSPACE_FILTER_PATTERN = /(?:视图|筛选|过滤|分组|排序|view|filter|group|sort)/iu
+const WORKSPACE_FILTER_PATTERN = /(?:视图选项|筛选选项|筛选会话|分组方式|排序方式|view\s*options?|filter\s*(?:options?|sessions?)|group\s*by|sort\s*by)/iu
 type ActiveMenuKind = 'workspace' | 'filter'
 
 export interface WorkspaceSessionVisibilityDomController {
@@ -344,7 +344,7 @@ function isVisibleMenu(menu: HTMLElement): boolean {
 
 function isWorkspaceFilterMenu(element: HTMLElement): boolean {
   const label = `${element.textContent ?? ''} ${element.getAttribute('aria-label') ?? ''} ${element.getAttribute('title') ?? ''}`
-  return /(?:视图|筛选|过滤|分组|排序|view|filter|group|sort)/iu.test(label)
+  return WORKSPACE_FILTER_PATTERN.test(label)
 }
 
 function injectWorkspaceMenuActions(

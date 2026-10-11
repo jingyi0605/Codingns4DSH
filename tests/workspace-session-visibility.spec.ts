@@ -36,6 +36,8 @@ test('工作区基线读取保留标题并兼容缺少标题的旧记录', async
 test('工作区菜单隐藏动作与筛选恢复列表不破坏原生菜单', async () => {
   const root = new FakeElement('div')
   root.setAttribute('role', 'tree')
+  // 列表可能包含“未分组”工作区，不能把普通列表文本当成筛选菜单标识。
+  root.textContent = '未分组'
   const filterTrigger = new FakeElement('button')
   filterTrigger.setAttribute('aria-label', '视图选项')
   let openFilterMenu = null
@@ -123,6 +125,9 @@ test('工作区菜单隐藏动作与筛选恢复列表不破坏原生菜单', as
   assert.equal(dom.querySelector(`[${WORKSPACE_SESSION_HIDDEN_LIST_ATTRIBUTE}]`), footer)
 
   filterMenu.remove()
+  observer.trigger(root)
+  await nextTurn()
+  assert.equal(root.children.some((child) => child.hasAttribute(WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE)), false)
   // 过滤菜单关闭时，Portal 可能暂时保留一个不可见的旧节点；打开工作区菜单
   // 时必须选择当前可见菜单，不能把“显示隐藏的工作区”注入旧节点。
   const staleFilterMenu = new FakeElement('div')
