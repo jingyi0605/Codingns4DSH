@@ -329,7 +329,7 @@ export function AssistantWorkbench(props: AssistantWorkbenchProps): ReactElement
       createElement('div', { 'data-codingns-assistant-scroll': true,
         // 通话页自带统一内边距，外层不重复叠加；普通对话与设置页横向 22px、纵向 11px。
         style: { flex: '1 1 auto', padding: calling ? 0 : '11px 22px', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, display: 'flex', flexDirection: 'column', gap: configuring ? 11 : 16 } },
-        !loaded ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, t('awb.loading'), ' ', button(t('awb.retry'), () => { void refresh().catch((cause) => setError(message(cause))) })) : null,
+        !loaded ? createElement(AssistantLoadingView, { t }) : null,
         noticeText ? createElement('div', { role: 'alert', style: { color: dshThemeColor.error, fontSize: uiFontSize(13), overflowWrap: 'anywhere' } }, noticeText) : null,
         notice ? createElement('div', { role: 'status', style: dshSettingsHelpStyle }, notice) : null,
         calling ? createElement(AssistantRealtimeCall, { services, name: lifecycle.profile.name, model: selectedAssistantAvatar(appearance), t,
@@ -397,6 +397,19 @@ export function AssistantConversationView({ conversation, name, t, services, mod
       message: { role: 'assistant', text: active.text, ...(active.toolCalls === undefined ? {} : { toolCalls: active.toolCalls }) }, name, t, services, model }))
 }
 
+/** 首次读取期间使用居中的动态状态，避免把正常等待误显示成失败或重试入口。 */
+export function AssistantLoadingView({ t }: { readonly t: CodingNsTranslator }): ReactElement {
+  return createElement('div', { 'data-codingns-assistant-loading': true, role: 'status', 'aria-live': 'polite', 'aria-label': t('awb.loading'), style: assistantLoadingStyle },
+    createElement('style', null, assistantLoadingCss),
+    createElement('div', { 'aria-hidden': true, style: assistantLoadingOrbStyle },
+      createElement('span', { className: 'codingns-assistant-loading-ring' }),
+      createElement('span', { className: 'codingns-assistant-loading-core' }),
+      createElement('span', { className: 'codingns-assistant-loading-dot codingns-assistant-loading-dot-one' }),
+      createElement('span', { className: 'codingns-assistant-loading-dot codingns-assistant-loading-dot-two' }),
+      createElement('span', { className: 'codingns-assistant-loading-dot codingns-assistant-loading-dot-three' })),
+    createElement('div', { style: assistantLoadingLabelStyle }, t('awb.loadingHint')))
+}
+
 /** 内层菜单先消费 Escape，外层窗口只处理尚未消费的关闭按键。 */
 export function handleAssistantWorkbenchEscape(event: KeyboardEvent, onClose: () => void): void {
   if (event.key !== 'Escape' || event.defaultPrevented) return
@@ -411,6 +424,28 @@ function requestKey(): string { return `assistant-${globalThis.crypto?.randomUUI
 const row: CSSProperties = { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }
 const help: CSSProperties = { ...dshSettingsHelpStyle, margin: 0 }
 const avatarStyle: CSSProperties = { display: 'grid', gap: 8, justifyItems: 'center' }
+const assistantLoadingStyle: CSSProperties = { flex: '1 1 auto', minHeight: 'min(420px, 45vh)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 18, color: dshThemeColor.labelSecondary }
+const assistantLoadingOrbStyle: CSSProperties = { position: 'relative', width: 76, height: 76, borderRadius: '50%', background: `radial-gradient(circle at 35% 28%, ${dshThemeColor.accent}33, transparent 58%)`, boxShadow: `0 0 0 1px ${dshThemeColor.border}, 0 0 42px ${dshThemeColor.accent}24` }
+const assistantLoadingLabelStyle: CSSProperties = { fontSize: uiFontSize(13), letterSpacing: '0.04em' }
+const assistantLoadingCss = `
+  [data-codingns-assistant-loading] .codingns-assistant-loading-ring,
+  [data-codingns-assistant-loading] .codingns-assistant-loading-core,
+  [data-codingns-assistant-loading] .codingns-assistant-loading-dot{position:absolute;display:block;border-radius:50%}
+  [data-codingns-assistant-loading] .codingns-assistant-loading-ring{inset:7px;border:1px solid ${dshThemeColor.accent}88;border-top-color:transparent;border-left-color:${dshThemeColor.accent};animation:codingns-assistant-loading-spin 2.8s linear infinite}
+  [data-codingns-assistant-loading] .codingns-assistant-loading-core{inset:22px;background:${dshThemeColor.accent};box-shadow:0 0 18px ${dshThemeColor.accent}aa;animation:codingns-assistant-loading-breathe 1.8s ease-in-out infinite}
+  [data-codingns-assistant-loading] .codingns-assistant-loading-dot{width:6px;height:6px;background:${dshThemeColor.labelPrimary};box-shadow:0 0 10px ${dshThemeColor.accent};animation:codingns-assistant-loading-pulse 1.8s ease-in-out infinite}
+  [data-codingns-assistant-loading] .codingns-assistant-loading-dot-one{top:4px;left:35px}
+  [data-codingns-assistant-loading] .codingns-assistant-loading-dot-two{right:7px;bottom:20px;animation-delay:.22s}
+  [data-codingns-assistant-loading] .codingns-assistant-loading-dot-three{left:7px;bottom:20px;animation-delay:.44s}
+  @keyframes codingns-assistant-loading-spin{to{transform:rotate(360deg)}}
+  @keyframes codingns-assistant-loading-breathe{0%,100%{transform:scale(.82);opacity:.72}50%{transform:scale(1.08);opacity:1}}
+  @keyframes codingns-assistant-loading-pulse{0%,100%{transform:scale(.65);opacity:.36}50%{transform:scale(1.15);opacity:1}}
+  @media (prefers-reduced-motion:reduce){
+    [data-codingns-assistant-loading] .codingns-assistant-loading-ring,
+    [data-codingns-assistant-loading] .codingns-assistant-loading-core,
+    [data-codingns-assistant-loading] .codingns-assistant-loading-dot{animation:none}
+  }
+`
 // 工作台外层统一保留 22px 四向边距；内部滚动区、页脚和组件间距保持原值。
 const backdrop: CSSProperties = { position: 'fixed', inset: 0, zIndex: 10000, background: dshThemeColor.overlay, backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 22, boxSizing: 'border-box' }
 const dialog: CSSProperties = { display: 'flex', flexDirection: 'column', width: 'min(940px, 100%)', maxHeight: 'calc(100dvh - 44px)', minHeight: 300, background: dshThemeColor.pageBackground, color: dshThemeColor.labelPrimary, border: `1px solid ${dshThemeColor.border}`, borderRadius: 20, boxShadow: '0 24px 80px rgba(0,0,0,.24)', overflow: 'hidden' }
