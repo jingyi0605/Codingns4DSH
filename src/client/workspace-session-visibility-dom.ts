@@ -143,6 +143,9 @@ export function startWorkspaceSessionVisibilityDom(
       })
       const menus = findWorkspaceMenus(dom)
       knownNativeMenus = new Set(menus)
+      // 只有刚由工作区/筛选触发器打开的这一轮，才允许使用 activeMenuWorkspaceId
+      // 作为 Portal 菜单的归属回退。设置菜单等其他 Portal 不能继承上一次工作区上下文。
+      const menuContextFresh = menuContextPending
       if (menus.length > 0) menuContextPending = false
       // Portal 可能暂时同时保留多个菜单节点，点击事件的上下文也可能因宿主
       // 重渲染丢失。以最后一个可见菜单为准，避免把筛选项错注入工作区菜单。
@@ -150,8 +153,14 @@ export function startWorkspaceSessionVisibilityDom(
       const currentMenuKind = currentMenu === undefined
         ? activeMenuKind
         : (isWorkspaceFilterMenu(currentMenu) ? 'filter' : 'workspace')
-      if (currentMenuKind === 'filter') {
-        injectFilterMenuAction(dom, selectFilterMenus(menus, menuWorkspaceIds, activeMenuWorkspaceId), showHiddenWorkspaces, () => {
+      const filterContextFresh = menuContextFresh && activeMenuKind === 'filter'
+      const filterMenus = currentMenuKind === 'filter'
+        ? selectFilterMenus(menus, menuWorkspaceIds, activeMenuWorkspaceId, filterContextFresh)
+        : []
+      const currentMenuOwnsFilterAction = currentMenu !== undefined
+        && currentMenu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`) !== null
+      if (currentMenuKind === 'filter' && (filterContextFresh || currentMenuOwnsFilterAction)) {
+        injectFilterMenuAction(dom, filterMenus, showHiddenWorkspaces, () => {
           showHiddenWorkspaces = !showHiddenWorkspaces
           scheduleScan()
         }, (menu) => closeFilterMenu(activeFilterTrigger, menu, () => {
@@ -159,7 +168,7 @@ export function startWorkspaceSessionVisibilityDom(
           return () => { suppressFilterTrigger = false }
         }), t)
       } else {
-        injectWorkspaceMenuActions(selectWorkspaceMenus(menus), dom, activeMenuWorkspaceId, workspaceIds, menuWorkspaceIds, (workspaceId) => updateVisibility(workspaceId, true), t)
+        injectWorkspaceMenuActions(selectWorkspaceMenus(menus, menuContextFresh, menuWorkspaceIds), dom, menuContextFresh ? activeMenuWorkspaceId : undefined, workspaceIds, menuWorkspaceIds, (workspaceId) => updateVisibility(workspaceId, true), t)
       }
       // 点击触发器与 Portal 菜单挂载不是同一个同步阶段。菜单尚未出现时
       // 必须保留上下文，否则后续 MutationObserver 扫描无法判断这是筛选菜单。
@@ -317,11 +326,15 @@ function selectFilterMenus(
   menus: readonly HTMLElement[],
   menuWorkspaceIds: WeakMap<HTMLElement, string>,
   activeWorkspaceId: string | undefined,
+  allowUnidentified: boolean,
 ): HTMLElement[] {
   // 隐藏的 Portal 旧节点不能作为回退目标，否则筛选动作会重新挂到已经关闭的菜单。
   const visible = menus.filter(isVisibleMenu)
   const candidates = visible.filter(isWorkspaceFilterMenu)
-  if (candidates.length > 0) return [candidates[candidates.length - 1]!]
+  const owned = candidates.filter((menu) => menu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`) !== null)
+  if (owned.length > 0) return [owned[owned.length - 1]!]
+  if (allowUnidentified && candidates.length > 0) return [candidates[candidates.length - 1]!]
+  if (!allowUnidentified) return []
   const fallback = visible.filter((menu) => (
     menuWorkspaceIds.get(menu) === undefined
       && (activeWorkspaceId === undefined || resolveWorkspaceId(menu) !== activeWorkspaceId)
@@ -330,9 +343,17 @@ function selectFilterMenus(
   return fallback.length > 0 ? [fallback[fallback.length - 1]!] : []
 }
 
-function selectWorkspaceMenus(menus: readonly HTMLElement[]): HTMLElement[] {
+function selectWorkspaceMenus(
+  menus: readonly HTMLElement[],
+  allowUnidentified: boolean,
+  menuWorkspaceIds: WeakMap<HTMLElement, string>,
+): HTMLElement[] {
   const visible = menus.filter(isVisibleMenu)
-  const candidates = visible.filter((menu) => !isWorkspaceFilterMenu(menu))
+  const candidates = visible.filter((menu) => !isWorkspaceFilterMenu(menu) && (
+    allowUnidentified
+      || resolveWorkspaceId(menu) !== undefined
+      || menuWorkspaceIds.get(menu) !== undefined
+  ))
   return candidates.length > 0 ? [candidates[candidates.length - 1]!] : []
 }
 
