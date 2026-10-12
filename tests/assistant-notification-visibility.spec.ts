@@ -78,7 +78,7 @@ test('主气泡滚动进入裁切区后才首展；隐藏窗口、通知升级�
   assert.equal(presented.length, 2); assert.ok(disconnected >= 2)
 })
 
-test('通知自动关闭只从真实首展开始计时，并通过收起动作保留记录', (t) => {
+test('通知自动关闭只从真实首展开始计时，并通过自动收起保留记录', (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const f = fixture(), presented: string[] = [], dismissed: string[] = []
   const props: AssistantNotificationBubbleProps = {
@@ -99,6 +99,25 @@ test('通知自动关闭只从真实首展开始计时，并通过收起动作�
   assert.deepEqual(presented, ['auto-close'])
   t.mock.timers.tick(14_999); assert.deepEqual(dismissed, [])
   t.mock.timers.tick(1); assert.deepEqual(dismissed, ['auto-close'])
+})
+
+test('单条通知的垃圾桶按钮仍然保留，并把被点击通知身份回传给清理回调', () => {
+  const dismissed: Array<[string, number, number | undefined]> = []
+  const props: AssistantNotificationBubbleProps = {
+    frame: { generation: 3, revision: 1, serverNow: 1, primary: {
+      noticeId: 'notice-to-clear', kind: 'completed', hostLabel: '本机', workspaceLabel: '项目', sessionTitle: '会话', text: '已完成',
+      createdAt: 1, read: false, presentation: 'queued', lifecycle: 'resolved', availability: 'ready',
+    }, items: [], unreadCount: 1, pendingCount: 0, cursor: null }, t: resolveCodingNsTranslator(), onOpen() {},
+    onDismiss(id, generation, connectionGeneration) { dismissed.push([id, generation, connectionGeneration]) }, onPresented() {},
+  }
+  const renderer = createHookRenderer(AssistantNotificationBubble, props)
+  try {
+    const tree = renderer.render()
+    const button = elements(tree).find((element) => element.props['data-codingns-notification-action'] === 'dismiss')
+    assert.ok(button)
+    button!.props.onClick()
+    assert.deepEqual(dismissed, [['notice-to-clear', 3, undefined]])
+  } finally { renderer.dispose() }
 })
 
 test('安全列表保留已读待办、隐藏已读终态，并显示空提示与明确会话操作标签', () => {
@@ -161,13 +180,14 @@ test('未读与待处理标签分别筛选对应通知，并可再次点击取�
   } finally { renderer.dispose() }
 })
 
-test('收起通知只保留展开按钮和数量徽标，不移除通知记录', () => {
+test('收起通知只保留展开按钮和数量徽标，再次展开仍显示完整记录', () => {
+  const collapsed: boolean[] = []
   const props: AssistantNotificationBubbleProps = { frame: {
     generation: 4, revision: 1, serverNow: 1, primary: {
       noticeId: 'pending', kind: 'question', hostLabel: '本机', workspaceLabel: '项目', sessionTitle: '需要处理的会话', text: '请处理',
       createdAt: 1, read: false, presentation: 'queued', lifecycle: 'active', availability: 'ready',
     }, items: [], unreadCount: 16, pendingCount: 2, cursor: null,
-  }, t: resolveCodingNsTranslator(), onOpen() {}, onDismiss() {}, onPresented() {} }
+  }, t: resolveCodingNsTranslator(), onOpen() {}, onDismiss() {}, onPresented() {}, onCollapsedChange(value) { collapsed.push(value) } }
   const renderer = createHookRenderer(AssistantNotificationBubble, props)
   try {
     let tree = renderer.render()
@@ -182,5 +202,26 @@ test('收起通知只保留展开按钮和数量徽标，不移除通知记录',
     elements(tree).find((element) => element.props['aria-label'] === '展开通知')!.props.onClick()
     tree = renderer.render()
     assert.equal(elements(tree).filter((element) => element.type === 'section').length, 1)
+    assert.deepEqual(collapsed, [true, false])
+  } finally { renderer.dispose() }
+})
+
+test('单条通知也显示筛选按钮，已读记录不会因首页筛选条件在展开后丢失', () => {
+  const completed = { noticeId: 'completed', kind: 'completed' as const, hostLabel: '本机', workspaceLabel: '项目', sessionTitle: '已完成会话', text: '已完成',
+    createdAt: 1, read: true, presentation: 'collapsed' as const, lifecycle: 'resolved' as const, availability: 'ready' as const }
+  const pending = { noticeId: 'pending', kind: 'question' as const, hostLabel: '本机', workspaceLabel: '项目', sessionTitle: '待处理会话', text: '请处理',
+    createdAt: 2, read: false, presentation: 'queued' as const, lifecycle: 'active' as const, availability: 'ready' as const }
+  const props: AssistantNotificationBubbleProps = { frame: { generation: 1, revision: 1, serverNow: 1, primary: pending,
+    items: [pending, completed], unreadCount: 0, pendingCount: 1, cursor: null }, t: resolveCodingNsTranslator(), onOpen() {}, onDismiss() {}, onPresented() {} }
+  const renderer = createHookRenderer(AssistantNotificationBubble, props)
+  try {
+    let tree = renderer.render()
+    assert.ok(elements(tree).some((element) => element.props['aria-label'] === '筛选待处理通知：1 项待处理'))
+    assert.equal(elements(tree).find((element) => element.props['data-codingns-notification-toolbar'] === true)!.props.style.flexWrap, 'nowrap')
+    elements(tree).find((element) => element.props['aria-label'] === '收起通知')!.props.onClick()
+    tree = renderer.render()
+    elements(tree).find((element) => element.props['aria-label'] === '展开通知')!.props.onClick()
+    tree = renderer.render()
+    assert.deepEqual(elements(tree).filter((element) => element.type === 'section').map((element) => element.props['data-codingns-notice-id']), ['pending', 'completed'])
   } finally { renderer.dispose() }
 })

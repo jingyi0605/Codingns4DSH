@@ -86,8 +86,7 @@ test('网页与原生共用通知事实；原生气泡只导航会话，本体�
   events = [{ sequence: 2, ownerId, generation: 4, noticeId, noticeGeneration: center.generation, type: 'notice-action', action: 'dismiss' }]
   await pollUntil(() => presentation.notification === undefined)
   assert.equal(presentation.notification, undefined)
-  assert.equal(presentation.notificationSnapshot.primary, null)
-  assert.equal(presentation.notificationSnapshot.pendingCount, 1, '收起气泡后原生仍持有待办入口')
+  assert.equal(presentation.notificationSnapshot, undefined, '单条清理后原生气泡不再保留该待办')
   assert.equal(presentation.reaction, undefined)
   // 待办完成并且历史通知已读后，空快照不能继续在网页悬浮形象旁留下空白气泡。
   center.consume({ type: 'request-resolved', requestKind: 'question', requestId: 'q', target: { hostId: 'local', workspaceId: 'project', sessionId: 'target' }, generation: center.generation })

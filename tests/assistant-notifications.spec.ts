@@ -48,7 +48,7 @@ test('同轮唯一终态，失败优先且同会话只保留最近终态', () =>
   assert.equal(f.center.read().unreadCount, 1)
 })
 
-test('请求独立结束，已读和收起都保留待处理，待办不受100条历史容量影响', () => {
+test('请求独立结束，单条清理隐藏对应待办但不影响事实结算，待办不受100条历史容量影响', () => {
   const f = fixture()
   for (let index = 0; index < 110; index++) f.request(`question-${index}`)
   for (let index = 0; index < 120; index++) f.turn('turn-completed', index)
@@ -58,10 +58,14 @@ test('请求独立结束，已读和收起都保留待处理，待办不受100�
   const frame = f.center.read(), item = frame.primary!
   const input = { generation: frame.generation, noticeId: item.noticeId }
   f.center.ack({ ...input, action: 'read' }); f.center.ack({ ...input, action: 'dismiss' })
-  assert.equal(f.center.read().pendingCount, 110)
+  assert.equal(f.center.read().pendingCount, 109)
+  assert.equal(f.center.read().items.some((notice) => notice.noticeId === item.noticeId), false)
   f.request('question-0', 'question', 'request-resolved')
   assert.equal(f.center.read().pendingCount, 109)
   assert.equal(f.center.read().primary!.kind, 'question')
+  // 已清理的请求仍保留生命周期事实；结算后再次收到同一打开事实不能重新出现。
+  f.request('question-0')
+  assert.equal(f.center.read().pendingCount, 109)
 })
 
 test('按 Host、工作区和会话三元组批量标记已读，重复调用幂等且不误读同名会话', () => {
@@ -209,15 +213,18 @@ test('错误通知关闭仍保留失败水位，不能留下或重新产生同�
   f.turn('turn-completed', 2, 4); assert.equal(f.center.read().unreadCount, 1)
 })
 
-test('类型开关只移除对应通知，无关待办保持身份和收起状态，重新基线不撤销失败证明', () => {
+test('类型开关只移除对应通知，单条清理不改请求事实，重新基线不撤销失败证明', () => {
   const f = fixture(); f.request('a', 'approval'); f.turn('turn-failed', 1, 1)
   const before = f.center.read(), approval = before.primary!
   f.center.ack({ noticeId: approval.noticeId, generation: before.generation, action: 'dismiss' })
   f.center.configure(true, ['workspace'], { completed: false })
   const after = f.center.read()
   assert.equal(after.generation, before.generation)
-  assert.equal(after.items.find(item => item.kind === 'approval')!.noticeId, approval.noticeId)
-  assert.equal(after.items.find(item => item.kind === 'approval')!.presentation, 'collapsed')
+  assert.equal(after.pendingCount, 0)
+  assert.equal(after.items.some(item => item.noticeId === approval.noticeId), false)
+  f.request('a', 'approval', 'request-resolved')
+  f.request('a', 'approval')
+  assert.equal(f.center.read().pendingCount, 0)
   f.center.configure(true, ['workspace'], { error: false })
   assert.equal(f.center.read().unreadCount, 0)
   f.center.baseline(local, 2); f.turn('turn-completed', 1, 3)

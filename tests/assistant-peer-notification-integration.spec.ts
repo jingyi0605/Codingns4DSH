@@ -111,16 +111,20 @@ test('关闭悬浮期间的终态不会在重新开启后补弹，仍有效的�
   assert.equal(frame.pendingCount, 1)
 })
 
-test('切换无关通知类型保留原有效待办身份和用户收起状态', async (t) => {
+test('切换无关通知类型保留请求事实，单条清理只隐藏对应待办', async (t) => {
   const f = await fixture(t, true)
   f.event('approval/asked', { id: 'a' }, 1)
   const before = await f.call<AssistantNotificationSnapshot>('read')
   await f.call('ack', { noticeId: before.primary!.noticeId, generation: before.generation, action: 'dismiss' })
   await f.update({ assistant: { ...f.settings().assistant, notifications: { ...f.settings().assistant.notifications, completed: false } } })
   const after = await f.call<AssistantNotificationSnapshot>('read')
-  assert.equal(after.pendingCount, 1)
+  assert.equal(after.pendingCount, 0)
   assert.equal(after.primary, null)
-  assert.equal(after.items[0]!.noticeId, before.primary!.noticeId)
+  assert.equal(after.items.some(item => item.noticeId === before.primary!.noticeId), false)
+  const source = await f.call<AssistantNotificationFeed>('source', { workspaceIds: ['w'] })
+  assert.deepEqual(source.pending.map(item => item.requestId), ['a'])
+  f.event('approval/decided', { id: 'a', outcome: 'rejected' }, 2)
+  assert.deepEqual((await f.call<AssistantNotificationFeed>('source', { workspaceIds: ['w'] })).pending, [])
 })
 
 test('真实Feature登记原生安全来源，独立分页保留全部待办，认证目标带本机入口身份', async (t) => {
