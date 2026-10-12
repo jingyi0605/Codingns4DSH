@@ -58,6 +58,26 @@ export interface AcpCliDriverOptions {
     usage: Extract<CodingNsAgentEvent, { type: 'usage' }>,
     input: CodingNsCliTurnInput,
   ) => Extract<CodingNsAgentEvent, { type: 'usage' }>
+  /**
+   * Provider 自带的逐请求用量读取器。
+   *
+   * 多数 ACP Provider 会在一次 `session/prompt` 里跑完整个 agent 循环，只在结束时
+   * 报告整轮累计用量；把它当成一个 step 的样本，DSH token-meter 会把整轮累计显示成
+   * 当前上下文占用。提供该读取器后，驱动会在每个工具边界前投影该请求自己的增量
+   * 用量，并让整轮累计只在没有增量样本时兜底。
+   */
+  readonly stepUsage?: AcpStepUsageReader
+}
+
+/** Provider 逐请求用量的增量读取器；`take` 只返回自上次调用以来的新增请求。 */
+export interface AcpStepUsageReader {
+  /** 新回合开始：把增量基线对齐到 Provider 当前累计用量。 */
+  begin(input: CodingNsCliTurnInput, providerSessionId: string): Promise<void> | void
+  /** 读取自上次调用以来新增模型请求的用量；没有新增时返回 null。 */
+  take(
+    input: CodingNsCliTurnInput,
+    providerSessionId: string,
+  ): Promise<Extract<CodingNsAgentEvent, { type: 'usage' }> | null> | Extract<CodingNsAgentEvent, { type: 'usage' }> | null
 }
 
 /** ACP 交互问题在 Host 中等待 DSH 回答时保留的请求状态。 */
@@ -112,6 +132,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
   private readonly readQuestionRequest: (message: JsonRpcMessage) => AcpPendingQuestionRequest | null
   private readonly decidePermission: AcpCliDriverOptions['decidePermission']
   private readonly enrichUsage: AcpCliDriverOptions['enrichUsage']
+  private readonly stepUsage: AcpCliDriverOptions['stepUsage']
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, AcpSession>()
@@ -139,6 +160,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.readQuestionRequest = options.readQuestionRequest ?? readStandardQuestionRequest
     this.decidePermission = options.decidePermission
     this.enrichUsage = options.enrichUsage
+    this.stepUsage = options.stepUsage
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
@@ -215,6 +237,49 @@ export class AcpCliDriver implements CodingNsCliDriver {
     let pendingFinish: Extract<CodingNsAgentEvent, { type: 'finish' }> | null = null
     let latestUsage: Extract<CodingNsAgentEvent, { type: 'usage' }> | null = null
     const segmentState = createCodingNsSegmentState()
+    // 逐请求用量只在 Registry 会按工具边界切分 step 时启用：同一个 step 里的多份
+    // usage 会被 token-meter 覆盖，只有分段才谈得上「一个 step 一次模型请求」。
+    const stepUsage = input.splitToolSteps === true ? this.stepUsage : undefined
+    let stepUsageActive = stepUsage !== undefined
+    if (stepUsage !== undefined) {
+      try {
+        await stepUsage.begin(input, providerSessionId)
+      } catch {
+        // 基线对齐失败时退回 ACP 终态口径，不冒用增量样本。
+        stepUsageActive = false
+      }
+    }
+    /** 已投影的逐请求样本累计，只用于与 ACP 终态累计做差。 */
+    const emittedUsage: AcpEmittedUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+    /** 当前 step 是否已经有样本；工具边界之前只允许一份。 */
+    let stepSampleEmitted = false
+    /** 本回合是否投影过逐请求样本；有样本时终态累计只用于补差。 */
+    let turnSampleEmitted = false
+    const takeStepUsage = async (): Promise<Extract<CodingNsAgentEvent, { type: 'usage' }> | null> => {
+      if (!stepUsageActive || stepUsage === undefined) return null
+      try {
+        return await stepUsage.take(input, providerSessionId) ?? null
+      } catch {
+        stepUsageActive = false
+        return null
+      }
+    }
+    const emitStepUsage = async (): Promise<Extract<CodingNsAgentEvent, { type: 'usage' }> | null> => {
+      const usage = await takeStepUsage()
+      if (usage === null) return null
+      stepSampleEmitted = true
+      turnSampleEmitted = true
+      emittedUsage.inputTokens += usage.inputTokens
+      emittedUsage.outputTokens += usage.outputTokens
+      emittedUsage.cacheReadTokens += usage.cacheReadTokens ?? 0
+      emittedUsage.cacheWriteTokens += usage.cacheWriteTokens ?? 0
+      return usage
+    }
+    /** 逐请求样本统一带上 Provider 已确认的上下文占用与容量。 */
+    const projectStepUsage = (usage: Extract<CodingNsAgentEvent, { type: 'usage' }>): Extract<CodingNsAgentEvent, { type: 'usage' }> => {
+      const merged = mergeAcpUsageContext(usage, latestUsage)
+      return this.enrichUsage?.(merged, input) ?? merged
+    }
     try {
       const stream = streamRpcRequest(session.rpc, 'session/prompt', {
         sessionId: providerSessionId,
@@ -244,6 +309,15 @@ export class AcpCliDriver implements CodingNsCliDriver {
           pendingFinish = chunk
           continue
         }
+        // 工具边界就是 Registry 切分 step 的位置：该请求的用量必须在工具事件之前
+        // 投影，才会落进即将结束的 step，而不是被下一个 step 的样本覆盖。
+        if (stepUsageActive && chunk.type === 'tool-event' && (chunk.status === 'completed' || chunk.status === 'failed')) {
+          const stepSample = await emitStepUsage()
+          // 该请求的用量属于即将结束的 step；Provider 还没报告上下文占用时只补容量。
+          if (stepSample !== null) yield projectStepUsage(stepSample)
+          // 工具事件之后进入下一个 step，样本槽重新开始。
+          stepSampleEmitted = false
+        }
         yield chunk
         advanceCodingNsSegment(chunk, segmentState)
       }
@@ -255,11 +329,21 @@ export class AcpCliDriver implements CodingNsCliDriver {
           yield { type: 'finish', reason: 'cancel' }
         }
       } else {
+        // 最后一个模型请求的用量必须在 finish 之前结算，否则当前 step 会缺样本。
+        const finalSample = await emitStepUsage()
+        if (finalSample !== null) yield projectStepUsage(finalSample)
         const responseUsage = acpResponseUsage(response)
         if (responseUsage !== null) {
-          const mergedUsage = mergeAcpUsageContext(responseUsage, latestUsage)
-          yield this.enrichUsage?.(mergedUsage, input) ?? mergedUsage
-        } else if (latestUsage !== null && isContextOnlyUsage(latestUsage)) {
+          if (!turnSampleEmitted) {
+            // 没有任何逐请求样本（Provider 未写 transcript、或本轮不是分段回合）：
+            // 保持 ACP 终态口径，宁可占用偏大也不能丢用量。
+            yield projectStepUsage(responseUsage)
+          } else if (!stepSampleEmitted) {
+            // 当前 step 还没有样本：把终态累计与已投影增量的差额补上。
+            const remainder = subtractAcpUsage(responseUsage, emittedUsage)
+            if (remainder !== null) yield projectStepUsage(remainder)
+          }
+        } else if (!turnSampleEmitted && latestUsage !== null && isContextOnlyUsage(latestUsage)) {
           yield latestUsage
         }
         if (pendingFinish !== null) {
@@ -480,6 +564,39 @@ function isContextOnlyUsage(usage: AcpUsageEvent): boolean {
   return usage.inputTokens === 0
     && usage.outputTokens === 0
     && (usage.contextWindow !== undefined || usage.contextTokens !== undefined || usage.contextUsageRatio !== undefined)
+}
+
+/** 已投影逐请求样本的四桶累计。 */
+interface AcpEmittedUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+}
+
+/**
+ * 用 ACP 终态累计减去已投影的逐请求样本。
+ *
+ * transcript 读取可能漏掉最后一次请求（CLI 还没落盘、文件被轮转）；差额补样本只在
+ * 当前 step 还没有样本时投影，避免覆盖已经计入的增量。没有差额时返回 null。
+ */
+function subtractAcpUsage(usage: AcpUsageEvent, emitted: AcpEmittedUsage): AcpUsageEvent | null {
+  const inputTokens = Math.max(0, usage.inputTokens - emitted.inputTokens)
+  const outputTokens = Math.max(0, usage.outputTokens - emitted.outputTokens)
+  const cacheReadTokens = usage.cacheReadTokens === undefined
+    ? undefined
+    : Math.max(0, usage.cacheReadTokens - emitted.cacheReadTokens)
+  const cacheWriteTokens = usage.cacheWriteTokens === undefined
+    ? undefined
+    : Math.max(0, usage.cacheWriteTokens - emitted.cacheWriteTokens)
+  if (inputTokens === 0 && outputTokens === 0 && (cacheReadTokens ?? 0) === 0 && (cacheWriteTokens ?? 0) === 0) return null
+  return {
+    type: 'usage',
+    inputTokens,
+    outputTokens,
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+  }
 }
 
 /** 读取 ACP v1/v2 标准权限请求；未知扩展字段不会被当成权限。 */

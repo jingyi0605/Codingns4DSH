@@ -29,6 +29,7 @@ import type { JsonRpcMessage, JsonRpcProcess } from './json-rpc-process.js'
 import { knownCommandCodeContextWindow } from './model-catalog.js'
 import {
   CommandCodeHistory,
+  CommandCodeUsageTail,
   type CommandCodeHistoryDelta,
   type CommandCodeHistoryDirection,
   type CommandCodeHistoryMessage,
@@ -321,8 +322,14 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     readonly protocol: 'command' | 'acp'
     readonly capabilities: readonly CodingNsCliCapability[]
   }
-  /** 驱动自己维护 Provider turn 边界，Host 可以把工具边界映射为 DSH step。 */
-  readonly supportsSegmentedTurns = true
+  /**
+   * print 回合由驱动自己维护 Provider turn 边界；ACP 回合的整个 agent 循环跑在
+   * 一个 `session/prompt` 里，驱动无法在中间结束 llm/stream，只能交给 Registry
+   * 在工具完成后挂起同一个迭代器分步。
+   */
+  get supportsSegmentedTurns(): boolean { return this.acpDriver === undefined }
+  /** ACP 回合由 Registry 按工具边界挂起并续读同一个迭代器。 */
+  get supportsToolStepSplitting(): boolean { return this.acpDriver !== undefined }
   private readonly homeDirectory: string
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
@@ -361,6 +368,10 @@ export class CommandCodeDriver implements CodingNsCliDriver {
     const acpCapabilities: readonly CodingNsCliCapability[] = [...legacyCapabilities, 'permission', 'questions']
     this.descriptor = { id: 'command-code', name: 'Command Code', protocol: options.enableAcp === true ? 'acp' : 'command', capabilities: options.enableAcp === true ? acpCapabilities : legacyCapabilities }
     if (options.enableAcp === true) {
+      // ACP 只在 prompt 结束时给出整轮累计用量。这里按 canonical transcript 的增量
+      // 把每次模型请求的用量单独交给驱动，ContextMeter 才不会把整轮累计（实测
+      // 17.6M）当成当前上下文占用。
+      const usageTail = new CommandCodeUsageTail(this.homeDirectory)
       this.acpDriver = new AcpCliDriver({
         binaries: this.binaries,
         spawnSync: this.runSpawnSync,
@@ -377,6 +388,24 @@ export class CommandCodeDriver implements CodingNsCliDriver {
         readQuestionRequest: readCommandCodeQuestionRequest,
         decidePermission: commandCodeAcpPermissionDecision,
         enrichUsage: enrichCommandCodeUsage,
+        stepUsage: {
+          begin: (input, providerSessionId) => {
+            usageTail.begin(providerSessionId, input.cwd ?? process.cwd())
+          },
+          take: (input, providerSessionId) => {
+            const delta = usageTail.take(providerSessionId, input.cwd ?? process.cwd())
+            if (delta === null) return null
+            // 只给原始四桶：上下文窗口与占用由 ACP 驱动合并 Provider 的 usage_update
+            // 之后再补齐，避免这里先把 contextTokens 写成请求规模、盖掉真实占用。
+            const usage = usageChunk({
+              inputTokens: delta.inputTokens,
+              outputTokens: delta.outputTokens,
+              cacheReadTokens: delta.cacheReadTokens,
+              cacheWriteTokens: delta.cacheWriteTokens,
+            })
+            return usage?.type === 'usage' ? usage : null
+          },
+        },
         probeReason: 'Command Code ACP 不公开可安全读取的会话索引',
       })
       this.respondPermission = (sessionId, response) => this.acpDriver!.respondPermission(sessionId, response)
