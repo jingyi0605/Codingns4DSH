@@ -3,6 +3,7 @@ import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { readFileSync } from 'node:fs'
 import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
+import { codexComputerUseLaunchSettings } from '../data/build/dist/host/cli-bridge/injections.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import { GrokBuildDriver } from '../data/build/dist/host/cli-adapters/grok-driver.js'
 import { PiAgentDriver } from '../data/build/dist/host/cli-adapters/pi-driver.js'
@@ -67,6 +68,71 @@ test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async 
       : [{ type: 'text-delta', text: '完成' }, { type: 'finish', reason: 'stop' }])
     assert.equal(killed, true)
   }
+})
+
+test('Codex Computer Use 注入官方 cua_repl，并在无运行时时安全降级', () => {
+  const config = {
+    command: '/opt/cua/node',
+    args: ['/opt/cua/cua-repl.mjs'],
+    env: { CODEX_HOME: '/tmp/codex-stage0' },
+  }
+  const enabled = codexComputerUseLaunchSettings('enabled', config, '/tmp/codex-stage0', 'darwin')
+  assert.equal(enabled.enabled, true)
+  assert.equal(enabled.args.some((value) => value.includes('mcp_servers.cua_repl.command')), true)
+  assert.equal(enabled.args.some((value) => value.includes('mcp_servers.cua_repl.enabled_tools')), true)
+
+  const disabled = codexComputerUseLaunchSettings('auto', undefined, '/tmp/no-codex-runtime', 'darwin')
+  assert.deepEqual(disabled, { enabled: false, args: [] })
+  assert.deepEqual(codexComputerUseLaunchSettings('auto', undefined, '/tmp/no-codex-runtime', 'win32'), { enabled: false, args: [] })
+})
+
+test('Codex MCP mcpToolCall 转换为 DSH 工具生命周期并保留失败结果', async () => {
+  const calls: string[][] = []
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    computerUse: 'enabled',
+    computerUseConfig: {
+      command: '/opt/cua/node',
+      args: ['/opt/cua/cua-repl.mjs'],
+      env: { CODEX_HOME: '/tmp/codex-stage0' },
+    },
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: ((command: string, args: string[]) => {
+      calls.push([command, ...args])
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = {
+        write(data: string): void {
+          const request = JSON.parse(data) as { id: number; method: string }
+          if (request.method === 'thread/start') {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'cua-thread' } } })}\n`)
+            return
+          }
+          if (request.method === 'turn/start') {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'cua-turn', status: 'inProgress' } } })}\n`)
+            setImmediate(() => {
+              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/started', params: { threadId: 'cua-thread', turnId: 'cua-turn', item: { type: 'mcpToolCall', id: 'cua-call', server: 'cua_repl', tool: 'js', status: 'inProgress', arguments: { code: 'await cua.getState()' } } } })}\n`)
+              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/completed', params: { threadId: 'cua-thread', turnId: 'cua-turn', item: { type: 'mcpToolCall', id: 'cua-call', server: 'cua_repl', tool: 'js', status: 'failed', arguments: { code: 'await cua.getState()' }, error: { message: 'Screen Recording permission denied' } } } })}\n`)
+              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'cua-thread', turn: { id: 'cua-turn', status: 'completed' } } })}\n`)
+            })
+            return
+          }
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        },
+      }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'cua-events', messages: [], prompt: '检查桌面状态' })) chunks.push(chunk)
+  assert.equal(calls[0]?.includes('mcp_servers.cua_repl.command="/opt/cua/node"'), true)
+  assert.equal(calls[0]?.includes('--disable'), false)
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-event'), [
+    { type: 'tool-event', toolName: 'cua_repl.js', status: 'running', callId: 'cua-call', input: '{"code":"await cua.getState()"}' },
+    { type: 'tool-event', toolName: 'cua_repl.js', status: 'failed', callId: 'cua-call', input: '{"code":"await cua.getState()"}', error: '{"message":"Screen Recording permission denied"}' },
+  ])
+  driver.dispose()
 })
 
 test('Codex turn/start 将图片附件作为 localImage 传递，并为文件保留可读取路径', async () => {
