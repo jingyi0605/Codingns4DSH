@@ -59,6 +59,7 @@ test('DSH 原生 Workspace/Session Remote 方法使用正式命名空间', () =>
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('officeToPdf/generation'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('officeToPdf/render'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('workspaceFiles/changes'))
+  assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('fileUploads/upload'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('terminal/environment'))
   assert.ok(DSH_NATIVE_REMOTE_METHODS.includes('terminal/follow'))
   assert.equal(isDshNativeRemoteMethod('workspace/list'), false)
@@ -199,6 +200,20 @@ test('codingnsTerminal 的 agentId 承载会话身份并双向改写', () => {
   assert.deepEqual(frame, {
     agentId: 'codingns:peer-host:v1:session:peer-a:remote-session',
     workspaceId: 'codingns:peer-host:v1:workspace:peer-a:remote-ws',
+  })
+})
+
+test('fileUploads/upload 的 agentId 复用 Session 虚拟身份改写', () => {
+  assert.deepEqual(rewriteNativeRequestIds('fileUploads/upload', {
+    args: {
+      agentId: createVirtualSessionId('peer-a', 'remote-session'),
+      request: { data: 'AA==', name: 'note.txt' },
+    },
+  }, resolver), {
+    args: {
+      agentId: 'remote-session',
+      request: { data: 'AA==', name: 'note.txt' },
+    },
   })
 })
 
