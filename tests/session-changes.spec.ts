@@ -8,18 +8,42 @@ import { createFileManagementFeature } from '../data/build/dist/host/features/fi
 import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
 import { registerSessionChangedFilesView, selectSessionChangedFiles } from '../data/build/dist/client/session-changed-files-view.js'
 
-test('会话修改文件优先从 DSH 原生 tool/call 事件提取并过滤工作区外路径', async () => {
+test('会话修改文件只提取成功写入工具的路径并过滤工作区外路径', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codingns-session-changes-'))
   try {
     const result = await readSessionChangedFiles({
       nativeSessions: {
         get: () => ({ snapshotEvents: () => [
-          { type: 'tool/call', data: { name: 'write_file', arguments: JSON.stringify({ path: 'src/index.ts' }) } },
-          { type: 'tool/call', data: { name: 'apply_patch', arguments: '*** Update File: src/app.ts\n*** Update File: ../outside.ts' } },
+          { type: 'tool/call', data: { callId: 'write-1', name: 'write_file', arguments: JSON.stringify({ path: 'src/index.ts' }) } },
+          { type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'write-1', content: [] } } },
+          { type: 'tool/call', data: { callId: 'read-1', name: 'read_file', arguments: JSON.stringify({ path: 'src/read-only.ts' }) } },
+          { type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'read-1', content: [] }, meta: { path: 'src/read-meta.ts' } } },
+          { type: 'tool/call', data: { callId: 'failed-1', name: 'edit_file', arguments: JSON.stringify({ path: 'src/failed.ts' }) } },
+          { type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'failed-1', isError: true, content: [] } } },
+          { type: 'tool/call', data: { callId: 'rename-1', name: 'rename_file', arguments: JSON.stringify({ sourcePath: 'src/old.ts', targetPath: 'src/new.ts' }) } },
+          { type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'rename-1', content: [] } } },
+          { type: 'tool/call', data: { callId: 'delete-1', name: 'delete_file', arguments: JSON.stringify({ paths: ['src/deleted.ts'] }) } },
+          { type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'delete-1', content: [] } } },
+          { type: 'tool/call', data: { callId: 'pending-1', name: 'write_file', arguments: JSON.stringify({ path: 'src/pending.ts' }) } },
+          { type: 'tool/call', data: {
+            callId: 'execute-1',
+            name: 'execute',
+            arguments: JSON.stringify({ toolCalls: [
+              { tool: 'write_file', status: 'completed', input: { path: 'src/nested.ts' } },
+              { tool: 'read_file', status: 'completed', input: { path: 'src/nested-read.ts' } },
+              { tool: 'edit_file', status: 'failed', input: { path: 'src/nested-failed.ts' } },
+            ] }),
+          } },
+          { type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'execute-1', content: [] } } },
+          { type: 'tool/call', data: { callId: 'patch-1', name: 'apply_patch', arguments: '*** Update File: src/app.ts\n*** Update File: ../outside.ts' } },
+          { type: 'tool/result', data: {
+            message: { role: 'tool', toolCallId: 'patch-1', content: [] },
+            meta: { diffs: [{ path: 'src/meta.ts', oldText: '', newText: 'ok' }, { path: '../outside-meta.ts' }] },
+          } },
         ] }),
       },
     }, 'session-1', root)
-    assert.deepEqual(result.paths, ['src/app.ts', 'src/index.ts'])
+    assert.deepEqual(result.paths, ['src/app.ts', 'src/deleted.ts', 'src/index.ts', 'src/meta.ts', 'src/nested.ts', 'src/new.ts', 'src/old.ts'])
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -31,7 +55,8 @@ test('原生事件没有文件路径时回退读取会话 JSONL', async () => {
   try {
     await writeFile(jsonl, [
       JSON.stringify({ type: 'session', id: 'session-2' }),
-      JSON.stringify({ type: 'tool/call', data: { arguments: JSON.stringify({ file_path: 'src/from-jsonl.ts' }) } }),
+      JSON.stringify({ type: 'tool/call', data: { callId: 'jsonl-write', name: 'write_file', arguments: JSON.stringify({ file_path: 'src/from-jsonl.ts' }) } }),
+      JSON.stringify({ type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'jsonl-write', content: [] } } }),
       '不完整尾行',
     ].join('\n'), 'utf8')
     const result = await readSessionChangedFiles({
