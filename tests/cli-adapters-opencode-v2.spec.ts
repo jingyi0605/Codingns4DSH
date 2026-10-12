@@ -97,9 +97,19 @@ test('OpenCode V2 识别真实协议，读取扁平模型目录、别名、默�
   driver.dispose()
 })
 
+test('OpenCode V2 模型目录请求携带当前会话工作目录', async () => {
+  const { driver, requests } = harness()
+  const catalog = await driver.listModels({ cwd })
+  assert.equal(catalog.currentModel, 'custom/alias/review')
+  for (const path of ['/api/model', '/api/provider', '/api/model/default']) {
+    assert.equal(requests.find((request) => request.path === path)?.query.get('location[directory]'), cwd)
+  }
+  driver.dispose()
+})
+
 test('OpenCode V2 目录 HTTP 错误不得被吞成空列表，200 HTML 不能误识别成 V1', async () => {
   const driver = new OpenCodeDriver({ binaries: [], serverUrls: ['http://opencode.test'], fetch: async (url: string) => {
-    if (url.endsWith('/api/info')) return json({ version: '2.0.24' })
+     if (new URL(url).pathname === '/api/info') return json({ version: '2.0.24' })
     return json({ message: 'Provider 配置无效' }, 500)
   } })
   await assert.rejects(driver.listModels(), /Provider 配置无效/u)
@@ -112,9 +122,9 @@ test('OpenCode V2 目录 HTTP 错误不得被吞成空列表，200 HTML 不能�
 test('OpenCode V2 目录等待 Provider 初始化快照收敛，不缓存首次空列表', async () => {
   let reads = 0
   const driver = new OpenCodeDriver({ binaries: [], serverUrls: ['http://opencode.test'], fetch: async (url: string) => {
-    if (url.endsWith('/api/info')) return json({ version: '2.0.24' })
-    if (url.endsWith('/api/model')) return envelope(++reads < 3 ? [] : [model])
-    if (url.endsWith('/api/provider')) return envelope([provider])
+     if (new URL(url).pathname === '/api/info') return json({ version: '2.0.24' })
+     if (new URL(url).pathname === '/api/model') return envelope(++reads < 3 ? [] : [model])
+     if (new URL(url).pathname === '/api/provider') return envelope([provider])
     return envelope(model)
   } })
   assert.equal((await driver.listModels()).groups[0]?.models[0]?.id, 'custom/alias/review')
@@ -126,9 +136,9 @@ test('OpenCode V2 非空的内置模型快照也要等待配置模型和默认�
   let reads = 0
   const initial = { ...model, id: 'free', providerID: 'builtin' }
   const driver = new OpenCodeDriver({ binaries: [], serverUrls: ['http://opencode.test'], fetch: async (url: string) => {
-    if (url.endsWith('/api/info')) return json({ version: '2.0.24' })
-    if (url.endsWith('/api/model')) return envelope(++reads === 1 ? [initial] : [model])
-    if (url.endsWith('/api/provider')) return envelope([provider, { id: 'builtin', name: '内置' }])
+     if (new URL(url).pathname === '/api/info') return json({ version: '2.0.24' })
+     if (new URL(url).pathname === '/api/model') return envelope(++reads === 1 ? [initial] : [model])
+     if (new URL(url).pathname === '/api/provider') return envelope([provider, { id: 'builtin', name: '内置' }])
     return envelope(reads === 1 ? initial : model)
   } })
   const catalog = await driver.listModels()
@@ -144,9 +154,9 @@ test('OpenCode V2 原生 service 登记提供认证，拒绝复用 PID 不匹配
     await writeFile(serviceFile, JSON.stringify({ url: 'http://127.0.0.1:4199', pid: 123, password: 'service-secret', version: '2.0.24' }))
     const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
       assert.equal(new Headers(init.headers).get('authorization'), `Basic ${Buffer.from('opencode:service-secret').toString('base64')}`)
-      if (url.endsWith('/api/info')) return json({ version: '2.0.24', pid: 123 })
-      if (url.endsWith('/api/model')) return envelope([model])
-      if (url.endsWith('/api/provider')) return envelope([provider])
+       if (new URL(url).pathname === '/api/info') return json({ version: '2.0.24', pid: 123 })
+       if (new URL(url).pathname === '/api/model') return envelope([model])
+       if (new URL(url).pathname === '/api/provider') return envelope([provider])
       return envelope(model)
     }
     const driver = new OpenCodeDriver({ binaries: [], serverUrls: [], serviceFile, fetch })
@@ -175,9 +185,9 @@ test('OpenCode V2 托管服务显式传入认证密码，目录请求使用认�
     fetch: async (url: string, init: RequestInit = {}) => {
       assert.equal(spawned, true)
       assert.equal(new Headers(init.headers).get('authorization'), `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`)
-      if (url.endsWith('/api/info')) return json({ version: '2.0.24' })
-      if (url.endsWith('/api/model')) return envelope([model])
-      if (url.endsWith('/api/provider')) return envelope([provider])
+       if (new URL(url).pathname === '/api/info') return json({ version: '2.0.24' })
+       if (new URL(url).pathname === '/api/model') return envelope([model])
+       if (new URL(url).pathname === '/api/provider') return envelope([provider])
       return envelope(model)
     },
   })
@@ -185,6 +195,84 @@ test('OpenCode V2 托管服务显式传入认证密码，目录请求使用认�
   assert.ok(password && password.length > 20)
   driver.dispose()
   assert.equal(killed, true)
+})
+
+test('OpenCode V2 托管 serve 使用动态空闲端口，同一工作区复用且不占用固定 4096', async () => {
+  const ports: number[] = []
+  const driver = new OpenCodeDriver({
+    binaries: ['opencode'], serverUrls: [],
+    spawnSync: (() => ({ status: 0, stdout: 'opencode v2.0.24', stderr: '' })) as never,
+    spawn: ((_command: string, args: string[]) => {
+      ports.push(Number(args[args.indexOf('--port') + 1]))
+      return { stdout: new PassThrough(), stderr: new PassThrough(), kill() { return true } }
+    }) as never,
+    fetch: async (url: string) => {
+      if (new URL(url).pathname === '/api/info') return json({ version: '2.0.24' })
+      if (new URL(url).pathname === '/api/model') return envelope([model])
+      if (new URL(url).pathname === '/api/provider') return envelope([provider])
+      return envelope(model)
+    },
+  })
+  assert.equal((await driver.listModels()).groups.length, 1)
+  assert.equal((await driver.listModels()).groups.length, 1)
+  // 固定端口 4096 会被其他 DSH Profile 或用户自有服务占用，不能再作为托管起点。
+  assert.equal(ports.length, 1)
+  assert.notEqual(ports[0], 4096)
+  driver.dispose()
+})
+
+test('OpenCode V2 托管 serve 子进程未监听即退出（端口被抢占）时换端口重试', async () => {
+  const ports: number[] = []
+  let firstKilled = false
+  const driver = new OpenCodeDriver({
+    binaries: ['opencode'], serverUrls: [],
+    spawnSync: (() => ({ status: 0, stdout: 'opencode v2.0.24', stderr: '' })) as never,
+    spawn: ((_command: string, args: string[]) => {
+      ports.push(Number(args[args.indexOf('--port') + 1]))
+      const child: Record<string, unknown> = { stdout: new PassThrough(), stderr: new PassThrough(), kill() { if (ports.length === 1) firstKilled = true; return true } }
+      // 第一次启动模拟端口被其他进程占用：子进程未监听就退出。
+      if (ports.length === 1) child.exitCode = 1
+      return child
+    }) as never,
+    fetch: async (url: string) => {
+      const parsed = new URL(url)
+      if (Number(parsed.port) !== ports[1]) return json({ message: '端口未监听' }, 503)
+      if (parsed.pathname === '/api/info') return json({ version: '2.0.24' })
+      if (parsed.pathname === '/api/model') return envelope([model])
+      if (parsed.pathname === '/api/provider') return envelope([provider])
+      return envelope(model)
+    },
+  })
+  assert.equal((await driver.listModels()).groups.length, 1)
+  assert.equal(ports.length, 2)
+  assert.equal(firstKilled, true)
+  driver.dispose()
+})
+
+test('OpenCode V2 托管 serve 在无外部服务时按请求工作区目录启动', async () => {
+  const spawnedCwds: string[] = []
+  const requests: Array<{ path: string; query: URLSearchParams }> = []
+  const driver = new OpenCodeDriver({
+    binaries: ['opencode'], serverUrls: [],
+    spawnSync: (() => ({ status: 0, stdout: 'opencode v2.0.24', stderr: '' })) as never,
+    spawn: ((_command: string, _args: string[], options: any) => {
+      spawnedCwds.push(options.cwd)
+      return { stdout: new PassThrough(), stderr: new PassThrough(), kill() { return true } }
+    }) as never,
+    fetch: async (url: string) => {
+      const parsed = new URL(url)
+      requests.push({ path: parsed.pathname, query: parsed.searchParams })
+      if (parsed.pathname === '/api/info') return json({ version: '2.0.24' })
+      if (parsed.pathname === '/api/model') return envelope([model])
+      if (parsed.pathname === '/api/provider') return envelope([provider])
+      return envelope(model)
+    },
+  })
+  // 会话目录必须归属到该目录自己的托管服务，不能落到 Host 当前目录。
+  assert.equal((await driver.listModels({ cwd })).groups.length, 1)
+  assert.deepEqual(spawnedCwds, [cwd])
+  assert.equal(requests.find((request) => request.path === '/api/model')?.query.get('location[directory]'), cwd)
+  driver.dispose()
 })
 
 test('OpenCode V2 文本快照去重，工具步骤不提前结束回合，严格隔离其他会话', async () => {
