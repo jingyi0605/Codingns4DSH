@@ -557,7 +557,9 @@ export function createPeerHostPageTransport(
     reply: (scope, payload, signal) => codingNsCall('peerHost/native', { method: '$events/result', payload, scope }, signal),
     accepts: (agentId, scope) => scopes.get(agentId)?.targetHostId === scope.targetHostId,
     onSessionStatus: (sessionId, running) => {
-      if (projection.setSessionRunning(sessionId, running)) void refreshPeerHostNativeSessions(uiContext as Parameters<typeof refreshPeerHostNativeSessions>[0])
+      // 状态帧本身会进入 DSH 原生事件总线；这里仅保留投影覆盖，避免每个
+      // true/false 边沿都再发起一次完整 session/list。成员增删仍由聚合刷新负责。
+      projection.setSessionRunning(sessionId, running)
     },
     prepare: async () => {
       if (nativeSessionPrepared) return
@@ -611,13 +613,18 @@ export function createPeerHostPageTransport(
     refreshModelCatalogForScope(navigationScope())
   }
   /** 父会话目录早于聚合到达时，复用新建会话的临时作用域与清理机制。 */
-  const rememberSubagentCatalog = (scope: HostScope, value: unknown): void => {
+  const rememberSubagentCatalog = (scope: HostScope, value: unknown): boolean => {
     const catalog = asRecord(asRecord(asRecord(value)?.projections)?.values)?.subagentCatalog
-    if (!Array.isArray(catalog)) return
+    if (!Array.isArray(catalog)) return false
+    let changed = false
     for (const child of catalog) {
       const id = asRecord(child)?.id
-      if (typeof id === 'string' && !scopes.has(id)) rememberCreatedSession(scope, { sessionId: id })
+      if (typeof id === 'string' && !scopes.has(id)) {
+        rememberCreatedSession(scope, { sessionId: id })
+        changed = true
+      }
     }
+    return changed
   }
   const hooks: CodingNsTransportHooks = {
     rpc: async <TResponse = unknown>({ method, payload, signal }: { method: string; payload: unknown; signal?: AbortSignal }): Promise<TResponse> => {
@@ -730,19 +737,18 @@ export function createPeerHostPageTransport(
           // session/follow 承载远端新建、续接过程中的实时事件。聚合摘要本身仍按轮询
           // 读取，但由这里把事件转成合并刷新，侧栏无需切换到别的会话才能更新状态。
           return (async function* (): AsyncIterable<TChunk> {
-            let emitted = false
             try {
               for await (const chunk of stream) {
-                emitted = true
                 // 父会话先公布子会话目录，聚合稍后才补基线。立即登记已验证的虚拟 ID，
                 // 避免用户在这段窗口打开子会话时把 CLI 配置读到本机并缓存成 dsh。
-                rememberSubagentCatalog(scope, chunk)
-                scheduleAggregateRefresh()
+                // 普通消息增量不改变工作区/会话成员，不应在历史回放期间反复读取完整摘要。
+                if (rememberSubagentCatalog(scope, chunk)) scheduleAggregateRefresh()
                 yield chunk
               }
             } finally {
-              // 某些实现只在回合结束时写入 updatedAt/status，流结束也必须补一次刷新。
-              if (!emitted) scheduleAggregateRefresh()
+              // 某些实现只在回合结束时写入 updatedAt/status，流正常结束或异常断开时
+              // 补一次刷新；用户主动取消/切换会话时不再额外启动聚合请求。
+              if (!(signal?.aborted ?? false)) scheduleAggregateRefresh()
             }
           })()
         }
