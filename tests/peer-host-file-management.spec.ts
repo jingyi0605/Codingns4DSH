@@ -81,7 +81,8 @@ for (const connection of ['web', 'native'] as const) {
           rpc: table, resolveWorkspaceRoot: (id: string) => id === 'workspace-1' ? directory : null,
           listWorkspaceRoots: () => [directory],
           nativeSessions: { get: (id: string) => id === 'session-1' ? { cwd: directory, snapshotEvents: () => [
-            { type: 'tool/call', data: { arguments: { path: 'test.ts' } } },
+            { type: 'tool/call', data: { callId: 'write-test', name: 'write_file', arguments: { path: 'test.ts' } } },
+            { type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'write-test', content: [] } } },
           ] } : undefined },
         }, resources: { add: (dispose: () => void) => resources.push(dispose) } } as never)
       }
