@@ -11,7 +11,7 @@ import { CODEX_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { isQuestionEvent, questionAnswersRecord, readAgentQuestions } from './interaction-events.js'
-import { codexBridgeArgs, codexBridgeDeveloperInstructions } from '../cli-bridge/injections.js'
+import { codexBridgeArgs, codexBridgeDeveloperInstructions, codexComputerUseLaunchSettings, type CodexComputerUseMode, type CodexComputerUseServerConfig } from '../cli-bridge/injections.js'
 import { CodexFileCitationNormalizer } from './codex-file-citations.js'
 
 export interface CodexAppServerDriverOptions {
@@ -19,6 +19,11 @@ export interface CodexAppServerDriverOptions {
   readonly sessionRoots?: readonly string[]
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
+  /** Computer Use 运行时策略；生产 Feature 使用 auto，受限部署可显式关闭。 */
+  readonly computerUse?: CodexComputerUseMode
+  /** 注入测试或受控部署提供的官方 cua_repl 配置。 */
+  readonly computerUseConfig?: CodexComputerUseServerConfig
+  readonly codexHome?: string
 }
 
 interface CodexSegmentedTurn {
@@ -94,15 +99,12 @@ interface CodexSkillEntry extends CodingNsCliSkillDescriptor {
 // 自身的 auto-compact，避免对正常的高占用回合重复发起压缩。
 const CODEX_COMPACTION_THRESHOLD = 1
 const CODEX_COMPACTION_TIMEOUT_MS = 60_000
-// Codex CLI 默认会启用 computer_use；DSH 没有对应的桌面控制宿主，必须在
-// app-server 进程启动时关闭该 feature，避免模型进入无法完成的控制回合。
-const CODEX_APP_SERVER_ARGS = [
+const CODEX_APP_SERVER_BASE_ARGS = [
   // 原生 request_permissions 默认关闭。必须在插件进程内启用，模型才能主动
   // 发出 item/permissions/requestApproval，而不是靠试写文件碰沙箱边界。
   // 用配置覆盖而非 --enable：旧版会忽略未知 feature 配置，保留原命令审批通道。
   '-c', 'features.request_permissions_tool=true',
   'app-server',
-  '--disable', 'computer_use',
   // Codex 默认关闭 request_user_input；不开启时模型只能把“提问”写成普通文本，
   // app-server 不会发出 item/tool/requestUserInput，DSH 也就没有问题事件可投影。
   '--enable', 'default_mode_request_user_input',
@@ -131,6 +133,7 @@ const CODEX_QUESTION_DEVELOPER_INSTRUCTIONS = [
  */
 const CODEX_PERMISSION_DEVELOPER_INSTRUCTIONS = [
   'CodingNS 通过 DSH 原生审批面板处理权限申请，权限边界和审批策略以当前回合的运行时上下文为准。',
+  'Computer Use 只在 macOS 官方 cua_repl 运行时可用，需要系统为运行时授予屏幕录制和辅助功能权限；权限不足时如实报告失败，不要反复重试或改用命令工具绕过拒绝。',
   '操作需要额外权限且当前审批策略允许交互时，优先调用原生 request_permissions 工具，申请完成任务所需的最小文件或网络权限，并等待结构化审批结果。',
   '用户要求主动触发或验证权限申请时，应自行选择当前允许范围之外的最小权限并调用 request_permissions；工作区、/tmp、/private/tmp 和 TMPDIR 可能已可写，在这些目录执行普通写入不等于发起审批。',
   '只有当前工具列表没有 request_permissions 时，才使用原生命令工具的 require_escalated 审批通道；工具参数和目标路径由你确定，不要要求用户编写提权命令。',
@@ -153,7 +156,7 @@ interface PendingCodexPermission {
 
 /** Codex app-server 的 JSON-RPC 驱动，Host 只暴露统一文本流，不暴露线程和 token。 */
 export class CodexAppServerDriver implements CodingNsCliDriver {
-  readonly descriptor = { id: 'codex', name: 'Codex', protocol: 'json-rpc', capabilities: ['models', 'skills', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions', 'steer'] as const } as const
+  readonly descriptor = { id: 'codex', name: 'Codex', protocol: 'json-rpc', capabilities: ['models', 'skills', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions', 'steer', 'computer-use'] as const } as const
   // Codex 一个 Provider turn 可能同时包含多个工具调用。只有 assistant item
   // 切换后才分段，不能在每个工具完成后注入下一 step。
   readonly supportsSegmentedTurns = true
@@ -163,6 +166,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   private readonly sessionRoots: readonly string[]
   /** Codex 配置根目录；`config.toml` 与 `auth.json` 都位于这里。 */
   private readonly codexHome: string
+  private readonly computerUseMode: CodexComputerUseMode
+  private readonly computerUseConfig: CodexComputerUseServerConfig | undefined
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, CodexSession>()
@@ -171,8 +176,12 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     this.binaries = options.binaries ?? ['codex']
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
-    const codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex')
+    const codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
     this.codexHome = codexHome
+    // 直接构造驱动时保持旧的安全默认值；正式 Feature 显式传入 auto，避免测试
+    // 或第三方嵌入在没有桌面宿主时意外启动 CUA 运行时。
+    this.computerUseMode = options.computerUse ?? 'disabled'
+    this.computerUseConfig = options.computerUseConfig
     this.sessionRoots = options.sessionRoots ?? [join(codexHome, 'sessions'), join(codexHome, 'archived_sessions')]
   }
 
@@ -209,7 +218,9 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   async listModels(): Promise<CodingNsCliModelCatalog> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) return emptyCatalog()
-    const rpc = new JsonRpcProcess({ command, args: CODEX_APP_SERVER_ARGS, explicitWindowsShell: true, spawn: this.runSpawn })
+    // 模型目录查询不需要启动桌面运行时；否则每次刷新模型都会唤起 CUA 服务，
+    // 还可能在没有系统权限时把一个与模型无关的失败带进目录查询。
+    const rpc = new JsonRpcProcess({ command, args: this.appServerArgs(false), explicitWindowsShell: true, spawn: this.runSpawn })
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 12_000)
     try {
@@ -922,6 +933,21 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     this.cachedBinary = null
   }
 
+  private appServerArgs(includeComputerUse = true): readonly string[] {
+    const computerUse = codexComputerUseLaunchSettings(
+      includeComputerUse ? this.computerUseMode : 'disabled',
+      includeComputerUse ? this.computerUseConfig : undefined,
+      this.codexHome,
+    )
+    return [
+      ...CODEX_APP_SERVER_BASE_ARGS.slice(0, 2),
+      ...computerUse.args,
+      ...CODEX_APP_SERVER_BASE_ARGS.slice(2, 3),
+      ...(computerUse.enabled ? ['--enable', 'computer_use'] : ['--disable', 'computer_use']),
+      ...CODEX_APP_SERVER_BASE_ARGS.slice(3),
+    ]
+  }
+
   private async getSession(input: CodingNsCliTurnInput, command: string) {
     const previous = this.sessions.get(input.sessionId)
     if (previous !== undefined && previous.cwd === input.cwd) return previous
@@ -931,7 +957,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     const bridgeArgs = codexBridgeArgs(input.sessionId, this.descriptor.id)
     // Codex 的 `-c` 覆盖项必须与 app-server 的其余启动参数放在同一侧；
     // 统一置于子命令前，避免不同版本对全局/子命令参数的解析差异。
-    const rpc = new JsonRpcProcess({ command, args: [...bridgeArgs, ...CODEX_APP_SERVER_ARGS], cwd: input.cwd, explicitWindowsShell: true, spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args: [...bridgeArgs, ...this.appServerArgs()], cwd: input.cwd, explicitWindowsShell: true, spawn: this.runSpawn })
     const session = {
       rpc,
       cwd: input.cwd,
@@ -1281,8 +1307,14 @@ function codexMessageToChunk(message: Record<string, any>): CodingNsAgentEvent |
     return text ? { type: 'reasoning-delta', text, ...(messageId === undefined ? {} : { messageId }) } : null
   }
   if (isCodexToolEvent(method, type)) {
+    const mcpToolName = type.replace(/[_-]/gu, '').toLowerCase() === 'mcptoolcall'
+      ? firstToolText(item.server, item.tool) === undefined
+        ? undefined
+        : `${firstToolText(item.server) ?? 'mcp'}.${firstToolText(item.tool) ?? 'tool'}`
+      : undefined
     const name = firstToolText(
       isFileChangeType(type) ? 'edit_file' : undefined,
+      mcpToolName,
       item.name,
       item.toolName,
       item.tool,
@@ -1306,7 +1338,7 @@ function codexMessageToChunk(message: Record<string, any>): CodingNsAgentEvent |
       ...(callId ? { callId } : {}),
       ...(input !== undefined ? { input } : {}),
       ...(failed
-        ? { error: explicitError ?? output ?? `exit code ${String(item.exitCode ?? item.exit_code)}` }
+        ? { error: explicitError ?? output ?? '工具执行失败' }
         : output === undefined ? {} : { output }),
       ...(!failed && output !== undefined ? { outputMode: 'snapshot' as const } : {}),
       ...(agentId ? { agentId } : {}),

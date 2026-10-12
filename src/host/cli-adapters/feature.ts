@@ -64,7 +64,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         new KimiCliDriver(),
         new GeminiCliDriver(),
         new PiAgentDriver(),
-        new CodexAppServerDriver(),
+        new CodexAppServerDriver({ computerUse: 'auto' }),
         new OpenCodeDriver(),
         new GrokBuildDriver(),
         new MiniMaxCodeDriver(),
