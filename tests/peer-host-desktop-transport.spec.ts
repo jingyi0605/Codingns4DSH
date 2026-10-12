@@ -174,6 +174,68 @@ test('Desktop 聚合路由分流远端请求，本机调用原样委派原生实
   })
 })
 
+test('Web/Desktop 共用的页面 fetch 会把远端文件上传转换为 fileUploads/upload', async () => {
+  const globals = globalThis as typeof globalThis & { fetch: typeof fetch }
+  const originalFetch = globals.fetch
+  const calls: { input: RequestInfo | URL; init?: RequestInit }[] = []
+  globals.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init })
+    if (String(input).startsWith('/api/session/uploadFileBinary')) return new Response('local-upload', { status: 201 })
+    return new Response(JSON.stringify({
+      result: {
+        ok: true,
+        value: { receiptId: 'receipt-1', file: { attachmentId: 'attachment-1', name: 'note.txt', bytes: 3 } },
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    const transport = createPeerHostPageTransport()
+    transport.setAggregate(remoteWorkspaceAggregate() as never)
+    const virtualSessionId = createVirtualSessionId('peer-1', 'session-1')
+    const response = await transport.hooks.fetch!(`/api/session/uploadFileBinary?sessionId=${encodeURIComponent(virtualSessionId)}&name=note.txt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: new Uint8Array([0, 45, 255]),
+    })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      value: { receiptId: 'receipt-1', file: { attachmentId: 'attachment-1', name: 'note.txt', bytes: 3 } },
+    })
+    assert.equal(calls.length, 1)
+    assert.equal(String(calls[0]?.input), '/codingns/peerHost/native')
+    const envelope = JSON.parse(String(calls[0]?.init?.body)) as { payload: { method: string; payload: { args: { agentId: string; request: { data: string; name: string } } } } }
+    assert.equal(envelope.payload.method, 'fileUploads/upload')
+    assert.equal(envelope.payload.payload.args.agentId, virtualSessionId)
+    assert.equal(envelope.payload.payload.args.request.data, Buffer.from([0, 45, 255]).toString('base64'))
+    assert.equal(envelope.payload.payload.args.request.name, 'note.txt')
+
+    const nativeResult = await transport.hooks.rpc!({
+      method: 'fileUploads/upload',
+      payload: {
+        channel: '/api',
+        payload: { args: { agentId: virtualSessionId, request: { data: 'AA==', name: 'byte.bin' } } },
+      },
+    })
+    assert.deepEqual(nativeResult, {
+      ok: true,
+      value: { receiptId: 'receipt-1', file: { attachmentId: 'attachment-1', name: 'note.txt', bytes: 3 } },
+    })
+    const nativeEnvelope = JSON.parse(String(calls[1]?.init?.body)) as { payload: { method: string; payload: { args: { agentId: string } } } }
+    assert.equal(nativeEnvelope.payload.method, 'fileUploads/upload')
+    assert.equal(nativeEnvelope.payload.payload.args.agentId, virtualSessionId)
+
+    const localResponse = await transport.hooks.fetch!('/api/session/uploadFileBinary?sessionId=local-session', {
+      method: 'POST',
+      body: new Uint8Array([1, 2]),
+    })
+    assert.equal(localResponse.status, 201)
+    assert.equal(String(calls[2]?.input), '/api/session/uploadFileBinary?sessionId=local-session')
+  } finally {
+    globals.fetch = originalFetch
+  }
+})
+
 test('Desktop 路由只装饰本机 session/list，最终仍还原 Remote 服务方法', async () => {
   await withDesktopPage(async () => {
     const transport = createPeerHostPageTransport()

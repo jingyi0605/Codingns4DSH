@@ -64,7 +64,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         new KimiCliDriver(),
         new GeminiCliDriver(),
         new PiAgentDriver(),
-        new CodexAppServerDriver(),
+        new CodexAppServerDriver({ computerUse: 'auto' }),
         new OpenCodeDriver(),
         new GrokBuildDriver(),
         new MiniMaxCodeDriver(),
@@ -396,6 +396,12 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           // 外部适配器绕过 DSH 原生 Agent Loop，必须在真正执行外部流前补发同一状态，
           // 否则外部子会话完成后虽已写入历史，客户端目录仍不会得到 running -> idle。
           publishExternalStatus(sessionId, true)
+          // 分步驱动（OpenCode、Claude、CodeBuddy 等）在工具完成处只结束一个 DSH
+          // step：Agent Loop 注入 next-step 后仍停留在同一个 turn 里继续下一步。
+          // 这种挂起不是回合结束，本段 llm/stream 返回时不能播报 idle，否则每个
+          // 工具完成都会先「已完成」再「进行中」，会话状态随工具调用反复闪烁。
+          // 真正的收尾由最后一段的 finish、原生 turn/end 与 agent/status idle 补齐。
+          let suspendedForNextStep = false
           try {
             for await (const chunk of registry.execute({ ...input, adapterId: config.adapterId })) {
               if (chunk.type === 'step-boundary') {
@@ -404,6 +410,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
                 // 之后再写入，否则 DSH 已经把整个 turn 结算完了。
                 const injected = nativeSessions?.injectNextStep?.(sessionId) ?? false
                 if (!injected) discardSuspendedTurn()
+                else suspendedForNextStep = true
                 for (const dshChunk of await projector.push(chunk)) yield dshChunk
                 continue
               }
@@ -418,7 +425,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             for (const dshChunk of await projector.fail(message, input.signal?.aborted ?? false)) yield dshChunk
           } finally {
             input.signal?.removeEventListener('abort', discardSuspendedTurn)
-            publishExternalStatus(sessionId, false)
+            // 挂起续段不是回合结束：这里不能播报 idle，否则每个工具完成都会让会话
+            // 状态在「已完成 / 进行中」之间来回闪烁。收尾由最后一段的 finish、
+            // 原生 turn/end 与 agent/status idle 补齐。
+            if (!suspendedForNextStep) publishExternalStatus(sessionId, false)
           }
         })
         if (typeof dispose === 'function') context.resources.add(() => { (dispose as () => void)() })

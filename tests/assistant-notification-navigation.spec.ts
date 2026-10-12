@@ -61,6 +61,23 @@ test('前台会话选择归一化为本地或远端通知匹配三元组，Host 
   assert.equal(normalizeAssistantSessionSelection({ workspaceId: 'project' }), undefined)
 })
 
+test('DSH selection 只提供 sessionId 时按 workspaces.list 反查本地与 PeerHost 工作区', () => {
+  const remoteWorkspaceId = createVirtualWorkspaceId('peer', 'project')
+  const remoteSessionId = createVirtualSessionId('peer', 'same')
+  const context = {
+    get(name: string) {
+      if (name !== 'workspaces') return undefined
+      return { list: { getSnapshot: () => ({ items: [
+        { workspaceId: 'project', sessionIds: ['local-session'] },
+        { workspaceId: remoteWorkspaceId, sessionIds: [remoteSessionId] },
+      ], archivedSessionIds: [] }), subscribe: () => () => {} } }
+    },
+  }
+  assert.deepEqual(normalizeAssistantSessionSelection({ sessionId: 'local-session' }, context), { hostId: 'local', workspaceId: 'project', sessionId: 'local-session' })
+  assert.deepEqual(normalizeAssistantSessionSelection({ sessionId: remoteSessionId }, context), { hostId: 'peer', workspaceId: 'project', sessionId: 'same' })
+  assert.equal(normalizeAssistantSessionSelection({ sessionId: 'missing' }, context), undefined)
+})
+
 test('导航失败、范围切换或取消期间不宣称成功，也不发送任何消息', async () => {
   const failed = fixture(() => false)
   await assert.rejects(openAssistantNotificationSession(failed.services, { hostId: 'local', workspaceId: 'project', sessionId: 'same' }), /未能打开/u)

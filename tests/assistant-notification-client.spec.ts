@@ -49,7 +49,7 @@ test('真实 Host 快照先展示待回答与待审批，同级按时间顺序�
     const snapshot = f.host.read(); assert.equal(snapshot.primary!.kind, expected)
     f.host.ack({ noticeId: snapshot.primary!.noticeId, generation: snapshot.generation, action: 'dismiss' })
   }
-  assert.equal(f.host.read().pendingCount, 2)
+  assert.equal(f.host.read().pendingCount, 0)
 })
 
 test('实际展示才确认，关闭不处理请求，成功导航才已读；同会话其他请求保留', async (t) => {
@@ -69,8 +69,9 @@ test('实际展示才确认，关闭不处理请求，成功导航才已读；�
   await f.store.open(notice.noticeId, f.host.generation)
   assert.deepEqual(f.navigated, [{ ...local, requestId: 'q1', requestKind: 'question' }])
   await f.store.acknowledge(notice.noticeId, f.host.generation, 'dismiss')
-  assert.equal(f.host.read().pendingCount, 2)
-  assert.ok(f.host.read().items.find((item) => item.noticeId === notice.noticeId)!.read)
+  assert.equal(f.host.read().pendingCount, 1)
+  assert.equal(f.host.read().items.some((item) => item.noticeId === notice.noticeId), false)
+  assert.equal((await f.host.target({ noticeId: notice.noticeId, generation: f.host.generation })).requestId, 'q1')
   assert.deepEqual(new Set(f.calls.map((call) => call.endpoint)), new Set(['assistant/notifications/read', 'assistant/notifications/ack', 'assistant/notifications/target']))
 })
 
@@ -200,6 +201,10 @@ test('单条未读直接展示会话卡片，多条提醒在漫画气泡内堆�
   assert.ok(singleHtml.includes('M1 0'))
   assert.ok(singleHtml.includes('border:none'), '主通知气泡不显示外框')
   assert.ok(singleHtml.includes('box-shadow:none'), '主通知气泡不显示阴影接缝')
+  assert.ok(singleHtml.includes('height:auto'), '通知外壳按内容收缩，不能填满原生预留区')
+  assert.ok(singleHtml.includes('grid-auto-rows:max-content'), '通知卡片不能被弹性高度垂直撑开')
+  assert.ok(singleHtml.includes('#303237'), '独立伴随页必须使用夜间灰色回退')
+  assert.ok(singleHtml.indexOf('data-codingns-notification-toolbar') < singleHtml.indexOf('data-codingns-notice-id='), '顶部操作按钮必须位于通知卡片之前')
   assert.ok(!singleHtml.includes('stroke-width="1.25"'), '尾巴不显示边框线')
   assert.ok(singleHtml.includes('问题'))
   assert.ok(!singleHtml.includes('1 条未读'))
@@ -315,7 +320,7 @@ test('气泡内容超出可用高度时只收缩内部面板，气泡底边和�
   assert.ok(html.includes('min-height:0'))
 })
 
-test('分页读取不丢未处理请求，修订变化后游标回到首页，关闭仅收起对应提醒', async (t) => {
+test('分页读取不丢未处理请求，修订变化后游标回到首页，单条清理只隐藏对应提醒', async (t) => {
   const f = fixture(); t.after(() => { f.store.dispose(); f.host.dispose() })
   for (let index = 0; index < 25; index++) f.emit('question', `request:${index}`)
   f.store.configure(true, 'pages'); await f.store.refresh()
@@ -327,7 +332,8 @@ test('分页读取不丢未处理请求，修订变化后游标回到首页，�
   assert.equal(f.store.getSnapshot().frame!.items.length, 20)
   const selected = f.store.getSnapshot().frame!.primary!
   await f.store.acknowledge(selected.noticeId, f.host.generation, 'dismiss')
-  assert.equal(f.store.getSnapshot().frame!.pendingCount, 26)
+  assert.equal(f.store.getSnapshot().frame!.pendingCount, 25)
+  assert.equal(f.store.getSnapshot().frame!.items.some((item) => item.noticeId === selected.noticeId), false)
 })
 
 test('主页面隐藏仍保持单循环更新，实际显示确认拒绝后台/裁剪/不可见节点', async (t) => {
@@ -488,7 +494,7 @@ test('旧气泡点击保留它自己的连接代次，网页已同步新连接�
   assert.equal(f.host.read().primary!.presentation, 'queued', '旧连接的收起不能修改新连接的待办')
   await f.store.acknowledge(shown.noticeId, f.host.generation, 'dismiss', undefined, 2)
   assert.equal(f.host.read().primary, null)
-  assert.equal(f.host.read().pendingCount, 1)
+  assert.equal(f.host.read().pendingCount, 0)
   await f.store.open(shown.noticeId, f.host.generation, 2)
   assert.equal(f.navigated[0]!.connectionGeneration, 2)
 })

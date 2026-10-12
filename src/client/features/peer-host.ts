@@ -314,6 +314,16 @@ export function createPeerHostPageTransport(
     const scope = scopes.get(virtualSessionId)
     return scope?.targetHostId === parsed.hostId ? scope : undefined
   }
+  const scopeForFileUpload = (url: URL): { readonly virtualSessionId: string; readonly scope: HostScope } | undefined => {
+    const virtualSessionId = url.searchParams.get('sessionId')
+    if (virtualSessionId === null) return undefined
+    const parsed = parseVirtualSessionId(virtualSessionId)
+    if (parsed === null) return undefined
+    const scope = scopes.get(virtualSessionId)
+    return scope?.targetHostId === parsed.hostId && scope.sessionId === parsed.sessionId
+      ? { virtualSessionId, scope }
+      : undefined
+  }
   const sessionExportPath = (url: URL, scope: HostScope): string => {
     const parsed = parseVirtualSessionId(url.searchParams.get('sessionId') ?? '')
     if (parsed === null || scope.targetHostId !== parsed.hostId) throw new Error('远程 Session 导出作用域不匹配')
@@ -325,11 +335,70 @@ export function createPeerHostPageTransport(
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     return new URL(raw, typeof document === 'undefined' ? 'http://codingns.invalid' : document.baseURI)
   }
+  const remoteFileUploadFetch = async (
+    url: URL,
+    request: Request | undefined,
+    init: RequestInit | undefined,
+    virtualSessionId: string,
+    scope: HostScope,
+  ): Promise<Response> => {
+    const signal = init?.signal ?? request?.signal
+    signal?.throwIfAborted()
+    // DSH 的 Blob/ReadableStream 上传使用这个原始 HTTP 入口。PeerHost 不能把
+    // 原始字节交给通用 HTTP 代理，因此在页面边界一次性编码后复用白名单 Remote。
+    // 以原 Request 作为基底合并 init，避免 DSH 传入 Request 后只覆盖 headers
+    // 时丢掉原始 Blob/ReadableStream body。
+    const bodyRequest = new Request(request ?? url.href, init)
+    const bytes = new Uint8Array(await bodyRequest.arrayBuffer())
+    const name = url.searchParams.get('name')
+    const payload = {
+      args: {
+        // 保留虚拟 ID 到 Host 边界，由 rewriteNativeRequestIds 统一还原真实 SessionId。
+        agentId: virtualSessionId,
+        request: {
+          data: encodeUploadBytesBase64(bytes),
+          ...(name === null ? {} : { name }),
+        },
+      },
+    }
+    try {
+      const value = decodeNativeResponseBytes(await codingNsCall('peerHost/native', {
+        method: 'fileUploads/upload',
+        payload,
+        scope,
+      }, signal))
+      return jsonResponse({ ok: true, value })
+    } catch (error) {
+      signal?.throwIfAborted()
+      const code = (error as { code?: unknown }).code
+      return jsonResponse({
+        ok: false,
+        error: {
+          code: typeof code === 'string' ? code : 'gateway/internal',
+          message: error instanceof Error ? error.message : String(error),
+          details: {},
+        },
+      })
+    }
+  }
   const remoteSessionExportFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     if (fetchImpl === undefined) throw new Error('当前页面没有 fetch')
     const request = typeof Request !== 'undefined' && input instanceof Request ? input : undefined
     const method = (init?.method ?? request?.method ?? 'GET').toUpperCase()
     const url = readFetchUrl(input)
+    if (url.pathname === '/api/session/uploadFileBinary' && method === 'POST') {
+      const parsed = parseVirtualSessionId(url.searchParams.get('sessionId') ?? '')
+      const uploadScope = scopeForFileUpload(url)
+      if (uploadScope !== undefined && uploadScope.scope.targetHostId !== null) {
+        return remoteFileUploadFetch(url, request, init, uploadScope.virtualSessionId, uploadScope.scope)
+      }
+      // 虚拟 Session 不能静默交给本机上传服务；真实本机会话和普通请求仍保持
+      // 原有 fetch 行为，未完成聚合时返回明确的作用域错误。
+      if (parsed !== null) return jsonResponse({
+        ok: false,
+        error: { code: 'PEER_HOST_SCOPE_MISMATCH', message: t('peerHost.sessionUnavailable'), details: {} },
+      }, 409)
+    }
     if (url.pathname !== '/api/session.export' || (method !== 'GET' && method !== 'HEAD')) return fetchImpl(input, init)
     const scope = scopeForSessionExport(url)
     if (scope === undefined || scope.targetHostId === null) return fetchImpl(input, init)
@@ -557,7 +626,9 @@ export function createPeerHostPageTransport(
     reply: (scope, payload, signal) => codingNsCall('peerHost/native', { method: '$events/result', payload, scope }, signal),
     accepts: (agentId, scope) => scopes.get(agentId)?.targetHostId === scope.targetHostId,
     onSessionStatus: (sessionId, running) => {
-      if (projection.setSessionRunning(sessionId, running)) void refreshPeerHostNativeSessions(uiContext as Parameters<typeof refreshPeerHostNativeSessions>[0])
+      // 状态帧本身会进入 DSH 原生事件总线；这里仅保留投影覆盖，避免每个
+      // true/false 边沿都再发起一次完整 session/list。成员增删仍由聚合刷新负责。
+      projection.setSessionRunning(sessionId, running)
     },
     prepare: async () => {
       if (nativeSessionPrepared) return
@@ -611,13 +682,18 @@ export function createPeerHostPageTransport(
     refreshModelCatalogForScope(navigationScope())
   }
   /** 父会话目录早于聚合到达时，复用新建会话的临时作用域与清理机制。 */
-  const rememberSubagentCatalog = (scope: HostScope, value: unknown): void => {
+  const rememberSubagentCatalog = (scope: HostScope, value: unknown): boolean => {
     const catalog = asRecord(asRecord(asRecord(value)?.projections)?.values)?.subagentCatalog
-    if (!Array.isArray(catalog)) return
+    if (!Array.isArray(catalog)) return false
+    let changed = false
     for (const child of catalog) {
       const id = asRecord(child)?.id
-      if (typeof id === 'string' && !scopes.has(id)) rememberCreatedSession(scope, { sessionId: id })
+      if (typeof id === 'string' && !scopes.has(id)) {
+        rememberCreatedSession(scope, { sessionId: id })
+        changed = true
+      }
     }
+    return changed
   }
   const hooks: CodingNsTransportHooks = {
     rpc: async <TResponse = unknown>({ method, payload, signal }: { method: string; payload: unknown; signal?: AbortSignal }): Promise<TResponse> => {
@@ -730,19 +806,18 @@ export function createPeerHostPageTransport(
           // session/follow 承载远端新建、续接过程中的实时事件。聚合摘要本身仍按轮询
           // 读取，但由这里把事件转成合并刷新，侧栏无需切换到别的会话才能更新状态。
           return (async function* (): AsyncIterable<TChunk> {
-            let emitted = false
             try {
               for await (const chunk of stream) {
-                emitted = true
                 // 父会话先公布子会话目录，聚合稍后才补基线。立即登记已验证的虚拟 ID，
                 // 避免用户在这段窗口打开子会话时把 CLI 配置读到本机并缓存成 dsh。
-                rememberSubagentCatalog(scope, chunk)
-                scheduleAggregateRefresh()
+                // 普通消息增量不改变工作区/会话成员，不应在历史回放期间反复读取完整摘要。
+                if (rememberSubagentCatalog(scope, chunk)) scheduleAggregateRefresh()
                 yield chunk
               }
             } finally {
-              // 某些实现只在回合结束时写入 updatedAt/status，流结束也必须补一次刷新。
-              if (!emitted) scheduleAggregateRefresh()
+              // 某些实现只在回合结束时写入 updatedAt/status，流正常结束或异常断开时
+              // 补一次刷新；用户主动取消/切换会话时不再额外启动聚合请求。
+              if (!(signal?.aborted ?? false)) scheduleAggregateRefresh()
             }
           })()
         }
@@ -1319,6 +1394,22 @@ function decodeBase64(value: string): ArrayBuffer {
   const bytes = new Uint8Array(binary.length)
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
   return bytes.buffer as ArrayBuffer
+}
+
+function encodeUploadBytesBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  if (typeof btoa === 'function') return btoa(binary)
+  const nodeBuffer = (globalThis as { Buffer?: { from(value: Uint8Array): { toString(encoding: string): string } } }).Buffer
+  if (nodeBuffer !== undefined) return nodeBuffer.from(bytes).toString('base64')
+  throw new Error('当前运行时不支持 Base64 编码')
+}
+
+function jsonResponse(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { 'content-type': 'application/json; charset=utf-8' },
+  })
 }
 
 /** PeerHost 启用状态说明；安装动作发生在启动页 preboot 阶段。 */

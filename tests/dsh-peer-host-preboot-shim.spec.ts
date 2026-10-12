@@ -10,6 +10,7 @@ import {
 
 type ShimGlobal = typeof globalThis & {
   __DSH_TRANSPORT__?: unknown
+  __DSH_FILE_UPLOAD__?: { fetch?: (input: string | URL, init: RequestInit) => Promise<Response> }
   dshDesktopBoot?: unknown
   location?: unknown
   [DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]?: { getState: () => string; getMode: () => string; activate: (t?: unknown) => string; deactivate: () => string; dispose: () => void }
@@ -19,12 +20,14 @@ async function withCleanGlobals(run: (globals: ShimGlobal) => void | Promise<voi
   const globals = globalThis as ShimGlobal
   const previous = {
     transport: globals.__DSH_TRANSPORT__,
+    fileUpload: globals.__DSH_FILE_UPLOAD__,
     desktop: globals.dshDesktopBoot,
     shim: globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL],
   }
   const hadTransport = Object.hasOwn(globals, '__DSH_TRANSPORT__')
   const hadDesktop = Object.hasOwn(globals, 'dshDesktopBoot')
   delete globals.__DSH_TRANSPORT__
+  delete globals.__DSH_FILE_UPLOAD__
   delete globals.dshDesktopBoot
   delete globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]
   try {
@@ -32,12 +35,34 @@ async function withCleanGlobals(run: (globals: ShimGlobal) => void | Promise<voi
   } finally {
     if (hadTransport) globals.__DSH_TRANSPORT__ = previous.transport
     else delete globals.__DSH_TRANSPORT__
+    if (previous.fileUpload === undefined) delete globals.__DSH_FILE_UPLOAD__
+    else globals.__DSH_FILE_UPLOAD__ = previous.fileUpload
     if (hadDesktop) globals.dshDesktopBoot = previous.desktop
     else delete globals.dshDesktopBoot
     if (previous.shim === undefined) delete globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]
     else globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL] = previous.shim
   }
 }
+
+test('preboot 为 DSH 文件上传安装动态 carrier，并在释放时还原', async () => {
+  await withCleanGlobals(async (globals) => {
+    const shim = installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
+    const carrier = globals.__DSH_FILE_UPLOAD__
+    assert.equal(typeof carrier?.fetch, 'function')
+    const calls: string[] = []
+    shim.activate({
+      fetch: async (input) => {
+        calls.push(String(input))
+        return new Response('ok')
+      },
+    })
+    const response = await carrier!.fetch!('/api/session/uploadFileBinary?sessionId=session-1', { method: 'POST' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(calls, ['/api/session/uploadFileBinary?sessionId=session-1'])
+    shim.dispose()
+    assert.equal(globals.__DSH_FILE_UPLOAD__, undefined)
+  })
+})
 
 function binaryResponse(bytes: Uint8Array): Response {
   const form = new FormData()

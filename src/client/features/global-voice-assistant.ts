@@ -22,7 +22,7 @@ import { AssistantNotificationStore } from './assistant-notification-store.js'
 import { assistantNotificationText, normalizeAssistantNotificationSettings } from '../../shared/assistant-notifications.js'
 import type { AssistantNotification, AssistantNotificationSnapshot, AssistantNotificationTailSide } from '../../shared/assistant-notifications.js'
 import type { AssistantAvatarReaction } from '../../shared/assistant-avatar.js'
-import { readDesktopAssistantNotificationSnapshot, type DesktopAssistantNotification } from '../../shared/desktop-assistant.js'
+import { assistantNotificationSnapshotHasNotifications, readDesktopAssistantNotificationSnapshot, type DesktopAssistantNotification } from '../../shared/desktop-assistant.js'
 import { normalizeAssistantSessionSelection, openAssistantNotificationSession, readAssistantSessionSelectionStore } from '../../dsh-capabilities/client/assistant-session-navigation-adapter.js'
 import { uiFontSize } from '../font-scale.js'
 
@@ -170,7 +170,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       if (selection === undefined) return undefined
       const sync = (): void => {
         // 选择 Store 只发布成功的前台会话；通知 Store 再以串行队列确认，旧选择不会越过新选择。
-        void notifications.markSessionRead(normalizeAssistantSessionSelection(selection.getSnapshot())).catch(() => undefined)
+        void notifications.markSessionRead(normalizeAssistantSessionSelection(selection.getSnapshot(), scope)).catch(() => undefined)
       }
       sync()
       return selection.subscribe(sync)
@@ -192,6 +192,9 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   }, [notifications])
   const dismissNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number): void => {
     void notifications.acknowledge(noticeId, generation, 'dismiss', undefined, connectionGeneration).catch(() => undefined)
+  }, [notifications])
+  const collapseNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number): void => {
+    void notifications.acknowledge(noticeId, generation, 'collapse', undefined, connectionGeneration).catch(() => undefined)
   }, [notifications])
   const openNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number): void => {
     void notifications.open(noticeId, generation, connectionGeneration).catch(() => undefined)
@@ -425,7 +428,9 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     userText: partialText || liveUserText, assistantText: liveAssistantText,
   } : undefined
   // 语音六种动作保留原事实所有者，情绪只由当前通知提供，可随时撤销。
-  const noticeFrame = notificationsEnabled ? notificationSnapshot.frame : undefined
+  // 空快照只表示通知中心已连接，不代表需要在形象旁挂载气泡；否则会留下空白通知外壳。
+  const noticeFrame = notificationsEnabled && notificationSnapshot.frame !== undefined && assistantNotificationSnapshotHasNotifications(notificationSnapshot.frame)
+    ? notificationSnapshot.frame : undefined
   const reaction = assistantNotificationReaction(noticeFrame)
   const desktopNotification = desktopAssistantNotification(noticeFrame,
     notificationSnapshot.errorNoticeId === noticeFrame?.primary?.noticeId ? notificationSnapshot.error : undefined)
@@ -442,9 +447,8 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
         await notifications.refresh(true)
         // 一键清理没有单条身份，只按点击帧的代次清空当前气泡展示。
         if (event.action === 'dismiss-all') return notifications.clearAll(event.noticeGeneration)
-        return event.action === 'open' ? notifications.open(event.noticeId, event.noticeGeneration,
-          event.connectionGeneration)
-          : notifications.acknowledge(event.noticeId, event.noticeGeneration, 'dismiss', undefined, event.connectionGeneration)
+        if (event.action === 'open') return notifications.open(event.noticeId, event.noticeGeneration, event.connectionGeneration)
+        return notifications.acknowledge(event.noticeId, event.noticeGeneration, event.action === 'collapse' ? 'collapse' : 'dismiss', undefined, event.connectionGeneration)
       },
     })
   const nativeFloating = floatingEnabled && desktopAvatar.native
@@ -453,7 +457,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     role: 'alert', style: { padding: 12, background: 'var(--dsw-alias-background-secondary)', borderRadius: 12, overflowWrap: 'anywhere' },
   }, notificationSnapshot.error) : undefined) : (tail: AssistantNotificationTailSide, tailTarget?: number, tailStyle?: CSSProperties) => createElement(AssistantNotificationBubble, {
     frame: noticeFrame, t, error: notificationSnapshot.error, autoClose: notificationSettings.autoClose, autoCloseSeconds: notificationSettings.autoCloseSeconds,
-    onPresented: presentNotice, onDismiss: dismissNotice, onOpen: openNotice, onClearAll: clearAllNotices, tailSide: tail, tailTarget, tailStyle,
+    onPresented: presentNotice, onDismiss: dismissNotice, onAutoClose: collapseNotice, onOpen: openNotice, onClearAll: clearAllNotices, tailSide: tail, tailTarget, tailStyle,
   })
   return createElement('div', { 'data-codingns-global-voice': 'true', ...(conversationOpen || floatingVisible ? {} : { 'aria-hidden': 'true' }) },
     floatingVisible && !nativeFloating

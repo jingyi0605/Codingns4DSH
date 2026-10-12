@@ -19,6 +19,9 @@ function harness(options: {
   events?: Array<{ type: string; data: Record<string, unknown> }>
   promptError?: string
   hold?: boolean
+  holdFormReply?: boolean
+  formReplyStatus?: number
+  formReplyData?: unknown
   skills?: unknown[]
   models?: unknown[]
   providers?: unknown[]
@@ -29,6 +32,8 @@ function harness(options: {
   let ended = false
   let ready = false
   let sessionCount = 0
+  let releaseFormReply: (() => void) | undefined
+  const formReplyGate = options.holdFormReply ? new Promise<void>((resolve) => { releaseFormReply = resolve }) : Promise.resolve()
   const emit = (type: string, data: Record<string, unknown> = {}): void => {
     if (!ended) controller?.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ id: 'evt_test', type, data })}\n\n`))
   }
@@ -46,6 +51,11 @@ function harness(options: {
     if (path === '/api/session' && init.method === 'POST') return envelope({ id: `ses_${++sessionCount}` })
     if (/^\/api\/session\/ses_[^/]+$/u.test(path)) return envelope({ id: path.split('/').pop(), location: { directory: options.sessionDirectory ?? cwd } })
     if (path.endsWith('/model') && init.method === 'POST') return envelope({})
+    if (path.includes('/form/') && path.endsWith('/reply')) {
+      await formReplyGate
+      if (options.formReplyStatus !== undefined) return json(options.formReplyData ?? {}, options.formReplyStatus)
+      return new Response(null, { status: 204 })
+    }
     if (path.endsWith('/reply')) return new Response(null, { status: 204 })
     if (path.endsWith('/interrupt')) { emit('session.execution.interrupted', { sessionID: 'ses_1', reason: 'user' }); return json({ interrupted: true }) }
     if (path.endsWith('/prompt')) {
@@ -70,7 +80,7 @@ function harness(options: {
     return json({}, 404)
   }
   const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
-  return { driver, requests, emit }
+  return { driver, requests, emit, releaseFormReply: () => releaseFormReply?.() }
 }
 
 const input = { sessionId: 'dsh-session', cwd, messages: [], prompt: '检查代码', modelId: 'custom/alias/review', effortId: 'deep' }
@@ -434,6 +444,72 @@ test('OpenCode V2 权限和表单回复保留 session 路由、option.value 与�
   assert.deepEqual(requests.find((request) => request.path.endsWith('/permission/per_1/reply'))?.body, { decision: 'reject', message: '取消操作' })
   assert.deepEqual(requests.find((request) => request.path.endsWith('/form/frm_1/reply'))?.body, { answer: { mode: 'fast', checks: ['types'], enabled: true, count: 3 } })
   await assert.rejects(driver.respondQuestion(input.sessionId, { requestId: 'frm_1', answers: [] }), /请求已结束/u)
+  driver.dispose()
+})
+
+test('OpenCode V2 同一问题表单的并发回复只发送一次', async () => {
+  const { driver, requests, releaseFormReply } = harness({ holdFormReply: true, events: [
+    { type: 'form.created', data: { form: { id: 'frm_race', sessionID: 'ses_1', fields: [{ key: 'choice', type: 'string', options: [{ label: '是', value: 'yes' }] }] } } },
+    done,
+  ] })
+  for await (const event of driver.executeTurn(input)) {
+    if (event.type !== 'question-request') continue
+    const response = { requestId: event.requestId, answers: [{ id: 'choice', selected: ['是'] }] }
+    const first = driver.respondQuestion(input.sessionId, response)
+    const duplicate = driver.respondQuestion(input.sessionId, response)
+    assert.equal(requests.filter((request) => request.path.endsWith('/form/frm_race/reply')).length, 1)
+    releaseFormReply()
+    await Promise.all([first, duplicate])
+  }
+  assert.equal(requests.filter((request) => request.path.endsWith('/form/frm_race/reply')).length, 1)
+  driver.dispose()
+})
+
+test('OpenCode V2 只将 FormAlreadySettledError 的 HTTP 409 当作幂等成功', async () => {
+  const settled = harness({
+    formReplyStatus: 409,
+    formReplyData: { errors: [{ name: 'FormAlreadySettledError', message: 'Form already settled' }] },
+    events: [{ type: 'form.created', data: { form: { id: 'frm_settled', sessionID: 'ses_1', fields: [{ key: 'ok', type: 'boolean' }] } } }, done],
+  })
+  for await (const event of settled.driver.executeTurn(input)) {
+    if (event.type !== 'question-request') continue
+    const response = { requestId: event.requestId, answers: [{ id: 'ok', selected: ['是'] }] }
+    await settled.driver.respondQuestion(input.sessionId, response)
+    await settled.driver.respondQuestion(input.sessionId, response)
+  }
+  assert.equal(settled.requests.filter((request) => request.path.endsWith('/form/frm_settled/reply')).length, 1)
+
+  const conflict = harness({
+    formReplyStatus: 409,
+    formReplyData: { message: 'another conflict' },
+    events: [{ type: 'form.created', data: { form: { id: 'frm_conflict', sessionID: 'ses_1', fields: [{ key: 'ok', type: 'boolean' }] } } }, done],
+  })
+  for await (const event of conflict.driver.executeTurn(input)) {
+    if (event.type === 'question-request') {
+      await assert.rejects(conflict.driver.respondQuestion(input.sessionId, {
+        requestId: event.requestId, answers: [{ id: 'ok', selected: ['是'] }],
+      }), /HTTP 409/u)
+    }
+  }
+  assert.equal(conflict.requests.filter((request) => request.path.endsWith('/form/frm_conflict/reply')).length, 1)
+  settled.driver.dispose()
+  conflict.driver.dispose()
+})
+
+test('OpenCode V2 取消后到达的表单答案不会发给 Provider', { timeout: 2_000 }, async () => {
+  const { driver, requests } = harness({ hold: true, events: [
+    { type: 'form.created', data: { form: { id: 'frm_cancelled', sessionID: 'ses_1', fields: [{ key: 'ok', type: 'boolean' }] } } },
+  ] })
+  const controller = new AbortController()
+  for await (const event of driver.executeTurn({ ...input, signal: controller.signal })) {
+    if (event.type !== 'question-request') continue
+    controller.abort()
+    await driver.respondQuestion(input.sessionId, {
+      requestId: event.requestId, answers: [{ id: 'ok', selected: ['是'] }],
+    })
+  }
+  assert.equal(requests.filter((request) => request.path.endsWith('/form/frm_cancelled/reply')).length, 0)
+  assert.equal(requests.filter((request) => request.path.endsWith('/interrupt')).length, 1)
   driver.dispose()
 })
 

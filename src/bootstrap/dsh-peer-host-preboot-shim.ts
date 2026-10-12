@@ -31,6 +31,8 @@ export interface DshPeerHostPrebootShimApi {
 
 type ShimGlobal = typeof globalThis & {
   __DSH_TRANSPORT__?: Record<string, unknown>
+  /** DSH file-upload 包在启动前读取的可选 fetch carrier。 */
+  __DSH_FILE_UPLOAD__?: { readonly fetch?: (input: string | URL, init: RequestInit) => Promise<Response> }
   dshDesktopBoot?: unknown
   [DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]?: DshPeerHostPrebootShimApi
 }
@@ -72,6 +74,23 @@ export function installDshPeerHostPrebootShim(options: { readonly dshVersion: st
   const baselineOpen = (): unknown => {
     const open = baselineRpc()?.open
     return typeof open === 'function' ? open : undefined
+  }
+  // DSH file-upload 默认在 Worker 中发送原始字节，Worker 不会继承页面上的
+  // globalThis.fetch。提前提供 carrier，让它在调用时动态读取当前 Transport；
+  // PeerHost 激活后，远程虚拟 Session 也会因此进入同一套页面分流逻辑。
+  const originalFileUpload = globals.__DSH_FILE_UPLOAD__
+  const fileUploadCarrier = originalFileUpload === undefined
+    ? { fetch: (input: string | URL, init: RequestInit) => {
+      const fetcher = resolveFetch()
+      if (typeof fetcher !== 'function') return Promise.reject(new Error('当前页面没有 fetch'))
+      return (fetcher as (input: string | URL, init: RequestInit) => Promise<Response>)(input, init)
+    } }
+    : undefined
+  if (fileUploadCarrier !== undefined) globals.__DSH_FILE_UPLOAD__ = fileUploadCarrier
+  const restoreFileUpload = (): void => {
+    if (fileUploadCarrier === undefined || globals.__DSH_FILE_UPLOAD__ !== fileUploadCarrier) return
+    if (originalFileUpload === undefined) delete globals.__DSH_FILE_UPLOAD__
+    else globals.__DSH_FILE_UPLOAD__ = originalFileUpload
   }
 
   const facade: Record<string, unknown> = {
@@ -177,6 +196,7 @@ export function installDshPeerHostPrebootShim(options: { readonly dshVersion: st
       return state
     },
     dispose() {
+      restoreFileUpload()
       active = undefined
       state = 'disposed'
       if (mode === 'desktop') {
@@ -250,7 +270,12 @@ function patchDshPeerHostPrebootShimScript(script: string): string {
   const marker = 'function fallbackCall(channel,endpoint,payload,signal)'
   const parser = 'function readDshRpcResponse(r){return(async function(){var c=r.headers&&r.headers.get("content-type");c=c&&c.split(";",1)[0].trim().toLowerCase();if(c!=="multipart/form-data")return await r.json();var fields=new Map();for(var iterator=(await r.formData()).entries(),step=iterator.next();!step.done;step=iterator.next()){var pair=step.value;if(fields.has(pair[0]))throw new TypeError("connection: invalid binary response fields");fields.set(pair[0],pair[1])}var metadata=fields.get("metadata");fields.delete("metadata");if(typeof metadata!=="string")throw new TypeError("connection: invalid binary response fields");var envelope=JSON.parse(metadata);var result=envelope&&typeof envelope==="object"&&!Array.isArray(envelope)?envelope.result:void 0;if(!envelope||typeof envelope!=="object"||Array.isArray(envelope)||!result||typeof result!=="object"||Array.isArray(result)||result.ok!==true)throw new TypeError("connection: invalid binary response result");var attachments=envelope.attachments;if(!Array.isArray(attachments)||attachments.length===0)throw new TypeError("connection: invalid binary response result");var root={value:result.value};for(var index=0;index<attachments.length;index++){var attachment=attachments[index];var path=attachment&&attachment.path;var part=attachment&&attachment.part;if(!attachment||typeof attachment!=="object"||Array.isArray(attachment)||attachment.codec!=="bytes"||typeof part!=="string"||!Array.isArray(path))throw new TypeError("connection: invalid binary response attachment");var data=fields.get(part);fields.delete(part);if(!(data instanceof Blob))throw new TypeError("connection: invalid binary response fields");var parent=root;var key="value";for(var pathIndex=0;pathIndex<path.length;pathIndex++){var segment=path[pathIndex];var value=Reflect.get(parent,key);if(typeof value!=="object"||value===null)throw new TypeError("connection: invalid binary response path");if(Array.isArray(value)){if(typeof segment!=="number"||!Number.isSafeInteger(segment)||segment<0||segment>=value.length)throw new TypeError("connection: invalid binary response path")}else if(typeof segment!=="string")throw new TypeError("connection: invalid binary response path");if(!Object.hasOwn(value,segment))throw new TypeError("connection: invalid binary response path");parent=value;key=segment}if(Reflect.get(parent,key)!==null)throw new TypeError("connection: invalid binary response placeholder");Object.defineProperty(parent,key,{value:new Uint8Array(await data.arrayBuffer()),enumerable:true,writable:true,configurable:true})}if(fields.size!==0)throw new TypeError("connection: invalid binary response fields");return Object.assign({},envelope,{result:Object.assign({},result,{value:root.value})})})()}function fallbackCall(channel,endpoint,payload,signal)'
   const patched = script.replace(marker, parser)
-  return patched.replace('return r.json()}).then(function(x){return x.result})}function call(', 'return readDshRpcResponse(r)}).then(function(x){return x.result})}function call(')
+  const withUploadCarrier = patched.replace(
+    'function baselineOpen(){',
+    'var previousFileUpload=g.__DSH_FILE_UPLOAD__,fileUploadCarrier;if(previousFileUpload===void 0){fileUploadCarrier={fetch:function(i,n){var f=resolveFetch();if(typeof f!=="function")return Promise.reject(new Error("当前页面没有 fetch"));return f(i,n)}};g.__DSH_FILE_UPLOAD__=fileUploadCarrier}function restoreFileUpload(){if(fileUploadCarrier===void 0||g.__DSH_FILE_UPLOAD__!==fileUploadCarrier)return;if(previousFileUpload===void 0)delete g.__DSH_FILE_UPLOAD__;else g.__DSH_FILE_UPLOAD__=previousFileUpload}function baselineOpen(){',
+  )
+  const withResponseParser = withUploadCarrier.replace('return r.json()}).then(function(x){return x.result})}function call(', 'return readDshRpcResponse(r)}).then(function(x){return x.result})}function call(')
+  return withResponseParser.replace('dispose:function(){active=void 0;', 'dispose:function(){restoreFileUpload();active=void 0;')
 }
 
 async function fallbackRpc(channel: string, endpoint: string, payload: unknown, signal: AbortSignal | undefined, fetcher: unknown): Promise<unknown> {

@@ -9,7 +9,14 @@ import { dshThemeColor } from './theme.js'
 import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { attachOutsideDismissal } from './popup-dismiss.js'
 import { PEER_HOST_OPEN_EVENT } from './peer-host-connection-button.js'
-import { resolveSettingsAnchor, settingsAnchorContainer, type SettingsAnchorKind } from './settings-anchor.js'
+import {
+  SETTINGS_BUTTON_SELECTOR,
+  SETTINGS_LAUNCHER_SLOT_SELECTOR,
+  resolveSettingsAnchor,
+  settingsAnchorContainer,
+  type SettingsAnchorKind,
+  type SettingsAnchorMatch,
+} from './settings-anchor.js'
 import { readDshPeerHostPrebootShimState } from '../bootstrap/dsh-peer-host-preboot-shim.js'
 import { startSerialPolling } from './serial-polling.js'
 
@@ -99,20 +106,24 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
       observeDom = true
       return
     }
-    // 齿轮按钮是 `settings.launcher` 槽位内的 fallback；Desktop 下该槽位被 DSH
-    // 账户菜单占位，齿轮不渲染，锚点直接落在槽位出口节点上。
-    const match = resolveSettingsAnchor((selector) => root.querySelector<HTMLElement>(selector))
-    if (match === null) {
-      observeDom = true
-      return
-    }
-    // 两种锚点最终都落在同一个「槽位出口」容器里（详见 settings-anchor 模块）。
-    const container = settingsAnchorContainer(match)
+    // 设置弹窗打开后，Desktop 可能同时渲染多个同名槽位。优先复用已经挂载的
+    // 入口及其容器，不能每次看到另一个槽位就再创建一个连接按钮。
+    const existing = root.querySelector<HTMLButtonElement>(`button[${ACCOUNT_ATTRIBUTE}]`)
+    let match = existing?.parentElement === null || existing?.parentElement === undefined
+      ? null
+      : matchForAccountContainer(existing.parentElement)
+    let container = match === null ? null : settingsAnchorContainer(match)
     if (container === null) {
+      // 齿轮按钮是 `settings.launcher` 槽位内的 fallback；Desktop 下该槽位被 DSH
+      // 账户菜单占位，齿轮不渲染，锚点直接落在槽位出口节点上。
+      match = resolveSettingsAnchor((selector) => root.querySelector<HTMLElement>(selector))
+      container = match === null ? null : settingsAnchorContainer(match)
+    }
+    if (match === null || container === null) {
       observeDom = true
       return
     }
-    let button = container.querySelector<HTMLButtonElement>(`button[${ACCOUNT_ATTRIBUTE}]`)
+    let button = existing ?? container.querySelector<HTMLButtonElement>(`button[${ACCOUNT_ATTRIBUTE}]`)
     if (button === null) {
       button = createAccountButton(root, isDesktopPage())
       button.addEventListener('click', (event) => {
@@ -124,8 +135,14 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
     // `settings.launcher` 出口是 display: contents，子节点会直接参与宿主
     // triggerRow 的 flex 布局。把插件入口放在原生账户组件之后，才能和账户登录
     // 组件保持同一行，并让连接管理入口自然落到最右侧。
-    if (match.kind === 'launcher-slot') container.append(button)
-    else if (button.parentElement !== container) container.insertBefore(button, container.firstChild)
+    if (button.parentElement !== container) {
+      if (match.kind === 'launcher-slot') container.append(button)
+      else container.insertBefore(button, container.firstChild)
+    }
+    // 旧版本或宿主重渲染可能留下重复入口；同一页面只允许一个账户入口。
+    root.querySelectorAll<HTMLButtonElement>(`button[${ACCOUNT_ATTRIBUTE}]`).forEach((node) => {
+      if (node !== button) node.remove()
+    })
     observeDom = false
     observer?.disconnect()
     container.dataset.codingnsAccountRow = 'true'
@@ -148,14 +165,11 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
     // DSH 的 `triggerRow`（里面是 DSH 自己的账户菜单）。宿主自己负责宽窄态，
     // 插件只保证入口追加到末尾并保持一行，避免原生账户组件被换到下一行。
     if (kind === 'launcher-slot') {
-      const row = container.parentElement
-      if (row === null) return
       // Desktop 的宿主 triggerRow 已经负责宽窄态布局。插件不能给它加
       // wrap/居中规则，否则 36px 收起态会把原生账户组件和入口拆成两行。
       const mode = 'desktop'
       if (button.dataset.codingnsWide === mode) return
       button.dataset.codingnsWide = mode
-      row.style.flexWrap = 'nowrap'
       button.style.order = '2'
       button.style.marginLeft = 'auto'
       return
@@ -195,9 +209,8 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
 
   const observerCallback = (): void => {
     if (disposed || rendering || renderQueued) return
-    const match = resolveSettingsAnchor((selector) => root.querySelector<HTMLElement>(selector))
     const button = root.querySelector<HTMLButtonElement>(`button[${ACCOUNT_ATTRIBUTE}]`)
-    if (match !== null && button !== null && settingsAnchorContainer(match) === button.parentElement) return
+    if (button !== null && button.parentElement !== null && matchForAccountContainer(button.parentElement) !== null) return
     renderQueued = true
     queueMicrotask(() => {
       renderQueued = false
@@ -584,6 +597,11 @@ function resourceRow(dom: Document, label: string, value: number): HTMLElement {
   return row
 }
 function isWide(parent: HTMLElement, settings: HTMLElement): boolean { return parent.clientWidth > 96 || getComputedStyle(settings).display !== 'none' && settings.getBoundingClientRect().width > 70 }
+function matchForAccountContainer(container: HTMLElement): SettingsAnchorMatch | null {
+  if (container.matches(SETTINGS_LAUNCHER_SLOT_SELECTOR)) return { kind: 'launcher-slot', node: container }
+  const settings = container.querySelector<HTMLElement>(SETTINGS_BUTTON_SELECTOR)
+  return settings === null || settings.parentElement !== container ? null : { kind: 'settings-button', node: settings }
+}
 function formatPercent(value: number): string { return `${Math.round(value)}%` }
 function formatBytes(value: number): string { if (value < 1024 ** 3) return `${Math.round(value / 1024 ** 2)} MB`; return `${(value / 1024 ** 3).toFixed(1)} GB` }
 function isRemoteContext(): boolean { return (globalThis as { __CODINGNS4DSH_REMOTE_WEB_CONTEXT__?: unknown }).__CODINGNS4DSH_REMOTE_WEB_CONTEXT__ === true }

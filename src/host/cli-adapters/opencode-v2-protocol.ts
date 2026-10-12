@@ -30,6 +30,8 @@ interface TurnTarget {
   readonly providerSessionId: string
   readonly controller: AbortController
   readonly forms: Map<string, readonly RecordValue[]>
+  readonly formReplies: Map<string, Promise<void>>
+  readonly settledForms: Set<string>
 }
 
 /**
@@ -184,7 +186,10 @@ export class OpenCodeV2Protocol {
       await this.request(server, sessionPath(id!), { permissions }, input.signal, 'PATCH')
     }
     this.sessions.set(input.sessionId, { server, id: id! })
-    const target: TurnTarget = { server, providerSessionId: id!, controller: new AbortController(), forms: new Map() }
+    const target: TurnTarget = {
+      server, providerSessionId: id!, controller: new AbortController(),
+      forms: new Map(), formReplies: new Map(), settledForms: new Set(),
+    }
     this.turns.set(input.sessionId, target)
     const projector = new OpenCodeV2Events(selected === undefined
       ? undefined
@@ -192,6 +197,8 @@ export class OpenCodeV2Protocol {
     let interruption: Promise<unknown> | undefined
     const abort = (): void => {
       target.controller.abort()
+      // 中断后 UI 可能仍提交已显示的问题答案；这些答案不再属于有效回合。
+      target.forms.clear()
       // 中断当前会话，不结束共享服务；回传不使用已经取消的用户 signal。
       interruption ??= this.request(server, sessionPath(id!, '/interrupt'), {}, AbortSignal.timeout(2_000)).catch(() => undefined)
     }
@@ -285,6 +292,7 @@ export class OpenCodeV2Protocol {
 
   private formQuestion(target: TurnTarget, form: RecordValue): CodingNsAgentEvent | null {
     if (typeof form.id !== 'string') return null
+    if (target.settledForms.has(form.id) || target.forms.has(form.id) || target.formReplies.has(form.id)) return null
     const fields = records(form.fields)
     target.forms.set(form.id, fields)
     const nativeQuestion = form.metadata?.kind === 'question'
@@ -306,6 +314,10 @@ export class OpenCodeV2Protocol {
 
   async respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): Promise<void> {
     const target = this.turnTarget(sessionId)
+    if (target.controller.signal.aborted) return
+    const inflight = target.formReplies.get(response.requestId)
+    if (inflight !== undefined) return inflight
+    if (target.settledForms.has(response.requestId)) return
     const fields = target.forms.get(response.requestId)
     if (fields === undefined) throw new Error('OpenCode V2 问题请求已结束')
     const answer: RecordValue = {}
@@ -333,8 +345,31 @@ export class OpenCodeV2Protocol {
         answer[field.key] = value
       } else if (choices[0] !== undefined) answer[field.key] = choices[0]
     }
-    await this.request(target.server, sessionPath(target.providerSessionId, `/form/${encodeURIComponent(response.requestId)}/reply`), { answer }, target.controller.signal)
     target.forms.delete(response.requestId)
+    let reply: Promise<void>
+    reply = this.request(
+      target.server,
+      sessionPath(target.providerSessionId, `/form/${encodeURIComponent(response.requestId)}/reply`),
+      { answer },
+      target.controller.signal,
+    ).then(() => {
+      target.forms.delete(response.requestId)
+      target.settledForms.add(response.requestId)
+    }).catch((error: unknown) => {
+      if (isFormAlreadySettledError(error) || target.controller.signal.aborted) {
+        target.forms.delete(response.requestId)
+        target.settledForms.add(response.requestId)
+        return
+      }
+      // 可恢复的 HTTP 错误允许用户重试；网络结果不确定时，服务端若已处理，
+      // 下一次得到 FormAlreadySettledError 也会按幂等成功收敛。
+      target.forms.set(response.requestId, fields)
+      throw error
+    }).finally(() => {
+      if (target.formReplies.get(response.requestId) === reply) target.formReplies.delete(response.requestId)
+    })
+    target.formReplies.set(response.requestId, reply)
+    return reply
   }
 
   private turnTarget(sessionId: string): TurnTarget {
@@ -354,7 +389,10 @@ export class OpenCodeV2Protocol {
       ...(body === undefined ? {} : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
       ...(signal === undefined ? {} : { signal }),
     })
-    if (response.status < 200 || response.status >= 300) throw new Error(`OpenCode V2 请求失败（HTTP ${response.status}）：${errorDetail(response.data)}`)
+    if (response.status < 200 || response.status >= 300) {
+      throw new OpenCodeV2HttpError(response.status, response.data, response.text,
+        `OpenCode V2 请求失败（HTTP ${response.status}）：${errorDetail(response.data)}`)
+    }
     if (response.status === 204) return undefined
     if (path.endsWith('/interrupt')) return response.data
     const envelope = record(response.data)
@@ -665,6 +703,26 @@ function isEmptyToolInput(value: string): boolean {
 
 function singleEvent(event: CodingNsAgentEvent | null): readonly CodingNsAgentEvent[] {
   return event === null ? [] : [event]
+}
+
+class OpenCodeV2HttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly responseData: unknown,
+    readonly responseText: string,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'OpenCodeV2HttpError'
+  }
+}
+
+/** 只把 OpenCode V2 明确表示“表单已处理”的 409 当作幂等成功。 */
+function isFormAlreadySettledError(error: unknown): boolean {
+  if (!(error instanceof OpenCodeV2HttpError) || error.status !== 409) return false
+  let serialized = ''
+  try { serialized = JSON.stringify(error.responseData) ?? '' } catch { /* JSON 响应通常可序列化。 */ }
+  return /FormAlreadySettledError|Form already settled/iu.test(`${error.message}\n${error.responseText}\n${serialized}`)
 }
 
 function selectModel(models: readonly RecordValue[], key: string | null | undefined): RecordValue | undefined {

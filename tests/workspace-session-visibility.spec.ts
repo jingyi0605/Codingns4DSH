@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import {
   WORKSPACE_SESSION_HIDDEN_ATTRIBUTE,
@@ -204,6 +205,18 @@ test('工作区菜单隐藏动作与筛选恢复列表不破坏原生菜单', as
   controller.dispose()
   assert.equal(workspaceB.container.hasAttribute(WORKSPACE_SESSION_HIDDEN_ATTRIBUTE), false)
   assert.equal(dom.querySelector(`[${WORKSPACE_SESSION_HIDDEN_LIST_ATTRIBUTE}]`), null)
+})
+
+test('设置菜单不继承上一次工作区菜单上下文', async () => {
+  const source = await readFile(new URL('../src/client/workspace-session-visibility-dom.ts', import.meta.url), 'utf8')
+  // Desktop 设置菜单也是 Portal 菜单；只有刚由工作区触发器打开的这一轮，
+  // 才能使用 activeMenuWorkspaceId 作为没有显式 ID 的回退。
+  assert.match(source, /const menuContextFresh = menuContextPending/u)
+  assert.match(source, /selectWorkspaceMenus\(menus, menuContextFresh, menuWorkspaceIds\)/u)
+  assert.match(source, /menuContextFresh \? activeMenuWorkspaceId : undefined/u)
+  assert.match(source, /allowUnidentified\s*\|\|\s*resolveWorkspaceId\(menu\) !== undefined/u)
+  assert.match(source, /const filterContextFresh = menuContextFresh && activeMenuKind === 'filter'/u)
+  assert.match(source, /if \(!allowUnidentified\) return \[\]/u)
 })
 
 function workspaceRow(id, title) {

@@ -1,4 +1,5 @@
 import { clampDesktopAssistantBounds, desktopAssistantLayout } from '../../shared/desktop-assistant.js'
+import { ASSISTANT_NOTIFICATION_TAIL_CLEARANCE } from '../../shared/assistant-notifications.js'
 
 /** 交给 Desktop 的 open-url 入口恢复主窗口；单纯激活进程不会取消窗口最小化。 */
 export function buildMacDesktopFocusScript(): string {
@@ -39,9 +40,11 @@ app.setActivationPolicy(1)
 var win=$.NSPanel.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(0,0,144,156),128,2,false)
 win.setOpaque(false);win.setBackgroundColor($.NSColor.clearColor);win.setHasShadow(false)
 win.setLevel(3);win.setCollectionBehavior(1|16|256);win.setHidesOnDeactivate(false)
-var visible=false,drag=false,lastMouse=null,parentPid=0,origin='',positioned=false
+var visible=false,drag=false,lastMouse=null,parentPid=0,origin='',positioned=false,noticeSize=-1
 ${buildMacDesktopFocusScript()}
 var clampBounds=${clampDesktopAssistantBounds.toString()}
+// JXA 只接收函数文本，模块作用域变量不会随 toString() 注入；显式补齐布局函数依赖的共享常量。
+var ASSISTANT_NOTIFICATION_TAIL_CLEARANCE=${ASSISTANT_NOTIFICATION_TAIL_CLEARANCE}
 var layoutBounds=${desktopAssistantLayout.toString()},layout=null,lastBounds=null
 function moved(){var f=win.frame;emit({ev:'moved',x:f.origin.x,y:f.origin.y,width:f.size.width,height:f.size.height,avatarX:layout?layout.avatar.x:0,avatarY:layout?layout.avatar.y:0})}
 function clamp(){
@@ -60,7 +63,11 @@ function bounds(m){
  if(!positioned&&m.bounds&&Number.isFinite(m.bounds.x)&&Number.isFinite(m.bounds.y)){
   x=m.bounds.x+(Number(m.bounds.avatarX)||0);y=-m.bounds.y-(Number(m.bounds.height)||size*208/192)+(Number(m.bounds.avatarY)||0)
  }
- layout=layoutBounds({x:x,y:y},size,Number.isFinite(m.notificationHeight)?m.notificationHeight:m.notification===true,m.caption===true,areas)
+ // 通知高度优先用伴随页实测值：命令里的请求只当上限，通知清空后丢弃旧测量，避免继续占着固定空白。
+ var request=Number.isFinite(m.notificationHeight)?Math.max(0,Math.min(276,m.notificationHeight)):(m.notification===true?276:0)
+ if(request===0)noticeSize=-1
+ var effective=request>0&&noticeSize>0?Math.min(request,noticeSize):request
+ layout=layoutBounds({x:x,y:y},size,effective,m.caption===true,areas)
  var b=layout.bounds;win.setFrameDisplay($.NSMakeRect(b.x,-b.y-b.height,b.width,b.height),true);positioned=true
  emit({ev:'layout',layout:layout})
 }
@@ -78,7 +85,12 @@ ObjC.registerSubclass({name:'CodingNsAssistantBridge',methods:{'userContentContr
  else if(msg.type==='open')focusDesktop()
  else if(msg.type==='notice-presented'||msg.type==='notice-action')emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,noticeId:msg.noticeId,noticeGeneration:msg.noticeGeneration,noticeKind:msg.noticeKind,connectionGeneration:msg.connectionGeneration,action:msg.action})
  else if(msg.type==='notice-page')emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,cursor:msg.cursor})
- else if(msg.type==='notice-expansion')emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,expanded:msg.expanded})
+  else if(msg.type==='notice-expansion'){if(msg.expanded===true)noticeSize=-1;emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,expanded:msg.expanded})}
+  else if(msg.type==='notice-collapse'){if(msg.collapsed===false)noticeSize=-1;emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,collapsed:msg.collapsed})}
+ else if(msg.type==='notice-size'){
+  var measured=Math.round(Number(msg.height))
+  if(Number.isFinite(measured)&&measured>0){measured=Math.min(276,Math.max(24,measured));if(measured!==noticeSize){noticeSize=measured;if(lastBounds)bounds(lastBounds)}}
+ }
 })}}})
 var bridgeHandler=$.CodingNsAssistantBridge.alloc.init
 controller.addScriptMessageHandlerName(bridgeHandler,$('assistant'));config.setUserContentController(controller)

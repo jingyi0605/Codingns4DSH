@@ -1,6 +1,7 @@
 import type { AssistantNotificationSessionTarget, AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
 import { createVirtualSessionId, parseVirtualSessionId, parseVirtualWorkspaceId } from '../../shared/contracts/peer-host.js'
 import type { CodingNsClientServices } from '../../client/features/types.js'
+import { readNativeWorkspaceSnapshot } from '../../client/native-workspace-store.js'
 
 interface SessionNavigation { openSession(sessionId: string): unknown }
 export interface AssistantSessionSelectionStore {
@@ -20,11 +21,16 @@ export function readAssistantSessionSelectionStore(context: unknown): AssistantS
 }
 
 /** 将本地/远端虚拟选择归一化为 Host 可匹配的会话三元组。 */
-export function normalizeAssistantSessionSelection(value: unknown): AssistantNotificationSessionTarget | undefined {
+export function normalizeAssistantSessionSelection(value: unknown, context?: unknown): AssistantNotificationSessionTarget | undefined {
   const record = asRecord(value)
   if (record === undefined) return undefined
   const rawSessionId = text(record.sessionId) ?? text(asRecord(record.subagentAddress)?.parentSessionId)
+  // DSH 0.2.x 的 uiWorkspace.selection 只持久化 sessionId；工作区归属由
+  // workspaces.list 的成员关系提供。旧版本或测试宿主若直接提供 workspaceId，
+  // 仍优先使用它，避免为兼容新协议改变已有路径。
   const rawWorkspaceId = text(record.workspaceId)
+    ?? text(asRecord(record.workspace)?.workspaceId)
+    ?? (rawSessionId === undefined ? undefined : readSessionWorkspaceId(context, rawSessionId))
   if (rawSessionId === undefined || rawWorkspaceId === undefined) return undefined
   const session = parseVirtualSessionId(rawSessionId)
   const workspace = parseVirtualWorkspaceId(rawWorkspaceId)
@@ -34,6 +40,24 @@ export function normalizeAssistantSessionSelection(value: unknown): AssistantNot
     ?? (hostId !== 'local' && rawWorkspaceId.startsWith(`${hostId}:`) ? rawWorkspaceId.slice(hostId.length + 1) : rawWorkspaceId)
   const sessionId = session?.sessionId ?? rawSessionId
   return { hostId: hostId === 'local' ? 'local' : hostId, workspaceId, sessionId }
+}
+
+/** 从原生 Workspace 列表按成员关系反查当前会话，保留远端虚拟 ID。 */
+function readSessionWorkspaceId(context: unknown, sessionId: string): string | undefined {
+  try {
+    const snapshot = readNativeWorkspaceSnapshot(context as Parameters<typeof readNativeWorkspaceSnapshot>[0])
+    const exact = snapshot?.items.find((workspace) => workspace.sessionIds.includes(sessionId))
+    if (exact !== undefined) return exact.workspaceId
+    const parsed = parseVirtualSessionId(sessionId)
+    if (parsed === null) return undefined
+    const compatible = snapshot?.items.find((workspace) => workspace.sessionIds.some((candidate) => {
+      const value = parseVirtualSessionId(candidate)
+      return value?.hostId === parsed.hostId && value.sessionId === parsed.sessionId
+    }))
+    return compatible?.workspaceId
+  } catch {
+    return undefined
+  }
 }
 
 /** 只探测 DSH 公开的 UI 导航能力；不操作草稿、消息、问题答案或审批。 */

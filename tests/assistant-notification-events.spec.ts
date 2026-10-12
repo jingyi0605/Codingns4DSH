@@ -279,7 +279,7 @@ test('远端已经证明的父子请求保留实际子身份，同父同请求ID
   assert.equal(f.events.center.read().pendingCount, 1)
 })
 
-test('类型开关保留已重连的远端订阅和待办收起状态，新请求与精确结算继续生效', async (t) => {
+test('类型开关保留已重连的远端订阅和已清理请求事实，新请求与精确结算继续生效', async (t) => {
   const f = fixture(); t.after(() => f.events.dispose()); f.configure({ managedWorkspaceIds: ['w', 'peer:w'] })
   const observer = f.remote()
   const approval = { kind: 'approval', logicalId: 'approval:a', requestId: 'a', sessionId: 's', workspaceId: 'w', sessionTitle: '远程会话', workspaceLabel: '远程项目', hostLabel: '远端', seq: 2 }
@@ -290,9 +290,10 @@ test('类型开关保留已重连的远端订阅和待办收起状态，新请�
   f.configure({ notifications: { ...f.settings().assistant.notifications, completed: false } })
   assert.equal(f.remote(), observer, '单类型开关不能重建连接并把代次从3重置到1')
   assert.equal(f.events.center.read().primary, null)
-  assert.equal(f.events.center.read().items[0]!.noticeId, before.primary!.noticeId)
+  assert.equal(f.events.center.read().pendingCount, 0)
+  assert.equal(f.events.center.read().items.some(item => item.noticeId === before.primary!.noticeId), false)
   observer.onUpdate({ hostId: 'peer', hostLabel: '远端', connectionGeneration: 3, feed: { ...feed, revision: 2, pending: [approval, { ...approval, requestId: 'b', logicalId: 'approval:b', seq: 3 }] } })
-  assert.equal(f.events.center.read().pendingCount, 2)
+  assert.equal(f.events.center.read().pendingCount, 1)
   observer.onUpdate({ hostId: 'peer', hostLabel: '远端', connectionGeneration: 3, feed: { ...feed, revision: 3, pending: [] } })
   assert.equal(f.events.center.read().pendingCount, 0)
   f.emit('s', 'approval/asked', { id: 'local' }, 1)

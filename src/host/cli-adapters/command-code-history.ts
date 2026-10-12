@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve } from 'node:path'
@@ -552,6 +552,149 @@ function readUsage(record: Record<string, unknown>, recordIndex = 0): CommandCod
 function readNumber(value: unknown): number {
   const parsed = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+}
+
+/** Command Code transcript 中一次模型请求的用量四桶。 */
+export interface CommandCodeUsageTotals {
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+  /** 参与合计的请求数；0 表示本次读取没有新增请求。 */
+  readonly requests: number
+}
+
+interface CommandCodeUsageCursor {
+  readonly filePath: string
+  offset: number
+  /** 基线对齐时文件还不存在：只接受该时刻之后写入的记录，避免迟到文件带进历史。 */
+  readonly sinceMs: number | null
+  readonly seenMessageIds: Set<string>
+}
+
+const COMMAND_CODE_USAGE_TAIL_MAX_ENTRIES = 64
+/** transcript 记录时间与本地时钟的容差，只在文件迟到创建时参与过滤。 */
+const COMMAND_CODE_USAGE_TAIL_CLOCK_TOLERANCE_MS = 5_000
+
+/**
+ * Command Code transcript 的逐请求用量增量读取器。
+ *
+ * ACP 只在 `session/prompt` 结束时给出整轮累计用量：CLI 的 agent 循环可能在一个
+ * DSH step 里发出几十次模型请求，把整轮累计当成 step 样本会让 DSH token-meter 的
+ * ContextMeter 显示成整轮总量（实测 17.6M / 1M）。这里按文件偏移只解析新增的
+ * transcript 记录，让驱动能在每个工具边界前投影该请求自己的用量。
+ */
+export class CommandCodeUsageTail {
+  private readonly cursors = new Map<string, CommandCodeUsageCursor>()
+
+  constructor(private readonly homeDirectory: string) {}
+
+  /** 对齐基线：游标推进到当前文件末尾，之后的 `take` 只统计新增请求。 */
+  begin(providerSessionId: string, workspacePath: string): void {
+    const filePath = join(this.homeDirectory, 'projects', workspaceSlug(workspacePath), `${providerSessionId}.jsonl`)
+    const stats = statSafe(filePath)
+    this.remember(providerSessionId, {
+      filePath,
+      offset: stats === null ? 0 : stats.size,
+      sinceMs: stats === null ? Date.now() : null,
+      seenMessageIds: new Set<string>(),
+    })
+  }
+
+  /** 读取自上次调用以来新增记录的用量合计；没有新增请求时返回 null。 */
+  take(providerSessionId: string, workspacePath: string): CommandCodeUsageTotals | null {
+    const filePath = join(this.homeDirectory, 'projects', workspaceSlug(workspacePath), `${providerSessionId}.jsonl`)
+    const cursor = this.cursors.get(providerSessionId)
+    if (cursor === undefined || cursor.filePath !== filePath) {
+      // 没有显式基线（或工作区变化）时按当前文件末尾对齐，宁可漏一轮也不把历史算进来。
+      this.begin(providerSessionId, workspacePath)
+      return null
+    }
+    const stats = statSafe(filePath)
+    if (stats === null) return null
+    if (stats.size < cursor.offset) {
+      // transcript 被重写或轮转：重新对齐基线，避免用过期偏移读出错位内容。
+      cursor.offset = stats.size
+      cursor.seenMessageIds.clear()
+      return null
+    }
+    if (stats.size === cursor.offset) return null
+    let chunk = ''
+    try {
+      const length = stats.size - cursor.offset
+      const buffer = Buffer.allocUnsafe(length)
+      const descriptor = openSync(filePath, 'r')
+      try {
+        const bytes = readSync(descriptor, buffer, 0, length, cursor.offset)
+        chunk = buffer.subarray(0, bytes).toString('utf8')
+      } finally {
+        closeSync(descriptor)
+      }
+    } catch {
+      return null
+    }
+    // 只消费完整行：CLI 正在追加时末尾可能只有半行，留到下一次读取。
+    const lastNewline = chunk.lastIndexOf('\n')
+    if (lastNewline === -1) return null
+    const complete = chunk.slice(0, lastNewline + 1)
+    cursor.offset += Buffer.byteLength(complete, 'utf8')
+    return sumCommandCodeUsageRecords(complete, cursor.sinceMs, cursor.seenMessageIds)
+  }
+
+  private remember(providerSessionId: string, cursor: CommandCodeUsageCursor): void {
+    this.cursors.delete(providerSessionId)
+    this.cursors.set(providerSessionId, cursor)
+    while (this.cursors.size > COMMAND_CODE_USAGE_TAIL_MAX_ENTRIES) {
+      const oldest = this.cursors.keys().next().value
+      if (oldest === undefined) break
+      this.cursors.delete(oldest)
+    }
+  }
+}
+
+/** 汇总一段完整 JSONL 文本里的用量记录；同一消息 ID 只计一次。 */
+function sumCommandCodeUsageRecords(
+  text: string,
+  sinceMs: number | null,
+  seenMessageIds: Set<string>,
+): CommandCodeUsageTotals | null {
+  let inputTokens = 0
+  let outputTokens = 0
+  let cacheReadTokens = 0
+  let cacheWriteTokens = 0
+  let requests = 0
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue
+    const record = parseJsonRecord(line)
+    if (record === null) continue
+    if (sinceMs !== null && !isRecordWrittenAfter(record, sinceMs)) continue
+    const usage = readUsage(record)
+    if (usage === null) continue
+    const hasIdentity = usage.messageId !== '' && !usage.messageId.startsWith('record:')
+    if (hasIdentity && seenMessageIds.has(usage.messageId)) continue
+    if (hasIdentity) seenMessageIds.add(usage.messageId)
+    inputTokens += usage.inputTokens
+    outputTokens += usage.outputTokens
+    cacheReadTokens += usage.cacheReadTokens
+    cacheWriteTokens += usage.cacheWriteTokens
+    requests += 1
+  }
+  if (requests === 0) return null
+  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, requests }
+}
+
+function parseJsonRecord(line: string): Record<string, unknown> | null {
+  try {
+    return asRecord(JSON.parse(line))
+  } catch {
+    return null
+  }
+}
+
+function isRecordWrittenAfter(record: Record<string, unknown>, sinceMs: number): boolean {
+  const timestamp = Date.parse(text(record.timestamp))
+  if (!Number.isFinite(timestamp)) return true
+  return timestamp >= sinceMs - COMMAND_CODE_USAGE_TAIL_CLOCK_TOLERANCE_MS
 }
 
 /** 工具结果也会以 user 角色写回，但它不代表新的真实用户轮次。 */

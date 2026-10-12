@@ -84,6 +84,8 @@ export const DSH_NATIVE_REMOTE_METHODS = Object.freeze([
   'codingnsTerminal/write',
   // 全局助理通知来源使用同一条 Typert Remote 长连接，旧 Host 不认识时由上层回退 HTTP。
   'codingnsAssistantNotifications/sourceStream',
+  // 文件上传的 Uint8Array 路径使用这个 Remote；原始 Blob 上传由页面 fetch 入口转换到这里。
+  'fileUploads/upload',
   'fileReferences/list',
   'skills/list',
 ] as const)

@@ -7,7 +7,21 @@ const PATH_KEYS = new Set([
   'path', 'paths', 'filePath', 'file_path', 'srcPath', 'src_path',
   'dstPath', 'dst_path', 'oldPath', 'old_path', 'newPath', 'new_path',
   'sourcePath', 'source_path', 'targetPath', 'target_path',
+  'source', 'destination', 'from', 'to',
 ])
+
+const MUTATING_TOOL_NAMES = new Set([
+  'write', 'write_file', 'file_write', 'create', 'create_file', 'new_file',
+  'edit', 'edit_file', 'file_edit', 'apply_patch', 'apply_patch_file', 'patch',
+  'delete', 'delete_file', 'file_delete', 'remove', 'remove_file',
+  'rename', 'rename_file', 'file_rename', 'move', 'move_file', 'file_move',
+  'copy', 'copy_file', 'file_copy', 'mkdir', 'make_directory', 'create_directory',
+])
+
+interface ToolCallRecord {
+  name: string
+  input?: unknown
+}
 
 /** 优先从 DSH 原生 Session 事件读取，原生事件不可用时回退到 JSONL。 */
 export async function readSessionChangedFiles(
@@ -63,28 +77,189 @@ function snapshotEvents(value: unknown): readonly unknown[] {
 
 function extractToolPaths(events: readonly unknown[], workspaceRoot: string): Set<string> {
   const paths = new Set<string>()
+  const calls = new Map<string, ToolCallRecord>()
+  const callsWithoutId: ToolCallRecord[] = []
   for (const candidate of events) {
     const event = isRecord(candidate) ? candidate : undefined
     if (event === undefined) continue
     const data = isRecord(event.data) ? event.data : event
+    if (event.type === 'assistant/message') {
+      registerAssistantToolCalls(data, calls, callsWithoutId)
+      continue
+    }
     if (event.type === 'tool/call') {
-      collectInputPaths(data.arguments, workspaceRoot, paths)
+      registerToolCall(data, calls, callsWithoutId)
       continue
     }
-    if (event.type === 'tool/result') {
-      collectInputPaths(data.meta, workspaceRoot, paths)
-      continue
-    }
-    if (event.type !== 'assistant/message') continue
+    if (event.type !== 'tool/result') continue
+
     const message = isRecord(data.message) ? data.message : undefined
-    const content = message?.content
-    if (!Array.isArray(content)) continue
-    for (const block of content) {
-      if (!isRecord(block) || block.type !== 'tool-call') continue
-      collectInputPaths(block.arguments, workspaceRoot, paths)
+    const callId = toolCallId(data) ?? toolCallId(message)
+    const call = callId === undefined
+      ? callsWithoutId.shift()
+      : calls.get(callId)
+    if (!isSuccessfulToolResult(data, message)) continue
+
+    // DSH 原生 edit/write 结果会把真实变更放在 meta.diffs。Diff 本身已经
+    // 是“成功写入”的事实，即使历史里缺少对应的 tool/call 也可以安全使用。
+    collectResultDiffPaths(data, message, workspaceRoot, paths)
+    collectNestedMutationPaths(call?.input, workspaceRoot, paths)
+    collectNestedMutationPaths(data, workspaceRoot, paths)
+
+    const toolName = call?.name ?? toolNameFrom(data, message)
+    if (toolName !== undefined && isMutatingTool(toolName)) {
+      collectInputPaths(call?.input, workspaceRoot, paths)
     }
   }
   return paths
+}
+
+function registerAssistantToolCalls(
+  data: Record<string, unknown>,
+  calls: Map<string, ToolCallRecord>,
+  callsWithoutId: ToolCallRecord[],
+): void {
+  const message = isRecord(data.message) ? data.message : undefined
+  const content = message?.content
+  if (!Array.isArray(content)) return
+  for (const block of content) {
+    if (!isRecord(block) || block.type !== 'tool-call') continue
+    registerToolCall(block, calls, callsWithoutId)
+  }
+}
+
+function registerToolCall(
+  value: Record<string, unknown>,
+  calls: Map<string, ToolCallRecord>,
+  callsWithoutId: ToolCallRecord[],
+): void {
+  const name = toolNameFrom(value)
+  if (name === undefined) return
+  const input = value.arguments ?? value.input ?? value.params ?? value.parameters
+  const callId = toolCallId(value)
+  if (callId === undefined) {
+    callsWithoutId.push({ name, ...(input === undefined ? {} : { input }) })
+    return
+  }
+  const previous = calls.get(callId)
+  calls.set(callId, {
+    name,
+    ...(input === undefined ? previous?.input === undefined ? {} : { input: previous.input } : { input }),
+  })
+}
+
+function toolCallId(value: Record<string, unknown> | undefined): string | undefined {
+  if (value === undefined) return undefined
+  for (const key of ['callId', 'callID', 'toolCallId', 'tool_call_id', 'id']) {
+    const candidate = value[key]
+    if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim()
+  }
+  const source = isRecord(value.source) ? value.source : undefined
+  const sourceId = source?.callId
+  return typeof sourceId === 'string' && sourceId.trim() !== '' ? sourceId.trim() : undefined
+}
+
+function toolNameFrom(...values: readonly (Record<string, unknown> | undefined)[]): string | undefined {
+  for (const value of values) {
+    if (value === undefined) continue
+    for (const key of ['name', 'tool', 'toolName', 'tool_name']) {
+      const candidate = value[key]
+      if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim()
+    }
+  }
+  return undefined
+}
+
+function isSuccessfulToolResult(data: Record<string, unknown>, message: Record<string, unknown> | undefined): boolean {
+  if (data.isError === true || message?.isError === true) return false
+  if (hasError(data.error) || hasError(message?.error)) return false
+  for (const value of [data.status, message?.status]) {
+    if (typeof value !== 'string') continue
+    const status = value.trim().toLowerCase()
+    if (['failed', 'failure', 'error', 'cancelled', 'canceled', 'aborted'].includes(status)) return false
+  }
+  return true
+}
+
+function hasError(value: unknown): boolean {
+  if (value === undefined || value === null) return false
+  return typeof value !== 'string' || value.trim() !== ''
+}
+
+function isMutatingTool(value: string): boolean {
+  const normalized = value.trim()
+    .replace(/([a-z])([A-Z])/gu, '$1_$2')
+    .toLowerCase()
+    .replace(/[\s-]+/gu, '_')
+  return MUTATING_TOOL_NAMES.has(normalized)
+}
+
+function collectResultDiffPaths(
+  data: Record<string, unknown>,
+  message: Record<string, unknown> | undefined,
+  workspaceRoot: string,
+  paths: Set<string>,
+): void {
+  for (const value of [data.meta, data.metadata, message?.meta, message?.metadata]) {
+    collectDiffPaths(value, workspaceRoot, paths)
+  }
+}
+
+function collectDiffPaths(value: unknown, workspaceRoot: string, paths: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectDiffPaths(item, workspaceRoot, paths)
+    return
+  }
+  if (!isRecord(value)) return
+  const diffs = value.diffs
+  if (Array.isArray(diffs)) {
+    for (const diff of diffs) collectDiffEntryPaths(diff, workspaceRoot, paths)
+  }
+}
+
+function collectDiffEntryPaths(value: unknown, workspaceRoot: string, paths: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectDiffEntryPaths(item, workspaceRoot, paths)
+    return
+  }
+  if (!isRecord(value)) return
+  for (const key of ['path', 'oldPath', 'old_path', 'newPath', 'new_path']) {
+    const candidate = value[key]
+    if (typeof candidate === 'string') addPath(candidate, workspaceRoot, paths)
+  }
+}
+
+function collectNestedMutationPaths(value: unknown, workspaceRoot: string, paths: Set<string>): void {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return
+    try { collectNestedMutationPaths(JSON.parse(trimmed) as unknown, workspaceRoot, paths) } catch {
+      // 工具参数不是 JSON 时没有可安全判断的嵌套调用。
+    }
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectNestedMutationPaths(item, workspaceRoot, paths)
+    return
+  }
+  if (!isRecord(value)) return
+  for (const key of ['toolCalls', 'tool_calls']) {
+    const nested = value[key]
+    if (!Array.isArray(nested)) continue
+    for (const item of nested) {
+      if (!isRecord(item)) continue
+      const name = toolNameFrom(item)
+      if (name === undefined || !isMutatingTool(name) || !isSuccessfulNestedTool(item)) continue
+      collectInputPaths(item.input ?? item.arguments ?? item.params, workspaceRoot, paths)
+      collectResultDiffPaths(item, undefined, workspaceRoot, paths)
+    }
+  }
+}
+
+function isSuccessfulNestedTool(value: Record<string, unknown>): boolean {
+  if (value.isError === true || hasError(value.error)) return false
+  const status = typeof value.status === 'string' ? value.status.trim().toLowerCase() : ''
+  return !['failed', 'failure', 'error', 'cancelled', 'canceled', 'aborted'].includes(status)
 }
 
 function collectInputPaths(value: unknown, workspaceRoot: string, paths: Set<string>): void {
@@ -95,7 +270,7 @@ function collectInputPaths(value: unknown, workspaceRoot: string, paths: Set<str
     }
     if (isRecord(value)) {
       for (const [key, nested] of Object.entries(value)) {
-        if (typeof nested === 'string' && PATH_KEYS.has(key)) addPath(nested, workspaceRoot, paths)
+        if (PATH_KEYS.has(key)) collectPathValues(nested, workspaceRoot, paths)
         else collectInputPaths(nested, workspaceRoot, paths)
       }
     }
@@ -112,6 +287,20 @@ function collectInputPaths(value: unknown, workspaceRoot: string, paths: Set<str
   }
   try { collectInputPaths(JSON.parse(trimmed) as unknown, workspaceRoot, paths) } catch {
     // 工具参数不是 JSON 时只使用 apply_patch 文本格式。
+  }
+}
+
+function collectPathValues(value: unknown, workspaceRoot: string, paths: Set<string>): void {
+  if (typeof value === 'string') {
+    addPath(value, workspaceRoot, paths)
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectPathValues(item, workspaceRoot, paths)
+    return
+  }
+  if (isRecord(value)) {
+    for (const nested of Object.values(value)) collectPathValues(nested, workspaceRoot, paths)
   }
 }
 

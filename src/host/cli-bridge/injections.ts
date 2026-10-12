@@ -1,3 +1,6 @@
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAdapterRegistry } from '../cli-adapters/registry-holder.js'
 import { getSubagentBridge } from './bridge-holder.js'
@@ -22,6 +25,26 @@ const SUBAGENT_CHILD_MARKER = 'CODINGNS_SUBAGENT_CHILD'
  * 以及用户自定义工具映射，避免原生入口绕过 CodingNS 桥接。
  */
 const CLAUDE_NATIVE_SUBAGENT_BLOCK_ARGS = ['--disallowedTools', 'Task', 'Agent'] as const
+
+export type CodexComputerUseMode = 'auto' | 'enabled' | 'disabled'
+
+/**
+ * Codex Computer Use 官方 MCP 的最小启动配置。
+ *
+ * 这里只保存 Host 启动 MCP 所需的路径和环境变量，不把配置写回用户的 Codex
+ * 文件。这样 Stage0 可以使用自己的 CODEX_HOME，且不会污染 Desktop Profile。
+ */
+export interface CodexComputerUseServerConfig {
+  readonly command: string
+  readonly args: readonly string[]
+  readonly env: Readonly<Record<string, string>>
+}
+
+export interface CodexComputerUseLaunchSettings {
+  readonly enabled: boolean
+  readonly args: readonly string[]
+  readonly config?: CodexComputerUseServerConfig
+}
 
 export function bridgeMcpEntryPath(): string {
   return MCP_ENTRY_PATH
@@ -160,6 +183,135 @@ export function codexBridgeArgs(sessionId: string, adapterId: string, platform: 
     // 托管工具属于基础设施级委派，固定为自动批准，避免把 DSH 权限模型外包给 Codex。
     '-c', codexConfigOverride('mcp_servers.codingns.default_tools_approval_mode', tomlString('approve', platform)),
   ]
+}
+
+/**
+ * 读取 CodingNS 可复用的官方 Computer Use MCP 配置。
+ *
+ * Codex Desktop 会把配置缓存到 CODEX_HOME/plugins/cache；某些安装只有 ChatGPT
+ * 应用内的运行时，没有缓存的插件配置。两种情况都支持，但只在 macOS 且启动
+ * 文件确实存在时启用，避免把一个永远无法连接的 MCP server 注入回合。
+ */
+export function discoverCodexComputerUseServer(
+  codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex'),
+  platform: NodeJS.Platform = process.platform,
+): CodexComputerUseServerConfig | undefined {
+  if (platform !== 'darwin') return undefined
+
+  const configuredPath = process.env.CODINGNS_CODEX_CUA_MCP_CONFIG?.trim()
+  if (configuredPath !== undefined && configuredPath !== '') {
+    const configured = readCodexComputerUseMcpFile(configuredPath)
+    if (configured !== undefined) return configured
+  }
+
+  const defaultCodexHome = join(homedir(), '.codex')
+  const codexHomes = [...new Set([codexHome, defaultCodexHome])]
+  const cacheRoot = process.env.CODINGNS_CODEX_CUA_RUNTIME?.trim()
+  const cacheCandidates = [
+    ...(cacheRoot === undefined || cacheRoot === '' ? [] : [join(cacheRoot, '.mcp.json')]),
+    ...codexHomes.flatMap((home) => readComputerUseCacheFiles(home)),
+  ]
+  for (const candidate of cacheCandidates) {
+    const config = readCodexComputerUseMcpFile(candidate)
+    if (config !== undefined) return config
+  }
+
+  // 兼容“应用已有运行时、但插件缓存尚未生成”的安装。这里仅使用公开的
+  // ChatGPT.app 资源和 CODEX_HOME 下的官方服务，不尝试下载、复制或安装文件。
+  const resourceRoot = process.env.CODINGNS_CODEX_CUA_RESOURCES?.trim()
+    || '/Applications/ChatGPT.app/Contents/Resources'
+  const node = join(resourceRoot, 'cua_node', 'bin', 'node')
+  const nodeRepl = join(resourceRoot, 'cua_node', 'bin', 'node_repl')
+  const nodeModules = join(resourceRoot, 'cua_node', 'lib', 'node_modules')
+  const entry = join(nodeModules, '@oai', 'cua-repl', 'bin', 'cua-repl.mjs')
+  const runtimeHome = codexHomes.find((home) => existsSync(join(home, 'computer-use', 'Codex Computer Use.app')))
+  if (runtimeHome === undefined) return undefined
+  const service = join(runtimeHome, 'computer-use', 'Codex Computer Use.app')
+  if (![node, nodeRepl, nodeModules, entry, service].every(existsSync)) return undefined
+  return {
+    command: node,
+    args: [entry],
+    env: {
+      NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS: '1000',
+      NODE_REPL_NODE_MODULE_DIRS: nodeModules,
+      NODE_REPL_NODE_PATH: node,
+      NODE_REPL_TRUSTED_CODE_PATHS: `${runtimeHome}:${nodeModules}`,
+      CODEX_HOME: runtimeHome,
+      NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE: 'Control desktop apps on macOS through Computer Use.',
+      NODE_REPL_TRUSTED_SERVICES: '{"sky":"@oai/sky/service"}',
+      SKY_CUA_SERVICE_PATH: service,
+      CUA_REPL_NODE_REPL_PATH: nodeRepl,
+      CUA_REPL_ENABLED_SURFACES: 'computer',
+    },
+  }
+}
+
+/**
+ * 生成 Codex app-server 的 Computer Use MCP 覆盖项。
+ *
+ * `auto` 找不到官方运行时时保留 `--disable computer_use`；这比暴露一个不可用
+ * 工具更安全，也能保证回合收到明确的“没有 Computer Use”状态而不是永久等待。
+ */
+export function codexComputerUseLaunchSettings(
+  mode: CodexComputerUseMode = 'auto',
+  override: CodexComputerUseServerConfig | undefined,
+  codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex'),
+  platform: NodeJS.Platform = process.platform,
+): CodexComputerUseLaunchSettings {
+  if (mode === 'disabled') return { enabled: false, args: [] }
+  const config = override ?? discoverCodexComputerUseServer(codexHome, platform)
+  if (config === undefined) return { enabled: false, args: [] }
+  const envToml = `{${Object.entries(config.env).map(([key, value]) => `${key}=${tomlString(value, platform)}`).join(',')}}`
+  return {
+    enabled: true,
+    config,
+    args: [
+      '-c', codexConfigOverride('mcp_servers.cua_repl.command', tomlString(config.command, platform)),
+      '-c', codexConfigOverride('mcp_servers.cua_repl.args', `[${config.args.map((value) => tomlString(value, platform)).join(',')}]`),
+      '-c', codexConfigOverride('mcp_servers.cua_repl.env', envToml),
+      '-c', codexConfigOverride('mcp_servers.cua_repl.enabled_tools', '["js","js_reset","turn_ended"]'),
+      '-c', codexConfigOverride('mcp_servers.cua_repl.startup_timeout_sec', '120'),
+      '-c', codexConfigOverride('mcp_servers.cua_repl.tools.js.output_token_limit', '25000'),
+    ],
+  }
+}
+
+function readComputerUseCacheFiles(codexHome: string): string[] {
+  const root = join(codexHome, 'plugins', 'cache', 'openai-bundled', 'unified-computer-use')
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .sort((left, right) => right.name.localeCompare(left.name))
+      .map((entry) => join(root, entry.name, '.mcp.json'))
+  } catch {
+    return []
+  }
+}
+
+function readCodexComputerUseMcpFile(path: string): CodexComputerUseServerConfig | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return undefined
+  }
+  const root = asRecord(parsed)
+  const servers = root === undefined ? undefined : asRecord(root.mcpServers)
+  const server = servers === undefined ? undefined : asRecord(servers.cua_repl)
+  if (server === undefined) return undefined
+  if (server.enabled === false || typeof server.command !== 'string' || server.command.trim() === '') return undefined
+  if (!Array.isArray(server.args) || !server.args.every((value) => typeof value === 'string')) return undefined
+  const command = server.command.trim()
+  const args = server.args.map((value) => value as string)
+  // 模板可以写相对命令，但已安装的官方缓存必须指向现存运行时，避免 Codex
+  // 启动后才发现 server 不可用。相对命令交给 PATH 解析，兼容开发环境覆盖。
+  if (isAbsolute(command) && !existsSync(command)) return undefined
+  const entry = args[0]
+  if (entry !== undefined && isAbsolute(entry) && !existsSync(entry)) return undefined
+  const env = asRecord(server.env)
+    ? Object.fromEntries(Object.entries(server.env).filter(([, value]) => typeof value === 'string')) as Record<string, string>
+    : {}
+  return { command, args, env }
 }
 
 function bridgeEnvironment(sessionId: string, adapterId: string): Record<string, string> | undefined {

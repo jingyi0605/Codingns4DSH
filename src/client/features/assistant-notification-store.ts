@@ -174,7 +174,7 @@ export class AssistantNotificationStore {
     return epoch === this.epoch && this.enabled && !this.disposed
   }
 
-  async acknowledge(noticeId: string, generation: number, action: 'presented' | 'dismiss', expectedKind?: AssistantNotification['kind'], expectedConnectionGeneration?: number): Promise<void> {
+  async acknowledge(noticeId: string, generation: number, action: 'presented' | 'collapse' | 'dismiss', expectedKind?: AssistantNotification['kind'], expectedConnectionGeneration?: number): Promise<void> {
     const epoch = this.epoch
     this.requireFrame(generation)
     const notice = this.knownNotices.get(noticeId)
@@ -199,7 +199,7 @@ export class AssistantNotificationStore {
       if (epoch === this.epoch && this.enabled && !this.disposed) this.publish({ ...this.snapshot, error: message(error), errorNoticeId: noticeId, errorGeneration: generation })
       throw error
     })
-    // 不复用写入前的在途快照。收起只修改提醒展示，从不提交原生问题或审批。
+    // 不复用写入前的在途快照。单条清理只修改提醒展示，从不提交原生问题或审批。
     await this.refresh(true)
   }
 

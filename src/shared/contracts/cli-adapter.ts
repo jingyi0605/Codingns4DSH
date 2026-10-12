@@ -47,6 +47,8 @@ export type CodingNsCliCapability =
   | 'permission'
   | 'questions'
   | 'steer'
+  /** Codex 通过官方 cua_repl MCP 提供的 macOS 桌面控制能力。 */
+  | 'computer-use'
 
 /**
  * Provider 声明的服务档位（例如 Codex 官方订阅的 Fast / Standard）。

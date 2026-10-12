@@ -86,7 +86,7 @@ test('问题next原样委托、取消不批准审批、真实audit仅结束精�
   const snapshot = await f.call<AssistantNotificationSnapshot>('notifications/read')
   assert.equal(snapshot.pendingCount, 3)
   await f.call('notifications/ack', { noticeId: snapshot.primary!.noticeId, generation: snapshot.generation, action: 'dismiss' })
-  assert.equal((await f.call<AssistantNotificationSnapshot>('notifications/read')).pendingCount, 3)
+  assert.equal((await f.call<AssistantNotificationSnapshot>('notifications/read')).pendingCount, 2)
   finish(response); assert.equal(await pending, response)
   f.sessionEvent('approval/decided', { id: 'a1', outcome: 'rejected' }, 3)
   assert.equal((await f.call<AssistantNotificationSnapshot>('notifications/read')).pendingCount, 1)
@@ -221,7 +221,7 @@ test('原生operator存在时只接受同一认证主体，伪造标记与缺少
   assert.equal((await f.call('notifications/source', { workspaceIds: ['w'] }, authenticated)).baseline, true)
 })
 
-test('生命周期真实保存通知草稿，非法布尔值不写入且无关类型保留已收起审批', async (t) => {
+test('生命周期真实保存通知草稿，非法布尔值不写入且单条清理不影响审批事实', async (t) => {
   const f = await fixture(t)
   f.sessionEvent('approval/asked', { id: 'a' }, 1)
   const before = await f.call<AssistantNotificationSnapshot>('notifications/read')
@@ -231,9 +231,11 @@ test('生命周期真实保存通知草稿，非法布尔值不写入且无关�
   assert.equal(f.settings().assistant.notifications!.completed, false)
   assert.equal(f.settings().assistant.notifications!.approval, true)
   const frame = await f.call<AssistantNotificationSnapshot>('notifications/read')
-  assert.equal(frame.pendingCount, 1)
+  assert.equal(frame.pendingCount, 0)
   assert.equal(frame.primary, null)
-  assert.equal(frame.items[0]!.noticeId, before.primary!.noticeId)
+  assert.equal(frame.items.some(item => item.noticeId === before.primary!.noticeId), false)
+  const source = await f.call<{ pending: readonly { requestId?: string }[] }>('notifications/source', { workspaceIds: ['w'] })
+  assert.deepEqual(source.pending.map(item => item.requestId), ['a'])
   const saved = structuredClone(f.settings().assistant)
   await assert.rejects(f.call('lifecycle/configure', { ...payload, configurationPatch: [{ op: 'set', path: ['notifications', 'error'], value: 'false' }] }))
   assert.deepEqual(f.settings().assistant, saved)
