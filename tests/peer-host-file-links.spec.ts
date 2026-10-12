@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { win32 } from 'node:path'
 import { fileAddressFor, parseFileAddress, sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
-import { installPeerHostFileLinkRouting } from '../src/client/peer-host-file-links.js'
+import { installSessionFileLinkRouting } from '../src/client/session-file-links.js'
 import { createPeerHostPageTransport, installPeerHostConnectionRouting } from '../src/client/features/peer-host.js'
 import { createPeerHostNativeProjection } from '../src/client/peer-host-native-projection.js'
 import { normalizePeerHostFileLocation } from '../src/shared/peer-host-file-location.js'
@@ -50,7 +50,7 @@ test('原生资源入口保留虚拟会话、行号、放置参数与查询片�
   }
   const originalOpen = sidebar.openResource
   const originalOpenIn = sidebar.openResourceIn
-  const restore = installPeerHostFileLinkRouting({ get: () => sidebar }, (id) => id === sessionId('peer-a') ? root : undefined)!
+  const restore = installSessionFileLinkRouting({ get: () => sidebar }, (id) => id === sessionId('peer-a') ? root : undefined)!
   try {
     const address = fileAddressFor(sessionId('peer-a') as never, root, linkPath)
     assert.equal(parseFileAddress(address)?.path, linkPath, '原生地址构造未拆出路径行号')
@@ -122,7 +122,7 @@ for (const connection of ['web', 'native'] as const) {
     }) as typeof fetch
     const transport = createPeerHostPageTransport(projection, context)
     transport.setAggregate(aggregate as never)
-    const restoreLinks = installPeerHostFileLinkRouting(context, (id) => projection.sessions().find((session) => session.sessionId === id)?.cwd)!
+    const restoreLinks = installSessionFileLinkRouting(context, (id) => projection.sessions().find((session) => session.sessionId === id)?.cwd)!
     const restoreConnection = connection === 'native' ? installPeerHostConnectionRouting({ uiContext: context, remote, hooks: transport.hooks, matchesScope: transport.matchesScope }) : undefined
     const call = (method: string, args: unknown) => connection === 'native' ? rpc.call('/api', method, { args })
       : transport.hooks.rpc!({ method, payload: { channel: '/api', payload: { args } } })

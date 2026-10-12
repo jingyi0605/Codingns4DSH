@@ -18,7 +18,6 @@ import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale }
 import { publishSessionAdapter } from '../session-adapter-cache.js'
 import { startSerialPolling } from '../serial-polling.js'
 import { PeerHostRemoteEvents } from '../peer-host-remote-events.js'
-import { installPeerHostFileLinkRouting } from '../peer-host-file-links.js'
 import { registerPeerHostReferenceSource } from '../peer-host-reference-source.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
@@ -126,13 +125,6 @@ export const peerHostFeature: CodingNsClientFeatureModule = {
         scope.effect(() => transport!.watchNavigation(), 'codingns4dsh: PeerHost model catalog navigation')
       })
       if (navigation !== undefined) context.resources.add(() => navigation.dispose())
-      // 文件路径的平台取自资源所属会话，不能由本机平台或前台选择决定。
-      const fileLinks = context.services.uiContext?.inject(['sidebarRight'], (scope) => {
-        scope.effect(() => installPeerHostFileLinkRouting(scope, (sessionId) => (
-          projection.sessions().find((session) => session.sessionId === sessionId)?.cwd
-        )) ?? (() => undefined), 'codingns4dsh: PeerHost file links')
-      })
-      if (fileLinks !== undefined) context.resources.add(() => fileLinks.dispose())
       // Desktop 的原生 `$events` 可能早于插件启动；切换一次客户端连接代次，让
       // 已打开的流使用聚合入口。Web 路径从 preboot shim 开始就使用当前入口，
       // 这里重连只会白白触发 DSH 的 session/list 基线刷新。
