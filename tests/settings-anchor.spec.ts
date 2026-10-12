@@ -71,10 +71,10 @@ test('账户入口通过共用锚点解析挂载，不再硬编码齿轮选择�
   ])
   // Desktop 下 DSH 账户菜单占用 settings.launcher 单槽位，齿轮 fallback 不渲染；
   // 账户入口必须走锚点解析，否则左下角既不显示用户图标也进不去 PeerHost 管理。
-  assert.match(accountBar, /import \{ resolveSettingsAnchor, settingsAnchorContainer, type SettingsAnchorKind \} from '\.\/settings-anchor\.js'/u)
-  assert.equal([...accountBar.matchAll(/resolveSettingsAnchor\(\(selector\) => root\.querySelector<HTMLElement>\(selector\)\)/gu)].length, 2)
+  assert.match(accountBar, /resolveSettingsAnchor,\n\s+settingsAnchorContainer,\n\s+type SettingsAnchorKind,/u)
+  assert.equal([...accountBar.matchAll(/resolveSettingsAnchor\(\(selector\) => root\.querySelector<HTMLElement>\(selector\)\)/gu)].length, 1)
   assert.doesNotMatch(accountBar, /querySelector<HTMLElement>\('button\[aria-label="设置"\]'\)/u)
-  // Desktop 的宿主行由插件保持 nowrap，避免原生账户组件与入口被拆成两行。
+  // Desktop 的宿主行由 DSH 自己管理，插件不能改写其换行策略。
   assert.match(accountBar, /if \(kind === 'launcher-slot'\) \{/u)
   // 选择器只允许在锚点模块里定义一份，避免调用点各自漂移。
   assert.match(anchor, /'\[data-slot="settings\.launcher"\]'/u)
