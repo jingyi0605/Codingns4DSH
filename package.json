@@ -119,7 +119,7 @@
     "dsh:stage0": "bash scripts/run-dsh-stage0.sh",
     "dsh:stage0:clean-link": "bash scripts/clean-stage0-dev-link.sh",
     "watch:client": "tsdown --watch",
-    "test": "pnpm run build && node --import ./tests/register-css-loader.mjs --test tests/*.spec.ts",
+    "test": "pnpm run build && node --import ./tests/register-css-loader.mjs --test --test-concurrency=1 tests/*.spec.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "files": [
