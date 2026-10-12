@@ -94,15 +94,14 @@ interface CodexSkillEntry extends CodingNsCliSkillDescriptor {
 // 自身的 auto-compact，避免对正常的高占用回合重复发起压缩。
 const CODEX_COMPACTION_THRESHOLD = 1
 const CODEX_COMPACTION_TIMEOUT_MS = 60_000
-// Codex CLI 默认会启用 computer_use；DSH 没有对应的桌面控制宿主，必须在
-// app-server 进程启动时关闭该 feature，避免模型进入无法完成的控制回合。
+// computer_use 由 Codex 自身配置和原生运行时管理；不因 DSH 未提供桌面
+// 控制宿主而禁用，否则会覆盖用户配置并阻断 Codex 原生 Computer Use。
 const CODEX_APP_SERVER_ARGS = [
   // 原生 request_permissions 默认关闭。必须在插件进程内启用，模型才能主动
   // 发出 item/permissions/requestApproval，而不是靠试写文件碰沙箱边界。
   // 用配置覆盖而非 --enable：旧版会忽略未知 feature 配置，保留原命令审批通道。
   '-c', 'features.request_permissions_tool=true',
   'app-server',
-  '--disable', 'computer_use',
   // Codex 默认关闭 request_user_input；不开启时模型只能把“提问”写成普通文本，
   // app-server 不会发出 item/tool/requestUserInput，DSH 也就没有问题事件可投影。
   '--enable', 'default_mode_request_user_input',

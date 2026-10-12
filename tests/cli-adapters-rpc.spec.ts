@@ -6,11 +6,12 @@ import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import { GrokBuildDriver } from '../data/build/dist/host/cli-adapters/grok-driver.js'
 import { PiAgentDriver } from '../data/build/dist/host/cli-adapters/pi-driver.js'
+import { windowsShellInvocation } from '../data/build/dist/host/cli-adapters/process-utils.js'
 
 test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async () => {
   for (const [Driver, expectedArgs] of [
     [PiAgentDriver, ['--mode', 'rpc']],
-    [CodexAppServerDriver, ['-c', 'features.request_permissions_tool=true', 'app-server', '--disable', 'computer_use', '--enable', 'default_mode_request_user_input']],
+    [CodexAppServerDriver, ['-c', 'features.request_permissions_tool=true', 'app-server', '--enable', 'default_mode_request_user_input']],
     [GrokBuildDriver, ['agent', '--no-leader', 'stdio']],
   ] as const) {
     const calls: string[][] = []
@@ -60,7 +61,10 @@ test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async 
     })
     const chunks = []
     for await (const chunk of driver.executeTurn({ sessionId: 's1', messages: [], prompt: '你好' })) chunks.push(chunk)
-    assert.deepEqual(calls[0], ['fake-agent', ...expectedArgs])
+    const invocation = Driver === CodexAppServerDriver
+      ? windowsShellInvocation('fake-agent', expectedArgs)
+      : { command: 'fake-agent', args: expectedArgs }
+    assert.deepEqual(calls[0], [invocation.command, ...invocation.args])
     driver.dispose()
     assert.deepEqual(chunks.filter((chunk) => chunk.type !== 'session-binding'), Driver === CodexAppServerDriver
       ? [{ type: 'text-delta', text: '完成', messageId: 'message-1' }, { type: 'finish', reason: 'stop' }]
