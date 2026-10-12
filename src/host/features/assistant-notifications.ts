@@ -28,7 +28,7 @@ interface NoticeRecord {
   notice: AssistantNotification
   target: AssistantNotificationTarget
   logicalKey: string
-  /** 一键清理只置这一个展示开关：记录仍参与去重、请求校正与生命周期，但不再进入任何快照。 */
+  /** 展示层清理只置这一个开关：记录仍参与去重、请求校正与生命周期，但不再进入任何快照。 */
   cleared: boolean
 }
 interface SessionWatermark { seq: number; turn?: number; turnId?: string; failed: boolean; noticeId?: string }
@@ -241,7 +241,7 @@ export class AssistantNotificationCenter {
       if (generation !== this.currentGeneration || revision !== this.currentRevision) reset = true
       else offset = index!
     }
-    // 一键清理只影响展示面：已清理记录继续留在事实层，但不出现在条目、计数与主气泡中。
+    // 展示层清理只影响展示面：已清理记录继续留在事实层，但不出现在条目、计数与主气泡中。
     const values = [...this.records.values()].filter((item) => !item.cleared).map((item) => item.notice)
     const all = [...values].sort((a, b) => b.createdAt - a.createdAt || b.noticeId.localeCompare(a.noticeId))
     // 同毫秒内的多个请求仍按输入顺序展示，随机通知 ID 不能决定队列顺序。
@@ -255,7 +255,7 @@ export class AssistantNotificationCenter {
   }
   ack(input: AssistantNotificationAckRequest): AssistantNotificationAckResult {
     this.expire()
-    if (!['presented', 'read', 'dismiss'].includes(input.action)) throw new TypeError('通知确认动作无效')
+    if (!['presented', 'read', 'collapse', 'dismiss'].includes(input.action)) throw new TypeError('通知确认动作无效')
     if (input.kind !== undefined && !['completed', 'error', 'question', 'approval'].includes(input.kind)) throw new TypeError('通知确认类型无效')
     const item = this.lookup(input)
     // 浏览器和伴随窗口都可能在失败事实到达前发出了完成帧确认。
@@ -269,7 +269,12 @@ export class AssistantNotificationCenter {
       next = { ...next, presentation: 'shown', presentedAt: next.presentedAt ?? now, ...(next.kind === 'completed' ? { deadline: next.deadline ?? now + 10_000 } : {}) }
     }
     if (input.action === 'read') next = readNotice(next)
-    if (input.action === 'dismiss') next = collapseNotice(next)
+    if (input.action === 'collapse') next = collapseNotice(next)
+    if (input.action === 'dismiss') {
+      // 单条清理只改变展示层；记录必须继续留在事实层，供请求结算、去重和后续校正使用。
+      if (!item.cleared) { item.cleared = true; this.bumpRevision() }
+      return { generation: this.currentGeneration, revision: this.currentRevision, notification: { ...item.notice } }
+    }
     if (next !== item.notice) { item.notice = next; this.bumpRevision() }
     return { generation: this.currentGeneration, revision: this.currentRevision, notification: { ...item.notice } }
   }
@@ -366,7 +371,7 @@ function stripWorkspaceHost(value: string, hostId: string): string {
 function readNotice(notice: AssistantNotification): AssistantNotification {
   return notice.read ? notice : { ...notice, read: true, ...(!pending(notice) ? { presentation: 'collapsed' as const } : {}) }
 }
-/** 收起只改变展示位置；已读、生命周期和请求身份都由原记录保留。 */
+/** 自动超时只改变展示位置；已读、生命周期和请求身份都由原记录保留。 */
 function collapseNotice(notice: AssistantNotification): AssistantNotification {
   return notice.presentation === 'collapsed' ? notice : { ...notice, presentation: 'collapsed' as const }
 }

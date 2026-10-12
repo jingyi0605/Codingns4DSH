@@ -29,7 +29,7 @@ function postDesktopAssistantEvent(event: Readonly<Record<string, unknown>>): vo
 }
 
 /** 回传只有不透明身份与固定动作，伴随页无法指定会话或调用 DSH RPC。 */
-export function sendDesktopAssistantNotice(frame: DesktopAssistantFrame, type: 'notice-presented' | 'notice-action', action?: 'open' | 'dismiss' | 'dismiss-all', noticeId?: string): void {
+export function sendDesktopAssistantNotice(frame: DesktopAssistantFrame, type: 'notice-presented' | 'notice-action', action?: 'open' | 'collapse' | 'dismiss' | 'dismiss-all', noticeId?: string): void {
   const notice = desktopAssistantNotice(frame, type === 'notice-presented' ? undefined : noticeId), identity = frame.identity
   if (!notice || !identity || (type === 'notice-presented' && !frame.nativeVisible)) return
   postDesktopAssistantEvent({ type, ...identity, noticeId: notice.noticeId, noticeGeneration: notice.generation,
@@ -65,7 +65,7 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
   latestFrame.current = frame
   const identityKey = JSON.stringify(frame.identity)
   useEffect(() => { setNoticeError(undefined) }, [identityKey])
-  const sendNotice = useCallback((type: 'notice-presented' | 'notice-action', noticeId: string, generation: number, action?: 'open' | 'dismiss', kind?: AssistantNotification['kind'], connectionGeneration?: number): void => {
+  const sendNotice = useCallback((type: 'notice-presented' | 'notice-action', noticeId: string, generation: number, action?: 'open' | 'collapse' | 'dismiss', kind?: AssistantNotification['kind'], connectionGeneration?: number): void => {
     const current = latestFrame.current
     const notice = desktopAssistantNotice(current, type === 'notice-presented' ? undefined : noticeId)
     // 旧 DOM 回调不能把旧气泡点击改写为新通知，真实身份来自被点击组件的 props。
@@ -78,6 +78,7 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
     sendNotice('notice-presented', noticeId, generation, undefined, kind, desktopAssistantNotice(latestFrame.current)?.connectionGeneration), [sendNotice])
   const openNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number) => sendNotice('notice-action', noticeId, generation, 'open', undefined, connectionGeneration), [sendNotice])
   const dismissNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number) => sendNotice('notice-action', noticeId, generation, 'dismiss', undefined, connectionGeneration), [sendNotice])
+  const collapseNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number) => sendNotice('notice-action', noticeId, generation, 'collapse', undefined, connectionGeneration), [sendNotice])
   const clearAllNotices = useCallback((generation: number): void => {
     const current = latestFrame.current
     // 只有点击帧与当前快照同一代次才回传；主页面仍会按 Host 代次复核一次。
@@ -88,6 +89,12 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
     const current = latestFrame.current
     if (current.notificationSnapshot && JSON.stringify(current.identity) === identityKey) {
       postDesktopAssistantEvent({ type: 'notice-expansion', ...current.identity, expanded })
+    }
+  }, [identityKey])
+  const collapsedNotices = useCallback((collapsed: boolean): void => {
+    const current = latestFrame.current
+    if (current.notificationSnapshot && JSON.stringify(current.identity) === identityKey) {
+      postDesktopAssistantEvent({ type: 'notice-collapse', ...current.identity, collapsed })
     }
   }, [identityKey])
   useEffect(() => {
@@ -165,8 +172,8 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
         onSizeChange: reportNoticeSize,
         ...(frame.autoClose === undefined || !frame.nativeVisible ? {} : { autoClose: frame.autoClose }),
         ...(frame.autoCloseSeconds === undefined || !frame.nativeVisible ? {} : { autoCloseSeconds: frame.autoCloseSeconds }),
-        onOpen: openNotice, onDismiss: dismissNotice, onPresented: frame.nativeVisible ? presented : () => undefined,
-        ...(frame.notificationSnapshot === undefined ? {} : { onExpandedChange: expandedNotices, onClearAll: clearAllNotices }) })) : null,
+        onOpen: openNotice, onDismiss: dismissNotice, onAutoClose: collapseNotice, onPresented: frame.nativeVisible ? presented : () => undefined,
+        ...(frame.notificationSnapshot === undefined ? {} : { onExpandedChange: expandedNotices, onCollapsedChange: collapsedNotices, onClearAll: clearAllNotices }) })) : null,
     frame.caption && layout.caption ? createElement('div', { 'aria-live': 'polite', 'data-codingns-native-caption': true,
       style: { ...regionStyle(layout.caption), whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
         boxSizing: 'border-box', padding: 8, borderRadius: 10, color: '#242424', background: 'rgba(255,255,255,.94)', fontSize: uiFontSize(12), lineHeight: 1.5 } }, frame.caption) : null)

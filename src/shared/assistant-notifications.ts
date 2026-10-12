@@ -1,6 +1,6 @@
 /** 通知与语音动作分离；伴随页只能获得下列安全展示字段。 */
 export type AssistantNotificationKind = 'completed' | 'error' | 'question' | 'approval'
-export type AssistantNotificationAction = 'presented' | 'read' | 'dismiss'
+export type AssistantNotificationAction = 'presented' | 'read' | 'collapse' | 'dismiss'
 export const ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS = [15, 30, 45, 60] as const
 export type AssistantNotificationAutoCloseSeconds = typeof ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS[number]
 export const DEFAULT_ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS: AssistantNotificationAutoCloseSeconds = 30
@@ -95,7 +95,7 @@ export interface AssistantNotificationCapabilities {
   readonly recovery: boolean
   readonly reason?: string
 }
-/** 只描述气泡里尚未清理的提醒：一键清理过的记录不进入主气泡、条目与两个计数。 */
+/** 只描述气泡里尚未清理的提醒：已清理记录不进入主气泡、条目与两个计数。 */
 export interface AssistantNotificationSnapshot {
   readonly generation: number
   readonly revision: number

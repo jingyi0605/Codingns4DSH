@@ -22,10 +22,14 @@ export interface AssistantNotificationBubbleProps {
   readonly error?: string | undefined
   readonly onOpen: (noticeId: string, generation: number, connectionGeneration?: number) => void
   readonly onDismiss: (noticeId: string, generation: number, connectionGeneration?: number) => void
+  /** 自动超时只收起提醒，不执行人工垃圾桶的清理语义。 */
+  readonly onAutoClose?: (noticeId: string, generation: number, connectionGeneration?: number) => void
   readonly onPresented: (noticeId: string, generation: number, kind?: AssistantNotification['kind']) => void
   readonly autoClose?: boolean
   readonly autoCloseSeconds?: AssistantNotificationAutoCloseSeconds
   readonly onExpandedChange?: ((expanded: boolean) => void) | undefined
+  /** 收起/恢复顶部状态条时通知原生窗口切换紧凑高度。 */
+  readonly onCollapsedChange?: ((collapsed: boolean) => void) | undefined
   /** 一键清理只提交当前代次的气泡清理；未接入的主机不渲染该按钮。 */
   readonly onClearAll?: ((generation: number) => void | Promise<void>) | undefined
   /** 气泡实际渲染高度回报；原生窗口据此收缩通知区，不让固定预留空间留下空白和点击死区。 */
@@ -66,7 +70,7 @@ function isPendingNotice(notice: Pick<AssistantNotification, 'kind' | 'lifecycle
   return (notice.kind === 'question' || notice.kind === 'approval') && notice.lifecycle === 'active'
 }
 
-export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss, onPresented, autoClose = false, autoCloseSeconds = 30, onExpandedChange, onClearAll, onSizeChange, tailSide = 'bottom', tailTarget, tailStyle }: AssistantNotificationBubbleProps): ReactElement {
+export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss, onAutoClose, onPresented, autoClose = false, autoCloseSeconds = 30, onExpandedChange, onCollapsedChange, onClearAll, onSizeChange, tailSide = 'bottom', tailTarget, tailStyle }: AssistantNotificationBubbleProps): ReactElement {
   const [expanded, setExpanded] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [listFilter, setListFilter] = useState<NotificationListFilter>('all')
@@ -76,7 +80,12 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
   const autoCloseTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const snapshot = 'items' in frame ? frame : undefined
   const primary = snapshot === undefined ? frame as DesktopAssistantNotification : snapshot.primary
-  const items = snapshot?.items.filter((notice) => !notice.read || isPendingNotice(notice)) ?? []
+  // 展开记录列表使用 Host 返回的完整安全快照；未读/待处理只影响首页主卡片，不应让已读记录在展开后消失。
+  // 旧版本快照可能没有把 primary 重复放入 items，列表仍需把它补回且不能重复。
+  const items = snapshot === undefined ? [] : [
+    ...(snapshot.primary !== null && !snapshot.items.some((notice) => notice.noticeId === snapshot.primary!.noticeId) ? [snapshot.primary] : []),
+    ...snapshot.items,
+  ]
   // 主气泡直接呈现当前需要用户关注的通知；记录列表仍保留完整快照，避免首屏只剩统计数字。
   const attentionItems = snapshot === undefined
     ? primary === undefined || primary === null ? [] : [primary]
@@ -109,7 +118,8 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
       const connectionGeneration = 'connectionGeneration' in presented ? presented.connectionGeneration : undefined
       autoCloseTimer.current = setTimeout(() => {
         autoCloseTimer.current = undefined
-        onDismiss(presented.noticeId, frame.generation, connectionGeneration)
+        if (onAutoClose !== undefined) onAutoClose(presented.noticeId, frame.generation, connectionGeneration)
+        else onDismiss(presented.noticeId, frame.generation, connectionGeneration)
       }, autoCloseSeconds * 1000)
     }
     const confirm = (): void => {
@@ -134,7 +144,7 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
       dom.removeEventListener('animationend', confirm, true)
       dom.defaultView?.removeEventListener('resize', confirm); dom.defaultView?.removeEventListener('pointerup', confirm)
     }
-  }, [presented?.noticeId, presented?.kind, presented?.connectionGeneration, createdAt, frame.generation, expanded, collapsed, autoClose, autoCloseSeconds, onPresented, onDismiss])
+  }, [presented?.noticeId, presented?.kind, presented?.connectionGeneration, createdAt, frame.generation, expanded, collapsed, autoClose, autoCloseSeconds, onPresented, onDismiss, onAutoClose])
   // 只有还存在可清理的会话通知（未读且非待处理）时才渲染按钮；待处理提醒不在清理范围内。
   const clearableCount = snapshot === undefined ? 0
     : [...snapshot.items, ...(snapshot.primary === null ? [] : [snapshot.primary])].filter((notice) => !notice.read && !isPendingNotice(notice)).length
@@ -144,7 +154,8 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
   const showExpandButton = collapsed && (mainNotice !== undefined || hasNotificationCounts)
   const showTopRow = showCollapseButton || showExpandButton || showClearAll || hasNotificationCounts
   const showBubble = !collapsed && (!expanded || snapshot === undefined) && mainNotice !== undefined
-  const showFilterTags = snapshot !== undefined && (multiple || collapsed)
+  // 单条通知也要保留筛选入口；否则展开状态没有办法从顶部操作栏进入记录视图。
+  const showFilterTags = snapshot !== undefined && hasNotificationCounts
   const listItems = listFilter === 'unread'
     ? items.filter((notice) => !notice.read && !isPendingNotice(notice))
     : listFilter === 'pending'
@@ -157,7 +168,7 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
       viewBox: `0 0 ${ASSISTANT_NOTIFICATION_TAIL_WIDTH} ${ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_OVERLAP}`, 'aria-hidden': true, style: tailSvg(tailSide) },
       createElement('path', { d: `${notificationTailCurve} Z`, fill: notificationTheme.surface }))) : null
   const toggleFilter = (filter: Exclude<NotificationListFilter, 'all'>): void => {
-    setCollapsed(false); setListFilter(listFilter === filter ? 'all' : filter); setExpanded(true)
+    setCollapsed(false); onCollapsedChange?.(false); setListFilter(listFilter === filter ? 'all' : filter); setExpanded(true)
   }
   // 提问与权限申请统一为「有 [标签] 需要你来处理」；权限申请用黄色标签，与卡片图标保持一致。
   const requestLine = (notice: AssistantNotification | DesktopAssistantNotification, compact = false): ReactElement => {
@@ -215,7 +226,11 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
       showCollapseButton || showExpandButton ? createElement('button', { type: 'button', style: toolbarIconButton,
         'aria-expanded': !collapsed, 'aria-label': t(collapsed ? 'awb.notifications.expand' : 'awb.notifications.collapse'),
         title: t(collapsed ? 'awb.notifications.expand' : 'awb.notifications.collapse'), onClick: () => {
-          setExpanded(false); setCollapsed((value) => !value)
+          const nextCollapsed = !collapsed
+          setCollapsed(nextCollapsed)
+          // 如果主记录已经被 Host 标记为 collapsed，恢复时直接打开记录列表，不能只显示一个空状态条。
+          setExpanded(!nextCollapsed)
+          onCollapsedChange?.(nextCollapsed)
         } }, notificationToolbarIcon(collapsed ? 'expand' : 'collapse')) : null,
       !collapsed && showClearAll ? createElement('button', { type: 'button', style: processing ? clearAllButtonBusy : clearAllButton,
         disabled: processing, 'aria-label': t('awb.notifications.clearAllLabel'), title: t('awb.notifications.clearAllLabel'), onClick: () => {
@@ -382,7 +397,7 @@ const notificationCountBadge: CSSProperties = { display: 'inline-grid', placeIte
   color: notificationTheme.labelPrimary, background: notificationTheme.card, fontSize: uiFontSize(10), lineHeight: 1, fontWeight: 750 }
 const notificationPendingBadge: CSSProperties = { ...notificationCountBadge, color: dshThemeColor.warningForeground, background: dshThemeColor.warning }
 // 顶部行按「收起、清理、未读、待处理」排列，图标只保留动作语义，数量由徽标承载。
-const topRow: CSSProperties = { display: 'flex', flexShrink: 0, alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 6 }
+const topRow: CSSProperties = { display: 'flex', width: '100%', flexShrink: 0, alignItems: 'center', justifyContent: 'center', flexWrap: 'nowrap', gap: 6 }
 // 清理通知与卡片内的查看/收起动作使用同一套中性灰色按钮，避免把清理误读为主流程操作。
 const clearAllButton: CSSProperties = { ...toolbarIconButton, alignSelf: 'end', background: notificationTheme.button,
   borderColor: notificationTheme.border, color: notificationTheme.labelPrimary, borderRadius: 10, boxShadow: 'none' }

@@ -1,4 +1,4 @@
-import { desktopAssistantNotificationHeight, desktopAssistantLayout, desktopAssistantNotice, readDesktopAssistantLayout, type DesktopAssistantFrame, type DesktopAssistantLayout, type DesktopAssistantNoticeEvent, type DesktopAssistantNoticeFeedback, type DesktopAssistantPresentation, type DesktopAssistantStatus } from '../../shared/desktop-assistant.js'
+import { desktopAssistantHasNotifications, desktopAssistantNotificationHeight, desktopAssistantLayout, desktopAssistantNotice, readDesktopAssistantLayout, type DesktopAssistantFrame, type DesktopAssistantLayout, type DesktopAssistantNoticeEvent, type DesktopAssistantNoticeFeedback, type DesktopAssistantPresentation, type DesktopAssistantStatus } from '../../shared/desktop-assistant.js'
 import type { DesktopAssistantPage } from './server.js'
 
 export interface DesktopAssistantAgent {
@@ -38,6 +38,7 @@ export class DesktopAssistantController {
   private noticeFeedbackError: { readonly event: DesktopAssistantNoticeEvent; readonly message: string } | undefined
   private presentedNotice = ''
   private notificationExpanded = false
+  private notificationCollapsed = false
   private layout: DesktopAssistantLayout | undefined
   /** 原生上报的 DSH 主窗口前台状态；未知时按后台处理。 */
   private appActive = false
@@ -53,6 +54,7 @@ export class DesktopAssistantController {
       this.owner = owner; this.sequence = -1; this.error = undefined
       this.noticeEvents = []; this.noticeError = undefined; this.noticeFeedbackError = undefined; this.noticeFrameSequence = 0; this.noticeFrameKey = ''; this.presentedNotice = ''
       this.notificationExpanded = false
+      this.notificationCollapsed = false
     }
     return this.status(owner)
   }
@@ -160,6 +162,15 @@ export class DesktopAssistantController {
         void this.refresh().catch(() => undefined)
       }
     }
+    if (event.ev === 'notice-collapse') {
+      const identity = this.frame?.identity
+      if (identity && this.frame?.notificationSnapshot && event.ownerId === this.owner && event.generation === identity.generation
+        && event.sequence === identity.sequence && typeof event.collapsed === 'boolean' && event.collapsed !== this.notificationCollapsed) {
+        this.notificationCollapsed = event.collapsed
+        if (event.collapsed) this.notificationExpanded = false
+        void this.refresh().catch(() => undefined)
+      }
+    }
     if (event.ev === 'error') this.failed(generation, typeof event.message === 'string' ? event.message.slice(0, 500) : '原生悬浮窗口不可用')
   }
 
@@ -167,6 +178,10 @@ export class DesktopAssistantController {
   private frameInput(): DesktopAssistantPresentation { return this.appActive ? { ...this.presentation, appActive: true } : this.presentation }
   private refreshFrame(): void {
     const frame = this.options.readFrame(this.frameInput())
+    // 通知全部消失后，新一轮通知应从完整气泡开始，不能继承上一轮手动收起状态。
+    if (frame === undefined || !desktopAssistantHasNotifications(frame)) {
+      this.notificationExpanded = false; this.notificationCollapsed = false
+    }
     // 同一 noticeId 的完成提醒可以升级为错误；呈现版本必须取最终 Host 快照，不能只取主页面请求序号。
     const snapshot = frame?.notificationSnapshot
     const primary = desktopAssistantNotice(frame)
@@ -192,7 +207,7 @@ export class DesktopAssistantController {
   }
   private showCommand(cmd: string): Record<string, unknown> {
     const frame = this.frame!
-    const notificationHeight = desktopAssistantNotificationHeight(frame, this.notificationExpanded, Boolean(this.noticeError || frame.noticeError))
+    const notificationHeight = desktopAssistantNotificationHeight(frame, this.notificationExpanded, Boolean(this.noticeError || frame.noticeError), this.notificationCollapsed)
     const layout = desktopAssistantLayout({ x: 0, y: 280 }, frame.size, notificationHeight, Boolean(frame.caption), [{ x: 0, y: 0, width: 1024, height: 768 }])
     return { cmd, width: layout.bounds.width, height: layout.bounds.height, avatarSize: frame.size, notification: notificationHeight > 0, notificationHeight, caption: Boolean(frame.caption) }
   }
@@ -206,7 +221,7 @@ export class DesktopAssistantController {
       || event.noticeKind !== undefined && event.noticeKind !== notice.kind
       || event.connectionGeneration !== undefined && (!Number.isSafeInteger(event.connectionGeneration) || Number(event.connectionGeneration) < 0)
       || notice.connectionGeneration !== undefined && event.connectionGeneration !== notice.connectionGeneration
-      || event.noticeGeneration !== notice.generation || (event.ev === 'notice-action' && !['open', 'dismiss'].includes(String(event.action)))) return
+      || event.noticeGeneration !== notice.generation || (event.ev === 'notice-action' && !['open', 'collapse', 'dismiss'].includes(String(event.action)))) return
     const presentedKey = JSON.stringify([this.owner, notice.generation, notice.noticeId, notice.kind])
     if (event.ev === 'notice-presented' && (!this.visible || this.presentedNotice === presentedKey)) return
     if (this.noticeEvents.length >= 32) {
@@ -216,7 +231,7 @@ export class DesktopAssistantController {
     const item: DesktopAssistantNoticeEvent = { sequence: ++this.noticeSequence, ownerId: this.owner, generation: this.generation,
       noticeId: notice.noticeId, noticeGeneration: notice.generation, noticeKind: notice.kind, type: event.ev as DesktopAssistantNoticeEvent['type'],
       ...(event.connectionGeneration === undefined ? {} : { connectionGeneration: event.connectionGeneration as number }),
-      ...(event.ev === 'notice-action' ? { action: event.action as 'open' | 'dismiss' } : {}) }
+      ...(event.ev === 'notice-action' ? { action: event.action as 'open' | 'collapse' | 'dismiss' } : {}) }
     if (item.type === 'notice-presented') {
       try { this.options.onNoticePresented?.(item) } catch {
         // 中心换代或销毁期间没有确认成功时允许伴随页重试，不能伪报已经呈现。
@@ -276,7 +291,7 @@ export class DesktopAssistantController {
     this.generation++
     this.visible = false; this.ready = false
     this.noticeEvents = []; this.noticeError = undefined; this.noticeFeedbackError = undefined; this.layout = undefined; this.presentedNotice = ''; this.noticeFrameKey = ''
-    this.notificationExpanded = false
+    this.notificationExpanded = false; this.notificationCollapsed = false
     this.settle?.('悬浮窗口已关闭')
     const agent = this.agent, page = this.page
     this.agent = undefined; this.page = undefined

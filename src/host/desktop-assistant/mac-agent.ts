@@ -85,7 +85,8 @@ ObjC.registerSubclass({name:'CodingNsAssistantBridge',methods:{'userContentContr
  else if(msg.type==='open')focusDesktop()
  else if(msg.type==='notice-presented'||msg.type==='notice-action')emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,noticeId:msg.noticeId,noticeGeneration:msg.noticeGeneration,noticeKind:msg.noticeKind,connectionGeneration:msg.connectionGeneration,action:msg.action})
  else if(msg.type==='notice-page')emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,cursor:msg.cursor})
- else if(msg.type==='notice-expansion')emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,expanded:msg.expanded})
+  else if(msg.type==='notice-expansion'){if(msg.expanded===true)noticeSize=-1;emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,expanded:msg.expanded})}
+  else if(msg.type==='notice-collapse'){if(msg.collapsed===false)noticeSize=-1;emit({ev:msg.type,ownerId:msg.ownerId,generation:msg.generation,sequence:msg.sequence,collapsed:msg.collapsed})}
  else if(msg.type==='notice-size'){
   var measured=Math.round(Number(msg.height))
   if(Number.isFinite(measured)&&measured>0){measured=Math.min(276,Math.max(24,measured));if(measured!==noticeSize){noticeSize=measured;if(lastBounds)bounds(lastBounds)}}

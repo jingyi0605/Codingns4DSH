@@ -222,7 +222,12 @@ public static class PetAgent {
       Emit(new { ev=type,ownerId=S(m,"ownerId"),generation=N(m,"generation",-1),sequence=N(m,"sequence",-1),cursor=m.ContainsKey("cursor") ? m["cursor"] : null });
     }
     else if (type == "notice-expansion") {
+      if (m.ContainsKey("expanded") && S(m,"expanded").ToLowerInvariant() == "true") noticeSize = -1;
       Emit(new { ev=type,ownerId=S(m,"ownerId"),generation=N(m,"generation",-1),sequence=N(m,"sequence",-1),expanded=m.ContainsKey("expanded")?m["expanded"]:null });
+    }
+    else if (type == "notice-collapse") {
+      if (m.ContainsKey("collapsed") && S(m,"collapsed").ToLowerInvariant() == "false") noticeSize = -1;
+      Emit(new { ev=type,ownerId=S(m,"ownerId"),generation=N(m,"generation",-1),sequence=N(m,"sequence",-1),collapsed=m.ContainsKey("collapsed")?m["collapsed"]:null });
     }
     else if (type == "notice-size") {
       double measured = Math.Round(N(m,"height",0));

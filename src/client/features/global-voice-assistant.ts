@@ -193,6 +193,9 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
   const dismissNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number): void => {
     void notifications.acknowledge(noticeId, generation, 'dismiss', undefined, connectionGeneration).catch(() => undefined)
   }, [notifications])
+  const collapseNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number): void => {
+    void notifications.acknowledge(noticeId, generation, 'collapse', undefined, connectionGeneration).catch(() => undefined)
+  }, [notifications])
   const openNotice = useCallback((noticeId: string, generation: number, connectionGeneration?: number): void => {
     void notifications.open(noticeId, generation, connectionGeneration).catch(() => undefined)
   }, [notifications])
@@ -444,9 +447,8 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
         await notifications.refresh(true)
         // 一键清理没有单条身份，只按点击帧的代次清空当前气泡展示。
         if (event.action === 'dismiss-all') return notifications.clearAll(event.noticeGeneration)
-        return event.action === 'open' ? notifications.open(event.noticeId, event.noticeGeneration,
-          event.connectionGeneration)
-          : notifications.acknowledge(event.noticeId, event.noticeGeneration, 'dismiss', undefined, event.connectionGeneration)
+        if (event.action === 'open') return notifications.open(event.noticeId, event.noticeGeneration, event.connectionGeneration)
+        return notifications.acknowledge(event.noticeId, event.noticeGeneration, event.action === 'collapse' ? 'collapse' : 'dismiss', undefined, event.connectionGeneration)
       },
     })
   const nativeFloating = floatingEnabled && desktopAvatar.native
@@ -455,7 +457,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     role: 'alert', style: { padding: 12, background: 'var(--dsw-alias-background-secondary)', borderRadius: 12, overflowWrap: 'anywhere' },
   }, notificationSnapshot.error) : undefined) : (tail: AssistantNotificationTailSide, tailTarget?: number, tailStyle?: CSSProperties) => createElement(AssistantNotificationBubble, {
     frame: noticeFrame, t, error: notificationSnapshot.error, autoClose: notificationSettings.autoClose, autoCloseSeconds: notificationSettings.autoCloseSeconds,
-    onPresented: presentNotice, onDismiss: dismissNotice, onOpen: openNotice, onClearAll: clearAllNotices, tailSide: tail, tailTarget, tailStyle,
+    onPresented: presentNotice, onDismiss: dismissNotice, onAutoClose: collapseNotice, onOpen: openNotice, onClearAll: clearAllNotices, tailSide: tail, tailTarget, tailStyle,
   })
   return createElement('div', { 'data-codingns-global-voice': 'true', ...(conversationOpen || floatingVisible ? {} : { 'aria-hidden': 'true' }) },
     floatingVisible && !nativeFloating

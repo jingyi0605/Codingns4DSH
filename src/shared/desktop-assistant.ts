@@ -15,8 +15,8 @@ export interface DesktopAssistantNoticeEvent {
   /** 主页面必须使用点击当时的远端连接代次，不能改用重连后的同名通知。 */
   readonly connectionGeneration?: AssistantNotification['connectionGeneration']
   readonly type: 'notice-presented' | 'notice-action'
-  /** 一键清理只按点击帧的代次清空气泡，不需要单条目标；旧 Host 可继续只识别 open/dismiss。 */
-  readonly action?: 'open' | 'dismiss' | 'dismiss-all'
+  /** 一键清理只按点击帧的代次清空气泡，不需要单条目标；自动超时使用 collapse，不清除事实记录。 */
+  readonly action?: 'open' | 'collapse' | 'dismiss' | 'dismiss-all'
 }
 export interface DesktopAssistantNoticeIdentity {
   readonly ownerId: string
@@ -167,8 +167,9 @@ export function assistantNotificationSnapshotHasNotifications(snapshot: Assistan
     && (!entry.completed || !entry.error || !entry.requests || !entry.resolve || !entry.navigation))
 }
 /** 没有可直接展示记录时缩成入口；收起后的未读记录仍保留在列表与计数中。 */
-export function desktopAssistantNotificationHeight(frame: DesktopAssistantPresentation, expanded = false, error = false): number {
+export function desktopAssistantNotificationHeight(frame: DesktopAssistantPresentation, expanded = false, error = false, collapsed = false): number {
   if (!desktopAssistantHasNotifications(frame)) return 0
+  if (collapsed) return 48
   const snapshot = frame.notificationSnapshot
   const directNotice = (snapshot?.primary !== null && snapshot?.primary !== undefined && snapshot.primary.presentation !== 'collapsed') || snapshot?.items.some((item) => item.presentation !== 'collapsed' && (!item.read
     || (item.kind === 'question' || item.kind === 'approval') && item.lifecycle === 'active')) === true
@@ -249,7 +250,8 @@ export function desktopAssistantLayout(anchor: { readonly x: number; readonly y:
   const noticeAbove = availableTop >= availableBottom
   const captionAbove = notification ? !noticeAbove : noticeAbove
   // 通知与形象之间保留尾巴伸出长度和尖端间隙；4 像素是原有的分区间距。
-  const noticeClearance = notification ? Math.max(0, ASSISTANT_NOTIFICATION_TAIL_CLEARANCE - 4) : 0
+  // 紧凑状态条不渲染尾巴；不要继续保留尾巴避让区，否则收起后会与助理拉开一大片空白。
+  const noticeClearance = notification && noticeLimit > 48 ? Math.max(0, ASSISTANT_NOTIFICATION_TAIL_CLEARANCE - 4) : 0
   // 小屏优先保留形象，再按上下空间缩小通知和字幕；正文由共用组件独立滚动。
   // noticeAvailable 是本侧空间允许的最大气泡高度，伴随页把它当作气泡限高，收缩后也不会低于内容。
   let noticeAvailable = notification ? Math.min(276, Math.max(0, (noticeAbove ? availableTop : availableBottom) - 4 - noticeClearance)) : 0
