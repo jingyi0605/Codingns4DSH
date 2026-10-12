@@ -159,9 +159,12 @@ export function readDesktopAssistantNotificationSnapshot(value: unknown): Assist
 }
 export function desktopAssistantHasNotifications(frame: DesktopAssistantPresentation): boolean {
   const snapshot = frame.notificationSnapshot
-  return snapshot === undefined ? frame.notification !== undefined : snapshot.primary !== null
-    || snapshot.unreadCount > 0 || snapshot.pendingCount > 0 || snapshot.capabilities.some((entry) => Boolean(entry.reason)
-      && (!entry.completed || !entry.error || !entry.requests || !entry.resolve || !entry.navigation))
+  return snapshot === undefined ? frame.notification !== undefined : assistantNotificationSnapshotHasNotifications(snapshot)
+}
+/** 空快照只代表通知中心已经返回结果，不应被当成需要挂载气泡的通知。 */
+export function assistantNotificationSnapshotHasNotifications(snapshot: AssistantNotificationSnapshot): boolean {
+  return snapshot.primary !== null || snapshot.unreadCount > 0 || snapshot.pendingCount > 0 || snapshot.capabilities.some((entry) => Boolean(entry.reason)
+    && (!entry.completed || !entry.error || !entry.requests || !entry.resolve || !entry.navigation))
 }
 /** 没有可直接展示记录时缩成入口；收起后的未读记录仍保留在列表与计数中。 */
 export function desktopAssistantNotificationHeight(frame: DesktopAssistantPresentation, expanded = false, error = false): number {
@@ -191,10 +194,12 @@ export function isDesktopAssistantHost(platform: string, electron: string | unde
 
 /** Desktop 与 Web 的位置是不同坐标系，不能复用页面 localStorage 中的位置。 */
 export interface DesktopAssistantBounds { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+/** 通知区额外给出气泡限高：伴随页据此收缩气泡，超出部分只在内层滚动，不再撑满原生固定区域。 */
+export interface DesktopAssistantNotificationBounds extends DesktopAssistantBounds { readonly limit?: number }
 export interface DesktopAssistantLayout {
   readonly bounds: DesktopAssistantBounds
   readonly avatar: DesktopAssistantBounds
-  readonly notification?: DesktopAssistantBounds
+  readonly notification?: DesktopAssistantNotificationBounds
   readonly caption?: DesktopAssistantBounds
 }
 
@@ -205,11 +210,20 @@ export function readDesktopAssistantLayout(value: unknown): DesktopAssistantLayo
   const bounds = readDesktopAssistantRectangle(record.bounds), avatar = readDesktopAssistantRectangle(record.avatar)
   const notification = readDesktopAssistantRectangle(record.notification), caption = readDesktopAssistantRectangle(record.caption)
   if (!bounds || !avatar || (record.notification !== undefined && !notification) || (record.caption !== undefined && !caption)) return undefined
+  // 旧原生不带 limit；一旦给出就必须是有限值且不小于当前区域高度，避免气泡被限到不可见。
+  const limit = notification === undefined ? undefined : readDesktopAssistantNotificationLimit(record.notification, notification)
+  if (limit === null) return undefined
   // bounds 是屏幕坐标，可为负；其他区域是窗口内坐标，必须完全包含在窗口中。
   const inside = (region: DesktopAssistantBounds): boolean => region.x >= 0 && region.y >= 0
     && region.x + region.width <= bounds.width + 0.01 && region.y + region.height <= bounds.height + 0.01
   if (![avatar, notification, caption].every((region) => region === undefined || inside(region))) return undefined
-  return { bounds, avatar, ...(notification === undefined ? {} : { notification }), ...(caption === undefined ? {} : { caption }) }
+  return { bounds, avatar, ...(notification === undefined ? {} : { notification: { ...notification, ...(limit === undefined ? {} : { limit }) } }),
+    ...(caption === undefined ? {} : { caption }) }
+}
+function readDesktopAssistantNotificationLimit(value: unknown, region: DesktopAssistantBounds): number | undefined | null {
+  const limit = (value as Record<string, unknown>).limit
+  if (limit === undefined) return undefined
+  return typeof limit === 'number' && Number.isFinite(limit) && limit >= region.height && limit <= 4096 ? limit : null
 }
 function readDesktopAssistantRectangle(value: unknown): DesktopAssistantBounds | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
@@ -237,14 +251,17 @@ export function desktopAssistantLayout(anchor: { readonly x: number; readonly y:
   // 通知与形象之间保留尾巴伸出长度和尖端间隙；4 像素是原有的分区间距。
   const noticeClearance = notification ? Math.max(0, ASSISTANT_NOTIFICATION_TAIL_CLEARANCE - 4) : 0
   // 小屏优先保留形象，再按上下空间缩小通知和字幕；正文由共用组件独立滚动。
-  let noticeHeight = notification ? Math.min(noticeLimit, Math.max(0, (noticeAbove ? availableTop : availableBottom) - 4 - noticeClearance)) : 0
+  // noticeAvailable 是本侧空间允许的最大气泡高度，伴随页把它当作气泡限高，收缩后也不会低于内容。
+  let noticeAvailable = notification ? Math.min(276, Math.max(0, (noticeAbove ? availableTop : availableBottom) - 4 - noticeClearance)) : 0
+  let noticeHeight = notification ? Math.min(noticeLimit, noticeAvailable) : 0
   let captionHeight = caption ? Math.min(128, Math.max(0, (captionAbove ? availableTop : availableBottom) - 4)) : 0
   // 贴近边缘时把字幕和通知分区堆在宽裕的一侧，不能留一个只有几像素高的字幕区。
   const stacked = notification && caption && captionHeight < 40 && Math.max(availableTop, availableBottom) >= 88
   if (stacked) {
     const space = noticeAbove ? availableTop : availableBottom
     captionHeight = Math.min(128, Math.max(40, Math.floor((space - 8) / 3)))
-    noticeHeight = Math.min(noticeLimit, space - captionHeight - 8 - noticeClearance)
+    noticeAvailable = Math.min(276, Math.max(0, space - captionHeight - 8 - noticeClearance))
+    noticeHeight = Math.min(noticeLimit, noticeAvailable)
   }
   // 通知块包含尾巴避让空间，字幕与形象之间仍用原有间距。
   const noticeBlock = noticeHeight + noticeClearance
@@ -263,7 +280,7 @@ export function desktopAssistantLayout(anchor: { readonly x: number; readonly y:
     if (noticeAbove) { noticeRegion.y = 0; captionRegion.y = noticeHeight + 4 + noticeClearance }
     else { captionRegion.y = avatar.y + avatar.height + 4; noticeRegion.y = captionRegion.y + captionHeight + 4 + noticeClearance }
   } else if (!noticeAbove) noticeRegion.y = avatar.y + avatar.height + 4 + noticeClearance
-  return { bounds, avatar, ...(notification && noticeHeight > 0 ? { notification: noticeRegion } : {}),
+  return { bounds, avatar, ...(notification && noticeHeight > 0 ? { notification: { ...noticeRegion, limit: noticeAvailable } } : {}),
     ...(caption && captionHeight > 0 ? { caption: captionRegion } : {}) }
 }
 export function clampDesktopAssistantBounds(bounds: DesktopAssistantBounds, areas: readonly DesktopAssistantBounds[]): DesktopAssistantBounds {

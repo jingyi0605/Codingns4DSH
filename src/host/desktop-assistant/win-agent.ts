@@ -27,6 +27,7 @@ public static class PetAgent {
   static bool positioned;
   static double avatarX, avatarY, avatarWidth = 144, avatarHeight = 156;
   static double noticeY, noticeHeight, captionY, captionHeight;
+  static double noticeSize = -1;
   static Dictionary<string, object> lastBounds;
   static bool loaded = false;
   static bool active = false;
@@ -131,14 +132,19 @@ public static class PetAgent {
     bool above = top >= bottom, notice = S(m,"notification").ToLowerInvariant()=="true", caption = S(m,"caption").ToLowerInvariant()=="true";
     bool captionAbove = notice ? !above : above;
     double noticeLimit = Math.Max(0,Math.Min(276,N(m,"notificationHeight",notice?276:0)));
-    noticeHeight = notice ? Math.Min(noticeLimit,Math.Max(0,(above?top:bottom)-4)) : 0;
+    // Prefer the measured bubble height; a zero request drops the stale measurement.
+    if (noticeLimit <= 0) noticeSize = -1;
+    double noticeEffective = noticeSize > 0 ? Math.Min(noticeLimit,noticeSize) : noticeLimit;
+    noticeHeight = notice ? Math.Min(noticeEffective,Math.Max(0,(above?top:bottom)-4)) : 0;
     captionHeight = caption ? Math.Min(128,Math.Max(0,(captionAbove?top:bottom)-4)) : 0;
     bool stacked = notice && caption && captionHeight < 40 && Math.Max(top,bottom) >= 88;
     if(stacked) {
       double space = above ? top : bottom;
       captionHeight = Math.Min(128,Math.Max(40,Math.Floor((space-8)/3)));
-      noticeHeight = Math.Min(noticeLimit,space-captionHeight-8);
+      noticeHeight = Math.Min(noticeEffective,space-captionHeight-8);
     }
+    double noticeAvailable = notice ? Math.Min(276,Math.Max(0,(above?top:bottom)-4)) : 0;
+    if (stacked) noticeAvailable = Math.Max(0,Math.Min(276,(above?top:bottom)-captionHeight-8));
     double combinedHeight = noticeHeight + captionHeight + 4;
     double topHeight = stacked ? (above?combinedHeight:0) : (above?noticeHeight:0) + (captionAbove?captionHeight:0);
     double bottomHeight = stacked ? (above?0:combinedHeight) : (above?0:noticeHeight) + (captionAbove?0:captionHeight);
@@ -154,7 +160,7 @@ public static class PetAgent {
     var layout = new Dictionary<string,object>();
     layout["bounds"] = new { x=win.Left,y=win.Top,width=win.Width,height=win.Height };
     layout["avatar"] = new { x=avatarX,y=avatarY,width=avatarWidth,height=avatarHeight };
-    if(noticeHeight>0) layout["notification"] = new { x=0,y=noticeY,width=w,height=noticeHeight };
+    if(noticeHeight>0) layout["notification"] = new { x=0,y=noticeY,width=w,height=noticeHeight,limit=noticeAvailable };
     if(captionHeight>0) layout["caption"] = new { x=0,y=captionY,width=w,height=captionHeight };
     positioned = true;
     Clamp();
@@ -217,6 +223,13 @@ public static class PetAgent {
     }
     else if (type == "notice-expansion") {
       Emit(new { ev=type,ownerId=S(m,"ownerId"),generation=N(m,"generation",-1),sequence=N(m,"sequence",-1),expanded=m.ContainsKey("expanded")?m["expanded"]:null });
+    }
+    else if (type == "notice-size") {
+      double measured = Math.Round(N(m,"height",0));
+      if (measured > 0) {
+        measured = Math.Min(276,Math.Max(24,measured));
+        if (measured != noticeSize) { noticeSize = measured; if (lastBounds != null) Bounds(lastBounds); }
+      }
     }
     else if (type == "drag-start") { if (GetCursorPos(out lastCursor)) { dragging = true; dragTimer.Start(); } }
     else if (type == "drag-end") { EndDrag(); }

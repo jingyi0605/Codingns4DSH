@@ -28,6 +28,8 @@ export interface AssistantNotificationBubbleProps {
   readonly onExpandedChange?: ((expanded: boolean) => void) | undefined
   /** 一键清理只提交当前代次的气泡清理；未接入的主机不渲染该按钮。 */
   readonly onClearAll?: ((generation: number) => void | Promise<void>) | undefined
+  /** 气泡实际渲染高度回报；原生窗口据此收缩通知区，不让固定预留空间留下空白和点击死区。 */
+  readonly onSizeChange?: ((height: number) => void) | undefined
   /** 尾巴贴的气泡边；由布局方按气泡相对形象的位置给出，缺省贴在底边。 */
   readonly tailSide?: AssistantNotificationTailSide | undefined
   /** 形象中心在面板边缘上的投影，和面板使用同一坐标系。 */
@@ -64,12 +66,13 @@ function isPendingNotice(notice: Pick<AssistantNotification, 'kind' | 'lifecycle
   return (notice.kind === 'question' || notice.kind === 'approval') && notice.lifecycle === 'active'
 }
 
-export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss, onPresented, autoClose = false, autoCloseSeconds = 30, onExpandedChange, onClearAll, tailSide = 'bottom', tailTarget, tailStyle }: AssistantNotificationBubbleProps): ReactElement {
+export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss, onPresented, autoClose = false, autoCloseSeconds = 30, onExpandedChange, onClearAll, onSizeChange, tailSide = 'bottom', tailTarget, tailStyle }: AssistantNotificationBubbleProps): ReactElement {
   const [expanded, setExpanded] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [listFilter, setListFilter] = useState<NotificationListFilter>('all')
   const [processing, setProcessing] = useState(false)
   const bubble = useRef<HTMLDivElement>(null)
+  const shellBox = useRef<HTMLDivElement>(null)
   const autoCloseTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const snapshot = 'items' in frame ? frame : undefined
   const primary = snapshot === undefined ? frame as DesktopAssistantNotification : snapshot.primary
@@ -87,6 +90,14 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
   useEffect(() => { onExpandedChange?.(expanded) }, [expanded, onExpandedChange])
   useEffect(() => { setCollapsed(false) }, [frame.generation])
   useEffect(() => { setListFilter('all') }, [frame.generation, snapshot?.reset])
+  // 高度回报只观察气泡自身尺寸：原生收缩通知区后不会再反过来撑大自己，避免测量与布局互相追高。
+  useEffect(() => {
+    const node = shellBox.current
+    if (onSizeChange === undefined || node === null || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => onSizeChange(Math.ceil(node.getBoundingClientRect().height)))
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [onSizeChange])
   useEffect(() => {
     if (presented === undefined || presented === null) return
     const node = bubble.current
@@ -144,7 +155,7 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
   const tail = showTail ? createElement('span', { 'aria-hidden': true, 'data-codingns-notification-tail': tailSide, style: { ...tailBox(tailSide), ...tailStyle } },
       createElement('svg', { width: ASSISTANT_NOTIFICATION_TAIL_WIDTH, height: ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_OVERLAP,
       viewBox: `0 0 ${ASSISTANT_NOTIFICATION_TAIL_WIDTH} ${ASSISTANT_NOTIFICATION_TAIL_HEIGHT + ASSISTANT_NOTIFICATION_TAIL_OVERLAP}`, 'aria-hidden': true, style: tailSvg(tailSide) },
-      createElement('path', { d: `${notificationTailCurve} Z`, fill: dshThemeColor.menuBackground }))) : null
+      createElement('path', { d: `${notificationTailCurve} Z`, fill: notificationTheme.surface }))) : null
   const toggleFilter = (filter: Exclude<NotificationListFilter, 'all'>): void => {
     setCollapsed(false); setListFilter(listFilter === filter ? 'all' : filter); setExpanded(true)
   }
@@ -194,7 +205,7 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
     ? []
     : (snapshot?.capabilities?.filter((capability) => capability.reason && (!capability.completed || !capability.error || !capability.requests || !capability.resolve || !capability.navigation)).map((capability) =>
       createElement('div', { key: capability.hostId, role: 'status', style: panel }, capability.reason)) ?? [])
-  return createElement('div', { 'data-codingns-assistant-notifications': true, style: shell,
+  return createElement('div', { ref: shellBox, 'data-codingns-assistant-notifications': true, style: shell,
     // 操作和文本选择不进入形象拖动区，不抢焦点；组件本身无弹跳动画。
     onPointerDown: (event: { stopPropagation(): void }) => event.stopPropagation(),
     onClick: (event: { stopPropagation(): void }) => event.stopPropagation() },
@@ -306,16 +317,28 @@ function notificationStatus(notice: AssistantNotification | DesktopAssistantNoti
   if (notice.kind === 'question') return t('awb.notifications.question')
   return t('awb.notifications.approval')
 }
-const button: CSSProperties = { ...dshSettingsButtonStyle, minHeight: 36, touchAction: 'manipulation', whiteSpace: 'normal', borderRadius: 999, fontWeight: 650 }
-const shell: CSSProperties = { position: 'relative', isolation: 'isolate', width: '100%', maxWidth: 320, height: '100%', maxHeight: 'var(--codingns-notification-max-height, min(276px, calc(100vh - 24px)))', minHeight: 0,
-  display: 'flex', flexDirection: 'column', gap: 6, pointerEvents: 'auto', color: dshThemeColor.labelPrimary, fontSize: uiFontSize(13) }
-const panel: CSSProperties = { position: 'relative', zIndex: 1, padding: 10, background: dshThemeColor.menuBackground, border: `1px solid ${dshThemeColor.border}`, borderRadius: 18, boxShadow: dshThemeColor.prominentShadow,
-  minWidth: 0, boxSizing: 'border-box', maxHeight: 'min(276px, calc(100vh - 24px))', overflowY: 'auto' }
-const bubblePanel: CSSProperties = { ...panel, position: 'relative', display: 'flex', flexDirection: 'column', flex: '1 1 auto', minWidth: 0, minHeight: 0,
-  padding: 10, overflow: 'visible', border: 'none', borderRadius: '24px 24px 24px 8px',
-  maxHeight: '100%', background: dshThemeColor.menuBackground, borderColor: 'transparent', boxShadow: 'none', outline: 'none' }
-const bubbleContent: CSSProperties = { position: 'relative', zIndex: 1, display: 'grid', gap: 8, minHeight: 0, flex: '1 1 auto',
-  overflowY: 'auto', overscrollBehavior: 'contain', boxSizing: 'border-box', padding: 0 }
+/** 独立伴随页没有 DSH 主题变量，回退色固定为夜间灰；宿主页面仍可通过变量覆盖。 */
+const notificationTheme = {
+  labelPrimary: 'var(--dsw-alias-label-primary, #f1f2f4)',
+  labelSecondary: 'var(--dsw-alias-label-secondary, #b7bac1)',
+  border: 'var(--dsw-alias-border-l2, #5b5e66)',
+  surface: 'var(--dsw-alias-bg-layer-3, #303237)',
+  card: 'var(--dsw-alias-bg-layer-1, #3b3d43)',
+  button: 'var(--dsw-alias-button-elevated-fill, #44474e)',
+  shadow: 'var(--dsw-elevation-prominent, 0 12px 36px rgba(0, 0, 0, 0.42))',
+} as const
+const button: CSSProperties = { ...dshSettingsButtonStyle, minHeight: 36, touchAction: 'manipulation', whiteSpace: 'normal', borderRadius: 999, fontWeight: 650,
+  color: notificationTheme.labelPrimary, background: notificationTheme.button, borderColor: notificationTheme.border }
+/** 外壳按实际内容收缩，避免原生为形象预留的高度变成大片不透明背景。 */
+const shell: CSSProperties = { position: 'relative', isolation: 'isolate', width: '100%', maxWidth: 320, height: 'auto', maxHeight: 'var(--codingns-notification-max-height, min(276px, calc(100vh - 24px)))', minHeight: 0,
+  display: 'flex', flexDirection: 'column', gap: 6, padding: 10, boxSizing: 'border-box', pointerEvents: 'auto', color: notificationTheme.labelPrimary, fontSize: uiFontSize(13),
+  background: notificationTheme.surface, border: `1px solid ${notificationTheme.border}`, borderRadius: '24px 24px 24px 8px', boxShadow: notificationTheme.shadow }
+const panel: CSSProperties = { position: 'relative', zIndex: 1, padding: 10, background: notificationTheme.surface, border: `1px solid ${notificationTheme.border}`, borderRadius: 18, boxShadow: notificationTheme.shadow,
+  minWidth: 0, boxSizing: 'border-box', maxHeight: 'var(--codingns-notification-max-height, min(276px, calc(100vh - 24px)))', overflowY: 'auto' }
+const bubblePanel: CSSProperties = { position: 'relative', display: 'flex', flexDirection: 'column', flex: '0 1 auto', minWidth: 0, minHeight: 0,
+  padding: 0, overflow: 'visible', border: 'none', borderRadius: 0, boxShadow: 'none', maxHeight: 'var(--codingns-notification-max-height, min(276px, calc(100vh - 24px)))', background: 'transparent', outline: 'none' }
+const bubbleContent: CSSProperties = { position: 'relative', zIndex: 1, display: 'grid', gridAutoRows: 'max-content', alignContent: 'start', gap: 8, minHeight: 0, flex: '0 1 auto',
+  maxHeight: 'var(--codingns-notification-max-height, min(276px, calc(100vh - 24px)))', overflowY: 'auto', overscrollBehavior: 'contain', boxSizing: 'border-box', padding: 0 }
 // 根部加宽，外露段连续收拢到单一尖点；不会形成平口方块。
 const notificationTailCurve = 'M1 0 C12 0 20 8 23 18 C24 24 25 30 28 36 C31 30 32 24 33 18 C36 8 44 0 55 0'
 function tailBox(side: AssistantNotificationTailSide): CSSProperties {
@@ -339,42 +362,42 @@ function tailSvg(side: AssistantNotificationTailSide): CSSProperties {
     transform: `translate(-50%, -50%) rotate(${side === 'left' ? 90 : -90}deg)` }
 }
 // 保留滚动操作，但不显示通知气泡右侧滚动条；内外层只由外层统一提供 10px 留白。
-const notificationBubbleCss = '[data-codingns-notification-scroll]{scrollbar-width:none;-ms-overflow-style:none}[data-codingns-notification-scroll]::-webkit-scrollbar{display:none;width:0;height:0}[data-codingns-notification-filter], [data-codingns-notification-filter]:focus, [data-codingns-notification-filter]:focus-visible{border:1px solid var(--dsw-alias-border-l2,#d9d9d9)!important;outline:none!important;box-shadow:none!important}'
+const notificationBubbleCss = '[data-codingns-notification-scroll]{scrollbar-width:none;-ms-overflow-style:none}[data-codingns-notification-scroll]::-webkit-scrollbar{display:none;width:0;height:0}[data-codingns-notification-filter], [data-codingns-notification-filter]:focus, [data-codingns-notification-filter]:focus-visible{border:1px solid var(--dsw-alias-border-l2,#5b5e66)!important;outline:none!important;box-shadow:none!important}'
 const primaryCard: CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: 9, padding: 5, minWidth: 0 }
-const compactCard: CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: 7, padding: '10px 11px', minWidth: 0, background: dshThemeColor.cardBackground,
-  border: `1px solid ${dshThemeColor.border}`, borderRadius: 15, boxShadow: dshThemeColor.subtleShadow }
+const compactCard: CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: 7, padding: '10px 11px', minWidth: 0, background: notificationTheme.card,
+  border: `1px solid ${notificationTheme.border}`, borderRadius: 15, boxShadow: '0 1px 2px rgba(0, 0, 0, 0.24)' }
 const cardBody: CSSProperties = { display: 'grid', gap: 8, minWidth: 0, minInlineSize: 0 }
 const cardHeading: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }
-const cardMeta: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), lineHeight: 1.3, overflowWrap: 'anywhere' }
+const cardMeta: CSSProperties = { color: notificationTheme.labelSecondary, fontSize: uiFontSize(11), lineHeight: 1.3, overflowWrap: 'anywhere' }
 const cardTitle: CSSProperties = { fontWeight: 750, fontSize: uiFontSize(15), lineHeight: 1.35, overflowWrap: 'anywhere' }
-const kindMark: CSSProperties = { display: 'inline-grid', placeItems: 'center', flex: '0 0 auto', width: 24, height: 24, borderRadius: '50%', color: dshThemeColor.primaryForeground,
-  fontSize: uiFontSize(13), fontWeight: 800, boxShadow: dshThemeColor.subtleShadow }
-const messageText: CSSProperties = { color: dshThemeColor.labelPrimary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.5, maxHeight: 120, overflowY: 'auto' }
+const kindMark: CSSProperties = { display: 'inline-grid', placeItems: 'center', flex: '0 0 auto', width: 24, height: 24, borderRadius: '50%', color: '#fff',
+  fontSize: uiFontSize(13), fontWeight: 800, boxShadow: '0 1px 2px rgba(0, 0, 0, 0.28)' }
+const messageText: CSSProperties = { color: notificationTheme.labelPrimary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.5, maxHeight: 120, overflowY: 'auto' }
 // 顶部统计按钮统一使用 28px 高度，给图标和数量徽标留出稳定的点击区域。
 const topRowButton: CSSProperties = { ...button, height: 28, minHeight: 28, padding: '2px 10px', fontSize: uiFontSize(12) }
 const toolbarIconButton: CSSProperties = { ...topRowButton, width: 28, minWidth: 28, padding: 4, display: 'inline-grid', placeItems: 'center' }
-const filterButton: CSSProperties = { ...topRowButton, alignSelf: 'end', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, minWidth: 46, padding: '2px 7px', background: dshThemeColor.menuBackground, boxShadow: dshThemeColor.subtleShadow }
+const filterButton: CSSProperties = { ...topRowButton, alignSelf: 'end', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, minWidth: 46, padding: '2px 7px', background: notificationTheme.button, boxShadow: '0 1px 2px rgba(0, 0, 0, 0.24)' }
 const filterButtonActive: CSSProperties = { ...filterButton, background: dshThemeColor.accent, borderColor: dshThemeColor.accent, color: dshThemeColor.primaryForeground }
 const notificationCountBadge: CSSProperties = { display: 'inline-grid', placeItems: 'center', minWidth: 16, height: 16, padding: '0 4px', boxSizing: 'border-box', borderRadius: 8,
-  color: dshThemeColor.labelPrimary, background: dshThemeColor.cardBackground, fontSize: uiFontSize(10), lineHeight: 1, fontWeight: 750 }
+  color: notificationTheme.labelPrimary, background: notificationTheme.card, fontSize: uiFontSize(10), lineHeight: 1, fontWeight: 750 }
 const notificationPendingBadge: CSSProperties = { ...notificationCountBadge, color: dshThemeColor.warningForeground, background: dshThemeColor.warning }
 // 顶部行按「收起、清理、未读、待处理」排列，图标只保留动作语义，数量由徽标承载。
 const topRow: CSSProperties = { display: 'flex', flexShrink: 0, alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 6 }
 // 清理通知与卡片内的查看/收起动作使用同一套中性灰色按钮，避免把清理误读为主流程操作。
-const clearAllButton: CSSProperties = { ...toolbarIconButton, alignSelf: 'end', background: dshThemeColor.buttonBackground,
-  borderColor: dshThemeColor.border, color: dshThemeColor.labelPrimary, borderRadius: 10, boxShadow: 'none' }
+const clearAllButton: CSSProperties = { ...toolbarIconButton, alignSelf: 'end', background: notificationTheme.button,
+  borderColor: notificationTheme.border, color: notificationTheme.labelPrimary, borderRadius: 10, boxShadow: 'none' }
 const clearAllButtonBusy: CSSProperties = { ...clearAllButton, opacity: 0.6, cursor: 'default' }
 // 「有 [标签] 需要你来处理」整行：标签胶囊夹在文字中间，间距由这一层控制，窄屏允许换行。
 const requestPrompt: CSSProperties = { display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, lineHeight: 1.5 }
 const requestInlineTag: CSSProperties = { display: 'inline-flex', alignItems: 'center', padding: '3px 8px', borderRadius: 999,
   color: dshThemeColor.primaryForeground, background: dshThemeColor.accent, fontSize: uiFontSize(11), lineHeight: 1.2, fontWeight: 750, letterSpacing: '0.02em', boxShadow: dshThemeColor.subtleShadow }
 // 多条堆叠的紧凑卡片：提示行字号略小，标签同步收紧，语义与主卡片一致。
-const compactPrompt: CSSProperties = { fontSize: uiFontSize(12), lineHeight: 1.4, color: dshThemeColor.labelPrimary }
+const compactPrompt: CSSProperties = { fontSize: uiFontSize(12), lineHeight: 1.4, color: notificationTheme.labelPrimary }
 const compactRequestTag: CSSProperties = { ...requestInlineTag, padding: '2px 7px', fontSize: uiFontSize(10) }
 // 权限申请标签改用黄色警示底与深色文字，与卡片图标一致。
 const approvalInlineTag: CSSProperties = { ...requestInlineTag, background: dshThemeColor.warning, color: dshThemeColor.warningForeground }
 const compactApprovalTag: CSSProperties = { ...compactRequestTag, background: dshThemeColor.warning, color: dshThemeColor.warningForeground }
-const compactStatus: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), lineHeight: 1.3, paddingLeft: 32 }
+const compactStatus: CSSProperties = { color: notificationTheme.labelSecondary, fontSize: uiFontSize(11), lineHeight: 1.3, paddingLeft: 32 }
 const actionRow: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'stretch', justifyContent: 'center', gap: 6, flex: '0 0 auto' }
 const notificationActionButton: CSSProperties = { ...button, width: 28, height: 28, minHeight: 28, padding: 0, display: 'inline-grid', placeItems: 'center', borderRadius: 10, fontSize: uiFontSize(12) }
 

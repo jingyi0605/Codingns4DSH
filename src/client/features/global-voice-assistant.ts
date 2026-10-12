@@ -22,7 +22,7 @@ import { AssistantNotificationStore } from './assistant-notification-store.js'
 import { assistantNotificationText, normalizeAssistantNotificationSettings } from '../../shared/assistant-notifications.js'
 import type { AssistantNotification, AssistantNotificationSnapshot, AssistantNotificationTailSide } from '../../shared/assistant-notifications.js'
 import type { AssistantAvatarReaction } from '../../shared/assistant-avatar.js'
-import { readDesktopAssistantNotificationSnapshot, type DesktopAssistantNotification } from '../../shared/desktop-assistant.js'
+import { assistantNotificationSnapshotHasNotifications, readDesktopAssistantNotificationSnapshot, type DesktopAssistantNotification } from '../../shared/desktop-assistant.js'
 import { normalizeAssistantSessionSelection, openAssistantNotificationSession, readAssistantSessionSelectionStore } from '../../dsh-capabilities/client/assistant-session-navigation-adapter.js'
 import { uiFontSize } from '../font-scale.js'
 
@@ -425,7 +425,9 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
     userText: partialText || liveUserText, assistantText: liveAssistantText,
   } : undefined
   // 语音六种动作保留原事实所有者，情绪只由当前通知提供，可随时撤销。
-  const noticeFrame = notificationsEnabled ? notificationSnapshot.frame : undefined
+  // 空快照只表示通知中心已连接，不代表需要在形象旁挂载气泡；否则会留下空白通知外壳。
+  const noticeFrame = notificationsEnabled && notificationSnapshot.frame !== undefined && assistantNotificationSnapshotHasNotifications(notificationSnapshot.frame)
+    ? notificationSnapshot.frame : undefined
   const reaction = assistantNotificationReaction(noticeFrame)
   const desktopNotification = desktopAssistantNotification(noticeFrame,
     notificationSnapshot.errorNoticeId === noticeFrame?.primary?.noticeId ? notificationSnapshot.error : undefined)

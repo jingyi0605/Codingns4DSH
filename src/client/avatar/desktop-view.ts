@@ -1,7 +1,7 @@
 import { Component, createElement, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode, PointerEvent } from 'react'
 import type { DesktopAssistantFrame } from '../../shared/desktop-assistant.js'
-import { desktopAssistantNotificationHeight, desktopAssistantLayout, desktopAssistantNotice } from '../../shared/desktop-assistant.js'
+import { desktopAssistantHasNotifications, desktopAssistantNotificationHeight, desktopAssistantLayout, desktopAssistantNotice } from '../../shared/desktop-assistant.js'
 import type { AssistantNotification, AssistantNotificationTailSide } from '../../shared/assistant-notifications.js'
 import { resolveAssistantAvatarAsset } from '../../shared/assistant-avatar.js'
 import { AssistantAvatarReactionBadge } from './reaction-badge.js'
@@ -46,6 +46,11 @@ export function sendDesktopAssistantNoticeClearAll(frame: DesktopAssistantFrame)
 export function sendDesktopAssistantNoticePage(frame: DesktopAssistantFrame, cursor?: string): void {
   if (!frame.identity || !frame.notificationSnapshot || cursor !== undefined && cursor.length > 2048) return
   postDesktopAssistantEvent({ type: 'notice-page', ...frame.identity, ...(cursor === undefined ? {} : { cursor }) })
+}
+/** 通知区高度按气泡真实渲染尺寸收缩；原生据此调整窗口与透明点击区，不保留固定空白。 */
+export function sendDesktopAssistantNoticeSize(height: number): void {
+  if (!Number.isFinite(height) || height <= 0) return
+  postDesktopAssistantEvent({ type: 'notice-size', height: Math.min(276, Math.round(height)) })
 }
 
 const renderers = { builtin: BuiltinAssistantAvatar, image: ImageAssistantAvatar, spritesheet: SpriteSheetAssistantAvatar, live2d: Live2dAssistantAvatar }
@@ -122,20 +127,25 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
   }
   useEffect(() => { if (!renderer) sendDesktopAssistantEvent('error', 'avatar_renderer_unavailable') }, [renderer])
   const layout = frame.layout ?? desktopAssistantLayout({ x: 0, y: 280 }, frame.size, desktopAssistantNotificationHeight(frame), Boolean(frame.caption), [{ x: 0, y: 0, width: 1024, height: 768 }])
+  // 快照清空后仍可能短暂带着上一轮原生布局；通知区域必须以当前事实为准，不能沿用旧白条。
+  const notification = desktopAssistantHasNotifications(frame) ? frame.notificationSnapshot ?? frame.notification : undefined
+  const notificationRegion = notification === undefined ? undefined : layout.notification
   const regionStyle = (region: { x: number; y: number; width: number; height: number }) => ({ position: 'absolute' as const, left: region.x, top: region.y, width: region.width, height: region.height, overflowY: 'auto' as const })
   // 气泡在形象上方时尾巴贴底边，在下方时贴顶边；尖端始终朝向形象且不压住它。
-  const notificationTail: AssistantNotificationTailSide = layout.notification !== undefined && layout.notification.y < layout.avatar.y ? 'bottom' : 'top'
-  const notificationTailStyle = layout.notification === undefined ? {} : assistantNotificationTailStyle(
-    layout.avatar.x + layout.avatar.width / 2, layout.notification.x, layout.notification.width, notificationTail)
-  const notificationStyle = layout.notification === undefined ? undefined : {
-    position: 'absolute' as const, left: layout.notification.x, top: layout.notification.y, width: layout.notification.width,
+  const notificationAbove = notificationRegion !== undefined && notificationRegion.y < layout.avatar.y
+  const notificationTail: AssistantNotificationTailSide = notificationAbove ? 'bottom' : 'top'
+  const notificationTailStyle = notificationRegion === undefined ? {} : assistantNotificationTailStyle(
+    layout.avatar.x + layout.avatar.width / 2, notificationRegion.x, notificationRegion.width, notificationTail)
+  // 气泡按内容收缩并贴在形象那一侧；区域收缩到实测高度前，弹性方向保证底边或顶边不会飘离形象。
+  const notificationStyle = notificationRegion === undefined ? undefined : {
+    position: 'absolute' as const, left: notificationRegion.x, top: notificationRegion.y, width: notificationRegion.width,
+    height: notificationRegion.height, boxSizing: 'border-box' as const,
+    display: 'flex' as const, flexDirection: 'column' as const, justifyContent: notificationAbove ? 'flex-end' as const : 'flex-start' as const,
     overflow: 'visible' as const,
-    // 区域高度由内容决定，气泡底边始终贴在形象上方；限高交给气泡面板，避免内容向下溢出。
-    '--codingns-notification-max-height': `${layout.notification.height}px`,
-    height: layout.notification.height, boxSizing: 'border-box' as const,
+    '--codingns-notification-max-height': `${notificationRegion.limit ?? notificationRegion.height}px`,
     ...notificationTailStyle,
   }
-  const notification = frame.notificationSnapshot ?? frame.notification
+  const reportNoticeSize = useCallback((height: number): void => sendDesktopAssistantNoticeSize(height), [])
   return createElement('div', { style: { width: layout.bounds.width, height: layout.bounds.height, position: 'relative', background: 'transparent' } },
     createElement('div', { role: 'button', tabIndex: 0, 'aria-label': frame.label, title: frame.label,
       onPointerDown: down, onPointerMove: move, onPointerUp: (event: PointerEvent<HTMLDivElement>) => end(event),
@@ -151,7 +161,8 @@ export function DesktopAssistantAvatar({ frame }: { readonly frame: DesktopAssis
         createElement('span', { 'data-companion-spinner': true, style: { width: 28, height: 28, borderRadius: '50%', border: '3px solid #dbe7fa', borderTopColor: '#6d9cdd', animation: 'companion-spin 1s linear infinite' } }))),
     notification && notificationStyle ? createElement('div', { style: notificationStyle, 'data-codingns-native-notice': true },
       createElement(AssistantNotificationBubble, { frame: notification, t: resolveCodingNsTranslator(), error: noticeError ?? frame.noticeError, tailSide: notificationTail,
-        tailTarget: assistantNotificationTailTarget(layout.avatar.x + layout.avatar.width / 2, layout.notification!.x), tailStyle: notificationTailStyle,
+        tailTarget: assistantNotificationTailTarget(layout.avatar.x + layout.avatar.width / 2, notificationRegion!.x), tailStyle: notificationTailStyle,
+        onSizeChange: reportNoticeSize,
         ...(frame.autoClose === undefined || !frame.nativeVisible ? {} : { autoClose: frame.autoClose }),
         ...(frame.autoCloseSeconds === undefined || !frame.nativeVisible ? {} : { autoCloseSeconds: frame.autoCloseSeconds }),
         onOpen: openNotice, onDismiss: dismissNotice, onPresented: frame.nativeVisible ? presented : () => undefined,
