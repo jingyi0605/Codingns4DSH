@@ -1133,10 +1133,18 @@ function registerPeerHostCompletionStatusListener(
   completed: Set<string>,
 ): (() => void) | undefined {
   if (ctx === undefined || typeof ctx.on !== 'function') return undefined
-  const listener = (sessionId: unknown, running: unknown): void => {
-    if (typeof sessionId !== 'string' || typeof running !== 'boolean') return
-    if (running) completed.delete(sessionId)
-    else completed.add(sessionId)
+  // 只有真正观察到 true → false 才是完成边沿。DSH 可能在初始化或重连时
+  // 广播一批已经空闲的会话；这些 false 不能被当成“刚刚完成”而在 PeerHost
+  // 建立事件流时重新回放，否则历史会话会被反复唤醒并触发原生列表刷新。
+  const runningSessions = new Set<string>()
+  const listener = (sessionId: unknown, isRunning: unknown): void => {
+    if (typeof sessionId !== 'string' || typeof isRunning !== 'boolean') return
+    if (isRunning) {
+      runningSessions.add(sessionId)
+      completed.delete(sessionId)
+      return
+    }
+    if (runningSessions.delete(sessionId)) completed.add(sessionId)
   }
   const disposer = ctx.on('api-session/status' as never, listener as never, { global: true } as never)
   return typeof disposer === 'function' ? disposer as () => void : undefined
