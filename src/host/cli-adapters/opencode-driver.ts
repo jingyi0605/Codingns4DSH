@@ -4,10 +4,12 @@ import type { CodingNsCliDetection } from '../../shared/contracts/cli-adapter.js
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type {
   CodingNsCliModelCatalog,
+  CodingNsCliModelListInput,
   CodingNsAgentEvent,
   CodingNsAgentQuestionResponse,
   CodingNsAgentPermissionResponse,
@@ -31,6 +33,8 @@ const DEFAULT_URLS = ['http://127.0.0.1:4096']
 /** OpenCode 首次加载 Provider 目录可能需要数秒，不能用半秒的固定窗口判定启动失败。 */
 const SERVER_START_TIMEOUT_MS = 10_000
 const SERVER_START_POLL_INTERVAL_MS = 100
+/** 仅当子进程在监听前退出（端口竞态）才换端口重试；避免配置错误时无限拉起进程。 */
+const SERVER_START_MAX_ATTEMPTS = 3
 /**
  * OpenCode 的自定义 Provider 可能不返回模型 variants，但 DSH 仍需展示模型的真实思考强度。
  * DeepSeek V4.1 Flash 的有效档位由上游模型目录定义为 low、high、max。
@@ -111,14 +115,20 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     return this.binaryDetection ?? { installed: false, version: null, command: null }
   }
 
-  async listModels(): Promise<CodingNsCliModelCatalog> {
-    const server = await this.ensureServer(false, undefined)
+  async listModels(input: CodingNsCliModelListInput = {}): Promise<CodingNsCliModelCatalog> {
+    // 会话目录既决定 V2 的 location，也决定托管服务的工作区归属：带目录查询
+    // 必须复用该目录已有的托管服务，否则会为同一工作区重复启动服务。
+    const server = await this.ensureServer(false, input.cwd)
     if (server === null) return emptyCatalog()
-    if (this.serverProtocols.get(server) === 2) return this.v2.listModels(server)
+    const protocol = this.serverProtocols.get(server)
+    // OpenCode V2 按 location[directory] 装载 Provider。设置页没有会话 ID 时，
+    // 使用 Host 当前目录，避免无目录请求被服务端当成空项目而返回空模型表。
+    const cwd = input.cwd?.trim() || (protocol === 2 ? process.cwd() : undefined)
+    if (protocol === 2) return this.v2.listModels(server, cwd)
     const paths = ['/config/providers', '/provider', '/models']
     for (const path of paths) {
       try {
-        const response = await this.http.json<unknown>(`${server}${path}`)
+        const response = await this.http.json<unknown>(withOpenCodeDirectory(server, path, cwd))
         if (!response.data || response.status < 200 || response.status >= 300) continue
         rememberModelContextWindows(this.modelContextWindows, response.data)
         const catalog = parseModelCatalog(response.data)
@@ -522,38 +532,56 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   private async startServer(cwd: string): Promise<string | null> {
     const command = this.cachedBinary?.command ?? (await this.findBinary())?.command
     if (command === null || command === undefined) return null
-    const port = 4096 + this.managedServers.size
-    const url = `http://127.0.0.1:${port}`
-    // V2 默认生成随机服务密码；托管时明确传入只属于该进程的密码，供 HTTP/SSE 共用。
-    const password = randomBytes(32).toString('base64url')
-    this.serverPasswords.set(url, password)
-    let child: CodingNsChildProcess
-    try {
-      child = this.runSpawn(command, [...this.serverArgs, '--port', String(port)], {
-        cwd,
-        env: { ...commandEnvironment(command), OPENCODE_PASSWORD: password, OPENCODE_SERVER_PASSWORD: password },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-        shell: WINDOWS,
-      }) as CodingNsChildProcess
-    } catch { this.serverPasswords.delete(url); return null }
-    child.stdout.on('data', () => undefined)
-    child.stderr.on('data', () => undefined)
-    this.managedServers.set(cwd, { url, child })
+    // 端口不能按固定 4096 递增分配：它会被其他 DSH Profile（Desktop、Web）
+    // 或用户自己启动的 opencode 服务占用，导致子进程绑定失败立即退出。
+    // 每次尝试都取一个操作系统分配的空闲端口；若子进程在监听前退出（端口
+    // 抢占等待极小概率竞态），换一个端口再试。
     const deadline = Date.now() + SERVER_START_TIMEOUT_MS
+    for (let attempt = 0; attempt < SERVER_START_MAX_ATTEMPTS; attempt += 1) {
+      if (Date.now() >= deadline) break
+      const port = await findAvailablePort()
+      const url = `http://127.0.0.1:${port}`
+      // V2 默认生成随机服务密码；托管时明确传入只属于该进程的密码，供 HTTP/SSE 共用。
+      const password = randomBytes(32).toString('base64url')
+      this.serverPasswords.set(url, password)
+      let child: CodingNsChildProcess
+      try {
+        child = this.runSpawn(command, [...this.serverArgs, '--port', String(port)], {
+          cwd,
+          env: { ...commandEnvironment(command), OPENCODE_PASSWORD: password, OPENCODE_SERVER_PASSWORD: password },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+          shell: WINDOWS,
+        }) as CodingNsChildProcess
+      } catch { this.serverPasswords.delete(url); return null }
+      child.stdout.on('data', () => undefined)
+      child.stderr.on('data', () => undefined)
+      this.managedServers.set(cwd, { url, child })
+      const ready = await this.waitForManagedServer(url, child, deadline)
+      if (ready) return url
+      const childExitCode = (child as unknown as { readonly exitCode?: number | null }).exitCode
+      this.stopManagedServer(cwd)
+      // 已经退出说明这次绑定失败，可以安全地换个端口重试；仍在运行却始终
+      // 未就绪时（首次加载配置超时）继续重试没有意义。
+      if (childExitCode === null || childExitCode === undefined) break
+    }
+    return null
+  }
+
+  /** 等待托管服务通过健康探测；子进程提前退出或超出启动窗口都视为失败。 */
+  private async waitForManagedServer(url: string, child: CodingNsChildProcess, deadline: number): Promise<boolean> {
     while (Date.now() < deadline) {
       try {
         const server = await this.probeServer(url)
-        if (server !== null) return url
+        if (server !== null) return true
       } catch { /* 服务尚未监听 */ }
       // 子进程已经退出时无需把整个启动超时耗尽；正常运行的 OpenCode
       // 进程在首次加载配置和 Provider 时允许有完整的启动窗口。
       const childExitCode = (child as unknown as { readonly exitCode?: number | null }).exitCode
-      if (childExitCode !== null && childExitCode !== undefined) break
+      if (childExitCode !== null && childExitCode !== undefined) return false
       await new Promise<void>((resolve) => setTimeout(resolve, SERVER_START_POLL_INTERVAL_MS))
     }
-    this.stopManagedServer(cwd)
-    return null
+    return false
   }
 
   private stopManagedServer(cwd: string): void {
@@ -714,6 +742,24 @@ function isReasoningField(value: string | undefined): boolean {
     || normalized === 'thinking'
     || normalized === 'reasoning_content'
     || normalized === 'reasoning_details'
+}
+
+/**
+ * 取一个操作系统分配的空闲端口。只做监听探测后立即释放，存在极小的被抢占
+ * 窗口；调用方在子进程未监听就退出时会换端口重试。
+ */
+async function findAvailablePort(): Promise<number> {
+  const probe = createServer()
+  try {
+    await new Promise<void>((resolve, reject) => {
+      probe.once('error', reject)
+      probe.listen(0, '127.0.0.1', () => resolve())
+    })
+    const address = probe.address()
+    return typeof address === 'object' && address !== null ? address.port : 0
+  } finally {
+    await new Promise<void>((resolve) => probe.close(() => resolve()))
+  }
 }
 
 function withOpenCodeDirectory(server: string, pathname: string, cwd: string | undefined): string {

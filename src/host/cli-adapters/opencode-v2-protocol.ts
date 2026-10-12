@@ -53,8 +53,8 @@ export class OpenCodeV2Protocol {
     this.sessions.clear()
   }
 
-  async listModels(server: string): Promise<CodingNsCliModelCatalog> {
-    return (await this.modelCatalog(server)).catalog
+  async listModels(server: string, cwd?: string): Promise<CodingNsCliModelCatalog> {
+    return (await this.modelCatalog(server, cwd)).catalog
   }
 
   private async modelCatalog(server: string, cwd?: string, signal?: AbortSignal, expected?: string): Promise<{

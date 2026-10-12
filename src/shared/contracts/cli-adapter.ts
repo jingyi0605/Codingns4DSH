@@ -110,6 +110,11 @@ export interface CodingNsCliModelCatalog {
   readonly defaultServiceTier?: string | null
 }
 
+/** 读取适配器模型目录时使用的当前工作目录。OpenCode V2 按目录加载 Provider。 */
+export interface CodingNsCliModelListInput {
+  readonly cwd?: string
+}
+
 /** Host 向 Client 暴露的 Skill 摘要；路径和 Skill 内容只留在 Host。 */
 export interface CodingNsCliSkillDescriptor {
   readonly id: string
