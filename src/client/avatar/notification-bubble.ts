@@ -154,8 +154,8 @@ export function AssistantNotificationBubble({ frame, t, error, onOpen, onDismiss
   const showExpandButton = collapsed && (mainNotice !== undefined || hasNotificationCounts)
   const showTopRow = showCollapseButton || showExpandButton || showClearAll || hasNotificationCounts
   const showBubble = !collapsed && (!expanded || snapshot === undefined) && mainNotice !== undefined
-  // 单条通知也要保留筛选入口；否则展开状态没有办法从顶部操作栏进入记录视图。
-  const showFilterTags = snapshot !== undefined && hasNotificationCounts
+  // 只有快照里确实有多条记录时才显示数量筛选；单条主卡片不重复占用工具栏。
+  const showFilterTags = snapshot !== undefined && hasNotificationCounts && (multiple || items.length > 1)
   const listItems = listFilter === 'unread'
     ? items.filter((notice) => !notice.read && !isPendingNotice(notice))
     : listFilter === 'pending'
