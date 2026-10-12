@@ -193,10 +193,12 @@ export function codexBridgeArgs(sessionId: string, adapterId: string, platform: 
  * 文件确实存在时启用，避免把一个永远无法连接的 MCP server 注入回合。
  */
 export function discoverCodexComputerUseServer(
-  codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex'),
+  codexHome: string | undefined,
   platform: NodeJS.Platform = process.platform,
 ): CodexComputerUseServerConfig | undefined {
   if (platform !== 'darwin') return undefined
+
+  const resolvedCodexHome = codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
 
   const configuredPath = process.env.CODINGNS_CODEX_CUA_MCP_CONFIG?.trim()
   if (configuredPath !== undefined && configuredPath !== '') {
@@ -205,7 +207,11 @@ export function discoverCodexComputerUseServer(
   }
 
   const defaultCodexHome = join(homedir(), '.codex')
-  const codexHomes = [...new Set([codexHome, defaultCodexHome])]
+  // 显式传入的目录用于测试或隔离运行时；不能再偷偷扫描真实用户目录，
+  // 否则测试会被本机 ChatGPT/Codex 安装污染，隔离 Host 也可能误启用 CUA。
+  const codexHomes = codexHome === undefined
+    ? [...new Set([resolvedCodexHome, defaultCodexHome])]
+    : [resolvedCodexHome]
   const cacheRoot = process.env.CODINGNS_CODEX_CUA_RUNTIME?.trim()
   const cacheCandidates = [
     ...(cacheRoot === undefined || cacheRoot === '' ? [] : [join(cacheRoot, '.mcp.json')]),
@@ -255,7 +261,7 @@ export function discoverCodexComputerUseServer(
 export function codexComputerUseLaunchSettings(
   mode: CodexComputerUseMode = 'auto',
   override: CodexComputerUseServerConfig | undefined,
-  codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex'),
+  codexHome?: string,
   platform: NodeJS.Platform = process.platform,
 ): CodexComputerUseLaunchSettings {
   if (mode === 'disabled') return { enabled: false, args: [] }
