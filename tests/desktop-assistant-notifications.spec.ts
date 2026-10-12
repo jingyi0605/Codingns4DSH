@@ -6,7 +6,7 @@ import { Script, runInNewContext } from 'node:vm'
 import { createElement, isValidElement } from 'react'
 import type { ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { readDesktopAssistantPresentation, readDesktopAssistantNoticeFeedback, readDesktopAssistantNotificationSnapshot, readDesktopAssistantLayout, desktopAssistantLayout, desktopAssistantNotificationHeight } from '../src/shared/desktop-assistant.js'
+import { readDesktopAssistantPresentation, readDesktopAssistantNoticeFeedback, readDesktopAssistantNotificationSnapshot, readDesktopAssistantLayout, desktopAssistantHasNotifications, desktopAssistantLayout, desktopAssistantNotificationHeight } from '../src/shared/desktop-assistant.js'
 import type { DesktopAssistantFrame, DesktopAssistantNoticeEvent, DesktopAssistantNotification, DesktopAssistantPresentation } from '../src/shared/desktop-assistant.js'
 import { BUILTIN_ASSISTANT_AVATAR } from '../src/shared/assistant-avatar.js'
 import { DesktopAssistantController } from '../src/host/desktop-assistant/controller.js'
@@ -83,6 +83,16 @@ test('2.3 主页面失败反馈只保留有界安全文本及事件身份，拒�
     { ...feedback, noticeId: '' }, { ...feedback, message: '' }, { ...feedback, message: 'x'.repeat(241) }]) {
     assert.throws(() => readDesktopAssistantNoticeFeedback(value), /通知反馈无效/u)
   }
+})
+
+test('空通知快照不渲染原生通知气泡，也不沿用上一轮通知布局', () => {
+  const empty: AssistantNotificationSnapshot = { generation: 7, revision: 9, serverNow: 100, primary: null,
+    items: [], unreadCount: 0, pendingCount: 0, cursor: null, capabilities: [] }
+  const staleLayout = desktopAssistantLayout({ x: 0, y: 280 }, 144, 276, false, [{ x: 0, y: 0, width: 1024, height: 768 }])
+  const current = { ...frame, notification: undefined, notificationSnapshot: empty, layout: staleLayout }
+  assert.equal(desktopAssistantHasNotifications(current), false)
+  const html = renderToStaticMarkup(createElement(DesktopAssistantAvatar, { frame: current }))
+  assert.ok(!html.includes('data-codingns-native-notice'), '空快照不能挂载空白通知外壳')
 })
 
 test('2.3 原生共享安全快照白名单往返；主气泡收起后未读和待处理列表仍保留', () => {
@@ -183,6 +193,31 @@ test('2.4 原生气泡一键清理只回传点击帧代次，旧组件不能为�
   renderer.render({ frame: { ...current, identity: { ...current.identity, sequence: 6 } } })
   oldClearAll(generation)
   assert.equal(events.filter((item) => item.action === 'dismiss-all').length, 1, '旧组件不能为新版本清空气泡')
+})
+
+test('2.4 伴随页把气泡实测高度回传给原生，收缩通知区而不保留固定空白', (context) => {
+  const events: Record<string, unknown>[] = []
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'webkit')
+  Object.defineProperty(globalThis, 'webkit', { configurable: true, value: { messageHandlers: { assistant: { postMessage: (value: string) => events.push(JSON.parse(value)) } } } })
+  const current = { ...frame, nativeVisible: true, identity: { ownerId: owner, generation: 3, sequence: 5 } }
+  const renderer = createHookRenderer(DesktopAssistantAvatar, { frame: current })
+  context.after(() => { renderer.dispose(); if (previous) Object.defineProperty(globalThis, 'webkit', previous); else Reflect.deleteProperty(globalThis, 'webkit') })
+  const bubble = elements(renderer.render()).find((item) => item.type === AssistantNotificationBubble)!
+  assert.equal(typeof bubble.props.onSizeChange, 'function', '原生伴随页必须回报气泡高度')
+  bubble.props.onSizeChange(118.4)
+  assert.deepEqual(events.at(-1), { type: 'notice-size', height: 118 })
+  bubble.props.onSizeChange(0); bubble.props.onSizeChange(Number.NaN); bubble.props.onSizeChange(400)
+  assert.deepEqual(events.at(-1), { type: 'notice-size', height: 276 }, '无效值忽略、超限值截到原生气泡上限')
+  assert.ok(events.every((item) => !('target' in item) && !('token' in item)))
+  // 气泡在形象上方时区域底边锚定形象；在下方时顶边锚定，区域收缩过程不会让气泡飘离形象。
+  const above = desktopAssistantLayout({ x: 0, y: 600 }, 144, 276, false, [{ x: 0, y: 0, width: 1024, height: 768 }])
+  const below = desktopAssistantLayout({ x: 0, y: 280 }, 144, 276, false, [{ x: 0, y: 0, width: 1024, height: 768 }])
+  const wrapper = (layout: typeof above): any => elements(renderer.render({ frame: { ...current, layout } }))
+    .find((item) => item.props?.['data-codingns-native-notice'] === true)!.props.style
+  assert.equal(wrapper(above).justifyContent, 'flex-end')
+  assert.equal(wrapper(below).justifyContent, 'flex-start')
+  assert.equal(wrapper(above)['--codingns-notification-max-height'], `${above.notification!.limit}px`, '限高来自原生可用空间而不是固定 276')
+  assert.equal(wrapper(above).height, above.notification!.height, '区域高度仍与原生布局一致')
 })
 
 test('单条未读直接保留完整卡片区域，列表展开不改变形象屏幕锚点', async () => {
@@ -529,6 +564,9 @@ test('2.4 四边缘、多屏负坐标、小屏和不同逻辑 DPI 保持锚点�
       assert.ok(expanded.bounds.x >= area.x && expanded.bounds.x + expanded.bounds.width <= area.x + area.width)
       assert.ok(expanded.bounds.y >= area.y && expanded.bounds.y + expanded.bounds.height <= area.y + area.height)
       assert.ok(expanded.notification!.width <= 320); assert.ok(expanded.notification!.height <= 276)
+      assert.ok(expanded.notification!.limit! >= expanded.notification!.height, '限高不能低于当前通知区高度')
+      assert.ok(expanded.notification!.limit! <= 276, '限高不能超过原生气泡上限')
+      assert.equal(compact.notification, undefined, '没有通知时不留固定高度的通知区')
       assert.ok(expanded.caption!.height >= 40, '屏幕边缘字幕仍保留可读的一行和滚动区域')
       assert.ok(captions.caption!.height >= 40, '只有通话字幕时必须选空间充足的一侧，不依赖虚构的通知区')
       assert.deepEqual(readDesktopAssistantLayout(captions), captions)
@@ -563,6 +601,8 @@ test('2.4 原生布局必需区域、有限坐标和窗口内边界严格校验�
     { ...valid, bounds: { ...valid.bounds, width: 0 } }, { ...valid, bounds: { ...valid.bounds, height: 4097 } },
     { ...valid, bounds: { ...valid.bounds, x: Infinity } }, { ...valid, avatar: { ...valid.avatar, x: -1 } },
     { ...valid, avatar: { ...valid.avatar, x: valid.bounds.width } }, { ...valid, notification: null },
+    { ...valid, notification: { ...valid.notification, limit: valid.notification!.height - 1 } },
+    { ...valid, notification: { ...valid.notification, limit: '276' } },
     { ...valid, caption: { ...valid.caption, height: valid.bounds.height + 1 } }]
   for (const value of invalid) assert.equal(readDesktopAssistantLayout(value), undefined)
   const f = fixture(); await started(f)
@@ -580,6 +620,13 @@ test('2.3/2.4 平台脚本只响应经Host确认的notice-open恢复；布局、
   assert.doesNotThrow(() => new Script(mac))
   assert.ok(mac.includes("if(m.cmd==='notice-open'){focusDesktop(true);return}"))
   assert.ok(mac.includes('setIgnoresMouseEvents(!inside)'))
+  // 通知区高度取伴随页实测值，固定请求只当上限；两个平台都要能收到 notice-size。
+  assert.ok(mac.includes("msg.type==='notice-size'"), 'macOS 原生必须接收气泡实测高度')
+  assert.ok(mac.includes('Math.min(request,noticeSize)'), 'macOS 原生必须按实测高度收缩通知区')
+  assert.ok(mac.includes('if(request===0)noticeSize=-1'), 'macOS 通知清空后必须丢弃旧测量')
+  assert.ok(windows.includes('type == "notice-size"'), 'Windows 原生必须接收气泡实测高度')
+  assert.ok(windows.includes('Math.Min(noticeLimit,noticeSize)'), 'Windows 原生必须按实测高度收缩通知区')
+  assert.ok(windows.includes('limit=noticeAvailable'), 'Windows 原生布局必须回报气泡限高')
   assert.ok(windows.includes('if (cmd == "notice-open") { FocusDesktop(); return; }'))
   assert.ok(windows.includes('TransformFromDevice')); assert.ok(windows.includes('AddHook(HitTest)'))
   assert.ok(windows.includes('message==0x02E0'))

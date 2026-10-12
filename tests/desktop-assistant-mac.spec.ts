@@ -8,9 +8,15 @@ import { createServer } from 'node:http'
 import { promisify } from 'node:util'
 import { buildMacAssistantScript } from '../src/host/desktop-assistant/mac-agent.js'
 import { openDesktopAssistantPage } from '../src/host/desktop-assistant/server.js'
+import { ASSISTANT_NOTIFICATION_TAIL_CLEARANCE } from '../src/shared/assistant-notifications.js'
 
 const nativeOptions = { skip: process.platform !== 'darwin', timeout: 20000 }
 const readyScript = 'window.webkit.messageHandlers.assistant.postMessage(JSON.stringify({type:"ready"}))'
+
+test('macOS 原生布局脚本注入通知尾巴避让常量，避免 JXA 运行时变量缺失', () => {
+  const script = buildMacAssistantScript()
+  assert.match(script, new RegExp(`var ASSISTANT_NOTIFICATION_TAIL_CLEARANCE=${ASSISTANT_NOTIFICATION_TAIL_CLEARANCE}\\n`))
+})
 
 test('macOS 唤回 API 与原生失败回调可用，检查不打开实际应用', nativeOptions, async () => {
   const root = fileURLToPath(new URL('../data/test-runs/', import.meta.url))
@@ -74,6 +80,30 @@ test('macOS 原生通知回执执行 WebKit 回调后进程仍保持运行', nat
   })
   assert.ok(events.includes('notice-presented'))
   assert.ok(!events.includes('error'))
+})
+
+test('macOS 原生按伴随页回报的气泡高度收缩通知区，不再保留固定空白区', nativeOptions, async () => {
+  const regions: { height: number; limit: number | undefined; bounds: number }[] = []
+  let showed = false
+  await runMacPage(`window.addEventListener('load', () => {
+    window.webkit.messageHandlers.assistant.postMessage(JSON.stringify({type:'ready'}))
+    setTimeout(() => window.webkit.messageHandlers.assistant.postMessage(JSON.stringify({type:'notice-size',height:96})), 300)
+  })`, (event, native) => {
+    const layout = event.layout as { notification?: { height: number; limit?: number }; bounds: { height: number } } | undefined
+    if (event.ev === 'layout' && layout?.notification) regions.push({ height: layout.notification.height, limit: layout.notification.limit, bounds: layout.bounds.height })
+    if (event.ev === 'loaded' && !showed) {
+      showed = true
+      native.stdin.write(JSON.stringify({ cmd: 'show', avatarSize: 144, notificationHeight: 276 }) + '\n')
+    }
+    // 收到收缩后的布局就结束：回传值必须成为通知区高度，而不是只当作额外提示。
+    if (event.ev === 'layout' && layout?.notification?.height === 96) native.stdin.end('{"cmd":"quit"}\n')
+  })
+  const requested = regions.find((region) => region.height === 276)
+  const measured = regions.find((region) => region.height === 96)
+  assert.ok(requested, `固定请求必须先给出上限区域：${JSON.stringify(regions)}`)
+  assert.ok(measured, `实测高度必须收缩通知区：${JSON.stringify(regions)}`)
+  assert.ok(measured.limit !== undefined && measured.limit >= measured.height, '布局必须回报气泡可用限高')
+  assert.ok(measured.bounds < requested.bounds, '通知区收缩后原生窗口同步变矮')
 })
 
 async function runMacPage(bundle: string, onEvent?: (event: Record<string, unknown>, native: ReturnType<typeof spawn>) => void): Promise<void> {

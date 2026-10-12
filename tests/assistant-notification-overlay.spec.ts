@@ -89,6 +89,11 @@ test('网页与原生共用通知事实；原生气泡只导航会话，本体�
   assert.equal(presentation.notificationSnapshot.primary, null)
   assert.equal(presentation.notificationSnapshot.pendingCount, 1, '收起气泡后原生仍持有待办入口')
   assert.equal(presentation.reaction, undefined)
+  // 待办完成并且历史通知已读后，空快照不能继续在网页悬浮形象旁留下空白气泡。
+  center.consume({ type: 'request-resolved', requestKind: 'question', requestId: 'q', target: { hostId: 'local', workspaceId: 'project', sessionId: 'target' }, generation: center.generation })
+  center.ack({ noticeId, generation: center.generation, action: 'read' })
+  tree = await pollUntil(() => presentation.notification === undefined && presentation.notificationSnapshot === undefined)
+  assert.ok(!elements(tree).some((element) => element.type === FloatingAssistantAvatar || element.type === AssistantNotificationBubble), '空通知快照不能挂载空白网页气泡')
   openSequence = 1; tree = await pollUntil(() => elements(renderer.render()).some((element) => element.type === AssistantLoadedView))
   assert.ok(elements(tree).some((element) => element.type === AssistantLoadedView), '本体保留原有打开助理行为')
   value.assistant.notifications!.enabled = false; for (const listener of listeners) listener(); renderer.render(); await settle(); renderer.render(); await settle()
