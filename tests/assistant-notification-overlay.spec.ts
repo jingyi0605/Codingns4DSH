@@ -36,7 +36,7 @@ test('网页与原生共用通知事实；原生气泡只导航会话，本体�
   value.assistant.profile = { initialized: true, name: '助理', createdAt: 1 }
   value.assistant.appearance = { ...normalizeAssistantAppearance(undefined), floatingEnabled: true }
   const listeners = new Set<() => void>(), selectionListeners = new Set<() => void>(), opened: string[] = [], calls: string[] = []
-  let selectionValue: unknown = { workspaceId: 'project', sessionId: 'other' }
+  let selectionValue: unknown = { sessionId: 'other' }
   const selection = { getSnapshot: () => selectionValue, subscribe(listener: () => void) { selectionListeners.add(listener); return () => selectionListeners.delete(listener) } }
   let ownerId = '', openSequence = 0, events: DesktopAssistantNoticeEvent[] = []
   let presentation: any
@@ -44,7 +44,8 @@ test('网页与原生共用通知事实；原生气泡只导航会话，本体�
   const services = { settings: { getSnapshot: () => ({ value, status: 'ready', writable: true, revision: 1 }),
     subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener) } },
     locale: { bind: () => translator, subscribe: () => () => {}, getSnapshot: () => 'zh' }, hostRouter: new HostRouter(),
-    uiContext: { get: (name: string) => name === 'uiWorkspace' ? { selection, openSession: async (id: string) => { opened.push(id) } } : undefined },
+    uiContext: { get: (name: string) => name === 'uiWorkspace' ? { selection, openSession: async (id: string) => { opened.push(id) } }
+      : name === 'workspaces' ? { list: { getSnapshot: () => ({ items: [{ workspaceId: 'project', sessionIds: ['other', 'target'] }], archivedSessionIds: [] }), subscribe: () => () => {} } } : undefined },
     rpc: { async call(channel: string, endpoint: string, payload: any) {
       calls.push(endpoint)
       if (channel === DESKTOP_ASSISTANT_CHANNEL) {
@@ -75,7 +76,7 @@ test('网页与原生共用通知事实；原生气泡只导航会话，本体�
   assert.equal('target' in presentation.notificationSnapshot.items[0], false)
   assert.ok(!elements(tree).some((element) => element.type === FloatingAssistantAvatar || element.type === AssistantNotificationBubble))
   const noticeId = center.read().primary!.noticeId
-  selectionValue = { workspaceId: 'project', sessionId: 'target' }; for (const listener of selectionListeners) listener(); await settle()
+  selectionValue = { sessionId: 'target' }; for (const listener of selectionListeners) listener(); await settle()
   assert.equal(center.read().items[0]!.read, true, '直接从会话列表打开也应标记对应通知已读')
   events = [{ sequence: 1, ownerId, generation: 4, noticeId, noticeGeneration: center.generation, type: 'notice-action', action: 'open' }]
   t.mock.timers.tick(1000); await settle(); tree = renderer.render()

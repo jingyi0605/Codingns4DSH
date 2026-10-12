@@ -170,7 +170,7 @@ function GlobalVoiceOverlay({ services }: { readonly services: CodingNsClientSer
       if (selection === undefined) return undefined
       const sync = (): void => {
         // 选择 Store 只发布成功的前台会话；通知 Store 再以串行队列确认，旧选择不会越过新选择。
-        void notifications.markSessionRead(normalizeAssistantSessionSelection(selection.getSnapshot())).catch(() => undefined)
+        void notifications.markSessionRead(normalizeAssistantSessionSelection(selection.getSnapshot(), scope)).catch(() => undefined)
       }
       sync()
       return selection.subscribe(sync)
