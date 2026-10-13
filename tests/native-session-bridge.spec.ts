@@ -50,7 +50,7 @@ test('原生会话桥接通过 get 探测可选服务，不直接读取未注入
   }) as never
 
   assert.doesNotThrow(() => createCodingNsNativeSessionBridge(ctx))
-  assert.deepEqual(reads, ['sessions', 'sessionController', 'workspaceController'])
+  assert.deepEqual(reads, ['sessions', 'sessionController', 'workspaceController', 'attachments'])
 })
 
 test('原生事件订阅在 Host 停用时可移除', () => {

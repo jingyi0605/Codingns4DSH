@@ -130,9 +130,18 @@ export class ProviderSubscriptionService {
   }
 
   private async readGrokFirst(providerId?: string): Promise<CliSubscriptionUsage | null> {
+    // R4 按来源域名识别，不能先被本机 Grok OAuth 读取器短路；其它自定义来源仍保持
+    // 官方 Grok 订阅优先，避免自定义余额覆盖 SuperGrok 订阅。
+    const r4Source = this.resolveR4Source('grok', providerId)
+    if (r4Source !== undefined) return this.r4.read(r4Source)
     const official = await this.grok.read()
     if (official !== null) return withProvider(official, identifyModelProvider({ name: 'xai' }), '')
     return (await this.readCustomUpstream('grok', providerId))?.usage ?? null
+  }
+
+  private resolveR4Source(adapterId: string, providerId?: string, discoveredSources?: readonly Sub2ApiSource[]): Sub2ApiSource | undefined {
+    return this.resolveCustomUpstreamCandidates(adapterId, providerId, discoveredSources)
+      .find((candidate) => isR4Source(candidate.source))?.source
   }
 
   /** 余额属于当前模型的原生 Provider，不能用其它账号或 Start Plan 冒充。 */
@@ -162,22 +171,7 @@ export class ProviderSubscriptionService {
   }
 
   private async readCustomUpstream(adapterId: string, providerId?: string, discoveredSources?: readonly Sub2ApiSource[]): Promise<Pick<CustomUpstreamReadResult, 'usage'> | null> {
-    const newApiConfigured = this.newApi.hasConfiguredSource(adapterId, providerId)
-    const sub2apiConfigured = this.sub2api.hasConfiguredSource(adapterId, providerId)
-    // 只要一侧有显式来源，就不把另一侧从本机环境自动发现的无关来源混进来。
-    // 两侧都没有显式来源时，才同时使用各自的 Agent 配置自动发现结果。
-    const newApiSources = discoveredSources ?? (sub2apiConfigured && !newApiConfigured ? [] : this.newApi.resolveSources(adapterId, providerId))
-    const sub2apiSources = discoveredSources ?? (newApiConfigured && !sub2apiConfigured ? [] : this.sub2api.resolveSources(adapterId, providerId))
-      .filter((source) => !isOfficialAgentBaseUrl(adapterId, source.baseUrl))
-    // 同一自定义来源的协议不能由配置项名称预先决定：一个 Agent 的配置文件
-    // 可能实际接入 New-API，也可能接入 Sub2API。统一分类器需要对每个候选
-    // 同时做两侧协议探测，再缓存最终分类，才能覆盖所有支持自定义 Provider
-    // 的适配器（尤其是 Command Code、ZCode、CodeBuddy 和 WorkBuddy）。
-    const candidates = mergeCustomUpstreamCandidates(newApiSources, sub2apiSources).map((candidate) => ({
-      ...candidate,
-      newApi: true,
-      sub2api: true,
-    }))
+    const candidates = this.resolveCustomUpstreamCandidates(adapterId, providerId, discoveredSources)
     if (candidates.length === 0) return null
     const r4Source = candidates.find((candidate) => isR4Source(candidate.source))?.source
     if (r4Source !== undefined) return { usage: await this.r4.read(r4Source) }
@@ -185,6 +179,25 @@ export class ProviderSubscriptionService {
       newApi: (source) => this.newApi.readWithKind(adapterId, providerId, source),
       sub2api: (source) => this.sub2api.readWithKind(adapterId, providerId, source),
     })
+  }
+
+  private resolveCustomUpstreamCandidates(adapterId: string, providerId?: string, discoveredSources?: readonly Sub2ApiSource[]) {
+    const newApiConfigured = this.newApi.hasConfiguredSource(adapterId, providerId)
+    const sub2apiConfigured = this.sub2api.hasConfiguredSource(adapterId, providerId)
+    // 只要一侧有显式来源，就不把另一侧从本机环境自动发现的无关来源混进来。
+    // 两侧都没有显式来源时，才同时使用各自的 Agent 配置自动发现结果。
+    const newApiSources = discoveredSources ?? (sub2apiConfigured && !newApiConfigured ? [] : this.newApi.resolveSources(adapterId, providerId))
+    const sub2apiSources = (discoveredSources ?? (newApiConfigured && !sub2apiConfigured ? [] : this.sub2api.resolveSources(adapterId, providerId)))
+      .filter((source) => !isOfficialAgentBaseUrl(adapterId, source.baseUrl))
+    // 同一自定义来源的协议不能由配置项名称预先决定：一个 Agent 的配置文件
+    // 可能实际接入 New-API，也可能接入 Sub2API。统一分类器需要对每个候选
+    // 同时做两侧协议探测，再缓存最终分类，才能覆盖所有支持自定义 Provider
+    // 的适配器（尤其是 Command Code、ZCode、CodeBuddy 和 WorkBuddy）。
+    return mergeCustomUpstreamCandidates(newApiSources, sub2apiSources).map((candidate) => ({
+      ...candidate,
+      newApi: true,
+      sub2api: true,
+    }))
   }
 }
 
