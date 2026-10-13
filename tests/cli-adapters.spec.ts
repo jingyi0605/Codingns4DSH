@@ -1607,6 +1607,37 @@ test('Agent 注册表隔离会话配置并拒绝未知 Agent', async () => {
   assert.throws(() => registry.setSession('s1', { adapterId: 'missing' }), /Agent 不可用/u)
 })
 
+test('Agent 注册表按 Agent 记忆翻译开关，并保留显式关闭值', () => {
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'fake', name: 'Fake' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'fake' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } },
+  }, {
+    descriptor: { id: 'other', name: 'Other' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'other' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } },
+  }])
+
+  assert.deepEqual(registry.setSession('translation-off', { adapterId: 'fake', translationEnabled: false }), {
+    adapterId: 'fake',
+    translationEnabled: false,
+  })
+  assert.deepEqual(registry.setSession('translation-on', { adapterId: 'other', translationEnabled: true }), {
+    adapterId: 'other',
+    translationEnabled: true,
+  })
+  assert.deepEqual(registry.setSession('translation-off-next', { adapterId: 'fake' }), {
+    adapterId: 'fake',
+    translationEnabled: false,
+  })
+  assert.deepEqual(registry.setSession('translation-on-next', { adapterId: 'other' }), {
+    adapterId: 'other',
+    translationEnabled: true,
+  })
+})
+
 test('Agent 注册表按当前会话路由 Skill 目录，并对没有 Skill 能力的 Agent 返回空目录', async () => {
   let received: unknown
   const registry = new CodingNsCliAdapterRegistry([{
@@ -2081,6 +2112,131 @@ test('委派 carrier 在 Agent Loop 的 pre-step 边界改写，兼容深冻结�
     yield { type: 'text-delta', text: '默认 DSH' }
   })) chunks.push(chunk)
   assert.deepEqual(chunks, [{ type: 'text-delta', text: '默认 DSH' }])
+  await features.disable('cliAdapters')
+})
+
+test('输入翻译保留用户原文，外部 Agent 收到纯译文且回复归属外部 Agent', async () => {
+  const table = new CodingNsRpcTable()
+  let llmListener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  let requestListener: ((payload: unknown, next: () => Promise<unknown>) => Promise<unknown>) | undefined
+  let preStepListener: ((payload: unknown, next: () => Promise<unknown>) => Promise<unknown>) | undefined
+  let receivedPrompt = ''
+  let receivedMessages: readonly any[] = []
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) {
+      receivedPrompt = input.prompt
+      receivedMessages = input.messages
+      yield { type: 'text-delta', text: 'Done' }
+      yield { type: 'finish', reason: 'stop' }
+    },
+  }])
+  const translation = {
+    enabled: true,
+    inputLanguage: 'fr' as const,
+    activate() {},
+    deactivate() {},
+    configure() {},
+    shouldTranslate() { return false },
+    async translateInput(_adapterId: string, text: string) { return text === '请修复这个问题' ? 'Répare ce problème' : text },
+    async translateOutput() { return null },
+    dispose() {},
+  }
+  const dshContext = {
+    get() { return undefined },
+    on(name: string, listener: (...args: any[]) => any) {
+      if (name === 'agent/request') requestListener = listener as typeof requestListener
+      if (name === 'agent/pre-step') preStepListener = listener as typeof preStepListener
+      return () => undefined
+    },
+  }
+  const events = {
+    on(name: string, listener: (...args: any[]) => any) {
+      if (name === 'llm/stream') llmListener = listener as typeof llmListener
+      return () => undefined
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table, events, dshContext: dshContext as never, sessionTranslation: translation })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  registry.setSession('translation-input', { adapterId: 'codex', modelId: 'gpt-5.5', translationEnabled: true })
+
+  const originalMessage = { role: 'user' as const, source: { kind: 'user' as const }, content: '请修复这个问题' }
+  const decision = await preStepListener!({
+    agent: { id: 'translation-input' },
+    messages: [originalMessage],
+    signal: new AbortController().signal,
+  }, async () => ({ kind: 'enter', messages: [originalMessage] })) as { messages: readonly any[] }
+  assert.equal(String(decision.messages[0]?.content), '请修复这个问题')
+  assert.equal(String(decision.messages[0]?.content).includes('【原文】'), false)
+  assert.equal(String(decision.messages[0]?.content).includes('【发给 Agent 的译文】'), false)
+  assert.equal(decision.messages[0]?.source?.codingnsTranslationInput?.translated, 'Répare ce problème')
+
+  const request = await requestListener!({ agent: { id: 'translation-input' } }, async () => ({ provider: 'deepseek', model: 'deepseek-chat' }))
+  assert.deepEqual(request, { provider: 'codex', model: 'gpt-5.5' })
+
+  const chunks = []
+  for await (const chunk of llmListener!({ sessionId: 'translation-input', messages: decision.messages }, async function* () {
+    yield { type: 'text-delta', text: '默认 DSH' }
+  })) chunks.push(chunk)
+  assert.equal(receivedPrompt, 'Répare ce problème')
+  assert.equal(receivedMessages[0]?.content, 'Répare ce problème')
+  assert.equal(receivedMessages[0]?.source?.codingnsTranslationInput, undefined)
+  assert.equal(chunks.at(-1)?.type, 'finish')
+  await features.disable('cliAdapters')
+})
+
+test('翻译 LLM 请求旁路外部 Agent 接管', async () => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  let externalCalls = 0
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() {
+      externalCalls += 1
+      yield { type: 'text-delta', text: '不应走外部 Agent' }
+      yield { type: 'finish', reason: 'stop' }
+    },
+  }])
+  const events = {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+      listener = next
+      return () => { listener = undefined }
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table, events })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+
+  const chunks: unknown[] = []
+  for await (const chunk of listener!({
+    provider: 'codex',
+    model: 'gpt-5.5',
+    codingnsTranslation: true,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'translate this' }] }],
+  }, async function* () {
+    yield { type: 'text-delta', text: 'translated' }
+  })) chunks.push(chunk)
+
+  assert.deepEqual(chunks, [{ type: 'text-delta', text: 'translated' }])
+  assert.equal(externalCalls, 0)
+
+  const markerOnlyChunks: unknown[] = []
+  for await (const chunk of listener!({
+    provider: 'codex',
+    model: 'gpt-5.5',
+    system: 'CODINGNS_SESSION_TRANSLATION_V1\nROLE: translation engine',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'translate this' }] }],
+  }, async function* () {
+    yield { type: 'text-delta', text: 'translated by marker' }
+  })) markerOnlyChunks.push(chunk)
+
+  assert.deepEqual(markerOnlyChunks, [{ type: 'text-delta', text: 'translated by marker' }])
+  assert.equal(externalCalls, 0)
   await features.disable('cliAdapters')
 })
 

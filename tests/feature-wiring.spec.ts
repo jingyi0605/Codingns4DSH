@@ -319,6 +319,12 @@ test('远程设置 RPC 返回版本并只允许修改 Codingns4DSH 字段', asyn
     ops: [{ op: 'set', path: ['modules', 'fileManagement'], value: true }],
   })
   await handler('set', {
+    ops: [{ op: 'set', path: ['modules', 'sessionTranslation'], value: true }],
+  })
+  await handler('set', {
+    ops: [{ op: 'set', path: ['sessionTranslation'], value: { inputLanguage: 'en', outputLanguage: 'zh', bilingual: false } }],
+  })
+  await handler('set', {
     ops: [{ op: 'set', path: ['fileManagement', 'sessionChangedFiles'], value: false }],
   })
   await handler('set', {
