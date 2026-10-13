@@ -637,8 +637,16 @@ export interface GrokSubscriptionOptions {
 }
 
 const GROK_BILLING_ENDPOINT = 'https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig'
+const GROK_SETTINGS_ENDPOINT = 'https://cli-chat-proxy.grok.com/v1/settings'
 const GROK_OIDC_SCOPE_PREFIX = 'https://auth.x.ai::'
 const GROK_LEGACY_SESSION_SCOPE = 'https://accounts.x.ai/sign-in'
+const GROK_DEFAULT_PLAN = 'SuperGrok'
+
+interface GrokAuthCredentials {
+  readonly token: string
+  readonly accountName: string | null
+  readonly isOidc: boolean
+}
 
 /** 读取 Grok（xAI）官方 SuperGrok 订阅额度；只读 Grok CLI 的 OAuth 凭据（~/.grok/auth.json），不做刷新，过期令牌也照常尝试以容忍时钟偏差。 */
 export class GrokSubscriptionService implements SubscriptionReader {
@@ -653,8 +661,8 @@ export class GrokSubscriptionService implements SubscriptionReader {
   }
 
   async read(): Promise<CliSubscriptionUsage | null> {
-    const token = this.readAccessToken()
-    if (token === null) return null
+    const credentials = this.readCredentials()
+    if (credentials === null) return null
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.timeoutMs)
     try {
@@ -662,7 +670,7 @@ export class GrokSubscriptionService implements SubscriptionReader {
       const response = await this.request(GROK_BILLING_ENDPOINT, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${credentials.token}`,
           Origin: 'https://grok.com',
           Referer: 'https://grok.com/?_s=usage',
           Accept: '*/*',
@@ -684,15 +692,17 @@ export class GrokSubscriptionService implements SubscriptionReader {
       const snapshot = parseGrokBillingPayload(raw, nowSecs)
       if (snapshot === null) return null
       const usedPercent = clamp(snapshot.usedPercent)
+      const planType = await this.readPlanType(credentials.token, credentials.isOidc)
       return {
         authenticated: true,
-        planType: null,
+        planType,
         primary: { usedPercent, remainingPercent: 100 - usedPercent, windowDurationMins: grokWindowDurationMins(snapshot.resetsAt, nowSecs), resetsAt: snapshot.resetsAt },
         secondary: null,
         monthly: null,
         rateLimitReachedType: null,
         resetCredits: null,
         capturedAt: new Date().toISOString(),
+        ...(credentials.accountName === null ? {} : { accountName: credentials.accountName }),
       }
     } catch {
       return null
@@ -701,14 +711,36 @@ export class GrokSubscriptionService implements SubscriptionReader {
     }
   }
 
-  private readAccessToken(): string | null {
+  private readCredentials(): GrokAuthCredentials | null {
     for (const path of this.credentialPaths) {
       const auth = readJson(path)
       if (auth === null) continue
-      const token = selectGrokAuthToken(auth)
-      if (token !== null) return token
+      const credentials = selectGrokAuthCredentials(auth)
+      if (credentials !== null) return credentials
     }
     return null
+  }
+
+  private async readPlanType(token: string, isOidc: boolean): Promise<string | null> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs)
+    try {
+      const response = await this.request(GROK_SETTINGS_ENDPOINT, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          'x-xai-token-auth': 'xai-grok-cli',
+        },
+        signal: controller.signal,
+      })
+      if (!response.ok) return isOidc ? GROK_DEFAULT_PLAN : null
+      const payload = recordValue(await response.json())
+      return textValue(payload?.subscription_tier_display) ?? (isOidc ? GROK_DEFAULT_PLAN : null)
+    } catch {
+      return isOidc ? GROK_DEFAULT_PLAN : null
+    } finally {
+      clearTimeout(timer)
+    }
   }
 }
 
@@ -717,16 +749,30 @@ function defaultGrokCredentialPaths(): string[] {
 }
 
 /** auth.json 以 OIDC scope URL 为键；优先 SuperGrok 的 auth.x.ai 条目，回退 legacy 登录条目，残缺条目不遮蔽健康条目。 */
-function selectGrokAuthToken(auth: Record<string, unknown>): string | null {
-  let oidc: string | null = null
-  let legacy: string | null = null
+function selectGrokAuthCredentials(auth: Record<string, unknown>): GrokAuthCredentials | null {
+  let oidc: GrokAuthCredentials | null = null
+  let legacy: GrokAuthCredentials | null = null
   for (const [scope, value] of Object.entries(auth)) {
-    const key = textValue(recordValue(value)?.key)
-    if (key === null) continue
-    if (scope.startsWith(GROK_OIDC_SCOPE_PREFIX)) oidc = key
-    else if (scope === GROK_LEGACY_SESSION_SCOPE || scope.includes('/sign-in')) legacy = key
+    const record = recordValue(value)
+    const token = textValue(record?.key)
+    if (token === null) continue
+    const credentials: GrokAuthCredentials = {
+      token,
+      accountName: grokAccountName(record),
+      isOidc: scope.startsWith(GROK_OIDC_SCOPE_PREFIX),
+    }
+    if (scope.startsWith(GROK_OIDC_SCOPE_PREFIX)) oidc = credentials
+    else if (scope === GROK_LEGACY_SESSION_SCOPE || scope.includes('/sign-in')) legacy = credentials
   }
   return oidc ?? legacy
+}
+
+function grokAccountName(auth: Record<string, any> | null): string | null {
+  if (auth === null) return null
+  const firstName = textValue(auth.first_name ?? auth.firstName)
+  const lastName = textValue(auth.last_name ?? auth.lastName)
+  const fullName = [firstName, lastName].filter((value): value is string => value !== null).join(' ')
+  return fullName || textValue(auth.name) || textValue(auth.email)
 }
 
 /** 按重置时间距今的天数推断窗口长度（4–12 天按周窗口、20–45 天按月窗口），无法推断时留空由客户端使用兜底标签。 */

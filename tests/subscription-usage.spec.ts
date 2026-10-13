@@ -112,6 +112,7 @@ test('Grok 账单 gRPC-web 帧解析出已用百分比与重置时间', async ()
   const service = new GrokSubscriptionService({
     credentials: [authPath],
     fetch: async (url, options) => {
+      if (String(url) === 'https://cli-chat-proxy.grok.com/v1/settings') return Response.json({ subscription_tier_display: 'SuperGrok' })
       requests.push({ url: String(url), authorization: options?.headers?.Authorization })
       return new Response(frame, { status: 200 })
     },
@@ -122,7 +123,7 @@ test('Grok 账单 gRPC-web 帧解析出已用百分比与重置时间', async ()
   assert.equal(usage.primary.remainingPercent, 70)
   assert.equal(usage.primary.windowDurationMins, 10_080)
   assert.equal(usage.primary.resetsAt, resetsAt)
-  assert.equal(usage.planType, null)
+  assert.equal(usage.planType, 'SuperGrok')
   assert.deepEqual(requests, [{
     url: 'https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig',
     authorization: 'Bearer grok-token',
@@ -149,7 +150,7 @@ test('Grok 缺失凭据或鉴权失败时返回空用量', async () => {
 test('Grok 官方 OAuth 订阅优先于已配置的自定义上游', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'codingns-grok-priority-'))
   const authPath = join(directory, 'auth.json')
-  writeFileSync(authPath, JSON.stringify({ 'https://auth.x.ai::client-id': { key: 'grok-token' } }))
+  writeFileSync(authPath, JSON.stringify({ 'https://auth.x.ai::client-id': { key: 'grok-token', first_name: 'Test', last_name: 'User' } }))
   const resetsAt = Math.floor(Date.now() / 1000) + 6 * 86_400
   const payload = grokBillingPayload(25, resetsAt)
   const frame = new Uint8Array(5 + payload.length)
@@ -160,7 +161,8 @@ test('Grok 官方 OAuth 订阅优先于已配置的自定义上游', async () =>
     grok: {
       credentials: [authPath],
       fetch: async (url) => {
-          assert.equal(url, 'https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig')
+        if (String(url) === 'https://cli-chat-proxy.grok.com/v1/settings') return Response.json({ subscription_tier_display: 'SuperGrok' })
+        assert.equal(url, 'https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig')
         return new Response(frame, { status: 200 })
       },
     },
@@ -175,6 +177,8 @@ test('Grok 官方 OAuth 订阅优先于已配置的自定义上游', async () =>
 
   const usage = await service.read('grok')
   assert.equal(usage?.provider?.id, 'xai')
+  assert.equal(usage?.planType, 'SuperGrok')
+  assert.equal(usage?.accountName, 'Test User')
   assert.equal(usage?.primary?.usedPercent, 25)
   assert.equal(usage?.sub2api, undefined)
   assert.equal(customUpstreamCalls, 0)
