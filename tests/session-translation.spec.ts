@@ -133,8 +133,12 @@ test('原文已是目标语言时跳过输入和输出翻译并记录无需处�
   service!.dispose()
 })
 
-test('会话翻译只允许指定的外部 Agent，不包含 DSH 原生 Agent', () => {
-  for (const adapterId of ['claude-code', 'codex', 'pi', 'opencode', 'antigravity', 'grok', 'cursor-cli', 'kiro-cli']) {
+test('会话翻译覆盖所有内置外部 Agent，不包含 DSH 原生 Agent', () => {
+  for (const adapterId of [
+    'command-code', 'claude-code', 'kimi', 'gemini', 'pi', 'codex', 'opencode', 'grok',
+    'mcode', 'zcode', 'codebuddy', 'workbuddy', 'cursor-cli', 'kiro-cli', 'qoder', 'qoder-cn',
+    'antigravity', 'doubao',
+  ]) {
     assert.equal(isSessionTranslationAdapter(adapterId), true)
   }
   assert.equal(isSessionTranslationAdapter('dsh'), false)
