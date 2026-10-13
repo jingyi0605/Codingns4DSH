@@ -1,5 +1,7 @@
+import type { Context } from '@deepseek-ai/cordis'
 import { parseFileAddress, sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
 import { normalizePeerHostFileLocation } from '../shared/peer-host-file-location.js'
+import { readNativeService, readNativeWorkspaceSnapshot } from './native-workspace-store.js'
 
 interface FileResourceOpenOptions {
   readonly params?: Readonly<Record<string, unknown>>
@@ -12,10 +14,10 @@ interface FileResourceSidebar {
 }
 
 /**
- * 在原生资源入口规范远端链接，保留资源里的虚拟会话身份和导航参数。
+ * 在原生资源入口规范本地及远端链接，保留资源里的会话身份和导航参数。
  * 右栏文件树、消息与预览内链接共用这个入口；不扫描消息正文或当前选择。
  */
-export function installPeerHostFileLinkRouting(
+export function installSessionFileLinkRouting(
   uiContext: { get(name: string): unknown },
   workspacePathForSession: (sessionId: string) => string | undefined,
 ): (() => void) | undefined {
@@ -47,4 +49,16 @@ export function installPeerHostFileLinkRouting(
     if (sidebar.openResource === open) sidebar.openResource = originalOpen
     if (openIn !== undefined && sidebar.openResourceIn === openIn) sidebar.openResourceIn = originalOpenIn!
   }
+}
+
+/** 独立于 PeerHost 开关，按资源所属会话的最新目录识别路径平台。 */
+export function installNativeSessionFileLinkRouting(uiContext: Context): (() => void) | undefined {
+  const sessions = readNativeService(uiContext, 'sessions', 'list') as {
+    getSnapshot(): { readonly byId?: Readonly<Record<string, { readonly cwd?: string }>> }
+  } | undefined
+  return installSessionFileLinkRouting(uiContext, (sessionId) => {
+    const workspace = readNativeWorkspaceSnapshot(uiContext)?.items.find((item) => item.sessionIds.includes(sessionId))
+    // 远端空白会话的 cwd 可能是侧栏虚拟 URI，优先使用工作区保存的真实路径。
+    return workspace?.workspacePath ?? sessions?.getSnapshot().byId?.[sessionId]?.cwd ?? workspace?.path
+  })
 }

@@ -7,6 +7,7 @@ import { codexComputerUseLaunchSettings } from '../data/build/dist/host/cli-brid
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import { GrokBuildDriver } from '../data/build/dist/host/cli-adapters/grok-driver.js'
 import { PiAgentDriver } from '../data/build/dist/host/cli-adapters/pi-driver.js'
+import { windowsShellInvocation } from '../data/build/dist/host/cli-adapters/process-utils.js'
 
 test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async () => {
   for (const [Driver, expectedArgs] of [
@@ -61,7 +62,10 @@ test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async 
     })
     const chunks = []
     for await (const chunk of driver.executeTurn({ sessionId: 's1', messages: [], prompt: '你好' })) chunks.push(chunk)
-    assert.deepEqual(calls[0], ['fake-agent', ...expectedArgs])
+    const invocation = Driver === CodexAppServerDriver
+      ? windowsShellInvocation('fake-agent', expectedArgs)
+      : { command: 'fake-agent', args: expectedArgs }
+    assert.deepEqual(calls[0], [invocation.command, ...invocation.args])
     driver.dispose()
     assert.deepEqual(chunks.filter((chunk) => chunk.type !== 'session-binding'), Driver === CodexAppServerDriver
       ? [{ type: 'text-delta', text: '完成', messageId: 'message-1' }, { type: 'finish', reason: 'stop' }]
@@ -120,7 +124,7 @@ test('Codex Computer Use 注入官方 cua_repl，并在无运行时时安全降�
   assert.equal(enabled.args.some((value) => value.includes('mcp_servers.cua_repl.command')), true)
   assert.equal(enabled.args.some((value) => value.includes('mcp_servers.cua_repl.enabled_tools')), true)
 
-  const disabled = codexComputerUseLaunchSettings('auto', undefined, '/tmp/no-codex-runtime', 'darwin')
+  const disabled = codexComputerUseLaunchSettings('disabled', undefined, '/tmp/no-codex-runtime', 'darwin')
   assert.deepEqual(disabled, { enabled: false, args: [] })
   assert.deepEqual(codexComputerUseLaunchSettings('auto', undefined, '/tmp/no-codex-runtime', 'win32'), { enabled: false, args: [] })
 })

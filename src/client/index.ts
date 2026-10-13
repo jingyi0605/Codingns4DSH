@@ -43,6 +43,7 @@ import { assertInjectedDshVersion } from './dsh-runtime-version.js'
 import { isInjectedStage0Runtime } from '../shared/runtime-environment.js'
 import { createDshCapabilityRegistry } from '../dsh-capabilities/index.js'
 import { installFontScale } from './font-scale.js'
+import { installNativeSessionFileLinkRouting } from './session-file-links.js'
 import { TYPERT_REMOTE } from '../typert.remote-client.js'
 import { ASSISTANT_NOTIFICATION_TYPERT_REMOTE } from '../typert.notifications-client.js'
 import { createPeerHostScopedClient } from './peer-host-scoped-client.js'
@@ -140,7 +141,12 @@ export function apply(ctx?: Context): void {
   ensureCryptoRandomUUID()
   ctx.effect(() => registerCodingNsLocale(ctx), 'codingns4dsh: client dictionaries')
 
-  // sessions/uiWorkspace 只供子 Agent 导航覆盖层使用，属于 DSH 版本相关的可选能力。
+  // 文件链接属于通用资源入口；历史消息也需要规范，不能依赖 PeerHost 功能开关。
+  ctx.inject(['sidebarRight', 'sessions', 'workspaces'], (scope) => {
+    scope.effect(() => installNativeSessionFileLinkRouting(scope) ?? (() => undefined), 'codingns4dsh: session file links')
+  })
+
+  // sessions/uiWorkspace 等原生导航能力按需注入，属于 DSH 版本相关的可选能力。
   // 它们不能成为整个插件的硬依赖，否则任一服务尚未注册就会让设置页和所有旧功能
   // 一起停在 pending 状态。
   ctx.inject(['slots', 'connection', 'remote', 'remote.workspace', 'remote.session', 'sidebarRight', 'sidebarRightTabs', 'layout', 'theme', 'locale', 'uiConversation'], async (settingsCtx) => {
