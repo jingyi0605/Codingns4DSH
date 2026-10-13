@@ -368,6 +368,47 @@ test('Command Code ACP 自由文本桥保留 async 语法并实际还原问题�
   assert.equal(unsupported.source, unrelated)
 })
 
+test('Command Code ACP 把 providers.json 声明的 BYOK 模型并入模型目录', async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), 'command-code-byok-catalog-'))
+  const previousHome = process.env.HOME
+  try {
+    const providersPath = join(homeDirectory, '.commandcode', 'providers.json')
+    mkdirSync(dirname(providersPath), { recursive: true })
+    writeFileSync(providersPath, JSON.stringify({
+      provider: {
+        mcgrox: { name: 'McGrox', baseURL: 'https://www.mcgrox.top/v1', models: { 'deepseek-v4.1-flash': { contextWindow: 400000 } } },
+        // 与内置目录同名的 BYOK 条目必须去重，否则同一个模型会出现在目录里两次。
+        deepseek: { name: '重复内置', models: { 'deepseek-v4.1-flash': {} } },
+      },
+    }))
+    const source = 'const RL={"deepseek/deepseek-v4.1-flash":{id:"deepseek/deepseek-v4.1-flash",name:"V4.1"}};'
+      + 'function catalogModels(){return Object.values(RL).filter(e=>!e.hidden).map(e=>({id:e.id,name:e.name,description:e.description||null}))}'
+      + 'export{catalogModels}'
+    const loaded = await loadCommandCodeAcpLoader(
+      'file:///tmp/node_modules/command-code/dist/cli.mjs',
+      { format: 'module' },
+      async () => ({ format: 'module', source }),
+    )
+    const patched = String(loaded.source)
+    assert.match(patched, /codingNsByokModels/u)
+    // loader 在 CLI 进程内读取 HOME 下的 providers.json，测试用临时 HOME 复现。
+    process.env.HOME = homeDirectory
+    const patchedModule = await import(`data:text/javascript;base64,${Buffer.from(patched).toString('base64')}`)
+    const catalogIds = (): string[] => patchedModule.catalogModels().map((model: { id: string }) => model.id)
+    assert.deepEqual(catalogIds(), ['deepseek/deepseek-v4.1-flash', 'mcgrox/deepseek-v4.1-flash'])
+    assert.equal(patchedModule.catalogModels().at(-1).description, 'McGrox')
+    // 配置损坏或缺失时目录退回内置模型，既不抛错也不阻塞 ACP 会话。
+    writeFileSync(providersPath, 'not json')
+    assert.deepEqual(catalogIds(), ['deepseek/deepseek-v4.1-flash'])
+    rmSync(providersPath, { force: true })
+    assert.deepEqual(catalogIds(), ['deepseek/deepseek-v4.1-flash'])
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    rmSync(homeDirectory, { recursive: true, force: true })
+  }
+})
+
 /** 按 CLI 的落盘节奏把 assistant 用量记录追加进 canonical transcript。 */
 function createCommandCodeUsageFixture(homeDirectory: string, sessionId: string) {
   const transcriptPath = join(homeDirectory, 'projects', 'tmp-command-code-acp-workspace', `${sessionId}.jsonl`)

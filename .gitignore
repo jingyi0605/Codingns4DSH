@@ -3,6 +3,7 @@ dist/
 .pnpm-store/
 *.tsbuildinfo
 data
+.playwright-mcp
 # 本机 AI 协作约定，不进入版本库
 AGENTS.md
 docs/开发记录
