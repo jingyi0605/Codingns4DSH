@@ -189,6 +189,8 @@ export class CodingNsDshMessageProjector {
         return []
       case 'tool-event':
         return this.externalToolChunk(this.toolHistory.observe(event))
+      case 'image-artifact':
+        return this.externalImageChunk(event)
       case 'permission-request':
         await this.requestPermission(event)
         return []
@@ -322,6 +324,27 @@ export class CodingNsDshMessageProjector {
         codingnsExternalTool: marker,
       },
       { type: 'block-end', index, block: { type: 'reasoning', text: ' ' } },
+    ]
+  }
+
+  /**
+   * 图片必须先进入 DSH attachments，再作为原生 image block 结束；流里不携带
+   * Provider 的绝对路径，也不让 Client 自己拼接 file:// 或任意文件 URL。
+   */
+  private async externalImageChunk(
+    event: Extract<CodingNsAgentEvent, { type: 'image-artifact' }>,
+  ): Promise<readonly CodingNsDshStreamChunk[]> {
+    const attachment = await this.options.nativeSessions?.admitImageArtifact?.(event)
+    if (attachment === null || attachment === undefined) return []
+    const closed = [
+      ...(await this.closeMessageBlock('reasoning')),
+      ...(await this.closeMessageBlock('text')),
+    ]
+    const index = this.nextBlockIndex
+    this.nextBlockIndex += 1
+    return [...closed,
+      { type: 'block-start', index, blockType: 'image' },
+      { type: 'block-end', index, block: { type: 'image', attachment } },
     ]
   }
 

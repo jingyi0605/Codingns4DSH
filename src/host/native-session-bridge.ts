@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto'
+import { readCodingNsImageArtifact } from './image-artifact-store.js'
 import type { Context } from '@deepseek-ai/cordis'
 import { debugWarn } from '../shared/debug.js'
+import { readAssistantAttachmentStore } from '../dsh-capabilities/host/assistant-attachment-adapter.js'
+import { readAssistantAttachments } from '../shared/assistant-attachments.js'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentQuestion,
   CodingNsAgentQuestionResponse,
+  CodingNsAgentImageArtifact,
 } from '../shared/contracts/cli-adapter.js'
 
 /**
@@ -77,6 +81,17 @@ export interface CodingNsNativeQuestionRequest {
   readonly requestId: string
   readonly questions: readonly CodingNsAgentQuestion[]
   readonly signal?: AbortSignal
+}
+
+/** DSH 附件服务返回的图片引用；字段与 ImageAttachmentRef 保持结构兼容。 */
+export interface CodingNsNativeImageAttachmentRef {
+  readonly attachmentId: string
+  readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
+  readonly bytes: number
+  readonly width: number
+  readonly height: number
+  readonly name?: string
+  readonly originalDimensions?: { readonly width: number; readonly height: number }
 }
 
 /** 外部 Agent 已确认的模型路由上下文容量，用于 DSH token-meter 的上下文占用投影。 */
@@ -170,6 +185,8 @@ export interface CodingNsNativeSessionBridge {
   requestApproval?(sessionId: string, request: CodingNsNativeApprovalRequest): Promise<CodingNsNativeApprovalOutcome>
   /** 使用 DSH 原生 userQuestions 组件提问；服务不可用或取消时返回 null。 */
   askQuestions?(sessionId: string, request: CodingNsNativeQuestionRequest): Promise<CodingNsAgentQuestionResponse | null>
+  /** 将 Host 上的 Provider 图片转成 DSH 持久化附件；失败时返回 null 让投影层降级。 */
+  admitImageArtifact?(artifact: CodingNsAgentImageArtifact): Promise<CodingNsNativeImageAttachmentRef | null>
   /** 从 DSH 原生侧栏归档会话；控制器不可用时返回 false。 */
   archive?(sessionId: string): Promise<boolean>
   /** 恢复 DSH 原生侧栏中的归档会话；控制器不可用时返回 false。 */
@@ -190,6 +207,7 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
   const store = isSessionStore(storeValue) ? storeValue : undefined
   const controller = isSessionController(controllerValue) ? controllerValue : undefined
   const workspaceController = isWorkspaceController(workspaceControllerValue) ? workspaceControllerValue : undefined
+  const attachments = readAssistantAttachmentStore(ctx)
   const currentWorkspaceController = (): CodingNsNativeWorkspaceController | undefined => {
     const value: unknown = ctx.get('workspaceController')
     return isWorkspaceController(value) ? value : undefined
@@ -717,6 +735,41 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
         return null
       }
     },
+    async admitImageArtifact(artifact) {
+      if (attachments === undefined) return null
+      const admitPromptContent = attachments.admitPromptContent
+      if (typeof admitPromptContent !== 'function') return null
+      try {
+        const image = await readCodingNsImageArtifact(artifact)
+        const admitted = readAssistantAttachments(await admitPromptContent.call(attachments, [{
+          type: 'image',
+          mediaType: image.mediaType,
+          data: Buffer.from(image.data).toString('base64'),
+          ...(image.name === undefined ? {} : { name: image.name }),
+        }]))
+        const block = admitted.find((value) => value.type === 'image')
+        if (block === undefined) return null
+        const ref = block.attachment
+        const width = ref.width
+        const height = ref.height
+        if (!isImageMediaType(ref.mediaType) || typeof width !== 'number' || !Number.isSafeInteger(width) || width < 1
+          || typeof height !== 'number' || !Number.isSafeInteger(height) || height < 1) return null
+        return {
+          attachmentId: ref.attachmentId,
+          mediaType: ref.mediaType,
+          bytes: ref.bytes,
+          width,
+          height,
+          ...(ref.name === undefined ? {} : { name: ref.name }),
+        }
+      } catch (error) {
+        debugWarn('codingns4dsh: 外部 Agent 图片产物未能登记为 DSH 附件', {
+          path: artifact.path,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        return null
+      }
+    },
     async archive(sessionId) {
       const current = currentWorkspaceController()
       if (sessionId.trim() === '' || current?.archiveSession === undefined) return false
@@ -969,6 +1022,10 @@ function isWorkspaceController(value: unknown): value is CodingNsNativeWorkspace
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function isImageMediaType(value: unknown): value is CodingNsNativeImageAttachmentRef['mediaType'] {
+  return value === 'image/png' || value === 'image/jpeg' || value === 'image/webp' || value === 'image/gif'
 }
 
 function isModernDshVersion(value: string | undefined): boolean {

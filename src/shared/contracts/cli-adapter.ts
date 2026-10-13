@@ -362,6 +362,17 @@ export interface CodingNsAgentToolEvent {
   readonly detail?: string
 }
 
+/** Provider 生成的图片产物；路径只在 Host 内部流转，绝不能直接下发给 Client。 */
+export interface CodingNsAgentImageArtifact {
+  readonly type: 'image-artifact'
+  /** Provider 返回的本机文件路径；公共投影层会先转成 DSH 受控附件。 */
+  readonly path?: string
+  /** Provider 直接返回的 base64 图片；只在 Host 内流转，不进入 DSH 消息正文。 */
+  readonly data?: string
+  readonly name?: string
+  readonly mediaType?: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
+}
+
 /**
  * 所有外部 Agent 必须输出的公共事件契约。
  *
@@ -384,6 +395,7 @@ export type CodingNsAgentEvent =
       readonly type: 'step-boundary'
     }
   | CodingNsAgentToolEvent
+  | CodingNsAgentImageArtifact
   | {
       readonly type: 'usage'
       /**

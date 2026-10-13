@@ -1,8 +1,8 @@
 import { runAsyncCommand } from './process-utils.js'
 import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import type { CodingNsAgentEvent, CodingNsAgentImageArtifact, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
@@ -15,6 +15,7 @@ import { reasoningText } from './reasoning-content.js'
 import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 import { readAgentQuestions } from './interaction-events.js'
 import { commandEnvironment, WINDOWS } from './process-utils.js'
+import { imageArtifactPathsFromValue, stripImageMarkdown } from '../image-artifact-store.js'
 
 interface GrokQuestionPending {
   readonly callId: string
@@ -44,7 +45,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
   private readonly sessionRoots: readonly string[]
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
-  private readonly sessions = new Map<string, { rpc: JsonRpcProcess; cwd: string | undefined; providerSessionId: string; requests: Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>; questions: Map<string, AcpElicitationRequest>; grokQuestions: Map<string, GrokQuestionPending>; grokQuestionCallIds: Set<string>; grokQuestionEventIds: Set<string> }>()
+  private readonly sessions = new Map<string, { rpc: JsonRpcProcess; cwd: string | undefined; rawStoreRef: string | undefined; providerSessionId: string; requests: Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>; questions: Map<string, AcpElicitationRequest>; grokQuestions: Map<string, GrokQuestionPending>; grokQuestionCallIds: Set<string>; grokQuestionEventIds: Set<string> }>()
 
   constructor(options: GrokBuildDriverOptions = {}) {
     this.binaries = options.binaries ?? ['grok', 'grok-build']
@@ -159,16 +160,20 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           finishResult = item.value
           break
         }
-        const chunk = acpMessageToChunk(item.value)
-        if (chunk === null) continue
-        if (chunk.type === 'question-request' && state.grokQuestionCallIds.has(chunk.requestId)) {
-          if (state.grokQuestionEventIds.has(chunk.requestId)) continue
-          state.grokQuestionEventIds.add(chunk.requestId)
+        for (const rawChunk of acpMessageToChunks(item.value)) {
+          const chunk = rawChunk.type === 'image-artifact'
+            ? await resolveGrokImageArtifact(rawChunk, state, this.sessionRoots)
+            : rawChunk
+          if (chunk === null) continue
+          if (chunk.type === 'question-request' && state.grokQuestionCallIds.has(chunk.requestId)) {
+            if (state.grokQuestionEventIds.has(chunk.requestId)) continue
+            state.grokQuestionEventIds.add(chunk.requestId)
+          }
+          // 问题的 tool_call_update 只是同一次交互的生命周期回声，不能再生成普通
+          // 工具记录，否则历史里会重新出现空参数或重复的问题调用。
+          if (chunk.type === 'tool-event' && chunk.callId !== undefined && state.grokQuestionCallIds.has(chunk.callId)) continue
+          yield chunk
         }
-        // 问题的 tool_call_update 只是同一次交互的生命周期回声，不能再生成普通
-        // 工具记录，否则历史里会重新出现空参数或重复的问题调用。
-        if (chunk.type === 'tool-event' && chunk.callId !== undefined && state.grokQuestionCallIds.has(chunk.callId)) continue
-        yield chunk
       }
       if (finishResult.reason === 'cancel') {
         try { await rpc.request('session/cancel', { sessionId: providerSessionId }, { killOnAbort: false }) }
@@ -224,7 +229,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     previous?.rpc.dispose()
     const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], cwd: input.cwd, env: grokRuntimeEnvironment(), spawn: this.runSpawn })
     this.processes.add(rpc)
-    const state = { rpc, cwd: input.cwd, providerSessionId: '', requests: new Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>(), questions: new Map<string, AcpElicitationRequest>(), grokQuestions: new Map<string, GrokQuestionPending>(), grokQuestionCallIds: new Set<string>(), grokQuestionEventIds: new Set<string>() }
+    const state = { rpc, cwd: input.cwd, rawStoreRef: input.rawStoreRef, providerSessionId: '', requests: new Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>(), questions: new Map<string, AcpElicitationRequest>(), grokQuestions: new Map<string, GrokQuestionPending>(), grokQuestionCallIds: new Set<string>(), grokQuestionEventIds: new Set<string>() }
     await rpc.request('initialize', {
       protocolVersion: 1,
       clientInfo: { name: 'codingns4dsh', version: '0.1.1' },
@@ -489,33 +494,52 @@ function grokQuestionResponse(pending: GrokQuestionPending, response: CodingNsAg
   }
 }
 
-function acpMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | null {
+function acpMessageToChunks(message: Record<string, any>): readonly CodingNsAgentEvent[] {
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
   const type = (typeof update.sessionUpdate === 'string' ? update.sessionUpdate : typeof update.type === 'string' ? update.type : typeof message.method === 'string' ? message.method : '').toLowerCase()
   const elicitation = readAcpElicitationRequest(message)
-  if (elicitation !== null) return { type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }
+  if (elicitation !== null) return [{ type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }]
   const grokQuestion = readGrokQuestionTool(message) ?? readGrokQuestionRequest(message)
-  if (grokQuestion !== null) return { type: 'question-request', requestId: grokQuestion.callId, callId: grokQuestion.callId, questions: grokQuestion.questions }
-  const reasoning = reasoningText(update)
-  if (reasoning !== null) return { type: 'reasoning-delta', text: reasoning }
+  if (grokQuestion !== null) return [{ type: 'question-request', requestId: grokQuestion.callId, callId: grokQuestion.callId, questions: grokQuestion.questions }]
   const text = textValue(update.delta ?? update.text ?? update.content ?? update.message ?? update.detail)
+  const artifactPaths = [
+    update.rawOutput,
+    update.raw_output,
+    update.output,
+    update.result,
+    update.image,
+    update.images,
+    update.content,
+    update.file,
+    update.files,
+  ].flatMap((value) => imageArtifactPathsFromValue(value))
+  const markdownPaths = imageArtifactPathsFromValue(text ?? '')
+  const imagePaths = [...new Set([...artifactPaths, ...markdownPaths])]
+  const imageEvents: CodingNsAgentEvent[] = imagePaths.map((path): CodingNsAgentImageArtifact => ({ type: 'image-artifact', path }))
+  const reasoning = reasoningText(update)
+  if (reasoning !== null) return [...imageEvents, { type: 'reasoning-delta', text: reasoning }]
   if (type.includes('permission')) {
     const requestId = permissionRequestId(message) ?? (typeof update.requestId === 'string' ? update.requestId : typeof update.id === 'string' ? update.id : null)
     if (requestId !== null) {
       const tool = isToolRecord(update.toolCall) ? update.toolCall : isToolRecord(update.tool_call) ? update.tool_call : update
       const toolName = firstToolText(tool.title, tool.name, tool.toolName, tool.tool_name, update.toolName)
       const callId = firstToolText(tool.toolCallId, tool.tool_call_id, tool.callId, tool.call_id, update.callId, update.call_id)
-      return { type: 'permission-request', requestId, kind: typeof update.kind === 'string' ? update.kind : toolName ?? 'unknown', ...(toolName ? { toolName } : {}), ...(callId ? { callId } : {}), ...(text ? { detail: text } : {}) }
+      return [{ type: 'permission-request', requestId, kind: typeof update.kind === 'string' ? update.kind : toolName ?? 'unknown', ...(toolName ? { toolName } : {}), ...(callId ? { callId } : {}), ...(text ? { detail: text } : {}) }]
     }
   }
-  if (type.includes('agent_message') || type.includes('text') || type === 'message') return text ? { type: 'text-delta', text } : null
-  if (type.includes('thought') || type.includes('reason')) return text ? { type: 'reasoning-delta', text } : null
+  if (type.includes('agent_message') || type.includes('text') || type === 'message') {
+    const visible = text === null ? '' : stripImageMarkdown(text, markdownPaths)
+    const textEvent: CodingNsAgentEvent | undefined = visible === '' ? undefined : { type: 'text-delta', text: visible }
+    return [...imageEvents, ...(textEvent === undefined ? [] : [textEvent])]
+  }
+  if (type.includes('image') || type.includes('artifact') || type.includes('generated')) return imageEvents
+  if (type.includes('thought') || type.includes('reason')) return text ? [{ type: 'reasoning-delta', text }] : []
   if (type.includes('tool') || type.includes('command')) {
     const tool = isToolRecord(update.toolCall) ? update.toolCall : isToolRecord(update.tool_call) ? update.tool_call : update
     const name = firstToolText(tool.name, tool.toolName, tool.tool_name, tool.title, update.name, update.toolName, update.title)
     const callId = firstToolText(tool.callId, tool.call_id, tool.toolCallId, tool.tool_call_id, tool.id, update.toolCallId, update.tool_call_id, update.id)
-    if (!name && !callId) return null
+    if (!name && !callId) return []
     const input = serializeToolValue(tool.rawInput ?? tool.input ?? tool.arguments ?? tool.args ?? update.rawInput)
     const output = serializeToolValue(tool.rawOutput ?? tool.output ?? tool.result ?? update.rawOutput)
     const error = serializeToolValue(tool.error ?? update.error)
@@ -526,7 +550,7 @@ function acpMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | n
       : output !== undefined || type.includes('result') || type.includes('complete')
         ? 'completed'
         : 'running'
-    return {
+    return [...imageEvents, {
       type: 'tool-event',
       toolName: name ?? 'tool',
       status: normalizeToolStatus(tool.status ?? tool.state ?? update.status, fallback),
@@ -537,9 +561,41 @@ function acpMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | n
       ...(error !== undefined ? { error } : {}),
       ...(agentId ? { agentId } : {}),
       ...(detail !== undefined ? { detail } : {}),
-    }
+    }]
   }
-  return usageChunk(update)
+  const usage = usageChunk(update)
+  return usage === null ? imageEvents : [...imageEvents, usage]
+}
+
+async function resolveGrokImageArtifact(
+  artifact: Extract<CodingNsAgentEvent, { type: 'image-artifact' }>,
+  state: { readonly cwd: string | undefined; readonly rawStoreRef: string | undefined; readonly providerSessionId: string },
+  roots: readonly string[],
+): Promise<Extract<CodingNsAgentEvent, { type: 'image-artifact' }> | null> {
+  const raw = artifact.path?.trim()
+  if (raw === undefined || raw === '') return artifact.data === undefined ? null : artifact
+  const candidates = isAbsolute(raw)
+      ? [raw]
+      : [
+        ...(state.rawStoreRef === undefined ? [] : containedPath(state.rawStoreRef, raw)),
+        ...(state.rawStoreRef === undefined ? [] : containedPath(dirname(state.rawStoreRef), raw)),
+        ...roots.flatMap((root) => containedPath(root, join(state.providerSessionId, raw))),
+        ...roots.flatMap((root) => containedPath(root, raw)),
+        ...(state.cwd === undefined ? [] : containedPath(state.cwd, raw)),
+      ]
+  for (const candidate of candidates) {
+    try {
+      if (await isRegularFile(candidate)) return { ...artifact, path: candidate }
+    } catch { /* Provider 可能只在另一处保存产物，继续尝试受控候选。 */ }
+  }
+  return null
+}
+
+function containedPath(root: string, child: string): readonly string[] {
+  const base = resolve(root)
+  const candidate = resolve(base, child)
+  const outside = relative(base, candidate)
+  return outside === '' || outside === '..' || outside.startsWith(`..${sep}`) || isAbsolute(outside) ? [] : [candidate]
 }
 
 function permissionRequestId(message: Record<string, any>): string | null {

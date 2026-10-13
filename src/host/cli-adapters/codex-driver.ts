@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliServiceTier, CodingNsAgentPermissionResponse, CodingNsCliSandboxMode, CodingNsCliTurnInput, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsAgentImageArtifact, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliServiceTier, CodingNsAgentPermissionResponse, CodingNsCliSandboxMode, CodingNsCliTurnInput, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
@@ -389,7 +389,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         if (responseTerminal !== null) onNotification(responseTerminal)
 
         for await (const message of eventQueue.iterable) {
-          const rawChunk = codexMessageToChunk(message)
+          const rawChunk = codexMessageToChunk(message, input.cwd)
           if (rawChunk === null) continue
           for (const chunk of expandCodexCompactionChunk(session, rawChunk)) {
             if (chunk.type !== 'finish') sawMeaningfulEvent = true
@@ -580,7 +580,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
           return
         }
         if (input.signal?.aborted) throw new Error('请求已取消')
-        chunk = codexMessageToChunk(next.value)
+        chunk = codexMessageToChunk(next.value, input.cwd)
       }
       if (chunk === null) continue
 
@@ -1235,7 +1235,7 @@ function summarizeCodexAuth(auth: string): string {
   return `${mode}|apiKey=${hasApiKey}|tokens=${hasTokens}|account=${accountId}`
 }
 
-function codexMessageToChunk(message: Record<string, any>): CodingNsAgentEvent | null {
+function codexMessageToChunk(message: Record<string, any>, cwd?: string): CodingNsAgentEvent | null {
   const params = isRecord(message.params) ? message.params : message
   const item = isRecord(params.item) ? params.item : params
   const method = typeof message.method === 'string' ? message.method : ''
@@ -1274,6 +1274,8 @@ function codexMessageToChunk(message: Record<string, any>): CodingNsAgentEvent |
     const compactionId = readTurnId(message)
     return { type: 'context-compaction', phase: 'end', ...(compactionId === null ? {} : { compactionId }) }
   }
+  const imageArtifact = codexImageArtifact(method, type, params, item, cwd)
+  if (imageArtifact !== null) return imageArtifact
   if (isQuestionEvent(`${method} ${type}`)) {
     const requestId = readRequestId(message) ?? readRequestId(params)
     const questions = readAgentQuestions(params.questions ?? item.questions ?? params)
@@ -1346,6 +1348,53 @@ function codexMessageToChunk(message: Record<string, any>): CodingNsAgentEvent |
     }
   }
   return codexUsageChunk(params)
+}
+
+/**
+ * Codex image_gen 在不同版本有两种结果：旧版提供 saved_path，新版扩展可能只
+ * 提供 image_generation_end.result 的 base64 PNG。两者都在 Host 内转成附件，不能
+ * 把 result 放进普通工具文本，也不能让 Client 读取 Provider 的原始路径。
+ */
+function codexImageArtifact(
+  method: string,
+  type: string,
+  params: Record<string, any>,
+  item: Record<string, any>,
+  cwd?: string,
+): CodingNsAgentImageArtifact | null {
+  const marker = `${method} ${type} ${firstToolText(item.name, item.toolName, item.tool) ?? ''}`.toLowerCase()
+  if (!/(?:image[_/-]?generation|image[_/-]?gen|imagegeneration)/u.test(marker)) return null
+  const rawPath = firstToolText(
+    item.saved_path,
+    item.savedPath,
+    item.output_path,
+    item.outputPath,
+    item.image_path,
+    item.imagePath,
+    params.saved_path,
+    params.savedPath,
+  )
+  const path = rawPath === undefined ? undefined : resolve(cwd ?? process.cwd(), rawPath)
+  const data = codexImageData(item.result ?? params.result ?? item.image ?? params.image)
+  if (path === undefined && data === undefined) return null
+  return {
+    type: 'image-artifact',
+    ...(path === undefined ? {} : { path }),
+    ...(data === undefined ? {} : { data }),
+    ...(data === undefined ? {} : { mediaType: 'image/png' as const }),
+    ...(path === undefined ? {} : { name: basename(path) }),
+  }
+}
+
+function codexImageData(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const candidate = value.trim()
+    if (/^data:image\/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+$/u.test(candidate)) return candidate
+    if (candidate.length >= 128 && candidate.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/u.test(candidate)) return candidate
+    return undefined
+  }
+  if (!isRecord(value)) return undefined
+  return codexImageData(value.b64_json ?? value.base64 ?? value.data ?? value.image_url ?? value.url)
 }
 
 /** 判断分段续流是否带来了新的真实用户插话。 */
