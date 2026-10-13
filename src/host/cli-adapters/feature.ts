@@ -533,6 +533,39 @@ function registerDelegationAgentHooks(
     if (typeof disposer === 'function') disposers.push(disposer as () => void)
   }
 
+  // DSH Agent Loop 会用 agent/request 的 provider/model 生成 assistant/message.source。
+  // 外部流虽然在 llm/stream 旁路执行，但如果这里仍保留 DeepSeek 路由，回复历史
+  // 就会被错误归属为 DeepSeek。只改写已绑定的外部会话，不影响 DSH 原生会话。
+  register('agent/request', async (payload: unknown, next: () => Promise<unknown>) => {
+    const resolved = await next()
+    const config = asRecord(resolved)
+    if (config === null) return resolved
+    const sessionId = readAgentSessionId(asRecord(payload)?.agent)
+    if (sessionId === '') return config
+
+    let session: CodingNsCliSessionConfig
+    try {
+      session = registry.getSession(sessionId)
+    } catch {
+      return config
+    }
+    const configuredAdapter = session.adapterId !== 'dsh' && registry.isEnabled(session.adapterId)
+      ? session.adapterId
+      : typeof config.provider === 'string' && registry.isEnabled(config.provider)
+        ? config.provider
+        : undefined
+    if (configuredAdapter === undefined) return config
+
+    if (session.adapterId === 'dsh') {
+      session = registry.setSession(sessionId, {
+        adapterId: configuredAdapter,
+        ...(typeof config.model === 'string' && config.model.trim() !== '' ? { modelId: config.model.trim() } : {}),
+      })
+    }
+    const model = session.modelId?.trim() || (typeof config.model === 'string' && config.model.trim() !== '' ? config.model.trim() : configuredAdapter)
+    return { ...config, provider: configuredAdapter, model }
+  })
+
   register('agent/pre-step', async (payload: unknown, next: () => Promise<unknown>) => {
     const record = asRecord(payload)
     const sessionId = readAgentSessionId(record?.agent)

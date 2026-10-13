@@ -62,7 +62,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
   async listModels(): Promise<CodingNsCliModelCatalog> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) return emptyCatalog()
-    const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], env: grokRuntimeEnvironment(), spawn: this.runSpawn })
     try {
       await rpc.request('initialize', {
         protocolVersion: 1,
@@ -94,7 +94,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           maxBuffer: 8 * 1024 * 1024,
           windowsHide: true,
           shell: WINDOWS,
-          env: commandEnvironment(command),
+          env: grokRuntimeEnvironment(command),
         })
         if (result.status === 0) {
           const catalog = parseGrokSkillCatalog(`${result.stdout ?? ''}`)
@@ -222,7 +222,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     const previous = this.sessions.get(input.sessionId)
     if (previous !== undefined && previous.cwd === input.cwd) return previous
     previous?.rpc.dispose()
-    const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], cwd: input.cwd, spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], cwd: input.cwd, env: grokRuntimeEnvironment(), spawn: this.runSpawn })
     this.processes.add(rpc)
     const state = { rpc, cwd: input.cwd, providerSessionId: '', requests: new Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>(), questions: new Map<string, AcpElicitationRequest>(), grokQuestions: new Map<string, GrokQuestionPending>(), grokQuestionCallIds: new Set<string>(), grokQuestionEventIds: new Set<string>() }
     await rpc.request('initialize', {
@@ -271,6 +271,15 @@ export class GrokBuildDriver implements CodingNsCliDriver {
 }
 
 const GROK_DRAIN_WAIT_MS = 250
+
+/**
+ * Grok 会默认兼容加载 `~/.claude/Claude.md`。CodingNS 已经有自己的会话规则，
+ * 外部 Agent 不应继承 Claude 的全局语言偏好或其他宿主专属指令。
+ */
+function grokRuntimeEnvironment(command?: string): Record<string, string | undefined> {
+  const base = command === undefined ? process.env : commandEnvironment(command)
+  return { ...base, GROK_CLAUDE_AGENTS_ENABLED: '0' }
+}
 
 /** 内建提问与 MCP 的连接状态无关，宿主能力说明必须随每轮请求一起传递。 */
 const GROK_QUESTION_GUIDANCE = [
