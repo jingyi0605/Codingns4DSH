@@ -10,6 +10,7 @@ import type { AssistantSessionSourceRecord } from './assistant-session-index.js'
 import type { AssistantSessionMessage, AssistantWaitingKind } from '../../shared/contracts/assistant.js'
 import type { AssistantPeerNotificationObserver } from './assistant-peer-notifications.js'
 import type { AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
+import type { SessionTranslationService } from './session-translation-service.js'
 
 export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
@@ -83,4 +84,6 @@ export interface CodingNsHostServices {
   readonly listWorkspaceRoots?: () => readonly string[]
   /** PeerHost 已装配时提供跨 Host 的助理摘要与派发通道。 */
   readonly assistantGateway?: AssistantHostGateway
+  /** 外部 Agent 会话翻译服务；仅由会话翻译模块启用并配置。 */
+  readonly sessionTranslation?: SessionTranslationService
 }

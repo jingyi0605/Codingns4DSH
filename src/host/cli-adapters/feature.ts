@@ -34,6 +34,9 @@ import { containsDelegationCarrier, delegationAdapterIds, rewriteDelegationMessa
 import { clearDelegationAuthorization, setDelegationAuthorization } from './delegation-authorization.js'
 import { debugInfo } from '../../shared/debug.js'
 import { hasLegacySessionAdapterHint } from './legacy-session-adapter.js'
+import {
+  type SessionTranslationInputRecord,
+} from '../../shared/contracts/session-translation.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -57,6 +60,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       const sessionStore = options.registry?.sessionRecords
         ?? new CodingNsCliSessionStore(context.services.settings === undefined ? {} : { settings: context.services.settings })
       const nativeSessions = context.services.nativeSessions
+      const translation = context.services.sessionTranslation
       // 启动只恢复持久化索引；旧会话在打开时迁移，禁止在首屏扫描全部历史。
       const registry = options.registry ?? new CodingNsCliAdapterRegistry([
         new CommandCodeDriver({ enableAcp: true }),
@@ -128,7 +132,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         })
         context.resources.add(disposeNativeEvents)
       }
-      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus)
+      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation)
       context.resources.add(context.services.rpc.register('cli', (action, payload) => {
         switch (action) {
           case 'catalog': return registry.catalog()
@@ -140,6 +144,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             const adapterId = readAdapterId(payload)
             return adapterId === 'dsh' ? readDshModelCatalog(context.services.dshContext) : registry.models(adapterId)
           }
+          case 'translation/models': return context.services.sessionTranslation?.catalog() ?? { models: [], default: null, errors: ['翻译模型目录不可用'] }
           case 'skills': {
             const request = readSkillsRequest(payload)
             const cwd = resolveSessionCwd(context.services.nativeSessions, request.sessionId, null)
@@ -163,8 +168,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             // 列表查询只返回持久化索引，不能触发会话加载或历史解析。
             return sessionStore.adapterBindings()
           case 'session/archive': return registry.archiveSession(readSessionId(payload))
-          case 'session/steer': return registry.steer(readSessionId(payload), readPrompt(payload), false)
-          case 'session/follow-up': return registry.steer(readSessionId(payload), readPrompt(payload), true)
+          case 'session/steer': return translateSteerPrompt(translation, registry, readSessionId(payload), readPrompt(payload), false)
+          case 'session/follow-up': return translateSteerPrompt(translation, registry, readSessionId(payload), readPrompt(payload), true)
           case 'session/interrupt': return registry.interrupt(readSessionId(payload))
           case 'team/status': return context.services.nativeTeam?.diagnostic() ?? registry.teamDiagnostic()
           case 'team/members': return requireTeam(context).invoke('members', payload)
@@ -269,6 +274,12 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       if (events !== undefined) {
         const dispose = events.on('llm/stream', async function* (options: unknown, next: () => AsyncIterable<unknown>) {
           const value = asRecord(options)
+          // 翻译服务也复用 DSH 原生 LLM，但它不是外部 Agent 回合；必须在这里
+          // 旁路 CLI Provider 接管，否则翻译请求会被再次当成 Grok/Codex 请求。
+          if (isSessionTranslationLlmRequest(value)) {
+            yield* next()
+            return
+          }
           const sessionId = typeof value?.sessionId === 'string' ? value.sessionId : ''
           if (value?.purpose === 'session-title' || value?.purpose === 'compaction') {
             yield* next()
@@ -345,6 +356,19 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           const turnInput = extractTurnInput(messages, context.services.dshContext)
           const turnOptions = readCliTurnOptions(value)
           const runtimeEnv = readCliRuntimeEnv(value)
+          const requestSignal = isAbortSignal(value?.signal) ? value.signal : undefined
+          let translatedPrompt = turnInput.translationPrompt
+          if (turnInput.translatePrompt && translation !== undefined) {
+            try {
+              translatedPrompt = await translation.translateInput(config.adapterId, turnInput.translationPrompt, requestSignal, config.translationEnabled === true)
+            } catch {
+              // 翻译服务异常不能阻断外部 Agent 主任务；本轮直接发送原文。
+              translatedPrompt = turnInput.translationPrompt
+            }
+          }
+          const prompt = turnInput.translatePrompt
+            ? [translatedPrompt, turnInput.untranslatedPrompt].filter((part) => part.trim() !== '').join('\n\n')
+            : turnInput.prompt
           // 权限状态必须与 DSH 会话当前生效值同源。驱动不能自行假设“完全权限”，
           // 也不能把缺省当成“已确认无限制”：解析失败时留空，由驱动沿用保守默认。
           const permission = resolveSessionPermission(context.services.dshContext, sessionId)
@@ -355,7 +379,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           const input = {
             sessionId,
             messages: turnInput.messages,
-            prompt: turnInput.prompt,
+            prompt,
             ...(turnInput.attachments.length === 0 ? {} : { attachments: turnInput.attachments }),
             ...(permission === undefined ? {} : { permission }),
             ...(turnOptions.plan === true ? { plan: true } : {}),
@@ -365,10 +389,11 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             ...(config.modelId ? { modelId: config.modelId } : {}),
             ...(config.effortId ? { effortId: config.effortId } : {}),
             ...(config.serviceTierId ? { serviceTierId: config.serviceTierId } : {}),
+            ...(config.translationEnabled === undefined ? {} : { translationEnabled: config.translationEnabled }),
             ...(config.providerSessionId ? { providerSessionId: config.providerSessionId } : {}),
             ...(config.rawStoreRef ? { rawStoreRef: config.rawStoreRef } : {}),
             ...(cwd === undefined ? {} : { cwd }),
-            ...(isAbortSignal(value?.signal) ? { signal: value.signal } : {}),
+            ...(requestSignal === undefined ? {} : { signal: requestSignal }),
             ...((registry.supportsSegmentedTurns(config.adapterId) || registry.supportsToolStepSplitting(config.adapterId))
               // SessionStore/controller 可能是远端代理而未标记 available，但原生
               // Agent 仍然提供 inject；用真实的 next-step 能力决定分段，不能让
@@ -388,6 +413,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             ...(input.signal === undefined ? {} : { signal: input.signal }),
             respondPermission: (response) => registry.respondPermission(sessionId, response),
             respondQuestion: (response) => registry.respondQuestion(sessionId, response),
+            ...(translation === undefined ? {} : { translation }),
+            ...(translation === undefined ? {} : { translationEnabled: config.translationEnabled === true }),
           })
           const discardSuspendedTurn = (): void => registry.discardSegmentedTurn(sessionId)
           input.signal?.addEventListener('abort', discardSuspendedTurn, { once: true })
@@ -489,14 +516,15 @@ function createExternalSessionStatusPublisher(
  * 在 Agent Loop 的可变输入边界消费委派 carrier。
  *
  * `llm/stream` 收到的 LOOP 请求由 DSH 深冻结，监听器只能读取；如果在那里改写
- * `messages`，会直接抛出只读属性异常。`agent/pre-step` 返回新的决策消息，随后由
- * Agent Loop 负责把改写后的内容写入当前会话并构造下一次只读 LLM 请求。
+ * `messages`，会直接抛出只读属性异常。`agent/pre-step` 返回的新消息保留用户原文，并把
+ * 译文写入 source 元数据；外部适配器再据此构造发给 Agent 的译文。
  */
 function registerDelegationAgentHooks(
   dshContext: CodingNsHostServices['dshContext'],
   registry: CodingNsCliAdapterRegistry,
   resources: FeatureResourceScope,
   publishExternalStatus: (sessionId: string, running: boolean) => void,
+  translation: CodingNsHostServices['sessionTranslation'],
 ): void {
   if (dshContext === undefined || typeof dshContext.on !== 'function') return
   const disposers: Array<() => void> = []
@@ -508,24 +536,36 @@ function registerDelegationAgentHooks(
   register('agent/pre-step', async (payload: unknown, next: () => Promise<unknown>) => {
     const record = asRecord(payload)
     const sessionId = readAgentSessionId(record?.agent)
-    const messages = Array.isArray(record?.messages) ? record.messages.filter(isMessage) : []
+    let messages = Array.isArray(record?.messages) ? record.messages.filter(isMessage) : []
     let delegation: ReturnType<typeof rewriteDelegationMessages> | undefined
     if (containsDelegationCarrier(messages)) {
       delegation = rewriteDelegationMessages(messages, await registry.catalogForUse(delegationAdapterIds(messages)))
       if (delegation.kind === 'error') clearDelegationAuthorization(sessionId)
       else if (delegation.kind === 'rewritten') {
         setDelegationAuthorization(sessionId, delegation.value.targets)
+        messages = [...delegation.value.messages]
       }
     }
 
+    const translatedInput = await translatePreStepInput(
+      translation,
+      registry,
+      sessionId,
+      messages,
+      dshContext,
+      isAbortSignal(record?.signal) ? record.signal : undefined,
+    )
+    if (translatedInput !== undefined) messages = [...translatedInput]
+
     const decision = await next()
-    if (delegation?.kind !== 'rewritten' || !isEnterPreStepDecision(decision)) return decision
+    if (!isEnterPreStepDecision(decision)) return decision
+    if (delegation?.kind !== 'rewritten' && translatedInput === undefined) return decision
 
     // `next()` 可能已经追加系统上下文或模型切换通知，只替换它前面的本轮用户消息。
     const suffix = decision.messages.slice(messages.length)
     return {
       ...decision,
-      messages: [...delegation.value.messages, ...suffix],
+      messages: [...messages, ...suffix],
     }
   })
 
@@ -556,6 +596,21 @@ function registerDelegationAgentHooks(
 function isEnterPreStepDecision(value: unknown): value is { kind: 'enter'; messages: readonly CodingNsCliMessage[] } {
   const record = asRecord(value)
   return record?.kind === 'enter' && Array.isArray(record.messages)
+}
+
+/**
+ * 翻译调用优先使用显式字段；若 DSH 在进入 waterfall 前规范化请求并丢掉未知字段，
+ * 再用 system 提示里的稳定标记识别。否则翻译请求会被误当成当前外部 Agent 回合。
+ */
+function isSessionTranslationLlmRequest(value: Record<string, any> | null): boolean {
+  if (value?.codingnsTranslation === true) return true
+  if (typeof value?.system === 'string' && value.system.includes('CODINGNS_SESSION_TRANSLATION_V1')) return true
+  if (!Array.isArray(value?.messages)) return false
+  return value.messages.some((message: unknown) => {
+    const record = asRecord(message)
+    if (record?.role !== 'system' || !Array.isArray(record.content)) return false
+    return record.content.some((part: unknown) => asRecord(part)?.text?.includes?.('CODINGNS_SESSION_TRANSLATION_V1') === true)
+  })
 }
 
 function readAgentSessionId(value: unknown): string {
@@ -727,6 +782,7 @@ function readSessionConfig(value: unknown): CodingNsCliSessionConfig {
     // `default` 是显式的“标准速度”选择，不能当作空值丢弃，否则关掉 Fast 会被
     // Registry 回退成上一次记住的加速档。
     ...(typeof record?.serviceTierId === 'string' && record.serviceTierId.trim() ? { serviceTierId: record.serviceTierId.trim() } : {}),
+    ...(typeof record?.translationEnabled === 'boolean' ? { translationEnabled: record.translationEnabled } : {}),
     ...(typeof record?.providerId === 'string' && record.providerId.trim() ? { providerId: record.providerId.trim() } : {}),
     ...(typeof record?.providerSessionId === 'string' && record.providerSessionId.trim() ? { providerSessionId: record.providerSessionId.trim() } : {}),
     ...(typeof record?.rawStoreRef === 'string' && record.rawStoreRef.trim() ? { rawStoreRef: record.rawStoreRef.trim() } : {}),
@@ -896,19 +952,125 @@ async function setAdapterEnabled(
   return { adapterId, enabled }
 }
 
+/** 运行中的外部 Agent 插话也必须经过同一条输入翻译路径。 */
+async function translateSteerPrompt(
+  translation: CodingNsHostServices['sessionTranslation'],
+  registry: CodingNsCliAdapterRegistry,
+  sessionId: string,
+  prompt: string,
+  followUp: boolean,
+): Promise<void> {
+  const session = registry.getSession(sessionId)
+  let translated = prompt
+  if (translation !== undefined) {
+    try {
+      translated = await translation.translateInput(session.adapterId, prompt, undefined, session.translationEnabled === true)
+    } catch {
+      // 插话翻译失败时仍把用户原文交给外部 Agent。
+      translated = prompt
+    }
+  }
+  await registry.steer(sessionId, translated, followUp)
+}
+
+/**
+ * 在 Agent Loop 接受本轮输入时生成一次输入译文。
+ *
+ * DSH 随后会把返回的消息写入 `user/message`。正文只放实际发送的译文；原文和模型
+ * 记录在 source 元数据中供 Client 详情按钮读取。外部 CLI 边界也会移除该元数据。
+ */
+async function translatePreStepInput(
+  translation: CodingNsHostServices['sessionTranslation'],
+  registry: CodingNsCliAdapterRegistry,
+  sessionId: string,
+  messages: readonly CodingNsCliMessage[],
+  dshContext: CodingNsHostServices['dshContext'],
+  signal?: AbortSignal,
+): Promise<readonly CodingNsCliMessage[] | undefined> {
+  if (translation === undefined || !translation.enabled || sessionId.trim() === '') return undefined
+
+  let session: CodingNsCliSessionConfig
+  try {
+    session = registry.getSession(sessionId)
+  } catch {
+    return undefined
+  }
+  if (session.adapterId === 'dsh' || session.translationEnabled !== true) return undefined
+
+  const messageIndex = findLatestHumanMessage(messages)
+  const current = messageIndex < 0 ? undefined : messages[messageIndex]
+  if (current === undefined || readInputTranslation(current.source) !== undefined) return undefined
+
+  const input = extractTurnInput(messages, dshContext)
+  if (input.translationPrompt.trim() === '') return undefined
+
+  let translatedNatural: string
+  let translationSourceLanguage: SessionTranslationInputRecord['sourceLanguage'] = undefined
+  let alreadyTargetLanguage = false
+  let translationModel: SessionTranslationInputRecord['model']
+  let translationFailed = false
+  try {
+    if (translation.translateInputDetailed !== undefined) {
+      const detailed = await translation.translateInputDetailed(session.adapterId, input.translationPrompt, signal, true)
+      translatedNatural = detailed.translated
+      translationSourceLanguage = detailed.sourceLanguage
+      alreadyTargetLanguage = detailed.alreadyTargetLanguage === true
+      translationModel = detailed.model
+      translationFailed = detailed.failed === true
+    } else {
+      translatedNatural = await translation.translateInput(session.adapterId, input.translationPrompt, signal, true)
+    }
+  } catch {
+    // 翻译只是增强能力；异常时保持现有外部 Agent 回合继续使用原文。
+    translatedNatural = input.translationPrompt
+    translationFailed = true
+  }
+  const translated = [translatedNatural, input.untranslatedPrompt]
+    .filter((part) => part.trim() !== '')
+    .join('\n\n')
+    .trim()
+  if (translated === '') return undefined
+
+  const record: SessionTranslationInputRecord = {
+    original: input.prompt,
+    translated,
+    ...(translationSourceLanguage === undefined ? {} : { sourceLanguage: translationSourceLanguage }),
+    targetLanguage: translation.inputLanguage ?? 'en',
+    ...(alreadyTargetLanguage ? { alreadyTargetLanguage: true } : {}),
+    ...(translationModel === undefined ? {} : { model: translationModel }),
+    ...(translationFailed ? { failed: true } : {}),
+  }
+  const next = [...messages]
+  next[messageIndex] = {
+    ...current,
+    source: {
+      ...(current.source ?? {}),
+      kind: 'user',
+      codingnsTranslationInput: record,
+    },
+  }
+  return next
+}
+
 function extractTurnInput(
   messages: readonly CodingNsCliMessage[],
   dshContext?: CodingNsHostServices['dshContext'],
 ): {
   readonly prompt: string
   readonly attachments: readonly CodingNsCliAttachment[]
+  /** 只翻译用户自然语言和引用文本；附件提示保持原文。 */
+  readonly translationPrompt: string
+  readonly untranslatedPrompt: string
+  /** 继续提示是 Host 注入的控制文本，不应再送入用户输入翻译。 */
+  readonly translatePrompt: boolean
   /** 当前轮已拼入 prompt 的引用上下文不再作为历史消息重复交给驱动。 */
   readonly messages: readonly CodingNsCliMessage[]
 } {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message !== undefined && isInjectedStepNotice(message)) {
-      return { prompt: extractText(message.content), attachments: [], messages }
+      const prompt = extractText(message.content)
+      return { prompt, translationPrompt: prompt, untranslatedPrompt: '', attachments: [], translatePrompt: false, messages }
     }
     if (message !== undefined && isHumanUserMessage(message)) {
       const direct = extractMessageInput(message.content, dshContext)
@@ -924,14 +1086,88 @@ function extractTurnInput(
       const forwarded = referenceIndexes.length === 0
         ? messages
         : messages.filter((_candidate, candidateIndex) => !referenceIndexes.includes(candidateIndex))
+      const translatedInput = readInputTranslation(message.source)
+      if (translatedInput !== undefined) {
+        return {
+          prompt: translatedInput.translated,
+          translationPrompt: translatedInput.translated,
+          untranslatedPrompt: '',
+          attachments: direct.attachments,
+          translatePrompt: false,
+          messages: stripInputTranslationDisplay(forwarded),
+        }
+      }
       return {
         prompt: [direct.prompt, ...referenceText].filter(text => text.trim() !== '').join('\n\n').trim(),
+        translationPrompt: [direct.translationPrompt, ...referenceText].filter(text => text.trim() !== '').join('\n\n').trim(),
+        untranslatedPrompt: direct.untranslatedPrompt,
         attachments: direct.attachments,
-        messages: forwarded,
+        translatePrompt: true,
+        messages: stripInputTranslationDisplay(forwarded),
       }
     }
   }
-  return { prompt: '', attachments: [], messages }
+  return { prompt: '', translationPrompt: '', untranslatedPrompt: '', attachments: [], translatePrompt: false, messages: stripInputTranslationDisplay(messages) }
+}
+
+function findLatestHumanMessage(messages: readonly CodingNsCliMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message !== undefined && isHumanUserMessage(message)) return index
+  }
+  return -1
+}
+
+function readInputTranslation(value: CodingNsCliMessage['source']): SessionTranslationInputRecord | undefined {
+  const candidate = value?.codingnsTranslationInput
+  if (!isRecord(candidate) || typeof candidate.original !== 'string' || typeof candidate.translated !== 'string') return undefined
+  if (candidate.original.trim() === '' || candidate.translated.trim() === '') return undefined
+  const targetLanguage = candidate.targetLanguage === 'fr' || candidate.targetLanguage === 'de' || candidate.targetLanguage === 'ja'
+    ? candidate.targetLanguage
+    : 'en'
+  const sourceLanguage = candidate.sourceLanguage === 'zh' || candidate.sourceLanguage === 'en' || candidate.sourceLanguage === 'fr' || candidate.sourceLanguage === 'de' || candidate.sourceLanguage === 'ja'
+    ? candidate.sourceLanguage
+    : undefined
+  return {
+    original: candidate.original,
+    translated: candidate.translated,
+    ...(sourceLanguage === undefined ? {} : { sourceLanguage }),
+    targetLanguage,
+    ...(candidate.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
+  }
+}
+
+/** 把历史消息还原为 Provider 可见的纯译文，并移除内部翻译元数据。 */
+function stripInputTranslationDisplay(messages: readonly CodingNsCliMessage[]): readonly CodingNsCliMessage[] {
+  return messages.map((message) => {
+    const record = readInputTranslation(message.source)
+    if (record === undefined) return message
+    const source = message.source
+    const cleanSource = source === undefined
+      ? undefined
+      : (() => {
+        const { codingnsTranslationInput: _translation, ...rest } = source
+        return rest
+      })()
+    return {
+      ...message,
+      content: replaceInputTranslationContent(message.content, record.translated),
+      ...(cleanSource === undefined ? {} : { source: cleanSource }),
+    }
+  })
+}
+
+function replaceInputTranslationContent(content: unknown, text: string): unknown {
+  if (typeof content === 'string') return text
+  if (!Array.isArray(content)) return [{ type: 'text', text }]
+  let replaced = false
+  const blocks = content.flatMap((part) => {
+    if (!isRecord(part) || part.type !== 'text') return [part]
+    if (replaced) return []
+    replaced = true
+    return [{ ...part, text }]
+  })
+  return replaced ? blocks : [{ type: 'text', text }, ...content]
 }
 
 /** DSH 为工具分段注入的继续提示必须成为下一次 Provider 请求的 prompt。 */
@@ -962,9 +1198,14 @@ function extractText(content: unknown): string {
   return content.filter(isRecord).map((part) => typeof part.text === 'string' ? part.text : '').join('\n').trim()
 }
 
-function extractMessageInput(content: unknown, dshContext?: CodingNsHostServices['dshContext']): { readonly prompt: string; readonly attachments: readonly CodingNsCliAttachment[] } {
-  if (typeof content === 'string') return { prompt: content, attachments: [] }
-  if (!Array.isArray(content)) return { prompt: '', attachments: [] }
+function extractMessageInput(content: unknown, dshContext?: CodingNsHostServices['dshContext']): {
+  readonly prompt: string
+  readonly translationPrompt: string
+  readonly untranslatedPrompt: string
+  readonly attachments: readonly CodingNsCliAttachment[]
+} {
+  if (typeof content === 'string') return { prompt: content, translationPrompt: content, untranslatedPrompt: '', attachments: [] }
+  if (!Array.isArray(content)) return { prompt: '', translationPrompt: '', untranslatedPrompt: '', attachments: [] }
   const text: string[] = []
   const attachments: CodingNsCliAttachment[] = []
   for (const part of content) {
@@ -980,7 +1221,9 @@ function extractMessageInput(content: unknown, dshContext?: CodingNsHostServices
     attachments.push({ kind, path, ...(name === undefined ? {} : { name }), ...(mimeType === undefined ? {} : { mimeType }) })
   }
   const fileNotes = attachments.filter((attachment) => attachment.kind === 'file').map((attachment) => `附件文件${attachment.name === undefined ? '' : `「${attachment.name}」`}位于：${attachment.path}\n请使用工具读取该文件的内容。`)
-  return { prompt: [...text, ...fileNotes].join('\n\n').trim(), attachments }
+  const translationPrompt = text.join('\n\n').trim()
+  const untranslatedPrompt = fileNotes.join('\n\n').trim()
+  return { prompt: [translationPrompt, untranslatedPrompt].filter(value => value !== '').join('\n\n'), translationPrompt, untranslatedPrompt, attachments }
 }
 
 function resolveDshAttachmentPath(

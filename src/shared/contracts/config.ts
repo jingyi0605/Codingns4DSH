@@ -5,6 +5,7 @@ import type { AssistantAppearanceSettings } from '../assistant-avatar.js'
 import { DEFAULT_ASSISTANT_PROMPTS, type AssistantPromptSettings } from '../assistant-prompts.js'
 import type { AssistantTtsSettings } from '../assistant-tts.js'
 import { DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS, type AssistantNotificationSettings } from '../assistant-notifications.js'
+import { DEFAULT_SESSION_TRANSLATION_SETTINGS, type SessionTranslationSettings } from './session-translation.js'
 
 /** 适配器最近一次使用的模型、思考强度与服务档位。 */
 export interface CodingNsCliAdapterPreference {
@@ -12,6 +13,8 @@ export interface CodingNsCliAdapterPreference {
   readonly effortId?: string | undefined
   /** Provider 服务档位（例如 Codex 官方订阅的 Fast）；`default` 表示标准速度。 */
   readonly serviceTierId?: string | undefined
+  /** 新建会话模型选择器中的“翻译对话”开关，按 Agent 隔离记忆。 */
+  readonly translationEnabled?: boolean | undefined
 }
 
 /** 全局智能助理设置；默认空范围，必须由用户显式勾选工作区。 */
@@ -115,6 +118,8 @@ export interface CodingNsSettings {
   agentAdapterPreferences?: Record<string, CodingNsCliAdapterPreference>
   /** 外部 CLI 子代理托管：把外部 Agent 自己的子代理调用转为 DSH 原生可续子会话。 */
   subagentBridge?: SubagentBridgeSettings
+  /** 外部 Agent 会话输入与输出的翻译设置。 */
+  sessionTranslation?: SessionTranslationSettings
 }
 
 /** 外部 CLI 子代理托管设置；关闭时所有驱动保持原样。 */
@@ -520,6 +525,7 @@ export const CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD = 'workspaceSessionEnh
 export const CODINGNS_FILE_MANAGEMENT_FIELD = 'fileManagement'
 export const CODINGNS_MOBILE_ACCESS_FIELD = 'mobileAccess'
 export const CODINGNS_SUBSCRIPTION_USAGE_FIELD = 'subscriptionUsage'
+export const CODINGNS_SESSION_TRANSLATION_FIELD = 'sessionTranslation'
 export const CODINGNS_ASSISTANT_FIELD = 'assistant'
 export const CODINGNS_SUBAGENT_BRIDGE_FIELD = 'subagentBridge'
 export const DEFAULT_CODINGNS_CONTROL_BASE_URL = 'https://channel.codingns.com:1443'
@@ -564,6 +570,7 @@ export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   agentAdapters: {},
   agentAdapterPreferences: {},
   subagentBridge: DEFAULT_SUBAGENT_BRIDGE_SETTINGS,
+  sessionTranslation: DEFAULT_SESSION_TRANSLATION_SETTINGS,
   terminalEnhancement: DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
   fileManagement: DEFAULT_FILE_MANAGEMENT_SETTINGS,

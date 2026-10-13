@@ -95,11 +95,11 @@ export function parseLegacyImportedAdapterPreferences(
   const preferences: Record<string, CodingNsCliAdapterPreference> = {}
   let inPreferences = false
   let adapterId: string | undefined
-  let current: { modelId?: string; effortId?: string } | undefined
+  let current: { modelId?: string; effortId?: string; translationEnabled?: boolean } | undefined
 
   const flush = (): void => {
     if (adapterId === undefined || current === undefined) return
-    if (current.modelId === undefined && current.effortId === undefined) return
+    if (current.modelId === undefined && current.effortId === undefined && current.translationEnabled === undefined) return
     preferences[adapterId] = { ...current }
   }
 
@@ -127,9 +127,13 @@ export function parseLegacyImportedAdapterPreferences(
       continue
     }
     if (adapterId === undefined || current === undefined) continue
-    const field = /^      (modelId|effortId):\s*(.*)$/u.exec(line)
+    const field = /^      (modelId|effortId|translationEnabled):\s*(.*)$/u.exec(line)
     if (field === null) continue
     const value = parseScalar(field[2]!)
+    if (field[1] === 'translationEnabled') {
+      if (typeof value === 'boolean') current.translationEnabled = value
+      continue
+    }
     if (typeof value !== 'string' || value.trim() === '') continue
     current[field[1] as 'modelId' | 'effortId'] = value.trim()
   }

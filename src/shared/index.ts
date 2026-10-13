@@ -9,6 +9,7 @@ export {
   CODINGNS_FILE_MANAGEMENT_FIELD,
   CODINGNS_MOBILE_ACCESS_FIELD,
   CODINGNS_SUBSCRIPTION_USAGE_FIELD,
+  CODINGNS_SESSION_TRANSLATION_FIELD,
   CODINGNS_ASSISTANT_FIELD,
   CODINGNS_MODULES_FIELD,
   CODINGNS_SETTINGS_NAMESPACE,
@@ -66,6 +67,19 @@ export {
   type AssistantVoiceProvider,
   type AssistantVoiceSettings,
 } from './contracts/config.js'
+export {
+  DEFAULT_SESSION_TRANSLATION_SETTINGS,
+  SESSION_TRANSLATION_ADAPTER_IDS,
+  formatSessionTranslationInput,
+  formatSessionTranslationOutput,
+  isSessionTranslationAdapter,
+  type SessionTranslationLanguage,
+  type SessionTranslationInputRecord,
+  type SessionTranslationModel,
+  type SessionTranslationOutputKind,
+  type SessionTranslationRecord,
+  type SessionTranslationSettings,
+} from './contracts/session-translation.js'
 export { DEFAULT_ASSISTANT_NAME, DEFAULT_ASSISTANT_PERSONALITY, ASSISTANT_PERSONALITY_MAX_CHARS, assistantWorkspaceMatches, readAssistantProfile, readAssistantPersonality, validateAssistantProfile, validateAssistantModel, validateAssistantPersonality } from './assistant-lifecycle.js'
 export type { AssistantConversationMessage, AssistantConversationSnapshot, AssistantLifecycleSnapshot } from './contracts/assistant.js'
 export type {

@@ -1,3 +1,5 @@
+import type { SessionTranslationInputRecord } from './session-translation.js'
+
 /** Codingns4DSH 当前可接入的外部 Agent 标识。内部字段沿用 cli 命名以保持协议兼容。 */
 export type CodingNsCliAdapterId = string
 
@@ -152,6 +154,8 @@ export interface CodingNsCliSessionConfig {
    * 界面关闭 Fast 时必须写 `default`，否则线程会保留上一次的加速档。
    */
   readonly serviceTierId?: string
+  /** 是否对当前外部 Agent 会话启用输入与输出翻译。 */
+  readonly translationEnabled?: boolean
   /** DSH 原生模型提供商，例如 deepseek-official、glor；不包含凭据。 */
   readonly providerId?: string
   /** 外部运行时会话标识，只保存在 Host 会话表中。 */
@@ -264,6 +268,8 @@ export interface CodingNsCliTurnInput {
   readonly effortId?: string
   /** Provider 服务档位；`default` 表示标准速度，缺省表示不下发、沿用 Provider 默认。 */
   readonly serviceTierId?: string
+  /** 是否对当前外部 Agent 会话启用输入与输出翻译。 */
+  readonly translationEnabled?: boolean
   readonly cwd?: string
   readonly signal?: AbortSignal
   readonly providerSessionId?: string
@@ -323,7 +329,14 @@ export interface CodingNsCliMessage {
   /** 工具结果对应的调用 ID；仅 `role:'tool'` 消息使用。 */
   readonly toolCallId?: string
   /** DSH 原生消息来源；插件上下文不能被当成人类输入再次发送给外部 Agent。 */
-  readonly source?: { readonly kind?: string; readonly plugin?: string; readonly form?: string; readonly callId?: string }
+  readonly source?: {
+    readonly kind?: string
+    readonly plugin?: string
+    readonly form?: string
+    readonly callId?: string
+    /** DSH 用户消息的双语展示元数据；只在 Host 内部剥离，不发送给 Provider。 */
+    readonly codingnsTranslationInput?: SessionTranslationInputRecord
+  }
 }
 
 /**

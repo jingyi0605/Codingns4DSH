@@ -13,6 +13,7 @@ import { createGlobalVoiceRpcFeature } from './global-voice-rpc.js'
 import { createAssistantAvatarRuntimeFeature } from './assistant-avatar-runtime.js'
 import { createDesktopAssistantFeature } from '../desktop-assistant/feature.js'
 import { createSessionTitleOptimizationFeature } from './session-title-optimization.js'
+import { createSessionTranslationFeature } from './session-translation.js'
 import type { CodingNsHostServices } from './types.js'
 
 export interface HostFeatureOptions {
@@ -25,6 +26,7 @@ export function createHostFeatures(options: HostFeatureOptions = {}): readonly F
     createAuthFeature(),
     createLanAccessDshFeature(),
     createTerminalStatusFeature(options.terminalStatus),
+    createSessionTranslationFeature(),
     createCliAdaptersFeature(),
     createSessionTitleOptimizationFeature(),
     createTerminalProcessFeature(),
@@ -47,6 +49,7 @@ export { createLanAccessDshFeature } from './lan-access-dsh.js'
 export { createTerminalStatusFeature } from './terminal-status.js'
 export { createCliAdaptersFeature } from '../cli-adapters/feature.js'
 export { createSessionTitleOptimizationFeature } from './session-title-optimization.js'
+export { createSessionTranslationFeature } from './session-translation.js'
 export { createTerminalProcessFeature } from './terminal-process.js'
 export { createDebugFeature } from './debug.js'
 export { createHostStatusFeature } from './host-status.js'

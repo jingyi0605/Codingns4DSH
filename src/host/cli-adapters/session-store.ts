@@ -31,6 +31,7 @@ export interface CodingNsCliSessionPatch {
   readonly modelId?: string
   readonly effortId?: string
   readonly serviceTierId?: string
+  readonly translationEnabled?: boolean
   readonly providerId?: string
   readonly providerSessionId?: string
   readonly rawStoreRef?: string
@@ -175,6 +176,7 @@ export class CodingNsCliSessionStore {
         ...(parent.modelId === undefined ? {} : { modelId: parent.modelId }),
         ...(parent.effortId === undefined ? {} : { effortId: parent.effortId }),
         ...(parent.serviceTierId === undefined ? {} : { serviceTierId: parent.serviceTierId }),
+        ...(parent.translationEnabled === undefined ? {} : { translationEnabled: parent.translationEnabled }),
         ...(cwd === undefined ? {} : { cwd }),
         status: existing?.status ?? 'idle',
       })
@@ -206,6 +208,7 @@ export class CodingNsCliSessionStore {
       ...(patch.modelId?.trim() ? { modelId: patch.modelId.trim() } : base?.modelId ? { modelId: base.modelId } : {}),
       ...(patch.effortId?.trim() ? { effortId: patch.effortId.trim() } : base?.effortId ? { effortId: base.effortId } : {}),
       ...(patch.serviceTierId?.trim() ? { serviceTierId: patch.serviceTierId.trim() } : base?.serviceTierId ? { serviceTierId: base.serviceTierId } : {}),
+      ...(patch.translationEnabled !== undefined ? { translationEnabled: patch.translationEnabled } : base?.translationEnabled === undefined ? {} : { translationEnabled: base.translationEnabled }),
       ...(patch.providerId?.trim() ? { providerId: patch.providerId.trim() } : base?.providerId ? { providerId: base.providerId } : {}),
       ...(providerSessionId ? { providerSessionId } : base?.providerSessionId ? { providerSessionId: base.providerSessionId } : {}),
       ...(patch.rawStoreRef?.trim() ? { rawStoreRef: patch.rawStoreRef.trim() } : providerBase?.rawStoreRef ? { rawStoreRef: providerBase.rawStoreRef } : {}),
@@ -295,6 +298,7 @@ export class CodingNsCliSessionStore {
       ...(stringValue(value.modelId) ? { modelId: stringValue(value.modelId)! } : {}),
       ...(stringValue(value.effortId) ? { effortId: stringValue(value.effortId)! } : {}),
       ...(stringValue(value.serviceTierId) ? { serviceTierId: stringValue(value.serviceTierId)! } : {}),
+      ...(typeof value.translationEnabled === 'boolean' ? { translationEnabled: value.translationEnabled } : {}),
       ...(stringValue(value.providerId) ? { providerId: stringValue(value.providerId)! } : {}),
       ...(stringValue(value.providerSessionId) ? { providerSessionId: stringValue(value.providerSessionId)! } : {}),
       ...(stringValue(value.rawStoreRef) ? { rawStoreRef: stringValue(value.rawStoreRef)! } : {}),

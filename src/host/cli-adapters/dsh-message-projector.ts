@@ -11,6 +11,8 @@ import {
   type CodingNsNormalizedAgentEvent,
 } from './stream-normalizer.js'
 import type { CodingNsDshExternalToolMarker } from './dsh-tool-history.js'
+import type { SessionTranslationService } from '../features/session-translation-service.js'
+import { formatSessionTranslationOutput, type SessionTranslationRecord } from '../../shared/contracts/session-translation.js'
 
 export interface CodingNsDshMessageProjectorOptions {
   readonly adapterId: string
@@ -21,6 +23,10 @@ export interface CodingNsDshMessageProjectorOptions {
   readonly signal?: AbortSignal
   readonly respondPermission?: (response: CodingNsAgentPermissionResponse) => Promise<void> | void
   readonly respondQuestion?: (response: CodingNsAgentQuestionResponse) => Promise<void> | void
+  /** 输出翻译只作用于 reasoning/text，工具、命令和路径永远走原文。 */
+  readonly translation?: SessionTranslationService
+  /** 会话模型选择器中的“翻译对话”状态；缺省按未开启处理。 */
+  readonly translationEnabled?: boolean
 }
 
 /** DSH `llm/stream` 接受的最小结构；具体协议只允许在本文件构造。 */
@@ -202,8 +208,8 @@ export class CodingNsDshMessageProjector {
         return []
       case 'finish':
         const closed = [
-          ...this.closeMessageBlock('reasoning'),
-          ...this.closeMessageBlock('text'),
+          ...(await this.closeMessageBlock('reasoning')),
+          ...(await this.closeMessageBlock('text')),
         ]
         this.finished = true
         const actualFailure = failureMessage ?? event.failure?.message
@@ -221,6 +227,7 @@ export class CodingNsDshMessageProjector {
     if (channel === 'reasoning') this.reasoningText += text
     else this.textText += text
     const delta = { type: `${channel}-delta`, index, text }
+    if (this.options.translation?.shouldTranslate(this.options.adapterId, channel === 'reasoning' ? 'reasoning' : 'assistant', this.options.translationEnabled) === true) return []
     return opened ? [{ type: 'block-start', index, blockType: channel }, delta] : [delta]
   }
 
@@ -234,23 +241,71 @@ export class CodingNsDshMessageProjector {
     return index
   }
 
-  private closeMessageBlock(channel: 'reasoning' | 'text'): readonly CodingNsDshStreamChunk[] {
+  private async closeMessageBlock(channel: 'reasoning' | 'text'): Promise<readonly CodingNsDshStreamChunk[]> {
     if (channel === 'reasoning') {
       if (this.reasoningText === '') return []
       const index = this.reasoningIndex
       if (index === undefined) return []
-      const chunk = { type: 'block-end', index, block: { type: 'reasoning', text: this.reasoningText } }
+      const original = this.reasoningText
       this.reasoningText = ''
       this.reasoningIndex = undefined
-      return [chunk]
+      if (this.options.translation?.shouldTranslate(this.options.adapterId, 'reasoning', this.options.translationEnabled) !== true) {
+        return [{ type: 'block-end', index, block: { type: 'reasoning', text: original } }]
+      }
+      return this.translatedBlock('reasoning', index, original)
     }
     if (this.textText === '') return []
     const index = this.textIndex
     if (index === undefined) return []
-    const chunk = { type: 'block-end', index, block: { type: 'text', text: this.textText } }
+    const original = this.textText
     this.textText = ''
     this.textIndex = undefined
-    return [chunk]
+    if (this.options.translation?.shouldTranslate(this.options.adapterId, 'assistant', this.options.translationEnabled) !== true) {
+      return [{ type: 'block-end', index, block: { type: 'text', text: original } }]
+    }
+    return this.translatedBlock('text', index, original)
+  }
+
+  private async translatedBlock(channel: 'reasoning' | 'text', index: number, original: string): Promise<readonly CodingNsDshStreamChunk[]> {
+    let translation: SessionTranslationRecord | null | undefined
+    try {
+      translation = await this.options.translation?.translateOutput(this.options.adapterId, channel === 'reasoning' ? 'reasoning' : 'assistant', original, this.options.signal, this.options.translationEnabled)
+    } catch {
+      // 翻译服务是旁路能力；异常时保留 Provider 原文并正常结束当前 block。
+      const failedRecord = {
+        original,
+        translated: original,
+        targetLanguage: this.options.translation?.outputLanguage ?? 'zh',
+        outputKind: channel === 'reasoning' ? 'reasoning' as const : 'assistant' as const,
+        bilingual: false,
+        failed: true,
+      }
+      return [
+        { type: 'block-start', index, blockType: channel, codingnsTranslation: failedRecord },
+        { type: `${channel}-delta`, index, text: original, codingnsTranslation: failedRecord },
+        { type: 'block-end', index, block: { type: channel, text: original, codingnsTranslation: failedRecord }, codingnsTranslation: failedRecord },
+      ]
+    }
+    const translated = translation?.translated ?? original
+    const visible = translation === null || translation === undefined
+      ? translated
+      : formatSessionTranslationOutput(translation)
+    const record = translation === null || translation === undefined ? undefined : {
+      original: translation.original,
+      translated: translation.translated,
+      ...(translation.sourceLanguage === undefined ? {} : { sourceLanguage: translation.sourceLanguage }),
+      targetLanguage: translation.targetLanguage,
+      outputKind: channel === 'reasoning' ? 'reasoning' as const : 'assistant' as const,
+      bilingual: translation.bilingual,
+      ...(translation.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
+      ...(translation.model === undefined ? {} : { model: translation.model }),
+      ...(translation.failed === true ? { failed: true } : {}),
+    }
+    return [
+      { type: 'block-start', index, blockType: channel, ...(record === undefined ? {} : { codingnsTranslation: record }) },
+      { type: `${channel}-delta`, index, text: visible, ...(record === undefined ? {} : { codingnsTranslation: record }) },
+      { type: 'block-end', index, block: { type: channel, text: visible, ...(record === undefined ? {} : { codingnsTranslation: record }) }, ...(record === undefined ? {} : { codingnsTranslation: record }) },
+    ]
   }
 
   private externalToolChunk(marker: CodingNsDshExternalToolMarker | null): readonly CodingNsDshStreamChunk[] {

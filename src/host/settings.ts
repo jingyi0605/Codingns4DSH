@@ -16,6 +16,7 @@ import {
   type CodingNsConfig,
   type CodingNsSettings,
 } from '../shared/contracts/config.js'
+import { DEFAULT_SESSION_TRANSLATION_SETTINGS } from '../shared/contracts/session-translation.js'
 import { debugInfo } from '../shared/debug.js'
 import { ASSISTANT_AVATAR_FLOATING_MINI_SIZE, ASSISTANT_AVATAR_FLOATING_STANDARD_SIZE, DEFAULT_ASSISTANT_APPEARANCE } from '../shared/assistant-avatar.js'
 import { ASSISTANT_PROMPT_MAX_CHARS, DEFAULT_ASSISTANT_PROMPTS } from '../shared/assistant-prompts.js'
@@ -38,6 +39,7 @@ export const CodingNsSettingsSchema = z.object({
     modelId: z.union([z.string(), z.const(undefined)]),
     effortId: z.union([z.string(), z.const(undefined)]),
     serviceTierId: z.union([z.string(), z.const(undefined)]),
+    translationEnabled: z.union([z.boolean(), z.const(undefined)]),
   })).default({}),
   subagentBridge: z.object({
     enabled: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.subagentBridge?.enabled ?? false),
@@ -46,6 +48,12 @@ export const CodingNsSettingsSchema = z.object({
       .max(SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.max)
       .default(DEFAULT_CODINGNS_SETTINGS.subagentBridge?.maxConcurrentSubagents ?? 8),
   }).default(DEFAULT_CODINGNS_SETTINGS.subagentBridge ?? { enabled: false, maxConcurrentSubagents: 8 }),
+  sessionTranslation: z.object({
+    inputLanguage: z.union([z.const('en'), z.const('fr'), z.const('de'), z.const('ja')]).default(DEFAULT_SESSION_TRANSLATION_SETTINGS.inputLanguage),
+    outputLanguage: z.union([z.const('zh'), z.const('en'), z.const('fr'), z.const('de'), z.const('ja')]).default(DEFAULT_SESSION_TRANSLATION_SETTINGS.outputLanguage),
+    bilingual: z.boolean().default(DEFAULT_SESSION_TRANSLATION_SETTINGS.bilingual),
+    translationModel: z.union([z.object({ provider: z.string().min(1).max(200), model: z.string().min(1).max(200) }), z.const(undefined)]),
+  }).default({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS }),
   assistant: z.object({
     notifications: z.object({
       enabled: z.boolean().default(true), completed: z.boolean().default(true),

@@ -14,6 +14,7 @@ import { registerCodingNsRpc } from './rpc.js'
 import { CodingNsRpcTable } from './rpc-table.js'
 import { registerCodingNsSettings } from './settings.js'
 import { createCodingNsNativeSessionBridge } from './native-session-bridge.js'
+import { createSessionTranslationService } from './features/session-translation-service.js'
 import { installTerminalController } from './terminal/startup.js'
 import type { DshTerminalAgent } from './terminal/terminal-controller.js'
 import { DebugWorkspaceService } from './debug.js'
@@ -155,6 +156,7 @@ export async function apply(ctx?: Context): Promise<void> {
       }),
     })
     debugInfo('codingns4dsh: host terminal controller ready', { mode: terminal.mode })
+    const sessionTranslation = createSessionTranslationService(hostCtx, dshVersion)
     const services: CodingNsHostServices = {
       rpc: new CodingNsRpcTable(),
       dshContext: hostCtx,
@@ -165,6 +167,7 @@ export async function apply(ctx?: Context): Promise<void> {
       dshWebAuthenticatedUrl: hostCtx.connection.authenticatedUrl(`http://127.0.0.1:${String(webServerPort)}`),
       events: { on: hostCtx.on.bind(hostCtx), emit: hostCtx.emit.bind(hostCtx) },
       nativeSessions: createCodingNsNativeSessionBridge(hostCtx, dshVersion),
+      ...(sessionTranslation === undefined ? {} : { sessionTranslation }),
       nativeTeam: new DshNativeTeamProxy(
         readOptionalService(hostCtx, 'agentTeams') as NativeTeamService | undefined,
         readOptionalService(hostCtx, 'agents') as AgentRegistry | undefined,

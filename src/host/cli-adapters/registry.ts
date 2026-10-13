@@ -178,7 +178,7 @@ export class CodingNsCliAdapterRegistry {
   private readonly sessionStore: CodingNsCliSessionStore | undefined
   private readonly nativeSessions: CodingNsNativeSessionBridge | undefined
   private readonly settings: DshHostSettingsScope<CodingNsSettings> | undefined
-  private readonly preferences = new Map<CodingNsCliAdapterId, { modelId?: string; effortId?: string; serviceTierId?: string }>()
+  private readonly preferences = new Map<CodingNsCliAdapterId, { modelId?: string; effortId?: string; serviceTierId?: string; translationEnabled?: boolean }>()
   /** 设置服务更新必须按选择顺序落盘；并发 update 会让旧快照覆盖新模型/档位。 */
   private preferenceWriteTail: Promise<void> = Promise.resolve()
 
@@ -337,6 +337,13 @@ export class CodingNsCliAdapterRegistry {
           : remembered?.serviceTierId
             ? { serviceTierId: remembered.serviceTierId }
             : {}),
+      ...(config.translationEnabled !== undefined
+        ? { translationEnabled: config.translationEnabled }
+        : sameAdapter && previous?.translationEnabled !== undefined
+          ? { translationEnabled: previous.translationEnabled }
+          : remembered?.translationEnabled !== undefined
+            ? { translationEnabled: remembered.translationEnabled }
+            : {}),
       ...(config.providerId?.trim()
         ? { providerId: config.providerId.trim() }
         : sameAdapter && previous?.providerId
@@ -385,23 +392,25 @@ export class CodingNsCliAdapterRegistry {
       const modelId = preference?.modelId?.trim()
       const effortId = preference?.effortId?.trim()
       const serviceTierId = preference?.serviceTierId?.trim()
-      if (modelId === undefined && effortId === undefined && serviceTierId === undefined) continue
+      if (modelId === undefined && effortId === undefined && serviceTierId === undefined && preference?.translationEnabled === undefined) continue
       this.preferences.set(adapterId, {
         ...(modelId ? { modelId } : {}),
         ...(effortId ? { effortId } : {}),
         ...(serviceTierId ? { serviceTierId } : {}),
+        ...(preference.translationEnabled === undefined ? {} : { translationEnabled: preference.translationEnabled }),
       })
     }
   }
 
-  private findRememberedPreference(adapterId: CodingNsCliAdapterId): { modelId?: string; effortId?: string; serviceTierId?: string } | undefined {
+  private findRememberedPreference(adapterId: CodingNsCliAdapterId): { modelId?: string; effortId?: string; serviceTierId?: string; translationEnabled?: boolean } | undefined {
     const records = this.sessionStore?.list({ includeArchived: true, adapterId }) ?? []
     for (const record of records) {
-      if (record.modelId !== undefined || record.effortId !== undefined || record.serviceTierId !== undefined) {
+      if (record.modelId !== undefined || record.effortId !== undefined || record.serviceTierId !== undefined || record.translationEnabled !== undefined) {
         const preference = {
           ...(record.modelId ? { modelId: record.modelId } : {}),
           ...(record.effortId ? { effortId: record.effortId } : {}),
           ...(record.serviceTierId ? { serviceTierId: record.serviceTierId } : {}),
+          ...(record.translationEnabled === undefined ? {} : { translationEnabled: record.translationEnabled }),
         }
         this.preferences.set(adapterId, preference)
         return preference
@@ -415,12 +424,14 @@ export class CodingNsCliAdapterRegistry {
     const modelId = config.modelId?.trim() || previous?.modelId
     const effortId = config.effortId?.trim() || previous?.effortId
     const serviceTierId = config.serviceTierId?.trim() || previous?.serviceTierId
-    if (modelId === undefined && effortId === undefined && serviceTierId === undefined) return
-    if (previous?.modelId === modelId && previous?.effortId === effortId && previous?.serviceTierId === serviceTierId) return
+    const translationEnabled = config.translationEnabled ?? previous?.translationEnabled
+    if (modelId === undefined && effortId === undefined && serviceTierId === undefined && translationEnabled === undefined) return
+    if (previous?.modelId === modelId && previous?.effortId === effortId && previous?.serviceTierId === serviceTierId && previous?.translationEnabled === translationEnabled) return
     const preference = {
       ...(modelId ? { modelId } : {}),
       ...(effortId ? { effortId } : {}),
       ...(serviceTierId ? { serviceTierId } : {}),
+      ...(translationEnabled === undefined ? {} : { translationEnabled }),
     }
     this.preferences.set(adapterId, preference)
     this.persistPreferences()
@@ -467,6 +478,7 @@ export class CodingNsCliAdapterRegistry {
         ...(stored.modelId === undefined ? {} : { modelId: stored.modelId }),
         ...(stored.effortId === undefined ? {} : { effortId: stored.effortId }),
         ...(stored.serviceTierId === undefined ? {} : { serviceTierId: stored.serviceTierId }),
+        ...(stored.translationEnabled === undefined ? {} : { translationEnabled: stored.translationEnabled }),
         ...(stored.providerId === undefined ? {} : { providerId: stored.providerId }),
         ...(stored.providerSessionId === undefined ? {} : { providerSessionId: stored.providerSessionId }),
         ...(stored.rawStoreRef === undefined ? {} : { rawStoreRef: stored.rawStoreRef }),
@@ -521,6 +533,7 @@ export class CodingNsCliAdapterRegistry {
       ...(input.modelId?.trim() ? { modelId: input.modelId.trim() } : {}),
       ...(input.effortId?.trim() ? { effortId: input.effortId.trim() } : {}),
       ...(input.serviceTierId?.trim() ? { serviceTierId: input.serviceTierId.trim() } : {}),
+      ...(input.translationEnabled !== undefined ? { translationEnabled: input.translationEnabled } : {}),
       // 续接请求自身带有 Provider 身份时必须写回当前内存配置；否则首轮
       // 恰好发生在页面恢复/迁移窗口内，会在下一轮丢失 --resume 所需的 ID。
       ...(input.providerSessionId?.trim() ? { providerSessionId: input.providerSessionId.trim() } : {}),
@@ -1159,11 +1172,12 @@ function normalizePreference(value: CodingNsCliAdapterPreference | undefined): C
   const modelId = value.modelId?.trim()
   const effortId = value.effortId?.trim()
   const serviceTierId = value.serviceTierId?.trim()
-  if (modelId === undefined && effortId === undefined && serviceTierId === undefined) return undefined
+  if (modelId === undefined && effortId === undefined && serviceTierId === undefined && value.translationEnabled === undefined) return undefined
   return {
     ...(modelId ? { modelId } : {}),
     ...(effortId ? { effortId } : {}),
     ...(serviceTierId ? { serviceTierId } : {}),
+    ...(value.translationEnabled === undefined ? {} : { translationEnabled: value.translationEnabled }),
   }
 }
 
@@ -1176,6 +1190,7 @@ function hasMissingPreferences(
     if (legacyPreference.modelId !== undefined && !hasText(current?.modelId)) return true
     if (legacyPreference.effortId !== undefined && !hasText(current?.effortId)) return true
     if (legacyPreference.serviceTierId !== undefined && !hasText(current?.serviceTierId)) return true
+    if (legacyPreference.translationEnabled !== undefined && current?.translationEnabled === undefined) return true
   }
   return false
 }
@@ -1229,6 +1244,7 @@ function mergeStoredSessionFields(
     ...(config.modelId === undefined && stored.modelId !== undefined ? { modelId: stored.modelId } : {}),
     ...(config.effortId === undefined && stored.effortId !== undefined ? { effortId: stored.effortId } : {}),
     ...(config.serviceTierId === undefined && stored.serviceTierId !== undefined ? { serviceTierId: stored.serviceTierId } : {}),
+    ...(config.translationEnabled === undefined && stored.translationEnabled !== undefined ? { translationEnabled: stored.translationEnabled } : {}),
   }
 }
 

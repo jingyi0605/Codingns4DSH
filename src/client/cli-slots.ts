@@ -31,6 +31,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
 import { loadCliSessionConfig, rememberCliSessionConfig } from './cli-session-config-cache.js'
 import { uiFontSize } from './font-scale.js'
+import { isSessionTranslationAdapter } from '../shared/contracts/session-translation.js'
 
 interface SessionSnapshot {
   readonly sessionId?: string
@@ -203,6 +204,7 @@ function publishSelection(sessionId: string, next: SelectionState): void {
     ...(next.modelId ? { modelId: next.modelId } : {}),
     ...(next.effortId ? { effortId: next.effortId } : {}),
     ...(next.serviceTierId ? { serviceTierId: next.serviceTierId } : {}),
+    ...(next.translationEnabled === undefined ? {} : { translationEnabled: next.translationEnabled }),
   }
   selections.set(sessionId, normalized)
   selectionLastUsed.set(sessionId, Date.now())
@@ -442,6 +444,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
               // 新模型不支持旧档位时显式回落 `default`：省略会让 Host 保留旧值，
               // 继续给 Claude 这类模型下发 `--effort` 并让整轮失败。
               effortId: effort ?? 'default',
+              translationEnabled: currentSelection.translationEnabled === true,
               ...(tier ? { serviceTierId: tier } : {}),
             })
           }
@@ -497,6 +500,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       adapterId: selection.adapterId,
       modelId: next.id,
       effortId: nextEffort ?? 'default',
+      translationEnabled: selection.translationEnabled === true,
       ...(nextTier ? { serviceTierId: nextTier } : {}),
     })
     setOpen(false)
@@ -510,6 +514,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       adapterId: selection.adapterId,
       modelId: model.id,
       effortId: effort,
+      translationEnabled: selection.translationEnabled === true,
       ...(tier ? { serviceTierId: tier } : {}),
     })
     setOpen(false)
@@ -524,7 +529,18 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     if (model === undefined) return
     const serviceTierId = toggledServiceTierId(model, next)
     if (serviceTierId === undefined) return
-    update({ adapterId: selection.adapterId, modelId: model.id, ...(selection.effortId ? { effortId: selection.effortId } : {}), serviceTierId })
+    update({ adapterId: selection.adapterId, modelId: model.id, ...(selection.effortId ? { effortId: selection.effortId } : {}), serviceTierId, translationEnabled: selection.translationEnabled === true })
+  }
+  const translationAvailable = isSessionTranslationAdapter(selection.adapterId)
+  const toggleTranslation = (next: boolean): void => {
+    if (model === undefined) return
+    update({
+      adapterId: selection.adapterId,
+      modelId: model.id,
+      ...(selection.effortId ? { effortId: selection.effortId } : {}),
+      ...(selection.serviceTierId ? { serviceTierId: selection.serviceTierId } : {}),
+      translationEnabled: next,
+    })
   }
   const menu = loading
     ? [
@@ -535,6 +551,16 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       ]
     : pane === 'root'
       ? [
+          ...(translationAvailable
+            ? [createElement('div', { key: 'translation', className: 'codingns4dsh-translation-toggle', style: serviceTierRowStyle },
+                createElement('span', { style: serviceTierLabelStyle }, t('cli.translationConversation')),
+                createElement(Switch, {
+                  checked: selection.translationEnabled === true,
+                  onChange: toggleTranslation,
+                  label: t('cli.translationConversationToggle'),
+                }),
+              )]
+            : []),
           // 档位开关固定在「模型」行上方，与模型/思考等级同处一个弹层。
           ...(serviceTierAvailable
             ? [createElement('div', { key: 'service-tier', className: 'codingns4dsh-service-tier', style: serviceTierRowStyle },
@@ -596,7 +622,7 @@ const nativeMenuStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const
 // 显式声明 border-box，让两种元素的内边距都算进宽度。
 const nativeMenuCellStyle = { width: '100%', minHeight: 40, boxSizing: 'border-box' as const, color: 'inherit', cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left' as const, fontSize: uiFontSize(14), lineHeight: '22px' }
 // 档位行与相邻菜单行保持同一高度、内边距与盒模型，Switch 右对齐到与菜单箭头同一列。
-const serviceTierRowStyle = { width: '100%', minHeight: 40, boxSizing: 'border-box' as const, color: 'inherit', borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8, fontSize: uiFontSize(14), lineHeight: '22px' }
+const serviceTierRowStyle = { width: '100%', minHeight: 40, boxSizing: 'border-box' as const, color: 'inherit', borderRadius: 10, padding: '0 10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: uiFontSize(14), lineHeight: '22px' }
 const serviceTierLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
 const nativeMenuLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
 const nativeMenuValueStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, textAlign: 'right' as const, color: dshThemeColor.labelTertiary }

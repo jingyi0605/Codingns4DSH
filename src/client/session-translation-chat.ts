@@ -1,0 +1,820 @@
+import { createElement, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, ReactElement, ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import type { AssistantBlock } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import {
+  DisclosureRow,
+  FileTypeIcon,
+  IconCheckOutlineRegular,
+  IconCopyOutlineRegular,
+  IconThinkOutlineRegular,
+  JsonBlock,
+  MarkdownText,
+  TextShimmer,
+  fileExtension,
+  fileSizeText,
+  projectUserText,
+  writeClipboard,
+} from '@deepseek-ai/dsh-client-ui-primitives'
+import type { MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
+import { useDismissOnOutsidePointer } from './popup-dismiss.js'
+import { dshThemeColor } from './theme.js'
+import { uiFontSize } from './font-scale.js'
+import type { CodingNsClientServices } from './features/types.js'
+import type { CodingNsTranslator } from './locale.js'
+import type { SessionTranslationInputRecord, SessionTranslationLanguage, SessionTranslationModel, SessionTranslationOutputKind, SessionTranslationRecord } from '../shared/contracts/session-translation.js'
+
+interface EventSourceLike {
+  getSnapshot(): { readonly entries?: readonly unknown[] }
+  subscribe(listener: () => void): () => void
+}
+
+interface TranslationPopupPosition {
+  readonly left: number
+  readonly top: number
+  readonly width: number
+  readonly maxHeight: number
+  readonly placement: 'above' | 'below'
+}
+
+interface TranslationActionProps {
+  readonly messageId: string
+  readonly sessionId: string
+  readonly services: CodingNsClientServices
+  readonly translationT: CodingNsTranslator
+  readonly record?: SessionTranslationRecord
+  readonly lookupText?: string
+  readonly outputKind?: SessionTranslationOutputKind
+  readonly turn?: number
+  readonly step?: number
+  readonly popupAlign?: 'start' | 'end'
+  readonly inline?: boolean
+}
+
+interface MarkdownTranslationLabels extends MarkdownLabels {
+  readonly code: MarkdownLabels['code'] & {
+    readonly toolbarLabels: NonNullable<MarkdownLabels['code']['toolbarLabels']>
+  }
+}
+
+interface UserContentParts {
+  readonly text: string
+  readonly attachments: readonly ({ readonly type: 'image'; readonly attachment: unknown } | { readonly type: 'file'; readonly file: Record<string, unknown> })[]
+  readonly rest: readonly unknown[]
+}
+
+/**
+ * 把翻译状态和查看原文的入口放回对应消息块，不占用 AI 回复底部的统一操作栏。
+ */
+function TranslationAction(props: TranslationActionProps): ReactElement | null {
+  const source = props.record === undefined ? readEventSource(props.services, props.sessionId) : undefined
+  const [, refresh] = useState(0)
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const popupRef = useRef<HTMLDivElement | null>(null)
+  const [popupPosition, setPopupPosition] = useState<TranslationPopupPosition | null>(null)
+  useEffect(() => {
+    if (source === undefined) return undefined
+    return source.subscribe(() => refresh((value) => value + 1))
+  }, [source])
+  useDismissOnOutsidePointer(rootRef, open, () => setOpen(false), { portal: popupRef })
+  useLayoutEffect(() => {
+    if (!open || typeof window === 'undefined') {
+      setPopupPosition(null)
+      return undefined
+    }
+    const updatePosition = (): void => {
+      const button = buttonRef.current
+      if (button === null) return
+      const rect = button.getBoundingClientRect()
+      const edge = 12
+      const gap = 8
+      const width = Math.max(1, Math.min(420, window.innerWidth - edge * 2))
+      const availableAbove = Math.max(0, rect.top - gap - edge)
+      const availableBelow = Math.max(0, window.innerHeight - rect.bottom - gap - edge)
+      const preferredHeight = Math.min(440, window.innerHeight * 0.65)
+      const placement = availableAbove >= preferredHeight
+        || (availableBelow < preferredHeight && availableAbove > availableBelow)
+        ? 'above'
+        : 'below'
+      const availableHeight = placement === 'above' ? availableAbove : availableBelow
+      const maxHeight = Math.min(preferredHeight, availableHeight)
+      const desiredLeft = props.popupAlign === 'end' ? rect.right - width : rect.left
+      const maxLeft = Math.max(edge, window.innerWidth - edge - width)
+      setPopupPosition({
+        left: Math.min(maxLeft, Math.max(edge, desiredLeft)),
+        top: placement === 'above' ? rect.top - gap : rect.bottom + gap,
+        width,
+        maxHeight,
+        placement,
+      })
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [open, props.popupAlign])
+
+  const record = props.record ?? (source === undefined || props.lookupText === undefined
+    ? undefined
+    : findTranslationRecordForText(source.getSnapshot(), props.lookupText, props.outputKind, props.turn, props.step))
+  if (record === undefined) return null
+
+  const failed = record.failed === true
+  const alreadyTargetLanguage = record.alreadyTargetLanguage === true
+  const statusText = failed
+    ? props.translationT('translation.statusFailed')
+    : alreadyTargetLanguage
+      ? props.translationT('translation.statusNotNeeded')
+      : props.translationT('translation.statusTranslated')
+  const model = formatModel(record.model, props.translationT)
+  const detailsId = `codingns-translation-details-${safeDomId(props.messageId)}`
+  const details = open && popupPosition !== null ? createElement('div', {
+    ref: popupRef,
+    role: 'dialog',
+    'aria-label': props.translationT('translation.detailsTitle'),
+    id: detailsId,
+    style: {
+      position: 'fixed',
+      zIndex: 2147483647,
+      left: popupPosition.left,
+      top: popupPosition.top,
+      width: popupPosition.width,
+      maxHeight: popupPosition.maxHeight,
+      boxSizing: 'border-box',
+      ...(popupPosition.placement === 'above' ? { transform: 'translateY(-100%)' } : {}),
+      overflow: 'auto',
+      padding: '10px 12px',
+      border: `1px solid ${dshThemeColor.border}`,
+      borderRadius: 8,
+      color: dshThemeColor.labelPrimary,
+      background: dshThemeColor.menuBackground,
+      boxShadow: '0 8px 24px color-mix(in srgb, CanvasText 16%, transparent)',
+      fontSize: uiFontSize(12),
+      lineHeight: 1.45,
+    },
+  },
+  createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 10, fontWeight: 600 } },
+    createElement('span', undefined, props.translationT('translation.detailsTitle')),
+    createElement('span', { style: { color: failed ? dshThemeColor.error : alreadyTargetLanguage ? dshThemeColor.accent : dshThemeColor.success, fontWeight: 400 } }, statusText),
+  ),
+  record.sourceLanguage === undefined ? null : createElement('div', { style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, `${props.translationT('translation.detectedLanguage')}: ${props.translationT(`translation.language.${record.sourceLanguage}`)}`),
+  createElement(DetailBlock, { label: props.translationT('translation.originalText'), value: record.original }),
+  createElement(DetailBlock, { label: props.translationT('translation.translatedText'), value: record.translated }),
+  createElement('div', { style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, `${props.translationT('translation.modelUsed')}: ${alreadyTargetLanguage ? props.translationT('translation.modelNotUsed') : model}`),
+  ) : null
+  const renderedDetails = details === null
+    ? null
+    : typeof document === 'undefined' ? details : createPortal(details, document.body)
+
+  return createElement('div', {
+    ref: rootRef,
+    style: {
+      position: 'relative',
+      display: 'inline-flex',
+      alignItems: 'center',
+      verticalAlign: 'middle',
+      ...(props.inline === true ? { marginInlineStart: 4 } : {}),
+    },
+    'data-codingns-translation-action': props.messageId,
+  },
+  createElement('button', {
+    ref: buttonRef,
+    type: 'button',
+    title: `${statusText} · ${props.translationT('translation.viewDetails')}`,
+    'aria-label': `${statusText} · ${props.translationT('translation.viewDetails')}`,
+    'aria-expanded': open,
+    'aria-controls': detailsId,
+    onClick: () => setOpen((value) => !value),
+    style: translationButtonStyle,
+  },
+  createElement(TranslationGlyph),
+  createElement('span', {
+    'aria-hidden': true,
+    style: {
+      position: 'absolute',
+      top: 1,
+      right: 1,
+      display: 'grid',
+      placeItems: 'center',
+      width: 10,
+      height: 10,
+      zIndex: 1,
+      boxSizing: 'border-box',
+      border: '1.5px solid var(--dsw-alias-bg-base, Canvas)',
+      borderRadius: '50%',
+      color: '#fff',
+      background: failed ? dshThemeColor.error : alreadyTargetLanguage ? dshThemeColor.accent : dshThemeColor.success,
+      fontSize: 6,
+      fontWeight: 700,
+      lineHeight: 1,
+    },
+  }, failed ? '!' : '✓'),
+  ),
+  renderedDetails,
+  )
+}
+
+function TranslationGlyph(): ReactElement {
+  return createElement('svg', {
+    viewBox: '0 0 24 24',
+    width: 16,
+    height: 16,
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.5,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+    'aria-hidden': true,
+  },
+  createElement('path', { d: 'M3.5 5.5h10M8.5 3.5v2M12.5 5.5c0 4.4-3.3 7.2-8 9' }),
+  createElement('path', { d: 'M5.5 8.5c1.4 2 3.4 3.7 6 4.8M14.5 19.5l3-8 3 8M15.7 17h3.6' }),
+  )
+}
+
+const messageActionButtonStyle: CSSProperties = {
+  position: 'relative',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 28,
+  height: 28,
+  padding: 0,
+  border: 0,
+  borderRadius: 'var(--dsw-radius-sm, 6px)',
+  color: dshThemeColor.labelTertiary,
+  background: 'transparent',
+  cursor: 'pointer',
+}
+
+const translationButtonStyle: CSSProperties = {
+  ...messageActionButtonStyle,
+  transition: 'background-color 100ms ease, color 100ms ease',
+}
+
+function DetailBlock({ label, value }: { readonly label: string; readonly value: string }): ReactElement {
+  return createElement('div', { style: { marginTop: 8 } },
+    createElement('div', { style: { marginBottom: 3, color: dshThemeColor.labelSecondary, fontWeight: 600 } }, label),
+    createElement('pre', { style: { margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'inherit' } }, value),
+  )
+}
+
+/** 按原生 user 节点的结构渲染用户消息，并把翻译按钮放在复制按钮前。 */
+function UserMessageNodeView(props: any): ReactElement | null {
+  const data = props.node.data
+  const parts = splitUserContent(data.content)
+  const record = readInputRecord({ source: data.source })
+  // DSH 自带消息保持原样；只接管确实带有 CodingNS 翻译记录的用户消息。
+  if (record === undefined) return null
+  const translationRecord = inputRecordForAction(record)
+  const labels = Array.isArray(data.referenceLabels) ? data.referenceLabels.filter((label: unknown): label is string => typeof label === 'string') : []
+  const skillNames = Array.isArray(data.skillNames) ? data.skillNames.filter((name: unknown): name is string => typeof name === 'string') : []
+  const showBubble = parts.text !== '' || parts.rest.length > 0
+  const images = parts.attachments.filter((attachment) => attachment.type === 'image')
+  const compactImages = images.length > 1
+  const messageId = `user-${String(data.seq ?? props.node.id ?? 'message')}`
+  const chatT = props.t as (key: string, params?: Record<string, unknown>) => string
+
+  return createElement('div', {
+    'data-chat-flow-kind': 'user',
+    style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 },
+  },
+  createElement('div', {
+    style: {
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'flex-end',
+      gap: 8,
+      minWidth: 0,
+      maxWidth: 'min(calc(var(--dsh-chat-content-width, 748px) * .702), 82%)',
+    },
+  },
+  parts.attachments.length > 0 ? createElement('div', {
+    'data-message-attachments': true,
+    style: { display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8, maxWidth: '100%' },
+  }, ...parts.attachments.map((attachment, index) => attachment.type === 'image'
+    ? createElement('div', { key: `image-${index}` }, props.renderMessageImages({ images: [{ attachment: attachment.attachment }], align: 'end', compact: compactImages }))
+    : createFileAttachment(attachment.file, index))) : null,
+  showBubble ? createElement('div', {
+    style: {
+      boxSizing: 'border-box',
+      maxWidth: '100%',
+      padding: '10px 16px',
+      borderRadius: 'var(--dsw-radius-xl, 18px)',
+      color: dshThemeColor.labelPrimary,
+      background: 'var(--dsw-specific-bubble, var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.08)))',
+      fontSize: 'var(--dsh-content-font-size, 14px)',
+      lineHeight: 'calc(22px + var(--dsh-content-font-delta, 0px))',
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+    },
+  },
+  projectUserText(
+    parts.text,
+    labels,
+    skillNames,
+    'skill',
+    typeof props.openFile === 'function' && typeof props.openSkill === 'function'
+      ? { openFile: props.openFile, openSkill: props.openSkill }
+      : undefined,
+  ),
+  ...parts.rest.map((block, index) => createElement(JsonBlock, {
+    key: `extra-${index}`,
+    label: chatT('message.extraBlock'),
+    payload: block,
+    truncatedLabel: (total: number) => chatT('json.truncated', { total }),
+  })),
+  ) : null,
+  ),
+  createElement('div', {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      alignSelf: 'flex-end',
+      height: 'calc(28px + var(--dsh-content-font-delta, 0px))',
+      gap: 8,
+      color: dshThemeColor.labelTertiary,
+    },
+  },
+  typeof data.time === 'number' ? createElement('span', {
+    style: { paddingRight: 12, color: dshThemeColor.labelTertiary, fontSize: 'var(--dsh-content-font-size-secondary, 13px)', whiteSpace: 'nowrap' },
+  }, formatMessageTime(data.time)) : null,
+  translationRecord === undefined ? null : createElement(TranslationAction, {
+    messageId,
+    sessionId: props.sessionId,
+    services: props.services,
+    translationT: props.translationT,
+    popupAlign: 'end',
+    record: translationRecord,
+  }),
+  createElement(CopyAction, { text: parts.text, t: chatT }),
+  ),
+  )
+}
+
+function createFileAttachment(file: Record<string, unknown>, index: number): ReactElement {
+  const name = typeof file.name === 'string' ? file.name : ''
+  const bytes = typeof file.bytes === 'number' ? file.bytes : 0
+  return createElement('span', {
+    key: `file-${index}`,
+    title: name,
+    style: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      minWidth: 0,
+      maxWidth: '100%',
+      gap: 8,
+      padding: '8px 10px',
+      border: `1px solid ${dshThemeColor.border}`,
+      borderRadius: 8,
+      color: dshThemeColor.labelPrimary,
+      background: dshThemeColor.surfaceSubtle,
+    },
+  },
+  createElement(FileTypeIcon, { path: name, style: { flex: 'none' } } as never),
+  createElement('span', { style: { display: 'flex', flexDirection: 'column', minWidth: 0, textAlign: 'left' } },
+    createElement('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, name),
+    createElement('span', { style: { color: dshThemeColor.labelSecondary, fontSize: 11 } }, [fileExtension(name).toUpperCase().slice(0, 8), fileSizeText(bytes)].filter(Boolean).join(' ')),
+  ),
+  )
+}
+
+function CopyAction({ text, t: chatT }: { readonly text: string; readonly t: (key: string) => string }): ReactElement {
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => {
+    if (timer.current !== undefined) clearTimeout(timer.current)
+  }, [])
+
+  return createElement('button', {
+    type: 'button',
+    title: copied ? chatT('copied') : chatT('copy'),
+    'aria-label': copied ? chatT('copied') : chatT('copy'),
+    onClick: () => {
+      void writeClipboard(text).then((success) => {
+        if (!success) return
+        setCopied(true)
+        if (timer.current !== undefined) clearTimeout(timer.current)
+        timer.current = setTimeout(() => {
+          timer.current = undefined
+          setCopied(false)
+        }, 1000)
+      })
+    },
+    style: messageActionButtonStyle,
+  }, createElement(copied ? IconCheckOutlineRegular : IconCopyOutlineRegular))
+}
+
+function splitUserContent(content: unknown): UserContentParts {
+  const text: string[] = []
+  const attachments: UserContentParts['attachments'][number][] = []
+  const rest: unknown[] = []
+  if (typeof content === 'string') return { text: content, attachments, rest }
+  if (!Array.isArray(content)) return { text: '', attachments, rest }
+  for (const value of content) {
+    const block = asRecord(value)
+    if (block?.type === 'text' && typeof block.text === 'string') text.push(block.text)
+    else if (block?.type === 'image' && block.attachment !== undefined) attachments.push({ type: 'image', attachment: block.attachment })
+    else if (block?.type === 'file' && asRecord(block.attachment) !== undefined) attachments.push({ type: 'file', file: asRecord(block.attachment)! })
+    else rest.push(value)
+  }
+  return { text: text.join(''), attachments, rest }
+}
+
+function formatMessageTime(time: number): string {
+  const date = new Date(time)
+  const now = new Date()
+  const sameDay = date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate()
+  const options: Intl.DateTimeFormatOptions = sameDay
+    ? { hour: '2-digit', minute: '2-digit' }
+    : { ...(date.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }), month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }
+  return new Intl.DateTimeFormat(undefined, options).format(date)
+}
+
+/** DSH assistant-step renderer: keep each translated text/reasoning block's source action adjacent to that block. */
+function AssistantTranslationNodeView(props: any): ReactElement | null {
+  const data = props.node.data
+  const blocks = Array.isArray(data.blocks) ? data.blocks as readonly AssistantBlock[] : []
+  const streaming = data.status === 'running'
+  const chatT = props.t as (key: string, params?: Record<string, unknown>) => string
+  const markdownLabels = useMemo(() => createMarkdownLabels(chatT), [chatT])
+  const pathImages = useMemo(() => ({ resolve: resolveMarkdownImagePath }), [])
+  const eventSnapshot = readEventSource(props.services, props.sessionId)?.getSnapshot()
+  const hasTranslation = blocks.some((block) => {
+    if (block.kind !== 'reasoning' && block.kind !== 'text') return false
+    const outputKind = block.kind === 'reasoning' ? 'reasoning' : 'assistant'
+    const embedded = readRecord(block)
+    if (embedded !== undefined && (embedded.outputKind === undefined || embedded.outputKind === outputKind)) return true
+    return eventSnapshot !== undefined && findTranslationRecordForText(eventSnapshot, block.text, outputKind, data.turn, data.step) !== undefined
+  })
+  const turn = props.node.location?.kind === 'turn' || props.node.location?.kind === 'step' ? props.node.location.turn : undefined
+  const tail = typeof props.useTurnData === 'function' ? props.useTurnData('turn-tail') : undefined
+  const finalNode = data.finalNode
+  const fileOwner = turn?.status === 'closed' && finalNode !== undefined && tail?.closing?.finalNode?.seq === finalNode.seq
+    ? { turn, seq: finalNode.seq, openFile: (path: string) => { void props.openFile(path) } }
+    : undefined
+  const mentions = fileOwner === undefined || typeof props.fileMentions !== 'function' ? undefined : props.fileMentions(fileOwner)
+  const turnProcess = props.turnProcess
+  const reasoningHidden = turnProcess !== undefined
+    && turnProcess.foldable === true
+    && turnProcess.spec?.answerStep === data.step
+    && turnProcess.spec?.inlineReasoning === true
+    && turnProcess.open !== true
+  const rendered: ReactNode[] = []
+  const last = blocks.length - 1
+  const messageId = typeof finalNode?.messageId === 'string' ? finalNode.messageId : `turn-${data.turn}-step-${data.step}`
+
+  if (!hasTranslation || !(streaming || data.status === 'interrupted' || blocks.some((block) => block.kind !== 'tool-call'))) return null
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index]
+    if (block === undefined) continue
+    if (props.groupPart === 'reasoning' && block.kind !== 'reasoning') continue
+    if (props.groupPart === 'response' && block.kind === 'reasoning') continue
+    const running = streaming && index === last
+    if (block.kind === 'text') {
+      const translationRecord = readRecord(block)
+      rendered.push(createElement('div', {
+        key: `text-${index}`,
+        'data-codingns-translation-inline': true,
+        style: { minWidth: 0 },
+      },
+      createElement(MarkdownText, { text: block.text, streaming, labels: markdownLabels, fileMentions: mentions, pathImages }),
+      createElement(TranslationAction, {
+        messageId: `${messageId}-text-${index}`,
+        sessionId: props.sessionId,
+        services: props.services,
+        translationT: props.translationT,
+        lookupText: block.text,
+        outputKind: 'assistant',
+        turn: data.turn,
+        step: data.step,
+        inline: true,
+        ...(translationRecord === undefined ? {} : { record: translationRecord }),
+      }),
+      ))
+      continue
+    }
+    if (block.kind === 'reasoning') {
+      rendered.push(createElement(AssistantReasoningBlock, {
+        key: `reasoning-${index}`,
+        messageId: `${messageId}-reasoning-${index}`,
+        sessionId: props.sessionId,
+        services: props.services,
+        translationT: props.translationT,
+        chatT,
+        text: block.text,
+        turn: data.turn,
+        step: data.step,
+        running,
+        hidden: reasoningHidden,
+        reveal: () => turnProcess?.setOpen?.(true),
+        useGroupAction: props.useGroupAction,
+        renderFactorySlot: props.renderFactorySlot,
+        markdownLabels,
+        pathImages,
+        mentions,
+      }))
+      continue
+    }
+    if (block.kind === 'image') {
+      const imageGroup = [block]
+      while (index + 1 < blocks.length && blocks[index + 1]?.kind === 'image') {
+        const next = blocks[index + 1]
+        if (next?.kind !== 'image') break
+        imageGroup.push(next)
+        index += 1
+      }
+      rendered.push(createElement('div', { key: `images-${index}`, style: { alignSelf: 'flex-start' } }, props.renderMessageImages({ images: imageGroup.map((image) => ({ attachment: image.attachment })), align: 'start' })))
+      continue
+    }
+    if (block.kind === 'other') {
+      rendered.push(createElement(JsonBlock, {
+        key: `other-${index}`,
+        label: chatT('message.unknownBlock'),
+        payload: block.block,
+        truncatedLabel: (total: number) => chatT('json.truncated', { total }),
+      }))
+    }
+  }
+
+  return createElement('div', {
+    'data-streaming': streaming || undefined,
+    style: { display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0, color: dshThemeColor.labelPrimary, fontSize: 'var(--dsh-content-font-size, 14px)', lineHeight: 'calc(24px + var(--dsh-content-font-delta, 0px))' },
+  },
+  ...rendered,
+  data.status === 'interrupted' ? createElement('span', {
+    style: { alignSelf: 'flex-start', padding: '0 6px', borderRadius: 'var(--dsw-radius-sm, 4px)', color: dshThemeColor.labelTertiary, background: dshThemeColor.surfaceSubtle, fontSize: 11, lineHeight: '18px' },
+  }, chatT('message.stopped')) : null,
+  )
+}
+
+interface AssistantReasoningBlockProps {
+  readonly messageId: string
+  readonly sessionId: string
+  readonly services: CodingNsClientServices
+  readonly translationT: CodingNsTranslator
+  readonly chatT: (key: string, params?: Record<string, unknown>) => string
+  readonly text: string
+  readonly turn?: number
+  readonly step?: number
+  readonly running: boolean
+  readonly hidden: boolean
+  readonly reveal: () => void
+  readonly useGroupAction?: (hidden: boolean, reveal: () => void) => React.RefObject<HTMLDivElement>
+  readonly renderFactorySlot?: (name: string, props: Record<string, unknown>) => ReactNode
+  readonly markdownLabels: MarkdownTranslationLabels
+  readonly pathImages: { resolve(value: string): string | undefined }
+  readonly mentions?: unknown
+}
+
+function AssistantReasoningBlock(props: AssistantReasoningBlockProps): ReactElement {
+  const [expanded, setExpanded] = useState(false)
+  const groupRef = props.useGroupAction?.(props.hidden, props.reveal)
+  const summary = props.text.split('\n').map((line) => line.replace(/[`*_#>]/gu, '').trim()).find(Boolean) ?? ''
+  const markdown = props.renderFactorySlot === undefined
+    ? createElement(MarkdownText, { text: props.text, streaming: props.running, labels: props.markdownLabels, fileMentions: props.mentions as never, pathImages: props.pathImages, variant: 'compact' })
+    : props.renderFactorySlot('conversation.chat.reasoning.content', { text: props.text, running: props.running })
+  return createElement('div', {
+    ref: groupRef,
+    hidden: props.hidden,
+    'data-turn-process-inline': props.hidden || undefined,
+  },
+  createElement(DisclosureRow, {
+    icon: createElement(IconThinkOutlineRegular, { size: 14 }),
+    title: props.chatT('message.think'),
+    open: expanded,
+    expandable: true,
+    expandOnRowClick: true,
+    running: props.running,
+    onToggle: () => setExpanded((value) => !value),
+    collapsedContent: createElement('span', {
+      style: { minWidth: 0, overflow: 'hidden', color: dshThemeColor.labelSecondary, fontSize: 'var(--dsh-content-font-size-secondary, 13px)', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+    }, createElement(TextShimmer, { active: props.running, children: summary })),
+  }, expanded ? createElement('div', {
+    'data-codingns-translation-inline': true,
+    style: { paddingTop: 8 },
+  },
+  markdown,
+  createElement(TranslationAction, {
+    messageId: props.messageId,
+    sessionId: props.sessionId,
+    services: props.services,
+    translationT: props.translationT,
+    lookupText: props.text,
+    outputKind: 'reasoning',
+    ...(props.turn === undefined ? {} : { turn: props.turn }),
+    ...(props.step === undefined ? {} : { step: props.step }),
+    inline: true,
+  }),
+  ) : null),
+  )
+}
+
+function createMarkdownLabels(chatT: (key: string) => string): MarkdownTranslationLabels {
+  return {
+    code: {
+      copyLabel: chatT('copy'),
+      copiedLabel: chatT('copied'),
+      toolbarLabels: {
+        codeLabel: chatT('codeBlock.title'),
+        wrapLabel: chatT('codeBlock.wrap'),
+        unwrapLabel: chatT('codeBlock.unwrap'),
+      },
+    },
+    footnotes: chatT('markdown.footnotes'),
+  }
+}
+
+function resolveMarkdownImagePath(value: string): string | undefined {
+  if (typeof document === 'undefined' || !value.startsWith('/') || /^[/\\]{2}/u.test(value) || /[\u0000-\u001f\u007f]/u.test(value)) return undefined
+  const base = document.baseURI
+  if (!/^https?:/u.test(base) && !base.startsWith('dsh-app://app/')) return undefined
+  try {
+    return new URL(`api/file?path=${encodeURIComponent(value)}`, base).href
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 注册两个有实际翻译记录的消息渲染器；DSH 的用户气泡内容仍由统一主题令牌控制。
+ */
+export function registerSessionTranslationChatUi(services: CodingNsClientServices): () => void {
+  const slots = services.slots as unknown as {
+    inject?(key: string, callback: () => () => void): () => void
+    register?(options: Record<string, unknown>, component: (props: any) => ReactElement | null): () => void
+  } | undefined
+  if (slots?.inject === undefined || slots.register === undefined) return () => undefined
+  const removeStyles = installSessionTranslationChatStyles()
+  const translationT = services.locale.bind('codingns')
+  const removeUserRenderer = slots.inject('conversation.chat.node', () => slots.register!({
+    name: 'conversation.chat.node',
+    key: 'user',
+    priority: -100,
+    locale: 'chat',
+    inject: (sessionId: string) => ({ services, sessionId, translationT }),
+  }, UserMessageNodeView))
+  const removeAssistantRenderer = slots.inject('conversation.chat.node', () => slots.register!({
+    name: 'conversation.chat.node',
+    key: 'assistant-step',
+    priority: -100,
+    locale: 'chat',
+    inject: (sessionId: string) => ({ services, sessionId, translationT }),
+  }, AssistantTranslationNodeView))
+  return () => {
+    removeAssistantRenderer()
+    removeUserRenderer()
+    removeStyles()
+  }
+}
+
+function installSessionTranslationChatStyles(): () => void {
+  if (typeof document === 'undefined') return () => undefined
+  const styleId = 'codingns-session-translation-chat'
+  if (document.head.querySelector(`style[data-plugin-css="${styleId}"]`) !== null) return () => undefined
+  const style = document.createElement('style')
+  style.dataset.plugin = 'codingns4dsh'
+  style.dataset.pluginCss = styleId
+  style.textContent = `
+    [data-codingns-translation-inline] > div:not([data-codingns-translation-action]){display:contents}
+    [data-codingns-translation-inline] > div:not([data-codingns-translation-action]) > p:last-child{display:inline;margin:0}
+  `
+  document.head.appendChild(style)
+  return () => style.remove()
+}
+
+function readEventSource(services: CodingNsClientServices, sessionId: string): EventSourceLike | undefined {
+  const sessions = services.sessions as { binding?(id: string): { eventSource?: EventSourceLike } | undefined } | undefined
+  try {
+    return sessions?.binding?.(sessionId)?.eventSource
+  } catch {
+    return undefined
+  }
+}
+
+function findTranslationRecordForText(
+  snapshot: { readonly entries?: readonly unknown[] },
+  text: string,
+  outputKind?: SessionTranslationOutputKind,
+  turn?: number,
+  step?: number,
+): SessionTranslationRecord | undefined {
+  const entries = snapshot.entries ?? []
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const event = readEntryEvent(entries[index])
+    if (event === undefined || !event.type.startsWith('assistant/')) continue
+    const eventData = asRecord(event.data)
+    if (turn !== undefined && typeof eventData?.turn === 'number' && eventData.turn !== turn) continue
+    if (step !== undefined && typeof eventData?.step === 'number' && eventData.step !== step) continue
+    const candidates: unknown[] = []
+    collectRecordCandidates(event.data, candidates, new Set<object>())
+    for (const candidate of candidates) {
+      const record = readRecord(candidate)
+      if (record === undefined || record.translated !== text) continue
+      if (outputKind !== undefined && record.outputKind !== undefined && record.outputKind !== outputKind) continue
+      return record
+    }
+  }
+  return undefined
+}
+
+function collectRecordCandidates(value: unknown, candidates: unknown[], seen: Set<object>, depth = 0): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectRecordCandidates(item, candidates, seen, depth + 1)
+    return
+  }
+  const record = asRecord(value)
+  if (record === undefined || seen.has(record) || depth > 7) return
+  seen.add(record)
+  if (readRecord(record) !== undefined || asRecord(record.codingnsTranslation) !== undefined) candidates.push(record)
+  for (const key of ['codingnsTranslation', 'source', 'message', 'content', 'stream', 'chunk', 'block', 'data']) {
+    if (record[key] !== undefined) collectRecordCandidates(record[key], candidates, seen, depth + 1)
+  }
+}
+
+function readEntryEvent(value: unknown): Record<string, any> | undefined {
+  const record = asRecord(value)
+  const event = asRecord(record?.event)
+  return event ?? (typeof record?.type === 'string' ? record : undefined)
+}
+
+function readRecord(value: unknown): SessionTranslationRecord | undefined {
+  const record = asRecord(value)
+  const candidate = asRecord(record?.codingnsTranslation) ?? record
+  if (candidate?.original === undefined || candidate.translated === undefined) return undefined
+  if (typeof candidate.original !== 'string' || typeof candidate.translated !== 'string') return undefined
+  const targetLanguage = readLanguage(candidate.targetLanguage)
+  if (targetLanguage === undefined) return undefined
+  const model = readModel(candidate.model)
+  const outputKind = candidate.outputKind === 'assistant' || candidate.outputKind === 'reasoning' ? candidate.outputKind : undefined
+  return {
+    original: candidate.original,
+    translated: candidate.translated,
+    ...(candidate.sourceLanguage === 'zh' || candidate.sourceLanguage === 'en' || candidate.sourceLanguage === 'fr' || candidate.sourceLanguage === 'de' || candidate.sourceLanguage === 'ja' ? { sourceLanguage: candidate.sourceLanguage } : {}),
+    targetLanguage,
+    bilingual: candidate.bilingual === true,
+    ...(outputKind === undefined ? {} : { outputKind }),
+    ...(candidate.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
+    ...(model === undefined ? {} : { model }),
+    ...(candidate.failed === true ? { failed: true } : {}),
+  }
+}
+
+function readModel(value: unknown): SessionTranslationModel | undefined {
+  const record = asRecord(value)
+  if (typeof record?.provider !== 'string' || typeof record.model !== 'string' || record.provider.trim() === '' || record.model.trim() === '') return undefined
+  return { provider: record.provider, model: record.model }
+}
+
+function readInputRecord(value: unknown): SessionTranslationInputRecord | undefined {
+  const message = asRecord(value)
+  const source = asRecord(message?.source)
+  const candidate = asRecord(source?.codingnsTranslationInput)
+  if (candidate?.original === undefined || candidate.translated === undefined) return undefined
+  if (typeof candidate.original !== 'string' || typeof candidate.translated !== 'string') return undefined
+  const targetLanguage = candidate.targetLanguage
+  if (targetLanguage !== 'en' && targetLanguage !== 'fr' && targetLanguage !== 'de' && targetLanguage !== 'ja') return undefined
+  const model = readModel(candidate.model)
+  return {
+    original: candidate.original,
+    translated: candidate.translated,
+    ...(candidate.sourceLanguage === 'zh' || candidate.sourceLanguage === 'en' || candidate.sourceLanguage === 'fr' || candidate.sourceLanguage === 'de' || candidate.sourceLanguage === 'ja' ? { sourceLanguage: candidate.sourceLanguage } : {}),
+    targetLanguage,
+    ...(candidate.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
+    ...(model === undefined ? {} : { model }),
+    ...(candidate.failed === true ? { failed: true } : {}),
+  }
+}
+
+function inputRecordForAction(record: SessionTranslationInputRecord): SessionTranslationRecord {
+  return {
+    original: record.original,
+    translated: record.translated,
+    ...(record.sourceLanguage === undefined ? {} : { sourceLanguage: record.sourceLanguage }),
+    targetLanguage: record.targetLanguage,
+    bilingual: false,
+    ...(record.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
+    ...(record.model === undefined ? {} : { model: record.model }),
+    ...(record.failed === true ? { failed: true } : {}),
+  }
+}
+
+function readLanguage(value: unknown): SessionTranslationLanguage | undefined {
+  return value === 'zh' || value === 'en' || value === 'fr' || value === 'de' || value === 'ja' ? value : undefined
+}
+
+function formatModel(model: SessionTranslationModel | undefined, t: CodingNsTranslator): string {
+  return model === undefined ? t('translation.modelUnknown') : `${model.provider} / ${model.model}`
+}
+
+function safeDomId(value: string): string {
+  return encodeURIComponent(value).replace(/%/gu, '-')
+}
+
+function asRecord(value: unknown): Record<string, any> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, any> : undefined
+}
