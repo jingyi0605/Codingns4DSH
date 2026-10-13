@@ -197,7 +197,7 @@ test('Command Code 子代理 Mod：只有禁用标记时也不允许创建嵌套
       input: { prompt: '再次拆分任务' },
     })
     assert.equal(outcome?.block, true)
-    assert.match(String(outcome?.additionalContext), /禁止嵌套子代理/u)
+    assert.match(String(outcome?.additionalContext), /Nested subagents are not allowed/u)
   } finally {
     process.env = previous
   }
@@ -223,8 +223,8 @@ test('Command Code 子代理 Mod：桥接不可用时阻断父会话原生 agent
       input: { prompt: '创建外部子代理' },
     })
     assert.equal(outcome?.block, true)
-    assert.match(String(outcome?.additionalContext), /桥接不可用/u)
-    assert.match(String(outcome?.additionalContext), /没有回退/u)
+    assert.match(String(outcome?.additionalContext), /subagent bridge is unavailable/u)
+    assert.match(String(outcome?.additionalContext), /did not fall back/u)
   } finally {
     process.env = previous
   }
@@ -247,7 +247,7 @@ test('Command Code 子代理 Mod：启动时注册 DSH agent_subagent 工具', a
     assert.equal(tools[0]?.schema?.name, 'agent_subagent')
     const result = await tools[0]!.run!({ input: { action: 'start', prompt: '创建一个子会话' } })
     assert.equal(result.ok, false)
-    assert.match(String(result.error), /桥接不可用/u)
+    assert.match(String(result.error), /subagent bridge is unavailable/u)
   } finally {
     process.env = previous
   }
@@ -605,7 +605,7 @@ test('桥接派发：解析父会话并把子代理绑定为原生可续子会�
         : undefined },
     })
     assert.equal(nestedStart.ok, false)
-    assert.match(String(nestedStart.error), /禁止嵌套子代理/u)
+    assert.match(String(nestedStart.error), /Nested subagents are not allowed/u)
     const parentReport = await dispatchBridgeSubagent({ sessionId: 'child-77', action: 'send', childSessionId: 's1', message: '子代理报告已完成' }, {
       ...deps,
       agents: { get: (id: string) => id === 's1'
@@ -619,7 +619,7 @@ test('桥接派发：解析父会话并把子代理绑定为原生可续子会�
       agents: { get: (id: string) => (id === 's2' ? { id: 'agent-s2', session: { header: { id: 's2' } } } : undefined) },
     })
     assert.equal(crossParent.ok, false)
-    assert.match(String(crossParent.error), /找不到父会话下的子会话/u)
+    assert.match(String(crossParent.error), /no child session was found under the parent session/u)
   } finally {
     setNativeSubagents(undefined)
     setAdapterRegistry(undefined)
@@ -722,7 +722,7 @@ test('桥接派发：缺少原生 Subagent 能力时返回可读错误', async (
     { agents: { get: () => undefined }, nativeSessions: { available: true, get: () => undefined, subscribe: () => () => undefined, list: () => [] } as never },
   )
   assert.equal(result.ok, false)
-  assert.match(String(result.error), /原生 Subagent 能力不可用/)
+  assert.match(String(result.error), /native DSH subagent capability is unavailable/u)
 })
 
 test('Command Code 转投：hook_blocked 命中桥接记录时投影为完成并保留结果', async () => {
@@ -955,7 +955,7 @@ test('桥接派发：派发失败时不登记重定向，失败必须保持可�
       },
     )
     assert.equal(result.ok, false)
-    assert.match(String(result.error), /原生 Subagent 能力不可用/)
+    assert.match(String(result.error), /native DSH subagent capability is unavailable/u)
     // 失败绝不能伪装成「已由 DSH 子代理完成」，否则工具态会显示成功。
     assert.equal(runtime.consumeRedirect('s-fail', 'call_fail_1'), undefined)
   } finally {
@@ -989,15 +989,15 @@ test('Command Code 托管 mod：桥接失败时 block 并给出可读原因，�
     // 过去这里返回 undefined，CLI 会悄悄改用内建子代理；必须改为 block 让失败可见。
     assert.equal(outcome?.block, true)
     const context = String(outcome?.additionalContext ?? '')
-    assert.match(context, /子代理托管派发失败/u)
-    assert.match(context, /没有回退到 Command Code 内建子代理/u)
+    assert.match(context, /Managed subagent dispatch failed/u)
+    assert.match(context, /did not fall back to the built-in Command Code subagent/u)
     // 非 agent 工具仍然不接管；空提示词也必须阻断，不能回退到本地子代理。
     assert.equal(await beforeToolCall({ toolName: 'bash', toolCallId: 'call_mod_2', input: { command: 'ls' } }), undefined)
     const output = await beforeToolCall({ toolName: 'agent_output', toolCallId: 'call_mod_output', input: {} })
     assert.equal(output?.block, true)
     const empty = await beforeToolCall({ toolName: 'agent', toolCallId: 'call_mod_3', input: { prompt: '   ' } })
     assert.equal(empty?.block, true)
-    assert.match(String(empty?.additionalContext), /不会回退到 Command Code 内建子代理/u)
+    assert.match(String(empty?.additionalContext), /did not fall back to the built-in Command Code subagent/u)
   } finally {
     process.env = previous
   }

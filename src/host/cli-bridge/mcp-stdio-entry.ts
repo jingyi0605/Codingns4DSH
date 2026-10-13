@@ -34,16 +34,16 @@ const TOOL_DEFINITION = {
   inputSchema: {
     type: 'object',
     properties: {
-      prompt: { type: 'string', description: '完整、自包含的子任务说明。' },
-      agent: { type: 'string', description: '外部编码 Agent id；缺省沿用当前会话的 Agent。' },
-      model: { type: 'string', description: '可选模型覆盖。' },
-      description: { type: 'string', description: '给子代理的简短标题。' },
-      subagent_type: { type: 'string', description: '子代理类型提示（explore/plan/general）。' },
+      prompt: { type: 'string', description: 'A complete, self-contained subtask description.' },
+      agent: { type: 'string', description: 'External coding Agent id; defaults to the current session Agent.' },
+      model: { type: 'string', description: 'Optional model override.' },
+      description: { type: 'string', description: 'Short title for the subtask.' },
+      subagent_type: { type: 'string', description: 'Subagent type hint (explore/plan/general).' },
       action: { type: 'string', enum: ['start', 'read', 'wait', 'send'] },
-      run_in_background: { type: 'boolean', description: 'start 是否立即返回；缺省为 true。' },
-      child_session_id: { type: 'string', description: '父代理发送时填子会话 ID；子代理回传时可填父会话 ID，也可省略。' },
-      agent_id: { type: 'string', description: '兼容父会话回传指令；子会话通常不需要填写，父会话由当前会话身份推导。' },
-      message: { type: 'string', description: '发送给已创建子代理的后续消息；action=send 时必填。' },
+      run_in_background: { type: 'boolean', description: 'Whether start returns immediately; defaults to true.' },
+      child_session_id: { type: 'string', description: 'Child session id for a parent follow-up; a child may provide its parent session id or omit it when reporting back.' },
+      agent_id: { type: 'string', description: 'Compatibility field for parent reports; child sessions usually omit it because the parent is inferred from the current session.' },
+      message: { type: 'string', description: 'Follow-up message for an existing child; required for action=send.' },
       timeout_ms: { type: 'number' },
       depends_on: { type: 'array', items: { type: 'string' } },
     },
@@ -109,16 +109,16 @@ async function handleLine(line: string): Promise<void> {
 async function callTool(params: unknown): Promise<Record<string, unknown>> {
   const record = asRecord(params)
   const name = typeof record?.name === 'string' ? record.name : ''
-  if (name !== TOOL_DEFINITION.name) return textResult(`未知工具: ${name}`, true)
+  if (name !== TOOL_DEFINITION.name) return textResult(`Unknown tool: ${name}`, true)
   const args = asRecord(record?.arguments) ?? {}
   const action = IS_SUBAGENT_CHILD
     ? 'send'
     : args.action === 'wait' || args.action === 'read' || args.action === 'send' ? args.action : 'start'
   const prompt = typeof args.prompt === 'string' ? args.prompt : ''
   const message = typeof args.message === 'string' ? args.message : ''
-  if (action === 'start' && prompt.trim() === '') return textResult('start 操作的 prompt 不能为空', true)
-  if (action === 'send' && message.trim() === '' && prompt.trim() === '') return textResult('send 操作的 message 不能为空', true)
-  if (BRIDGE_URL === '' || BRIDGE_TOKEN === '' || SESSION_ID === '') return textResult('Codingns4DSH 子代理桥接未配置', true)
+  if (action === 'start' && prompt.trim() === '') return textResult('The prompt is required for the start action.', true)
+  if (action === 'send' && message.trim() === '' && prompt.trim() === '') return textResult('The message or prompt is required for the send action.', true)
+  if (BRIDGE_URL === '' || BRIDGE_TOKEN === '' || SESSION_ID === '') return textResult('The CodingNS4DSH subagent bridge is not configured.', true)
   try {
     const response = await fetch(`${BRIDGE_URL}/v1/dispatch`, {
       method: 'POST',
@@ -146,7 +146,7 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
     const payload = await readJsonRecord(response)
     if (!response.ok) {
       const detail = typeof payload?.error === 'string' && payload.error.trim() !== '' ? payload.error.trim() : `HTTP ${String(response.status)}`
-      return textResult(`子代理桥接请求失败：${detail}`, true)
+      return textResult(`Subagent bridge request failed: ${detail}`, true)
     }
     if (payload?.ok !== true) {
       const safePayload = payload ?? {}
@@ -157,7 +157,7 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
           status,
           completed: safePayload.completed === true,
           ...(typeof safePayload.childSessionId === 'string' ? { childSessionId: safePayload.childSessionId } : {}),
-          text: typeof safePayload.text === 'string' ? safePayload.text : '子代理仍在运行。',
+          text: typeof safePayload.text === 'string' ? safePayload.text : 'The subagent is still running.',
         }), false)
       }
       if (status === 'failed' || status === 'interrupted') {
@@ -169,12 +169,12 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
           ...(typeof safePayload.failureReviewed === 'boolean' ? { failureReviewed: safePayload.failureReviewed } : {}),
           ...(typeof safePayload.failureReviewRequired === 'boolean' ? { failureReviewRequired: safePayload.failureReviewRequired } : {}),
           ...(typeof safePayload.failureGuidance === 'string' ? { failureGuidance: safePayload.failureGuidance } : {}),
-          text: typeof safePayload.text === 'string' ? safePayload.text : '子代理已失败，请检查状态。',
+          text: typeof safePayload.text === 'string' ? safePayload.text : 'The subagent failed; inspect its status.',
           ...(typeof safePayload.error === 'string' ? { error: safePayload.error } : {}),
         }), false)
       }
-      const detail = typeof safePayload.error === 'string' && safePayload.error.trim() !== '' ? safePayload.error.trim() : '桥接端未返回具体错误。'
-      return textResult(`子代理执行失败：${detail}`, true)
+      const detail = typeof safePayload.error === 'string' && safePayload.error.trim() !== '' ? safePayload.error.trim() : 'The bridge did not return a specific error.'
+      return textResult(`Subagent execution failed: ${detail}`, true)
     }
     // 启动结果必须把 childSessionId/status 交给模型；只返回文本会让后台任务
     // 无法被后续 read/wait 追踪。统一以 JSON 文本承载，同时保留原始字段。
@@ -189,11 +189,11 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
       ...(typeof payload.failureReviewed === 'boolean' ? { failureReviewed: payload.failureReviewed } : {}),
       ...(typeof payload.failureReviewRequired === 'boolean' ? { failureReviewRequired: payload.failureReviewRequired } : {}),
       ...(typeof payload.failureGuidance === 'string' ? { failureGuidance: payload.failureGuidance } : {}),
-      text: typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : '子代理已完成，但没有文本输出。',
+      text: typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : 'The subagent completed without text output.',
       ...(typeof payload.error === 'string' && payload.error.trim() !== '' ? { error: payload.error } : {}),
     }), false)
   } catch (error) {
-    return textResult(`子代理桥接不可达：${error instanceof Error ? error.message : String(error)}`, true)
+    return textResult(`The subagent bridge is unreachable: ${error instanceof Error ? error.message : String(error)}`, true)
   }
 }
 

@@ -66,18 +66,18 @@ export default function codingNsSubagentMod(cmd: ModApiLike): void {
   cmd.addTool?.({
     schema: {
       name: 'agent_subagent',
-      description: '通过 CodingNS DSH 桥接异步创建外部 Agent 子会话，并用 read/wait/send 跟踪；子会话可用自己的 parent session id 回传报告，且不能再次 start 创建嵌套子代理。',
+       description: 'Asynchronously create external Agent child sessions through the CodingNS DSH bridge and track them with read/wait/send. Child sessions may report through their parent session id and cannot use start to create nested subagents.',
       input_schema: {
         type: 'object',
         properties: {
-          prompt: { type: 'string', description: '完整、自包含的子任务说明。' },
-          agent: { type: 'string', description: '外部 Agent id；缺省沿用当前会话。' },
-          model: { type: 'string', description: '可选模型覆盖。' },
-          description: { type: 'string', description: '子任务标题。' },
-          subagent_type: { type: 'string', description: '子代理类型提示。' },
+          prompt: { type: 'string', description: 'A complete, self-contained subtask description.' },
+          agent: { type: 'string', description: 'External Agent id; defaults to the current session.' },
+          model: { type: 'string', description: 'Optional model override.' },
+          description: { type: 'string', description: 'Subtask title.' },
+          subagent_type: { type: 'string', description: 'Subagent type hint.' },
           action: { type: 'string', enum: ['start', 'read', 'wait', 'send'] },
           run_in_background: { type: 'boolean' },
-          child_session_id: { type: 'string', description: '父代理发送时填子会话 ID；子代理回传时可填父会话 ID，也可省略。' },
+          child_session_id: { type: 'string', description: 'Child session id for a parent follow-up; a child may provide its parent session id or omit it when reporting back.' },
           message: { type: 'string' },
           timeout_ms: { type: 'number' },
           depends_on: { type: 'array', items: { type: 'string' } },
@@ -108,19 +108,19 @@ export default function codingNsSubagentMod(cmd: ModApiLike): void {
       if (context.toolName !== 'agent' && context.toolName !== 'agent_output') return undefined
       if (context.toolName === 'agent_output') return {
         block: true,
-        additionalContext: failureText('Command Code 原生子代理工具已禁用', '请使用 DSH 的 agent_subagent 工具查看子会话。'),
+        additionalContext: failureText('The native Command Code subagent tool is disabled', 'Use the DSH agent_subagent tool to inspect child sessions.'),
       }
       const input = context.input ?? {}
       const prompt = typeof input.prompt === 'string' ? input.prompt : ''
       if (prompt.trim() === '') return {
         block: true,
-        additionalContext: failureText('请求缺少子任务提示词', 'DSH 桥接不会回退到 Command Code 内建子代理。'),
+        additionalContext: failureText('The request is missing a subtask prompt', 'The DSH bridge will not fall back to the built-in Command Code subagent.'),
       }
       if (!bridgeConfigured) return {
         block: true,
         additionalContext: failureText(
-          subagentChild ? '当前会话禁止嵌套子代理' : 'DSH 子代理桥接不可用',
-          subagentChild ? '该会话是 DSH 子代理会话，不能再次创建外部 Agent。' : '桥接服务尚未启动或已失效，不能创建外部 Agent。',
+          subagentChild ? 'Nested subagents are not allowed in this session' : 'The DSH subagent bridge is unavailable',
+          subagentChild ? 'This is a DSH child session and cannot create another external Agent.' : 'The bridge has not started or is no longer available; an external Agent cannot be created.',
         ),
       }
       const dispatched = await dispatchToBridge(baseUrl, token, sessionId, context.toolCallId, prompt, input)
@@ -142,10 +142,10 @@ async function runDshAgentTool(
   const action = input?.action === 'read' || input?.action === 'wait' || input?.action === 'send' ? input.action : 'start'
   const prompt = typeof input?.prompt === 'string' ? input.prompt : ''
   const message = typeof input?.message === 'string' ? input.message : ''
-  if (subagentChild && action === 'start') return { ok: false, error: failureText('当前会话禁止嵌套子代理', '该会话是 DSH 子代理会话，不能再次创建外部 Agent。') }
-  if (baseUrl === '' || token === '' || sessionId === '') return { ok: false, error: failureText('DSH 子代理桥接不可用', '桥接服务尚未启动或已失效，不能创建外部 Agent。') }
-  if (action === 'start' && prompt.trim() === '') return { ok: false, error: 'agent_subagent 的 start 操作需要非空 prompt。' }
-  if (action === 'send' && prompt.trim() === '' && message.trim() === '') return { ok: false, error: 'agent_subagent 的 send 操作需要 message 或 prompt。' }
+  if (subagentChild && action === 'start') return { ok: false, error: failureText('Nested subagents are not allowed in this session', 'This is a DSH child session and cannot create another external Agent.') }
+  if (baseUrl === '' || token === '' || sessionId === '') return { ok: false, error: failureText('The DSH subagent bridge is unavailable', 'The bridge has not started or is no longer available; an external Agent cannot be created.') }
+  if (action === 'start' && prompt.trim() === '') return { ok: false, error: 'agent_subagent requires a non-empty prompt for the start action.' }
+  if (action === 'send' && prompt.trim() === '' && message.trim() === '') return { ok: false, error: 'agent_subagent requires a message or prompt for the send action.' }
   const dispatched = await dispatchRequest(baseUrl, token, {
     sessionId,
     prompt,
@@ -215,7 +215,7 @@ async function dispatchRequest(baseUrl: string, token: string, request: BridgeRe
       signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
     })
     if (!response.ok) {
-      return { ok: false, failure: failureText(`桥接返回 HTTP ${String(response.status)}`, await readBridgeError(response)) }
+      return { ok: false, failure: failureText(`The bridge returned HTTP ${String(response.status)}`, await readBridgeError(response)) }
     }
     const payload = await response.json() as {
       readonly ok?: unknown
@@ -230,9 +230,9 @@ async function dispatchRequest(baseUrl: string, token: string, request: BridgeRe
     const knownStatus = payload.status === 'creating' || payload.status === 'running' || payload.status === 'completed' || payload.status === 'failed' || payload.status === 'interrupted'
     if (payload.ok !== true && !knownStatus) {
       const detail = typeof payload.error === 'string' && payload.error.trim() !== '' ? payload.error.trim() : ''
-      return { ok: false, failure: failureText('桥接拒绝了这次子代理派发', detail) }
+      return { ok: false, failure: failureText('The bridge rejected this subagent dispatch', detail) }
     }
-    const text = typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : '(子代理没有文本输出)'
+    const text = typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : '(The subagent produced no text output.)'
     // 把子会话身份带回外部 Agent；否则它只能知道“已启动”，却无法继续
     // 调用 action=read/wait 观察结果。
     return {
@@ -250,7 +250,7 @@ async function dispatchRequest(baseUrl: string, token: string, request: BridgeRe
     }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
-    return { ok: false, failure: failureText('无法连接 DSH 子代理桥接', reason) }
+    return { ok: false, failure: failureText('Unable to connect to the DSH subagent bridge', reason) }
   }
 }
 
@@ -273,9 +273,9 @@ async function readBridgeError(response: Response): Promise<string> {
  */
 function failureText(summary: string, detail: string): string {
   const lines = [
-    `[codingns4dsh] 子代理托管派发失败：${summary}。`,
-    detail === '' ? '' : `原因：${detail}`,
-    '本次调用没有回退到 Command Code 内建子代理，任务尚未执行。请修复 DSH 子代理托管配置后重试。',
+    `[codingns4dsh] Managed subagent dispatch failed: ${summary}.`,
+    detail === '' ? '' : `Reason: ${detail}`,
+    'This call did not fall back to the built-in Command Code subagent, and the task has not run. Fix the DSH subagent hosting configuration and retry.',
   ]
   return lines.filter((line) => line !== '').join('\n')
 }

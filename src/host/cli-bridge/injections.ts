@@ -373,7 +373,7 @@ export function openCodeBridgePrompt(sessionId: string, prompt: string): string 
   if (!subagentBridgeActive(sessionId) || (!child && !looksLikeSubagentRequest(prompt))) return prompt
   const toolName = openCodeBridgeToolName(sessionId)
   if (prompt.includes(toolName)) return prompt
-  return `[CodingNS 子代理路由规则]\n${bridgeSubagentGuidance(toolName)}\n\n[用户请求]\n${prompt}`
+  return `[CodingNS subagent routing instructions]\n${bridgeSubagentGuidance(toolName)}\n\n[User request]\n${prompt}`
 }
 
 /** 返回当前 OpenCode V2 会话实际暴露的 MCP 工具名。 */

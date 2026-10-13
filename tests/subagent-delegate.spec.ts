@@ -85,7 +85,7 @@ test('carrier v2 携带用户明确选择的模型并在 Host 改写授权中保
   assert.equal(rewritten.kind, 'rewritten')
   if (rewritten.kind === 'rewritten') {
     assert.equal(rewritten.value.targets[0]?.modelId, 'deepseek/deepseek-v4.1-flash')
-    assert.match(rewritten.value.instruction, /模型：deepseek\/deepseek-v4\.1-flash/u)
+    assert.match(rewritten.value.instruction, /model: deepseek\/deepseek-v4\.1-flash/u)
   }
 })
 

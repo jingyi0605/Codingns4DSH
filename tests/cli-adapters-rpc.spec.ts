@@ -1119,7 +1119,7 @@ test('Grok ask_user_question 真实事件经过原生问题入口闭环保留 to
   assert.deepEqual(JSON.parse(results[0].result.output).answers, [{ id: 'question-1', selected: ['是 (Recommended)'] }])
   assert.equal(chunks.some((chunk) => chunk.type === 'tool-event'), false)
   assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'stop' })
-  assert.match(String(replay.prompt[0]?.text), /ask_user_question 属于 grok_build 内建工具，不依赖 MCP 服务器/u)
+  assert.match(String(replay.prompt[0]?.text), /ask_user_question is a grok_build built-in tool and does not depend on an MCP server/u)
   assert.deepEqual(replay.prompt.at(-1), { type: 'text', text: '请使用提问组件向我提问' })
   replay.driver.dispose()
 })

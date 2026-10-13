@@ -30,34 +30,34 @@ export async function dispatchBridgeSubagent(
 ): Promise<SubagentBridgeDispatchResult> {
   const native = getNativeSubagents()
   if (!hasNativeSubagentStart(native)) {
-    return bridgeFailure('DSH 原生 Subagent 能力不可用，当前 Host 未提供可续子会话')
+    return bridgeFailure('The native DSH subagent capability is unavailable; the Host does not provide continuable child sessions.')
   }
   if (deps.nativeSessions === undefined) {
-    return bridgeFailure('DSH 原生会话桥接不可用')
+    return bridgeFailure('The native DSH session bridge is unavailable.')
   }
   const parentAgent = findAgentBySession(deps.agents, request.sessionId)
   if (parentAgent === undefined) {
-    return bridgeFailure(`找不到会话对应的 DSH Agent: ${request.sessionId}`)
+    return bridgeFailure(`No DSH Agent was found for session ${request.sessionId}.`)
   }
   // 桥接环境已经用 request.sessionId 绑定了调用方身份；不能改用 Agent 对象的
   // 可变 header/id，否则子 Agent 创建期间的对象复用会把主会话误认成子会话。
   const parentId = request.sessionId.trim()
-  if (parentId === '') return bridgeFailure('子代理桥接缺少当前会话 ID')
+  if (parentId === '') return bridgeFailure('The subagent bridge is missing the current session id.')
   const action = request.action ?? 'start'
   const ownParentTarget = isNativeSubagentSession(deps.nativeSessions, parentId)
     ? nativeSubagentParentSessionId(deps.nativeSessions, parentId)
     : undefined
   if (action === 'start' && ownParentTarget !== undefined) {
-    return bridgeFailure('当前会话禁止嵌套子代理：子会话只能通过 send 回传父会话报告')
+    return bridgeFailure('Nested subagents are not allowed in this session; a child session can only use send to report to its parent.')
   }
   if (action === 'read' || action === 'wait') {
     const childSessionId = request.childSessionId?.trim() ?? ''
     const lifecycle = action === 'read'
       ? readNativeSubagentLifecycle(childSessionId)
       : await waitNativeSubagentLifecycle(childSessionId, request.timeoutMs)
-    if (lifecycle === undefined || lifecycle.parentSessionId !== parentId) return bridgeFailure(`DELEGATE_CHILD_NOT_FOUND: 找不到父会话下的子会话：${childSessionId}`)
+    if (lifecycle === undefined || lifecycle.parentSessionId !== parentId) return bridgeFailure(`DELEGATE_CHILD_NOT_FOUND: no child session was found under the parent session: ${childSessionId}`)
     const reviewed = reviewNativeSubagentFailure(childSessionId) ?? lifecycle
-    return { ok: reviewed.status === 'completed', completed: reviewed.completed, status: reviewed.status, text: reviewed.text ?? '子代理尚未产生文本结果。', childSessionId: reviewed.childSessionId, ...(reviewed.error === undefined ? {} : { error: reviewed.error }), ...nativeSubagentFailureReviewFields(reviewed) }
+    return { ok: reviewed.status === 'completed', completed: reviewed.completed, status: reviewed.status, text: reviewed.text ?? 'The subagent has not produced a text result yet.', childSessionId: reviewed.childSessionId, ...(reviewed.error === undefined ? {} : { error: reviewed.error }), ...nativeSubagentFailureReviewFields(reviewed) }
   }
   if (action === 'send') {
     const requestedTargetId = request.childSessionId?.trim() ?? ''
@@ -68,23 +68,23 @@ export async function dispatchBridgeSubagent(
     if (parentTarget !== undefined && (requestedTargetId === '' || requestedTargetId === parentTarget)) {
       const sent = sendNativeSubagentParentMessage(deps.nativeSessions, parentId, message)
       return sent.ok
-        ? { ok: true, completed: false, status: 'running', text: '子代理报告已回传父会话。', parentSessionId: sent.parentSessionId ?? parentTarget }
-        : bridgeFailure(sent.error ?? '父会话报告回传失败。')
+        ? { ok: true, completed: false, status: 'running', text: 'The subagent report was sent to the parent session.', parentSessionId: sent.parentSessionId ?? parentTarget }
+        : bridgeFailure(sent.error ?? 'Failed to send the report to the parent session.')
     }
     const childSessionId = requestedTargetId
     const lifecycle = readNativeSubagentLifecycle(childSessionId)
-    if (lifecycle === undefined || lifecycle.parentSessionId !== parentId) return bridgeFailure(`DELEGATE_CHILD_NOT_FOUND: 找不到父会话下的子会话：${childSessionId}`)
+    if (lifecycle === undefined || lifecycle.parentSessionId !== parentId) return bridgeFailure(`DELEGATE_CHILD_NOT_FOUND: no child session was found under the parent session: ${childSessionId}`)
     const reviewed = reviewNativeSubagentFailure(childSessionId) ?? lifecycle
     const cursor = nativeSubagentEventCursor(deps.nativeSessions, childSessionId)
     const sent = await sendNativeSubagentMessage(native, { parentAgent, parentId, childSessionId, message })
-    if (!sent.ok) return { ok: false, completed: false, status: 'failed', text: sent.error ?? '子代理消息发送失败。', childSessionId, error: sent.error ?? '子代理消息发送失败。', ...nativeSubagentFailureReviewFields(reviewed) }
+    if (!sent.ok) return { ok: false, completed: false, status: 'failed', text: sent.error ?? 'Failed to send the message to the subagent.', childSessionId, error: sent.error ?? 'Failed to send the message to the subagent.', ...nativeSubagentFailureReviewFields(reviewed) }
     trackNativeSubagentFollowup(deps.nativeSessions, childSessionId, cursor)
-    return { ok: true, completed: false, status: 'running', text: '后续消息已发送给子代理。', childSessionId, ...(sent.messageId === undefined ? {} : { messageId: sent.messageId }) }
+    return { ok: true, completed: false, status: 'running', text: 'The follow-up message was sent to the subagent.', childSessionId, ...(sent.messageId === undefined ? {} : { messageId: sent.messageId }) }
   }
   const authorizedTarget = getSingleDelegationTarget(request.sessionId)
   const adapterId = (request.agent ?? authorizedTarget?.adapterId ?? resolveSessionAdapter(request.sessionId) ?? '').trim()
   if (!EXTERNAL_SUBAGENT_IDS.includes(adapterId as typeof EXTERNAL_SUBAGENT_IDS[number])) {
-    return bridgeFailure(`不支持的外部 Agent: ${adapterId === '' ? '(未指定)' : adapterId}`)
+    return bridgeFailure(`Unsupported external Agent: ${adapterId === '' ? '(unspecified)' : adapterId}`)
   }
   const registry = getAdapterRegistry()
   if (registry !== undefined) {
@@ -94,16 +94,16 @@ export async function dispatchBridgeSubagent(
       ? { installed: true, enabled: true }
       : (await registry.catalogForUse([adapterId])).find((item) => item.id === adapterId)
     if (adapter === undefined || !adapter.installed || !adapter.enabled) {
-      return bridgeFailure(`${adapterId} 未安装或未启用`)
+      return bridgeFailure(`${adapterId} is not installed or enabled.`)
     }
   }
-  if (!isDelegationTargetAllowed(parentId, adapterId)) return bridgeFailure(`DELEGATE_TARGET_NOT_ALLOWED: 当前对话未授权使用 ${adapterId}`)
+  if (!isDelegationTargetAllowed(parentId, adapterId)) return bridgeFailure(`DELEGATE_TARGET_NOT_ALLOWED: this conversation is not authorized to use ${adapterId}`)
   const dependencyStates = (request.dependsOn ?? []).map((id) => readNativeSubagentLifecycle(id))
   if (dependencyStates.some((state) => state === undefined || state.parentSessionId !== parentId || state.status !== 'completed')) {
     const failedDependency = dependencyStates.find((state) => state !== undefined && nativeSubagentFailureNeedsReview(state))
     return bridgeFailure(failedDependency === undefined
-      ? 'DELEGATE_DEPENDENCY_NOT_READY: 前置子会话尚未 completed，请先 wait/read。'
-      : 'DELEGATE_DEPENDENCY_FAILED_REVIEW_REQUIRED: 前置子代理 failed，必须先 read/wait 查看失败状态，再评估重新创建或接管。')
+      ? 'DELEGATE_DEPENDENCY_NOT_READY: a prerequisite child session is not completed; call wait/read first.'
+      : 'DELEGATE_DEPENDENCY_FAILED_REVIEW_REQUIRED: a prerequisite subagent failed; call read/wait to inspect it before recreating or taking it over.')
   }
   const modelId = request.model?.trim() === ''
     ? authorizedTarget?.modelId
@@ -147,12 +147,12 @@ export async function dispatchBridgeSubagent(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return bridgeFailure(message || '子代理派发失败，且未返回具体错误。')
+    return bridgeFailure(message || 'Subagent dispatch failed without a specific error.')
   }
 }
 
 function bridgeFailure(error: string): SubagentBridgeDispatchResult {
-  const message = error.trim() || '子代理派发失败，且未返回具体错误。'
+  const message = error.trim() || 'Subagent dispatch failed without a specific error.'
   return { ok: false, completed: false, status: 'failed', text: message, error: message }
 }
 

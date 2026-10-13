@@ -3382,7 +3382,7 @@ test('stage0 形态：fork 子会话被识别为父会话的外部 Agent，而�
   await features.disable('cliAdapters')
 })
 
-test('委派 RPC 允许任务留空，交由派发内核回退到最近一条用户消息', async () => {
+test('委派 RPC 接受空任务并返回派发内核的能力诊断', async () => {
   const table = new CodingNsRpcTable()
   const features = new FeatureRegistry({ rpc: table })
   features.register(createCliAdaptersFeature({ registry: new CodingNsCliAdapterRegistry([]) }))
@@ -3390,13 +3390,12 @@ test('委派 RPC 允许任务留空，交由派发内核回退到最近一条用
   const handler = table.resolve('cli/delegate')?.handler
 
   // popupSelect 打开时焦点在弹层，草稿里往往只剩 `/委派` 本身，prompt 因此是空串。
-  // 这里必须放行到派发内核（由它回退到最近一条人类消息），而不是在参数校验就抛错，
-  // 否则用户会看到「prompt 不能为空」而完全无法委派。
+  // RPC 应允许空字符串进入派发内核，再由内核返回当前能力诊断，而不是在参数解码时抛错。
   const result = await handler?.('delegate', { sessionId: 'session-delegate-empty', adapterId: 'codex', prompt: '' }) as Record<string, unknown> | undefined
   assert.notEqual(result, undefined)
   assert.equal(result?.ok, false)
-  // 缺少可续子代理/原生会话桥接时返回可读诊断，绝不能是参数校验错误。
-  assert.match(String(result?.error ?? ''), /可续子代理|任务描述不能为空/u)
+  // 这个 fixture 没有注册原生子代理能力，因此应返回可读能力诊断，而不是参数校验错误。
+  assert.match(String(result?.error ?? ''), /continuable child sessions|prompt is required|可续子代理能力|任务描述不能为空/u)
 
   // 显式传入非字符串仍要拒绝，避免把类型错误静默当成空任务。
   await assert.rejects(

@@ -82,7 +82,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
 
   /** Grok 的原生目录同时应用信任、禁用、兼容来源和插件命名规则。 */
   async listSkills(input: CodingNsCliSkillListInput): Promise<readonly CodingNsCliSkillDescriptor[]> {
-    if (input.signal?.aborted) throw new Error('Skill 目录读取已取消')
+    if (input.signal?.aborted) throw new Error('Skill catalog loading was canceled')
     const cwd = input.cwd?.trim() || process.cwd()
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command !== null) {
@@ -118,7 +118,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const command = this.cachedBinary ?? (await this.detect()).command
-    if (command === null) throw new Error('Grok Build 未安装')
+    if (command === null) throw new Error('Grok Build is not installed')
     const state = await this.getSession(input, command)
     const rpc = state.rpc
     let providerSessionId = state.providerSessionId
@@ -191,9 +191,9 @@ export class GrokBuildDriver implements CodingNsCliDriver {
 
   respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
     const state = this.sessions.get(sessionId)
-    if (state === undefined) throw new Error('Grok 权限请求已结束')
+    if (state === undefined) throw new Error('The Grok permission request has ended')
     const pending = state.requests.get(response.requestId)
-    if (pending === undefined) throw new Error('Grok 权限请求不存在')
+    if (pending === undefined) throw new Error('The Grok permission request does not exist')
     state.requests.delete(response.requestId)
     const optionId = response.approved ? pending.allowOptionId : pending.rejectOptionId
     state.rpc.respond(pending.rpcId, { outcome: { outcome: 'selected', optionId } })
@@ -211,7 +211,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       return
     }
     const elicitation = state?.questions.get(response.requestId)
-    if (state === undefined || elicitation === undefined) throw new Error('Grok 问题请求不存在')
+    if (state === undefined || elicitation === undefined) throw new Error('The Grok question request does not exist')
     state.questions.delete(response.requestId)
     state.rpc.respond(elicitation.rpcId, acpElicitationResponse(elicitation, response))
   }
@@ -275,9 +275,9 @@ const GROK_DRAIN_WAIT_MS = 250
 /** 内建提问与 MCP 的连接状态无关，宿主能力说明必须随每轮请求一起传递。 */
 const GROK_QUESTION_GUIDANCE = [
   '<codingns_host_capabilities>',
-  'DSH 宿主支持 Grok Build 内建 ask_user_question 工具，会显示原生问题卡并回传用户的结构化回答。',
-  'ask_user_question 属于 grok_build 内建工具，不依赖 MCP 服务器；MCP 正在连接的提示只影响提示中列出的 MCP 服务器。',
-  '当用户明确要求使用提问组件，或需要通过问题卡收集用户选择时，请直接调用 ask_user_question 并等待用户回答，再继续验证或处理答案。',
+  'The DSH host provides Grok Build\'s built-in ask_user_question tool. It displays a native question card and returns the user\'s structured answer.',
+  'ask_user_question is a grok_build built-in tool and does not depend on an MCP server. MCP connection notices only describe the MCP servers listed in the prompt.',
+  'When the user explicitly asks to use a question component, or when a question card is needed to collect a choice, call ask_user_question directly, wait for the user\'s answer, and then continue.',
   '</codingns_host_capabilities>',
 ].join('\n')
 

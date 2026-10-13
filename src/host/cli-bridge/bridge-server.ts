@@ -59,7 +59,7 @@ export async function startSubagentBridgeServer(options: {
   const server = createServer((request, response) => {
     void handleRequest(request, response, token, options.dispatch).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
-      respondJson(response, 500, { ok: false, text: message || '子代理桥接内部错误。', error: message || '子代理桥接内部错误。' })
+      respondJson(response, 500, { ok: false, text: message || 'Internal subagent bridge error.', error: message || 'Internal subagent bridge error.' })
     })
   })
   server.requestTimeout = 0
@@ -115,7 +115,7 @@ async function handleRequest(
   }
   const input = readDispatchRequest(parsed)
   if (input === undefined) {
-    respondJson(response, 400, { ok: false, error: 'sessionId 不能为空，start 操作的 prompt 不能为空' })
+    respondJson(response, 400, { ok: false, error: 'sessionId and the start prompt are required' })
     return
   }
   const result = await dispatch(input)

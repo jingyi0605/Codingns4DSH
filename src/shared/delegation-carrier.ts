@@ -29,7 +29,7 @@ export function encodeDelegationCarrier(adapterId: string, label: string, modelI
   const normalizedId = adapterId.trim()
   const normalizedLabel = label.trim() || normalizedId
   const normalizedModel = modelId?.trim() || ''
-  if (normalizedId === '') throw new Error('委派 carrier 的 adapterId 不能为空')
+  if (normalizedId === '') throw new Error('The delegation carrier adapterId cannot be empty.')
   if (normalizedModel !== '') {
     return `@${normalizedLabel}${CARRIER_V2_PREFIX}${encodeURIComponent(normalizedId)}:${encodeURIComponent(normalizedModel)}:${encodeURIComponent(normalizedLabel)}-->`
   }
@@ -67,9 +67,9 @@ export function parseDelegationCarriers(input: string): ParsedDelegationCarriers
       modelId = decodeURIComponent(rawModel).trim()
       label = decodeURIComponent(rawLabel).trim()
     } catch {
-      errors.push('DELEGATE_CARRIER_INVALID: carrier 编码损坏')
+      errors.push('DELEGATE_CARRIER_INVALID: carrier encoding is corrupted')
     }
-    if (adapterId === '' || modelId === '' || label === '') errors.push('DELEGATE_CARRIER_INVALID: carrier 缺少目标标识')
+    if (adapterId === '' || modelId === '' || label === '') errors.push('DELEGATE_CARRIER_INVALID: carrier is missing a target identifier')
     const mention = label === '' ? '' : `@${label}`
     const start = mention !== '' && text.slice(Math.max(0, index - mention.length), index) === mention
       ? index - mention.length
@@ -92,9 +92,9 @@ export function parseDelegationCarriers(input: string): ParsedDelegationCarriers
       adapterId = decodeURIComponent(rawId).trim()
       label = decodeURIComponent(rawLabel).trim()
     } catch {
-      errors.push('DELEGATE_CARRIER_INVALID: carrier 编码损坏')
+      errors.push('DELEGATE_CARRIER_INVALID: carrier encoding is corrupted')
     }
-    if (adapterId === '' || label === '') errors.push('DELEGATE_CARRIER_INVALID: carrier 缺少目标标识')
+    if (adapterId === '' || label === '') errors.push('DELEGATE_CARRIER_INVALID: carrier is missing a target identifier')
     const mention = label === '' ? '' : `@${label}`
     const start = mention !== '' && text.slice(Math.max(0, index - mention.length), index) === mention
       ? index - mention.length
@@ -109,7 +109,7 @@ export function parseDelegationCarriers(input: string): ParsedDelegationCarriers
     const index = match.index ?? -1
     if (index < 0 || /^<!--codingns:delegate:v1:[^:>]+:[^>]+-->$/u.test(match[0]) || /^<!--codingns:delegate:v2:[^:>]+:[^:>]+:[^>]+-->$/u.test(match[0])) continue
     found = true
-    errors.push('DELEGATE_CARRIER_INVALID: carrier 格式不受支持')
+    errors.push('DELEGATE_CARRIER_INVALID: carrier format is not supported')
     ranges.push([index, index + match[0].length])
   }
 

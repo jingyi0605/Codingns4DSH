@@ -53,7 +53,7 @@ export function rewriteDelegationMessages(
   const parsed = parseDelegationCarriers(sourceText)
   if (!parsed.found) return { kind: 'none', messages }
   if (parsed.errors.length > 0) {
-    return { kind: 'error', error: { code: 'DELEGATE_CARRIER_INVALID', message: parsed.errors[0] ?? '委派 carrier 无效。', adapterIds: [] } }
+    return { kind: 'error', error: { code: 'DELEGATE_CARRIER_INVALID', message: parsed.errors[0] ?? 'The delegation carrier is invalid.', adapterIds: [] } }
   }
   const unavailable: string[] = []
   const targets: DelegationRewriteTarget[] = []
@@ -74,7 +74,7 @@ export function rewriteDelegationMessages(
       kind: 'error',
       error: {
         code: 'DELEGATE_TARGET_UNAVAILABLE',
-        message: `委派目标未安装或已停用：${unavailable.join('、')}`,
+        message: `Delegation targets are not installed or enabled: ${unavailable.join(', ')}`,
         adapterIds: unavailable,
       },
     }
@@ -85,7 +85,7 @@ export function rewriteDelegationMessages(
       kind: 'error',
       error: {
         code: 'DELEGATE_TASK_EMPTY',
-        message: '委派任务描述不能为空，请在 Agent mention 后补充任务。',
+        message: 'The delegation task description cannot be empty. Add a task after the Agent mention.',
         adapterIds: targets.map((target) => target.adapterId),
       },
     }
@@ -101,14 +101,14 @@ export function rewriteDelegationMessages(
 }
 
 function buildDelegationInstruction(task: string, targets: readonly DelegationRewriteTarget[]): string {
-  const allowed = targets.map((target) => `- ${target.adapterId}（${target.label}，模型：${target.modelId ?? '适配器默认'}，能力：${target.capabilities.length === 0 ? '未声明' : target.capabilities.join('、')}）`).join('\n')
+  const allowed = targets.map((target) => `- ${target.adapterId} (${target.label}, model: ${target.modelId ?? 'adapter default'}, capabilities: ${target.capabilities.length === 0 ? 'none declared' : target.capabilities.join(', ')})`).join('\n')
   return [
-    '[CodingNS 委派指令]',
-    `任务：${task}`,
-    '允许使用的外部 Agent：',
+    '[CodingNS delegation instructions]',
+    `Task: ${task}`,
+    'Allowed external Agents:',
     allowed,
-    '请先根据任务语义制定简短的角色和步骤计划：明确每一步的目标 Agent、职责和 dependsOn。实现、测试、复核等角色由当前 Agent 理解任务后分配，不由 Host 猜测。',
-    '然后调用已有 agent_subagent 工具执行委派。每个子任务必须使用上面列出的稳定 adapterId，保持子任务在独立子会话中运行；有 dependsOn 的后置步骤必须先 wait/read 前置 child session 直到 completed，再启动后置步骤。任何 failed 子代理都必须先 read/wait 查看状态，评估是否重新创建或用 send 接管；当前 Agent 负责向用户说明创建、运行、完成和失败状态，不要把创建成功当作任务完成。',
+    'First create a short role and step plan from the task semantics. Specify the target Agent, responsibility, and dependsOn for every step. The current Agent assigns implementation, testing, and review roles after understanding the task; the Host does not guess them.',
+    'Then use the existing agent_subagent tool to delegate. Every subtask must use one of the stable adapterIds listed above and run in an independent child session. A dependent step must wait/read its prerequisite child session until it is completed. A failed subagent must be inspected with read/wait before it is recreated or taken over with send. The current Agent must report creation, running, completion, and failure states to the user; creating a child session does not mean the task is complete.',
   ].join('\n')
 }
 
