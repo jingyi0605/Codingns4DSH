@@ -73,7 +73,11 @@ export class ProviderSubscriptionService {
     // Claude/GPT 两个独立配额组里读哪一组。
     if (adapterId === 'antigravity') return this.antigravity.read({ modelId })
     if (adapterId === 'zcode') return this.readZcode(providerId, modelId)
-    if (adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'grok' || adapterId === 'opencode' || adapterId === 'command-code' || adapterId === 'codebuddy' || adapterId === 'workbuddy') {
+    // Grok Build 的 OAuth 登录代表官方 SuperGrok 订阅，即使本机同时保留了
+    // GROK_BASE_URL/XAI_BASE_URL 之类的自定义上游配置，也必须先展示官方订阅窗口。
+    // 否则自定义上游只要能返回余额，就会在官方读取器执行前截获结果。
+    if (adapterId === 'grok') return this.readGrokFirst(providerId)
+    if (adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'opencode' || adapterId === 'command-code' || adapterId === 'codebuddy' || adapterId === 'workbuddy') {
       return this.readSub2ApiFirst(adapterId, providerId)
     }
     switch (adapterId) {
@@ -123,6 +127,12 @@ export class ProviderSubscriptionService {
     if (adapterId === 'command-code') return this.commandCode?.read() ?? null
     if (adapterId === 'codebuddy' || adapterId === 'workbuddy') return this.codebuddy.read(adapterId)
     return null
+  }
+
+  private async readGrokFirst(providerId?: string): Promise<CliSubscriptionUsage | null> {
+    const official = await this.grok.read()
+    if (official !== null) return withProvider(official, identifyModelProvider({ name: 'xai' }), '')
+    return (await this.readCustomUpstream('grok', providerId))?.usage ?? null
   }
 
   /** 余额属于当前模型的原生 Provider，不能用其它账号或 Start Plan 冒充。 */

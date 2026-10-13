@@ -146,6 +146,40 @@ test('Grok 缺失凭据或鉴权失败时返回空用量', async () => {
   assert.equal(await unauthorized.read(), null)
 })
 
+test('Grok 官方 OAuth 订阅优先于已配置的自定义上游', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'codingns-grok-priority-'))
+  const authPath = join(directory, 'auth.json')
+  writeFileSync(authPath, JSON.stringify({ 'https://auth.x.ai::client-id': { key: 'grok-token' } }))
+  const resetsAt = Math.floor(Date.now() / 1000) + 6 * 86_400
+  const payload = grokBillingPayload(25, resetsAt)
+  const frame = new Uint8Array(5 + payload.length)
+  frame.set([0, 0, 0, 0, payload.length], 0)
+  frame.set(payload, 5)
+  let customUpstreamCalls = 0
+  const service = new ProviderSubscriptionService({
+    grok: {
+      credentials: [authPath],
+      fetch: async (url) => {
+          assert.equal(url, 'https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig')
+        return new Response(frame, { status: 200 })
+      },
+    },
+    sub2api: {
+      sources: { grok: { baseUrl: 'https://upstream.example.test/v1', apiKey: 'custom-secret' } },
+      fetch: async () => {
+        customUpstreamCalls += 1
+        return new Response(JSON.stringify({ balance: 88, usage: { today: {}, total: {} } }), { status: 200 })
+      },
+    },
+  })
+
+  const usage = await service.read('grok')
+  assert.equal(usage?.provider?.id, 'xai')
+  assert.equal(usage?.primary?.usedPercent, 25)
+  assert.equal(usage?.sub2api, undefined)
+  assert.equal(customUpstreamCalls, 0)
+})
+
 test('Codex 订阅快照映射重置次数、到期明细与点数余额', async () => {
   await withoutOpenAiBaseUrl(async () => {
     const methods: string[] = []
