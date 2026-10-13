@@ -2,6 +2,37 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 
+test('图片产物先登记为 DSH 附件，再投影成原生 image block', async () => {
+  const admitted: unknown[] = []
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'grok',
+    sessionId: 'image-session',
+    nativeSessions: {
+      admitImageArtifact: async (artifact) => {
+        admitted.push(artifact)
+        return {
+          attachmentId: 'sha256:image',
+          mediaType: 'image/jpeg',
+          bytes: 3,
+          width: 1,
+          height: 1,
+          name: '1.jpg',
+        }
+      },
+    },
+  })
+
+  const chunks = await projector.push({ type: 'image-artifact', path: '/private/provider/images/1.jpg' })
+
+  assert.deepEqual(admitted, [{ type: 'image-artifact', path: '/private/provider/images/1.jpg' }])
+  assert.deepEqual(chunks, [
+    { type: 'block-start', index: 2, blockType: 'image' },
+    { type: 'block-end', index: 2, block: { type: 'image', attachment: {
+      attachmentId: 'sha256:image', mediaType: 'image/jpeg', bytes: 3, width: 1, height: 1, name: '1.jpg',
+    } } },
+  ])
+})
+
 test('公共消息投影层统一处理正文、思考、工具、用量和唯一终态', async () => {
   const calls = []
   const results = []

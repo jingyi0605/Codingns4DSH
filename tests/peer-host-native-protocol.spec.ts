@@ -235,6 +235,26 @@ test('原生响应中的列表、header 和 projection key 可重新编码为虚
   })
 })
 
+test('session/attachment 只改写会话作用域并保留 opaque attachmentId', () => {
+  const virtualSession = 'codingns:peer-host:v1:session:peer-a:remote-session'
+  const payload = {
+    args: {
+      request: {
+        sessionId: virtualSession,
+        attachmentId: 'sha256:' + 'a'.repeat(64),
+      },
+    },
+  }
+  assert.deepEqual(rewriteNativeRequestIds('session/attachment', payload, resolver), {
+    args: {
+      request: {
+        sessionId: 'remote-session',
+        attachmentId: 'sha256:' + 'a'.repeat(64),
+      },
+    },
+  })
+})
+
 test('原生响应改写不会展开 Uint8Array，并可安全穿过 PeerHost JSON 边界', () => {
   const bytes = new Uint8Array([0, 45, 60, 255])
   const rewritten = rewriteNativeResponseIds(

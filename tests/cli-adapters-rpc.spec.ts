@@ -70,6 +70,45 @@ test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async 
   }
 })
 
+test('Codex image_generation 事件把内联 base64 保留为 Host 图片产物事件', async () => {
+  const generated = Buffer.alloc(100, 0x41).toString('base64')
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = {
+        write(data: string): void {
+          const request = JSON.parse(data) as { id: number; method: string }
+          if (request.method === 'thread/start') {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'image-thread' } } })}\n`)
+            return
+          }
+          if (request.method === 'turn/start') {
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'image-turn', status: 'inProgress' } } })}\n`)
+            setImmediate(() => {
+              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/completed', params: { threadId: 'image-thread', turnId: 'image-turn', item: { type: 'image_generation', id: 'image-call', status: 'completed', result: generated } } })}\n`)
+              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'image-thread', turn: { id: 'image-turn', status: 'completed' } } })}\n`)
+            })
+            return
+          }
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        },
+      }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const events = []
+  for await (const event of driver.executeTurn({ sessionId: 'image-events', messages: [], prompt: '生成图片' })) events.push(event)
+  assert.deepEqual(events.filter((event) => event.type !== 'session-binding'), [
+    { type: 'image-artifact', data: generated, mediaType: 'image/png' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
 test('Codex Computer Use 注入官方 cua_repl，并在无运行时时安全降级', () => {
   const config = {
     command: '/opt/cua/node',
