@@ -23,7 +23,9 @@ export interface SessionTranslationSettings {
 }
 
 export const SESSION_TRANSLATION_ADAPTER_IDS = [
-  'claude-code', 'codex', 'pi', 'opencode', 'antigravity', 'grok', 'cursor-cli', 'kiro-cli',
+  'command-code', 'claude-code', 'kimi', 'gemini', 'pi', 'codex', 'opencode', 'grok',
+  'mcode', 'zcode', 'codebuddy', 'workbuddy', 'cursor-cli', 'kiro-cli', 'qoder', 'qoder-cn',
+  'antigravity', 'doubao',
 ] as const
 
 export const DEFAULT_SESSION_TRANSLATION_SETTINGS: SessionTranslationSettings = {
@@ -32,7 +34,7 @@ export const DEFAULT_SESSION_TRANSLATION_SETTINGS: SessionTranslationSettings = 
   bilingual: false,
 }
 
-/** 当前支持在会话模型选择器中开启翻译的外部 Agent。 */
+/** 所有内置外部 Agent 均可在会话模型选择器中开启翻译；DSH 原生 Agent 不在其中。 */
 export function isSessionTranslationAdapter(adapterId: string): boolean {
   return (SESSION_TRANSLATION_ADAPTER_IDS as readonly string[]).includes(adapterId)
 }
