@@ -130,7 +130,7 @@ export const zh: Record<string, string> = {
   'translation.originalText': '原文',
   'translation.translatedText': '译文',
   'translation.actualSentText': '实际发送文本：',
-  'translation.modelUsed': '实际翻译模型',
+  'translation.modelUsed': '翻译模型',
   'translation.modelUnknown': '暂无模型信息',
   'translation.modelOfficial': 'DeepSeek 官方',
   'translation.modelThirdParty': '第三方',
