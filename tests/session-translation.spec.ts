@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import { createSessionTranslationService } from '../data/build/dist/host/features/session-translation-service.js'
-import { DEFAULT_SESSION_TRANSLATION_SETTINGS, isSessionTranslationAdapter } from '../data/build/dist/shared/contracts/session-translation.js'
+import {
+  DEFAULT_SESSION_TRANSLATION_SETTINGS,
+  isSessionTranslationAdapter,
+  normalizeSessionTranslationSettings,
+  readNativeTranslationRecord,
+  supportsSessionTranslation,
+  toSessionTranslationRecord,
+} from '../data/build/dist/shared/contracts/session-translation.js'
 
 test('会话翻译只在文本块结束后投影译文，并保留双语元数据', async () => {
   const translation = {
@@ -133,15 +140,97 @@ test('原文已是目标语言时跳过输入和输出翻译并记录无需处�
   service!.dispose()
 })
 
-test('会话翻译覆盖所有内置外部 Agent，不包含 DSH 原生 Agent', () => {
+test('会话翻译覆盖所有内置外部 Agent，DSH 原生 Agent 单独判定', () => {
   for (const adapterId of [
     'command-code', 'claude-code', 'kimi', 'gemini', 'pi', 'codex', 'opencode', 'grok',
     'mcode', 'zcode', 'codebuddy', 'workbuddy', 'cursor-cli', 'kiro-cli', 'qoder', 'qoder-cn',
     'antigravity', 'doubao',
   ]) {
     assert.equal(isSessionTranslationAdapter(adapterId), true)
+    assert.equal(supportsSessionTranslation(adapterId), true)
   }
+  // `isSessionTranslationAdapter` 只表示外部 CLI 适配器，翻译模型目录排除外部虚拟
+  // Provider 时依赖这一语义；DSH 原生会话由 supportsSessionTranslation 单独放行。
   assert.equal(isSessionTranslationAdapter('dsh'), false)
+  assert.equal(supportsSessionTranslation('dsh'), true)
+  assert.equal(supportsSessionTranslation('unknown-agent'), false)
+})
+
+test('原生会话翻译设置归一化补齐新字段并保留旧值', () => {
+  assert.deepEqual(DEFAULT_SESSION_TRANSLATION_SETTINGS, {
+    inputLanguage: 'en',
+    outputLanguage: 'zh',
+    bilingual: false,
+    nativeEnabled: false,
+  })
+
+  // 旧设置快照没有 nativeEnabled：必须补成关闭，而不是让原生翻译默认生效。
+  const legacy = normalizeSessionTranslationSettings({
+    inputLanguage: 'ja',
+    outputLanguage: 'en',
+    bilingual: true,
+  } as never)
+  assert.equal(legacy.inputLanguage, 'ja')
+  assert.equal(legacy.outputLanguage, 'en')
+  assert.equal(legacy.bilingual, true)
+  assert.equal(legacy.nativeEnabled, false)
+
+  const enabled = normalizeSessionTranslationSettings({
+    inputLanguage: 'zh',
+    outputLanguage: 'en',
+    bilingual: false,
+    nativeEnabled: true,
+    translationModel: { provider: ' deepseek ', model: ' deepseek-chat ' },
+  })
+  assert.equal(enabled.inputLanguage, 'zh')
+  assert.equal(enabled.nativeEnabled, true)
+  assert.deepEqual(enabled.translationModel, { provider: 'deepseek', model: 'deepseek-chat' })
+
+  const invalid = normalizeSessionTranslationSettings({
+    inputLanguage: 'xx',
+    outputLanguage: 'yy',
+    bilingual: 'yes',
+    translationModel: { provider: ' ', model: 'm' },
+  } as never)
+  assert.equal(invalid.inputLanguage, 'en')
+  assert.equal(invalid.outputLanguage, 'zh')
+  assert.equal(invalid.bilingual, false)
+  assert.equal(invalid.translationModel, undefined)
+})
+
+test('原生用户消息的翻译记录可回读并转换为详情记录', () => {
+  const source = {
+    kind: 'user',
+    codingnsTranslationInput: {
+      original: '请检查这段代码',
+      translated: 'Please review this code',
+      sourceLanguage: 'zh',
+      targetLanguage: 'en',
+      model: { provider: 'deepseek', model: 'deepseek-chat' },
+    },
+  }
+  const record = readNativeTranslationRecord(source)
+  assert.deepEqual(record, {
+    original: '请检查这段代码',
+    translated: 'Please review this code',
+    targetLanguage: 'en',
+    sourceLanguage: 'zh',
+    model: { provider: 'deepseek', model: 'deepseek-chat' },
+  })
+  assert.deepEqual(toSessionTranslationRecord(record!, { bilingual: true }), {
+    original: '请检查这段代码',
+    translated: 'Please review this code',
+    targetLanguage: 'en',
+    bilingual: true,
+    sourceLanguage: 'zh',
+    model: { provider: 'deepseek', model: 'deepseek-chat' },
+  })
+
+  // 不完整或未知结构按「没有翻译」处理，不能把非法语言渲染成详情入口。
+  assert.equal(readNativeTranslationRecord(undefined), undefined)
+  assert.equal(readNativeTranslationRecord({ kind: 'user' }), undefined)
+  assert.equal(readNativeTranslationRecord({ codingnsTranslationInput: { original: 'a', translated: 'b', targetLanguage: 'xx' } }), undefined)
+  assert.equal(readNativeTranslationRecord({ codingnsTranslationInput: { original: '', translated: 'b', targetLanguage: 'en' } }), undefined)
 })
 
 test('翻译请求使用指定模型并显式关闭思考，同时保护命令和代码', async () => {
