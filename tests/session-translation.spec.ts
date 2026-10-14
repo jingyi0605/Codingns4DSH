@@ -261,3 +261,103 @@ test('跟随默认模型时不会把外部 Agent 的虚拟 Provider 当成翻译
   assert.equal(requests[0]?.model, 'deepseek-chat')
   service!.dispose()
 })
+
+test('目标语言是英语时，缺少语言特征的英文短指令直接放行且不调用翻译模型', async () => {
+  let requestCount = 0
+  const context = {
+    llm: {
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }],
+      stream: () => {
+        requestCount += 1
+        return (async function* () {
+          yield { type: 'text-delta', text: 'unexpected translation' }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    },
+    get(name: string) {
+      if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+      return undefined
+    },
+  }
+  const service = createSessionTranslationService(context, '0.2.1-alpha.2')
+  assert.notEqual(service, undefined)
+  service!.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
+  service!.activate()
+
+  // 这些短指令没有专属字形，也没有足够词表信号；目标语言是英语时必须直接发送。
+  for (const text of ['tool test', 'check this file', 'Fix the bug', 'run the tests', 'ok']) {
+    const result = await service!.translateInputDetailed!('codex', text, undefined, true)
+    assert.equal(result.translated, text)
+    assert.equal(result.sourceLanguage, 'en')
+    assert.equal(result.alreadyTargetLanguage, true)
+    assert.equal(result.model, undefined)
+  }
+  assert.equal(requestCount, 0)
+  service!.dispose()
+})
+
+test('目标语言是英语时，带法语或德语特征的输入仍然交给翻译模型', async () => {
+  const requests: Record<string, unknown>[] = []
+  const context = {
+    llm: {
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }],
+      stream: (options: Record<string, unknown>) => {
+        requests.push(options)
+        return (async function* () {
+          yield { type: 'text-delta', text: 'Translate this' }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    },
+    get(name: string) {
+      if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+      return undefined
+    },
+  }
+  const service = createSessionTranslationService(context, '0.2.1-alpha.2')
+  assert.notEqual(service, undefined)
+  service!.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
+  service!.activate()
+
+  const french = await service!.translateInputDetailed!('codex', 'le fichier', undefined, true)
+  assert.equal(french.alreadyTargetLanguage, undefined)
+  assert.equal(french.translated, 'Translate this')
+  assert.equal(requests.length, 1)
+  service!.dispose()
+})
+
+test('输出方向目标为中文时，没有特征字的短中文回复不再调用翻译模型', async () => {
+  let requestCount = 0
+  const context = {
+    llm: {
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }],
+      stream: () => {
+        requestCount += 1
+        return (async function* () {
+          yield { type: 'text-delta', text: 'unexpected translation' }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    },
+    get(name: string) {
+      if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+      return undefined
+    },
+  }
+  const service = createSessionTranslationService(context, '0.2.1-alpha.2')
+  assert.notEqual(service, undefined)
+  service!.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
+  service!.activate()
+
+  const record = await service!.translateOutput('codex', 'assistant', '我修好了', undefined, true)
+  assert.equal(record?.translated, '我修好了')
+  assert.equal(record?.sourceLanguage, 'zh')
+  assert.equal(record?.alreadyTargetLanguage, true)
+  assert.equal(record?.model, undefined)
+  assert.equal(requestCount, 0)
+  service!.dispose()
+})

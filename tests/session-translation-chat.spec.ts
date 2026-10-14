@@ -164,3 +164,34 @@ test('仅含工具调用块的助手步骤保持原生行为：不渲染空步�
   // 工具调用卡片由独立的 tool-call 节点渲染；这里必须与 DSH 原生 AssistantMarkdown 一样留空。
   assert.equal(assistantHtml, '')
 })
+
+test('原文已是目标语言时翻译入口显示蓝色状态点而不是已翻译的绿色', () => {
+  const renderers = captureRenderers()
+  const userHtml = render(renderers.get('user')!.component, {
+    node: {
+      id: 'user-3',
+      data: {
+        seq: 10,
+        time: Date.now(),
+        content: [{ type: 'text', text: 'tool test' }],
+        source: {
+          kind: 'user',
+          codingnsTranslationInput: {
+            original: 'tool test',
+            translated: 'tool test',
+            sourceLanguage: 'en',
+            targetLanguage: 'en',
+            alreadyTargetLanguage: true,
+          },
+        },
+      },
+    },
+    sessionId: 'translation-chat',
+  })
+
+  assert.ok(userHtml.includes('data-codingns-translation-action'), '无需翻译的记录同样要渲染翻译入口')
+  assert.ok(userHtml.includes('原文已是目标语言，无需翻译'), `无需翻译状态必须给出提示：${userHtml}`)
+  // 状态点用 accent（蓝）而不是 success（绿）：输入已经是目标语言，没有调用翻译模型。
+  assert.ok(userHtml.includes('var(--dsw-alias-button-info-fill, #1677ff)'), `无需翻译必须显示蓝色状态点：${userHtml}`)
+  assert.equal(userHtml.includes('var(--dsw-alias-state-success-primary'), false)
+})
