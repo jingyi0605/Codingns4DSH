@@ -19,6 +19,7 @@ import {
 import type { MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import { dshThemeColor } from './theme.js'
+import { TRANSLATION_GLYPH_PATHS, TRANSLATION_GLYPH_SIZE, TRANSLATION_PENDING_BADGE_STYLE, TRANSLATION_STATUS_BADGE_STYLE } from '../shared/translation-indicator.js'
 import { uiFontSize } from './font-scale.js'
 import { useCliSessionTranslationEnabled } from './cli-slots.js'
 import { watchPendingTranslationTargets, type PendingTranslationTarget } from './session-translation-pending-dom.js'
@@ -204,23 +205,8 @@ export function TranslationAction(props: TranslationActionProps): ReactElement |
     'aria-hidden': true,
     'data-codingns-translation-pending': pending || undefined,
     style: {
-      position: 'absolute',
-      top: 1,
-      right: 1,
-      display: 'grid',
-      placeItems: 'center',
-      width: 10,
-      height: 10,
-      zIndex: 1,
-      boxSizing: 'border-box',
-      border: pending ? `1.5px solid ${dshThemeColor.accent}` : '1.5px solid var(--dsw-alias-bg-base, Canvas)',
-      ...(pending ? { borderTopColor: 'transparent' } : {}),
-      borderRadius: '50%',
-      color: '#fff',
-      background: pending ? 'transparent' : statusColor,
-      fontSize: 6,
-      fontWeight: 700,
-      lineHeight: 1,
+      ...TRANSLATION_STATUS_BADGE_STYLE,
+      ...(pending ? TRANSLATION_PENDING_BADGE_STYLE : { background: statusColor }),
     },
   }, pending ? null : failed ? '!' : '✓'),
   ),
@@ -261,8 +247,8 @@ function PendingTranslationAction(props: Omit<TranslationActionProps, 'messageId
 function TranslationGlyph(): ReactElement {
   return createElement('svg', {
     viewBox: '0 0 24 24',
-    width: 16,
-    height: 16,
+    width: TRANSLATION_GLYPH_SIZE,
+    height: TRANSLATION_GLYPH_SIZE,
     fill: 'none',
     stroke: 'currentColor',
     strokeWidth: 1.5,
@@ -270,8 +256,7 @@ function TranslationGlyph(): ReactElement {
     strokeLinejoin: 'round',
     'aria-hidden': true,
   },
-  createElement('path', { d: 'M3.5 5.5h10M8.5 3.5v2M12.5 5.5c0 4.4-3.3 7.2-8 9' }),
-  createElement('path', { d: 'M5.5 8.5c1.4 2 3.4 3.7 6 4.8M14.5 19.5l3-8 3 8M15.7 17h3.6' }),
+  ...TRANSLATION_GLYPH_PATHS.map(d => createElement('path', { key: d, d })),
   )
 }
 
