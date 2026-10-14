@@ -11,6 +11,7 @@ import {
   lanAccessFeature,
   mobileAccessFeature,
   reverseProxyFeature,
+  sessionTranslationFeature,
   terminalEnhancementFeature,
   workspaceSessionEnhancementFeature,
 } from '../data/build/dist/client/features/index.js'
@@ -588,6 +589,17 @@ test('工作区调试面板作为可独立启停的 Client 模块登记', () => 
   assert.equal(debugFeature.descriptor.enabledByDefault, true)
   assert.equal(debugFeature.descriptor.ui?.labelKey, 'feature.debug.label')
   assert.equal(debugFeature.settingsPanel, undefined)
+})
+
+test('会话翻译作为默认折叠的独立 Client 设置模块登记', () => {
+  assert.equal(sessionTranslationFeature.descriptor.name, 'sessionTranslation')
+  assert.equal(sessionTranslationFeature.descriptor.runtime, 'client')
+  assert.equal(sessionTranslationFeature.descriptor.enabledByDefault, false)
+  assert.deepEqual(sessionTranslationFeature.descriptor.dependencies, ['cliAdapters'])
+  assert.equal(sessionTranslationFeature.descriptor.ui?.labelKey, 'feature.sessionTranslation.label')
+  // 设置明细默认折叠：进入设置页只看到标题与开关，展开后才挂载翻译配置面板。
+  assert.equal(sessionTranslationFeature.descriptor.ui?.defaultOpen, false)
+  assert.equal(sessionTranslationFeature.settingsPanel?.name, 'SessionTranslationPanel')
 })
 
 test('注册表拒绝未知的模块生效模式', () => {
