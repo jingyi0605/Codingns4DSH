@@ -7,21 +7,21 @@ import {
 import type { AssistantChatCatalog } from '../../shared/contracts/assistant.js'
 import {
   DEFAULT_SESSION_TRANSLATION_SETTINGS,
+  normalizeSessionTranslationSettings,
   type SessionTranslationLanguage,
-  type SessionTranslationModel,
   type SessionTranslationSettings,
 } from '../../shared/contracts/session-translation.js'
 import type { CodingNsClientFeatureModule, FeaturePanelProps } from './types.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { callCliRpc } from '../cli-catalog.js'
 import { SettingsToggleRow } from '../settings-controls.js'
+import { SessionTranslationModelPool } from '../session-translation-model-pool.js'
 import { registerSessionTranslationChatUi } from '../session-translation-chat.js'
 import { notifyNativeTranslationDefaultChanged, setNativeTranslationDefaultReader } from '../native-translation-default.js'
 import {
   dshFormRootStyle,
   dshSettingsFieldLabelStyle,
   dshSettingsFieldStyle,
-  dshSettingsHelpStyle,
   dshSettingsListRowStyle,
   dshSettingsSectionHeaderStyle,
 } from '../theme.js'
@@ -71,8 +71,9 @@ export const sessionTranslationFeature: CodingNsClientFeatureModule = {
 
 function SessionTranslationPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
   const t = useCodingNsTranslator(services.locale)
-  const value: SessionTranslationSettings = snapshot.value?.sessionTranslation ?? DEFAULT_CODINGNS_SETTINGS.sessionTranslation ?? DEFAULT_SESSION_TRANSLATION_SETTINGS
-  const disabled = !enabled || snapshot.status === 'loading' || !snapshot.writable
+  const value = normalizeSessionTranslationSettings(snapshot.value?.sessionTranslation ?? DEFAULT_CODINGNS_SETTINGS.sessionTranslation ?? DEFAULT_SESSION_TRANSLATION_SETTINGS)
+  const [saving, setSaving] = useState(false)
+  const disabled = !enabled || snapshot.status === 'loading' || !snapshot.writable || saving
   const [catalog, setCatalog] = useState<AssistantChatCatalog | null>(null)
 
   useEffect(() => {
@@ -83,18 +84,21 @@ function SessionTranslationPanel({ services, enabled, snapshot, notify }: Featur
     return () => { active = false }
   }, [services.rpc])
 
-  const save = (patch: SessionTranslationPatch): void => {
-    // exactOptionalPropertyTypes 下不能把 undefined 作为可选字段显式写入设置；
-    // 选择“跟随默认模型”时直接省略 translationModel，交给 schema 的缺省语义处理。
+  const save = async (patch: SessionTranslationPatch): Promise<boolean> => {
+    if (disabled) return false
+    // Omit cleared optional fields, including the legacy single-model selection.
     const next = Object.fromEntries(
       Object.entries({ ...value, ...patch }).filter(([, item]) => item !== undefined),
     )
-    void services.settings.set(CODINGNS_SESSION_TRANSLATION_FIELD, next)
-      .then((written) => {
-        if (!written) throw new Error(t('translation.saveRejected'))
-        notify({ kind: 'success', message: t('translation.saved') })
-      })
-      .catch((error: unknown) => notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) }))
+    setSaving(true)
+    try {
+      if (!await services.settings.set(CODINGNS_SESSION_TRANSLATION_FIELD, next)) throw new Error(t('translation.saveRejected'))
+      notify({ kind: 'success', message: t('translation.saved') })
+      return true
+    } catch (error) {
+      notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
+      return false
+    } finally { setSaving(false) }
   }
 
   return createElement('div', {
@@ -136,7 +140,9 @@ function SessionTranslationPanel({ services, enabled, snapshot, notify }: Featur
   createElement('div', { style: { ...dshSettingsSectionHeaderStyle, marginTop: 12 } },
     createElement('span', { style: dshSettingsFieldLabelStyle }, t('translation.modelTitle')),
   ),
-  createElement(ModelField, { value, catalog, disabled, t, onChange: (model) => save({ translationModel: model }) }),
+  createElement(SessionTranslationModelPool, { value, catalog, disabled, pending: saving, t,
+    onChange: (models) => save({ translationModels: models, translationModel: undefined }),
+  }),
   )
 }
 
@@ -144,50 +150,6 @@ function Field({ label, children }: { readonly label: string; readonly children?
   return createElement('label', { style: { ...dshSettingsListRowStyle, alignItems: 'flex-start', flexDirection: 'column', gap: 6 } },
     createElement('span', { style: dshSettingsFieldLabelStyle }, label), children ?? null,
   )
-}
-
-function ModelField({ value, catalog, disabled, t, onChange }: {
-  readonly value: SessionTranslationSettings
-  readonly catalog: AssistantChatCatalog | null
-  readonly disabled: boolean
-  readonly t: ReturnType<typeof useCodingNsTranslator>
-  readonly onChange: (model: SessionTranslationModel | undefined) => void
-}): ReactElement {
-  const selectedKey = value.translationModel === undefined ? '' : JSON.stringify([value.translationModel.provider, value.translationModel.model])
-  const models = catalog?.models ?? []
-  const hasSelected = selectedKey !== '' && models.some((model) => JSON.stringify([model.provider, model.model]) === selectedKey)
-  return createElement('div', { style: { width: '100%', display: 'grid', gap: 6 } },
-    createElement('select', {
-      value: selectedKey,
-      disabled,
-      style: dshSettingsFieldStyle,
-      onChange: (event: { currentTarget: { value: string } }) => onChange(readTranslationModel(event.currentTarget.value)),
-    },
-      createElement('option', { value: '' }, t('translation.modelFollowDefault')),
-      !hasSelected && selectedKey !== '' && createElement('option', { value: selectedKey }, t('translation.modelUnavailable')),
-      ...models.map((model) => createElement('option', { key: JSON.stringify([model.provider, model.model]), value: JSON.stringify([model.provider, model.model]) },
-        `${isOfficialProvider(model.provider) ? t('translation.modelOfficial') : t('translation.modelThirdParty')} · ${model.label}`,
-      )),
-    ),
-    catalog === null
-      ? createElement('span', { style: dshSettingsHelpStyle }, t('translation.modelLoading'))
-      : models.length === 0
-        ? createElement('span', { style: dshSettingsHelpStyle }, t('translation.modelEmpty'))
-        : createElement('span', { style: dshSettingsHelpStyle }, t('translation.modelHelp')),
-  )
-}
-
-function readTranslationModel(value: string): SessionTranslationModel | undefined {
-  if (value === '') return undefined
-  try {
-    const parsed = JSON.parse(value) as unknown
-    if (!Array.isArray(parsed) || typeof parsed[0] !== 'string' || typeof parsed[1] !== 'string' || parsed[0].trim() === '' || parsed[1].trim() === '') return undefined
-    return { provider: parsed[0], model: parsed[1] }
-  } catch { return undefined }
-}
-
-function isOfficialProvider(provider: string): boolean {
-  return /^(?:deepseek(?:-official)?|official-deepseek)$/iu.test(provider.trim())
 }
 
 function readInputLanguage(value: string): SessionTranslationSettings['inputLanguage'] {

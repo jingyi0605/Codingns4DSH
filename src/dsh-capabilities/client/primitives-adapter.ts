@@ -3,6 +3,7 @@ import { createElement, type ComponentType } from 'react'
 
 /** 富文本菜单沿用宿主的键盘导航、焦点归还和外部点击关闭行为。 */
 export { Menu as DshMenu } from '@deepseek-ai/dsh-client-ui-primitives'
+export { Button as DshButton, Checkbox as DshCheckbox, Input as DshInput, Modal as DshModal } from '@deepseek-ai/dsh-client-ui-primitives'
 
 type IconComponent = ComponentType<{ readonly size?: number; readonly className?: string }>
 type ShortcutKeysComponent = ComponentType<{ readonly keys: readonly string[] }>
