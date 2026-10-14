@@ -299,13 +299,12 @@ function isUsableTranslation(value: string, language: SessionTranslationLanguage
 }
 
 /**
- * 轻量、本地的语言判断。只有明确的文字特征或较强词汇信号才返回语言；
- * 混合文本、短代号和语言特征不足的文本保持未知，继续走原翻译流程。
+ * Local language detection after protected code and literals have been removed.
+ * Han prose may contain isolated Latin terms; foreign passages and ambiguous
+ * mixtures remain unknown so that translation is not skipped accidentally.
  *
- * 目标语言是英语时额外放行「纯拉丁文本」：英语没有专属字形，词表评分对
- * `tool test`、`check this file` 这类短指令经常给不出结论，继续调用翻译模型
- * 只会原样返回，还会把界面标成「已翻译」。命中法语/德语词汇或带非英语
- * 变音字母的文本仍保持未知，交由翻译模型处理。
+ * An English target also accepts plain Latin text without French/German signals,
+ * preserving the existing bypass for short instructions such as "tool test".
  */
 function detectSourceLanguage(value: string, targetLanguage?: SessionTranslationLanguage): SessionTranslationLanguage | undefined {
   const text = stripPlaceholders(value)
@@ -317,18 +316,19 @@ function detectSourceLanguage(value: string, targetLanguage?: SessionTranslation
 
   const han = (text.match(/[\u3400-\u9fff]/gu) ?? []).length
   const latin = (text.match(/[A-Za-zÀ-ÖØ-öø-ÿ]/gu) ?? []).length
-  if (han > 0 && latin === 0) {
+  if (han > 0) {
+    if (latin > 0 && !isHanProseWithEmbeddedLatinTerms(text, han)) return undefined
     // 简体中文特征字和常见短语，补足“你好”一类没有专属字形的短文本。
     if (/[这门马车东书国语汉发后里时会为]/u.test(text)
       || /(?:你好|您好|谢谢|再见|请问|什么|为什么|如何|代码|检查|完成|错误|继续|开始|结束|测试|确认|没有|可以|需要)/u.test(text)) return 'zh'
     // 少数常见的纯汉字日语短语；普通日语句子通常已由假名识别。
     if (/(?:確認|作成|実行|設定|変更|対応|修正|原因|利用|処理|必要|可能|準備|表示|入力|出力|開発|環境|現在)/u.test(text)) return 'ja'
-    // 目标语言是中文时，纯汉字文本按中文处理：没有特征字的短句（如“我修好了”）
-    // 同样无法识别，继续调用翻译模型只会原样返回并把界面标成「已翻译」。
+    // With a Chinese target, Han prose without distinctive vocabulary is also
+    // accepted, including short replies and prose with embedded technical terms.
     if (targetLanguage === 'zh') return 'zh'
     return undefined
   }
-  if (latin === 0 || han > 0) return undefined
+  if (latin === 0) return undefined
 
   const words = text.toLocaleLowerCase().match(/[\p{L}]+/gu) ?? []
   const scores: Record<'en' | 'fr' | 'de', number> = { en: 0, fr: 0, de: 0 }
@@ -358,6 +358,26 @@ function detectSourceLanguage(value: string, targetLanguage?: SessionTranslation
   if (best[1] >= 2 && best[1] - second[1] >= 1) return best[0]
   if (targetLanguage === 'en' && scores.fr === 0 && scores.de === 0 && isPlainLatinText(text)) return 'en'
   return undefined
+}
+
+/** Accept embedded terms without letting a Han majority hide foreign passages. */
+function isHanProseWithEmbeddedLatinTerms(text: string, han: number): boolean {
+  if (/(?!\p{Script=Han}|\p{Script=Latin})\p{L}/u.test(text)) return false
+  // Count Latin words rather than letters: a long identifier must not outweigh
+  // its surrounding prose. Very short or term-heavy mixtures remain unknown.
+  const terms = text.match(/\p{Script=Latin}+/gu) ?? []
+  if (han <= terms.length) return false
+  // Keep periods inside identifiers such as Node.js; split sentence endings and
+  // lines so that even a short foreign sentence cannot be masked by Han elsewhere.
+  const clauses = text.split(/[\r\n。！？!?；;]|\.(?=\s|$)/u)
+  return clauses.every((clause) => {
+    if (!/\p{Script=Latin}/u.test(clause)) return true
+    if (!/[\u3400-\u9fff]/u.test(clause)) return false
+    // Only isolated terms qualify. Multiword names and phrases remain ambiguous;
+    // handling them conservatively avoids skipping actual foreign prose. Ignore
+    // Markdown emphasis without treating underscores inside identifiers as spaces.
+    return !/\p{Script=Latin}\s+\p{Script=Latin}/u.test(clause.replace(/[*_~]/gu, ''))
+  })
 }
 
 /**
