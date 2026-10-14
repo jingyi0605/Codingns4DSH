@@ -12,7 +12,7 @@ import {
 } from './stream-normalizer.js'
 import type { CodingNsDshExternalToolMarker } from './dsh-tool-history.js'
 import type { SessionTranslationService } from '../features/session-translation-service.js'
-import { formatSessionTranslationOutput, type SessionTranslationRecord } from '../../shared/contracts/session-translation.js'
+import type { SessionTranslationRecord } from '../../shared/contracts/session-translation.js'
 
 export interface CodingNsDshMessageProjectorOptions {
   readonly adapterId: string
@@ -288,10 +288,6 @@ export class CodingNsDshMessageProjector {
         { type: 'block-end', index, block: { type: channel, text: original, codingnsTranslation: failedRecord }, codingnsTranslation: failedRecord },
       ]
     }
-    const translated = translation?.translated ?? original
-    const visible = translation === null || translation === undefined
-      ? translated
-      : formatSessionTranslationOutput(translation)
     const record = translation === null || translation === undefined ? undefined : {
       original: translation.original,
       translated: translation.translated,
@@ -303,10 +299,12 @@ export class CodingNsDshMessageProjector {
       ...(translation.model === undefined ? {} : { model: translation.model }),
       ...(translation.failed === true ? { failed: true } : {}),
     }
+    // Keep the Provider original in DSH history. The client-side translation renderer
+    // reads `codingnsTranslation.translated` for the visible localized text.
     return [
       { type: 'block-start', index, blockType: channel, ...(record === undefined ? {} : { codingnsTranslation: record }) },
-      { type: `${channel}-delta`, index, text: visible, ...(record === undefined ? {} : { codingnsTranslation: record }) },
-      { type: 'block-end', index, block: { type: channel, text: visible, ...(record === undefined ? {} : { codingnsTranslation: record }) }, ...(record === undefined ? {} : { codingnsTranslation: record }) },
+      { type: `${channel}-delta`, index, text: original, ...(record === undefined ? {} : { codingnsTranslation: record }) },
+      { type: 'block-end', index, block: { type: channel, text: original, ...(record === undefined ? {} : { codingnsTranslation: record }) }, ...(record === undefined ? {} : { codingnsTranslation: record }) },
     ]
   }
 

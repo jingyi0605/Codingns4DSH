@@ -197,7 +197,7 @@ export function formatSessionTranslationInput(record: SessionTranslationInputRec
   return record.translated
 }
 
-/** DSH 的回复正文只保留译文；详情入口从元数据读取原文和模型。 */
+/** Return the output translation; native DSH history keeps the original and the client reads this record. */
 export function formatSessionTranslationOutput(record: SessionTranslationRecord): string {
   return record.translated
 }

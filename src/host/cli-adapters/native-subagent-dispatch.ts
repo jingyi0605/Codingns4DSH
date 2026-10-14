@@ -399,8 +399,8 @@ export function guardNativeSubagentParentTurn(
   const childIds = pending.map((state) => `${state.childSessionId}(${state.status})`).join(', ')
   const hasFailed = pending.some((state) => nativeSubagentFailureNeedsReview(state))
   const summary = hasFailed
-    ? `存在 failed 子代理，主任务暂不能收尾。请先使用 agent_subagent 的 action=read/wait 查看失败原因和已有报告，再评估是否需要 action=start 重新创建，或 action=send 接管继续；确认无需继续后才能汇总报告：${childIds}。`
-    : `子代理尚未结束，主任务暂不能收尾。请先使用 agent_subagent 的 action=wait/read 检查：${childIds || `${String(activeCount)} 个子代理正在创建`}。所有子代理进入终态后再汇总报告。`
+    ? `A subagent failed, so the parent task cannot finish yet. Use agent_subagent action=read/wait to inspect the failure and existing report, then decide whether to recreate it with action=start or take over with action=send. Only summarize after confirming no further work is needed: ${childIds}.`
+    : `A subagent is still running, so the parent task cannot finish yet. Use agent_subagent action=wait/read to check: ${childIds || `${String(activeCount)} subagent(s) are still starting`}. Summarize only after every subagent reaches a terminal state.`
   const injected = sessions.injectNextStep?.(id, summary) === true
   if (injected) guardedParentTurns.add(id)
   return { parentSessionId: id, blocked: true, pending, activeCount, injected }

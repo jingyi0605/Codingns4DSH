@@ -512,7 +512,7 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
       return false
     }
   }
-  const injectNativeNextStep = (sessionId: string, summary = '外部工具已完成，继续处理当前任务。'): boolean => {
+  const injectNativeNextStep = (sessionId: string, summary = 'The external tool has finished. Continue the current task.'): boolean => {
     const agent = nativeAgent(ctx, sessionId)
     if (agent === null || typeof (agent as { inject?: unknown }).inject !== 'function') {
       // 子代理会话一旦注入失败，DSH 不会发起第二次 llm/stream，子会话就停在当前
@@ -531,7 +531,7 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     // 被另一个同步调用插入的竞态，也保持 DSH Agent 对收件箱的唯一所有权。
     if (hasPendingNativeNextStep(agent)) return true
     injectedStepSequence += 1
-    const boundedSummary = summary.trim().slice(0, 120) || '外部工具已完成，继续处理当前任务。'
+    const boundedSummary = summary.trim().slice(0, 120) || 'The external tool has finished. Continue the current task.'
     const producerOwned = usesProducerOwnedSource(appendableSession(store?.get(sessionId)))
     try {
       if (on !== undefined) pendingStepTransitions.add(sessionId)

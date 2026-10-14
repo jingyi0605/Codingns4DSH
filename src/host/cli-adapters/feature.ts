@@ -353,8 +353,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             if (sessionId !== '' && (selection.modelId !== undefined || selection.effortId !== undefined)) {
               registry.setSession(sessionId, { adapterId: 'dsh', ...selection })
             }
-            // 原生会话的输出翻译只能包装 DSH 自己的 Provider 流：文本与思考在块结束时
-            // 换成译文并挂上记录，工具、usage 与 finish 原样透传；开关关闭时零改动。
+            // Native-session output translation wraps only DSH's own Provider stream:
+            // preserve text/reasoning and attach the translation record; the client renders it.
             if (!isSessionTranslationLlmRequest(value)
               && translation !== undefined
               && translation.enabled
@@ -1215,8 +1215,8 @@ interface NativeStreamBlock {
  * DSH 原生会话的输出翻译。
  *
  * 原生回复由 DSH 自己组装成 `assistant/message`，插件只能在 Provider 流边界改写：
- * 文本与思考增量先缓存，块结束时一次性发出译文，工具调用、usage 与 finish 原样透传。
- * 翻译失败、流中断或异常都会补发原文块，保证回复不丢失。
+ * 文本与思考增量先缓存，块结束时一次性发出原文，并把译文放进记录供客户端显示；
+ * 工具调用、usage 与 finish 原样透传。翻译失败、流中断或异常都会补发原文块，保证回复不丢失。
  */
 async function* translateNativeStream(
   stream: AsyncIterable<unknown>,
@@ -1261,8 +1261,10 @@ async function* translateNativeStream(
     const visible = formatSessionTranslationOutput(record)
     if (visible.trim() === '' || visible === original) return []
     return [
-      { type: `${block.kind}-delta`, index: block.index, text: visible, codingnsTranslation: record },
-      { type: 'block-end', index: block.index, block: { type: block.kind, text: visible, codingnsTranslation: record }, codingnsTranslation: record },
+      // Keep the provider text in the native history. The client chooses the translated
+      // text for display from codingnsTranslation.translated.
+      { type: `${block.kind}-delta`, index: block.index, text: original, codingnsTranslation: record },
+      { type: 'block-end', index: block.index, block: { type: block.kind, text: original, codingnsTranslation: record }, codingnsTranslation: record },
     ]
   }
 
