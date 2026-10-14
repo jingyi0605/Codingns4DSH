@@ -563,7 +563,12 @@ function registerDelegationAgentHooks(
       })
     }
     const model = session.modelId?.trim() || (typeof config.model === 'string' && config.model.trim() !== '' ? config.model.trim() : configuredAdapter)
-    return { ...config, provider: configuredAdapter, model }
+    // reasoningEffort 属于被改写掉的那条 DSH 原生路由（例如全局默认模型 glor/deepseek-v4.1-flash
+    // 的 max）。外部 CLI 的虚拟 Provider 不声明任何思考强度，DSH 会在准入阶段以
+    // UNSUPPORTED_REASONING_EFFORT 拒绝整轮；外部 Agent 的思考强度由适配器自己的
+    // effortId 偏好驱动，因此这里必须丢弃继承值，只改写 provider/model。
+    const { reasoningEffort: _inheritedReasoningEffort, ...routeConfig } = config
+    return { ...routeConfig, provider: configuredAdapter, model }
   })
 
   register('agent/pre-step', async (payload: unknown, next: () => Promise<unknown>) => {
