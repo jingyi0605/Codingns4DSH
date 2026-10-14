@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { applyEntryPatches, entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 import { createRequire } from 'node:module'
+import { createServer } from 'node:net'
 import { reloadScript } from '../scripts/stage0-client-hmr.mjs'
 import { registerStage0DevHmr } from '../data/build/dist/host/stage0-dev-hmr.js'
 
@@ -61,6 +62,10 @@ setInterval(() => {}, 1000)
     DSH_STAGE0_LAUNCHER: launcher,
     DSH_STAGE0_HOME: home,
     CODINGNS4DSH_STAGE0_STATE_DIR: join(root, 'state'),
+    // 启动器默认端口 17891 会与开发机上正在运行的 stage0 实例冲突，端口预检会直接
+    // 拒绝启动并返回 1。这里显式指定 0 让内核分配空闲端口：预检探测的临时监听在
+    // 关闭后即释放，假启动器不真正监听，用例因此与开发机的端口占用无关。
+    DSH_STAGE0_PORT: '0',
     CODINGNS_TEST_EVENTS: events,
   }
   // 不能继承测试调用方关闭 watch 的设置或故障注入参数。
@@ -70,7 +75,11 @@ setInterval(() => {}, 1000)
   delete env.CODINGNS_TEST_DSH_KEEP_ALIVE
   return {
     root, env, launcher,
-    events: () => readFileSync(events, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)),
+    // 事件文件由假入口在真正被启动时创建；预检在启动任何进程前失败时该文件不存在，
+    // 此时「没有任何事件」正是需要断言的结果。
+    events: () => existsSync(events)
+      ? readFileSync(events, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+      : [],
   }
 }
 
@@ -178,6 +187,27 @@ test('DSH_STAGE0_WATCH=0 支持外部监听，非法值在启动前失败', unix
       if (value === '0') assert.deepEqual(fixture.events().map((event) => event.role), ['dsh'])
       else assert.match(result.stderr, /只接受 0 或 1/u)
     } finally { rmSync(fixture.root, { recursive: true, force: true }) }
+  }
+})
+
+test('端口被占用时预检在编译前失败并给出占用进程', unixOnly, async () => {
+  const fixture = createFixture()
+  // 用真实监听占用端口：预检必须识别出占用者，而不是启动编译后再让 DSH 报 EADDRINUSE。
+  const blocker = createServer()
+  await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve))
+  const address = blocker.address()
+  assert.ok(address !== null && typeof address === 'object')
+  fixture.env.DSH_STAGE0_PORT = String(address.port)
+  try {
+    const result = spawnSync('/bin/bash', [stage0Script], { env: fixture.env, encoding: 'utf8', timeout: 5000 })
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, new RegExp(`端口 ${address.port} 已被占用`, 'u'))
+    assert.match(result.stderr, new RegExp(`占用进程 PID: ${process.pid}`, 'u'))
+    // 预检失败不能启动编译器，也不能启动 DSH。
+    assert.deepEqual(fixture.events(), [])
+  } finally {
+    await new Promise<void>((resolve) => blocker.close(() => resolve()))
+    rmSync(fixture.root, { recursive: true, force: true })
   }
 })
 
