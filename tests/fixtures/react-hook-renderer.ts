@@ -1,7 +1,7 @@
 import React from 'react'
 
 /** 无浏览器的组件控制测试：保留 Hook 状态并执行订阅清理，不模拟 DOM 或音频设备。 */
-export function createHookRenderer<P, R>(component: (props: P) => R, initialProps: P) {
+export function createHookRenderer<P, R>(component: (props: P) => R, initialProps: P, options: { readonly checkHookOrder?: boolean } = {}) {
   const internals = (React as any).__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED
   const cells: any[] = []
   let cursor = 0
@@ -9,6 +9,7 @@ export function createHookRenderer<P, R>(component: (props: P) => R, initialProp
   let props = initialProps
   let output: R
   let effects: (() => void)[] = []
+  let hookCount: number | undefined
   const same = (a?: readonly unknown[], b?: readonly unknown[]) => a !== undefined && b !== undefined && a.length === b.length && a.every((value, index) => Object.is(value, b[index]))
   const memo = (factory: () => unknown, deps?: readonly unknown[]) => {
     const index = cursor++
@@ -53,6 +54,10 @@ export function createHookRenderer<P, R>(component: (props: P) => R, initialProp
         const previous = internals.ReactCurrentDispatcher.current
         internals.ReactCurrentDispatcher.current = dispatcher
         try { output = component(props) } finally { internals.ReactCurrentDispatcher.current = previous }
+        if (options.checkHookOrder && hookCount !== undefined && cursor !== hookCount) {
+          throw new Error(`Hook 调用数量变化：${hookCount} → ${cursor}`)
+        }
+        hookCount = cursor
         for (const run of effects) run()
       }
       return output!

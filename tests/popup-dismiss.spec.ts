@@ -98,7 +98,8 @@ test('所有弹层统一改用共用关闭模块，不再依赖重复点击触�
   // Agent 与模型两个选择器都绑定根节点并注册外部关闭。
   assert.match(slot, /import \{ useDismissOnOutsidePointer \} from '\.\/popup-dismiss\.js'/u)
   assert.equal([...slot.matchAll(/useDismissOnOutsidePointer\(rootRef, open,/gu)].length, 2)
-  assert.equal([...slot.matchAll(/ref: rootRef/gu)].length, 2)
+  // 两个选择器加一个不可见的原生菜单定位节点；定位节点没有独立弹层。
+  assert.equal([...slot.matchAll(/ref: rootRef/gu)].length, 3)
   assert.doesNotMatch(slot, /event\.target instanceof Node/u)
 
   // Git 的两个「⋯」菜单从原生 details 折叠改为受控菜单。
