@@ -162,11 +162,11 @@ export function TranslationAction(props: TranslationActionProps): ReactElement |
     createElement('span', { role: 'status', 'aria-live': 'polite', style: { color: statusColor, fontWeight: 400 } }, statusText),
   ),
   record?.sourceLanguage === undefined ? null : createElement('div', { style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, `${props.translationT('translation.detectedLanguage')}: ${props.translationT(`translation.language.${record.sourceLanguage}`)}`),
-  createElement(DetailBlock, { label: props.translationT('translation.originalText'), value: record?.original ?? props.original ?? '' }),
+  createElement(DetailBlock, { kind: 'original', translationT: props.translationT, value: record?.original ?? props.original ?? '' }),
   pending ? createElement('progress', { 'aria-label': statusText, style: { display: 'block', width: '100%', height: 4, marginTop: 8, accentColor: dshThemeColor.accent } }) : null,
   pending
     ? createElement('div', { role: 'status', 'aria-live': 'polite', style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, props.translationT('translation.progressHelp'))
-    : createElement(DetailBlock, { label: props.translationT(props.messageRole === 'user' ? 'translation.actualSentText' : 'translation.translatedText'), value: record.translated }),
+    : createElement(DetailBlock, { kind: props.messageRole === 'user' ? 'sent' : 'translated', translationT: props.translationT, value: record.translated }),
   pending ? null : createElement('div', { style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, `${props.translationT('translation.modelUsed')}: ${alreadyTargetLanguage ? props.translationT('translation.modelNotUsed') : formatModel(record.model, props.translationT)}`),
   ) : null
   const renderedDetails = details === null
@@ -290,10 +290,43 @@ const translationButtonStyle: CSSProperties = {
   transition: 'background-color 100ms ease, color 100ms ease',
 }
 
-function DetailBlock({ label, value }: { readonly label: string; readonly value: string }): ReactElement {
+const translationDetailTypes = {
+  original: { labelKey: 'translation.originalText', color: dshThemeColor.labelSecondary },
+  translated: { labelKey: 'translation.translatedText', color: dshThemeColor.accent },
+  sent: { labelKey: 'translation.actualSentText', color: dshThemeColor.success },
+} as const
+
+function DetailBlock({ kind, translationT, value }: {
+  readonly kind: keyof typeof translationDetailTypes
+  readonly translationT: CodingNsTranslator
+  readonly value: string
+}): ReactElement {
+  const { labelKey, color } = translationDetailTypes[kind]
   return createElement('div', { style: { marginTop: 8 } },
-    createElement('div', { style: { marginBottom: 3, color: dshThemeColor.labelSecondary, fontWeight: 600 } }, label),
-    createElement('pre', { style: { margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'inherit' } }, value),
+    createElement('div', {
+      style: {
+        display: 'inline-block',
+        maxWidth: '100%',
+        boxSizing: 'border-box',
+        marginBottom: 6,
+        padding: '2px 8px',
+        border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
+        borderRadius: 'var(--dsw-radius-sm, 6px)',
+        color,
+        background: `color-mix(in srgb, ${color} 12%, transparent)`,
+        fontWeight: 600,
+        overflowWrap: 'anywhere',
+      },
+    }, translationT(labelKey)),
+    createElement('pre', {
+      style: {
+        margin: 0,
+        color: `color-mix(in srgb, ${color} 45%, ${dshThemeColor.labelPrimary})`,
+        whiteSpace: 'pre-wrap',
+        overflowWrap: 'anywhere',
+        fontFamily: 'inherit',
+      },
+    }, value),
   )
 }
 
