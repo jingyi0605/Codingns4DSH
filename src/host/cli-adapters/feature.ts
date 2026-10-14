@@ -37,6 +37,7 @@ import { hasLegacySessionAdapterHint } from './legacy-session-adapter.js'
 import {
   DSH_NATIVE_SESSION_ADAPTER_ID,
   formatSessionTranslationOutput,
+  readSessionTranslationMetrics,
   type SessionTranslationInputRecord,
   type SessionTranslationRecord,
 } from '../../shared/contracts/session-translation.js'
@@ -1070,6 +1071,7 @@ async function translatePreStepInput(
       targetLanguage: readInputTargetLanguage(translation),
       ...(result.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
       ...(result.model === undefined ? {} : { model: result.model }),
+      ...readSessionTranslationMetrics(result),
       ...(result.failed === true ? { failed: true } : {}),
     }
     const next = [...messages]
@@ -1106,6 +1108,7 @@ async function translatePreStepInput(
     targetLanguage: readInputTargetLanguage(translation),
     ...(result.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
     ...(result.model === undefined ? {} : { model: result.model }),
+    ...readSessionTranslationMetrics(result),
     ...(result.failed === true ? { failed: true } : {}),
   }
   const next = [...messages]
@@ -1132,6 +1135,8 @@ async function runInputTranslation(
   readonly alreadyTargetLanguage?: boolean
   readonly model?: SessionTranslationInputRecord['model']
   readonly failed?: boolean
+  readonly durationMs?: number
+  readonly totalTokens?: number
 }> {
   try {
     if (translation.translateInputDetailed !== undefined) {
@@ -1142,6 +1147,7 @@ async function runInputTranslation(
         ...(detailed.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
         ...(detailed.model === undefined ? {} : { model: detailed.model }),
         ...(detailed.failed === true ? { failed: true } : {}),
+        ...readSessionTranslationMetrics(detailed),
       }
     }
     return { translated: await translation.translateInput(adapterId, text, signal, true) }
@@ -1251,6 +1257,7 @@ async function* translateNativeStream(
           bilingual: result.bilingual,
           ...(result.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
           ...(result.model === undefined ? {} : { model: result.model }),
+          ...readSessionTranslationMetrics(result),
           ...(result.failed === true ? { failed: true } : {}),
         }
       }

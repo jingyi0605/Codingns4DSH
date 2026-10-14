@@ -112,7 +112,25 @@ function normalizeTranslationModel(value: SessionTranslationModel | undefined): 
   return provider === '' || model === '' ? undefined : { provider, model }
 }
 
-export interface SessionTranslationRecord {
+export interface SessionTranslationMetrics {
+  /** Elapsed translation time, including model selection and fallback attempts. */
+  readonly durationMs?: number
+  /** Reported token consumption across model attempts, including cached input. */
+  readonly totalTokens?: number
+}
+
+/** Preserve available metrics while accepting records saved before metrics existed. */
+export function readSessionTranslationMetrics(value: unknown): SessionTranslationMetrics {
+  const record = asRecord(value)
+  const durationMs = record?.durationMs
+  const totalTokens = record?.totalTokens
+  return {
+    ...(typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs >= 0 ? { durationMs } : {}),
+    ...(typeof totalTokens === 'number' && Number.isSafeInteger(totalTokens) && totalTokens >= 0 ? { totalTokens } : {}),
+  }
+}
+
+export interface SessionTranslationRecord extends SessionTranslationMetrics {
   readonly original: string
   readonly translated: string
   readonly sourceLanguage?: SessionTranslationLanguage
@@ -129,7 +147,7 @@ export interface SessionTranslationRecord {
 }
 
 /** 用户输入的原文、实际送出的译文和翻译模型，作为 DSH 历史元数据保存。 */
-export interface SessionTranslationInputRecord {
+export interface SessionTranslationInputRecord extends SessionTranslationMetrics {
   readonly original: string
   /** 包含附件提示等不翻译内容的最终 Provider prompt。 */
   readonly translated: string
@@ -167,6 +185,7 @@ export function readNativeTranslationRecord(source: unknown): SessionTranslation
     ...(candidate.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
     ...(candidate.failed === true ? { failed: true } : {}),
     ...(model === undefined ? {} : { model }),
+    ...readSessionTranslationMetrics(candidate),
   }
 }
 
@@ -185,6 +204,7 @@ export function toSessionTranslationRecord(
     ...(record.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
     ...(record.failed === true ? { failed: true } : {}),
     ...(record.model === undefined ? {} : { model: record.model }),
+    ...readSessionTranslationMetrics(record),
   }
 }
 

@@ -25,6 +25,7 @@ import { watchPendingTranslationTargets, type PendingTranslationTarget } from '.
 import type { CodingNsClientServices } from './features/types.js'
 import type { CodingNsTranslator } from './locale.js'
 import type { SessionTranslationInputRecord, SessionTranslationLanguage, SessionTranslationModel, SessionTranslationOutputKind, SessionTranslationRecord } from '../shared/contracts/session-translation.js'
+import { readSessionTranslationMetrics } from '../shared/contracts/session-translation.js'
 
 interface EventSourceLike {
   getSnapshot(): { readonly entries?: readonly unknown[] }
@@ -167,7 +168,11 @@ export function TranslationAction(props: TranslationActionProps): ReactElement |
   pending
     ? createElement('div', { role: 'status', 'aria-live': 'polite', style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, props.translationT('translation.progressHelp'))
     : createElement(DetailBlock, { kind: props.messageRole === 'user' ? 'sent' : 'translated', translationT: props.translationT, value: record.translated }),
-  pending ? null : createElement('div', { style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, `${props.translationT('translation.modelUsed')}: ${alreadyTargetLanguage ? props.translationT('translation.modelNotUsed') : formatModel(record.model, props.translationT)}`),
+  pending ? null : createElement('div', { style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, [
+    `${props.translationT('translation.modelUsed')}: ${alreadyTargetLanguage ? props.translationT('translation.modelNotUsed') : formatModel(record.model, props.translationT)}`,
+    ...(record.durationMs === undefined ? [] : [`${(record.durationMs / 1000).toFixed(2)} s`]),
+    ...(record.totalTokens === undefined ? [] : [`${record.totalTokens} tok`]),
+  ].join(' · ')),
   ) : null
   const renderedDetails = details === null
     ? null
@@ -889,6 +894,7 @@ function readRecord(value: unknown): SessionTranslationRecord | undefined {
     ...(candidate.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
     ...(model === undefined ? {} : { model }),
     ...(candidate.failed === true ? { failed: true } : {}),
+    ...readSessionTranslationMetrics(candidate),
   }
 }
 
@@ -915,6 +921,7 @@ function readInputRecord(value: unknown): SessionTranslationInputRecord | undefi
     ...(candidate.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
     ...(model === undefined ? {} : { model }),
     ...(candidate.failed === true ? { failed: true } : {}),
+    ...readSessionTranslationMetrics(candidate),
   }
 }
 
@@ -928,6 +935,7 @@ function inputRecordForAction(record: SessionTranslationInputRecord): SessionTra
     ...(record.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
     ...(record.model === undefined ? {} : { model: record.model }),
     ...(record.failed === true ? { failed: true } : {}),
+    ...readSessionTranslationMetrics(record),
   }
 }
 

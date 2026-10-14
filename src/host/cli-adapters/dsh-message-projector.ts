@@ -13,6 +13,7 @@ import {
 import type { CodingNsDshExternalToolMarker } from './dsh-tool-history.js'
 import type { SessionTranslationService } from '../features/session-translation-service.js'
 import type { SessionTranslationRecord } from '../../shared/contracts/session-translation.js'
+import { readSessionTranslationMetrics } from '../../shared/contracts/session-translation.js'
 
 export interface CodingNsDshMessageProjectorOptions {
   readonly adapterId: string
@@ -297,6 +298,7 @@ export class CodingNsDshMessageProjector {
       bilingual: translation.bilingual,
       ...(translation.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
       ...(translation.model === undefined ? {} : { model: translation.model }),
+      ...readSessionTranslationMetrics(translation),
       ...(translation.failed === true ? { failed: true } : {}),
     }
     // Keep the Provider original in DSH history. The client-side translation renderer

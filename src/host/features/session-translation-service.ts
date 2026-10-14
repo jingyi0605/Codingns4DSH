@@ -11,6 +11,7 @@ import type {
   SessionTranslationOutputKind,
   SessionTranslationRecord,
   SessionTranslationSettings,
+  SessionTranslationMetrics,
 } from '../../shared/contracts/session-translation.js'
 import { debugWarn } from '../../shared/debug.js'
 import { protectText, restoreText, stripPlaceholders } from './session-translation-protection.js'
@@ -48,7 +49,7 @@ export interface SessionTranslationService {
   configure(settings: SessionTranslationSettings | undefined): void
   translateInput(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<string>
   /** 输入翻译的可审计结果；旧调用方仍可使用 translateInput。 */
-  translateInputDetailed?(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<{
+  translateInputDetailed?(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationMetrics & {
     readonly translated: string
     readonly sourceLanguage?: SessionTranslationLanguage
     readonly alreadyTargetLanguage?: boolean
@@ -104,7 +105,13 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     protectedText: ReturnType<typeof protectText>,
     targetLanguage: SessionTranslationLanguage,
     signal?: AbortSignal,
-  ): Promise<{ readonly translated: string; readonly model?: SessionTranslationModel; readonly failed?: boolean }> => {
+  ): Promise<SessionTranslationMetrics & { readonly translated: string; readonly model?: SessionTranslationModel; readonly failed?: boolean }> => {
+    const startedAt = performance.now()
+    let totalTokens: number | undefined
+    const metrics = (): SessionTranslationMetrics => ({
+      durationMs: performance.now() - startedAt,
+      ...(totalTokens === undefined ? {} : { totalTokens }),
+    })
     let selected: ModelSelection | undefined
     try {
       const selectionTimeout = AbortSignal.timeout(30_000)
@@ -118,6 +125,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
         const controller = new AbortController()
         const timeout = globalThis.setTimeout(() => controller.abort(new Error('session translation timeout')), 30_000)
         const combined = signal === undefined ? controller.signal : AbortSignal.any([controller.signal, signal])
+        let attemptTokens = 0
         try {
           const translated = await withAbort(async () => {
             combined.throwIfAborted()
@@ -132,13 +140,16 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
               maxTokens: Math.min(16_000, Math.max(512, text.length * 2 + 256)),
               system: translationSystem(targetLanguage, kind),
               messages: [{ role: 'user', content: [{ type: 'text', text: translationUserMessage(targetLanguage, kind, protectedText.text) }] }],
-            }), combined)
+            }), combined, (tokens) => {
+              totalTokens = (totalTokens ?? 0) + tokens - attemptTokens
+              attemptTokens = tokens
+            })
             combined.throwIfAborted()
             // Validate prose before restoring code, whose language is intentionally unchanged.
             if (!isUsableTranslation(stripPlaceholders(result), targetLanguage)) throw new Error('model returned an unusable translation')
             return restoreText(result.trim(), protectedText.values)
           }, combined)
-          return { translated, model: candidate }
+          return { translated, model: candidate, ...metrics() }
         } catch (error) {
           debugWarn('codingns4dsh: Translation model failed', {
             adapterId, kind, provider: candidate.provider, model: candidate.model,
@@ -154,7 +165,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
         adapterId, kind, error: error instanceof Error ? error.message : String(error),
       })
     }
-    return { translated: text, failed: true, ...(selected === undefined ? {} : { model: selected }) }
+    return { translated: text, failed: true, ...(selected === undefined ? {} : { model: selected }), ...metrics() }
   }
 
   const translate = async (adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationRecord | null> => {
@@ -173,6 +184,8 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
         targetLanguage,
         bilingual: settings.bilingual,
         alreadyTargetLanguage: true,
+        durationMs: 0,
+        totalTokens: 0,
       }
     }
     const result = await translateWithModels(adapterId, kind, value, protectedText, targetLanguage, signal)
@@ -232,7 +245,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     dispose() { active = false },
   }
 
-  async function translateInputDetailed(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<{
+  async function translateInputDetailed(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationMetrics & {
     readonly translated: string
     readonly sourceLanguage?: SessionTranslationLanguage
     readonly alreadyTargetLanguage?: boolean
@@ -245,7 +258,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
       const targetLanguage = settings.inputLanguage
       const sourceLanguage = detectSourceLanguage(protectedText.text, targetLanguage)
       if (sourceLanguage === targetLanguage) {
-        return { translated: text, sourceLanguage, alreadyTargetLanguage: true }
+        return { translated: text, sourceLanguage, alreadyTargetLanguage: true, durationMs: 0, totalTokens: 0 }
       }
       const result = await translateWithModels(adapterId, 'input', text, protectedText, targetLanguage, signal)
       return { ...result, ...(sourceLanguage === undefined ? {} : { sourceLanguage }) }
@@ -391,10 +404,18 @@ function isPlainLatinText(text: string): boolean {
   return true
 }
 
-async function readTranslation(stream: AsyncIterable<Record<string, any>>, signal: AbortSignal): Promise<string> {
+async function readTranslation(stream: AsyncIterable<Record<string, any>>, signal: AbortSignal, onUsage: (tokens: number) => void): Promise<string> {
   let text = ''
   for await (const chunk of stream) {
     signal.throwIfAborted()
+    if (chunk.type === 'usage' && chunk.usage != null) {
+      const usage = chunk.usage
+      const validTokens = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+      // DSH reports uncached input and cache reads/writes as disjoint buckets.
+      const buckets = [usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens].filter(validTokens)
+      if (validTokens(usage.totalTokens)) onUsage(usage.totalTokens)
+      else if (buckets.length > 0) onUsage(buckets.reduce((total, value) => total + value, 0))
+    }
     if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
     else if (chunk.type === 'block-end' && chunk.block?.type === 'text' && text === '' && typeof chunk.block.text === 'string') text = chunk.block.text
     if (chunk.type === 'finish' && chunk.reason?.kind === 'error') throw new Error(chunk.reason.failure?.message ?? 'translation failed')
