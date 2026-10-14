@@ -33,7 +33,7 @@ import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
 import { loadCliSessionConfig, rememberCliSessionConfig } from './cli-session-config-cache.js'
 import { uiFontSize } from './font-scale.js'
 import { DSH_NATIVE_SESSION_ADAPTER_ID, supportsSessionTranslation } from '../shared/contracts/session-translation.js'
-import { subscribeNativeTranslationDefault } from './native-translation-default.js'
+import { readNativeTranslationDefault, subscribeNativeTranslationDefault } from './native-translation-default.js'
 import { watchNativeModelMenu } from './native-model-translation-menu.js'
 
 interface SessionSnapshot {
@@ -142,6 +142,14 @@ export async function waitForCliSessionSelection(sessionId: string): Promise<voi
 /** 读取当前会话 Agent 选择版本，供按会话缓存的目录在切换 Agent 后失效。 */
 export function cliSessionSelectionRevision(sessionId: string): number {
   return selectionRevisions.get(sessionId) ?? 0
+}
+
+/** Share the model menu's effective translation switch with pending message actions. */
+export function useCliSessionTranslationEnabled(sessionId: string | undefined, rpc: CodingNsRpcClient): boolean {
+  const [selection] = useSelection(sessionId, rpc)
+  const nativeDefault = useSyncExternalStore(subscribeNativeTranslationDefault, readNativeTranslationDefault, readNativeTranslationDefault)
+  return supportsSessionTranslation(selection.adapterId)
+    && (selection.translationEnabled ?? (selection.adapterId === DSH_NATIVE_SESSION_ADAPTER_ID && nativeDefault === true))
 }
 
 /** 在 Agent 和模型两个 Slot 之间共享当前会话选择。 */
