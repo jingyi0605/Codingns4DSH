@@ -250,7 +250,7 @@ test('DSH 原生会话的子代理与助理会话不参与翻译', async () => {
   await assistantHarness.features.disable('cliAdapters')
 })
 
-test('DSH 原生会话输出翻译在块结束时替换正文并挂上记录', async () => {
+test('DSH 原生会话输出保留原文并挂上客户端译文记录', async () => {
   const translation = createTranslation({ outputLanguage: 'zh' })
   const harness = createHarness({ translation }) as Harness & { start(): Promise<void> }
   await harness.start()
@@ -273,15 +273,16 @@ test('DSH 原生会话输出翻译在块结束时替换正文并挂上记录', a
     'finish',
   ])
   const reasoning = chunks[1]
-  assert.equal(reasoning.text, '[zh]Checking code')
+  assert.equal(reasoning.text, 'Checking code')
   assert.equal(reasoning.codingnsTranslation.original, 'Checking code')
   assert.equal(reasoning.codingnsTranslation.translated, '[zh]Checking code')
   assert.equal(reasoning.codingnsTranslation.outputKind, 'reasoning')
   const text = chunks[4]
-  assert.equal(text.text, '[zh]Hello')
+  assert.equal(text.text, 'Hello')
   assert.equal(text.codingnsTranslation.outputKind, 'assistant')
-  // 可见正文必须与记录里的译文完全一致，客户端靠它匹配翻译入口。
-  assert.equal(chunks[5].block.text, text.codingnsTranslation.translated)
+  // DSH history keeps the provider text; the client renders the translated field.
+  assert.equal(chunks[5].block.text, 'Hello')
+  assert.equal(chunks[5].block.codingnsTranslation.original, text.codingnsTranslation.original)
   assert.equal(chunks[5].block.codingnsTranslation.translated, text.codingnsTranslation.translated)
   await harness.features.disable('cliAdapters')
 })
@@ -380,8 +381,9 @@ test('原生会话显式开启时，输入和输出均覆盖默认关闭，并�
       yield { type: 'finish', reason: { kind: 'stop' } }
     })) output.push(chunk)
     assert.equal(requests.length, 2, '会话开启必须同时执行输入和输出翻译')
-    assert.equal(output.find((chunk) => chunk.type === 'reasoning-delta')?.text, '用户正在测试对话。')
+    assert.equal(output.find((chunk) => chunk.type === 'reasoning-delta')?.text, 'The user is testing the conversation.')
     assert.equal(output.find((chunk) => chunk.type === 'block-end')?.block.codingnsTranslation.original, 'The user is testing the conversation.')
+    assert.equal(output.find((chunk) => chunk.type === 'block-end')?.block.codingnsTranslation.translated, '用户正在测试对话。')
   } finally { await harness.features.disable('cliAdapters'); translation.dispose() }
 })
 

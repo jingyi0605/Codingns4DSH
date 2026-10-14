@@ -1012,6 +1012,19 @@ test('原生会话桥接使用 Agent.inject 把外部工具推进下一个合法
   assert.equal(bridge.canInjectNextStep?.('missing'), false)
 })
 
+test('原生会话桥接的默认续跑提示使用英文', () => {
+  const messages: unknown[] = []
+  const agent = { id: 'default-step-language', inject(message: unknown) { messages.push(message) } }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'agents' ? { get(id: string) { return id === agent.id ? agent : undefined } } : undefined
+    },
+  } as never)
+
+  assert.equal(bridge.injectNextStep?.(agent.id), true)
+  assert.equal((messages[0] as { content: Array<{ text: string }> }).content[0]?.text, 'The external tool has finished. Continue the current task.')
+})
+
 test('已有原生 steer 收件箱时不重复注入外部工具提示', () => {
   const messages: unknown[] = []
   const agent = {

@@ -11,7 +11,7 @@ import {
   toSessionTranslationRecord,
 } from '../data/build/dist/shared/contracts/session-translation.js'
 
-test('会话翻译只在文本块结束后投影译文，并保留双语元数据', async () => {
+test('会话翻译只在文本块结束后投影原文，并保留双语元数据供客户端显示译文', async () => {
   const translation = {
     enabled: true,
     activate() {},
@@ -36,8 +36,8 @@ test('会话翻译只在文本块结束后投影译文，并保留双语元数�
   assert.deepEqual(await projector.push({ type: 'text-delta', text: 'Hello' }), [])
   assert.deepEqual(await projector.push({ type: 'finish', reason: 'stop' }), [
     { type: 'block-start', index: 1, blockType: 'text', codingnsTranslation: { original: 'Hello', translated: '你好', targetLanguage: 'zh', outputKind: 'assistant', bilingual: true } },
-    { type: 'text-delta', index: 1, text: '你好', codingnsTranslation: { original: 'Hello', translated: '你好', targetLanguage: 'zh', outputKind: 'assistant', bilingual: true } },
-    { type: 'block-end', index: 1, block: { type: 'text', text: '你好', codingnsTranslation: { original: 'Hello', translated: '你好', targetLanguage: 'zh', outputKind: 'assistant', bilingual: true } }, codingnsTranslation: { original: 'Hello', translated: '你好', targetLanguage: 'zh', outputKind: 'assistant', bilingual: true } },
+    { type: 'text-delta', index: 1, text: 'Hello', codingnsTranslation: { original: 'Hello', translated: '你好', targetLanguage: 'zh', outputKind: 'assistant', bilingual: true } },
+    { type: 'block-end', index: 1, block: { type: 'text', text: 'Hello', codingnsTranslation: { original: 'Hello', translated: '你好', targetLanguage: 'zh', outputKind: 'assistant', bilingual: true } }, codingnsTranslation: { original: 'Hello', translated: '你好', targetLanguage: 'zh', outputKind: 'assistant', bilingual: true } },
     { type: 'finish', reason: { kind: 'stop' } },
   ])
 })
