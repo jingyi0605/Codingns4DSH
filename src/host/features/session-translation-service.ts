@@ -2,6 +2,8 @@ import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
 import type { AssistantChatCatalog } from '../../shared/contracts/assistant.js'
 import {
   isSessionTranslationAdapter,
+  normalizeSessionTranslationSettings,
+  supportsSessionTranslation,
 } from '../../shared/contracts/session-translation.js'
 import type {
   SessionTranslationLanguage,
@@ -31,9 +33,13 @@ interface AgentDefaultModel {
 export interface SessionTranslationService {
   readonly enabled: boolean
   /** 当前输入翻译的目标语言；旧测试替身未实现时由调用方回退为英语。 */
-  readonly inputLanguage?: Exclude<SessionTranslationLanguage, 'zh'>
+  readonly inputLanguage?: SessionTranslationLanguage
   /** 当前输出翻译的目标语言；旧测试替身未实现时由调用方回退为中文。 */
   readonly outputLanguage?: SessionTranslationLanguage
+  /** DSH 原生会话的总开关；旧测试替身未实现时按关闭处理。 */
+  readonly nativeEnabled?: boolean
+  /** 是否在界面同时保留原文与译文；旧测试替身未实现时按关闭处理。 */
+  readonly bilingual?: boolean
   catalog(): Promise<AssistantChatCatalog>
   shouldTranslate(adapterId: string, kind: SessionTranslationOutputKind, sessionEnabled?: boolean): boolean
   activate(): void
@@ -177,6 +183,8 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     get enabled() { return active },
     get inputLanguage() { return settings.inputLanguage },
     get outputLanguage() { return settings.outputLanguage },
+    get nativeEnabled() { return settings.nativeEnabled === true },
+    get bilingual() { return settings.bilingual === true },
     async catalog() {
       const errors: string[] = []
       const providers = llm.listProviders?.() ?? []
@@ -463,27 +471,16 @@ function restoreText(value: string, values: readonly string[]): string {
 }
 
 function normalizeSettings(value: SessionTranslationSettings | undefined): SessionTranslationSettings {
-  const fallback = defaultSettings()
-  if (value === undefined) return fallback
-  const translationModel = normalizeModel(value.translationModel)
-  return {
-    inputLanguage: ['en', 'fr', 'de', 'ja'].includes(value.inputLanguage) ? value.inputLanguage : fallback.inputLanguage,
-    outputLanguage: ['zh', 'en', 'fr', 'de', 'ja'].includes(value.outputLanguage) ? value.outputLanguage : fallback.outputLanguage,
-    bilingual: value.bilingual === true,
-    ...(translationModel === undefined ? {} : { translationModel }),
-  }
+  return normalizeSessionTranslationSettings(value)
 }
 
 function defaultSettings(): SessionTranslationSettings {
-  return {
-    inputLanguage: 'en',
-    outputLanguage: 'zh',
-    bilingual: false,
-  }
+  return normalizeSessionTranslationSettings(undefined)
 }
 
+/** 外部 Agent 与 DSH 原生 Agent 共用同一开关语义：会话级开关必须显式为 true。 */
 function canTranslateAdapter(adapterId: string, sessionEnabled?: boolean): boolean {
-  return isSessionTranslationAdapter(adapterId) && sessionEnabled === true
+  return supportsSessionTranslation(adapterId) && sessionEnabled === true
 }
 
 /**
@@ -497,13 +494,6 @@ async function translationReasoningEffort(llm: LlmRuntime, model: ModelSelection
   const info = await llm.resolveModelInfo?.(model.provider, model.model, signal)
   signal.throwIfAborted()
   return info?.reasoning?.efforts.find((item) => item.id === 'off' || item.id === 'none')?.id
-}
-
-function normalizeModel(value: SessionTranslationSettings['translationModel']): ModelSelection | undefined {
-  if (value === undefined || value === null || typeof value.provider !== 'string' || typeof value.model !== 'string') return undefined
-  const provider = value.provider.trim()
-  const model = value.model.trim()
-  return provider === '' || model === '' ? undefined : { provider, model }
 }
 
 function readOptionalService(ctx: unknown, name: string): unknown {

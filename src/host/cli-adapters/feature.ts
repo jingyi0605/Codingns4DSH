@@ -35,8 +35,12 @@ import { clearDelegationAuthorization, setDelegationAuthorization } from './dele
 import { debugInfo } from '../../shared/debug.js'
 import { hasLegacySessionAdapterHint } from './legacy-session-adapter.js'
 import {
+  DSH_NATIVE_SESSION_ADAPTER_ID,
+  formatSessionTranslationOutput,
   type SessionTranslationInputRecord,
+  type SessionTranslationRecord,
 } from '../../shared/contracts/session-translation.js'
+import { ASSISTANT_AGENT_PREFIX } from '../../dsh-capabilities/host/assistant-agent-adapter.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -132,7 +136,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         })
         context.resources.add(disposeNativeEvents)
       }
-      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation)
+      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, nativeSessions)
       context.resources.add(context.services.rpc.register('cli', (action, payload) => {
         switch (action) {
           case 'catalog': return registry.catalog()
@@ -349,6 +353,23 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             if (sessionId !== '' && (selection.modelId !== undefined || selection.effortId !== undefined)) {
               registry.setSession(sessionId, { adapterId: 'dsh', ...selection })
             }
+            // 原生会话的输出翻译只能包装 DSH 自己的 Provider 流：文本与思考在块结束时
+            // 换成译文并挂上记录，工具、usage 与 finish 原样透传；开关关闭时零改动。
+            if (!isSessionTranslationLlmRequest(value)
+              && translation !== undefined
+              && translation.enabled
+              && (config.translationEnabled ?? translation.nativeEnabled === true)
+              && sessionId !== ''
+              && !isAssistantSession(sessionId)
+              && readNativeSessionHeader(nativeSessions, sessionId)?.origin !== 'subagent') {
+              yield* guardDshNativeStream(() => translateNativeStream(
+                next(),
+                translation,
+                translation.bilingual === true,
+                isAbortSignal(value?.signal) ? value.signal : undefined,
+              ))
+              return
+            }
             yield* guardDshNativeStream(next)
             return
           }
@@ -525,6 +546,7 @@ function registerDelegationAgentHooks(
   resources: FeatureResourceScope,
   publishExternalStatus: (sessionId: string, running: boolean) => void,
   translation: CodingNsHostServices['sessionTranslation'],
+  nativeSessions?: CodingNsHostServices['nativeSessions'],
 ): void {
   if (dshContext === undefined || typeof dshContext.on !== 'function') return
   const disposers: Array<() => void> = []
@@ -592,6 +614,7 @@ function registerDelegationAgentHooks(
       messages,
       dshContext,
       isAbortSignal(record?.signal) ? record.signal : undefined,
+      nativePreStepContext(translation, registry, sessionId, nativeSessions),
     )
     if (translatedInput !== undefined) messages = [...translatedInput]
 
@@ -1024,8 +1047,39 @@ async function translatePreStepInput(
   messages: readonly CodingNsCliMessage[],
   dshContext: CodingNsHostServices['dshContext'],
   signal?: AbortSignal,
+  nativeSession?: { readonly adapterId: string; readonly translationEnabled: boolean },
 ): Promise<readonly CodingNsCliMessage[] | undefined> {
   if (translation === undefined || !translation.enabled || sessionId.trim() === '') return undefined
+
+  const messageIndex = findLatestHumanMessage(messages)
+  const current = messageIndex < 0 ? undefined : messages[messageIndex]
+  if (current === undefined || readInputTranslation(current.source) !== undefined) return undefined
+
+  if (nativeSession !== undefined) {
+    // DSH 原生会话：消息本身就是发给 Provider 的正文，直接替换为译文并把原文留在元数据。
+    if (nativeSession.translationEnabled !== true) return undefined
+    const input = extractTurnInput(messages, dshContext)
+    if (input.translationPrompt.trim() === '') return undefined
+    const result = await runInputTranslation(translation, nativeSession.adapterId, input.translationPrompt, signal)
+    const translated = [result.translated, input.untranslatedPrompt].filter((part) => part.trim() !== '').join('\n\n').trim()
+    if (translated === '') return undefined
+    const record: SessionTranslationInputRecord = {
+      original: input.prompt,
+      translated,
+      ...(result.sourceLanguage === undefined ? {} : { sourceLanguage: result.sourceLanguage }),
+      targetLanguage: readInputTargetLanguage(translation),
+      ...(result.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
+      ...(result.model === undefined ? {} : { model: result.model }),
+      ...(result.failed === true ? { failed: true } : {}),
+    }
+    const next = [...messages]
+    next[messageIndex] = {
+      ...current,
+      content: [{ type: 'text', text: translated }],
+      source: { ...(current.source ?? {}), kind: 'user', codingnsTranslationInput: record },
+    }
+    return next
+  }
 
   let session: CodingNsCliSessionConfig
   try {
@@ -1035,35 +1089,11 @@ async function translatePreStepInput(
   }
   if (session.adapterId === 'dsh' || session.translationEnabled !== true) return undefined
 
-  const messageIndex = findLatestHumanMessage(messages)
-  const current = messageIndex < 0 ? undefined : messages[messageIndex]
-  if (current === undefined || readInputTranslation(current.source) !== undefined) return undefined
-
   const input = extractTurnInput(messages, dshContext)
   if (input.translationPrompt.trim() === '') return undefined
 
-  let translatedNatural: string
-  let translationSourceLanguage: SessionTranslationInputRecord['sourceLanguage'] = undefined
-  let alreadyTargetLanguage = false
-  let translationModel: SessionTranslationInputRecord['model']
-  let translationFailed = false
-  try {
-    if (translation.translateInputDetailed !== undefined) {
-      const detailed = await translation.translateInputDetailed(session.adapterId, input.translationPrompt, signal, true)
-      translatedNatural = detailed.translated
-      translationSourceLanguage = detailed.sourceLanguage
-      alreadyTargetLanguage = detailed.alreadyTargetLanguage === true
-      translationModel = detailed.model
-      translationFailed = detailed.failed === true
-    } else {
-      translatedNatural = await translation.translateInput(session.adapterId, input.translationPrompt, signal, true)
-    }
-  } catch {
-    // 翻译只是增强能力；异常时保持现有外部 Agent 回合继续使用原文。
-    translatedNatural = input.translationPrompt
-    translationFailed = true
-  }
-  const translated = [translatedNatural, input.untranslatedPrompt]
+  const result = await runInputTranslation(translation, session.adapterId, input.translationPrompt, signal)
+  const translated = [result.translated, input.untranslatedPrompt]
     .filter((part) => part.trim() !== '')
     .join('\n\n')
     .trim()
@@ -1072,11 +1102,11 @@ async function translatePreStepInput(
   const record: SessionTranslationInputRecord = {
     original: input.prompt,
     translated,
-    ...(translationSourceLanguage === undefined ? {} : { sourceLanguage: translationSourceLanguage }),
-    targetLanguage: translation.inputLanguage ?? 'en',
-    ...(alreadyTargetLanguage ? { alreadyTargetLanguage: true } : {}),
-    ...(translationModel === undefined ? {} : { model: translationModel }),
-    ...(translationFailed ? { failed: true } : {}),
+    ...(result.sourceLanguage === undefined ? {} : { sourceLanguage: result.sourceLanguage }),
+    targetLanguage: readInputTargetLanguage(translation),
+    ...(result.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
+    ...(result.model === undefined ? {} : { model: result.model }),
+    ...(result.failed === true ? { failed: true } : {}),
   }
   const next = [...messages]
   next[messageIndex] = {
@@ -1088,6 +1118,203 @@ async function translatePreStepInput(
     },
   }
   return next
+}
+
+/** 输入翻译统一入口：翻译只是增强能力，异常时回退原文并标记失败。 */
+async function runInputTranslation(
+  translation: NonNullable<CodingNsHostServices['sessionTranslation']>,
+  adapterId: string,
+  text: string,
+  signal?: AbortSignal,
+): Promise<{
+  readonly translated: string
+  readonly sourceLanguage?: SessionTranslationInputRecord['sourceLanguage']
+  readonly alreadyTargetLanguage?: boolean
+  readonly model?: SessionTranslationInputRecord['model']
+  readonly failed?: boolean
+}> {
+  try {
+    if (translation.translateInputDetailed !== undefined) {
+      const detailed = await translation.translateInputDetailed(adapterId, text, signal, true)
+      return {
+        translated: detailed.translated,
+        ...(detailed.sourceLanguage === undefined ? {} : { sourceLanguage: detailed.sourceLanguage }),
+        ...(detailed.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
+        ...(detailed.model === undefined ? {} : { model: detailed.model }),
+        ...(detailed.failed === true ? { failed: true } : {}),
+      }
+    }
+    return { translated: await translation.translateInput(adapterId, text, signal, true) }
+  } catch {
+    return { translated: text, failed: true }
+  }
+}
+
+/** 旧测试替身没有 inputLanguage 时沿用历史默认值英语。 */
+function readInputTargetLanguage(translation: NonNullable<CodingNsHostServices['sessionTranslation']>): SessionTranslationInputRecord['targetLanguage'] {
+  const language = translation.inputLanguage
+  return language === undefined ? 'en' : language
+}
+
+/**
+ * 判断本次 pre-step 是否按 DSH 原生会话翻译。
+ *
+ * 原生会话的翻译记录来自全局 `nativeEnabled` 与适配器偏好（会话索引对 `dsh` 不落盘），
+ * 子代理与插件自己的助理会话必须排除，避免把内部执行流水线翻译掉。
+ */
+function nativePreStepContext(
+  translation: CodingNsHostServices['sessionTranslation'],
+  registry: CodingNsCliAdapterRegistry,
+  sessionId: string,
+  nativeSessions: CodingNsHostServices['nativeSessions'],
+): { readonly adapterId: string; readonly translationEnabled: boolean } | undefined {
+  if (translation === undefined || !translation.enabled || sessionId.trim() === '') return undefined
+  if (isAssistantSession(sessionId)) return undefined
+  if (readNativeSessionHeader(nativeSessions, sessionId)?.origin === 'subagent') return undefined
+  let session: CodingNsCliSessionConfig
+  try {
+    session = registry.getSession(sessionId)
+  } catch {
+    return undefined
+  }
+  if (session.adapterId !== DSH_NATIVE_SESSION_ADAPTER_ID) return undefined
+  return {
+    adapterId: DSH_NATIVE_SESSION_ADAPTER_ID,
+    // 会话级开关优先；用户没有单独设置过该会话时跟随「DSH 原生会话」总开关。
+    translationEnabled: session.translationEnabled ?? translation.nativeEnabled === true,
+  }
+}
+
+/** 读取原生会话 header；测试替身或会话尚未装载时返回 undefined。 */
+function readNativeSessionHeader(
+  nativeSessions: CodingNsHostServices['nativeSessions'],
+  sessionId: string,
+): Record<string, unknown> | undefined {
+  if (nativeSessions === undefined) return undefined
+  try {
+    return asRecord(asRecord(nativeSessions.get(sessionId))?.header) ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** 插件自己的全局助理会话不属于用户对话，不能被翻译改写。 */
+function isAssistantSession(sessionId: string): boolean {
+  // 复用助理适配器导出的会话前缀常量：会话身份的唯一定义在那里，重复字面量会漂移。
+  return sessionId.startsWith(ASSISTANT_AGENT_PREFIX)
+}
+
+interface NativeStreamBlock {
+  readonly index: number
+  readonly kind: 'reasoning' | 'text'
+  text: string
+  closed: boolean
+}
+
+/**
+ * DSH 原生会话的输出翻译。
+ *
+ * 原生回复由 DSH 自己组装成 `assistant/message`，插件只能在 Provider 流边界改写：
+ * 文本与思考增量先缓存，块结束时一次性发出译文，工具调用、usage 与 finish 原样透传。
+ * 翻译失败、流中断或异常都会补发原文块，保证回复不丢失。
+ */
+async function* translateNativeStream(
+  stream: AsyncIterable<unknown>,
+  translation: NonNullable<CodingNsHostServices['sessionTranslation']>,
+  bilingual: boolean,
+  signal?: AbortSignal,
+): AsyncIterable<unknown> {
+  const blocks = new Map<number, NativeStreamBlock>()
+
+  const bufferOf = (index: number, kind: NativeStreamBlock['kind']): NativeStreamBlock | undefined => {
+    const existing = blocks.get(index)
+    if (existing !== undefined) return existing.kind === kind && !existing.closed ? existing : undefined
+    const created: NativeStreamBlock = { index, kind, text: '', closed: false }
+    blocks.set(index, created)
+    return created
+  }
+
+  const translateBlock = async (block: NativeStreamBlock): Promise<readonly unknown[]> => {
+    const original = block.text
+    if (original.trim() === '') return []
+    const kind = block.kind === 'reasoning' ? 'reasoning' as const : 'assistant' as const
+    let record: SessionTranslationRecord | undefined
+    try {
+      const result = await translation.translateOutput(DSH_NATIVE_SESSION_ADAPTER_ID, kind, original, signal, true)
+      if (result !== null && result !== undefined) {
+        record = {
+          original: result.original,
+          translated: result.translated,
+          ...(result.sourceLanguage === undefined ? {} : { sourceLanguage: result.sourceLanguage }),
+          targetLanguage: result.targetLanguage,
+          outputKind: kind,
+          bilingual: result.bilingual,
+          ...(result.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
+          ...(result.model === undefined ? {} : { model: result.model }),
+          ...(result.failed === true ? { failed: true } : {}),
+        }
+      }
+    } catch {
+      record = { original, translated: original, targetLanguage: translation.outputLanguage ?? 'zh', outputKind: kind, bilingual, failed: true }
+    }
+    if (record === undefined) return []
+    const visible = formatSessionTranslationOutput(record)
+    if (visible.trim() === '' || visible === original) return []
+    return [
+      { type: `${block.kind}-delta`, index: block.index, text: visible, codingnsTranslation: record },
+      { type: 'block-end', index: block.index, block: { type: block.kind, text: visible, codingnsTranslation: record }, codingnsTranslation: record },
+    ]
+  }
+
+  try {
+    for await (const chunk of stream) {
+      const record = asRecord(chunk)
+      const type = typeof record?.type === 'string' ? record.type : ''
+      const index = typeof record?.index === 'number' ? record.index : undefined
+      if (type === 'text-delta' || type === 'reasoning-delta') {
+        if (index === undefined || typeof record?.text !== 'string') { yield chunk; continue }
+        const kind = type === 'text-delta' ? 'text' as const : 'reasoning' as const
+        const block = bufferOf(index, kind)
+        if (block === undefined) { yield chunk; continue }
+        block.text += record.text
+        continue
+      }
+      if (type === 'block-end' && index !== undefined) {
+        const block = blocks.get(index)
+        if (block !== undefined && !block.closed) {
+          block.closed = true
+          if (block.text.trim() !== '') {
+            const emitted = await translateBlock(block)
+            for (const item of emitted) yield item
+            if (emitted.length > 0) continue
+          }
+        }
+        yield chunk
+        continue
+      }
+      yield chunk
+    }
+  } catch (error) {
+    // 流异常时先把缓存正文按原文补发，再把原始错误交给 DSH，保证回复不丢失。
+    for (const item of flushBuffered()) yield item
+    throw error
+  }
+  for (const item of flushBuffered()) yield item
+
+  /**
+   * Provider 未发送 block-end（中断或异常）时，把缓存正文按原文补发。
+   *
+   * 不能用 `finally` 里的 `yield`：异常正在传播时生成器已经结束，后续 yield 会被
+   * 直接丢弃，用户会看不到已经生成的半截回复。
+   */
+  function* flushBuffered(): Generator<unknown> {
+    for (const block of [...blocks.values()]) {
+      if (block.closed || block.text.trim() === '') continue
+      block.closed = true
+      yield { type: `${block.kind}-delta`, index: block.index, text: block.text }
+      yield { type: 'block-end', index: block.index, block: { type: block.kind, text: block.text } }
+    }
+  }
 }
 
 function extractTurnInput(

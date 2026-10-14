@@ -49,9 +49,12 @@ export const CodingNsSettingsSchema = z.object({
       .default(DEFAULT_CODINGNS_SETTINGS.subagentBridge?.maxConcurrentSubagents ?? 8),
   }).default(DEFAULT_CODINGNS_SETTINGS.subagentBridge ?? { enabled: false, maxConcurrentSubagents: 8 }),
   sessionTranslation: z.object({
-    inputLanguage: z.union([z.const('en'), z.const('fr'), z.const('de'), z.const('ja')]).default(DEFAULT_SESSION_TRANSLATION_SETTINGS.inputLanguage),
+    // 输入语言放开中文：DSH 原生会话的典型用法正是「中文输入 → 英文请求」。
+    inputLanguage: z.union([z.const('zh'), z.const('en'), z.const('fr'), z.const('de'), z.const('ja')]).default(DEFAULT_SESSION_TRANSLATION_SETTINGS.inputLanguage),
     outputLanguage: z.union([z.const('zh'), z.const('en'), z.const('fr'), z.const('de'), z.const('ja')]).default(DEFAULT_SESSION_TRANSLATION_SETTINGS.outputLanguage),
     bilingual: z.boolean().default(DEFAULT_SESSION_TRANSLATION_SETTINGS.bilingual),
+    // DSH 原生会话默认不翻译：输出翻译会把 assistant 正文写成译文，不能默认改变既有行为。
+    nativeEnabled: z.boolean().default(DEFAULT_SESSION_TRANSLATION_SETTINGS.nativeEnabled === true),
     translationModel: z.union([z.object({ provider: z.string().min(1).max(200), model: z.string().min(1).max(200) }), z.const(undefined)]),
   }).default({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS }),
   assistant: z.object({

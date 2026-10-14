@@ -493,6 +493,8 @@ export class CodingNsCliAdapterRegistry {
       ...(remembered?.modelId ? { modelId: remembered.modelId } : {}),
       ...(remembered?.effortId ? { effortId: remembered.effortId } : {}),
       ...(remembered?.serviceTierId ? { serviceTierId: remembered.serviceTierId } : {}),
+      // 原生会话没有插件会话索引，翻译开关按适配器偏好持久化并在这里回读。
+      ...(remembered?.translationEnabled === undefined ? {} : { translationEnabled: remembered.translationEnabled }),
     }, this.nativeSessions?.get(sessionId))
   }
 

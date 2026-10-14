@@ -14,7 +14,9 @@ import {
 import type { CodingNsClientFeatureModule, FeaturePanelProps } from './types.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { callCliRpc } from '../cli-catalog.js'
+import { SettingsToggleRow } from '../settings-controls.js'
 import { registerSessionTranslationChatUi } from '../session-translation-chat.js'
+import { notifyNativeTranslationDefaultChanged, setNativeTranslationDefaultReader } from '../native-translation-default.js'
 import {
   dshFormRootStyle,
   dshSettingsFieldLabelStyle,
@@ -45,7 +47,7 @@ export const sessionTranslationFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     ui: {
       label: 'Session translation',
-      description: 'Translate selected external Agent requests and replies without changing tools, commands, paths, or original history.',
+      description: 'Translate selected external Agent requests and replies without changing tools, commands, paths, or original history. DSH native sessions are opt-in.',
       labelKey: 'feature.sessionTranslation.label',
       descriptionKey: 'feature.sessionTranslation.description',
       order: 32,
@@ -53,7 +55,16 @@ export const sessionTranslationFeature: CodingNsClientFeatureModule = {
     },
   },
   start: (context) => {
-    return registerSessionTranslationChatUi(context.services)
+    const settings = context.services.settings
+    // 菜单订阅默认值及模块启停；已打开的菜单也必须随设置变化更新。
+    setNativeTranslationDefaultReader(() => settings.getSnapshot().value?.sessionTranslation?.nativeEnabled === true)
+    const removeSettings = settings.subscribe(notifyNativeTranslationDefaultChanged)
+    const removeChatUi = registerSessionTranslationChatUi(context.services)
+    return () => {
+      removeSettings()
+      setNativeTranslationDefaultReader(undefined)
+      removeChatUi()
+    }
   },
   settingsPanel: SessionTranslationPanel,
 }
@@ -99,8 +110,18 @@ function SessionTranslationPanel({ services, enabled, snapshot, notify }: Featur
       disabled,
       style: dshSettingsFieldStyle,
       onChange: (event: { currentTarget: { value: string } }) => save({ inputLanguage: readInputLanguage(event.currentTarget.value) }),
-    }, ...(['en', 'fr', 'de', 'ja'] as const).map((language) => createElement('option', { key: language, value: language }, t(languageLabelKeys[language])))),
+    }, ...(['zh', 'en', 'fr', 'de', 'ja'] as const).map((language) => createElement('option', { key: language, value: language }, t(languageLabelKeys[language])))),
   ),
+  createElement('div', { style: { ...dshSettingsSectionHeaderStyle, marginTop: 12 } },
+    createElement('span', { style: dshSettingsFieldLabelStyle }, t('translation.nativeTitle')),
+  ),
+  createElement(SettingsToggleRow, {
+    label: t('translation.nativeToggle'),
+    description: t('translation.nativeHelp'),
+    checked: value.nativeEnabled === true,
+    disabled,
+    onChange: (checked: boolean) => save({ nativeEnabled: checked }),
+  }),
   createElement('div', { style: { ...dshSettingsSectionHeaderStyle, marginTop: 12 } },
     createElement('span', { style: dshSettingsFieldLabelStyle }, t('translation.outputTitle')),
   ),
@@ -170,7 +191,7 @@ function isOfficialProvider(provider: string): boolean {
 }
 
 function readInputLanguage(value: string): SessionTranslationSettings['inputLanguage'] {
-  return value === 'fr' || value === 'de' || value === 'ja' ? value : 'en'
+  return value === 'zh' || value === 'fr' || value === 'de' || value === 'ja' ? value : 'en'
 }
 
 function readOutputLanguage(value: string): SessionTranslationLanguage {

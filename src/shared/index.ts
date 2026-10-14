@@ -69,10 +69,17 @@ export {
 } from './contracts/config.js'
 export {
   DEFAULT_SESSION_TRANSLATION_SETTINGS,
+  DSH_NATIVE_SESSION_ADAPTER_ID,
   SESSION_TRANSLATION_ADAPTER_IDS,
+  SESSION_TRANSLATION_LANGUAGES,
   formatSessionTranslationInput,
   formatSessionTranslationOutput,
   isSessionTranslationAdapter,
+  isSessionTranslationLanguage,
+  normalizeSessionTranslationSettings,
+  readNativeTranslationRecord,
+  supportsSessionTranslation,
+  toSessionTranslationRecord,
   type SessionTranslationLanguage,
   type SessionTranslationInputRecord,
   type SessionTranslationModel,
