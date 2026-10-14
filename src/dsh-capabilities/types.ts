@@ -16,6 +16,7 @@ export type DshCapabilityId =
   | 'theme.font-scale'
   | 'conversation.tool-call'
   | 'conversation.draft-share'
+  | 'conversation.interaction-translation'
   | 'sidebar.right'
   | 'typert.remote'
   | 'typert.context'

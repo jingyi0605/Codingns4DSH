@@ -68,6 +68,7 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('theme.font-scale', 'theme-font-scale-021', 'client', '>=0.2.1-alpha.2', 'supported', ['client/font-scale.ts', 'client/index.ts']),
   route('conversation.tool-call', 'conversation-events-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/external-tool-stream.ts']),
   route('conversation.draft-share', 'conversation-draft-share-021', 'client', '>=0.2.1-alpha.1 <=0.2.1-alpha.2', 'supported', ['client/terminal/ui.ts', 'client/terminal/sharing.ts']),
+  route('conversation.interaction-translation', 'interaction-presentation-021', 'client', '>=0.2.1-alpha.1 <=0.2.1-alpha.2', 'supported', ['client/session-translation-interactions.ts']),
   route('sidebar.right', 'sidebar-right-dock-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/terminal/ui.ts']),
   route('typert.remote', 'remote-context-stream-020-client', 'client', DSH_COMPATIBILITY, 'supported', ['client/terminal/model.ts']),
   route('typert.context', 'typert-context-registry-020-client', 'client', DSH_COMPATIBILITY, 'supported', ['typert.remote-client.ts', 'client/terminal/model.ts']),

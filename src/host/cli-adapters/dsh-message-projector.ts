@@ -351,11 +351,19 @@ export class CodingNsDshMessageProjector {
   private async requestPermission(event: Extract<CodingNsAgentEvent, { type: 'permission-request' }>): Promise<void> {
     const responder = this.options.respondPermission
     if (responder === undefined) throw new Error('外部 Agent 发送了权限请求，但适配器没有权限回复接口')
+    let detail = event.detail
+    const planReview = event.kind === 'plan' || ['exitplanmode', 'exit_plan_mode'].includes(event.toolName?.toLowerCase() ?? '')
+    if (planReview && detail && this.options.translation?.shouldTranslate(this.options.adapterId, 'assistant', this.options.translationEnabled)) {
+      try {
+        const record = await this.options.translation.translateOutput(this.options.adapterId, 'assistant', detail, this.options.signal, this.options.translationEnabled)
+        if (record !== null && !record.failed) detail = record.translated
+      } catch { /* Keep the original plan when translation is unavailable. */ }
+    }
     const outcome = await this.options.nativeSessions?.requestApproval?.(this.options.sessionId, {
       requestId: event.requestId,
       toolName: event.toolName ?? (event.kind || 'external-agent'),
       ...(event.callId ? { callId: event.callId } : {}),
-      ...(event.detail ? { reason: event.detail } : {}),
+      ...(detail ? { reason: detail } : {}),
       ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
     }) ?? 'unavailable'
     const approved = outcome === 'allowed-once'

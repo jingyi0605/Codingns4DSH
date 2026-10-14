@@ -16,6 +16,7 @@ import { useCodingNsTranslator } from '../locale.js'
 import { callCliRpc } from '../cli-catalog.js'
 import { SessionTranslationModelPool } from '../session-translation-model-pool.js'
 import { registerSessionTranslationChatUi } from '../session-translation-chat.js'
+import { registerSessionTranslationInteractions } from '../session-translation-interactions.js'
 import { notifyNativeTranslationDefaultChanged, setNativeTranslationDefaultReader } from '../native-translation-default.js'
 import {
   dshFormRootStyle,
@@ -44,6 +45,7 @@ export const sessionTranslationFeature: CodingNsClientFeatureModule = {
     enabledByDefault: false,
     dependencies: ['cliAdapters'],
     runtime: 'client',
+    requires: [{ capability: 'conversation.interaction-translation', required: false, fallback: 'degrade' }],
     ui: {
       label: 'Session translation',
       description: 'Translate selected external Agent requests and replies without changing tools, commands, paths, or original history. Control DSH native session translation using the switch in the conversation model selector.',
@@ -59,10 +61,12 @@ export const sessionTranslationFeature: CodingNsClientFeatureModule = {
     setNativeTranslationDefaultReader(() => settings.getSnapshot().value?.sessionTranslation?.nativeEnabled === true)
     const removeSettings = settings.subscribe(notifyNativeTranslationDefaultChanged)
     const removeChatUi = registerSessionTranslationChatUi(context.services)
+    const removeInteractions = registerSessionTranslationInteractions(context.services)
     return () => {
       removeSettings()
       setNativeTranslationDefaultReader(undefined)
       removeChatUi()
+      removeInteractions()
     }
   },
   settingsPanel: SessionTranslationPanel,
