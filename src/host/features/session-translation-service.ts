@@ -92,7 +92,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     const targetLanguage = kind === 'assistant' || kind === 'reasoning' ? settings.outputLanguage : settings.inputLanguage
     const protectedText = protectText(value)
     if (isPlaceholderOnly(protectedText.text)) return null
-    const sourceLanguage = detectSourceLanguage(protectedText.text)
+    const sourceLanguage = detectSourceLanguage(protectedText.text, targetLanguage)
     if (sourceLanguage === targetLanguage) {
       return {
         original: value,
@@ -229,7 +229,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
       const protectedText = protectText(text)
       if (isPlaceholderOnly(protectedText.text)) return { translated: text }
       const targetLanguage = settings.inputLanguage
-      const sourceLanguage = detectSourceLanguage(protectedText.text)
+      const sourceLanguage = detectSourceLanguage(protectedText.text, targetLanguage)
       if (sourceLanguage === targetLanguage) {
         return { translated: text, sourceLanguage, alreadyTargetLanguage: true }
       }
@@ -331,8 +331,13 @@ function isUsableTranslation(value: string, language: SessionTranslationLanguage
 /**
  * 轻量、本地的语言判断。只有明确的文字特征或较强词汇信号才返回语言；
  * 混合文本、短代号和语言特征不足的文本保持未知，继续走原翻译流程。
+ *
+ * 目标语言是英语时额外放行「纯拉丁文本」：英语没有专属字形，词表评分对
+ * `tool test`、`check this file` 这类短指令经常给不出结论，继续调用翻译模型
+ * 只会原样返回，还会把界面标成「已翻译」。命中法语/德语词汇或带非英语
+ * 变音字母的文本仍保持未知，交由翻译模型处理。
  */
-function detectSourceLanguage(value: string): SessionTranslationLanguage | undefined {
+function detectSourceLanguage(value: string, targetLanguage?: SessionTranslationLanguage): SessionTranslationLanguage | undefined {
   const text = value
     .replace(/@@CODINGNS_TRANSLATION_\d+@@/gu, ' ')
     .normalize('NFKC')
@@ -349,6 +354,9 @@ function detectSourceLanguage(value: string): SessionTranslationLanguage | undef
       || /(?:你好|您好|谢谢|再见|请问|什么|为什么|如何|代码|检查|完成|错误|继续|开始|结束|测试|确认|没有|可以|需要)/u.test(text)) return 'zh'
     // 少数常见的纯汉字日语短语；普通日语句子通常已由假名识别。
     if (/(?:確認|作成|実行|設定|変更|対応|修正|原因|利用|処理|必要|可能|準備|表示|入力|出力|開発|環境|現在)/u.test(text)) return 'ja'
+    // 目标语言是中文时，纯汉字文本按中文处理：没有特征字的短句（如“我修好了”）
+    // 同样无法识别，继续调用翻译模型只会原样返回并把界面标成「已翻译」。
+    if (targetLanguage === 'zh') return 'zh'
     return undefined
   }
   if (latin === 0 || han > 0) return undefined
@@ -377,8 +385,21 @@ function detectSourceLanguage(value: string): SessionTranslationLanguage | undef
   const ranked = (Object.entries(scores) as [keyof typeof scores, number][]).sort((left, right) => right[1] - left[1])
   const best = ranked[0]
   const second = ranked[1]
-  if (best === undefined || second === undefined || best[1] < 2 || best[1] - second[1] < 1) return undefined
-  return best[0]
+  if (best === undefined || second === undefined) return undefined
+  if (best[1] >= 2 && best[1] - second[1] >= 1) return best[0]
+  if (targetLanguage === 'en' && scores.fr === 0 && scores.de === 0 && isPlainLatinText(text)) return 'en'
+  return undefined
+}
+
+/**
+ * 纯拉丁文本：不含汉字、假名等其它文字的专属字形，也不含非英语的拉丁变音字母。
+ * 只有这类文本才允许在目标语言是英语时直接放行。
+ */
+function isPlainLatinText(text: string): boolean {
+  if (!/[A-Za-z]/u.test(text)) return false
+  if (/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u0400-\u04ff\u0370-\u03ff\u0600-\u06ff\u0590-\u05ff\u0e00-\u0e7f]/u.test(text)) return false
+  if (/[\u00c0-\u024f\u1e00-\u1eff]/u.test(text)) return false
+  return true
 }
 
 async function readTranslation(stream: AsyncIterable<Record<string, any>>, signal: AbortSignal): Promise<string> {
