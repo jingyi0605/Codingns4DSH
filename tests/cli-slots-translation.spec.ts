@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createElement, type ReactElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { registerCliConversationSlots } from '../src/client/cli-slots.js'
+import { registerCliConversationSlots, useCliSessionTranslationEnabled } from '../src/client/cli-slots.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import { SESSION_TRANSLATION_ADAPTER_IDS } from '../src/shared/contracts/session-translation.js'
 import { notifyNativeTranslationDefaultChanged, readNativeTranslationDefault, setNativeTranslationDefaultReader } from '../src/client/native-translation-default.js'
@@ -50,6 +50,24 @@ function createProbe(adapterId = 'dsh', options: { readDefault?: () => boolean |
 
 let nextSessionId = 0
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
+
+test('pending translation follows the native default and per-session switches for native and external agents', async () => {
+  setNativeTranslationDefaultReader(() => true)
+  try {
+    for (const [adapterId, override, expected] of [
+      ['dsh', undefined, true], ['dsh', false, false], ['dsh', true, true],
+      ['codex', undefined, false], ['codex', false, false], ['codex', true, true],
+    ] as const) {
+      const probe = createProbe(adapterId, { translationEnabled: override })
+      const renderer = createHookRenderer(() => useCliSessionTranslationEnabled(probe.sessionId, probe.rpc), {})
+      try {
+        renderer.render()
+        await flush()
+        assert.equal(renderer.render(), expected, `${adapterId}: ${override}`)
+      } finally { renderer.dispose(); probe.dispose() }
+    }
+  } finally { setNativeTranslationDefaultReader(undefined) }
+})
 
 function elementWhere(node: ReactNode, predicate: (element: ReactElement<any>) => boolean): ReactElement<any> | undefined {
   if (Array.isArray(node)) {

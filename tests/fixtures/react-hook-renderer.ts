@@ -39,6 +39,7 @@ export function createHookRenderer<P, R>(component: (props: P) => R, initialProp
     useMemo: memo,
     useCallback: (callback: unknown, deps: readonly unknown[]) => memo(() => callback, deps),
     useEffect: effect,
+    useLayoutEffect: effect,
     useId: () => memo(() => `test-hook-${cursor}`, []),
     useSyncExternalStore(subscribe: (listener: () => void) => () => void, read: () => unknown) {
       effect(() => subscribe(() => { dirty = true }), [subscribe])

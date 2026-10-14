@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createElement, type ComponentType, type ReactNode } from 'react'
+import { Children, createElement, isValidElement, type ComponentType, type ReactElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { AssistantReasoningContent, registerSessionTranslationChatUi } from '../src/client/session-translation-chat.js'
+import { AssistantReasoningContent, TranslationAction, registerSessionTranslationChatUi } from '../src/client/session-translation-chat.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import type { CodingNsClientServices } from '../src/client/features/types.js'
 import type { SessionTranslationRecord } from '../src/shared/contracts/session-translation.js'
+import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 
 const translationT = resolveCodingNsTranslator()
 const chatT = (key: string, params?: Record<string, unknown>): string => {
@@ -82,6 +83,76 @@ const outputRecord: SessionTranslationRecord = {
   model: { provider: 'deepseek', model: 'chat' },
 }
 
+function elements(node: ReactNode): ReactElement<any>[] {
+  if (!isValidElement<{ children?: ReactNode }>(node)) return []
+  return [node, ...Children.toArray(node.props.children).flatMap(elements)]
+}
+
+test('pending translation is clickable, shows progress, and switches to completed or failed details', (t) => {
+  const listeners = new Map<string, unknown>()
+  const previousWindow = globalThis.window
+  Object.assign(globalThis, { window: {
+    innerWidth: 900, innerHeight: 700,
+    addEventListener: (name: string, listener: unknown) => listeners.set(name, listener),
+    removeEventListener: (name: string) => listeners.delete(name),
+  } })
+  const props = { messageId: 'pending-input', services: {} as CodingNsClientServices, translationT, original: inputRecord.original }
+  const renderer = createHookRenderer(TranslationAction, props)
+  t.after(() => {
+    renderer.dispose()
+    if (previousWindow === undefined) delete (globalThis as any).window
+    else globalThis.window = previousWindow
+  })
+  let tree = renderer.render()
+  const button = elements(tree).find((element) => element.type === 'button')!
+  assert.equal(button.props.disabled, undefined)
+  assert.equal(button.props['aria-expanded'], false)
+  assert.ok(elements(tree).some((element) => element.props['data-codingns-translation-pending'] === true))
+  ;(button as any).ref.current = { getBoundingClientRect: () => ({ left: 200, right: 228, top: 500, bottom: 528 }) }
+  button.props.onClick()
+  tree = renderer.render()
+  let dialog = elements(tree).find((element) => element.props.role === 'dialog')!
+  assert.ok(dialog)
+  let html = renderToStaticMarkup(dialog)
+  assert.ok(html.includes(translationT('translation.statusTranslating')))
+  assert.ok(html.includes(translationT('translation.progressHelp')))
+  assert.ok(html.includes(inputRecord.original))
+  assert.equal(html.includes(translationT('translation.modelUsed')), false)
+  const progress = elements(dialog).find((element) => element.type === 'progress')!
+  assert.ok(progress)
+  assert.equal(progress.props.value, undefined, 'translation progress must not invent a completion percentage')
+
+  const record = { ...outputRecord, original: inputRecord.original, translated: inputRecord.translated }
+  tree = renderer.render({ ...props, record } as typeof props)
+  assert.equal(elements(tree).some((element) => element.props['data-codingns-translation-pending'] === true), false)
+  dialog = elements(tree).find((element) => element.props.role === 'dialog')!
+  html = renderToStaticMarkup(dialog)
+  assert.ok(html.includes(inputRecord.translated))
+  assert.ok(html.includes(translationT('translation.statusTranslated')))
+  assert.equal(html.includes(translationT('translation.progressHelp')), false)
+  assert.equal(elements(dialog).some((element) => element.type === 'progress'), false)
+
+  tree = renderer.render({ ...props, record: { ...record, failed: true, translated: record.original } } as typeof props)
+  html = renderToStaticMarkup(elements(tree).find((element) => element.props.role === 'dialog')!)
+  assert.ok(html.includes(translationT('translation.statusFailed')))
+  elements(tree).find((element) => element.type === 'button')!.props.onClick()
+  tree = renderer.render()
+  assert.equal(elements(tree).some((element) => element.props.role === 'dialog'), false)
+  assert.equal(listeners.size, 0)
+})
+
+test('Chinese input target keeps the final translation action after pending state ends', () => {
+  const userView = captureRenderers().get('user')!.component
+  const html = render(userView, {
+    node: { id: 'user-zh', data: {
+      content: [{ type: 'text', text: 'Conversation test' }],
+      source: { kind: 'user', codingnsTranslationInput: { ...inputRecord, targetLanguage: 'zh' } },
+    } },
+  })
+  assert.ok(html.includes('data-codingns-translation-action'))
+  assert.equal(html.includes('data-codingns-translation-pending'), false)
+})
+
 test('会话翻译渲染器在无翻译记录时仍渲染用户消息与 AI 正文，不再返回 null', () => {
   const renderers = captureRenderers()
   const userView = renderers.get('user')!.component
@@ -142,12 +213,13 @@ test('会话翻译渲染器在有翻译记录时保留翻译入口与引用汇�
         status: 'settled',
         turn: 1,
         step: 1,
-        blocks: [{ kind: 'text', text: '随时可以开始。', codingnsTranslation: outputRecord }],
+        blocks: [{ kind: 'text', text: outputRecord.original, codingnsTranslation: outputRecord }],
       },
     },
     sessionId: 'translation-chat',
   })
   assert.ok(assistantHtml.includes('随时可以开始。'))
+  assert.equal(assistantHtml.includes('Ready to help.'), false)
   assert.ok(assistantHtml.includes('data-codingns-translation-action'), '有输出翻译记录时必须保留翻译入口')
 })
 
@@ -229,7 +301,7 @@ test('思考块展开后必须渲染译文正文，不能只留下翻译入口',
       status: 'settled',
       turn: 1,
       step: 1,
-      blocks: [{ kind: 'reasoning', text: reasoningRecord.translated, codingnsTranslation: reasoningRecord }],
+      blocks: [{ kind: 'reasoning', text: reasoningRecord.original, codingnsTranslation: reasoningRecord }],
     },
   }
 
