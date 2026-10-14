@@ -41,6 +41,7 @@ interface TranslationPopupPosition {
 
 interface TranslationActionProps {
   readonly messageId: string
+  readonly messageRole?: 'user' | 'assistant'
   readonly services: CodingNsClientServices
   readonly translationT: CodingNsTranslator
   /** Absent only for a pending submission in a translation-enabled session. */
@@ -165,7 +166,7 @@ export function TranslationAction(props: TranslationActionProps): ReactElement |
   pending ? createElement('progress', { 'aria-label': statusText, style: { display: 'block', width: '100%', height: 4, marginTop: 8, accentColor: dshThemeColor.accent } }) : null,
   pending
     ? createElement('div', { role: 'status', 'aria-live': 'polite', style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, props.translationT('translation.progressHelp'))
-    : createElement(DetailBlock, { label: props.translationT('translation.translatedText'), value: record.translated }),
+    : createElement(DetailBlock, { label: props.translationT(props.messageRole === 'user' ? 'translation.actualSentText' : 'translation.translatedText'), value: record.translated }),
   pending ? null : createElement('div', { style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, `${props.translationT('translation.modelUsed')}: ${alreadyTargetLanguage ? props.translationT('translation.modelNotUsed') : formatModel(record.model, props.translationT)}`),
   ) : null
   const renderedDetails = details === null
@@ -249,7 +250,7 @@ function PendingTranslationActions(props: {
 
 function PendingTranslationAction(props: Omit<TranslationActionProps, 'messageId'>): ReactElement {
   const id = useId()
-  return createElement(TranslationAction, { ...props, messageId: `pending-${id}`, popupAlign: 'end' })
+  return createElement(TranslationAction, { ...props, messageId: `pending-${id}`, messageRole: 'user', popupAlign: 'end' })
 }
 
 function TranslationGlyph(): ReactElement {
@@ -385,6 +386,7 @@ function UserMessageNodeView(props: any): ReactElement | null {
   }, formatMessageTime(data.time)) : null,
   translationRecord === undefined ? null : createElement(TranslationAction, {
     messageId,
+    messageRole: 'user',
     services: props.services,
     translationT: props.translationT,
     popupAlign: 'end',
@@ -532,6 +534,7 @@ function AssistantTranslationNodeView(props: any): ReactElement | null {
       createElement(MarkdownText, { text: displayText, streaming, labels: markdownLabels, fileMentions: mentions, pathImages }),
       translationRecord === undefined ? null : createElement(TranslationAction, {
         messageId: `${messageId}-text-${index}`,
+        messageRole: 'assistant',
         services: props.services,
         translationT: props.translationT,
         record: translationRecord,
@@ -688,6 +691,7 @@ export function AssistantReasoningContent(props: AssistantReasoningContentProps)
   content,
   props.translationRecord === undefined ? null : createElement(TranslationAction, {
     messageId: props.messageId,
+    messageRole: 'assistant',
     services: props.services,
     translationT: props.translationT,
     record: props.translationRecord,
