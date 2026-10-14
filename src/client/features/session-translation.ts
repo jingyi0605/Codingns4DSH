@@ -14,7 +14,6 @@ import {
 import type { CodingNsClientFeatureModule, FeaturePanelProps } from './types.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { callCliRpc } from '../cli-catalog.js'
-import { SettingsToggleRow } from '../settings-controls.js'
 import { SessionTranslationModelPool } from '../session-translation-model-pool.js'
 import { registerSessionTranslationChatUi } from '../session-translation-chat.js'
 import { notifyNativeTranslationDefaultChanged, setNativeTranslationDefaultReader } from '../native-translation-default.js'
@@ -47,7 +46,7 @@ export const sessionTranslationFeature: CodingNsClientFeatureModule = {
     runtime: 'client',
     ui: {
       label: 'Session translation',
-      description: 'Translate selected external Agent requests and replies without changing tools, commands, paths, or original history. DSH native sessions are opt-in.',
+      description: 'Translate selected external Agent requests and replies without changing tools, commands, paths, or original history. Control DSH native session translation using the switch in the conversation model selector.',
       labelKey: 'feature.sessionTranslation.label',
       descriptionKey: 'feature.sessionTranslation.description',
       order: 32,
@@ -116,16 +115,6 @@ function SessionTranslationPanel({ services, enabled, snapshot, notify }: Featur
       onChange: (event: { currentTarget: { value: string } }) => save({ inputLanguage: readInputLanguage(event.currentTarget.value) }),
     }, ...(['zh', 'en', 'fr', 'de', 'ja'] as const).map((language) => createElement('option', { key: language, value: language }, t(languageLabelKeys[language])))),
   ),
-  createElement('div', { style: { ...dshSettingsSectionHeaderStyle, marginTop: 12 } },
-    createElement('span', { style: dshSettingsFieldLabelStyle }, t('translation.nativeTitle')),
-  ),
-  createElement(SettingsToggleRow, {
-    label: t('translation.nativeToggle'),
-    description: t('translation.nativeHelp'),
-    checked: value.nativeEnabled === true,
-    disabled,
-    onChange: (checked: boolean) => save({ nativeEnabled: checked }),
-  }),
   createElement('div', { style: { ...dshSettingsSectionHeaderStyle, marginTop: 12 } },
     createElement('span', { style: dshSettingsFieldLabelStyle }, t('translation.outputTitle')),
   ),
