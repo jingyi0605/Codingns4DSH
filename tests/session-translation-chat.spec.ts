@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createElement, type ComponentType } from 'react'
+import { createElement, type ComponentType, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { registerSessionTranslationChatUi } from '../src/client/session-translation-chat.js'
+import { AssistantReasoningContent, registerSessionTranslationChatUi } from '../src/client/session-translation-chat.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import type { CodingNsClientServices } from '../src/client/features/types.js'
 import type { SessionTranslationRecord } from '../src/shared/contracts/session-translation.js'
@@ -194,4 +194,69 @@ test('原文已是目标语言时翻译入口显示蓝色状态点而不是已�
   // 状态点用 accent（蓝）而不是 success（绿）：输入已经是目标语言，没有调用翻译模型。
   assert.ok(userHtml.includes('var(--dsw-alias-button-info-fill, #1677ff)'), `无需翻译必须显示蓝色状态点：${userHtml}`)
   assert.equal(userHtml.includes('var(--dsw-alias-state-success-primary'), false)
+})
+
+const reasoningRecord: SessionTranslationRecord = {
+  original: 'The user just sent a period. This is a minimal input without a clear request.',
+  translated: '用户刚刚发送了一个句号。这是一个没有明确请求的极简输入。',
+  sourceLanguage: 'en',
+  targetLanguage: 'zh',
+  outputKind: 'reasoning',
+  bilingual: false,
+  model: { provider: 'glor02', model: 'deepseek-v4.1-flash' },
+}
+
+const markdownLabels = {
+  code: {
+    copyLabel: chatT('copy'),
+    copiedLabel: chatT('copied'),
+    toolbarLabels: {
+      codeLabel: chatT('codeBlock.title'),
+      wrapLabel: chatT('codeBlock.wrap'),
+      unwrapLabel: chatT('codeBlock.unwrap'),
+    },
+  },
+  footnotes: chatT('markdown.footnotes'),
+}
+
+test('思考块展开后必须渲染译文正文，不能只留下翻译入口', () => {
+  const renderers = captureRenderers()
+  const assistantView = renderers.get('assistant-step')!.component
+  const node = {
+    id: 'assistant-reasoning',
+    location: { kind: 'step', turn: { status: 'closed' } },
+    data: {
+      status: 'settled',
+      turn: 1,
+      step: 1,
+      blocks: [{ kind: 'reasoning', text: reasoningRecord.translated, codingnsTranslation: reasoningRecord }],
+    },
+  }
+
+  // 折叠态：思考行摘要取自译文正文。
+  const collapsed = render(assistantView, { node, sessionId: 'translation-chat' })
+  assert.ok(collapsed.includes('用户刚刚发送了一个句号'), `思考行摘要必须使用译文：${collapsed}`)
+
+  // 展开态：DSH 的 renderFactorySlot 在工厂缺失时只渲染 fallback（缺省 null），
+  // 这里用同样的语义做替身——正文必须由 fallback 渲染出来，不能依赖工厂存在。
+  const factoryCalls: string[] = []
+  const renderFactorySlot = (name: string, _props: Record<string, unknown>, options?: { readonly fallback?: ReactNode }): ReactNode => {
+    factoryCalls.push(name)
+    return options?.fallback ?? null
+  }
+  const expanded = renderToStaticMarkup(createElement(AssistantReasoningContent, {
+    messageId: 'turn-1-step-1-reasoning-0',
+    services: {},
+    translationT,
+    text: reasoningRecord.translated,
+    running: false,
+    translationRecord: reasoningRecord,
+    markdownLabels,
+    pathImages: { resolve: () => undefined },
+    renderFactorySlot,
+  }))
+
+  assert.ok(expanded.includes('用户刚刚发送了一个句号'), `展开后的思考正文必须渲染译文：${expanded}`)
+  assert.ok(expanded.includes('data-codingns-translation-action'), '展开后的思考正文仍需保留翻译入口')
+  assert.ok(factoryCalls.length <= 1, `工厂只应被查询一次：${factoryCalls.join(', ')}`)
 })
