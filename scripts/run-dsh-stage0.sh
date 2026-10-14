@@ -67,6 +67,8 @@ trap 'forward_stage0_signal TERM' TERM
 trap 'forward_stage0_signal INT' INT
 
 dsh_args=()
+# 只有普通启动会占用端口；--dump-config 与 plugin 子命令不监听，无需端口预检。
+stage0_serves=1
 
 # 0.2 运行时没有内置 stage0 模板：首次使用时基于内置 web 模板初始化该 profile，
 # 之后普通启动；--from-default-profile 在 profile 已存在时会被 dsh 忽略，可安全重复。
@@ -80,6 +82,7 @@ if [[ "${1-}" == "--dump-config" ||
   "${1-}" == "--dump-config-schema" ||
   "${1-}" == "--dump-default-config" ]]; then
   dsh_args=(--profile stage0 --patch "$stage0_patch" "$@")
+  stage0_serves=0
   if (( ${#bootstrap_args[@]} > 0 )); then
     dsh_args=("${bootstrap_args[@]}" "${dsh_args[@]}")
   fi
@@ -88,6 +91,7 @@ fi
 # 插件管理（dsh plugin --profile stage0 …）也必须在 0.2.0 运行时上执行，参数原样转发。
 if [[ "${1-}" == "plugin" ]]; then
   dsh_args=("$@")
+  stage0_serves=0
 fi
 
 if (( ${#dsh_args[@]} == 0 )); then
@@ -108,6 +112,46 @@ done
 if [[ "$stage0_watch" != 0 && "$stage0_watch" != 1 ]]; then
   printf 'DSH_STAGE0_WATCH 只接受 0 或 1。\n' >&2
   exit 1
+fi
+
+# 端口预检：DSH 只在 webserver 插件监听失败时才抛出 EADDRINUSE，对外表现为
+# “必选插件未激活”，并连带一串插件卡在等 webServer / connection 上，很难看出
+# 真正原因是端口被上一个遗留实例占用。这里在编译前直接检查并打印占用者。
+if (( stage0_serves == 1 )); then
+  stage0_port_state=$(node -e '
+    const net = require("node:net");
+    const server = net.createServer();
+    server.once("error", (error) => {
+      process.stdout.write(error.code === "EADDRINUSE" ? "in-use" : "unknown");
+      process.exit(0);
+    });
+    server.once("listening", () => server.close(() => {
+      process.stdout.write("free");
+      process.exit(0);
+    }));
+    server.listen(Number(process.argv[1]), "127.0.0.1");
+  ' "$port" 2>/dev/null || printf 'unknown')
+
+  if [[ "$stage0_port_state" == "in-use" ]]; then
+    printf 'stage0 端口 %s 已被占用，DSH 启动后会在插件激活阶段以 EADDRINUSE 失败。\n' "$port" >&2
+    stage0_port_owners=''
+    if command -v lsof >/dev/null 2>&1; then
+      stage0_port_owners=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null |
+        awk 'NR > 1 { print $2 }' | sort -u | tr '\n' ' ')
+    fi
+    if [[ -n "${stage0_port_owners// /}" ]]; then
+      printf '占用进程 PID: %s\n' "${stage0_port_owners% }" >&2
+      for stage0_owner_pid in $stage0_port_owners; do
+        # 重定向顺序不能颠倒：先指向 stderr，再把 ps 自身的报错丢弃。
+        ps -o pid=,lstart=,command= -p "$stage0_owner_pid" >&2 2>/dev/null || true
+      done
+      printf '确认该实例无用后终止：kill %s\n' "${stage0_port_owners% }" >&2
+    else
+      printf '无法识别占用进程，请自查：lsof -nP -iTCP:%s -sTCP:LISTEN\n' "$port" >&2
+    fi
+    printf '或改用其他端口启动：DSH_STAGE0_PORT=17892 dsh-stage0\n' >&2
+    exit 1
+  fi
 fi
 
 env "${runtime_env[@]}" "CODINGNS4DSH_STAGE0_WATCH=$stage0_watch" \
