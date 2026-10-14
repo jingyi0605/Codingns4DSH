@@ -39,14 +39,10 @@ interface TranslationPopupPosition {
 
 interface TranslationActionProps {
   readonly messageId: string
-  readonly sessionId: string
   readonly services: CodingNsClientServices
   readonly translationT: CodingNsTranslator
-  readonly record?: SessionTranslationRecord
-  readonly lookupText?: string
-  readonly outputKind?: SessionTranslationOutputKind
-  readonly turn?: number
-  readonly step?: number
+  /** 已确认存在的翻译记录；没有记录时调用方不会渲染本组件。 */
+  readonly record: SessionTranslationRecord
   readonly popupAlign?: 'start' | 'end'
   readonly inline?: boolean
 }
@@ -67,17 +63,11 @@ interface UserContentParts {
  * 把翻译状态和查看原文的入口放回对应消息块，不占用 AI 回复底部的统一操作栏。
  */
 function TranslationAction(props: TranslationActionProps): ReactElement | null {
-  const source = props.record === undefined ? readEventSource(props.services, props.sessionId) : undefined
-  const [, refresh] = useState(0)
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const buttonRef = useRef<HTMLButtonElement | null>(null)
   const popupRef = useRef<HTMLDivElement | null>(null)
   const [popupPosition, setPopupPosition] = useState<TranslationPopupPosition | null>(null)
-  useEffect(() => {
-    if (source === undefined) return undefined
-    return source.subscribe(() => refresh((value) => value + 1))
-  }, [source])
   useDismissOnOutsidePointer(rootRef, open, () => setOpen(false), { portal: popupRef })
   useLayoutEffect(() => {
     if (!open || typeof window === 'undefined') {
@@ -119,11 +109,7 @@ function TranslationAction(props: TranslationActionProps): ReactElement | null {
     }
   }, [open, props.popupAlign])
 
-  const record = props.record ?? (source === undefined || props.lookupText === undefined
-    ? undefined
-    : findTranslationRecordForText(source.getSnapshot(), props.lookupText, props.outputKind, props.turn, props.step))
-  if (record === undefined) return null
-
+  const record = props.record
   const failed = record.failed === true
   const alreadyTargetLanguage = record.alreadyTargetLanguage === true
   const statusText = failed
@@ -263,14 +249,14 @@ function DetailBlock({ label, value }: { readonly label: string; readonly value:
   )
 }
 
-/** 按原生 user 节点的结构渲染用户消息，并把翻译按钮放在复制按钮前。 */
+/** 按原生 user 节点的结构渲染用户消息；翻译入口只在确实有记录时追加。 */
 function UserMessageNodeView(props: any): ReactElement | null {
   const data = props.node.data
   const parts = splitUserContent(data.content)
   const record = readInputRecord({ source: data.source })
-  // DSH 自带消息保持原样；只接管确实带有 CodingNS 翻译记录的用户消息。
-  if (record === undefined) return null
-  const translationRecord = inputRecordForAction(record)
+  // 这个渲染器以更低优先级遮蔽了 DSH 原生 user 渲染器，因此无论有没有翻译记录
+  // 都必须画出消息本身：返回 null 会让整条用户消息从对话里消失。
+  const translationRecord = record === undefined ? undefined : inputRecordForAction(record)
   const labels = Array.isArray(data.referenceLabels) ? data.referenceLabels.filter((label: unknown): label is string => typeof label === 'string') : []
   const skillNames = Array.isArray(data.skillNames) ? data.skillNames.filter((name: unknown): name is string => typeof name === 'string') : []
   const showBubble = parts.text !== '' || parts.rest.length > 0
@@ -329,6 +315,13 @@ function UserMessageNodeView(props: any): ReactElement | null {
     truncatedLabel: (total: number) => chatT('json.truncated', { total }),
   })),
   ) : null,
+  labels.length === 0 ? null : createElement('div', {
+    style: {
+      color: dshThemeColor.labelTertiary,
+      fontSize: 'var(--dsh-content-font-size-secondary, 13px)',
+      lineHeight: 'calc(18px + var(--dsh-content-font-delta-secondary, 0px))',
+    },
+  }, chatT('message.referenceSummary', { labels: labels.join(chatT('message.referenceSeparator')) })),
   ),
   createElement('div', {
     style: {
@@ -345,7 +338,6 @@ function UserMessageNodeView(props: any): ReactElement | null {
   }, formatMessageTime(data.time)) : null,
   translationRecord === undefined ? null : createElement(TranslationAction, {
     messageId,
-    sessionId: props.sessionId,
     services: props.services,
     translationT: props.translationT,
     popupAlign: 'end',
@@ -443,8 +435,13 @@ function AssistantTranslationNodeView(props: any): ReactElement | null {
   const chatT = props.t as (key: string, params?: Record<string, unknown>) => string
   const markdownLabels = useMemo(() => createMarkdownLabels(chatT), [chatT])
   const pathImages = useMemo(() => ({ resolve: resolveMarkdownImagePath }), [])
-  const eventSnapshot = readEventSource(props.services, props.sessionId)?.getSnapshot()
-  const hasTranslation = blocks.some((block) => {
+  // 与 DSH 原生 AssistantMarkdown 相同的可见性判据：只有「运行中 / 被中断 / 含正文块」
+  // 才渲染内容。这个渲染器遮蔽了原生 assistant-step 渲染器，若在这里因为缺少翻译
+  // 记录而返回 null，整段 AI 正文就会从对话里消失。
+  const renderable = streaming || data.status === 'interrupted' || blocks.some((block) => block.kind !== 'tool-call')
+  // 只有确实需要渲染时才读取事件流：没有翻译的普通会话不再订阅 Session 事件。
+  const eventSnapshot = renderable ? readEventSource(props.services, props.sessionId)?.getSnapshot() : undefined
+  const hasTranslation = renderable && blocks.some((block) => {
     if (block.kind !== 'reasoning' && block.kind !== 'text') return false
     const outputKind = block.kind === 'reasoning' ? 'reasoning' : 'assistant'
     const embedded = readRecord(block)
@@ -468,7 +465,7 @@ function AssistantTranslationNodeView(props: any): ReactElement | null {
   const last = blocks.length - 1
   const messageId = typeof finalNode?.messageId === 'string' ? finalNode.messageId : `turn-${data.turn}-step-${data.step}`
 
-  if (!hasTranslation || !(streaming || data.status === 'interrupted' || blocks.some((block) => block.kind !== 'tool-call'))) return null
+  if (!renderable) return null
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index]
     if (block === undefined) continue
@@ -476,39 +473,37 @@ function AssistantTranslationNodeView(props: any): ReactElement | null {
     if (props.groupPart === 'response' && block.kind === 'reasoning') continue
     const running = streaming && index === last
     if (block.kind === 'text') {
-      const translationRecord = readRecord(block)
+      const translationRecord = readRecord(block) ?? (hasTranslation && eventSnapshot !== undefined
+        ? findTranslationRecordForText(eventSnapshot, block.text, 'assistant', data.turn, data.step)
+        : undefined)
       rendered.push(createElement('div', {
         key: `text-${index}`,
         'data-codingns-translation-inline': true,
         style: { minWidth: 0 },
       },
       createElement(MarkdownText, { text: block.text, streaming, labels: markdownLabels, fileMentions: mentions, pathImages }),
-      createElement(TranslationAction, {
+      translationRecord === undefined ? null : createElement(TranslationAction, {
         messageId: `${messageId}-text-${index}`,
-        sessionId: props.sessionId,
         services: props.services,
         translationT: props.translationT,
-        lookupText: block.text,
-        outputKind: 'assistant',
-        turn: data.turn,
-        step: data.step,
+        record: translationRecord,
         inline: true,
-        ...(translationRecord === undefined ? {} : { record: translationRecord }),
       }),
       ))
       continue
     }
     if (block.kind === 'reasoning') {
+      const translationRecord = readRecord(block) ?? (hasTranslation && eventSnapshot !== undefined
+        ? findTranslationRecordForText(eventSnapshot, block.text, 'reasoning', data.turn, data.step)
+        : undefined)
       rendered.push(createElement(AssistantReasoningBlock, {
         key: `reasoning-${index}`,
         messageId: `${messageId}-reasoning-${index}`,
-        sessionId: props.sessionId,
         services: props.services,
         translationT: props.translationT,
         chatT,
         text: block.text,
-        turn: data.turn,
-        step: data.step,
+        ...(translationRecord === undefined ? {} : { translationRecord }),
         running,
         hidden: reasoningHidden,
         reveal: () => turnProcess?.setOpen?.(true),
@@ -554,13 +549,12 @@ function AssistantTranslationNodeView(props: any): ReactElement | null {
 
 interface AssistantReasoningBlockProps {
   readonly messageId: string
-  readonly sessionId: string
   readonly services: CodingNsClientServices
   readonly translationT: CodingNsTranslator
   readonly chatT: (key: string, params?: Record<string, unknown>) => string
   readonly text: string
-  readonly turn?: number
-  readonly step?: number
+  /** 该思考块的翻译记录；缺省表示无需展示翻译入口。 */
+  readonly translationRecord?: SessionTranslationRecord
   readonly running: boolean
   readonly hidden: boolean
   readonly reveal: () => void
@@ -599,15 +593,11 @@ function AssistantReasoningBlock(props: AssistantReasoningBlockProps): ReactElem
     style: { paddingTop: 8 },
   },
   markdown,
-  createElement(TranslationAction, {
+  props.translationRecord === undefined ? null : createElement(TranslationAction, {
     messageId: props.messageId,
-    sessionId: props.sessionId,
     services: props.services,
     translationT: props.translationT,
-    lookupText: props.text,
-    outputKind: 'reasoning',
-    ...(props.turn === undefined ? {} : { turn: props.turn }),
-    ...(props.step === undefined ? {} : { step: props.step }),
+    record: props.translationRecord,
     inline: true,
   }),
   ) : null),
