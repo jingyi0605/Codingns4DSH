@@ -14,6 +14,7 @@ import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSett
 import { useCodingNsTranslator } from '../locale.js'
 import { backdropPointerDownHandler } from '../popup-dismiss.js'
 import { registerExternalToolStreamUi } from '../external-tool-stream.js'
+import { readNativeTranslationDefault } from '../native-translation-default.js'
 import { startContextBreakdownDom } from '../context-breakdown-dom.js'
 import { fetchSessionAdapters, replaceSessionAdapters, sessionAdapterId } from '../session-adapter-cache.js'
 import { providerIconUrl } from '../provider-icons.js'
@@ -127,7 +128,8 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
     context.resources.add(registerExternalToolStreamUi(context.services))
     // CLI Slot 带有浏览器图片资源，启用模块时再加载，避免 Node 侧读取 Client 元数据时解析图片。
     const { registerCliConversationSlots } = await import('../cli-slots.js')
-    const disposeSlots = registerCliConversationSlots(slots, context.services.rpc, context.services.locale)
+    // 原生会话的翻译开关默认值由会话翻译模块注册；未启用该模块时按关闭处理。
+    const disposeSlots = registerCliConversationSlots(slots, context.services.rpc, context.services.locale, readNativeTranslationDefault)
     context.resources.add(disposeSlots)
   },
   settingsPanel: CliAdaptersPanel,

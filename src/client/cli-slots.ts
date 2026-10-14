@@ -1,5 +1,6 @@
 import { watchAdapterCatalog, subscribeAdapterCatalogChanged } from './adapter-catalog-watch.js'
-import { createElement, useEffect, useRef, useState } from 'react'
+import { createElement, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import type { ReactElement } from 'react'
 import type { CSSProperties } from 'react'
@@ -31,7 +32,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
 import { loadCliSessionConfig, rememberCliSessionConfig } from './cli-session-config-cache.js'
 import { uiFontSize } from './font-scale.js'
-import { isSessionTranslationAdapter } from '../shared/contracts/session-translation.js'
+import { DSH_NATIVE_SESSION_ADAPTER_ID, supportsSessionTranslation } from '../shared/contracts/session-translation.js'
+import { subscribeNativeTranslationDefault } from './native-translation-default.js'
+import { watchNativeModelMenu } from './native-model-translation-menu.js'
 
 interface SessionSnapshot {
   readonly sessionId?: string
@@ -108,6 +111,8 @@ interface CliSlotProps {
   readonly useSession?: SessionSelector
   readonly rpc: CodingNsRpcClient
   readonly locale: CodingNsLocale
+  /** 会话未单独设置翻译开关时是否跟随「DSH 原生会话」总开关。 */
+  readonly readNativeTranslationEnabled?: () => boolean | undefined
 }
 
 interface SelectionState extends CodingNsCliSessionConfig {}
@@ -159,6 +164,8 @@ function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [S
     selectionListeners.set(sessionId, listeners)
     const listener = (): void => setSelection(selections.get(sessionId) ?? DEFAULT_SELECTION)
     listeners.add(listener)
+    // 同一 Slot 可切换会话；缓存命中时 session/get 不再发布，需先同步当前会话。
+    listener()
     return () => {
       active = false
       listeners.delete(listener)
@@ -212,8 +219,18 @@ function publishSelection(sessionId: string, next: SelectionState): void {
   for (const listener of selectionListeners.get(sessionId) ?? []) listener()
 }
 
-/** 把 Agent 与模型选择器注册到同一工具栏，使用顺序保证 Agent 始终位于模型左侧。 */
-export function registerCliConversationSlots(slots: SlotRegistry, rpc: CodingNsRpcClient, locale: CodingNsLocale): () => void {
+/**
+ * 把 Agent 与模型选择器注册到同一工具栏，使用顺序保证 Agent 始终位于模型左侧。
+ *
+ * `readNativeTranslationEnabled` 提供「DSH 原生会话未单独设置翻译开关时是否跟随总开关」
+ * 的当前值；原生会话的翻译开关与外部 Agent 共用模型菜单里的同一行开关。
+ */
+export function registerCliConversationSlots(
+  slots: SlotRegistry,
+  rpc: CodingNsRpcClient,
+  locale: CodingNsLocale,
+  readNativeTranslationEnabled?: () => boolean | undefined,
+): () => void {
   installComposerStyles()
   const t = locale.bind('codingns')
   const disposeAgent = slots.inject('conversation.input.right', () => slots.register({
@@ -228,7 +245,12 @@ export function registerCliConversationSlots(slots: SlotRegistry, rpc: CodingNsR
     id: 'codingns4dsh-model',
     order: -10,
     label: t('cli.modelSelector'),
-    inject: (sessionId: string) => ({ rpc, sessionId, locale }),
+    inject: (sessionId: string) => ({
+      rpc,
+      sessionId,
+      locale,
+      ...(readNativeTranslationEnabled === undefined ? {} : { readNativeTranslationEnabled }),
+    }),
   }, ModelSlot))
   return () => {
     disposeModel()
@@ -285,6 +307,28 @@ function AgentSlot(props: CliSlotProps): ReactElement {
         )
       }),
     ),
+  )
+}
+
+/**
+ * 模型菜单里的「翻译对话」开关行。
+ *
+ * 外部 Agent 与 DSH 原生会话共用同一份样式与交互：外部会话的开关只在会话级
+ * 生效，原生会话的开关写回适配器偏好；两者都复用模型菜单的行样式。
+ */
+function TranslationToggleRow(props: {
+  readonly checked: boolean
+  readonly label: string
+  readonly toggleLabel: string
+  readonly onChange: (next: boolean) => void
+}): ReactElement {
+  return createElement('div', { className: 'codingns4dsh-translation-toggle', style: serviceTierRowStyle },
+    createElement('span', { style: serviceTierLabelStyle }, props.label),
+    createElement(Switch, {
+      checked: props.checked,
+      onChange: props.onChange,
+      label: props.toggleLabel,
+    }),
   )
 }
 
@@ -395,14 +439,25 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
 
   useDismissOnOutsidePointer(rootRef, open, () => { setOpen(false); setPane('root') })
 
+  const nativeDefault = useSyncExternalStore(
+    subscribeNativeTranslationDefault,
+    () => props.readNativeTranslationEnabled?.(),
+    () => props.readNativeTranslationEnabled?.(),
+  )
+  const nativeAvailable = nativeDefault !== undefined
+  const [nativeMenu, setNativeMenu] = useState<HTMLElement | null>(null)
+  useEffect(() => {
+    setNativeMenu(null)
+    if (selection.adapterId !== DSH_NATIVE_SESSION_ADAPTER_ID || !nativeAvailable || rootRef.current === null) return
+    return watchNativeModelMenu(rootRef.current, setNativeMenu)
+  }, [selection.adapterId, nativeAvailable, sessionId])
+
   const catalog = catalogState?.adapterId === selection.adapterId && catalogState.sessionId === sessionId ? catalogState.value : null
   // 目录必须和当前会话、适配器绑定；跨 Host 切换时不能短暂展示上一会话的目录。
-  const loading = selection.adapterId !== 'dsh'
-    // 有 stale 目录时直接可用，后台刷新不应阻塞模型/思考强度选择。
-    && catalog === null
-    && refreshingAdapterId === selection.adapterId
+  // 有 stale 目录时直接可用，后台刷新不应阻塞模型/思考强度选择。
+  const loading = catalog === null && refreshingAdapterId === selection.adapterId
   useEffect(() => {
-    if (selection.adapterId === 'dsh') {
+    if (selection.adapterId === DSH_NATIVE_SESSION_ADAPTER_ID) {
       setCatalogState(null)
       setRefreshingAdapterId(null)
       return
@@ -475,7 +530,17 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
 
   useEffect(() => { if (selection.adapterId === 'dsh') setOpen(false) }, [selection.adapterId])
 
-  if (selection.adapterId === 'dsh') return null
+  // 所有 Hooks 都先执行；原生与外部适配器切换不能改变 Hook 调用顺序。
+  if (selection.adapterId === DSH_NATIVE_SESSION_ADAPTER_ID) {
+    return createElement('div', { ref: rootRef, hidden: true },
+      nativeMenu !== null && nativeAvailable ? createPortal(createElement(TranslationToggleRow, {
+        checked: selection.translationEnabled ?? nativeDefault === true,
+        label: t('cli.translationConversation'),
+        toggleLabel: t('cli.translationConversationToggle'),
+        onChange: (next: boolean) => update({ ...selection, translationEnabled: next }),
+      }), nativeMenu) : null,
+    )
+  }
 
   const model = catalog === null ? undefined : findModel(catalog, selection.modelId) ?? firstModel(catalog)
   const efforts = model?.efforts ?? []
@@ -531,7 +596,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     if (serviceTierId === undefined) return
     update({ adapterId: selection.adapterId, modelId: model.id, ...(selection.effortId ? { effortId: selection.effortId } : {}), serviceTierId, translationEnabled: selection.translationEnabled === true })
   }
-  const translationAvailable = isSessionTranslationAdapter(selection.adapterId)
+  const translationAvailable = supportsSessionTranslation(selection.adapterId)
   const toggleTranslation = (next: boolean): void => {
     if (model === undefined) return
     update({
@@ -552,14 +617,13 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     : pane === 'root'
       ? [
           ...(translationAvailable
-            ? [createElement('div', { key: 'translation', className: 'codingns4dsh-translation-toggle', style: serviceTierRowStyle },
-                createElement('span', { style: serviceTierLabelStyle }, t('cli.translationConversation')),
-                createElement(Switch, {
-                  checked: selection.translationEnabled === true,
-                  onChange: toggleTranslation,
-                  label: t('cli.translationConversationToggle'),
-                }),
-              )]
+            ? [createElement(TranslationToggleRow, {
+                key: 'translation',
+                checked: selection.translationEnabled === true,
+                label: t('cli.translationConversation'),
+                toggleLabel: t('cli.translationConversationToggle'),
+                onChange: toggleTranslation,
+              })]
             : []),
           // 档位开关固定在「模型」行上方，与模型/思考等级同处一个弹层。
           ...(serviceTierAvailable
