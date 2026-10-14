@@ -91,6 +91,10 @@ function modal(tree: ReactElement): ReactElement<any> {
   return elements(tree).find((element) => element.type === DshModal)!
 }
 
+function resetModal(tree: ReactElement): ReactElement<any> {
+  return elements(tree).find((element) => element.type === DshModal && element.props.title === resolveCodingNsTranslator()('translation.modelResetTitle'))!
+}
+
 async function loaded(f: ReturnType<typeof fixture>): Promise<ReactElement> {
   f.renderer.render()
   await setImmediate()
@@ -138,11 +142,73 @@ test('only pooled models appear in settings; additions are confirmed in a separa
   assert.deepEqual(f.writes.at(-1)?.value.translationModels, [third, second])
 
   button(tree, tr('translation.modelFollowDefault')).props.onClick()
+  tree = f.renderer.render()
+  assert.equal(resetModal(tree).props.open, true)
+  button(tree, tr('translation.modelResetConfirm')).props.onClick()
   await setImmediate()
   tree = f.renderer.render()
   assert.deepEqual(f.writes.at(-1)?.value.translationModels, [])
   assert.equal(rows(tree).length, 0)
   assert.equal(button(tree, tr('translation.modelAdd')).props.disabled, false)
+})
+
+test('following the default model requires confirmation; cancellation and dismissal preserve the pool', async (t) => {
+  const f = fixture({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationModels: [second, first] })
+  t.after(() => f.renderer.dispose())
+  const tr = resolveCodingNsTranslator()
+  let tree = await loaded(f)
+  for (const close of ['cancel', 'dismiss']) {
+    button(tree, tr('translation.modelFollowDefault')).props.onClick()
+    tree = f.renderer.render()
+    assert.equal(resetModal(tree).props.open, true)
+    assert.equal(f.writes.length, 0)
+    assert.deepEqual(order(tree), [['backup', 'second'], ['deepseek', 'first']])
+    if (close === 'cancel') button(tree, tr('translation.modelCancel')).props.onClick()
+    else resetModal(tree).props.onClose()
+    tree = f.renderer.render()
+    assert.equal(resetModal(tree).props.open, false)
+    assert.equal(f.writes.length, 0)
+    assert.deepEqual(f.snapshot.value.sessionTranslation.translationModels, [second, first])
+  }
+  button(tree, tr('translation.modelFollowDefault')).props.onClick()
+  tree = f.renderer.render()
+  button(tree, tr('translation.modelResetConfirm')).props.onClick()
+  await setImmediate()
+  tree = f.renderer.render()
+  assert.equal(f.writes.length, 1)
+  assert.deepEqual(f.writes[0].value.translationModels, [])
+  assert.equal(resetModal(tree).props.open, false)
+})
+
+test('a rejected reset preserves models and lets the user retry in the confirmation dialog', async (t) => {
+  const f = fixture({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationModels: [second, first] })
+  t.after(() => f.renderer.dispose())
+  const write = f.props.services.settings.set
+  let rejectWrite: (error: Error) => void = () => undefined
+  f.props.services.settings.set = () => new Promise((_resolve, reject) => { rejectWrite = reject })
+  const tr = resolveCodingNsTranslator()
+  let tree = await loaded(f)
+  button(tree, tr('translation.modelFollowDefault')).props.onClick()
+  tree = f.renderer.render()
+  button(tree, tr('translation.modelResetConfirm')).props.onClick()
+  tree = f.renderer.render()
+  assert.equal(button(tree, tr('translation.modelResetConfirm')).props.disabled, true)
+  assert.equal(button(tree, tr('translation.modelCancel')).props.disabled, true)
+  resetModal(tree).props.onClose()
+  assert.equal(resetModal(f.renderer.render()).props.open, true)
+  rejectWrite(new Error('settings write rejected'))
+  await setImmediate()
+  tree = f.renderer.render()
+  assert.equal(resetModal(tree).props.open, true)
+  assert.deepEqual(order(tree), [['backup', 'second'], ['deepseek', 'first']])
+  assert.equal(elements(tree).some((element) => element.props.role === 'alert' && element.props.children === tr('translation.saveRejected')), true)
+  assert.equal(f.writes.length, 0)
+  f.props.services.settings.set = write
+  button(tree, tr('translation.modelResetConfirm')).props.onClick()
+  await setImmediate()
+  tree = f.renderer.render()
+  assert.equal(resetModal(tree).props.open, false)
+  assert.deepEqual(f.writes.at(-1)?.value.translationModels, [])
 })
 
 test('search keeps selected models across filters and cancelling discards the selection', async (t) => {
