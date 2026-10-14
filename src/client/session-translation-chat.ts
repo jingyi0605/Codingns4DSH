@@ -53,6 +53,12 @@ interface MarkdownTranslationLabels extends MarkdownLabels {
   }
 }
 
+/**
+ * DSH 的表现层工厂渲染入口。`fallback` 是工厂缺失时的兜底内容，缺省渲染 null，
+ * 所以调用方必须显式传入，不能把可见内容完全交给工厂。
+ */
+type TranslationFactorySlot = (name: string, props: Record<string, unknown>, options?: { readonly fallback?: ReactNode }) => ReactNode
+
 interface UserContentParts {
   readonly text: string
   readonly attachments: readonly ({ readonly type: 'image'; readonly attachment: unknown } | { readonly type: 'file'; readonly file: Record<string, unknown> })[]
@@ -559,7 +565,7 @@ interface AssistantReasoningBlockProps {
   readonly hidden: boolean
   readonly reveal: () => void
   readonly useGroupAction?: (hidden: boolean, reveal: () => void) => React.RefObject<HTMLDivElement>
-  readonly renderFactorySlot?: (name: string, props: Record<string, unknown>) => ReactNode
+  readonly renderFactorySlot?: TranslationFactorySlot
   readonly markdownLabels: MarkdownTranslationLabels
   readonly pathImages: { resolve(value: string): string | undefined }
   readonly mentions?: unknown
@@ -569,9 +575,6 @@ function AssistantReasoningBlock(props: AssistantReasoningBlockProps): ReactElem
   const [expanded, setExpanded] = useState(false)
   const groupRef = props.useGroupAction?.(props.hidden, props.reveal)
   const summary = props.text.split('\n').map((line) => line.replace(/[`*_#>]/gu, '').trim()).find(Boolean) ?? ''
-  const markdown = props.renderFactorySlot === undefined
-    ? createElement(MarkdownText, { text: props.text, streaming: props.running, labels: props.markdownLabels, fileMentions: props.mentions as never, pathImages: props.pathImages, variant: 'compact' })
-    : props.renderFactorySlot('conversation.chat.reasoning.content', { text: props.text, running: props.running })
   return createElement('div', {
     ref: groupRef,
     hidden: props.hidden,
@@ -588,11 +591,57 @@ function AssistantReasoningBlock(props: AssistantReasoningBlockProps): ReactElem
     collapsedContent: createElement('span', {
       style: { minWidth: 0, overflow: 'hidden', color: dshThemeColor.labelSecondary, fontSize: 'var(--dsh-content-font-size-secondary, 13px)', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
     }, createElement(TextShimmer, { active: props.running, children: summary })),
-  }, expanded ? createElement('div', {
+  }, expanded ? createElement(AssistantReasoningContent, {
+    messageId: props.messageId,
+    services: props.services,
+    translationT: props.translationT,
+    text: props.text,
+    running: props.running,
+    ...(props.translationRecord === undefined ? {} : { translationRecord: props.translationRecord }),
+    markdownLabels: props.markdownLabels,
+    pathImages: props.pathImages,
+    mentions: props.mentions,
+    ...(props.renderFactorySlot === undefined ? {} : { renderFactorySlot: props.renderFactorySlot }),
+  }) : null),
+  )
+}
+
+interface AssistantReasoningContentProps {
+  readonly messageId: string
+  readonly services: CodingNsClientServices
+  readonly translationT: CodingNsTranslator
+  readonly text: string
+  readonly running: boolean
+  /** 该思考块的翻译记录；缺省表示无需展示翻译入口。 */
+  readonly translationRecord?: SessionTranslationRecord
+  readonly markdownLabels: MarkdownTranslationLabels
+  readonly pathImages: { resolve(value: string): string | undefined }
+  readonly mentions?: unknown
+  /** DSH 的表现层工厂渲染入口；缺省时直接渲染原生 MarkdownText。 */
+  readonly renderFactorySlot?: TranslationFactorySlot
+}
+
+/**
+ * 思考块展开后的正文。
+ *
+ * DSH 原生 `ReasoningRow` 直接渲染 `MarkdownText`，运行时**没有**注册
+ * `conversation.chat.reasoning.content` 工厂（`conversation.chat.*` 只有
+ * `node` / `assistant-actions` / `commandview` / `turnTail`）。而 `renderFactorySlot`
+ * 在工厂缺失时只渲染 `fallback`，缺省为 `null`——此前这里既不传 fallback，
+ * 又把正文完全交给该工厂，于是展开思考后只剩翻译入口，译文一行都看不到。
+ * 因此原生 MarkdownText 必须作为 fallback 传进去：没有工厂时按原生方式渲染，
+ * 工厂存在时才允许表现层覆盖。
+ */
+export function AssistantReasoningContent(props: AssistantReasoningContentProps): ReactElement {
+  const markdown = createElement(MarkdownText, { text: props.text, streaming: props.running, labels: props.markdownLabels, fileMentions: props.mentions as never, pathImages: props.pathImages, variant: 'compact' })
+  const content = props.renderFactorySlot === undefined
+    ? markdown
+    : props.renderFactorySlot('conversation.chat.reasoning.content', { text: props.text, running: props.running }, { fallback: markdown })
+  return createElement('div', {
     'data-codingns-translation-inline': true,
     style: { paddingTop: 8 },
   },
-  markdown,
+  content,
   props.translationRecord === undefined ? null : createElement(TranslationAction, {
     messageId: props.messageId,
     services: props.services,
@@ -600,7 +649,6 @@ function AssistantReasoningBlock(props: AssistantReasoningBlockProps): ReactElem
     record: props.translationRecord,
     inline: true,
   }),
-  ) : null),
   )
 }
 
