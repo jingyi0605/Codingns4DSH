@@ -11,10 +11,12 @@ import type {
   SessionTranslationOutputKind,
   SessionTranslationRecord,
   SessionTranslationSettings,
+  SessionTranslationFailure,
   SessionTranslationMetrics,
 } from '../../shared/contracts/session-translation.js'
 import { debugWarn } from '../../shared/debug.js'
-import { protectText, restoreText, stripPlaceholders } from './session-translation-protection.js'
+import { isLanguageNeutralText, protectText, restoreText, stripPlaceholders } from './session-translation-protection.js'
+import { translationFailure, withTranslationAbort as withAbort } from './session-translation-runtime.js'
 
 interface LlmRuntime {
   listProviders?(): readonly { id: string; name: string }[]
@@ -34,6 +36,8 @@ interface AgentDefaultModel {
 
 export interface SessionTranslationService {
   readonly enabled: boolean
+  /** Changes with settings and the default model, invalidating structured display translations. */
+  readonly cacheKey?: string
   /** 当前输入翻译的目标语言；旧测试替身未实现时由调用方回退为英语。 */
   readonly inputLanguage?: SessionTranslationLanguage
   /** 当前输出翻译的目标语言；旧测试替身未实现时由调用方回退为中文。 */
@@ -55,6 +59,7 @@ export interface SessionTranslationService {
     readonly alreadyTargetLanguage?: boolean
     readonly model?: SessionTranslationModel
     readonly failed?: boolean
+    readonly failure?: SessionTranslationFailure
   }>
   translateOutput(adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationRecord | null>
   dispose(): void
@@ -105,7 +110,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     protectedText: ReturnType<typeof protectText>,
     targetLanguage: SessionTranslationLanguage,
     signal?: AbortSignal,
-  ): Promise<SessionTranslationMetrics & { readonly translated: string; readonly model?: SessionTranslationModel; readonly failed?: boolean }> => {
+  ): Promise<SessionTranslationMetrics & { readonly translated: string; readonly model?: SessionTranslationModel; readonly failed?: boolean; readonly failure?: SessionTranslationFailure }> => {
     const startedAt = performance.now()
     let totalTokens: number | undefined
     const metrics = (): SessionTranslationMetrics => ({
@@ -113,6 +118,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
       ...(totalTokens === undefined ? {} : { totalTokens }),
     })
     let selected: ModelSelection | undefined
+    let failure: SessionTranslationFailure = { code: 'configuration', retryable: false }
     try {
       const selectionTimeout = AbortSignal.timeout(30_000)
       const selectionSignal = signal === undefined ? selectionTimeout : AbortSignal.any([selectionTimeout, signal])
@@ -151,6 +157,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
           }, combined)
           return { translated, model: candidate, ...metrics() }
         } catch (error) {
+          failure = translationFailure(error, combined)
           debugWarn('codingns4dsh: Translation model failed', {
             adapterId, kind, provider: candidate.provider, model: candidate.model,
             error: error instanceof Error ? error.message : String(error),
@@ -161,11 +168,12 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
         }
       }
     } catch (error) {
+      failure = translationFailure(error, signal)
       debugWarn('codingns4dsh: Translation model selection failed', {
         adapterId, kind, error: error instanceof Error ? error.message : String(error),
       })
     }
-    return { translated: text, failed: true, ...(selected === undefined ? {} : { model: selected }), ...metrics() }
+    return { translated: text, failed: true, failure, ...(selected === undefined ? {} : { model: selected }), ...metrics() }
   }
 
   const translate = async (adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationRecord | null> => {
@@ -174,7 +182,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     if (!canTranslateAdapter(adapterId, sessionEnabled)) return null
     const targetLanguage = kind === 'assistant' || kind === 'reasoning' ? settings.outputLanguage : settings.inputLanguage
     const protectedText = protectText(value)
-    if (isPlaceholderOnly(protectedText.text)) return null
+    if (hasNoTranslatableText(protectedText.text)) return null
     const sourceLanguage = detectSourceLanguage(protectedText.text, targetLanguage)
     if (sourceLanguage === targetLanguage) {
       return {
@@ -200,6 +208,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
 
   return {
     get enabled() { return active },
+    get cacheKey() { return JSON.stringify([settings, model?.currentSelection?.()]) },
     get inputLanguage() { return settings.inputLanguage },
     get outputLanguage() { return settings.outputLanguage },
     get nativeEnabled() { return settings.nativeEnabled === true },
@@ -251,10 +260,11 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     readonly alreadyTargetLanguage?: boolean
     readonly model?: SessionTranslationModel
     readonly failed?: boolean
+    readonly failure?: SessionTranslationFailure
   }> {
       if (!active || !canTranslateAdapter(adapterId, sessionEnabled) || text.trim() === '') return { translated: text }
       const protectedText = protectText(text)
-      if (isPlaceholderOnly(protectedText.text)) return { translated: text }
+      if (hasNoTranslatableText(protectedText.text)) return { translated: text }
       const targetLanguage = settings.inputLanguage
       const sourceLanguage = detectSourceLanguage(protectedText.text, targetLanguage)
       if (sourceLanguage === targetLanguage) {
@@ -423,18 +433,6 @@ async function readTranslation(stream: AsyncIterable<Record<string, any>>, signa
   return text
 }
 
-// Some providers do not promptly honor abort signals while resolving or streaming.
-async function withAbort<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted()
-  let onAbort: () => void = () => undefined
-  const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(signal.reason)
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
-  try { return await Promise.race([operation(), aborted]) }
-  finally { signal.removeEventListener('abort', onAbort) }
-}
-
 async function findFirstNativeModel(llm: LlmRuntime): Promise<ModelSelection | undefined> {
   const providers = llm.listProviders?.() ?? []
   for (const provider of providers) {
@@ -450,8 +448,9 @@ async function findFirstNativeModel(llm: LlmRuntime): Promise<ModelSelection | u
   return undefined
 }
 
-function isPlaceholderOnly(value: string): boolean {
-  return stripPlaceholders(value).trim() === ''
+function hasNoTranslatableText(value: string): boolean {
+  const prose = stripPlaceholders(value).trim()
+  return prose === '' || isLanguageNeutralText(prose)
 }
 
 function normalizeSettings(value: SessionTranslationSettings | undefined): SessionTranslationSettings {

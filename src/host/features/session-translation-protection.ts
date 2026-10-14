@@ -8,6 +8,11 @@ interface TextRange {
 
 const voidElements = new Set('area base br col embed hr img input link meta param source track wbr'.split(' '))
 
+/** Numbers, dates, and numeric expressions have no prose to translate. */
+export function isLanguageNeutralText(value: string): boolean {
+  return /\p{N}/u.test(value) && /^[\p{N}\p{P}\p{S}\s]+$/u.test(value)
+}
+
 /** Keep source slices locally; only placeholders and prose reach the translation model. */
 export function protectText(value: string): { readonly text: string; readonly values: readonly string[] } {
   let ranges: TextRange[] = []

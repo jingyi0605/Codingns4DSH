@@ -112,6 +112,11 @@ function normalizeTranslationModel(value: SessionTranslationModel | undefined): 
   return provider === '' || model === '' ? undefined : { provider, model }
 }
 
+export interface SessionTranslationFailure {
+  readonly code: 'timeout' | 'cancelled' | 'rate-limit' | 'network' | 'unavailable' | 'invalid-response' | 'configuration' | 'provider'
+  readonly retryable: boolean
+}
+
 export interface SessionTranslationMetrics {
   /** Elapsed translation time, including model selection and fallback attempts. */
   readonly durationMs?: number
@@ -144,6 +149,8 @@ export interface SessionTranslationRecord extends SessionTranslationMetrics {
   readonly model?: SessionTranslationModel
   /** 本次尝试失败并回退原文；前端显示警告状态。 */
   readonly failed?: boolean
+  /** Structured failure details; absent in older translation records. */
+  readonly failure?: SessionTranslationFailure
 }
 
 /** 用户输入的原文、实际送出的译文和翻译模型，作为 DSH 历史元数据保存。 */

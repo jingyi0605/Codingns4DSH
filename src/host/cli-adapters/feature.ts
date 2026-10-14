@@ -41,6 +41,7 @@ import {
   type SessionTranslationInputRecord,
   type SessionTranslationRecord,
 } from '../../shared/contracts/session-translation.js'
+import { createInteractionTranslation } from '../features/interaction-translation.js'
 import { ASSISTANT_AGENT_PREFIX } from '../../dsh-capabilities/host/assistant-agent-adapter.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
@@ -138,7 +139,9 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         context.resources.add(disposeNativeEvents)
       }
       registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, nativeSessions)
-      context.resources.add(context.services.rpc.register('cli', (action, payload) => {
+      const interactionTranslation = createInteractionTranslation(translation, sessionId => registry.getSession(sessionId))
+      context.resources.add(() => interactionTranslation.dispose())
+      context.resources.add(context.services.rpc.register('cli', (action, payload, rpcContext) => {
         switch (action) {
           case 'catalog': return registry.catalog()
           case 'catalog/refresh': return registry.refreshCatalog(asRecord(payload)?.adapterId === undefined ? undefined : readAdapterId(payload)).then((catalog) => {
@@ -150,6 +153,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             return adapterId === 'dsh' ? readDshModelCatalog(context.services.dshContext) : registry.models(adapterId)
           }
           case 'translation/models': return context.services.sessionTranslation?.catalog() ?? { models: [], default: null, errors: ['翻译模型目录不可用'] }
+          case 'translation/fields': {
+            const signal = asRecord(rpcContext)?.signal
+            return interactionTranslation.translate(payload, isAbortSignal(signal) ? signal : undefined)
+          }
           case 'skills': {
             const request = readSkillsRequest(payload)
             const cwd = resolveSessionCwd(context.services.nativeSessions, request.sessionId, null)
