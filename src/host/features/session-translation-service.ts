@@ -13,6 +13,7 @@ import type {
   SessionTranslationSettings,
 } from '../../shared/contracts/session-translation.js'
 import { debugWarn } from '../../shared/debug.js'
+import { protectText, restoreText, stripPlaceholders } from './session-translation-protection.js'
 
 interface LlmRuntime {
   listProviders?(): readonly { id: string; name: string }[]
@@ -132,8 +133,8 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
         system: translationSystem(targetLanguage, kind),
         messages: [{ role: 'user', content: [{ type: 'text', text: translationUserMessage(targetLanguage, kind, protectedText.text) }] }],
       }), combined)
-      const translated = restoreText(result, protectedText.values).trim()
-      if (!isUsableTranslation(translated, targetLanguage)) {
+      const translated = restoreText(result.trim(), protectedText.values)
+      if (!isUsableTranslation(stripPlaceholders(result), targetLanguage)) {
         debugWarn('codingns4dsh: 会话输出翻译没有返回文字，已回退原文', {
           adapterId,
           kind,
@@ -263,8 +264,8 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
           system: translationSystem(settings.inputLanguage, 'input'),
           messages: [{ role: 'user', content: [{ type: 'text', text: translationUserMessage(settings.inputLanguage, 'input', protectedText.text) }] }],
         }), combined)
-        const translated = restoreText(result, protectedText.values).trim()
-        if (!isUsableTranslation(translated, settings.inputLanguage)) {
+        const translated = restoreText(result.trim(), protectedText.values)
+        if (!isUsableTranslation(stripPlaceholders(result), settings.inputLanguage)) {
           debugWarn('codingns4dsh: 会话输入翻译没有返回文字，已回退原文', {
             adapterId,
             provider: selected.provider,
@@ -307,7 +308,8 @@ function translationSystem(language: SessionTranslationLanguage | Exclude<Sessio
     'TRANSLATION RULE: Translate faithfully and completely. Do not add facts, intent, politeness, or a suggested next step.',
     'OUTPUT RULE: Return only the translated text. Do not add a prefix, quotation marks, labels, notes, or commentary.',
     'OUTPUT RULE: If the source text is already in the target language, return it unchanged.',
-    'PRESERVATION RULE: Preserve line breaks, Markdown structure, fenced code, inline code, JSON, shell commands, URLs, file paths, identifiers, and placeholders exactly.',
+    'PRESERVATION RULE: Preserve line breaks, Markdown structure, fenced code, inline code, HTML/XML elements, JSON, shell commands, URLs, file paths, identifiers, and placeholders exactly.',
+    'PRESERVATION RULE: Copy each @@CODINGNS_TRANSLATION_N@@ placeholder exactly once. Never translate, omit, duplicate, or invent placeholders.',
   ].join('\n')
 }
 
@@ -346,8 +348,7 @@ function isUsableTranslation(value: string, language: SessionTranslationLanguage
  * 变音字母的文本仍保持未知，交由翻译模型处理。
  */
 function detectSourceLanguage(value: string, targetLanguage?: SessionTranslationLanguage): SessionTranslationLanguage | undefined {
-  const text = value
-    .replace(/@@CODINGNS_TRANSLATION_\d+@@/gu, ' ')
+  const text = stripPlaceholders(value)
     .normalize('NFKC')
     .trim()
   if (text === '') return undefined
@@ -436,38 +437,8 @@ async function findFirstNativeModel(llm: LlmRuntime): Promise<ModelSelection | u
   return undefined
 }
 
-function protectText(value: string): { readonly text: string; readonly values: readonly string[] } {
-  const values: string[] = []
-  if (isJsonDocument(value)) {
-    values.push(value)
-    return { text: `@@CODINGNS_TRANSLATION_0@@`, values }
-  }
-  const text = value.replace(/```[\s\S]*?```|`[^`]*`|https?:\/\/[^\s)]+|(?:^|\s)(?:[~/][^\s]+|[A-Za-z]:\\[^\s]+)(?=\s|$)|(?:^|\n)[ \t]*(?:[$>#]\s+|(?:npm|pnpm|yarn|bun|git|node|python|python3|cargo|docker|kubectl|curl|ssh|chmod|chown|mkdir|rmdir|rm|cp|mv|ls|cat|echo|export|make)\s+)[^\n]+/gimu, (match) => {
-    const prefix = /^\s/u.test(match) ? match.slice(0, match.length - match.trimStart().length) : ''
-    const original = match.slice(prefix.length)
-    const index = values.push(original) - 1
-    return `${prefix}@@CODINGNS_TRANSLATION_${index}@@`
-  })
-  return { text, values }
-}
-
 function isPlaceholderOnly(value: string): boolean {
-  return value.replace(/@@CODINGNS_TRANSLATION_\d+@@/gu, '').trim() === ''
-}
-
-function isJsonDocument(value: string): boolean {
-  const trimmed = value.trim()
-  if (!/^(?:\{|\[)/u.test(trimmed)) return false
-  try {
-    JSON.parse(trimmed)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function restoreText(value: string, values: readonly string[]): string {
-  return value.replace(/@@CODINGNS_TRANSLATION_(\d+)@@/gu, (match, index: string) => values[Number(index)] ?? match)
+  return stripPlaceholders(value).trim() === ''
 }
 
 function normalizeSettings(value: SessionTranslationSettings | undefined): SessionTranslationSettings {
