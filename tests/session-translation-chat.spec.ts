@@ -122,15 +122,26 @@ test('pending translation is clickable, shows progress, and switches to complete
   assert.ok(progress)
   assert.equal(progress.props.value, undefined, 'translation progress must not invent a completion percentage')
 
-  const record = { ...outputRecord, original: inputRecord.original, translated: inputRecord.translated }
+  const record = { ...outputRecord, original: inputRecord.original, translated: inputRecord.translated, durationMs: 1234, totalTokens: 456 }
   tree = renderer.render({ ...props, record } as typeof props)
   assert.equal(elements(tree).some((element) => element.props['data-codingns-translation-pending'] === true), false)
   dialog = elements(tree).find((element) => element.props.role === 'dialog')!
   html = renderToStaticMarkup(dialog)
   assert.ok(html.includes(inputRecord.translated))
   assert.ok(html.includes(translationT('translation.statusTranslated')))
+  assert.ok(html.includes('deepseek / chat · 1.23 s · 456 tok'))
   assert.equal(html.includes(translationT('translation.progressHelp')), false)
   assert.equal(elements(dialog).some((element) => element.type === 'progress'), false)
+
+  for (const [metrics, suffix] of [
+    [{}, 'deepseek / chat</div>'],
+    [{ durationMs: 2000 }, 'deepseek / chat · 2.00 s</div>'],
+    [{ durationMs: 0, totalTokens: 0 }, 'deepseek / chat · 0.00 s · 0 tok</div>'],
+  ] as const) {
+    tree = renderer.render({ ...props, record: { ...outputRecord, ...metrics } } as typeof props)
+    html = renderToStaticMarkup(elements(tree).find((element) => element.props.role === 'dialog')!)
+    assert.ok(html.includes(suffix), html)
+  }
 
   tree = renderer.render({ ...props, record: { ...record, failed: true, translated: record.original } } as typeof props)
   html = renderToStaticMarkup(elements(tree).find((element) => element.props.role === 'dialog')!)
@@ -139,6 +150,31 @@ test('pending translation is clickable, shows progress, and switches to complete
   tree = renderer.render()
   assert.equal(elements(tree).some((element) => element.props.role === 'dialog'), false)
   assert.equal(listeners.size, 0)
+})
+
+test('input and reply history pass translation metrics to the popup action', () => {
+  const renderers = captureRenderers()
+  const metrics = { durationMs: 1234, totalTokens: 456 }
+  for (const [key, node] of [
+    ['user', { id: 'user-metrics', data: {
+      content: [{ type: 'text', text: inputRecord.translated }],
+      source: { kind: 'user', codingnsTranslationInput: { ...inputRecord, ...metrics } },
+    } }],
+    ['assistant-step', {
+      id: 'assistant-metrics', location: { kind: 'step', turn: { status: 'closed' } },
+      data: { status: 'settled', turn: 1, step: 1, blocks: [
+        { kind: 'text', text: outputRecord.original, codingnsTranslation: { ...outputRecord, ...metrics } },
+      ] },
+    }],
+  ] as const) {
+    const component = renderers.get(key)!.component as (props: any) => ReactElement
+    const renderer = createHookRenderer(component, { node, t: chatT, translationT, services: {}, sessionId: 'metrics' })
+    try {
+      const action = elements(renderer.render()).find((element) => element.type === TranslationAction)!
+      assert.equal(action.props.record.durationMs, metrics.durationMs)
+      assert.equal(action.props.record.totalTokens, metrics.totalTokens)
+    } finally { renderer.dispose() }
+  }
 })
 
 test('Chinese input target keeps the final translation action after pending state ends', () => {

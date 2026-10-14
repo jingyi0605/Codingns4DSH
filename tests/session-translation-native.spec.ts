@@ -354,6 +354,7 @@ test('原生会话显式开启时，输入和输出均覆盖默认关闭，并�
         requests.push(options)
         return (async function* () {
           yield { type: 'text-delta', text: requests.length === 1 ? 'Conversation test' : '用户正在测试对话。' }
+          yield { type: 'usage', usage: { inputTokens: 20, outputTokens: 10, cacheReadTokens: 5 } }
           yield { type: 'finish', reason: { kind: 'stop' } }
         })()
       },
@@ -372,6 +373,8 @@ test('原生会话显式开启时，输入和输出均覆盖默认关闭，并�
     const decision = await harness.preStepListener({ agent: { id: 'native-session' }, messages: [original] }, async () => ({ kind: 'enter', messages: [original] })) as { messages: readonly any[] }
     assert.equal(decision.messages[0].content[0].text, 'Conversation test')
     assert.equal(decision.messages[0].source.codingnsTranslationInput.original, '对话测试')
+    assert.equal(decision.messages[0].source.codingnsTranslationInput.totalTokens, 35)
+    assert.ok(decision.messages[0].source.codingnsTranslationInput.durationMs >= 0)
     assert.equal(original.content[0].text, '对话测试')
     const output: any[] = []
     for await (const chunk of harness.llmListener(Object.freeze({ sessionId: 'native-session', provider: 'native', model: 'translator', messages: decision.messages }), async function* () {
@@ -384,6 +387,8 @@ test('原生会话显式开启时，输入和输出均覆盖默认关闭，并�
     assert.equal(output.find((chunk) => chunk.type === 'reasoning-delta')?.text, 'The user is testing the conversation.')
     assert.equal(output.find((chunk) => chunk.type === 'block-end')?.block.codingnsTranslation.original, 'The user is testing the conversation.')
     assert.equal(output.find((chunk) => chunk.type === 'block-end')?.block.codingnsTranslation.translated, '用户正在测试对话。')
+    assert.equal(output.find((chunk) => chunk.type === 'block-end')?.block.codingnsTranslation.totalTokens, 35)
+    assert.ok(output.find((chunk) => chunk.type === 'block-end')?.block.codingnsTranslation.durationMs >= 0)
   } finally { await harness.features.disable('cliAdapters'); translation.dispose() }
 })
 

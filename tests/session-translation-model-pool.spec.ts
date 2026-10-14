@@ -39,6 +39,47 @@ async function* response(text: string): AsyncIterable<Request> {
   yield { type: 'finish', reason: { kind: 'stop' } }
 }
 
+for (const kind of ['input', 'assistant', 'reasoning'] as const) {
+  test(`${kind} metrics include fallback time and usage without double-counting snapshots`, async (t) => {
+    let now = 100
+    t.mock.method(performance, 'now', () => now)
+    const f = fixture((request) => (async function* () {
+      now += 600
+      if (request.model === primary.model) {
+        yield { type: 'usage', usage: { totalTokens: 20, inputTokens: 10, outputTokens: 10 } }
+        throw new Error('connection lost')
+      }
+      yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 1, cacheReadTokens: 30, cacheWriteTokens: 5 } }
+      yield { type: 'text-delta', text: kind === 'input' ? 'Please review the code' : '请检查代码' }
+      yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 30, cacheWriteTokens: 5 } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })())
+    t.after(() => f.service.dispose())
+    const result = kind === 'input'
+      ? await f.service.translateInputDetailed!('codex', '请检查代码', undefined, true)
+      : await f.service.translateOutput('codex', kind, 'Please review the code', undefined, true)
+    assert.equal(result?.durationMs, 1200)
+    assert.equal(result?.totalTokens, 70)
+    assert.deepEqual(result?.model, secondary)
+  })
+}
+
+test('translation metrics leave unreported usage absent and retain reported usage on failure', async (t) => {
+  const f = fixture(() => response('Please review the code'))
+  t.after(() => f.service.dispose())
+  const result = await f.service.translateInputDetailed!('codex', '请检查代码', undefined, true)
+  assert.ok(result.durationMs! >= 0)
+  assert.equal(result.totalTokens, undefined)
+  f.runtime.stream = () => (async function* () {
+    yield { type: 'usage', usage: { totalTokens: 12 } }
+    throw new Error('connection lost')
+  })()
+  const failed = await f.service.translateInputDetailed!('codex', '请检查代码', undefined, true)
+  assert.equal(failed.failed, true)
+  assert.equal(failed.totalTokens, 36)
+  assert.ok(failed.durationMs! >= 0)
+})
+
 test('model pool normalization preserves priority, trims identifiers, and removes duplicate or invalid entries', () => {
   const settings = {
     ...DEFAULT_SESSION_TRANSLATION_SETTINGS,
@@ -164,8 +205,12 @@ test('text already in the target language skips the entire model pool', async ()
   const f = fixture(() => { throw new Error('unexpected request') })
   const input = await f.service.translateInputDetailed!('codex', 'Please review the code', undefined, true)
   assert.equal(input.alreadyTargetLanguage, true)
+  assert.equal(input.durationMs, 0)
+  assert.equal(input.totalTokens, 0)
   const output = await f.service.translateOutput('codex', 'assistant', '请检查代码', undefined, true)
   assert.equal(output?.alreadyTargetLanguage, true)
+  assert.equal(output?.durationMs, 0)
+  assert.equal(output?.totalTokens, 0)
   assert.equal(f.requests.length, 0)
   f.service.dispose()
 })

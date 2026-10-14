@@ -7,6 +7,7 @@ import {
   isSessionTranslationAdapter,
   normalizeSessionTranslationSettings,
   readNativeTranslationRecord,
+  readSessionTranslationMetrics,
   supportsSessionTranslation,
   toSessionTranslationRecord,
 } from '../data/build/dist/shared/contracts/session-translation.js'
@@ -40,6 +41,29 @@ test('会话翻译只在文本块结束后投影原文，并保留双语元数�
     { type: 'block-end', index: 1, block: { type: 'text', text: 'Hello', codingnsTranslation: { original: 'Hello', translated: '你好', targetLanguage: 'zh', outputKind: 'assistant', bilingual: true } }, codingnsTranslation: { original: 'Hello', translated: '你好', targetLanguage: 'zh', outputKind: 'assistant', bilingual: true } },
     { type: 'finish', reason: { kind: 'stop' } },
   ])
+})
+
+test('translation metrics survive history serialization and external output projection', async () => {
+  const metrics = { durationMs: 1234, totalTokens: 456 }
+  const saved = JSON.parse(JSON.stringify({ codingnsTranslationInput: {
+    original: '请检查代码', translated: 'Please review the code', targetLanguage: 'en', ...metrics,
+  } }))
+  const input = readNativeTranslationRecord(saved)!
+  assert.deepEqual(readSessionTranslationMetrics(toSessionTranslationRecord(input)), metrics)
+  assert.deepEqual(readSessionTranslationMetrics({ durationMs: -1, totalTokens: NaN }), {})
+  assert.deepEqual(readSessionTranslationMetrics({ durationMs: Infinity, totalTokens: 1.5 }), {})
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'codex', sessionId: 'translation-metrics', translationEnabled: true,
+    translation: {
+      shouldTranslate: () => true,
+      translateOutput: async () => ({ original: 'Hello', translated: '你好', targetLanguage: 'zh', bilingual: false, ...metrics }),
+    } as never,
+  })
+  await projector.push({ type: 'text-delta', text: 'Hello' })
+  const chunks = await projector.push({ type: 'finish', reason: 'stop' })
+  for (const chunk of chunks.filter((chunk) => chunk.type !== 'finish')) {
+    assert.deepEqual(readSessionTranslationMetrics(chunk.codingnsTranslation), metrics)
+  }
 })
 
 test('翻译服务失败时输入回退原文，且不会执行工具', async () => {
