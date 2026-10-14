@@ -38,17 +38,21 @@ export function SessionTranslationModelPool({ value, catalog, disabled, pending,
   const [selection, setSelection] = useState<ReadonlySet<string> | null>(null)
   const [search, setSearch] = useState('')
   const [saveFailed, setSaveFailed] = useState(false)
+  const [resetOpen, setResetOpen] = useState(false)
+  const [resetFailed, setResetFailed] = useState(false)
   const [preview, setPreview] = useState<PoolDrag | null>(null)
   const [announcement, setAnnouncement] = useState('')
   const drag = useRef<PoolDrag | null>(null)
   const list = useRef<HTMLOListElement>(null)
   const poolIdentity = JSON.stringify(pool)
   const pickerOpen = selection !== null
-  const locked = disabled || pickerOpen
+  const locked = disabled || pickerOpen || resetOpen
 
   const cancelDrag = (): void => { drag.current = null; setPreview(null) }
   useEffect(() => { cancelDrag() }, [disabled, poolIdentity])
-  useEffect(() => { if (disabled && !pending) setSelection(null) }, [disabled, pending])
+  useEffect(() => {
+    if (disabled && !pending) { setSelection(null); setResetOpen(false) }
+  }, [disabled, pending])
 
   const candidates = [...available.values()].filter((model) => !pooled.has(modelKey(model)))
   const query = search.trim().toLowerCase()
@@ -63,6 +67,13 @@ export function SessionTranslationModelPool({ value, catalog, disabled, pending,
     setSaveFailed(false)
     if (await onChange([...pool, ...additions])) setSelection(null)
     else setSaveFailed(true)
+  }
+  const closeReset = (): void => { if (!pending) setResetOpen(false) }
+  const confirmReset = async (): Promise<void> => {
+    if (disabled || !resetOpen) return
+    setResetFailed(false)
+    if (await onChange([])) setResetOpen(false)
+    else setResetFailed(true)
   }
   const commitOrder = (order: readonly SessionTranslationModel[], key: string): void => {
     if (locked) return
@@ -123,9 +134,9 @@ export function SessionTranslationModelPool({ value, catalog, disabled, pending,
     createElement('style', null, modelPoolCss),
     createElement('div', { className: 'codingns-translation-pool-toolbar' },
       createElement('span', { style: dshSettingsHelpStyle }, t(pool.length === 0 ? 'translation.modelDefaultActive' : 'translation.modelPoolCount', { count: pool.length })),
-      createElement(DshButton, { type: 'button', variant: 'outline', size: 'sm', disabled,
+      createElement(DshButton, { type: 'button', variant: 'outline', size: 'sm', disabled: disabled || resetOpen,
         icon: createElement(resolvePlusIcon(), { size: 14 }), 'aria-haspopup': 'dialog', 'aria-expanded': pickerOpen,
-        onClick: () => { if (!disabled) { setSearch(''); setSaveFailed(false); setSelection(new Set()) } },
+        onClick: () => { if (!disabled && !resetOpen) { setSearch(''); setSaveFailed(false); setSelection(new Set()) } },
       }, t('translation.modelAdd')),
     ),
     pool.length === 0 ? createElement('div', { className: 'codingns-translation-pool-empty' },
@@ -158,8 +169,9 @@ export function SessionTranslationModelPool({ value, catalog, disabled, pending,
     ),
     createElement('div', { className: 'codingns-translation-pool-toolbar' },
       createElement('span', { style: { ...dshSettingsHelpStyle, flex: 1 } }, t('translation.modelHelp')),
-      pool.length > 0 && createElement(DshButton, { type: 'button', size: 'sm', disabled: locked,
-        onClick: () => { if (!locked) void onChange([]) },
+      pool.length > 0 && createElement(DshButton, { type: 'button', size: 'sm', disabled: disabled || pickerOpen,
+        style: { color: dshThemeColor.error }, 'aria-haspopup': 'dialog', 'aria-expanded': resetOpen,
+        onClick: () => { if (!locked) { setResetFailed(false); setResetOpen(true) } },
       }, t('translation.modelFollowDefault')),
     ),
     createElement('span', { role: 'status', 'aria-live': 'polite', className: 'codingns-translation-pool-status' }, announcement),
@@ -204,7 +216,18 @@ export function SessionTranslationModelPool({ value, catalog, disabled, pending,
         saveFailed && createElement('span', { role: 'alert', style: { ...dshSettingsHelpStyle, color: dshThemeColor.error } }, t('translation.saveRejected')),
       ),
     ),
-
+    createElement(DshModal, {
+      open: resetOpen, onClose: closeReset, title: t('translation.modelResetTitle'), closeLabel: t('translation.modelCancel'),
+      description: t('translation.modelResetHelp', { count: pool.length }),
+      footer: createElement(Fragment, null,
+        createElement(DshButton, { type: 'button', variant: 'outline', disabled: pending,
+          ...{ 'data-modal-autofocus': true }, onClick: closeReset,
+        }, t('translation.modelCancel')),
+        createElement(DshButton, { type: 'button', variant: 'outline', disabled,
+          style: { color: dshThemeColor.error }, onClick: () => { void confirmReset() },
+        }, t('translation.modelResetConfirm')),
+      ),
+    }, resetFailed ? createElement('span', { role: 'alert', style: { ...dshSettingsHelpStyle, color: dshThemeColor.error } }, t('translation.saveRejected')) : undefined),
   )
 }
 
