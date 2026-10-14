@@ -2188,6 +2188,49 @@ test('输入翻译保留用户原文，外部 Agent 收到纯译文且回复归�
   await features.disable('cliAdapters')
 })
 
+test('外部 Agent 路由不继承 DSH 原生思考强度', async () => {
+  const table = new CodingNsRpcTable()
+  let requestListener: ((payload: unknown, next: () => Promise<unknown>) => Promise<unknown>) | undefined
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'command-code', name: 'Command Code' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'command-code' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() {
+      yield { type: 'text-delta', text: 'Done' }
+      yield { type: 'finish', reason: 'stop' }
+    },
+  }])
+  const dshContext = {
+    get() { return undefined },
+    on(name: string, listener: (...args: any[]) => any) {
+      if (name === 'agent/request') requestListener = listener as typeof requestListener
+      return () => undefined
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table, events: { on() { return () => undefined } }, dshContext: dshContext as never })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  registry.setSession('external-effort', { adapterId: 'command-code', modelId: 'deepseek/deepseek-v4.1-flash' })
+
+  // 外部 CLI 的虚拟 Provider 不声明 reasoning；继承 DSH 原生模型的 max 会让 DSH 准入
+  // 直接抛 UNSUPPORTED_REASONING_EFFORT，整轮在发出任何请求前失败。
+  const routed = await requestListener!(
+    { agent: { id: 'external-effort' } },
+    async () => ({ provider: 'glor', model: 'deepseek-v4.1-flash', reasoningEffort: 'max', maxTokens: 4096 }),
+  ) as Record<string, unknown>
+  assert.deepEqual(routed, { provider: 'command-code', model: 'deepseek/deepseek-v4.1-flash', maxTokens: 4096 })
+  assert.equal('reasoningEffort' in routed, false)
+
+  // DSH 原生会话没有绑定外部适配器时，原生思考强度必须原样保留。
+  registry.setSession('dsh-native-effort', { adapterId: 'dsh' })
+  const native = await requestListener!(
+    { agent: { id: 'dsh-native-effort' } },
+    async () => ({ provider: 'glor', model: 'deepseek-v4.1-flash', reasoningEffort: 'max' }),
+  ) as Record<string, unknown>
+  assert.deepEqual(native, { provider: 'glor', model: 'deepseek-v4.1-flash', reasoningEffort: 'max' })
+  await features.disable('cliAdapters')
+})
+
 test('翻译 LLM 请求旁路外部 Agent 接管', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
