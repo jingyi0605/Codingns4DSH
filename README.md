@@ -11,7 +11,7 @@
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.1-beta.10`** · DSH **`>=0.2.0-rc.2 <=0.2.1-alpha.2`**（已验证 `0.2.1-alpha.2`）· Node **`>= 22.19`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.1-beta.11`** · DSH **`>=0.2.0-rc.2 <=0.2.1-alpha.2`**（已验证 `0.2.1-alpha.2`）· Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965** · **[微信群 / QQ 群二维码](#交流群)**
 
@@ -128,7 +128,7 @@ Agent 的安装与登录由各自工具完成。适配细节见[外部 Agent 文
 
 可在设置中启用会话翻译，为选定的外部 Agent 翻译用户请求、思考文本和正式回复。输入目标语言支持简体中文、英语、法语、德语和日语；输出默认中文，也可显示双语。工具调用、命令、路径、代码、JSON 与附件保持原样。
 
-同一设置页还提供「DSH 原生会话」开关（默认关闭）：开启后，DSH 内置 Agent 会话同样在发送前翻译请求、并把界面上的思考与回复翻译为目标语言。原生会话的回复正文由 DSH 自己写入历史，因此历史中保存的是译文，原文仍可在每条消息的「翻译详情」中查看；每个会话的模型选择菜单内提供「翻译对话」开关，可覆盖总开关。
+DSH 原生会话的翻译默认关闭，可在会话模型选择菜单中开启「翻译对话」。开启后，请求在发送前翻译，思考与回复在界面中显示译文；AI 原文保留在历史中，翻译详情可查看原文、译文及实际发送文本。
 
 ### 全局智能助理（测试中）
 
@@ -243,7 +243,7 @@ Agent 的安装与登录由各自工具完成。适配细节见[外部 Agent 文
 ### 使用内置 Web 配置
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.1-beta.10
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.1-beta.11
 dsh web
 ```
 
@@ -253,7 +253,7 @@ dsh web
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.1-beta.10
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.1-beta.11
 dsh codingns
 ```
 
