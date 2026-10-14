@@ -18,7 +18,7 @@ export function createSessionTranslationFeature(): FeatureModule<CodingNsHostSer
         labelKey: 'feature.sessionTranslation.label',
         descriptionKey: 'feature.sessionTranslation.description',
         order: 32,
-        defaultOpen: true,
+        defaultOpen: false,
       },
     },
     start(context) {

@@ -49,7 +49,7 @@ export const sessionTranslationFeature: CodingNsClientFeatureModule = {
       labelKey: 'feature.sessionTranslation.label',
       descriptionKey: 'feature.sessionTranslation.description',
       order: 32,
-      defaultOpen: true,
+      defaultOpen: false,
     },
   },
   start: (context) => {
