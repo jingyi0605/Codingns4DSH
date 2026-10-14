@@ -20,6 +20,8 @@ export interface SessionTranslationSettings {
   readonly bilingual: boolean
   /** 翻译模型；缺省时跟随 DSH 当前默认模型。 */
   readonly translationModel?: SessionTranslationModel
+  /** Models in priority order. An empty pool follows the DSH default; absent pools use the legacy selection. */
+  readonly translationModels?: readonly SessionTranslationModel[]
   /**
    * DSH 原生会话是否参与翻译；缺省关闭。
    *
@@ -78,13 +80,29 @@ export function normalizeSessionTranslationSettings(value: SessionTranslationSet
   const fallback = DEFAULT_SESSION_TRANSLATION_SETTINGS
   if (value === undefined) return fallback
   const translationModel = normalizeTranslationModel(value.translationModel)
+  const translationModels = Array.isArray(value.translationModels) ? normalizeTranslationModels(value.translationModels) : undefined
   return {
     inputLanguage: isSessionTranslationLanguage(value.inputLanguage) ? value.inputLanguage : fallback.inputLanguage,
     outputLanguage: isSessionTranslationLanguage(value.outputLanguage) ? value.outputLanguage : fallback.outputLanguage,
     bilingual: value.bilingual === true,
     nativeEnabled: value.nativeEnabled === true,
     ...(translationModel === undefined ? {} : { translationModel }),
+    ...(translationModels === undefined ? {} : { translationModels }),
   }
+}
+
+function normalizeTranslationModels(values: readonly SessionTranslationModel[]): readonly SessionTranslationModel[] {
+  const models: SessionTranslationModel[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    const model = normalizeTranslationModel(value)
+    if (model === undefined) continue
+    const key = JSON.stringify([model.provider, model.model])
+    if (seen.has(key)) continue
+    seen.add(key)
+    models.push(model)
+  }
+  return models
 }
 
 function normalizeTranslationModel(value: SessionTranslationModel | undefined): SessionTranslationModel | undefined {

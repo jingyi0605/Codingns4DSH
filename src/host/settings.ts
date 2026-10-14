@@ -56,7 +56,8 @@ export const CodingNsSettingsSchema = z.object({
     // DSH 原生会话默认不翻译：输出翻译会把 assistant 正文写成译文，不能默认改变既有行为。
     nativeEnabled: z.boolean().default(DEFAULT_SESSION_TRANSLATION_SETTINGS.nativeEnabled === true),
     translationModel: z.union([z.object({ provider: z.string().min(1).max(200), model: z.string().min(1).max(200) }), z.const(undefined)]),
-  }).default({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS }),
+    translationModels: z.union([z.array(z.object({ provider: z.string().min(1).max(200), model: z.string().min(1).max(200) })), z.const(undefined)]),
+  }).default({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationModels: undefined }),
   assistant: z.object({
     notifications: z.object({
       enabled: z.boolean().default(true), completed: z.boolean().default(true),

@@ -73,10 +73,13 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
   let active = false
   let nativeFallbackModel: Promise<ModelSelection | undefined> | undefined
 
-  const selectModel = async (signal: AbortSignal): Promise<ModelSelection | undefined> => {
-    const configured = settings.translationModel
+  const selectModels = async (signal: AbortSignal): Promise<readonly ModelSelection[]> => {
+    if (settings.translationModels !== undefined && settings.translationModels.length > 0) {
+      return settings.translationModels.filter((item) => !isSessionTranslationAdapter(item.provider))
+    }
+    const configured = settings.translationModels === undefined ? settings.translationModel : undefined
     if (configured !== undefined) {
-      if (!isSessionTranslationAdapter(configured.provider)) return configured
+      if (!isSessionTranslationAdapter(configured.provider)) return [configured]
       debugWarn('codingns4dsh: 翻译设置指向外部 Agent Provider，改用原生模型目录', {
         provider: configured.provider,
         model: configured.model,
@@ -84,12 +87,74 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     }
 
     const selected = model?.currentSelection?.()
-    if (selected !== undefined && !isSessionTranslationAdapter(selected.provider)) return selected
+    if (selected !== undefined && !isSessionTranslationAdapter(selected.provider)) return [selected]
 
     if (nativeFallbackModel === undefined) nativeFallbackModel = findFirstNativeModel(llm)
-    const fallback = await nativeFallbackModel
+    const pendingFallback = nativeFallbackModel
+    const fallback = await withAbort(() => pendingFallback, signal)
     signal.throwIfAborted()
-    return fallback
+    return fallback === undefined ? [] : [fallback]
+  }
+
+  // Both directions share model ordering, deadlines, cancellation, and result validation.
+  const translateWithModels = async (
+    adapterId: string,
+    kind: SessionTranslationOutputKind | 'input',
+    text: string,
+    protectedText: ReturnType<typeof protectText>,
+    targetLanguage: SessionTranslationLanguage,
+    signal?: AbortSignal,
+  ): Promise<{ readonly translated: string; readonly model?: SessionTranslationModel; readonly failed?: boolean }> => {
+    let selected: ModelSelection | undefined
+    try {
+      const selectionTimeout = AbortSignal.timeout(30_000)
+      const selectionSignal = signal === undefined ? selectionTimeout : AbortSignal.any([selectionTimeout, signal])
+      selectionSignal.throwIfAborted()
+      const candidates = await selectModels(selectionSignal)
+      for (const candidate of candidates) {
+        if (signal?.aborted) break
+        if (candidate.provider.trim() === '' || candidate.model.trim() === '') continue
+        selected = candidate
+        const controller = new AbortController()
+        const timeout = globalThis.setTimeout(() => controller.abort(new Error('session translation timeout')), 30_000)
+        const combined = signal === undefined ? controller.signal : AbortSignal.any([controller.signal, signal])
+        try {
+          const translated = await withAbort(async () => {
+            combined.throwIfAborted()
+            const reasoningEffort = await translationReasoningEffort(llm, candidate, combined)
+            const result = await readTranslation(llm.stream({
+              provider: candidate.provider,
+              model: candidate.model,
+              signal: combined,
+              codingnsTranslation: true,
+              ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+              temperature: 0,
+              maxTokens: Math.min(16_000, Math.max(512, text.length * 2 + 256)),
+              system: translationSystem(targetLanguage, kind),
+              messages: [{ role: 'user', content: [{ type: 'text', text: translationUserMessage(targetLanguage, kind, protectedText.text) }] }],
+            }), combined)
+            combined.throwIfAborted()
+            // Validate prose before restoring code, whose language is intentionally unchanged.
+            if (!isUsableTranslation(stripPlaceholders(result), targetLanguage)) throw new Error('model returned an unusable translation')
+            return restoreText(result.trim(), protectedText.values)
+          }, combined)
+          return { translated, model: candidate }
+        } catch (error) {
+          debugWarn('codingns4dsh: Translation model failed', {
+            adapterId, kind, provider: candidate.provider, model: candidate.model,
+            error: error instanceof Error ? error.message : String(error),
+          })
+          if (signal?.aborted) break
+        } finally {
+          globalThis.clearTimeout(timeout)
+        }
+      }
+    } catch (error) {
+      debugWarn('codingns4dsh: Translation model selection failed', {
+        adapterId, kind, error: error instanceof Error ? error.message : String(error),
+      })
+    }
+    return { translated: text, failed: true, ...(selected === undefined ? {} : { model: selected }) }
   }
 
   const translate = async (adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationRecord | null> => {
@@ -110,73 +175,13 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
         alreadyTargetLanguage: true,
       }
     }
-    const controller = new AbortController()
-    const timeout = globalThis.setTimeout(() => controller.abort(new Error('session translation timeout')), 30_000)
-    const combined = signal === undefined ? controller.signal : AbortSignal.any([controller.signal, signal])
-    let selected: ModelSelection | undefined
-    try {
-      selected = await selectModel(combined)
-      if (selected === undefined || selected.provider.trim() === '' || selected.model.trim() === '') {
-        debugWarn('codingns4dsh: 会话翻译未找到可用模型，已回退原文', { adapterId, kind })
-        return { original: value, translated: value, ...(sourceLanguage === undefined ? {} : { sourceLanguage }), targetLanguage, bilingual: settings.bilingual, failed: true }
-      }
-      combined.throwIfAborted()
-      const reasoningEffort = await translationReasoningEffort(llm, selected, combined)
-      const result = await readTranslation(llm.stream({
-        provider: selected.provider,
-        model: selected.model,
-        signal: combined,
-        codingnsTranslation: true,
-        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-        temperature: 0,
-        maxTokens: Math.min(16_000, Math.max(512, value.length * 2 + 256)),
-        system: translationSystem(targetLanguage, kind),
-        messages: [{ role: 'user', content: [{ type: 'text', text: translationUserMessage(targetLanguage, kind, protectedText.text) }] }],
-      }), combined)
-      const translated = restoreText(result.trim(), protectedText.values)
-      if (!isUsableTranslation(stripPlaceholders(result), targetLanguage)) {
-        debugWarn('codingns4dsh: 会话输出翻译没有返回文字，已回退原文', {
-          adapterId,
-          kind,
-          provider: selected.provider,
-          model: selected.model,
-        })
-        return {
-          original: value,
-          translated: value,
-          ...(sourceLanguage === undefined ? {} : { sourceLanguage }),
-          targetLanguage,
-          bilingual: settings.bilingual,
-          failed: true,
-          model: { provider: selected.provider, model: selected.model },
-        }
-      }
-      return {
-        original: value,
-        translated,
-        ...(sourceLanguage === undefined ? {} : { sourceLanguage }),
-        targetLanguage,
-        bilingual: settings.bilingual,
-        model: { provider: selected.provider, model: selected.model },
-      }
-    } catch (error) {
-      debugWarn('codingns4dsh: 会话输出翻译请求失败，已回退原文', {
-        adapterId,
-        kind,
-        ...(selected === undefined ? {} : { provider: selected.provider, model: selected.model }),
-        error: error instanceof Error ? error.message : String(error),
-      })
-      return {
-        original: value,
-        translated: value,
-        ...(sourceLanguage === undefined ? {} : { sourceLanguage }),
-        targetLanguage,
-        bilingual: settings.bilingual,
-        failed: true,
-        ...(selected === undefined ? {} : { model: { provider: selected.provider, model: selected.model } }),
-      }
-    } finally {
-      globalThis.clearTimeout(timeout)
+    const result = await translateWithModels(adapterId, kind, value, protectedText, targetLanguage, signal)
+    return {
+      original: value,
+      ...result,
+      ...(sourceLanguage === undefined ? {} : { sourceLanguage }),
+      targetLanguage,
+      bilingual: settings.bilingual,
     }
   }
 
@@ -242,53 +247,8 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
       if (sourceLanguage === targetLanguage) {
         return { translated: text, sourceLanguage, alreadyTargetLanguage: true }
       }
-      const controller = new AbortController()
-      const timeout = globalThis.setTimeout(() => controller.abort(new Error('session translation timeout')), 30_000)
-      const combined = signal === undefined ? controller.signal : AbortSignal.any([controller.signal, signal])
-      let selected: ModelSelection | undefined
-      try {
-        selected = await selectModel(combined)
-        if (selected === undefined || selected.provider.trim() === '' || selected.model.trim() === '') {
-          debugWarn('codingns4dsh: 会话输入翻译未找到可用模型，已回退原文', { adapterId })
-          return { translated: text, ...(sourceLanguage === undefined ? {} : { sourceLanguage }), failed: true }
-        }
-        const reasoningEffort = await translationReasoningEffort(llm, selected, combined)
-        const result = await readTranslation(llm.stream({
-          provider: selected.provider,
-          model: selected.model,
-          signal: combined,
-          codingnsTranslation: true,
-          ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-          temperature: 0,
-          maxTokens: Math.min(16_000, Math.max(512, text.length * 2 + 256)),
-          system: translationSystem(settings.inputLanguage, 'input'),
-          messages: [{ role: 'user', content: [{ type: 'text', text: translationUserMessage(settings.inputLanguage, 'input', protectedText.text) }] }],
-        }), combined)
-        const translated = restoreText(result.trim(), protectedText.values)
-        if (!isUsableTranslation(stripPlaceholders(result), settings.inputLanguage)) {
-          debugWarn('codingns4dsh: 会话输入翻译没有返回文字，已回退原文', {
-            adapterId,
-            provider: selected.provider,
-            model: selected.model,
-          })
-          return { translated: text, ...(sourceLanguage === undefined ? {} : { sourceLanguage }), failed: true, model: { provider: selected.provider, model: selected.model } }
-        }
-        return { translated, ...(sourceLanguage === undefined ? {} : { sourceLanguage }), model: { provider: selected.provider, model: selected.model } }
-      } catch (error) {
-        debugWarn('codingns4dsh: 会话输入翻译请求失败，已回退原文', {
-          adapterId,
-          ...(selected === undefined ? {} : { provider: selected.provider, model: selected.model }),
-          error: error instanceof Error ? error.message : String(error),
-        })
-        return {
-          translated: text,
-          ...(sourceLanguage === undefined ? {} : { sourceLanguage }),
-          failed: true,
-          ...(selected === undefined ? {} : { model: { provider: selected.provider, model: selected.model } }),
-        }
-      } finally {
-        globalThis.clearTimeout(timeout)
-      }
+      const result = await translateWithModels(adapterId, 'input', text, protectedText, targetLanguage, signal)
+      return { ...result, ...(sourceLanguage === undefined ? {} : { sourceLanguage }) }
   }
 
 }
@@ -420,6 +380,18 @@ async function readTranslation(stream: AsyncIterable<Record<string, any>>, signa
     if (chunk.type === 'finish' && chunk.reason?.kind === 'error') throw new Error(chunk.reason.failure?.message ?? 'translation failed')
   }
   return text
+}
+
+// Some providers do not promptly honor abort signals while resolving or streaming.
+async function withAbort<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted()
+  let onAbort: () => void = () => undefined
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try { return await Promise.race([operation(), aborted]) }
+  finally { signal.removeEventListener('abort', onAbort) }
 }
 
 async function findFirstNativeModel(llm: LlmRuntime): Promise<ModelSelection | undefined> {
