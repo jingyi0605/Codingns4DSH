@@ -453,6 +453,43 @@ test('Codex app-server 保留 item 工具生命周期和失败结果', async () 
   driver.dispose()
 })
 
+test('Codex app-server v2 camelCase aggregatedOutput 映射为工具输出', async () => {
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; method: string }
+        if (request.method === 'thread/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { thread: { id: 'codex-thread' } } })}\n`)
+          return
+        }
+        if (request.method === 'turn/start') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'codex-turn', status: 'inProgress' } } })}\n`)
+          setImmediate(() => {
+            const item = (id: string, command: string, aggregatedOutput: string, exitCode: number, status: string) => ({ type: 'commandExecution', id, command, aggregatedOutput, exitCode, status })
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/completed', params: { threadId: 'codex-thread', turnId: 'codex-turn', item: item('ok-1', 'pwd', 'C:/repo', 0, 'completed') } })}\n`)
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'item/completed', params: { threadId: 'codex-thread', turnId: 'codex-turn', item: item('bad-1', 'exit 2', '失败输出', 2, 'failed') } })}\n`)
+            stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'codex-thread', turn: { id: 'codex-turn', status: 'completed' } } })}\n`)
+          })
+          return
+        }
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'codex-camel-output', messages: [], prompt: '执行' })) chunks.push(chunk)
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-event'), [
+    { type: 'tool-event', toolName: 'command_execution', callId: 'ok-1', input: 'pwd', output: 'C:/repo', outputMode: 'snapshot', status: 'completed' },
+    { type: 'tool-event', toolName: 'command_execution', callId: 'bad-1', input: 'exit 2', error: '失败输出', status: 'failed' },
+  ])
+  driver.dispose()
+})
+
 test('Codex 在同一个 provider turn 内保留多个工具调用，不人为拆分 step', async () => {
   const driver = new CodexAppServerDriver({
     binaries: ['fake-codex'],
