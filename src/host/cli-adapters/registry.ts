@@ -25,7 +25,7 @@ import type {
 } from './driver.js'
 import { CodingNsCliSessionStore } from './session-store.js'
 import { readLegacyImportedAdapterPreferences } from './legacy-session-settings.js'
-import { knownAntigravityContextWindow, knownCodexContextWindow, knownCommandCodeContextWindow, knownOpenCodeContextWindow } from './model-catalog.js'
+import { knownAntigravityContextWindow, knownClaudeContextWindow, knownCodexContextWindow, knownCommandCodeContextWindow, knownOpenCodeContextWindow } from './model-catalog.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import type { CodingNsSettings, CodingNsCliAdapterPreference } from '../../shared/contracts/config.js'
 import type { DshHostSettingsScope } from '../../dsh-capabilities/host/config-forms-adapter.js'
@@ -588,6 +588,8 @@ export class CodingNsCliAdapterRegistry {
               ? knownAntigravityContextWindow(input.modelId)
               : input.adapterId === 'opencode'
                 ? knownOpenCodeContextWindow(input.modelId)
+                : input.adapterId === 'claude-code'
+                  ? knownClaudeContextWindow(input.modelId)
                 : undefined
         if (nativeSessionReady) this.nativeSessions?.appendRequestContext?.(input.sessionId, {
           provider: input.adapterId,

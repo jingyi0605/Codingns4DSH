@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
-import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel } from './model-catalog.js'
+import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel, knownClaudeContextWindow } from './model-catalog.js'
 import { discoverClaudeModelCatalog } from './claude-model-options.js'
 import { spawnClaudeProcess } from './claude-process.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
@@ -15,6 +15,7 @@ import { WINDOWS, commandEnvironment, runAsyncCommand, type CodingNsChildProcess
 import { claudeBridgeArgs } from '../cli-bridge/injections.js'
 import { readAgentQuestions } from './interaction-events.js'
 import { scanCompatibleSkills } from './skill-filesystem.js'
+import { usageChunk } from './rpc-driver-utils.js'
 
 export interface ClaudeCodeDriverOptions extends StandardStreamDriverOptions {
   /** 测试或托管环境可显式指定用户级 Skill 根目录。 */
@@ -316,6 +317,14 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     const interaction = this.parseInteraction(value, input.sessionId)
     if (interaction !== null) return [interaction]
     const event = value.type === 'stream_event' && typeof value.event === 'object' && value.event !== null ? value.event as Record<string, unknown> : value
+    const usage = readClaudeUsage(value, event, input)
+    const failure = readClaudeFailure(value, event)
+    if (failure !== null) {
+      return [
+        ...(usage === null ? [] : [usage]),
+        { type: 'finish', reason: input.signal?.aborted ? 'cancel' : 'error', ...(input.signal?.aborted ? {} : { failure }) },
+      ]
+    }
     const delta = typeof event.delta === 'object' && event.delta !== null ? event.delta as Record<string, unknown> : null
     if (event.type === 'message_start') this.toolInputStates.delete(input.sessionId)
     if (event.type === 'content_block_delta' && delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') return [{ type: 'reasoning-delta', text: delta.thinking }]
@@ -332,7 +341,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     if ((value.type === 'assistant' || value.type === 'user') && typeof value.message === 'object' && value.message !== null) {
       const message = value.message as Record<string, unknown>
       const content = Array.isArray(message.content) ? message.content : []
-      return content.flatMap((part): readonly CodingNsAgentEvent[] => {
+      return [...(usage === null ? [] : [usage]), ...content.flatMap((part): readonly CodingNsAgentEvent[] => {
         if (!part || typeof part !== 'object') return []
         const item = part as Record<string, unknown>
         if (item.type === 'tool_use') {
@@ -349,9 +358,10 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
         // 快照和实时块同时写入同一个 assistant，会把整段正文追加第二遍。
         // 工具生命周期仍由上面的 tool_use/tool_result 分支读取。
         return []
-      })
+      })]
     }
-    return super.parseEvent(value, input)
+    const generic = super.parseEvent(value, input)
+    return usage === null ? generic : [usage, ...generic.filter((chunk) => chunk.type !== 'usage')]
   }
 
   private parseInteraction(value: Record<string, unknown>, sessionId: string): CodingNsAgentEvent | null {
@@ -502,6 +512,111 @@ function claudeToolResult(item: Record<string, unknown>): ClaudeToolEvent | null
     ...(agentId ? { agentId } : {}),
     ...(detail !== undefined ? { detail } : {}),
   }
+}
+
+type ClaudeUsageEvent = Extract<CodingNsAgentEvent, { type: 'usage' }>
+
+/** Claude 的 token usage 既可能在 message.usage，也可能在 result.usage。 */
+function readClaudeUsage(
+  value: Record<string, unknown>,
+  event: Record<string, unknown>,
+  input: CodingNsCliTurnInput,
+): ClaudeUsageEvent | null {
+  const message = isRecord(event.message) ? event.message : null
+  const rawUsage = message !== null && isRecord(message.usage)
+    ? message.usage
+    : isRecord(value.usage)
+      ? value.usage
+      : isRecord(event.usage)
+        ? event.usage
+        : null
+  if (rawUsage === null) return null
+  const modelId = typeof message?.model === 'string'
+    ? message.model
+    : typeof value.model === 'string'
+      ? value.model
+      : input.modelId
+  const contextWindow = readClaudeContextWindow(value, event, modelId)
+  const parsed = usageChunk(contextWindow === undefined ? rawUsage : { ...rawUsage, contextWindow })
+  if (parsed?.type !== 'usage') return null
+  return enrichClaudeUsage(parsed, contextWindow)
+}
+
+/** 优先使用 Claude result.modelUsage 的 Provider 事实，再使用已验证模型窗口。 */
+function readClaudeContextWindow(
+  value: Record<string, unknown>,
+  event: Record<string, unknown>,
+  modelId: string | undefined,
+): number | undefined {
+  const direct = positiveNumber(value.contextWindow) ?? positiveNumber(event.contextWindow)
+  if (direct !== undefined) return direct
+  let reported: number | undefined
+  for (const source of [value.modelUsage, event.modelUsage]) {
+    if (!isRecord(source)) continue
+    for (const item of Object.values(source)) {
+      if (!isRecord(item)) continue
+      const contextWindow = positiveNumber(item.contextWindow ?? item.context_window)
+      if (contextWindow !== undefined && (reported === undefined || contextWindow > reported)) reported = contextWindow
+    }
+  }
+  if (reported !== undefined) return reported
+  const modelIds = [
+    modelId,
+    ...claudeModelUsageIds(value.modelUsage),
+    ...claudeModelUsageIds(event.modelUsage),
+  ]
+  for (const candidate of modelIds) {
+    const contextWindow = knownClaudeContextWindow(candidate)
+    if (contextWindow !== undefined) return contextWindow
+  }
+  return undefined
+}
+
+function claudeModelUsageIds(value: unknown): readonly string[] {
+  return isRecord(value) ? Object.keys(value).filter((modelId) => modelId.trim() !== '') : []
+}
+
+/** Anthropic input_tokens 不含缓存桶；上下文占用需要把缓存读写加回去。 */
+function enrichClaudeUsage(event: ClaudeUsageEvent, contextWindow: number | undefined): ClaudeUsageEvent {
+  if (contextWindow === undefined || contextWindow <= 0) return event
+  const contextTokens = event.contextTokens
+    ?? (event.inputTokens > 0 || event.cacheReadTokens !== undefined || event.cacheWriteTokens !== undefined
+      ? event.inputTokens + (event.cacheReadTokens ?? 0) + (event.cacheWriteTokens ?? 0)
+      : undefined)
+  return {
+    ...event,
+    contextWindow,
+    ...(contextTokens === undefined ? {} : { contextTokens }),
+    ...(event.contextUsageRatio === undefined && contextTokens !== undefined
+      ? { contextUsageRatio: Number(Math.min(1, contextTokens / contextWindow).toFixed(6)) }
+      : {}),
+  }
+}
+
+/** Claude 的错误结果使用 `is_error` + `result`，不是通用的 `error` 字段。 */
+function readClaudeFailure(value: Record<string, unknown>, event: Record<string, unknown>): { message: string; code?: string } | null {
+  const isError = value.is_error === true || value.isError === true || event.is_error === true || event.isError === true
+  if (!isError) return null
+  const candidates = [value.result, event.result, value.error, event.error]
+  const message = candidates
+    .map((candidate) => {
+      if (typeof candidate === 'string') return candidate.trim()
+      if (!isRecord(candidate)) return ''
+      return [candidate.message, candidate.detail, candidate.description, candidate.error]
+        .find((item): item is string => typeof item === 'string' && item.trim() !== '')?.trim() ?? ''
+    })
+    .find((candidate) => candidate !== '') ?? 'Claude Code 返回了错误结果'
+  const rawCode = value.api_error_status ?? event.api_error_status ?? value.code ?? event.code
+  const code = typeof rawCode === 'number' && Number.isFinite(rawCode)
+    ? String(rawCode)
+    : typeof rawCode === 'string' && rawCode.trim() !== ''
+      ? rawCode.trim()
+      : undefined
+  return code === undefined ? { message } : { message, code }
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
 }
 
 /** 把 DSH 的生效权限映射到 Claude Code 公开的 permission-mode。 */

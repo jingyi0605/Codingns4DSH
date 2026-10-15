@@ -63,6 +63,65 @@ export const CLAUDE_CATALOG = staticCatalog('claude', 'Claude', [
   { id: 'haiku', efforts: CLAUDE_EFFORT_LEVELS },
 ])
 
+/**
+ * Claude Code 的 stream-json usage 通常不带上下文容量；这些是 CLI 当前
+ * 已确认的模型/别名窗口，只用于 Provider 首个 usage 到达前的占位。
+ * `result.modelUsage[*].contextWindow` 到达后由驱动优先采用实测值。
+ */
+const CLAUDE_CONTEXT_WINDOWS = new Map<string, number>([
+  ['claude-haiku-4-5', 200_000],
+  ['claude-haiku-4-5-20251001', 200_000],
+  ['claude-haiku-4.5', 200_000],
+  ['claude-haiku-3-5', 200_000],
+  ['claude-opus-4', 200_000],
+  ['claude-opus-4-0', 200_000],
+  ['claude-opus-4-20250514', 200_000],
+  ['claude-opus-4-1', 200_000],
+  ['claude-opus-4-1-20250805', 200_000],
+  ['claude-opus-4-5', 200_000],
+  ['claude-opus-4-5-20251101', 200_000],
+  ['claude-opus-4-6', 1_000_000],
+  ['claude-opus-4-6-v1', 1_000_000],
+  ['claude-opus-4-7', 1_000_000],
+  ['claude-opus-4-8', 1_000_000],
+  ['claude-opus-5', 1_000_000],
+  ['claude-opus-5-5', 1_000_000],
+  ['claude-fable-5', 1_000_000],
+  ['claude-fable-5-1', 1_000_000],
+  ['claude-mythos-5', 1_000_000],
+  ['claude-mythos-5-1', 1_000_000],
+  ['claude-sonnet-4', 200_000],
+  ['claude-sonnet-4-0', 200_000],
+  ['claude-sonnet-4-20250514', 200_000],
+  ['claude-sonnet-4-5', 200_000],
+  ['claude-sonnet-4-5-20250929', 200_000],
+  ['claude-sonnet-4-6', 1_000_000],
+  ['claude-sonnet-5', 1_000_000],
+  ['claude-sonnet-5-5', 1_000_000],
+  ['haiku', 200_000],
+  ['opus', 1_000_000],
+  ['sonnet', 1_000_000],
+])
+
+export function knownClaudeContextWindow(modelId: string | undefined): number | undefined {
+  if (modelId === undefined) return undefined
+  const normalized = modelId.trim().toLowerCase()
+  if (normalized === '') return undefined
+  if (/\[1m\]$/u.test(normalized)) return 1_000_000
+  const candidates = new Set<string>([normalized])
+  const providerModel = normalized.indexOf('claude-')
+  if (providerModel >= 0) candidates.add(normalized.slice(providerModel))
+  for (const candidate of [...candidates]) {
+    candidates.add(candidate.replace(/\.(?=\d)/gu, '-'))
+    candidates.add(candidate.replace(/(?:-v\d+(?::\d+)?|-\d{8}|@\d{8})$/u, ''))
+  }
+  for (const candidate of candidates) {
+    const contextWindow = CLAUDE_CONTEXT_WINDOWS.get(candidate)
+    if (contextWindow !== undefined) return contextWindow
+  }
+  return undefined
+}
+
 export const KIMI_CATALOG = staticCatalog('kimi', 'Kimi', [
   { id: 'provider-default', name: '跟随 Kimi 默认模型', efforts: ['off', 'low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'kimi-k2.5', efforts: ['off', 'low', 'medium', 'high', 'xhigh', 'max'] },
