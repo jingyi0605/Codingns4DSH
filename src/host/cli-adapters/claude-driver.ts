@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
-import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel, knownClaudeContextWindow } from './model-catalog.js'
+import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel } from './model-catalog.js'
 import { discoverClaudeModelCatalog } from './claude-model-options.js'
 import { spawnClaudeProcess } from './claude-process.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
@@ -88,6 +88,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   private readonly managedSettingsDir: string
   /** 参数分片按会话和内容块索引隔离，避免并发会话或多个工具互相串入。 */
   private readonly toolInputStates = new Map<string, Map<number, ClaudeToolInputState>>()
+  private readonly usageStates = new Map<string, ClaudeUsageState>()
   /**
    * `--effort` 探测结论，绑定到具体的 CLI 路径与版本。
    *
@@ -240,6 +241,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   override async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const userContent = await buildClaudeUserContent(input.prompt, input.attachments ?? [], input.translationLanguage)
     this.toolInputStates.delete(input.sessionId)
+    this.usageStates.delete(input.sessionId)
     const interaction: ClaudeInteractionState = { write: undefined, pending: new Map(), userContent }
     this.interactions.set(input.sessionId, interaction)
     try {
@@ -247,6 +249,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
       yield* super.executeTurn({ ...input, attachments: (input.attachments ?? []).filter((attachment) => attachment.kind === 'file') })
     } finally {
       this.toolInputStates.delete(input.sessionId)
+      this.usageStates.delete(input.sessionId)
       if (this.interactions.get(input.sessionId) === interaction) this.interactions.delete(input.sessionId)
     }
   }
@@ -309,6 +312,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     this.effortProbe = undefined
     this.detectedVersion = null
     this.toolInputStates.clear()
+    this.usageStates.clear()
     this.interactions.clear()
     super.dispose()
   }
@@ -317,7 +321,9 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     const interaction = this.parseInteraction(value, input.sessionId)
     if (interaction !== null) return [interaction]
     const event = value.type === 'stream_event' && typeof value.event === 'object' && value.event !== null ? value.event as Record<string, unknown> : value
-    const usage = readClaudeUsage(value, event, input)
+    const usageState = this.usageStates.get(input.sessionId) ?? {}
+    this.usageStates.set(input.sessionId, usageState)
+    const usage = readClaudeUsage(value, event, input, usageState)
     const failure = readClaudeFailure(value, event)
     if (failure !== null) {
       return [
@@ -361,7 +367,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
       })]
     }
     const generic = super.parseEvent(value, input)
-    return usage === null ? generic : [usage, ...generic.filter((chunk) => chunk.type !== 'usage')]
+    return [...(usage === null ? [] : [usage]), ...generic.filter((chunk) => chunk.type !== 'usage')]
   }
 
   private parseInteraction(value: Record<string, unknown>, sessionId: string): CodingNsAgentEvent | null {
@@ -516,12 +522,20 @@ function claudeToolResult(item: Record<string, unknown>): ClaudeToolEvent | null
 
 type ClaudeUsageEvent = Extract<CodingNsAgentEvent, { type: 'usage' }>
 
-/** Claude 的 token usage 既可能在 message.usage，也可能在 result.usage。 */
+interface ClaudeUsageState {
+  modelId?: string
+  contextTokens?: number
+  contextWindow?: number
+}
+
+/** Keep the current request's context separate from cumulative result billing. */
 function readClaudeUsage(
   value: Record<string, unknown>,
   event: Record<string, unknown>,
   input: CodingNsCliTurnInput,
+  state: ClaudeUsageState,
 ): ClaudeUsageEvent | null {
+  if (value.parent_tool_use_id != null) return null
   const message = isRecord(event.message) ? event.message : null
   const rawUsage = message !== null && isRecord(message.usage)
     ? message.usage
@@ -535,14 +549,25 @@ function readClaudeUsage(
     ? message.model
     : typeof value.model === 'string'
       ? value.model
-      : input.modelId
+      : state.modelId ?? input.modelId
+  if (modelId !== undefined) state.modelId = modelId
   const contextWindow = readClaudeContextWindow(value, event, modelId)
+    ?? positiveNumber(rawUsage.contextWindow ?? rawUsage.context_window)
+    ?? state.contextWindow
   const parsed = usageChunk(contextWindow === undefined ? rawUsage : { ...rawUsage, contextWindow })
   if (parsed?.type !== 'usage') return null
-  return enrichClaudeUsage(parsed, contextWindow)
+  if (contextWindow !== undefined) state.contextWindow = contextWindow
+  if (parsed.contextTokens !== undefined) state.contextTokens = parsed.contextTokens
+  else if ((value.type === 'assistant' || event.type === 'message_start')
+    && (typeof rawUsage.input_tokens === 'number' || typeof rawUsage.inputTokens === 'number'
+      || parsed.cacheReadTokens !== undefined || parsed.cacheWriteTokens !== undefined)) {
+    // Anthropic input tokens exclude both cache buckets. Result usage sums requests.
+    state.contextTokens = parsed.inputTokens + (parsed.cacheReadTokens ?? 0) + (parsed.cacheWriteTokens ?? 0)
+  }
+  return enrichClaudeUsage(parsed, state)
 }
 
-/** 优先使用 Claude result.modelUsage 的 Provider 事实，再使用已验证模型窗口。 */
+/** Only provider facts may anchor native usage; catalog hints stay in request/context. */
 function readClaudeContextWindow(
   value: Record<string, unknown>,
   event: Record<string, unknown>,
@@ -550,44 +575,24 @@ function readClaudeContextWindow(
 ): number | undefined {
   const direct = positiveNumber(value.contextWindow) ?? positiveNumber(event.contextWindow)
   if (direct !== undefined) return direct
-  let reported: number | undefined
   for (const source of [value.modelUsage, event.modelUsage]) {
     if (!isRecord(source)) continue
-    for (const item of Object.values(source)) {
-      if (!isRecord(item)) continue
-      const contextWindow = positiveNumber(item.contextWindow ?? item.context_window)
-      if (contextWindow !== undefined && (reported === undefined || contextWindow > reported)) reported = contextWindow
-    }
-  }
-  if (reported !== undefined) return reported
-  const modelIds = [
-    modelId,
-    ...claudeModelUsageIds(value.modelUsage),
-    ...claudeModelUsageIds(event.modelUsage),
-  ]
-  for (const candidate of modelIds) {
-    const contextWindow = knownClaudeContextWindow(candidate)
+    const entries = Object.values(source)
+    const item = (modelId === undefined ? undefined : source[modelId])
+      ?? (entries.length === 1 ? entries[0] : undefined)
+    if (!isRecord(item)) continue
+    const contextWindow = positiveNumber(item.contextWindow ?? item.context_window)
     if (contextWindow !== undefined) return contextWindow
   }
   return undefined
 }
 
-function claudeModelUsageIds(value: unknown): readonly string[] {
-  return isRecord(value) ? Object.keys(value).filter((modelId) => modelId.trim() !== '') : []
-}
-
-/** Anthropic input_tokens 不含缓存桶；上下文占用需要把缓存读写加回去。 */
-function enrichClaudeUsage(event: ClaudeUsageEvent, contextWindow: number | undefined): ClaudeUsageEvent {
-  if (contextWindow === undefined || contextWindow <= 0) return event
-  const contextTokens = event.contextTokens
-    ?? (event.inputTokens > 0 || event.cacheReadTokens !== undefined || event.cacheWriteTokens !== undefined
-      ? event.inputTokens + (event.cacheReadTokens ?? 0) + (event.cacheWriteTokens ?? 0)
-      : undefined)
+function enrichClaudeUsage(event: ClaudeUsageEvent, { contextWindow, contextTokens }: ClaudeUsageState): ClaudeUsageEvent {
   return {
     ...event,
-    contextWindow,
+    ...(contextWindow === undefined ? {} : { contextWindow }),
     ...(contextTokens === undefined ? {} : { contextTokens }),
-    ...(event.contextUsageRatio === undefined && contextTokens !== undefined
+    ...(event.contextUsageRatio === undefined && contextTokens !== undefined && contextWindow !== undefined
       ? { contextUsageRatio: Number(Math.min(1, contextTokens / contextWindow).toFixed(6)) }
       : {}),
   }
@@ -597,7 +602,9 @@ function enrichClaudeUsage(event: ClaudeUsageEvent, contextWindow: number | unde
 function readClaudeFailure(value: Record<string, unknown>, event: Record<string, unknown>): { message: string; code?: string } | null {
   const isError = value.is_error === true || value.isError === true || event.is_error === true || event.isError === true
   if (!isError) return null
-  const candidates = [value.result, event.result, value.error, event.error]
+  const errors = Array.isArray(value.errors) ? value.errors : Array.isArray(event.errors) ? event.errors : []
+  const candidates = [value.result, event.result, value.error, event.error,
+    errors.filter((error): error is string => typeof error === 'string' && error.trim() !== '').join('\n')]
   const message = candidates
     .map((candidate) => {
       if (typeof candidate === 'string') return candidate.trim()
@@ -605,7 +612,7 @@ function readClaudeFailure(value: Record<string, unknown>, event: Record<string,
       return [candidate.message, candidate.detail, candidate.description, candidate.error]
         .find((item): item is string => typeof item === 'string' && item.trim() !== '')?.trim() ?? ''
     })
-    .find((candidate) => candidate !== '') ?? 'Claude Code 返回了错误结果'
+    .find((candidate) => candidate !== '') ?? 'Claude Code returned an error result'
   const rawCode = value.api_error_status ?? event.api_error_status ?? value.code ?? event.code
   const code = typeof rawCode === 'number' && Number.isFinite(rawCode)
     ? String(rawCode)
