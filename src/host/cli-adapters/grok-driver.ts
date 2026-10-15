@@ -31,6 +31,25 @@ interface GrokQuestionTool {
   readonly questions: readonly CodingNsAgentQuestion[]
 }
 
+interface GrokPermissionOptions {
+  readonly allowOptionId: string | undefined
+  readonly rejectOptionId: string | undefined
+}
+
+interface GrokSessionState {
+  readonly rpc: JsonRpcProcess
+  readonly cwd: string | undefined
+  readonly rawStoreRef: string | undefined
+  readonly alwaysApprove: boolean
+  providerSessionId: string
+  readonly requests: Map<string, GrokPermissionOptions & { readonly rpcId: number | string; readonly callId: string | undefined }>
+  readonly permissionDenials: Map<string, string>
+  readonly questions: Map<string, AcpElicitationRequest>
+  readonly grokQuestions: Map<string, GrokQuestionPending>
+  readonly grokQuestionCallIds: Set<string>
+  readonly grokQuestionEventIds: Set<string>
+}
+
 export interface GrokBuildDriverOptions {
   readonly binaries?: readonly string[]
   readonly sessionRoots?: readonly string[]
@@ -48,7 +67,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
   private readonly sessionRoots: readonly string[]
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
-  private readonly sessions = new Map<string, { rpc: JsonRpcProcess; cwd: string | undefined; rawStoreRef: string | undefined; providerSessionId: string; requests: Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>; questions: Map<string, AcpElicitationRequest>; grokQuestions: Map<string, GrokQuestionPending>; grokQuestionCallIds: Set<string>; grokQuestionEventIds: Set<string> }>()
+  private readonly sessions = new Map<string, GrokSessionState>()
 
   constructor(options: GrokBuildDriverOptions = {}) {
     this.binaries = options.binaries ?? ['grok', 'grok-build']
@@ -160,7 +179,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         // 反向请求的 RPC id 只由请求处理器登记，避免用户回答和处理器调度交错时
         // 已回答的问题被重新登记。tool_call 可以先显示问题卡并暂存用户答案。
         const requestId = interactionRequestId(notification)
-        if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, { rpcId: notification.id, ...permissionOptions(notification) })
+        if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, { rpcId: notification.id, callId: permissionCallId(notification), ...permissionOptions(notification) })
       })
       let finishResult: { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }
       while (true) {
@@ -171,10 +190,14 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         }
         const streamId = grokStreamId(item.value)
         for (const rawChunk of acpMessageToChunks(item.value)) {
-          const resolved = rawChunk.type === 'image-artifact'
+          let resolved = rawChunk.type === 'image-artifact'
             ? await resolveGrokImageArtifact(rawChunk, state, this.sessionRoots)
             : rawChunk
           if (resolved === null) continue
+          if (resolved.type === 'tool-event' && resolved.status === 'failed' && resolved.callId) {
+            const denial = state.permissionDenials.get(resolved.callId)
+            if (denial !== undefined) resolved = { ...resolved, error: denial, output: denial, outputMode: 'snapshot' }
+          }
           const chunk = decorateCodingNsSegmentEvent(resolved, input, segmentState, this.descriptor.id)
           if (chunk.type === 'question-request' && state.grokQuestionCallIds.has(chunk.requestId)) {
             if (state.grokQuestionEventIds.has(chunk.requestId)) continue
@@ -205,7 +228,11 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           if (chunk.type === 'question-request') segmentState.segment += 1
         }
       }
-      reusable = finishResult.reason !== 'cancel' && !input.signal?.aborted
+      if (finishResult.failure?.code === 'PERMISSION_DENIED') {
+        const denial = [...state.permissionDenials.values()].at(-1)
+        if (denial !== undefined) finishResult = { ...finishResult, failure: { message: denial, code: 'PERMISSION_DENIED' } }
+      }
+      reusable = finishResult.reason === 'stop' && !input.signal?.aborted
       yield { type: 'finish', reason: finishResult.reason, ...(finishResult.failure === undefined ? {} : { failure: finishResult.failure }) }
     } finally {
       // 原生问题卡取消或消费者提前结束时，也要释放反向请求与流监听器。
@@ -219,7 +246,8 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       state.grokQuestionEventIds.clear()
       state.questions.clear()
       state.requests.clear()
-      if (stream !== undefined && !reusable) {
+      state.permissionDenials.clear()
+      if (!reusable) {
         // An abandoned prompt can keep producing updates without prompt metadata.
         // Reload its persisted session on a fresh transport before accepting new input.
         await rpc.disposeAndWait()
@@ -235,7 +263,11 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     if (pending === undefined) throw new Error('The Grok permission request does not exist')
     state.requests.delete(response.requestId)
     const optionId = response.approved ? pending.allowOptionId : pending.rejectOptionId
-    state.rpc.respond(pending.rpcId, { outcome: { outcome: 'selected', optionId } })
+    if (!response.approved || optionId === undefined) {
+      state.permissionDenials.set(pending.callId ?? response.requestId,
+        response.reason ?? (response.approved ? 'Grok did not offer a one-time approval option.' : 'Grok tool execution was denied.'))
+    }
+    state.rpc.respond(pending.rpcId, { outcome: optionId === undefined ? { outcome: 'cancelled' } : { outcome: 'selected', optionId } })
   }
 
   respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
@@ -258,16 +290,17 @@ export class GrokBuildDriver implements CodingNsCliDriver {
   dispose(): void { for (const process of this.processes) process.dispose(); this.processes.clear(); this.sessions.clear(); this.cachedBinary = null }
 
   private async getSession(input: CodingNsCliTurnInput, command: string) {
+    const alwaysApprove = input.permission?.sandboxMode === 'danger-full-access' && input.permission.approvalPolicy === 'never'
     const previous = this.sessions.get(input.sessionId)
-    if (previous !== undefined && previous.cwd === input.cwd && !previous.rpc.isClosed) return previous
+    if (previous !== undefined && previous.cwd === input.cwd && previous.alwaysApprove === alwaysApprove && !previous.rpc.isClosed) return previous
     if (previous !== undefined) {
       await previous.rpc.disposeAndWait()
       this.processes.delete(previous.rpc)
     }
     const resumeId = input.providerSessionId ?? (previous?.cwd === input.cwd ? previous?.providerSessionId : undefined)
-    const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], cwd: input.cwd, env: grokRuntimeEnvironment(), spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', ...(alwaysApprove ? ['--always-approve'] : []), 'stdio'], cwd: input.cwd, env: grokRuntimeEnvironment(), spawn: this.runSpawn })
     this.processes.add(rpc)
-    const state = { rpc, cwd: input.cwd, rawStoreRef: input.rawStoreRef, providerSessionId: '', requests: new Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>(), questions: new Map<string, AcpElicitationRequest>(), grokQuestions: new Map<string, GrokQuestionPending>(), grokQuestionCallIds: new Set<string>(), grokQuestionEventIds: new Set<string>() }
+    const state: GrokSessionState = { rpc, cwd: input.cwd, rawStoreRef: input.rawStoreRef, alwaysApprove, providerSessionId: '', requests: new Map(), permissionDenials: new Map(), questions: new Map(), grokQuestions: new Map(), grokQuestionCallIds: new Set(), grokQuestionEventIds: new Set() }
     await rpc.request('initialize', {
       protocolVersion: 1,
       clientInfo: { name: 'codingns4dsh', version: '0.1.1' },
@@ -304,7 +337,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       if (message.method === 'elicitation/create') return { action: 'cancel' }
       const requestId = interactionRequestId(message)
       if (requestId === null || message.id === undefined || message.id === null) return { outcome: { outcome: 'cancelled' } }
-      state.requests.set(requestId, { rpcId: message.id, ...permissionOptions(message) })
+      state.requests.set(requestId, { rpcId: message.id, callId: permissionCallId(message), ...permissionOptions(message) })
       return new Promise<never>(() => undefined)
     })
     this.sessions.set(input.sessionId, state)
@@ -390,8 +423,10 @@ async function* streamGrokPrompt(
     _meta: { promptId },
   }, { signal: requestController.signal, killOnAbort: false }).then(
     (response) => {
+      if (signal?.aborted) return
       const responseReason = grokPromptReason(response)
       if (responseReason !== null) terminalReason = mergeGrokReason(terminalReason, responseReason)
+      failure ??= grokPermissionFailure(response)
       beginDrain()
     },
     () => {
@@ -446,8 +481,14 @@ function grokPromptReason(value: unknown): 'stop' | 'cancel' | 'error' | null {
   if (!isRecord(value)) return null
   const reason = firstToolText(value.stopReason, value.stop_reason)?.toLowerCase()
   if (reason === undefined) return null
-  if (reason === 'cancelled' || reason === 'canceled') return 'cancel'
+  if (reason === 'cancelled' || reason === 'canceled') return grokPermissionFailure(value) === undefined ? 'cancel' : 'error'
   return reason === 'error' || reason === 'failed' ? 'error' : 'stop'
+}
+
+function grokPermissionFailure(value: unknown): { message: string; code: string } | undefined {
+  if (!isRecord(value) || !isRecord(value._meta) || value._meta.cancellationCategory !== 'PermissionRejected') return undefined
+  const context = isRecord(value._meta.cancellationContext) ? value._meta.cancellationContext : {}
+  return { message: firstToolText(context.reason) ?? 'Grok tool execution was denied.', code: 'PERMISSION_DENIED' }
 }
 
 function mergeGrokReason(
@@ -475,6 +516,8 @@ function grokNotificationReason(message: JsonRpcMessage): 'stop' | 'cancel' | 'e
 function grokFailure(message: JsonRpcMessage): { message: string; code?: string } | undefined {
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
+  const permissionFailure = grokPermissionFailure(update)
+  if (permissionFailure !== undefined) return permissionFailure
   const error = isRecord(update.error) ? update.error : update
   const detail = firstToolText(error.message, error.errorMessage, error.error_message, error.detail, error.reason)
   if (detail === undefined) return undefined
@@ -622,13 +665,19 @@ function acpMessageToChunks(message: Record<string, any>): readonly CodingNsAgen
     const callId = firstToolText(tool.callId, tool.call_id, tool.toolCallId, tool.tool_call_id, tool.id, update.toolCallId, update.tool_call_id, update.id)
     if (!name && !callId) return []
     const input = serializeToolValue(tool.rawInput ?? tool.input ?? tool.arguments ?? tool.args ?? update.rawInput)
-    const output = serializeToolValue(tool.rawOutput ?? tool.output ?? tool.result ?? update.rawOutput)
+    // ACP tool results can contain nested text blocks without a rawOutput field.
+    const content = tool.content ?? update.content
+    const contentText = Array.isArray(content)
+      ? content.flatMap((block) => isRecord(block) ? textValue(block.content ?? block) ?? [] : []).join('\n') || undefined
+      : undefined
+    const rawOutput = serializeToolValue(tool.rawOutput ?? tool.output ?? tool.result ?? update.rawOutput)
+    const output = rawOutput ?? contentText
     const error = serializeToolValue(tool.error ?? update.error)
     const agentId = firstToolText(tool.agentId, tool.agent_id, update.agentId, update.agent_id)
     const detail = serializeToolValue(tool.detail ?? update.detail ?? update.content)
     const fallback = error !== undefined || type.includes('error') || type.includes('fail')
       ? 'failed'
-      : output !== undefined || type.includes('result') || type.includes('complete')
+      : rawOutput !== undefined || type.includes('result') || type.includes('complete')
         ? 'completed'
         : 'running'
     return [...imageEvents, {
@@ -692,7 +741,14 @@ function interactionRequestId(message: Record<string, any>): string | null {
   return permissionRequestId(message)
 }
 
-function permissionOptions(message: Record<string, any>): { readonly allowOptionId: string; readonly rejectOptionId: string } {
+function permissionCallId(message: Record<string, any>): string | undefined {
+  const params = isRecord(message.params) ? message.params : message
+  const update = isRecord(params.update) ? params.update : params
+  const tool = isRecord(update.toolCall) ? update.toolCall : isRecord(update.tool_call) ? update.tool_call : update
+  return firstToolText(tool.toolCallId, tool.tool_call_id, tool.callId, tool.call_id)
+}
+
+function permissionOptions(message: Record<string, any>): GrokPermissionOptions {
   const params = isRecord(message.params) ? message.params : {}
   const options = Array.isArray(params.options) ? params.options : []
   const ids = options.flatMap((option) => {
@@ -701,9 +757,16 @@ function permissionOptions(message: Record<string, any>): { readonly allowOption
     if (id === undefined) return []
     return [{ id, kind: firstToolText(option.kind, option.type)?.toLowerCase() ?? '' }]
   })
+  if (ids.length === 0) return { allowOptionId: 'allow-once', rejectOptionId: 'reject-once' }
+  // Grok lists allow_always before allow_once. A DSH one-time approval must
+  // never become a persistent grant merely because of provider option order.
   return {
-    allowOptionId: ids.find((option) => /allow|approve|accept/u.test(option.kind))?.id ?? ids[0]?.id ?? 'allow-once',
-    rejectOptionId: ids.find((option) => /reject|deny|decline|cancel/u.test(option.kind))?.id ?? ids[1]?.id ?? 'reject-once',
+    allowOptionId: ids.find((option) => option.kind === 'allow_once')?.id
+      ?? ids.find((option) => /^(allow|approve|accept)$/u.test(option.kind))?.id
+      ?? (ids[0]?.kind === '' ? ids[0].id : undefined),
+    rejectOptionId: ids.find((option) => option.kind === 'reject_once')?.id
+      ?? ids.find((option) => /^(reject|deny|decline|cancel)$/u.test(option.kind))?.id
+      ?? (ids[1]?.kind === '' ? ids[1].id : undefined),
   }
 }
 
