@@ -75,6 +75,7 @@ for (const connection of ['web', 'native'] as const) {
         const directory = await mkdtemp(join(root, `${host}-`))
         roots.set(host, directory)
         await writeFile(join(directory, 'test.ts'), host)
+        await writeFile(join(directory, 'app.html'), '<!doctype html><title>Workspace test</title>')
         const table = new CodingNsRpcTable()
         tables.set(host, table)
         createFileManagementFeature().start({ services: {
@@ -128,6 +129,15 @@ for (const connection of ['web', 'native'] as const) {
         assert.equal((await call('fileManagement/write', { sessionId: scope.sessionId, path: 'test.ts', content: sessionId('peer-b') })).ok, true)
         assert.equal(await readFile(join(roots.get(host)!, 'test.ts'), 'utf8'), sessionId('peer-b'))
         assert.equal((await call('fileManagement/download', { ...scope, path: 'test.ts' })).value.contentBase64, Buffer.from(sessionId('peer-b')).toString('base64'))
+        const preview = { sessionId: scope.sessionId, documentPath: 'app.html', scopes: ['./test.ts'], path: './test.ts' }
+        const htmlRead = await call('fileManagement/html-files', { ...preview, operation: 'read' })
+        assert.equal(htmlRead.value.content, sessionId('peer-b'))
+        assert.equal(calls.at(-1)?.payload.sessionId, 'session-1')
+        const htmlWrite = await call('fileManagement/html-files', {
+          ...preview, operation: 'write', content: sessionId('peer-b'), ifMtime: htmlRead.value.mtime,
+        })
+        assert.equal(htmlWrite.ok, true)
+        assert.equal(await readFile(join(roots.get(host)!, 'test.ts'), 'utf8'), sessionId('peer-b'))
       }
       const count = calls.length
       for (const scope of [

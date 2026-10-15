@@ -4,6 +4,7 @@ import { startFileManagementDom } from '../file-management-dom.js'
 import { FileManagementPanel } from './file-management-panel.js'
 import { registerSessionChangedFilesView } from '../session-changed-files-view.js'
 import { resolveCodingNsTranslator } from '../locale.js'
+import { startHtmlWorkspaceFiles } from '../html-workspace-files.js'
 
 /** descriptor 的 label/description 只是词典缺失时的兜底，取内置中文词典。 */
 const fallbackT = resolveCodingNsTranslator()
@@ -31,6 +32,7 @@ export const fileManagementFeature: CodingNsClientFeatureModule = {
       return { menuEnhancement: value.menuEnhancement, fileEditor: value.fileEditor, locale: context.services.locale }
     }
     const dom = startFileManagementDom(context.services.rpc, readOptions())
+    context.resources.add(startHtmlWorkspaceFiles(context.services.rpc, context.services.locale))
     let disposeSessionView: (() => void) | undefined
     const syncSessionView = (): void => {
       const value = { ...DEFAULT_FILE_MANAGEMENT_SETTINGS, ...context.services.settings.getSnapshot().value?.fileManagement }

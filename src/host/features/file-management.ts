@@ -4,6 +4,7 @@ import type { FeatureModule } from '../../shared/contracts/feature.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import type { CodingNsHostServices } from './types.js'
 import { readSessionChangedFiles } from '../session-changes.js'
+import { runHtmlWorkspaceFileOperation } from '../html-workspace-files.js'
 
 const MAX_EDIT_BYTES = 4 * 1024 * 1024
 
@@ -21,6 +22,12 @@ export function createFileManagementFeature(): FeatureModule<CodingNsHostService
       context.resources.add(context.services.rpc.register('fileManagement', async (action, payload) => {
         const input = record(payload)
         switch (action) {
+          case 'html-files': {
+            const sessionId = requiredString(input.sessionId, 'sessionId')
+            const root = findSessionRoot(context.services, sessionId)
+            if (!root) throw new CodingNsRpcError('FILE_MANAGEMENT_WORKSPACE_UNAVAILABLE', 'This session has no available workspace')
+            return runHtmlWorkspaceFileOperation(root, input)
+          }
           case 'session-changes': {
             const sessionId = requiredString(input.sessionId, 'sessionId')
             const workspaceId = typeof input.workspaceId === 'string' ? input.workspaceId.trim() : ''
