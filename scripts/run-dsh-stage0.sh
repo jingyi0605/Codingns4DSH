@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stage0 使用独立的 DSH 0.2.1-alpha.1 运行时；不要复用旧的 0.1.x 启动器。
+# Stage0 owns a versioned runtime independent of other DSH installations.
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-dsh_bin=${DSH_STAGE0_LAUNCHER:-"$HOME/.local/share/codingns/deepseek-harness/0.2.1-alpha.1/node_modules/@deepseek-ai/dsh/lib/bin.js"}
-# DSH_HOME 保持不变：0.2.1-alpha.1 与 0.2.0-rc.2 同属 0.2 世代，会话仍为 v4 格式，
-# 配置、凭据与会话记录原地复用，不做迁移也不新建 HOME。
+dsh_bin=${DSH_STAGE0_LAUNCHER:-"$HOME/.local/share/codingns/deepseek-harness/0.2.1-alpha.3/node_modules/@deepseek-ai/dsh/lib/bin.js"}
+# Preserve Stage0's existing home. New session events may prevent downgrade.
 dsh_home=${DSH_STAGE0_HOME:-"$HOME/.dsh-stage0-020"}
 state_dir=${CODINGNS4DSH_STAGE0_STATE_DIR:-"$HOME/.config/codingns4dsh/stage0-020"}
 port=${DSH_STAGE0_PORT:-17891}
 stage0_patch="$repo_root/dsh-stage0.patch.yml"
 
 if [[ ! -f "$dsh_bin" ]]; then
-  printf '找不到 DSH 0.2.1-alpha.1 启动器: %s\n' "$dsh_bin" >&2
+  printf 'DSH 0.2.1-alpha.3 launcher not found: %s\n' "$dsh_bin" >&2
   exit 1
 fi
 
@@ -70,8 +69,8 @@ dsh_args=()
 # 只有普通启动会占用端口；--dump-config 与 plugin 子命令不监听，无需端口预检。
 stage0_serves=1
 
-# 0.2 运行时没有内置 stage0 模板：首次使用时基于内置 web 模板初始化该 profile，
-# 之后普通启动；--from-default-profile 在 profile 已存在时会被 dsh 忽略，可安全重复。
+# Bootstrap only a missing profile. In alpha.3 --from-default-profile can
+# overwrite an existing profile, so it must never be repeated on normal startup.
 bootstrap_args=()
 if [[ ! -f "$dsh_home/profiles/stage0/package.json" ]]; then
   printf '首次启动：在 %s 初始化 stage0 profile（基于内置 web 模板）\n' "$dsh_home" >&2
@@ -93,6 +92,12 @@ if [[ "${1-}" == "plugin" ]]; then
   dsh_args=("$@")
   stage0_serves=0
 fi
+
+case "${1-}" in
+  --help|-h|--version|-v|-V)
+    dsh_args=("$@")
+    stage0_serves=0 ;;
+esac
 
 if (( ${#dsh_args[@]} == 0 )); then
   dsh_args=(--profile stage0 --patch "$stage0_patch" --port "$port" --no-open "$@")

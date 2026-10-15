@@ -5,8 +5,27 @@ import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { createServer } from 'node:net'
 
 const stage0Script = fileURLToPath(new URL('../scripts/run-dsh-stage0.sh', import.meta.url))
+
+test('version queries bypass the occupied server port and never bootstrap an existing profile', { skip: process.platform === 'win32' }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codingns-stage0-version-'))
+  const server = createServer()
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const launcher = join(root, 'version.mjs')
+    writeFileSync(launcher, 'console.log(JSON.stringify(process.argv.slice(2)))')
+    const env = createEnvironment('exit', launcher, root)
+    env.DSH_STAGE0_PORT = String((server.address() as { port: number }).port)
+    const result = spawnSync('/bin/bash', [stage0Script, '--version'], { encoding: 'utf8', env, timeout: 10_000 })
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(JSON.parse(result.stdout), ['--version'])
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 /**
  * 建立一个只模拟 DSH 入口的启动器。它不会读取配置，也不会监听端口，
