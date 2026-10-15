@@ -8,6 +8,8 @@ import { SESSION_TRANSLATION_ADAPTER_IDS } from '../src/shared/contracts/session
 import { notifyNativeTranslationDefaultChanged, readNativeTranslationDefault, setNativeTranslationDefaultReader } from '../src/client/native-translation-default.js'
 import { watchNativeModelMenu } from '../src/client/native-model-translation-menu.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
+import { ConversationTranslationSettings } from '../src/client/conversation-translation-settings.js'
+import { Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 
 const t = resolveCodingNsTranslator()
 const locale = {
@@ -44,7 +46,7 @@ function createProbe(adapterId = 'dsh', options: { readDefault?: () => boolean |
       return () => { registered.delete(options.id) }
     },
   }
-  const dispose = registerCliConversationSlots(slots as never, rpc, locale, options.readDefault ?? (() => true))
+  const dispose = registerCliConversationSlots(slots as never, rpc, locale, options.readDefault ?? (() => true), {} as never)
   return { registered, rpc, calls, sessionId, dispose }
 }
 
@@ -90,6 +92,41 @@ test('DSH 原生会话保留原生模型席位，不显示独立的翻译按钮'
     const html = renderToStaticMarkup(createElement(slot.component, slot.props))
     assert.doesNotMatch(html, /<button|翻译对话|codingns4dsh-model-root/u)
   } finally { probe.dispose() }
+})
+
+test('the settings icon precedes the master switch and opens a dialog for native and external models', async () => {
+  for (const adapterId of ['dsh', 'codex']) {
+    const probe = createProbe(adapterId, { translationEnabled: false })
+    const slot = probe.registered.get('codingns4dsh-model')!
+    const dom = createNativeMenuProbe()
+    const renderer = createHookRenderer((props: Record<string, unknown>) => {
+      const root = slot.component(props)
+      if (root?.props.hidden) (root as any).ref.current = dom.anchor
+      return root
+    }, slot.props)
+    try {
+      renderer.render()
+      await flush(); renderer.render(); await flush()
+      if (adapterId !== 'dsh') elementWhere(renderer.render(), element => element.type === 'button')!.props.onClick()
+      const tree = renderer.render()!
+      const row = adapterId === 'dsh' ? (tree.props.children as any)[0].children : elementWhere(tree, element => element.key === 'translation')!
+      const controls = (row.type(row.props) as ReactElement<any>).props.children
+      assert.equal(controls[1].type, 'button')
+      assert.equal(controls[1].props['aria-label'], t('cli.translationSettings'))
+      assert.equal(controls[2].type, Switch)
+      assert.equal(controls[2].props.checked, false)
+      controls[1].props.onClick()
+      const dialog = elementWhere(renderer.render(), element => element.type === ConversationTranslationSettings)!
+      assert.ok(dialog)
+      assert.equal(probe.calls.some(call => call.endpoint === 'cli/session/set'), false)
+      if (adapterId === 'dsh') {
+        dom.attributes.set('aria-expanded', 'false'); dom.mutate()
+        assert.ok(elementWhere(renderer.render(), element => element.type === ConversationTranslationSettings), 'closing the native menu must not unmount settings')
+      }
+      dialog.props.onClose()
+      assert.equal(elementWhere(renderer.render(), element => element.type === ConversationTranslationSettings), undefined)
+    } finally { renderer.dispose(); probe.dispose() }
+  }
 })
 
 test('所有外部 Agent 从默认 DSH 状态加载配置后都能渲染模型菜单，Hooks 顺序保持不变', async () => {
@@ -244,7 +281,7 @@ test('原生菜单中的共享翻译开关跟随设置更新、写回会话覆�
     if (root?.props.hidden) (root as any).ref.current = dom.anchor
     return root
   }, slot.props, { checkHookOrder: true })
-  const toggleRow = () => (renderer.render()!.props.children as any).children as ReactElement<any>
+  const toggleRow = () => (renderer.render()!.props.children as any)[0].children as ReactElement<any>
   try {
     renderer.render()
     await flush()
@@ -259,7 +296,7 @@ test('原生菜单中的共享翻译开关跟随设置更新、写回会话覆�
     assert.equal(toggleRow().props.checked, true, '会话显式开启覆盖默认关闭')
     assert.ok(probe.calls.some((call) => call.endpoint === 'cli/session/set' && call.payload.adapterId === 'dsh' && call.payload.translationEnabled === true))
     setNativeTranslationDefaultReader(undefined)
-    assert.equal(renderer.render()!.props.children, null)
+    assert.deepEqual(renderer.render()!.props.children, [null, null])
     assert.equal(dom.menu.children.length, 0)
   } finally { renderer.dispose(); probe.dispose(); setNativeTranslationDefaultReader(undefined) }
 })
@@ -285,9 +322,9 @@ test('同一个模型槽位进入已缓存的新 DSH 会话时，采用该会话
   try {
     renderer.render()
     await flush()
-    assert.equal((renderer.render()!.props.children as any).children.props.checked, false)
+    assert.equal((renderer.render()!.props.children as any)[0].children.props.checked, false)
     renderer.render(nextSlot.props)
     await flush()
-    assert.equal((renderer.render()!.props.children as any).children.props.checked, true, '不能沿用上一会话的关闭状态')
+    assert.equal((renderer.render()!.props.children as any)[0].children.props.checked, true, '不能沿用上一会话的关闭状态')
   } finally { renderer.dispose(); previous.dispose(); next.dispose() }
 })

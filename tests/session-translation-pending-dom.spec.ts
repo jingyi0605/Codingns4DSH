@@ -152,6 +152,7 @@ test('failure polling attaches the prompt to the matching pending user message a
     original: 'Second message', translated: 'Second message', targetLanguage: 'en', bilingual: false, failed: true,
   } }]
   const services = {
+    settings: { getSnapshot: () => ({ value: undefined }), subscribe: () => () => undefined },
     rpc: { async call(_channel: string, endpoint: string) { return { ok: true, value: endpoint === 'cli/translation/pending' ? failures : { adapterId: 'dsh', translationEnabled: true } } } },
     locale: { bind: () => resolveCodingNsTranslator() },
     slots: {
@@ -188,7 +189,9 @@ test('failure polling attaches the prompt to the matching pending user message a
 
 test('the registered pending slot renders portals only for enabled sessions and releases them on disable or unmount', async () => {
   const registered = new Map<string, (props: any) => ReactElement>()
+  let inputEnabled = true
   const services = {
+    settings: { getSnapshot: () => ({ value: { sessionTranslation: { inputEnabled } } }), subscribe: () => () => undefined },
     rpc: { async call() { return { ok: true, value: { adapterId: 'dsh' } } } },
     locale: { bind: () => resolveCodingNsTranslator() },
     slots: {
@@ -225,6 +228,12 @@ test('the registered pending slot renders portals only for enabled sessions and 
     assert.equal(portal.containerInfo, message.actions.children[0])
     assert.equal(portal.children.props.original, 'Translate this message')
     assert.equal(portal.children.props.record, undefined)
+    inputEnabled = false
+    renderer.render()
+    assert.equal(message.actions.children.length, 1)
+    inputEnabled = true
+    renderer.render()
+    assert.equal(message.actions.children.length, 2)
     subagent = { address: { mode: 'continuable' } }
     renderer.render()
     assert.equal(message.actions.children.length, 1)

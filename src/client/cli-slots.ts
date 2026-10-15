@@ -6,7 +6,7 @@ import type { ReactElement } from 'react'
 import type { CSSProperties } from 'react'
 import { Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CodingNsCliAdapterDescriptor, CodingNsCliModel, CodingNsCliModelCatalog, CodingNsCliSessionConfig } from '../shared/contracts/cli-adapter.js'
-import type { CodingNsRpcClient } from './features/types.js'
+import type { CodingNsClientServices, CodingNsRpcClient } from './features/types.js'
 import { adapterCatalogWithDsh, adapterDetectionLabel, callCliRpc, findModel, firstModel } from './cli-catalog.js'
 import {
   activeServiceTier,
@@ -17,7 +17,7 @@ import {
   needsServiceTierRevalidation,
   toggledServiceTierId,
 } from './service-tier.js'
-import { resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
+import { resolveAssistantControlIcon, resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 import { providerIconUrl } from './provider-icons.js'
 import { publishSessionSelection } from './session-adapter-cache.js'
 import {
@@ -35,6 +35,8 @@ import { uiFontSize } from './font-scale.js'
 import { DSH_NATIVE_SESSION_ADAPTER_ID, supportsSessionTranslation } from '../shared/contracts/session-translation.js'
 import { readNativeTranslationDefault, subscribeNativeTranslationDefault } from './native-translation-default.js'
 import { watchNativeModelMenu } from './native-model-translation-menu.js'
+import { ConversationTranslationSettings } from './conversation-translation-settings.js'
+import { settingsIconButtonStyle } from './settings-controls.js'
 
 interface SessionSnapshot {
   readonly sessionId?: string
@@ -107,6 +109,7 @@ function installComposerStyles(): void {
 }
 
 interface CliSlotProps {
+  readonly settings?: CodingNsClientServices['settings'] | undefined
   readonly sessionId?: string
   readonly useSession?: SessionSelector
   readonly rpc: CodingNsRpcClient
@@ -238,6 +241,7 @@ export function registerCliConversationSlots(
   rpc: CodingNsRpcClient,
   locale: CodingNsLocale,
   readNativeTranslationEnabled?: () => boolean | undefined,
+  settings?: CodingNsClientServices['settings'],
 ): () => void {
   installComposerStyles()
   const t = locale.bind('codingns')
@@ -257,6 +261,7 @@ export function registerCliConversationSlots(
       rpc,
       sessionId,
       locale,
+      settings,
       ...(readNativeTranslationEnabled === undefined ? {} : { readNativeTranslationEnabled }),
     }),
   }, ModelSlot))
@@ -329,9 +334,19 @@ function TranslationToggleRow(props: {
   readonly label: string
   readonly toggleLabel: string
   readonly onChange: (next: boolean) => void
+  readonly settingsLabel: string
+  readonly onSettings: () => void
 }): ReactElement {
   return createElement('div', { className: 'codingns4dsh-translation-toggle', style: serviceTierRowStyle },
-    createElement('span', { style: serviceTierLabelStyle }, props.label),
+    createElement('span', { style: { ...serviceTierLabelStyle, flex: '1 1 auto', whiteSpace: 'normal' } }, props.label),
+    createElement('button', {
+      type: 'button',
+      'aria-label': props.settingsLabel,
+      title: props.settingsLabel,
+      'aria-haspopup': 'dialog',
+      onClick: props.onSettings,
+      style: { ...settingsIconButtonStyle, flexBasis: 24, width: 24, height: 28 },
+    }, createElement(resolveAssistantControlIcon('settings'), { size: 16 })),
     createElement(Switch, {
       checked: props.checked,
       onChange: props.onChange,
@@ -443,6 +458,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const [catalogRetry, setCatalogRetry] = useState(0)
   const [open, setOpen] = useState(false)
   const [pane, setPane] = useState<ModelPane>('root')
+  const [translationSettingsOpen, setTranslationSettingsOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
 
   useDismissOnOutsidePointer(rootRef, open, () => { setOpen(false); setPane('root') })
@@ -539,6 +555,15 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   useEffect(() => { if (selection.adapterId === 'dsh') setOpen(false) }, [selection.adapterId])
 
   // 所有 Hooks 都先执行；原生与外部适配器切换不能改变 Hook 调用顺序。
+  const translationSettings = translationSettingsOpen && props.settings !== undefined
+    ? createElement(ConversationTranslationSettings, {
+        settings: props.settings, t, onClose: () => setTranslationSettingsOpen(false),
+      })
+    : null
+  const openTranslationSettings = (): void => {
+    setOpen(false)
+    setTranslationSettingsOpen(true)
+  }
   if (selection.adapterId === DSH_NATIVE_SESSION_ADAPTER_ID) {
     return createElement('div', { ref: rootRef, hidden: true },
       nativeMenu !== null && nativeAvailable ? createPortal(createElement(TranslationToggleRow, {
@@ -546,7 +571,10 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
         label: t('cli.translationConversation'),
         toggleLabel: t('cli.translationConversationToggle'),
         onChange: (next: boolean) => update({ ...selection, translationEnabled: next }),
+        settingsLabel: t('cli.translationSettings'),
+        onSettings: openTranslationSettings,
       }), nativeMenu) : null,
+      translationSettings,
     )
   }
 
@@ -631,6 +659,8 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
                 label: t('cli.translationConversation'),
                 toggleLabel: t('cli.translationConversationToggle'),
                 onChange: toggleTranslation,
+                settingsLabel: t('cli.translationSettings'),
+                onSettings: openTranslationSettings,
               })]
             : []),
           // 档位开关固定在「模型」行上方，与模型/思考等级同处一个弹层。
@@ -677,6 +707,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       !loading && createElement(NativeDropdownChevron, { open }),
     ),
     open && createElement('div', { role: 'menu', 'aria-label': t('cli.chooseModelMenu'), style: nativeMenuStyle }, ...menu),
+    translationSettings,
   )
 }
 

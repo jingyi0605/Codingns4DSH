@@ -1,4 +1,4 @@
-import { createElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, ReactElement, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { AssistantBlock } from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -271,8 +271,10 @@ function PendingTranslationActions(props: {
   const [failures, setFailures] = useState<readonly SessionTranslationPendingInput[]>([])
   const pollingRef = useRef<ReturnType<typeof startSerialPolling>>()
   const enabled = useCliSessionTranslationEnabled(props.sessionId, props.services.rpc)
+  const store = props.services.settings
+  const settings = useSyncExternalStore(store.subscribe.bind(store), store.getSnapshot.bind(store), store.getSnapshot.bind(store))
   const subagent = props.useSession?.((state) => state.subagent)
-  const eligible = enabled && subagent == null && !props.sessionId?.startsWith('codingns-assistant-')
+  const eligible = enabled && settings.value?.sessionTranslation?.inputEnabled !== false && subagent == null && !props.sessionId?.startsWith('codingns-assistant-')
   useEffect(() => {
     setFailures([])
     if (!eligible || props.sessionId === undefined) return

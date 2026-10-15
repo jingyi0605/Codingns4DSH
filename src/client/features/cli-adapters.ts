@@ -129,7 +129,7 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
     // CLI Slot 带有浏览器图片资源，启用模块时再加载，避免 Node 侧读取 Client 元数据时解析图片。
     const { registerCliConversationSlots } = await import('../cli-slots.js')
     // 原生会话的翻译开关默认值由会话翻译模块注册；未启用该模块时按关闭处理。
-    const disposeSlots = registerCliConversationSlots(slots, context.services.rpc, context.services.locale, readNativeTranslationDefault)
+    const disposeSlots = registerCliConversationSlots(slots, context.services.rpc, context.services.locale, readNativeTranslationDefault, context.services.settings)
     context.resources.add(disposeSlots)
   },
   settingsPanel: CliAdaptersPanel,
