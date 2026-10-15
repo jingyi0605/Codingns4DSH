@@ -36,6 +36,12 @@ interface GrokPermissionOptions {
   readonly rejectOptionId: string | undefined
 }
 
+interface GrokStreamedToolInput {
+  readonly callId: string
+  readonly toolName: string
+  arguments: string
+}
+
 interface GrokSessionState {
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
@@ -152,6 +158,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     let stepPhase: 'message' | 'tools' | undefined
     let stepStreamId: string | undefined
     const activeTools = new Set<string>()
+    const streamedToolInputs = new Map<number, GrokStreamedToolInput>()
     try {
       if (providerSessionId === '') {
         const session = await rpc.request('session/new', {
@@ -196,7 +203,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           break
         }
         const streamId = grokStreamId(item.value)
-        for (const rawChunk of acpMessageToChunks(item.value)) {
+        for (const rawChunk of grokToolInputChunks(item.value, streamedToolInputs) ?? acpMessageToChunks(item.value)) {
           let resolved = rawChunk.type === 'image-artifact'
             ? await resolveGrokImageArtifact(rawChunk, state, this.sessionRoots)
             : rawChunk
@@ -482,6 +489,33 @@ function isGrokPromptMessage(message: JsonRpcMessage, sessionId: string, promptI
   const meta = isRecord(params._meta) ? params._meta : {}
   const owner = firstToolText(update.prompt_id, update.promptId, meta.promptId)
   return owner === undefined || owner === promptId
+}
+
+function grokToolInputChunks(message: JsonRpcMessage, inputs: Map<number, GrokStreamedToolInput>): CodingNsAgentEvent[] | null {
+  const params = isRecord(message.params) ? message.params : message
+  const update = isRecord(params.update) ? params.update : params
+  if (update.sessionUpdate !== 'tool_call_delta_chunk' || !Number.isInteger(update.tool_index)) return null
+  const index = update.tool_index as number
+  const callId = firstToolText(update.tool_call_id, update.toolCallId)
+  // Argument fragments omit the call id; a new id resets a reused model-call index.
+  let pending = inputs.get(index)
+  const started = callId !== undefined && pending?.callId !== callId
+  if (started) {
+    pending = { callId, toolName: firstToolText(update.name, update.title) ?? 'tool', arguments: '' }
+    inputs.set(index, pending)
+  }
+  if (pending === undefined) return []
+  if (typeof update.arguments_delta === 'string') pending.arguments += update.arguments_delta
+  let input: string | undefined
+  try {
+    const parsed: unknown = JSON.parse(pending.arguments)
+    if (isRecord(parsed)) input = JSON.stringify(parsed)
+  } catch { /* Do not persist incomplete JSON as a tool's final arguments. */ }
+  if (!started && input === undefined) return []
+  return [{
+    type: 'tool-event', callId: pending.callId, toolName: pending.toolName, status: 'running',
+    ...(input === undefined ? {} : { input }),
+  }]
 }
 
 function grokPromptReason(value: unknown): 'stop' | 'cancel' | 'error' | null {

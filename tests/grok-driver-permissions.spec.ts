@@ -234,6 +234,42 @@ for (const envelope of [true, false]) {
   })
 }
 
+test('Grok reconstructs streamed arguments for calls cancelled before execution', { timeout: 3_000 }, async () => {
+  const fixture = replay((request, connection) => {
+    if (request.method !== 'session/prompt') return
+    const delta = (update: Message) => connection.emit({ method: '_x.ai/session_notification', params: {
+      sessionId: 'provider-session', update: { sessionUpdate: 'tool_call_delta_chunk', ...update },
+    } })
+    delta({ tool_call_id: 'first', tool_index: 0, name: 'read' })
+    delta({ tool_index: 0, arguments_delta: '{"path":"original.txt"}' })
+    connection.update({ sessionUpdate: 'tool_call_update', toolCallId: 'first', status: 'completed', rawOutput: 'Original content' })
+    // A new model call reuses index zero. Its fragments belong to the new id.
+    delta({ tool_call_id: 'next', tool_index: 0, name: 'write', arguments_delta: '{"file_path":' })
+    delta({ tool_index: 0, arguments_delta: '"next.txt","content":"Hello\\nworld"}' })
+    delta({ tool_call_id: 'sibling', tool_index: 1, name: 'write' })
+    delta({ tool_index: 1, arguments_delta: '{"file_path":"sibling.txt","content":"Sibling"}' })
+    connection.reply(request, { stopReason: 'cancelled', _meta: {
+      cancellationCategory: 'PermissionRejected', cancellationContext: { reason: 'Write rejected by policy' },
+    } })
+  })
+  const calls: Message[] = []
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'grok', sessionId: input.sessionId,
+    nativeSessions: {
+      appendToolCall(sessionId, call) { calls.push(call); return { sessionId, turn: 1, step: 1, callId: call.callId, callSeq: calls.length } },
+      appendToolResult() { return true },
+    } as never,
+  })
+  try {
+    for await (const event of fixture.driver.executeTurn(input)) await projector.push(event)
+    assert.deepEqual(calls.map(call => [call.callId, JSON.parse(call.arguments)]), [
+      ['first', { file_path: 'original.txt' }],
+      ['next', { file_path: 'next.txt', content: 'Hello\nworld' }],
+      ['sibling', { file_path: 'sibling.txt', content: 'Sibling' }],
+    ])
+  } finally { fixture.driver.dispose() }
+})
+
 test('Grok does not relabel a later ordinary cancellation as a prior permission denial', { timeout: 4_000 }, async () => {
   let prompt = 0
   const fixture = replay((request, connection) => {
