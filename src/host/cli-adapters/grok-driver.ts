@@ -157,7 +157,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     const segmentState = createCodingNsSegmentState()
     let stepPhase: 'message' | 'tools' | undefined
     let stepStreamId: string | undefined
-    const activeTools = new Set<string>()
+    const activeTools = new Map<string, string>()
     const streamedToolInputs = new Map<number, GrokStreamedToolInput>()
     try {
       if (providerSessionId === '') {
@@ -235,7 +235,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           if (chunk.type === 'tool-event') {
             const callId = chunk.callId ?? chunk.toolName
             if (chunk.status === 'completed' || chunk.status === 'failed') activeTools.delete(callId)
-            else activeTools.add(callId)
+            else activeTools.set(callId, chunk.toolName === 'tool' ? activeTools.get(callId) ?? chunk.toolName : chunk.toolName)
           }
           yield chunk
           advanceCodingNsSegment(chunk, segmentState)
@@ -245,6 +245,18 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       if (finishResult.failure?.code === 'PERMISSION_DENIED') {
         const denial = [...state.permissionDenials.values()].at(-1)
         if (denial !== undefined) finishResult = { ...finishResult, failure: { message: denial, code: 'PERMISSION_DENIED' } }
+      }
+      // A normal prompt stop does not confirm pending tool execution. Keep the
+      // observed arguments and make the unknown outcome explicit without retrying.
+      if (activeTools.size > 0) {
+        for (const [callId, toolName] of activeTools) {
+          const error = 'Grok ended the turn without reporting a final result for this tool; its outcome is unconfirmed.'
+          yield decorateCodingNsSegmentEvent({ type: 'tool-event', callId, toolName, status: 'failed', error, output: error, outputMode: 'snapshot' }, input, segmentState, this.descriptor.id)
+        }
+        if (finishResult.reason === 'stop') finishResult = {
+          reason: 'error',
+          failure: { message: 'Grok ended the turn before all tool results were confirmed.', code: 'INCOMPLETE_TOOL_RESULT' },
+        }
       }
       reusable = finishResult.reason === 'stop' && !input.signal?.aborted
       yield { type: 'finish', reason: finishResult.reason, ...(finishResult.failure === undefined ? {} : { failure: finishResult.failure }) }

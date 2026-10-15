@@ -270,6 +270,44 @@ test('Grok reconstructs streamed arguments for calls cancelled before execution'
   } finally { fixture.driver.dispose() }
 })
 
+for (const reason of ['end_turn', 'cancelled', 'failed']) {
+  test(`Grok marks unfinished tools as unconfirmed when the provider ends with ${reason}`, { timeout: 3_000 }, async () => {
+    const fixture = replay((request, connection) => {
+      if (request.method !== 'session/prompt') return
+      connection.update({ sessionUpdate: 'tool_call', toolCallId: 'done', title: 'read', status: 'pending', rawInput: { path: 'original.txt' } })
+      connection.update({ sessionUpdate: 'tool_call_update', toolCallId: 'done', status: 'completed', rawOutput: 'Original content' })
+      connection.update({ sessionUpdate: 'tool_call', toolCallId: 'incomplete', title: 'write', status: 'pending', rawInput: {} })
+      connection.update({ sessionUpdate: 'tool_call', toolCallId: 'progress', title: 'read', status: 'in_progress', rawInput: { path: 'large.txt' } })
+      connection.update({ sessionUpdate: 'tool_call_update', toolCallId: 'progress', status: 'in_progress', rawOutput: 'Still reading...' })
+      connection.reply(request, { stopReason: reason })
+    })
+    const calls: Message[] = []
+    const results: Message[] = []
+    const projector = new CodingNsDshMessageProjector({
+      adapterId: 'grok', sessionId: input.sessionId,
+      nativeSessions: {
+        appendToolCall(sessionId, call) { calls.push(call); return { sessionId, turn: 1, step: 1, callId: call.callId, callSeq: calls.length } },
+        appendToolResult(handle, result) { results.push({ callId: handle.callId, ...result }); return true },
+      } as never,
+    })
+    try {
+      const chunks: Message[] = []
+      for await (const event of fixture.driver.executeTurn({ ...input, splitToolSteps: true })) chunks.push(...await projector.push(event))
+      assert.equal(results.length, 3)
+      assert.equal(results.find(result => result.callId === 'done')?.isError, false)
+      const incomplete = results.find(result => result.callId === 'incomplete')
+      assert.equal(incomplete?.isError, true)
+      assert.match(incomplete?.output, /without reporting a final result/)
+      const progress = results.find(result => result.callId === 'progress')
+      assert.equal(progress?.isError, true)
+      assert.match(progress?.output, /without reporting a final result/)
+      assert.equal(calls.find(call => call.callId === 'incomplete')?.arguments, '{}', 'Do not invent missing tool arguments')
+      assert.equal(chunks.at(-1)?.reason.kind, reason === 'cancelled' ? 'aborted' : 'error')
+      if (reason === 'end_turn') assert.equal(chunks.at(-1)?.reason.failure.code, 'INCOMPLETE_TOOL_RESULT')
+    } finally { fixture.driver.dispose() }
+  })
+}
+
 test('Grok does not relabel a later ordinary cancellation as a prior permission denial', { timeout: 4_000 }, async () => {
   let prompt = 0
   const fixture = replay((request, connection) => {
