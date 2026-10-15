@@ -2020,7 +2020,10 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
     { type: 'finish', reason: { kind: 'stop' } },
   ])
   assert.equal(capturedPrompt, '你好')
-  assert.deepEqual(registryInputs.at(-1), {
+  const { signal, ...forwardedInput } = registryInputs.at(-1)!
+  assert.ok(signal instanceof AbortSignal)
+  assert.equal(signal.aborted, false)
+  assert.deepEqual(forwardedInput, {
     adapterId: 'fake',
     sessionId: 's1',
     messages: [
@@ -2054,6 +2057,7 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
     providerId: 'deepseek',
   })
   await features.disable('cliAdapters')
+  assert.equal(signal.aborted, true)
   assert.equal(listener, undefined)
 })
 
@@ -3107,7 +3111,7 @@ test('CLI 功能模块从 DSH 会话头传递工作目录并把统一工具事�
 test('CLI 功能模块解析 DSH 图片和文件附件并传给外部驱动', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
-  let received: { prompt: string; attachments?: readonly { kind: string; path: string; name?: string }[] } | undefined
+  let received: { prompt: string; signal?: AbortSignal; attachments?: readonly { kind: string; path: string; name?: string }[] } | undefined
   const registry = new CodingNsCliAdapterRegistry([{
     descriptor: { id: 'codex', name: 'Codex' },
     async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
@@ -3150,7 +3154,10 @@ test('CLI 功能模块解析 DSH 图片和文件附件并传给外部驱动', as
     }],
   }, async function* () {})) { /* 消费完整流 */ }
 
-  assert.deepEqual(received, {
+  const { signal, ...forwardedInput } = received!
+  assert.ok(signal instanceof AbortSignal)
+  assert.equal(signal.aborted, false)
+  assert.deepEqual(forwardedInput, {
     adapterId: 'codex',
     sessionId: 'codex-attachments',
     messages: [{

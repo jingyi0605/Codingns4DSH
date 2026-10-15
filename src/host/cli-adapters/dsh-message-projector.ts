@@ -372,6 +372,7 @@ export class CodingNsDshMessageProjector {
   }
 
   private async requestQuestions(event: Extract<CodingNsAgentEvent, { type: 'question-request' }>): Promise<void> {
+    this.options.signal?.throwIfAborted()
     const responder = this.options.respondQuestion
     if (responder === undefined) throw new Error('外部 Agent 发送了问题请求，但适配器没有问题回复接口')
     // Provider 的 question.asked 往往先于工具结果抵达，且工具输入快照可能是空对象。
@@ -390,6 +391,8 @@ export class CodingNsDshMessageProjector {
       questions: event.questions,
       ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
     }) ?? null
+    // A submitted answer can race with cancellation or adapter reload.
+    this.options.signal?.throwIfAborted()
     if (response === null) throw new Error('DSH 原生问题组件不可用或问题已取消')
     await responder(response)
     if (event.callId !== undefined) {

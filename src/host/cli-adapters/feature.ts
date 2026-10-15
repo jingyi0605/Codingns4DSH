@@ -60,6 +60,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       requires: [{ capability: 'session.external-model-selection', required: false, fallback: 'degrade' }],
     },
     async start(context) {
+      const lifetime = new AbortController()
       // 用量查询超时对所有适配器统一生效：同一个 timeoutMs 下发给全部网络读取器，
       // 设置变更时整体重建，避免旧超时继续生效。
       const buildSubscriptions = (settings: CodingNsSettings | undefined): ProviderSubscriptionService => {
@@ -427,7 +428,9 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           const turnInput = extractTurnInput(messages, context.services.dshContext)
           const turnOptions = readCliTurnOptions(value)
           const runtimeEnv = readCliRuntimeEnv(value)
-          const requestSignal = isAbortSignal(value?.signal) ? value.signal : undefined
+          const requestSignal = isAbortSignal(value?.signal)
+            ? AbortSignal.any([value.signal, lifetime.signal])
+            : lifetime.signal
           let translatedPrompt = turnInput.translationPrompt
           if (turnInput.translatePrompt && turnInput.translationPrompt.trim() !== '' && translation !== undefined && config.translationEnabled === true) {
             try {
@@ -536,6 +539,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         // DSH 先停用设置上下文再执行异步资源清理时，旧的写队列不能继续调用
         // configEditor，否则会出现 inactive context 并污染退出日志。
         sessionStore.dispose()
+        // Close native interaction cards before unloading their provider transports.
+        lifetime.abort()
         await registry.dispose()
         await sessionStore.flush()
         setAdapterRegistry(undefined)

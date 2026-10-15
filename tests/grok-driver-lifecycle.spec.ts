@@ -269,6 +269,9 @@ test('Grok keeps a question and its answer between the surrounding assistant mes
   })
   const timeline = await createTimeline(replay.driver, { async askQuestions(_sessionId, request) {
     questions++
+    // Keep the card open beyond the prompt stream's terminal drain window.
+    await new Promise(resolve => setTimeout(resolve, 350))
+    assert.equal(request.signal?.aborted, false)
     return { requestId: request.requestId, answers: [{ id: 'format', selected: ['PNG'] }] }
   } })
   try {
@@ -280,8 +283,49 @@ test('Grok keeps a question and its answer between the surrounding assistant mes
     assert.deepEqual(timeline.history[0].blocks.map(block => block.text), ['Choose a format.'])
     assert.deepEqual(timeline.history[3].blocks.map(block => block.text), ['PNG selected.'])
     assert.equal(replay.connections[0].requests.filter(request => request.method === 'session/prompt').length, 1)
+    assert.deepEqual(replay.connections[0].requests.filter(request => request.id === 77).map(request => request.result), [
+      { outcome: 'accepted', answers: { 'Which format?': ['PNG'] } },
+    ])
   } finally { await timeline.dispose() }
 })
+
+for (const honorCancellation of [true, false]) {
+  test(`Unloading the adapter cancels a Grok question (${honorCancellation ? 'open card' : 'late submission'})`, { timeout: 5_000 }, async () => {
+    const opened = Promise.withResolvers<void>()
+    const answer = Promise.withResolvers<unknown>()
+    let questionSignal: AbortSignal | undefined
+    const replay = createReplay((request, connection) => {
+      if (request.method !== 'session/prompt') return
+      connection.update({ sessionUpdate: 'agent_message_chunk', text: 'Choose a format.' }, { streamStartMs: 1 })
+      connection.emit({ jsonrpc: '2.0', id: 77, method: '_x.ai/ask_user_question', params: {
+        sessionId: 'provider-session', toolCallId: 'question', questions: [{ id: 'format', question: 'Which format?', options: [{ label: 'PNG' }] }],
+      } })
+    })
+    const timeline = await createTimeline(replay.driver, { async askQuestions(_sessionId, request) {
+      questionSignal = request.signal
+      // The native question service closes its card when this signal is aborted.
+      if (honorCancellation) questionSignal?.addEventListener('abort', () => answer.resolve(null), { once: true })
+      opened.resolve()
+      return answer.promise
+    } })
+    const running = timeline.run()
+    try {
+      await opened.promise
+      await timeline.dispose()
+      // A reply already in flight may reach the bridge after shutdown begins.
+      answer.resolve({ requestId: 'question', answers: [{ id: 'format', selected: ['PNG'] }] })
+      const chunks = await running
+      assert.equal(chunks.at(-1)?.reason?.kind, 'aborted', JSON.stringify(chunks.at(-1)))
+      assert.equal(questionSignal?.aborted, true, 'A stopped adapter must not leave a selectable question card')
+      assert.equal(replay.connections[0].killed, true)
+      assert.equal(replay.connections[0].requests.some(request => request.id === 77 && request.result?.outcome === 'accepted'), false)
+    } finally {
+      answer.resolve(null)
+      await running
+      await timeline.dispose()
+    }
+  })
+}
 
 for (const source of ['notification', 'response'] as const) {
   test(`Grok preserves cancellation from a ${source}`, { timeout: 3_000 }, async () => {
