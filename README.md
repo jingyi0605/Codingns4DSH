@@ -130,6 +130,8 @@ Agent 的安装与登录由各自工具完成。适配细节见[外部 Agent 文
 
 DSH 原生会话的翻译默认关闭，可在会话模型选择菜单中开启「翻译对话」。开启后，请求在发送前翻译，思考与回复在界面中显示译文；AI 原文保留在历史中，翻译详情可查看原文、译文及实际发送文本。
 
+Enabled sessions also localize attachment instructions and injected skill/workspace descriptions. On DSH 0.2.1-alpha.3, assembled system sections and tool descriptions use the input language through a version-checked adapter. Filenames, paths, tool identifiers, and execution schemas remain unchanged. DSH-owned complete prompts and refreshed runtime-policy context retain their native behavior. See [Spec 015](specs/spec015-会话内置提示翻译/README.md).
+
 ### 全局智能助理（测试中）
 
 创建自己的助理，自定义名称、性格、模型与形象，从侧栏或悬浮形象进入同一工作台。
