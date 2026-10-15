@@ -301,6 +301,8 @@ Source links and development runs are for Stage0 only. Desktop uses published ve
 
 Design and implementation details live in the [specifications](specs/), [development records](docs/开发记录/) and [development guidelines](docs/开发规范/) (Chinese). The [avatar catalog](assets/assistant-avatar-catalog.md) and [screenshot list](assets/screenshots/README.md) are also available separately.
 
+Development proposal: [Spec 016 — Quick Apps and controlled static HTTP hosting](specs/spec016-快捷应用与受控静态HTTP托管/README.md) documents the draft requirements, design, tasks, and existing-change review. Implementation has not started.
+
 ---
 
 ## Acknowledgements
