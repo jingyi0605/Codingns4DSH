@@ -18,7 +18,7 @@
  *   node scripts/check-client-i18n.mjs --json          # 输出机器可读结果
  */
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 
@@ -40,9 +40,17 @@ const warnOnly = args.includes('--warn-only')
 const strictInternal = args.includes('--strict-internal')
 const asJson = args.includes('--json')
 const fileFilterIndex = args.indexOf('--files')
+/**
+ * 统一用 `/` 表示仓库相对路径：Windows 的 relative() 返回 `\`，
+ * 与 allowlist、--files 参数和词典目录前缀比较时会全部失配。
+ */
+function repoPath(file) {
+  return relative(ROOT, file).split(sep).join('/')
+}
+
 const fileFilter = fileFilterIndex === -1
   ? null
-  : new Set(args.slice(fileFilterIndex + 1).map((item) => relative(ROOT, resolve(ROOT, item))))
+  : new Set(args.slice(fileFilterIndex + 1).map((item) => repoPath(resolve(ROOT, item))))
 
 /** 递归收集 .ts 文件。 */
 function collectTs(dir, out = []) {
@@ -80,7 +88,7 @@ function collectNamedObjectKeys(file, names) {
   const visit = (node) => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && names.has(node.name.text)
       && node.initializer !== undefined && ts.isObjectLiteralExpression(node.initializer)) {
-      found.push({ file: relative(ROOT, file), name: node.name.text, keys: objectKeys(node.initializer) })
+      found.push({ file: repoPath(file), name: node.name.text, keys: objectKeys(node.initializer) })
     }
     ts.forEachChild(node, visit)
   }
@@ -188,9 +196,10 @@ const violations = []
 const warnings = []
 const usedKeys = []
 
-const clientFiles = collectTs(CLIENT_DIR).filter((file) => file !== LOCALE_FILE && !file.startsWith(LOCALE_DIR + '/'))
+const localePrefix = repoPath(LOCALE_DIR) + '/'
+const clientFiles = collectTs(CLIENT_DIR).filter((file) => file !== LOCALE_FILE && !repoPath(file).startsWith(localePrefix))
 for (const file of clientFiles) {
-  const relativeFile = relative(ROOT, file)
+  const relativeFile = repoPath(file)
   const source = parse(file)
   const visit = (node) => {
     if (isChineseLiteral(node)) {
@@ -243,7 +252,7 @@ for (const file of descriptorFiles) {
         .filter((property) => ts.isPropertyAssignment(property))
         .map((property) => property.name.getText()))
       if (names.has('label') || names.has('description')) {
-        const relativeFile = relative(ROOT, file)
+        const relativeFile = repoPath(file)
         for (const required of ['labelKey', 'descriptionKey']) {
           if (!names.has(required)) {
             descriptorIssues.push({ file: relativeFile, line: lineOf(source, node), rule: 'descriptor-missing-key', text: required })
