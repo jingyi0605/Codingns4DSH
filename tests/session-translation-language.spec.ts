@@ -133,6 +133,49 @@ test('Chinese context does not hide foreign prose or ambiguous mixed text', asyn
   }
 })
 
+// 真实 Stage0 回归：Codex 只回复 STAGE0_INITIAL_OK 时，模型按保留规则原样返回，
+// 中文目标的结果校验找不到汉字，回复被标记为“翻译失败”。
+const identifierOnly = ['STAGE0_INITIAL_OK', 'STAGE0_INITIAL_OK\n1', '`STAGE0_INITIAL_OK`', 'sourceLanguage', 'Node.js', '9fd2d5d', '"OK_DONE".']
+
+for (const kind of ['assistant', 'reasoning'] as const) {
+  test(`纯标识符的 ${kind} 输出不调用翻译模型，也不记为失败`, async (t) => {
+    const f = fixture()
+    t.after(() => f.service.dispose())
+    for (const original of identifierOnly) {
+      assert.equal(await f.service.translateOutput('codex', kind, original, undefined, true), null, original)
+    }
+    assert.deepEqual(f.sources, [])
+  })
+}
+
+test('纯标识符输入原样发送，插话等普通输入仍经模型翻译后发送', async (t) => {
+  const f = fixture('Reply 1')
+  t.after(() => f.service.dispose())
+  for (const original of identifierOnly) {
+    const result = await f.service.translateInputDetailed!('codex', original, undefined, true)
+    assert.equal(result.translated, original, original)
+    assert.equal(result.failed, undefined, original)
+  }
+  assert.deepEqual(f.sources, [])
+  for (const original of ['回复1', '只回复 STAGE0_INITIAL_OK']) {
+    const result = await f.service.translateInputDetailed!('codex', original, undefined, true)
+    assert.equal(result.translated, 'Reply 1', original)
+    assert.equal(result.failed, undefined, original)
+  }
+  assert.deepEqual(f.sources, ['回复1', '只回复 STAGE0_INITIAL_OK'])
+})
+
+test('普通英文单词不属于标识符，输出仍交给翻译模型', async (t) => {
+  const f = fixture('好的。')
+  t.after(() => f.service.dispose())
+  for (const original of ['OK', 'Done', 'Run STAGE0_INITIAL_OK now']) {
+    const record = await f.service.translateOutput('codex', 'assistant', original, undefined, true)
+    assert.equal(record?.translated, '好的。', original)
+    assert.equal(record?.failed, undefined, original)
+  }
+  assert.equal(f.sources.length, 3)
+})
+
 test('existing Japanese, English, French, and German detection remains intact', async (t) => {
   const f = fixture()
   t.after(() => f.service.dispose())

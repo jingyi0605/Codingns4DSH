@@ -20,6 +20,28 @@ export function isLanguageNeutralText(value: string): boolean {
   return /\p{N}/u.test(value) && /^[\p{N}\p{P}\p{S}\s]+$/u.test(value)
 }
 
+/**
+ * 只由代码标识符组成的文本（如 `STAGE0_INITIAL_OK`、`sourceLanguage`、`Node.js`、`9fd2d5d`）
+ * 没有可翻译的自然语言。模型会按保留规则原样返回，再按目标语言校验就会被误判为失败。
+ * 普通单词（如 `OK`、`Done`）不属于标识符，仍交给翻译模型处理。
+ */
+export function isCodeIdentifierText(value: string): boolean {
+  const tokens = value.trim().split(/\s+/u)
+    .map(token => token.replace(/^["'`([{「“‘]+|["'`)\]}」”’.,;:!?。，；：！？]+$/gu, ''))
+    .filter(token => token !== '')
+  return tokens.length > 0
+    && tokens.some(token => /\p{L}/u.test(token))
+    && tokens.every(token => isLanguageNeutralText(token) || isCodeIdentifier(token))
+}
+
+function isCodeIdentifier(token: string): boolean {
+  if (!/^[A-Za-z0-9_.-]+$/u.test(token) || !/[A-Za-z]/u.test(token)) return false
+  return /_/u.test(token)
+    || /\d/u.test(token)
+    || /^[a-z]+(?:[A-Z][a-z0-9]*)+$/u.test(token)
+    || /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+$/u.test(token)
+}
+
 /** Keep source slices locally; only placeholders and prose reach the translation model. */
 export function protectText(value: string, options: TextProtectionOptions = {}): { readonly text: string; readonly values: readonly string[] } {
   const knownRanges: TextRange[] = []

@@ -15,7 +15,7 @@ import type {
   SessionTranslationMetrics,
 } from '../../shared/contracts/session-translation.js'
 import { debugWarn } from '../../shared/debug.js'
-import { isLanguageNeutralText, protectText, restoreText, stripPlaceholders } from './session-translation-protection.js'
+import { isCodeIdentifierText, isLanguageNeutralText, protectText, restoreText, stripPlaceholders } from './session-translation-protection.js'
 import type { TextProtectionOptions } from './session-translation-protection.js'
 import { translationFailure, withTranslationAbort as withAbort } from './session-translation-runtime.js'
 
@@ -490,7 +490,7 @@ async function findFirstNativeModel(llm: LlmRuntime): Promise<ModelSelection | u
 
 function hasNoTranslatableText(value: string): boolean {
   const prose = stripPlaceholders(value).trim()
-  return prose === '' || isLanguageNeutralText(prose)
+  return prose === '' || isLanguageNeutralText(prose) || isCodeIdentifierText(prose)
 }
 
 function normalizeSettings(value: SessionTranslationSettings | undefined): SessionTranslationSettings {
