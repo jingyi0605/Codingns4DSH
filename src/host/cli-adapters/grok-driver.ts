@@ -157,7 +157,6 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         const session = await rpc.request('session/new', {
           cwd: input.cwd ?? process.cwd(),
           mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),
-        ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}),
         }, { signal: input.signal })
         providerSessionId = readSessionId(session) ?? input.sessionId
         state.providerSessionId = providerSessionId
@@ -165,6 +164,14 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         this.sessions.set(providerSessionId, state)
       }
       yield { type: 'session-binding', providerSessionId }
+      // Grok 1.0.52 ignores the model field on session/new. Apply explicit
+      // selections after both creation and restoration, including reused sessions.
+      if (input.modelId && !isProviderDefaultModel(input.modelId)) {
+        await rpc.request('session/set_model', { sessionId: providerSessionId, modelId: input.modelId }, { signal: input.signal })
+      }
+      if (input.effortId) {
+        await rpc.request('session/set_config_option', { sessionId: providerSessionId, configId: 'reasoning_effort', value: input.effortId }, { signal: input.signal })
+      }
       // Skill 斜杠命令由 Grok 在用户输入开头解析，不能把普通提示插到命令前。
       const nativeCommand = /^\s*\/[A-Za-z0-9][A-Za-z0-9._:-]*(?:\s|$)/u.test(input.prompt)
       const prompt = [
