@@ -534,3 +534,153 @@ test('OpenCode 旧模型已不在目录时自动切换到同 Provider 的唯一�
   ])
   driver.dispose()
 })
+
+/** 手机实测序列：权限被拒后服务端补发 permission.replied，它不是新请求。 */
+test('OpenCode 结算事件不会被当成第二次权限请求', async () => {
+  const encoder = new TextEncoder()
+  const replies: Array<{ url: string; body: unknown }> = []
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/session') && init.method === 'POST') return new Response(JSON.stringify({ id: 'settled-session' }), { status: 200 })
+    if (url.endsWith('/message')) return new Response('{}', { status: 200 })
+    if (url.includes('/reply')) {
+      replies.push({ url, body: JSON.parse(String(init.body)) })
+      // 已结算的 requestID 再回复一次时，服务端返回 PermissionNotFoundError。
+      const settled = replies.filter((item) => item.url === url).length > 1
+      return settled
+        ? new Response(JSON.stringify({ _tag: 'PermissionNotFoundError', requestID: 'per_1' }), { status: 404 })
+        : new Response('{}', { status: 200 })
+    }
+    if (url.endsWith('/event')) {
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"permission.asked","properties":{"id":"per_1","sessionID":"settled-session","permission":"external_directory","patterns":["/etc/*"]}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"permission.replied","properties":{"sessionID":"settled-session","requestID":"per_1","reply":"reject"}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"question.replied","properties":{"sessionID":"settled-session","requestID":"que_1","answers":[["React"]]}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"session.status","properties":{"status":{"type":"idle"}}}\n\n'))
+        controller.close()
+      } })
+      return new Response(body, { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'settled', messages: [], prompt: '读取设备信息' })) {
+    chunks.push(chunk)
+    if (chunk.type === 'permission-request') await driver.respondPermission('settled', { requestId: chunk.requestId, approved: false })
+  }
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'settled-session' },
+    { type: 'permission-request', requestId: 'per_1', kind: 'external_directory', toolName: 'external_directory', detail: '["/etc/*"]' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  assert.deepEqual(replies, [{ url: 'http://opencode.test/permission/per_1/reply', body: { reply: 'reject' } }])
+  driver.dispose()
+})
+
+/** 旧版路由对已结算/不在 V1 注册表的 requestID 返回 404，不能升级为致命回合错误。 */
+test('OpenCode 交互回传在请求已结束时按幂等收敛', async () => {
+  const encoder = new TextEncoder()
+  const replies: string[] = []
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/session') && init.method === 'POST') return new Response(JSON.stringify({ id: 'gone-session' }), { status: 200 })
+    if (url.endsWith('/message')) return new Response('{}', { status: 200 })
+    if (url.includes('/reply')) {
+      replies.push(url)
+      const kind = url.includes('/question/') ? 'QuestionNotFoundError' : 'PermissionNotFoundError'
+      return new Response(JSON.stringify({ _tag: kind, requestID: 'per_gone' }), { status: 404 })
+    }
+    if (url.endsWith('/event')) {
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"permission.asked","properties":{"id":"per_gone","sessionID":"gone-session","permission":"external_directory","patterns":["/proc/*"]}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"question.asked","properties":{"id":"que_gone","sessionID":"gone-session","questions":[{"question":"继续吗","options":[{"label":"继续"}]}]}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"session.status","properties":{"status":{"type":"idle"}}}\n\n'))
+        controller.close()
+      } })
+      return new Response(body, { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'gone', messages: [], prompt: '继续' })) {
+    chunks.push(chunk)
+    // 回复已结算的请求既不能抛错，也不能产生第二次回复。
+    if (chunk.type === 'permission-request') await driver.respondPermission('gone', { requestId: chunk.requestId, approved: false })
+    if (chunk.type === 'question-request') await driver.respondQuestion('gone', { requestId: chunk.requestId, answers: [{ id: chunk.questions[0]!.id, selected: ['继续'] }] })
+  }
+  assert.deepEqual(chunks.map((chunk) => chunk.type), ['session-binding', 'permission-request', 'question-request', 'finish'])
+  assert.deepEqual(replies, [
+    'http://opencode.test/permission/per_gone/reply',
+    'http://opencode.test/api/session/gone-session/permission/per_gone/reply',
+    'http://opencode.test/question/que_gone/reply',
+    'http://opencode.test/api/session/gone-session/question/que_gone/reply',
+  ])
+  driver.dispose()
+})
+
+/** 1.18 起旧版事件流会原样推送 V2 形状权限事件，字段名是 action/resources。 */
+test('OpenCode 读取 V2 形状权限事件的动作与资源', async () => {
+  const encoder = new TextEncoder()
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/session') && init.method === 'POST') return new Response(JSON.stringify({ id: 'v2-shape' }), { status: 200 })
+    if (url.endsWith('/message')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/event')) {
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(encoder.encode('data: {"id":"evt_1","type":"permission.v2.asked","properties":{"id":"per_v2","sessionID":"v2-shape","action":"external_directory","resources":["/system/*"]}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"id":"evt_2","type":"permission.v2.replied","properties":{"sessionID":"v2-shape","requestID":"per_v2","reply":"reject"}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"session.status","properties":{"status":{"type":"idle"}}}\n\n'))
+        controller.close()
+      } })
+      return new Response(body, { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'v2-shape', messages: [], prompt: '读取系统文件' })) chunks.push(chunk)
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'v2-shape' },
+    { type: 'permission-request', requestId: 'per_v2', kind: 'external_directory', toolName: 'external_directory', detail: '["/system/*"]' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
+/** V2 注册表的权限在旧版路由上必然 404，必须回退到同一 requestID 的 V2 路由。 */
+test('OpenCode 旧版权限路由查不到时回退到 V2 路由', async () => {
+  const encoder = new TextEncoder()
+  const replies: string[] = []
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/session') && init.method === 'POST') return new Response(JSON.stringify({ id: 'v2-fallback' }), { status: 200 })
+    if (url.endsWith('/message')) return new Response('{}', { status: 200 })
+    if (url.includes('/reply')) {
+      replies.push(url)
+      if (url === 'http://opencode.test/permission/per_v2/reply') {
+        return new Response(JSON.stringify({ _tag: 'PermissionNotFoundError', requestID: 'per_v2' }), { status: 404 })
+      }
+      return new Response(null, { status: 204 })
+    }
+    if (url.endsWith('/event')) {
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(encoder.encode('data: {"id":"evt_1","type":"permission.v2.asked","properties":{"id":"per_v2","sessionID":"v2-fallback","action":"external_directory","resources":["/system/*"]}}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"session.status","properties":{"status":{"type":"idle"}}}\n\n'))
+        controller.close()
+      } })
+      return new Response(body, { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  for await (const chunk of driver.executeTurn({ sessionId: 'v2-fallback', messages: [], prompt: '读取系统文件' })) {
+    if (chunk.type === 'permission-request') await driver.respondPermission('v2-fallback', { requestId: chunk.requestId, approved: true })
+  }
+  assert.deepEqual(replies, [
+    'http://opencode.test/permission/per_v2/reply',
+    'http://opencode.test/api/session/v2-fallback/permission/per_v2/reply',
+  ])
+  driver.dispose()
+})
