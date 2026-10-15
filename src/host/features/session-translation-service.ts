@@ -112,6 +112,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     signal?: AbortSignal,
   ): Promise<SessionTranslationMetrics & { readonly translated: string; readonly model?: SessionTranslationModel; readonly failed?: boolean; readonly failure?: SessionTranslationFailure }> => {
     const startedAt = performance.now()
+    const system = translationSystem(targetLanguage, kind, settings.translationRules ?? [])
     let totalTokens: number | undefined
     const metrics = (): SessionTranslationMetrics => ({
       durationMs: performance.now() - startedAt,
@@ -144,7 +145,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
               ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
               temperature: 0,
               maxTokens: Math.min(16_000, Math.max(512, text.length * 2 + 256)),
-              system: translationSystem(targetLanguage, kind),
+              system,
               messages: [{ role: 'user', content: [{ type: 'text', text: translationUserMessage(targetLanguage, kind, protectedText.text) }] }],
             }), combined, (tokens) => {
               totalTokens = (totalTokens ?? 0) + tokens - attemptTokens
@@ -184,7 +185,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     const protectedText = protectText(value)
     if (hasNoTranslatableText(protectedText.text)) return null
     const sourceLanguage = detectSourceLanguage(protectedText.text, targetLanguage)
-    if (sourceLanguage === targetLanguage) {
+    if (sourceLanguage === targetLanguage && !settings.translationRules?.length) {
       return {
         original: value,
         translated: value,
@@ -267,7 +268,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
       if (hasNoTranslatableText(protectedText.text)) return { translated: text }
       const targetLanguage = settings.inputLanguage
       const sourceLanguage = detectSourceLanguage(protectedText.text, targetLanguage)
-      if (sourceLanguage === targetLanguage) {
+      if (sourceLanguage === targetLanguage && !settings.translationRules?.length) {
         return { translated: text, sourceLanguage, alreadyTargetLanguage: true, durationMs: 0, totalTokens: 0 }
       }
       const result = await translateWithModels(adapterId, 'input', text, protectedText, targetLanguage, signal)
@@ -276,13 +277,21 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
 
 }
 
-function translationSystem(language: SessionTranslationLanguage | Exclude<SessionTranslationLanguage, 'zh'>, kind: SessionTranslationOutputKind | 'input'): string {
+function translationSystem(language: SessionTranslationLanguage, kind: SessionTranslationOutputKind | 'input', rules: readonly string[]): string {
   const names: Record<SessionTranslationLanguage, string> = { zh: 'Simplified Chinese', en: 'English', fr: 'French', de: 'German', ja: 'Japanese' }
   const task = kind === 'input'
     ? `Translate the user's message into ${names[language]}.`
     : `Translate the ${kind} content into ${names[language]}.`
   return [
     'CODINGNS_SESSION_TRANSLATION_V1',
+    ...(rules.length === 0 ? [] : [
+      'CUSTOM TRANSLATION RULES (highest priority):',
+      'Follow these rules for input, reasoning, and reply translation, including text already in the target language.',
+      'If a custom rule conflicts with any default translation instruction below or in the user-message wrapper, follow the custom rule.',
+      ...rules.map((rule, index) => `Rule ${index + 1}:\n${rule}`),
+      'END CUSTOM TRANSLATION RULES',
+      'DEFAULT TRANSLATION INSTRUCTIONS (lower priority):',
+    ]),
     'ROLE: You are a deterministic translation engine, not a conversational assistant.',
     `TARGET LANGUAGE: ${names[language]} (${language}).`,
     `TASK: ${task}`,

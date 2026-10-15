@@ -57,7 +57,8 @@ export const CodingNsSettingsSchema = z.object({
     nativeEnabled: z.boolean().default(DEFAULT_SESSION_TRANSLATION_SETTINGS.nativeEnabled === true),
     translationModel: z.union([z.object({ provider: z.string().min(1).max(200), model: z.string().min(1).max(200) }), z.const(undefined)]),
     translationModels: z.union([z.array(z.object({ provider: z.string().min(1).max(200), model: z.string().min(1).max(200) })), z.const(undefined)]),
-  }).default({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationModels: undefined }),
+    translationRules: z.union([z.array(z.string()), z.const(undefined)]),
+  }).default({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationModels: undefined, translationRules: undefined }),
   assistant: z.object({
     notifications: z.object({
       enabled: z.boolean().default(true), completed: z.boolean().default(true),

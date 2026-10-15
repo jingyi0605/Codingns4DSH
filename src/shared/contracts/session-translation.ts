@@ -22,6 +22,8 @@ export interface SessionTranslationSettings {
   readonly translationModel?: SessionTranslationModel
   /** Models in priority order. An empty pool follows the DSH default; absent pools use the legacy selection. */
   readonly translationModels?: readonly SessionTranslationModel[]
+  /** Custom prompt instructions that take precedence over the default translation prompts. */
+  readonly translationRules?: readonly string[]
   /**
    * DSH 原生会话是否参与翻译；缺省关闭。
    *
@@ -81,6 +83,9 @@ export function normalizeSessionTranslationSettings(value: SessionTranslationSet
   if (value === undefined) return fallback
   const translationModel = normalizeTranslationModel(value.translationModel)
   const translationModels = Array.isArray(value.translationModels) ? normalizeTranslationModels(value.translationModels) : undefined
+  const translationRules = Array.isArray(value.translationRules)
+    ? value.translationRules.filter((rule): rule is string => typeof rule === 'string').map((rule) => rule.trim()).filter((rule) => rule !== '')
+    : undefined
   return {
     inputLanguage: isSessionTranslationLanguage(value.inputLanguage) ? value.inputLanguage : fallback.inputLanguage,
     outputLanguage: isSessionTranslationLanguage(value.outputLanguage) ? value.outputLanguage : fallback.outputLanguage,
@@ -88,6 +93,7 @@ export function normalizeSessionTranslationSettings(value: SessionTranslationSet
     nativeEnabled: value.nativeEnabled === true,
     ...(translationModel === undefined ? {} : { translationModel }),
     ...(translationModels === undefined ? {} : { translationModels }),
+    ...(translationRules === undefined ? {} : { translationRules }),
   }
 }
 
