@@ -127,6 +127,65 @@ test('pending actions stay in their session and ignore historical, nested, and a
   stop()
 })
 
+test('queue submission previews support an attached action with or without a native action row', () => {
+  const root = new Element('[data-conversation-session]')
+  const anchor = new Element('anchor')
+  root.append(anchor)
+  const row = new Element('[data-submission-echo]')
+  row.append(new Element('[class*="preview"]', 'Queued message'))
+  root.append(row)
+  let targets: readonly PendingTranslationTarget[] = []
+  const stop = watchPendingTranslationTargets(anchor as unknown as HTMLElement, next => { targets = next })
+  assert.equal(targets[0]!.container.parentElement, row)
+  assert.equal(targets[0]!.original, 'Queued message')
+  stop()
+  const actions = new Element('[class*="actions"]')
+  row.append(actions)
+  const stopWithActions = watchPendingTranslationTargets(anchor as unknown as HTMLElement, next => { targets = next })
+  assert.equal(targets[0]!.container.parentElement, actions)
+  stopWithActions()
+})
+
+test('failure polling attaches the prompt to the matching pending user message and refreshes after a choice', async () => {
+  const registered = new Map<string, (props: any) => ReactElement>()
+  let failures = [{ id: 'failed-second-message', sessionId: 'failure-attachment', record: {
+    original: 'Second message', translated: 'Second message', targetLanguage: 'en', bilingual: false, failed: true,
+  } }]
+  const services = {
+    rpc: { async call(_channel: string, endpoint: string) { return { ok: true, value: endpoint === 'cli/translation/pending' ? failures : { adapterId: 'dsh', translationEnabled: true } } } },
+    locale: { bind: () => resolveCodingNsTranslator() },
+    slots: {
+      inject(_name: string, callback: () => () => void) { return callback() },
+      register(options: any, component: (props: any) => ReactElement) { registered.set(options.id ?? options.key, component); return () => {} },
+    },
+  } as unknown as CodingNsClientServices
+  const remove = registerSessionTranslationChatUi(services)
+  const root = new Element('[data-conversation-session]')
+  const anchor = new Element('anchor')
+  root.append(anchor)
+  const first = pending('First message')
+  const second = pending('Second message')
+  root.append(first.row); root.append(second.row)
+  const renderer = createHookRenderer(registered.get('codingns-translation-pending')!, {
+    services, translationT: resolveCodingNsTranslator(), sessionId: 'failure-attachment',
+  })
+  const flush = () => new Promise<void>(resolve => setImmediate(resolve))
+  try {
+    const tree = renderer.render()
+    ;(tree as any).ref.current = anchor
+    await flush(); renderer.render(); await flush()
+    const portals = (renderer.render().props as any).children
+    assert.equal(portals.length, 2)
+    assert.equal(portals[0].children.props.inputFailure, undefined)
+    assert.equal(portals[1].containerInfo, second.actions.children[0])
+    assert.equal(portals[1].children.props.inputFailure.id, failures[0]!.id)
+    failures = []
+    portals[1].children.props.onDecision()
+    await flush()
+    assert.equal((renderer.render().props as any).children[1].children.props.inputFailure, undefined)
+  } finally { renderer.dispose(); remove() }
+})
+
 test('the registered pending slot renders portals only for enabled sessions and releases them on disable or unmount', async () => {
   const registered = new Map<string, (props: any) => ReactElement>()
   const services = {

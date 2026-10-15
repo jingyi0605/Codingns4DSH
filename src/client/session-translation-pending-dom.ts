@@ -4,7 +4,7 @@ export interface PendingTranslationTarget {
   readonly original: string
 }
 
-/** Pending DSH bubbles have no renderer slot; attach only to their action rows. */
+/** Pending DSH bubbles and queue previews have no renderer slot. */
 export function watchPendingTranslationTargets(
   anchor: HTMLElement,
   onChange: (targets: readonly PendingTranslationTarget[]) => void,
@@ -26,9 +26,9 @@ export function watchPendingTranslationTargets(
     }
     for (const row of rows) {
       if (row.closest('[data-conversation-session]') !== root) continue
-      const original = row.querySelector<HTMLElement>('[class*="bubble"]')?.textContent ?? ''
-      const actions = row.querySelector<HTMLElement>('[data-clock="start"]')
-      if (original.trim() === '' || actions === null) continue
+      const original = (row.querySelector<HTMLElement>('[class*="bubble"]') ?? row.querySelector<HTMLElement>('[class*="preview"]'))?.textContent ?? ''
+      const actions = row.querySelector<HTMLElement>('[data-clock="start"]') ?? row.querySelector<HTMLElement>('[class*="actions"]') ?? row
+      if (original.trim() === '') continue
       const existing = targets.get(row)
       if (existing !== undefined) {
         if (existing.original !== original) {

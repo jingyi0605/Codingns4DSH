@@ -8,6 +8,7 @@ import type { CodingNsClientServices } from '../src/client/features/types.js'
 import type { SessionTranslationRecord } from '../src/shared/contracts/session-translation.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 import { createPresentationSlots } from './fixtures/presentation-slots.js'
+import { clearOutputTranslationRetries } from '../src/client/session-translation-retry.js'
 
 const translationT = resolveCodingNsTranslator()
 const chatT = (key: string, params?: Record<string, unknown>): string => {
@@ -222,6 +223,102 @@ test('pending translation is clickable, shows progress, and switches to complete
   assert.equal(listeners.size, 0)
 })
 
+test('failed reasoning and reply popups retry once per click and update their visible text', async (t) => {
+  const previousWindow = globalThis.window
+  Object.assign(globalThis, { window: { innerWidth: 900, innerHeight: 700, addEventListener() {}, removeEventListener() {} } })
+  t.after(() => { if (previousWindow === undefined) delete (globalThis as any).window; else globalThis.window = previousWindow })
+  const flush = () => new Promise<void>(resolve => setImmediate(resolve))
+  for (const kind of ['assistant', 'reasoning'] as const) {
+    let finish!: (value: any) => void
+    const calls: any[] = []
+    const services = { rpc: { call(_channel: string, endpoint: string, payload: any) {
+      calls.push({ endpoint, payload })
+      return new Promise(resolve => { finish = resolve })
+    } } } as unknown as CodingNsClientServices
+    const failed = { ...outputRecord, outputKind: kind, translated: outputRecord.original, failed: true }
+    const view = captureRenderers().get('assistant-step')!.component as (props: any) => ReactElement
+    const rootProps = { services, sessionId: 'retry-session', t: chatT, translationT,
+      node: { id: 'retry-message', data: { status: 'running', turn: 1, step: 1,
+        blocks: [{ kind: kind === 'assistant' ? 'text' : 'reasoning', text: failed.original, codingnsTranslation: failed }] } },
+    }
+    const root = createHookRenderer(view, rootProps)
+    const block = elements(root.render()).find(element => element.props.translationRecord !== undefined)!
+    const body = createHookRenderer(kind === 'assistant' ? block.type as (props: any) => ReactElement : AssistantReasoningContent,
+      { ...block.props, running: false })
+    const actionElement = elements(body.render()).find(element => element.type === TranslationAction)!
+    const popup = createHookRenderer(TranslationAction, actionElement.props)
+    try {
+      let tree = popup.render()
+      const trigger = elements(tree).find(element => element.type === 'button')!
+      ;(trigger as any).ref.current = { getBoundingClientRect: () => ({ left: 200, right: 228, top: 500, bottom: 528 }) }
+      trigger.props.onClick()
+      tree = popup.render()
+      const retry = elements(tree).find(element => element.type === 'button' && element.props.children === translationT('translation.retry'))!
+      assert.ok(retry)
+      retry.props.onClick()
+      retry.props.onClick()
+      assert.equal(calls.length, 1, 'rapid clicks share one in-flight retry')
+      assert.equal(calls[0].endpoint, 'cli/translation/retry-output')
+      assert.equal(calls[0].payload.outputKind, kind)
+      assert.equal(calls[0].payload.original, failed.original)
+      assert.equal(elements(popup.render()).find(element => element.props.children === translationT('translation.retry'))!.props.disabled, true)
+      finish({ ok: true, value: failed })
+      await flush()
+      tree = popup.render()
+      const again = elements(tree).find(element => element.type === 'button' && element.props.children === translationT('translation.retry'))!
+      assert.equal(again.props.disabled, false, 'a second failure remains retryable')
+      again.props.onClick()
+      finish({ ok: true, value: { ...outputRecord, outputKind: kind } })
+      await flush()
+      assert.equal(elements(popup.render()).some(element => element.props.children === translationT('translation.retry')), false)
+      assert.ok(renderToStaticMarkup(body.render()).includes(outputRecord.translated))
+      assert.ok(renderToStaticMarkup(root.render()).includes(outputRecord.translated), 'collapsed reasoning also reads the successful retry')
+      const settled = root.render({ ...rootProps, node: { ...rootProps.node, data: { ...rootProps.node.data,
+        status: 'settled', finalNode: { messageId: 'durable-history-id' },
+      } } } as typeof rootProps)
+      assert.ok(renderToStaticMarkup(settled).includes(outputRecord.translated), 'settling the step must retain the retried translation')
+    } finally { popup.dispose(); body.dispose(); root.dispose(); clearOutputTranslationRetries(services) }
+  }
+})
+
+test('failed user translation opens a compact attached popup with only the notice and three choices', async (t) => {
+  const previousWindow = globalThis.window
+  Object.assign(globalThis, { window: { innerWidth: 900, innerHeight: 700, addEventListener() {}, removeEventListener() {} } })
+  t.after(() => { if (previousWindow === undefined) delete (globalThis as any).window; else globalThis.window = previousWindow })
+  for (const [choice, label] of [['retry', 'translation.retry'], ['send', 'translation.sendDirectly'], ['cancel', 'translation.cancelSending']] as const) {
+    const calls: any[] = []
+    let resolved = 0
+    const services = { rpc: { async call(_channel: string, endpoint: string, payload: any) {
+      calls.push({ endpoint, payload }); return { ok: true, value: { accepted: true } }
+    } } } as unknown as CodingNsClientServices
+    const base = { messageId: `pending-${choice}`, messageRole: 'user' as const, services, translationT, original: inputRecord.original, onDecision: () => { resolved++ } }
+    const popup = createHookRenderer(TranslationAction, base)
+    try {
+      const trigger = elements(popup.render()).find(element => element.type === 'button')!
+      ;(trigger as any).ref.current = { getBoundingClientRect: () => ({ left: 200, right: 228, top: 500, bottom: 528 }) }
+      const tree = popup.render({ ...base, inputFailure: { id: 'request', sessionId: 'session', record: {
+        ...outputRecord, original: inputRecord.original, failed: true, sourceLanguage: 'zh', durationMs: 1300, totalTokens: 0,
+      } } } as typeof base)
+      const dialog = elements(tree).find(element => element.props.role === 'dialog')!
+      assert.ok(dialog, 'failure automatically opens the popup')
+      const html = renderToStaticMarkup(dialog)
+      assert.equal(dialog.props['aria-label'], translationT('translation.inputFailedTitle'))
+      assert.ok(html.includes(translationT('translation.inputFailedHelp')))
+      for (const key of ['translation.actualSentText', 'translation.originalText', 'translation.detectedLanguage', 'translation.modelUsed', 'translation.detailsTitle']) {
+        assert.equal(html.includes(translationT(key)), false, `failure prompt omits ${key}`)
+      }
+      assert.equal(html.includes(inputRecord.original), false)
+      assert.doesNotMatch(html, /1\.30 s|0 tok/)
+      for (const key of ['translation.retry', 'translation.sendDirectly', 'translation.cancelSending']) assert.ok(html.includes(translationT(key)))
+      const button = elements(dialog).find(element => element.props.children === translationT(label))!
+      button.props.onClick(); button.props.onClick()
+      await new Promise<void>(resolve => setImmediate(resolve))
+      assert.deepEqual(calls, [{ endpoint: 'cli/translation/resolve', payload: { sessionId: 'session', id: 'request', choice } }])
+      assert.equal(resolved, 1)
+    } finally { popup.dispose(); clearOutputTranslationRetries(services) }
+  }
+})
+
 test('input and reply history pass translation metrics to the popup action', () => {
   const renderers = captureRenderers()
   const metrics = { durationMs: 1234, totalTokens: 456 }
@@ -240,9 +337,13 @@ test('input and reply history pass translation metrics to the popup action', () 
     const component = renderers.get(key)!.component as (props: any) => ReactElement
     const renderer = createHookRenderer(component, { node, t: chatT, translationT, services: {}, sessionId: 'metrics' })
     try {
-      const action = elements(renderer.render()).find((element) => element.type === TranslationAction)!
+      const tree = renderer.render()
+      const content = elements(tree).find(element => typeof element.type === 'function' && element.props.translationRecord !== undefined)
+      const contentRenderer = content === undefined ? undefined : createHookRenderer(content.type as (props: any) => ReactElement, content.props)
+      const action = elements(contentRenderer?.render() ?? tree).find((element) => element.type === TranslationAction)!
       assert.equal(action.props.record.durationMs, metrics.durationMs)
       assert.equal(action.props.record.totalTokens, metrics.totalTokens)
+      contentRenderer?.dispose()
     } finally { renderer.dispose() }
   }
 })

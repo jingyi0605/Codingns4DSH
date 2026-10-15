@@ -25,9 +25,12 @@ import { TRANSLATION_GLYPH_PATHS, TRANSLATION_GLYPH_SIZE, TRANSLATION_PENDING_BA
 import { uiFontSize } from './font-scale.js'
 import { useCliSessionTranslationEnabled } from './cli-slots.js'
 import { watchPendingTranslationTargets, type PendingTranslationTarget } from './session-translation-pending-dom.js'
+import { callCliRpc } from './cli-catalog.js'
+import { startSerialPolling } from './serial-polling.js'
+import { clearOutputTranslationRetries, useOutputTranslation } from './session-translation-retry.js'
 import type { CodingNsClientServices } from './features/types.js'
 import type { CodingNsTranslator } from './locale.js'
-import type { SessionTranslationInputRecord, SessionTranslationLanguage, SessionTranslationModel, SessionTranslationOutputKind, SessionTranslationRecord } from '../shared/contracts/session-translation.js'
+import type { SessionTranslationInputRecord, SessionTranslationLanguage, SessionTranslationModel, SessionTranslationOutputKind, SessionTranslationRecord, SessionTranslationPendingInput, SessionTranslationRecoveryChoice } from '../shared/contracts/session-translation.js'
 import { readSessionTranslationMetrics } from '../shared/contracts/session-translation.js'
 
 interface EventSourceLike {
@@ -45,11 +48,15 @@ interface TranslationPopupPosition {
 
 interface TranslationActionProps {
   readonly messageId: string
+  readonly sessionId?: string | undefined
+  readonly outputKind?: SessionTranslationOutputKind | undefined
+  readonly inputFailure?: SessionTranslationPendingInput | undefined
+  readonly onDecision?: (() => void) | undefined
   readonly messageRole?: 'user' | 'assistant'
   readonly services: CodingNsClientServices
   readonly translationT: CodingNsTranslator
   /** Absent only for a pending submission in a translation-enabled session. */
-  readonly record?: SessionTranslationRecord
+  readonly record?: SessionTranslationRecord | undefined
   readonly original?: string
   readonly popupAlign?: 'start' | 'end'
   readonly inline?: boolean
@@ -77,7 +84,15 @@ interface UserContentParts {
  * 把翻译状态和查看原文的入口放回对应消息块，不占用 AI 回复底部的统一操作栏。
  */
 export function TranslationAction(props: TranslationActionProps): ReactElement | null {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(props.inputFailure !== undefined)
+  const output = useOutputTranslation({ ...props, record: props.inputFailure?.record ?? props.record })
+  const [deciding, setDeciding] = useState(false)
+  const decidingRef = useRef(false)
+  const [decisionError, setDecisionError] = useState(false)
+  useEffect(() => {
+    if (props.inputFailure !== undefined) setOpen(true)
+    setDecisionError(false)
+  }, [props.inputFailure?.id])
   const rootRef = useRef<HTMLDivElement | null>(null)
   const buttonRef = useRef<HTMLButtonElement | null>(null)
   const popupRef = useRef<HTMLDivElement | null>(null)
@@ -123,8 +138,10 @@ export function TranslationAction(props: TranslationActionProps): ReactElement |
     }
   }, [open, props.popupAlign])
 
-  const record = props.record
-  const pending = record === undefined
+  const record = output.record
+  const inputFailure = props.inputFailure !== undefined
+  const detailsTitle = props.translationT(inputFailure ? 'translation.inputFailedTitle' : 'translation.detailsTitle')
+  const pending = record === undefined || output.pending
   const failed = record?.failed === true
   const alreadyTargetLanguage = record?.alreadyTargetLanguage === true
   const statusText = pending
@@ -136,10 +153,23 @@ export function TranslationAction(props: TranslationActionProps): ReactElement |
         : props.translationT('translation.statusTranslated')
   const statusColor = pending ? dshThemeColor.accent : failed ? dshThemeColor.error : alreadyTargetLanguage ? dshThemeColor.accent : dshThemeColor.success
   const detailsId = `codingns-translation-details-${safeDomId(props.messageId)}`
+  const decide = async (choice: SessionTranslationRecoveryChoice): Promise<void> => {
+    if (props.inputFailure === undefined || decidingRef.current) return
+    decidingRef.current = true
+    setDeciding(true)
+    setDecisionError(false)
+    try {
+      await callCliRpc(props.services.rpc, 'translation/resolve', {
+        sessionId: props.inputFailure.sessionId, id: props.inputFailure.id, choice,
+      }, AbortSignal.timeout(15_000))
+      props.onDecision?.()
+    } catch { setDecisionError(true) }
+    finally { decidingRef.current = false; setDeciding(false) }
+  }
   const details = open && popupPosition !== null ? createElement('div', {
     ref: popupRef,
     role: 'dialog',
-    'aria-label': props.translationT('translation.detailsTitle'),
+    'aria-label': detailsTitle,
     id: detailsId,
     style: {
       position: 'fixed',
@@ -162,20 +192,29 @@ export function TranslationAction(props: TranslationActionProps): ReactElement |
     },
   },
   createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 10, fontWeight: 600 } },
-    createElement('span', undefined, props.translationT('translation.detailsTitle')),
-    createElement('span', { role: 'status', 'aria-live': 'polite', style: { color: statusColor, fontWeight: 400 } }, statusText),
+    createElement('span', undefined, detailsTitle),
+    inputFailure ? null : createElement('span', { role: 'status', 'aria-live': 'polite', style: { color: statusColor, fontWeight: 400 } }, statusText),
   ),
-  record?.sourceLanguage === undefined ? null : createElement('div', { style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, `${props.translationT('translation.detectedLanguage')}: ${props.translationT(`translation.language.${record.sourceLanguage}`)}`),
-  createElement(DetailBlock, { kind: 'original', translationT: props.translationT, value: record?.original ?? props.original ?? '' }),
+  inputFailure || record?.sourceLanguage === undefined ? null : createElement('div', { style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, `${props.translationT('translation.detectedLanguage')}: ${props.translationT(`translation.language.${record.sourceLanguage}`)}`),
+  inputFailure ? null : createElement(DetailBlock, { kind: 'original', translationT: props.translationT, value: record?.original ?? props.original ?? '' }),
   pending ? createElement('progress', { 'aria-label': statusText, style: { display: 'block', width: '100%', height: 4, marginTop: 8, accentColor: dshThemeColor.accent } }) : null,
   pending
     ? createElement('div', { role: 'status', 'aria-live': 'polite', style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, props.translationT('translation.progressHelp'))
-    : createElement(DetailBlock, { kind: props.messageRole === 'user' ? 'sent' : 'translated', translationT: props.translationT, value: record.translated }),
-  pending ? null : createElement('div', { style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, [
-    `${props.translationT('translation.modelUsed')}: ${alreadyTargetLanguage ? props.translationT('translation.modelNotUsed') : formatModel(record.model, props.translationT)}`,
-    ...(record.durationMs === undefined ? [] : [`${(record.durationMs / 1000).toFixed(2)} s`]),
-    ...(record.totalTokens === undefined ? [] : [`${record.totalTokens} tok`]),
+    : props.inputFailure !== undefined ? null : createElement(DetailBlock, { kind: props.messageRole === 'user' ? 'sent' : 'translated', translationT: props.translationT, value: record!.translated }),
+  pending || inputFailure ? null : createElement('div', { style: { marginTop: 8, color: dshThemeColor.labelSecondary } }, [
+    `${props.translationT('translation.modelUsed')}: ${alreadyTargetLanguage ? props.translationT('translation.modelNotUsed') : formatModel(record!.model, props.translationT)}`,
+    ...(record!.durationMs === undefined ? [] : [`${(record!.durationMs / 1000).toFixed(2)} s`]),
+    ...(record!.totalTokens === undefined ? [] : [`${record!.totalTokens} tok`]),
   ].join(' · ')),
+  props.inputFailure === undefined ? null : createElement('p', { role: 'alert' }, props.translationT('translation.inputFailedHelp')),
+  decisionError ? createElement('p', { role: 'alert', style: { color: dshThemeColor.error } }, props.translationT('translation.decisionFailed')) : null,
+  props.inputFailure !== undefined ? createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 } },
+    ...(['retry', 'send', 'cancel'] as const).map(choice => createElement('button', {
+      key: choice, type: 'button', disabled: deciding, onClick: () => { void decide(choice) }, style: recoveryButtonStyle,
+    }, props.translationT(choice === 'retry' ? 'translation.retry' : choice === 'send' ? 'translation.sendDirectly' : 'translation.cancelSending'))),
+  ) : output.retry === undefined ? null : createElement('button', {
+    type: 'button', disabled: pending, onClick: () => { void output.retry?.() }, style: { ...recoveryButtonStyle, marginTop: 10 },
+  }, props.translationT('translation.retry')),
   ) : null
   const renderedDetails = details === null
     ? null
@@ -216,6 +255,11 @@ export function TranslationAction(props: TranslationActionProps): ReactElement |
   )
 }
 
+const recoveryButtonStyle: CSSProperties = {
+  padding: '5px 10px', borderRadius: 6, border: `1px solid ${dshThemeColor.border}`,
+  background: dshThemeColor.surfaceSubtle, color: dshThemeColor.labelPrimary, cursor: 'pointer', font: 'inherit',
+}
+
 function PendingTranslationActions(props: {
   readonly services: CodingNsClientServices
   readonly translationT: CodingNsTranslator
@@ -224,22 +268,50 @@ function PendingTranslationActions(props: {
 }): ReactElement {
   const anchorRef = useRef<HTMLSpanElement | null>(null)
   const [targets, setTargets] = useState<readonly PendingTranslationTarget[]>([])
+  const [failures, setFailures] = useState<readonly SessionTranslationPendingInput[]>([])
+  const pollingRef = useRef<ReturnType<typeof startSerialPolling>>()
   const enabled = useCliSessionTranslationEnabled(props.sessionId, props.services.rpc)
   const subagent = props.useSession?.((state) => state.subagent)
   const eligible = enabled && subagent == null && !props.sessionId?.startsWith('codingns-assistant-')
+  useEffect(() => {
+    setFailures([])
+    if (!eligible || props.sessionId === undefined) return
+    const polling = startSerialPolling(async signal => {
+      const next = await callCliRpc<readonly SessionTranslationPendingInput[]>(props.services.rpc, 'translation/pending', { sessionId: props.sessionId }, signal)
+      if (!signal.aborted && Array.isArray(next)) setFailures(current => JSON.stringify(current) === JSON.stringify(next) ? current : next)
+    }, 750)
+    pollingRef.current = polling
+    return () => { polling.dispose(); pollingRef.current = undefined }
+  }, [eligible, props.sessionId, props.services.rpc])
   useLayoutEffect(() => {
     setTargets([])
     if (!eligible || anchorRef.current === null) return undefined
     return watchPendingTranslationTargets(anchorRef.current, setTargets)
   }, [eligible, props.sessionId])
-  return createElement('span', { ref: anchorRef, style: { display: 'none' } },
-    ...targets.map((target) => createPortal(createElement(PendingTranslationAction, {
+  const remaining = [...failures]
+  const actions = targets.map(target => {
+    const index = remaining.findIndex(failure => normalizePendingText(failure.record.original) === normalizePendingText(target.original))
+    const failure = index < 0 ? undefined : remaining.splice(index, 1)[0]
+    return createPortal(createElement(PendingTranslationAction, {
       services: props.services,
       translationT: props.translationT,
       original: target.original,
-    }), target.container, String(target.key))),
+      inputFailure: failure,
+      onDecision: () => { void pollingRef.current?.refresh({ afterPending: true }) },
+    }), target.container, String(target.key))
+  })
+  return createElement('span', { ref: anchorRef, style: { display: 'contents' } },
+    ...actions,
+    ...remaining.map(failure => createElement('span', { key: failure.id, style: { display: 'inline-flex', alignItems: 'center', gap: 8, maxWidth: '100%' } },
+      createElement('span', { style: { maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, failure.record.original),
+      createElement(PendingTranslationAction, { services: props.services, translationT: props.translationT,
+        original: failure.record.original, inputFailure: failure,
+        onDecision: () => { void pollingRef.current?.refresh({ afterPending: true }) } }),
+    )),
   )
 }
+
+function normalizePendingText(value: string): string { return value.replace(/\s+/gu, ' ').trim() }
 
 function PendingTranslationAction(props: Omit<TranslationActionProps, 'messageId'>): ReactElement {
   const id = useId()
@@ -542,7 +614,8 @@ function AssistantTranslationNodeView(props: any): ReactElement | null {
     && turnProcess.open !== true
   const rendered: ReactNode[] = []
   const last = blocks.length - 1
-  const messageId = typeof finalNode?.messageId === 'string' ? finalNode.messageId : `turn-${data.turn}-step-${data.step}`
+  // Keep retries attached when a running step receives its final history node.
+  const messageId = `turn-${data.turn}-step-${data.step}`
 
   if (!renderable) return null
   for (let index = 0; index < blocks.length; index += 1) {
@@ -555,22 +628,14 @@ function AssistantTranslationNodeView(props: any): ReactElement | null {
       const translationRecord = readRecord(block) ?? (hasTranslation && eventSnapshot !== undefined
         ? findTranslationRecordForText(eventSnapshot, block.text, 'assistant', data.turn, data.step)
         : undefined)
-      const displayText = translationRecord?.translated ?? block.text
-      rendered.push(createElement('div', {
+      rendered.push(createElement(AssistantTextContent, {
         key: `text-${index}`,
-        'data-codingns-translation-inline': true,
-        style: { minWidth: 0 },
-      },
-      createElement(MarkdownText, { text: displayText, streaming, labels: markdownLabels, fileMentions: mentions, pathImages }),
-      translationRecord === undefined ? null : createElement(TranslationAction, {
         messageId: `${messageId}-text-${index}`,
-        messageRole: 'assistant',
+        sessionId: props.sessionId,
         services: props.services,
         translationT: props.translationT,
-        record: translationRecord,
-        inline: true,
-      }),
-      ))
+        text: block.text, streaming, markdownLabels, mentions, pathImages, translationRecord,
+      }))
       continue
     }
     if (block.kind === 'reasoning') {
@@ -580,6 +645,7 @@ function AssistantTranslationNodeView(props: any): ReactElement | null {
       rendered.push(createElement(AssistantReasoningBlock, {
         key: `reasoning-${index}`,
         messageId: `${messageId}-reasoning-${index}`,
+        sessionId: props.sessionId,
         services: props.services,
         translationT: props.translationT,
         chatT,
@@ -628,8 +694,24 @@ function AssistantTranslationNodeView(props: any): ReactElement | null {
   )
 }
 
+function AssistantTextContent(props: {
+  readonly messageId: string; readonly sessionId?: string | undefined; readonly services: CodingNsClientServices
+  readonly translationT: CodingNsTranslator; readonly translationRecord?: SessionTranslationRecord | undefined
+  readonly text: string; readonly streaming: boolean; readonly markdownLabels: MarkdownTranslationLabels
+  readonly mentions?: unknown; readonly pathImages: { resolve(value: string): string | undefined }
+}): ReactElement {
+  const { record } = useOutputTranslation({ ...props, outputKind: 'assistant', record: props.translationRecord })
+  return createElement('div', { 'data-codingns-translation-inline': true, style: { minWidth: 0 } },
+    createElement(MarkdownText, { text: record?.translated ?? props.text, streaming: props.streaming, labels: props.markdownLabels, fileMentions: props.mentions as never, pathImages: props.pathImages }),
+    record === undefined ? null : createElement(TranslationAction, { messageId: props.messageId, sessionId: props.sessionId,
+      messageRole: 'assistant', outputKind: 'assistant', services: props.services, translationT: props.translationT,
+      record: props.translationRecord, inline: true }),
+  )
+}
+
 interface AssistantReasoningBlockProps {
   readonly messageId: string
+  readonly sessionId?: string | undefined
   readonly services: CodingNsClientServices
   readonly translationT: CodingNsTranslator
   readonly chatT: (key: string, params?: Record<string, unknown>) => string
@@ -649,7 +731,8 @@ interface AssistantReasoningBlockProps {
 function AssistantReasoningBlock(props: AssistantReasoningBlockProps): ReactElement {
   const [expanded, setExpanded] = useState(false)
   const groupRef = props.useGroupAction?.(props.hidden, props.reveal)
-  const displayText = props.translationRecord?.translated ?? props.text
+  const { record } = useOutputTranslation({ ...props, outputKind: 'reasoning', record: props.translationRecord })
+  const displayText = record?.translated ?? props.text
   const summary = displayText.split('\n').map((line) => line.replace(/[`*_#>]/gu, '').trim()).find(Boolean) ?? ''
   return createElement('div', {
     ref: groupRef,
@@ -669,6 +752,7 @@ function AssistantReasoningBlock(props: AssistantReasoningBlockProps): ReactElem
     }, createElement(TextShimmer, { active: props.running, children: summary })),
   }, expanded ? createElement(AssistantReasoningContent, {
     messageId: props.messageId,
+    sessionId: props.sessionId,
     services: props.services,
     translationT: props.translationT,
     text: props.text,
@@ -684,6 +768,7 @@ function AssistantReasoningBlock(props: AssistantReasoningBlockProps): ReactElem
 
 interface AssistantReasoningContentProps {
   readonly messageId: string
+  readonly sessionId?: string | undefined
   readonly services: CodingNsClientServices
   readonly translationT: CodingNsTranslator
   readonly text: string
@@ -709,7 +794,8 @@ interface AssistantReasoningContentProps {
  * 工厂存在时才允许表现层覆盖。
  */
 export function AssistantReasoningContent(props: AssistantReasoningContentProps): ReactElement {
-  const displayText = props.translationRecord?.translated ?? props.text
+  const { record } = useOutputTranslation({ ...props, outputKind: 'reasoning', record: props.translationRecord })
+  const displayText = record?.translated ?? props.text
   const markdown = createElement(MarkdownText, { text: displayText, streaming: props.running, labels: props.markdownLabels, fileMentions: props.mentions as never, pathImages: props.pathImages, variant: 'compact' })
   const content = props.renderFactorySlot === undefined
     ? markdown
@@ -721,6 +807,8 @@ export function AssistantReasoningContent(props: AssistantReasoningContentProps)
   content,
   props.translationRecord === undefined ? null : createElement(TranslationAction, {
     messageId: props.messageId,
+    sessionId: props.sessionId,
+    outputKind: 'reasoning',
     messageRole: 'assistant',
     services: props.services,
     translationT: props.translationT,
@@ -773,7 +861,7 @@ export function registerSessionTranslationChatUi(services: CodingNsClientService
     id: 'codingns-translation-pending',
     inject: (sessionId: string) => ({ services, sessionId, translationT }),
   }, PendingTranslationActions))
-  if (resolution?.status !== 'ready') return () => { removePendingActions(); removeStyles() }
+  if (resolution?.status !== 'ready') return () => { clearOutputTranslationRetries(services); removePendingActions(); removeStyles() }
   const presentation = resolution.value as MessagePresentation
   const removeRenderers = presentation.mount(() => {
     const removeUserRenderer = slots.inject!('conversation.chat.node', () => slots.register!({
@@ -796,6 +884,7 @@ export function registerSessionTranslationChatUi(services: CodingNsClientService
     return () => { removeAssistantRenderer(); removeUserRenderer() }
   })
   return () => {
+    clearOutputTranslationRetries(services)
     removePendingActions()
     removeRenderers()
     removeStyles()
