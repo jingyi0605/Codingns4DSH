@@ -82,6 +82,8 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   private readonly sessions = new Map<string, string>()
   /** Provider 会话的实际工作目录；目录变化时禁止复用旧会话。 */
   private readonly sessionCwds = new Map<string, string>()
+  /** 已投影到 Provider 会话的权限规则签名；避免每轮重复追加同一条规则。 */
+  private readonly sessionPermissions = new Map<string, string>()
   /** 交互请求属于启动该轮次的 OpenCode 目录实例，回传时必须复用同一目录。 */
   private readonly interactionTargets = new Map<string, { server: string; cwd: string | undefined }>()
   private readonly modelContextWindows = new Map<string, number>()
@@ -244,6 +246,8 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       sessionId = await this.createSession(server, input)
       this.sessions.set(input.sessionId, sessionId)
     }
+    // 复用旧会话时同样要投影：会话是在策略变化前创建的，不补写就会继续触发无意义审批。
+    await this.applySessionPermissionProjection(server, sessionId, input)
     const contextWindow = await this.resolveModelContextWindow(server, modelId)
     if (input.cwd?.trim()) this.sessionCwds.set(sessionId, input.cwd.trim())
     const interactionTarget = { server, cwd: input.cwd }
@@ -442,6 +446,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     this.v2.dispose()
     this.sessions.clear()
     this.sessionCwds.clear()
+    this.sessionPermissions.clear()
     this.interactionTargets.clear()
     this.modelContextWindows.clear()
     for (const managed of this.managedServers.values()) terminateChildProcess(managed.child)
@@ -496,6 +501,32 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     const id = typeof record?.id === 'string' ? record.id : typeof record?.sessionID === 'string' ? record.sessionID : null
     if (response.status < 200 || response.status >= 300 || id === null) throw new Error(`OpenCode 创建会话失败（HTTP ${response.status}）：${openCodeErrorDetail(response.data)}`)
     return id
+  }
+
+  /**
+   * 把 DSH 的沙箱与审批策略投影到 OpenCode 1.x 会话权限。
+   *
+   * OpenCode 默认对工作目录之外的路径触发 external_directory 询问。DSH 的
+   * danger-full-access + never 已经表示允许无提示执行，必须在 Provider 会话层
+   * 放行这条边界；否则每次读取设备目录都会绕回 DSH 审批并被 never 自动拒绝，
+   * 既做不了事，又制造出会被结算的权限事件。判定条件与 V2 路径的
+   * openCodePermissions 保持一致；策略变化时用 ask 规则把它还原回去。
+   */
+  private async applySessionPermissionProjection(server: string, sessionId: string, input: CodingNsCliTurnInput): Promise<void> {
+    if (input.permission === undefined) return
+    const allow = input.permission.sandboxMode === 'danger-full-access' && input.permission.approvalPolicy === 'never'
+    const action = allow ? 'allow' : 'ask'
+    const signature = `${server}|${action}`
+    if (this.sessionPermissions.get(sessionId) === signature) return
+    try {
+      const response = await this.http.json<unknown>(withOpenCodeDirectory(server, `/session/${encodeURIComponent(sessionId)}`, input.cwd), {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ permission: [{ permission: 'external_directory', pattern: '*', action }] }),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      })
+      if (isHttpSuccess(response.status)) this.sessionPermissions.set(sessionId, signature)
+    } catch { /* 旧版本没有会话权限接口时保持原生审批行为。 */ }
   }
 
   private async providerSessionMatchesDirectory(

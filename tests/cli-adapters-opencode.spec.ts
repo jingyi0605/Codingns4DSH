@@ -684,3 +684,33 @@ test('OpenCode 旧版权限路由查不到时回退到 V2 路由', async () => {
   ])
   driver.dispose()
 })
+
+/** danger-full-access + never 表示允许无提示执行，必须在 Provider 会话层放行外部目录。 */
+test('OpenCode 把完全访问策略投影到会话权限且不重复写入', async () => {
+  const encoder = new TextEncoder()
+  const patches: unknown[] = []
+  const fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    if (url.endsWith('/global/health')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/session') && init.method === 'POST') return new Response(JSON.stringify({ id: 'projection-session' }), { status: 200 })
+    if (url.endsWith('/session/projection-session') && init.method === 'PATCH') {
+      patches.push(JSON.parse(String(init.body)))
+      return new Response('{}', { status: 200 })
+    }
+    if (url.endsWith('/message')) return new Response('{}', { status: 200 })
+    if (url.endsWith('/event')) {
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"session.status","properties":{"status":{"type":"idle"}}}\n\n'))
+        controller.close()
+      } })
+      return new Response(body, { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  const driver = new OpenCodeDriver({ fetch, serverUrls: ['http://opencode.test'], binaries: [] })
+  const permission = { sandboxMode: 'danger-full-access', approvalPolicy: 'never' } as const
+  for (const prompt of ['第一次', '第二次']) {
+    for await (const chunk of driver.executeTurn({ sessionId: 'projection', messages: [], prompt, permission })) void chunk
+  }
+  assert.deepEqual(patches, [{ permission: [{ permission: 'external_directory', pattern: '*', action: 'allow' }] }])
+  driver.dispose()
+})
