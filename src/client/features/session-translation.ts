@@ -45,7 +45,10 @@ export const sessionTranslationFeature: CodingNsClientFeatureModule = {
     enabledByDefault: false,
     dependencies: ['cliAdapters'],
     runtime: 'client',
-    requires: [{ capability: 'conversation.interaction-translation', required: false, fallback: 'degrade' }],
+    requires: [
+      { capability: 'conversation.interaction-translation', required: false, fallback: 'degrade' },
+      { capability: 'conversation.message-presentation', required: false, fallback: 'degrade' },
+    ],
     ui: {
       label: 'Session translation',
       description: 'Translate selected external Agent requests and replies without changing tools, commands, paths, or original history. Control DSH native session translation using the switch in the conversation model selector.',

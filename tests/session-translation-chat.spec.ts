@@ -7,6 +7,7 @@ import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import type { CodingNsClientServices } from '../src/client/features/types.js'
 import type { SessionTranslationRecord } from '../src/shared/contracts/session-translation.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
+import { createPresentationSlots } from './fixtures/presentation-slots.js'
 
 const translationT = resolveCodingNsTranslator()
 const chatT = (key: string, params?: Record<string, unknown>): string => {
@@ -57,9 +58,78 @@ function createServices(slots: CodingNsClientServices['slots']): CodingNsClientS
 
 function captureRenderers(): Map<string, { component: ComponentType<any>; priority: number }> {
   const probe = createSlotsProbe()
-  registerSessionTranslationChatUi(createServices(probe.slots))
+  registerSessionTranslationChatUi(createServices(probe.slots), { primitives: { projectUserText: (text: string) => text } })
   return probe.registered
 }
+
+test('alpha.3 renders ordinary and translated user content through native factories without removed owner callbacks', () => {
+  const probe = createSlotsProbe()
+  Object.assign(probe.slots!, { registerFactory() {} })
+  const services = { ...createServices(probe.slots), dshVersion: '0.2.1-alpha.3' }
+  const dispose = registerSessionTranslationChatUi(services, { primitives: {} })
+  const calls: { name: string; props: any }[] = []
+  const loadImage = () => undefined
+  const renderFactorySlot = (name: string, props: any) => {
+    calls.push({ name, props })
+    return createElement('span', { 'data-native-content': true }, props.content?.text ?? 'native image')
+  }
+  for (const source of [undefined, { kind: 'user', codingnsTranslationInput: inputRecord }]) {
+    const html = render(probe.registered.get('user')!.component, {
+      node: { id: 'user', data: { content: [{ type: 'text', text: 'message' }, { type: 'image', attachment: { attachmentId: 'image' } }], source, referenceLabels: ['session'], skillNames: ['skill'] } },
+      renderFactorySlot, loadImage,
+    })
+    assert.match(html, /data-native-content/)
+    assert.match(html, /message/)
+    const call = calls.at(-1)!
+    assert.equal(call.name, 'conversation.chat.user.content')
+    assert.equal(call.props.loadImage, loadImage)
+    assert.deepEqual(call.props.facts, { sessionLabels: ['session'], skillNames: ['skill'] })
+    assert.deepEqual(call.props.content.attachments, [{ type: 'image', image: { attachment: { attachmentId: 'image' } } }])
+  }
+  render(probe.registered.get('assistant-step')!.component, {
+    node: { id: 'assistant', location: { kind: 'step', turn: { status: 'closed' } }, data: { status: 'settled', turn: 1, step: 1, blocks: [{ kind: 'image', attachment: { attachmentId: 'result' } }] } },
+    renderFactorySlot, loadImage,
+  })
+  assert.equal(calls.at(-1)?.name, 'conversation.images.content')
+  assert.equal(calls.at(-1)?.props.align, 'start')
+  dispose()
+  assert.equal(probe.registered.size, 0)
+})
+
+test('alpha.3 translation follows late factory declarations, reloads and disposal', () => {
+  const slots = createPresentationSlots()
+  const removeRoot = slots.register({ name: 'root', children: {
+    'conversation.chat.node': { kind: 'keyed', scope: 'session' },
+    'conversation.input.left': { kind: 'list', scope: 'session' },
+  } } as any, () => null)
+  const native = () => null
+  const removeNative = slots.register({ name: 'conversation.chat.node', key: 'user' } as any, native)
+  const dispose = registerSessionTranslationChatUi({ ...createServices(slots as any), dshVersion: '0.2.1-alpha.3' })
+  const renderers = () => slots.entries('conversation.chat.node' as never)
+  assert.equal(renderers().length, 1, 'native renderer survives while factories are unavailable')
+  const text = () => slots.registerFactory({ name: 'conversation.user.text', scope: 'session',
+    children: { 'conversation.user.text.node': { kind: 'keyed', scope: 'session' } } } as any, () => null)
+  const removeText = text()
+  assert.equal(renderers().length, 1)
+  const content = () => slots.registerFactory({ name: 'conversation.chat.user.content', scope: 'session',
+    children: { 'conversation.chat.user.images': { kind: 'single', scope: 'session' } } } as any, () => null)
+  const removeContent = content()
+  assert.equal(renderers().length, 3, 'text translation does not wait for the optional image gallery')
+  removeContent()
+  assert.equal(renderers().length, 1)
+  const removeReplacement = content()
+  assert.equal(renderers().length, 3)
+  removeText()
+  assert.equal(renderers().length, 1)
+  const removeTextReplacement = text()
+  assert.equal(renderers().length, 3)
+  dispose()
+  assert.equal(renderers().length, 1)
+  removeTextReplacement()
+  const removeAfterStop = text()
+  assert.equal(renderers().length, 1, 'disposed feature must not remount on later factory changes')
+  removeAfterStop(); removeReplacement(); removeNative(); removeRoot()
+})
 
 function render(component: ComponentType<any>, props: Record<string, unknown>): string {
   return renderToStaticMarkup(createElement(component, { t: chatT, translationT, services: {}, ...props }))

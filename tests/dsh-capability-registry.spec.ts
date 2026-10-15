@@ -230,13 +230,16 @@ test('0.2 世代 Host fixture 按服务形状解析到 020 路由', () => {
     ['web.index-inject', 'index-inject-rows-020'],
     ['web.index-tap', 'index-tap-020'],
   ] as const
-  // 0.2 世代的所有版本共用同一套结构路由：旧测试版本（rc.2）与当前测试版本
-  // 必须解析到同一批 routeId，否则升级会让已发布环境静默降级。
+  // alpha.3 changes peer admission; the other service routes remain stable.
   for (const dshVersion of ['0.2.0-rc.2', SUPPORTED_DSH_VERSION]) {
-    const profile = createDshCapabilityRegistry(dshVersion, 'host', context).getProfile(context)
+    const fixture = dshVersion === '0.2.0-rc.2' ? context : { ...context, connection: {
+      ...context.connection, operator: undefined, browserPeer: {}, createPeer() {},
+    } }
+    const profile = createDshCapabilityRegistry(dshVersion, 'host', fixture).getProfile(fixture)
     for (const [capability, routeId] of expectations) {
       const resolution = profile.capabilities.get(capability)
-      assert.equal(resolution?.routeId, routeId, `${dshVersion} ${capability}`)
+      const expectedRoute = dshVersion !== '0.2.0-rc.2' && (capability === 'connection.peer' || capability === 'connection.uplink') ? `${capability}-021` : routeId
+      assert.equal(resolution?.routeId, expectedRoute, `${dshVersion} ${capability}`)
       assert.equal(resolution?.status, 'ready', `${dshVersion} ${capability}`)
     }
     // 原生子代理启动入口按世代换代，但对外仍是同一个 `subagent.continuable` 能力。

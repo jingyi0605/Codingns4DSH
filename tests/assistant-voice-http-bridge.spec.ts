@@ -16,7 +16,7 @@ import type { VoicePcmFrame, VoiceRuntimeListener } from '../data/build/dist/sha
  * 上游没有公开导出 bridge；在内存为发布包的完整区域补一个测试导出。
  * 不修改依赖、不生成构建产物，也不监听任何端口。
  */
-async function loadNativeBridge(): Promise<(request: PassThrough, response: MemoryResponse, handler: unknown) => Promise<void>> {
+async function loadNativeBridge(): Promise<(request: PassThrough, response: MemoryResponse, handler: unknown, peer: unknown) => Promise<void>> {
   const source = await readFile(new URL(import.meta.resolve('@deepseek-ai/dsh-client-connection')), 'utf8')
   const start = source.indexOf('//#region lib/types/http-bridge.js')
   const end = source.indexOf('//#endregion', start)
@@ -51,18 +51,18 @@ function connection(): HostConnectionService {
 
 test('复现原生桥给 GET 附加流式正文时的 400 根因', async (t) => {
   const native = connection()
-  t.after(() => native.operator.dispose())
+  t.after(() => native.browserPeer.dispose())
   let entered = false
   const dispose = native.fetch.register({ path: ASSISTANT_VOICE_STREAM_PATH, methods: ['GET', 'POST'], requestBody: 'streaming', fetch: async () => { entered = true; return new Response('不应进入') } })
   t.after(() => dispose())
   const bridge = await loadNativeBridge()
-  await assert.rejects(() => bridge(request(ASSISTANT_VOICE_STREAM_PATH), new MemoryResponse(), native.createSharedFetchHandler('/api')), /GET\/HEAD.*body/u)
+  await assert.rejects(() => bridge(request(ASSISTANT_VOICE_STREAM_PATH), new MemoryResponse(), native.createSharedFetchHandler('/api'), native.browserPeer), /GET\/HEAD.*body/u)
   assert.equal(entered, false, '错误发生在 Node Request 创建阶段，语音处理器尚未进入')
 })
 
 test('独立 buffered GET 经原生 HTTP 桥返回 200，PCM 上传与实时事件能同时工作', { timeout: 3_000 }, async (t) => {
   const native = connection()
-  t.after(() => native.operator.dispose())
+  t.after(() => native.browserPeer.dispose())
   const listeners = new Set<VoiceRuntimeListener>()
   const coordinator = new GlobalVoiceCoordinator({ adapter: {
     capabilities: { realtime: true, streamingInput: true, streamingOutput: false, wakeWord: false, bargeIn: false, speechToText: true, textToSpeech: false },
@@ -78,7 +78,7 @@ test('独立 buffered GET 经原生 HTTP 桥返回 200，PCM 上传与实时事�
   const bridge = await loadNativeBridge()
   const output = new MemoryResponse()
   const firstChunk = once(output, 'chunk')
-  const done = bridge(request(`${ASSISTANT_VOICE_EVENTS_PATH}?ownerId=tab-a`), output, api)
+  const done = bridge(request(`${ASSISTANT_VOICE_EVENTS_PATH}?ownerId=tab-a`), output, api, native.browserPeer)
   await Promise.race([firstChunk, done.then(() => { throw new Error('事件连接在首次回显前结束') })])
   assert.equal(output.status, 200)
   assert.equal(output.headers['x-accel-buffering'], 'no')
@@ -87,12 +87,12 @@ test('独立 buffered GET 经原生 HTTP 桥返回 200，PCM 上传与实时事�
   const body = Buffer.concat([open, frame, new Uint8Array([1, 2])])
   const uploadOutput = new MemoryResponse()
   const partial = once(output, 'chunk')
-  await bridge(request(`${ASSISTANT_VOICE_STREAM_PATH}?mode=frames`, 'POST', body), uploadOutput, api)
+  await bridge(request(`${ASSISTANT_VOICE_STREAM_PATH}?mode=frames`, 'POST', body), uploadOutput, api, native.browserPeer)
   await partial
   assert.equal(uploadOutput.status, 204)
   assert.match(output.chunks.join(''), /真实 HTTP 桥回显/u)
   const denied = new MemoryResponse()
-  await bridge(request(`${ASSISTANT_VOICE_EVENTS_PATH}?ownerId=tab-b`), denied, api)
+  await bridge(request(`${ASSISTANT_VOICE_EVENTS_PATH}?ownerId=tab-b`), denied, api, native.browserPeer)
   assert.equal(denied.status, 403, '拆分路由不能绕过租约保护')
   await coordinator.stop('tab-a')
   await done
@@ -101,7 +101,7 @@ test('独立 buffered GET 经原生 HTTP 桥返回 200，PCM 上传与实时事�
 
 test('TTS 正文与参考试听经原生桥传递，试听不需要实时麦克风租约', async (t) => {
   const native = connection()
-  t.after(() => native.operator.dispose())
+  t.after(() => native.browserPeer.dispose())
   const coordinator = new GlobalVoiceCoordinator({ adapter: {
     capabilities: { realtime: false, streamingInput: false, streamingOutput: false, wakeWord: false, bargeIn: false, speechToText: false, textToSpeech: false },
     start() { throw new Error('试听不应启动实时识别') }, stop() {}, interrupt() {}, subscribe() { return () => undefined },
@@ -128,14 +128,14 @@ test('TTS 正文与参考试听经原生桥传递，试听不需要实时麦克�
   const bridge = await loadNativeBridge()
   const api = native.createSharedFetchHandler('/api')
   const output = new MemoryResponse()
-  await bridge(request(ASSISTANT_TTS_PATH, 'POST', Buffer.from(JSON.stringify({ text: '你好', voiceId: 'moss:Junhao' }))), output, api)
+  await bridge(request(ASSISTANT_TTS_PATH, 'POST', Buffer.from(JSON.stringify({ text: '你好', voiceId: 'moss:Junhao' }))), output, api, native.browserPeer)
   assert.equal(output.status, 200)
   assert.equal(output.headers['x-accel-buffering'], 'no')
   assert.deepEqual(output.chunks.join('').trim().split('\n').map((line) => JSON.parse(line)), [
     { type: 'audio', sampleRate: 48000, data: 'AAA=' }, { type: 'done' },
   ])
   const sample = new MemoryResponse()
-  await bridge(request(`${ASSISTANT_VOICE_SAMPLE_PATH}?id=moss%3AJunhao`), sample, api)
+  await bridge(request(`${ASSISTANT_VOICE_SAMPLE_PATH}?id=moss%3AJunhao`), sample, api, native.browserPeer)
   assert.equal(sample.status, 200)
   assert.equal(sample.headers['content-type'], 'audio/wav')
   assert.equal(sample.chunks.join(''), 'RIFF-reference')

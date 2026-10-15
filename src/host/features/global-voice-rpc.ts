@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { isCodingNsOwnerPeer } from '../../dsh-capabilities/host/connection-peer-adapter.js'
 import type { FeatureModule } from '../../shared/contracts/feature.js'
 import type { VoiceRuntimeCapabilities, VoiceRuntimeEvent, VoiceRuntimeState } from '../../shared/contracts/voice-runtime.js'
 import type { CodingNsHostServices } from './types.js'
@@ -812,9 +813,7 @@ export function createGlobalVoiceRpcFeature(options: { readonly probeVoiceModel?
       context.resources.add(context.services.rpc.register('assistant', async (action, payload, rpcContext) => {
         if (action.startsWith('notifications/')) {
           // 外层连接已完成认证；仍拒绝明确的访客/受限会话，伴随页没有这条 RPC 通道。
-          const peer = asRecord(asRecord(rpcContext)?.peer)
-          const operator = readOptionalService(context.services.dshContext, 'connection')?.operator
-          if (operator !== undefined && asRecord(rpcContext)?.peer !== operator || peer?.authenticated === false || peer?.authorized === false || peer?.scope?.kind === 'session' || peer?.kind === 'session') throw new CodingNsRpcError('CODINGNS_RPC_UNAUTHENTICATED', '当前调用者无权读取全局助理通知')
+          if (!isCodingNsOwnerPeer(readOptionalService(context.services.dshContext, 'connection'), asRecord(rpcContext)?.peer)) throw new CodingNsRpcError('CODINGNS_RPC_UNAUTHENTICATED', '当前调用者无权读取全局助理通知')
           if (!isRecord(payload) || Array.isArray(payload)) throw new TypeError('通知 RPC 参数无效')
           if (action === 'notifications/source') {
             const request = readAssistantNotificationFeedRequest(payload)

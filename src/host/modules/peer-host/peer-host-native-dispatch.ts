@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { randomUUID } from 'node:crypto'
 import { CodingNsRpcError } from '../../rpc-table.js'
+import { nativePeerRequest, nativeSharedFetch, type NativeGateway } from '../../../dsh-capabilities/host/native-dispatch-adapter.js'
 
 /**
  * DSH Web 会先开放 Connection，再异步激活部分 Host Service。
@@ -22,8 +23,8 @@ const GATEWAY_SERVICE_UNAVAILABLE = 'gateway/service-unavailable'
  * 会话流立刻结束（`session/follow`）。因此这里只经过 DSH 自己的 Gateway。
  */
 export interface DshNativeDispatch {
-  rpc(method: string, payload: unknown, signal?: AbortSignal): Promise<unknown>
-  stream(method: string, payload: unknown, signal?: AbortSignal): Promise<AsyncIterable<unknown>>
+  rpc(method: string, payload: unknown, signal?: AbortSignal, peer?: unknown): Promise<unknown>
+  stream(method: string, payload: unknown, signal?: AbortSignal, peer?: unknown): Promise<AsyncIterable<unknown>>
 }
 
 export interface DshNativeDispatchOptions {
@@ -33,17 +34,11 @@ export interface DshNativeDispatchOptions {
   readonly onSessionStatusForwarded?: (sessionId: string, running: boolean) => void
 }
 
-interface TypertGatewayService {
-  readonly wireStream?: { open(endpoint: string, payload: unknown, uplink: AsyncIterable<unknown>, peer: undefined, signal: AbortSignal): Promise<AsyncIterable<unknown>> }
-  readonly invoke?: (request: { readonly namespace: string; readonly method: string; readonly args: Record<string, unknown>; readonly signal?: AbortSignal }) => Promise<unknown>
-  readonly stream?: (request: { readonly namespace: string; readonly method: string; readonly args: Record<string, unknown>; readonly signal?: AbortSignal }) => AsyncIterable<unknown>
-}
-
 export function resolveDshNativeDispatch(ctx: Context | undefined, options: DshNativeDispatchOptions = {}): DshNativeDispatch | undefined {
   if (ctx === undefined) return undefined
   let gateway: unknown
   try { gateway = ctx.get('typertGateway') } catch { return undefined }
-  const service = gateway as TypertGatewayService | undefined
+  const service = gateway as NativeGateway | undefined
   if (typeof service?.invoke !== 'function' || typeof service.stream !== 'function') return undefined
   const endpoint = (method: string): { namespace: string; method: string } => {
     const separator = method.indexOf('/')
@@ -53,25 +48,25 @@ export function resolveDshNativeDispatch(ctx: Context | undefined, options: DshN
     return { namespace, method: operation }
   }
   return {
-    async rpc(method, payload, signal) {
-      if (method === '$events/result') return dispatchEventResult(ctx, payload, signal)
+    async rpc(method, payload, signal, peer) {
+      if (method === '$events/result') return dispatchEventResult(ctx, payload, signal, peer)
       const target = endpoint(method)
       const args = readWireArgs(payload)
       return await invokeWithServiceReadinessRetry(
-        () => service.invoke!({ ...target, args, ...(signal === undefined ? {} : { signal }) }),
+        () => service.invoke!({ ...target, args, ...nativePeerRequest(ctx.get('connection'), peer), ...(signal === undefined ? {} : { signal }) }),
         signal,
       )
     },
-    async stream(method, payload, signal) {
+    async stream(method, payload, signal, peer) {
       if (method === '$events') {
         if (service.wireStream === undefined) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', '当前 Host 未提供 DSH 原生事件通道')
-        const stream = await service.wireStream.open(method, payload, (async function* () {})(), undefined, signal ?? new AbortController().signal)
+        const stream = await service.wireStream.open(method, payload, (async function* () {})(), nativePeerRequest(ctx.get('connection'), peer).peer, signal ?? new AbortController().signal)
         return interactionEvents(stream, options)
       }
       const target = endpoint(method)
       const args = readWireArgs(payload)
       return await invokeWithServiceReadinessRetry(
-        () => Promise.resolve(service.stream!({ ...target, args, ...(signal === undefined ? {} : { signal }) })),
+        () => Promise.resolve(service.stream!({ ...target, args, ...nativePeerRequest(ctx.get('connection'), peer), ...(signal === undefined ? {} : { signal }) })),
         signal,
       )
     },
@@ -116,16 +111,16 @@ function isSessionStatusFrame(value: unknown): boolean {
 }
 
 /** 事件结果由 Connection 的 Gateway 拦截器接收；不访问私有方法，也不发起本机网络请求。 */
-async function dispatchEventResult(ctx: Context, payload: unknown, signal?: AbortSignal): Promise<unknown> {
+async function dispatchEventResult(ctx: Context, payload: unknown, signal?: AbortSignal, peer?: unknown): Promise<unknown> {
   const connection = ctx.get('connection') as unknown as {
     createSharedFetchHandler?: (channel: '/api') => { fetch(request: Request): Promise<Response> }
   } | undefined
   if (typeof connection?.createSharedFetchHandler !== 'function') throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', '当前 Host 未提供 DSH 事件结果入口')
-  const response = await connection.createSharedFetchHandler('/api').fetch(new Request('http://peer-host.internal/api/$events/result', {
+  const response = await nativeSharedFetch(connection, new Request('http://peer-host.internal/api/$events/result', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ type: 'client-request', rpcId: randomUUID(), method: '$events/result', payload }),
     ...(signal === undefined ? {} : { signal }),
-  }))
+  }), peer)
   const envelope = asRecord(await response.json())
   const result = asRecord(envelope?.result)
   if (response.ok && result?.ok === true) return result.value

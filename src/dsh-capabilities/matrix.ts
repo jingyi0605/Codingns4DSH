@@ -15,6 +15,12 @@ export interface DshCapabilityMatrixRoute {
 
 /** 能力版本矩阵是运行时路由和版本检查的共同事实源。 */
 export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
+  route('session.activation', 'session-activation-020', 'host', '>=0.2.0-rc.2 <=0.2.1-alpha.2', 'supported', ['dsh-capabilities/host/session-activation-adapter.ts', 'host/native-session-bridge.ts']),
+  route('session.activation', 'session-activation-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/session-activation-adapter.ts', 'host/native-session-bridge.ts']),
+  route('conversation.message-presentation', 'message-presentation-020', 'client', '>=0.2.0-rc.2 <=0.2.1-alpha.2', 'supported', ['dsh-capabilities/client/message-presentation-adapter.ts', 'client/session-translation-chat.ts']),
+  route('conversation.message-presentation', 'message-presentation-021', 'client', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/client/message-presentation-adapter.ts', 'client/session-translation-chat.ts']),
+  route('connection.peer', 'connection.peer-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/connection-peer-adapter.ts', 'host/rpc.ts', 'host/features/global-voice-rpc.ts', 'host/modules/peer-host/peer-host-native-dispatch.ts']),
+  route('connection.uplink', 'connection.uplink-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/native-dispatch-adapter.ts', 'host/modules/peer-host/peer-host-native-dispatch.ts']),
   route('session.title', 'session-title-020', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/session-title-adapter.ts', 'host/features/session-title-optimization.ts']),
   // alpha.2 起会话有可变的「当前目录」；旧版本没有该服务，终端回退到不可变的
   // `session.header.cwd`，因此能力缺失只影响「跟随当前目录」这一项增强。
@@ -47,9 +53,9 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   // DSH 0.2.0 的 Client ABI 只对当前锁定的 rc.2 做正式承诺，不能用无上界范围掩盖漂移。
   route('settings.store', 'settings-forms-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/settings.ts', 'host/rpc.ts']),
   route('connection.rpc', 'connection-rpc-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/rpc.ts', 'transport/dsh-transport.ts']),
-  route('connection.peer', 'connection-peer-admission-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/rpc.ts']),
+  route('connection.peer', 'connection-peer-admission-020', 'host', '>=0.2.0-rc.2 <=0.2.1-alpha.2', 'supported', ['host/rpc.ts']),
   route('connection.attachment', 'connection-rpc-attachment-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/rpc.ts', 'transport/dsh-transport.ts']),
-  route('connection.uplink', 'connection-rpc-uplink-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/rpc.ts', 'transport/dsh-transport.ts']),
+  route('connection.uplink', 'connection-rpc-uplink-020', 'host', '>=0.2.0-rc.2 <=0.2.1-alpha.2', 'supported', ['host/rpc.ts', 'transport/dsh-transport.ts']),
   route('typert.remote', 'remote-context-stream-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/terminal/terminal-controller.ts', 'client/terminal/model.ts']),
   route('typert.context', 'typert-context-registry-020', 'host', DSH_COMPATIBILITY, 'supported', ['typert.host.ts', 'host/terminal/terminal-controller.ts']),
   route('typert.stream', 'typert-remote-stream-020', 'host', DSH_COMPATIBILITY, 'supported', ['typert.host.ts', 'typert.remote-client.ts']),
@@ -67,8 +73,8 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   // 插件界面的 `fontSize()` 会回落到基准值，行为与今天一致。
   route('theme.font-scale', 'theme-font-scale-021', 'client', '>=0.2.1-alpha.2', 'supported', ['client/font-scale.ts', 'client/index.ts']),
   route('conversation.tool-call', 'conversation-events-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/external-tool-stream.ts']),
-  route('conversation.draft-share', 'conversation-draft-share-021', 'client', '>=0.2.1-alpha.1 <=0.2.1-alpha.2', 'supported', ['client/terminal/ui.ts', 'client/terminal/sharing.ts']),
-  route('conversation.interaction-translation', 'interaction-presentation-021', 'client', '>=0.2.1-alpha.1 <=0.2.1-alpha.2', 'supported', ['client/session-translation-interactions.ts']),
+  route('conversation.draft-share', 'conversation-draft-share-021', 'client', '>=0.2.1-alpha.1 <=0.2.1-alpha.3', 'supported', ['client/terminal/ui.ts', 'client/terminal/sharing.ts']),
+  route('conversation.interaction-translation', 'interaction-presentation-021', 'client', '>=0.2.1-alpha.1 <=0.2.1-alpha.3', 'supported', ['client/session-translation-interactions.ts']),
   route('sidebar.right', 'sidebar-right-dock-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/terminal/ui.ts']),
   route('typert.remote', 'remote-context-stream-020-client', 'client', DSH_COMPATIBILITY, 'supported', ['client/terminal/model.ts']),
   route('typert.context', 'typert-context-registry-020-client', 'client', DSH_COMPATIBILITY, 'supported', ['typert.remote-client.ts', 'client/terminal/model.ts']),

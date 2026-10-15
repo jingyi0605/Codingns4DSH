@@ -652,7 +652,7 @@ test('新能力只在已支持的 DSH 世代启用，旧世代明确不可用', 
     assert.equal(profile.capabilities.get('conversation.draft-share')?.status, 'unavailable')
     assert.ok(profile.diagnostics.some((item) => item.capability === 'conversation.draft-share'))
   }
-  for (const version of ['0.2.1-alpha.1']) {
+  for (const version of ['0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3']) {
     assert.equal(createDshCapabilityRegistry(version, 'client', fake.context).getProfile(fake.context).capabilities.get('conversation.draft-share')?.status, 'ready')
   }
   assert.equal(createDshCapabilityRegistry('0.2.1-alpha.1', 'client', {}).getProfile({}).capabilities.get('conversation.draft-share')?.status, 'unavailable')

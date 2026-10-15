@@ -547,6 +547,7 @@ export class CodingNsCliAdapterRegistry {
     // 手动 next() 不会自动转发外层的 return()；本轮持有的迭代器必须在 finally 关闭。
     // 只有显式交给 segmentedTurns 的流才能跨 DSH step 保留。
     let iterator: AsyncIterator<CodingNsAgentEvent> | undefined
+    let nativeSessionReady = false
     try {
       const stored = this.sessionStore?.get(input.sessionId)
       if (stored?.status === 'archived') {
@@ -574,7 +575,7 @@ export class CodingNsCliAdapterRegistry {
       })
       // Agent Loop 通常已经创建了同名 DSH 原生会话；直接调用 Registry 时才按需补建。
       // 原生服务失败不能阻断外部 Agent，消息仍由现有 llm/stream 链路处理。
-      try { await this.nativeSessions?.ensure(input.sessionId, input.cwd) } catch { /* 可选服务降级 */ }
+      try { nativeSessionReady = await this.nativeSessions?.ensure(input.sessionId, input.cwd) === input.sessionId } catch { /* Optional native projection is unavailable. */ }
       // 每轮都写入稳定的适配器身份。旧日志只有通用 codingns-external 标记，
       // 这条 request/context 是升级后自动迁移时唯一可靠的回填依据。
       try {
@@ -587,7 +588,7 @@ export class CodingNsCliAdapterRegistry {
               : input.adapterId === 'opencode'
                 ? knownOpenCodeContextWindow(input.modelId)
                 : undefined
-        this.nativeSessions?.appendRequestContext?.(input.sessionId, {
+        if (nativeSessionReady) this.nativeSessions?.appendRequestContext?.(input.sessionId, {
           provider: input.adapterId,
           model: input.modelId ?? input.adapterId,
           ...(contextWindow === undefined ? {} : { contextWindow, confirmed: true, source: 'catalog' as const }),
@@ -675,7 +676,7 @@ export class CodingNsCliAdapterRegistry {
     } finally {
       if (iterator !== undefined) await closeAgentIterator(iterator)
       this.executingSessions.delete(input.sessionId)
-      try { await this.nativeSessions?.flush(input.sessionId) } catch { /* DSH 自身检查点策略负责重试 */ }
+      try { if (nativeSessionReady) await this.nativeSessions?.flush(input.sessionId) } catch { /* DSH 自身检查点策略负责重试 */ }
     }
   }
 

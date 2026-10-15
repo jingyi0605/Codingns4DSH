@@ -2756,7 +2756,7 @@ test('Codex 新会话在首个 usage 到达前也使用 256K 上下文窗口', a
     controller: undefined,
     get() { return { header: { cwd: '/workspace' } } },
     list() { return [] },
-    async ensure() { return null },
+    async ensure(sessionId: string) { return sessionId },
     async flush() {},
     appendRequestContext(_sessionId: string, context: unknown) {
       contexts.push(context)
@@ -2831,7 +2831,7 @@ test('OpenCode 新会话在首个 usage 到达前写入已知上下文窗口', a
       controller: undefined,
       get() { return { header: { cwd: '/workspace' } } },
       list() { return [] },
-      async ensure() { return null },
+      async ensure(sessionId: string) { return sessionId },
       async flush() {},
       appendRequestContext(_sessionId: string, context: unknown) { contexts.push(context); return true },
       subscribe() { return () => {} },
@@ -2863,7 +2863,7 @@ test('Command Code 新会话在首个 usage 到达前写入已知上下文窗口
       controller: undefined,
       get() { return { header: { cwd: '/workspace' } } },
       list() { return [] },
-      async ensure() { return null },
+      async ensure(sessionId: string) { return sessionId },
       async flush() {},
       appendRequestContext(_sessionId: string, context: unknown) { contexts.push(context); return true },
       subscribe() { return () => {} },

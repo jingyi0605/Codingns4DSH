@@ -165,7 +165,8 @@ export function registerNativeTeamSubagentProviders(service: NativeSubagentServi
     if (adapterId === 'dsh') continue
     const result = service.registerProvider({
       name: externalTeamProvider(adapterId),
-      capabilities: { agentOptions: false, outputSchema: false, depthLimit: true, toolFilter: false, persona: false },
+      // Unknown false capability flags are ignored by older providers.
+      capabilities: { agentOptions: false, agentPreset: false, outputSchema: false, depthLimit: true, toolFilter: false, persona: false },
       // 子会话必须继承父会话的 DSH 沙箱与审批上下文；外部 CLI 只负责执行协议，
       // 不能因为换了 Provider 就把工作区写入退回到默认的逐次询问模式。
       inheritsParentContext: true,

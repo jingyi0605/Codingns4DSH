@@ -13,10 +13,12 @@ import {
   TextShimmer,
   fileExtension,
   fileSizeText,
-  projectUserText,
   writeClipboard,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
+import * as messagePrimitives from '@deepseek-ai/dsh-client-ui-primitives'
+import { createDshCapabilityRegistry, type DshCapabilityRuntimeFacts } from '../dsh-capabilities/routes.js'
+import type { MessagePresentation } from '../dsh-capabilities/client/message-presentation-adapter.js'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import { dshThemeColor } from './theme.js'
 import { TRANSLATION_GLYPH_PATHS, TRANSLATION_GLYPH_SIZE, TRANSLATION_PENDING_BADGE_STYLE, TRANSLATION_STATUS_BADGE_STYLE } from '../shared/translation-indicator.js'
@@ -340,7 +342,12 @@ function UserMessageNodeView(props: any): ReactElement | null {
     'data-chat-flow-kind': 'user',
     style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 },
   },
-  createElement('div', {
+  (props.presentation as MessagePresentation).kind === 'factory' ? (props.presentation as MessagePresentation).userContent(props, {
+    text: parts.text,
+    attachments: parts.attachments.map(item => item.type === 'image' ? { type: 'image', image: { attachment: item.attachment } } : item),
+    extraBlocks: parts.rest,
+    referenceLabels: labels,
+  }, { sessionLabels: labels, skillNames }) : createElement('div', {
     style: {
       display: 'flex',
       flexDirection: 'column',
@@ -354,7 +361,7 @@ function UserMessageNodeView(props: any): ReactElement | null {
     'data-message-attachments': true,
     style: { display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8, maxWidth: '100%' },
   }, ...parts.attachments.map((attachment, index) => attachment.type === 'image'
-    ? createElement('div', { key: `image-${index}` }, props.renderMessageImages({ images: [{ attachment: attachment.attachment }], align: 'end', compact: compactImages }))
+    ? createElement('div', { key: `image-${index}` }, (props.presentation as MessagePresentation).images(props, { images: [{ attachment: attachment.attachment }], align: 'end', compact: compactImages }))
     : createFileAttachment(attachment.file, index))) : null,
   showBubble ? createElement('div', {
     style: {
@@ -370,7 +377,7 @@ function UserMessageNodeView(props: any): ReactElement | null {
       wordBreak: 'break-word',
     },
   },
-  projectUserText(
+  (props.presentation as MessagePresentation).projectText(
     parts.text,
     labels,
     skillNames,
@@ -597,7 +604,7 @@ function AssistantTranslationNodeView(props: any): ReactElement | null {
         imageGroup.push(next)
         index += 1
       }
-      rendered.push(createElement('div', { key: `images-${index}`, style: { alignSelf: 'flex-start' } }, props.renderMessageImages({ images: imageGroup.map((image) => ({ attachment: image.attachment })), align: 'start' })))
+      rendered.push(createElement('div', { key: `images-${index}`, style: { alignSelf: 'flex-start' } }, (props.presentation as MessagePresentation).images(props, { images: imageGroup.map((image) => ({ attachment: image.attachment })), align: 'start' })))
       continue
     }
     if (block.kind === 'other') {
@@ -752,7 +759,8 @@ function resolveMarkdownImagePath(value: string): string | undefined {
 /**
  * 注册两个有实际翻译记录的消息渲染器；DSH 的用户气泡内容仍由统一主题令牌控制。
  */
-export function registerSessionTranslationChatUi(services: CodingNsClientServices): () => void {
+export function registerSessionTranslationChatUi(services: CodingNsClientServices, facts: DshCapabilityRuntimeFacts = { primitives: messagePrimitives }): () => void {
+  const resolution = createDshCapabilityRegistry(services.dshVersion, 'client', services, facts).getProfile(services).capabilities.get('conversation.message-presentation')
   const slots = services.slots as unknown as {
     inject?(key: string, callback: () => () => void): () => void
     register?(options: Record<string, unknown>, component: (props: any) => ReactElement | null): () => void
@@ -765,24 +773,31 @@ export function registerSessionTranslationChatUi(services: CodingNsClientService
     id: 'codingns-translation-pending',
     inject: (sessionId: string) => ({ services, sessionId, translationT }),
   }, PendingTranslationActions))
-  const removeUserRenderer = slots.inject('conversation.chat.node', () => slots.register!({
-    name: 'conversation.chat.node',
-    key: 'user',
-    priority: -100,
-    locale: 'chat',
-    inject: (sessionId: string) => ({ services, sessionId, translationT }),
-  }, UserMessageNodeView))
-  const removeAssistantRenderer = slots.inject('conversation.chat.node', () => slots.register!({
-    name: 'conversation.chat.node',
-    key: 'assistant-step',
-    priority: -100,
-    locale: 'chat',
-    inject: (sessionId: string) => ({ services, sessionId, translationT }),
-  }, AssistantTranslationNodeView))
+  if (resolution?.status !== 'ready') return () => { removePendingActions(); removeStyles() }
+  const presentation = resolution.value as MessagePresentation
+  const removeRenderers = presentation.mount(() => {
+    const removeUserRenderer = slots.inject!('conversation.chat.node', () => slots.register!({
+      name: 'conversation.chat.node',
+      key: 'user',
+      priority: -100,
+      locale: 'chat',
+      inject: (sessionId: string) => ({ services, sessionId, translationT }),
+    }, props => UserMessageNodeView({ ...props, presentation })))
+    let removeAssistantRenderer: () => void
+    try {
+      removeAssistantRenderer = slots.inject!('conversation.chat.node', () => slots.register!({
+        name: 'conversation.chat.node',
+        key: 'assistant-step',
+        priority: -100,
+        locale: 'chat',
+        inject: (sessionId: string) => ({ services, sessionId, translationT }),
+      }, props => AssistantTranslationNodeView({ ...props, presentation })))
+    } catch (error) { removeUserRenderer(); throw error }
+    return () => { removeAssistantRenderer(); removeUserRenderer() }
+  })
   return () => {
     removePendingActions()
-    removeAssistantRenderer()
-    removeUserRenderer()
+    removeRenderers()
     removeStyles()
   }
 }

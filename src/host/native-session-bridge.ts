@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { createSessionActivator, type SessionActivationController } from '../dsh-capabilities/host/session-activation-adapter.js'
+import { createDshCapabilityRegistry } from '../dsh-capabilities/routes.js'
 import { readCodingNsImageArtifact } from './image-artifact-store.js'
 import type { Context } from '@deepseek-ai/cordis'
 import { debugWarn } from '../shared/debug.js'
@@ -130,7 +132,7 @@ export interface CodingNsNativeUsageSample {
 /** 公共消息投影层传递的 Provider 上下文压缩活动。 */
 export type CodingNsNativeCompactionEvent = Extract<CodingNsAgentEvent, { type: 'context-compaction' }>
 
-export interface CodingNsNativeSessionController {
+export interface CodingNsNativeSessionController extends SessionActivationController {
   create?(request: { readonly sessionId?: string; readonly cwd?: string }): Promise<{ readonly sessionId: string }>
   list?(request?: unknown, signal?: AbortSignal): Promise<{ readonly items: readonly unknown[] }>
 }
@@ -206,6 +208,8 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
   const workspaceControllerValue: unknown = ctx.get('workspaceController')
   const store = isSessionStore(storeValue) ? storeValue : undefined
   const controller = isSessionController(controllerValue) ? controllerValue : undefined
+  const activationController = dshVersion === undefined ? controller
+    : createDshCapabilityRegistry(dshVersion, 'host', ctx).getProfile(ctx).capabilities.get('session.activation')?.value as SessionActivationController | undefined
   const workspaceController = isWorkspaceController(workspaceControllerValue) ? workspaceControllerValue : undefined
   const attachments = readAssistantAttachmentStore(ctx)
   const currentWorkspaceController = (): CodingNsNativeWorkspaceController | undefined => {
@@ -632,17 +636,7 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
       }
       return this.list()
     },
-    async ensure(sessionId, cwd) {
-      if (sessionId.trim() === '') return null
-      if (store?.get(sessionId) !== undefined) return sessionId
-      if (controller?.create !== undefined) {
-        const created = await controller.create({ sessionId, ...(cwd ? { cwd } : {}) })
-        return typeof created.sessionId === 'string' && created.sessionId.trim() ? created.sessionId : sessionId
-      }
-      // 不调用裸 SessionStore.create()：它把会话绑定到插件 Fiber，停用插件
-      // 时会被移除，无法满足长期会话和原生侧栏持久化要求。
-      return null
-    },
+    ensure: createSessionActivator(store, activationController),
     async flush(sessionId) {
       const session = store?.get(sessionId)
       if (session === undefined || store?.flush === undefined) return

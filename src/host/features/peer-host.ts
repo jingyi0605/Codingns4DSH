@@ -635,7 +635,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             parseScope(input.scope)
             // 必须经过 DSH 自己的 Typert Gateway 解码线上载荷，不能直接调用 Controller。
             if (dshNativeDispatch === undefined) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', '当前 Host 未提供 DSH Typert Gateway')
-            return encodeNativeResponseBytes(await dshNativeDispatch.rpc(method, input.payload, (rpcContext as { signal?: AbortSignal } | undefined)?.signal))
+            return encodeNativeResponseBytes(await dshNativeDispatch.rpc(method, input.payload, (rpcContext as { signal?: AbortSignal } | undefined)?.signal, (rpcContext as { peer?: unknown } | undefined)?.peer))
           }
           case 'nativeStream': {
             const method = requiredString(input.method, 'method')
@@ -654,7 +654,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
                 value, (id) => createVirtualWorkspaceId(targetHostId, id), (id) => createVirtualSessionId(targetHostId, id), method,
               ))
               return { [Symbol.asyncIterator]: () => iterator }
-            })
+            }, (rpcContext as { peer?: unknown } | undefined)?.peer)
             return { streamId }
           }
           case 'nativeStreamOpen': {
@@ -664,16 +664,16 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             // 句柄会在后续 nativeStreamNext/Close 中被轮询管理，不能绑定到本次 HTTP 请求的短生命周期 signal。
             if (dshNativeDispatch === undefined) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', '当前 Host 未提供 DSH Typert Gateway')
             const streamId = await nativeStreams.open(scope, async (signal) => {
-              const stream = await dshNativeDispatch.stream(method, input.payload, signal)
+              const stream = await dshNativeDispatch.stream(method, input.payload, signal, (rpcContext as { peer?: unknown } | undefined)?.peer)
               if (!isAsyncIterable(stream)) throw new CodingNsRpcError('CODINGNS_RPC_UNSUPPORTED', `DSH 原生 Remote 方法不是流: ${method}`)
               return stream
-            })
+            }, (rpcContext as { peer?: unknown } | undefined)?.peer)
             return { streamId }
           }
           case 'nativeStreamNext': {
             const streamId = requiredString(input.streamId, 'streamId')
             const scope = parseScope(input.scope)
-            const next = await nativeStreams.next(streamId, scope, (rpcContext as { signal?: AbortSignal } | undefined)?.signal)
+            const next = await nativeStreams.next(streamId, scope, (rpcContext as { signal?: AbortSignal } | undefined)?.signal, (rpcContext as { peer?: unknown } | undefined)?.peer)
             return {
               done: next.done === true,
               ...(next.done === true ? {} : { value: encodeNativeResponseBytes(next.value) }),
@@ -681,7 +681,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
           }
           case 'nativeStreamClose': {
             const streamId = requiredString(input.streamId, 'streamId')
-            await nativeStreams.close(streamId, parseScope(input.scope))
+            await nativeStreams.close(streamId, parseScope(input.scope), undefined, (rpcContext as { peer?: unknown } | undefined)?.peer)
             return { closed: true }
           }
           case 'native': {

@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 // 仅启用 DSH Connection 的 Cordis Context 增强；RPC 结果契约仍使用本文件的内部类型。
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { admitCodingNsPeer } from '../dsh-capabilities/host/connection-peer-adapter.js'
 import { CODINGNS_SETTINGS_NAMESPACE, isCodingNsSettingsEntryId, type CodingNsSettings } from '../shared/contracts/config.js'
 import { debugInfo, debugWarn } from '../shared/debug.js'
 import { CodingNsRpcError, type CodingNsRpcHandler, type CodingNsRpcTable } from './rpc-table.js'
@@ -152,10 +153,10 @@ async function handleChannelRequest(
   // 只在请求体未收全，或响应尚未完成便断开连接时传播取消。
   request.once('close', () => { if (!request.complete) abortController.abort() })
   response.once('close', () => { if (!response.writableFinished) abortController.abort() })
-  const rejection = connection.requestRejection({ headers: request.headers })
-  if (rejection !== undefined) {
-    response.statusCode = rejection
-    response.end(rejection === 401 ? 'unauthorized' : 'forbidden')
+  const admission = admitCodingNsPeer(connection, request.headers)
+  if ('rejection' in admission) {
+    response.statusCode = admission.rejection
+    response.end(admission.rejection === 401 ? 'unauthorized' : 'forbidden')
     return
   }
   const endpoint = endpointFromChannelUrl(request.url)
@@ -193,8 +194,7 @@ async function handleChannelRequest(
     return
   }
   try {
-    const peer = (connection as Context['connection'] & { readonly operator?: unknown }).operator
-    writeRpcResponse(response, body.rpcId, await invokeConnectionRpcHandler(handler, endpoint, body.payload, abortController.signal, peer))
+    writeRpcResponse(response, body.rpcId, await invokeConnectionRpcHandler(handler, endpoint, body.payload, abortController.signal, admission.peer))
   } catch (error) {
     response.statusCode = 500
     response.end(`handler failure: ${String(error)}`)
@@ -416,8 +416,9 @@ async function handleFetchRpc(
   if (typeof envelope.rpcId !== 'string' || (method !== endpoint && method !== `codingns/${endpoint}`)) {
     return new Response('invalid RPC envelope', { status: 400 })
   }
-  const peer = (connection as Context['connection'] & { readonly operator?: unknown }).operator
-  const result = await invokeConnectionRpcHandler(handler, endpoint, envelope.payload, request.signal, peer)
+  const admission = admitCodingNsPeer(connection, request.headers)
+  if ('rejection' in admission) return new Response('forbidden', { status: admission.rejection })
+  const result = await invokeConnectionRpcHandler(handler, endpoint, envelope.payload, request.signal, admission.peer)
   debugInfo('codingns4dsh: host fetch rpc response', { endpoint, ok: result.ok })
   return Response.json({ type: 'server-response', rpcId: envelope.rpcId, result })
 }
