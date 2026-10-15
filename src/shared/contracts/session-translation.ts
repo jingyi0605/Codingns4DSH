@@ -159,6 +159,15 @@ export interface SessionTranslationRecord extends SessionTranslationMetrics {
   readonly failure?: SessionTranslationFailure
 }
 
+export type SessionTranslationRecoveryChoice = 'retry' | 'send' | 'cancel'
+
+/** A failed submission remains on the host until the user makes a choice. */
+export interface SessionTranslationPendingInput {
+  readonly id: string
+  readonly sessionId: string
+  readonly record: SessionTranslationRecord
+}
+
 /** 用户输入的原文、实际送出的译文和翻译模型，作为 DSH 历史元数据保存。 */
 export interface SessionTranslationInputRecord extends SessionTranslationMetrics {
   readonly original: string

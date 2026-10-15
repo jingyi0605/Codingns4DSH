@@ -42,6 +42,7 @@ import {
   type SessionTranslationRecord,
 } from '../../shared/contracts/session-translation.js'
 import { createInteractionTranslation } from '../features/interaction-translation.js'
+import { createSessionTranslationRecovery, SessionTranslationCancelled } from '../features/session-translation-recovery.js'
 import { ASSISTANT_AGENT_PREFIX } from '../../dsh-capabilities/host/assistant-agent-adapter.js'
 import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
 import type { SessionModelSelectionAdapter } from '../../dsh-capabilities/host/session-model-selection-adapter.js'
@@ -151,10 +152,14 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         })
         context.resources.add(disposeNativeEvents)
       }
-      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, nativeSessions)
+      const translationRecovery = createSessionTranslationRecovery(translation, sessionId => registry.getSession(sessionId))
+      context.resources.add(() => translationRecovery.dispose())
+      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, translationRecovery, nativeSessions)
       const interactionTranslation = createInteractionTranslation(translation, sessionId => registry.getSession(sessionId))
       context.resources.add(() => interactionTranslation.dispose())
       context.resources.add(context.services.rpc.register('cli', (action, payload, rpcContext) => {
+        const rpcSignal = asRecord(rpcContext)?.signal
+        const signal = isAbortSignal(rpcSignal) ? rpcSignal : undefined
         switch (action) {
           case 'catalog': return registry.catalog()
           case 'catalog/refresh': return registry.refreshCatalog(asRecord(payload)?.adapterId === undefined ? undefined : readAdapterId(payload)).then((catalog) => {
@@ -166,10 +171,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             return adapterId === 'dsh' ? readDshModelCatalog(context.services.dshContext) : registry.models(adapterId)
           }
           case 'translation/models': return context.services.sessionTranslation?.catalog() ?? { models: [], default: null, errors: ['翻译模型目录不可用'] }
-          case 'translation/fields': {
-            const signal = asRecord(rpcContext)?.signal
-            return interactionTranslation.translate(payload, isAbortSignal(signal) ? signal : undefined)
-          }
+          case 'translation/pending': return translationRecovery.pending(payload)
+          case 'translation/resolve': return translationRecovery.resolve(payload)
+          case 'translation/retry-output': return translationRecovery.retryOutput(payload, signal)
+          case 'translation/fields': return interactionTranslation.translate(payload, signal)
           case 'skills': {
             const request = readSkillsRequest(payload)
             const cwd = resolveSessionCwd(context.services.nativeSessions, request.sessionId, null)
@@ -187,15 +192,25 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             }
             return registry.getSession(sessionId)
           }
-          case 'session/set': return registry.setSession(readSessionId(payload), readSessionConfig(payload))
+          case 'session/set': {
+            const sessionId = readSessionId(payload)
+            const previous = registry.getSession(sessionId)
+            const config = registry.setSession(sessionId, readSessionConfig(payload))
+            if (config.translationEnabled === false || previous.adapterId !== config.adapterId) translationRecovery.cancelSession(sessionId)
+            return config
+          }
           case 'session/list': return registry.listSessions(readSessionListOptions(payload))
           case 'session/adapter-map':
             // 列表查询只返回持久化索引，不能触发会话加载或历史解析。
             return sessionStore.adapterBindings()
           case 'session/archive': return registry.archiveSession(readSessionId(payload))
-          case 'session/steer': return translateSteerPrompt(translation, registry, readSessionId(payload), readPrompt(payload), false)
-          case 'session/follow-up': return translateSteerPrompt(translation, registry, readSessionId(payload), readPrompt(payload), true)
-          case 'session/interrupt': return registry.interrupt(readSessionId(payload))
+          case 'session/steer': return translateSteerPrompt(translationRecovery, registry, readSessionId(payload), readPrompt(payload), false, signal)
+          case 'session/follow-up': return translateSteerPrompt(translationRecovery, registry, readSessionId(payload), readPrompt(payload), true, signal)
+          case 'session/interrupt': {
+            const sessionId = readSessionId(payload)
+            translationRecovery.cancelSession(sessionId)
+            return registry.interrupt(sessionId)
+          }
           case 'team/status': return context.services.nativeTeam?.diagnostic() ?? registry.teamDiagnostic()
           case 'team/members': return requireTeam(context).invoke('members', payload)
           case 'team/tasks': return requireTeam(context).invoke('tasks', payload)
@@ -286,6 +301,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           virtualProviders?.setProviders(registry.enabledAdapterIds())
           registry.syncPreferences(next.agentAdapterPreferences)
           sessionStore.sync(next.cliSessions)
+          translationRecovery.cancelDisabled(next.sessionTranslation?.nativeEnabled === true)
           const nextSubscriptionSettings = JSON.stringify(next.subscriptionUsage ?? null)
           if (nextSubscriptionSettings !== subscriptionSettings) {
             subscriptionSettings = nextSubscriptionSettings
@@ -400,12 +416,13 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           const runtimeEnv = readCliRuntimeEnv(value)
           const requestSignal = isAbortSignal(value?.signal) ? value.signal : undefined
           let translatedPrompt = turnInput.translationPrompt
-          if (turnInput.translatePrompt && translation !== undefined) {
+          if (turnInput.translatePrompt && turnInput.translationPrompt.trim() !== '' && translation !== undefined && config.translationEnabled === true) {
             try {
-              translatedPrompt = await translation.translateInput(config.adapterId, turnInput.translationPrompt, requestSignal, config.translationEnabled === true)
-            } catch {
-              // 翻译服务异常不能阻断外部 Agent 主任务；本轮直接发送原文。
-              translatedPrompt = turnInput.translationPrompt
+              translatedPrompt = (await translationRecovery.translateInput(sessionId, config.adapterId, turnInput.translationPrompt, requestSignal)).translated
+            } catch (error) {
+              if (!(error instanceof SessionTranslationCancelled) && !requestSignal?.aborted) throw error
+              yield { type: 'finish', reason: { kind: 'stop' } }
+              return
             }
           }
           const prompt = turnInput.translatePrompt
@@ -567,6 +584,7 @@ function registerDelegationAgentHooks(
   resources: FeatureResourceScope,
   publishExternalStatus: (sessionId: string, running: boolean) => void,
   translation: CodingNsHostServices['sessionTranslation'],
+  translationRecovery: ReturnType<typeof createSessionTranslationRecovery>,
   nativeSessions?: CodingNsHostServices['nativeSessions'],
 ): void {
   if (dshContext === undefined || typeof dshContext.on !== 'function') return
@@ -628,15 +646,22 @@ function registerDelegationAgentHooks(
       }
     }
 
-    const translatedInput = await translatePreStepInput(
-      translation,
-      registry,
-      sessionId,
-      messages,
-      dshContext,
-      isAbortSignal(record?.signal) ? record.signal : undefined,
-      nativePreStepContext(translation, registry, sessionId, nativeSessions),
-    )
+    let translatedInput: readonly CodingNsCliMessage[] | undefined
+    try {
+      translatedInput = await translatePreStepInput(
+        translation,
+        translationRecovery,
+        registry,
+        sessionId,
+        messages,
+        dshContext,
+        isAbortSignal(record?.signal) ? record.signal : undefined,
+        nativePreStepContext(translation, registry, sessionId, nativeSessions),
+      )
+    } catch (error) {
+      if (error instanceof SessionTranslationCancelled || record?.signal?.aborted === true) return { kind: 'reject' }
+      throw error
+    }
     if (translatedInput !== undefined) messages = [...translatedInput]
 
     const decision = await next()
@@ -658,12 +683,14 @@ function registerDelegationAgentHooks(
     const sessionId = readAgentSessionId(record?.agent)
     if (record?.status === 'running') publishExternalStatus(sessionId, true)
     else if (record?.status === 'idle') {
+      translationRecovery.cancelSession(sessionId)
       publishExternalStatus(sessionId, false)
       clearDelegationAuthorization(sessionId)
     }
   })
   register('agent/disposed', (payload: unknown) => {
     const sessionId = readAgentSessionId(asRecord(payload)?.agent)
+    translationRecovery.cancelSession(sessionId)
     // disposed 只代表运行时释放；subagentCatalog 没有删除语义，保留目录项并
     // 把它标成 idle，后续若 DSH 重新激活会再次收到 running。
     publishExternalStatus(sessionId, false)
@@ -1036,22 +1063,24 @@ async function setAdapterEnabled(
 
 /** 运行中的外部 Agent 插话也必须经过同一条输入翻译路径。 */
 async function translateSteerPrompt(
-  translation: CodingNsHostServices['sessionTranslation'],
+  translationRecovery: ReturnType<typeof createSessionTranslationRecovery>,
   registry: CodingNsCliAdapterRegistry,
   sessionId: string,
   prompt: string,
   followUp: boolean,
+  signal?: AbortSignal,
 ): Promise<void> {
   const session = registry.getSession(sessionId)
   let translated = prompt
-  if (translation !== undefined) {
+  if (session.translationEnabled === true) {
     try {
-      translated = await translation.translateInput(session.adapterId, prompt, undefined, session.translationEnabled === true)
-    } catch {
-      // 插话翻译失败时仍把用户原文交给外部 Agent。
-      translated = prompt
+      translated = (await translationRecovery.translateInput(sessionId, session.adapterId, prompt, signal)).translated
+    } catch (error) {
+      if (error instanceof SessionTranslationCancelled) return
+      throw error
     }
   }
+  signal?.throwIfAborted()
   await registry.steer(sessionId, translated, followUp)
 }
 
@@ -1063,6 +1092,7 @@ async function translateSteerPrompt(
  */
 async function translatePreStepInput(
   translation: CodingNsHostServices['sessionTranslation'],
+  translationRecovery: ReturnType<typeof createSessionTranslationRecovery>,
   registry: CodingNsCliAdapterRegistry,
   sessionId: string,
   messages: readonly CodingNsCliMessage[],
@@ -1081,7 +1111,7 @@ async function translatePreStepInput(
     if (nativeSession.translationEnabled !== true) return undefined
     const input = extractTurnInput(messages, dshContext)
     if (input.translationPrompt.trim() === '') return undefined
-    const result = await runInputTranslation(translation, nativeSession.adapterId, input.translationPrompt, signal)
+    const result = await translationRecovery.translateInput(sessionId, nativeSession.adapterId, input.translationPrompt, signal)
     const translated = [result.translated, input.untranslatedPrompt].filter((part) => part.trim() !== '').join('\n\n').trim()
     if (translated === '') return undefined
     const record: SessionTranslationInputRecord = {
@@ -1097,7 +1127,7 @@ async function translatePreStepInput(
     const next = [...messages]
     next[messageIndex] = {
       ...current,
-      content: [{ type: 'text', text: translated }],
+      content: result.failed ? current.content : [{ type: 'text', text: translated }],
       source: { ...(current.source ?? {}), kind: 'user', codingnsTranslationInput: record },
     }
     return next
@@ -1114,7 +1144,7 @@ async function translatePreStepInput(
   const input = extractTurnInput(messages, dshContext)
   if (input.translationPrompt.trim() === '') return undefined
 
-  const result = await runInputTranslation(translation, session.adapterId, input.translationPrompt, signal)
+  const result = await translationRecovery.translateInput(sessionId, session.adapterId, input.translationPrompt, signal)
   const translated = [result.translated, input.untranslatedPrompt]
     .filter((part) => part.trim() !== '')
     .join('\n\n')
@@ -1141,39 +1171,6 @@ async function translatePreStepInput(
     },
   }
   return next
-}
-
-/** 输入翻译统一入口：翻译只是增强能力，异常时回退原文并标记失败。 */
-async function runInputTranslation(
-  translation: NonNullable<CodingNsHostServices['sessionTranslation']>,
-  adapterId: string,
-  text: string,
-  signal?: AbortSignal,
-): Promise<{
-  readonly translated: string
-  readonly sourceLanguage?: SessionTranslationInputRecord['sourceLanguage']
-  readonly alreadyTargetLanguage?: boolean
-  readonly model?: SessionTranslationInputRecord['model']
-  readonly failed?: boolean
-  readonly durationMs?: number
-  readonly totalTokens?: number
-}> {
-  try {
-    if (translation.translateInputDetailed !== undefined) {
-      const detailed = await translation.translateInputDetailed(adapterId, text, signal, true)
-      return {
-        translated: detailed.translated,
-        ...(detailed.sourceLanguage === undefined ? {} : { sourceLanguage: detailed.sourceLanguage }),
-        ...(detailed.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
-        ...(detailed.model === undefined ? {} : { model: detailed.model }),
-        ...(detailed.failed === true ? { failed: true } : {}),
-        ...readSessionTranslationMetrics(detailed),
-      }
-    }
-    return { translated: await translation.translateInput(adapterId, text, signal, true) }
-  } catch {
-    return { translated: text, failed: true }
-  }
 }
 
 /** 旧测试替身没有 inputLanguage 时沿用历史默认值英语。 */
@@ -1286,7 +1283,7 @@ async function* translateNativeStream(
     }
     if (record === undefined) return []
     const visible = formatSessionTranslationOutput(record)
-    if (visible.trim() === '' || visible === original) return []
+    if (visible.trim() === '' || visible === original && record.failed !== true) return []
     return [
       // Keep the provider text in the native history. The client chooses the translated
       // text for display from codingnsTranslation.translated.

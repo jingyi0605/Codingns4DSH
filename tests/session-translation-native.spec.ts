@@ -16,6 +16,7 @@ interface Harness {
   readonly features: FeatureRegistry
   readonly registry: CodingNsCliAdapterRegistry
   readonly requests: readonly Record<string, unknown>[]
+  readonly table: CodingNsRpcTable
   readonly llmListener: LlmListener
   readonly preStepListener: PreStepListener
 }
@@ -26,13 +27,20 @@ function createHarness(options: {
   readonly header?: Record<string, unknown>
   readonly sessionId?: string
   readonly translationEnabled?: boolean
+  readonly adapterId?: 'dsh' | 'codex'
+  readonly executions?: Record<string, unknown>[]
   /** 缺省表示会话从未单独设置过开关，此时跟随总开关。 */
   readonly sessionTranslationEnabled?: boolean
 }): Harness {
   const table = new CodingNsRpcTable()
   let llmListener: LlmListener | undefined
   let preStepListener: PreStepListener | undefined
-  const registry = new CodingNsCliAdapterRegistry([])
+  const registry = new CodingNsCliAdapterRegistry(options.adapterId !== 'codex' ? [] : [{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: 'test', command: 'fake-codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) { options.executions?.push(input as unknown as Record<string, unknown>); yield { type: 'finish' as const, reason: 'stop' as const } },
+  }])
   const events = {
     on(_name: string, listener: LlmListener) {
       llmListener = listener
@@ -74,6 +82,7 @@ function createHarness(options: {
     features,
     registry,
     requests,
+    table,
     get llmListener() {
       assert.notEqual(llmListener, undefined, 'llm/stream 监听器必须已注册')
       return llmListener!
@@ -85,7 +94,7 @@ function createHarness(options: {
     async start() {
       await features.start('cliAdapters')
       registry.setSession(sessionId, {
-        adapterId: 'dsh',
+        adapterId: options.adapterId ?? 'dsh',
         ...(sessionTranslationEnabled === undefined ? {} : { translationEnabled: sessionTranslationEnabled }),
       })
     },
@@ -189,6 +198,78 @@ test('DSH 原生会话开关关闭时不改写 pre-step 消息', async () => {
   assert.equal(decision.messages[0]?.source?.codingnsTranslationInput, undefined)
   assert.deepEqual(harness.requests, [])
   await harness.features.disable('cliAdapters')
+})
+
+test('pre-step holds a failed user message until retry, direct send, or cancellation is resolved through RPC', async () => {
+  for (const choice of ['retry', 'send', 'cancel'] as const) {
+    let attempts = 0
+    const translation = { ...createTranslation(), async translateInputDetailed(_adapter: string, text: string) {
+      attempts++
+      return attempts === 1 ? { translated: text, failed: true } : { translated: 'Please review this code' }
+    } }
+    const harness = createHarness({ translation }) as Harness & { start(): Promise<void> }
+    await harness.start()
+    const rpc = async (action: string, payload: unknown): Promise<any> => {
+      const target = harness.table.resolve(`cli/translation/${action}`)!
+      return target.handler(target.action, payload)
+    }
+    const original = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '请检查这段代码' }, { type: 'image', attachment: { attachmentId: 'image' } }] }
+    let entered = false
+    const pending = harness.preStepListener({ agent: { id: 'native-session' }, messages: [original] }, async () => {
+      entered = true
+      return { kind: 'enter', messages: [original] }
+    }) as Promise<any>
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      assert.equal(entered, false, 'the agent must not receive a failed translation automatically')
+      const [request] = await rpc('pending', { sessionId: 'native-session' })
+      assert.ok(request)
+      await rpc('resolve', { sessionId: 'native-session', id: request.id, choice })
+      const result = await pending
+      if (choice === 'cancel') {
+        assert.equal(result.kind, 'reject')
+        assert.equal(entered, false)
+      } else {
+        assert.equal(result.kind, 'enter')
+        assert.equal(entered, true)
+        assert.equal(result.messages[0].source.codingnsTranslationInput.original, '请检查这段代码')
+        if (choice === 'send') assert.deepEqual(result.messages[0].content, original.content)
+        else assert.equal(result.messages[0].content[0].text, 'Please review this code')
+      }
+      assert.equal(attempts, choice === 'retry' ? 2 : 1)
+    } finally { await harness.features.disable('cliAdapters') }
+  }
+})
+
+test('external agents receive only the chosen input and do not translate it a second time', async () => {
+  for (const choice of ['retry', 'send', 'cancel'] as const) {
+    let attempts = 0
+    const executions: Record<string, unknown>[] = []
+    const translation = { ...createTranslation(), async translateInputDetailed(_adapter: string, text: string) {
+      return ++attempts === 1 ? { translated: text, failed: true } : { translated: 'Review the code' }
+    } }
+    const harness = createHarness({ translation, adapterId: 'codex', translationEnabled: true, executions }) as Harness & { start(): Promise<void> }
+    await harness.start()
+    try {
+      const original = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '检查代码' }] }
+      const pending = harness.preStepListener({ agent: { id: 'native-session' }, messages: [original] }, async () => ({ kind: 'enter', messages: [original] })) as Promise<any>
+      await new Promise<void>(resolve => setImmediate(resolve))
+      assert.equal(executions.length, 0)
+      const poll = harness.table.resolve('cli/translation/pending')!
+      const [request] = await poll.handler(poll.action, { sessionId: 'native-session' }) as any[]
+      const resolve = harness.table.resolve('cli/translation/resolve')!
+      await resolve.handler(resolve.action, { sessionId: 'native-session', id: request.id, choice })
+      const decision = await pending
+      if (choice === 'cancel') assert.equal(decision.kind, 'reject')
+      else {
+        assert.deepEqual(decision.messages[0].content, original.content, 'external history retains the original')
+        for await (const _chunk of harness.llmListener({ sessionId: 'native-session', messages: decision.messages }, async function* () {})) {}
+        assert.equal(executions.length, 1)
+        assert.equal(executions[0]!.prompt, choice === 'retry' ? 'Review the code' : '检查代码')
+      }
+      assert.equal(attempts, choice === 'retry' ? 2 : 1)
+    } finally { await harness.features.disable('cliAdapters') }
+  }
 })
 
 test('原生会话没有单独设置时跟随总开关，显式关闭时覆盖总开关', async () => {
@@ -298,9 +379,13 @@ test('DSH 原生会话输出翻译失败或流中断时补发原文', async () =
     yield { type: 'finish', reason: { kind: 'stop' } }
   })) failingChunks.push(chunk)
   assert.deepEqual(failingChunks, [
-    { type: 'block-end', index: 1, block: { type: 'text', text: 'Hello' } },
+    { type: 'text-delta', index: 1, text: 'Hello', codingnsTranslation: failingChunks[0].codingnsTranslation },
+    { type: 'block-end', index: 1, block: { type: 'text', text: 'Hello', codingnsTranslation: failingChunks[0].codingnsTranslation }, codingnsTranslation: failingChunks[0].codingnsTranslation },
     { type: 'finish', reason: { kind: 'stop' } },
   ])
+  assert.equal(failingChunks[0].codingnsTranslation.failed, true)
+  assert.equal(failingChunks[0].codingnsTranslation.original, 'Hello')
+  assert.equal(failingChunks[0].codingnsTranslation.outputKind, 'assistant')
   await failingHarness.features.disable('cliAdapters')
 
   const interrupted = createTranslation()

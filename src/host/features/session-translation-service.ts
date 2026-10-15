@@ -50,6 +50,7 @@ export interface SessionTranslationService {
   shouldTranslate(adapterId: string, kind: SessionTranslationOutputKind, sessionEnabled?: boolean): boolean
   activate(): void
   deactivate(): void
+  onDeactivate?(listener: () => void): () => void
   configure(settings: SessionTranslationSettings | undefined): void
   translateInput(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<string>
   /** 输入翻译的可审计结果；旧调用方仍可使用 translateInput。 */
@@ -77,6 +78,8 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
   let settings: SessionTranslationSettings = defaultSettings()
   let disposed = false
   let active = false
+  const deactivateListeners = new Set<() => void>()
+  const deactivate = (): void => { active = false; for (const listener of deactivateListeners) listener() }
   let nativeFallbackModel: Promise<ModelSelection | undefined> | undefined
 
   const selectModels = async (signal: AbortSignal): Promise<readonly ModelSelection[]> => {
@@ -239,7 +242,8 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
         && canTranslateAdapter(adapterId, sessionEnabled)
     },
     activate() { active = true; disposed = false },
-    deactivate() { active = false },
+    deactivate,
+    onDeactivate(listener) { deactivateListeners.add(listener); return () => { deactivateListeners.delete(listener) } },
     configure(next) {
       settings = normalizeSettings(next)
       nativeFallbackModel = undefined
@@ -252,7 +256,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     async translateOutput(adapterId, kind, text, signal, sessionEnabled) {
       return translate(adapterId, kind, text, signal, sessionEnabled)
     },
-    dispose() { active = false },
+    dispose: deactivate,
   }
 
   async function translateInputDetailed(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationMetrics & {
