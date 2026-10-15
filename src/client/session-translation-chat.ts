@@ -23,7 +23,7 @@ import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import { dshThemeColor } from './theme.js'
 import { TRANSLATION_GLYPH_PATHS, TRANSLATION_GLYPH_SIZE, TRANSLATION_PENDING_BADGE_STYLE, TRANSLATION_STATUS_BADGE_STYLE } from '../shared/translation-indicator.js'
 import { uiFontSize } from './font-scale.js'
-import { useCliSessionTranslationEnabled } from './cli-slots.js'
+import { useCliSessionTranslationState } from './cli-slots.js'
 import { watchPendingTranslationTargets, type PendingTranslationTarget } from './session-translation-pending-dom.js'
 import { callCliRpc } from './cli-catalog.js'
 import { startSerialPolling } from './serial-polling.js'
@@ -31,7 +31,7 @@ import { clearOutputTranslationRetries, useOutputTranslation } from './session-t
 import type { CodingNsClientServices } from './features/types.js'
 import type { CodingNsTranslator } from './locale.js'
 import type { SessionTranslationInputRecord, SessionTranslationLanguage, SessionTranslationModel, SessionTranslationOutputKind, SessionTranslationRecord, SessionTranslationPendingInput, SessionTranslationRecoveryChoice } from '../shared/contracts/session-translation.js'
-import { readSessionTranslationMetrics } from '../shared/contracts/session-translation.js'
+import { readSessionTranslationMetrics, resolveSessionTranslationOptions } from '../shared/contracts/session-translation.js'
 
 interface EventSourceLike {
   getSnapshot(): { readonly entries?: readonly unknown[] }
@@ -270,11 +270,11 @@ function PendingTranslationActions(props: {
   const [targets, setTargets] = useState<readonly PendingTranslationTarget[]>([])
   const [failures, setFailures] = useState<readonly SessionTranslationPendingInput[]>([])
   const pollingRef = useRef<ReturnType<typeof startSerialPolling>>()
-  const enabled = useCliSessionTranslationEnabled(props.sessionId, props.services.rpc)
+  const { adapterId, enabled } = useCliSessionTranslationState(props.sessionId, props.services.rpc)
   const store = props.services.settings
   const settings = useSyncExternalStore(store.subscribe.bind(store), store.getSnapshot.bind(store), store.getSnapshot.bind(store))
   const subagent = props.useSession?.((state) => state.subagent)
-  const eligible = enabled && settings.value?.sessionTranslation?.inputEnabled !== false && subagent == null && !props.sessionId?.startsWith('codingns-assistant-')
+  const eligible = enabled && resolveSessionTranslationOptions(settings.value?.sessionTranslation, adapterId).inputEnabled && subagent == null && !props.sessionId?.startsWith('codingns-assistant-')
   useEffect(() => {
     setFailures([])
     if (!eligible || props.sessionId === undefined) return

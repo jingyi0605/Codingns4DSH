@@ -149,10 +149,15 @@ export function cliSessionSelectionRevision(sessionId: string): number {
 
 /** Share the model menu's effective translation switch with pending message actions. */
 export function useCliSessionTranslationEnabled(sessionId: string | undefined, rpc: CodingNsRpcClient): boolean {
+  return useCliSessionTranslationState(sessionId, rpc).enabled
+}
+
+export function useCliSessionTranslationState(sessionId: string | undefined, rpc: CodingNsRpcClient): { adapterId: string; enabled: boolean } {
   const [selection] = useSelection(sessionId, rpc)
   const nativeDefault = useSyncExternalStore(subscribeNativeTranslationDefault, readNativeTranslationDefault, readNativeTranslationDefault)
-  return supportsSessionTranslation(selection.adapterId)
+  const enabled = supportsSessionTranslation(selection.adapterId)
     && (selection.translationEnabled ?? (selection.adapterId === DSH_NATIVE_SESSION_ADAPTER_ID && nativeDefault === true))
+  return { adapterId: selection.adapterId, enabled }
 }
 
 /** 在 Agent 和模型两个 Slot 之间共享当前会话选择。 */
@@ -557,6 +562,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   // 所有 Hooks 都先执行；原生与外部适配器切换不能改变 Hook 调用顺序。
   const translationSettings = translationSettingsOpen && props.settings !== undefined
     ? createElement(ConversationTranslationSettings, {
+        key: selection.adapterId, adapterId: selection.adapterId,
         settings: props.settings, t, onClose: () => setTranslationSettingsOpen(false),
       })
     : null

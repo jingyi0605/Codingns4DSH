@@ -118,6 +118,7 @@ test('the settings icon precedes the master switch and opens a dialog for native
       controls[1].props.onClick()
       const dialog = elementWhere(renderer.render(), element => element.type === ConversationTranslationSettings)!
       assert.ok(dialog)
+      assert.equal(dialog.props.adapterId, adapterId)
       assert.equal(probe.calls.some(call => call.endpoint === 'cli/session/set'), false)
       if (adapterId === 'dsh') {
         dom.attributes.set('aria-expanded', 'false'); dom.mutate()

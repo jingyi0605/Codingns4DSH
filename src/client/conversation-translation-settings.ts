@@ -5,6 +5,7 @@ import type { CodingNsTranslator } from './locale.js'
 import { DshModal } from '../dsh-capabilities/client/primitives-adapter.js'
 import { SettingsToggleRow } from './settings-controls.js'
 import { dshThemeColor } from './theme.js'
+import { resolveSessionTranslationOptions } from '../shared/contracts/session-translation.js'
 
 const messageSettings = [
   ['inputEnabled', 'cli.translationUserMessages'],
@@ -12,14 +13,16 @@ const messageSettings = [
   ['assistantEnabled', 'cli.translationAssistantMessages'],
 ] as const
 
-/** Shared message preferences, independent of each conversation's master switch. */
+/** Per-adapter message preferences, independent of each conversation's master switch. */
 export function ConversationTranslationSettings(props: {
   readonly settings: CodingNsClientServices['settings']
+  readonly adapterId: string
   readonly t: CodingNsTranslator
   readonly onClose: () => void
 }): ReactElement {
-  const { settings, t } = props
+  const { settings, adapterId, t } = props
   const snapshot = useSyncExternalStore(settings.subscribe.bind(settings), settings.getSnapshot.bind(settings), settings.getSnapshot.bind(settings))
+  const options = resolveSessionTranslationOptions(snapshot.value?.sessionTranslation, adapterId)
   const [saving, setSaving] = useState(false)
   const savingRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
@@ -31,7 +34,7 @@ export function ConversationTranslationSettings(props: {
     setError(null)
     try {
       // Write only the selected field so concurrent model/language edits survive.
-      if (!await settings.mutate([{ op: 'set', path: ['sessionTranslation', field], value: checked }])) {
+      if (!await settings.mutate([{ op: 'set', path: ['sessionTranslation', 'adapterOptions', adapterId, field], value: checked }])) {
         throw new Error(t('translation.saveRejected'))
       }
     } catch (cause) {
@@ -44,14 +47,14 @@ export function ConversationTranslationSettings(props: {
   return createElement(DshModal, {
     open: true,
     title: t('cli.translationSettings'),
-    description: t('cli.translationSettingsDescription'),
+    description: t('cli.translationSettingsDescription', { agent: adapterId }),
     closeLabel: t('cli.translationSettingsClose'),
     onClose: props.onClose,
   },
   ...messageSettings.map(([field, label]) => createElement(SettingsToggleRow, {
     key: field,
     label: t(label),
-    checked: snapshot.value?.sessionTranslation?.[field] !== false,
+    checked: options[field],
     disabled,
     onChange: (checked) => { void save(field, checked) },
   })),

@@ -191,7 +191,9 @@ test('the registered pending slot renders portals only for enabled sessions and 
   const registered = new Map<string, (props: any) => ReactElement>()
   let inputEnabled = true
   const services = {
-    settings: { getSnapshot: () => ({ value: { sessionTranslation: { inputEnabled } } }), subscribe: () => () => undefined },
+    settings: { getSnapshot: () => ({ value: { sessionTranslation: {
+      inputEnabled: false, adapterOptions: { dsh: { inputEnabled }, codex: { inputEnabled: false } },
+    } } }), subscribe: () => () => undefined },
     rpc: { async call() { return { ok: true, value: { adapterId: 'dsh' } } } },
     locale: { bind: () => resolveCodingNsTranslator() },
     slots: {
