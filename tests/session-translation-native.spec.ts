@@ -30,6 +30,7 @@ function createHarness(options: {
   readonly translationEnabled?: boolean
   readonly adapterId?: 'dsh' | 'codex'
   readonly executions?: Record<string, unknown>[]
+  readonly attachmentPath?: string
   /** 缺省表示会话从未单独设置过开关，此时跟随总开关。 */
   readonly sessionTranslationEnabled?: boolean
 }): Harness {
@@ -49,7 +50,7 @@ function createHarness(options: {
     },
   }
   const dshContext = {
-    get() { return undefined },
+    get(name: string) { return name === 'attachments' && options.attachmentPath !== undefined ? { fileHostPath: () => options.attachmentPath } : undefined },
     on(name: string, listener: PreStepListener) {
       if (name === 'agent/pre-step') preStepListener = listener
       return () => undefined
@@ -157,6 +158,29 @@ function createTranslation(options: {
   }
 }
 
+test('file-only native submissions localize notices without sending file identity to the translation model', async () => {
+  const path = '/tmp/中文 目录/报告 (最终).zip'
+  for (const language of ['en', 'fr', 'de', 'ja', 'zh']) {
+    const translation = createTranslation({ inputLanguage: language })
+    const harness = createHarness({ translation, attachmentPath: path }) as Harness & { start(): Promise<void> }
+    await harness.start()
+    try {
+      const file = { type: 'file', attachment: { attachmentId: 'sha256:file', name: '报告 (最终).zip' } }
+      const message = { role: 'user', source: { kind: 'user' }, content: [file] }
+      const decision = await harness.preStepListener({ agent: { id: 'native-session' }, messages: [message] }, async () => ({ kind: 'enter', messages: [message] })) as any
+      const content = decision.messages[0].content
+      assert.equal(content.some((part: any) => part.type === 'file'), false, 'DSH must not append a second English-only file notice')
+      assert.deepEqual(message.content, [file], 'the original submission is unchanged')
+      const text = content.find((part: any) => part.type === 'text').text
+      assert.ok(text.includes(path))
+      assert.ok(text.includes('报告 (最终).zip'))
+      if (language !== 'zh') assert.doesNotMatch(text, /附件文件|请使用工具读取/u)
+      assert.match(decision.messages[0].source.codingnsTranslationInput.original, /附件文件/u)
+      assert.equal(translation.requests.length, 0, 'fixed attachment prose does not need an LLM request')
+    } finally { await harness.features.disable('cliAdapters') }
+  }
+})
+
 test('pre-step preserves downstream instructions inserted before the human message and translates their prose', async () => {
   const translation = createTranslation({ translateInput: text => text.replaceAll('中文描述', 'Translated description') })
   const harness = createHarness({ translation }) as Harness & { start(): Promise<void> }
@@ -173,6 +197,33 @@ test('pre-step preserves downstream instructions inserted before the human messa
     assert.equal(decision.messages[2].content, 'Translated description')
     assert.equal(instructions.content, '中文描述')
     assert.equal(catalog.content, '中文描述')
+  } finally { await harness.features.disable('cliAdapters') }
+})
+
+test('native translation retains image payloads and unresolved file references', async () => {
+  const translation = createTranslation({ translateInput: () => 'Read the attachments.' })
+  const harness = createHarness({ translation }) as Harness & { start(): Promise<void> }
+  await harness.start()
+  try {
+    const image = { type: 'image', attachment: { attachmentId: 'sha256:image', mediaType: 'image/png' } }
+    const file = { type: 'file', attachment: { attachmentId: 'sha256:unresolved', name: '未知.txt' } }
+    const user = { role: 'user', source: { kind: 'user' }, content: [image, file, { type: 'text', text: '读取附件' }] }
+    const decision = await harness.preStepListener({ agent: { id: 'native-session' }, messages: [user] }, async () => ({ kind: 'enter', messages: [user] })) as any
+    assert.deepEqual(decision.messages[0].content, [image, file, { type: 'text', text: 'Read the attachments.' }])
+  } finally { await harness.features.disable('cliAdapters') }
+})
+
+test('external dispatch forwards the input language to late attachment formatters', async () => {
+  const translation = createTranslation({ inputLanguage: 'fr' })
+  const executions: Record<string, unknown>[] = []
+  const harness = createHarness({ translation, adapterId: 'codex', translationEnabled: true, executions, attachmentPath: '/tmp/中文 文件.txt' }) as Harness & { start(): Promise<void> }
+  await harness.start()
+  try {
+    const user = { role: 'user', source: { kind: 'user' }, content: [{ type: 'file', attachment: { attachmentId: 'sha256:file', name: '中文 文件.txt' } }] }
+    for await (const _chunk of harness.llmListener({ sessionId: 'native-session', messages: [user] }, async function* () {})) { /* Inspect the captured driver input. */ }
+    assert.equal(executions[0].translationLanguage, 'fr')
+    assert.match(String(executions[0].prompt), /Fichier joint/u)
+    assert.match(String(executions[0].prompt), /\/tmp\/中文 文件.txt/u)
   } finally { await harness.features.disable('cliAdapters') }
 })
 

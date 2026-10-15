@@ -46,6 +46,7 @@ import { createSessionTranslationRecovery, SessionTranslationCancelled } from '.
 import { ASSISTANT_AGENT_PREFIX } from '../../dsh-capabilities/host/assistant-agent-adapter.js'
 import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
 import type { SessionModelSelectionAdapter } from '../../dsh-capabilities/host/session-model-selection-adapter.js'
+import { attachmentFileNotice } from '../../shared/attachment-prompts.js'
 import { sessionPromptScope, type SessionPromptAdapter } from '../../dsh-capabilities/host/session-prompt-adapter.js'
 import { createSessionPromptTranslation } from '../features/session-prompt-translation.js'
 
@@ -431,8 +432,9 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           const requestSignal = isAbortSignal(value?.signal)
             ? AbortSignal.any([value.signal, lifetime.signal])
             : lifetime.signal
+          const translationLanguage = translation?.enabled && config.translationEnabled === true ? readInputTargetLanguage(translation) : undefined
           let translatedPrompt = turnInput.translationPrompt
-          if (turnInput.translatePrompt && turnInput.translationPrompt.trim() !== '' && translation !== undefined && config.translationEnabled === true) {
+          if (turnInput.translatePrompt && turnInput.translationPrompt.trim() !== '' && translationLanguage !== undefined) {
             try {
               translatedPrompt = (await translationRecovery.translateInput(sessionId, config.adapterId, turnInput.translationPrompt, requestSignal)).translated
             } catch (error) {
@@ -442,7 +444,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             }
           }
           const prompt = turnInput.translatePrompt
-            ? [translatedPrompt, turnInput.untranslatedPrompt].filter((part) => part.trim() !== '').join('\n\n')
+            ? [translatedPrompt, translationLanguage === undefined ? turnInput.untranslatedPrompt : attachmentNotices(turnInput.attachments, translationLanguage)].filter((part) => part.trim() !== '').join('\n\n')
             : turnInput.prompt
           // 权限状态必须与 DSH 会话当前生效值同源。驱动不能自行假设“完全权限”，
           // 也不能把缺省当成“已确认无限制”：解析失败时留空，由驱动沿用保守默认。
@@ -455,6 +457,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             sessionId,
             messages: turnInput.messages,
             prompt,
+            ...(translationLanguage === undefined ? {} : { translationLanguage }),
             ...(turnInput.attachments.length === 0 ? {} : { attachments: turnInput.attachments }),
             ...(permission === undefined ? {} : { permission }),
             ...(turnOptions.plan === true ? { plan: true } : {}),
@@ -1145,9 +1148,9 @@ async function translatePreStepInput(
     // DSH 原生会话：消息本身就是发给 Provider 的正文，直接替换为译文并把原文留在元数据。
     if (nativeSession.translationEnabled !== true) return undefined
     const input = extractTurnInput(messages, dshContext)
-    if (input.translationPrompt.trim() === '') return undefined
+    if (input.prompt.trim() === '') return undefined
     const result = await translationRecovery.translateInput(sessionId, nativeSession.adapterId, input.translationPrompt, signal)
-    const translated = [result.translated, input.untranslatedPrompt].filter((part) => part.trim() !== '').join('\n\n').trim()
+    const translated = [result.translated, attachmentNotices(input.attachments, readInputTargetLanguage(translation))].filter((part) => part.trim() !== '').join('\n\n').trim()
     if (translated === '') return undefined
     const record: SessionTranslationInputRecord = {
       original: input.prompt,
@@ -1162,7 +1165,7 @@ async function translatePreStepInput(
     const next = [...messages]
     next[messageIndex] = {
       ...current,
-      content: result.failed ? current.content : [{ type: 'text', text: translated }],
+      content: result.failed ? current.content : replaceInputTranslationContent(nativeTranslationContent(current.content, dshContext), translated),
       source: { ...(current.source ?? {}), kind: 'user', codingnsTranslationInput: record },
     }
     return next
@@ -1177,10 +1180,10 @@ async function translatePreStepInput(
   if (session.adapterId === 'dsh' || session.translationEnabled !== true) return undefined
 
   const input = extractTurnInput(messages, dshContext)
-  if (input.translationPrompt.trim() === '') return undefined
+  if (input.prompt.trim() === '') return undefined
 
   const result = await translationRecovery.translateInput(sessionId, session.adapterId, input.translationPrompt, signal)
-  const translated = [result.translated, input.untranslatedPrompt]
+  const translated = [result.translated, attachmentNotices(input.attachments, readInputTargetLanguage(translation))]
     .filter((part) => part.trim() !== '')
     .join('\n\n')
     .trim()
@@ -1448,7 +1451,7 @@ function readInputTranslation(value: CodingNsCliMessage['source']): SessionTrans
   const candidate = value?.codingnsTranslationInput
   if (!isRecord(candidate) || typeof candidate.original !== 'string' || typeof candidate.translated !== 'string') return undefined
   if (candidate.original.trim() === '' || candidate.translated.trim() === '') return undefined
-  const targetLanguage = candidate.targetLanguage === 'fr' || candidate.targetLanguage === 'de' || candidate.targetLanguage === 'ja'
+  const targetLanguage = candidate.targetLanguage === 'fr' || candidate.targetLanguage === 'de' || candidate.targetLanguage === 'ja' || candidate.targetLanguage === 'zh'
     ? candidate.targetLanguage
     : 'en'
   const sourceLanguage = candidate.sourceLanguage === 'zh' || candidate.sourceLanguage === 'en' || candidate.sourceLanguage === 'fr' || candidate.sourceLanguage === 'de' || candidate.sourceLanguage === 'ja'
@@ -1494,6 +1497,18 @@ function replaceInputTranslationContent(content: unknown, text: string): unknown
     return [{ ...part, text }]
   })
   return replaced ? blocks : [{ type: 'text', text }, ...content]
+}
+
+/** Resolved files already have localized path notices. Leaving their file blocks
+ * would make DSH append another, English-only file notice at adapter dispatch.
+ * Preserve images and unresolved files so DSH retains modality/error handling.
+ */
+function nativeTranslationContent(content: unknown, dshContext: CodingNsHostServices['dshContext']): unknown {
+  if (!Array.isArray(content)) return content
+  return content.filter(part => {
+    if (!isRecord(part) || part.type !== 'file') return true
+    return resolveDshAttachmentPath(dshContext, 'file', isRecord(part.attachment) ? part.attachment : part) === undefined
+  })
 }
 
 /** DSH 为工具分段注入的继续提示必须成为下一次 Provider 请求的 prompt。 */
@@ -1546,10 +1561,13 @@ function extractMessageInput(content: unknown, dshContext?: CodingNsHostServices
     const mimeType = typeof reference.mediaType === 'string' && reference.mediaType.trim() !== '' ? reference.mediaType.trim() : undefined
     attachments.push({ kind, path, ...(name === undefined ? {} : { name }), ...(mimeType === undefined ? {} : { mimeType }) })
   }
-  const fileNotes = attachments.filter((attachment) => attachment.kind === 'file').map((attachment) => `附件文件${attachment.name === undefined ? '' : `「${attachment.name}」`}位于：${attachment.path}\n请使用工具读取该文件的内容。`)
   const translationPrompt = text.join('\n\n').trim()
-  const untranslatedPrompt = fileNotes.join('\n\n').trim()
+  const untranslatedPrompt = attachmentNotices(attachments)
   return { prompt: [translationPrompt, untranslatedPrompt].filter(value => value !== '').join('\n\n'), translationPrompt, untranslatedPrompt, attachments }
+}
+
+function attachmentNotices(attachments: readonly CodingNsCliAttachment[], language?: SessionTranslationInputRecord['targetLanguage']): string {
+  return attachments.filter(attachment => attachment.kind === 'file').map(attachment => attachmentFileNotice(attachment, language)).join('\n\n')
 }
 
 function resolveDshAttachmentPath(
