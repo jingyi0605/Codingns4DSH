@@ -52,6 +52,7 @@ test('the reported quiz keeps numeric labels locally and translates every descri
     assert.ok(!/^\d+$/.test(source), 'numeric labels must never consume a model request')
     await new Promise(resolve => setTimeout(resolve, 20_000))
     yield { type: 'text-delta', text: '中文翻译' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
   })())
   t.after(() => f.dispose())
   const fields = questionTranslationFields([quiz])

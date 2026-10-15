@@ -8,6 +8,47 @@ const button = '<button type="button" class="_button_1rv3m_2 _ghost_1rv3m_45 _sm
 const marker = '@@CODINGNS_TRANSLATION_0@@'
 type Request = Record<string, any>
 
+test('protects paths adjacent to translated labels and explicit paths containing spaces', () => {
+  for (const path of ['/tmp/中文目录/报告.zip', 'C:\\工作目录\\报告.zip', '../目录/报告.zip', 'docs/调查报告/说明.md', '\\\\server\\目录\\报告.zip', "'/tmp/中文 目录/报告.zip'"]) {
+    const source = `文件位于：${path}\n请阅读。`
+    const protectedText = protectText(source)
+    assert.deepEqual(protectedText.values, [path])
+    assert.equal(restoreText(protectedText.text.replace('请阅读。', 'Please read it.'), protectedText.values), source.replace('请阅读。', 'Please read it.'))
+  }
+  const path = '/tmp/中文 目录/报告 (最终).zip'
+  const protectedText = protectText(`文件位于：${path}\n请阅读。`, { literals: [path] })
+  assert.deepEqual(protectedText.values, [path])
+})
+
+test('host wrapper handling does not expose ordinary user HTML or source code', () => {
+  const source = '<system-reminder>中文描述 <button>中文按钮</button> {{working_directory}}</system-reminder>'
+  assert.equal(protectText(source).text, marker)
+  const protectedText = protectText(source, { promptMarkup: true })
+  assert.match(protectedText.text, /中文描述/u)
+  assert.doesNotMatch(protectedText.text, /中文按钮|working_directory|system-reminder/u)
+  assert.equal(restoreText(protectedText.text, protectedText.values), source)
+})
+
+test('identifier protection leaves ordinary words intact and does not split enclosing paths', () => {
+  const source = 'Translate the transaction description with action=start and /tmp/action/说明.txt.'
+  const protectedText = protectText(source, { literals: ['action', 'on', 'start'] })
+  assert.match(protectedText.text, /Translate the transaction description with /u)
+  assert.ok(protectedText.values.includes('action'))
+  assert.ok(protectedText.values.includes('start'))
+  assert.ok(protectedText.values.includes('/tmp/action/说明.txt.'))
+  assert.equal(restoreText(protectedText.text, protectedText.values), source)
+})
+
+test('known working directories remain part of one protected full path', () => {
+  for (const cwd of ['/tmp/中文目录', '/tmp/中文 目录', 'C:\\工作目录', 'C:\\工作 目录']) {
+    const path = `${cwd}${cwd.startsWith('C:') ? '\\' : '/'}说明.txt`
+    const source = `请读取：${path}\n然后继续。`
+    const protectedText = protectText(source, { literals: [cwd] })
+    assert.deepEqual(protectedText.values, [path])
+    assert.equal(restoreText(protectedText.text, protectedText.values), source)
+  }
+})
+
 function fixture(reply: (source: string, request: Request) => string) {
   const sources: string[] = []
   const service = createSessionTranslationService({

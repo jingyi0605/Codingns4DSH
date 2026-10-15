@@ -5,6 +5,7 @@ export type DshCapabilityId =
   | 'session.title'
   | 'session.activation'
   | 'session.external-model-selection'
+  | 'session.prompt-assembly'
   | 'session.working-directory'
   | 'assistant.agent'
   | 'connection.rpc'

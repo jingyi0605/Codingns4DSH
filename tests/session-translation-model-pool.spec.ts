@@ -129,12 +129,13 @@ for (const kind of ['input', 'assistant', 'reasoning'] as const) {
 }
 
 test('empty, invalid, and partial failed responses are discarded before trying the next model', async () => {
-  for (const failure of ['empty', 'wrong-language', 'stream-error', 'finish-error']) {
+  for (const failure of ['empty', 'wrong-language', 'stream-error', 'finish-error', 'max-tokens', 'missing-finish']) {
     const f = fixture((request) => request.model !== primary.model ? response('Please review the code') : (async function* () {
       if (failure === 'wrong-language') yield { type: 'text-delta', text: '好的，我会检查代码' }
-      if (failure === 'stream-error' || failure === 'finish-error') yield { type: 'text-delta', text: 'partial text that must be discarded' }
+      if (['stream-error', 'finish-error', 'max-tokens', 'missing-finish'].includes(failure)) yield { type: 'text-delta', text: 'partial text that must be discarded' }
+      if (failure === 'missing-finish') return
       if (failure === 'stream-error') throw new Error('connection lost')
-      yield { type: 'finish', reason: { kind: failure === 'finish-error' ? 'error' : 'stop' } }
+      yield { type: 'finish', reason: { kind: failure === 'finish-error' ? 'error' : failure === 'max-tokens' ? 'max-tokens' : 'stop' } }
     })())
     const result = await f.service.translateInputDetailed!('codex', '请检查代码', undefined, true)
     assert.equal(result.translated, 'Please review the code', failure)

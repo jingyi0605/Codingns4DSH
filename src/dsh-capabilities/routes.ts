@@ -6,6 +6,7 @@ import { createTerminalSharingBridge, supportsTerminalSharing } from './client/t
 import { createInteractionPresentationBridge, supportsInteractionPresentation } from './client/interaction-presentation-adapter.js'
 import { supportsLegacyMessagePresentation, supportsFactoryMessagePresentation, createLegacyMessagePresentation, createFactoryMessagePresentation } from './client/message-presentation-adapter.js'
 import { createSessionModelSelectionAdapter, supportsSessionModelSelection } from './host/session-model-selection-adapter.js'
+import { createSessionPromptAdapter, supportsSessionPromptAssembly } from './host/session-prompt-adapter.js'
 
 /**
  * 注册 Codingns4DSH 当前实际消费的 DSH 服务能力。
@@ -26,6 +27,8 @@ export function createDshCapabilityRegistry(
   const add = <T>(route: DshCapabilityRoute<T>): void => registry.register(route)
 
   if (runtime === 'host') {
+    add({ id: 'session-prompt-assembly-021', capability: 'session.prompt-assembly', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+      detect: supportsSessionPromptAssembly, create: createSessionPromptAdapter })
     add({ id: 'session-external-model-selection-021', capability: 'session.external-model-selection', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: ctx => supportsSessionModelSelection(read(ctx, 'sessionController')), create: ctx => createSessionModelSelectionAdapter(read(ctx, 'sessionController')) })
     add({ id: 'session-activation-020', capability: 'session.activation', supportedDsh: '>=0.2.0-rc.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',

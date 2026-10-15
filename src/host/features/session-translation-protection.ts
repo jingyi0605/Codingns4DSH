@@ -7,6 +7,13 @@ interface TextRange {
 }
 
 const voidElements = new Set('area base br col embed hr img input link meta param source track wbr'.split(' '))
+const promptWrappers = new Set(['system-reminder', 'available_skills'])
+
+export interface TextProtectionOptions {
+  readonly literals?: readonly string[]
+  /** Only host-owned prompt messages may expose prose inside these known wrappers. */
+  readonly promptMarkup?: boolean
+}
 
 /** Numbers, dates, and numeric expressions have no prose to translate. */
 export function isLanguageNeutralText(value: string): boolean {
@@ -14,7 +21,19 @@ export function isLanguageNeutralText(value: string): boolean {
 }
 
 /** Keep source slices locally; only placeholders and prose reach the translation model. */
-export function protectText(value: string): { readonly text: string; readonly values: readonly string[] } {
+export function protectText(value: string, options: TextProtectionOptions = {}): { readonly text: string; readonly values: readonly string[] } {
+  const knownRanges: TextRange[] = []
+  for (const literal of options.literals ?? []) {
+    if (literal === '') continue
+    const identifier = /^[A-Za-z_][A-Za-z0-9_.-]*$/u.test(literal)
+    const partOfToken = (character: string | undefined): boolean => character !== undefined && /[A-Za-z0-9_.\\/-]/u.test(character)
+    let start = value.indexOf(literal)
+    while (start >= 0) {
+      const end = start + literal.length
+      if (!identifier || !partOfToken(value[start - 1]) && !partOfToken(value[end])) knownRanges.push({ start, end })
+      start = value.indexOf(literal, start + literal.length)
+    }
+  }
   let ranges: TextRange[] = []
   const blocks: TextRange[] = []
   const visit = (node: Nodes): void => {
@@ -41,8 +60,9 @@ export function protectText(value: string): { readonly text: string; readonly va
     cursor = range.end
   }
   markupSource += value.slice(cursor)
-  ranges = mergeRanges([...ranges, ...markupRanges(markupSource)])
-  ranges = mergeRanges([...ranges, ...collectInGaps(value, ranges, literalRanges)])
+  ranges = mergeRanges([...ranges, ...markupRanges(markupSource, options.promptMarkup === true)])
+  // Merge known values after recognizing whole paths so a known cwd cannot split a longer path.
+  ranges = mergeRanges([...ranges, ...knownRanges, ...collectInGaps(value, ranges, literalRanges)])
 
   const values: string[] = []
   let text = ''
@@ -78,7 +98,7 @@ function mergeRanges(ranges: TextRange[]): TextRange[] {
 }
 
 /** Match whole paired elements, including their text, without consuming adjacent prose. */
-function markupRanges(value: string): TextRange[] {
+function markupRanges(value: string, promptMarkup: boolean): TextRange[] {
   const ranges: TextRange[] = []
   const stack: { name: string; start: number }[] = []
   const tags = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<!DOCTYPE(?:[^>"']|"[^"]*"|'[^']*')*>|<\/?([\p{L}_][\p{L}\p{N}_:.-]*)(?=[\s/>])(?:[^<>"']|"[^"]*"|'[^']*')*>/giu
@@ -88,6 +108,7 @@ function markupRanges(value: string): TextRange[] {
     const end = match.index + tag.length
     ranges.push({ start: match.index, end })
     if (name === undefined) continue
+    if (promptMarkup && promptWrappers.has(name)) continue
     if (tag.startsWith('</')) {
       let opening = stack.length - 1
       while (opening >= 0 && stack[opening]!.name !== name) opening--
@@ -136,7 +157,7 @@ function jsonRanges(value: string): TextRange[] {
 
 function literalRanges(value: string): TextRange[] {
   const ranges: TextRange[] = []
-  const literals = /@@CODINGNS_TRANSLATION_\d+@@|https?:\/\/[^\s)]+|(?:^|\s)(?:[~/][^\s]+|[A-Za-z]:\\[^\s]+)(?=\s|$)|(?:^|\n)[ \t]*(?:[$>#]\s+|(?:npm|pnpm|yarn|bun|git|node|python|python3|cargo|docker|kubectl|curl|ssh|chmod|chown|mkdir|rmdir|rm|cp|mv|ls|cat|echo|export|make)\s+)[^\n]+/gimu
+  const literals = /@@CODINGNS_TRANSLATION_\d+@@|\{\{[a-z][a-z0-9_]*\}\}|(?:https?|file):\/\/[^\s)]+|["'「](?:[~/]|\.\.?\/|[A-Za-z]:[\\/])[^"'」\r\n]+["'」]|(?<![\p{L}\p{N}_])(?:~\/|\.\.?\/|\/|\\\\|[A-Za-z]:[\\/]|(?:[\p{L}\p{N}_.-]+[\\/])+)[^\s"'<>「」]+|(?:^|\n)[ \t]*(?:[$>#]\s+|(?:npm|pnpm|yarn|bun|git|node|python|python3|cargo|docker|kubectl|curl|ssh|chmod|chown|mkdir|rmdir|rm|cp|mv|ls|cat|echo|export|make)\s+)[^\n]+/gimu
   for (const match of value.matchAll(literals)) {
     const leadingSpace = match[0].length - match[0].trimStart().length
     ranges.push({ start: match.index + leadingSpace, end: match.index + match[0].length })

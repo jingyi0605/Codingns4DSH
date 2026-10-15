@@ -46,6 +46,8 @@ import { createSessionTranslationRecovery, SessionTranslationCancelled } from '.
 import { ASSISTANT_AGENT_PREFIX } from '../../dsh-capabilities/host/assistant-agent-adapter.js'
 import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
 import type { SessionModelSelectionAdapter } from '../../dsh-capabilities/host/session-model-selection-adapter.js'
+import { sessionPromptScope, type SessionPromptAdapter } from '../../dsh-capabilities/host/session-prompt-adapter.js'
+import { createSessionPromptTranslation } from '../features/session-prompt-translation.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -154,7 +156,18 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       }
       const translationRecovery = createSessionTranslationRecovery(translation, sessionId => registry.getSession(sessionId))
       context.resources.add(() => translationRecovery.dispose())
-      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, translationRecovery, nativeSessions)
+      const promptTranslation = createSessionPromptTranslation(translation, sessionId => {
+        if (!sessionId || isAssistantSession(sessionId) || readNativeSessionHeader(nativeSessions, sessionId)?.origin === 'subagent') return undefined
+        const config = registry.getSession(sessionId)
+        return (config.translationEnabled ?? (config.adapterId === 'dsh' && translation?.nativeEnabled === true)) ? config.adapterId : undefined
+      })
+      context.resources.add(() => promptTranslation.dispose())
+      if (context.services.dshContext !== undefined && context.services.dshVersion !== undefined) {
+        const adapter = createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext)
+          .getProfile(context.services.dshContext).capabilities.get('session.prompt-assembly')?.value as SessionPromptAdapter | undefined
+        if (adapter !== undefined) context.resources.add(adapter.install((assembly, scope) => promptTranslation.translateAssembly(assembly, scope)))
+      }
+      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, translationRecovery, promptTranslation, nativeSessions)
       const interactionTranslation = createInteractionTranslation(translation, sessionId => registry.getSession(sessionId))
       context.resources.add(() => interactionTranslation.dispose())
       context.resources.add(context.services.rpc.register('cli', (action, payload, rpcContext) => {
@@ -585,12 +598,14 @@ function registerDelegationAgentHooks(
   publishExternalStatus: (sessionId: string, running: boolean) => void,
   translation: CodingNsHostServices['sessionTranslation'],
   translationRecovery: ReturnType<typeof createSessionTranslationRecovery>,
+  promptTranslation: ReturnType<typeof createSessionPromptTranslation>,
   nativeSessions?: CodingNsHostServices['nativeSessions'],
 ): void {
   if (dshContext === undefined || typeof dshContext.on !== 'function') return
   const disposers: Array<() => void> = []
   const register = (name: string, listener: (...args: any[]) => unknown): void => {
-    const disposer = dshContext.on(name as never, listener as never, { global: true } as never)
+    // Wrap existing pre-step producers so their after-next catalogs are visible.
+    const disposer = dshContext.on(name as never, listener as never, { global: true, prepend: name === 'agent/pre-step' } as never)
     if (typeof disposer === 'function') disposers.push(disposer as () => void)
   }
 
@@ -666,13 +681,28 @@ function registerDelegationAgentHooks(
 
     const decision = await next()
     if (!isEnterPreStepDecision(decision)) return decision
-    if (delegation?.kind !== 'rewritten' && translatedInput === undefined) return decision
-
-    // `next()` 可能已经追加系统上下文或模型切换通知，只替换它前面的本轮用户消息。
-    const suffix = decision.messages.slice(messages.length)
-    return {
-      ...decision,
-      messages: [...messages, ...suffix],
+    // Match producer-owned messages by identity. Downstream middleware may insert
+    // instructions before the human message, so a positional prefix loses data.
+    const incoming = Array.isArray(record?.messages) ? record.messages.filter(isMessage) : []
+    const replaced = new Set<number>()
+    const accepted = delegation?.kind === 'rewritten' || translatedInput !== undefined
+      ? decision.messages.map(message => {
+        const index = incoming.findIndex((original, position) => !replaced.has(position) && (
+          original === message || typeof original.id === 'string' && original.id === message.id
+          // Legacy callers can return detached messages without durable IDs.
+          || original.id === undefined && message.id === undefined && original.role === message.role
+            && original.source?.kind === message.source?.kind && original.source?.form === message.source?.form
+            && JSON.stringify(original.content) === JSON.stringify(message.content)
+        ))
+        if (index >= 0) replaced.add(index)
+        return index < 0 ? message : messages[index] ?? message
+      }) : decision.messages
+    try {
+      const scope = sessionPromptScope(record?.agent, isAbortSignal(record?.signal) ? record.signal : undefined)
+      return { ...decision, messages: await promptTranslation.translateMessages(accepted, scope) }
+    } catch (error) {
+      if (error instanceof SessionTranslationCancelled || record?.signal?.aborted === true) return { kind: 'reject' }
+      throw error
     }
   })
 

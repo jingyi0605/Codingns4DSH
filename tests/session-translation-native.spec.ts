@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { Context } from '@deepseek-ai/cordis'
 import { createCliAdaptersFeature } from '../data/build/dist/host/cli-adapters/feature.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
@@ -155,6 +156,45 @@ function createTranslation(options: {
     dispose() {},
   }
 }
+
+test('pre-step preserves downstream instructions inserted before the human message and translates their prose', async () => {
+  const translation = createTranslation({ translateInput: text => text.replaceAll('中文描述', 'Translated description') })
+  const harness = createHarness({ translation }) as Harness & { start(): Promise<void> }
+  await harness.start()
+  try {
+    const user = { id: 'user', role: 'user', source: { kind: 'user' }, content: '中文描述' }
+    const catalog = { id: 'catalog', role: 'user', source: { kind: 'skill-catalog', entries: [{ name: 'skill', description: '中文描述' }] }, content: '中文描述' }
+    const instructions = { id: 'instructions', role: 'user', source: { kind: 'agent-instructions' }, content: '中文描述' }
+    const decision = await harness.preStepListener({ agent: { id: 'native-session' }, messages: [user] }, async () => ({ kind: 'enter', messages: [instructions, user, catalog] })) as any
+    assert.deepEqual(decision.messages.map((message: any) => message.id), ['instructions', 'user', 'catalog'])
+    assert.equal(decision.messages[0].content, 'Translated description')
+    assert.equal(decision.messages[0].source.kind, 'agent-instructions')
+    assert.equal(decision.messages[1].source.codingnsTranslationInput.translated, 'Translated description')
+    assert.equal(decision.messages[2].content, 'Translated description')
+    assert.equal(instructions.content, '中文描述')
+    assert.equal(catalog.content, '中文描述')
+  } finally { await harness.features.disable('cliAdapters') }
+})
+
+test('real Cordis middleware translates catalogs produced by previously registered after-next listeners', async () => {
+  const ctx = new Context()
+  const translation = createTranslation({ translateInput: text => text.replaceAll('中文描述', 'Translated description') })
+  const catalog = { id: 'catalog', role: 'user', source: { kind: 'skill-catalog' }, content: '中文描述' }
+  ctx.on('agent/pre-step' as never, (async (_payload: unknown, next: () => Promise<any>) => {
+    const decision = await next()
+    return { ...decision, messages: [...decision.messages, catalog] }
+  }) as never)
+  const registry = new CodingNsCliAdapterRegistry([])
+  const features = new FeatureRegistry({ rpc: new CodingNsRpcTable(), dshContext: ctx as never, sessionTranslation: translation as never })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  try {
+    registry.setSession('native-session', { adapterId: 'dsh', translationEnabled: true })
+    const decision = await ctx.waterfall('agent/pre-step' as never, { agent: { id: 'native-session' }, messages: [] }, async () => ({ kind: 'enter', messages: [] })) as any
+    assert.equal(decision.messages[0].content, 'Translated description')
+    assert.equal(decision.messages[0].source.kind, 'skill-catalog')
+  } finally { await features.disable('cliAdapters') }
+})
 
 test('DSH 原生会话在 pre-step 翻译请求，并把原文留在元数据里', async () => {
   const translation = createTranslation({ inputLanguage: 'en', translateInput: () => 'Please review this code' })

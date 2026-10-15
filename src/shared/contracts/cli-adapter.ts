@@ -1,4 +1,4 @@
-import type { SessionTranslationInputRecord } from './session-translation.js'
+import type { SessionTranslationInputRecord, SessionTranslationRecord } from './session-translation.js'
 
 /** Codingns4DSH 当前可接入的外部 Agent 标识。内部字段沿用 cli 命名以保持协议兼容。 */
 export type CodingNsCliAdapterId = string
@@ -336,6 +336,8 @@ export interface CodingNsCliMessage {
     readonly callId?: string
     /** DSH 用户消息的双语展示元数据；只在 Host 内部剥离，不发送给 Provider。 */
     readonly codingnsTranslationInput?: SessionTranslationInputRecord
+    /** Original host context remains auditable without changing its producer identity. */
+    readonly codingnsTranslationContext?: { readonly originalContent: unknown; readonly records: readonly SessionTranslationRecord[] }
   }
 }
 

@@ -11,7 +11,10 @@ export function createSessionTranslationFeature(): FeatureModule<CodingNsHostSer
       enabledByDefault: false,
       dependencies: ['cliAdapters'],
       runtime: 'host',
-      requires: [{ capability: 'llm.text', required: false, fallback: 'disable' }],
+      requires: [
+        { capability: 'llm.text', required: false, fallback: 'disable' },
+        { capability: 'session.prompt-assembly', required: false, fallback: 'degrade' },
+      ],
       ui: {
         label: 'Session translation middleware',
         description: 'Translate selected external Agent requests and visible reasoning or replies while keeping tools, commands, paths, and original history intact. DSH native sessions are opt-in and can be enabled separately.',

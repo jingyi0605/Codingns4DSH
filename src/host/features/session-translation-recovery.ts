@@ -3,6 +3,7 @@ import type { CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapte
 import type { SessionTranslationPendingInput, SessionTranslationRecord, SessionTranslationRecoveryChoice } from '../../shared/contracts/session-translation.js'
 import type { SessionTranslationService } from './session-translation-service.js'
 import { translationFailure, withTranslationAbort } from './session-translation-runtime.js'
+import type { TextProtectionOptions } from './session-translation-protection.js'
 
 export class SessionTranslationCancelled extends Error {
   constructor() { super('Message sending cancelled'); this.name = 'SessionTranslationCancelled' }
@@ -50,7 +51,7 @@ export function createSessionTranslationRecovery(
       entry.resolve(value.choice as SessionTranslationRecoveryChoice)
       return { accepted: true }
     },
-    async translateInput(sessionId: string, adapterId: string, text: string, requestSignal?: AbortSignal): Promise<SessionTranslationRecord> {
+    async translateInput(sessionId: string, adapterId: string, text: string, requestSignal?: AbortSignal, protection?: TextProtectionOptions): Promise<SessionTranslationRecord> {
       const controller = new AbortController()
       inputs.set(controller, sessionId)
       const signal = AbortSignal.any([lifetime.signal, controller.signal, ...(requestSignal ? [requestSignal] : [])])
@@ -62,8 +63,8 @@ export function createSessionTranslationRecovery(
           let record: SessionTranslationRecord
           try {
             record = await withTranslationAbort(async () => ({ ...fallback, ...(service.translateInputDetailed
-              ? await service.translateInputDetailed(adapterId, text, signal, true)
-              : { translated: await service.translateInput(adapterId, text, signal, true) }) }), signal)
+              ? await service.translateInputDetailed(adapterId, text, signal, true, protection)
+              : { translated: await service.translateInput(adapterId, text, signal, true, protection) }) }), signal)
           } catch (error) {
             record = { ...fallback, failed: true, failure: translationFailure(error, signal) }
           }

@@ -16,6 +16,7 @@ import type {
 } from '../../shared/contracts/session-translation.js'
 import { debugWarn } from '../../shared/debug.js'
 import { isLanguageNeutralText, protectText, restoreText, stripPlaceholders } from './session-translation-protection.js'
+import type { TextProtectionOptions } from './session-translation-protection.js'
 import { translationFailure, withTranslationAbort as withAbort } from './session-translation-runtime.js'
 
 interface LlmRuntime {
@@ -52,9 +53,9 @@ export interface SessionTranslationService {
   deactivate(): void
   onDeactivate?(listener: () => void): () => void
   configure(settings: SessionTranslationSettings | undefined): void
-  translateInput(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<string>
+  translateInput(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean, protection?: TextProtectionOptions): Promise<string>
   /** 输入翻译的可审计结果；旧调用方仍可使用 translateInput。 */
-  translateInputDetailed?(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationMetrics & {
+  translateInputDetailed?(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean, protection?: TextProtectionOptions): Promise<SessionTranslationMetrics & {
     readonly translated: string
     readonly sourceLanguage?: SessionTranslationLanguage
     readonly alreadyTargetLanguage?: boolean
@@ -248,8 +249,8 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
       settings = normalizeSettings(next)
       nativeFallbackModel = undefined
     },
-    async translateInput(adapterId, text, signal, sessionEnabled) {
-      const result = await translateInputDetailed(adapterId, text, signal, sessionEnabled)
+    async translateInput(adapterId, text, signal, sessionEnabled, protection) {
+      const result = await translateInputDetailed(adapterId, text, signal, sessionEnabled, protection)
       return result.translated
     },
     translateInputDetailed,
@@ -259,7 +260,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     dispose: deactivate,
   }
 
-  async function translateInputDetailed(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationMetrics & {
+  async function translateInputDetailed(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean, protection?: TextProtectionOptions): Promise<SessionTranslationMetrics & {
     readonly translated: string
     readonly sourceLanguage?: SessionTranslationLanguage
     readonly alreadyTargetLanguage?: boolean
@@ -268,7 +269,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     readonly failure?: SessionTranslationFailure
   }> {
       if (!active || !canTranslateAdapter(adapterId, sessionEnabled) || text.trim() === '') return { translated: text }
-      const protectedText = protectText(text)
+      const protectedText = protectText(text, protection)
       if (hasNoTranslatableText(protectedText.text)) return { translated: text }
       const targetLanguage = settings.inputLanguage
       const sourceLanguage = detectSourceLanguage(protectedText.text, targetLanguage)
@@ -429,6 +430,7 @@ function isPlainLatinText(text: string): boolean {
 
 async function readTranslation(stream: AsyncIterable<Record<string, any>>, signal: AbortSignal, onUsage: (tokens: number) => void): Promise<string> {
   let text = ''
+  let completed = false
   for await (const chunk of stream) {
     signal.throwIfAborted()
     if (chunk.type === 'usage' && chunk.usage != null) {
@@ -442,7 +444,10 @@ async function readTranslation(stream: AsyncIterable<Record<string, any>>, signa
     if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
     else if (chunk.type === 'block-end' && chunk.block?.type === 'text' && text === '' && typeof chunk.block.text === 'string') text = chunk.block.text
     if (chunk.type === 'finish' && chunk.reason?.kind === 'error') throw new Error(chunk.reason.failure?.message ?? 'translation failed')
+    if (chunk.type === 'finish' && chunk.reason?.kind !== 'stop') throw new Error('model returned an unusable translation: incomplete stream')
+    if (chunk.type === 'finish') completed = true
   }
+  if (!completed) throw new Error('model returned an unusable translation: missing finish')
   return text
 }
 
