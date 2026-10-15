@@ -172,7 +172,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   }
 
   protected writeStdin(child: CodingNsChildProcess, input: CodingNsCliTurnInput): void {
-    const prompt = promptWithAttachmentPaths(input.prompt, input.attachments ?? [])
+    const prompt = promptWithAttachmentPaths(input.prompt, input.attachments ?? [], input.translationLanguage)
     // Antigravity 的 stream-json 输入协议要求每一轮一个 user 事件，且
     // message 必须是带 content 字符串的对象；直接传字符串会让 AGY 退出。
     if (child.stdin === null) throw new Error('Antigravity CLI 未打开 stdin 管道')

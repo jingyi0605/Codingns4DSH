@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { CodingNsAgentEvent, CodingNsCliAttachment, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { SessionTranslationLanguage } from '../../shared/contracts/session-translation.js'
+import { attachmentReferences } from '../../shared/attachment-prompts.js'
 
 const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -112,10 +114,10 @@ export async function* withAttachmentPaths(
 }
 
 /** 给只接受文本 prompt 的 CLI 追加可解析的 @路径引用。 */
-export function promptWithAttachmentPaths(prompt: string, attachments: readonly CodingNsCliAttachment[]): string {
+export function promptWithAttachmentPaths(prompt: string, attachments: readonly CodingNsCliAttachment[], language?: SessionTranslationLanguage): string {
   if (attachments.length === 0) return prompt
-  const references = attachments.map((attachment) => `附件「${attachment.name ?? basename(attachment.path)}」：@${attachment.path}`)
-  return [prompt.trim(), '请读取并处理以下消息附件：', ...references].filter((part) => part !== '').join('\n')
+  const references = attachmentReferences(attachments.map(attachment => ({ name: attachment.name ?? basename(attachment.path), path: attachment.path })), language)
+  return [prompt.trim(), ...references].filter((part) => part !== '').join('\n')
 }
 
 /** ACP PromptRequest 的内容块；图片内联，普通文件用 file:// 资源链接。 */
@@ -161,9 +163,9 @@ export async function buildPiImages(attachments: readonly CodingNsCliAttachment[
 }
 
 /** Kimi wire 只接受 user_input；图片必须放进原生 image_url 内容块，不能另造 attachments 字段。 */
-export async function buildKimiUserInput(prompt: string, attachments: readonly CodingNsCliAttachment[]): Promise<string | readonly Record<string, unknown>[]> {
-  if (!attachments.some((attachment) => attachment.kind === 'image')) return promptWithAttachmentPaths(prompt, attachments)
-  const text = promptWithAttachmentPaths(prompt, attachments.filter((attachment) => attachment.kind === 'file'))
+export async function buildKimiUserInput(prompt: string, attachments: readonly CodingNsCliAttachment[], language?: SessionTranslationLanguage): Promise<string | readonly Record<string, unknown>[]> {
+  if (!attachments.some((attachment) => attachment.kind === 'image')) return promptWithAttachmentPaths(prompt, attachments, language)
+  const text = promptWithAttachmentPaths(prompt, attachments.filter((attachment) => attachment.kind === 'file'), language)
   const images = await Promise.all(attachments.filter((attachment) => attachment.kind === 'image').map(async (attachment) => {
     const { bytes, mimeType } = await readAttachment(attachment)
     return { type: 'image_url', image_url: { url: `data:${mimeType};base64,${bytes.toString('base64')}` } }
@@ -172,8 +174,8 @@ export async function buildKimiUserInput(prompt: string, attachments: readonly C
 }
 
 /** Claude stdin 原生支持图片内容块，包括 GIF/WebP；普通文件保留工具可读取路径。 */
-export async function buildClaudeUserContent(prompt: string, attachments: readonly CodingNsCliAttachment[]): Promise<readonly Record<string, unknown>[]> {
-  const text = promptWithAttachmentPaths(prompt, attachments.filter((attachment) => attachment.kind === 'file'))
+export async function buildClaudeUserContent(prompt: string, attachments: readonly CodingNsCliAttachment[], language?: SessionTranslationLanguage): Promise<readonly Record<string, unknown>[]> {
+  const text = promptWithAttachmentPaths(prompt, attachments.filter((attachment) => attachment.kind === 'file'), language)
   const images = await Promise.all(attachments.filter((attachment) => attachment.kind === 'image').map(async (attachment) => {
     const { bytes, mimeType } = await readAttachment(attachment)
     return { type: 'image', source: { type: 'base64', media_type: mimeType, data: bytes.toString('base64') } }

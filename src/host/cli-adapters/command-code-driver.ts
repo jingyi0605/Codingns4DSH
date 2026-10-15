@@ -855,7 +855,7 @@ export class CommandCodeDriver implements CodingNsCliDriver {
   private buildTurnArgs(input: CodingNsCliTurnInput, turn: CommandCodeTurn): string[] {
     // 续跑沿用同一个 Provider 会话，只把输入换成续跑提示；不能再次写入历史，
     // 否则会把 CLI 已经落盘的进度覆盖成空会话。
-    const prompt = turn.attempt > 1 ? this.autoContinuePrompt : promptWithAttachmentPaths(input.prompt, input.attachments ?? [])
+    const prompt = turn.attempt > 1 ? this.autoContinuePrompt : promptWithAttachmentPaths(input.prompt, input.attachments ?? [], input.translationLanguage)
     const args = turn.transcriptPath !== undefined && turn.attempt === 1
       ? ['--session', turn.transcriptPath, '-p', prompt, '--output-format', 'json', '--skip-onboarding', '--max-turns', String(this.maxTurns)]
       : turn.providerSessionId !== undefined

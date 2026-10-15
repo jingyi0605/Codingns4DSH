@@ -237,7 +237,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
    * 同一通路支持 PNG/JPEG/GIF/WebP；文件附件继续开放其原始目录供工具读取。
    */
   override async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
-    const userContent = await buildClaudeUserContent(input.prompt, input.attachments ?? [])
+    const userContent = await buildClaudeUserContent(input.prompt, input.attachments ?? [], input.translationLanguage)
     this.toolInputStates.delete(input.sessionId)
     const interaction: ClaudeInteractionState = { write: undefined, pending: new Map(), userContent }
     this.interactions.set(input.sessionId, interaction)

@@ -222,7 +222,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     session.acceptingInteractions = true
     const sendPromise = session.rpc.request('session/send', {
       sessionId: session.acpSessionId,
-      content: promptWithAttachmentPaths(zcodePrompt(input.prompt), input.attachments ?? []),
+      content: promptWithAttachmentPaths(zcodePrompt(input.prompt), input.attachments ?? [], input.translationLanguage),
     }, { signal: input.signal, killOnAbort: false })
       .then(() => undefined, (error: unknown) => {
         sendError = error

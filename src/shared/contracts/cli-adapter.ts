@@ -1,4 +1,4 @@
-import type { SessionTranslationInputRecord, SessionTranslationRecord } from './session-translation.js'
+import type { SessionTranslationInputRecord, SessionTranslationLanguage, SessionTranslationRecord } from './session-translation.js'
 
 /** Codingns4DSH 当前可接入的外部 Agent 标识。内部字段沿用 cli 命名以保持协议兼容。 */
 export type CodingNsCliAdapterId = string
@@ -254,6 +254,8 @@ export interface CodingNsCliTurnInput {
   readonly prompt: string
   /** 当前用户消息中的已解析附件；路径只在 Host 内部传给驱动。 */
   readonly attachments?: readonly CodingNsCliAttachment[]
+  /** Input language for host-generated prose; omitted when translation is disabled. */
+  readonly translationLanguage?: SessionTranslationLanguage
   /** DSH 会话权限状态；缺省表示 Host 未读到，驱动沿用保守默认。 */
   readonly permission?: CodingNsCliPermissionState
   /** Provider 原生计划模式；由 Host 显式指定时才下发。 */

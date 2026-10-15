@@ -63,7 +63,7 @@ export class GeminiCliDriver extends StandardStreamDriver {
   }
 
   protected buildArgs(input: CodingNsCliTurnInput): readonly string[] {
-    const args = ['-p', promptWithAttachmentPaths(input.prompt, input.attachments ?? []), '--output-format', 'stream-json', ...geminiPermissionArgs(input.permission)]
+    const args = ['-p', promptWithAttachmentPaths(input.prompt, input.attachments ?? [], input.translationLanguage), '--output-format', 'stream-json', ...geminiPermissionArgs(input.permission)]
     for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--include-directories', directory)
     if (input.providerSessionId) args.push('--resume', input.providerSessionId)
     if (input.modelId && !isProviderDefaultModel(input.modelId)) args.push('--model', input.modelId)

@@ -241,7 +241,7 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
     child.stderr.on('data', (chunk) => { stderr = `${stderr}${String(chunk)}`.slice(-16_384) })
     try {
       if (child.stdin === null) throw new Error('MiniMax Code CLI 未打开 stdin 管道')
-      child.stdin.end(`${promptWithAttachmentPaths(input.prompt, input.attachments ?? [])}\n`, 'utf8')
+      child.stdin.end(`${promptWithAttachmentPaths(input.prompt, input.attachments ?? [], input.translationLanguage)}\n`, 'utf8')
       const lines = readline.createInterface({ input: child.stdout })
       try {
         for await (const line of lines) {

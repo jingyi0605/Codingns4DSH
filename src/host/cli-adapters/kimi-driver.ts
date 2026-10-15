@@ -68,7 +68,7 @@ export class KimiCliDriver extends StandardStreamDriver {
 
   protected writeStdin(child: CodingNsChildProcess, input: CodingNsCliTurnInput): void {
     if (child.stdin === null) throw new Error('Kimi CLI 未打开 stdin 管道')
-    const text = promptWithAttachmentPaths(input.prompt, input.attachments ?? [])
+    const text = promptWithAttachmentPaths(input.prompt, input.attachments ?? [], input.translationLanguage)
     child.stdin.end(`${JSON.stringify({ role: 'user', content: [{ type: 'text', text }] })}\n`, 'utf8')
   }
 
@@ -160,7 +160,7 @@ export class KimiCliDriver extends StandardStreamDriver {
           capabilities: { supports_question: true },
         },
       })}\n`)
-      const userInput = await buildKimiUserInput(input.prompt, input.attachments ?? [])
+      const userInput = await buildKimiUserInput(input.prompt, input.attachments ?? [], input.translationLanguage)
       let promptSent = false
       const sendPrompt = (): void => {
         if (promptSent) return
