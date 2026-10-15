@@ -17,7 +17,7 @@ function fixture(reply: string, failPrimary = false) {
     async *stream(request: Record<string, any>) {
       requests.push(request)
       if (failPrimary && request.model === 'primary') throw new Error('model unavailable')
-      yield { type: 'text-delta', text: reply }
+      yield { type: 'text-delta', text: JSON.stringify({ translation: reply }) }
       yield { type: 'finish', reason: { kind: 'stop' } }
     },
   } }, '0.2.1-alpha.2')!

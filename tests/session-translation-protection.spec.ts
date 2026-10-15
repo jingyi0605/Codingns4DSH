@@ -59,7 +59,7 @@ function fixture(reply: (source: string, request: Request) => string) {
         const source = request.messages[0].content[0].text.split('SOURCE TEXT BEGIN\n')[1].split('\nSOURCE TEXT END')[0]
         sources.push(source)
         return (async function* () {
-          yield { type: 'text-delta', text: reply(source, request) }
+          yield { type: 'text-delta', text: JSON.stringify({ translation: reply(source, request) }) }
           yield { type: 'finish', reason: { kind: 'stop' } }
         })()
       },

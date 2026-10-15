@@ -35,7 +35,7 @@ function fixture(stream: (request: Request) => AsyncIterable<Request>, pool: rea
 }
 
 async function* response(text: string): AsyncIterable<Request> {
-  yield { type: 'text-delta', text }
+  yield { type: 'text-delta', text: JSON.stringify({ translation: text }) }
   yield { type: 'finish', reason: { kind: 'stop' } }
 }
 
@@ -50,7 +50,7 @@ for (const kind of ['input', 'assistant', 'reasoning'] as const) {
         throw new Error('connection lost')
       }
       yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 1, cacheReadTokens: 30, cacheWriteTokens: 5 } }
-      yield { type: 'text-delta', text: kind === 'input' ? 'Please review the code' : '请检查代码' }
+      yield { type: 'text-delta', text: JSON.stringify({ translation: kind === 'input' ? 'Please review the code' : '请检查代码' }) }
       yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 30, cacheWriteTokens: 5 } }
       yield { type: 'finish', reason: { kind: 'stop' } }
     })())
@@ -131,7 +131,7 @@ for (const kind of ['input', 'assistant', 'reasoning'] as const) {
 test('empty, invalid, and partial failed responses are discarded before trying the next model', async () => {
   for (const failure of ['empty', 'wrong-language', 'stream-error', 'finish-error', 'max-tokens', 'missing-finish']) {
     const f = fixture((request) => request.model !== primary.model ? response('Please review the code') : (async function* () {
-      if (failure === 'wrong-language') yield { type: 'text-delta', text: '好的，我会检查代码' }
+      if (failure === 'wrong-language') yield { type: 'text-delta', text: JSON.stringify({ translation: '好的，我会检查代码' }) }
       if (['stream-error', 'finish-error', 'max-tokens', 'missing-finish'].includes(failure)) yield { type: 'text-delta', text: 'partial text that must be discarded' }
       if (failure === 'missing-finish') return
       if (failure === 'stream-error') throw new Error('connection lost')

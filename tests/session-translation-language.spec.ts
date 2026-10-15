@@ -24,7 +24,7 @@ function fixture(reply = '翻译后的内容。') {
         const source = request.messages[0].content[0].text.split('SOURCE TEXT BEGIN\n')[1].split('\nSOURCE TEXT END')[0]
         sources.push(source)
         return (async function* () {
-          yield { type: 'text-delta', text: reply }
+          yield { type: 'text-delta', text: JSON.stringify({ translation: reply }) }
           yield { type: 'finish', reason: { kind: 'stop' } }
         })()
       },

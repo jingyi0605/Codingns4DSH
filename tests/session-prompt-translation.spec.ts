@@ -23,7 +23,7 @@ function fixture() {
       requests.push(request)
       return (async function* () {
         const text = request.messages[0].content[0].text.split('SOURCE TEXT BEGIN\n')[1].split('\nSOURCE TEXT END')[0]
-        yield { type: 'text-delta', text: text.replaceAll(original, 'Translated description') }
+        yield { type: 'text-delta', text: JSON.stringify({ translation: text.replaceAll(original, 'Translated description') }) }
         yield { type: 'finish', reason: { kind: failure ? 'max-tokens' : 'stop' } }
       })()
     },

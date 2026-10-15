@@ -10,7 +10,7 @@ import { CodingNsRpcTable } from '../src/host/rpc-table.js'
 import { FeatureRegistry } from '../src/features/registry.js'
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
-const response = (text: string) => (async function* () { yield { type: 'text-delta', text }; yield { type: 'finish', reason: { kind: 'stop' } } })()
+const response = (text: string) => (async function* () { yield { type: 'text-delta', text: JSON.stringify({ translation: text }) }; yield { type: 'finish', reason: { kind: 'stop' } } })()
 const record = (original: string) => ({ original, translated: '中文翻译', targetLanguage: 'zh' as const, bilingual: false })
 const request = (texts: string[], sessionId = 's1') => ({ sessionId, direction: 'output', fields: texts.map((text, index) => ({ key: `f.${index}`, text })) })
 
@@ -51,7 +51,7 @@ test('the reported quiz keeps numeric labels locally and translates every descri
   const f = modelFixture((_options, source) => (async function* () {
     assert.ok(!/^\d+$/.test(source), 'numeric labels must never consume a model request')
     await new Promise(resolve => setTimeout(resolve, 20_000))
-    yield { type: 'text-delta', text: '中文翻译' }
+    yield { type: 'text-delta', text: JSON.stringify({ translation: '中文翻译' }) }
     yield { type: 'finish', reason: { kind: 'stop' } }
   })())
   t.after(() => f.dispose())

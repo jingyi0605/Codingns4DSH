@@ -599,7 +599,7 @@ test('原生会话显式开启时，输入和输出均覆盖默认关闭，并�
       stream: (options: Record<string, unknown>) => {
         requests.push(options)
         return (async function* () {
-          yield { type: 'text-delta', text: requests.length === 1 ? 'Conversation test' : '用户正在测试对话。' }
+          yield { type: 'text-delta', text: JSON.stringify({ translation: requests.length === 1 ? 'Conversation test' : '用户正在测试对话。' }) }
           yield { type: 'usage', usage: { inputTokens: 20, outputTokens: 10, cacheReadTokens: 5 } }
           yield { type: 'finish', reason: { kind: 'stop' } }
         })()
