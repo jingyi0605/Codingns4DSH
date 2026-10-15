@@ -1326,7 +1326,8 @@ function codexMessageToChunk(message: Record<string, any>, cwd?: string): Coding
     const callId = firstToolText(item.callId, item.call_id, item.toolCallId, item.id, params.itemId)
     const agentId = firstToolText(item.agentId, item.agent_id, type.includes('agent') || type.includes('collab') ? item.id : undefined)
     const input = serializeToolValue(isFileChangeType(type) ? fileChangeToolInput(item) : item.arguments ?? item.input ?? item.command)
-    const rawOutput = item.result ?? item.output ?? item.aggregated_output
+    // app-server v2 的 commandExecution 使用 camelCase aggregatedOutput；snake_case 保留给旧协议。
+    const rawOutput = item.result ?? item.output ?? item.aggregatedOutput ?? item.aggregated_output
     const explicitError = serializeToolValue(item.error)
     const output = serializeToolValue(rawOutput)
     const exitCodeFailed = typeof item.exitCode === 'number' && item.exitCode !== 0 || typeof item.exit_code === 'number' && item.exit_code !== 0
