@@ -376,6 +376,9 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
   if (path[0] === 'subscriptionUsage') {
     return path.length === 2 && ['timeoutSecs', 'refreshIntervalMins'].includes(path[1] ?? '')
   }
+  if (path[0] === 'sessionTranslation') {
+    return path.length === 2 && ['inputEnabled', 'reasoningEnabled', 'assistantEnabled'].includes(path[1] ?? '')
+  }
   if (path[0] === 'assistant') {
     return (path.length === 2 && ['managedWorkspaceIds', 'appearance', 'prompts', 'profile', 'model'].includes(path[1] ?? '')) || (path.length === 3 && path[1] === 'prompts' && ['index', 'chat'].includes(path[2] ?? ''))
   }

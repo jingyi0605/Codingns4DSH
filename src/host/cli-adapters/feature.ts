@@ -316,7 +316,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           virtualProviders?.setProviders(registry.enabledAdapterIds())
           registry.syncPreferences(next.agentAdapterPreferences)
           sessionStore.sync(next.cliSessions)
-          translationRecovery.cancelDisabled(next.sessionTranslation?.nativeEnabled === true)
+          translationRecovery.cancelDisabled(next.sessionTranslation?.nativeEnabled === true, next.sessionTranslation?.inputEnabled !== false)
           const nextSubscriptionSettings = JSON.stringify(next.subscriptionUsage ?? null)
           if (nextSubscriptionSettings !== subscriptionSettings) {
             subscriptionSettings = nextSubscriptionSettings
@@ -432,7 +432,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           const requestSignal = isAbortSignal(value?.signal)
             ? AbortSignal.any([value.signal, lifetime.signal])
             : lifetime.signal
-          const translationLanguage = translation?.enabled && config.translationEnabled === true ? readInputTargetLanguage(translation) : undefined
+          const translationLanguage = translation?.enabled && translation.inputEnabled !== false && config.translationEnabled === true ? readInputTargetLanguage(translation) : undefined
           let translatedPrompt = turnInput.translationPrompt
           if (turnInput.translatePrompt && turnInput.translationPrompt.trim() !== '' && translationLanguage !== undefined) {
             try {
@@ -1138,7 +1138,7 @@ async function translatePreStepInput(
   signal?: AbortSignal,
   nativeSession?: { readonly adapterId: string; readonly translationEnabled: boolean },
 ): Promise<readonly CodingNsCliMessage[] | undefined> {
-  if (translation === undefined || !translation.enabled || sessionId.trim() === '') return undefined
+  if (translation === undefined || !translation.enabled || translation.inputEnabled === false || sessionId.trim() === '') return undefined
 
   const messageIndex = findLatestHumanMessage(messages)
   const current = messageIndex < 0 ? undefined : messages[messageIndex]
@@ -1268,6 +1268,7 @@ function isAssistantSession(sessionId: string): boolean {
 interface NativeStreamBlock {
   readonly index: number
   readonly kind: 'reasoning' | 'text'
+  readonly translate: boolean
   text: string
   closed: boolean
 }
@@ -1290,7 +1291,10 @@ async function* translateNativeStream(
   const bufferOf = (index: number, kind: NativeStreamBlock['kind']): NativeStreamBlock | undefined => {
     const existing = blocks.get(index)
     if (existing !== undefined) return existing.kind === kind && !existing.closed ? existing : undefined
-    const created: NativeStreamBlock = { index, kind, text: '', closed: false }
+    const created: NativeStreamBlock = {
+      index, kind, text: '', closed: false,
+      translate: translation.shouldTranslate(DSH_NATIVE_SESSION_ADAPTER_ID, kind === 'reasoning' ? 'reasoning' : 'assistant', true),
+    }
     blocks.set(index, created)
     return created
   }
@@ -1339,7 +1343,9 @@ async function* translateNativeStream(
         if (index === undefined || typeof record?.text !== 'string') { yield chunk; continue }
         const kind = type === 'text-delta' ? 'text' as const : 'reasoning' as const
         const block = bufferOf(index, kind)
-        if (block === undefined) { yield chunk; continue }
+        // Decide once per block: changing settings must not translate only a suffix
+        // or drop a prefix that was already buffered.
+        if (block === undefined || !block.translate) { yield chunk; continue }
         block.text += record.text
         continue
       }
@@ -1351,6 +1357,7 @@ async function* translateNativeStream(
             const emitted = await translateBlock(block)
             for (const item of emitted) yield item
             if (emitted.length > 0) continue
+            yield { type: `${block.kind}-delta`, index: block.index, text: block.text }
           }
         }
         yield chunk

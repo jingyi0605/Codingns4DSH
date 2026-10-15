@@ -31,10 +31,10 @@ export function createSessionTranslationRecovery(
   return {
     dispose() { lifetime.abort(new SessionTranslationCancelled()); pending.clear(); removeDeactivate?.() },
     cancelSession,
-    cancelDisabled(nativeEnabled: boolean) {
+    cancelDisabled(nativeEnabled: boolean, inputEnabled = true) {
       for (const sessionId of new Set(inputs.values())) {
         const config = session(sessionId)
-        if (!(config.translationEnabled ?? (config.adapterId === 'dsh' && nativeEnabled))) cancelSession(sessionId)
+        if (!inputEnabled || !(config.translationEnabled ?? (config.adapterId === 'dsh' && nativeEnabled))) cancelSession(sessionId)
       }
     },
     pending(payload: unknown): readonly SessionTranslationPendingInput[] {
@@ -59,7 +59,7 @@ export function createSessionTranslationRecovery(
         while (true) {
           signal.throwIfAborted()
           const fallback: SessionTranslationRecord = { original: text, translated: text, targetLanguage: service?.inputLanguage ?? 'en', bilingual: false }
-          if (service === undefined || !service.enabled || text.trim() === '') return fallback
+          if (service === undefined || !service.enabled || service.inputEnabled === false || text.trim() === '') return fallback
           let record: SessionTranslationRecord
           try {
             record = await withTranslationAbort(async () => ({ ...fallback, ...(service.translateInputDetailed

@@ -12,6 +12,60 @@ import {
   toSessionTranslationRecord,
 } from '../data/build/dist/shared/contracts/session-translation.js'
 
+test('each message category independently gates translation for native and external agents', async () => {
+  const requests: string[] = []
+  const service = createSessionTranslationService({
+    llm: {
+      listProviders: () => [{ id: 'test', name: 'Test' }],
+      listModels: async () => [{ id: 'model', name: 'Model' }],
+      stream: (options: any) => (async function* () {
+        requests.push(options.system)
+        yield { type: 'text-delta', text: options.system.includes("user's message") ? 'Please review the code.' : '请检查代码。' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })(),
+    },
+  }, '0.2.1-alpha.2')!
+  service.activate()
+  try {
+    for (const adapterId of ['dsh', 'codex']) {
+      for (const inputEnabled of [true, false]) for (const reasoningEnabled of [true, false]) for (const assistantEnabled of [true, false]) {
+        service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, inputEnabled, reasoningEnabled, assistantEnabled })
+        const count = requests.length
+        const input = await service.translateInputDetailed!(adapterId, '请检查代码。', undefined, true)
+        assert.equal(input.translated, inputEnabled ? 'Please review the code.' : '请检查代码。')
+        for (const [kind, enabled] of [['reasoning', reasoningEnabled], ['assistant', assistantEnabled]] as const) {
+          assert.equal(service.shouldTranslate(adapterId, kind, true), enabled)
+          assert.equal(service.shouldTranslate(adapterId, kind, false), false)
+          const output = await service.translateOutput(adapterId, kind, 'Please review the code.', undefined, true)
+          assert.equal(output?.translated ?? null, enabled ? '请检查代码。' : null)
+        }
+        assert.equal(requests.length - count, Number(inputEnabled) + Number(reasoningEnabled) + Number(assistantEnabled))
+        assert.equal(await service.translateInput(adapterId, '请检查代码。', undefined, false), '请检查代码。')
+        assert.equal(requests.length - count, Number(inputEnabled) + Number(reasoningEnabled) + Number(assistantEnabled))
+      }
+    }
+  } finally { service.dispose() }
+})
+
+test('changing output settings during an external block never drops or duplicates deltas', async () => {
+  for (const initiallyEnabled of [true, false]) {
+    let enabled = initiallyEnabled
+    const projector = new CodingNsDshMessageProjector({ adapterId: 'codex', sessionId: 'changing-translation', translationEnabled: true,
+      translation: {
+        shouldTranslate: () => enabled,
+        translateOutput: async () => null,
+      } as never,
+    })
+    const chunks = [...await projector.push({ type: 'text-delta', text: 'Hello' })]
+    enabled = !enabled
+    chunks.push(...await projector.push({ type: 'text-delta', text: ' world' }))
+    chunks.push(...await projector.push({ type: 'finish', reason: 'stop' }))
+    assert.equal(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join(''), 'Hello world')
+    assert.equal(chunks.filter(chunk => chunk.type === 'block-start').length, 1)
+    assert.equal(chunks.filter(chunk => chunk.type === 'block-end').length, 1)
+  }
+})
+
 test('会话翻译只在文本块结束后投影原文，并保留双语元数据供客户端显示译文', async () => {
   const translation = {
     enabled: true,
@@ -182,6 +236,9 @@ test('会话翻译覆盖所有内置外部 Agent，DSH 原生 Agent 单独判定
 
 test('原生会话翻译设置归一化补齐新字段并保留旧值', () => {
   assert.deepEqual(DEFAULT_SESSION_TRANSLATION_SETTINGS, {
+    inputEnabled: true,
+    reasoningEnabled: true,
+    assistantEnabled: true,
     inputLanguage: 'en',
     outputLanguage: 'zh',
     bilingual: false,
@@ -198,6 +255,9 @@ test('原生会话翻译设置归一化补齐新字段并保留旧值', () => {
   assert.equal(legacy.outputLanguage, 'en')
   assert.equal(legacy.bilingual, true)
   assert.equal(legacy.nativeEnabled, false)
+  assert.equal(legacy.inputEnabled, true)
+  assert.equal(legacy.reasoningEnabled, true)
+  assert.equal(legacy.assistantEnabled, true)
 
   const enabled = normalizeSessionTranslationSettings({
     inputLanguage: 'zh',

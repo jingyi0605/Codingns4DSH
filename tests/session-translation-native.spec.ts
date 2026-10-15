@@ -422,6 +422,76 @@ test('DSH 原生会话的子代理与助理会话不参与翻译', async () => {
   await assistantHarness.features.disable('cliAdapters')
 })
 
+test('disabled user translation preserves native and external submissions without translation metadata', async () => {
+  for (const adapterId of ['dsh', 'codex']) {
+    const translation = { ...createTranslation(), inputEnabled: false }
+    const executions: any[] = []
+    const harness = createHarness({ translation, adapterId, translationEnabled: true, executions, attachmentPath: '/tmp/中文 文件.txt' })
+    await harness.start()
+    try {
+      const original = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '请检查代码' }] }
+      const decision = await harness.preStepListener({ agent: { id: 'native-session' }, messages: [original], turn: 1, step: 1 },
+        async () => ({ kind: 'enter', messages: [original] })) as any
+      assert.deepEqual(decision.messages, [original])
+      if (adapterId === 'codex') {
+        for await (const _chunk of harness.llmListener({ sessionId: 'native-session', messages: [original] }, async function* () {})) { /* Drain the provider stream. */ }
+        assert.equal(executions[0].prompt, '请检查代码')
+        assert.equal(executions[0].translationLanguage, undefined)
+      }
+      assert.deepEqual(translation.requests, [])
+    } finally { await harness.features.disable('cliAdapters') }
+  }
+})
+
+test('disabled native output categories stream unchanged while the other category is translated', async () => {
+  for (const disabledKind of ['reasoning', 'assistant']) {
+    const translation = createTranslation()
+    translation.shouldTranslate = (_adapter, kind) => kind !== disabledKind
+    const harness = createHarness({ translation })
+    await harness.start()
+    try {
+      const chunks: any[] = []
+      const originals: any[] = []
+      for await (const chunk of harness.llmListener({ sessionId: 'native-session', messages: [] }, async function* () {
+        for (const [index, kind] of ['reasoning', 'text'].entries()) {
+          for (const text of ['Hello', ' world']) {
+            const delta = { type: `${kind}-delta`, index, text }
+            if ((kind === 'text' ? 'assistant' : kind) === disabledKind) originals.push(delta)
+            yield delta
+          }
+          yield { type: 'block-end', index, block: { type: kind, text: 'Hello world' } }
+        }
+      })) chunks.push(chunk)
+      const disabledIndex = disabledKind === 'reasoning' ? 0 : 1
+      assert.deepEqual(chunks.filter(chunk => chunk.index === disabledIndex && chunk.type.endsWith('-delta')), originals)
+      assert.ok(chunks.filter(chunk => chunk.index === disabledIndex).every(chunk => chunk.codingnsTranslation === undefined))
+      assert.equal(translation.requests.length, 1)
+      assert.equal(translation.requests[0]!.outputKind, disabledKind === 'reasoning' ? 'assistant' : 'reasoning')
+    } finally { await harness.features.disable('cliAdapters') }
+  }
+})
+
+test('native blocks keep their streaming mode when translation settings change mid-block', async () => {
+  for (const initiallyEnabled of [true, false]) {
+    let enabled = initiallyEnabled
+    const translation = createTranslation({ translateOutput: text => enabled ? { original: text, translated: `[zh]${text}`, targetLanguage: 'zh', bilingual: false } : null })
+    translation.shouldTranslate = () => enabled
+    const harness = createHarness({ translation })
+    await harness.start()
+    try {
+      const chunks: any[] = []
+      for await (const chunk of harness.llmListener({ sessionId: 'native-session', messages: [] }, async function* () {
+        yield { type: 'text-delta', index: 1, text: 'Hello' }
+        enabled = !enabled
+        yield { type: 'text-delta', index: 1, text: ' world' }
+        yield { type: 'block-end', index: 1, block: { type: 'text', text: 'Hello world' } }
+      })) chunks.push(chunk)
+      assert.equal(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join(''), 'Hello world')
+      assert.deepEqual(chunks.find(chunk => chunk.type === 'block-end').block, { type: 'text', text: 'Hello world' })
+    } finally { await harness.features.disable('cliAdapters') }
+  }
+})
+
 test('DSH 原生会话输出保留原文并挂上客户端译文记录', async () => {
   const translation = createTranslation({ outputLanguage: 'zh' })
   const harness = createHarness({ translation }) as Harness & { start(): Promise<void> }

@@ -108,3 +108,16 @@ test('manual output retry preserves reasoning versus reply kind and validates th
     await assert.rejects(recovery.retryOutput({ sessionId: 'native', outputKind: 'input', original: 'text' }), /Invalid/)
   } finally { recovery.dispose() }
 })
+
+test('disabling user translation cancels a pending submission without sending the original', async () => {
+  const { recovery } = harness(async text => ({ translated: text, failed: true }))
+  try {
+    const submitted = recovery.translateInput('native', 'dsh', '你好')
+    const rejected = assert.rejects(submitted, SessionTranslationCancelled)
+    await flush()
+    assert.equal(recovery.pending({ sessionId: 'native' }).length, 1)
+    recovery.cancelDisabled(true, false)
+    await rejected
+    assert.deepEqual(recovery.pending({ sessionId: 'native' }), [])
+  } finally { recovery.dispose() }
+})

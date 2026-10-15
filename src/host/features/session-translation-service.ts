@@ -45,6 +45,7 @@ export interface SessionTranslationService {
   readonly outputLanguage?: SessionTranslationLanguage
   /** DSH 原生会话的总开关；旧测试替身未实现时按关闭处理。 */
   readonly nativeEnabled?: boolean
+  readonly inputEnabled?: boolean
   /** 是否在界面同时保留原文与译文；旧测试替身未实现时按关闭处理。 */
   readonly bilingual?: boolean
   catalog(): Promise<AssistantChatCatalog>
@@ -184,7 +185,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
   const translate = async (adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationRecord | null> => {
     const value = text
     if (!active || disposed || value.trim() === '') return null
-    if (!canTranslateAdapter(adapterId, sessionEnabled)) return null
+    if (!canTranslateAdapter(adapterId, sessionEnabled) || !outputEnabled(kind)) return null
     const targetLanguage = kind === 'assistant' || kind === 'reasoning' ? settings.outputLanguage : settings.inputLanguage
     const protectedText = protectText(value)
     if (hasNoTranslatableText(protectedText.text)) return null
@@ -217,6 +218,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     get inputLanguage() { return settings.inputLanguage },
     get outputLanguage() { return settings.outputLanguage },
     get nativeEnabled() { return settings.nativeEnabled === true },
+    get inputEnabled() { return settings.inputEnabled !== false },
     get bilingual() { return settings.bilingual === true },
     async catalog() {
       const errors: string[] = []
@@ -241,6 +243,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     shouldTranslate(adapterId, kind, sessionEnabled) {
       return active
         && canTranslateAdapter(adapterId, sessionEnabled)
+        && outputEnabled(kind)
     },
     activate() { active = true; disposed = false },
     deactivate,
@@ -268,7 +271,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     readonly failed?: boolean
     readonly failure?: SessionTranslationFailure
   }> {
-      if (!active || !canTranslateAdapter(adapterId, sessionEnabled) || text.trim() === '') return { translated: text }
+      if (!active || settings.inputEnabled === false || !canTranslateAdapter(adapterId, sessionEnabled) || text.trim() === '') return { translated: text }
       const protectedText = protectText(text, protection)
       if (hasNoTranslatableText(protectedText.text)) return { translated: text }
       const targetLanguage = settings.inputLanguage
@@ -280,6 +283,9 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
       return { ...result, ...(sourceLanguage === undefined ? {} : { sourceLanguage }) }
   }
 
+  function outputEnabled(kind: SessionTranslationOutputKind): boolean {
+    return (kind === 'reasoning' ? settings.reasoningEnabled : settings.assistantEnabled) !== false
+  }
 }
 
 function translationSystem(language: SessionTranslationLanguage, kind: SessionTranslationOutputKind | 'input', rules: readonly string[]): string {

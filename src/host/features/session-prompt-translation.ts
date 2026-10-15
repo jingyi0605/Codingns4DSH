@@ -31,7 +31,7 @@ export function createSessionPromptTranslation(
 
   async function run<T>(scope: SessionPromptScope, original: T, transform: (translate: (text: string, protection?: TextProtectionOptions) => Promise<SessionTranslationRecord>) => Promise<T>): Promise<T> {
     const adapterId = adapterFor(scope.sessionId)
-    if (service === undefined || !service.enabled || scope.subagent || adapterId === undefined) return original
+    if (service === undefined || !service.enabled || service.inputEnabled === false || scope.subagent || adapterId === undefined) return original
     const generation = settingsKey()
     if (generation !== currentKey) { clear(); currentKey = generation }
     const controller = new AbortController()

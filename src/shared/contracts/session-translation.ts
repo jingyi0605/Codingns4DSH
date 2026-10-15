@@ -12,6 +12,10 @@ export interface SessionTranslationModel {
 
 /** 会话翻译中间件的持久化设置。 */
 export interface SessionTranslationSettings {
+  /** Message categories are enabled unless explicitly disabled in older or current settings. */
+  readonly inputEnabled?: boolean
+  readonly reasoningEnabled?: boolean
+  readonly assistantEnabled?: boolean
   /** 用户输入送入 Agent 的目的语言。 */
   readonly inputLanguage: SessionTranslationLanguage
   /** 输出翻译语言；默认中文。 */
@@ -45,6 +49,9 @@ export const DSH_NATIVE_SESSION_ADAPTER_ID = 'dsh' as const
 export const SESSION_TRANSLATION_LANGUAGES = ['en', 'fr', 'de', 'ja', 'zh'] as const
 
 export const DEFAULT_SESSION_TRANSLATION_SETTINGS: SessionTranslationSettings = {
+  inputEnabled: true,
+  reasoningEnabled: true,
+  assistantEnabled: true,
   inputLanguage: 'en',
   outputLanguage: 'zh',
   bilingual: false,
@@ -87,6 +94,9 @@ export function normalizeSessionTranslationSettings(value: SessionTranslationSet
     ? value.translationRules.filter((rule): rule is string => typeof rule === 'string').map((rule) => rule.trim()).filter((rule) => rule !== '')
     : undefined
   return {
+    inputEnabled: value.inputEnabled !== false,
+    reasoningEnabled: value.reasoningEnabled !== false,
+    assistantEnabled: value.assistantEnabled !== false,
     inputLanguage: isSessionTranslationLanguage(value.inputLanguage) ? value.inputLanguage : fallback.inputLanguage,
     outputLanguage: isSessionTranslationLanguage(value.outputLanguage) ? value.outputLanguage : fallback.outputLanguage,
     bilingual: value.bilingual === true,

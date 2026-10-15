@@ -85,6 +85,8 @@ export class CodingNsDshMessageProjector {
   private nextBlockIndex = 2
   private reasoningText = ''
   private textText = ''
+  /** Decide buffering once per block so settings changes cannot split its deltas. */
+  private readonly translatedBlocks = new Set<number>()
   private finished = false
   /** 只要收到正文、工具、usage 或交互事件，就说明 Provider 确实产出了结果。 */
   private receivedProviderEvent = false
@@ -230,7 +232,10 @@ export class CodingNsDshMessageProjector {
     if (channel === 'reasoning') this.reasoningText += text
     else this.textText += text
     const delta = { type: `${channel}-delta`, index, text }
-    if (this.options.translation?.shouldTranslate(this.options.adapterId, channel === 'reasoning' ? 'reasoning' : 'assistant', this.options.translationEnabled) === true) return []
+    if (opened && this.options.translation?.shouldTranslate(this.options.adapterId, channel === 'reasoning' ? 'reasoning' : 'assistant', this.options.translationEnabled) === true) {
+      this.translatedBlocks.add(index)
+    }
+    if (this.translatedBlocks.has(index)) return []
     return opened ? [{ type: 'block-start', index, blockType: channel }, delta] : [delta]
   }
 
@@ -252,7 +257,7 @@ export class CodingNsDshMessageProjector {
       const original = this.reasoningText
       this.reasoningText = ''
       this.reasoningIndex = undefined
-      if (this.options.translation?.shouldTranslate(this.options.adapterId, 'reasoning', this.options.translationEnabled) !== true) {
+      if (!this.translatedBlocks.delete(index)) {
         return [{ type: 'block-end', index, block: { type: 'reasoning', text: original } }]
       }
       return this.translatedBlock('reasoning', index, original)
@@ -263,7 +268,7 @@ export class CodingNsDshMessageProjector {
     const original = this.textText
     this.textText = ''
     this.textIndex = undefined
-    if (this.options.translation?.shouldTranslate(this.options.adapterId, 'assistant', this.options.translationEnabled) !== true) {
+    if (!this.translatedBlocks.delete(index)) {
       return [{ type: 'block-end', index, block: { type: 'text', text: original } }]
     }
     return this.translatedBlock('text', index, original)
