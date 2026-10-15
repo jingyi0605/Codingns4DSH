@@ -69,7 +69,7 @@ test('三个 RPC 驱动按各自协议完成握手并转换文本事件', async 
     driver.dispose()
     assert.deepEqual(chunks.filter((chunk) => chunk.type !== 'session-binding'), Driver === CodexAppServerDriver
       ? [{ type: 'text-delta', text: '完成', messageId: 'message-1' }, { type: 'finish', reason: 'stop' }]
-      : [{ type: 'text-delta', text: '完成' }, { type: 'finish', reason: 'stop' }])
+      : [{ type: 'text-delta', text: '完成', ...(Driver === GrokBuildDriver ? { messageId: 'assistant-grok-s1-0' } : {}) }, { type: 'finish', reason: 'stop' }])
     assert.equal(killed, true)
   }
 })
@@ -1252,7 +1252,11 @@ function createGrokQuestionReplay(options: { deferRequest?: boolean; method?: st
           promptId = request.id
           prompt = request.params.prompt
           questionRpcId++
-          for (const notification of updates) emit(notification)
+          // Preserve the recorded payload while correlating it with this replay's prompt.
+          for (const notification of updates) emit({ ...notification, params: {
+            ...notification.params,
+            _meta: { ...notification.params._meta, promptId: request.params._meta.promptId },
+          } })
           sendRequest = () => emit({ jsonrpc: '2.0', id: questionRpcId, method: options.method ?? '_x.ai/ask_user_question', params: {
             sessionId, toolCallId: callId, questions: updates[1].params.update.rawInput.questions, mode: 'default',
           } })
@@ -1451,7 +1455,7 @@ test('Grok ACP 权限请求保留原始 request id 并接受标准回复', async
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'grok-session' },
     { type: 'permission-request', requestId: '99', kind: 'terminal', detail: '运行命令' },
-    { type: 'text-delta', text: '完成' },
+    { type: 'text-delta', text: '完成', messageId: 'assistant-grok-coding-session-0' },
     { type: 'finish', reason: 'stop' },
   ])
   assert.deepEqual(permissionReply, { jsonrpc: '2.0', id: 99, result: { outcome: { outcome: 'selected', optionId: 'allow-once' } } })
@@ -1813,7 +1817,7 @@ test('Grok 在 prompt 响应后排空延迟到达的文本和完成通知', asyn
   for await (const chunk of driver.executeTurn({ sessionId: 'grok-late', messages: [], prompt: '你好' })) chunks.push(chunk)
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'grok-session' },
-    { type: 'text-delta', text: '延迟回复' },
+    { type: 'text-delta', text: '延迟回复', messageId: 'assistant-grok-grok-late-0' },
     { type: 'finish', reason: 'stop' },
   ])
   driver.dispose()

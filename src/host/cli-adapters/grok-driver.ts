@@ -1,5 +1,6 @@
 import { runAsyncCommand } from './process-utils.js'
 import { spawn, spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsAgentImageArtifact, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
@@ -16,6 +17,7 @@ import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitatio
 import { readAgentQuestions } from './interaction-events.js'
 import { commandEnvironment, WINDOWS } from './process-utils.js'
 import { imageArtifactPathsFromValue, stripImageMarkdown } from '../image-artifact-store.js'
+import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 
 interface GrokQuestionPending {
   readonly callId: string
@@ -124,6 +126,9 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     const rpc = state.rpc
     let providerSessionId = state.providerSessionId
     let stream: ReturnType<typeof streamGrokPrompt> | undefined
+    let reusable = false
+    const promptId = randomUUID()
+    const segmentState = createCodingNsSegmentState()
     try {
       if (providerSessionId === '') {
         const session = await rpc.request('session/new', {
@@ -143,7 +148,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         ...(nativeCommand ? [] : [{ type: 'text', text: GROK_QUESTION_GUIDANCE }]),
         ...await buildAcpPromptBlocks(input.prompt, input.attachments ?? []),
       ]
-      stream = streamGrokPrompt(rpc, providerSessionId, prompt, input.signal, (notification) => {
+      stream = streamGrokPrompt(rpc, providerSessionId, promptId, prompt, input.signal, (notification) => {
         const elicitation = readAcpElicitationRequest(notification)
         if (elicitation !== null) state.questions.set(elicitation.requestId, elicitation)
         const grokTool = readGrokQuestionTool(notification)
@@ -161,10 +166,11 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           break
         }
         for (const rawChunk of acpMessageToChunks(item.value)) {
-          const chunk = rawChunk.type === 'image-artifact'
+          const resolved = rawChunk.type === 'image-artifact'
             ? await resolveGrokImageArtifact(rawChunk, state, this.sessionRoots)
             : rawChunk
-          if (chunk === null) continue
+          if (resolved === null) continue
+          const chunk = decorateCodingNsSegmentEvent(resolved, input, segmentState, this.descriptor.id)
           if (chunk.type === 'question-request' && state.grokQuestionCallIds.has(chunk.requestId)) {
             if (state.grokQuestionEventIds.has(chunk.requestId)) continue
             state.grokQuestionEventIds.add(chunk.requestId)
@@ -173,12 +179,11 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           // 工具记录，否则历史里会重新出现空参数或重复的问题调用。
           if (chunk.type === 'tool-event' && chunk.callId !== undefined && state.grokQuestionCallIds.has(chunk.callId)) continue
           yield chunk
+          advanceCodingNsSegment(chunk, segmentState)
+          if (chunk.type === 'question-request') segmentState.segment += 1
         }
       }
-      if (finishResult.reason === 'cancel') {
-        try { await rpc.request('session/cancel', { sessionId: providerSessionId }, { killOnAbort: false }) }
-        catch { /* 不同 ACP 版本的取消方法可能不同，请求级取消已经先行发出。 */ }
-      }
+      reusable = finishResult.reason !== 'cancel' && !input.signal?.aborted
       yield { type: 'finish', reason: finishResult.reason, ...(finishResult.failure === undefined ? {} : { failure: finishResult.failure }) }
     } finally {
       // 原生问题卡取消或消费者提前结束时，也要释放反向请求与流监听器。
@@ -190,7 +195,14 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       state.grokQuestions.clear()
       state.grokQuestionCallIds.clear()
       state.grokQuestionEventIds.clear()
-      // ACP 进程和会话跨轮复用，统一由 dispose() 回收。
+      state.questions.clear()
+      state.requests.clear()
+      if (stream !== undefined && !reusable) {
+        // An abandoned prompt can keep producing updates without prompt metadata.
+        // Reload its persisted session on a fresh transport before accepting new input.
+        await rpc.disposeAndWait()
+        this.processes.delete(rpc)
+      }
     }
   }
 
@@ -225,8 +237,12 @@ export class GrokBuildDriver implements CodingNsCliDriver {
 
   private async getSession(input: CodingNsCliTurnInput, command: string) {
     const previous = this.sessions.get(input.sessionId)
-    if (previous !== undefined && previous.cwd === input.cwd) return previous
-    previous?.rpc.dispose()
+    if (previous !== undefined && previous.cwd === input.cwd && !previous.rpc.isClosed) return previous
+    if (previous !== undefined) {
+      await previous.rpc.disposeAndWait()
+      this.processes.delete(previous.rpc)
+    }
+    const resumeId = input.providerSessionId ?? (previous?.cwd === input.cwd ? previous?.providerSessionId : undefined)
     const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], cwd: input.cwd, env: grokRuntimeEnvironment(), spawn: this.runSpawn })
     this.processes.add(rpc)
     const state = { rpc, cwd: input.cwd, rawStoreRef: input.rawStoreRef, providerSessionId: '', requests: new Map<string, { readonly rpcId: number | string; readonly allowOptionId: string; readonly rejectOptionId: string }>(), questions: new Map<string, AcpElicitationRequest>(), grokQuestions: new Map<string, GrokQuestionPending>(), grokQuestionCallIds: new Set<string>(), grokQuestionEventIds: new Set<string>() }
@@ -238,10 +254,10 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       clientCapabilities: ACP_FORM_CLIENT_CAPABILITIES,
     })
     rpc.notify('initialized', {})
-    if (input.providerSessionId) {
+    if (resumeId) {
       try {
-        const loaded = await rpc.request('session/load', { sessionId: input.providerSessionId, cwd: input.cwd ?? process.cwd(), mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id) })
-        state.providerSessionId = readSessionId(loaded) ?? input.providerSessionId
+        const loaded = await rpc.request('session/load', { sessionId: resumeId, cwd: input.cwd ?? process.cwd(), mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id) })
+        state.providerSessionId = readSessionId(loaded) ?? resumeId
       } catch { /* 旧版 ACP 没有 load，下一轮在同一进程创建新会话 */ }
     }
     // ACP 权限是 Grok 发起的 server request，先挂起响应，待标准权限入口明确回复原始 id。
@@ -302,6 +318,7 @@ const GROK_QUESTION_GUIDANCE = [
 async function* streamGrokPrompt(
   rpc: JsonRpcProcess,
   sessionId: string,
+  promptId: string,
   prompt: readonly Record<string, unknown>[],
   signal: AbortSignal | undefined,
   onNotification: (message: JsonRpcMessage) => void,
@@ -312,12 +329,14 @@ async function* streamGrokPrompt(
   let drainDeadline: number | null = null
   let terminalReason: 'stop' | 'cancel' | 'error' | null = null
   let failure: { message: string; code?: string } | undefined
+  let completed = false
   const notify = (): void => { wake?.(); wake = undefined }
   const beginDrain = (): void => {
     if (drainDeadline === null) drainDeadline = Date.now() + GROK_DRAIN_WAIT_MS
     notify()
   }
   const listener = (message: JsonRpcMessage): void => {
+    if (!isGrokPromptMessage(message, sessionId, promptId)) return
     queue.push(message)
     onNotification(message)
     const notificationReason = grokNotificationReason(message)
@@ -330,8 +349,6 @@ async function* streamGrokPrompt(
       const detail = grokFailure(message)
       if (detail !== undefined) failure = detail
     }
-    // 部分 Grok 版本只发终态通知而不回复 prompt，主动取消可清理待处理请求。
-    requestController.abort()
     beginDrain()
   }
   const removeListener = rpc.addNotificationListener(listener)
@@ -345,9 +362,10 @@ async function* streamGrokPrompt(
   if (signal?.aborted) onAbort()
   else signal?.addEventListener('abort', onAbort, { once: true })
 
-  void rpc.request('session/prompt', {
+  if (!signal?.aborted) void rpc.request('session/prompt', {
     sessionId,
     prompt,
+    _meta: { promptId },
   }, { signal: requestController.signal, killOnAbort: false }).then(
     (response) => {
       const responseReason = grokPromptReason(response)
@@ -355,6 +373,7 @@ async function* streamGrokPrompt(
       beginDrain()
     },
     () => {
+      if (requestController.signal.aborted) return
       if (terminalReason === null) terminalReason = signal?.aborted ? 'cancel' : 'error'
       beginDrain()
     },
@@ -378,17 +397,35 @@ async function* streamGrokPrompt(
       ])
       wake = undefined
     }
+    completed = true
     return { reason: terminalReason ?? 'stop', ...(failure === undefined ? {} : { failure }) }
   } finally {
     signal?.removeEventListener('abort', onAbort)
     removeListener()
+    if (!completed || signal?.aborted) {
+      // ACP cancellation is a notification; waiting for an RPC response can hang.
+      try { rpc.notify('session/cancel', { sessionId }) } catch { /* The process may already have exited. */ }
+    }
+    // Terminal-only providers and consumers that close the iterator both need cleanup.
+    requestController.abort()
   }
 }
 
-function grokPromptReason(value: unknown): 'stop' | 'error' | null {
-  if (!isRecord(value) || typeof value.stopReason !== 'string') return null
-  const reason = value.stopReason.toLowerCase()
-  return reason === 'cancelled' || reason === 'error' || reason === 'failed' ? 'error' : 'stop'
+function isGrokPromptMessage(message: JsonRpcMessage, sessionId: string, promptId: string): boolean {
+  const params = isRecord(message.params) ? message.params : message
+  if (typeof params.sessionId === 'string' && params.sessionId !== sessionId) return false
+  const update = isRecord(params.update) ? params.update : params
+  const meta = isRecord(params._meta) ? params._meta : {}
+  const owner = firstToolText(update.prompt_id, update.promptId, meta.promptId)
+  return owner === undefined || owner === promptId
+}
+
+function grokPromptReason(value: unknown): 'stop' | 'cancel' | 'error' | null {
+  if (!isRecord(value)) return null
+  const reason = firstToolText(value.stopReason, value.stop_reason)?.toLowerCase()
+  if (reason === undefined) return null
+  if (reason === 'cancelled' || reason === 'canceled') return 'cancel'
+  return reason === 'error' || reason === 'failed' ? 'error' : 'stop'
 }
 
 function mergeGrokReason(
@@ -400,7 +437,7 @@ function mergeGrokReason(
   return 'stop'
 }
 
-function grokNotificationReason(message: JsonRpcMessage): 'stop' | 'error' | null {
+function grokNotificationReason(message: JsonRpcMessage): 'stop' | 'cancel' | 'error' | null {
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
   const type = typeof update.sessionUpdate === 'string'
@@ -408,8 +445,8 @@ function grokNotificationReason(message: JsonRpcMessage): 'stop' | 'error' | nul
     : typeof update.type === 'string'
       ? update.type.toLowerCase()
       : ''
-  if (type.includes('error') || type.includes('failed')) return 'error'
-  if (type.includes('turn_completed') || type.includes('turn_complete') || type === 'completed' || type === 'done') return 'stop'
+  if (['turn_error', 'turn_failed', 'error', 'failed'].includes(type)) return 'error'
+  if (['turn_completed', 'turn_complete', 'prompt_complete', 'completed', 'done'].includes(type)) return grokPromptReason(update) ?? 'stop'
   return null
 }
 
@@ -494,6 +531,13 @@ function grokQuestionResponse(pending: GrokQuestionPending, response: CodingNsAg
   }
 }
 
+function grokStreamId(message: Record<string, any>): string | undefined {
+  const params = isRecord(message.params) ? message.params : message
+  const meta = isRecord(params._meta) ? params._meta : {}
+  return typeof meta.streamStartMs === 'number' && Number.isFinite(meta.streamStartMs)
+    ? `grok-stream-${meta.streamStartMs}` : undefined
+}
+
 function acpMessageToChunks(message: Record<string, any>): readonly CodingNsAgentEvent[] {
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
@@ -517,8 +561,11 @@ function acpMessageToChunks(message: Record<string, any>): readonly CodingNsAgen
   const markdownPaths = imageArtifactPathsFromValue(text ?? '')
   const imagePaths = [...new Set([...artifactPaths, ...markdownPaths])]
   const imageEvents: CodingNsAgentEvent[] = imagePaths.map((path): CodingNsAgentImageArtifact => ({ type: 'image-artifact', path }))
+  // Grok identifies each model call independently of the enclosing user prompt.
+  const messageId = grokStreamId(message)
+  const identity = messageId === undefined ? {} : { messageId }
   const reasoning = reasoningText(update)
-  if (reasoning !== null) return [...imageEvents, { type: 'reasoning-delta', text: reasoning }]
+  if (reasoning !== null) return [...imageEvents, { type: 'reasoning-delta', text: reasoning, ...identity }]
   if (type.includes('permission')) {
     const requestId = permissionRequestId(message) ?? (typeof update.requestId === 'string' ? update.requestId : typeof update.id === 'string' ? update.id : null)
     if (requestId !== null) {
@@ -530,11 +577,11 @@ function acpMessageToChunks(message: Record<string, any>): readonly CodingNsAgen
   }
   if (type.includes('agent_message') || type.includes('text') || type === 'message') {
     const visible = text === null ? '' : stripImageMarkdown(text, markdownPaths)
-    const textEvent: CodingNsAgentEvent | undefined = visible === '' ? undefined : { type: 'text-delta', text: visible }
+    const textEvent: CodingNsAgentEvent | undefined = visible === '' ? undefined : { type: 'text-delta', text: visible, ...identity }
     return [...imageEvents, ...(textEvent === undefined ? [] : [textEvent])]
   }
   if (type.includes('image') || type.includes('artifact') || type.includes('generated')) return imageEvents
-  if (type.includes('thought') || type.includes('reason')) return text ? [{ type: 'reasoning-delta', text }] : []
+  if (type.includes('thought') || type.includes('reason')) return text ? [{ type: 'reasoning-delta', text, ...identity }] : []
   if (type.includes('tool') || type.includes('command')) {
     const tool = isToolRecord(update.toolCall) ? update.toolCall : isToolRecord(update.tool_call) ? update.tool_call : update
     const name = firstToolText(tool.name, tool.toolName, tool.tool_name, tool.title, update.name, update.toolName, update.title)
