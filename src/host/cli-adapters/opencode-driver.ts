@@ -26,6 +26,7 @@ import { usageChunk } from './rpc-driver-utils.js'
 import { commandEnvironment, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { buildOpenCodeAttachmentParts } from './attachment-utils.js'
 import { OpenCodeV2Protocol } from './opencode-v2-protocol.js'
+import { debugWarn } from '../../shared/debug.js'
 
 const WINDOWS = process.platform === 'win32'
 const DEFAULT_BINARIES = WINDOWS ? ['opencode.exe', 'opencode', 'opencode2.exe', 'opencode2'] : ['opencode', 'opencode2']
@@ -81,6 +82,8 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   private readonly sessions = new Map<string, string>()
   /** Provider 会话的实际工作目录；目录变化时禁止复用旧会话。 */
   private readonly sessionCwds = new Map<string, string>()
+  /** 已投影到 Provider 会话的权限规则签名；避免每轮重复追加同一条规则。 */
+  private readonly sessionPermissions = new Map<string, string>()
   /** 交互请求属于启动该轮次的 OpenCode 目录实例，回传时必须复用同一目录。 */
   private readonly interactionTargets = new Map<string, { server: string; cwd: string | undefined }>()
   private readonly modelContextWindows = new Map<string, number>()
@@ -243,6 +246,8 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       sessionId = await this.createSession(server, input)
       this.sessions.set(input.sessionId, sessionId)
     }
+    // 复用旧会话时同样要投影：会话是在策略变化前创建的，不补写就会继续触发无意义审批。
+    await this.applySessionPermissionProjection(server, sessionId, input)
     const contextWindow = await this.resolveModelContextWindow(server, modelId)
     if (input.cwd?.trim()) this.sessionCwds.set(sessionId, input.cwd.trim())
     const interactionTarget = { server, cwd: input.cwd }
@@ -374,30 +379,74 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     if (this.v2.hasTurn(sessionId)) return this.v2.respondPermission(sessionId, response)
     const target = this.interactionTargets.get(sessionId)
     if (target === undefined) throw new Error('OpenCode 权限请求已结束')
-    const result = await this.http.json(withOpenCodeDirectory(target.server, `/permission/${encodeURIComponent(response.requestId)}/reply`, target.cwd), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reply: response.approved ? 'once' : 'reject' }),
-    })
-    if (result.status < 200 || result.status >= 300) throw new Error(`OpenCode 权限回复失败（HTTP ${result.status}）`)
+    const requestId = encodeURIComponent(response.requestId)
+    await this.replyInteraction(
+      target,
+      this.sessions.get(sessionId),
+      `/permission/${requestId}/reply`,
+      (providerSessionId) => `/api/session/${encodeURIComponent(providerSessionId)}/permission/${requestId}/reply`,
+      { reply: response.approved ? 'once' : 'reject' },
+      'OpenCode 权限回复失败',
+    )
   }
 
   async respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): Promise<void> {
     if (this.v2.hasTurn(sessionId)) return this.v2.respondQuestion(sessionId, response)
     const target = this.interactionTargets.get(sessionId)
     if (target === undefined) throw new Error('OpenCode 问题请求已结束')
-    const result = await this.http.json(withOpenCodeDirectory(target.server, `/question/${encodeURIComponent(response.requestId)}/reply`, target.cwd), {
+    const requestId = encodeURIComponent(response.requestId)
+    await this.replyInteraction(
+      target,
+      this.sessions.get(sessionId),
+      `/question/${requestId}/reply`,
+      (providerSessionId) => `/api/session/${encodeURIComponent(providerSessionId)}/question/${requestId}/reply`,
+      { answers: questionAnswersList(response) },
+      'OpenCode 问题回复失败',
+    )
+  }
+
+  /**
+   * 交互回传的幂等收敛。
+   *
+   * 旧版路由（`/permission/:id/reply`、`/question/:id/reply`）只查 V1 交互注册表，
+   * 已结算或属于 V2 注册表的 requestID 一律返回 404 PermissionNotFoundError /
+   * QuestionNotFoundError。重复回传是正常竞态（服务端可能已经自行结算，或事件流
+   * 把已结算事件当成新请求重放），因此：先按同一 requestID 尝试 V2 路由补发一次，
+   * 再按幂等成功收敛，绝不能把「请求已结束」升级为致命回合错误。
+   */
+  private async replyInteraction(
+    target: { server: string; cwd: string | undefined },
+    providerSessionId: string | undefined,
+    legacyPath: string,
+    fallbackPath: (providerSessionId: string) => string,
+    body: Record<string, unknown>,
+    failureLabel: string,
+  ): Promise<void> {
+    const options: RequestInit = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ answers: questionAnswersList(response) }),
-    })
-    if (result.status < 200 || result.status >= 300) throw new Error(`OpenCode 问题回复失败（HTTP ${result.status}）：${openCodeErrorDetail(result.data)}`)
+      body: JSON.stringify(body),
+    }
+    const legacy = await this.http.json(withOpenCodeDirectory(target.server, legacyPath, target.cwd), options)
+    if (isHttpSuccess(legacy.status)) return
+    if (!isInteractionNotFound(legacy.data, legacy.text)) throw new Error(`${failureLabel}（HTTP ${legacy.status}）`)
+    if (providerSessionId === undefined) return
+    try {
+      const fallback = await this.http.json(withOpenCodeDirectory(target.server, fallbackPath(providerSessionId), target.cwd), options)
+      if (isHttpSuccess(fallback.status)) return
+      debugWarn('codingns4dsh: OpenCode 交互回传按已结算收敛', {
+        path: legacyPath,
+        status: fallback.status,
+        detail: openCodeErrorDetail(fallback.data),
+      })
+    } catch { /* 旧版本没有 V2 交互路由：同样按已结算收敛。 */ }
   }
 
   dispose(): void {
     this.v2.dispose()
     this.sessions.clear()
     this.sessionCwds.clear()
+    this.sessionPermissions.clear()
     this.interactionTargets.clear()
     this.modelContextWindows.clear()
     for (const managed of this.managedServers.values()) terminateChildProcess(managed.child)
@@ -452,6 +501,32 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     const id = typeof record?.id === 'string' ? record.id : typeof record?.sessionID === 'string' ? record.sessionID : null
     if (response.status < 200 || response.status >= 300 || id === null) throw new Error(`OpenCode 创建会话失败（HTTP ${response.status}）：${openCodeErrorDetail(response.data)}`)
     return id
+  }
+
+  /**
+   * 把 DSH 的沙箱与审批策略投影到 OpenCode 1.x 会话权限。
+   *
+   * OpenCode 默认对工作目录之外的路径触发 external_directory 询问。DSH 的
+   * danger-full-access + never 已经表示允许无提示执行，必须在 Provider 会话层
+   * 放行这条边界；否则每次读取设备目录都会绕回 DSH 审批并被 never 自动拒绝，
+   * 既做不了事，又制造出会被结算的权限事件。判定条件与 V2 路径的
+   * openCodePermissions 保持一致；策略变化时用 ask 规则把它还原回去。
+   */
+  private async applySessionPermissionProjection(server: string, sessionId: string, input: CodingNsCliTurnInput): Promise<void> {
+    if (input.permission === undefined) return
+    const allow = input.permission.sandboxMode === 'danger-full-access' && input.permission.approvalPolicy === 'never'
+    const action = allow ? 'allow' : 'ask'
+    const signature = `${server}|${action}`
+    if (this.sessionPermissions.get(sessionId) === signature) return
+    try {
+      const response = await this.http.json<unknown>(withOpenCodeDirectory(server, `/session/${encodeURIComponent(sessionId)}`, input.cwd), {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ permission: [{ permission: 'external_directory', pattern: '*', action }] }),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      })
+      if (isHttpSuccess(response.status)) this.sessionPermissions.set(sessionId, signature)
+    } catch { /* 旧版本没有会话权限接口时保持原生审批行为。 */ }
   }
 
   private async providerSessionMatchesDirectory(
@@ -789,7 +864,7 @@ function eventToChunk(
   const part = asRecord(event.part) ?? asRecord(properties?.part) ?? properties ?? event
   const messageId = firstToolText(part.messageID, part.messageId, properties?.messageID, properties?.messageId)
   if (messageId !== undefined && assistantMessageIds !== undefined && !assistantMessageIds.has(messageId)) return null
-  if (isQuestionEvent(type)) {
+  if (isQuestionEvent(type) && !isSettledInteractionEvent(type)) {
     const requestId = firstToolText(part.id, part.requestID, part.requestId, properties?.id)
     const questions = readAgentQuestions(part.questions ?? properties?.questions ?? part)
     const tool = asRecord(part.tool) ?? asRecord(properties?.tool)
@@ -810,16 +885,18 @@ function eventToChunk(
       ...(callId === undefined ? {} : { callId }),
     }
   }
-  if (type.toLowerCase().includes('permission')) {
+  // 旧版事件流把 V2 注册表的权限也推给客户端，字段名随版本在 permission/patterns
+  // 与 action/resources 之间变化；只有 ask 才是新请求，结算事件必须显式忽略。
+  if (type.toLowerCase().includes('permission') && !isSettledInteractionEvent(type) && part.type !== 'reply') {
     const requestId = firstToolText(part.id, part.requestID, part.requestId, properties?.id)
     if (requestId !== undefined) {
-      const kind = firstToolText(part.permission, part.kind, part.type) ?? 'unknown'
-      const detail = serializeToolValue(part.patterns ?? part.metadata ?? part.detail)
+      const kind = firstToolText(part.permission, part.kind, part.action, part.type) ?? 'unknown'
+      const detail = serializeToolValue(part.patterns ?? part.resources ?? part.metadata ?? part.detail)
       return {
         type: 'permission-request',
         requestId,
         kind,
-        toolName: firstToolText(part.tool, part.toolName) ?? kind,
+        toolName: firstToolText(part.tool, part.toolName, part.action) ?? kind,
         ...(detail === undefined ? {} : { detail }),
       }
     }
@@ -1026,6 +1103,37 @@ function openCodeErrorDetail(value: unknown): string {
   if (detail !== undefined) return detail.trim().slice(0, 16_384)
   if (typeof value === 'string' && value.trim() !== '') return value.trim().slice(0, 16_384)
   return 'Provider 未返回具体错误信息'
+}
+
+/** 交互事件的结算态。ask 之外的状态都不是新请求，绝不能再回复一次。 */
+const SETTLED_INTERACTION_PHASES: ReadonlySet<string> = new Set([
+  'replied', 'rejected', 'resolved', 'cancelled', 'canceled', 'deleted', 'removed', 'expired',
+])
+
+/**
+ * 识别 `permission.replied`、`permission.v2.replied`、`question.rejected` 之类的结算事件。
+ * OpenCode 1.x 的权限事件在结算后会补发 `permission.replied`（properties 只有
+ * sessionID/requestID/reply），把它当成新请求会导致对已结算的 requestID 重复回复。
+ */
+function isSettledInteractionEvent(type: string): boolean {
+  const normalized = type
+    .replace(/([a-z0-9])([A-Z])/gu, '$1_$2')
+    .toLowerCase()
+    .replace(/[./-]+/gu, '_')
+    .replace(/_\d+$/u, '')
+  const phase = /^(?:permission|question)(?:_v\d+)?_([a-z]+)$/u.exec(normalized)?.[1]
+  return phase !== undefined && SETTLED_INTERACTION_PHASES.has(phase)
+}
+
+function isHttpSuccess(status: number): boolean {
+  return status >= 200 && status < 300
+}
+
+/** 旧版路由对「不在自己注册表里」的 requestID 返回 PermissionNotFoundError/QuestionNotFoundError。 */
+function isInteractionNotFound(data: unknown, text = ''): boolean {
+  const serialized = typeof data === 'string' ? data : openCodeErrorDetail(data)
+  return /PermissionNotFoundError|QuestionNotFoundError|Permission request not found|Question request not found/iu
+    .test(`${serialized}\n${text}`)
 }
 
 function parseModelCatalog(value: unknown): CodingNsCliModelCatalog {
