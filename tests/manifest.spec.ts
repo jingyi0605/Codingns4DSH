@@ -3,7 +3,9 @@ import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 import test from 'node:test'
+import semver from 'semver'
 import {
   CODINGNS_SETTINGS_ENTRY_IDS,
   SUPPORTED_DSH_COMPATIBILITY,
@@ -52,16 +54,38 @@ test('package manifest declares the DSH bundle and client entry', () => {
   assert.equal(manifest.exports['./remote'].types, './data/build/dist/typert.remote-client.d.ts')
   assert.equal(manifest.exports['./bootstrap'].default, './data/build/dist/bootstrap/index.js')
   assert.equal(manifest.engines.dsh, SUPPORTED_DSH_COMPATIBILITY)
-  assert.equal(manifest.peerDependencies['@deepseek-ai/cordis'], '~4.0.4')
+  for (const version of ['4.0.4', '4.0.5-alpha.1', '4.0.5-alpha.2']) {
+    assert.ok(semver.satisfies(version, manifest.peerDependencies['@deepseek-ai/cordis']), `Cordis ${version} must remain supported`)
+  }
   assert.equal(manifest.peerDependencies['@deepseek-ai/dsh'], SUPPORTED_DSH_COMPATIBILITY)
   // Host 入口在独立 npm Profile 中运行，不能依赖发布包的 devDependencies。
-  assert.equal(manifest.dependencies['@deepseek-ai/schemastery'], '^3.18.4')
+  for (const version of ['3.18.4', '3.18.5-alpha.1', '3.18.5-alpha.2']) {
+    assert.ok(semver.satisfies(version, manifest.dependencies['@deepseek-ai/schemastery']), `Schemastery ${version} must remain supported`)
+  }
   assert.equal(manifest.dependencies['@deepseek-ai/dsh-typert-protocol'], SUPPORTED_DSH_VERSION)
   const versionFile = JSON.parse(readFileSync(join(root, 'version.json'), 'utf8'))
   assert.equal(manifest.version, versionFile.pluginVersion)
   assert.equal(versionFile.pluginVersion, manifest.version)
   assert.equal(versionFile.dshTestedVersion, SUPPORTED_DSH_VERSION)
   assert.equal(versionFile.dshProtocolVersion, 1)
+})
+
+test('installed framework versions satisfy the actual pinned DSH peer requirements', () => {
+  const require = createRequire(import.meta.url)
+  const readManifest = (name: string) => JSON.parse(readFileSync(require.resolve(`${name}/package.json`), 'utf8'))
+  const framework = ['@deepseek-ai/cordis', '@deepseek-ai/cordis-plugin-group', '@deepseek-ai/cordis-plugin-include', '@deepseek-ai/schemastery']
+  let checked = 0
+  for (const name of Object.keys({ ...manifest.dependencies, ...manifest.devDependencies }).filter(name => name.startsWith('@deepseek-ai/dsh'))) {
+    const dependency = readManifest(name)
+    for (const peer of framework) {
+      const range = dependency.peerDependencies?.[peer]
+      if (range === undefined) continue
+      const installed = readManifest(peer).version
+      assert.ok(semver.satisfies(installed, range), `${name} needs ${peer}@${range}, found ${installed}`)
+      checked++
+    }
+  }
+  assert.ok(checked > 0, 'the compatibility check must inspect installed framework requirements')
 })
 
 test('根 Bundle 导出名称与 scoped package 名称一致', async () => {
