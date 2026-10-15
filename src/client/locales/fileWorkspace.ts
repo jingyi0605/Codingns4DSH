@@ -5,6 +5,8 @@
  * 规范见 docs/开发规范/20260930-前端文案国际化规范.md。
  */
 export const en: Record<string, string> = {
+  'htmlFiles.confirmConnect': 'Allow this HTML page to read, save, and delete files in these locations?\n\nPage: {path}\n\n{scopes}\n\nAccess lasts until this preview is closed or reloaded.',
+  'htmlFiles.cancelled': 'Workspace file connection cancelled.',
   'fileMenu.expandFolder': 'Expand folder',
   'fileMenu.openFile': 'Open file',
   'fileMenu.download': 'Download file',
@@ -75,6 +77,8 @@ export const en: Record<string, string> = {
 }
 
 export const zh: Record<string, string> = {
+  'htmlFiles.confirmConnect': '允许此 HTML 页面读取、保存和删除以下位置中的文件吗？\n\n页面：{path}\n\n{scopes}\n\n授权在关闭或重新加载预览后失效。',
+  'htmlFiles.cancelled': '已取消工作区文件连接。',
   'fileMenu.expandFolder': '展开文件夹',
   'fileMenu.openFile': '打开文件',
   'fileMenu.download': '下载文件',
