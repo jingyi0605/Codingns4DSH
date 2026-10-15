@@ -1,7 +1,7 @@
 import type { SessionPromptAssembly, SessionPromptScope } from '../../dsh-capabilities/host/session-prompt-adapter.js'
 import type { CodingNsCliMessage } from '../../shared/contracts/cli-adapter.js'
 import type { SessionTranslationRecord } from '../../shared/contracts/session-translation.js'
-import type { SessionTranslationService } from './session-translation-service.js'
+import { isSessionTranslationInputEnabled, type SessionTranslationService } from './session-translation-service.js'
 import { SessionTranslationCancelled } from './session-translation-recovery.js'
 import { createTranslationQueue, translationFailure } from './session-translation-runtime.js'
 import type { TextProtectionOptions } from './session-translation-protection.js'
@@ -31,7 +31,7 @@ export function createSessionPromptTranslation(
 
   async function run<T>(scope: SessionPromptScope, original: T, transform: (translate: (text: string, protection?: TextProtectionOptions) => Promise<SessionTranslationRecord>) => Promise<T>): Promise<T> {
     const adapterId = adapterFor(scope.sessionId)
-    if (service === undefined || !service.enabled || service.inputEnabled === false || scope.subagent || adapterId === undefined) return original
+    if (service === undefined || !service.enabled || scope.subagent || adapterId === undefined || !isSessionTranslationInputEnabled(service, adapterId)) return original
     const generation = settingsKey()
     if (generation !== currentKey) { clear(); currentKey = generation }
     const controller = new AbortController()

@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type { CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
 import type { SessionTranslationPendingInput, SessionTranslationRecord, SessionTranslationRecoveryChoice } from '../../shared/contracts/session-translation.js'
-import type { SessionTranslationService } from './session-translation-service.js'
+import { resolveSessionTranslationOptions, type SessionTranslationSettings } from '../../shared/contracts/session-translation.js'
+import { isSessionTranslationInputEnabled, type SessionTranslationService } from './session-translation-service.js'
 import { translationFailure, withTranslationAbort } from './session-translation-runtime.js'
 import type { TextProtectionOptions } from './session-translation-protection.js'
 
@@ -31,10 +32,11 @@ export function createSessionTranslationRecovery(
   return {
     dispose() { lifetime.abort(new SessionTranslationCancelled()); pending.clear(); removeDeactivate?.() },
     cancelSession,
-    cancelDisabled(nativeEnabled: boolean, inputEnabled = true) {
+    cancelDisabled(settings: SessionTranslationSettings | undefined) {
       for (const sessionId of new Set(inputs.values())) {
         const config = session(sessionId)
-        if (!inputEnabled || !(config.translationEnabled ?? (config.adapterId === 'dsh' && nativeEnabled))) cancelSession(sessionId)
+        if (!resolveSessionTranslationOptions(settings, config.adapterId).inputEnabled
+          || !(config.translationEnabled ?? (config.adapterId === 'dsh' && settings?.nativeEnabled === true))) cancelSession(sessionId)
       }
     },
     pending(payload: unknown): readonly SessionTranslationPendingInput[] {
@@ -59,7 +61,7 @@ export function createSessionTranslationRecovery(
         while (true) {
           signal.throwIfAborted()
           const fallback: SessionTranslationRecord = { original: text, translated: text, targetLanguage: service?.inputLanguage ?? 'en', bilingual: false }
-          if (service === undefined || !service.enabled || service.inputEnabled === false || text.trim() === '') return fallback
+          if (service === undefined || !service.enabled || !isSessionTranslationInputEnabled(service, adapterId) || text.trim() === '') return fallback
           let record: SessionTranslationRecord
           try {
             record = await withTranslationAbort(async () => ({ ...fallback, ...(service.translateInputDetailed

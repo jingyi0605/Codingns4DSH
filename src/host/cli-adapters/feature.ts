@@ -43,6 +43,7 @@ import {
 } from '../../shared/contracts/session-translation.js'
 import { createInteractionTranslation } from '../features/interaction-translation.js'
 import { createSessionTranslationRecovery, SessionTranslationCancelled } from '../features/session-translation-recovery.js'
+import { isSessionTranslationInputEnabled } from '../features/session-translation-service.js'
 import { ASSISTANT_AGENT_PREFIX } from '../../dsh-capabilities/host/assistant-agent-adapter.js'
 import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
 import type { SessionModelSelectionAdapter } from '../../dsh-capabilities/host/session-model-selection-adapter.js'
@@ -316,7 +317,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           virtualProviders?.setProviders(registry.enabledAdapterIds())
           registry.syncPreferences(next.agentAdapterPreferences)
           sessionStore.sync(next.cliSessions)
-          translationRecovery.cancelDisabled(next.sessionTranslation?.nativeEnabled === true, next.sessionTranslation?.inputEnabled !== false)
+          translationRecovery.cancelDisabled(next.sessionTranslation)
           const nextSubscriptionSettings = JSON.stringify(next.subscriptionUsage ?? null)
           if (nextSubscriptionSettings !== subscriptionSettings) {
             subscriptionSettings = nextSubscriptionSettings
@@ -432,7 +433,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           const requestSignal = isAbortSignal(value?.signal)
             ? AbortSignal.any([value.signal, lifetime.signal])
             : lifetime.signal
-          const translationLanguage = translation?.enabled && translation.inputEnabled !== false && config.translationEnabled === true ? readInputTargetLanguage(translation) : undefined
+          const translationLanguage = translation?.enabled && isSessionTranslationInputEnabled(translation, config.adapterId) && config.translationEnabled === true ? readInputTargetLanguage(translation) : undefined
           let translatedPrompt = turnInput.translationPrompt
           if (turnInput.translatePrompt && turnInput.translationPrompt.trim() !== '' && translationLanguage !== undefined) {
             try {
@@ -1138,7 +1139,7 @@ async function translatePreStepInput(
   signal?: AbortSignal,
   nativeSession?: { readonly adapterId: string; readonly translationEnabled: boolean },
 ): Promise<readonly CodingNsCliMessage[] | undefined> {
-  if (translation === undefined || !translation.enabled || translation.inputEnabled === false || sessionId.trim() === '') return undefined
+  if (translation === undefined || !translation.enabled || sessionId.trim() === '') return undefined
 
   const messageIndex = findLatestHumanMessage(messages)
   const current = messageIndex < 0 ? undefined : messages[messageIndex]
@@ -1146,7 +1147,7 @@ async function translatePreStepInput(
 
   if (nativeSession !== undefined) {
     // DSH 原生会话：消息本身就是发给 Provider 的正文，直接替换为译文并把原文留在元数据。
-    if (nativeSession.translationEnabled !== true) return undefined
+    if (nativeSession.translationEnabled !== true || !isSessionTranslationInputEnabled(translation, nativeSession.adapterId)) return undefined
     const input = extractTurnInput(messages, dshContext)
     if (input.prompt.trim() === '') return undefined
     const result = await translationRecovery.translateInput(sessionId, nativeSession.adapterId, input.translationPrompt, signal)
@@ -1177,7 +1178,7 @@ async function translatePreStepInput(
   } catch {
     return undefined
   }
-  if (session.adapterId === 'dsh' || session.translationEnabled !== true) return undefined
+  if (session.adapterId === 'dsh' || session.translationEnabled !== true || !isSessionTranslationInputEnabled(translation, session.adapterId)) return undefined
 
   const input = extractTurnInput(messages, dshContext)
   if (input.prompt.trim() === '') return undefined

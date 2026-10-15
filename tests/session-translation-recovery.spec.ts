@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createSessionTranslationRecovery, SessionTranslationCancelled } from '../src/host/features/session-translation-recovery.js'
 import type { SessionTranslationService } from '../src/host/features/session-translation-service.js'
+import { DEFAULT_SESSION_TRANSLATION_SETTINGS } from '../src/shared/contracts/session-translation.js'
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve))
 function harness(translate: (text: string) => Promise<{ translated: string; failed?: boolean }>) {
@@ -116,8 +117,27 @@ test('disabling user translation cancels a pending submission without sending th
     const rejected = assert.rejects(submitted, SessionTranslationCancelled)
     await flush()
     assert.equal(recovery.pending({ sessionId: 'native' }).length, 1)
-    recovery.cancelDisabled(true, false)
+    recovery.cancelDisabled({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, nativeEnabled: true, inputEnabled: false })
     await rejected
     assert.deepEqual(recovery.pending({ sessionId: 'native' }), [])
+  } finally { recovery.dispose() }
+})
+
+test('disabling input for one agent cancels only its pending submissions', async () => {
+  const { recovery } = harness(async text => ({ translated: text, failed: true }))
+  try {
+    const native = recovery.translateInput('native', 'dsh', '你好')
+    const external = recovery.translateInput('external', 'codex', '你好')
+    const rejected = assert.rejects(external, SessionTranslationCancelled)
+    await flush()
+    recovery.cancelDisabled({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, nativeEnabled: true,
+      inputEnabled: false, adapterOptions: { dsh: { inputEnabled: true }, codex: { inputEnabled: false } },
+    })
+    await rejected
+    assert.deepEqual(recovery.pending({ sessionId: 'external' }), [])
+    const pending = recovery.pending({ sessionId: 'native' })[0]!
+    assert.ok(pending)
+    recovery.resolve({ sessionId: 'native', id: pending.id, choice: 'send' })
+    assert.equal((await native).translated, '你好')
   } finally { recovery.dispose() }
 })

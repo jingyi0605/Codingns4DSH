@@ -3,6 +3,7 @@ import type { AssistantChatCatalog } from '../../shared/contracts/assistant.js'
 import {
   isSessionTranslationAdapter,
   normalizeSessionTranslationSettings,
+  resolveSessionTranslationOptions,
   supportsSessionTranslation,
 } from '../../shared/contracts/session-translation.js'
 import type {
@@ -46,6 +47,7 @@ export interface SessionTranslationService {
   /** DSH 原生会话的总开关；旧测试替身未实现时按关闭处理。 */
   readonly nativeEnabled?: boolean
   readonly inputEnabled?: boolean
+  isInputEnabled?(adapterId: string): boolean
   /** 是否在界面同时保留原文与译文；旧测试替身未实现时按关闭处理。 */
   readonly bilingual?: boolean
   catalog(): Promise<AssistantChatCatalog>
@@ -66,6 +68,11 @@ export interface SessionTranslationService {
   }>
   translateOutput(adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationRecord | null>
   dispose(): void
+}
+
+/** Older service implementations expose only the shared input preference. */
+export function isSessionTranslationInputEnabled(service: SessionTranslationService, adapterId: string): boolean {
+  return service.isInputEnabled?.(adapterId) ?? service.inputEnabled !== false
 }
 
 /**
@@ -186,7 +193,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
   const translate = async (adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationRecord | null> => {
     const value = text
     if (!active || disposed || value.trim() === '') return null
-    if (!canTranslateAdapter(adapterId, sessionEnabled) || !outputEnabled(kind)) return null
+    if (!canTranslateAdapter(adapterId, sessionEnabled) || !outputEnabled(adapterId, kind)) return null
     const targetLanguage = kind === 'assistant' || kind === 'reasoning' ? settings.outputLanguage : settings.inputLanguage
     const protectedText = protectText(value)
     if (hasNoTranslatableText(protectedText.text)) return null
@@ -220,6 +227,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     get outputLanguage() { return settings.outputLanguage },
     get nativeEnabled() { return settings.nativeEnabled === true },
     get inputEnabled() { return settings.inputEnabled !== false },
+    isInputEnabled: (adapterId) => resolveSessionTranslationOptions(settings, adapterId).inputEnabled,
     get bilingual() { return settings.bilingual === true },
     async catalog() {
       const errors: string[] = []
@@ -244,7 +252,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     shouldTranslate(adapterId, kind, sessionEnabled) {
       return active
         && canTranslateAdapter(adapterId, sessionEnabled)
-        && outputEnabled(kind)
+        && outputEnabled(adapterId, kind)
     },
     activate() { active = true; disposed = false },
     deactivate,
@@ -272,7 +280,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     readonly failed?: boolean
     readonly failure?: SessionTranslationFailure
   }> {
-      if (!active || settings.inputEnabled === false || !canTranslateAdapter(adapterId, sessionEnabled) || text.trim() === '') return { translated: text }
+      if (!active || !resolveSessionTranslationOptions(settings, adapterId).inputEnabled || !canTranslateAdapter(adapterId, sessionEnabled) || text.trim() === '') return { translated: text }
       const protectedText = protectText(text, protection)
       if (hasNoTranslatableText(protectedText.text)) return { translated: text }
       const targetLanguage = settings.inputLanguage
@@ -284,8 +292,9 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
       return { ...result, ...(sourceLanguage === undefined ? {} : { sourceLanguage }) }
   }
 
-  function outputEnabled(kind: SessionTranslationOutputKind): boolean {
-    return (kind === 'reasoning' ? settings.reasoningEnabled : settings.assistantEnabled) !== false
+  function outputEnabled(adapterId: string, kind: SessionTranslationOutputKind): boolean {
+    const options = resolveSessionTranslationOptions(settings, adapterId)
+    return kind === 'reasoning' ? options.reasoningEnabled : options.assistantEnabled
   }
 }
 

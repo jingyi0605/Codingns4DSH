@@ -423,8 +423,10 @@ test('DSH 原生会话的子代理与助理会话不参与翻译', async () => {
 })
 
 test('disabled user translation preserves native and external submissions without translation metadata', async () => {
-  for (const adapterId of ['dsh', 'codex']) {
-    const translation = { ...createTranslation(), inputEnabled: false }
+  for (const adapterId of ['dsh', 'codex']) for (const legacy of [true, false]) {
+    const translation = { ...createTranslation(), ...(legacy
+      ? { inputEnabled: false }
+      : { inputEnabled: true, isInputEnabled: (id: string) => id !== adapterId }) }
     const executions: any[] = []
     const harness = createHarness({ translation, adapterId, translationEnabled: true, executions, attachmentPath: '/tmp/中文 文件.txt' })
     await harness.start()
@@ -439,6 +441,28 @@ test('disabled user translation preserves native and external submissions withou
         assert.equal(executions[0].translationLanguage, undefined)
       }
       assert.deepEqual(translation.requests, [])
+    } finally { await harness.features.disable('cliAdapters') }
+  }
+})
+
+test('an enabled agent input option overrides a disabled legacy default in native and external submissions', async () => {
+  for (const adapterId of ['dsh', 'codex']) {
+    const translation = { ...createTranslation({ translateInput: () => 'Please review the code.' }),
+      inputEnabled: false, isInputEnabled: (id: string) => id === adapterId }
+    const executions: any[] = []
+    const harness = createHarness({ translation, adapterId, translationEnabled: true, executions })
+    await harness.start()
+    try {
+      const original = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '请检查代码' }] }
+      const decision = await harness.preStepListener({ agent: { id: 'native-session' }, messages: [original], turn: 1, step: 1 },
+        async () => ({ kind: 'enter', messages: [original] })) as any
+      assert.equal(decision.messages[0].source.codingnsTranslationInput.translated, 'Please review the code.')
+      if (adapterId === 'codex') {
+        for await (const _chunk of harness.llmListener({ sessionId: 'native-session', messages: decision.messages }, async function* () {})) { /* Drain the provider stream. */ }
+        assert.equal(executions[0].prompt, 'Please review the code.')
+        assert.equal(executions[0].translationLanguage, 'en')
+      }
+      assert.equal(translation.requests.length, 1)
     } finally { await harness.features.disable('cliAdapters') }
   }
 })

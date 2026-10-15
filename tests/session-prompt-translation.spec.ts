@@ -36,6 +36,25 @@ function fixture() {
     dispose() { context.dispose(); recovery.dispose(); service.dispose() } }
 }
 
+test('prompt translation uses the current agent input option instead of the legacy shared value', async t => {
+  const f = fixture(); t.after(() => f.dispose())
+  const external = createSessionPromptTranslation(f.service, () => 'codex')
+  t.after(() => external.dispose())
+  const assembly = { sections: [{ name: 'host', text: original }], tools: [] }
+  f.service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, inputEnabled: false,
+    adapterOptions: { dsh: { inputEnabled: true }, codex: { inputEnabled: false } },
+  })
+  assert.equal((await f.context.translateAssembly(assembly, scope)).sections[0]!.text, 'Translated description')
+  assert.equal(await external.translateAssembly(assembly, scope), assembly)
+  assert.equal(f.requests.length, 1)
+  f.service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, inputEnabled: true,
+    adapterOptions: { dsh: { inputEnabled: false }, codex: { inputEnabled: true } },
+  })
+  assert.equal(await f.context.translateAssembly(assembly, scope), assembly)
+  assert.equal((await external.translateAssembly(assembly, scope)).sections[0]!.text, 'Translated description')
+  assert.equal(f.requests.length, 2)
+})
+
 test('assembly translates descriptions without changing schemas, variables, or runtime facts', async t => {
   const f = fixture(); t.after(() => f.dispose())
   const data = { description: '中文数据' }

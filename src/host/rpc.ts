@@ -11,6 +11,7 @@ import type { CodingNsSettingsOperation } from '../dsh-capabilities/settings-sto
 import { validateAssistantAppearance } from '../shared/assistant-avatar.js'
 import { validateAssistantPrompt, validateAssistantPrompts } from '../shared/assistant-prompts.js'
 import { validateAssistantModel, validateAssistantProfile } from '../shared/assistant-lifecycle.js'
+import { supportsSessionTranslation } from '../shared/contracts/session-translation.js'
 import { isPeerHostRequestCancellation, PeerHostNativeStreamError } from './modules/peer-host/peer-host-request-errors.js'
 
 /** 0.2 Connection handler 的 Peer 参数；旧版 handler 仍可通过可选参数调用。 */
@@ -322,7 +323,7 @@ function parseSettingsOp(value: unknown): CodingNsSettingsOperation {
     throw new TypeError('设置操作必须是 { op, path, value? }')
   }
   const path = value.path
-  if (path.length === 0 || path.length > 3 || path.some((part) => typeof part !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]*$/u.test(part))) {
+  if (path.length === 0 || path.length > 4 || path.some((part) => typeof part !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]*$/u.test(part))) {
     throw new TypeError('设置路径非法')
   }
   if (!isAllowedSettingsPath(path)) throw new CodingNsRpcError('CODINGNS_SETTINGS_FIELD_FORBIDDEN', `禁止修改设置字段: ${path.join('.')}`)
@@ -377,7 +378,9 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
     return path.length === 2 && ['timeoutSecs', 'refreshIntervalMins'].includes(path[1] ?? '')
   }
   if (path[0] === 'sessionTranslation') {
-    return path.length === 2 && ['inputEnabled', 'reasoningEnabled', 'assistantEnabled'].includes(path[1] ?? '')
+    const fields = ['inputEnabled', 'reasoningEnabled', 'assistantEnabled']
+    return (path.length === 2 && fields.includes(path[1] ?? ''))
+      || (path.length === 4 && path[1] === 'adapterOptions' && supportsSessionTranslation(path[2] ?? '') && fields.includes(path[3] ?? ''))
   }
   if (path[0] === 'assistant') {
     return (path.length === 2 && ['managedWorkspaceIds', 'appearance', 'prompts', 'profile', 'model'].includes(path[1] ?? '')) || (path.length === 3 && path[1] === 'prompts' && ['index', 'chat'].includes(path[2] ?? ''))

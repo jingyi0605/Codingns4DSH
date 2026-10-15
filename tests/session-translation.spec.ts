@@ -47,6 +47,56 @@ test('each message category independently gates translation for native and exter
   } finally { service.dispose() }
 })
 
+test('adapter options independently control input, reasoning and replies after settings reload', async () => {
+  let requests = 0
+  const service = createSessionTranslationService({
+    llm: {
+      listProviders: () => [{ id: 'test', name: 'Test' }],
+      listModels: async () => [{ id: 'model', name: 'Model' }],
+      stream: (options: any) => (async function* () {
+        requests++
+        yield { type: 'text-delta', text: JSON.stringify({ translation: options.system.includes("user's message") ? 'Please review the code.' : '请检查代码。' }) }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })(),
+    },
+  }, '0.2.1-alpha.2')!
+  const settings = {
+    ...DEFAULT_SESSION_TRANSLATION_SETTINGS,
+    inputEnabled: false,
+    adapterOptions: {
+      codex: { inputEnabled: true, reasoningEnabled: false, assistantEnabled: true },
+      'claude-code': { inputEnabled: false, reasoningEnabled: true, assistantEnabled: false },
+      dsh: { inputEnabled: true, reasoningEnabled: false, assistantEnabled: false },
+    },
+  }
+  service.configure(JSON.parse(JSON.stringify(settings)))
+  service.activate()
+  try {
+    for (const [adapterId, input, reasoning, assistant] of [
+      ['codex', true, false, true], ['claude-code', false, true, false],
+      ['dsh', true, false, false], ['gemini', false, true, true],
+    ] as const) {
+      const count = requests
+      assert.equal(service.isInputEnabled!(adapterId), input)
+      assert.equal(await service.translateInput(adapterId, '请检查代码。', undefined, true), input ? 'Please review the code.' : '请检查代码。')
+      for (const [kind, enabled] of [['reasoning', reasoning], ['assistant', assistant]] as const) {
+        assert.equal(service.shouldTranslate(adapterId, kind, true), enabled)
+        assert.equal((await service.translateOutput(adapterId, kind, 'Please review the code.', undefined, true))?.translated ?? null, enabled ? '请检查代码。' : null)
+      }
+      assert.equal(requests - count, Number(input) + Number(reasoning) + Number(assistant))
+      assert.equal(await service.translateInput(adapterId, '请检查代码。', undefined, false), '请检查代码。')
+      assert.equal(await service.translateOutput(adapterId, 'assistant', 'Please review the code.', undefined, false), null)
+      assert.equal(requests - count, Number(input) + Number(reasoning) + Number(assistant))
+    }
+    service.configure({ ...settings, adapterOptions: { ...settings.adapterOptions, codex: { inputEnabled: false, reasoningEnabled: true, assistantEnabled: false } } })
+    assert.equal(service.isInputEnabled!('codex'), false)
+    assert.equal(service.isInputEnabled!('dsh'), true)
+    assert.equal(service.shouldTranslate('codex', 'reasoning', true), true)
+    assert.equal(service.shouldTranslate('dsh', 'reasoning', true), false)
+    assert.equal(service.shouldTranslate('gemini', 'assistant', true), true)
+  } finally { service.dispose() }
+})
+
 test('changing output settings during an external block never drops or duplicates deltas', async () => {
   for (const initiallyEnabled of [true, false]) {
     let enabled = initiallyEnabled

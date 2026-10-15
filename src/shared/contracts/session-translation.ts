@@ -10,12 +10,16 @@ export interface SessionTranslationModel {
   readonly model: string
 }
 
-/** 会话翻译中间件的持久化设置。 */
-export interface SessionTranslationSettings {
-  /** Message categories are enabled unless explicitly disabled in older or current settings. */
+/** Message categories saved independently for each agent adapter. */
+export interface SessionTranslationOptions {
   readonly inputEnabled?: boolean
   readonly reasoningEnabled?: boolean
   readonly assistantEnabled?: boolean
+}
+
+/** Persisted translation settings; top-level message options remain legacy defaults. */
+export interface SessionTranslationSettings extends SessionTranslationOptions {
+  readonly adapterOptions?: Readonly<Record<string, SessionTranslationOptions>>
   /** 用户输入送入 Agent 的目的语言。 */
   readonly inputLanguage: SessionTranslationLanguage
   /** 输出翻译语言；默认中文。 */
@@ -74,6 +78,16 @@ export function supportsSessionTranslation(adapterId: string): boolean {
   return adapterId === DSH_NATIVE_SESSION_ADAPTER_ID || isSessionTranslationAdapter(adapterId)
 }
 
+/** Preserve existing choices until an adapter overrides them. Missing legacy values default on. */
+export function resolveSessionTranslationOptions(settings: SessionTranslationSettings | undefined, adapterId: string): Required<SessionTranslationOptions> {
+  const options = settings?.adapterOptions?.[adapterId]
+  return {
+    inputEnabled: (options?.inputEnabled ?? settings?.inputEnabled) !== false,
+    reasoningEnabled: (options?.reasoningEnabled ?? settings?.reasoningEnabled) !== false,
+    assistantEnabled: (options?.assistantEnabled ?? settings?.assistantEnabled) !== false,
+  }
+}
+
 /** 判断任意字符串是否为受支持的翻译语言。 */
 export function isSessionTranslationLanguage(value: unknown): value is SessionTranslationLanguage {
   return typeof value === 'string' && (SESSION_TRANSLATION_LANGUAGES as readonly string[]).includes(value)
@@ -101,6 +115,11 @@ export function normalizeSessionTranslationSettings(value: SessionTranslationSet
     outputLanguage: isSessionTranslationLanguage(value.outputLanguage) ? value.outputLanguage : fallback.outputLanguage,
     bilingual: value.bilingual === true,
     nativeEnabled: value.nativeEnabled === true,
+    ...(value.adapterOptions === undefined ? {} : {
+      adapterOptions: Object.fromEntries(Object.entries(value.adapterOptions)
+        .filter(([adapterId]) => supportsSessionTranslation(adapterId))
+        .map(([adapterId]) => [adapterId, resolveSessionTranslationOptions(value, adapterId)])),
+    }),
     ...(translationModel === undefined ? {} : { translationModel }),
     ...(translationModels === undefined ? {} : { translationModels }),
     ...(translationRules === undefined ? {} : { translationRules }),

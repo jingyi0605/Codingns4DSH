@@ -52,6 +52,11 @@ export const CodingNsSettingsSchema = z.object({
     inputEnabled: z.boolean().default(true),
     reasoningEnabled: z.boolean().default(true),
     assistantEnabled: z.boolean().default(true),
+    adapterOptions: z.dict(z.object({
+      inputEnabled: z.union([z.boolean(), z.const(undefined)]),
+      reasoningEnabled: z.union([z.boolean(), z.const(undefined)]),
+      assistantEnabled: z.union([z.boolean(), z.const(undefined)]),
+    })).default({}),
     // 输入语言放开中文：DSH 原生会话的典型用法正是「中文输入 → 英文请求」。
     inputLanguage: z.union([z.const('zh'), z.const('en'), z.const('fr'), z.const('de'), z.const('ja')]).default(DEFAULT_SESSION_TRANSLATION_SETTINGS.inputLanguage),
     outputLanguage: z.union([z.const('zh'), z.const('en'), z.const('fr'), z.const('de'), z.const('ja')]).default(DEFAULT_SESSION_TRANSLATION_SETTINGS.outputLanguage),

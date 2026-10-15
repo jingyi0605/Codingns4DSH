@@ -7,6 +7,8 @@ import SettingsForms from '@deepseek-ai/dsh-settings'
 import { CodingNsConfigSchema, CodingNsSettingsSchema, registerCodingNsSettings } from '../data/build/dist/host/settings.js'
 import { installTerminalController } from '../data/build/dist/host/terminal/startup.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../data/build/dist/shared/contracts/config.js'
+import { createCodingNsSettingsRpcHandler } from '../src/host/rpc.js'
+import { resolveSessionTranslationOptions } from '../src/shared/contracts/session-translation.js'
 
 // 与原生 Loader 一样更新 volatile（实时配置）引用，不引入额外持久化实现。
 const require = createRequire(import.meta.url)
@@ -123,6 +125,50 @@ test('重载后仍通过原生 namespace 编辑设置并通知监听器', async 
     await fiber.dispose()
     await formsFiber.dispose()
   }
+})
+
+test('per-agent translation options persist through native SettingsForms mutations and host reload', async () => {
+  const { ctx, entry, formsFiber } = await fixture()
+  const expected = {
+    codex: { inputEnabled: false, reasoningEnabled: true, assistantEnabled: false },
+    'claude-code': { inputEnabled: true, reasoningEnabled: false, assistantEnabled: true },
+    dsh: { inputEnabled: false, reasoningEnabled: false, assistantEnabled: true },
+  }
+  try {
+    for (let generation = 0; generation < 2; generation++) {
+      let injected: any
+      let scope: ReturnType<typeof registerCodingNsSettings>
+      const fiber = ctx.plugin({
+        Config: CodingNsConfigSchema,
+        apply(owner: Context) {
+          injected = owner.inject(['settings'], inner => {
+            scope = registerCodingNsSettings(inner, () => owner.fiber.config)
+          })
+        },
+      }, entry.options.config)
+      entry.fiber = fiber.ctx.fiber
+      try {
+        await fiber
+        await injected
+        const handler = createCodingNsSettingsRpcHandler(ctx.settings as never)
+        if (generation === 0) {
+          for (const [adapterId, options] of Object.entries(expected)) {
+            for (const [field, value] of Object.entries(options)) {
+              await handler('set', { ops: [{ op: 'set', path: ['sessionTranslation', 'adapterOptions', adapterId, field], value }] })
+            }
+          }
+        }
+        for (const [adapterId, options] of Object.entries(expected)) {
+          assert.deepEqual(resolveSessionTranslationOptions(scope!.get().sessionTranslation, adapterId), options)
+        }
+        assert.deepEqual(resolveSessionTranslationOptions(scope!.get().sessionTranslation, 'gemini'), {
+          inputEnabled: true, reasoningEnabled: true, assistantEnabled: true,
+        })
+        assert.equal(scope!.get().agentAdapterPreferences?.codex?.modelId, 'saved-model')
+        assert.deepEqual(entry.options.config.sessionTranslation.adapterOptions, expected)
+      } finally { await fiber.dispose() }
+    }
+  } finally { await formsFiber.dispose() }
 })
 
 test('未提供入口配置的现代设置调用和旧版 register 路径保持兼容', () => {
