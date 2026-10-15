@@ -2,7 +2,7 @@ import type { ComponentType, ReactElement } from 'react'
 import type { TranslationQuestionCard, TranslationTodo } from '../../shared/contracts/interaction-presentation.js'
 import type { InteractionTranslationField, InteractionTranslationResult } from '../../shared/contracts/interaction-translation.js'
 import { displayQuestionHistory, questionHistoryFields, readQuestionHistory } from './question-history-adapter.js'
-import { mirrorPresentationSlot, type PresentationSlots, type RenderElement } from './slot-presentation-mirror.js'
+import { followPresentationEntry, mirrorPresentationSlot, type PresentationSlots, type RenderElement } from './slot-presentation-mirror.js'
 
 export interface QuestionPresentation {
   readonly matched: TranslationQuestionCard
@@ -37,9 +37,8 @@ export function createInteractionPresentationBridge(context: unknown): Interacti
     },
     questions(sessionId, component, element) {
       const actionSlot = `codingns.translation.plan-actions.${encodeURIComponent(sessionId)}`
-      return slots.inject('conversation.composer', () => {
-        const native = slots.entries('conversation.composer').find(entry => entry.children?.['conversation.plan-review.actions'] !== undefined)
-        if (native === undefined || typeof native.select !== 'function') return () => undefined
+      return followPresentationEntry(slots, 'conversation.composer',
+        entry => entry.children?.['conversation.plan-review.actions'] !== undefined && typeof entry.select === 'function', native => {
         const select = native.select as (owner: unknown) => unknown
         const removeQuestion = slots.register({
           name: 'conversation.composer', priority: -100,
@@ -65,9 +64,7 @@ export function createInteractionPresentationBridge(context: unknown): Interacti
       })
     },
     todos(render, element) {
-      return slots.inject('conversation.input.dock', () => {
-        const native = slots.entries('conversation.input.dock').find(entry => entry.options.id === 'todo')
-        if (native === undefined) return () => undefined
+      return followPresentationEntry(slots, 'conversation.input.dock', entry => entry.options.id === 'todo', native => {
         return slots.register({ name: 'conversation.input.dock', id: 'todo', priority: -100, order: 0, locale: native.locale },
           (props: { sessionId: string; useProjection(key: string): unknown }) => {
             const value = props.useProjection('todos')
@@ -77,9 +74,7 @@ export function createInteractionPresentationBridge(context: unknown): Interacti
       })
     },
     questionHistory(render, element) {
-      return slots.inject('tool.call.toolview', () => {
-        const native = slots.entries('tool.call.toolview').find(entry => entry.options.key === 'ask_user_question')
-        if (native === undefined) return () => undefined
+      return followPresentationEntry(slots, 'tool.call.toolview', entry => entry.options.key === 'ask_user_question', native => {
         return slots.register({ name: 'tool.call.toolview', key: 'ask_user_question', priority: -100, locale: native.locale, inject: native.inject },
           props => {
             const settled = props.useProjection('userQuestions', (view: any) => view?.settled?.find((row: any) => row.callId === props.callId)?.answers)

@@ -6,6 +6,8 @@ import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 import { createQuestionAnswerTranslation, NativeQuestionTranslation, NativeTranslatedContent, NativeTodoTranslation, registerSessionTranslationInteractions } from '../src/client/session-translation-interactions.js'
 import { CodingNsSettingsBridge } from '../src/client/settings-bridge.js'
 import { readAgentQuestions } from '../src/host/cli-adapters/interaction-events.js'
+import { createPresentationSlots } from './fixtures/presentation-slots.js'
+import { createInteractionPresentationBridge } from '../src/dsh-capabilities/client/interaction-presentation-adapter.js'
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
 let nextId = 0
@@ -118,7 +120,7 @@ test('todo translation retains the native progress component and its collapsed s
   renderer.dispose()
 })
 
-for (const version of ['0.2.1-alpha.1', '0.2.1-alpha.2']) test('DSH ' + version + ' renders its original composer with its store, hooks, and locale', async () => {
+for (const version of ['0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3']) test('DSH ' + version + ' renders its original composer with its store, hooks, and locale', async () => {
   const f = fixture()
   f.services.dshVersion = version
   const core = new SlotCore()
@@ -166,4 +168,40 @@ for (const version of ['0.2.1-alpha.1', '0.2.1-alpha.2']) test('DSH ' + version 
   host.dispose()
   stop()
   assert.deepEqual(core.entries('conversation.composer'), [native])
+})
+
+test('question, todo and history wrappers follow native entries registered after their slots', async () => {
+  const slots = createPresentationSlots()
+  const removeRoot = slots.register({ name: 'root', children: {
+    'conversation.composer': { kind: 'chain', scope: 'session-maybe' },
+    'conversation.input.dock': { kind: 'list', scope: 'session' },
+    'tool.call.toolview': { kind: 'keyed', scope: 'session' },
+  } } as any, () => null)
+  const bridge = createInteractionPresentationBridge({ slots })
+  const stops = [bridge.questions('session', () => null, createElement),
+    bridge.todos(props => props.original, createElement), bridge.questionHistory(props => props.render({ enabled: false, records: {} }), createElement)]
+  const names = ['conversation.composer', 'conversation.input.dock', 'tool.call.toolview']
+  const counts = () => names.map(name => slots.entries(name as never).length)
+  assert.deepEqual(counts(), [0, 0, 0])
+  const register = () => [
+    slots.register({ name: names[0], select: () => null, children: { 'conversation.plan-review.actions': { kind: 'list', scope: 'session' } } } as any, () => null),
+    slots.register({ name: names[1], id: 'todo' } as any, () => null),
+    slots.register({ name: names[2], key: 'ask_user_question' } as any, () => null),
+  ]
+  let native = register()
+  await tick()
+  assert.deepEqual(counts(), [2, 2, 2])
+  native.forEach(remove => remove())
+  await tick()
+  assert.deepEqual(counts(), [0, 0, 0])
+  native = register()
+  await tick()
+  assert.deepEqual(counts(), [2, 2, 2])
+  stops.forEach(stop => stop())
+  assert.deepEqual(counts(), [1, 1, 1])
+  native.forEach(remove => remove())
+  native = register()
+  await tick()
+  assert.deepEqual(counts(), [1, 1, 1], 'disposed wrappers must not return')
+  native.forEach(remove => remove()); removeRoot()
 })

@@ -132,12 +132,12 @@ test('disposing translation prevents late result publication', async () => {
 
 test('interaction capability reports unsupported older fixtures and requires the actual Slot API', () => {
   const context = { slots: { inject() {}, register() {}, entries() { return [] }, subscribe() { return () => {} } } }
-  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.0-rc.2']) {
+  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2']) {
     const profile = createDshCapabilityRegistry(version, 'client', context).getProfile(context)
     assert.equal(profile.capabilities.get('conversation.interaction-translation')?.status, 'unavailable')
     assert.ok(profile.diagnostics.some(d => d.capability === 'conversation.interaction-translation'))
   }
-  for (const version of ['0.2.1-alpha.1', '0.2.1-alpha.2']) {
+  for (const version of ['0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3']) {
     assert.equal(createDshCapabilityRegistry(version, 'client', context).getProfile(context).capabilities.get('conversation.interaction-translation')?.status, 'ready', version)
     assert.equal(createDshCapabilityRegistry(version, 'client', {}).getProfile({}).capabilities.get('conversation.interaction-translation')?.status, 'unavailable')
   }

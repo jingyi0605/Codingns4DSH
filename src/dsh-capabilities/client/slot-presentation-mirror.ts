@@ -19,6 +19,31 @@ export interface PresentationSlots {
   subscribe(name: string, listener: () => void): () => void
 }
 
+/** Follow a native entry that may load after its slot or be replaced during reload. */
+export function followPresentationEntry(
+  slots: PresentationSlots, name: string,
+  matches: (entry: PresentationEntry) => boolean,
+  mount: (entry: PresentationEntry) => () => void,
+): () => void {
+  return slots.inject(name, () => {
+    let native: PresentationEntry | undefined
+    let remove: (() => void) | undefined
+    let disposed = false
+    const reconcile = (): void => {
+      if (disposed || native !== undefined && slots.entries(name).includes(native)) return
+      // Remove our previous wrapper before selecting another native entry.
+      remove?.()
+      remove = undefined
+      native = slots.entries(name).find(matches)
+      if (native !== undefined) remove = mount(native)
+    }
+    const unsubscribe = slots.subscribe(name, reconcile)
+    const dispose = (): void => { disposed = true; unsubscribe(); remove?.(); remove = undefined }
+    try { reconcile() } catch (error) { dispose(); throw error }
+    return dispose
+  })
+}
+
 /** Render existing actions in an owned slot without redeclaring or mutating native slots. */
 export function mirrorPresentationSlot(slots: PresentationSlots, source: string, target: string, element: RenderElement): () => void {
   return slots.inject(source, () => {

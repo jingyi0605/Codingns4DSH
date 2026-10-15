@@ -4,7 +4,7 @@ import { TRANSLATION_GLYPH_PATHS, TRANSLATION_GLYPH_SIZE, TRANSLATION_PENDING_BA
 export type NativeInteractionTextKind = 'question' | 'todo'
 type TranslationStatus = 'pending' | 'complete' | 'failed'
 
-// Scoped to the inspected alpha.1/alpha.2 native fields, never controls or editable drafts.
+// Scoped to the inspected rc.2 through alpha.3 fields, never controls or editable drafts.
 const SELECTORS: Record<NativeInteractionTextKind, string> = {
   question: [
     '[data-question-key] h2', '[data-question-key] [class$="_eyebrow"]',
