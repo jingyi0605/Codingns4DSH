@@ -24,7 +24,16 @@ export interface CodexAppServerDriverOptions {
   /** 注入测试或受控部署提供的官方 cua_repl 配置。 */
   readonly computerUseConfig?: CodexComputerUseServerConfig
   readonly codexHome?: string
+  /**
+   * 插话被 Codex 以“无活动回合”拒绝后，等待真实终态通知的最长毫秒数。
+   * 拒绝响应可能先于 turn/completed 到达；超时仍未收到才按正常结束处理。
+   */
+  readonly steerTerminalGraceMs?: number
 }
+
+/** Codex app-server 对已结束回合执行 turn/steer 时返回的固定错误文本。 */
+const CODEX_NO_ACTIVE_TURN_TO_STEER = 'no active turn to steer'
+const DEFAULT_STEER_TERMINAL_GRACE_MS = 2_000
 
 interface CodexSegmentedTurn {
   readonly queue: CodexTurnEventQueue
@@ -168,6 +177,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   private readonly codexHome: string
   private readonly computerUseMode: CodexComputerUseMode
   private readonly computerUseConfig: CodexComputerUseServerConfig | undefined
+  private readonly steerTerminalGraceMs: number
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, CodexSession>()
@@ -182,6 +192,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     // 或第三方嵌入在没有桌面宿主时意外启动 CUA 运行时。
     this.computerUseMode = options.computerUse ?? 'disabled'
     this.computerUseConfig = options.computerUseConfig
+    this.steerTerminalGraceMs = options.steerTerminalGraceMs ?? DEFAULT_STEER_TERMINAL_GRACE_MS
     this.sessionRoots = options.sessionRoots ?? [join(codexHome, 'sessions'), join(codexHome, 'archived_sessions')]
   }
 
@@ -470,7 +481,10 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       // Provider turn，单纯续读旧队列会让这条消息只在 DSH 临时快照里出现，
       // 随即被消费掉；只有把真实用户输入转成 `turn/steer`，Codex 才会继续
       // 生成新方向的正文。内部 step 提示和问题回答不属于用户插话，不能重复注入。
-      if (!isNew && isCodexSteeringInput(input)) await this.steer(input.sessionId, input.prompt)
+      if (!isNew && isCodexSteeringInput(input)) {
+        const delivered = yield* this.deliverSegmentedSteer(session, active, input, command)
+        if (delivered) return
+      }
 
       for await (const chunk of this.consumeSegment(session, active, input)) yield chunk
       if (active.done && session.segmentedTurn === active) session.segmentedTurn = undefined
@@ -479,6 +493,70 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       if (!input.signal?.aborted) throw error
       await this.interrupt(input.sessionId)
     }
+  }
+
+  /**
+   * 把续段中的真实用户插话交给 Codex；返回 true 表示本次 llm/stream 已经处理完毕。
+   *
+   * DSH 翻译插话期间，挂起的 Provider turn 可能已经结束。此时 `turn/steer` 无处投递，
+   * 只能先产出旧回合的剩余输出，再用新 turn 执行插话。只有 Codex 明确回复“无活动
+   * 回合”才允许重新提交；超时或其他协议错误可能已被接收，重发会让同一输入执行两次。
+   */
+  private async *deliverSegmentedSteer(
+    session: CodexSession,
+    active: CodexSegmentedTurn,
+    input: CodingNsCliTurnInput,
+    command: string,
+  ): AsyncGenerator<CodingNsAgentEvent, boolean> {
+    let terminalFallback: ReturnType<typeof setTimeout> | undefined
+    if (active.terminalReason === null) {
+      try {
+        await this.steer(input.sessionId, input.prompt)
+        return false
+      } catch (error) {
+        if (!isCodexNoActiveTurnError(error)) throw error
+        // 拒绝响应可能先于终态通知到达。立即关闭队列会丢弃随后到达的 interrupted
+        // 或 failed，把被中断的回合误判为正常结束并重新执行插话；因此先等待真实终态。
+        if (active.terminalReason === null) {
+          terminalFallback = setTimeout(() => {
+            active.terminalReason ??= 'stop'
+            active.queue.close()
+          }, this.steerTerminalGraceMs)
+        }
+      }
+    }
+    try {
+      // 旧回合的剩余输出与新回合正文同属插话后的这一步。中途的 step 边界和 stop
+      // 不能交给 DSH，否则 DSH 会结算这一步并再次消费同一条插话。
+      while (!active.done) {
+        for await (const chunk of this.consumeSegment(session, active, input)) {
+          if (chunk.type === 'step-boundary') continue
+          if (chunk.type === 'finish' && chunk.reason === 'stop') continue
+          // 旧回合已经结束，它遗留的问题或审批无法再影响结果；直接回绝，
+          // 不能让 DSH 等待用户回答一个已失效的请求而阻塞插话。
+          if (chunk.type === 'question-request') {
+            this.releaseStaleRequest(() => this.respondQuestion(input.sessionId, { requestId: chunk.requestId, answers: [] }))
+            continue
+          }
+          if (chunk.type === 'permission-request') {
+            this.releaseStaleRequest(() => this.respondPermission(input.sessionId, { requestId: chunk.requestId, approved: false }))
+            continue
+          }
+          yield chunk
+        }
+      }
+    } finally {
+      clearTimeout(terminalFallback)
+    }
+    // 中断或失败的回合已由上面的 finish 报告终态，不能再自动执行插话。
+    if (active.terminalReason !== 'stop' || input.signal?.aborted) return true
+    yield* this.executeSegmentedTurn({ ...input, resumeSegmentedTurn: false }, command)
+    return true
+  }
+
+  /** 回绝已结束回合遗留的反向请求；请求已被其他路径清理时忽略。 */
+  private releaseStaleRequest(release: () => void): void {
+    try { release() } catch { /* 请求已不存在 */ }
   }
 
   private async startSegmentedTurn(
@@ -1395,6 +1473,11 @@ function codexImageData(value: unknown): string | undefined {
   }
   if (!isRecord(value)) return undefined
   return codexImageData(value.b64_json ?? value.base64 ?? value.data ?? value.image_url ?? value.url)
+}
+
+/** Codex 明确拒绝插话且未接收输入时才返回 true；其他错误都可能已被接收。 */
+function isCodexNoActiveTurnError(error: unknown): boolean {
+  return error instanceof JsonRpcRequestError && error.message === CODEX_NO_ACTIVE_TURN_TO_STEER
 }
 
 /** 判断分段续流是否带来了新的真实用户插话。 */
