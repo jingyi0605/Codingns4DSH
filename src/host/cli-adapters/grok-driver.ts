@@ -516,14 +516,17 @@ function grokNotificationReason(message: JsonRpcMessage): 'stop' | 'cancel' | 'e
       ? update.type.toLowerCase()
       : ''
   if (['turn_error', 'turn_failed', 'error', 'failed'].includes(type)) return 'error'
-  if (['turn_completed', 'turn_complete', 'prompt_complete', 'completed', 'done'].includes(type)) return grokPromptReason(update) ?? 'stop'
+  if (['turn_completed', 'turn_complete', 'prompt_complete', 'completed', 'done'].includes(type)) {
+    const reason = grokPromptReason(update) ?? 'stop'
+    return reason === 'cancel' && grokPermissionFailure(params) !== undefined ? 'error' : reason
+  }
   return null
 }
 
 function grokFailure(message: JsonRpcMessage): { message: string; code?: string } | undefined {
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
-  const permissionFailure = grokPermissionFailure(update)
+  const permissionFailure = grokPermissionFailure(update) ?? grokPermissionFailure(params)
   if (permissionFailure !== undefined) return permissionFailure
   const error = isRecord(update.error) ? update.error : update
   const detail = firstToolText(error.message, error.errorMessage, error.error_message, error.detail, error.reason)

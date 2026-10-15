@@ -216,6 +216,24 @@ test('Grok preserves ACP content-only tool output and failure details', { timeou
   } finally { fixture.driver.dispose() }
 })
 
+for (const envelope of [true, false]) {
+  test(`Grok reads permission cancellation metadata from the ${envelope ? 'notification envelope' : 'update'}`, { timeout: 3_000 }, async () => {
+    const fixture = replay((request, connection) => {
+      if (request.method !== 'session/prompt') return
+      const metadata = { cancellationCategory: 'PermissionRejected', cancellationContext: { tool_name: 'write', reason: 'Write rejected by policy' } }
+      const update = { sessionUpdate: 'turn_completed', stop_reason: 'cancelled', ...(!envelope ? { _meta: metadata } : {}) }
+      connection.emit({ method: '_x.ai/session/update', params: { sessionId: 'provider-session', update, ...(envelope ? { _meta: metadata } : {}) } })
+      // The terminal notification is authoritative even without matching response metadata.
+      connection.reply(request, { stopReason: 'end_turn' })
+    })
+    try {
+      const events = []
+      for await (const event of fixture.driver.executeTurn(input)) events.push(event)
+      assert.deepEqual(events.at(-1), { type: 'finish', reason: 'error', failure: { message: 'Write rejected by policy', code: 'PERMISSION_DENIED' } })
+    } finally { fixture.driver.dispose() }
+  })
+}
+
 test('Grok does not relabel a later ordinary cancellation as a prior permission denial', { timeout: 4_000 }, async () => {
   let prompt = 0
   const fixture = replay((request, connection) => {
