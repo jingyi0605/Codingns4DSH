@@ -115,15 +115,15 @@ test('alpha.3 translation follows late factory declarations, reloads and disposa
   const content = () => slots.registerFactory({ name: 'conversation.chat.user.content', scope: 'session',
     children: { 'conversation.chat.user.images': { kind: 'single', scope: 'session' } } } as any, () => null)
   const removeContent = content()
-  assert.equal(renderers().length, 3, 'text translation does not wait for the optional image gallery')
+  assert.equal(renderers().length, 4, 'text translation does not wait for the optional image gallery')
   removeContent()
   assert.equal(renderers().length, 1)
   const removeReplacement = content()
-  assert.equal(renderers().length, 3)
+  assert.equal(renderers().length, 4)
   removeText()
   assert.equal(renderers().length, 1)
   const removeTextReplacement = text()
-  assert.equal(renderers().length, 3)
+  assert.equal(renderers().length, 4)
   dispose()
   assert.equal(renderers().length, 1)
   removeTextReplacement()
@@ -428,6 +428,22 @@ test('会话翻译渲染器在有翻译记录时保留翻译入口与引用汇�
   assert.ok(assistantHtml.includes('随时可以开始。'))
   assert.equal(assistantHtml.includes('Ready to help.'), false)
   assert.ok(assistantHtml.includes('data-codingns-translation-action'), '有输出翻译记录时必须保留翻译入口')
+})
+
+test('运行中被 turn 接收的插话投影为 steering 节点时仍显示输入翻译入口', () => {
+  // 真实 Stage0 回归：插话“回复1”已翻译为 “Reply 1” 发送，但 DSH 用 steering 键渲染，
+  // 只遮蔽 user 键时翻译入口消失，看起来像未经翻译就发送。
+  const renderers = captureRenderers()
+  const steering = renderers.get('steering')
+  assert.ok(steering, '必须同时遮蔽 steering 键')
+  assert.equal(steering.priority, -100)
+  const record = { ...inputRecord, original: '回复1', translated: 'Reply 1' }
+  const html = render(steering.component, {
+    node: { id: 'steer-1', data: { seq: 10, time: Date.now(), content: [{ type: 'text', text: '回复1' }], source: { kind: 'user', codingnsTranslationInput: record } } },
+    sessionId: 'translation-chat',
+  })
+  assert.ok(html.includes('data-codingns-translation-action'), `插话必须显示翻译入口：${html}`)
+  assert.ok(html.includes('回复1'), `插话气泡显示用户原文：${html}`)
 })
 
 test('仅含工具调用块的助手步骤保持原生行为：不渲染空步骤', () => {

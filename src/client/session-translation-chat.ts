@@ -847,7 +847,7 @@ function resolveMarkdownImagePath(value: string): string | undefined {
 }
 
 /**
- * 注册两个有实际翻译记录的消息渲染器；DSH 的用户气泡内容仍由统一主题令牌控制。
+ * 注册用户消息（含插话）与 AI 正文的翻译渲染器；DSH 的用户气泡内容仍由统一主题令牌控制。
  */
 export function registerSessionTranslationChatUi(services: CodingNsClientServices, facts: DshCapabilityRuntimeFacts = { primitives: messagePrimitives }): () => void {
   const resolution = createDshCapabilityRegistry(services.dshVersion, 'client', services, facts).getProfile(services).capabilities.get('conversation.message-presentation')
@@ -866,24 +866,29 @@ export function registerSessionTranslationChatUi(services: CodingNsClientService
   if (resolution?.status !== 'ready') return () => { clearOutputTranslationRetries(services); removePendingActions(); removeStyles() }
   const presentation = resolution.value as MessagePresentation
   const removeRenderers = presentation.mount(() => {
-    const removeUserRenderer = slots.inject!('conversation.chat.node', () => slots.register!({
-      name: 'conversation.chat.node',
-      key: 'user',
-      priority: -100,
-      locale: 'chat',
-      inject: (sessionId: string) => ({ services, sessionId, translationT }),
-    }, props => UserMessageNodeView({ ...props, presentation })))
-    let removeAssistantRenderer: () => void
+    // DSH 把运行中被当前 turn 接收的插话投影为 steering 节点，并用同一个用户气泡
+    // 渲染；只遮蔽 user 会让插话的翻译记录不显示，看起来像未经翻译就发送。
+    const renderers: readonly [string, (props: any) => ReactElement | null][] = [
+      ['user', props => UserMessageNodeView({ ...props, presentation })],
+      ['steering', props => UserMessageNodeView({ ...props, presentation })],
+      ['assistant-step', props => AssistantTranslationNodeView({ ...props, presentation })],
+    ]
+    const removers: (() => void)[] = []
     try {
-      removeAssistantRenderer = slots.inject!('conversation.chat.node', () => slots.register!({
-        name: 'conversation.chat.node',
-        key: 'assistant-step',
-        priority: -100,
-        locale: 'chat',
-        inject: (sessionId: string) => ({ services, sessionId, translationT }),
-      }, props => AssistantTranslationNodeView({ ...props, presentation })))
-    } catch (error) { removeUserRenderer(); throw error }
-    return () => { removeAssistantRenderer(); removeUserRenderer() }
+      for (const [key, component] of renderers) {
+        removers.push(slots.inject!('conversation.chat.node', () => slots.register!({
+          name: 'conversation.chat.node',
+          key,
+          priority: -100,
+          locale: 'chat',
+          inject: (sessionId: string) => ({ services, sessionId, translationT }),
+        }, component)))
+      }
+    } catch (error) {
+      for (const remove of removers.reverse()) remove()
+      throw error
+    }
+    return () => { for (const remove of [...removers].reverse()) remove() }
   })
   return () => {
     clearOutputTranslationRetries(services)
