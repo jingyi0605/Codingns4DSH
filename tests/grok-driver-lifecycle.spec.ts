@@ -6,6 +6,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { GrokBuildDriver } from '../data/build/dist/host/cli-adapters/grok-driver.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
+import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
+import { createCliAdaptersFeature } from '../data/build/dist/host/cli-adapters/feature.js'
+import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
+import { FeatureRegistry } from '../data/build/dist/features/registry.js'
 
 type Message = Record<string, any>
 type Connection = {
@@ -50,6 +54,234 @@ function createReplay(onRequest: (request: Message, connection: Connection) => v
 }
 
 const turn = { sessionId: 'host-session', messages: [], prompt: 'Continue' }
+
+async function createTimeline(driver: GrokBuildDriver, options: {
+  canInject?: boolean
+  inject?: () => boolean
+  askQuestions?: (sessionId: string, request: Message) => Promise<unknown>
+} = {}) {
+  const table = new CodingNsRpcTable()
+  const registry = new CodingNsCliAdapterRegistry([driver])
+  const history: Message[] = []
+  let listener: (options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<any>
+  let step = 0
+  let continued = false
+  const features = new FeatureRegistry({
+    rpc: table,
+    events: { on(_name, next) { listener = next; return () => {} } },
+    nativeSessions: {
+      available: true, store: undefined, controller: undefined,
+      get() { return { header: { cwd: '/workspace' } } },
+      list() { return [] },
+      async ensure() { return null },
+      async flush() {},
+      appendRequestContext() { return true },
+      canInjectNextStep() { return options.canInject !== false },
+      injectNextStep() { continued = options.inject?.() ?? true; return continued },
+      appendToolCall(sessionId, call) {
+        history.push({ type: 'tool/call', step, call })
+        return { sessionId, turn: 1, step, callId: call.callId, callSeq: history.length }
+      },
+      appendToolResult(handle, result) {
+        history.push({ type: 'tool/result', step: handle.step, callId: handle.callId, result })
+        return true
+      },
+      ...(options.askQuestions ? { askQuestions: options.askQuestions } : {}),
+      subscribe() { return () => {} },
+    },
+  })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  await table.resolve('cli/session/set')?.handler('session/set', { sessionId: turn.sessionId, adapterId: 'grok' })
+  return {
+    history,
+    async run() {
+      const allChunks: Message[] = []
+      do {
+        continued = false
+        step++
+        assert.ok(step < 100, 'A continuation must make progress')
+        const blocks: Message[] = []
+        for await (const chunk of listener!({ sessionId: turn.sessionId, messages: [{ role: 'user', content: turn.prompt }] }, async function* () {})) {
+          allChunks.push(chunk)
+          if (chunk.type === 'block-end' && (chunk.block.type === 'text' || chunk.block.type === 'reasoning') && chunk.block.text.trim()) blocks.push(chunk.block)
+          // DSH appends assistant content at step settlement, after any native tool writes.
+          if (chunk.type === 'finish' && blocks.length) history.push({ type: 'assistant/message', step, blocks: [...blocks] })
+        }
+      } while (continued)
+      return allChunks
+    },
+    async dispose() { await features.disable('cliAdapters') },
+  }
+}
+
+for (const metadata of [true, false]) {
+  test(`Grok persists assistant messages before parallel tool batches (${metadata ? 'native' : 'legacy'} metadata)`, { timeout: 5_000 }, async () => {
+    const replay = createReplay((request, connection) => {
+      if (request.method !== 'session/prompt') return
+      for (let modelCall = 0; modelCall < 3; modelCall++) {
+        const meta = metadata ? { promptId: request.params._meta.promptId, streamStartMs: 100 + modelCall } : undefined
+        connection.update({ sessionUpdate: 'agent_thought_chunk', text: `Thinking ${modelCall}.` }, meta)
+        connection.update({ sessionUpdate: 'agent_message_chunk', text: `Reply ${modelCall}.` }, meta)
+        if (modelCall === 2) break
+        // Parallel calls start together and finish in reverse order.
+        for (const index of [0, 1]) connection.update({ sessionUpdate: 'tool_call', toolCallId: `call-${modelCall}-${index}`, title: 'read_file', status: 'pending', rawInput: { path: 'example.ts' } }, meta)
+        for (const index of [1, 0]) connection.update({ sessionUpdate: 'tool_call_update', toolCallId: `call-${modelCall}-${index}`, status: 'completed', rawOutput: 'file contents' }, meta)
+      }
+      connection.reply(request, { stopReason: 'end_turn' })
+    })
+    const timeline = await createTimeline(replay.driver)
+    try {
+      await timeline.run()
+      assert.deepEqual(timeline.history.map(row => [row.type, row.step]), [
+        ['assistant/message', 1],
+        ['tool/call', 2], ['tool/call', 2], ['tool/result', 2], ['tool/result', 2],
+        ['assistant/message', 3],
+        ['tool/call', 4], ['tool/call', 4], ['tool/result', 4], ['tool/result', 4],
+        ['assistant/message', 5],
+      ])
+      assert.deepEqual(timeline.history.filter(row => row.type === 'assistant/message').map(row => row.blocks.map(block => block.text)), [
+        ['Thinking 0.', 'Reply 0.'], ['Thinking 1.', 'Reply 1.'], ['Thinking 2.', 'Reply 2.'],
+      ])
+      assert.equal(replay.connections.length, 1)
+      assert.equal(replay.connections[0].requests.filter(request => request.method === 'session/prompt').length, 1)
+      assert.equal(replay.connections[0].requests.some(request => request.method === 'session/cancel'), false)
+      assert.equal(replay.connections[0].killed, false)
+    } finally { await timeline.dispose() }
+  })
+}
+
+test('Grok separates the exported 16-model-call, 82-tool timeline and settles aggregate usage once', { timeout: 5_000 }, async () => {
+  // Preserve the reported session's event shape without copying its private content.
+  const toolCounts = [3, 6, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 4, 0]
+  const textCalls = new Set([0, 1, 3, 5, 15])
+  const replay = createReplay((request, connection) => {
+    if (request.method !== 'session/prompt') return
+    for (const [modelCall, toolCount] of toolCounts.entries()) {
+      const meta = { promptId: request.params._meta.promptId, streamStartMs: 100 + modelCall }
+      if (modelCall !== 3 && modelCall !== 14) connection.update({ sessionUpdate: 'agent_thought_chunk', text: `Thinking ${modelCall}.` }, meta)
+      if (textCalls.has(modelCall)) connection.update({ sessionUpdate: 'agent_message_chunk', text: `Reply ${modelCall}.` }, meta)
+      for (let tool = 0; tool < toolCount; tool++) connection.update({ sessionUpdate: 'tool_call', toolCallId: `call-${modelCall}-${tool}`, title: 'read_file', status: 'pending', rawInput: { path: 'example.ts' } }, meta)
+      for (let tool = 0; tool < toolCount; tool++) {
+        connection.update({ sessionUpdate: 'tool_call_update', toolCallId: `call-${modelCall}-${tool}`, status: 'in_progress' }, meta)
+        connection.update({ sessionUpdate: 'tool_call_update', toolCallId: `call-${modelCall}-${tool}`, status: tool === 0 ? 'failed' : 'completed', rawOutput: 'tool result' }, meta)
+      }
+    }
+    connection.update({ sessionUpdate: 'turn_completed', stop_reason: 'end_turn', usage: {
+      inputTokens: 1249970, outputTokens: 10226, totalTokens: 1260196, cachedReadTokens: 1079168, cacheCreationTokens: 0, modelCalls: 16,
+    } })
+    connection.reply(request, { stopReason: 'end_turn' })
+  })
+  const timeline = await createTimeline(replay.driver)
+  try {
+    const chunks = await timeline.run()
+    const messages = timeline.history.filter(row => row.type === 'assistant/message')
+    const calls = timeline.history.filter(row => row.type === 'tool/call')
+    const results = timeline.history.filter(row => row.type === 'tool/result')
+    assert.equal(messages.length, 15)
+    assert.equal(messages.flatMap(row => row.blocks).filter(block => block.type === 'reasoning').length, 14)
+    assert.equal(messages.flatMap(row => row.blocks).filter(block => block.type === 'text').length, 5)
+    assert.equal(calls.length, 82)
+    assert.equal(results.length, 82)
+    assert.equal(new Set(calls.map(row => row.step)).size, 15)
+    assert.equal(chunks.filter(chunk => chunk.type === 'finish').length, 30)
+    for (let modelCall = 0; modelCall < 15; modelCall++) {
+      const batch = calls.filter(row => row.call.callId.startsWith(`call-${modelCall}-`))
+      assert.equal(new Set(batch.map(row => row.step)).size, 1, 'Parallel calls belong to one tool step')
+      for (const call of batch) assert.equal(results.find(row => row.callId === call.call.callId)?.step, call.step)
+      if (modelCall === 14) continue // This model call contains only tools.
+      const message = messages.find(row => row.blocks.some(block => block.text === `Reply ${modelCall}.` || block.text === `Thinking ${modelCall}.`))
+      assert.ok(message)
+      assert.ok(message.step < batch[0].step)
+      assert.ok(timeline.history.indexOf(message) < timeline.history.indexOf(batch[0]))
+    }
+    assert.deepEqual(messages.at(-1)?.blocks.map(block => block.text), ['Thinking 15.', 'Reply 15.'])
+    assert.deepEqual(chunks.filter(chunk => chunk.type === 'usage'), [{ type: 'usage', usage: {
+      inputTokens: 170802, outputTokens: 10226, totalTokens: 1260196, cacheReadTokens: 1079168, cacheWriteTokens: 0,
+    } }])
+    assert.equal(replay.connections[0].requests.filter(request => request.method === 'session/prompt').length, 1)
+  } finally { await timeline.dispose() }
+})
+
+test('Grok retains single-step fallback when DSH cannot inject continuation', { timeout: 3_000 }, async () => {
+  const replay = createReplay((request, connection) => {
+    if (request.method !== 'session/prompt') return
+    connection.update({ sessionUpdate: 'agent_message_chunk', text: 'Before.' }, { streamStartMs: 1 })
+    connection.update({ sessionUpdate: 'tool_call_update', toolCallId: 'call', title: 'read_file', status: 'completed' }, { streamStartMs: 1 })
+    connection.update({ sessionUpdate: 'agent_message_chunk', text: 'After.' }, { streamStartMs: 2 })
+    connection.reply(request, { stopReason: 'end_turn' })
+  })
+  const timeline = await createTimeline(replay.driver, { canInject: false })
+  try {
+    const chunks = await timeline.run()
+    assert.equal(chunks.filter(chunk => chunk.type === 'finish').length, 1)
+    assert.deepEqual(timeline.history.at(-1)?.blocks.map(block => block.text), ['Before.', 'After.'])
+    assert.equal(replay.connections[0].requests.filter(request => request.method === 'session/prompt').length, 1)
+  } finally { await timeline.dispose() }
+})
+
+test('Grok discards a suspended prompt when next-step injection fails', { timeout: 5_000 }, async () => {
+  let prompts = 0
+  const replay = createReplay((request, connection) => {
+    if (request.method !== 'session/prompt') return
+    prompts++
+    if (prompts === 1) {
+      connection.update({ sessionUpdate: 'agent_message_chunk', text: 'Before tools.' }, { streamStartMs: 1 })
+      connection.update({ sessionUpdate: 'tool_call', toolCallId: 'call', title: 'read_file', status: 'pending' }, { streamStartMs: 1 })
+      return
+    }
+    connection.update({ sessionUpdate: 'agent_message_chunk', text: 'Fresh reply.' }, { streamStartMs: 2 })
+    connection.reply(request, { stopReason: 'end_turn' })
+  })
+  const timeline = await createTimeline(replay.driver, { inject: () => false })
+  try {
+    await timeline.run()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(replay.connections[0].killed, true)
+    assert.ok(replay.connections[0].requests.some(request => request.method === 'session/cancel' && request.id === undefined))
+    await timeline.run()
+    assert.equal(prompts, 2)
+    assert.equal(replay.connections.length, 2)
+    assert.ok(replay.connections[1].requests.some(request => request.method === 'session/load'))
+    assert.deepEqual(timeline.history.map(row => row.blocks.map(block => block.text)), [['Before tools.'], ['Fresh reply.']])
+  } finally { await timeline.dispose() }
+})
+
+test('Grok keeps a question and its answer between the surrounding assistant messages', { timeout: 5_000 }, async () => {
+  let prompt: Message
+  let questions = 0
+  const replay = createReplay((request, connection) => {
+    if (request.method === 'session/prompt') {
+      prompt = request
+      connection.update({ sessionUpdate: 'agent_message_chunk', text: 'Choose a format.' }, { streamStartMs: 1 })
+      connection.update({ sessionUpdate: 'tool_call', toolCallId: 'question', title: 'ask_user_question', status: 'pending',
+        _meta: { 'x.ai/tool': { namespace: 'grok_build', name: 'ask_user_question' } },
+        rawInput: { questions: [{ id: 'format', question: 'Which format?', options: [{ label: 'PNG' }] }] },
+      }, { streamStartMs: 1 })
+      connection.emit({ jsonrpc: '2.0', id: 77, method: '_x.ai/ask_user_question', params: {
+        sessionId: 'provider-session', toolCallId: 'question', questions: [{ id: 'format', question: 'Which format?', options: [{ label: 'PNG' }] }],
+      } })
+    } else if (request.id === 77 && request.result) {
+      connection.update({ sessionUpdate: 'tool_call_update', toolCallId: 'question', status: 'completed', rawOutput: request.result }, { streamStartMs: 1 })
+      connection.update({ sessionUpdate: 'agent_message_chunk', text: 'PNG selected.' }, { streamStartMs: 2 })
+      connection.reply(prompt, { stopReason: 'end_turn' })
+    }
+  })
+  const timeline = await createTimeline(replay.driver, { async askQuestions(_sessionId, request) {
+    questions++
+    return { requestId: request.requestId, answers: [{ id: 'format', selected: ['PNG'] }] }
+  } })
+  try {
+    await timeline.run()
+    assert.equal(questions, 1)
+    assert.deepEqual(timeline.history.map(row => [row.type, row.step]), [
+      ['assistant/message', 1], ['tool/call', 2], ['tool/result', 2], ['assistant/message', 3],
+    ])
+    assert.deepEqual(timeline.history[0].blocks.map(block => block.text), ['Choose a format.'])
+    assert.deepEqual(timeline.history[3].blocks.map(block => block.text), ['PNG selected.'])
+    assert.equal(replay.connections[0].requests.filter(request => request.method === 'session/prompt').length, 1)
+  } finally { await timeline.dispose() }
+})
 
 for (const source of ['notification', 'response'] as const) {
   test(`Grok preserves cancellation from a ${source}`, { timeout: 3_000 }, async () => {

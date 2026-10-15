@@ -41,6 +41,7 @@ export interface GrokBuildDriverOptions {
 /** Grok Build 的 ACP stdio 驱动。ACP 会话和权限细节只在 Host 进程内处理。 */
 export class GrokBuildDriver implements CodingNsCliDriver {
   readonly descriptor = { id: 'grok', name: 'Grok Build', protocol: 'acp', capabilities: ['models', 'skills', 'stream', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'] as const } as const
+  readonly supportsStreamStepSplitting = true
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
@@ -129,6 +130,9 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     let reusable = false
     const promptId = randomUUID()
     const segmentState = createCodingNsSegmentState()
+    let stepPhase: 'message' | 'tools' | undefined
+    let stepStreamId: string | undefined
+    const activeTools = new Set<string>()
     try {
       if (providerSessionId === '') {
         const session = await rpc.request('session/new', {
@@ -165,6 +169,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           finishResult = item.value
           break
         }
+        const streamId = grokStreamId(item.value)
         for (const rawChunk of acpMessageToChunks(item.value)) {
           const resolved = rawChunk.type === 'image-artifact'
             ? await resolveGrokImageArtifact(rawChunk, state, this.sessionRoots)
@@ -178,6 +183,23 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           // 问题的 tool_call_update 只是同一次交互的生命周期回声，不能再生成普通
           // 工具记录，否则历史里会重新出现空参数或重复的问题调用。
           if (chunk.type === 'tool-event' && chunk.callId !== undefined && state.grokQuestionCallIds.has(chunk.callId)) continue
+          const phase = grokStepPhase(chunk)
+          if (phase !== undefined) {
+            // DSH persists assistant content only at step settlement. End the content
+            // step before native tools are appended, and keep unfinished parallel calls
+            // together so their results cannot be finalized by an intermediate step.
+            if (input.splitToolSteps && stepPhase !== undefined && activeTools.size === 0
+              && (phase !== stepPhase || (streamId !== undefined && stepStreamId !== undefined && streamId !== stepStreamId))) {
+              yield { type: 'step-boundary' }
+            }
+            stepPhase = phase
+            if (streamId !== undefined) stepStreamId = streamId
+          }
+          if (chunk.type === 'tool-event') {
+            const callId = chunk.callId ?? chunk.toolName
+            if (chunk.status === 'completed' || chunk.status === 'failed') activeTools.delete(callId)
+            else activeTools.add(callId)
+          }
           yield chunk
           advanceCodingNsSegment(chunk, segmentState)
           if (chunk.type === 'question-request') segmentState.segment += 1
@@ -536,6 +558,18 @@ function grokStreamId(message: Record<string, any>): string | undefined {
   const meta = isRecord(params._meta) ? params._meta : {}
   return typeof meta.streamStartMs === 'number' && Number.isFinite(meta.streamStartMs)
     ? `grok-stream-${meta.streamStartMs}` : undefined
+}
+
+function grokStepPhase(event: CodingNsAgentEvent): 'message' | 'tools' | undefined {
+  switch (event.type) {
+    case 'text-delta':
+    case 'reasoning-delta': return event.text.length > 0 ? 'message' : undefined
+    case 'image-artifact': return 'message'
+    case 'tool-event':
+    case 'question-request':
+    case 'permission-request': return 'tools'
+    default: return undefined
+  }
 }
 
 function acpMessageToChunks(message: Record<string, any>): readonly CodingNsAgentEvent[] {

@@ -500,7 +500,8 @@ export class CodingNsCliAdapterRegistry {
 
   /** 只有已验证能维护连续事件流的驱动，Host 才把工具边界映射到 DSH step。 */
   supportsSegmentedTurns(adapterId: CodingNsCliAdapterId): boolean {
-    return this.drivers.get(adapterId)?.supportsSegmentedTurns === true
+    const driver = this.drivers.get(adapterId)
+    return driver?.supportsSegmentedTurns === true || driver?.supportsStreamStepSplitting === true
   }
 
   /** Qoder 等 ACP 驱动由 Registry 挂起同一个迭代器完成通用工具分步。 */
@@ -638,20 +639,22 @@ export class CodingNsCliAdapterRegistry {
           this.segmentedTurns.delete(input.sessionId)
           this.sessionStore?.upsert(input.sessionId, { ...this.sessions.get(input.sessionId) ?? current, status: event.reason === 'error' ? 'error' : 'idle' })
         }
-        // Codex 等驱动已经把同一个 Provider turn 切成了多个段。边界本身
-        // 直接交给 Feature，不能再次按工具完成事件切一遍。
+        // Explicit boundaries preserve the driver's grouping of messages and tool batches.
         if (event.type === 'step-boundary') {
-          await closeAgentIterator(iterator)
+          if (driver.supportsStreamStepSplitting === true) {
+            this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator })
+          } else {
+            await closeAgentIterator(iterator)
+            // Driver-owned segments resume through a new executeTurn call.
+            this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator: null })
+          }
           iterator = undefined
-          // 驱动自己持有 Provider 进程与段状态：这里只登记续段意图，下一次
-          // llm/stream 再显式要求驱动恢复；注入失败时 discardSegmentedTurn
-          // 会同时丢弃 Registry 意图和驱动内的进程。
-          this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator: null })
           yield event
           return
         }
         if (input.splitToolSteps
           && driver.supportsSegmentedTurns !== true
+          && driver.supportsStreamStepSplitting !== true
           && event.type === 'tool-event'
           && (event.status === 'completed' || event.status === 'failed')) {
           // 先保存迭代器再 yield。即使调用方在工具事件后提前关闭流，

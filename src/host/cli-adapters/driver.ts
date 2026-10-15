@@ -51,6 +51,8 @@ export interface CodingNsCliDriver {
   readonly warmModelCatalog?: boolean
   /** 驱动是否已经自行维护 Provider turn 的 step 边界。 */
   readonly supportsSegmentedTurns?: boolean
+  /** The driver emits step boundaries; Registry retains its iterator for continuation. */
+  readonly supportsStreamStepSplitting?: boolean
   /** 驱动可以由 Registry 在工具完成后挂起并续读同一个事件迭代器。 */
   readonly supportsToolStepSplitting?: boolean
   /** 丢弃等待下一个 DSH step 的 Provider 运行；只有自行分段的驱动需要实现。 */
