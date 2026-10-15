@@ -4,6 +4,7 @@ export type DshCapabilityId =
   | 'llm.text'
   | 'session.title'
   | 'session.activation'
+  | 'session.external-model-selection'
   | 'session.working-directory'
   | 'assistant.agent'
   | 'connection.rpc'

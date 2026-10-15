@@ -43,6 +43,8 @@ import {
 } from '../../shared/contracts/session-translation.js'
 import { createInteractionTranslation } from '../features/interaction-translation.js'
 import { ASSISTANT_AGENT_PREFIX } from '../../dsh-capabilities/host/assistant-agent-adapter.js'
+import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
+import type { SessionModelSelectionAdapter } from '../../dsh-capabilities/host/session-model-selection-adapter.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -52,6 +54,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       enabledByDefault: true,
       dependencies: [],
       runtime: 'host',
+      requires: [{ capability: 'session.external-model-selection', required: false, fallback: 'degrade' }],
     },
     async start(context) {
       // 用量查询超时对所有适配器统一生效：同一个 timeoutMs 下发给全部网络读取器，
@@ -101,6 +104,16 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       const virtualProviders = createDshVirtualProviderRegistration(context.services.dshContext)
       virtualProviders?.setProviders(registry.enabledAdapterIds())
       if (virtualProviders !== undefined) context.resources.add(() => virtualProviders.dispose())
+      if (context.services.dshContext !== undefined && context.services.dshVersion !== undefined) {
+        const selection = createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext)
+          .getProfile(context.services.dshContext).capabilities.get('session.external-model-selection')
+          ?.value as SessionModelSelectionAdapter | undefined
+        if (selection !== undefined) context.resources.add(selection.install((sessionId) => {
+          const config = registry.getSession(sessionId)
+          if (config.adapterId === 'dsh' || !registry.isEnabled(config.adapterId)) return undefined
+          return { provider: config.adapterId, model: config.modelId?.trim() || 'provider-default' }
+        }))
+      }
       registry.warmCatalog()
       // 外部适配器没有经过 DSH 原生 Agent Loop，必须把同一套运行状态投影给
       // subagentCatalog。这里集中去重，避免 llm/stream、原生 session/event 和

@@ -15,6 +15,7 @@ export interface DshCapabilityMatrixRoute {
 
 /** 能力版本矩阵是运行时路由和版本检查的共同事实源。 */
 export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
+  route('session.external-model-selection', 'session-external-model-selection-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/session-model-selection-adapter.ts', 'host/cli-adapters/feature.ts']),
   route('session.activation', 'session-activation-020', 'host', '>=0.2.0-rc.2 <=0.2.1-alpha.2', 'supported', ['dsh-capabilities/host/session-activation-adapter.ts', 'host/native-session-bridge.ts']),
   route('session.activation', 'session-activation-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/session-activation-adapter.ts', 'host/native-session-bridge.ts']),
   route('conversation.message-presentation', 'message-presentation-020', 'client', '>=0.2.0-rc.2 <=0.2.1-alpha.2', 'supported', ['dsh-capabilities/client/message-presentation-adapter.ts', 'client/session-translation-chat.ts']),
