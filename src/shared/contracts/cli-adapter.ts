@@ -27,6 +27,18 @@ export interface CodingNsCliAdapterDescriptor {
   readonly diagnostic?: string
   /** 探测失败原因与“未找到安装入口”分离；旧 Client 可以忽略此可选字段。 */
   readonly detectionFailure?: 'launch' | 'timeout' | 'version' | 'protocol'
+  /** Optional, read-only release check; never starts an installation or an Agent. */
+  readonly update?: {
+    readonly state: 'unchecked' | 'checking' | 'available' | 'current' | 'unavailable' | 'error'
+    readonly latestVersion?: string
+    readonly checkedAt?: string
+    readonly sourceUrl?: string
+    readonly failure?: 'timeout' | 'network' | 'http' | 'invalid-response'
+    readonly httpStatus?: number
+    readonly reason?: 'application-managed' | 'unknown-version' | 'legacy-distribution' | 'no-release-source' | 'incomparable-version'
+    /** The release can be checked, but installation belongs to the owning application. */
+    readonly manualUpdate?: boolean
+  }
 }
 
 export type CodingNsCliDetection = Pick<CodingNsCliAdapterDescriptor, 'installed' | 'runtimeState' | 'version' | 'command' | 'diagnostic' | 'detectionFailure'>

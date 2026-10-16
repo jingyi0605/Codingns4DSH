@@ -29,7 +29,7 @@ export function failedDetection(reason: NonNullable<CodingNsCliDetection['detect
 /** 所有命令型适配器共用探测与兜底规则；一个别名失败不会掩盖后续可用入口。 */
 export async function detectBinary(options: RpcBinaryOptions): Promise<CodingNsCliDetection> {
   const run = options.spawnSync ?? spawnSync
-  const parseVersion = options.parseVersion ?? ((output: string) => output.match(/\d+\.\d+(?:\.\d+)?/u)?.[0] ?? null)
+  const parseVersion = options.parseVersion ?? ((output: string) => output.match(/\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?/u)?.[0] ?? null)
   let failure: CodingNsCliDetection | undefined
   for (const command of options.binaries) {
     const direct = await probe(command)

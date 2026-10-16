@@ -17,6 +17,7 @@ import { QoderCliDriver } from './qoder-driver.js'
 import { AntigravityDriver } from './antigravity-driver.js'
 import { DoubaoAppDriver } from './doubao-driver.js'
 import { CodingNsCliAdapterRegistry } from './registry.js'
+import { CliUpdateCheckService, type CliUpdateCheckOptions } from './update-check.js'
 import { CodingNsCliSessionStore } from './session-store.js'
 import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
 import { CommandCodeSubscriptionService } from './command-code-subscription.js'
@@ -51,7 +52,7 @@ import { attachmentFileNotice } from '../../shared/attachment-prompts.js'
 import { sessionPromptScope, type SessionPromptAdapter } from '../../dsh-capabilities/host/session-prompt-adapter.js'
 import { createSessionPromptTranslation } from '../features/session-prompt-translation.js'
 
-export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry } = {}): FeatureModule<CodingNsHostServices> {
+export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry; updateCheck?: CliUpdateCheckOptions } = {}): FeatureModule<CodingNsHostServices> {
   return {
     descriptor: {
       name: 'cliAdapters',
@@ -121,6 +122,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         }))
       }
       registry.warmCatalog()
+      const updates = new CliUpdateCheckService(options.updateCheck)
+      context.resources.add(() => updates.dispose())
       // 外部适配器没有经过 DSH 原生 Agent Loop，必须把同一套运行状态投影给
       // subagentCatalog。这里集中去重，避免 llm/stream、原生 session/event 和
       // agent/status 同时到达时反复刷新同一个子 Agent。
@@ -177,10 +180,12 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         const rpcSignal = asRecord(rpcContext)?.signal
         const signal = isAbortSignal(rpcSignal) ? rpcSignal : undefined
         switch (action) {
-          case 'catalog': return registry.catalog()
+          case 'catalog': return registry.catalog().then(catalog => updates.catalog(catalog))
           case 'catalog/refresh': return registry.refreshCatalog(asRecord(payload)?.adapterId === undefined ? undefined : readAdapterId(payload)).then((catalog) => {
             subscriptions = buildSubscriptions(context.services.settings?.get())
-            return catalog
+            return asRecord(payload)?.checkUpdates === true
+              ? updates.refresh(catalog, asRecord(payload)?.adapterId)
+              : updates.catalog(catalog)
           })
           case 'models': {
             const adapterId = readAdapterId(payload)
@@ -545,6 +550,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         sessionStore.dispose()
         // Close native interaction cards before unloading their provider transports.
         lifetime.abort()
+        updates.dispose()
         await registry.dispose()
         await sessionStore.flush()
         setAdapterRegistry(undefined)

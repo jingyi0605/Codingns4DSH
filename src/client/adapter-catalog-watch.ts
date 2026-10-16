@@ -17,7 +17,7 @@ export function subscribeAdapterCatalogChanged(rpc: CodingNsRpcClient, listener:
   return () => { entries.delete(listener) }
 }
 
-/** 只在首轮检测未完成时读取进度；完成即停，没有长期后台轮询。 */
+/** Poll only while installation detection or an explicitly requested release check is pending. */
 export function watchAdapterCatalog(
   rpc: CodingNsRpcClient,
   sessionId: string | undefined,
@@ -49,7 +49,7 @@ export function watchAdapterCatalog(
       if (!active) return
       failures = 0
       onValue(value)
-      if (value.some((entry) => entry.detectionState === 'pending' || entry.detectionState === 'running') && Date.now() - started < 120_000) {
+      if (value.some((entry) => entry.detectionState === 'pending' || entry.detectionState === 'running' || entry.update?.state === 'checking') && Date.now() - started < 120_000) {
         timer = setTimeout(() => { void refresh() }, 1_000)
       }
     } catch (error) {
