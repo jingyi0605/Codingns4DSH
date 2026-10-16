@@ -241,12 +241,25 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   override async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const userContent = await buildClaudeUserContent(input.prompt, input.attachments ?? [], input.translationLanguage)
     this.toolInputStates.delete(input.sessionId)
-    this.usageStates.delete(input.sessionId)
+    const usageState: ClaudeUsageState = {}
+    this.usageStates.set(input.sessionId, usageState)
+    let pendingStepUsage: ClaudeUsageEvent | undefined
     const interaction: ClaudeInteractionState = { write: undefined, pending: new Map(), userContent }
     this.interactions.set(input.sessionId, interaction)
     try {
       // 图片已内联，不能再让文本驱动生成副本或把相同图片作为 @路径发送第二遍。
-      yield* super.executeTurn({ ...input, attachments: (input.attachments ?? []).filter((attachment) => attachment.kind === 'file') })
+      for await (const event of super.executeTurn({ ...input, attachments: (input.attachments ?? []).filter((attachment) => attachment.kind === 'file') })) {
+        if (input.splitToolSteps) {
+          if (event.type === 'usage') pendingStepUsage = event
+          if (event.type === 'tool-event' && (event.status === 'completed' || event.status === 'failed') && pendingStepUsage !== undefined) {
+            // Registry settles this step after the tool result. Its latest usage
+            // must be deducted from the eventual cumulative SDK result exactly once.
+            settleClaudeUsage(usageState, pendingStepUsage)
+            pendingStepUsage = undefined
+          }
+        }
+        yield event
+      }
     } finally {
       this.toolInputStates.delete(input.sessionId)
       this.usageStates.delete(input.sessionId)
@@ -526,6 +539,48 @@ interface ClaudeUsageState {
   modelId?: string
   contextTokens?: number
   contextWindow?: number
+  settled?: ClaudeSettledUsage
+}
+
+interface ClaudeSettledUsage {
+  readonly uncachedInputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+  readonly totalTokens: number
+}
+
+function settleClaudeUsage(state: ClaudeUsageState, usage: ClaudeUsageEvent): void {
+  const previous = state.settled
+  const uncachedInputTokens = usage.uncachedInputTokens ?? usage.inputTokens
+  const cacheReadTokens = usage.cacheReadTokens ?? 0
+  const cacheWriteTokens = usage.cacheWriteTokens ?? 0
+  state.settled = {
+    uncachedInputTokens: (previous?.uncachedInputTokens ?? 0) + uncachedInputTokens,
+    outputTokens: (previous?.outputTokens ?? 0) + usage.outputTokens,
+    cacheReadTokens: (previous?.cacheReadTokens ?? 0) + cacheReadTokens,
+    cacheWriteTokens: (previous?.cacheWriteTokens ?? 0) + cacheWriteTokens,
+    totalTokens: (previous?.totalTokens ?? 0) + (usage.totalTokens ?? uncachedInputTokens + cacheReadTokens + cacheWriteTokens + usage.outputTokens),
+  }
+}
+
+/** Subtract only earlier DSH settlements, using disjoint input/cache buckets. */
+function remainingClaudeUsage(usage: ClaudeUsageEvent, settled: ClaudeSettledUsage): ClaudeUsageEvent {
+  const inputTokens = Math.max(0, (usage.uncachedInputTokens ?? usage.inputTokens) - settled.uncachedInputTokens)
+  const outputTokens = Math.max(0, usage.outputTokens - settled.outputTokens)
+  const cacheReadTokens = Math.max(0, (usage.cacheReadTokens ?? 0) - settled.cacheReadTokens)
+  const cacheWriteTokens = Math.max(0, (usage.cacheWriteTokens ?? 0) - settled.cacheWriteTokens)
+  const fullInputTokens = inputTokens + cacheReadTokens + cacheWriteTokens
+  const { cacheHitRate: _aggregateHitRate, ...rest } = usage
+  return {
+    ...rest, inputTokens, uncachedInputTokens: inputTokens, outputTokens,
+    ...(usage.cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(usage.cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    ...(usage.totalTokens === undefined ? {} : { totalTokens: Math.max(0, usage.totalTokens - settled.totalTokens) }),
+    ...(usage.cacheReadTokens === undefined || fullInputTokens === 0 ? {} : {
+      cacheHitRate: Number((cacheReadTokens / fullInputTokens * 100).toFixed(4)),
+    }),
+  }
 }
 
 /** Keep the current request's context separate from cumulative result billing. */
@@ -564,7 +619,8 @@ function readClaudeUsage(
     // Anthropic input tokens exclude both cache buckets. Result usage sums requests.
     state.contextTokens = parsed.inputTokens + (parsed.cacheReadTokens ?? 0) + (parsed.cacheWriteTokens ?? 0)
   }
-  return enrichClaudeUsage(parsed, state)
+  const usage = value.type === 'result' && state.settled !== undefined ? remainingClaudeUsage(parsed, state.settled) : parsed
+  return enrichClaudeUsage(usage, state)
 }
 
 /** Only provider facts may anchor native usage; catalog hints stay in request/context. */
