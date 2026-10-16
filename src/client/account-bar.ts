@@ -19,6 +19,8 @@ import {
 } from './settings-anchor.js'
 import { readDshPeerHostPrebootShimState } from '../bootstrap/dsh-peer-host-preboot-shim.js'
 import { startSerialPolling } from './serial-polling.js'
+import { sidebarFooterControlStyle } from './sidebar-footer-style.js'
+import { createSidebarFooterIcon } from '../dsh-capabilities/client/sidebar-footer-icon-adapter.js'
 
 const ACCOUNT_ATTRIBUTE = 'data-codingns-account-button'
 const MENU_ATTRIBUTE = 'data-codingns-account-menu'
@@ -483,89 +485,34 @@ function createAccountButton(dom: Document, desktop: boolean): HTMLButtonElement
   const button = dom.createElement('button')
   button.type = 'button'
   button.setAttribute(ACCOUNT_ATTRIBUTE, '')
-  Object.assign(button.style, { position: 'relative', width: '30px', height: '30px', padding: 0, border: '1px solid var(--dsw-alias-border-l2, rgba(255,255,255,.16))', borderRadius: '50%', background: 'var(--dsw-alias-button-elevated-fill, #545557)', color: 'var(--dsw-alias-label-primary, #fff)', cursor: 'pointer', flex: '0 0 30px', boxSizing: 'border-box', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', transition: 'background 140ms ease, border-color 140ms ease, transform 140ms ease', boxShadow: 'var(--dsw-elevation-l1, 0 1px 2px rgba(0,0,0,.12))' })
+  Object.assign(button.style, sidebarFooterControlStyle, { position: 'relative', background: 'transparent', color: dshThemeColor.labelSecondary,
+    cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', transition: 'background 140ms ease, color 140ms ease', boxShadow: 'none' })
   button.addEventListener('mouseenter', () => {
-    button.style.background = 'var(--dsw-alias-button-elevated-hover, var(--dsw-alias-interactive-bg-hover, #66686c))'
-    button.style.borderColor = 'var(--dsw-alias-brand-primary, var(--dsw-alias-border-l2, rgba(255,255,255,.28)))'
-    button.style.transform = 'translateY(-1px)'
+    button.style.background = dshThemeColor.hoverBackground
+    button.style.color = dshThemeColor.labelPrimary
   })
   button.addEventListener('mouseleave', () => {
-    button.style.background = 'var(--dsw-alias-button-elevated-fill, #545557)'
-    button.style.borderColor = 'var(--dsw-alias-border-l2, rgba(255,255,255,.16))'
-    button.style.transform = 'translateY(0)'
+    button.style.background = 'transparent'
+    button.style.color = dshThemeColor.labelSecondary
   })
-  button.addEventListener('focus', () => { button.style.outline = '2px solid var(--dsw-alias-brand-primary, #4aa3ff)'; button.style.outlineOffset = '2px' })
+  button.addEventListener('focus', () => { button.style.outline = `2px solid ${dshThemeColor.accent}`; button.style.outlineOffset = '-2px' })
   button.addEventListener('blur', () => { button.style.outline = 'none' })
   button.append(desktop ? createConnectionIcon(dom) : createAccountIcon(dom))
   const status = dom.createElement('span')
   status.setAttribute('data-codingns-account-status', '')
   status.setAttribute('aria-hidden', 'true')
-  Object.assign(status.style, { position: 'absolute', right: '0px', bottom: '0px', width: '7px', height: '7px', border: '2px solid var(--dsw-specific-sidebar-fill, var(--dsw-alias-bg-primary, #202124))', borderRadius: '50%', background: 'var(--dsw-alias-label-tertiary, #8b8d91)', boxSizing: 'border-box', display: desktop ? 'none' : '' })
+  Object.assign(status.style, { position: 'absolute', right: '4px', bottom: '4px', width: '5px', height: '5px', border: `1px solid ${dshThemeColor.cardBackground}`, borderRadius: '50%', background: dshThemeColor.labelTertiary, boxSizing: 'border-box', display: desktop ? 'none' : '' })
   button.append(status)
   return button
 }
 
 /** Desktop 入口表示跨 Host 连接管理，不再复用用户登录头像。 */
 function createConnectionIcon(dom: Document): SVGSVGElement {
-  const svg = dom.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  svg.setAttribute('width', '17')
-  svg.setAttribute('height', '17')
-  svg.setAttribute('viewBox', '0 0 24 24')
-  svg.setAttribute('fill', 'none')
-  svg.setAttribute('aria-hidden', 'true')
-  svg.style.pointerEvents = 'none'
-  svg.style.overflow = 'visible'
-  const left = dom.createElementNS('http://www.w3.org/2000/svg', 'path')
-  left.setAttribute('d', 'M10 13.8 8.4 15.4a3.4 3.4 0 1 1-4.8-4.8l2.5-2.5a3.4 3.4 0 0 1 4.8 0')
-  left.setAttribute('stroke', 'currentColor')
-  left.setAttribute('stroke-width', '1.8')
-  left.setAttribute('stroke-linecap', 'round')
-  const right = dom.createElementNS('http://www.w3.org/2000/svg', 'path')
-  right.setAttribute('d', 'M14 10.2 15.6 8.6a3.4 3.4 0 1 1 4.8 4.8l-2.5 2.5a3.4 3.4 0 0 1-4.8 0')
-  right.setAttribute('stroke', 'currentColor')
-  right.setAttribute('stroke-width', '1.8')
-  right.setAttribute('stroke-linecap', 'round')
-  const bridge = dom.createElementNS('http://www.w3.org/2000/svg', 'path')
-  bridge.setAttribute('d', 'm8.5 15.5 7-7')
-  bridge.setAttribute('stroke', 'var(--dsw-alias-brand-primary, #4aa3ff)')
-  bridge.setAttribute('stroke-width', '1.8')
-  bridge.setAttribute('stroke-linecap', 'round')
-  svg.append(left, right, bridge)
-  return svg
+  return createSidebarFooterIcon(dom, 'connection')
 }
 
 function createAccountIcon(dom: Document): SVGSVGElement {
-  const svg = dom.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  svg.setAttribute('width', '17')
-  svg.setAttribute('height', '17')
-  svg.setAttribute('viewBox', '0 0 24 24')
-  svg.setAttribute('fill', 'none')
-  svg.setAttribute('aria-hidden', 'true')
-  svg.style.pointerEvents = 'none'
-  svg.style.overflow = 'visible'
-  const badge = dom.createElementNS('http://www.w3.org/2000/svg', 'circle')
-  badge.setAttribute('cx', '12')
-  badge.setAttribute('cy', '12')
-  badge.setAttribute('r', '9.25')
-  badge.setAttribute('fill', 'var(--dsw-alias-brand-primary, #4aa3ff)')
-  badge.setAttribute('fill-opacity', '.2')
-  const ring = dom.createElementNS('http://www.w3.org/2000/svg', 'circle')
-  ring.setAttribute('cx', '12')
-  ring.setAttribute('cy', '12')
-  ring.setAttribute('r', '9.25')
-  ring.setAttribute('stroke', 'var(--dsw-alias-brand-primary, #4aa3ff)')
-  ring.setAttribute('stroke-opacity', '.65')
-  ring.setAttribute('stroke-width', '1')
-  const head = dom.createElementNS('http://www.w3.org/2000/svg', 'circle')
-  head.setAttribute('cx', '12')
-  head.setAttribute('cy', '8')
-  head.setAttribute('r', '3.25')
-  head.setAttribute('fill', 'currentColor')
-  const shoulders = dom.createElementNS('http://www.w3.org/2000/svg', 'path')
-  shoulders.setAttribute('d', 'M5.2 19.2c.6-3.5 3.1-5.4 6.8-5.4s6.2 1.9 6.8 5.4v.55H5.2z')
-  shoulders.setAttribute('fill', 'currentColor')
-  svg.append(badge, ring, head, shoulders)
-  return svg
+  return createSidebarFooterIcon(dom, 'user')
 }
 
 function createMenu(dom: Document): HTMLElement {
