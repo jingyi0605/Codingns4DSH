@@ -8,6 +8,7 @@ import { CODINGNS_VERSION, DSH_VERSION, isDshVersionCompatible } from '../../sha
 import { PeerHostHandshakeService } from '../modules/peer-host/peer-host-handshake.js'
 import { isPeerHostTransientStatus, PeerHostSessionService } from '../modules/peer-host/peer-host-session.js'
 import { PeerHostHttpProxyService } from '../modules/peer-host/host-api-proxy-service.js'
+import { createQuickAppPeerGateway } from '../modules/peer-host/quick-app-gateway.js'
 import {
   EncryptedFilePeerHostCredentialStore,
   FilePeerHostRecordStore,
@@ -287,6 +288,11 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
         if ([404, 405, 501].includes(response.status)) throw new CodingNsRpcError('UNSUPPORTED_CAPABILITY', '远端不支持会话通知来源协议')
         return readNativeRpcEnvelope(response.body)
       }
+      const quickAppPeerGateway = createQuickAppPeerGateway(store, httpProxy, localHostId)
+      ;(context.services as { quickAppPeerGateway?: typeof quickAppPeerGateway }).quickAppPeerGateway = quickAppPeerGateway
+      context.resources.add(() => {
+        if (context.services.quickAppPeerGateway === quickAppPeerGateway) delete (context.services as { quickAppPeerGateway?: typeof quickAppPeerGateway }).quickAppPeerGateway
+      })
       const assistantGateway = {
         async validateNotificationTarget(target: AssistantNotificationTarget): Promise<boolean> {
           if (target.hostId === localHostId) return false

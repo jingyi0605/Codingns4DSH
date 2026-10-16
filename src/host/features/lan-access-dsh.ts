@@ -18,7 +18,7 @@ export function createLanAccessDshFeature(options: { runtime?: LanAccessDshRunti
     },
     async start(context) {
       const runtime = options.runtime ?? createNodeLanAccessDshRuntime(context.services.dshWebPort)
-      const proxy = new LanAccessDshProxy(runtime, context.services.dshWebAuthenticatedUrl)
+      const proxy = new LanAccessDshProxy(runtime, context.services.dshWebAuthenticatedUrl, undefined, context.services.quickAppLanTransport)
       const settings = context.services.settings
       // PWA 资产不缓存字节之外的任何状态：设置变化通过 provider 的键检测即时生效。
       proxy.setPwaProvider(createLanAccessDshPwaProvider({

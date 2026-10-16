@@ -3,6 +3,7 @@
  * 路由命中只表示允许使用 Host 票据；目标端仍必须验证签名、有效期与撤销状态。
  */
 export const PEER_HOST_HTTP_PROXY_RULES = [
+  { prefix: '/api/codingns/quickApps/remote', methods: ['POST'], exact: true },
   { prefix: '/api/codingns/host/status', methods: ['POST'] },
   // 仅开放只读的会话通知事实源，不放行助理配置、派发或审批动作。
   { prefix: '/api/codingns/assistant/notifications/source', methods: ['POST'] },
