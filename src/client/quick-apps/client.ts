@@ -1,0 +1,40 @@
+import type { CodingNsRpcClient } from '../features/types.js'
+import type { QuickAppDocument } from '../../shared/contracts/quick-apps.js'
+
+/** The controlling Host keeps metadata; no active conversation or browser storage is consulted. */
+export class QuickAppsClient {
+  private generation = 0
+  private launchId: string | undefined
+  constructor(private readonly rpc: CodingNsRpcClient) {}
+  async call<T>(action: string, payload: unknown = {}): Promise<T> {
+    // Embedding choice is checked against operator configuration; it never grants file access.
+    const uiOrigin = typeof location === 'object' ? location.origin : undefined
+    const input = (action === 'list' || action === 'launch') && uiOrigin ? { ...(payload as object), uiOrigin } : payload
+    const result = await this.rpc.call('codingns', `quickApps/${action}`, input)
+    if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
+    return result.value as T
+  }
+  async open(id: string): Promise<QuickAppView | undefined> {
+    const closing = this.close()
+    const generation = this.generation
+    await closing
+    if (generation !== this.generation) return undefined
+    const result = await this.call<QuickAppView>('launch', { id })
+    if (generation !== this.generation) {
+      if (result.launchId) await this.call('close', { id: result.launchId })
+      return undefined
+    }
+    if (result.launchId) this.launchId = result.launchId
+    return result
+  }
+  async close(): Promise<void> {
+    this.generation++
+    const id = this.launchId
+    this.launchId = undefined
+    if (id) await this.call('close', { id })
+  }
+}
+
+// Optional document fields keep old read-only Hosts viewable during an incremental upgrade.
+export type QuickAppView = ({ kind: 'text'; title: string; content: string; launchId?: string; expiresAt?: number } & Partial<Omit<QuickAppDocument, 'content'>>)
+  | { kind: 'html'; url: string; origin: string; launchId: string; expiresAt: number; isolation?: 'lan-port' | 'sandbox-proxy'; basePath?: string }

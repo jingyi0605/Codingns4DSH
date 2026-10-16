@@ -8,10 +8,11 @@ import { python } from '@codemirror/lang-python'
 import { sql } from '@codemirror/lang-sql'
 
 /** 叶子引擎只依赖 CodeMirror；预览控制器在用户点击编辑后才加载本模块。 */
-export function createFileEditor(parent: HTMLElement, content: string, path: string): EditorView {
+export function createFileEditor(parent: HTMLElement, content: string, path: string, onChange?: (content: string) => void): EditorView {
   const language = editorLanguageForPath(path)
   const extensions = [basicSetup, editorTheme, EditorView.lineWrapping]
   if (language !== undefined) extensions.push(language)
+  if (onChange) extensions.push(EditorView.updateListener.of(update => { if (update.docChanged) onChange(update.state.doc.toString()) }))
   return new EditorView({ doc: content, extensions, parent })
 }
 

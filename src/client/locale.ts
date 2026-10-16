@@ -16,6 +16,7 @@ import * as voiceModelsDictionary from './locales/voiceModels.js'
 import * as assistantTtsDictionary from './locales/assistantTts.js'
 import * as assistantWorkbenchDictionary from './locales/assistantWorkbench.js'
 import * as subagentCollapsedDictionary from './locales/subagentCollapsed.js'
+import * as quickAppsDictionary from './locales/quickApps.js'
 import * as cliManagementDictionary from './locales/cliManagement.js'
 
 /** Codingns4DSH 自有词典命名空间。词典缺少的语言由 DSH 自动回退到英文。 */
@@ -953,6 +954,7 @@ const en: Record<string, string> = {
   ...terminalAuthDictionary.en,
   ...panelsDictionary.en,
   ...subagentCollapsedDictionary.en,
+  ...quickAppsDictionary.en,
   ...cliManagementDictionary.en,
 }
 
@@ -972,6 +974,7 @@ const zh: Record<string, string> = {
   ...terminalAuthDictionary.zh,
   ...panelsDictionary.zh,
   ...subagentCollapsedDictionary.zh,
+  ...quickAppsDictionary.zh,
   ...cliManagementDictionary.zh,
 }
 

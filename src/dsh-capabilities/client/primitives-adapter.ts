@@ -1,9 +1,19 @@
 import * as primitives from '@deepseek-ai/dsh-client-ui-primitives'
-import { createElement, type ComponentType } from 'react'
+import { createElement, type ComponentType, type ComponentProps, type ReactNode } from 'react'
 
 /** 富文本菜单沿用宿主的键盘导航、焦点归还和外部点击关闭行为。 */
 export { Menu as DshMenu } from '@deepseek-ai/dsh-client-ui-primitives'
 export { Button as DshButton, Checkbox as DshCheckbox, Input as DshInput, Modal as DshModal } from '@deepseek-ai/dsh-client-ui-primitives'
+export { FileTypeIcon as DshFileTypeIcon, classifyFileType as classifyDshFileType, IconFolderCloseRegular as DshFolderIcon } from '@deepseek-ai/dsh-client-ui-primitives'
+export { PathLabel as DshPathLabel, Tooltip as DshTooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+
+/** Older primitive packages may lack Markdown delegation. Do not fail the whole footer. */
+export function hasNativeMarkdown(source: object = primitives): boolean {
+  const value = source as Partial<typeof primitives>
+  return value.MarkdownText !== undefined && typeof value.MarkdownDelegateProvider === 'function'
+}
+export const DshMarkdownText = primitives.MarkdownText ?? (({ text }: ComponentProps<typeof primitives.MarkdownText>) => createElement('pre', null, text))
+export const DshMarkdownDelegate = primitives.MarkdownDelegateProvider ?? (({ children }: { children: ReactNode }) => createElement('div', null, children))
 
 type IconComponent = ComponentType<{ readonly size?: number; readonly className?: string }>
 type ShortcutKeysComponent = ComponentType<{ readonly keys: readonly string[] }>
@@ -41,6 +51,8 @@ type PrimitiveExports = typeof primitives & {
   readonly IconStopFillMedium?: IconComponent
   readonly IconPhoneOutlineRegular?: IconComponent
   readonly IconPhoneOutlineMedium?: IconComponent
+  readonly IconWrapFillRegular?: IconComponent
+  readonly IconNowrapFillRegular?: IconComponent
   readonly ShortcutKeys?: ShortcutKeysComponent
 }
 
@@ -93,6 +105,20 @@ export function resolveChevronDownIcon(): IconComponent {
 export function resolveRefreshIcon(): IconComponent {
   const value = primitives as PrimitiveExports
   return value.IconRefreshOutlineRegular ?? value.IconRefreshOutlineMedium ?? unavailableIcon
+}
+
+/** Document toolbar glyphs shared with the native text preview. */
+export function resolveTextWrapIcon(wrapped: boolean): IconComponent {
+  const value = primitives as PrimitiveExports
+  return (wrapped ? value.IconNowrapFillRegular : value.IconWrapFillRegular) ?? unavailableIcon
+}
+
+/** Native viewer controls; keep optional glyph compatibility at the adapter boundary. */
+export function resolveViewerIcon(name: 'edit' | 'save' | 'fullscreen' | 'restore' | 'back' | 'home'): IconComponent {
+  const icons = primitives as unknown as Record<string, IconComponent | undefined>
+  const key = { edit: 'IconEditOutlineRegular', save: 'IconCheckOutlineRegular', fullscreen: 'IconFullscreenOutlineRegular',
+    restore: 'IconFullscreenOutlineRegular', back: 'IconChevronLeftOutlineRegular', home: 'IconFileOutlineRegular' }[name]
+  return icons[key] ?? resolveRefreshIcon()
 }
 
 /** 终端工具栏入口使用的原生工具图标。 */

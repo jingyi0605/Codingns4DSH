@@ -10,6 +10,7 @@ import { mobileAccessFeature } from './mobile-access.js'
 import { debugFeature } from './debug.js'
 import { gitManagementFeature } from '../git-management.js'
 import { fileManagementFeature } from './file-management.js'
+import { quickAppsFeature } from './quick-apps.js'
 import { peerHostFeature } from './peer-host.js'
 import { globalVoiceAssistantFeature } from './global-voice-assistant.js'
 import { subagentCollapsedLineageFeature } from './subagent-collapsed-lineage.js'
@@ -28,6 +29,7 @@ export const CLIENT_FEATURES: readonly CodingNsClientFeatureModule[] = [
   debugFeature,
   gitManagementFeature,
   fileManagementFeature,
+  quickAppsFeature,
   peerHostFeature,
   globalVoiceAssistantFeature,
   subagentCollapsedLineageFeature,
