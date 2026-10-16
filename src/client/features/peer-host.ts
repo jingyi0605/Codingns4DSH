@@ -447,6 +447,8 @@ export function createPeerHostPageTransport(
     return method === 'session/modelCatalog' && !containsResourceId(value) ? navigationScope() : undefined
   }
   const scopeForPluginRequest = (endpoint: string, value: unknown): HostScope | undefined => {
+    // Agent installation is scoped to the settings Host, never foreground navigation.
+    if (endpoint.startsWith('cli/management/')) return undefined
     // 设置页明确选择本机时，不能让无会话的目录查询跟随前台远端工作区。
     if ((endpoint === 'cli/catalog' || endpoint === 'cli/models' || endpoint === 'cli/catalog/refresh')
       && asRecord(value)?.catalogHostId === 'local') return undefined

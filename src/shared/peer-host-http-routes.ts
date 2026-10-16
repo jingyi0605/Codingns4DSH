@@ -30,6 +30,8 @@ export const PEER_HOST_HTTP_PROXY_RULES = [
 
 /** 按完整路径段匹配，不能让 debug-admin 等相似前缀借用调试授权。 */
 export function isPeerHostHttpRoute(method: string, path: string): boolean {
+  // Installation changes are local settings operations, not delegated workspace RPCs.
+  if (path === '/api/codingns/cli/management' || path.startsWith('/api/codingns/cli/management/')) return false
   const route = PEER_HOST_HTTP_PROXY_RULES.find(candidate => ('exact' in candidate && candidate.exact === true)
     ? path === candidate.prefix
     : path === candidate.prefix || path.startsWith(`${candidate.prefix}/`))

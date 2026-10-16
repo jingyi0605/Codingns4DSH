@@ -19,7 +19,7 @@ export function createCliSettingsRpc(rpc: CodingNsRpcClient, peerHostId: string 
       const method = channel === CODINGNS_RPC_CHANNEL ? endpoint : channel === '/api' ? endpoint.replace(/^codingns\//u, '') : ''
       if (peerHostId === null) {
         // 聚合 Transport 识别此字段，设置页的本机目录不会跟随远端前台导航。
-        const input = CATALOG_ENDPOINTS.has(method) ? { ...asRecord(payload), catalogHostId: 'local' } : payload
+        const input = CATALOG_ENDPOINTS.has(method) || method.startsWith('cli/management/') ? { ...asRecord(payload), catalogHostId: 'local' } : payload
         return rpc.call(channel, endpoint, input, signal)
       }
       // 远端设置页仅支持目录查询与检测刷新，禁止把本机启用开关转发出去。

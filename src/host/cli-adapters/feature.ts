@@ -17,6 +17,7 @@ import { QoderCliDriver } from './qoder-driver.js'
 import { AntigravityDriver } from './antigravity-driver.js'
 import { DoubaoAppDriver } from './doubao-driver.js'
 import { CodingNsCliAdapterRegistry } from './registry.js'
+import { CliManagementService } from './management.js'
 import { CliUpdateCheckService, type CliUpdateCheckOptions } from './update-check.js'
 import { CodingNsCliSessionStore } from './session-store.js'
 import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
@@ -122,6 +123,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         }))
       }
       registry.warmCatalog()
+      const management = new CliManagementService(registry)
+      context.resources.add(() => management.dispose())
       const updates = new CliUpdateCheckService(options.updateCheck)
       context.resources.add(() => updates.dispose())
       // 外部适配器没有经过 DSH 原生 Agent Loop，必须把同一套运行状态投影给
@@ -180,6 +183,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         const rpcSignal = asRecord(rpcContext)?.signal
         const signal = isAbortSignal(rpcSignal) ? rpcSignal : undefined
         switch (action) {
+          case 'management/plan':
+          case 'management/start':
+          case 'management/status':
+          case 'management/cancel': return management.rpc(action, payload)
           case 'catalog': return registry.catalog().then(catalog => updates.catalog(catalog))
           case 'catalog/refresh': return registry.refreshCatalog(asRecord(payload)?.adapterId === undefined ? undefined : readAdapterId(payload)).then((catalog) => {
             subscriptions = buildSubscriptions(context.services.settings?.get())
@@ -551,6 +558,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         // Close native interaction cards before unloading their provider transports.
         lifetime.abort()
         updates.dispose()
+        await management.dispose()
         await registry.dispose()
         await sessionStore.flush()
         setAdapterRegistry(undefined)

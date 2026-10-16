@@ -1,0 +1,49 @@
+import { spawn } from 'node:child_process'
+import { homedir } from 'node:os'
+import { stripVTControlCharacters } from 'node:util'
+import { commandEnvironment, resolveCommandPath, terminateChildProcess, windowsShellInvocation, WINDOWS } from './process-utils.js'
+import type { ManagementCommand } from './management-methods.js'
+
+export type ManagementRunner = (command: ManagementCommand, signal: AbortSignal, onOutput: (text: string) => void) => Promise<number | null>
+
+/** Run a fixed publisher command without an interactive shell or privilege escalation. */
+export const runManagementCommand: ManagementRunner = async (command, signal, onOutput) => {
+  signal.throwIfAborted()
+  const file = await resolveCommandPath(command.file)
+  if (file === null) throw new Error(`Required command is unavailable: ${command.file}. Install the prerequisite and try again.`)
+  signal.throwIfAborted()
+  const batch = WINDOWS && /\.(?:cmd|bat)$/iu.test(file)
+  const invocation = batch ? windowsShellInvocation(file, command.args) : { command: file, args: command.args }
+  return new Promise((resolve, reject) => {
+    const child = spawn(invocation.command, [...invocation.args], {
+      cwd: homedir(), env: { ...commandEnvironment(file), NO_COLOR: '1', FORCE_COLOR: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+      detached: !WINDOWS, ...(batch ? { windowsVerbatimArguments: true } : {}),
+    })
+    const stop = (): void => {
+      if (!WINDOWS && child.pid !== undefined) {
+        try { process.kill(-child.pid, 'SIGKILL'); return } catch { /* Fall back if the process group has already exited. */ }
+      }
+      terminateChildProcess(child, 'SIGKILL')
+    }
+    const output = (chunk: string): void => onOutput(chunk)
+    child.stdout.setEncoding('utf8').on('data', output)
+    child.stderr.setEncoding('utf8').on('data', output)
+    signal.addEventListener('abort', stop, { once: true })
+    if (signal.aborted) stop()
+    child.once('error', reject)
+    child.once('close', (code) => {
+      signal.removeEventListener('abort', stop)
+      resolve(code)
+    })
+  })
+}
+
+/** Apply redaction to the whole bounded buffer so chunk boundaries cannot split a secret. */
+export function managementOutput(text: string): string {
+  return stripVTControlCharacters(text)
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/giu, '$1[redacted]@')
+    .replace(/((?:authorization|token|api[_-]?key|password)\s*[:=]\s*)(?:Bearer\s+)?[^\s,;]+/giu, '$1[redacted]')
+    .replace(/\b(?:sk|ghp|gho|npm)_[A-Za-z0-9_-]{12,}\b|\bsk-[A-Za-z0-9_-]{12,}\b/gu, '[redacted]')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/gu, '')
+}

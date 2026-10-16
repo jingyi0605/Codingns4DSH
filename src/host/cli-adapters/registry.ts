@@ -79,7 +79,8 @@ export class CodingNsCliAdapterRegistry {
   private readonly providerProbeTimeoutMs: number
   private readonly providerProbeConcurrency: number
   private readonly probes = new Map<string, Promise<void>>()
-  private readonly executingSessions = new Set<string>()
+  private readonly executingSessions = new Map<string, CodingNsCliAdapterId>()
+  private readonly maintenanceAdapters = new Set<string>()
   private readonly archivingSessions = new Set<string>()
   private readonly detectionCache = new Map<CodingNsCliAdapterId, CacheEntry<CodingNsCliDetection>>()
   private readonly detectionRefreshes = new Map<CodingNsCliAdapterId, Promise<CodingNsCliDetection>>()
@@ -224,6 +225,19 @@ export class CodingNsCliAdapterRegistry {
       this.invalidateModelCache(driver.descriptor.id)
     }))
     return this.catalog()
+  }
+
+  /** Serialize installation changes against active and suspended Agent turns. */
+  beginMaintenance(adapterId: string): () => void {
+    if (this.disposed) throw new CodingNsRpcError('CODINGNS_CLI_MANAGEMENT_UNAVAILABLE', 'The Agent registry is stopped.')
+    this.requireDriver(adapterId)
+    if (this.maintenanceAdapters.has(adapterId)
+      || [...this.executingSessions.values()].includes(adapterId)
+      || [...this.segmentedTurns.values()].some((turn) => turn.adapterId === adapterId)) {
+      throw new CodingNsRpcError('CODINGNS_CLI_MANAGEMENT_BUSY', 'Wait for this Agent to finish its active tasks before installing or updating it.')
+    }
+    this.maintenanceAdapters.add(adapterId)
+    return () => { this.maintenanceAdapters.delete(adapterId) }
   }
 
   async models(adapterId: CodingNsCliAdapterId): Promise<CodingNsCliModelCatalog> {
@@ -511,8 +525,13 @@ export class CodingNsCliAdapterRegistry {
 
   /** 供原生 Subagent Provider 执行首轮；不创建普通外部会话索引。 */
   async *runSubagentTurn(input: CodingNsCliTurnInput & { readonly adapterId: CodingNsCliAdapterId }): AsyncIterable<CodingNsAgentEvent> {
+    if (this.maintenanceAdapters.has(input.adapterId) || this.executingSessions.has(input.sessionId)) {
+      throw new CodingNsRpcError('CODINGNS_CLI_MANAGEMENT_BUSY', 'This Agent or session is already busy.')
+    }
     const driver = this.requireEnabledDriver(input.adapterId)
-    yield* driver.executeTurn(input)
+    this.executingSessions.set(input.sessionId, input.adapterId)
+    try { yield* driver.executeTurn(input) }
+    finally { this.executingSessions.delete(input.sessionId) }
   }
 
   /** 子会话 Provider 绑定完成后立即落盘，确保冷恢复不会丢失适配器身份。 */
@@ -521,6 +540,9 @@ export class CodingNsCliAdapterRegistry {
   }
 
   async *execute(input: CodingNsCliTurnInput & { readonly adapterId: CodingNsCliAdapterId }): AsyncIterable<CodingNsAgentEvent> {
+    if (this.maintenanceAdapters.has(input.adapterId)) {
+      throw new CodingNsRpcError('CODINGNS_CLI_MANAGEMENT_BUSY', 'This Agent is being installed or updated. Wait for it to finish.')
+    }
     const driver = this.requireEnabledDriver(input.adapterId)
     if (this.archivingSessions.has(input.sessionId)) {
       throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', '外部会话正在归档，不能开始新一轮执行')
@@ -528,7 +550,7 @@ export class CodingNsCliAdapterRegistry {
     if (this.executingSessions.has(input.sessionId)) {
       throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', '外部会话已有一轮执行正在进行')
     }
-    this.executingSessions.add(input.sessionId)
+    this.executingSessions.set(input.sessionId, input.adapterId)
     const previous = this.sessions.get(input.sessionId)
     if (previous !== undefined && previous.adapterId !== input.adapterId) this.lastUsages.delete(input.sessionId)
     let current = {
