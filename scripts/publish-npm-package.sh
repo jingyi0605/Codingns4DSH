@@ -220,8 +220,9 @@ run_checks_and_build() {
 
   echo "==> 执行类型检查"
   pnpm run typecheck
-  echo "==> 执行完整测试（测试流程会重新构建）"
-  pnpm test
+  echo "==> Running full tests (counts and progress only; tests rebuild the package)"
+  # Scope the reporter to packaging and preserve any existing Node options.
+  NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--test-reporter=\"$ROOT_DIR/scripts/test-progress-reporter.mjs\"" pnpm test
 }
 
 create_tarball() {
