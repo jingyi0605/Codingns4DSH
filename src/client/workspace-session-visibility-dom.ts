@@ -6,6 +6,7 @@ import {
   type WorkspaceRecord,
 } from './workspace-session-archive-dom.js'
 import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
+import type { NativeWorkspaceSnapshot } from './native-workspace-store.js'
 
 /** 工作区隐藏注入节点的标记，便于重复扫描和停用时完整清理。 */
 export const WORKSPACE_SESSION_HIDDEN_ATTRIBUTE = 'data-codingns-hidden-workspace'
@@ -35,6 +36,8 @@ export interface WorkspaceSessionVisibilityDomOptions {
   readonly document?: Document
   readonly MutationObserver?: typeof MutationObserver
   readonly remote?: unknown
+  /** Read names from the sidebar store, including projected remote workspaces. */
+  readonly readNativeWorkspaceSnapshot?: () => NativeWorkspaceSnapshot | undefined
   readonly hiddenWorkspaceIds?: readonly string[]
   /** 持久化由功能模块完成；回调失败时控制器会恢复上一次可见状态。 */
   readonly onHiddenWorkspaceIdsChange?: (ids: readonly string[]) => Promise<void> | void
@@ -57,7 +60,7 @@ export function startWorkspaceSessionVisibilityDom(
   const remote = options.remote
   const t = resolveCodingNsTranslator(options.locale)
   let hiddenWorkspaceIds = new Set(normalizeIds(options.hiddenWorkspaceIds ?? []))
-  let workspaces: readonly WorkspaceRecord[] = []
+  let fallbackWorkspaces: readonly WorkspaceRecord[] = []
   let disposed = false
   let scanQueued = false
   let loading: Promise<void> | undefined
@@ -91,14 +94,14 @@ export function startWorkspaceSessionVisibilityDom(
   }
 
   const refreshData = async (): Promise<void> => {
-    if (disposed) return
+    if (disposed || options.readNativeWorkspaceSnapshot?.() !== undefined) return
     if (loading !== undefined) {
       await loading
       return
     }
     loading = loadWorkspaceRecords(remote).then((next) => {
       if (disposed) return
-      workspaces = next
+      fallbackWorkspaces = next
       scan()
     }).catch(() => undefined).finally(() => {
       loading = undefined
@@ -112,6 +115,7 @@ export function startWorkspaceSessionVisibilityDom(
     try {
       clearHiddenWorkspaceNodes(dom)
       if (!showHiddenWorkspaces) removeVisibilityEntries(dom)
+      const workspaces = options.readNativeWorkspaceSnapshot?.()?.items ?? fallbackWorkspaces
       const headers = findWorkspaceHeaders(dom)
       const workspaceIds = new Set(workspaces.map((workspace) => workspace.workspaceId))
       for (const header of headers) {
@@ -496,7 +500,7 @@ function applyNativeMenuItemStyle(action: HTMLElement, menu: HTMLElement): void 
 function injectHiddenWorkspaceFooter(
   dom: Pick<Document, 'body' | 'querySelectorAll' | 'createElement'>,
   headers: readonly HTMLElement[],
-  workspaces: readonly WorkspaceRecord[],
+  workspaces: readonly Pick<WorkspaceRecord, 'workspaceId' | 'title' | 'path'>[],
   hiddenWorkspaceIds: ReadonlySet<string>,
   onRestore: (workspaceId: string) => void,
   t: CodingNsTranslator,
@@ -505,7 +509,7 @@ function injectHiddenWorkspaceFooter(
   for (const header of headers) {
     const workspaceId = resolveWorkspaceId(header)
     if (workspaceId !== undefined && !recordsById.has(workspaceId)) {
-      recordsById.set(workspaceId, { workspaceId, title: workspaceId, sessionIds: [], archivedSessionIds: [] })
+      recordsById.set(workspaceId, { workspaceId, title: workspaceId })
     }
   }
   // 新近隐藏的工作区排在前面，恢复入口更符合用户刚刚完成的操作顺序。

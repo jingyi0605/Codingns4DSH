@@ -48,6 +48,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
     let visibilityDom: WorkspaceSessionVisibilityDomController | undefined
     let rightbarDom: WorkspaceSessionRightbarDomController | undefined
     let disposeAdapterRefresh: (() => void) | undefined
+    let disposeVisibilityRefresh: (() => void) | undefined
     let disposeSubscription: (() => void) | undefined
     let disposeQuickPhrases: (() => void) | undefined
     let disposeSkillCommand: (() => void) | undefined
@@ -80,6 +81,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
       if (visibilityDom === undefined) {
         visibilityDom = startWorkspaceSessionVisibilityDom({
           remote: context.services.remote,
+          readNativeWorkspaceSnapshot: () => readNativeWorkspaceSnapshot(context.services.uiContext),
           hiddenWorkspaceIds,
           locale: context.services.locale,
           onHiddenWorkspaceIdsChange: async (ids) => {
@@ -90,11 +92,15 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
             }])
           },
         })
+        disposeVisibilityRefresh = readNativeWorkspaceListStore(context.services.uiContext)
+          ?.subscribe(() => visibilityDom?.refresh())
         return
       }
       visibilityDom.setHiddenWorkspaceIds(hiddenWorkspaceIds)
     }
     const disableWorkspaceVisibility = (): void => {
+      disposeVisibilityRefresh?.()
+      disposeVisibilityRefresh = undefined
       visibilityDom?.dispose()
       visibilityDom = undefined
     }
