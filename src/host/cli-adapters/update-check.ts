@@ -184,7 +184,7 @@ export class CliUpdateCheckService {
       if (['pi', 'codebuddy', 'claude-code', 'codex', 'gemini'].includes(check.adapter.id) && check.adapter.command) {
         const command = await (this.options.resolveCommand ?? resolveManagementInstallation)(check.adapter.command, managementNpmPackage(check.adapter))
         signal.throwIfAborted()
-        if (command) check.source = agentReleaseSource({ ...check.adapter, command }, this.options.platform ?? process.platform, this.options.arch ?? process.arch)
+        if (command || check.adapter.id === 'codex') check.source = agentReleaseSource({ ...check.adapter, command }, this.options.platform ?? process.platform, this.options.arch ?? process.arch)
       }
       if (!check.source) {
         check.update = { ...check.update, state: 'unavailable', reason: 'no-release-source', checkedAt: new Date().toISOString() }

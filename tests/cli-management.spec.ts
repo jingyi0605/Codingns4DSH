@@ -150,7 +150,7 @@ test('Codex versioned packages retain the active standalone launcher after resol
   const binary = join(home, 'packages/standalone/releases/0.163.0-aarch64-apple-darwin/bin/codex')
   const launcher = join(directory, 'codex')
   await mkdir(join(binary, '..'), { recursive: true }); await mkdir(directory)
-  await writeFile(binary, '#!/bin/sh\nexit 99\n', { mode: 0o755 })
+  await writeFile(binary, Buffer.from([0xcf, 0xfa, 0xed, 0xfe]), { mode: 0o755 })
   await symlink(binary, launcher)
   const environment = { CODEX_INSTALL_DIR: directory, CODEX_HOME: home }
   assert.equal(await resolveManagementInstallation(launcher, '@openai/codex', environment), launcher)

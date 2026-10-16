@@ -47,7 +47,7 @@ export class CliManagementService {
     const resolved = action === 'update' && adapter.command
       ? await (this.options.resolveCommand ?? ((command: string) => resolveManagementInstallation(command, AGENT_MANAGEMENT_DEFINITIONS[adapter.id]?.npm)))(adapter.command) : null
     this.assertAvailable()
-    const installation = resolved ? { ...adapter, command: resolved } : adapter
+    const installation = action === 'update' ? { ...adapter, command: resolved } : adapter
     const { sourceUrl, methods } = managementMethods(installation, action, platform, this.options.arch ?? process.arch)
     const automaticMethodId = action === 'update' ? automaticUpdateMethod(installation, methods, platform) : methods.find(method => method.executable)?.id
     const publicMethods = methods.map(({ invocation: _invocation, ...method }) => method)

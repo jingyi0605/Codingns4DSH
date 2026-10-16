@@ -1,4 +1,4 @@
-import { readFile, realpath, stat } from 'node:fs/promises'
+import { open, readFile, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { resolveCommandPath } from './process-utils.js'
@@ -18,16 +18,16 @@ export function codexStandaloneDirectory(command: string, platform: NodeJS.Platf
 
 /** Retain the npm owner when its launcher resolves into a separate binary package. */
 export async function resolveManagementInstallation(command: string, packageName?: string, environment: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  return resolveInstallation(command, packageName, environment, new Set())
+}
+
+async function resolveInstallation(command: string, packageName: string | undefined, environment: NodeJS.ProcessEnv, visited: Set<string>): Promise<string | null> {
   const launcher = await resolveCommandPath(command)
   if (launcher === null) return null
   const target = await realpath(launcher).catch(() => launcher)
+  if (visited.has(target) || visited.size >= 8) return null
+  visited.add(target)
   if (!packageName) return target
-  if (packageName === '@openai/codex') {
-    const directory = codexStandaloneDirectory(target, process.platform, environment)
-    const entry = directory && join(directory, 'codex')
-    // Keep the active launcher only if it points to this release. Never redirect a custom installation.
-    if (entry && await realpath(entry).catch(() => null) === target) return entry
-  }
   const normalizedTarget = target.replaceAll('\\', '/')
   const brewPackage = normalizedTarget.match(/\/(?:Cellar|Caskroom)\/([^/]+)\//u)?.[1]
   if ((brewPackage && !/^node(?:@\d+)?$/u.test(brewPackage)) || /\.app\/Contents\/|\/resources\/app(?:\.asar)?\//iu.test(normalizedTarget)) return target
@@ -65,7 +65,40 @@ export async function resolveManagementInstallation(command: string, packageName
       }
     } catch { /* Missing or unrelated metadata is not evidence of package ownership. */ }
   }
-  return target
+  if (packageName === '@openai/codex' && process.platform !== 'win32') {
+    try {
+      const script = await readExecutableScript(target)
+      if (script !== undefined) {
+        const wrapped = codexWrapperTarget(script)
+        return wrapped ? resolveInstallation(wrapped, packageName, environment, visited) : null
+      }
+    } catch { return null }
+    const directory = codexStandaloneDirectory(target, process.platform, environment)
+    const entry = directory && join(directory, 'codex')
+    // Keep the active launcher only if it points to this release. Never redirect a custom installation.
+    if (entry && await realpath(entry).catch(() => null) === target) return entry
+  }
+  // A wrapper needs verified ownership; an arbitrary exec target must not select an updater.
+  return visited.size === 1 ? target : null
+}
+
+/** Inspect a literal terminal exec without evaluating the wrapper or sourcing its environment files. */
+function codexWrapperTarget(script: string): string | undefined {
+  if (!/^#![ \t]*(?:\/bin\/(?:ba|da|k|z)?sh|\/usr\/bin\/env[ \t]+(?:ba|da|k|z)?sh)[ \t]*\r?\n/u.test(script)) return undefined
+  const lines = script.split(/\r?\n/u).map(line => line.trim()).filter(line => line && !line.startsWith('#'))
+  if (lines.filter(line => /^exec[ \t]/u.test(line)).length !== 1) return undefined
+  const match = lines.at(-1)?.match(/^exec[ \t]+(?:'([^']+)'|"([^"$`\\]+)"|([/\w@+=,:.-]+))(?:[ \t]+--[\w-]+(?:=[\w.-]+)?)*[ \t]+"\$@"$/u)
+  const target = match?.[1] ?? match?.[2] ?? match?.[3]
+  return target && isAbsolute(target) && /^(?:codex|codex\.js)$/u.test(basename(target)) ? target : undefined
+}
+
+async function readExecutableScript(path: string): Promise<string | undefined> {
+  const file = await open(path, 'r')
+  try {
+    const header = Buffer.alloc(2)
+    await file.read(header, 0, header.length, 0)
+    return header.toString() === '#!' ? await readSmallFile(path) : undefined
+  } finally { await file.close() }
 }
 
 async function readSmallFile(path: string): Promise<string> {
