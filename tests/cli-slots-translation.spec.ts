@@ -53,6 +53,34 @@ function createProbe(adapterId = 'dsh', options: { readDefault?: () => boolean |
 let nextSessionId = 0
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
 
+test('Agent catalog failures remain visible and a retry restores the external Agents', async () => {
+  const probe = createProbe()
+  const call = probe.rpc.call
+  let catalogRequests = 0
+  probe.rpc.call = async (channel, endpoint, payload) => {
+    if (endpoint === 'cli/catalog' && ++catalogRequests === 1) throw new Error('Host unavailable')
+    return call(channel, endpoint, payload)
+  }
+  const slot = probe.registered.get('codingns4dsh-agent')!
+  const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
+  try {
+    renderer.render()
+    await flush()
+    elementWhere(renderer.render(), element => element.type === 'button')!.props.onClick()
+    const failed = renderer.render()
+    assert.ok(elementWhere(failed, element => element.props.role === 'alert'))
+    assert.ok(elementWhere(failed, element => element.key === 'dsh'))
+    const retry = elementWhere(failed, element => element.type === 'button' && element.props.children === t('cli.retryCatalog'))!
+    retry.props.onClick()
+    renderer.render()
+    await flush()
+    const recovered = renderer.render()
+    assert.equal(catalogRequests, 2)
+    assert.equal(elementWhere(recovered, element => element.props.role === 'alert'), undefined)
+    assert.ok(elementWhere(recovered, element => element.key === 'gemini'))
+  } finally { renderer.dispose(); probe.dispose() }
+})
+
 test('pending translation follows the native default and per-session switches for native and external agents', async () => {
   setNativeTranslationDefaultReader(() => true)
   try {
