@@ -308,14 +308,17 @@ test('订阅重置清理当前账号的所有模型缓存，并保留其他账�
   assert.equal(cache.size, 2)
 })
 
-test('设置页 Agent 列表复用 Provider Logo，并在移动端拆成名称与元数据两行', async () => {
+test('Agent settings reuse provider logos and keep compact rows responsive', async () => {
   const source = await readFile(join(projectRoot, 'src/client/features/cli-adapters.ts'), 'utf8')
   assert.match(source, /import \{ providerIconUrl \} from '\.\.\/provider-icons\.js'/u)
   assert.match(source, /className: cliAdapterClass\.icon/u)
   assert.match(source, /createElement\('img', \{[\s\S]*src: icon/u)
   assert.match(source, /@media \(max-width:768px\)/u)
-  assert.match(source, /grid-template-columns:minmax\(0,1fr\) auto/u)
-  assert.match(source, /grid-column:1;grid-row:2/u)
-  assert.match(source, /grid-column:2;grid-row:2/u)
+  assert.match(source, /\.\$\{cliAdapterClass\.row\}\{display:flex;/u)
+  assert.match(source, /\.\$\{cliAdapterClass\.metadata\}\{[^}]*flex-wrap:wrap/u)
   assert.match(source, /white-space:normal;overflow-wrap:anywhere/u)
+  const narrowLayout = source.match(/@media \(max-width:260px\)\{[\s\S]*?\n\}/u)?.[0] ?? ''
+  assert.match(narrowLayout, /\.\$\{cliAdapterClass\.row\}\{flex-wrap:wrap/u)
+  assert.match(narrowLayout, /\.\$\{cliAdapterClass\.main\}\{flex-basis:100%\}/u)
+  assert.match(narrowLayout, /\.\$\{cliAdapterClass\.actions\}\{margin-left:auto\}/u)
 })

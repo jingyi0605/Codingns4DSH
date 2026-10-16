@@ -152,12 +152,15 @@ test('外部 Agent 集成设置面板只保留 Agent 列表，不再渲染外部
   assert.equal(source.includes('正在读取外部 Agent 状态…'), true, 'Agent 列表仍应保留')
 })
 
-test('外部 Agent 设置列表包含提供商图标并在窄屏分成两行', async () => {
+test('Agent settings bundle includes provider icons and responsive action wrapping', async () => {
   const source = await readClientCode()
   assert.equal(source.includes('providerIconUrl'), true, 'Agent 列表必须使用提供商图标映射')
   assert.equal(source.includes('codingns4dsh-cli-adapter-icon'), true, 'Agent 行必须保留图标样式类')
   assert.equal(source.includes('@media (max-width:768px)'), true, 'Agent 列表必须包含移动端断点布局')
-  assert.equal(source.includes('grid-template-columns:minmax(0,1fr) auto'), true, '移动端必须把元数据与开关放到第二行')
+  const narrowLayout = source.match(/@media \(max-width:260px\)\{[\s\S]*?\n\}/u)?.[0] ?? ''
+  assert.match(narrowLayout, /flex-wrap:wrap/u, 'very narrow rows must allow actions to wrap')
+  assert.match(narrowLayout, /flex-basis:100%/u, 'Agent identity must occupy its own line when actions wrap')
+  assert.match(narrowLayout, /margin-left:auto/u, 'wrapped actions must remain aligned to the end')
 })
 
 test('设置页由注册表驱动：遍历模块清单并同步启停', async () => {
