@@ -854,7 +854,8 @@ function loginResponse(status: number, body: string, extra: Record<string, strin
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'",
-    'Referrer-Policy': 'no-referrer',
+    // Native form POSTs need their Origin; no-referrer turns it into null.
+    'Referrer-Policy': isHtml ? 'same-origin' : 'no-referrer',
     Connection: 'close',
     ...extra,
   }
