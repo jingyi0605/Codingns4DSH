@@ -1,0 +1,55 @@
+# Design: External Agent installation and updates
+
+Status: Implemented
+
+## 1. Architecture
+
+The existing CLI feature owns a management service. A separate Host catalog maps adapter IDs and Host platforms to official methods. The Client renders the returned plan and polls a short status RPC only while an operation is running. No new DSH capability or feature module is needed.
+
+## 2. Contracts and commands
+
+`cli/management/plan` returns the detected adapter, action, official URL, and supported methods. Each method contains a stable ID, label, display command, prerequisites, and whether execution is supported. An optional `automaticMethodId` identifies the Host-selected installer or verified updater. The Host resolves the executable and symlinks, then checks bounded package metadata and exported binaries to retain npm ownership when a launcher points to a separate platform binary. npm prefixes (including Homebrew Node and Windows global layouts) and Homebrew cask channels are preserved. Application-managed runtimes, other package managers, and legacy migrations are not silently replaced. `cli/management/start` accepts only identifiers plus the plan fingerprint. The Host rebuilds the plan, rejects changed state or ownership, and requires an update to use the detected method. `cli/management/status` returns the latest bounded operation; `cli/management/cancel` requires its operation ID.
+
+Commands use fixed executable/argument arrays. Only official script installers use a fixed shell expression; user text is never concatenated into it. Windows npm shims use the existing command quoting helper. Commands run from the user's home directory with the shared resolved command environment, without automatic privilege escalation.
+
+Codex's official standalone directory and versioned standalone release paths select the official installer automatically. The existing install directory is passed as a positional argument, with unattended mode and an explicit latest release. Arbitrary custom binary paths, application bundles, and package-manager paths are not reassigned to the standalone installer.
+
+## 3. Ownership and lifecycle
+
+A single in-memory operation owns an AbortController, bounded output, and the adapter maintenance lock. The lock is acquired before asynchronous detection and released after re-detection. The registry checks active and suspended turns and blocks new turns for that adapter. Feature disposal cancels the process tree. Status is retained until another operation starts; no installation history or credentials are persisted.
+
+## 4. Settings behavior
+
+Each adapter row exposes Install after confirmed absence, or Update after a confirmed newer release. Install previews the Host-selected method. Clicking Update starts the Host-selected updater directly after checking for an existing operation; progress, errors, cancellation, and optional command details remain visible. No installation-method selector is rendered. An unidentified method or migration shows guidance and re-detection without asking the user to choose a package manager. Status retries never automatically resubmit an update, and another running operation prevents a new automatic start. Remote Host selectors retain their existing read-only policy. English and Chinese strings are registered in a dedicated locale fragment.
+
+Rows are direct children of the management content, separated by thin dividers. The sibling management dialog uses a separate key namespace; reusing an Agent row's key caused React to retain duplicate DOM rows during detection and progress updates. A compact Host selector, numeric count, smaller logos, inline status/version text, accent icon actions, and unlabeled accessible switches replace the nested card and large controls. Mobile keeps controls together; exceptionally narrow containers wrap without clipping.
+
+The settings panel retains delegation enablement and concurrency above one list launcher. `CliAdaptersContent` mounts only while the management modal is open and contains no delegation settings. `CliSettingsDialog` portals a native `dialog` to the document body and opens it in the browser top layer, escaping the DSH settings container and its stacking/containment rules. Desktop width is capped at 960 pixels; mobile uses the full viewport. Nested details and installer dialogs use the same native mechanism. Install/Update retain the refresh button's transparent surface, using blue/green icons.
+
+`CliManagementTerminal` renders the Host's bounded plain-text output in a dark monospace viewport with a live/result label. It follows new output until the user scrolls away from the bottom; a jump-to-latest control resumes following. Output remains React text rather than HTML. A separate result panel uses an icon, state heading, and detected version or error so color is not the only status cue.
+
+On completion the dialog passes the operation snapshot to the list once. Success immediately replaces that row with the Host-verified version, clears stale update availability, and calls `catalog/refresh` with `adapterId` and `checkUpdates: true`. The response updates the list and details, invalidates model caches, and notifies catalog watchers. A failed refresh leaves the successful update visible and offers a refresh-only retry. Existing Host request identity checks reject late responses after navigation.
+
+Closing progress during an active or submitted operation hides the dialog while retaining its status monitor inside the mounted Agent list. Closing during method detection still unmounts and cancels that pending request. Status polling retries transient errors without resubmitting the updater; completion and unmount dispose timers and requests. Changing Hosts or closing the Agent-list modal stops the monitor. Successful operations leave a concise result and Close action rather than prompting another update.
+
+## 5. Compatibility and errors
+
+The current source supports legacy Kimi wire and Pi RPC distributions. Official distributions may migrate; documented migration guidance must remain visible. Pi package identity, rather than a 0.x version number, determines the npm updater. No automatic configuration/session migration or uninstall is performed. Unknown platforms and undocumented updaters use manual guidance. Nonzero exits, launch errors, timeouts, cancellation, and detection failures remain distinguishable. Update success also requires detection of a newer version; an exit-zero no-op or downgrade fails verification and retains the output. Successful command execution does not prove an Agent is authenticated or its protocol is compatible.
+
+## 6. Verification
+
+Test catalog platform coverage, invalid/stale input, duplicate starts, activity locks, success and failed detection, cancellation/disposal, command construction, and Client Host isolation. Run typecheck, version check, capability check, i18n check, and CLI regression tests through the source loader. Do not invoke `pnpm test`, which builds the project.
+
+## 7. Background release checks
+
+The CLI feature owns `CliUpdateCheckService`, separate from the installation registry and management jobs. Settings refresh sends `checkUpdates: true` on the existing `catalog/refresh` route. Detection retains its existing asynchronous behavior; once detected, the service queues release checks and returns immediately. Plain `catalog` calls attach memory snapshots and never fetch. Legacy callers that omit the flag retain their existing behavior.
+
+Three HTTP checks run concurrently, each limited to eight seconds and 512 KiB. No external Agent is launched. Active duplicate checks are coalesced, refresh retries completed/error checks, and disposal aborts active requests and drops queued work. Results are keyed to adapter/version/command; old jobs cannot replace a newer snapshot. The optional descriptor `update` contains checking/available/current/unavailable/error state, comparable latest version, check time, and source URL. The existing catalog watcher polls only while detection or a release check is pending.
+
+Release feeds come from publisher npm packages or official installer manifests. Command resolution for Pi, Claude, CodeBuddy, Codex, and Gemini runs inside the background queue, preserving package/cask identity without delaying catalog RPCs. CodeBuddy npm installations update through the same official registry as their checks; recognized native installations use the publisher's separate CDN feed. Claude CLI installations prefer the documented built-in updater, while Homebrew casks retain their manager and feed. Codex standalone checks use the official installer's release channel. Homebrew Codex and Gemini use their cask/formula metadata, while npm installations retain npm feeds.
+
+Identified ZCode bundled runtimes expose an app version and can use the publisher's public stable Electron manifest. The checker parses only its top-level version; no installer is downloaded. Available releases carry `manualUpdate` so the list identifies that installation must finish in the owning app. Unrelated standalone ZCode commands do not inherit the app feed. WorkBuddy/Doubao runtime feeds and legacy Kimi migration remain unverified, with explicit reason codes. Unknown installed versions and incomparable release channels have separate reasons. Invalid/missing version data from a configured feed is an error rather than a manual-check fallback.
+
+OpenCode 1.x and 2.x use separate packages. Cursor uses dated build identifiers; differing hashes on the same date are not ordered. Semantic versions compare numeric components and prerelease precedence, ignoring build metadata. A stable installation is not prompted to install a prerelease.
+
+Supported Hosts return an explicit `unchecked` snapshot before the first refresh. Missing update data on a settled installed Agent therefore indicates an older Host and triggers a compatibility message. Check failures carry bounded reason codes (timeout/network/HTTP/invalid metadata) and an optional HTTP status; raw provider errors and bodies are never forwarded. The list shows concise check states, while details show the reason and official guide.
