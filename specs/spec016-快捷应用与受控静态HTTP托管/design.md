@@ -1,6 +1,8 @@
 # Design — Quick Apps and controlled static HTTP hosting
 
-Status: Draft, 2026-10-15. No Quick Apps HTTP implementation is claimed.
+Current transport amendment (2026-10-16): the user selected a sandboxed preview through the existing DSH Host. `quick-app.proxy` is now the default when available. The existing WebServer serves a scoped launch path; iframe and response CSP enforce an opaque origin. The native viewer and Host workspace grants remain unchanged. Relative resources and the optional API use this path, including PeerHost resources relayed through the controlling Host. No new listener, certificate or domain is required. Browser storage and unchanged root-relative URLs are not promised in this mode. Earlier dedicated-origin design below describes the retained compatibility providers. Implementation, LAN regression recovery and acceptance changes: `specs/spec016-快捷应用与受控静态HTTP托管/docs/20261016-主机代理预览与局域网回归修复.md`.
+
+Status (2026-10-16): source implementation includes the default Host proxy, retained dedicated HTTPS providers, PeerHost routing and native viewers. Local HTTP/browser evidence is available; installed-platform/device acceptance and legacy service consolidation remain incomplete. Current acceptance and commit records are in `specs/spec016-快捷应用与受控静态HTTP托管/docs/20261015-实现验收矩阵与剩余条件.md`.
 
 ## 1. Overview
 
@@ -15,7 +17,7 @@ Serve a selected workspace directory as a small website, open it from a persiste
 - The existing native HTML packer is a Blob-based preview with limited direct JS/CSS packaging. It is not the required HTTP app runtime.
 - `src/client/native-workspace-store.ts` provides workspace identities, including PeerHost records. `src/host/index.ts` resolves workspace roots. New operations must fail if that exact workspace cannot be resolved, with no fallback to another session/root.
 - `src/client/settings-bridge.ts` supports Host-backed settings for remote clients. Shortcut metadata can use that boundary; temporary launch secrets must not be put in globally mirrored settings.
-- This Spec does not authorize builds, running servers, installation, restart, publishing, or Desktop profile edits. Verification tasks identify when a real endpoint is required.
+- The implementation request authorizes repository builds/checks and disposable local fixture servers. Installed Desktop/dsh-web/Stage0 operations, publishing and profile edits remain outside this work.
 
 ## 2. Architecture
 
@@ -35,11 +37,19 @@ flowchart LR
 
 Text shortcuts use the document view and the same authoritative workspace identity. No synthetic conversation is created to satisfy a session-only file reader.
 
+The launcher is an inline icon grid in the native sidebar footer, directly above Settings. It loads on mount, uses four columns in the wide sidebar and one icon column when collapsed, and bounds its scroll area to keep Settings reachable. Add/edit controls follow the parent CodingNS footer rail. Shortcut editors/removal and app/document viewers use dialogs; there is no modal containing the shortcut list. Saving an HTML shortcut enables workspace read/write/create/delete access with a visible explanation, replacing the three permission path fields. Unavailable tiles remain clickable to explain their status without launching.
+
+The current launcher has normal, edit and collapsed states. Add/remove controls appear in edit mode; pointer dragging and Alt + arrow keys reorder shortcuts. Pointer cancellation or an unchanged drop does not write settings. The form asks for workspace, file and optional title, infers the file type/root, and preserves existing valid roots/mounts/SPA settings when editing within the same workspace. Changing workspace clears those source-specific values. Advanced hosting controls are no longer shown in the form.
+
+`quickApps/reorder` validates all IDs and revisions before one serialized settings write. Revisions still detect competing metadata writes. Launches, legacy grants and remote documents compare the remaining app definition, excluding only `order` and `revision`, so reordering cannot revoke an open viewer or lose a grant. File identity, workspace resolution, access policy, expiry and explicit revocation remain checked. Both the native prefix and compatibility Fetch routes register the action. Older Hosts can fall back to individual upserts; that legacy path is not atomic and retains the older Host's launch-invalidation behavior, with refresh after partial failures.
+
+Source selection uses the native workspace Menu and a visual file selector backed by the native Host workspace listing service through `workspace.directory-list`. The authenticated `quickApps/browse` operation resolves the exact workspace on its owning Host, validates paths, bounds results and creates no conversation. The native conversation file panel itself is not embedded; the selector reuses its Host listing service and shared UI primitives. Direct path entry remains the unavailable-capability fallback.
+
 ### 2.2 Responsibilities
 
 | Component | Responsibility | Inputs / outputs |
 | --- | --- | --- |
-| Quick Apps client feature | Footer entry, app list, add/edit/remove, open/close, permission UI | Shortcut metadata and launch result |
+| Quick Apps client feature | Inline footer grid above Settings, add/edit/remove, open/close, permission UI | Shortcut metadata and launch result |
 | Quick Apps Host feature | Register management RPC, app routes, sessions and cleanup | Authenticated controlling client; no app-selected Host identity |
 | Origin/routing adapter | Allocate a reachable app origin and route to the owning Host | Connection context + app identity → origin/route or diagnostic |
 | App registry | Persist shortcuts with revision checks | Metadata only; no copied HTML or launch secrets |
@@ -52,15 +62,19 @@ Text shortcuts use the document view and the same authoritative workspace identi
 1. A trusted DSH client selects a persisted shortcut. The Host resolves its exact Host/workspace and checks the entry/root.
 2. The origin adapter establishes a reachable isolated origin. Unavailable routing returns a diagnostic before the app runs.
 3. The Host creates a temporary launch session using approved app grants. Credential delivery uses only an app-scoped channel; the page never receives the general DSH token.
-4. The browser loads real resource URLs. Each server access checks the launch and current app revision before serving or mutating.
+4. The browser loads real resource URLs. Each server access checks the launch and relevant app definition before serving or mutating; order-only metadata revisions do not change authorization.
 5. Close performs best-effort revocation; expiry handles abrupt client loss. Navigation/app replacement revokes the old embedding controller and write channel. Explicit revoke and module disposal deny further server requests.
 6. Already downloaded bytes cannot be recalled. Cache policy and tests distinguish server revocation from removal of content already in browser memory.
 
 ## 3. Components and interfaces
 
-### 3.1 Origin and routing contract — mandatory feasibility task
+### 3.1 Origin and routing contract — default and retained providers
+
+The current default is the Host proxy described above. The distinct-origin compositions below document retained compatibility providers; their DNS/TLS/port setup is not required for the default. Their root-relative URL and browser-storage behavior must not be attributed to the sandboxed path proxy.
 
 The desired URL shape is `https://<app-specific-origin>/<resource-path>`. The app root maps to `/`, preserving both relative and root-relative references. A shared `/apps/<id>/` URL path is not an origin boundary.
+
+The 2026-10-16 LAN transport amendment adds `https://<existing-hostname-or-IP>:<fresh-port>/` alongside the existing hostname provider. It binds to the active LAN proxy's interface, requires a certificate covering the selected address, and uses a configured reachable port range. The app listener strips general credentials and checks the exact browser origin on every resource request. The privileged LAN proxy checks the original browser origin before its Host/Origin rewrite, including WebSockets. Atomic durable port reservations prevent old app pages from inheriting later launches after a restart. No new DNS name is mandatory. Configuration, finite-pool limits, PeerHost guard requirements and verification are documented in `specs/spec016-快捷应用与受控静态HTTP托管/docs/20261016-局域网地址与独立端口托管.md`.
 
 `AppOriginProvider.open(app, connection)` returns `{ origin, mount, dispose }` or a typed unavailable reason. One managed service may dispatch many app hostnames; a managed dedicated listener is an alternative only where the selected connection can actually reach it. No arbitrary per-app development server is started.
 
@@ -70,18 +84,24 @@ For embedded apps, `allow-same-origin` is acceptable only when the real app orig
 
 ### 3.2 Data structures
 
+The retained dedicated-hostname provider uses a lazy TLS virtual-host listener configured by the operator. It enforces a separate cookie site, wildcard certificate coverage and exact SNI/Host. Its one-use bootstrap exchanges an app-only fragment ticket for an HttpOnly/Partitioned cookie before loading unchanged files. Its PeerHost resource requests reach the owning Host's HTTPS origin directly. This differs from the default Host proxy, which relays resources through the controlling Host and requires no app bootstrap cookie. See `specs/spec016-快捷应用与受控静态HTTP托管/docs/20261015-独立HTTPS配置与前端入口.md` for the retained provider's configuration and limits.
+
 | Model | Fields | Ownership / constraints |
 | --- | --- | --- |
-| `QuickApp` | `id`, `title`, `hostId`, `workspaceId`, `entryPath`, `documentRoot`, `kind`, `spaFallback`, `mounts`, `revision`, `order` | Persisted on controlling Host/profile; workspace-relative paths; `kind` is `html` or `text` |
+| `QuickApp` | `id`, `title`, `hostId`, `workspaceId`, `entryPath`, `documentRoot`, `kind`, optional `fileAccess: 'workspace'`, `spaFallback`, `mounts`, `revision`, `order` | Persisted on controlling Host/profile; workspace-relative paths; text does not inherit HTML workspace trust |
 | `AppMount` | `urlPrefix`, `workspacePath`, `read` | Same owning workspace; disjoint normalized URL prefixes; no arbitrary URL proxy |
-| `AppGrant` | `appId`, `appRevision`, read roots, write roots, delete roots, approval metadata | Host authority; static read does not imply write/delete; code/root/permission changes invalidate remembered trust |
+| `AppGrant` | `appId`, `appRevision`, read roots, write roots, delete roots, approval metadata | Host derives all operations from saved workspace trust; legacy path grants retain code/root invalidation for compatibility |
 | `AppLaunch` | random ID/credential digest, app ID/revision, principal/connection identity, owning Host/workspace, granted operations, expiry, revoked state | Host-only ephemeral state; credentials never mirrored to other clients |
 
 Source paths are resolved only by the owning Host. Display paths may be shown in trusted UI but never act as proof of authorization. Static serving excludes `.git` and secret files by policy; explicitly needed hidden data should use a narrowly approved mount or the file API.
 
 ### 3.3 Management and app interfaces
 
-Proposed management RPC namespace: `quickApps/list`, `upsert`, `remove`, `launch`, `close`, `grant`, `revoke`. These are called by the authenticated DSH client, not directly exposed to app pages. Updates use the app registry revision; removing a shortcut does not remove files.
+Management RPC namespace: `quickApps/list`, `browse`, `upsert`, `remove`, `launch`, `document`, `close`, `grant`, `revoke`, `remote`. These are called by the authenticated DSH client, not directly exposed to app pages. Updates use the app registry revision; removing a shortcut does not remove files.
+
+The 2026-10-16 user decision replaces new HTML apps' per-path approvals with `fileAccess: 'workspace'`. The authenticated shortcut save persists that policy; HTML launch derives read/write/delete scopes at the workspace root. Workspace mode does not run application-code revision scans. Legacy shortcuts omit the field and keep their previous behavior until explicitly saved. `revoke` clears persisted workspace trust, advances the revision and invalidates launches, even when the entry is missing. Old remote Hosts must acknowledge the policy before a save succeeds. Existing `grant` remains for legacy compatibility and rejects workspace-mode shortcuts rather than pretending to narrow their access.
+
+For text launches, `document` supports scoped `read`/raster `image`, explicit `allow-edit` for the current exact file, and version-preconditioned `save`. The Host-owned launch fixes principal, workspace and document root; it grants no create/delete operation. The trusted UI reuses public DSH Markdown primitives and the existing CodeMirror editor, while Quick Apps owns routing, draft protection and disposal. Older text responses remain read-only. See `specs/spec016-快捷应用与受控静态HTTP托管/docs/20261016-快捷应用原生文档体验.md` for the implemented boundary and evidence.
 
 On the isolated app origin:
 

@@ -1,12 +1,16 @@
 # Requirements — Quick Apps and controlled static HTTP hosting
 
-Status: Draft, 2026-10-15.
+Status: Implemented with platform acceptance pending; workspace-access policy amended by the user on 2026-10-16.
+
+Transport amendment (2026-10-16): the user selected sandboxed previews through the existing DSH Host address. This is the default on supported Hosts and supersedes separate app addresses as a setup requirement. Opaque sandbox isolation replaces distinct URL origins in this mode; browser storage and unchanged root-relative URLs are explicitly outside its compatibility guarantee. See `specs/spec016-快捷应用与受控静态HTTP托管/docs/20261016-主机代理预览与局域网回归修复.md`.
+
+The user selected read/write/create/delete access within the shortcut's owning workspace as the default for newly added HTML apps. This supersedes the original per-path approval default. Existing shortcuts keep their earlier behavior until explicitly saved with workspace access. Browser origin isolation, exact owning-Host routing, path containment, version preconditions and cleanup remain required.
 
 ## Introduction
 
 The membership HTML page runs inside DSH's isolated document preview. A phone directory picker cannot provide access to files on the computer hosting the workspace. The existing page-specific connector supplies some file operations, but it does not serve ordinary websites over HTTP.
 
-Users need to select a workspace, application folder, and entry HTML, then open that application from Quick Apps on Desktop or a phone. Static resource loading must use browser HTTP behavior. Saving workspace data is an optional, explicitly scoped capability.
+Users need to select a workspace, application folder, and entry HTML, then open that application from Quick Apps on Desktop or a phone. Static resource loading must use browser HTTP behavior. Saving a new HTML shortcut authorizes its workspace file operations through the optional HTTP API.
 
 ## Terms
 
@@ -31,6 +35,7 @@ Out of scope: starting arbitrary development servers; Node/Python/PHP/SSR execut
 2. WHEN reopening DSH from another client of the same controlling Host/profile, the system SHALL load the persisted shortcut list, retaining remote Host identity and ordering.
 3. WHEN no conversation is active, the shortcut SHALL remain openable through workspace identity alone.
 4. WHEN a shortcut is removed, the system SHALL leave source files intact. Missing files, missing workspaces, and disconnected Hosts SHALL have distinct unavailable states.
+5. WHEN changing shortcut order, the current Host SHALL persist the complete order atomically with revision checks. Reordering SHALL preserve open HTML/text viewers, existing grants, owning-Host routing and access policy; stale concurrent reorder requests SHALL fail without partial updates.
 
 ## R2 — Serve ordinary static applications
 
@@ -47,17 +52,17 @@ Out of scope: starting arbitrary development servers; Node/Python/PHP/SSR execut
 **User story:** As a workspace owner, I want an app to access only the resources I approved.
 
 1. WHEN serving any file or performing any mutation, the Host SHALL resolve the launch session to its own app definition, workspace root, grants, and revision. Request parameters SHALL NOT replace those identities or enlarge grants.
-2. WHEN an app is launched, its executable origin SHALL be distinct from DSH's privileged UI. Apps with different grants SHALL have separate origins; a URL path prefix alone SHALL NOT count as origin isolation.
-3. WHEN a launch expires, is revoked, or its relevant app configuration changes, subsequent requests SHALL be rejected. Disabling the module SHALL close routes and active launch sessions. Persisted shortcuts SHALL survive; revoked launch credentials SHALL not be revived after restart.
-4. WHEN resolving files, the system SHALL reject traversal, malformed/ambiguous encodings, root escapes, and symlink escapes; it SHALL not expose arbitrary workspace files, `.git`, or secret files merely because the entry belongs to that workspace.
+2. WHEN an app is launched through the default Host proxy, the iframe and HTTP response SHALL enforce an opaque sandbox origin, without `allow-same-origin`. Launch routes SHALL bind to separate Host-owned grants. A URL prefix alone SHALL NOT count as isolation. The retained dedicated-hosting mode SHALL keep separate URL origins for apps with different grants.
+3. WHEN a launch expires, is revoked, or its relevant app configuration changes, subsequent requests SHALL be rejected. Display order and metadata revisions alone SHALL not invalidate a launch. Disabling the module SHALL close routes and active launch sessions. Persisted shortcuts SHALL survive; revoked launch credentials SHALL not be revived after restart.
+4. WHEN resolving files, the system SHALL reject traversal, malformed/ambiguous encodings, root escapes, and symlink escapes. Saved workspace access SHALL cover ordinary files in the owning workspace through the file API; hidden/credential files remain excluded. Static URLs SHALL remain scoped to the app folder and configured mounts.
 5. WHEN authorizing app requests, the system SHALL keep general DSH credentials in the privileged Host/client boundary. App credentials SHALL be limited to their launch scope and omitted from logs and referrers.
 
 ## R4 — Offer optional file writes
 
-**User story:** As a user of a static data-management app, I want approved changes saved to its Host workspace.
+**User story:** As a user of a static data-management app, I want it to read and manage files in its owning workspace without configuring separate path lists.
 
-1. WHEN only static access is enabled, write and delete requests SHALL fail. Static GET/HEAD SHALL not mutate workspace files.
-2. WHEN write access is enabled, the Host SHALL check separate read, write/create, and delete permissions for each path. The app SHALL use a documented HTTP API; a JavaScript SDK MAY wrap it but SHALL remain optional.
+1. WHEN adding an HTML shortcut through the current UI, saving SHALL authorize workspace read/write/create/delete access with a visible explanation. Existing shortcuts SHALL retain their prior access until the user explicitly saves workspace access. Static GET/HEAD SHALL not mutate files; revoked or legacy static-only launches SHALL have no implicit file API grant.
+2. WHEN workspace access is saved, the Host SHALL derive all three operation scopes from the saved owning workspace, without per-path prompts or application-code reapproval. Revocation SHALL remove this persisted policy and invalidate launches. Legacy scoped grants SHALL remain compatible until deliberately migrated. Apps SHALL use the documented HTTP API; an SDK remains optional.
 3. WHEN updating or deleting an existing file, the request SHALL include a version precondition and stale requests SHALL fail without silently overwriting newer content. Creating a new file SHALL not overwrite an existing file.
 4. WHEN saving, the system SHALL bound request size, serialize its own mutations, revalidate authorization/path state at execution, and use atomic replacement. External applications do not participate in plugin locks; that limitation SHALL be documented.
 5. WHEN a write fails, the app SHALL receive a clear error and keep its edited content available for retry or export. A successful workspace save SHALL not be reported as a browser download.
@@ -70,6 +75,7 @@ Out of scope: starting arbitrary development servers; Node/Python/PHP/SSR execut
 2. WHEN the containing DSH page uses HTTPS, embedded app resources SHALL use a compatible HTTPS route; the system SHALL not silently downgrade to mixed-content HTTP.
 3. WHEN the required origin/routing capability is unavailable, the UI SHALL explain that limitation before launch instead of weakening isolation or showing a falsely connected state.
 4. WHEN accessing a PeerHost workspace, resource and file API requests SHALL reach that Host; mismatched and disconnected targets SHALL fail closed. Unsupported relay compositions SHALL be reported explicitly.
+5. WHEN opening a sandboxed preview, the system SHALL proxy through the current DSH address, using its existing HTTP or HTTPS transport without additional app certificates or exposed ports. Quick Apps configuration SHALL NOT restrict ordinary LAN navigation or break existing reverse proxies. Separate HTTPS ports remain an optional compatibility implementation, not the default setup requirement.
 
 ## R6 — Integrate through supported plugin interfaces
 
