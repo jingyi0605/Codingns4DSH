@@ -1,5 +1,5 @@
 import { startSerialPolling } from './serial-polling.js'
-import { createElement, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { createElement, Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { UseSessions } from '@deepseek-ai/dsh-client-ui-session/client'
@@ -187,12 +187,10 @@ function GitPanel(props: GitTabProps): ReactElement {
   const [toast, setToast] = useState<SettingsNotice | null>(null)
   const [diffView, setDiffView] = useState<GitCommitDiff | null>(null)
   const [fileDiff, setFileDiff] = useState<{ readonly path: string; readonly staged: boolean; readonly diff: GitDiff } | null>(null)
-  const [singleColumn, setSingleColumn] = useState(false)
   const [activeColumn, setActiveColumn] = useState<'files' | 'history'>('files')
   const [historyScope, setHistoryScope] = useState<GitHistoryScope>('all')
   const [historyTotalCount, setHistoryTotalCount] = useState(0)
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false)
-  const contentGridRef = useRef<HTMLDivElement | null>(null)
   const historyExpanded = useRef(false)
   const gridVisible = status !== null && status.snapshot.enabled !== false
 
@@ -201,23 +199,6 @@ function GitPanel(props: GitTabProps): ReactElement {
     const timer = globalThis.setTimeout(() => setToast(null), 3200)
     return () => globalThis.clearTimeout(timer)
   }, [toast])
-
-  useEffect(() => {
-    const element = contentGridRef.current
-    if (element === null) { setSingleColumn(false); return }
-    const update = (): void => {
-      const tracks = getComputedStyle(element).gridTemplateColumns.split(' ').filter((track) => track !== '')
-      setSingleColumn(tracks.length <= 1)
-    }
-    update()
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', update)
-      return () => window.removeEventListener('resize', update)
-    }
-    const observer = new ResizeObserver(update)
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [gridVisible])
 
   const notify = (kind: SettingsNotice['kind'], message: string): void => setToast({ kind, message })
 
@@ -367,10 +348,10 @@ function GitPanel(props: GitTabProps): ReactElement {
   }
   const stageAll = (): void => { void run('git/stage', { targets: unstaged.map((item) => item.path) }) }
   const discardAll = (): void => { void run('git/discard', { targets: changes.map((item) => item.path) }) }
-  return createElement('section', { style: panelStyle, 'data-git-management-panel': 'true' },
+  const panel = createElement('section', { className: gitPanelClass.panel, style: panelStyle, 'data-git-management-panel': 'true' },
     // 面板标题已由 Sidebar 标签页渲染，这里不再重复；只保留视图切换与操作菜单。
     createElement('header', { style: headerStyle },
-      singleColumn ? createElement('div', { style: columnSwitchStyle },
+      gridVisible ? createElement('div', { className: gitPanelClass.columnSwitch, style: columnSwitchStyle },
         createElement(SegmentedControl<'files' | 'history'>, {
           id: 'codingns4dsh-git-view', value: activeColumn, onChange: setActiveColumn, label: t('git.viewSwitcherLabel'),
           options: [
@@ -391,10 +372,8 @@ function GitPanel(props: GitTabProps): ReactElement {
       createElement('button', { type: 'button', disabled: busy, onClick: () => void run('git/init', {}), className: `${gitPanelClass.button} ${gitPanelClass.buttonPrimary}`, style: primaryButtonStyle }, t('git.init')),
     ) : null,
     status !== null ? createElement('div', { style: summaryStyle }, t('git.summary', { staged: staged.length, unstaged: unstaged.length, total: historyTotalCount, scope: historyScope === 'all' ? t('git.allBranches') : t('git.currentBranch') })) : null,
-    diffView !== null ? createElement(DiffViewer, { diff: diffView, onClose: () => setDiffView(null), t }) : null,
-    fileDiff !== null ? createElement(FileDiffViewer, { path: fileDiff.path, staged: fileDiff.staged, diff: fileDiff.diff, onClose: () => setFileDiff(null), t }) : null,
-    status !== null && status.snapshot.enabled !== false ? createElement('div', { ref: contentGridRef, style: contentGridStyle },
-      singleColumn && activeColumn !== 'files' ? null : createElement('div', { style: columnStyle },
+    status !== null && status.snapshot.enabled !== false ? createElement('div', { className: gitPanelClass.contentGrid, style: contentGridStyle, 'data-active-column': activeColumn },
+      createElement('div', { className: gitPanelClass.column, style: columnStyle, 'data-git-column': 'files' },
         createElement('section', { style: commitSectionStyle },
           createElement('div', { style: sectionHeaderStyle },
             createElement('strong', undefined, t('git.commitChanges')),
@@ -412,10 +391,15 @@ function GitPanel(props: GitTabProps): ReactElement {
         staged.length > 0 ? createElement(ChangeSection, { title: t('git.stagedFiles'), staged: true, items: staged, busy, onOpenDiff: openFileDiff, onAction: (action, path) => void run(`git/${action}`, { targets: [path] }), onBatchAction: (action, paths) => void run(`git/${action}`, { targets: paths }), onBulkAction: () => void run('git/unstage', { targets: staged.map((item) => item.path) }), t }) : null,
         unstaged.length > 0 ? createElement(ChangeSection, { title: t('git.unstagedFiles'), staged: false, items: unstaged, busy, onOpenDiff: openFileDiff, onAction: (action, path) => void run(`git/${action}`, { targets: [path] }), onBatchAction: (action, paths) => void run(`git/${action}`, { targets: paths }), onBulkAction: () => void run('git/stage', { targets: unstaged.map((item) => item.path) }), t }) : null,
       ),
-      singleColumn && activeColumn !== 'history' ? null : createElement('div', { style: columnStyle },
+      createElement('div', { className: gitPanelClass.column, style: columnStyle, 'data-git-column': 'history' },
         createElement(HistorySection, { history, totalCount: historyTotalCount, hasMore: history.length < historyTotalCount, loadingMore: historyLoadingMore, onLoadMore: loadMoreHistory, branches, busy, scope: historyScope, hasRemote: Boolean(status?.snapshot.hasRemote || branches?.remote.length), onScopeChange: setHistoryScope, onSwitch: (branchName) => void run('git/switch', { branchName, create: false }, (value) => setBranches(normalizeBranchSnapshot(value as GitBranchSnapshot))), onCopy: copyCommitHash, onCopyMessage: copyCommitMessage, onViewDiff: openCommitDiff, onUndo: () => runGitOperation('undo'), t }),
       ),
     ) : null,
+  )
+  // Fixed overlays must stay outside the layout containment used by container queries.
+  return createElement(Fragment, undefined, panel,
+    diffView !== null ? createElement(DiffViewer, { diff: diffView, onClose: () => setDiffView(null), t }) : null,
+    fileDiff !== null ? createElement(FileDiffViewer, { path: fileDiff.path, staged: fileDiff.staged, diff: fileDiff.diff, onClose: () => setFileDiff(null), t }) : null,
   )
 }
 
@@ -1157,15 +1141,15 @@ function graphRailStyle(lane: number, stroke: string, dashed = false): CSSProper
 }
 
 // 面板根节点不再铺底色：DSH 右侧栏的其它面板都是透明的，继承 Sidebar 表面色才不会出现色块接缝。
-const panelStyle: CSSProperties = { position: 'relative', userSelect: 'none', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 12, minHeight: '100%', padding: '12px 14px 20px', overflow: 'auto', color: dshThemeColor.labelPrimary }
+const panelStyle: CSSProperties = { position: 'relative', userSelect: 'none', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 12, height: '100%', minHeight: 0, padding: '12px 14px 20px', overflow: 'auto', color: dshThemeColor.labelPrimary }
 const headerStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 28 }
 const tabTitleStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', minWidth: 0, color: dshThemeColor.labelPrimary, fontSize: uiFontSize(12) }
 const headerActionsStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4 }
 // SegmentedControl 自带 indicator 与键盘走查；外层占满面板宽度后再将控件居中。
-const columnSwitchStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', minWidth: 0 }
+const columnSwitchStyle: CSSProperties = { alignItems: 'center', justifyContent: 'center', width: '100%', minWidth: 0 }
 const summaryStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) }
-const contentGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', alignItems: 'start', gap: 12 }
-const columnStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }
+const contentGridStyle: CSSProperties = { display: 'grid', alignItems: 'start', gap: 12 }
+const columnStyle: CSSProperties = { flexDirection: 'column', gap: 12, minWidth: 0 }
 // 卡片用 layer-1：与 DSH 内置卡片同层，暗色下只比侧栏表面亮一档。
 const sectionStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8, padding: 10, border: `.5px solid ${dshThemeColor.menuBorder}`, borderRadius: 8, background: dshThemeColor.cardBackground }
 const sectionHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 24, fontSize: uiFontSize(12) }

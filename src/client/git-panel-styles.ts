@@ -8,6 +8,10 @@ const STYLE_ID = 'codingns4dsh-git-panel'
  * 内联样式只负责尺寸与排版。取值全部来自 DSH 真实令牌，与内置组件同一套观感。
  */
 export const gitPanelClass = {
+  panel: 'codingns4dsh-git-panel',
+  contentGrid: 'codingns4dsh-git-content-grid',
+  column: 'codingns4dsh-git-column',
+  columnSwitch: 'codingns4dsh-git-column-switch',
   action: 'codingns4dsh-git-action',
   actionDanger: 'codingns4dsh-git-action-danger',
   button: 'codingns4dsh-git-button',
@@ -46,6 +50,16 @@ const active = 'background:var(--dsw-alias-interactive-bg-active)'
 const disabled = 'opacity:.4;cursor:not-allowed'
 
 const gitPanelCss = `
+.${gitPanelClass.panel}{container-type:inline-size;container-name:codingns4dsh-git;scrollbar-gutter:stable}
+.${gitPanelClass.contentGrid}{grid-template-columns:minmax(0,1fr)}
+.${gitPanelClass.column},.${gitPanelClass.columnSwitch}{display:flex}
+.${gitPanelClass.contentGrid}[data-active-column='files']>[data-git-column='history'],.${gitPanelClass.contentGrid}[data-active-column='history']>[data-git-column='files']{display:none}
+/* Column visibility depends on the scrollport width, never on the rendered grid tracks. */
+@container codingns4dsh-git (min-width:612px){
+  .${gitPanelClass.columnSwitch}{display:none}
+  .${gitPanelClass.contentGrid}{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .${gitPanelClass.contentGrid}[data-active-column]>[data-git-column]{display:flex}
+}
 .${gitPanelClass.action}{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;padding:0;border:0;border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-secondary);background:transparent;cursor:pointer;font-size:16px;line-height:1}
 .${gitPanelClass.action}:hover:not(:disabled){${hover};color:var(--dsw-alias-label-primary)}
 .${gitPanelClass.action}:active:not(:disabled){${active}}
