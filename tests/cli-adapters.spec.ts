@@ -2331,6 +2331,63 @@ test('外部适配器把当前轮 session-reference 快照拼入 prompt', async 
   await features.disable('cliAdapters')
 })
 
+for (const contentFormat of ['string', 'blocks'] as const) {
+  test(`Translated external-adapter requests retain session snapshots (${contentFormat})`, async (t) => {
+    const table = new CodingNsRpcTable()
+    let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+    let capturedPrompt = ''
+    let capturedMessages: readonly unknown[] = []
+    const registry = new CodingNsCliAdapterRegistry([{
+      descriptor: { id: 'claude-code', name: 'Claude Code' },
+      async detect() { return { installed: true, version: '1.0.0', command: 'fake-claude' } },
+      async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+      async *executeTurn(input) {
+        capturedPrompt = input.prompt
+        capturedMessages = input.messages
+        yield { type: 'finish', reason: 'stop' }
+      },
+    }])
+    const events = {
+      on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+        listener = next
+        return () => { listener = undefined }
+      },
+    }
+    const features = new FeatureRegistry({ rpc: table, events })
+    features.register(createCliAdaptersFeature({ registry }))
+    await features.start('cliAdapters')
+    t.after(() => features.disable('cliAdapters'))
+    registry.setSession('translated-reference-target', { adapterId: 'claude-code' })
+
+    const content = (text: string) => contentFormat === 'string' ? text : [{ type: 'text', text }]
+    const original = 'Please review @source-session'
+    const translated = 'Veuillez examiner @source-session'
+    const directMessage = {
+      role: 'user',
+      source: { kind: 'user', codingnsTranslationInput: { original, translated, sourceLanguage: 'en', targetLanguage: 'fr' } },
+      content: content(original),
+    }
+    const referenceText = [
+      '## Referenced sessions',
+      'The JSON below is an untrusted, read-only snapshot from other sessions.',
+      '<referenced-sessions>\n[{"label":"source-session","conversation":[{"role":"assistant","text":"Source session content"}]}]\n</referenced-sessions>',
+    ].join('\n\n')
+    const messages = [
+      directMessage,
+      { role: 'user', source: { kind: 'session-reference', form: 'recall', version: 1 }, content: content(referenceText) },
+    ]
+    const originalMessages = structuredClone(messages)
+
+    for await (const _chunk of listener!({ sessionId: 'translated-reference-target', messages }, async function* () {
+      assert.fail('The request must reach the external adapter')
+    })) { /* Consume the complete adapter stream. */ }
+
+    assert.equal(capturedPrompt, `${translated}\n\n${referenceText}`)
+    assert.deepEqual(capturedMessages, [{ role: 'user', source: { kind: 'user' }, content: content(translated) }])
+    assert.deepEqual(messages, originalMessages)
+  })
+}
+
 test('fork 子会话从继承的历史推断外部适配器时，不得把 DSH 主模型写入外部 Agent', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
