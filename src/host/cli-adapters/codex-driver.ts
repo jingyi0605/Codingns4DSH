@@ -13,8 +13,10 @@ import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-o
 import { isQuestionEvent, questionAnswersRecord, readAgentQuestions } from './interaction-events.js'
 import { codexBridgeArgs, codexBridgeDeveloperInstructions, codexComputerUseLaunchSettings, type CodexComputerUseMode, type CodexComputerUseServerConfig } from '../cli-bridge/injections.js'
 import { CodexFileCitationNormalizer } from './codex-file-citations.js'
+import { CodexPerformanceTracker } from './codex-performance.js'
 
 export interface CodexAppServerDriverOptions {
+  readonly now?: () => number
   readonly binaries?: readonly string[]
   readonly sessionRoots?: readonly string[]
   readonly spawnSync?: typeof spawnSync
@@ -55,6 +57,7 @@ interface CodexTurnEventQueue {
 }
 
 interface CodexSession {
+  readonly performance: CodexPerformanceTracker
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
   modelId: string | undefined
@@ -172,6 +175,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
+  private readonly now: () => number
   private readonly sessionRoots: readonly string[]
   /** Codex 配置根目录；`config.toml` 与 `auth.json` 都位于这里。 */
   private readonly codexHome: string
@@ -186,6 +190,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     this.binaries = options.binaries ?? ['codex']
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
+    this.now = options.now ?? Date.now
     const codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
     this.codexHome = codexHome
     // 直接构造驱动时保持旧的安全默认值；正式 Feature 显式传入 auto，避免测试
@@ -354,7 +359,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         if (turnId !== null) {
           session.turnId = turnId
         }
-        eventQueue.push(message)
+        eventQueue.push(withCodexPerformance(session, message))
         const reason = readCodexTerminalReason(message)
         if (reason !== null) {
           terminalReason = reason
@@ -593,7 +598,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       if (turnId !== null) {
         session.turnId = turnId
       }
-      eventQueue.push(message)
+      eventQueue.push(withCodexPerformance(session, message))
       const reason = readCodexTerminalReason(message)
       if (reason !== null) {
         active.terminalReason = reason
@@ -780,11 +785,13 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   /** turn/start 遇到上下文超限时压缩一次并重试，兼容关闭自动压缩的 Codex 配置。 */
   private async startTurn(session: CodexSession, input: CodingNsCliTurnInput): Promise<unknown> {
     await this.prepareSkillInputs(session, input)
+    session.performance.beginTurn()
     try {
       return await session.rpc.request('turn/start', codexTurnStartParams(input, session.threadId, session.skills), { signal: input.signal, killOnAbort: false })
     } catch (error) {
       if (!isContextWindowError(error)) throw error
       await this.compactThread(session, input)
+      session.performance.beginTurn()
       return session.rpc.request('turn/start', codexTurnStartParams(input, session.threadId, session.skills), { signal: input.signal, killOnAbort: false })
     }
   }
@@ -1037,6 +1044,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     // 统一置于子命令前，避免不同版本对全局/子命令参数的解析差异。
     const rpc = new JsonRpcProcess({ command, args: [...bridgeArgs, ...this.appServerArgs()], cwd: input.cwd, explicitWindowsShell: true, spawn: this.runSpawn })
     const session = {
+      performance: new CodexPerformanceTracker(this.now),
       rpc,
       cwd: input.cwd,
       modelId: input.modelId,
@@ -1698,6 +1706,7 @@ function codexUsageChunk(params: Record<string, any>): CodingNsAgentEvent | null
   const contextTokens = usage.inputTokens
   return {
     ...usage,
+    ...(params.codingnsCodexPerformance === undefined ? {} : { codexPerformance: params.codingnsCodexPerformance }),
     ...(contextWindow === undefined ? {} : {
       contextWindow,
       contextTokens,
@@ -1708,6 +1717,13 @@ function codexUsageChunk(params: Record<string, any>): CodingNsAgentEvent | null
 
 function optionalToken(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function withCodexPerformance(session: CodexSession, message: JsonRpcMessage): JsonRpcMessage {
+  const performance = session.performance.observe(message)
+  return performance === undefined ? message : {
+    ...message, params: { ...(isRecord(message.params) ? message.params : {}), codingnsCodexPerformance: performance },
+  }
 }
 
 function readRequestId(value: unknown): string | null {
