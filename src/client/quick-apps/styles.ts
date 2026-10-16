@@ -4,14 +4,15 @@ import { uiFontSize } from '../font-scale.js'
 /** Parent ModalAtoms/shortcut-rail layout, scoped to this plugin and mapped to DSH theme tokens. */
 export const quickAppsCss = `
 .codingns-quick-app-rail{width:100%;min-width:0;margin:0 0 6px;color:${color.labelPrimary};font-size:${uiFontSize(12)}}
-.codingns-quick-app-rail .qa-rail-header{display:flex;align-items:center;gap:6px;min-height:28px;margin-bottom:4px}
+.codingns-quick-app-rail .qa-rail-header{display:flex;align-items:center;gap:6px;min-height:32px;margin-bottom:4px}
 .codingns-quick-app-rail[data-collapsed=true] .qa-rail-header{margin-bottom:0}
 .codingns-quick-app-rail h2{margin:0;font-size:${uiFontSize(12)};font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .codingns-quick-app-rail .qa-count{color:${color.labelSecondary};font-size:${uiFontSize(11)}}
-.codingns-quick-app-rail .qa-controls{display:flex;gap:2px;margin-left:auto}
-.codingns-quick-app-rail .qa-control{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:5px;border:0;border-radius:7px;background:transparent;color:${color.labelSecondary};cursor:pointer}
+.codingns-quick-app-rail .qa-controls{display:flex;gap:2px;margin-left:auto;margin-right:var(--codingns-quick-app-controls-end,0px)}
+.codingns-quick-app-rail .qa-control{display:inline-flex;align-items:center;justify-content:center;background:transparent;color:${color.labelSecondary};cursor:pointer;box-shadow:none;transition:background 140ms ease,color 140ms ease}
 .codingns-quick-app-rail .qa-control svg{width:16px;height:16px;flex:none}
 .codingns-quick-app-rail .qa-control:hover:not(:disabled),.codingns-quick-app-rail .qa-tile:hover:not(:disabled){background:${color.hoverBackground}}
+.codingns-quick-app-rail .qa-control:hover:not(:disabled){color:${color.labelPrimary}}
 .codingns-quick-app-rail button:disabled{opacity:.5;cursor:not-allowed}
 .codingns-quick-app-rail button:focus-visible{outline:2px solid ${color.accent};outline-offset:-2px}
 .codingns-quick-app-rail .qa-grid{position:relative;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;padding-top:4px;max-height:min(35dvh,240px);overflow:auto;overscroll-behavior:contain}
@@ -34,13 +35,11 @@ export const quickAppsCss = `
 .codingns-quick-app-rail .qa-rail-notice{margin:4px 0 8px;font-size:${uiFontSize(11)};line-height:1.5;color:${color.labelSecondary};overflow-wrap:anywhere;max-height:72px;overflow:auto}
 .codingns-quick-app-rail .qa-rail-notice[role=alert]{color:${color.error}}
 .codingns-quick-app-rail[data-wide=false]{width:36px}
-.codingns-quick-app-rail[data-wide=false] .qa-controls{flex-direction:column;margin:0 auto}
-.codingns-quick-app-rail[data-wide=false] .qa-control{width:36px;height:32px}
+.codingns-quick-app-rail[data-wide=false] .qa-controls{flex-direction:column;margin:0 var(--codingns-quick-app-controls-end,2px) 0 auto}
 .codingns-quick-app-rail[data-wide=false] .qa-grid{grid-template-columns:minmax(0,1fr)}
 .codingns-quick-app-rail[data-wide=false] .qa-tile{min-height:36px;justify-content:center}
 .codingns-quick-app-rail[data-wide=false] .qa-tile strong{display:none}
 .codingns-quick-app-rail[data-wide=false] .qa-rail-notice{text-align:center}
-@media(pointer:coarse){.codingns-quick-app-rail .qa-control{width:32px;height:32px}}
 .codingns-quick-app-dialog{width:520px;max-width:100%;max-height:100%;color:${color.labelPrimary};font-size:${uiFontSize(14)};border-radius:var(--dsw-radius-panel,12px);background:${color.menuBackground}}
 .codingns-quick-app-dialog .qa-content{min-height:0;flex:1}
 .codingns-quick-app-dialog .qa-content>div:has(>.qa-body){min-height:0;flex:1;overflow:hidden;margin-top:8px}

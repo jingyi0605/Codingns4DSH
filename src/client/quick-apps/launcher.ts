@@ -14,6 +14,7 @@ import { QuickAppWorkspacePicker } from './workspace-picker.js'
 import { QuickAppFilePicker } from './file-picker.js'
 import { QuickAppViewer } from './viewer.js'
 import { useQuickAppReorder } from './reorder.js'
+import { sidebarFooterControlStyle, useSidebarFooterAlignment } from '../sidebar-footer-style.js'
 
 type ListedApp = QuickApp & { availability: QuickAppAvailability; runtimeReason?: QuickAppRuntimeReason }
 type Screen = { kind: 'edit'; draft: QuickAppDraft }
@@ -21,6 +22,7 @@ type Screen = { kind: 'edit'; draft: QuickAppDraft }
 type Notice = { tone: 'error' | 'success'; text: string }
 
 export function QuickAppsLauncher({ services, wide }: { services: CodingNsClientServices; wide: boolean }): ReactElement {
+  const rail = useSidebarFooterAlignment(wide)
   const t = useCodingNsTranslator(services.locale)
   const formId = useId()
   const client = useMemo(() => new QuickAppsClient(services.rpc), [services.rpc])
@@ -179,19 +181,20 @@ export function QuickAppsLauncher({ services, wide }: { services: CodingNsClient
     title = screen.app.title
   }
   const control = (label: string, icon: 'add' | 'edit' | 'done' | 'retry' | 'collapse' | 'expand', onClick: () => void) => h('button', {
-    type: 'button', className: 'qa-control', title: label, 'aria-label': label, disabled: busy,
+    type: 'button', className: 'qa-control', style: sidebarFooterControlStyle, title: label, 'aria-label': label, disabled: busy,
     'aria-pressed': icon === 'edit' || icon === 'done' ? editing : undefined,
     'aria-expanded': icon === 'collapse' || icon === 'expand' ? !collapsed : undefined, onClick,
   }, h(QuickAppControlIcon, { icon }))
-  return h('section', { className: 'codingns-quick-app-rail', 'data-wide': wide, 'data-collapsed': collapsed, 'aria-label': t('quickApps.title'), 'aria-busy': busy }, h('style', null, quickAppsCss),
+  return h('section', { ref: rail, className: 'codingns-quick-app-rail', 'data-wide': wide, 'data-collapsed': collapsed, 'aria-label': t('quickApps.title'), 'aria-busy': busy }, h('style', null, quickAppsCss),
     h('header', { className: 'qa-rail-header' },
       wide ? h('h2', null, t('quickApps.title')) : null,
       wide && loaded && !collapsed ? h('span', { className: 'qa-count', 'aria-label': t('quickApps.count', { count: apps.length }) }, apps.length) : null,
       h('div', { className: 'qa-controls' },
+        !collapsed ? editing ? control(t('quickApps.add'), 'add', add)
+          : control(t('quickApps.manage'), 'edit', () => { setMode('edit'); setNotice(null) }) : null,
         collapsed ? control(t('quickApps.expandBar'), 'expand', () => setMode('normal'))
-          : editing ? control(t('quickApps.add'), 'add', add)
-            : control(t('quickApps.collapseBar'), 'collapse', () => setMode('collapsed')),
-        !collapsed ? control(t(editing ? 'quickApps.done' : 'quickApps.manage'), editing ? 'done' : 'edit', () => { setMode(editing ? 'normal' : 'edit'); setNotice(null) }) : null)),
+          : editing ? control(t('quickApps.done'), 'done', () => { setMode('normal'); setNotice(null) })
+            : control(t('quickApps.collapseBar'), 'collapse', () => setMode('collapsed')))),
     !collapsed ? h('div', { className: 'qa-rail-content' },
       !screen && notice ? h('p', { className: 'qa-rail-notice', role: notice.tone === 'error' ? 'alert' : 'status', title: notice.text }, wide ? notice.text : '!') : null,
       !loaded && !notice ? h('p', { className: 'qa-rail-notice', role: 'status', title: t('quickApps.loading') }, wide ? t('quickApps.loading') : '…') : null,
