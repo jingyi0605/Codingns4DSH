@@ -1,4 +1,5 @@
 import { resolveCodingNsTranslator, type CodingNsTranslator } from './locale.js'
+import { fromCliProviderId } from '../shared/cli-provider-route.js'
 
 export interface ProviderVisual {
   readonly adapterId: string | null
@@ -82,7 +83,8 @@ export function providerVisual(adapterId: string | undefined, t?: CodingNsTransl
 
 /** 兼容旧版 CN profile 的会话快照，但不重新暴露第二个 Provider。 */
 function normalizeProviderAdapterId(adapterId: string): string {
-  return adapterId === 'codebuddy-cn' ? 'codebuddy' : adapterId
+  const normalized = fromCliProviderId(adapterId) ?? adapterId
+  return normalized === 'codebuddy-cn' ? 'codebuddy' : normalized
 }
 
 export { PROVIDER_DEFINITIONS, PROVIDER_ICONS }

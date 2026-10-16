@@ -55,6 +55,7 @@ import { createSessionPromptTranslation } from '../features/session-prompt-trans
 import { codexPerformanceProjection } from './codex-performance-projection.js'
 import { grokContextProjection, grokPerformanceProjection } from './grok-performance-projection.js'
 import type { SessionPerformanceAdapter } from '../../dsh-capabilities/host/session-performance-adapter.js'
+import { fromCliProviderId, toCliProviderId } from '../../shared/cli-provider-route.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry; updateCheck?: CliUpdateCheckOptions } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -125,8 +126,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       })
       registry.applyEnabledSettings(context.services.settings?.get().agentAdapters)
       const virtualProviders = createDshVirtualProviderRegistration(context.services.dshContext)
-      virtualProviders?.setProviders(registry.enabledAdapterIds())
       if (virtualProviders !== undefined) context.resources.add(() => virtualProviders.dispose())
+      virtualProviders?.setProviders(registry.enabledAdapterIds())
       if (context.services.dshContext !== undefined && context.services.dshVersion !== undefined) {
         const selection = createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext)
           .getProfile(context.services.dshContext).capabilities.get('session.external-model-selection')
@@ -134,7 +135,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         if (selection !== undefined) context.resources.add(selection.install((sessionId) => {
           const config = registry.getSession(sessionId)
           if (config.adapterId === 'dsh' || !registry.isEnabled(config.adapterId)) return undefined
-          return { provider: config.adapterId, model: config.modelId?.trim() || 'provider-default' }
+          return { provider: toCliProviderId(config.adapterId), model: config.modelId?.trim() || 'provider-default' }
         }))
       }
       registry.warmCatalog()
@@ -403,7 +404,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             }
           } else if (sessionId !== '') clearDelegationAuthorization(sessionId)
           const selectedExternalAdapter = selectExternalAdapter(
-            dshSelection.providerId,
+            fromCliProviderId(dshSelection.providerId),
             inferMessageAdapter(messages),
             registry,
           )
@@ -414,7 +415,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           // 写进外部 Agent——Codex 会用它 thread/start 并直接 404，整个会话从此
           // 无法继续。此时必须留空，由适配器自己的偏好决定模型。
           const selectionOwnedByAdapter = selectedExternalAdapter !== undefined
-            && dshSelection.providerId === selectedExternalAdapter
+            && (fromCliProviderId(dshSelection.providerId) ?? dshSelection.providerId) === selectedExternalAdapter
           let config: CodingNsCliSessionConfig = storedConfig.adapterId === 'dsh' && selectedExternalAdapter !== undefined
             ? {
                 adapterId: selectedExternalAdapter,
@@ -663,10 +664,11 @@ function registerDelegationAgentHooks(
     } catch {
       return config
     }
+    const providerAdapter = fromCliProviderId(config.provider)
     const configuredAdapter = session.adapterId !== 'dsh' && registry.isEnabled(session.adapterId)
       ? session.adapterId
-      : typeof config.provider === 'string' && registry.isEnabled(config.provider)
-        ? config.provider
+      : providerAdapter !== undefined && registry.isEnabled(providerAdapter)
+        ? providerAdapter
         : undefined
     if (configuredAdapter === undefined) return config
 
@@ -682,7 +684,7 @@ function registerDelegationAgentHooks(
     // UNSUPPORTED_REASONING_EFFORT 拒绝整轮；外部 Agent 的思考强度由适配器自己的
     // effortId 偏好驱动，因此这里必须丢弃继承值，只改写 provider/model。
     const { reasoningEffort: _inheritedReasoningEffort, ...routeConfig } = config
-    return { ...routeConfig, provider: configuredAdapter, model }
+    return { ...routeConfig, provider: toCliProviderId(configuredAdapter), model }
   })
 
   register('agent/pre-step', async (payload: unknown, next: () => Promise<unknown>) => {
@@ -1107,11 +1109,13 @@ function selectExternalAdapter(
 function inferMessageAdapter(messages: readonly CodingNsCliMessage[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const source = asRecord((messages[index] as unknown as Record<string, unknown>).source)
-    // 旧会话和 DSH 原生投影的 source 形状不完全一致；只要是模型消息就读取
-    // provider，最终仍由 selectExternalAdapter 校验是否为已启用外部适配器。
     if (source?.kind !== 'model') continue
-    const provider = source.provider
-    if (typeof provider === 'string' && provider.trim() !== '') return provider.trim()
+    const provider = typeof source.provider === 'string' ? source.provider.trim() : undefined
+    // Legacy raw providers need explicit plugin metadata; native API brands can
+    // have the same names as CLI adapters. The latest model source is decisive.
+    return fromCliProviderId(provider)
+      ?? (typeof source.adapterId === 'string' ? source.adapterId : undefined)
+      ?? (source.plugin === 'codingns4dsh' ? provider : undefined)
   }
   return undefined
 }

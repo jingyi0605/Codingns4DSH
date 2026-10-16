@@ -1,5 +1,6 @@
 import type { CodingNsCliAdapterId } from '../../shared/contracts/cli-adapter.js'
 import type { Context } from '@deepseek-ai/cordis'
+import { fromCliProviderId, toCliProviderId } from '../../shared/cli-provider-route.js'
 
 /**
  * DSH LLM 运行时的最小结构。
@@ -60,7 +61,7 @@ export function createDshVirtualProviderRegistration(
   if (llm === undefined) return undefined
 
   const adapter: DshVirtualLlmAdapter = {
-    providerInfo: (provider) => ({ id: provider, name: `CodingNS ${provider}` }),
+    providerInfo: (provider) => ({ id: provider, name: `CodingNS ${fromCliProviderId(provider) ?? provider}` }),
     providerRetryPolicy: () => undefined,
     imageRequestPricing: () => undefined,
     listModels: async () => [],
@@ -81,7 +82,7 @@ export function createDshVirtualProviderRegistration(
   let currentProviders: string[] = []
 
   const setProviders = (providers: readonly CodingNsCliAdapterId[]): void => {
-    const nextProviders = [...new Set(providers.filter((provider) => provider.trim() !== ''))]
+    const nextProviders = [...new Set(providers.filter((provider) => provider.trim() !== '').map(toCliProviderId))]
     if (sameProviders(currentProviders, nextProviders)) return
 
     if (registration?.replace !== undefined) {

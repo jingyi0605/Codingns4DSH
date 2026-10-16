@@ -1944,10 +1944,10 @@ test('CLI 功能模块向 DSH 注册外部 Provider 的图片能力，流仍由 
   features.register(createCliAdaptersFeature({ registry }))
   await features.start('cliAdapters')
 
-  assert.deepEqual(registeredProviders, ['codex'])
+  assert.deepEqual(registeredProviders, ['codingns-cli-codex'])
   assert.notEqual(virtualAdapter, undefined)
-  assert.deepEqual(await virtualAdapter!.resolveModel('codex', 'gpt-5.5'), {
-    provider: 'codex',
+  assert.deepEqual(await virtualAdapter!.resolveModel('codingns-cli-codex', 'gpt-5.5'), {
+    provider: 'codingns-cli-codex',
     id: 'gpt-5.5',
     name: 'gpt-5.5',
     inputModalities: ['text', 'image'],
@@ -2179,7 +2179,7 @@ test('输入翻译保留用户原文，外部 Agent 收到纯译文且回复归�
   assert.equal(decision.messages[0]?.source?.codingnsTranslationInput?.translated, 'Répare ce problème')
 
   const request = await requestListener!({ agent: { id: 'translation-input' } }, async () => ({ provider: 'deepseek', model: 'deepseek-chat' }))
-  assert.deepEqual(request, { provider: 'codex', model: 'gpt-5.5' })
+  assert.deepEqual(request, { provider: 'codingns-cli-codex', model: 'gpt-5.5' })
 
   const chunks = []
   for await (const chunk of llmListener!({ sessionId: 'translation-input', messages: decision.messages }, async function* () {
@@ -2222,7 +2222,7 @@ test('外部 Agent 路由不继承 DSH 原生思考强度', async () => {
     { agent: { id: 'external-effort' } },
     async () => ({ provider: 'glor', model: 'deepseek-v4.1-flash', reasoningEffort: 'max', maxTokens: 4096 }),
   ) as Record<string, unknown>
-  assert.deepEqual(routed, { provider: 'command-code', model: 'deepseek/deepseek-v4.1-flash', maxTokens: 4096 })
+  assert.deepEqual(routed, { provider: 'codingns-cli-command-code', model: 'deepseek/deepseek-v4.1-flash', maxTokens: 4096 })
   assert.equal('reasoningEffort' in routed, false)
 
   // DSH 原生会话没有绑定外部适配器时，原生思考强度必须原样保留。
@@ -2464,7 +2464,7 @@ test('DSH 请求明确携带外部 provider 时恢复外部适配器路由', asy
   const chunks = []
   for await (const chunk of listener!({
     sessionId: 'dsh-restored-codex',
-    provider: 'codex',
+    provider: 'codingns-cli-codex',
     model: 'gpt-5.6-sol',
     messages: [{ role: 'user', source: { kind: 'user' }, content: '继续' }],
   }, async function* () { yield { type: 'finish', reason: { kind: 'stop' } } })) chunks.push(chunk)
@@ -2500,7 +2500,7 @@ test('DSH 首轮选择 Codex 后，未携带 provider 的第二轮仍沿用 Code
   const first: unknown[] = []
   for await (const chunk of listener!({
     sessionId: 'dsh-codex-persist',
-    provider: 'codex',
+    provider: 'codingns-cli-codex',
     model: 'gpt-5.6-sol',
     messages: [{ role: 'user', source: { kind: 'user' }, content: '第一轮' }],
   }, async function* () {})) first.push(chunk)
@@ -2544,7 +2544,7 @@ test('DSH 从 modelSelection.pending 和历史消息恢复 Codex 路由', async 
   const first: unknown[] = []
   for await (const chunk of listener!({
     sessionId: 'dsh-codex-shape',
-    modelSelection: { pending: { provider: 'codex', model: 'gpt-5.6-sol' } },
+    modelSelection: { pending: { provider: 'codingns-cli-codex', model: 'gpt-5.6-sol' } },
     messages: [{ role: 'user', source: { kind: 'user' }, content: '第一轮' }],
   }, async function* () {})) first.push(chunk)
   const second: unknown[] = []
@@ -2845,7 +2845,7 @@ test('Codex 新会话在首个 usage 到达前也使用 256K 上下文窗口', a
   })) chunks.push(chunk)
 
   assert.deepEqual(contexts, [{
-    provider: 'codex',
+    provider: 'codingns-cli-codex',
     model: 'gpt-5.6-sol',
     contextWindow: 258400,
     confirmed: true,
@@ -2904,7 +2904,7 @@ test('OpenCode 新会话在首个 usage 到达前写入已知上下文窗口', a
   })) { /* 消费完整流 */ }
 
   assert.deepEqual(contexts, [{
-    provider: 'opencode', model: 'deepseek/deepseek-v4.1-flash', contextWindow: 1_000_000, confirmed: true, source: 'catalog',
+    provider: 'codingns-cli-opencode', model: 'deepseek/deepseek-v4.1-flash', contextWindow: 1_000_000, confirmed: true, source: 'catalog',
   }])
 })
 
@@ -2940,7 +2940,7 @@ test('Command Code 新会话在首个 usage 到达前写入已知上下文窗口
   })) { /* 消费完整流 */ }
 
   assert.deepEqual(contexts, [{
-    provider: 'command-code',
+    provider: 'codingns-cli-command-code',
     model: 'deepseek/deepseek-v4.1-flash',
     contextWindow: 1_000_000,
     confirmed: true,

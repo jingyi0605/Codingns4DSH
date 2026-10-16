@@ -79,7 +79,7 @@ test('fresh Grok image prompt passes real DSH admission without changing the nat
     registerAdapter(_providers: string[], adapter: typeof virtual) { virtual = adapter; return () => { virtual = undefined } },
     async resolveModelInfo(provider: string, model: string) {
       checked.push({ provider, model })
-      return provider === 'grok' ? virtual!.resolveModel(provider, model) : { inputModalities: ['text'] }
+      return provider === 'codingns-cli-grok' ? virtual!.resolveModel(provider, model) : { inputModalities: ['text'] }
     },
   }
   const context = {
@@ -114,10 +114,10 @@ test('fresh Grok image prompt passes real DSH admission without changing the nat
     const set = (adapterId: string, modelId?: string) => table.resolve('cli/session/set')!.handler('session/set', { sessionId: agent.id, adapterId, ...(modelId ? { modelId } : {}) })
     await set('grok')
     assert.deepEqual(await send(), { accepted: true })
-    assert.deepEqual(checked.at(-1), { provider: 'grok', model: 'provider-default' })
+    assert.deepEqual(checked.at(-1), { provider: 'codingns-cli-grok', model: 'provider-default' })
     await set('grok', 'selected-grok-model')
     assert.deepEqual(await send(), { accepted: true })
-    assert.deepEqual(checked.at(-1), { provider: 'grok', model: 'selected-grok-model' })
+    assert.deepEqual(checked.at(-1), { provider: 'codingns-cli-grok', model: 'selected-grok-model' })
     assert.equal(nativeRef.current, defaultSelection)
     assert.equal(delivered.length, 2)
     registry.setEnabled('grok', false)

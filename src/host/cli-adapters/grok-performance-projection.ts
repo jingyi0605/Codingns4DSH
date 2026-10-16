@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION } from '../../shared/request-performance.js'
 import { createSessionPerformanceProjection } from './session-performance-projection.js'
+import { fromCliProviderId } from '../../shared/cli-provider-route.js'
 
 export const grokPerformanceProjection = createSessionPerformanceProjection(GROK_PERFORMANCE_PROJECTION, chunk => {
   const batch = chunk.codingnsRequestPerformance
@@ -20,7 +21,7 @@ export const grokContextProjection = {
   init: (): ContextState => ({}),
   apply(state: ContextState, event: { type: string; data: any }): ContextState {
     if (event.type === 'request/context') {
-      if (event.data.provider !== 'grok') return {}
+      if (event.data.provider !== 'grok' && fromCliProviderId(event.data.provider) !== 'grok') return {}
       // Step placeholders and the legacy meter's capacity anchor cannot replace
       // a live provider observation, including a resized window on the same model.
       return state

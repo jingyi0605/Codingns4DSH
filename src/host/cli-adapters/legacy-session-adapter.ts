@@ -1,4 +1,5 @@
 import type { CodingNsCliAdapterId } from '../../shared/contracts/cli-adapter.js'
+import { fromCliProviderId } from '../../shared/cli-provider-route.js'
 
 /** 当前插件注册的适配器；旧日志只能从这些稳定 ID 中选择，不能猜测任意品牌。 */
 export const KNOWN_CLI_ADAPTER_IDS = new Set<CodingNsCliAdapterId>([
@@ -39,6 +40,8 @@ export function hasLegacySessionAdapterHint(event: unknown): boolean {
   const data = asRecord(record?.data)
   const source = asRecord(asRecord(data?.message)?.source)
   if (source?.plugin === 'codingns4dsh' || source?.provider === 'codingns-external') return true
+  const provider = firstString(source?.provider, record?.type === 'request/context' ? data?.provider : undefined)
+  if (fromCliProviderId(provider) !== undefined) return true
   const adapterId = firstString(source?.adapterId, record?.type === 'request/context' ? data?.adapterId ?? data?.provider : undefined)
   return adapterId !== undefined && (adapterId === 'codebuddy-cn' || KNOWN_CLI_ADAPTER_IDS.has(adapterId))
 }
@@ -64,6 +67,7 @@ export function inspectLegacySessionAdapter(value: unknown): LegacySessionAdapte
   const events = snapshotEvents(record)
   let external = false
   const candidates = new Set<CodingNsCliAdapterId>()
+  const legacyProviders = new Set<CodingNsCliAdapterId>()
   for (const event of events) {
     const eventRecord = asRecord(event)
     if (eventRecord === null) continue
@@ -73,13 +77,25 @@ export function inspectLegacySessionAdapter(value: unknown): LegacySessionAdapte
     const sourceProvider = firstString(source?.adapterId, source?.provider)
     const pluginSource = source?.plugin === 'codingns4dsh'
     if (sourceProvider === 'codingns-external' || pluginSource) external = true
+    const providerAdapter = fromCliProviderId(firstString(source?.provider, eventRecord.type === 'request/context' ? data?.provider : undefined))
+    if (providerAdapter !== undefined) {
+      external = true
+      candidates.add(providerAdapter === 'codebuddy-cn' ? 'codebuddy' : providerAdapter)
+    }
     // 只有显式 adapterId 或插件自写的 source 才能作为来源证据；DSH 自己的
     // model provider 不能因为名字碰巧叫 codex 就被绑定到 Codex 适配器。
     addCandidate(candidates, firstString(source?.adapterId))
     if (pluginSource) addCandidate(candidates, sourceProvider)
-    if (eventRecord.type === 'request/context') addCandidate(candidates, firstString(data?.adapterId, data?.provider))
+    if (eventRecord.type === 'request/context') {
+      addCandidate(candidates, firstString(data?.adapterId))
+      addCandidate(legacyProviders, firstString(data?.provider))
+    }
   }
-  const adapterId = external && candidates.size === 1 ? [...candidates][0] : undefined
+  // Explicit ownership wins over older native request contexts whose API
+  // provider happens to share a CLI adapter's name.
+  const adapters = candidates.size > 0 ? candidates : legacyProviders
+  const candidate = external && adapters.size === 1 ? [...adapters][0] : undefined
+  const adapterId = candidate !== undefined && KNOWN_CLI_ADAPTER_IDS.has(candidate) ? candidate : undefined
   const parentSessionId = firstString(header?.parentSession)
   return {
     sessionId,
@@ -107,6 +123,7 @@ function snapshotEvents(record: Record<string, unknown>): readonly unknown[] {
 }
 
 function addCandidate(candidates: Set<string>, value: string | undefined): void {
+  value = fromCliProviderId(value) ?? value
   if (value === 'codebuddy-cn') {
     candidates.add('codebuddy')
     return

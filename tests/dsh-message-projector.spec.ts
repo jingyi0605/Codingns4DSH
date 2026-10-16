@@ -174,7 +174,7 @@ test('用量带上下文窗口时写入 DSH request/context 元数据', async ()
 
   assert.deepEqual(contexts, [{
     sessionId: 'session-context',
-    context: { provider: 'codex', model: 'gpt-5.3-codex', contextWindow: 258400, confirmed: true },
+    context: { provider: 'codingns-cli-codex', model: 'gpt-5.3-codex', contextWindow: 258400, confirmed: true },
   }])
 })
 
@@ -292,7 +292,7 @@ test('Provider usage 到达时先写入非 surface 采样，ContextMeter 不等�
   }])
   assert.deepEqual(contexts, [{
     sessionId: 'session-usage-sample',
-    context: { provider: 'opencode', model: 'deepseek/deepseek-flash', contextWindow: 1000000, confirmed: true },
+    context: { provider: 'codingns-cli-opencode', model: 'deepseek/deepseek-flash', contextWindow: 1000000, confirmed: true },
   }])
 
   const finish = await projector.push({ type: 'finish', reason: 'stop' })

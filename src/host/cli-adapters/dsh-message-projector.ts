@@ -1,3 +1,4 @@
+import { toCliProviderId } from '../../shared/cli-provider-route.js'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentQuestionResponse,
@@ -172,7 +173,7 @@ export class CodingNsDshMessageProjector {
     }
     if (event.contextWindow !== undefined) {
       this.options.nativeSessions?.appendRequestContext?.(this.options.sessionId, {
-        provider: this.options.adapterId,
+        provider: toCliProviderId(this.options.adapterId),
         model: event.contextModelId ?? this.options.modelId ?? this.options.adapterId,
         contextWindow: event.contextWindow,
         confirmed: true,

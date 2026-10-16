@@ -26,6 +26,7 @@ import type {
 import { CodingNsCliSessionStore } from './session-store.js'
 import { readLegacyImportedAdapterPreferences } from './legacy-session-settings.js'
 import { knownAntigravityContextWindow, knownClaudeContextWindow, knownCodexContextWindow, knownCommandCodeContextWindow, knownOpenCodeContextWindow } from './model-catalog.js'
+import { toCliProviderId } from '../../shared/cli-provider-route.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import type { CodingNsSettings, CodingNsCliAdapterPreference } from '../../shared/contracts/config.js'
 import type { DshHostSettingsScope } from '../../dsh-capabilities/host/config-forms-adapter.js'
@@ -614,7 +615,7 @@ export class CodingNsCliAdapterRegistry {
                   ? knownClaudeContextWindow(input.modelId)
                 : undefined
         if (nativeSessionReady) this.nativeSessions?.appendRequestContext?.(input.sessionId, {
-          provider: input.adapterId,
+          provider: toCliProviderId(input.adapterId),
           model: input.modelId ?? input.adapterId,
           ...(contextWindow === undefined ? {} : { contextWindow, confirmed: true, source: 'catalog' as const }),
         })

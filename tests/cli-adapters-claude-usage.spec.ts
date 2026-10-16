@@ -203,6 +203,6 @@ test('Claude Code 新会话在首个 usage 前写入已知上下文窗口', asyn
   })) { /* 消费完整流 */ }
 
   assert.deepEqual(contexts, [{
-    provider: 'claude-code', model: 'claude-sonnet-4-6', contextWindow: 200_000, confirmed: true, source: 'catalog',
+    provider: 'codingns-cli-claude-code', model: 'claude-sonnet-4-6', contextWindow: 200_000, confirmed: true, source: 'catalog',
   }])
 })
