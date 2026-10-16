@@ -97,7 +97,11 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       this.cachedBinary = binary.command
       return binary
     }
-    const runtime = this.resolveRuntime()
+    const previous = this.cachedRuntime
+    const runtime = resolveZCodeDesktopRuntime()
+    if (previous && (previous.entry !== runtime?.entry || previous.appVersion !== runtime.appVersion)) this.dispose()
+    this.cachedRuntime = runtime
+    this.cachedBinary = null
     if (runtime !== null) return { installed: true, version: runtime.appVersion, command: runtime.entry }
     return binary
   }

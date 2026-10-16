@@ -13,7 +13,7 @@ As a user, I want to install missing Agents and update installed Agents without 
 1. A completed missing detection shows Install. An installed Agent shows Update only after a comparable newer publisher release is confirmed, even when disabled or disconnected. Unknown, current, checking, and failed checks do not show Update.
 2. Pending or failed detection cannot be treated as a confirmed missing installation.
 3. Install previews the Host-selected official installer. Clicking Update starts the verified updater directly, then shows progress and cancellation with command details available on demand. Neither action presents an installation-method chooser.
-4. Detect ownership from the executable, symlinks, and package metadata. Preserve the package manager and installation location. Unidentified installations, application-managed runtimes, and migrations show guidance and a re-detect action without asking users to identify their installation method.
+4. Detect ownership from the executable, symlinks, and package metadata. Preserve the package manager and installation location. Identified ZCode desktop bundles on Windows/macOS update the owning app in place using its official release package. Unidentified installations, other application-managed runtimes, package-managed ZCode bundles, and migrations show guidance and a re-detect action without asking users to identify their installation method.
 5. Repeated detection, opening or closing progress, and completion refreshes retain exactly one row per registered Agent. Sibling rows and dialogs must have distinct React keys.
 
 ## R2: Official methods
@@ -22,7 +22,7 @@ As a user, I want the action to follow the Agent publisher's documented method f
 
 1. All 18 registered adapters have official installation/update information, including separate Qoder and Qoder CN entries.
 2. Run only fixed Host-owned commands. The browser supplies adapter, action, and method identifiers, never shell text.
-3. Desktop installers, interactive-only operations, unsupported platforms, and unverified methods show official guidance rather than an invented command.
+3. Desktop installers without a verified update path, interactive-only operations, unsupported platforms, and unverified methods show official guidance rather than an invented command. ZCode desktop updates verify the official manifest's package size and SHA-512 checksum before executing the Windows installer or replacing the macOS bundle.
 4. Legacy distribution migrations are explained and are not silently performed as routine updates.
 
 ## R3: Reliable execution and feedback
@@ -43,7 +43,7 @@ As a user, I want to see progress, errors, and the detected result.
 3. Return catalog data without waiting for release checks; show progress through the existing refresh icons and stop polling when checks settle.
 4. Failed, unsupported, or ambiguous checks remain distinguishable from current versions. A later refresh retries them. Installation changes and late responses cannot reuse stale availability.
 5. Resolve package identity in the background when needed. Keep Pi's actual npm package, CodeBuddy's npm/native sources, and Claude's Homebrew cask channel aligned with the updater. Do not classify all Pi 0.x versions as a legacy distribution.
-6. Check the public stable application manifest for identified ZCode bundled runtimes and label installation as app-managed. Explain remaining manual-check reasons; malformed metadata from a configured feed is an error.
+6. Check the public stable application manifest for identified ZCode bundled runtimes. Windows/macOS bundles with a supported in-place updater expose the regular Update action; remaining layouts retain the app-managed label. Read the installed app's package version on re-detection rather than requiring the app to launch and refresh its provider snapshot. Explain remaining manual-check reasons; malformed metadata from a configured feed is an error.
 
 ## R5: Dense responsive settings
 

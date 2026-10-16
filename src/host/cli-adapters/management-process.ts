@@ -3,12 +3,14 @@ import { homedir } from 'node:os'
 import { stripVTControlCharacters } from 'node:util'
 import { commandEnvironment, resolveCommandPath, terminateChildProcess, windowsShellInvocation, WINDOWS } from './process-utils.js'
 import type { ManagementCommand } from './management-methods.js'
+import { runZcodeUpdate } from './zcode-update.js'
 
 export type ManagementRunner = (command: ManagementCommand, signal: AbortSignal, onOutput: (text: string) => void) => Promise<number | null>
 
 /** Run a fixed publisher command without an interactive shell or privilege escalation. */
 export const runManagementCommand: ManagementRunner = async (command, signal, onOutput) => {
   signal.throwIfAborted()
+  if (command.zcodeUpdate) return runZcodeUpdate(command, signal, onOutput, runManagementCommand)
   const file = await resolveCommandPath(command.file)
   if (file === null) throw new Error(`Required command is unavailable: ${command.file}. Install the prerequisite and try again.`)
   signal.throwIfAborted()

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { WINDOWS } from './process-utils.js'
@@ -17,7 +17,7 @@ export interface CodingNsDesktopAppRuntime {
   readonly installRoot: string
   /** 随应用分发的 CLI 入口（Node 脚本）。 */
   readonly entry: string
-  /** 应用版本；来自桌面应用自己刷新出的运行时目录。 */
+  /** 已安装应用的包版本；无法读取包元数据时使用桌面端刷新的运行时版本。 */
   readonly appVersion: string | null
   /** 启动 CLI 所需的环境变量（provider 配置与数据目录）。 */
   readonly env: Readonly<Record<string, string>>
@@ -25,6 +25,30 @@ export interface CodingNsDesktopAppRuntime {
 
 const ZCODE_ENTRY_SEGMENTS = ['resources', 'glm', 'zcode.cjs'] as const
 const PROVIDER_CONFIG_SEGMENT = ['provider', 'zcode-builtin.json'] as const
+
+/** Read the installed app's version, which can be newer than its last launched provider snapshot. */
+export function readZcodePackagedVersion(resources: string): string | null {
+  let file: number | undefined
+  try {
+    file = openSync(join(resources, 'app.asar'), 'r')
+    const prefix = Buffer.alloc(16)
+    if (readSync(file, prefix, 0, 16, 0) !== 16) return null
+    const headerSize = prefix.readUInt32LE(4)
+    const jsonSize = prefix.readUInt32LE(12)
+    if (jsonSize > 16 * 1024 * 1024 || headerSize < jsonSize + 8) return null
+    const header = Buffer.alloc(jsonSize)
+    if (readSync(file, header, 0, jsonSize, 16) !== jsonSize) return null
+    const entry = JSON.parse(header.toString('utf8')).files?.['package.json']
+    const offset = Number(entry?.offset)
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(entry?.size) || entry.size <= 0 || entry.size > 65_536) return null
+    const bytes = Buffer.alloc(entry.size)
+    if (readSync(file, bytes, 0, entry.size, 8 + headerSize + offset) !== entry.size) return null
+    const metadata = JSON.parse(bytes.toString('utf8'))
+    if (metadata.name !== '@zcode/desktop') return null
+    const version: unknown = metadata.version
+    return typeof version === 'string' && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/u.test(version) ? version : null
+  } catch { return null } finally { if (file !== undefined) closeSync(file) }
+}
 
 function candidateRoots(appDirName: string): string[] {
   const roots = new Set<string>()
@@ -116,6 +140,7 @@ export function resolveZCodeDesktopRuntime(): CodingNsDesktopAppRuntime | null {
   const resourceRoot = entry.endsWith(join(...ZCODE_ENTRY_SEGMENTS))
     ? join(entry, '..', '..')
     : join(root, 'Contents', 'Resources')
+  const appVersion = readZcodePackagedVersion(resourceRoot) ?? runtime.appVersion
   const packaged = join(resourceRoot, 'config', ...PROVIDER_CONFIG_SEGMENT)
   const env: Record<string, string> = { ZCODE_DATA_BASE_DIR: home }
   const builtin = runtime.configFile ?? (existsSync(packaged) ? packaged : null)
@@ -123,8 +148,8 @@ export function resolveZCodeDesktopRuntime(): CodingNsDesktopAppRuntime | null {
     env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE = builtin
     env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE = personal
   }
-  if (runtime.appVersion !== null) env.ZCODE_APP_VERSION = runtime.appVersion
-  return { appId: 'zcode', appName: 'ZCode', installRoot: root, entry, appVersion: runtime.appVersion, env }
+  if (appVersion !== null) env.ZCODE_APP_VERSION = appVersion
+  return { appId: 'zcode', appName: 'ZCode', installRoot: root, entry, appVersion, env }
 }
 
 /** 启动桌面端 CLI 使用的 Node 运行时；桌面 Host 自身是 Electron，需要显式以 Node 方式复用。 */

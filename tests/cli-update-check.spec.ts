@@ -55,7 +55,7 @@ test('release sources cover supported CLIs and keep desktop/legacy distributions
   assert.equal(agentReleaseSource(adapter('qoder'), 'linux', 'x64')!.read('{"latest":"1.2.0"}'), '1.2.0')
 })
 
-test('ZCode bundled runtimes check the official stable manifest and identify app-managed updates', async context => {
+test('ZCode bundled runtimes check the official stable manifest and identify supported desktop updates', async context => {
   const installed = { ...adapter('zcode', '3.14.3'), command: '/Applications/ZCode.app/Contents/resources/glm/zcode.cjs' }
   for (const [platform, arch, expected] of [['darwin', 'arm64', 'darwin-aarch64'], ['win32', 'x64', 'windows-x86_64'], ['linux', 'x64', 'linux-x86_64']] as const) {
     const source = agentReleaseSource(installed, platform, arch)!
@@ -69,7 +69,8 @@ test('ZCode bundled runtimes check the official stable manifest and identify app
   const result = service.catalog([installed])[0]!.update!
   assert.equal(result.state, 'available')
   assert.equal(result.latestVersion, '3.15.3')
-  assert.equal(result.manualUpdate, true)
+  assert.equal(result.manualUpdate, undefined)
+  assert.equal(agentReleaseSource(installed, 'linux', 'x64')?.manualUpdate, true)
   assert.equal(agentReleaseSource(adapter('zcode', '0.1.0'), 'darwin', 'arm64'), undefined, 'an unrelated standalone CLI is not compared to the app')
 })
 

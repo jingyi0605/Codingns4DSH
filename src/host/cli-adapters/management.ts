@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { realpath } from 'node:fs/promises'
 import type { CodingNsCliAdapterDescriptor } from '../../shared/contracts/cli-adapter.js'
 import type { CliManagementAction, CliManagementOperation, CliManagementPlan } from '../../shared/contracts/cli-management.js'
 import { CodingNsRpcError } from '../rpc-table.js'
@@ -44,8 +45,12 @@ export class CliManagementService {
     if (adapter.detectionState !== 'ready' || adapter.detectionFailure) throw failure('DETECTION_FAILED', 'Re-detect this Agent successfully before installing or updating it.')
     if ((action === 'install') === adapter.installed) throw failure('STATE_CHANGED', 'The installation state changed. Close this dialog and re-detect the Agent.')
     const platform = this.options.platform ?? process.platform
+    // ZCode's bundled .cjs is read by Node, so it need not have POSIX executable permission.
+    const resolveCommand = this.options.resolveCommand ?? ((command: string) => adapter.id === 'zcode'
+      ? realpath(command).catch(() => null)
+      : resolveManagementInstallation(command, AGENT_MANAGEMENT_DEFINITIONS[adapter.id]?.npm))
     const resolved = action === 'update' && adapter.command
-      ? await (this.options.resolveCommand ?? ((command: string) => resolveManagementInstallation(command, AGENT_MANAGEMENT_DEFINITIONS[adapter.id]?.npm)))(adapter.command) : null
+      ? await resolveCommand(adapter.command) : null
     this.assertAvailable()
     const installation = action === 'update' ? { ...adapter, command: resolved } : adapter
     const { sourceUrl, methods } = managementMethods(installation, action, platform, this.options.arch ?? process.arch)

@@ -1,6 +1,7 @@
 import type { CodingNsCliAdapterDescriptor } from '../../shared/contracts/cli-adapter.js'
 import { AGENT_MANAGEMENT_DEFINITIONS, managementNpmPackage } from './management-methods.js'
 import { codexStandaloneDirectory, resolveManagementInstallation } from './management-installation.js'
+import { zcodeManifestUrl, zcodeUpdateRoot } from './zcode-update.js'
 
 type Update = NonNullable<CodingNsCliAdapterDescriptor['update']>
 interface ReleaseSource {
@@ -31,11 +32,10 @@ const npmSource = (name: string): ReleaseSource => ({ url: `https://registry.npm
 export function agentReleaseSource(adapter: CodingNsCliAdapterDescriptor, platform: NodeJS.Platform, arch: string): ReleaseSource | undefined {
   const definition = AGENT_MANAGEMENT_DEFINITIONS[adapter.id]
   if (adapter.id === 'zcode') {
-    if (!/[\\/]resources[\\/]glm[\\/]zcode\.cjs$/iu.test(adapter.command ?? '') || !['darwin', 'win32', 'linux'].includes(platform) || !['x64', 'arm64'].includes(arch)) return undefined
-    const os = platform === 'win32' ? 'windows' : platform
-    const cpu = arch === 'arm64' ? 'aarch64' : 'x86_64'
-    return { url: `https://zcode.z.ai/api/v1/releases/electron/manifest?platform=${os}-${cpu}&channel=1`,
-      read: text => text.match(/^version:\s*["']?(\d+\.\d+\.\d+(?:-[\w.-]+)?)["']?\s*$/mu)?.[1], manualUpdate: true }
+    const url = zcodeManifestUrl(platform, arch)
+    if (!/[\\/]resources[\\/]glm[\\/]zcode\.cjs$/iu.test(adapter.command ?? '') || !url) return undefined
+    return { url, read: text => text.match(/^version:\s*["']?(\d+\.\d+\.\d+(?:-[\w.-]+)?)["']?\s*$/mu)?.[1],
+      ...(!zcodeUpdateRoot(adapter.command ?? '', platform, arch) ? { manualUpdate: true } : {}) }
   }
   if (!definition || definition.manual) return undefined
   const brew = (adapter.command ?? '').replaceAll('\\', '/').match(/\/(Cellar|Caskroom)\/([^/]+)\//u)
