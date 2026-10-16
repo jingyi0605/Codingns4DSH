@@ -10,6 +10,8 @@ import {
   startWorkspaceSessionVisibilityDom,
 } from '../data/build/dist/client/workspace-session-visibility-dom.js'
 import { loadWorkspaceRecords } from '../data/build/dist/client/workspace-session-archive-dom.js'
+import { workspaceSessionEnhancementFeature } from '../data/build/dist/client/features/workspace-session-enhancement.js'
+import { FeatureResourceScopeImpl } from '../data/build/dist/features/index.js'
 
 test('工作区基线读取保留标题并兼容缺少标题的旧记录', async () => {
   const records = await loadWorkspaceRecords({
@@ -32,6 +34,102 @@ test('工作区基线读取保留标题并兼容缺少标题的旧记录', async
     { id: 'workspace-a', title: '项目 A' },
     { id: 'workspace-b', title: '/repo/b' },
   ])
+})
+
+test('Hidden workspace names follow the native store, including unmounted remote workspaces', async (t) => {
+  const root = new FakeElement('div')
+  root.setAttribute('role', 'tree')
+  const filterTrigger = new FakeElement('button')
+  filterTrigger.setAttribute('aria-label', 'View options')
+  const local = workspaceRow('workspace-a', 'Local project')
+  root.append(filterTrigger, local.container)
+  const dom = new FakeDocument(root)
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom })
+  const resources = new FeatureResourceScopeImpl()
+  t.after(async () => {
+    await resources.dispose()
+    if (previousDocument === undefined) delete globalThis.document
+    else Object.defineProperty(globalThis, 'document', previousDocument)
+  })
+  let snapshot = {
+    items: [
+      { workspaceId: 'workspace-a', title: 'Local project', path: '/repo/a', sessionIds: [] },
+      { workspaceId: 'remote-workspace', title: 'Remote project', path: '/remote/repo', sessionIds: [] },
+    ],
+    archivedSessionIds: [],
+  }
+  const storeListeners = new Set()
+  const store = {
+    getSnapshot: () => snapshot,
+    subscribe(listener) {
+      storeListeners.add(listener)
+      return () => storeListeners.delete(listener)
+    },
+  }
+  let settings = { workspaceSessionEnhancement: {
+    showWorkspaceHiding: true,
+    hiddenWorkspaceIds: ['workspace-a', 'remote-workspace'],
+    showAdapterLogo: false,
+    showArchivedSessions: false,
+    showSubscriptionUsage: false,
+    showQuickPhrases: false,
+    showSkillQuickReference: false,
+  } }
+  const settingsListeners = new Set()
+  let followCalls = 0
+  workspaceSessionEnhancementFeature.start({
+    descriptor: workspaceSessionEnhancementFeature.descriptor,
+    resources,
+    services: {
+      uiContext: { get(name) { return name === 'workspaces' ? { list: store } : undefined } },
+      remote: { workspace: { follow() { followCalls += 1; throw new Error('Separate stream unavailable') } } },
+      settings: {
+        getSnapshot: () => ({ value: settings }),
+        subscribe(listener) { settingsListeners.add(listener); return () => settingsListeners.delete(listener) },
+        async mutate(operations) { settings.workspaceSessionEnhancement.hiddenWorkspaceIds = operations[0].value },
+      },
+    },
+  })
+  await nextTurn()
+
+  const filterMenu = new FakeElement('div')
+  filterMenu.setAttribute('role', 'menu')
+  filterMenu.setAttribute('aria-label', 'View options')
+  filterMenu.append(menuItem('Group by workspace'))
+  root.appendChild(filterMenu)
+  filterTrigger.dispatch('click')
+  await nextTurn()
+  filterMenu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`).dispatch('click')
+  await timerTurn()
+  await nextTurn()
+  const readNames = () => dom.querySelector(`[${WORKSPACE_SESSION_HIDDEN_LIST_ATTRIBUTE}]`)
+    ?.querySelectorAll('[role="menuitem"]').map((item) => item.textContent)
+  assert.deepEqual(readNames(), ['Remote project', 'Local project'])
+  assert.equal(followCalls, 0, 'The native store must supply names without a separate workspace stream')
+  assert.equal(storeListeners.size, 1)
+
+  local.container.remove()
+  snapshot = { ...snapshot, items: snapshot.items.map((item) => ({ ...item, title: `${item.title} renamed` })) }
+  for (const listener of [...storeListeners]) listener()
+  await nextTurn()
+  assert.deepEqual(readNames(), ['Remote project renamed', 'Local project renamed'])
+
+  const restore = dom.querySelector(`[${WORKSPACE_SESSION_HIDDEN_LIST_ATTRIBUTE}]`).querySelector('[role="menuitem"]')
+  restore.dispatch('click')
+  await nextTurn()
+  assert.deepEqual(settings.workspaceSessionEnhancement.hiddenWorkspaceIds, ['workspace-a'])
+
+  settings = { workspaceSessionEnhancement: { ...settings.workspaceSessionEnhancement, showWorkspaceHiding: false } }
+  for (const listener of [...settingsListeners]) listener()
+  assert.equal(storeListeners.size, 0)
+  assert.equal(dom.querySelector(`[${WORKSPACE_SESSION_HIDDEN_LIST_ATTRIBUTE}]`), null)
+
+  settings = { workspaceSessionEnhancement: { ...settings.workspaceSessionEnhancement, showWorkspaceHiding: true } }
+  for (const listener of [...settingsListeners]) listener()
+  assert.equal(storeListeners.size, 1)
+  await resources.dispose()
+  assert.equal(storeListeners.size, 0)
 })
 
 test('工作区菜单隐藏动作与筛选恢复列表不破坏原生菜单', async () => {
@@ -174,6 +272,7 @@ test('工作区菜单隐藏动作与筛选恢复列表不破坏原生菜单', as
   toggle.dispatch('click')
   const restore = currentFooter?.querySelector('[role="menuitem"]')
   assert.ok(restore)
+  assert.equal(restore.textContent, '项目 A')
   restore.dispatch('click')
   await nextTurn()
   assert.deepEqual(persisted.at(-1), ['workspace-b'])
