@@ -28,7 +28,7 @@ export function createQuickAppHttpHandler(launches: QuickAppLaunches, files: Qui
       res.setHeader('Cache-Control', 'no-store')
       res.setHeader('Referrer-Policy', lease.isolation === 'lan-port' ? 'same-origin' : 'no-referrer')
       res.setHeader('X-Content-Type-Options', 'nosniff')
-      res.setHeader('Content-Security-Policy', `${proxy ? 'sandbox allow-scripts allow-forms allow-downloads; ' : ''}frame-ancestors ${new URL(lease.uiOrigin).origin}; worker-src 'none'; object-src 'none'`)
+      res.setHeader('Content-Security-Policy', `${proxy ? 'sandbox allow-scripts allow-forms allow-downloads; ' : ''}frame-ancestors ${lease.uiOrigin}; worker-src 'none'; object-src 'none'`)
       if (req.headers.host !== new URL(lease.origin).host) deny('Wrong app Host header.')
       const cookies = (req.headers.cookie ?? '').split(';').map(part => part.trim()).filter(part => part.startsWith(`${lease.cookieName}=`))
       if (cookies.length !== 1) throw new QuickAppError(401, 'QUICK_APP_UNAUTHENTICATED', 'App authentication required.')

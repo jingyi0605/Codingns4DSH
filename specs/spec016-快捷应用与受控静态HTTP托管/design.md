@@ -1,5 +1,7 @@
 # Design — Quick Apps and controlled static HTTP hosting
 
+Compatibility amendment (2026-10-16): verified the native footer slot and sessionless workspace listing in cached DSH 0.2.0-rc.2 packages. Quick Apps capability routes now use the existing bounded plugin compatibility range. The Host adapter normalizes rc.2's `host`/actual `port` to the newer origin contract. Desktop's exact `dsh-app://app` embedding origin uses the existing loopback HTTP listener with the same scoped sandbox; HTTP(S) behavior is preserved. Evidence: `docs/调查报告/20261016-快捷应用rc2接口兼容核查.md` and `docs/开发记录/20261016-快捷应用支持rc2记录.md`. This source amendment does not constitute an installed Desktop deployment or acceptance result.
+
 Current transport amendment (2026-10-16): the user selected a sandboxed preview through the existing DSH Host. `quick-app.proxy` is now the default when available. The existing WebServer serves a scoped launch path; iframe and response CSP enforce an opaque origin. The native viewer and Host workspace grants remain unchanged. Relative resources and the optional API use this path, including PeerHost resources relayed through the controlling Host. No new listener, certificate or domain is required. Browser storage and unchanged root-relative URLs are not promised in this mode. Earlier dedicated-origin design below describes the retained compatibility providers. Implementation, LAN regression recovery and acceptance changes: `specs/spec016-快捷应用与受控静态HTTP托管/docs/20261016-主机代理预览与局域网回归修复.md`.
 
 Status (2026-10-16): source implementation includes the default Host proxy, retained dedicated HTTPS providers, PeerHost routing and native viewers. Local HTTP/browser evidence is available; installed-platform/device acceptance and legacy service consolidation remain incomplete. Current acceptance and commit records are in `specs/spec016-快捷应用与受控静态HTTP托管/docs/20261015-实现验收矩阵与剩余条件.md`.
@@ -13,7 +15,7 @@ Serve a selected workspace directory as a small website, open it from a persiste
 ### 1.2 Constraints and existing evidence
 
 - Host: Node and existing DSH authentication/connection services. Client: existing plugin framework, feature registry, settings bridge, localization, and DSH slots.
-- DSH 0.2.1-alpha.3 exposes `sidebar.footer.action`, document-renderer registrations, and `webServer.register({ kind, path, handler })`. The WebServer service supplies routing, not a ready-made workspace static server.
+- DSH 0.2.0-rc.2 already exposes `sidebar.footer.action`, sessionless workspace listing, and `webServer.register({ kind, path, handler })`; its listener address requires an adapter because `getOrigin()` is absent. The current 0.2.1-alpha.3 route remains supported. The WebServer service supplies routing, not a ready-made workspace static server.
 - The existing native HTML packer is a Blob-based preview with limited direct JS/CSS packaging. It is not the required HTTP app runtime.
 - `src/client/native-workspace-store.ts` provides workspace identities, including PeerHost records. `src/host/index.ts` resolves workspace roots. New operations must fail if that exact workspace cannot be resolved, with no fallback to another session/root.
 - `src/client/settings-bridge.ts` supports Host-backed settings for remote clients. Shortcut metadata can use that boundary; temporary launch secrets must not be put in globally mirrored settings.

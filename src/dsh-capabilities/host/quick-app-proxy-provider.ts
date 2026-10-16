@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { request, type IncomingMessage, type ServerResponse } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { QuickAppOriginLease, QuickAppOriginProvider } from './quick-app-origin-adapter.js'
-import { QUICK_APP_PROXY_PREFIX } from '../../shared/quick-app-proxy-path.js'
+import { QUICK_APP_DESKTOP_ORIGIN, QUICK_APP_PROXY_PREFIX } from '../../shared/quick-app-proxy-path.js'
 import { QUICK_APP_LIMITS, type QuickAppProxyRequest, type QuickAppProxyResponse } from '../../shared/contracts/quick-apps.js'
 import { quickAppProxyBase } from '../../shared/quick-app-proxy-path.js'
 import type { QuickAppProxyServer } from './quick-app-proxy-adapter.js'
@@ -15,12 +15,22 @@ export class QuickAppProxyProvider implements QuickAppOriginProvider {
   private readonly handlers = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>()
   private releaseRoute: (() => void | Promise<void>) | undefined
   constructor(private readonly server: QuickAppProxyServer) {}
+  private previewOrigin(uiOrigin?: string): string | undefined {
+    try {
+      const desktop = uiOrigin === QUICK_APP_DESKTOP_ORIGIN
+      const origin = desktop ? this.server.getOrigin() : uiOrigin!
+      const url = new URL(origin)
+      if (!['http:', 'https:'].includes(url.protocol) || url.origin !== origin) return undefined
+      if (desktop && (url.protocol !== 'http:' || url.hostname !== '127.0.0.1')) return undefined
+      return origin
+    } catch { return undefined }
+  }
   available(uiOrigin?: string): boolean {
-    try { const url = new URL(uiOrigin!); return !this.stopped && ['http:', 'https:'].includes(url.protocol) && url.origin === uiOrigin } catch { return false }
+    return !this.stopped && this.previewOrigin(uiOrigin) !== undefined
   }
   async open(handler: (req: IncomingMessage, res: ServerResponse) => void, uiOrigin?: string): Promise<QuickAppOriginLease> {
-    if (!this.available(uiOrigin)) throw Object.assign(new Error('The Host preview route is unavailable on this connection.'), { code: 'QUICK_APP_ORIGIN_UNAVAILABLE' })
-    const origin = uiOrigin!
+    const origin = this.previewOrigin(uiOrigin)
+    if (this.stopped || !origin) throw Object.assign(new Error('The Host preview route is unavailable on this connection.'), { code: 'QUICK_APP_ORIGIN_UNAVAILABLE' })
     const basePath = `${QUICK_APP_PROXY_PREFIX}${randomBytes(32).toString('base64url')}/`
     const cookieName = 'quickapp-proxy'
     let credential: string | undefined
@@ -49,7 +59,7 @@ export class QuickAppProxyProvider implements QuickAppOriginProvider {
     })
     const dispose = async () => { if (!active) return; active = false; credential = undefined; this.handlers.delete(basePath); this.releases.delete(dispose) }
     this.releases.add(dispose)
-    return { origin, uiOrigin: origin, ownerHostId: 'local', remote: false, isolation: 'sandbox-proxy', basePath, cookieName,
+    return { origin, uiOrigin: uiOrigin!, ownerHostId: 'local', remote: false, isolation: 'sandbox-proxy', basePath, cookieName,
       activate: async (value, path) => {
         if (!active) throw new Error('Preview closed.')
         credential = value

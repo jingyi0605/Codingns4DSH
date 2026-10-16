@@ -1,6 +1,7 @@
 import type { CodingNsRpcClient } from '../features/types.js'
-import { callCodingNsRpcResult } from '../rpc-call.js'
 import type { QuickApp, QuickAppDocument } from '../../shared/contracts/quick-apps.js'
+import { QUICK_APP_DESKTOP_ORIGIN } from '../../shared/quick-app-proxy-path.js'
+import { callCodingNsRpcResult } from '../rpc-call.js'
 
 /** The controlling Host keeps metadata; no active conversation or browser storage is consulted. */
 export class QuickAppsClient {
@@ -9,7 +10,8 @@ export class QuickAppsClient {
   constructor(private readonly rpc: CodingNsRpcClient) {}
   async call<T>(action: string, payload: unknown = {}): Promise<T> {
     // Embedding choice is checked against operator configuration; it never grants file access.
-    const uiOrigin = typeof location === 'object' ? location.origin : undefined
+    const uiOrigin = typeof location !== 'object' ? undefined
+      : location.protocol === 'dsh-app:' && location.host === 'app' ? QUICK_APP_DESKTOP_ORIGIN : location.origin
     const input = (action === 'list' || action === 'launch') && uiOrigin ? { ...(payload as object), uiOrigin } : payload
     const result = await callCodingNsRpcResult(this.rpc, `quickApps/${action}`, input)
     if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })

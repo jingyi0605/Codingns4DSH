@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { QuickAppRuntimeReason, QuickAppProxyRequest, QuickAppProxyResponse } from '../../shared/contracts/quick-apps.js'
-import { quickAppProxyBase } from '../../shared/quick-app-proxy-path.js'
+import { QUICK_APP_DESKTOP_ORIGIN, quickAppProxyBase } from '../../shared/quick-app-proxy-path.js'
 
 /** Internal service supplied by a verified transport composition, never by an RPC payload. */
 export interface QuickAppOriginLease {
@@ -44,7 +44,10 @@ export function validateQuickAppOrigin(lease: QuickAppOriginLease, ownerHostId: 
   const app = new URL(lease.origin)
   const ui = new URL(lease.uiOrigin)
   if (lease.isolation === 'sandbox-proxy') {
-    if (!['http:', 'https:'].includes(ui.protocol) || ui.origin !== lease.uiOrigin || app.origin !== lease.origin || app.origin !== ui.origin
+    const matchesUi = lease.uiOrigin === QUICK_APP_DESKTOP_ORIGIN
+      ? app.protocol === 'http:' && app.hostname === '127.0.0.1' && !lease.remote
+      : ['http:', 'https:'].includes(ui.protocol) && ui.origin === lease.uiOrigin && app.origin === ui.origin
+    if (!matchesUi || app.origin !== lease.origin
       || lease.ownerHostId !== ownerHostId || !lease.basePath || quickAppProxyBase(lease.basePath) !== lease.basePath) throw new Error(QUICK_APP_ORIGIN_UNAVAILABLE)
     return
   }

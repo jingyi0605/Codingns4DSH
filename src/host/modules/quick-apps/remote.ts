@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { QuickApp, QuickAppProxyRequest, QuickAppProxyResponse } from '../../../shared/contracts/quick-apps.js'
 import { readBody } from './static-handler.js'
 import { QUICK_APP_LIMITS } from '../../../shared/contracts/quick-apps.js'
+import { QUICK_APP_DESKTOP_ORIGIN } from '../../../shared/quick-app-proxy-path.js'
 import { parseVirtualWorkspaceId } from '../../../shared/contracts/peer-host.js'
 import { validateQuickAppOrigin, type QuickAppOriginProvider } from '../../../dsh-capabilities/host/quick-app-origin-adapter.js'
 import { QuickAppRegistry, parseDefinition, quickAppDefinitionKey } from './registry.js'
@@ -97,7 +98,9 @@ export class QuickAppRemoteController {
       try { if (result.kind === 'html' && result.isolation === 'sandbox-proxy') {
         if (this.proxy?.isolation !== 'sandbox-proxy') throw new QuickAppError(503, 'QUICK_APP_RELAY_UNAVAILABLE', 'The controlling Host needs the workspace preview proxy.')
         const remoteBase = result.basePath
-        validateQuickAppOrigin({ ...result, uiOrigin: uiOrigin ?? '', ownerHostId: app.hostId, cookieName: 'quickapp-proxy', remote: true,
+        // Desktop resources stay behind the authenticated relay; only the controlling lease reaches the browser.
+        const ownerUiOrigin = uiOrigin === QUICK_APP_DESKTOP_ORIGIN ? result.origin : uiOrigin ?? ''
+        validateQuickAppOrigin({ ...result, uiOrigin: ownerUiOrigin, ownerHostId: app.hostId, cookieName: 'quickapp-proxy', remote: true,
           activate: async () => ({ url: '' }), dispose: async () => undefined }, app.hostId, this.origins)
         if (!result.url.startsWith(result.origin + remoteBase)) deny('Invalid remote preview address.')
         const lease = await this.proxy.open((req, res) => {
