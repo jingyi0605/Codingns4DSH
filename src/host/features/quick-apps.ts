@@ -1,6 +1,6 @@
 import type { FeatureModule } from '../../shared/contracts/feature.js'
 import type { CodingNsHostServices } from './types.js'
-import { QuickAppRegistry } from '../modules/quick-apps/registry.js'
+import { QuickAppRegistry, quickAppDefinitionKey } from '../modules/quick-apps/registry.js'
 import { QuickAppService } from '../modules/quick-apps/service.js'
 import { QuickAppError } from '../modules/quick-apps/errors.js'
 import { QuickAppRemoteController, QuickAppRemoteOwner, quickAppTargetWorkspace } from '../modules/quick-apps/remote.js'
@@ -63,6 +63,7 @@ export function createQuickAppsFeature(): FeatureModule<CodingNsHostServices> {
           }))
           return local
         }
+        if (action === 'reorder') return registry.reorder(input.apps)
         if (action === 'upsert') {
           const previousId = (input.app as { id?: string } | undefined)?.id
           const previous = previousId ? registry.get(previousId) : undefined
@@ -105,7 +106,7 @@ export function createQuickAppsFeature(): FeatureModule<CodingNsHostServices> {
           const result = await remote.launch(app, principal, uiOrigin, peer?.signal) as { kind: string; launchId?: string }
           let current: QuickApp | undefined
           try { current = registry.get(id) } catch { /* Removal while launch was in flight. */ }
-          if (JSON.stringify(current) !== JSON.stringify(app)) {
+          if (!current || quickAppDefinitionKey(current) !== quickAppDefinitionKey(app)) {
             if (result.launchId) await remote.close(result.launchId, principal)
             conflict()
           }

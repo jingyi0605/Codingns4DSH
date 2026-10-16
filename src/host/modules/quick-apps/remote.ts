@@ -4,7 +4,7 @@ import { readBody } from './static-handler.js'
 import { QUICK_APP_LIMITS } from '../../../shared/contracts/quick-apps.js'
 import { parseVirtualWorkspaceId } from '../../../shared/contracts/peer-host.js'
 import { validateQuickAppOrigin, type QuickAppOriginProvider } from '../../../dsh-capabilities/host/quick-app-origin-adapter.js'
-import { QuickAppRegistry, parseDefinition } from './registry.js'
+import { QuickAppRegistry, parseDefinition, quickAppDefinitionKey } from './registry.js'
 import { QuickAppService } from './service.js'
 import { deny, QuickAppError } from './errors.js'
 
@@ -53,7 +53,7 @@ export class QuickAppRemoteOwner {
         fileAccess: candidate.fileAccess, runtimeReason: this.origins?.diagnostic?.(uiOrigin), isolation: this.origins?.isolation }
       if (action === 'revoke') { await this.service.invalidate(id); this.apps = this.apps.filter(item => item.id !== id); return { ok: true } }
       await this.registry.validate(candidate)
-      if (!app || JSON.stringify({ ...app, revision: 0 }) !== JSON.stringify({ ...candidate, revision: 0 })) {
+      if (!app || quickAppDefinitionKey(app) !== quickAppDefinitionKey(candidate)) {
         if (!app && this.apps.length >= QUICK_APP_LIMITS.shortcuts) throw new QuickAppError(429, 'QUICK_APP_LIMIT', 'Too many remote shortcuts for this module lifetime.')
         await this.service.invalidate(id)
         app = { ...candidate, revision: (app?.revision ?? 0) + 1 }
@@ -146,7 +146,7 @@ export class QuickAppRemoteController {
   owns(id: string): boolean { return this.active.has(id) }
   async document(id: string, principal: string, input: Record<string, unknown>, currentApp: (id: string) => QuickApp): Promise<unknown> {
     const launch = this.active.get(id)
-    if (!launch || launch.principal !== principal || launch.expiresAt <= Date.now() || JSON.stringify(currentApp(launch.app.id)) !== JSON.stringify(launch.app)) deny()
+    if (!launch || launch.principal !== principal || launch.expiresAt <= Date.now() || quickAppDefinitionKey(currentApp(launch.app.id)) !== quickAppDefinitionKey(launch.app)) deny()
     return this.call(launch.app, 'document', { operation: input.operation, path: input.path, content: input.content, version: input.version, id: launch.targetId })
   }
   async close(id: string, principal: string): Promise<void> {

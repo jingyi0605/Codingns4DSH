@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { realpath } from 'node:fs/promises'
 import type { QuickApp, QuickAppPermissions } from '../../../shared/contracts/quick-apps.js'
 import { QUICK_APP_LIMITS } from '../../../shared/contracts/quick-apps.js'
-import type { QuickAppRegistry } from './registry.js'
+import { quickAppDefinitionKey, type QuickAppRegistry } from './registry.js'
 import { deny, QuickAppError } from './errors.js'
 
 export interface QuickAppLaunch {
@@ -46,7 +46,7 @@ export class QuickAppLaunches {
       void this.revoke(launch.id).catch(() => undefined)
       throw new QuickAppError(410, 'QUICK_APP_REVOKED', 'The shortcut was removed.')
     }
-    if (JSON.stringify(current) !== JSON.stringify(launch.app) || this.registry.root(current) !== launch.workspaceReference) {
+    if (quickAppDefinitionKey(current) !== quickAppDefinitionKey(launch.app) || this.registry.root(current) !== launch.workspaceReference) {
       void this.revoke(launch.id).catch(() => undefined)
       throw new QuickAppError(410, 'QUICK_APP_REVOKED', 'The shortcut or workspace changed.')
     }

@@ -61,6 +61,26 @@ export class QuickAppRegistry {
       await this.storage.write(this.list().filter(app => app.id !== id))
     })
   }
+  reorder(input: unknown): Promise<readonly QuickApp[]> {
+    return this.serialize(async () => {
+      if (!Array.isArray(input) || input.length > QUICK_APP_LIMITS.shortcuts) deny('Invalid shortcut order.')
+      const expected = new Map<string, number>()
+      for (const item of input) {
+        if (!item || typeof item.id !== 'string' || !Number.isSafeInteger(item.expectedRevision) || expected.has(item.id)) deny('Invalid shortcut order.')
+        expected.set(item.id, item.expectedRevision)
+      }
+      const apps = this.list()
+      if (apps.length !== expected.size || apps.some(app => expected.get(app.id) !== app.revision)) conflict()
+      const byId = new Map(apps.map(app => [app.id, app]))
+      const ordered = [...expected.keys()].map((id, order) => {
+        const app = byId.get(id)!
+        return app.order === order ? app : { ...app, order, revision: app.revision + 1 }
+      })
+      // Ordering only changes metadata, including shortcuts whose Host or source is unavailable.
+      if (ordered.some(app => app !== byId.get(app.id))) await this.storage.write(ordered)
+      return ordered
+    })
+  }
   revokeWorkspaceAccess(id: string, expectedRevision: number): Promise<QuickApp> {
     return this.serialize(async () => {
       const app = this.get(id)
@@ -82,6 +102,12 @@ export class QuickAppRegistry {
     this.pending = next
     return next
   }
+}
+
+/** Ordering revisions protect metadata writes without changing launch files or permissions. */
+export function quickAppDefinitionKey(app: QuickApp): string {
+  const { order: _order, revision: _revision, ...definition } = app
+  return JSON.stringify(definition)
 }
 
 function text(value: unknown): string {

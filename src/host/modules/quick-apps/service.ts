@@ -3,7 +3,7 @@ import { realpath } from 'node:fs/promises'
 import { QUICK_APP_ORIGIN_UNAVAILABLE, validateQuickAppOrigin, type QuickAppOriginProvider } from '../../../dsh-capabilities/host/quick-app-origin-adapter.js'
 import type { QuickAppPermissions, QuickAppProxyRequest, QuickAppProxyResponse } from '../../../shared/contracts/quick-apps.js'
 import { QUICK_APP_LIMITS } from '../../../shared/contracts/quick-apps.js'
-import { QuickAppRegistry, parsePermissions } from './registry.js'
+import { QuickAppRegistry, parsePermissions, quickAppDefinitionKey } from './registry.js'
 import { QuickAppLaunches } from './launches.js'
 import { QuickAppFileApi } from './file-api.js'
 import { QuickAppDocuments } from './documents.js'
@@ -41,8 +41,8 @@ export class QuickAppService {
     await this.launches.revokeApp(id)
     const workspaceRoot = await realpath(this.registry.root(app))
     const codeRevision = await quickAppCodeRevision(workspaceRoot, app)
-    if (this.stopped || JSON.stringify(this.registry.get(id)) !== JSON.stringify(app)) deny()
-    this.approvals.set(id, { definition: JSON.stringify(app), workspaceRoot, permissions: parsed, codeRevision })
+    if (this.stopped || quickAppDefinitionKey(this.registry.get(id)) !== quickAppDefinitionKey(app)) deny()
+    this.approvals.set(id, { definition: quickAppDefinitionKey(app), workspaceRoot, permissions: parsed, codeRevision })
   }
   launch(id: string, principal: string, connectionSignal?: AbortSignal, uiOrigin?: string): Promise<unknown> {
     if (this.stopped) return Promise.reject(new QuickAppError(410, 'QUICK_APP_REVOKED', 'Quick Apps is disabled.'))
@@ -83,7 +83,7 @@ export class QuickAppService {
       validateQuickAppOrigin(lease, this.registry.hostId, this.origins)
       if (lease.isolation !== 'sandbox-proxy') this.origins.add(lease.origin)
       const approved = this.approvals.get(id)
-      const trusted = app.fileAccess !== 'workspace' && approved?.definition === JSON.stringify(app) && approved.workspaceRoot === await realpath(this.registry.root(app))
+      const trusted = app.fileAccess !== 'workspace' && approved?.definition === quickAppDefinitionKey(app) && approved.workspaceRoot === await realpath(this.registry.root(app))
         && approved.codeRevision === await quickAppCodeRevision(this.registry.root(app), app)
       // Workspace trust follows the saved Host-owned definition, not mutable app code or request fields.
       const permissions = app.fileAccess === 'workspace' ? { read: [''], write: [''], delete: [''] }
