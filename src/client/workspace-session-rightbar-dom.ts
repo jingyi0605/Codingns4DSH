@@ -45,33 +45,25 @@ export function startWorkspaceSessionRightbarDom(
   let userInteracting = false
   let userCommitPending = false
   let applying = false
-  let pendingShare: number | undefined
+  let lastRestore: { readonly handle: HTMLElement; readonly containerWidth: number; readonly share: number } | undefined
 
   const scan = (): void => {
     if (disposed || dom === undefined || win === undefined) return
     const handle = findRightbarHandle(dom)
-    if (handle === undefined) return
+    if (handle === undefined) { lastRestore = undefined; return }
 
     if (applying) return
     const share = readRightbarShare(handle, win)
     if (share === undefined) return
-    if (pendingShare !== undefined) {
-      const expectedShare = pendingShare
-      pendingShare = undefined
-      if (sharesMatch(share, expectedShare)) return
-      // 宿主重绘时可能先移除旧句柄的内联位置，再补上新的布局状态。
-      // 这种中间态可以直接继续恢复；如果仍有旧位置，则等下一次宿主重绘，
-      // 避免在 React 状态提交前重复派发拖拽事件。
-      if (handle.style.left !== '') return
-    }
     if (userCommitPending) {
       userCommitPending = false
       desiredShare = share
+      lastRestore = undefined
       writeStoredShare(storage, share)
       return
     }
-    // 宿主布局可能在插件恢复后再次渲染默认宽度。用户没有拖拽时，
-    // 始终把句柄拉回已保存比例，避免默认值覆盖本地布局。
+    // DSH may clamp the requested width. Restore once per handle/container size;
+    // content mutations must not keep replaying a resize the host cannot honor.
     if (!userInteracting && desiredShare !== undefined && !sharesMatch(share, desiredShare)) {
       applyShare(handle, desiredShare, win)
       return
@@ -109,9 +101,7 @@ export function startWorkspaceSessionRightbarDom(
   }
   const onResize = (): void => {
     if (disposed || win === undefined || dom === undefined) return
-    const handle = findRightbarHandle(dom)
-    const savedShare = readStoredShare(storage)
-    if (handle !== undefined && savedShare !== undefined) applyShare(handle, savedShare, win)
+    desiredShare = readStoredShare(storage) ?? desiredShare
     scheduleScan()
   }
   dom?.addEventListener('mousedown', onPointerStart, true)
@@ -122,7 +112,7 @@ export function startWorkspaceSessionRightbarDom(
   scheduleScan()
 
   return {
-    refresh: scheduleScan,
+    refresh() { lastRestore = undefined; scheduleScan() },
     dispose() {
       if (disposed) return
       disposed = true
@@ -137,11 +127,12 @@ export function startWorkspaceSessionRightbarDom(
 
   function applyShare(handle: HTMLElement, share: number, targetWindow: Window): void {
     const containerWidth = resolveContainerWidth(handle, targetWindow)
+    if (lastRestore?.handle === handle && Math.abs(lastRestore.containerWidth - containerWidth) < 1 && sharesMatch(lastRestore.share, share)) return
+    lastRestore = { handle, containerWidth, share }
     const rightWidth = containerWidth * share
     const container = resolveContainerRect(handle, targetWindow.innerWidth)
     const targetClientX = container.left + containerWidth - rightWidth
     applying = true
-    pendingShare = share
     try {
       // 右侧栏宽度通常由宿主 React 的拖拽状态驱动。模拟一次原生拖拽，
       // 让宿主自己更新面板和调整线，避免只移动句柄而面板状态仍是默认值。

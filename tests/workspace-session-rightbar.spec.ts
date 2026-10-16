@@ -34,9 +34,9 @@ class PointerHandle extends FakeHandle {
 class FakeDocument {
   readonly documentElement = {}
   private readonly listeners = new Map<string, () => void>()
-  readonly handle: FakeHandle
+  handle: FakeHandle | null
   constructor(handle: FakeHandle) { this.handle = handle }
-  querySelector(): FakeHandle { return this.handle }
+  querySelector(): FakeHandle | null { return this.handle }
   addEventListener(name: string, listener: () => void): void { this.listeners.set(name, listener) }
   removeEventListener(name: string): void { this.listeners.delete(name) }
   emit(name: string): void { this.listeners.get(name)?.() }
@@ -44,8 +44,10 @@ class FakeDocument {
 
 class FakeWindow {
   innerWidth = 1000
-  addEventListener(): void {}
-  removeEventListener(): void {}
+  private readonly listeners = new Map<string, () => void>()
+  addEventListener(name: string, listener: () => void): void { this.listeners.set(name, listener) }
+  removeEventListener(name: string): void { this.listeners.delete(name) }
+  emit(name: string): void { this.listeners.get(name)?.() }
 }
 
 class FakeStorage {
@@ -152,4 +154,92 @@ test('宿主支持 Pointer Events 时通过原生拖拽更新布局状态', asyn
   assert.deepEqual(handle.events, ['pointerdown', 'pointermove', 'pointerup'])
   assert.equal(handle.style.left, '')
   controller.dispose()
+})
+
+test('A host width constraint does not replay resize gestures on every DOM mutation', async (t) => {
+  let mutation: () => void = () => undefined
+  let disconnected = false
+  class Observer {
+    constructor(callback: () => void) { mutation = callback }
+    observe(): void {}
+    disconnect(): void { disconnected = true }
+  }
+  class ConstrainedHandle extends PointerHandle {
+    override dispatchEvent(event: { type: string }): boolean {
+      super.dispatchEvent(event)
+      if (event.type === 'pointerup') {
+        // The native layout must retain room for the conversation and sidebar.
+        this.left = 700
+        this.style.left = '700px'
+      }
+      return true
+    }
+  }
+  const handle = new ConstrainedHandle()
+  handle.left = 800
+  const document = new FakeDocument(handle)
+  const window = Object.assign(new FakeWindow(), {
+    document,
+    PointerEvent: class {
+      readonly type: string
+      constructor(type: string) { this.type = type }
+    },
+  })
+  const storage = new FakeStorage('0.6')
+  const controller = startWorkspaceSessionRightbarDom({
+    document: document as unknown as Document,
+    window: window as unknown as Window,
+    storage,
+    MutationObserver: Observer as unknown as typeof MutationObserver,
+  })
+  t.after(() => controller.dispose())
+  await Promise.resolve()
+  for (let index = 0; index < 8; index++) {
+    mutation()
+    await Promise.resolve()
+  }
+  const attempts = () => handle.events.filter((type) => type === 'pointerdown').length
+  assert.equal(attempts(), 1, 'Git updates and session switches must not restart the same rejected resize')
+  assert.equal(storage.read(), '0.6', 'Keep the preference for a viewport that can accommodate it')
+
+  window.emit('resize')
+  await Promise.resolve()
+  assert.equal(attempts(), 1, 'An unchanged viewport must not replay the gesture')
+  window.innerWidth = 1200
+  window.emit('resize')
+  await Promise.resolve()
+  assert.equal(attempts(), 2, 'A different container width allows one new restore attempt')
+
+  document.emit('mousedown')
+  handle.style.left = '600px'
+  document.emit('mouseup')
+  await Promise.resolve()
+  assert.equal(storage.read(), '0.5', 'A subsequent user resize still updates the preference')
+  mutation()
+  await Promise.resolve()
+  assert.equal(attempts(), 2)
+
+  const replacement = new ConstrainedHandle()
+  document.handle = replacement
+  mutation()
+  await Promise.resolve()
+  assert.equal(replacement.events.length, 3, 'A replacement handle gets its own restore attempt')
+  mutation()
+  await Promise.resolve()
+  assert.equal(replacement.events.length, 3)
+  document.handle = null
+  mutation()
+  await Promise.resolve()
+  document.handle = replacement
+  mutation()
+  await Promise.resolve()
+  assert.equal(replacement.events.length, 6, 'Reopening after the handle disappears allows restoration')
+
+  controller.dispose()
+  mutation()
+  window.emit('resize')
+  await Promise.resolve()
+  assert.equal(attempts(), 2)
+  assert.equal(replacement.events.length, 6)
+  assert.equal(disconnected, true)
 })
