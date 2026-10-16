@@ -31,9 +31,9 @@ export function createDshCapabilityRegistry(
   const add = <T>(route: DshCapabilityRoute<T>): void => registry.register(route)
 
   if (runtime === 'host') {
-    add({ id: 'quick-app-host-proxy-021', capability: 'quick-app.proxy', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+    add({ id: 'quick-app-host-proxy-021', capability: 'quick-app.proxy', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: supportsQuickAppProxy, create: createQuickAppProxy })
-    add({ id: 'workspace-directory-list-021', capability: 'workspace.directory-list', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+    add({ id: 'workspace-directory-list-021', capability: 'workspace.directory-list', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: supportsWorkspaceDirectory, create: createWorkspaceDirectoryBrowser })
     add({ id: 'quick-app-origin-provider', capability: 'quick-app.origin', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: () => supportsQuickAppOrigins(facts.quickAppOrigins), create: () => facts.quickAppOrigins })
@@ -63,7 +63,7 @@ export function createDshCapabilityRegistry(
     addDsh020HostRoutes(add, range020)
     addPeerHostHostRoutes(add)
   } else {
-    add({ id: 'sidebar-footer-action-021', capability: 'sidebar.footer-action', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+    add({ id: 'sidebar-footer-action-021', capability: 'sidebar.footer-action', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: ctx => supportsQuickAppFooter(read(ctx, 'slots')), create: ctx => read(ctx, 'slots') })
     add({ id: 'message-presentation-020', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.0-rc.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: ctx => supportsLegacyMessagePresentation({ slots: read(ctx, 'slots') }, facts.primitives), create: () => createLegacyMessagePresentation(facts.primitives) })

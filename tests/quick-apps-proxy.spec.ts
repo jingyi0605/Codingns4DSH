@@ -46,9 +46,9 @@ test('Host proxy uses the existing LAN address, scoped file API and lifecycle wi
 
 test('sandbox proxy capability is explicit on supported DSH and does not affect older fixtures', () => {
   const ctx = { webServer: { getOrigin: () => 'http://127.0.0.1:12345', register: () => async () => undefined } }
-  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.1-alpha.3']) {
+  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.0-rc.2', '0.2.1-alpha.3']) {
     const capability = createDshCapabilityRegistry(version, 'host', ctx).getProfile(ctx).capabilities.get('quick-app.proxy')
-    assert.equal(capability?.status, version === '0.2.1-alpha.3' ? 'ready' : 'unavailable')
+    assert.equal(capability?.status, version === '0.2.0-rc.2' || version === '0.2.1-alpha.3' ? 'ready' : 'unavailable')
     if (capability?.status !== 'ready') assert.ok(capability?.reason)
   }
   assert.equal(createDshCapabilityRegistry('0.2.1-alpha.3', 'host', {}).getProfile({}).capabilities.get('quick-app.proxy')?.status, 'unavailable')

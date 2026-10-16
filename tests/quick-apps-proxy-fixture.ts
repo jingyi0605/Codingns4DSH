@@ -1,10 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { QuickAppProxyProvider } from '../src/dsh-capabilities/host/quick-app-proxy-provider.js'
+import { createQuickAppProxy } from '../src/dsh-capabilities/host/quick-app-proxy-adapter.js'
 import { QuickAppService } from '../src/host/modules/quick-apps/service.js'
 import { createNodeLanAccessDshRuntime, LanAccessDshProxy } from '../src/host/lan-access-dsh.js'
 import { quickAppFixture } from './quick-apps-fixture.js'
 
-export async function quickAppProxyFixture() {
+export async function quickAppProxyFixture(dshVersion = '0.2.1-alpha.3') {
   const f = await quickAppFixture()
   const routes = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void>>()
   let ui = '<p id="privileged">DSH fixture</p>'
@@ -23,7 +24,8 @@ export async function quickAppProxyFixture() {
     if (route.path.endsWith('/')) throw new Error('DSH prefix routes must not have a trailing slash.')
     routes.set(route.path, route.handler); return async () => { routes.delete(route.path) }
   } }
-  const provider = new QuickAppProxyProvider(native)
+  const legacy = { host: '127.0.0.1', port, register: native.register }
+  const provider = new QuickAppProxyProvider(createQuickAppProxy({ webServer: dshVersion === '0.2.0-rc.2' ? legacy : native }))
   const service = new QuickAppService(f.registry, provider)
   await f.registry.upsert({ ...f.app, fileAccess: 'workspace' }, f.app.revision)
   const proxy = new LanAccessDshProxy(createNodeLanAccessDshRuntime(port))

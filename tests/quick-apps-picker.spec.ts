@@ -31,10 +31,10 @@ function elements(node: ReactNode): ReactElement<any>[] {
 test('native directory capability is explicit across required versions and preserves service binding without a session', async () => {
   const calls: unknown[][] = []
   const context = { workspaceFiles: { list(...args: unknown[]) { assert.equal(this, context.workspaceFiles); calls.push(args); return Promise.resolve({ entries: [], truncated: false }) } } }
-  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.1-alpha.3']) {
+  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.0-rc.2', '0.2.1-alpha.3']) {
     const profile = createDshCapabilityRegistry(version, 'host', context).getProfile(context)
     const capability = profile.capabilities.get('workspace.directory-list')!
-    assert.equal(capability.status, version === '0.2.1-alpha.3' ? 'ready' : 'unavailable')
+    assert.equal(capability.status, version === '0.2.0-rc.2' || version === '0.2.1-alpha.3' ? 'ready' : 'unavailable')
     if (capability.status !== 'ready') assert.ok(profile.diagnostics.some(item => item.capability === 'workspace.directory-list'))
   }
   assert.equal(createDshCapabilityRegistry('0.2.1-alpha.3', 'host', {}).getProfile({}).capabilities.get('workspace.directory-list')?.status, 'unavailable')
