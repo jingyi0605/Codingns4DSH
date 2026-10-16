@@ -241,6 +241,56 @@ test('修复外部适配器累积 assistant 消息中的重复 tool-call', async
       { type: 'text', text: '继续执行。' },
       { type: 'tool-call', id: 'two', name: 'write', arguments: '{}' },
     ])
+    assert.equal(await repairLegacySessionLog(path), false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('completed calls can reuse an ID in the same step without rewriting valid logs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codingns-repair-reused-call-'))
+  try {
+    for (const compressed of [false, true]) {
+      const path = join(root, `session.v4.jsonl${compressed ? '.zstd' : ''}`)
+      const rows = sampleReusedCallEvents()
+      const original = compressed ? encodeZstd(rows) : encodeNone(rows)
+      await writeFile(path, original)
+
+      assert.equal(await repairLegacySessionLog(path), false)
+      assert.deepEqual(await readFile(path), original)
+      await assert.rejects(stat(`${path}.codingns-repair-backup`), { code: 'ENOENT' })
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('missing declarations for reused IDs are repaired once with result references preserved', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codingns-repair-missing-reused-call-'))
+  try {
+    for (const compressed of [false, true]) {
+      const path = join(root, `session.v4.jsonl${compressed ? '.zstd' : ''}`)
+      const rows = sampleReusedCallEvents(false)
+      const original = compressed ? encodeZstd(rows) : encodeNone(rows)
+      await writeFile(path, original)
+
+      assert.equal(await repairLegacySessionLog(path), true)
+      const repairedBytes = await readFile(path)
+      const { events } = compressed ? decodeZstd(repairedBytes) : decodeNone(repairedBytes)
+      assert.deepEqual(events.filter((event) => event.type === 'assistant/message').map((event) => event.data.message.content), [
+        [{ type: 'tool-call', id: 'reused', name: 'read', arguments: '{"path":"first"}' }],
+        [],
+        [{ type: 'tool-call', id: 'reused', name: 'write', arguments: '{"path":"second"}' }],
+      ])
+      const calls = events.filter((event) => event.type === 'tool/call')
+      const results = events.filter((event) => event.type === 'tool/result')
+      assert.deepEqual(results.map((event) => event.sourceEventSeqs), calls.map((event) => [event.seq]))
+      assert.deepEqual(events.map((event) => event.seq), events.map((_, index) => index))
+      assert.equal(events.at(-1)?.data.reason.kind, 'completed')
+      assert.deepEqual(await readFile(`${path}.codingns-repair-backup`), original)
+      assert.equal(await repairLegacySessionLog(path), false)
+      assert.deepEqual(await readFile(path), repairedBytes)
+    }
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -258,6 +308,56 @@ test('修复失败时保持原文件不变', async () => {
     await rm(root, { recursive: true, force: true })
   }
 })
+
+function sampleReusedCallEvents(withSecondDeclaration = true): Array<Record<string, unknown>> {
+  const rows: Array<Record<string, unknown>> = [
+    { type: 'session', version: 4 },
+    { type: 'turn/start', seq: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+  ]
+  for (const [index, name] of ['read', 'write'].entries()) {
+    const args = JSON.stringify({ path: index === 0 ? 'first' : 'second' })
+    rows.push({
+      type: 'assistant/message',
+      seq: rows.length - 1,
+      data: {
+        turn: 1,
+        step: 1,
+        message: {
+          id: 'external-tool-reused-1-1',
+          role: 'assistant',
+          content: index === 0 || withSecondDeclaration
+            ? [{ type: 'tool-call', id: 'reused', name, arguments: args }]
+            : [],
+          source: { kind: 'model', provider: 'codex', model: 'codex' },
+        },
+        stream: [],
+      },
+      surfaceOp: 'append',
+    })
+    const callSeq = rows.length - 1
+    rows.push(
+      { type: 'tool/call', seq: callSeq, data: { turn: 1, step: 1, callId: 'reused', name, arguments: args } },
+      {
+        type: 'tool/result', seq: callSeq + 1,
+        data: {
+          turn: 1,
+          step: 1,
+          message: {
+            id: 'reused-result-1-1', role: 'tool', toolCallId: 'reused',
+            content: [{ type: 'text', text: 'ok' }], source: { kind: 'tool', callId: 'reused' },
+          },
+        },
+        sourceEventSeqs: [callSeq], surfaceOp: 'append',
+      },
+    )
+  }
+  rows.push(
+    { type: 'step/end', seq: rows.length - 1, data: { turn: 1, step: 1 } },
+    { type: 'turn/end', seq: rows.length, data: { turn: 1, reason: { kind: 'completed' } } },
+  )
+  return rows
+}
 
 function sampleEvents(withExistingDeclaration: boolean): Array<Record<string, unknown>> {
   const events: Array<Record<string, unknown>> = [
