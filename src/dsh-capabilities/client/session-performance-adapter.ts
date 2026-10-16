@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react'
 import { CODEX_PERFORMANCE_PROJECTION } from '../../shared/codex-performance.js'
 import { GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION } from '../../shared/request-performance.js'
+import { contextComposerSlotName } from './composer-slot-selectors.js'
 import { followPresentationEntry, mirrorPresentationSlot, type PresentationSlots, type RenderElement } from './slot-presentation-mirror.js'
 
 export interface SessionPerformancePresentation {
@@ -59,7 +60,7 @@ function installGrokContextPresentation(slots: PresentationSlots, useAdapter: (i
   return followPresentationEntry(slots, 'conversation.composer.bar',
     entry => entry.children?.['conversation.composer.dock'] !== undefined,
     native => {
-      const names = Object.fromEntries(Object.keys(native.children ?? {}).map(name => [name, `codingns.grok-context.${name}`]))
+      const names = Object.fromEntries(Object.keys(native.children ?? {}).map(name => [name, contextComposerSlotName(name)]))
       const removers: (() => void)[] = []
       const remove = slots.register({
         name: 'conversation.composer.bar', ...native.options,

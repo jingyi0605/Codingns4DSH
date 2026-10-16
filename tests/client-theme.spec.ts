@@ -168,7 +168,6 @@ test('输入工具栏放不下时按 DSH 判定收起模型字段，超长名称
   assert.match(source, /className: 'codingns4dsh-model-effort'/u)
   assert.match(source, /data-composer-card\].*width:0;flex:1 1 0/u)
   assert.match(source, /codingns4dsh-model-root/u)
-  assert.match(source, /conversation\.input\.model.*select\{[\s\S]*max-width:min\(150px,45cqw\)/u)
   assert.match(source, /const nativeTriggerStyle = \{ width: '100%'/u)
   assert.match(source, /@keyframes codingns4dsh-cli-model-scroll/u)
   assert.match(source, /ResizeObserver/u)

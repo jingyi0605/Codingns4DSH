@@ -18,6 +18,7 @@ import {
   toggledServiceTierId,
 } from './service-tier.js'
 import { resolveAssistantControlIcon, resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
+import { composerSlotSelector } from '../dsh-capabilities/client/composer-slot-selectors.js'
 import { providerIconUrl } from './provider-icons.js'
 import { publishSessionSelection } from './session-adapter-cache.js'
 import {
@@ -69,9 +70,11 @@ function installComposerStyles(): void {
   const style = document.createElement('style')
   style.dataset.plugin = 'codingns4dsh'
   style.dataset.pluginCss = CLI_STYLE_ID
+  const modelSlot = composerSlotSelector('conversation.input.model')
+  const rightSlot = composerSlotSelector('conversation.input.right')
   style.textContent = [
     // 每个输入框只读取自己的适配器；主会话与右侧子会话可以同时使用不同 Agent。
-    '[data-composer-card]:has([data-codingns-agent]:not([data-codingns-agent="dsh"])) [data-slot="conversation.input.model"]{display:none!important}',
+    `[data-composer-card]:has([data-codingns-agent]:not([data-codingns-agent="dsh"])) ${modelSlot}{display:none!important}`,
     // DSH 在控制行放不下时给行加 data-model-compact，原生模型席位据此把文本收成图标。
     // 这里不再强制工具行 nowrap：保留原生 flex-wrap 语义，DSH 的测量口径才能反映真实占用，
     // 放不下时先收起模型，而不是把左侧工具组（权限/规划组）压到内容溢出与相邻按钮重叠。
@@ -80,10 +83,10 @@ function installComposerStyles(): void {
     '[data-composer-card] [data-model-compact] .codingns4dsh-model-root .codingns4dsh-model-name,',
     '[data-composer-card] [data-model-compact] .codingns4dsh-model-root .codingns4dsh-model-effort{display:none!important}',
     '[data-composer-card] [data-model-compact] .codingns4dsh-model-root .codingns4dsh-model-icon{display:block!important;flex:none}',
-    '[data-composer-card] > div:has([data-slot="conversation.input.right"]) > div:has(> [data-slot="conversation.input.right"]){min-width:0;width:0;flex:1 1 0}',
-    '[data-composer-card] > div:has([data-slot="conversation.input.right"]) [data-slot="conversation.input.right"] > .codingns4dsh-model-root{min-width:0;max-width:min(360px,45cqw);flex:1 1 min(360px,45cqw)}',
-    '[data-composer-card] > div:has([data-slot="conversation.input.right"]) [data-slot="conversation.input.model"] > select{width:100%;min-width:0;max-width:min(150px,45cqw);flex:1 1 min(150px,45cqw);overflow:hidden;white-space:nowrap}',
-    '[data-composer-card] > div:has([data-slot="conversation.input.right"]) [data-slot="conversation.input.model"] > button{width:100%;min-width:0;max-width:min(360px,45cqw);overflow:hidden;white-space:nowrap}',
+    `[data-composer-card] > div:has(${rightSlot}) > div:has(> ${rightSlot}){min-width:0;width:0;flex:1 1 0}`,
+    `[data-composer-card] > div:has(${rightSlot}) ${rightSlot} > .codingns4dsh-model-root{min-width:0;max-width:min(360px,45cqw);flex:1 1 min(360px,45cqw)}`,
+    `[data-composer-card] > div:has(${rightSlot}) ${modelSlot} > select{width:100%;min-width:0;max-width:min(150px,45cqw);flex:1 1 min(150px,45cqw);overflow:hidden;white-space:nowrap}`,
+    `[data-composer-card] > div:has(${rightSlot}) ${modelSlot} > button{width:100%;min-width:0;max-width:min(360px,45cqw);overflow:hidden;white-space:nowrap}`,
     // 与 DSH 原生同类控件一致（权限选择器 460px、预设标签 540px 都用容器查询）：
     // composer 控制行收窄到 650px 以内时，适配器按钮让出名称与右侧状态图标（下拉箭头/锁形），
     // 只保留适配器图标；行宽恢复后名称自动回来。这是纯 CSS 判定，不随任何折叠状态摆动。
@@ -92,7 +95,7 @@ function installComposerStyles(): void {
     '@container (width<=650px){[data-composer-card] .codingns4dsh-agent-trigger > .codingns4dsh-agent-label{display:none}[data-composer-card] .codingns4dsh-agent-trigger > svg{display:none!important}[data-composer-card] .codingns4dsh-agent-trigger{padding-left:4px;padding-right:4px;gap:0}}',
     // 移动端工具栏空间有限，收掉控件组自身的间距；控件组按 CSS Modules 本地名匹配，
     // 不绑定构建哈希（npm 分发的 Web 构建是 uV2eYG_*，Desktop 内嵌构建是 yhfFVG_*）。
-    '@media (max-width: 768px){[data-composer-card] > div:has([data-slot="conversation.input.right"]) > div:has(> [data-slot="conversation.input.right"]),[data-composer-card] [data-slot="conversation.input.right"],[data-composer-card] [class*="_standardControls"],[data-composer-card] [class*="_trailing"]{gap:0!important;column-gap:0!important}}',
+    `@media (max-width: 768px){[data-composer-card] > div:has(${rightSlot}) > div:has(> ${rightSlot}),[data-composer-card] ${rightSlot},[data-composer-card] [class*="_standardControls"],[data-composer-card] [class*="_trailing"]{gap:0!important;column-gap:0!important}}`,
     // ContextMeter 在 pressure 尚未合并时会暂时返回 null；dock 保留同样的行高，数值回来时只更新内容。
     '[data-composer-card] + div{box-sizing:border-box;min-height:26px;align-items:center}',
     '[data-composer-card] + div svg[viewBox="0 0 14 14"] circle:last-child{transition:stroke-dasharray .18s ease,stroke .18s ease}',
