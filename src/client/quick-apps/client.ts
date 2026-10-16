@@ -1,4 +1,5 @@
 import type { CodingNsRpcClient } from '../features/types.js'
+import { callCodingNsRpcResult } from '../rpc-call.js'
 import type { QuickApp, QuickAppDocument } from '../../shared/contracts/quick-apps.js'
 
 /** The controlling Host keeps metadata; no active conversation or browser storage is consulted. */
@@ -10,7 +11,7 @@ export class QuickAppsClient {
     // Embedding choice is checked against operator configuration; it never grants file access.
     const uiOrigin = typeof location === 'object' ? location.origin : undefined
     const input = (action === 'list' || action === 'launch') && uiOrigin ? { ...(payload as object), uiOrigin } : payload
-    const result = await this.rpc.call('codingns', `quickApps/${action}`, input)
+    const result = await callCodingNsRpcResult(this.rpc, `quickApps/${action}`, input)
     if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
     return result.value as T
   }
