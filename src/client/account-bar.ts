@@ -27,6 +27,17 @@ const MENU_ATTRIBUTE = 'data-codingns-account-menu'
 const POLL_MS = 5_000
 const LOGIN_REFRESH_POLL_MS = 30_000
 
+const accountButtonCss = `
+button[${ACCOUNT_ATTRIBUTE}]{background:transparent;color:${dshThemeColor.labelSecondary};outline:none;-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:background 160ms ease,color 160ms ease}
+button[${ACCOUNT_ATTRIBUTE}]>svg{transform:scale(1);transform-origin:center;transition:transform 220ms cubic-bezier(.16,1,.3,1)}
+@media(hover:hover){button[${ACCOUNT_ATTRIBUTE}]:hover{background:${dshThemeColor.hoverBackground};color:${dshThemeColor.labelPrimary}}}
+button[${ACCOUNT_ATTRIBUTE}][aria-expanded=true]{background:${dshThemeColor.hoverBackground};color:${dshThemeColor.labelPrimary}}
+button[${ACCOUNT_ATTRIBUTE}]:active{background:${dshThemeColor.activeBackground};color:${dshThemeColor.labelPrimary}}
+button[${ACCOUNT_ATTRIBUTE}]:active>svg{transform:scale(.88);transition-duration:80ms}
+button[${ACCOUNT_ATTRIBUTE}]:focus-visible{outline:2px solid ${dshThemeColor.labelTertiary};outline-offset:2px}
+@media(prefers-reduced-motion:reduce){button[${ACCOUNT_ATTRIBUTE}],button[${ACCOUNT_ATTRIBUTE}]>svg{transition:none}button[${ACCOUNT_ATTRIBUTE}]:active>svg{transform:none}}
+`
+
 export interface LocalIdentity { username: string; expiresAt?: number }
 type ActiveAccount =
   | { kind: 'codingns'; identity: string }
@@ -39,6 +50,9 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   const currentDocument = dom ?? (typeof document === 'undefined' ? undefined : document)
   if (currentDocument === undefined) return { dispose() {} }
   const root = currentDocument
+  const buttonStyles = root.createElement('style')
+  buttonStyles.textContent = accountButtonCss
+  root.head.append(buttonStyles)
   // 没有 locale 服务（单测或非 Cordis 宿主）时退回内置中文词典。
   const t = resolveCodingNsTranslator(locale)
   let disposed = false
@@ -245,6 +259,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
       root.defaultView?.removeEventListener(LOGIN_PROTECTION_SESSION_EVENT, onLoginProtectionSessionChanged)
       closeMenu()
       root.querySelectorAll<HTMLElement>(`button[${ACCOUNT_ATTRIBUTE}]`).forEach((node) => node.remove())
+      buttonStyles.remove()
     },
   }
 
@@ -344,6 +359,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
   /** 关闭账户菜单并注销外部点击监听；菜单与监听始终成对回收。 */
   function closeMenu(): void {
     root.querySelectorAll<HTMLElement>(`[${MENU_ATTRIBUTE}]`).forEach((node) => node.remove())
+    root.querySelectorAll<HTMLButtonElement>(`button[${ACCOUNT_ATTRIBUTE}]`).forEach((button) => button.setAttribute('aria-expanded', 'false'))
     closeMenuDismiss?.()
     closeMenuDismiss = undefined
   }
@@ -358,6 +374,7 @@ export function startCodingNsAccountBar(rpc: CodingNsRpcClient, dom?: Document, 
     const rect = button.getBoundingClientRect()
     Object.assign(menu.style, { top: '0px', left: '0px' })
     root.body.appendChild(menu)
+    button.setAttribute('aria-expanded', 'true')
     renderMenu(menu)
     positionMenuUpperRight(menu, button)
     // 触发按钮算内部：它自己的 click 负责开合，pointerdown 不重复关闭。
@@ -485,18 +502,9 @@ function createAccountButton(dom: Document, desktop: boolean): HTMLButtonElement
   const button = dom.createElement('button')
   button.type = 'button'
   button.setAttribute(ACCOUNT_ATTRIBUTE, '')
-  Object.assign(button.style, sidebarFooterControlStyle, { position: 'relative', background: 'transparent', color: dshThemeColor.labelSecondary,
-    cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', transition: 'background 140ms ease, color 140ms ease', boxShadow: 'none' })
-  button.addEventListener('mouseenter', () => {
-    button.style.background = dshThemeColor.hoverBackground
-    button.style.color = dshThemeColor.labelPrimary
-  })
-  button.addEventListener('mouseleave', () => {
-    button.style.background = 'transparent'
-    button.style.color = dshThemeColor.labelSecondary
-  })
-  button.addEventListener('focus', () => { button.style.outline = `2px solid ${dshThemeColor.accent}`; button.style.outlineOffset = '-2px' })
-  button.addEventListener('blur', () => { button.style.outline = 'none' })
+  button.setAttribute('aria-expanded', 'false')
+  Object.assign(button.style, sidebarFooterControlStyle, { position: 'relative',
+    cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'none' })
   button.append(desktop ? createConnectionIcon(dom) : createAccountIcon(dom))
   const status = dom.createElement('span')
   status.setAttribute('data-codingns-account-status', '')
