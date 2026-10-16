@@ -8,6 +8,7 @@ import { createDebugFeature } from './debug.js'
 import { createHostStatusFeature } from './host-status.js'
 import { createGitManagementFeature } from './git-management.js'
 import { createFileManagementFeature } from './file-management.js'
+import { createQuickAppsFeature } from './quick-apps.js'
 import { createPeerHostFeature } from './peer-host.js'
 import { createGlobalVoiceRpcFeature } from './global-voice-rpc.js'
 import { createAssistantAvatarRuntimeFeature } from './assistant-avatar-runtime.js'
@@ -34,6 +35,7 @@ export function createHostFeatures(options: HostFeatureOptions = {}): readonly F
     createHostStatusFeature(),
     createGitManagementFeature(),
     createFileManagementFeature(),
+    createQuickAppsFeature(),
     createPeerHostFeature(),
     createGlobalVoiceRpcFeature(),
     createAssistantAvatarRuntimeFeature(),

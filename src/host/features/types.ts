@@ -11,6 +11,9 @@ import type { AssistantSessionMessage, AssistantWaitingKind } from '../../shared
 import type { AssistantPeerNotificationObserver } from './assistant-peer-notifications.js'
 import type { AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
 import type { SessionTranslationService } from './session-translation-service.js'
+import type { QuickAppLanTransport, QuickAppOriginProvider } from '../../dsh-capabilities/host/quick-app-origin-adapter.js'
+import type { QuickAppPeerGateway } from '../modules/quick-apps/remote.js'
+import type { WorkspaceDirectoryBrowser } from '../../dsh-capabilities/host/workspace-directory-adapter.js'
 
 export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
@@ -47,6 +50,11 @@ export interface AssistantHostGateway {
  * 在这里增加字段，模块数量本身不改变这个契约的形状。
  */
 export interface CodingNsHostServices {
+  /** Only a verified transport composition may supply executable app origins. */
+  readonly quickAppOrigins?: QuickAppOriginProvider
+  readonly quickAppLanTransport?: QuickAppLanTransport
+  readonly quickAppPeerGateway?: QuickAppPeerGateway
+  readonly workspaceDirectoryBrowser?: WorkspaceDirectoryBrowser | undefined
   readonly rpc: CodingNsRpcTable
   /** 当前 DSH Host Context；仅供需要结构探测原生服务的适配层使用。 */
   readonly dshContext?: Context
@@ -80,6 +88,8 @@ export interface CodingNsHostServices {
   readonly registerAssistantAvatarRuntimeRoute?: (handler: (request: Request) => Promise<Response>, legacy?: boolean) => () => Promise<void>
   /** 由 Host 权威解析 Workspace ID，Client 不可覆盖。 */
   readonly resolveWorkspaceRoot?: (workspaceId: string) => string | null
+  /** Exact live workspace registry lookup; never falls back to a terminal/session directory cache. */
+  readonly resolveManagedWorkspaceRoot?: (workspaceId: string) => string | null
   /** 返回 Host 当前已知的工作区根目录，用于文件管理路径校验。 */
   readonly listWorkspaceRoots?: () => readonly string[]
   /** PeerHost 已装配时提供跨 Host 的助理摘要与派发通道。 */

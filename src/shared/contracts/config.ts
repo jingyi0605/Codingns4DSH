@@ -98,6 +98,8 @@ export interface CodingNsSettings {
   workspaceSessionEnhancement: WorkspaceSessionEnhancementSettings
   /** DSH 文件管理侧栏的独立增强选项。 */
   fileManagement: FileManagementSettings
+  /** Shortcut references only; approvals and launch secrets are Host runtime state. */
+  quickApps?: import('./quick-apps.js').QuickApp[]
   /** 手机/平板窄屏访问时的界面增强选项。 */
   mobileAccess: MobileAccessSettings
   /** 用量查询设置：超时控制单次网络查询，间隔控制自动刷新。 */

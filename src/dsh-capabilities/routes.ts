@@ -7,6 +7,10 @@ import { createInteractionPresentationBridge, supportsInteractionPresentation } 
 import { supportsLegacyMessagePresentation, supportsFactoryMessagePresentation, createLegacyMessagePresentation, createFactoryMessagePresentation } from './client/message-presentation-adapter.js'
 import { createSessionModelSelectionAdapter, supportsSessionModelSelection } from './host/session-model-selection-adapter.js'
 import { createSessionPromptAdapter, supportsSessionPromptAssembly } from './host/session-prompt-adapter.js'
+import { supportsQuickAppOrigins } from './host/quick-app-origin-adapter.js'
+import { supportsQuickAppProxy, createQuickAppProxy } from './host/quick-app-proxy-adapter.js'
+import { supportsQuickAppFooter } from './client/quick-app-footer-adapter.js'
+import { createWorkspaceDirectoryBrowser, supportsWorkspaceDirectory } from './host/workspace-directory-adapter.js'
 
 /**
  * 注册 Codingns4DSH 当前实际消费的 DSH 服务能力。
@@ -27,6 +31,12 @@ export function createDshCapabilityRegistry(
   const add = <T>(route: DshCapabilityRoute<T>): void => registry.register(route)
 
   if (runtime === 'host') {
+    add({ id: 'quick-app-host-proxy-021', capability: 'quick-app.proxy', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+      detect: supportsQuickAppProxy, create: createQuickAppProxy })
+    add({ id: 'workspace-directory-list-021', capability: 'workspace.directory-list', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+      detect: supportsWorkspaceDirectory, create: createWorkspaceDirectoryBrowser })
+    add({ id: 'quick-app-origin-provider', capability: 'quick-app.origin', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+      detect: () => supportsQuickAppOrigins(facts.quickAppOrigins), create: () => facts.quickAppOrigins })
     add({ id: 'session-prompt-assembly-021', capability: 'session.prompt-assembly', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: supportsSessionPromptAssembly, create: createSessionPromptAdapter })
     add({ id: 'session-external-model-selection-021', capability: 'session.external-model-selection', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
@@ -53,6 +63,8 @@ export function createDshCapabilityRegistry(
     addDsh020HostRoutes(add, range020)
     addPeerHostHostRoutes(add)
   } else {
+    add({ id: 'sidebar-footer-action-021', capability: 'sidebar.footer-action', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+      detect: ctx => supportsQuickAppFooter(read(ctx, 'slots')), create: ctx => read(ctx, 'slots') })
     add({ id: 'message-presentation-020', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.0-rc.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: ctx => supportsLegacyMessagePresentation({ slots: read(ctx, 'slots') }, facts.primitives), create: () => createLegacyMessagePresentation(facts.primitives) })
     add({ id: 'message-presentation-021', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
@@ -80,6 +92,7 @@ type CapabilityRouteAdder = <T>(route: DshCapabilityRoute<T>) => void
  * 图标导出属于客户端 bundle 的静态导入，由 client/index.ts 在装配时提供。
  */
 export interface DshCapabilityRuntimeFacts {
+  readonly quickAppOrigins?: unknown
   readonly primitives?: unknown
 }
 

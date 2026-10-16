@@ -2,16 +2,9 @@ import { link, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, wri
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { CodingNsRpcError } from './rpc-table.js'
+import { serializeWorkspaceMutation } from './workspace-file-mutations.js'
 
 const MAX_BYTES = 4 * 1024 * 1024
-const mutations = new Map<string, Promise<unknown>>()
-
-async function serializeMutation(path: string, operation: () => Promise<unknown>): Promise<unknown> {
-  const previous = mutations.get(path) ?? Promise.resolve()
-  const next = previous.catch(() => undefined).then(operation)
-  mutations.set(path, next)
-  try { return await next } finally { if (mutations.get(path) === next) mutations.delete(path) }
-}
 
 function fail(message: string): never {
   throw new CodingNsRpcError('HTML_FILES_ACCESS_DENIED', message)
@@ -109,6 +102,11 @@ export async function runHtmlWorkspaceFileOperation(sessionRoot: string, input: 
     default: fail('Unsupported HTML file operation')
   } }
   return input.operation === 'write' || input.operation === 'delete'
-    ? serializeMutation(physical, perform)
+    ? serializeWorkspaceMutation(physical, async () => {
+      // Preserve the trusted-parent protocol, but recheck paths after waiting behind another writer.
+      if (await realpath(sessionRoot) !== root || await physicalPath(path) !== physical
+        || !inside(root, await realpath(documentPath)) || !inside(await physicalPath(scope), physical)) fail('Workspace paths changed while waiting to save')
+      return perform()
+    })
     : perform()
 }

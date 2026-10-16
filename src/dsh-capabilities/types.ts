@@ -1,5 +1,9 @@
 /** DSH 宿主能力的稳定标识。业务模块只依赖这些标识，不直接依赖 DSH 版本。 */
 export type DshCapabilityId =
+  | 'workspace.directory-list'
+  | 'quick-app.origin'
+  | 'quick-app.proxy'
+  | 'sidebar.footer-action'
   | 'settings.store'
   | 'llm.text'
   | 'session.title'

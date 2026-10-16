@@ -15,6 +15,10 @@ export interface DshCapabilityMatrixRoute {
 
 /** 能力版本矩阵是运行时路由和版本检查的共同事实源。 */
 export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
+  route('quick-app.proxy', 'quick-app-host-proxy-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/quick-app-proxy-adapter.ts', 'dsh-capabilities/host/quick-app-proxy-provider.ts', 'host/features/quick-apps.ts', 'host/index.ts']),
+  route('workspace.directory-list', 'workspace-directory-list-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/workspace-directory-adapter.ts', 'host/features/quick-apps.ts', 'host/modules/quick-apps/browse.ts']),
+  route('quick-app.origin', 'quick-app-origin-provider', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/quick-app-origin-adapter.ts', 'dsh-capabilities/host/quick-app-https-provider.ts', 'dsh-capabilities/host/quick-app-lan-ports.ts', 'dsh-capabilities/host/quick-app-transport.ts', 'host/features/quick-apps.ts', 'host/features/lan-access-dsh.ts']),
+  route('sidebar.footer-action', 'sidebar-footer-action-021', 'client', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/client/quick-app-footer-adapter.ts', 'client/features/quick-apps.ts']),
   route('session.prompt-assembly', 'session-prompt-assembly-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/session-prompt-adapter.ts', 'host/features/session-prompt-translation.ts', 'host/cli-adapters/feature.ts']),
   route('session.external-model-selection', 'session-external-model-selection-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/session-model-selection-adapter.ts', 'host/cli-adapters/feature.ts']),
   route('session.activation', 'session-activation-020', 'host', '>=0.2.0-rc.2 <=0.2.1-alpha.2', 'supported', ['dsh-capabilities/host/session-activation-adapter.ts', 'host/native-session-bridge.ts']),
@@ -86,7 +90,7 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('peer-host.remote-web-context-fallback', 'peer-host-remote-web-context-fallback-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/features/peer-host.ts']),
   route('peer-host.store', 'peer-host-store-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/features/peer-host.ts']),
   route('peer-host.handshake', 'peer-host-handshake-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/features/peer-host.ts']),
-  route('peer-host.http-proxy', 'peer-host-http-proxy-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/features/peer-host.ts']),
+  route('peer-host.http-proxy', 'peer-host-http-proxy-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/features/peer-host.ts', 'host/modules/peer-host/quick-app-gateway.ts']),
   route('peer-host.ws-proxy', 'peer-host-ws-proxy-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/features/peer-host.ts']),
   route('peer-host.aggregate', 'peer-host-aggregate-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/features/peer-host.ts']),
   route('peer-host.aggregated-transport', 'peer-host-aggregated-transport-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/modules/peer-host/aggregated-host-transport.ts']),

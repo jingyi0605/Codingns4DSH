@@ -12,6 +12,9 @@ import { HOST_FEATURES, createHostFeatures } from './features/index.js'
 import type { CodingNsHostServices } from './features/types.js'
 import { registerCodingNsRpc } from './rpc.js'
 import { CodingNsRpcTable } from './rpc-table.js'
+import { configuredQuickAppTransport } from '../dsh-capabilities/host/quick-app-transport.js'
+import type { QuickAppProxyServer } from '../dsh-capabilities/host/quick-app-proxy-adapter.js'
+import { QuickAppProxyProvider } from '../dsh-capabilities/host/quick-app-proxy-provider.js'
 import { registerCodingNsSettings } from './settings.js'
 import { createCodingNsNativeSessionBridge } from './native-session-bridge.js'
 import { createSessionTranslationService } from './features/session-translation-service.js'
@@ -129,7 +132,15 @@ export async function apply(ctx?: Context): Promise<void> {
     hostCtx.effect(() => registerProviderIconRoutes(hostCtx.connection.fetch), 'codingns4dsh: 提供商图标资源')
     // 能力 Profile 只依赖 Context 与版本，提前到终端装配之前解析，供需要按能力
     // 降级的装配点使用；业务代码只判 ready，不写版本判断。
-    const capabilityProfile = createDshCapabilityRegistry(dshVersion, 'host', hostCtx).getProfile(hostCtx)
+    const proxyCapability = createDshCapabilityRegistry(dshVersion, 'host', hostCtx).getProfile(hostCtx).capabilities.get('quick-app.proxy')
+    const proxyProvider = proxyCapability?.status === 'ready' ? new QuickAppProxyProvider(proxyCapability.value as QuickAppProxyServer) : undefined
+    const quickAppTransport = proxyProvider
+      ? { origins: proxyProvider, dispose: () => proxyProvider.dispose(), configurationError: false, lan: undefined }
+      : await configuredQuickAppTransport()
+    const quickAppOrigins = quickAppTransport.origins
+    if (quickAppTransport.configurationError) debugWarn('Quick Apps transport configuration is invalid; HTML hosting remains unavailable.')
+    hostCtx.effect(() => () => quickAppTransport.dispose(), 'Quick Apps transport')
+    const capabilityProfile = createDshCapabilityRegistry(dshVersion, 'host', hostCtx, { quickAppOrigins }).getProfile(hostCtx)
     const workingDirectoryCapability = capabilityProfile.capabilities.get('session.working-directory')
     const workingDirectoryService = workingDirectoryCapability?.status === 'ready'
       ? workingDirectoryCapability.value as { get(session: unknown): string } | undefined
@@ -159,6 +170,8 @@ export async function apply(ctx?: Context): Promise<void> {
     const sessionTranslation = createSessionTranslationService(hostCtx, dshVersion)
     const services: CodingNsHostServices = {
       rpc: new CodingNsRpcTable(),
+      ...(quickAppOrigins ? { quickAppOrigins } : {}),
+      ...(quickAppTransport.lan ? { quickAppLanTransport: quickAppTransport.lan } : {}),
       dshContext: hostCtx,
       dshVersion,
       settings,
@@ -174,6 +187,7 @@ export async function apply(ctx?: Context): Promise<void> {
       ),
       terminalProcesses: terminal.processService,
       resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveWorkspaceRoot(hostCtx, workspaceId),
+      resolveManagedWorkspaceRoot: (workspaceId) => resolveWorkspaceRoot(hostCtx, workspaceId),
       listWorkspaceRoots: () => [...workspaceRoots.values(), ...readWorkspaceRoots(hostCtx)],
       registerDebugProxyRoute: (handler) => hostCtx.connection.fetch.register({
         path: '/api/codingns/debug-proxy',
@@ -194,7 +208,16 @@ export async function apply(ctx?: Context): Promise<void> {
       resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveWorkspaceRoot(hostCtx, workspaceId),
       terminalProcesses: terminal.processService,
     })
-    const servicesWithDebug: CodingNsHostServices = { ...services, debug }
+    let directoryBrowser: CodingNsHostServices['workspaceDirectoryBrowser']
+    const servicesWithDebug: CodingNsHostServices = { ...services, debug, get workspaceDirectoryBrowser() { return directoryBrowser } }
+    // This optional provider may start after CodingNS. Its lifecycle must not restart other modules.
+    hostCtx.inject(['workspaceFiles'], directoryCtx => {
+      const capability = createDshCapabilityRegistry(dshVersion, 'host', directoryCtx).getProfile(directoryCtx).capabilities.get('workspace.directory-list')
+      if (capability?.status !== 'ready') return
+      const browser = capability.value as NonNullable<CodingNsHostServices['workspaceDirectoryBrowser']>
+      directoryBrowser = browser
+      directoryCtx.effect(() => () => { if (directoryBrowser === browser) directoryBrowser = undefined }, 'Quick Apps native directory browser')
+    })
     debugInfo('codingns4dsh: host capabilities resolved', {
       dshVersion,
       capabilities: [...capabilityProfile.capabilities.entries()].map(([capability, resolution]) => ({ capability, status: resolution.status, route: resolution.routeId, reason: resolution.reason ?? null })),
