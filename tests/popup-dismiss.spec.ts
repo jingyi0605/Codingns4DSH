@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { CliSettingsDialog } from '../data/build/dist/client/cli-settings-dialog.js'
+import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 import {
   attachOutsideDismissal,
   backdropPointerDownHandler,
@@ -131,9 +133,30 @@ test('所有弹层统一改用共用关闭模块，不再依赖重复点击触�
   assert.match(archive, /overlay\.addEventListener\('pointerdown', \(event\) => \{ if \(event\.target === overlay\) closeArchiveModal\(dom\) \}\)/u)
 })
 
-test('显式关闭按钮的弹窗补齐点击遮罩关闭', async () => {
+test('native Agent dialogs close on the backdrop and preserve clicks inside the dialog', context => {
+  let closed = 0
+  const view = createHookRenderer(CliSettingsDialog, { titleId: 'agent-details', onClose() { closed++ } })
+  context.after(() => view.dispose())
+  const output = view.render()
+  assert.equal(output.type, 'dialog')
+  const dialog = { getBoundingClientRect: () => ({ left: 100, right: 300, top: 100, bottom: 250 }) }
+  const pointerDown = (target, clientX, clientY) => output.props.onPointerDown({ target, currentTarget: dialog, clientX, clientY })
+
+  pointerDown(fakeNode(), 50, 150)
+  pointerDown(dialog, 150, 150)
+  pointerDown(dialog, 100, 100)
+  pointerDown(dialog, 300, 250)
+  assert.equal(closed, 0, 'child content, empty space, and dialog edges must not dismiss it')
+
+  for (const [clientX, clientY] of [[99, 150], [301, 150], [150, 99], [150, 251]]) {
+    pointerDown(dialog, clientX, clientY)
+  }
+  assert.equal(closed, 4, 'the backdrop must dismiss the dialog on every side')
+})
+
+test('custom overlays share backdrop dismissal and Agent details use the native dialog', async () => {
   const read = (relative) => readFile(join(projectRoot, relative), 'utf8')
-  const sources = await Promise.all([
+  const [adapters, ...sources] = await Promise.all([
     read('src/client/features/cli-adapters.ts'),
     read('src/client/features/reverse-proxy-panel.ts'),
     read('src/client/debug/ui.ts'),
@@ -144,8 +167,10 @@ test('显式关闭按钮的弹窗补齐点击遮罩关闭', async () => {
     assert.match(source, /onPointerDown: backdropPointerDownHandler\(/u)
   }
 
-  // 遮罩改为 presentation，语义角色落在真正的对话框面板上。
-  assert.match(sources[0]!, /role: 'presentation',\n\s+onPointerDown: backdropPointerDownHandler\(onClose\),/u)
-  assert.match(sources[1]!, /role: 'presentation', onPointerDown: backdropPointerDownHandler\(\(\) => \{ setAddAddressOpen\(false\); setAddressError\(''\) \}\)/u)
-  assert.match(sources[2]!, /role: 'presentation', onPointerDown: backdropPointerDownHandler\(\(\) => setDraft\(null\)\)/u)
+  // Agent details delegate backdrop handling to the shared native dialog.
+  assert.match(adapters!, /import \{ CliSettingsDialog \} from '\.\.\/cli-settings-dialog\.js'/u)
+  assert.match(adapters!, /createElement\(CliSettingsDialog, \{ titleId: 'codingns-cli-adapter-title', onClose \}/u)
+  // Custom overlays keep presentation semantics around their dialog panels.
+  assert.match(sources[0]!, /role: 'presentation', onPointerDown: backdropPointerDownHandler\(\(\) => \{ setAddAddressOpen\(false\); setAddressError\(''\) \}\)/u)
+  assert.match(sources[1]!, /role: 'presentation', onPointerDown: backdropPointerDownHandler\(\(\) => setDraft\(null\)\)/u)
 })
