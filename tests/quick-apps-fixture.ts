@@ -16,6 +16,7 @@ export async function quickAppFixture() {
   await mkdir(join(root, 'data'))
   await mkdir(join(root, 'site', 'folder'))
   await writeFile(join(root, 'site', 'folder', 'index.html'), '<p>directory</p>')
+  await writeFile(join(root, 'site', '空 格.txt'), 'unicode\n')
   await writeFile(join(root, 'data', 'member.json'), '{"value":1}')
   await writeFile(join(root, 'site', 'assets', 'pixel.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'))
   await copyFile(new URL('../node_modules/@deepseek-ai/dsh-client-ui-theme/lib/styles/montserrat-regular.woff2', import.meta.url), join(root, 'site', 'assets', 'font.woff2'))
