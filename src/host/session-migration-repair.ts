@@ -210,34 +210,30 @@ function decodeZstd(bytes: Buffer): string {
 function repairEvents(events: readonly SessionEvent[], canonicalizeV4Results = false): SessionEvent[] | null {
   const mapping: number[] = []
   const insertBefore = new Map<number, { callId: string; name: string; arguments: string; turn: number; step: number }>()
-  const pending = new Set<string>()
+  const declarations = new Map<string, 'pending' | 'completed'>()
+  const requiredDeclarations = findRequiredToolDeclarations(events)
   const normalizedAssistantMessages = new Map<number, SessionEvent>()
   let canonicalized = false
   for (const event of events) {
     const oldSeq = event.seq!
-    if (event.type === 'assistant/message') registerDeclaredCalls(event, pending)
+    if (event.type === 'step/start' || event.type === 'turn/start') declarations.clear()
+    const normalized = canonicalizeExternalAssistantMessage(event, declarations, requiredDeclarations.get(oldSeq))
+    if (normalized !== event) {
+      normalizedAssistantMessages.set(oldSeq, normalized)
+      canonicalized = true
+    }
     if (event.type === 'tool/call') {
       const call = toolCallData(event)
-      if (call !== null && !pending.has(call.callId)) {
+      if (call !== null && declarations.get(call.callId) !== 'pending') {
         insertBefore.set(oldSeq, call)
-        pending.add(call.callId)
       }
-      if (call !== null) pending.add(call.callId)
+      if (call !== null) declarations.set(call.callId, 'pending')
     }
     if (event.type === 'tool/result') {
       const callId = toolResultCallId(event)
-      if (callId !== null) pending.delete(callId)
+      if (callId !== null) declarations.set(callId, 'completed')
     }
-  }
-  const declaredExternalCalls = new Set<string>()
-  for (const event of events) {
-    if (event.type === 'step/start' || event.type === 'turn/start') declaredExternalCalls.clear()
-    const normalized = canonicalizeExternalAssistantMessage(event, declaredExternalCalls)
-    if (normalized !== event) {
-      normalizedAssistantMessages.set(event.seq!, normalized)
-      canonicalized = true
-    }
-    if (event.type === 'step/end' || event.type === 'turn/end') declaredExternalCalls.clear()
+    if (event.type === 'step/end' || event.type === 'turn/end') declarations.clear()
   }
   if (insertBefore.size === 0 && !canonicalizeV4Results && !canonicalized) return null
   if (canonicalizeV4Results) {
@@ -306,34 +302,52 @@ function canonicalizeV4ToolResult(event: SessionEvent): SessionEvent {
   return { ...event, data: { ...data, message: normalizedMessage } }
 }
 
-/** 删除外部适配器累积消息中的历史 tool-call，保留当前消息新增的声明。 */
-function canonicalizeExternalAssistantMessage(event: SessionEvent, declared: Set<string>): SessionEvent {
+/** Match each lifecycle to its nearest preceding declaration within the same step. */
+function findRequiredToolDeclarations(events: readonly SessionEvent[]): Map<number, Set<string>> {
+  const required = new Map<number, Set<string>>()
+  const awaiting = new Set<string>()
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!
+    if (event.type === 'step/start' || event.type === 'step/end' || event.type === 'turn/start' || event.type === 'turn/end') awaiting.clear()
+    const callId = event.type === 'tool/call' ? toolCallData(event)?.callId : event.type === 'tool/result' ? toolResultCallId(event) : null
+    if (callId !== null && callId !== undefined) awaiting.add(callId)
+    if (event.type !== 'assistant/message') continue
+    const data = isRecord(event.data) ? event.data : undefined
+    const message = data && isRecord(data.message) ? data.message : undefined
+    if (!Array.isArray(message?.content)) continue
+    for (const block of message.content) {
+      if (!isRecord(block) || block.type !== 'tool-call' || typeof block.id !== 'string' || !awaiting.delete(block.id)) continue
+      let calls = required.get(event.seq!)
+      if (calls === undefined) required.set(event.seq!, calls = new Set())
+      calls.add(block.id)
+    }
+  }
+  return required
+}
+
+/** Remove stale cumulative declarations while preserving completed IDs used by another lifecycle. */
+function canonicalizeExternalAssistantMessage(
+  event: SessionEvent,
+  declarations: Map<string, 'pending' | 'completed'>,
+  required: ReadonlySet<string> | undefined,
+): SessionEvent {
   if (event.type !== 'assistant/message') return event
   const data = isRecord(event.data) ? event.data : undefined
   const message = data && isRecord(data.message) ? data.message : undefined
-  if (!message || !Array.isArray(message.content) || !Array.isArray(data?.stream) || data.stream.length !== 0) return event
+  if (!message || !Array.isArray(message.content)) return event
+  const external = Array.isArray(data?.stream) && data.stream.length === 0
   let changed = false
   const content = message.content.filter((block) => {
     if (!isRecord(block) || block.type !== 'tool-call' || typeof block.id !== 'string') return true
-    if (declared.has(block.id)) {
+    const state = declarations.get(block.id)
+    if (external && (state === 'pending' || state === 'completed' && !required?.has(block.id))) {
       changed = true
       return false
     }
-    declared.add(block.id)
+    declarations.set(block.id, 'pending')
     return true
   })
   return changed ? { ...event, data: { ...data, message: { ...message, content } } } : event
-}
-
-function registerDeclaredCalls(event: SessionEvent, pending: Set<string>): void {
-  const data = isRecord(event.data) ? event.data : undefined
-  const message = data && isRecord(data.message) ? data.message : undefined
-  const content = message?.content
-  if (!Array.isArray(content)) return
-  for (const block of content) {
-    if (!isRecord(block) || block.type !== 'tool-call' || typeof block.id !== 'string') continue
-    pending.add(block.id)
-  }
 }
 
 function toolCallData(event: SessionEvent): { callId: string; name: string; arguments: string; turn: number; step: number } | null {
