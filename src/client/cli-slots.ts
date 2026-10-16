@@ -285,6 +285,8 @@ function AgentSlot(props: CliSlotProps): ReactElement {
   const sessionId = props.sessionId ?? session?.sessionId
   const [selection, update] = useSelection(sessionId, props.rpc)
   const [agents, setAgents] = useState<readonly CodingNsCliAdapterDescriptor[]>([{ id: 'dsh', name: 'DeepSeek Harness', installed: true, enabled: true, version: null, command: null }])
+  const [catalogFailed, setCatalogFailed] = useState(false)
+  const [catalogRetry, setCatalogRetry] = useState(0)
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const locked = isSessionLocked(session)
@@ -292,8 +294,11 @@ function AgentSlot(props: CliSlotProps): ReactElement {
   useDismissOnOutsidePointer(rootRef, open, () => setOpen(false))
 
   useEffect(() => {
-    return watchAdapterCatalog(props.rpc, sessionId, (value) => setAgents(adapterCatalogWithDsh(value)))
-  }, [props.rpc, sessionId])
+    return watchAdapterCatalog(props.rpc, sessionId, (value) => {
+      setAgents(adapterCatalogWithDsh(value))
+      setCatalogFailed(false)
+    }, () => setCatalogFailed(true))
+  }, [props.rpc, sessionId, catalogRetry])
 
   useEffect(() => { if (locked) setOpen(false) }, [locked])
 
@@ -313,6 +318,13 @@ function AgentSlot(props: CliSlotProps): ReactElement {
       createElement(NativeDropdownChevron, { open, locked }),
     ),
     open && !locked && createElement('div', { role: 'menu', 'aria-label': t('cli.selectAgent'), style: agentMenuStyle },
+      catalogFailed && createElement('div', { role: 'alert', style: { padding: 8, fontSize: uiFontSize(13) } },
+        createElement('div', null, t('cli.catalogLoadFailed')),
+        createElement('button', {
+          type: 'button', role: 'menuitem', style: { ...agentOptionStyle, minHeight: 30 },
+          onClick: () => { setCatalogFailed(false); setCatalogRetry((value) => value + 1) },
+        }, t('cli.retryCatalog')),
+      ),
       ...agents.map((agent) => {
         const selected = agent.id === selection.adapterId
         const available = agent.installed && agent.enabled
