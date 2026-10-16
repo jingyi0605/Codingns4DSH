@@ -1454,9 +1454,10 @@ function extractTurnInput(
         : messages.filter((_candidate, candidateIndex) => !referenceIndexes.includes(candidateIndex))
       const translatedInput = readInputTranslation(message.source)
       if (translatedInput !== undefined) {
+        const prompt = [translatedInput.translated, ...referenceText].join('\n\n')
         return {
-          prompt: translatedInput.translated,
-          translationPrompt: translatedInput.translated,
+          prompt,
+          translationPrompt: prompt,
           untranslatedPrompt: '',
           attachments: direct.attachments,
           translatePrompt: false,
