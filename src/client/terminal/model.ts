@@ -348,7 +348,8 @@ export class CodingNsTerminalView {
         debugInfo('codingns4dsh: client terminal created', { sessionId: this.sessionId, workspaceId: environment.workspaceId, terminalId: info.id })
       }
       if (info === undefined) throw new Error('Host 中不存在该终端，且恢复流程禁止自动创建替代进程')
-      this.patch({ environment, info, title: info.title })
+      const { error: _error, ...rest } = this.store.getSnapshot()
+      this.store.set({ ...rest, environment, info, title: info.title })
       this.finishLoad()
     } catch (error) {
       if (!this.lifetime.signal.aborted) this.fail(error)

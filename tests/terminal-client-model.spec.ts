@@ -128,6 +128,76 @@ test('Client 收到恢复首帧后清理 attach 控制权瞬态错误', async ()
   await view.dispose()
 })
 
+for (const initiallyConnected of [false, true]) {
+  test(`Successful retry clears an environment error after ${initiallyConnected ? 'refresh' : 'initial load'}`, async (t) => {
+    const { calls, remote } = createRemote(true)
+    const readEnvironment = remote.environment
+    const message = 'client api: codingnsTerminal/environment failed: Failed to fetch'
+    let rejectEnvironment = !initiallyConnected
+    remote.environment = async () => {
+      if (rejectEnvironment) throw new Error(message)
+      return readEnvironment()
+    }
+    const view = new CodingNsTerminalView('session-1', 'terminal-1', remote, false, '/bin/zsh')
+    const unmount = view.mount()
+    t.after(async () => { unmount(); await view.dispose() })
+
+    await view.refresh()
+    if (initiallyConnected) {
+      await waitFor(() => view.state.getSnapshot().phase === 'connected', 'Initial connection did not complete')
+      view.acknowledge(view.state.getSnapshot().render.revision)
+      rejectEnvironment = true
+      await view.refresh({ force: true })
+    }
+    assert.equal(view.state.getSnapshot().phase, 'failed')
+    assert.equal(view.state.getSnapshot().error, message)
+
+    rejectEnvironment = false
+    await view.refresh({ force: true })
+    await waitFor(() => view.state.getSnapshot().phase === 'connected', 'Retry did not restore the terminal connection')
+    const recovered = view.state.getSnapshot()
+    assert.equal(recovered.error, undefined, 'Recovered terminal retained the previous environment error')
+    assert.equal(recovered.writable, true)
+    view.acknowledge(recovered.render.revision)
+    view.write('pwd\r')
+    await waitFor(() => calls.write.length === 1, 'Recovered terminal did not accept input')
+    assert.deepEqual(calls.write, ['pwd\r'])
+    assert.equal(calls.create, 0)
+    assert.equal(calls.close, 0)
+  })
+}
+
+test('Terminal output preserves input validation errors', async (t) => {
+  const { calls, remote } = createRemote(true)
+  let releaseOutput
+  const outputReady = new Promise((resolve) => { releaseOutput = resolve })
+  const follow = remote.follow
+  remote.follow = async function* (...args) {
+    for await (const frame of follow(...args)) {
+      yield frame
+      await outputReady
+      yield { type: 'output', sequence: 1, data: 'background output\r\n' }
+    }
+  }
+  const view = new CodingNsTerminalView('session-1', 'terminal-1', remote, false, '/bin/zsh')
+  const unmount = view.mount()
+  t.after(async () => { releaseOutput(); unmount(); await view.dispose() })
+
+  await waitFor(() => view.state.getSnapshot().render !== undefined, 'Initial terminal snapshot did not arrive')
+  const firstRevision = view.state.getSnapshot().render.revision
+  view.acknowledge(firstRevision)
+  view.write('x'.repeat(environment.maxInputBytes + 1))
+  const validationError = view.state.getSnapshot().error
+  assert.ok(validationError)
+  assert.equal(calls.write.length, 0)
+
+  releaseOutput()
+  await waitFor(() => view.state.getSnapshot().render.revision > firstRevision, 'Terminal output did not arrive')
+  assert.equal(view.state.getSnapshot().phase, 'connected')
+  assert.equal(view.state.getSnapshot().error, validationError)
+  view.acknowledge(view.state.getSnapshot().render.revision)
+})
+
 test('聚合页常驻视图的多个挂载引用只建立一次 follow', async () => {
   const { calls, remote } = createRemote(true)
   const view = new CodingNsTerminalView('session-1', 'terminal-1', remote, false, '/bin/zsh')
