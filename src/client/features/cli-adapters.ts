@@ -6,13 +6,14 @@ import type {
   CodingNsCliModelCatalog,
 } from '../../shared/contracts/cli-adapter.js'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
+import type { CliManagementOperation } from '../../shared/contracts/cli-management.js'
 import type { PeerHostClientRecord } from '../../shared/contracts/peer-host.js'
 import { createVirtualSessionId } from '../../shared/contracts/peer-host.js'
 import { normalizeSubagentBridgeSettings, SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS } from '../../shared/contracts/config.js'
 import { adapterDetectionLabel, callCliRpc, catalogRefreshErrorMessage, errorMessage } from '../cli-catalog.js'
-import { dshFormRootStyle, dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsFieldStyle, dshSettingsHelpStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
+import { dshFormRootStyle, dshSettingsButtonStyle, dshSettingsFieldStyle, dshSettingsHelpStyle, dshSettingsListRowStyle, dshThemeColor } from '../theme.js'
 import { useCodingNsTranslator } from '../locale.js'
-import { backdropPointerDownHandler } from '../popup-dismiss.js'
+import { CliSettingsDialog } from '../cli-settings-dialog.js'
 import { registerExternalToolStreamUi } from '../external-tool-stream.js'
 import { readNativeTranslationDefault } from '../native-translation-default.js'
 import { startContextBreakdownDom } from '../context-breakdown-dom.js'
@@ -25,12 +26,12 @@ import { createCliSettingsRpc } from '../cli-settings-rpc.js'
 import { createPeerHostManagementApi } from '../peer-host-management-api.js'
 import { SettingsSwitch } from '../settings-controls.js'
 import { uiFontSize } from '../font-scale.js'
+import { CliManagementDialog, cliManagementAction } from '../cli-management-dialog.js'
 
 const CLI_ADAPTER_STYLE_ID = 'codingns4dsh-cli-adapter-settings-style'
 const cliAdapterClass = {
   panel: 'codingns4dsh-cli-adapter-panel',
   listHeader: 'codingns4dsh-cli-adapter-list-header',
-  listCard: 'codingns4dsh-cli-adapter-list-card',
   row: 'codingns4dsh-cli-adapter-row',
   main: 'codingns4dsh-cli-adapter-main',
   identity: 'codingns4dsh-cli-adapter-identity',
@@ -41,6 +42,8 @@ const cliAdapterClass = {
   version: 'codingns4dsh-cli-adapter-version',
   toggle: 'codingns4dsh-cli-adapter-toggle',
   detectButton: 'codingns4dsh-cli-adapter-detect-button',
+  actions: 'codingns4dsh-cli-adapter-actions',
+  manageButton: 'codingns4dsh-cli-adapter-manage-button',
 } as const
 
 /** 设置页 Agent 行的响应式布局；内联样式无法表达移动端换行规则，因此集中注入。 */
@@ -50,36 +53,42 @@ function installCliAdapterStyles(): void {
   style.dataset.plugin = 'codingns4dsh'
   style.dataset.pluginCss = CLI_ADAPTER_STYLE_ID
   style.textContent = `
-.${cliAdapterClass.panel}{display:flex;flex-direction:column;gap:12px;width:100%;min-width:0}
-.${cliAdapterClass.listCard}{overflow:hidden;border:1px solid var(--dsw-alias-border-l2,#e5e7eb);border-radius:14px;background:var(--dsw-alias-bg-layer-1,Canvas);box-shadow:0 1px 3px rgba(15,23,42,.04)}
-.${cliAdapterClass.listHeader}{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:0 6px 10px;color:var(--dsw-alias-label-tertiary,GrayText);border-bottom:1px solid var(--dsw-alias-border-l4,#eef0f2);font-size:13px;font-weight:600;letter-spacing:.02em}
-.${cliAdapterClass.row}{display:flex;align-items:center;width:100%;min-width:0;min-height:76px;gap:16px;padding:13px 18px;box-sizing:border-box;background:transparent}
+.${cliAdapterClass.panel}{display:flex;flex-direction:column;width:100%;min-width:0}
+.${cliAdapterClass.listHeader}{display:flex;align-items:center;gap:8px;margin-top:12px;padding:0 0 8px;color:var(--dsw-alias-label-tertiary,GrayText);border-bottom:1px solid var(--dsw-alias-border-l4,#eef0f2);font-size:12px;font-weight:500}
+.${cliAdapterClass.row}{display:flex;align-items:center;width:100%;min-width:0;min-height:60px;gap:10px;padding:9px 0;box-sizing:border-box;background:transparent}
 .${cliAdapterClass.row}+.${cliAdapterClass.row}{border-top:1px solid var(--dsw-alias-border-l4,#eef0f2)}
-.${cliAdapterClass.main}{display:flex;align-items:center;gap:13px;flex:1 1 auto;min-width:0}
-.${cliAdapterClass.identity}{display:flex;flex-direction:column;justify-content:center;gap:5px;min-width:0}
-.${cliAdapterClass.icon}{display:inline-flex;align-items:center;justify-content:center;flex:0 0 44px;width:44px;height:44px;padding:7px;box-sizing:border-box;object-fit:contain;border:1px solid var(--dsw-alias-border-l4,#eef0f2);border-radius:12px;background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.06)))}
+.${cliAdapterClass.main}{display:flex;align-items:center;gap:9px;flex:1 1 auto;min-width:0;min-height:40px;padding:0;border:0;border-radius:6px;color:inherit;text-align:left;background:transparent;cursor:pointer}
+.${cliAdapterClass.main}:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#1677ff);outline-offset:2px}
+.${cliAdapterClass.identity}{display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:0}
+.${cliAdapterClass.icon}{display:inline-flex;align-items:center;justify-content:center;flex:0 0 30px;width:30px;height:30px;box-sizing:border-box;object-fit:contain;border-radius:7px}
 .${cliAdapterClass.name}{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:1.25}
-.${cliAdapterClass.metadata}{display:inline-flex;align-items:center;gap:8px;min-width:0;color:var(--dsw-alias-label-tertiary,GrayText);font-size:12px;line-height:1.2}
+.${cliAdapterClass.metadata}{display:flex;align-items:center;flex-wrap:wrap;gap:3px 6px;min-width:0;color:var(--dsw-alias-label-tertiary,GrayText);font-size:11px;line-height:1.3}
 .${cliAdapterClass.status},.${cliAdapterClass.version}{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.${cliAdapterClass.status}{padding:3px 7px;border-radius:5px;background:var(--dsw-alias-state-success-bg,rgba(22,163,74,.12))}
-.${cliAdapterClass.toggle}{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;color:var(--dsw-alias-label-secondary,GrayText);font-size:13px;font-weight:500}
-.${cliAdapterClass.detectButton}{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:32px;height:32px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,GrayText);cursor:pointer}
+.${cliAdapterClass.version}{font-variant-numeric:tabular-nums}
+.${cliAdapterClass.status}{display:inline-flex;align-items:center;gap:4px;flex-shrink:0}
+.${cliAdapterClass.status}:before{content:'';width:5px;height:5px;flex-shrink:0;border-radius:50%;background:currentColor}
+.${cliAdapterClass.toggle}{display:inline-flex;align-items:center;justify-content:center;flex:0 0 36px;min-height:36px}
+.${cliAdapterClass.toggle}>span{margin-left:0!important}
+.${cliAdapterClass.actions}{display:flex;align-items:center;gap:2px;flex:0 0 auto}
+.${cliAdapterClass.detectButton}{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:36px;height:36px;padding:0;border:0;border-radius:10px;background:transparent;color:var(--dsw-alias-label-secondary,GrayText);cursor:pointer;transition:background .15s,color .15s}
 .${cliAdapterClass.detectButton}:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08));color:var(--dsw-alias-label-primary,CanvasText)}
+.${cliAdapterClass.manageButton}[data-action="install"],.${cliAdapterClass.manageButton}[data-action="install"]:hover:not(:disabled){color:var(--dsw-alias-state-business-primary,#1677ff)}
+.${cliAdapterClass.manageButton}[data-action="update"],.${cliAdapterClass.manageButton}[data-action="update"]:hover:not(:disabled){color:var(--dsw-alias-state-success-primary,#16803c)}
 .${cliAdapterClass.detectButton}:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#1677ff);outline-offset:2px}
 .${cliAdapterClass.detectButton}:disabled{opacity:.45;cursor:not-allowed}
 .${cliAdapterClass.detectButton}[aria-busy="true"] svg{animation:codingns-cli-detect-spin 1s linear infinite}
 @keyframes codingns-cli-detect-spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.${cliAdapterClass.detectButton}[aria-busy="true"] svg{animation:none}}
 @media (max-width:768px){
-  .${cliAdapterClass.row}{display:grid!important;grid-template-columns:minmax(0,1fr) auto;align-items:center!important;gap:7px 10px!important;min-height:0!important;padding:12px 14px!important}
-  .${cliAdapterClass.main}{grid-column:1 / -1;display:flex!important;align-items:center!important;width:100%;gap:10px!important}
-  .${cliAdapterClass.identity}{gap:4px}
-  .${cliAdapterClass.name}{white-space:normal;overflow-wrap:anywhere;text-overflow:clip}
-  .${cliAdapterClass.metadata}{grid-column:1;grid-row:2;display:flex;flex-wrap:wrap;gap:7px!important;min-width:0;max-width:100%}
-  .${cliAdapterClass.status},.${cliAdapterClass.version}{max-width:100%;min-width:0!important}
-  .${cliAdapterClass.toggle}{grid-column:2;grid-row:2;justify-self:end;align-self:center;min-width:0;max-width:100%;white-space:nowrap}
-  .${cliAdapterClass.toggle}>span:first-child{max-width:7em;overflow:hidden;text-overflow:ellipsis}
-  .${cliAdapterClass.row}>.${cliAdapterClass.detectButton}{grid-column:1;grid-row:2;justify-self:start}
+  .${cliAdapterClass.row}{gap:4px;padding:8px 0}
+  .${cliAdapterClass.name}{font-size:13px;white-space:normal;overflow-wrap:anywhere}
+  .${cliAdapterClass.detectButton}{width:38px;height:40px}
+  .${cliAdapterClass.toggle}{flex-basis:32px;min-height:40px}
+}
+@media (max-width:260px){
+  .${cliAdapterClass.row}{flex-wrap:wrap;gap:2px}
+  .${cliAdapterClass.main}{flex-basis:100%}
+  .${cliAdapterClass.actions}{margin-left:auto}
 }
 `
   document.head.appendChild(style)
@@ -141,7 +150,105 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
  * 面板只管理 Agent 本身：安装状态、版本、命令、启用开关与模型目录。外部会话由
  * DSH 原生侧栏和工作区归档入口承载，这里不再重复一份会话列表。
  */
-export function CliAdaptersPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
+export function CliAdaptersPanel(props: FeaturePanelProps): ReactElement {
+  const t = useCodingNsTranslator(props.services.locale)
+  const [open, setOpen] = useState(false)
+  useEffect(() => { installCliAdapterStyles() }, [])
+  useEffect(() => { if (!props.enabled) setOpen(false) }, [props.enabled])
+  return createElement('div', { style: dshFormRootStyle },
+    createElement(CliDelegationSettings, props),
+    createElement('button', {
+      type: 'button', disabled: !props.enabled, 'aria-haspopup': 'dialog', 'aria-expanded': open,
+      onClick: () => setOpen(true), style: { ...dshSettingsButtonStyle, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+    }, t('cli.manage.open'), createElement('span', { 'aria-hidden': true }, '↗')),
+    open && props.enabled && createElement(CliSettingsDialog, { titleId: 'codingns-agent-list-title', wide: true, onClose: () => setOpen(false) },
+      createElement('header', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, padding: '10px 16px', borderBottom: `1px solid ${dshThemeColor.fieldBorder}` } },
+        createElement('h2', { id: 'codingns-agent-list-title', style: { margin: 0, fontSize: uiFontSize(17) } }, t('cli.manage.listTitle')),
+        createElement('button', { type: 'button', autoFocus: true, className: cliAdapterClass.detectButton, 'aria-label': t('cli.manage.close'), title: t('cli.manage.close'), onClick: () => setOpen(false) },
+          createElement('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', 'aria-hidden': true }, createElement('path', { d: 'm6 6 12 12M18 6 6 18' }))),
+      ),
+      createElement('div', { style: { padding: '0 16px 12px', overflow: 'auto', minHeight: 0, overscrollBehavior: 'contain' } }, createElement(CliAdaptersContent, props)),
+    ),
+  )
+}
+
+export function CliDelegationSettings({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
+  const t = useCodingNsTranslator(services.locale)
+  const [bridgeBusy, setBridgeBusy] = useState(false)
+  const bridgeEnabled = snapshot.value?.subagentBridge?.enabled === true
+  const bridgeWritable = enabled && snapshot.status !== 'loading' && snapshot.writable
+  const bridgeConcurrency = normalizeSubagentBridgeSettings(snapshot.value?.subagentBridge).maxConcurrentSubagents
+  const [concurrencyText, setConcurrencyText] = useState(() => String(bridgeConcurrency))
+  // Sync external settings changes without overwriting in-progress input.
+  useEffect(() => { setConcurrencyText(String(bridgeConcurrency)) }, [bridgeConcurrency])
+  const toggleSubagentBridge = async (next: boolean): Promise<void> => {
+    setBridgeBusy(true)
+    try {
+      const accepted = await services.settings.mutate([{ op: 'set', path: ['subagentBridge', 'enabled'], value: next }])
+      if (!accepted) {
+        notify({ kind: 'error', message: t('settings.moduleWriteRejected') })
+        return
+      }
+      notify({ kind: 'success', message: t(next ? 'cli.subagentBridgeEnabled' : 'cli.subagentBridgeDisabled') })
+    } catch (error) {
+      notify({ kind: 'error', message: errorMessage(error) })
+    } finally {
+      setBridgeBusy(false)
+    }
+  }
+  const saveBridgeConcurrency = async (): Promise<void> => {
+    // Clamp invalid input before persisting the concurrency limit.
+    const next = normalizeSubagentBridgeSettings({ maxConcurrentSubagents: Number(concurrencyText) }).maxConcurrentSubagents
+    setConcurrencyText(String(next))
+    if (next === bridgeConcurrency) return
+    setBridgeBusy(true)
+    try {
+      const accepted = await services.settings.mutate([{ op: 'set', path: ['subagentBridge', 'maxConcurrentSubagents'], value: next }])
+      if (!accepted) {
+        notify({ kind: 'error', message: t('settings.moduleWriteRejected') })
+        return
+      }
+      notify({ kind: 'success', message: t('cli.subagentBridgeConcurrencySaved') })
+    } catch (error) {
+      notify({ kind: 'error', message: errorMessage(error) })
+    } finally {
+      setBridgeBusy(false)
+    }
+  }
+  return createElement('div', { style: dshFormRootStyle },
+    createElement('label', { style: dshSettingsListRowStyle },
+      createElement('span', { style: { flex: '1 1 auto', minWidth: 0 } },
+        createElement('strong', { style: { display: 'block', fontSize: uiFontSize(13), lineHeight: 1.4 } }, t('cli.subagentBridge')),
+        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeDescription')),
+      ),
+      createElement(SettingsSwitch, {
+        'aria-label': t('cli.subagentBridgeToggle'),
+        checked: bridgeEnabled,
+        disabled: !bridgeWritable || bridgeBusy,
+        onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleSubagentBridge(event.currentTarget.checked) },
+      }),
+    ),
+    createElement('label', { style: { ...dshSettingsListRowStyle, opacity: bridgeEnabled ? 1 : 0.5 } },
+      createElement('span', { style: { flex: '1 1 auto', minWidth: 0 } },
+        createElement('strong', { style: { display: 'block', fontSize: uiFontSize(13), lineHeight: 1.4 } }, t('cli.subagentBridgeConcurrency')),
+        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeConcurrencyHelp')),
+      ),
+      createElement('input', {
+        type: 'number',
+        min: SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.min,
+        max: SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.max,
+        'aria-label': t('cli.subagentBridgeConcurrency'),
+        value: concurrencyText,
+        disabled: !bridgeWritable || bridgeBusy,
+        onChange: (event: { currentTarget: { value: string } }) => { setConcurrencyText(event.currentTarget.value) },
+        onBlur: () => { void saveBridgeConcurrency() },
+        style: { ...dshSettingsFieldStyle, flex: '0 0 auto', width: 96, minHeight: 32, padding: '5px 8px', fontSize: uiFontSize(13) },
+      }),
+    ),
+  )
+}
+
+export function CliAdaptersContent({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
   const t = useCodingNsTranslator(services.locale)
   const disabled = !enabled
   const [peerHosts, setPeerHosts] = useState<readonly PeerHostClientRecord[]>([])
@@ -159,13 +266,16 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
   currentRequest.current = requestContext
   const [catalog, setCatalog] = useState<readonly CodingNsCliAdapterDescriptor[]>([])
   const [selected, setSelected] = useState<CodingNsCliAdapterDescriptor | null>(null)
+  const [managementAdapter, setManagementAdapter] = useState<CodingNsCliAdapterDescriptor | null>(null)
+  const [managementVisible, setManagementVisible] = useState(false)
   const [models, setModels] = useState<CodingNsCliModelCatalog | null>(null)
   const [loading, setLoading] = useState(false)
   const [busyAdapterId, setBusyAdapterId] = useState<string | null>(null)
-  const [bridgeBusy, setBridgeBusy] = useState(false)
   const [modelsError, setModelsError] = useState('')
   const [catalogError, setCatalogError] = useState('')
   const [detecting, setDetecting] = useState<string | null>(null)
+  const checkingUpdates = catalog.some(adapter => adapter.update?.state === 'checking')
+  const updateCheckUnsupported = catalog.some(adapter => adapter.installed && (adapter.detectionState === undefined || adapter.detectionState === 'ready') && !adapter.detectionFailure && adapter.update === undefined)
 
   useEffect(() => { installCliAdapterStyles() }, [])
   useEffect(() => {
@@ -200,6 +310,7 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
   useEffect(() => {
     setCatalog([])
     setSelected(null)
+    setManagementAdapter(null)
     setModels(null)
     setModelsError('')
     setCatalogError('')
@@ -228,11 +339,37 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
   }, [disabled, selected, requestContext, catalogAvailable])
 
   const buttonStyle = { ...dshSettingsButtonStyle, cursor: disabled ? 'not-allowed' : 'pointer' }
+  const refreshManagedCatalog = async (operation?: CliManagementOperation): Promise<void> => {
+    if (currentRequest.current !== requestContext || peerHostId !== null) return
+    const succeeded = operation?.state === 'succeeded'
+    const detected = operation?.adapter
+    const adapterId = operation?.adapterId ?? managementAdapter?.id
+    invalidateModelCatalogCache(services.rpc, adapterId)
+    // Show the Host-verified version immediately while the explicit refresh runs.
+    if (succeeded && detected) {
+      const updated = { ...detected, update: { state: 'unchecked' as const } }
+      setCatalog(current => current.map(entry => entry.id === updated.id ? updated : entry))
+      setSelected(current => current?.id === updated.id ? updated : current)
+    }
+    try {
+      const value = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(catalogRpc, succeeded ? 'catalog/refresh' : 'catalog',
+        succeeded ? { adapterId, checkUpdates: true } : {}, AbortSignal.timeout(120_000))
+      if (currentRequest.current !== requestContext) return
+      setCatalog(value)
+      setCatalogError('')
+      setSelected((current) => current === null ? null : value.find((entry) => entry.id === current.id) ?? null)
+      notifyAdapterCatalogChanged(services.rpc)
+      notifyAdapterCatalogChanged(catalogRpc)
+    } catch (error) {
+      if (currentRequest.current === requestContext) setCatalogError(errorMessage(error))
+      throw error
+    }
+  }
   const redetect = async (adapterId?: string): Promise<void> => {
     if (disabled || !catalogAvailable || detecting !== null) return
     setDetecting(adapterId ?? '*')
     try {
-      const value = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(catalogRpc, 'catalog/refresh', adapterId === undefined ? {} : { adapterId }, AbortSignal.timeout(120_000))
+      const value = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(catalogRpc, 'catalog/refresh', { ...(adapterId === undefined ? {} : { adapterId }), checkUpdates: true }, AbortSignal.timeout(120_000))
       invalidateModelCatalogCache(services.rpc, adapterId, peerHostId === null ? undefined : createVirtualSessionId(peerHostId, '__catalog__'))
       notifyAdapterCatalogChanged(services.rpc)
       if (currentRequest.current !== requestContext) return
@@ -248,46 +385,6 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
       }
     }
     finally { if (currentRequest.current === requestContext) setDetecting(null) }
-  }
-  const bridgeEnabled = snapshot.value?.subagentBridge?.enabled === true
-  const bridgeWritable = snapshot.status !== 'loading' && snapshot.writable
-  const bridgeConcurrency = normalizeSubagentBridgeSettings(snapshot.value?.subagentBridge).maxConcurrentSubagents
-  const [concurrencyText, setConcurrencyText] = useState(() => String(bridgeConcurrency))
-  // 设置被外部改写（例如另一个页面保存）时同步输入框，但不在用户输入过程中反复覆盖。
-  useEffect(() => { setConcurrencyText(String(bridgeConcurrency)) }, [bridgeConcurrency])
-  const toggleSubagentBridge = async (next: boolean): Promise<void> => {
-    setBridgeBusy(true)
-    try {
-      const accepted = await services.settings.mutate([{ op: 'set', path: ['subagentBridge', 'enabled'], value: next }])
-      if (!accepted) {
-        notify({ kind: 'error', message: t('settings.moduleWriteRejected') })
-        return
-      }
-      notify({ kind: 'success', message: t(next ? 'cli.subagentBridgeEnabled' : 'cli.subagentBridgeDisabled') })
-    } catch (error) {
-      notify({ kind: 'error', message: errorMessage(error) })
-    } finally {
-      setBridgeBusy(false)
-    }
-  }
-  const saveBridgeConcurrency = async (): Promise<void> => {
-    // 越界或非数值输入按上下限收敛，避免把 NaN/0 写进设置后彻底锁死派发。
-    const next = normalizeSubagentBridgeSettings({ maxConcurrentSubagents: Number(concurrencyText) }).maxConcurrentSubagents
-    setConcurrencyText(String(next))
-    if (next === bridgeConcurrency) return
-    setBridgeBusy(true)
-    try {
-      const accepted = await services.settings.mutate([{ op: 'set', path: ['subagentBridge', 'maxConcurrentSubagents'], value: next }])
-      if (!accepted) {
-        notify({ kind: 'error', message: t('settings.moduleWriteRejected') })
-        return
-      }
-      notify({ kind: 'success', message: t('cli.subagentBridgeConcurrencySaved') })
-    } catch (error) {
-      notify({ kind: 'error', message: errorMessage(error) })
-    } finally {
-      setBridgeBusy(false)
-    }
   }
   const toggleAdapter = async (adapter: CodingNsCliAdapterDescriptor, next: boolean): Promise<void> => {
     if (disabled || peerHostId !== null) return
@@ -310,37 +407,7 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
   return createElement(
     'div',
     { className: cliAdapterClass.panel, 'aria-disabled': disabled, style: { ...dshFormRootStyle, opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' } },
-    peerHostId === null && createElement('label', { style: dshSettingsListRowStyle },
-      createElement('span', { style: { flex: '1 1 auto', minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: uiFontSize(13), lineHeight: 1.4 } }, t('cli.subagentBridge')),
-        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeDescription')),
-      ),
-      createElement(SettingsSwitch, {
-        'aria-label': t('cli.subagentBridgeToggle'),
-        checked: bridgeEnabled,
-        disabled: !bridgeWritable || bridgeBusy,
-        onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleSubagentBridge(event.currentTarget.checked) },
-      }),
-    ),
-    peerHostId === null && createElement('label', { style: { ...dshSettingsListRowStyle, opacity: bridgeEnabled ? 1 : 0.5 } },
-      createElement('span', { style: { flex: '1 1 auto', minWidth: 0 } },
-        createElement('strong', { style: { display: 'block', fontSize: uiFontSize(13), lineHeight: 1.4 } }, t('cli.subagentBridgeConcurrency')),
-        createElement('span', { style: { display: 'block', marginTop: 3, ...dshSettingsHelpStyle, opacity: 0.75 } }, t('cli.subagentBridgeConcurrencyHelp')),
-      ),
-      createElement('input', {
-        type: 'number',
-        min: SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.min,
-        max: SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.max,
-        'aria-label': t('cli.subagentBridgeConcurrency'),
-        value: concurrencyText,
-        disabled: !bridgeWritable || bridgeBusy,
-        onChange: (event: { currentTarget: { value: string } }) => { setConcurrencyText(event.currentTarget.value) },
-        onBlur: () => { void saveBridgeConcurrency() },
-        style: { ...dshSettingsFieldStyle, flex: '0 0 auto', width: 96, minHeight: 32, padding: '5px 8px', fontSize: uiFontSize(13) },
-      }),
-    ),
     createElement('div', { className: cliAdapterClass.listHeader },
-      createElement('span', undefined, t('cli.agentList')),
       createElement('select', {
         'aria-label': t('cli.agentHost'), value: peerHostId ?? '', disabled,
         onFocus: () => refreshHosts.current(),
@@ -348,29 +415,26 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
           setPeerHostId(event.currentTarget.value || null)
           setCatalog([]); setSelected(null); setModels(null); setModelsError(''); setCatalogError('')
         },
-        style: { ...dshSettingsFieldStyle, flex: '1 1 160px', width: 'auto', maxWidth: 280, minWidth: 0, minHeight: 32, padding: '5px 8px', fontSize: uiFontSize(13) },
+        style: { ...dshSettingsFieldStyle, flex: '1 1 auto', width: 'auto', minWidth: 0, minHeight: 36, padding: '5px 8px', fontSize: uiFontSize(13) },
       },
         createElement('option', { value: '' }, t('cli.localHost')),
         ...peerHosts.map((host) => createElement('option', { key: host.id, value: host.id }, host.displayName)),
       ),
-      createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto', flex: '0 0 auto' } },
-        catalog.length > 0 && createElement('span', undefined, t('cli.agentCount', { count: catalog.length })),
-        createElement(AdapterDetectButton, { label: t(detecting === '*' ? 'cli.detecting' : 'cli.redetectAll'), busy: detecting === '*', disabled: disabled || !catalogAvailable || detecting !== null, onClick: () => { void redetect() } }),
-      ),
+      catalog.length > 0 && createElement('span', { title: t('cli.agentCount', { count: catalog.length }), 'aria-label': t('cli.agentCount', { count: catalog.length }), style: { fontVariantNumeric: 'tabular-nums' } }, catalog.length),
+      createElement(AdapterDetectButton, { label: t(detecting === '*' ? 'cli.detecting' : checkingUpdates ? 'cli.manage.checking' : 'cli.redetectAll'), busy: detecting === '*' || checkingUpdates, disabled: disabled || !catalogAvailable || detecting !== null || checkingUpdates, onClick: () => { void redetect() } }),
     ),
+    updateCheckUnsupported && createElement('div', { role: 'alert', style: { ...dshSettingsHelpStyle, padding: '8px 0', color: dshThemeColor.warning } }, t('cli.manage.hostUnsupported')),
     hostsError && createElement('div', { role: 'alert', style: dshSettingsHelpStyle }, t('cli.peerHostListError', { message: hostsError })),
     peerHostId !== null && createElement('div', { style: dshSettingsHelpStyle }, t('cli.peerHostReadOnly', { name: hostLabel })),
     !catalogAvailable && createElement('div', { role: 'status', style: dshSettingsHelpStyle }, t('cli.peerHostUnavailable', { name: hostLabel })),
     catalogError && createElement('div', { role: 'alert', style: { ...dshSettingsHelpStyle, color: dshThemeColor.error } }, catalogError),
     loading && createElement('div', { role: 'status' }, t('cli.readingAgents')),
     !loading && catalogAvailable && !catalogError && catalog.length === 0 && createElement('div', { role: 'status', style: { opacity: 0.7 } }, t('cli.noAgents')),
-    createElement('div', { className: cliAdapterClass.listCard },
-      ...catalog.map((adapter) => createElement('div', { key: adapter.id, className: cliAdapterClass.row },
+    ...catalog.map((adapter) => createElement('div', { key: adapter.id, className: cliAdapterClass.row },
         createElement('button', {
           type: 'button',
           className: cliAdapterClass.main,
           onClick: () => setSelected(adapter),
-          style: { flex: '1 1 auto', minWidth: 0, display: 'flex', alignItems: 'center', gap: 12, padding: 0, border: 0, color: 'inherit', textAlign: 'left', background: 'transparent', cursor: 'pointer' },
           'aria-label': t('cli.viewDetails', { name: adapter.name }),
         },
           createElement(AdapterIcon, { adapter }),
@@ -379,21 +443,34 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
             createElement('div', { className: cliAdapterClass.metadata },
               createElement('span', { className: cliAdapterClass.status, style: {
                 color: adapter.installed ? (adapter.runtimeState === 'installed' ? dshThemeColor.labelSecondary : dshThemeColor.success) : dshThemeColor.labelTertiary,
-                background: adapter.installed && adapter.runtimeState !== 'installed' ? 'rgba(22,163,74,.12)' : dshThemeColor.surfaceSubtle,
               } }, adapterStatus(adapter, t)),
-              createElement('span', { className: cliAdapterClass.version }, adapter.version ?? t('cli.notDetectedVersion')),
+              adapter.version && createElement('span', { className: cliAdapterClass.version, title: updateCheckLabel(adapter, t) }, adapter.version),
+              adapter.update?.state === 'available' && createElement('span', { className: cliAdapterClass.version, title: updateCheckLabel(adapter, t), style: { color: dshThemeColor.success } }, `↑ ${adapter.update.latestVersion}`),
+              adapter.update?.state === 'available' && adapter.update.manualUpdate && createElement('span', { className: cliAdapterClass.version }, t('cli.manage.updateInApp')),
+              adapter.installed && adapter.update && adapter.update.state !== 'available' && createElement('span', {
+                className: cliAdapterClass.version, title: updateCheckLabel(adapter, t),
+                style: { color: adapter.update.state === 'error' ? dshThemeColor.warning : dshThemeColor.labelTertiary },
+              }, t(adapter.update.state === 'unavailable' && adapter.update.reason ? `cli.manage.reasonLabel.${adapter.update.reason}` : `cli.manage.state.${adapter.update.state}`)),
             ),
           ),
         ),
-        createElement(AdapterDetectButton, { label: `${adapter.name} · ${t(detecting === adapter.id || detecting === '*' ? 'cli.detecting' : 'cli.redetect')}`, busy: detecting === adapter.id || detecting === '*', disabled: disabled || detecting !== null, onClick: () => { void redetect(adapter.id) } }),
-        createElement('label', { className: cliAdapterClass.toggle, style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' } },
-          createElement('span', { 'aria-hidden': true }, adapter.enabled ? t('cli.enabled') : t('cli.disabled')),
-          createElement(SettingsSwitch, { 'aria-label': t('cli.adapterToggle', { name: adapter.name }), checked: adapter.enabled, disabled: peerHostId !== null || !adapter.installed || busyAdapterId === adapter.id, onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleAdapter(adapter, event.currentTarget.checked) } }),
+        createElement('div', { className: cliAdapterClass.actions },
+          peerHostId === null && cliManagementAction(adapter) !== null && createElement('button', {
+            type: 'button', className: `${cliAdapterClass.detectButton} ${cliAdapterClass.manageButton}`, 'data-action': cliManagementAction(adapter), disabled: disabled || detecting !== null,
+            title: adapter.installed ? updateCheckLabel(adapter, t) : t('cli.manage.title', { action: t('cli.manage.install'), name: adapter.name }),
+            'aria-label': t('cli.manage.title', { action: t(`cli.manage.${cliManagementAction(adapter)}`), name: adapter.name }),
+            onClick: () => { setManagementAdapter(adapter); setManagementVisible(true) },
+          }, createElement('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+            createElement('path', { d: adapter.installed ? 'M12 16V4m-4 4 4-4 4 4M5 14v5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5' : 'M12 3v12m-4-4 4 4 4-4M5 16v4a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4' }),
+          )),
+          createElement(AdapterDetectButton, { label: `${adapter.name} · ${t(detecting === adapter.id || detecting === '*' ? 'cli.detecting' : adapter.update?.state === 'checking' ? 'cli.manage.checking' : 'cli.redetect')}`, busy: detecting === adapter.id || detecting === '*' || adapter.update?.state === 'checking', disabled: disabled || detecting !== null || adapter.update?.state === 'checking', onClick: () => { void redetect(adapter.id) } }),
+        ),
+        createElement('label', { className: cliAdapterClass.toggle, title: adapter.enabled ? t('cli.enabled') : t('cli.disabled') },
+          createElement(SettingsSwitch, { 'aria-label': t('cli.adapterToggle', { name: adapter.name }), checked: adapter.enabled, disabled: disabled || peerHostId !== null || !adapter.installed || busyAdapterId === adapter.id, onChange: (event: { currentTarget: { checked: boolean } }) => { void toggleAdapter(adapter, event.currentTarget.checked) } }),
         ),
       )),
-    ),
     selected !== null && createElement(AdapterDetailsDialog, {
-      adapter: selected,
+      adapter: catalog.find(adapter => adapter.id === selected.id) ?? selected,
       models,
       hostLabel,
       modelsError,
@@ -401,6 +478,10 @@ export function CliAdaptersPanel({ services, enabled, snapshot, notify }: Featur
       onClose: () => setSelected(null),
       buttonStyle,
       t,
+    }),
+    !disabled && peerHostId === null && managementAdapter !== null && createElement(CliManagementDialog, {
+      key: `management:${managementAdapter.id}`, adapter: managementAdapter, rpc: catalogRpc, hostLabel, t, visible: managementVisible,
+      onClose: (keepTracking) => { setManagementVisible(false); if (!keepTracking) setManagementAdapter(null) }, onCatalogChanged: refreshManagedCatalog,
     }),
   )
 }
@@ -421,6 +502,14 @@ function AdapterDetectButton({ label, busy, disabled, onClick }: {
 
 function adapterStatus(adapter: CodingNsCliAdapterDescriptor, t: ReturnType<typeof useCodingNsTranslator>): string {
   return t(adapterDetectionLabel(adapter))
+}
+
+function updateCheckLabel(adapter: CodingNsCliAdapterDescriptor, t: ReturnType<typeof useCodingNsTranslator>): string {
+  const state = adapter.update?.state ?? 'unchecked'
+  if (state === 'error' && adapter.update?.failure) return t(`cli.manage.failure.${adapter.update.failure}`, { status: adapter.update.httpStatus ?? '' })
+  if (state === 'unavailable' && adapter.update?.reason) return t(`cli.manage.reason.${adapter.update.reason}`)
+  if (state === 'available' && adapter.update?.manualUpdate) return t('cli.manage.availableInApp', { version: adapter.update.latestVersion ?? '', name: adapter.name })
+  return t(`cli.manage.${state}`, { version: adapter.update?.latestVersion ?? '' })
 }
 
 /** 设置页列表中的 Agent logo；资产缺失时用首字母占位，避免出现破图或空白。 */
@@ -454,16 +543,9 @@ interface AdapterDetailsDialogProps {
 }
 
 function AdapterDetailsDialog({ adapter, hostLabel, models, modelsError, loading, onClose, buttonStyle, t }: AdapterDetailsDialogProps): ReactElement {
-  return createElement('div', {
-    role: 'presentation',
-    onPointerDown: backdropPointerDownHandler(onClose),
-    style: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: dshThemeColor.overlay },
-  },
+  return createElement(CliSettingsDialog, { titleId: 'codingns-cli-adapter-title', onClose },
     createElement('div', {
-      role: 'dialog',
-      'aria-modal': true,
-      'aria-labelledby': 'codingns-cli-adapter-title',
-      style: { ...dshPopupSurfaceStyle, width: 'min(100%, 620px)', maxHeight: 'min(720px, 90vh)', overflow: 'auto', boxSizing: 'border-box', padding: 24, borderRadius: 8 },
+      style: { padding: 20 },
     },
       createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
         createElement('h3', { id: 'codingns-cli-adapter-title', style: { margin: 0, fontSize: uiFontSize(18) } }, adapter.name),
@@ -474,6 +556,11 @@ function AdapterDetailsDialog({ adapter, hostLabel, models, modelsError, loading
         createElement('dt', undefined, t('cli.installStatus')), createElement('dd', { style: { margin: 0 } }, adapterStatus(adapter, t)),
         createElement('dt', undefined, t('cli.enabledStatus')), createElement('dd', { style: { margin: 0 } }, adapter.enabled ? t('cli.enabled') : t('cli.disabled')),
         createElement('dt', undefined, t('cli.version')), createElement('dd', { style: { margin: 0 } }, adapter.version ?? t('cli.notDetectedVersion')),
+        adapter.installed && createElement('dt', undefined, t('cli.manage.update')),
+        adapter.installed && createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } },
+          updateCheckLabel(adapter, t),
+          adapter.update?.sourceUrl && createElement('a', { href: adapter.update.sourceUrl, target: '_blank', rel: 'noopener noreferrer', style: { display: 'block', marginTop: 4 } }, t('cli.manage.source')),
+        ),
         createElement('dt', undefined, t('cli.commandPath')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.command ?? t('cli.notDetectedCommand')),
         adapter.diagnostic && createElement('dt', undefined, t('cli.diagnostic')),
         adapter.diagnostic && createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere', color: dshThemeColor.labelSecondary } }, adapter.diagnostic),

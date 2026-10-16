@@ -1,17 +1,21 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { setImmediate } from 'node:timers/promises'
-import { isValidElement } from 'react'
+import { Children, isValidElement } from 'react'
 import type { ReactElement } from 'react'
 import { callCliRpc } from '../src/client/cli-catalog.js'
 import { createCliSettingsRpc } from '../src/client/cli-settings-rpc.js'
-import { CliAdaptersPanel } from '../src/client/features/cli-adapters.js'
+import { CliAdaptersPanel, CliAdaptersContent, CliDelegationSettings } from '../src/client/features/cli-adapters.js'
+import { CliSettingsDialog } from '../src/client/cli-settings-dialog.js'
+import { CliManagementDialog } from '../src/client/cli-management-dialog.js'
 import type { CodingNsRpcClient, CodingNsRpcResult, FeaturePanelProps } from '../src/client/features/types.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
 import { CODINGNS_RPC_CHANNEL } from '../src/shared/contracts/transport.js'
 import type { PeerHostClientRecord } from '../src/shared/contracts/peer-host.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
+import type { CodingNsCliAdapterDescriptor } from '../src/shared/contracts/cli-adapter.js'
+import { notifyAdapterCatalogChanged } from '../src/client/adapter-catalog-watch.js'
 import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js'
 import { createCliAdaptersFeature } from '../src/host/cli-adapters/feature.js'
 import { FeatureRegistry } from '../src/features/registry.js'
@@ -21,7 +25,7 @@ import { PeerHostHttpProxyService } from '../src/host/modules/peer-host/host-api
 import { InMemoryPeerHostCredentialStore, InMemoryPeerHostRecordStore, PeerHostStore } from '../src/host/modules/peer-host/peer-host-store.js'
 
 const t = resolveCodingNsTranslator()
-const adapter = (name: string, version = '1') => ({ id: 'codex', name, installed: true, enabled: true, version, command: `/tools/${name}` })
+const adapter = (name: string, version = '1') => ({ id: 'codex', name, installed: true, enabled: true, version, command: `/tools/${name}`, update: { state: 'available' as const, latestVersion: '2.0.0' } })
 const hosts = ['peer-a', 'peer-b'].map(id => ({ id, displayName: id, status: 'ready', route: { kind: 'lan' }, visibleWorkspaceIds: [] })) as unknown as PeerHostClientRecord[]
 const success = (value: unknown): CodingNsRpcResult => ({ ok: true, value })
 const proxyResponse = (value: unknown) => success({ status: 200, headers: [], body: JSON.stringify({ result: success(value) }) })
@@ -42,12 +46,208 @@ function panel(rpc: CodingNsRpcClient) {
     locale: { bind: () => t, getSnapshot: () => ({ revision: 1 }), subscribe: () => () => {} },
     settings: { mutate: async (patch: unknown) => { mutations.push(patch); return true } },
   } } as unknown as FeaturePanelProps
-  const renderer = createHookRenderer(CliAdaptersPanel, props)
+  const renderer = createHookRenderer(CliAdaptersContent, props)
   return { ...renderer, notices, mutations, props,
     async flush() { await setImmediate(); renderer.render(); await setImmediate(); return renderer.render() },
     switchHost(host: string) { find(renderer.render(), t('cli.agentHost')).props.onChange({ currentTarget: { value: host } }); return renderer.render() },
   }
 }
+
+test('settings keeps one entry and mounts Agent management only inside a separate modal', async context => {
+  const calls: string[] = []
+  const props = panel({ call: async (_channel, method) => { calls.push(method); return success([]) } }).props
+  const view = createHookRenderer(CliAdaptersPanel, props)
+  context.after(() => view.dispose())
+  let output = view.render()
+  assert.equal(elements(output).filter(element => element.type === 'button').length, 1)
+  assert.equal(output.props.children[0].type, CliDelegationSettings, 'delegation stays above the list entry')
+  assert.equal(elements(output).some(element => element.type === CliAdaptersContent), false)
+  const entry = elements(output).find(element => element.props['aria-haspopup'] === 'dialog')!
+  assert.equal(entry.props['aria-expanded'], false)
+  entry.props.onClick(); output = view.render()
+  const dialog = elements(output).find(element => element.type === CliSettingsDialog)!
+  assert.equal(dialog.props.wide, true)
+  assert.ok(elements(dialog).some(element => element.type === CliAdaptersContent))
+  assert.equal(elements(dialog).some(element => element.type === CliDelegationSettings), false)
+  dialog.props.onClose(); output = view.render()
+  assert.equal(elements(output).some(element => element.type === CliSettingsDialog), false)
+  assert.deepEqual(calls, [], 'closed settings do not query Agent or Host lists')
+  view.render({ ...props, enabled: false })
+  assert.equal(elements(view.render({ ...props, enabled: false })).find(element => element.type === 'button')!.props.disabled, true)
+})
+
+test('delegation controls remain editable in settings without opening the Agent list', async context => {
+  const fixture = panel({ call: async () => { assert.fail('Delegation does not load the Agent list') } })
+  const view = createHookRenderer(CliDelegationSettings, fixture.props)
+  context.after(() => view.dispose())
+  let output = view.render()
+  assert.equal(elements(output).some(element => element.type === 'details'), false)
+  find(output, t('cli.subagentBridgeToggle')).props.onChange({ currentTarget: { checked: true } })
+  await setImmediate(); output = view.render()
+  find(output, t('cli.subagentBridgeConcurrency')).props.onChange({ currentTarget: { value: '12' } })
+  output = view.render()
+  find(output, t('cli.subagentBridgeConcurrency')).props.onBlur()
+  await setImmediate()
+  assert.deepEqual(fixture.mutations, [
+    [{ op: 'set', path: ['subagentBridge', 'enabled'], value: true }],
+    [{ op: 'set', path: ['subagentBridge', 'maxConcurrentSubagents'], value: 12 }],
+  ])
+  output = view.render({ ...fixture.props, enabled: false })
+  assert.equal(find(output, t('cli.subagentBridgeToggle')).props.disabled, true)
+  assert.equal(find(output, t('cli.subagentBridgeConcurrency')).props.disabled, true)
+})
+
+test('native dialog uses the top layer and cancels only the active dialog', context => {
+  let closed = 0, prevented = 0, stopped = 0
+  const view = createHookRenderer(CliSettingsDialog, { titleId: 'agents', wide: true, onClose() { closed++ } })
+  context.after(() => view.dispose())
+  const output = view.render()
+  assert.equal(output.type, 'dialog')
+  assert.equal(output.props['aria-modal'], true)
+  output.props.onCancel({ preventDefault() { prevented++ }, stopPropagation() { stopped++ } })
+  assert.deepEqual([closed, prevented, stopped], [1, 1, 1])
+})
+
+test('settings refresh checks updates in the background and exposes compact icon actions only when eligible', async context => {
+  let update: CodingNsCliAdapterDescriptor['update']
+  const calls: { method: string; payload: any }[] = []
+  const catalog = () => [
+    { ...adapter('Codex', '1.0.0'), update },
+    { ...adapter('Missing'), id: 'kimi', installed: false, version: null, update: undefined },
+  ]
+  const rpc: CodingNsRpcClient = { call: async (_channel, method, payload) => {
+    if (method === 'peerHost/list') return success([])
+    calls.push({ method, payload })
+    if (method === 'cli/catalog/refresh') update = { state: 'checking' }
+    return success(catalog())
+  } }
+  const view = panel(rpc); context.after(() => view.dispose())
+  view.render(); let output = await view.flush()
+  const updateLabel = t('cli.manage.title', { action: t('cli.manage.update'), name: 'Codex' })
+  const installLabel = t('cli.manage.title', { action: t('cli.manage.install'), name: 'Missing' })
+  assert.equal(find(output, updateLabel), undefined)
+  assert.ok(texts(output).includes(t('cli.manage.hostUnsupported')), 'an older Host cannot silently look up to date')
+  const install = find(output, installLabel)
+  assert.equal(install.props['data-action'], 'install')
+  assert.ok(elements(install).some(element => element.type === 'svg' && element.props['aria-hidden']))
+  assert.equal(texts(install), '', 'icon actions retain their accessible name without a text button')
+  assert.equal(texts(output).includes(t('cli.notDetectedVersion')), false)
+  assert.equal(calls.some(call => call.payload?.checkUpdates), false, 'loading a list does not request an update check')
+  const rows = (output.props as any).children.flat().filter((element: any) => element?.props?.className === 'codingns4dsh-cli-adapter-row')
+  assert.equal(rows.length, 2, 'Agent rows are direct panel children without an extra card')
+  elements(output).find(element => element.props.label === t('cli.redetectAll'))!.props.onClick()
+  output = await view.flush()
+  assert.ok(calls.some(call => call.method === 'cli/catalog/refresh' && call.payload.checkUpdates === true))
+  assert.equal(find(output, updateLabel), undefined)
+  assert.equal(texts(output).includes(t('cli.manage.hostUnsupported')), false)
+  assert.equal(find(output, t('cli.adapterToggle', { name: 'Codex' })).props.disabled, false)
+  assert.equal(elements(output).find(element => element.props.label === t('cli.manage.checking'))!.props.busy, true)
+  const scoped = createCliSettingsRpc(rpc, null, view.props.services.locale)
+  for (const state of ['current', 'error', 'unavailable', 'available'] as const) {
+    update = { state, latestVersion: '2.0.0' }
+    notifyAdapterCatalogChanged(scoped)
+    output = await view.flush()
+    assert.equal(!!find(output, updateLabel), state === 'available', state)
+  }
+  const updateButton = find(output, updateLabel)
+  assert.equal(updateButton.props['data-action'], 'update')
+  assert.ok(elements(updateButton).some(element => element.type === 'svg'))
+  assert.ok(texts(output).includes('↑ 2.0.0'))
+  updateButton.props.onClick()
+  assert.ok(elements(view.render()).some(element => element.type === CliManagementDialog))
+})
+
+test('manual checking reasons and app-managed updates are visible in the compact list', async context => {
+  const catalog = [
+    { ...adapter('ZCode', '3.14.4'), id: 'zcode', update: { state: 'available', latestVersion: '3.15.3', manualUpdate: true } },
+    { ...adapter('WorkBuddy'), id: 'workbuddy', update: { state: 'unavailable', reason: 'application-managed' } },
+  ]
+  const view = panel({ call: async (_channel, endpoint) => success(endpoint === 'peerHost/list' ? [] : catalog) })
+  context.after(() => view.dispose())
+  view.render(); const output = await view.flush()
+  assert.ok(texts(output).includes('↑ 3.15.3'))
+  assert.ok(texts(output).includes(t('cli.manage.updateInApp')))
+  assert.ok(texts(output).includes(t('cli.manage.reasonLabel.application-managed')))
+  assert.ok(elements(output).some(element => element.props.title === t('cli.manage.reason.application-managed')))
+})
+
+test('Agent rows and management dialogs keep distinct sibling keys during repeated detection', async context => {
+  const catalog = [adapter('Claude Code'), { ...adapter('Gemini'), id: 'gemini' }]
+  const view = panel({ call: async (_channel, endpoint) => success(endpoint === 'peerHost/list' ? [] : catalog) })
+  context.after(() => view.dispose())
+  view.render(); let output = await view.flush()
+  const assertRows = () => {
+    const siblings = Children.toArray(output.props.children).filter(isValidElement)
+    const keys = siblings.map(element => element.key)
+    assert.equal(new Set(keys).size, keys.length, 'a dialog must not reuse an Agent row key')
+    const rows = siblings.filter(element => (element.props as any).className === 'codingns4dsh-cli-adapter-row')
+    assert.equal(rows.length, catalog.length)
+  }
+  assertRows()
+  for (let attempt = 0; attempt < 3; attempt++) {
+    find(output, t('cli.manage.title', { action: t('cli.manage.update'), name: 'Claude Code' })).props.onClick()
+    output = view.render(); assertRows()
+    const dialog = elements(output).find(element => element.type === CliManagementDialog)!
+    await dialog.props.onCatalogChanged()
+    output = await view.flush(); assertRows()
+    dialog.props.onClose(true)
+    output = view.render(); assertRows()
+    dialog.props.onClose(false)
+    output = view.render(); assertRows()
+  }
+})
+
+test('successful management publishes the verified version immediately and refreshes the selected Agent', async context => {
+  const previous = adapter('Codex', '1.0.0')
+  const detected = { ...previous, version: '2.0.0', update: undefined }
+  let catalog: readonly CodingNsCliAdapterDescriptor[] = [previous]
+  const refresh = Promise.withResolvers<void>()
+  const requests: any[] = []
+  const rpc: CodingNsRpcClient = { call: async (_channel, endpoint, payload) => {
+    if (endpoint === 'peerHost/list') return success(hosts)
+    if (endpoint === 'cli/catalog/refresh') {
+      requests.push(payload)
+      await refresh.promise
+      catalog = [{ ...detected, update: { state: 'current', latestVersion: '2.0.0' } }]
+    }
+    return success(catalog)
+  } }
+  const view = panel(rpc); context.after(() => view.dispose())
+  view.render(); let output = await view.flush()
+  find(output, t('cli.manage.title', { action: t('cli.manage.update'), name: 'Codex' })).props.onClick()
+  const dialog = elements(view.render()).find(element => element.type === CliManagementDialog)!
+  dialog.props.onClose(true)
+  assert.equal(elements(view.render()).find(element => element.type === CliManagementDialog)!.props.visible, false, 'closing progress keeps the operation monitor mounted')
+  const completed = dialog.props.onCatalogChanged({ id: 'updated', adapterId: 'codex', action: 'update', state: 'succeeded', output: '', adapter: detected })
+  output = view.render()
+  assert.ok(texts(output).includes('2.0.0'))
+  assert.equal(texts(output).includes('1.0.0'), false)
+  assert.equal(texts(output).includes('↑ 2.0.0'), false, 'the old update badge is cleared immediately')
+  assert.equal(texts(output).includes(t('cli.manage.hostUnsupported')), false)
+  assert.deepEqual(requests, [{ adapterId: 'codex', checkUpdates: true, catalogHostId: 'local' }])
+  refresh.resolve(); await completed; output = await view.flush()
+  assert.ok(texts(output).includes(t('cli.manage.state.current')))
+  assert.equal(find(output, t('cli.manage.title', { action: t('cli.manage.update'), name: 'Codex' })), undefined)
+})
+
+test('a late post-update refresh cannot overwrite a different Host list', async context => {
+  const refresh = Promise.withResolvers<unknown>()
+  const rpc: CodingNsRpcClient = { call: async (_channel, endpoint) => {
+    if (endpoint === 'peerHost/list') return success(hosts)
+    if (endpoint === 'peerHost/request') return proxyResponse([{ ...adapter('Remote', '9.0.0'), update: { state: 'current', latestVersion: '9.0.0' } }])
+    if (endpoint === 'cli/catalog/refresh') return success(await refresh.promise)
+    return success([adapter('Local', '1.0.0')])
+  } }
+  const view = panel(rpc); context.after(() => view.dispose())
+  view.render(); let output = await view.flush()
+  find(output, t('cli.manage.title', { action: t('cli.manage.update'), name: 'Local' })).props.onClick()
+  const dialog = elements(view.render()).find(element => element.type === CliManagementDialog)!
+  const completed = dialog.props.onCatalogChanged({ id: 'updated', adapterId: 'codex', action: 'update', state: 'succeeded', output: '', adapter: adapter('Local', '2.0.0') })
+  view.switchHost('peer-a'); await view.flush()
+  refresh.resolve([adapter('Local', '2.0.0')]); await completed; output = await view.flush()
+  assert.ok(texts(output).includes('Remote'))
+  assert.equal(texts(output).includes('2.0.0'), false)
+})
 
 test('PeerHost 设置目录通过真实 HTTP 白名单与目标 RPC 刷新注册表，无工作区也可查询', async context => {
   let detections = 0
@@ -157,9 +357,13 @@ test('设置页切换本机与多个 PeerHost，单个及全部刷新、详情�
   view.render(); let output = await view.flush()
   assert.match(texts(output), /本机/u)
   assert.ok(calls.some(call => call.host === null && call.payload.catalogHostId === 'local'))
+  find(output, t('cli.manage.title', { action: t('cli.manage.update'), name: '本机' })).props.onClick()
+  assert.ok(elements(view.render()).some(element => element.type === CliManagementDialog))
   for (const host of ['peer-a', 'peer-b']) {
     view.switchHost(host); output = await view.flush()
     assert.ok(texts(output).includes(host))
+    assert.equal(elements(output).some(element => element.type === CliManagementDialog), false)
+    assert.equal(find(output, t('cli.manage.title', { action: t('cli.manage.update'), name: host })), undefined)
     assert.equal(find(output, t('cli.adapterToggle', { name: host })).props.disabled, true)
     assert.equal(find(output, t('cli.subagentBridgeToggle')), undefined, '远端不展示本机托管设置')
     find(output, t('cli.adapterToggle', { name: host })).props.onChange({ currentTarget: { checked: false } })
@@ -168,6 +372,7 @@ test('设置页切换本机与多个 PeerHost，单个及全部刷新、详情�
       const button = elements(view.render()).find(element => element.props.label === label)!
       button.props.onClick(); await view.flush()
       assert.ok(calls.some(call => call.host === host && call.method === 'cli/catalog/refresh'
+        && call.payload.checkUpdates === true
         && (label === t('cli.redetectAll') ? !call.payload.adapterId : call.payload.adapterId === 'codex')))
     }
     find(view.render(), t('cli.viewDetails', { name: host })).props.onClick(); output = await view.flush()
@@ -177,7 +382,7 @@ test('设置页切换本机与多个 PeerHost，单个及全部刷新、详情�
     assert.equal(calls.at(-1)?.host, host)
   }
   view.switchHost(''); output = await view.flush()
-  assert.ok(find(output, t('cli.subagentBridgeToggle')))
+  assert.equal(find(output, t('cli.subagentBridgeToggle')), undefined, 'delegation is outside the Agent modal for every Host')
   assert.equal(find(output, t('cli.adapterToggle', { name: '本机' })).props.disabled, false)
   find(output, t('cli.adapterToggle', { name: '本机' })).props.onChange({ currentTarget: { checked: false } })
   await view.flush()
