@@ -18,6 +18,7 @@ import { readAgentQuestions } from './interaction-events.js'
 import { commandEnvironment, WINDOWS } from './process-utils.js'
 import { imageArtifactPathsFromValue, stripImageMarkdown } from '../image-artifact-store.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
+import { GrokContextUsage, GrokPromptUsage } from './grok-usage.js'
 
 interface GrokQuestionPending {
   readonly callId: string
@@ -43,6 +44,7 @@ interface GrokStreamedToolInput {
 }
 
 interface GrokSessionState {
+  readonly contextUsage: GrokContextUsage
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
   readonly rawStoreRef: string | undefined
@@ -57,6 +59,7 @@ interface GrokSessionState {
 }
 
 export interface GrokBuildDriverOptions {
+  readonly now?: () => number
   readonly binaries?: readonly string[]
   readonly sessionRoots?: readonly string[]
   readonly spawnSync?: typeof spawnSync
@@ -71,6 +74,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
   private readonly sessionRoots: readonly string[]
+  private readonly now: () => number
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, GrokSessionState>()
@@ -79,6 +83,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     this.binaries = options.binaries ?? ['grok', 'grok-build']
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
+    this.now = options.now ?? Date.now
     this.sessionRoots = options.sessionRoots ?? [join(process.env.GROK_HOME ?? join(homedir(), '.grok'), 'sessions')]
   }
 
@@ -166,6 +171,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),
         }, { signal: input.signal })
         providerSessionId = readSessionId(session) ?? input.sessionId
+        state.contextUsage.observe(session)
         state.providerSessionId = providerSessionId
         this.sessions.set(input.sessionId, state)
         this.sessions.set(providerSessionId, state)
@@ -174,7 +180,9 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       // Grok 1.0.52 ignores the model field on session/new. Apply explicit
       // selections after both creation and restoration, including reused sessions.
       if (input.modelId && !isProviderDefaultModel(input.modelId)) {
-        await rpc.request('session/set_model', { sessionId: providerSessionId, modelId: input.modelId }, { signal: input.signal })
+        const selected = await rpc.request('session/set_model', { sessionId: providerSessionId, modelId: input.modelId }, { signal: input.signal })
+        state.contextUsage.modelId = input.modelId
+        state.contextUsage.observe(selected)
       }
       if (input.effortId) {
         await rpc.request('session/set_config_option', { sessionId: providerSessionId, configId: 'reasoning_effort', value: input.effortId }, { signal: input.signal })
@@ -185,7 +193,9 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         ...(nativeCommand ? [] : [{ type: 'text', text: GROK_QUESTION_GUIDANCE }]),
         ...await buildAcpPromptBlocks(input.prompt, input.attachments ?? []),
       ]
+      const usage = new GrokPromptUsage(promptId, state.contextUsage, this.now)
       stream = streamGrokPrompt(rpc, providerSessionId, promptId, prompt, input.signal, (notification) => {
+        usage.observe(notification)
         const elicitation = readAcpElicitationRequest(notification)
         if (elicitation !== null) state.questions.set(elicitation.requestId, elicitation)
         const grokTool = readGrokQuestionTool(notification)
@@ -194,7 +204,8 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         // 已回答的问题被重新登记。tool_call 可以先显示问题卡并暂存用户答案。
         const requestId = interactionRequestId(notification)
         if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, { rpcId: notification.id, callId: permissionCallId(notification), ...permissionOptions(notification) })
-      })
+        return usage.takeObservation()
+      }, response => { usage.observeResponse(response); return usage.takeObservation() })
       let finishResult: { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }
       while (true) {
         const item = await stream.next()
@@ -202,8 +213,12 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           finishResult = item.value
           break
         }
+        if (item.value.codingnsGrokObservation !== undefined) yield item.value.codingnsGrokObservation as Extract<CodingNsAgentEvent, { type: 'usage-observation' }>
         const streamId = grokStreamId(item.value)
         for (const rawChunk of grokToolInputChunks(item.value, streamedToolInputs) ?? acpMessageToChunks(item.value)) {
+          // Settle native turn accounting once, after the terminal drain. Per-call
+          // usage is retained by the RPC observer solely for timing and fallback.
+          if (rawChunk.type === 'usage') continue
           let resolved = rawChunk.type === 'image-artifact'
             ? await resolveGrokImageArtifact(rawChunk, state, this.sessionRoots)
             : rawChunk
@@ -241,6 +256,11 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           advanceCodingNsSegment(chunk, segmentState)
           if (chunk.type === 'question-request') segmentState.segment += 1
         }
+      }
+      const settledUsage = usage.finish()
+      if (settledUsage !== undefined) {
+        const { requestPerformance: _observed, ...accounting } = settledUsage
+        yield accounting
       }
       if (finishResult.failure?.code === 'PERMISSION_DENIED') {
         const denial = [...state.permissionDenials.values()].at(-1)
@@ -326,18 +346,26 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     const resumeId = input.providerSessionId ?? (previous?.cwd === input.cwd ? previous?.providerSessionId : undefined)
     const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', ...(alwaysApprove ? ['--always-approve'] : []), 'stdio'], cwd: input.cwd, env: grokRuntimeEnvironment(), spawn: this.runSpawn })
     this.processes.add(rpc)
-    const state: GrokSessionState = { rpc, cwd: input.cwd, rawStoreRef: input.rawStoreRef, alwaysApprove, providerSessionId: '', requests: new Map(), permissionDenials: new Map(), questions: new Map(), grokQuestions: new Map(), grokQuestionCallIds: new Set(), grokQuestionEventIds: new Set() }
-    await rpc.request('initialize', {
+    const state: GrokSessionState = { rpc, contextUsage: new GrokContextUsage(), cwd: input.cwd, rawStoreRef: input.rawStoreRef, alwaysApprove, providerSessionId: '', requests: new Map(), permissionDenials: new Map(), questions: new Map(), grokQuestions: new Map(), grokQuestionCallIds: new Set(), grokQuestionEventIds: new Set() }
+    rpc.addNotificationListener(message => {
+      const params = isRecord(message.params) ? message.params : {}
+      const owner = state.providerSessionId || resumeId
+      if (owner && typeof params.sessionId === 'string' && params.sessionId !== owner) return
+      state.contextUsage.observe(message)
+    })
+    const initialized = await rpc.request('initialize', {
       protocolVersion: 1,
       clientInfo: { name: 'codingns4dsh', version: '0.1.1' },
       // 旧版 Grok 读取 capabilities；标准 ACP 读取 clientCapabilities。
       capabilities: ACP_FORM_CLIENT_CAPABILITIES,
       clientCapabilities: ACP_FORM_CLIENT_CAPABILITIES,
     })
+    state.contextUsage.observe(initialized)
     rpc.notify('initialized', {})
     if (resumeId) {
       try {
         const loaded = await rpc.request('session/load', { sessionId: resumeId, cwd: input.cwd ?? process.cwd(), mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id) })
+        state.contextUsage.observe(loaded)
         state.providerSessionId = readSessionId(loaded) ?? resumeId
       } catch { /* 旧版 ACP 没有 load，下一轮在同一进程创建新会话 */ }
     }
@@ -402,7 +430,8 @@ async function* streamGrokPrompt(
   promptId: string,
   prompt: readonly Record<string, unknown>[],
   signal: AbortSignal | undefined,
-  onNotification: (message: JsonRpcMessage) => void,
+  onNotification: (message: JsonRpcMessage) => Extract<CodingNsAgentEvent, { type: 'usage-observation' }> | undefined,
+  onResponse: (response: unknown) => Extract<CodingNsAgentEvent, { type: 'usage-observation' }> | undefined,
 ): AsyncGenerator<JsonRpcMessage, { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }, void> {
   const queue: JsonRpcMessage[] = []
   const requestController = new AbortController()
@@ -418,8 +447,8 @@ async function* streamGrokPrompt(
   }
   const listener = (message: JsonRpcMessage): void => {
     if (!isGrokPromptMessage(message, sessionId, promptId)) return
-    queue.push(message)
-    onNotification(message)
+    const observation = onNotification(message)
+    queue.push(observation === undefined ? message : { ...message, codingnsGrokObservation: observation })
     const notificationReason = grokNotificationReason(message)
     if (notificationReason === null) {
       notify()
@@ -450,6 +479,8 @@ async function* streamGrokPrompt(
   }, { signal: requestController.signal, killOnAbort: false }).then(
     (response) => {
       if (signal?.aborted) return
+      const observation = onResponse(response)
+      if (observation !== undefined) queue.push({ method: 'codingns/grok-observation', codingnsGrokObservation: observation })
       const responseReason = grokPromptReason(response)
       if (responseReason !== null) terminalReason = mergeGrokReason(terminalReason, responseReason)
       failure ??= grokPermissionFailure(response)
@@ -499,6 +530,7 @@ function isGrokPromptMessage(message: JsonRpcMessage, sessionId: string, promptI
   if (typeof params.sessionId === 'string' && params.sessionId !== sessionId) return false
   const update = isRecord(params.update) ? params.update : params
   const meta = isRecord(params._meta) ? params._meta : {}
+  if (meta.isReplay === true) return false
   const owner = firstToolText(update.prompt_id, update.promptId, meta.promptId)
   return owner === undefined || owner === promptId
 }
