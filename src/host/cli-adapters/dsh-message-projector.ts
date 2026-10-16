@@ -101,6 +101,10 @@ export class CodingNsDshMessageProjector {
 
   async push(event: CodingNsAgentEvent): Promise<readonly CodingNsDshStreamChunk[]> {
     if (this.finished) return []
+    if (event.type === 'usage-observation') {
+      this.recordUsageSample(event)
+      return []
+    }
     if (event.type !== 'session-binding' && event.type !== 'finish') {
       this.receivedProviderEvent = true
     }
@@ -147,12 +151,21 @@ export class CodingNsDshMessageProjector {
    * DSH 规范要求正式 usage 仍随 assistant/message 在 finish 前结算，因此这里不
    * 提前向 LLM 流发送第二个 usage，只写入 assistant/attempt 供上下文计量投影使用。
    */
-  private recordUsageSample(event: Extract<CodingNsAgentEvent, { type: 'usage' }>): void {
+  private recordUsageSample(event: Extract<CodingNsAgentEvent, { type: 'usage' | 'usage-observation' }>): void {
+    const billing = event.type === 'usage' ? event : undefined
     // assistant/attempt 同样是 DSH 会话记录，usage 必须按 DSH 的互斥桶口径落盘。
     const usage: CodingNsNativeUsageSample = {
-      ...toDshTokenUsage(event, this.options.adapterId === 'qoder' || this.options.adapterId === 'qoder-cn'),
-      ...(event.cacheHitRate === undefined ? {} : { cacheHitRate: event.cacheHitRate }),
-      ...(event.providerCredits === undefined ? {} : { providerCredits: event.providerCredits }),
+      ...(billing?.codexPerformance === undefined ? {} : { codexPerformance: billing.codexPerformance }),
+      ...(event.requestPerformance === undefined ? {} : { requestPerformance: event.requestPerformance }),
+      ...(event.type !== 'usage-observation' ? {} : { contextObservation: {
+        ...(event.contextModelId === undefined ? {} : { contextModelId: event.contextModelId }),
+        ...(event.contextWindow === undefined ? {} : { contextWindow: event.contextWindow }),
+        ...(event.contextTokens === undefined ? {} : { contextTokens: event.contextTokens }),
+      } }),
+      ...(billing === undefined ? { inputTokens: 0, outputTokens: 0 }
+        : toDshTokenUsage(billing, this.options.adapterId === 'qoder' || this.options.adapterId === 'qoder-cn')),
+      ...(billing?.cacheHitRate === undefined ? {} : { cacheHitRate: billing.cacheHitRate }),
+      ...(billing?.providerCredits === undefined ? {} : { providerCredits: billing.providerCredits }),
       ...(event.contextWindow === undefined ? {} : { contextWindow: event.contextWindow }),
       ...(event.contextTokens === undefined ? {} : { contextTokens: event.contextTokens }),
       ...(event.contextUsageRatio === undefined ? {} : { contextUsageRatio: event.contextUsageRatio }),
@@ -160,7 +173,7 @@ export class CodingNsDshMessageProjector {
     if (event.contextWindow !== undefined) {
       this.options.nativeSessions?.appendRequestContext?.(this.options.sessionId, {
         provider: this.options.adapterId,
-        model: this.options.modelId ?? this.options.adapterId,
+        model: event.contextModelId ?? this.options.modelId ?? this.options.adapterId,
         contextWindow: event.contextWindow,
         confirmed: true,
       })

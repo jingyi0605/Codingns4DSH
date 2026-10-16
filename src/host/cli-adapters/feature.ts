@@ -52,6 +52,9 @@ import type { SessionModelSelectionAdapter } from '../../dsh-capabilities/host/s
 import { attachmentFileNotice } from '../../shared/attachment-prompts.js'
 import { sessionPromptScope, type SessionPromptAdapter } from '../../dsh-capabilities/host/session-prompt-adapter.js'
 import { createSessionPromptTranslation } from '../features/session-prompt-translation.js'
+import { codexPerformanceProjection } from './codex-performance-projection.js'
+import { grokContextProjection, grokPerformanceProjection } from './grok-performance-projection.js'
+import type { SessionPerformanceAdapter } from '../../dsh-capabilities/host/session-performance-adapter.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry; updateCheck?: CliUpdateCheckOptions } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -61,7 +64,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       enabledByDefault: true,
       dependencies: [],
       runtime: 'host',
-      requires: [{ capability: 'session.external-model-selection', required: false, fallback: 'degrade' }],
+      requires: [
+        { capability: 'session.external-model-selection', required: false, fallback: 'degrade' },
+        { capability: 'session.external-performance', required: false, fallback: 'degrade' },
+      ],
     },
     async start(context) {
       const lifetime = new AbortController()
@@ -77,6 +83,15 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       const sessionStore = options.registry?.sessionRecords
         ?? new CodingNsCliSessionStore(context.services.settings === undefined ? {} : { settings: context.services.settings })
       const nativeSessions = context.services.nativeSessions
+      if (context.services.dshContext !== undefined && context.services.dshVersion !== undefined) {
+        const performance = createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext)
+          .getProfile(context.services.dshContext).capabilities.get('session.external-performance')?.value as SessionPerformanceAdapter | undefined
+        if (performance !== undefined) {
+          for (const projection of [codexPerformanceProjection, grokPerformanceProjection, grokContextProjection]) {
+            context.resources.add(performance.install(projection))
+          }
+        }
+      }
       const translation = context.services.sessionTranslation
       // 启动只恢复持久化索引；旧会话在打开时迁移，禁止在首屏扫描全部历史。
       const registry = options.registry ?? new CodingNsCliAdapterRegistry([

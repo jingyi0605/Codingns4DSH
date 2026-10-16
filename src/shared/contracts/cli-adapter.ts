@@ -413,7 +413,20 @@ export type CodingNsAgentEvent =
   | CodingNsAgentToolEvent
   | CodingNsAgentImageArtifact
   | {
+      /** Live provider measurements; these are not an additional accounting charge. */
+      readonly type: 'usage-observation'
+      readonly requestPerformance?: import('../request-performance.js').RequestPerformanceBatch
+      readonly contextModelId?: string
+      readonly contextTokens?: number
+      readonly contextWindow?: number
+      readonly contextUsageRatio?: number
+    }
+  | {
       readonly type: 'usage'
+      /** Request timing measured at the Codex RPC reader, before translation or queueing. */
+      readonly codexPerformance?: import('../codex-performance.js').CodexRequestPerformance
+      /** Completed requests belonging to one provider turn; independent of billing totals. */
+      readonly requestPerformance?: import('../request-performance.js').RequestPerformanceBatch
       /**
        * Provider 上报的输入口径：Codex、Command Code 的 inputTokens 已包含缓存读写，
        * Anthropic 风格的 input 不含缓存。公共投影层按 `uncachedInputTokens` 折算成
@@ -434,6 +447,7 @@ export type CodingNsAgentEvent =
       readonly contextWindow?: number
       readonly contextTokens?: number
       readonly contextUsageRatio?: number
+      readonly contextModelId?: string
     }
   | {
       readonly type: 'finish'

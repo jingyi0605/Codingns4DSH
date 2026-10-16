@@ -7,6 +7,7 @@ export type DshCapabilityId =
   | 'settings.store'
   | 'llm.text'
   | 'session.title'
+  | 'session.external-performance'
   | 'session.activation'
   | 'session.external-model-selection'
   | 'session.prompt-assembly'

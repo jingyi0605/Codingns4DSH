@@ -114,6 +114,9 @@ export interface CodingNsNativeRequestContext {
  * 计费输入 = inputTokens + 缓存读写。调用方（公共投影层）负责从 Provider 口径折算。
  */
 export interface CodingNsNativeUsageSample {
+  readonly codexPerformance?: import('../shared/codex-performance.js').CodexRequestPerformance
+  readonly requestPerformance?: import('../shared/request-performance.js').RequestPerformanceBatch
+  readonly contextObservation?: Pick<Extract<CodingNsAgentEvent, { type: 'usage-observation' }>, 'contextModelId' | 'contextWindow' | 'contextTokens'>
   readonly inputTokens: number
   readonly outputTokens: number
   readonly cacheReadTokens?: number
@@ -429,7 +432,10 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
           time: Date.now(),
           chunk: {
             type: 'usage',
-          usage: compactUsage(normalizedUsage),
+            ...(normalizedUsage.codexPerformance === undefined ? {} : { codingnsCodexPerformance: normalizedUsage.codexPerformance }),
+            ...(normalizedUsage.requestPerformance === undefined ? {} : { codingnsRequestPerformance: normalizedUsage.requestPerformance }),
+            ...(normalizedUsage.contextObservation === undefined ? {} : { codingnsContextObservation: normalizedUsage.contextObservation }),
+            usage: compactUsage(normalizedUsage),
           },
         }],
       })

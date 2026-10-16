@@ -15,6 +15,8 @@ export interface DshCapabilityMatrixRoute {
 
 /** 能力版本矩阵是运行时路由和版本检查的共同事实源。 */
 export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
+  route('session.external-performance', 'session-performance-projection-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/session-performance-adapter.ts', 'host/cli-adapters/feature.ts']),
+  route('session.external-performance', 'session-performance-presentation-021', 'client', '>=0.2.1-alpha.3 <=0.2.1-alpha.3', 'supported', ['dsh-capabilities/client/session-performance-adapter.ts', 'client/features/cli-adapters.ts']),
   route('quick-app.proxy', 'quick-app-host-proxy-021', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/quick-app-proxy-adapter.ts', 'dsh-capabilities/host/quick-app-proxy-provider.ts', 'host/features/quick-apps.ts', 'host/index.ts']),
   route('workspace.directory-list', 'workspace-directory-list-021', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/workspace-directory-adapter.ts', 'host/features/quick-apps.ts', 'host/modules/quick-apps/browse.ts']),
   route('quick-app.origin', 'quick-app-origin-provider', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/quick-app-origin-adapter.ts', 'dsh-capabilities/host/quick-app-https-provider.ts', 'dsh-capabilities/host/quick-app-lan-ports.ts', 'dsh-capabilities/host/quick-app-transport.ts', 'host/features/quick-apps.ts', 'host/features/lan-access-dsh.ts']),

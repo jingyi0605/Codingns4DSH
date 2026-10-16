@@ -3,7 +3,7 @@ import type { CodingNsAgentEvent, CodingNsCliTurnInput } from '../../shared/cont
 type SnapshotChunk = Extract<CodingNsAgentEvent, { readonly type: 'reasoning-snapshot' | 'text-snapshot' }>
 type UsageChunk = Extract<CodingNsAgentEvent, { readonly type: 'usage' }>
 
-export type CodingNsNormalizedAgentEvent = Exclude<CodingNsAgentEvent, SnapshotChunk>
+export type CodingNsNormalizedAgentEvent = Exclude<CodingNsAgentEvent, SnapshotChunk | { readonly type: 'usage-observation' }>
 
 /** 适配器没有稳定 assistant item 标识时，为公共投影层维护的段状态。 */
 export interface CodingNsSegmentState {
@@ -55,6 +55,7 @@ export class CodingNsAgentEventNormalizer {
   private usage: UsageChunk | null = null
 
   push(chunk: CodingNsAgentEvent): readonly CodingNsNormalizedAgentEvent[] {
+    if (chunk.type === 'usage-observation') return []
     if (chunk.type === 'reasoning-delta') {
       const boundary = this.messageBoundary('reasoning', chunk.messageId)
       this.reasoning = this.reasoningBoundary ? chunk.text : this.reasoning + chunk.text

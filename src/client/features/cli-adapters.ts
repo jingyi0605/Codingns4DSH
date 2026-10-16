@@ -1,4 +1,4 @@
-import { createElement, useEffect, useMemo, useRef, useState } from 'react'
+import { createElement, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type {
   CodingNsCliAdapterDescriptor,
@@ -17,7 +17,9 @@ import { CliSettingsDialog } from '../cli-settings-dialog.js'
 import { registerExternalToolStreamUi } from '../external-tool-stream.js'
 import { readNativeTranslationDefault } from '../native-translation-default.js'
 import { startContextBreakdownDom } from '../context-breakdown-dom.js'
-import { fetchSessionAdapters, replaceSessionAdapters, sessionAdapterId } from '../session-adapter-cache.js'
+import { fetchSessionAdapters, replaceSessionAdapters, sessionAdapterId, subscribeSessionAdapters } from '../session-adapter-cache.js'
+import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
+import type { SessionPerformancePresentation } from '../../dsh-capabilities/client/session-performance-adapter.js'
 import { providerIconUrl } from '../provider-icons.js'
 import { notifyAdapterCatalogChanged, watchAdapterCatalog } from '../adapter-catalog-watch.js'
 import { invalidateModelCatalogCache } from '../model-catalog-cache.js'
@@ -102,6 +104,7 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
     enabledByDefault: true,
     dependencies: [],
     runtime: 'client',
+    requires: [{ capability: 'session.external-performance', required: false, fallback: 'degrade' }],
     ui: {
       label: 'External Agent integration',
       description: 'View installed external Agents, versions, command paths, available models, and enable them independently. External Agent context panels keep only the occupancy percentage and totals.',
@@ -125,6 +128,11 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
     // 因此这里不把它挂在 slots 可用性之后。
     const uiContext = context.services.uiContext
     if (uiContext !== undefined) {
+      const performance = createDshCapabilityRegistry(context.services.dshVersion, 'client', uiContext)
+        .getProfile(uiContext).capabilities.get('session.external-performance')?.value as SessionPerformancePresentation | undefined
+      if (performance !== undefined) context.resources.add(performance.install(
+        sessionId => useSyncExternalStore(subscribeSessionAdapters,
+          () => sessionAdapterId(sessionId), () => sessionAdapterId(sessionId)), createElement))
       const { registerDelegateCommand } = await import('../delegate-command.js')
       context.resources.add(registerDelegateCommand(uiContext, {
         rpc: context.services.rpc,

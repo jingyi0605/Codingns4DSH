@@ -11,6 +11,8 @@ import { supportsQuickAppOrigins } from './host/quick-app-origin-adapter.js'
 import { supportsQuickAppProxy, createQuickAppProxy } from './host/quick-app-proxy-adapter.js'
 import { supportsQuickAppFooter } from './client/quick-app-footer-adapter.js'
 import { createWorkspaceDirectoryBrowser, supportsWorkspaceDirectory } from './host/workspace-directory-adapter.js'
+import { createSessionPerformanceAdapter, supportsSessionPerformance } from './host/session-performance-adapter.js'
+import { createSessionPerformancePresentation, supportsSessionPerformancePresentation } from './client/session-performance-adapter.js'
 
 /**
  * 注册 Codingns4DSH 当前实际消费的 DSH 服务能力。
@@ -31,6 +33,7 @@ export function createDshCapabilityRegistry(
   const add = <T>(route: DshCapabilityRoute<T>): void => registry.register(route)
 
   if (runtime === 'host') {
+    add({ id: 'session-performance-projection-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformance, create: createSessionPerformanceAdapter })
     add({ id: 'quick-app-host-proxy-021', capability: 'quick-app.proxy', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: supportsQuickAppProxy, create: createQuickAppProxy })
     add({ id: 'workspace-directory-list-021', capability: 'workspace.directory-list', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
@@ -63,6 +66,7 @@ export function createDshCapabilityRegistry(
     addDsh020HostRoutes(add, range020)
     addPeerHostHostRoutes(add)
   } else {
+    add({ id: 'session-performance-presentation-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformancePresentation, create: createSessionPerformancePresentation })
     add({ id: 'sidebar-footer-action-021', capability: 'sidebar.footer-action', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: ctx => supportsQuickAppFooter(read(ctx, 'slots')), create: ctx => read(ctx, 'slots') })
     add({ id: 'message-presentation-020', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.0-rc.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
