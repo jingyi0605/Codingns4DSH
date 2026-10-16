@@ -79,6 +79,33 @@ test('PeerHost 登录接口共享来源和全局失败限速', () => {
   assert.match(new TextDecoder().decode(blocked), /429 Too Many Requests/u)
 })
 
+test('login HTML preserves form origins while sandboxed and cross-site logins remain blocked', () => {
+  const proxy = new LanAccessDshProxy()
+  proxy.setLoginConfig(createLoginProtectionConfig({ username: 'fixture-user', password: 'fixture-password', timeoutSeconds: 1800, scopes: { lan: true, relay: true } }))
+  const authorize = (method: string, path: string, requestHeaders: Record<string, string> = {}) => {
+    const response = (proxy as unknown as { authorize(request: unknown, local: boolean, socket: unknown): Uint8Array | 'pass' })
+      .authorize({ method, path, headers: { ...headers, ...requestHeaders }, body: new TextEncoder().encode('username=fixture-user&password=fixture-password') }, false, { remoteAddress: '192.0.2.10' })
+    assert.notEqual(response, 'pass')
+    return new TextDecoder().decode(response as Uint8Array)
+  }
+  const page = authorize('GET', '/')
+  assert.match(page, /^HTTP\/1\.1 200 /u)
+  assert.match(page, /\r\nReferrer-Policy: same-origin\r\n/u)
+  assert.match(page, /form-action 'self'/u)
+  assert.match(page, /\r\nX-Frame-Options: DENY\r\n/u)
+  assert.match(authorize('GET', '/__codingns/session'), /\r\nReferrer-Policy: no-referrer\r\n/u)
+  for (const requestHeaders of [
+    { origin: 'null' },
+    { origin: 'null', 'sec-fetch-site': 'same-origin' },
+    { origin: 'https://foreign.test', 'sec-fetch-site': 'cross-site' },
+    { origin: 'https://app.dsh.test', 'sec-fetch-site': 'same-site' },
+  ]) {
+    const blocked = authorize('POST', '/__codingns/login', requestHeaders)
+    assert.match(blocked, /^HTTP\/1\.1 403 /u)
+    assert.doesNotMatch(blocked, /\r\nSet-Cookie:/u)
+  }
+})
+
 // —— 回归：验证码被并发签发请求作废，导致正确密码也永远提示“验证码错误” ——
 
 /** 足以压过守卫层每设备验证码配额的静态资源请求次数。 */
