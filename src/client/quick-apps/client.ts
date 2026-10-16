@@ -1,5 +1,5 @@
 import type { CodingNsRpcClient } from '../features/types.js'
-import type { QuickAppDocument } from '../../shared/contracts/quick-apps.js'
+import type { QuickApp, QuickAppDocument } from '../../shared/contracts/quick-apps.js'
 
 /** The controlling Host keeps metadata; no active conversation or browser storage is consulted. */
 export class QuickAppsClient {
@@ -13,6 +13,23 @@ export class QuickAppsClient {
     const result = await this.rpc.call('codingns', `quickApps/${action}`, input)
     if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
     return result.value as T
+  }
+  async reorder(apps: readonly QuickApp[], current: () => boolean): Promise<readonly QuickApp[]> {
+    try {
+      return await this.call<QuickApp[]>('reorder', { apps: apps.map(app => ({ id: app.id, expectedRevision: app.revision })) })
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'CODINGNS_RPC_NOT_FOUND') throw error
+    }
+    // Older Hosts already support order through upsert. Preserve their validation and access policy.
+    const saved: QuickApp[] = []
+    for (const [order, app] of apps.entries()) {
+      if (!current()) return saved
+      if (app.order === order) { saved.push(app); continue }
+      const { id, title, hostId, workspaceId, entryPath, documentRoot, kind, fileAccess, spaFallback, mounts } = app
+      saved.push(await this.call<QuickApp>('upsert', { expectedRevision: app.revision,
+        app: { id, title, hostId, workspaceId, entryPath, documentRoot, kind, ...(fileAccess ? { fileAccess } : {}), spaFallback, mounts, order } }))
+    }
+    return saved
   }
   async open(id: string): Promise<QuickAppView | undefined> {
     const closing = this.close()

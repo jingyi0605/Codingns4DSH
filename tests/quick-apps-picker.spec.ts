@@ -194,7 +194,7 @@ test('file picker reports unavailable browsing, retries explicitly and leaves ca
   const read = () => elements(renderer.render())
   read(); await flush()
   assert.equal(read().find(element => element.props.role === 'alert')?.props.children, en['quickApps.browseUnavailable'])
-  read().find(element => element.type === 'button' && element.props.children === 'Refresh')!.props.onClick(); read(); await flush()
+  read().find(element => element.type === 'button' && element.props['aria-label'] === 'Refresh')!.props.onClick(); read(); await flush()
   assert.equal(attempts, 2)
   assert.equal(read().some(element => element.props.role === 'alert'), false)
   assert.equal(read().find(element => element.type === QuickAppButton && element.props.children === 'Use this file')!.props.disabled, true)

@@ -2,7 +2,7 @@ import { createElement as h, useEffect, useRef, useState, type ReactElement } fr
 import type { QuickAppDirectory } from '../../shared/contracts/quick-apps.js'
 import type { CodingNsTranslator } from '../locale.js'
 import type { NativeWorkspaceRecord } from '../native-workspace-store.js'
-import { DshFileTypeIcon, DshFolderIcon, DshModal, classifyDshFileType } from '../../dsh-capabilities/client/primitives-adapter.js'
+import { DshFileTypeIcon, DshFolderIcon, DshModal, classifyDshFileType, resolveRefreshIcon, resolveTerminalArrowIcon } from '../../dsh-capabilities/client/primitives-adapter.js'
 import { QuickAppActions, QuickAppButton } from './ui.js'
 import type { QuickAppsClient } from './client.js'
 
@@ -39,19 +39,28 @@ export function QuickAppFilePicker({ client, workspace, value, t, onSelect, onCl
   const entries = [...(listing?.entries ?? [])].sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || a.name.localeCompare(b.name, undefined, { numeric: true }))
   return h(DshModal, { open: true, title: t('quickApps.chooseFile'), closeLabel: t('quickApps.cancel'), onClose,
     className: 'codingns-quick-app-dialog qa-file-picker', contentClassName: 'qa-content',
-    footer: h(QuickAppActions, null, h(QuickAppButton, { onClick: onClose }, t('quickApps.cancel')), h(QuickAppButton, { disabled: loading || !selected, onClick: () => choose(selected) }, t('quickApps.useFile'))) },
+    footer: h(QuickAppActions, null, h(QuickAppButton, { onClick: onClose }, t('quickApps.cancel')), h(QuickAppButton, { variant: 'primary', disabled: loading || !selected, onClick: () => choose(selected) }, t('quickApps.useFile'))) },
   h('div', { className: 'qa-body', 'aria-busy': loading },
-    h('p', { className: 'qa-help' }, `${workspace.hostLabel ?? workspace.hostId ?? t('quickApps.localHost')} · ${workspace.title}`),
-    h('nav', { className: 'qa-file-breadcrumbs', 'aria-label': t('quickApps.currentFolder') },
-      h('button', { type: 'button', onClick: () => setPath(''), disabled: !path }, workspace.title),
-      ...parts.map((part, index) => h('button', { key: index, type: 'button', disabled: index === parts.length - 1, onClick: () => setPath(parts.slice(0, index + 1).join('/')) }, part)),
-      h('button', { type: 'button', disabled: loading, onClick: () => setRevision(revision + 1) }, t('quickApps.refreshFiles'))),
+    h('div', { className: 'qa-file-location' }, h(DshFolderIcon, { size: 20 }),
+      h('div', { className: 'qa-workspace-label' }, h('strong', { className: 'qa-workspace-name' }, workspace.title),
+        h('small', null, workspace.hostLabel ?? workspace.hostId ?? t('quickApps.localHost')))),
+    h('div', { className: 'qa-file-toolbar' },
+      h('button', { type: 'button', className: 'qa-file-tool', title: t('quickApps.parentFolder'), 'aria-label': t('quickApps.parentFolder'), disabled: !path,
+        onClick: () => setPath(parts.slice(0, -1).join('/')) }, h(resolveTerminalArrowIcon('up'), { size: 16 })),
+      h('nav', { className: 'qa-file-breadcrumbs', 'aria-label': t('quickApps.currentFolder') },
+        h('button', { type: 'button', onClick: () => setPath(''), 'aria-current': !path ? 'location' : undefined }, workspace.title),
+        ...parts.map((part, index) => h('span', { key: index, className: 'qa-file-crumb' }, h(resolveTerminalArrowIcon('right'), { size: 12 }),
+          h('button', { type: 'button', 'aria-current': index === parts.length - 1 ? 'location' : undefined, onClick: () => setPath(parts.slice(0, index + 1).join('/')) }, part)))),
+      h('button', { type: 'button', className: 'qa-file-tool', title: t('quickApps.refreshFiles'), 'aria-label': t('quickApps.refreshFiles'), disabled: loading,
+        onClick: () => setRevision(revision + 1) }, h(resolveRefreshIcon(), { size: 16 }))),
     error ? h('p', { className: 'qa-notice', role: 'alert' }, error) : null,
     h('div', { className: 'qa-file-list', role: 'group', 'aria-label': t('quickApps.chooseFile') },
-      loading ? h('p', { className: 'qa-help', role: 'status' }, t('quickApps.loadingFiles')) : !error && !entries.length ? h('p', { className: 'qa-help' }, t('quickApps.emptyFolder')) : null,
+      loading ? h('p', { className: 'qa-file-empty qa-help', role: 'status' }, t('quickApps.loadingFiles')) : !error && !entries.length ? h('p', { className: 'qa-file-empty qa-help' }, t('quickApps.emptyFolder')) : null,
       ...entries.map(entry => h('button', { key: entry.path, type: 'button', className: 'qa-file-row', 'data-kind': entry.kind, 'aria-pressed': entry.kind === 'file' ? selected === entry.path : undefined,
+        title: entry.name,
         onClick: () => entry.kind === 'directory' ? setPath(entry.path) : setSelected(entry.path), onDoubleClick: () => { if (entry.kind === 'file') choose(entry.path) } },
-      entry.kind === 'directory' ? h(DshFolderIcon, { size: 18 }) : h(DshFileTypeIcon, { kind: classifyDshFileType(entry.name), size: 18 }), h('span', null, entry.name)))),
+      entry.kind === 'directory' ? h(DshFolderIcon, { size: 18 }) : h(DshFileTypeIcon, { kind: classifyDshFileType(entry.name), size: 18 }), h('span', null, entry.name),
+      entry.kind === 'directory' ? h(resolveTerminalArrowIcon('right'), { size: 14 }) : null))),
     listing?.truncated ? h('p', { className: 'qa-help', role: 'status' }, t('quickApps.filesTruncated')) : null,
-    h('p', { className: 'qa-selected-file' }, selected || t('quickApps.selectFileHint'))))
+    h('p', { className: 'qa-selected-file', role: 'status' }, selected || t('quickApps.selectFileHint'))))
 }

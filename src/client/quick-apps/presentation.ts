@@ -13,6 +13,14 @@ export function entryTitle(path: string): string {
   return name.toLowerCase() === 'index' ? parts.at(-2) ?? name : name
 }
 
+/** Keep existing URL roots when valid; new entries need no folder configuration. */
+export function quickAppEntryPatch(draft: QuickAppDraft, entryPath: string, original?: QuickApp): Partial<QuickAppDraft> {
+  const sameWorkspace = original?.hostId === draft.hostId && original?.workspaceId === draft.workspaceId
+  const keepRoot = sameWorkspace && (original.documentRoot === '' || entryPath.startsWith(`${original.documentRoot}/`))
+  return { entryPath, documentRoot: keepRoot ? original.documentRoot : entryPath.slice(0, Math.max(0, entryPath.lastIndexOf('/'))),
+    kind: /\.html?$/iu.test(entryPath) ? 'html' : 'text' }
+}
+
 export function draftChanged(draft: QuickAppDraft, app: QuickApp): boolean {
   return (Object.keys(newQuickAppDraft(0)) as (keyof QuickAppDraft)[]).some(key =>
     key !== 'expectedRevision' && JSON.stringify(draft[key]) !== JSON.stringify(app[key]))
