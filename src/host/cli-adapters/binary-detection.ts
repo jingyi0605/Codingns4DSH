@@ -1,6 +1,6 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import type { CodingNsCliDetection } from '../../shared/contracts/cli-adapter.js'
-import { commandEnvironment, resolveCommandPath, runAsyncCommand, WINDOWS } from './process-utils.js'
+import { commandEnvironment, resolveCommandPath, resolvePosixCommandPath, runAsyncCommand, WINDOWS } from './process-utils.js'
 
 export interface RpcBinaryOptions {
   readonly binaries: readonly string[]
@@ -47,8 +47,11 @@ export async function detectBinary(options: RpcBinaryOptions): Promise<CodingNsC
   async function probe(command: string): Promise<{ detection: CodingNsCliDetection; result: SpawnSyncReturns<string> }> {
     let result: SpawnSyncReturns<string>
     try {
+      const environment = { ...commandEnvironment(command), ...options.environment }
+      // Retain the executable that actually supplied this version, even if a later login shell changes PATH.
+      if (run === spawnSync && !WINDOWS) command = await resolvePosixCommandPath(command, environment.PATH ?? '') ?? command
       result = await runAsyncCommand(run, command, options.versionArgs ?? ['--version'], {
-        timeout: options.timeout ?? 3_000, shell: WINDOWS, env: { ...commandEnvironment(command), ...options.environment },
+        timeout: options.timeout ?? 3_000, shell: WINDOWS, env: environment,
       })
     } catch (error) {
       result = { status: null, stdout: '', stderr: '', error: error as Error } as SpawnSyncReturns<string>

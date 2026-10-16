@@ -1,8 +1,8 @@
 import { execFile, spawn, spawnSync, type ChildProcessByStdio, type SpawnSyncOptions, type SpawnSyncReturns } from 'node:child_process'
-import { access } from 'node:fs/promises'
+import { access, stat } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { dirname, join, win32 } from 'node:path'
+import { dirname, join, resolve, win32 } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 import { environmentValue, parseWindowsEnvironmentSnapshot, windowsCommandEnvironment, type WindowsEnvironmentSnapshot } from './windows-command-environment.js'
 
@@ -159,11 +159,7 @@ export async function resolveCommandPath(command: string, run: typeof spawnSync 
       })()
       await loginShellLookup
       if (revision !== commandEnvironmentRevision) return resolveCommandPath(command, run)
-      for (const directory of (loginShellPath ?? '').split(':').filter(Boolean)) {
-        const candidate = join(directory, command)
-        try { await access(candidate, constants.X_OK); return candidate } catch { /* 继续检查 PATH。 */ }
-      }
-      return null
+      return resolvePosixCommandPath(command, loginShellPath ?? '')
     }
     const result = WINDOWS
       ? await runAsyncCommand(run, win32.join(environmentValue(process.env, 'SystemRoot') ?? 'C:\\Windows', 'System32', 'where.exe'), [command], { timeout: 3_000, env: commandEnvironment(command) })
@@ -183,6 +179,18 @@ export async function resolveCommandPath(command: string, run: typeof spawnSync 
     }
   } catch {
     // 登录 Shell 不可用时仍按未安装处理。
+  }
+  return null
+}
+
+/** Resolve against the exact PATH used for a probe, without loading another shell environment. */
+export async function resolvePosixCommandPath(command: string, path: string): Promise<string | null> {
+  const candidates = command.includes('/') ? [resolve(command)] : path.split(':').map(directory => resolve(directory, command))
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.X_OK)
+      if ((await stat(candidate)).isFile()) return candidate
+    } catch { /* Continue to the next executable on this PATH. */ }
   }
   return null
 }
