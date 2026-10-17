@@ -1,6 +1,6 @@
 # Tasks: External Agent Team collaboration and management
 
-Status: Original development, session-export regressions, authorized Stage0 translation/Team integration, and the Grok teammate permission follow-up are complete. All 14 tasks have verification evidence. No release or publication was performed; Desktop remains outside scope.
+Status: Original development and six follow-ups have verification evidence for 17 completed tasks. Task 4.5 records the adapter matrix; task 4.6 completes the requested Command Code/Grok corrections and their six live workflows. No release or publication was performed.
 
 Planning submission: local commit `10bd749` (`docs: submit spec007.4 external agent team implementation plan`). No push was requested or performed.
 
@@ -207,6 +207,48 @@ All document paths below are repository-root-relative. Requirements and design s
   - Complete when: the reproduction passes across follow-up turns, unrelated/risky/unbound requests retain native approval handling, and verification limits are recorded.
   - Verify: failing-first Grok replay, affected source tests, typecheck, version/capability checks, and whitespace/document checks.
   - Trace: R2, R4–R8; design §4–8.
+
+- [x] 4.4 Preserve Claude's pending API retries across ordinary and Team sessions
+  - State: DONE within the source and protocol-replay scope.
+  - Evidence (2026-10-17): the supplied 53-record Claude teammate export contains three terminal `PROVIDER_ERROR: server_error` failures and one pending turn. Its matching Claude Code 2.1.301 transcript records HTTP 502 upstream failures at retry attempt 1 of 10. Each exported terminal error follows the retry record by 5–25 ms, before the scheduled 514–607 ms delay. The parser forwarded `system/api_retry` to generic error handling, which terminated the process before retrying.
+  - Work: consume the nonterminal Claude retry notification in the Claude parser; retain genuine terminal errors, cancellation, EOF failure, and terminal-result cleanup without adding adapter-owned retries or changing the selected model.
+  - Result: ordinary Claude sessions, external Leads, and teammates retain their existing invocation and conversation during CLI-owned retries.
+  - Verification: all seven new regressions failed before the correction and passed afterward. The affected Claude/stream/Team suite passed 104 tests with two explicit skips and zero failures. Typecheck, version synchronization, and capability retirement checks passed. Logs: `/tmp/codingns-claude-api-retry-before.log`, `/tmp/codingns-claude-api-retry-after.log`, `/tmp/codingns-claude-api-retry-focused.log`, and `/tmp/codingns-claude-api-retry-{typecheck,version,capability}.log`.
+  - Files: `src/host/cli-adapters/claude-driver.ts`, `tests/cli-adapters-claude-retry.spec.ts`, and `specs/spec007.4-外部Agent团队协作与管理/docs/20261017-Claude重试通知误判故障回归记录.md` with its Spec pointers.
+  - Excludes: resolving the upstream outage, changing saved models/effort/permissions, live model calls, historical task replay, server/profile/Desktop operations, and release actions.
+  - Complete when: protocol recovery passes in all three roles without prompt replay, exhausted retries preserve the final provider error, cancellation/EOF stay correct, and the evidence separates source correctness from upstream health.
+  - Verify: failing-first replay, affected Claude/stream/Team tests, typecheck, version/capability checks, Spec links, whitespace, and final changed-file scope.
+  - Trace: R2, R4–R8; design §4–8.
+
+- [x] 4.5 Exercise every supported external adapter through the verified Stage0 instance
+  - State: DONE within the requested live-testing scope; this does not certify the failed workflows as usable.
+  - Authorization (2026-10-17): the user requested Stage0 Team usability and subagent invocation tests for all supported external adapters.
+  - Steering: the user subsequently excluded Claude Code. No new Claude tests followed; the active owned Stage0 Claude test was interrupted and terminal cancellation verified.
+  - Scope: enumerate installed/enabled adapters; exercise Team collaborators and Leads, task claim/completion, a scoped file artifact, and follow-up messaging. Separately test ordinary delegation where supported; report missing installations and external service failures without silently changing models or saved preferences.
+  - Target: verified Stage0 PID 79487, DSH 0.2.1-rc.2, port 17891, home `/Users/jackson/.dsh-stage0-020`, repository patch and profile `stage0`.
+  - Boundary incident: the session-bound `codingns.agent_subagent` tool was discovered to target Desktop after three read-only smoke-test children were created. The mistake was disclosed to the user. Those children are excluded from Stage0 results; the Desktop bridge is no longer used, and no Desktop cleanup or further operation is authorized. Subsequent tests use the ownership-checked Stage0 API and its own native/injected tools.
+  - Files: `scripts/verify-stage0-agent-adapters.mjs`, this Spec, and retained temporary acceptance artifacts.
+  - Complete when: every eligible adapter has an observed pass, failure, or explicit prerequisite blocker; evidence verifies real routes, identities, tasks, files, follow-up behavior, and preference preservation.
+  - Verify: opt-in Stage0 live runner, retained session journals/projections and result files, script syntax, affected source checks if a correction is required, and final scope review.
+  - Evidence (2026-10-17): Codex Team Lead/collaborator and OpenCode ordinary/Team Lead/collaborator passed; Command Code and Zcode ordinary initial/follow-up passed, with stale read/wait findings. Command Code Team tool discovery failed; Grok ordinary reporting and collaborator file permissions failed, and its Lead follow-up required approval. Gemini inherited an unrelated model when omitted, rejected explicit default Team selection, and timed out in admitted-model/startup controls. Pi computed its result but failed the reporting-guidance workflow. MiniMax Code and Kimi were installation-blocked; Pi/Zcode/Kimi Team roles remain unsupported.
+  - Final audit: zero active owned Stage0 root/child turns and zero unresolved test approvals; the existing Stage0 listener remained running. The ordinary Gemini probe's saved preference side effect was restored with native settings CAS, and all adapter preferences matched preflight. Script syntax, whitespace, and document links passed. No production fix, full build/test rerun, commit, push, installation, or publication was performed in this acceptance task.
+  - Record: `specs/spec007.4-外部Agent团队协作与管理/docs/20261017-Stage0全适配器团队与委派验收记录.md`; private final audit `/tmp/codingns-stage0-final-acceptance-audit.json`.
+  - Trace: R2–R8; design §4–9.
+
+- [x] 4.6 Fix the observed Command Code and Grok workflow failures
+  - State: DONE within the recorded source and Stage0 `0.2.1-rc.2` scope.
+  - Authorization (2026-10-17): the user requested fixes for Command Code and Grok after the Stage0 matrix. Claude Code remains excluded from live testing.
+  - Scope: load Command Code's existing session-bound Team Mod in actual ACP startup; admit Grok's already-authorized workspace file operations and exact injected coordination/reporting tools while retaining native approval for unrelated commands, external paths, explicit risks, and unknown authority. Correct Grok's bootstrap catalog probe after it rejected the saved model during the fresh retest. Fix the shared cold-follow-up status defect reproduced in both adapters.
+  - Evidence: task 4.5's live failures; installed Command Code 1.82.5 calls `loadCommandModHost()` from `runAcp()` without applying the ordinary CLI action's `--mod` initialization. Grok currently only recognizes the bound Team tool as already admitted.
+  - Files: existing Command Code ACP loader, Grok driver, native subagent observer and its two send callers, focused protocol/path/cold-follow-up regressions, this Spec and dated verification record.
+  - Excludes: unrelated Gemini/Pi/model-selection changes, changing approval policies, adapter installations, Desktop operations, commits, pushes, and releases.
+  - Complete when: failing-first regressions pass, permission boundaries remain covered, and fresh owned Stage0 Command Code/Grok ordinary and Team initial/follow-up outcomes are recorded.
+  - Verify: focused tests, typecheck, version/capability checks, bounded authorized Stage0 cases, preference/cleanup audit, and whitespace review.
+  - Source evidence: 145 focused tests and 65 additional native-session/delegation compatibility tests passed with zero failures/skips; typecheck, version, capability, syntax, and whitespace checks passed. Initial transport/permission, catalog, real formatted-title, and two cold-follow-up regressions failed before correction.
+  - Live evidence: all six Command Code/Grok ordinary, Team collaborator, and Team Lead cases passed both rounds. Same-child/provider-conversation identity was retained. Team tasks stayed completed at revision 3 with unchanged artifact hashes. Both ordinary cold-restoration cases returned the new ACK directly from read/wait, without a stale completed first-turn result. All accepted cases recorded zero native approval requests.
+  - Final audit: adapter preferences matched preflight, zero owned test turns or approvals remained active, and Stage0 PID 79487 remained running. No Claude live tests, Desktop operation, commit, push, installation, or release occurred in this follow-up. Detailed identities and `/tmp/codingns-stage0-command-grok-final-audit.json` are recorded in the linked record. Interrupted controls are excluded from complete acceptance.
+  - Record: `specs/spec007.4-外部Agent团队协作与管理/docs/20261017-CommandCode与Grok团队故障修复记录.md`.
+  - Trace: R2–R8; design §4–9.
 
 ## Planning verification (2026-10-17)
 
