@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { beforeEach } from 'node:test'
 import { Children, isValidElement, type ReactElement, type ReactNode } from 'react'
 import { QuickAppsLauncher } from '../src/client/quick-apps/launcher.js'
+import { QUICK_APPS_RAIL_COLLAPSED_KEY } from '../src/client/quick-apps/rail-preference.js'
 import { DshModal } from '../src/dsh-capabilities/client/primitives-adapter.js'
 import { QuickAppRegistry } from '../src/host/modules/quick-apps/registry.js'
 import { createQuickAppsFeature } from '../src/host/features/quick-apps.js'
@@ -23,6 +24,10 @@ const initial: QuickApp[] = ['a', 'b', 'c'].map((id, order) => ({
 }))
 const request = (apps: readonly QuickApp[]) => apps.map(app => ({ id: app.id, expectedRevision: app.revision }))
 const flush = () => new Promise<void>(resolve => setImmediate(resolve))
+
+beforeEach(() => {
+  try { globalThis.localStorage?.removeItem(QUICK_APPS_RAIL_COLLAPSED_KEY) } catch { /* isolation only */ }
+})
 
 test('reordering is atomic, revision checked and preserves unavailable shortcuts and access policy', async () => {
   let saved = structuredClone(initial)

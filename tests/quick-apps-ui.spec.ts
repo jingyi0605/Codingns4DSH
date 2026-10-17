@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { beforeEach } from 'node:test'
 import { Children, isValidElement, type ReactElement, type ReactNode } from 'react'
 import { QuickAppsLauncher } from '../src/client/quick-apps/launcher.js'
+import { QUICK_APPS_RAIL_COLLAPSED_KEY, readQuickAppsRailCollapsed, writeQuickAppsRailCollapsed } from '../src/client/quick-apps/rail-preference.js'
 import { DshInput, DshModal } from '../src/dsh-capabilities/client/primitives-adapter.js'
 import { en, zh } from '../src/client/locales/quickApps.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
@@ -17,6 +18,41 @@ function elements(node: ReactNode): ReactElement<any>[] {
   return isValidElement<{ children?: ReactNode; footer?: ReactNode }>(node) ? [node, ...Children.toArray(node.props.children).flatMap(elements), ...Children.toArray(node.props.footer).flatMap(elements)] : []
 }
 const flush = () => new Promise<void>(resolve => setImmediate(resolve))
+
+beforeEach(() => {
+  try { globalThis.localStorage?.removeItem(QUICK_APPS_RAIL_COLLAPSED_KEY) } catch { /* isolation only */ }
+})
+
+function installRailStorage(t: { after(fn: () => void): void }, initial: Record<string, string> = {}, options: { throwOnGet?: boolean; throwOnSet?: boolean } = {}) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const values = new Map(Object.entries(initial))
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => {
+        if (options.throwOnGet) throw new Error('storage blocked')
+        return values.get(key) ?? null
+      },
+      setItem: (key: string, value: string) => {
+        if (options.throwOnSet) throw new Error('storage blocked')
+        values.set(key, String(value))
+      },
+      removeItem: (key: string) => { values.delete(key) },
+    },
+  })
+  t.after(() => {
+    if (previous === undefined) delete (globalThis as { localStorage?: unknown }).localStorage
+    else Object.defineProperty(globalThis, 'localStorage', previous)
+  })
+  return values
+}
+
+function launcherServices() {
+  return {
+    locale: { bind: () => (key: keyof typeof en) => en[key] ?? key, subscribe: () => () => {}, getSnapshot: () => ({ revision: 0 }) },
+    rpc: { call: async () => ({ ok: true, value: [{ ...definition, id: 'app', revision: 1, availability: 'available' }] }) },
+  }
+}
 
 test('native HTML viewer uses the Host sandbox without exposing the launch address', t => {
   const app = { ...definition, id: 'app', revision: 1 }
@@ -111,6 +147,51 @@ for (const wide of [true, false]) test(`launcher separates normal, collapsed and
   assert.equal(read().find(node => node.props.className === 'qa-tile')!.props['data-editing'], false)
   assert.equal(read().some(node => node.props.className === 'qa-remove'), false)
   assert.deepEqual(calls, ['quickApps/list'], 'mode changes and editing must not launch an app')
+})
+
+test('rail preference stores only collapsed vs expanded and ignores unreadable storage', t => {
+  const values = installRailStorage(t)
+  assert.equal(readQuickAppsRailCollapsed(), false)
+  writeQuickAppsRailCollapsed(true)
+  assert.equal(values.get(QUICK_APPS_RAIL_COLLAPSED_KEY), '1')
+  assert.equal(readQuickAppsRailCollapsed(), true)
+  writeQuickAppsRailCollapsed(false)
+  assert.equal(values.get(QUICK_APPS_RAIL_COLLAPSED_KEY), '0')
+  assert.equal(readQuickAppsRailCollapsed(), false)
+  values.set(QUICK_APPS_RAIL_COLLAPSED_KEY, 'yes')
+  assert.equal(readQuickAppsRailCollapsed(), false)
+  installRailStorage(t, {}, { throwOnGet: true, throwOnSet: true })
+  assert.equal(readQuickAppsRailCollapsed(), false)
+  writeQuickAppsRailCollapsed(true)
+  assert.equal(readQuickAppsRailCollapsed(), false)
+})
+
+test('launcher restores the collapsed rail after remount and does not persist edit mode', async t => {
+  const values = installRailStorage(t)
+  const mount = async () => {
+    const renderer = createHookRenderer(QuickAppsLauncher, { services: launcherServices() as never, wide: true })
+    const read = () => elements(renderer.render())
+    const controls = () => read().filter(node => node.props.className === 'qa-control').map(node => node.props['aria-label'])
+    const click = (label: string) => read().find(node => node.props['aria-label'] === label)!.props.onClick()
+    read(); await flush()
+    return { renderer, read, controls, click }
+  }
+  const first = await mount(); t.after(first.renderer.dispose)
+  first.click('Collapse Quick Apps')
+  assert.deepEqual(first.controls(), ['Restore Quick Apps'])
+  assert.equal(values.get(QUICK_APPS_RAIL_COLLAPSED_KEY), '1')
+  const collapsed = await mount(); t.after(collapsed.renderer.dispose)
+  assert.equal(collapsed.read().find(node => node.props.className === 'codingns-quick-app-rail')?.props['data-collapsed'], true)
+  assert.deepEqual(collapsed.controls(), ['Restore Quick Apps'])
+  assert.equal(collapsed.read().some(node => node.props.className === 'qa-grid'), false)
+  collapsed.click('Restore Quick Apps')
+  assert.equal(values.get(QUICK_APPS_RAIL_COLLAPSED_KEY), '0')
+  collapsed.click('Edit shortcuts')
+  assert.deepEqual(collapsed.controls(), ['Add shortcut', 'Done'])
+  const restored = await mount()
+  t.after(restored.renderer.dispose)
+  assert.equal(restored.read().find(node => node.props.className === 'codingns-quick-app-rail')?.props['data-collapsed'], false)
+  assert.deepEqual(restored.controls(), ['Edit shortcuts', 'Collapse Quick Apps'])
 })
 
 test('delete badges confirm removal, retain failed attempts and keep an empty bar editable', async t => {
