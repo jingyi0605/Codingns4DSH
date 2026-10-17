@@ -220,7 +220,7 @@ test('ZCode 在正文增量缺失时使用 turn.completed 快照收尾', async (
   driver.dispose()
 })
 
-test('ZCode 设置选择普通套餐时不被同时存在的 Start Plan JWT 遮蔽', async () => {
+test('ZCode 设置选择普通套餐时不被同时存在的 Start Plan JWT 遮蔽', async (context) => {
   const root = mkdtempSync(join(tmpdir(), 'codingns-zcode-provider-selection-'))
   const settingsPath = join(root, '.zcode', 'v2', 'setting.json')
   const credentialsPath = join(root, '.zcode', 'v2', 'credentials.json')
@@ -271,6 +271,7 @@ test('ZCode 设置选择普通套餐时不被同时存在的 Start Plan JWT 遮�
     }),
   })
   ;(driver as unknown as { resolveRuntime: () => typeof runtime }).resolveRuntime = () => runtime
+  context.mock.method(driver, 'detect', async () => ({ installed: true, version: runtime.appVersion, command: runtime.entry }))
   try {
     const catalog = await driver.listModels()
     assert.equal(catalog.currentModel, 'account:bigmodel-individual-coding-plan/GLM-5.3')
