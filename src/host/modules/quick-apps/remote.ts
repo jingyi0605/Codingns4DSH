@@ -112,7 +112,7 @@ export class QuickAppRemoteController {
             }
             const timeout = AbortSignal.any([AbortSignal.timeout(30_000), ...(signal ? [signal] : [])])
             const request: QuickAppProxyRequest = { method: req.method ?? 'GET', path: req.url ?? '/', headers,
-              ...(req.method === 'PUT' ? { body: await readBody(req, timeout) } : {}) }
+              ...(req.method === 'PUT' || req.method === 'POST' ? { body: await readBody(req, timeout) } : {}) }
             const response = await this.call(app, 'resource', { id: result.launchId, request }, timeout) as QuickAppProxyResponse
             if (!Number.isInteger(response?.status) || response.status < 200 || response.status > 599 || typeof response.bodyBase64 !== 'string'
               || response.bodyBase64.length > Math.ceil(QUICK_APP_LIMITS.staticBytes / 3) * 4) deny('Invalid remote preview response.')

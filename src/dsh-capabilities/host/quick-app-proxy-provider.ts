@@ -73,7 +73,7 @@ export class QuickAppProxyProvider implements QuickAppOriginProvider {
 
   /** Existing local Host listener only; callers cannot supply an upstream address. */
   async requestResource(basePath: string, input: QuickAppProxyRequest, signal: AbortSignal): Promise<QuickAppProxyResponse> {
-    if (this.stopped || quickAppProxyBase(basePath) !== basePath || !input || !['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS'].includes(input.method)
+    if (this.stopped || quickAppProxyBase(basePath) !== basePath || !input || !['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS'].includes(input.method)
       || typeof input.path !== 'string' || !input.path.startsWith('/') || input.path.startsWith('//') || input.path.length > 8192
       || /[\r\n#]/u.test(input.path) || typeof input.headers !== 'object' || !input.headers
       || input.body !== undefined && (typeof input.body !== 'string' || Buffer.byteLength(input.body) > QUICK_APP_LIMITS.textBytes)) throw new Error('Invalid preview resource request.')

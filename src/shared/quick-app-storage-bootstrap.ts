@@ -1,4 +1,5 @@
 import { QUICK_APP_STORAGE_LIMITS, QUICK_APP_STORAGE_PROTOCOL } from './quick-app-browser-storage.js'
+import { quickAppNetworkInstall, quickAppNetworkSource } from './quick-app-network-bootstrap.js'
 
 /** Self-contained because the Host serializes this function into an opaque sandbox document. */
 export function quickAppStorageRuntime(token: string, protocol: string, limits: { bytes: number; keys: number; pending: number; timeoutMs: number }): void {
@@ -135,6 +136,7 @@ export function quickAppStorageRuntime(token: string, protocol: string, limits: 
     })
     // Parse at the original URL, after hydration, so ordinary resource URLs and script order survive.
     // MessagePort listeners remain attached when document.open clears Window/Document listeners.
+    quickAppNetworkInstall()
     document.open(); document.write(html); document.close()
   }).catch(error => {
     const message = document.createElement('p')
@@ -145,5 +147,6 @@ export function quickAppStorageRuntime(token: string, protocol: string, limits: 
 
 export function quickAppStorageBootstrap(token: string): string {
   if (!/^[a-f0-9-]{36}$/u.test(token)) throw new Error('Invalid storage launch token.')
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Quick App</title></head><body><script>(${quickAppStorageRuntime.toString()})(${JSON.stringify(token)},${JSON.stringify(QUICK_APP_STORAGE_PROTOCOL)},${JSON.stringify(QUICK_APP_STORAGE_LIMITS)});</script></body></html>`
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Quick App</title></head><body><script>${quickAppNetworkSource()}
+(${quickAppStorageRuntime.toString()})(${JSON.stringify(token)},${JSON.stringify(QUICK_APP_STORAGE_PROTOCOL)},${JSON.stringify(QUICK_APP_STORAGE_LIMITS)});</script></body></html>`
 }

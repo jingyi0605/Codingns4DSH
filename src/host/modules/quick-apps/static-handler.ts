@@ -9,7 +9,9 @@ import type { QuickAppLaunch, QuickAppLaunches } from './launches.js'
 import { QuickAppFileApi, tooLarge } from './file-api.js'
 import { appPath, decodeResourceTarget, publicPath, resolveAppPath, withinScope } from './paths.js'
 import { deny, QuickAppError } from './errors.js'
+import { quickAppNetworkBootstrap, quickAppPreparedHtml } from '../../../shared/quick-app-network-bootstrap.js'
 import { quickAppStorageBootstrap } from '../../../shared/quick-app-storage-bootstrap.js'
+import { proxyQuickAppEgress, readEgressBody } from './egress.js'
 
 const TYPES: Record<string, string> = { html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', mjs: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', json: 'application/json', txt: 'text/plain; charset=utf-8', md: 'text/plain; charset=utf-8', svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', ico: 'image/x-icon', woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', wasm: 'application/wasm', pdf: 'application/pdf', mp3: 'audio/mpeg', mp4: 'video/mp4', csv: 'text/csv; charset=utf-8' }
 export function quickAppMime(path: string): string { return TYPES[extname(path).slice(1).toLowerCase()] ?? 'application/octet-stream' }
@@ -37,7 +39,7 @@ export function createQuickAppHttpHandler(launches: QuickAppLaunches, files: Qui
       await launches.validateWorkspace(launch)
       if (proxy) {
         res.setHeader('Access-Control-Allow-Origin', 'null')
-        res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, PUT, DELETE, OPTIONS')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS')
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, If-Match, If-None-Match')
         if (req.method === 'OPTIONS') { res.writeHead(204).end(); return }
       }
@@ -47,6 +49,18 @@ export function createQuickAppHttpHandler(launches: QuickAppLaunches, files: Qui
       if (target.path === '__quickapp' || target.path.startsWith('__quickapp/')) {
         if (req.headers.origin !== undefined && req.headers.origin !== appOrigin) deny('Cross-origin file requests are denied.')
         if (!proxy && req.headers['sec-fetch-site'] === 'cross-site') deny()
+        if (target.path === '__quickapp/egress') {
+          if (req.method !== 'POST') throw new QuickAppError(405, 'QUICK_APP_METHOD', 'Network egress accepts POST.')
+          if (req.headers.origin !== appOrigin) deny('Egress requires the app Origin.')
+          const egressSignal = AbortSignal.any([abort.signal, launch.abort.signal, AbortSignal.timeout(180_000)])
+          const outbound = await readEgressBody(req, egressSignal)
+          launches.authorize(launch)
+          const result = await proxyQuickAppEgress(outbound, egressSignal, { allow: launch.app.networkAllow ?? [] })
+          launches.authorize(launch)
+          res.writeHead(result.status, { 'Content-Type': result.contentType, 'Content-Length': result.body.byteLength, 'Cache-Control': 'no-store' })
+          res.end(result.body)
+          return
+        }
         const query = new URLSearchParams(target.query)
         if ([...query.keys()].some(key => key !== 'path') || query.getAll('path').length !== 1) deny('Only one workspace-relative path is accepted.')
         const path = appPath(query.get('path'))
@@ -83,7 +97,7 @@ export function createQuickAppHttpHandler(launches: QuickAppLaunches, files: Qui
         }
       } catch (error) {
         const navigation = req.headers['sec-fetch-mode'] === 'navigate' && ['document', 'iframe'].includes(String(req.headers['sec-fetch-dest'])) && String(req.headers.accept ?? '').includes('text/html')
-          || proxy && Boolean(storageToken) && req.headers.accept === 'text/html'
+          || proxy && req.headers.accept === 'text/html'
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || !app.spaFallback || !navigation || extname(target.path) !== '' || mount) throw error
         absolute = await resolveAppPath(launch.workspaceRoot, app.entryPath)
       }
@@ -94,10 +108,17 @@ export function createQuickAppHttpHandler(launches: QuickAppLaunches, files: Qui
         if (info.size > QUICK_APP_LIMITS.staticBytes) throw new QuickAppError(413, 'QUICK_APP_TOO_LARGE', 'Static resources are limited to 64 MiB.')
         launches.authorize(launch)
         const navigation = req.headers['sec-fetch-mode'] === 'navigate' && ['iframe', 'document'].includes(String(req.headers['sec-fetch-dest']))
-        if (proxy && storageToken && navigation && quickAppMime(absolute).startsWith('text/html')) {
-          const bootstrap = quickAppStorageBootstrap(storageToken)
-          res.writeHead(200, { 'Content-Type': quickAppMime(absolute), 'Content-Length': Buffer.byteLength(bootstrap) })
-          res.end(req.method === 'HEAD' ? undefined : bootstrap)
+        if (proxy && quickAppMime(absolute).startsWith('text/html')) {
+          if (navigation) {
+            const bootstrap = storageToken ? quickAppStorageBootstrap(storageToken) : quickAppNetworkBootstrap()
+            res.writeHead(200, { 'Content-Type': quickAppMime(absolute), 'Content-Length': Buffer.byteLength(bootstrap) })
+            res.end(req.method === 'HEAD' ? undefined : bootstrap)
+            return
+          }
+          // The application document itself installs egress before its own scripts.
+          const prepared = Buffer.from(quickAppPreparedHtml((await file.readFile()).toString('utf8')))
+          res.writeHead(200, { 'Content-Type': quickAppMime(absolute), 'Content-Length': prepared.byteLength })
+          res.end(req.method === 'HEAD' ? undefined : prepared)
           return
         }
         res.writeHead(200, { 'Content-Type': quickAppMime(absolute), 'Content-Length': info.size })
