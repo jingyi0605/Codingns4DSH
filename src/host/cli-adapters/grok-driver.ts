@@ -876,6 +876,11 @@ function containedPath(root: string, child: string): readonly string[] {
   return outside === '' || outside === '..' || outside.startsWith(`..${sep}`) || isAbsolute(outside) ? [] : [candidate]
 }
 
+function isAdmittedGrokFileMutation(name: string): boolean {
+  const key = name.trim().toLowerCase().replace(/[\s-]+/gu, '_')
+  return ['write', 'edit', 'search_replace', 'str_replace', 'string_replace'].includes(key)
+}
+
 /** Admit existing file/bridge authority; shells and unknown requests retain native approval. */
 function isAdmittedGrokPermission(message: JsonRpcMessage, input: CodingNsCliTurnInput, state: GrokSessionState,
   tools: ReadonlyMap<string, { readonly name: string; readonly input: unknown }>): boolean {
@@ -899,7 +904,7 @@ function isAdmittedGrokPermission(message: JsonRpcMessage, input: CodingNsCliTur
   const name = firstToolText(tool.name, tool.toolName, tool.tool_name) ?? bridgeTitle ?? observed?.name ?? title
   if (name === 'codingns__agent_team') return Boolean(state.teamToken && teamBridgeToken(input.sessionId) === state.teamToken)
   if (name === 'codingns__agent_subagent') return Boolean(!state.teamToken && state.bridgeToken && getSubagentBridge()?.token === state.bridgeToken)
-  if (name !== 'write' && name !== 'edit') return false
+  if (!isAdmittedGrokFileMutation(name)) return false
   if (observed && observed.name !== name) return false
   const raw = tool.rawInput ?? observed?.input
   if (!isRecord(raw)) return false
