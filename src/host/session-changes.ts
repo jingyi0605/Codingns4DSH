@@ -4,7 +4,7 @@ import type { SessionChangedFiles } from '../shared/contracts/file-management.js
 import type { CodingNsHostServices } from './features/types.js'
 
 const PATH_KEYS = new Set([
-  'path', 'paths', 'filePath', 'file_path', 'srcPath', 'src_path',
+  'path', 'paths', 'filePath', 'file_path', 'target_file', 'srcPath', 'src_path',
   'dstPath', 'dst_path', 'oldPath', 'old_path', 'newPath', 'new_path',
   'sourcePath', 'source_path', 'targetPath', 'target_path',
   'source', 'destination', 'from', 'to',
@@ -12,7 +12,8 @@ const PATH_KEYS = new Set([
 
 const MUTATING_TOOL_NAMES = new Set([
   'write', 'write_file', 'file_write', 'create', 'create_file', 'new_file',
-  'edit', 'edit_file', 'file_edit', 'apply_patch', 'apply_patch_file', 'patch',
+  'edit', 'edit_file', 'file_edit', 'search_replace', 'str_replace', 'string_replace',
+  'apply_patch', 'apply_patch_file', 'patch',
   'delete', 'delete_file', 'file_delete', 'remove', 'remove_file',
   'rename', 'rename_file', 'file_rename', 'move', 'move_file', 'file_move',
   'copy', 'copy_file', 'file_copy', 'mkdir', 'make_directory', 'create_directory',

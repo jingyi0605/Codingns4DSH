@@ -328,6 +328,7 @@ function normalizeToolCall(toolName: string, input: string | undefined): Normali
   if (name === 'read' || name === 'write' || name === 'edit') {
     rename(args, 'path', 'file_path')
     rename(args, 'filePath', 'file_path')
+    rename(args, 'target_file', 'file_path')
   }
   if (name === 'edit') {
     rename(args, 'oldString', 'old_string')
@@ -366,8 +367,8 @@ function canonicalToolName(value: string): string {
   const key = original.toLowerCase().replace(/[\s-]+/gu, '_')
   if (['read', 'read_file'].includes(key)) return 'read'
   if (['write', 'write_file'].includes(key)) return 'write'
-  if (['edit', 'edit_file'].includes(key)) return 'edit'
-  if (['bash', 'shell', 'shell_command', 'run_shell_command', 'command_execution'].includes(key)) return 'bash'
+  if (['edit', 'edit_file', 'search_replace', 'str_replace', 'string_replace'].includes(key)) return 'edit'
+  if (['bash', 'shell', 'shell_command', 'run_shell_command', 'command_execution', 'run_terminal_command'].includes(key)) return 'bash'
   return original
 }
 
