@@ -130,7 +130,6 @@ Agent 的安装与登录由各自工具完成。适配细节见[外部 Agent 文
 
 DSH 原生会话的翻译默认关闭，可在会话模型选择菜单中开启「翻译对话」。开启后，请求在发送前翻译，思考与回复在界面中显示译文；AI 原文保留在历史中，翻译详情可查看原文、译文及实际发送文本。
 
-Enabled sessions also localize attachment instructions and injected skill/workspace descriptions. On DSH 0.2.1-alpha.3, assembled system sections and tool descriptions use the input language through a version-checked adapter. Filenames, paths, tool identifiers, and execution schemas remain unchanged. DSH-owned complete prompts and refreshed runtime-policy context retain their native behavior. See [Spec 015](specs/spec015-会话内置提示翻译/README.md).
 
 ### 全局智能助理（测试中）
 
@@ -324,10 +323,6 @@ pnpm typecheck
 功能设计与实现细节见 [Spec 文档](specs/)、[开发记录](docs/开发记录/)和[开发规范](docs/开发规范/)。[形象包目录](assets/assistant-avatar-catalog.md)与[截图清单](assets/screenshots/README.md)也可单独查阅。
 
 [Spec007.4: External Agent Team collaboration and management](specs/spec007.4-外部Agent团队协作与管理/README.md) adds native DSH Team tools for eligible external collaborators and Leads from DSH `0.2.1-alpha.2` through `0.2.1-rc.2`. Headless reference acceptance covers native/external and mixed Codex/Claude workflows on alpha.2 and alpha.3; rc.2 compatibility is covered by repository regressions and Stage0 HTTP checks. Ordinary external sessions support DSH `>=0.2.0-rc.2 <=0.2.1-rc.2`. See the Spec for adapter eligibility, recovery evidence, and validation limits.
-
-[Spec 016: Quick Apps and controlled static HTTP hosting](specs/spec016-快捷应用与受控静态HTTP托管/README.md) covers sandboxed HTML hosting, optional workspace file operations, and application-scoped browser storage. The asynchronous `appStorage` API and LocalStorage/SessionStorage compatibility require no additional domain, certificate or port; IndexedDB is excluded. See the [browser-storage API and limits](docs/开发规范/20261017-快捷应用浏览器存储接口规范.md). Installed-platform acceptance remains pending.
-
-[spec014.1：全局助理会话提醒与情绪反馈](specs/spec014.1-全局助理会话提醒与情绪反馈/README.md)已完成会话完成、错误、提问与审批气泡、可选表情、原生未读列表及对应会话导航的源码开发；343 项免构建回归通过，网页与双平台实机验收另行记录。
 
 ---
 
