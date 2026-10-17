@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { DSH_TESTED_VERSION } from '../src/shared/contracts/version.js'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createDshCapabilityRegistry } from '../src/dsh-capabilities/routes.js'
@@ -20,12 +21,14 @@ test('performance capabilities reject legacy and unverified versions with explai
   const slots = createPresentationSlots()
   const context = { slots, sessionProjections: { register() {} } }
   for (const runtime of ['host', 'client'] as const) {
-    for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.1-alpha.2', '0.2.1-alpha.4']) {
+    for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.1-alpha.2', '0.2.1-rc.3']) {
       const profile = createDshCapabilityRegistry(version, runtime, context).getProfile(context)
       assert.equal(profile.capabilities.get('session.external-performance')?.status, 'unavailable')
       assert.ok(profile.diagnostics.some(item => item.capability === 'session.external-performance' && item.code === 'CAPABILITY_VERSION_UNSUPPORTED'))
     }
-    assert.equal(createDshCapabilityRegistry('0.2.1-alpha.3', runtime, context).getProfile(context).capabilities.get('session.external-performance')?.status, 'ready')
+    for (const version of ['0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2']) {
+      assert.equal(createDshCapabilityRegistry(version, runtime, context).getProfile(context).capabilities.get('session.external-performance')?.status, 'ready')
+    }
     assert.equal(createDshCapabilityRegistry('0.2.1-alpha.3', runtime, {}).getProfile({}).capabilities.get('session.external-performance')?.status, 'unavailable')
   }
 })
@@ -137,7 +140,7 @@ test('performance UI follows late native registration and replacement', async ()
 
 // Read verified Stage0 libraries into memory only; no profile, server, persistence, or CLI is started.
 const runtime = process.env.CODINGNS_STAGE0_RUNTIME_DIR
-  ?? join(homedir(), '.local/share/codingns/deepseek-harness/0.2.1-alpha.3/node_modules/@deepseek-ai')
+  ?? join(homedir(), `.local/share/codingns/deepseek-harness/${DSH_TESTED_VERSION}/node_modules/@deepseek-ai`)
 const registryPath = join(runtime, 'dsh-session-projection/lib/index.js')
 test('real DSH admits performance metadata and restores the same whole-session average from its checkpoint', { skip: !existsSync(registryPath) }, async () => {
   const [{ Context }, { SessionProjectionRegistry }, { Session }] = await Promise.all([

@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
+import { DSH_TESTED_VERSION } from '../src/shared/contracts/version.js'
 import { createDshCapabilityRegistry } from '../src/dsh-capabilities/routes.js'
 import { createSessionModelSelectionAdapter, type SessionModelSelection } from '../src/dsh-capabilities/host/session-model-selection-adapter.js'
 import { createCliAdaptersFeature } from '../src/host/cli-adapters/feature.js'
@@ -13,13 +14,15 @@ import { FeatureRegistry } from '../src/features/registry.js'
 
 test('external selection capability rejects unverified versions and missing native accessors', () => {
   const context = { sessionController: { agents: { selectionFor() {} } } }
-  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.1-alpha.4']) {
+  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.1-rc.3']) {
     const profile = createDshCapabilityRegistry(version, 'host', context).getProfile(context)
     assert.equal(profile.capabilities.get('session.external-model-selection')?.status, 'unavailable')
     assert.ok(profile.diagnostics.some(value => value.capability === 'session.external-model-selection' && value.code === 'CAPABILITY_VERSION_UNSUPPORTED'))
   }
-  const supported = createDshCapabilityRegistry('0.2.1-alpha.3', 'host', context).getProfile(context)
-  assert.equal(supported.capabilities.get('session.external-model-selection')?.status, 'ready')
+  for (const version of ['0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2']) {
+    const supported = createDshCapabilityRegistry(version, 'host', context).getProfile(context)
+    assert.equal(supported.capabilities.get('session.external-model-selection')?.status, 'ready')
+  }
   for (const context of [{}, { sessionController: {} }, { sessionController: { agents: {} } }]) {
     const profile = createDshCapabilityRegistry('0.2.1-alpha.3', 'host', context).getProfile(context)
     assert.equal(profile.capabilities.get('session.external-model-selection')?.status, 'unavailable')
@@ -55,12 +58,12 @@ test('external selection view preserves native choices, setters, other sessions 
 // Import installed Stage0 libraries into memory only: no launcher, profile,
 // persistence, network, server or external CLI is used by this regression.
 const runtime = process.env.CODINGNS_STAGE0_RUNTIME_DIR
-  ?? join(homedir(), '.local/share/codingns/deepseek-harness/0.2.1-alpha.3/node_modules/@deepseek-ai')
+  ?? join(homedir(), `.local/share/codingns/deepseek-harness/${DSH_TESTED_VERSION}/node_modules/@deepseek-ai`)
 const controllerPackage = join(runtime, 'dsh-api-session-controller')
 const available = existsSync(join(controllerPackage, 'lib/types/commands.js'))
 const version = available ? JSON.parse(readFileSync(join(controllerPackage, 'package.json'), 'utf8')).version : ''
 
-test('fresh Grok image prompt passes real DSH admission without changing the native default', { skip: !available || version !== '0.2.1-alpha.3' }, async () => {
+test('fresh Grok image prompt passes real DSH admission without changing the native default', { skip: !available || version !== DSH_TESTED_VERSION }, async () => {
   const [{ ApiSessionAgentController }, { SessionCommandController }] = await Promise.all([
     import(pathToFileURL(join(controllerPackage, 'lib/types/agent.js')).href),
     import(pathToFileURL(join(controllerPackage, 'lib/types/commands.js')).href),

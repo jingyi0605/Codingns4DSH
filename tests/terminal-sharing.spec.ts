@@ -162,6 +162,32 @@ function fixture(options: { reference?: boolean; locked?: boolean; stale?: boole
   return { calls, inputs, registry, services, context: { get: (name: string) => services[name] } }
 }
 
+test('rc.2 terminal insertion preserves a claimed command and existing semantic references', async () => {
+  const fake = fixture()
+  const state = fake.inputs.get('target-session')!
+  state.draft = '/goal inspect @existing'
+  state.phase = 'claimed'
+  const command = Object.freeze({ token: '/goal ' })
+  const references = Object.freeze([{ source: 'session', ref: 'existing', clipboardText: '@existing' }])
+  const semantic = Object.assign(state, { command, references })
+  const conversation = fake.services.conversation as { input: { for(scope: { sessionId: string }): any } }
+  const inputFor = conversation.input.for
+  conversation.input.for = scope => ({ ...inputFor(scope),
+    setDraft() { assert.fail('Insertion must not reconstruct a command draft from plain text') },
+  })
+  const bridge = createTerminalSharingBridge(fake.context)
+  await bridge.insert('target-session', 'terminal output')
+  await bridge.insert('target-session', 'log reference', { source: 'codingns-terminal-log', ref: 'log',
+    label: 'Log', clipboardText: '@log', appearance: 'file' })
+  assert.match(state.draft, /^\/goal inspect @existing\n\nterminal output/u)
+  assert.equal(semantic.command, command)
+  assert.equal(semantic.references, references)
+  assert.equal(state.phase, 'claimed')
+  assert.equal(fake.calls.references.length, 1)
+  assert.equal(fake.calls.persisted, 2)
+  assert.equal(fake.calls.submitted, 0)
+})
+
 test('指定目标草稿插入保留源草稿和附件，不自动提交消息', async () => {
   const fake = fixture()
   const bridge = createTerminalSharingBridge(fake.context)
@@ -652,7 +678,7 @@ test('新能力只在已支持的 DSH 世代启用，旧世代明确不可用', 
     assert.equal(profile.capabilities.get('conversation.draft-share')?.status, 'unavailable')
     assert.ok(profile.diagnostics.some((item) => item.capability === 'conversation.draft-share'))
   }
-  for (const version of ['0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3']) {
+  for (const version of ['0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2']) {
     assert.equal(createDshCapabilityRegistry(version, 'client', fake.context).getProfile(fake.context).capabilities.get('conversation.draft-share')?.status, 'ready')
   }
   assert.equal(createDshCapabilityRegistry('0.2.1-alpha.1', 'client', {}).getProfile({}).capabilities.get('conversation.draft-share')?.status, 'unavailable')

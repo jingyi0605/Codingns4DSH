@@ -54,12 +54,12 @@ test('package manifest declares the DSH bundle and client entry', () => {
   assert.equal(manifest.exports['./remote'].types, './data/build/dist/typert.remote-client.d.ts')
   assert.equal(manifest.exports['./bootstrap'].default, './data/build/dist/bootstrap/index.js')
   assert.equal(manifest.engines.dsh, SUPPORTED_DSH_COMPATIBILITY)
-  for (const version of ['4.0.4', '4.0.5-alpha.1', '4.0.5-alpha.2']) {
+  for (const version of ['4.0.4', '4.0.5-alpha.1', '4.0.5-alpha.2', '4.0.5']) {
     assert.ok(semver.satisfies(version, manifest.peerDependencies['@deepseek-ai/cordis']), `Cordis ${version} must remain supported`)
   }
   assert.equal(manifest.peerDependencies['@deepseek-ai/dsh'], SUPPORTED_DSH_COMPATIBILITY)
   // Host 入口在独立 npm Profile 中运行，不能依赖发布包的 devDependencies。
-  for (const version of ['3.18.4', '3.18.5-alpha.1', '3.18.5-alpha.2']) {
+  for (const version of ['3.18.4', '3.18.5-alpha.1', '3.18.5-alpha.2', '3.18.5']) {
     assert.ok(semver.satisfies(version, manifest.dependencies['@deepseek-ai/schemastery']), `Schemastery ${version} must remain supported`)
   }
   assert.equal(manifest.dependencies['@deepseek-ai/dsh-typert-protocol'], SUPPORTED_DSH_VERSION)

@@ -217,13 +217,15 @@ test('invalidating internal translation never masks an explicit Agent cancellati
 
 test('prompt capability rejects unverified versions and absent assembly services', () => {
   const ctx = { on() {}, systemPrompt: { assemble() {} } }
-  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.1-alpha.4']) {
+  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.1-rc.3']) {
     const profile = createDshCapabilityRegistry(version, 'host', ctx).getProfile(ctx)
     assert.equal(profile.capabilities.get('session.prompt-assembly')?.status, 'unavailable')
     assert.ok(profile.diagnostics.some(item => item.capability === 'session.prompt-assembly' && item.code === 'CAPABILITY_VERSION_UNSUPPORTED'))
   }
-  assert.equal(createDshCapabilityRegistry('0.2.1-alpha.3', 'host', ctx).getProfile(ctx).capabilities.get('session.prompt-assembly')?.status, 'ready')
-  assert.equal(createDshCapabilityRegistry('0.2.1-alpha.3', 'host', {}).getProfile({}).capabilities.get('session.prompt-assembly')?.status, 'unavailable')
+  for (const version of ['0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2']) {
+    assert.equal(createDshCapabilityRegistry(version, 'host', ctx).getProfile(ctx).capabilities.get('session.prompt-assembly')?.status, 'ready')
+    assert.equal(createDshCapabilityRegistry(version, 'host', {}).getProfile({}).capabilities.get('session.prompt-assembly')?.status, 'unavailable')
+  }
 })
 
 test('real DSH assembly accepts translated copies, enforces complete sections, and releases the hook', async t => {
