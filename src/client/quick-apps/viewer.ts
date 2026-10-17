@@ -5,6 +5,7 @@ import { DshFileTypeIcon, DshPathLabel, DshTooltip, DshModal, DshMenu, classifyD
 import type { QuickAppsClient, QuickAppView } from './client.js'
 import { QuickAppActions, QuickAppButton } from './ui.js'
 import { documentPath, QuickAppEditor, QuickAppMarkdown } from './document.js'
+import { attachQuickAppStorageBroker } from './browser-storage.js'
 
 type DocumentMode = 'markdown' | 'source' | 'edit'
 const defaultMode = (path: string): DocumentMode => /\.(?:md|markdown)$/iu.test(path) && hasNativeMarkdown() ? 'markdown' : 'source'
@@ -27,6 +28,9 @@ export function QuickAppViewer({ app, view, client, busy, error, t, onClose, onR
   const [confirmation, setConfirmation] = useState<{ kind: 'edit' } | { kind: 'discard'; action(): void } | null>(null)
   const generation = useRef(0)
   const pending = useRef(false)
+  const frame = useRef<HTMLIFrameElement | null>(null)
+  const storageTranslator = useRef(t)
+  storageTranslator.current = t
   const dirty = doc !== undefined && draft !== doc.content
   const path = doc?.path ?? app.entryPath
   const accept = (next: QuickAppDocument) => { setDoc(next); setDraft(next.content) }
@@ -36,6 +40,11 @@ export function QuickAppViewer({ app, view, client, busy, error, t, onClose, onR
     return () => { generation.current++ }
   }, [view])
   useEffect(() => { if (error) setFrameLoading(false) }, [error])
+  useEffect(() => {
+    if (view.kind !== 'html' || view.isolation !== 'sandbox-proxy' || !view.storageToken || !view.storageScope || typeof window === 'undefined') return
+    return attachQuickAppStorageBroker({ owner: window, frame: () => frame.current, token: view.storageToken, scope: view.storageScope, expiresAt: view.expiresAt,
+      onError: cause => setMessage({ error: true, text: storageTranslator.current('quickApps.storageFailed', { message: cause.message }) }) })
+  }, [view])
   useEffect(() => {
     if (!dirty || typeof window === 'undefined') return
     const prevent = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
@@ -118,11 +127,11 @@ export function QuickAppViewer({ app, view, client, busy, error, t, onClose, onR
       disabled || frameLoading ? h('div', { className: 'qa-view-progress', role: 'status', 'aria-label': t('quickApps.loadingDocument') }) : null,
       error || message ? h('p', { className: message && !message.error && !error ? 'qa-view-status' : 'qa-view-error', role: message && !message.error && !error ? 'status' : 'alert' }, error ?? message?.text) : null,
       doc && /\.(?:md|markdown)$/iu.test(path) && !hasNativeMarkdown() ? h('p', { className: 'qa-view-status', role: 'status' }, t('quickApps.markdownUnavailable')) : null,
-      view.kind === 'html' && view.isolation === 'sandbox-proxy' ? h('p', { className: 'qa-view-status', role: 'status' }, t('quickApps.sandboxPreview')) : null,
+      view.kind === 'html' && view.isolation === 'sandbox-proxy' ? h('p', { className: 'qa-view-status', role: 'status' }, t(view.storageToken ? 'quickApps.storagePreview' : 'quickApps.sandboxPreview')) : null,
       doc ? mode === 'edit' ? h(QuickAppEditor, { key: path, content: draft, path, t, onChange: setDraft, onSave: save })
         : mode === 'markdown' ? h(QuickAppMarkdown, { key: path, content: draft, path, root: app.documentRoot, launchId: view.launchId, client, t, onNavigate: navigate })
           : h('div', { className: 'qa-view-text-body', 'data-wrap': wrap, tabIndex: 0, 'aria-label': app.title }, h('pre', null, draft))
-        : view.kind === 'html' ? h('iframe', { key: view.launchId, className: 'qa-view-frame', title: app.title, src: view.url, onLoad: () => setFrameLoading(false),
+        : view.kind === 'html' ? h('iframe', { ref: frame, key: view.launchId, className: 'qa-view-frame', title: app.title, src: view.url, onLoad: () => setFrameLoading(false),
           sandbox: view.isolation === 'sandbox-proxy' ? 'allow-scripts allow-forms allow-downloads' : 'allow-scripts allow-same-origin allow-forms allow-downloads', referrerPolicy: 'no-referrer' }) : null),
     confirmation ? h(DshModal, { open: true, title: t(confirmation.kind === 'edit' ? 'quickApps.allowEditing' : 'quickApps.discardTitle'), closeLabel: t('quickApps.cancel'),
       onClose: () => setConfirmation(null), className: 'codingns-quick-app-dialog qa-view-confirm',

@@ -34,12 +34,12 @@ export class QuickAppsClient {
     }
     return saved
   }
-  async open(id: string): Promise<QuickAppView | undefined> {
+  async open(id: string, browserStorage = true): Promise<QuickAppView | undefined> {
     const closing = this.close()
     const generation = this.generation
     await closing
     if (generation !== this.generation) return undefined
-    const result = await this.call<QuickAppView>('launch', { id })
+    const result = await this.call<QuickAppView>('launch', { id, ...(browserStorage ? { browserStorage: true } : {}) })
     if (generation !== this.generation) {
       if (result.launchId) await this.call('close', { id: result.launchId })
       return undefined
@@ -57,4 +57,4 @@ export class QuickAppsClient {
 
 // Optional document fields keep old read-only Hosts viewable during an incremental upgrade.
 export type QuickAppView = ({ kind: 'text'; title: string; content: string; launchId?: string; expiresAt?: number } & Partial<Omit<QuickAppDocument, 'content'>>)
-  | { kind: 'html'; url: string; origin: string; launchId: string; expiresAt: number; isolation?: 'lan-port' | 'sandbox-proxy'; basePath?: string }
+  | { kind: 'html'; url: string; origin: string; launchId: string; expiresAt: number; isolation?: 'lan-port' | 'sandbox-proxy'; basePath?: string; storageToken?: string; storageScope?: string }

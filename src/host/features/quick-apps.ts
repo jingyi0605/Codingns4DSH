@@ -102,8 +102,8 @@ export function createQuickAppsFeature(): FeatureModule<CodingNsHostServices> {
           return { ok: true, app }
         }
         if (action === 'launch') {
-          if (!isRemote) return service.launch(id, principal, peer?.signal, uiOrigin)
-          const result = await remote.launch(app, principal, uiOrigin, peer?.signal) as { kind: string; launchId?: string }
+          if (!isRemote) return service.launch(id, principal, peer?.signal, uiOrigin, input.browserStorage === true)
+          const result = await remote.launch(app, principal, uiOrigin, peer?.signal, input.browserStorage === true) as { kind: string; launchId?: string }
           let current: QuickApp | undefined
           try { current = registry.get(id) } catch { /* Removal while launch was in flight. */ }
           if (!current || quickAppDefinitionKey(current) !== quickAppDefinitionKey(app)) {

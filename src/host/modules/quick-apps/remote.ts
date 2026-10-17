@@ -3,6 +3,7 @@ import type { QuickApp, QuickAppProxyRequest, QuickAppProxyResponse } from '../.
 import { readBody } from './static-handler.js'
 import { QUICK_APP_LIMITS } from '../../../shared/contracts/quick-apps.js'
 import { QUICK_APP_DESKTOP_ORIGIN } from '../../../shared/quick-app-proxy-path.js'
+import { quickAppStorageKey } from '../../../shared/quick-app-browser-storage.js'
 import { parseVirtualWorkspaceId } from '../../../shared/contracts/peer-host.js'
 import { validateQuickAppOrigin, type QuickAppOriginProvider } from '../../../dsh-capabilities/host/quick-app-origin-adapter.js'
 import { QuickAppRegistry, parseDefinition, quickAppDefinitionKey } from './registry.js'
@@ -61,7 +62,7 @@ export class QuickAppRemoteOwner {
         this.apps = [...this.apps.filter(item => item.id !== id), app]
       }
       if (action === 'grant') { await this.service.grant(id, app.revision, input.permissions); return { ok: true } }
-      return this.service.launch(id, principal, undefined, uiOrigin)
+      return this.service.launch(id, principal, undefined, uiOrigin, input.browserStorage === true)
     })
     this.pending = next
     return next
@@ -83,11 +84,11 @@ export class QuickAppRemoteController {
     const workspaceId = quickAppTargetWorkspace(app)
     return gateway.call(app.hostId, workspaceId, action, { ...payload, app: { ...app, hostId: 'local', workspaceId } }, signal)
   }
-  launch(app: QuickApp, principal: string, uiOrigin: string | undefined, signal?: AbortSignal): Promise<unknown> {
+  launch(app: QuickApp, principal: string, uiOrigin: string | undefined, signal?: AbortSignal, browserStorage = false): Promise<unknown> {
     for (const [id, value] of this.active) if (value.expiresAt <= Date.now()) void this.close(id, value.principal).catch(() => undefined)
     if (this.stopped || this.active.size + this.opening.size >= QUICK_APP_LIMITS.launches || this.origins.size >= QUICK_APP_LIMITS.originHistory) return Promise.reject(new QuickAppError(429, 'QUICK_APP_LIMIT', 'Too many remote launches.'))
     const operation = (async () => {
-      const result = await this.call(app, 'launch', { uiOrigin }, signal)
+      const result = await this.call(app, 'launch', { uiOrigin, browserStorage }, signal)
       if (result?.kind === 'text') {
         if (typeof result.content !== 'string' || typeof result.title !== 'string' || Buffer.byteLength(result.content) > QUICK_APP_LIMITS.textBytes) deny()
         // Older peers remain viewable, but expose no editing capability or launch to route.
@@ -140,7 +141,7 @@ export class QuickAppRemoteController {
       const onAbort = () => { void this.close(id, principal).catch(() => undefined) }
       signal?.addEventListener('abort', onAbort, { once: true })
       this.active.set(id, { app, principal, targetId: result.launchId, expiresAt: result.expiresAt, removeAbort: () => signal?.removeEventListener('abort', onAbort), ...(disposeProxy ? { disposeProxy } : {}) })
-      return { ...result, launchId: id }
+      return { ...result, launchId: id, ...(result.storageToken ? { storageScope: quickAppStorageKey(app) } : {}) }
     })()
     this.opening.add(operation)
     void operation.finally(() => this.opening.delete(operation)).catch(() => undefined)

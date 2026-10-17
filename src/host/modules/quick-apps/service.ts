@@ -1,5 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { realpath } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { quickAppStorageKey } from '../../../shared/quick-app-browser-storage.js'
 import { QUICK_APP_ORIGIN_UNAVAILABLE, validateQuickAppOrigin, type QuickAppOriginProvider } from '../../../dsh-capabilities/host/quick-app-origin-adapter.js'
 import type { QuickAppPermissions, QuickAppProxyRequest, QuickAppProxyResponse } from '../../../shared/contracts/quick-apps.js'
 import { QUICK_APP_LIMITS } from '../../../shared/contracts/quick-apps.js'
@@ -44,16 +46,16 @@ export class QuickAppService {
     if (this.stopped || quickAppDefinitionKey(this.registry.get(id)) !== quickAppDefinitionKey(app)) deny()
     this.approvals.set(id, { definition: quickAppDefinitionKey(app), workspaceRoot, permissions: parsed, codeRevision })
   }
-  launch(id: string, principal: string, connectionSignal?: AbortSignal, uiOrigin?: string): Promise<unknown> {
+  launch(id: string, principal: string, connectionSignal?: AbortSignal, uiOrigin?: string, browserStorage = false): Promise<unknown> {
     if (this.stopped) return Promise.reject(new QuickAppError(410, 'QUICK_APP_REVOKED', 'Quick Apps is disabled.'))
     const pruning = this.launches.prune()
     if (this.opening.size + this.launches.size >= QUICK_APP_LIMITS.launches) { void pruning.catch(() => undefined); return Promise.reject(new QuickAppError(429, 'QUICK_APP_LIMIT', 'Too many pending or active launches.')) }
-    const operation = pruning.then(() => this.open(id, principal, connectionSignal, uiOrigin))
+    const operation = pruning.then(() => this.open(id, principal, connectionSignal, uiOrigin, browserStorage))
     this.opening.add(operation)
     void operation.finally(() => this.opening.delete(operation)).catch(() => undefined)
     return operation
   }
-  private async open(id: string, principal: string, connectionSignal?: AbortSignal, uiOrigin?: string): Promise<unknown> {
+  private async open(id: string, principal: string, connectionSignal?: AbortSignal, uiOrigin?: string, browserStorage = false): Promise<unknown> {
     connectionSignal?.throwIfAborted()
     const app = this.registry.get(id)
     await this.registry.validate(app)
@@ -102,13 +104,15 @@ export class QuickAppService {
       // A retired hostname cannot be reused: a previously loaded page would inherit new cookies.
       launch.dispose = async () => { this.proxyPaths.delete(launch.id); connectionSignal?.removeEventListener('abort', disconnect); await lease.dispose() }
       if (lease.isolation === 'sandbox-proxy' && lease.basePath) this.proxyPaths.set(launch.id, lease.basePath)
-      handler = createQuickAppHttpHandler(this.launches, this.files, launch, lease)
+      const storageToken = browserStorage && lease.isolation === 'sandbox-proxy' ? randomUUID() : undefined
+      handler = createQuickAppHttpHandler(this.launches, this.files, launch, lease, storageToken)
       if (connectionSignal?.aborted) { await this.launches.revoke(launch.id); connectionSignal.throwIfAborted() }
       const path = app.entryPath.slice(app.documentRoot.length).replace(/^\//u, '').split('/').map(encodeURIComponent).join('/')
       const result = await lease.activate(credential, `/${path}`)
       this.launches.authorize(launch)
       if (new URL(result.url).origin !== lease.origin) deny('Invalid app launch URL.')
       return { kind: 'html', launchId: launch.id, url: result.url, origin: lease.origin, expiresAt: launch.expiresAt,
+        ...(storageToken ? { storageToken, storageScope: quickAppStorageKey(app) } : {}),
         ...(lease.basePath ? { basePath: lease.basePath } : {}),
         ...(lease.isolation ? { isolation: lease.isolation } : {}) }
     } catch (error) {

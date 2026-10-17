@@ -9,11 +9,12 @@ import type { QuickAppLaunch, QuickAppLaunches } from './launches.js'
 import { QuickAppFileApi, tooLarge } from './file-api.js'
 import { appPath, decodeResourceTarget, publicPath, resolveAppPath, withinScope } from './paths.js'
 import { deny, QuickAppError } from './errors.js'
+import { quickAppStorageBootstrap } from '../../../shared/quick-app-storage-bootstrap.js'
 
 const TYPES: Record<string, string> = { html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', mjs: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', json: 'application/json', txt: 'text/plain; charset=utf-8', md: 'text/plain; charset=utf-8', svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', ico: 'image/x-icon', woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', wasm: 'application/wasm', pdf: 'application/pdf', mp3: 'audio/mpeg', mp4: 'video/mp4', csv: 'text/csv; charset=utf-8' }
 export function quickAppMime(path: string): string { return TYPES[extname(path).slice(1).toLowerCase()] ?? 'application/octet-stream' }
 
-export function createQuickAppHttpHandler(launches: QuickAppLaunches, files: QuickAppFileApi, launch: QuickAppLaunch, lease: QuickAppOriginLease): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+export function createQuickAppHttpHandler(launches: QuickAppLaunches, files: QuickAppFileApi, launch: QuickAppLaunch, lease: QuickAppOriginLease, storageToken?: string): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   let active = 0
   return async (req, res) => {
     const proxy = lease.isolation === 'sandbox-proxy'
@@ -82,6 +83,7 @@ export function createQuickAppHttpHandler(launches: QuickAppLaunches, files: Qui
         }
       } catch (error) {
         const navigation = req.headers['sec-fetch-mode'] === 'navigate' && ['document', 'iframe'].includes(String(req.headers['sec-fetch-dest'])) && String(req.headers.accept ?? '').includes('text/html')
+          || proxy && Boolean(storageToken) && req.headers.accept === 'text/html'
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || !app.spaFallback || !navigation || extname(target.path) !== '' || mount) throw error
         absolute = await resolveAppPath(launch.workspaceRoot, app.entryPath)
       }
@@ -91,6 +93,13 @@ export function createQuickAppHttpHandler(launches: QuickAppLaunches, files: Qui
         if (!info.isFile()) deny()
         if (info.size > QUICK_APP_LIMITS.staticBytes) throw new QuickAppError(413, 'QUICK_APP_TOO_LARGE', 'Static resources are limited to 64 MiB.')
         launches.authorize(launch)
+        const navigation = req.headers['sec-fetch-mode'] === 'navigate' && ['iframe', 'document'].includes(String(req.headers['sec-fetch-dest']))
+        if (proxy && storageToken && navigation && quickAppMime(absolute).startsWith('text/html')) {
+          const bootstrap = quickAppStorageBootstrap(storageToken)
+          res.writeHead(200, { 'Content-Type': quickAppMime(absolute), 'Content-Length': Buffer.byteLength(bootstrap) })
+          res.end(req.method === 'HEAD' ? undefined : bootstrap)
+          return
+        }
         res.writeHead(200, { 'Content-Type': quickAppMime(absolute), 'Content-Length': info.size })
         if (req.method === 'HEAD' || info.size === 0) { res.end(); return }
         await pipeline(file.createReadStream({ autoClose: false, start: 0, end: info.size - 1, highWaterMark: 64 * 1024 }), res, { signal })

@@ -213,7 +213,7 @@ export function QuickAppsLauncher({ services, wide }: { services: CodingNsClient
           onClick: () => {
             if (editing) { edit(app); return }
             if (!available) { setNotice({ tone: 'error', text: status }); return }
-            void perform(async current => { const view = await client.open(app.id); if (current() && view) navigate({ kind: 'view', app, view }) })
+            void perform(async current => { const view = await client.open(app.id, app.kind === 'html'); if (current() && view) navigate({ kind: 'view', app, view }) })
           } }, h('span', { className: 'qa-icon', style: icon.style, 'aria-hidden': true }, icon.text,
             !available ? h('span', { className: 'qa-unavailable' }, '!') : null), h('strong', null, app.title)),
           editing ? h('button', { type: 'button', className: 'qa-remove', disabled: busy,
@@ -222,7 +222,7 @@ export function QuickAppsLauncher({ services, wide }: { services: CodingNsClient
           }, h(QuickAppControlIcon, { icon: 'remove' })) : null)
       }))) : null,
     screen?.kind === 'view' ? h(QuickAppViewer, { key: screen.app.id, app: screen.app, view: screen.view, client, busy, error: notice?.tone === 'error' ? notice.text : undefined, t, onClose: close,
-        onReload: () => { void perform(async current => { const view = await client.open(screen.app.id); if (current() && view) setScreen({ ...screen, view }) }) } })
+        onReload: () => { void perform(async current => { const view = await client.open(screen.app.id, screen.app.kind === 'html'); if (current() && view) setScreen({ ...screen, view }) }) } })
       : screen ? h(DshModal, { open: true, title, closeLabel: t('quickApps.close'), onClose: close, className: 'codingns-quick-app-dialog', contentClassName: 'qa-content', footer },
       h('div', { className: 'qa-body', 'aria-busy': busy }, notice ? h('div', { className: 'qa-notice', role: notice.tone === 'error' ? 'alert' : 'status' }, notice.text) : null, body)) : null)
 }

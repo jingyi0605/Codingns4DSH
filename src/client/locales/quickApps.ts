@@ -1,6 +1,8 @@
 import { quickAppBootstrapEn, quickAppBootstrapZh } from '../../shared/quick-apps-bootstrap-locale.js'
 
 export const en = {
+  'quickApps.storagePreview': 'App data is saved in this browser. IndexedDB and URLs starting with / are not supported in this view.',
+  'quickApps.storageFailed': 'App data could not be saved in this browser: {message}',
   'quickApps.sandboxPreview': 'Workspace preview. Browser storage and URLs starting with / may not work in this view.',
   'quickApps.runtime.not-configured': 'This Host does not provide workspace HTML previews. Update its CodingNS plugin and reopen the shortcut.',
   'quickApps.runtime.config-invalid': 'The Host’s HTML hosting configuration or TLS certificate is invalid.',
@@ -75,6 +77,8 @@ export const en = {
   'quickApps.status.missing-file': 'The entry file or application folder is missing or cannot be accessed.',
 }
 export const zh: Record<keyof typeof en, string> = {
+  'quickApps.storagePreview': '应用数据保存在当前浏览器中。此视图不支持 IndexedDB 和以 / 开头的网址。',
+  'quickApps.storageFailed': '无法在当前浏览器中保存应用数据：{message}',
   'quickApps.sandboxPreview': '工作区预览：浏览器存储和以 / 开头的网址可能无法在此视图中使用。',
   'quickApps.runtime.not-configured': '此主机尚不支持工作区 HTML 预览，请更新其 CodingNS 插件后重新打开快捷方式。',
   'quickApps.runtime.config-invalid': '主机的 HTML 托管配置或 TLS 证书无效。',
