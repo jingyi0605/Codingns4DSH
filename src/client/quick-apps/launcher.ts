@@ -14,6 +14,7 @@ import { QuickAppWorkspacePicker } from './workspace-picker.js'
 import { QuickAppFilePicker } from './file-picker.js'
 import { QuickAppViewer } from './viewer.js'
 import { useQuickAppReorder } from './reorder.js'
+import { readQuickAppsRailCollapsed, writeQuickAppsRailCollapsed } from './rail-preference.js'
 import { sidebarFooterControlStyle, useSidebarFooterAlignment } from '../sidebar-footer-style.js'
 
 type ListedApp = QuickApp & { availability: QuickAppAvailability; runtimeReason?: QuickAppRuntimeReason }
@@ -27,9 +28,11 @@ export function QuickAppsLauncher({ services, wide }: { services: CodingNsClient
   const formId = useId()
   const client = useMemo(() => new QuickAppsClient(services.rpc), [services.rpc])
   const [screen, setScreen] = useState<Screen | null>(null)
-  const [mode, setMode] = useState<'normal' | 'edit' | 'collapsed'>('normal')
+  const [mode, setMode] = useState<'normal' | 'edit' | 'collapsed'>(() => readQuickAppsRailCollapsed() ? 'collapsed' : 'normal')
   const editing = mode === 'edit'
   const collapsed = mode === 'collapsed'
+  const expandRail = () => { writeQuickAppsRailCollapsed(false); setMode('normal') }
+  const collapseRail = () => { writeQuickAppsRailCollapsed(true); setMode('collapsed') }
   const [pickingFile, setPickingFile] = useState(false)
   const [apps, setApps] = useState<ListedApp[]>([])
   const [notice, setNotice] = useState<Notice | null>(null)
@@ -192,9 +195,9 @@ export function QuickAppsLauncher({ services, wide }: { services: CodingNsClient
       h('div', { className: 'qa-controls' },
         !collapsed ? editing ? control(t('quickApps.add'), 'add', add)
           : control(t('quickApps.manage'), 'edit', () => { setMode('edit'); setNotice(null) }) : null,
-        collapsed ? control(t('quickApps.expandBar'), 'expand', () => setMode('normal'))
+        collapsed ? control(t('quickApps.expandBar'), 'expand', expandRail)
           : editing ? control(t('quickApps.done'), 'done', () => { setMode('normal'); setNotice(null) })
-            : control(t('quickApps.collapseBar'), 'collapse', () => setMode('collapsed')))),
+            : control(t('quickApps.collapseBar'), 'collapse', collapseRail))),
     !collapsed ? h('div', { className: 'qa-rail-content' },
       !screen && notice ? h('p', { className: 'qa-rail-notice', role: notice.tone === 'error' ? 'alert' : 'status', title: notice.text }, wide ? notice.text : '!') : null,
       !loaded && !notice ? h('p', { className: 'qa-rail-notice', role: 'status', title: t('quickApps.loading') }, wide ? t('quickApps.loading') : '…') : null,
