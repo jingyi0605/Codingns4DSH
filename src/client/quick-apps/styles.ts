@@ -106,8 +106,14 @@ export const quickAppsCss = `
 .codingns-quick-app-dialog .qa-view-surface{display:flex;flex:1;flex-direction:column;min-width:0;min-height:0;color:${color.labelPrimary};background:${color.pageBackground}}
 .codingns-quick-app-dialog :is(.qa-view-titlebar,.qa-view-toolbar){display:flex;flex:none;align-items:center;gap:4px;box-sizing:border-box;height:38px;padding:0 6px 0 16px;border-bottom:.5px solid ${color.menuBorder}}
 .codingns-quick-app-dialog .qa-view-titlebar{gap:8px}
+.codingns-quick-app-dialog .qa-view-title{display:flex;flex:1;align-items:center;gap:8px;min-width:0}
 .codingns-quick-app-dialog .qa-view-titlebar h2{flex:1;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:${uiFontSize(13)};font-weight:500}
-.codingns-quick-app-dialog .qa-view-titlebar>svg{flex:none}
+.codingns-quick-app-dialog .qa-view-title>svg{flex:none}
+/* Fullscreen title sits in the window chrome. Center the name clear of the macOS traffic lights and the trailing controls. */
+.codingns-quick-app-dialog.qa-viewer.qa-maximized .qa-view-titlebar{position:relative;justify-content:flex-end}
+.codingns-quick-app-dialog.qa-viewer.qa-maximized .qa-view-title{position:absolute;left:88px;right:88px;top:0;height:100%;flex:none;justify-content:center;pointer-events:none}
+.codingns-quick-app-dialog.qa-viewer.qa-maximized .qa-view-title>svg{display:none}
+.codingns-quick-app-dialog.qa-viewer.qa-maximized .qa-view-title h2{flex:0 1 auto;text-align:center}
 .codingns-quick-app-dialog .qa-view-tool{display:inline-flex;flex:none;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:var(--dsw-radius-sm,6px);background:transparent;color:${color.labelSecondary};cursor:pointer}
 .codingns-quick-app-dialog .qa-view-tool svg{width:15px;height:15px}
 .codingns-quick-app-dialog .qa-view-tool:hover:not(:disabled){color:${color.labelPrimary};background:${color.hoverBackground}}
