@@ -49,6 +49,79 @@ test('会话修改文件只提取成功写入工具的路径并过滤工作区�
   }
 })
 
+test('会话修改文件识别 Grok search_replace 的编辑和空 old_string 新建', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codingns-session-search-replace-'))
+  try {
+    const result = await readSessionChangedFiles({
+      nativeSessions: {
+        get: () => ({ snapshotEvents: () => [
+          {
+            type: 'tool/call',
+            data: {
+              callId: 'replace-1',
+              name: 'search_replace',
+              arguments: JSON.stringify({
+                file_path: 'src/host/lan-access-dsh.ts',
+                old_string: 'const dshPort = input.dshPort',
+                new_string: 'const dshPort = resolveLanAccessDshStartPort(input.dshPort)',
+              }),
+            },
+          },
+          {
+            type: 'tool/result',
+            data: {
+              message: {
+                role: 'tool',
+                toolCallId: 'replace-1',
+                content: [{ type: 'text', text: '{"type":"SearchReplace","EditsApplied":{"absolute_path":"/outside/ignore.ts"}}' }],
+              },
+            },
+          },
+          {
+            type: 'tool/call',
+            data: {
+              callId: 'create-1',
+              name: 'search_replace',
+              arguments: JSON.stringify({
+                file_path: 'docs/开发记录/new.md',
+                old_string: '',
+                new_string: '# 记录\n',
+              }),
+            },
+          },
+          {
+            type: 'tool/result',
+            data: {
+              message: { role: 'tool', toolCallId: 'create-1', content: [] },
+            },
+          },
+          {
+            type: 'tool/call',
+            data: {
+              callId: 'write-target',
+              name: 'write',
+              arguments: JSON.stringify({ target_file: 'src/client/features/lan-access-panel.ts', content: 'export {}\n' }),
+            },
+          },
+          {
+            type: 'tool/result',
+            data: {
+              message: { role: 'tool', toolCallId: 'write-target', content: [] },
+            },
+          },
+        ] }),
+      },
+    }, 'session-search-replace', root)
+    assert.deepEqual(result.paths, [
+      'docs/开发记录/new.md',
+      'src/client/features/lan-access-panel.ts',
+      'src/host/lan-access-dsh.ts',
+    ])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('原生事件没有文件路径时回退读取会话 JSONL', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codingns-session-jsonl-'))
   const jsonl = join(root, 'session.jsonl')

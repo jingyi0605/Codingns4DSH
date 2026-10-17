@@ -344,6 +344,87 @@ test('公共工具投影层统一映射 edit_file 并生成 DSH diff 元数据',
   })
 })
 
+test('公共工具投影层把 Grok search_replace 映射为 DSH edit 并生成 diff 元数据', () => {
+  const sink = createSink()
+  const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'session-grok-edit')
+  projector.observe({
+    type: 'tool-event',
+    toolName: 'search_replace',
+    callId: 'replace-1',
+    input: JSON.stringify({
+      file_path: '/workspace/src/host/lan-access-dsh.ts',
+      old_string: 'const dshPort = input.dshPort',
+      new_string: 'const dshPort = resolveLanAccessDshStartPort(input.dshPort)',
+    }),
+    status: 'running',
+  })
+  projector.observe({
+    type: 'tool-event',
+    toolName: 'search_replace',
+    callId: 'replace-1',
+    output: 'The file /workspace/src/host/lan-access-dsh.ts has been updated successfully.',
+    outputMode: 'snapshot',
+    status: 'completed',
+  })
+  projector.finalize('stop')
+
+  assert.deepEqual(sink.calls[0]?.call, {
+    callId: 'replace-1',
+    name: 'edit',
+    arguments: JSON.stringify({
+      file_path: '/workspace/src/host/lan-access-dsh.ts',
+      old_string: 'const dshPort = input.dshPort',
+      new_string: 'const dshPort = resolveLanAccessDshStartPort(input.dshPort)',
+    }),
+  })
+  assert.deepEqual(sink.results[0]?.result, {
+    output: 'The file /workspace/src/host/lan-access-dsh.ts has been updated successfully.',
+    isError: false,
+    meta: {
+      diffs: [{
+        path: '/workspace/src/host/lan-access-dsh.ts',
+        oldText: 'const dshPort = input.dshPort',
+        newText: 'const dshPort = resolveLanAccessDshStartPort(input.dshPort)',
+      }],
+    },
+  })
+})
+
+test('Grok search_replace 空 old_string 的新建仍落成 DSH edit 卡片', () => {
+  const sink = createSink()
+  const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'session-grok-create')
+  projector.observe({
+    type: 'tool-event',
+    toolName: 'search_replace',
+    callId: 'create-1',
+    input: JSON.stringify({
+      file_path: '/workspace/docs/new.md',
+      old_string: '',
+      new_string: '# 记录\n',
+    }),
+    status: 'running',
+  })
+  projector.observe({
+    type: 'tool-event',
+    toolName: 'search_replace',
+    callId: 'create-1',
+    output: 'The file /workspace/docs/new.md has been updated successfully.',
+    outputMode: 'snapshot',
+    status: 'completed',
+  })
+  projector.finalize('stop')
+
+  assert.equal(sink.calls[0]?.call.name, 'edit')
+  assert.deepEqual(JSON.parse(String(sink.calls[0]?.call.arguments)), {
+    file_path: '/workspace/docs/new.md',
+    old_string: '',
+    new_string: '# 记录\n',
+  })
+  assert.deepEqual(sink.results[0]?.result.meta, {
+    diffs: [{ path: '/workspace/docs/new.md', oldText: '', newText: '# 记录\n' }],
+  })
+})
+
 test('公共工具投影层把 Codex fileChange 归一为 DSH edit 并保留多文件 Diff', () => {
   const sink = createSink()
   const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'session-codex-file-change')
@@ -433,6 +514,65 @@ test('公共工具投影层把 shell 别名归一为 bash 且失败终态只记�
 
   assert.equal(sink.calls[0]?.call.name, 'bash')
   assert.deepEqual(sink.results.map(({ result }) => result), [{ output: 'exit 2', isError: true, error: 'exit 2' }])
+})
+
+test('公共工具投影层把 Grok run_terminal_command 映射为 DSH bash', () => {
+  const sink = createSink()
+  const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'session-grok-shell')
+  projector.observe({
+    type: 'tool-event',
+    toolName: 'run_terminal_command',
+    callId: 'shell-1',
+    input: JSON.stringify({ command: 'node --test tests/lan-access-dsh.spec.ts', description: 'Run lan-access tests' }),
+    status: 'running',
+  })
+  projector.observe({
+    type: 'tool-event',
+    toolName: 'run_terminal_command',
+    callId: 'shell-1',
+    output: 'ok',
+    outputMode: 'snapshot',
+    status: 'completed',
+  })
+  projector.finalize('stop')
+
+  assert.deepEqual(sink.calls[0]?.call, {
+    callId: 'shell-1',
+    name: 'bash',
+    arguments: JSON.stringify({
+      command: 'node --test tests/lan-access-dsh.spec.ts',
+      description: 'Run lan-access tests',
+    }),
+  })
+  assert.deepEqual(sink.results[0]?.result, { output: 'ok', isError: false })
+})
+
+test('公共工具投影层把 Grok read 的 target_file 改名为 file_path', () => {
+  const sink = createSink()
+  const projector = new CodingNsDshToolHistoryProjector(sink.bridge as never, 'session-grok-read')
+  projector.observe({
+    type: 'tool-event',
+    toolName: 'read',
+    callId: 'read-1',
+    input: JSON.stringify({ target_file: '/workspace/src/host/lan-access-dsh.ts', offset: 200, limit: 80 }),
+    status: 'running',
+  })
+  projector.observe({
+    type: 'tool-event',
+    toolName: 'read',
+    callId: 'read-1',
+    output: 'source',
+    outputMode: 'snapshot',
+    status: 'completed',
+  })
+  projector.finalize('stop')
+
+  assert.equal(sink.calls[0]?.call.name, 'read')
+  assert.deepEqual(JSON.parse(String(sink.calls[0]?.call.arguments)), {
+    file_path: '/workspace/src/host/lan-access-dsh.ts',
+    offset: 200,
+    limit: 80,
+  })
 })
 
 test('所有外部 Agent 驱动只产出统一事件，不直接依赖 DSH 原生消息', async () => {

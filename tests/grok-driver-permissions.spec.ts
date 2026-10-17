@@ -89,6 +89,7 @@ for (const scenario of [
   { label: 'a formatted title with an explicit conflicting identity', tool: 'write', path: 'result.json', display: true, requestName: 'run_terminal_command', admitted: false },
   { label: 'a nested workspace file', tool: 'write', path: 'new/nested/result.json', admitted: true },
   { label: 'an existing workspace edit', tool: 'edit', path: 'existing.json', admitted: true },
+  { label: 'a grok search_replace workspace edit', tool: 'search_replace', path: 'existing.json', admitted: true },
   { label: 'a path carried by the permission request', tool: 'write', path: 'result.json', requestInput: true, unobserved: true, admitted: true },
   { label: 'an uncorrelated missing input', tool: 'write', path: 'result.json', unobserved: true, admitted: false },
   { label: 'a conflicting path alias', tool: 'write', path: 'result.json', conflicting: true, admitted: false },
