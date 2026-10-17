@@ -21,6 +21,8 @@ const WORKSPACE_SESSION_HIDDEN_FILTER_BOUND_ATTRIBUTE = 'data-codingns-hidden-wo
 const MENU_ATTRIBUTE = 'aria-haspopup'
 const WORKSPACE_MENU_PATTERN = /(?:更多|菜单|选项|操作|more|menu|option|action)/iu
 const WORKSPACE_FILTER_PATTERN = /(?:视图选项|筛选选项|筛选会话|分组方式|排序方式|view\s*options?|filter\s*(?:options?|sessions?)|group\s*by|sort\s*by)/iu
+/** 标题栏上的筛选按钮文案。菜单行里的“分组方式 / Group by”不能算作这个按钮。 */
+const WORKSPACE_FILTER_TOOLBAR_PATTERN = /(?:视图选项|筛选选项|view\s*options?|filter\s*options?)/iu
 type ActiveMenuKind = 'workspace' | 'filter'
 
 export interface WorkspaceSessionVisibilityDomController {
@@ -147,10 +149,14 @@ export function startWorkspaceSessionVisibilityDom(
       })
       const menus = findWorkspaceMenus(dom)
       knownNativeMenus = new Set(menus)
+      // 操作栏里误挂的“显示隐藏的工作区”不在菜单节点内，每次扫描都清掉。
+      removeStrayFilterActions(dom)
       // 只有刚由工作区/筛选触发器打开的这一轮，才允许使用 activeMenuWorkspaceId
       // 作为 Portal 菜单的归属回退。设置菜单等其他 Portal 不能继承上一次工作区上下文。
+      // 仍在测量、尚未可见的 Portal 不能消耗这次上下文，否则可见后的那一次扫描
+      // 不会再把筛选项放进真正的菜单。
       const menuContextFresh = menuContextPending
-      if (menus.length > 0) menuContextPending = false
+      if (menus.some(isVisibleMenu)) menuContextPending = false
       // Portal 可能暂时同时保留多个菜单节点，点击事件的上下文也可能因宿主
       // 重渲染丢失。以最后一个可见菜单为准，避免把筛选项错注入工作区菜单。
       const currentMenu = [...menus].reverse().find(isVisibleMenu)
@@ -301,6 +307,18 @@ function isWorkspaceFilterTrigger(element: HTMLElement): boolean {
   return WORKSPACE_FILTER_PATTERN.test(label)
 }
 
+/**
+ * 筛选按钮和它的提示文字都在标题行里。标题行、操作按钮栏因此也会带上
+ * “视图选项”，但不能把它们当成展开后的筛选菜单。
+ */
+function containsFilterTrigger(element: HTMLElement): boolean {
+  return [...element.querySelectorAll<HTMLElement>('button,[role="button"]')].some((button) => {
+    if (button.getAttribute('role') === 'menuitem' || button.getAttribute('role') === 'menuitemcheckbox') return false
+    const label = `${button.textContent ?? ''} ${button.getAttribute('aria-label') ?? ''} ${button.title}`.replace(/\s+/gu, ' ')
+    return WORKSPACE_FILTER_TOOLBAR_PATTERN.test(label)
+  })
+}
+
 function findWorkspaceMenus(dom: Pick<Document, 'querySelectorAll'>): HTMLElement[] {
   const explicit = [...dom.querySelectorAll<HTMLElement>('[role="menu"], [role="listbox"], [data-menu-content], [data-radix-menu-content]')]
   if (explicit.length > 0) return explicit
@@ -318,6 +336,7 @@ function findWorkspaceMenus(dom: Pick<Document, 'querySelectorAll'>): HTMLElemen
   const candidates = [...counts.keys()].filter((element) => (
     (counts.get(element) ?? 0) >= 3
       && isWorkspaceFilterMenu(element)
+      && !containsFilterTrigger(element)
   ))
   return candidates.filter((element) => !candidates.some((other) => other !== element && element.contains(other)))
 }
@@ -334,13 +353,14 @@ function selectFilterMenus(
 ): HTMLElement[] {
   // 隐藏的 Portal 旧节点不能作为回退目标，否则筛选动作会重新挂到已经关闭的菜单。
   const visible = menus.filter(isVisibleMenu)
-  const candidates = visible.filter(isWorkspaceFilterMenu)
+  const candidates = visible.filter((menu) => isWorkspaceFilterMenu(menu) && !containsFilterTrigger(menu))
   const owned = candidates.filter((menu) => menu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`) !== null)
   if (owned.length > 0) return [owned[owned.length - 1]!]
   if (allowUnidentified && candidates.length > 0) return [candidates[candidates.length - 1]!]
   if (!allowUnidentified) return []
   const fallback = visible.filter((menu) => (
-    menuWorkspaceIds.get(menu) === undefined
+    !containsFilterTrigger(menu)
+      && menuWorkspaceIds.get(menu) === undefined
       && (activeWorkspaceId === undefined || resolveWorkspaceId(menu) !== activeWorkspaceId)
       && menu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_MENU_ATTRIBUTE}]`) === null
   ))
@@ -370,6 +390,16 @@ function isVisibleMenu(menu: HTMLElement): boolean {
 function isWorkspaceFilterMenu(element: HTMLElement): boolean {
   const label = `${element.textContent ?? ''} ${element.getAttribute('aria-label') ?? ''} ${element.getAttribute('title') ?? ''}`
   return WORKSPACE_FILTER_PATTERN.test(label)
+}
+
+/** 标题行里的副本不由 React 菜单持有，可以直接移除；菜单内的条目留给宿主卸载。 */
+function removeStrayFilterActions(dom: Pick<Document, 'querySelectorAll'>): void {
+  for (const node of dom.querySelectorAll<HTMLElement>(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`)) {
+    const host = node.parentElement
+    if (host !== null && isWorkspaceFilterMenu(host) && !containsFilterTrigger(host)) continue
+    if (node.closest('[role="menu"], [role="listbox"], [data-menu-content], [data-radix-menu-content]') !== null) continue
+    node.remove()
+  }
 }
 
 function injectWorkspaceMenuActions(
@@ -420,8 +450,9 @@ function injectFilterMenuAction(
   t: CodingNsTranslator,
 ): void {
   // 没有可读文本时，Portal 最近追加的菜单就是当前视图菜单；避免把选项
-  // 错注入到页面中其他仍然存在的菜单。
-  const menu = menus.find(isWorkspaceFilterMenu) ?? menus[menus.length - 1]
+  // 错注入到页面中其他仍然存在的菜单。包含筛选按钮的标题行和操作栏不是菜单。
+  const menu = menus.find((candidate) => isWorkspaceFilterMenu(candidate) && !containsFilterTrigger(candidate))
+    ?? [...menus].reverse().find((candidate) => !containsFilterTrigger(candidate))
   if (menu === undefined) return
   for (const stale of menu.querySelectorAll<HTMLElement>(`[${WORKSPACE_SESSION_HIDDEN_MENU_ATTRIBUTE}]`)) stale.remove()
   const existing = menu.querySelector<HTMLElement>(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`)
