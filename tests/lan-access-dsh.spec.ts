@@ -14,8 +14,10 @@ import {
   InMemoryLanAccessDshLoginStore,
   createLanAccessDshRpcHandler,
   createLoginProtectionConfig,
+  createNodeLanAccessDshRuntime,
   isPeerHostRouteRequest,
   refreshLoginProtectionSession,
+  resolveLanAccessDshStartPort,
   resolvePeerHostAuthResponse,
   verifyPeerHostAccessToken,
   verifyLoginProtectionSession,
@@ -129,6 +131,81 @@ test('多个 DSH 实例要求手动指定端口', async () => {
   await assert.rejects(() => proxy.start({ listenPort: 13080 }), /多个 DSH/u)
   const snapshot = await proxy.start({ listenPort: 13080, dshPort: 9081 })
   assert.equal(snapshot.dshPort, 9081)
+})
+
+test('启动前按探测结果选择 DSH Web 端口', () => {
+  assert.equal(resolveLanAccessDshStartPort(18789, [18789]), 18789)
+  assert.equal(resolveLanAccessDshStartPort(18789, [19234]), 19234)
+  assert.equal(resolveLanAccessDshStartPort(0, [19234]), 19234)
+  assert.equal(resolveLanAccessDshStartPort(undefined, [19234]), 19234)
+  assert.equal(resolveLanAccessDshStartPort(18789, []), 18789)
+  assert.equal(resolveLanAccessDshStartPort(9081, [9080, 9081]), 9081)
+  assert.throws(() => resolveLanAccessDshStartPort(undefined, []), /未能自动探测/u)
+  assert.throws(() => resolveLanAccessDshStartPort(9082, [9080, 9081]), /多个 DSH/u)
+})
+
+test('启动前探测到唯一新端口时改用新端口', async () => {
+  const runtime = new FakeRuntime()
+  runtime.detected = [19234]
+  const proxy = new LanAccessDshProxy(runtime)
+  const snapshot = await proxy.start({ listenHost: '0.0.0.0', listenPort: 13080, dshPort: 18789 })
+  assert.equal(snapshot.dshPort, 19234)
+  runtime.accept()
+  assert.deepEqual(runtime.connected, [19234])
+  await proxy.stop()
+})
+
+test('探测失败时沿用已保存的 DSH 端口', async () => {
+  const runtime = new FakeRuntime()
+  runtime.detected = []
+  const proxy = new LanAccessDshProxy(runtime)
+  const snapshot = await proxy.start({ listenPort: 13080, dshPort: 18789 })
+  assert.equal(snapshot.dshPort, 18789)
+  await proxy.stop()
+})
+
+test('当前进程 DSH Web 端口存在时探测不再混入环境变量端口', async () => {
+  const previous = process.env.PORT
+  process.env.PORT = '18789'
+  try {
+    const runtime = createNodeLanAccessDshRuntime(19234)
+    assert.deepEqual([...await runtime.detectDshPorts()], [19234])
+  } finally {
+    if (previous === undefined) delete process.env.PORT
+    else process.env.PORT = previous
+  }
+})
+
+test('启动时探测到 DSH 端口变化则回写设置', async () => {
+  const runtime = new FakeRuntime()
+  runtime.detected = [19234]
+  const settings = new FakeSettings({
+    controlBaseUrl: 'https://channel.codingns.com:1443',
+    controlBaseUrls: ['https://channel.codingns.com:1443'],
+    modules: {},
+    lanAccessDsh: { autoStart: false, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 18789, pwa: DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS },
+  })
+  const handler = createLanAccessDshRpcHandler(new LanAccessDshProxy(runtime), settings)
+  const snapshot = await handler('start', { listenHost: '0.0.0.0', listenPort: 13080, dshPort: 18789 }) as { dshPort: number }
+  assert.equal(snapshot.dshPort, 19234)
+  assert.equal(settings.get().lanAccessDsh.dshPort, 19234)
+  assert.equal(settings.get().lanAccessDsh.pwa.enabled, DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS.enabled)
+})
+
+test('启动时探测端口未变化则不改写设置', async () => {
+  const runtime = new FakeRuntime()
+  runtime.detected = [18789]
+  const settings = new FakeSettings({
+    controlBaseUrl: 'https://channel.codingns.com:1443',
+    controlBaseUrls: ['https://channel.codingns.com:1443'],
+    modules: {},
+    lanAccessDsh: { autoStart: true, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 18789, pwa: DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS },
+  })
+  const handler = createLanAccessDshRpcHandler(new LanAccessDshProxy(runtime), settings)
+  const snapshot = await handler('start', { listenHost: '0.0.0.0', listenPort: 13080, dshPort: 18789 }) as { dshPort: number }
+  assert.equal(snapshot.dshPort, 18789)
+  assert.equal(settings.get().lanAccessDsh.dshPort, 18789)
+  assert.equal(settings.get().lanAccessDsh.autoStart, true)
 })
 
 test('局域网代理改写上游 Host/Origin 并保留 WebSocket 升级', () => {
@@ -325,6 +402,24 @@ test('登录保护中继票据可在有效期内滚动续签', async () => {
   assert.notEqual(refreshed.token, result.relaySession.token)
   assert.ok(Date.parse(refreshed.expiresAt) > Date.parse(result.relaySession.expiresAt) - 1000)
   assert.equal(await verifyLoginProtectionSession(store, refreshed.token, 'relay'), true)
+})
+
+test('自动启动时若已保存端口与探测结果不一致则更新配置', async () => {
+  const runtime = new FakeRuntime()
+  runtime.detected = [19234]
+  const settings = new FakeSettings({
+    controlBaseUrl: 'https://channel.codingns.com:1443',
+    controlBaseUrls: ['https://channel.codingns.com:1443'],
+    modules: {},
+    lanAccessDsh: { autoStart: true, listenHost: '0.0.0.0', listenPort: 13080, dshPort: 18789, pwa: DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS },
+  })
+  const registry = new FeatureRegistry({ rpc: new CodingNsRpcTable(), settings, dshWebPort: 19234 })
+  registry.register(createLanAccessDshFeature({ runtime }))
+  await registry.reconcile(['lanAccessDsh'])
+  runtime.accept()
+  assert.deepEqual(runtime.connected, [19234])
+  assert.equal(settings.get().lanAccessDsh.dshPort, 19234)
+  await registry.disable('lanAccessDsh')
 })
 
 test('Host 启动时按持久化配置自动启动映射，运行中修改选项不会重启映射', async () => {
