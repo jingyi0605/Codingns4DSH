@@ -331,6 +331,9 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   }
 
   protected parseEvent(value: Record<string, unknown>, input: CodingNsCliTurnInput): readonly CodingNsAgentEvent[] {
+    // Claude owns API retries. Their error field describes a pending retry,
+    // not a terminal failure; keep consuming until the actual result arrives.
+    if (value.type === 'system' && value.subtype === 'api_retry') return []
     const interaction = this.parseInteraction(value, input.sessionId)
     if (interaction !== null) return [interaction]
     const event = value.type === 'stream_event' && typeof value.event === 'object' && value.event !== null ? value.event as Record<string, unknown> : value
