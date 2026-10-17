@@ -11,6 +11,7 @@ import { QuickAppButton, QuickAppField } from '../src/client/quick-apps/ui.js'
 import { shortcutIcon, entryTitle, newQuickAppDraft, quickAppEntryPatch } from '../src/client/quick-apps/presentation.js'
 import { QuickAppWorkspacePicker } from '../src/client/quick-apps/workspace-picker.js'
 import { QuickAppViewer } from '../src/client/quick-apps/viewer.js'
+import { quickAppsCss } from '../src/client/quick-apps/styles.js'
 
 function elements(node: ReactNode): ReactElement<any>[] {
   return isValidElement<{ children?: ReactNode; footer?: ReactNode }>(node) ? [node, ...Children.toArray(node.props.children).flatMap(elements), ...Children.toArray(node.props.footer).flatMap(elements)] : []
@@ -250,6 +251,13 @@ test('native-style viewer controls keep text literal and HTML launch credentials
   assert.equal(frame.props.sandbox, 'allow-scripts allow-same-origin allow-forms allow-downloads')
   nodes.find(node => node.props['aria-label'] === 'Back to shortcuts')!.props.onClick()
   assert.equal(reloaded, 1); assert.equal(closed, 1)
+  const title = nodes.find(node => node.props.className === 'qa-view-title')
+  assert.equal(elements(title).find(node => node.type === 'h2')?.props.children, common.app.title)
+  nodes.find(node => node.props['aria-label'] === 'Maximize viewer')!.props.onClick()
+  const maximized = elements(html.render())
+  assert.match(maximized.find(node => node.type === DshModal)!.props.className, /\sqa-maximized\b/)
+  assert.equal(maximized.find(node => node.props.className === 'qa-view-title') !== undefined, true)
+  assert.match(quickAppsCss, /\.qa-viewer\.qa-maximized \.qa-view-title\{[^}]*left:88px;right:88px;[^}]*justify-content:center/)
 })
 
 test('shortcut form preserves Host/workspace identity and leaves failed edits available for retry', async t => {
