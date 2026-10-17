@@ -1,5 +1,4 @@
 import { resolveCodingNsTranslator, type CodingNsLocale } from './locale.js'
-import { FISH_LOGO_PATH } from './mobile-sidebar-logo.js'
 
 const PANEL = '[data-team-panel][role="dialog"]'
 const MOBILE = 'data-codingns-mobile-team'
@@ -98,20 +97,17 @@ function createHeader(dom: Document, panel: HTMLElement): HTMLElement {
   const button = dom.createElement('button')
   button.type = 'button'
   const svg = dom.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  svg.setAttribute('viewBox', '0 0 32 24')
-  svg.setAttribute('width', '32')
-  svg.setAttribute('height', '24')
+  svg.setAttribute('viewBox', '0 0 24 24')
+  svg.setAttribute('width', '20')
+  svg.setAttribute('height', '20')
   svg.setAttribute('aria-hidden', 'true')
-  const logo = dom.createElementNS('http://www.w3.org/2000/svg', 'path')
-  logo.setAttribute('d', FISH_LOGO_PATH)
-  logo.setAttribute('transform', 'translate(1 2)')
-  logo.setAttribute('fill', 'currentColor')
   const close = dom.createElementNS('http://www.w3.org/2000/svg', 'path')
-  close.setAttribute('d', 'M25 17l6 6m0-6l-6 6')
+  close.setAttribute('d', 'M6 6l12 12m0-12L6 18')
+  close.setAttribute('fill', 'none')
   close.setAttribute('stroke', 'currentColor')
   close.setAttribute('stroke-width', '2')
   close.setAttribute('stroke-linecap', 'round')
-  svg.append(logo, close)
+  svg.appendChild(close)
   button.appendChild(svg)
   button.addEventListener('click', event => {
     event.stopPropagation()
