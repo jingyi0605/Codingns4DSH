@@ -1,5 +1,6 @@
 import { runAsyncCommand } from './process-utils.js'
 import { spawn, spawnSync } from 'node:child_process'
+import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -11,7 +12,8 @@ import { GROK_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { isRegularFile, probeStoredSession, resolveSessionDirectory } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks } from './attachment-utils.js'
-import { acpBridgeMcpServers, teamBridgeToken } from '../cli-bridge/injections.js'
+import { acpBridgeMcpServers, bridgeSessionGuidance, subagentBridgeActive, teamBridgeToken } from '../cli-bridge/injections.js'
+import { getSubagentBridge } from '../cli-bridge/bridge-holder.js'
 import { reasoningText } from './reasoning-content.js'
 import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 import { readAgentQuestions } from './interaction-events.js'
@@ -45,6 +47,7 @@ interface GrokStreamedToolInput {
 
 interface GrokSessionState {
   readonly teamToken?: string | undefined
+  readonly bridgeToken?: string | undefined
   readonly contextUsage: GrokContextUsage
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
@@ -63,6 +66,7 @@ export interface GrokBuildDriverOptions {
   readonly now?: () => number
   readonly binaries?: readonly string[]
   readonly sessionRoots?: readonly string[]
+  readonly modelCachePath?: string
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
 }
@@ -75,6 +79,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
   private readonly sessionRoots: readonly string[]
+  private readonly modelCachePath: string
   private readonly now: () => number
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
@@ -86,6 +91,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     this.runSpawn = options.spawn ?? spawn
     this.now = options.now ?? Date.now
     this.sessionRoots = options.sessionRoots ?? [join(process.env.GROK_HOME ?? join(homedir(), '.grok'), 'sessions')]
+    this.modelCachePath = options.modelCachePath ?? join(process.env.GROK_HOME ?? join(homedir(), '.grok'), 'models_cache.json')
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
@@ -97,6 +103,8 @@ export class GrokBuildDriver implements CodingNsCliDriver {
   async listModels(): Promise<CodingNsCliModelCatalog> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) return emptyCatalog()
+    const native = this.nativeModels(command)
+    let catalog = GROK_CATALOG
     const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', 'stdio'], env: grokRuntimeEnvironment(), spawn: this.runSpawn })
     try {
       await rpc.request('initialize', {
@@ -109,10 +117,38 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       rpc.notify('initialized', {})
       const session = await rpc.request('session/new', { cwd: process.cwd(), mcpServers: [] })
       const parsed = parseGrokCatalog(session)
-      return parsed.groups.length > 0 ? parsed : GROK_CATALOG
+      if (parsed.groups.length > 0) catalog = parsed
     } catch {
-      return GROK_CATALOG
+      // Retain the compatibility catalog when ACP discovery is unavailable.
     } finally { rpc.dispose() }
+    const listed = await native
+    if (!listed) return catalog
+    const existing = new Map(catalog.groups.flatMap(group => group.models).map(model => [model.id, model]))
+    const cached = readGrokModelMetadata(this.modelCachePath)
+    const models = listed.ids.map(id => {
+      const metadata = cached.get(id)
+      return { id, name: existing.get(id)?.name ?? metadata?.name ?? id,
+        efforts: metadata?.efforts ?? existing.get(id)?.efforts ?? [] }
+    })
+    const providerDefault = GROK_CATALOG.groups.flatMap(group => group.models).find(model => model.id === 'provider-default')!
+    return { groups: [{ id: 'grok', name: 'Grok', models: [providerDefault, ...models] }], currentModel: listed.current, currentEffort: null }
+  }
+
+  /** The models command waits for the fetched catalog; session/new may return its bootstrap snapshot. */
+  private async nativeModels(command: string): Promise<{ ids: string[]; current: string | null } | undefined> {
+    try {
+      const result = await runAsyncCommand(this.runSpawnSync, command, ['models'], {
+        cwd: process.cwd(), encoding: 'utf8', timeout: 10_000, maxBuffer: 1024 * 1024,
+        windowsHide: true, shell: WINDOWS, env: grokRuntimeEnvironment(command),
+      })
+      if (result.status !== 0) return undefined
+      const text = String(result.stdout).replace(/\u001b\[[0-9;]*m/gu, '')
+      const section = text.split('Available models:')[1]
+      if (!section) return undefined
+      const ids = [...new Set([...section.matchAll(/^\s*[-*]\s+([A-Za-z0-9][A-Za-z0-9._:/-]*)(?:\s+\(default\))?\s*$/gmu)].map(match => match[1]!))]
+      const current = text.match(/^Default model:\s*(\S+)\s*$/mu)?.[1] ?? null
+      return ids.length ? { ids, current: current && ids.includes(current) ? current : null } : undefined
+    } catch { return undefined }
   }
 
   /** Grok 的原生目录同时应用信任、禁用、兼容来源和插件命名规则。 */
@@ -165,6 +201,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     let stepStreamId: string | undefined
     const activeTools = new Map<string, string>()
     const streamedToolInputs = new Map<number, GrokStreamedToolInput>()
+    const permissionTools = new Map<string, { readonly name: string; readonly input: unknown }>()
     try {
       if (providerSessionId === '') {
         const session = await rpc.request('session/new', {
@@ -192,11 +229,18 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       const nativeCommand = /^\s*\/[A-Za-z0-9][A-Za-z0-9._:-]*(?:\s|$)/u.test(input.prompt)
       const prompt = [
         ...(nativeCommand ? [] : [{ type: 'text', text: GROK_QUESTION_GUIDANCE }]),
+        ...(nativeCommand || !subagentBridgeActive(input.sessionId) ? [] : [{ type: 'text', text: bridgeSessionGuidance(input.sessionId, 'codingns__agent_subagent') }]),
         ...await buildAcpPromptBlocks(input.prompt, input.attachments ?? []),
       ]
       const usage = new GrokPromptUsage(promptId, state.contextUsage, this.now)
       stream = streamGrokPrompt(rpc, providerSessionId, promptId, prompt, input.signal, (notification) => {
         usage.observe(notification)
+        const params = isRecord(notification.params) ? notification.params : {}
+        const update = isRecord(params.update) ? params.update : {}
+        const callId = firstToolText(update.toolCallId, update.tool_call_id)
+        if (callId && update.sessionUpdate === 'tool_call') {
+          permissionTools.set(callId, { name: firstToolText(update.name, update.title) ?? '', input: update.rawInput })
+        }
         const elicitation = readAcpElicitationRequest(notification)
         if (elicitation !== null) state.questions.set(elicitation.requestId, elicitation)
         const grokTool = readGrokQuestionTool(notification)
@@ -206,7 +250,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         const requestId = interactionRequestId(notification)
         if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, {
           rpcId: notification.id, callId: permissionCallId(notification), ...permissionOptions(notification),
-          autoApproved: isBoundTeamPermission(notification, input, state.teamToken),
+          autoApproved: isAdmittedGrokPermission(notification, input, state, permissionTools),
         })
         return usage.takeObservation()
       }, response => { usage.observeResponse(response); return usage.takeObservation() })
@@ -344,7 +388,8 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     const alwaysApprove = input.permission?.sandboxMode === 'danger-full-access' && input.permission.approvalPolicy === 'never'
     const previous = this.sessions.get(input.sessionId)
     const teamToken = teamBridgeToken(input.sessionId)
-    if (previous !== undefined && previous.cwd === input.cwd && previous.alwaysApprove === alwaysApprove && previous.teamToken === teamToken && !previous.rpc.isClosed) return previous
+    const bridgeToken = getSubagentBridge()?.token
+    if (previous !== undefined && previous.cwd === input.cwd && previous.alwaysApprove === alwaysApprove && previous.teamToken === teamToken && previous.bridgeToken === bridgeToken && !previous.rpc.isClosed) return previous
     if (previous !== undefined) {
       await previous.rpc.disposeAndWait()
       this.processes.delete(previous.rpc)
@@ -352,7 +397,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     const resumeId = input.providerSessionId ?? (previous?.cwd === input.cwd ? previous?.providerSessionId : undefined)
     const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', ...(alwaysApprove ? ['--always-approve'] : []), 'stdio'], cwd: input.cwd, env: grokRuntimeEnvironment(), spawn: this.runSpawn })
     this.processes.add(rpc)
-    const state: GrokSessionState = { teamToken, rpc, contextUsage: new GrokContextUsage(), cwd: input.cwd, rawStoreRef: input.rawStoreRef, alwaysApprove, providerSessionId: '', requests: new Map(), permissionDenials: new Map(), questions: new Map(), grokQuestions: new Map(), grokQuestionCallIds: new Set(), grokQuestionEventIds: new Set() }
+    const state: GrokSessionState = { teamToken, bridgeToken, rpc, contextUsage: new GrokContextUsage(), cwd: input.cwd, rawStoreRef: input.rawStoreRef, alwaysApprove, providerSessionId: '', requests: new Map(), permissionDenials: new Map(), questions: new Map(), grokQuestions: new Map(), grokQuestionCallIds: new Set(), grokQuestionEventIds: new Set() }
     rpc.addNotificationListener(message => {
       const params = isRecord(message.params) ? message.params : {}
       const owner = state.providerSessionId || resumeId
@@ -378,8 +423,8 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         // Ordinary legacy ACP sessions keep their existing new-session fallback.
       }
     }
-    // Bound Team requests retain existing coordination authority; other ACP
-    // permissions wait for the native approval result using the original RPC id.
+    // Admitted file/bridge requests retain existing authority. Other requests
+    // wait for native approval using the original RPC id.
     rpc.setServerRequestHandler((message) => {
       const elicitation = readAcpElicitationRequest(message)
       if (elicitation !== null) {
@@ -430,6 +475,7 @@ const GROK_QUESTION_GUIDANCE = [
   '<codingns_host_capabilities>',
   'The DSH host provides Grok Build\'s built-in ask_user_question tool. It displays a native question card and returns the user\'s structured answer.',
   'ask_user_question is a grok_build built-in tool and does not depend on an MCP server. MCP connection notices only describe the MCP servers listed in the prompt.',
+  'Use the built-in read/read_file tool to inspect files. Shell commands may require approval even when workspace file writes are already allowed; do not replace a file read with a shell command.',
   'When the user explicitly asks to use a question component, or when a question card is needed to collect a choice, call ask_user_question directly, wait for the user\'s answer, and then continue.',
   '</codingns_host_capabilities>',
 ].join('\n')
@@ -830,19 +876,79 @@ function containedPath(root: string, child: string): readonly string[] {
   return outside === '' || outside === '..' || outside.startsWith(`..${sep}`) || isAbsolute(outside) ? [] : [candidate]
 }
 
-/** The bound bridge enforces Team identity and role; unrelated tools still require native admission. */
-function isBoundTeamPermission(message: JsonRpcMessage, input: CodingNsCliTurnInput, token: string | undefined): boolean {
-  if (message.method !== 'session/request_permission' || !token || teamBridgeToken(input.sessionId) !== token || input.plan === true) return false
+/** Admit existing file/bridge authority; shells and unknown requests retain native approval. */
+function isAdmittedGrokPermission(message: JsonRpcMessage, input: CodingNsCliTurnInput, state: GrokSessionState,
+  tools: ReadonlyMap<string, { readonly name: string; readonly input: unknown }>): boolean {
+  if (message.method !== 'session/request_permission' || input.plan === true) return false
   const mode = input.permission?.sandboxMode
   if (mode !== 'workspace-write' && mode !== 'danger-full-access') return false
   const params = isRecord(message.params) ? message.params : {}
   const tool = isToolRecord(params.toolCall) ? params.toolCall : {}
   const metadata = isRecord(params._meta) ? params._meta : {}
-  if (metadata.risk !== undefined || firstToolText(tool.name, tool.toolName, tool.tool_name, tool.title) !== 'codingns__agent_team') return false
+  if (metadata.risk !== undefined || tool.risk !== undefined) return false
   // Never substitute a persistent grant or invent an option absent from the request.
-  return Array.isArray(params.options) && params.options.some(option => isRecord(option)
+  if (!Array.isArray(params.options) || !params.options.some(option => isRecord(option)
     && firstToolText(option.kind, option.type)?.toLowerCase() === 'allow_once'
-    && firstToolText(option.optionId, option.option_id, option.id) !== undefined)
+    && firstToolText(option.optionId, option.option_id, option.id) !== undefined)) return false
+  const observed = tools.get(permissionCallId(message) ?? '')
+  // Titles become human-readable labels such as "Write `/path`". Keep the
+  // canonical identity from the matching call, while MCP wrappers name their
+  // inner bridge tool in the permission request itself.
+  const title = firstToolText(tool.title)
+  const bridgeTitle = title === 'codingns__agent_team' || title === 'codingns__agent_subagent' ? title : undefined
+  const name = firstToolText(tool.name, tool.toolName, tool.tool_name) ?? bridgeTitle ?? observed?.name ?? title
+  if (name === 'codingns__agent_team') return Boolean(state.teamToken && teamBridgeToken(input.sessionId) === state.teamToken)
+  if (name === 'codingns__agent_subagent') return Boolean(!state.teamToken && state.bridgeToken && getSubagentBridge()?.token === state.bridgeToken)
+  if (name !== 'write' && name !== 'edit') return false
+  if (observed && observed.name !== name) return false
+  const raw = tool.rawInput ?? observed?.input
+  if (!isRecord(raw)) return false
+  const paths = ['file_path', 'target_file', 'path'].flatMap(key => raw[key] === undefined ? [] : [raw[key]])
+  if (!paths.length || paths.some(path => typeof path !== 'string' || !path.trim() || path.includes('\0'))) return false
+  if (!input.cwd || !isAbsolute(input.cwd)) return false
+  const root = canonicalGrokPath(input.cwd)
+  if (!root) return false
+  return paths.every(path => {
+    // Keep dot segments until realpath resolves existing symlink ancestors.
+    const target = canonicalGrokPath(isAbsolute(path as string) ? path as string : `${input.cwd}${sep}${path}`)
+    if (!target) return false
+    const outside = relative(root, target)
+    return mode === 'danger-full-access' || outside !== '' && outside !== '..' && !outside.startsWith(`..${sep}`) && !isAbsolute(outside)
+  })
+}
+
+/** Resolve existing ancestors, rejecting broken links and non-missing filesystem errors. */
+function canonicalGrokPath(path: string): string | undefined {
+  const suffix: string[] = []
+  let current = path
+  for (;;) {
+    try { lstatSync(current) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || dirname(current) === current) return undefined
+      suffix.unshift(basename(current))
+      current = dirname(current)
+      continue
+    }
+    try { return resolve(realpathSync.native(current), ...suffix) }
+    catch { return undefined }
+  }
+}
+
+/** Cache metadata enriches only IDs admitted by the native CLI's filtered list. */
+function readGrokModelMetadata(path: string): Map<string, { name: string; efforts: string[] }> {
+  const result = new Map<string, { name: string; efforts: string[] }>()
+  try {
+    const value: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (!isRecord(value) || !isRecord(value.models)) return result
+    for (const entry of Object.values(value.models)) {
+      if (!isRecord(entry) || !isRecord(entry.info) || typeof entry.info.id !== 'string') continue
+      const info = entry.info
+      const efforts = Array.isArray(info.reasoning_efforts) ? info.reasoning_efforts.flatMap(effort =>
+        typeof effort === 'string' ? [effort] : isRecord(effort) && typeof effort.id === 'string' ? [effort.id] : []) : []
+      result.set(info.id as string, { name: typeof info.name === 'string' ? info.name : info.id as string, efforts })
+    }
+  } catch { /* Metadata is optional and never adds selectable model IDs. */ }
+  return result
 }
 
 function permissionRequestId(message: Record<string, any>): string | null {

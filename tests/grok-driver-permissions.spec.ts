@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { GrokBuildDriver } from '../data/build/dist/host/cli-adapters/grok-driver.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import { createSubagentBridgeRuntime, setSubagentBridge } from '../data/build/dist/host/cli-bridge/bridge-holder.js'
@@ -64,6 +67,99 @@ function requestPermission(connection: Connection, options = permissionOptions) 
     toolCall: { toolCallId: 'backup-call', title: 'Execute backup command' },
     options,
   } })
+}
+
+test('Grok names the actual injected bridge in the model prompt', { timeout: 3_000 }, async () => {
+  setSubagentBridge(createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:1', token: 'bound' }))
+  const fixture = replay((request, connection) => {
+    if (request.method === 'session/prompt') {
+      const prompt = JSON.stringify(request.params.prompt)
+      assert.match(prompt, /codingns__agent_subagent/)
+      assert.match(prompt, /ordinary final output is also delivered to the parent/)
+      connection.reply(request, { stopReason: 'end_turn' })
+    }
+  })
+  try { for await (const _event of fixture.driver.executeTurn(input)) { /* Consume the real wire prompt. */ } }
+  finally { fixture.driver.dispose(); setSubagentBridge(undefined) }
+})
+
+for (const scenario of [
+  { label: 'a new workspace file', tool: 'write', path: 'result.json', admitted: true },
+  { label: 'a formatted write display title', tool: 'write', path: 'result.json', display: true, admitted: true },
+  { label: 'a formatted title with an explicit conflicting identity', tool: 'write', path: 'result.json', display: true, requestName: 'run_terminal_command', admitted: false },
+  { label: 'a nested workspace file', tool: 'write', path: 'new/nested/result.json', admitted: true },
+  { label: 'an existing workspace edit', tool: 'edit', path: 'existing.json', admitted: true },
+  { label: 'a path carried by the permission request', tool: 'write', path: 'result.json', requestInput: true, unobserved: true, admitted: true },
+  { label: 'an uncorrelated missing input', tool: 'write', path: 'result.json', unobserved: true, admitted: false },
+  { label: 'a conflicting path alias', tool: 'write', path: 'result.json', conflicting: true, admitted: false },
+  { label: 'a conflicting observed tool', tool: 'write', path: 'result.json', observedTool: 'run_terminal_command', admitted: false },
+  { label: 'an ordinary bound parent report', tool: 'codingns__agent_subagent', bridge: true, admitted: true },
+  { label: 'an unbound parent report', tool: 'codingns__agent_subagent', admitted: false },
+  { label: 'a shell command', tool: 'run_terminal_command', path: 'result.json', admitted: false },
+  { label: 'an outside file', tool: 'write', path: '../outside.json', admitted: false },
+  { label: 'a symlink escape', tool: 'write', path: 'escape/result.json', admitted: false },
+  { label: 'a symlink followed by dot-dot', tool: 'write', path: 'escape/../outside.json', admitted: false },
+  { label: 'a dangling symlink', tool: 'write', path: 'dangling', admitted: false },
+  { label: 'a misleading workspace prefix', tool: 'write', path: '../workspace-other/result.json', admitted: false },
+  { label: 'a missing file path', tool: 'write', admitted: false },
+  { label: 'read-only writes', tool: 'write', path: 'result.json', mode: 'read-only', admitted: false },
+  { label: 'unknown scope', tool: 'write', path: 'result.json', mode: 'unknown', admitted: false },
+  { label: 'plan-mode writes', tool: 'write', path: 'result.json', plan: true, admitted: false },
+  { label: 'an explicit risk', tool: 'write', path: 'result.json', risk: 'elevated', admitted: false },
+  { label: 'a permanent-only grant', tool: 'write', path: 'result.json', permanent: true, admitted: false },
+  { label: 'a revoked report bridge', tool: 'codingns__agent_subagent', bridge: true, revoke: true, admitted: false },
+]) {
+  test(`Grok admits only existing authority for ${scenario.label}`, { timeout: 5_000 }, async t => {
+    const root = mkdtempSync(join(tmpdir(), 'codingns-grok-admission-'))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    const cwd = join(root, 'workspace')
+    mkdirSync(cwd)
+    writeFileSync(join(cwd, 'existing.json'), '{}')
+    if (scenario.path?.startsWith('escape/') || scenario.path === 'dangling') {
+      try {
+        symlinkSync(root, join(cwd, 'escape'), 'dir')
+        symlinkSync(join(root, 'missing.json'), join(cwd, 'dangling'))
+      } catch (error) {
+        if (process.platform !== 'win32' || error.code !== 'EPERM') throw error
+        t.skip('This Windows host cannot create symlink fixtures.')
+        return
+      }
+    }
+    setSubagentBridge(scenario.bridge ? createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:1', token: 'bound' }) : undefined)
+    const fixture = replay((request, connection) => {
+      if (request.method === 'session/prompt') {
+        connection.promptId = request.id
+        if (scenario.revoke) setSubagentBridge(undefined)
+        const rawInput = scenario.path ? { file_path: `${cwd}/${scenario.path}`,
+          ...(scenario.conflicting ? { path: join(root, 'outside.json') } : {}) } : { action: 'send', message: '55' }
+        if (!scenario.unobserved) connection.update({ sessionUpdate: 'tool_call', toolCallId: 'admitted-call', title: scenario.observedTool ?? scenario.tool, status: 'pending', rawInput })
+        connection.emit({ jsonrpc: '2.0', id: 77, method: 'session/request_permission', params: {
+          sessionId: 'provider-session', toolCall: { toolCallId: 'admitted-call', title: scenario.display ? `Write \`${cwd}/${scenario.path}\`` : scenario.tool,
+            ...(scenario.requestName ? { name: scenario.requestName } : {}),
+            ...(scenario.requestInput ? { rawInput } : {}) },
+          ...(scenario.risk ? { _meta: { risk: scenario.risk } } : {}),
+          options: scenario.permanent ? [permissionOptions[0], permissionOptions[3]] : permissionOptions,
+        } })
+      } else if (request.id === 77 && request.result) {
+        connection.update({ sessionUpdate: 'tool_call_update', toolCallId: 'admitted-call', status: 'completed', rawOutput: 'done' })
+        connection.reply({ id: connection.promptId }, { stopReason: 'end_turn' })
+      }
+    })
+    try {
+      let approvals = 0
+      for await (const event of fixture.driver.executeTurn({ ...input, cwd, plan: scenario.plan,
+        permission: scenario.mode === 'unknown' ? { approvalPolicy: 'never' } : { sandboxMode: scenario.mode ?? 'workspace-write', approvalPolicy: 'never' } } as never)) {
+        if (event.type === 'permission-request') {
+          approvals++
+          fixture.driver.respondPermission(input.sessionId, { requestId: event.requestId, approved: false })
+        }
+      }
+      assert.equal(approvals, scenario.admitted ? 0 : 1)
+      const reply = fixture.connections[0].requests.find(request => request.id === 77 && request.result)
+      assert.equal(reply?.result.outcome.optionId, scenario.admitted ? 'allow-once' : scenario.permanent ? undefined : 'reject-once')
+      assert.equal(fixture.connections[0].args.includes('--always-approve'), false)
+    } finally { fixture.driver.dispose(); setSubagentBridge(undefined) }
+  })
 }
 
 test('Grok runs bound Team coordination without a second approval under workspace-write/never', { timeout: 5_000 }, async () => {
