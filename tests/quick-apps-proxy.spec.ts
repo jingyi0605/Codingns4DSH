@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { QuickAppRemoteOwner, QuickAppRemoteController } from '../src/host/modules/quick-apps/remote.js'
 import { createVirtualWorkspaceId } from '../src/shared/contracts/peer-host.js'
 import { createDshCapabilityRegistry } from '../src/dsh-capabilities/index.js'
-import { createServer } from 'node:http'
+import { createServer, request } from 'node:http'
+import { quickAppStorageKey } from '../src/shared/quick-app-browser-storage.js'
 import { PeerHostStore } from '../src/host/modules/peer-host/peer-host-store.js'
 import { PeerHostSessionService } from '../src/host/modules/peer-host/peer-host-session.js'
 import { PeerHostHttpProxyService } from '../src/host/modules/peer-host/host-api-proxy-service.js'
@@ -106,4 +107,14 @@ test('actual PeerHost HTTP carrier proxies resources through the controlling add
   assert.equal((await fetch(local.origin + launched.basePath + 'folder', { redirect: 'manual' })).headers.get('location'), launched.basePath + 'folder/')
   await remote.close(launched.launchId, 'browser-owner')
   assert.equal((await fetch(launched.url)).status, 404)
+  const stored = await remote.launch(app, 'browser-owner', local.origin, undefined, true) as any
+  assert.equal(stored.storageScope, quickAppStorageKey(app), 'The controlling Host supplies the stable shortcut identity')
+  const bootstrap = await new Promise<string>((resolve, reject) => {
+    const req = request(stored.url, { headers: { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'iframe' } }, res => {
+      let body = ''; res.on('data', bytes => { body += String(bytes) }); res.on('end', () => resolve(body)); res.on('error', reject)
+    }); req.on('error', reject); req.end()
+  })
+  assert.ok(bootstrap.includes(stored.storageToken), 'Storage navigation bootstraps survive the actual PeerHost resource carrier')
+  assert.match(await (await fetch(stored.url, { headers: { accept: 'text/html' } })).text(), /Ordinary static app/u)
+  await remote.close(stored.launchId, 'browser-owner')
 })

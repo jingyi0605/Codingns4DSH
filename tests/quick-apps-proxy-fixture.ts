@@ -32,7 +32,7 @@ export async function quickAppProxyFixture(dshVersion = '0.2.1-alpha.3') {
   const snapshot = await proxy.start({ listenHost: '127.0.0.1', listenPort: 0, dshPort: port })
   const origin = `http://127.0.0.1:${snapshot.actualListenPort}`
   return { ...f, provider, service, native, proxy, routes, seen, origin, hostOrigin: `http://127.0.0.1:${port}`,
-    launch: (uiOrigin = origin) => service.launch(f.app.id, 'browser-owner', undefined, uiOrigin) as Promise<any>,
+    launch: (uiOrigin = origin, browserStorage = false) => service.launch(f.app.id, 'browser-owner', undefined, uiOrigin, browserStorage) as Promise<any>,
     setUi: (value: string) => { ui = value },
     dispose: async () => { await service.dispose(); await proxy.close(); await provider.dispose(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await f.dispose() },
   }
