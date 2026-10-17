@@ -904,7 +904,7 @@ function isAdmittedGrokPermission(message: JsonRpcMessage, input: CodingNsCliTur
   const name = firstToolText(tool.name, tool.toolName, tool.tool_name) ?? bridgeTitle ?? observed?.name ?? title
   if (name === 'codingns__agent_team') return Boolean(state.teamToken && teamBridgeToken(input.sessionId) === state.teamToken)
   if (name === 'codingns__agent_subagent') return Boolean(!state.teamToken && state.bridgeToken && getSubagentBridge()?.token === state.bridgeToken)
-  if (!isAdmittedGrokFileMutation(name)) return false
+  if (!name || !isAdmittedGrokFileMutation(name)) return false
   if (observed && observed.name !== name) return false
   const raw = tool.rawInput ?? observed?.input
   if (!isRecord(raw)) return false
