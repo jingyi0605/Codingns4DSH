@@ -13,6 +13,7 @@ import { PeerHostHttpProxyService } from '../src/host/modules/peer-host/host-api
 import { createQuickAppPeerGateway } from '../src/host/modules/peer-host/quick-app-gateway.js'
 import { quickAppProxyFixture } from './quick-apps-proxy-fixture.js'
 import { quickAppProxyBase } from '../src/shared/quick-app-proxy-path.js'
+import { quickAppPreparedHtml } from '../src/shared/quick-app-network-bootstrap.js'
 
 test('Host proxy uses the existing LAN address, scoped file API and lifecycle without certificates', { timeout: 30_000 }, async t => {
   const f = await quickAppProxyFixture(); t.after(f.dispose)
@@ -22,13 +23,14 @@ test('Host proxy uses the existing LAN address, scoped file API and lifecycle wi
   const entry = await get('index.html', { headers: { cookie: 'dsh=secret', authorization: 'Bearer secret' } })
   assert.equal(entry.status, 200); assert.match(entry.headers.get('content-security-policy')!, /sandbox allow-scripts/u)
   assert.equal(entry.headers.get('set-cookie'), null)
-  assert.equal(await entry.text(), await readFile(join(f.root, 'site/index.html'), 'utf8'))
+  const entryFile = await readFile(join(f.root, 'site/index.html'), 'utf8')
+  assert.equal(await entry.text(), quickAppPreparedHtml(entryFile))
   assert.equal(f.seen.at(-1)?.cookie, undefined); assert.equal(f.seen.at(-1)?.authorization, undefined, 'LAN does not inject privileged credentials')
   const image = await get('assets/pixel.png'); assert.equal(image.headers.get('content-type'), 'image/png')
   assert.deepEqual(Buffer.from(await image.arrayBuffer()), await readFile(join(f.root, 'site/assets/pixel.png')))
   assert.equal((await get('missing.js')).status, 404)
   assert.equal((await get('folder', { redirect: 'manual' })).headers.get('location'), launch.basePath + 'folder/')
-  assert.equal((await get('index.html', { method: 'HEAD' })).headers.get('content-length'), String(Buffer.byteLength(await readFile(join(f.root, 'site/index.html')))))
+  assert.equal((await get('index.html', { method: 'HEAD' })).headers.get('content-length'), String(Buffer.byteLength(quickAppPreparedHtml(entryFile))))
   const path = '__quickapp/files?path=data/member.json'
   const before = await (await get(path)).json()
   const headers = { origin: 'null', 'content-type': 'text/plain', 'if-match': before.version }
