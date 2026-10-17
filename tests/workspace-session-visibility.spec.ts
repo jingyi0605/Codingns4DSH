@@ -306,6 +306,51 @@ test('工作区菜单隐藏动作与筛选恢复列表不破坏原生菜单', as
   assert.equal(dom.querySelector(`[${WORKSPACE_SESSION_HIDDEN_LIST_ATTRIBUTE}]`), null)
 })
 
+test('显示隐藏的工作区只出现在筛选菜单，不留在标题操作栏', async () => {
+  const root = new FakeElement('div')
+  const header = new FakeElement('div')
+  // 浏览器里 textContent 包含提示气泡；FakeElement 不汇总子节点，这里直接模拟。
+  header.textContent = '工作区视图选项'
+  const search = new FakeElement('button')
+  search.setAttribute('aria-label', '搜索会话')
+  const filterTrigger = new FakeElement('button')
+  filterTrigger.setAttribute('aria-label', '视图选项')
+  const add = new FakeElement('button')
+  add.setAttribute('aria-label', '添加工作区')
+  const stray = new FakeElement('button')
+  stray.setAttribute(WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE, '')
+  stray.textContent = '显示隐藏的工作区'
+  header.append(search, filterTrigger, add, stray)
+  const tree = new FakeElement('div')
+  tree.setAttribute('role', 'tree')
+  tree.append(workspaceRow('workspace-a', '项目 A').container)
+  root.append(header, tree)
+  const dom = new FakeDocument(root)
+  const controller = startWorkspaceSessionVisibilityDom({
+    document: dom,
+    remote: { workspace: { async *follow() {} } },
+    readNativeWorkspaceSnapshot: () => ({ items: [], archivedSessionIds: [] }),
+  })
+  await nextTurn()
+  assert.equal(header.querySelector(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`), null)
+
+  // 菜单 Portal 比点击回调更晚挂上。这一轮只能看到带“视图选项”提示的标题行。
+  filterTrigger.dispatch('click')
+  await nextTurn()
+  assert.equal(header.querySelector(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`), null)
+
+  const filterMenu = new FakeElement('div')
+  filterMenu.setAttribute('role', 'menu')
+  filterMenu.setAttribute('aria-label', '视图选项')
+  filterMenu.textContent = '分组方式 排序方式 筛选会话'
+  filterMenu.append(menuItem('按工作区'), menuItem('最近更新'), menuItem('隐藏已归档'))
+  root.appendChild(filterMenu)
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.ok(filterMenu.querySelector(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`))
+  assert.equal(header.querySelector(`[${WORKSPACE_SESSION_HIDDEN_FILTER_ATTRIBUTE}]`), null)
+  controller.dispose()
+})
+
 test('设置菜单不继承上一次工作区菜单上下文', async () => {
   const source = await readFile(new URL('../src/client/workspace-session-visibility-dom.ts', import.meta.url), 'utf8')
   // Desktop 设置菜单也是 Portal 菜单；只有刚由工作区触发器打开的这一轮，
