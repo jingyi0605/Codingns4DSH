@@ -35,26 +35,26 @@ export function createDshCapabilityRegistry(
 
   if (runtime === 'host') {
     for (const role of ['member', 'lead'] as const) {
-      add({ id: `agent-team-external-${role}-021`, capability: `agent-team.external-${role}`, supportedDsh: '>=0.2.1-alpha.2 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.2',
+      add({ id: `agent-team-external-${role}-021`, capability: `agent-team.external-${role}`, supportedDsh: '>=0.2.1-alpha.2 <=0.2.1-rc.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.2',
         detect: ctx => supportsExternalAgentTeam(ctx, role === 'lead'), create: createAgentTeamAdapter })
     }
-    add({ id: 'session-performance-projection-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformance, create: createSessionPerformanceAdapter })
+    add({ id: 'session-performance-projection-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-rc.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformance, create: createSessionPerformanceAdapter })
     add({ id: 'quick-app-host-proxy-021', capability: 'quick-app.proxy', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: supportsQuickAppProxy, create: createQuickAppProxy })
     add({ id: 'workspace-directory-list-021', capability: 'workspace.directory-list', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: supportsWorkspaceDirectory, create: createWorkspaceDirectoryBrowser })
     add({ id: 'quick-app-origin-provider', capability: 'quick-app.origin', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: () => supportsQuickAppOrigins(facts.quickAppOrigins), create: () => facts.quickAppOrigins })
-    add({ id: 'session-prompt-assembly-021', capability: 'session.prompt-assembly', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+    add({ id: 'session-prompt-assembly-021', capability: 'session.prompt-assembly', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-rc.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: supportsSessionPromptAssembly, create: createSessionPromptAdapter })
-    add({ id: 'session-external-model-selection-021', capability: 'session.external-model-selection', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+    add({ id: 'session-external-model-selection-021', capability: 'session.external-model-selection', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-rc.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: ctx => supportsSessionModelSelection(read(ctx, 'sessionController')), create: ctx => createSessionModelSelectionAdapter(read(ctx, 'sessionController')) })
     add({ id: 'session-activation-020', capability: 'session.activation', supportedDsh: '>=0.2.0-rc.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: ctx => hasMethods(read(ctx, 'sessionController'), ['create']), create: ctx => read(ctx, 'sessionController') })
-    add({ id: 'session-activation-021', capability: 'session.activation', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+    add({ id: 'session-activation-021', capability: 'session.activation', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-rc.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: ctx => hasMethods(read(ctx, 'sessionController'), ['create', 'resolveAgent']), create: ctx => read(ctx, 'sessionController') })
     for (const capability of ['connection.peer', 'connection.uplink'] as const) {
-      add({ id: `${capability}-021`, capability, supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 40, status: 'supported', introducedIn: '0.2.1-alpha.3',
+      add({ id: `${capability}-021`, capability, supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-rc.2', runtime, priority: 40, status: 'supported', introducedIn: '0.2.1-alpha.3',
         detect: ctx => hasMethods(read(ctx, 'connection'), ['admit', 'createPeer']) && read(ctx, 'connection.browserPeer') !== undefined,
         create: ctx => read(ctx, 'connection') })
     }
@@ -71,12 +71,12 @@ export function createDshCapabilityRegistry(
     addDsh020HostRoutes(add, range020)
     addPeerHostHostRoutes(add)
   } else {
-    add({ id: 'session-performance-presentation-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformancePresentation, create: createSessionPerformancePresentation })
+    add({ id: 'session-performance-presentation-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-rc.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformancePresentation, create: createSessionPerformancePresentation })
     add({ id: 'sidebar-footer-action-021', capability: 'sidebar.footer-action', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: ctx => supportsQuickAppFooter(read(ctx, 'slots')), create: ctx => read(ctx, 'slots') })
     add({ id: 'message-presentation-020', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.0-rc.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: ctx => supportsLegacyMessagePresentation({ slots: read(ctx, 'slots') }, facts.primitives), create: () => createLegacyMessagePresentation(facts.primitives) })
-    add({ id: 'message-presentation-021', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+    add({ id: 'message-presentation-021', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-rc.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: ctx => supportsFactoryMessagePresentation({ slots: read(ctx, 'slots') }), create: createFactoryMessagePresentation })
     add({ id: 'settings-scope', capability: 'settings.store', supportedDsh: rangeLegacy, runtime, priority: 10, status: 'supported', introducedIn: '0.1.5-rc.3', detect: (ctx) => typeof (ctx as { settingsScope?: { bind?: unknown } }).settingsScope?.bind === 'function', create: (ctx) => (ctx as { settingsScope: unknown }).settingsScope })
     add({ id: 'config-form', capability: 'settings.store', supportedDsh: rangeModern, runtime, priority: 20, status: 'supported', introducedIn: '0.1.7-rc.2', detect: (ctx) => typeof (ctx as { configForms?: { get?: unknown } }).configForms?.get === 'function', create: (ctx) => (ctx as { configForms: unknown }).configForms })
@@ -232,7 +232,7 @@ function addDsh020ClientRoutes(add: CapabilityRouteAdder, supportedDsh: string, 
     // rc.2 只有纯文本镜像且在组件挂载后才导入草稿，不能保证跨会话插入安全。
     // alpha.1 与 alpha.2 的 `scope`/`input.for`/`openSession` 探测点与草稿 API
     // （captureInsertion、insertReference、persistDraft）逐项一致，因此共用同一路由。
-    id: 'conversation-draft-share-021', capability: 'conversation.draft-share', supportedDsh: '>=0.2.1-alpha.1 <=0.2.1-alpha.3', runtime: 'client', priority: 30,
+    id: 'conversation-draft-share-021', capability: 'conversation.draft-share', supportedDsh: '>=0.2.1-alpha.1 <=0.2.1-rc.2', runtime: 'client', priority: 30,
     status: 'supported', introducedIn: '0.2.1-alpha.1',
     detect: supportsTerminalSharing,
     create: createTerminalSharingBridge,
