@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import type { QuickApp, QuickAppAvailability, QuickAppPermissions } from '../../../shared/contracts/quick-apps.js'
 import { QUICK_APP_LIMITS } from '../../../shared/contracts/quick-apps.js'
+import { parseQuickAppNetworkAllow } from '../../../shared/quick-app-network-allow.js'
 import { appPath, publicPath, resolveAppPath, withinScope } from './paths.js'
 import { conflict, deny, QuickAppError } from './errors.js'
 
@@ -133,9 +134,12 @@ export function parseDefinition(input: unknown): Omit<QuickApp, 'revision'> {
   })
   const entryPath = appPath(value.entryPath, false)
   if (value.kind === 'html' && !/\.html?$/iu.test(entryPath)) deny('Choose an HTML entry file.')
+  let networkAllow: readonly string[] = []
+  try { networkAllow = parseQuickAppNetworkAllow(value.networkAllow) } catch { deny('Invalid local network allow list.') }
   return { id: value.id ? text(value.id) : '', title: text(value.title), hostId: text(value.hostId), workspaceId: text(value.workspaceId),
     ...(value.kind === 'html' && value.fileAccess === 'workspace' ? { fileAccess: 'workspace' as const } : {}),
-    entryPath, documentRoot: appPath(value.documentRoot), kind: value.kind, spaFallback: value.spaFallback, mounts, order: value.order as number }
+    entryPath, documentRoot: appPath(value.documentRoot), kind: value.kind, spaFallback: value.spaFallback,
+    ...(networkAllow.length ? { networkAllow } : {}), mounts, order: value.order as number }
 }
 
 export function parsePermissions(value: unknown): QuickAppPermissions {

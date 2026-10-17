@@ -1,10 +1,11 @@
 import type { CSSProperties } from 'react'
 import type { QuickApp } from '../../shared/contracts/quick-apps.js'
+import { parseQuickAppNetworkAllow } from '../../shared/quick-app-network-allow.js'
 
 export type QuickAppDraft = Omit<QuickApp, 'revision'> & { expectedRevision: number }
 
 export function newQuickAppDraft(order: number): QuickAppDraft {
-  return { id: '', title: '', hostId: 'local', workspaceId: '', entryPath: '', documentRoot: '', kind: 'html', fileAccess: 'workspace', spaFallback: false, mounts: [], order, expectedRevision: 0 }
+  return { id: '', title: '', hostId: 'local', workspaceId: '', entryPath: '', documentRoot: '', kind: 'html', fileAccess: 'workspace', spaFallback: false, networkAllow: [], mounts: [], order, expectedRevision: 0 }
 }
 
 export function entryTitle(path: string): string {
@@ -22,8 +23,17 @@ export function quickAppEntryPatch(draft: QuickAppDraft, entryPath: string, orig
 }
 
 export function draftChanged(draft: QuickAppDraft, app: QuickApp): boolean {
-  return (Object.keys(newQuickAppDraft(0)) as (keyof QuickAppDraft)[]).some(key =>
-    key !== 'expectedRevision' && JSON.stringify(draft[key]) !== JSON.stringify(app[key]))
+  return (Object.keys(newQuickAppDraft(0)) as (keyof QuickAppDraft)[]).some(key => {
+    if (key === 'expectedRevision') return false
+    if (key === 'networkAllow') return !sameNetworkAllow(draft.networkAllow, app.networkAllow)
+    return JSON.stringify(draft[key]) !== JSON.stringify(app[key])
+  })
+}
+
+function sameNetworkAllow(draft: readonly string[] | undefined, saved: readonly string[] | undefined): boolean {
+  const lines = (draft ?? []).map(item => item.trim()).filter(Boolean)
+  try { return JSON.stringify(parseQuickAppNetworkAllow(lines)) === JSON.stringify(parseQuickAppNetworkAllow(saved ?? [])) }
+  catch { return false }
 }
 
 /** Match the parent workspace shortcut rail's stable, name-based icon treatment. */

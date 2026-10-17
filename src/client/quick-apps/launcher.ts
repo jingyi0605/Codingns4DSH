@@ -7,6 +7,7 @@ import { DshFileTypeIcon, DshFolderIcon, DshInput, DshModal, classifyDshFileType
 import { useCodingNsTranslator } from '../locale.js'
 import { readNativeWorkspaceSnapshot, readNativeWorkspaceListStore } from '../native-workspace-store.js'
 import { QuickAppsClient, type QuickAppView } from './client.js'
+import { parseQuickAppNetworkAllow } from '../../shared/quick-app-network-allow.js'
 import { draftChanged, entryTitle, newQuickAppDraft, quickAppEntryPatch, shortcutIcon, type QuickAppDraft } from './presentation.js'
 import { QuickAppActions, QuickAppButton, QuickAppControlIcon, QuickAppField } from './ui.js'
 import { quickAppsCss } from './styles.js'
@@ -108,10 +109,14 @@ export function QuickAppsLauncher({ services, wide }: { services: CodingNsClient
     const invalid: Record<string, string> = {}
     if (!workspaces.some(workspace => workspace.workspaceId === draft.workspaceId && (workspace.hostId ?? 'local') === draft.hostId)) invalid.workspaceId = t('quickApps.chooseWorkspace')
     if (!draft.entryPath.trim()) invalid.entryPath = t('quickApps.entryRequired')
+    const lines = (draft.networkAllow ?? []).map(line => line.trim()).filter(Boolean)
+    let networkAllow: readonly string[] = []
+    try { networkAllow = parseQuickAppNetworkAllow(lines) } catch { invalid.networkAllow = t('quickApps.networkAllowInvalid') }
     if (Object.keys(invalid).length) { setErrors(invalid); return }
     void perform(async current => {
-      const saved = await client.call<QuickApp>('upsert', { app: { ...draft, fileAccess: draft.kind === 'html' ? 'workspace' : undefined,
-        title: draft.title.trim() || entryTitle(draft.entryPath) }, expectedRevision: draft.expectedRevision })
+      const { networkAllow: _draftAllow, ...fields } = draft
+      const saved = await client.call<QuickApp>('upsert', { app: { ...fields, fileAccess: draft.kind === 'html' ? 'workspace' : undefined,
+        title: draft.title.trim() || entryTitle(draft.entryPath), ...(networkAllow.length ? { networkAllow } : {}) }, expectedRevision: draft.expectedRevision })
       if (draft.kind === 'html' && saved.fileAccess !== 'workspace') throw new Error(t('quickApps.workspaceAccessHostUpdate'))
       if (!current()) return
       setScreen(null)
@@ -159,6 +164,10 @@ export function QuickAppsLauncher({ services, wide }: { services: CodingNsClient
         onClose: () => setPickingFile(false), onSelect: path => { setEntry(draft, path); setPickingFile(false) } }) : null,
       h(QuickAppField, { id: `${formId}-kind`, label: t('quickApps.kind') }, h('select', { id: `${formId}-kind`, className: 'qa-select', value: draft.kind, disabled: busy, onChange: (event: { target: { value: string } }) => updateDraft({ kind: event.target.value as 'html' | 'text' }) },
         h('option', { value: 'html' }, t('quickApps.html')), h('option', { value: 'text' }, t('quickApps.text')))),
+      h(QuickAppField, { id: `${formId}-network-allow`, label: t('quickApps.networkAllow'), error: errors.networkAllow, help: t('quickApps.networkAllowHelp') },
+        h('textarea', { id: `${formId}-network-allow`, className: 'qa-allow', rows: 4, value: (draft.networkAllow ?? []).join('\n'), disabled: busy, spellCheck: false,
+          placeholder: t('quickApps.networkAllowPlaceholder'), 'aria-invalid': Boolean(errors.networkAllow), 'aria-describedby': `${formId}-network-allow-help`,
+          onChange: (event: { target: { value: string } }) => updateDraft({ networkAllow: event.target.value.split('\n') }) })),
       draft.kind === 'html' && selected ? h('p', { className: 'qa-help' }, t('quickApps.workspaceAccessHelp', { workspace: selected.title })) : null,
       draft.id ? h('fieldset', { className: 'qa-management', disabled: busy || changed, 'aria-label': t('quickApps.accessAndRemoval') },
         changed ? h('p', { className: 'qa-help' }, t('quickApps.saveBeforeAccess')) : null,

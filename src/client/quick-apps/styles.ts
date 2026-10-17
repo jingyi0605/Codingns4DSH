@@ -61,6 +61,9 @@ export const quickAppsCss = `
 /* DSH Input paints its wrapper; the inner input must remain undecorated. */
 .codingns-quick-app-dialog :is(.qa-input,.qa-select,.qa-file-input){box-sizing:border-box;width:100%;min-width:0;max-width:100%;height:40px;border:0;border-radius:8px;background:${color.surfaceSubtle};color:${color.labelPrimary};font:inherit;font-size:${uiFontSize(13)};font-weight:400}
 .codingns-quick-app-dialog :is(.qa-input,.qa-select){padding:0 11px}
+.codingns-quick-app-dialog .qa-allow{box-sizing:border-box;width:100%;min-width:0;min-height:88px;padding:8px 11px;border:0;border-radius:8px;background:${color.surfaceSubtle};color:${color.labelPrimary};font:inherit;font-size:${uiFontSize(13)};font-weight:400;resize:vertical}
+.codingns-quick-app-dialog .qa-allow:focus{outline:2px solid ${color.accent};outline-offset:-2px}
+.codingns-quick-app-dialog .qa-allow:disabled{opacity:.5}
 .codingns-quick-app-dialog .qa-input input{width:100%;min-width:0;padding:0;border:0;border-radius:0;outline:none;background:transparent;color:inherit;font:inherit;box-shadow:none}
 .codingns-quick-app-dialog :is(.qa-input,.qa-file-input):focus-within{outline:2px solid ${color.accent};outline-offset:-2px}
 .codingns-quick-app-dialog :is(.qa-input,.qa-file-input):has(input:disabled){opacity:.5}

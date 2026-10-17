@@ -10,6 +10,8 @@ export interface QuickApp {
   /** Explicit workspace trust; omitted on legacy shortcuts until the user saves them. */
   readonly fileAccess?: 'workspace'
   readonly spaFallback: boolean
+  /** Local IPs, CIDR ranges, or hostnames this app may reach. Omitted means none. */
+  readonly networkAllow?: readonly string[]
   readonly mounts: readonly QuickAppMount[]
   readonly revision: number
   readonly order: number

@@ -39,6 +39,7 @@ export const CodingNsSettingsSchema = z.object({
     workspaceId: z.string().min(1).max(512), entryPath: z.string().max(2048), documentRoot: z.string().max(2048),
     kind: z.union([z.const('html'), z.const('text')]), spaFallback: z.boolean(),
     fileAccess: z.union([z.const('workspace'), z.const(undefined)]),
+    networkAllow: z.union([z.array(z.string().min(1).max(253)).max(16), z.const(undefined)]),
     mounts: z.array(z.object({ urlPrefix: z.string().max(2048), workspacePath: z.string().max(2048), read: z.const(true) })).max(8),
     revision: z.number().min(1).step(1), order: z.number().step(1),
   })).max(200).default([]),

@@ -28,9 +28,9 @@ export class QuickAppsClient {
     for (const [order, app] of apps.entries()) {
       if (!current()) return saved
       if (app.order === order) { saved.push(app); continue }
-      const { id, title, hostId, workspaceId, entryPath, documentRoot, kind, fileAccess, spaFallback, mounts } = app
+      const { id, title, hostId, workspaceId, entryPath, documentRoot, kind, fileAccess, spaFallback, networkAllow, mounts } = app
       saved.push(await this.call<QuickApp>('upsert', { expectedRevision: app.revision,
-        app: { id, title, hostId, workspaceId, entryPath, documentRoot, kind, ...(fileAccess ? { fileAccess } : {}), spaFallback, mounts, order } }))
+        app: { id, title, hostId, workspaceId, entryPath, documentRoot, kind, ...(fileAccess ? { fileAccess } : {}), spaFallback, ...(networkAllow?.length ? { networkAllow } : {}), mounts, order } }))
     }
     return saved
   }
