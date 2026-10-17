@@ -17,6 +17,7 @@ const { QoderCliDriver } = await import('../src/host/cli-adapters/qoder-driver.j
 const { CodeBuddyCliDriver } = await import('../src/host/cli-adapters/codebuddy-driver.js')
 const { JsonRpcProcess } = await import('../src/host/cli-adapters/json-rpc-process.js')
 const { CodingNsCliAdapterRegistry } = await import('../src/host/cli-adapters/registry.js')
+const { runManagementCommand } = await import('../src/host/cli-adapters/management-process.js')
 beforeEach(() => invalidateCommandEnvironment())
 
 const missing = { status: 1, stdout: '', stderr: '' }
@@ -47,6 +48,53 @@ test('真实异步执行器在系统进程边界保留 cmd 引号，普通 exe �
   await runAsyncCommand(childProcess.spawnSync, 'C:\\Agents\\probe.exe', ['--version'])
   assert.equal(calls.at(-1)?.windowsVerbatimArguments, false)
   assert.equal(calls.filter((call) => isPowerShell(call.file)).length, 1)
+})
+
+test('NSIS management quotes the installer and keeps the final destination unquoted at the native boundary', async t => {
+  const installer = 'C:\\Users\\Test User\\AppData\\Local\\Temp\\ZCode-setup.exe'
+  const calls: Array<{ file: string; args: string[]; windowsVerbatimArguments: boolean }> = []
+  t.mock.method(childProcess.ChildProcess.prototype, 'spawn', function(this: any, options: any) {
+    calls.push({ file: options.file, args: options.args, windowsVerbatimArguments: options.windowsVerbatimArguments })
+    this.stdout = new PassThrough(); this.stderr = new PassThrough(); this.stdin = new PassThrough()
+    process.nextTick(() => {
+      this.stdout.end(isPowerShell(options.file) ? snapshotResult().stdout : isWhere(options.file) ? installer : '')
+      this.stderr.end(); this.emit('close', 0, null)
+    })
+    return 0
+  })
+  for (const directory of ['D:\\Applications with spaces\\ZCode', 'C:\\Program Files\\ZCode', 'D:\\工具 & Agents\\ZCode', '\\\\server\\Shared apps\\ZCode', 'D:\\Apps\\ZCode']) {
+    assert.equal(await runManagementCommand({ file: 'ZCode-setup.exe', args: ['/S'], nsisInstallDirectory: directory }, new AbortController().signal, () => {}), 0)
+    const invocation = calls.at(-1)!
+    assert.equal(invocation.file, installer)
+    assert.equal(invocation.windowsVerbatimArguments, true)
+    // With verbatim arguments, libuv joins this exact array into the Windows command line.
+    assert.equal(invocation.args.join(' '), `"${installer}" /S /D=${directory}`)
+  }
+  const installations = calls.filter(call => call.file === installer).length
+  for (const directory of ['relative\\ZCode', 'D:\\Apps"\\ZCode', 'D:\\Apps\n/D=C:\\Other', 'D:\\Apps\r/D=C:\\Other']) {
+    await assert.rejects(runManagementCommand({ file: 'ZCode-setup.exe', args: ['/S'], nsisInstallDirectory: directory }, new AbortController().signal, () => {}), /NSIS updates require/u)
+  }
+  assert.equal(calls.filter(call => call.file === installer).length, installations, 'Invalid destinations must not launch an installer')
+})
+
+test('ordinary management EXE and batch commands retain their existing Windows argument handling', async t => {
+  const calls: Array<{ file: string; args: string[]; windowsVerbatimArguments: boolean }> = []
+  t.mock.method(childProcess.ChildProcess.prototype, 'spawn', function(this: any, options: any) {
+    calls.push({ file: options.file, args: options.args, windowsVerbatimArguments: options.windowsVerbatimArguments })
+    this.stdout = new PassThrough(); this.stderr = new PassThrough(); this.stdin = new PassThrough()
+    process.nextTick(() => {
+      this.stdout.end(isPowerShell(options.file) ? snapshotResult().stdout : isWhere(options.file) ? `C:\\Program Files\\Agents\\${options.args.at(-1)}` : '')
+      this.stderr.end(); this.emit('close', 0, null)
+    })
+    return 0
+  })
+  const signal = new AbortController().signal
+  assert.equal(await runManagementCommand({ file: 'agent.exe', args: ['argument with spaces'] }, signal, () => {}), 0)
+  assert.equal(calls.at(-1)!.windowsVerbatimArguments, false)
+  assert.deepEqual(calls.at(-1)!.args, ['C:\\Program Files\\Agents\\agent.exe', 'argument with spaces'])
+  assert.equal(await runManagementCommand({ file: 'npm.cmd', args: ['argument with spaces'] }, signal, () => {}), 0)
+  assert.equal(calls.at(-1)!.windowsVerbatimArguments, true)
+  assert.deepEqual(calls.at(-1)!.args.slice(1), ['/d', '/s', '/c', '""C:\\Program Files\\Agents\\npm.cmd" "argument with spaces""'])
 })
 
 test('PATH 补充保留调用方优先级，展开注册表变量，去重且不覆盖其他环境', () => {

@@ -1,10 +1,13 @@
 import type { CodingNsCliAdapterDescriptor } from '../../shared/contracts/cli-adapter.js'
 import type { CliManagementAction, CliManagementMethod } from '../../shared/contracts/cli-management.js'
 import { codexStandaloneDirectory } from './management-installation.js'
+import { zcodeUpdateRoot } from './zcode-update.js'
 
 export interface ManagementCommand {
   readonly file: string
   readonly args: readonly string[]
+  readonly nsisInstallDirectory?: string
+  readonly zcodeUpdate?: { readonly platform: NodeJS.Platform; readonly arch: string }
 }
 
 export interface ManagementMethod extends CliManagementMethod {
@@ -58,6 +61,12 @@ export function managementMethods(adapter: CodingNsCliAdapterDescriptor, action:
   const methods: ManagementMethod[] = []
   const note = definition.note ?? 'Follow the official prerequisites. Updating does not sign you in or change your Agent settings.'
   const manual = (instructions = note): ManagementMethod => ({ id: 'manual', label: 'Official guide', command: null, instructions, executable: false })
+  if (adapter.id === 'zcode' && action === 'update' && zcodeUpdateRoot(adapter.command ?? '', platform, arch)) {
+    const root = zcodeUpdateRoot(adapter.command!, platform, arch)!
+    return { sourceUrl: definition.sourceUrl, methods: [{ id: 'zcode-desktop', label: 'Official ZCode desktop update',
+      command: `ZCode official release → ${root}`, instructions: 'Updates the official desktop application at its existing location. Close ZCode before updating; sign-in and personal configuration are retained.',
+      executable: true, invocation: { file: adapter.command!, args: [], zcodeUpdate: { platform, arch } } }] }
+  }
   const bundled = /\.app[\\/]Contents[\\/]|[\\/]resources[\\/]app(?:\.asar)?[\\/]/iu.test(adapter.command ?? '')
   const unsupported = !['darwin', 'linux', 'win32'].includes(platform)
     || (platform === 'win32' && arch === 'arm64' && ['qoder', 'qoder-cn'].includes(adapter.id))
@@ -105,6 +114,7 @@ export function automaticUpdateMethod(adapter: CodingNsCliAdapterDescriptor, met
   const absolute = platform === 'win32' ? /^(?:[A-Za-z]:\/|\/\/)/u.test(path) : path.startsWith('/')
   const has = (id: string): boolean => methods.some(method => method.id === id && method.executable)
   if (!definition || !adapter.installed) return undefined
+  if (adapter.id === 'zcode' && has('zcode-desktop')) return 'zcode-desktop'
   if (adapter.id === 'claude-code' && path === 'claude' && has('native')) return 'native'
   if (!absolute) return undefined
   if (adapter.id === 'kimi' && Number(adapter.version?.match(/^v?(\d+)\./u)?.[1] ?? 0) < 2) return undefined
