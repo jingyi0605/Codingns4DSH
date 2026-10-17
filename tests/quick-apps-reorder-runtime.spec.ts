@@ -77,7 +77,7 @@ test('order-independent launches still reject changed file identity, routing and
   const changes: Partial<QuickApp>[] = [
     { hostId: 'other-host' }, { workspaceId: 'other-workspace' }, { entryPath: 'site/other.html' },
     { documentRoot: '' }, { kind: 'text' }, { fileAccess: 'workspace' },
-    { mounts: [{ urlPrefix: '/data', workspacePath: 'data', read: true }] }, { spaFallback: false },
+    { mounts: [{ urlPrefix: '/data', workspacePath: 'data', read: true }] }, { spaFallback: false }, { networkAllow: ['127.0.0.1'] },
   ]
   for (const change of changes) {
     await f.registry.storage.write([f.app])

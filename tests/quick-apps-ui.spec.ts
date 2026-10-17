@@ -9,7 +9,7 @@ import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 import { quickAppFixture, definition } from './quick-apps-fixture.js'
 import { CodingNsSettingsSchema } from '../src/host/settings.js'
 import { QuickAppButton, QuickAppField } from '../src/client/quick-apps/ui.js'
-import { shortcutIcon, entryTitle, newQuickAppDraft, quickAppEntryPatch } from '../src/client/quick-apps/presentation.js'
+import { draftChanged, shortcutIcon, entryTitle, newQuickAppDraft, quickAppEntryPatch } from '../src/client/quick-apps/presentation.js'
 import { QuickAppWorkspacePicker } from '../src/client/quick-apps/workspace-picker.js'
 import { QuickAppViewer } from '../src/client/quick-apps/viewer.js'
 import { quickAppsCss } from '../src/client/quick-apps/styles.js'
@@ -270,6 +270,7 @@ test('editing keeps launch separate and changing workspace resets paths without 
   assert.equal(saved.app.documentRoot, 'apps/calendar')
   assert.deepEqual(saved.app.mounts, [])
   assert.equal(saved.app.spaFallback, false)
+  assert.equal(saved.app.networkAllow, undefined)
   assert.equal(saved.expectedRevision, 4)
 })
 
@@ -360,12 +361,20 @@ test('shortcut form preserves Host/workspace identity and leaves failed edits av
   input('Title').props.onChange({ target: { value: 'My app' } })
   input('Entry file').props.onChange({ target: { value: 'site/index.html' } })
   assert.equal(read().some(element => element.type === 'details' || element.type === 'input' && element.props.type === 'checkbox'), false)
-  assert.deepEqual(read().filter(element => element.type === QuickAppField).map(element => element.props.label), ['Entry file', 'Title', 'Open as'])
+  assert.deepEqual(read().filter(element => element.type === QuickAppField).map(element => element.props.label), ['Entry file', 'Title', 'Open as', 'Local addresses'])
+  const allow = read().find(element => element.type === 'textarea')!
+  assert.equal(allow.props.value, '')
+  allow.props.onChange({ target: { value: '8.8.8.8' } })
+  read().find(element => element.type === 'form')!.props.onSubmit({ preventDefault() {} }); await flush()
+  assert.equal(calls.some(call => call.endpoint === 'quickApps/upsert'), false)
+  assert.equal(read().find(element => element.type === QuickAppField && element.props.label === 'Local addresses')?.props.error, en['quickApps.networkAllowInvalid'])
+  read().find(element => element.type === 'textarea')!.props.onChange({ target: { value: '192.168.1.5/24\nlocalhost' } })
   read().find(element => element.type === 'form')!.props.onSubmit({ preventDefault() {} }); await flush()
   assert.equal(calls.at(-1).payload.app.hostId, 'owning-peer')
   assert.equal(calls.at(-1).payload.app.workspaceId, 'peer:workspace')
   assert.equal(calls.at(-1).payload.app.documentRoot, 'site')
   assert.equal(calls.at(-1).payload.app.kind, 'html')
+  assert.deepEqual(calls.at(-1).payload.app.networkAllow, ['192.168.1.0/24', 'localhost'])
   assert.equal(input('Title').props.value, 'My app')
   assert.ok(read().some(element => element.props.role === 'alert'))
 })
@@ -375,6 +384,10 @@ test('entry selection infers folders and modes without losing an existing URL ro
   assert.deepEqual(quickAppEntryPatch(draft, 'apps/calendar/index.html'), { entryPath: 'apps/calendar/index.html', documentRoot: 'apps/calendar', kind: 'html' })
   assert.deepEqual(quickAppEntryPatch(draft, 'notes.md'), { entryPath: 'notes.md', documentRoot: '', kind: 'text' })
   const original = { ...definition, id: 'app', revision: 1 }
+  const unchanged = { ...original, networkAllow: [] as const, expectedRevision: 1 }
+  assert.equal(draftChanged(unchanged, original), false)
+  assert.equal(draftChanged({ ...unchanged, networkAllow: ['127.0.0.1'] }, original), true)
+  assert.equal(draftChanged({ ...unchanged, networkAllow: ['192.168.1.5/24'] }, { ...original, networkAllow: ['192.168.1.0/24'] }), false)
   const editing = { ...original, expectedRevision: 1 }
   const partial = { ...editing, ...quickAppEntryPatch(editing, 's', original) }
   assert.equal(quickAppEntryPatch(partial, 'site/folder/index.html', original).documentRoot, 'site')
