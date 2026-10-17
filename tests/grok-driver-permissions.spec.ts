@@ -3,6 +3,7 @@ import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { GrokBuildDriver } from '../data/build/dist/host/cli-adapters/grok-driver.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
+import { createSubagentBridgeRuntime, setSubagentBridge } from '../data/build/dist/host/cli-bridge/bridge-holder.js'
 
 type Message = Record<string, any>
 type Connection = {
@@ -64,6 +65,140 @@ function requestPermission(connection: Connection, options = permissionOptions) 
     options,
   } })
 }
+
+test('Grok runs bound Team coordination without a second approval under workspace-write/never', { timeout: 5_000 }, async () => {
+  const signal = new AbortController().signal
+  const caller = {}
+  const runtime = createSubagentBridgeRuntime({
+    baseUrl: 'http://127.0.0.1:1', token: 'legacy',
+    teamAccess: sessionId => sessionId === input.sessionId ? {
+      caller, signal, identity: { sessionId, teamId: 'team', name: 'con-grok', role: 'teammate' },
+    } : undefined,
+  })
+  setSubagentBridge(runtime)
+  const fixture = replay((request, connection) => {
+    if (request.method === 'session/prompt') {
+      connection.promptId = request.id
+      for (const [id, action] of [[77, 'status'], [78, 'task']] as const) {
+        connection.update({ sessionUpdate: 'tool_call', toolCallId: `team-${id}`, title: 'use_tool', status: 'pending', rawInput: {
+          tool_name: 'codingns__agent_team', tool_input: { action, ...(action === 'task' ? { taskId: 'task-2' } : {}) },
+        } })
+        connection.emit({ jsonrpc: '2.0', id, method: 'session/request_permission', params: {
+          sessionId: 'provider-session', toolCall: { toolCallId: `team-${id}`, title: 'codingns__agent_team' }, options: permissionOptions,
+        } })
+      }
+    } else if ([77, 78].includes(request.id) && request.result) {
+      connection.update({ sessionUpdate: 'tool_call_update', toolCallId: `team-${request.id}`, status: 'completed', rawOutput: '{"ok":true}' })
+      if (connection.requests.filter(item => [77, 78].includes(item.id) && item.result).length % 2 === 0) {
+        connection.reply({ id: connection.promptId }, { stopReason: 'end_turn' })
+      }
+    }
+  })
+  try {
+    for (let round = 0; round < 2; round++) {
+      const events: Message[] = []
+      for await (const event of fixture.driver.executeTurn({ ...input, permission: { sandboxMode: 'workspace-write', approvalPolicy: 'never' } })) {
+        assert.notEqual(event.type, 'permission-request', 'The bound Team tool must retain its existing coordination authority')
+        events.push(event)
+      }
+      assert.deepEqual(events.at(-1), { type: 'finish', reason: 'stop' })
+    }
+    assert.equal(fixture.connections.length, 1)
+    assert.equal(fixture.connections[0].args.includes('--always-approve'), false)
+    const replies = fixture.connections[0].requests.filter(request => [77, 78].includes(request.id) && request.result)
+    assert.equal(replies.length, 4)
+    assert.ok(replies.every(reply => reply.result.outcome.optionId === 'allow-once'))
+  } finally { fixture.driver.dispose(); setSubagentBridge(undefined) }
+})
+
+for (const scenario of [
+  { label: 'an unrelated CodingNS tool', tool: 'codingns__bash' },
+  { label: 'another MCP server', tool: 'other__agent_team' },
+  { label: 'an unqualified tool', tool: 'agent_team' },
+  { label: 'a dynamic tool wrapper', tool: 'use_tool' },
+  { label: 'an ordinary session', bound: false },
+  { label: 'another host session', sessionId: 'other-session' },
+  { label: 'a revoked Team identity', revoke: true },
+  { label: 'read-only scope', permission: { sandboxMode: 'read-only', approvalPolicy: 'never' } },
+  { label: 'unknown write scope', permission: { approvalPolicy: 'never' } },
+  { label: 'plan mode', plan: true },
+  { label: 'an explicit risk request', risk: 'elevated' },
+  { label: 'only permanent approval options', options: [permissionOptions[0], permissionOptions[3]] },
+  { label: 'missing approval options', options: [] },
+]) {
+  test(`Grok retains native permission handling for ${scenario.label}`, { timeout: 3_000 }, async () => {
+    let bound = scenario.bound !== false
+    const signal = new AbortController().signal
+    const caller = {}
+    setSubagentBridge(createSubagentBridgeRuntime({
+      baseUrl: 'http://127.0.0.1:1', token: 'legacy',
+      teamAccess: sessionId => bound && sessionId === input.sessionId ? {
+        caller, signal, identity: { sessionId, teamId: 'team', name: 'con-grok', role: 'teammate' },
+      } : undefined,
+    }))
+    const fixture = replay((request, connection) => {
+      if (request.method === 'session/prompt') {
+        connection.promptId = request.id
+        if (scenario.revoke) bound = false
+        connection.emit({ jsonrpc: '2.0', id: 77, method: 'session/request_permission', params: {
+          sessionId: 'provider-session',
+          toolCall: { toolCallId: 'team-call', title: scenario.tool ?? 'codingns__agent_team', rawInput: { tool_name: 'codingns__agent_team' } },
+          options: scenario.options ?? permissionOptions,
+          ...(scenario.risk ? { _meta: { risk: scenario.risk } } : {}),
+        } })
+      } else if (request.id === 77 && request.result) connection.reply({ id: connection.promptId }, { stopReason: 'end_turn' })
+    })
+    try {
+      let approvals = 0
+      for await (const event of fixture.driver.executeTurn({
+        ...input, sessionId: scenario.sessionId ?? input.sessionId,
+        permission: scenario.permission ?? { sandboxMode: 'workspace-write', approvalPolicy: 'never' },
+        ...(scenario.plan ? { plan: true } : {}),
+      } as never)) {
+        if (event.type === 'permission-request') {
+          approvals++
+          fixture.driver.respondPermission(scenario.sessionId ?? input.sessionId, { requestId: event.requestId, approved: false, reason: 'Native policy rejection' })
+        }
+      }
+      assert.equal(approvals, 1)
+      const outcome = fixture.connections[0].requests.find(request => request.id === 77 && request.result)?.result.outcome
+      assert.ok(outcome.outcome === 'cancelled' || outcome.optionId.startsWith('reject'))
+      assert.equal(fixture.connections[0].args.includes('--always-approve'), false)
+    } finally { fixture.driver.dispose(); setSubagentBridge(undefined) }
+  })
+}
+
+test('Grok rechecks Team write authority on each reused turn', { timeout: 4_000 }, async () => {
+  const signal = new AbortController().signal
+  const caller = {}
+  setSubagentBridge(createSubagentBridgeRuntime({
+    baseUrl: 'http://127.0.0.1:1', token: 'legacy',
+    teamAccess: sessionId => ({ caller, signal, identity: { sessionId, teamId: 'team', name: 'con-grok', role: 'teammate' } }),
+  }))
+  const fixture = replay((request, connection) => {
+    if (request.method === 'session/prompt') {
+      connection.promptId = request.id
+      connection.emit({ jsonrpc: '2.0', id: 77, method: 'session/request_permission', params: {
+        sessionId: 'provider-session', toolCall: { toolCallId: 'team-call', title: 'codingns__agent_team' }, options: permissionOptions,
+      } })
+    } else if (request.id === 77 && request.result) connection.reply({ id: connection.promptId }, { stopReason: 'end_turn' })
+  })
+  try {
+    const approvals: string[] = []
+    for (const sandboxMode of ['workspace-write', 'read-only', 'workspace-write']) {
+      for await (const event of fixture.driver.executeTurn({ ...input, permission: { sandboxMode, approvalPolicy: 'never' } } as never)) {
+        if (event.type === 'permission-request') {
+          approvals.push(sandboxMode)
+          fixture.driver.respondPermission(input.sessionId, { requestId: event.requestId, approved: false })
+        }
+      }
+    }
+    assert.equal(fixture.connections.length, 1)
+    assert.deepEqual(approvals, ['read-only'])
+    assert.deepEqual(fixture.connections[0].requests.filter(request => request.id === 77 && request.result)
+      .map(request => request.result.outcome.optionId), ['allow-once', 'reject-once', 'allow-once'])
+  } finally { fixture.driver.dispose(); setSubagentBridge(undefined) }
+})
 
 test('Grok enables native automatic approval only for confirmed full-access/never', { timeout: 10_000 }, async () => {
   for (const permission of [undefined, {}, { approvalPolicy: 'never' },

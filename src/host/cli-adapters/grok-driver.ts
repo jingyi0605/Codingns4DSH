@@ -51,7 +51,7 @@ interface GrokSessionState {
   readonly rawStoreRef: string | undefined
   readonly alwaysApprove: boolean
   providerSessionId: string
-  readonly requests: Map<string, GrokPermissionOptions & { readonly rpcId: number | string; readonly callId: string | undefined }>
+  readonly requests: Map<string, GrokPermissionOptions & { readonly rpcId: number | string; readonly callId: string | undefined; readonly autoApproved?: boolean }>
   readonly permissionDenials: Map<string, string>
   readonly questions: Map<string, AcpElicitationRequest>
   readonly grokQuestions: Map<string, GrokQuestionPending>
@@ -204,7 +204,10 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         // 反向请求的 RPC id 只由请求处理器登记，避免用户回答和处理器调度交错时
         // 已回答的问题被重新登记。tool_call 可以先显示问题卡并暂存用户答案。
         const requestId = interactionRequestId(notification)
-        if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, { rpcId: notification.id, callId: permissionCallId(notification), ...permissionOptions(notification) })
+        if (requestId !== null && notification.id !== undefined && notification.id !== null) state.requests.set(requestId, {
+          rpcId: notification.id, callId: permissionCallId(notification), ...permissionOptions(notification),
+          autoApproved: isBoundTeamPermission(notification, input, state.teamToken),
+        })
         return usage.takeObservation()
       }, response => { usage.observeResponse(response); return usage.takeObservation() })
       let finishResult: { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }
@@ -217,6 +220,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         if (item.value.codingnsGrokObservation !== undefined) yield item.value.codingnsGrokObservation as Extract<CodingNsAgentEvent, { type: 'usage-observation' }>
         const streamId = grokStreamId(item.value)
         for (const rawChunk of grokToolInputChunks(item.value, streamedToolInputs) ?? acpMessageToChunks(item.value)) {
+          if (rawChunk.type === 'permission-request' && state.requests.get(rawChunk.requestId)?.autoApproved) continue
           // Settle native turn accounting once, after the terminal drain. Per-call
           // usage is retained by the RPC observer solely for timing and fallback.
           if (rawChunk.type === 'usage') continue
@@ -374,7 +378,8 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         // Ordinary legacy ACP sessions keep their existing new-session fallback.
       }
     }
-    // ACP 权限是 Grok 发起的 server request，先挂起响应，待标准权限入口明确回复原始 id。
+    // Bound Team requests retain existing coordination authority; other ACP
+    // permissions wait for the native approval result using the original RPC id.
     rpc.setServerRequestHandler((message) => {
       const elicitation = readAcpElicitationRequest(message)
       if (elicitation !== null) {
@@ -396,6 +401,10 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       if (message.method === 'elicitation/create') return { action: 'cancel' }
       const requestId = interactionRequestId(message)
       if (requestId === null || message.id === undefined || message.id === null) return { outcome: { outcome: 'cancelled' } }
+      const pending = state.requests.get(requestId)
+      if (pending?.autoApproved && pending.allowOptionId !== undefined) {
+        return { outcome: { outcome: 'selected', optionId: pending.allowOptionId } }
+      }
       state.requests.set(requestId, { rpcId: message.id, callId: permissionCallId(message), ...permissionOptions(message) })
       return new Promise<never>(() => undefined)
     })
@@ -819,6 +828,21 @@ function containedPath(root: string, child: string): readonly string[] {
   const candidate = resolve(base, child)
   const outside = relative(base, candidate)
   return outside === '' || outside === '..' || outside.startsWith(`..${sep}`) || isAbsolute(outside) ? [] : [candidate]
+}
+
+/** The bound bridge enforces Team identity and role; unrelated tools still require native admission. */
+function isBoundTeamPermission(message: JsonRpcMessage, input: CodingNsCliTurnInput, token: string | undefined): boolean {
+  if (message.method !== 'session/request_permission' || !token || teamBridgeToken(input.sessionId) !== token || input.plan === true) return false
+  const mode = input.permission?.sandboxMode
+  if (mode !== 'workspace-write' && mode !== 'danger-full-access') return false
+  const params = isRecord(message.params) ? message.params : {}
+  const tool = isToolRecord(params.toolCall) ? params.toolCall : {}
+  const metadata = isRecord(params._meta) ? params._meta : {}
+  if (metadata.risk !== undefined || firstToolText(tool.name, tool.toolName, tool.tool_name, tool.title) !== 'codingns__agent_team') return false
+  // Never substitute a persistent grant or invent an option absent from the request.
+  return Array.isArray(params.options) && params.options.some(option => isRecord(option)
+    && firstToolText(option.kind, option.type)?.toLowerCase() === 'allow_once'
+    && firstToolText(option.optionId, option.option_id, option.id) !== undefined)
 }
 
 function permissionRequestId(message: Record<string, any>): string | null {
