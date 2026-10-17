@@ -16,7 +16,8 @@ export const quickAppsCss = `
 .codingns-quick-app-rail button:disabled{opacity:.5;cursor:not-allowed}
 .codingns-quick-app-rail button:focus-visible{outline:2px solid ${color.accent};outline-offset:-2px}
 .codingns-quick-app-rail .qa-grid{position:relative;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;padding-top:4px;max-height:min(35dvh,240px);overflow:auto;overscroll-behavior:contain}
-.codingns-quick-app-rail .qa-shortcut{position:relative;min-width:0}
+/* Clip the edit-mode tilt. Its rotating border box would otherwise become scrollable overflow and toggle the grid scrollbar, which shifts the rows below. */
+.codingns-quick-app-rail .qa-shortcut{position:relative;min-width:0;overflow:clip}
 .codingns-quick-app-rail .qa-tile{display:flex;flex-direction:column;align-items:center;gap:3px;width:100%;min-width:0;min-height:54px;padding:2px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;cursor:pointer}
 .codingns-quick-app-rail .qa-tile[data-editing=true]{outline:1px dashed ${color.border};outline-offset:-1px;cursor:grab;touch-action:none;user-select:none;-webkit-touch-callout:none}
 .codingns-quick-app-rail .qa-tile[data-dragging=true]{cursor:grabbing;background:${color.hoverBackground};outline:2px solid ${color.accent};opacity:.7}
