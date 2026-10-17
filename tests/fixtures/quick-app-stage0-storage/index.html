@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Stage0 storage acceptance probe</title>
+  <script>
+    const startup = {
+      local: localStorage.getItem('stage0-probe'),
+      session: sessionStorage.getItem('stage0-draft'),
+      asyncApi: typeof appStorage,
+      mode: document.compatMode,
+    };
+  </script>
+  <style>
+    :root { font: 15px system-ui; color-scheme: light dark; }
+    body { max-width: 780px; margin: auto; padding: 20px; }
+    h1 { font-size: 22px; }
+    .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+    button { padding: 9px 12px; font: inherit; cursor: pointer; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #8882; padding: 12px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Stage0 storage acceptance probe</h1>
+  <p>Dedicated test data only. Both shortcuts use this unchanged HTML source.</p>
+  <div class="buttons">
+    <button id="write-a">Write A</button>
+    <button id="write-b">Write B</button>
+    <button id="read">Read storage</button>
+    <button id="sandbox">Check sandbox</button>
+    <button id="quota">Check quota</button>
+    <button id="cleanup">Clear probe data</button>
+  </div>
+  <h2>Hydrated before the first script</h2>
+  <pre id="startup"></pre>
+  <h2>Current storage</h2>
+  <pre id="current" role="status">Loading</pre>
+  <h2>Checks</h2>
+  <pre id="checks">Not run</pre>
+  <p id="module">Relative module: loading</p>
+  <script type="module" src="./module.js"></script>
+  <script>
+    const key = 'stage0-probe';
+    const draftKey = 'stage0-draft';
+    const errors = [];
+    addEventListener('appstorageerror', event => errors.push(event.detail.name));
+    const output = (id, data) => document.getElementById(id).textContent = JSON.stringify(data, null, 2);
+    output('startup', startup);
+    async function read() {
+      output('current', {
+        local: localStorage.getItem(key),
+        asyncLocal: await appStorage.getItem(key),
+        session: sessionStorage.getItem(draftKey),
+        asyncSession: await appStorage.session.getItem(draftKey),
+        property: localStorage.stage0Property ?? null,
+        enumerated: Object.keys(localStorage),
+        errors,
+      });
+    }
+    async function write(value) {
+      localStorage.setItem(key, value);
+      localStorage.stage0Property = 'property-' + value;
+      const immediate = localStorage.getItem(key);
+      await appStorage.flush();
+      await appStorage.session.setItem(draftKey, 'draft-' + value);
+      await appStorage.setItem('stage0-async', 'async-' + value);
+      output('checks', { write: 'PASS', immediate, acknowledged: await appStorage.getItem(key), asyncWrite: await appStorage.getItem('stage0-async') });
+      await read();
+    }
+    async function sandbox() {
+      const denied = operation => { try { operation(); return 'FAIL: accessible'; } catch (error) { return error.name; } };
+      output('checks', {
+        parentDOM: denied(() => parent.document.body.textContent),
+        cookies: denied(() => document.cookie),
+        indexedDB: denied(() => indexedDB.open('stage0-probe-denied')),
+        mode: document.compatMode,
+        fitsWidth: document.documentElement.scrollWidth <= innerWidth,
+      });
+    }
+    async function quota() {
+      const before = await appStorage.getItem(key);
+      let syncError, asyncError;
+      const oversized = 'x'.repeat(1024 * 1024);
+      try { localStorage.setItem('stage0-oversized', oversized); } catch (error) { syncError = error.name; }
+      try { await appStorage.setItem('stage0-oversized', oversized); } catch (error) { asyncError = error.name; }
+      await appStorage.flush();
+      output('checks', { syncError, asyncError, oversized: await appStorage.getItem('stage0-oversized'), preserved: before === await appStorage.getItem(key) });
+      await read();
+    }
+    async function cleanup() {
+      await appStorage.clear();
+      await appStorage.session.clear();
+      output('checks', { cleanup: 'PASS' });
+      await read();
+    }
+    function action(id, run) {
+      document.getElementById(id).onclick = () => run().catch(error => output('checks', { failure: error.name, message: error.message }));
+    }
+    action('write-a', () => write('A'));
+    action('write-b', () => write('B'));
+    action('read', read);
+    action('sandbox', sandbox);
+    action('quota', quota);
+    action('cleanup', cleanup);
+    read().catch(error => output('current', { failure: error.message }));
+  </script>
+</body>
+</html>
