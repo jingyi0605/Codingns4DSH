@@ -323,7 +323,7 @@ pnpm typecheck
 
 功能设计与实现细节见 [Spec 文档](specs/)、[开发记录](docs/开发记录/)和[开发规范](docs/开发规范/)。[形象包目录](assets/assistant-avatar-catalog.md)与[截图清单](assets/screenshots/README.md)也可单独查阅。
 
-[Spec 016: Quick Apps and controlled static HTTP hosting](specs/spec016-快捷应用与受控静态HTTP托管/README.md) is a draft covering standard HTML app hosting, optional scoped file writes, and a review of the earlier preview connector. Implementation has not started.
+[Spec 016: Quick Apps and controlled static HTTP hosting](specs/spec016-快捷应用与受控静态HTTP托管/README.md) covers sandboxed HTML hosting, optional workspace file operations, and application-scoped browser storage. The asynchronous `appStorage` API and LocalStorage/SessionStorage compatibility require no additional domain, certificate or port; IndexedDB is excluded. See the [browser-storage API and limits](docs/开发规范/20261017-快捷应用浏览器存储接口规范.md). Installed-platform acceptance remains pending.
 
 [spec014.1：全局助理会话提醒与情绪反馈](specs/spec014.1-全局助理会话提醒与情绪反馈/README.md)已完成会话完成、错误、提问与审批气泡、可选表情、原生未读列表及对应会话导航的源码开发；343 项免构建回归通过，网页与双平台实机验收另行记录。
 

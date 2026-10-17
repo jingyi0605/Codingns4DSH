@@ -2,6 +2,8 @@
 
 Status: Implemented with platform acceptance pending; workspace-access policy amended by the user on 2026-10-16.
 
+Browser-storage amendment (2026-10-17): R7 adds the documented asynchronous API and LocalStorage/SessionStorage compatibility to the default sandbox viewer. Native browser storage remains inaccessible to app code; IndexedDB remains excluded. This supersedes earlier blanket storage exclusions only within R7's scope.
+
 Transport amendment (2026-10-16): the user selected sandboxed previews through the existing DSH Host address. This is the default on supported Hosts and supersedes separate app addresses as a setup requirement. Opaque sandbox isolation replaces distinct URL origins in this mode; browser storage and unchanged root-relative URLs are explicitly outside its compatibility guarantee. See `specs/spec016-快捷应用与受控静态HTTP托管/docs/20261016-主机代理预览与局域网回归修复.md`.
 
 The user selected read/write/create/delete access within the shortcut's owning workspace as the default for newly added HTML apps. This supersedes the original per-path approval default. Existing shortcuts keep their earlier behavior until explicitly saved with workspace access. Browser origin isolation, exact owning-Host routing, path containment, version preconditions and cleanup remain required.
@@ -23,7 +25,7 @@ Users need to select a workspace, application folder, and entry HTML, then open 
 
 ## Scope
 
-In scope: shortcut management, HTML and text opening, static HTTP(S) resources, optional SPA navigation fallback, Host/workspace isolation, optional text-file writes, and Desktop/phone compatibility through supported connections.
+In scope: shortcut management, HTML and text opening, static HTTP(S) resources, optional SPA navigation fallback, Host/workspace isolation, optional text-file writes, application-scoped browser storage under R7, and Desktop/phone compatibility through supported connections.
 
 Out of scope: starting arbitrary development servers; Node/Python/PHP/SSR execution; npm builds per app; a general reverse proxy; public anonymous sharing; automatic app migration; filesystem watching; service-worker/offline lifecycle management; installing or restarting a running DSH instance. Existing backend APIs continue to require their own reachable, authorized service.
 
@@ -85,6 +87,16 @@ Out of scope: starting arbitrary development servers; Node/Python/PHP/SSR execut
 2. WHEN opening text/Markdown, the system SHALL use an appropriate document viewer without executing the text as HTML. A workspace with no session SHALL still be supported by the plugin-owned view.
 3. WHEN a DSH capability is missing or version-incompatible, the module SHALL report a bounded capability diagnostic through the existing capability registry.
 4. WHEN migrating the earlier HTML connector, existing behavior SHALL be preserved or explicitly retired with a replacement. Unrelated translation changes SHALL not be included in this feature's implementation or commits.
+
+## R7 — Application-scoped browser storage (2026-10-17)
+
+**User story:** As a Quick Apps user, I want each application to save data in my current browser without domain, certificate or port setup, while keeping DSH and other applications' data isolated.
+
+1. New sandbox viewers SHALL offer `appStorage` with asynchronous string-key/value `getItem`, `setItem`, `removeItem`, `clear`, `keys` and `flush`; successful writes SHALL be acknowledged after the trusted browser store accepts them. `appStorage.session` SHALL use tab-session storage.
+2. A documented LocalStorage/SessionStorage facade SHALL preload values before application scripts execute. Synchronous writes SHALL update a local mirror and queue persistence; errors SHALL remain observable through `flush()`, an application error event and the viewer.
+3. Storage identity SHALL use the browser origin/profile and the Host's authoritative launch snapshot of the shortcut's owning Host, workspace, ID and source paths. Stale sidebar metadata SHALL NOT select a previous source's namespace. Display/order/revision changes SHALL preserve data; changing source identity SHALL select a different namespace. App messages SHALL NOT choose storage namespaces.
+4. The iframe and response SHALL retain opaque-origin sandboxing. A per-launch token, exact source window and transferred MessagePort SHALL bind the bridge; nested/foreign windows, malformed requests, expired/disposed channels and excessive data SHALL be rejected.
+5. No new domain, certificate, listener, Host-side business-data storage or workspace grant SHALL be required. Older viewers/Hosts and dedicated-origin providers SHALL retain their previous behavior. IndexedDB, storage events, live cross-window mirror synchronization, workers and native Storage object branding SHALL remain outside this increment.
 
 ## Non-functional requirements
 

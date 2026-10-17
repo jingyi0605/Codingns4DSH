@@ -4,6 +4,10 @@ Status: Core implementation includes same-address Host previews, PeerHost resour
 
 Current default (2026-10-16): user-selected sandboxed HTML preview through the existing DSH Host address. No app domain, certificate or additional port is required. Workspace access remains simple; browser storage and root-relative URLs have sandbox/path compatibility limits. Earlier HTTPS-provider instructions are retained for compatibility, not required setup.
 
+Browser storage (2026-10-17): new sandbox viewers provide the asynchronous `appStorage` API and LocalStorage/SessionStorage compatibility through an application-scoped browser broker. IndexedDB is excluded. API examples, limits and lifecycle details: `docs/开发规范/20261017-快捷应用浏览器存储接口规范.md`.
+
+Stage0 runtime acceptance (2026-10-17, explicitly authorized): the running Stage0 UI in installed Edge on macOS passed persistence, shortcut isolation, tab-session isolation, quota and sandbox checks. Physical-phone and other platform acceptance remain open. See the Stage0 evidence below.
+
 Open HTML applications and text documents from managed workspaces through a lower-left Quick Apps entry. HTML applications receive real HTTP(S) resource URLs so ordinary scripts, modules, styles, images, and `fetch()` calls work without a mandatory CodingNS SDK. Optional workspace writes use a separate, Host-authorized file API.
 
 This specification records the implementation, its changes from the original plan, and acceptance evidence. Repository commits do not deploy the plugin or change running Desktop, Web, or Stage0 instances. The original uncommitted-change review remains a dated historical inventory.
@@ -23,5 +27,6 @@ This specification records the implementation, its changes from the original pla
 - [LAN address and separate ports](docs/20261016-局域网地址与独立端口托管.md): reuse an existing hostname or IP without wildcard DNS; HTTPS configuration, proxy guard, durable port reservations and verification.
 - [Acceptance matrix](docs/20261015-实现验收矩阵与剩余条件.md): actual verification, review scope and explicit remaining gaps.
 - [Host proxy and LAN recovery](docs/20261016-主机代理预览与局域网回归修复.md): current default, workspace boundary, sandbox compatibility limits, normal LAN recovery and actual verification.
+- [Stage0 browser-storage acceptance](docs/20261017-Stage0浏览器存储实机验收.md): actual Mac/Edge launcher and viewer results, captured evidence, probe cleanup and remaining platform limits.
 
 The standard filenames follow `specs/000-Spec规范/Spec模板/`. Supplementary documents use dated Chinese filenames; their contents are English.
