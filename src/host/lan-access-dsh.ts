@@ -215,7 +215,7 @@ export class LanAccessDshProxy {
   }
 
   async start(input: Partial<LanAccessDshConfig>): Promise<LanAccessDshSnapshot> {
-    const dshPort = input.dshPort ?? (await this.resolveDetectedPort())
+    const dshPort = resolveLanAccessDshStartPort(input.dshPort, await this.detect())
     const config = normalizeLanAccessDshConfig({
       listenHost: input.listenHost ?? '0.0.0.0',
       listenPort: input.listenPort ?? 13080,
@@ -312,13 +312,6 @@ export class LanAccessDshProxy {
       timeoutSeconds: config?.timeoutSeconds ?? 1800,
       scopes: config?.scopes ?? defaultLoginScopes(),
     }
-  }
-
-  private async resolveDetectedPort(): Promise<number> {
-    const ports = this.detectedDshPorts.length > 0 ? this.detectedDshPorts : await this.detect()
-    if (ports.length === 0) throw new LanAccessDshError('DSH_PORT_NOT_FOUND', '未能自动探测 DSH Web 端口，请手动填写')
-    if (ports.length > 1) throw new LanAccessDshError('DSH_PORT_AMBIGUOUS', `自动探测到多个 DSH Web 端口，请手动选择: ${ports.join(', ')}`)
-    return ports[0]!
   }
 
   private accept(active: ActiveProxy, localSocket: LanAccessDshStream): void {
@@ -1125,6 +1118,42 @@ export class LanAccessDshError extends Error {
   }
 }
 
+/**
+ * 启动前根据探测结果决定 DSH Web 端口。
+ *
+ * 探测到唯一端口时以它为准：与已保存端口一致则直接启动，已变化则改用新端口。
+ * 探测失败时沿用已保存端口。多个探测结果仅在已保存端口仍在其中时沿用。
+ */
+export function resolveLanAccessDshStartPort(
+  requested: number | undefined,
+  detected: readonly number[],
+): number {
+  const ports = uniquePorts(detected)
+  const saved = requested !== undefined && requested > 0 ? requested : undefined
+  if (ports.length === 1) return ports[0]!
+  if (saved !== undefined && (ports.length === 0 || ports.includes(saved))) return saved
+  if (ports.length === 0) throw new LanAccessDshError('DSH_PORT_NOT_FOUND', '未能自动探测 DSH Web 端口，请手动填写')
+  throw new LanAccessDshError('DSH_PORT_AMBIGUOUS', `自动探测到多个 DSH Web 端口，请手动选择: ${ports.join(', ')}`)
+}
+
+/** 启动局域网映射；DSH Web 端口相对已保存值发生变化时回写持久化配置。 */
+export async function startLanAccessDsh(
+  proxy: LanAccessDshProxy,
+  input: Partial<LanAccessDshConfig>,
+  settings?: DshHostSettingsScope<CodingNsSettings>,
+): Promise<LanAccessDshSnapshot> {
+  const snapshot = await proxy.start(input)
+  if (settings === undefined) return snapshot
+  const current = settings.get().lanAccessDsh
+  if (current.dshPort === snapshot.dshPort) return snapshot
+  try {
+    await settings.update({ lanAccessDsh: { ...current, dshPort: snapshot.dshPort } })
+  } catch (error) {
+    console.warn('codingns4dsh: 局域网访问 DSH 端口配置回写失败', error)
+  }
+  return snapshot
+}
+
 export function normalizeLanAccessDshConfig(value: Partial<LanAccessDshConfig>, allowedListenHosts?: readonly string[]): LanAccessDshConfig {
   const listenHost = requireText(value.listenHost, 'listenHost')
   const listenPort = requirePort(value.listenPort ?? 13080, 'listenPort', true)
@@ -1232,7 +1261,7 @@ export function createLanAccessDshRpcHandler(
         return refreshLoginProtectionSession(loginStore, input.token, input.scope)
       }
       case 'start':
-        return proxy.start(parseStartPayload(payload))
+        return startLanAccessDsh(proxy, parseStartPayload(payload), settings)
       case 'stop':
         await proxy.stop()
         return { stopped: true }
@@ -1454,12 +1483,13 @@ function uniquePorts(ports: readonly number[]): number[] {
 }
 
 function detectDshPortsFromRuntime(dshWebPort?: number): readonly number[] {
+  const current = uniquePorts(dshWebPort === undefined ? [] : [dshWebPort])
+  if (current.length === 1) return current
   const runtime = globalThis as typeof globalThis & {
     __DSH_WEB_PORT__?: unknown
     process?: { argv?: unknown; env?: Record<string, unknown> }
   }
   const values: unknown[] = [
-    dshWebPort,
     runtime.__DSH_WEB_PORT__,
     runtime.process?.env?.DSH_WEB_PORT,
     runtime.process?.env?.DSH_PORT,

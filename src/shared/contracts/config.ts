@@ -448,7 +448,7 @@ export const DEFAULT_QUICK_PHRASES: QuickPhrase[] = [
   { id: 'builtin-quick-4', text: '请给出完整的开发提示词，我将在新的页面中继续开发' },
 ]
 
-/** 局域网访问 DSH 的持久化配置；dshPort 为 0 表示启动时自动探测。 */
+/** 局域网访问 DSH 的持久化配置；dshPort 为 0 表示启动时自动探测，大于 0 时启动前仍会探测，端口已变化则回写新值。 */
 export interface LanAccessDshSettings {
   autoStart: boolean
   listenHost: string

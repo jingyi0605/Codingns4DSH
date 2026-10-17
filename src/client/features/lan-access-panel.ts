@@ -118,6 +118,7 @@ export function LanAccessPanel({ services, enabled, snapshot: settingsSnapshot, 
     setCopiedUrl(null)
     setDshPort(String(current.dshPort))
     setListenPort(String(current.listenPort))
+    setSavedSettings((prev) => prev === undefined ? prev : { ...prev, dshPort: current.dshPort, listenPort: current.listenPort })
     const url = buildLanAccessUrls(current, interfaceAddresses)[0]
       ?? `http://${current.listenHost}:${current.actualListenPort ?? current.listenPort}/`
     notify({ kind: 'success', message: t('lan.started', { url }) })

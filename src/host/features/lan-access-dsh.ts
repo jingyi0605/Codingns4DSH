@@ -1,6 +1,6 @@
 import type { FeatureModule } from '../../shared/contracts/feature.js'
 import { DEFAULT_LAN_ACCESS_DSH_PWA_SETTINGS, type CodingNsSettings, type LanAccessDshSettings } from '../../shared/contracts/config.js'
-import { createLanAccessDshRpcHandler, createNodeLanAccessDshRuntime, FileLanAccessDshLoginStore, LanAccessDshProxy, type LanAccessDshRuntime } from '../lan-access-dsh.js'
+import { createLanAccessDshRpcHandler, createNodeLanAccessDshRuntime, FileLanAccessDshLoginStore, LanAccessDshProxy, startLanAccessDsh, type LanAccessDshRuntime } from '../lan-access-dsh.js'
 import { createLanAccessDshPwaProvider, PwaPushService } from '../modules/pwa/index.js'
 import { createPwaSessionNotification } from '../modules/pwa/pwa-session-notifications.js'
 import { resolveHostPushLocale } from '../browser-text.js'
@@ -55,7 +55,7 @@ export function createLanAccessDshFeature(options: { runtime?: LanAccessDshRunti
         const autoStart = async (value: CodingNsSettings): Promise<void> => {
           if (!value.lanAccessDsh.autoStart) return
           try {
-            await proxy.start({ ...toStartInput(value.lanAccessDsh), ...(loginConfig === null ? {} : { login: loginConfig }) })
+            await startLanAccessDsh(proxy, { ...toStartInput(value.lanAccessDsh), ...(loginConfig === null ? {} : { login: loginConfig }) }, settings)
           } catch (error) {
             // 自动启动失败不能阻断 DSH，其它功能仍应正常可用；用户仍可在卡片中手动重试。
             console.error('codingns4dsh: 局域网访问 DSH 自动启动失败', error)
