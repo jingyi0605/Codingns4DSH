@@ -11,6 +11,8 @@ const schemaChildren = new Set(['items', 'additionalProperties', 'additionalItem
 const schemaLists = new Set(['allOf', 'anyOf', 'oneOf', 'prefixItems'])
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
 
+class PromptTranslationInvalidated extends Error {}
+
 /** Translates host-owned prose; shared schemas, provenance, and execution data stay immutable. */
 export function createSessionPromptTranslation(
   service: SessionTranslationService | undefined,
@@ -24,7 +26,7 @@ export function createSessionPromptTranslation(
   const clear = (): void => { cache.clear(); cacheSize = 0 }
   const removeDeactivate = service?.onDeactivate?.(() => {
     clear()
-    for (const controller of controllers) controller.abort(new SessionTranslationCancelled())
+    for (const controller of controllers) controller.abort(new PromptTranslationInvalidated())
   })
   const settingsKey = (): string => JSON.stringify([service?.cacheKey, service?.inputLanguage])
   let currentKey = settingsKey()
@@ -60,7 +62,7 @@ export function createSessionPromptTranslation(
           result = { ...fallback, failed: true, failure: translationFailure(error, signal) }
         }
         signal.throwIfAborted()
-        if (generation !== settingsKey() || adapterFor(scope.sessionId) !== adapterId || !service.enabled) throw new SessionTranslationCancelled()
+        if (generation !== settingsKey() || adapterFor(scope.sessionId) !== adapterId || !service.enabled) throw new PromptTranslationInvalidated()
         if (result.failed) { failed = true; return { ...result, translated: text } }
         if (!result.failed && service.cacheKey !== undefined) {
           const size = key.length + result.original.length + result.translated.length
@@ -83,9 +85,17 @@ export function createSessionPromptTranslation(
       signal.throwIfAborted()
       const result = await transform(translate)
       signal.throwIfAborted()
-      if (generation !== settingsKey() || adapterFor(scope.sessionId) !== adapterId || !service.enabled) throw new SessionTranslationCancelled()
+      if (generation !== settingsKey() || adapterFor(scope.sessionId) !== adapterId || !service.enabled) throw new PromptTranslationInvalidated()
       return result
-    } catch (error) { controller.abort(error); throw error }
+    } catch (error) {
+      controller.abort(error)
+      lifetime.signal.throwIfAborted()
+      scope.signal?.throwIfAborted()
+      // Internal prose translation is optional. Discard a stale translation as
+      // a whole; only the Agent's own cancellation may stop its accepted work.
+      if (error instanceof PromptTranslationInvalidated) return original
+      throw error
+    }
     finally { controllers.delete(controller) }
   }
 

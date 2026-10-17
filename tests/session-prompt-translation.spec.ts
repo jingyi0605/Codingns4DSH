@@ -172,17 +172,47 @@ test('failed injected translations preserve provenance and never request a sendi
   assert.deepEqual(f.recovery.pending({ sessionId: 'session' }), [])
 })
 
-test('deactivation cancels internal translation even when the provider ignores abort', { timeout: 1000 }, async t => {
+test('deactivation cancels internal translation without cancelling the Agent turn', { timeout: 1000 }, async t => {
   const f = fixture(); t.after(() => f.dispose())
   let started!: () => void
   const entered = new Promise<void>(resolve => { started = resolve })
   f.service.translateInputDetailed = () => { started(); return new Promise(() => {}) }
-  const result = f.context.translateAssembly({ sections: [{ name: 'host', text: original }], tools: [] }, scope)
-  const rejected = assert.rejects(result, SessionTranslationCancelled)
+  const assembly = { sections: [{ name: 'host', text: original }], tools: [] }
+  const result = f.context.translateAssembly(assembly, scope)
   await entered
   f.service.deactivate()
-  await rejected
+  assert.equal(await result, assembly)
   assert.deepEqual(f.recovery.pending({ sessionId: 'session' }), [])
+})
+
+test('translation settings changing during prompt assembly retain the original prompt', async t => {
+  const f = fixture(); t.after(() => f.dispose())
+  const translate = f.service.translateInputDetailed!.bind(f.service)
+  let changed = false
+  f.service.translateInputDetailed = async (...args) => {
+    const result = await translate(...args)
+    if (!changed) {
+      changed = true
+      f.service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, nativeEnabled: true, inputLanguage: 'fr' })
+    }
+    return result
+  }
+  const assembly = { sections: [{ name: 'host', text: original }], tools: [] }
+  assert.equal(await f.context.translateAssembly(assembly, scope), assembly)
+  assert.deepEqual(f.recovery.pending({ sessionId: 'session' }), [])
+  assert.notEqual(await f.context.translateAssembly(assembly, scope), assembly, 'The next request uses the new translation settings')
+})
+
+test('invalidating internal translation never masks an explicit Agent cancellation', async t => {
+  const f = fixture(); t.after(() => f.dispose())
+  const controller = new AbortController()
+  const reason = new Error('Agent interrupted')
+  f.service.translateInputDetailed = async () => {
+    controller.abort(reason)
+    f.service.deactivate()
+    return { translated: 'Translated description' }
+  }
+  await assert.rejects(f.context.translateAssembly({ sections: [{ name: 'host', text: original }], tools: [] }, { ...scope, signal: controller.signal }), reason)
 })
 
 test('prompt capability rejects unverified versions and absent assembly services', () => {
