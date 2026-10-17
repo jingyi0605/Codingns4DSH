@@ -5,13 +5,13 @@
 **在 DSH 中使用多种编程 Agent、管理项目、与智能助理交流，并随时远程访问工作台。**
 
 [![npm version](https://img.shields.io/npm/v/%40jingyi0605%2Fcodingns4dsh?logo=npm)](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)
-[![DSH compatibility](https://img.shields.io/badge/DSH-0.2.1--alpha.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH compatibility](https://img.shields.io/badge/DSH-0.2.1--rc.2-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-3C873A?logo=node.js&logoColor=white)](https://nodejs.org)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.1-beta.14`** · DSH **`>=0.2.0-rc.2 <=0.2.1-alpha.3`**（已验证 `0.2.1-alpha.3`）· Node **`>= 22.19`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.1-beta.14`** · DSH **`>=0.2.0-rc.2 <=0.2.1-rc.2`**（已验证 `0.2.1-rc.2`）· Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965** · **[微信群 / QQ 群二维码](#交流群)**
 
@@ -240,7 +240,7 @@ Enabled sessions also localize attachment instructions and injected skill/worksp
 
 ## 安装
 
-**环境要求**：DSH `>=0.2.0-rc.2 <=0.2.1-alpha.3`（已验证 `0.2.1-alpha.3`）、Node.js `>=22.19`，并安装 pnpm。macOS/Linux 的持久终端还需要 tmux。
+**环境要求**：DSH `>=0.2.0-rc.2 <=0.2.1-rc.2`（已验证 `0.2.1-rc.2`）、Node.js `>=22.19`，并安装 pnpm。macOS/Linux 的持久终端还需要 tmux。
 
 ### 使用内置 Web 配置
 
@@ -323,7 +323,7 @@ pnpm typecheck
 
 功能设计与实现细节见 [Spec 文档](specs/)、[开发记录](docs/开发记录/)和[开发规范](docs/开发规范/)。[形象包目录](assets/assistant-avatar-catalog.md)与[截图清单](assets/screenshots/README.md)也可单独查阅。
 
-[Spec007.4: External Agent Team collaboration and management](specs/spec007.4-外部Agent团队协作与管理/README.md) adds native DSH Team tools for eligible external collaborators and Leads on DSH `0.2.1-alpha.2`–`0.2.1-alpha.3`. Source development and headless reference acceptance are complete: native/external and mixed Codex/Claude workflows passed on both runtimes. Existing ordinary external sessions retain the plugin's rc.2–alpha.3 compatibility range. See the Spec for adapter eligibility, recovery evidence, and validation limits.
+[Spec007.4: External Agent Team collaboration and management](specs/spec007.4-外部Agent团队协作与管理/README.md) adds native DSH Team tools for eligible external collaborators and Leads from DSH `0.2.1-alpha.2` through `0.2.1-rc.2`. Headless reference acceptance covers native/external and mixed Codex/Claude workflows on alpha.2 and alpha.3; rc.2 compatibility is covered by repository regressions and Stage0 HTTP checks. Ordinary external sessions support DSH `>=0.2.0-rc.2 <=0.2.1-rc.2`. See the Spec for adapter eligibility, recovery evidence, and validation limits.
 
 [Spec 016: Quick Apps and controlled static HTTP hosting](specs/spec016-快捷应用与受控静态HTTP托管/README.md) covers sandboxed HTML hosting, optional workspace file operations, and application-scoped browser storage. The asynchronous `appStorage` API and LocalStorage/SessionStorage compatibility require no additional domain, certificate or port; IndexedDB is excluded. See the [browser-storage API and limits](docs/开发规范/20261017-快捷应用浏览器存储接口规范.md). Installed-platform acceptance remains pending.
 

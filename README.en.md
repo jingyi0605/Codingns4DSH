@@ -5,13 +5,13 @@
 **Use multiple coding Agents, manage projects, talk with your assistant, and access your DSH workbench remotely.**
 
 [![npm version](https://img.shields.io/npm/v/%40jingyi0605%2Fcodingns4dsh?logo=npm)](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)
-[![DSH compatibility](https://img.shields.io/badge/DSH-0.2.1--alpha.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH compatibility](https://img.shields.io/badge/DSH-0.2.1--rc.2-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-3C873A?logo=node.js&logoColor=white)](https://nodejs.org)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 [简体中文](README.md) · **English**
 
-**Current release `@jingyi0605/codingns4dsh@0.2.1-beta.14`** · DSH **`>=0.2.0-rc.2 <=0.2.1-alpha.3`** (tested with `0.2.1-alpha.3`) · Node **`>= 22.19`** · macOS / Linux / Windows
+**Current release `@jingyi0605/codingns4dsh@0.2.1-beta.14`** · DSH **`>=0.2.0-rc.2 <=0.2.1-rc.2`** (tested with `0.2.1-rc.2`) · Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ group 1092985965** · **[WeChat / QQ QR codes](#community)**
 
@@ -218,7 +218,7 @@ The account menu shows login status, access method, connection latency and Host 
 
 ## Installation
 
-**Requirements**: DSH `>=0.2.0-rc.2 <=0.2.1-alpha.3` (tested with `0.2.1-alpha.3`), Node.js `>=22.19`, and pnpm. Persistent terminals on macOS/Linux also require tmux.
+**Requirements**: DSH `>=0.2.0-rc.2 <=0.2.1-rc.2` (tested with `0.2.1-rc.2`), Node.js `>=22.19`, and pnpm. Persistent terminals on macOS/Linux also require tmux.
 
 ### Use the Built-in Web Profile
 
