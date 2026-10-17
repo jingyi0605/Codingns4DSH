@@ -247,6 +247,7 @@ export function trackNativeSubagentFollowup(
   sessions: CodingNsNativeSessionBridge,
   childSessionId: string,
   afterSeq: number,
+  messageId?: string,
 ): void {
   const id = childSessionId.trim()
   const current = lifecycleStates.get(id)
@@ -266,6 +267,7 @@ export function trackNativeSubagentFollowup(
     undefined,
     BACKGROUND_NATIVE_SUBAGENT_TIMEOUT_MS,
     afterSeq,
+    messageId,
   ).then((result) => {
     saveLifecycle(lifecycleFromResult(lifecycle, result))
     return result
@@ -549,8 +551,10 @@ function waitForChildFirstTurn(
   signal: AbortSignal | undefined,
   timeoutMs: number,
   afterSeq = 0,
+  messageId?: string,
 ): Promise<ChildResult> {
   return new Promise((resolve) => {
+    let acceptedInput = messageId === undefined
     let text = ''
     let toolCalls = 0
     let done = false
@@ -582,6 +586,12 @@ function waitForChildFirstTurn(
       // 该类型自己的载荷。读 `data.type` 会永远匹配不到，同步等待只能等满超时。
       const type = typeof row.type === 'string' ? row.type : ''
       const data = asRecord(row.data) ?? row
+      // A cold send restores old history after the pre-send cursor was read.
+      // Only the accepted follow-up message opens this observation window.
+      if (!acceptedInput) {
+        if (type === 'user/message' && data.id === messageId) acceptedInput = true
+        return
+      }
       if (type === 'assistant/message') {
         const message = asRecord(data.message)
         const content = Array.isArray(message?.content) ? message.content : []

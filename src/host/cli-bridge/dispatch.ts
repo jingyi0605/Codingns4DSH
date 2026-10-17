@@ -78,7 +78,7 @@ export async function dispatchBridgeSubagent(
     const cursor = nativeSubagentEventCursor(deps.nativeSessions, childSessionId)
     const sent = await sendNativeSubagentMessage(native, { parentAgent, parentId, childSessionId, message })
     if (!sent.ok) return { ok: false, completed: false, status: 'failed', text: sent.error ?? 'Failed to send the message to the subagent.', childSessionId, error: sent.error ?? 'Failed to send the message to the subagent.', ...nativeSubagentFailureReviewFields(reviewed) }
-    trackNativeSubagentFollowup(deps.nativeSessions, childSessionId, cursor)
+    trackNativeSubagentFollowup(deps.nativeSessions, childSessionId, cursor, sent.messageId)
     return { ok: true, completed: false, status: 'running', text: 'The follow-up message was sent to the subagent.', childSessionId, ...(sent.messageId === undefined ? {} : { messageId: sent.messageId }) }
   }
   const authorizedTarget = getSingleDelegationTarget(request.sessionId)

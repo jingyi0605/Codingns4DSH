@@ -90,7 +90,7 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
         const cursor = nativeSubagentEventCursor(options.nativeSessions, childSessionId)
         const sent = await sendNativeSubagentMessage(native, { parentAgent, parentId, childSessionId, message, signal: exec.signal })
         if (sent.ok) {
-          trackNativeSubagentFollowup(options.nativeSessions, childSessionId, cursor)
+          trackNativeSubagentFollowup(options.nativeSessions, childSessionId, cursor, sent.messageId)
           return { ok: true, status: 'running', completed: false, childSessionId, ...(sent.messageId === undefined ? {} : { messageId: sent.messageId }), result: '后续消息已发送给子代理。' }
         }
         return { ok: false, status: 'failed', childSessionId, error: sent.error ?? '子代理消息发送失败。', ...nativeSubagentFailureReviewFields(reviewed) }
