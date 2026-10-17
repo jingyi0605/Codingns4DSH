@@ -8,6 +8,7 @@ import { startMobileSidebarGestures, type MobileSidebarGestureController } from 
 import { notifyMobileRightbarManualOpen, notifyMobileRightbarManualClose } from '../mobile-rightbar-visibility.js'
 import { startMobileRightbarTabsDom } from '../mobile-rightbar-tabs-dom.js'
 import { startMobileSettingsModalDom, type MobileSettingsModalController } from '../mobile-settings-modal-dom.js'
+import { startMobileTeamPanelDom } from '../mobile-team-panel-dom.js'
 import { MobileAccessPanel } from './mobile-access-panel.js'
 import type { CodingNsClientFeatureModule } from './types.js'
 import { resolveCodingNsTranslator } from '../locale.js'
@@ -85,17 +86,25 @@ export const mobileAccessFeature: CodingNsClientFeatureModule = {
         context.services.settings.getSnapshot().value?.mobileAccess,
       ).mobileViewportMaxPx,
     })
+    const teamPanel = startMobileTeamPanelDom({
+      locale: context.services.locale,
+      mobileViewportMaxPx: () => normalizeMobileAccessSettings(
+        context.services.settings.getSnapshot().value?.mobileAccess,
+      ).mobileViewportMaxPx,
+    })
     context.resources.add(context.services.settings.subscribe(() => {
       controller.refresh()
       gestures.refresh()
       settingsModal.refresh()
       rightbarTabs.refresh()
+      teamPanel.refresh()
     }))
     context.resources.add(() => {
       controller.dispose()
       gestures.dispose()
       settingsModal.dispose()
       rightbarTabs.dispose()
+      teamPanel.dispose()
     })
   },
   settingsPanel: MobileAccessPanel,
