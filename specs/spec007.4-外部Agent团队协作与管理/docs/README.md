@@ -2,4 +2,10 @@
 
 The canonical source investigation is `docs/调查报告/20261017-外部Agent团队协作与管理兼容性调查.md`. That directory is local under the repository's existing `.gitignore`; core findings and policy are included in the main Spec documents so the plan remains understandable without the local report.
 
-Keep future implementation decisions and acceptance results under `docs/开发记录/` with dated Chinese filenames, and link them from `specs/spec007.4-外部Agent团队协作与管理/tasks.md`. Interface/version investigations belong under `docs/调查报告/`; reusable rules belong under `docs/开发规范/`. No runtime acceptance has been performed for this Spec.
+Implementation decisions and acceptance results are in `docs/开发记录/20261017-外部Agent团队协作与管理开发记录.md`; tracked findings and validation limits are also recorded in the Spec README and task list. Native/external and mixed Codex/Claude reference acceptance passed on alpha.2 and alpha.3. Interface/version investigations belong under `docs/调查报告/`; reusable rules belong under `docs/开发规范/`.
+
+The [session failure regression record](20261017-团队会话故障回归记录.md) covers the user's subsequent OpenCode/Codex exports and the source fixes, separately from the earlier live reference acceptance.
+
+The [Stage0 translation and Team integration record](20261017-会话翻译与团队协作联调记录.md) covers the explicitly enabled development profile, real configured model calls, initial/follow-up sessions, mixed-input translation/cancellation, and the additional startup/route-synchronization findings.
+
+The [Grok teammate permission regression](20261017-Grok队友权限故障回归记录.md) traces the supplied export's automatic approval-policy rejection and records the scoped Team admission fix and verification.

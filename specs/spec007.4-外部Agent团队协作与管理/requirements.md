@@ -1,6 +1,6 @@
 # Requirements: External Agent Team collaboration and management
 
-Status: Accepted for implementation on 2026-10-17, with DSH `0.2.1-alpha.2` as the full-Team minimum.
+Status: Implemented and verified on 2026-10-17, with DSH `0.2.1-alpha.2` as the full-Team minimum. Reference acceptance uses Codex/Claude and a deterministic native model fixture; other adapter eligibility and validation limits are recorded in the Spec README and tasks.
 
 ## Terminology and scope
 

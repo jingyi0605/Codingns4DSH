@@ -323,7 +323,7 @@ pnpm typecheck
 
 功能设计与实现细节见 [Spec 文档](specs/)、[开发记录](docs/开发记录/)和[开发规范](docs/开发规范/)。[形象包目录](assets/assistant-avatar-catalog.md)与[截图清单](assets/screenshots/README.md)也可单独查阅。
 
-[Spec007.4: External Agent Team collaboration and management](specs/spec007.4-外部Agent团队协作与管理/README.md) is in planning. It covers external teammates and external Leads through native DSH Teams, with DSH `0.2.1-alpha.2` as the minimum for full Team support. Implementation and runtime acceptance have not started.
+[Spec007.4: External Agent Team collaboration and management](specs/spec007.4-外部Agent团队协作与管理/README.md) adds native DSH Team tools for eligible external collaborators and Leads on DSH `0.2.1-alpha.2`–`0.2.1-alpha.3`. Source development and headless reference acceptance are complete: native/external and mixed Codex/Claude workflows passed on both runtimes. Existing ordinary external sessions retain the plugin's rc.2–alpha.3 compatibility range. See the Spec for adapter eligibility, recovery evidence, and validation limits.
 
 [Spec 016: Quick Apps and controlled static HTTP hosting](specs/spec016-快捷应用与受控静态HTTP托管/README.md) covers sandboxed HTML hosting, optional workspace file operations, and application-scoped browser storage. The asynchronous `appStorage` API and LocalStorage/SessionStorage compatibility require no additional domain, certificate or port; IndexedDB is excluded. See the [browser-storage API and limits](docs/开发规范/20261017-快捷应用浏览器存储接口规范.md). Installed-platform acceptance remains pending.
 

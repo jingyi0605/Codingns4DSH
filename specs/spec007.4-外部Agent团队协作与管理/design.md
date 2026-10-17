@@ -1,6 +1,6 @@
 # Design: External Agent Team collaboration and management
 
-Status: Accepted for implementation on 2026-10-17. This document describes the planned implementation; it does not report shipped behavior.
+Status: Source implementation completed on 2026-10-17. Isolated runtime certification and release are separate; evidence is recorded in the task list.
 
 ## 1. Decision and constraints
 
@@ -38,7 +38,7 @@ Business modules consume stable CodingNS interfaces. Put the new DSH structural 
 
 ## 3. Capabilities and version behavior
 
-Proposed stable IDs are `agent-team.external-member` and `agent-team.external-lead`. They describe Host contract availability, not blanket certification of every external adapter. Runtime diagnostics additionally report current membership, bridge enablement, provider registration, and per-adapter role eligibility.
+Stable IDs are `agent-team.external-member` and `agent-team.external-lead`. They describe Host contract availability, not blanket certification of every external adapter. Runtime diagnostics additionally report current membership, bridge enablement, provider registration, and per-adapter role eligibility.
 
 | Host | New external Team integration | Existing behavior |
 | --- | --- | --- |
@@ -59,7 +59,7 @@ Alpha.3's `agentPreset` declaration and its peer/session activation rules remain
 
 ### 4.1 One plugin Team tool
 
-Propose a Host tool named `agent_team`, exposed under each external transport's actual CodingNS namespace. Its actions are `status`, `members`, `spawn`, `message`, `tasks`, `task`, `task_create`, `task_update`, `wait`, and `interrupt`. The names and schemas are implementation contracts, not permission grants.
+The Host tool is named `agent_team`, exposed under each external transport's actual CodingNS namespace. Its actions are `status`, `members`, `spawn`, `message`, `tasks`, `task`, `task_create`, `task_update`, `wait`, and `interrupt`. The names and schemas are implementation contracts, not permission grants.
 
 | Action | Input | Native operation |
 | --- | --- | --- |
@@ -79,6 +79,8 @@ Use a per-session launch credential mapped by the Host to the session and runtim
 ### 4.2 Tool discovery and guidance
 
 Native Agents retain official Team tools. The plugin tool supplies explicit external adapter/model selection and follows native authorization. External Team sessions receive one canonical Team tool and current role/name guidance, rather than simultaneously receiving contradictory parent-only subagent instructions.
+
+Implementation uses `provider` only for native DSH children when model names are ambiguous. The public native model catalog resolves that exact route. A synchronous `agent/created` observer binds the rostered native child before first execution, and the existing alpha.3 selection adapter exposes its route during prompt admission. Both native and external Team bindings persist without changing adapter defaults; a successful Team spawn also records the Lead's Team binding. No inherited external route is used for an explicitly native child.
 
 Keep native policy requiring the user's explicit request before creating teammates. An installed Team profile and available tool do not authorize automatic delegation.
 
@@ -107,6 +109,8 @@ Introduce a focused input-selection function that distinguishes human input, pee
 Track the dispatch position for the current provider session/turn using existing driver acceptance boundaries. A notice that resumes a retained iterator must not resend prior peer input. A new peer message arriving during suspension must not be consumed as a notice. Drivers with real steer use it; other drivers accept the message at the next supported DSH/provider boundary without starting a second concurrent provider turn.
 
 Recovery uses the native session and existing provider binding. If acceptance cannot be established after a crash, report an uncertain delivery instead of automatically reissuing work. Do not introduce an exactly-once guarantee, a second conversation journal, or a retrying Team mailbox.
+
+The implementation observes accepted pre-step input and keeps bounded consumed identities for the live session. A retained provider iterator uses real steer when available; other drivers defer peer input until the current provider turn ends successfully. Deferred input survives additional step boundaries. A failed/cancelled turn returns `TEAM_DELIVERY_UNCERTAIN` instead of starting deferred work. Cached Codex/ACP/Grok/MiniMax processes are refreshed when launch credentials change and resume the exact bound provider identity. Missing Team provider sessions and rejected model selections remain visible errors.
 
 Historical `team-message` input remains readable and retains attribution. The new feature does not issue legacy mailbox sends on rc.2/alpha.1. Historical queued records remain historical after upgrading; the bridge does not replay, acknowledge, or rewrite them.
 
@@ -146,12 +150,10 @@ The following invariants drive tests: one DSH identity per member; native author
 
 Run source-based targeted regressions, `pnpm run typecheck`, `pnpm run version:check`, `pnpm run capability:check`, `pnpm run i18n:check`, and `git diff --check` during implementation. Regenerate capability reports with their script; never edit generated reports manually. `pnpm test` builds the project and is deferred until a build is explicitly authorized.
 
-Live acceptance must cover both alpha.2 and alpha.3, Codex and Claude reference participants, and the three Lead/backend combinations using isolated authorized Stage0 resources. Record exact plugin/DSH/CLI versions, task revisions, native identities, peer delivery, cancellation, and recovery. Fake fixtures do not count as live certification. Historical fixtures include `0.1.5-rc.3`, `0.1.6-alpha.2`, and `0.1.7-rc.2` with explainable unsupported results.
+Live acceptance covers both alpha.2 and alpha.3, Codex and Claude reference participants, and the three Lead/backend combinations using isolated authorized runtime resources. Record exact plugin/DSH/CLI versions, task revisions, native identities, peer delivery, cancellation, and recovery. Fake Team fixtures do not count as live certification. Historical fixtures include `0.1.5-rc.3`, `0.1.6-alpha.2`, and `0.1.7-rc.2` with explainable unsupported results.
 
-## 9. Open verification items
+## 9. Resolved verification and limits
 
-- Confirm precise driver acceptance/steer boundaries before selecting the minimal input-dispatch state.
-- Confirm explicit native child routing under an external Lead on both target versions.
-- Inventory Team tool transport and recovery support for each existing external provider; leave unsupported roles unavailable with reasons.
-- Validate optional Team service lifetime changes and runtime credential revocation with actual Cordis composition.
-- Live runtime evidence and any application/build/server permissions remain separate from this documentation step.
+Accepted pre-step input, real Codex steer, retained iterators, and deferred peer turns are covered by source/protocol tests. Native child routing under both reference external Leads passed on both target runtimes. Per-adapter transport eligibility is recorded in the Spec README, and actual Cordis tests cover service installation/removal/reinstallation and credential revocation.
+
+All native/external and mixed Codex/Claude reference cases passed against real DSH core/Team/persistence/activation services and real CLI processes. Native model output was an explicit deterministic fixture. Browser/GUI acceptance, native cloud-provider behavior, and live certification of the other source-eligible adapters are outside the recorded reference acceptance. The task list and dated development record contain the exact evidence and authorization; no Desktop operations or release actions were performed.
