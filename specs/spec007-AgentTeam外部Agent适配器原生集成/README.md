@@ -2,6 +2,8 @@
 
 状态：技术规划修订完成，待实施。
 
+Planning update (2026-10-17): [Spec007.4](specs/spec007.4-外部Agent团队协作与管理/README.md) is the current plan for native external collaborators and external Leads, with full Team support starting at DSH `0.2.1-alpha.2`. It keeps native DSH as the roster/task authority. The standalone orchestration direction and unchecked implementation tasks below remain historical planning material for this scope.
+
 ## 这份 Spec 解决什么问题
 
 插件已经有 Command Code、Claude Code、Kimi CLI、Gemini CLI、Pi Agent、Codex、OpenCode 和 Grok Build 等外部 Agent 适配器，但这些适配器只提供各自的会话、流、工具事件、权限和恢复能力，没有统一的 Team 编排层。
