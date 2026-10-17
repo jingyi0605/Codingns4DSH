@@ -107,6 +107,7 @@ export class CodingNsCliAdapterRegistry {
   private readonly segmentedTurns = new Map<string, {
     readonly adapterId: CodingNsCliAdapterId
     readonly iterator: AsyncIterator<CodingNsAgentEvent> | null
+    readonly deferredPeerInput?: CodingNsCliTurnInput
   }>()
   private cacheGeneration = 0
   private startupTimer: ReturnType<typeof setTimeout> | undefined
@@ -315,15 +316,21 @@ export class CodingNsCliAdapterRegistry {
     }
   }
 
-  setSession(sessionId: string, config: CodingNsCliSessionConfig): CodingNsCliSessionConfig {
+  setSession(sessionId: string, config: CodingNsCliSessionConfig, options: { readonly rememberPreference?: boolean; readonly inheritSelection?: boolean } = {}): CodingNsCliSessionConfig {
     if (sessionId.trim() === '') throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', 'sessionId 不能为空')
     // dsh 是 DSH 自带的默认 Agent，不对应一个外部驱动，但仍需要作为会话
     // 配置保存值，方便 Client 从外部 CLI 切回默认 Agent。
     if (config.adapterId !== 'dsh') this.requireEnabledDriver(config.adapterId)
-    const previous = this.sessions.get(sessionId)
+    const storedTeam = this.sessionStore?.get(sessionId)
+    const previous = this.sessions.get(sessionId) ?? (storedTeam?.teamId && storedTeam.adapterId === config.adapterId ? this.getSession(sessionId) : undefined)
     const sameAdapter = previous?.adapterId === config.adapterId
     if (previous !== undefined && !sameAdapter) this.lastUsages.delete(sessionId)
     const remembered = this.preferences.get(config.adapterId) ?? this.findRememberedPreference(config.adapterId)
+    // A resolved child route owns its complete model selection. An omitted
+    // effort must remain omitted instead of borrowing another model's choice.
+    const previousSelection = options.inheritSelection === false ? undefined : sameAdapter ? previous : undefined
+    const ownsNativeTeamSelection = config.adapterId === 'dsh' && Boolean(config.teamId ?? previous?.teamId)
+    const rememberedSelection = options.inheritSelection === false || ownsNativeTeamSelection ? undefined : remembered
     const providerSessionId = config.providerSessionId?.trim()
     const providerIdentityChanged = providerSessionId !== undefined
       && providerSessionId !== previous?.providerSessionId
@@ -331,26 +338,26 @@ export class CodingNsCliAdapterRegistry {
       adapterId: config.adapterId,
       ...(config.modelId?.trim()
         ? { modelId: config.modelId.trim() }
-        : sameAdapter && previous?.modelId
-          ? { modelId: previous.modelId }
-          : remembered?.modelId
-            ? { modelId: remembered.modelId }
+        : previousSelection?.modelId
+          ? { modelId: previousSelection.modelId }
+          : rememberedSelection?.modelId
+            ? { modelId: rememberedSelection.modelId }
             : {}),
       ...(config.effortId?.trim()
         ? { effortId: config.effortId.trim() }
-        : sameAdapter && previous?.effortId
-          ? { effortId: previous.effortId }
-          : remembered?.effortId
-            ? { effortId: remembered.effortId }
+        : previousSelection?.effortId
+          ? { effortId: previousSelection.effortId }
+          : rememberedSelection?.effortId
+            ? { effortId: rememberedSelection.effortId }
             : {}),
       // 服务档位是“显式选择”而不是“可回退的最近值”：`default` 表示标准速度，
       // 与 undefined（Host 没有该选择）语义不同，必须原样保留，不能被记忆值覆盖。
       ...(config.serviceTierId?.trim()
         ? { serviceTierId: config.serviceTierId.trim() }
-        : sameAdapter && previous?.serviceTierId
-          ? { serviceTierId: previous.serviceTierId }
-          : remembered?.serviceTierId
-            ? { serviceTierId: remembered.serviceTierId }
+        : previousSelection?.serviceTierId
+          ? { serviceTierId: previousSelection.serviceTierId }
+          : rememberedSelection?.serviceTierId
+            ? { serviceTierId: rememberedSelection.serviceTierId }
             : {}),
       ...(config.translationEnabled !== undefined
         ? { translationEnabled: config.translationEnabled }
@@ -391,7 +398,7 @@ export class CodingNsCliAdapterRegistry {
     }
     this.sessions.set(sessionId, normalized)
     this.sessionStore?.upsert(sessionId, normalized)
-    this.rememberPreference(config.adapterId, normalized)
+    if (options.rememberPreference !== false && normalized.teamId === undefined) this.rememberPreference(config.adapterId, normalized)
     return normalized
   }
 
@@ -418,7 +425,7 @@ export class CodingNsCliAdapterRegistry {
   }
 
   private findRememberedPreference(adapterId: CodingNsCliAdapterId): { modelId?: string; effortId?: string; serviceTierId?: string; translationEnabled?: boolean } | undefined {
-    const records = this.sessionStore?.list({ includeArchived: true, adapterId }) ?? []
+    const records = this.sessionStore?.list({ includeArchived: true, adapterId }).filter(record => record.teamId === undefined) ?? []
     for (const record of records) {
       if (record.modelId !== undefined || record.effortId !== undefined || record.serviceTierId !== undefined || record.translationEnabled !== undefined) {
         const preference = {
@@ -476,6 +483,10 @@ export class CodingNsCliAdapterRegistry {
   }
 
   getSession(sessionId: string): CodingNsCliSessionConfig {
+    const teamRecord = this.sessions.get(sessionId) ?? this.sessionStore?.get(sessionId)
+    if (teamRecord?.teamId && teamRecord.adapterId !== 'dsh' && !this.isEnabled(teamRecord.adapterId)) {
+      throw new CodingNsRpcError('TEAM_ADAPTER_UNAVAILABLE', 'The Team participant adapter is disabled.')
+    }
     const session = this.sessions.get(sessionId)
     if (session !== undefined && (session.adapterId === 'dsh' || this.isEnabled(session.adapterId))) {
       if (session.adapterId === 'dsh') return mergeDshNativeSelection(session, this.nativeSessions?.get(sessionId))
@@ -487,7 +498,7 @@ export class CodingNsCliAdapterRegistry {
     // 刚被加载）。此时必须读取 SessionStore，否则子会话会被当成 DSH 主会话，
     // 用户看到的仍是“默认 DSH Agent”。
     const stored = this.sessionStore?.get(sessionId)
-    if (stored !== undefined && stored.adapterId !== 'dsh' && this.isEnabled(stored.adapterId)) {
+    if (stored !== undefined && (stored.adapterId === 'dsh' ? stored.teamId !== undefined : this.isEnabled(stored.adapterId))) {
       const config: CodingNsCliSessionConfig = {
         adapterId: stored.adapterId,
         ...(stored.modelId === undefined ? {} : { modelId: stored.modelId }),
@@ -498,6 +509,9 @@ export class CodingNsCliAdapterRegistry {
         ...(stored.providerSessionId === undefined ? {} : { providerSessionId: stored.providerSessionId }),
         ...(stored.rawStoreRef === undefined ? {} : { rawStoreRef: stored.rawStoreRef }),
         ...(stored.parentSessionId === undefined ? {} : { parentSessionId: stored.parentSessionId }),
+        ...(stored.origin === undefined ? {} : { origin: stored.origin }),
+        ...(stored.teamId === undefined ? {} : { teamId: stored.teamId }),
+        ...(stored.teamMemberId === undefined ? {} : { teamMemberId: stored.teamMemberId }),
       }
       this.sessions.set(sessionId, config)
       return { ...config, ...lastUsageField(this.lastUsages.get(sessionId)) }
@@ -567,7 +581,7 @@ export class CodingNsCliAdapterRegistry {
     }
     // 除了 Client 的 session/set，Host 内部和未来的调用方也可能直接执行一轮。
     // 最近使用应由真实执行参数更新，不能依赖某个 UI 一定先发 RPC。
-    this.rememberPreference(input.adapterId, input)
+    if (current.teamId === undefined) this.rememberPreference(input.adapterId, input)
     // 手动 next() 不会自动转发外层的 return()；本轮持有的迭代器必须在 finally 关闭。
     // 只有显式交给 segmentedTurns 的流才能跨 DSH step 保留。
     let iterator: AsyncIterator<CodingNsAgentEvent> | undefined
@@ -585,6 +599,17 @@ export class CodingNsCliAdapterRegistry {
       }
       const suspended = this.segmentedTurns.get(input.sessionId)
       const resumingSegmentedTurn = suspended?.adapterId === input.adapterId
+      let deferredPeerInput = resumingSegmentedTurn ? suspended?.deferredPeerInput : undefined
+      if (resumingSegmentedTurn && input.peerInput) {
+        if (suspended?.iterator !== null && driver.steer !== undefined) {
+          await driver.steer(input.sessionId, input.prompt)
+        } else if (driver.steer === undefined) {
+          deferredPeerInput = deferredPeerInput ? {
+            ...input, prompt: `${deferredPeerInput.prompt}\n\n${input.prompt}`,
+            attachments: [...(deferredPeerInput.attachments ?? []), ...(input.attachments ?? [])],
+          } : input
+        }
+      }
       // 驱动自行分段时，续段必须由 Host 显式声明；驱动不能靠猜输入形状决定是否
       // 复用旧进程，否则注入失败后的新用户消息会被拼进上一次运行。
       const resumingDriverTurn = resumingSegmentedTurn && suspended !== undefined && suspended.iterator === null
@@ -634,7 +659,19 @@ export class CodingNsCliAdapterRegistry {
       }
       while (true) {
         const next = await iterator.next()
-        if (next.done) { iterator = undefined; break }
+        if (next.done || next.value.type === 'finish') {
+          if (deferredPeerInput) {
+            if (!next.done && next.value.type === 'finish' && next.value.reason !== 'stop') {
+              throw new CodingNsRpcError('TEAM_DELIVERY_UNCERTAIN', 'The provider turn ended unsuccessfully before pending Team input could be delivered. Inspect the session before resending.')
+            }
+            await closeAgentIterator(iterator)
+            const pending = deferredPeerInput
+            deferredPeerInput = undefined
+            iterator = driver.executeTurn({ ...pending, ...(current.providerSessionId ? { providerSessionId: current.providerSessionId } : {}), resumeSegmentedTurn: false })[Symbol.asyncIterator]()
+            continue
+          }
+          if (next.done) { iterator = undefined; break }
+        }
         const event = next.value
         if (event.type === 'usage') this.lastUsages.set(input.sessionId, usageSnapshot(event))
         if (event.type === 'session-binding') {
@@ -667,11 +704,11 @@ export class CodingNsCliAdapterRegistry {
         // Explicit boundaries preserve the driver's grouping of messages and tool batches.
         if (event.type === 'step-boundary') {
           if (driver.supportsStreamStepSplitting === true) {
-            this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator })
+            this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator, ...(deferredPeerInput ? { deferredPeerInput } : {}) })
           } else {
             await closeAgentIterator(iterator)
             // Driver-owned segments resume through a new executeTurn call.
-            this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator: null })
+            this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator: null, ...(deferredPeerInput ? { deferredPeerInput } : {}) })
           }
           iterator = undefined
           yield event
@@ -684,7 +721,7 @@ export class CodingNsCliAdapterRegistry {
           && (event.status === 'completed' || event.status === 'failed')) {
           // 先保存迭代器再 yield。即使调用方在工具事件后提前关闭流，
           // 下一次 DSH step 仍能从同一个 Provider 进程继续读取正文。
-          this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator })
+          this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator, ...(deferredPeerInput ? { deferredPeerInput } : {}) })
           // 所有权交给续段表，当前调用结束不得关闭需要继续消费的 Provider 流。
           iterator = undefined
           yield event

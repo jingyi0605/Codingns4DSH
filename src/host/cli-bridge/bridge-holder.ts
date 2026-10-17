@@ -1,3 +1,6 @@
+import { randomBytes } from 'node:crypto'
+import type { CodingNsTeamIdentity } from '../../shared/contracts/agent-team.js'
+
 /**
  * 外部 CLI 子代理托管桥接的运行时句柄。
  *
@@ -22,6 +25,16 @@ export interface SubagentBridgeRuntime {
   recordRedirect(sessionId: string, toolCallId: string, redirect: SubagentBridgeRedirect): void
   /** 取出并清理重定向记录；同一 toolCallId 只消费一次。 */
   consumeRedirect(sessionId: string, toolCallId: string): SubagentBridgeRedirect | undefined
+  teamSession?(sessionId: string): { readonly token: string; readonly identity: CodingNsTeamIdentity } | undefined
+  authorizeTeam?(token: string): string | undefined
+  revokeTeamSession?(sessionId: string): void
+  revokeTeamSessions?(): void
+}
+
+export interface TeamSessionAccess {
+  readonly identity: CodingNsTeamIdentity
+  readonly caller: object
+  readonly signal: AbortSignal
 }
 
 const REDIRECT_TTL_MS = 30 * 60_000
@@ -37,8 +50,15 @@ export function getSubagentBridge(): SubagentBridgeRuntime | undefined {
   return current
 }
 
-export function createSubagentBridgeRuntime(options: { readonly baseUrl: string; readonly token: string }): SubagentBridgeRuntime {
+export function createSubagentBridgeRuntime(options: { readonly baseUrl: string; readonly token: string; readonly teamAccess?: (sessionId: string) => TeamSessionAccess | undefined }): SubagentBridgeRuntime {
   const redirects = new Map<string, { readonly redirect: SubagentBridgeRedirect; readonly expiresAt: number }>()
+  const sessions = new Map<string, { token: string; access: TeamSessionAccess }>()
+  const credentials = new Map<string, string>()
+  const forget = (sessionId: string): void => {
+    const previous = sessions.get(sessionId)
+    if (previous) credentials.delete(previous.token)
+    sessions.delete(sessionId)
+  }
   const keyOf = (sessionId: string, toolCallId: string): string => `${sessionId}\u0000${toolCallId}`
   const prune = (now: number): void => {
     for (const [key, entry] of redirects) {
@@ -51,6 +71,42 @@ export function createSubagentBridgeRuntime(options: { readonly baseUrl: string;
   return {
     baseUrl: options.baseUrl,
     token: options.token,
+    teamSession(sessionId) {
+      const access = options.teamAccess?.(sessionId)
+      if (!access || access.signal.aborted) { forget(sessionId); return undefined }
+      let session = sessions.get(sessionId)
+      if (session && (session.access.caller !== access.caller || session.access.signal !== access.signal || session.access.identity.teamId !== access.identity.teamId)) {
+        forget(sessionId)
+        session = undefined
+      }
+      if (!session) {
+        for (const [id, candidate] of sessions) if (candidate.access.signal.aborted) forget(id)
+        if (sessions.size >= 2048) {
+          for (const [id, candidate] of sessions) {
+            const live = options.teamAccess?.(id)
+            if (!live || live.signal.aborted || live.caller !== candidate.access.caller || live.signal !== candidate.access.signal) forget(id)
+          }
+        }
+        if (sessions.size >= 2048) return undefined
+        session = { token: randomBytes(24).toString('hex'), access }
+        sessions.set(sessionId, session)
+        credentials.set(session.token, sessionId)
+      }
+      return { token: session.token, identity: access.identity }
+    },
+    authorizeTeam(token) {
+      const sessionId = credentials.get(token)
+      if (!sessionId) return undefined
+      const previous = sessions.get(sessionId)
+      const current = options.teamAccess?.(sessionId)
+      if (!previous || !current || current.signal.aborted || previous.access.signal !== current.signal || previous.access.caller !== current.caller || previous.access.identity.teamId !== current.identity.teamId) {
+        forget(sessionId)
+        return undefined
+      }
+      return sessionId
+    },
+    revokeTeamSession: forget,
+    revokeTeamSessions() { sessions.clear(); credentials.clear() },
     recordRedirect(sessionId, toolCallId, redirect) {
       if (sessionId === '' || toolCallId === '') return
       const now = Date.now()

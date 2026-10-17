@@ -27,6 +27,12 @@ export interface CodingNsCliAdapterDescriptor {
   readonly diagnostic?: string
   /** 探测失败原因与“未找到安装入口”分离；旧 Client 可以忽略此可选字段。 */
   readonly detectionFailure?: 'launch' | 'timeout' | 'version' | 'protocol'
+  /** Host and adapter readiness are separate from live-runtime certification. */
+  readonly team?: {
+    readonly member: boolean
+    readonly lead: boolean
+    readonly reason?: 'version' | 'profile' | 'disabled' | 'adapter' | 'installation'
+  }
   /** Optional, read-only release check; never starts an installation or an Agent. */
   readonly update?: {
     readonly state: 'unchecked' | 'checking' | 'available' | 'current' | 'unavailable' | 'error'
@@ -264,6 +270,8 @@ export interface CodingNsCliTurnInput {
   readonly sessionId: string
   readonly messages: readonly CodingNsCliMessage[]
   readonly prompt: string
+  /** Trusted Host marker for newly accepted peer input at a resumed provider boundary. */
+  readonly peerInput?: boolean
   /** 当前用户消息中的已解析附件；路径只在 Host 内部传给驱动。 */
   readonly attachments?: readonly CodingNsCliAttachment[]
   /** Input language for host-generated prose; omitted when translation is disabled. */
@@ -348,6 +356,8 @@ export interface CodingNsCliMessage {
     readonly plugin?: string
     readonly form?: string
     readonly callId?: string
+    /** Native peer and settlement messages retain the originating child identity. */
+    readonly senderSessionId?: string
     /** DSH 用户消息的双语展示元数据；只在 Host 内部剥离，不发送给 Provider。 */
     readonly codingnsTranslationInput?: SessionTranslationInputRecord
     /** Original host context remains auditable without changing its producer identity. */

@@ -11,7 +11,7 @@ import { CODEX_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { isQuestionEvent, questionAnswersRecord, readAgentQuestions } from './interaction-events.js'
-import { codexBridgeArgs, codexBridgeDeveloperInstructions, codexComputerUseLaunchSettings, type CodexComputerUseMode, type CodexComputerUseServerConfig } from '../cli-bridge/injections.js'
+import { codexBridgeArgs, codexBridgeDeveloperInstructions, codexComputerUseLaunchSettings, teamBridgeToken, type CodexComputerUseMode, type CodexComputerUseServerConfig } from '../cli-bridge/injections.js'
 import { CodexFileCitationNormalizer } from './codex-file-citations.js'
 import { CodexPerformanceTracker } from './codex-performance.js'
 
@@ -57,6 +57,8 @@ interface CodexTurnEventQueue {
 }
 
 interface CodexSession {
+  readonly teamToken: string | undefined
+  readonly resumeThreadId: string | undefined
   readonly performance: CodexPerformanceTracker
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
@@ -320,8 +322,9 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     try {
       if (session.threadId === '') {
         const threadParams = codexThreadParams(input)
-        const thread = input.providerSessionId
-          ? await rpc.request('thread/resume', { threadId: input.providerSessionId, ...threadParams }, { signal: input.signal, killOnAbort: false })
+        const resumeThreadId = input.providerSessionId ?? session.resumeThreadId
+        const thread = resumeThreadId
+          ? await rpc.request('thread/resume', { threadId: resumeThreadId, ...threadParams }, { signal: input.signal, killOnAbort: false })
           : await rpc.request('thread/start', threadParams, { signal: input.signal, killOnAbort: false })
         session.threadId = readId(thread) ?? input.providerSessionId ?? input.sessionId
         session.providerSessionId = session.threadId
@@ -450,8 +453,9 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     try {
       if (session.threadId === '') {
         const threadParams = codexThreadParams(input)
-        const thread = input.providerSessionId
-          ? await rpc.request('thread/resume', { threadId: input.providerSessionId, ...threadParams }, { signal: input.signal, killOnAbort: false })
+        const resumeThreadId = input.providerSessionId ?? session.resumeThreadId
+        const thread = resumeThreadId
+          ? await rpc.request('thread/resume', { threadId: resumeThreadId, ...threadParams }, { signal: input.signal, killOnAbort: false })
           : await rpc.request('thread/start', threadParams, { signal: input.signal, killOnAbort: false })
         session.threadId = readId(thread) ?? input.providerSessionId ?? input.sessionId
         session.providerSessionId = session.threadId
@@ -1035,7 +1039,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
 
   private async getSession(input: CodingNsCliTurnInput, command: string) {
     const previous = this.sessions.get(input.sessionId)
-    if (previous !== undefined && previous.cwd === input.cwd) return previous
+    const teamToken = teamBridgeToken(input.sessionId)
+    if (previous !== undefined && previous.cwd === input.cwd && previous.teamToken === teamToken && !previous.rpc.isClosed) return previous
     if (previous?.segmentedTurn !== undefined) this.closeSegmentedTurn(previous, previous.segmentedTurn)
     previous?.rpc.dispose()
     // 子代理托管开启时用 `-c` 覆盖注入 MCP 替身工具；工具由桥接转投成 DSH 原生子会话。
@@ -1044,6 +1049,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     // 统一置于子命令前，避免不同版本对全局/子命令参数的解析差异。
     const rpc = new JsonRpcProcess({ command, args: [...bridgeArgs, ...this.appServerArgs()], cwd: input.cwd, explicitWindowsShell: true, spawn: this.runSpawn })
     const session = {
+      teamToken,
+      resumeThreadId: input.providerSessionId ?? (previous?.cwd === input.cwd ? previous?.threadId || previous?.resumeThreadId : undefined),
       performance: new CodexPerformanceTracker(this.now),
       rpc,
       cwd: input.cwd,
@@ -1492,6 +1499,7 @@ function isCodexNoActiveTurnError(error: unknown): boolean {
 /** 判断分段续流是否带来了新的真实用户插话。 */
 function isCodexSteeringInput(input: CodingNsCliTurnInput): boolean {
   if (input.resumeSegmentedTurn !== true || input.prompt.trim() === '') return false
+  if (input.peerInput) return true
   for (let index = input.messages.length - 1; index >= 0; index -= 1) {
     const message = input.messages[index]
     if (message?.role !== 'user') continue

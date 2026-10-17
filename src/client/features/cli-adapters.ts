@@ -572,6 +572,10 @@ function AdapterDetailsDialog({ adapter, hostLabel, models, modelsError, loading
         createElement('dt', undefined, t('cli.commandPath')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.command ?? t('cli.notDetectedCommand')),
         adapter.diagnostic && createElement('dt', undefined, t('cli.diagnostic')),
         adapter.diagnostic && createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere', color: dshThemeColor.labelSecondary } }, adapter.diagnostic),
+        adapter.team && createElement('dt', undefined, t('cli.team.label')),
+        adapter.team && createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.team.member
+          ? t(adapter.team.lead ? 'cli.team.leadAndMember' : 'cli.team.member')
+          : t(`cli.team.reason.${adapter.team.reason ?? 'adapter'}`)),
         createElement('dt', undefined, t('cli.protocol')), createElement('dd', { style: { margin: 0 } }, adapter.protocol ?? t('cli.undeclared')),
         createElement('dt', undefined, t('cli.capabilities')), createElement('dd', { style: { margin: 0, overflowWrap: 'anywhere' } }, adapter.capabilities?.join(t('common.listSeparator')) ?? t('cli.undeclared')),
       ),

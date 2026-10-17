@@ -4,6 +4,7 @@ import { isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAdapterRegistry } from '../cli-adapters/registry-holder.js'
 import { getSubagentBridge } from './bridge-holder.js'
+import { teamGuidance } from '../../shared/contracts/agent-team.js'
 
 /**
  * 注入构造器：把桥接端点、令牌与会话身份翻译成各外部 CLI 的原生扩展面。
@@ -59,6 +60,11 @@ export function subagentBridgeActive(sessionId: string): boolean {
   return getSubagentBridge() !== undefined && sessionId.trim() !== ''
 }
 
+/** Runtime-only fingerprint for invalidating provider processes with stale Team tools. */
+export function teamBridgeToken(sessionId: string): string | undefined {
+  return getSubagentBridge()?.teamSession?.(sessionId)?.token
+}
+
 /** command-code：`--mod` 每次运行加载托管 mod。 */
 export function commandCodeBridgeArgs(sessionId: string): readonly string[] {
   if (!subagentBridgeActive(sessionId)) return []
@@ -104,7 +110,9 @@ export function claudeBridgeArgs(sessionId: string, adapterId: string): readonly
   const config = JSON.stringify({ mcpServers: { codingns: mcpServerConfig(env) } })
   return [
     '--mcp-config', config,
-    '--append-system-prompt', bridgeSubagentGuidance('mcp__codingns__agent_subagent'),
+    '--append-system-prompt', bridgeSessionGuidance(sessionId, 'mcp__codingns__agent_subagent'),
+    // Coordination authority is checked by DSH; filesystem tools retain their policy.
+    ...(env.CODINGNS_TEAM_TOKEN ? ['--allowedTools', 'mcp__codingns__agent_team'] : []),
     ...CLAUDE_NATIVE_SUBAGENT_BLOCK_ARGS,
   ]
 }
@@ -115,7 +123,7 @@ export function claudeBridgeArgs(sessionId: string, adapterId: string): readonly
  */
 export function codexBridgeDeveloperInstructions(sessionId: string): string | undefined {
   if (!subagentBridgeActive(sessionId)) return undefined
-  return bridgeSubagentGuidance('codingns.agent_subagent')
+  return bridgeSessionGuidance(sessionId, 'codingns.agent_subagent')
 }
 
 /**
@@ -125,6 +133,7 @@ export function codexBridgeDeveloperInstructions(sessionId: string): string | un
 export function acpBridgeMcpServers(sessionId: string, adapterId: string): readonly Record<string, unknown>[] {
   const env = bridgeEnvironment(sessionId, adapterId)
   if (env === undefined) return []
+  if (adapterId === 'command-code' && env.CODINGNS_TEAM_TOKEN) return []
   return [{
     name: 'codingns',
     command: process.execPath,
@@ -158,7 +167,7 @@ export function openCodeBridgeMcpConfig(sessionId: string, adapterId: string): {
   const serverName = openCodeBridgeServerName(sessionId)
   return {
     serverName,
-    toolName: `${serverName}_${isSubagentChildSession(sessionId) ? 'send_message' : 'agent_subagent'}`,
+    toolName: `${serverName}_${env.CODINGNS_TEAM_TOKEN ? 'agent_team' : isSubagentChildSession(sessionId) ? 'send_message' : 'agent_subagent'}`,
     config: {
       type: 'local',
       command: [process.execPath, MCP_ENTRY_PATH],
@@ -324,12 +333,14 @@ function bridgeEnvironment(sessionId: string, adapterId: string): Record<string,
   const runtime = getSubagentBridge()
   if (runtime === undefined || sessionId.trim() === '') return undefined
   const child = isSubagentChildSession(sessionId)
+  const team = runtime.teamSession?.(sessionId)
   return {
     [BRIDGE_MARKER]: '1',
     CODINGNS_BRIDGE_URL: runtime.baseUrl,
-    CODINGNS_BRIDGE_TOKEN: runtime.token,
+    CODINGNS_BRIDGE_TOKEN: team?.token ?? runtime.token,
     CODINGNS_DSH_SESSION_ID: sessionId,
     CODINGNS_ADAPTER_ID: adapterId,
+    ...(team ? { CODINGNS_TEAM_TOKEN: team.token, CODINGNS_TEAM_ROLE: team.identity.role, CODINGNS_TEAM_NAME: team.identity.name, CODINGNS_TEAM_ID: team.identity.teamId } : {}),
     ...(child ? { [SUBAGENT_CHILD_MARKER]: '1' } : {}),
     // 桌面版 DSH 的 process.execPath 是 Electron 二进制；该变量让它以 Node 运行 MCP 入口。
     ELECTRON_RUN_AS_NODE: '1',
@@ -338,6 +349,11 @@ function bridgeEnvironment(sessionId: string, adapterId: string): Record<string,
 
 function mcpServerConfig(env: Record<string, string>): Record<string, unknown> {
   return { command: process.execPath, args: [MCP_ENTRY_PATH], env }
+}
+
+export function bridgeSessionGuidance(sessionId: string, ordinaryToolName: string): string {
+  const team = getSubagentBridge()?.teamSession?.(sessionId)
+  return team ? teamGuidance(ordinaryToolName.replace(/(?:agent_subagent|send_message)$/u, 'agent_team'), team.identity) : bridgeSubagentGuidance(ordinaryToolName)
 }
 
 /**
@@ -370,15 +386,16 @@ export function bridgeSubagentGuidance(toolName: string): string {
  */
 export function openCodeBridgePrompt(sessionId: string, prompt: string): string {
   const child = isSubagentChildSession(sessionId)
-  if (!subagentBridgeActive(sessionId) || (!child && !looksLikeSubagentRequest(prompt))) return prompt
+  const team = getSubagentBridge()?.teamSession?.(sessionId)
+  if (!subagentBridgeActive(sessionId) || (!team && !child && !looksLikeSubagentRequest(prompt))) return prompt
   const toolName = openCodeBridgeToolName(sessionId)
   if (prompt.includes(toolName)) return prompt
-  return `[CodingNS subagent routing instructions]\n${bridgeSubagentGuidance(toolName)}\n\n[User request]\n${prompt}`
+  return `[CodingNS coordination instructions]\n${bridgeSessionGuidance(sessionId, toolName)}\n\n[User request]\n${prompt}`
 }
 
 /** 返回当前 OpenCode V2 会话实际暴露的 MCP 工具名。 */
 export function openCodeBridgeToolName(sessionId: string): string {
-  return `${openCodeBridgeServerName(sessionId)}_${isSubagentChildSession(sessionId) ? 'send_message' : 'agent_subagent'}`
+  return `${openCodeBridgeServerName(sessionId)}_${getSubagentBridge()?.teamSession?.(sessionId) ? 'agent_team' : isSubagentChildSession(sessionId) ? 'send_message' : 'agent_subagent'}`
 }
 
 /**

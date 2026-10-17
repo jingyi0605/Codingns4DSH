@@ -259,6 +259,27 @@ test('Codex 分段续流收到真实用户插话时调用 turn/steer 并保留�
 
 type SteerHarness = Awaited<ReturnType<typeof createSteerHarness>>
 
+test('Codex steers a suspended turn with trusted native peer input', { timeout: 5_000 }, async () => {
+  const harness = await createSteerHarness(true)
+  let resumed: AsyncIterator<CodingNsAgentEvent> | undefined
+  try {
+    await suspendAfterTool(harness, 'Buffered result')
+    const prompt = 'Team message from reviewer: fix the race'
+    resumed = harness.driver.executeTurn({
+      sessionId: harness.sessionId, prompt, peerInput: true,
+      messages: [{ role: 'user', source: { kind: 'agent-message', form: 'relay' }, content: prompt }],
+      splitToolSteps: true, resumeSegmentedTurn: true,
+    })[Symbol.asyncIterator]()
+    assert.equal((await resumed.next()).value?.type, 'text-delta')
+    assert.deepEqual(harness.calls.find(call => call.method === 'turn/steer')?.params, {
+      threadId: harness.threadId, expectedTurnId: harness.turnId, input: [{ type: 'text', text: prompt }],
+    })
+    harness.completeTurn()
+    await collect(resumed)
+    assert.equal(harness.calls.filter(call => call.method === 'turn/start').length, 1)
+  } finally { await resumed?.return?.(); await harness.dispose() }
+})
+
 /** 让分段回合在工具完成后挂起，并在队列里留下一段尚未交给 DSH 的旧正文。 */
 async function suspendAfterTool(harness: SteerHarness, bufferedText: string): Promise<void> {
   harness.sendNotification('item/completed', {

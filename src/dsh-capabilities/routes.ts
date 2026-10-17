@@ -13,6 +13,7 @@ import { supportsQuickAppFooter } from './client/quick-app-footer-adapter.js'
 import { createWorkspaceDirectoryBrowser, supportsWorkspaceDirectory } from './host/workspace-directory-adapter.js'
 import { createSessionPerformanceAdapter, supportsSessionPerformance } from './host/session-performance-adapter.js'
 import { createSessionPerformancePresentation, supportsSessionPerformancePresentation } from './client/session-performance-adapter.js'
+import { createAgentTeamAdapter, supportsExternalAgentTeam } from './host/agent-team-adapter.js'
 
 /**
  * 注册 Codingns4DSH 当前实际消费的 DSH 服务能力。
@@ -33,6 +34,10 @@ export function createDshCapabilityRegistry(
   const add = <T>(route: DshCapabilityRoute<T>): void => registry.register(route)
 
   if (runtime === 'host') {
+    for (const role of ['member', 'lead'] as const) {
+      add({ id: `agent-team-external-${role}-021`, capability: `agent-team.external-${role}`, supportedDsh: '>=0.2.1-alpha.2 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.2',
+        detect: ctx => supportsExternalAgentTeam(ctx, role === 'lead'), create: createAgentTeamAdapter })
+    }
     add({ id: 'session-performance-projection-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformance, create: createSessionPerformanceAdapter })
     add({ id: 'quick-app-host-proxy-021', capability: 'quick-app.proxy', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: supportsQuickAppProxy, create: createQuickAppProxy })

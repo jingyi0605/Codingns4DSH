@@ -18,7 +18,7 @@ import { probeStoredSession } from './session-probe.js'
 import { buildAcpPromptBlocks, promptWithAttachmentPaths, withAttachmentPaths } from './attachment-utils.js'
 import { firstToolText, serializeToolValue } from './tool-observation.js'
 import { terminateChildProcess, WINDOWS, type CodingNsChildProcess } from './process-utils.js'
-import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
+import { acpBridgeMcpServers, teamBridgeToken } from '../cli-bridge/injections.js'
 import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest as parseAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 
 export interface MiniMaxCodeDriverOptions {
@@ -29,6 +29,7 @@ export interface MiniMaxCodeDriverOptions {
 }
 
 interface McodeSession {
+  readonly teamToken: string | undefined
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
   /** '' 表示尚未创建 ACP 会话；创建后为 CLI 原生 mvs_* 标识。 */
@@ -119,6 +120,7 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
     if (command === null) throw new Error('MiniMax Code 未安装')
     const effort = input.effortId?.trim()
     if (EXEC_ONLY_EFFORT && effort !== undefined && effort !== '' && effort !== 'default' && isCatalogEffort(input.modelId, effort, this.effortCatalog())) {
+      if (teamBridgeToken(input.sessionId)) throw Object.assign(new Error('MiniMax Team sessions require the default ACP effort; exec mode cannot expose Team tools.'), { code: 'TEAM_EFFORT_UNSUPPORTED' })
       yield* withAttachmentPaths(input, (prepared) => this.executeExecTurn(prepared, command))
       return
     }
@@ -131,7 +133,7 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
     }
     yield { type: 'session-binding', providerSessionId: session.acpSessionId }
     if (input.modelId && !isProviderDefaultModel(input.modelId)) {
-      await session.rpc.request('session/set_model', { sessionId: session.acpSessionId, modelId: input.modelId }).catch(() => undefined)
+      await session.rpc.request('session/set_model', { sessionId: session.acpSessionId, modelId: input.modelId }).catch(error => { if (session.teamToken) throw error })
     }
 
     const eventQueue = createMcodeTurnEventQueue()
@@ -297,10 +299,12 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
   /** 复用同 cwd 的常驻 ACP 进程；cwd 变化或进程死亡时重建并重新挂载会话。 */
   private async getSession(input: CodingNsCliTurnInput, command: string): Promise<McodeSession> {
     const previous = this.sessions.get(input.sessionId)
-    if (previous !== undefined && previous.cwd === input.cwd && !previous.rpc.isClosed) return previous
+    const teamToken = teamBridgeToken(input.sessionId)
+    if (previous !== undefined && previous.cwd === input.cwd && previous.teamToken === teamToken && !previous.rpc.isClosed) return previous
     previous?.rpc.dispose()
     const rpc = new JsonRpcProcess({ command, args: ['acp'], cwd: input.cwd, spawn: this.runSpawn })
     const session: McodeSession = {
+      teamToken,
       rpc,
       cwd: input.cwd,
       acpSessionId: '',
@@ -352,7 +356,8 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
           cwd: input.cwd ?? process.cwd(),
           mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),
         }, { signal: input.signal, killOnAbort: false })
-      } catch {
+      } catch (error) {
+        if (session.teamToken) throw error
         session.providerSessionId = input.sessionId
       }
     }

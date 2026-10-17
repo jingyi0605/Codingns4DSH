@@ -60,6 +60,48 @@ export default function codingNsSubagentMod(cmd: ModApiLike): void {
   // 会话始终带标记，不能因为桥接暂时不可用而回退到原生 agent。
   if (!nativeAgentDisabled && !bridgeConfigured) return
 
+  const teamToken = process.env.CODINGNS_TEAM_TOKEN ?? ''
+  if (teamToken !== '') {
+    const lead = process.env.CODINGNS_TEAM_ROLE === 'lead'
+    const memberActions = ['status', 'members', 'message', 'tasks', 'task', 'task_create', 'task_update', 'wait']
+    cmd.addTool?.({
+      schema: {
+        name: 'agent_team',
+        description: `You are ${lead ? 'the Lead' : 'a teammate'} named ${process.env.CODINGNS_TEAM_NAME ?? ''} in a native DSH Team. Use agent_team for coordination. Create teammates only on the user's explicit request. Task updates require current expectedRevision and taskAction; message acceptance is not processing or task completion. Members share files: coordinate write scopes and dependencies. Message required inactive peers before waiting and re-read after changes. ${lead ? 'Only the Lead may spawn, interrupt, and reassign. Wait for required teammates before finishing.' : 'Report to target=lead and do not create nested agents.'}`,
+        input_schema: {
+          type: 'object', additionalProperties: false, required: ['action'],
+          properties: {
+            action: { type: 'string', enum: lead ? [...memberActions, 'spawn', 'interrupt'] : memberActions },
+            ...Object.fromEntries(['name', 'description', 'prompt', 'agent', 'provider', 'model', 'effort', 'target', 'message', 'taskId', 'subject', 'taskAction', 'owner'].map(key => [key, { type: 'string' }])),
+            context: { type: 'string', enum: ['fresh'] },
+            expectedRevision: { type: 'integer', minimum: 1 },
+            timeout_ms: { type: 'integer', minimum: 10_000, maximum: 240_000 },
+            blockedBy: { type: 'array', items: { type: 'string' } },
+            writeScopes: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+      run: async ({ input }) => {
+        try {
+          const response = await fetch(`${baseUrl}/v1/team`, {
+            method: 'POST', headers: { authorization: `Bearer ${teamToken}`, 'content-type': 'application/json' },
+            body: JSON.stringify(input), signal: AbortSignal.timeout(260_000),
+          })
+          const result = await response.json() as { ok?: boolean }
+          return { ok: response.ok && result.ok === true, content: [{ type: 'text', text: JSON.stringify(result) }] }
+        } catch {
+          return { ok: false, error: 'TEAM_DELIVERY_UNCERTAIN: Read current Team state before retrying a mutation.' }
+        }
+      },
+    })
+    cmd.hooks({
+      onSessionStart: () => { if (cmd.getActiveTools && cmd.setActiveTools) cmd.setActiveTools(cmd.getActiveTools().filter(name => !['agent', 'agent_output', 'agent_subagent'].includes(name))) },
+      beforeToolCall: context => ['agent', 'agent_output', 'agent_subagent'].includes(context.toolName ?? '')
+        ? { block: true, additionalContext: 'Use agent_team for native DSH Team operations; provider-owned subagents are disabled.' } : undefined,
+    })
+    return
+  }
+
   // legacy `-p` 模式不会像 ACP 那样从 session/new 接收 mcpServers。直接注册
   // DSH 工具，才能让 Command Code 在启动时就拥有正确的委派入口；仅靠
   // beforeToolCall 拦截原生 agent 会把模型逼回错误工具或让它继续内联。

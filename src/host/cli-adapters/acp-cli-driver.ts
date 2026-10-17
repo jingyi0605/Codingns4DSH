@@ -13,7 +13,7 @@ import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, streamRpcRequest, usageChunk } from './rpc-driver-utils.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks } from './attachment-utils.js'
-import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
+import { acpBridgeMcpServers, teamBridgeToken } from '../cli-bridge/injections.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 import { reasoningText } from './reasoning-content.js'
 import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest } from './acp-elicitation.js'
@@ -89,6 +89,7 @@ export interface AcpPendingQuestionRequest {
 }
 
 interface AcpSession {
+  readonly teamToken: string | undefined
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
   readonly argsKey: string
@@ -230,7 +231,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
 
     await this.configureSession?.(session.rpc, providerSessionId, input)
     if (this.runtimeModelSelection && input.modelId && input.modelId !== 'provider-default') {
-      await session.rpc.request('session/set_model', { sessionId: providerSessionId, modelId: input.modelId }, { signal: input.signal, killOnAbort: false }).catch(() => undefined)
+      await session.rpc.request('session/set_model', { sessionId: providerSessionId, modelId: input.modelId }, { signal: input.signal, killOnAbort: false }).catch(error => { if (session.teamToken) throw error })
     }
 
     let emittedFinish = false
@@ -386,7 +387,8 @@ export class AcpCliDriver implements CodingNsCliDriver {
   private async getSession(input: CodingNsCliTurnInput, command: string, args: readonly string[]): Promise<AcpSession> {
     const argsKey = JSON.stringify(args)
     const previous = this.sessions.get(input.sessionId)
-    if (previous !== undefined && previous.cwd === input.cwd && previous.argsKey === argsKey && !previous.rpc.isClosed) return previous
+    const teamToken = teamBridgeToken(input.sessionId)
+    if (previous !== undefined && previous.cwd === input.cwd && previous.argsKey === argsKey && previous.teamToken === teamToken && !previous.rpc.isClosed) return previous
     previous?.rpc.dispose()
     // 会话级注入必须在每次创建 ACP 进程时重新计算：桥接端点、令牌和父会话身份
     // 都是运行时状态，不能在驱动构造时静态捕获。runtimeEnv 先于专用注入合并，
@@ -398,6 +400,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     }
     const rpc = new JsonRpcProcess({ command, args, cwd: input.cwd, env: sessionEnvironment, spawn: this.runSpawn })
     const state: AcpSession = {
+      teamToken,
       rpc,
       cwd: input.cwd,
       argsKey,

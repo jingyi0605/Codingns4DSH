@@ -22,7 +22,7 @@ import { usageChunk } from './rpc-driver-utils.js'
 import { commandEnvironment, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
 import { prepareAttachmentPaths, promptWithAttachmentPaths } from './attachment-utils.js'
 import { parseSkillFrontmatter } from './skill-filesystem.js'
-import { commandCodeNativeAgentArgs, commandCodeNativeAgentEnvironment, subagentBridgeActive } from '../cli-bridge/injections.js'
+import { commandCodeNativeAgentArgs, commandCodeNativeAgentEnvironment, subagentBridgeActive, teamBridgeToken } from '../cli-bridge/injections.js'
 import { getSubagentBridge } from '../cli-bridge/bridge-holder.js'
 import { AcpCliDriver, type AcpPendingQuestionRequest } from './acp-cli-driver.js'
 import type { JsonRpcMessage, JsonRpcProcess } from './json-rpc-process.js'
@@ -2094,7 +2094,8 @@ function commandCodeAcpPermissionDecision(message: JsonRpcMessage, input: Coding
     && (permission?.sandboxMode === 'workspace-write' || permission?.sandboxMode === 'danger-full-access')
   // 只识别插件自己的两个入口，不能把全部 MCP/自定义工具或显式风险请求放行。
   if (canWrite && metadata.risk === undefined && subagentBridgeActive(input.sessionId)
-    && (toolName === 'agent_subagent' || toolName === 'mcp__codingns__agent_subagent')) return 'allow'
+    && (toolName === 'agent_subagent' || toolName === 'mcp__codingns__agent_subagent'
+      || toolName === 'agent_team' && teamBridgeToken(input.sessionId) !== undefined)) return 'allow'
   // never 允许已有授权范围内的工作，但不允许把剩余审批升级成交互弹窗。
   return permission?.approvalPolicy === 'never' ? 'reject' : undefined
 }

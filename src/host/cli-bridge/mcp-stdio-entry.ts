@@ -5,15 +5,19 @@
  * 令牌和 DSH 会话身份全部来自进程环境，不读取磁盘上的任何配置。
  */
 
+import { teamToolSchema, teamGuidance } from '../../shared/contracts/agent-team.js'
+
 const BRIDGE_URL = (process.env.CODINGNS_BRIDGE_URL ?? '').replace(/\/+$/u, '')
 const BRIDGE_TOKEN = process.env.CODINGNS_BRIDGE_TOKEN ?? ''
 const SESSION_ID = process.env.CODINGNS_DSH_SESSION_ID ?? ''
 const ADAPTER_ID = process.env.CODINGNS_ADAPTER_ID ?? ''
+const TEAM_TOKEN = process.env.CODINGNS_TEAM_TOKEN ?? ''
+const TEAM_ROLE = process.env.CODINGNS_TEAM_ROLE === 'lead' ? 'lead' : 'teammate'
 // OpenCode V2 会把同目录下的 MCP server 全部放进工具目录，子会话需要独立
 // 的回传工具名；其他 ACP/Claude/Codex 适配器仍兼容原有 agent_subagent schema。
 const IS_SUBAGENT_CHILD = process.env.CODINGNS_SUBAGENT_CHILD === '1' && ADAPTER_ID === 'opencode'
 /** 子会话只暴露回传工具，避免在多个历史 codingns_* 桥接间猜路由。 */
-const TOOL_NAME = IS_SUBAGENT_CHILD ? 'send_message' : 'agent_subagent'
+const TOOL_NAME = TEAM_TOKEN !== '' ? 'agent_team' : IS_SUBAGENT_CHILD ? 'send_message' : 'agent_subagent'
 // MCP 客户端通常把单次 tools/call 限制在 300 秒左右。start 永远后台返回；
 // wait 也只做一次有界观察，超时后由模型再次调用 read/wait 继续轮询。
 const DISPATCH_TIMEOUT_MS = 260_000
@@ -26,7 +30,11 @@ interface JsonRpcRequest {
   readonly params?: unknown
 }
 
-const TOOL_DEFINITION = {
+const TOOL_DEFINITION = TEAM_TOKEN !== '' ? {
+  name: TOOL_NAME,
+  description: teamGuidance('agent_team', { sessionId: SESSION_ID, teamId: process.env.CODINGNS_TEAM_ID ?? '', role: TEAM_ROLE, name: process.env.CODINGNS_TEAM_NAME ?? '' }),
+  inputSchema: teamToolSchema(TEAM_ROLE),
+} : {
   name: TOOL_NAME,
   description: IS_SUBAGENT_CHILD
     ? 'Report the completed result to the parent DSH session. This is the only supported child-to-parent report tool; do not search another codingns_* namespace. The parent session is inferred from the current child session, so child_session_id and agent_id are optional.'
@@ -111,6 +119,18 @@ async function callTool(params: unknown): Promise<Record<string, unknown>> {
   const name = typeof record?.name === 'string' ? record.name : ''
   if (name !== TOOL_DEFINITION.name) return textResult(`Unknown tool: ${name}`, true)
   const args = asRecord(record?.arguments) ?? {}
+  if (TEAM_TOKEN !== '') {
+    try {
+      const response = await fetch(`${BRIDGE_URL}/v1/team`, {
+        method: 'POST', headers: { authorization: `Bearer ${TEAM_TOKEN}`, 'content-type': 'application/json' },
+        body: JSON.stringify(args), signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
+      })
+      const result = await readJsonRecord(response)
+      return textResult(JSON.stringify(result ?? { ok: false, code: 'TEAM_BRIDGE_UNAVAILABLE' }), !response.ok || result?.ok !== true)
+    } catch {
+      return textResult(JSON.stringify({ ok: false, code: 'TEAM_DELIVERY_UNCERTAIN', error: 'The Team bridge did not confirm this operation. Read current state before retrying a mutation.' }), true)
+    }
+  }
   const action = IS_SUBAGENT_CHILD
     ? 'send'
     : args.action === 'wait' || args.action === 'read' || args.action === 'send' ? args.action : 'start'

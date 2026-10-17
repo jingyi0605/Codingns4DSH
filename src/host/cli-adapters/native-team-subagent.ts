@@ -52,6 +52,7 @@ export interface NativeSubagentStart {
 }
 
 export interface NativeSubagentService {
+  getProvider?(name: string): unknown
   registerProvider(provider: {
     readonly name: string
     readonly capabilities: Record<string, boolean>
@@ -114,7 +115,7 @@ export async function startNativeSubagent(
   throw new Error('DSH 原生 Subagent 能力不可用，当前 Host 未提供可续子会话')
 }
 
-interface PendingSelection { readonly modelId?: string }
+interface PendingSelection { readonly modelId?: string; readonly effortId?: string; readonly teamId?: string }
 const pendingSelections = new Map<string, PendingSelection>()
 const registeredServices = new WeakMap<object, () => void>()
 
@@ -136,11 +137,11 @@ const creationChains = new Map<string, Promise<unknown>>()
  * 创建阶段的排队版本：保留“同一父会话同一 Provider 一次只创建一条”的并发约束，
  * 但把并行批次排成队列而不是直接拒绝。桥接拦截外部 CLI 的并行子代理时使用。
  */
-export function enqueueTeamSubagentSelection<T>(parentId: string, adapterId: string, modelId: string | undefined, action: () => Promise<T>): Promise<T> {
+export function enqueueTeamSubagentSelection<T>(parentId: string, adapterId: string, modelId: string | undefined, action: () => Promise<T>, options: Omit<PendingSelection, 'modelId'> = {}): Promise<T> {
   const key = selectionKey(parentId, adapterId)
   const run = async (): Promise<T> => {
     if (pendingSelections.has(key)) throw new Error('同一 Agent 的子代理创建正在进行中')
-    pendingSelections.set(key, modelId === undefined ? {} : { modelId })
+    pendingSelections.set(key, { ...options, ...(modelId === undefined ? {} : { modelId }) })
     try { return await action() } finally { pendingSelections.delete(key) }
   }
   const previous = creationChains.get(key) ?? Promise.resolve()
@@ -191,6 +192,8 @@ export function registerNativeTeamSubagentProviders(service: NativeSubagentServi
           parentSessionId,
           origin: 'subagent',
           ...(selected?.modelId === undefined ? {} : { modelId: selected.modelId }),
+          ...(selected?.teamId && adapterId === 'mcode' ? { effortId: 'default' } : selected?.effortId === undefined ? {} : { effortId: selected.effortId }),
+          ...(selected?.teamId === undefined ? {} : { teamId: selected.teamId, teamMemberId: request.sessionId }),
         })
         await registry.flushSessionBindings()
         return {}

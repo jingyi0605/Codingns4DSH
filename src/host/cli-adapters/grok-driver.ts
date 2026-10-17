@@ -11,7 +11,7 @@ import { GROK_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { isRegularFile, probeStoredSession, resolveSessionDirectory } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks } from './attachment-utils.js'
-import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
+import { acpBridgeMcpServers, teamBridgeToken } from '../cli-bridge/injections.js'
 import { reasoningText } from './reasoning-content.js'
 import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 import { readAgentQuestions } from './interaction-events.js'
@@ -44,6 +44,7 @@ interface GrokStreamedToolInput {
 }
 
 interface GrokSessionState {
+  readonly teamToken?: string | undefined
   readonly contextUsage: GrokContextUsage
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
@@ -338,7 +339,8 @@ export class GrokBuildDriver implements CodingNsCliDriver {
   private async getSession(input: CodingNsCliTurnInput, command: string) {
     const alwaysApprove = input.permission?.sandboxMode === 'danger-full-access' && input.permission.approvalPolicy === 'never'
     const previous = this.sessions.get(input.sessionId)
-    if (previous !== undefined && previous.cwd === input.cwd && previous.alwaysApprove === alwaysApprove && !previous.rpc.isClosed) return previous
+    const teamToken = teamBridgeToken(input.sessionId)
+    if (previous !== undefined && previous.cwd === input.cwd && previous.alwaysApprove === alwaysApprove && previous.teamToken === teamToken && !previous.rpc.isClosed) return previous
     if (previous !== undefined) {
       await previous.rpc.disposeAndWait()
       this.processes.delete(previous.rpc)
@@ -346,7 +348,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
     const resumeId = input.providerSessionId ?? (previous?.cwd === input.cwd ? previous?.providerSessionId : undefined)
     const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', ...(alwaysApprove ? ['--always-approve'] : []), 'stdio'], cwd: input.cwd, env: grokRuntimeEnvironment(), spawn: this.runSpawn })
     this.processes.add(rpc)
-    const state: GrokSessionState = { rpc, contextUsage: new GrokContextUsage(), cwd: input.cwd, rawStoreRef: input.rawStoreRef, alwaysApprove, providerSessionId: '', requests: new Map(), permissionDenials: new Map(), questions: new Map(), grokQuestions: new Map(), grokQuestionCallIds: new Set(), grokQuestionEventIds: new Set() }
+    const state: GrokSessionState = { teamToken, rpc, contextUsage: new GrokContextUsage(), cwd: input.cwd, rawStoreRef: input.rawStoreRef, alwaysApprove, providerSessionId: '', requests: new Map(), permissionDenials: new Map(), questions: new Map(), grokQuestions: new Map(), grokQuestionCallIds: new Set(), grokQuestionEventIds: new Set() }
     rpc.addNotificationListener(message => {
       const params = isRecord(message.params) ? message.params : {}
       const owner = state.providerSessionId || resumeId
@@ -367,7 +369,10 @@ export class GrokBuildDriver implements CodingNsCliDriver {
         const loaded = await rpc.request('session/load', { sessionId: resumeId, cwd: input.cwd ?? process.cwd(), mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id) })
         state.contextUsage.observe(loaded)
         state.providerSessionId = readSessionId(loaded) ?? resumeId
-      } catch { /* 旧版 ACP 没有 load，下一轮在同一进程创建新会话 */ }
+      } catch (error) {
+        if (teamToken) { rpc.dispose(); this.processes.delete(rpc); throw error }
+        // Ordinary legacy ACP sessions keep their existing new-session fallback.
+      }
     }
     // ACP 权限是 Grok 发起的 server request，先挂起响应，待标准权限入口明确回复原始 id。
     rpc.setServerRequestHandler((message) => {

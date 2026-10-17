@@ -1,4 +1,12 @@
 export const en: Record<string, string> = {
+  'cli.team.label': 'Team eligibility',
+  'cli.team.leadAndMember': 'Collaborator and Lead',
+  'cli.team.member': 'Collaborator',
+  'cli.team.reason.version': 'Full Team support requires a verified DSH alpha.2 or alpha.3 host.',
+  'cli.team.reason.profile': 'Enable the native DSH Team profile to use Teams.',
+  'cli.team.reason.disabled': 'Enable the CodingNS bridge and this Agent to use Teams.',
+  'cli.team.reason.adapter': 'This Agent does not provide the required Team tool transport.',
+  'cli.team.reason.installation': 'Install and enable this Agent before using Teams.',
   'cli.manage.reasonLabel.application-managed': 'Check in app',
   'cli.manage.reasonLabel.unknown-version': 'Version unknown',
   'cli.manage.reasonLabel.legacy-distribution': 'Legacy distribution',
@@ -69,6 +77,14 @@ export const en: Record<string, string> = {
 }
 
 export const zh: Record<string, string> = {
+  'cli.team.label': '团队适配能力',
+  'cli.team.leadAndMember': '协作者和管理者',
+  'cli.team.member': '协作者',
+  'cli.team.reason.version': '完整团队功能需要经过验证的 DSH alpha.2 或 alpha.3 主机。',
+  'cli.team.reason.profile': '请启用 DSH 原生团队配置后使用团队功能。',
+  'cli.team.reason.disabled': '请启用 CodingNS 桥接和此 Agent 后使用团队功能。',
+  'cli.team.reason.adapter': '此 Agent 尚未提供所需的团队工具通道。',
+  'cli.team.reason.installation': '请先安装并启用此 Agent，再使用团队功能。',
   'cli.manage.reasonLabel.application-managed': '在应用中检查',
   'cli.manage.reasonLabel.unknown-version': '版本未知',
   'cli.manage.reasonLabel.legacy-distribution': '旧版发行包',

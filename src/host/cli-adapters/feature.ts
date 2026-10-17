@@ -29,7 +29,7 @@ import { setAdapterRegistry } from './registry-holder.js'
 import { createDshVirtualProviderRegistration } from './dsh-virtual-providers.js'
 import { dispatchBridgeSubagent, type BridgeAgentRegistry } from '../cli-bridge/dispatch.js'
 import { startSubagentBridgeServer, type SubagentBridgeServer } from '../cli-bridge/bridge-server.js'
-import { setSubagentBridge } from '../cli-bridge/bridge-holder.js'
+import { getSubagentBridge, setSubagentBridge } from '../cli-bridge/bridge-holder.js'
 import { delegateCapability, dispatchDelegateSubagent, type DelegateAgentRegistry } from './delegate-dispatch.js'
 import { guardNativeSubagentParentTurn, markNativeSubagentParentTurnStarted, setMaxNativeSubagentsPerParent } from './native-subagent-dispatch.js'
 import { containsDelegationCarrier, delegationAdapterIds, rewriteDelegationMessages } from './delegation-mention-rewrite.js'
@@ -56,6 +56,11 @@ import { codexPerformanceProjection } from './codex-performance-projection.js'
 import { grokContextProjection, grokPerformanceProjection } from './grok-performance-projection.js'
 import type { SessionPerformanceAdapter } from '../../dsh-capabilities/host/session-performance-adapter.js'
 import { fromCliProviderId, toCliProviderId } from '../../shared/cli-provider-route.js'
+import { DshAgentTeamAdapter, type TeamAgent } from '../../dsh-capabilities/host/agent-team-adapter.js'
+import { CodingNsTeamDispatcher } from '../cli-bridge/team-dispatch.js'
+import { createAgentTeamTool } from '../cli-bridge/team-tool.js'
+import { TeamInputTracker, isTeamInputMessage, pendingPeerInput } from './team-input.js'
+import { withTeamSupport } from '../cli-bridge/team-adapters.js'
 
 export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry; updateCheck?: CliUpdateCheckOptions } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -66,6 +71,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       dependencies: [],
       runtime: 'host',
       requires: [
+        { capability: 'agent-team.external-member', required: false, fallback: 'degrade' },
+        { capability: 'agent-team.external-lead', required: false, fallback: 'degrade' },
         { capability: 'session.external-model-selection', required: false, fallback: 'degrade' },
         { capability: 'session.external-performance', required: false, fallback: 'degrade' },
       ],
@@ -120,6 +127,41 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         ...(context.services.nativeSessions === undefined ? {} : { nativeSessions: context.services.nativeSessions }),
       })
       setAdapterRegistry(registry)
+      const teamInputs = new TeamInputTracker()
+      context.resources.add(() => teamInputs.clear())
+      let teamAdapter: DshAgentTeamAdapter | undefined
+      const teamDispatcher = new CodingNsTeamDispatcher({
+        adapter: () => teamAdapter,
+        registry,
+        enabled: () => !lifetime.signal.aborted && normalizeSubagentBridgeSettings(context.services.settings?.get().subagentBridge).enabled,
+      })
+      const versionSupported = context.services.dshVersion !== undefined && !createDshCapabilityRegistry(context.services.dshVersion, 'host', {}).getProfile({}).diagnostics.some(item => item.capability === 'agent-team.external-member' && item.code === 'CAPABILITY_VERSION_UNSUPPORTED')
+      const teamCatalog = (catalog: readonly import('../../shared/contracts/cli-adapter.js').CodingNsCliAdapterDescriptor[]) => withTeamSupport(catalog,
+        !versionSupported ? 'version' : !normalizeSubagentBridgeSettings(context.services.settings?.get().subagentBridge).enabled ? 'disabled' : !teamAdapter ? 'profile' : undefined, teamAdapter?.supportsLead)
+      const dshContext = context.services.dshContext
+      if (dshContext?.inject && context.services.dshVersion) {
+        const teamScope = dshContext.inject(['agentTeams', 'agents', 'subagents', 'tools'], scoped => {
+          const capability = createDshCapabilityRegistry(context.services.dshVersion!, 'host', scoped).getProfile(scoped).capabilities.get('agent-team.external-member')
+          if (capability?.status !== 'ready') return
+          const adapter = capability.value as DshAgentTeamAdapter
+          teamAdapter = adapter
+          const tools = scoped.get('tools') as { register(definition: Record<string, unknown>): unknown }
+          const unregister = tools.register(createAgentTeamTool(teamDispatcher))
+          scoped.effect(() => () => {
+            adapter.dispose()
+            if (teamAdapter === adapter) teamAdapter = undefined
+            if (typeof unregister === 'function') unregister()
+          }, 'CodingNS native Team bridge')
+        })
+        context.resources.add(() => teamScope.dispose())
+      }
+      if (dshContext?.on) {
+        const stopCreated = dshContext.on('agent/created' as never, ((payload: unknown) => {
+          const agent = asRecord(payload)?.agent
+          if (agent && typeof agent.id === 'string') teamDispatcher.initializeNativeChild(agent as TeamAgent)
+        }) as never, { global: true } as never)
+        if (typeof stopCreated === 'function') context.resources.add(stopCreated as () => void)
+      }
       context.resources.add(() => {
         if (registry === undefined) return
         setAdapterRegistry(undefined)
@@ -134,6 +176,9 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           ?.value as SessionModelSelectionAdapter | undefined
         if (selection !== undefined) context.resources.add(selection.install((sessionId) => {
           const config = registry.getSession(sessionId)
+          if (config.adapterId === 'dsh' && config.teamId && config.providerId && config.modelId) return {
+            provider: config.providerId, model: config.modelId, ...(config.effortId ? { reasoningEffort: config.effortId } : {}),
+          }
           if (config.adapterId === 'dsh' || !registry.isEnabled(config.adapterId)) return undefined
           return { provider: toCliProviderId(config.adapterId), model: config.modelId?.trim() || 'provider-default' }
         }))
@@ -192,7 +237,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           .getProfile(context.services.dshContext).capabilities.get('session.prompt-assembly')?.value as SessionPromptAdapter | undefined
         if (adapter !== undefined) context.resources.add(adapter.install((assembly, scope) => promptTranslation.translateAssembly(assembly, scope)))
       }
-      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, translationRecovery, promptTranslation, nativeSessions)
+      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, translationRecovery, promptTranslation, nativeSessions, teamInputs)
       const interactionTranslation = createInteractionTranslation(translation, sessionId => registry.getSession(sessionId))
       context.resources.add(() => interactionTranslation.dispose())
       context.resources.add(context.services.rpc.register('cli', (action, payload, rpcContext) => {
@@ -203,12 +248,12 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           case 'management/start':
           case 'management/status':
           case 'management/cancel': return management.rpc(action, payload)
-          case 'catalog': return registry.catalog().then(catalog => updates.catalog(catalog))
+          case 'catalog': return registry.catalog().then(catalog => updates.catalog(teamCatalog(catalog)))
           case 'catalog/refresh': return registry.refreshCatalog(asRecord(payload)?.adapterId === undefined ? undefined : readAdapterId(payload)).then((catalog) => {
             subscriptions = buildSubscriptions(context.services.settings?.get())
             return asRecord(payload)?.checkUpdates === true
-              ? updates.refresh(catalog, asRecord(payload)?.adapterId)
-              : updates.catalog(catalog)
+              ? updates.refresh(teamCatalog(catalog), asRecord(payload)?.adapterId)
+              : updates.catalog(teamCatalog(catalog))
           })
           case 'models': {
             const adapterId = readAdapterId(payload)
@@ -307,6 +352,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         try {
           const agents = readOptionalContextService(context.services.dshContext, 'agents')
           const server = await startSubagentBridgeServer({
+            teamAccess: (sessionId) => teamDispatcher.access(sessionId),
+            teamDispatch: (sessionId, input, signal) => teamDispatcher.dispatch(sessionId, input, signal),
             dispatch: (request) => dispatchBridgeSubagent(request, {
               agents: agents as BridgeAgentRegistry | undefined,
               nativeSessions: context.services.nativeSessions,
@@ -403,7 +450,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
               messages = [...delegation.value.messages]
             }
           } else if (sessionId !== '') clearDelegationAuthorization(sessionId)
-          const selectedExternalAdapter = selectExternalAdapter(
+          const selectedExternalAdapter = storedConfig.adapterId === 'dsh' && storedConfig.teamId ? undefined : selectExternalAdapter(
             fromCliProviderId(dshSelection.providerId),
             inferMessageAdapter(messages),
             registry,
@@ -428,6 +475,9 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           // 采用规范化结果，让本轮也使用适配器自己的模型偏好，而不是 DSH 主模型。
           if (sessionId !== '' && storedConfig.adapterId === 'dsh' && selectedExternalAdapter !== undefined) {
             config = registry.setSession(sessionId, config)
+          }
+          if (config.teamId && !teamDispatcher.identity(sessionId)) {
+            throw Object.assign(new Error('The native Team identity is unavailable. Restore its Team profile and adapter before continuing.'), { code: 'TEAM_SERVICE_UNAVAILABLE' })
           }
           if (config.adapterId === 'dsh') {
             const selection = dshSelection
@@ -455,7 +505,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             return
           }
           const cwd = resolveSessionCwd(context.services.nativeSessions, sessionId, value)
-          const turnInput = extractTurnInput(messages, context.services.dshContext)
+          const turnInput = extractTurnInput(messages, context.services.dshContext, teamInputs.take(sessionId, messages))
           const turnOptions = readCliTurnOptions(value)
           const runtimeEnv = readCliRuntimeEnv(value)
           const requestSignal = isAbortSignal(value?.signal)
@@ -486,6 +536,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             sessionId,
             messages: turnInput.messages,
             prompt,
+            ...(turnInput.peerInput ? { peerInput: true } : {}),
             ...(translationLanguage === undefined ? {} : { translationLanguage }),
             ...(turnInput.attachments.length === 0 ? {} : { attachments: turnInput.attachments }),
             ...(permission === undefined ? {} : { permission }),
@@ -639,6 +690,7 @@ function registerDelegationAgentHooks(
   translationRecovery: ReturnType<typeof createSessionTranslationRecovery>,
   promptTranslation: ReturnType<typeof createSessionPromptTranslation>,
   nativeSessions?: CodingNsHostServices['nativeSessions'],
+  teamInputs?: TeamInputTracker,
 ): void {
   if (dshContext === undefined || typeof dshContext.on !== 'function') return
   const disposers: Array<() => void> = []
@@ -663,6 +715,10 @@ function registerDelegationAgentHooks(
       session = registry.getSession(sessionId)
     } catch {
       return config
+    }
+    if (session.adapterId === 'dsh' && session.teamId && session.providerId && session.modelId) {
+      const { reasoningEffort: _effort, ...nativeConfig } = config
+      return { ...nativeConfig, provider: session.providerId, model: session.modelId, ...(session.effortId ? { reasoningEffort: session.effortId } : {}) }
     }
     const providerAdapter = fromCliProviderId(config.provider)
     const configuredAdapter = session.adapterId !== 'dsh' && registry.isEnabled(session.adapterId)
@@ -701,7 +757,7 @@ function registerDelegationAgentHooks(
       }
     }
 
-    let translatedInput: readonly CodingNsCliMessage[] | undefined
+    let translatedInput: readonly (CodingNsCliMessage | undefined)[] | undefined
     try {
       translatedInput = await translatePreStepInput(
         translation,
@@ -717,16 +773,15 @@ function registerDelegationAgentHooks(
       if (error instanceof SessionTranslationCancelled || record?.signal?.aborted === true) return { kind: 'reject' }
       throw error
     }
-    if (translatedInput !== undefined) messages = [...translatedInput]
-
     const decision = await next()
     if (!isEnterPreStepDecision(decision)) return decision
     // Match producer-owned messages by identity. Downstream middleware may insert
     // instructions before the human message, so a positional prefix loses data.
     const incoming = Array.isArray(record?.messages) ? record.messages.filter(isMessage) : []
     const replaced = new Set<number>()
+    const replacements = translatedInput ?? messages
     const accepted = delegation?.kind === 'rewritten' || translatedInput !== undefined
-      ? decision.messages.map(message => {
+      ? decision.messages.flatMap(message => {
         const index = incoming.findIndex((original, position) => !replaced.has(position) && (
           original === message || typeof original.id === 'string' && original.id === message.id
           // Legacy callers can return detached messages without durable IDs.
@@ -735,11 +790,15 @@ function registerDelegationAgentHooks(
             && JSON.stringify(original.content) === JSON.stringify(message.content)
         ))
         if (index >= 0) replaced.add(index)
-        return index < 0 ? message : messages[index] ?? message
+        if (index < 0) return [message]
+        const replacement = replacements[index]
+        return replacement === undefined ? [] : [replacement]
       }) : decision.messages
     try {
       const scope = sessionPromptScope(record?.agent, isAbortSignal(record?.signal) ? record.signal : undefined)
-      return { ...decision, messages: await promptTranslation.translateMessages(accepted, scope) }
+      const translated = await promptTranslation.translateMessages(accepted, scope)
+      if (registry.getSession(sessionId).adapterId !== 'dsh') teamInputs?.accept(sessionId, translated)
+      return { ...decision, messages: translated }
     } catch (error) {
       if (error instanceof SessionTranslationCancelled || record?.signal?.aborted === true) return { kind: 'reject' }
       throw error
@@ -760,6 +819,8 @@ function registerDelegationAgentHooks(
   })
   register('agent/disposed', (payload: unknown) => {
     const sessionId = readAgentSessionId(asRecord(payload)?.agent)
+    teamInputs?.release(sessionId)
+    getSubagentBridge()?.revokeTeamSession?.(sessionId)
     translationRecovery.cancelSession(sessionId)
     // disposed 只代表运行时释放；subagentCatalog 没有删除语义，保留目录项并
     // 把它标成 idle，后续若 DSH 重新激活会再次收到 running。
@@ -894,10 +955,10 @@ function isDshFinishChunk(value: unknown): boolean {
 function isMeaningfulDshChunk(value: unknown): boolean {
   const record = asRecord(value)
   if (record === null) return false
-  if (record.type === 'text-delta' || record.type === 'reasoning-delta' || record.type === 'usage' || record.type === 'tool-call' || record.type === 'tool-result') return true
+  if (record.type === 'text-delta' || record.type === 'reasoning-delta' || record.type === 'usage' || record.type === 'tool-call-delta' || record.type === 'tool-call' || record.type === 'tool-result') return true
   if (record.type === 'block-end') {
     const block = asRecord(record.block)
-    return typeof block?.text === 'string' && block.text !== ''
+    return block?.type === 'tool-call' || block?.type === 'tool-result' || typeof block?.text === 'string' && block.text !== ''
   }
   return false
 }
@@ -1171,8 +1232,27 @@ async function translatePreStepInput(
   dshContext: CodingNsHostServices['dshContext'],
   signal?: AbortSignal,
   nativeSession?: { readonly adapterId: string; readonly translationEnabled: boolean },
-): Promise<readonly CodingNsCliMessage[] | undefined> {
+): Promise<readonly (CodingNsCliMessage | undefined)[] | undefined> {
   if (translation === undefined || !translation.enabled || sessionId.trim() === '') return undefined
+  if (messages.some(isTeamInputMessage)) {
+    const next: Array<CodingNsCliMessage | undefined> = []
+    for (const message of messages) {
+      // Team protocol text keeps its sender and machine-owned body. Human
+      // messages accepted at the same boundary still use submission recovery.
+      try {
+        const translated = isHumanUserMessage(message)
+          ? await translatePreStepInput(translation, translationRecovery, registry, sessionId, [message], dshContext, signal, nativeSession)
+          : undefined
+        next.push(translated?.[0] ?? message)
+      } catch (error) {
+        if (!(error instanceof SessionTranslationCancelled) || signal?.aborted) throw error
+        // Cancelling one submission does not cancel independently accepted
+        // Team work. Keep the original positions until pre-step producers merge.
+        next.push(undefined)
+      }
+    }
+    return next.some((message, index) => message !== messages[index]) ? next : undefined
+  }
 
   const messageIndex = findLatestHumanMessage(messages)
   const current = messageIndex < 0 ? undefined : messages[messageIndex]
@@ -1425,8 +1505,10 @@ async function* translateNativeStream(
 function extractTurnInput(
   messages: readonly CodingNsCliMessage[],
   dshContext?: CodingNsHostServices['dshContext'],
+  acceptedPeerInput: readonly CodingNsCliMessage[] = pendingPeerInput(messages),
 ): {
   readonly prompt: string
+  readonly peerInput?: boolean
   readonly attachments: readonly CodingNsCliAttachment[]
   /** 只翻译用户自然语言和引用文本；附件提示保持原文。 */
   readonly translationPrompt: string
@@ -1436,6 +1518,15 @@ function extractTurnInput(
   /** 当前轮已拼入 prompt 的引用上下文不再作为历史消息重复交给驱动。 */
   readonly messages: readonly CodingNsCliMessage[]
 } {
+  if (acceptedPeerInput.some(isTeamInputMessage)) {
+    const parts = acceptedPeerInput.map(message => {
+      const part = extractMessageInput(message.content, dshContext)
+      const translated = isHumanUserMessage(message) ? readInputTranslation(message.source) : undefined
+      return translated ? { ...part, prompt: translated.translated } : part
+    })
+    const prompt = parts.map(part => part.prompt).filter(text => text.trim() !== '').join('\n\n')
+    return { prompt, peerInput: true, translationPrompt: prompt, untranslatedPrompt: '', attachments: parts.flatMap(part => part.attachments), translatePrompt: false, messages: stripInputTranslationDisplay(messages) }
+  }
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message !== undefined && isInjectedStepNotice(message)) {

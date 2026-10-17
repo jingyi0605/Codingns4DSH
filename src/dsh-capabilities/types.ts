@@ -33,6 +33,8 @@ export type DshCapabilityId =
   | 'session.format-v4'
   | 'subagent.continuable'
   | 'agent-team.native'
+  | 'agent-team.external-member'
+  | 'agent-team.external-lead'
   | 'client.boot-graph'
   | 'web.index-inject'
   | 'web.index-tap'

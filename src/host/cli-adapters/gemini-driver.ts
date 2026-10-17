@@ -10,7 +10,7 @@ import { GEMINI_CATALOG, isProviderDefaultModel, resolveGeminiEfforts } from './
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks, promptWithAttachmentPaths } from './attachment-utils.js'
-import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
+import { acpBridgeMcpServers, teamBridgeToken } from '../cli-bridge/injections.js'
 import { reasoningText } from './reasoning-content.js'
 import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 
@@ -110,7 +110,8 @@ export class GeminiCliDriver extends StandardStreamDriver {
     try {
       yield* this.executeAcpTurn(input)
       return
-    } catch {
+    } catch (error) {
+      if (teamBridgeToken(input.sessionId)) throw error
       if (input.signal?.aborted) {
         yield { type: 'finish', reason: 'cancel' }
         return

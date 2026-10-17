@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createSubagentBridgeRuntime } from './bridge-holder.js'
 import type { SubagentBridgeRuntime } from './bridge-holder.js'
+import type { TeamSessionAccess } from './bridge-holder.js'
+import type { TeamBridgeResult } from './team-dispatch.js'
 
 /** 外部 CLI 发起的一次子代理托管请求。 */
 export interface SubagentBridgeDispatchRequest {
@@ -54,10 +56,14 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024
  */
 export async function startSubagentBridgeServer(options: {
   readonly dispatch: (request: SubagentBridgeDispatchRequest) => Promise<SubagentBridgeDispatchResult>
+  readonly teamAccess?: (sessionId: string) => TeamSessionAccess | undefined
+  readonly teamDispatch?: (sessionId: string, input: unknown, signal: AbortSignal) => Promise<TeamBridgeResult>
 }): Promise<SubagentBridgeServer> {
   const token = randomBytes(24).toString('hex')
+  const lifetime = new AbortController()
+  let runtime: SubagentBridgeRuntime
   const server = createServer((request, response) => {
-    void handleRequest(request, response, token, options.dispatch).catch((error: unknown) => {
+    void handleRequest(request, response, runtime, options, lifetime.signal).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       respondJson(response, 500, { ok: false, text: message || 'Internal subagent bridge error.', error: message || 'Internal subagent bridge error.' })
     })
@@ -73,11 +79,14 @@ export async function startSubagentBridgeServer(options: {
   })
   const address = server.address()
   const port = typeof address === 'object' && address !== null ? address.port : 0
-  const runtime = createSubagentBridgeRuntime({ baseUrl: `http://127.0.0.1:${String(port)}`, token })
+  runtime = createSubagentBridgeRuntime({ baseUrl: `http://127.0.0.1:${String(port)}`, token, ...(options.teamAccess ? { teamAccess: options.teamAccess } : {}) })
   return {
     runtime,
     close: () => new Promise<void>((resolve) => {
+      lifetime.abort()
+      runtime.revokeTeamSessions?.()
       server.close(() => resolve())
+      server.closeIdleConnections()
     }),
   }
 }
@@ -85,19 +94,21 @@ export async function startSubagentBridgeServer(options: {
 async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
-  token: string,
-  dispatch: (input: SubagentBridgeDispatchRequest) => Promise<SubagentBridgeDispatchResult>,
+  runtime: SubagentBridgeRuntime,
+  options: { readonly dispatch: (input: SubagentBridgeDispatchRequest) => Promise<SubagentBridgeDispatchResult>; readonly teamDispatch?: (sessionId: string, input: unknown, signal: AbortSignal) => Promise<TeamBridgeResult> },
+  lifetime: AbortSignal,
 ): Promise<void> {
   const url = request.url ?? '/'
   if (request.method === 'GET' && url === '/v1/status') {
     respondJson(response, 200, { ok: true, service: 'codingns-subagent-bridge' })
     return
   }
-  if (request.method !== 'POST' || url !== '/v1/dispatch') {
+  if (request.method !== 'POST' || (url !== '/v1/dispatch' && url !== '/v1/team')) {
     respondJson(response, 404, { ok: false, error: 'not found' })
     return
   }
-  if (!authorize(request, token)) {
+  const teamSession = url === '/v1/team' ? runtime.authorizeTeam?.(bearerToken(request)) : undefined
+  if (url === '/v1/team' ? teamSession === undefined || !options.teamDispatch : !authorize(request, runtime.token)) {
     respondJson(response, 401, { ok: false, error: 'unauthorized' })
     return
   }
@@ -113,12 +124,26 @@ async function handleRequest(
     respondJson(response, 400, { ok: false, error: 'invalid JSON body' })
     return
   }
+  if (url === '/v1/team' && teamSession && options.teamDispatch) {
+    // Body delivery can outlive the launch Agent. Recheck before admitting work.
+    if (runtime.authorizeTeam?.(bearerToken(request)) !== teamSession) {
+      respondJson(response, 401, { ok: false, error: 'unauthorized' })
+      return
+    }
+    const cancellation = new AbortController()
+    const disconnect = (): void => { if (!response.writableEnded) cancellation.abort() }
+    response.once('close', disconnect)
+    try {
+      respondJson(response, 200, await options.teamDispatch(teamSession, parsed, AbortSignal.any([lifetime, cancellation.signal])))
+    } finally { response.off('close', disconnect) }
+    return
+  }
   const input = readDispatchRequest(parsed)
   if (input === undefined) {
     respondJson(response, 400, { ok: false, error: 'sessionId and the start prompt are required' })
     return
   }
-  const result = await dispatch(input)
+  const result = await options.dispatch(input)
   respondJson(response, 200, result)
 }
 
@@ -130,6 +155,11 @@ function authorize(request: IncomingMessage, token: string): boolean {
   const expected = Buffer.from(token, 'utf8')
   if (provided.length !== expected.length) return false
   return timingSafeEqual(provided, expected)
+}
+
+function bearerToken(request: IncomingMessage): string {
+  const header = request.headers.authorization
+  return typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : ''
 }
 
 function readBody(request: IncomingMessage): Promise<string | undefined> {
