@@ -149,6 +149,9 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
             const chunk = segmentState === undefined ? rawChunk : decorateCodingNsSegmentEvent(rawChunk, input, segmentState, this.descriptor.id)
             if (chunk.type === 'finish') emittedFinish = true
             yield chunk
+            // SDK-style CLIs keep stdin open after a terminal result. The turn
+            // owns this process and must settle without waiting for stdout EOF.
+            if (chunk.type === 'finish') return
             if (segmentState !== undefined) advanceCodingNsSegment(chunk, segmentState)
           }
         }

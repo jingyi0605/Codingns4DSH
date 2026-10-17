@@ -7,6 +7,27 @@ import { KimiCliDriver } from '../data/build/dist/host/cli-adapters/kimi-driver.
 import { CodingNsAgentEventNormalizer } from '../data/build/dist/host/cli-adapters/stream-normalizer.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 
+test('Claude terminal results settle and release a process whose stdout remains open', { timeout: 1000 }, async () => {
+  let killed = false
+  const stdin = new PassThrough()
+  const driver = new ClaudeCodeDriver({
+    binaries: ['fake-claude'],
+    spawnSync: (() => ({ status: 0, stdout: 'claude 1.2.3', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      queueMicrotask(() => stdout.write(JSON.stringify({ type: 'result', subtype: 'success', result: 'PONG' }) + '\n'))
+      return { stdout, stderr, stdin, kill() { killed = true; stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  try {
+    const events = []
+    for await (const event of driver.executeTurn({ sessionId: 'persistent-stdio', messages: [], prompt: 'Reply PONG' })) events.push(event)
+    assert.deepEqual(events.at(-1), { type: 'finish', reason: 'stop' })
+    assert.equal(killed, true)
+    assert.equal(stdin.writableEnded, true)
+  } finally { driver.dispose() }
+})
+
 test('分段边界先结算当前段 usage，避免上下文和 Token 用量被下一段覆盖', () => {
   const normalizer = new CodingNsAgentEventNormalizer()
   const firstUsage = { type: 'usage', inputTokens: 120, outputTokens: 8, contextWindow: 1_000, contextTokens: 120 } as const
