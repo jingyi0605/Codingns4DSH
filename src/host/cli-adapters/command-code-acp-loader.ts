@@ -14,6 +14,8 @@
  * 目录；当上游实现已经变化时保持原模块不变。
  */
 
+import { fileURLToPath } from 'node:url'
+
 interface LoaderContext {
   readonly format?: string
   readonly importAttributes?: Record<string, string>
@@ -35,8 +37,17 @@ export async function load(url: string, context: LoaderContext, nextLoad: NextLo
   const loaded = await nextLoad(url, context)
   if (!url.endsWith(COMMAND_CODE_CLI_SUFFIX) || loaded.format !== 'module' || loaded.source === undefined) return loaded
   const source = typeof loaded.source === 'string' ? loaded.source : new TextDecoder().decode(loaded.source)
-  const patched = patchCommandCodeAcpByokModels(patchCommandCodeAcpQuestion(source))
+  const patched = patchCommandCodeAcpMod(patchCommandCodeAcpByokModels(patchCommandCodeAcpQuestion(source)))
   return patched === source ? loaded : { ...loaded, source: patched, shortCircuit: true }
+}
+
+/** ACP skips the ordinary CLI action that applies --mod before host creation. */
+function patchCommandCodeAcpMod(source: string): string {
+  const entry = 'async function runAcp(){'
+  const mod = fileURLToPath(new URL('../cli-bridge/command-code-mod.js', import.meta.url))
+  const initialize = `if(process.env.CODINGNS_DISABLE_NATIVE_AGENT==="1")setModPathsOverride([${JSON.stringify(mod)}]);`
+  if (!source.includes('function setModPathsOverride(') || !source.includes(entry) || source.includes(initialize)) return source
+  return source.replace(entry, entry + initialize)
 }
 
 /**

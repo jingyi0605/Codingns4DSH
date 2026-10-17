@@ -12,6 +12,38 @@ import { load as loadCommandCodeAcpLoader } from '../data/build/dist/host/cli-ad
 import { readCommandCodeApiKey } from '../data/build/dist/host/cli-adapters/command-code-subscription.js'
 import { createSubagentBridgeRuntime, setSubagentBridge } from '../data/build/dist/host/cli-bridge/bridge-holder.js'
 
+test('Command Code ACP initializes the managed Mod before loading its host', async () => {
+  const source = 'let paths=[];function setModPathsOverride(value){paths=value}async function loadCommandModHost(){return paths}async function runAcp(){return await loadCommandModHost()}export{runAcp}'
+  const loaded = await loadCommandCodeAcpLoader('file:///tmp/node_modules/command-code/dist/cli.mjs',
+    { format: 'module' }, async () => ({ format: 'module', source }))
+  const module = await import(`data:text/javascript;base64,${Buffer.from(String(loaded.source)).toString('base64')}`)
+  const previous = process.env.CODINGNS_DISABLE_NATIVE_AGENT
+  try {
+    process.env.CODINGNS_DISABLE_NATIVE_AGENT = '1'
+    const paths = await module.runAcp()
+    assert.equal(paths.length, 1)
+    assert.ok(paths[0].endsWith('/cli-bridge/command-code-mod.js'))
+  } finally {
+    if (previous === undefined) delete process.env.CODINGNS_DISABLE_NATIVE_AGENT
+    else process.env.CODINGNS_DISABLE_NATIVE_AGENT = previous
+  }
+})
+
+test('Command Code ACP Mod initialization preserves standalone and unknown upstream entrypoints', async () => {
+  const source = 'function setModPathsOverride(){throw new Error("Must not run")}async function runAcp(){return "standalone"}export{runAcp}'
+  const loaded = await loadCommandCodeAcpLoader('file:///tmp/node_modules/command-code/dist/cli.mjs',
+    { format: 'module' }, async () => ({ format: 'module', source }))
+  const previous = process.env.CODINGNS_DISABLE_NATIVE_AGENT
+  delete process.env.CODINGNS_DISABLE_NATIVE_AGENT
+  try {
+    const module = await import(`data:text/javascript;base64,${Buffer.from(String(loaded.source)).toString('base64')}`)
+    assert.equal(await module.runAcp(), 'standalone')
+    const unknown = 'async function startAcp(){return 1}'
+    assert.equal((await loadCommandCodeAcpLoader('file:///tmp/node_modules/command-code/dist/cli.mjs',
+      { format: 'module' }, async () => ({ format: 'module', source: unknown }))).source, unknown)
+  } finally { if (previous !== undefined) process.env.CODINGNS_DISABLE_NATIVE_AGENT = previous }
+})
+
 test('Command Code ACP 将问题和 DSH 权限映射回传给 Provider', async () => {
   let promptId = 0
   const replies = new Map<number | string, Record<string, unknown>>()
