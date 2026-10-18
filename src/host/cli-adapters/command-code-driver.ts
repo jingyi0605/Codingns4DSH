@@ -2092,9 +2092,10 @@ function commandCodeAcpPermissionDecision(message: JsonRpcMessage, input: Coding
   const permission = input.permission
   const canWrite = input.plan !== true
     && (permission?.sandboxMode === 'workspace-write' || permission?.sandboxMode === 'danger-full-access')
-  // 只识别插件自己的两个入口，不能把全部 MCP/自定义工具或显式风险请求放行。
+  // 只识别插件自己的桥接入口，不能把全部 MCP/自定义工具或显式风险请求放行。
   if (canWrite && metadata.risk === undefined && subagentBridgeActive(input.sessionId)
     && (toolName === 'agent_subagent' || toolName === 'mcp__codingns__agent_subagent'
+      || toolName === 'web_search' || toolName === 'mcp__codingns__web_search'
       || toolName === 'agent_team' && teamBridgeToken(input.sessionId) !== undefined)) return 'allow'
   // never 允许已有授权范围内的工作，但不允许把剩余审批升级成交互弹窗。
   return permission?.approvalPolicy === 'never' ? 'reject' : undefined

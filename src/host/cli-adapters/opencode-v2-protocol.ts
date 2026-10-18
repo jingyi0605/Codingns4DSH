@@ -416,7 +416,10 @@ function openCodePermissions(
   if (input.permission?.sandboxMode === 'danger-full-access' && input.permission.approvalPolicy === 'never') {
     permissions.push(OPENCODE_EXTERNAL_DIRECTORY_ALLOW)
   }
-  if (bridge !== undefined) permissions.push({ action: bridge.toolName, resource: '*', effect: 'allow' })
+  if (bridge !== undefined) {
+    permissions.push({ action: bridge.toolName, resource: '*', effect: 'allow' })
+    permissions.push({ action: `${bridge.serverName}_web_search`, resource: '*', effect: 'allow' })
+  }
   return permissions
 }
 

@@ -28,6 +28,7 @@ import type { CodingNsHostServices } from '../features/types.js'
 import { setAdapterRegistry } from './registry-holder.js'
 import { createDshVirtualProviderRegistration } from './dsh-virtual-providers.js'
 import { dispatchBridgeSubagent, type BridgeAgentRegistry } from '../cli-bridge/dispatch.js'
+import { dispatchBridgeSearch } from '../cli-bridge/search-dispatch.js'
 import { startSubagentBridgeServer, type SubagentBridgeServer } from '../cli-bridge/bridge-server.js'
 import { getSubagentBridge, setSubagentBridge } from '../cli-bridge/bridge-holder.js'
 import { delegateCapability, dispatchDelegateSubagent, type DelegateAgentRegistry } from './delegate-dispatch.js'
@@ -358,6 +359,9 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
               agents: agents as BridgeAgentRegistry | undefined,
               nativeSessions: context.services.nativeSessions,
             }),
+            search: (input, signal) => dispatchBridgeSearch(input, {
+              web: readOptionalContextService(context.services.dshContext, 'web'),
+            }, signal),
           })
           bridgeServer = server
           setSubagentBridge(server.runtime)

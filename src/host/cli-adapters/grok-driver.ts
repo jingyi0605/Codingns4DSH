@@ -900,10 +900,14 @@ function isAdmittedGrokPermission(message: JsonRpcMessage, input: CodingNsCliTur
   // canonical identity from the matching call, while MCP wrappers name their
   // inner bridge tool in the permission request itself.
   const title = firstToolText(tool.title)
-  const bridgeTitle = title === 'codingns__agent_team' || title === 'codingns__agent_subagent' ? title : undefined
+  const bridgeTitle = title === 'codingns__agent_team' || title === 'codingns__agent_subagent' || title === 'codingns__web_search' ? title : undefined
   const name = firstToolText(tool.name, tool.toolName, tool.tool_name) ?? bridgeTitle ?? observed?.name ?? title
   if (name === 'codingns__agent_team') return Boolean(state.teamToken && teamBridgeToken(input.sessionId) === state.teamToken)
   if (name === 'codingns__agent_subagent') return Boolean(!state.teamToken && state.bridgeToken && getSubagentBridge()?.token === state.bridgeToken)
+  if (name === 'codingns__web_search') {
+    if (state.teamToken) return teamBridgeToken(input.sessionId) === state.teamToken
+    return Boolean(state.bridgeToken && getSubagentBridge()?.token === state.bridgeToken)
+  }
   if (!name || !isAdmittedGrokFileMutation(name)) return false
   if (observed && observed.name !== name) return false
   const raw = tool.rawInput ?? observed?.input
