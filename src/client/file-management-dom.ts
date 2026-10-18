@@ -178,10 +178,12 @@ export function startFileManagementDom(
   function openPreviewCopyPathMenu(pathLabel: HTMLElement, x: number, y: number): void {
     const preview = pathLabel.closest<HTMLElement>('[data-textpreview-url], [data-document-preview]')
     const parsed = parseFileTarget((preview?.getAttribute('data-textpreview-url') ?? '').split(/[?#]/u)[0] ?? '')
+    const displayPath = pathLabel.getAttribute('title')?.trim() || undefined
+    const workspaceRoot = filesRootForEntry(pathLabel)
     const paths = resolveFileCopyPaths({
-      resourcePath: parsed?.path,
-      displayPath: pathLabel.getAttribute('title')?.trim() || undefined,
-      workspaceRoot: filesRootForEntry(pathLabel),
+      ...(parsed === undefined ? {} : { resourcePath: parsed.path }),
+      ...(displayPath === undefined ? {} : { displayPath }),
+      ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
     })
     if (paths === undefined) {
       showNotice(t('fileMenu.unresolvedPath'))
@@ -267,9 +269,10 @@ export function startFileManagementDom(
   }
 
   async function copyPath(item: FileEntryElement, absolute: boolean): Promise<void> {
+    const workspaceRoot = filesRootForEntry(item)
     const paths = resolveFileCopyPaths({
       resourcePath: item.dataset.filesPath ?? '',
-      workspaceRoot: filesRootForEntry(item),
+      ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
     })
     if (paths === undefined) {
       showNotice(t('fileMenu.unresolvedPath'))

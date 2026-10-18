@@ -55,7 +55,11 @@ export function registerFileViewerCopyPathMenu(
       id: FILE_VIEWER_COPY_PATH_MENU_ID,
       order: 80,
     }, function FileTabCopyPathMenu(props: FileTabCopyPathMenuProps) {
-      return FileTabCopyPathMenuItems({ ...props, locale: props.locale ?? locale })
+      const resolvedLocale = props.locale ?? locale
+      return FileTabCopyPathMenuItems({
+        ...props,
+        ...(resolvedLocale === undefined ? {} : { locale: resolvedLocale }),
+      })
     }))
   } catch {
     return () => undefined
@@ -82,10 +86,12 @@ export function fileCopyPathsForTab(props: Pick<FileTabCopyPathMenuProps, 'tab' 
   const address = (props.tab.contentId ?? '').split(/[?#]/u)[0] ?? ''
   const parsed = parseFileTarget(address)
   if (parsed === undefined) return undefined
+  const workspaceRoot = workspaceRootForSession(props.sessionId)
+  const resourceAbsolutePath = props.useResource?.(address)?.value?.absolutePath
   return resolveFileCopyPaths({
     resourcePath: parsed.path,
-    workspaceRoot: workspaceRootForSession(props.sessionId),
-    resourceAbsolutePath: props.useResource?.(address)?.value?.absolutePath,
+    ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
+    ...(resourceAbsolutePath === undefined ? {} : { resourceAbsolutePath }),
   })
 }
 
