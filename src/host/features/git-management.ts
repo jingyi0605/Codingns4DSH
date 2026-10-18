@@ -19,13 +19,16 @@ import type {
 } from '../../shared/contracts/git.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import type { CodingNsHostServices } from './types.js'
+import { createAssistantLlmAdapter, type AssistantLlmAdapter } from '../../dsh-capabilities/host/assistant-llm-adapter.js'
+import { MAX_GIT_COMMIT_MESSAGE_CHARS, normalizeGitManagementSettings } from '../../shared/contracts/git.js'
+import { generateGitCommitMessage } from './git-commit-message.js'
 
 const execFile = promisify(execFileCallback)
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 const MAX_DIFF_BYTES = 60_000
 
 /** Host 侧 Git 工作区服务；所有路径都由 resolveWorkspaceRoot 权威解析。 */
-export function createGitManagementFeature(): FeatureModule<CodingNsHostServices> {
+export function createGitManagementFeature(options: { readonly llm?: AssistantLlmAdapter } = {}): FeatureModule<CodingNsHostServices> {
   return {
     descriptor: {
       name: 'gitManagement',
@@ -33,14 +36,31 @@ export function createGitManagementFeature(): FeatureModule<CodingNsHostServices
       enabledByDefault: true,
       dependencies: [],
       runtime: 'host',
+      requires: [{ capability: 'llm.text', required: false, fallback: 'degrade' }],
     },
     start(context) {
-      context.resources.add(context.services.rpc.register('git', async (action, payload) => {
+      const lifetime = new AbortController()
+      context.resources.add(() => lifetime.abort())
+      const llm = options.llm ?? (context.services.dshVersion === undefined ? undefined : createAssistantLlmAdapter(context.services.dshContext, context.services.dshVersion))
+      context.resources.add(context.services.rpc.register('git', async (action, payload, rpcContext) => {
+        if (action === 'models') return llm?.catalog() ?? { models: [], default: null, errors: ['The native model service is unavailable.'] }
         const input = record(payload)
         const workspaceId = requiredString(input.workspaceId, 'workspaceId')
         const root = context.services.resolveWorkspaceRoot?.(workspaceId)
         if (root === null || root === undefined) throw new CodingNsRpcError('GIT_WORKSPACE_UNAVAILABLE', '当前 Workspace 没有可用的本地目录')
         switch (action) {
+          case 'generate-message': {
+            const settings = normalizeGitManagementSettings(context.services.settings?.get()?.gitManagement)
+            if (!settings.commitMessageEnabled) throw new CodingNsRpcError('GIT_GENERATION_DISABLED', 'Commit message generation is disabled in Git repository management settings.')
+            if (llm === undefined) throw new CodingNsRpcError('GIT_MODEL_UNAVAILABLE', 'The native model service is unavailable.')
+            const requestSignal = (rpcContext as { signal?: AbortSignal } | undefined)?.signal
+            const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(90_000), ...(requestSignal === undefined ? [] : [requestSignal])])
+            signal.throwIfAborted()
+            const diff = (await runGit(root, ['diff', '--cached', '--no-ext-diff', '--no-textconv', '--no-color', '--stat', '--patch', '--'])).stdout
+            if (diff.trim() === '') throw new CodingNsRpcError('GIT_NOTHING_STAGED', 'Stage changes before generating a commit message.')
+            const content = diff.slice(0, MAX_DIFF_BYTES)
+            return generateGitCommitMessage(llm, settings, content + (content.length < diff.length ? '\n[Diff truncated]' : ''), signal)
+          }
           case 'status': return readStatus(workspaceId, root)
           case 'init': return runGit(root, ['init']).then(() => readStatus(workspaceId, root))
           case 'diff': return readDiff(workspaceId, root, requiredString(input.path, 'path'), input.staged === true)
@@ -168,7 +188,7 @@ async function discardTargets(workspaceId: string, root: string, rawTargets: unk
 }
 
 async function commit(workspaceId: string, root: string, subject: string): Promise<GitCommitResult & { readonly status: GitStatus }> {
-  if (subject.length > 200) throw new TypeError('subject 不能超过 200 个字符')
+  if (subject.length > MAX_GIT_COMMIT_MESSAGE_CHARS) throw new TypeError(`Commit message cannot exceed ${MAX_GIT_COMMIT_MESSAGE_CHARS} characters`)
   const result = await runGit(root, ['commit', '-m', subject])
   const hash = (await runGit(root, ['rev-parse', 'HEAD'])).stdout.trim()
   return { commitHash: hash, summary: result.stdout.trim() || `已提交 ${hash.slice(0, 8)}`, status: await readStatus(workspaceId, root) }

@@ -17,6 +17,7 @@ import {
   type CodingNsSettings,
 } from '../shared/contracts/config.js'
 import { DEFAULT_SESSION_TRANSLATION_SETTINGS } from '../shared/contracts/session-translation.js'
+import { DEFAULT_GIT_MANAGEMENT_SETTINGS } from '../shared/contracts/git.js'
 import { debugInfo } from '../shared/debug.js'
 import { ASSISTANT_AVATAR_FLOATING_MINI_SIZE, ASSISTANT_AVATAR_FLOATING_STANDARD_SIZE, DEFAULT_ASSISTANT_APPEARANCE } from '../shared/assistant-avatar.js'
 import { ASSISTANT_PROMPT_MAX_CHARS, DEFAULT_ASSISTANT_PROMPTS } from '../shared/assistant-prompts.js'
@@ -57,6 +58,11 @@ export const CodingNsSettingsSchema = z.object({
       .max(SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.max)
       .default(DEFAULT_CODINGNS_SETTINGS.subagentBridge?.maxConcurrentSubagents ?? 8),
   }).default(DEFAULT_CODINGNS_SETTINGS.subagentBridge ?? { enabled: false, maxConcurrentSubagents: 8 }),
+  gitManagement: z.object({
+    commitMessageEnabled: z.boolean().default(true),
+    commitMessageDetail: z.union([z.const('concise'), z.const('detailed')]).default('concise'),
+    commitMessageModels: z.array(z.object({ provider: z.string().min(1).max(200), model: z.string().min(1).max(200) })).default([]),
+  }).default({ ...DEFAULT_GIT_MANAGEMENT_SETTINGS, commitMessageModels: [...DEFAULT_GIT_MANAGEMENT_SETTINGS.commitMessageModels] }),
   sessionTranslation: z.object({
     inputEnabled: z.boolean().default(true),
     reasoningEnabled: z.boolean().default(true),

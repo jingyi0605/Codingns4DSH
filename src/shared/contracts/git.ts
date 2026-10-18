@@ -1,5 +1,45 @@
 /** Git 工作区面板在 Host 与 Client 之间传输的稳定契约。 */
 
+export interface GitCommitMessageModel {
+  readonly provider: string
+  readonly model: string
+}
+
+export interface GitManagementSettings {
+  readonly commitMessageEnabled: boolean
+  readonly commitMessageDetail: 'concise' | 'detailed'
+  readonly commitMessageModels: readonly GitCommitMessageModel[]
+}
+
+export const DEFAULT_GIT_MANAGEMENT_SETTINGS: GitManagementSettings = {
+  commitMessageEnabled: true,
+  commitMessageDetail: 'concise',
+  commitMessageModels: [],
+}
+
+export const MAX_GIT_COMMIT_MESSAGE_CHARS = 10_000
+
+export function normalizeGitManagementSettings(value: GitManagementSettings | undefined): GitManagementSettings {
+  const seen = new Set<string>()
+  return {
+    commitMessageEnabled: value?.commitMessageEnabled !== false,
+    commitMessageDetail: value?.commitMessageDetail === 'detailed' ? 'detailed' : 'concise',
+    commitMessageModels: (value?.commitMessageModels ?? []).flatMap((item) => {
+      const provider = item?.provider?.trim()
+      const model = item?.model?.trim()
+      if (!provider || !model) return []
+      const key = JSON.stringify([provider, model])
+      if (seen.has(key)) return []
+      seen.add(key)
+      return [{ provider, model }]
+    }),
+  }
+}
+
+export interface GitCommitMessageDraft {
+  readonly message: string
+}
+
 export interface GitRepoSnapshot {
   readonly workspaceId: string
   readonly repoRoot: string

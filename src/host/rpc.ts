@@ -255,7 +255,7 @@ const CODINGNS_RPC_ENDPOINTS = [
   'debug/config/get', 'debug/config/save', 'debug/config/update', 'debug/config/delete', 'debug/profile/list', 'debug/profile/launch',
   'debug/runtime/get', 'debug/runtime/list', 'debug/runtime/stop',
   'debug/port/check', 'debug/port/terminate', 'debug/port/kill', 'debug/proxy/get', 'debug/proxy/enable', 'debug/proxy/disable',
-  'git/status', 'git/init', 'git/diff', 'git/stage', 'git/unstage', 'git/discard', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/switch', 'git/fetch', 'git/pull', 'git/push', 'git/undo',
+  'git/status', 'git/models', 'git/generate-message', 'git/init', 'git/diff', 'git/stage', 'git/unstage', 'git/discard', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/switch', 'git/fetch', 'git/pull', 'git/push', 'git/undo',
   'fileManagement/session-changes', 'fileManagement/read', 'fileManagement/download', 'fileManagement/write', 'fileManagement/create-file', 'fileManagement/create-directory', 'fileManagement/rename', 'fileManagement/copy', 'fileManagement/move', 'fileManagement/delete', 'fileManagement/git-ignore',
   'quickApps/list', 'quickApps/browse', 'quickApps/upsert', 'quickApps/reorder', 'quickApps/remove', 'quickApps/launch', 'quickApps/document', 'quickApps/close', 'quickApps/grant', 'quickApps/revoke', 'quickApps/remote',
   'lanAccessDsh/addresses', 'lanAccessDsh/detect', 'lanAccessDsh/get', 'lanAccessDsh/settings/get', 'lanAccessDsh/settings/set', 'lanAccessDsh/login/get', 'lanAccessDsh/login/set', 'lanAccessDsh/login/session/open', 'lanAccessDsh/login/session/refresh', 'lanAccessDsh/start', 'lanAccessDsh/stop',
@@ -358,7 +358,7 @@ function operationsToPatch(operations: readonly CodingNsSettingsOperation[]): Re
 }
 
 function isAllowedSettingsPath(path: readonly string[]): boolean {
-  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage', 'sessionTranslation', 'assistant'].includes(path[0] ?? '')
+  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage', 'sessionTranslation', 'gitManagement', 'assistant'].includes(path[0] ?? '')
   if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'quickApps', 'mobileAccess', 'peerHost', 'globalVoiceAssistant', 'sessionTranslation'].includes(path[1] ?? '')
   if (path[0] === 'workspaceSessionEnhancement') {
     return path.length === 2 && [

@@ -10,6 +10,7 @@ export {
   CODINGNS_MOBILE_ACCESS_FIELD,
   CODINGNS_SUBSCRIPTION_USAGE_FIELD,
   CODINGNS_SESSION_TRANSLATION_FIELD,
+  CODINGNS_GIT_MANAGEMENT_FIELD,
   CODINGNS_ASSISTANT_FIELD,
   CODINGNS_MODULES_FIELD,
   CODINGNS_SETTINGS_NAMESPACE,
@@ -67,6 +68,14 @@ export {
   type AssistantVoiceProvider,
   type AssistantVoiceSettings,
 } from './contracts/config.js'
+export {
+  DEFAULT_GIT_MANAGEMENT_SETTINGS,
+  MAX_GIT_COMMIT_MESSAGE_CHARS,
+  normalizeGitManagementSettings,
+  type GitCommitMessageDraft,
+  type GitCommitMessageModel,
+  type GitManagementSettings,
+} from './contracts/git.js'
 export {
   DEFAULT_SESSION_TRANSLATION_SETTINGS,
   DSH_NATIVE_SESSION_ADAPTER_ID,

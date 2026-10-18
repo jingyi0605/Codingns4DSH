@@ -1,11 +1,13 @@
 import { startSerialPolling } from './serial-polling.js'
-import { createElement, Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { createElement, Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { UseSessions } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { UseSidebarRightTabInfo } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type { GitBranchSnapshot, GitChangeItem, GitCommitChangedFile, GitCommitDiff, GitDiff, GitHistoryItem, GitHistoryOrigin, GitHistoryRef, GitHistoryScope, GitStatus } from '../shared/contracts/git.js'
-import type { CodingNsClientFeatureModule, CodingNsRpcClient, CodingNsRpcResult } from './features/types.js'
+import type { CodingNsClientFeatureModule, CodingNsClientServices, CodingNsRpcClient, CodingNsRpcResult } from './features/types.js'
+import { MAX_GIT_COMMIT_MESSAGE_CHARS, type GitCommitMessageDraft } from '../shared/contracts/git.js'
+import { GitManagementSettingsPanel } from './git-management-settings.js'
 import { buildHistoryGraph, GRAPH_DASH_ARRAY, GRAPH_LANE_WIDTH, GRAPH_ROW_HEIGHT, laneCenterX, laneColor, laneStroke, laneDashed, isUnpushed, segmentStroke } from './git-history-graph.js'
 import type { GitGraphLane, GitGraphRow } from './git-history-graph.js'
 import { CODINGNS_RPC_CHANNEL } from '../shared/contracts/transport.js'
@@ -46,10 +48,11 @@ type GitTabProps = {
   readonly rpc: CodingNsRpcClient
   readonly remote?: unknown
   readonly uiContext?: Context
+  readonly settings?: CodingNsClientServices['settings'] | undefined
   readonly t: CodingNsTranslator
 }
 type GitTabTitleProps = { readonly useTabInfo: UseSidebarRightTabInfo; readonly t: CodingNsTranslator }
-type GitServices = { readonly rpc: CodingNsRpcClient; readonly remote?: unknown; readonly locale?: CodingNsLocale }
+type GitServices = { readonly rpc: CodingNsRpcClient; readonly remote?: unknown; readonly locale?: CodingNsLocale; readonly settings?: CodingNsClientServices['settings'] }
 type GitOperation = 'fetch' | 'pull' | 'push' | 'undo' | 'refresh'
 
 function gitOperationLabel(operation: GitOperation, t: CodingNsTranslator): string {
@@ -129,7 +132,7 @@ export function registerGitManagementUi(ctx: Context, services: GitServices): ()
     }))
     disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
       name: 'sidebar.right.pane.tab', key: GIT_PROVIDER_ID,
-      inject: () => ({ rpc: services.rpc, remote: services.remote, uiContext: ctx, t }),
+      inject: () => ({ rpc: services.rpc, remote: services.remote, uiContext: ctx, settings: services.settings, t }),
     }, GitPanel)))
     disposers.push(ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
       name: 'sidebar.right.pane.tab.title', key: GIT_PROVIDER_ID,
@@ -173,6 +176,12 @@ function GitTabTitle({ useTabInfo, t }: GitTabTitleProps): ReactElement {
 function GitPanel(props: GitTabProps): ReactElement {
   const sessionId = String(props.sessionId)
   const t = props.t
+  const settingsStore = useMemo(() => ({
+    subscribe: (listener: () => void) => props.settings?.subscribe(listener) ?? (() => undefined),
+    read: () => props.settings?.getSnapshot(),
+  }), [props.settings])
+  const settingsSnapshot = useSyncExternalStore(settingsStore.subscribe, settingsStore.read, settingsStore.read)
+  const generationEnabled = settingsSnapshot?.value?.gitManagement?.commitMessageEnabled !== false
   const tabInfo = props.useTabInfo()
   // 聚合摘要晚到时重新解析归属；普通状态更新不应清空已经展开的 Git 视图。
   useGitWorkspaceSnapshot(props.uiContext)
@@ -182,7 +191,10 @@ function GitPanel(props: GitTabProps): ReactElement {
   const [history, setHistory] = useState<readonly GitHistoryItem[]>([])
   const [branches, setBranches] = useState<GitBranchSnapshot | null>(null)
   const [subject, setSubject] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [operationBusy, setBusy] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const draftRequest = useRef<AbortController | null>(null)
+  const busy = operationBusy || generating
   const [activeOperation, setActiveOperation] = useState<GitOperation | null>(null)
   const [toast, setToast] = useState<SettingsNotice | null>(null)
   const [diffView, setDiffView] = useState<GitCommitDiff | null>(null)
@@ -193,6 +205,11 @@ function GitPanel(props: GitTabProps): ReactElement {
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false)
   const historyExpanded = useRef(false)
   const gridVisible = status !== null && status.snapshot.enabled !== false
+
+  useEffect(() => {
+    setGenerating(false)
+    return () => { draftRequest.current?.abort(); draftRequest.current = null }
+  }, [workspaceId, generationEnabled, sessionId, projectedWorkspaceId])
 
   useEffect(() => {
     if (toast === null) return
@@ -306,6 +323,23 @@ function GitPanel(props: GitTabProps): ReactElement {
     if (!value) { notify('error', t('git.commitMessageRequired')); return }
     void run('git/commit', { subject: value }, () => setSubject(''))
   }
+  const generateMessage = async (): Promise<void> => {
+    if (!generationEnabled || busy || workspaceId === undefined || draftRequest.current !== null) return
+    const abort = new AbortController()
+    draftRequest.current = abort
+    setGenerating(true)
+    notify('info', t('git.generatingMessage'))
+    try {
+      const draft = await call<GitCommitMessageDraft>(props.rpc, 'git/generate-message', { workspaceId }, abort.signal)
+      if (abort.signal.aborted) return
+      setSubject(draft.message)
+      setToast(null)
+    } catch (error) {
+      if (!abort.signal.aborted) notify('error', error instanceof Error ? error.message : String(error))
+    } finally {
+      if (draftRequest.current === abort) { draftRequest.current = null; setGenerating(false) }
+    }
+  }
   const copyCommitHash = (commitHash: string): void => {
     void copyText(commitHash).then((copied) => notify(copied ? 'success' : 'error', copied ? t('git.commitHashCopied') : t('git.copyUnsupported')))
   }
@@ -380,8 +414,8 @@ function GitPanel(props: GitTabProps): ReactElement {
             createElement('span', { style: mutedStyle }, staged.length === 0 ? t('git.stagingEmpty') : t('git.stagedCount', { count: staged.length })),
           ),
           createElement('div', { style: commitEditorRowStyle },
-            createElement('textarea', { value: subject, disabled: busy || workspaceId === undefined, className: gitPanelClass.field, onChange: (event: { currentTarget: { value: string } }) => setSubject(event.currentTarget.value), onKeyDown: (event: { key: string; preventDefault: () => void }) => { if (event.key === 'Enter') event.preventDefault() }, placeholder: t('git.commitPlaceholder'), rows: 1, style: commitSubjectStyle }),
-            createElement('button', { type: 'button', disabled: busy || workspaceId === undefined, onClick: () => notify('info', t('git.draftUnavailable')), className: `${gitPanelClass.button} ${gitPanelClass.field}`, style: draftButtonStyle, title: t('git.draftMessage'), 'aria-label': t('git.draftMessage') }, '✦'),
+            createElement('textarea', { value: subject, disabled: busy || workspaceId === undefined, maxLength: MAX_GIT_COMMIT_MESSAGE_CHARS, className: gitPanelClass.field, onChange: (event: { currentTarget: { value: string } }) => setSubject(event.currentTarget.value), placeholder: t('git.commitPlaceholder'), rows: Math.min(8, subject.split('\n').length), style: commitSubjectStyle }),
+            generationEnabled && createElement('button', { type: 'button', disabled: busy || workspaceId === undefined || staged.length === 0, onClick: () => { void generateMessage() }, className: `${gitPanelClass.button} ${gitPanelClass.field}`, style: draftButtonStyle, title: t(generating ? 'git.generatingMessage' : 'git.draftMessage'), 'aria-label': t('git.draftMessage'), 'aria-busy': generating }, generating ? '…' : '✦'),
           ),
           createElement('div', { style: commitActionsStyle },
             createElement('button', { type: 'button', disabled: busy || workspaceId === undefined, onClick: () => void run('git/status', {}, (value) => setStatus(value as GitStatus)), className: `${gitPanelClass.button} ${gitPanelClass.field}`, style: refreshActionStyle }, t('git.refresh')),
@@ -1202,7 +1236,7 @@ const diffCodeStyle: CSSProperties = { minWidth: 0, paddingLeft: 10, color: 'inh
 const commitSectionStyle: CSSProperties = { ...sectionStyle, gap: 10 }
 /** 提交框与「生成提交信息」按钮同高，输入面沿用面板的表单风格（边框 + 输入底色 + 8px 圆角）。 */
 const commitEditorRowStyle: CSSProperties = { display: 'flex', alignItems: 'stretch', gap: 8, minWidth: 0 }
-const commitSubjectStyle: CSSProperties = { width: '100%', minHeight: 34, boxSizing: 'border-box', resize: 'none', padding: '7px 10px', borderRadius: 8, font: 'inherit', fontSize: uiFontSize(12), lineHeight: '16px' }
+const commitSubjectStyle: CSSProperties = { width: '100%', minHeight: 34, boxSizing: 'border-box', resize: 'vertical', padding: '7px 10px', borderRadius: 8, font: 'inherit', fontSize: uiFontSize(12), lineHeight: '16px' }
 const draftButtonStyle: CSSProperties = { width: 34, flex: '0 0 auto', padding: 0, borderRadius: 8, fontSize: uiFontSize(16), lineHeight: 1 }
 const commitActionsStyle: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }
 const refreshActionStyle: CSSProperties = { minHeight: 32, padding: '6px 12px', borderRadius: 8, fontSize: uiFontSize(12), lineHeight: '16px' }
@@ -1226,6 +1260,7 @@ export const gitManagementFeature: CodingNsClientFeatureModule = {
   start(context) {
     const uiContext = context.services.uiContext
     if (uiContext === undefined) throw new Error('Git 管理模块缺少 DSH UI 上下文')
-    context.resources.add(registerGitManagementUi(uiContext, { rpc: context.services.rpc, remote: context.services.remote, locale: context.services.locale }))
+    context.resources.add(registerGitManagementUi(uiContext, { rpc: context.services.rpc, remote: context.services.remote, locale: context.services.locale, settings: context.services.settings }))
   },
+  settingsPanel: GitManagementSettingsPanel,
 }
