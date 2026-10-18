@@ -118,7 +118,7 @@ test('Team routes retain alpha.2 support through rc.2 and reject old and future 
 })
 
 test('native and external Leads create real roster children with isolated model/effort selection', async () => {
-  for (const rootAdapter of ['dsh', 'codex', 'claude-code']) {
+  for (const rootAdapter of ['dsh', 'codex', 'claude-code', 'pi']) {
     const h = harness(rootAdapter)
     try {
       const requests = ['model-a', 'model-b'].map((model, index) => h.dispatcher.dispatch('root', {
@@ -214,11 +214,13 @@ test('catalog readiness separates host, adapter installation, enablement, and ro
     { id: 'codex', name: 'Codex', installed: true, enabled: true },
     { id: 'claude-code', name: 'Claude', installed: false, enabled: true },
     { id: 'gemini', name: 'Gemini', installed: true, enabled: false },
+    { id: 'pi', name: 'Pi Agent', installed: true, enabled: true },
     { id: 'kimi', name: 'Kimi', installed: true, enabled: true },
   ] as never
   assert.deepEqual(withTeamSupport(catalog).map(item => item.team), [
     { member: true, lead: true }, { member: false, lead: false, reason: 'installation' },
-    { member: false, lead: false, reason: 'disabled' }, { member: false, lead: false, reason: 'adapter' },
+    { member: false, lead: false, reason: 'disabled' }, { member: true, lead: true },
+    { member: false, lead: false, reason: 'adapter' },
   ])
   assert.deepEqual(withTeamSupport(catalog, undefined, false)[0]!.team, { member: true, lead: false })
   for (const reason of ['version', 'profile', 'disabled'] as const) assert.equal(withTeamSupport(catalog, reason).every(item => item.team?.reason === reason), true)
@@ -375,8 +377,9 @@ test('Team discovery uses one role-specific tool and injected transports carry s
     const nativeTool = createAgentTeamTool(h.dispatcher) as any
     assert.equal((await nativeTool.execute({ action: 'members' }, { agent: { ...h.root } })).ok, false)
     assert.equal((await nativeTool.execute({ action: 'members' }, { agent: h.root })).ok, true)
-    for (const id of ['codex', 'claude-code', 'command-code', 'gemini', 'mcode', 'grok', 'opencode']) assert.equal(teamAdapterSupport(id).member, true)
-    for (const id of ['kimi', 'pi', 'zcode', 'doubao', 'unknown']) assert.equal(teamAdapterSupport(id).member, false)
+    for (const id of ['codex', 'claude-code', 'command-code', 'gemini', 'mcode', 'grok', 'opencode', 'pi']) assert.equal(teamAdapterSupport(id).member, true)
+    assert.deepEqual(teamAdapterSupport('pi'), { member: true, lead: true, transport: 'rpc' })
+    for (const id of ['kimi', 'zcode', 'doubao', 'unknown']) assert.equal(teamAdapterSupport(id).member, false)
   } finally { await h.dispose() }
 })
 

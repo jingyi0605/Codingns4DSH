@@ -3,7 +3,7 @@ import type { CodingNsCliAdapterDescriptor } from '../../shared/contracts/cli-ad
 export interface TeamAdapterSupport {
   readonly member: boolean
   readonly lead: boolean
-  readonly transport?: 'mcp' | 'acp' | 'mod'
+  readonly transport?: 'mcp' | 'acp' | 'mod' | 'rpc'
   readonly reason?: string
 }
 
@@ -22,6 +22,7 @@ export function teamAdapterSupport(adapterId: string): TeamAdapterSupport {
     case 'codex': case 'claude-code': case 'opencode': return { member: true, lead: true, transport: 'mcp' }
     case 'command-code': return { member: true, lead: true, transport: 'mod' }
     case 'gemini': case 'grok': case 'mcode': return { member: true, lead: true, transport: 'acp' }
+    case 'pi': return { member: true, lead: true, transport: 'rpc' }
     default: return { member: false, lead: false, reason: 'TEAM_ADAPTER_UNSUPPORTED' }
   }
 }
