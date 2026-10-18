@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 import test from 'node:test'
 import { createCodingNsRpcHandler } from '../data/build/dist/host/rpc.js'
 import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
-import { createGitManagementFeature } from '../data/build/dist/host/features/git-management.js'
+import { createGitCommandEnv, createGitManagementFeature } from '../data/build/dist/host/features/git-management.js'
 import { registerGitManagementUi, resolveGitWorkspaceId } from '../data/build/dist/client/git-management.js'
 
 const execFile = promisify(execFileCallback)
@@ -100,6 +100,55 @@ test('Git Host 状态按文件返回未跟踪目录内容', async () => {
 test('Git Host 模块拒绝不存在的 Workspace', async () => {
   const { table } = startGitFeature(new Map())
   await assert.rejects(() => rpc(table, 'git/status', { workspaceId: 'missing' }), /当前 Workspace 没有可用的本地目录/u)
+})
+
+test('Git Host 优先使用 Registry 根目录，不依赖终端缓存', async () => {
+  const root = await mkdtemp(`${tmpdir()}/codingns-git-managed-`)
+  try {
+    const table = new CodingNsRpcTable()
+    const resources: ResourceScope = { disposers: [], add(disposer) { this.disposers.push(disposer) } }
+    const feature = createGitManagementFeature()
+    feature.start({
+      descriptor: feature.descriptor,
+      resources,
+      services: {
+        rpc: table,
+        resolveManagedWorkspaceRoot: (workspaceId: string) => workspaceId === 'workspace-managed' ? root : null,
+        resolveWorkspaceRoot: () => '/stale-terminal-root',
+      },
+    })
+    const empty = await rpc(table, 'git/status', { workspaceId: 'workspace-managed' }) as { snapshot: { enabled?: boolean; repoRoot?: string } }
+    assert.equal(empty.snapshot.enabled, false)
+    assert.equal(empty.snapshot.repoRoot, root)
+    for (const dispose of resources.disposers.reverse()) await dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Git 命令环境剥离仓库重定向变量', () => {
+  const env = createGitCommandEnv({
+    PATH: '/usr/bin',
+    GIT_DIR: '/tmp/poison.git',
+    GIT_WORK_TREE: '/tmp/poison-tree',
+    GIT_INDEX_FILE: '/tmp/poison.index',
+    GIT_OBJECT_DIRECTORY: '/tmp/poison-objects',
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: '/tmp/poison-alt',
+    GIT_COMMON_DIR: '/tmp/poison-common',
+    GIT_PREFIX: 'src/',
+    HOME: '/Users/dev',
+  })
+  assert.equal(env.GIT_DIR, undefined)
+  assert.equal(env.GIT_WORK_TREE, undefined)
+  assert.equal(env.GIT_INDEX_FILE, undefined)
+  assert.equal(env.GIT_OBJECT_DIRECTORY, undefined)
+  assert.equal(env.GIT_ALTERNATE_OBJECT_DIRECTORIES, undefined)
+  assert.equal(env.GIT_COMMON_DIR, undefined)
+  assert.equal(env.GIT_PREFIX, undefined)
+  assert.equal(env.PATH, '/usr/bin')
+  assert.equal(env.HOME, '/Users/dev')
+  assert.equal(env.GIT_TERMINAL_PROMPT, '0')
+  assert.equal(env.GIT_OPTIONAL_LOCKS, '0')
 })
 
 test('Git Host 模块支持提交 Diff 和撤销最近提交', async () => {
