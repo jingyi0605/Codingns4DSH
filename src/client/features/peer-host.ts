@@ -19,6 +19,7 @@ import { publishSessionAdapter } from '../session-adapter-cache.js'
 import { startSerialPolling } from '../serial-polling.js'
 import { PeerHostRemoteEvents } from '../peer-host-remote-events.js'
 import { registerPeerHostReferenceSource } from '../peer-host-reference-source.js'
+import { installPeerHostAttachmentIntake } from '../../dsh-capabilities/client/peer-host-attachment-adapter.js'
 
 /** 聚合刷新周期；远端资源只影响自身节点，刷新失败不改变本机界面。 */
 const PEER_HOST_AGGREGATE_REFRESH_MS = 30_000
@@ -231,6 +232,7 @@ export function createPeerHostPageTransport(
   const fetchImpl = typeof originalGlobalFetch === 'function' ? originalGlobalFetch.bind(globalThis) : undefined
   const scopes = new Map<string, HostScope>()
   const remoteHostScopes = new Map<string, HostScope>()
+  const restoreAttachmentIntake = installPeerHostAttachmentIntake(uiContext, t('peerHost.attachmentFolderUnsupported'))
   // DSH 的模型目录是 Host generation 级缓存；PeerHost 工作区切换不会触发 DSH
   // 自己的 connection/reset，因此仅按前台导航的 Host 变化使目录失效。
   let activeModelCatalogScopeKey: string | undefined
@@ -830,6 +832,7 @@ export function createPeerHostPageTransport(
     mergeEvents: (local, signal) => events.open(local, signal),
     dispose() {
       events.dispose()
+      restoreAttachmentIntake()
       restoreAnchorClick()
       restoreGlobalFetch()
       if (aggregateRefreshTimer !== undefined) clearTimeout(aggregateRefreshTimer)
