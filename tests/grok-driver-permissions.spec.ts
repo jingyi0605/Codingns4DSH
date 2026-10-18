@@ -75,6 +75,7 @@ test('Grok names the actual injected bridge in the model prompt', { timeout: 3_0
     if (request.method === 'session/prompt') {
       const prompt = JSON.stringify(request.params.prompt)
       assert.match(prompt, /codingns__agent_subagent/)
+      assert.match(prompt, /codingns__web_search/)
       assert.match(prompt, /ordinary final output is also delivered to the parent/)
       connection.reply(request, { stopReason: 'end_turn' })
     }
@@ -96,6 +97,8 @@ for (const scenario of [
   { label: 'a conflicting observed tool', tool: 'write', path: 'result.json', observedTool: 'run_terminal_command', admitted: false },
   { label: 'an ordinary bound parent report', tool: 'codingns__agent_subagent', bridge: true, admitted: true },
   { label: 'an unbound parent report', tool: 'codingns__agent_subagent', admitted: false },
+  { label: 'a bound parent web search', tool: 'codingns__web_search', bridge: true, admitted: true },
+  { label: 'an unbound web search', tool: 'codingns__web_search', admitted: false },
   { label: 'a shell command', tool: 'run_terminal_command', path: 'result.json', admitted: false },
   { label: 'an outside file', tool: 'write', path: '../outside.json', admitted: false },
   { label: 'a symlink escape', tool: 'write', path: 'escape/result.json', admitted: false },
@@ -162,6 +165,36 @@ for (const scenario of [
     } finally { fixture.driver.dispose(); setSubagentBridge(undefined) }
   })
 }
+
+test('Grok admits bound Team web_search without a second approval under workspace-write/never', { timeout: 5_000 }, async () => {
+  const signal = new AbortController().signal
+  const caller = {}
+  setSubagentBridge(createSubagentBridgeRuntime({
+    baseUrl: 'http://127.0.0.1:1', token: 'legacy',
+    teamAccess: sessionId => sessionId === input.sessionId ? {
+      caller, signal, identity: { sessionId, teamId: 'team', name: 'con-grok', role: 'teammate' },
+    } : undefined,
+  }))
+  const fixture = replay((request, connection) => {
+    if (request.method === 'session/prompt') {
+      connection.promptId = request.id
+      connection.update({ sessionUpdate: 'tool_call', toolCallId: 'search-call', title: 'codingns__web_search', status: 'pending', rawInput: { queries: ['公开资料'] } })
+      connection.emit({ jsonrpc: '2.0', id: 77, method: 'session/request_permission', params: {
+        sessionId: 'provider-session', toolCall: { toolCallId: 'search-call', title: 'codingns__web_search' }, options: permissionOptions,
+      } })
+    } else if (request.id === 77 && request.result) {
+      connection.update({ sessionUpdate: 'tool_call_update', toolCallId: 'search-call', status: 'completed', rawOutput: '{"ok":true}' })
+      connection.reply({ id: connection.promptId }, { stopReason: 'end_turn' })
+    }
+  })
+  try {
+    for await (const event of fixture.driver.executeTurn({ ...input, permission: { sandboxMode: 'workspace-write', approvalPolicy: 'never' } })) {
+      assert.notEqual(event.type, 'permission-request', 'The bound search tool must retain its existing Host authority')
+    }
+    const reply = fixture.connections[0].requests.find(request => request.id === 77 && request.result)
+    assert.equal(reply?.result.outcome.optionId, 'allow-once')
+  } finally { fixture.driver.dispose(); setSubagentBridge(undefined) }
+})
 
 test('Grok runs bound Team coordination without a second approval under workspace-write/never', { timeout: 5_000 }, async () => {
   const signal = new AbortController().signal

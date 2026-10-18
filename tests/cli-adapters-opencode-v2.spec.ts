@@ -457,6 +457,7 @@ test('OpenCode V2 桥接注册 CodingNS MCP 并拒绝原生 subagent', async () 
     assert.deepEqual(session?.body.permissions, [
       { action: 'subagent', resource: '*', effect: 'deny' },
       { action: `${serverName}_agent_subagent`, resource: '*', effect: 'allow' },
+      { action: `${serverName}_web_search`, resource: '*', effect: 'allow' },
     ])
     const prompt = requests.find((request) => request.path.endsWith('/prompt'))
     assert.match(prompt?.body.text ?? '', /codingns_[0-9a-f]{8}_agent_subagent/u)

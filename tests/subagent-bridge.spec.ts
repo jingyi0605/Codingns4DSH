@@ -99,6 +99,7 @@ test('子代理桥接注入：Command Code 始终屏蔽原生 agent，桥接开�
     const codexInstructions = codexBridgeDeveloperInstructions('s1')
     assert.ok(codexInstructions !== undefined)
     assert.ok(codexInstructions.includes('codingns.agent_subagent'))
+    assert.ok(codexInstructions.includes('codingns.web_search'))
 
     // Windows 的 JsonRpcProcess 通过显式 cmd.exe `/c` 命令启动 `.cmd` 包装器；
     // 注入层只返回真实 argv，shell 转义由进程层统一完成，MCP args 继续是 TOML 数组。
@@ -244,7 +245,7 @@ test('Command Code 子代理 Mod：启动时注册 DSH agent_subagent 工具', a
       addTool: (tool: { readonly schema?: { readonly name?: string }; readonly run?: (context: { input: unknown }) => Promise<Record<string, unknown>> }) => { tools.push(tool) },
       hooks: () => undefined,
     })
-    assert.equal(tools[0]?.schema?.name, 'agent_subagent')
+    assert.deepEqual(tools.map((tool) => tool.schema?.name), ['agent_subagent', 'web_search'])
     const result = await tools[0]!.run!({ input: { action: 'start', prompt: '创建一个子会话' } })
     assert.equal(result.ok, false)
     assert.match(String(result.error), /subagent bridge is unavailable/u)
@@ -362,8 +363,7 @@ test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', 
     assert.equal(initialized.result.serverInfo.name, 'codingns-subagent-bridge')
     assert.equal(initialized.result.protocolVersion, '2024-11-05')
     const tools = await waitFor(2)
-    assert.equal(tools.result.tools.length, 1)
-    assert.equal(tools.result.tools[0].name, 'agent_subagent')
+    assert.deepEqual(tools.result.tools.map((tool: { name: string }) => tool.name), ['agent_subagent', 'web_search'])
     assert.match(String(tools.result.tools[0].description), /returns immediately/u)
     const call = await waitFor(3)
     assert.equal(call.result.isError, undefined)
@@ -384,7 +384,7 @@ test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', 
   }
 })
 
-test('MCP 子会话只暴露 send_message，并把 agent_id 兼容映射到父会话', async () => {
+test('MCP 子会话用 send_message 回传父会话，并把 agent_id 兼容映射到父会话', async () => {
   const dispatched: Array<Record<string, unknown>> = []
   const server = await startSubagentBridgeServer({
     dispatch: async (request) => {
@@ -431,8 +431,7 @@ test('MCP 子会话只暴露 send_message，并把 agent_id 兼容映射到父�
     send({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
     send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'send_message', arguments: { agent_id: 'parent-1', message: '完整报告' } } })
     const tools = await waitFor(1)
-    assert.equal(tools.result.tools.length, 1)
-    assert.equal(tools.result.tools[0].name, 'send_message')
+    assert.deepEqual(tools.result.tools.map((tool: { name: string }) => tool.name), ['send_message', 'web_search'])
     const call = await waitFor(2)
     assert.equal(call.result.isError, undefined)
     assert.equal(dispatched[0]?.sessionId, 'child-1')
