@@ -10,6 +10,8 @@ import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters
 import { createCliAdaptersFeature } from '../data/build/dist/host/cli-adapters/feature.js'
 import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
 import { FeatureRegistry } from '../data/build/dist/features/registry.js'
+import { createCodingNsNativeSessionBridge } from '../data/build/dist/host/native-session-bridge.js'
+import { readSessionChangedFiles } from '../data/build/dist/host/session-changes.js'
 
 type Message = Record<string, any>
 type Connection = {
@@ -54,6 +56,52 @@ function createReplay(onRequest: (request: Message, connection: Connection) => v
 }
 
 const turn = { sessionId: 'host-session', messages: [], prompt: 'Continue' }
+
+for (const version of [3, 4]) {
+  test(`Grok preserves edit identity through display updates and a delayed native V${version} step`, { timeout: 5_000 }, async () => {
+    const file_path = '/workspace/src/edited.ts'
+    const rawInput = { file_path, old_string: 'before', new_string: 'after' }
+    const _meta = { 'x.ai/tool': { version: 1, name: 'search_replace', kind: 'edit', namespace: 'grok_build', label: 'Edit', read_only: false } }
+    const replay = createReplay((request, connection) => {
+      if (request.method !== 'session/prompt') return
+      connection.update({ sessionUpdate: 'tool_call', toolCallId: 'edit', title: 'search_replace', rawInput, _meta })
+      connection.update({ sessionUpdate: 'tool_call_update', toolCallId: 'edit', kind: 'edit', title: `Edit \`${file_path}\``,
+        rawInput: { variant: 'SearchReplace', ...rawInput, replace_all: false },
+        content: [{ type: 'diff', path: file_path, oldText: 'before', newText: 'after' }], locations: [{ path: file_path }], _meta })
+      connection.update({ sessionUpdate: 'tool_call_update', toolCallId: 'edit', status: 'completed',
+        rawOutput: { type: 'SearchReplace', EditsApplied: { absolute_path: file_path } } })
+      connection.reply(request, { stopReason: 'end_turn' })
+    })
+    const events: Message[] = [{ type: 'turn/start', seq: 0, data: { turn: 1 } }]
+    const session = {
+      header: { version, cwd: '/workspace' },
+      snapshotEvents() { return [...events] },
+      append(type: string, data: unknown) {
+        const event = { type, seq: events.length, data }
+        events.push(event)
+        return event
+      },
+    }
+    const nativeSessions = createCodingNsNativeSessionBridge({
+      get: (name: string) => name === 'sessions' ? { get: () => session, list: () => [session] } : undefined,
+    } as never)
+    const projector = new CodingNsDshMessageProjector({ adapterId: 'grok', sessionId: turn.sessionId, nativeSessions })
+    let observed = 0
+    try {
+      for await (const event of replay.driver.executeTurn(turn)) {
+        if (event.type === 'tool-event') {
+          observed++
+          if (observed === 2) session.append('step/start', { turn: 1, step: 1 })
+        }
+        await projector.push(event)
+      }
+      assert.equal(events.find(event => event.type === 'tool/call')?.data.name, 'edit')
+      assert.deepEqual(events.find(event => event.type === 'tool/result')?.data.meta?.diffs,
+        [{ path: file_path, oldText: 'before', newText: 'after' }])
+      assert.deepEqual(await readSessionChangedFiles({ nativeSessions }, turn.sessionId, '/workspace'), { paths: ['src/edited.ts'] })
+    } finally { replay.driver.dispose() }
+  })
+}
 
 async function createTimeline(driver: GrokBuildDriver, options: {
   canInject?: boolean

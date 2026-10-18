@@ -143,6 +143,28 @@ test('原生事件没有文件路径时回退读取会话 JSONL', async () => {
   }
 })
 
+test('Session changes recover persisted Grok display titles without counting reads or failed edits', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codingns-session-grok-titles-'))
+  try {
+    const events = [
+      ['edited', 'Edit `src/edited.ts`', 'src/edited.ts', false],
+      ['created', 'Write `src/created.ts`', 'src/created.ts', false],
+      ['read', 'Read `src/read.ts`', 'src/read.ts', false],
+      ['failed', 'Edit `src/failed.ts`', 'src/failed.ts', true],
+      ['outside', 'Edit `../outside.ts`', '../outside.ts', false],
+    ].flatMap(([callId, name, file_path, isError]) => [
+      { type: 'tool/call', data: { callId, name, arguments: JSON.stringify({ file_path }) } },
+      { type: 'tool/result', data: { message: { toolCallId: callId, isError, content: [] } } },
+    ])
+    const result = await readSessionChangedFiles({
+      nativeSessions: { get: () => ({ snapshotEvents: () => events }) },
+    }, 'grok-history', root)
+    assert.deepEqual(result.paths, ['src/created.ts', 'src/edited.ts'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('提交后 Git 状态清空时会话修改文件选择结果归零', () => {
   const sessionFiles = { paths: ['src/one.ts', 'src/two.ts'] }
   const beforeCommit = {
