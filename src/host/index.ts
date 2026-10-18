@@ -38,6 +38,7 @@ import { registerAssistantAvatarRoutes } from './features/assistant-avatar-runti
 import { isStage0Runtime, registerStage0DevHmr } from './stage0-dev-hmr.js'
 import { CODINGNS_STAGE0_GLOBAL } from '../shared/runtime-environment.js'
 import { registerProviderIconRoutes } from './provider-icon-assets.js'
+import { listWorkspaceRoots as listRegistryWorkspaceRoots, resolveWorkspaceRoot as resolveRegistryWorkspaceRoot } from './workspace-root.js'
 
 export async function apply(ctx?: Context): Promise<void> {
   if (ctx === undefined) return
@@ -149,7 +150,7 @@ export async function apply(ctx?: Context): Promise<void> {
     // controller 必须在功能模块和浏览器 Client 开始消费状态前完成装配。
     // 工厂在本次启动只读取一次开关，设置 watcher 不会热切同名 service。
     const terminal = await installTerminalController(hostCtx, settings, settingsContext.settings, {
-      resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveWorkspaceRoot(hostCtx, workspaceId),
+      resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveRegistryWorkspaceRoot(hostCtx, workspaceId),
       registerWorkspaceRoot: (workspaceId, cwd) => workspaceRoots.set(workspaceId, cwd),
       // alpha.2 起会话「当前目录」可被模型切换；旧版本没有该服务，回调整体缺省，
       // 终端自动回退到不可变的会话头目录。
@@ -186,9 +187,9 @@ export async function apply(ctx?: Context): Promise<void> {
         readOptionalService(hostCtx, 'agents') as AgentRegistry | undefined,
       ),
       terminalProcesses: terminal.processService,
-      resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveWorkspaceRoot(hostCtx, workspaceId),
-      resolveManagedWorkspaceRoot: (workspaceId) => resolveWorkspaceRoot(hostCtx, workspaceId),
-      listWorkspaceRoots: () => [...workspaceRoots.values(), ...readWorkspaceRoots(hostCtx)],
+      resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveRegistryWorkspaceRoot(hostCtx, workspaceId),
+      resolveManagedWorkspaceRoot: (workspaceId) => resolveRegistryWorkspaceRoot(hostCtx, workspaceId),
+      listWorkspaceRoots: () => [...workspaceRoots.values(), ...listRegistryWorkspaceRoots(hostCtx)],
       registerDebugProxyRoute: (handler) => hostCtx.connection.fetch.register({
         path: '/api/codingns/debug-proxy',
         methods: ['GET', 'HEAD', 'POST'],
@@ -205,7 +206,7 @@ export async function apply(ctx?: Context): Promise<void> {
       registerAssistantAvatarRuntimeRoute: (handler, legacy) => registerAssistantAvatarRoutes(hostCtx.connection.fetch, handler, legacy),
     }
     const debug = new DebugWorkspaceService({
-      resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveWorkspaceRoot(hostCtx, workspaceId),
+      resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveRegistryWorkspaceRoot(hostCtx, workspaceId),
       terminalProcesses: terminal.processService,
     })
     let directoryBrowser: CodingNsHostServices['workspaceDirectoryBrowser']
@@ -319,36 +320,6 @@ function readOptionalService(ctx: Context, name: string): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
-}
-
-function resolveWorkspaceRoot(ctx: Context, workspaceId: string): string | null {
-  try {
-    const registry = ctx.get('workspaceRegistry') as { readonly list?: () => readonly Record<string, unknown>[] } | undefined
-    const entry = registry?.list?.().find((candidate) => candidate.id === workspaceId)
-    if (entry === undefined) return null
-    for (const key of ['rootPath', 'path', 'cwd', 'directory']) {
-      const value = entry[key]
-      if (typeof value === 'string' && value.trim() !== '') return value
-    }
-  } catch {
-    // Workspace Registry 还未装配时由启动服务返回可读的不可用错误。
-  }
-  return null
-}
-
-function readWorkspaceRoots(ctx: Context): readonly string[] {
-  try {
-    const registry = ctx.get('workspaceRegistry') as { readonly list?: () => readonly Record<string, unknown>[] } | undefined
-    return (registry?.list?.() ?? []).flatMap((entry) => {
-      for (const key of ['rootPath', 'path', 'cwd', 'directory']) {
-        const value = entry[key]
-        if (typeof value === 'string' && value.trim() !== '') return [value.trim()]
-      }
-      return []
-    })
-  } catch {
-    return []
-  }
 }
 
 export {
