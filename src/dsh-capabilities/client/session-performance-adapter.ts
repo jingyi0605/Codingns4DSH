@@ -1,8 +1,8 @@
 import type { ComponentType } from 'react'
 import { CODEX_PERFORMANCE_PROJECTION } from '../../shared/codex-performance.js'
 import { GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION } from '../../shared/request-performance.js'
-import { contextComposerSlotName } from './composer-slot-selectors.js'
-import { followPresentationEntry, mirrorPresentationSlot, type PresentationSlots, type RenderElement } from './slot-presentation-mirror.js'
+import { installComposerPresentation } from './composer-presentation-adapter.js'
+import { followPresentationEntry, type PresentationSlots, type RenderElement } from './slot-presentation-mirror.js'
 
 export interface SessionPerformancePresentation {
   install(useAdapter: (id: string) => string | undefined, element: RenderElement): () => void
@@ -48,7 +48,7 @@ export function createSessionPerformancePresentation(context: unknown): SessionP
           return () => { remove(); wrappers.delete(ActivityWithSourceTiming) }
         })
       try {
-        const removeContext = installGrokContextPresentation(slots, useAdapter, element)
+        const removeContext = installGrokContextPresentation(context as object, slots, useAdapter, element)
         return () => { removeContext(); removeActivity() }
       } catch (error) { removeActivity(); throw error }
     },
@@ -56,43 +56,20 @@ export function createSessionPerformancePresentation(context: unknown): SessionP
 }
 
 /** ContextMeter lives inside the native composer bar, rather than in its own slot. */
-function installGrokContextPresentation(slots: PresentationSlots, useAdapter: (id: string) => string | undefined, element: RenderElement): () => void {
-  return followPresentationEntry(slots, 'conversation.composer.bar',
-    entry => entry.children?.['conversation.composer.dock'] !== undefined,
-    native => {
-      const names = Object.fromEntries(Object.keys(native.children ?? {}).map(name => [name, contextComposerSlotName(name)]))
-      const removers: (() => void)[] = []
-      const remove = slots.register({
-        name: 'conversation.composer.bar', ...native.options,
-        priority: (native.options.priority ?? 0) - 1,
-        locale: native.locale, inject: native.inject, store: native.store, select: native.select,
-        children: Object.fromEntries(Object.entries(native.children ?? {}).map(([name, spec]) => [names[name], spec])),
-      }, props => {
-        const adapter = useAdapter(props.sessionId ?? '')
-        return element(native.component, {
-          ...props,
-          renderSlot: (name: string, ...args: unknown[]) => props.renderSlot(names[name] ?? name, ...args),
-          ...(props.renderSlotChain === undefined ? {} : {
-            renderSlotChain: (name: string, ...args: unknown[]) => props.renderSlotChain(names[name] ?? name, ...args),
-          }),
-          useProjection: (key: string, ...args: unknown[]) => {
-            const original = props.useProjection(key, ...args)
-            if (key === 'contextBreakdown' && adapter === 'grok') return undefined
-            if (key !== 'contextPressure') return original
-            const value = props.useProjection(GROK_CONTEXT_PROJECTION)
-            if (adapter !== 'grok') return original
-            const pressure = value ?? {}
-            return typeof args[0] === 'function' ? args[0](pressure) : pressure
-          },
-        })
-      })
-      try {
-        for (const [source, target] of Object.entries(names)) removers.push(mirrorPresentationSlot(slots, source, target, element))
-      } catch (error) {
-        for (const dispose of removers.reverse()) dispose()
-        remove()
-        throw error
-      }
-      return () => { for (const dispose of removers.reverse()) dispose(); remove() }
+function installGrokContextPresentation(owner: object, slots: PresentationSlots, useAdapter: (id: string) => string | undefined, element: RenderElement): () => void {
+  return installComposerPresentation(owner, slots, Native => function ComposerWithGrokContext(props) {
+    const adapter = useAdapter(props.sessionId ?? '')
+    return element(Native, {
+      ...props,
+      useProjection: (key: string, ...args: unknown[]) => {
+        const original = props.useProjection(key, ...args)
+        if (key === 'contextBreakdown' && adapter === 'grok') return undefined
+        if (key !== 'contextPressure') return original
+        const value = props.useProjection(GROK_CONTEXT_PROJECTION)
+        if (adapter !== 'grok') return original
+        const pressure = value ?? {}
+        return typeof args[0] === 'function' ? args[0](pressure) : pressure
+      },
     })
+  }, element)
 }
