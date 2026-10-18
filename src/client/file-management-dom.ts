@@ -3,14 +3,18 @@ import { callCodingNsRpc } from './settings-bridge.js'
 import type { EditorView } from 'codemirror'
 import { createEngineLoader } from './engine-loader.js'
 import { isOutsideDismissRoots } from './popup-dismiss.js'
-import { resolveCodingNsTranslator, type CodingNsLocale } from './locale.js'
+import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { parseVirtualSessionId } from '../shared/contracts/peer-host.js'
 
 type FileEntryElement = HTMLElement & { dataset: DOMStringMap }
 type ClipboardState = { mode: 'copy' | 'cut'; target: FileTarget }
 type FileEditorState = { root: HTMLElement; body: HTMLElement; host: HTMLElement; view: EditorView; path: FileTarget; buttons: HTMLElement }
 type FileTarget = { path: string; sessionId?: string }
+type FileCopyPaths = { readonly relative: string; readonly absolute: string }
+type FileContextMenuItem = { label: string; disabled?: boolean; action: () => void | Promise<void> }
 const DOCUMENT_PREVIEW_SELECTOR = '[data-document-preview]'
+const FILE_TREE_ENTRY_SELECTOR = '[data-files-entry][data-files-path]'
+const PREVIEW_PATH_SELECTOR = '[data-textpreview-path]'
 const loadEditorEngine = createEngineLoader(() => import('./editor-engine.js'))
 
 /** 可直接交给文本编辑器的扩展名；未知扩展名仍按只读预览处理，避免误打开二进制文件。 */
@@ -86,11 +90,19 @@ export function startFileManagementDom(
   const closeMenu = (): void => { menu?.remove(); menu = undefined }
   const onContextMenu = (event: MouseEvent): void => {
     if (!options.menuEnhancement) return
-    const target = (event.target as Element | null)?.closest<HTMLElement>('[data-files-entry][data-files-path]')
-    if (target == null) return
+    const origin = eventElement(event.target)
+    const treeEntry = origin?.closest<HTMLElement>(FILE_TREE_ENTRY_SELECTOR)
+    if (treeEntry != null) {
+      event.preventDefault()
+      event.stopPropagation()
+      openMenu(treeEntry, event.clientX, event.clientY)
+      return
+    }
+    const previewPath = previewPathLabel(origin)
+    if (previewPath == null) return
     event.preventDefault()
     event.stopPropagation()
-    openMenu(target, event.clientX, event.clientY)
+    openPreviewCopyPathMenu(previewPath, event.clientX, event.clientY)
   }
   // 只关闭「点在外面」的情况：菜单项自身在 pointerdown 之后才收到 click，
   // 若无条件关闭会把菜单从 DOM 移除，菜单项的动作永远不会执行。
@@ -137,7 +149,6 @@ export function startFileManagementDom(
   }
 
   function openMenu(item: FileEntryElement, x: number, y: number): void {
-    closeMenu()
     const rawPath = item.dataset.filesPath ?? ''
     const kind = item.dataset.filesEntry === 'directory' ? 'directory' : 'file'
     if (rawPath === '') return
@@ -148,7 +159,7 @@ export function startFileManagementDom(
     const base = kind === 'directory' ? path : parentPath(path)
     const destination = { ...target, path: base }
     const panel = item.closest<HTMLElement>('[data-files-state="tree"]')
-    const items: Array<{ label: string; disabled?: boolean; action: () => void | Promise<void> }> = [
+    showMenu([
       { label: t(kind === 'directory' ? 'fileMenu.expandFolder' : 'fileMenu.openFile'), action: () => clickEntry(item) },
       { label: t('fileMenu.download'), disabled: kind !== 'file', action: () => void downloadFile(target) },
       { label: t('fileMenu.newFile'), action: () => void createEntry(destination, false, panel) },
@@ -161,9 +172,33 @@ export function startFileManagementDom(
       { label: t('fileMenu.copyAbsolutePath'), action: () => void copyPath(item, true) },
       { label: t('fileMenu.gitIgnore'), action: () => void runMutation('git-ignore', { ...target, paths: [path] }, panel) },
       { label: t('fileMenu.delete'), action: () => void deleteEntry(target, panel) },
-    ]
+    ], x, y, 'tree')
+  }
+
+  function openPreviewCopyPathMenu(pathLabel: HTMLElement, x: number, y: number): void {
+    const preview = pathLabel.closest<HTMLElement>('[data-textpreview-url], [data-document-preview]')
+    const parsed = parseFileTarget((preview?.getAttribute('data-textpreview-url') ?? '').split(/[?#]/u)[0] ?? '')
+    const paths = resolveFileCopyPaths({
+      resourcePath: parsed?.path,
+      displayPath: pathLabel.getAttribute('title')?.trim() || undefined,
+      workspaceRoot: filesRootForEntry(pathLabel),
+    })
+    if (paths === undefined) {
+      showNotice(t('fileMenu.unresolvedPath'))
+      return
+    }
+    showMenu([
+      { label: t('fileMenu.copyRelativePath'), action: () => void copyResolvedFilePath(paths.relative, false, t) },
+      { label: t('fileMenu.copyAbsolutePath'), action: () => void copyResolvedFilePath(paths.absolute, true, t) },
+    ], x, y, 'preview')
+  }
+
+  function showMenu(items: readonly FileContextMenuItem[], x: number, y: number, kind: 'tree' | 'preview'): void {
+    closeMenu()
+    if (items.length === 0) return
     menu = document.createElement('div')
     menu.setAttribute('role', 'menu')
+    menu.setAttribute('data-file-management-menu', kind)
     menu.style.cssText = 'position:fixed;z-index:2147483647;min-width:190px;padding:5px;background:var(--dsw-alias-bg-layer-3,#242526);border:1px solid var(--dsw-alias-border-l2,#666);border-radius:8px;box-shadow:0 8px 30px #0008;color:var(--dsw-alias-label-primary,#eee);font:13px var(--dsw-font,system-ui,sans-serif)'
     for (const item of items) {
       const button = document.createElement('button')
@@ -179,7 +214,7 @@ export function startFileManagementDom(
     }
     document.body.append(menu)
     const width = menu.offsetWidth || 190
-    const height = menu.offsetHeight || 360
+    const height = menu.offsetHeight || (kind === 'preview' ? 88 : 360)
     menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - width - 8))}px`
     menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - height - 8))}px`
   }
@@ -232,13 +267,15 @@ export function startFileManagementDom(
   }
 
   async function copyPath(item: FileEntryElement, absolute: boolean): Promise<void> {
-    const path = item.dataset.filesPath ?? ''
-    const root = filesRootForEntry(item)
-    const value = absolute ? absolutePath(path, root) : relativePath(path, root)
-    try {
-      await copyTextToClipboard(value)
-      showNotice(t(absolute ? 'fileMenu.copiedAbsolutePath' : 'fileMenu.copiedRelativePath'))
-    } catch { showNotice(t('fileMenu.copyPathFailed')) }
+    const paths = resolveFileCopyPaths({
+      resourcePath: item.dataset.filesPath ?? '',
+      workspaceRoot: filesRootForEntry(item),
+    })
+    if (paths === undefined) {
+      showNotice(t('fileMenu.unresolvedPath'))
+      return
+    }
+    await copyResolvedFilePath(absolute ? paths.absolute : paths.relative, absolute, t)
   }
 
   async function runMutation(action: string, payload: Record<string, unknown>, panel: HTMLElement | null): Promise<void> {
@@ -482,7 +519,22 @@ function findButton(root: ParentNode | null | undefined, pattern: RegExp): HTMLB
   return undefined
 }
 
-function parseFileTarget(url: string): FileTarget | undefined {
+function eventElement(target: EventTarget | null | undefined): HTMLElement | null {
+  if (target != null && typeof (target as { closest?: unknown }).closest === 'function') return target as HTMLElement
+  const parent = (target as { parentElement?: unknown } | null)?.parentElement
+  return parent != null && typeof (parent as { closest?: unknown }).closest === 'function' ? parent as HTMLElement : null
+}
+
+function previewPathLabel(origin: HTMLElement | null): HTMLElement | null {
+  if (origin == null || origin.closest('[data-textpreview-body]') != null) return null
+  const labeled = origin.closest<HTMLElement>(PREVIEW_PATH_SELECTOR)
+  if (labeled != null) return labeled
+  const pathLabel = origin.closest<HTMLElement>('[data-path-label]')
+  if (pathLabel == null) return null
+  return pathLabel.closest('[data-textpreview-url], [data-document-preview]') == null ? null : pathLabel
+}
+
+export function parseFileTarget(url: string): FileTarget | undefined {
   const match = /^dsh-resource:\/\/file\/session\/([^/]+)\/(.*)$/u.exec(url)
   if (match === null) return undefined
   const sessionId = decodeURIComponent(match[1] ?? '')
@@ -534,7 +586,37 @@ function relativePath(path: string, root?: string): string {
   if (normalizedPath.startsWith(`${normalizedRoot}/`)) return normalizedPath.slice(normalizedRoot.length + 1)
   return path
 }
-async function copyTextToClipboard(text: string): Promise<void> {
+
+export interface FileCopyPathInput {
+  readonly resourcePath?: string
+  readonly displayPath?: string
+  readonly workspaceRoot?: string
+  readonly resourceAbsolutePath?: string
+}
+
+/** 从资源地址、查看器标题和工作区根目录合成可复制的相对路径与绝对路径。 */
+export function resolveFileCopyPaths(input: FileCopyPathInput): FileCopyPaths | undefined {
+  const resourcePath = input.resourcePath?.trim() ?? ''
+  const displayPath = input.displayPath?.trim() ?? ''
+  const resourceAbsolutePath = input.resourceAbsolutePath?.trim() ?? ''
+  const workspaceRoot = input.workspaceRoot?.trim() || undefined
+  const source = resourcePath || displayPath || resourceAbsolutePath
+  if (source === '') return undefined
+  const absoluteSource = resourceAbsolutePath || (isAbsoluteLike(displayPath) ? displayPath : '')
+  const absolute = absoluteSource || absolutePath(resourcePath || displayPath, workspaceRoot)
+  const relative = relativePath(resourcePath || (isAbsoluteLike(displayPath) ? displayPath : resourcePath) || absolute, workspaceRoot)
+  if (absolute === '' && relative === '') return undefined
+  return { relative, absolute }
+}
+
+export async function copyResolvedFilePath(value: string, absolute: boolean, t: CodingNsTranslator): Promise<void> {
+  try {
+    await copyTextToClipboard(value)
+    showNotice(t(absolute ? 'fileMenu.copiedAbsolutePath' : 'fileMenu.copiedRelativePath'))
+  } catch { showNotice(t('fileMenu.copyPathFailed')) }
+}
+
+export async function copyTextToClipboard(text: string): Promise<void> {
   if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text)

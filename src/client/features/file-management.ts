@@ -3,6 +3,7 @@ import { DEFAULT_FILE_MANAGEMENT_SETTINGS } from '../../shared/contracts/config.
 import { startFileManagementDom } from '../file-management-dom.js'
 import { FileManagementPanel } from './file-management-panel.js'
 import { registerSessionChangedFilesView } from '../session-changed-files-view.js'
+import { registerFileViewerCopyPathMenu } from '../file-viewer-copy-path-menu.js'
 import { resolveCodingNsTranslator } from '../locale.js'
 import { startHtmlWorkspaceFiles } from '../html-workspace-files.js'
 
@@ -34,6 +35,8 @@ export const fileManagementFeature: CodingNsClientFeatureModule = {
     const dom = startFileManagementDom(context.services.rpc, readOptions())
     context.resources.add(startHtmlWorkspaceFiles(context.services.rpc, context.services.locale))
     let disposeSessionView: (() => void) | undefined
+    let disposeCopyPathMenu: (() => void) | undefined
+    const slots = context.services.uiContext?.slots ?? context.services.slots
     const syncSessionView = (): void => {
       const value = { ...DEFAULT_FILE_MANAGEMENT_SETTINGS, ...context.services.settings.getSnapshot().value?.fileManagement }
       if (value.sessionChangedFiles && disposeSessionView === undefined) {
@@ -43,14 +46,26 @@ export const fileManagementFeature: CodingNsClientFeatureModule = {
         disposeSessionView = undefined
       }
     }
+    const syncCopyPathMenu = (): void => {
+      const value = { ...DEFAULT_FILE_MANAGEMENT_SETTINGS, ...context.services.settings.getSnapshot().value?.fileManagement }
+      if (value.menuEnhancement && disposeCopyPathMenu === undefined) {
+        disposeCopyPathMenu = registerFileViewerCopyPathMenu(slots, context.services.locale)
+      } else if (!value.menuEnhancement && disposeCopyPathMenu !== undefined) {
+        disposeCopyPathMenu()
+        disposeCopyPathMenu = undefined
+      }
+    }
     syncSessionView()
+    syncCopyPathMenu()
     const unsubscribe = context.services.settings.subscribe(() => {
       dom.setOptions(readOptions())
       syncSessionView()
+      syncCopyPathMenu()
     })
     context.resources.add(unsubscribe)
     context.resources.add(dom.dispose)
     context.resources.add(() => disposeSessionView?.())
+    context.resources.add(() => disposeCopyPathMenu?.())
   },
   settingsPanel: FileManagementPanel,
 }
