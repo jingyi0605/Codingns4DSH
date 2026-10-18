@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { startSubagentBridgeServer } from '../data/build/dist/host/cli-bridge/bridge-server.js'
 import { dispatchBridgeSearch } from '../data/build/dist/host/cli-bridge/search-dispatch.js'
 import { bridgeMcpEntryPath } from '../data/build/dist/host/cli-bridge/injections.js'
+import { createPiBridgeExtension } from '../data/build/dist/host/cli-bridge/pi-extension.js'
 import commandCodeMod from '../data/build/dist/host/cli-bridge/command-code-mod.js'
 
 function sourceEntry(path: string): string {
@@ -29,6 +30,33 @@ function stubWeb(queries: string[] = []) {
       }
     },
   }
+}
+
+function mockPiTypeBox() {
+  const shape = (type: string, options: Record<string, unknown> = {}) => ({ type, ...options })
+  return {
+    Type: {
+      Object: (properties: Record<string, unknown>, options: Record<string, unknown> = {}) => ({ type: 'object', properties, ...options }),
+      String: (options?: Record<string, unknown>) => shape('string', options),
+      Number: (options?: Record<string, unknown>) => shape('number', options),
+      Integer: (options?: Record<string, unknown>) => shape('integer', options),
+      Boolean: (options?: Record<string, unknown>) => shape('boolean', options),
+      Array: (item: unknown, options: Record<string, unknown> = {}) => ({ type: 'array', items: item, ...options }),
+      Optional: (schema: unknown) => ({ ...(schema as Record<string, unknown>), optional: true }),
+      Union: (schemas: readonly unknown[]) => ({ anyOf: schemas }),
+      Literal: (value: string) => ({ const: value }),
+    },
+  }
+}
+
+interface RegisteredPiTool {
+  readonly name: string
+  readonly exposure: string
+  readonly parameters: { readonly properties?: Record<string, any> }
+  readonly execute: (toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<{
+    readonly content: readonly { readonly type: 'text'; readonly text: string }[]
+    readonly isError?: boolean
+  }>
 }
 
 test('dispatchBridgeSearch validates queries, deduplicates, and marks results untrusted', async () => {
@@ -67,6 +95,126 @@ test('dispatchBridgeSearch cancels sibling queries when one search fails', async
   assert.equal(result.ok, false)
   assert.match(String(result.error), /provider error/u)
   assert.equal(cancelled, true)
+})
+
+test('Pi 桥接扩展直接注册 web_search 和 agent_subagent，并调用 Host HTTP 端点', async () => {
+  const requests: Array<{ url: string; init: RequestInit }> = []
+  const tools: RegisteredPiTool[] = []
+  const fetcher: typeof fetch = async (input, init = {}) => {
+    const url = String(input)
+    requests.push({ url, init })
+    return url.endsWith('/v1/search')
+      ? new Response(JSON.stringify({ ok: true, text: 'untrusted reference material: public result' }), { status: 200 })
+      : new Response(JSON.stringify({ ok: true, status: 'running', childSessionId: 'child-1', text: 'Created child session' }), { status: 200 })
+  }
+  createPiBridgeExtension({ registerTool: (tool) => { tools.push(tool as unknown as RegisteredPiTool) } } as never, mockPiTypeBox() as never, {
+    environment: {
+      CODINGNS_BRIDGE_URL: 'http://127.0.0.1:45999/',
+      CODINGNS_BRIDGE_TOKEN: 'bridge-token',
+      CODINGNS_DSH_SESSION_ID: 'parent-1',
+      CODINGNS_ADAPTER_ID: 'pi',
+    },
+    fetcher,
+  })
+
+  assert.deepEqual(tools.map((tool) => [tool.name, tool.exposure]), [['agent_subagent', 'direct'], ['web_search', 'direct']])
+  const search = await tools.find((tool) => tool.name === 'web_search')!.execute('search-1', { queries: ['public facts'] }, undefined)
+  assert.match(search.content[0]!.text, /untrusted reference material/u)
+  const subagent = await tools.find((tool) => tool.name === 'agent_subagent')!.execute('dispatch-1', {
+    action: 'start', prompt: 'Review the isolated change', description: 'Review',
+  }, undefined)
+  assert.match(subagent.content[0]!.text, /child-1/u)
+  assert.equal(subagent.isError, undefined)
+  assert.equal(requests[0]?.url, 'http://127.0.0.1:45999/v1/search')
+  assert.deepEqual(JSON.parse(String(requests[0]?.init.body)), { queries: ['public facts'] })
+  assert.equal((requests[0]?.init.headers as Record<string, string>).authorization, 'Bearer bridge-token')
+  assert.equal(requests[1]?.url, 'http://127.0.0.1:45999/v1/dispatch')
+  assert.deepEqual(JSON.parse(String(requests[1]?.init.body)), {
+    sessionId: 'parent-1', prompt: 'Review the isolated change', action: 'start', runInBackground: true, description: 'Review',
+  })
+})
+
+test('Pi 子会话只能通过 agent_subagent send 回报，不能创建嵌套子代理', async () => {
+  const requests: Array<{ url: string; body: Record<string, unknown> }> = []
+  const tools: RegisteredPiTool[] = []
+  const fetcher: typeof fetch = async (input, init = {}) => {
+    requests.push({ url: String(input), body: JSON.parse(String(init.body)) as Record<string, unknown> })
+    return new Response(JSON.stringify({ ok: true, status: 'completed', text: 'Report accepted' }), { status: 200 })
+  }
+  createPiBridgeExtension({ registerTool: (tool) => { tools.push(tool as unknown as RegisteredPiTool) } } as never, mockPiTypeBox() as never, {
+    environment: {
+      CODINGNS_BRIDGE_URL: 'http://127.0.0.1:45999',
+      CODINGNS_BRIDGE_TOKEN: 'bridge-token',
+      CODINGNS_DSH_SESSION_ID: 'child-1',
+      CODINGNS_SUBAGENT_CHILD: '1',
+    },
+    fetcher,
+  })
+  const subagent = tools.find((tool) => tool.name === 'agent_subagent')!
+  const nested = await subagent.execute('nested', { action: 'start', prompt: 'Do more work' }, undefined)
+  assert.equal(nested.isError, true)
+  assert.match(nested.content[0]!.text, /Nested subagents are not allowed/u)
+  assert.equal(requests.length, 0)
+  const report = await subagent.execute('report', { action: 'send', message: 'Complete report' }, undefined)
+  assert.equal(report.isError, undefined)
+  assert.deepEqual(requests, [{
+    url: 'http://127.0.0.1:45999/v1/dispatch',
+    body: { sessionId: 'child-1', prompt: '', action: 'send', message: 'Complete report' },
+  }])
+})
+
+test('Pi Team 扩展按既有角色注册 agent_team 操作集合', async () => {
+  const makeTeamTool = (role: 'lead' | 'teammate') => {
+    const tools: RegisteredPiTool[] = []
+    const fetcher: typeof fetch = async (_input, init = {}) => {
+      assert.equal((init.headers as Record<string, string>).authorization, 'Bearer team-token')
+      return new Response(JSON.stringify({ ok: true, result: { status: 'active' } }), { status: 200 })
+    }
+    createPiBridgeExtension({ registerTool: (tool) => { tools.push(tool as unknown as RegisteredPiTool) } } as never, mockPiTypeBox() as never, {
+      environment: {
+        CODINGNS_BRIDGE_URL: 'http://127.0.0.1:45999',
+        CODINGNS_BRIDGE_TOKEN: 'team-token',
+        CODINGNS_TEAM_TOKEN: 'team-token',
+        CODINGNS_TEAM_ROLE: role,
+        CODINGNS_TEAM_NAME: role,
+        CODINGNS_TEAM_ID: 'team-1',
+      },
+      fetcher,
+    })
+    return tools
+  }
+  const actions = (tool: RegisteredPiTool): string[] => tool.parameters.properties!.action!.anyOf.map((schema: { const: string }) => schema.const)
+  const leadTools = makeTeamTool('lead')
+  const teammateTools = makeTeamTool('teammate')
+  assert.deepEqual(leadTools.map((tool) => tool.name), ['agent_team', 'web_search'])
+  assert.deepEqual(teammateTools.map((tool) => tool.name), ['agent_team', 'web_search'])
+  assert.ok(actions(leadTools[0]!).includes('spawn'))
+  assert.ok(actions(leadTools[0]!).includes('interrupt'))
+  assert.equal(actions(teammateTools[0]!).includes('spawn'), false)
+  assert.equal(actions(teammateTools[0]!).includes('interrupt'), false)
+  const result = await teammateTools[0]!.execute('team-1', { action: 'members' }, undefined)
+  assert.match(result.content[0]!.text, /active/u)
+})
+
+test('Pi 缺少 direct tool API 时的 MCP fallback 只传递桥接环境', () => {
+  let registration: { name: string; config: Record<string, any> } | undefined
+  createPiBridgeExtension({
+    registerMcpServer: (name, config) => { registration = { name, config } },
+  } as never, mockPiTypeBox() as never, {
+    environment: {
+      CODINGNS_BRIDGE_URL: 'http://127.0.0.1:45999',
+      CODINGNS_BRIDGE_TOKEN: 'bridge-token',
+      CODINGNS_DSH_SESSION_ID: 'pi-1',
+      CODINGNS_ADAPTER_ID: 'pi',
+      UNRELATED_SECRET: 'must-not-leak',
+    },
+  })
+  assert.equal(registration?.name, 'codingns')
+  assert.equal(registration?.config.exposure, 'direct')
+  assert.deepEqual(Object.keys(registration?.config.env ?? {}).sort(), [
+    'CODINGNS_ADAPTER_ID', 'CODINGNS_BRIDGE_TOKEN', 'CODINGNS_BRIDGE_URL', 'CODINGNS_DSH_SESSION_ID',
+  ])
+  assert.deepEqual(registration?.config.args, [bridgeMcpEntryPath()])
 })
 
 test('桥接 /v1/search 接受运行时令牌与 Team 令牌，并拒绝未授权请求', async () => {

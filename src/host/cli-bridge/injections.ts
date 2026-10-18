@@ -15,6 +15,7 @@ import { teamGuidance } from '../../shared/contracts/agent-team.js'
 
 const MCP_ENTRY_PATH = fileURLToPath(new URL('./mcp-stdio-entry.js', import.meta.url))
 const COMMAND_CODE_MOD_PATH = fileURLToPath(new URL('./command-code-mod.js', import.meta.url))
+const PI_EXTENSION_PATH = fileURLToPath(new URL('./pi-extension-entry.js', import.meta.url))
 
 /** 外部 CLI 侧认为这是一次由 Codingns4DSH 托管的会话。 */
 const BRIDGE_MARKER = 'CODINGNS_SUBAGENT_BRIDGE'
@@ -55,6 +56,10 @@ export function bridgeCommandCodeModPath(): string {
   return COMMAND_CODE_MOD_PATH
 }
 
+export function piBridgeExtensionPath(): string {
+  return PI_EXTENSION_PATH
+}
+
 /** 桥接是否应当介入该会话；子会话也需要桥接来回传父会话报告。 */
 export function subagentBridgeActive(sessionId: string): boolean {
   return getSubagentBridge() !== undefined && sessionId.trim() !== ''
@@ -84,6 +89,25 @@ export function commandCodeNativeAgentArgs(_sessionId: string): readonly string[
 
 /** command-code：mod 从进程环境读取桥接配置。 */
 export function commandCodeBridgeEnvironment(sessionId: string, adapterId: string): Record<string, string> {
+  return bridgeEnvironment(sessionId, adapterId) ?? {}
+}
+
+/** pi: load the DSH extension only for sessions with an active bridge. */
+export function piBridgeArgs(sessionId: string): readonly string[] {
+  if (!subagentBridgeActive(sessionId)) return []
+  const toolName = teamBridgeToken(sessionId)
+    ? 'agent_team'
+    : isSubagentChildSession(sessionId)
+      ? 'send_message'
+      : 'agent_subagent'
+  return [
+    '--extension', PI_EXTENSION_PATH,
+    '--append-system-prompt', bridgeSessionGuidance(sessionId, toolName),
+  ]
+}
+
+/** pi: pass only the bridge credentials and session identity to the child process. */
+export function piBridgeEnvironment(sessionId: string, adapterId: string): Record<string, string> {
   return bridgeEnvironment(sessionId, adapterId) ?? {}
 }
 
@@ -373,6 +397,13 @@ export function bridgeSearchGuidance(toolName: string): string {
  * codex 用 `server.tool`），因此按工具名生成同一套语义的指令。
  */
 export function bridgeSubagentGuidance(toolName: string): string {
+  if (toolName === 'send_message') {
+    return [
+      'This is a DSH child session. Return the completed report by calling the `agent_subagent` tool with `action=send`.',
+      'Do not use `action=start` to create nested external Agents.',
+      'The parent session is inferred from the current child identity; send the complete self-contained result in the `message` field and omit `child_session_id` unless the parent session id is needed explicitly.',
+    ].join(' ')
+  }
   const childReport = toolName.endsWith('_send_message')
   if (childReport) {
     return [

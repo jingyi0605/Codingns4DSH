@@ -3,7 +3,8 @@ import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { readFileSync } from 'node:fs'
 import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
-import { codexComputerUseLaunchSettings } from '../data/build/dist/host/cli-bridge/injections.js'
+import { codexComputerUseLaunchSettings, piBridgeExtensionPath } from '../data/build/dist/host/cli-bridge/injections.js'
+import { createSubagentBridgeRuntime, setSubagentBridge } from '../data/build/dist/host/cli-bridge/bridge-holder.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import { GrokBuildDriver } from '../data/build/dist/host/cli-adapters/grok-driver.js'
 import { PiAgentDriver } from '../data/build/dist/host/cli-adapters/pi-driver.js'
@@ -1531,6 +1532,70 @@ test('Pi 同一 sessionId 跨轮复用 RPC 进程，并在 dispose 时统一回�
   assert.equal(spawnCount, 1)
   driver.dispose()
   assert.equal(killed, 1)
+})
+
+test('Pi 桥接参数与环境随会话启动，令牌变化后重启进程并保留恢复参数', async () => {
+  const launches: Array<{ args: string[]; env: Record<string, string | undefined> }> = []
+  let killed = 0
+  const driver = new PiAgentDriver({
+    binaries: ['fake-pi'],
+    spawnSync: (() => ({ status: 0, stdout: 'pi 1.3.0', stderr: '' })) as never,
+    spawn: ((_command: string, args: string[], options: { env: Record<string, string | undefined> }) => {
+      launches.push({ args, env: options.env })
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; type: string }
+        if (request.type === 'prompt') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { accepted: true } })}\n`)
+          setImmediate(() => stdout.write(`${JSON.stringify({ type: 'agent_settled' })}\n`))
+          return
+        }
+        const result = request.type === 'get_state' ? { sessionId: 'provider-session' } : {}
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`)
+      } }
+      return { stdout, stderr, stdin, kill() { killed += 1; stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const rawStoreRef = '/private/tmp/pi-session.jsonl'
+  const execute = async (sessionId: string, sessionStoreRef?: string): Promise<void> => {
+    for await (const _event of driver.executeTurn({
+      sessionId, messages: [], prompt: 'continue', ...(sessionStoreRef === undefined ? {} : { rawStoreRef: sessionStoreRef }),
+    })) { /* The fake process only verifies launch and reuse behavior. */ }
+  }
+  try {
+    setSubagentBridge(createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:45999', token: 'token-one' }))
+    await execute('pi-bridge', rawStoreRef)
+    await execute('pi-bridge', rawStoreRef)
+    assert.equal(launches.length, 1)
+    assert.deepEqual(launches[0]?.args.slice(0, 2), ['--mode', 'rpc'])
+    assert.equal(launches[0]?.args.includes('--extension'), true)
+    assert.equal(launches[0]?.args[launches[0]!.args.indexOf('--extension') + 1], piBridgeExtensionPath())
+    assert.equal(launches[0]?.args[launches[0]!.args.indexOf('--session') + 1], rawStoreRef)
+    assert.equal(launches[0]?.env.CODINGNS_BRIDGE_TOKEN, 'token-one')
+    assert.equal(launches[0]?.env.CODINGNS_DSH_SESSION_ID, 'pi-bridge')
+    assert.equal(launches[0]?.env.CODINGNS_ADAPTER_ID, 'pi')
+
+    setSubagentBridge(createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:45999', token: 'token-two' }))
+    await execute('pi-bridge', rawStoreRef)
+    assert.equal(launches.length, 2)
+    assert.equal(killed, 1)
+    assert.equal(launches[1]?.env.CODINGNS_BRIDGE_TOKEN, 'token-two')
+    assert.equal(launches[1]?.args[launches[1]!.args.indexOf('--session') + 1], rawStoreRef)
+
+    await execute('pi-generated-session')
+    assert.equal(launches.length, 3)
+    assert.equal(launches[2]?.args.includes('--session-id'), false)
+    setSubagentBridge(createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:45999', token: 'token-three' }))
+    await execute('pi-generated-session')
+    assert.equal(launches.length, 4)
+    assert.deepEqual(launches[3]?.args.slice(launches[3]!.args.indexOf('--session-id')), ['--session-id', 'provider-session'])
+    assert.equal(killed, 2)
+  } finally {
+    driver.dispose()
+    setSubagentBridge(undefined)
+  }
+  assert.equal(killed, 4)
 })
 
 test('Codex 原生权限请求转换为标准事件并可回传审批结果', async () => {

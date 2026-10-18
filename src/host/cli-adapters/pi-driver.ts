@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { runAsyncCommand } from './process-utils.js'
 import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
@@ -12,6 +13,7 @@ import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } 
 import { commandEnvironment, WINDOWS } from './process-utils.js'
 import { buildPiImages, promptWithAttachmentPaths } from './attachment-utils.js'
 import { reasoningText } from './reasoning-content.js'
+import { piBridgeArgs, piBridgeEnvironment } from '../cli-bridge/injections.js'
 
 export interface PiAgentDriverOptions {
   readonly binaries?: readonly string[]
@@ -33,7 +35,9 @@ export class PiAgentDriver implements CodingNsCliDriver {
     rpc: JsonRpcProcess
     cwd: string | undefined
     rawStoreRef: string | undefined
+    bridgeFingerprint: string
     providerSessionId: string
+    providerSessionIdKnown: boolean
     stateLoaded: boolean
     modelContextWindow: number | undefined
   }>()
@@ -96,7 +100,10 @@ export class PiAgentDriver implements CodingNsCliDriver {
         try {
           const state = await rpc.request('get_state', {}, { signal: input.signal, killOnAbort: false, wireFormat: 'pi' })
           const discoveredId = readPiStateSessionId(state)
-          if (discoveredId) session.providerSessionId = discoveredId
+          if (discoveredId) {
+            session.providerSessionId = discoveredId
+            session.providerSessionIdKnown = true
+          }
           session.modelContextWindow = readPiModelContextWindow(state)
         } catch { /* 旧版 Pi 不提供 get_state 时保留 Host 侧回退标识。 */ }
         session.stateLoaded = true
@@ -131,6 +138,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
           break
         }
         const discoveredId = readSessionId(item.value)
+        if (discoveredId) session.providerSessionIdKnown = true
         if (discoveredId && discoveredId !== session.providerSessionId) {
           session.providerSessionId = discoveredId
           yield { type: 'session-binding', providerSessionId: discoveredId }
@@ -189,22 +197,36 @@ export class PiAgentDriver implements CodingNsCliDriver {
     providerSessionId: string | undefined,
     rawStoreRef: string | undefined,
   ) {
+    const bridgeArgs = piBridgeArgs(sessionId)
+    const bridgeEnvironment = piBridgeEnvironment(sessionId, 'pi')
+    const bridgeFingerprint = createHash('sha256')
+      .update(JSON.stringify([bridgeArgs, bridgeEnvironment]))
+      .digest('hex')
     const previous = this.sessions.get(sessionId)
     if (previous !== undefined
       && previous.cwd === cwd
+      && previous.bridgeFingerprint === bridgeFingerprint
       && (providerSessionId === undefined || providerSessionId === previous.providerSessionId)
-      && (rawStoreRef === undefined || rawStoreRef === previous.rawStoreRef)) return previous
+      && (rawStoreRef === undefined || rawStoreRef === previous.rawStoreRef)) {
+      if (providerSessionId !== undefined) previous.providerSessionIdKnown = true
+      return previous
+    }
+    const resumeStoreRef = rawStoreRef ?? previous?.rawStoreRef
+    const resumeProviderSessionId = providerSessionId
+      ?? (previous?.providerSessionIdKnown ? previous.providerSessionId : undefined)
     previous?.rpc.dispose()
-    const args = ['--mode', 'rpc']
-    if (rawStoreRef?.trim()) args.push('--session', rawStoreRef.trim())
-    else if (providerSessionId?.trim()) args.push('--session-id', providerSessionId.trim())
-    const rpc = new JsonRpcProcess({ command, args, cwd, spawn: this.runSpawn })
+    const args = ['--mode', 'rpc', ...bridgeArgs]
+    if (resumeStoreRef?.trim()) args.push('--session', resumeStoreRef.trim())
+    else if (resumeProviderSessionId?.trim()) args.push('--session-id', resumeProviderSessionId.trim())
+    const rpc = new JsonRpcProcess({ command, args, cwd, env: bridgeEnvironment, spawn: this.runSpawn })
     this.processes.add(rpc)
     const session = {
       rpc,
       cwd,
-      rawStoreRef,
-      providerSessionId: providerSessionId ?? sessionId,
+      rawStoreRef: resumeStoreRef,
+      bridgeFingerprint,
+      providerSessionId: providerSessionId ?? previous?.providerSessionId ?? sessionId,
+      providerSessionIdKnown: providerSessionId !== undefined || (previous?.providerSessionIdKnown ?? false),
       stateLoaded: false,
       modelContextWindow: undefined as number | undefined,
     }

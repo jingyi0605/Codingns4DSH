@@ -18,6 +18,9 @@ import {
   commandCodeBridgeEnvironment,
   commandCodeNativeAgentArgs,
   commandCodeNativeAgentEnvironment,
+  piBridgeArgs,
+  piBridgeEnvironment,
+  piBridgeExtensionPath,
 } from '../data/build/dist/host/cli-bridge/injections.js'
 import { dispatchBridgeSubagent } from '../data/build/dist/host/cli-bridge/dispatch.js'
 import { isNativeSubagentSession, nativeSubagentParentSessionId, sendNativeSubagentParentMessage } from '../data/build/dist/host/cli-adapters/native-subagent-dispatch.js'
@@ -115,6 +118,57 @@ test('子代理桥接注入：Command Code 始终屏蔽原生 agent，桥接开�
     })
   } finally {
     setSubagentBridge(undefined)
+  }
+})
+
+test('Pi 仅在桥接会话加载扩展，并按父、子和 Team 身份生成指令与环境', () => {
+  const lifetime = new AbortController()
+  try {
+    assert.deepEqual(piBridgeArgs('pi-parent'), [])
+    assert.deepEqual(piBridgeEnvironment('pi-parent', 'pi'), {})
+
+    enableBridge()
+    const parentArgs = piBridgeArgs('pi-parent')
+    assert.deepEqual(parentArgs.slice(0, 2), ['--extension', piBridgeExtensionPath()])
+    assert.ok(existsSync(sourceEntry(piBridgeExtensionPath())))
+    assert.ok(parentArgs.includes('--append-system-prompt'))
+    assert.match(parentArgs[parentArgs.indexOf('--append-system-prompt') + 1]!, /agent_subagent/u)
+    assert.match(parentArgs[parentArgs.indexOf('--append-system-prompt') + 1]!, /web_search/u)
+    const parentEnv = piBridgeEnvironment('pi-parent', 'pi')
+    assert.equal(parentEnv.CODINGNS_BRIDGE_URL, ACTIVE_RUNTIME.baseUrl)
+    assert.equal(parentEnv.CODINGNS_BRIDGE_TOKEN, ACTIVE_RUNTIME.token)
+    assert.equal(parentEnv.CODINGNS_DSH_SESSION_ID, 'pi-parent')
+    assert.equal(parentEnv.CODINGNS_ADAPTER_ID, 'pi')
+
+    const store = new CodingNsCliSessionStore()
+    store.upsert('pi-child', { adapterId: 'pi', origin: 'subagent', parentSessionId: 'pi-parent' })
+    setAdapterRegistry(new CodingNsCliAdapterRegistry([], undefined, { sessionStore: store }))
+    const childArgs = piBridgeArgs('pi-child')
+    const childGuidance = childArgs[childArgs.indexOf('--append-system-prompt') + 1]!
+    assert.match(childGuidance, /agent_subagent.*action=send/u)
+    assert.match(childGuidance, /Do not use `action=start`/u)
+    assert.equal(piBridgeEnvironment('pi-child', 'pi').CODINGNS_SUBAGENT_CHILD, '1')
+
+    const identity = { sessionId: 'pi-team', teamId: 'team-1', name: 'lead', role: 'lead' } as const
+    const caller = {}
+    setSubagentBridge(createSubagentBridgeRuntime({
+      baseUrl: ACTIVE_RUNTIME.baseUrl,
+      token: ACTIVE_RUNTIME.token,
+      teamAccess: (sessionId) => sessionId === identity.sessionId
+        ? { caller, signal: lifetime.signal, identity }
+        : undefined,
+    }))
+    const teamArgs = piBridgeArgs('pi-team')
+    const teamGuidance = teamArgs[teamArgs.indexOf('--append-system-prompt') + 1]!
+    assert.match(teamGuidance, /agent_team/u)
+    assert.match(teamGuidance, /web_search/u)
+    const teamEnv = piBridgeEnvironment('pi-team', 'pi')
+    assert.equal(teamEnv.CODINGNS_TEAM_TOKEN, teamEnv.CODINGNS_BRIDGE_TOKEN)
+    assert.equal(teamEnv.CODINGNS_TEAM_ROLE, 'lead')
+    assert.equal(teamEnv.CODINGNS_TEAM_ID, 'team-1')
+  } finally {
+    setSubagentBridge(undefined)
+    setAdapterRegistry(undefined)
   }
 })
 
