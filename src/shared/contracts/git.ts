@@ -9,21 +9,25 @@ export interface GitManagementSettings {
   readonly commitMessageEnabled: boolean
   readonly commitMessageDetail: 'concise' | 'detailed'
   readonly commitMessageModels: readonly GitCommitMessageModel[]
+  readonly commitMessagePrompt: string
 }
 
 export const DEFAULT_GIT_MANAGEMENT_SETTINGS: GitManagementSettings = {
   commitMessageEnabled: true,
   commitMessageDetail: 'concise',
   commitMessageModels: [],
+  commitMessagePrompt: '',
 }
 
 export const MAX_GIT_COMMIT_MESSAGE_CHARS = 10_000
+export const MAX_GIT_COMMIT_PROMPT_CHARS = 10_000
 
 export function normalizeGitManagementSettings(value: GitManagementSettings | undefined): GitManagementSettings {
   const seen = new Set<string>()
   return {
     commitMessageEnabled: value?.commitMessageEnabled !== false,
     commitMessageDetail: value?.commitMessageDetail === 'detailed' ? 'detailed' : 'concise',
+    commitMessagePrompt: typeof value?.commitMessagePrompt === 'string' ? value.commitMessagePrompt : '',
     commitMessageModels: (value?.commitMessageModels ?? []).flatMap((item) => {
       const provider = item?.provider?.trim()
       const model = item?.model?.trim()

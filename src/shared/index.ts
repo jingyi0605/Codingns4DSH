@@ -71,6 +71,7 @@ export {
 export {
   DEFAULT_GIT_MANAGEMENT_SETTINGS,
   MAX_GIT_COMMIT_MESSAGE_CHARS,
+  MAX_GIT_COMMIT_PROMPT_CHARS,
   normalizeGitManagementSettings,
   type GitCommitMessageDraft,
   type GitCommitMessageModel,

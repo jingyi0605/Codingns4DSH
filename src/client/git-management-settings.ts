@@ -2,18 +2,21 @@ import { createElement, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { AssistantChatCatalog } from '../shared/contracts/assistant.js'
 import { CODINGNS_GIT_MANAGEMENT_FIELD } from '../shared/contracts/config.js'
-import { normalizeGitManagementSettings, type GitManagementSettings } from '../shared/contracts/git.js'
+import { MAX_GIT_COMMIT_PROMPT_CHARS, normalizeGitManagementSettings, type GitManagementSettings } from '../shared/contracts/git.js'
+import { DshButton } from '../dsh-capabilities/client/primitives-adapter.js'
 import type { FeaturePanelProps } from './features/types.js'
 import { useCodingNsTranslator } from './locale.js'
 import { ModelPriorityPool } from './model-priority-pool.js'
 import { SettingsToggleRow } from './settings-controls.js'
 import { CODINGNS_RPC_CHANNEL } from '../shared/contracts/transport.js'
-import { dshFormRootStyle, dshSettingsFieldLabelStyle, dshSettingsFieldStyle, dshSettingsListRowStyle } from './theme.js'
+import { dshFormRootStyle, dshSettingsFieldLabelStyle, dshSettingsFieldStyle, dshSettingsHelpStyle, dshSettingsListRowStyle } from './theme.js'
 
 export function GitManagementSettingsPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
   const t = useCodingNsTranslator(services.locale)
   const value = normalizeGitManagementSettings(snapshot.value?.gitManagement)
   const [saving, setSaving] = useState(false)
+  const [promptDraft, setPromptDraft] = useState<string | null>(null)
+  const promptText = promptDraft ?? value.commitMessagePrompt
   const savingRef = useRef(false)
   const [catalog, setCatalog] = useState<AssistantChatCatalog | null>(null)
   const disabled = !enabled || snapshot.status !== 'ready' || !snapshot.writable || saving
@@ -62,6 +65,21 @@ export function GitManagementSettingsPanel({ services, enabled, snapshot, notify
         saveRejectedKey: 'settings.moduleWriteRejected',
         onChange: (models) => save({ commitMessageModels: models }),
       }),
+      createElement('div', { style: { display: 'grid', gap: 6, marginTop: 16 } },
+        createElement('label', { style: { display: 'grid', gap: 6 } },
+          createElement('span', { style: dshSettingsFieldLabelStyle }, t('git.messagePrompt')),
+          createElement('textarea', { rows: 5, value: promptText, maxLength: MAX_GIT_COMMIT_PROMPT_CHARS, disabled: generationDisabled,
+            'aria-label': t('git.messagePrompt'), placeholder: t('git.messagePromptPlaceholder'),
+            style: { ...dshSettingsFieldStyle, resize: 'vertical' },
+            onChange: (event: { currentTarget: { value: string } }) => { if (!generationDisabled) setPromptDraft(event.currentTarget.value) },
+          }),
+        ),
+        createElement('div', { style: dshSettingsHelpStyle }, t('git.messagePromptHelp')),
+        createElement(DshButton, { type: 'button', variant: 'outline', size: 'sm', style: { justifySelf: 'start' },
+          disabled: generationDisabled || promptText === value.commitMessagePrompt,
+          onClick: () => { if (!generationDisabled) void save({ commitMessagePrompt: promptText }).then((accepted) => { if (accepted) setPromptDraft(null) }) },
+        }, t(saving ? 'git.messagePromptSaving' : 'git.messagePromptSave')),
+      ),
     ),
   )
 }
