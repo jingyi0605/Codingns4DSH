@@ -165,6 +165,37 @@ test('Session changes recover persisted Grok display titles without counting rea
   }
 })
 
+test('Session changes use the same registered workspace root as Git when the terminal cache differs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codingns-session-workspace-root-'))
+  const disposers: Array<() => void> = []
+  try {
+    const table = new CodingNsRpcTable()
+    const feature = createFileManagementFeature()
+    feature.start({
+      descriptor: feature.descriptor,
+      resources: { add: (dispose: () => void) => disposers.push(dispose) },
+      services: {
+        rpc: table,
+        resolveManagedWorkspaceRoot: () => root,
+        resolveWorkspaceRoot: () => join(root, 'terminal-subdirectory'),
+        nativeSessions: { get: () => ({ snapshotEvents: () => [
+          { type: 'tool/call', data: { callId: 'edit', name: 'edit', arguments: { file_path: join(root, 'src/edited.ts') } } },
+          { type: 'tool/result', data: { message: { toolCallId: 'edit', content: [] } } },
+        ] }) },
+      },
+    })
+    const route = table.resolve('fileManagement/session-changes')!
+    const result = await route.handler(route.action, { sessionId: 'grok', workspaceId: 'workspace' })
+    assert.deepEqual(result, { paths: ['src/edited.ts'] })
+    assert.equal(selectSessionChangedFiles(result, {
+      changes: [{ path: 'src/edited.ts', oldPath: null }, { path: 'src/unrelated.ts', oldPath: null }],
+    } as never).length, 1)
+  } finally {
+    for (const dispose of disposers.reverse()) dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('提交后 Git 状态清空时会话修改文件选择结果归零', () => {
   const sessionFiles = { paths: ['src/one.ts', 'src/two.ts'] }
   const beforeCommit = {
