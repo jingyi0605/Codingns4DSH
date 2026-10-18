@@ -32,7 +32,8 @@ export function createFileManagementFeature(): FeatureModule<CodingNsHostService
             const sessionId = requiredString(input.sessionId, 'sessionId')
             const workspaceId = typeof input.workspaceId === 'string' ? input.workspaceId.trim() : ''
             const root = workspaceId !== ''
-              ? context.services.resolveWorkspaceRoot?.(workspaceId) ?? findSessionRoot(context.services, sessionId)
+              ? context.services.resolveManagedWorkspaceRoot?.(workspaceId)
+                ?? context.services.resolveWorkspaceRoot?.(workspaceId) ?? findSessionRoot(context.services, sessionId)
               : findSessionRoot(context.services, sessionId)
             if (root === null || root === undefined || root.trim() === '') {
               throw new CodingNsRpcError('FILE_MANAGEMENT_WORKSPACE_UNAVAILABLE', '当前会话没有可用的工作区目录')
