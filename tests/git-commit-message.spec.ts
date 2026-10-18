@@ -48,6 +48,43 @@ test('an empty Git pool follows the DSH default and concise output has no body',
   assert.deepEqual(await generateGitCommitMessage(adapter, DEFAULT_GIT_MANAGEMENT_SETTINGS, 'diff', signal()), { message: 'Update Git settings' })
 })
 
+test('custom Git commit rules reach every fallback model while the selected detail level still applies', async () => {
+  const rules = 'Write in French.\nUse Conventional Commits with a scope.'
+  const attempts: string[] = []
+  const adapter: AssistantLlmAdapter = {
+    catalog: async () => catalog,
+    async reply(model, system, messages) {
+      attempts.push(model.model)
+      assert.ok(system.endsWith(rules))
+      assert.match(system, /take precedence over default language and style/u)
+      assert.match(system, /only the single subject line/u)
+      assert.equal(messages[0]?.text, 'staged diff')
+      if (model.model === primary.model) throw new Error('Provider unavailable')
+      return 'feat(git): ajouter des règles de commit\n\nUnwanted body'
+    },
+  }
+  const result = await generateGitCommitMessage(adapter, { ...DEFAULT_GIT_MANAGEMENT_SETTINGS,
+    commitMessageModels: [primary, backup], commitMessagePrompt: rules,
+  }, 'staged diff', signal())
+  assert.deepEqual(attempts, ['primary', 'backup'])
+  assert.equal(result.message, 'feat(git): ajouter des règles de commit')
+})
+
+test('legacy settings and blank commit prompts preserve the default generation prompt', async () => {
+  const prompts: string[] = []
+  const adapter: AssistantLlmAdapter = {
+    catalog: async () => catalog,
+    async reply(_model, system) { prompts.push(system); return 'Update Git settings' },
+  }
+  const { commitMessagePrompt: _prompt, ...legacy } = DEFAULT_GIT_MANAGEMENT_SETTINGS
+  for (const settings of [legacy, DEFAULT_GIT_MANAGEMENT_SETTINGS, { ...DEFAULT_GIT_MANAGEMENT_SETTINGS, commitMessagePrompt: ' \n ' }]) {
+    await generateGitCommitMessage(adapter, settings as typeof DEFAULT_GIT_MANAGEMENT_SETTINGS, 'diff', signal())
+  }
+  assert.equal(prompts[0], prompts[1])
+  assert.equal(prompts[1], prompts[2])
+  assert.doesNotMatch(prompts[0]!, /Custom commit rules/u)
+})
+
 test('invalid results fall back and complete failure is reported', async () => {
   const attempts: string[] = []
   const adapter: AssistantLlmAdapter = {
@@ -94,13 +131,14 @@ test('Git RPC generates from staged changes, respects enablement, and accepts de
       requests++
       assert.equal(model.model, 'backup')
       assert.match(system, /detailed bullet list/u)
+      assert.ok(system.endsWith('Use Conventional Commits.'))
       assert.match(messages[0]!.text, /STAGED_MARKER/u)
       assert.doesNotMatch(messages[0]!.text, /UNSTAGED_MARKER|UNTRACKED_MARKER/u)
       return message
     },
   }
   const settings = { ...DEFAULT_CODINGNS_SETTINGS, modules: { sessionTranslation: false },
-    gitManagement: { ...DEFAULT_GIT_MANAGEMENT_SETTINGS, commitMessageDetail: 'detailed' as const, commitMessageModels: [backup] },
+    gitManagement: { ...DEFAULT_GIT_MANAGEMENT_SETTINGS, commitMessageDetail: 'detailed' as const, commitMessageModels: [backup], commitMessagePrompt: 'Use Conventional Commits.' },
   }
   Object.defineProperty(settings, 'sessionTranslation', { get() { throw new Error('Git must not read translation settings') } })
   const table = new CodingNsRpcTable()

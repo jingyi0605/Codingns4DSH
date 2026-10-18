@@ -5,6 +5,7 @@ import { Children, isValidElement, type ReactElement, type ReactNode } from 'rea
 import { gitManagementFeature, registerGitManagementUi } from '../src/client/git-management.js'
 import { ModelPriorityPool } from '../src/client/model-priority-pool.js'
 import { SettingsToggleRow } from '../src/client/settings-controls.js'
+import { DshButton } from '../src/dsh-capabilities/client/primitives-adapter.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import { createCodingNsSettingsBridge } from '../src/client/settings-bridge.js'
 import { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler } from '../src/host/rpc.js'
@@ -55,6 +56,9 @@ test('Git settings persist through Host RPC and reload without changing translat
   const view = createHookRenderer(gitManagementFeature.settingsPanel!, props() as never)
   t.after(() => view.dispose())
   const fields = () => elements(view.render(props() as never))
+  const translator = resolveCodingNsTranslator()
+  const promptEditor = () => fields().find((field) => field.type === 'textarea')!
+  const savePrompt = () => fields().find((field) => field.type === DshButton && field.props.children === translator('git.messagePromptSave'))!
   assert.equal(fields().find((field) => field.type === SettingsToggleRow)!.props.checked, true)
   await setImmediate()
   assert.ok(requests.includes('git/models'))
@@ -64,16 +68,43 @@ test('Git settings persist through Host RPC and reload without changing translat
   const models = [{ provider: 'native', model: 'second' }, { provider: 'native', model: 'first' }]
   assert.equal(await fields().find((field) => field.type === ModelPriorityPool)!.props.onChange(models), true)
   assert.deepEqual(saved.gitManagement, { ...DEFAULT_GIT_MANAGEMENT_SETTINGS, commitMessageDetail: 'detailed', commitMessageModels: models })
+  assert.equal(promptEditor().props.value, '')
+  assert.equal(savePrompt().props.disabled, true)
+  const commitRules = 'Use Conventional Commits.\nInclude the affected scope.'
+  promptEditor().props.onChange({ currentTarget: { value: commitRules } })
+  assert.equal(saved.gitManagement.commitMessagePrompt, '', 'Typing must not persist incomplete rules')
+  savePrompt().props.onClick()
+  await setImmediate()
+  assert.equal(saved.gitManagement.commitMessagePrompt, commitRules)
+  assert.equal(savePrompt().props.disabled, true)
+  const rejectedRules = 'Use French for commit messages.'
+  promptEditor().props.onChange({ currentTarget: { value: rejectedRules } })
+  rejectWrite = true
+  savePrompt().props.onClick()
+  await setImmediate()
+  assert.equal(saved.gitManagement.commitMessagePrompt, commitRules)
+  assert.equal(promptEditor().props.value, rejectedRules, 'A rejected save must preserve the editable draft')
+  assert.equal(notices.at(-1).kind, 'error')
+  rejectWrite = false
+  promptEditor().props.onChange({ currentTarget: { value: '' } })
+  savePrompt().props.onClick()
+  await setImmediate()
+  assert.equal(saved.gitManagement.commitMessagePrompt, '', 'Clearing the prompt restores the default rules')
+  promptEditor().props.onChange({ currentTarget: { value: commitRules } })
+  savePrompt().props.onClick()
+  await setImmediate()
   fields().find((field) => field.type === SettingsToggleRow)!.props.onChange(false)
   await setImmediate()
   assert.equal(fields().find((field) => field.type === 'select')!.props.disabled, true)
   assert.equal(fields().find((field) => field.type === ModelPriorityPool)!.props.disabled, true)
+  assert.equal(promptEditor().props.disabled, true)
   assert.deepEqual(saved.sessionTranslation, translation)
   assert.equal(saved.gitManagement.commitMessageEnabled, false)
   const reloaded = createCodingNsSettingsBridge(undefined, rpc)
   t.after(() => reloaded.dispose())
   await reloaded.load()
   assert.deepEqual(reloaded.getSnapshot().value?.gitManagement, saved.gitManagement)
+  assert.equal(reloaded.getSnapshot().value?.gitManagement?.commitMessagePrompt, commitRules)
   const before = structuredClone(saved.gitManagement)
   rejectWrite = true
   fields().find((field) => field.type === SettingsToggleRow)!.props.onChange(true)
@@ -83,6 +114,7 @@ test('Git settings persist through Host RPC and reload without changing translat
   assert.equal(fields().find((field) => field.type === SettingsToggleRow)!.props.checked, false)
   const readOnly = elements(view.render({ ...props(), snapshot: { ...settings.getSnapshot(), writable: false } } as never))
   assert.equal(readOnly.find((field) => field.type === SettingsToggleRow)!.props.disabled, true)
+  assert.equal(readOnly.find((field) => field.type === 'textarea')!.props.disabled, true)
 })
 
 test('Git panel generates editable multiline drafts, preserves drafts on failure, and cancels stale replies', async (t) => {
