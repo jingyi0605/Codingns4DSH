@@ -27,6 +27,7 @@ const WRITE_FILES = [
   'src/client/features/subscription-usage-panel.ts',
   'src/client/features/mobile-access-panel.ts',
   'src/client/features/cli-adapters.ts',
+  'src/client/git-management-settings.ts',
 ] as const
 
 const WRITE_CALL = /settings\s*\.\s*(?:mutate|set)\s*\(/gu
