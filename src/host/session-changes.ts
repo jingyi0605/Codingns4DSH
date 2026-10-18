@@ -188,7 +188,10 @@ function hasError(value: unknown): boolean {
 }
 
 function isMutatingTool(value: string): boolean {
+  // Older Grok projections persisted display titles as tool names. Recover
+  // their arguments without treating the title itself as evidence of a path.
   const normalized = value.trim()
+    .replace(/^(Edit|Write) `[^`]+`$/u, '$1')
     .replace(/([a-z])([A-Z])/gu, '$1_$2')
     .toLowerCase()
     .replace(/[\s-]+/gu, '_')

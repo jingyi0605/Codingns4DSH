@@ -809,7 +809,11 @@ function acpMessageToChunks(message: Record<string, any>): readonly CodingNsAgen
   if (type.includes('thought') || type.includes('reason')) return text ? [{ type: 'reasoning-delta', text, ...identity }] : []
   if (type.includes('tool') || type.includes('command')) {
     const tool = isToolRecord(update.toolCall) ? update.toolCall : isToolRecord(update.tool_call) ? update.tool_call : update
-    const name = firstToolText(tool.name, tool.toolName, tool.tool_name, tool.title, update.name, update.toolName, update.title)
+    const meta = isToolRecord(tool._meta) ? tool._meta : isToolRecord(update._meta) ? update._meta : {}
+    const xaiTool = isToolRecord(meta['x.ai/tool']) ? meta['x.ai/tool'] : undefined
+    // Grok changes title to a display label such as Edit `path` while the call
+    // is running. Its structured name must survive until native persistence.
+    const name = firstToolText(tool.name, tool.toolName, tool.tool_name, xaiTool?.name, update.name, update.toolName, tool.title, update.title)
     const callId = firstToolText(tool.callId, tool.call_id, tool.toolCallId, tool.tool_call_id, tool.id, update.toolCallId, update.tool_call_id, update.id)
     if (!name && !callId) return []
     const input = serializeToolValue(tool.rawInput ?? tool.input ?? tool.arguments ?? tool.args ?? update.rawInput)
