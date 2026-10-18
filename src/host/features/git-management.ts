@@ -26,8 +26,31 @@ import { generateGitCommitMessage } from './git-commit-message.js'
 const execFile = promisify(execFileCallback)
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 const MAX_DIFF_BYTES = 60_000
+/** Inherited GIT_* keys that relocate the repository away from `cwd`. */
+const GIT_REPOSITORY_REDIRECT_KEYS = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_PREFIX',
+] as const
 
-/** Host 侧 Git 工作区服务；所有路径都由 resolveWorkspaceRoot 权威解析。 */
+/**
+ * Isolate plugin Git from DSH workspace-changes snapshot env and from any
+ * inherited `GIT_DIR`. PeerHost Git runs in the target Host process, which may
+ * have live sessions using private object directories.
+ */
+export function createGitCommandEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...source }
+  for (const key of GIT_REPOSITORY_REDIRECT_KEYS) delete env[key]
+  env.GIT_TERMINAL_PROMPT = '0'
+  env.GIT_OPTIONAL_LOCKS = '0'
+  return env
+}
+
+/** Host 侧 Git 工作区服务；优先 Registry 根目录，终端缓存只作回退。 */
 export function createGitManagementFeature(options: { readonly llm?: AssistantLlmAdapter } = {}): FeatureModule<CodingNsHostServices> {
   return {
     descriptor: {
@@ -46,7 +69,8 @@ export function createGitManagementFeature(options: { readonly llm?: AssistantLl
         if (action === 'models') return llm?.catalog() ?? { models: [], default: null, errors: ['The native model service is unavailable.'] }
         const input = record(payload)
         const workspaceId = requiredString(input.workspaceId, 'workspaceId')
-        const root = context.services.resolveWorkspaceRoot?.(workspaceId)
+        const root = context.services.resolveManagedWorkspaceRoot?.(workspaceId)
+          ?? context.services.resolveWorkspaceRoot?.(workspaceId)
         if (root === null || root === undefined) throw new CodingNsRpcError('GIT_WORKSPACE_UNAVAILABLE', '当前 Workspace 没有可用的本地目录')
         switch (action) {
           case 'generate-message': {
@@ -402,7 +426,13 @@ async function switchBranch(root: string, branchName: string, create: boolean): 
 
 async function runGit(cwd: string, args: readonly string[]): Promise<{ stdout: string; stderr: string }> {
   try {
-    return await execFile('git', [...args], { cwd, encoding: 'utf8', maxBuffer: MAX_OUTPUT_BYTES, timeout: 30_000 }) as { stdout: string; stderr: string }
+    return await execFile('git', ['-c', 'safe.directory=*', ...args], {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: MAX_OUTPUT_BYTES,
+      timeout: 30_000,
+      env: createGitCommandEnv(),
+    }) as { stdout: string; stderr: string }
   } catch (error) {
     const detail = error as { stdout?: string; stderr?: string; code?: string | number }
     throw new GitCommandError(`git ${args.join(' ')} 执行失败`, detail.stderr ?? detail.stdout ?? String(error), detail.code, detail.stdout ?? '')
