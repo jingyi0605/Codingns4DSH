@@ -14,7 +14,7 @@ import {
 import type { CodingNsClientFeatureModule, FeaturePanelProps } from './types.js'
 import { useCodingNsTranslator } from '../locale.js'
 import { callCliRpc } from '../cli-catalog.js'
-import { SessionTranslationModelPool } from '../session-translation-model-pool.js'
+import { ModelPriorityPool } from '../model-priority-pool.js'
 import { SessionTranslationRules } from '../session-translation-rules.js'
 import { registerSessionTranslationChatUi } from '../session-translation-chat.js'
 import { registerSessionTranslationInteractions } from '../session-translation-interactions.js'
@@ -137,7 +137,7 @@ function SessionTranslationPanel({ services, enabled, snapshot, notify }: Featur
   createElement('div', { style: { ...dshSettingsSectionHeaderStyle, marginTop: 12 } },
     createElement('span', { style: dshSettingsFieldLabelStyle }, t('translation.modelTitle')),
   ),
-  createElement(SessionTranslationModelPool, { value, catalog, disabled, pending: saving, t,
+  createElement(ModelPriorityPool, { models: value.translationModels ?? (value.translationModel === undefined ? [] : [value.translationModel]), catalog, disabled, pending: saving, t,
     onChange: (models) => save({ translationModels: models, translationModel: undefined }),
   }),
   createElement('div', { style: { ...dshSettingsSectionHeaderStyle, marginTop: 12 } },

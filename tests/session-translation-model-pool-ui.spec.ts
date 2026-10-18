@@ -3,7 +3,7 @@ import { setImmediate } from 'node:timers/promises'
 import test from 'node:test'
 import { Children, isValidElement, type ReactElement, type ReactNode } from 'react'
 import { sessionTranslationFeature } from '../src/client/features/session-translation.js'
-import { SessionTranslationModelPool } from '../src/client/session-translation-model-pool.js'
+import { ModelPriorityPool } from '../src/client/model-priority-pool.js'
 import { DshButton, DshCheckbox, DshInput, DshModal } from '../src/dsh-capabilities/client/primitives-adapter.js'
 import type { CodingNsClientServices, FeaturePanelProps } from '../src/client/features/types.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
@@ -33,7 +33,7 @@ function elements(node: ReactNode): ReactElement<any>[] {
 // Execute the panel's hooks and render only the model controls under test.
 function renderPool(props: FeaturePanelProps): ReactElement {
   const panel = sessionTranslationFeature.settingsPanel!(props)
-  const field = elements(panel).find((element) => element.type === SessionTranslationModelPool)!
+  const field = elements(panel).find((element) => element.type === ModelPriorityPool)!
   assert.ok(field)
   return (field.type as (props: any) => ReactElement)(field.props)
 }

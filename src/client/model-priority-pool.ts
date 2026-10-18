@@ -6,31 +6,41 @@ import {
 } from '../dsh-capabilities/client/primitives-adapter.js'
 import type { AssistantChatCatalog } from '../shared/contracts/assistant.js'
 import { isSessionTranslationAdapter } from '../shared/contracts/session-translation.js'
-import type { SessionTranslationModel, SessionTranslationSettings } from '../shared/contracts/session-translation.js'
 import type { CodingNsTranslator } from './locale.js'
 import { uiFontSize } from './font-scale.js'
 import { dshSettingsHelpStyle, dshThemeColor } from './theme.js'
 
+interface ModelSelection {
+  readonly provider: string
+  readonly model: string
+}
+
 interface ModelPoolProps {
-  readonly value: SessionTranslationSettings
+  readonly models: readonly ModelSelection[]
   readonly catalog: AssistantChatCatalog | null
   readonly disabled: boolean
   readonly pending: boolean
   readonly t: CodingNsTranslator
-  readonly onChange: (models: readonly SessionTranslationModel[]) => Promise<boolean>
+  readonly onChange: (models: readonly ModelSelection[]) => Promise<boolean>
+  readonly titleKey?: string
+  readonly pickerTitleKey?: string
+  readonly helpKey?: string
+  readonly saveRejectedKey?: string
 }
 
 interface PoolDrag {
   readonly pointerId: number
   readonly key: string
   readonly startY: number
-  readonly original: readonly SessionTranslationModel[]
-  readonly order: readonly SessionTranslationModel[]
+  readonly original: readonly ModelSelection[]
+  readonly order: readonly ModelSelection[]
 }
 
 /** The persisted pool owns priority; modal choices and drag previews remain local until confirmed. */
-export function SessionTranslationModelPool({ value, catalog, disabled, pending, t, onChange }: ModelPoolProps): ReactElement {
-  const pool = value.translationModels ?? (value.translationModel === undefined ? [] : [value.translationModel])
+export function ModelPriorityPool({ models: pool, catalog, disabled, pending, t, onChange,
+  titleKey = 'translation.modelTitle', pickerTitleKey = 'translation.modelPickerTitle', helpKey = 'translation.modelHelp',
+  saveRejectedKey = 'translation.saveRejected',
+}: ModelPoolProps): ReactElement {
   const available = new Map((catalog?.models ?? [])
     .filter((model) => !isSessionTranslationAdapter(model.provider))
     .map((model) => [modelKey(model), model]))
@@ -75,7 +85,7 @@ export function SessionTranslationModelPool({ value, catalog, disabled, pending,
     if (await onChange([])) setResetOpen(false)
     else setResetFailed(true)
   }
-  const commitOrder = (order: readonly SessionTranslationModel[], key: string): void => {
+  const commitOrder = (order: readonly ModelSelection[], key: string): void => {
     if (locked) return
     void onChange(order).then((saved) => {
       if (saved) setAnnouncement(t('translation.modelReordered', {
@@ -142,7 +152,7 @@ export function SessionTranslationModelPool({ value, catalog, disabled, pending,
     pool.length === 0 ? createElement('div', { className: 'codingns-translation-pool-empty' },
       createElement(resolveDataIcon(), { size: 22 }),
       createElement('span', null, t('translation.modelPoolEmpty')),
-    ) : createElement('ol', { ref: list, className: 'codingns-translation-pool-list', 'aria-label': t('translation.modelTitle'),
+    ) : createElement('ol', { ref: list, className: 'codingns-translation-pool-list', 'aria-label': t(titleKey),
       onPointerMove: moveDrag, onPointerUp: finishDrag, onPointerCancel: cancelDrag, onLostPointerCapture: cancelDrag,
     },
       ...(preview?.order ?? pool).map((model, index) => {
@@ -168,7 +178,7 @@ export function SessionTranslationModelPool({ value, catalog, disabled, pending,
       }),
     ),
     createElement('div', { className: 'codingns-translation-pool-toolbar' },
-      createElement('span', { style: { ...dshSettingsHelpStyle, flex: 1 } }, t('translation.modelHelp')),
+      createElement('span', { style: { ...dshSettingsHelpStyle, flex: 1 } }, t(helpKey)),
       pool.length > 0 && createElement(DshButton, { type: 'button', size: 'sm', disabled: disabled || pickerOpen,
         style: { color: dshThemeColor.error }, 'aria-haspopup': 'dialog', 'aria-expanded': resetOpen,
         onClick: () => { if (!locked) { setResetFailed(false); setResetOpen(true) } },
@@ -176,7 +186,7 @@ export function SessionTranslationModelPool({ value, catalog, disabled, pending,
     ),
     createElement('span', { role: 'status', 'aria-live': 'polite', className: 'codingns-translation-pool-status' }, announcement),
     createElement(DshModal, {
-      open: pickerOpen, onClose: closePicker, title: t('translation.modelPickerTitle'), closeLabel: t('translation.modelCancel'),
+      open: pickerOpen, onClose: closePicker, title: t(pickerTitleKey), closeLabel: t('translation.modelCancel'),
       description: t('translation.modelPickerHelp'), className: 'codingns-translation-model-picker',
       contentClassName: 'codingns-translation-model-picker-content',
       footer: createElement(Fragment, null,
@@ -192,7 +202,7 @@ export function SessionTranslationModelPool({ value, catalog, disabled, pending,
           'aria-label': t('translation.modelSearch'), ...{ 'data-modal-autofocus': true }, disabled,
           onChange: (event) => setSearch(event.currentTarget.value),
         }),
-        createElement('div', { className: 'codingns-translation-picker-list', role: 'group', 'aria-label': t('translation.modelPickerTitle') },
+        createElement('div', { className: 'codingns-translation-picker-list', role: 'group', 'aria-label': t(pickerTitleKey) },
           ...filtered.map((model) => {
             const key = modelKey(model)
             return createElement('div', { key, className: `codingns-translation-picker-choice${selection?.has(key) ? ' is-selected' : ''}` },
@@ -213,7 +223,7 @@ export function SessionTranslationModelPool({ value, catalog, disabled, pending,
           filtered.length > 0 ? null : createElement('div', { className: 'codingns-translation-pool-empty', role: 'status' },
             t(catalog === null ? 'translation.modelLoading' : candidates.length > 0 ? 'translation.modelNoMatches' : available.size > 0 ? 'translation.modelAllAdded' : 'translation.modelEmpty')),
         ),
-        saveFailed && createElement('span', { role: 'alert', style: { ...dshSettingsHelpStyle, color: dshThemeColor.error } }, t('translation.saveRejected')),
+        saveFailed && createElement('span', { role: 'alert', style: { ...dshSettingsHelpStyle, color: dshThemeColor.error } }, t(saveRejectedKey)),
       ),
     ),
     createElement(DshModal, {
@@ -227,13 +237,13 @@ export function SessionTranslationModelPool({ value, catalog, disabled, pending,
           style: { color: dshThemeColor.error }, onClick: () => { void confirmReset() },
         }, t('translation.modelResetConfirm')),
       ),
-    }, resetFailed ? createElement('span', { role: 'alert', style: { ...dshSettingsHelpStyle, color: dshThemeColor.error } }, t('translation.saveRejected')) : undefined),
+    }, resetFailed ? createElement('span', { role: 'alert', style: { ...dshSettingsHelpStyle, color: dshThemeColor.error } }, t(saveRejectedKey)) : undefined),
   )
 }
 
-function modelKey(model: SessionTranslationModel): string { return JSON.stringify([model.provider, model.model]) }
+function modelKey(model: ModelSelection): string { return JSON.stringify([model.provider, model.model]) }
 
-function moveModel(pool: readonly SessionTranslationModel[], source: number, target: number): readonly SessionTranslationModel[] {
+function moveModel(pool: readonly ModelSelection[], source: number, target: number): readonly ModelSelection[] {
   const next = [...pool]
   const model = next.splice(source, 1)[0]
   if (model !== undefined) next.splice(target, 0, model)
@@ -242,7 +252,7 @@ function moveModel(pool: readonly SessionTranslationModel[], source: number, tar
 
 function isOfficialProvider(provider: string): boolean { return /^(?:deepseek(?:-official)?|official-deepseek)$/iu.test(provider.trim()) }
 
-function ModelIdentity({ model, label, t }: { readonly model: SessionTranslationModel; readonly label: string; readonly t: CodingNsTranslator }): ReactElement {
+function ModelIdentity({ model, label, t }: { readonly model: ModelSelection; readonly label: string; readonly t: CodingNsTranslator }): ReactElement {
   const [provider, ...name] = label.split(' / ')
   return createElement('div', { className: 'codingns-translation-pool-identity', title: label },
     createElement('span', { className: 'codingns-translation-pool-name' }, name.join(' / ') || model.model),
