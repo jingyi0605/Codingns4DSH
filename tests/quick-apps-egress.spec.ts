@@ -134,7 +134,7 @@ test('sandbox navigation installs the network shim and the launch route blocks p
   assert.match(bootstrap, /__quickapp\/egress/u)
   assert.doesNotMatch(bootstrap, /quickAppStorageRuntime/u)
   const page = await textRequest(launch.url, { accept: 'text/html' })
-  assert.match(page, /^<script>[\s\S]*function quickAppNetworkInstall[\s\S]*quickAppNetworkInstall\(\);<\/script>/u)
+  assert.match(page, /^<!doctype html>\s*<html\b[^>]*><script>[\s\S]*function quickAppNetworkInstall[\s\S]*quickAppNetworkInstall\(\);<\/script>/u)
   assert.match(page, /Ordinary static app/u)
   const stored = await f.launch(f.origin, true)
   assert.match(await textRequest(stored.url, { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'iframe', accept: 'text/html' }), /function quickAppNetworkInstall[\s\S]*quickAppStorageRuntime/u)

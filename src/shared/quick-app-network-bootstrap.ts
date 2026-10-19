@@ -20,7 +20,15 @@ export function quickAppNetworkSource(): string {
 
 /** Runs before any application script, including when the iframe loads the file directly. */
 export function quickAppPreparedHtml(html: string): string {
-  return `<script>${quickAppNetworkSource()}\nquickAppNetworkInstall();</script>${html}`
+  const bootstrap = `<script>${quickAppNetworkSource()}\nquickAppNetworkInstall();</script>`
+  const doctype = /^(?:\uFEFF)?(?:\s|<!--[\s\S]*?-->)*(<!doctype(?:[^>"']|"[^"]*"|'[^']*')*>)/iu.exec(html)
+  const doctypeEnd = doctype?.[0].length ?? 0
+  const document = html.slice(doctypeEnd)
+  const htmlTag = /<html\b(?:[^>"']|"[^"]*"|'[^']*')*>/iu.exec(document)
+  const headTag = /<head\b(?:[^>"']|"[^"]*"|'[^']*')*>/iu.exec(document)
+  const anchor = headTag !== null && (htmlTag === null || headTag.index > htmlTag.index) ? headTag : htmlTag
+  const insertionPoint = anchor === null ? doctypeEnd : doctypeEnd + anchor.index + anchor[0].length
+  return `${html.slice(0, insertionPoint)}${bootstrap}${html.slice(insertionPoint)}`
 }
 
 export function quickAppNetworkBootstrap(): string {

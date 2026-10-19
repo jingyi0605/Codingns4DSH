@@ -15,6 +15,14 @@ import { quickAppProxyFixture } from './quick-apps-proxy-fixture.js'
 import { quickAppProxyBase } from '../src/shared/quick-app-proxy-path.js'
 import { quickAppPreparedHtml } from '../src/shared/quick-app-network-bootstrap.js'
 
+test('sandbox bootstrap preserves document mode and installs before application scripts', () => {
+  const html = '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><script src="/app.js"></script></head></html>'
+  const prepared = quickAppPreparedHtml(html)
+  assert.ok(prepared.startsWith('<!doctype html>\n<html lang="en"><head><script>'))
+  assert.ok(prepared.indexOf('quickAppNetworkInstall();</script>') < prepared.indexOf('<script src="/app.js">'))
+  assert.ok(prepared.includes('<html lang="en">'))
+})
+
 test('Host proxy uses the existing LAN address, scoped file API and lifecycle without certificates', { timeout: 30_000 }, async t => {
   const f = await quickAppProxyFixture(); t.after(f.dispose)
   const launch = await f.launch()

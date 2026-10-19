@@ -35,7 +35,13 @@ for (const secure of [false, true]) test(`sandboxed Host proxy over ${secure ? '
   await f.registry.upsert({ ...current, entryPath: 'site/proxy.html' }, current.revision)
   const app = await f.launch(origin)
   f.setUi(`<meta name="viewport" content="width=device-width,initial-scale=1"><p id="privileged">DSH</p><iframe id="app" style="width:95%;height:600px" sandbox="allow-scripts allow-forms allow-downloads" src="${app.url}"></iframe>`)
-  assert.equal(await (await fetch(f.hostOrigin + app.basePath + 'proxy.html')).text(), await readFile(join(f.root, 'site/proxy.html'), 'utf8'), 'HTML is served unchanged')
+  const servedHtml = await (await fetch(f.hostOrigin + app.basePath + 'proxy.html')).text()
+  const originalHtml = await readFile(join(f.root, 'site/proxy.html'), 'utf8')
+  const bootstrapStart = servedHtml.indexOf('<script>')
+  const bootstrapEnd = servedHtml.indexOf('quickAppNetworkInstall();</script>', bootstrapStart)
+  assert.ok(servedHtml.startsWith('<!doctype html>'), 'The doctype must remain first to preserve standards mode')
+  assert.ok(bootstrapStart > 0 && bootstrapEnd > bootstrapStart, 'The egress bootstrap must be injected')
+  assert.equal(servedHtml.slice(0, bootstrapStart) + servedHtml.slice(bootstrapEnd + 'quickAppNetworkInstall();</script>'.length), originalHtml, 'Only the egress bootstrap is injected')
   const browser = await quickAppBrowser(t, browserArgs); if (!browser) return
   const { command, evaluate, contexts } = browser
   await command('Page.enable'); await command('Network.enable')
@@ -49,6 +55,7 @@ for (const secure of [false, true]) test(`sandboxed Host proxy over ${secure ? '
     context = undefined; await new Promise(resolve => setTimeout(resolve, 100))
   }
   assert.ok(context, 'Same-address sandbox loaded modules, dynamic imports and fetch without injected code')
+  assert.deepEqual(await evaluate('({ mode: document.compatMode, language: document.documentElement.lang })', context), { mode: 'CSS1Compat', language: 'en' })
   assert.deepEqual(await evaluate('({result:document.querySelector("#result").textContent,color:getComputedStyle(document.body).color,image:document.querySelector("img").naturalWidth,font:document.fonts.check("16px FixtureFont")})', context),
     { result: 'module|dynamic|fetch|unicode|classic', color: 'rgb(20, 40, 60)', image: 1, font: true })
   for (const expression of ['parent.document.body.innerText', 'document.cookie', 'localStorage.length', 'indexedDB.open("fixture")']) {
