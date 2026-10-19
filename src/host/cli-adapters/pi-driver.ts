@@ -206,6 +206,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
     if (previous !== undefined
       && previous.cwd === cwd
       && previous.bridgeFingerprint === bridgeFingerprint
+      && !previous.rpc.isClosed
       && (providerSessionId === undefined || providerSessionId === previous.providerSessionId)
       && (rawStoreRef === undefined || rawStoreRef === previous.rawStoreRef)) {
       if (providerSessionId !== undefined) previous.providerSessionIdKnown = true
@@ -231,6 +232,10 @@ export class PiAgentDriver implements CodingNsCliDriver {
       modelContextWindow: undefined as number | undefined,
     }
     this.sessions.set(sessionId, session)
+    rpc.addExitListener(() => {
+      this.processes.delete(rpc)
+      if (this.sessions.get(sessionId)?.rpc === rpc) this.sessions.delete(sessionId)
+    })
     return session
   }
 }
@@ -261,6 +266,12 @@ async function* streamPiPrompt(
     notify()
   }
   const removeListener = rpc.addNotificationListener(listener)
+  const removeExitListener = rpc.addExitListener((error) => {
+    if (terminalReason !== null) return
+    terminalReason = 'error'
+    failure = errorMessageFromUnknown(error)
+    notify()
+  })
   const onAbort = (): void => { terminalReason = 'cancel'; notify() }
   if (signal?.aborted) onAbort()
   else signal?.addEventListener('abort', onAbort, { once: true })
@@ -287,6 +298,7 @@ async function* streamPiPrompt(
   } finally {
     signal?.removeEventListener('abort', onAbort)
     removeListener()
+    removeExitListener()
   }
 }
 

@@ -1879,6 +1879,39 @@ test('Pi prompt 被拒绝时结束为 error', async () => {
   driver.dispose()
 })
 
+test('Pi prompt 已接受但进程退出时结束为 error，并清理失效会话', async () => {
+  let spawnCount = 0
+  const driver = new PiAgentDriver({
+    binaries: ['fake-pi'],
+    spawnSync: (() => ({ status: 0, stdout: 'pi 1.3.0', stderr: '' })) as never,
+    spawn: (() => {
+      spawnCount += 1
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; type?: string }
+        if (request.type === 'prompt') {
+          stdout.write(`${JSON.stringify({ id: request.id, type: 'response', success: true, data: { accepted: true } })}\n`)
+          setImmediate(() => { stdout.end(); stderr.end() })
+        } else {
+          stdout.write(`${JSON.stringify({ id: request.id, type: 'response', success: true, data: {} })}\n`)
+        }
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'pi-exit', messages: [], prompt: '你好' })) chunks.push(chunk)
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'error', failure: { message: 'Agent 进程已退出' } })
+
+  const second = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'pi-exit', messages: [], prompt: '再次尝试' })) second.push(chunk)
+  assert.equal(spawnCount, 2)
+  assert.deepEqual(second.at(-1), { type: 'finish', reason: 'error', failure: { message: 'Agent 进程已退出' } })
+  driver.dispose()
+})
+
 test('Pi turn_end 的 Provider 错误不会被 agent_settled 覆盖为成功', async () => {
   const driver = new PiAgentDriver({
     binaries: ['fake-pi'],
