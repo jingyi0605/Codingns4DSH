@@ -1,8 +1,9 @@
-import { useMemo, useSyncExternalStore, type ComponentType } from 'react'
+import type { ComponentType } from 'react'
 import { contextComposerSlotName } from './composer-slot-selectors.js'
 import { followPresentationEntry, mirrorPresentationSlot, type PresentationSlots, type RenderElement } from './slot-presentation-mirror.js'
 
 type ComposerDecorator = (component: ComponentType<any>) => ComponentType<any>
+export type ComposerPresentationHooks = Pick<typeof import('react'), 'useMemo' | 'useSyncExternalStore'>
 interface ComposerPresentation {
   decorators: readonly ComposerDecorator[]
   readonly listeners: Set<() => void>
@@ -11,7 +12,9 @@ interface ComposerPresentation {
 const presentations = new WeakMap<object, ComposerPresentation>()
 
 /** Compose customizations over one native composer, sharing its child-slot mirror. */
-export function installComposerPresentation(owner: object, slots: PresentationSlots, decorate: ComposerDecorator, element: RenderElement): () => void {
+export function installComposerPresentation(owner: object, slots: PresentationSlots, decorate: ComposerDecorator, element: RenderElement, hooks: ComposerPresentationHooks): () => void {
+  // Shared capability routes also load on the Host; the client supplies its React hooks.
+  const { useMemo, useSyncExternalStore } = hooks
   // Cordis can return a fresh service proxy on every access. The owning context is stable.
   let presentation = presentations.get(owner)
   if (presentation === undefined) {

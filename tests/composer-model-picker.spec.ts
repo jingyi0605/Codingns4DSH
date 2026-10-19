@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createElement } from 'react'
+import { createElement, useMemo, useSyncExternalStore } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { registerCliConversationSlots } from '../src/client/cli-slots.js'
 import { watchNativeModelMenu } from '../src/client/native-model-translation-menu.js'
 import { composerSlotSelector, contextComposerSlotName } from '../src/dsh-capabilities/client/composer-slot-selectors.js'
@@ -32,18 +33,19 @@ function mirroredSlots() {
   const root = slots.register({ name: 'root', children: {
     'conversation.composer.bar': { kind: 'single', scope: 'session-maybe' },
   } }, (() => null) as never)
+  let composerProps: any
   const native = slots.register({ name: 'conversation.composer.bar', children: {
     'conversation.composer.dock': { kind: 'list', scope: 'session' },
     'conversation.input.right': { kind: 'list', scope: 'session' },
     'conversation.input.model': { kind: 'single', scope: 'session' },
-  } }, (() => null) as never)
-  const dispose = createSessionPerformancePresentation({ slots }).install(() => 'codex', createElement)
+  } }, ((props: any) => { composerProps = props; return null }) as never)
+  const dispose = createSessionPerformancePresentation({ slots }).install(() => 'codex', createElement, { useMemo, useSyncExternalStore })
   try {
     const entry = slots.core.entriesOfSlot('conversation.composer.bar')[0]!
-    const wrapped = (entry.component as any)({ sessionId: 'fixture', renderSlot: (name: string) => name })
+    renderToStaticMarkup(createElement(entry.component as any, { sessionId: 'fixture', renderSlot: (name: string) => name }))
     return {
-      right: wrapped.props.renderSlot('conversation.input.right', {}),
-      model: wrapped.props.renderSlot('conversation.input.model', {}),
+      right: composerProps.renderSlot('conversation.input.right', {}),
+      model: composerProps.renderSlot('conversation.input.model', {}),
     } as { right: string; model: string }
   } finally { dispose(); native(); root() }
 }

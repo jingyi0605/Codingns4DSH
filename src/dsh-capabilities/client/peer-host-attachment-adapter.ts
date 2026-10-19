@@ -1,4 +1,4 @@
-import { createElement } from 'react'
+import { createElement, useMemo, useSyncExternalStore } from 'react'
 import { parseVirtualSessionId } from '../../shared/contracts/peer-host.js'
 import { installComposerPresentation } from './composer-presentation-adapter.js'
 import type { PresentationSlots } from './slot-presentation-mirror.js'
@@ -22,5 +22,5 @@ export function installPeerHostAttachmentIntake(context: unknown, folderError: s
         })))
       },
     })
-  }, createElement)
+  }, createElement, { useMemo, useSyncExternalStore })
 }

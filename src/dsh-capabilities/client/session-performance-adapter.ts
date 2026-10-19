@@ -1,11 +1,11 @@
 import type { ComponentType } from 'react'
 import { CODEX_PERFORMANCE_PROJECTION } from '../../shared/codex-performance.js'
 import { GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION } from '../../shared/request-performance.js'
-import { installComposerPresentation } from './composer-presentation-adapter.js'
+import { installComposerPresentation, type ComposerPresentationHooks } from './composer-presentation-adapter.js'
 import { followPresentationEntry, type PresentationSlots, type RenderElement } from './slot-presentation-mirror.js'
 
 export interface SessionPerformancePresentation {
-  install(useAdapter: (id: string) => string | undefined, element: RenderElement): () => void
+  install(useAdapter: (id: string) => string | undefined, element: RenderElement, hooks: ComposerPresentationHooks): () => void
 }
 
 export function supportsSessionPerformancePresentation(context: unknown): boolean {
@@ -17,7 +17,7 @@ export function supportsSessionPerformancePresentation(context: unknown): boolea
 export function createSessionPerformancePresentation(context: unknown): SessionPerformancePresentation {
   const slots = (context as { slots: PresentationSlots }).slots
   return {
-    install(useAdapter, element) {
+    install(useAdapter, element, hooks) {
       const wrappers = new Set<unknown>()
       const removeActivity = followPresentationEntry(slots, 'conversation.composer.dock',
         entry => entry.options.id === 'activity' && !wrappers.has(entry.component),
@@ -48,7 +48,7 @@ export function createSessionPerformancePresentation(context: unknown): SessionP
           return () => { remove(); wrappers.delete(ActivityWithSourceTiming) }
         })
       try {
-        const removeContext = installGrokContextPresentation(context as object, slots, useAdapter, element)
+        const removeContext = installGrokContextPresentation(context as object, slots, useAdapter, element, hooks)
         return () => { removeContext(); removeActivity() }
       } catch (error) { removeActivity(); throw error }
     },
@@ -56,7 +56,7 @@ export function createSessionPerformancePresentation(context: unknown): SessionP
 }
 
 /** ContextMeter lives inside the native composer bar, rather than in its own slot. */
-function installGrokContextPresentation(owner: object, slots: PresentationSlots, useAdapter: (id: string) => string | undefined, element: RenderElement): () => void {
+function installGrokContextPresentation(owner: object, slots: PresentationSlots, useAdapter: (id: string) => string | undefined, element: RenderElement, hooks: ComposerPresentationHooks): () => void {
   return installComposerPresentation(owner, slots, Native => function ComposerWithGrokContext(props) {
     const adapter = useAdapter(props.sessionId ?? '')
     return element(Native, {
@@ -71,5 +71,5 @@ function installGrokContextPresentation(owner: object, slots: PresentationSlots,
         return typeof args[0] === 'function' ? args[0](pressure) : pressure
       },
     })
-  }, element)
+  }, element, hooks)
 }

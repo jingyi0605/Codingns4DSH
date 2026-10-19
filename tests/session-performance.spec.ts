@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { DSH_TESTED_VERSION } from '../src/shared/contracts/version.js'
-import { createElement } from 'react'
+import { createElement, useMemo, useSyncExternalStore } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createDshCapabilityRegistry } from '../src/dsh-capabilities/routes.js'
 import { createSessionPerformanceAdapter } from '../src/dsh-capabilities/host/session-performance-adapter.js'
@@ -51,7 +51,7 @@ test('native activity UI uses corrected Codex statistics and preserves native se
   const Native = (props: any) => createElement('span', undefined, JSON.stringify(props.useProjection('sessionStats')))
   const inject = () => ({ usePerformanceUsage: () => 'compact' })
   const native = slots.register({ name: 'conversation.composer.dock', id: 'activity', priority: 100, locale: 'codingns', inject }, Native as never)
-  const dispose = createSessionPerformancePresentation({ slots }).install(() => adapter, createElement)
+  const dispose = createSessionPerformancePresentation({ slots }).install(() => adapter, createElement, { useMemo, useSyncExternalStore })
   const entries = slots.core.entriesOfSlot('conversation.composer.dock')
   assert.equal(entries.length, 1)
   assert.notEqual(entries[0]!.component, Native)
@@ -92,7 +92,7 @@ test('Grok context uses provider occupancy while preserving the native composer 
   } }, Native as never)
   const action = slots.register({ name: 'conversation.input.left', id: 'test' }, (() => null) as never)
   let adapter = 'grok'
-  const dispose = createSessionPerformancePresentation({ slots }).install(() => adapter, createElement)
+  const dispose = createSessionPerformancePresentation({ slots }).install(() => adapter, createElement, { useMemo, useSyncExternalStore })
   const entry = slots.core.entriesOfSlot('conversation.composer.bar')[0]!
   assert.notEqual(entry.component, Native)
   assert.equal(entry.inject, inject)
@@ -125,7 +125,7 @@ test('Grok context uses provider occupancy while preserving the native composer 
 test('performance UI follows late native registration and replacement', async () => {
   const slots = createPresentationSlots()
   const root = slots.register({ name: 'root', children: { 'conversation.composer.dock': { kind: 'list', scope: 'session' } } }, (() => null) as never)
-  const dispose = createSessionPerformancePresentation({ slots }).install(() => 'codex', createElement)
+  const dispose = createSessionPerformancePresentation({ slots }).install(() => 'codex', createElement, { useMemo, useSyncExternalStore })
   const first = slots.register({ name: 'conversation.composer.dock', id: 'activity' }, (() => null) as never)
   await Promise.resolve()
   assert.equal(slots.entries('conversation.composer.dock').length, 2)

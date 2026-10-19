@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { createElement } from 'react'
+import { createElement, useMemo, useSyncExternalStore } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createPeerHostPageTransport } from '../src/client/features/peer-host.js'
 import { zh } from '../src/client/locales/peerHost.js'
@@ -141,7 +141,7 @@ for (const peerFirst of [true, false]) test(`attachment intake composes with nat
     'conversation.composer.bar': { kind: 'single', scope: 'session-maybe' },
   } }, (() => null) as never)
   const installPeer = () => installPeerHostAttachmentIntake(context, 'individual files only')
-  const installPerformance = () => createSessionPerformancePresentation(context).install(() => 'grok', createElement)
+  const installPerformance = () => createSessionPerformancePresentation(context).install(() => 'grok', createElement, { useMemo, useSyncExternalStore })
   const first = peerFirst ? installPeer() : installPerformance()
   const second = peerFirst ? installPerformance() : installPeer()
   let received: any

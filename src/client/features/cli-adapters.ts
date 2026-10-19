@@ -132,7 +132,7 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
         .getProfile(uiContext).capabilities.get('session.external-performance')?.value as SessionPerformancePresentation | undefined
       if (performance !== undefined) context.resources.add(performance.install(
         sessionId => useSyncExternalStore(subscribeSessionAdapters,
-          () => sessionAdapterId(sessionId), () => sessionAdapterId(sessionId)), createElement))
+          () => sessionAdapterId(sessionId), () => sessionAdapterId(sessionId)), createElement, { useMemo, useSyncExternalStore }))
       const { registerDelegateCommand } = await import('../delegate-command.js')
       context.resources.add(registerDelegateCommand(uiContext, {
         rpc: context.services.rpc,

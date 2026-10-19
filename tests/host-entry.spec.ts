@@ -1,11 +1,38 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { apply } from '../data/build/dist/host/index.js'
 import { CodingNsConfigSchema } from '../data/build/dist/host/settings.js'
+
+test('published Host entries load without React or React DOM', () => {
+  const entries = ['../data/build/dist/index.js', '../data/build/dist/host/index.js']
+    .map(entry => new URL(entry, import.meta.url).href)
+  const script = `
+    import assert from 'node:assert/strict'
+    import { registerHooks } from 'node:module'
+    registerHooks({
+      resolve(specifier, context, nextResolve) {
+        if (/^react(?:-dom)?(?:\\/|$)/.test(specifier)) {
+          throw Object.assign(new Error('Cannot find package ' + specifier), { code: 'ERR_MODULE_NOT_FOUND' })
+        }
+        return nextResolve(specifier, context)
+      },
+    })
+    for (const entry of ${JSON.stringify(entries)}) {
+      const host = await import(entry)
+      assert.equal(typeof host.apply, 'function')
+      await host.apply()
+    }
+  `
+  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
+    encoding: 'utf8', timeout: 30_000,
+  })
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr)
+})
 
 test('Host entry 可以加载并卸载且不创建资源', async () => {
   await assert.doesNotReject(() => apply())
