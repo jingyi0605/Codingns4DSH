@@ -11,7 +11,9 @@
  * 把 BYOK 模型补进内存中的目录，使 ACP 会话能切换并真正路由到对应提供者。
  *
  * 这个 loader 只改写内存中的 cli.mjs，不修改用户安装的 npm 包或 Desktop
- * 目录；当上游实现已经变化时保持原模块不变。
+ * The model catalog patch depends only on the stable catalogModels function entry,
+ * not on minified catalog variable names or the complete function text. If the
+ * upstream entry point disappears, the original module is left unchanged.
  */
 
 import { fileURLToPath } from 'node:url'
@@ -71,35 +73,52 @@ function patchCommandCodeAcpQuestion(source: string): string {
   return patched
 }
 
-/** 上游 `catalogModels()` 的原始声明；命中不到说明实现已变化，保持模块不变。 */
-const CATALOG_MODELS_DECLARATION =
-  'function catalogModels(){return Object.values(RL).filter(e=>!e.hidden).map(e=>({id:e.id,name:e.name,description:e.description||null}))}'
+/**
+ * Stable declaration shape for the upstream `catalogModels()` function.
+ *
+ * Command Code's minified catalog variable changed between 1.74, 1.82, and 1.84
+ * (for example RL, NL, and QD), while ACP still builds its built-in catalog here.
+ * Matching only the function entry and finding its body with balanced braces
+ * avoids updating the plugin for every bundle re-minification.
+ */
+const CATALOG_MODELS_DECLARATION = /function\s+catalogModels\s*\([^)]*\)\s*\{/u
 
 /**
- * 注入到 bundle 的 BYOK 目录补充函数。
+ * Injected helper that supplements the bundle's BYOK model catalog.
  *
- * 用 `process.getBuiltinModule` 取 fs/os，避免依赖 cli.mjs 压缩后的导入别名。
- * 每次调用重读 providers.json，用户改完 BYOK 配置无需重启 ACP 进程；文件不存在
- * 或解析失败时返回空数组，目录行为与上游完全一致。
+ * `process.getBuiltinModule` loads fs/os without depending on minified cli.mjs
+ * import aliases. The providers file is read on each call, so changing BYOK
+ * configuration does not require restarting the ACP process. Missing or invalid
+ * configuration returns an empty list and preserves the upstream catalog.
  */
 const BYOK_MODELS_HELPER =
-  'function codingNsByokModels(){try{' +
-  'const fs=process.getBuiltinModule("node:fs"),os=process.getBuiltinModule("node:os");' +
-  'const p=os.homedir()+"/.commandcode/providers.json";' +
-  'if(!fs.existsSync(p))return[];' +
-  'const c=JSON.parse(fs.readFileSync(p,"utf8"));' +
-  'const m=c&&"object"==typeof c.provider?c.provider:c&&"object"==typeof c.providers?c.providers:null;' +
-  'if(!m)return[];' +
-  'const out=[];' +
-  'for(const id of Object.keys(m)){const v=m[id];if(!v||"object"!=typeof v.models)continue;' +
-  'for(const name of Object.keys(v.models))out.push({id:id+"/"+name,name:id+"/"+name,description:"string"==typeof v.name?v.name:"byok"})}' +
-  'return out}catch{return[]}}'
+  'function codingNsByokModels(){' +
+  'const normalize=e=>e&&typeof e.id==="string"&&e.id.trim()!==""?' +
+  '{id:e.id,name:typeof e.name==="string"&&e.name.trim()!==""?e.name:e.id,' +
+  'description:typeof e.description==="string"&&e.description.trim()!==""?e.description:"byok"}:null;' +
+  'try{if(typeof customModelListOptions==="function"){const e=customModelListOptions();' +
+  'if(Array.isArray(e)){const n=e.map(e=>normalize({...e,name:e.id})).filter(Boolean);if(n.length>0)return n}}}catch{}' +
+  'try{if(typeof getCustomProviderModelsSync==="function"){const e=getCustomProviderModelsSync();' +
+  'if(Array.isArray(e)){const n=[];for(const t of e){if(!t||typeof t.id!=="string"||!Array.isArray(t.models))continue;' +
+  'for(const e of t.models){if(!e||typeof e.id!=="string"||e.id.trim()==="")continue;' +
+  'n.push(normalize({id:t.id+"/"+e.id,name:typeof e.name==="string"?e.name:e.id,' +
+  'description:typeof t.name==="string"&&t.name.trim()!==""?t.name:"byok"}))}' +
+  '}if(n.length>0)return n}}}catch{}' +
+  'try{const fs=process.getBuiltinModule("node:fs"),os=process.getBuiltinModule("node:os"),' +
+  'home=typeof process.env.HOME==="string"&&process.env.HOME.trim()!==""?process.env.HOME:os.homedir(),' +
+  'p=home+"/.commandcode/providers.json";if(!fs.existsSync(p))return[];' +
+  'const c=JSON.parse(fs.readFileSync(p,"utf8")),m=c&&typeof c.provider==="object"&&c.provider!==null?' +
+  'c.provider:c&&typeof c.providers==="object"&&c.providers!==null?c.providers:null;if(!m)return[];' +
+  'const n=[];for(const t of Object.keys(m)){const e=m[t];' +
+  'if(!/^[a-z0-9][a-z0-9_.-]{0,63}$/u.test(t)||!e||typeof e!=="object"||e.disabled===true||e.enabled===false||' +
+  'typeof e.models!=="object"||e.models===null)continue;' +
+  'for(const r of Object.keys(e.models)){if(r.trim()!=="")n.push(normalize({id:t+"/"+r,name:t+"/"+r,' +
+  'description:typeof e.name==="string"&&e.name.trim()!==""?e.name:"byok"}))}}return n}catch{return[]}}'
 
-/** 打补丁后的 `catalogModels()`：内置目录在前，BYOK 模型去重后追加。 */
-const BYOK_MODELS_DECLARATION =
-  BYOK_MODELS_HELPER +
-  'function catalogModels(){const a=Object.values(RL).filter(e=>!e.hidden).map(e=>({id:e.id,name:e.name,description:e.description||null}));' +
-  'for(const e of codingNsByokModels())if(!a.some(n=>n.id===e.id))a.push(e);return a}'
+/** Patched `catalogModels()`: keep built-in entries first, then append unique BYOK models. */
+const BYOK_MODELS_WRAPPER =
+  'function catalogModels(...args){const a=codingNsBuiltinCatalogModels(...args);' +
+  'for(const e of codingNsByokModels())if(e&&typeof e.id==="string"&&!a.some(n=>n&&n.id===e.id))a.push(e);return a}'
 
 /**
  * 把 providers.json 声明的 BYOK 模型并入模型目录。
@@ -109,6 +128,67 @@ const BYOK_MODELS_DECLARATION =
  * 重复 id（BYOK 提供者与内置目录同名）保留内置条目，避免同一模型出现两次。
  */
 function patchCommandCodeAcpByokModels(source: string): string {
-  if (!source.includes(CATALOG_MODELS_DECLARATION)) return source
-  return source.replace(CATALOG_MODELS_DECLARATION, BYOK_MODELS_DECLARATION)
+  const match = CATALOG_MODELS_DECLARATION.exec(source)
+  if (match === null || match.index === undefined) return source
+  const openingBrace = match.index + match[0].lastIndexOf('{')
+  const end = findJavaScriptBlockEnd(source, openingBrace)
+  if (end === null) return source
+  const original = source.slice(match.index, end)
+  const renamed = original.replace(/^function\s+catalogModels/u, 'function codingNsBuiltinCatalogModels')
+  if (renamed === original) return source
+  return `${source.slice(0, match.index)}${BYOK_MODELS_HELPER}${renamed}${BYOK_MODELS_WRAPPER}${source.slice(end)}`
+}
+
+/** Find the end of a function body without interpreting braces inside literals/comments. */
+function findJavaScriptBlockEnd(source: string, openingBrace: number): number | null {
+  let depth = 0
+  let quote: '"' | "'" | '`' | null = null
+  let escaped = false
+  let lineComment = false
+  let blockComment = false
+  for (let index = openingBrace; index < source.length; index += 1) {
+    const current = source[index]!
+    const next = source[index + 1]
+    if (lineComment) {
+      if (current === '\n' || current === '\r') lineComment = false
+      continue
+    }
+    if (blockComment) {
+      if (current === '*' && next === '/') {
+        blockComment = false
+        index += 1
+      }
+      continue
+    }
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false
+      } else if (current === '\\') {
+        escaped = true
+      } else if (current === quote) {
+        quote = null
+      }
+      continue
+    }
+    if (current === '/' && next === '/') {
+      lineComment = true
+      index += 1
+      continue
+    }
+    if (current === '/' && next === '*') {
+      blockComment = true
+      index += 1
+      continue
+    }
+    if (current === '"' || current === "'" || current === '`') {
+      quote = current
+      continue
+    }
+    if (current === '{') depth += 1
+    else if (current === '}') {
+      depth -= 1
+      if (depth === 0) return index + 1
+    }
+  }
+  return null
 }
