@@ -8,11 +8,13 @@ import { createSessionTranslationService } from '../src/host/features/session-tr
 import { createSessionTranslationRecovery, SessionTranslationCancelled } from '../src/host/features/session-translation-recovery.js'
 import { createSessionPromptTranslation } from '../src/host/features/session-prompt-translation.js'
 import { DEFAULT_SESSION_TRANSLATION_SETTINGS } from '../src/shared/contracts/session-translation.js'
+import { createAgentSubagentTool } from '../src/host/cli-adapters/subagent-tool.js'
+import { AGENT_SUBAGENT_DESCRIPTIONS } from '../src/host/cli-adapters/subagent-tool-descriptions.js'
 
 const scope = { sessionId: 'session', subagent: false, literals: ['/workspace/中文 目录'] }
 const original = '中文描述'
 
-function fixture() {
+function fixture(translateText = (text: string) => text.replaceAll(original, 'Translated description')) {
   const requests: any[] = []
   let failure = false
   let enabled = true
@@ -23,7 +25,7 @@ function fixture() {
       requests.push(request)
       return (async function* () {
         const text = request.messages[0].content[0].text.split('SOURCE TEXT BEGIN\n')[1].split('\nSOURCE TEXT END')[0]
-        yield { type: 'text-delta', text: JSON.stringify({ translation: text.replaceAll(original, 'Translated description') }) }
+        yield { type: 'text-delta', text: JSON.stringify({ translation: translateText(text) }) }
         yield { type: 'finish', reason: { kind: failure ? 'max-tokens' : 'stop' } }
       })()
     },
@@ -120,6 +122,191 @@ test('context cache follows settings and lifecycle and never rewrites excluded s
   assert.equal(f.requests.length, 3)
   f.context.dispose()
   await assert.rejects(f.context.translateAssembly(assembly, scope), SessionTranslationCancelled)
+})
+
+test('independent sections, tool descriptions and parameter descriptions start together', async t => {
+  const f = fixture(); t.after(() => f.dispose())
+  const started: string[] = []
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const translate = f.service.translateInputDetailed!.bind(f.service)
+  f.service.translateInputDetailed = async (...args) => {
+    started.push(args[1])
+    await gate
+    return translate(...args)
+  }
+  const result = f.context.translateAssembly({
+    sections: [{ name: 'host', text: `${original} 系统` }],
+    tools: [{ name: 'tool', description: `${original} 工具`, parameters: {
+      type: 'object', properties: { value: { type: 'string', description: `${original} 参数` } },
+    } }],
+  }, scope)
+  await new Promise(resolve => setImmediate(resolve))
+  const firstWave = [...started]
+  release()
+  const translated = await result
+  assert.deepEqual(firstWave.sort(), [`${original} 系统`, `${original} 工具`, `${original} 参数`].sort())
+  assert.equal(translated.sections[0]!.text, 'Translated description 系统')
+  assert.equal(translated.tools[0]!.description, 'Translated description 工具')
+  assert.deepEqual(translated.tools[0]!.parameters, {
+    type: 'object', properties: { value: { type: 'string', description: 'Translated description 参数' } },
+  })
+})
+
+test('identical descriptions reuse translations across tools and workspaces with unrelated literals', async t => {
+  const f = fixture(); t.after(() => f.dispose())
+  const assembly = { sections: [], tools: ['first_tool', 'second_tool'].map(name => ({
+    name, description: original, parameters: {
+      type: 'object', properties: { [`${name}_value`]: { type: 'string', description: original } },
+    },
+  })) }
+  await f.context.translateAssembly(assembly, scope)
+  await f.context.translateAssembly(assembly, { ...scope, sessionId: 'other-session', literals: ['/other/workspace'] })
+  assert.equal(f.requests.length, 1)
+})
+
+function subagentAssembly() {
+  const tool = createAgentSubagentTool()
+  return { sections: [], tools: [{ name: 'agent_subagent', description: tool.description as string, parameters: tool.parameters }] }
+}
+
+test('built-in subagent prose uses local English with a cold cache and preserves the schema', async t => {
+  const f = fixture(); t.after(() => f.dispose())
+  const assembly = subagentAssembly()
+  const snapshot = structuredClone(assembly)
+  const translated = await f.context.translateAssembly(assembly, scope)
+  let expected = JSON.stringify(assembly)
+  for (const description of Object.values(AGENT_SUBAGENT_DESCRIPTIONS)) {
+    expected = expected.replace(description.zh, description.en)
+  }
+  assert.deepEqual(translated, JSON.parse(expected))
+  assert.deepEqual(assembly, snapshot)
+  assert.equal(f.requests.length, 0, 'none of the five built-in fields require a provider request')
+  await f.recovery.translateInput('session', 'dsh', original)
+  assert.equal(f.requests.length, 1, 'actual user input still follows normal translation')
+})
+
+test('custom rules and other target languages retain model translation for built-in prose', async t => {
+  const f = fixture(text => text.replace(/[\p{Script=Han}]+/gu, 'Translated'))
+  t.after(() => f.dispose())
+  const assembly = subagentAssembly()
+  await f.context.translateAssembly(assembly, scope)
+  assert.equal(f.requests.length, 0)
+  f.service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationRules: ['Use formal language.'] })
+  await f.context.translateAssembly(assembly, scope)
+  assert.equal(f.requests.length, 5)
+  assert.ok(f.requests.every(request => request.system.includes('Use formal language.')))
+  f.service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, inputLanguage: 'fr' })
+  await f.context.translateAssembly(assembly, scope)
+  assert.equal(f.requests.length, 10)
+  assert.ok(f.requests.slice(5).every(request => request.system.includes('French')))
+  f.service.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
+  await f.context.translateAssembly(assembly, scope)
+  assert.equal(f.requests.length, 10, 'removing custom rules restores the local path')
+})
+
+test('local tool prose does not replace modified descriptions, other tools, or human messages', async t => {
+  const f = fixture(text => text.replace(/[\p{Script=Han}]+/gu, 'Translated'))
+  t.after(() => f.dispose())
+  const assembly = subagentAssembly()
+  assembly.tools[0]!.description += ' 新增说明'
+  const translated = await f.context.translateAssembly(assembly, scope)
+  assert.equal(f.requests.length, 1)
+  assert.notEqual(translated.tools[0]!.description, AGENT_SUBAGENT_DESCRIPTIONS.tool.en)
+  await f.context.translateAssembly({ sections: [], tools: [{ name: 'another_tool', description: AGENT_SUBAGENT_DESCRIPTIONS.prompt.zh }] }, scope)
+  assert.equal(f.requests.length, 2)
+  await f.recovery.translateInput('session', 'dsh', AGENT_SUBAGENT_DESCRIPTIONS.prompt.zh)
+  assert.equal(f.requests.length, 3)
+})
+
+test('disabled, excluded, and cancelled sessions cannot take the local tool translation path', async t => {
+  const f = fixture(); t.after(() => f.dispose())
+  const assembly = subagentAssembly()
+  assert.equal(await f.context.translateAssembly(assembly, { ...scope, subagent: true }), assembly)
+  f.enable(false)
+  assert.equal(await f.context.translateAssembly(assembly, scope), assembly)
+  f.enable(true)
+  f.service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, inputEnabled: false })
+  assert.equal(await f.context.translateAssembly(assembly, scope), assembly)
+  f.service.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
+  const controller = new AbortController()
+  const reason = new Error('Agent cancelled')
+  controller.abort(reason)
+  await assert.rejects(f.context.translateAssembly(assembly, { ...scope, signal: controller.signal }), reason)
+  f.service.deactivate()
+  assert.equal(await f.context.translateAssembly(assembly, scope), assembly)
+  assert.equal(f.requests.length, 0)
+})
+
+test('additional protected schema values retain placeholder protection instead of local wording', async t => {
+  const f = fixture(text => text.replace(/[\p{Script=Han}]+/gu, 'Translated'))
+  t.after(() => f.dispose())
+  const translated = await f.context.translateAssembly({ sections: [], tools: [{
+    name: 'agent_subagent', description: AGENT_SUBAGENT_DESCRIPTIONS.prompt.zh,
+    parameters: { type: 'object', properties: { 子任务: { type: 'string' } } },
+  }] }, scope)
+  assert.equal(f.requests.length, 1)
+  assert.doesNotMatch(JSON.stringify(f.requests[0].messages), /子任务/u)
+  assert.match(translated.tools[0]!.description!, /子任务/u)
+})
+
+test('literals present in a description still separate cache entries and remain protected', async t => {
+  const f = fixture(); t.after(() => f.dispose())
+  const description = `${original} 工作项`
+  const translated = await f.context.translateAssembly({ sections: [], tools: [
+    { name: 'first_tool', description, parameters: { type: 'object', properties: { 工作项: { type: 'string' } } } },
+    { name: 'second_tool', description, parameters: { type: 'object', properties: { value: { type: 'string' } } } },
+  ] }, scope)
+  assert.equal(f.requests.length, 2)
+  assert.doesNotMatch(JSON.stringify(f.requests[0].messages), /工作项/u)
+  assert.match(JSON.stringify(f.requests[1].messages), /工作项/u)
+  assert.ok(translated.tools.every(tool => tool.description === 'Translated description 工作项'))
+})
+
+test('queued context translations reuse a result completed by another session', async t => {
+  const f = fixture(); t.after(() => f.dispose())
+  const calls: string[] = []
+  const releases: (() => void)[] = []
+  f.service.translateInputDetailed = async (_adapter, text) => {
+    calls.push(text)
+    if (text.startsWith('blocked')) await new Promise<void>(resolve => { releases.push(resolve) })
+    return { translated: 'Translated description' }
+  }
+  const busy = f.context.translateAssembly({ tools: [], sections: Array.from({ length: 4 }, (_, index) => ({ name: `blocked${index}`, text: `blocked${index}` })) }, scope)
+  const assembly = { tools: [], sections: [{ name: 'shared', text: original }] }
+  const first = f.context.translateAssembly(assembly, { ...scope, sessionId: 'first' })
+  const second = f.context.translateAssembly(assembly, { ...scope, sessionId: 'second' })
+  assert.equal(releases.length, 4)
+  releases[0]!()
+  try {
+    const results = await Promise.all([first, second])
+    assert.ok(results.every(result => result.sections[0]!.text === 'Translated description'))
+    assert.equal(calls.filter(text => text === original).length, 1)
+  } finally { releases.forEach(release => release()); await busy }
+})
+
+test('cancelling a parallel assembly removes queued fields and releases all four slots', async t => {
+  const f = fixture(); t.after(() => f.dispose())
+  const calls: string[] = []
+  f.service.translateInputDetailed = async (_adapter, text) => {
+    calls.push(text)
+    if (text !== 'next') return new Promise(() => {})
+    return { translated: 'Translated description' }
+  }
+  const controller = new AbortController()
+  const reason = new Error('Agent interrupted')
+  const assembly = { sections: [{ name: 'host', text: original }], tools: Array.from({ length: 5 }, (_, index) => ({
+    name: `tool_${index}`, description: `${original} ${index}`, parameters: {
+      type: 'object', properties: { value: { description: `${original} 参数 ${index}` } },
+    },
+  })) }
+  const pending = f.context.translateAssembly(assembly, { ...scope, signal: controller.signal })
+  assert.equal(calls.length, 4)
+  controller.abort(reason)
+  await assert.rejects(pending, reason)
+  const next = await f.context.translateAssembly({ sections: [{ name: 'next', text: 'next' }], tools: [] }, scope)
+  assert.equal(next.sections[0]!.text, 'Translated description')
+  assert.equal(calls.length, 5, 'cancelled queued fields never reach the provider')
 })
 
 test('failed internal translation keeps the original without a user decision and is not cached', { timeout: 1000 }, async t => {

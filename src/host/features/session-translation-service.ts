@@ -42,6 +42,8 @@ export interface SessionTranslationService {
   readonly cacheKey?: string
   /** 当前输入翻译的目标语言；旧测试替身未实现时由调用方回退为英语。 */
   readonly inputLanguage?: SessionTranslationLanguage
+  /** Local prompt translations may bypass the model only when this is explicitly false. */
+  readonly customRulesEnabled?: boolean
   /** 当前输出翻译的目标语言；旧测试替身未实现时由调用方回退为中文。 */
   readonly outputLanguage?: SessionTranslationLanguage
   /** DSH 原生会话的总开关；旧测试替身未实现时按关闭处理。 */
@@ -224,6 +226,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     get enabled() { return active },
     get cacheKey() { return JSON.stringify([settings, model?.currentSelection?.()]) },
     get inputLanguage() { return settings.inputLanguage },
+    get customRulesEnabled() { return (settings.translationRules?.length ?? 0) > 0 },
     get outputLanguage() { return settings.outputLanguage },
     get nativeEnabled() { return settings.nativeEnabled === true },
     get inputEnabled() { return settings.inputEnabled !== false },

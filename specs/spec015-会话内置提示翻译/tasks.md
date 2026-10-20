@@ -52,3 +52,66 @@ node --import ./tests/register-source-loader.mjs --test --test-concurrency=1 \
 ```
 
 Typecheck, version, capability, and locale checks passed. The locale check reported zero blocking violations and 200 warnings in existing log/error strings. Verification remained source-only; the running Stage0 was not rebuilt or restarted.
+
+## 2026-10-20 translation latency optimization and live Stage0 comparison
+
+Work is on `perf/translation-first-turn`; `main` remains at `713dfc1beec2a046c0cb17bb715eb5e557b68f3b`. No commit, merge, installation into Desktop, or restart of an existing service was performed.
+
+Independent system sections, tool descriptions, and parameter descriptions now enter the existing four-slot queue together. Cache keys exclude unused literals and normalize literal order, allowing identical descriptions to reuse results across tools and workspaces. Queued requests check the cache again before calling the provider. Existing cancellation ownership, failure fallback, protected values, and settings invalidation remain covered by regressions.
+
+Verification:
+
+```powershell
+node --import ./tests/register-source-loader.mjs --test tests/session-prompt-translation.spec.ts tests/session-translation-protection.spec.ts tests/session-translation-native.spec.ts tests/session-translation-recovery.spec.ts
+node ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit
+node scripts/check-version-sync.mjs
+node scripts/check-capability-retirement.mjs
+git diff --check
+```
+
+All 84 source tests passed, including five added regressions for parallel starts, cache reuse, literal protection, queued reuse, and cancellation. Type, version, and capability checks passed. The direct Node commands were used because `pnpm` was initially absent from PATH. A local `pnpm@10.7.1` was subsequently located and used for two complete `pnpm build` runs in separate temporary worktrees; both builds passed.
+
+Live comparison used DSH `0.2.1-rc.2`, Node `v26.7.0`, and the real `deepseek-official / deepseek-flash` provider with reasoning off. The existing local Stage0 runtime (`0.2.1-alpha.2`) lacks the prompt-assembly capability, so a separate runtime was installed under a temporary benchmark directory. Baseline and optimized worktrees each had a separate Stage0 home, plugin state, workspace, and loopback port (`17892` / `17893`). Only the existing DeepSeek API credential reference was copied to the temporary Host credential stores; no credentials were placed in the repository or returned to the Client. The default Desktop and original Stage0 profiles were not modified.
+
+Thirty native-session turns were measured: five samples per implementation for each of three scenarios. Implementation order alternated by sample; sessions ran sequentially. All used the same Chinese input asking for `BENCH_OK` without tools, file, or network operations. Output/reasoning translation was disabled to isolate input and internal-prompt preparation. The real default assembly contained 22 sections and 32 tools; no benchmark fixture tools or sections were injected. Every turn completed and all translation streams succeeded.
+
+| Scenario | Baseline preparation median | Optimized preparation median | Translation requests per turn | Baseline full-turn median | Optimized full-turn median |
+| --- | --- | --- | --- | --- | --- |
+| Translation cache cleared, new session | 6.248 s | 6.006 s | 6 → 6 | 8.123 s | 7.892 s |
+| Cache retained, new session in the same workspace | 2.016 s | 1.933 s | 1 → 1 | 3.941 s | 3.966 s |
+| Cache retained, new session in a different workspace | 5.925 s | 2.053 s | 6 → 1 | 8.082 s | 4.113 s |
+
+Preparation is measured from dispatching the native prompt RPC to the first main-model `llm/stream` event; it includes internal and user-input translation. Full-turn time ends when `turn/end` is observed in persisted session events, polled every 100 ms. Per-input `durationMs` remains only that input's translation time. The probe's downstream assembly timer does not cover the entire middleware chain and was excluded from these results.
+
+Different-workspace preparation decreased by 3.872 s (65.35%); full-turn time decreased by 3.969 s (49.11%). Requests decreased deterministically from six to one in all five pairs. Cold-cache and same-workspace measurements do not establish a material improvement: the differences are small relative to live API variance. Clearing the translation module cache does not clear provider connections or process caches, so this is not a full process-cold benchmark. Browser rendering, actual send-button click latency, external CLI startup, and output translation latency were not measured.
+
+Sanitized local evidence is in `C:/Users/Administrator/.config/codingns4dsh/translation-benchmark-20261020/`: `manifest.json`, `summary.json`, `results.json`, `results.csv`, the benchmark scripts, and the optimization patch. The temporary experiment root is recorded in the manifest. Both test listeners were stopped and their temporary credential/authentication files removed after the run. The temporary comparison worktrees were removed after preserving the patch and results. No release runtime was updated.
+
+## 2026-10-20 fixed tool prose localization
+
+The five cold-cache internal requests were traced to the plugin-owned `agent_subagent` description and four parameter descriptions. Their Chinese originals now share a catalog with reviewed English text. Only unchanged tool-owned fields, an English input target, and explicitly absent custom rules use the local path. Added schema/workspace literals must survive unchanged; otherwise the original placeholder-preserving model path applies. User input, other tools, other languages, custom rules, opt-in, exclusions, cancellation, and settings invalidation retain their existing behavior.
+
+The benchmark baseline includes the earlier uncommitted queue/cache optimization; it is not bare `main`. Both variants are separate temporary worktrees and Stage0 profiles using DSH `0.2.1-rc.2`, Node `v26.7.0`, pnpm `10.7.1`, and `deepseek-official / deepseek-flash` with reasoning off. Default Desktop and existing Stage0 were not modified. No commit, merge, release, or installation was performed.
+
+Verification of the final implementation:
+
+- 124 targeted source tests passed: `session-prompt-translation`, `session-translation-protection`, `session-translation-native`, `session-translation-recovery`, `session-translation-rules`, `subagent-delegate`, and `native-subagent-followup`, using `node --import ./tests/register-source-loader.mjs --test`.
+- Five new behavioral tests cover zero provider requests for fixed descriptions, custom-rule/other-language fallback, changed/foreign/human text, disabled/excluded/cancelled sessions, and additional protected schema literals.
+- Typecheck, version, capability, and i18n checks passed (i18n: zero blocking violations, 200 existing warnings). Both isolated variants passed `pnpm build`; the optimized variant was rebuilt after the protected-literal regression was added.
+- An expanded run exposed four failures in `tests/subagent-bridge.spec.ts`: a Windows command assertion and three MCP response timeouts. The same four failures reproduced in the pre-change snapshot (22/26 passed); no unrelated bridge changes were made.
+
+The initial 30-turn trial preceded the final protected-literal check; its results are retained separately and are not the final benchmark. The final code is rebuilt and compared in another 30-turn run, five alternating samples per variant and scenario, after smoke turns warm both processes. Output/reasoning translation stays disabled. Cold clears only the module cache, not process/provider connections. Preparation measures native prompt RPC dispatch to the first main-model stream; total ends at persisted `turn/end` polled every 100 ms. Browser rendering, real external CLI execution, other-language/custom-rule latency, and output translation were not measured.
+
+Final 30-turn results (all turns completed; zero failed translation streams):
+
+| Scenario | Baseline preparation median | Optimized preparation median | Translation requests | Baseline full-turn median | Optimized full-turn median |
+| --- | --- | --- | --- | --- | --- |
+| Cold translation cache | 4.766 s | 2.496 s | 6 → 1 | 6.526 s | 4.371 s |
+| Warm cache, new session | 1.943 s | 1.909 s | 1 → 1 | 3.893 s | 3.789 s |
+| Warm cache, new workspace | 1.868 s | 1.828 s | 1 → 1 | 3.969 s | 3.763 s |
+
+Cold preparation decreased 2.270 s (47.63%); full-turn median decreased 2.155 s (33.02%). Warm-cache differences do not establish a material improvement. The deterministic benefit is removal of all five fixed-description requests, leaving only the real user-input translation. No user-input/lifecycle overlap, concurrency change, or new persistent cache was needed for this result.
+
+Sanitized evidence and reproducible scripts are saved in `C:/Users/Administrator/.config/codingns4dsh/translation-local-prose-20261020/`. The manifest includes the baseline definition and final normalized source hashes. The final patch and new catalog source are retained alongside the results. Both temporary test listeners were stopped. Automatic command policy rejected the combined stop/delete command without a specific reason; the process-only lifecycle script then succeeded. Temporary credential/authentication files were not deleted by another mechanism after that rejection.
+
+Both temporary comparison worktrees were removed after preserving code and results; unrelated existing worktrees remain. Temporary Host profiles remain under `C:/Users/Administrator/AppData/Local/Temp/codingns-translation-local-9d93c955/`, including the credential/authentication files whose deletion was rejected. No benchmark listener remains on ports 17892/17893.
